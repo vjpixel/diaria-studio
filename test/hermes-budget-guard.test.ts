@@ -57,10 +57,17 @@ describe("guard de budget do wrapper (#6666)", () => {
     );
   });
 
-  it("o loop de classificacao cobre 'exceeded.*budget' no ATTEMPT_LOG", () => {
+  it("o loop de classificacao cobre o erro literal do CLI ('Exceeded USD budget') no ATTEMPT_LOG", () => {
     // Procura pelo elif que detecta budget-exceeded, exatamente como o
     // #6617 fez com os patternos de rate-limit/config-error.
-    const budgetPattern = /elif grep -qiE "exceeded\.budget|budget\.exceeded|too expensive|cost\.exceed" "\$ATTEMPT_LOG"/;
+    //
+    // #6796: o padrao frouxo original ("exceeded.*budget|budget.*exceeded|
+    // too expensive|cost.*exceed") foi trocado pela string LITERAL que o
+    // CLI emite — casava prosa gerada pelo proprio modelo discutindo o bug
+    // (este checkout fala de orcamento/custo o tempo todo), o que e
+    // perigoso porque este e o UNICO classificador que ainda le texto do
+    // modelo e alimenta SAW_CONFIG_ERROR_SIGNAL (exit 4).
+    const budgetPattern = /elif grep -qE "Exceeded USD budget" "\$ATTEMPT_LOG"/;
     assert.ok(
       budgetPattern.test(source),
       "o elif de classificacao do budget-exceeded nao esta presente no wrapper — sem isso, 'Exceeded USD budget' (que vai pro STDOUT) e classificado como 'sem sinal claro' e a cadeia falha silenciosamente (#6666)",

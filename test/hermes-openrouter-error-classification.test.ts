@@ -40,9 +40,8 @@ describe("classificação de erro do wrapper OpenRouter (#6696)", () => {
   const source = readFileSync(WRAPPER_PATH, "utf8");
 
   it("finding 1: o elif de budget-exceeded seta SAW_CONFIG_ERROR_SIGNAL, não SAW_QUOTA_SIGNAL", () => {
-    const budgetElifIdx = source.indexOf(
-      'elif grep -qiE "exceeded.*budget|budget.*exceeded|too expensive|cost.*exceed"',
-    );
+    // #6796: o padrão migrou de prosa frouxa pra string literal do CLI.
+    const budgetElifIdx = source.indexOf('elif grep -qE "Exceeded USD budget"');
     assert.ok(budgetElifIdx > -1, "elif de budget-exceeded não encontrado");
     // A próxima ocorrência de SAW_*_SIGNAL= depois deste elif é a que ele seta.
     const nextConfigSignal = source.indexOf("SAW_CONFIG_ERROR_SIGNAL=1", budgetElifIdx);
@@ -94,7 +93,7 @@ describe("classificação de erro do wrapper OpenRouter (#6696)", () => {
   it("finding 2 (regressão inversa): o grep de budget-exceeded continua vendo o STDOUT (precisa, #6666)", () => {
     // O budget error do CLI vai pro stdout — não pode migrar pro snapshot
     // stderr-only, senão o #6666 volta a quebrar.
-    const budgetElif = /elif grep -qiE "exceeded\.\*budget[^"]*" "(\$\w+)"/.exec(source);
+    const budgetElif = /elif grep -qE "Exceeded USD budget" "(\$\w+)"/.exec(source);
     assert.ok(budgetElif, "elif de budget-exceeded não encontrado");
     assert.equal(
       budgetElif![1],
@@ -102,6 +101,29 @@ describe("classificação de erro do wrapper OpenRouter (#6696)", () => {
       "o grep de budget-exceeded precisa continuar vendo o ATTEMPT_LOG combinado " +
         "(stdout+stderr) — 'Exceeded USD budget' vai pro STDOUT (#6666); mover isso " +
         "pro snapshot stderr-only reintroduziria o bug original.",
+    );
+  });
+
+  it("#6796: o padrão de budget-exceeded não casa prosa PT-BR do modelo discutindo orçamento", () => {
+    // Extrai o padrão de grep -E literal usado pelo wrapper e confirma que
+    // uma resposta gerada pelo modelo discutindo o próprio bug de budget
+    // (assunto real deste checkout, #6712/#6716/#6791) não casa — só o
+    // texto EXATO que o CLI emite deve casar.
+    const budgetElif = /elif grep -qE "([^"]+)" "\$ATTEMPT_LOG"/.exec(source);
+    assert.ok(budgetElif, "elif de budget-exceeded não encontrado");
+    const pattern = new RegExp(budgetElif![1]);
+    assert.ok(
+      pattern.test("Exceeded USD budget (0.31 spent)"),
+      "o padrão precisa continuar casando o texto literal que o CLI emite",
+    );
+    assert.ok(
+      !pattern.test("o job excedeu o budget de tokens configurado para esta rodada"),
+      "o padrão não pode casar prosa PT-BR gerada pelo modelo mencionando budget — " +
+        "esse é o cenário de falso-positivo do #6796 (exit 4 espúrio sobre modelos sãos)",
+    );
+    assert.ok(
+      !pattern.test("this session exceeded its budget for the task and had to stop early"),
+      "o padrão não pode casar prosa EM INGLÊS parafraseando o erro (não o texto literal do CLI)",
     );
   });
 
