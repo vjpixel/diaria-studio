@@ -233,7 +233,19 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as PlatformConfig;
+  // Review #6809 (P2, confiança alta): mesmo padrão de corrupção que crashou
+  // check-brevo-diaria-guardrail.ts (#6799) — JSON.parse sem try/catch aqui
+  // propagaria SyntaxError cru em vez de diagnóstico + exit(2) controlado.
+  let platformConfig: PlatformConfig;
+  try {
+    platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as PlatformConfig;
+  } catch (e) {
+    log(
+      `ERRO: platform.config.json não parseia como JSON válido (${(e as Error).message}) — ` +
+        "config corrompida ou escrita parcial. Não é seguro prosseguir sem config válida.",
+    );
+    process.exit(2);
+  }
   const brevoDiaria = platformConfig.brevo_diaria;
   if (!brevoDiaria) {
     log("ERRO: brevo_diaria não configurado em platform.config.json.");
@@ -293,7 +305,10 @@ async function main(): Promise<void> {
   const currentActiveCount = computeCurrentActiveCount(store.contacts);
   const slotsBeforeGuardrail = computeAvailableSlots(currentActiveCount, cap);
 
-  const guardrailState = readRolloutGuardrailState();
+  // Review #6809 (P2, confiança alta): sem `warn`, um state file corrompido
+  // cai no fail-soft silencioso — se o rollout estava PAUSADO quando
+  // corrompeu, o reset libera o envio sem log nenhum (#6799).
+  const guardrailState = readRolloutGuardrailState(undefined, log);
   const slotsAfterGuardrail = applyRolloutGuardrailGate(slotsBeforeGuardrail, guardrailState.rollout_paused);
   if (guardrailState.rollout_paused) {
     log(
