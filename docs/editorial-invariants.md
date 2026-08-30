@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 89 invariants.
+**Total**: 90 invariants.
 
 ## Static (estrutura do repo)
 
@@ -77,6 +77,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `box-divulgacao-runtime-excluded` | slot de boxes_divulgacao aponta pra snippet runtime:false — injetaria conteúdo de doc/referência verbatim (#4504) | #4504 |
 | `capture-failed-submission-count` | captura de newsletters (0b-bis) falhou — coverage line não pode afirmar '0 submissões' (#2878) | #2878 |
 | `card-4x5-upload-missing` | card 4:5 existe no disco mas 06-public-images.json não tem a entry d{N}_4x5 (#4090, warning-only) | #4090 |
+| `carousel-cards-missing` | ausência TOTAL dos slides do carrossel diário (0 dos N×4) pra edição com texto de destaque — gen-carousel-cards.ts provavelmente nunca rodou (#6740) | #6740 |
 | `carousel-cards-stale` | slides do carrossel diário rasterizados com texto anterior à edição do 03-social.md (#6064) | #6064 |
 | `carousel-text-overflow` | parágrafo do social não cabe no card do carrossel em tamanho fixo — precisa ser reescrito (#6078) | #6078 |
 | `carousel-upload-incomplete` | slides do carrossel existem no disco mas 06-public-images.json não tem todas as 5 chaves (#6064, warning-only) | #6064 |
