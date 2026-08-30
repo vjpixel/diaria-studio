@@ -51,6 +51,23 @@
  *                   *comando* (exit code != 0, JSON.parse jogando) é o
  *                   entrypoint CLI, que produz este mesmo veredito antes de
  *                   sequer chamar a função pura daqui.
+ *   - `"blocked_by_conflict"` (#6768): nenhum check chegou a começar
+ *                   (`statusCheckRollup` vazio, ou nenhuma entrada tem
+ *                   `startedAt` — todas ainda `QUEUED`) **e** o PR está
+ *                   `mergeable === "CONFLICTING"` contra a base. Quando o
+ *                   GitHub não consegue computar o merge ref (branch em
+ *                   conflito), o trigger `pull_request` nunca dispara — o
+ *                   check-suite fica `queued` pra sempre, sem nunca virar
+ *                   `workflow_run`. Reportar isso como `pending` genérico
+ *                   (mesmo veredito de "CI ainda não teve tempo de rodar")
+ *                   levava o coordenador a esperar o timeout de 30 min do
+ *                   #2381 achando que era CI lento — medido ao vivo no PR
+ *                   #6765 (rodada overnight 260829b). Distinto de `pending`:
+ *                   nenhuma espera resolve isso, só um merge/rebase com a
+ *                   base. `mergeable` é opcional (2º parâmetro de
+ *                   `evaluatePrChecksGate`) — quando omitido (chamadores
+ *                   antigos, testes existentes) este veredito nunca é
+ *                   produzido, comportamento idêntico ao de antes do #6768.
  *
  * **Nenhum destes 4 estados equivale a "autorizado" exceto `"pass"`** — é
  * essa a garantia central: comando que falhou (seja na chamada ao `gh`, seja
@@ -58,7 +75,7 @@
  * reprovados, logo pode mergear".
  */
 
-export type PrChecksGateVerdict = "pass" | "fail" | "pending" | "error";
+export type PrChecksGateVerdict = "pass" | "fail" | "pending" | "error" | "blocked_by_conflict";
 
 export interface PrCheckNode {
   name?: string;
@@ -130,7 +147,7 @@ export function keepLatestPerName(nodes: readonly PrCheckNode[]): PrCheckNode[] 
 
   const out: PrCheckNode[] = [];
   for (const name of ordem) {
-    const grupo = porNome.get(name)!;
+    const grupo = dropSupersededCancelled(porNome.get(name)!);
     if (grupo.length === 1) {
       out.push(grupo[0]);
       continue;
@@ -153,6 +170,59 @@ export function keepLatestPerName(nodes: readonly PrCheckNode[]): PrCheckNode[] 
     out.push(maisNova);
   }
   return [...out, ...semNome];
+}
+
+/**
+ * #6768: um node "deu sinal" (algo do CI de fato aconteceu pra ele) quando:
+ * - `CheckRun` já `COMPLETED` — passou ou falhou, não importa `startedAt`
+ *   (um payload parcial/antigo pode não trazer o campo mesmo já concluído).
+ * - `CheckRun` com `startedAt` válido — está rodando ou já rodou.
+ * - `StatusContext` com `state` fora de `PENDING_STATES` — já resolveu.
+ *
+ * Sem isso (`nenhumComecou` calculado só por `startedAt` ausente, achado do
+ * self-review do PR #6770), um `StatusContext` — que estruturalmente NUNCA
+ * tem `startedAt` — ou um `CheckRun` `COMPLETED` de payload parcial sem o
+ * campo eram lidos como "não começou", produzindo `blocked_by_conflict` por
+ * cima de um check que na verdade já `FAILURE`/`SUCCESS`.
+ */
+function hasStartedSignal(node: PrCheckNode): boolean {
+  if (typeof node.state === "string") return !PENDING_STATES.has(node.state);
+  if (node.status === "COMPLETED") return true;
+  return parseStartedAt(node.startedAt) !== null;
+}
+
+function isCancelledCheckRun(node: PrCheckNode): boolean {
+  return node.status === "COMPLETED" && node.conclusion === "CANCELLED";
+}
+
+/**
+ * #6766: um evento `labeled` no PR (ex: aplicar uma label depois de um
+ * `gh run rerun`) pode disparar um 2º `workflow_run` separado do MESMO
+ * workflow para o MESMO SHA — que o `concurrency: cancel-in-progress` do
+ * workflow cancela quase na hora. O `statusCheckRollup` acumula as DUAS
+ * entradas com o MESMO `name`: uma `CANCELLED` (do run cancelado) e uma
+ * `SUCCESS`/`FAILURE` (do run que de fato terminou — o original, ou um
+ * rerun de job dentro dele).
+ *
+ * `startedAt` **não** ordena essas duas de forma confiável — medido ao
+ * vivo no PR #6764: o run cancelado tinha `startedAt` MAIS TARDE que o
+ * run bem-sucedido (o job do run cancelado só chegou a ser agendado depois
+ * que o outro já tinha COMEÇADO, mesmo terminando antes) — "manter a
+ * entrada de `startedAt` mais recente" (o `keepLatestPerName` de baixo)
+ * escolhia a `CANCELLED` errada e reportava `fail` com CI genuinamente
+ * verde. Por isso este passo roda ANTES da comparação por timestamp: um
+ * `CANCELLED` nunca compete por horário contra uma entrada não-cancelada
+ * do mesmo nome — se existe qualquer substituta (`SUCCESS`, `FAILURE`, ou
+ * ainda em andamento), a(s) `CANCELLED` são descartadas incondicionalmente.
+ * Um `CANCELLED` **sozinho** (sem substituta, cancelamento humano de fato)
+ * continua contando — ausência de sinal nunca é aprovação (ver teste
+ * "CANCELLED SEM run mais nova continua reprovando").
+ */
+function dropSupersededCancelled(grupo: PrCheckNode[]): PrCheckNode[] {
+  if (grupo.length <= 1) return grupo;
+  const cancelados = grupo.filter(isCancelledCheckRun);
+  if (cancelados.length === 0 || cancelados.length === grupo.length) return grupo;
+  return grupo.filter((n) => !isCancelledCheckRun(n));
 }
 
 /**
@@ -186,13 +256,25 @@ const PASSING_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 const PASSING_STATES = new Set(["SUCCESS"]);
 const PENDING_STATES = new Set(["PENDING", "EXPECTED"]);
 
+/** Segundo parâmetro opcional de `evaluatePrChecksGate` — ver `"blocked_by_conflict"` acima. */
+export interface EvaluatePrChecksGateOptions {
+  /** `gh pr view --json mergeable` → `"MERGEABLE" | "CONFLICTING" | "UNKNOWN"`. */
+  mergeable?: string | null;
+}
+
 /**
  * Decide o veredito da condição 1 do gate a partir do `statusCheckRollup`
  * já parseado de `gh pr view --json statusCheckRollup`. Puro, sem rede;
  * nunca lança — payload malformado vira `verdict: "error"`, nunca uma
  * exceção que o chamador precisaria capturar pra não confundir com "pass".
+ *
+ * `opts.mergeable`, quando fornecido, habilita o veredito
+ * `"blocked_by_conflict"` (#6768) — ver docstring do tipo acima.
  */
-export function evaluatePrChecksGate(statusCheckRollup: unknown): PrChecksGateResult {
+export function evaluatePrChecksGate(
+  statusCheckRollup: unknown,
+  opts: EvaluatePrChecksGateOptions = {},
+): PrChecksGateResult {
   if (!Array.isArray(statusCheckRollup)) {
     return {
       verdict: "error",
@@ -202,7 +284,24 @@ export function evaluatePrChecksGate(statusCheckRollup: unknown): PrChecksGateRe
     };
   }
 
+  // #6768: rollup vazio (nem check nenhum registrado) + PR CONFLICTING com a
+  // base é o caso mais claro — o GitHub não computa o merge ref pra rodar
+  // `pull_request` neste SHA, então nem check-suite chega a existir. Checar
+  // isto ANTES do early-return de array vazio abaixo, que senão produziria
+  // `pending` pra este caso. O caso "checks existem mas nenhum começou"
+  // (todos `QUEUED` sem `startedAt`) é resolvido mais abaixo, depois da
+  // dedup — ver comentário perto de `pendingChecks`.
   if (statusCheckRollup.length === 0) {
+    if (opts.mergeable === "CONFLICTING") {
+      return {
+        verdict: "blocked_by_conflict",
+        failingChecks: [],
+        pendingChecks: [],
+        reason:
+          "PR está CONFLICTING com a base e nenhum check chegou a ser registrado — o GitHub não computa o " +
+          "merge ref pra rodar `pull_request` neste SHA. Esperar CI aqui é inútil; resolver o conflito (merge/rebase com a base) primeiro.",
+      };
+    }
     return {
       verdict: "pending",
       failingChecks: [],
@@ -271,6 +370,29 @@ export function evaluatePrChecksGate(statusCheckRollup: unknown): PrChecksGateRe
   }
 
   if (pendingChecks.length > 0) {
+    // #6768, 2º caso: o rollup TEM entradas (diferente do early-return de
+    // array vazio acima), mas nenhuma delas deu qualquer sinal real ainda
+    // (todas `QUEUED` sem `startedAt`, nenhuma `StatusContext` fora de
+    // PENDING/EXPECTED). Calculado sobre `vigentes` (pós-dedup #6766) — não
+    // sobre o rollup cru — pra não confundir um `CANCELLED` já descartado
+    // com sinal de que "algo rodou". Também calculado sobre TODAS as
+    // vigentes, não só as que caíram em `pendingChecks`: se qualquer uma já
+    // é `COMPLETED` (passou, e por isso não foi empurrada pra nenhum
+    // array), isso já é sinal de que o `pull_request` disparou — nunca
+    // `blocked_by_conflict` nesse caso, mesmo que outro check ainda não
+    // tenha começado.
+    const nenhumComecou = vigentes.every((n) => !hasStartedSignal((n ?? {}) as PrCheckNode));
+    if (nenhumComecou && opts.mergeable === "CONFLICTING") {
+      return {
+        verdict: "blocked_by_conflict",
+        failingChecks: [],
+        pendingChecks,
+        reason:
+          "PR está CONFLICTING com a base e nenhum check registrado chegou a começar (todos ainda sem " +
+          "`startedAt`) — o GitHub não computa o merge ref pra rodar `pull_request` neste SHA. Esperar CI " +
+          "aqui é inútil; resolver o conflito (merge/rebase com a base) primeiro.",
+      };
+    }
     return {
       verdict: "pending",
       failingChecks: [],
