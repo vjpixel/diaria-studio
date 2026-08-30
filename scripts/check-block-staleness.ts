@@ -59,6 +59,35 @@ import { flattenClaims, findAgedClaims, CLAIM_STALE_AGE_MS } from "./lib/claim-s
  * `findStaleBlocks` já trata esses valores como "não verificável".
  */
 function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
+  // #6754 fleet review — a categoria `bloqueio-execucao` agora checa TODAS
+  // as labels de `BLOCKED_LABELS_SET` (4 labels) por issue; sem cache isso
+  // vira 4 chamadas `gh issue view` idênticas (mesmo issue, mesmo campo
+  // `labels`, só o filtro final muda). Memoiza por issueNumber dentro desta
+  // instância de consultor — 1 fetch por issue, independente de quantas
+  // labels forem checadas.
+  const labelsCache = new Map<number, Set<string> | null>();
+  function fetchLabels(issueNumber: number): Set<string> | null {
+    if (labelsCache.has(issueNumber)) return labelsCache.get(issueNumber) ?? null;
+    const result = spawnSync("gh", ["issue", "view", String(issueNumber), "--json", "labels"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    let value: Set<string> | null;
+    if (result.error || result.status !== 0 || !result.stdout) {
+      value = null;
+    } else {
+      try {
+        const parsed = JSON.parse(result.stdout) as { labels?: Array<{ name?: string }> };
+        value = new Set((parsed.labels ?? []).map((l) => l.name).filter((n): n is string => !!n));
+      } catch {
+        value = null;
+      }
+    }
+    labelsCache.set(issueNumber, value);
+    return value;
+  }
+
   return {
     getPrState(prNumber: number): PrState {
       const result = spawnSync("gh", ["pr", "view", String(prNumber), "--json", "state"], {
@@ -87,19 +116,9 @@ function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
       }
     },
     hasLabel(issueNumber: number, label: string): boolean | null {
-      const result = spawnSync("gh", ["issue", "view", String(issueNumber), "--json", "labels"], {
-        cwd: repoRoot,
-        encoding: "utf8",
-        timeout: 15_000,
-      });
-      if (result.error || result.status !== 0 || !result.stdout) return null;
-      try {
-        const parsed = JSON.parse(result.stdout) as { labels?: Array<{ name?: string }> };
-        const labels = parsed.labels ?? [];
-        return labels.some((l) => l.name === label);
-      } catch {
-        return null;
-      }
+      const labels = fetchLabels(issueNumber);
+      if (labels === null) return null;
+      return labels.has(label);
     },
   };
 }

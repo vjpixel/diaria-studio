@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   isGhPrCreateCommand,
+  containsShellWrappedGhPrCreate,
   isRuntimeArtifactPath,
   isFixturePath,
   parseNameStatus,
@@ -41,6 +42,28 @@ describe("isGhPrCreateCommand (#6753)", () => {
     assert.equal(isGhPrCreateCommand(undefined), false);
     assert.equal(isGhPrCreateCommand(null), false);
   });
+
+  // Fleet review pós-PR #6776, finding 1: `stripQuotedSpans` removia o
+  // argumento de `bash -c "..."`/`sh -c "..."`, deixando um `gh pr create`
+  // REAL (não uma citação) passar despercebido.
+  it("#6776-finding-1: detecta gh pr create embrulhado em bash -c/sh -c/zsh -c", () => {
+    assert.equal(isGhPrCreateCommand('bash -c "gh pr create --title x --body y"'), true);
+    assert.equal(isGhPrCreateCommand("sh -c 'gh pr create --title x'"), true);
+    assert.equal(isGhPrCreateCommand('zsh -c "gh pr create --title x"'), true);
+    assert.equal(isGhPrCreateCommand('bash --command="gh pr create --title x"'), true);
+  });
+
+  it("#6776-finding-1: citação pura (sem interpretador -c) continua não-detectada", () => {
+    assert.equal(isGhPrCreateCommand('echo "gh pr create seria bloqueado aqui"'), false);
+  });
+});
+
+describe("containsShellWrappedGhPrCreate (#6776 finding 1)", () => {
+  it("true só quando HÁ interpretador -c/--command E gh pr create dentro", () => {
+    assert.equal(containsShellWrappedGhPrCreate('bash -c "gh pr create --title x"'), true);
+    assert.equal(containsShellWrappedGhPrCreate('bash -c "echo hi"'), false);
+    assert.equal(containsShellWrappedGhPrCreate("gh pr create --title x"), false);
+  });
 });
 
 describe("isRuntimeArtifactPath (#6753)", () => {
@@ -65,6 +88,30 @@ describe("isRuntimeArtifactPath (#6753)", () => {
     assert.equal(isRuntimeArtifactPath("scripts/lib/clarice-db.ts"), false);
     assert.equal(isRuntimeArtifactPath("test/block-staleness.test.ts"), false);
     assert.equal(isRuntimeArtifactPath("docs/installation.md"), false);
+  });
+
+  // Fleet review pós-PR #6776, finding 2: o padrão anterior de "dump" era
+  // substring livre e colidia com um arquivo real do repo.
+  it("#6776-finding-2: NÃO acusa scripts/dump-worker-logs.ts (arquivo real do repo, 'dump' é prefixo)", () => {
+    assert.equal(isRuntimeArtifactPath("scripts/dump-worker-logs.ts"), false);
+  });
+
+  it("#6776-finding-2: ainda acusa 'dump' como sufixo de arquivo ou diretório inteiro", () => {
+    assert.equal(isRuntimeArtifactPath("scripts/engagement-dump.json"), true);
+    assert.equal(isRuntimeArtifactPath("scripts/engagement_dump.json"), true);
+    assert.equal(isRuntimeArtifactPath("scripts/dump/data.json"), true);
+    assert.equal(isRuntimeArtifactPath("dump.json"), true);
+  });
+
+  // Fleet review pós-PR #6776, finding 3: a forma DIRETÓRIO de "-backup"
+  // já era coberta; faltava a forma ARQUIVO bare (sem diretório dedicado).
+  it("#6776-finding-3: acusa arquivo bare *-backup.ext / *_backups.ext (sem diretório dedicado)", () => {
+    assert.equal(isRuntimeArtifactPath("scripts/subscribers-backup.json"), true);
+    assert.equal(isRuntimeArtifactPath("scripts/subscribers_backups.csv"), true);
+  });
+
+  it("#6776-finding-3: NÃO acusa arquivo cujo nome só começa com 'backup-' (prefixo, não sufixo)", () => {
+    assert.equal(isRuntimeArtifactPath("scripts/lib/backup-strategy.ts"), false);
   });
 });
 

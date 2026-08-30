@@ -32,7 +32,6 @@
  *    (nome da TRANSIÇÃO, não da label), mas a label real que sustenta o
  *    bloqueio pode ser qualquer uma do conjunto.
  *
-
  * **Motivos explicitamente EXCLUÍDOS de propósito** (não são caducáveis por
  * este mecanismo — ver corpo da issue #6259, seção "Motivos NÃO
  * transitórios"): `bloqueio-externo` (conta de terceiro — só o editor

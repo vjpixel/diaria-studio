@@ -120,22 +120,57 @@ export function stripQuotedSpans(command) {
  * — este guard é PreToolUse (decide ANTES da execução) e prefere fail-open
  * (não bloquear) quando o comando não é reconhecido com confiança, então o
  * 3º estado "unknown" colapsa em `false` aqui.
+ *
+ * **Exceção deliberada à regra "aspas nunca contam" (fleet review pós-PR
+ * #6776, finding 1):** um `gh pr create` embrulhado em `bash -c "..."`/
+ * `sh -c "..."`/`zsh -c "..."` é uma invocação REAL, não uma citação — mas
+ * `stripQuotedSpans` remove o conteúdo de QUALQUER string entre aspas,
+ * inclusive o argumento de `-c`, então a checagem principal (sobre o
+ * comando stripado) nunca veria esse `gh pr create`. `containsShellWrappedGhPrCreate`
+ * checa o comando BRUTO (não stripado) só quando há sinal de um
+ * interpretador `-c`/`--command`, evitando reabrir a brecha original (uma
+ * citação solta tipo `echo "rodar gh pr create depois"` continua sem
+ * interpretador `-c`, então não é afetada).
  */
+export function containsShellWrappedGhPrCreate(command) {
+  if (typeof command !== "string") return false;
+  return (
+    /\b(?:bash|sh|zsh)\s+(?:-\w*c\w*\s|--command[= ])/i.test(command) &&
+    /\bgh\s+pr\s+create\b/i.test(command)
+  );
+}
+
 export function isGhPrCreateCommand(command) {
   if (typeof command !== "string") return false;
+  if (containsShellWrappedGhPrCreate(command)) return true;
   const stripped = stripQuotedSpans(command);
   return /^\s*gh\s+pr\s+create\b|(?:&&|;|\|\||\||\n)\s*gh\s+pr\s+create\b/.test(stripped);
 }
 
 /** Padrões de path que nunca deveriam estar versionados — artefato de
  * runtime (#6753). Casam contra o path RELATIVO ao repo (barras `/`, nunca
- * `\`). */
+ * `\`).
+ *
+ * **Ajustados no fleet review pós-PR #6776 (findings 2 e 3):**
+ * - `dump` era substring livre (`[^/]*dump[^/]*`) e colidia com o arquivo
+ *   real `scripts/dump-worker-logs.ts` (código-fonte legítimo, "dump" é só
+ *   parte do nome). Restrito a "dump"/"dumps" como SEGMENTO de diretório
+ *   inteiro, ou como SUFIXO de nome de arquivo antes da extensão
+ *   (`*-dump.ext`, `*_dump.ext`, `dump.ext` bare) — nunca como prefixo de
+ *   um nome maior.
+ * - `backup` só casava a forma DIRETÓRIO (`*-backup3/`) — um arquivo bare
+ *   como `subscribers-backup.json` (sem diretório dedicado) passava
+ *   despercebido. Adicionado o par em forma de ARQUIVO.
+ */
 export const RUNTIME_ARTIFACT_PATH_PATTERNS = [
   /(^|\/)_tmp_[^/]*(\/|$)/i, // scripts/_tmp_*/ (o padrão exato do incidente)
   /(^|\/)tmp_[^/]*(\/|$)/i,
   /^data\//i, // qualquer path sob data/ — CLAUDE.md: nada ali é pra ir pro repo
-  /(^|\/)[^/]*-backup\d*\/(?:.*)?$/i, // *-backup*/ (scripts/_tmp_engagement_backup3/)
-  /(^|\/)[^/]*dump[^/]*(\/|$)/i,
+  /(^|\/)[\w.-]*-backup\d*\//i, // diretório *-backup*/ (scripts/_tmp_engagement_backup3/)
+  /(^|\/)[\w.-]*[-_]backups?\.[^/]+$/i, // arquivo bare *-backup.ext / *_backups.ext
+  /(^|\/)dumps?(\/|$)/i, // diretório (ou arquivo sem extensão) literalmente "dump"/"dumps"
+  /(^|\/)dumps?\.[^/]+$/i, // arquivo bare "dump.ext"/"dumps.ext" (sem prefixo)
+  /(^|\/)[\w.-]*[-_]dumps?\.[^/]+$/i, // arquivo *-dump.ext / *_dumps.ext
   /(^|\/)\.cache(\/|$)/i,
   /\.tmp$/i,
 ];
