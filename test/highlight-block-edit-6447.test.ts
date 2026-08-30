@@ -154,6 +154,36 @@ Impacto prático do D1.
       blocks[0].titleOptions.map((t) => t.text),
       ["Primeira opção de título", "Segunda opção de título", "Terceira opção de título"],
     );
+    // #6743 review (code-reviewer, P2): a URL da PRIMEIRA opção com link
+    // (mesmo que ela tenha texto residual colado) precisa resolver — não só
+    // a contagem de opções.
+    assert.equal(blocks[0].url, "https://example.com/artigo-1");
+  });
+
+  it("#6743 review (P2): resolve a URL quando a ÚNICA opção de título (pós-gate) tem anotação colada", () => {
+    // Caso mais estrito que o anterior: sem opção 1 "limpa" pra resolver a
+    // URL primeiro — se a única linha de título tiver anotação colada, `url`
+    // não pode ficar "" (isso derrubava o campo URL no painel "Editor por
+    // destaque" e fazia applyHighlightEdit rejeitar o save).
+    const fixturePodadoComAnotacao = `Cobertura.
+
+---
+
+**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Único título com anotação](https://example.com/artigo-solo)** (via Fonte Original)
+
+Parágrafo único.
+
+Por que isso importa:
+
+Impacto prático.
+`;
+    const { blocks } = parseHighlightBlocks(fixturePodadoComAnotacao);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].titleOptions.length, 1);
+    assert.equal(blocks[0].titleOptions[0].text, "Único título com anotação");
+    assert.equal(blocks[0].url, "https://example.com/artigo-solo");
   });
 });
 
