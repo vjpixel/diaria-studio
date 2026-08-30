@@ -18,6 +18,21 @@ Nao instrumenta nada: le `session_model_usage` do state.db, que o proprio
 Hermes ja preenche (model, billing_provider, actual/estimated_cost_usd).
 Sobrevive a atualizacao do Hermes porque nao toca no codigo dele.
 
+LIMITACAO CONHECIDA (#6708, 29/08/2026): este script so DETECTA a cobranca
+indevida depois do fato (le o billing ja gravado) — nao valida o override
+ANTES da chamada disparar. A causa raiz de "pedido X, cobrado Y" fica na
+resolucao de modelo do Hermes CORE (overrides de sessao persistidos,
+provavelmente `~/.hermes/sessions/sessions.json`, mais a cadeia de
+smart_model_routing em `~/.hermes/config.yaml`) — nenhum dos dois vive
+neste repo, e nao existem nesta maquina/worktree (checado em 29/08/2026:
+`~/.hermes/` inteiro ausente aqui, por design — so existe no `helios`).
+Investigar/corrigir a causa raiz exige acesso a essa maquina; nao
+reproduzido nem instrumentado a partir daqui. O que ESTE script ja cobre
+(deteccao pos-fato via `vazamento_pago`/`_is_leak`) e o que
+`watch-continuo-health.sh` ja consome pra abrir issue automaticamente
+segue valido e e a mitigacao disponivel enquanto a causa raiz no Hermes
+core nao for corrigida.
+
 Uso:
     python3 hermes-model-cost-report.py [--days N] [--sessions] [--json]
 """

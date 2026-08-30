@@ -52,6 +52,19 @@ def _pool_state(entries, now_ts):
     )
 
 
+def _run_hermes_cmd(args):
+    """subprocess.run com guard (#6697 finding 4) — sem isto, `hermes` fora do
+    PATH (FileNotFoundError) ou uma chamada travada (TimeoutExpired) produzia
+    traceback cru a cada tick em vez de uma mensagem de watchdog. Retorna
+    `None` na falha (chamador trata como "não consegui rodar o comando",
+    distinto de rc!=0, que é "rodei e o hermes recusou")."""
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=90)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        print(f"⚠️ Watchdog não conseguiu rodar `{' '.join(args)}`: {e}")
+        return None
+
+
 def _job_uses_free_openrouter_pool(job):
     """True só se o job está configurado pra rodar num modelo `:free` do
     OpenRouter (#6594) — a exaustão do pool free só é relevante nesse caso.
@@ -96,10 +109,9 @@ def main():
         # pausado, ele não depende mais do pool free — não faz sentido
         # esperar o reset dele pra retomar.
         if not blocked or not _job_uses_free_openrouter_pool(job):
-            r = subprocess.run(
-                ["hermes", "cron", "resume", JOB_ID],
-                capture_output=True, text=True, timeout=90,
-            )
+            r = _run_hermes_cmd(["hermes", "cron", "resume", JOB_ID])
+            if r is None:
+                return
             if r.returncode == 0:
                 os.remove(MARKER_PATH)
                 reason = (
@@ -121,17 +133,34 @@ def main():
     # --- pausa preventiva durante exaustão ---
     all_exhausted = all(e.get("last_status") == "exhausted" for e in entries)
     if all_exhausted and blocked and enabled and _job_uses_free_openrouter_pool(job):
-        r = subprocess.run(
-            ["hermes", "cron", "pause", JOB_ID],
-            capture_output=True, text=True, timeout=90,
-        )
+        r = _run_hermes_cmd(["hermes", "cron", "pause", JOB_ID])
+        if r is None:
+            return
         if r.returncode == 0:
             next_reset = max(
                 (e.get("last_error_reset_at") or 0) for e in entries
             )
             dt = datetime.datetime.fromtimestamp(next_reset)
-            with open(MARKER_PATH, "w") as f:
-                f.write(JOB_ID)
+            # #6697 finding 4: o `hermes cron pause` JÁ efetivou quando este
+            # `open()` roda. Qualquer exceção aqui (permissão, disco cheio)
+            # deixava o job desabilitado SEM o marcador que autoriza a
+            # retomada — o watchdog nunca mais o retomaria, em silêncio
+            # (mesma classe do #6643: job pausado ~7h sem sinal). Gritar alto
+            # em vez de deixar a exceção subir crua é o mínimo: o pause já
+            # aconteceu, então a alternativa "falhar e não pausar" não existe
+            # mais neste ponto.
+            try:
+                with open(MARKER_PATH, "w") as f:
+                    f.write(JOB_ID)
+            except OSError as e:
+                print(
+                    f"🚨 Watchdog PAUSOU {JOB_ID} mas FALHOU AO GRAVAR o marcador "
+                    f"({e}) — o job vai ficar pausado INDEFINIDAMENTE sem retomada "
+                    f"automática (o watchdog só retoma quando o marcador existe). "
+                    f"Ação manual necessária: 'hermes cron resume {JOB_ID}' após o "
+                    f"reset ({dt:%d/%m %H:%M}), ou investigar {MARKER_PATH}."
+                )
+                return
             print(
                 f"⏸️ **Diária Contínuo pausado** pelo watchdog: toda a credencial "
                 f"OpenRouter está exaurida (rate limit diário — causa dos erros "

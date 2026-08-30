@@ -21,8 +21,17 @@ Lógica:
                         pulando o atual e os que já falharam nesta sequência.
   - job rodando agora → "RUNNING" estável.
 """
+# from __future__ import annotations (#6697 self-review): as novas type hints
+# `str | None`/`list[str]`/`set[str]` introduzidas nesta revisão usam sintaxe
+# de anotação do Python 3.10+; sem este import, DEFINIR as funções (não só
+# chamá-las) já lança TypeError num interpretador mais antigo — e não há
+# garantia versionada aqui de qual Python roda no `helios`. O future import
+# torna toda anotação uma string avaliada preguiçosamente, seguro desde 3.7+.
+from __future__ import annotations
+
 import json
 import os
+import re
 import sys
 
 import yaml
@@ -36,39 +45,87 @@ JOB_ID = "5d791ef6fc2c"
 # mesmos citados na issue como evidência de que o wrapper não conseguiu
 # rodar em NENHUM modelo, apesar do tick ter terminado com "sucesso" do
 # ponto de vista do Hermes.
-DELEGATION_FAILURE_MARKERS = ("rc=1", "wrapper degradado", "falhou model=")
+#
+# #6697 finding 1: "falhou model=X" FOI removido daqui. `claude-openrouter.sh`
+# imprime essa linha para CADA modelo que falha antes de um seguinte dar
+# certo — o fallback em cadeia é o comportamento de PROJETO, não uma falha
+# (o caso comum é o :free #1 estourar cota e o #2 responder normalmente). O
+# marcador precisa ser a linha TERMINAL, que só aparece quando a cadeia
+# INTEIRA falhou (todos os modelos, sem nenhum sucesso) — ver o `exit 1`/
+# `exit 4` no fim do loop do wrapper.
+DELEGATION_FAILURE_MARKERS = (
+    "rc=1",
+    "wrapper degradado",
+    "ERRO: todos os modelos da cadeia falharam",
+)
+
+# #6697 finding 1: regex pra extrair, de um tick que falhou de fato, QUAIS
+# modelos ele tentou nesta sequência — usado pela rotação (finding 2) pra
+# não recomendar de volta um modelo que já falhou no mesmo tick.
+#
+# Achado no self-review desta mesma PR: um corte em `[^\s:]+` (parar no
+# primeiro ':') TRUNCA slugs `:free` — a maioria dos modelos da chain
+# (ex: "poolside/laguna-s-2.1:free") tem um ':' DENTRO do próprio nome, não
+# só como delimitador do log. `claude-openrouter.sh` imprime "falhou
+# model=$MODEL" seguido ora por espaço ("model=$MODEL rc=$RC: ..."), ora por
+# ':' direto ("model=$MODEL: TIMEOUT ...") — captura por \S+ (não-espaço) e
+# só depois remove um ':' remanescente no fim (`.rstrip(":")`), que nunca
+# aparece DENTRO de um slug real (sempre termina em letra, ex: "...free").
+FAILED_MODEL_RE = re.compile(r"falhou model=(\S+)")
+
+
+def _latest_tick_files(max_check: int = 5) -> list[str]:
+    """Caminhos completos dos `max_check` ticks mais recentes (mais novo
+    por último), ordenados por mtime — não pelo nome do arquivo, que é
+    convenção do Hermes, não garantia."""
+    out_dir = CRON_OUTPUT_DIR.format(JOB_ID)
+    try:
+        names = [f for f in os.listdir(out_dir) if f.endswith(".md")]
+        files = sorted(names, key=lambda f: os.path.getmtime(os.path.join(out_dir, f)))
+    except Exception:
+        return []
+    return [os.path.join(out_dir, f) for f in files[-max_check:]]
+
+
+def _read_tick(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except Exception:
+        # Arquivo ilegível — sinalizado ao chamador via None; cada chamador
+        # decide se isso conta como "falha" ou "pula" (não subestimar nem
+        # superestimar o streak por um problema de leitura pontual).
+        return None
 
 
 def consecutive_delegation_failures(max_check: int = 5) -> int:
     """Conta quantos dos ticks mais recentes (mais novo primeiro) trazem
-    marcador de falha de delegação, parando no primeiro tick sem marcador.
-    Fonte independente de jobs.json — cobre o caso em que o Hermes nunca vê
-    a falha porque o tick em si roda até o fim com exit 0."""
-    out_dir = CRON_OUTPUT_DIR.format(JOB_ID)
-    try:
-        names = [f for f in os.listdir(out_dir) if f.endswith(".md")]
-        # Ordena por mtime, não pelo nome — o nome do arquivo é convenção do
-        # Hermes, não garantia; mtime é o sinal de "mais recente" real.
-        files = sorted(names, key=lambda f: os.path.getmtime(os.path.join(out_dir, f)))
-    except Exception:
-        return 0
+    marcador de falha de delegação TERMINAL, parando no primeiro tick sem
+    marcador. Fonte independente de jobs.json — cobre o caso em que o Hermes
+    nunca vê a falha porque o tick em si roda até o fim com exit 0."""
     count = 0
-    for fname in reversed(files[-max_check:]):
-        try:
-            with open(
-                os.path.join(out_dir, fname), encoding="utf-8", errors="replace"
-            ) as f:
-                content = f.read()
-        except Exception:
-            # Arquivo ilegível não conta como falha nem interrompe a
-            # contagem — pula pro próximo tick mais antigo em vez de
-            # subestimar o streak por um problema de leitura pontual.
+    for path in reversed(_latest_tick_files(max_check)):
+        content = _read_tick(path)
+        if content is None:
             continue
         if any(marker in content for marker in DELEGATION_FAILURE_MARKERS):
             count += 1
         else:
             break
     return count
+
+
+def failed_models_in_latest_tick() -> set[str]:
+    """Modelos que apareceram em uma linha `falhou model=X` no tick mais
+    recente — usado só pra evitar recomendar de volta, na rotação (#6697
+    finding 2), um modelo que JÁ falhou nesta mesma sequência."""
+    files = _latest_tick_files(max_check=1)
+    if not files:
+        return set()
+    content = _read_tick(files[-1])
+    if content is None:
+        return set()
+    return {m.rstrip(":") for m in FAILED_MODEL_RE.findall(content)}
 
 
 def load_chain():
@@ -106,18 +163,31 @@ def main() -> None:
 
     delegation_streak = consecutive_delegation_failures()
 
-    if streak < 2 and status == "ok" and delegation_streak < 2:
+    # #6697 finding 3: NÃO exigir status == "ok" — um job novo (`last_status`
+    # ainda "unknown") ou o estado logo após a pausa do watchdog irmão
+    # (pause-cron-on-ratelimit.py) caem fora de "ok" sem serem falha real, e
+    # isso fazia a saída MUDAR a cada tick com streak=0 (o próprio gatilho de
+    # despacho do padrão monitor). streak e delegation_streak já são os
+    # sinais determinísticos de falha real; last_status só entra na MENSAGEM
+    # de alerta abaixo, nunca na decisão OK/ALERTA.
+    if streak < 2 and delegation_streak < 2:
         print("OK")
         return
 
-    # Falha(s): próximo da chain coding_fallback após o atual.
+    # Falha(s): próximo da chain coding_fallback após o atual, pulando
+    # modelos que JÁ falharam nesta sequência (#6697 finding 2 — a versão
+    # anterior só avançava 1 posição com wrap-around, então com 2 modelos na
+    # chain e ambos falhando o alerta alternava indefinidamente entre os
+    # dois quebrados).
     try:
         chain = load_chain()
+        if not chain:
+            raise ValueError("coding_fallback vazio em config.yaml")
+        failed = failed_models_in_latest_tick()
         idx = next((i for i, (m, _) in enumerate(chain) if m == model), None)
-        if idx is None:
-            nxt = chain[0] if chain else ("gpt-5.6-luna", "openai-codex")
-        else:
-            nxt = chain[(idx + 1) % len(chain)]
+        start = (idx + 1) % len(chain) if idx is not None else 0
+        candidates = [chain[(start + i) % len(chain)] for i in range(len(chain))]
+        nxt = next((c for c in candidates if c[0] not in failed), candidates[0])
         nxt_txt = f"{nxt[0]} ({nxt[1]})"
     except Exception as e:
         nxt_txt = f"gpt-5.6-luna (openai-codex) — falha ao ler chain: {e}"
