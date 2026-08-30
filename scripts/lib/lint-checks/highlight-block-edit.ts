@@ -49,7 +49,7 @@ import {
 } from "./highlight-parsing.ts";
 import { walkDestaqueTitles } from "./destaque-title-walk.ts";
 import { looksLikeTitleOption } from "../title-heuristic.ts";
-import { parseInlineLink } from "../inline-link.ts";
+import { parseInlineLink, parseInlineLinkWithTrailing } from "../inline-link.ts";
 import { APROFUNDE_HEADER_RE, HUB_LINK_HEADER_RE } from "../../extract-destaques.ts";
 
 // ── Tipos ────────────────────────────────────────────────────────────────
@@ -186,7 +186,16 @@ function parseBlockContent(
   for (const t of titleLines) {
     titleOptions.push({ text: t.title, line: t.line });
     if (!url) {
-      const inline = parseInlineLink(lines[t.line - 1].trim());
+      const raw = lines[t.line - 1].trim();
+      // #6743 review (code-reviewer, P2): `walkDestaqueTitles` já aceita uma
+      // opção de título com link válido + texto residual colado via
+      // `parseInlineLinkWithTrailing` (fix do #6743) — sem o mesmo fallback
+      // aqui, uma linha assim (especialmente quando é a ÚNICA opção, pós-gate)
+      // fazia `parseInlineLink` retornar null e `url` nunca era preenchida,
+      // mesmo a linha tendo um link perfeitamente válido. Resultado: `url`
+      // vazia no painel ("Editor por destaque") e `applyHighlightEdit`
+      // rejeitando o save com "URL não pode ser vazia".
+      const inline = parseInlineLink(raw) ?? parseInlineLinkWithTrailing(raw);
       if (inline) url = inline.url;
     }
   }

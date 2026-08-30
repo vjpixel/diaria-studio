@@ -120,6 +120,71 @@ describe("parseHighlightBlocks (#6447 Fatia 2)", () => {
     assert.equal(d3.trailingRaw, "");
     assert.equal(d3.titleOptions.length, 1);
   });
+
+  it("#6743: opção de título com anotação colada não derruba as opções seguintes", () => {
+    // Achado ao vivo (edição 260830): painel do Studio mostrou 1 opção de
+    // título em vez de 3 pra um destaque real. Causa: a opção 2 tinha um
+    // link válido mas com texto residual colado depois (anotação de fonte) —
+    // `parseInlineLink` rejeita "link puro" com texto depois, e o fallback
+    // plain-text checava a linha INTEIRA (com a URL embedada, sempre >60
+    // chars) contra `looksLikeTitleOption`, sempre falhando — o `break`
+    // resultante descartava a opção 2 E a opção 3, não só a linha malformada.
+    const fixtureWithAnnotation = `Para esta edição, eu (o editor) enviei 2 submissões e a diar.ia.br encontrou outros 30 artigos. Selecionamos os 3 mais relevantes para as pessoas que assinam a newsletter.
+
+---
+
+**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Primeira opção de título](https://example.com/artigo-1)**
+
+**[Segunda opção de título](https://example.com/artigo-1)** (via Fonte Original)
+
+**[Terceira opção de título](https://example.com/artigo-1)**
+
+Parágrafo 1 do D1.
+
+Por que isso importa:
+
+Impacto prático do D1.
+`;
+    const { blocks } = parseHighlightBlocks(fixtureWithAnnotation);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].titleOptions.length, 3);
+    assert.deepEqual(
+      blocks[0].titleOptions.map((t) => t.text),
+      ["Primeira opção de título", "Segunda opção de título", "Terceira opção de título"],
+    );
+    // #6743 review (code-reviewer, P2): a URL da PRIMEIRA opção com link
+    // (mesmo que ela tenha texto residual colado) precisa resolver — não só
+    // a contagem de opções.
+    assert.equal(blocks[0].url, "https://example.com/artigo-1");
+  });
+
+  it("#6743 review (P2): resolve a URL quando a ÚNICA opção de título (pós-gate) tem anotação colada", () => {
+    // Caso mais estrito que o anterior: sem opção 1 "limpa" pra resolver a
+    // URL primeiro — se a única linha de título tiver anotação colada, `url`
+    // não pode ficar "" (isso derrubava o campo URL no painel "Editor por
+    // destaque" e fazia applyHighlightEdit rejeitar o save).
+    const fixturePodadoComAnotacao = `Cobertura.
+
+---
+
+**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Único título com anotação](https://example.com/artigo-solo)** (via Fonte Original)
+
+Parágrafo único.
+
+Por que isso importa:
+
+Impacto prático.
+`;
+    const { blocks } = parseHighlightBlocks(fixturePodadoComAnotacao);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].titleOptions.length, 1);
+    assert.equal(blocks[0].titleOptions[0].text, "Único título com anotação");
+    assert.equal(blocks[0].url, "https://example.com/artigo-solo");
+  });
 });
 
 describe("applyHighlightEdit (#6447 Fatia 2)", () => {

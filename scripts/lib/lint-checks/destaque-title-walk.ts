@@ -49,11 +49,29 @@
  *
  * Cada linha não-vazia que não bate nenhum terminator vira um título:
  *   - inline link (`[título](url)`) → título = texto do link.
+ *   - inline link com texto residual colado (`[título](url) resto`) → título
+ *     = texto do link, `resto` descartado (#6743 — ver nota abaixo).
  *   - plain-text (formato legado) → título = linha inteira, só se
  *     `isTitleCandidate(linha)` retornar true (quando fornecido).
+ *
+ * ## Fix (#6743): fallback pra `parseInlineLinkWithTrailing` antes do break
+ *
+ * Uma opção de título com link válido mas ALGUM texto colado depois dele
+ * (anotação de fonte, resíduo de correção do Clarice/humanizador — mesmo
+ * cenário de "Drive pull reformata `[Título](url)` + resumo" que motivou
+ * `parseInlineLinkWithTrailing` em `inline-link.ts`) rejeitava em
+ * `parseInlineLink` (link "puro" exige nada depois) e caía no fallback
+ * plain-text: `isTitleCandidate` roda sobre a linha INTEIRA, que ainda
+ * contém a URL — sempre > 60 chars, então SEMPRE falha, e o `break`
+ * resultante descarta não só essa linha malformada mas **todas as opções de
+ * título seguintes** (2 destaque de 3, achado ao vivo #6743, edição 260830:
+ * painel do Studio mostrou 1 opção de título em vez de 3). A partir daqui, uma
+ * linha que bate `parseInlineLinkWithTrailing` também vira título (usando só
+ * a parte do link, ignorando o resto) — mesmo tratamento incondicional do
+ * inline link puro, sem passar por `isTitleCandidate`.
  */
 
-import { parseInlineLink } from "../inline-link.ts";
+import { parseInlineLink, parseInlineLinkWithTrailing } from "../inline-link.ts";
 import {
   HIGHLIGHT_HEADER_RE,
   URL_LINE_RE,
@@ -105,6 +123,15 @@ export function walkDestaqueTitles(
     const inline = parseInlineLink(t);
     if (inline) {
       titles.push({ title: inline.title, line: j + 1 });
+      j++;
+      continue;
+    }
+    // #6743: link válido com texto residual colado — ainda é título (usa só
+    // a parte do link), não cai no fallback plain-text abaixo. Ver nota de
+    // design no topo do arquivo.
+    const inlineWithTrailing = parseInlineLinkWithTrailing(t);
+    if (inlineWithTrailing) {
+      titles.push({ title: inlineWithTrailing.title, line: j + 1 });
       j++;
       continue;
     }
