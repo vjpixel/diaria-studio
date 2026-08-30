@@ -1652,15 +1652,21 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             // duplicidade: esta detecção só acontece NESTA rodada, não no
             // instante real da confirmação do double opt-in no Kit.
             // Opcional/omitida em teste (ver docstring do parâmetro) — nunca
-            // lança, nunca bloqueia a promoção em si.
-            appendDuplicateWindowLog?.(
-              buildDuplicateWindowEntry({
-                email: contact.email,
-                kitSubscriberCreatedAt,
-                lastBrevoSendAt: nativeState?.last_messagesSent_at ?? null,
-                brevoSendsCount: nativeState?.sends_count ?? contact.sends_count,
-              }),
-            );
+            // lança, nunca bloqueia a promoção em si (self-review: try/catch
+            // dedicado — uma falha de disco na MEDIÇÃO não pode impedir a
+            // promoção real que ela só está observando).
+            try {
+              appendDuplicateWindowLog?.(
+                buildDuplicateWindowEntry({
+                  email: contact.email,
+                  kitSubscriberCreatedAt,
+                  lastBrevoSendAt: nativeState?.last_messagesSent_at ?? null,
+                  brevoSendsCount: nativeState?.sends_count ?? contact.sends_count,
+                }),
+              );
+            } catch (logErr) {
+              log(`${contact.email}: falha ao registrar instrumentação #6705 (não bloqueia a promoção) — ${(logErr as Error).message}`);
+            }
             await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
             store = applySelfConfirmed(store, contact.email);
           }

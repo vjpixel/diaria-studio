@@ -238,4 +238,43 @@ describe("runEvaluation — instrumentação da janela de duplicidade (#6705)", 
       restore();
     }
   });
+
+  it("self-review: appendDuplicateWindowLog LANÇA (ex: disco cheio) → não bloqueia a promoção real (unlink/applySelfConfirmed seguem rodando, failed não incrementa)", async () => {
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("api.kit.com")) return kitSubscriberRes(111, "active", "kit-log-falha@b.com");
+      if (init?.method === "PUT") return jsonRes(200, {});
+      if (u.includes("/contacts/")) return jsonRes(200, { emailBlacklisted: false, statistics: { messagesSent: [], opened: [] } });
+      throw new Error(`fetch inesperado: ${u} ${init?.method}`);
+    }) as typeof fetch;
+
+    const logMessages: string[] = [];
+    try {
+      const contacts = [contact("kit-log-falha@b.com", { beehiiv_subscription_id: "kit:111" })];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: true,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: (msg) => logMessages.push(msg),
+        kitApiKey: "kkey",
+        appendDuplicateWindowLog: () => {
+          throw new Error("ENOSPC simulado — disco cheio");
+        },
+      });
+      // A promoção real (self-confirmed) precisa ter acontecido de qualquer jeito —
+      // uma falha na MEDIÇÃO nunca pode impedir o efeito que ela só observa.
+      assert.equal(result.selfConfirmed, 1);
+      assert.equal(result.failed, 0, "falha da instrumentação nunca conta como falha de negócio");
+      assert.ok(
+        logMessages.some((m) => m.includes("#6705") && m.includes("ENOSPC simulado")),
+        "o erro deve aparecer no log, não desaparecer em silêncio",
+      );
+    } finally {
+      restore();
+    }
+  });
 });
