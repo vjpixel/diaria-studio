@@ -165,11 +165,26 @@ else
 fi
 
 # ── 5. adoção da convenção de branch (informational) ─────────────────────────
+# #6771 (absorve #6709): a checagem original marcava TODA branch das últimas
+# 24h sem prefixo autônomo, incluindo sessão interativa do editor — investigado
+# ao vivo em #6709: as 7 branches acusadas eram TODAS de sessão interativa
+# (#6707, #6675, #6639, #6632, worktree de subagente), nenhuma do contínuo, e
+# o alarme disparava TODO DIA pelo mesmo motivo. Falso positivo recorrente
+# treina quem lê a ignorar o alarme inteiro — o próprio objetivo do check.
+# Fix: aceitar também os prefixos convencionais de sessão interativa/develop
+# manual já em uso neste repo (fix/, docs/, feat/, chore/, refactor/, test/) e
+# o prefixo `worktree-` (sem barra) das branches efêmeras de worktree de
+# subagente — nenhum deles é usado pelo contínuo, que sempre gera
+# `continuo/fix-N-slug` (hermes-diaria-continuo/SKILL.md §4.2). O check
+# continua pegando o caso real que motivou #6461: um PR do contínuo que saiu
+# sem NENHUM desses prefixos.
 if ! NOPREFIX=$(gh pr list --state all --limit 30 --json headRefName,createdAt,author --jq '
   [.[] | select(.createdAt > (now - 86400 | todate))
        | select(.author.login == "vjpixel")
        | .headRefName
-       | select((startswith("continuo/") or startswith("overnight/") or startswith("develop/") or startswith("dependabot/")) | not)
+       | select((startswith("continuo/") or startswith("overnight/") or startswith("develop/") or startswith("dependabot/")
+                 or startswith("fix/") or startswith("docs/") or startswith("feat/") or startswith("chore/")
+                 or startswith("refactor/") or startswith("test/") or startswith("worktree-")) | not)
   ] | join(", ")' 2>/dev/null); then
   echo "[watch] convenção de branch: INDETERMINADO (gh pr list falhou)" >&2; FAILS=$((FAILS+1)); NOPREFIX=""
 fi
