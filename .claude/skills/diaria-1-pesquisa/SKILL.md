@@ -82,6 +82,27 @@ Semântica completa (exit codes, output JSON, falha do próprio validator) em **
 
 `{EDITION_DIR}/_internal/01-categorized.json` + `01-categorized.md` — apresentar ao usuário para aprovação. Após aprovação, salvar em `_internal/01-approved.json`.
 
+## Passo 5 — Escrever sentinel de conclusão (#6827)
+
+**Obrigatório, em TODO caso (headless ou com editor presente).** O sentinel `.step-1-done.json` é o que o orchestrator usa pra detectar que o Stage 1 completou — sem ele, a próxima retomada ou o próximo stage não sabe que o trabalho já está feito, e a edição fica presa em "pending" indefinidamente (#6827).
+
+Sempre que o gate for aprovado (ou `--no-gates` auto-aprovar), rodar:
+
+```bash
+npx tsx scripts/pipeline-sentinel.ts write \
+  --edition $1 \
+  --step 1 \
+  --outputs "01-categorized.md,_internal/01-categorized.json,_internal/01-approved.json"
+```
+
+**Ordem:**
+1. Se o editor editou o MD no gate: rodar `npx tsx scripts/apply-gate-edits.ts --md {EDITION_DIR}/01-categorized.md --json {EDITION_DIR}/_internal/01-categorized.json --out {EDITION_DIR}/_internal/01-approved.json` antes.
+2. Se `--no-gates` (auto_approve): rodar `npx tsx scripts/apply-gate-edits.ts --auto --json {EDITION_DIR}/_internal/01-categorized.json --out {EDITION_DIR}/_internal/01-approved.json` antes.
+3. Depois, rodar o `pipeline-sentinel.ts write` acima.
+4. Depois, arquivar inbox: `npx tsx scripts/archive-inbox.ts --edition $1 --inbox-md data/inbox.md` (fail-soft).
+
+**Não pule este passo em lugar nenhum** — nem em headless, nem quando o orchestrator playbook §1y já menciona o sentinel. O playbook é prosa; este passo é mecânico, e é o que impede que uma sessão `--print` escale o sentinel (#6827).
+
 ## Passo 4 — Fechar task tracking pós-gate (#904)
 
 **Imediatamente após gate aprovado** (quando o sentinel `pipeline-sentinel.ts write --step 1` for executado em 1y do orchestrator), marcar todas as tasks `Stage 1*` (incluindo `Stage 1x — GATE HUMANO`) como `completed` via `TaskUpdate`. Sem isso, o timer da task de gate continua rodando indefinidamente na UI mesmo com Stage 2 já dispatchado.
