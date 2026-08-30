@@ -18,11 +18,18 @@ import {
   isValidUnitDiagnosticValue,
   formatUnitDiagnosticFieldsTable,
   buildUnitInvestigationCommand,
+  buildSimultaneousFailuresNote,
+  buildCorrelationComment,
   UNIT_DIAGNOSTIC_PROPERTIES,
   ALARM_DEDUP_EXPIRY_MS,
   type UnitDiagnosticFields,
 } from "../scripts/lib/systemd-failed-units-alarm.ts";
-import { toAlarmFinding, readUnitDiagnosticFields } from "../scripts/systemd-failed-units-alarm.ts";
+import {
+  toAlarmFinding,
+  readUnitDiagnosticFields,
+  postCorrelationComments,
+} from "../scripts/systemd-failed-units-alarm.ts";
+import type { AlarmFindingOutcome } from "../scripts/lib/alarm-issues.ts";
 
 describe("toAlarmFinding — family obrigatório (#5553/#5557)", () => {
   it("family é sempre 'estado' (condição re-checável a cada sweep — some quando o operador conserta)", () => {
@@ -354,5 +361,132 @@ describe("toAlarmFinding — corpo com campos diagnósticos (#5963)", () => {
     assert.equal(finding.body.includes("sk-leaked-token"), false);
     assert.equal(finding.body.includes("assinante@example.com"), false);
     assert.equal(finding.body.includes("ExecMainStatusText"), false);
+  });
+});
+
+describe("buildSimultaneousFailuresNote — correlação de achados simultâneos (#6788)", () => {
+  it("única unit failed na execução -> string vazia (nada a correlacionar)", () => {
+    assert.equal(buildSimultaneousFailuresNote("diaria-a.service", ["diaria-a.service"]), "");
+  });
+
+  it("múltiplas units failed na mesma execução -> lista as OUTRAS, exclui a própria", () => {
+    const note = buildSimultaneousFailuresNote("diaria-a.service", [
+      "diaria-a.service",
+      "diaria-b.service",
+      "diaria-c.service",
+    ]);
+    assert.match(note, /Falhas simultâneas/);
+    assert.match(note, /diaria-b\.service/);
+    assert.match(note, /diaria-c\.service/);
+    assert.equal(note.includes("`diaria-a.service`"), false);
+  });
+});
+
+describe("toAlarmFinding — corpo inclui a nota de correlação quando há siblings (#6788)", () => {
+  it("sem outras units failed (allFailedUnits omitido) -> corpo NÃO menciona correlação", () => {
+    const finding = toAlarmFinding("diaria-a.service", null);
+    assert.doesNotMatch(finding.body, /Falhas simultâneas/);
+  });
+
+  it("com outras units failed na mesma execução -> corpo cita as demais pelo NOME", () => {
+    const finding = toAlarmFinding("diaria-brevo-diaria-evaluate.service", null, [
+      "diaria-brevo-diaria-evaluate.service",
+      "diaria-clarice-sync.service",
+      "diaria-clarice-novos.service",
+    ]);
+    assert.match(finding.body, /Falhas simultâneas/);
+    assert.match(finding.body, /diaria-clarice-sync\.service/);
+    assert.match(finding.body, /diaria-clarice-novos\.service/);
+    // a seção de correlação em si (até a próxima linha em branco) nunca cita
+    // a própria unit na lista de "outras" — o resto do corpo (investigação)
+    // cita a própria unit de propósito, então a checagem é escopada à seção.
+    const start = finding.body.indexOf("Falhas simultâneas");
+    const end = finding.body.indexOf("\n\n", start);
+    const correlationSection = finding.body.slice(start, end === -1 ? undefined : end);
+    assert.equal(correlationSection.includes("diaria-brevo-diaria-evaluate.service"), false);
+  });
+
+  it("fingerprint continua sendo 1 por unit — dedup/auto-close não muda (#6788 é aditivo)", () => {
+    const finding = toAlarmFinding("diaria-a.service", null, ["diaria-a.service", "diaria-b.service"]);
+    assert.equal(finding.check, "systemd-failed-units");
+    assert.equal(finding.fingerprint, "diaria-a.service");
+    assert.equal(finding.family, "estado");
+  });
+});
+
+describe("buildCorrelationComment — texto do cross-link por NÚMERO de issue (#6788)", () => {
+  it("sem siblings -> string vazia", () => {
+    assert.equal(buildCorrelationComment([]), "");
+  });
+
+  it("com siblings -> lista '#NNNN (unit)' de cada um", () => {
+    const comment = buildCorrelationComment([
+      { unit: "diaria-clarice-sync.service", issueNumber: 6786 },
+      { unit: "diaria-clarice-novos.service", issueNumber: 6787 },
+    ]);
+    assert.match(comment, /#6786 \(`diaria-clarice-sync\.service`\)/);
+    assert.match(comment, /#6787 \(`diaria-clarice-novos\.service`\)/);
+  });
+});
+
+describe("postCorrelationComments — cross-linka issues já criadas por NÚMERO (#6788)", () => {
+  function outcome(unit: string, issueNumber: number | null, action: AlarmFindingOutcome["action"] = "created"): AlarmFindingOutcome {
+    return { check: "systemd-failed-units", fingerprint: unit, issueNumber, url: issueNumber ? `https://x/${issueNumber}` : null, action };
+  }
+
+  it("menos de 2 issues resolvidas -> não chama gh (nada a correlacionar)", () => {
+    let calls = 0;
+    const run = () => {
+      calls++;
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    postCorrelationComments([outcome("diaria-a.service", 100)], "/repo", run);
+    assert.equal(calls, 0);
+  });
+
+  it("2+ issues resolvidas -> comenta em CADA uma, citando as OUTRAS por número+unit", () => {
+    const calls: { args: string[] }[] = [];
+    const run = (args: string[]) => {
+      calls.push({ args });
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    postCorrelationComments(
+      [outcome("diaria-a.service", 100), outcome("diaria-b.service", 101), outcome("diaria-c.service", 102)],
+      "/repo",
+      run,
+    );
+    assert.equal(calls.length, 3);
+    // comentário na issue #100 cita #101 e #102, nunca a si mesma (#100)
+    // args: ["issue", "comment", "<issueNumber>", "--body", "<comment>"]
+    const call100 = calls.find((c) => c.args[2] === "100")!;
+    assert.match(call100.args[4], /#101/);
+    assert.match(call100.args[4], /#102/);
+    assert.equal(call100.args[4].includes("#100"), false);
+  });
+
+  it("outcome 'failed' (issueNumber null) é ignorado — nunca tenta comentar em issue inexistente", () => {
+    const calls: string[][] = [];
+    const run = (args: string[]) => {
+      calls.push(args);
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    postCorrelationComments(
+      [outcome("diaria-a.service", 100), outcome("diaria-b.service", null, "failed")],
+      "/repo",
+      run,
+    );
+    // só 1 issue resolvida (100) -> abaixo do teto de 2, nada a correlacionar
+    assert.equal(calls.length, 0);
+  });
+
+  it("falha de 'gh issue comment' numa issue não impede tentar as demais (fail-soft, best-effort)", () => {
+    const calls: string[][] = [];
+    const run = (args: string[]) => {
+      calls.push(args);
+      if (args[2] === "100") return { status: 1, stdout: "", stderr: "rate limited" };
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    postCorrelationComments([outcome("diaria-a.service", 100), outcome("diaria-b.service", 101)], "/repo", run);
+    assert.equal(calls.length, 2);
   });
 });

@@ -66,6 +66,8 @@ import {
   parseUnitDiagnosticShowOutput,
   formatUnitDiagnosticFieldsTable,
   buildUnitInvestigationCommand,
+  buildSimultaneousFailuresNote,
+  buildCorrelationComment,
   UNIT_DIAGNOSTIC_PROPERTIES,
   type SystemdFailedUnitsAlarmState,
   type SystemdFailedUnitsEvaluation,
@@ -75,9 +77,12 @@ import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
+  defaultAlarmGhRun,
   type AlarmFinding,
   type AlarmIssuesState,
   type AlarmIssueResult,
+  type AlarmFindingOutcome,
+  type GhRunFn,
 } from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -136,17 +141,26 @@ export function readUnitDiagnosticFields(
   }
 }
 
-export function toAlarmFinding(unitName: string, diagnosticFields: UnitDiagnosticFields | null = null): AlarmFinding {
+export function toAlarmFinding(
+  unitName: string,
+  diagnosticFields: UnitDiagnosticFields | null = null,
+  allFailedUnits: readonly string[] = [],
+): AlarmFinding {
   const fields = diagnosticFields ?? {};
   const table = formatUnitDiagnosticFieldsTable(fields);
   const investigationCmd = buildUnitInvestigationCommand(unitName, fields);
+  // #6788 — lista as OUTRAS units failed na mesma execução (nomes; os
+  // números das issues ainda não existem neste ponto — ver
+  // `postCorrelationComments` abaixo, que cross-linka por NÚMERO depois que
+  // todas as issues desta execução foram criadas/reusadas).
+  const simultaneousNote = buildSimultaneousFailuresNote(unitName, allFailedUnits);
   return {
     check: "systemd-failed-units",
     fingerprint: unitName,
     title: `[diar.ia.br] systemd unit falhou: ${unitName}`,
     body: [
       "Achado automático do alarme `Diaria-Systemd-Failed-Units-Alarm`",
-      "(`scripts/systemd-failed-units-alarm.ts`, #5563 follow-up, campos diagnósticos #5963).",
+      "(`scripts/systemd-failed-units-alarm.ts`, #5563 follow-up, campos diagnósticos #5963, correlação #6788).",
       "",
       `A unit systemd --user \`${unitName}\` está em estado \`failed\`.`,
       ...(table
@@ -158,6 +172,7 @@ export function toAlarmFinding(unitName: string, diagnosticFields: UnitDiagnosti
             table,
           ]
         : []),
+      ...(simultaneousNote ? ["", simultaneousNote] : []),
       "",
       `Investigar: \`${investigationCmd}\` e ` +
         `\`systemctl --user status ${unitName}\`. Religar/reiniciar é ação manual do editor ` +
@@ -171,6 +186,45 @@ export function toAlarmFinding(unitName: string, diagnosticFields: UnitDiagnosti
     priority: "P1",
     family: "estado",
   };
+}
+
+/**
+ * #6788 — depois que TODAS as issues desta execução foram
+ * criadas/reusadas (`findingOutcomes` já tem `issueNumber` resolvido pra
+ * cada unit), cross-linka por NÚMERO cada issue com as demais units failed
+ * na mesma execução: um comentário em cada issue listando `#NNNN
+ * (unit-nome)` das outras. Só roda quando ≥2 units falharam nesta execução
+ * (nada a correlacionar com 1 só) — I/O, não pura (por isso vive aqui, não
+ * em `lib/systemd-failed-units-alarm.ts`, que só monta o TEXTO via
+ * `buildCorrelationComment`).
+ *
+ * Best-effort/fail-soft: uma falha em `gh issue comment` pra uma issue não
+ * impede a tentativa nas demais — cada uma é logada, nenhuma lança.
+ */
+export function postCorrelationComments(
+  findingOutcomes: readonly AlarmFindingOutcome[],
+  cwd: string,
+  run: GhRunFn = defaultAlarmGhRun,
+): void {
+  const resolved = findingOutcomes.filter(
+    (o): o is AlarmFindingOutcome & { issueNumber: number } =>
+      typeof o.issueNumber === "number" && o.action !== "failed",
+  );
+  if (resolved.length < 2) return;
+
+  for (const outcome of resolved) {
+    const siblings = resolved
+      .filter((o) => o.issueNumber !== outcome.issueNumber)
+      .map((o) => ({ unit: o.fingerprint, issueNumber: o.issueNumber }));
+    const comment = buildCorrelationComment(siblings);
+    if (!comment) continue;
+    const res = run(["issue", "comment", String(outcome.issueNumber), "--body", comment], cwd);
+    if (res.status !== 0) {
+      console.error(
+        `${LOG_PREFIX} falha ao postar comentário de correlação (#6788) em #${outcome.issueNumber}: ${res.stderr.trim() || `status ${res.status}`}`,
+      );
+    }
+  }
 }
 
 function loadState(): SystemdFailedUnitsAlarmState {
@@ -233,10 +287,16 @@ async function main(): Promise<void> {
 
   const state = loadState();
   const alarmFindings: AlarmFinding[] = isAlarmingVerdict(evaluation.verdict)
-    ? evaluation.failedUnits.map((unit) => toAlarmFinding(unit, readUnitDiagnosticFields(unit)))
+    ? evaluation.failedUnits.map((unit) => toAlarmFinding(unit, readUnitDiagnosticFields(unit), evaluation.failedUnits))
     : [];
   const alarmState = loadAlarmIssuesState();
   const issueRefs: AlarmIssueResult[] = [];
+  // #6788 — mesmo gate do e-mail (dedup por CONJUNTO + expiração #5978):
+  // só cross-linka issues por comentário quando este É um alarme NOVO
+  // (conjunto mudou ou dedup expirou) — nunca a cada execução enquanto o
+  // mesmo conjunto de units segue failed, senão o comentário de correlação
+  // reapareceria em loop a cada 2h sem nada de novo pra dizer.
+  const shouldAlarmNow = shouldSendSystemdFailedUnitsAlarm(evaluation, state);
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
@@ -264,9 +324,13 @@ async function main(): Promise<void> {
         console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
       }
     }
+
+    if (shouldAlarmNow) {
+      postCorrelationComments(findingOutcomes, ROOT);
+    }
   }
 
-  if (!shouldSendSystemdFailedUnitsAlarm(evaluation, state)) {
+  if (!shouldAlarmNow) {
     console.log(
       isAlarmingVerdict(evaluation.verdict)
         ? `${LOG_PREFIX} já alarmado pro mesmo conjunto de units nesta invocação anterior — não reenvia.`

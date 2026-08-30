@@ -199,6 +199,54 @@ export function buildUnitInvestigationCommand(unitName: string, fields: UnitDiag
 }
 
 // ---------------------------------------------------------------------------
+// Correlação de achados simultâneos (#6788) — direção (1) da issue: quando
+// múltiplos units falham na MESMA execução do sweep, cada issue individual
+// (fingerprint continua sendo por unit — não muda dedup/auto-close) ganha
+// uma referência às OUTRAS units falhas naquele momento. Não infere causa
+// comum; só torna visível que os achados são simultâneos, pro investigador
+// da 1ª issue enxergar as demais sem depender de acaso (achado do #6788: 5
+// serviços caídos pela mesma causa viraram issues que nunca se referenciam).
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure — nota de correlação a incluir no CORPO do finding de `unitName`,
+ * listando as OUTRAS units que estavam `failed` na mesma execução do sweep
+ * (`allFailedUnits` já inclui `unitName`, filtrado aqui). String vazia
+ * quando `unitName` foi a única unit failed (nada a correlacionar) — caller
+ * decide se omite a seção inteira, mesmo padrão de
+ * `formatUnitDiagnosticFieldsTable`.
+ */
+export function buildSimultaneousFailuresNote(unitName: string, allFailedUnits: readonly string[]): string {
+  const others = allFailedUnits.filter((u) => u !== unitName);
+  if (others.length === 0) return "";
+  return (
+    `**Falhas simultâneas nesta execução:** ${others.length} outra(s) unit(s) também estavam ` +
+    "`failed` no mesmo sweep — provável causa comum, investigar em conjunto:\n" +
+    others.map((u) => `  - \`${u}\``).join("\n")
+  );
+}
+
+/**
+ * Pure — texto do comentário de cross-link postado em CADA issue já criada
+ * pra um achado com siblings simultâneos, uma vez que os números das outras
+ * issues são conhecidos (só depois que `ensureAlarmIssue` roda pra todas —
+ * a nota em `buildSimultaneousFailuresNote` acima só lista NOMES porque roda
+ * antes disso). `siblingIssues` já vem sem a própria unit/issue. String
+ * vazia quando não há siblings (caller decide se pula o `gh issue comment`).
+ */
+export function buildCorrelationComment(
+  siblingIssues: readonly { unit: string; issueNumber: number }[],
+): string {
+  if (siblingIssues.length === 0) return "";
+  const lines = siblingIssues.map((s) => `  - #${s.issueNumber} (\`${s.unit}\`)`);
+  return (
+    "Falhas simultâneas nesta execução do alarme (#6788) — outra(s) unit(s) também " +
+    "estavam `failed` no mesmo sweep, provável causa comum:\n" +
+    lines.join("\n")
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Idempotência do e-mail — 1 alarme por CONJUNTO de units falhas (reenvia se
 // o conjunto mudar: unit nova falhou, ou uma unit saiu do conjunto e outra
 // permanece — mesmo padrão de OnedriveSyncAlarmState, adaptado pra um
