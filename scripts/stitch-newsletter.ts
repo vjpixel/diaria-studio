@@ -771,11 +771,9 @@ export function stitchNewsletter(input: StitchInput): string {
       "",
     );
   }
-  // #3476: box de divulgação slot 3 — SEMPRE após o ÚLTIMO destaque (D3 se
-  // existir, senão D2), antes de USE MELHOR/É IA?.
-  if (slot3Box) {
-    parts.push(slot3Box, "", "---", "");
-  }
+  // #6748: box de divulgação slot 3 eliminado — `slot3Box` é sempre `null`
+  // (ver declaração acima), então o bloco de injeção pós-último-destaque do
+  // #3476 foi removido daqui. USE MELHOR/É IA? seguem direto depois de D2/D3.
   // #6323: USE MELHOR vem ANTES de LANÇAMENTOS, que vem ANTES de É IA?
   // (decisão do editor 260827, tornado permanente — substitui a ordem
   // USE MELHOR → É IA? → LANÇAMENTOS do #3476/260716). Racional: LANÇAMENTOS

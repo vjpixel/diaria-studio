@@ -1,6 +1,6 @@
 ---
 name: diaria-artigo-especial
-description: Fecha as 3 ações manuais que seguem o deploy de um Artigo Especial (`especial.diar.ia.br/{ano}/{slug}/`) — post teaser no apoia.se, posts agendados no LinkedIn (página diar.ia.br D+1 09:00 BRT + perfil pessoal D+2 09:30 BRT — #6014) e atualização + pin do box "Artigo Especial" (slot 3) da diária. Requer a máquina do editor (Claude in Chrome logado) — não roda no `helios`. Uso — `/diaria-artigo-especial --slug {slug} [--ano AAAA] [--at ISO] [--skip apoiase,linkedin,box] [--dry-run] [--unpin]`.
+description: Fecha as 3 ações manuais que seguem o deploy de um Artigo Especial (`especial.diar.ia.br/{ano}/{slug}/`) — post teaser no apoia.se, posts agendados no LinkedIn (página diar.ia.br D+1 09:00 BRT + perfil pessoal D+2 09:30 BRT — #6014) e atualização + pin do box "Artigo Especial" (slot 2, desde #6748 — era slot 3, eliminado) da diária. Requer a máquina do editor (Claude in Chrome logado) — não roda no `helios`. Uso — `/diaria-artigo-especial --slug {slug} [--ano AAAA] [--at ISO] [--skip apoiase,linkedin,box] [--dry-run] [--unpin]`.
 ---
 
 # /diaria-artigo-especial
@@ -8,9 +8,17 @@ description: Fecha as 3 ações manuais que seguem o deploy de um Artigo Especia
 Fecha o loop de divulgação de um Artigo Especial já **deployado** (issue
 #5979). Todo mês o artigo sai com 3 ações manuais repetidas pelo editor:
 post teaser no apoia.se, posts agendados no LinkedIn (página + perfil), e
-atualização do box "Artigo Especial" da diária pinado no slot 3. Esta skill
-empacota as 3 num único playbook, com gate humano único antes de qualquer
-publicação e state file por canal pra resumir com segurança.
+atualização do box "Artigo Especial" da diária pinado no slot 2 (desde
+#6748 — era slot 3 até 29/08/2026, quando o #6748 eliminou o slot 3 da
+rotação inteira; pinar no slot 3 hoje escreveria a config e reportaria
+sucesso sem NENHUM efeito, porque `stitch-newsletter.ts` nunca mais
+renderiza esse slot). **Trade-off aceito na troca para o slot 2**: o slot 2
+só existe no gap D2/D3 — em edição de 2 destaques (#2343/#3369) o box do
+Artigo Especial não aparece nessa edição, mesmo pinado (diferente do antigo
+slot 3, que injetava sempre após o último destaque, independente da
+contagem). Esta skill empacota as 3 ações num único playbook, com gate
+humano único antes de qualquer publicação e state file por canal pra
+resumir com segurança.
 
 **Pré-requisito fora do escopo desta skill**: o artigo já precisa estar
 deployado em `especial.diar.ia.br/{ano}/{slug}/` (`cd workers/artigos && npx
@@ -32,7 +40,7 @@ inteira não fecha de ponta a ponta.
 | Conteúdo dos posts LinkedIn | Mesma regra de chamada acima (editor, 23/08/2026): o post não entrega a tese completa no feed. Isca concreta (o caso real) + promessa do que o artigo responde, sem responder. |
 | **Link do artigo no LinkedIn** | **NUNCA divulgar a URL direta de `especial.diar.ia.br` nos posts de LinkedIn** (editor, 23/08/2026; justificativa corrigida em #6014/#6013: o artigo é PÚBLICO e indexado de propósito — está no `sitemap.xml` com `robots.txt` liberando crawlers de IA. O que o tier R$10+ compra é antecedência, entrega por e-mail e arquivo, não exclusividade de leitura). O CTA fecha no apoia.se porque é lá que a conversão acontece, não porque o artigo seja inacessível. Os 2 posts de LinkedIn fecham com a linha literal `Apoie nosso trabalho e leia o artigo completo em: apoia.se/diaria` (frase do editor, não reescrever, não passar por Clarice/humanizador). Só `apoiase.md` leva a URL direta, porque ali o público já é apoiador. Vale pra qualquer canal público futuro (Facebook, Instagram, X): CTA aponta pro apoia.se, nunca pro artigo. |
 | Conta(s) e horário LinkedIn | Página diar.ia.br (`webhook_target: "diaria"`) **D+1 09:00 BRT** e perfil pessoal (`webhook_target: "pixel"`) **D+2 09:30 BRT**, textos distintos (#6014 item 1 — o default único antigo D+1 17:30 colidia com o `d3` da edição diária no mesmo minuto). Agenda do dia: `09:00 especial-pagina | 10:00 d1 | 12:30 d2 | 17:30 d3`. |
-| Box | Reescrever `data/snippets/artigo-especial-apoiadores.md` + pinar no slot 3 (`boxes_divulgacao.slot3` + `boxes_divulgacao_auto.pinned_slots: [3]` em `platform.config.json`). |
+| Box | Reescrever `data/snippets/artigo-especial-apoiadores.md` + pinar no slot 2 (`boxes_divulgacao.slot2` + `boxes_divulgacao_auto.pinned_slots: [2]` em `platform.config.json` — era slot 3 até o #6748 eliminá-lo, ver seção "Decisões já tomadas" acima). |
 | Visibilidade apoia.se | **Restrito a apoiadores R$10+ (revisto pelo editor 23/08/2026, 1ª execução ao vivo — substitui "público").** Motivo: `data/snippets/artigo-especial-apoiadores.md` vende o Artigo Especial como benefício de R$10+/mês; post público entregaria o benefício a quem não paga no mesmo instante. A restrição é do POST — o artigo em si segue público em `especial.diar.ia.br` (o canal com paywall continua sendo outro: `artigo.diar.ia.br`, `workers/artigo-mensal`). Consequência no texto: o `apoiase.md` fala com quem JÁ apoia, sem CTA de conversão. |
 
 ## Argumentos
@@ -51,8 +59,8 @@ inteira não fecha de ponta a ponta.
   `--skip` do Stage 5 diário).
 - `--dry-run` — gera os 3 textos, mostra tudo, não publica/agenda/grava
   nada. Para no gate humano (Passo 2 abaixo).
-- `--unpin` — só remove o `3` de `boxes_divulgacao_auto.pinned_slots`
-  (`platform.config.json`) — usar quando o artigo envelhecer e o slot 3
+- `--unpin` — só remove o `2` de `boxes_divulgacao_auto.pinned_slots`
+  (`platform.config.json`) — usar quando o artigo envelhecer e o slot 2
   deve voltar pro auto-select por cliques (#4626). Não mexe em nenhum outro
   canal; ignora `--slug`/`--ano` (não precisa do artigo).
 - `--force` — reexecuta um canal já `done` no state file (ver Passo 0).
@@ -180,7 +188,7 @@ LinkedIn página (agenda {--at resolvido}):
 LinkedIn perfil (agenda {--at resolvido}):
 {linkedin-perfil.md}
 
-Box (slot 3, pinado até --unpin):
+Box (slot 2, pinado até --unpin — só aparece em edição de 3 destaques, #6748):
 {preview do box com título/gancho}
 
 Aprovar os 3? sim / ajustar {canal} / abortar
@@ -297,18 +305,19 @@ Reescreve **só o corpo** de `data/snippets/artigo-especial-apoiadores.md`
 #495; `ArtigoEspecialBoxFormatError` se o formato divergiu — ajustar
 manualmente 1x antes de rodar de novo, nunca adivinhar — e propaga: o canal
 `box` grava `failed` em `published.json`, retentável sem `--force` na
-próxima chamada) e — por padrão — pina o slot 3 em `platform.config.json`
-(`boxes_divulgacao.slot3="artigo-especial-apoiadores.md"` +
-`boxes_divulgacao_auto.pinned_slots` ganha `3`, idempotente).
+próxima chamada) e — por padrão — pina o slot 2 em `platform.config.json`
+(`boxes_divulgacao.slot2="artigo-especial-apoiadores.md"` +
+`boxes_divulgacao_auto.pinned_slots` ganha `2`, idempotente. Era slot 3 até
+o #6748 eliminar esse slot da rotação — ver "Decisões já tomadas" acima).
 
 **`platform.config.json` é git — abrir PR:**
 
 ```bash
 git checkout -b artigo-especial/{ano}-{slug}
 git add platform.config.json
-git commit -m "chore(#5979): pin box Artigo Especial slot 3 — {ano}-{slug}"
+git commit -m "chore(#5979): pin box Artigo Especial slot 2 — {ano}-{slug}"
 gh pr create --title "chore(#5979): pin box Artigo Especial — {título curto}" \
-  --body "Pin do box \"Artigo Especial\" no slot 3 para o artigo {ano}/{slug}. Skill /diaria-artigo-especial."
+  --body "Pin do box \"Artigo Especial\" no slot 2 para o artigo {ano}/{slug}. Skill /diaria-artigo-especial."
 ```
 
 (`data/snippets/artigo-especial-apoiadores.md` **não** entra no commit — é
@@ -338,7 +347,7 @@ implícito `false` — mesmo fluxo de branch/PR, sem tocar em
 - **Horário real confirmado:** a 1ª execução usou `D+1 17:30 BRT` (default antigo, hoje SUBSTITUÍDO pelo par D+1 09:00 × D+2 09:30 do #6014 — justamente por ter colidido com o d3); o agendamento em si foi confirmado ao vivo (status `done` para `apoiase` 02:06, `linkedin_pagina` 02:46, `box` 02:17 — todos no mesmo dia, 23/08).
 - **Visibilidade apoia.se:** confirmada como `restrito a apoiadores R$10+` (não público). Nenhuma alteração no texto do `apoiase.md`; o post não contém CTA de conversão, apenas acesso direto ao artigo para quem já apoia.
 - **Perfil pessoal (`linkedin_perfil`):** falhou na 1ª execução (`failed`, `reason: "reconciliação pós-dispatch: Worker reportou falha (DLQ)."`). A falha ocorreu APÓS o dispatch — não é um erro do script `publish-artigo-especial-linkedin.ts` (o `dispatchEntry` executou sem 4xx), mas sim um erro do Worker no momento de conciliar a entrega. Isso confirma a necessidade do fix #6015: se o Worker retornar 4xx durante o dispatch, o fallback não deve ser permitido; se a falha for posterior (DLQ), o estado `failed` no `linkedin-published.json` já é a resposta correta.
-- **Box (`slot3`):** `done` — `platform.config.json` atualizado, PR criada automaticamente (`pr-create-review.mjs`). Nenhuma mudança adicional necessária.
+- **Box (`slot3` na 1ª execução, migrado pra `slot2` no #6748 — 29/08/2026):** `done` — `platform.config.json` atualizado, PR criada automaticamente (`pr-create-review.mjs`). Nenhuma mudança adicional necessária.
 - **Nenhuma alteração no conteúdo das chamadas:** a 1ª execução confirmou que o texto gerado por `subagent` (`sonnet`) segue a regra de CHAMADA, e a humanização (`humanizador`) e a correção (`mcp__clarice__correct_text`) mantêm a integridade. Nenhuma edição manual foi feita nos textos após a geração — o editor aprovou diretamente no gate (Passo 2).
 
 ## Casos de borda
@@ -353,7 +362,7 @@ implícito `false` — mesmo fluxo de branch/PR, sem tocar em
 - **Canal já `done`** → pulado no resume, sem `--force`.
 - **`--unpin`** → não gera nenhum dos 3 textos, não toca no state file de
   apoiase/LinkedIn — só o Passo 5 roda (`applyBoxPin` com `pin: false`),
-  removendo `3` de `pinned_slots` sem tocar `boxes_divulgacao.slot3` (ver
+  removendo `2` de `pinned_slots` sem tocar `boxes_divulgacao.slot2` (ver
   docstring de `applyBoxPin`) — o slot volta a ser candidato do auto-select
   por cliques (#4626) em vez de ficar travado no artigo antigo.
 - **Formato do snippet divergiu** (`data/snippets/artigo-especial-apoiadores.md`
@@ -374,5 +383,6 @@ data/artigo-especial/{ano}-{slug}/
   linkedin-published.json     detalhe do dispatch LinkedIn (worker_queue_key, route, scheduled_at — Passo 4)
 ```
 
-`platform.config.json` (`boxes_divulgacao.slot3` + `pinned_slots`) e
-`data/snippets/artigo-especial-apoiadores.md` — ver Passo 5.
+`platform.config.json` (`boxes_divulgacao.slot2` + `pinned_slots` — desde
+#6748; era `slot3`) e `data/snippets/artigo-especial-apoiadores.md` — ver
+Passo 5.

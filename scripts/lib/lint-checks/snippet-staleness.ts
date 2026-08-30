@@ -249,6 +249,11 @@ export function resolveUsedSnippets(
   if (boxesCfg.slot2 && extractBoxDivulgacao2(reviewedMd) !== null) {
     used.push({ file: boxesCfg.slot2, slot: "slot2" });
   }
+  // #6748: slot 3 eliminado — `stitch-newsletter.ts` nunca mais escreve nada
+  // nessa região em edições NOVAS, então `extractBoxDivulgacao3` só pode
+  // achar algo aqui em MD's arquivados de antes do #6748 (histórico), nunca
+  // numa edição gerada pelo pipeline atual. Ramo mantido intacto (harmless,
+  // e cobre esse caso de arquivo antigo) — não removido.
   if (boxesCfg.slot3 && extractBoxDivulgacao3(reviewedMd) !== null) {
     used.push({ file: boxesCfg.slot3, slot: "slot3" });
   }

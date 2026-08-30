@@ -158,9 +158,9 @@ O script é determinístico, sem LLM. Ordem canonical (#3476, slot0 desde #4274)
 - DESTAQUE 2 block (lê `_internal/02-d2-draft.md`)
 - box de divulgação slot 2 (D2/D3) — **omitido em edições de 2 destaques**
 - DESTAQUE 3 block (lê `_internal/02-d3-draft.md`) — **omitido em edições de 2 destaques (#2343)**
-- box de divulgação slot 3 (pós-último-destaque — D3 se existir, senão D2)
+- ~~box de divulgação slot 3 (pós-último-destaque)~~ **ELIMINADO (#6748, 29/08/2026)** — `stitch-newsletter.ts` nunca mais injeta nada nessa região; a edição sai com no máximo 2 boxes (slot1+slot2)
 - **🛠️ USE MELHOR** (se houver candidato selecionado)
-- É IA? section (lê `01-eia.md` se existir, strip frontmatter YAML) — **#3476: agora DEPOIS de USE MELHOR** (antes ficava logo após o último destaque, #2546); se a edição não tiver USE MELHOR, É IA? cai logo após o box do slot 3
+- É IA? section (lê `01-eia.md` se existir, strip frontmatter YAML) — **#3476: agora DEPOIS de USE MELHOR** (antes ficava logo após o último destaque, #2546); se a edição não tiver USE MELHOR, É IA? cai logo após o último destaque (D3 ou D2 — não mais "o box do slot 3", eliminado no #6748)
 - **VÍDEOS** (formato canonical `**[title](url)**` + summary, singular/plural conforme count #1324) — **#3820: agora ANTES de LANÇAMENTOS** (decisão editorial 260722; antes ficava depois, #3100 só tinha subido VÍDEOS pra antes de RADAR)
 - **LANÇAMENTOS**, **RADAR** (idem; omite seção vazia — RADAR mergeia PESQUISAS + OUTRAS NOTÍCIAS, #1569)
 - **ERRO INTENCIONAL** placeholder (`render-erro-intencional.ts` re-insere ao final pós-Clarice — auto-converge)
