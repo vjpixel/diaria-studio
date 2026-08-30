@@ -15,6 +15,7 @@ function fakeConsultor(overrides: Partial<BlockStalenessConsultor>): BlockStalen
     getPrState: () => "UNKNOWN",
     isIssueClaimedActive: () => true,
     hasLabel: () => null,
+    getIssueState: () => "OPEN",
     ...overrides,
   };
 }
@@ -201,6 +202,63 @@ test("issues não-puladas (elegivel, mergeada, etc.) nunca entram na checagem", 
   ];
   const consultor = fakeConsultor({ getPrState: (): PrState => "MERGED" });
   assert.deepEqual(findStaleBlocks(issues, consultor), []);
+});
+
+// --- issue já CLOSED (#6784) ---------------------------------------------
+// Espelha a checagem irmã já existente pra PR (`pr-em-voo` compara
+// `state === "MERGED" || state === "CLOSED"` antes de reportar caducidade):
+// issue auto-fechada (ex: alarme que se auto-normalizou) não gera mais
+// "reavalie dispatch", em NENHUMA das 3 categorias.
+
+test("bloqueio-execucao (#6784): issue já CLOSED, mesmo com label ausente → NÃO acusa (era o achado ao vivo: 9/12 caducadas já fechadas)", () => {
+  const issues: BlockStalenessPlanIssue[] = [
+    { number: 6652, status: "pulada", motivo: "bloqueio-execucao" },
+  ];
+  const consultor = fakeConsultor({
+    hasLabel: () => false, // label ausente — sozinho isso reportaria caducidade
+    getIssueState: () => "CLOSED",
+  });
+  assert.deepEqual(findStaleBlocks(issues, consultor), []);
+});
+
+test("pr-em-voo (#6784): issue já CLOSED, mesmo com PR mergeado → NÃO acusa", () => {
+  const issues: BlockStalenessPlanIssue[] = [
+    { number: 1, status: "pulada", motivo: "pr-em-voo", pr: 10 },
+  ];
+  const consultor = fakeConsultor({
+    getPrState: (): PrState => "MERGED",
+    getIssueState: () => "CLOSED",
+  });
+  assert.deepEqual(findStaleBlocks(issues, consultor), []);
+});
+
+test("claimed-por-outra-sessao (#6784): issue já CLOSED, mesmo com claim livre → NÃO acusa", () => {
+  const issues: BlockStalenessPlanIssue[] = [
+    { number: 1, status: "pulada", motivo: "claimed-por-outra-sessao" },
+  ];
+  const consultor = fakeConsultor({
+    isIssueClaimedActive: () => false,
+    getIssueState: () => "CLOSED",
+  });
+  assert.deepEqual(findStaleBlocks(issues, consultor), []);
+});
+
+test("bloqueio-execucao (#6784): issue ainda OPEN e label ausente → segue acusando normalmente (não regrediu)", () => {
+  const issues: BlockStalenessPlanIssue[] = [
+    { number: 6186, status: "pulada", motivo: "bloqueio-execucao" },
+  ];
+  const consultor = fakeConsultor({ hasLabel: () => false, getIssueState: () => "OPEN" });
+  const findings = findStaleBlocks(issues, consultor);
+  assert.equal(findings.length, 1);
+});
+
+test("bloqueio-execucao (#6784): estado da issue UNKNOWN (gh indisponível) não impede reportar — fail-soft na direção oposta", () => {
+  const issues: BlockStalenessPlanIssue[] = [
+    { number: 6186, status: "pulada", motivo: "bloqueio-execucao" },
+  ];
+  const consultor = fakeConsultor({ hasLabel: () => false, getIssueState: () => "UNKNOWN" });
+  const findings = findStaleBlocks(issues, consultor);
+  assert.equal(findings.length, 1);
 });
 
 test("mistura de findings caducados e válidos: só os caducados voltam, ordenados por número", () => {

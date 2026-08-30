@@ -46,6 +46,7 @@ import {
   findStaleBlocks,
   type BlockStalenessConsultor,
   type BlockStalenessPlanIssue,
+  type IssueState,
   type PrState,
 } from "./lib/block-staleness.ts";
 import { isIssueClaimedByOther, listActiveSessions } from "./lib/session-registry.ts";
@@ -62,29 +63,43 @@ function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
   // #6754 fleet review — a categoria `bloqueio-execucao` agora checa TODAS
   // as labels de `BLOCKED_LABELS_SET` (4 labels) por issue; sem cache isso
   // vira 4 chamadas `gh issue view` idênticas (mesmo issue, mesmo campo
-  // `labels`, só o filtro final muda). Memoiza por issueNumber dentro desta
-  // instância de consultor — 1 fetch por issue, independente de quantas
-  // labels forem checadas.
-  const labelsCache = new Map<number, Set<string> | null>();
-  function fetchLabels(issueNumber: number): Set<string> | null {
-    if (labelsCache.has(issueNumber)) return labelsCache.get(issueNumber) ?? null;
-    const result = spawnSync("gh", ["issue", "view", String(issueNumber), "--json", "labels"], {
+  // `labels`, só o filtro final muda). #6784 acrescentou uma checagem de
+  // ESTADO por issue (`getIssueState`) — em vez de mais uma chamada `gh`
+  // separada, busca `labels` e `state` NUM SÓ fetch e memoiza os dois numa
+  // única entrada por issueNumber: 1 chamada `gh issue view` cobre tanto
+  // `hasLabel` (× N labels) quanto `getIssueState`, independente de quantas
+  // vezes cada um for consultado pra mesma issue.
+  interface IssueData {
+    labels: Set<string> | null;
+    state: IssueState;
+  }
+  const issueDataCache = new Map<number, IssueData>();
+  function fetchIssueData(issueNumber: number): IssueData {
+    const cached = issueDataCache.get(issueNumber);
+    if (cached) return cached;
+    const result = spawnSync("gh", ["issue", "view", String(issueNumber), "--json", "labels,state"], {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 15_000,
     });
-    let value: Set<string> | null;
+    let value: IssueData;
     if (result.error || result.status !== 0 || !result.stdout) {
-      value = null;
+      value = { labels: null, state: "UNKNOWN" };
     } else {
       try {
-        const parsed = JSON.parse(result.stdout) as { labels?: Array<{ name?: string }> };
-        value = new Set((parsed.labels ?? []).map((l) => l.name).filter((n): n is string => !!n));
+        const parsed = JSON.parse(result.stdout) as {
+          labels?: Array<{ name?: string }>;
+          state?: string;
+        };
+        const labels = new Set((parsed.labels ?? []).map((l) => l.name).filter((n): n is string => !!n));
+        const rawState = (parsed.state ?? "").toUpperCase();
+        const state: IssueState = rawState === "OPEN" || rawState === "CLOSED" ? rawState : "UNKNOWN";
+        value = { labels, state };
       } catch {
-        value = null;
+        value = { labels: null, state: "UNKNOWN" };
       }
     }
-    labelsCache.set(issueNumber, value);
+    issueDataCache.set(issueNumber, value);
     return value;
   }
 
@@ -116,9 +131,12 @@ function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
       }
     },
     hasLabel(issueNumber: number, label: string): boolean | null {
-      const labels = fetchLabels(issueNumber);
+      const { labels } = fetchIssueData(issueNumber);
       if (labels === null) return null;
       return labels.has(label);
+    },
+    getIssueState(issueNumber: number): IssueState {
+      return fetchIssueData(issueNumber).state;
     },
   };
 }

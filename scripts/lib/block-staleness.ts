@@ -91,6 +91,9 @@ export interface StaleBlockFinding {
 
 export type PrState = "OPEN" | "MERGED" | "CLOSED" | "UNKNOWN";
 
+/** Estado de uma ISSUE (distinto de `PrState` — issue não tem `MERGED`). */
+export type IssueState = "OPEN" | "CLOSED" | "UNKNOWN";
+
 /** Labels que, presentes na issue, significam "ainda bloqueada" para efeito
  * da categoria `bloqueio-execucao` (#6754). Reexportado de
  * `issue-exec-track.ts` (`BLOCKED_LABELS_SET`) — não duplicar a lista aqui:
@@ -114,6 +117,11 @@ export interface BlockStalenessConsultor {
   /** `true`/`false` = presença confirmada; `null` = não verificável (gh
    * indisponível) — nunca reportar caducidade nesse caso. */
   hasLabel(issueNumber: number, label: string): boolean | null;
+  /** Estado atual da ISSUE em si (não do PR/label) — `"UNKNOWN"` quando não
+   * verificável (gh indisponível). Espelha `getPrState` (#6784): uma issue
+   * já `CLOSED` (ex: auto-fechada por alarme que se auto-normalizou) não tem
+   * "dispatch a reavaliar" — reportá-la como "bloqueio caducado" é ruído. */
+  getIssueState(issueNumber: number): IssueState;
 }
 
 /** Pure: extrai o número do PR citado numa entrada — prioriza o campo
@@ -146,6 +154,17 @@ export function findStaleBlocks(
     const motivo = typeof entry.motivo === "string" ? entry.motivo : null;
     if (!motivo || !TRANSIENT_MOTIVOS.has(motivo as StaleBlockCategory)) continue;
     const category = motivo as StaleBlockCategory;
+
+    // #6784 — espelha a checagem irmã de PR (branch `pr-em-voo` abaixo, que
+    // já compara `state === "MERGED" || state === "CLOSED"`): antes de
+    // reportar caducidade por QUALQUER categoria, checa se a ISSUE em si já
+    // está `CLOSED`. Issue fechada não tem "dispatch a reavaliar" — o
+    // trabalho já não existe mais, reportá-la como "reavalie dispatch" é
+    // ruído puro (achado ao vivo: 9/12 caducadas reportadas numa rodada já
+    // estavam CLOSED, auto-fechadas por alarme auto-normalizado).
+    // `UNKNOWN` (gh indisponível) não pula — fail-soft na direção oposta:
+    // preferir reportar de mais a esconder um bloqueio genuinamente caducado.
+    if (consultor.getIssueState(entry.number) === "CLOSED") continue;
 
     if (category === "pr-em-voo") {
       const pr = extractPrNumber(entry);

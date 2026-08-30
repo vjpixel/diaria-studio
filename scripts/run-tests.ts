@@ -66,6 +66,46 @@
  * pra regravar goldens) são repassados a TODOS os batches — funciona porque
  * `--test-name-pattern` filtra por nome de teste, não por arquivo, e roda
  * igual em cada invocação.
+ *
+ * ## Retry de `ERR_MODULE_NOT_FOUND` (#6495)
+ *
+ * A mitigação acima (descoberta explícita, síncrona, ANTES de qualquer
+ * processo filho) não eliminou o flake — reincidiu 2× DEPOIS de estar em
+ * vigor (PR #6480 antes dela existir; PR #6782, `test/track-quality-
+ * report.test.ts`, DEPOIS, no head sha que já tinha `run-tests.ts`). A
+ * investigação ao vivo (#6495, comentário 260830) descartou a hipótese que
+ * motivou a mitigação original (descoberta assíncrona do `node --test`
+ * nativo) — o arquivo é encontrado pelo processo PAI (senão não seria
+ * passado como argumento) e falha no `import()` do processo FILHO. Restou
+ * um padrão: as únicas 2 ocorrências reais foram sempre em arquivo de teste
+ * NOVO, adicionado pelo próprio PR — hipótese líder é um glitch de
+ * filesystem do runner em torno de um arquivo recém-materializado pelo
+ * `actions/checkout`, não confirmável sem instrumentação adicional na CI.
+ *
+ * Enquanto a causa raiz exata não é isolada, este wrapper aplica a
+ * mitigação PRAGMÁTICA autorizada pela própria issue: é um erro de
+ * INFRAESTRUTURA do runner, não um teste real falhando (o sumário do
+ * `node:test` mostra `fail 0` — nenhuma asserção quebrou, só o `import()`
+ * de um arquivo que existe) — então um retry automático do batch específico
+ * é seguro (não mascara falha de teste real, porque só dispara quando o
+ * `node:test` confirma zero falhas E a assinatura do erro bate). Critério
+ * de `shouldRetryBatch` — os TRÊS precisam ser verdadeiros:
+ *   1. o batch falhou (`status !== 0`);
+ *   2. o stdout/stderr combinado contém `ERR_MODULE_NOT_FOUND`;
+ *   3. o sumário final do `node:test` (reporter `spec`, prefixo `ℹ` — local/
+ *      TTY; ou `tap`, prefixo `#` — CI/sem TTY) reporta `fail 0`.
+ * Só UM retry por batch — se o 2º run falhar de novo, o batch conta como
+ * falha definitiva (nunca mascarar um flake persistente/real como
+ * "infraestrutura" indefinidamente).
+ *
+ * Efeito colateral necessário: `stdio` deixou de ser `"inherit"` e passou a
+ * ser capturado (`"pipe"`) — só assim dá pra inspecionar o output ANTES de
+ * decidir se retry. Pra não perder a visibilidade de progresso do `npm test`
+ * (útil localmente e no log da CI), o buffer capturado é escrito em
+ * `process.stdout`/`process.stderr` logo após cada batch terminar — a
+ * saída para de ser char-a-char em tempo real e passa a ser por BATCH
+ * (ainda long antes do fim de todos os batches, só não intercalada dentro
+ * de um único batch), troca aceitável pelo ganho de poder decidir o retry.
  */
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -96,12 +136,59 @@ export interface RunTestsOptions {
   batchSize?: number;
   /** Injeção de dependência pra teste — default `child_process.spawnSync`. */
   spawn?: typeof spawnSync;
+  /** Injeção de saída pra teste — default `process.stdout`/`process.stderr`. */
+  stdout?: { write(chunk: string): unknown };
+  stderr?: { write(chunk: string): unknown };
+}
+
+/** Casa a assinatura de erro do #6495 — nunca uma falha de teste real, é o
+ *  `import()` do processo filho do `node --test` falhando pra um arquivo
+ *  que o processo PAI já confirmou existir (foi ele quem enumerou e passou
+ *  como argumento). */
+const ERR_MODULE_NOT_FOUND_RE = /ERR_MODULE_NOT_FOUND/;
+
+/** Casa a linha de sumário final do `node:test` — reporter `spec` (local,
+ *  TTY) usa prefixo `ℹ`; reporter `tap` (CI, sem TTY) usa `#`. Pega a
+ *  ÚLTIMA ocorrência de `fail N` ancorada em início/fim de linha — nunca a
+ *  palavra "fail" solta no NOME de um teste individual. */
+const FAIL_SUMMARY_RE = /^(?:ℹ|#)\s*fail\s+(\d+)\s*$/gim;
+
+/** Pure: extrai a contagem `fail N` do sumário final do `node:test` no
+ *  output combinado de um batch. `null` quando nenhum sumário reconhecível
+ *  é encontrado (formato de reporter inesperado — trata como "não sei",
+ *  nunca como fail 0). */
+export function parseFailCount(output: string): number | null {
+  FAIL_SUMMARY_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let last: number | null = null;
+  while ((match = FAIL_SUMMARY_RE.exec(output)) !== null) {
+    last = Number(match[1]);
+  }
+  return last;
+}
+
+/** Pure: decide se um batch que falhou merece 1 retry — os TRÊS critérios
+ *  do #6495 precisam ser verdadeiros (ver docstring do módulo): status !=
+ *  0, assinatura `ERR_MODULE_NOT_FOUND` presente, e sumário do `node:test`
+ *  confirmando `fail 0` (nenhuma falha de teste real, só o erro de
+ *  infraestrutura do runner). */
+export function shouldRetryBatch(output: string, status: number | null): boolean {
+  if ((status ?? 1) === 0) return false;
+  if (!ERR_MODULE_NOT_FOUND_RE.test(output)) return false;
+  return parseFailCount(output) === 0;
 }
 
 /** Roda `node --import tsx --test <batch...>` em batches sequenciais.
  *  Retorna o exit code agregado (0 só se TODOS os batches saírem 0). */
 export function runTestBatches(opts: RunTestsOptions): number {
-  const { files, extraArgs = [], batchSize = BATCH_SIZE, spawn = spawnSync } = opts;
+  const {
+    files,
+    extraArgs = [],
+    batchSize = BATCH_SIZE,
+    spawn = spawnSync,
+    stdout = process.stdout,
+    stderr = process.stderr,
+  } = opts;
   if (files.length === 0) {
     // Sem arquivos: deixa o guard `assert-test-discovery.ts` (pretest) ser
     // quem falha alto nesse caso — este wrapper não duplica esse julgamento.
@@ -109,15 +196,63 @@ export function runTestBatches(opts: RunTestsOptions): number {
   }
   const batches = chunk(files, batchSize);
   let exitCode = 0;
-  for (const batch of batches) {
-    const result = spawn(process.execPath, ["--import", "tsx", "--test", ...extraArgs, ...batch], {
-      stdio: "inherit",
+
+  const runOne = (batch: string[]) =>
+    spawn(process.execPath, ["--import", "tsx", "--test", ...extraArgs, ...batch], {
+      encoding: "utf8",
+      stdio: ["inherit", "pipe", "pipe"],
+      // Review #6807 (P1, confiança alta): sem isto, o default de 1 MB do
+      // Node estoura fácil com BATCH_SIZE=150 e 200+ console.log já na
+      // suíte — o spawn falha com result.error ANTES do retry (#6495) ter
+      // chance de rodar, transformando um batch 100% verde num falso
+      // "falha ao spawnar". maxBuffer generoso (não Infinity — string de
+      // tamanho ilimitado ainda pode estourar heap em runner com pouca
+      // RAM); 256 MB é folga larga sobre qualquer batch observado até hoje.
+      maxBuffer: 256 * 1024 * 1024,
     });
+
+  /** `spawn` está tipado como `typeof spawnSync` (assinatura genérica) —
+   *  na prática, com `encoding: "utf8"` sempre passado em `runOne`, o
+   *  runtime devolve `string`, mas o TS não estreita o overload através da
+   *  variável injetada. `String(...)` normaliza sem custo (já é string em
+   *  produção; só formaliza o tipo). */
+  const toText = (v: string | Buffer | null | undefined): string => (v ? String(v) : "");
+
+  const emit = (result: ReturnType<typeof spawnSync>) => {
+    const out = toText(result.stdout);
+    const err = toText(result.stderr);
+    if (out) stdout.write(out);
+    if (err) stderr.write(err);
+  };
+
+  for (const batch of batches) {
+    let result = runOne(batch);
     if (result.error) {
       console.error(`run-tests: falha ao spawnar batch (${batch.length} arquivos): ${result.error.message}`);
       exitCode = 1;
       continue;
     }
+    emit(result);
+
+    if ((result.status ?? 1) !== 0) {
+      const combined = `${toText(result.stdout)}\n${toText(result.stderr)}`;
+      if (shouldRetryBatch(combined, result.status)) {
+        stderr.write(
+          `\nrun-tests: batch com ERR_MODULE_NOT_FOUND e fail 0 (#6495, erro de infra do runner, não de teste) — retentando UMA vez (${batch.length} arquivos)...\n`,
+        );
+        const retry = runOne(batch);
+        if (retry.error) {
+          console.error(
+            `run-tests: falha ao spawnar retry do batch (${batch.length} arquivos): ${retry.error.message}`,
+          );
+          exitCode = 1;
+          continue;
+        }
+        emit(retry);
+        result = retry;
+      }
+    }
+
     if ((result.status ?? 1) !== 0) exitCode = 1;
   }
   return exitCode;
