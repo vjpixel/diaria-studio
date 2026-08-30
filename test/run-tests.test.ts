@@ -120,7 +120,7 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
     let seenOptions: Record<string, unknown> | undefined;
     runTestBatches({
       files: ["/a.test.ts"],
-      spawn: ((_cmd, _args, options) => {
+      spawn: ((_cmd: unknown, _args: unknown, options: unknown) => {
         seenOptions = options as Record<string, unknown>;
         return { status: 0 } as ReturnType<typeof import("node:child_process").spawnSync>;
       }) as typeof import("node:child_process").spawnSync,
@@ -257,7 +257,7 @@ describe("runTestBatches — retry automático (#6495)", () => {
     const exit = runTestBatches({
       files: ["/a.test.ts", "/b.test.ts"],
       batchSize: 1,
-      spawn: ((_cmd, args) => {
+      spawn: ((_cmd: unknown, args: unknown) => {
         const file = (args as string[]).slice(3)[0];
         seen.push(file === "/a.test.ts" ? 1 : 2);
         if (file === "/b.test.ts") {
