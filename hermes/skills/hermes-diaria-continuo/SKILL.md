@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.2
+version: 0.5.3
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -102,8 +102,49 @@ O output é a verdade — 6 categorias (`overnight`/`develop`/`agendada`/
 Se o `.ts` mudar, esta skill NÃO precisa mudar.
 
 Escopo do contínuo: issues `track=overnight` não reivindicadas por outra
-sessão ativa (regra de claim abaixo). `develop`/`bloqueada`/`epica`/etc.:
-registrar no relatório, não trabalhar.
+sessão ativa (regra de claim abaixo) **E** que passem no filtro de
+coerência abaixo (#6752). `develop`/`bloqueada`/`epica`/etc.: registrar no
+relatório, não trabalhar.
+
+#### Filtro de coerência — mudanças de baixa coerência só (#6752, 30/08/2026)
+
+Auditoria comparativa de 29/08/2026 (#6752) mediu que modelos grátis
+entregam diff final quase tão bom quanto a assinatura Anthropic
+(correção 4,42 vs 4,83/5), mas falham em **coerência entre PRs** — o
+modelo não lembra do que ele mesmo fez numa PR anterior no mesmo dia.
+Retrabalho medido: `continuo` 23,3% vs `overnight` 9,8% (2,4×); 3 dos 4
+incidentes recentes de master vermelho vêm de PRs `continuo`. Decisão do
+editor: em vez de um eixo novo em `classifyExecTrack` ou label dedicada, a
+checagem entra **aqui**, no passo de seleção de fila desta skill — é
+comportamento de fila (o que o contínuo pega DESTE lote), não de
+roteamento (`classifyExecTrack` responde "que sessão pega esta issue?",
+pergunta diferente).
+
+Antes de reivindicar uma issue `track=overnight`, ler o corpo + arquivos que
+ela provavelmente toca e marcar SIM/NÃO para cada critério. **Qualquer SIM
+tira a issue da fila do contínuo neste ciclo:**
+
+1. Cria ou altera abstração compartilhada — `scripts/lib/shared/*`, um
+   módulo novo pensado como canônico, ou um tipo/helper que 2+ call sites
+   vão consumir.
+2. É refactor / consolidação de duplicação (junta lógica espalhada num
+   lugar só, renomeia contrato usado em vários arquivos).
+3. A implementação correta exige ler o que outra PR aberta ou mergeada
+   recentemente (mesmo dia/janela) fez — a issue só faz sentido no
+   contexto de um trabalho anterior que o modelo não tem motivo de ter
+   visto.
+4. É fatia de épico onde a fatia N+1 depende da N já ter sido feita de um
+   jeito específico (não apenas "épico" no sentido de grande — ver `epica`
+   em `classifyExecTrack`, que já é outro track).
+
+Nenhum SIM → segue elegível, reivindicar normalmente. Pelo menos 1 SIM →
+**não reivindicar neste ciclo**; registrar no relatório como `issue #N:
+pulada (baixa-coerência, critério K) — encaminhar overnight/develop` e
+seguir para a próxima candidata. Isto não cria um 7º valor de
+`ExecTrack` nem uma label nova — é uma pergunta feita a cada seleção,
+igual ao guard de claim que já existe no mesmo passo; issue que falhar
+aqui continua `track=overnight` no código, só não é trabalhada por ESTA
+fila neste ciclo (overnight/develop seguem livres para pegá-la).
 
 #### Regra dura: NUNCA parsear saída do `gh` com Python ad-hoc
 
@@ -248,7 +289,23 @@ e são drenadas pelos modelos free. O loop se fecha: Opus audita, free corrige.
 Esta skill NÃO chama esse script no tick; só registra no relatório se as
 issues `[daily-review]` aparecerem na classificação.
 
-## Relatório de tick (formato inalterado)
+## Relatório de tick — contrato de tamanho (#6716, 30/08/2026)
+
+O job cron roda com `context_from: ["self"]` (config do Hermes, fora deste
+repo): **o corpo deste relatório é reinjetado inteiro como contexto do
+próximo tick.** Medido em #6712 (29/08/2026): 23–31 KB por tick, empurrando o
+baseline de entrada de cada delegação de ~54k para até 144k tokens dentro de
+um único tick — e é esse crescimento de contexto que dispara o auto-compact
+cujo custo (Sonnet 5 como "supporting model", ~75% do gasto por delegação) a
+#6716 investigou. Cortar o relatório não fecha essa investigação sozinho
+(auto-compact pode não ser a causa — ver #6716), mas reduz o custo por tick
+sob QUALQUER uma das duas hipóteses vivas: se for auto-compact, menos
+contexto = compacta com menos frequência; se não for, ainda assim é menos
+tokens de entrada por chamada. Decisão do editor (30/08/2026, comentário de
+#6716): atacar isto agora, sem esperar a medição do dashboard OpenRouter, e
+sem desligar `autoCompactEnabled`.
+
+**Orçamento: até ~2 KB por relatório (~40 linhas curtas).** Formato:
 
 ```
 ## Tick HH:MM
@@ -259,8 +316,27 @@ issues `[daily-review]` aparecerem na classificação.
 ### Perguntas (se houver)
 ```
 
-Relatório de uma linha quando não houver trabalho — nunca reimprimir backlog
-inteiro/git status/worktree list se normal (pitfall do ciclo 26/08).
+Regras que mantêm o relatório dentro do orçamento:
+
+- **Referenciar por número, nunca reproduzir o texto.** `#6699 comentado
+  (bloqueio: X)` — não colar o corpo do comentário nem o diff da issue.
+- **Nunca colar saída bruta de ferramenta** — sem `git diff`, sem JSON cru do
+  `gh`, sem stderr/log do `claude-openrouter.sh`. Resumir em 1 linha o que
+  aquele output significou para a decisão.
+- **Nunca reimprimir o backlog inteiro, `git status` ou `worktree list`** se
+  o estado é o normal esperado (pitfall do ciclo 26/08, regra já existia —
+  agora com o motivo explícito: cada linha extra aqui é uma linha que o
+  PRÓXIMO tick paga de novo).
+- **1 linha por item**, não parágrafo — "issue #N: <verbo> <resultado>", sem
+  narrar o raciocínio intermediário (esse já está no comentário que foi
+  deixado na issue/PR, que é permanente; o relatório de tick é efêmero e
+  só precisa apontar pra lá).
+- Relatório de uma linha quando não houver trabalho.
+
+Se o conteúdo genuíno de um tick excede o orçamento (ex: muitas issues
+trabalhadas), preferir **mais referências curtas** a **texto mais longo por
+item** — o corte é em verbosidade, nunca em cobertura (todo item trabalhado
+continua tendo 1 linha; a linha é que fica mais enxuta).
 
 ## Definição de sucesso do ciclo (critério do editor, 23/08, inalterado)
 
@@ -279,6 +355,18 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Changelog
 
+- 0.5.3 (30/08/2026, #6716): contrato de tamanho do relatório de tick — orçamento
+  de ~2 KB (`context_from: ["self"]` reinjeta o relatório inteiro no próximo
+  tick; medido em #6712 em 23–31 KB, elevando o baseline de entrada de ~54k
+  para até 144k tokens dentro de um tick). Decisão do editor: atacar o
+  tamanho do contexto reinjetado por tick sem esperar a medição do dashboard
+  OpenRouter e sem desligar `autoCompactEnabled` — reduz custo sob as duas
+  hipóteses vivas de origem do gasto (auto-compact ou não). Regras novas:
+  referenciar por número em vez de reproduzir texto, nunca colar saída bruta
+  de ferramenta, 1 linha por item. Regra pré-existente de "nunca reimprimir
+  backlog inteiro se normal" mantida, agora com o motivo explícito. Também
+  restringe a fila do contínuo a mudanças de baixa coerência no passo de
+  seleção (#6752): ver seção 2.
 - 0.5.2 (28/08/2026): session-id do cron por TICK, não por JOB (#6443,
   raiz da issue — itens 2/3 da decisão do editor já tinham sido resolvidos
   via #6436). `$SESSION_ID` agora inclui timestamp UTC do início do tick
