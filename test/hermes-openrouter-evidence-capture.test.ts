@@ -73,6 +73,32 @@ describe("captura de evidência real de falha (#6666 item 1)", () => {
         "ou /tmp é limpo, tornando a evidência irrecuperável na prática (#6666 item 1).",
     );
   });
+
+  it("o path ESTÁVEL contém a própria linha de diagnóstico (rc+duração), não só o attempt log de antes dela (review #6808)", () => {
+    // Achado do review da PR #6808 (P2, confiança alta): a linha de
+    // diagnóstico só era apendada ao STDERR_LOG ($$-escopado, some com o
+    // processo) — o cp para o path estável rodava sobre o ATTEMPT_LOG de
+    // ANTES da linha de diagnóstico ser escrita nele, então o único arquivo
+    // que sobrevive ao PID não continha o dado que o #6666 item 1 existe
+    // pra preservar. A linha de diagnóstico precisa ser apendada ao
+    // ATTEMPT_LOG ANTES do `cp` pro path estável.
+    const diagAppendToAttemptIdx = source.indexOf(
+      'echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT" >> "$ATTEMPT_LOG"',
+    );
+    const cpIdx = source.indexOf('cp -f "$ATTEMPT_LOG" "${TMPDIR:-/tmp}/claude-openrouter-last-failure.log"');
+    assert.ok(
+      diagAppendToAttemptIdx > -1,
+      "a linha de diagnóstico não é apendada ao ATTEMPT_LOG — o path estável " +
+        "vai continuar sem rc+duração mesmo com o resto do fix presente",
+    );
+    assert.ok(cpIdx > -1, "cópia pro path estável não encontrada");
+    assert.ok(
+      diagAppendToAttemptIdx < cpIdx,
+      "a linha de diagnóstico precisa ser apendada ao ATTEMPT_LOG ANTES do cp " +
+        "pro path estável — na ordem inversa, o cp continua capturando o " +
+        "estado de ANTES do diagnóstico existir",
+    );
+  });
 });
 
 describe("unrecognized_model nunca alimenta a classificação de exit code (#6666 item 2, já resolvido junto com #6617)", () => {

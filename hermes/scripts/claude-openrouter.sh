@@ -311,6 +311,13 @@ for MODEL in "${MODELS[@]}"; do
     # /tmp é limpo. Sobrescrita a cada falha nova (best-effort — investigar
     # "a falha mais recente" é o caso de uso; falhas concorrentes de ticks
     # paralelos ainda têm o path $$-escopado como fonte completa).
+    # Review #6808 (P2, confiança alta): a linha de diagnóstico (rc+duração)
+    # só ia pro STDERR_LOG ($$-escopado, some com o processo) — o
+    # last-failure.log ESTÁVEL era uma cópia do ATTEMPT_LOG de ANTES da
+    # linha de diagnóstico ser escrita, então o arquivo que devia sobreviver
+    # não continha o próprio dado que o #6666 item 1 existe pra preservar.
+    # Fix: apendar a linha de diagnóstico ao ATTEMPT_LOG antes da cópia.
+    echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT" >> "$ATTEMPT_LOG"
     cp -f "$ATTEMPT_LOG" "${TMPDIR:-/tmp}/claude-openrouter-last-failure.log" 2>/dev/null || true
     # Classificar o motivo desta tentativa (finding do review #6446 cobria só
     # rc=0/saída-vazia vs timeout vs rc≠0 genérico; #6617 acrescenta a
