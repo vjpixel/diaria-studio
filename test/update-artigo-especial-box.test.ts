@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,6 +14,8 @@ import {
   type BoxesDivulgacaoConfig,
 } from "../scripts/update-artigo-especial-box.ts";
 import { artigoEspecialStatePath, readArtigoEspecialState } from "../scripts/lib/artigo-especial-state.ts";
+import { stitchNewsletter } from "../scripts/stitch-newsletter.ts";
+import { extractBoxDivulgacao2 } from "../scripts/lib/newsletter-parse.ts";
 
 const INPUT = {
   titulo: "Engenharia de ilusão: jailbreak de IA não arromba, encena",
@@ -259,8 +261,9 @@ describe("update-artigo-especial-box.ts CLI (--dry-run, integração leve)", () 
     assert.ok(existsSync(snippetsFile));
     assert.ok(readFileSync(snippetsFile, "utf8").includes("**Artigo Especial de Agosto**"));
     const configAfter = JSON.parse(readFileSync(configPath, "utf8"));
-    assert.equal(configAfter.boxes_divulgacao.slot3, "artigo-especial-apoiadores.md");
-    assert.deepEqual(configAfter.boxes_divulgacao_auto.pinned_slots, [3]);
+    // #6748: default de --slot mudou de 3 (eliminado) para 2.
+    assert.equal(configAfter.boxes_divulgacao.slot2, "artigo-especial-apoiadores.md");
+    assert.deepEqual(configAfter.boxes_divulgacao_auto.pinned_slots, [2]);
   });
 });
 
@@ -396,5 +399,100 @@ describe("runUpdateArtigoEspecialBox — guard de idempotencia do canal 'box' (#
     const statePath = artigoEspecialStatePath(dataDir, "2026", "y");
     const state = readArtigoEspecialState(statePath, "2026", "y");
     assert.equal(state.channels.box?.status, "failed");
+  });
+});
+
+describe("#6748 self-review (alta confiança): pin do box de fato RENDERIZA na newsletter, cross-módulo com stitch-newsletter.ts", () => {
+  // O gap que motivou este describe: os testes de `applyBoxPin` acima só
+  // provam que a ESCRITA em platform.config.json está correta — nunca que o
+  // valor escrito produz efeito real na edição. Antes do #6748, pinar em
+  // slot3 (default antigo) já não teria efeito nenhum (slot3 eliminado), e
+  // nenhum teste pegava isso porque nenhum teste ia até `stitchNewsletter`.
+  // readSnippetFile (scripts/lib/shared/snippet-loader.ts) resolve
+  // `{rootDir}/data/snippets/{filename}` — `snippetsRootDir` do stitch é a
+  // RAIZ (equivalente a `ROOT`), não o diretório de snippets em si.
+  function setupSnippet(dir: string): string {
+    const snippetsDir = join(dir, "data", "snippets");
+    mkdirSync(snippetsDir, { recursive: true });
+    const box = buildDefaultArtigoEspecialBox({ ...INPUT, ctaUrl: "https://apoia.se/diaria" });
+    writeFileSync(join(snippetsDir, "artigo-especial-apoiadores.md"), box, "utf8");
+    return dir;
+  }
+
+  function setup3Destaques(dir: string) {
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(join(internalDir, "02-d1-draft.md"), "**DESTAQUE 1 | 🚀**\n\n[**T1**](https://e.com/d1)\n\nbody1");
+    writeFileSync(join(internalDir, "02-d2-draft.md"), "**DESTAQUE 2 | 🔬**\n\n[**T2**](https://e.com/d2)\n\nbody2");
+    writeFileSync(join(internalDir, "02-d3-draft.md"), "**DESTAQUE 3 | ⚖️**\n\n[**T3**](https://e.com/d3)\n\nbody3");
+    writeFileSync(join(internalDir, "01-approved-capped.json"), JSON.stringify({ coverage: { line: "cov" } }));
+    return internalDir;
+  }
+
+  it("default do CLI (--slot omitido = 2, #6748) pinado via applyBoxPin: o box do Artigo Especial aparece de fato no output de stitchNewsletter (edição de 3 destaques)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "artigo-especial-render-"));
+    try {
+      const snippetsDir = setupSnippet(dir);
+      const internalDir = setup3Destaques(dir);
+
+      const pinnedConfig = applyBoxPin(
+        { boxes_divulgacao: { slot1: null, slot2: null }, boxes_divulgacao_auto: { enabled: true, pinned_slots: [] } },
+        { slot: 2, filename: "artigo-especial-apoiadores.md", pin: true },
+      );
+
+      const out = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: join(internalDir, "02-d3-draft.md"),
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+        snippetsRootDir: snippetsDir,
+        boxesDivulgacao: {
+          slot1: (pinnedConfig.boxes_divulgacao!.slot1 as string | null) ?? null,
+          slot2: (pinnedConfig.boxes_divulgacao!.slot2 as string | null) ?? null,
+        },
+      });
+
+      const box = extractBoxDivulgacao2(out);
+      assert.ok(box, "o box do Artigo Especial deve aparecer no slot2 (D2/D3) quando pinado, edição de 3 destaques");
+      assert.match(box!, /Engenharia de ilusão/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("documenta o trade-off aceito no #6748: em edição de 2 destaques (sem D3), o box pinado em slot2 NÃO aparece — diferente do antigo slot3", () => {
+    const dir = mkdtempSync(join(tmpdir(), "artigo-especial-render-2d-"));
+    try {
+      const snippetsDir = setupSnippet(dir);
+      const internalDir = join(dir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(join(internalDir, "02-d1-draft.md"), "**DESTAQUE 1 | 🚀**\n\n[**T1**](https://e.com/d1)\n\nbody1");
+      writeFileSync(join(internalDir, "02-d2-draft.md"), "**DESTAQUE 2 | 🔬**\n\n[**T2**](https://e.com/d2)\n\nbody2");
+      writeFileSync(join(internalDir, "01-approved-capped.json"), JSON.stringify({ coverage: { line: "cov" }, highlights: [{}, {}] }));
+
+      const pinnedConfig = applyBoxPin(
+        { boxes_divulgacao: { slot1: null, slot2: null }, boxes_divulgacao_auto: { enabled: true, pinned_slots: [] } },
+        { slot: 2, filename: "artigo-especial-apoiadores.md", pin: true },
+      );
+
+      const out = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: null,
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+        snippetsRootDir: snippetsDir,
+        boxesDivulgacao: {
+          slot1: (pinnedConfig.boxes_divulgacao!.slot1 as string | null) ?? null,
+          slot2: (pinnedConfig.boxes_divulgacao!.slot2 as string | null) ?? null,
+        },
+      });
+
+      assert.equal(extractBoxDivulgacao2(out), null, "slot2 exige D3 — trade-off documentado no #6748/SKILL.md");
+      assert.doesNotMatch(out, /Engenharia de ilusão/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

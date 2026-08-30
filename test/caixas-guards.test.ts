@@ -163,7 +163,11 @@ describe("SLOT_POSITION_LABEL (#3937; slot0 #4290)", () => {
     assert.match(SLOT_POSITION_LABEL.slot1, /D2/);
     assert.match(SLOT_POSITION_LABEL.slot2, /D2/);
     assert.match(SLOT_POSITION_LABEL.slot2, /D3/);
-    assert.match(SLOT_POSITION_LABEL.slot3, /último destaque/i);
+  });
+
+  it("#6748: slot3 descreve eliminação, não mais uma posição de render", () => {
+    assert.match(SLOT_POSITION_LABEL.slot3, /eliminado/i);
+    assert.match(SLOT_POSITION_LABEL.slot3, /6748/);
   });
 
   it("#4290: slot0 (introdução) descreve a posição antes de D1", () => {

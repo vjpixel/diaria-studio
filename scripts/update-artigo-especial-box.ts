@@ -3,9 +3,25 @@
  *
  * Passo 5 da skill `/diaria-artigo-especial`: reescreve o CORPO de
  * `data/snippets/artigo-especial-apoiadores.md` com o título/gancho do
- * artigo especial do mês, e (por padrão) pina o box no slot 3 em
- * `platform.config.json` (via `boxes_divulgacao.slot3` +
+ * artigo especial do mês, e (por padrão) pina o box no slot 2 em
+ * `platform.config.json` (via `boxes_divulgacao.slot2` +
  * `boxes_divulgacao_auto.pinned_slots`).
+ *
+ * ## #6748 (29/08/2026) — default mudou de slot 3 para slot 2 (slot 3 eliminado)
+ *
+ * O #6748 eliminou o slot 3 da rotação de boxes de divulgação — `stitch-newsletter.ts`
+ * nunca mais renderiza esse slot, `select-boxes-by-clicks.ts` nunca mais o
+ * ranqueia/pina. Pinar o box do Artigo Especial em `slot3` (comportamento
+ * pré-#6748) hoje escreveria a config e reportaria sucesso sem NENHUM efeito
+ * — o box nunca apareceria na newsletter (achado no self-review do #6748,
+ * ver PR). O default de `--slot` mudou para `2`. **Trade-off aceito nessa
+ * troca**: diferente do slot 3 (que injetava sempre, após o último destaque,
+ * independente da contagem de destaques), o slot 2 só existe no gap D2/D3 —
+ * em edição de 2 destaques (#2343/#3369, sem D3) o box do Artigo Especial
+ * NÃO aparece nessa edição, mesmo pinado. Sem heurística melhor disponível
+ * sem tocar `stitch-newsletter.ts` de novo; reavaliar se isso incomodar na
+ * prática (ex: repinar pro slot1, que sempre existe, mas aí compete com o
+ * box padrão desse slot).
  *
  * ## Frase-padrão fixada no gate 260724 (não reabrir — ver `context/snippets/README.md`)
  *
@@ -59,7 +75,7 @@
  *     --ano 2026 --slug engenharia-de-ilusao \
  *     [--snippets-file data/snippets/artigo-especial-apoiadores.md] \
  *     [--config platform.config.json] [--data-dir data] \
- *     [--slot 3] [--no-pin] [--unpin] [--force] [--dry-run]
+ *     [--slot 2] [--no-pin] [--unpin] [--force] [--dry-run]
  */
 
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
@@ -336,7 +352,7 @@ async function main(): Promise<void> {
     console.error(
       "Uso: npx tsx scripts/update-artigo-especial-box.ts --titulo \"...\" --gancho \"...\" --mes \"Agosto\" " +
         "[--ano AAAA --slug slug] [--cta-url https://apoia.se/...] [--snippets-file path] [--config path] [--data-dir path] " +
-        "[--slot 3] [--no-pin] [--unpin] [--force] [--dry-run]",
+        "[--slot 2] [--no-pin] [--unpin] [--force] [--dry-run]",
     );
     process.exit(2);
   }
@@ -352,7 +368,9 @@ async function main(): Promise<void> {
   // pinned_slots com NaN) sem erro nenhum. getIntArg já existe pra fechar
   // exatamente essa classe de bug (docstring cita #4476/#4496, #4542/#4564,
   // #4568) — aborta com mensagem clara em vez de aceitar lixo.
-  const slot = getIntArg(process.argv.slice(2), "slot", { min: 1 }) ?? 3;
+  // #6748: default mudou de 3 para 2 — slot 3 foi eliminado da rotação e
+  // nunca mais renderiza (ver docstring do módulo).
+  const slot = getIntArg(process.argv.slice(2), "slot", { min: 1 }) ?? 2;
   const dryRun = flags.has("dry-run");
   const force = flags.has("force");
   const unpin = flags.has("unpin");

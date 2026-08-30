@@ -78,11 +78,17 @@
         </label>
         <select id="slot2-select" class="cx-slots-select"></select>
       </div>
+      <!-- #6748: slot 3 eliminado — pipeline nunca mais renderiza esse slot
+           (stitch-newsletter.ts/select-boxes-by-clicks.ts ignoram
+           boxesCfg.slot3), então o campo fica DESATIVADO aqui pra não sugerir
+           uma escolha que não tem efeito. Chave "slot3" continua existindo em
+           platform.config.json/BoxSlotsSnapshot por back-compat/reversibilidade
+           (decisão documentada no PR #6748). -->
       <div class="cx-slots-row" data-slot="slot3">
         <label class="cx-slots-label" for="slot3-select">
-          Slot 3 <span class="cx-slots-position">— depois do último destaque (D3, ou D2 se só houver 2)</span>
+          Slot 3 (DESATIVADO — #6748) <span class="cx-slots-position">— eliminado; a edição sai com no máximo 2 caixas (slot1+slot2). Qualquer valor aqui é ignorado pelo pipeline.</span>
         </label>
-        <select id="slot3-select" class="cx-slots-select"></select>
+        <select id="slot3-select" class="cx-slots-select" disabled></select>
       </div>
       <div class="cx-editor-toolbar">
         <button id="slots-save-btn" type="button">Salvar atribuição de slots</button>

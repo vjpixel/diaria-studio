@@ -97,9 +97,13 @@ const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
 const SNIPPETS_DIR = resolve(ROOT, "data/snippets"); // #5227: migrado de context/snippets/
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
 
-/** #4626: só slot 1/2/3 entram na rotação automática — ver docstring do
- * módulo pro porquê do slot 0 ficar de fora. */
-export const ROTATION_SLOTS: ReadonlySet<BoxSlot> = new Set<BoxSlot>([1, 2, 3]);
+/** #4626: só slot 1/2 entram na rotação automática — ver docstring do módulo
+ * pro porquê do slot 0 ficar de fora. **#6748: slot 3 removido da rotação**
+ * (era `[1, 2, 3]`) — a edição sai com no máximo 2 caixas de divulgação
+ * (slot1 + slot2); o slot 3 nunca mais é ranqueado, escolhido nem entra no
+ * histórico/anti-repetição (`buildSnippetHistory`/`findPreviousEditionSnippets`
+ * usam este mesmo conjunto por default). */
+export const ROTATION_SLOTS: ReadonlySet<BoxSlot> = new Set<BoxSlot>([1, 2]);
 
 function avg(nums: number[]): number {
   return nums.length === 0 ? 0 : nums.reduce((a, b) => a + b, 0) / nums.length;
@@ -463,14 +467,29 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
     slot0: opts.boxesCfg.slot0 ?? null,
     slot1: opts.boxesCfg.slot1 ?? null,
     slot2: opts.boxesCfg.slot2 ?? null,
-    slot3: opts.boxesCfg.slot3 ?? null,
+    // #6748: slot 3 eliminado — nunca efetivo, independente de
+    // `opts.boxesCfg.slot3` (o campo continua existindo no schema por
+    // back-compat/reversibilidade, mas é ignorado aqui).
+    slot3: null,
   };
 
   const snippets = loadSnippets(opts.snippetsDir ?? SNIPPETS_DIR);
+  // #6748: registro do slot 3 é sempre "disabled"/vazio — nunca participa do
+  // ranking, pin nem fallback, em NENHUM modo (auto ligado ou desligado).
+  const slot3Disabled: SlotSelectionRecord = {
+    slot: 3,
+    mode: "disabled",
+    file: null,
+    nome: null,
+    score: null,
+    trend: null,
+    editionsAppeared: null,
+    seasonal: null,
+  };
 
   if (!autoCfg.enabled) {
     const snippetByFile = new Map(snippets.map((s) => [s.file, s]));
-    const selection: SlotSelectionRecord[] = ([1, 2, 3] as const).map((slot) => {
+    const selection: SlotSelectionRecord[] = ([1, 2] as const).map((slot) => {
       const snippet = snippetByFile.get(effective[SLOT_KEY[slot]] ?? "");
       return {
         slot,
@@ -483,6 +502,7 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
         seasonal: snippet?.seasonal ?? null,
       };
     });
+    selection.push(slot3Disabled);
     return { effective, selection };
   }
 
@@ -514,9 +534,13 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   const ranked = [...history.values()].map((h) => scoreBox(h, autoCfg.recentWindow, autoCfg.priorWindow));
   const previousSnippets = findPreviousEditionSnippets(opts.aammdd, aammddList, readReviewedMd, snippets);
 
-  const slotsToAuto = ([1, 2, 3] as const).filter((s) => !autoCfg.pinnedSlots.has(s));
+  // #6748: slot 3 fora de [1, 2] em TODOS os arrays abaixo — nunca entra em
+  // `slotsToAuto` (não é ranqueado/escolhido), nunca é elegível a pin, e o
+  // loop de seleção final abaixo cobre só [1, 2] + o registro fixo
+  // `slot3Disabled` (adicionado no fim).
+  const slotsToAuto = ([1, 2] as const).filter((s) => !autoCfg.pinnedSlots.has(s));
   const alreadyAssignedFiles = new Set<string>();
-  for (const s of [1, 2, 3] as const) {
+  for (const s of [1, 2] as const) {
     if (autoCfg.pinnedSlots.has(s) && effective[SLOT_KEY[s]]) {
       alreadyAssignedFiles.add(effective[SLOT_KEY[s]]!);
     }
@@ -534,7 +558,7 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   const snippetByFile = new Map(snippets.map((s) => [s.file, s]));
 
   const selection: SlotSelectionRecord[] = [];
-  for (const slot of [1, 2, 3] as const) {
+  for (const slot of [1, 2] as const) {
     if (autoCfg.pinnedSlots.has(slot)) {
       const snippet = snippetByFile.get(effective[SLOT_KEY[slot]] ?? "");
       selection.push({
@@ -578,6 +602,7 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
     }
   }
 
+  selection.push(slot3Disabled);
   return { effective, selection };
 }
 

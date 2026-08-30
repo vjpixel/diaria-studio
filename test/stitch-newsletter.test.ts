@@ -1370,7 +1370,7 @@ describe("#4274 — boxes_divulgacao config-driven (slot0, introdução)", () =>
   });
 });
 
-describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de USE MELHOR", () => {
+describe("#6748 — slot 3 eliminado (revoga #3476); no máximo 2 boxes (slot1+slot2); USE MELHOR depois de É IA? mantido", () => {
   function setupEdition() {
     const dir = mkdtempSync(join(tmpdir(), "stitch-3476-"));
     const internalDir = join(dir, "_internal");
@@ -1408,7 +1408,7 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
   const SLOT3_ANCHOR = STABLE_SLOT3_ANCHOR;
   const STABLE_3_SLOTS = { slot1: STABLE_SLOT1_FILE, slot2: STABLE_SLOT2_FILE, slot3: STABLE_SLOT3_FILE };
 
-  it("#3212/#3476/#3824: injeta os 3 slots (fixtures fixadas via override, #4083)", () => {
+  it("#6748: injeta só slot1+slot2 (fixtures fixadas via override, #4083) — slot3 NUNCA injeta mesmo configurado", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       const out = stitchNewsletter(base(dir, internalDir, { boxesDivulgacao: STABLE_3_SLOTS }));
@@ -1418,34 +1418,16 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
       const slot2 = extractBoxDivulgacao2(out);
       assert.ok(slot2, "slot2 injetado");
       assert.match(slot2!, SLOT2_ANCHOR);
-      const slot3 = extractBoxDivulgacao3(out);
-      assert.ok(slot3, "slot3 injetado (#3824)");
-      assert.match(slot3!, SLOT3_ANCHOR);
+      // #6748: STABLE_3_SLOTS passa slot3 explicitamente configurado — mesmo
+      // assim nunca injeta. Regressão do bug que este PR reverte (#3476).
+      assert.equal(extractBoxDivulgacao3(out), null, "slot3 nunca injeta, mesmo configurado (#6748)");
+      assert.doesNotMatch(out, SLOT3_ANCHOR, "conteúdo do slot3 não aparece em lugar nenhum da edição");
     } finally {
       cleanup();
     }
   });
 
-  it("#3476: box3 posicionado entre D3 e USE MELHOR (não entre D2/D3, não depois de USE MELHOR)", () => {
-    const { dir, internalDir, cleanup } = setupEdition();
-    try {
-      const out = stitchNewsletter(base(dir, internalDir, {
-        boxesDivulgacao: { slot1: null, slot2: null, slot3: STABLE_SLOT3_FILE },
-      }));
-      const d3Pos = out.indexOf("DESTAQUE 3");
-      const slot3Pos = out.indexOf(extractBoxDivulgacao3(out) ?? " ");
-      const umPos = out.indexOf("USE MELHOR");
-      assert.ok(slot3Pos > 0, "box3 deveria estar presente");
-      assert.ok(
-        d3Pos < slot3Pos && slot3Pos < umPos,
-        `box3 deve ficar entre D3 (${d3Pos}) e USE MELHOR (${umPos}); achou em ${slot3Pos}`,
-      );
-    } finally {
-      cleanup();
-    }
-  });
-
-  it("#3476: USE MELHOR renderiza ANTES de É IA? (antes do #3476 era o inverso, #2546)", () => {
+  it("#6748: USE MELHOR renderiza ANTES de É IA? (preservado, independente da remoção do slot3)", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       // #4138 finding 2: override explícito — a ordem USE MELHOR/É IA? não tem
@@ -1462,7 +1444,7 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
     }
   });
 
-  it("#3476: sem USE MELHOR na edição, É IA? cai logo após box3 (nunca desaparece)", () => {
+  it("#6748: sem USE MELHOR na edição, É IA? cai logo após D3, mesmo com slot3 configurado (nunca injeta)", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       // Sobrescreve o approved-capped.json sem use_melhor.
@@ -1474,17 +1456,18 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
         boxesDivulgacao: { slot1: null, slot2: null, slot3: STABLE_SLOT3_FILE },
       }));
       assert.doesNotMatch(out, /USE MELHOR/);
-      const slot3Pos = out.indexOf(extractBoxDivulgacao3(out) ?? " ");
+      assert.equal(extractBoxDivulgacao3(out), null, "slot3 nunca injeta (#6748)");
+      const d3Pos = out.indexOf("DESTAQUE 3");
       const eiaPos = out.indexOf("É IA?");
-      assert.ok(slot3Pos > 0 && eiaPos > 0);
-      assert.ok(slot3Pos < eiaPos, "É IA? deve vir logo após box3 quando USE MELHOR está ausente");
+      assert.ok(d3Pos > 0 && eiaPos > 0);
+      assert.ok(d3Pos < eiaPos, "É IA? deve vir logo após D3 quando USE MELHOR está ausente (sem box3 no meio)");
     } finally {
       cleanup();
     }
   });
 
-  it("#3476: box3 injeta mesmo em edição de 2 destaques (após D2, diferente do slot2 que exige D3)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "stitch-3476-2d-"));
+  it("#6748: edição de 2 destaques também nunca injeta slot3, mesmo configurado", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-6748-2d-"));
     const internalDir = join(dir, "_internal");
     mkdirSync(internalDir, { recursive: true });
     try {
@@ -1500,49 +1483,28 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
         boxesDivulgacao: { slot1: null, slot2: null, slot3: STABLE_SLOT3_FILE },
         snippetsRootDir: SNIPPETS_FIXTURE_ROOT, // #5227
       });
-      const slot3 = extractBoxDivulgacao3(out);
-      assert.ok(slot3, "slot3 deve injetar mesmo sem D3 (é pós-último-destaque, não uma lacuna D2/D3)");
-      assert.match(slot3!, SLOT3_ANCHOR);
+      assert.equal(extractBoxDivulgacao3(out), null, "slot3 nunca injeta, mesmo em edição de 2 destaques (#6748)");
+      assert.doesNotMatch(out, SLOT3_ANCHOR);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("idempotência: box3 já glúado ao fim de D3 não é dupla-injetado", () => {
+  it("sponsor=false suprime os 2 slots restantes (slot1+slot2) — slot3 já é sempre ausente independente de sponsor", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
-      writeFileSync(
-        join(internalDir, "02-d3-draft.md"),
-        "**DESTAQUE 3 | ⚖️ REGULAÇÃO**\n\n[**T3**](https://e.com/d3)\n\nbody3\n\n**🔧 Já colado. [Ver](https://exemplo.com/ferramenta).**",
-      );
-      const out = stitchNewsletter(base(dir, internalDir, {
-        boxesDivulgacao: { slot1: null, slot2: null, slot3: STABLE_SLOT3_FILE },
-      }));
-      assert.equal((out.match(/🔧/g) || []).length, 1, "só 1 marcador 🔧 (não dupla-injeta)");
-      // Âncora do slot3 e não "Quero apoiar": esta última passou a existir
-      // também no slot2 (artigo-especial-apoiadores) na rotação de 260727, e
-      // um match dela aqui não distinguiria mais os dois boxes.
-      assert.doesNotMatch(out, SLOT3_ANCHOR, "não injeta o snippet default por cima do box já colado");
-    } finally {
-      cleanup();
-    }
-  });
-
-  it("sponsor=false suprime os 3 slots (não só os 2 antigos)", () => {
-    const { dir, internalDir, cleanup } = setupEdition();
-    try {
-      // Mesmo cuidado do #4044: prova que os 3 slots injetam com sponsor on
+      // Mesmo cuidado do #4044: prova que os slots injetam com sponsor on
       // ANTES de provar que somem com sponsor off, pra "null" não ficar
       // vago o suficiente pra ser satisfeito por um fixture ausente/mal
       // resolvido em vez da supressão de fato.
       const withSponsor = stitchNewsletter(base(dir, internalDir, { boxesDivulgacao: STABLE_3_SLOTS }));
       assert.ok(extractBoxDivulgacao1(withSponsor), "pré-condição: slot1 injeta com sponsor on");
       assert.ok(extractBoxDivulgacao2(withSponsor), "pré-condição: slot2 injeta com sponsor on");
-      assert.ok(extractBoxDivulgacao3(withSponsor), "pré-condição: slot3 injeta com sponsor on");
+      assert.equal(extractBoxDivulgacao3(withSponsor), null, "slot3 já ausente mesmo com sponsor on (#6748)");
       const out = stitchNewsletter(base(dir, internalDir, { sponsor: false, boxesDivulgacao: STABLE_3_SLOTS }));
       assert.equal(extractBoxDivulgacao1(out), null, "slot1 suprimido");
       assert.equal(extractBoxDivulgacao2(out), null, "slot2 suprimido");
-      assert.equal(extractBoxDivulgacao3(out), null, "slot3 suprimido");
+      assert.equal(extractBoxDivulgacao3(out), null, "slot3 continua ausente");
     } finally {
       cleanup();
     }

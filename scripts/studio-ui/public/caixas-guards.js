@@ -68,7 +68,11 @@ export const SLOT_POSITION_LABEL = {
   slot0: "na introdução, antes de D1 (depois de qualquer callout/agradecimento)",
   slot1: "entre D1 e D2",
   slot2: "entre D2 e D3 (só materializa em edição de 3 destaques)",
-  slot3: "depois do último destaque (D3, ou D2 se só houver 2)",
+  // #6748: slot 3 eliminado — não injeta mais em lugar nenhum. Texto
+  // atualizado pra não descrever uma posição que não existe mais, mesmo essa
+  // constante não sendo consumida hoje por caixas.js (caixas.html tem seu
+  // próprio texto "(DESATIVADO — #6748)").
+  slot3: "eliminado (#6748) — nunca injeta, independente do valor configurado",
 };
 
 /** Mensagem do `confirm()` disparado por `saveSlots()` quando o server
