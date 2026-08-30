@@ -141,6 +141,39 @@ test("bloqueio-execucao: label não verificável (gh indisponível) → fail-sof
   assert.deepEqual(findStaleBlocks(issues, consultor), []);
 });
 
+// #6754 — falso positivo ao vivo: issue #6674 bloqueada por `kit-migration`
+// (sem `bloqueio-execucao` presente) foi reportada como "bloqueio caducou"
+// porque o checker só conhecia a label `bloqueio-execucao` isoladamente.
+test("bloqueio-execucao (#6754): bloqueada por kit-migration (sem bloqueio-execucao presente) → NÃO acusa", () => {
+  const issues: BlockStalenessPlanIssue[] = [
+    { number: 6674, status: "pulada", motivo: "bloqueio-execucao" },
+  ];
+  const consultor = fakeConsultor({
+    hasLabel: (_n, label) => label === "kit-migration",
+  });
+  assert.deepEqual(findStaleBlocks(issues, consultor), []);
+});
+
+test("bloqueio-execucao (#6754): NENHUMA label de bloqueio real presente → caducado", () => {
+  const issues: BlockStalenessPlanIssue[] = [
+    { number: 6674, status: "pulada", motivo: "bloqueio-execucao" },
+  ];
+  const consultor = fakeConsultor({ hasLabel: () => false });
+  const findings = findStaleBlocks(issues, consultor);
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].number, 6674);
+});
+
+test("bloqueio-execucao (#6754): alguma label não verificável mesmo com outras ausentes → fail-soft, não acusa", () => {
+  const issues: BlockStalenessPlanIssue[] = [
+    { number: 6674, status: "pulada", motivo: "bloqueio-execucao" },
+  ];
+  const consultor = fakeConsultor({
+    hasLabel: (_n, label) => (label === "beehiiv" ? null : false),
+  });
+  assert.deepEqual(findStaleBlocks(issues, consultor), []);
+});
+
 // --- motivos NÃO transitórios (nunca reabertos por este mecanismo) ------
 
 test("motivos não-transitórios (bloqueio-externo, requer-sessao-local, ambigua, trade-off-real) nunca são reportados", () => {

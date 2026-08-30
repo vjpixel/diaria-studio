@@ -128,6 +128,32 @@ function buildHasOpenPr(repoRoot: string): (issueNumber: number) => boolean | nu
   };
 }
 
+/**
+ * #6754 — `true`/`false` se a issue está `CLOSED`; `null` (não verificável)
+ * em qualquer falha de `gh` (offline, rate limit, não-autenticado). Issue
+ * fechada nunca precisa de re-triagem por claim envelhecida — ver docstring
+ * de `findAgedClaims` em `claim-staleness.ts`.
+ */
+function buildIsIssueClosed(repoRoot: string): (issueNumber: number) => boolean | null {
+  return (issueNumber: number): boolean | null => {
+    const result = spawnSync("gh", ["issue", "view", String(issueNumber), "--json", "state"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    if (result.error || result.status !== 0 || !result.stdout) return null;
+    try {
+      const parsed = JSON.parse(result.stdout) as { state?: string };
+      const state = (parsed.state ?? "").toUpperCase();
+      if (state === "CLOSED") return true;
+      if (state === "OPEN") return false;
+      return null;
+    } catch {
+      return null;
+    }
+  };
+}
+
 if (isMainModule(import.meta.url)) {
   const { values } = parseArgs(process.argv.slice(2));
   const planPath = values.plan;
@@ -164,7 +190,14 @@ if (isMainModule(import.meta.url)) {
   const sessions = listActiveSessions(repoRoot);
   const claimEntries = flattenClaims(sessions);
   const hasOpenPr = buildHasOpenPr(repoRoot);
-  const agedClaims = findAgedClaims(claimEntries, Date.now(), CLAIM_STALE_AGE_MS, hasOpenPr);
+  const isIssueClosed = buildIsIssueClosed(repoRoot);
+  const agedClaims = findAgedClaims(
+    claimEntries,
+    Date.now(),
+    CLAIM_STALE_AGE_MS,
+    hasOpenPr,
+    isIssueClosed,
+  );
 
   if (findings.length === 0 && agedClaims.length === 0) {
     console.log(

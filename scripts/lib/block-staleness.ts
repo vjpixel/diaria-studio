@@ -22,9 +22,17 @@
  *    `plan.json` real grava o número só em prosa) já está `MERGED`/`CLOSED`.
  * 2. **`claimed-por-outra-sessao`** — nenhuma sessão ativa (não-stale)
  *    segura mais a issue em `claimed_issues` (`session-registry.ts`).
- * 3. **`bloqueio-execucao`** — a label `bloqueio-execucao` que causou o
- *    bloqueio foi removida da issue no GitHub.
+ * 3. **`bloqueio-execucao`** — NENHUMA label de bloqueio real
+ *    (`BLOCKED_LABELS_SET`, reexportado de `issue-exec-track.ts` —
+ *    `external-blocker`, `kit-migration`, `beehiiv`, `bloqueio-execucao`)
+ *    está mais presente na issue. **#6754**: checar só a label
+ *    `bloqueio-execucao` isoladamente dava falso positivo numa issue
+ *    bloqueada por `kit-migration` (sem `bloqueio-execucao` presente) — o
+ *    motivo do `plan.json` é sempre a categoria `bloqueio-execucao`
+ *    (nome da TRANSIÇÃO, não da label), mas a label real que sustenta o
+ *    bloqueio pode ser qualquer uma do conjunto.
  *
+
  * **Motivos explicitamente EXCLUÍDOS de propósito** (não são caducáveis por
  * este mecanismo — ver corpo da issue #6259, seção "Motivos NÃO
  * transitórios"): `bloqueio-externo` (conta de terceiro — só o editor
@@ -83,6 +91,16 @@ export interface StaleBlockFinding {
 }
 
 export type PrState = "OPEN" | "MERGED" | "CLOSED" | "UNKNOWN";
+
+/** Labels que, presentes na issue, significam "ainda bloqueada" para efeito
+ * da categoria `bloqueio-execucao` (#6754). Reexportado de
+ * `issue-exec-track.ts` (`BLOCKED_LABELS_SET`) — não duplicar a lista aqui:
+ * o achado ao vivo do #6754 foi exatamente checar só a label
+ * `bloqueio-execucao` e ignorar as demais labels de bloqueio real
+ * (`external-blocker`, `kit-migration`, `beehiiv`) que `classifyExecTrack`
+ * já reconhece. */
+import { BLOCKED_LABELS_SET } from "./issue-exec-track.ts";
+export { BLOCKED_LABELS_SET };
 
 /**
  * Consultor de estado externo, injetável — implementação real (CLI) chama
@@ -159,15 +177,24 @@ export function findStaleBlocks(
     }
 
     if (category === "bloqueio-execucao") {
-      const hasLabel = consultor.hasLabel(entry.number, "bloqueio-execucao");
-      if (hasLabel === false) {
-        findings.push({
-          number: entry.number,
-          category,
-          motivo,
-          reason: "label bloqueio-execucao não está mais presente na issue — bloqueio caducou",
-        });
-      }
+      // #6754 — checa TODAS as labels de bloqueio real, não só
+      // `bloqueio-execucao` isoladamente: uma issue pode estar bloqueada por
+      // `kit-migration`/`external-blocker`/`beehiiv` sem carregar a label
+      // `bloqueio-execucao`. Presença confirmada de QUALQUER uma delas ⇒
+      // ainda bloqueada (não reporta). `null` (não verificável) em qualquer
+      // label ⇒ fail-soft, não reporta. Só reporta quando TODAS foram
+      // confirmadas ausentes.
+      const results = [...BLOCKED_LABELS_SET].map((label) =>
+        consultor.hasLabel(entry.number, label),
+      );
+      if (results.some((r) => r === true)) continue; // alguma label de bloqueio ainda presente
+      if (results.some((r) => r === null)) continue; // alguma não verificável — fail-soft
+      findings.push({
+        number: entry.number,
+        category,
+        motivo,
+        reason: "nenhuma label de bloqueio (bloqueio-execucao/external-blocker/kit-migration/beehiiv) está mais presente na issue — bloqueio caducou",
+      });
       continue;
     }
   }
