@@ -238,50 +238,72 @@ for MODEL in "${MODELS[@]}"; do
   ))
   RC=$?
     set -e
+    # #6696 finding 2: snapshot do stderr PURO antes do stdout entrar no
+    # mesmo arquivo. Este wrapper roda DENTRO deste checkout, onde as
+    # próprias tarefas falam de "model not found"/"rate limit" (assunto
+    # das issues #6617/#6666) — se o texto GERADO pelo modelo for
+    # misturado ao stderr antes de classificar, uma resposta que discuta
+    # o próprio bug e morra com rc≠0 pode disparar um exit 4 espúrio
+    # (rotação de um modelo que estava são). Os greps de config-inválida e
+    # rate-limit abaixo classificam só contra este snapshot; só o grep de
+    # budget-exceeded (que precisa ver o STDOUT, ver #6666) usa o log
+    # combinado, montado depois deste ponto.
+    STDERR_ONLY_LOG="${TMPDIR:-/tmp}/claude-openrouter-attempt-stderr.$$.log"
+    cp "$ATTEMPT_LOG" "$STDERR_ONLY_LOG"
     # #6666: capturar stdout também no RC≠0 — "Exceeded USD budget" é erro do CLI
     # que vai pro STDOUT (não stderr), então o classify-grep de stderr nunca o via.
     # Sem isso, a cadeia falha silenciosamente com rc=1 e stderr vazio.
     echo "$OUT" >> "$ATTEMPT_LOG"
     cat "$ATTEMPT_LOG" >> "$STDERR_LOG"
-    grep -vE "not a model this version|unrecognized_model|connectors are disabled" "$ATTEMPT_LOG" >&2 || true
     if [ $RC -eq 0 ] && [ -n "$OUT" ]; then
       printf '%s\n' "$OUT"
       echo "[claude-openrouter] ok model=$MODEL" >&2
-      rm -f "$STDERR_LOG" "$ATTEMPT_LOG"
+      rm -f "$STDERR_LOG" "$ATTEMPT_LOG" "$STDERR_ONLY_LOG"
       exit 0
     fi
+    # #6696 finding 3: filtro de ruído só no caminho de FALHA. Antes disto
+    # rodava incondicionalmente ANTES do check de sucesso acima — mesmo um
+    # run bem-sucedido tinha a resposta inteira do modelo impressa também
+    # em stderr (o ATTEMPT_LOG já continha $OUT quando o grep rodava),
+    # duplicando log e inflando a chance de falso-positivo por substring
+    # nos watchdogs que varrem esse output.
+    grep -vE "not a model this version|unrecognized_model|connectors are disabled" "$ATTEMPT_LOG" >&2 || true
     # Classificar o motivo desta tentativa (finding do review #6446 cobria só
     # rc=0/saída-vazia vs timeout vs rc≠0 genérico; #6617 acrescenta a
     # distinção quota-transitória vs config-permanente dentro do rc≠0/vazio).
     if [ $RC -eq 124 ]; then
       SAW_QUOTA_SIGNAL=1
       echo "[claude-openrouter] falhou model=$MODEL: TIMEOUT (${TIMEOUT}s) — próximo da cadeia; stderr cru em $STDERR_LOG" >&2
-    elif grep -qiE "model not found|invalid model|not a valid model|no endpoints found|no allowed providers" "$ATTEMPT_LOG"; then
+    elif grep -qiE "model not found|invalid model|not a valid model|no endpoints found|no allowed providers" "$STDERR_ONLY_LOG"; then
       # #6617 review finding 3: checar config-inválida ANTES de rate-limit —
       # "not a valid model" também casaria com um grep solto por "valid model"
       # numa mensagem de quota, então a ordem evita falso-negativo cruzado.
       SAW_CONFIG_ERROR_SIGNAL=1
       echo "[claude-openrouter] falhou model=$MODEL rc=$RC: MODELO INEXISTENTE/INVÁLIDO no provedor — config permanente, NÃO é rate-limit; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
-    elif grep -qiE "rate.?limit|too many requests|quota exceeded|http.{0,10}429|status.{0,10}429|429.{0,10}(too many|rate)|\\(429\\)" "$ATTEMPT_LOG"; then
+    elif grep -qiE "rate.?limit|too many requests|quota exceeded|http.{0,10}429|status.{0,10}429|429.{0,10}(too many|rate)|\\(429\\)" "$STDERR_ONLY_LOG"; then
       # #6617 review finding 4: "429" sozinho podia casar com ruído não
       # relacionado (contagem de bytes, linha) — agora exige contexto de
       # rate-limit textual OU o número junto de "http"/"status".
       SAW_QUOTA_SIGNAL=1
       echo "[claude-openrouter] falhou model=$MODEL rc=$RC: RATE-LIMIT/QUOTA (sinal no stderr) — transitório, próximo da cadeia; stderr cru em $STDERR_LOG" >&2
     elif grep -qiE "exceeded.*budget|budget.*exceeded|too expensive|cost.*exceed" "$ATTEMPT_LOG"; then
-      # #6666: "Exceeded USD budget (0.25)" do CLI vai pro stdout, rc=1.
-      # É transitório — o mesmo prompt com budget maior roda normalmente.
-      # Não é config inválida nem rate-limit, mas é um sinal claro de
-      # "a chamada não cabia no orçamento" — o wrapper deve perceber isso
-      # e não tratar como falha permanente.
-      SAW_QUOTA_SIGNAL=1
-      echo "[claude-openrouter] falhou model=$MODEL rc=$RC: ORÇAMENTO EXCEDIDO (stdout: budget insuficiente para o contexto carregado) — transitório, próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+      # #6696 finding 1: budget-exceeded é DETERMINÍSTICO pro mesmo valor de
+      # BUDGET — o mesmo prompt estoura em TODO run até alguém mexer no
+      # valor, então não é "transitório, reset resolve" (SAW_QUOTA_SIGNAL);
+      # é config permanente (SAW_CONFIG_ERROR_SIGNAL), a mesma classe que o
+      # #6617 criou o exit 4 pra sinalizar. Classificar como quota mascarava
+      # de volta o exato incidente que o #6617 corrigiu: CLAUDE.md crescendo
+      # além do que o BUDGET comporta faria todo tick estourar e o
+      # watchdog/consumidor leria "reset natural resolve" — nunca a correção
+      # manual necessária (subir BUDGET ou cortar contexto).
+      SAW_CONFIG_ERROR_SIGNAL=1
+      echo "[claude-openrouter] falhou model=$MODEL rc=$RC: ORÇAMENTO EXCEDIDO (stdout: BUDGET=$BUDGET insuficiente para o contexto carregado) — permanente até o valor mudar, NÃO é rate-limit; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
     elif [ $RC -eq 0 ]; then
       echo "[claude-openrouter] falhou model=$MODEL: saída VAZIA com rc=0 (sessão terminou sem texto final) — próximo da cadeia; stderr cru em $STDERR_LOG" >&2
     else
       echo "[claude-openrouter] falhou model=$MODEL rc=$RC — sem sinal claro de quota nem de modelo inválido; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
     fi
-  rm -f "$ATTEMPT_LOG"
+  rm -f "$ATTEMPT_LOG" "$STDERR_ONLY_LOG"
 done
 
 # #6617 review finding 2: qualquer sinal de config inválida em QUALQUER

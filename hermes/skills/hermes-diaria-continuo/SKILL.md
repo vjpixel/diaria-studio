@@ -202,9 +202,34 @@ delegações morreram, o tick de 40min produziu zero PRs e deixou worktree
 
 3. O PR aberto entra na fila do passo 3 (review independente continua sendo
    o gate — o harness implementa, o pipeline do Hermes revisa e mergeia).
-4. Falha do wrapper (exit ≠ 0, todos os modelos): registrar no relatório,
-   NÃO reimplementar no modelo do próprio Hermes — o fallback já está dentro
-   do wrapper; falha total é sinal de infra, não de modelo.
+4. **Falha do wrapper (exit ≠ 0, todos os modelos) — verificar ANTES de
+   desfazer o claim (#6712, achado 29/08/2026, 2 ocorrências no mesmo dia):**
+   o wrapper pode estourar `--max-budget-usd` (ou outro erro classificado
+   como falha) **DEPOIS** de já ter commitado e aberto PR — o relatório do
+   tick então lê "nada foi feito" quando na real o trabalho existe,
+   `unclaim-issue` libera a issue de volta pra fila, e o próximo tick (ou o
+   overnight/develop) refaz trabalho que já tem PR aberto. 1ª ocorrência:
+   #6702 desfeito por engano (PR #6713 já existia). 2ª forma, mais sutil,
+   no mesmo dia: um WORKTREE criado durante o próprio tick (`.claude/worktrees/`,
+   não commitado) foi relatado como "trabalho de OUTRA sessão em curso" —
+   verificado que o worktree nascera dentro da janela do tick.
+
+   Antes de rodar `unclaim-issue` por causa de erro de delegação, checar
+   AMBOS:
+   ```bash
+   gh pr list --author @me --state open --json number,headRefName,createdAt \
+     --jq '.[] | select(.headRefName | startswith("continuo/fix-'"$ISSUE_NUM"'"))'
+   ls -la .claude/worktrees/ 2>/dev/null   # worktree da unidade já existe?
+   ```
+   Se PR ou worktree da unidade já existir: **não desfazer o claim** — o
+   trabalho está em curso ou concluído; registrar isso no relatório e deixar
+   o próximo tick continuar de onde parou (worktree) ou só aguardar o review
+   (PR já aberto). Só desfazer o claim quando NENHUM dos dois existir — aí
+   sim é falha real de infra, sem trabalho a preservar.
+
+   Falha do wrapper **sem** PR nem worktree da unidade: registrar no
+   relatório, NÃO reimplementar no modelo do próprio Hermes — o fallback já
+   está dentro do wrapper; falha total é sinal de infra, não de modelo.
 
 ### 5. Sem trabalho elegível → perguntar/registrar (inalterado da v0.4)
 
