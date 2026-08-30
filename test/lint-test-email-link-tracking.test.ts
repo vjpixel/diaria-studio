@@ -255,6 +255,86 @@ describe("#1949 — cortar falso-positivos (merge tags, 403 bot-block, timeout w
   });
 });
 
+describe("#6819 — HEAD→GET fallback (Worker eia.diar.ia.br/jogar só tem handler pra GET)", () => {
+  // #6819: o Worker `/jogar` não implementa HEAD — o router retorna 404 pra
+  // HEAD mas 200 pra GET. Sem o fallback, o link do rodapé virava falso
+  // blocker toda edition. O teste simula exatamente essa resposta
+  // assimétrica: HEAD 404, GET 200 → deve vir `passed`, não `link_dead`.
+  it("HEAD 404 → GET 200 → passed (não blocker) — falso-positivo corrigido", async () => {
+    const html = '<a href="https://eia.diar.ia.br/jogar">jogar</a>';
+    const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      const method = init?.method || "GET";
+      if (method === "HEAD") {
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }
+      return Promise.resolve(new Response(null, { status: 200 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 0, "nenhum issue — GET 200 após HEAD 404 não é blocker");
+    assert.equal(r.passed, 1);
+    assert.equal(r.skipped.length, 0);
+  });
+
+  it("HEAD 404 → GET 404 → link_dead de fato (ambos falham — GET é o que humanos usam)", async () => {
+    const html = '<a href="https://dead.example.com">x</a>';
+    const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      return Promise.resolve(new Response(null, { status: 404 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 1);
+    assert.equal(r.issues[0].type, "link_dead");
+    assert.equal(r.issues[0].severity, "blocker");
+    assert.equal(r.issues[0].status, 404);
+  });
+
+  it("HEAD 500 → GET 200 → passed (fallback cobre 5xx também, não só 4xx)", async () => {
+    const html = '<a href="https://eia.diar.ia.br/jogar">jogar</a>';
+    const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      const method = init?.method || "GET";
+      if (method === "HEAD") {
+        return Promise.resolve(new Response(null, { status: 500 }));
+      }
+      return Promise.resolve(new Response(null, { status: 200 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 0, "GET 200 após HEAD 500 também não é blocker");
+    assert.equal(r.passed, 1);
+  });
+
+  it("HEAD 401 → skip bot_blocked (NÃO cai pra GET — 401 é bot_blocked, não falso-positivo)", async () => {
+    const html = '<a href="https://diaria.beehiiv.com/cursos">cursos</a>';
+    const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      const method = init?.method || "GET";
+      if (method === "HEAD") {
+        return Promise.resolve(new Response(null, { status: 401 }));
+      }
+      // GET nunca deve ser chamado pra 401 — o caller skipa antes de chegar aqui
+      return Promise.resolve(new Response(null, { status: 200 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 0, "401 não é issue");
+    const bot = r.skipped.filter((s) => s.reason === "bot_blocked");
+    assert.equal(bot.length, 1);
+    assert.equal(bot[0].status, 401);
+  });
+
+  it("HEAD 429 → skip rate_limited (NÃO cai pra GET — 429 é rate_limited, já skipado)", async () => {
+    const html = '<a href="https://venturebeat.com/ai/some-article">artigo</a>';
+    const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      const method = init?.method || "GET";
+      if (method === "HEAD") {
+        return Promise.resolve(new Response(null, { status: 429 }));
+      }
+      return Promise.resolve(new Response(null, { status: 200 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 0, "429 não é issue");
+    const rl = r.skipped.filter((s) => s.reason === "rate_limited");
+    assert.equal(rl.length, 1);
+    assert.equal(rl[0].status, 429);
+  });
+});
+
 describe("classifyKnownArtifact (#3480/#3481/#3482 — post-mortem 260716)", () => {
   it("#3480: domínio Amazon → amazon_bot_block", () => {
     const r1 = classifyKnownArtifact("https://www.amazon.com.br/dp/B0ABCDEF12");

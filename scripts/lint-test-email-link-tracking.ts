@@ -13,6 +13,12 @@
  *    - `link_dead` (blocker): HEAD final retorna 4xx/5xx (exceto 401/403) OU
  *      (#4604) o redirect final aterrissa em `/jogar?...&from=post-web` — ver
  *      rationale completo no header de `isPostWebRedirectTarget` abaixo.
+ *      **#6819:** quando o HEAD retorna 4xx (exceto 401/403 — `bot_blocked`,
+ *      e 429 — `rate_limited`, que já são skipados), o checker cai pra GET
+ *      (mesmo padrão de `verify-accessibility.ts` #899). O Worker
+ *      `eia.diar.ia.br/jogar` só tem handler pra GET — HEAD cai num 404 do
+ *      router. Sem o fallback, o link do rodapé virava falso blocker toda
+ *      edition. GET 200 → `passed`; GET também 4xx → `link_dead` de fato.
  *    - `link_timeout` (warning, #1949): HEAD demora >5s — transiente, NÃO blocker
  *    - `link_redirect_chain_long` (blocker): >3 hops até 200
  *
@@ -375,30 +381,51 @@ interface HeadResult {
   hops: number;
   final_url: string;
   timed_out: boolean;
+  /** #6819: true quando o status final veio de um GET de fallback (o Worker
+   *  não implementa HEAD em /jogar — cai num 404 do router). */
+  via_get: boolean;
 }
 
 /**
  * Faz HEAD com follow-redirect manual (até MAX_REDIRECTS).
  * Retorna status final, hops, URL final.
+ *
+ * #6819: quando o HEAD retorna 4xx (exceto 401/403 — `bot_blocked`, e 429 —
+ * `rate_limited`, que já são skipados em `checkLinkTracking` antes de chegar
+ * aqui), cai pra GET no MESMO url — mesmo padrão de `verify-accessibility.ts`
+ * (#899, linha ~439). O Worker `eia.diar.ia.br/jogar` só tem handler pra GET:
+ * HEAD cai num 404 default do router, GET retorna 200 com o HTML do jogo.
+ * Sem o fallback, o link do rodapé virava falso blocker toda edition.
+ *
+ * O GET de fallback NÃO herda redirect:'manual' — se o GET der redirect,
+ * segue com follow (fetch default) e o status é o final. Se GET também
+ * retornar 4xx, o status é esse 4xx e o caller classifica como `link_dead`
+ * de fato (não há 2ª tentativa — 1 fallback, como o verify-accessibility).
  */
 async function headWithRedirects(url: string, fetchImpl: typeof fetch): Promise<HeadResult> {
   let current = url;
   let hops = 0;
   let lastStatus: number | null = null;
-  while (hops <= MAX_REDIRECTS) {
+
+  async function fetchOnce(method: "HEAD" | "GET", signal: AbortSignal): Promise<Response> {
+    return fetchImpl(current, {
+      method,
+      redirect: method === "HEAD" ? "manual" : "follow",
+      signal,
+    });
+  }
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const method = attempt === 0 ? "HEAD" : "GET";
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), HEAD_TIMEOUT_MS);
     try {
-      const res = await fetchImpl(current, {
-        method: "HEAD",
-        redirect: "manual",
-        signal: controller.signal,
-      });
+      const res = await fetchOnce(method, controller.signal);
       lastStatus = res.status;
-      if (res.status >= 300 && res.status < 400) {
+      if (res.status >= 300 && res.status < 400 && method === "HEAD") {
         const loc = res.headers.get("location");
         if (!loc) {
-          return { status: res.status, hops, final_url: current, timed_out: false };
+          return { status: res.status, hops, final_url: current, timed_out: false, via_get: false };
         }
         // Resolve relative location
         try {
@@ -409,16 +436,28 @@ async function headWithRedirects(url: string, fetchImpl: typeof fetch): Promise<
         hops++;
         continue;
       }
-      return { status: res.status, hops, final_url: current, timed_out: false };
+      // #6819: HEAD 4xx (exceto 401/403/429, já skipados pelo caller) → GET.
+      // GET não faz redirect manual (ver follow acima) — status é o final.
+      if (method === "HEAD" && res.status >= 400 && res.status !== 401 && res.status !== 403 && res.status !== 429) {
+        continue;
+      }
+      return { status: res.status, hops, final_url: current, timed_out: false, via_get: method === "GET" };
     } catch (e) {
       const isAbort = (e as Error).name === "AbortError";
-      return { status: lastStatus, hops, final_url: current, timed_out: isAbort };
+      // #6819: qualquer falha em HEAD (timeout, DNS, conexão recusada) não é
+      // fatal — tenta GET uma única vez antes de reportar. Links que só
+      // respondem em GET (ex: worker pesado, ou .invalid quefalha em HEAD
+      // mas poderia responder em GET) seriam falso link_timeout sem isso.
+      if (method === "HEAD") {
+        continue;
+      }
+      return { status: lastStatus, hops, final_url: current, timed_out: isAbort, via_get: method === "GET" };
     } finally {
       clearTimeout(t);
     }
   }
-  // Excedeu MAX_REDIRECTS sem chegar a 200 final
-  return { status: lastStatus, hops, final_url: current, timed_out: false };
+  // Excedeu as 2 tentativas (HEAD 4xx + GET) sem status < 400
+  return { status: lastStatus, hops, final_url: current, timed_out: false, via_get: true };
 }
 
 /**
@@ -578,6 +617,9 @@ export async function checkLinkTracking(
         // ramo genérico >=400 abaixo e virava `link_dead` — falso-positivo.
         skipped.push({ url, reason: "rate_limited", status: r.status });
       } else if (r.status !== null && r.status >= 400) {
+        // #6819: se o GET de fallback também falhou, é link morto de fato —
+        // um GET 4xx não é falso-positivo de HEAD (o GET é o que humanos
+        // usam). Quando r.via_get é true, o status veio do GET, não do HEAD.
         issues.push({
           type: "link_dead",
           severity: "blocker",
@@ -585,7 +627,9 @@ export async function checkLinkTracking(
           final_url: r.final_url !== url ? r.final_url : undefined,
           status: r.status,
           hops: r.hops,
-          details: `HEAD retornou ${r.status} em ${r.final_url}`,
+          details: r.via_get
+            ? `HEAD 4xx + GET ${r.status} em ${r.final_url} — link morto de fato (GET é o que humanos usam)`
+            : `HEAD retornou ${r.status} em ${r.final_url}`,
         });
       } else {
         passed++;
