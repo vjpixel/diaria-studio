@@ -11,7 +11,11 @@ on:
     # Decisão do editor (#6711, 30/08/2026, via /diaria-desbloqueia): aceitar
     # não rodar a suíte em merges docs-only também no master. Manter os dois
     # blocos em sincronia manualmente — não há include compartilhado nativo
-    # do GitHub Actions entre triggers de um mesmo workflow.
+    # do GitHub Actions entre triggers de um mesmo workflow (`test/ci-workflow-paths-ignore.test.ts`
+    # trava a sincronia). Se um required status check aplicado a PUSH (ruleset
+    # de branch, distinto do gate de merge de PR) for adicionado ao `master`
+    # um dia, revisitar este bloco também — mesma ressalva do comentário do
+    # bloco pull_request: abaixo.
     paths-ignore:
       - "CLAUDE.md"
       - "**/*.md"
