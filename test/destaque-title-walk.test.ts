@@ -126,6 +126,33 @@ describe("walkDestaqueTitles (#2693 item 1)", () => {
     assert.equal(lines[nextIndex].trim(), "DESTAQUE 2 | TECNOLOGIA");
   });
 
+  it("#6743: link válido com texto residual colado não descarta as opções seguintes", () => {
+    // Achado ao vivo #6743 (edição 260830): opção 2 com um link puro válido
+    // mas com anotação colada depois (`(via Fonte)`) falhava em
+    // `parseInlineLink` (link "puro" exige nada depois) e caía no fallback
+    // plain-text — que roda `isTitleCandidate` sobre a linha INTEIRA (com a
+    // URL, sempre > 60 chars) e por isso sempre falhava, quebrando a coleta
+    // e descartando a opção 3 também. Painel do Studio mostrava 1 opção em
+    // vez de 3.
+    const lines = [
+      "DESTAQUE 1 | NEGÓCIOS",
+      "",
+      "**[Primeira opção de título](https://example.com/artigo)**",
+      "",
+      "**[Segunda opção de título](https://example.com/artigo)** (via Fonte)",
+      "",
+      "**[Terceira opção de título](https://example.com/artigo)**",
+      "",
+      "Parágrafo 1.",
+    ];
+    const { titles } = walkDestaqueTitles(lines, 1, "NEGÓCIOS", looksLikeTitleOption);
+    assert.deepEqual(titles.map((t) => t.title), [
+      "Primeira opção de título",
+      "Segunda opção de título",
+      "Terceira opção de título",
+    ]);
+  });
+
   it("retorna vazio quando o bloco não tem títulos (fim do documento)", () => {
     const lines = ["DESTAQUE 1 | NEGÓCIOS"];
     const { titles, nextIndex } = walkDestaqueTitles(lines, 1, "NEGÓCIOS", looksLikeTitleOption);

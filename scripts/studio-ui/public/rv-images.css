@@ -25,19 +25,37 @@
 
 .rv-img-destaques { display: flex; flex-direction: column; gap: 0.4rem; }
 
+/* #6745: com o carrossel (#6005 Parte B) cada destaque tem 7 imagens
+   (2:1, 1:1, card 4:5, carrossel p1/p2/p3/CTA) — `flex-wrap: wrap` quebrava
+   em 2 linhas por destaque, forçando rolagem vertical e perdendo a
+   comparação lado a lado (o ponto do painel). Faixa única com rolagem
+   HORIZONTAL própria — a página (`body`) nunca rola horizontalmente,
+   só este container. `-webkit-overflow-scrolling: touch` + `scroll-snap`
+   ajudam o gesto no mobile (o painel é usado no celular via tunnel);
+   no desktop a barra de rolagem nativa já é affordance suficiente de que
+   há mais conteúdo à direita. Altura da faixa é só a das miniaturas
+   (110px) + label + botão Regenerar — nada além disso (`align-items:
+   flex-start` evita esticar entradas menores até a maior). */
 .rv-img-group {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: flex-start;
   gap: 0.7rem;
-  padding: 0.3rem 0;
+  padding: 0.3rem 0 0.6rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
 }
 
 .rv-img-entry {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
+  flex: 0 0 160px;
   width: 160px;
   font-size: 0.78rem;
+  scroll-snap-align: start;
 }
 .rv-img-entry-label { margin: 0; opacity: 0.85; }
 .rv-img-thumb {
