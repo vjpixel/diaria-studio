@@ -43,6 +43,7 @@ import {
   readBoxDivulgacaoAltForSlot,
   readBoxDivulgacaoAltForFile, // #5457
   readBoxDivulgacaoRuntimeExcludedForSlot, // #4504
+  pickErroIntencionalReveal, // #6734 — MESMA função que o renderer/check-stage2-invariants usam
 } from "../newsletter-parse.ts";
 import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
 import {
@@ -618,15 +619,22 @@ function checkUseMelhorTempoConsistent(editionDir: string): InvariantViolation[]
 }
 
 /**
- * #2377/#2411/#2419 (rewrite): detecta quando a fonte do reveal para a PRÓXIMA edição
- * seria inválida — genérica, catalog-shaped (label interno "DESTAQUE N"), ou agramatical.
+ * #2377/#2411/#2419/#6734 (rewrite): detecta quando a fonte do reveal para a PRÓXIMA
+ * edição seria inválida — genérica, catalog-shaped (label interno "DESTAQUE N"), sem
+ * o prefixo temporal correto, ou agramatical.
  *
  * Casos detectados:
  *   1. Narrativa "Nessa edição, …" no corpo é placeholder genérico (incidente #2377).
  *   2. (#2419 bug #2 fix) Narrativa no corpo ou no record (`_internal/intentional-error.json`,
  *      #3222) é catalog-shaped ("DESTAQUE N lista o Spotify…") — passa verde hoje, publica
  *      label interno.
- *   3. (#2419) Sem campo `reveal` dedicado E sem fonte válida de narrative →
+ *   3. (#6734) `record.reveal` não é catálogo/genérico mas não começa com "Na última
+ *      edição" nem contém palavra-gancho temporal reconhecida pelo renderer — caso real
+ *      260828: "Nessa edição, escrevi ChatGTP…" (editor descrevendo a edição ATUAL, não
+ *      fraseando pra edição SEGUINTE revelar). `check-stage2-invariants.ts` já bloqueia
+ *      isso no dia da declaração (#6139); este é o backstop no Stage 4 pra qualquer edição
+ *      manual do JSON feita depois daquele check já ter passado.
+ *   4. (#2419) Sem campo `reveal` dedicado E sem fonte válida de narrative →
  *      reveal da próxima edição seria o fallback genérico seguro.
  *
  * severity: "warning" (lints permanecem warning — re-block para error é follow-up).
@@ -796,6 +804,35 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
         },
       ];
     }
+  }
+
+  // #6734: `reveal` pode passar limpo pelas 2 checagens acima (não é catálogo,
+  // não é o placeholder genérico do convite ao sorteio) e AINDA assim não
+  // começar com o prefixo temporal correto — caso real 260828:
+  // "Nessa edição, escrevi ChatGTP..." (editor pensando na edição ATUAL,
+  // não escrevendo pra edição SEGUINTE revelar). `check-stage2-invariants.ts`
+  // já valida isso no Stage 2 (mesmo dia da declaração, #6139) — este é o
+  // BACKSTOP no Stage 4 (mesma reincidência de #2419/#3494: `record.reveal`
+  // pode ser editado depois do Stage 2 já ter passado, sem re-rodar aquele
+  // check), pra pegar antes do publish, não só quando a edição SEGUINTE
+  // tentar renderizar e o box de reveal sumir silenciosamente.
+  if (reveal && pickErroIntencionalReveal(reveal) === null) {
+    return [
+      {
+        rule: "reveal-temporal-prefix",
+        message:
+          `ERRO INTENCIONAL: o campo \`intentional_error.reveal\` não começa com ` +
+          `"Na última edição" nem contém palavra-gancho temporal reconhecida pelo ` +
+          `renderer (último/anterior/passado/ontem/edições): "${reveal.slice(0, 80)}". ` +
+          `A edição SEGUINTE copia este texto verbatim e o box de reveal do ERRO ` +
+          `INTENCIONAL não será renderizado, silenciosamente (#6139/#6734). ` +
+          `Reescreva \`reveal\` em _internal/intentional-error.json começando com ` +
+          `"Na última edição, ...".`,
+        source_issue: "#6734",
+        severity: "warning",
+        file: path,
+      },
+    ];
   }
 
   // (#2438 Item 2 — caso 3) Sem campo `reveal` dedicado E sem fonte válida de narrative

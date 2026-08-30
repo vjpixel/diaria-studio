@@ -102,7 +102,7 @@ describe("findEditionsInProgress", () => {
     const scenarios: Array<{ stage: 2 | 3 | 4 | 5 | 6; prereq: string[] }> = [
       { stage: 2, prereq: ["_internal/01-approved.json"] },
       { stage: 3, prereq: ["_internal/01-approved.json"] },
-      { stage: 4, prereq: ["02-reviewed.md", "03-social.md"] },
+      { stage: 4, prereq: ["02-reviewed.md", "03-social.md", "04-d1-1x1.jpg"] },
       { stage: 5, prereq: ["_internal/.step-4-done.json"] },
       { stage: 6, prereq: ["_internal/.step-5-done.json"] },
     ];
@@ -157,17 +157,33 @@ describe("findEditionsInProgress", () => {
     }
   });
 
-  it("Stage 4 (Revisão #1694): requires both 02-reviewed.md AND 03-social.md as prereq, output is .step-4-done.json", () => {
+  it("Stage 4 (Revisão #1694): requires 02-reviewed.md, 03-social.md AND 04-d1-1x1.jpg (Stage 3 output) as prereq, output is .step-4-done.json", () => {
     const { root, cleanup } = setupSandbox();
     try {
       // Only 02-reviewed.md → not enough
       makeEdition(root, "260505", ["02-reviewed.md"]);
       assert.deepEqual(findEditionsInProgress(4, root), []);
-      // Add 03-social.md → now in progress
+      // Add 03-social.md → still not enough, Stage 3 (imagens) output missing
       makeEdition(root, "260505", ["03-social.md"]);
+      assert.deepEqual(findEditionsInProgress(4, root), []);
+      // Add 04-d1-1x1.jpg (Stage 3 done) → now in progress
+      makeEdition(root, "260505", ["04-d1-1x1.jpg"]);
       assert.deepEqual(findEditionsInProgress(4, root), ["260505"]);
       // Add output sentinel → done
       makeEdition(root, "260505", ["_internal/.step-4-done.json"]);
+      assert.deepEqual(findEditionsInProgress(4, root), []);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("Stage 4: #6731 regressão — Stage 2 completo mas Stage 3 (imagens) pendente NÃO aparece como gate 4 em progresso", () => {
+    const { root, cleanup } = setupSandbox();
+    try {
+      // Cenário real (edição 260830): Stage 2 acabou de escrever
+      // 02-reviewed.md/03-social.md, mas run-edition-stages.ts ainda não
+      // disparou o Stage 3 — sem 04-d1-1x1.jpg, não é candidato de Stage 4.
+      makeEdition(root, "260505", ["02-reviewed.md", "03-social.md"]);
       assert.deepEqual(findEditionsInProgress(4, root), []);
     } finally {
       cleanup();

@@ -15,6 +15,8 @@ import { isDevReleaseNote } from "./release-note-detect.ts";
 import { canonicalize } from "./url-utils.ts";
 // #2691 item 1: fonte única do guard de roundup/newsletter (antes duplicado localmente).
 import { hasRoundupSignalInUrlOrTitle, urlSlugText } from "./roundup-detect.ts";
+// #6739: detecta URL de vídeo (YouTube/Vimeo) pra priorizar duração real sobre heurística de título.
+import { isVideoUrl } from "./video-youtube-resolve.ts";
 
 // ---------------------------------------------------------------------------
 // #2276 — Boost: tutorial/academy oficial
@@ -768,22 +770,150 @@ const MEDIUM_TUTORIAL_RE =
   /\b(tutorial|guia\s+(?:completo|pr[aá]tico|passo\s+a\s+passo)|passo\s+a\s+passo|step[- ]?by[- ]?step|hands[- ]?on|walkthrough|cookbook|build(?:ing)?\s+(?:your|a|an)\b|crash\s+course|quickstart)\b/i;
 
 /**
- * #2447 (opção b): Estima automaticamente o tempo de leitura/execução de um
- * item USE MELHOR com base no tipo de tutorial detectado no título.
+ * #6739: fonte de onde a estimativa de tempo do USE MELHOR veio — gravado
+ * pelo caller em `_internal/use-melhor-tempo-source.json` pra medir depois
+ * quanto ainda sai de placeholder de título (ver `estimateUseMelhorTempoDetailed`).
+ */
+export type UseMelhorTempoSource = "wordcount" | "youtube" | "title-heuristic";
+
+/** #6739: velocidade de leitura assumida para PT-BR (palavras por minuto). */
+const WORDS_PER_MINUTE_PTBR = 200;
+
+/**
+ * #6739: só confiar na contagem de palavras do body cacheado quando ele tem
+ * conteúdo substancial — medido ao vivo (260811) que a MEDIANA de palavras
+ * extraíveis de `_internal/_forensic/link-verify-bodies` é 8 (a maioria é
+ * shell de SPA sem texto server-side); só ~10% passam de 2.000 palavras.
+ * Abaixo deste limiar, a contagem é ruído — cai pra heurística de título.
+ */
+const WORD_COUNT_MIN_THRESHOLD = 300;
+
+/** #6739: valores discretos aceitos pro tempo estimado — mesmo grid que a
+ * heurística de título já usava (5/15/30), mais 10/20 pra granularidade
+ * intermediária quando a contagem de palavras sugere um valor entre eles. */
+const READING_MINUTES_BUCKETS = [5, 10, 15, 20, 30] as const;
+
+/**
+ * #6739: arredonda um tempo de leitura contínuo (minutos) pro bucket discreto
+ * mais próximo em `READING_MINUTES_BUCKETS`. Puro — sem I/O.
+ */
+export function roundToReadingMinutesBucket(minutes: number): number {
+  let closest: number = READING_MINUTES_BUCKETS[0];
+  let closestDelta = Math.abs(minutes - closest);
+  for (const bucket of READING_MINUTES_BUCKETS) {
+    const delta = Math.abs(minutes - bucket);
+    if (delta < closestDelta) {
+      closest = bucket;
+      closestDelta = delta;
+    }
+  }
+  return closest;
+}
+
+/**
+ * #6739: extrai texto legível de um HTML bruto — remove `<script>`/`<style>`,
+ * tags, decodifica um punhado de entities comuns, colapsa whitespace. Não é
+ * um parser de artigo (não distingue nav/footer de corpo) — é deliberadamente
+ * grosseiro, porque o objetivo é só uma contagem de palavras aproximada, com
+ * o guard de `WORD_COUNT_MIN_THRESHOLD` acima protegendo contra ruído de
+ * shell de SPA. Puro — sem I/O (caller lê o arquivo).
+ */
+export function extractPlainTextFromHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** #6739: conta palavras de um texto já extraído (split em whitespace). Puro. */
+export function countWords(text: string): number {
+  const trimmed = text.trim();
+  if (!trimmed) return 0;
+  return trimmed.split(/\s+/).length;
+}
+
+/**
+ * #6739: extrai a duração (segundos) de uma página `watch` do YouTube a
+ * partir do HTML cacheado — o `lengthSeconds` embutido no player response
+ * inline (`"lengthSeconds":"NNN"`), já presente no HTML sem precisar de API.
+ * Retorna `null` quando não encontrado (página não é de vídeo, ou shape mudou).
+ */
+export function extractYoutubeLengthSeconds(html: string): number | null {
+  const m = html.match(/"lengthSeconds"\s*:\s*"(\d+)"/);
+  if (!m) return null;
+  const seconds = Number.parseInt(m[1], 10);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
+/**
+ * #2447 (opção b) / #6739 (usa conteúdo real quando disponível): Estima
+ * automaticamente o tempo de leitura/execução de um item USE MELHOR.
  *
- * Heurística determinística (sem LLM):
- *   - Curso/trilha/formação/workshop/bootcamp → `(30 min)` (atividade longa)
- *   - Tutorial completo/passo-a-passo/guia/cookbook → `(15 min)` (how-to médio)
- *   - Default (artigo curto, how-to rápido) → `(5 min)`
+ * Prioridade (#6739 — medição 260829: 60% dos itens saíam com o mesmo
+ * `(5 min)` porque a heurística de título decide só pelo TÍTULO/domínio,
+ * nunca olha o conteúdo — "número que se apresenta como estimativa" em vez
+ * de uma estimativa de verdade):
+ *   1. `bodyHtml` é de uma página `watch` do YouTube com `lengthSeconds`
+ *      extraível → duração real do vídeo, arredondada pro bucket mais
+ *      próximo (fonte `youtube`).
+ *   2. `bodyHtml` tem ≥ `WORD_COUNT_MIN_THRESHOLD` palavras extraíveis →
+ *      `wordCount / 200 ppm`, arredondado pro bucket mais próximo (fonte
+ *      `wordcount`). Abaixo do limiar, o texto extraído é ruído (shell de
+ *      SPA) — cai pra heurística de título.
+ *   3. Sem `bodyHtml` (ou body abaixo do limiar) → heurística de título
+ *      original (#2447, fonte `title-heuristic`):
+ *      - Curso/trilha/formação/workshop/bootcamp → `(30 min)`
+ *      - Tutorial completo/passo-a-passo/guia/cookbook → `(15 min)`
+ *      - Default (artigo curto, how-to rápido) → `(5 min)`
  *
  * O resultado é sempre no formato canônico `(X min)` (#2450).
  * O editor pode ajustar livremente no gate.
  *
- * @param title    Título do artigo (usado para classificar o tipo).
- * @param url      URL do artigo (usado para detectar plataformas de curso).
- * @returns        String no formato `"(X min)"`.
+ * @param title    Título do artigo (usado para classificar o tipo quando cai no fallback).
+ * @param url      URL do artigo (usado para detectar plataformas de curso e vídeo).
+ * @param bodyHtml HTML cacheado do artigo (`_internal/_forensic/link-verify-bodies`),
+ *                 quando disponível. Omitido/`null` preserva o comportamento pré-#6739
+ *                 (só heurística de título).
+ * @returns        `{ estimate: "(X min)", source }`.
  */
-export function estimateUseMelhorTempo(title: string, url = ""): string {
+export function estimateUseMelhorTempoDetailed(
+  title: string,
+  url = "",
+  bodyHtml?: string | null,
+): { estimate: string; source: UseMelhorTempoSource } {
+  if (bodyHtml) {
+    if (isVideoUrl(url)) {
+      const seconds = extractYoutubeLengthSeconds(bodyHtml);
+      if (seconds !== null) {
+        const minutes = roundToReadingMinutesBucket(seconds / 60);
+        return { estimate: `(${minutes} min)`, source: "youtube" };
+      }
+    }
+    const words = countWords(extractPlainTextFromHtml(bodyHtml));
+    if (words >= WORD_COUNT_MIN_THRESHOLD) {
+      const minutes = roundToReadingMinutesBucket(words / WORDS_PER_MINUTE_PTBR);
+      return { estimate: `(${minutes} min)`, source: "wordcount" };
+    }
+  }
+  return { estimate: estimateUseMelhorTempoTitleHeuristic(title, url), source: "title-heuristic" };
+}
+
+/**
+ * #2447 (opção b): heurística original por título/domínio — extraída sem
+ * mudança de comportamento pra ser o fallback de `estimateUseMelhorTempoDetailed`
+ * (#6739). Mantida exportada por compat com testes/callers existentes que só
+ * querem a heurística de título.
+ */
+export function estimateUseMelhorTempoTitleHeuristic(title: string, url = ""): string {
   const hay = title;
   // Hoist: chamada única (finding 7 code-review #2464 — era chamado 2×).
   const isAcademy = isTutorialAcademy(url, title);
@@ -802,6 +932,19 @@ export function estimateUseMelhorTempo(title: string, url = ""): string {
   }
   // Default: artigo curto, dica rápida, how-to simples
   return "(5 min)";
+}
+
+/**
+ * #2447 (opção b): API pré-#6739 preservada — só a heurística de título,
+ * sem `bodyHtml`. Callers que já leram/tem acesso ao body cacheado devem
+ * usar `estimateUseMelhorTempoDetailed` em vez desta.
+ *
+ * @param title    Título do artigo (usado para classificar o tipo).
+ * @param url      URL do artigo (usado para detectar plataformas de curso).
+ * @returns        String no formato `"(X min)"`.
+ */
+export function estimateUseMelhorTempo(title: string, url = ""): string {
+  return estimateUseMelhorTempoTitleHeuristic(title, url);
 }
 
 // ---------------------------------------------------------------------------

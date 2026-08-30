@@ -216,9 +216,11 @@ export const FILE_NOTIFIED_STORE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  * pendente. Se a sequência "resolvido → pendente de novo pela mesma chave"
  * acontecer inteiramente com o studio-server FORA DO AR, o processo que
  * reinicia carrega do disco uma chave "já notificada" que ninguém limpou, e
- * a nova ocorrência fica muda até o TTL. Fica mais provável combinada com o
- * falso positivo conhecido de `findEditionsInProgress(4)` em
- * `studio-state.ts`.
+ * a nova ocorrência fica muda até o TTL. Ficava mais provável combinada com o
+ * falso positivo de `findEditionsInProgress(4)` (Stage 2 completo, Stage 3
+ * ainda pendente, marcado erroneamente como "gate 4 em progresso") — corrigido
+ * em `find-current-edition.ts` pelo #6731, que passou a exigir também o
+ * output de Stage 3 no prereq.
  *
  * A corrida entre processos concorrentes está muito REDUZIDA pelo
  * merge-on-flush abaixo (`mergeFromDisk` relê o arquivo antes de cada escrita
