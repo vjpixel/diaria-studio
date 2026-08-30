@@ -236,6 +236,32 @@ describe("#6086 item c: negrito seletivo (`**...**` no title)", () => {
     assert.doesNotMatch(svg, /\*\*/);
   });
 
+  it("#6740-render-fix: **bold** colado direto em pontuação (sem espaço) não ganha espaço fantasma nem órfã em linha própria", () => {
+    // Achado ao vivo (carrossel diário 260830): "**trecho**:"/"**trecho**." —
+    // bold fechando direto sobre pontuação, sem espaço no texto original.
+    // Antes do fix, o `:`/`.` virava uma "palavra" própria que o wrap juntava
+    // de volta com um espaço extra ("trecho :"), ou até isolava em linha nova.
+    const FIXED = { mode: "fixed" as const, size: 62 };
+    const svgColon = buildFlatCardSvg({ kicker: "x", title: "**Isto é bold**: e o resto", footer: "y" }, FIXED);
+    assert.match(svgColon, /<tspan font-weight="700">Isto é bold<\/tspan>: e o resto/);
+    assert.doesNotMatch(svgColon, /bold<\/tspan> :/);
+
+    const svgPeriod = buildFlatCardSvg({ kicker: "x", title: "Frase com **destaque no fim**.", footer: "y" }, FIXED);
+    assert.match(svgPeriod, /<tspan font-weight="700">destaque no fim<\/tspan>\./);
+    assert.doesNotMatch(svgPeriod, /fim<\/tspan> \./);
+
+    // Mesmo padrão preservado no texto VISÍVEL (measureFlatCardBody) — a
+    // pontuação nunca abre linha própria nem ganha espaço antes de si.
+    const { lines } = measureFlatCardBody("Frase com **destaque no fim**.", FIXED);
+    assert.ok(lines[lines.length - 1].endsWith("fim."), `última linha deveria terminar em "fim.", veio: ${JSON.stringify(lines)}`);
+  });
+
+  it("#6740-render-fix: **bold** com espaço normal ao redor continua funcionando (não regride o caso comum)", () => {
+    const FIXED = { mode: "fixed" as const, size: 62 };
+    const svg = buildFlatCardSvg({ kicker: "x", title: "A **frase em destaque** B", footer: "y" }, FIXED);
+    assert.match(svg, />A <tspan font-weight="700">frase em destaque<\/tspan> B</);
+  });
+
   it("parseInlineBold / stripInlineBold (pure helpers)", async () => {
     const mod = await import("../scripts/lib/weekly-flat-card.ts");
     assert.deepEqual(mod.parseInlineBold("sem marcação"), [{ text: "sem marcação", bold: false }]);
