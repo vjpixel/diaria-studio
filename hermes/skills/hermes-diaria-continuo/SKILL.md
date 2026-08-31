@@ -319,9 +319,10 @@ Siga o CLAUDE.md. Crie branch com o prefixo continuo/ (convenção
 continuo/fix-N-slug — é o que faz o PR aparecer como CONTINUO na Triagem
 do Studio, #6446), implemente com edições cirúrgicas, adicione
 teste de regressão se for bugfix (#633), rode os testes afetados, abra PR
-com gh pr create referenciando a issue. NÃO mergeie — o merge é do
-coordenador. Se a issue for inviável/ambígua além do trivial, comente nela
-o bloqueio via gh issue comment e pare." | \
+com gh pr create referenciando a issue. NÃO mergeie — desde o #6864, nem
+o coordenador deste tick mergeia mais: o merge acontece exclusivamente no
+pickup (#6823) ou no review consolidado. Se a issue for inviável/ambígua
+além do trivial, comente nela o bloqueio via gh issue comment e pare." | \
   ~/.hermes/scripts/claude-openrouter.sh \
     --tools "Read,Grep,Glob,Bash,Edit,Write" \
     --budget 20.0 --timeout 2400
