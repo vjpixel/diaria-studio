@@ -534,10 +534,10 @@ describe("getHowToDiscoveryQueries (#2278)", () => {
     }
   });
 
-  it("pool tem 12 temas distintos", () => {
-    assert.equal(HOWTO_BR_DISCOVERY_TOPICS.length, 12);
+  it("pool tem temas distintos (11 após remoção do query falho #6826)", () => {
+    assert.equal(HOWTO_BR_DISCOVERY_TOPICS.length, 11);
     const unique = new Set(HOWTO_BR_DISCOVERY_TOPICS);
-    assert.equal(unique.size, 12, "todos os temas devem ser únicos");
+    assert.equal(unique.size, 11, "todos os temas devem ser únicos");
   });
 
   it("count=0 retorna vazio", () => {
@@ -1216,10 +1216,10 @@ describe("HOWTO_BR_DISCOVERY_TOPICS — queries how-to reescritas (#2339)", () =
     }
   });
 
-  it("pool tem 12 temas distintos (sem duplicatas)", () => {
-    assert.equal(HOWTO_BR_DISCOVERY_TOPICS.length, 12);
+  it("pool tem temas distintos (sem duplicatas, 11 após #6826)", () => {
+    assert.equal(HOWTO_BR_DISCOVERY_TOPICS.length, 11);
     const unique = new Set(HOWTO_BR_DISCOVERY_TOPICS);
-    assert.equal(unique.size, 12, "sem duplicatas no pool");
+    assert.equal(unique.size, 11, "sem duplicatas no pool");
   });
 });
 
