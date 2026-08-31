@@ -84,7 +84,13 @@ export function hasNewOrModifiedTest(changedFiles: string[]): boolean {
     // padrão de diretório. `.test.sh` não precisa da checagem de diretório
     // (o nome já é inequívoco); `.test.ts`/`.test.js` continuam exigindo
     // test/tests/ pra não confundir um `foo.test.ts` de fixture solto.
-    if (f.endsWith(".test.sh")) return true;
+    //
+    // #6863 (achado do review, mesma sessão): `.test.py` — MESMA convenção,
+    // outra linguagem (hermes/scripts/pause-cron-on-ratelimit.test.py,
+    // hermes/scripts/monitor-cron-model-rotation.test.py). Idêntica
+    // justificativa, e como o `.sh` acima, mesmo bug-classe (falso-negativo
+    // silencioso), só ainda não medido ao vivo bloqueando um PR real.
+    if (f.endsWith(".test.sh") || f.endsWith(".test.py")) return true;
     return (
       (f.startsWith("test/") || f.startsWith("tests/") || f.includes("/test/") || f.includes("/tests/")) &&
       (f.endsWith(".test.ts") || f.endsWith(".test.js"))

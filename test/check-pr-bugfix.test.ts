@@ -103,6 +103,15 @@ describe("hasNewOrModifiedTest (#970)", () => {
     assert.equal(hasNewOrModifiedTest(["hermes/scripts/lib/continuo-branch-prefix.sh"]), false);
   });
 
+  it("#6863 (achado do review): aceita .test.py CO-LOCADO, mesma convenção do .test.sh (pause-cron-on-ratelimit.test.py, monitor-cron-model-rotation.test.py)", () => {
+    assert.equal(hasNewOrModifiedTest(["hermes/scripts/pause-cron-on-ratelimit.test.py"]), true);
+    assert.equal(hasNewOrModifiedTest(["hermes/scripts/monitor-cron-model-rotation.test.py"]), true);
+  });
+
+  it("#6863: .test.py só conta o arquivo .test.py em si, não o irmão .py que ele testa", () => {
+    assert.equal(hasNewOrModifiedTest(["hermes/scripts/pause-cron-on-ratelimit.py"]), false);
+  });
+
   it("retorna false em diff vazio", () => {
     assert.equal(hasNewOrModifiedTest([]), false);
   });
