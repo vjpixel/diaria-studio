@@ -14,6 +14,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -74,6 +75,31 @@ describe("claude-openrouter.sh — marcador de exaustão da cota free (#6712)", 
     assert.ok(
       markerLogicIdx > elseIdx,
       "a lógica do marcador precisa estar depois do `else` (ramo sem --model), nunca no ramo `if` (--model explícito)",
+    );
+  });
+
+  it("leitura do marcador é fail-soft mesmo com conteúdo malformado (gap de cobertura do review da PR #6874)", () => {
+    // Chamar diretamente is_exhaustion_marker_valid, como o wrapper chama
+    // (`$(is_exhaustion_marker_valid "$MARKER_EPOCH" "$NOW_EPOCH" 2>/dev/null || echo false)`),
+    // com um MARKER_EPOCH não-numérico — deve degradar para "false" (chain
+    // inteira, comportamento de hoje), nunca abortar sob set -e.
+    const out = execFileSync(
+      "bash",
+      [
+        "-c",
+        `source "${LIB_PATH}"; echo "$(is_exhaustion_marker_valid "garbage-not-a-number" "1787119680" 2>/dev/null || echo false)"`,
+      ],
+      { encoding: "utf8" },
+    ).trim();
+    assert.equal(out, "false", "marcador malformado deve degradar para false (fail-soft), não abortar");
+  });
+
+  it("o read-path do marcador no wrapper tem o mesmo guard fail-soft (`2>/dev/null || echo false`)", () => {
+    const src = readWrapper();
+    assert.match(
+      src,
+      /is_exhaustion_marker_valid\s+"\$MARKER_EPOCH"\s+"\$NOW_EPOCH"\s+2>\/dev\/null\s+\|\|\s+echo\s+false/,
+      "chamada a is_exhaustion_marker_valid no wrapper precisa manter o guard 2>/dev/null || echo false",
     );
   });
 });

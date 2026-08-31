@@ -72,5 +72,12 @@ filter_out_free_models() {
       *) out+=("$m") ;;
     esac
   done
-  printf '%s\n' "${out[@]}"
+  # #6712 review (P2): `printf '%s\n' "${out[@]}"` sobre um array VAZIO
+  # imprime uma linha vazia, não zero linhas — `mapfile -t` do caller lia
+  # isso como `PAID_ONLY=("")` (count 1, não 0), contornando o fallback
+  # fail-soft documentado acima e corrompendo MODELS pra um elo vazio.
+  # Guard explícito: array vazio não passa pelo printf.
+  if [ "${#out[@]}" -gt 0 ]; then
+    printf '%s\n' "${out[@]}"
+  fi
 }

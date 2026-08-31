@@ -69,6 +69,15 @@ FILTERED_ALL_FREE=$(filter_out_free_models "a:free" "b:free")
 assert_eq "filter_out_free_models com TODOS os elos :free produz saída vazia (caller decide o fallback)" \
   "" "$FILTERED_ALL_FREE"
 
+# Regressão do P2 do review da PR #6874: `$(...)` acima strippa newline
+# final e mascara a diferença entre "zero linhas" e "uma linha vazia" — é
+# exatamente essa diferença que corrompia `mapfile -t PAID_ONLY` no caller
+# (lia count=1 em vez de 0, contornando o fallback fail-soft). Exercita o
+# mesmo caminho (`mapfile -t` sobre process substitution) que o wrapper usa.
+mapfile -t PAID_ONLY_ALL_FREE < <(filter_out_free_models "a:free" "b:free")
+assert_eq "filter_out_free_models com TODOS :free produz ZERO linhas sob mapfile (não 1 linha vazia)" \
+  "0" "${#PAID_ONLY_ALL_FREE[@]}"
+
 FILTERED_NONE_FREE=$(filter_out_free_models "a-pago" "b-pago")
 EXPECTED_NONE_FREE=$'a-pago\nb-pago'
 assert_eq "filter_out_free_models sem nenhum elo :free preserva a lista inteira" \
