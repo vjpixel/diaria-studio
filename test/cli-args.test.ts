@@ -198,6 +198,25 @@ describe("getIntArg — atalho tipado, ausente ≠ inválido (#4497)", () => {
     assert.equal(getIntArg(["--slot", "2"], "slot", { min: 1, max: 2 }), 2);
     assert.equal(getIntArg(["--slot", "1"], "slot", { min: 1, max: 2 }), 1);
   });
+
+  it("#6850: mensagem de max SEM maxContext é genérica — nunca menciona 'slot'/#6748 pra chamador que não é o do #6748", () => {
+    try {
+      getIntArg(["--limit", "500"], "limit", { min: 1, max: 100 });
+      assert.fail("deveria ter lançado");
+    } catch (e) {
+      const msg = (e as Error).message;
+      assert.match(msg, /--limit deve ser ≤ 100, recebido "500"\./);
+      assert.ok(!/slot/i.test(msg), `mensagem genérica não deve mencionar "slot", veio: ${msg}`);
+      assert.ok(!/#6748/.test(msg), `mensagem genérica não deve citar #6748, veio: ${msg}`);
+    }
+  });
+
+  it("#6850: maxContext, quando fornecido, aparece entre parênteses na mensagem (uso real do #6748 em update-artigo-especial-box.ts)", () => {
+    assert.throws(
+      () => getIntArg(["--slot", "3"], "slot", { min: 1, max: 2, maxContext: "slot 2 é o último válido, #6748" }),
+      /--slot deve ser ≤ 2 \(slot 2 é o último válido, #6748\), recebido "3"\./,
+    );
+  });
 });
 
 describe("parseArgsSimple — variante flat (#2834: consolida 21 duplicatas byte-a-byte)", () => {

@@ -165,7 +165,11 @@ export function getStringArg(
   return raw;
 }
 
-export function getIntArg(argv: string[], key: string, opts: { min?: number; max?: number } = {}): number | undefined {
+export function getIntArg(
+  argv: string[],
+  key: string,
+  opts: { min?: number; max?: number; maxContext?: string } = {},
+): number | undefined {
   const min = opts.min ?? 0;
   const max = opts.max;
   const parsed = parseArgs(argv);
@@ -186,9 +190,14 @@ export function getIntArg(argv: string[], key: string, opts: { min?: number; max
     );
   }
   if (max !== undefined && value > max) {
-    throw new Error(
-      `--${key} deve ser ≤ ${max} (slot ${max} é o último válido, #6748), recebido "${raw}".`,
-    );
+    // #6850: mensagem base sempre genérica — o helper é usado por vários
+    // chamadores, não só `update-artigo-especial-box.ts` (#6748). Contexto
+    // específico (ex: "slot N é o último válido, #6748") entra via
+    // `opts.maxContext`, nunca hardcoded aqui — um chamador futuro que use
+    // `max` pra outra coisa (--limit, --max-add, --batch-size) não deve ver
+    // vocabulário de "slot" que não tem relação com o argumento dele.
+    const context = opts.maxContext ? ` (${opts.maxContext})` : "";
+    throw new Error(`--${key} deve ser ≤ ${max}${context}, recebido "${raw}".`);
   }
   return value;
 }
