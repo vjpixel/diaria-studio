@@ -542,7 +542,11 @@ export interface HomeMetaFindingIssueRef {
   issueNumber: number | null;
   url: string | null;
   // #5978 — "reopened" acompanha o mesmo valor novo de `AlarmIssueResult.action`.
-  action: "created" | "reused" | "reopened" | "failed";
+  // #6798 — "updated" idem: nunca ocorre de fato aqui (este check não declara
+  // `AlarmFinding.contentSignature`), mas o tipo precisa aceitar o valor
+  // porque `applyAlarmReconciliation` devolve o union completo de
+  // `AlarmIssueResult.action`.
+  action: "created" | "reused" | "reopened" | "updated" | "failed";
   error?: string;
 }
 
@@ -592,6 +596,8 @@ export function buildHomeMetaDriftAlarmEmail(
       else if (ref.action === "reused") line += ` → #${ref.issueNumber} (existente) — ${ref.url}`;
       // #5978 — issue localizada estava fechada; reaberta em vez de reusada silenciosamente.
       else if (ref.action === "reopened") line += ` → #${ref.issueNumber} (reaberta) — ${ref.url}`;
+      // #6798 — nunca ocorre nesta checagem (sem contentSignature), branch aqui só por exaustividade de tipo.
+      else if (ref.action === "updated") line += ` → #${ref.issueNumber} (atualizada) — ${ref.url}`;
       else line += ` → issue não criada: ${ref.error ?? "erro desconhecido"}`;
     }
     lines.push(line);

@@ -30,6 +30,7 @@ import {
   applyAlarmReconciliation,
   isAllowlisted,
   aggregateFindingsOnDebut,
+  aggregateNoisyFindings,
   ALARM_ACTION_LABEL,
   type AlarmFinding,
   type AlarmIssuesState,
@@ -466,6 +467,101 @@ describe("ensureAlarmIssue — cache-hit confirma estado real pra família 'esta
       run,
     );
     assert.deepEqual(result, { issueNumber: 42, url: "https://x/42", action: "reused" });
+  });
+});
+
+describe("ensureAlarmIssue — contentSignature divergente vira comentário, nunca reuse silencioso (#6798)", () => {
+  const AGGREGATE_FINDING: AlarmFinding = {
+    check: "session-registry-safebackup",
+    fingerprint: "estreia-aggregate",
+    title: "15 cópias de conflito (agregado)",
+    body: "Lista atualizada:\n- a.json\n- b.json\n- c.json",
+    family: "estado",
+    group: "session-registry-safebackup",
+    contentSignature: "a.json|b.json|c.json",
+  };
+
+  it("contentSignature MUDOU desde o cachedEntry -> comenta com o body atualizado, action 'updated'", () => {
+    let commentArgs: string[] | null = null;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "view") return ok(JSON.stringify({ state: "OPEN" }));
+      if (args[0] === "issue" && args[1] === "comment") {
+        commentArgs = args;
+        return ok("");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const result = ensureAlarmIssue(
+      AGGREGATE_FINDING,
+      { issueNumber: 6573, url: "https://x/6573", closedAt: null, contentSignature: "a.json|b.json" },
+      CWD,
+      run,
+    );
+    assert.deepEqual(result, { issueNumber: 6573, url: "https://x/6573", action: "updated" });
+    assert.ok(commentArgs, "deveria ter comentado com a lista atualizada");
+    assert.equal(commentArgs![2], "6573");
+    assert.match(commentArgs![4], /c\.json/, "comentário deve conter o body atualizado do finding");
+  });
+
+  it("contentSignature IGUAL ao cachedEntry -> reused, sem comentar (só confirma estado real, mesmo caminho do #5989)", () => {
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "view") return ok(JSON.stringify({ state: "OPEN" }));
+      throw new Error("não deveria chamar gh além de 'view' — contentSignature idêntico, sem novidade a comentar");
+    };
+    const result = ensureAlarmIssue(
+      AGGREGATE_FINDING,
+      { issueNumber: 6573, url: "https://x/6573", closedAt: null, contentSignature: "a.json|b.json|c.json" },
+      CWD,
+      run,
+    );
+    assert.deepEqual(result, { issueNumber: 6573, url: "https://x/6573", action: "reused" });
+  });
+
+  it("finding SEM contentSignature (undefined) -> comportamento pré-#6798 intocado, sempre 'reused', nunca compara", () => {
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "view") return ok(JSON.stringify({ state: "OPEN" }));
+      throw new Error("não deveria chamar gh além de 'view' — finding não declara contentSignature");
+    };
+    const result = ensureAlarmIssue(
+      FINDING_A, // sem contentSignature
+      { issueNumber: 42, url: "https://x/42", closedAt: null, contentSignature: "algo-irrelevante" },
+      CWD,
+      run,
+    );
+    assert.deepEqual(result, { issueNumber: 42, url: "https://x/42", action: "reused" });
+  });
+
+  it("cachedEntry SEM contentSignature (state.json pré-#6798) + finding COM contentSignature -> trata como divergente, comenta 1x pra migrar", () => {
+    let commented = false;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "view") return ok(JSON.stringify({ state: "OPEN" }));
+      if (args[0] === "issue" && args[1] === "comment") {
+        commented = true;
+        return ok("");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const result = ensureAlarmIssue(
+      AGGREGATE_FINDING,
+      { issueNumber: 6573, url: "https://x/6573", closedAt: null }, // sem contentSignature
+      CWD,
+      run,
+    );
+    assert.equal(result.action, "updated");
+    assert.ok(commented);
+  });
+
+  it("'gh issue comment' falha -> action 'failed', erro populado, nunca fabrica issueNumber", () => {
+    const run: GhRunFn = () => fail("rate limited");
+    const result = ensureAlarmIssue(
+      AGGREGATE_FINDING,
+      { issueNumber: 6573, url: "https://x/6573", closedAt: null, contentSignature: "a.json|b.json" },
+      CWD,
+      run,
+    );
+    assert.equal(result.action, "failed");
+    assert.equal(result.issueNumber, null);
+    assert.match(result.error!, /rate limited/);
   });
 });
 
@@ -1060,6 +1156,48 @@ describe("applyAlarmReconciliation (#5112) — cenários fim-a-fim da issue", ()
       assert.equal(state[key].missingStreak, 0, "streak nunca avança pra uma entry de evento — congelada de propósito");
     });
   });
+
+  it("#6798: contentSignature do finding é persistido em nextState (created) e comparado na execução seguinte (updated)", () => {
+    const aggFinding: AlarmFinding = {
+      check: "session-registry-safebackup",
+      fingerprint: "estreia-aggregate",
+      title: "3 cópias",
+      body: "lista v1",
+      family: "estado",
+      group: "session-registry-safebackup",
+      contentSignature: "a|b|c",
+    };
+    let createCalled = false;
+    const runCreate: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "issue" && args[1] === "create") {
+        createCalled = true;
+        return ok("https://github.com/x/y/issues/9001\n");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const r1 = applyAlarmReconciliation([aggFinding], {}, { cwd: CWD, closeAfterRuns: 2, run: runCreate });
+    assert.ok(createCalled);
+    const key = alarmIssueStateKey(aggFinding.check, aggFinding.fingerprint);
+    assert.equal(r1.nextState[key].contentSignature, "a|b|c");
+
+    // Execução seguinte: mesmo fingerprint, conjunto MUDOU (arquivo novo entrou).
+    const aggFindingV2: AlarmFinding = { ...aggFinding, body: "lista v2", contentSignature: "a|b|c|d" };
+    let commented = false;
+    const runComment: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "view") return ok(JSON.stringify({ state: "OPEN" }));
+      if (args[0] === "issue" && args[1] === "comment") {
+        commented = true;
+        assert.match(args[4], /lista v2/);
+        return ok("");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const r2 = applyAlarmReconciliation([aggFindingV2], r1.nextState, { cwd: CWD, closeAfterRuns: 2, run: runComment });
+    assert.equal(r2.findingOutcomes[0].action, "updated");
+    assert.ok(commented, "deveria ter comentado a mudança de conjunto, nunca reused silencioso");
+    assert.equal(r2.nextState[key].contentSignature, "a|b|c|d", "state avança pro novo valor, base da PRÓXIMA comparação");
+  });
 });
 
 // ─── Allowlist de achados aceitos como limitação permanente (#5364) ────────
@@ -1313,5 +1451,73 @@ describe("aggregateFindingsOnDebut (#6572 — generaliza o cap de estreia do #65
     const passthrough = result.find((f) => f.fingerprint === "d");
     assert.ok(aggregated);
     assert.ok(passthrough);
+  });
+});
+
+describe("aggregateNoisyFindings (#6798 — agrega SEMPRE acima do teto, não só na estreia)", () => {
+  function findingWithGroup(fingerprint: string, group: string): AlarmFinding {
+    return {
+      check: "some-check",
+      fingerprint,
+      title: `achado ${fingerprint}`,
+      body: "corpo",
+      family: "estado",
+      group,
+    };
+  }
+
+  const buildAggregate = (group: string, findings: readonly AlarmFinding[]): AlarmFinding => ({
+    check: "some-check",
+    fingerprint: `${group}:aggregate`,
+    title: `${findings.length} achados agregados de ${group}`,
+    body: findings.map((f) => f.fingerprint).join(", "),
+    family: "estado",
+    contentSignature: findings.map((f) => f.fingerprint).join("|"),
+  });
+
+  it("findings sem group NUNCA agregam, mesmo acima do teto (mesma retrocompat de aggregateFindingsOnDebut)", () => {
+    const findings: AlarmFinding[] = [
+      { check: "x", fingerprint: "1", title: "t1", body: "b", family: "estado" },
+      { check: "x", fingerprint: "2", title: "t2", body: "b", family: "estado" },
+    ];
+    assert.deepEqual(aggregateNoisyFindings(findings, { threshold: 1, buildAggregate }), findings);
+  });
+
+  it("acima do teto -> agrega, SEM depender de stateIsEmpty (não existe esse parâmetro aqui — é a diferença central pro #6798)", () => {
+    const findings = [
+      findingWithGroup("a", "grupo-x"),
+      findingWithGroup("b", "grupo-x"),
+      findingWithGroup("c", "grupo-x"),
+    ];
+    const result = aggregateNoisyFindings(findings, { threshold: 2, buildAggregate });
+    assert.equal(result.length, 1);
+    assert.equal(result[0].fingerprint, "grupo-x:aggregate");
+    assert.equal(result[0].contentSignature, "a|b|c");
+  });
+
+  it("chamado 2x seguidas com o MESMO volume acima do teto -> agrega as DUAS vezes (nunca volta a 1-por-finding, ao contrário de aggregateFindingsOnDebut)", () => {
+    const findings = [
+      findingWithGroup("a", "grupo-x"),
+      findingWithGroup("b", "grupo-x"),
+      findingWithGroup("c", "grupo-x"),
+    ];
+    const first = aggregateNoisyFindings(findings, { threshold: 2, buildAggregate });
+    const second = aggregateNoisyFindings(findings, { threshold: 2, buildAggregate });
+    assert.equal(first.length, 1);
+    assert.equal(second.length, 1);
+    assert.equal(first[0].fingerprint, second[0].fingerprint);
+  });
+
+  it("NO/abaixo do teto -> passa direto, 1-por-finding", () => {
+    const findings = [findingWithGroup("a", "grupo-x"), findingWithGroup("b", "grupo-x")];
+    assert.deepEqual(aggregateNoisyFindings(findings, { threshold: 2, buildAggregate }), findings);
+  });
+
+  it("conjunto muda entre 2 chamadas -> contentSignature do agregado muda junto (sinal de recorrência preservado)", () => {
+    const before = [findingWithGroup("a", "grupo-x"), findingWithGroup("b", "grupo-x"), findingWithGroup("c", "grupo-x")];
+    const after = [...before, findingWithGroup("d", "grupo-x")]; // arquivo novo entrou
+    const r1 = aggregateNoisyFindings(before, { threshold: 2, buildAggregate });
+    const r2 = aggregateNoisyFindings(after, { threshold: 2, buildAggregate });
+    assert.notEqual(r1[0].contentSignature, r2[0].contentSignature);
   });
 });

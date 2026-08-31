@@ -91,12 +91,11 @@ async function main(): Promise<void> {
   );
 
   const state = loadAlarmIssuesState();
-  const stateIsEmpty = Object.keys(state).length === 0;
-  const findings = resolveSafeBackupFindings(backupFiles, stateIsEmpty);
-  if (stateIsEmpty && backupFiles.length > SAFE_BACKUP_ESTREIA_AGGREGATE_THRESHOLD) {
+  const findings = resolveSafeBackupFindings(backupFiles);
+  if (backupFiles.length > SAFE_BACKUP_ESTREIA_AGGREGATE_THRESHOLD) {
     console.log(
-      `${LOG_PREFIX} modo de estreia (#6562): ${backupFiles.length} backups agregados numa única issue ` +
-        `(state local vazio + acima do teto de ${SAFE_BACKUP_ESTREIA_AGGREGATE_THRESHOLD}).`,
+      `${LOG_PREFIX} modo agregado (#6798, generaliza a estreia do #6562): ${backupFiles.length} backups ` +
+        `agregados numa única issue (acima do teto de ${SAFE_BACKUP_ESTREIA_AGGREGATE_THRESHOLD}).`,
     );
   }
 

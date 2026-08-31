@@ -232,6 +232,19 @@ export interface AlarmFinding {
    * declarando `group` (tipicamente igual a `check`, mas não precisa ser —
    * fica a critério do emissor). */
   group?: string;
+  /** #6798 — assinatura OPCIONAL de conteúdo do achado (ex: lista de
+   * arquivos, hash, contador) — quando declarada, `ensureAlarmIssue`
+   * compara contra o valor persistido no `state.json` do `cachedEntry`. Se
+   * mudou desde a última execução E a issue seria "reused" silenciosamente,
+   * comenta com o corpo atualizado (`action: "updated"`) em vez de reusar
+   * sem sinal nenhum — mecanismo pra achados AGREGADOS (`group`) que
+   * recorrem SEMPRE com o mesmo fingerprint fixo (ver
+   * `aggregateNoisyFindings` abaixo): sem isto, um item novo entrando na
+   * agregação silenciaria pra sempre depois da 1ª issue, contradizendo o
+   * princípio "o sinal 'aconteceu de novo' tem que sobreviver" (#6798).
+   * `undefined` (default, todo check pré-existente): comportamento
+   * IDÊNTICO ao anterior — nunca compara, nunca comenta em reuse. */
+  contentSignature?: string;
 }
 
 export interface AlarmIssueResult {
@@ -239,8 +252,13 @@ export interface AlarmIssueResult {
   url: string | null;
   /** `"reopened"` (#5978): a issue localizada (via cache OU marcador) estava
    * `CLOSED` no GitHub — reaberta + comentada em vez de tratada como reuse
-   * silencioso (ver docstring de `ensureAlarmIssue`). */
-  action: "created" | "reused" | "reopened" | "failed";
+   * silencioso (ver docstring de `ensureAlarmIssue`). `"updated"` (#6798):
+   * a issue seguia ABERTA (nunca foi "reused" silenciosamente), mas
+   * `finding.contentSignature` mudou desde a última execução — comentada
+   * com o corpo atualizado. Só ocorre quando o finding declara
+   * `contentSignature`; achados sem essa declaração nunca produzem
+   * `"updated"`, comportamento pré-#6798 preservado. */
+  action: "created" | "reused" | "reopened" | "updated" | "failed";
   error?: string;
 }
 
@@ -349,6 +367,60 @@ export function aggregateFindingsOnDebut(
   return out;
 }
 
+// ─── Agrupamento genérico de achados NOISY, sempre (#6798) ─────────────────
+// `aggregateFindingsOnDebut` acima só agrega na 1ª execução — de propósito
+// (#6562/#6572), mas a auditoria do #6798 mediu a consequência: um check
+// como `session-registry-safebackup` cujo volume fica acima do teto em
+// TODA execução (não só na estreia) volta ao modo 1-por-finding pra sempre
+// depois da 1ª vez, e 15 issues abertas do MESMO alarme (39% do backlog de
+// alarme do projeto) foi o resultado medido. `aggregateNoisyFindings`
+// resolve o MESMO agrupamento por `AlarmFinding.group`, mas o gatilho é só
+// o teto — nunca `stateIsEmpty`. Junto com `AlarmFinding.contentSignature`
+// (ver `ensureAlarmIssue`), o achado agregado comenta quando o conjunto
+// muda, preservando o sinal "aconteceu de novo" que dedup agressivo
+// esconderia.
+
+export interface AggregateNoisyOptions {
+  /** Mesmo contrato de `AggregateOnDebutOptions.threshold`. */
+  threshold: number;
+  /** Mesmo contrato de `AggregateOnDebutOptions.buildAggregate` — o
+   * `AlarmFinding` retornado DEVE declarar `contentSignature` (tipicamente
+   * derivado da lista/conteúdo agregado) pra `ensureAlarmIssue` conseguir
+   * detectar mudança entre execuções; sem isso, o achado agregado vira
+   * "reused" silencioso pra sempre depois da 1ª issue — o MESMO problema
+   * que este mecanismo existe pra evitar, só que 1 issue mais tarde. */
+  buildAggregate: (group: string, findings: readonly AlarmFinding[]) => AlarmFinding;
+}
+
+/**
+ * Pura — agrupa `findings` por `AlarmFinding.group` e substitui cada grupo
+ * cujo tamanho excede `opts.threshold` por 1 único achado agregado,
+ * INCONDICIONALMENTE (nunca depende de `stateIsEmpty` — diferente de
+ * `aggregateFindingsOnDebut`). Findings sem `group` nunca são candidatos,
+ * mesmo comportamento retrocompatível da função irmã.
+ */
+export function aggregateNoisyFindings(findings: readonly AlarmFinding[], opts: AggregateNoisyOptions): AlarmFinding[] {
+  const ungrouped = findings.filter((f) => !f.group);
+  const byGroup = new Map<string, AlarmFinding[]>();
+  for (const f of findings) {
+    if (!f.group) continue;
+    const list = byGroup.get(f.group) ?? [];
+    list.push(f);
+    byGroup.set(f.group, list);
+  }
+
+  const out: AlarmFinding[] = [...ungrouped];
+  for (const [group, groupFindings] of byGroup) {
+    if (groupFindings.length > opts.threshold) {
+      const sorted = [...groupFindings].sort((a, b) => a.fingerprint.localeCompare(b.fingerprint));
+      out.push(opts.buildAggregate(group, sorted));
+    } else {
+      out.push(...groupFindings);
+    }
+  }
+  return out;
+}
+
 // ─── Marcador de dedup (puro) ───────────────────────────────────────────────
 
 /** Pura — marcador de dedup embutido no corpo da issue (#5112 item 2). */
@@ -378,6 +450,11 @@ export interface AlarmIssueStateEntry {
    * pré-existente preservado pro `state.json` já em disco; só entries criadas
    * a partir desta mudança carregam o valor de verdade). */
   family?: AlarmFamily;
+  /** #6798 — última `AlarmFinding.contentSignature` vista pra este
+   * fingerprint. `undefined` pra toda entry de check que não declara
+   * `contentSignature` (comportamento inalterado) ou persistida antes do
+   * #6798. Ver docstring de `AlarmFinding.contentSignature`. */
+  contentSignature?: string;
 }
 
 /** Chave do mapa de estado — `check:fingerprint` (fingerprint já inclui o
@@ -620,6 +697,31 @@ function reopenAlarmIssue(
   return { issueNumber, url, action: "reopened" };
 }
 
+/** #6798 — comenta o corpo ATUALIZADO do achado numa issue que segue aberta
+ * (nunca fechada, nunca reaberta) porque `contentSignature` divergiu do
+ * persistido. Fail-soft: `gh` falhando vira `action: "failed"`, estado NÃO
+ * avança (próxima execução tenta de novo com o mesmo `contentSignature`
+ * antigo persistido, mesma disciplina do resto do módulo). */
+function commentAlarmIssueUpdated(
+  issueNumber: number,
+  url: string,
+  finding: AlarmFinding,
+  cwd: string,
+  run: GhRunFn,
+): AlarmIssueResult {
+  const comment = `Achado atualizado (fingerprint \`${finding.fingerprint}\`):\n\n${finding.body}`;
+  const res = run(["issue", "comment", String(issueNumber), "--body", comment], cwd);
+  if (res.status !== 0) {
+    return {
+      issueNumber: null,
+      url: null,
+      action: "failed",
+      error: `gh issue comment falhou pra #${issueNumber}: ${res.stderr.trim() || `status ${res.status}`}`,
+    };
+  }
+  return { issueNumber, url, action: "updated" };
+}
+
 /**
  * Garante que existe uma issue pro achado `finding` — reusa via `cachedEntry`
  * (fast path pra família `"evento"`, sem tocar rede; família `"estado"`
@@ -663,10 +765,27 @@ function reopenAlarmIssue(
  * `"estado"` — preço de fechar o silêncio real que já causou 2 dias de
  * rampa Clarice parada (#5989). Família `"evento"` segue sem checagem
  * nenhuma no cache-hit (comportamento intocado, nunca reabre sozinha).
+ *
+ * **#6798 — `contentSignature` divergente vira comentário, nunca reuse
+ * silencioso.** Auditoria da camada de alarmes mediu 15 issues abertas
+ * simultâneas do MESMO check (`session-registry-safebackup`) porque o
+ * design "1 finding por arquivo" não tinha teto — cada arquivo novo virava
+ * issue nova, sem nunca consolidar. A correção estrutural
+ * (`aggregateNoisyFindings`) faz o CHECK emitir 1 finding agregado com
+ * fingerprint FIXO sempre que o volume passa do teto — mas um fingerprint
+ * fixo, sozinho, faria a issue virar "reused" pra sempre depois da 1ª vez,
+ * silenciando exatamente o "aconteceu de novo" que #6798 pede pra
+ * preservar. Por isso: toda vez que o cache-hit chegaria a `"reused"`
+ * (issue segue aberta, nada mudou de estado), se `finding.contentSignature`
+ * está definido E diverge do `cachedEntry.contentSignature` persistido,
+ * comenta com o corpo atualizado do achado (`commentAlarmIssueUpdated`) e
+ * devolve `action: "updated"` em vez de `"reused"`. Achados sem
+ * `contentSignature` (todo check pré-#6798) não mudam de comportamento —
+ * a comparação nunca dispara pra `undefined`.
  */
 export function ensureAlarmIssue(
   finding: AlarmFinding,
-  cachedEntry: { issueNumber: number; url: string; closedAt?: string | null } | undefined,
+  cachedEntry: { issueNumber: number; url: string; closedAt?: string | null; contentSignature?: string } | undefined,
   cwd: string,
   run: GhRunFn = defaultAlarmGhRun,
 ): AlarmIssueResult {
@@ -682,6 +801,9 @@ export function ensureAlarmIssue(
       // realState === "OPEN", ou null (gh falhou/indisponível) -> fail-soft,
       // nunca reabre às cegas sem confirmação POSITIVA de CLOSED.
     }
+    if (finding.contentSignature !== undefined && finding.contentSignature !== cachedEntry.contentSignature) {
+      return commentAlarmIssueUpdated(cachedEntry.issueNumber, cachedEntry.url, finding, cwd, run);
+    }
     return { issueNumber: cachedEntry.issueNumber, url: cachedEntry.url, action: "reused" };
   }
 
@@ -690,6 +812,11 @@ export function ensureAlarmIssue(
     if (existing.state === "CLOSED") {
       return reopenAlarmIssue(existing.issueNumber, existing.url, finding, cwd, run);
     }
+    // Cache local perdido (1ª execução pós-clone) mas issue já achada por
+    // marcador — sem `cachedEntry.contentSignature` pra comparar, então
+    // nunca dispara "updated" por esse caminho (não é regressão: sem cache,
+    // a única alternativa seria comparar contra o corpo já postado, custo
+    // de rede que este fallback já evita por design, ver `findExistingAlarmIssue`).
     return { issueNumber: existing.issueNumber, url: existing.url, action: "reused" };
   }
 
@@ -862,7 +989,12 @@ export function applyAlarmReconciliation(
       const result = ensureAlarmIssue(
         action.finding,
         cachedEntry
-          ? { issueNumber: cachedEntry.issueNumber, url: cachedEntry.url, closedAt: cachedEntry.closedAt }
+          ? {
+              issueNumber: cachedEntry.issueNumber,
+              url: cachedEntry.url,
+              closedAt: cachedEntry.closedAt,
+              contentSignature: cachedEntry.contentSignature,
+            }
           : undefined,
         opts.cwd,
         run,
@@ -889,6 +1021,11 @@ export function applyAlarmReconciliation(
         // reused/cache-hit: se o script chamador algum dia reclassificar o
         // achado, o `state.json` se auto-corrige no próximo `ensure`.
         family: action.finding.family,
+        // #6798 — idem pra `contentSignature`: sempre a do finding DESTA
+        // execução (inclusive `undefined` pra check que não declara),
+        // nunca a antiga do `cachedEntry` — é essa atualização que faz a
+        // PRÓXIMA execução comparar contra o valor certo.
+        contentSignature: action.finding.contentSignature,
       };
     } else if (action.kind === "comment_resolved") {
       const ok = commentAlarmIssueResolved(action.issueNumber, now, opts.cwd, run);
