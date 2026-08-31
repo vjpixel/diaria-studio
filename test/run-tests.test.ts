@@ -680,4 +680,56 @@ describe("runTestBatches — bisecção automática no caminho de falha (#6822 D
     assert.equal(calls, 1, "bisecção desligada não deve gastar spawn extra");
     assert.ok(written.some((s) => s.includes("bisecção desligada")));
   });
+
+  it("spawnSync mata por ETIMEDOUT também aciona bisecção (não só o caminho de result.signal)", () => {
+    const logs: string[] = [];
+    const origError = console.error;
+    console.error = (msg: string) => logs.push(msg);
+    try {
+      runTestBatches({
+        files: ["/inocente.test.ts", "/culpado.test.ts"],
+        batchSize: 10,
+        bisectTimeoutMs: 1000,
+        spawn: ((_cmd: unknown, args: unknown) => {
+          const batch = (args as string[]).slice(3);
+          if (batch.length > 1) {
+            return { error: Object.assign(new Error("spawnSync node ETIMEDOUT"), { code: "ETIMEDOUT" }), status: null };
+          }
+          return batch[0] === "/culpado.test.ts"
+            ? { status: null, signal: "SIGKILL", stdout: "", stderr: "" }
+            : { status: 0, stdout: OK_SUMMARY, stderr: "" };
+        }) as unknown as typeof import("node:child_process").spawnSync,
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+      });
+      assert.ok(
+        logs.some((s) => s.includes("candidato") && s.includes("/culpado.test.ts") && !s.includes("/inocente.test.ts")),
+        `deve isolar o culpado via bisecção mesmo no caminho de ETIMEDOUT, veio: ${JSON.stringify(logs)}`,
+      );
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  it("batch sem sumário do node:test (status 0, Defeito A) também aciona bisecção e isola o culpado", () => {
+    const written: string[] = [];
+    runTestBatches({
+      files: ["/inocente.test.ts", "/culpado.test.ts"],
+      batchSize: 10,
+      bisectTimeoutMs: 1000,
+      spawn: ((_cmd, args) => {
+        const batch = (args as string[]).slice(3);
+        if (batch.length > 1) return { status: 0, stdout: "sem sumário nenhum aqui\n", stderr: "" };
+        return batch[0] === "/culpado.test.ts"
+          ? { status: 0, stdout: "sem sumário nenhum aqui\n", stderr: "" }
+          : { status: 0, stdout: OK_SUMMARY, stderr: "" };
+      }) as typeof import("node:child_process").spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: (s: string) => written.push(s) },
+    });
+    assert.ok(
+      written.some((s) => s.includes("bisecção") && s.includes("/culpado.test.ts") && !s.includes("/inocente.test.ts")),
+      `deve isolar o culpado via bisecção no caminho de sumário ausente, veio: ${JSON.stringify(written)}`,
+    );
+  });
 });

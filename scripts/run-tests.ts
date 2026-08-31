@@ -500,7 +500,7 @@ export function runTestBatches(opts: RunTestsOptions): number {
       const combined = `${toText(result.stdout)}\n${toText(result.stderr)}`;
       if (shouldRetryBatch(combined, result.status)) {
         stderr.write(
-          `\nrun-tests: ${label} com ERR_MODULE_NOT_FOUND e fail 0 (#6495, erro de infra do runner, não de teste) — retentando UMA vez (${batch.length} arquivos)...\n`,
+          `\nrun-tests: ${label} com ERR_MODULE_NOT_FOUND (#6495/#6857, erro de infra do runner, não de teste) — retentando UMA vez (${batch.length} arquivos)...\n`,
         );
         const retry = runOne(batch);
         if (retry.error) {
