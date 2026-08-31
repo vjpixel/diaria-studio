@@ -50,9 +50,21 @@
 
 /** Bold: `**texto**` ou `__texto__`. Roda ANTES do italic — sem isso,
  *  `**bold**` casaria como `*` + `*bold*` + `*` no passo de italic e
- *  sobraria 1 asterisco de cada lado. */
+ *  sobraria 1 asterisco de cada lado.
+ *
+ *  Achado do review da PR #6866 (P2, confiança 85%): o grupo opcional
+ *  `(?:[\s\S]*?\S)?` era LAZY por dentro mas GREEDY por fora (`?` simples
+ *  prefere incluir o grupo) — em `**a** **b**`, isso fazia o motor tentar
+ *  "com grupo" antes de "sem grupo", e como `\S` também casa `*`, a busca
+ *  lazy interna acabava engolindo o `**` de fechamento do 1º span como
+ *  conteúdo e só parava no `**` do 2º span, fundindo os dois:
+ *  `stripBold("**a** **b**")` virava `"a** **b"` em vez de `"a b"`. Só
+ *  acontecia com spans de 1 caractere seguidos de outro span logo depois —
+ *  span de várias palavras (o caso real de produção) não reproduz. Fix:
+ *  `??` (grupo opcional LAZY) em vez de `?` — tenta "sem grupo" (span de 1
+ *  char) primeiro, só cresce se não fechar ali. */
 function stripBold(text: string): string {
-  return text.replace(/\*\*(\S(?:[\s\S]*?\S)?)\*\*/g, "$1").replace(/__(\S(?:[\s\S]*?\S)?)__/g, "$1");
+  return text.replace(/\*\*(\S(?:[\s\S]*?\S)??)\*\*/g, "$1").replace(/__(\S(?:[\s\S]*?\S)??)__/g, "$1");
 }
 
 /** Italic: `*texto*` ou `_texto_` — só quando FLANQUEADO (delimitador não

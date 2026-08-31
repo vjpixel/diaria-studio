@@ -100,6 +100,13 @@ describe("stripMarkdownEmphasis (#6862)", () => {
     assert.equal(stripMarkdownEmphasis("é *importante* também"), "é importante também");
   });
 
+  it("#6866 (achado do review, P2): dois spans de bold curtos SEGUIDOS não se fundem — cada ** fecha no par mais próximo", () => {
+    // Antes do fix: "**a** **b**" virava "a** **b" (o motor engolia o
+    // fechamento do 1º span como conteúdo e só parava no fechamento do 2º).
+    assert.equal(stripMarkdownEmphasis("**a** **b**"), "a b");
+    assert.equal(stripMarkdownEmphasis("**um** **dois** **três**"), "um dois três");
+  });
+
   it("#6862: preserva o negrito exigido por parágrafo do social-writer (#6086 item c) — não existe lint bloqueando isso, ver docstring do módulo", () => {
     // Contrato real de .claude/agents/social-writer.md: cada parágrafo de
     // ## d{N} em 03-social.md tem EXATAMENTE UM trecho **...** — é assim
