@@ -503,14 +503,18 @@ export function assertMvGuardAcknowledged(argv: string[], coverage: MvCoverage |
 // ── fila de tamanho fixo + backfill (#4476 item 5) ──────────────────────────
 
 /**
- * Pura — quantos slots estão livres na fila (cap 300 — DECISÃO deste
- * projeto pra este canal, `brevo_diaria.daily_send_cap` em
- * `platform.config.json`, não um limite inerente da plataforma Brevo; 300
- * foi escolhido por caber com folga no free tier real, issue #4476 item 5 —
- * ver `platform.config.json` nota do campo). O mesmo valor cobre tanto o
- * teto de ENVIO diário quanto o teto de CONTATOS ativos simultâneos, por
- * escolha deste desenho, não por restrição externa. `currentActiveCount`
- * é `store.contacts` com `status === "in_brevo"` (quem hoje ocupa um slot —
+ * Pura — quantos slots estão livres na fila, dado um `cap` (parâmetro
+ * genérico; não lê config sozinha). Histórico (#4476 item 5, até 30/08/2026):
+ * o cap era 300 (`brevo_diaria.daily_send_cap`), e o MESMO valor cobria tanto
+ * o teto de ENVIO diário quanto o teto de CONTATOS ativos simultâneos — os
+ * dois usos compartilhavam a mesma constante, por escolha de desenho.
+ * **Desde #6793 "Faixa A" item 6 (30/08/2026, decisão do editor): os
+ * call sites que gerenciam o teto de CONTATOS ativos passam
+ * `Number.POSITIVE_INFINITY`** — o acoplamento com `daily_send_cap` acabou
+ * PARA ESSE USO. `daily_send_cap` continua vivo pro teto de ENVIO diário
+ * (item 5 da mesma issue, `checkDailySendCap` em `publish-daily-brevo.ts`)
+ * — os dois deixaram de compartilhar constante. `currentActiveCount` é
+ * `store.contacts` com `status === "in_brevo"` (quem hoje ocupa um slot —
  * `promoted_beehiiv`/`suppressed`/`unsubscribed` já liberaram o deles).
  * Nunca negativo (população acima do cap por transição de config — ex: cap
  * reduzido depois do fato — não gera backfill negativo, só 0 slots livres).

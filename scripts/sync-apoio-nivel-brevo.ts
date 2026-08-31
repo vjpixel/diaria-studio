@@ -82,7 +82,7 @@
  * real nos testes).
  *
  * Uso:
- *   npx tsx scripts/sync-apoio-nivel-brevo.ts [--push] [--allow-partial] [--force-blast-radius]
+ *   npx tsx scripts/sync-apoio-nivel-brevo.ts [--push] [--allow-partial]
  */
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -646,27 +646,19 @@ async function main(): Promise<void> {
   const diff = diffApoioBrevo(desired, current);
   const allowPartial = hasFlag(argv, "allow-partial");
   const removalsBlockedByPartialData = shouldBlockRemovals(data.error, { skippedUnresolved: diff.skippedUnresolved }, allowPartial);
-  const forceBlastRadius = hasFlag(argv, "force-blast-radius");
-  const blastGuard = evaluateBrevoBlastRadiusGuard(diff.toRemove.length, current.length, forceBlastRadius);
+  // #6793 "Faixa A" item 8 (30/08/2026): evaluateBrevoBlastRadiusGuard nunca
+  // bloqueia mais (blocked sempre false) — `--force-blast-radius` ficou sem
+  // efeito e foi removido da CLI (era o escape hatch de um guard que não
+  // existe mais). `force: false` fixo aqui só preserva a assinatura da
+  // função pura (mantida pra paridade com sync-apoio-nivel-beehiiv.ts e
+  // testabilidade histórica).
+  const blastGuard = evaluateBrevoBlastRadiusGuard(diff.toRemove.length, current.length, false);
 
   logDiff(diff, removalsBlockedByPartialData);
   logBlastRadiusGuard(blastGuard);
 
   if (!push) {
     log("dry-run (default) — NENHUMA mutação aplicada. Use --push para gravar.");
-    return;
-  }
-
-  if (blastGuard.blocked) {
-    log(
-      "RECUSANDO o --push inteiro (guard de blast radius acima) — nenhuma mutação foi aplicada, nem " +
-        "adições nem remoções. Confira se é uma virada de mês/instabilidade da apoia.se antes de usar " +
-        "--force-blast-radius (decisão consciente do editor, sempre logada).",
-    );
-    // Windows fix (#4651): já houve await fetch (runApoioReconciliationCycle,
-    // buildApoiosData e, quando list_id/apiKey presentes,
-    // fetchCurrentBrevoApoiadoresState) antes deste ponto.
-    process.exitCode = 1;
     return;
   }
 
