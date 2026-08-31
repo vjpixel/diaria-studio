@@ -24,6 +24,19 @@
 #     #1042, #947) — `git branch`/`for-each-ref` local não os acha porque as
 #     branches já foram deletadas pós-merge, mas o PR (e o padrão de uso)
 #     é real; mantidos por evidência histórica, não por suposição.
+#   - fix-, docs-, feat-, chore-, refactor-, test- (HÍFEN, mesma palavra) —
+#     achado ao vivo #6853 (31/08/2026): `watch-continuo-health.sh` flagou
+#     4 PRs reais de sessões interativas (#6846, #6848, #6851, #6852 —
+#     confirmados via `gh pr view --json body`, todos com prosa detalhada e
+#     `Closes #NNNN`, nenhum no formato padrão do contínuo) porque essa
+#     sessão (e a #6716/Opus) vêm usando `fix-NNNN-slug` (hífen) em vez de
+#     `fix/NNNN-slug` (barra) — convenção real e ativa, não um erro isolado
+#     nem um bug do contínuo (que sempre gera `continuo/fix-N-slug`, prefixo
+#     com barra, nunca confundível com este). Mesma palavra-chave da versão
+#     com barra, só o separador muda — sem risco de engolir uma branch
+#     genuinamente sem prefixo (`random-no-prefix-branch`, `a-sem-prefixo`
+#     etc. não começam com nenhuma destas palavras + hífen, cobertos pelo
+#     teste de regressão).
 #   - hotfix/ — exceção documentada em CLAUDE.md ("1 PR aberto por vez",
 #     hotfix P0 pode abrir em paralelo) e com uso real recente (achado do
 #     fleet review do #6821: hotfix/onboarding-mass-send-killswitch,
@@ -43,6 +56,8 @@ CONTINUO_BRANCH_PREFIX_JQ_FILTER='
        | .headRefName
        | select((startswith("continuo/") or startswith("overnight/") or startswith("develop/") or startswith("dependabot/")
                  or startswith("fix/") or startswith("docs/") or startswith("feat/") or startswith("chore/")
-                 or startswith("refactor/") or startswith("test/") or startswith("worktree-")
-                 or startswith("hotfix/")) | not)
+                 or startswith("refactor/") or startswith("test/")
+                 or startswith("fix-") or startswith("docs-") or startswith("feat-") or startswith("chore-")
+                 or startswith("refactor-") or startswith("test-")
+                 or startswith("worktree-") or startswith("hotfix/")) | not)
   ] | join(", ")'

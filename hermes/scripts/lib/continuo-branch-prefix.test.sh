@@ -70,6 +70,18 @@ done
 assert_eq "branch sem nenhum prefixo reconhecido AINDA é flagada (#6461)" '"random-no-prefix-branch"' \
   "$(run_filter "[{\"headRefName\":\"random-no-prefix-branch\",\"createdAt\":\"$RECENT\",\"author\":{\"login\":\"vjpixel\"}}]")"
 
+# #6853 (achado ao vivo, 31/08/2026): variante com HÍFEN da mesma palavra —
+# os 4 PRs reais que motivaram a issue (#6846, #6848, #6851, #6852).
+for prefix in fix docs feat chore refactor test; do
+  assert_eq "prefixo $prefix- (hífen, mesma palavra da versão com barra) não é flagado (#6853)" '""' \
+    "$(run_filter "[{\"headRefName\":\"${prefix}-6852-algo-qualquer\",\"createdAt\":\"$RECENT\",\"author\":{\"login\":\"vjpixel\"}}]")"
+done
+
+# Garante que o hífen não abre uma brecha genérica: uma branch que começa com
+# uma palavra qualquer + hífen (não uma das 6 aceitas) continua flagada.
+assert_eq "palavra+hífen fora da allowlist ainda é flagada (#6853 não vira brecha genérica)" '"random-no-prefix-branch"' \
+  "$(run_filter "[{\"headRefName\":\"random-no-prefix-branch\",\"createdAt\":\"$RECENT\",\"author\":{\"login\":\"vjpixel\"}}]")"
+
 # Branch >24h não entra na janela, mesmo sem prefixo.
 assert_eq "branch sem prefixo mas fora da janela de 24h não é flagada" '""' \
   "$(run_filter "[{\"headRefName\":\"random-no-prefix-branch\",\"createdAt\":\"$STALE\",\"author\":{\"login\":\"vjpixel\"}}]")"
