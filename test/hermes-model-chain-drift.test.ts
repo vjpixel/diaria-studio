@@ -23,7 +23,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -152,5 +152,166 @@ describe("cadeia de modelos do Hermes: wrapper e SKILL.md não podem divergir (#
       false,
       `linha da tabela contém slug abreviado sem prefixo de provedor: "${tableRow.trim()}"`,
     );
+  });
+
+  // -----------------------------------------------------------------------
+  // #6790: asserção negativa — doc NUNCA pode afirmar que o wrapper lê
+  // config.yaml / fallback_chains / coding_fallback como fonte da cadeia.
+  // O wrapper roda o array bash MODELS_DEFAULT, hardcoded; o bloco
+  // smart_model_routing é config morta como roteador.
+  //
+  // A armadilha: a seção de CORREÇÃO (ex: tick-20260828-*.md) cita os
+  // mesmos termos justamente pra negá-los. Match cru gera falso positivo.
+  // Estratégia: procura afirmação POSITIVA — termos de crença perto do
+  // nome do wrapper, sem verbo negativo interposto.
+  //
+  // Achado (sessão 31/08, ao destravar #6790): a 1ª versão buscava o
+  // verbo negativo só DEPOIS da menção ao wrapper (`afterWrapper`) —
+  // uma frase corretora com a negação ANTES do nome do wrapper (ex:
+  // "não é verdade que claude-openrouter.sh usa fallback_chains")
+  // escaparia da detecção e viraria falso-positivo de violação.
+  //
+  // 1ª tentativa de fix: buscar na JANELA INTEIRA. Review independente
+  // (mesma sessão) achou o problema — janela inteira é PERMISSIVA
+  // DEMAIS na direção oposta: uma negação numa frase SEM RELAÇÃO
+  // nenhuma, só coincidentemente dentro das 3 linhas antes do trecho,
+  // passaria a eximir uma afirmação genuinamente errada (falso
+  // negativo — contra-exemplo construído pelo review: "O roteamento
+  // não é feito manualmente... claude-openrouter.sh lê o
+  // fallback_chains..." deixaria de ser flagado).
+  //
+  // Fix final: busca a partir do PRIMEIRO dos dois marcadores (menção
+  // ao wrapper OU ao termo proibido, o que vier antes no texto) até o
+  // fim da janela — cobre negação tanto ANTES do wrapper quanto DEPOIS
+  // do termo proibido (o padrão real do corpus: "está errado" vem
+  // depois dos dois), mas não drena uma frase anterior não-relacionada
+  // que só por acidente cai nas 3 linhas de contexto. Extraído como
+  // função pura (`isUnnegatedForbiddenClaim`, abaixo do describe) pra
+  // poder ser testada em isolamento contra os 2 contra-exemplos.
+  // -----------------------------------------------------------------------
+
+  it("nenhum doc afirma que claude-openrouter.sh lê config.yaml / fallback_chains / coding_fallback (#6790)", () => {
+    const REF_DIR = join(ROOT, "hermes/skills/hermes-diaria-continuo/references");
+    const SKILL_MD = join(ROOT, "hermes/skills/hermes-diaria-continuo/SKILL.md");
+
+    const files = [SKILL_MD, ...readdirSync(REF_DIR).map((f) => join(REF_DIR, f))].filter((f) =>
+      f.endsWith(".md"),
+    );
+
+    for (const f of files) {
+      const src = readFileSync(f, "utf8");
+      const lines = src.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line.includes("claude-openrouter")) continue;
+        // Janela de 3 linhas pra trás e 2 pra frente: a afirmação é
+        // contextual, não só a linha que menciona o wrapper.
+        const windowLines = lines.slice(Math.max(0, i - 3), i + 3);
+        if (!isUnnegatedForbiddenClaim(windowLines)) continue;
+        assert.fail(
+          `doc ${f.replace(ROOT + "/", "")}:` +
+            ` linha ${i + 1} associa claude-openrouter.sh a termo proibido sem negação: "${line.trim()}"`,
+        );
+      }
+    }
+  });
+});
+
+// #6790: verbo negativo que desmente a afirmação — se aparecer na janela
+// relevante (ver isUnnegatedForbiddenClaim), a frase é corretora, não
+// assertiva.
+const NEG_VERB =
+  /\b(não|never|no|nenhum|sem|fora|errado|morto|obsoleto|removido|deixou|parou|não lê|não roteia|não resolve|não usa)\b/i;
+const FORBIDDEN_CHAIN_SOURCE = /fallback_chains|coding_fallback|fallback_chain_key|smart_model_routing/;
+
+/**
+ * Pure (#6790): decide se `windowLines` (contexto de texto ao redor de uma
+ * menção a "claude-openrouter") contém uma afirmação NÃO-NEGADA de que o
+ * wrapper lê a cadeia de `config.yaml`/`fallback_chains`/`coding_fallback`
+ * — `true` = violação (deve falhar o teste), `false` = ausente ou
+ * corretora (isenta).
+ *
+ * Busca o verbo negativo a partir do PRIMEIRO dos dois marcadores (menção
+ * ao wrapper OU ao termo proibido, o que vier antes no texto) até o fim da
+ * janela. Nem "só depois do wrapper" nem "janela inteira" bastam sozinhos
+ * — ver os 2 testes de regressão logo abaixo, que reproduzem os 2
+ * contra-exemplos que derrubaram cada uma dessas versões anteriores.
+ */
+/** Corte grosseiro de sentenças (fim de frase = `.`/`!`/`?` seguido de
+ *  espaço) — não lida com abreviações/URLs com ponto, aceitável pro escopo
+ *  estreito deste guard (doc em prosa curta, não texto arbitrário). */
+function sentenceBoundaries(text: string): number[] {
+  const ends: number[] = [];
+  const re = /[.!?]\s+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) ends.push(m.index + m[0].length);
+  return ends;
+}
+
+export function isUnnegatedForbiddenClaim(windowLines: string[]): boolean {
+  const window = windowLines.join(" ");
+  const forbiddenMatch = FORBIDDEN_CHAIN_SOURCE.exec(window);
+  if (!forbiddenMatch) return false;
+  const wrapperIdx = window.indexOf("claude-openrouter");
+  if (wrapperIdx === -1) return false;
+
+  // A negação só conta se estiver na MESMA sentença de um dos 2 marcadores
+  // (cobre "Não é verdade que claude-openrouter.sh usa X" — negação ANTES
+  // do wrapper, mas na mesma frase) OU na sentença seguinte (cobre "X.
+  // Isso está errado." — o padrão real do corpus, correção como frase
+  // separada). Uma negação numa sentença ANTERIOR não-relacionada nunca
+  // conta — é aí que "só depois do wrapper" e "janela inteira" erravam
+  // cada um pra um lado (ver os 2 contra-exemplos abaixo).
+  const ends = sentenceBoundaries(window);
+  const startOfSentenceAt = (pos: number) => {
+    let start = 0;
+    for (const end of ends) {
+      if (end <= pos) start = end;
+      else break;
+    }
+    return start;
+  };
+  const endOfSentenceAt = (pos: number) => ends.find((end) => end > pos) ?? window.length;
+
+  const firstIdx = Math.min(wrapperIdx, forbiddenMatch.index);
+  const secondIdx = Math.max(wrapperIdx, forbiddenMatch.index);
+  const spanStart = startOfSentenceAt(firstIdx);
+  const spanEnd = endOfSentenceAt(endOfSentenceAt(secondIdx)); // sentença dos marcadores + a seguinte
+  const relevant = window.slice(spanStart, spanEnd);
+  return !NEG_VERB.test(relevant);
+}
+
+describe("isUnnegatedForbiddenClaim (#6790 — puro, os 3 cenários que derrubaram as 2 versões anteriores)", () => {
+  it("frase corretora real do corpus (negação DEPOIS do wrapper e do termo proibido) → isenta", () => {
+    const windowLines = [
+      "**CORREÇÃO (30/08/2026).** A frase original desta seção dizia que o wrapper",
+      "`claude-openrouter.sh` \"resolve via `fallback_chains.coding_fallback` em",
+      "`~/.hermes/config.yaml`\". Isso está errado por DOIS motivos independentes, e",
+    ];
+    assert.equal(isUnnegatedForbiddenClaim(windowLines), false);
+  });
+
+  it("contra-exemplo do review: negação NÃO-RELACIONADA antes do wrapper não isenta uma afirmação genuinamente errada", () => {
+    // Achado do review independente desta PR: a versão "janela inteira"
+    // (descartada) deixava esta frase passar — a negação sobre roteamento
+    // manual não tem nada a ver com a afirmação (falsa) que vem depois.
+    const windowLines = [
+      "O roteamento não é feito manualmente pelo editor.",
+      "claude-openrouter.sh lê o fallback_chains do config.yaml pra decidir o modelo.",
+    ];
+    assert.equal(isUnnegatedForbiddenClaim(windowLines), true, "deve flagar — a negação anterior é de outro assunto");
+  });
+
+  it("negação ANTES do wrapper mas ligada à MESMA afirmação (o bug original do afterWrapper) → isenta", () => {
+    const windowLines = ['Não é verdade que claude-openrouter.sh usa fallback_chains do config.yaml.'];
+    assert.equal(isUnnegatedForbiddenClaim(windowLines), false);
+  });
+
+  it("sem menção ao wrapper → nunca viola (guard de entrada)", () => {
+    assert.equal(isUnnegatedForbiddenClaim(["fallback_chains é usado em outro lugar qualquer"]), false);
+  });
+
+  it("sem termo proibido → nunca viola", () => {
+    assert.equal(isUnnegatedForbiddenClaim(["claude-openrouter.sh roda MODELS_DEFAULT hardcoded"]), false);
   });
 });
