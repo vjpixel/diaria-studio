@@ -69,7 +69,8 @@
  * Uso: `npx tsx scripts/track-quality-report.ts --table [--since 30d]`
  *      `npx tsx scripts/track-quality-report.ts --json [--since 2026-08-01]`
  *
- * ## Escopo explícito: NÃO tem eixo de custo (#6755, comentário 30/08/2026)
+ * ## Escopo explícito: NÃO tem eixo de custo (achado ao vivo, 31/08/2026,
+ * coordenação com sessão trabalhando o #6816)
  *
  * As 4 métricas acima decidem "qual trilha PRODUZ trabalho que precisa ser
  * refeito" — nenhuma delas mede quanto custou produzir esse trabalho. A
@@ -84,6 +85,26 @@
  * in/out) — fora deste repo, não consumida aqui. Quem for calcular "custo
  * por PR mergeada sem retrabalho" precisa cruzar a métrica 1 daqui com uma
  * fonte de custo externa; este módulo não tenta adivinhar esse número.
+ *
+ * ## Achados do fleet review da PR #6855 (31/08/2026), aplicados neste commit
+ *
+ * 1. **P1 — `master_red.count`/`finding_density.density` viravam `0`/`0.00`,
+ *    não `null`, quando a busca de origem (`git log`/`gh issue list`)
+ *    falhava** — indistinguível de "zero incidentes de verdade". As duas
+ *    métricas agora seguem o MESMO padrão que 1 e 4 já tinham
+ *    (`rate: number | null`): `count`/`density` viram `null` quando a
+ *    fonte não pôde ser consultada, nunca um zero fabricado.
+ * 2. **P2 — `--limit 500` truncava silenciosamente a janela `--since`
+ *    anunciada no uso deste script** (confirmado ao vivo: `--since 14d` e
+ *    `--since 30d` produziam saída IDÊNTICA, porque 500 PRs mergeadas já
+ *    esgotava ~12 dias de histórico). Teto subido pra 2000 (`gh` pagina
+ *    automaticamente, sem custo extra de request) + aviso explícito
+ *    quando o resultado bate exatamente no teto (`length === limit`),
+ *    sinal de truncamento possível.
+ * 3. As 2 buscas idênticas de `[daily-review] in:title` (uma só por
+ *    `body,createdAt`, outra só por `number,body`) viraram 1 chamada só
+ *    (`number,body,createdAt`) — reduz a superfície de falha parcial que
+ *    alimentava o achado 1 pra métrica 3.
  */
 import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
@@ -261,17 +282,28 @@ export function computeReworkRate(mergedPrs: MergedPrRecord[]): ReworkMetric[] {
 
 export interface MasterRedMetric {
   trail: Trail | "desconhecida";
-  count: number;
+  /** `null` quando a fonte (`git log`) não pôde ser consultada nesta
+   * rodada — NUNCA um `0` fabricado (review da PR #6855, P1). `0` só
+   * aparece aqui quando a busca teve sucesso e genuinamente não achou
+   * nenhum commit de quebra atribuído a esta trilha. */
+  count: number | null;
 }
 
 /** Métrica 2 — quantos commits de "quebra de master" cada trilha causou,
  * segundo `resolveMasterRedCommitTrail`. Inclui a categoria "desconhecida"
  * explicitamente (nunca omite o que não pôde ser resolvido — omitir daria
- * a impressão falsa de que toda quebra foi atribuída). */
+ * a impressão falsa de que toda quebra foi atribuída). `commitsFetchOk:
+ * false` (o `git log` da fonte falhou) faz TODAS as trilhas voltarem
+ * `count: null` — nunca `0`, que seria indistinguível de "checamos e não
+ * tinha nenhuma" (review da PR #6855, P1, confiança alta). */
 export function computeMasterRedAttribution(
   commits: { subject: string; body: string }[],
   ctx: MasterRedResolutionContext,
+  commitsFetchOk: boolean,
 ): MasterRedMetric[] {
+  if (!commitsFetchOk) {
+    return [...TRAILS, "desconhecida" as const].map((trail) => ({ trail, count: null }));
+  }
   const counts = new Map<Trail | "desconhecida", number>();
   for (const t of [...TRAILS, "desconhecida" as const]) counts.set(t, 0);
   for (const commit of commits) {
@@ -284,9 +316,11 @@ export function computeMasterRedAttribution(
 
 export interface FindingDensityMetric {
   trail: Trail;
-  findings: number;
+  /** `null` quando a fonte (`gh issue list [daily-review]`) não pôde ser
+   * consultada — nunca `0` fabricado (review da PR #6855, P1). */
+  findings: number | null;
   merged_prs: number;
-  density: number | null; // findings / merged_prs; null quando merged_prs === 0
+  density: number | null; // findings / merged_prs; null quando merged_prs === 0 OU findings indisponível
 }
 
 /** Métrica 3 — densidade de finding do `daily-review` por trilha
@@ -294,11 +328,21 @@ export interface FindingDensityMetric {
  * issues `[daily-review]` na janela (qualquer estado — finding não deixa de
  * ter acontecido por a issue ter sido fechada); `mergedPrsByTrail` conta
  * PRs mergeadas na MESMA janela, pra normalizar (mais PRs mergeadas é
- * esperado gerar mais findings em volume absoluto). */
+ * esperado gerar mais findings em volume absoluto). `issuesFetchOk: false`
+ * (a busca de `[daily-review]` falhou) faz `findings`/`density` voltarem
+ * `null` pra toda trilha — mesmo `merged_prs` continuando disponível (é uma
+ * fonte independente que pode ter tido sucesso), NUNCA um `density: 0.00`
+ * fabricado que passaria por "trilha limpa" (review da PR #6855, P1,
+ * confiança alta — esse era o achado mais perigoso: `0.00` numa métrica de
+ * QUALIDADE lê como "sem problema", o oposto de "não sei"). */
 export function computeFindingDensity(
   dailyReviewIssueBodies: string[],
   mergedPrsByTrail: Record<Trail, number>,
+  issuesFetchOk: boolean,
 ): FindingDensityMetric[] {
+  if (!issuesFetchOk) {
+    return TRAILS.map((trail) => ({ trail, findings: null, merged_prs: mergedPrsByTrail[trail] ?? 0, density: null }));
+  }
   const findingCounts = new Map<Trail, number>();
   for (const trail of TRAILS) findingCounts.set(trail, 0);
   for (const body of dailyReviewIssueBodies) {
@@ -393,12 +437,18 @@ interface RawInput {
   mergedPrs: MergedPrRecord[];
   closedPrs: ClosedPrRecord[];
   dailyReviewIssueBodies: string[];
+  /** `false` sse a busca de `[daily-review] in:title` falhou nesta rodada
+   * — alimenta o `null` fail-closed da métrica 3 (review PR #6855, P1). */
+  dailyReviewIssuesFetchOk: boolean;
   masterRedCommits: { subject: string; body: string }[];
+  /** `false` sse o `git log` falhou nesta rodada — alimenta o `null`
+   * fail-closed da métrica 2 (review PR #6855, P1). */
+  masterRedCommitsFetchOk: boolean;
   masterRedResolutionCtx: MasterRedResolutionContext;
   warnings: string[];
 }
 
-// `gh pr list --limit 500 --json ...` pode devolver MB de JSON (medido: 1,57
+// `gh pr list --limit N --json ...` pode devolver MB de JSON (medido: 1,57
 // MB pra 500 PRs mergeadas) — bem acima do maxBuffer default de 1 MB do
 // `child_process`. `timeout` cobre travamento real (gh sem rede, auth
 // expirada); `maxBuffer` generoso cobre volume legítimo. Os dois tetos
@@ -407,8 +457,28 @@ interface RawInput {
 // degradar a seção sem necessidade.
 const GH_JSON_TIMEOUT_MS = 30_000;
 const GH_JSON_MAX_BUFFER = 20 * 1024 * 1024;
+// Review da PR #6855 (P2, confirmado ao vivo): 500 já truncava a janela de
+// --since 30d anunciada no próprio uso deste script (500 PRs mergeadas
+// esgotava ~12 dias de histórico neste repo). Medido ao vivo de novo depois
+// de subir pra 2000: AINDA truncava um --since 30d (volume real do repo é
+// maior que isso). 5000 é generoso o bastante pra qualquer janela --since
+// realista sem custo extra de request (gh pagina automaticamente por trás
+// de --limit) — mas o número em si nunca é a defesa real: é o aviso de
+// truncamento abaixo (dispara sempre que o resultado bate exatamente no
+// teto, qualquer que seja o teto), que é o que de fato garante que uma
+// janela subestimada nunca fica silenciosa.
+const GH_LIST_LIMIT = 5000;
 
-function ghJson<T>(args: string[], cwd: string, warnings: string[], label: string): T[] {
+interface GhJsonResult<T> {
+  items: T[];
+  /** `false` = a chamada falhou (status != 0 ou JSON inválido) — `items`
+   * é `[]`, mas isso NÃO significa "resultado vazio de verdade". Todo
+   * chamador que alimenta uma métrica precisa propagar este flag, nunca
+   * tratar `items: []` sozinho como "consultamos e não tinha nada". */
+  ok: boolean;
+}
+
+function ghJson<T>(args: string[], cwd: string, warnings: string[], label: string): GhJsonResult<T> {
   const result = spawnSync("gh", args, {
     cwd,
     encoding: "utf8",
@@ -417,14 +487,19 @@ function ghJson<T>(args: string[], cwd: string, warnings: string[], label: strin
   });
   if (result.status !== 0) {
     const stderr = (result.stderr ?? "").trim().slice(0, 300);
-    warnings.push(`${label}: gh saiu com status ${result.status} — seção degradada para vazia. stderr: ${stderr}`);
-    return [];
+    const spawnErr = result.error ? ` spawn error: ${result.error.message}` : "";
+    warnings.push(`${label}: gh saiu com status ${result.status} — seção degradada para vazia. stderr: ${stderr}${spawnErr}`);
+    return { items: [], ok: false };
   }
   try {
-    return JSON.parse(result.stdout) as T[];
+    const items = JSON.parse(result.stdout) as T[];
+    if (Array.isArray(items) && items.length === GH_LIST_LIMIT) {
+      warnings.push(`${label}: resultado bateu exatamente no teto de --limit ${GH_LIST_LIMIT} — pode estar truncado, a janela --since pedida pode não ter sido totalmente coberta.`);
+    }
+    return { items, ok: true };
   } catch {
     warnings.push(`${label}: saída de gh não é JSON válido — seção degradada para vazia`);
-    return [];
+    return { items: [], ok: false };
   }
 }
 
@@ -434,13 +509,13 @@ function ghJson<T>(args: string[], cwd: string, warnings: string[], label: strin
 export function fetchRawInput(cwd: string, sinceDate: Date | null): RawInput {
   const warnings: string[] = [];
 
-  const mergedPrsRaw = ghJson<{ number: number; headRefName: string; mergedAt: string | null; body: string; mergeCommit: { oid: string } | null }>(
-    ["pr", "list", "--state", "merged", "--limit", "500", "--json", "number,headRefName,mergedAt,body,mergeCommit"],
+  const mergedPrsResult = ghJson<{ number: number; headRefName: string; mergedAt: string | null; body: string; mergeCommit: { oid: string } | null }>(
+    ["pr", "list", "--state", "merged", "--limit", String(GH_LIST_LIMIT), "--json", "number,headRefName,mergedAt,body,mergeCommit"],
     cwd,
     warnings,
     "merged PRs",
   );
-  const mergedPrs: MergedPrRecord[] = mergedPrsRaw
+  const mergedPrs: MergedPrRecord[] = mergedPrsResult.items
     .filter((pr) => pr.mergedAt != null)
     .filter((pr) => !sinceDate || new Date(pr.mergedAt as string) >= sinceDate)
     .map((pr) => ({
@@ -451,34 +526,31 @@ export function fetchRawInput(cwd: string, sinceDate: Date | null): RawInput {
       mergeCommitSha: pr.mergeCommit?.oid,
     }));
 
-  const closedPrsRaw = ghJson<{ headRefName: string; closedAt: string | null; mergedAt: string | null }>(
-    ["pr", "list", "--state", "closed", "--limit", "500", "--json", "headRefName,closedAt,mergedAt"],
+  const closedPrsResult = ghJson<{ headRefName: string; closedAt: string | null; mergedAt: string | null }>(
+    ["pr", "list", "--state", "closed", "--limit", String(GH_LIST_LIMIT), "--json", "headRefName,closedAt,mergedAt"],
     cwd,
     warnings,
     "closed PRs",
   );
-  const closedPrs: ClosedPrRecord[] = closedPrsRaw
+  const closedPrs: ClosedPrRecord[] = closedPrsResult.items
     .filter((pr) => !sinceDate || (pr.closedAt && new Date(pr.closedAt) >= sinceDate))
     .map((pr) => ({ headRefName: pr.headRefName, merged: pr.mergedAt != null }));
 
-  const dailyReviewIssuesRaw = ghJson<{ body: string; createdAt: string }>(
-    ["issue", "list", "--state", "all", "--search", "[daily-review] in:title", "--limit", "300", "--json", "body,createdAt"],
+  // 1 chamada só (review da PR #6855, P3 — a versão original fazia a MESMA
+  // busca "[daily-review] in:title" duas vezes, uma por conjunto de campos,
+  // dobrando a superfície de falha parcial para a métrica 3).
+  const dailyReviewIssuesResult = ghJson<{ number: number; body: string; createdAt: string }>(
+    ["issue", "list", "--state", "all", "--search", "[daily-review] in:title", "--limit", String(GH_LIST_LIMIT), "--json", "number,body,createdAt"],
     cwd,
     warnings,
     "[daily-review] issues",
   );
-  const dailyReviewIssueBodies = dailyReviewIssuesRaw
+  const dailyReviewIssueBodies = dailyReviewIssuesResult.items
     .filter((i) => !sinceDate || new Date(i.createdAt) >= sinceDate)
     .map((i) => i.body ?? "");
 
   const issueOrigemByNumber = new Map<number, OrigemMarker | undefined>();
-  const issuesWithNumberRaw = ghJson<{ number: number; body: string }>(
-    ["issue", "list", "--state", "all", "--search", "[daily-review] in:title", "--limit", "300", "--json", "number,body"],
-    cwd,
-    warnings,
-    "[daily-review] issues (para resolução de commit hotfix)",
-  );
-  for (const issue of issuesWithNumberRaw) {
+  for (const issue of dailyReviewIssuesResult.items) {
     issueOrigemByNumber.set(issue.number, parseOrigemMarker(issue.body) ?? undefined);
   }
 
@@ -488,8 +560,10 @@ export function fetchRawInput(cwd: string, sinceDate: Date | null): RawInput {
     { cwd, encoding: "utf8", timeout: GH_JSON_TIMEOUT_MS, maxBuffer: GH_JSON_MAX_BUFFER },
   );
   let masterRedCommits: { subject: string; body: string }[] = [];
-  if (gitLog.status !== 0) {
-    warnings.push(`git log falhou (status ${gitLog.status}) — métrica de quebra de master degradada para vazia. stderr: ${(gitLog.stderr ?? "").trim().slice(0, 300)}`);
+  const masterRedCommitsFetchOk = gitLog.status === 0;
+  if (!masterRedCommitsFetchOk) {
+    const spawnErr = gitLog.error ? ` spawn error: ${gitLog.error.message}` : "";
+    warnings.push(`git log falhou (status ${gitLog.status}) — métrica de quebra de master degradada para null (não 0). stderr: ${(gitLog.stderr ?? "").trim().slice(0, 300)}${spawnErr}`);
   } else {
     const entries = gitLog.stdout.split("\x02").map((e) => e.trim()).filter(Boolean);
     masterRedCommits = entries
@@ -507,20 +581,22 @@ export function fetchRawInput(cwd: string, sinceDate: Date | null): RawInput {
   for (const commit of masterRedCommits) {
     const revertedSha = extractRevertedSha(commit.body);
     if (!revertedSha || revertedShaToTrail.has(revertedSha)) continue;
-    const prsForSha = ghJson<{ headRefName: string }>(
+    const prsForShaResult = ghJson<{ headRefName: string }>(
       ["pr", "list", "--search", revertedSha, "--state", "all", "--limit", "5", "--json", "headRefName"],
       cwd,
       warnings,
       `resolução de origem do commit revertido ${revertedSha}`,
     );
-    if (prsForSha.length > 0) revertedShaToTrail.set(revertedSha, deriveTrail(prsForSha[0].headRefName));
+    if (prsForShaResult.items.length > 0) revertedShaToTrail.set(revertedSha, deriveTrail(prsForShaResult.items[0].headRefName));
   }
 
   return {
     mergedPrs,
     closedPrs,
     dailyReviewIssueBodies,
+    dailyReviewIssuesFetchOk: dailyReviewIssuesResult.ok,
     masterRedCommits,
+    masterRedCommitsFetchOk,
     masterRedResolutionCtx: { revertedShaToTrail, issueOrigemByNumber },
     warnings,
   };
@@ -537,8 +613,8 @@ export function buildTrackQualityReport(raw: RawInput, since: string | null): Tr
     generated_at: new Date().toISOString(),
     since,
     rework: computeReworkRate(raw.mergedPrs),
-    master_red: computeMasterRedAttribution(raw.masterRedCommits, raw.masterRedResolutionCtx),
-    finding_density: computeFindingDensity(raw.dailyReviewIssueBodies, mergedPrsByTrailCount(raw.mergedPrs)),
+    master_red: computeMasterRedAttribution(raw.masterRedCommits, raw.masterRedResolutionCtx, raw.masterRedCommitsFetchOk),
+    finding_density: computeFindingDensity(raw.dailyReviewIssueBodies, mergedPrsByTrailCount(raw.mergedPrs), raw.dailyReviewIssuesFetchOk),
     closed_without_merge: computeClosedWithoutMerge(raw.closedPrs),
     warnings: raw.warnings,
   };
@@ -564,11 +640,11 @@ export function renderTrackQualityTable(report: TrackQualityReport): string {
   lines.push("");
   lines.push("## 2. Quebra de master atribuída por trilha");
   lines.push("trilha\tcount");
-  for (const r of report.master_red) lines.push(`${r.trail}\t${r.count}`);
+  for (const r of report.master_red) lines.push(`${r.trail}\t${r.count ?? "n/a"}`);
   lines.push("");
   lines.push("## 3. Densidade de finding do daily-review por trilha (findings / PRs mergeadas)");
   lines.push("trilha\tfindings\tmerged_prs\tdensity");
-  for (const r of report.finding_density) lines.push(`${r.trail}\t${r.findings}\t${r.merged_prs}\t${r.density ?? "n/a"}`);
+  for (const r of report.finding_density) lines.push(`${r.trail}\t${r.findings ?? "n/a"}\t${r.merged_prs}\t${r.density ?? "n/a"}`);
   lines.push("");
   lines.push("## 4. PRs fechadas sem merge por trilha");
   lines.push("trilha\tclosed_without_merge\tclosed_total\trate");

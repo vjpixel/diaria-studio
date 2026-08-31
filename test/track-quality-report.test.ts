@@ -189,6 +189,18 @@ describe("resolveMasterRedCommitTrail", () => {
     const trail = resolveMasterRedCommitTrail({ subject: "hotfix urgente sem número", body: "" }, ctx);
     assert.equal(trail, "desconhecida");
   });
+
+  it("AMBOS os sinais resolvíveis simultaneamente -> trailer de revert (a) vence sobre marcador de issue (b), conforme a ordem documentada (pr-test-analyzer, PR #6855: precedência nunca exercitada com os dois presentes ao mesmo tempo)", () => {
+    const ctx = {
+      revertedShaToTrail: new Map([["abc1234", "continuo" as const]]),
+      issueOrigemByNumber: new Map([[6255, { pr: 6214, trilha: "overnight" as const, commit: "sha" }]]),
+    };
+    const trail = resolveMasterRedCommitTrail(
+      { subject: "Revert \"hotfix(#6255): algo\"", body: "This reverts commit abc1234." },
+      ctx,
+    );
+    assert.equal(trail, "continuo", "trailer de revert (a) deve vencer sobre o marcador de issue (b), mesmo os dois sendo resolvíveis");
+  });
 });
 
 function pr(overrides: Partial<MergedPrRecord> & { number: number }): MergedPrRecord {
@@ -250,11 +262,18 @@ describe("computeMasterRedAttribution (métrica 2)", () => {
       { subject: "hotfix urgente sem referência", body: "" },
       { subject: "feat normal, não é quebra", body: "" },
     ];
-    const metrics = computeMasterRedAttribution(commits, ctx);
+    const metrics = computeMasterRedAttribution(commits, ctx, true);
     assert.equal(metrics.find((m) => m.trail === "continuo")!.count, 1);
     assert.equal(metrics.find((m) => m.trail === "desconhecida")!.count, 1);
     // total de commits classificados como master-red deve ser 2 (o "feat normal" não conta)
-    assert.equal(metrics.reduce((s, m) => s + m.count, 0), 2);
+    assert.equal(metrics.reduce((s, m) => s + (m.count ?? 0), 0), 2);
+  });
+
+  it("commitsFetchOk: false -> TODAS as trilhas voltam count null, nunca 0 (review PR #6855, P1: git log falhou não pode virar 'checamos, deu zero')", () => {
+    const ctx = { revertedShaToTrail: new Map(), issueOrigemByNumber: new Map() };
+    const commits = [{ subject: "Revert algo", body: "This reverts commit abc." }];
+    const metrics = computeMasterRedAttribution(commits, ctx, false);
+    for (const m of metrics) assert.equal(m.count, null, `trilha ${m.trail} deveria ser null quando a fonte falhou`);
   });
 });
 
@@ -268,13 +287,24 @@ describe("computeFindingDensity (métrica 3)", () => {
       "sem marcador nenhum",
     ];
     const merged = { continuo: 10, overnight: 5, develop: 0, other: 0 };
-    const metrics = computeFindingDensity(bodies, merged);
+    const metrics = computeFindingDensity(bodies, merged, true);
     const continuo = metrics.find((m) => m.trail === "continuo")!;
     assert.equal(continuo.findings, 2);
     assert.equal(continuo.density, 0.2);
     const develop = metrics.find((m) => m.trail === "develop")!;
     assert.equal(develop.merged_prs, 0);
     assert.equal(develop.density, null, "sem PR mergeada na janela, density é null (não divisão por zero)");
+  });
+
+  it("issuesFetchOk: false -> findings/density viram null pra TODA trilha, mesmo com merged_prs disponível (review PR #6855, P1 — o achado mais perigoso: density:0.00 lê como 'trilha limpa')", () => {
+    const merged = { continuo: 10, overnight: 5, develop: 3, other: 1 };
+    const metrics = computeFindingDensity(["<!-- origem: pr=1 trilha=continuo commit=a -->"], merged, false);
+    for (const m of metrics) {
+      assert.equal(m.findings, null, `trilha ${m.trail}: findings deveria ser null`);
+      assert.equal(m.density, null, `trilha ${m.trail}: density deveria ser null`);
+    }
+    // merged_prs continua vindo da fonte independente (não zera junto)
+    assert.equal(metrics.find((m) => m.trail === "continuo")!.merged_prs, 10);
   });
 });
 
@@ -322,7 +352,9 @@ describe("buildTrackQualityReport / renderTrackQualityTable — integração das
       mergedPrs: [pr({ number: 1, headRefName: "continuo/fix-6716-a", body: "Closes #6716" })],
       closedPrs: [{ headRefName: "continuo/fix-x", merged: false }] as ClosedPrRecord[],
       dailyReviewIssueBodies: ["<!-- origem: pr=1 trilha=continuo commit=a -->"],
+      dailyReviewIssuesFetchOk: true,
       masterRedCommits: [{ subject: "hotfix(#1) urgente", body: "" }],
+      masterRedCommitsFetchOk: true,
       masterRedResolutionCtx: { revertedShaToTrail: new Map(), issueOrigemByNumber: new Map() },
       warnings: ["aviso de teste"],
     };
@@ -338,5 +370,55 @@ describe("buildTrackQualityReport / renderTrackQualityTable — integração das
     assert.match(table, /track-quality-report/);
     assert.match(table, /Avisos \(seções degradadas\)/);
     assert.match(table, /aviso de teste/);
+  });
+
+  it("fontes indisponíveis (git log E [daily-review] falharam) -> master_red.count e finding_density.density viram null, NUNCA 0, e a tabela imprime 'n/a' (não '0')", () => {
+    const raw = {
+      mergedPrs: [pr({ number: 1, headRefName: "continuo/fix-1", body: "Closes #1" })],
+      closedPrs: [] as ClosedPrRecord[],
+      dailyReviewIssueBodies: [],
+      dailyReviewIssuesFetchOk: false,
+      masterRedCommits: [],
+      masterRedCommitsFetchOk: false,
+      masterRedResolutionCtx: { revertedShaToTrail: new Map(), issueOrigemByNumber: new Map() },
+      warnings: ["git log falhou", "[daily-review] issues falhou"],
+    };
+    const report = buildTrackQualityReport(raw, null);
+    for (const m of report.master_red) assert.equal(m.count, null);
+    for (const f of report.finding_density) {
+      assert.equal(f.findings, null);
+      assert.equal(f.density, null);
+    }
+    const table = renderTrackQualityTable(report);
+    assert.doesNotMatch(table, /\tcontinuo\t0\n/, "count null não pode imprimir como 0 na tabela");
+    assert.match(table, /n\/a/);
+  });
+
+  it("retrospectivo: reconstrução aproximada do achado real do #6752 (retrabalho continuo >> overnight) — âncora contra regressão silenciosa da métrica 1", () => {
+    // Não são os números exatos da auditoria de 29/08 (73/286 PRs reais não
+    // cabem num fixture de teste) — é uma reconstrução PROPORCIONAL: mesma
+    // ORDEM DE GRANDEZA de retrabalho (continuo bem mais alto que
+    // overnight), suficiente pra travar que um refactor futuro não inverta
+    // silenciosamente a atribuição "trilha da 1ª PR" ou a contagem de
+    // retrabalho (test-analyzer, PR #6855, P2).
+    const mergedPrs: MergedPrRecord[] = [];
+    // continuo: 10 issues, 3 com retrabalho (~30%, mesma ordem do 23,3% real)
+    for (let i = 1; i <= 10; i++) {
+      mergedPrs.push(pr({ number: 1000 + i, headRefName: "continuo/fix-a", mergedAt: `2026-08-0${(i % 9) + 1}T00:00:00Z`, body: `Closes #${i}` }));
+      if (i <= 3) mergedPrs.push(pr({ number: 2000 + i, headRefName: "continuo/fix-b", mergedAt: `2026-08-1${(i % 9) + 1}T00:00:00Z`, body: `Closes #${i}` }));
+    }
+    // overnight: 10 issues, 1 com retrabalho (~10%, mesma ordem do 9,8% real)
+    for (let i = 101; i <= 110; i++) {
+      mergedPrs.push(pr({ number: 3000 + i, headRefName: "overnight/fix-a", mergedAt: `2026-08-0${(i % 9) + 1}T00:00:00Z`, body: `Closes #${i}` }));
+      if (i === 101) mergedPrs.push(pr({ number: 4000 + i, headRefName: "overnight/fix-b", mergedAt: `2026-08-1${(i % 9) + 1}T00:00:00Z`, body: `Closes #${i}` }));
+    }
+    const rework = computeReworkRate(mergedPrs);
+    const continuo = rework.find((r) => r.trail === "continuo")!;
+    const overnight = rework.find((r) => r.trail === "overnight")!;
+    assert.equal(continuo.issues_total, 10);
+    assert.equal(continuo.issues_reworked, 3);
+    assert.equal(overnight.issues_total, 10);
+    assert.equal(overnight.issues_reworked, 1);
+    assert.ok(continuo.rate! > overnight.rate!, "continuo deve ter taxa de retrabalho MAIOR que overnight, mesma direção medida em 29/08/2026 (#6752)");
   });
 });
