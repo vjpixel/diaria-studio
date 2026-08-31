@@ -81,8 +81,19 @@ describe("ci.yml: concurrency separa push (nunca cancela) de pull_request (cance
     assert.match(groupLine!, /github\.event_name/, "group deve condicionar por github.event_name");
   });
 
-  it("group usa github.sha no ramo de push (grupo único por commit — nunca colide entre merges distintos)", () => {
-    assert.match(groupLine!, /github\.sha/, "group deve referenciar github.sha (ramo push)");
+  it("group usa github.sha no ramo de push, github.ref no ramo pull_request — MATCH EXATO da expressão, não só presença de token (review #6837 P2)", () => {
+    // Confiança alta do review: uma regressão que INVERTE o ternário
+    // (`event_name == 'push' && github.ref || github.sha` — push cai no ref
+    // fixo de novo, pull_request cai no sha) ainda conteria as substrings
+    // "github.event_name" e "github.sha" em algum lugar da linha — os
+    // asserts de PRESENÇA acima passariam mesmo com o bug do #6822/#6835
+    // reintroduzido, só que pro lado errado. Match exato da string inteira
+    // fecha esse buraco: só UMA ordem dos dois ramos é aceita.
+    assert.equal(
+      groupLine!.trim(),
+      "group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}",
+      "expressão do group deve ser EXATAMENTE esta — push→sha, pull_request→ref; qualquer desvio (inclusive ternário invertido) quebra a garantia",
+    );
   });
 
   it("cancel-in-progress condiciona por github.event_name (não é mais 'true' fixo)", () => {
@@ -94,6 +105,18 @@ describe("ci.yml: concurrency separa push (nunca cancela) de pull_request (cance
       "cancel-in-progress voltou a ser 'true' fixo — cancela push:master de novo",
     );
     assert.match(cancelLine!, /github\.event_name/);
+  });
+
+  it("cancel-in-progress usa exatamente 'github.event_name != push' (review #6837 P2 — mesmo risco de inversão do group)", () => {
+    // Se o operador virasse '==' (cancela SÓ em push, nunca em pull_request),
+    // ainda conteria "github.event_name" e passaria no assert de presença
+    // acima, invertendo a garantia inteira. Match exato fecha o buraco.
+    const cancelLine = block.split("\n").find((l) => /^\s*cancel-in-progress:/.test(l));
+    assert.equal(
+      cancelLine!.trim(),
+      "cancel-in-progress: ${{ github.event_name != 'push' }}",
+      "expressão deve ser EXATAMENTE esta — cancela em qualquer trigger que NÃO seja push",
+    );
   });
 });
 
