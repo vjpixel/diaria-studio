@@ -44,6 +44,13 @@
  * automática). Worktree detached (sem branch, `git worktree list
  * --porcelain` reporta `detached`) sempre cai em `needs-review` — sem
  * branch não tem PR pra consultar, sem sinal pra decidir sozinho.
+ * Worktree LOCKED (`git worktree lock`) nunca é removido, independente de
+ * tudo o resto — é o sinal explícito e nativo do git pra "isto está em
+ * uso" (#6802, review da PR #6852). E `git status --porcelain` que FALHA
+ * (não "vazio", FALHA — índice travado por sessão concorrente, permissão,
+ * disco cheio) nunca é tratado como limpo: `PorcelainStatus` tem 3 valores
+ * justamente pra isso, `"unknown"` cai no mesmo `needs-review` de sujo,
+ * nunca no mesmo caminho de `"clean"`.
  *
  * `git worktree prune` (nativo do git, não reimplementado aqui) já cobre o
  * caso mais simples e mais comum na auditoria — worktree cujo diretório no
@@ -56,12 +63,19 @@
 
 export type CleanupVerdict = "safe-delete" | "needs-review";
 
+/** Vocabulário real de `gh pr list --json state` (#6802, review da PR
+ * #6852 — P3: `string[]` cru deixava um typo/valor futuro do GitHub passar
+ * sem sinal de compilador; como a direção de erro já é fail-closed
+ * (qualquer valor não reconhecido cai em `needs-review`), o custo do typo
+ * era baixo, mas o tipo documenta o contrato real). */
+export type PrState = "OPEN" | "CLOSED" | "MERGED";
+
 export interface BranchCleanupInput {
   readonly branch: string;
   /** Estados de TODAS as PRs encontradas com este branch como head (pode
    * ser mais de uma — reabertura, ou 2 PRs históricas pro mesmo branch
    * name reusado). `[]` = nenhuma PR encontrada. */
-  readonly prStates: readonly string[];
+  readonly prStates: readonly PrState[];
   /** `git merge-base --is-ancestor <branch> master` — `true` sse a branch
    * é ancestral (já está, integralmente, na história de master). */
   readonly isAncestorOfMaster: boolean;
@@ -100,6 +114,12 @@ export interface WorktreeListEntry {
   /** `null` = detached, ou entry `bare`. */
   readonly branch: string | null;
   readonly prunable: boolean;
+  /** #6802, review da PR #6852 (P1, confiança alta) — `git worktree lock`
+   * é o mecanismo NATIVO do git pra "não mexa, isto está em uso"; um
+   * `git worktree remove --force` ignora essa trava. Sem este campo,
+   * `classifyWorktreeForCleanup` não tinha como saber que um worktree
+   * estava explicitamente marcado como intocável. */
+  readonly locked: boolean;
 }
 
 /** Pura — parseia `git worktree list --porcelain` (blocos separados por
@@ -117,17 +137,30 @@ export function parseWorktreeListPorcelain(output: string): WorktreeListEntry[] 
     const branchLine = lines.find((l) => l.startsWith("branch "));
     const branch = branchLine ? branchLine.slice("branch ".length).replace(/^refs\/heads\//, "").trim() : null;
     const prunable = lines.some((l) => l.startsWith("prunable"));
-    entries.push({ path, branch, prunable });
+    const locked = lines.some((l) => l.startsWith("locked"));
+    entries.push({ path, branch, prunable, locked });
   }
   return entries;
 }
+
+/** #6802, review da PR #6852 (P0, confiança alta, confirmado por 3
+ * revisores independentes): `boolean` sozinho não distingue "verificado
+ * limpo" de "não deu pra verificar" — um `git status --porcelain` que
+ * falha (lock de índice por sessão concorrente, permissão, disco cheio)
+ * e vira `null` no CLI não pode colapsar pro MESMO valor que "de fato
+ * limpo", porque isso faria `--force` remover um worktree cujo estado
+ * real é desconhecido, não confirmadamente limpo. `"unknown"` é tratado
+ * como sujo — fail-closed, nunca como "limpo por omissão". */
+export type PorcelainStatus = "clean" | "dirty" | "unknown";
 
 export interface WorktreeCleanupInput {
   readonly path: string;
   /** `null` = worktree detached (sem branch checked out). */
   readonly branch: string | null;
-  /** `git -C <path> status --porcelain` vazio? */
-  readonly isPorcelainClean: boolean;
+  readonly porcelainStatus: PorcelainStatus;
+  /** `git worktree lock` ativo — nunca remover, independente de tudo o
+   * resto (ver docstring de `WorktreeListEntry.locked`). */
+  readonly locked: boolean;
   /** Decisão já computada pra `branch` (via `classifyBranchForCleanup`),
    * ou `null` se `branch` é `null`. */
   readonly branchDecision: CleanupDecision | null;
@@ -141,8 +174,15 @@ export interface WorktreeCleanupDecision {
 /** Pura — decide se um worktree EXISTENTE (já passou por `git worktree
  * prune`, que cobre o caso "diretório nem existe mais") é seguro remover. */
 export function classifyWorktreeForCleanup(input: WorktreeCleanupInput): WorktreeCleanupDecision {
-  if (!input.isPorcelainClean) {
-    return { verdict: "needs-review", reason: "worktree tem mudança não commitada — nunca remove estado sujo (fail-closed)" };
+  if (input.locked) {
+    return { verdict: "needs-review", reason: "worktree está locked (git worktree lock) — sinal explícito de 'em uso', nunca remove" };
+  }
+  if (input.porcelainStatus !== "clean") {
+    const detail =
+      input.porcelainStatus === "unknown"
+        ? "não deu pra confirmar o status (git status falhou) — tratado como sujo, fail-closed"
+        : "worktree tem mudança não commitada";
+    return { verdict: "needs-review", reason: `${detail} — nunca remove estado não-confirmadamente-limpo` };
   }
   if (input.branch === null) {
     return { verdict: "needs-review", reason: "worktree detached (sem branch) — sem sinal pra decidir sozinho" };

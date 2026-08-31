@@ -40,6 +40,12 @@ describe("classifyBranchForCleanup (#6802)", () => {
     assert.equal(r.verdict, "needs-review");
   });
 
+  it("PR MERGED e ancestral SIMULTANEAMENTE -> safe-delete via MERGED (critério primário, não depende do secundário coincidir)", () => {
+    const r = classifyBranchForCleanup({ branch: "both-signals", prStates: ["MERGED"], isAncestorOfMaster: true });
+    assert.equal(r.verdict, "safe-delete");
+    assert.match(r.reason, /MERGED/, "MERGED é checado primeiro — a razão deve refletir o critério primário, não o secundário");
+  });
+
   it("#6802 retrospectivo: das 61 branches continuo/ medidas, ancestor-only classificava 51 como não-mergeadas — MERGED via gh corrige isso", () => {
     // Reconstrução direta do achado: branch squash-mergeada, isAncestorOfMaster
     // é false (squash nunca vira ancestral) — só a PR MERGED resolve certo.
@@ -53,7 +59,7 @@ describe("classifyBranchForCleanup (#6802)", () => {
 });
 
 describe("parseWorktreeListPorcelain (#6802)", () => {
-  it("parseia múltiplos blocos, extrai path/branch/prunable", () => {
+  it("parseia múltiplos blocos, extrai path/branch/prunable/locked", () => {
     const out = [
       "worktree /home/vjpixel/diaria-studio",
       "HEAD abc123",
@@ -66,8 +72,8 @@ describe("parseWorktreeListPorcelain (#6802)", () => {
     ].join("\n");
     const entries = parseWorktreeListPorcelain(out);
     assert.equal(entries.length, 2);
-    assert.deepEqual(entries[0], { path: "/home/vjpixel/diaria-studio", branch: "master", prunable: false });
-    assert.deepEqual(entries[1], { path: "/tmp/wt-6143", branch: null, prunable: true });
+    assert.deepEqual(entries[0], { path: "/home/vjpixel/diaria-studio", branch: "master", prunable: false, locked: false });
+    assert.deepEqual(entries[1], { path: "/tmp/wt-6143", branch: null, prunable: true, locked: false });
   });
 
   it("branch com refs/heads/ prefixo é normalizada (sem o prefixo no output)", () => {
@@ -84,6 +90,40 @@ describe("parseWorktreeListPorcelain (#6802)", () => {
     const out = "HEAD abc\nbranch refs/heads/x";
     assert.deepEqual(parseWorktreeListPorcelain(out), []);
   });
+
+  it("worktree LOCKED -> locked: true (formato real do git: 'locked <motivo>')", () => {
+    const out = ["worktree /tmp/locked-wt", "HEAD abc123", "branch refs/heads/wt-branch", "locked testing lock"].join("\n");
+    const entries = parseWorktreeListPorcelain(out);
+    assert.equal(entries[0].locked, true);
+  });
+
+  it("bloco 'bare' (sem HEAD/branch) -> branch null, nunca lança (formato real de repo bare)", () => {
+    const out = ["worktree /repo.git", "bare"].join("\n");
+    const entries = parseWorktreeListPorcelain(out);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].branch, null);
+  });
+
+  it("3+ blocos consecutivos parseiam todos, não só os 2 primeiros", () => {
+    const out = [
+      "worktree /a",
+      "HEAD a1",
+      "branch refs/heads/a",
+      "",
+      "worktree /b",
+      "HEAD b1",
+      "branch refs/heads/b",
+      "",
+      "worktree /c",
+      "HEAD c1",
+      "branch refs/heads/c",
+    ].join("\n");
+    const entries = parseWorktreeListPorcelain(out);
+    assert.deepEqual(
+      entries.map((e) => e.path),
+      ["/a", "/b", "/c"],
+    );
+  });
 });
 
 describe("classifyWorktreeForCleanup (#6802 item 3)", () => {
@@ -91,15 +131,40 @@ describe("classifyWorktreeForCleanup (#6802 item 3)", () => {
     const r = classifyWorktreeForCleanup({
       path: "/x",
       branch: "continuo/fix-1",
-      isPorcelainClean: false,
+      porcelainStatus: "dirty",
+      locked: false,
       branchDecision: { verdict: "safe-delete", reason: "PR MERGED" },
     });
     assert.equal(r.verdict, "needs-review");
-    assert.match(r.reason, /não commitada/);
+    assert.match(r.reason, /mudança não commitada/);
+  });
+
+  it("porcelain UNKNOWN (git status falhou) -> needs-review, NUNCA tratado como limpo (P0 da review da PR #6852)", () => {
+    const r = classifyWorktreeForCleanup({
+      path: "/x",
+      branch: "continuo/fix-1",
+      porcelainStatus: "unknown",
+      locked: false,
+      branchDecision: { verdict: "safe-delete", reason: "PR MERGED" },
+    });
+    assert.equal(r.verdict, "needs-review");
+    assert.match(r.reason, /não deu pra confirmar/);
+  });
+
+  it("worktree LOCKED -> needs-review SEMPRE, mesmo limpo e com branch safe-delete (git worktree lock é o sinal mais forte)", () => {
+    const r = classifyWorktreeForCleanup({
+      path: "/x",
+      branch: "continuo/fix-1",
+      porcelainStatus: "clean",
+      locked: true,
+      branchDecision: { verdict: "safe-delete", reason: "PR MERGED" },
+    });
+    assert.equal(r.verdict, "needs-review");
+    assert.match(r.reason, /locked/);
   });
 
   it("detached (sem branch) -> sempre needs-review, mesmo limpo", () => {
-    const r = classifyWorktreeForCleanup({ path: "/x", branch: null, isPorcelainClean: true, branchDecision: null });
+    const r = classifyWorktreeForCleanup({ path: "/x", branch: null, porcelainStatus: "clean", locked: false, branchDecision: null });
     assert.equal(r.verdict, "needs-review");
     assert.match(r.reason, /detached/);
   });
@@ -108,7 +173,8 @@ describe("classifyWorktreeForCleanup (#6802 item 3)", () => {
     const r = classifyWorktreeForCleanup({
       path: "/x",
       branch: "overnight/fix-6413",
-      isPorcelainClean: true,
+      porcelainStatus: "clean",
+      locked: false,
       branchDecision: { verdict: "safe-delete", reason: "PR MERGED encontrada (gh pr list --state all)" },
     });
     assert.equal(r.verdict, "safe-remove");
@@ -119,7 +185,8 @@ describe("classifyWorktreeForCleanup (#6802 item 3)", () => {
     const r = classifyWorktreeForCleanup({
       path: "/x",
       branch: "wip-branch",
-      isPorcelainClean: true,
+      porcelainStatus: "clean",
+      locked: false,
       branchDecision: { verdict: "needs-review", reason: "sem PR nenhuma" },
     });
     assert.equal(r.verdict, "needs-review");
