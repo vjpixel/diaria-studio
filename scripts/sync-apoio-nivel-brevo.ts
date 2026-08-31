@@ -311,14 +311,19 @@ export interface BrevoBlastRadiusGuardResult {
 }
 
 /**
- * Pure: recusa o `--push` inteiro quando as remoções calculadas excedem
- * `BLAST_RADIUS_THRESHOLD` (30%) de quem é membro HOJE da lista Brevo
- * dedicada — mesmo racional/limiar de `evaluateBlastRadiusGuard`
- * (sync-apoio-nivel-beehiiv.ts, #4436), denominador adaptado pro modelo de
- * membresia de lista (não há campo `apoioNivel` por membro no estado atual
- * aqui — só o e-mail já implica "é alvo", ver `fetchCurrentBrevoApoiadoresState`).
- * "Passar de" é estrito — exatamente no limiar não bloqueia.
- * `force` (`--force-blast-radius`) é o escape hatch explícito, sempre logado.
+ * Pure: calcula a magnitude das remoções (`ratio`) contra quem é membro HOJE
+ * da lista Brevo dedicada, pro log/observabilidade do `--push`.
+ *
+ * #6793 "Faixa A" (30/08/2026, decisão do editor, item 8): freio automático
+ * de blast radius REMOVIDO — `blocked` é sempre `false`, `--push` nunca é
+ * recusado por magnitude de remoção. Antes disso, recusava quando `ratio`
+ * excedia `BLAST_RADIUS_THRESHOLD` (30%, mesmo racional/limiar de
+ * `evaluateBlastRadiusGuard`, sync-apoio-nivel-beehiiv.ts, #4436) — o
+ * cálculo do `ratio` continua aqui só pra o caller logar a magnitude real
+ * de cada `--push`, nunca pra bloquear.
+ * `force`/`BLAST_RADIUS_THRESHOLD` seguem existindo (assinatura/constante
+ * seguem paridade com o histórico e com o par Beehiiv) mas não afetam mais
+ * `blocked` — mantidos como documentação viva do limiar que valia antes.
  */
 export function evaluateBrevoBlastRadiusGuard(
   removalCount: number,
@@ -326,7 +331,8 @@ export function evaluateBrevoBlastRadiusGuard(
   force: boolean,
 ): BrevoBlastRadiusGuardResult {
   const ratio = currentMemberCount > 0 ? removalCount / currentMemberCount : 0;
-  const blocked = !force && ratio > BLAST_RADIUS_THRESHOLD;
+  void force; // #6793: escape hatch ficou sem efeito — guard nunca bloqueia mais.
+  const blocked = false;
   return { blocked, removalCount, currentMemberCount, ratio };
 }
 

@@ -137,11 +137,15 @@ export type Stage5BrevoResult =
       campaignId: number;
       totalAtual: number;
       targetTotal: number;
+      /** #6793 (30/08/2026): deixou de ser aplicado como cap — desde o item 7
+       * da issue, `--max-add` não é mais passado a `brevo-diaria-run.ts`.
+       * Campo mantido só como valor INFORMATIVO (o que a fórmula antiga teria
+       * pedido), não como intenção real. */
       maxAdd: number;
       /** #5839 — recontagem real pós-`--apply` (`computeCurrentActiveCount` sobre
-       * `deps.readContacts()` relido), nunca a INTENÇÃO (`maxAdd`). Distingue
-       * "adicionei os N pedidos" de "adicionei 0" — os dois saíam como `ok`
-       * indistinguíveis antes desta issue. */
+       * `deps.readContacts()` relido). Desde #6793, reflete só quantos
+       * candidatos elegíveis existiam nesta rodada (sem cap pra comparar
+       * contra). */
       addedActual: number;
     };
 
@@ -180,31 +184,30 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
     return { status: "skipped", reason: resolved.reason };
   }
 
+  // #6793 "Faixa A" (30/08/2026, decisão do editor, item 7): freio de VOLUME
+  // por meta diária removido — `--max-add` deixou de ser passado a
+  // `brevo-diaria-run.ts`, então o backfill preenche TODOS os slots livres
+  // (também ilimitados desde o item 6, `sync-pending-to-brevo.ts`) em vez de
+  // parar num alvo fixo diário. `resolveStage5MaxAdd`/`resolved.maxAdd`
+  // continuam computados abaixo só pra log/observabilidade e pra preservar o
+  // skip-on-missing-store (`storeExists`) — não gate mais nada no `exec`.
   process.stderr.write(
-    `[brevo-diaria stage5] total_atual=${resolved.totalAtual} target=${resolved.targetTotal} ` +
-      `max-add=${resolved.maxAdd} (premissa registrada automaticamente, #5321/#5772)\n`,
+    `[brevo-diaria stage5] total_atual=${resolved.totalAtual} target-informativo=${resolved.targetTotal} ` +
+      `(sem teto aplicado, #6793 — max-add não é mais passado)\n`,
   );
 
-  const applyResult = deps.exec("scripts/brevo-diaria-run.ts", ["--apply", "--max-add", String(resolved.maxAdd)]);
+  const applyResult = deps.exec("scripts/brevo-diaria-run.ts", ["--apply"]);
   if (applyResult.code !== 0) {
     return { status: "failed", step: "brevo-diaria-run --apply", reason: tailReason(applyResult) };
   }
 
-  // #5839 — recontagem REAL pós-`--apply`, não a intenção (`resolved.maxAdd`).
-  // `brevo-diaria-run --apply` sai 0 tanto quando adicionou os N pedidos
-  // quanto quando não havia candidato elegível nenhum ("0 de 0 elegível(is)
-  // selecionado(s)") — só relendo `deps.readContacts()` de novo (fresh do
-  // store, já mutado pelo apply) dá pra distinguir os dois casos.
+  // Recontagem REAL pós-`--apply` (#5839) — sem cap (#6793), `addedActual`
+  // reflete só quantos candidatos elegíveis existiam nesta rodada, não mais
+  // uma comparação contra um pedido de N.
   const activeCountAfterApply = deps.storeExists()
     ? computeCurrentActiveCount(deps.readContacts() as BrevoDiariaContact[])
     : resolved.totalAtual;
   const addedActual = Math.max(0, activeCountAfterApply - resolved.totalAtual);
-  if (addedActual < resolved.maxAdd) {
-    process.stderr.write(
-      `⚠️ Brevo diária: fila em ${activeCountAfterApply}/${resolved.targetTotal} — ` +
-        `${resolved.maxAdd} vaga(s) pedida(s), ${addedActual} preenchida(s) (sem candidatos elegíveis).\n`,
-    );
-  }
 
   const publishResult = deps.exec("scripts/publish-daily-brevo.ts", [editionDir, "--i-reviewed-the-copy"]);
   if (publishResult.code !== 0) {

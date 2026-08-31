@@ -193,20 +193,19 @@ const PER_PAGE = 100;
 interface BrevoDiariaConfig {
   api_key_env: string;
   list_id: number | null;
-  /** #4476 item 5 — cap free tier Brevo (300), reusado como teto da fila de
-   * contatos ATIVOS (`in_brevo`), não só de envio diário — ver
-   * `computeAvailableSlots`. */
+  /** #4476 item 5 — cap free tier Brevo (300). Usado por `checkDailySendCap`
+   * (`publish-daily-brevo.ts`, item 5 da issue #6793) como teto de ENVIO
+   * diário — esse uso continua ativo. **Deixou de** ser reusado como teto da
+   * fila de contatos ATIVOS (`in_brevo`) — decisão do editor #6793 "Faixa A"
+   * (30/08/2026, remoção deliberada dos freios automáticos de VOLUME,
+   * assumindo o risco de reputação de domínio/IP conscientemente). Ver
+   * `main()` abaixo, onde o cap da fila agora é ilimitado.
+   */
   daily_send_cap?: number;
 }
 interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
 }
-
-/** Fallback se `daily_send_cap` não estiver em `platform.config.json` (nunca
- * deveria faltar — já documentado lá desde #4266 — mas o campo é opcional no
- * tipo, então um fallback explícito é mais seguro que `undefined` silencioso
- * chegando em `computeAvailableSlots`). */
-const DEFAULT_QUEUE_CAP = 300;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -870,10 +869,15 @@ async function main(): Promise<void> {
       `).`,
   );
 
-  // #4476 item 5 — fila de tamanho fixo: só backfill até o cap, priorizado
-  // pelo score de origem (item 4). Substitui o comportamento antigo de
-  // ingerir TODO o `toIngest` de uma vez (ou abortar se > cap).
-  const cap = brevoDiaria!.daily_send_cap ?? DEFAULT_QUEUE_CAP;
+  // #6793 "Faixa A" (30/08/2026, decisão do editor, item 6): freio
+  // automático de VOLUME da fila removido — a fila `brevo_diaria` não tem
+  // mais teto de contatos ativos simultâneos. `daily_send_cap` continua
+  // existindo em platform.config.json e continua valendo pro cap de ENVIO
+  // diário (item 5 da mesma issue, `checkDailySendCap` em
+  // publish-daily-brevo.ts) — só o uso dele AQUI, como teto do TAMANHO da
+  // fila, foi removido. `computeAvailableSlots` continua puro/testado com
+  // o mesmo contrato de sempre; só o cap passado a ela mudou.
+  const cap = Number.POSITIVE_INFINITY;
   const currentActiveCount = computeCurrentActiveCount(store.contacts); // #4631: exclui EDITOR_SEED_EMAILS
   const slotsBeforeGuardrail = computeAvailableSlots(currentActiveCount, cap);
 
@@ -903,7 +907,7 @@ async function main(): Promise<void> {
         "efetivo(s) pro backfill desta rodada (teto escolhido pelo editor no passo de decisão de volume).",
     );
   }
-  log(`fila: ${currentActiveCount}/${cap} ocupados, ${availableSlots} slot(s) livre(s) pro backfill.`);
+  log(`fila: ${currentActiveCount} ocupados, sem teto (#6793) — ${availableSlots} slot(s) livre(s) pro backfill.`);
 
   const selected = selectContactsForBackfill(toIngest, availableSlots, scoreByEmail, laneByEmail);
   log(`${selected.length} contato(s) selecionado(s) pra este backfill (de ${toIngest.length} elegíveis, ordenados por score).`);

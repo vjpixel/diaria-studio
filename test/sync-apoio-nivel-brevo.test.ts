@@ -233,21 +233,27 @@ describe("diffApoioBrevo — caso 6: membro atual sem contato apoia.se correspon
   });
 });
 
-describe("evaluateBrevoBlastRadiusGuard — limiar 30% (#4436, paridade #4572)", () => {
-  it("no limiar EXATO (30%) não bloqueia", () => {
+describe("evaluateBrevoBlastRadiusGuard — freio removido (#6793 Faixa A, item 8)", () => {
+  it("no limiar EXATO (30%) não bloqueia — nunca bloqueou, comportamento preservado", () => {
     const result = evaluateBrevoBlastRadiusGuard(3, 10, false);
     assert.equal(result.ratio, 0.3);
     assert.equal(result.blocked, false);
   });
 
-  it("acima do limiar bloqueia", () => {
+  it("#6793: acima do limiar histórico (30%) NÃO bloqueia mais — guard desativado", () => {
     const result = evaluateBrevoBlastRadiusGuard(4, 10, false);
     assert.ok(result.ratio > 0.3);
-    assert.equal(result.blocked, true);
+    assert.equal(result.blocked, false);
   });
 
-  it("--force-blast-radius sempre libera, mesmo muito acima do limiar", () => {
+  it("--force-blast-radius: sem efeito (guard já não bloqueia nada), sempre libera", () => {
     const result = evaluateBrevoBlastRadiusGuard(9, 10, true);
+    assert.equal(result.blocked, false);
+  });
+
+  it("#6793: mesmo removendo 100% dos membros, não bloqueia", () => {
+    const result = evaluateBrevoBlastRadiusGuard(10, 10, false);
+    assert.equal(result.ratio, 1);
     assert.equal(result.blocked, false);
   });
 
