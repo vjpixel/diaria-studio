@@ -603,6 +603,53 @@ describe("wiring da skill /diaria-edicao (#5744)", () => {
   });
 });
 
+// #6827: a skill /diaria-1-pesquisa deve instruir EXPLICITAMENTE o top-level
+// headless (--auto/--no-gates/--print) a escrever o sentinel de conclusão após
+// o gate. O bug foi um buraco de instrução na prosa da skill: o script
+// `stage-1-run.ts --phase post-gate` já escrevia o sentinel, mas quando a skill
+// usava o fallback prosa (ou o session era interrompido antes de chegar ao
+// script), não havia instrução explícita. Este teste valida o wiring — que o
+// Passo 4 existe, cita `pipeline-sentinel.ts write` com `--step 1` e
+// `--outputs`, e não pode ser "pulado por falta de instrução explícita".
+describe("wiring da skill /diaria-1-pesquisa — sentinel (#6827)", () => {
+  const skillPath = join(import.meta.dirname, "..", ".claude", "skills", "diaria-1-pesquisa", "SKILL.md");
+
+  it("SKILL.md tem Passo 4 instruindo o write do sentinel com args canônicos", () => {
+    const skill = readFileSync(skillPath, "utf8");
+    assert.match(skill, /Passo 4.*sentinel/i, "skill precisa de um Passo 4 explícito sobre sentinel de conclusão");
+    assert.match(
+      skill,
+      /pipeline-sentinel\.ts write[\s\\]*\n\s*--edition\s*\$1[\s\\]*\n\s*--step\s+1/,
+      "o comando deve passar --edition $1 e --step 1",
+    );
+    assert.match(
+      skill,
+      /--outputs.*01-categorized\.md.*_internal\/01-approved\.json/,
+      "o comando deve declarar os outputs canônicos do Stage 1",
+    );
+  });
+
+  it("Passo 4 (sentinel) vem após o Passo 2 (playbook execution incl. gate)", () => {
+    const skill = readFileSync(skillPath, "utf8");
+    // O sentinel é escrito APÓS o gate (apply-gate-edits). No SKILL.md, o gate
+    // roda dentro do playbook do Passo 2; Passo 4 é o escritor do sentinel.
+    const step2Idx = skill.indexOf("## Passo 2");
+    const step4Idx = skill.indexOf("## Passo 4");
+    const sentinelCmdIdx = skill.indexOf("npx tsx scripts/pipeline-sentinel.ts write");
+    assert.ok(step2Idx < step4Idx, "Passo 4 (sentinel) deve vir após Passo 2 (playbook/gate)");
+    assert.ok(sentinelCmdIdx > step2Idx, "comando sentinel não deve vir antes do playbook do Passo 2");
+  });
+
+  it("fail-soft do sentinel write é documentado (warn, não skip)", () => {
+    const skill = readFileSync(skillPath, "utf8");
+    assert.match(
+      skill,
+      /sentinel_write_failed.*não bloqueia|fail-soft|não desculpa para pular|--bypass-reason/i,
+      "a skill deve documentar que falha do sentinel write é warn/fail-soft, nunca um motivo para pular",
+    );
+  });
+});
+
 // ── #6088: MCP permission_not_granted_noninteractive deixa de ser silencioso ──
 describe("edition-stage-runner — #6088: mcpPermissionWarnings", () => {
   const MCP_LINE_GMAIL =
