@@ -123,7 +123,7 @@
  *   npx tsx scripts/sunset-dead-subscribers.ts --push --force-blast-radius
  */
 
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -389,10 +389,6 @@ export function excludeAlreadyInStore(
   }
   return { toConsider, excludedEmails };
 }
-
-/** Fallback se `daily_send_cap` não estiver em `platform.config.json` — mesmo
- *  valor default de `sync-pending-to-brevo.ts::DEFAULT_QUEUE_CAP`. */
-export const DEFAULT_QUEUE_CAP = 300;
 
 /**
  * Pura — trunca a seleção pra caber nos slots livres da MESMA fila
@@ -880,19 +876,14 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Cap da fila compartilhada com sync-pending-to-brevo.ts (item 4 da spec —
-  // "respeitando o fluxo existente... cap da fila"). Lido de
-  // platform.config.json → brevo_diaria.daily_send_cap, mesmo campo/fallback
-  // de sync-pending-to-brevo.ts::DEFAULT_QUEUE_CAP.
-  let cap = DEFAULT_QUEUE_CAP;
-  try {
-    const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
-      brevo_diaria?: { daily_send_cap?: number };
-    };
-    cap = platformConfig.brevo_diaria?.daily_send_cap ?? DEFAULT_QUEUE_CAP;
-  } catch (e) {
-    log(`aviso: falha ao ler platform.config.json (${(e as Error).message}) — usando cap default ${DEFAULT_QUEUE_CAP}.`);
-  }
+  // #6793 "Faixa A" (30/08/2026, decisão do editor, item 6 — 3º call site,
+  // incluído por identidade de mecanismo/chave/conta com sync-pending-to-brevo.ts
+  // e import-curated-batch-brevo.ts, não nomeado originalmente na issue mas
+  // adicionado pra evitar que a mesma chave `daily_send_cap` signifique coisas
+  // opostas dependendo do script): freio de VOLUME da fila compartilhada
+  // removido — este script (2º caminho de backfill pro mesmo store/lista)
+  // deixou de ter teto de contatos ativos simultâneos.
+  const cap = Number.POSITIVE_INFINITY;
   const currentActiveCount = computeCurrentActiveCount(store.contacts);
   const availableSlots = computeAvailableSlots(currentActiveCount, cap);
   const toApply = applyQueueCapGate(toConsider, availableSlots);
