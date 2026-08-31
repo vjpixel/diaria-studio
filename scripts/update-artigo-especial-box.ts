@@ -370,7 +370,9 @@ async function main(): Promise<void> {
   // #4568) — aborta com mensagem clara em vez de aceitar lixo.
   // #6748: default mudou de 3 para 2 — slot 3 foi eliminado da rotação e
   // nunca mais renderiza (ver docstring do módulo).
-  const slot = getIntArg(process.argv.slice(2), "slot", { min: 1 }) ?? 2;
+  // #6748: slot 3 foi eliminado da rotação — rejeitar explicitamente
+  // `--slot 3` com mensagem que aponta a motivação, não só um max silente.
+  const slot = getIntArg(process.argv.slice(2), "slot", { min: 1, max: 2 }) ?? 2;
   const dryRun = flags.has("dry-run");
   const force = flags.has("force");
   const unpin = flags.has("unpin");

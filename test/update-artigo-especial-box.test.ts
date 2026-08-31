@@ -495,4 +495,45 @@ describe("#6748 self-review (alta confiança): pin do box de fato RENDERIZA na n
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("#6797: --slot 3 é rejeitado com erro explícito (não silencioso)", () => {
+    // O #6748 eliminou slot 3 da rotação. Antes, --slot 3 gravava a config
+    // e reportava sucesso sem nenhum efeito (stitch-newsletter.ts ignora slot3).
+    // Agora getIntArg com max:2 deve lançar, e o config NUNCA é escrito.
+    const dir = mkdtempSync(join(tmpdir(), "artigo-especial-slot3-"));
+    const configPath = join(dir, "platform.config.json");
+    const snippetPath = join(dir, "artigo-especial-apoiadores.md");
+    try {
+      writeFileSync(configPath, JSON.stringify({}));
+      let threw = false;
+      let errMsg = "";
+      try {
+        runUpdateArtigoEspecialBox({
+          titulo: "Teste",
+          gancho: "gancho",
+          mesLabel: "Setembro",
+          snippetsFile: snippetPath,
+          configPath,
+          dataDir: dir,
+          slot: 3,
+          pin: true,
+          dryRun: false,
+          force: false,
+        });
+      } catch (e: any) {
+        threw = true;
+        errMsg = String(e?.message ?? e);
+      }
+      assert.ok(threw, "--slot 3 deveria lançar, não escrever silenciosamente");
+      assert.ok(
+        errMsg.includes("≤ 2") && errMsg.includes("#6748"),
+        `mensagem deve apontar o #6748 e o teto de 2 slots, recebido: "${errMsg}"`,
+      );
+      // config não foi modificado
+      assert.equal(readFileSync(configPath, "utf8").trim(), "{}");
+      assert.ok(!existsSync(snippetPath), "snippet não deveria ter sido criado");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
