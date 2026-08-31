@@ -28,6 +28,8 @@ import {
   FAILURE_TAIL_LINES,
   NO_BACKGROUND_DIRECTIVE,
   BACKGROUND_WAIT_MAX_ATTEMPTS,
+  STAGE_OUTPUTS,
+  recoverSentinelIfComplete,
 } from "../scripts/lib/edition-stage-runner.ts";
 import { planThrough, main as cliMain, DEFAULT_THROUGH } from "../scripts/run-edition-stages.ts";
 import { readFileSync, existsSync } from "node:fs";
@@ -358,6 +360,87 @@ describe("edition-stage-runner — laço", () => {
 
     const failed = result.outcomes.find((o) => o.status === "failed");
     assert.match(failed?.failureTail ?? "", /sem stdout/, "ausência de captura deve ser explícita, não um buraco silencioso");
+  });
+
+  // ── #6827: recuperação best-effort de sentinel esquecido em headless ──
+  it("#6827: processo sai 0 sem escrever sentinela, mas todos os outputs já estão em disco → sentinel recuperada, stage ok", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const tmpRoot = mkdtempSync(join(tmpdir(), "6827-"));
+    const editionDir = join(tmpRoot, "editions", "260820");
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    // Simula o trabalho real do Stage 1 já gravado em disco pelo --print —
+    // outputs válidos, gate aprovado. O que falta é só a assinatura.
+    writeFileSync(join(editionDir, "01-categorized.md"), "# categorized\n", "utf8");
+    writeFileSync(join(editionDir, "_internal", "01-approved.json"), "{}\n", "utf8");
+    // Nenhum .step-1-done.json: é exatamente o bug de 260831.
+
+    const prompts: string[] = [];
+    const execFn = spawnInto(
+      { assertFn: () => ({ ok: false as const, reason: "sentinel_missing" as const }), complete: () => {} },
+      prompts,
+      undefined,
+      "stage-1 output",
+    );
+
+    const result = runEditionStages({
+      aammdd: "260820",
+      editionDir,
+      repoRootAbs: tmpRoot,
+      resolveClaudeBin: () => "/fake/bin/claude",
+      env: {},
+      plan: [{ stage: 1, skill: "diaria-1-pesquisa" }],
+      assertSentinelFn: () => ({ ok: false, reason: "sentinel_missing" }),
+      execFn,
+    });
+
+    // O runner DEVERIA marcar ok e escrever a sentinel, em vez de jogar
+    // fora um trabalho que já está gravado e forçar re-execução.
+    assert.equal(result.exitCode, 0, "recuperação: não é falha");
+    assert.equal(result.failedStage, null);
+    assert.equal(result.outcomes.length, 1);
+    assert.equal(result.outcomes[0]?.status, "ok");
+    assert.ok(
+      existsSync(join(editionDir, "_internal", ".step-1-done.json")),
+      "sentinela foi escrita automaticamente em vez do stage ser marcado falho",
+    );
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("#6827: processo sai 0 sem sentinela E com outputs ausentes → ainda falha (recuperação não mascara trabalho incompleto)", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const tmpRoot = mkdtempSync(join(tmpdir(), "6827b-"));
+    const editionDir = join(tmpRoot, "editions", "260820");
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    // Só um dos dois outputs declare — o outro falta, então o stage não
+    // completou de fato e a recuperação não deve disparar.
+    writeFileSync(join(editionDir, "01-categorized.md"), "# categorized\n", "utf8");
+    // _internal/01-approved.json intencionalmente ausente
+
+    const prompts: string[] = [];
+    const execFn = spawnInto(
+      { assertFn: () => ({ ok: false as const, reason: "sentinel_missing" as const }), complete: () => {} },
+      prompts,
+      undefined,
+      "stage-1 partial output",
+    );
+
+    const result = runEditionStages({
+      aammdd: "260820",
+      editionDir,
+      repoRootAbs: tmpRoot,
+      resolveClaudeBin: () => "/fake/bin/claude",
+      env: {},
+      plan: [{ stage: 1, skill: "diaria-1-pesquisa" }],
+      assertSentinelFn: () => ({ ok: false, reason: "sentinel_missing" }),
+      execFn,
+    });
+
+    assert.notEqual(result.exitCode, 0, "com output faltando, o stage NÃO é recuperado");
+    assert.equal(result.failedStage, 1);
+    assert.match(result.outcomes[0]?.failureTail ?? "", /não completou/);
+    rmSync(tmpRoot, { recursive: true, force: true });
   });
 
   it("sentinela órfã (output apagado) NÃO conta como stage concluído", () => {

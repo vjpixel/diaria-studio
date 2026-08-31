@@ -37,7 +37,12 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { assertSentinel as assertSentinelImpl, type AssertResult } from "./pipeline-state.ts";
+import { resolve } from "node:path";
+import {
+  assertSentinel as assertSentinelImpl,
+  writeSentinel,
+  type AssertResult,
+} from "./pipeline-state.ts";
 import { resolveRunLogPath } from "./run-log.ts";
 
 /** Um stage do pipeline e a skill que o executa. */
@@ -291,6 +296,87 @@ export function assertNoPublishStage(plan: ReadonlyArray<EditionStage>): void {
   }
 }
 
+/**
+ * Outputs canônicos declarados por cada stage — a fonte única de verdade
+ * de "o stage fez seu trabalho", usada pela pós-condição de #6827.
+ *
+ * **Por que está mapeado aqui e não lido do SKILL.md.** Cada stage declara
+ * seus outputs no SKILL.md de cada stage (arquivo `.claude/skills/diaria-{N}-*`
+ * / SKILL.md) no comando `pipeline-sentinel.ts write --outputs "..."`, e é
+ * regra de projeto (#2747 contra imports cruzados) que `scripts/lib/` não leia
+ * `.claude/`. Manter esta lista em sync com os 4 SKILL.mds é o custo de um
+ * `git diff` — o alternativo (ler o .md em runtime) tornaria o runner
+ * dependente de formatação de prosa e quebraria na próxima reescrita do
+ * comando.
+ *
+ * A lista é o CONTRATO de outputs: o que o sentinel declara é o que
+ * `assertSentinel` confere em disco. Se um stage passar a escrever um
+ * output novo (ex: Stage 3 ganhando os carrosséis `04-dN-carousel-*`
+ * depois do #6005), adicionar aqui é o que atualiza a verificação —
+ * esquecer é o buraco que o #6827 tentou fechar.
+ */
+export const STAGE_OUTPUTS: Readonly<Record<number, ReadonlyArray<string>>> = {
+  1: ["01-categorized.md", "_internal/01-approved.json"],
+  2: ["02-reviewed.md", "03-social.md"],
+  3: [
+    "01-eia.md",
+    "01-eia-A.jpg",
+    "01-eia-B.jpg",
+    "04-d1-2x1.jpg",
+    "04-d1-1x1.jpg",
+    "04-d2-1x1.jpg",
+    "04-d3-1x1.jpg",
+    "04-d1-4x5.jpg",
+    "04-d2-4x5.jpg",
+    "04-d3-4x5.jpg",
+  ],
+  4: ["02-reviewed.md", "03-social.md"],
+};
+
+/**
+ * #6827 — recuperação best-effort de sentinel esquecido em sessão headless.
+ *
+ * Contexto do bug (edição 260831): sessão `claude --print` do Stage 1
+ * completou TUDO — outputs válidos, invariants limpos, gate aprovado — e
+ * saiu sem chamar `pipeline-sentinel.ts write`. `.step-1-done.json` ficou
+ * ausente, o `assertSentinel` da pós-condição voltou `sentinel_missing`, e
+ * o runner marcou o stage como FALHADO. O trabalho real estava em disco
+ * e o runner o jogou fora, forçando re-execução inteira.
+ *
+ * A defesa em profundidade já existente no runner era fina exatamente no
+ * ponto em que o bug bate: ela distingue "outputs faltando" de "sentinela
+ * ausente mas tudo está em disco", e no segundo caso dizia falha. Este
+ * helper trata o segundo caso: se TODOS os outputs declarados já existem,
+ * o stage de fato completou e o que faltava era apenas a assinatura —
+ * escreve a sentinel e deixa o runner seguir.
+ *
+ * **Best-effort, não salva-qualquer-coisa.** Só escreve quando a pós-
+ * condição falhou com `sentinel_missing` (não `outputs_missing`) e cada
+ * output declarado já está em disco. Se `writeSentinel` falhar (permissão,
+ * disco cheio, `_internal` inexistente), o sentinel continua ausente e a
+ * próxima iteração do runner volta a falhar — o reparo é ilustrativo,
+ * nunca mascara trabalho incompleto.
+ */
+export function recoverSentinelIfComplete(
+  editionDir: string,
+  stage: number,
+  assert: AssertResult,
+): boolean {
+  if (assert.ok) return false;
+  if (assert.reason !== "sentinel_missing") return false;
+  const outputs = STAGE_OUTPUTS[stage];
+  if (!outputs || outputs.length === 0) return false;
+  for (const rel of outputs) {
+    if (!existsSync(resolve(editionDir, rel))) return false;
+  }
+  try {
+    writeSentinel(editionDir, stage, [...outputs]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Últimas `FAILURE_TAIL_LINES` linhas não-vazias, achatadas em uma linha. */
 export function summarizeFailure(raw: string): string {
   const flattened = raw
@@ -420,6 +506,22 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       // barata e não depende de adivinhar a semântica de exit code do harness.
       const after = assertSentinelFn(editionDir, stage);
       if (!after.ok) {
+        // #6827: o processo saiu 0 e o stage fez o trabalho, mas esqueceu
+        // de escrever a sentinel (`claude --print` sem o
+        // `pipeline-sentinel.ts write` no final). Se TODOS os outputs
+        // declarados já estão em disco, isso é só a assinatura que faltava —
+        // escreve a sentinel best-effort e segue como ok, em vez de marcar
+        // falha e forçar re-execução de um trabalho que já está gravado.
+        const stdoutText = typeof stdout === "string" ? stdout : "";
+        if (recoverSentinelIfComplete(editionDir, stage, after)) {
+          onProgress(
+            `Stage ${stage}: sentinel recuperada best-effort (#6827) — outputs declarados já estavam em disco, ` +
+              `o processo completou o trabalho e só esqueceu a assinatura`,
+          );
+          outcomes.push({ stage, skill, status: "ok", exitCode: 0, durationMs: nowMs() - startedAt });
+          stageOutcome = null;
+          break;
+        }
         const detail =
           after.reason === "outputs_missing"
             ? `outputs declarados ausentes: ${after.missingOutputs.join(", ")}`
@@ -427,7 +529,6 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
         // #5791/#6045: instrumentação de observabilidade + detecção do
         // sintoma background-wait. Com o sintoma presente e retry restante,
         // NÃO declara falha ainda — repete o stage.
-        const stdoutText = typeof stdout === "string" ? stdout : "";
         if (looksLikeBackgroundWaitExit(stdoutText) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
           continue;
         }
