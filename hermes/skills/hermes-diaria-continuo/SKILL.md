@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.3
+version: 0.5.4
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -164,19 +164,23 @@ issue nova é reivindicada. Para cada PR, nesta ordem:
    "aguardando review externo — self-review não satisfaz o gate do #5251",
    e passar para a próxima issue/PR da fila.
 
-   **Estado honesto sobre "quem revisa depois" (achado do fleet review do
-   #6820, 30/08/2026): NÃO existe hoje um passo explícito em
-   `/diaria-overnight`/`/diaria-develop` que adote um PR órfão marcado
-   self-review, rode um review de verdade nele, e o mergeie.** O checklist
-   de "PR alheio já aberto" dessas duas skills (autor conhecido? CI verde?
-   atualizado nas últimas ~24-48h?) decide se a sessão reimplementa a issue
-   de forma independente — não decide "revisar e mergear o PR existente". Na
-   prática, hoje, um PR self-reviewed do contínuo fica aberto **indefinidamente**
-   a menos que uma sessão o note manualmente. `daily-consolidated-review.sh`
-   também não fecha esse loop — gera achados/issues sobre o diff, nunca
-   mergeia PR aberto. Rastreado em #6823; não bloqueia este gate (o gate
-   continua correto — impede o self-merge inseguro — só o "e depois?"
-   segue em aberto).
+   **Pickup existe desde o #6823 (31/08/2026) — só no `/diaria-overnight`.**
+   O fleet review do #6820 (30/08/2026) tinha achado que nenhuma das duas
+   skills adotava PR órfão marcado self-review; o #6823 fechou essa lacuna
+   no `/diaria-overnight` (passo 2b da Fase 0): lista PRs `continuo/*` com
+   `check-pr-review-authenticity.ts` → `exit 1` (self_review) **ou** `exit 2`
+   (no_review — tick morreu antes de sequer comentar; caso da PR que motivou
+   a issue, #6844), roda guard de caminho sensível + review independente de
+   verdade via Agent tool + gate de CI genuína, mergeia se limpo.
+   **`/diaria-develop` deliberadamente NÃO ganhou esse passo** — pickup de
+   PR órfão do contínuo não exige presença
+   do editor nem a máquina Windows, então é trabalho que cabe ao
+   `/diaria-overnight` (server, desassistido), não a uma sessão interativa
+   (#5751, "sessão interativa não faz o que o helios faria sozinho"). Na
+   prática, um PR self-reviewed do contínuo fica aberto até a próxima rodada
+   `/diaria-overnight` rodar a Fase 0 — não mais indefinidamente, mas também
+   não instantâneo; `daily-consolidated-review.sh` continua sem fechar esse
+   loop (gera achados/issues sobre o diff, nunca mergeia PR aberto).
 
 ### 4. Implementar issues elegíveis — via harness delegado
 
@@ -316,6 +320,16 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Changelog
 
+- 0.5.4 (31/08/2026): §3 passo 3 atualizado — pickup de PR órfão do
+  `continuo` deixou de ser lacuna documentada e passou a existir de fato
+  (#6823), implementado como passo 2b da Fase 0 do `/diaria-overnight`
+  (fora deste arquivo — este SKILL.md só reflete o estado, não implementa
+  o passo). Cobre tanto `exit 1` (`self_review`) quanto `exit 2`
+  (`no_review` — tick que morreu antes de sequer comentar, o cenário real
+  da PR que motivou a issue, #6844). Deliberadamente **só** no overnight,
+  nunca no `/diaria-develop` (#5751). A entrada 0.5.3 abaixo, que dizia
+  "aguardando review externo (Opus diário ou pickup do overnight/develop)",
+  ficava desatualizada nesse detalhe (mencionava develop) até esta entrada.
 - 0.5.3 (30/08/2026): gate de autenticidade de review pré-merge (#6732) —
   a delegação (sem ferramenta Agent) fabricava um comentário no formato de
   review independente, satisfazendo o gate de auto-merge do #5251 com
