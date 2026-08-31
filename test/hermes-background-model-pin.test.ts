@@ -88,8 +88,13 @@ describe("claude-openrouter.sh — pin do modelo de background (#6716)", () => {
    * ~1,4% das requisições, ~71K prompt tokens por chamada.
    *
    * Mesma invisibilidade do caso original: não aparece no transcript, não
-   * produz erro, só no billing do gateway. Por isso as três vars são travadas
-   * pelo mesmo guard.
+   * produz erro, só no billing do gateway. As três vars têm testes de
+   * conteúdo/valor análogos (existe + fixada em "$MODEL") e, mais abaixo,
+   * o MESMO guard de posição (dentro do subshell do OUT=$(...)) — não são
+   * travadas por um único teste compartilhado; achado do review da PR
+   * #6859 corrigindo um overclaim deste parágrafo (dizia "o mesmo guard"
+   * quando o guard de posição, na versão original desta PR, só cobria
+   * HAIKU).
    */
   for (const varName of [
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
@@ -149,16 +154,45 @@ describe("claude-openrouter.sh — pin do modelo de background (#6716)", () => {
     assert.equal(stripInlineComment('    sem comentario'), '    sem comentario');
   });
 
-  it("fica no mesmo bloco env do ANTHROPIC_BASE_URL (chega ao processo do CLI)", () => {
-    const lines = codeLines();
-    const iVar = lines.findIndex((l) => l.includes("ANTHROPIC_DEFAULT_HAIKU_MODEL"));
-    const iBase = lines.findIndex((l) => l.includes('ANTHROPIC_BASE_URL="https://openrouter.ai/api"'));
-    const iClaude = lines.findIndex((l) => /^\s*claude -p/.test(l));
-    assert.ok(iBase >= 0 && iClaude >= 0, "âncoras do bloco env não encontradas");
-    assert.ok(
-      iVar > iBase && iVar < iClaude,
-      "ANTHROPIC_DEFAULT_HAIKU_MODEL precisa estar entre ANTHROPIC_BASE_URL e " +
-        "`claude -p` — fora do bloco `env` ela não chega ao processo do CLI.",
-    );
-  });
+  /**
+   * Achado do review da PR #6859 (P2, confiança alta, confirmado
+   * empiricamente pelo revisor): a versão anterior deste teste só checava
+   * ANTHROPIC_DEFAULT_HAIKU_MODEL, e usava âncoras fracas (`ANTHROPIC_BASE_
+   * URL`/`claude -p` por CONTEÚDO de linha, não a fronteira real do
+   * subshell) — mover uma das 2 vars novas (SONNET/OPUS) pra FORA do
+   * subshell `OUT=$(printf ... | ( ... ))` (a regressão exata que violaria
+   * #5608/#6718: var ANTHROPIC_* vazando pro ambiente global sequestra
+   * sessão da assinatura claude.ai) não fazia os testes de conteúdo/valor
+   * acima falharem, e o teste de posição só cobria HAIKU. Generalizado
+   * pras 3 vars + trocado pro MESMO par de âncoras robusto que `test/
+   * hermes-key-not-in-cmdline.test.ts` já usa pra ANTHROPIC_AUTH_TOKEN:
+   * `iSub` (abertura do subshell) e `iClose` (a linha `))` que o fecha,
+   * procurada DEPOIS de `iSub` — não a 1ª ocorrência do arquivo — em vez de
+   * `claude -p`, que é só uma linha DENTRO do bloco, não a fronteira real.
+   * Validado manualmente (não travado em CI, documentado aqui pra quem
+   * duvidar): mover `export ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL"` pra
+   * antes de `OUT=$(printf ...` faz este teste falhar; o código de produção
+   * não tem essa regressão.
+   */
+  for (const varName of [
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  ]) {
+    it(`${varName} fica DENTRO do subshell do OUT=$(printf ... | ( ... )) (chega ao processo do CLI, nunca vaza pro ambiente global)`, () => {
+      const lines = codeLines();
+      const iSub = lines.findIndex((l) => l.includes(`OUT=$(printf '%s' "$PROMPT" | (`));
+      const iVar = lines.findIndex((l) => l.includes(varName));
+      const iClose = lines.findIndex((l, i) => i > iSub && l.trim() === "))");
+      assert.ok(iSub >= 0, "subshell do OUT=$(printf ... | ( não encontrado — a estrutura do fix #6718 mudou");
+      assert.ok(iVar >= 0, `${varName} não encontrada em código`);
+      assert.ok(iClose > iSub, "fechamento )) do subshell não encontrado depois de iSub");
+      assert.ok(
+        iVar > iSub && iVar < iClose,
+        `${varName} precisa estar ENTRE a abertura do subshell (OUT=$(printf ... | () e o fechamento )) — ` +
+          "fora dele a var vaza pro ambiente global do wrapper (violaria #5608/#6718: sequestra sessão da " +
+          "assinatura claude.ai) e/ou nunca chega ao processo do `claude -p`.",
+      );
+    });
+  }
 });

@@ -255,15 +255,19 @@ for MODEL in "${MODELS[@]}"; do
   # uma string real da Anthropic — que o gateway fatura a preço cheio. Daí os
   # dois exports abaixo, irmãos do de haiku.
   #
-  # TRADE-OFF ACEITO (review da PR #6717): quando o elo corrente é `:free`, o
-  # background passa a puxar do MESMO balde `free-models-per-day` (por CONTA)
-  # que o primário — 2 saques por delegação em vez de 1, então o balde seca mais
-  # cedo e a cadeia cai no pago antes. Antes do fix essas chamadas iam pro Sonnet
-  # pago e não tocavam o balde. O custo em DINHEIRO cai de qualquer forma; o que
-  # piora é a cota free, que já é o gargalo do #6712 (17h/dia de pausa). Se isso
-  # incomodar, a alternativa é fixar o background sempre no elo PAGO barato
-  # (glm-5.3-flash) em vez de "$MODEL" — não feito aqui pra manter a propriedade
-  # "background nunca custa mais que o primário" e evitar um slug hardcoded.
+  # TRADE-OFF ACEITO (review da PR #6717, número revisado na #6859): quando
+  # o elo corrente é `:free`, o background passa a puxar do MESMO balde
+  # `free-models-per-day` (por CONTA) que o primário — até 3 saques por
+  # delegação em vez de 1 agora que HAIKU/SONNET/OPUS estão todos pinados
+  # (era "2" quando só HAIKU existia; sobe se algum caminho interno da
+  # família sonnet/opus disparar no mesmo tick que o de haiku), então o
+  # balde seca mais cedo e a cadeia cai no pago antes. Antes do fix essas
+  # chamadas iam pro Sonnet pago e não tocavam o balde. O custo em DINHEIRO
+  # cai de qualquer forma; o que piora é a cota free, que já é o gargalo do
+  # #6712 (17h/dia de pausa). Se isso incomodar, a alternativa é fixar o
+  # background sempre no elo PAGO barato (glm-5.3-flash) em vez de "$MODEL"
+  # — não feito aqui pra manter a propriedade "background nunca custa mais
+  # que o primário" e evitar um slug hardcoded.
   #
   # O que torna isso traiçoeiro: essas chamadas NÃO aparecem no transcript
   # .jsonl da sessão (as duas acima registram só glm-5.3-flash), então
@@ -297,6 +301,13 @@ for MODEL in "${MODELS[@]}"; do
     export ANTHROPIC_AUTH_TOKEN="$KEY"
     export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL"
     export ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL"
+    # OPUS_MODEL: risco só TEÓRICO hoje (review da PR #6859) — o único call
+    # site (hermes-diaria-continuo/SKILL.md) passa `--tools "Read,Grep,Glob,
+    # Bash,Edit,Write"`, sem Task/Agent, então não há como este processo
+    # despachar um subagente que peça Opus. Vira risco real se algum call
+    # site futuro incluir Task/Agent nas --tools — não remover o pin por
+    # isso (custa nada, evita a classe de bug se/quando isso mudar), só
+    # lembrar que ele está PROTEGENDO um caminho que não existe ainda.
     export ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL"
     export CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000
     timeout "$TIMEOUT" \
