@@ -112,7 +112,7 @@ npx tsx scripts/pipeline-sentinel.ts write \
 - **Falha do `write` é fail-soft, não desculpa para pular.** Se retorna exit != 0
   (inviável de write, violação de invariant `severity: error` sem
   `--bypass-reason`), logar `warn: sentinel_write_failed` via `log-event.ts` e
-  **reeter a chamada com `--bypass-reason "..."`** descrevendo o falso-positivo
+  **retentar a chamada com `--bypass-reason "..."`** descrevendo o falso-positivo
   conhecido — nunca deixar o stage sem sentinel por falha transitória.
 - **Não confundir com o marker `inject-inbox-urls`.** `pipeline-sentinel.ts
   assert-marker --name inject-inbox-urls` é uma checagem separada (prova que o

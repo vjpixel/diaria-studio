@@ -710,7 +710,7 @@ npx tsx scripts/pipeline-sentinel.ts write --edition {AAMMDD} --step 1 --outputs
 
 - **Semântica em `scripts/pipeline-sentinel.ts`** (exit codes, `--bypass-reason`, e o `write` roda `check-invariants --stage 1` automaticamente, recusando o write se houver violação `severity: error`).
 - **É o ÚLTIMO passo do Stage 1, sempre.** Em qualquer caminho (editor ou `--auto`), vem após o `apply-gate-edits.ts` concluir. Nunca antes do gate, nunca "quando der tempo".
-- **Falha do `write` é fail-soft, não desculta para pular.** Se retornar exit != 0, logar `warn: sentinel_write_failed` e reeter com `--bypass-reason "<motivo>"` descrevendo o falso-positivo conhecido — nunca deixar o stage sem sentinel.
+- **Falha do `write` é fail-soft, não desculpa para pular.** Se retornar exit != 0, logar `warn: sentinel_write_failed` e retentar com `--bypass-reason "<motivo>"` descrevendo o falso-positivo conhecido — nunca deixar o stage sem sentinel.
 
 ---
 

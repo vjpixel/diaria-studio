@@ -616,9 +616,8 @@ O Stage 1 termina SEMPRE escrevendo `_internal/.step-1-done.json`
 (`pipeline-sentinel.ts write --step 1`), nunca opcional — sem isso o runner
 (`scripts/lib/edition-stage-runner.ts`) não detecta conclusão (#6827: sessão
 headless completou o trabalho e saiu sem escrever, edição ficou sem
-checkpoint). Mecanismo completo, o bug original, e a defesa em profundidade
-(`assertSentinel`) vivem em `orchestrator-stage-1-research.md` §1y — é onde
-o passo de fato executa.
+checkpoint). Mecanismo completo e o bug original vivem em
+`orchestrator-stage-1-research.md` §1y — é onde o passo de fato executa.
 
 ## Stage 1 — Research
 
