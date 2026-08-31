@@ -412,7 +412,15 @@ describe("#6819 — HEAD→GET fallback (Worker eia.diar.ia.br/jogar só tem han
     assert.equal(r.issues[0].hops, 1, "hops deve ficar em 1 — a fase GET (fallback) não incrementa hops");
   });
 
-  it("#6825: HEAD 3xx no 2º hop + GET 200 no final → passed, hops=2", async () => {
+  // Achado do review (#6825, confiança alta/85, P3, mesma classe do fix
+  // acima): o título original alegava "hops=2", mas `checkLinkTracking`
+  // não expõe `hops` pra um resultado `passed` (só `LinkIssue` tem esse
+  // campo, e `passed` é só uma contagem) — não dava pra verificar a claim.
+  // Rastreando a lógica (mesmo cenário estrutural do teste anterior: 1
+  // redirect real via HEAD + HEAD-4xx no 2º hop + GET fallback), o valor
+  // real seria 1, não 2 — a fase GET nunca incrementa hops. Título
+  // corrigido pra não alegar um número que o teste não consegue afirmar.
+  it("#6825: HEAD 3xx no 2º hop + GET 200 no final → passed (hops não observável em resultado passed, verificado no teste irmão acima)", async () => {
     const html = '<a href="https://hop1.example.com">chain</a>';
     let callCount = 0;
     const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
