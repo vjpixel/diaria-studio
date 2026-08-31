@@ -411,7 +411,7 @@ export type DailyCapCheck = { ok: true } | { ok: false; reason: string };
  * hard-stop, nunca sucesso silencioso.
  */
 /**
- * #6793 "Faixa A", item 5 (30/08/2026, decisão do editor): freio automático
+ * #6793 "Faixa B", item 5 (30/08/2026, decisão do editor): freio automático
  * de VOLUME (cap da LISTA) removido — este guard não recusa mais por
  * `netSubscribers > cap`. O piso contra estado IMPOSSÍVEL
  * (`totalSubscribers < seedCount`) continua intacto: não é freio de volume,

@@ -149,17 +149,19 @@ npx tsx scripts/check-brevo-diaria-guardrail.ts --dry-run
 (`openRatePct` no output — mesma métrica agregada do piso de 15% citado
 acima; não julgue "abaixo de 15%" de memória).
 
-**#6793 "Faixa A" (30/08/2026, decisão do editor): nem a fila (item 6) nem
-o envio (item 5) têm mais teto de volume.** `computeAvailableSlots`
-(`sync-pending-to-brevo.ts`) recebe `Number.POSITIVE_INFINITY` em vez de
-`daily_send_cap`, e `checkDailySendCap` (`publish-daily-brevo.ts`) nunca
-mais recusa por `netSubscribers > cap` — os dois continuam existindo como
-função (e o piso de estado impossível de `checkDailySendCap` — lista com
-menos assinantes brutos que `EDITOR_SEED_EMAILS` — segue bloqueando, é
-detecção de dado corrompido, não freio de volume), mas o cap em si deixou
-de limitar a fila/o envio. `brevo_diaria.daily_send_cap` continua em
+**#6793 (30/08/2026, decisão do editor): o envio (item 5, Faixa B) não tem
+mais teto de volume.** `checkDailySendCap` (`publish-daily-brevo.ts`) nunca
+mais recusa por `netSubscribers > cap` — continua existindo como função (e
+o piso de estado impossível — lista com menos assinantes brutos que
+`EDITOR_SEED_EMAILS` — segue bloqueando, é detecção de dado corrompido,
+não freio de volume), mas o cap em si deixou de limitar o envio.
+**A fila (item 6, Faixa A, `computeAvailableSlots` em
+`sync-pending-to-brevo.ts` recebendo `Number.POSITIVE_INFINITY`) é PR
+separado (#6882)** — confira se já mergeou antes de assumir que também
+está sem teto; até lá, `daily_send_cap` continua limitando a fila
+normalmente. `brevo_diaria.daily_send_cap` continua em
 `platform.config.json` só como documentação histórica do valor que valia
-até 30/08/2026.
+antes de cada item mergear.
 
 **Contexto histórico (válido até #6793, pode aparecer em log antigo): o cap
 de 300 excluía os 5 `EDITOR_SEED_EMAILS` do numerador (#4631, #5182)** —

@@ -120,7 +120,7 @@ describe("stripGreetingAndSupporterBlocks — achado 260803 (revisão do editor 
   });
 });
 
-describe("checkDailySendCap — freio de VOLUME removido (#6793 Faixa A, item 5)", () => {
+describe("checkDailySendCap — freio de VOLUME removido (#6793 Faixa B, item 5)", () => {
   it("dentro do cap (líquido dos seeds default) → ok", () => {
     assert.deepEqual(checkDailySendCap(250, 300), { ok: true });
   });

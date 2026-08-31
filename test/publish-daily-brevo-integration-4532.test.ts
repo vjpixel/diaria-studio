@@ -32,7 +32,7 @@
  * exercitando `main()` de ponta a ponta — o caso abaixo fecha essa lacuna,
  * espelhando a estrutura dos casos de exit 4/5/6.
  *
- * #6793 "Faixa A" item 5 (30/08/2026, decisão do editor): `checkDailySendCap`
+ * #6793 "Faixa B" item 5 (30/08/2026, decisão do editor): `checkDailySendCap`
  * deixou de bloquear por volume — o teste original de exit(3) acima (#4651)
  * foi reescrito pra afirmar o comportamento NOVO (prossegue mesmo bem acima
  * do cap histórico); o piso de estado impossível (`totalSubscribers <
@@ -343,7 +343,7 @@ describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta 
     }
   });
 
-  it("#6793 (Faixa A, item 5, 30/08/2026): checkDailySendCap NÃO bloqueia mais mesmo bem acima do cap — main() prossegue e cria a campanha (era exit(3) até o #4651/#6793)", async () => {
+  it("#6793 (Faixa B, item 5, 30/08/2026): checkDailySendCap NÃO bloqueia mais mesmo bem acima do cap — main() prossegue e cria a campanha (era exit(3) até o #4651/#6793)", async () => {
     const root = mkTmpRoot();
     try {
       writePlatformConfig(root, { daily_send_cap: 2 });
