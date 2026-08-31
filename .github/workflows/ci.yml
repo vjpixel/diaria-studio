@@ -37,8 +37,27 @@ on:
       - "**/*.mdx"
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # #6835: dois regimes distintos por trigger, não um grupo único.
+  #
+  # push:master NUNCA cancela — grupo único por SHA (`github.sha`). Antes,
+  # o grupo era `ci-${{ github.ref }}`, que pra push é sempre a MESMA string
+  # (`refs/heads/master`) — qualquer 2 merges mais rápidos que a suíte
+  # (~5-9min) cancelavam o run do commit anterior. Levantamento retroativo do
+  # #6822 mediu 37 merges recentes cujo job `test` do próprio SHA mergeado
+  # nunca completou (`cancelled`, sem retry) — essa árvore específica de
+  # master nunca recebeu NENHUM resultado de CI, nem verde nem vermelho.
+  # `cancel-in-progress: false` aqui é redundante por construção (grupo já
+  # único por SHA nunca colide), mantido explícito documentando a intenção.
+  #
+  # pull_request continua cancelando — grupo por `github.ref`, que pra
+  # pull_request já é único POR PR (`refs/pull/N/merge`), então isso nunca
+  # colidiu entre PRs diferentes. O cancelamento aqui é o caso legítimo:
+  # um push novo na MESMA PR (evento `synchronize`) cancela o run do commit
+  # anterior dessa PR — é o mesmo diff em evolução, economia sem perda de
+  # sinal (o commit anterior nunca ficou em master, não precisa de resultado
+  # próprio).
+  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   test:
