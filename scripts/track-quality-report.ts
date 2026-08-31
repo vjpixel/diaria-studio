@@ -69,22 +69,68 @@
  * Uso: `npx tsx scripts/track-quality-report.ts --table [--since 30d]`
  *      `npx tsx scripts/track-quality-report.ts --json [--since 2026-08-01]`
  *
- * ## Escopo explícito: NÃO tem eixo de custo (achado ao vivo, 31/08/2026,
- * coordenação com sessão trabalhando o #6816)
+ * ## Métrica 5 — Custo via OpenRouter `GET /api/v1/activity` (#6755, 31/08/2026)
  *
- * As 4 métricas acima decidem "qual trilha PRODUZ trabalho que precisa ser
- * refeito" — nenhuma delas mede quanto custou produzir esse trabalho. A
- * discussão que motivou a troca de modelo do contínuo (#6816) combina
- * retrabalho (métrica 1 daqui) com custo por chamada — mas o custo em si
- * fica de fora deste script de propósito: hoje a única chave OpenRouter em
- * uso é de inferência (`is_provisioning_key: false`), e `GET
- * /api/v1/activity` responde `403` — sem quebra de custo por dia/modelo
- * até uma management key existir (bloqueio de credencial, fora do alcance
- * desta sessão). A fonte mais rica que já existe hoje sobre custo é
- * `~/.hermes/logs/agent.log` (por chamada: modelo, provider, tokens
- * in/out) — fora deste repo, não consumida aqui. Quem for calcular "custo
- * por PR mergeada sem retrabalho" precisa cruzar a métrica 1 daqui com uma
- * fonte de custo externa; este módulo não tenta adivinhar esse número.
+ * A lacuna documentada abaixo (histórico, mantido pra contexto) foi
+ * fechada assim que uma management key passou a existir no `.env`
+ * (`OPENROUTER_MANAGEMENT_KEY`, sincronizada via Doppler): a chave de
+ * inferência usada por `hermes/scripts/claude-openrouter.sh` sempre
+ * respondeu `403` neste endpoint (`is_provisioning_key: false`); a
+ * management key responde `200` com custo real por dia/modelo.
+ *
+ * **Por que o custo cai 100% na trilha `continuo`, sem precisar resolver
+ * por PR:** este repo proíbe qualquer sessão de Claude Code (overnight,
+ * develop, interativa) de autenticar via API (`CLAUDE.md`, "NUNCA trocar a
+ * conta claude.ai pela API", #5608) — a ÚNICA coisa que fatura no
+ * OpenRouter é a delegação do contínuo via `claude-openrouter.sh`. Não é
+ * uma inferência deste script; é o invariante que o resto do repo já
+ * impõe. Por isso a métrica de custo não tem eixo "por trilha" (sempre
+ * seria 100% `continuo`, 0% nas demais) — só por modelo, que é o que o
+ * endpoint realmente sabe.
+ *
+ * **Endpoint sem parâmetro de range** — `GET /api/v1/activity` sozinho
+ * devolve uma janela retida (medido ao vivo 31/08/2026: ~23 dias, uma
+ * linha por dia+modelo); `?date=YYYY-MM-DD` filtra pra UM dia específico
+ * (não é um range). Este módulo busca sem parâmetro (a janela inteira
+ * retida) e filtra client-side por `sinceDate`, mesmo padrão de
+ * `fetchRawInput` pras outras 4 métricas — nunca confia no filtro remoto
+ * pra cobrir a janela pedida.
+ *
+ * **Consolidação (achado da coordenação com a sessão do #6816):** o(s)
+ * dia(s) mais recente(s) da resposta pode(m) estar parcialmente
+ * consolidado(s) — o valor de `usage` de hoje pode subir em uma consulta
+ * futura. Este módulo não tenta compensar isso (não há como saber o
+ * quanto falta consolidar); só expõe `max_date` no relatório e um aviso
+ * quando `max_date` é a data de HOJE, pra quem ler saber que o total pode
+ * estar subestimado.
+ *
+ * **Fail-soft:** chave ausente, endpoint fora do ar, ou `403` (chave de
+ * inferência, não management) degradam a seção pra `available: false` +
+ * aviso — nunca lançam, nunca derrubam as outras 4 métricas (mesmo
+ * contrato de `fetchRawInput`).
+ *
+ * **Combinada com a métrica 1:** `continuo_cost_per_nonreworked_issue` —
+ * custo total (janela) dividido por quantas issues da trilha `continuo`
+ * fecharam SEM precisar de 2ª PR (`issues_total - issues_reworked` da
+ * métrica 1). É o número que a discussão do #6816 pediu como critério de
+ * aceite pra troca de modelo: "um modelo mais caro que não mexe no
+ * retrabalho trocou a fatura sem resolver o problema". `null` quando o
+ * custo não está disponível OU o denominador é 0 (nunca uma divisão por
+ * zero silenciosa).
+ *
+ * ### Histórico (lacuna original, 31/08/2026, coordenação com sessão do #6816)
+ *
+ * "As 4 métricas acima decidem 'qual trilha PRODUZ trabalho que precisa
+ * ser refeito' — nenhuma delas mede quanto custou produzir esse trabalho
+ * [...] hoje a única chave OpenRouter em uso é de inferência
+ * (`is_provisioning_key: false`), e `GET /api/v1/activity` responde `403`
+ * — sem quebra de custo por dia/modelo até uma management key existir
+ * (bloqueio de credencial, fora do alcance desta sessão)." A fonte mais
+ * rica sobre custo POR CHAMADA continua sendo `~/.hermes/logs/agent.log`
+ * (modelo, provider, tokens in/out por chamada individual) — fora deste
+ * repo, não consumida aqui; o que este módulo adiciona é o agregado por
+ * dia/modelo que o próprio OpenRouter já consolida, sem precisar parsear
+ * log local.
  *
  * ## Achados do fleet review da PR #6855 (31/08/2026), aplicados neste commit
  *
@@ -400,6 +446,135 @@ function round2(n: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// Métrica 5 — custo via OpenRouter activity (#6755).
+// ---------------------------------------------------------------------------
+
+export interface OpenRouterActivityRow {
+  date: string; // "YYYY-MM-DD 00:00:00" (UTC, granularidade diária) — formato do endpoint
+  model: string;
+  usage: number;
+  requests: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+}
+
+export interface CostByModelMetric {
+  model: string;
+  usage_usd: number;
+  requests: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+}
+
+/** Extrai só a parte de data (`YYYY-MM-DD`) do campo `date` do endpoint —
+ * pura, não depende de timezone local (a string já vem em UTC). */
+function activityRowDateOnly(row: OpenRouterActivityRow): string {
+  return row.date.slice(0, 10);
+}
+
+/** Pura: agrega linhas diárias (uma por dia+modelo) por MODELO dentro da
+ * janela `sinceDate`, ordenado por custo desc (modelo mais caro primeiro —
+ * a leitura mais acionável). `sinceDate: null` = sem filtro (toda a janela
+ * retida pelo endpoint). Comparação por DIA (não por instante) — `date` do
+ * endpoint é sempre meia-noite UTC, então comparar a string já resolvida
+ * pra `YYYY-MM-DD` evita off-by-one de timezone. */
+export function computeCostByModel(rows: OpenRouterActivityRow[], sinceDate: Date | null): CostByModelMetric[] {
+  const sinceDay = sinceDate ? sinceDate.toISOString().slice(0, 10) : null;
+  const byModel = new Map<string, CostByModelMetric>();
+  for (const row of rows) {
+    if (sinceDay && activityRowDateOnly(row) < sinceDay) continue;
+    const bucket = byModel.get(row.model) ?? { model: row.model, usage_usd: 0, requests: 0, prompt_tokens: 0, completion_tokens: 0 };
+    bucket.usage_usd += row.usage;
+    bucket.requests += row.requests;
+    bucket.prompt_tokens += row.prompt_tokens;
+    bucket.completion_tokens += row.completion_tokens;
+    byModel.set(row.model, bucket);
+  }
+  return [...byModel.values()]
+    .map((m) => ({ ...m, usage_usd: round4(m.usage_usd) }))
+    .sort((a, b) => b.usage_usd - a.usage_usd);
+}
+
+function round4(n: number): number {
+  return Math.round(n * 10000) / 10000;
+}
+
+/** Maior `date` (dia, `YYYY-MM-DD`) presente na resposta bruta — usado só
+ * pro aviso de consolidação (achado 5). `null` sem linhas. */
+export function maxActivityDate(rows: OpenRouterActivityRow[]): string | null {
+  if (rows.length === 0) return null;
+  return rows.map(activityRowDateOnly).reduce((max, d) => (d > max ? d : max));
+}
+
+export interface CostReport {
+  available: boolean;
+  by_model: CostByModelMetric[];
+  total_usd: number | null;
+  max_date: string | null;
+  /** custo total dividido por quantas issues `continuo` fecharam sem 2ª PR
+   *  (métrica 1) — `null` sem custo disponível ou denominador 0. Nunca
+   *  divisão por zero silenciosa. */
+  continuo_cost_per_nonreworked_issue: number | null;
+}
+
+/** Pura: combina o custo total (janela) com a métrica 1 (retrabalho) pra
+ * produzir o número que o #6816 pediu como critério de aceite de troca de
+ * modelo — "custo por issue `continuo` que não precisou de 2ª PR". */
+export function computeCostPerNonReworkedContinuoIssue(
+  totalUsd: number | null,
+  reworkContinuo: ReworkMetric | undefined,
+): number | null {
+  if (totalUsd == null || !reworkContinuo) return null;
+  const nonReworked = reworkContinuo.issues_total - reworkContinuo.issues_reworked;
+  if (nonReworked <= 0) return null;
+  return round4(totalUsd / nonReworked);
+}
+
+const OPENROUTER_ACTIVITY_TIMEOUT_MS = 15_000;
+
+interface OpenRouterActivityFetchResult {
+  rows: OpenRouterActivityRow[];
+  ok: boolean;
+  warning?: string;
+}
+
+/** Único ponto de I/O da métrica 5 — chama `GET /api/v1/activity` com a
+ * management key do env (`OPENROUTER_MANAGEMENT_KEY`). Fail-soft: chave
+ * ausente, timeout, status != 200 (ex: `403` de uma chave de inferência) ou
+ * corpo não-JSON degradam pra `ok: false` com aviso — nunca lançam. */
+export async function fetchOpenRouterActivity(
+  apiKey: string | undefined,
+  fetchImpl: typeof fetch = fetch,
+): Promise<OpenRouterActivityFetchResult> {
+  if (!apiKey) {
+    return { rows: [], ok: false, warning: "OPENROUTER_MANAGEMENT_KEY ausente no env — seção de custo degradada (n/a), nunca 0 fabricado" };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OPENROUTER_ACTIVITY_TIMEOUT_MS);
+  try {
+    const res = await fetchImpl("https://openrouter.ai/api/v1/activity", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const isForbidden = res.status === 403;
+      const hint = isForbidden ? " (403 costuma ser chave de INFERÊNCIA, não management — confira OPENROUTER_MANAGEMENT_KEY)" : "";
+      return { rows: [], ok: false, warning: `GET /api/v1/activity respondeu ${res.status}${hint} — seção de custo degradada (n/a)` };
+    }
+    const body = (await res.json()) as { data?: OpenRouterActivityRow[] };
+    if (!Array.isArray(body.data)) {
+      return { rows: [], ok: false, warning: "GET /api/v1/activity: corpo sem campo `data` array — seção de custo degradada (n/a)" };
+    }
+    return { rows: body.data, ok: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { rows: [], ok: false, warning: `GET /api/v1/activity falhou: ${msg} — seção de custo degradada (n/a)` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // --since
 // ---------------------------------------------------------------------------
 
@@ -430,6 +605,7 @@ export interface TrackQualityReport {
   master_red: MasterRedMetric[];
   finding_density: FindingDensityMetric[];
   closed_without_merge: ClosedWithoutMergeMetric[];
+  cost: CostReport;
   warnings: string[];
 }
 
@@ -608,22 +784,55 @@ function mergedPrsByTrailCount(mergedPrs: MergedPrRecord[]): Record<Trail, numbe
   return counts;
 }
 
-export function buildTrackQualityReport(raw: RawInput, since: string | null): TrackQualityReport {
+export function buildTrackQualityReport(
+  raw: RawInput,
+  since: string | null,
+  costFetch: OpenRouterActivityFetchResult,
+  sinceDate: Date | null,
+): TrackQualityReport {
+  const rework = computeReworkRate(raw.mergedPrs);
+  const warnings = costFetch.warning ? [...raw.warnings, costFetch.warning] : raw.warnings;
+
+  let cost: CostReport;
+  if (!costFetch.ok) {
+    cost = { available: false, by_model: [], total_usd: null, max_date: null, continuo_cost_per_nonreworked_issue: null };
+  } else {
+    const byModel = computeCostByModel(costFetch.rows, sinceDate);
+    const totalUsd = byModel.length > 0 ? round4(byModel.reduce((sum, m) => sum + m.usage_usd, 0)) : 0;
+    const maxDate = maxActivityDate(costFetch.rows);
+    const todayDay = new Date().toISOString().slice(0, 10);
+    if (maxDate === todayDay) {
+      warnings.push(`custo (OpenRouter activity): dado do dia de hoje (${maxDate}) pode estar parcialmente consolidado — total pode subestimar (#6755)`);
+    }
+    cost = {
+      available: true,
+      by_model: byModel,
+      total_usd: totalUsd,
+      max_date: maxDate,
+      continuo_cost_per_nonreworked_issue: computeCostPerNonReworkedContinuoIssue(
+        totalUsd,
+        rework.find((r) => r.trail === "continuo"),
+      ),
+    };
+  }
+
   return {
     generated_at: new Date().toISOString(),
     since,
-    rework: computeReworkRate(raw.mergedPrs),
+    rework,
     master_red: computeMasterRedAttribution(raw.masterRedCommits, raw.masterRedResolutionCtx, raw.masterRedCommitsFetchOk),
     finding_density: computeFindingDensity(raw.dailyReviewIssueBodies, mergedPrsByTrailCount(raw.mergedPrs), raw.dailyReviewIssuesFetchOk),
     closed_without_merge: computeClosedWithoutMerge(raw.closedPrs),
-    warnings: raw.warnings,
+    cost,
+    warnings,
   };
 }
 
-export function runTrackQualityReport(cwd: string, since: string | null): TrackQualityReport {
+export async function runTrackQualityReport(cwd: string, since: string | null): Promise<TrackQualityReport> {
   const sinceDate = since ? parseSince(since) : null;
   const raw = fetchRawInput(cwd, sinceDate);
-  return buildTrackQualityReport(raw, since);
+  const costFetch = await fetchOpenRouterActivity(process.env.OPENROUTER_MANAGEMENT_KEY);
+  return buildTrackQualityReport(raw, since, costFetch, sinceDate);
 }
 
 // ---------------------------------------------------------------------------
@@ -649,6 +858,18 @@ export function renderTrackQualityTable(report: TrackQualityReport): string {
   lines.push("## 4. PRs fechadas sem merge por trilha");
   lines.push("trilha\tclosed_without_merge\tclosed_total\trate");
   for (const r of report.closed_without_merge) lines.push(`${r.trail}\t${r.closed_without_merge}\t${r.closed_total}\t${r.rate ?? "n/a"}`);
+  lines.push("");
+  lines.push("## 5. Custo (OpenRouter activity, 100% trilha continuo — ver docstring)");
+  if (!report.cost.available) {
+    lines.push("indisponível nesta rodada (ver Avisos)");
+  } else {
+    lines.push("model\tusage_usd\trequests\tprompt_tokens\tcompletion_tokens");
+    for (const m of report.cost.by_model) lines.push(`${m.model}\t${m.usage_usd}\t${m.requests}\t${m.prompt_tokens}\t${m.completion_tokens}`);
+    lines.push("");
+    lines.push(`total_usd\t${report.cost.total_usd}`);
+    lines.push(`max_date\t${report.cost.max_date ?? "n/a"}`);
+    lines.push(`continuo_cost_per_nonreworked_issue\t${report.cost.continuo_cost_per_nonreworked_issue ?? "n/a"}`);
+  }
   if (report.warnings.length > 0) {
     lines.push("");
     lines.push("## Avisos (seções degradadas)");
@@ -666,19 +887,22 @@ if (isMainModule(import.meta.url)) {
   const since = values["since"] ?? null;
   const cwd = process.cwd();
 
-  let report: TrackQualityReport;
-  try {
-    report = runTrackQualityReport(cwd, since);
-  } catch (err) {
-    console.error(`[track-quality-report] ERRO: ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(2);
-  }
+  const main = async () => {
+    let report: TrackQualityReport;
+    try {
+      report = await runTrackQualityReport(cwd, since);
+    } catch (err) {
+      console.error(`[track-quality-report] ERRO: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(2);
+    }
 
-  if (flags.has("json")) {
-    console.log(JSON.stringify(report, null, 2));
-  } else if (flags.has("table")) {
-    console.log(renderTrackQualityTable(report));
-  } else {
-    console.log("Uso: npx tsx scripts/track-quality-report.ts --table|--json [--since 30d|2026-08-01]");
-  }
+    if (flags.has("json")) {
+      console.log(JSON.stringify(report, null, 2));
+    } else if (flags.has("table")) {
+      console.log(renderTrackQualityTable(report));
+    } else {
+      console.log("Uso: npx tsx scripts/track-quality-report.ts --table|--json [--since 30d|2026-08-01]");
+    }
+  };
+  main();
 }

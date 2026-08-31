@@ -26,8 +26,14 @@ import {
   parseSince,
   buildTrackQualityReport,
   renderTrackQualityTable,
+  computeCostByModel,
+  maxActivityDate,
+  computeCostPerNonReworkedContinuoIssue,
+  fetchOpenRouterActivity,
   type MergedPrRecord,
   type ClosedPrRecord,
+  type OpenRouterActivityRow,
+  type ReworkMetric,
 } from "../scripts/track-quality-report.ts";
 
 describe("deriveTrail", () => {
@@ -358,13 +364,14 @@ describe("buildTrackQualityReport / renderTrackQualityTable — integração das
       masterRedResolutionCtx: { revertedShaToTrail: new Map(), issueOrigemByNumber: new Map() },
       warnings: ["aviso de teste"],
     };
-    const report = buildTrackQualityReport(raw, "30d");
+    const report = buildTrackQualityReport(raw, "30d", { rows: [], ok: false, warning: "chave ausente" }, null);
     assert.equal(report.since, "30d");
-    assert.equal(report.warnings.length, 1);
+    assert.equal(report.warnings.length, 2);
     assert.equal(report.rework.length, 4);
     assert.equal(report.master_red.length, 5); // 4 trilhas + desconhecida
     assert.equal(report.finding_density.length, 4);
     assert.equal(report.closed_without_merge.length, 4);
+    assert.equal(report.cost.available, false);
 
     const table = renderTrackQualityTable(report);
     assert.match(table, /track-quality-report/);
@@ -383,7 +390,7 @@ describe("buildTrackQualityReport / renderTrackQualityTable — integração das
       masterRedResolutionCtx: { revertedShaToTrail: new Map(), issueOrigemByNumber: new Map() },
       warnings: ["git log falhou", "[daily-review] issues falhou"],
     };
-    const report = buildTrackQualityReport(raw, null);
+    const report = buildTrackQualityReport(raw, null, { rows: [], ok: false, warning: "chave ausente" }, null);
     for (const m of report.master_red) assert.equal(m.count, null);
     for (const f of report.finding_density) {
       assert.equal(f.findings, null);
@@ -420,5 +427,164 @@ describe("buildTrackQualityReport / renderTrackQualityTable — integração das
     assert.equal(overnight.issues_total, 10);
     assert.equal(overnight.issues_reworked, 1);
     assert.ok(continuo.rate! > overnight.rate!, "continuo deve ter taxa de retrabalho MAIOR que overnight, mesma direção medida em 29/08/2026 (#6752)");
+  });
+});
+
+function activityRow(overrides: Partial<OpenRouterActivityRow>): OpenRouterActivityRow {
+  return { date: "2026-08-20 00:00:00", model: "z-ai/glm-5.3-flash", usage: 0.1, requests: 5, prompt_tokens: 1000, completion_tokens: 100, ...overrides };
+}
+
+describe("computeCostByModel — métrica 5 (#6755)", () => {
+  it("agrega por modelo, soma usage/requests/tokens, ordena por custo desc", () => {
+    const rows = [
+      activityRow({ date: "2026-08-20 00:00:00", model: "z-ai/glm-5.3-flash", usage: 0.1, requests: 5 }),
+      activityRow({ date: "2026-08-21 00:00:00", model: "z-ai/glm-5.3-flash", usage: 0.2, requests: 3 }),
+      activityRow({ date: "2026-08-20 00:00:00", model: "anthropic/claude-sonnet-5", usage: 5.0, requests: 1 }),
+    ];
+    const result = computeCostByModel(rows, null);
+    assert.equal(result.length, 2);
+    assert.equal(result[0].model, "anthropic/claude-sonnet-5", "modelo mais caro vem primeiro");
+    assert.equal(result[1].model, "z-ai/glm-5.3-flash");
+    assert.equal(result[1].usage_usd, 0.3);
+    assert.equal(result[1].requests, 8);
+  });
+
+  it("filtra por sinceDate — linhas de dias ANTERIORES ao filtro são excluídas", () => {
+    const rows = [
+      activityRow({ date: "2026-08-01 00:00:00", usage: 100 }), // fora da janela
+      activityRow({ date: "2026-08-25 00:00:00", usage: 1 }), // dentro
+    ];
+    const result = computeCostByModel(rows, new Date("2026-08-20T00:00:00Z"));
+    assert.equal(result.length, 1);
+    assert.equal(result[0].usage_usd, 1);
+  });
+
+  it("sinceDate no MESMO dia da linha (fronteira) inclui a linha — comparação por dia, não por instante", () => {
+    const rows = [activityRow({ date: "2026-08-20 00:00:00", usage: 1 })];
+    const result = computeCostByModel(rows, new Date("2026-08-20T18:00:00Z"));
+    assert.equal(result.length, 1, "mesmo dia (18h > 00h) não deve excluir a linha — comparação é por YYYY-MM-DD, não por timestamp");
+  });
+
+  it("lista vazia -> lista vazia, nunca lança", () => {
+    assert.deepEqual(computeCostByModel([], null), []);
+  });
+});
+
+describe("maxActivityDate", () => {
+  it("retorna o maior dia entre as linhas", () => {
+    const rows = [activityRow({ date: "2026-08-10 00:00:00" }), activityRow({ date: "2026-08-25 00:00:00" }), activityRow({ date: "2026-08-15 00:00:00" })];
+    assert.equal(maxActivityDate(rows), "2026-08-25");
+  });
+
+  it("lista vazia -> null", () => {
+    assert.equal(maxActivityDate([]), null);
+  });
+});
+
+describe("computeCostPerNonReworkedContinuoIssue", () => {
+  const rework = (total: number, reworked: number): ReworkMetric => ({ trail: "continuo", issues_total: total, issues_reworked: reworked, rate: total > 0 ? reworked / total : null });
+
+  it("custo total dividido por issues não-retrabalhadas (arredondado a 4 casas)", () => {
+    assert.equal(computeCostPerNonReworkedContinuoIssue(100, rework(10, 3)), 14.2857);
+  });
+
+  it("totalUsd null -> null (custo indisponível)", () => {
+    assert.equal(computeCostPerNonReworkedContinuoIssue(null, rework(10, 3)), null);
+  });
+
+  it("rework de continuo ausente -> null (nunca adivinha)", () => {
+    assert.equal(computeCostPerNonReworkedContinuoIssue(100, undefined), null);
+  });
+
+  it("todas as issues foram retrabalhadas (denominador 0) -> null, nunca divisão por zero", () => {
+    assert.equal(computeCostPerNonReworkedContinuoIssue(100, rework(3, 3)), null);
+  });
+
+  it("issues_total 0 (denominador 0 pelo outro lado) -> null", () => {
+    assert.equal(computeCostPerNonReworkedContinuoIssue(100, rework(0, 0)), null);
+  });
+});
+
+describe("fetchOpenRouterActivity — fail-soft (#6755)", () => {
+  it("chave ausente -> ok:false, aviso explícito, nunca lança", async () => {
+    const result = await fetchOpenRouterActivity(undefined);
+    assert.equal(result.ok, false);
+    assert.equal(result.rows.length, 0);
+    assert.match(result.warning!, /ausente/);
+  });
+
+  it("status != 200 (ex: 403 de chave de inferência) -> ok:false com dica sobre management key", async () => {
+    const fakeFetch = (async () => new Response(JSON.stringify({}), { status: 403 })) as typeof fetch;
+    const result = await fetchOpenRouterActivity("some-key", fakeFetch);
+    assert.equal(result.ok, false);
+    assert.match(result.warning!, /403/);
+    assert.match(result.warning!, /management/i);
+  });
+
+  it("corpo sem campo data array -> ok:false, nunca lança sobre shape inesperado", async () => {
+    const fakeFetch = (async () => new Response(JSON.stringify({ oops: true }), { status: 200 })) as typeof fetch;
+    const result = await fetchOpenRouterActivity("some-key", fakeFetch);
+    assert.equal(result.ok, false);
+  });
+
+  it("200 com data válido -> ok:true, rows populado", async () => {
+    const fakeFetch = (async () => new Response(JSON.stringify({ data: [activityRow({})] }), { status: 200 })) as typeof fetch;
+    const result = await fetchOpenRouterActivity("some-key", fakeFetch);
+    assert.equal(result.ok, true);
+    assert.equal(result.rows.length, 1);
+  });
+
+  it("fetch lança (rede fora do ar) -> ok:false, nunca propaga a exceção", async () => {
+    const fakeFetch = (async () => {
+      throw new Error("network down");
+    }) as typeof fetch;
+    const result = await fetchOpenRouterActivity("some-key", fakeFetch);
+    assert.equal(result.ok, false);
+    assert.match(result.warning!, /network down/);
+  });
+});
+
+describe("buildTrackQualityReport — integração da métrica 5 (custo)", () => {
+  const emptyRaw = {
+    mergedPrs: [] as MergedPrRecord[],
+    closedPrs: [] as ClosedPrRecord[],
+    dailyReviewIssueBodies: [] as string[],
+    dailyReviewIssuesFetchOk: true,
+    masterRedCommits: [] as { subject: string; body: string }[],
+    masterRedCommitsFetchOk: true,
+    masterRedResolutionCtx: { revertedShaToTrail: new Map(), issueOrigemByNumber: new Map() },
+    warnings: [] as string[],
+  };
+
+  it("custo indisponível (costFetch.ok=false) -> cost.available=false, sem total_usd fabricado, aviso propagado", () => {
+    const report = buildTrackQualityReport(emptyRaw, null, { rows: [], ok: false, warning: "chave ausente" }, null);
+    assert.equal(report.cost.available, false);
+    assert.equal(report.cost.total_usd, null);
+    assert.ok(report.warnings.includes("chave ausente"));
+    const table = renderTrackQualityTable(report);
+    assert.match(table, /indisponível nesta rodada/);
+  });
+
+  it("custo disponível -> total_usd somado, continuo_cost_per_nonreworked_issue calculado a partir da métrica 1", () => {
+    const raw = {
+      ...emptyRaw,
+      mergedPrs: [
+        { number: 1, headRefName: "continuo/fix-a", mergedAt: "2026-08-01T00:00:00Z", body: "Closes #1" },
+        { number: 2, headRefName: "continuo/fix-b", mergedAt: "2026-08-02T00:00:00Z", body: "Closes #2" },
+      ] as MergedPrRecord[],
+    };
+    const costFetch = { rows: [activityRow({ date: "2026-08-20 00:00:00", usage: 10 })], ok: true as const };
+    const report = buildTrackQualityReport(raw, null, costFetch, null);
+    assert.equal(report.cost.available, true);
+    assert.equal(report.cost.total_usd, 10);
+    // 2 issues continuo, 0 retrabalhadas -> denominador 2
+    assert.equal(report.cost.continuo_cost_per_nonreworked_issue, 5);
+  });
+
+  it("max_date = hoje -> aviso de consolidação parcial aparece nos warnings", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const costFetch = { rows: [activityRow({ date: `${today} 00:00:00`, usage: 1 })], ok: true as const };
+    const report = buildTrackQualityReport(emptyRaw, null, costFetch, null);
+    assert.ok(report.warnings.some((w) => w.includes("parcialmente consolidado")));
   });
 });
