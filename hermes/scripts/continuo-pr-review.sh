@@ -16,13 +16,13 @@
 # rápida e superficial de UMA PR (Sonnet, ~4h) vs. varredura funda do dia
 # inteiro com visão de interação-entre-PRs (Opus, 1x/dia).
 #
-# ## Passo manual PENDENTE (fora do repo, toca ~/.hermes — não executado
-# por esta PR)
+# ## Ação manual (fora do repo, feita em 31/08/2026)
 #
-# Este script só existe no repo até alguém rodar, fora daqui: criar o
-# symlink `~/.hermes/scripts/continuo-pr-review.sh` e `hermes cron create`
-# pro job novo (~4h). Sem isso, o script nunca roda — não há cron
-# apontando pra ele ainda. Ver `hermes/README.md`.
+# Job `3330b108a5b2`, `every 240m`, aponta pro STUB
+# `~/.hermes/scripts/continuo-pr-review.sh` — NÃO symlink (o guard de
+# traversal do cron do Hermes rejeita symlink resolvendo fora de
+# `~/.hermes/scripts/`; o stub só faz `exec` pra este arquivo). Ver
+# `hermes/README.md`.
 #
 # ## NUNCA mergeia (propriedade mecânica, não só de prosa)
 #

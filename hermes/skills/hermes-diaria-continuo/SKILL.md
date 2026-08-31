@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.8
+version: 0.5.9
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -197,17 +197,34 @@ issue nova é reivindicada. Para cada PR, nesta ordem:
    agente(s)..."` de um dispatch que não aconteceu (era exatamente isso que
    os PRs #6713/#6715 mostravam, indistinguível de um review real).
 
-   Antes de mergear, rodar:
-   ```bash
-   npx tsx scripts/check-pr-review-authenticity.ts --pr N
-   ```
-   `exit 0` (`pass` — comentário no formato de review independente
-   encontrado, sem o marcador de self-review) → merge no MESMO tick, como
-   antes. `exit != 0` (`self_review`, `no_review`, ou `error` — fail-closed,
-   mesma disciplina do guard de caminho sensível do passo 2) → **NÃO
-   mergear**: deixar o PR aberto, registrar no relatório do tick como
-   "aguardando review externo — self-review não satisfaz o gate do #5251",
-   e passar para a próxima issue/PR da fila.
+   **#6864 (31/08/2026) — o contínuo NUNCA mergeia a própria PR, ponto.**
+   Decisão do editor, decorrente do #6849: o gate de autenticidade acima
+   (`check-pr-review-authenticity.ts`) é honor-system por CONSTRUÇÃO —
+   avaliador (esta delegação) e avaliado (a PR que ela mesma abriu) são o
+   MESMO processo, com a MESMA credencial `gh`, escrevendo no MESMO lugar.
+   `INDEPENDENT_REVIEW_RE` já aprovou o texto fabricado exato do incidente
+   #6713 uma vez — endurecer a regex só encarece fabricar, não muda quem
+   decide. A investigação do #6849 esgotou a busca por sinal fora do texto
+   (autor — `["vjpixel"]` é o único ator que já comentou neste repo, sem
+   bot/App; `kind` do session-registry; `gh pr comment` × `gh pr review`;
+   telemetria de dispatch) e não achou nenhum. **Remover a capacidade de
+   merge é mais forte que confiar no texto ou proteger um segredo de bot**
+   — não há configuração a errar, e este repo já tem 3 incidentes
+   documentados de credencial vazando pro processo errado (#5608, #6714,
+   #6718) pra desconfiar de "revisor com token próprio" como solução.
+
+   Rode `npx tsx scripts/check-pr-review-authenticity.ts --pr N` mesmo
+   assim — o resultado (`pass`/`self_review`/`no_review`/`error`) vira
+   ROTULO informativo no relatório do tick (ex: "review independente já
+   presente" vs "aguardando review externo"), não autorização de ação. Em
+   TODOS os casos, inclusive `exit 0`/`pass`: **NÃO mergear** — deixar o
+   PR aberto e passar para a próxima issue/PR da fila. O merge acontece
+   exclusivamente no pickup (#6823, abaixo) ou no review consolidado, que
+   têm ferramenta Agent e conseguem revisar de verdade — nunca nesta
+   delegação. **Se você chegou aqui pensando em reintroduzir merge nesta
+   seção "por otimização" (menos latência, menos dependência de outro
+   processo): não. É exatamente o trade-off que o #6864 aceitou de
+   propósito — ver "Custo aceito" na issue.**
 
    **Pickup existe desde o #6823 (31/08/2026) — só no `/diaria-overnight`.**
    O fleet review do #6820 (30/08/2026) tinha achado que nenhuma das duas
@@ -302,9 +319,10 @@ Siga o CLAUDE.md. Crie branch com o prefixo continuo/ (convenção
 continuo/fix-N-slug — é o que faz o PR aparecer como CONTINUO na Triagem
 do Studio, #6446), implemente com edições cirúrgicas, adicione
 teste de regressão se for bugfix (#633), rode os testes afetados, abra PR
-com gh pr create referenciando a issue. NÃO mergeie — o merge é do
-coordenador. Se a issue for inviável/ambígua além do trivial, comente nela
-o bloqueio via gh issue comment e pare." | \
+com gh pr create referenciando a issue. NÃO mergeie — desde o #6864, nem
+o coordenador deste tick mergeia mais: o merge acontece exclusivamente no
+pickup (#6823) ou no review consolidado. Se a issue for inviável/ambígua
+além do trivial, comente nela o bloqueio via gh issue comment e pare." | \
   ~/.hermes/scripts/claude-openrouter.sh \
     --tools "Read,Grep,Glob,Bash,Edit,Write" \
     --budget 20.0 --timeout 2400
@@ -433,6 +451,20 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Changelog
 
+- 0.5.9 (31/08/2026): #6864 — a delegação PARA de mergear a própria PR.
+  §3 (fila de PRs abertos) removeu a instrução "exit 0 → merge no mesmo
+  tick" — `check-pr-review-authenticity.ts` vira rótulo informativo pro
+  relatório do tick, nunca autorização de ação; em TODO veredito
+  (inclusive `pass`), a decisão é NÃO mergear e passar pra próxima
+  issue/PR. Decorre do #6849: o gate é honor-system por construção
+  (avaliador e avaliado são o mesmo processo/credencial) — endurecer a
+  regex de reconhecimento não muda quem decide, só encarece fabricar.
+  Só seguro porque o #6865 (v0.5.8, acima) já colocou um revisor externo
+  de verdade a cada ~4h (`continuo-pr-review.sh`) — sem essa peça, PRs do
+  contínuo ficariam órfãs até o pickup diário. Merge continua exclusivo
+  do pickup (#6823) e do review consolidado — nunca desta delegação.
+  Guard: `test/continuo-never-merges-own-pr.test.ts` falha se a instrução
+  antiga voltar.
 - 0.5.8 (31/08/2026): #6865 — review externo do contínuo separado em 2
   papéis (decisão do editor, decorrente do #6849). `daily-consolidated-
   review.sh` renomeado pra `opus-daily-diff-review.sh` (mesma cadência
