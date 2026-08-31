@@ -92,6 +92,17 @@ describe("hasNewOrModifiedTest (#970)", () => {
     assert.equal(hasNewOrModifiedTest(["test/legacy.test.js"]), true);
   });
 
+  it("#6860 (achado ao vivo): aceita .test.sh CO-LOCADO com o assunto, fora de test/tests/ — convenção real (continuo-branch-prefix.test.sh, daily-review-coverage.test.sh)", () => {
+    assert.equal(hasNewOrModifiedTest(["hermes/scripts/lib/continuo-branch-prefix.test.sh"]), true);
+    assert.equal(hasNewOrModifiedTest(["hermes/scripts/lib/daily-review-coverage.test.sh"]), true);
+    // não precisa estar sob test/tests/ — .test.sh sozinho já é inequívoco.
+    assert.equal(hasNewOrModifiedTest(["scripts/lib/algo-novo.test.sh"]), true);
+  });
+
+  it("#6860: .test.sh só conta o arquivo .test.sh em si, não o irmão .sh que ele testa", () => {
+    assert.equal(hasNewOrModifiedTest(["hermes/scripts/lib/continuo-branch-prefix.sh"]), false);
+  });
+
   it("retorna false em diff vazio", () => {
     assert.equal(hasNewOrModifiedTest([]), false);
   });
