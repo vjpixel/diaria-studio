@@ -165,8 +165,9 @@ export function getStringArg(
   return raw;
 }
 
-export function getIntArg(argv: string[], key: string, opts: { min?: number } = {}): number | undefined {
+export function getIntArg(argv: string[], key: string, opts: { min?: number; max?: number } = {}): number | undefined {
   const min = opts.min ?? 0;
+  const max = opts.max;
   const parsed = parseArgs(argv);
   if (parsed.flags.has(key)) {
     throw new Error(`--${key} foi passado sem valor (ex: "--${key} 50") — omita a flag pra usar o default.`);
@@ -182,6 +183,11 @@ export function getIntArg(argv: string[], key: string, opts: { min?: number } = 
   if (!Number.isInteger(value) || value < min) {
     throw new Error(
       `--${key} deve ser um inteiro ${min === 0 ? "não-negativo" : `≥ ${min}`}, recebido "${raw}".`,
+    );
+  }
+  if (max !== undefined && value > max) {
+    throw new Error(
+      `--${key} deve ser ≤ ${max} (slot ${max} é o último válido, #6748), recebido "${raw}".`,
     );
   }
   return value;

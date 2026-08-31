@@ -259,11 +259,32 @@ export function runScheduledTask(
     // (offline, divergência, working tree suja) vira warning e a task
     // prossegue com o código local. Nunca bloqueia uma task por falha de sync.
     // O SHA efetivamente usado fica registrado no log da rodada.
+    //
+    // #6800: o fail-soft original era sem retry — quando o sync falhava
+    // (sync_in_progress, stash_failed, etc.), a task prosseguia com código
+    // potencialmente defasado e nada retentava até a próxima execução,
+    // que frequentemente sofha pelo mesmo motivo. Isso fez com que ~250
+    // de ~320 execuções instrumentadas rodassem sem sincronizar, várias
+    // com commits_behind=7. O retry com backoff curto (3 tentativas, 2s/5s)
+    // cobre o caso comum de contenção de lock (sync_in_progress) sem
+    // transformar falha persistente em loop infinita — se todas as
+    // tentativas falharem, o warning é gravado e a task segue (fail-soft
+    // invariável, #2686). Sempre fail-soft: nenhuma tentativa blocked a task.
     let syncResult: GitSyncResult | null = null;
-    try {
-      syncResult = syncCode();
-    } catch (e) {
-      appendTemp(`AVISO: sync-code.ts lançou exceção inesperada: ${(e as Error).message}`);
+    let syncAttempt = 0;
+    const SYNC_MAX_ATTEMPTS = 3;
+    const SYNC_BACKOFF_MS = [2000, 5000];
+    while (syncAttempt < SYNC_MAX_ATTEMPTS) {
+      try {
+        syncResult = syncCode();
+        break;
+      } catch (e) {
+        appendTemp(`AVISO: sync-code.ts lançou exceção inesperada (tentativa ${syncAttempt + 1}/${SYNC_MAX_ATTEMPTS}): ${(e as Error).message}`);
+      }
+      syncAttempt++;
+      if (syncAttempt < SYNC_MAX_ATTEMPTS) {
+        sleepSync(SYNC_BACKOFF_MS[syncAttempt - 1] ?? 2000);
+      }
     }
     if (syncResult) {
       appendTemp(`[git-sync] outcome=${syncResult.outcome} up_to_date=${syncResult.up_to_date} commits_behind=${syncResult.commits_behind}`);
@@ -273,7 +294,7 @@ export function runScheduledTask(
         }
       }
     } else {
-      appendTemp("[git-sync] WARN: sync-code.ts não retornou resultado — prosseguindo com código local.");
+      appendTemp(`[git-sync] WARN: sync-code.ts falhou em ${SYNC_MAX_ATTEMPTS} tentativas — prosseguindo com código local (#6800)`);
     }
 
     for (const step of def.steps) {
