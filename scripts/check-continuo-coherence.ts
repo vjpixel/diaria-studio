@@ -71,15 +71,29 @@ function fetchActiveFiles(cwd: string): { ok: boolean; files?: string[]; error?:
   }
 }
 
-/** Paths tocados por commits de master dentro da janela recente. */
+/** Paths tocados por commits de master dentro da janela recente. RAW — com
+ *  repetição (1 entrada por commit que toca o path), NUNCA deduplicado:
+ *  `evaluateContinuoCoherence` usa a frequência pra distinguir arquivo
+ *  esporadicamente tocado (sinal real, #6699) de playbook em iteração
+ *  ativa tocado o tempo todo (`HOT_FILE_TOUCH_THRESHOLD`, review da PR
+ *  #6848). Dá `git fetch` ANTES do `git log` — sem isso, `origin/master`
+ *  local pode estar desatualizado e o comando ainda assim sai `status 0`
+ *  (sucesso silencioso com dado obsoleto, quebrando o fail-closed que o
+ *  resto deste arquivo garante — achado da review da PR #6848, P2/P3
+ *  confiança alta). Falha do fetch é fail-closed aqui (`ok: false`), igual
+ *  a qualquer outro comando deste CLI — diferente do `sync-code.ts`
+ *  chamado no início do tick pela skill, que é fail-soft de propósito. */
 function fetchRecentMasterFiles(cwd: string, recentHours: number): { ok: boolean; files?: string[]; error?: string } {
+  const fetch = run("git", ["fetch", "origin", "master", "--quiet"], cwd);
+  if (!fetch.ok) return { ok: false, error: fetch.error };
+
   const r = run("git", ["log", `--since=${recentHours} hours ago`, "origin/master", "--name-only", "--pretty=format:"], cwd);
   if (!r.ok) return { ok: false, error: r.error };
   const files = r.stdout
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
-  return { ok: true, files: [...new Set(files)] };
+  return { ok: true, files };
 }
 
 export function checkContinuoCoherence(issueNumber: number, cwd: string, recentHours: number): GateOutcome {

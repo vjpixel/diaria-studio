@@ -282,9 +282,15 @@ delegações morreram, o tick de 40min produziu zero PRs e deixou worktree
    com o achado (`gh pr comment N --body "..."`, texto que o CLI já imprime
    em stderr) — **não bloqueia o merge nem o review** (o conteúdo já chega
    correto ao master, é achado de arqueologia, não de correção — #6804 é
-   P3). `exit 0` (`consistent`) → nada a fazer. O PR aberto entra na fila do
-   passo 3 (review independente continua sendo o gate — o harness
-   implementa, o pipeline do Hermes revisa e mergeia).
+   P3). `exit 0` (`consistent`) → nada a fazer. `exit 2` (`error` — `gh`
+   falhou, inconclusivo, review da PR #6848: esta branch tinha ficado sem
+   instrução, assimétrica com o passo 0 acima que já trata `exit 2`) →
+   registrar no relatório do tick ("rastreabilidade não verificada pro PR
+   #N: {motivo}") e seguir — não é `consistent`, mas também não bloqueia
+   nada (mesmo caráter não-bloqueante do `mismatch`, só que sem o achado
+   pra comentar). O PR aberto entra na fila do passo 3 (review independente
+   continua sendo o gate — o harness implementa, o pipeline do Hermes
+   revisa e mergeia).
 4. **Falha do wrapper (exit ≠ 0, todos os modelos) — verificar ANTES de
    desfazer o claim (#6712, achado 29/08/2026, 2 ocorrências no mesmo dia):**
    o wrapper pode estourar `--max-budget-usd` (ou outro erro classificado

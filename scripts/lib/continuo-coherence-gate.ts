@@ -54,14 +54,24 @@
  *
  *   1. **Overlap de arquivo**: a issue MENCIONA (regex sobre paths no
  *      corpo) um arquivo que também aparece tocado por uma PR aberta AGORA
- *      ou por um merge recente em master (janela configurável). Isto é
- *      exatamente o padrão medido em #6699/#6694/#6696/#6700 — dois
- *      commits no mesmo arquivo/módulo perto um do outro no tempo.
+ *      ou por um merge recente em master (janela configurável) — mas só
+ *      quando o arquivo é tocado POUCAS vezes (< `HOT_FILE_TOUCH_THRESHOLD`
+ *      abaixo). Isto é exatamente o padrão medido em #6699/#6694/#6696/#6700
+ *      — dois commits no mesmo arquivo/módulo perto um do outro no tempo,
+ *      não um playbook em iteração ativa tocado o tempo todo (achado da
+ *      review da PR #6848: sem o filtro de "hotness", `SKILL.md`/
+ *      `claude-openrouter.sh` — tocados 4-6× em 48h em rodadas ativas —
+ *      disparavam pra qualquer issue que só os MENCIONASSE, mesmo issues já
+ *      resolvidas e sem relação nenhuma com o padrão real).
  *   2. **Sinal textual explícito**: palavras-chave PT-BR de baixa
- *      ambiguidade (refactor/consolidar/unificar/duplicação, "abstração
- *      compartilhada"/"módulo canônico"/path `scripts/lib/shared/`, "fatia
- *      N de M"/"parte N/M" de épico, "depende de #N"/"após #N"/"bloqueado
- *      por #N"/"baseado em #N").
+ *      ambiguidade (refactor/refatoração, "abstração compartilhada"/"módulo
+ *      canônico"/path `scripts/lib/shared/`, "fatia N de M"/"parte N/M" de
+ *      épico, "depende de #N"/"após #N"/"bloqueado por #N"/"baseado em
+ *      #N"). "Consolidar"/"unificar"/"duplicação" FORAM removidas da lista
+ *      (review da PR #6848, P2 confiança alta, demonstrado ao vivo) — são
+ *      vocabulário comum do próprio domínio deste repo (dedup de URL,
+ *      "duplicação de linha no CSV") e disparavam em bugs pontuais comuns,
+ *      sem relação com o padrão medido.
  *
  * Falso negativo é possível (issue de alta coerência sem nenhum desses
  * sinais no texto) — inerente a decidir ANTES do diff existir, não um
@@ -107,30 +117,62 @@ export function extractMentionedPaths(text: string): string[] {
  *  módulo que o #6680 contornou. */
 const SHARED_PATH_PREFIXES = ["scripts/lib/shared/"];
 
-const REFACTOR_RE = /\brefactor|refatora[çc][ãa]o|consolidar|consolida[çc][ãa]o|unificar|unifica[çc][ãa]o|duplica[çc][ãa]o/i;
+/** Review da PR #6848 (code-reviewer, P2, confiança alta, demonstrado ao
+ *  vivo): a versão original incluía "consolidar"/"unificar"/"duplicação"
+ *  como gatilho — palavras comuns no vocabulário do PRÓPRIO domínio deste
+ *  repo (dedup de URL, "duplicação de linha no CSV", "unificar formato de
+ *  data") que disparavam em issues de bug pontual comuns, sem nenhuma
+ *  relação com o padrão medido (abstração criada e contornada). Restrito a
+ *  "refactor"/"refatoração" — inequívoco, nenhum caso de bug pontual usa
+ *  essa palavra pra outra coisa. */
+const REFACTOR_RE = /\brefactor|refatora[çc][ãa]o/i;
 const SHARED_ABSTRACTION_TEXT_RE = /abstra[çc][ãa]o compartilhada|m[óo]dulo can[ôo]nico|tipo canônico/i;
 const EPIC_SLICE_RE = /\b(fatia|parte|slice)\s+\d+\s*(de|\/)\s*\d+|depende d[ae] (fatia|parte) anterior/i;
-const CROSS_PR_DEP_RE = /\bdepende(\s+d[eo])?\s+#\d+|\bap[óo]s\s+(o\s+merge\s+d[eo]|mergear)\s+#\d+|\bbloqueado\s+por\s+#\d+|\bbaseado\s+(n[oa]|em)\s+#\d+/i;
+/** Review da PR #6848 (comment-analyzer, P3): a docstring do módulo
+ *  prometia "após #N" bare, mas o regex original exigia "mergear"/"o merge
+ *  de/do" entre "após" e o número — "só fazer isso após #500 mergear"
+ *  passava batido. Ajustado pra aceitar a forma bare também (erra pro lado
+ *  de barrar mais, consistente com o resto do desenho). */
+const CROSS_PR_DEP_RE =
+  /\bdepende(\s+d[eo])?\s+#\d+|\bap[óo]s\s+(o\s+merge\s+d[eo]\s+|mergear\s+)?#\d+|\bbloqueado\s+por\s+#\d+|\bbaseado\s+(n[oa]|em)\s+#\d+/i;
+
+/** Review da PR #6848 (code-reviewer, P2, demonstrado ao vivo contra a
+ *  issue #6820 já mergeada): um arquivo tocado MUITAS vezes na janela
+ *  recente (ex: `hermes/skills/hermes-diaria-continuo/SKILL.md`,
+ *  `hermes/scripts/claude-openrouter.sh` — playbooks em iteração ativa,
+ *  6+ toques em 48h) não é sinal útil de "duas PRs pisando uma na outra"
+ *  — é só um arquivo popular. O padrão real medido (#6699) é o OPOSTO:
+ *  um arquivo tocado 1-2 vezes, criado numa PR e contornado na seguinte.
+ *  Path tocado `>= HOT_FILE_TOUCH_THRESHOLD` vezes na janela é excluído do
+ *  gatilho de overlap (mas ainda conta pro sinal de `scripts/lib/shared/`,
+ *  que é independente). */
+const HOT_FILE_TOUCH_THRESHOLD = 3;
 
 export interface CoherenceGateInput {
   readonly issueTitle: string;
   readonly issueBody: string;
   /** Paths tocados por qualquer PR aberta agora (todas as branches). */
   readonly activeFiles: readonly string[];
-  /** Paths tocados por commits recentes em master (janela do CLI). */
+  /** Paths tocados por commits recentes em master (janela do CLI) — RAW,
+   *  com repetição (1 entrada por commit que toca o path), não
+   *  deduplicado: é a frequência que alimenta o filtro de
+   *  `HOT_FILE_TOUCH_THRESHOLD` acima (dedup aqui destruiria o sinal). */
   readonly recentMasterFiles: readonly string[];
 }
 
 export interface CoherenceGateResult {
   /** `true` = baixa coerência medida, contínuo pode reivindicar. `false` =
-   *  sinal de alta coerência, NÃO reivindicar neste tick. */
+   *  sinal de alta coerência, NÃO reivindicar neste tick. DERIVADO de
+   *  `reasons.length === 0` — nunca setar este campo à mão em outro lugar
+   *  (mesma disciplina de `SensitiveClassification.sensitive` em
+   *  `sensitive-path-guard.ts`). */
   readonly admit: boolean;
   /** Vazio quando `admit: true`. Cada string é um motivo independente —
    *  pode haver mais de um sinal disparando ao mesmo tempo. */
-  readonly reasons: string[];
+  readonly reasons: readonly string[];
   /** Paths mencionados na issue que colidem com trabalho ativo/recente —
    *  só populado quando esse motivo dispara, útil pro relatório do tick. */
-  readonly overlappingPaths: string[];
+  readonly overlappingPaths: readonly string[];
 }
 
 /**
@@ -142,8 +184,14 @@ export function evaluateContinuoCoherence(input: CoherenceGateInput): CoherenceG
 
   const mentionedPaths = extractMentionedPaths(text);
   const activeSet = new Set(input.activeFiles);
-  const recentSet = new Set(input.recentMasterFiles);
-  const overlappingPaths = mentionedPaths.filter((p) => activeSet.has(p) || recentSet.has(p));
+  const recentCounts = new Map<string, number>();
+  for (const p of input.recentMasterFiles) recentCounts.set(p, (recentCounts.get(p) ?? 0) + 1);
+
+  const overlappingPaths = mentionedPaths.filter((p) => {
+    if (activeSet.has(p)) return true;
+    const recentTouches = recentCounts.get(p) ?? 0;
+    return recentTouches > 0 && recentTouches < HOT_FILE_TOUCH_THRESHOLD;
+  });
   if (overlappingPaths.length > 0) {
     reasons.push(
       `issue menciona path(s) que também aparecem em PR aberta ou merge recente de master: ${overlappingPaths.join(", ")} — mesmo padrão medido no #6699 (dois commits no mesmo módulo, sem coordenação)`,

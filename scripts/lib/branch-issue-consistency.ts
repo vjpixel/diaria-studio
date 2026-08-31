@@ -76,10 +76,13 @@ export function extractIssueNumbersFromCommitMessages(messages: readonly string[
 
 export interface BranchIssueConsistencyResult {
   /** `true` quando não há bug a reportar: branch não-numerada (nada a
-   *  checar), OU a issue do nome aparece em pelo menos 1 commit. */
+   *  checar), OU a issue do nome aparece em pelo menos 1 commit. DERIVADO
+   *  de `commitIssues.includes(branchIssue)` — nunca setar à mão em outro
+   *  lugar (review da PR #6848, mesma disciplina de
+   *  `SensitiveClassification.sensitive` em `sensitive-path-guard.ts`). */
   readonly consistent: boolean;
   readonly branchIssue: number | null;
-  readonly commitIssues: number[];
+  readonly commitIssues: readonly number[];
 }
 
 /**

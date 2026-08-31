@@ -77,4 +77,11 @@ describe("checkBranchIssueConsistency — retrospectivo dos casos reais da #6804
     const r = checkBranchIssueConsistency("continuo/fix-7000-slug", ["fix(#7000): resolve o bug"]);
     assert.equal(r.consistent, true);
   });
+
+  it("branch numerada com lista de commits VAZIA -> mismatch (pr-test-analyzer, PR #6848: PR sem commits ainda / payload malformado chegando na função pura)", () => {
+    const r = checkBranchIssueConsistency("continuo/fix-8000-slug", []);
+    assert.equal(r.consistent, false);
+    assert.equal(r.branchIssue, 8000);
+    assert.deepEqual(r.commitIssues, []);
+  });
 });
