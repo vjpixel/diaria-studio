@@ -120,7 +120,7 @@ describe("stripGreetingAndSupporterBlocks — achado 260803 (revisão do editor 
   });
 });
 
-describe("checkDailySendCap — guard de segurança, não rotação (#4266)", () => {
+describe("checkDailySendCap — freio de VOLUME removido (#6793 Faixa A, item 5)", () => {
   it("dentro do cap (líquido dos seeds default) → ok", () => {
     assert.deepEqual(checkDailySendCap(250, 300), { ok: true });
   });
@@ -129,45 +129,40 @@ describe("checkDailySendCap — guard de segurança, não rotação (#4266)", ()
     assert.deepEqual(checkDailySendCap(305, 300), { ok: true });
   });
 
-  it("acima do cap mesmo líquido dos seeds default → not ok, motivo explica que não há rotação de ondas", () => {
+  it("#6793: acima do cap histórico → NÃO bloqueia mais — guard de volume desativado (piso de estado impossível segue intacto)", () => {
     const result = checkDailySendCap(306, 300);
-    assert.equal(result.ok, false);
-    assert.match((result as { ok: false; reason: string }).reason, /306/);
-    assert.match((result as { ok: false; reason: string }).reason, /rotação por ondas/);
+    assert.deepEqual(result, { ok: true });
   });
 
-  it("seedCount explícito (compat/teste sem depender de EDITOR_SEED_EMAILS) → 301 bruto, 0 seeds, cap 300 → not ok", () => {
+  it("seedCount explícito (compat/teste sem depender de EDITOR_SEED_EMAILS) → 301 bruto, 0 seeds, cap 300 → ok (#6793)", () => {
     const result = checkDailySendCap(301, 300, 0);
-    assert.equal(result.ok, false);
+    assert.deepEqual(result, { ok: true });
   });
 
   it("seedCount explícito → 301 bruto, 1 seed, cap 300 → ok (líquido 300)", () => {
     assert.deepEqual(checkDailySendCap(301, 300, 1), { ok: true });
   });
+
+  it("#6793: lista MUITO acima do cap (ex: 10x) → ainda ok, sem teto de volume", () => {
+    assert.deepEqual(checkDailySendCap(3000, 300), { ok: true });
+  });
 });
 
-describe("checkDailySendCap — exclui EDITOR_SEED_EMAILS do denominador (#4631)", () => {
+describe("checkDailySendCap — exclui EDITOR_SEED_EMAILS do denominador (#4631, #6793: cap não bloqueia mais, mas o piso de estado impossível segue igual)", () => {
   it("reproduz o incidente 260804: lista Brevo com 179 assinantes, cap 175 → ok (líquido dos 5 seeds = 174)", () => {
     // Antes do #4631: checkDailySendCap(179, 175) abortava com "acima do cap
     // diário (175)" mesmo com a fila real (`in_brevo` no store) batendo
     // exatamente 175 — os 5 EDITOR_SEED_EMAILS (nunca rastreados no store,
     // mas permanentemente vinculados à lista) infestavam o bruto da API.
+    // Desde #6793, o cap nem bloquearia mais de qualquer forma — este teste
+    // fica como regressão do PISO (totalSubscribers >= seedCount), que segue
+    // intacto.
     assert.deepEqual(checkDailySendCap(179, 175), { ok: true });
   });
 
-  it("179 bruto, cap 173 (fila real de 174 excede o cap líquido) → not ok", () => {
+  it("#6793: 179 bruto, cap 173 (fila real de 174 excederia o cap líquido histórico) → ok, cap não bloqueia mais", () => {
     const result = checkDailySendCap(179, 173);
-    assert.equal(result.ok, false);
-    assert.match((result as { ok: false; reason: string }).reason, /173/);
-  });
-
-  it("mensagem de erro cita o total bruto E o líquido dos seeds", () => {
-    const result = checkDailySendCap(306, 300);
-    assert.equal(result.ok, false);
-    const reason = (result as { ok: false; reason: string }).reason;
-    assert.match(reason, /306 assinante/);
-    assert.match(reason, /301 líquido/);
-    assert.match(reason, /5 EDITOR_SEED_EMAILS/);
+    assert.deepEqual(result, { ok: true });
   });
 });
 
