@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.6
+version: 0.5.7
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -25,9 +25,53 @@ com modelos do OpenRouter — sem tocar a cota da assinatura Anthropic.
 Papel do Hermes nesta skill: **orquestrador** (loop do cron, claims, fila,
 relatório no Telegram). Quem pensa sobre código é o harness delegado.
 
-## Segurança e escopo (inalterado da v0.4)
+## Segurança e escopo
 
-- Workdir: `/home/vjpixel/diaria-studio`. Nunca operar fora dele.
+- **Allowlist de raízes (#6817), substitui o "workdir único" da v0.4.**
+  Antes de LER ou ESCREVER qualquer path fora de `data/`/`.claude/worktrees/`
+  do próprio tick, rodar `npx tsx scripts/check-continuo-workdir.ts --path
+  {caminho} --intent read|write`. `exit 0` (allowed) → prossegue. `exit 1`
+  (denied) → não tocar esse path, registrar no relatório do tick e seguir.
+  3 raízes definidas (`scripts/lib/continuo-workdir-allowlist.ts`):
+  `diaria-studio` (`enabled: true`, como sempre foi), `hermes-agent` e
+  `dot-hermes` (`~/.hermes`) — **as duas últimas nascem `enabled: false`**,
+  decisão do editor: habilitá-las é 1 campo (`enabled: true` no módulo),
+  mas enquanto qualquer sessão estiver trabalhando ativamente nessas raízes
+  (fork `vjpixel/hermes`, config `~/.hermes` sob medição), ligar o contínuo
+  nelas reproduz a mesma colisão que a #6802 já sofreu neste dia — blast
+  radius maior (config de produção do próprio orquestrador, checkout com
+  trabalho não commitado). **`~/.hermes/auth.json` é negado permanentemente,
+  em QUALQUER cenário** — tokens OAuth/chaves em claro, leitura livre por
+  um agente cujo log vai pro Telegram é vazamento a 1 `echo` de distância;
+  o hard-deny vence mesmo se `dot-hermes` for ativada no futuro.
+- **Guard de auto-modificação (#6817 item 4).** Antes de aplicar qualquer
+  mudança, rodar `npx tsx scripts/check-continuo-workdir.ts --check-self-mod
+  --path {caminho da mudança} --active {lista separada por vírgula dos
+  arquivos que ESTE tick está executando agora}` — tipicamente o próprio
+  `SKILL.md`, o wrapper `claude-openrouter.sh`, o job corrente em
+  `~/.hermes/cron/jobs.json`. `exit 1` (self-modification): **não aplicar
+  a mudança neste tick** — abrir PR e deixar pro próximo tick ou decisão
+  do editor. `exit 0`: seguro aplicar. Review da PR #6854 (P2, confiança
+  alta): a versão inicial só documentava a função pura
+  (`isSelfModification`, mesmo módulo) sem NENHUM comando que a
+  chamasse — a delegação só sabe rodar `npx tsx scripts/...`, nunca
+  importar TS direto, então a instrução original era inexecutável na
+  prática. Achado #6059: o contínuo deletou a própria infra no meio do
+  próprio loop, quebrando-o; revertido no #6060.
+  Fail-closed é requisito aqui, não preferência — o contínuo rodando
+  DENTRO do que ele modifica é a receita de um estado que ninguém desfaz
+  sozinho.
+- **Escopo deliberadamente NÃO implementado nesta 1ª fatia** (#6817 tem 7
+  sub-propostas; itens 2, 3, 5, 6 e 7 exigem operar de fato dentro de
+  `hermes-agent`/`~/.hermes` pra fazer sentido, e essas raízes nascem
+  desligadas — implementá-los contra raiz desligada seria código morto):
+  redação de `auth.json` pra leitura segura, verbo único de escrita de
+  config de runtime (backup + validação + probe + revert), extensão do
+  `sensitive-path-guard.ts` pra `~/.hermes/config.yaml`/`cron/jobs.json`,
+  gate de review pro fork (o `.claude/hooks/pr-create-review.mjs` é deste
+  checkout, não roda em `~/hermes-agent`), e leitura do tracker do fork
+  como 2ª fila (`vjpixel/hermes#N` sempre prefixado). Ficam para quando o
+  editor decidir ativar as raízes.
 - Nunca tocar `data/editions/` de edição em curso, credenciais, ou disparar
   publicação. Fila TÉCNICA (issues/PRs), nunca fluxo editorial.
 - Env vars `ANTHROPIC_*` NUNCA no ambiente global — só dentro do wrapper
@@ -368,6 +412,20 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Changelog
 
+- 0.5.7 (31/08/2026): "Segurança e escopo" — workdir único trocado por
+  allowlist de raízes (#6817). `npx tsx scripts/check-continuo-workdir.ts
+  --path {caminho} --intent read|write` antes de tocar qualquer path fora
+  do tick corrente. 3 raízes definidas (`diaria-studio`/`hermes-agent`/
+  `dot-hermes`) — só `diaria-studio` nasce `enabled: true`; as outras duas
+  ficam desligadas de propósito (colisão com sessão trabalhando ao vivo em
+  `~/hermes-agent`/`~/.hermes`, achado no mesmo dia). `~/.hermes/auth.json`
+  negado permanentemente, em qualquer cenário. Novo guard de
+  auto-modificação (`isSelfModification`) — mudança que toca o que o tick
+  corrente está executando não se aplica agora, vira PR pro próximo tick.
+  5 dos 7 sub-itens da issue (redação de auth.json, verbo de escrita de
+  config, extensão do sensitive-path-guard, gate de review do fork, 2º
+  tracker) deliberadamente NÃO implementados — dependem das raízes
+  desligadas pra fazer sentido.
 - 0.5.6 (31/08/2026): §4 passo 3 — checagem de rastreabilidade
   branch↔commit ANTES da PR entrar na fila de review (#6804). Achado ao
   limpar 61 branches `continuo/`: nome referenciando uma issue (inclusive
