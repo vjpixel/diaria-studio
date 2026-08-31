@@ -273,6 +273,16 @@ export type RunUpdateBoxResult =
 export function runUpdateArtigoEspecialBox(options: RunUpdateBoxOptions): RunUpdateBoxResult {
   const { titulo, gancho, mesLabel, snippetsFile, configPath, slot, pin, dryRun, force, ano, slug, dataDir } = options;
 
+  // #6797: slot 3 foi eliminado pelo #6748 — rejeitar explicitamente em vez de
+  // deixar o caller gravar a config e reportar sucesso sem efeito.
+  if (slot === 3) {
+    throw new Error(
+      "--slot 3 foi eliminado pelo #6748: stitch-newsletter.ts nunca mais renderiza esse slot, " +
+      "então piná-lo escreveria platform.config.json e reportaria sucesso sem NENHUM efeito. " +
+      "Use --slot 2 (default) ou --slot 1.",
+    );
+  }
+
   // #5979/PR #6000 fleet review (silent-failure-hunter, média confiança):
   // --ano/--slug são all-or-nothing — passar só 1 dos 2 (typo, flag sem
   // valor) desligava o guard de idempotência inteiro em silêncio, sem
@@ -370,7 +380,16 @@ async function main(): Promise<void> {
   // #4568) — aborta com mensagem clara em vez de aceitar lixo.
   // #6748: default mudou de 3 para 2 — slot 3 foi eliminado da rotação e
   // nunca mais renderiza (ver docstring do módulo).
+  // #6797: rejeitar --slot 3 EXPLICITAMENTE (não só max: 2) pra que o erro
+  // explique *por quê* — grava a config e reporta sucesso sem efeito.
   const slot = getIntArg(process.argv.slice(2), "slot", { min: 1 }) ?? 2;
+  if (slot === 3) {
+    throw new Error(
+      "--slot 3 foi eliminado pelo #6748: stitch-newsletter.ts nunca mais renderiza esse slot, " +
+      "então piná-lo escreveria platform.config.json e reportaria sucesso sem NENHUM efeito. " +
+      "Use --slot 2 (default) ou --slot 1.",
+    );
+  }
   const dryRun = flags.has("dry-run");
   const force = flags.has("force");
   const unpin = flags.has("unpin");
