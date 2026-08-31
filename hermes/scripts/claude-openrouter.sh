@@ -66,6 +66,12 @@
 #     [--cwd DIR] [--budget USD] [--timeout SECS] [--model SLUG] [--effort LEVEL]
 set -euo pipefail
 
+# Preflight (#6875, extraído pro lib compartilhado no #6879): falha do
+# binário precisa ser nomeada, não enigmática.
+# shellcheck source=./lib/claude-binary-preflight.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/claude-binary-preflight.sh"
+claude_binary_preflight
+
 # shellcheck source=./lib/free-quota-exhaustion.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/free-quota-exhaustion.sh"
 
