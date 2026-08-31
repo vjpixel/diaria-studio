@@ -23,7 +23,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -152,5 +152,67 @@ describe("cadeia de modelos do Hermes: wrapper e SKILL.md não podem divergir (#
       false,
       `linha da tabela contém slug abreviado sem prefixo de provedor: "${tableRow.trim()}"`,
     );
+  });
+
+  // -----------------------------------------------------------------------
+  // #6790: asserção negativa — doc NUNCA pode afirmar que o wrapper lê
+  // config.yaml / fallback_chains / coding_fallback como fonte da cadeia.
+  // O wrapper roda o array bash MODELS_DEFAULT, hardcoded; o bloco
+  // smart_model_routing é config morta como roteador.
+  //
+  // A armadilha: a seção de CORREÇÃO (ex: tick-20260828-*.md) cita os
+  // mesmos termos justamente pra negá-los. Match cru gera falso positivo.
+  // Estratégia: procura afirmação POSITIVA — termos de crença perto do
+  // nome do wrapper, sem verbo negativo interposto.
+  //
+  // Achado (sessão 31/08, ao destravar #6790): a 1ª versão buscava o
+  // verbo negativo só DEPOIS da menção ao wrapper (`afterWrapper`) —
+  // uma frase corretora com a negação ANTES do nome do wrapper (ex:
+  // "não é verdade que claude-openrouter.sh usa fallback_chains")
+  // escaparia da detecção e viraria falso-positivo de violação. No
+  // corpus atual isso não se manifestou por coincidência (a correção
+  // real de tick-20260828-*.md usa "está errado" DEPOIS da menção ao
+  // wrapper, dentro da mesma janela) — mas a fragilidade é real e
+  // independente de conteúdo específico. Buscar a negação na JANELA
+  // INTEIRA (não só depois do wrapper) fecha essa direção sem abrir
+  // a oposta: a janela já é estreita (3 linhas atrás, 2 à frente),
+  // então uma negação em qualquer lugar dela ainda está perto o
+  // bastante da afirmação pra ser plausivelmente a mesma frase.
+  // -----------------------------------------------------------------------
+
+  it("nenhum doc afirma que claude-openrouter.sh lê config.yaml / fallback_chains / coding_fallback (#6790)", () => {
+    const REF_DIR = join(ROOT, "hermes/skills/hermes-diaria-continuo/references");
+    const SKILL_MD = join(ROOT, "hermes/skills/hermes-diaria-continuo/SKILL.md");
+
+    // Verbo negativo que desmente a afirmação — se aparecer na janela da
+    // frase, ela é corretora, não assertiva.
+    const NEG_VERB =
+      /\b(não|never|no|nenhum|sem|fora|errado|morto|obsoleto|removido|deixou|parou|não lê|não roteia|não resolve|não usa)\b/i;
+
+    const files = [SKILL_MD, ...readdirSync(REF_DIR).map((f) => join(REF_DIR, f))].filter((f) =>
+      f.endsWith(".md"),
+    );
+
+    const FORBIDDEN = /fallback_chains|coding_fallback|fallback_chain_key|smart_model_routing/;
+
+    for (const f of files) {
+      const src = readFileSync(f, "utf8");
+      const lines = src.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line.includes("claude-openrouter")) continue;
+        // Janela de 3 linhas pra trás e 2 pra frente: a afirmação é
+        // contextual, não só a linha que menciona o wrapper.
+        const window = lines.slice(Math.max(0, i - 3), i + 3).join(" ");
+        if (!FORBIDDEN.test(window)) continue;
+        // Procurar verbo negativo na JANELA INTEIRA — não só depois do
+        // wrapper (ver achado no comentário acima do teste).
+        if (NEG_VERB.test(window)) continue; // frase corretora
+        assert.fail(
+          `doc ${f.replace(ROOT + "/", "")}:` +
+            ` linha ${i + 1} associa claude-openrouter.sh a termo proibido sem negação: "${line.trim()}"`,
+        );
+      }
+    }
   });
 });
