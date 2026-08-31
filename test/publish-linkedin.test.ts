@@ -33,6 +33,11 @@ describe("extractPostText (publish-linkedin) (#528)", () => {
   it("lanca sem secao LinkedIn", () => { assert.throws(()=>extractPostText("# Facebook\n\n## d1\nT.","d1"),/LinkedIn/i); });
   it("lanca sem destaque", () => { assert.throws(()=>extractPostText("# LinkedIn\n\n## d1\nT.","d4"),/d4/i); });
   it("d1 nao contamina d2", () => { assert.ok(!extractPostText(LF,"d1").includes("LinkedIn d2.")); });
+  it("#6862: remove markdown de ênfase — LinkedIn não renderiza markdown (achado ao vivo: editor viu ** literal no post real)", () => {
+    const t = extractPostText("# LinkedIn\n\n## d1\n**Por que isso importa:** frase qualquer.", "d1");
+    assert.ok(!t.includes("**"), `não deveria sobrar '**', veio: ${JSON.stringify(t)}`);
+    assert.ok(t.includes("Por que isso importa: frase qualquer."));
+  });
 });
 
 describe("extractPostText (publish-linkedin) — formato novo # Social (#3991)", () => {

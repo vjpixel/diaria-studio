@@ -63,6 +63,7 @@ import { editionDir } from "./lib/edition-paths.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts";
+import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #6862 — nenhum canal social renderiza markdown
 
 export const EIA_CHANNELS = ["linkedin", "facebook", "instagram", "threads", "twitter"] as const;
 export type EiaChannel = (typeof EIA_CHANNELS)[number];
@@ -108,7 +109,11 @@ export function buildPlans(md: string, art: { composite: string; a: string; b: s
     if (skip.has(channel)) continue;
     const text = extractChannelText(md, channel);
     if (!text) throw new Error(`01-eia-social.md sem seção "## ${channel}" — escreva o texto ou passe --skip ${channel}`);
-    plans.push({ channel, text, images: imagesForChannel(channel, art) });
+    // #6862: nenhum canal social renderiza markdown — 01-eia-social.md não
+    // alimenta o carrossel (imagens do É IA? são compostas fixas, `art.*`),
+    // então não tem o conflito de destino duplo de 03-social.md; strip é
+    // sempre seguro aqui.
+    plans.push({ channel, text: stripMarkdownEmphasis(text), images: imagesForChannel(channel, art) });
   }
   return plans;
 }
