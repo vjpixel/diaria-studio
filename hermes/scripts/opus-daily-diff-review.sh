@@ -17,12 +17,13 @@
 # contínuo) — com dois scripts de review no diretório, "daily-consolidated-
 # review" sozinho passou a ler como "o único review que existe", o que
 # deixou de ser verdade. Cadência e modelo deste script são os MESMOS de
-# antes — só o nome ficou mais específico. **Requer ação manual fora deste
-# repo** (não executada por esta PR — ver `hermes/README.md`): recriar o
-# symlink `~/.hermes/scripts/opus-daily-diff-review.sh` e rodar `hermes cron
-# edit 645d5debb7f0 --script opus-daily-diff-review.sh` — sem isso, o job
-# `645d5debb7f0` (agendado, `Script: daily-consolidated-review.sh`) aponta
-# pra um symlink que não existe mais até o passo manual rodar.
+# antes — só o nome ficou mais específico. Ação manual (fora deste repo,
+# feita em 31/08/2026): job `645d5debb7f0` recriado apontando pro STUB
+# `~/.hermes/scripts/opus-daily-diff-review.sh` — NÃO symlink, o guard de
+# traversal do cron do Hermes rejeita symlink resolvendo fora de
+# `~/.hermes/scripts/`; o stub só faz `exec` pra este arquivo (ver
+# `hermes/README.md`). Antigo `daily-consolidated-review.sh` aposentado
+# como `daily-consolidated-review.sh.retired-260831`.
 #
 # AUTH: assinatura claude.ai (OAuth), DE PROPÓSITO — este script NÃO seta
 # ANTHROPIC_BASE_URL/AUTH_TOKEN/API_KEY nenhum (#5608: sessão de Claude Code
