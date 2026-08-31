@@ -88,9 +88,6 @@ import {
   type PersonalPostDeixisMatch,
   type PersonalPostDeixisResult,
   lintPersonalPostNewsletterDeixis,
-  type MarkdownEmphasisMatch,
-  type MarkdownEmphasisResult,
-  lintNoMarkdownEmphasis,
   type SectionCoverageResult,
   checkHumanizerSectionCoverage,
   type PlatformHeaderDuplicateError,
@@ -133,8 +130,6 @@ export type { PostPixelMatchResult };
 export { lintPostPixelMatchesD1, lastMeaningfulSentence, endsWithTrailingQuestion, lintTrailingQuestion };
 export type { PersonalPostDeixisMatch, PersonalPostDeixisResult };
 export { lintPersonalPostNewsletterDeixis };
-export type { MarkdownEmphasisMatch, MarkdownEmphasisResult };
-export { lintNoMarkdownEmphasis };
 export type { SectionCoverageResult };
 export { checkHumanizerSectionCoverage };
 export type { PlatformHeaderDuplicateError, PlatformHeaderUniqueResult };
@@ -236,15 +231,6 @@ export function runStage4SocialLintReport(editionDir: string): SocialStageLintRe
 
   runSocialCheckSafely(push, "no-xml-artifacts", "#4077", "gate-blocking", () =>
     checkNoXmlArtifacts(md),
-  );
-
-  // #6862: `**`/`__`/`*`/`_` saindo literal no texto publicado — nenhum
-  // canal renderiza markdown. GATE-BLOCKING (mesma classe do
-  // `no_markdown_link` que já bloqueia) — `lintNoMarkdownEmphasis` retorna
-  // `ok` real (não sempre-true como antithesis/editorial-hook acima), então
-  // usa `runSocialCheckSafely` normalmente.
-  runSocialCheckSafely(push, "no-markdown-emphasis", "#6862", "gate-blocking", () =>
-    lintNoMarkdownEmphasis(md),
   );
 
   // #2526/#4352: `lintAntithesisReveal`/`lintTrailingEditorialHook` sempre
@@ -399,8 +385,7 @@ function main(): void {
         "  ou: lint-social-md.ts --check no-antithesis-reveal --md <path>\n" +
         "  ou: lint-social-md.ts --check no-trailing-editorial-hook --md <path>\n" +
         "  ou: lint-social-md.ts --check platform-headers-unicos --md <path>\n" +
-        "  ou: lint-social-md.ts --check no-xml-artifacts --md <path>\n" +
-        "  ou: lint-social-md.ts --check no-markdown-emphasis --md <path>",
+        "  ou: lint-social-md.ts --check no-xml-artifacts --md <path>",
     );
     process.exit(2);
   }
@@ -686,31 +671,6 @@ function main(): void {
       }
       console.error(
         `\nFix: remova o trecho de tag XML solta do fim de ${args.md} — nunca é markdown editorial legítimo (ver #4077).`,
-      );
-      process.exit(1);
-    }
-    return;
-  }
-
-  // Modo --check no-markdown-emphasis (#6862, GATE-BLOCKING) — `**`/`__`/
-  // `*`/`_` saindo literal no texto publicado (nenhum canal social renderiza
-  // markdown). Irmão de `no_markdown_link` (já bloqueado dentro do modo
-  // default de CTA), agora cobrindo ênfase. NÃO roda sobre os cards do
-  // carrossel (gen-carousel-cards.ts não passa por este lint) — o carrossel
-  // mantém o negrito de propósito, ver docstring de
-  // lib/strip-markdown-emphasis.ts.
-  if (args.check === "no-markdown-emphasis") {
-    const result = lintNoMarkdownEmphasis(md);
-    console.log(JSON.stringify(result, null, 2));
-    if (!result.ok) {
-      console.error(`\n❌ ${result.matches.length} linha(s) com markdown de ênfase literal em ${args.md}:`);
-      for (const m of result.matches) {
-        console.error(`  linha ${m.line}: ${m.context}`);
-      }
-      console.error(
-        `\nNenhuma plataforma social renderiza markdown — remova \`**\`/\`__\`/\`*\`/\`_\` do texto DE PUBLICAÇÃO ` +
-          `(nunca de 03-social.md em si — o carrossel lê o mesmo arquivo e MANTÉM o negrito, #6862). ` +
-          `Se o publisher do canal já chama stripMarkdownEmphasis, o bug está em outro lugar; se não chama, é ali que falta.`,
       );
       process.exit(1);
     }

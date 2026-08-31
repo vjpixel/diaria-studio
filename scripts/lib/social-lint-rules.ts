@@ -16,7 +16,6 @@ import { createHash } from "node:crypto";
 import { tokenizeForJaccard, jaccardSimilarity } from "../dedup.ts"; // #1861
 import { DIARIA_LINKEDIN_PAGE_SLUG } from "./canonical-urls.ts"; // #2790 fonte única (reexportada abaixo p/ back-compat)
 import { extractSection } from "./extract-section.ts"; // #2834 fonte única (era duplicada em publish-instagram.ts/publish-threads.ts)
-import { hasMarkdownEmphasis } from "./strip-markdown-emphasis.ts"; // #6862
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exportadas pra tests
@@ -1770,57 +1769,3 @@ export function checkScopedHumanizerCoverage(
   };
 }
 
-
-// ---------------------------------------------------------------------------
-// no_markdown_emphasis (#6862)
-// ---------------------------------------------------------------------------
-
-export interface MarkdownEmphasisMatch {
-  line: number;
-  context: string;
-}
-
-export interface MarkdownEmphasisResult {
-  /** `false` quando há qualquer ocorrência — GATE-BLOCKING (severity error no
-   *  invariant check), irmão de `no_markdown_link` (que já bloqueia). */
-  ok: boolean;
-  matches: MarkdownEmphasisMatch[];
-}
-
-/**
- * #6862 (achado ao vivo: `**` saindo literal em posts publicados de
- * Facebook/Instagram/LinkedIn — nenhuma dessas plataformas renderiza
- * markdown). Irmã de `no_markdown_link` (mesma justificativa, já existente
- * pra `[texto](url)`), mas cobre ênfase (`**`/`__`/`*`/`_`).
- *
- * Varre o `03-social.md` INTEIRO (não só `# LinkedIn`/`# Facebook`) — todas
- * as seções que existirem (`# Social`, `# Curto`, e o legado `# LinkedIn`/
- * `# Facebook`/`# Instagram`) são texto de publicação, nunca prosa livre com
- * `**` legítimo. `hasMarkdownEmphasis` (mesmo módulo que faz a remoção real
- * no ponto de publicação, `strip-markdown-emphasis.ts`) decide por LINHA —
- * detector e remoção nunca divergem sobre o que conta como ênfase.
- *
- * GATE-BLOCKING de propósito (ok:false quando há matches) — diferente de
- * `lintAntithesisReveal`/`lintTrailingEditorialHook` (WARN-ONLY): markdown
- * literal saindo pro leitor é o mesmo defeito objetivo que `no_markdown_link`
- * já bloqueia, não um julgamento editorial subjetivo.
- *
- * **Não roda sobre os cards do carrossel** (`gen-carousel-cards.ts` lê o
- * `03-social.md` direto, não passa por este lint) — decisão do editor
- * (31/08/2026): o carrossel MANTÉM o negrito de propósito. Este check só
- * cobre o arquivo-fonte que também alimenta a publicação em texto; a
- * sanitização de fato acontece no ponto de publicação
- * (`stripMarkdownEmphasis`), este lint é o gate que garante que ninguém
- * esqueceu de chamá-la — ver docstring de `strip-markdown-emphasis.ts`.
- */
-export function lintNoMarkdownEmphasis(md: string): MarkdownEmphasisResult {
-  const lines = md.replace(/\r\n/g, "\n").split("\n");
-  const matches: MarkdownEmphasisMatch[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (hasMarkdownEmphasis(line)) {
-      matches.push({ line: i + 1, context: line.trim().slice(0, 160) });
-    }
-  }
-  return { ok: matches.length === 0, matches };
-}

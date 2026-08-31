@@ -88,4 +88,30 @@ describe("stripMarkdownEmphasis (#6862)", () => {
   it("** sem par de fechamento não é removido (texto malformado passa intacto)", () => {
     assert.equal(stripMarkdownEmphasis("começa com ** mas nunca fecha"), "começa com ** mas nunca fecha");
   });
+
+  it("#6866 (achado do review, P3): palavra acentuada colada no delimitador de italic não é falsamente stripada — \\w do JS é ASCII-only, corrigido com \\p{L}/\\p{N}", () => {
+    // Antes do fix: "é"/"café" não contam como \w (ASCII-only), então o
+    // lookaround (?<![\w*]) não bloqueava e "café*importante*" stripava
+    // errado pra "caféimportante" — asterisco colado numa palavra acentuada
+    // deveria ser tratado como "colado a caractere de palavra" (preservado),
+    // igual já acontecia com "3*4"/"user_name" em ASCII.
+    assert.equal(stripMarkdownEmphasis("café*importante*"), "café*importante*");
+    assert.equal(stripMarkdownEmphasis("análise *crítica* aqui"), "análise crítica aqui");
+    assert.equal(stripMarkdownEmphasis("é *importante* também"), "é importante também");
+  });
+
+  it("#6862: preserva o negrito exigido por parágrafo do social-writer (#6086 item c) — não existe lint bloqueando isso, ver docstring do módulo", () => {
+    // Contrato real de .claude/agents/social-writer.md: cada parágrafo de
+    // ## d{N} em 03-social.md tem EXATAMENTE UM trecho **...** — é assim
+    // que gen-carousel-cards.ts sabe qual frase é o resumo do slide. Este
+    // teste documenta que stripMarkdownEmphasis não é chamado sobre o
+    // ARQUIVO-FONTE (só no ponto de publicação) — aqui só confirma que a
+    // função em si não tem opinião sobre onde é chamada, só sobre COMO
+    // remove ênfase quando de fato é chamada.
+    const paragrafoReal =
+      "A Anthropic lançou um modelo que roda direto no navegador, sem enviar nada pra nuvem. " +
+      "**O trade-off é velocidade: local ainda é mais lento que API.**";
+    const stripped = stripMarkdownEmphasis(paragrafoReal);
+    assert.ok(!stripped.includes("**"), "a função remove o negrito quando CHAMADA — é o publisher que decide chamar ou não");
+  });
 });

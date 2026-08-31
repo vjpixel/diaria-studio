@@ -22,6 +22,22 @@
  * sanitização vive aqui (chamada explícita no ponto de publicação de cada
  * canal), nunca em `extractDestaqueBlock`/`extract-section.ts` nem no agent.
  *
+ * ## Por que não existe um lint bloqueando `**` em 03-social.md (achado do
+ * review da PR #6866)
+ *
+ * Uma versão anterior desta PR tentou adicionar uma regra `no_markdown_
+ * emphasis` GATE-BLOCKING no Stage 4 flagando qualquer `**` em
+ * `03-social.md`. Errado: `.claude/agents/social-writer.md` (decisão #6086
+ * item c) exige EXATAMENTE UM trecho em `**...**` por parágrafo de `## d{N}`
+ * — é assim que o carrossel sabe qual frase é o resumo do slide. Um lint que
+ * flagasse `**` no arquivo-fonte reprovaria toda edição real, sempre — o
+ * negrito no arquivo-fonte não é o bug, é o contrato. O bug era só os
+ * publishers não removerem essa marcação antes de publicar como texto puro.
+ * A correção certa (esta) fica inteiramente no lado do PUBLISH — nenhuma
+ * verificação estática do `03-social.md` consegue distinguir "negrito
+ * esperado pelo contrato do carrossel" de "markdown vazando", porque os dois
+ * são literalmente o mesmo byte no mesmo arquivo.
+ *
  * ## Por que não é um replace ingênuo de todo asterisco/underscore
  *
  * Precisa preservar asterisco/underscore LEGÍTIMO no meio de palavra (ex:
@@ -42,11 +58,16 @@ function stripBold(text: string): string {
 /** Italic: `*texto*` ou `_texto_` — só quando FLANQUEADO (delimitador não
  *  colado a caractere alfanumérico do lado de fora, nem a espaço do lado
  *  de dentro). Preserva "3*4", "user_name", "algo_importante_aqui" (sem
- *  espaço fechando o par — não é ênfase, é nome com underscore). */
+ *  espaço fechando o par — não é ênfase, é nome com underscore).
+ *
+ *  Achado do review da PR #6866: `\w` do JS é ASCII-only — "café*importante*"
+ *  stripava errado (o "é" colado no delimitador não bloqueava o lookaround,
+ *  já que "é" não é `\w`). Usa `\p{L}`/`\p{N}` (propriedade Unicode, flag
+ *  `u`) em vez de `\w` — cobre acentuação do português sem essa lacuna. */
 function stripItalic(text: string): string {
   return text
-    .replace(/(?<![\w*])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![\w*])/g, "$1")
-    .replace(/(?<![\w_])_(?!\s)([^_\n]+?)(?<!\s)_(?![\w_])/g, "$1");
+    .replace(/(?<![\p{L}\p{N}_*])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![\p{L}\p{N}_*])/gu, "$1")
+    .replace(/(?<![\p{L}\p{N}_])_(?!\s)([^_\n]+?)(?<!\s)_(?![\p{L}\p{N}_])/gu, "$1");
 }
 
 /** Pura — remove `**`/`__`/`*`/`_` de ênfase, preserva o texto e qualquer
@@ -56,10 +77,3 @@ export function stripMarkdownEmphasis(text: string): string {
   return stripItalic(stripBold(text));
 }
 
-/** Pura — `true` se `text` contém ênfase markdown que `stripMarkdownEmphasis`
- *  removeria. Implementado como diff contra o strip (não uma 2ª regex) —
- *  garante que detector e remoção NUNCA divergem sobre o que conta como
- *  ênfase (usado pelo lint `no_markdown_emphasis`, #6862). */
-export function hasMarkdownEmphasis(text: string): boolean {
-  return stripMarkdownEmphasis(text) !== text;
-}
