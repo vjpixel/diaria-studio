@@ -383,13 +383,14 @@ export function aggregateFindingsOnDebut(
 export interface AggregateNoisyOptions {
   /** Mesmo contrato de `AggregateOnDebutOptions.threshold`. */
   threshold: number;
-  /** Mesmo contrato de `AggregateOnDebutOptions.buildAggregate` — o
-   * `AlarmFinding` retornado DEVE declarar `contentSignature` (tipicamente
-   * derivado da lista/conteúdo agregado) pra `ensureAlarmIssue` conseguir
-   * detectar mudança entre execuções; sem isso, o achado agregado vira
-   * "reused" silencioso pra sempre depois da 1ª issue — o MESMO problema
-   * que este mecanismo existe pra evitar, só que 1 issue mais tarde. */
-  buildAggregate: (group: string, findings: readonly AlarmFinding[]) => AlarmFinding;
+  /** Mesmo contrato de `AggregateOnDebutOptions.buildAggregate`, mas o
+   * retorno EXIGE `contentSignature` no tipo (não só na prosa, review da
+   * PR #6851, P3 — type-design-analyzer): sem essa obrigação expressa no
+   * tipo, um 2º `buildAggregate` futuro que esquecesse de declarar
+   * `contentSignature` compilaria limpo e reintroduziria — 1 issue depois
+   * — o exato problema que `aggregateNoisyFindings` existe pra fechar
+   * (achado agregado virando "reused" silencioso pra sempre). */
+  buildAggregate: (group: string, findings: readonly AlarmFinding[]) => AlarmFinding & { contentSignature: string };
 }
 
 /**

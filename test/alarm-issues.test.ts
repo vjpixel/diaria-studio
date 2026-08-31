@@ -563,6 +563,44 @@ describe("ensureAlarmIssue — contentSignature divergente vira comentário, nun
     assert.equal(result.issueNumber, null);
     assert.match(result.error!, /rate limited/);
   });
+
+  it("família 'evento' com contentSignature divergente -> ainda comenta 'updated', SEM chamar 'gh issue view' (pr-test-analyzer, PR #6851: branch não coberto antes)", () => {
+    const eventoFinding: AlarmFinding = { ...AGGREGATE_FINDING, family: "evento" };
+    let viewCalled = false;
+    let commented = false;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCalled = true;
+        throw new Error("não deveria chamar view — família evento nunca confirma estado real (#5989 é exclusivo de estado)");
+      }
+      if (args[0] === "issue" && args[1] === "comment") {
+        commented = true;
+        return ok("");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const result = ensureAlarmIssue(
+      eventoFinding,
+      { issueNumber: 6573, url: "https://x/6573", closedAt: null, contentSignature: "a.json|b.json" },
+      CWD,
+      run,
+    );
+    assert.equal(result.action, "updated");
+    assert.equal(viewCalled, false);
+    assert.ok(commented);
+  });
+
+  it("fallback por marcador (SEM cachedEntry) com contentSignature -> 'reused', nunca 'updated' (comportamento documentado, silent-failure-hunter PR #6851: janela de 1 execução até o cache local ser reconstruído)", () => {
+    const marker = `<!-- alarm-finding: ${AGGREGATE_FINDING.check}:${AGGREGATE_FINDING.fingerprint} -->`;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") {
+        return ok(JSON.stringify([{ number: 6573, url: "https://x/6573", body: `corpo antigo\n\n${marker}\n`, state: "OPEN" }]));
+      }
+      throw new Error(`unexpected (sem cachedEntry, nunca deveria comentar/reabrir): ${args.join(" ")}`);
+    };
+    const result = ensureAlarmIssue(AGGREGATE_FINDING, undefined, CWD, run);
+    assert.deepEqual(result, { issueNumber: 6573, url: "https://x/6573", action: "reused" });
+  });
 });
 
 describe("applyAlarmReconciliation — cenário real da issue #5978 (issue fechada reproduz de novo)", () => {

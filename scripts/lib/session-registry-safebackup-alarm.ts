@@ -57,11 +57,13 @@ export const SAFE_BACKUP_ESTREIA_AGGREGATE_THRESHOLD = 10;
  * `alarm-issues.ts` conseguir rastrear/fechar/reusar a MESMA issue.
  * Literal mantido de propósito (nome "estreia" já não descreve o gatilho
  * desde o #6798 — agrega sempre acima do teto, não só na 1ª execução):
- * trocar o literal orfanaria a issue já usada pra isso, inclusive a #6573
- * (fechada) que este mecanismo pode reabrir/reusar de novo. */
+ * trocar o literal orfanaria a issue já usada pra isso — a #6573, que este
+ * mecanismo reabre/reusa/comenta continuamente conforme o conjunto de
+ * arquivos evolui (não uma issue estática — não assumir um estado
+ * open/closed fixo dela ao ler este comentário, review da PR #6851). */
 const ESTREIA_AGGREGATE_FINGERPRINT = "estreia-aggregate";
 
-export function buildAggregatedSafeBackupFinding(backupFiles: readonly string[]): AlarmFinding {
+export function buildAggregatedSafeBackupFinding(backupFiles: readonly string[]): AlarmFinding & { contentSignature: string } {
   const sorted = [...backupFiles].sort();
   return {
     check: "session-registry-safebackup",
