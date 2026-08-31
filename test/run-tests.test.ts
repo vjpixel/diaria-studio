@@ -432,6 +432,58 @@ describe("runTestBatches — batch que TRAVA/MORRE produz exit != 0 (#6822, Defe
     }
   });
 
+  it("review #6833 P2: output PARCIAL do batch é emitido mesmo quando spawnSync mata por ETIMEDOUT (não descartado)", () => {
+    // Antes do fix pós-review: `emit(result)` só rodava DEPOIS do branch
+    // `if (result.error) { ...; return; }` — qualquer stdout/stderr que o
+    // batch tenha produzido antes do kill (o dado mais valioso pra bissecar
+    // o Defeito B, ver docstring do módulo) era jogado fora.
+    const written: string[] = [];
+    runTestBatches({
+      files: ["/a.test.ts"],
+      spawn: (() => ({
+        error: Object.assign(new Error("spawnSync node ETIMEDOUT"), { code: "ETIMEDOUT" }),
+        status: null,
+        // partial: o Node ainda captura o que o processo escreveu antes do
+        // kill — este é o dado que a PR #6833 (pré-fix) descartava.
+        stdout: "▶ suite-x\n  ✔ teste que rodou antes do hang\n",
+        stderr: "",
+      })) as unknown as typeof import("node:child_process").spawnSync,
+      stdout: { write: (s: string) => written.push(s) },
+      stderr: { write: () => {} },
+    });
+    assert.ok(
+      written.some((s) => s.includes("teste que rodou antes do hang")),
+      "output parcial do batch morto deve chegar ao stdout injetado, não ser descartado",
+    );
+  });
+
+  it("review #6833 P3: timeout detectado via error.code === 'ETIMEDOUT' (estruturado), não regex sobre error.message", () => {
+    // error.message NÃO contém a string "ETIMEDOUT" — só error.code contém.
+    // Se o código regredisse pra checar a mensagem, este teste pegaria.
+    const logs: string[] = [];
+    const origError = console.error;
+    console.error = (msg: string) => logs.push(msg);
+    try {
+      const exit = runTestBatches({
+        files: ["/hang.test.ts"],
+        batchTimeoutMs: 4242,
+        spawn: (() => ({
+          error: Object.assign(new Error("mensagem genérica sem menção a timeout"), { code: "ETIMEDOUT" }),
+          status: null,
+        })) as unknown as typeof import("node:child_process").spawnSync,
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+      });
+      assert.equal(exit, 1);
+      assert.ok(
+        logs.some((s) => s.includes("/hang.test.ts") && s.includes("4242") && s.includes("timeout")),
+        `deve reconhecer timeout via error.code mesmo sem a palavra na mensagem, veio: ${JSON.stringify(logs)}`,
+      );
+    } finally {
+      console.error = origError;
+    }
+  });
+
   it("loga os arquivos do batch ANTES de despachar (#6822 Defeito B: instrumentação pra bissecar hang futuro)", () => {
     const written: string[] = [];
     let spawnCalled = false;

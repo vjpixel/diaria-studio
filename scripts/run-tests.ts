@@ -321,13 +321,20 @@ export function runTestBatches(opts: RunTestsOptions): number {
 
     let result = runOne(batch);
     if (result.error) {
-      // #6822: `ETIMEDOUT` é o `spawnSync` matando o batch por ter estourado
-      // `batchTimeoutMs` — o caso real observado ao vivo (testado com um
-      // arquivo que trava de propósito). Nomeia os arquivos do batch
-      // diretamente na mensagem de erro (não só na linha "despachando"
-      // anterior), pra quem só grep a mensagem de falha achar o candidato
-      // sem precisar rolar o log pra cima.
-      const isTimeout = /ETIMEDOUT/.test(result.error.message);
+      // Review #6833 (P2, confiança alta): antes deste fix, `emit(result)`
+      // só rodava DEPOIS deste branch — descartando qualquer stdout/stderr
+      // parcial que o batch tenha produzido antes de `spawnSync` matá-lo
+      // (confirmado ao vivo: um `ETIMEDOUT` ainda vem com o output emitido
+      // até o momento do kill). Esse parcial é justamente o dado mais
+      // valioso pra bissecar o Defeito B — reduz o universo de suspeitos do
+      // batch inteiro pro(s) arquivo(s) cujo output já apareceu antes do
+      // corte. Emitir ANTES de decidir a mensagem de erro preserva isso.
+      emit(result);
+      // Review #6833 (P3, confiança alta): checar `error.code` (propriedade
+      // estruturada e estável do Node) em vez de regex sobre `error.message`
+      // (string livre — `"spawnSync <path> ETIMEDOUT"` embute o path
+      // resolvido do executável, formato não-contratual entre versões).
+      const isTimeout = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
       const suffix = isTimeout
         ? ` (timeout de ${batchTimeoutMs}ms — candidatos ao hang: ${batch.join(", ")})`
         : "";
@@ -347,6 +354,9 @@ export function runTestBatches(opts: RunTestsOptions): number {
         );
         const retry = runOne(batch);
         if (retry.error) {
+          // Review #6833: mesmo fix do branch acima — emitir o parcial antes
+          // de reportar o erro do retry.
+          emit(retry);
           console.error(`run-tests: falha ao spawnar retry do ${label}: ${retry.error.message}`);
           exitCode = 1;
           return;
