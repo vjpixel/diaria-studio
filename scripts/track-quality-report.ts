@@ -499,6 +499,26 @@ function round4(n: number): number {
   return Math.round(n * 10000) / 10000;
 }
 
+/** Pura: soma `usage` bruto (não arredondado por modelo) das linhas dentro
+ * da janela `sinceDate`, arredondando só o TOTAL final. Review PR #6878
+ * (P3/nitpick, média confiança): somar os `usage_usd` já arredondados de
+ * `computeCostByModel` acumularia erro de arredondamento por modelo antes
+ * de arredondar de novo — negligível na magnitude de USD deste script
+ * (<$10, erro por modelo ~0,00005), mas o padrão do arquivo (ver
+ * `round2`/`round4` nas outras 4 métricas) já evita esse tipo de
+ * composição, então mantém a mesma disciplina aqui. Mesmo filtro por dia
+ * de `computeCostByModel` — nunca diverge sobre o que conta como "dentro
+ * da janela". */
+export function computeTotalCostUsd(rows: OpenRouterActivityRow[], sinceDate: Date | null): number {
+  const sinceDay = sinceDate ? sinceDate.toISOString().slice(0, 10) : null;
+  let total = 0;
+  for (const row of rows) {
+    if (sinceDay && activityRowDateOnly(row) < sinceDay) continue;
+    total += row.usage;
+  }
+  return round4(total);
+}
+
 /** Maior `date` (dia, `YYYY-MM-DD`) presente na resposta bruta — usado só
  * pro aviso de consolidação (achado 5). `null` sem linhas. */
 export function maxActivityDate(rows: OpenRouterActivityRow[]): string | null {
@@ -791,14 +811,24 @@ export function buildTrackQualityReport(
   sinceDate: Date | null,
 ): TrackQualityReport {
   const rework = computeReworkRate(raw.mergedPrs);
-  const warnings = costFetch.warning ? [...raw.warnings, costFetch.warning] : raw.warnings;
+  // Review PR #6878 (P2, alta confiança): a versão original fazia
+  // `costFetch.warning ? [...raw.warnings, w] : raw.warnings` — no ramo
+  // `false`, `warnings` era o MESMO array de `raw.warnings` (bind por
+  // referência, não cópia), e o `.push()` do aviso de consolidação
+  // abaixo mutava o array do CALLER em vez de produzir um novo. Latente
+  // hoje (cada chamada de CLI recebe um `raw` fresco), mas quebra a
+  // pureza esperada de `buildTrackQualityReport` e já reproduzia de
+  // verdade nos testes (3 `it()`s compartilhando o fixture `emptyRaw`).
+  // Cópia SEMPRE, nos dois ramos — nunca aliasing do array do caller.
+  const warnings = [...raw.warnings];
+  if (costFetch.warning) warnings.push(costFetch.warning);
 
   let cost: CostReport;
   if (!costFetch.ok) {
     cost = { available: false, by_model: [], total_usd: null, max_date: null, continuo_cost_per_nonreworked_issue: null };
   } else {
     const byModel = computeCostByModel(costFetch.rows, sinceDate);
-    const totalUsd = byModel.length > 0 ? round4(byModel.reduce((sum, m) => sum + m.usage_usd, 0)) : 0;
+    const totalUsd = computeTotalCostUsd(costFetch.rows, sinceDate);
     const maxDate = maxActivityDate(costFetch.rows);
     const todayDay = new Date().toISOString().slice(0, 10);
     if (maxDate === todayDay) {
@@ -904,5 +934,11 @@ if (isMainModule(import.meta.url)) {
       console.log("Uso: npx tsx scripts/track-quality-report.ts --table|--json [--since 30d|2026-08-01]");
     }
   };
-  main();
+  main().catch((err) => {
+    // Review PR #6878 (P3): sem isto, um throw fora do try/catch interno
+    // (ex: no console.log/JSON.stringify) vira unhandled rejection em vez
+    // do caminho limpo de erro — mesmo tratamento do catch interno.
+    console.error(`[track-quality-report] ERRO inesperado: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  });
 }

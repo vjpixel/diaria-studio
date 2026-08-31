@@ -27,6 +27,7 @@ import {
   buildTrackQualityReport,
   renderTrackQualityTable,
   computeCostByModel,
+  computeTotalCostUsd,
   maxActivityDate,
   computeCostPerNonReworkedContinuoIssue,
   fetchOpenRouterActivity,
@@ -470,6 +471,29 @@ describe("computeCostByModel — métrica 5 (#6755)", () => {
   });
 });
 
+describe("computeTotalCostUsd — soma bruta antes de arredondar (review PR #6878, P3)", () => {
+  it("soma o usage bruto de vários modelos e arredonda só o total, não composto de arredondamentos por modelo", () => {
+    const rows = [
+      activityRow({ date: "2026-08-20 00:00:00", model: "a", usage: 0.00003 }),
+      activityRow({ date: "2026-08-20 00:00:00", model: "b", usage: 0.00003 }),
+      activityRow({ date: "2026-08-20 00:00:00", model: "c", usage: 0.00003 }),
+    ];
+    // Cada usage isolado arredondaria pra 0 em round4 (0.00003 -> 0.0000),
+    // mas a soma bruta (0.00009) arredonda pra 0.0001 — prova que o total
+    // não é a soma dos valores JÁ arredondados por modelo.
+    assert.equal(computeTotalCostUsd(rows, null), 0.0001);
+  });
+
+  it("respeita o mesmo filtro por dia de computeCostByModel", () => {
+    const rows = [activityRow({ date: "2026-08-01 00:00:00", usage: 100 }), activityRow({ date: "2026-08-25 00:00:00", usage: 1 })];
+    assert.equal(computeTotalCostUsd(rows, new Date("2026-08-20T00:00:00Z")), 1);
+  });
+
+  it("lista vazia -> 0", () => {
+    assert.equal(computeTotalCostUsd([], null), 0);
+  });
+});
+
 describe("maxActivityDate", () => {
   it("retorna o maior dia entre as linhas", () => {
     const rows = [activityRow({ date: "2026-08-10 00:00:00" }), activityRow({ date: "2026-08-25 00:00:00" }), activityRow({ date: "2026-08-15 00:00:00" })];
@@ -586,5 +610,13 @@ describe("buildTrackQualityReport — integração da métrica 5 (custo)", () =>
     const costFetch = { rows: [activityRow({ date: `${today} 00:00:00`, usage: 1 })], ok: true as const };
     const report = buildTrackQualityReport(emptyRaw, null, costFetch, null);
     assert.ok(report.warnings.some((w) => w.includes("parcialmente consolidado")));
+  });
+
+  it("regressão review PR #6878 (P2, alta confiança): não muta raw.warnings do caller — array do fixture continua vazio depois da chamada", () => {
+    const before = emptyRaw.warnings.length;
+    const today = new Date().toISOString().slice(0, 10);
+    const costFetch = { rows: [activityRow({ date: `${today} 00:00:00`, usage: 1 })], ok: true as const };
+    buildTrackQualityReport(emptyRaw, null, costFetch, null);
+    assert.equal(emptyRaw.warnings.length, before, "buildTrackQualityReport não pode mutar o array raw.warnings recebido — deve sempre produzir uma cópia nova");
   });
 });
