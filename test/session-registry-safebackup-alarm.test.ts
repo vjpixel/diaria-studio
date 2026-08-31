@@ -55,43 +55,50 @@ describe("buildAggregatedSafeBackupFinding (#6562)", () => {
       assert.match(finding.body, new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
   });
+
+  it("#6798: contentSignature é a lista ordenada join('|') — muda sse o CONJUNTO de arquivos muda", () => {
+    const f1 = buildAggregatedSafeBackupFinding(["b.json", "a.json"]);
+    const f2 = buildAggregatedSafeBackupFinding(["a.json", "b.json"]); // ordem de entrada diferente
+    assert.equal(f1.contentSignature, "a.json|b.json");
+    assert.equal(f1.contentSignature, f2.contentSignature, "mesma ordenação final independente da ordem de entrada");
+
+    const f3 = buildAggregatedSafeBackupFinding(["a.json", "b.json", "c.json"]); // arquivo novo
+    assert.notEqual(f3.contentSignature, f1.contentSignature);
+  });
 });
 
-describe("resolveSafeBackupFindings (#6562 — modo de estreia)", () => {
-  it("lista vazia → nenhum finding, independente do state", () => {
-    assert.deepEqual(resolveSafeBackupFindings([], true), []);
-    assert.deepEqual(resolveSafeBackupFindings([], false), []);
+describe("resolveSafeBackupFindings (#6562, generalizado no #6798 — agrega SEMPRE acima do teto)", () => {
+  it("lista vazia → nenhum finding", () => {
+    assert.deepEqual(resolveSafeBackupFindings([]), []);
   });
 
-  it("state NÃO vazio → sempre 1-por-arquivo, mesmo acima do teto", () => {
+  it("#6798: acima do teto, SEM state vazio (regime estacionário) → AINDA assim agrega — é a regressão que motivou o #6798 (15 issues abertas medidas)", () => {
     const files = Array.from(
       { length: SAFE_BACKUP_ESTREIA_AGGREGATE_THRESHOLD + 5 },
       (_, i) => `file-${i}-safeBackup-0001.json`,
     );
-    const findings = resolveSafeBackupFindings(files, false);
-    assert.equal(findings.length, files.length);
-    assert.deepEqual(
-      findings.map((f) => f.fingerprint).sort(),
-      [...files].sort(),
-    );
+    const findings = resolveSafeBackupFindings(files);
+    assert.equal(findings.length, 1, "não mais 1-por-arquivo em regime estacionário — a lacuna que o #6798 fechou");
+    assert.equal(findings[0].fingerprint, "estreia-aggregate");
   });
 
-  it("state vazio + volume ABAIXO/NO teto → continua 1-por-arquivo (comportamento preservado)", () => {
+  it("volume ABAIXO/NO teto → continua 1-por-arquivo (comportamento preservado)", () => {
     const files = Array.from(
       { length: SAFE_BACKUP_ESTREIA_AGGREGATE_THRESHOLD },
       (_, i) => `file-${i}-safeBackup-0001.json`,
     );
-    const findings = resolveSafeBackupFindings(files, true);
+    const findings = resolveSafeBackupFindings(files);
     assert.equal(findings.length, files.length);
   });
 
-  it("state vazio + volume ACIMA do teto → 1 finding agregado, não 1-por-arquivo", () => {
+  it("volume ACIMA do teto → 1 finding agregado com contentSignature preenchido", () => {
     const files = Array.from(
       { length: SAFE_BACKUP_ESTREIA_AGGREGATE_THRESHOLD + 1 },
       (_, i) => `file-${i}-safeBackup-0001.json`,
     );
-    const findings = resolveSafeBackupFindings(files, true);
+    const findings = resolveSafeBackupFindings(files);
     assert.equal(findings.length, 1);
     assert.equal(findings[0].fingerprint, "estreia-aggregate");
+    assert.ok(findings[0].contentSignature && findings[0].contentSignature.length > 0);
   });
 });
