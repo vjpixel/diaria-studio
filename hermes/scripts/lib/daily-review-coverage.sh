@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # daily-review-coverage.sh — cálculo PURO do campo de cobertura do
-# daily-consolidated-review.sh (#6757).
+# opus-daily-diff-review.sh (#6757; script renomeado de
+# daily-consolidated-review.sh no #6865).
 #
 # Extraído pra arquivo próprio, sem side effects (sem git/gh/claude), só pra
 # ser `source`ável de um teste sem precisar de repo real ou rede. O script

@@ -1,7 +1,7 @@
 /**
  * test/daily-review-link-format.test.ts
  *
- * Guard do sed cosmético de `hermes/scripts/daily-consolidated-review.sh`, que
+ * Guard do sed cosmético de `hermes/scripts/opus-daily-diff-review.sh`, que
  * separa os links do resumo RESUMO-DAILY-REVIEW com espaço (clientes que
  * autolinkam, como o Telegram, grudam a URL na vírgula/no `=` e produzem link
  * quebrado).
@@ -36,7 +36,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SCRIPT_PATH = join(ROOT, "hermes/scripts/daily-consolidated-review.sh");
+const SCRIPT_PATH = join(ROOT, "hermes/scripts/opus-daily-diff-review.sh");
 
 /** A linha `sed -i ...` real do script, sem depender de cópia manual. */
 function sedLine(): string {
@@ -47,7 +47,7 @@ function sedLine(): string {
   return line!;
 }
 
-describe("daily-consolidated-review: formatação de links do resumo", () => {
+describe("opus-daily-diff-review: formatação de links do resumo", () => {
   it("separa os links da vírgula e do `=` (sed real do script)", () => {
     const dir = mkdtempSync(join(tmpdir(), "daily-review-fmt-"));
     const file = join(dir, "out.txt");
