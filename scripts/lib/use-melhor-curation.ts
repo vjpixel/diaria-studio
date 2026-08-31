@@ -624,8 +624,6 @@ export const HOWTO_BR_DISCOVERY_TOPICS: readonly string[] = [
   "tutorial passo a passo como criar conteudo com IA",
   // Financas pessoais
   "guia como usar IA para financas pessoais passo a passo",
-  // Iniciantes / geral
-  "tutorial IA para iniciantes sem precisar programar passo a passo Brasil",
   // Freelancer / autonomo
   "como usar ChatGPT para freelancer e autonomo tutorial pratico",
 ];
