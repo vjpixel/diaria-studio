@@ -47,7 +47,7 @@ Pitfall observado: arquivo `/tmp/batch1-out.txt` vazio nos primeiros 465s —
 tempo normal (MCP paginado). Não interpretar vazio como falha; aguardar
 `notify_on_complete`.
 
-## 3. Modelo ativo (não memorizar — ler `config.yaml`)
+## 3. Modelo ativo (não memorizar — ler o wrapper)
 
 No banner desta sessão (`provider=openrouter`,
 `model=thinkingmachines/inkling:free`).

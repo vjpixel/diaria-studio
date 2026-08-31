@@ -192,6 +192,12 @@ describe("getIntArg — atalho tipado, ausente ≠ inválido (#4497)", () => {
   it("LANÇA em --key seguido de outra flag (também absorvido em flags)", () => {
     assert.throws(() => getIntArg(["--limit", "--confirm"], "limit"), /sem valor/);
   });
+
+  it("max: rejeita valor acima do teto (#6797)", () => {
+    assert.throws(() => getIntArg(["--slot", "3"], "slot", { min: 1, max: 2 }), /≤ 2/);
+    assert.equal(getIntArg(["--slot", "2"], "slot", { min: 1, max: 2 }), 2);
+    assert.equal(getIntArg(["--slot", "1"], "slot", { min: 1, max: 2 }), 1);
+  });
 });
 
 describe("parseArgsSimple — variante flat (#2834: consolida 21 duplicatas byte-a-byte)", () => {
