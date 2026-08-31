@@ -697,20 +697,20 @@ npx tsx scripts/apply-gate-edits.ts \
 ```
 Re-valida lançamentos (mesmo `validate-lancamentos.ts` do 1v) e invariantes pós-apply (warn, não bloqueia). Experimento D3-radar (opt-in via config): se `platform.config.json > stage1_experiments.d3_to_radar === true` e `highlights.length === 3`, mover D3 pra `radar` e promover melhor `runners_up` a D3 — regra determinística, não julgamento editorial.
 
-**Escreve sentinel `_internal/.step-1-done.json` (#6827).** Esta é a única saída que o Stage 1 deixa pra trás que o runner (`scripts/lib/edition-stage-runner.ts`) usa pra decidir retomar/skipir o Stage 2+ — e o caminho headless (`claude --print`, runner agendado) é onde o erro aconteceu: a sessão completou todo o trabalho com outputs válidos e saiu sem chamar `pipeline-sentinel.ts write`, então `.step-1-done.json` nunca existiu e a próxima etapa re-executou o Stage 1 ou seguiu sem checkpoint. Chamada explícita, não implícita:
+Se `auto_approve`:
+```bash
+npx tsx scripts/apply-gate-edits.ts --auto --json {EDITION_DIR}/_internal/01-categorized.json --out {EDITION_DIR}/_internal/01-approved.json
+```
+
+**Escreve sentinel `_internal/.step-1-done.json` (#6827) — após o gate aplicado.** Esta é a única saída que o Stage 1 deixa pra trás que o runner (`scripts/lib/edition-stage-runner.ts`) usa pra decidir retomar/skipir o Stage 2+ — e o caminho headless (`claude --print`, runner agendado) é onde o erro aconteceu: a sessão completou todo o trabalho com outputs válidos e saiu sem chamar `pipeline-sentinel.ts write`, então `.step-1-done.json` nunca existiu e a próxima etapa re-executou o Stage 1 ou seguiu sem checkpoint. Chamada explícita, não implícita — vem em SEQUÊNCIA depois do `apply-gate-edits.ts` acima (manual ou `--auto`):
 
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write --edition {AAMMDD} --step 1 --outputs "01-categorized.md,_internal/01-approved.json"
 ```
 
 - **Semântica em `scripts/pipeline-sentinel.ts`** (exit codes, `--bypass-reason`, e o `write` roda `check-invariants --stage 1` automaticamente, recusando o write se houver violação `severity: error`).
-- **É o ÚLTIMO passo do Stage 1, sempre.** No caminho `auto_approve` (runner agendado, `--print`) vem imediatamente após o `apply-gate-edits.ts --auto`; no caminho com editor, vem após a aprovação do gate. Nunca antes do gate, nunca "quando der tempo".
+- **É o ÚLTIMO passo do Stage 1, sempre.** Em qualquer caminho (editor ou `--auto`), vem após o `apply-gate-edits.ts` concluir. Nunca antes do gate, nunca "quando der tempo".
 - **Falha do `write` é fail-soft, não desculta para pular.** Se retornar exit != 0, logar `warn: sentinel_write_failed` e reeter com `--bypass-reason "<motivo>"` descrevendo o falso-positivo conhecido — nunca deixar o stage sem sentinel.
-
-Se `auto_approve`:
-```bash
-npx tsx scripts/apply-gate-edits.ts --auto --json {EDITION_DIR}/_internal/01-categorized.json --out {EDITION_DIR}/_internal/01-approved.json
-```
 
 ---
 
