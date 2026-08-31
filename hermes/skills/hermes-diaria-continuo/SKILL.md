@@ -45,12 +45,19 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
   um agente cujo log vai pro Telegram é vazamento a 1 `echo` de distância;
   o hard-deny vence mesmo se `dot-hermes` for ativada no futuro.
 - **Guard de auto-modificação (#6817 item 4).** Antes de aplicar qualquer
-  mudança, checar `isSelfModification` (mesmo módulo) contra os arquivos
-  que ESTE tick está executando agora (o próprio `SKILL.md`, o wrapper
-  `claude-openrouter.sh`, o job corrente em `~/.hermes/cron/jobs.json`).
-  Se `true`: **não aplicar a mudança neste tick** — abrir PR e deixar pro
-  próximo tick ou decisão do editor. Achado #6059: o contínuo deletou a
-  própria infra no meio do próprio loop, quebrando-o; revertido no #6060.
+  mudança, rodar `npx tsx scripts/check-continuo-workdir.ts --check-self-mod
+  --path {caminho da mudança} --active {lista separada por vírgula dos
+  arquivos que ESTE tick está executando agora}` — tipicamente o próprio
+  `SKILL.md`, o wrapper `claude-openrouter.sh`, o job corrente em
+  `~/.hermes/cron/jobs.json`. `exit 1` (self-modification): **não aplicar
+  a mudança neste tick** — abrir PR e deixar pro próximo tick ou decisão
+  do editor. `exit 0`: seguro aplicar. Review da PR #6854 (P2, confiança
+  alta): a versão inicial só documentava a função pura
+  (`isSelfModification`, mesmo módulo) sem NENHUM comando que a
+  chamasse — a delegação só sabe rodar `npx tsx scripts/...`, nunca
+  importar TS direto, então a instrução original era inexecutável na
+  prática. Achado #6059: o contínuo deletou a própria infra no meio do
+  próprio loop, quebrando-o; revertido no #6060.
   Fail-closed é requisito aqui, não preferência — o contínuo rodando
   DENTRO do que ele modifica é a receita de um estado que ninguém desfaz
   sozinho.
