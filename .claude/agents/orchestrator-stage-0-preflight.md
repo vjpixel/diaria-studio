@@ -612,30 +612,13 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator -
 
 ## Invariante de sentinel de Stage 1 (#6827)
 
-O Stage 1 é o único stage do `STAGE_PLAN` cujo sentinel pode ser escrito de DUAS
-formas: pelo `scripts/stage-1-run.ts --phase post-gate` (caminho determinístico)
-OU pela skill `/diaria-1-pesquisa` em prosa (fallback). Em ambos, o
-`pipeline-sentinel.ts write --step 1` é O ÚLTIMO passo do stage — nunca
-opcional, nunca "quando der tempo".
-
-**O erro do #6827 (edição 260831):** sessão `--print` do Stage 1 completou todo
-o trabalho (outputs válidos, check-invariants limpo) e saiu sem chamar
-`pipeline-sentinel.ts write`. `.step-1-done.json` nunca existiu, então o runner
-(`scripts/lib/edition-stage-runner.ts`) viu "sentinel ausente" e ou re-executou
-o Stage 1 inteiro, ou seguiu pra frente com a edição sem checkpoint — falha
-silenciosa de detecção de conclusão.
-
-**Defesa em profundidade:** o runner já lida com isso via `assertSentinel`
-(não `sentinelExists`): se o `claude --print` sair com exit 0 sem sentinel, o
-laço marca falha e interrompe, em vez de seguir com uma edição incompleta.
-A defesa impede o dano; o agente evita o custo de re-execução.
-
-**Invariante:** qualquer execução do Stage 1 termina com
-`pipeline-sentinel.ts write --edition {AAMMDD} --step 1 --outputs "01-categorized.md,_internal/01-approved.json"`.
-- Caminho determinístico: o `write` já é parte do `--phase post-gate`
-  (`scripts/stage-1-run.ts`, `runPostGate`).
-- Caminho fallback (skill em prosa): ver `.claude/skills/diaria-1-pesquisa/SKILL.md`
-  Passo 4 — obrigatório, não é "depois do gate" no sentido de "quando der tempo".
+O Stage 1 termina SEMPRE escrevendo `_internal/.step-1-done.json`
+(`pipeline-sentinel.ts write --step 1`), nunca opcional — sem isso o runner
+(`scripts/lib/edition-stage-runner.ts`) não detecta conclusão (#6827: sessão
+headless completou o trabalho e saiu sem escrever, edição ficou sem
+checkpoint). Mecanismo completo, o bug original, e a defesa em profundidade
+(`assertSentinel`) vivem em `orchestrator-stage-1-research.md` §1y — é onde
+o passo de fato executa.
 
 ## Stage 1 — Research
 
