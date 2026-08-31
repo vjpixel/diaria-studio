@@ -33,6 +33,9 @@
 # Estado: data/continuo/last-daily-review-sha (avança SÓ após review completo).
 set -euo pipefail
 
+# Preflight (#6875): falha nomeada do binário, não enigmática.
+claude --version >/dev/null 2>&1 || { echo "ERRO: binário Claude Code quebrado — rodar node ~/.npm-global/lib/node_modules/@anthropic-ai/claude-code/install.cjs" >&2; exit 5; }
+
 REPO="/home/vjpixel/diaria-studio"
 STATE_DIR="$REPO/data/continuo"
 STATE_FILE="$STATE_DIR/last-daily-review-sha"

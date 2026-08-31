@@ -66,6 +66,9 @@
 #     [--cwd DIR] [--budget USD] [--timeout SECS] [--model SLUG] [--effort LEVEL]
 set -euo pipefail
 
+# Preflight (#6875): falha do binário precisa ser nomeada, não enigmática.
+claude --version >/dev/null 2>&1 || { echo "ERRO: binário Claude Code quebrado — rodar node ~/.npm-global/lib/node_modules/@anthropic-ai/claude-code/install.cjs" >&2; exit 5; }
+
 # shellcheck source=./lib/free-quota-exhaustion.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/free-quota-exhaustion.sh"
 

@@ -56,6 +56,9 @@
 # ANTHROPIC_BASE_URL/AUTH_TOKEN/API_KEY nenhum (#5608).
 set -euo pipefail
 
+# Preflight (#6875): binário do Claude Code precisa existir e responder.
+claude --version >/dev/null 2>&1 || { echo "ERRO: binário Claude Code quebrado (postinstall ausente) — rodar node ~/.npm-global/lib/node_modules/@anthropic-ai/claude-code/install.cjs" >&2; exit 5; }
+
 REPO="/home/vjpixel/diaria-studio"
 cd "$REPO"
 git fetch origin -q
