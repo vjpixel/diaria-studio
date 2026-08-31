@@ -372,7 +372,12 @@ async function main(): Promise<void> {
   // nunca mais renderiza (ver docstring do módulo). `--slot 3` hoje é
   // inerte (grava a config e reporta sucesso sem efeito, #6797): o
   // `getIntArg` rejeita com max:2 em vez de aceitar silenciosamente.
-  const slot = getIntArg(process.argv.slice(2), "slot", { min: 1, max: 2 }) ?? 2;
+  const slot =
+    getIntArg(process.argv.slice(2), "slot", {
+      min: 1,
+      max: 2,
+      maxContext: "slot 2 é o último válido, #6748",
+    }) ?? 2;
   const dryRun = flags.has("dry-run");
   const force = flags.has("force");
   const unpin = flags.has("unpin");
