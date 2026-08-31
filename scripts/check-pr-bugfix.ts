@@ -75,11 +75,27 @@ function getChangedFiles(baseSha: string, headSha: string): string[] {
 }
 
 export function hasNewOrModifiedTest(changedFiles: string[]): boolean {
-  return changedFiles.some(
-    (f) =>
+  return changedFiles.some((f) => {
+    // #6860 (achado ao vivo, 31/08/2026): `.test.sh` — convenção real e
+    // pré-existente (hermes/scripts/lib/continuo-branch-prefix.test.sh,
+    // hermes/scripts/lib/daily-review-coverage.test.sh) de teste shell
+    // CO-LOCADO com o assunto, não sob test/tests/ — este gate bloqueava um
+    // PR com regressão de teste genuína só porque o arquivo não batia o
+    // padrão de diretório. `.test.sh` não precisa da checagem de diretório
+    // (o nome já é inequívoco); `.test.ts`/`.test.js` continuam exigindo
+    // test/tests/ pra não confundir um `foo.test.ts` de fixture solto.
+    //
+    // #6863 (achado do review, mesma sessão): `.test.py` — MESMA convenção,
+    // outra linguagem (hermes/scripts/pause-cron-on-ratelimit.test.py,
+    // hermes/scripts/monitor-cron-model-rotation.test.py). Idêntica
+    // justificativa, e como o `.sh` acima, mesmo bug-classe (falso-negativo
+    // silencioso), só ainda não medido ao vivo bloqueando um PR real.
+    if (f.endsWith(".test.sh") || f.endsWith(".test.py")) return true;
+    return (
       (f.startsWith("test/") || f.startsWith("tests/") || f.includes("/test/") || f.includes("/tests/")) &&
-      (f.endsWith(".test.ts") || f.endsWith(".test.js")),
-  );
+      (f.endsWith(".test.ts") || f.endsWith(".test.js"))
+    );
+  });
 }
 
 /**
@@ -224,7 +240,7 @@ async function main(): Promise<void> {
     [
       `[#970] PR de bugfix sem teste novo (regra #633).`,
       ``,
-      `Adicione um teste de regressão (test/*.test.ts) que demonstre que o bug não voltaria,`,
+      `Adicione um teste de regressão (test/*.test.ts, ou *.test.sh co-locado) que demonstre que o bug não voltaria,`,
       `OU adicione label 'no-regression-test' + justificativa no body explicando por que`,
       `o fix não pode ser testado (ex: "agent prompt", "config-only change").`,
       ``,
