@@ -702,8 +702,8 @@ export function buildReviewInstruction(prUrl, effort, warning = null) {
     `with the literal line \`${SELF_REVIEW_MARKER}\` on its own line, followed by plain prose stating this is a ` +
     "self-review by the PR's own authoring session, with no independent reviewer. The pre-merge gate " +
     "(`scripts/check-pr-review-authenticity.ts`, #6732) reads that marker and treats it as NOT satisfying #5251 — " +
-    "the PR stays open for external review (`daily-consolidated-review.sh` or overnight/develop pickup), never " +
-    "merges on a self-review alone." +
+    "the PR stays open for external review (`continuo-pr-review.sh`, `opus-daily-diff-review.sh`, or " +
+    "overnight/develop pickup), never merges on a self-review alone." +
     warningNote
   );
 }

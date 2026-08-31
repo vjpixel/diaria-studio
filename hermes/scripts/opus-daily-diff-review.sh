@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# daily-consolidated-review.sh — review Opus (assinatura claude.ai) do diff
-# ACUMULADO do dia no diaria-studio, 1x/dia.
+# opus-daily-diff-review.sh (renomeado de daily-consolidated-review.sh, #6865)
+# — review Opus (assinatura claude.ai) do diff ACUMULADO do dia no
+# diaria-studio, 1x/dia.
 #
 # Racional (28/08/2026, decisão do editor): o hermes-diaria-continuo implementa
 # e mergeia PRs com modelos free do OpenRouter (gate leve por PR). A qualidade
@@ -8,6 +9,20 @@
 # (~25 PRs/dia) em vez de 25 sessões — o overhead fixo por sessão (CLAUDE.md,
 # contexto) é pago 1x, e o review enxerga interações ENTRE PRs (ex: PR
 # supersedido por outro do mesmo dia — caso real #6238, 26/08).
+#
+# #6865 (31/08/2026): renomeado de `daily-consolidated-review.sh`. O papel
+# deste script (varredura consolidada do diff acumulado, 1x/dia, Opus) NÃO
+# mudou — o que mudou é que ele passou a ter um IRMÃO,
+# `continuo-pr-review.sh` (Sonnet, ~4h, review de PR individual do
+# contínuo) — com dois scripts de review no diretório, "daily-consolidated-
+# review" sozinho passou a ler como "o único review que existe", o que
+# deixou de ser verdade. Cadência e modelo deste script são os MESMOS de
+# antes — só o nome ficou mais específico. **Requer ação manual fora deste
+# repo** (não executada por esta PR — ver `hermes/README.md`): recriar o
+# symlink `~/.hermes/scripts/opus-daily-diff-review.sh` e rodar `hermes cron
+# edit 645d5debb7f0 --script opus-daily-diff-review.sh` — sem isso, o job
+# `645d5debb7f0` (agendado, `Script: daily-consolidated-review.sh`) aponta
+# pra um symlink que não existe mais até o passo manual rodar.
 #
 # AUTH: assinatura claude.ai (OAuth), DE PROPÓSITO — este script NÃO seta
 # ANTHROPIC_BASE_URL/AUTH_TOKEN/API_KEY nenhum (#5608: sessão de Claude Code

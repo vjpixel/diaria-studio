@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.7
+version: 0.5.8
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -83,7 +83,8 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
 |---|---|---|
 | `~/.hermes/scripts/claude-openrouter.sh` | roda `claude -p` com OpenRouter (stdin=prompt; `--tools`, `--budget`, `--timeout`) | `dots-studio/dots-3-note-preview:free` → `poolside/laguna-s-2.1:free` → `z-ai/glm-5.3-flash` |
 | `npx tsx --eval` (direto, sem LLM) | classificação determinística | nenhum |
-| `~/.hermes/scripts/daily-consolidated-review.sh` | review Opus do diff do dia (cron separado, 1x/dia) | Anthropic (assinatura) |
+| `~/.hermes/scripts/opus-daily-diff-review.sh` | review Opus do diff ACUMULADO do dia (cron separado, 1x/dia; #6865, ex-`daily-consolidated-review.sh`) | Anthropic (assinatura) |
+| `~/.hermes/scripts/continuo-pr-review.sh` | review Sonnet de 1 PR `continuo/*` aberta por vez (cron separado, ~4h; #6865) — NUNCA mergeia, só comenta | Anthropic (assinatura) |
 
 ## Cada ciclo (tick do cron)
 
@@ -223,8 +224,10 @@ issue nova é reivindicada. Para cada PR, nesta ordem:
    (#5751, "sessão interativa não faz o que o helios faria sozinho"). Na
    prática, um PR self-reviewed do contínuo fica aberto até a próxima rodada
    `/diaria-overnight` rodar a Fase 0 — não mais indefinidamente, mas também
-   não instantâneo; `daily-consolidated-review.sh` continua sem fechar esse
-   loop (gera achados/issues sobre o diff, nunca mergeia PR aberto).
+   não instantâneo; nem `opus-daily-diff-review.sh` (ex-`daily-consolidated-
+   review.sh`) nem `continuo-pr-review.sh` (#6865) fecham esse loop —
+   ambos só geram achados/comentários de review, NUNCA mergeiam PR aberta;
+   o pickup acima continua sendo o único ponto de merge.
 
 ### 4. Implementar issues elegíveis — via harness delegado
 
@@ -374,12 +377,30 @@ delegações morreram, o tick de 40min produziu zero PRs e deixou worktree
 
 ### 6. Review consolidado diário (cron separado — NÃO por tick)
 
-`daily-consolidated-review.sh` roda 1x/dia (cron próprio, 09:00 BRT) com a
-**assinatura Anthropic** (Opus) sobre o diff acumulado desde o último marco.
-Findings viram issues `[daily-review]` com prioridade — que caem nesta fila
-e são drenadas pelos modelos free. O loop se fecha: Opus audita, free corrige.
-Esta skill NÃO chama esse script no tick; só registra no relatório se as
-issues `[daily-review]` aparecerem na classificação.
+`opus-daily-diff-review.sh` (#6865, ex-`daily-consolidated-review.sh` —
+renomeado porque "daily-consolidated-review" deixou de distinguir qual dos
+dois scripts de review é qual, ver seção 7) roda 1x/dia (cron próprio,
+09:00 BRT) com a **assinatura Anthropic** (Opus) sobre o diff acumulado
+desde o último marco. Findings viram issues `[daily-review]` com
+prioridade — que caem nesta fila e são drenadas pelos modelos free. O
+loop se fecha: Opus audita, free corrige. Esta skill NÃO chama esse
+script no tick; só registra no relatório se as issues `[daily-review]`
+aparecerem na classificação.
+
+### 7. Review de PR individual (cron separado — NÃO por tick, #6865)
+
+`continuo-pr-review.sh` roda ~4h (cron próprio) com **assinatura
+Anthropic** (Sonnet) — review de 1 PR `continuo/*` ABERTA por vez, não o
+diff acumulado do dia (papel distinto do #6). Existe porque o contínuo
+roda a cada 120min e o review diário sozinho deixava PRs esperando até
+24h — descompasso 12:1 medido no #6849/#6864/#6865. Posta comentário de
+review no formato que `check-pr-review-authenticity.ts` reconhece como
+`independent-review` (#6732) — um review de verdade, de uma sessão
+distinta da que abriu a PR, então o formato reconhecido passa a
+corresponder a um dispatch real, não a texto auto-declarado pela
+delegação (#6849). **NUNCA mergeia** — só comenta. O merge continua sendo
+exclusivo do pickup (seção 3, passo 3, #6823); os dois processos nunca
+disputam a mesma ação porque um só revisa e o outro só mergeia.
 
 ## Relatório de tick (formato inalterado)
 
@@ -412,6 +433,20 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Changelog
 
+- 0.5.8 (31/08/2026): #6865 — review externo do contínuo separado em 2
+  papéis (decisão do editor, decorrente do #6849). `daily-consolidated-
+  review.sh` renomeado pra `opus-daily-diff-review.sh` (mesma cadência
+  1x/dia, mesmo modelo Opus, mesmo papel — só o nome deixou de valer
+  "o único review" com um irmão novo no diretório). Novo
+  `continuo-pr-review.sh`: Sonnet, ~4h, review de 1 PR `continuo/*` por
+  vez, fecha o descompasso 12:1 entre o contínuo (`every 120m`) e o
+  review diário antigo (`0 12 * * *`) sem trocar o modelo do review
+  profundo por um mais barato. Os dois scripts NUNCA mergeiam — o pickup
+  (seção 3, passo 3, #6823) continua sendo o único ponto de merge, o que
+  evita a corrida de dois processos mergeando a mesma PR (guard do
+  #5716). Item 4 do #6865 (risco de corrida) resolvido por construção,
+  não por lock. **Passo manual pendente fora do repo** (symlink +
+  `hermes cron`), documentado em `hermes/README.md`.
 - 0.5.7 (31/08/2026): "Segurança e escopo" — workdir único trocado por
   allowlist de raízes (#6817). `npx tsx scripts/check-continuo-workdir.ts
   --path {caminho} --intent read|write` antes de tocar qualquer path fora
