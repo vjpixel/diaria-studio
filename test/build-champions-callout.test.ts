@@ -78,7 +78,11 @@ describe("buildChampionsCallout (#2725)", () => {
     assert.match(text!, /🥇 jorgemartinsfilho/);
     assert.match(text!, /🥈 Bruna Quevedo/);
     assert.match(text!, /🥉 Joshu/);
-    assert.match(text!, /\*\*Sorteio\*\*/);
+    // #6869: "Sorteio" NÃO é negrito próprio — já herda negrito do wrap
+    // "**...**" externo (aplicado pelo injetor), negrito aninhado disparava
+    // stacked-intro-callouts (medido na edição 260901).
+    assert.match(text!, /(?<!\*)Sorteio(?!\*)/);
+    assert.doesNotMatch(text!, /\*\*Sorteio\*\*/);
     assert.match(
       text!,
       /dia 2 de julho, das 13h30 às 14h, no \[Google Meet\]\(https:\/\/meet\.google\.com\/nbs-jcut-ojj\)/,
@@ -125,13 +129,22 @@ describe("buildChampionsCallout (#2725)", () => {
       "https://eia.diar.ia.br/leaderboard",
     );
     assert.ok(text);
-    assert.match(text!, /🥉 Joshu\n\n\[Veja o ranking completo\]\(https:\/\/eia\.diar\.ia\.br\/leaderboard\)\n\n\*\*Sorteio\*\*/);
+    assert.match(text!, /🥉 Joshu\n\n\[Veja o ranking completo\]\(https:\/\/eia\.diar\.ia\.br\/leaderboard\)\n\nSorteio/);
+    assert.doesNotMatch(text!, /\*\*Sorteio\*\*/);
   });
 
   it("leaderboardUrl ausente → sem link, comportamento igual ao anterior (fail-open)", () => {
     const text = buildChampionsCallout(PODIUM, RAFFLE, "junho", "2 de julho");
     assert.ok(text);
     assert.ok(!text!.includes("ranking completo"));
-    assert.match(text!, /🥉 Joshu\n\n\*\*Sorteio\*\*/);
+    assert.match(text!, /🥉 Joshu\n\nSorteio/);
+    assert.doesNotMatch(text!, /\*\*Sorteio\*\*/);
+  });
+
+  it("#6869: 'Sorteio' nunca sai com negrito próprio — regressão do bold aninhado que disparava stacked-intro-callouts (edição 260901)", () => {
+    const text = buildChampionsCallout(PODIUM, RAFFLE, "junho", "2 de julho");
+    assert.ok(text);
+    assert.doesNotMatch(text!, /\*\*Sorteio\*\*/);
+    assert.match(text!, /\n\nSorteio\n\n/);
   });
 });
