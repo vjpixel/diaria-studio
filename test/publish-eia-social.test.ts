@@ -94,6 +94,18 @@ describe("buildPlans", () => {
     const semThreads = MD.replace(/## threads\n\nTexto do Threads\.\n\n/, "");
     assert.throws(() => buildPlans(semThreads, ART, new Set()), /## threads/);
   });
+
+  it("#6862: remove markdown de ênfase do texto de cada canal — nenhum canal social renderiza markdown", () => {
+    const mdComEnfase = MD.replace("Texto do LinkedIn.", "**Por que isso importa:** frase qualquer.");
+    const plans = buildPlans(mdComEnfase, ART, new Set(["facebook", "instagram", "threads"]));
+    const linkedinPlan = plans.find((p) => p.channel === "linkedin");
+    assert.ok(linkedinPlan, "plano do linkedin deveria existir");
+    assert.ok(
+      !linkedinPlan!.text.includes("**"),
+      `não deveria sobrar '**' no texto do canal, veio: ${JSON.stringify(linkedinPlan!.text)}`,
+    );
+    assert.ok(linkedinPlan!.text.includes("Por que isso importa: frase qualquer."));
+  });
 });
 
 describe("parseScheduledAt", () => {

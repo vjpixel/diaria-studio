@@ -150,6 +150,13 @@ describe("extractPostText (threads) — SÓ '# Curto', sem fallback, sem throw (
   it("retorna null (não lança) para seção Curto ausente com input arbitrário", () => {
     assert.equal(extractPostText("# LinkedIn\n## d1\ntexto", "d1"), null);
   });
+
+  it("#6862: remove markdown de ênfase do texto do Curto — Threads não renderiza markdown", () => {
+    const md = "# Curto\n\n## d1\n\n**Por que isso importa:** frase qualquer.\n";
+    const t = extractPostText(md, "d1");
+    assert.ok(t && !t.includes("**"), `não deveria sobrar '**', veio: ${JSON.stringify(t)}`);
+    assert.ok(t && t.includes("Por que isso importa: frase qualquer."));
+  });
 });
 
 describe("regressão #4309 (defesa em profundidade — hoje latente em '# Curto')", () => {

@@ -2,11 +2,12 @@
  * test/lint-social-md-stage-json.test.ts (#5416)
  *
  * Cobre o modo agregador `--stage 4 --json` de `lint-social-md.ts` — mesmo
- * tratamento dado a `lint-newsletter-md.ts` (#5416): agrega os 4 checks que
+ * tratamento dado a `lint-newsletter-md.ts` (#5416): agrega os 5 checks que
  * `.claude/agents/orchestrator-stage-4.md` §4c.2b dispara em invocações
  * separadas (`post_pixel-matches-d1`, `no-xml-artifacts`,
- * `no-antithesis-reveal`, `no-trailing-editorial-hook` — todos
- * GATE-BLOCKING) numa única chamada de processo.
+ * `no-antithesis-reveal`, `no-trailing-editorial-hook`, e desde o #6862
+ * `no-markdown-emphasis` — todos GATE-BLOCKING) numa única chamada de
+ * processo.
  *
  * Mesma estratégia de oráculo do teste irmão
  * (test/lint-newsletter-md-stage-json.test.ts): compara o `.result` de cada
@@ -26,6 +27,7 @@ import {
   checkNoXmlArtifacts,
   lintAntithesisReveal,
   lintTrailingEditorialHook,
+  lintNoMarkdownEmphasis,
   lintRelativeTime,
   lintLinkedinSchema,
   lintInstagramEmailCTA,
@@ -94,12 +96,13 @@ describe("runStage4SocialLintReport (#5416)", () => {
     return dir;
   }
 
-  it("4 checks presentes, todos gate-blocking", () => {
+  it("5 checks presentes, todos gate-blocking (#6862: +no-markdown-emphasis)", () => {
     const editionDir = makeEditionDir();
     const report = runStage4SocialLintReport(editionDir);
     const ids = report.checks.map((c) => c.id).sort();
     assert.deepEqual(ids, [
       "no-antithesis-reveal",
+      "no-markdown-emphasis",
       "no-trailing-editorial-hook",
       "no-xml-artifacts",
       "post_pixel-matches-d1",
@@ -118,6 +121,7 @@ describe("runStage4SocialLintReport (#5416)", () => {
     assert.deepEqual(byId.get("no-xml-artifacts")?.result, checkNoXmlArtifacts(md));
     assert.deepEqual(byId.get("no-antithesis-reveal")?.result, lintAntithesisReveal(md));
     assert.deepEqual(byId.get("no-trailing-editorial-hook")?.result, lintTrailingEditorialHook(md));
+    assert.deepEqual(byId.get("no-markdown-emphasis")?.result, lintNoMarkdownEmphasis(md));
     rmSync(editionDir, { recursive: true, force: true });
   });
 

@@ -133,6 +133,13 @@ describe("extractPostText (instagram)", () => {
       /não encontrado/i,
     );
   });
+
+  it("#6862: remove markdown de ênfase do caminho legado (seção Instagram própria) — Instagram não renderiza markdown", () => {
+    const md = "# Instagram\n\n## d1\n**Por que isso importa:** frase qualquer.";
+    const t = extractPostText(md, "d1");
+    assert.ok(!t.includes("**"), `não deveria sobrar '**', veio: ${JSON.stringify(t)}`);
+    assert.ok(t.includes("Por que isso importa: frase qualquer."));
+  });
 });
 
 describe("extractPostText/extractDestaquesFromSocialMd (instagram) — formato novo # Social (#3991)", () => {
@@ -163,6 +170,13 @@ describe("extractPostText/extractDestaquesFromSocialMd (instagram) — formato n
     const t = extractPostText(mixed, "d1");
     assert.ok(t.includes("Texto novo d1."));
     assert.ok(!t.includes("Texto legado d1."));
+  });
+
+  it("#6862: remove markdown de ênfase do caminho # Social (o real, pós-#3991) — Instagram não renderiza markdown", () => {
+    const md = "# Social\n\n## d1\n\n**Por que isso importa:** frase qualquer.\n";
+    const t = extractPostText(md, "d1");
+    assert.ok(!t.includes("**"), `não deveria sobrar '**', veio: ${JSON.stringify(t)}`);
+    assert.ok(t.includes("Por que isso importa: frase qualquer."));
   });
 });
 

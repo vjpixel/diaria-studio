@@ -37,6 +37,7 @@ import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-publ
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 import { selectSocialCardImageFile } from "./lib/select-social-card-image.ts"; // #4090 item 5
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`; #4309 — extração do `## dN` + guard de scaffolding
+import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #6862 — Facebook não renderiza markdown
 import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
 import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
@@ -145,7 +146,11 @@ export function extractPostText(socialMd: string, platform: string, destaque: st
 
   const text = platform === "facebook" ? injectChannelLine(dText.trim(), "facebook") : dText.trim();
   assertNoScaffolding(text, `destaque '${destaque}' (${platform})`);
-  return text;
+  // #6862: nenhuma plataforma social renderiza markdown — remover `**`/`__`/
+  // `*`/`_` aqui, no ponto de publicação, NUNCA na fonte (03-social.md
+  // alimenta o carrossel também, que MANTÉM o negrito — ver docstring de
+  // lib/strip-markdown-emphasis.ts).
+  return stripMarkdownEmphasis(text);
 }
 
 // computeScheduledAt foi movido pra `scripts/compute-social-schedule.ts` (#270)

@@ -69,6 +69,13 @@ describe("extractPostText (publish-facebook) (#527)", () => {
   it("lanca quando plataforma nao encontrada", () => { assert.throws(() => extractPostText(MD, "twitter", "d1"), /Twitter.*not found|not found.*Twitter/i); });
   it("lanca quando destaque nao encontrado", () => { assert.throws(() => extractPostText(MD, "facebook", "d4"), /d4/i); });
   it("lanca quando d2 inexistente na plataforma", () => { assert.throws(() => extractPostText("# Facebook\n\n## d1\nPost.\n\n## d3\nPost.", "facebook", "d2"), /d2/i); });
+
+  it("#6862: remove markdown de ênfase (**bold**) do texto publicado — Facebook não renderiza markdown", () => {
+    const mdWithEmphasis = "# Facebook\n\n## d1\n**Por que isso importa:** frase qualquer.";
+    const t = extractPostText(mdWithEmphasis, "facebook", "d1");
+    assert.ok(!t.includes("**"), `não deveria sobrar '**' no texto publicado, veio: ${JSON.stringify(t)}`);
+    assert.ok(t.includes("Por que isso importa: frase qualquer."), `texto deveria sobreviver sem a marcação, veio: ${JSON.stringify(t)}`);
+  });
 });
 
 describe("extractPostText (publish-facebook) — formato novo # Social (#3991)", () => {

@@ -65,6 +65,7 @@ import { logEvent } from "./lib/run-log.ts";
 import { outrosCount as _outrosCount, resolveOutrosCountFromEditionDir } from "./lib/outros-count.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 import { extractSection, extractDestaqueBlock as extractDestaqueBlockShared, assertNoScaffolding } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`; #4309 — extração do `## dN` compartilhada + guard de scaffolding
+import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #6862 — LinkedIn não renderiza markdown
 import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
 import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts"; // #2454: constante centralizada da URL base
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
@@ -177,7 +178,10 @@ export function extractPostText(socialMd: string, destaque: string): string {
   // #4309: guard no ponto de saída do texto FINAL (pós-corte dos comments) —
   // este é o texto que de fato vai pro post principal do LinkedIn.
   assertNoScaffolding(text, `destaque '${destaque}' (linkedin, post principal)`);
-  return text;
+  // #6862: LinkedIn não renderiza markdown — achado ao vivo (editor viu `**`
+  // literal no post real). Ver docstring de lib/strip-markdown-emphasis.ts
+  // (nunca fazer isso na fonte — 03-social.md alimenta o carrossel também).
+  return stripMarkdownEmphasis(text);
 }
 
 /**
