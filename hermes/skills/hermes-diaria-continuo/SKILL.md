@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.4
+version: 0.5.6
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -186,6 +186,37 @@ issue nova é reivindicada. Para cada PR, nesta ordem:
 
 Para cada issue elegível (após claim):
 
+0. **Gate de coerência (#6752), ANTES do claim — barra cedo, não depois de
+   implementar.** Auditoria de 29/08/2026 mediu 2,4× de retrabalho em PRs
+   `continuo` vs `overnight`/`develop` da mesma janela — não por qualidade
+   de diff isolado (notas próximas), mas por FALTA DE MEMÓRIA ENTRE PRs: o
+   caso canônico (#6699) é uma PR criando um módulo canônico em
+   `scripts/lib/shared/` e, dois commits depois, outra PR do mesmo dia
+   contornando essa mesma abstração com um literal hardcoded — a abstração
+   foi criada e imediatamente pisada pelo próprio autor. Decisão do editor
+   (#6752, 30/08/2026): checagem MECÂNICA aqui no passo de seleção, **sem**
+   eixo novo em `classifyExecTrack` nem label dedicada — rejeitar aqui não
+   grava NADA na issue, ela só não é reivindicada NESTE tick, continua
+   `track=overnight` normal pro overnight/develop.
+
+   Rodar, pra cada candidata ANTES de `claim-issue`:
+   ```bash
+   npx tsx scripts/check-continuo-coherence.ts --issue N
+   ```
+   `exit 0` (`admit`) → prossegue pro passo 1 (claim). `exit 1` (`reject`) →
+   **NÃO reivindicar** — registrar no relatório do tick ("pulada por
+   coerência: {motivo}") e ir pra próxima candidata da fila. `exit 2`
+   (`error` — `gh`/`git` falhou, inconclusivo) → tratar como `reject`
+   também (fail-closed, mesma disciplina do guard de caminho sensível do
+   §3 passo 2: não sabe responder ⇒ não arrisca). Ver
+   `scripts/lib/continuo-coherence-gate.ts` pro que o gate mede
+   (overlap de path com PR aberta/merge recente, refactor/consolidação,
+   abstração compartilhada, fatia de épico, dependência cruzada explícita
+   de outra PR) e por que é mecânico em vez de julgamento — não é um
+   classificador perfeito (decide ANTES do diff existir), mas erra pro
+   lado de barrar mais, porque o custo do falso-positivo (issue boa espera
+   o overnight) é muito menor que o do falso-negativo medido (retrabalho
+   2,4×, 3 das 4 quebras recentes de master).
 1. **Claim é LEASE de trabalho imediato, nunca reserva de fila** (regra dura,
    28/08 — incidente recorrente antes do #6443: o contínuo acumulava claims
    sem PR nenhum e travava as issues para o develop indefinidamente, porque
@@ -241,8 +272,25 @@ na OpenRouter, aplicado pelo provedor. Em 29/08/2026 o tick reagiu a
 delegações morreram, o tick de 40min produziu zero PRs e deixou worktree
 órfão. Se este erro aparecer, o valor a mexer é para CIMA.
 
-3. O PR aberto entra na fila do passo 3 (review independente continua sendo
-   o gate — o harness implementa, o pipeline do Hermes revisa e mergeia).
+3. **Antes** de entrar na fila (próximo item): `npx tsx
+   scripts/check-branch-issue-consistency.ts --pr N`. **Rastreabilidade
+   (#6804)**, achado ao limpar 61 branches `continuo/`: branch nomeada
+   `continuo/fix-6043-onboarding` (P0 de mass-send indevido) chegou a
+   carregar só trabalho do #6005 (carrossel do Instagram) — quem investigar
+   o P0 pelo nome da branch encontra outra coisa. `exit 1` (`mismatch` — o
+   número no nome da branch não aparece em NENHUM commit) → comentar no PR
+   com o achado (`gh pr comment N --body "..."`, texto que o CLI já imprime
+   em stderr) — **não bloqueia o merge nem o review** (o conteúdo já chega
+   correto ao master, é achado de arqueologia, não de correção — #6804 é
+   P3). `exit 0` (`consistent`) → nada a fazer. `exit 2` (`error` — `gh`
+   falhou, inconclusivo, review da PR #6848: esta branch tinha ficado sem
+   instrução, assimétrica com o passo 0 acima que já trata `exit 2`) →
+   registrar no relatório do tick ("rastreabilidade não verificada pro PR
+   #N: {motivo}") e seguir — não é `consistent`, mas também não bloqueia
+   nada (mesmo caráter não-bloqueante do `mismatch`, só que sem o achado
+   pra comentar). O PR aberto entra na fila do passo 3 (review independente
+   continua sendo o gate — o harness implementa, o pipeline do Hermes
+   revisa e mergeia).
 4. **Falha do wrapper (exit ≠ 0, todos os modelos) — verificar ANTES de
    desfazer o claim (#6712, achado 29/08/2026, 2 ocorrências no mesmo dia):**
    o wrapper pode estourar `--max-budget-usd` (ou outro erro classificado
@@ -320,6 +368,28 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Changelog
 
+- 0.5.6 (31/08/2026): §4 passo 3 — checagem de rastreabilidade
+  branch↔commit ANTES da PR entrar na fila de review (#6804). Achado ao
+  limpar 61 branches `continuo/`: nome referenciando uma issue (inclusive
+  um caso com #6043, P0) carregando commits de outra issue inteiramente —
+  `watch-continuo-health.sh` item 5 só checa PREFIXO de trilha, nunca o
+  número; e é alarme pós-fato (0 correções medidas na auditoria do #6798).
+  `npx tsx scripts/check-branch-issue-consistency.ts --pr N` — `exit 1`
+  comenta no PR com o achado, não bloqueia merge (rastreabilidade, não
+  correção — conteúdo já chega certo ao master). Lógica pura em
+  `scripts/lib/branch-issue-consistency.ts`.
+- 0.5.5 (31/08/2026): §4 novo passo 0 — gate de coerência ANTES do claim
+  (#6752). Auditoria mediu 2,4× de retrabalho em PRs `continuo` vs
+  `overnight`/`develop`, causa raiz não é qualidade de diff isolado, é
+  falta de memória entre PRs (caso canônico #6699: módulo compartilhado
+  criado numa PR, contornado com hardcode duas PRs depois, mesma sessão).
+  `npx tsx scripts/check-continuo-coherence.ts --issue N` roda antes de
+  `session-registry.ts claim-issue` — `exit 1`/`2` pula a issue neste tick
+  sem gravar nada nela (sem label, sem eixo novo em `classifyExecTrack` —
+  decisão explícita do editor, opção 2 do #6752). Critério mecânico:
+  overlap de path com PR aberta/merge recente de master, palavras-chave de
+  refactor/abstração-compartilhada/fatia-de-épico/dependência-cruzada no
+  corpo da issue (`scripts/lib/continuo-coherence-gate.ts`).
 - 0.5.4 (31/08/2026): §3 passo 3 atualizado — pickup de PR órfão do
   `continuo` deixou de ser lacuna documentada e passou a existir de fato
   (#6823), implementado como passo 2b da Fase 0 do `/diaria-overnight`
