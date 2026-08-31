@@ -497,6 +497,93 @@ describe("runScheduledTask — sync de código antes dos passos (#6431)", () => 
     assert.match(content, /----- noop -----/);
   });
 
+  // #6844 review (P1, confiança alta): regressão pro bug achado no review —
+  // a 1ª versão do retry só disparava em EXCEÇÃO lançada por syncCode(),
+  // mas sync_in_progress/stash_failed (os motivos reais citados pelo #6800)
+  // são valores de RETORNO normais, nunca exceção. Sem estes 2 testes, o
+  // bug (break incondicional após qualquer retorno sem exceção, mesmo de
+  // falha) passava despercebido — os testes acima só cobrem sucesso na 1ª
+  // tentativa e exceção lançada, nunca "retorna outcome de falha sem
+  // lançar".
+  it("#6844: outcome sync_in_progress na 1ª tentativa, sucesso na 2ª → syncResult reflete o sucesso (retry funciona pro cenário real do #6800)", () => {
+    const tempLogPath = join(workDir, "sync-retry-outcome-temp.log");
+    const logPathOverride = join(workDir, "sync-retry-outcome-final.log");
+
+    const inProgress: GitSyncResult = {
+      outcome: "sync_in_progress",
+      message: "outro syncCode() já rodando",
+      branch_before: "master",
+      warnings: ["outro syncCode() já rodando"],
+      proceed: true,
+      up_to_date: false,
+      commits_behind: -1,
+    };
+    const success: GitSyncResult = {
+      outcome: "synced",
+      message: "sincronizado",
+      branch_before: "master",
+      warnings: [],
+      proceed: true,
+      up_to_date: true,
+      commits_behind: 0,
+    };
+
+    let calls = 0;
+    const result = runScheduledTask(baseDef(), {
+      rootDir: ROOT,
+      logPathOverride,
+      tempLogPathOverride: tempLogPath,
+      syncCode: () => {
+        calls++;
+        return calls === 1 ? inProgress : success;
+      },
+      execStep: () => ({ code: 0, output: "ok" }),
+    });
+
+    assert.equal(calls, 2, "deve retentar após outcome=sync_in_progress (não é exceção, mas também não é sucesso)");
+    assert.equal(result.code, 0);
+    const content = readFileSync(logPathOverride, "utf8");
+    assert.match(content, /AVISO: sync-code\.ts outcome=sync_in_progress \(tentativa 1\/3\) — não é sucesso, retentando/);
+    assert.match(content, /\[git-sync\] outcome=synced /, "o outcome FINAL logado deve ser o do sucesso da 2ª tentativa, não da 1ª");
+  });
+
+  it("#6844: 3 tentativas, TODAS outcome de falha (sem exceção) → desiste após 3, syncResult é o último outcome de falha", () => {
+    const tempLogPath = join(workDir, "sync-retry-exhaust-temp.log");
+    const logPathOverride = join(workDir, "sync-retry-exhaust-final.log");
+
+    const stashFailed: GitSyncResult = {
+      outcome: "stash_failed",
+      message: "stash falhou",
+      branch_before: "master",
+      warnings: ["stash falhou"],
+      proceed: true,
+      up_to_date: false,
+      commits_behind: -1,
+    };
+
+    let calls = 0;
+    const result = runScheduledTask(baseDef(), {
+      rootDir: ROOT,
+      logPathOverride,
+      tempLogPathOverride: tempLogPath,
+      syncCode: () => {
+        calls++;
+        return stashFailed;
+      },
+      execStep: () => ({ code: 0, output: "ok" }),
+    });
+
+    assert.equal(calls, 3, "deve tentar exatamente 3× (nunca insiste indefinidamente)");
+    assert.equal(result.code, 0, "esgotar as tentativas continua fail-soft — nunca aborta a task");
+    const content = readFileSync(logPathOverride, "utf8");
+    assert.match(content, /AVISO: sync-code\.ts outcome=stash_failed \(tentativa 1\/3\)/);
+    assert.match(content, /AVISO: sync-code\.ts outcome=stash_failed \(tentativa 2\/3\)/);
+    // A 3ª tentativa NÃO gera "retentando" (não há 4ª) — mas o outcome final
+    // (stash_failed, não um sucesso) ainda é logado via [git-sync] outcome=,
+    // porque syncResult guarda o ÚLTIMO resultado mesmo sem ser sucesso.
+    assert.match(content, /\[git-sync\] outcome=stash_failed /);
+  });
+
   it("syncCode com warnings loga cada warning individualmente", () => {
     const tempLogPath = join(workDir, "sync-warn-temp.log");
     const logPathOverride = join(workDir, "sync-warn-final.log");

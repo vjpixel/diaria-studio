@@ -69,7 +69,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ScheduledTaskDefinition } from "./scheduled-tasks.ts";
 import { unitBaseName } from "./systemd-units.ts";
-import { syncCode as syncCodeFn, type GitSyncResult } from "./git-sync.ts";
+import { syncCode as syncCodeFn, type GitSyncResult, type GitSyncOutcome } from "./git-sync.ts";
 
 /** Resultado de rodar um único passo (`execStep`). */
 export interface StepExecResult {
@@ -270,14 +270,31 @@ export function runScheduledTask(
     // transformar falha persistente em loop infinita — se todas as
     // tentativas falharem, o warning é gravado e a task segue (fail-soft
     // invariável, #2686). Sempre fail-soft: nenhuma tentativa blocked a task.
+    //
+    // Review #6844 (P1, confiança alta): a 1ª versão só retentava quando
+    // `syncCode()` LANÇAVA exceção — mas `sync_in_progress`/`stash_failed`
+    // (os 2 motivos que a issue #6800 cita como causa real dos ~250/320)
+    // são valores de RETORNO normais de `syncCode()` (`GitSyncOutcome` é um
+    // tipo discriminado por `return`, nunca `throw`, ver git-sync.ts). O
+    // `break` incondicional após qualquer retorno sem exceção saía do loop
+    // na 1ª tentativa mesmo com outcome de falha — o retry nunca disparava
+    // pro cenário que motivou a issue. Corrigido: só considera SUCESSO (e só
+    // então `break`) os 3 outcomes terminais de sucesso; qualquer outro
+    // outcome (falha, mesmo sem exceção) é tratado como tentativa falha e
+    // entra no mesmo backoff.
+    const SYNC_SUCCESS_OUTCOMES = new Set<GitSyncOutcome>(["synced", "synced_stashed", "already_up_to_date"]);
     let syncResult: GitSyncResult | null = null;
     let syncAttempt = 0;
     const SYNC_MAX_ATTEMPTS = 3;
     const SYNC_BACKOFF_MS = [2000, 5000];
     while (syncAttempt < SYNC_MAX_ATTEMPTS) {
       try {
-        syncResult = syncCode();
-        break;
+        const result = syncCode();
+        syncResult = result;
+        if (SYNC_SUCCESS_OUTCOMES.has(result.outcome)) break;
+        appendTemp(
+          `AVISO: sync-code.ts outcome=${result.outcome} (tentativa ${syncAttempt + 1}/${SYNC_MAX_ATTEMPTS}) — não é sucesso, retentando`,
+        );
       } catch (e) {
         appendTemp(`AVISO: sync-code.ts lançou exceção inesperada (tentativa ${syncAttempt + 1}/${SYNC_MAX_ATTEMPTS}): ${(e as Error).message}`);
       }

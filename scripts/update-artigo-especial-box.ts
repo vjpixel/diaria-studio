@@ -369,10 +369,10 @@ async function main(): Promise<void> {
   // exatamente essa classe de bug (docstring cita #4476/#4496, #4542/#4564,
   // #4568) — aborta com mensagem clara em vez de aceitar lixo.
   // #6748: default mudou de 3 para 2 — slot 3 foi eliminado da rotação e
-      // nunca mais renderiza (ver docstring do módulo). `--slot 3` hoje é
-      // inerte (grava a config e reporta sucesso sem efeito, #6797): o
-      // `getIntArg` rejeita com max:2 em vez de aceitar silenciosamente.
-      const slot = getIntArg(process.argv.slice(2), "slot", { min: 1, max: 2 }) ?? 2;
+  // nunca mais renderiza (ver docstring do módulo). `--slot 3` hoje é
+  // inerte (grava a config e reporta sucesso sem efeito, #6797): o
+  // `getIntArg` rejeita com max:2 em vez de aceitar silenciosamente.
+  const slot = getIntArg(process.argv.slice(2), "slot", { min: 1, max: 2 }) ?? 2;
   const dryRun = flags.has("dry-run");
   const force = flags.has("force");
   const unpin = flags.has("unpin");
