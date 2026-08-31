@@ -49,11 +49,33 @@
 #     certa. Antes de editar MODELS_DEFAULT por causa de um exit 4, conferir
 #     o catálogo: `curl -s https://openrouter.ai/api/v1/models` (sem auth) e
 #     procurar o id. Tratamento dos 3 casos: issue #6803.
+#   - Marcador de exaustão da cota free (#6712, 31/08/2026): quando um elo
+#     `:free` bate 429/rate-limit, este script grava
+#     `${TMPDIR:-/tmp}/claude-openrouter-free-quota-exhausted-until` com o
+#     epoch do próximo reset (00:00 UTC). Invocações SEGUINTES (mesmo dia,
+#     processo diferente) leem esse marcador ANTES de montar a cadeia e
+#     pulam direto pro(s) elo(s) pago(s) — sem gastar requisição sabendo
+#     que vai bater 429 de novo. Medido no diagnóstico da issue: ~70
+#     invocações/tick × 2 tentativas free desperdiçadas = ~140
+#     requisições/tick jogadas fora depois do 1º 429 do dia, sem esse
+#     marcador. `--model` explícito nunca é filtrado (é escolha do
+#     caller). Miolo puro/testável em `lib/free-quota-exhaustion.sh`.
 #
 # Uso:
 #   echo "<tarefa>" | claude-openrouter.sh [--tools "Read,Bash(npx tsx:*)"] \
 #     [--cwd DIR] [--budget USD] [--timeout SECS] [--model SLUG] [--effort LEVEL]
 set -euo pipefail
+
+# shellcheck source=./lib/free-quota-exhaustion.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/free-quota-exhaustion.sh"
+
+# #6712 (31/08/2026): marcador de exaustão da cota free-models-per-day —
+# ver docstring de lib/free-quota-exhaustion.sh pro mecanismo completo.
+# Path ESTÁVEL (não $$-escopado): precisa sobreviver ENTRE invocações
+# deste wrapper (chamadas diferentes, mesmo dia) pra o benefício aparecer —
+# um marcador por-PID nunca seria lido por ninguém além do processo que o
+# escreveu.
+FREE_QUOTA_EXHAUSTED_MARKER="${TMPDIR:-/tmp}/claude-openrouter-free-quota-exhausted-until"
 
 TOOLS="Read,Grep,Glob,Bash"
 CWD="/home/vjpixel/diaria-studio"
@@ -180,6 +202,26 @@ if [ -n "$MODEL_FORCED" ]; then
   MODELS=("$MODEL_FORCED")
 else
   MODELS=("${MODELS_DEFAULT[@]}")
+  # #6712: se uma invocação ANTERIOR (mesmo dia, processo diferente) já
+  # detectou a cota free exaurida, pula direto pro(s) elo(s) pago(s) —
+  # sem gastar requisição sabendo que vai bater 429. `--model` explícito
+  # (MODEL_FORCED acima) NUNCA é filtrado — é escolha deliberada do
+  # caller, não a cadeia default.
+  NOW_EPOCH=$(date -u +%s)
+  if [ -f "$FREE_QUOTA_EXHAUSTED_MARKER" ]; then
+    MARKER_EPOCH=$(cat "$FREE_QUOTA_EXHAUSTED_MARKER" 2>/dev/null || echo "")
+    if [ -n "$MARKER_EPOCH" ] && [ "$(is_exhaustion_marker_valid "$MARKER_EPOCH" "$NOW_EPOCH" 2>/dev/null || echo false)" = "true" ]; then
+      mapfile -t PAID_ONLY < <(filter_out_free_models "${MODELS[@]}")
+      if [ "${#PAID_ONLY[@]}" -gt 0 ]; then
+        echo "[claude-openrouter] cota free marcada como exaurida até $(date -u -d "@$MARKER_EPOCH" -Iseconds 2>/dev/null || date -u -r "$MARKER_EPOCH" -Iseconds 2>/dev/null || echo "$MARKER_EPOCH epoch") (#6712) — pulando elos :free, indo direto pro(s) elo(s) pago(s)" >&2
+        MODELS=("${PAID_ONLY[@]}")
+      fi
+      # PAID_ONLY vazio (cadeia é 100% :free, sem elo pago configurado) —
+      # fail-soft: mantém a cadeia inteira, melhor tentar o free "exaurido"
+      # (pode já ter resetado, marcador pode estar errado) do que ficar
+      # sem NENHUM modelo pra tentar.
+    fi
+  fi
 fi
 
 # Sem --bare de propósito: --bare desliga o auto-discovery do CLAUDE.md, que é
@@ -397,6 +439,20 @@ for MODEL in "${MODELS[@]}"; do
       # rate-limit textual OU o número junto de "http"/"status".
       SAW_QUOTA_SIGNAL=1
       echo "[claude-openrouter] falhou model=$MODEL rc=$RC: RATE-LIMIT/QUOTA (sinal no stderr) — transitório, próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+      # #6712: grava o marcador de exaustão SÓ quando o elo que bateu
+      # 429/rate-limit é `:free` — o limite free-models-per-day é POR
+      # CONTA e compartilhado entre todos os elos :free (medido no corpo
+      # da issue), então UM elo free exaurido já significa que os OUTROS
+      # elos free também vão falhar; um elo PAGO batendo rate-limit é outra
+      # causa (teto de gasto da chave, ex.) e não diz nada sobre a cota
+      # free — não escrever o marcador nesse caso.
+      case "$MODEL" in
+        *:free)
+          RESET_EPOCH=$(next_utc_midnight_epoch "$(date -u +%s)")
+          echo "$RESET_EPOCH" > "$FREE_QUOTA_EXHAUSTED_MARKER" 2>/dev/null || \
+            echo "[claude-openrouter] AVISO: falha ao gravar $FREE_QUOTA_EXHAUSTED_MARKER (#6712) — próxima invocação vai tentar :free de novo, cosmético (não perde a chamada atual)" >&2
+          ;;
+      esac
     elif grep -qE "Exceeded USD budget" "$ATTEMPT_LOG"; then
       # #6696 finding 1: budget-exceeded é DETERMINÍSTICO pro mesmo valor de
       # BUDGET — o mesmo prompt estoura em TODO run até alguém mexer no
