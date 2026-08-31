@@ -404,6 +404,12 @@ describe("#6819 — HEAD→GET fallback (Worker eia.diar.ia.br/jogar só tem han
     assert.equal(r.issues.length, 1, "GET 4xx → link_dead");
     assert.equal(r.issues[0].type, "link_dead");
     assert.equal(r.issues[0].status, 404);
+    // Achado do review (#6825, confiança alta/85, P3): o título do teste
+    // alega "hops=1 preservado" mas nenhuma assertion verificava esse
+    // valor — só a sequência de métodos e o status/type final. A fase GET
+    // (Phase 2) não incrementa hops (ver comentário em headWithRedirects),
+    // então só o hop real via HEAD (301→hop2) conta: hops deve ficar em 1.
+    assert.equal(r.issues[0].hops, 1, "hops deve ficar em 1 — a fase GET (fallback) não incrementa hops");
   });
 
   it("#6825: HEAD 3xx no 2º hop + GET 200 no final → passed, hops=2", async () => {
