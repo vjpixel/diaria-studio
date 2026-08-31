@@ -13,6 +13,8 @@ import {
   shouldRetryBatch,
   parseFailCount,
   hasTestSummary,
+  bisectHangingBatch,
+  formatBisectResult,
   BATCH_SIZE,
   DEFAULT_BATCH_TIMEOUT_MS,
 } from "../scripts/run-tests.ts";
@@ -82,6 +84,12 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
     const exit = runTestBatches({
       files: [1, 2, 3, 4] as unknown as string[],
       batchSize: 2,
+      // Mock deliberadamente sem sumário do node:test — este teste exerce
+      // "status != 0 é sempre falha", não a bisecção do #6822 Defeito B.
+      // bisectBudgetMs:0 evita que a ausência de sumário (também presente
+      // no batch que "passa" aqui) dispare spawns extras e infle a contagem
+      // que este teste mede.
+      bisectBudgetMs: 0,
       spawn: ((_cmd, args) => {
         const batch = (args as string[]).slice(3); // pula --import tsx --test
         seenBatches.push(batch.map(Number));
@@ -109,6 +117,9 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
       files: ["/a.test.ts", "/b.test.ts", "/c.test.ts"],
       batchSize: 1,
       extraArgs: ["--test-name-pattern", "foo"],
+      // Mock sem sumário do node:test — este teste exerce só o repasse de
+      // extraArgs, não a bisecção do #6822 Defeito B.
+      bisectBudgetMs: 0,
       spawn: ((_cmd, args) => {
         invocations.push(args as string[]);
         return { status: 0 } as ReturnType<typeof import("node:child_process").spawnSync>;
@@ -176,7 +187,7 @@ describe("parseFailCount (#6495)", () => {
   });
 });
 
-describe("shouldRetryBatch (#6495) — os 3 critérios precisam bater", () => {
+describe("shouldRetryBatch (#6495, alargado pelo #6857) — status != 0 + ERR_MODULE_NOT_FOUND, sem gate de fail count", () => {
   const ERR = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/test/foo.test.ts'";
 
   it("status != 0 + ERR_MODULE_NOT_FOUND + fail 0 → retry", () => {
@@ -194,14 +205,19 @@ describe("shouldRetryBatch (#6495) — os 3 critérios precisam bater", () => {
     assert.equal(shouldRetryBatch(output, 1), false);
   });
 
-  it("ERR_MODULE_NOT_FOUND presente mas fail > 0 (falha de teste REAL também no batch) → nunca retry", () => {
-    const output = `${ERR}\nℹ fail 2\n`;
-    assert.equal(shouldRetryBatch(output, 1), false, "não mascarar falha de teste real como infra");
+  it("#6857 (achado ao vivo, PR #6855): ERR_MODULE_NOT_FOUND presente com fail 1 (o próprio crash contado como 1 falha, não uma asserção real) → AGORA retry", () => {
+    const output = `${ERR}\nℹ fail 1\n`;
+    assert.equal(shouldRetryBatch(output, 1), true, "o crash de módulo não é uma asserção real; gate por fail 0 escondia esse retry");
   });
 
-  it("ERR_MODULE_NOT_FOUND presente mas sumário ilegível (fail count desconhecido) → nunca retry", () => {
+  it("ERR_MODULE_NOT_FOUND presente com fail > 1 → também retry (a assinatura sozinha já basta, #6857)", () => {
+    const output = `${ERR}\nℹ fail 2\n`;
+    assert.equal(shouldRetryBatch(output, 1), true);
+  });
+
+  it("ERR_MODULE_NOT_FOUND presente mas sumário ilegível (fail count desconhecido) → também retry (#6857)", () => {
     const output = `${ERR}\nsem linha de sumário reconhecível\n`;
-    assert.equal(shouldRetryBatch(output, 1), false);
+    assert.equal(shouldRetryBatch(output, 1), true);
   });
 });
 
@@ -507,5 +523,213 @@ describe("runTestBatches — batch que TRAVA/MORRE produz exit != 0 (#6822, Defe
       stderr: { write: () => {} },
     });
     assert.ok(written.some((s) => s.includes("/x.test.ts") && s.includes("/y.test.ts") && s.includes("despachando")));
+  });
+});
+
+describe("bisectHangingBatch (#6822 Defeito B)", () => {
+  const okResult = { status: 0, stdout: OK_SUMMARY, stderr: "" } as ReturnType<
+    typeof import("node:child_process").spawnSync
+  >;
+  const hangResult = { status: null, signal: "SIGKILL", stdout: "", stderr: "" } as ReturnType<
+    typeof import("node:child_process").spawnSync
+  >;
+
+  it("batch inteiro roda limpo dentro do subTimeout → tudo 'clean', nenhum spawn extra além do 1º", () => {
+    let calls = 0;
+    const result = bisectHangingBatch(
+      ["/a.test.ts", "/b.test.ts", "/c.test.ts"],
+      (() => {
+        calls++;
+        return okResult;
+      }) as typeof import("node:child_process").spawnSync,
+      [],
+      1000,
+      Date.now() + 60_000,
+    );
+    assert.deepEqual(result, { clean: ["/a.test.ts", "/b.test.ts", "/c.test.ts"], hanging: [], inconclusive: [] });
+    assert.equal(calls, 1, "batch saudável não precisa bissecar — 1 spawn só");
+  });
+
+  it("1 arquivo específico trava sozinho mesmo isolado → isolado corretamente em 'hanging', o resto em 'clean'", () => {
+    const result = bisectHangingBatch(
+      ["/a.test.ts", "/b.test.ts", "/culpado.test.ts", "/d.test.ts"],
+      ((_cmd, args) => {
+        const batch = (args as string[]).slice(3);
+        return batch.includes("/culpado.test.ts") ? hangResult : okResult;
+      }) as typeof import("node:child_process").spawnSync,
+      [],
+      1000,
+      Date.now() + 60_000,
+    );
+    assert.deepEqual(result.hanging, ["/culpado.test.ts"]);
+    assert.deepEqual(result.inconclusive, []);
+    assert.ok(!result.clean.includes("/culpado.test.ts"));
+    assert.ok(
+      ["/a.test.ts", "/b.test.ts", "/d.test.ts"].every((f) => result.clean.includes(f)),
+      "os 3 arquivos inocentes devem sair como clean",
+    );
+  });
+
+  it("nenhuma sub-lista reproduz isolada (contenção de recurso — só trava com vizinhos concorrentes) → tudo 'clean', nunca reportado como culpado", () => {
+    // Simula o cenário em que o hang depende de CONCORRÊNCIA entre arquivos
+    // — bissecar reduz o paralelismo junto com o tamanho, então nada
+    // reproduz isolado. `formatBisectResult` deve refletir isso como
+    // "não reproduziu", não como "está tudo bem".
+    const result = bisectHangingBatch(
+      ["/a.test.ts", "/b.test.ts"],
+      (() => okResult) as typeof import("node:child_process").spawnSync,
+      [],
+      1000,
+      Date.now() + 60_000,
+    );
+    assert.deepEqual(result, { clean: ["/a.test.ts", "/b.test.ts"], hanging: [], inconclusive: [] });
+    assert.ok(formatBisectResult(result).includes("não reproduziu"));
+  });
+
+  it("orçamento total esgotado no meio da bisecção → arquivos restantes ficam 'inconclusive', NUNCA promovidos a 'clean' por falta de tempo", () => {
+    const result = bisectHangingBatch(["/a.test.ts", "/b.test.ts", "/c.test.ts"], (() => hangResult) as typeof import(
+      "node:child_process"
+    ).spawnSync, [], 1000, Date.now() - 1 /* deadline já vencido antes da 1ª chamada */);
+    assert.deepEqual(result, { clean: [], hanging: [], inconclusive: ["/a.test.ts", "/b.test.ts", "/c.test.ts"] });
+  });
+
+  it("batch de 1 arquivo que trava → 'hanging' direto, sem tentar recursar abaixo de 1", () => {
+    const result = bisectHangingBatch(
+      ["/sozinho.test.ts"],
+      (() => hangResult) as typeof import("node:child_process").spawnSync,
+      [],
+      1000,
+      Date.now() + 60_000,
+    );
+    assert.deepEqual(result, { clean: [], hanging: ["/sozinho.test.ts"], inconclusive: [] });
+  });
+
+  it("passa timeout reduzido (subTimeoutMs) pro spawn, não o batchTimeoutMs original", () => {
+    let seenTimeout: unknown;
+    bisectHangingBatch(
+      ["/a.test.ts"],
+      ((_cmd, _args, options) => {
+        seenTimeout = (options as Record<string, unknown>).timeout;
+        return okResult;
+      }) as typeof import("node:child_process").spawnSync,
+      [],
+      4242,
+      Date.now() + 60_000,
+    );
+    assert.equal(seenTimeout, 4242);
+  });
+});
+
+describe("formatBisectResult (#6822 Defeito B)", () => {
+  it("hanging não-vazio → rotula 'candidato(s) forte(s)', nunca 'causa comprovada'", () => {
+    const msg = formatBisectResult({ clean: [], hanging: ["/x.test.ts"], inconclusive: [] });
+    assert.ok(msg.includes("candidato"));
+    assert.ok(msg.includes("/x.test.ts"));
+    assert.ok(!msg.toLowerCase().includes("causa comprovada"));
+  });
+
+  it("inconclusive não-vazio → menciona contenção de recurso, nunca declara 'limpo'", () => {
+    const msg = formatBisectResult({ clean: [], hanging: [], inconclusive: ["/y.test.ts"] });
+    assert.ok(msg.includes("/y.test.ts"));
+    assert.ok(msg.toLowerCase().includes("contenção") || msg.toLowerCase().includes("concorrente"));
+  });
+
+  it("tudo clean (não reproduziu em nenhuma sub-lista) → mensagem honesta de 'não reproduziu', não 'está tudo bem'", () => {
+    const msg = formatBisectResult({ clean: ["/a.test.ts"], hanging: [], inconclusive: [] });
+    assert.ok(msg.includes("não reproduziu"));
+  });
+});
+
+describe("runTestBatches — bisecção automática no caminho de falha (#6822 Defeito B)", () => {
+  it("batch morto por sinal aciona bisecção e reporta o(s) arquivo(s) isolado(s), não só a lista crua do batch inteiro", () => {
+    const written: string[] = [];
+    runTestBatches({
+      files: ["/inocente.test.ts", "/culpado.test.ts"],
+      batchSize: 10,
+      bisectTimeoutMs: 1000,
+      spawn: ((_cmd, args) => {
+        const batch = (args as string[]).slice(3);
+        if (batch.length > 1) return { status: null, signal: "SIGKILL", stdout: "", stderr: "" };
+        return batch[0] === "/culpado.test.ts"
+          ? { status: null, signal: "SIGKILL", stdout: "", stderr: "" }
+          : { status: 0, stdout: OK_SUMMARY, stderr: "" };
+      }) as typeof import("node:child_process").spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: (s: string) => written.push(s) },
+    });
+    assert.ok(
+      written.some((s) => s.includes("bisecção") && s.includes("/culpado.test.ts") && !s.includes("/inocente.test.ts")),
+      `deve isolar o culpado sem incluir o inocente na mensagem de bisecção, veio: ${JSON.stringify(written)}`,
+    );
+  });
+
+  it("bisectBudgetMs: 0 desliga a bisecção — mensagem cai de volta na lista crua do batch, sem spawns extras", () => {
+    let calls = 0;
+    const written: string[] = [];
+    runTestBatches({
+      files: ["/a.test.ts", "/b.test.ts"],
+      batchSize: 10,
+      bisectBudgetMs: 0,
+      spawn: (() => {
+        calls++;
+        return { status: null, signal: "SIGKILL", stdout: "", stderr: "" };
+      }) as unknown as typeof import("node:child_process").spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: (s: string) => written.push(s) },
+    });
+    assert.equal(calls, 1, "bisecção desligada não deve gastar spawn extra");
+    assert.ok(written.some((s) => s.includes("bisecção desligada")));
+  });
+
+  it("spawnSync mata por ETIMEDOUT também aciona bisecção (não só o caminho de result.signal)", () => {
+    const logs: string[] = [];
+    const origError = console.error;
+    console.error = (msg: string) => logs.push(msg);
+    try {
+      runTestBatches({
+        files: ["/inocente.test.ts", "/culpado.test.ts"],
+        batchSize: 10,
+        bisectTimeoutMs: 1000,
+        spawn: ((_cmd: unknown, args: unknown) => {
+          const batch = (args as string[]).slice(3);
+          if (batch.length > 1) {
+            return { error: Object.assign(new Error("spawnSync node ETIMEDOUT"), { code: "ETIMEDOUT" }), status: null };
+          }
+          return batch[0] === "/culpado.test.ts"
+            ? { status: null, signal: "SIGKILL", stdout: "", stderr: "" }
+            : { status: 0, stdout: OK_SUMMARY, stderr: "" };
+        }) as unknown as typeof import("node:child_process").spawnSync,
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+      });
+      assert.ok(
+        logs.some((s) => s.includes("candidato") && s.includes("/culpado.test.ts") && !s.includes("/inocente.test.ts")),
+        `deve isolar o culpado via bisecção mesmo no caminho de ETIMEDOUT, veio: ${JSON.stringify(logs)}`,
+      );
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  it("batch sem sumário do node:test (status 0, Defeito A) também aciona bisecção e isola o culpado", () => {
+    const written: string[] = [];
+    runTestBatches({
+      files: ["/inocente.test.ts", "/culpado.test.ts"],
+      batchSize: 10,
+      bisectTimeoutMs: 1000,
+      spawn: ((_cmd, args) => {
+        const batch = (args as string[]).slice(3);
+        if (batch.length > 1) return { status: 0, stdout: "sem sumário nenhum aqui\n", stderr: "" };
+        return batch[0] === "/culpado.test.ts"
+          ? { status: 0, stdout: "sem sumário nenhum aqui\n", stderr: "" }
+          : { status: 0, stdout: OK_SUMMARY, stderr: "" };
+      }) as typeof import("node:child_process").spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: (s: string) => written.push(s) },
+    });
+    assert.ok(
+      written.some((s) => s.includes("bisecção") && s.includes("/culpado.test.ts") && !s.includes("/inocente.test.ts")),
+      `deve isolar o culpado via bisecção no caminho de sumário ausente, veio: ${JSON.stringify(written)}`,
+    );
   });
 });

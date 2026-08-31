@@ -192,6 +192,13 @@ export interface RunTestsOptions {
   stderr?: { write(chunk: string): unknown };
   /** #6822: teto de tempo por batch (ms) — default `DEFAULT_BATCH_TIMEOUT_MS`. */
   batchTimeoutMs?: number;
+  /** #6822 (Defeito B): teto por rodada de bisecção (ms) — default
+   *  `DEFAULT_BISECT_TIMEOUT_MS`. */
+  bisectTimeoutMs?: number;
+  /** #6822 (Defeito B): orçamento total de bisecção (ms) — default
+   *  `DEFAULT_BISECT_BUDGET_MS`. `0` desliga a bisecção inteiramente
+   *  (volta ao comportamento anterior: só a lista crua do batch). */
+  bisectBudgetMs?: number;
 }
 
 /** #6822: teto por batch — bem acima da duração normal observada (~40-90s
@@ -239,15 +246,140 @@ export function hasTestSummary(output: string): boolean {
   return parseFailCount(output) !== null;
 }
 
-/** Pure: decide se um batch que falhou merece 1 retry — os TRÊS critérios
- *  do #6495 precisam ser verdadeiros (ver docstring do módulo): status !=
- *  0, assinatura `ERR_MODULE_NOT_FOUND` presente, e sumário do `node:test`
- *  confirmando `fail 0` (nenhuma falha de teste real, só o erro de
- *  infraestrutura do runner). */
+/** Pure: decide se um batch que falhou merece 1 retry — critérios do #6495,
+ *  alargados pelo #6857. Precisam ser verdadeiros: status != 0 e assinatura
+ *  `ERR_MODULE_NOT_FOUND` presente no output combinado.
+ *
+ *  #6857 (achado ao vivo 31/08/2026, PR #6855, 2 tentativas consecutivas,
+ *  mesmo arquivo nas duas): a versão original também exigia `fail 0` no
+ *  sumário — a leitura de que o crash SEMPRE zera a contagem de falhas do
+ *  batch. Falso: quando o `ERR_MODULE_NOT_FOUND` acontece no MEIO do batch
+ *  (outros arquivos já rodaram e concluíram antes do crash), o node:test
+ *  soma esse próprio crash como 1 falha no sumário (`ℹ fail 1`), então
+ *  `fail 0` nunca bate e o retry não disparava — CI ficava vermelho por
+ *  infra, exigindo `gh run rerun --failed` manual toda vez. A assinatura
+ *  `ERR_MODULE_NOT_FOUND` sozinha já é suficiente: é sempre o processo
+ *  filho falhando ao resolver um import de um arquivo que o PAI já
+ *  confirmou existir (ele quem enumerou e passou como argumento) — nunca
+ *  uma asserção de teste real, então não faz sentido gatear por `fail`. */
 export function shouldRetryBatch(output: string, status: number | null): boolean {
   if ((status ?? 1) === 0) return false;
-  if (!ERR_MODULE_NOT_FOUND_RE.test(output)) return false;
-  return parseFailCount(output) === 0;
+  return ERR_MODULE_NOT_FOUND_RE.test(output);
+}
+
+/** #6822 (Defeito B): teto por RODADA de bisecção — bem menor que
+ *  `batchTimeoutMs` de propósito, porque uma sub-lista de N/2 arquivos deve
+ *  rodar em fração do tempo normal de um batch saudável (~40-90s pra 150
+ *  arquivos). Overridável via `RUN_TESTS_BISECT_TIMEOUT_MS`. Uma sub-lista
+ *  perto do teto por ser genuinamente lenta (não travada) pode aparecer como
+ *  falso positivo — por isso o resultado da bisecção é sempre rotulado
+ *  "candidato", nunca "causa comprovada" (ver `BisectResult`). */
+export const DEFAULT_BISECT_TIMEOUT_MS = (() => {
+  const raw = process.env.RUN_TESTS_BISECT_TIMEOUT_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 90 * 1000;
+})();
+
+/** #6822 (Defeito B): orçamento TOTAL de tempo pra bisecção inteira de um
+ *  batch travado — sem isso, um batch onde CADA arquivo trava sozinho (caso
+ *  patológico, nunca observado, mas não impossível) recursaria até 2N-1
+ *  spawns e multiplicaria o próprio hang que está tentando diagnosticar.
+ *  Overridável via `RUN_TESTS_BISECT_BUDGET_MS`. */
+export const DEFAULT_BISECT_BUDGET_MS = (() => {
+  const raw = process.env.RUN_TESTS_BISECT_BUDGET_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10 * 60 * 1000;
+})();
+
+/** Resultado de `bisectHangingBatch` — three-way, nunca colapsa incerteza em
+ *  "limpo" ou "culpado":
+ *   - `clean`: rodou com sumário válido dentro do `subTimeoutMs` reduzido —
+ *     não reproduziu o problema quando isolado deste jeito.
+ *   - `hanging`: já não deu pra reduzir mais (lista de 1) e AINDA ASSIM não
+ *     produziu sumário — candidato forte, mas rotulado "candidato" no
+ *     output porque um arquivo genuinamente lento sozinho pode bater o
+ *     mesmo sintoma sem ser bug de hang.
+ *   - `inconclusive`: a bisecção não terminou de isolar (orçamento total
+ *     estourou antes) — pode ser reflexo de CONTENÇÃO DE RECURSO entre
+ *     arquivos concorrentes (o hang só se manifesta com vizinhos certos
+ *     rodando ao mesmo tempo, e bissecar reduz a concorrência junto com o
+ *     tamanho da lista) — nunca reportar como "limpo" só por falta de
+ *     tempo pra confirmar. */
+export interface BisectResult {
+  clean: string[];
+  hanging: string[];
+  inconclusive: string[];
+}
+
+/** #6822 (Defeito B): re-roda recursivamente metades cada vez menores do
+ *  batch que travou, com um teto de tempo bem mais curto por rodada, até
+ *  isolar o(s) arquivo(s) que reproduzem o hang sozinhos — ou esgotar o
+ *  orçamento total tentando. Só é chamado no caminho de FALHA (batch morto
+ *  por timeout/sinal, spawn com ETIMEDOUT, ou sem sumário do node:test) —
+ *  nunca no caminho feliz, então o custo extra só existe quando já há CI
+ *  vermelho de qualquer forma. `deadline` (epoch ms) é injetável pra teste
+ *  determinístico; default é `Date.now() + budgetMs` na 1ª chamada. */
+export function bisectHangingBatch(
+  batch: string[],
+  spawn: typeof spawnSync,
+  extraArgs: string[],
+  subTimeoutMs: number,
+  deadline: number,
+): BisectResult {
+  if (batch.length === 0) return { clean: [], hanging: [], inconclusive: [] };
+  if (Date.now() >= deadline) {
+    return { clean: [], hanging: [], inconclusive: [...batch] };
+  }
+  const result = spawn(process.execPath, ["--import", "tsx", "--test", ...extraArgs, ...batch], {
+    encoding: "utf8",
+    stdio: ["inherit", "pipe", "pipe"],
+    maxBuffer: 256 * 1024 * 1024,
+    timeout: subTimeoutMs,
+    killSignal: "SIGKILL",
+  });
+  const out = result.stdout ? String(result.stdout) : "";
+  const err = result.stderr ? String(result.stderr) : "";
+  const combined = `${out}\n${err}`;
+  const spawnTimedOut = Boolean(result.error) && (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
+  const killedBySignal = Boolean(result.signal);
+  const noSummary = !result.error && !hasTestSummary(combined);
+  const reproducedHere = spawnTimedOut || killedBySignal || noSummary;
+  if (!reproducedHere) {
+    // Sumário válido dentro do teto reduzido: esta sub-lista não reproduziu
+    // o sintoma isolada — todo mundo aqui volta como "clean".
+    return { clean: [...batch], hanging: [], inconclusive: [] };
+  }
+  if (batch.length === 1) {
+    return { clean: [], hanging: [...batch], inconclusive: [] };
+  }
+  const mid = Math.ceil(batch.length / 2);
+  const left = bisectHangingBatch(batch.slice(0, mid), spawn, extraArgs, subTimeoutMs, deadline);
+  const right = bisectHangingBatch(batch.slice(mid), spawn, extraArgs, subTimeoutMs, deadline);
+  return {
+    clean: [...left.clean, ...right.clean],
+    hanging: [...left.hanging, ...right.hanging],
+    inconclusive: [...left.inconclusive, ...right.inconclusive],
+  };
+}
+
+/** Formata o resultado de `bisectHangingBatch` pra uma linha de log —
+ *  centraliza a mensagem pros 3 call sites de `runTestBatches` (spawn
+ *  ETIMEDOUT, morte por sinal, sem sumário) que hoje só imprimem a lista
+ *  crua do batch inteiro. */
+export function formatBisectResult(result: BisectResult): string {
+  const parts: string[] = [];
+  if (result.hanging.length > 0) {
+    parts.push(`candidato(s) forte(s) ao hang (travou mesmo isolado): ${result.hanging.join(", ")}`);
+  }
+  if (result.inconclusive.length > 0) {
+    parts.push(
+      `não isolado (orçamento de bisecção esgotado — pode ser contenção de recurso entre arquivos concorrentes, não travamento de 1 arquivo sozinho): ${result.inconclusive.join(", ")}`,
+    );
+  }
+  if (parts.length === 0) {
+    return "bisecção não reproduziu o hang em nenhuma sub-lista isolada — sintoma pode depender de concorrência/ordem que a bisecção não preserva.";
+  }
+  return parts.join(" | ");
 }
 
 /** Roda `node --import tsx --test <batch...>` em batches sequenciais.
@@ -261,7 +393,25 @@ export function runTestBatches(opts: RunTestsOptions): number {
     stdout = process.stdout,
     stderr = process.stderr,
     batchTimeoutMs = DEFAULT_BATCH_TIMEOUT_MS,
+    bisectTimeoutMs = DEFAULT_BISECT_TIMEOUT_MS,
+    bisectBudgetMs = DEFAULT_BISECT_BUDGET_MS,
   } = opts;
+  /** #6822 (Defeito B): tenta isolar o(s) arquivo(s) culpado(s) de um batch
+   *  que não produziu sumário — só roda se houver orçamento (`bisectBudgetMs
+   *  > 0`); escreve o resultado formatado em `stderr` como uma linha extra,
+   *  sem alterar `exitCode` (a falha do batch já foi decidida pelo caller).
+   *  Isolado numa closure porque os 3 call sites precisam do mesmo
+   *  `deadline` por CHAMADA de `runTestBatches` (não por batch — um batch
+   *  travado já consumiu tempo real da suíte; não vale a pena dar orçamento
+   *  cheio de novo pra cada ocorrência dentro da mesma rodada de CI). */
+  const bisectDeadline = Date.now() + bisectBudgetMs;
+  const tryBisect = (batch: string[]): string => {
+    if (bisectBudgetMs <= 0) {
+      return `candidatos ao hang (bisecção desligada — RUN_TESTS_BISECT_BUDGET_MS=0): ${batch.join(", ")}`;
+    }
+    const result = bisectHangingBatch(batch, spawn, extraArgs, bisectTimeoutMs, bisectDeadline);
+    return formatBisectResult(result);
+  };
   if (files.length === 0) {
     // Sem arquivos: deixa o guard `assert-test-discovery.ts` (pretest) ser
     // quem falha alto nesse caso — este wrapper não duplica esse julgamento.
@@ -336,7 +486,7 @@ export function runTestBatches(opts: RunTestsOptions): number {
       // resolvido do executável, formato não-contratual entre versões).
       const isTimeout = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
       const suffix = isTimeout
-        ? ` (timeout de ${batchTimeoutMs}ms — candidatos ao hang: ${batch.join(", ")})`
+        ? ` (timeout de ${batchTimeoutMs}ms — ${tryBisect(batch)})`
         : "";
       console.error(
         `run-tests: falha ao spawnar ${label} (${batch.length} arquivos): ${result.error.message}${suffix}`,
@@ -350,7 +500,7 @@ export function runTestBatches(opts: RunTestsOptions): number {
       const combined = `${toText(result.stdout)}\n${toText(result.stderr)}`;
       if (shouldRetryBatch(combined, result.status)) {
         stderr.write(
-          `\nrun-tests: ${label} com ERR_MODULE_NOT_FOUND e fail 0 (#6495, erro de infra do runner, não de teste) — retentando UMA vez (${batch.length} arquivos)...\n`,
+          `\nrun-tests: ${label} com ERR_MODULE_NOT_FOUND (#6495/#6857, erro de infra do runner, não de teste) — retentando UMA vez (${batch.length} arquivos)...\n`,
         );
         const retry = runOne(batch);
         if (retry.error) {
@@ -372,8 +522,9 @@ export function runTestBatches(opts: RunTestsOptions): number {
     // acidental da plataforma) escapar como sucesso.
     if (result.signal) {
       stderr.write(
-        `\nrun-tests: ${label} MORTO por sinal ${result.signal} (timeout de ${batchTimeoutMs}ms atingido, ou kill externo) — travou antes de emitir o sumário do node:test. Arquivos candidatos ao hang (não sabemos qual exatamente, dentro deste batch): ${batch.join(", ")}\n`,
+        `\nrun-tests: ${label} MORTO por sinal ${result.signal} (timeout de ${batchTimeoutMs}ms atingido, ou kill externo) — travou antes de emitir o sumário do node:test. Arquivos candidatos ao hang (não sabemos qual exatamente, dentro deste batch): ${batch.join(", ")}. Bissecando pra isolar o(s) arquivo(s)...\n`,
       );
+      stderr.write(`run-tests: ${label} bisecção: ${tryBisect(batch)}\n`);
       exitCode = 1;
       return;
     }
@@ -387,8 +538,9 @@ export function runTestBatches(opts: RunTestsOptions): number {
     const combinedFinal = `${toText(result.stdout)}\n${toText(result.stderr)}`;
     if (!hasTestSummary(combinedFinal)) {
       stderr.write(
-        `\nrun-tests: ${label} (${batch.length} arquivos) NÃO produziu sumário reconhecível do node:test ("# fail N"/"ℹ fail N") — tratando como FALHA independente do exit status (${result.status}). A suíte pode ter travado no meio deste batch sem emitir o resultado final. Arquivos deste batch: ${batch.join(", ")}\n`,
+        `\nrun-tests: ${label} (${batch.length} arquivos) NÃO produziu sumário reconhecível do node:test ("# fail N"/"ℹ fail N") — tratando como FALHA independente do exit status (${result.status}). A suíte pode ter travado no meio deste batch sem emitir o resultado final. Bissecando pra isolar o(s) arquivo(s)...\n`,
       );
+      stderr.write(`run-tests: ${label} bisecção: ${tryBisect(batch)}\n`);
       exitCode = 1;
       return;
     }
