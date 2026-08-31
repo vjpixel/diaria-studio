@@ -52,13 +52,22 @@
 #
 # Uso:
 #   echo "<tarefa>" | claude-openrouter.sh [--tools "Read,Bash(npx tsx:*)"] \
-#     [--cwd DIR] [--budget USD] [--timeout SECS] [--model SLUG]
+#     [--cwd DIR] [--budget USD] [--timeout SECS] [--model SLUG] [--effort LEVEL]
 set -euo pipefail
 
 TOOLS="Read,Grep,Glob,Bash"
 CWD="/home/vjpixel/diaria-studio"
 BUDGET="20.0"
 TIMEOUT="1800"
+# --effort (#6816): passthrough opcional pro --effort nativo do `claude -p`
+# (low|medium|high|xhigh|max, confirmado via `claude -p --help`). Vazio por
+# default = comportamento de hoje, sem override (o CLI decide sozinho). Existe
+# pra permitir A/B de esforço por camada sem editar este script a cada teste —
+# quem decide o valor é o call site (SKILL.md/cron), nunca um default aqui.
+# Não confundir com `agent.reasoning_overrides` do Hermes nativo (~/.hermes) —
+# aquele é outro mecanismo, fora deste repo, e não alcança quem passa por este
+# wrapper (o wrapper nunca lê ~/.hermes/config.yaml).
+EFFORT=""
 # #6712: BUDGET de $2.0 → $20.0. O #6666 tinha subido de $0.25 → $2.0
 # tratando o SINTOMA; a causa é outra e o valor certo é ordens de grandeza
 # maior. O CLI NÃO reconhece o slug do gateway
@@ -129,9 +138,17 @@ while [ $# -gt 0 ]; do
     --budget)  BUDGET="$2"; shift 2 ;;
     --timeout) TIMEOUT="$2"; shift 2 ;;
     --model)   MODEL_FORCED="$2"; shift 2 ;;
+    --effort)  EFFORT="$2"; shift 2 ;;
     *) echo "arg desconhecido: $1" >&2; exit 2 ;;
   esac
 done
+
+# Mesma disciplina do --timeout/--budget acima: validar ANTES do loop de
+# tentativas, não deixar o CLI rejeitar no meio da cadeia.
+case "$EFFORT" in
+  ''|low|medium|high|xhigh|max) ;;
+  *) echo "ERRO: --effort deve ser low|medium|high|xhigh|max, veio '$EFFORT'" >&2; exit 2 ;;
+esac
 
 # Validar numéricos ANTES do loop (finding do review #6446: valor malformado
 # faria TODOS os modelos falharem identicamente, mascarado como "cadeia caiu").
@@ -276,7 +293,8 @@ for MODEL in "${MODELS[@]}"; do
     claude -p \
       --model "$MODEL" \
       --allowedTools "$TOOLS" \
-      --max-budget-usd "$BUDGET" 2> "$ATTEMPT_LOG"
+      --max-budget-usd "$BUDGET" \
+      ${EFFORT:+--effort "$EFFORT"} 2> "$ATTEMPT_LOG"
   ))
   RC=$?
   ATTEMPT_DURATION_S=$(( $(date +%s) - ATTEMPT_START_TS ))
