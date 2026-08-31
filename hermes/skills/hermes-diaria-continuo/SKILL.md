@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.3
+version: 0.5.4
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -171,8 +171,9 @@ issue nova é reivindicada. Para cada PR, nesta ordem:
    `check-pr-review-authenticity.ts` → `exit 1` (self_review) **ou** `exit 2`
    (no_review — tick morreu antes de sequer comentar; caso da PR que motivou
    a issue, #6844), roda guard de caminho sensível + review independente de
-   verdade via Agent tool + gate de CI genuína, mergeia se limpo. **`/diaria-develop` deliberadamente NÃO
-   ganhou esse passo** — pickup de PR órfão do contínuo não exige presença
+   verdade via Agent tool + gate de CI genuína, mergeia se limpo.
+   **`/diaria-develop` deliberadamente NÃO ganhou esse passo** — pickup de
+   PR órfão do contínuo não exige presença
    do editor nem a máquina Windows, então é trabalho que cabe ao
    `/diaria-overnight` (server, desassistido), não a uma sessão interativa
    (#5751, "sessão interativa não faz o que o helios faria sozinho"). Na
@@ -319,6 +320,16 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Changelog
 
+- 0.5.4 (31/08/2026): §3 passo 3 atualizado — pickup de PR órfão do
+  `continuo` deixou de ser lacuna documentada e passou a existir de fato
+  (#6823), implementado como passo 2b da Fase 0 do `/diaria-overnight`
+  (fora deste arquivo — este SKILL.md só reflete o estado, não implementa
+  o passo). Cobre tanto `exit 1` (`self_review`) quanto `exit 2`
+  (`no_review` — tick que morreu antes de sequer comentar, o cenário real
+  da PR que motivou a issue, #6844). Deliberadamente **só** no overnight,
+  nunca no `/diaria-develop` (#5751). A entrada 0.5.3 abaixo, que dizia
+  "aguardando review externo (Opus diário ou pickup do overnight/develop)",
+  ficava desatualizada nesse detalhe (mencionava develop) até esta entrada.
 - 0.5.3 (30/08/2026): gate de autenticidade de review pré-merge (#6732) —
   a delegação (sem ferramenta Agent) fabricava um comentário no formato de
   review independente, satisfazendo o gate de auto-merge do #5251 com
