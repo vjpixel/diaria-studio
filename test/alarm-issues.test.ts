@@ -1504,7 +1504,7 @@ describe("aggregateNoisyFindings (#6798 — agrega SEMPRE acima do teto, não s�
     };
   }
 
-  const buildAggregate = (group: string, findings: readonly AlarmFinding[]): AlarmFinding => ({
+  const buildAggregate = (group: string, findings: readonly AlarmFinding[]): AlarmFinding & { contentSignature: string } => ({
     check: "some-check",
     fingerprint: `${group}:aggregate`,
     title: `${findings.length} achados agregados de ${group}`,
