@@ -16,6 +16,14 @@
 # rápida e superficial de UMA PR (Sonnet, ~4h) vs. varredura funda do dia
 # inteiro com visão de interação-entre-PRs (Opus, 1x/dia).
 #
+# ## Passo manual PENDENTE (fora do repo, toca ~/.hermes — não executado
+# por esta PR)
+#
+# Este script só existe no repo até alguém rodar, fora daqui: criar o
+# symlink `~/.hermes/scripts/continuo-pr-review.sh` e `hermes cron create`
+# pro job novo (~4h). Sem isso, o script nunca roda — não há cron
+# apontando pra ele ainda. Ver `hermes/README.md`.
+#
 # ## NUNCA mergeia (propriedade mecânica, não só de prosa)
 #
 # `--allowedTools` abaixo NÃO inclui `gh pr merge` — travado deliberadamente
@@ -63,6 +71,7 @@ fi
 REVIEWED=0
 SKIPPED=0
 FAILED=0
+INFRA_ERRORS=0
 
 for PR in $PR_NUMBERS; do
   set +e
@@ -80,13 +89,34 @@ for PR in $PR_NUMBERS; do
     # motivo pra tentar revisar às cegas — pula esta PR nesta rodada,
     # tenta de novo no próximo tick (~4h).
     echo "[continuo-pr-review] PR #$PR: check-pr-review-authenticity.ts falhou (infra) — pulando esta rodada: $AUTH_OUT" >&2
+    # Review #6871 (P3): contar no resumo final — sem isso o tick reporta
+    # "revisadas=X já-tinham-review=Y falharam=Z" que não bate com o total
+    # de PRs continuo/* abertas, escondendo que essa PR nem chegou a ser
+    # avaliada de verdade.
+    INFRA_ERRORS=$((INFRA_ERRORS + 1))
     continue
   fi
   # AUTH_RC 1 (self_review) ou 2 (no_review): precisa de review real.
 
-  BASE_SHA=$(gh pr view "$PR" --json baseRefOid --jq .baseRefOid)
-  HEAD_SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
-  PR_TITLE=$(gh pr view "$PR" --json title --jq .title)
+  # Review #6871 (P3): `gh pr view` também precisa de set +e — sem isso,
+  # uma falha transitória de rede/gh numa PR aborta o script inteiro
+  # (set -euo pipefail) em vez de só pular essa PR e seguir pras próximas,
+  # inconsistente com o resto do loop (que já trata falha por-PR como
+  # fail-soft, não fail-hard).
+  set +e
+  BASE_SHA=$(gh pr view "$PR" --json baseRefOid --jq .baseRefOid 2>&1)
+  VIEW_RC=$?
+  HEAD_SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid 2>&1)
+  VIEW_RC=$((VIEW_RC + $?))
+  PR_TITLE=$(gh pr view "$PR" --json title --jq .title 2>&1)
+  VIEW_RC=$((VIEW_RC + $?))
+  set -e
+
+  if [ "$VIEW_RC" -ne 0 ]; then
+    echo "[continuo-pr-review] PR #$PR: gh pr view falhou ao buscar base/head/title — pulando esta rodada" >&2
+    INFRA_ERRORS=$((INFRA_ERRORS + 1))
+    continue
+  fi
 
   echo "[continuo-pr-review] revisando PR #$PR ($PR_TITLE, $BASE_SHA..$HEAD_SHA)..."
 
@@ -121,4 +151,4 @@ VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramen
   REVIEWED=$((REVIEWED + 1))
 done
 
-echo "[continuo-pr-review] concluído — revisadas=$REVIEWED já-tinham-review=$SKIPPED falharam=$FAILED"
+echo "[continuo-pr-review] concluído — revisadas=$REVIEWED já-tinham-review=$SKIPPED falharam=$FAILED erros-de-infra=$INFRA_ERRORS"

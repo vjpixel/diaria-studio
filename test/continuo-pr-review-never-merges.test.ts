@@ -23,17 +23,42 @@ function readScript(): string {
   return readFileSync(SCRIPT_PATH, "utf8");
 }
 
+/** Achado do review da PR #6871 (P2, confiança alta): checar só a AUSÊNCIA
+ *  da substring "gh pr merge" é frágil — um `Bash(gh:*)` ou `Bash(*)` futuro
+ *  daria merge sem conter esse literal. Extrai os patterns `Bash(...)`
+ *  individuais de dentro de `--allowedTools "..."` e valida cada um contra
+ *  uma ALLOWLIST POSITIVA de patterns conhecidos-seguros — qualquer pattern
+ *  fora da lista (inclusive um genérico demais tipo `Bash(gh:*)`) falha o
+ *  teste, não só os que citam merge literalmente. */
+const SAFE_BASH_PATTERNS = new Set([
+  "Bash(git diff:*)",
+  "Bash(git log:*)",
+  "Bash(git show:*)",
+  "Bash(gh pr view:*)",
+  "Bash(gh pr diff:*)",
+  "Bash(gh pr comment:*)",
+]);
+
+function extractAllowedToolsValue(src: string): string {
+  const m = src.match(/--allowedTools\s+"([^"]+)"/);
+  assert.ok(m, "não encontrou --allowedTools \"...\" no script");
+  return m![1];
+}
+
 describe("continuo-pr-review.sh nunca mergeia (#6865, propriedade mecânica)", () => {
-  it("--allowedTools não contém 'gh pr merge' nem 'pr merge'", () => {
-    const src = readScript();
-    const allowedToolsLine = src
-      .split("\n")
-      .find((l) => l.includes("--allowedTools") && !l.trim().startsWith("#"));
-    assert.ok(allowedToolsLine, "linha --allowedTools não encontrada no script");
-    assert.ok(
-      !allowedToolsLine!.includes("pr merge") && !allowedToolsLine!.includes("gh pr merge"),
-      `--allowedTools não pode conter 'pr merge' — vazaria capacidade de merge pro Sonnet, veio: ${allowedToolsLine}`,
-    );
+  it("--allowedTools só contém patterns Bash(...) da allowlist positiva (nunca um pattern genérico demais que vazaria merge)", () => {
+    const value = extractAllowedToolsValue(readScript());
+    const parts = value.split(",");
+    const bashPatterns = parts.filter((p) => p.startsWith("Bash("));
+    assert.ok(bashPatterns.length > 0, "esperava pelo menos 1 pattern Bash(...)");
+    for (const pattern of bashPatterns) {
+      assert.ok(
+        SAFE_BASH_PATTERNS.has(pattern),
+        `pattern '${pattern}' não está na allowlist positiva de patterns seguros — ` +
+          `mesmo sem conter 'pr merge' literal, um pattern genérico (ex: Bash(gh:*)) vazaria capacidade de merge. ` +
+          `Patterns permitidos: ${[...SAFE_BASH_PATTERNS].join(", ")}`,
+      );
+    }
   });
 
   it("nenhuma linha do script INVOCA `gh pr merge` como comando real (todas as menções são comentário, docstring, ou negação explícita no prompt)", () => {
