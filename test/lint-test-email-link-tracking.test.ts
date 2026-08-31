@@ -255,6 +255,195 @@ describe("#1949 — cortar falso-positivos (merge tags, 403 bot-block, timeout w
   });
 });
 
+describe("#6819 — HEAD→GET fallback (Worker eia.diar.ia.br/jogar só tem handler pra GET)", () => {
+  // #6819: o Worker `/jogar` não implementa HEAD — o router retorna 404 pra
+  // HEAD mas 200 pra GET. Sem o fallback, o link do rodapé virava falso
+  // blocker toda edition. O teste simula exatamente essa resposta
+  // assimétrica: HEAD 404, GET 200 → deve vir `passed`, não `link_dead`.
+  it("HEAD 404 → GET 200 → passed (não blocker) — falso-positivo corrigido", async () => {
+    const html = '<a href="https://eia.diar.ia.br/jogar">jogar</a>';
+    const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      const method = init?.method || "GET";
+      if (method === "HEAD") {
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }
+      return Promise.resolve(new Response(null, { status: 200 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 0, "nenhum issue — GET 200 após HEAD 404 não é blocker");
+    assert.equal(r.passed, 1);
+    assert.equal(r.skipped.length, 0);
+  });
+
+  it("HEAD 404 → GET 404 → link_dead de fato (ambos falham — GET é o que humanos usam)", async () => {
+    const html = '<a href="https://dead.example.com">x</a>';
+    const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      return Promise.resolve(new Response(null, { status: 404 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 1);
+    assert.equal(r.issues[0].type, "link_dead");
+    assert.equal(r.issues[0].severity, "blocker");
+    assert.equal(r.issues[0].status, 404);
+  });
+
+  it("HEAD 500 → GET 200 → passed (fallback cobre 5xx também, não só 4xx)", async () => {
+    const html = '<a href="https://eia.diar.ia.br/jogar">jogar</a>';
+    const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      const method = init?.method || "GET";
+      if (method === "HEAD") {
+        return Promise.resolve(new Response(null, { status: 500 }));
+      }
+      return Promise.resolve(new Response(null, { status: 200 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 0, "GET 200 após HEAD 500 também não é blocker");
+    assert.equal(r.passed, 1);
+  });
+
+  it("HEAD 401 → skip bot_blocked (NÃO cai pra GET — 401 é bot_blocked, não falso-positivo)", async () => {
+    const html = '<a href="https://diaria.beehiiv.com/cursos">cursos</a>';
+    const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      const method = init?.method || "GET";
+      if (method === "HEAD") {
+        return Promise.resolve(new Response(null, { status: 401 }));
+      }
+      // GET nunca deve ser chamado pra 401 — o caller skipa antes de chegar aqui
+      return Promise.resolve(new Response(null, { status: 200 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 0, "401 não é issue");
+    const bot = r.skipped.filter((s) => s.reason === "bot_blocked");
+    assert.equal(bot.length, 1);
+    assert.equal(bot[0].status, 401);
+  });
+
+  it("HEAD 429 → skip rate_limited (NÃO cai pra GET — 429 é rate_limited, já skipado)", async () => {
+    const html = '<a href="https://venturebeat.com/ai/some-article">artigo</a>';
+    const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      const method = init?.method || "GET";
+      if (method === "HEAD") {
+        return Promise.resolve(new Response(null, { status: 429 }));
+      }
+      return Promise.resolve(new Response(null, { status: 200 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 0, "429 não é issue");
+    const rl = r.skipped.filter((s) => s.reason === "rate_limited");
+    assert.equal(rl.length, 1);
+    assert.equal(rl[0].status, 429);
+  });
+
+  // ── #6825: regression test — ≥2 hops de redirect com HEAD 3xx não deve
+  // forçar GET no meio da cadeia. O bug original: o loop `for (attempt < 2)`
+  // usava o mesmo counter pra "seguir redirect" e "cair pra GET", então
+  // um redirect HEAD fazia `continue` que avançava `attempt` pra 1 —
+  // forçando GET no 2º hop mesmo sendo só continuação legítima. O GET
+  // usava `redirect: "follow"` e terminava a cadeia inteira sem incrementar
+  // `hops`, então `hops` nunca passava de 1 e o blocker
+  // `link_redirect_chain_long` (hops > MAX_REDIRECTS) nunca disparava.
+  it("#6825: 3 hops de redirect via HEAD contados corretamente — hops=3, não 1", async () => {
+    const html = '<a href="https://hop1.example.com">chain</a>';
+    const responses = [
+      new Response(null, { status: 301, headers: { Location: "https://hop2.example.com" } }),
+      new Response(null, { status: 302, headers: { Location: "https://hop3.example.com" } }),
+      new Response(null, { status: 301, headers: { Location: "https://hop4.example.com" } }),
+      new Response(null, { status: 200 }),
+    ];
+    let i = 0;
+    const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      const method = init?.method || "GET";
+      // Confirma que todos os hops rodam via HEAD (não GET no meio)
+      assert.equal(method, "HEAD", `hop ${i} deveria ser HEAD, recebeu ${method}`);
+      return Promise.resolve(responses[i++]);
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 0, "cadeia de 3 redirects até 200 não é issue");
+    assert.equal(r.passed, 1);
+  });
+
+  it("#6825: 4 hops de redirect via HEAD → link_redirect_chain_long (MAX_REDIRECTS=3)", async () => {
+    const html = '<a href="https://hop1.example.com">chain</a>';
+    const responses = [
+      new Response(null, { status: 301, headers: { Location: "https://hop2.example.com" } }),
+      new Response(null, { status: 302, headers: { Location: "https://hop3.example.com" } }),
+      new Response(null, { status: 301, headers: { Location: "https://hop4.example.com" } }),
+      new Response(null, { status: 302, headers: { Location: "https://hop5.example.com" } }),
+    ];
+    let i = 0;
+    const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      const method = init?.method || "GET";
+      assert.equal(method, "HEAD", `hop ${i} deveria ser HEAD, recebeu ${method}`);
+      return Promise.resolve(responses[i++]);
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 1, "cadeia de 4 redirects (> MAX_REDIRECTS=3) é blocker");
+    assert.equal(r.issues[0].type, "link_redirect_chain_long");
+    assert.equal(r.issues[0].severity, "blocker");
+    assert.equal(r.issues[0].hops, 4, "hops deve ser 4 (contados via HEAD, não abortado pelo GET)");
+  });
+
+  it("#6825: HEAD 4xx no 2º hop → GET fallback no local final, hops=1 preservado", async () => {
+    const html = '<a href="https://hop1.example.com">chain</a>';
+    const responses = [
+      new Response(null, { status: 301, headers: { Location: "https://hop2.example.com" } }),
+      new Response(null, { status: 404 }),
+    ];
+    let i = 0;
+    const methods: string[] = [];
+    const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      const method = init?.method || "GET";
+      methods.push(method);
+      return Promise.resolve(responses[i++]);
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    // hop1=HEAD(301), hop2=HEAD(404) → break → GET fallback
+    assert.equal(methods[0], "HEAD", "1º hop é HEAD");
+    assert.equal(methods[1], "HEAD", "2º hop é HEAD");
+    assert.equal(methods[2], "GET", "3ª tentativa é GET fallback");
+    assert.equal(r.issues.length, 1, "GET 4xx → link_dead");
+    assert.equal(r.issues[0].type, "link_dead");
+    assert.equal(r.issues[0].status, 404);
+    // Achado do review (#6825, confiança alta/85, P3): o título do teste
+    // alega "hops=1 preservado" mas nenhuma assertion verificava esse
+    // valor — só a sequência de métodos e o status/type final. A fase GET
+    // (Phase 2) não incrementa hops (ver comentário em headWithRedirects),
+    // então só o hop real via HEAD (301→hop2) conta: hops deve ficar em 1.
+    assert.equal(r.issues[0].hops, 1, "hops deve ficar em 1 — a fase GET (fallback) não incrementa hops");
+  });
+
+  // Achado do review (#6825, confiança alta/85, P3, mesma classe do fix
+  // acima): o título original alegava "hops=2", mas `checkLinkTracking`
+  // não expõe `hops` pra um resultado `passed` (só `LinkIssue` tem esse
+  // campo, e `passed` é só uma contagem) — não dava pra verificar a claim.
+  // Rastreando a lógica (mesmo cenário estrutural do teste anterior: 1
+  // redirect real via HEAD + HEAD-4xx no 2º hop + GET fallback), o valor
+  // real seria 1, não 2 — a fase GET nunca incrementa hops. Título
+  // corrigido pra não alegar um número que o teste não consegue afirmar.
+  it("#6825: HEAD 3xx no 2º hop + GET 200 no final → passed (hops não observável em resultado passed, verificado no teste irmão acima)", async () => {
+    const html = '<a href="https://hop1.example.com">chain</a>';
+    let callCount = 0;
+    const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      callCount++;
+      const method = init?.method || "GET";
+      if (method === "HEAD") {
+        const hop = callCount; // 1=hop1, 2=hop2
+        if (hop === 1) {
+          return Promise.resolve(new Response(null, { status: 301, headers: { Location: "https://hop2.example.com" } }));
+        }
+        // hop2: HEAD 404 (simula worker que só responde GET)
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }
+      // GET fallback
+      return Promise.resolve(new Response(null, { status: 200 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 0, "GET 200 após HEAD 4xx no 2º hop não é blocker");
+    assert.equal(r.passed, 1);
+    assert.equal(callCount, 3, "2 HEAD + 1 GET");
+  });
+});
+
 describe("classifyKnownArtifact (#3480/#3481/#3482 — post-mortem 260716)", () => {
   it("#3480: domínio Amazon → amazon_bot_block", () => {
     const r1 = classifyKnownArtifact("https://www.amazon.com.br/dp/B0ABCDEF12");
