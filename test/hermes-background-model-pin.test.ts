@@ -76,6 +76,45 @@ export function stripInlineComment(line: string): string {
 }
 
 describe("claude-openrouter.sh — pin do modelo de background (#6716)", () => {
+  /**
+   * #6716, 31/08/2026 — o pin de haiku NÃO bastava, e a razão está nos docs.
+   *
+   * `ANTHROPIC_DEFAULT_HAIKU_MODEL` cobre apenas o alias `haiku` e as
+   * funcionalidades de background. Qualquer caminho interno do CLI que peça
+   * modelo pela FAMÍLIA `sonnet`/`opus` resolve pelo ID default embutido no
+   * binário — uma string real da Anthropic — que o gateway fatura a preço
+   * cheio. Medido na conta: em 30/08, `anthropic/claude-sonnet-5` fez 10
+   * requisições ($0,3868) contra um total de $0,4650 no dia — 83% do custo com
+   * ~1,4% das requisições, ~71K prompt tokens por chamada.
+   *
+   * Mesma invisibilidade do caso original: não aparece no transcript, não
+   * produz erro, só no billing do gateway. Por isso as três vars são travadas
+   * pelo mesmo guard.
+   */
+  for (const varName of [
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  ]) {
+    it(`passa ${varName} para o CLI, fixado em "$MODEL"`, () => {
+      const hit = codeLines().filter((l) => l.includes(varName));
+      assert.equal(
+        hit.length,
+        1,
+        `esperava exatamente 1 uso de ${varName} em código (fora de ` +
+          `comentário), achei ${hit.length}. Sem essa var, caminho interno que ` +
+          "peça a família resolve pelo ID default da Anthropic e o gateway " +
+          "fatura a preço cheio — ver #6716.",
+      );
+      assert.match(
+        hit[0],
+        new RegExp(`export\\s+${varName}="\\$MODEL"`),
+        `${varName} deve ser fixado em "$MODEL" (elo corrente da cadeia), ` +
+          "nunca num slug hardcoded — o auxiliar herda o custo do primário e " +
+          "nunca fica mais caro que o modelo pedido.",
+      );
+    });
+  }
+
   it("passa ANTHROPIC_DEFAULT_HAIKU_MODEL para o CLI", () => {
     const hit = codeLines().filter((l) => l.includes("ANTHROPIC_DEFAULT_HAIKU_MODEL"));
     assert.equal(

@@ -242,10 +242,18 @@ for MODEL in "${MODELS[@]}"; do
   # 29/08/2026 nas sessões 76433685 ($0.38) e 1520faa3 ($0.417), ~75% do custo
   # de cada delegação, contra ~$0.09 se tudo tivesse rodado no slug pedido.
   #
-  # Qual auxiliar dispara aqui não está estabelecido: a doc lista summarization
-  # pra `--resume` e auto-compact, mas este wrapper nunca passa `--resume`
-  # (chamada única, sem continuação), o que deixa o auto-compact como candidato
-  # provável — o contexto sobe de ~52k pra ~70k dentro de um tick. Não confirmado.
+  # CAUSA IDENTIFICADA (31/08/2026, docs oficiais do Claude Code). A hipótese
+  # anterior registrada aqui — auto-compact como candidato provável — está
+  # DESCARTADA: a doc de prompt-caching diz que a chamada de compactação usa o
+  # MESMO modelo da conversa, e a sumarização de `--resume` já está atrelada ao
+  # ANTHROPIC_DEFAULT_HAIKU_MODEL. Nenhuma das duas explicaria cobrança em
+  # Sonnet.
+  #
+  # O que explica: ANTHROPIC_DEFAULT_HAIKU_MODEL cobre APENAS o alias `haiku` e
+  # as funcionalidades de background. Caminho interno que peça modelo pela
+  # FAMÍLIA `sonnet`/`opus` resolve pelo ID default embutido no binário do CLI —
+  # uma string real da Anthropic — que o gateway fatura a preço cheio. Daí os
+  # dois exports abaixo, irmãos do de haiku.
   #
   # TRADE-OFF ACEITO (review da PR #6717): quando o elo corrente é `:free`, o
   # background passa a puxar do MESMO balde `free-models-per-day` (por CONTA)
@@ -288,6 +296,8 @@ for MODEL in "${MODELS[@]}"; do
     export ANTHROPIC_BASE_URL="https://openrouter.ai/api"
     export ANTHROPIC_AUTH_TOKEN="$KEY"
     export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL"
+    export ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL"
+    export ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL"
     export CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000
     timeout "$TIMEOUT" \
     claude -p \
