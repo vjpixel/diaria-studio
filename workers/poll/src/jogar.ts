@@ -1818,8 +1818,9 @@ ${renderIdentityFormBlock()}`;
       // #4116: capturar o STATUS junto com o corpo. Antes só o texto era
       // lido, e o veredito saía do prefixo da .msg (check/x) — mas NENHUMA
       // mensagem de erro do /vote tem esse prefixo ("Link inválido",
-      // "Escolha inválida", "Essa edição não aceita mais votos", "Link
-      // inválido ou expirado"), nem uma página 5xx da borda (que sequer tem
+      // "Escolha inválida", "Essa edição não aceita mais votos",
+      // "Essa edição ainda não foi enviada", "Link inválido ou expirado"),
+      // nem uma página 5xx da borda (que sequer tem
       // .msg). Resultado: todo erro virava correct:null, indistinguível do
       // "já votou" legítimo — e o chamador pulava a rodada em silêncio,
       // logando o evento ERRADO (seq_skip_already_voted_race), o que
