@@ -150,26 +150,29 @@ for PR in $PR_NUMBERS; do
   fi
   # AUTH_RC 1 (self_review) ou 2 (no_review): precisa de review real.
 
-  # Review #6871 (P3): `gh pr view` também precisa de set +e — sem isso,
-  # uma falha transitória de rede/gh numa PR aborta o script inteiro
-  # (set -euo pipefail) em vez de só pular essa PR e seguir pras próximas,
-  # inconsistente com o resto do loop (que já trata falha por-PR como
-  # fail-soft, não fail-hard).
+  # #6923: os dois campos JSON antigos (base/head ref oid) que este bloco
+  # pedia via `gh pr view` não existem no `gh` 2.46 (pacote ESM do Ubuntu
+  # do helios) — "Unknown JSON field", TODA PR pulada em TODA rodada,
+  # silenciosamente até o #6910 revelar o motivo.
+  # Fix: REST v3 via `gh api`, onde `.base.sha`/`.head.sha` são estáveis há
+  # anos independente da versão do `gh` — 1 chamada em vez de 3, e nunca
+  # depende do que a distro decidir empacotar no próximo `apt upgrade`
+  # (não subir o `gh`: ver docstring da issue #6923). `set +e` preservado
+  # do #6871 (P3) — falha transitória de rede/gh numa PR não pode abortar
+  # o script inteiro (set -euo pipefail), só pular essa PR.
   set +e
-  BASE_SHA=$(gh pr view "$PR" --json baseRefOid --jq .baseRefOid 2>&1)
-  VIEW_RC=$?
-  HEAD_SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid 2>&1)
-  VIEW_RC=$((VIEW_RC + $?))
-  PR_TITLE=$(gh pr view "$PR" --json title --jq .title 2>&1)
-  VIEW_RC=$((VIEW_RC + $?))
+  API_OUT=$(gh api "repos/{owner}/{repo}/pulls/$PR" --jq '[.base.sha, .head.sha, .title] | @tsv' 2>&1)
+  API_RC=$?
   set -e
 
-  if [ "$VIEW_RC" -ne 0 ]; then
-    echo "[continuo-pr-review] PR #$PR: gh pr view falhou ao buscar base/head/title — pulando esta rodada" >&2
+  if [ "$API_RC" -ne 0 ]; then
+    echo "[continuo-pr-review] PR #$PR: gh api pulls falhou ao buscar base/head/title — pulando esta rodada" >&2
     INFRA_ERRORS=$((INFRA_ERRORS + 1))
-    log_infra_error "$PR" "gh_pr_view_rc=$VIEW_RC" "$BASE_SHA / $HEAD_SHA / $PR_TITLE"
+    log_infra_error "$PR" "gh_api_pulls_rc=$API_RC" "$API_OUT"
     continue
   fi
+
+  IFS=$'\t' read -r BASE_SHA HEAD_SHA PR_TITLE <<< "$API_OUT"
 
   echo "[continuo-pr-review] revisando PR #$PR ($PR_TITLE, $BASE_SHA..$HEAD_SHA)..."
 
