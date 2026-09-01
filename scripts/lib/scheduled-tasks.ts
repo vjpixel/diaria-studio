@@ -1489,6 +1489,27 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     schedule: { kind: "interval", hours: 6 },
     issue: "#6927",
   },
+  {
+    name: "Diaria-Npm-Version-Drift-Alarm",
+    description:
+      "contrapeso ao updater desligado: defasagem entre a versao do Claude Code em disco e a publicada no npm, ha quantos dias (#6960)",
+    steps: [{ key: "check", script: "scripts/npm-version-drift-alarm.ts" }],
+    logPath: "npm-version-drift-alarm/.alarm.log",
+    // Diario — cadencia de release do Claude Code e quase diaria (medicao
+    // citada na #6960: 2.1.251 -> 2.1.257 em 1 dia), entao 1 checagem/dia
+    // ja da granularidade suficiente pro limiar (default 7d) sem custo de
+    // rodar mais vezes. Diferente do Diaria-Claude-Session-Version-Drift-Alarm
+    // (#6927, acima): aquele mede reinstalacao RECENTE (processo != disco)
+    // e fica mudo com o updater desligado; este mede DEFASAGEM acumulada
+    // (disco != upstream), o sinal que continua existindo mesmo sem
+    // reinstalacao nenhuma acontecer.
+    schedule: { kind: "daily", hour: 10, minute: 40 },
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do #5845/#5908/#5754/#6130/#6189 acima) — armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada
+    // (`helios`) e acao POSTERIOR do editor.
+    issue: "#6960",
+  },
 ];
 
 /**
