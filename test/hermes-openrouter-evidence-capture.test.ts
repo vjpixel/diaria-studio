@@ -83,7 +83,7 @@ describe("captura de evidência real de falha (#6666 item 1)", () => {
     // pra preservar. A linha de diagnóstico precisa ser apendada ao
     // ATTEMPT_LOG ANTES do `cp` pro path estável.
     const diagAppendToAttemptIdx = source.indexOf(
-      'echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT" >> "$ATTEMPT_LOG"',
+      'echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT bytes_stdout=$BYTES_STDOUT bytes_stderr=$BYTES_STDERR" >> "$ATTEMPT_LOG"',
     );
     const cpIdx = source.indexOf('cp -f "$ATTEMPT_LOG" "${TMPDIR:-/tmp}/claude-openrouter-last-failure.log"');
     assert.ok(

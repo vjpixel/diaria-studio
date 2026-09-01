@@ -214,7 +214,13 @@ try_merge_gate() {
         set +e
         MERGED_STATE=$(gh pr view "$pr" --json state,mergedAt --jq '[.state, .mergedAt] | @tsv' 2>&1)
         set -e
-        if echo "$MERGED_STATE" | grep -q "^MERGED"; then
+        # #6987/#6989 (01/09/2026): `command grep` — `grep` neste ambiente é
+        # função de shell que shella pro binário `claude`; se ele quebrar,
+        # `grep` falha junto, indistinguível de "não achou". Aqui a direção
+        # de falha já é segura (cai no `else`, não conta como mergeada,
+        # retenta no próximo tick) — `command grep` fecha o caso mesmo assim,
+        # pra não depender de sorte de direção em toda chamada futura.
+        if echo "$MERGED_STATE" | command grep -q "^MERGED"; then
           echo "[continuo-pr-review] PR #$pr: gh pr merge saiu com erro (rc=$MERGE_RC) mas o estado remoto confirma MERGED — contando como mergeada"
           MERGED=$((MERGED + 1))
         else
