@@ -263,6 +263,19 @@ disponível, usar o mecanismo de kill do próprio harness em vez de um
 comando de shell solto. Nunca `/IM {nome-de-processo}` ou `-f {padrão}` sem
 escopo ao PID/árvore do chamador.
 
+**2ª ocorrência (#6982, 01/09/2026): um subagente da #6976 rodou `taskkill
+/F /IM python.exe` "limpando" um servidor HTTP local de checagem visual —
+matou 9 processos `python.exe` alheios. A prosa acima (escrita citando o
+incidente do `node.exe`) não bastou: o subagente lidava com `python.exe` e
+não se reconheceu no padrão porque a memória do editor citava só o binário
+do incidente original, não a classe inteira — confirma, de novo, "instrução
+em prosa não é guard" (#6864/#6941).** Guard MECÂNICO desde o #6982:
+`.claude/hooks/block-unsafe-shared-checkout-ops.mjs` (`PreToolUse` sobre
+`Bash`) nega qualquer `taskkill` com flag `/IM`/`-IM`/`--IM`/`//IM` (qualquer
+nome de imagem, qualquer plataforma) — `taskkill /PID {n}` (o uso correto)
+nunca é bloqueado. Este guard NÃO cobre `pkill -f`/`killall` (Unix) — ainda
+prosa; considerar estender se recorrer.
+
 ## 13. Tocou `invariant-checks/*.ts`? Regenerar `docs/editorial-invariants.md` (#4877)
 
 Se você adicionar, editar ou remover uma invariante em
@@ -471,3 +484,39 @@ tem classe análoga de risco com escapes.
 
 Verificação barata pós-write: `cat -A body.md` (ou reler o arquivo) antes do
 `gh ... --body-file`.
+
+## 20. Nunca `rm` no checkout compartilhado; rascunho de sessão vive fora da árvore (#6971)
+
+O checkout PRINCIPAL é compartilhado por várias sessões concorrentes por
+design (#5156) — arquivo **untracked** apagado ali não tem desfazer (não há
+`git checkout --` que salve). Incidente de origem (01/09/2026, frota de
+review da PR #6969): um subagente de review, mesmo com instrução explícita
+de somente-leitura no prompt, rodou `rm -f` num `.md` untracked que era
+rascunho de OUTRA sessão — recuperado só por sorte (cópia solta em `/tmp`).
+
+**Regra prática, dupla:**
+- **Nunca escreva rascunho de sessão (corpo de PR, comentário de review,
+  patch temporário) dentro da árvore do checkout principal.** Use `/tmp`
+  (Unix) ou o scratchpad da sessão — mesmo texto que este arquivo já pede
+  pra corpo de issue/PR na regra 19 acima. Isso não impede um `rm`
+  indevido, mas remove o alvo — foi exatamente o que salvou o incidente
+  original.
+- **Nunca rode `rm` em caminho dentro do checkout compartilhado que você
+  não criou nesta mesma sessão** — nem para "limpeza" pós-tarefa. Um agente
+  de review não tem razão legítima pra apagar nada do disco.
+
+**Guard mecânico PARCIAL desde o #6971:**
+`.claude/hooks/block-unsafe-shared-checkout-ops.mjs` (`PreToolUse` sobre
+`Bash`) nega `rm` em caminho dentro do checkout PRINCIPAL (nunca no
+worktree do próprio subagente) quando existe uma rodada
+overnight/develop/continuo ATIVA registrada e a chamada não é da
+coordenadora — mesmo discriminador de `block-branch-checkout-main.mjs`
+(#6509). **Cobertura HONESTA, não da classe inteira**: sem rodada
+coordenadora registrada (o caso mais provável do incidente de origem — uma
+frota de review dispatchada por sessão interativa comum), o guard não
+dispara — payload do hook não carrega nenhum campo que identifique "esta
+chamada é de um subagente de review" especificamente, e restringir o
+toolset do agente de review na origem (a direção preferida pela #6971)
+exigiria editar a definição do agente do plugin `pr-review-toolkit`
+(marketplace, fora deste repo) — não implementável a partir daqui. Ver o
+docblock do hook para a análise completa.
