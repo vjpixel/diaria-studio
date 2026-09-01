@@ -2164,13 +2164,24 @@ export function unclaimIssue(
   // `claimIssueCheckAndSet`/`grantMergeWindow`.
   writeJsonSafeWithCas(
     path,
-    (current) => {
-      if (!current) throw new Error("unclaimIssue: sessão sumiu entre a leitura e a escrita");
-      const claimed = current.claimed_issues ?? [];
-      const claimedAt = { ...(current.claimed_issues_at ?? {}) };
+    (fresh) => {
+      if (!fresh) throw new Error("unclaimIssue: sessão sumiu entre a leitura e a escrita");
+      // #6952: a base é o registro MESCLADO do grupo (real + backups), não o
+      // arquivo real cru — igual ao `current` calculado fora do lock, e pelo
+      // mesmo motivo (#6481: a claim pode existir só num backup).
+      //
+      // Reler só o arquivo real aqui foi regressão de verdade, pega por
+      // `test/session-registry-reconcile-claims.test.ts`: o `unclaimIssue`
+      // deixava de trazer as claims que existiam só nos backups, e o registro
+      // real saía com MENOS issues do que o grupo tinha antes da operação.
+      // "Re-derivar do estado fresco" continua valendo — o que muda é QUAL
+      // leitura é a fresca: a do GRUPO, não a de um arquivo do grupo.
+      const base = readMergedRecordForRealFile(repoRoot, path) ?? fresh;
+      const claimed = base.claimed_issues ?? [];
+      const claimedAt = { ...(base.claimed_issues_at ?? {}) };
       delete claimedAt[String(issueNumber)];
       return {
-        ...current,
+        ...base,
         claimed_issues: claimed.filter((n) => n !== issueNumber),
         claimed_issues_at: claimedAt,
         lastHeartbeat: now,
