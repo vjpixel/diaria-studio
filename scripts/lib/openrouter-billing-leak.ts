@@ -86,12 +86,24 @@ export const EXPECTED_PAID_MODELS: ReadonlySet<string> = new Set([
   "openai/gpt-5.6-luna", // mesma família sob o id prefixado do gateway
 ]);
 
-/** `true` quando a linha representa gasto que ninguém pediu. */
+/**
+ * `true` quando a linha representa gasto que ninguém pediu.
+ *
+ * **Não há atalho por sufixo `:free` (#6983 review, achado 3).** A 1ª versão
+ * tinha `if (row.model.endsWith(":free")) return false` DEPOIS do teste de
+ * `usageUsd > 0` — ou seja, o atalho só era alcançado por uma linha `:free`
+ * que **de fato cobrou dólar**, que é precisamente a anomalia que vale ver
+ * (mudança de tier, overage, bug de billing do gateway). O guard descartava
+ * em silêncio a única circunstância em que aquele branch importava, apoiado
+ * na premissa "`:free` nunca cobra" — e delegar a garantia a outro guard
+ * (#6907, que vigia COTA, não dólar) é a mesma confiança-cruzada que já
+ * falhou no `vazamento_pago` original.
+ *
+ * Gasto ZERO segue não sendo vazamento: é assim que todo `:free` normal
+ * aparece no activity (usage 0,0000), e é o teste que basta.
+ */
 export function isBillingLeak(row: BillingRow, expected: ReadonlySet<string> = EXPECTED_PAID_MODELS): boolean {
-  // Gasto ZERO nunca é vazamento — modelo `:free` aparece no activity com
-  // usage 0,0000 e contaria como "pago não pedido" numa leitura ingênua.
   if (!(row.usageUsd > 0)) return false;
-  if (row.model.endsWith(":free")) return false;
   return !expected.has(row.model);
 }
 

@@ -24,7 +24,13 @@ import {
   EXPECTED_PAID_MODELS,
   type BillingRow,
 } from "../scripts/lib/openrouter-billing-leak.ts";
-import { loadState, saveState, parseActivityRows } from "../scripts/openrouter-billing-leak-check.ts";
+import {
+  loadState,
+  saveState,
+  parseActivityRows,
+  resolveExitCode,
+  LEAK_FOUND_EXIT_CODE,
+} from "../scripts/openrouter-billing-leak-check.ts";
 
 /** Linhas reais do `/api/v1/activity`, medidas em 01/09/2026. */
 const REAL_ROWS: BillingRow[] = [
@@ -65,6 +71,22 @@ describe("evaluateBillingLeak (#6716 escopo 3) — contra o vazamento REAL medid
 
   it("usage 0 num modelo pago não acusa — cobrança zero não é gasto não pedido", () => {
     assert.equal(isBillingLeak({ date: "2026-09-01", model: "anthropic/claude-sonnet-5", requests: 3, usageUsd: 0 }), false);
+  });
+
+  // #6983 (review, achado 3): havia um `if (model.endsWith(":free")) return false`
+  // DEPOIS do teste de `usageUsd > 0` — alcançável só por um `:free` que de
+  // fato cobrou dólar, que é exatamente a anomalia que interessa ver.
+  it("`:free` que COBROU dólar é vazamento — o atalho por sufixo descartava justo a anomalia", () => {
+    assert.equal(
+      isBillingLeak({ date: "2026-09-01", model: "dots-studio/dots-3-note-preview:free", requests: 5, usageUsd: 0.42 }),
+      true,
+      "modelo anunciado como grátis cobrando é achado, não exceção a silenciar",
+    );
+  });
+
+  it("usageUsd NaN/negativo não acusa — só gasto positivo é 'gasto não pedido'", () => {
+    assert.equal(isBillingLeak({ date: "2026-09-01", model: "x/y", requests: 1, usageUsd: Number.NaN }), false);
+    assert.equal(isBillingLeak({ date: "2026-09-01", model: "x/y", requests: 1, usageUsd: -0.5 }), false, "crédito/reembolso");
   });
 
   it("totalUsd soma tudo, leakedUsd só o que vazou", () => {
@@ -141,10 +163,80 @@ describe("parseActivityRows (#6716) — I/O", () => {
     assert.equal(skipped, 1, "a descartada é contada — resultado parcial é sinalizado, não silenciado");
   });
 
+  // #6983 (review, CRÍTICO): `Number(null)`, `Number(false)` e `Number("")`
+  // são TODOS `0`, e `0` passa por `Number.isFinite`. A 1ª versão fazia
+  // `Number(o.usage)` cru e transformava essas linhas em `usageUsd: 0` — que
+  // `isBillingLeak` trata como "nunca é vazamento". Um modelo pago vazando
+  // com o campo de custo nulo era relatado como LIMPO, e nem contava em
+  // `skipped`. É o mesmo falso "ok" que este guard existe pra não repetir,
+  // reintroduzido pela porta do parsing. Cada valor abaixo tem que ser
+  // DESCARTADO e CONTADO, nunca coagido.
+  for (const [nome, usage] of [
+    ["null", null],
+    ["false", false],
+    ["string vazia", ""],
+    ["string só de espaço", "   "],
+    ["array vazio", []],
+    ["objeto", {}],
+    ["undefined (campo ausente)", undefined],
+  ] as const) {
+    it(`usage \`${nome}\` é descartado e contado — nunca vira 0 silencioso`, () => {
+      const { rows, skipped } = parseActivityRows({
+        data: [{ date: "2026-08-31", model: "anthropic/claude-sonnet-5", requests: 32, usage }],
+      });
+      assert.deepEqual(rows, [], `usage ${nome} não pode virar linha com usageUsd 0`);
+      assert.equal(skipped, 1, `usage ${nome} tem que contar como descartado`);
+    });
+  }
+
+  it("usage numérico 0 legítimo NÃO é descartado — é `:free` normal, dado íntegro", () => {
+    const { rows, skipped } = parseActivityRows({
+      data: [{ date: "2026-08-31", model: "dots-studio/dots-3-note-preview:free", requests: 714, usage: 0 }],
+    });
+    assert.equal(rows.length, 1, "0 numérico é medição real, não shape inválido");
+    assert.equal(skipped, 0);
+    assert.equal(rows[0].usageUsd, 0);
+  });
+
+  it("usage numérico em STRING é aceito — o gateway já mandou assim", () => {
+    const { rows, skipped } = parseActivityRows({
+      data: [{ date: "2026-08-31", model: "x/y", requests: 1, usage: "0.9599" }],
+    });
+    assert.equal(skipped, 0);
+    assert.equal(rows[0].usageUsd, 0.9599);
+  });
+
   it("payload sem data[] → vazio, nunca lança", () => {
     assert.doesNotThrow(() => parseActivityRows({}));
     assert.deepEqual(parseActivityRows({}), { rows: [], skipped: 0 });
     assert.deepEqual(parseActivityRows(null), { rows: [], skipped: 0 });
+  });
+});
+
+describe("resolveExitCode (#6716) — leitura parcial nunca sai 0", () => {
+  it("sem vazamento e leitura íntegra → 0", () => {
+    assert.equal(resolveExitCode({ hasLeaks: false, partialRead: false }), 0);
+  });
+
+  // #6983 (review, CRÍTICO): antes disso, `skipped > 0` era só um
+  // `console.error` — com as linhas sobreviventes limpas, o processo saía 0 e
+  // implicava "sem vazamento" sobre uma medição admitidamente incompleta.
+  it("sem vazamento MAS leitura parcial → 1, nunca 0", () => {
+    assert.equal(
+      resolveExitCode({ hasLeaks: false, partialRead: true }),
+      1,
+      "não medi ≠ está limpo — é a falha que este guard existe pra não repetir",
+    );
+  });
+
+  it("vazamento → 3, e continua 3 mesmo com leitura parcial", () => {
+    assert.equal(resolveExitCode({ hasLeaks: true, partialRead: false }), LEAK_FOUND_EXIT_CODE);
+    assert.equal(resolveExitCode({ hasLeaks: true, partialRead: true }), LEAK_FOUND_EXIT_CODE);
+  });
+
+  it("3 é distinto de 1 — o runner precisa separar 'achou' de 'quebrou'", () => {
+    assert.notEqual(LEAK_FOUND_EXIT_CODE, 1);
+    assert.notEqual(LEAK_FOUND_EXIT_CODE, 0);
   });
 });
 

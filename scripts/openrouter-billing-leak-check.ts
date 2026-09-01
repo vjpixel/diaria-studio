@@ -25,10 +25,27 @@
  * `data/.credentials.json` com scope `gmail.send` só quando há alarme a
  * enviar. Estado: `data/openrouter-billing-leak/state.json`.
  *
- * Exit codes: 0 = sem vazamento (ou dry-run); 1 = erro de execução;
- * **3 = vazamento encontrado** — distinto de 1 de propósito, pra um runner
- * poder tratar "achou" diferente de "quebrou" (mesma disciplina do exit 3 de
- * `check-pr-checks-gate.ts`).
+ * Exit codes: 0 = sem vazamento; 1 = erro de execução OU **indeterminado**
+ * (sem key, HTTP não-ok, janela vazia, leitura parcial — nunca 0, porque
+ * "não consegui medir" jamais pode virar "está limpo"); **3 = vazamento
+ * encontrado** — distinto de 1 de propósito, pra um runner poder tratar
+ * "achou" diferente de "quebrou".
+ *
+ * **`--dry-run` NÃO força exit 0** (#6983 review, achado 2 — a redação
+ * anterior dizia "0 = sem vazamento (ou dry-run)" e o código nunca fez
+ * isso). Dry-run suprime só os EFEITOS (não persiste estado, não envia
+ * e-mail); o veredito continua saindo no exit code, senão um preview de
+ * vazamento sairia indistinguível de uma janela limpa.
+ *
+ * Sem convenção global de exit code neste repo — cada script documenta o
+ * seu. (Uma versão anterior deste bloco citava `check-pr-checks-gate.ts`
+ * como "mesma disciplina"; lá o 3 é o OPOSTO — erro/indeterminado. Citação
+ * removida em vez de corrigida: não havia padrão compartilhado a herdar.)
+ *
+ * Fuso: o `/api/v1/activity` agrega por dias UTC COMPLETOS, e o `cutoff`
+ * abaixo é derivado de `toISOString()` — os dois lados da comparação vivem
+ * em UTC de propósito. Não trocar por data local (BRT) sem reconferir o
+ * referencial do endpoint.
  */
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -53,6 +70,7 @@ const STATE_PATH = resolve(ROOT, "data", "openrouter-billing-leak", "state.json"
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[openrouter-billing-leak]";
 const ACTIVITY_URL = "https://openrouter.ai/api/v1/activity";
+const ACTIVITY_TIMEOUT_MS = 30_000;
 /** Exit code dedicado pra "achou vazamento" — nunca confundir com erro. */
 export const LEAK_FOUND_EXIT_CODE = 3;
 
@@ -66,7 +84,12 @@ export function loadState(statePath: string = STATE_PATH): BillingLeakAlarmState
         : null;
     const at = typeof raw.lastCheckedAt === "string" || raw.lastCheckedAt === null ? raw.lastCheckedAt : null;
     return { lastAlarmedFingerprint: fp ?? null, lastCheckedAt: at ?? null };
-  } catch {
+  } catch (e) {
+    // #6983 (review): antes era `catch {}` mudo. A direção é segura (estado
+    // vazio re-alarma, nunca silencia), mas um problema PERSISTENTE de I/O
+    // (permissão errada no diretório) ficava invisível pra sempre,
+    // "recuperando" em silêncio a cada execução.
+    console.error(`${LOG_PREFIX} estado ilegível em ${statePath} (${(e as Error).message}) — seguindo com estado vazio; se repetir, é I/O, não corrupção pontual.`);
     return emptyBillingLeakAlarmState();
   }
 }
@@ -85,6 +108,25 @@ export function saveState(state: BillingLeakAlarmState, statePath: string = STAT
  * guard existe pra não repetir. O caller conta quantas foram descartadas e
  * trata isso como indeterminado, não como limpo.
  */
+/**
+ * Converte um campo numérico do payload SEM coagir falsy pra 0.
+ *
+ * #6983 (review, CRÍTICO): a 1ª versão fazia `Number(o.usage)` no `else`, e
+ * `Number(null)`, `Number(false)` e `Number("")` são **0**, todos passando
+ * por `Number.isFinite`. Ou seja: linha com `usage` AUSENTE ou corrompido
+ * virava `usageUsd: 0` — e `isBillingLeak` trata custo 0 como "nunca é
+ * vazamento". Um modelo pago vazando, com o campo de custo nulo, era
+ * relatado como limpo. É exatamente o falso "ok" que este guard existe pra
+ * não repetir, reintroduzido por outra porta (parsing, em vez de fonte
+ * errada) — e o docstring já prometia o comportamento certo enquanto o
+ * código fazia o oposto.
+ */
+function numericField(value: unknown): number {
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && value.trim() !== "") return Number(value);
+  return Number.NaN; // null, false, "", [], {}, undefined → shape inválido
+}
+
 export function parseActivityRows(payload: unknown): { rows: BillingRow[]; skipped: number } {
   const data = (payload as { data?: unknown })?.data;
   if (!Array.isArray(data)) return { rows: [], skipped: 0 };
@@ -94,8 +136,8 @@ export function parseActivityRows(payload: unknown): { rows: BillingRow[]; skipp
     const o = item as Record<string, unknown>;
     const date = typeof o.date === "string" ? o.date : null;
     const model = typeof o.model === "string" ? o.model : null;
-    const usage = typeof o.usage === "number" ? o.usage : Number(o.usage);
-    const requests = typeof o.requests === "number" ? o.requests : Number(o.requests);
+    const usage = numericField(o.usage);
+    const requests = numericField(o.requests);
     if (!date || !model || !Number.isFinite(usage)) {
       skipped++;
       continue;
@@ -103,6 +145,24 @@ export function parseActivityRows(payload: unknown): { rows: BillingRow[]; skipp
     rows.push({ date, model, usageUsd: usage, requests: Number.isFinite(requests) ? requests : 0 });
   }
   return { rows, skipped };
+}
+
+/**
+ * Pura — traduz o resultado da rodada em exit code.
+ *
+ * Extraída de `main()` no #6983 (review, achado 3) só pra virar testável: a
+ * regra que importa é que **leitura parcial nunca sai 0**. `main()` é I/O
+ * puro (fetch + Gmail + disco) e nenhum teste a exercita, então a decisão
+ * mais fácil de regredir em silêncio era justamente a que ninguém cobria.
+ *
+ * `hasLeaks` vence sobre `partialRead`: achado positivo é informação mais
+ * forte que "faltou dado" — as duas condições saem diferente de 0 de todo
+ * jeito, e o 3 diz ao runner que há gasto concreto a olhar.
+ */
+export function resolveExitCode({ hasLeaks, partialRead }: { hasLeaks: boolean; partialRead: boolean }): number {
+  if (hasLeaks) return LEAK_FOUND_EXIT_CODE;
+  if (partialRead) return 1;
+  return 0;
 }
 
 async function main(): Promise<void> {
@@ -126,7 +186,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  const res = await fetch(ACTIVITY_URL, { headers: { Authorization: `Bearer ${key}` } });
+  // #6983 (review): sem timeout, um hang de rede pendura o processo
+  // indefinidamente — sem exit code, sem e-mail, sem log. Falha silenciosa
+  // por AUSÊNCIA de sinal, que é o pior tipo pra um guard agendado.
+  const res = await fetch(ACTIVITY_URL, {
+    headers: { Authorization: `Bearer ${key}` },
+    signal: AbortSignal.timeout(ACTIVITY_TIMEOUT_MS),
+  });
   if (!res.ok) {
     console.error(`${LOG_PREFIX} INDETERMINADO — activity respondeu HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
     process.exitCode = 1;
@@ -134,8 +200,22 @@ async function main(): Promise<void> {
   }
 
   const { rows: allRows, skipped } = parseActivityRows(await res.json());
-  if (skipped > 0) {
-    console.error(`${LOG_PREFIX} ${skipped} linha(s) do activity descartada(s) por shape inválido — resultado é PARCIAL.`);
+  // #6983 (review, CRÍTICO): antes isto era SÓ um console.error, e o fluxo
+  // seguia — com linhas sobreviventes limpas, o processo saía 0, gravava
+  // `lastAlarmedFingerprint: null` e implicava "sem vazamento" sobre uma
+  // medição admitidamente PARCIAL. Se o gateway mudasse o shape justo da
+  // linha que está vazando (e só dela), o guard reportaria limpo pra sempre
+  // — o mesmo modo de falha do detector que esta PR substitui.
+  //
+  // Descartar linha é perder visibilidade sobre gasto, e este guard não pode
+  // afirmar ausência do que não conseguiu ler. Segue avaliando (um vazamento
+  // achado nas linhas ÍNTEGRAS continua valendo e ainda alarma), mas a
+  // execução nunca termina como "limpa".
+  const partialRead = skipped > 0;
+  if (partialRead) {
+    console.error(
+      `${LOG_PREFIX} PARCIAL — ${skipped} linha(s) do activity descartada(s) por shape inválido. Não dá pra afirmar ausência de vazamento sobre dado incompleto.`,
+    );
   }
 
   // Janela: o endpoint não cobre o dia corrente (~1 dia de consolidação),
@@ -159,6 +239,13 @@ async function main(): Promise<void> {
     return;
   }
 
+  // #6983 (review): o exit code de "achou vazamento" é setado ANTES de
+  // tentar alarmar/gravar. Se `sendGmailMessage` ou `saveState` lançar, a
+  // exceção sobe pro catch de `main()` — que setava 1 e apagava a distinção
+  // entre "quebrou" e "achou vazamento E quebrou ao avisar". O runner
+  // precisa saber que havia vazamento pendente mesmo quando o aviso falhou.
+  process.exitCode = resolveExitCode({ hasLeaks: evaluation.leaks.length > 0, partialRead });
+
   const state = loadState();
   if (shouldAlarmBillingLeak(state, evaluation)) {
     const { subject, body } = buildBillingLeakAlarmEmail(evaluation, new Date());
@@ -177,7 +264,6 @@ async function main(): Promise<void> {
   }
 
   if (!isDryRun) saveState(advanceBillingLeakAlarmState(evaluation, new Date()));
-  if (evaluation.leaks.length > 0) process.exitCode = LEAK_FOUND_EXIT_CODE;
 }
 
 if (isMainModule(import.meta.url)) {
