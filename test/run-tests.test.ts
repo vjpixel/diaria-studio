@@ -26,6 +26,7 @@ import {
   DEFAULT_WORKER_COUNT,
   BATCH_SIZE,
   DEFAULT_BATCH_TIMEOUT_MS,
+  computeWorkerTimeoutMs,
   type RunTestBatchesParallelOptions,
 } from "../scripts/run-tests.ts";
 
@@ -857,6 +858,56 @@ describe("runTestBatchesParallel (#6877) — roteamento pro caminho sequencial",
 
   it("DEFAULT_WORKER_COUNT é um inteiro positivo (nunca 0, nunca fracionário)", () => {
     assert.ok(Number.isInteger(DEFAULT_WORKER_COUNT) && DEFAULT_WORKER_COUNT > 0);
+  });
+});
+
+describe("computeWorkerTimeoutMs (#6939) — teto do worker soma o orçamento de bisecção", () => {
+  it("REGRESSÃO (#6939): cenário da issue — grupo de 2 batches de 5min + bisecção de 10min cabia no teto ANTES do fix (12min < 16min de gasto real) e não cabe mais", () => {
+    const batchTimeoutMs = 5 * 60 * 1000;
+    const bisectBudgetMs = 10 * 60 * 1000;
+    const payload = { batches: [["a.test.ts"], ["b.test.ts"]], batchTimeoutMs, bisectBudgetMs };
+
+    const timeoutMs = computeWorkerTimeoutMs(payload);
+
+    // Teto ANTES do fix (#6939): só somava batches + margem — 2*5min+2min=12min.
+    const legacyTimeoutMs = payload.batches.length * batchTimeoutMs + 2 * 60 * 1000;
+    assert.equal(legacyTimeoutMs, 12 * 60 * 1000);
+
+    // Gasto real possível no pior caso descrito na issue: 1 batch travado até
+    // o SIGKILL (5min) + bisecção inteira (10min) + o outro batch saudável
+    // (~1min) — até 16min, que estourava o teto legado de 12min.
+    const worstCaseRealMs = batchTimeoutMs + bisectBudgetMs + 60 * 1000;
+    assert.ok(
+      legacyTimeoutMs < worstCaseRealMs,
+      "pré-condição da regressão: o teto legado cabia menos que o pior caso real — é isso que matava o worker no meio da bisecção",
+    );
+
+    // Teto CORRIGIDO cobre o pior caso real inteiro (com folga da própria
+    // margem de startup).
+    assert.ok(
+      timeoutMs >= worstCaseRealMs,
+      `teto corrigido (${timeoutMs}ms) deveria cobrir o pior caso real (${worstCaseRealMs}ms) — sem isso o worker ainda morre no meio da bisecção`,
+    );
+    assert.equal(timeoutMs, 2 * batchTimeoutMs + bisectBudgetMs + 2 * 60 * 1000);
+  });
+
+  it("bisecção desligada (bisectBudgetMs=0) → teto idêntico ao comportamento pré-#6939 (só batches + margem)", () => {
+    const batchTimeoutMs = 5 * 60 * 1000;
+    const timeoutMs = computeWorkerTimeoutMs({
+      batches: [["a.test.ts"], ["b.test.ts"], ["c.test.ts"]],
+      batchTimeoutMs,
+      bisectBudgetMs: 0,
+    });
+    assert.equal(timeoutMs, 3 * batchTimeoutMs + 2 * 60 * 1000);
+  });
+
+  it("grupo com 1 batch só → teto = 1 batch + bisecção + margem", () => {
+    const timeoutMs = computeWorkerTimeoutMs({
+      batches: [["a.test.ts"]],
+      batchTimeoutMs: 5 * 60 * 1000,
+      bisectBudgetMs: 10 * 60 * 1000,
+    });
+    assert.equal(timeoutMs, 5 * 60 * 1000 + 10 * 60 * 1000 + 2 * 60 * 1000);
   });
 });
 

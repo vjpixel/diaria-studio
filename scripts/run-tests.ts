@@ -776,10 +776,23 @@ export const DEFAULT_WORKER_COUNT = (() => {
 })();
 
 /** Margem fixa somada ao teto do worker (ver `runWorker`) além da soma dos
- *  timeouts de cada batch — cobre overhead de startup do processo (V8/tsx)
- *  e do I/O de leitura do payload, nunca zero (#6822: teto sempre finito,
- *  nunca "confiar que os batches internos bastam"). */
+ *  timeouts de cada batch e do orçamento de bisecção — cobre overhead de
+ *  startup do processo (V8/tsx) e do I/O de leitura do payload, nunca zero
+ *  (#6822: teto sempre finito, nunca "confiar que os batches internos
+ *  bastam"). */
 const WORKER_TIMEOUT_MARGIN_MS = 2 * 60 * 1000;
+
+/** Pure (#6939): calcula o teto de tempo do worker — extraída de `runWorker`
+ *  pra ser testável de forma determinística, sem precisar de um worker real
+ *  dormindo minutos. Soma os timeouts de TODOS os batches do grupo (pior
+ *  caso: todos travam em sequência) + o orçamento de bisecção (pior caso: a
+ *  última chamada a `tryBisect`, dentro de `processChunkedBatches`, gasta o
+ *  orçamento inteiro) + a margem fixa de startup. Ver docstring de
+ *  `runWorker` pro cenário de falha que motivou incluir `bisectBudgetMs`
+ *  aqui — antes do #6939 ele não entrava nesta conta. */
+export function computeWorkerTimeoutMs(payload: Pick<WorkerPayload, "batches" | "batchTimeoutMs" | "bisectBudgetMs">): number {
+  return payload.batches.length * payload.batchTimeoutMs + payload.bisectBudgetMs + WORKER_TIMEOUT_MARGIN_MS;
+}
 
 /** Roda um único worker (processo `fork`ado) até o fim — resolve com o
  *  `WorkerResult` recebido via IPC, ou com `{exitCode:1, completedFiles:0}`
@@ -794,6 +807,16 @@ const WORKER_TIMEOUT_MARGIN_MS = 2 * 60 * 1000;
  *  se ele travasse fora de um `spawnSync` (ex: lendo o payload, entre
  *  batches) — teto = soma dos timeouts de todos os batches do grupo mais
  *  uma margem fixa de startup, nunca infinito.
+ *
+ *  #6939: a conta acima esquecia o `bisectBudgetMs` — `processChunkedBatches`
+ *  roda DENTRO deste worker e pode gastar até esse orçamento inteiro (default
+ *  10min, `DEFAULT_BISECT_BUDGET_MS`) numa única chamada a `tryBisect` quando
+ *  um batch do grupo trava (Defeito A/B do #6822). Sem somar esse tempo, o
+ *  teto do worker estourava e matava (`SIGKILL`) o processo NO MEIO da
+ *  bisecção — perdendo o diagnóstico que o #6822 existe pra produzir E
+ *  descartando os resultados de batches saudáveis já concluídos no mesmo
+ *  grupo (o worker morre sem IPC, `runWorker` devolve
+ *  `{exitCode:1, completedFiles:0}` pro grupo inteiro).
  *
  *  stdout/stderr do worker são encanados pro processo pai em tempo real
  *  (`pipe`, forwarded) — múltiplos workers escrevendo ao mesmo tempo
@@ -824,7 +847,7 @@ function runWorker(payload: WorkerPayload, scriptPath: string, payloadPath: stri
     child.stdout?.pipe(process.stdout);
     child.stderr?.pipe(process.stderr);
 
-    const workerTimeoutMs = payload.batches.length * payload.batchTimeoutMs + WORKER_TIMEOUT_MARGIN_MS;
+    const workerTimeoutMs = computeWorkerTimeoutMs(payload);
     const timer = setTimeout(() => {
       console.error(
         `run-tests: worker (${payload.label}) excedeu o teto de ${workerTimeoutMs}ms sem completar — matando (SIGKILL) e tratando como falha dura.`,
