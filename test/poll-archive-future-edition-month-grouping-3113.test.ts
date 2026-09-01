@@ -152,7 +152,8 @@ describe("handleVote — bloqueia edição futura mesmo via URL direta pro /vote
     const res = await handleVote(url, env, "diaria");
     assert.equal(res.status, 410);
     const html = await res.text();
-    assert.match(html, /não aceita mais votos/);
+    // #6902: mensagem distinta pra edição ainda NÃO ENVIADA (não "perdeu a janela").
+    assert.match(html, /ainda não foi enviada/);
   });
 
   it("edição de HOJE com gabarito → continua votável (200) via /vote — só o FUTURO é bloqueado", async () => {

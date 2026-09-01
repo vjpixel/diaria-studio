@@ -60,6 +60,17 @@ import { encodeShareToken, type SharePayload } from "./share";
 // se a sessão é `pending` (cadastro sem confirmação da Beehiiv ainda) pra NÃO
 // aplicar a sobreposição de identidade nesse caso.
 import { readWebSession } from "./web-gate";
+// #6902: a lista de contas de teste do editor já existia hardcoded aqui (2
+// endereços) enquanto a canônica do projeto — `EDITOR_SEED_EMAILS` em
+// scripts/lib/editor-copy.ts — já tinha crescido pra 5. Resultado: o editor
+// testava o voto com `vjpixel@yahoo.com`/`vjpixel@hotmail.com`/`apixel@gmail.com`
+// e recebia 410 "edição não aceita mais votos" mesmo com a conta ativa e merge
+// tag corretamente resolvida na Beehiiv. Derivar da fonte única elimina a
+// categoria inteira de "esqueceram de atualizar os dois lugares".
+// `email` já chega normalizado (lowercase + trim) no momento da comparação
+// (handleVote, linha ~271) — os endereços de seed já estão em lowercase, mas
+// o `.map(lowercase)` é defensivo e barato.
+import { EDITOR_SEED_EMAILS } from "../../../scripts/lib/editor-copy.ts";
 
 /**
  * #3384: contas do próprio editor usadas pra testar o fluxo de voto no e-mail
@@ -68,7 +79,7 @@ import { readWebSession } from "./web-gate";
  * regras (assinatura/gabarito/KV) continuam valendo normalmente pra elas.
  * `email` já chega normalizado (lowercase + trim) no momento da comparação.
  */
-const TEST_ACCOUNT_EMAILS = new Set(["pixel@memelab.com.br", "vjpixel@gmail.com"]);
+const TEST_ACCOUNT_EMAILS = new Set(EDITOR_SEED_EMAILS.map((e) => e.toLowerCase()));
 
 /**
  * #3118 (item 10): monta a resposta "já votou" — extraído dos dois caminhos
@@ -555,6 +566,9 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   ]);
   const validSet = parseValidEditions(validEditionsRaw);
   if (!isValidEdition(validSet, edition) && correctRaw === null) {
+    // #6902 (2º problema, mesmo arquivo): este caminho é a edição EXPIRADA/
+    // nunca-existente (gabarito nunca setado) — a votação de fato FECHOU.
+    // "Não aceita mais votos" está correto aqui.
     return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false, null, null, null, brand), 410);
   }
 
@@ -573,7 +587,12 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // precisam votar no e-mail de teste do Stage 5, rodado na véspera, quando a
   // edição ainda é "de amanhã".
   if (AAMMDD_RE.test(edition) && edition > todayAammddBrt(new Date()) && !TEST_ACCOUNT_EMAILS.has(email)) {
-    return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false, null, null, null, brand), 410);
+    // #6902 (2º problema, mesmo arquivo): este caminho é a edição FUTURA — ainda
+    // não enviada, a votação NÃO abriu. A mensagem "não aceita MAIS votos"
+    // (usada no return de cima, pra edição expirada) é o oposto do que é verdade
+    // aqui: o leitor/testador lê "perdeu a janela" quando na verdade ela nem
+    // começou. Mensagem distinta pra não confundir.
+    return voteHtmlResponse(votePageHtml("Essa edição ainda não foi enviada — volte quando ela chegar na sua caixa de entrada.", false, null, null, null, brand), 410);
   }
 
   // #1083: sig agora pode ser email-only (permanente) OU email:edition (legacy).
