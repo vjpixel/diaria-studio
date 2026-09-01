@@ -83,13 +83,14 @@ if (result.outcome === "preexisting_unmerged_state") {
   process.stderr.write(
     `\n🧟 ESTADO ABSORVENTE — sync vai continuar falhando pra sempre sem intervenção manual.\n` +
       `   Caminho(s) já em UU/AA/etc no índice (sobra de um stash pop conflitante de uma\n` +
-      `   rodada ANTERIOR, não desta) — git stash recusa rodar nesse estado, então NENHUMA\n` +
+      `   rodada ANTERIOR, não desta — ou um merge/rebase manual em curso nesta checkout\n` +
+      `   compartilhada) — git checkout/git stash recusam rodar nesse estado, então NENHUMA\n` +
       `   chamada futura deste script se recupera sozinha.\n` +
       `   Resolva: git status --porcelain | grep -E '^(DD|AU|UD|UA|DU|AA|UU)' pra listar,\n` +
       `   depois git checkout HEAD -- <arquivo> (descarta o lado local, fica com upstream)\n` +
       `   ou resolva os marcadores manualmente + git add <arquivo>.\n` +
-      `   Confira git stash list antes de qualquer git stash drop — pode haver conteúdo\n` +
-      `   genuinamente não-mergeado preservado ali.\n\n`,
+      `   Confira git stash list e git status antes de qualquer ação destrutiva — pode haver\n` +
+      `   conteúdo genuinamente não-mergeado (merge/rebase em progresso) preservado ali.\n\n`,
   );
 }
 

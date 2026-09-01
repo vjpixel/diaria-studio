@@ -534,6 +534,41 @@ describe("git-sync — #6800: estado ABSORVENTE (caminho(s) já unmerged ANTES d
     const r = syncCode(spawn, NOOP_LOCK);
     assert.notEqual(r.outcome, "preexisting_unmerged_state");
   });
+
+  // #6800 review (PR #6918, achado P2): git checkout TAMBÉM recusa rodar
+  // com o índice unmerged — sem esta checagem ANTES do checkout, o caso
+  // combinado (branch != master + unmerged pré-existente) caía no
+  // "checkout_failed" genérico, não no outcome específico deste fix.
+  it("branch != master E unmerged pré-existente -> 'preexisting_unmerged_state' (não 'checkout_failed', não tenta git checkout)", () => {
+    let checkoutCalled = false;
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git checkout master") checkoutCalled = true;
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("overnight/fix-x"),
+        "git status --porcelain": ok("UU conflito.ts"),
+      })(cmd, args);
+    };
+
+    const r = syncCode(spawn, NOOP_LOCK);
+    assert.equal(r.outcome, "preexisting_unmerged_state");
+    assert.equal(checkoutCalled, false, "não deve tentar git checkout master quando o índice já está unmerged — o comando recusaria de qualquer forma");
+  });
+
+  it("branch != master SEM unmerged pré-existente não regride — checkout master roda normalmente", () => {
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("overnight/fix-x"),
+      "git status --porcelain": ok(" M arquivo-normal.txt"),
+      "git checkout master": ok("Switched to branch 'master'"),
+      "git fetch origin": ok(""),
+      "git stash --include-untracked": ok("Saved working directory..."),
+      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
+      "git stash pop": ok("On branch master..."),
+    });
+    const r = syncCode(spawn, NOOP_LOCK);
+    assert.notEqual(r.outcome, "preexisting_unmerged_state");
+    assert.equal(r.outcome, "synced_stashed");
+  });
 });
 
 describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso negativo de 'working tree não tocada')", () => {
