@@ -254,6 +254,19 @@ export interface KitGmailWarmupWave {
    * normal.
    */
   unverifiedEmails: string[];
+  /**
+   * `true` quando esta entrada NÃO é uma onda decidida por esta rampa, e sim
+   * a ABSORÇÃO de endereços do cohort que entraram na tag do Kit por fora
+   * dela — na prática, aplicados por `kit-ramp-cohort.ts` (#6964). Existe
+   * pra que `returnedEmails`/`lastPushedWaveSize` reflitam a realidade em vez
+   * do que esta rampa lembra de ter feito.
+   *
+   * `gateBroadcastId`/`gateVerdict` numa entrada dessas são os da RODADA QUE
+   * ABSORVEU, não os da migração em si — ela não passou por gate desta rampa
+   * (é justamente o que a torna out-of-band). Ausente/`false` em toda onda
+   * normal, e opcional pra não invalidar `state.json` gravado antes do fix.
+   */
+  outOfBand?: boolean;
 }
 
 export interface KitGmailWarmupState {
@@ -266,6 +279,74 @@ export interface KitGmailWarmupState {
 }
 
 export const DEFAULT_KIT_GMAIL_WARMUP_STATE_PATH = "data/kit-gmail-warmup/state.json";
+
+/**
+ * Endereços do cohort que JÁ ESTÃO na tag do Kit mas que nenhuma onda desta
+ * rampa registrou — migrados **fora** dela (#6964). Puro.
+ *
+ * ## Por que a tag ao vivo é a fonte, e o `state.json` não
+ *
+ * `kit-ramp-cohort.ts` (#6507) faz as duas pontas de uma onda (tagueia no Kit
+ * + desativa na Beehiiv) e **não escreve no estado desta rampa**. Quando o
+ * editor aplica uma onda por ali — o caminho normal quando a rampa devolve
+ * todo mundo em `needsBeehiivDeactivation` —, `returnedEmails` não enxerga
+ * ninguém, e a rodada seguinte re-propõe endereços já migrados: alcance novo
+ * zero, rampa parada, e a divergência só aparece se o operador conferir à
+ * mão. Foi exatamente o que aconteceu em 01/09/2026 (onda 4, 48 endereços).
+ *
+ * Derivar da tag torna a rampa robusta a QUALQUER aplicação out-of-band —
+ * a de ontem, e a que ainda não foi inventada. É a correção (1) da #6964,
+ * escolhida por não depender de disciplina de ordem entre dois scripts.
+ *
+ * A interseção com o cohort não é detalhe: a tag tem membros que nunca
+ * foram recusados pelo Gmail (as ondas 0/1 da migração, feitas à mão) — na
+ * medição de 01/09, 179 membros para 93 do cohort. Sem o filtro, gente de
+ * fora do aquecimento contaria como "devolvida".
+ *
+ * Ordem de saída é a de `rejectedEmails` (estável, mesma de
+ * `computeGmailRejectedEmails`), nunca a da API.
+ */
+export function computeOutOfBandReturned(
+  rejectedEmails: readonly string[],
+  stateReturned: ReadonlySet<string>,
+  liveTaggedEmails: readonly string[],
+): string[] {
+  const normalize = (e: string) => e.trim().toLowerCase();
+  const tagged = new Set(liveTaggedEmails.map(normalize));
+  const recorded = new Set([...stateReturned].map(normalize));
+  return rejectedEmails.filter((email) => {
+    const key = normalize(email);
+    return tagged.has(key) && !recorded.has(key);
+  });
+}
+
+/**
+ * Registro de ABSORÇÃO de uma migração out-of-band (#6964) — ver
+ * `computeOutOfBandReturned` e o campo `outOfBand`. Recebe o gate da rodada
+ * que absorveu porque a migração original não teve gate desta rampa; o
+ * `size` é o que de fato já está na tag, e é ele que devolve a progressão
+ * geométrica ao trilho (a onda que gravou `size: 0` fazia
+ * `computeNextWaveSize` reiniciar em `WARMUP_INITIAL_WAVE_SIZE`).
+ *
+ * Absorver um LOTE de várias migrações out-of-band de uma vez faz a próxima
+ * onda dobrar sobre esse lote inteiro, o que pode saltar mais do que a
+ * progressão saltaria onda a onda. É aceito de propósito: o gate de entrega
+ * é medido a cada rodada e segura o crescimento se a entrega piorar
+ * (`planNextWave` respeita `gate.podeCrescer` antes de qualquer tamanho) —
+ * o tamanho nunca é a única proteção.
+ */
+export function buildOutOfBandWaveEntry(
+  state: KitGmailWarmupState,
+  gateBroadcastId: number,
+  gate: RampaVeredito,
+  emails: string[],
+  now: Date = new Date(),
+): KitGmailWarmupWave {
+  return {
+    ...buildWaveEntry(state, gateBroadcastId, gate, emails, [], true, now, []),
+    outOfBand: true,
+  };
+}
 
 /** União dos e-mails de todas as ondas PUSHADAS. Pura. */
 export function returnedEmails(state: KitGmailWarmupState): Set<string> {

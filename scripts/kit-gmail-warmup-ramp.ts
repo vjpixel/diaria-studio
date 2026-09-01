@@ -55,6 +55,8 @@ import { fetchAudience, todasOuNenhuma } from "./kit-provider-split.ts";
 import { computeProviderSplit, verificarIntegridade, avaliarRampa, type RampaVeredito } from "./lib/provider-split.ts";
 import { getBroadcastStats } from "./lib/kit-client.ts";
 import { findTagIdByName, tagSubscriber, listSubscriberTags } from "./lib/kit-broadcasts.ts";
+import { resolveKitConfig } from "./lib/kit-config.ts";
+import { listAllSubscribersForTag } from "./kit-ramp-cohort.ts";
 import { createOrUpdateSubscriber, listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import { isApoioNivel, type ApoioNivel } from "./sync-apoio-nivel-beehiiv.ts";
 import { resolveBeehiivConfig } from "./lib/beehiiv-config.ts";
@@ -65,6 +67,8 @@ import {
   resolveWarmupBeehiivPartition,
   returnedEmails,
   lastPushedWaveSize,
+  computeOutOfBandReturned,
+  buildOutOfBandWaveEntry,
   buildInitialState,
   buildWaveEntry,
   DEFAULT_KIT_GMAIL_WARMUP_STATE_PATH,
@@ -119,6 +123,43 @@ async function resolveApoioNivelByEmail(): Promise<Map<string, ApoioNivel>> {
     );
   }
   return out;
+}
+
+/**
+ * Resolve o id da tag de audiência, abortando se ela não existir — falha
+ * segura, mesmo padrão de `resolveAudienceTagId` em `kit-diaria-channel.ts`.
+ * Resolvida no INÍCIO da rodada (não só no caminho de `--push`) porque a
+ * reconciliação out-of-band do #6964 precisa ler a tag também em dry-run.
+ */
+async function resolveAudienceTagId(tagName: string): Promise<number> {
+  const tagId = await findTagIdByName(tagName);
+  if (tagId === null) {
+    throw new Error(
+      `[kit-gmail-warmup-ramp] tag "${tagName}" (kit_diaria.audience_tag) não encontrada no Kit — abortando ` +
+        `sem taguear ninguém (falha segura, mesmo padrão de resolveAudienceTagId em kit-diaria-channel.ts).`,
+    );
+  }
+  return tagId;
+}
+
+/**
+ * Membros atuais da tag de audiência — a fonte de verdade sobre quem já
+ * migrou (#6964, ver `computeOutOfBandReturned`).
+ *
+ * **Fail-fast de propósito, nunca fail-soft.** Tratar erro de leitura como
+ * "ninguém migrou" reproduziria exatamente o bug que este caminho existe pra
+ * corrigir — a rampa re-proporia endereços já tagueados, em silêncio. Abortar
+ * não perde nada: nesta altura da rodada nada foi escrito ainda.
+ */
+async function listTaggedEmails(tagId: number): Promise<string[]> {
+  const resolved = resolveKitConfig();
+  if (!resolved.ok) {
+    throw new Error(
+      `[kit-gmail-warmup-ramp] credenciais do Kit indisponíveis (${resolved.reason}) — abortando antes de planejar: ` +
+        "sem ler a tag não há como saber quem já migrou fora da rampa (#6964).",
+    );
+  }
+  return listAllSubscribersForTag(tagId, resolved.config);
 }
 
 /** Mede o gate (entrega+abertura Gmail) de um broadcast — mesmo cálculo de `kit-provider-split.ts`. */
@@ -179,6 +220,11 @@ export interface WarmupRampResult {
    *  construída e salva com quem TEVE sucesso, mesmo que outros e-mails da
    *  mesma onda falhem. */
   failedEmails: Array<{ email: string; error: string }>;
+  /** #6964 — endereços do cohort que já estavam na tag do Kit sem nenhuma
+   *  onda desta rampa tê-los registrado (aplicados por `kit-ramp-cohort.ts`).
+   *  Absorvidos no estado ANTES de planejar esta rodada; em dry-run a
+   *  absorção existe só em memória. Vazio quando estado e tag concordam. */
+  outOfBandReturned: string[];
 }
 
 export async function runWarmupRamp(opts: {
@@ -218,6 +264,28 @@ export async function runWarmupRamp(opts: {
   }
 
   const gate = await measureGate(opts.gateBroadcastId);
+
+  // #6964 — antes de planejar, reconcilia com a REALIDADE: quem já está na
+  // tag do Kit conta como devolvido mesmo que nenhuma onda desta rampa o
+  // tenha registrado (caso típico: `kit-ramp-cohort.ts` aplicou a onda).
+  // Sempre ANTES de taguear qualquer coisa nesta rodada, pra que a leitura
+  // não enxergue a própria escrita (a listagem por tag leva ~180s pra
+  // refletir — ver `listAllSubscribersForTag`).
+  const tagName = readAudienceTagName();
+  const tagId = await resolveAudienceTagId(tagName);
+  const outOfBand = computeOutOfBandReturned(
+    state.rejectedEmails,
+    returnedEmails(state),
+    await listTaggedEmails(tagId),
+  );
+  if (outOfBand.length > 0) {
+    const absorbed = buildOutOfBandWaveEntry(state, opts.gateBroadcastId, gate, outOfBand);
+    state = { ...state, waves: [...state.waves, absorbed] };
+    // Persiste a absorção SEPARADAMENTE da onda desta rodada: se o tagueamento
+    // abaixo falhar no meio, o que já era verdade no Kit continua registrado.
+    if (opts.push) saveState(state, statePath);
+  }
+
   const plan = planNextWave({
     rejectedEmails: state.rejectedEmails,
     alreadyReturned: returnedEmails(state),
@@ -229,7 +297,7 @@ export async function runWarmupRamp(opts: {
     // Onda vazia (segurada pelo gate, ou já esgotada) — registrar como
     // proposta não-empurrada é ruído (nenhum e-mail, nenhuma decisão nova) e
     // infla o histórico sem valor; não grava wave.
-    return { state, plan, safeToTag: [], needsBeehiivDeactivation: [], pushed: false, unverifiedEmails: [], failedEmails: [] };
+    return { state, plan, safeToTag: [], needsBeehiivDeactivation: [], pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned: outOfBand };
   }
 
   const beehiivCfg = resolveBeehiivConfig();
@@ -245,16 +313,7 @@ export async function runWarmupRamp(opts: {
   const { safeToTag, needsBeehiivDeactivation } = resolveWarmupBeehiivPartition(plan.emails, beehiivCfg.ok, activeBeehiiv);
 
   if (!opts.push) {
-    return { state, plan, safeToTag, needsBeehiivDeactivation, pushed: false, unverifiedEmails: [], failedEmails: [] };
-  }
-
-  const tagName = readAudienceTagName();
-  const tagId = await findTagIdByName(tagName);
-  if (tagId === null) {
-    throw new Error(
-      `[kit-gmail-warmup-ramp] tag "${tagName}" (kit_diaria.audience_tag) não encontrada no Kit — abortando ` +
-        `sem taguear ninguém (falha segura, mesmo padrão de resolveAudienceTagId em kit-diaria-channel.ts).`,
-    );
+    return { state, plan, safeToTag, needsBeehiivDeactivation, pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned: outOfBand };
   }
 
   const unverifiedEmails: string[] = [];
@@ -288,13 +347,19 @@ export async function runWarmupRamp(opts: {
   state = { ...state, waves: [...state.waves, wave] };
   saveState(state, statePath);
 
-  return { state, plan, safeToTag: actuallyTagged, needsBeehiivDeactivation, pushed: true, unverifiedEmails, failedEmails };
+  return { state, plan, safeToTag: actuallyTagged, needsBeehiivDeactivation, pushed: true, unverifiedEmails, failedEmails, outOfBandReturned: outOfBand };
 }
 
 export function formatReport(result: WarmupRampResult): string {
   const lines: string[] = [];
   lines.push(`Cohort recusado (referência broadcast ${result.state.referenceBroadcastId}): ${result.state.totalRejected} endereço(s) Gmail.`);
   lines.push(`Já devolvidos em ondas anteriores: ${returnedEmails(result.state).size}.`);
+  if (result.outOfBandReturned.length > 0) {
+    lines.push(
+      `  ↳ ${result.outOfBandReturned.length} deles migrados FORA desta rampa (tag do Kit, tipicamente kit-ramp-cohort.ts) e ` +
+        `absorvidos ${result.pushed ? "no estado" : "só em memória (dry-run)"} agora — #6964.`,
+    );
+  }
   if (result.plan.skipped) {
     lines.push(`\nNenhuma onda proposta: ${result.plan.reason}`);
     return lines.join("\n");

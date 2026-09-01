@@ -77,6 +77,7 @@ function fakeResult(overrides: Partial<WarmupRampResult> = {}): WarmupRampResult
     pushed: false,
     unverifiedEmails: [],
     failedEmails: [],
+    outOfBandReturned: [],
     ...overrides,
   };
 }
@@ -153,5 +154,22 @@ describe("formatReport", () => {
   it("omite a seção de desativação manual quando ninguém precisa dela", () => {
     const out = formatReport(fakeResult({ needsBeehiivDeactivation: [] }));
     assert.doesNotMatch(out, /desativação manual/);
+  });
+});
+
+describe("formatReport — reconciliação out-of-band (#6964)", () => {
+  it("omite a linha quando estado e tag do Kit concordam", () => {
+    assert.doesNotMatch(formatReport(fakeResult()), /FORA desta rampa/);
+  });
+
+  it("informa quantos migraram fora da rampa e que a absorção foi só em memória no dry-run", () => {
+    const out = formatReport(fakeResult({ outOfBandReturned: ["x@gmail.com", "y@gmail.com"], pushed: false }));
+    assert.match(out, /2 deles migrados FORA desta rampa/);
+    assert.match(out, /só em memória \(dry-run\)/);
+  });
+
+  it("com --push, diz que a absorção foi persistida no estado", () => {
+    const out = formatReport(fakeResult({ outOfBandReturned: ["x@gmail.com"], pushed: true }));
+    assert.match(out, /absorvidos no estado/);
   });
 });
