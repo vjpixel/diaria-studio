@@ -91,6 +91,21 @@ assert_true \
   "script real cita o caminho do log completo na saída (não só o resumo truncado desta rodada)" \
   "$(grep -q 'log completo: \$INFRA_ERROR_LOG' "$SCRIPT" && echo 1 || echo 0)"
 
+# #6910 (review, P2): o próprio log_infra_error() não pode falhar em
+# silêncio — se o jq/write falhar, tem que aparecer em stderr, não só
+# `|| true` engolindo. Simula falha forçando INFRA_ERROR_LOG pra um
+# diretório que não existe e não pode ser criado (permissão), provando que
+# a função REAL escreve um aviso em stderr nesse caso.
+READONLY_PARENT="$TMPDIR/readonly-parent"
+mkdir -p "$READONLY_PARENT"
+chmod 555 "$READONLY_PARENT"
+INFRA_ERROR_LOG="$READONLY_PARENT/subdir/infra-errors.jsonl"
+STDERR_OUT=$(log_infra_error "9999" "test_failure" "motivo qualquer" 2>&1 1>/dev/null || true)
+chmod 755 "$READONLY_PARENT"
+assert_true \
+  "log_infra_error() avisa em stderr quando não consegue escrever o log (não engole em silêncio, P2 do review)" \
+  "$(echo "$STDERR_OUT" | grep -q 'log_infra_error' && echo 1 || echo 0)"
+
 if [ "$FAILED" -gt 0 ]; then
   echo ""
   echo "$FAILED asserção(ões) falharam"

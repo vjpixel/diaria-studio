@@ -106,12 +106,20 @@ INFRA_ERROR_LOG="$REPO/data/continuo-pr-review/infra-errors.jsonl"
 log_infra_error() {
   local pr="$1" code="$2" reason="$3"
   mkdir -p "$(dirname "$INFRA_ERROR_LOG")"
-  # jq -Rn monta o JSON com escaping seguro — $reason pode conter aspas,
-  # quebras de linha (stderr multi-linha do gh/tsx), etc.
-  jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg pr "$pr" \
+  # jq -cn (compact, null-input) monta o JSON com escaping seguro — $reason
+  # pode conter aspas, quebras de linha (stderr multi-linha do gh/tsx), etc.
+  local jq_err
+  jq_err=$(jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg pr "$pr" \
     --arg code "$code" --arg reason "$reason" \
     '{ts: $ts, pr: ($pr | tonumber), exit_code: $code, reason: $reason}' \
-    >> "$INFRA_ERROR_LOG" 2>/dev/null || true
+    2>&1 >> "$INFRA_ERROR_LOG")
+  if [ -n "$jq_err" ]; then
+    # Review do #6910 (P2): silenciar a falha do próprio logger de infra
+    # reintroduziria exatamente a classe de falha silenciosa que esta PR
+    # existe pra eliminar. Nunca aborta o script (best-effort, mesmo
+    # espírito do `|| true` anterior) — só torna a falha VISÍVEL em stderr.
+    echo "[continuo-pr-review] log_infra_error: falha ao escrever em $INFRA_ERROR_LOG: $jq_err" >&2
+  fi
   local truncated="${reason:0:200}"
   INFRA_ERROR_SUMMARY="${INFRA_ERROR_SUMMARY}PR #$pr ($code): $truncated"$'\n'
 }
