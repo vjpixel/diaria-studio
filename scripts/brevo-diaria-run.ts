@@ -33,18 +33,20 @@
  *    material bruto pro gate humano do Passo 4 — apresentar ao editor,
  *    nunca decidir `--max-add` por conta própria.
  *
- *  `--apply --max-add N [--confirm-mv]` — roda a sequência de MUTAÇÃO REAL
+ *  `--apply [--max-add N] [--confirm-mv]` — roda a sequência de MUTAÇÃO REAL
  *    na ordem fixa do Passo 4: evaluate --push, refresh-pending-pool --push,
  *    score-pending-origin, verify-pending-emails-mv, sync-pending-to-brevo
- *    --push --max-add N. Só deve ser invocado DEPOIS que o editor confirmou
+ *    --push [--max-add N]. Só deve ser invocado DEPOIS que o editor confirmou
  *    o gate humano do Passo 4 (o próprio script não pergunta nada — a
  *    confirmação é responsabilidade de quem o invoca, a skill/agente
  *    top-level, exatamente como `clarice-novos-run.ts` nunca pergunta e
  *    depende do kill switch/flags de quem o dispara).
- *    `--max-add 0` é a forma explícita de "nenhum contato novo" (mesma
- *    semântica do `sync-pending-to-brevo.ts` original) — sempre roda os
- *    Passos 1-2 (evaluate + refresh do pool) mesmo com `--max-add 0`, só
- *    não ingere ninguém no Passo 3.
+ *    `--max-add` é OPCIONAL (#6895) — ausência da flag propaga como ausência
+ *    da flag pro `sync-pending-to-brevo.ts`, que trata isso como "sem teto"
+ *    (`applyMaxAddGate`, #6793 Faixa A item 6). `--max-add 0` é a forma
+ *    explícita de "nenhum contato novo" — sempre roda os Passos 1-2
+ *    (evaluate + refresh do pool) mesmo com `--max-add 0`, só não ingere
+ *    ninguém no Passo 3.
  *    `--confirm-mv` repassa `--confirm` pro `verify-pending-emails-mv.ts`
  *    (guard de custo real, `MV_COST_GUARD_THRESHOLD=500` — criterio 3 de
  *    "Perguntar é exceção" no CLAUDE.md, gasto real acima do trivial).
@@ -71,7 +73,7 @@
  *
  * Uso:
  *   npx tsx scripts/brevo-diaria-run.ts --preflight
- *   npx tsx scripts/brevo-diaria-run.ts --apply --max-add N [--confirm-mv] [--i-know-this-skips-mv]
+ *   npx tsx scripts/brevo-diaria-run.ts --apply [--max-add N] [--confirm-mv] [--i-know-this-skips-mv]
  *
  * @see .claude/skills/diaria-brevo-diaria/SKILL.md (Passos 1-4 em prosa —
  *      espelha este script; a skill passa a delegar pra cá em vez de
@@ -276,7 +278,7 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
         steps,
         summary:
           "preflight concluído — nenhuma mutação aplicada. Apresente o stderr dos 3 passos ao editor no gate " +
-          "(Passo 4 do SKILL.md) antes de rodar `--apply --max-add N`.",
+          "(Passo 4 do SKILL.md) antes de rodar `--apply` (--max-add N opcional, #6895).",
       };
     }
 
