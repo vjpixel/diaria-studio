@@ -7,7 +7,10 @@ description: Empacota o envio da edição diária pelo canal Brevo próprio do e
 
 **Desde #5772 (20/08/2026), este canal NÃO é mais exclusivamente manual** — a
 Etapa 5 de `/diaria-edicao` (`brevo-diaria-stage5-dispatch.ts`) já cria o
-rascunho automaticamente (`--max-add` derivado sem gate) e a Etapa 6
+rascunho automaticamente (`--max-add` deixou de ser calculado/passado desde
+#6793 Faixa A item 7, 01/09/2026 — `resolveStage5MaxAdd` hoje só loga o
+valor que teria resolvido, informativo; a fila em si perdeu o teto de
+crescimento no mesmo item) e a Etapa 6
 (`schedule-daily-brevo.ts`) já agenda junto com o Schedule Beehiiv, sob o
 mesmo gate humano. Esta skill segue existindo pro caminho **manual/ad-hoc**:
 retry de um disparo que falhou na Etapa 5/6, execução fora do fluxo normal
