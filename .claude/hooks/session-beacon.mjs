@@ -483,7 +483,48 @@ function writeJsonAtomic(path, value) {
  * heartbeat custa um registro alguns segundos mais velho; perder um
  * `merge_grant` custa um deadlock de merge com diagnóstico invertido.
  */
-function acquireBeaconLock(lockPath, timeoutMs = 10_000) {
+/**
+ * #6952 (achado do review): idade a partir da qual um `.lock` é considerado
+ * ÓRFÃO e quebrado à força. Espelha `STALE_LOCK_MS` de
+ * `scripts/lib/session-registry.ts` — os TRÊS programas que escrevem o
+ * registro precisam concordar neste número, senão um quebra o lock que o
+ * outro ainda considera válido.
+ *
+ * O `wx` não tem dono nem TTL: um processo morto segurando o lock (SIGKILL,
+ * OOM, o binário do Claude Code quebrando no meio — aconteceu 5× num único
+ * dia) deixa o arquivo no disco PARA SEMPRE, e todo escritor seguinte passa a
+ * falhar. Sem quebra por idade, o conserto do #6952 trocaria um grant perdido
+ * de vez em quando por uma parada total do registro. 60s é folgado: a seção
+ * crítica é um read-modify-write de um JSON pequeno.
+ */
+const STALE_LOCK_MS = 60_000;
+
+/** Remove um `.lock` órfão. Best-effort: nunca lança. */
+function breakStaleLock(lockPath) {
+  try {
+    if (Date.now() - statSync(lockPath).mtimeMs < STALE_LOCK_MS) return;
+    unlinkSync(lockPath);
+  } catch { /* inexistente, ou outro quebrador ganhou a corrida — segue */ }
+}
+
+/**
+ * #6952 (achado do review): o ORÇAMENTO DE BLOQUEIO do beacon é deliberadamente
+ * menor que o do lado TS.
+ *
+ * Este hook roda em TODA chamada de ferramenta e a promessa dele é "nunca
+ * bloqueia". Com o teto do `session-registry.ts` (10s × 50 tentativas), uma
+ * contenção patológica seguraria uma tool call por ~500s: o hook cumpriria a
+ * letra do CAS e quebraria a razão de existir dele — além de violar o "stall
+ * silencioso > 60s é inaceitável" do CLAUDE.md.
+ *
+ * 2s × 3 = ~6s de pior caso. A assimetria com o lado TS é escolha, não
+ * descuido: lá, perder a escrita custa um grant/claim e vale esperar; aqui,
+ * custa um heartbeat alguns segundos mais velho e não vale segurar o editor.
+ */
+const BEACON_LOCK_TIMEOUT_MS = 2_000;
+const BEACON_CAS_ATTEMPTS = 3;
+
+function acquireBeaconLock(lockPath, timeoutMs = BEACON_LOCK_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
@@ -517,12 +558,15 @@ function readJsonOrNull(path) {
   }
 }
 
-function writeJsonAtomicWithCas(path, buildRecord, verify, attempts = 50) {
+function writeJsonAtomicWithCas(path, buildRecord, verify, attempts = BEACON_CAS_ATTEMPTS) {
   const lockPath = `${path}.lock`;
   let lastErr = null;
   for (let i = 0; i < attempts; i++) {
     let acquired = false;
     try {
+      // Antes de esperar de novo, checa se o lock é de um processo que morreu
+      // segurando-o (ver STALE_LOCK_MS).
+      breakStaleLock(lockPath);
       acquireBeaconLock(lockPath);
       acquired = true;
       const value = buildRecord(readJsonOrNull(path));

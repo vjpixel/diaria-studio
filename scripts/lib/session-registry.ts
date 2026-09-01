@@ -143,7 +143,7 @@
  */
 
 import { basename, dirname, join } from "node:path";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./cli-args.ts";
@@ -639,6 +639,40 @@ function writeJsonSafe(path: string, value: unknown): void {
  * `attempts` é o teto de retries (default 50). Cada retry é uma leitura +
  * uma escrita atômica + uma verificação — 3 syscalls a mais, barato.
  */
+/**
+ * #6952 (achado do review): idade a partir da qual um `.lock` de registro de
+ * sessão é considerado ÓRFÃO e quebrado à força.
+ *
+ * O `wx` não tem dono nem TTL: se o processo que segurava o lock morre sem
+ * rodar o `finally` (SIGKILL, OOM, a máquina suspendendo, o binário do Claude
+ * Code quebrando no meio — que aconteceu 5× num único dia), o arquivo fica no
+ * disco PARA SEMPRE. Sem quebra por idade, todo escritor seguinte — os três
+ * programas — passa a gastar o timeout inteiro e falhar, indefinidamente: um
+ * grant perdido de vez em quando viraria uma parada total do registro.
+ *
+ * 60s é folgado por construção: a seção crítica é um read-modify-write de um
+ * JSON pequeno (millissegundos), e o teto de espera de UMA tentativa é 10s.
+ * Um lock com mais de 60s não está sendo usado por ninguém vivo.
+ */
+export const STALE_LOCK_MS = 60_000;
+
+/**
+ * Remove um `.lock` órfão (mais velho que `STALE_LOCK_MS`). Devolve `true` se
+ * removeu. Fail-soft em tudo: lock inexistente, `stat` falhando, corrida com
+ * outro quebrador — nada disso lança, porque quebrar lock é melhor-esforço e
+ * nunca deve ser o motivo de uma falha.
+ */
+export function breakStaleLock(lockPath: string, now: number = Date.now()): boolean {
+  try {
+    const ageMs = now - statSync(lockPath).mtimeMs;
+    if (ageMs < STALE_LOCK_MS) return false;
+    unlinkSync(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function writeJsonSafeWithCas(
   path: string,
   merge: (current: SessionRecord | null) => SessionRecord,
@@ -650,6 +684,10 @@ function writeJsonSafeWithCas(
   let lastErr: unknown = null;
   for (let i = 0; i < attempts; i++) {
     try {
+      // Antes de esperar mais 10s por um lock, checa se ele é de um processo
+      // que morreu segurando-o. Sem isto, um lock órfão wedgeia o registro
+      // para sempre (ver `STALE_LOCK_MS`).
+      breakStaleLock(lockPath);
       withFileLock(lockPath, () => {
         const current = readJsonSafe<SessionRecord>(path);
         const value = merge(current);
@@ -1190,12 +1228,37 @@ export function heartbeat(
  * encerrar da máquina local o registro de outra máquina sem passar `--tag`
  * explicitamente — `tag` aqui default pra `machineTag()` local, então sem a
  * flag o path procurado nunca é o da outra máquina).
+ *
+ * **#6952 (achado do review da PR): a remoção também entra no lock.** Todo
+ * ESCRITOR do registro passou a serializar em `{path}.lock`, mas o REMOVEDOR
+ * tinha ficado de fora — e remover é escrever. Sem o lock, esta sequência
+ * ressuscita um registro encerrado de propósito:
+ *
+ *   t0  um CAS (heartbeat/claim/beacon) lê `current` DENTRO do lock
+ *   t1  endSession apaga o arquivo, sem lock nenhum
+ *   t2  o CAS grava — e recria o arquivo que acabou de ser encerrado
+ *
+ * O gatilho é banal: o beacon da sessão dispara a cada chamada de ferramenta,
+ * inclusive na última antes de a sessão terminar, então o heartbeat final e o
+ * `end` competem por construção. Um registro ressuscitado é pior que um
+ * heartbeat perdido — ele volta a aparecer em `list-active`, segura as claims
+ * dele, e só sai no GC seguinte.
+ *
+ * Um timeout de lock aqui PROPAGA (não vira `false`): "não consegui garantir
+ * a remoção" e "não havia nada pra remover" são estados diferentes, e o CLI
+ * distingue os dois — o `main()` transforma o throw em erro nomeado com exit
+ * 1, em vez de imprimir "nothing to end" pra uma remoção que não aconteceu.
  */
 export function endSession(repoRoot: string, kind: SessionKind, sessionId: string, tag: string = machineTag()): boolean {
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
   if (!existsSync(path)) return false;
-  rmSync(path);
-  return true;
+  return withFileLock(`${path}.lock`, () => {
+    // Re-checa DENTRO do lock: outro `end`/GC concorrente pode ter removido
+    // entre o `existsSync` acima e a aquisição.
+    if (!existsSync(path)) return false;
+    rmSync(path);
+    return true;
+  });
 }
 
 /**
@@ -3076,10 +3139,6 @@ export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
       continue;
     }
 
-    const claimedSet = new Set(current.claimed_issues ?? []);
-    for (const issue of fresh.addedIssues) claimedSet.add(issue);
-    const claimedIssuesAt = { ...(current.claimed_issues_at ?? {}), ...fresh.addedClaimedIssuesAt };
-    const expectedClaimed = [...claimedSet].sort((a, b) => a - b);
     try {
       // #6952: CAS em vez de read-modify-write solto — o beacon pode
       // reescrever o record enquanto este `reconcileClaims` tenta gravar, e um
@@ -3097,8 +3156,18 @@ export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
             claimed_issues_at: at,
           };
         },
-        (onDisk) =>
-          JSON.stringify(onDisk?.claimed_issues ?? []) === JSON.stringify(expectedClaimed),
+        // `verify` checa PERTINÊNCIA das issues que este reconcile veio
+        // adicionar, nunca igualdade do array inteiro contra um snapshot.
+        // Comparar com um `expectedClaimed` congelado ANTES do lock seria o
+        // mesmo bug que esta PR conserta, do lado do `verify`: um escritor
+        // concorrente que adicione OUTRA issue deixa o disco correto (o
+        // `merge` acima relê fresco e produz o superconjunto) e mesmo assim a
+        // igualdade nunca casaria — as 50 tentativas se esgotariam e o
+        // reconcile reportaria `write-failed` para uma escrita que funcionou.
+        (onDisk) => {
+          const claimedOnDisk = new Set(onDisk?.claimed_issues ?? []);
+          return fresh.addedIssues.every((issue) => claimedOnDisk.has(issue));
+        },
       );
     } catch (e) {
       entry.action = "write-failed";
@@ -3548,32 +3617,63 @@ export function consumeMergeGrant(repoRoot: string, sessionId: string, now: numb
   if (!found) return false;
   const owner = found.grantedBy;
   const path = sessionFilePath(repoRoot, owner.kind, owner.machineTag, owner.sessionId);
-  // #6952: CAS em vez de read-modify-write solto — o beacon pode reescrever
-  // este registro entre o read acima e o write, apagando o `consumedAt`.
   const consumedAt = new Date(now).toISOString();
   const grant = found.grant;
-  try {
-    writeJsonSafeWithCas(
-      path,
-      (current) => {
-        if (!current || !current.merge_grant) throw new Error("consumeMergeGrant: sessão sumiu entre a leitura e a escrita");
-        return {
-          ...current,
-          merge_grant: { ...current.merge_grant, consumedAt },
-        };
-      },
-      (onDisk) =>
-        onDisk?.merge_grant?.grantedTo === grant.grantedTo &&
-        onDisk?.merge_grant?.grantedAt === grant.grantedAt &&
-        onDisk?.merge_grant?.consumedAt === consumedAt,
-    );
-  } catch {
-    // Fail-open: se o CAS não convergiu (sessão sumiu, beacon muito ativo),
-    // devolve `false` — a concessão expira pelo TTL de qualquer forma e o merge
-    // já aconteceu. Preserva o contrato "nunca lança" desta função.
-    return false;
+
+  // #6952 (achado do review INDEPENDENTE da PR): consumir percorre o GRUPO
+  // inteiro — arquivo real + toda cópia `-safeBackup-*` —, não só o real.
+  //
+  // Por que isto passou a ser obrigatório NESTA PR e não era antes: a 2ª
+  // metade fez `mergeSessionRecords` UNIR o `merge_grant`, então uma concessão
+  // que vive só numa cópia de conflito do OneDrive passou a ser ENCONTRADA por
+  // `findLiveMergeGrant`. Consertar a leitura sem consertar a escrita cria um
+  // estado novo e pior que o bug original: um grant **encontrável e
+  // inconsumível**, vivo pelo TTL inteiro, porque o `consumedAt` era gravado
+  // só no arquivo real — que nesse cenário nem carrega o grant. Reproduzido ao
+  // vivo: `findLiveMergeGrant` acha, `consumeMergeGrant` devolve `false`, e o
+  // grant continua vivo na leitura seguinte.
+  //
+  // O molde é o do `unclaimIssue` (#6567) logo acima, pelo mesmo motivo e com
+  // a mesma disciplina: reescrita cirúrgica de UM campo por cópia, nunca o
+  // registro mesclado inteiro por cima de um arquivo do grupo.
+  //
+  // O retorno passa a afirmar a PÓS-CONDIÇÃO, não o número de escritas: só é
+  // `true` se a concessão de fato deixou de estar viva. Um `true` com o grant
+  // ainda vivo seria exatamente a mentira que abre uso duplo — o chamador
+  // acredita que a janela fechou e ela não fechou.
+  const identityMatches = (g: MergeGrant | undefined): boolean =>
+    Boolean(g) &&
+    g!.grantedTo === grant.grantedTo &&
+    g!.grantedBy === grant.grantedBy &&
+    g!.grantedAt === grant.grantedAt;
+
+  for (const groupPath of [path, ...sessionGroupBackupPaths(repoRoot, path)]) {
+    const record = readJsonSafe<SessionRecord>(groupPath);
+    // Nada a fazer neste arquivo: ilegível, sem grant, com OUTRA concessão, ou
+    // já consumido. Nenhum dos casos é erro — a concessão pode viver em
+    // qualquer subconjunto das cópias.
+    if (!record || !identityMatches(record.merge_grant) || record.merge_grant?.consumedAt) continue;
+    try {
+      writeJsonSafeWithCas(
+        groupPath,
+        (current) => {
+          if (!current?.merge_grant) {
+            throw new Error("consumeMergeGrant: a concessão sumiu deste arquivo entre a leitura e a escrita");
+          }
+          return { ...current, merge_grant: { ...current.merge_grant, consumedAt } };
+        },
+        (onDisk) => Boolean(onDisk?.merge_grant?.consumedAt),
+      );
+    } catch {
+      // Uma cópia que falhou não impede consumir as outras — e são as OUTRAS
+      // que mantêm a concessão viva na leitura. A pós-condição abaixo é quem
+      // decide o desfecho.
+    }
   }
-  return true;
+
+  // Fail-open no contrato ("nunca lança"), mas honesto no valor: relê e
+  // devolve se a janela realmente fechou.
+  return findLiveMergeGrant(repoRoot, sessionId, now) === null;
 }
 
 // ─── CLI ────────────────────────────────────────────────────────────────────

@@ -42,6 +42,7 @@ import {
   mergeSessionRecords,
   isMergeGrantLive,
   findLiveMergeGrant,
+  consumeMergeGrant,
   planSessionGc,
   garbageCollectSessions,
   resolveRepoRoot,
@@ -3037,6 +3038,86 @@ describe("#6952 (2ª metade) — merge_grant sobrevive à união de cópias de c
     const a: SessionRecord = { ...BASE, lastHeartbeat: "2026-09-01T12:00:00.000Z", claimed_issues: [] };
     const b: SessionRecord = { ...BASE, lastHeartbeat: "2026-09-01T12:05:00.000Z", claimed_issues: [] };
     assert.equal("merge_grant" in mergeSessionRecords([a, b]), false);
+  });
+
+  it("consumir um grant que só existe no -safeBackup- de fato o MATA (#6952)", () => {
+    // O teste irmão abaixo afirma que a leitura ACHA o grant no backup — e
+    // parava aí. Meia jornada: consertar a leitura sem consertar a escrita
+    // produz um estado NOVO e pior que o bug original — um grant
+    // **encontrável e inconsumível**, vivo pelo TTL inteiro, porque o
+    // `consumedAt` era gravado só no arquivo real, que neste cenário nem
+    // carrega o grant. Achado pelo review independente e reproduzido ao vivo:
+    // `findLiveMergeGrant` achava, `consumeMergeGrant` devolvia false, e a
+    // leitura seguinte continuava achando.
+    const root = freshRoot();
+    const sessionsDir = join(root, "data", "sessions");
+    mkdirSync(sessionsDir, { recursive: true });
+    const now = Date.parse("2026-09-01T12:01:00.000Z");
+
+    // Arquivo REAL: heartbeat mais novo, SEM o grant.
+    writeFileSync(
+      join(sessionsDir, "overnight-helios-coord-6952.json"),
+      JSON.stringify({ ...BASE, lastHeartbeat: "2026-09-01T12:00:30.000Z", claimed_issues: [] }),
+      "utf8",
+    );
+    // Cópia de conflito: heartbeat mais antigo, COM o grant.
+    writeFileSync(
+      join(sessionsDir, "overnight-helios-coord-6952-safeBackup-0001.json"),
+      JSON.stringify({
+        ...BASE,
+        lastHeartbeat: "2026-09-01T12:00:00.000Z",
+        claimed_issues: [],
+        merge_grant: GRANT,
+      }),
+      "utf8",
+    );
+
+    assert.ok(findLiveMergeGrant(root, "benef-6952", now), "sanity: a leitura acha o grant");
+
+    assert.equal(
+      consumeMergeGrant(root, "benef-6952", now),
+      true,
+      "consumir devolveu false para um grant que a leitura acha — encontrável e inconsumível",
+    );
+    assert.equal(
+      findLiveMergeGrant(root, "benef-6952", now + 1),
+      null,
+      "o grant continua VIVO depois de consumido — janela aberta pelo TTL inteiro, uso duplo",
+    );
+    // E o `consumedAt` foi parar no arquivo que de fato carrega a concessão.
+    const backup = JSON.parse(
+      readFileSync(join(sessionsDir, "overnight-helios-coord-6952-safeBackup-0001.json"), "utf8"),
+    );
+    assert.ok(backup.merge_grant?.consumedAt, "o consumedAt precisa ter sido gravado no backup");
+  });
+
+  it("consumir marca TODAS as cópias que carregam a concessão, não só uma (#6952)", () => {
+    const root = freshRoot();
+    const sessionsDir = join(root, "data", "sessions");
+    mkdirSync(sessionsDir, { recursive: true });
+    const now = Date.parse("2026-09-01T12:01:00.000Z");
+
+    for (const [name, hb] of [
+      ["overnight-helios-coord-6952.json", "2026-09-01T12:00:30.000Z"],
+      ["overnight-helios-coord-6952-safeBackup-0001.json", "2026-09-01T12:00:00.000Z"],
+      ["overnight-helios-coord-6952-safeBackup-0002.json", "2026-09-01T11:59:00.000Z"],
+    ] as const) {
+      writeFileSync(
+        join(sessionsDir, name),
+        JSON.stringify({ ...BASE, lastHeartbeat: hb, claimed_issues: [], merge_grant: GRANT }),
+        "utf8",
+      );
+    }
+
+    assert.equal(consumeMergeGrant(root, "benef-6952", now), true);
+    for (const name of readdirSync(sessionsDir)) {
+      const rec = JSON.parse(readFileSync(join(sessionsDir, name), "utf8"));
+      assert.ok(
+        rec.merge_grant?.consumedAt,
+        `${name} ficou com a concessão NÃO consumida — uma cópia viva basta pra ressuscitar a janela`,
+      );
+    }
+    assert.equal(findLiveMergeGrant(root, "benef-6952", now + 1), null);
   });
 
   it("fim a fim: findLiveMergeGrant acha o grant que só existe no -safeBackup- (#6952)", () => {
