@@ -1,6 +1,11 @@
 /**
  * scripts/lib/clarice-envio-override.ts (#5515)
  *
+ * **Dormente desde #6793 "Faixa B" item 2 (01/09/2026):** `decideBrake`
+ * nunca mais produz `"stop"` sozinho, e este módulo só age quando
+ * `brake.level === "stop"` — sem `stop` pra rebaixar, o override não tem
+ * mais efeito no caminho automático. Ferramenta do editor, não removida.
+ *
  * Mecanismo de override PERSISTENTE pro freio automático de envio Clarice
  * (`clarice-envio-risk.ts` 19:00 BRT + `clarice-envio-guard.ts` 05:00 BRT,
  * #5026/#5220). Sem isto, uma correção manual do editor ("este STOP é
