@@ -66,15 +66,45 @@ function isUnpairedBoldMarker(adjacentText: string): boolean {
 function parseLinkAtLineStart(
   line: string,
 ): { rawTitle: string; url: string; rest: string } | null {
-  // `**` de abertura é opcional e independente do de fechamento (#590).
+  // `**` de abertura é opcional e independente de fechamento (#590).
   // Capturado em grupo próprio (`hasOpenBold` abaixo) — precisa saber se
   // REALMENTE houve abertura antes de tratar um `**` colado ao fechamento
   // como o par dela (#3300).
-  const head = line.match(/^\s*(\*\*)?\[([^\]]+)\]\(/);
+  //
+  // #6868: o título pode conter colchetes aninhados balanceados
+  // (ex: `[[AINews] OpenAI shuts off Cursor](url)` — fonte real da diar.ia.br,
+  // item de USE MELHOR com tag de source no início do título). O regex antigo
+  // `[^\]]+` parava no PRIMEIRO `]`, então títulos com `[` literal dentro
+  // caíam no fallback (url vazia, item quebrado). Substituímos o regex por
+  // scan com balanceamento de `[`/`]` — mesmo princípio do scan de
+  // parênteses que já fazemos pro destino.
+  const head = line.match(/^(\s*)(\*\*)?\[/);
   if (!head) return null;
-  const hasOpenBold = head[1] === "**";
-  const rawTitle = head[2];
-  const destStart = head[0].length;
+  const hasOpenBold = head[2] === "**";
+  const titleStart = head[0].length;
+
+  // Scan do título com balanceamento de colchetes.
+  let titleDepth = 1; // o `[` inicial já foi consumido pelo regex acima
+  let titleEnd = titleStart;
+  let titleClosed = false;
+  for (; titleEnd < line.length; titleEnd++) {
+    const ch = line[titleEnd];
+    if (ch === "[") titleDepth++;
+    else if (ch === "]") {
+      titleDepth--;
+      if (titleDepth === 0) {
+        titleClosed = true;
+        break;
+      }
+    }
+  }
+  if (!titleClosed) return null;
+
+  // Após o `]` de fechamento do título, espera-se `(`.
+  if (line[titleEnd + 1] !== "(") return null;
+
+  const rawTitle = line.slice(titleStart, titleEnd);
+  const destStart = titleEnd + 2; // pula `](`
   // Destino precisa ser http(s) — rejeita `[t](example.com)` e `[t]()`.
   if (!/^https?:\/\//.test(line.slice(destStart))) return null;
   // Scan balanceando parênteses até o `)` de fechamento do markdown link.
