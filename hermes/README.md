@@ -34,6 +34,25 @@ Só a SKILL (`hermes-diaria-continuo`, primeira linha da tabela acima) usa
 symlink de verdade — o guard de traversal do cron se aplica a `--script`
 de job (o que dispara os scripts abaixo), não ao carregamento de skill.
 
+**Drift confirmado ao vivo, #6943 (01/09/2026): `~/.hermes/scripts/
+claude-openrouter.sh` era um SYMLINK de verdade no `helios`, não o STUB
+que esta tabela documenta.** Achado via transcript do tick das 12:06
+(`preflight missing`, erro apontando pra `~/.hermes/scripts/lib/...`, um
+caminho que só existe se `${BASH_SOURCE[0]}` resolveu pro symlink em vez
+do arquivo real — exatamente o padrão de falha de um `source` relativo
+através de symlink). O guard de traversal do cron não pegou porque ele
+audita o path do `--script` do JOB (que aponta pra dentro de
+`~/.hermes/scripts/`, válido), não se ESSE arquivo em si é um symlink pra
+fora — os dois são checagens diferentes. Consequência: 8 de 11 ticks do
+contínuo perdidos no dia (#6922). Tentativa de trocar o symlink por stub
+foi bloqueada pelo classificador de permissão da sessão que investigou;
+não insistiu, ficou pro editor decidir. O fix do lado do REPO (#6943 —
+`readlink -f` antes do `dirname` nos `source` afetados) faz a resolução
+funcionar pros DOIS formatos, então este drift específico deixou de
+quebrar o pipeline — mas o deploy real de `claude-openrouter.sh` ainda
+não foi convertido pra stub; esta tabela descreve o estado PRETENDIDO,
+não confirmado como o atual pra esta linha.
+
 Por quê aqui e não só em `~/.hermes`: fora do git a skill envelhecia sem
 review nem teste — foi a raiz do bug das 5-vs-6 categorias do
 `classifyExecTrack` (a cópia em prosa não conheceu `epica`/#6201) e do quase-

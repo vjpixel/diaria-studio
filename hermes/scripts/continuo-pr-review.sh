@@ -109,7 +109,7 @@ export DISABLE_AUTOUPDATER=1
 # Preflight (#6875, extraído pro lib compartilhado no #6879): binário do
 # Claude Code precisa existir e responder.
 # shellcheck source=./lib/claude-binary-preflight.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/claude-binary-preflight.sh"
+source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/lib/claude-binary-preflight.sh"
 claude_binary_preflight
 
 REPO="/home/vjpixel/diaria-studio"
