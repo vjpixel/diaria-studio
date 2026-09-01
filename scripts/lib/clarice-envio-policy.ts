@@ -22,8 +22,12 @@
  *      já estão em `workers/brevo-dashboard/src/thresholds.ts` (importados
  *      daqui, nunca redigitados — ver `RED_RISK_THRESHOLDS`).
  *   3. ESCALADA ADAPTATIVA pela folga até os limiares (substitui o +10% fixo do
- *      `DEFAULT_WEEK_STEP`), com teto de +25%/dia.
- *   4. SEM teto absoluto de volume — limitam só a fila, o crédito Brevo e o freio.
+ *      `DEFAULT_WEEK_STEP`), com teto de +25%/dia. **SUPERSEDIDO pelo item 3
+ *      da #6888 (01/09/2026) — ver `adaptiveStep` abaixo: o passo voltou a
+ *      ser fixo, agora em 10%/dia, incondicional (nunca mais consulta risco).**
+ *   4. SEM teto absoluto de volume — desde #6793/#6888 (freio nunca mais
+ *      trava, passo é fixo) os únicos limitadores reais que sobram são a
+ *      fila e o crédito Brevo.
  *   5. SUNSET de não-abridores (`shouldSunsetNonOpener`): ≥2 envios e 0 aberturas
  *      vira inelegível, cortando o laço que alimenta spam.
  *
@@ -187,14 +191,19 @@ export const RED_RISK_THRESHOLDS: RiskThresholdsPct = {
  *
  * 0,7 é exatamente `HOLD_UTIL`, e isso é proposital: espelha a semântica que já
  * vale hoje no dashboard (`classifySpamSignal`: indeterminado ⇒ 🟡 ⇒ mantém
- * volume). Sem leitura, o motor NUNCA acelera (0,7 zera `adaptiveStep`) e NUNCA
- * para (0,7 < 1,0, não vira `stop`) — segurar onde está é a única postura
- * honesta quando o sinal que governa o breaker de spam não pôde ser lido.
+ * volume). Histórico até #6888 (01/09/2026): sem leitura, o motor NUNCA
+ * acelerava (0,7 zerava `adaptiveStep`) e NUNCA parava (0,7 < 1,0, não virava
+ * `stop`, mesmo antes de `decideBrake` perder o freio no #6793). Desde #6888,
+ * `adaptiveStep` é incondicional (`FIXED_DAILY_STEP`, sempre) — este valor
+ * continua alimentando `decideBrake.reasons`/relatório (spam indeterminado
+ * ainda aparece como zona de atenção pra quem lê), só não trava mais nada.
  */
 export const INDETERMINATE_SPAM_UTIL = 0.7;
 
 export interface RiskUtilization {
-  /** Maior utilização entre as 4 métricas — é ela que decide freio e passo. */
+  /** Maior utilização entre as 4 métricas. Não decide mais nada desde #6888
+   * (passo) e #6793 (freio) — só alimenta `decideBrake.reasons`/`flagged`
+   * (texto de observabilidade pro relatório), nunca uma ação. */
   readonly maxUtil: number;
   /** Utilização por métrica (`valor ÷ limiar vermelho`). */
   readonly byMetric: Readonly<Record<string, number>>;
@@ -220,9 +229,21 @@ export interface RiskUtilization {
    * desta janela — ver comentário abaixo), `maxUtil` ficava baixo e
    * `decideBrake`/`adaptiveStep` liberavam escalada **sem nenhuma evidência
    * de envio real na janela** — o exato "ok fabricado" que este módulo diz
-   * evitar, só que por ausência de dado em vez de `NaN`. Consumido por
-   * `decideBrake` (nunca `ok` sem dado suficiente) e `adaptiveStep` (nunca
-   * escala sem dado suficiente) — `true` só quando `hasSent` é `true`.
+   * evitar, só que por ausência de dado em vez de `NaN`. Desde #6793
+   * (`decideBrake`, nível sempre `ok`) e #6888 (`adaptiveStep`, passo sempre
+   * `FIXED_DAILY_STEP`) NENHUM dos dois consumidores AGE mais sobre `false`
+   * aqui — `true` só quando `hasSent` é `true` — mas as duas janelas que o
+   * consomem hoje diferem em quem ainda REPORTA:
+   *   - **janela fresca** (3 dias, `decideBrake`/`freshRisk`): continua
+   *     calculado e reportado — `brake.reasons` nomeia "sem NENHUM envio na
+   *     janela" quando `false` aqui (ver `decideBrake` acima).
+   *   - **janela accel** (30 dias, `accelRisk`): até #6958, NINGUÉM chamava
+   *     `riskUtilization(accelRisk, …)` — `adaptiveStep` parou de consumi-la
+   *     no #6888 e nada mais a lia, então este campo nem era CALCULADO pra
+   *     essa janela, e um canal dormente >30 dias reativado crescia 10%/dia
+   *     sem nenhum aviso. #6958 fecha isso: `RiskSnapshot.accelWindow.
+   *     utilization` carrega o resultado e `clarice-envio-run.ts` reporta
+   *     quando vem `false` — só observabilidade, nenhuma ação nova.
    */
   readonly sufficientData: boolean;
 }
@@ -242,9 +263,11 @@ function utilOf(valuePct: number, limitPct: number, hasDenominator: boolean): nu
 /**
  * Quanto de cada limiar VERMELHO já foi consumido, em fração (1,0 = está
  * exatamente no breaker). Nenhuma decisão aqui — só a medida que
- * `decideBrake` e `adaptiveStep` consomem, pra que as duas nunca divirjam
- * sobre "quão perto do limite estamos" (2 cálculos paralelos do mesmo fato é a
- * classe de bug do #4658).
+ * `decideBrake` consome pro relatório (`reasons`/`flagged`). Até #6888,
+ * `adaptiveStep` também consumia esta função pra decidir o passo — desde
+ * #6888 (01/09/2026) o passo é fixo (`FIXED_DAILY_STEP`) e não chama mais
+ * `riskUtilization`; a garantia "2 cálculos paralelos do mesmo fato é a
+ * classe de bug do #4658" continua valendo pro que resta consumindo isto.
  *
  * Regras de borda, todas deliberadas:
  * - `sent === 0` (nenhum envio na janela) ⇒ util 0 nas 3 métricas de e-mail, e
@@ -361,13 +384,14 @@ function observedValue(
  * mais são produzidos.** `util`/`flagged`/`reasons` continuam calculados
  * e reportados normalmente (observabilidade preservada — o relatório
  * continua nomeando QUAL métrica estouraria o limiar antigo, só não age
- * mais sobre isso). A proteção contra "crescer sobre dado ausente" NÃO
- * desapareceu: `adaptiveStep` (função separada, INTOCADA por #6793,
- * fora do escopo do item 2 — que nomeia só `decideBrake`) mantém seu
- * próprio guard `sufficientData → passo 0`, então mesmo sem freio, um dia
- * sem envio na janela não escala volume (o passo fica 0, `proposeNextVolume`
- * repete a base — mesmo efeito numérico que o antigo `hold` produzia pra
- * esse caso específico, só sem o rótulo `hold`).
+ * mais sobre isso). **A proteção contra "crescer sobre dado ausente"
+ * também saiu, na mesma data (#6888): `adaptiveStep` cresce
+ * `FIXED_DAILY_STEP` mesmo sem NENHUM envio na janela** — até #6888 ela
+ * sobrevivia porque `adaptiveStep` (função separada, então fora do escopo
+ * do item 2 acima, que nomeava só `decideBrake`) tinha seu próprio guard
+ * `sufficientData → passo 0`; a #6888 remove esse guard também, por pedido
+ * EXPLÍCITO do editor — decisão consciente registrada na issue, não um
+ * efeito colateral de trocar a fórmula do passo.
  *
  * Histórico (#4476/#4705, até 01/09/2026): `sufficientData: false` NUNCA
  * produzia `ok` (achado CRITICAL do silent-failure-hunter) — `sent === 0`
@@ -406,7 +430,7 @@ export function decideBrake(
   // noDataMetrics no fim (Finding 1 do review).
   if (!util.sufficientData && flagged.length === 0) {
     reasons.push(
-      "sem NENHUM envio na janela do freio — segurando por falta de dado, nunca escalando sobre 'não sabemos'.",
+      "sem NENHUM envio na janela do freio — nota informativa só (freio não segura mais nada, #6793); o passo fixo de +10%/dia (#6888) escala mesmo sobre este 'não sabemos'.",
     );
   }
 
@@ -449,59 +473,51 @@ export function decideBrake(
 }
 
 // ---------------------------------------------------------------------------
-// 4. Escalada adaptativa — pela folga até o limiar, não +10% fixo
+// 4. Passo de crescimento diário — FIXO desde #6888 (01/09/2026)
 // ---------------------------------------------------------------------------
 
 /**
- * Teto de crescimento por dia (+25%). Substitui o `DEFAULT_WEEK_STEP` (+10%
- * fixo) do worker: o passo fixo ignorava completamente QUANTA folga existe até
- * o breaker — dava o mesmo +10% com hard bounce em 0,1% e em 1,9%.
+ * Passo FIXO de crescimento por dia — 10%, sempre, independente de risco.
  *
- * 25%/dia é agressivo de propósito (a base fria precisa de alcance) mas ainda
- * dentro do que aquecimento de IP tolera; e só é atingível com risco
- * praticamente zerado (`maxUtil ≈ 0`), porque o passo decai LINEARMENTE com a
- * utilização.
+ * DECISÃO DO EDITOR (#6888, 01/09/2026, NÃO reabrir sem novo pedido
+ * explícito): `/diaria-clarice-envio` deve crescer 10% de um dia pro outro
+ * SEMPRE, independente da taxa de spam, que também não pode mais bloquear o
+ * envio (a metade do freio — `decideBrake` acima — já foi entregue pelo item
+ * 2 da #6793; esta constante entrega a outra metade, o PASSO).
+ *
+ * Substitui a escalada adaptativa por folga do #4705 (histórico:
+ * `MAX_DAILY_STEP=0.25 × (1 − maxUtil/HOLD_UTIL)`, zerando em
+ * `maxUtil >= HOLD_UTIL` — zona de atenção — OU em `sufficientData: false` —
+ * nenhum envio na janela de 30 dias; ver `git log --all --grep=6888` pra
+ * reverter). Os dois caminhos que hoje zeravam o passo passam a devolver 10%
+ * também, sem exceção — é justamente o que o editor pediu ("crescer sempre").
+ *
+ * TRADE-OFF que o editor aceitou, avisado explicitamente antes da execução
+ * (issue #6888, tabela "estado × passo"): **10% é MENOR que o teto anterior
+ * de 25%.** Em dia saudável (risco praticamente zero) isso DESACELERA o
+ * crescimento pela metade — de propósito: o pedido não era "crescer mais", é
+ * "crescer sempre, a uma taxa previsível". Só nos dois estados que hoje
+ * congelavam (zona de atenção, sem dado suficiente) o passo fixo cresce MAIS
+ * que o adaptativo (que dava 0 nos dois).
  */
-export const MAX_DAILY_STEP = 0.25;
-
-/** Arredonda a 4 casas — passo é fração, e 4 casas já é 0,01% de volume. */
-function round4(n: number): number {
-  return Math.round(n * 10000) / 10000;
-}
+export const FIXED_DAILY_STEP = 0.1;
 
 /**
- * Passo de crescimento do dia, calculado sobre a janela LONGA
- * (`SEND_WINDOWS.accelDays` = 30 dias corridos — use `selectWithinDays`).
+ * Passo de crescimento do dia. Incondicional desde #6888 — sempre
+ * `FIXED_DAILY_STEP`, nunca consulta risco.
  *
- * Janela diferente da do freio de propósito: FREAR é urgente (3 dias, pega o
- * pico de hoje), ACELERAR é uma aposta sobre reputação sustentada (30 dias, não
- * confunde 3 dias bons com tendência).
- *
- *   maxUtil ≥ 0,7  ⇒ 0 (zona de atenção: mantém, nunca cresce)
- *   maxUtil < 0,7  ⇒ MAX_DAILY_STEP × (1 − maxUtil/0,7)
- *
- * Ou seja: risco zero libera os 25% cheios; metade da folga gasta libera ~12,5%;
- * chegando em 0,7 o passo já é 0 — o crescimento morre ANTES do freio precisar
- * agir. Resultado sempre em [0, MAX_DAILY_STEP], monotonicamente decrescente em
- * `maxUtil`.
- *
- * **`sufficientData: false` ⇒ passo 0** (mesmo achado CRITICAL do
- * `decideBrake`, Finding 1 do review): sem NENHUM envio na janela de 30 dias,
- * as métricas de e-mail zeram por falta de denominador — escalar sobre isso
- * seria crescer sem UMA evidência real de saúde, não "risco zero confirmado".
- *
- * Abertura não entra aqui pelo mesmo motivo de `decideBrake` — é o núcleo do
- * #4705.
+ * SEM PARÂMETROS de propósito (#6958, achado do type-design-analyzer): até
+ * aqui a assinatura mantinha `accelRisk`/`spam`/`t` ignorados, justificando
+ * isso como "barato reverter" — mas a reversão barata deste repo pra esta
+ * classe de decisão já É o git history (o parágrafo acima manda rodar `git
+ * log --all --grep=6888`; o próprio #6888 aposentou `MAX_DAILY_STEP` de vez,
+ * sem guardá-la "por via das dúvidas"). Único call site
+ * (`scripts/clarice-envio-risk.ts`) — dropar os 3 parâmetros é 1 linha, não
+ * migração. Se algum dia isto voltar a consultar risco, a assinatura muda
+ * de novo então; até lá, `()` é o sinal honesto de que não há entrada.
  */
-export function adaptiveStep(
-  accelRisk: RiskMetrics,
-  spam: SpamSignalLike,
-  t: RiskThresholdsPct = RED_RISK_THRESHOLDS,
-): number {
-  const { maxUtil, sufficientData } = riskUtilization(accelRisk, spam, t);
-  if (!sufficientData || !Number.isFinite(maxUtil) || maxUtil >= HOLD_UTIL) return 0;
-  const step = MAX_DAILY_STEP * (1 - Math.max(0, maxUtil) / HOLD_UTIL);
-  return Math.min(MAX_DAILY_STEP, Math.max(0, round4(step)));
+export function adaptiveStep(): number {
+  return FIXED_DAILY_STEP;
 }
 
 // ---------------------------------------------------------------------------
@@ -544,7 +560,7 @@ export interface NextVolumeDecision {
    * substring-matched em vez de tipo):
    * - `"stop"`: freio `stop` — volume 0, cancelar onda já agendada;
    * - `"hold"`: freio `hold` — repetiu a base, sem escalar;
-   * - `"step"`: caminho normal — o passo adaptativo definiu o volume;
+   * - `"step"`: caminho normal — o passo fixo (`FIXED_DAILY_STEP`, #6888) definiu o volume;
    * - `"queue"` / `"credit"`: a fila ou o crédito cortaram abaixo do proposto
    *   (quando os DOIS cortam, `cappedBy` é o ÚLTIMO a agir — `"credit"`, já
    *   que crédito é checado depois da fila — mas `note` sempre registra os

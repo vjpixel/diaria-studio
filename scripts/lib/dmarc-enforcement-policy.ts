@@ -48,7 +48,7 @@
  *
  * Os limiares VERMELHOS (hard bounce, spam/complaint) medem risco de ISP de
  * forma independente do CANAL que os produziu — é essa generalidade que
- * justifica reusar o número, não reescalar as janelas/passo adaptativo da
+ * justifica reusar o número, não reescalar as janelas/passo diário da
  * Clarice, que são específicos do problema dela. **Números de piso de volume
  * e janela de maturidade abaixo (`MIN_VOLUME_FOR_DECISION`,
  * `MIN_MATURITY_DAYS`) são estimativas de calibração inicial, não medição —

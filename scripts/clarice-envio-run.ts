@@ -945,6 +945,26 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
         "⚠️  sinal de spam do Postmaster está SEM LEITURA CONFIÁVEL (indeterminate) — o freio assume 70% de utilização às cegas nesta rodada. Ver task 'Diaria-Postmaster-Spam-Sync'.",
       );
     }
+    // #6958 (achado 7/8 do review): a janela de 30d (acelerador histórico)
+    // sempre teve rate/utilização calculada e DESCARTADA — `adaptiveStep`
+    // parou de ler `accelRisk` no #6888 e nada mais lia esse cálculo, então
+    // nem o relatório nem `sufficientData` dela apareciam em lugar nenhum.
+    // Um canal dormente >30 dias reativado crescia 10%/dia sem NENHUM aviso
+    // (a janela do freio, 3 dias sem piso de calendário, podia mostrar
+    // `sent > 0` mesmo com a de 30 dias zerada). Isto NUNCA decide nada — o
+    // freio automático segue removido (#6793) e o passo segue fixo (#6888) —
+    // é só observação, mesmo padrão da tendência de abertura logo abaixo.
+    const accel = risk.accelWindow;
+    report.note(
+      `janela de 30d (acelerador, só observação, NUNCA freia): hard bounce ${accel.hardBounceRatePct.toFixed(2)}%, ` +
+        `bounce total ${accel.bounceRatePct.toFixed(2)}%, unsub ${accel.unsubRatePct.toFixed(2)}% ` +
+        `(pior métrica: ${accel.utilization.worst}, ${Math.round(accel.utilization.maxUtil * 100)}% do limiar; ${accel.sampleDays} dias de amostra, ${accel.sent} enviados).`,
+    );
+    if (!accel.utilization.sufficientData) {
+      report.note(
+        "⚠️  sem NENHUM envio na janela de 30 dias do acelerador — o passo fixo de +10%/dia (#6888) escala mesmo sobre este 'não sabemos' (canal pode ter ficado dormente e acabou de reativar).",
+      );
+    }
     // #5220 — sidecar JSON pro guard das 05:00 (clarice-envio-guard.ts) usar
     // como FALLBACK se os próprios pré-requisitos dele (esta mesma dupla de
     // scripts, chamados de novo de manhã com dado mais fresco) falharem
@@ -958,8 +978,8 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
     if (risk.staleNote) report.note(`⚠️  ${risk.staleNote}`);
 
     const effectiveStep = missed || noEscalationReason ? 0 : risk.step;
-    if (missed && risk.step > 0) report.note(`passo adaptativo calculado seria +${(risk.step * 100).toFixed(1)}%, zerado por onda perdida (ver acima).`);
-    else if (noEscalationReason && risk.step > 0) report.note(`passo adaptativo calculado seria +${(risk.step * 100).toFixed(1)}%, zerado por ${noEscalationReason}.`);
+    if (missed && risk.step > 0) report.note(`passo fixo calculado seria +${(risk.step * 100).toFixed(1)}%, zerado por onda perdida (ver acima).`);
+    else if (noEscalationReason && risk.step > 0) report.note(`passo fixo calculado seria +${(risk.step * 100).toFixed(1)}%, zerado por ${noEscalationReason}.`);
 
     // --- Passo 4: fila de 1º envio — MV sob demanda se insuficiente, senão PARA (decisão do editor). ---
     //
@@ -978,7 +998,7 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
     //   - Crédito raso é só um CORTE DE VOLUME dentro do MESMO público já
     //     elegível — a Brevo aceita menos envios este ciclo, mas quem seria
     //     enviado continua sendo exatamente o recorte que já passou pelos
-    //     guards de elegibilidade (fila, freio, passo adaptativo). Não há
+    //     guards de elegibilidade (fila, freio, passo fixo). Não há
     //     decisão de público pra tomar aqui, só um teto numérico mais baixo
     //     — por isso a rodada segue em vez de parar.
     // Se esse racional deixar de valer (ex.: crédito baixo virar sinal de

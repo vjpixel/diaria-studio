@@ -545,7 +545,7 @@ describe("recommendAbcAction (#4657)", () => {
   });
 
   it("#5055: encerrado + poder baixo → SEM ressalva, pra que o passo de volume não seja zerado", () => {
-    // `clarice-envio-run.ts` zera o passo adaptativo quando `caveats` não é
+    // `clarice-envio-run.ts` zera o passo (fixo desde #6888) quando `caveats` não é
     // vazio. Com o teste encerrado não existe teste pra ter poder nenhum, então
     // a ressalva de poder baixo (#4559) não pode sobreviver — era ela que
     // fechava o laço "base pequena → poder baixo → passo zerado → base nunca

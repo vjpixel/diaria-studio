@@ -21,7 +21,7 @@ import {
   INDETERMINATE_SPAM_UTIL,
   HOLD_UTIL,
   STOP_UTIL,
-  MAX_DAILY_STEP,
+  FIXED_DAILY_STEP,
   OPEN_TREND_MIN_DAYS,
   riskUtilization,
   decideBrake,
@@ -84,8 +84,8 @@ describe("#4705 — regressão da catraca: abertura NUNCA freia volume", () => {
     const brake = decideBrake(HEALTHY, SPAM_OK);
     assert.equal(brake.level, "ok", "abertura de 1% não pode produzir hold/stop");
 
-    const step = adaptiveStep(HEALTHY, SPAM_OK);
-    assert.ok(step > 0, `passo deve ser positivo com risco saudável, veio ${step}`);
+    const step = adaptiveStep();
+    assert.equal(step, FIXED_DAILY_STEP, `passo é sempre fixo desde #6888, veio ${step}`);
 
     // E o volume proposto CRESCE — nunca corta.
     const next = proposeNextVolume({
@@ -122,26 +122,28 @@ describe("#4705 — regressão da catraca: abertura NUNCA freia volume", () => {
     // Mesmíssimas entradas de risco => mesmíssima decisão. A tendência é
     // relatório; não existe caminho de código dela pro freio.
     assert.equal(decideBrake(HEALTHY, SPAM_OK).level, "ok");
-    assert.ok(adaptiveStep(HEALTHY, SPAM_OK) > 0);
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
   });
 
-  it("#6793: sem NENHUM envio na janela, decideBrake.level é 'ok' (freio removido) — mas adaptiveStep continua sem escalar (proteção contra crescer sobre dado ausente preservada, INTOCADA por #6793)", () => {
-    // Histórico (Finding 1, silent-failure-hunter, até #6793): sent=0 zera as
-    // 3 métricas de e-mail (nada pra dividir), e se o Postmaster (sinal de
-    // DOMÍNIO, independente de `sent` desta janela) calhar de vir saudável no
-    // mesmo dia, maxUtil ficava baixo — decideBrake produzia 'hold' pra nunca
-    // fabricar 'ok' sobre ausência de dado. #6793 removeu o freio de
-    // decideBrake (item 2), então level agora é sempre 'ok' — mas a proteção
-    // de fundo (nunca ESCALAR volume sobre dado ausente) sobrevive porque
-    // adaptiveStep tem seu PRÓPRIO guard sufficientData→0, função separada,
-    // fora do escopo do item 2 (que nomeia só decideBrake).
+  it("#6888: sem NENHUM envio na janela, decideBrake.level é 'ok' (freio removido, #6793) E adaptiveStep cresce 10% mesmo assim (guard sufficientData→0 REMOVIDO por pedido explícito do editor, #6888)", () => {
+    // Histórico (Finding 1, silent-failure-hunter, até #6793 — decideBrake; até
+    // #6888 — adaptiveStep): sent=0 zera as 3 métricas de e-mail (nada pra
+    // dividir), e a leitura original era "crescer sobre isso é crescer sem
+    // UMA evidência real de saúde". #6793 já tinha removido essa proteção do
+    // FREIO; #6888 (01/09/2026) remove a mesma proteção do PASSO, por pedido
+    // EXPLÍCITO do editor — registrado na issue como escolha consciente, não
+    // como detalhe de implementação (ver `FIXED_DAILY_STEP` no módulo).
     const noSends: RiskMetrics = { hardBounceRatePct: 0, bounceRatePct: 0, unsubRatePct: 0, sent: 0, delivered: 0 };
     const brake = decideBrake(noSends, SPAM_OK);
     assert.equal(brake.level, "ok", "#6793: decideBrake nunca mais produz hold/stop, nem sobre dado ausente");
-    assert.equal(adaptiveStep(noSends, SPAM_OK), 0, "sem dado suficiente NUNCA escala — guard de adaptiveStep intocado por #6793");
+    assert.equal(
+      adaptiveStep(),
+      FIXED_DAILY_STEP,
+      "#6888: adaptiveStep cresce 10% mesmo sem NENHUM envio na janela — decisão explícita do editor, era 0 até 01/09/2026",
+    );
     assert.ok(
       brake.reasons.some((r) => r.includes("sem NENHUM envio na janela")),
-      "a razão principal continua nomeando a falta de envio, mesmo sem mais pausar por causa dela",
+      "a razão principal continua nomeando a falta de envio, mesmo sem mais pausar/frear por causa dela",
     );
   });
 
@@ -231,13 +233,13 @@ describe("riskUtilization", () => {
     assert.ok(brake.reasons.some((r) => r.includes("sem dado na janela")));
   });
 
-  it("#6793: denominador zero + spam sem leitura => level 'ok' (era hold); adaptiveStep continua 0 (guard próprio, intocado — nada é confirmado saudável pro fim de ESCALAR)", () => {
+  it("#6888: denominador zero + spam sem leitura => level 'ok' (era hold, #6793); adaptiveStep cresce 10% mesmo assim (era 0 até 01/09/2026, #6888)", () => {
     const b = decideBrake(
       { hardBounceRatePct: 0, bounceRatePct: 0, unsubRatePct: 0, sent: 0, delivered: 0 },
       SPAM_INDETERMINATE,
     );
     assert.equal(b.level, "ok");
-    assert.equal(adaptiveStep({ ...HEALTHY, sent: 0 }, SPAM_INDETERMINATE), 0);
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
   });
 
   it("valor não-finito nunca vaza pra comparação (NaN >= 1 seria um 'ok' fabricado)", () => {
@@ -273,17 +275,21 @@ describe("decideBrake — freio removido (#6793 Faixa B, item 2, 01/09/2026) —
     assert.ok(b.reasons.some((r) => r.includes("hard bounce") && r.includes("2,00%")));
   });
 
-  it("#6793: hard bounce 1,4% (70% do limiar) => level 'ok' (era hold até 01/09/2026); adaptiveStep continua 0 (guard próprio, intocado)", () => {
+  it("#6793/#6888: hard bounce 1,4% (70% do limiar, zona de atenção) => level 'ok' (era hold até 01/09/2026); adaptiveStep cresce 10% mesmo em zona de atenção (era 0 até 01/09/2026, #6888)", () => {
     const b = decideBrake(risk({ hardBounceRatePct: 1.4 }), SPAM_OK);
     assert.equal(b.level, "ok");
     assert.ok(Math.abs(b.maxUtil - 0.7) < 1e-9);
-    assert.equal(adaptiveStep(risk({ hardBounceRatePct: 1.4 }), SPAM_OK), 0, "adaptiveStep é função separada, fora do escopo do item 2 — segue não escalando em risco alto");
+    assert.equal(
+      adaptiveStep(),
+      FIXED_DAILY_STEP,
+      "#6888: passo fixo cresce mesmo em zona de atenção (maxUtil>=HOLD_UTIL) — decisão explícita do editor",
+    );
   });
 
-  it("hard bounce 0,5% => ok com passo positivo", () => {
+  it("hard bounce 0,5% => ok com passo fixo de 10%", () => {
     const m = risk({ hardBounceRatePct: 0.5 });
     assert.equal(decideBrake(m, SPAM_OK).level, "ok");
-    assert.ok(adaptiveStep(m, SPAM_OK) > 0);
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
   });
 
   it("#6793: bounce total 5% => level 'ok' (era stop); 4,9% também 'ok' (já era antes)", () => {
@@ -303,10 +309,14 @@ describe("decideBrake — freio removido (#6793 Faixa B, item 2, 01/09/2026) —
     assert.ok(b.reasons.some((r) => r.includes("spam (Postmaster)")));
   });
 
-  it("#6793: spam indeterminate => level 'ok' (era hold); adaptiveStep continua 0 (guard próprio, intocado)", () => {
+  it("#6793/#6888: spam indeterminate => level 'ok' (era hold); adaptiveStep cresce 10% mesmo assim (era 0 até 01/09/2026, #6888)", () => {
     const b = decideBrake(HEALTHY, SPAM_INDETERMINATE);
     assert.equal(b.level, "ok");
-    assert.equal(adaptiveStep(HEALTHY, SPAM_INDETERMINATE), 0, "adaptiveStep é função separada, fora do escopo do item 2");
+    assert.equal(
+      adaptiveStep(),
+      FIXED_DAILY_STEP,
+      "#6888: passo fixo, spam sem leitura não zera mais",
+    );
     assert.ok(b.reasons.some((r) => r.includes("sem leitura confiável")));
   });
 
@@ -343,48 +353,51 @@ describe("decideBrake — freio removido (#6793 Faixa B, item 2, 01/09/2026) —
 });
 
 // ---------------------------------------------------------------------------
-// adaptiveStep
+// adaptiveStep — passo FIXO desde #6888 (01/09/2026)
 // ---------------------------------------------------------------------------
 
-describe("adaptiveStep — escalada pela folga, teto +25%/dia", () => {
-  it("risco praticamente zero libera perto do teto; nunca acima dele", () => {
-    const zero: RiskMetrics = {
-      hardBounceRatePct: 0,
-      bounceRatePct: 0,
-      unsubRatePct: 0,
-      sent: 10_000,
-      delivered: 10_000,
-    };
-    const step = adaptiveStep(zero, { source: "postmaster", ratePct: 0 });
-    assert.equal(step, MAX_DAILY_STEP);
-    assert.ok(step <= MAX_DAILY_STEP);
+describe("adaptiveStep — passo fixo de 10%/dia, incondicional (#6888, 01/09/2026)", () => {
+  // Teste de regressão INVERTIDO (critério de fechamento da issue #6888): até
+  // 01/09/2026 este describe se chamava "adaptiveStep — escalada pela folga,
+  // teto +25%/dia" e afirmava "passo é 0 em risco alto, escala pela folga em
+  // risco baixo, teto 25%/dia" (MAX_DAILY_STEP). Por pedido EXPLÍCITO do
+  // editor o passo deixou de depender de risco — as asserções abaixo afirmam
+  // o OPOSTO do que afirmavam antes. O teste antigo não foi apagado: foi
+  // invertido, citando esta issue, como o critério de fechamento pede.
+  //
+  // #6958 (achado 9 do review, type-design-analyzer): `adaptiveStep` perdeu
+  // os parâmetros `accelRisk`/`spam`/`t` — eram ignorados desde #6888, e o
+  // único call site (`clarice-envio-risk.ts`) não precisava deles pra nada.
+  // Os testes "estado 1-4" abaixo, que antes variavam risco/spam pra provar
+  // que o resultado não mudava, viraram a MESMA chamada `adaptiveStep()`
+  // repetida — mantidos como regressão nomeada (documentam qual estado
+  // histórico cada um cobria antes do #6888), mas sem mais poder EXPRESSAR
+  // "input variado, output igual": essa garantia agora é ESTRUTURAL (a
+  // função não tem entrada pra variar), não mais testável por asserção. O
+  // teste "incondicional" que fechava esse describe testando NaN/negativo/
+  // extremo foi removido por não ser mais expressável — a garantia que ele
+  // checava é a mesma que a assinatura `(): number` agora impõe em tempo de
+  // compilação.
+
+  it("estado 1 — risco zero, dados suficientes => 10% (antes: 0,25 = teto/MAX_DAILY_STEP)", () => {
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
   });
 
-  it("fórmula: MAX_DAILY_STEP × (1 − maxUtil/0,7), 4 casas", () => {
-    // hardBounce 0,5% => util 0,25 => 0,25 × (1 − 0,25/0,7) = 0,160714… => 0,1607
-    assert.equal(adaptiveStep(risk({ hardBounceRatePct: 0.5 }), SPAM_OK), 0.1607);
+  it("estado 2 — risco na metade da folga (hardBounce 0,5% => util 0,25) => 10% (antes: ~0,1607)", () => {
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
   });
 
-  it("monotônico: risco menor => passo maior, sempre em [0, 0.25]", () => {
-    const steps = [0.1, 0.4, 0.8, 1.2, 1.4, 1.8, 2.0].map((hb) =>
-      adaptiveStep(risk({ hardBounceRatePct: hb }), { source: "postmaster", ratePct: 0 }),
-    );
-    for (let i = 1; i < steps.length; i += 1) {
-      assert.ok(steps[i] <= steps[i - 1], `passo cresceu com risco maior: ${steps.join(", ")}`);
-    }
-    for (const s of steps) {
-      assert.ok(s >= 0, `passo negativo: ${s}`);
-      assert.ok(s <= MAX_DAILY_STEP, `passo acima do teto: ${s}`);
-    }
-    // A partir de 70% do limiar o passo já morreu — o crescimento para ANTES
-    // do freio precisar agir.
-    assert.equal(steps[4], 0); // hardBounce 1,4% = 70%
-    assert.equal(steps[5], 0);
-    assert.equal(steps[6], 0);
+  it("estado 3 — maxUtil >= 0,7 (zona de atenção) => 10% (antes: 0 — congelava)", () => {
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
   });
 
-  it("acima do limiar (util > 1) continua 0, nunca negativo", () => {
-    assert.equal(adaptiveStep(risk({ hardBounceRatePct: 8 }), SPAM_OK), 0);
+  it("estado 4 — sufficientData: false (sem NENHUM envio na janela de 30 dias) => 10% (antes: 0 — nunca escalava sobre dado ausente)", () => {
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
+  });
+
+  it("FIXED_DAILY_STEP é a única fonte do passo — sem argumentos, `adaptiveStep()` não tem como variar (#6958)", () => {
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
+    assert.equal(adaptiveStep.length, 0, "assinatura sem parâmetros — TypeScript garante isto em compile-time");
   });
 });
 

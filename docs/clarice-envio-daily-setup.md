@@ -38,7 +38,7 @@ Por que existe: antes do #5055 não havia onde registrar "o teste acabou". O ún
 Dois efeitos ao encerrar, não um:
 
 1. a onda sai como **célula única** (`--no-cells`), com o assunto travado;
-2. o **passo adaptativo de volume volta a valer**. Com o teste aberto, a ressalva de poder baixo (#4559) entra em `caveats` e `clarice-envio-run.ts` zera o passo — um laço que se auto-alimenta (base pequena → poder baixo → passo zerado → base nunca cresce). Teste encerrado não tem poder pra ser baixo, então não há ressalva e nada zera o passo.
+2. o **passo de volume volta a valer**. Com o teste aberto, a ressalva de poder baixo (#4559) entra em `caveats` e `clarice-envio-run.ts` zera o passo — um laço que se auto-alimenta (base pequena → poder baixo → passo zerado → base nunca cresce). Teste encerrado não tem poder pra ser baixo, então não há ressalva e nada zera o passo. (O passo em si é fixo, `FIXED_DAILY_STEP`, desde #6888 — este mecanismo de zerar por ressalva é independente disso e continua valendo.)
 
 Leituras possíveis do arquivo:
 
@@ -77,7 +77,7 @@ npx tsx scripts/lib/clarice-hour-test.ts --close --winner none \
 **Por que sufixo próprio (`H06`/`H10`) e não `A`/`B`:**
 
 1. `parseAbcAudienceCampaign` (dashboard) casa `([ABC])\b`. Reusar `A`/`B` faria o painel exibir o teste de horário rotulado como teste de **assunto** — passaria a afirmar algo falso sobre o que está sendo medido.
-2. `clarice-abc-state.json` precisa continuar `encerrado`. Reabri-lo devolve a ressalva de poder baixo do #4559, que **zera o passo adaptativo de volume** — o laço "base pequena → poder baixo → passo zerado → base nunca cresce" descrito acima. Um teste de horário que congela o volume da rampa como efeito colateral mediria a coisa errada com a base errada.
+2. `clarice-abc-state.json` precisa continuar `encerrado`. Reabri-lo devolve a ressalva de poder baixo do #4559, que **zera o passo de volume** (fixo, `FIXED_DAILY_STEP`, desde #6888) — o laço "base pequena → poder baixo → passo zerado → base nunca cresce" descrito acima. Um teste de horário que congela o volume da rampa como efeito colateral mediria a coisa errada com a base errada.
 
 **Faixa suportada: 00:00–20:00 BRT.** A partir de 21:00 BRT o horário cai no dia seguinte em UTC, e `brtHourToUtcHourSameDay` **lança** em vez de montar o ISO no dia errado — o modo de falha seria uma campanha agendada 24h antes do pretendido, visível só depois do disparo. A janela útil do teste é diurna de qualquer forma.
 

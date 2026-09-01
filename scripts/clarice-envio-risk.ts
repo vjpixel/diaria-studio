@@ -53,10 +53,12 @@ import {
   groupByBrtDay,
   decideBrake,
   adaptiveStep,
+  riskUtilization,
   openRateTrend,
   type RiskMetrics,
   type SpamSignalLike,
   type BrakeDecision,
+  type RiskUtilization,
   type OpenRateTrendResult,
   type OpenRateTrendPoint,
 } from "./lib/clarice-envio-policy.ts";
@@ -79,11 +81,33 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export interface RiskSnapshot {
   readonly brake: BrakeDecision;
-  /** Passo adaptativo do dia (fração, ex: 0.17 = +17%). */
+  /** Passo do dia (fração). Fixo desde #6888 (01/09/2026) — sempre
+   * `FIXED_DAILY_STEP` (0.1 = +10%), nunca mais varia com risco. */
   readonly step: number;
   readonly openTrend: OpenRateTrendResult;
   readonly freshWindow: { readonly sampleDays: number; readonly sent: number; readonly delivered: number };
-  readonly accelWindow: { readonly sampleDays: number; readonly sent: number; readonly delivered: number };
+  /**
+   * Janela de 30 dias corridos (acelerador histórico, #4705). As TAXAS
+   * (`hardBounceRatePct`/`bounceRatePct`/`unsubRatePct`) e a `utilization`
+   * (`riskUtilization` sobre esta mesma janela) são calculadas desde sempre,
+   * mas até #6958 eram jogadas fora — `adaptiveStep` parou de ler `accelRisk`
+   * no #6888 e nenhum outro consumidor as lia. #6958 as expõe aqui pra
+   * `clarice-envio-run.ts` reportar (nunca decidir sobre elas — o freio
+   * automático segue removido, #6793) — cobre o achado de que um canal
+   * dormente >30 dias reativado crescia 10%/dia sem NENHUM aviso, porque
+   * `freshWindow` (3 dias, sem piso de calendário) podia ter `sent > 0`
+   * enquanto `accelWindow` (30 dias, corte rígido) tinha `sent === 0` — e
+   * nada olhava pra essa 2ª janela.
+   */
+  readonly accelWindow: {
+    readonly sampleDays: number;
+    readonly sent: number;
+    readonly delivered: number;
+    readonly hardBounceRatePct: number;
+    readonly bounceRatePct: number;
+    readonly unsubRatePct: number;
+    readonly utilization: RiskUtilization;
+  };
   readonly spamSignal: SpamSignalLike;
   /** Cache stale do dashboard (Cloudflare serviu last-good por falha upstream) — nunca decide sobre isso sem avisar. */
   readonly staleNote: string | null;
@@ -210,7 +234,13 @@ export async function fetchRiskSnapshot(opts: FetchRiskSnapshotOptions): Promise
   const accelRisk = aggregateRisk(accelCampaigns);
 
   const rawBrake = decideBrake(freshRisk, spamSignal);
-  const step = adaptiveStep(accelRisk, spamSignal);
+  // #6958 — `adaptiveStep` não consome mais `accelRisk`/`spamSignal` (passo é
+  // fixo desde #6888), mas `accelRisk` continua computado: alimenta
+  // `accelWindow` abaixo, que agora carrega a utilização da janela de 30
+  // dias pro relatório enxergar (achado 7/8 do review — ver docstring de
+  // `RiskSnapshot.accelWindow`).
+  const step = adaptiveStep();
+  const accelUtilization = riskUtilization(accelRisk, spamSignal);
   const openTrend = openRateTrend(toOpenTrendPoints(trendCampaigns));
 
   // #5515 — ponto único de aplicação do override persistente. As DUAS
@@ -230,7 +260,15 @@ export async function fetchRiskSnapshot(opts: FetchRiskSnapshotOptions): Promise
     step,
     openTrend,
     freshWindow: { sampleDays: groupByBrtDay(freshCampaigns).size, sent: freshRisk.sent, delivered: freshRisk.delivered },
-    accelWindow: { sampleDays: groupByBrtDay(accelCampaigns).size, sent: accelRisk.sent, delivered: accelRisk.delivered },
+    accelWindow: {
+      sampleDays: groupByBrtDay(accelCampaigns).size,
+      sent: accelRisk.sent,
+      delivered: accelRisk.delivered,
+      hardBounceRatePct: accelRisk.hardBounceRatePct,
+      bounceRatePct: accelRisk.bounceRatePct,
+      unsubRatePct: accelRisk.unsubRatePct,
+      utilization: accelUtilization,
+    },
     spamSignal,
     staleNote,
     overrideApplied,

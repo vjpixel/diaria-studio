@@ -29,6 +29,11 @@ import type { WaveProposal, WaveState } from "../scripts/lib/clarice-wave-plan.t
 import type { ResolveLatestMonthlyCycleResult } from "../scripts/lib/mensal/monthly-paths.ts";
 import type { ClariceAbcStateRead } from "../scripts/lib/clarice-abc-state.ts";
 import { acquireEnvioLock, lockPathForCycle } from "../scripts/lib/clarice-envio-lock.ts";
+import {
+  riskUtilization,
+  type RiskMetrics,
+  type SpamSignalLike,
+} from "../scripts/lib/clarice-envio-policy.ts";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -112,7 +117,21 @@ function healthyRisk(over: Partial<Record<string, unknown>> = {}) {
     step: 0.15,
     openTrend: { current: 20, previous: 19, deltaPp: 1, verdict: "estavel", sampleDays: 26 },
     freshWindow: { sampleDays: 3, sent: 5000, delivered: 4900 },
-    accelWindow: { sampleDays: 20, sent: 50000, delivered: 49000 },
+    accelWindow: {
+      sampleDays: 20,
+      sent: 50000,
+      delivered: 49000,
+      hardBounceRatePct: 0.2,
+      bounceRatePct: 0.5,
+      unsubRatePct: 0.1,
+      utilization: {
+        maxUtil: 0.2,
+        byMetric: { hardBounce: 0.1, bounce: 0.1, unsub: 0.033, spam: 0.2 },
+        worst: "spam",
+        noDataMetrics: [],
+        sufficientData: true,
+      },
+    },
     spamSignal: { source: "postmaster", ratePct: 0.05 },
     staleNote: null,
     ...over,
@@ -563,6 +582,80 @@ describe("clarice-envio-run (#5026)", () => {
       const importCall = calls.find((c) => c.script === "scripts/clarice-import-waves.ts");
       assert.ok(importCall);
       assert.deepEqual(importCall!.args, ["--cycle", CYCLE, "--group", "d12-qua12", "--label", `${CYCLE} d12-qua12`, "--execute"]);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    // -----------------------------------------------------------------------
+    // #6958 (achados 7/8 do review da PR #6958): a janela de 30d (acelerador)
+    // tinha rate/utilização calculada e DESCARTADA — o relatório agora
+    // reporta os dois. Findings 7/8 existem porque o sinal de risco da janela
+    // de 30d tinha ficado invisível; um teste que só grepasse a palavra
+    // "acelerador" (ou "30d") passaria contra uma linha que imprime zeros —
+    // por isso as asserções abaixo pinam os NÚMEROS reais da fixture, não só
+    // um rótulo. Regra do editor: a visibilidade É o fix, então é a
+    // visibilidade que precisa ficar pinada.
+    // -----------------------------------------------------------------------
+
+    it("#6958: janela de 30d saudável => relatório cita a taxa/sent REAIS da fixture, não um rótulo genérico", async () => {
+      const root = freshRoot();
+      const { exec } = makeFakeExec(goldenHandlers());
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.ok(
+        r.reportMarkdown.includes("acelerador"),
+        `relatório deveria nomear a janela de 30d (acelerador); reportMarkdown=${r.reportMarkdown}`,
+      );
+      // healthyRisk().accelWindow: hardBounceRatePct 0.2 => "0.20%"; sent 50000.
+      // Se alguém reescrever a linha pra imprimir 0 (regressão dos achados
+      // 7/8 — o cálculo volta a ser jogado fora), estes dois números somem
+      // do relatório mesmo que a palavra "acelerador" continue lá.
+      assert.ok(
+        r.reportMarkdown.includes("0.20%"),
+        `relatório deveria citar a taxa real de hard bounce da janela de 30d (fixture=0.2%), não zero; reportMarkdown=${r.reportMarkdown}`,
+      );
+      assert.ok(
+        r.reportMarkdown.includes("50000"),
+        `relatório deveria citar o sent real da janela de 30d (fixture=50000), não um valor fabricado; reportMarkdown=${r.reportMarkdown}`,
+      );
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#6958: accelWindow sem NENHUM envio (sent: 0, via riskUtilization real) => relatório avisa, sem abortar", async () => {
+      const root = freshRoot();
+      // Driblando a fixture pelo `sent: 0` — nunca setando `sufficientData`
+      // à mão — e computando a utilização com a MESMA função pura que
+      // `clarice-envio-risk.ts` chama em produção (`riskUtilization`). Isso
+      // pina a fiação real ("sent 0 => sufficientData false"), não só o
+      // branch do relatório que lê a flag já pronta.
+      const accelRiskEmpty: RiskMetrics = { hardBounceRatePct: 0, bounceRatePct: 0, unsubRatePct: 0, sent: 0, delivered: 0 };
+      const spamOk: SpamSignalLike = { source: "postmaster", ratePct: 0.05 };
+      const utilization = riskUtilization(accelRiskEmpty, spamOk);
+      assert.equal(
+        utilization.sufficientData,
+        false,
+        "sanity: riskUtilization real confirma que sent=0 produz sufficientData=false — se isto falhar, o teste abaixo não estaria testando o cenário que promete",
+      );
+      const { exec } = makeFakeExec(
+        goldenHandlers({
+          risk: {
+            accelWindow: {
+              sampleDays: 0,
+              sent: 0,
+              delivered: 0,
+              hardBounceRatePct: 0,
+              bounceRatePct: 0,
+              unsubRatePct: 0,
+              utilization,
+            },
+          },
+        }),
+      );
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.ok(
+        r.reportMarkdown.includes("⚠️  sem NENHUM envio na janela de 30 dias"),
+        `relatório deveria avisar sobre accelWindow sem dado (canal dormente reativado); reportMarkdown=${r.reportMarkdown}`,
+      );
       rmSync(root, { recursive: true, force: true });
     });
 
