@@ -7,12 +7,17 @@
  * PRÓPRIA do editor — API key `platform.config.json → brevo_diaria.api_key_env`)
  * contra os mesmos limiares do ramp Clarice (abertura <15%, bounce duro ≥2%,
  * bounce total ≥5%, spam ≥0,1%, unsub ≥3% — ver
- * `scripts/lib/brevo-diaria-guardrail.ts` pro racional completo, inclusive
- * por que abertura NUNCA pausa sozinha). Se algum breaker de bounce/spam/unsub
- * for cruzado, PAUSA o rollout (latch persistido em
- * `data/brevo-diaria/guardrail-state.json`) — `sync-pending-to-brevo.ts` lê
- * esse estado e para de fazer backfill (novos contatos) enquanto pausado,
- * mesmo que ainda existam slots livres na fila top-300 (item 5).
+ * `scripts/lib/brevo-diaria-guardrail.ts` pro racional completo).
+ *
+ * **#6793 "Faixa B" item 1 (01/09/2026, decisão do editor): o freio
+ * automático foi REMOVIDO.** Até então, se algum breaker de bounce/spam/
+ * unsub fosse cruzado, o script PAUSAVA o rollout sozinho (latch em
+ * `data/brevo-diaria/guardrail-state.json`, lido por `sync-pending-to-brevo.ts`
+ * pra zerar o backfill). `shouldPauseRollout` agora retorna sempre `false` —
+ * este script continua avaliando/logando os breaches normalmente (nada aqui
+ * ficou cego), só não pausa mais nada sozinho. O latch em si (uma vez
+ * `rollout_paused: true` por algum motivo legado/manual) continua
+ * funcionando — só a transição automática saiu.
  *
  * ## Diferença deliberada do alarme do ramp Clarice (`clarice-guardrail-alarm.ts`)
  *
