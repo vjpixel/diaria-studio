@@ -179,15 +179,22 @@ export function parseBrevoDiariaRunArgs(argv: string[]): BrevoDiariaRunOptions {
   }
 
   const maxAddRaw = getArg(argv, "max-add");
-  // `getArg` devolve `""` (nunca `undefined`) quando a flag está ausente —
-  // mesma armadilha documentada em verify-pending-emails-mv.ts (#4494
-  // achado): `Number("") === 0` passaria silenciosamente como "--max-add 0"
-  // mesmo sem a flag. Checagem explícita de string vazia evita essa classe
-  // de bug aqui.
+  // #6895 (01/09/2026): `--max-add` virou OPCIONAL em `--apply`, espelhando a
+  // semântica que `sync-pending-to-brevo.ts` já tem desde o #6793 Faixa A
+  // item 6 (`maxAdd === undefined` → sem teto, `applyMaxAddGate`). Antes
+  // desta correção, a flag era exigida incondicionalmente — regressão
+  // introduzida pelo próprio #6793 Faixa A item 7, que fez
+  // `brevo-diaria-stage5-dispatch.ts` parar de passar `--max-add` (freio de
+  // volume removido do dispatch automático) sem atualizar este parser pra
+  // aceitar a ausência da flag. Resultado: `--apply` sempre abortava no
+  // dispatch automático (bloqueava o canal Brevo diária em toda edição desde
+  // o merge do #6793 Faixa A). `--max-add 0` continua a forma explícita de
+  // "nenhum contato novo" — ausência da flag agora é "sem teto", nunca 0
+  // implícito (`getArg` devolve `""`, nunca `undefined`, quando a flag está
+  // ausente — mesma armadilha documentada em verify-pending-emails-mv.ts
+  // #4494 — daí a checagem explícita de string vazia abaixo).
   if (maxAddRaw === "") {
-    throw new BrevoDiariaAbort(
-      '❌ --apply exige --max-add N (inteiro ≥0) — "nenhum contato novo" é --max-add 0, explícito, nunca a ausência da flag.',
-    );
+    return { mode: "apply", maxAdd: undefined, confirmMv, iKnowThisSkipsMv };
   }
   const maxAdd = Number(maxAddRaw);
   if (!Number.isFinite(maxAdd) || !Number.isInteger(maxAdd) || maxAdd < 0) {
@@ -284,19 +291,25 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
       "scripts/verify-pending-emails-mv.ts",
       opts.confirmMv ? ["--confirm"] : [],
     );
+    // #6895: --max-add só é repassado quando explicitamente informado —
+    // omissão (opts.maxAdd === undefined) propaga como AUSÊNCIA da flag pro
+    // sync-pending-to-brevo.ts, que já trata isso como "sem teto"
+    // (applyMaxAddGate, #6793 Faixa A item 6). Nunca inventar um valor aqui.
+    const maxAddArgs = opts.maxAdd !== undefined ? ["--max-add", String(opts.maxAdd)] : [];
+    const maxAddLabel = opts.maxAdd !== undefined ? ` --max-add ${opts.maxAdd}` : " (sem --max-add, sem teto)";
     step(
       deps,
       steps,
-      `Passo 3 — sync-pending-to-brevo --push --max-add ${opts.maxAdd}`,
+      `Passo 3 — sync-pending-to-brevo --push${maxAddLabel}`,
       "scripts/sync-pending-to-brevo.ts",
-      ["--push", "--max-add", String(opts.maxAdd), ...(opts.iKnowThisSkipsMv ? ["--i-know-this-skips-mv"] : [])],
+      ["--push", ...maxAddArgs, ...(opts.iKnowThisSkipsMv ? ["--i-know-this-skips-mv"] : [])],
     );
 
     return {
       code: 0,
       mode: "apply",
       steps,
-      summary: `apply concluído — 5 passo(s) aplicado(s) na ordem fixa do Passo 4, --max-add ${opts.maxAdd}.`,
+      summary: `apply concluído — 5 passo(s) aplicado(s) na ordem fixa do Passo 4${maxAddLabel}.`,
     };
   } catch (e) {
     const abort = e instanceof BrevoDiariaAbort ? e : new BrevoDiariaAbort(`❌ erro inesperado: ${(e as Error).message}`);
