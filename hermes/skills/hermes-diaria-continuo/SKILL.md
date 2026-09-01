@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.11
+version: 0.5.12
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -225,14 +225,26 @@ issue nova é reivindicada. Para cada PR, nesta ordem:
    assim — o resultado (`pass`/`self_review`/`no_review`/`error`) vira
    ROTULO informativo no relatório do tick (ex: "review independente já
    presente" vs "aguardando review externo"), não autorização de ação. Em
-   TODOS os casos, inclusive `exit 0`/`pass`: **NÃO mergear** — deixar o
-   PR aberto e passar para a próxima issue/PR da fila. O merge acontece
-   exclusivamente no pickup (#6823, abaixo) ou no review consolidado, que
-   têm ferramenta Agent e conseguem revisar de verdade — nunca nesta
-   delegação. **Se você chegou aqui pensando em reintroduzir merge nesta
-   seção "por otimização" (menos latência, menos dependência de outro
-   processo): não. É exatamente o trade-off que o #6864 aceitou de
-   propósito — ver "Custo aceito" na issue.**
+   TODOS os casos, inclusive `exit 0`/`pass`: **NÃO mergear.** O merge
+   acontece exclusivamente no pickup (#6823, abaixo) ou no review
+   consolidado, que têm ferramenta Agent e conseguem revisar de verdade —
+   nunca nesta delegação. **Se você chegou aqui pensando em reintroduzir
+   merge nesta seção "por otimização" (menos latência, menos dependência
+   de outro processo): não. É exatamente o trade-off que o #6864 aceitou
+   de propósito — ver "Custo aceito" na issue.**
+
+   **PR aberta NUNCA encerra o tick (#6917, 01/09/2026).** Depois de
+   rotular a PR, siga para a próxima issue da fila e trabalhe
+   normalmente. "Há PR aguardando review externo" descreve o estado
+   DAQUELA PR, não uma condição de parada do tick — não existe regra que
+   limite o contínuo a uma PR por vez. Se há issue `track=overnight`
+   elegível e não reivindicada, o tick trabalha. Achado ao vivo (#6917):
+   um tick com 36 issues `track=overnight` elegíveis na fila terminou sem
+   reivindicar nenhuma, justificando com "conforme a regra de prioridade
+   da fila" — **essa regra nunca existiu neste arquivo.** O tick preencheu
+   um vazio de instrução com uma regra plausível; nomear e negar
+   explicitamente a leitura errada aqui fecha esse vazio, no mesmo
+   princípio do aviso contra reintroduzir merge logo acima.
 
    **Pickup existe desde o #6823 (31/08/2026) — só no `/diaria-overnight`.**
    O fleet review do #6820 (30/08/2026) tinha achado que nenhuma das duas
@@ -499,6 +511,21 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Changelog
 
+- 0.5.12 (01/09/2026): #6917 — "PR aberta NUNCA encerra o tick" ganha
+  estatuto de afirmação própria, em negrito, separada do bloco de
+  proibição de merge (§3). Achado ao vivo: um tick com 36 issues
+  `track=overnight` elegíveis terminou sem reivindicar nenhuma,
+  justificando com "regra de prioridade da fila" que nunca existiu neste
+  arquivo — a instrução real ("passar para a próxima issue/PR da fila")
+  era 8 palavras sem negrito, em oração subordinada, no fim de 25 linhas
+  cujo peso retórico inteiro estava em "NÃO mergear". O tick não ignorou
+  o texto — preencheu um vazio de ênfase com uma regra plausível. Fix
+  nomeia e nega explicitamente a leitura errada (mesmo princípio do aviso
+  já existente contra reintroduzir merge "por otimização"). Puramente
+  textual — nenhum mecanismo/script mudou. Detectores de tick improdutivo
+  (propostas 1-3 do #6917) ficam para depois, calibrados com a taxa
+  medida PÓS-conserto (senão a linha de base fica contaminada pelo
+  próprio defeito).
 - 0.5.11 (01/09/2026): #6885 — renovador de heartbeat em background durante
   a delegação (passo 4.2). Achado: heartbeat só era gravado 1x por tick
   (passo 1.3), nunca renovado — durante a delegação bloqueante (até 40min,
