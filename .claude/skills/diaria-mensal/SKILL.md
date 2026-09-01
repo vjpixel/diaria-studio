@@ -296,10 +296,36 @@ fi
 EAI_EDITION=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$SEL_JSON','utf8')).edition)")
 SEL_SELECTION=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$SEL_JSON','utf8')).selection)")
 SEL_PCT=$(node -e "const j=JSON.parse(require('fs').readFileSync('$SEL_JSON','utf8')); console.log(j.pct_correct === null ? 'null' : j.pct_correct)")
-npx tsx scripts/eia-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$CYCLE/ \
-  --selection $SEL_SELECTION --pct-correct $SEL_PCT
 ```
-Se `eia-compose.ts` falhar (sem imagem elegível), registrar warn e seguir — É IA? é opcional. `$SEL_JSON` fica em `_internal/` (não sobe pro Drive — #959) e é a fonte pro item de aviso no Checkpoint Etapa 3 abaixo.
+**Caminho PADRÃO (#6881 item 5): reusar o É IA? já gerado e aprovado da edição
+diária, nunca gerar do zero quando a edição já tem os 3 arquivos.** A edição
+`$EAI_EDITION` já passou pelo Stage 3 diário — o mesmo par de imagens A/B já
+foi composto, aprovado no gate e enviado; regerar via `eia-compose.ts` refaz
+uma chamada Gemini paga pra produzir, na prática, quase a mesma imagem, e
+corre o risco real de `IMAGE_SAFETY` bloquear a geração sem motivo editorial
+(achado ao vivo, gate do ciclo 2608-09 — a correção manual foi copiar os
+arquivos já existentes em vez de insistir na geração). Só cai pra
+`eia-compose.ts` (geração nova) quando a edição diária não tem os 3 arquivos
+— ciclo antigo arquivado sem essas imagens, ou edge-case do
+`select-eia-edition.ts`.
+```bash
+DAILY_EIA_DIR="data/editions/$EAI_EDITION"
+if [ -f "$DAILY_EIA_DIR/01-eia.md" ] && [ -f "$DAILY_EIA_DIR/01-eia-A.jpg" ] && [ -f "$DAILY_EIA_DIR/01-eia-B.jpg" ]; then
+  echo "[etapa-3] Reusando É IA? já aprovado da edição diária $EAI_EDITION (evita gerar imagem nova)."
+  cp "$DAILY_EIA_DIR/01-eia.md" "data/monthly/$CYCLE/01-eia.md"
+  cp "$DAILY_EIA_DIR/01-eia-A.jpg" "data/monthly/$CYCLE/01-eia-A.jpg"
+  cp "$DAILY_EIA_DIR/01-eia-B.jpg" "data/monthly/$CYCLE/01-eia-B.jpg"
+  mkdir -p "data/monthly/$CYCLE/_internal"
+  [ -f "$DAILY_EIA_DIR/_internal/01-eia-meta.json" ] && cp "$DAILY_EIA_DIR/_internal/01-eia-meta.json" "data/monthly/$CYCLE/_internal/01-eia-meta.json"
+else
+  npx tsx scripts/eia-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$CYCLE/ \
+    --selection $SEL_SELECTION --pct-correct $SEL_PCT
+fi
+```
+Se nem o reuso nem `eia-compose.ts` produzirem imagem (edição diária sem os 3
+arquivos E geração falhando — sem imagem elegível/`IMAGE_SAFETY`), registrar
+warn e seguir — É IA? é opcional. `$SEL_JSON` fica em `_internal/` (não sobe
+pro Drive — #959) e é a fonte pro item de aviso no Checkpoint Etapa 3 abaixo.
 
 ### 3c. Preview local via `serve-preview.ts` (#3546 — substitui Claude Artifacts)
 

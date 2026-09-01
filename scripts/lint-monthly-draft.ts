@@ -145,6 +145,55 @@ export function checkOptionalSectionIntegrity(draft: string): SectionIntegrityRe
   return { ok: missing.length === 0, missing, sectionCount: sections.length };
 }
 
+// ─── Rótulos do rodapé (Curadorias:/Da diar.ia.br:) — #6881 item 4 ─────────
+
+export interface FooterLabelsCheckResult {
+  ok: boolean;
+  missing: string[];
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Os 2 rótulos do rodapé PARA ENCERRAR (`CURADORIA_PILLS`,
+ * `scripts/lib/shared/encerramento-snippet.ts`) — cada um precisa estar na
+ * linha IMEDIATAMENTE anterior à sua lista `- [texto](url)`. */
+const FOOTER_LABELS: readonly string[] = ["Curadorias:", "Da diar.ia.br:"];
+
+/**
+ * #6881 item 4: o template já documenta que os 2 rótulos do rodapé
+ * (`Curadorias:`/`Da diar.ia.br:`) precisam sair na linha imediatamente
+ * anterior à sua lista — sem isso, `monthly-render.ts` cai no fallback
+ * genérico "Acesse nossas curadorias:" (comportamento documentado, não bug de
+ * render). O reminder em prosa não impediu o desvio do writer no ciclo
+ * 2608-09 (draft saiu sem os 2 rótulos) — este check torna o desvio um FATAL
+ * mecânico do lint, em vez de depender de leitura manual no gate.
+ *
+ * Ausência da seção PARA ENCERRAR inteira não é responsabilidade deste
+ * check (coberta por `REQUIRED_SECTION_CHECKS`/`checkSectionIntegrity`
+ * acima) — aqui só falha quando a seção EXISTE mas um ou os dois rótulos
+ * não precedem imediatamente sua lista.
+ */
+export function checkFooterLabels(draft: string): FooterLabelsCheckResult {
+  const sections = splitByLabels(draft);
+  const encerrar = sections.find((s) => {
+    const firstLine = normalizeLabel(s.split("\n")[0] ?? "");
+    return /^(ENCERRAMENTO|PARA\s+ENCERRAR)$/i.test(firstLine);
+  });
+  if (!encerrar) return { ok: true, missing: [] };
+  const missing = FOOTER_LABELS.filter((label) => {
+    // Rótulo na sua própria linha, seguido (linha seguinte, sem linha em
+    // branco entre os dois — mesma exigência do template/render) por uma
+    // linha de lista `- [...]`. `[ \t]*` (não `\s*`) antes do `\n` — `\s`
+    // casaria newline também, absorvendo silenciosamente uma linha em
+    // branco entre rótulo e lista, que é justo o caso que precisa falhar.
+    const re = new RegExp(`^${escapeRegex(label)}[ \\t]*\\r?\\n-\\s*\\[`, "m");
+    return !re.test(encerrar);
+  });
+  return { ok: missing.length === 0, missing };
+}
+
 export interface ImageRenderProbeResult {
   ok: boolean;
   imgCount: number;
@@ -226,6 +275,7 @@ function main(): void {
   const sectionCheck = checkSectionIntegrity(text);
   const optionalSectionCheck = checkOptionalSectionIntegrity(text);
   const imageCheck = checkImageRenderProbe(text, yymm);
+  const footerLabelsCheck = checkFooterLabels(text);
   let hasFatal = false;
 
   if (!sectionCheck.ok) {
@@ -249,6 +299,15 @@ function main(): void {
     console.error(
       `[lint-monthly] FATAL: render simulado (draftToEmail com URLs de sonda) produziu apenas ` +
       `${imageCheck.imgCount}/3 <img> para os destaques — a edição sairia SEM IMAGEM em produção. Ver #2794.`,
+    );
+  }
+  if (!footerLabelsCheck.ok) {
+    hasFatal = true;
+    console.error(
+      `[lint-monthly] FATAL: rótulo(s) de rodapé ausente(s) ou desalinhado(s) em PARA ENCERRAR: ` +
+      `${footerLabelsCheck.missing.join(", ")} — cada rótulo precisa ficar na linha imediatamente ` +
+      "anterior à sua lista `- [texto](url)`, sem linha em branco entre os dois. Sem isso o render " +
+      "cai no fallback genérico 'Acesse nossas curadorias:'. Ver #6881.",
     );
   }
   if (hasFatal) {
