@@ -52,13 +52,20 @@ const EN_CLOSE_KEYWORDS = [
 /**
  * Números de issue que o corpo já declara fechar em INGLÊS. Mesmo formato
  * de regex do #6920 (`\b(?:verbo)\b` seguido, dentro de 20 chars sem quebra
- * de linha nem outro `#`, de `#<número>`, com suporte a múltiplas issues no
- * mesmo verbo — `"Closes #10 e #11"`). Retorna números ÚNICOS, sem ordem
- * garantida além da ordem de primeira ocorrência no texto.
+ * de linha nem outro `#`, do PRIMEIRO `#<número>`). #6938: essa folga de 20
+ * chars vale só para o PRIMEIRO número — continuar a cauda para um 2º/3º
+ * número (`"Closes #10 e #11"`/`"Closes #10, #11"`) exige conjunção
+ * explícita (`,`/`e`/`and`) logo em seguida, nunca só proximidade solta
+ * (era o defeito do #6938: "Closes #A (ver #B)" capturava #B também).
+ * Retorna números ÚNICOS, sem ordem garantida além da ordem de primeira
+ * ocorrência no texto.
  */
 export function extractClosingIssueNumbers(body: unknown): number[] {
   if (typeof body !== "string" || body.length === 0) return [];
-  const re = new RegExp(`\\b(?:${EN_CLOSE_KEYWORDS.join("|")})\\b((?:[^\\n#]{0,20}#\\d+)+)`, "gi");
+  const re = new RegExp(
+    `\\b(?:${EN_CLOSE_KEYWORDS.join("|")})\\b[^\\n#]{0,20}(#\\d+(?:\\s*(?:,|\\be\\b|\\band\\b)\\s*#\\d+)*)`,
+    "gi",
+  );
   const nums: number[] = [];
   const seen = new Set<number>();
   let match;
