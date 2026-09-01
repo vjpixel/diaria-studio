@@ -215,6 +215,12 @@ export function splitBodyAndTags(text: string): SplitBodyAndTags {
  * `genericText` é o texto genérico (estilo Instagram, #3991) lido de
  * `03-social.md` — sem CTA de canal, sem "link na bio", sem menção a e-mail.
  * `channel` decide qual linha (se alguma) é injetada ENTRE corpo e tags.
+ *
+ * A sanitização de negrito markdown (`**`) NÃO acontece aqui — é feita uma
+ * camada acima, no ponto de publicação de cada canal, via
+ * `stripMarkdownEmphasis` (`scripts/lib/strip-markdown-emphasis.ts`, #6862):
+ * cobre `**`/`__`/`*`/`_` com tratamento de bugs de fusão de span e boundary
+ * Unicode que uma regex ingênua aqui duplicaria de forma mais estreita.
  */
 export function injectChannelLine(genericText: string, channel: SocialChannel): string {
   const { body, tags } = splitBodyAndTags(genericText);

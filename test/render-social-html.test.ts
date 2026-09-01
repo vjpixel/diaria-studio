@@ -461,3 +461,22 @@ Post pessoal.
     assert.equal(countImgTags(html), 1, "1 <img> só — a capa, como single-image de sempre");
   });
 });
+
+describe("renderDestaqueGroup — negrito ** vira <strong> no preview (#6871, achado 260901)", () => {
+  const IMAGES = { d1: { url: "https://img.example/d1.jpg" } };
+
+  it("** no corpo do post vira <strong>, nunca sobrevive como asterisco literal", () => {
+    const MD = `# Social
+
+## d1
+
+Frase normal. **Trecho em negrito no slide do carrossel.** Mais texto.
+
+#IA
+`;
+    const groups = groupByDestaque(parsePlatforms(MD), IMAGES);
+    const html = renderDestaqueGroup(groups[0], "#000");
+    assert.ok(html.includes("<strong>Trecho em negrito no slide do carrossel.</strong>"));
+    assert.ok(!html.includes("**"), "preview não deve mostrar asterisco literal — o texto REAL publicado também não tem (stripMarkdownBold)");
+  });
+});
