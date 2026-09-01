@@ -21,6 +21,11 @@ import {
   shouldEmitReviewInstruction,
   resolveEmitDecision,
   logSuppressedReviewInstruction,
+  extractPtCloseIssueNumbers,
+  extractEnCloseIssueNumbers,
+  computeCloseKeywordAddendum,
+  extractPrNumberFromUrl,
+  ensureCloseKeywords,
 } from "../.claude/hooks/pr-create-review.mjs";
 
 // #2754/#3322/#3326: overnight (token-sensitive) sempre resolveu /code-review
@@ -1491,5 +1496,111 @@ describe("hook como processo real, fim-a-fim (#6298 fleet review, finding #3)", 
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.hookSpecificOutput.hookEventName, "PostToolUse");
     assert.match(parsed.hookSpecificOutput.additionalContext, /pull\/6282/);
+  });
+});
+
+// #6920: "Fecha #N"/"Corrige #N"/"Resolve #N"/"Encerra #N" (com flexões) em
+// português não aciona o auto-close do GitHub — só as palavras-chave em
+// inglês (close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved)
+// fecham. O guard corrige em vez de reclamar: anexa "Closes #N" ao corpo via
+// `gh pr edit`, sem tocar no texto em português já escrito.
+describe("computeCloseKeywordAddendum (#6920)", () => {
+  it("corpo com 'Fecha #N' e sem palavra-chave em inglês → produz 'Closes #N'", () => {
+    assert.equal(computeCloseKeywordAddendum("Corrige um bug.\n\nFecha #6920"), "Closes #6920");
+  });
+
+  it("corpo que já tem a palavra-chave em inglês para o mesmo N → não duplica", () => {
+    assert.equal(computeCloseKeywordAddendum("Fecha #6920\n\nCloses #6920"), null);
+  });
+
+  it("corpo sem referência de fechamento nenhuma → passa intocado (null)", () => {
+    assert.equal(computeCloseKeywordAddendum("Refatora scripts/lib/foo.ts, sem issue associada."), null);
+  });
+
+  it("flexões verbais em português (fecham, corrigindo, resolvem, encerrando)", () => {
+    assert.equal(computeCloseKeywordAddendum("Fecham #1 e #2"), "Closes #1\nCloses #2");
+    assert.equal(computeCloseKeywordAddendum("Corrigindo o bug #3"), "Closes #3");
+    assert.equal(computeCloseKeywordAddendum("Resolvem #4"), "Closes #4");
+    assert.equal(computeCloseKeywordAddendum("Encerrando #5"), "Closes #5");
+  });
+
+  it("múltiplas issues em português, uma já com Closes em inglês → só anexa a que falta", () => {
+    assert.equal(computeCloseKeywordAddendum("Fecha #10 e #11\n\nCloses #10"), "Closes #11");
+  });
+
+  it("verbo em português citando issue de OUTRO PR sem # próximo não conta (guard de distância)", () => {
+    // "Fecha" aparece, mas o "#" mais próximo está a mais de 20 chars —
+    // não deve casar como se fosse `Fecha #N`.
+    assert.equal(
+      computeCloseKeywordAddendum("Fecha o loop de retry mencionado faz tempo, ver #6920 pra contexto"),
+      null,
+    );
+  });
+});
+
+describe("extractPtCloseIssueNumbers / extractEnCloseIssueNumbers (#6920)", () => {
+  it("extrai números únicos, case-insensitive", () => {
+    assert.deepEqual(extractPtCloseIssueNumbers("fecha #1\nFECHA #1\nCorrige #2"), [1, 2]);
+    assert.deepEqual(extractEnCloseIssueNumbers("closes #3\nFixed #4"), [3, 4]);
+  });
+});
+
+describe("extractPrNumberFromUrl (#6920)", () => {
+  it("extrai o número da URL de PR", () => {
+    assert.equal(extractPrNumberFromUrl("https://github.com/o/r/pull/6920"), 6920);
+  });
+
+  it("URL sem /pull/ → null", () => {
+    assert.equal(extractPrNumberFromUrl("https://github.com/o/r/issues/6920"), null);
+  });
+});
+
+describe("ensureCloseKeywords (#6920)", () => {
+  it("anexa 'Closes #N' via gh pr edit quando o corpo só tem a forma em português", () => {
+    const calls = [];
+    const execFn = (cmd, args) => {
+      calls.push([cmd, args]);
+      if (args[1] === "view") return "Fecha #6920\n";
+      return "";
+    };
+    const result = ensureCloseKeywords("https://github.com/o/r/pull/6920", { execFn });
+    assert.equal(result.applied, true);
+    assert.equal(result.addendum, "Closes #6920");
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0], ["gh", ["pr", "view", "6920", "--json", "body", "-q", ".body"]]);
+    assert.equal(calls[1][0], "gh");
+    assert.deepEqual(calls[1][1].slice(0, 2), ["pr", "edit"]);
+    assert.match(calls[1][1][calls[1][1].length - 1], /Closes #6920/);
+  });
+
+  it("não chama 'gh pr edit' quando o corpo já está correto", () => {
+    const calls = [];
+    const execFn = (cmd, args) => {
+      calls.push(args[1]);
+      return "Closes #6920\n";
+    };
+    const result = ensureCloseKeywords("https://github.com/o/r/pull/6920", { execFn });
+    assert.equal(result.applied, false);
+    assert.deepEqual(calls, ["view"]); // nunca chega a chamar "edit"
+  });
+
+  it("gh indisponível (execFn lança) → fail-soft, nunca propaga", () => {
+    const execFn = () => {
+      throw new Error("gh: command not found");
+    };
+    assert.doesNotThrow(() => {
+      const result = ensureCloseKeywords("https://github.com/o/r/pull/6920", { execFn });
+      assert.equal(result.applied, false);
+      assert.equal(result.reason, "error");
+    });
+  });
+
+  it("URL sem número de PR reconhecível → não chama gh, fail-soft", () => {
+    const execFn = () => {
+      throw new Error("não deveria ser chamado");
+    };
+    const result = ensureCloseKeywords("https://github.com/o/r/nao-e-uma-pr", { execFn });
+    assert.equal(result.applied, false);
+    assert.equal(result.reason, "no-pr-number");
   });
 });
