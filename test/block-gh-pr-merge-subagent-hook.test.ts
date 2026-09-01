@@ -151,7 +151,7 @@ describe("shouldBlockGhPrMerge (#5716)", () => {
 });
 
 describe("readActiveCoordinatorSessionIds (#5716)", () => {
-  const roots = [];
+  const roots: string[] = [];
 
   after(() => {
     for (const root of roots) rmSync(root, { recursive: true, force: true });
@@ -166,7 +166,7 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
     return root;
   }
 
-  function writeSession(root, filename, record) {
+  function writeSession(root: string, filename: string, record: Record<string, unknown>) {
     const dir = sessionsDir(root);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, filename), JSON.stringify(record), "utf8");
@@ -520,7 +520,7 @@ describe("shouldBlockGhPrMerge — concessão escopada ao PR (#6303 Finding S)",
 // ─── readActiveCoordinatorScan — sinal de degradação (#6303 Finding B) ─────
 
 describe("readActiveCoordinatorScan (#6303 Finding B)", () => {
-  const roots = [];
+  const roots: string[] = [];
   after(() => {
     for (const root of roots) rmSync(root, { recursive: true, force: true });
   });
@@ -590,7 +590,7 @@ describe("readActiveCoordinatorScan (#6303 Finding B)", () => {
 // de outra máquina ────────────────────────────────────────────────────────
 
 describe("readActiveCoordinatorScan opts.crossMachine (#6621)", () => {
-  const roots = [];
+  const roots: string[] = [];
   after(() => {
     for (const root of roots) rmSync(root, { recursive: true, force: true });
   });
@@ -599,7 +599,7 @@ describe("readActiveCoordinatorScan opts.crossMachine (#6621)", () => {
     roots.push(root);
     return root;
   }
-  function writeSession(root, filename, record) {
+  function writeSession(root: string, filename: string, record: Record<string, unknown>) {
     const dir = sessionsDir(root);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, filename), JSON.stringify(record), "utf8");
@@ -651,7 +651,7 @@ describe("readActiveCoordinatorScan opts.crossMachine (#6621)", () => {
 });
 
 describe("classifyMergeBlockCause com scan crossMachine (#6621, incidente PR #6614)", () => {
-  const roots = [];
+  const roots: string[] = [];
   after(() => {
     for (const root of roots) rmSync(root, { recursive: true, force: true });
   });
@@ -660,7 +660,7 @@ describe("classifyMergeBlockCause com scan crossMachine (#6621, incidente PR #66
     roots.push(root);
     return root;
   }
-  function writeSession(root, filename, record) {
+  function writeSession(root: string, filename: string, record: Record<string, unknown>) {
     const dir = sessionsDir(root);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, filename), JSON.stringify(record), "utf8");
@@ -724,7 +724,7 @@ describe("shouldBlockGhPrMerge — varredura degradada anula a leniência solo (
 // ─── readMergeLockHolder — os 4 estados (#6303 Finding C/G) ────────────────
 
 describe("readMergeLockHolder — os 4 estados (#6303 Finding C, coberto por teste no Finding G)", () => {
-  const roots = [];
+  const roots: string[] = [];
   after(() => {
     for (const root of roots) rmSync(root, { recursive: true, force: true });
   });
@@ -794,7 +794,7 @@ describe("readMergeLockHolder — os 4 estados (#6303 Finding C, coberto por tes
 // ─── readLiveMergeGrantFor via arquivos reais (#6303 Finding G) ────────────
 
 describe("readLiveMergeGrantFor — arquivos reais (#6303 Finding G, clock skew do Finding A)", () => {
-  const roots = [];
+  const roots: string[] = [];
   after(() => {
     for (const root of roots) rmSync(root, { recursive: true, force: true });
   });
@@ -804,11 +804,11 @@ describe("readLiveMergeGrantFor — arquivos reais (#6303 Finding G, clock skew 
     mkdirSync(sessionsDir(root), { recursive: true });
     return root;
   }
-  function writeCoordinator(root, filename, record) {
+  function writeCoordinator(root: string, filename: string, record: Record<string, unknown>) {
     writeFileSync(join(sessionsDir(root), filename), JSON.stringify(record), "utf8");
   }
   const NOW = Date.parse("2026-08-26T12:00:00.000Z");
-  const base = (overrides) => ({
+  const base = (overrides: Record<string, unknown>) => ({
     kind: "overnight",
     sessionId: "coord-a",
     lastHeartbeat: new Date(NOW).toISOString(),
