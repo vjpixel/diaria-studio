@@ -70,7 +70,7 @@ dia — cadência e modelo INALTERADOS, só o nome ficou mais específico
 (job `645d5debb7f0`, mesmo job de antes, só o `--script` do stub mudou de
 alvo). `continuo-pr-review.sh` é NOVO: Sonnet, cron próprio (job
 `3330b108a5b2`; cadência: derivar com `hermes cron list --all`, nunca esta
-prosa — esta entrada registrava `every 240m` e um descompasso "12:1"
+prosa — esta entrada registrava "every 240m" e um descompasso "12:1"
 derivados de cadências erradas, corrigidos no #6928), review de UMA
 PR aberta `continuo/*` por vez (não o diff do dia) — existe pra dar ao
 contínuo um revisor externo separado do tick (ver #6849/#6864/#6865)

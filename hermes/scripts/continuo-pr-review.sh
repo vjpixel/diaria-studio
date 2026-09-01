@@ -13,10 +13,10 @@
 # continuo/SKILL.md`) roda com cadência bem mais curta — não citar o
 # número exato aqui (já divergiu no passado, ver CLAUDE.md; fonte canônica
 # é `hermes cron list --all`, nunca esta prosa). O comentário original
-# justificava este script com um descompasso "12:1" e uma espera de "~24h"
-# — derivados de cadências erradas (corrigido no #6928; a razão real era
-# 2:1 e a espera máxima ~2h com as cadências medidas em 01/09/2026, mas
-# NÃO confie neste número tampouco: derive). O motivo do script não depende
+# justificava este script com um descompasso e uma espera máxima que eram
+# derivados de cadências erradas — as duas muito maiores que a realidade
+# medida (corrigido no #6928; para os valores de agora, derive com
+# `hermes cron list --all`). O motivo do script não depende
 # da razão: o contínuo é impedido de mergear a própria PR (#6864), e o
 # revisor externo precisa existir separado do tick (#6865). Este
 # script fecha esse gap SEM trocar o modelo do review profundo diário por
@@ -295,7 +295,7 @@ for PR in $PR_NUMBERS; do
   if [ "$AUTH_RC" -eq 3 ]; then
     # #738/CLAUDE.md: falha de infra (gh indisponível, PR sumiu) não é
     # motivo pra tentar revisar às cegas — pula esta PR nesta rodada,
-    # tenta de novo no próximo tick (~2h).
+    # tenta de novo no próximo tick (intervalo: `hermes cron list --all`).
     echo "[continuo-pr-review] PR #$PR: check-pr-review-authenticity.ts falhou (infra) — pulando esta rodada: $AUTH_OUT" >&2
     # Review #6871 (P3): contar no resumo final — sem isso o tick reporta
     # "revisadas=X já-tinham-review=Y falharam=Z" que não bate com o total

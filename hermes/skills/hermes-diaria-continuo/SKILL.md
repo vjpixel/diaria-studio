@@ -543,11 +543,10 @@ MESMO ciclo enquanto houver orçamento.
 ## Changelog
 
 - 0.5.14 (01/09/2026): #6928 — cadências dos 2 crons do contínuo estavam
-  erradas em prosa, nas duas direções (o tick registrado como valor 2× o
-  real, o review de PR como 2× o real na direção oposta), e o descompasso
-  "12:1"/espera "~24h" do #6865 era derivado dos números errados (real
-  medido em 01/09/2026: 2:1 e ~2h — não re-registrar; deriva com
-  `hermes cron list --all`). Todas as menções numéricas de cadência
+  erradas em prosa, ambas registrando o dobro do valor real, e o
+  descompasso/espera máxima que o #6865 citava era derivado desses números
+  errados (os valores de agora não são re-registrados aqui de propósito:
+  deriva com `hermes cron list --all`). Todas as menções numéricas de cadência
   saíram da prosa deste arquivo, do `hermes/README.md` e dos 2 scripts de
   review — substituídas pelo ponteiro de derivação. Guard:
   `test/continuo-cadence-prose-drift-6928.test.ts` falha se os tokens
