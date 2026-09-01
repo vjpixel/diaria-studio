@@ -740,6 +740,130 @@ export function extractCreatedPrUrl(text) {
 }
 
 /**
+ * #6920: GitHub só reconhece as palavras-chave de auto-close em INGLÊS
+ * (close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved). Este
+ * projeto escreve corpo de PR em português (`Fecha #N`, `Corrige #N`,
+ * `Resolve #N`, `Encerra #N`, flexões incluídas) — o texto declara a
+ * intenção, o GitHub não entende, a issue nunca fecha sozinha (achado #6920:
+ * 14 de 90 issues abertas, 16%, já resolvidas e mergeadas). Duplicado
+ * (não importado de scripts/lib/) pelo mesmo motivo documentado no topo do
+ * arquivo: este hook é self-contained de propósito.
+ *
+ * As duas listas abaixo compartilham o mesmo formato de regex
+ * (`\b(?:verbo)\b` seguido, a até 20 chars de distância sem quebra de linha
+ * nem outro `#`, de `#<número>`) para tratar "Fecha o bug #123" e "Fecha
+ * #123" da mesma forma sem também casar "#123 fecha a fase 2 do projeto"
+ * (o `#` tem que vir DEPOIS do verbo).
+ */
+const PT_CLOSE_VERBS = [
+  "fecha",
+  "fecham",
+  "fechando",
+  "corrige",
+  "corrigem",
+  "corrigindo",
+  "resolve",
+  "resolvem",
+  "resolvendo",
+  "encerra",
+  "encerram",
+  "encerrando",
+];
+
+const EN_CLOSE_KEYWORDS = [
+  "close",
+  "closes",
+  "closed",
+  "fix",
+  "fixes",
+  "fixed",
+  "resolve",
+  "resolves",
+  "resolved",
+];
+
+function extractIssueNumbersByVerb(body, verbs) {
+  if (typeof body !== "string" || body.length === 0) return [];
+  // Captura a "cauda" inteira depois do verbo — permite "Fecha #10 e #11"
+  // (múltiplas issues no mesmo verbo), cada repetição do grupo exigindo até
+  // 20 chars sem quebra de linha nem outro `#` antes do próximo `#<número>`.
+  // A quebra de linha corta a cauda de propósito (evita colar o verbo de uma
+  // frase com o `#` de um parágrafo seguinte não relacionado).
+  const re = new RegExp(`\\b(?:${verbs.join("|")})\\b((?:[^\\n#]{0,20}#\\d+)+)`, "gi");
+  const nums = new Set();
+  let match;
+  while ((match = re.exec(body)) !== null) {
+    const numRe = /#(\d+)/g;
+    let numMatch;
+    while ((numMatch = numRe.exec(match[1])) !== null) {
+      nums.add(Number(numMatch[1]));
+    }
+  }
+  return [...nums];
+}
+
+/** Issues que o corpo declara fechar em PORTUGUÊS (`Fecha #N` e variantes). */
+export function extractPtCloseIssueNumbers(body) {
+  return extractIssueNumbersByVerb(body, PT_CLOSE_VERBS);
+}
+
+/** Issues que o corpo já declara fechar com a palavra-chave em INGLÊS que o GitHub reconhece. */
+export function extractEnCloseIssueNumbers(body) {
+  return extractIssueNumbersByVerb(body, EN_CLOSE_KEYWORDS);
+}
+
+/**
+ * Computa o texto a ANEXAR ao corpo da PR para que o GitHub feche, ao merge,
+ * toda issue que o corpo já declara fechar em português mas ainda não em
+ * inglês. Retorna `null` quando nada precisa mudar — corpo sem referência em
+ * português (passa intocado), ou issue que já tem a palavra-chave em inglês
+ * para o MESMO número (nunca duplica). Nunca REMOVE nem reescreve o texto em
+ * português — a issue #6920 é explícita: a forma em português é boa
+ * comunicação, o defeito é só a ausência do gatilho que o GitHub entende.
+ */
+export function computeCloseKeywordAddendum(body) {
+  const ptNums = extractPtCloseIssueNumbers(body);
+  if (ptNums.length === 0) return null;
+  const enNums = new Set(extractEnCloseIssueNumbers(body));
+  const missing = ptNums.filter((n) => !enNums.has(n));
+  if (missing.length === 0) return null;
+  return missing.map((n) => `Closes #${n}`).join("\n");
+}
+
+/** Extrai o número da PR de uma URL `https://github.com/{org}/{repo}/pull/{n}`. */
+export function extractPrNumberFromUrl(prUrl) {
+  const match = /\/pull\/(\d+)/.exec(typeof prUrl === "string" ? prUrl : "");
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * Lê o corpo atual da PR recém-criada via `gh pr view`, computa o addendum
+ * (função pura acima) e, se necessário, anexa via `gh pr edit --body`. Corrige
+ * em vez de reclamar (Passo 2a da #6920) — o texto em português continua
+ * sendo o que o humano lê, o `Closes #N` em inglês é só o que falta pro
+ * GitHub entender. Fail-soft total: qualquer erro (gh indisponível, PR
+ * deletada entre create e este passo, JSON malformado) nunca propaga — este
+ * hook não pode bloquear nem atrasar a criação da PR, que já aconteceu.
+ */
+export function ensureCloseKeywords(prUrl, { execFn = execFileSync } = {}) {
+  try {
+    const num = extractPrNumberFromUrl(prUrl);
+    if (!num) return { applied: false, reason: "no-pr-number" };
+    const body = execFn("gh", ["pr", "view", String(num), "--json", "body", "-q", ".body"], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    const addendum = computeCloseKeywordAddendum(body);
+    if (!addendum) return { applied: false, reason: "not-needed" };
+    const newBody = `${body.replace(/\s+$/, "")}\n\n${addendum}\n`;
+    execFn("gh", ["pr", "edit", String(num), "--body", newBody], { encoding: "utf8", timeout: 10_000 });
+    return { applied: true, addendum };
+  } catch {
+    return { applied: false, reason: "error" };
+  }
+}
+
+/**
  * #6298 fix 2: reconfere se o comando que gerou este `PostToolUse` é de fato
  * um `gh pr create` — o `if: "Bash(gh pr create*)"` de `.claude/settings.json`
  * é o filtro documentado (ver cabeçalho do arquivo), mas a issue #6298
@@ -949,6 +1073,10 @@ if (
       const command = payload.tool_input?.command;
       const { prUrl, reason: emitReason } = resolveEmitDecision(resp, command);
       if (prUrl) {
+        // #6920: corrige "Fecha #N" (não reconhecido pelo GitHub) anexando
+        // "Closes #N" ANTES do review — melhor esforço, nunca bloqueia o
+        // resto do hook se falhar (fail-soft dentro de ensureCloseKeywords).
+        ensureCloseKeywords(prUrl);
         // #5156: repassa o session_id deste hook (a sessão que rodou `gh pr create`)
         // pra resolveEffort — permite que isOvernightRoundActive discrimine
         // marker com session_id sem quebrar o caminho default (marker sem
