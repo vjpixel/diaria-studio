@@ -21,6 +21,13 @@
  *      kill (reproduzido ao vivo: `fetch_failed` com "offline ou erro de rede"
  *      era enganoso quando a causa real era um fetch grande ainda em
  *      andamento).
+ *   2b. #6800: ANTES de tentar stash, checa se há caminho(s) JÁ unmerged (UU/AA/
+ *      etc) no índice — sobra de um "stash pop" conflitante de uma rodada
+ *      ANTERIOR (git stash recusa rodar nesse estado, então "stash_failed"
+ *      genérico repetiria pra sempre sem nenhuma execução futura se
+ *      recuperar sozinha — estado ABSORVENTE, não transitório). Outcome
+ *      distinto "preexisting_unmerged_state" (ERROR, ainda fail-soft) — ver
+ *      parseUnmergedPaths()/uso em syncCodeLocked.
  *   3. Se working tree suja → stash → merge --ff-only origin/master → stash pop
  *      (reversível). Se stash falhar E nenhum stash tiver sido criado → warn +
  *      retorna sem tocar o tree ("stash_failed"). Se stash pop falhar (conflito
@@ -157,7 +164,16 @@ export type GitSyncOutcome =
                            // stash_pop_failed (arquivo sintaticamente quebrado, não só "pop não terminou"),
                            // mas AINDA fail-soft (proceed: true) — warn ERROR, segue
   | "checkout_failed"     // não estava em master e checkout master falhou — warn, segue
-  | "sync_in_progress";   // #3423: outro syncCode() já está rodando neste checkout — warn, segue sem tocar git
+  | "sync_in_progress"    // #3423: outro syncCode() já está rodando neste checkout — warn, segue sem tocar git
+  | "preexisting_unmerged_state"; // #6800: caminho(s) UU/AA/etc JÁ presentes no índice ANTES de
+                           // qualquer tentativa de stash desta chamada — sobra de um "stash pop"
+                           // conflitante de uma rodada ANTERIOR (não desta). ESTADO ABSORVENTE:
+                           // "git stash" recusa rodar com caminhos unmerged, então nenhuma
+                           // chamada futura de syncCode() se recupera sozinha — diferente de
+                           // "stash_failed" comum (transitório, workable na próxima rodada).
+                           // ERROR, fail-soft (proceed: true), mas o consumidor (sync-code.ts)
+                           // deve tratar como mais urgente que qualquer outro warning — ver
+                           // #6800.
 
 /** Resultado completo do sync. */
 export interface GitSyncResult {
@@ -704,6 +720,22 @@ export function defaultSpawn(cmd: string, args: string[], timeoutMs: number = GI
 const UNMERGED_STATUS_CODES = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
 
 /**
+ * Núcleo puro (#6800, extraído de findUnmergedPaths para reuso): dado o
+ * stdout literal de `git status --porcelain`, retorna os caminhos marcados
+ * como unmerged. Sem spawn, sem I/O — reusado tanto por findUnmergedPaths
+ * (chama git status de novo, pós-stash-pop, #6668) quanto pela checagem de
+ * estado PRÉ-EXISTENTE em syncCodeLocked (#6800, reusa o git status do
+ * passo 4 sem gastar um spawn extra — MAX_SEQUENTIAL_GIT_SPAWNS já
+ * documenta o orçamento de spawns por chamada).
+ */
+export function parseUnmergedPaths(porcelainStdout: string): string[] {
+  return porcelainStdout
+    .split("\n")
+    .filter((line) => line.length > 3 && UNMERGED_STATUS_CODES.has(line.slice(0, 2)))
+    .map((line) => line.slice(3).trim());
+}
+
+/**
  * Lista os caminhos (relativos ao repo) que `git status --porcelain` reporta
  * como unmerged agora mesmo — usado depois de um `git stash pop` para
  * detectar conflito deixado no disco (#6668), independente do exit code do
@@ -728,10 +760,7 @@ function findUnmergedPaths(spawn: SpawnFn, warnings?: string[]): string[] {
     );
     return [];
   }
-  return res.stdout
-    .split("\n")
-    .filter((line) => line.length > 3 && UNMERGED_STATUS_CODES.has(line.slice(0, 2)))
-    .map((line) => line.slice(3).trim());
+  return parseUnmergedPaths(res.stdout);
 }
 
 function isAlreadyUpToDate(stdout: string): boolean {
@@ -872,6 +901,45 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
     );
   }
   const isDirty = statusRes.status !== 0 || statusRes.stdout.trim().length > 0;
+
+  // #6800: detecta ESTADO ABSORVENTE — caminho(s) já unmerged (UU/AA/etc)
+  // ANTES de qualquer tentativa de stash desta chamada. Reusa o statusRes já
+  // obtido acima (nenhum spawn extra) via parseUnmergedPaths — o mesmo
+  // núcleo puro que findUnmergedPaths usa pós-pop (#6668), aqui aplicado
+  // ANTES. Isso só pode ser sobra de um "stash pop" conflitante de uma
+  // rodada ANTERIOR (#6668 já cobre o conflito NOVO desta própria chamada,
+  // mais abaixo) — "git stash" recusa rodar com o índice em estado unmerged,
+  // então SEM esta checagem o fluxo cairia no "stash_failed" genérico
+  // (transitório por natureza) toda vez, indistinguível de uma falha
+  // passageira. Reproduzido ao vivo (documentado no #6800): uma sessão
+  // ficou 14 commits atrás de origin/master porque toda execução de
+  // syncCode() batia nesse muro desde o primeiro pop conflitante, sem
+  // nenhuma delas se recuperar. Checado ANTES do branch isDirty porque um
+  // caminho UU também marca a tree como dirty — sem este early-return,
+  // cairia no caminho normal de stash e falharia com a mensagem genérica.
+  if (statusRes.status === 0) {
+    const preexistingUnmerged = parseUnmergedPaths(statusRes.stdout);
+    if (preexistingUnmerged.length > 0) {
+      const msg =
+        `[git-sync] ERROR: ${preexistingUnmerged.length} caminho(s) JÁ em estado unmerged (UU/AA/etc) ` +
+        `ANTES de qualquer tentativa de sync desta chamada: ${preexistingUnmerged.join(", ")}. ESTADO ` +
+        `ABSORVENTE (#6800) — sobra de um stash pop conflitante de uma rodada ANTERIOR (não desta). ` +
+        `git stash recusa rodar com caminhos unmerged, então NENHUMA chamada futura de syncCode() se ` +
+        `recupera sozinha até intervenção manual. Resolva um destes: (1) git checkout HEAD -- <arquivo> ` +
+        `para descartar o lado local em favor do upstream já mergeado — correto quando o stash for mais ` +
+        `velho que o commit atual; (2) resolva os marcadores de conflito manualmente e git add <arquivo>; ` +
+        `em ambos os casos, confira git stash list antes de qualquer git stash drop — pode haver conteúdo ` +
+        `genuinamente não-mergeado preservado ali.`;
+      warnings.push(msg);
+      return {
+        outcome: "preexisting_unmerged_state",
+        message: msg,
+        branch_before: branchBefore,
+        warnings,
+        proceed: true,
+      };
+    }
+  }
 
   if (isDirty) {
     // ── 5a. Dirty tree: stash → merge --ff-only → stash pop ────────────────

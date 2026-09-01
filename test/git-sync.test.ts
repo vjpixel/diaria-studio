@@ -39,6 +39,7 @@ import {
   createFileLock,
   resolveSharedLockPath,
   resolveSharedLockPathCached,
+  parseUnmergedPaths,
   REPO_ROOT,
   GIT_TIMEOUT_MS,
   GIT_FETCH_TIMEOUT_MS,
@@ -447,6 +448,91 @@ describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco
     const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "synced_stashed");
     assert.equal(r.proceed, true);
+  });
+});
+
+describe("git-sync — #6800: parseUnmergedPaths (núcleo puro extraído)", () => {
+  it("reconhece os 7 códigos de conflito reservados pelo git (DD/AU/UD/UA/DU/AA/UU)", () => {
+    const porcelain = ["DD a.txt", "AU b.txt", "UD c.txt", "UA d.txt", "DU e.txt", "AA f.txt", "UU g.txt"].join("\n");
+    assert.deepEqual(parseUnmergedPaths(porcelain), ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt", "g.txt"]);
+  });
+
+  it("não confunde mudança comum (MM/AM/RM) com unmerged", () => {
+    const porcelain = ["MM a.txt", "AM b.txt", "RM c.txt -> d.txt", " M e.txt"].join("\n");
+    assert.deepEqual(parseUnmergedPaths(porcelain), []);
+  });
+
+  it("stdout vazio retorna lista vazia", () => {
+    assert.deepEqual(parseUnmergedPaths(""), []);
+  });
+});
+
+describe("git-sync — #6800: estado ABSORVENTE (caminho(s) já unmerged ANTES de qualquer tentativa de stash)", () => {
+  /**
+   * Reprodução real (#6800, 01/09/2026): um stash pop conflitante de uma
+   * rodada ANTERIOR deixou UU no índice. git stash recusa rodar nesse
+   * estado ("error: ... you have unmerged files") — sem esta checagem, TODA
+   * chamada futura de syncCode() cairia no stash_failed genérico (tratado
+   * como transitório), sem nenhuma se recuperar sozinha. O checkout ficou
+   * 14 commits atrás de origin/master em silêncio antes de alguém notar.
+   */
+  it("git status --porcelain já mostra UU (nenhum stash tentado ainda) -> preexisting_unmerged_state, ERROR, fail-soft", () => {
+    let stashCalled = false;
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key.startsWith("git stash")) stashCalled = true;
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok("UU scripts/track-quality-report.ts\nUU test/track-quality-report.test.ts"),
+      })(cmd, args);
+    };
+
+    const r = syncCode(spawn, NOOP_LOCK);
+    assert.equal(r.outcome, "preexisting_unmerged_state");
+    assert.equal(r.proceed, true, "ainda fail-soft — nunca bloqueia a edição");
+    assert.match(r.message, /ERROR/);
+    assert.match(r.message, /ABSORVENTE/i);
+    assert.match(r.message, /track-quality-report\.ts/);
+    assert.equal(stashCalled, false, "não deve tentar git stash quando o índice já está unmerged — o comando recusaria de qualquer forma");
+  });
+
+  it("estado unmerged com 1 único caminho (AA, não UU) também é detectado", () => {
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("master"),
+      "git fetch origin": ok(""),
+      "git status --porcelain": ok("AA conflito-de-add.txt"),
+    });
+
+    const r = syncCode(spawn, NOOP_LOCK);
+    assert.equal(r.outcome, "preexisting_unmerged_state");
+  });
+
+  it("status --porcelain SEM unmerged (só mudança comum) não regride — segue pro caminho normal de stash", () => {
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("master"),
+      "git fetch origin": ok(""),
+      "git status --porcelain": ok(" M arquivo-normal.txt"),
+      "git stash --include-untracked": ok("Saved working directory..."),
+      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
+      "git stash pop": ok("On branch master..."),
+    });
+    const r = syncCode(spawn, NOOP_LOCK);
+    assert.notEqual(r.outcome, "preexisting_unmerged_state");
+    assert.equal(r.outcome, "synced_stashed");
+  });
+
+  it("se git status --porcelain FALHA (status != 0), a checagem de pré-existência não dispara falso-positivo — cai no caminho 'dirty por segurança' já existente", () => {
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("master"),
+      "git fetch origin": ok(""),
+      "git status --porcelain": fail("fatal: unable to read index file", 1),
+      "git stash --include-untracked": ok("Saved working directory..."),
+      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
+      "git stash pop": ok("On branch master..."),
+    });
+    const r = syncCode(spawn, NOOP_LOCK);
+    assert.notEqual(r.outcome, "preexisting_unmerged_state");
   });
 });
 
