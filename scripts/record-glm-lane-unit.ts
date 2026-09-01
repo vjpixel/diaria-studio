@@ -23,7 +23,14 @@
  *     --duration-sec 720 \
  *     --credits-before '{"ok":true,"totalUsageUsd":10.5,...}' \
  *     --credits-after '{"ok":true,"totalUsageUsd":10.52,...}' \
- *     --pr-number 6941   # ou "" se nenhuma PR foi aberta
+ *     --pr-number 6941 \  # ou "" se nenhuma PR foi aberta
+ *     --status completed  # ou infra-error (#6941, ver GlmLaneUnitRecord.status)
+ *
+ * `--status` é OBRIGATÓRIO — sem valor `completed`/`infra-error`
+ * reconhecido, o script recusa gravar (exit 2). Ausência silenciosa
+ * aqui seria pior que um erro alto: `computeGlmLaneState` usa `status`
+ * pra excluir infra-error dos critérios de morte que julgam o modelo, e
+ * um registro sem esse campo corromperia essa distinção.
  */
 
 import { appendFileSync, mkdirSync } from "node:fs";
@@ -71,11 +78,16 @@ if (isMainModule(import.meta.url)) {
   const creditsBeforeRaw = values["credits-before"];
   const creditsAfterRaw = values["credits-after"];
   const prNumberRaw = values["pr-number"];
+  const statusRaw = values.status;
 
   if (!unitsLogPath || !issueRaw || !startedAt || !endedAt) {
     console.error(
-      "[record-glm-lane-unit] uso: --units-log PATH --issue N --started-at ISO --ended-at ISO [--duration-sec N] [--credits-before JSON] [--credits-after JSON] [--pr-number N]",
+      "[record-glm-lane-unit] uso: --units-log PATH --issue N --started-at ISO --ended-at ISO --status completed|infra-error [--duration-sec N] [--credits-before JSON] [--credits-after JSON] [--pr-number N]",
     );
+    process.exit(2);
+  }
+  if (statusRaw !== "completed" && statusRaw !== "infra-error") {
+    console.error(`[record-glm-lane-unit] --status precisa ser 'completed' ou 'infra-error', recebido: ${statusRaw}`);
     process.exit(2);
   }
 
@@ -90,7 +102,8 @@ if (isMainModule(import.meta.url)) {
     durationSec: durationSecRaw ? Number(durationSecRaw) : null,
     costUsd,
     prNumber: prNumberRaw && prNumberRaw.trim() !== "" ? Number(prNumberRaw) : null,
-    reviewRounds: null, // preenchido depois, por um reconciliador separado (fora de escopo desta unidade)
+    reviewRounds: null, // preenchido depois, por um reconciliador separado (fora de escopo desta unidade — ver docstring do campo em glm-lane-gate.ts)
+    status: statusRaw,
   };
 
   mkdirSync(dirname(unitsLogPath), { recursive: true });

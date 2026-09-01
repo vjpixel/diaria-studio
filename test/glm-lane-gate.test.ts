@@ -113,6 +113,7 @@ function unit(overrides: Partial<GlmLaneUnitRecord> = {}): GlmLaneUnitRecord {
     costUsd: 0.01,
     prNumber: 100,
     reviewRounds: null,
+    status: "completed",
     ...overrides,
   };
 }
@@ -174,5 +175,39 @@ describe("computeGlmLaneState (#6930)", () => {
   it("sonnetLaneCostPerIssueUsd é repassado como veio (não calculado aqui)", () => {
     const state = computeGlmLaneState([], { unitsCap: 10, sonnetLaneCostPerIssueUsd: 1.23 });
     assert.equal(state.sonnetLaneCostPerIssueUsd, 1.23);
+  });
+});
+
+describe("computeGlmLaneState (#6941) — status:'infra-error' excluído dos critérios que julgam o modelo", () => {
+  it("unidade infra-error CONTA pro unitsDispatched (teto de 10 inclui falha de infra)", () => {
+    const state = computeGlmLaneState([unit({ status: "infra-error" })], {
+      unitsCap: 10,
+      sonnetLaneCostPerIssueUsd: null,
+    });
+    assert.equal(state.unitsDispatched, 1);
+  });
+
+  it("3 unidades infra-error não contam pro firstThreeHadAnyPr — critério continua null (não avaliável)", () => {
+    const state = computeGlmLaneState(
+      [unit({ status: "infra-error", prNumber: null }), unit({ status: "infra-error", prNumber: null }), unit({ status: "infra-error", prNumber: null })],
+      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null },
+    );
+    assert.equal(state.firstThreeHadAnyPr, null);
+  });
+
+  it("2 unidades completed sem PR + 1 infra-error (total 3 registros) → firstThreeHadAnyPr ainda null (só 2 unidades de MODELO)", () => {
+    const state = computeGlmLaneState(
+      [unit({ status: "completed", prNumber: null }), unit({ status: "infra-error", prNumber: null }), unit({ status: "completed", prNumber: null })],
+      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null },
+    );
+    assert.equal(state.firstThreeHadAnyPr, null);
+  });
+
+  it("custo de unidade infra-error nunca entra em costPerIssueUsd, mesmo com PR/custo preenchidos", () => {
+    const state = computeGlmLaneState(
+      [unit({ status: "infra-error", prNumber: 1, costUsd: 999 }), unit({ status: "completed", prNumber: 2, costUsd: 0.1 })],
+      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null },
+    );
+    assert.equal(state.costPerIssueUsd, 0.1);
   });
 });

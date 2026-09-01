@@ -82,6 +82,25 @@ exceção **não implica** que ele foi consertado.
 **Teto: 10 unidades.** Esgotadas, o piloto acaba — continuar exige decisão nova
 e escrita. **Reverter é apagar o ponteiro no `CLAUDE.md` e este arquivo.**
 
+**Critérios de morte adicionais (#6930/#6941, especificados durante a
+construção do harness — mecânicos, em `scripts/lib/glm-lane-gate.ts`,
+checados a cada despacho por `scripts/check-glm-lane-gate.ts`):**
+
+2. **Zero PRs nos 3 primeiros despachos** — sinal medido em #6922 (10 ticks
+   consecutivos do primário mais barato: zero claims, zero PRs, relatório
+   coerente). O modo de falha do modelo barato em trabalho autônomo não é
+   "erra", é "para cedo e relata bem".
+3. **Média de rodadas de review > 2** (inerte até um reconciliador de
+   `reviewRounds` existir — ver `GlmLaneUnitRecord` em `glm-lane-gate.ts`).
+4. **`$/issue` do GLM acima do equivalente no lane Sonnet** (inerte até
+   `GLM_LANE_SONNET_COST_PER_ISSUE_USD` ser configurada — sem baseline, o
+   repo não tem hoje uma fonte pronta pra esse número; decisão explícita de
+   não inventar um).
+
+Unidade que falhou por infraestrutura (timeout, rede — `status:
+"infra-error"` em `units.jsonl`) ainda conta pro teto de 10, mas é excluída
+dos critérios 2-4, que julgam o MODELO, não a infra.
+
 ## O que a exceção NÃO autoriza
 
 - Não se pronuncia sobre a **delegação do contínuo**, que já usa o mesmo
@@ -103,28 +122,52 @@ e escrita. **Reverter é apagar o ponteiro no `CLAUDE.md` e este arquivo.**
 
 `scripts/dispatch-glm-lane-unit.sh <ISSUE>` — despacha 1 unidade. Impõe (b)
 e (c) mecanicamente: `--tools` explícito omite `gh pr merge`/`gh pr
-review`/`gh issue close|edit`; `--model z-ai/glm-5.3-flash` sempre passado.
-Reivindica a issue (`session-registry.ts claim-issue`), roda num worktree
-isolado, invoca `hermes/scripts/claude-openrouter.sh` UMA VEZ (nunca sessão
-de vida longa), tira snapshot de `/api/v1/credits`
-(`scripts/glm-lane-credits.ts`) antes e depois, e registra a unidade
-append-only em `data/glm-lane/units.jsonl`
-(`scripts/record-glm-lane-unit.ts`).
+review`/`gh issue close|edit` E escopa `git`/`npm`/`npx` a subcomandos
+específicos (nunca `Bash(git:*)`/`Bash(npm:*)`/`Bash(npx:*)` genéricos —
+achado de review, #6941: esses genéricos permitiam `git push` direto pra
+`master` e `npm exec -- gh pr merge` driblando o allowlist inteiro);
+`--model z-ai/glm-5.3-flash` sempre passado. **NÃO reivindica a issue
+sozinho** — a reivindicação é responsabilidade do COORDENADOR, como comando
+standalone ANTES de chamar o script (`session-registry.ts claim-issue`;
+achado de review: `--session-id` só é injetado automaticamente numa
+chamada de TOPO da ferramenta Bash, nunca numa chamada enterrada dentro de
+um script — um `claim-issue` daqui dentro sempre falharia). O script só
+CONFERE que a claim existe (`is-claimed`) e recusa despachar se não achar.
+Roda num worktree isolado (removido ao final, sucesso ou falha), invoca
+`hermes/scripts/claude-openrouter.sh` UMA VEZ (nunca sessão de vida longa),
+tira snapshot de `/api/v1/credits` (`scripts/glm-lane-credits.ts`) antes e
+depois, e registra a unidade append-only em `data/glm-lane/units.jsonl`
+(`scripts/record-glm-lane-unit.ts`) — incluindo se a invocação terminou
+(`status: "completed"`) ou falhou por infra (`"infra-error"`, excluído dos
+critérios de morte 2-4 acima).
 
 Antes de CADA despacho, `scripts/check-glm-lane-gate.ts` (lógica pura em
-`scripts/lib/glm-lane-gate.ts`) avalia o teto de 10 unidades e os 3
-critérios de morte contra o histórico já registrado — recusa a 11ª
-unidade e qualquer unidade além de um critério disparado, por construção.
-A condição (a) — issue de aceite mecânico — continua seleção humana; o
-harness recebe o número da issue já escolhida, nunca decide isso sozinho.
+`scripts/lib/glm-lane-gate.ts`) avalia o teto de 10 unidades e os critérios
+de morte contra o histórico já registrado — recusa a 11ª unidade e
+qualquer unidade além de um critério disparado, por construção. A condição
+(a) — issue de aceite mecânico — continua seleção humana; o harness
+recebe o número da issue já escolhida, nunca decide isso sozinho.
 
-**Nenhuma unidade real foi despachada ainda** — harness entregue com
-teste (`test/glm-lane-*.test.ts`, `test/dispatch-glm-lane-unit.test.ts`),
-aguardando a 1ª issue escolhida pelo coordenador.
+**Nenhuma unidade real foi despachada ainda** — harness entregue com teste
+(`test/glm-lane-gate.test.ts`, `test/glm-lane-credits.test.ts`,
+`test/check-glm-lane-gate.test.ts`, `test/record-glm-lane-unit.test.ts`,
+`test/dispatch-glm-lane-unit.test.ts`), aguardando a 1ª issue escolhida
+pelo coordenador.
+
+**Risco residual, não fechado por este harness**: `--tools` restringe
+subcomandos específicos, mas não é uma sandbox — um modelo adversarial com
+`Write` ainda pode escrever um arquivo `.ts` que chama `gh pr merge` via
+`execSync` e rodá-lo com `Bash(npx tsx:*)`. Fechar isso por completo exige
+sandbox de processo/container, fora de escopo desta PR (mesmo risco que
+já existe, sem escopo NENHUM de `--tools`, na delegação padrão do
+contínuo — ver `hermes-diaria-continuo/SKILL.md` §4 passo 2).
 
 ## Relacionadas
 
 #6930 (a proposta e o desenho), #6716 (o vazamento de Sonnet no wrapper),
 #6926 (o merger automático de que o lane depende), #6864 (por que a condição
 (b) é mecânica), #5608 e #6714 (a regra a que isto abre exceção), #6935 (o
-teto do `CLAUDE.md`).
+teto do `CLAUDE.md`), #6922 (o modo de falha "para cedo e relata bem" que
+motiva o critério de morte 2), #6941 (review do harness — achados que
+endureceram `--tools`, `status`/infra-error, e moveram claim-issue pra
+fora do script).
