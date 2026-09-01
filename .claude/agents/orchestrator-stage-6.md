@@ -508,13 +508,12 @@ limpa e no-op).
 **Escopo:** so votos `diaria` (default do script, sem `--brand`). O mensal (Clarice)
 usa `--brand clarice` e fica FORA deste auto-run diario — nao tocar.
 
-**Checar auth wrangler antes de rodar (label `local`, #2643).** Rodar com um timeout
-curto explicito (ex: 15000ms via o parametro de timeout da tool de Bash) — `wrangler
-whoami` so le config local e nao deveria abrir browser, mas o proprio
-`check-cloudflare-token.ts` evita esse comando justamente por risco de side-effect de
-login interativo; o timeout e a rede de seguranca contra qualquer stall:
+**Checar auth wrangler antes de rodar (label `local`, #2643).** Usar `scripts/check-wrangler-auth.ts` (#6900) —
+NUNCA `npx wrangler whoami` cru: valida identidade ERRADA (env normal, com token), não a de `purge-leaderboard.ts`
+(env sem token, sessao OAuth — #2265; falso-positivo ja ao vivo em 260901, guard cru passou com OAuth expirada e a
+purga falhou com `Authentication error [code: 10000]`). Roda `wrangler whoami` com o env sanitizado (`scripts/lib/cloudflare-oauth-env.ts`):
 ```bash
-npx wrangler whoami
+npx tsx scripts/check-wrangler-auth.ts
 ```
 - **Exit 0** (lista a conta logada) → prosseguir com a purga abaixo.
 - **Exit != 0, OU o comando estourar o timeout** (nao logado — tipico de sessao cloud

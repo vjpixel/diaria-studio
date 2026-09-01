@@ -47,6 +47,7 @@ import {
   commitAndPushSitePage,
   productionDeps,
   createExecFileSyncLockRunner,
+  needsShellForNpx,
   EditionInputsInvalid,
   type PublishPageDeps,
   type GitRunner,
@@ -1010,6 +1011,70 @@ describe("#6630 defaultLockRunner nunca trava indefinidamente", () => {
 
     assert.equal(result.ok, false);
     assert.match(result.stderr, /ETIMEDOUT/);
+  });
+});
+
+describe("#6899 execFileSync('npx', ...) precisa de shell:true no Windows", () => {
+  it("needsShellForNpx é true só em win32 — puro, sem tocar process.platform real", () => {
+    assert.equal(needsShellForNpx("win32"), true);
+    assert.equal(needsShellForNpx("linux"), false);
+    assert.equal(needsShellForNpx("darwin"), false);
+  });
+
+  it("platform win32: createExecFileSyncLockRunner passa shell:true pro exec injetado", () => {
+    let capturedOptions: Record<string, unknown> | undefined;
+    const fakeExec = (
+      _cmd: string,
+      _args: string[],
+      options: { cwd: string; stdio: ["ignore", "pipe", "pipe"]; timeout: number; shell?: boolean },
+    ) => {
+      capturedOptions = options as unknown as Record<string, unknown>;
+      return Buffer.from("ok");
+    };
+    const runner = createExecFileSyncLockRunner(fakeExec, "win32");
+    const result = runner(["merge-lock-acquire"], "/repo");
+
+    assert.equal(capturedOptions?.shell, true, "sem shell:true, execFileSync('npx',...) lança ENOENT no Windows");
+    assert.equal(result.ok, true);
+  });
+
+  it("platform linux/darwin: createExecFileSyncLockRunner NÃO passa shell — evita risco de escaping à toa", () => {
+    let capturedOptions: Record<string, unknown> | undefined;
+    const fakeExec = (
+      _cmd: string,
+      _args: string[],
+      options: { cwd: string; stdio: ["ignore", "pipe", "pipe"]; timeout: number; shell?: boolean },
+    ) => {
+      capturedOptions = options as unknown as Record<string, unknown>;
+      return Buffer.from("ok");
+    };
+    const runner = createExecFileSyncLockRunner(fakeExec, "linux");
+    runner(["merge-lock-acquire"], "/repo");
+
+    assert.equal(capturedOptions?.shell, undefined);
+  });
+
+  it("regressão: ENOENT sem detalhe (stdout/stderr undefined) é exatamente o sintoma reportado no #6899", () => {
+    // Reproduz o erro real de execFileSync('npx', ...) sem shell:true no
+    // Windows — err.stdout/err.stderr ficam undefined, daí a mensagem "sem
+    // detalhe" no halt do Stage 6. O fix (shell:true) evita que esse catch
+    // dispare; este teste documenta o formato do erro que o fix elimina.
+    const enoentError = Object.assign(new Error("spawnSync npx ENOENT"), {
+      status: null,
+      errno: -4058,
+      code: "ENOENT",
+      stdout: undefined,
+      stderr: undefined,
+    });
+    const fakeExec = () => {
+      throw enoentError;
+    };
+    const runner = createExecFileSyncLockRunner(fakeExec, "win32");
+    const result = runner(["merge-lock-acquire"], "/repo");
+
+    assert.equal(result.ok, false);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
   });
 });
 

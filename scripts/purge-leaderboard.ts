@@ -94,6 +94,7 @@ import { dohFetch } from "./lib/doh-fetch.ts"; // #4474
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #4474
 import { summarizePurgeDoResults, type PurgeDoStepResult } from "./lib/purge-leaderboard-do-summary.ts"; // #4477 achado 1
 import type { Brand } from "../workers/poll/src/lib.ts"; // #4477 achado 3
+import { sanitizedCloudflareOAuthEnv } from "./lib/cloudflare-oauth-env.ts"; // #6900
 
 // #2265: NAMESPACE_ID do POLL (KV). Auth e acesso ao KV vão pelo WRANGLER (auth
 // global do CLI), não mais pela CF REST API com CLOUDFLARE_API_TOKEN — o token
@@ -112,9 +113,9 @@ function wrangler(wargs: string[]): string {
   // do env do filho — força o wrangler a resolver tudo pela auth OAuth do CLI.
   // Sem isso: o TOKEN avulso do .env dava 401; um ACCOUNT_ID errado no shell
   // daria 404. Conta única na auth OAuth → resolvida automaticamente (#2265).
-  const childEnv = { ...process.env };
-  delete childEnv.CLOUDFLARE_API_TOKEN;
-  delete childEnv.CLOUDFLARE_ACCOUNT_ID;
+  // Helper compartilhado com o guard `wrangler whoami` de §6h (#6900) — os
+  // dois lados nunca podem divergir sobre qual env conta como "autenticado".
+  const childEnv = sanitizedCloudflareOAuthEnv(process.env);
   return execFileSync(process.execPath, [WRANGLER_BIN, ...wargs], {
     cwd: POLL_DIR,
     encoding: "utf8",
