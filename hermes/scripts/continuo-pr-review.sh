@@ -3,27 +3,33 @@
 #
 # Review Sonnet (assinatura claude.ai) de UMA PR `continuo/*` aberta por vez
 # — não o diff acumulado do dia (esse é `opus-daily-diff-review.sh`, irmão
-# deste script). Roda a cada 120min (job `3330b108a5b2`).
+# deste script). Roda em cron próprio (job `3330b108a5b2`) — a cadência
+# NÃO vive nesta prosa: derivar com `hermes cron list --all` (#6928;
+# já registrou valor errado duas vezes).
 #
 # ## Por que existe
 #
 # O `opus-daily-diff-review.sh` roda 1x/dia; o contínuo (`hermes-diaria-
 # continuo/SKILL.md`) roda com cadência bem mais curta — não citar o
 # número exato aqui (já divergiu no passado, ver CLAUDE.md; fonte canônica
-# é `hermes cron list --all`, nunca esta prosa). Descompasso de ordem de
-# grandeza (#6849/#6864/#6865): com o contínuo impedido de mergear a
-# própria PR (#6864), uma PR podia esperar horas pelo único revisor
-# externo que existia. Este
+# é `hermes cron list --all`, nunca esta prosa). O comentário original
+# justificava este script com um descompasso e uma espera máxima que eram
+# derivados de cadências erradas — as duas muito maiores que a realidade
+# medida (corrigido no #6928; para os valores de agora, derive com
+# `hermes cron list --all`). O motivo do script não depende
+# da razão: o contínuo é impedido de mergear a própria PR (#6864), e o
+# revisor externo precisa existir separado do tick (#6865). Este
 # script fecha esse gap SEM trocar o modelo do review profundo diário por
 # um mais barato — dois papéis distintos (decisão do editor): revisão
-# rápida e superficial de UMA PR (Sonnet, a cada 120min) vs. varredura
+# rápida e superficial de UMA PR (Sonnet) vs. varredura
 # funda do dia inteiro com visão de interação-entre-PRs (Opus, 1x/dia).
 #
 # ## Ação manual (fora do repo, feita em 31/08/2026)
 #
-# Job `3330b108a5b2`, `every 120m` (docstring corrigida no #6926 — dizia
-# `every 240m`/"~4h" desde a criação; `hermes cron list --all` é a fonte
-# canônica, nunca esta prosa, ver CLAUDE.md), aponta pro STUB
+# Job `3330b108a5b2`, aponta pro STUB (docstring já havia registrado
+# cadência errada desde a criação — corrigida no #6926/#6928;
+# `hermes cron list --all` é a fonte canônica, nunca esta prosa, ver
+# CLAUDE.md), aponta pro STUB
 # `~/.hermes/scripts/continuo-pr-review.sh` — NÃO symlink (o guard de
 # traversal do cron do Hermes rejeita symlink resolvendo fora de
 # `~/.hermes/scripts/`; o stub só faz `exec` pra este arquivo). Ver
@@ -289,7 +295,7 @@ for PR in $PR_NUMBERS; do
   if [ "$AUTH_RC" -eq 3 ]; then
     # #738/CLAUDE.md: falha de infra (gh indisponível, PR sumiu) não é
     # motivo pra tentar revisar às cegas — pula esta PR nesta rodada,
-    # tenta de novo no próximo tick (~2h).
+    # tenta de novo no próximo tick (intervalo: `hermes cron list --all`).
     echo "[continuo-pr-review] PR #$PR: check-pr-review-authenticity.ts falhou (infra) — pulando esta rodada: $AUTH_OUT" >&2
     # Review #6871 (P3): contar no resumo final — sem isso o tick reporta
     # "revisadas=X já-tinham-review=Y falharam=Z" que não bate com o total
