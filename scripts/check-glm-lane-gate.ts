@@ -30,7 +30,7 @@ import {
   type GlmLaneUnitRecord,
 } from "./lib/glm-lane-gate.ts";
 
-/** #6953 (review silent-failure-hunter, P2/medium-high): `execFileSync`
+/** #6954 (review silent-failure-hunter, P2/medium-high): `execFileSync`
  *  sem timeout pode travar indefinidamente se `gh` pendurar (rede
  *  degradada, auth pendente) — o gate roda ANTES do despacho caro do
  *  GLM, então um stall aqui prende a unidade inteira sem nenhum
@@ -111,7 +111,7 @@ const defaultGhExec: GhExec = (args) => execFileSync("gh", args, { encoding: "ut
 
 /**
  * Consulta o `gh` UMA vez por PR nos `prNumbers` dados e devolve o
- * subconjunto que está `MERGED` agora (#6953 — o critério de morte 2
+ * subconjunto que está `MERGED` agora (#6954 — o critério de morte 2
  * precisa saber "mergeou", não só "foi aberta", e isso só é conhecível
  * fazendo o fetch AO VIVO — o estado muda depois do momento em que a
  * unidade que abriu a PR terminou e gravou seu registro em `units.jsonl`).
@@ -159,7 +159,7 @@ if (isMainModule(import.meta.url)) {
 
   const { records, malformedCount } = readGlmLaneUnits(unitsLogPath);
 
-  // #6953 — só consulta o `gh` pras PRs que de fato entram no critério 2
+  // #6954 — só consulta o `gh` pras PRs que de fato entram no critério 2
   // (as 3 primeiras unidades de MODELO, status !== "infra-error"), nunca
   // o histórico inteiro — mantém o custo de rede proporcional ao que a
   // decisão realmente precisa, mesmo com `units.jsonl` crescendo. Fonte
@@ -179,7 +179,7 @@ if (isMainModule(import.meta.url)) {
   const verdict = evaluateGlmLaneGate(state);
 
   const malformedNote = malformedCount > 0 ? ` malformadas=${malformedCount}` : "";
-  // #6953 (achado de review, type-design-analyzer): quando o critério 2
+  // #6954 (achado de review, type-design-analyzer): quando o critério 2
   // reprova, o `reason` sozinho não distingue "checamos e nenhuma
   // mergeou" de "o `gh` falhou pra alguma/todas as consultas" — as duas
   // produzem `mergedPrNumbers` menor do que o esperado. Anexa a contagem

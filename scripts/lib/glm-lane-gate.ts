@@ -24,7 +24,7 @@
  *    autônomo não é "erra", é "para cedo e relata bem". Só avaliável com
  *    >= 3 unidades já despachadas; com menos, `firstThreeHadAnyMergedPr`
  *    é `null` (ainda não dá pra saber) e este critério não decide nada.
- *    **Corrigido no #6953 (achado ao vivo, unidade 2 do piloto):** a
+ *    **Corrigido no #6954 (achado ao vivo, unidade 2 do piloto):** a
  *    versão original media "abriu PR", não "PR mergeou" — a unidade 2
  *    abriu a #6950, que não podia mergear (3 findings de review, um P1),
  *    e o critério contava isso como sucesso. "Abriu PR" mede atividade;
@@ -58,7 +58,7 @@ export interface GlmLaneState {
    *  pra não hardcodar um mágico dentro da função pura. */
   unitsCap: number;
   /** `true` = ao menos 1 PR das 3 primeiras unidades está MERGEADA
-   *  (`#6953` — não basta ter aberto, precisa ter sido aceita); `false` =
+   *  (`#6954` — não basta ter aberto, precisa ter sido aceita); `false` =
    *  nenhuma das 3 primeiras tem PR mergeada; `null` = ainda não há 3
    *  unidades despachadas, critério não avaliável ainda. */
   firstThreeHadAnyMergedPr: boolean | null;
@@ -98,7 +98,7 @@ export function evaluateGlmLaneGate(state: GlmLaneState): GlmLaneGateVerdict {
   if (state.firstThreeHadAnyMergedPr === false) {
     return {
       allow: false,
-      reason: "critério de morte: zero PRs MERGEADAS nos 3 primeiros despachos (mesmo modo de falha medido no #6922 — para cedo e relata bem; #6953 — abrir PR que não mergeia não conta)",
+      reason: "critério de morte: zero PRs MERGEADAS nos 3 primeiros despachos (mesmo modo de falha medido no #6922 — para cedo e relata bem; #6954 — abrir PR que não mergeia não conta)",
     };
   }
 
@@ -166,7 +166,7 @@ export interface GlmLaneUnitRecord {
  * Deriva `GlmLaneState` a partir dos registros já persistidos — pura,
  * sem tocar `gh`/rede. `sonnetLaneCostPerIssueUsd` é sempre repassado
  * como veio (não calculado aqui: não há fonte no repo, ver docstring do
- * campo em `GlmLaneState`). `mergedPrNumbers` (#6953) também é sempre
+ * campo em `GlmLaneState`). `mergedPrNumbers` (#6954) também é sempre
  * repassado como veio — o fetch AO VIVO do estado de merge de cada PR
  * roda no CLI wrapper (`check-glm-lane-gate.ts`), nunca aqui: esta função
  * fica pura por construção, e o momento em que uma PR mergeia é
@@ -177,7 +177,7 @@ export interface GlmLaneUnitRecord {
 /**
  * Pura — seleciona as PRIMEIRAS 3 unidades de MODELO (`status !==
  * "infra-error"`) do histórico e devolve só os `prNumber` não-nulos delas.
- * Extraída (#6953 review — achado convergente de type-design-analyzer E
+ * Extraída (#6954 review — achado convergente de type-design-analyzer E
  * pr-test-analyzer) porque `computeGlmLaneState` e o CLI wrapper
  * (`check-glm-lane-gate.ts`, que precisa saber QUAIS PRs consultar no
  * `gh` antes de montar `mergedPrNumbers`) reescreviam essa mesma seleção

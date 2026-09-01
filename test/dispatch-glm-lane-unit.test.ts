@@ -31,7 +31,7 @@ function readScript(): string {
 }
 
 /**
- * #6953: o script agora define DUAS strings `--tools` literais — uma pro
+ * #6954: o script agora define DUAS strings `--tools` literais — uma pro
  * modo padrão (1ª rodada, abre PR nova) e uma pro modo `--pr N` (2ª+
  * rodada, itera sobre PR existente, `gh pr create` OMITIDO de propósito).
  * Extrai as DUAS (via a atribuição `TOOLS="..."`, não `--tools "..."`,
@@ -122,7 +122,7 @@ describe("dispatch-glm-lane-unit.sh — condição (b) do docs/lane-glm.md, prod
     assert.ok(defaultTools.includes("gh pr create"), "--tools do modo padrão deveria permitir 'gh pr create'");
   });
 
-  it("#6953: --tools do modo --pr OMITE gh pr create — mecanicamente impossível abrir PR duplicada", () => {
+  it("#6954: --tools do modo --pr OMITE gh pr create — mecanicamente impossível abrir PR duplicada", () => {
     const [prTools] = extractToolsValues(readScript()).filter((v) => !v.includes("git push -u origin"));
     assert.ok(prTools, "não achei a --tools do modo --pr");
     assert.ok(!prTools.includes("gh pr create"), "--tools do modo --pr NÃO deveria permitir 'gh pr create' — instrução de prompt não basta (#6864/#6849)");
@@ -263,7 +263,7 @@ describe("dispatch-glm-lane-unit.sh — snapshot de custo por unidade (condiçã
   });
 });
 
-describe("dispatch-glm-lane-unit.sh — modo --pr N, segunda rodada (#6953)", () => {
+describe("dispatch-glm-lane-unit.sh — modo --pr N, segunda rodada (#6954)", () => {
   it("aceita --pr como segundo argumento posicional/flag e resolve a branch HEAD via gh pr view", () => {
     const src = readScript();
     assert.match(src, /EXISTING_PR="\$\{2:\?uso: --pr requer um número de PR\}"/);
@@ -288,7 +288,7 @@ describe("dispatch-glm-lane-unit.sh — modo --pr N, segunda rodada (#6953)", ()
     assert.match(src.slice(promptIdx, promptIdx + 400), /NÃO chame 'gh pr create'/);
   });
 
-  it("#6953: guard de CI-wait presente nos DOIS prompts (padrão e --pr) — nunca esperar CI dentro da unidade", () => {
+  it("#6954: guard de CI-wait presente nos DOIS prompts (padrão e --pr) — nunca esperar CI dentro da unidade", () => {
     const src = readScript();
     const guardCount = (src.match(/NUNCA rode 'gh pr checks', 'gh run watch'/g) ?? []).length;
     // A string CI_WAIT_GUARD é definida 1x e interpolada nos 2 prompts —
@@ -303,11 +303,37 @@ describe("dispatch-glm-lane-unit.sh — modo --pr N, segunda rodada (#6953)", ()
     assert.match(src, /if \[ -n "\$EXISTING_PR" \]; then\s*\n\s*PR_NUMBER="\$EXISTING_PR"/);
   });
 
-  it("#6953: mensagem final de infra-error NUNCA diz 'considere retentar' quando já existe uma PR — diria 'revise-a' / '--pr'", () => {
+  it("#6954: mensagem final de infra-error NUNCA diz 'considere retentar' quando já existe uma PR — diria 'revise-a' / '--pr'", () => {
     const src = readScript();
     const tailIdx = src.lastIndexOf('if [ "$CLAUDE_RC" -ne 0 ]; then');
     const tail = src.slice(tailIdx);
     assert.match(tail, /PR_NUMBER.*revise-a/s, "quando PR_NUMBER existe, a mensagem deveria mandar revisar a PR, não retentar");
     assert.match(tail, /considere retentar do zero \(sem --pr\)/, "só quando NÃO há PR ainda é que 'considere retentar' é seguro");
+  });
+});
+
+describe("dispatch-glm-lane-unit.sh — P0 do review da #6955: headRefName validado antes de virar --tools", () => {
+  it("faz source do guard e CHAMA is_safe_glm_branch_ref antes de atribuir $BRANCH no modo --pr", () => {
+    const src = readScript();
+    assert.match(src, /source "\$REPO\/scripts\/lib\/glm-lane-headref-guard\.sh"/);
+    const guardIdx = src.indexOf("if ! is_safe_glm_branch_ref");
+    const branchAssignIdx = src.indexOf('BRANCH="$HEAD_REF"');
+    assert.ok(guardIdx !== -1, "script deveria chamar is_safe_glm_branch_ref");
+    assert.ok(branchAssignIdx !== -1, 'script deveria atribuir BRANCH="$HEAD_REF"');
+    assert.ok(guardIdx < branchAssignIdx, "a validação tem que vir ANTES de $HEAD_REF virar $BRANCH (que é o que entra no --tools)");
+  });
+
+  it("recusa (exit != 0) quando a validação falha, nunca segue com o valor não-validado", () => {
+    const src = readScript();
+    const guardIdx = src.indexOf("if ! is_safe_glm_branch_ref");
+    const after = src.slice(guardIdx, guardIdx + 600);
+    assert.match(after, /exit 2/);
+  });
+
+  it("#6954 P3: gh pr comment / gh issue comment escopados ao número exato, nunca ':*' aberto", () => {
+    for (const value of extractToolsValues(readScript())) {
+      assert.ok(!value.includes("Bash(gh pr comment:*)"), "gh pr comment não deveria ser irrestrito");
+      assert.ok(!value.includes("Bash(gh issue comment:*)"), "gh issue comment não deveria ser irrestrito");
+    }
   });
 });

@@ -149,7 +149,7 @@ describe("computeGlmLaneState (#6930)", () => {
     assert.equal(state.firstThreeHadAnyMergedPr, true);
   });
 
-  it("#6953 — 3 registros, 1 com PR ABERTA mas NÃO mergeada → firstThreeHadAnyMergedPr=false (o bug real: abrir não basta)", () => {
+  it("#6954 — 3 registros, 1 com PR ABERTA mas NÃO mergeada → firstThreeHadAnyMergedPr=false (o bug real: abrir não basta)", () => {
     const state = computeGlmLaneState(
       [unit({ prNumber: null }), unit({ prNumber: 42 }), unit({ prNumber: null })],
       { unitsCap: 10, sonnetLaneCostPerIssueUsd: null, mergedPrNumbers: new Set() },
@@ -222,7 +222,7 @@ describe("computeGlmLaneState (#6941) — status:'infra-error' excluído dos cri
   });
 });
 
-describe("selectFirstThreeModelPrNumbers (#6953)", () => {
+describe("selectFirstThreeModelPrNumbers (#6954)", () => {
   it("exclui infra-error e devolve só prNumber não-nulos, das 3 primeiras unidades de MODELO", () => {
     const records = [
       unit({ status: "infra-error", prNumber: 1 }),
@@ -238,7 +238,7 @@ describe("selectFirstThreeModelPrNumbers (#6953)", () => {
     assert.deepEqual(selectFirstThreeModelPrNumbers([]), []);
   });
 
-  it("é a MESMA seleção que computeGlmLaneState usa internamente (fonte única, #6953 review)", () => {
+  it("é a MESMA seleção que computeGlmLaneState usa internamente (fonte única, #6954 review)", () => {
     const records = [unit({ prNumber: 10 }), unit({ prNumber: null }), unit({ prNumber: 20 })];
     const prNumbers = selectFirstThreeModelPrNumbers(records);
     // simula o CLI: só as PRs selecionadas por essa função "mergeiam"

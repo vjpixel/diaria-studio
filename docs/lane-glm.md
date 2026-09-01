@@ -87,7 +87,7 @@ construção do harness — mecânicos, em `scripts/lib/glm-lane-gate.ts`,
 checados a cada despacho por `scripts/check-glm-lane-gate.ts`):**
 
 2. **Zero PRs MERGEADAS nos 3 primeiros despachos** (corrigido de "abertas"
-   pra "mergeadas" no #6953, achado ao vivo na unidade 2 — abrir PR que não
+   pra "mergeadas" no #6954, achado ao vivo na unidade 2 — abrir PR que não
    consegue mergear não é sucesso) — sinal medido em #6922 (10 ticks
    consecutivos do primário mais barato: zero claims, zero PRs, relatório
    coerente). O modo de falha do modelo barato em trabalho autônomo não é
@@ -124,11 +124,11 @@ dos critérios 2-4, que julgam o MODELO, não a infra.
 | 29/08 | `z-ai/glm-5.3-flash` | 613 | 1,7160 | 0,0028 |
 | 28/08 | `z-ai/glm-5.3-flash` | 69 | 0,1016 | 0,0015 |
 
-## Harness (#6930, `--pr N` no #6953)
+## Harness (#6930, `--pr N` no #6954)
 
 `scripts/dispatch-glm-lane-unit.sh <ISSUE> [--pr N]` — despacha 1 unidade.
 Sem `--pr`, cria branch+worktree do zero a partir de `origin/master` (1ª
-rodada). **Com `--pr N`** (#6953, achado ao vivo na unidade 2 — a #6950
+rodada). **Com `--pr N`** (#6954, achado ao vivo na unidade 2 — a #6950
 recebeu 3 findings de review e não tinha como o harness endereçá-los sem
 duplicar PR): faz checkout da branch HEAD da PR N existente (`gh pr view N
 --json headRefName`), injeta no prompt os comentários de review já
@@ -136,14 +136,18 @@ postados nela (`gh pr view N --json comments`), e comita POR CIMA do que
 já existe — `gh pr create` fica FORA do `--tools` desse modo
 (mecanicamente impossível duplicar, mesma disciplina do resto do harness).
 `git push` continua escopado à branch EXATA (agora a da PR). O prompt de
-ambos os modos inclui um guard explícito contra esperar CI dentro da
-unidade (`gh pr checks`/`gh run watch`/qualquer laço de poll) — achado ao
-vivo: a unidade 2 ficou girando DEPOIS de abrir a PR (provavelmente
-esperando CI), custando 22× mais que a unidade que não esperou nada
-(US$0,2407 vs. US$0,0108).
+ambos os modos inclui um pedido explícito — **ADVISORY, não mecânico**
+(achado de review independente; #6864 já estabeleceu essa distinção neste
+repo) — pra não esperar CI dentro da unidade (`gh pr checks`/`gh run
+watch`/qualquer laço de poll): achado ao vivo, a unidade 2 ficou girando
+DEPOIS de abrir a PR (provavelmente esperando CI), custando 22× mais que
+a unidade que não esperou nada (US$0,2407 vs. US$0,0108). `Bash(gh pr
+view:*)` — o vetor mais plausível desse laço — continua no `--tools` sem
+sub-timeout; nada aqui IMPEDE mecanicamente um poll repetido, só pede pro
+modelo parar sozinho. Risco residual registrado, não fechado.
 
 **Retry via `--pr N` consome 1 slot do teto de 10 e entra normalmente no
-critério "3 primeiras" (achado de review, #6953, não resolvido — registrado
+critério "3 primeiras" (achado de review, #6954, não resolvido — registrado
 de propósito):** cada invocação do script grava um registro NOVO em
 `units.jsonl`, `--pr` incluso. Uma issue que precisou de 2 rodadas (1ª +
 1 retry `--pr`) consome 2 dos 10 slots do piloto por 1 issue só, e se esse
@@ -206,5 +210,5 @@ contínuo — ver `hermes-diaria-continuo/SKILL.md` §4 passo 2).
 teto do `CLAUDE.md`), #6922 (o modo de falha "para cedo e relata bem" que
 motiva o critério de morte 2), #6941 (review do harness — achados que
 endureceram `--tools`, `status`/infra-error, e moveram claim-issue pra
-fora do script), #6953 (unidade 2 real expôs o gap "abriu PR" vs. "PR
+fora do script), #6954 (unidade 2 real expôs o gap "abriu PR" vs. "PR
 mergeou" e o CI-wait dentro da unidade; adiciona `--pr N`).

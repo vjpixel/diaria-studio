@@ -116,7 +116,7 @@ describe("readGlmLaneUnits (#6930/#6941)", () => {
   });
 });
 
-describe("fetchMergedPrNumbers (#6953)", () => {
+describe("fetchMergedPrNumbers (#6954)", () => {
   it("lista vazia de PRs → Set vazio, nunca chama gh", () => {
     let calls = 0;
     const fakeGh: GhExec = () => {
