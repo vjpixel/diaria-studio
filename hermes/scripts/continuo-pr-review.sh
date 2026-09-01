@@ -8,9 +8,12 @@
 # ## Por que existe
 #
 # O `opus-daily-diff-review.sh` roda 1x/dia; o contínuo (`hermes-diaria-
-# continuo/SKILL.md`) roda a cada 60min. Descompasso 2:1 (#6849/#6864/
-# #6865): com o contínuo impedido de mergear a própria PR (#6864), uma PR
-# podia esperar até ~2h pelo único revisor externo que existia. Este
+# continuo/SKILL.md`) roda com cadência bem mais curta — não citar o
+# número exato aqui (já divergiu no passado, ver CLAUDE.md; fonte canônica
+# é `hermes cron list --all`, nunca esta prosa). Descompasso de ordem de
+# grandeza (#6849/#6864/#6865): com o contínuo impedido de mergear a
+# própria PR (#6864), uma PR podia esperar horas pelo único revisor
+# externo que existia. Este
 # script fecha esse gap SEM trocar o modelo do review profundo diário por
 # um mais barato — dois papéis distintos (decisão do editor): revisão
 # rápida e superficial de UMA PR (Sonnet, a cada 120min) vs. varredura
@@ -42,14 +45,23 @@
 # `extractIndependentReviewVerdict`), e É O BASH, DEPOIS que a sessão do
 # modelo já saiu, que decide mergear — nunca uma ferramenta que o modelo
 # invoca. Um modelo persuadido a aprovar uma PR ruim não mergeia nada
-# sozinho: o veredito passa por MAIS 5 portões determinísticos e
-# fail-closed em `scripts/check-continuo-merge-gate.ts` (superseded, HEAD
-# não mudou desde a revisão — corrida do #5716 — caminho não-sensível, CI
-# verde + mergeable, diff dentro do limiar de `pr-create-review.mjs`
-# #4813/#6393) antes de qualquer `gh pr merge` rodar. Isto NÃO contradiz o
-# #6864: avaliador (este script) e avaliado (a PR aberta pelo tick,
-# processo/cron diferente) continuam sendo dois processos distintos — a
-# mesma separação que já autorizava o pickup do overnight a mergear.
+# sozinho: o veredito passa por MAIS 8 portões determinísticos e
+# fail-closed em `scripts/check-continuo-merge-gate.ts` (superseded, SHA
+# revisado conhecido, HEAD não mudou desde a revisão — corrida do #5716 —
+# caminho não-sensível, CI verde + mergeable, diff dentro do limiar de
+# `pr-create-review.mjs` #4813/#6393) antes de qualquer `gh pr merge`
+# rodar — ver a lista completa e ordenada no docblock de
+# `scripts/lib/continuo-merge-gate.ts`. Isto NÃO contradiz o #6864:
+# avaliador (este script) e avaliado (a PR aberta pelo tick, processo/cron
+# diferente) continuam sendo dois processos distintos — a mesma separação
+# que já autorizava o pickup do overnight a mergear.
+#
+# Lacuna conhecida, registrada e não bloqueante (#6934): este script NÃO
+# adquire o merge-lock cross-sessão (`session-registry.ts merge-lock-
+# acquire`, usado por overnight/develop) antes de `gh pr merge` — integrar
+# exige desenhar que `kind`/`session-id` este cron deveria reivindicar, o
+# que não foi decidido ainda. Blast radius aceito por ora: PRs pequenas,
+# CI obrigatória, revert de 1 comando.
 #
 # Dois portões que ESTE script NUNCA decide sozinho — sempre `escalate`,
 # nunca `merge` nem `reject`: caminho sensível de publicação/render, e
@@ -156,20 +168,44 @@ log_infra_error() {
 # NUNCA invocado de dentro do `--allowedTools` da sessão do modelo (essa
 # sessão só REVISA, ver docblock do topo do arquivo) — só daqui, depois que
 # a sessão já saiu (caminho `claude -p`) ou nem chegou a rodar (caminho
-# `AUTH_RC=0`, `$3` = `--assume-approved`).
+# `AUTH_RC=0`). `check-continuo-merge-gate.ts` AUTO-DERIVA o SHA revisado
+# do marcador de review (#6932, P0/P1 — nunca mais recebido como argumento
+# aqui, pra fechar a corrida do #5716 por construção; ver docstring do
+# script TS).
+#
+# stdout e stderr de `check-continuo-merge-gate.ts` são capturados
+# SEPARADOS (arquivo temporário pro stderr) — não `2>&1` misturado — porque
+# este bash faz `jq` sobre a linha JSON do stdout pra extrair `reason`/
+# `action`, e stdout/stderr intercalados não têm ordem garantida entre si
+# (#6932, P3: a versão anterior fazia `tail -1` sobre os dois juntos,
+# arriscando pegar a linha errada).
 try_merge_gate() {
-  local pr="$1" reviewed_head_sha="$2" extra_flag="${3:-}"
+  local pr="$1"
+  local stderr_tmp
+  stderr_tmp="$(mktemp)"
   set +e
-  GATE_OUT=$(npx tsx scripts/check-continuo-merge-gate.ts --pr "$pr" --reviewed-head-sha "$reviewed_head_sha" $extra_flag 2>&1)
+  GATE_JSON=$(npx tsx scripts/check-continuo-merge-gate.ts --pr "$pr" 2>"$stderr_tmp")
   GATE_RC=$?
   set -e
+  GATE_STDERR=$(cat "$stderr_tmp" 2>/dev/null || true)
+  rm -f "$stderr_tmp"
 
   case "$GATE_RC" in
     0)
-      echo "[continuo-pr-review] PR #$pr: gate=merge"
-      echo "$GATE_OUT"
+      REVIEWED_HEAD_SHA=$(printf '%s' "$GATE_JSON" | jq -r '.details.reviewedHeadSha // empty')
+      echo "[continuo-pr-review] PR #$pr: gate=merge (head=$REVIEWED_HEAD_SHA)"
+      echo "$GATE_JSON"
       set +e
-      gh pr merge "$pr" --squash
+      # `--match-head-commit`: o GitHub recusa o merge se o HEAD real da PR
+      # divergir do SHA que o gate acabou de confirmar — fecha o intervalo
+      # entre "gate leu o HEAD" e "gh pr merge de fato roda" (#6932, P2;
+      # TOCTOU que existiria mesmo com o gate correto, se algo empurrasse
+      # um commit nesse meio-tempo).
+      if [ -n "$REVIEWED_HEAD_SHA" ]; then
+        gh pr merge "$pr" --squash --match-head-commit "$REVIEWED_HEAD_SHA"
+      else
+        gh pr merge "$pr" --squash
+      fi
       MERGE_RC=$?
       set -e
       if [ "$MERGE_RC" -ne 0 ]; then
@@ -193,25 +229,34 @@ try_merge_gate() {
       ;;
     1)
       echo "[continuo-pr-review] PR #$pr: gate=escalate — deixando pro pickup do /diaria-overnight (fallback, #6823)"
-      echo "$GATE_OUT"
+      echo "$GATE_JSON"
       ESCALATED=$((ESCALATED + 1))
       ;;
     2)
       echo "[continuo-pr-review] PR #$pr: gate=reject — NÃO mergear"
-      echo "$GATE_OUT"
+      echo "$GATE_JSON"
       REJECTED=$((REJECTED + 1))
       # #6926: só comenta o motivo — nunca fecha/reabre a PR sozinho aqui
       # (fora de escopo; fechamento de PR superseded continua trabalho do
       # tick, hermes-diaria-continuo/SKILL.md §3 passo 1).
-      GATE_REASON=$(printf '%s' "$GATE_OUT" | tail -1)
+      GATE_REASON=$(printf '%s' "$GATE_JSON" | jq -r '.reason // "motivo não disponível"')
       set +e
       gh pr comment "$pr" --body "Gate de merge automático (#6926): rejeitado — $GATE_REASON"
+      COMMENT_RC=$?
       set -e
+      if [ "$COMMENT_RC" -ne 0 ]; then
+        # #6932 (P3): rejeição em si continua correta (merge bloqueado) —
+        # só a comunicação na PR falhou. Registrar pra não perder o rastro
+        # (mesma disciplina do #6910), nunca deixar isso silencioso.
+        echo "[continuo-pr-review] PR #$pr: gate=reject, mas gh pr comment falhou (rc=$COMMENT_RC) — motivo só nos logs desta rodada" >&2
+        INFRA_ERRORS=$((INFRA_ERRORS + 1))
+        log_infra_error "$pr" "reject_comment_rc=$COMMENT_RC" "rejeição correta ($GATE_REASON), falha ao postar o motivo na PR"
+      fi
       ;;
     *)
-      echo "[continuo-pr-review] PR #$pr: check-continuo-merge-gate.ts falhou (infra, rc=$GATE_RC) — pulando merge nesta rodada: $GATE_OUT" >&2
+      echo "[continuo-pr-review] PR #$pr: check-continuo-merge-gate.ts falhou (infra, rc=$GATE_RC) — pulando merge nesta rodada: $GATE_STDERR" >&2
       INFRA_ERRORS=$((INFRA_ERRORS + 1))
-      log_infra_error "$pr" "merge_gate_rc=$GATE_RC" "$GATE_OUT"
+      log_infra_error "$pr" "merge_gate_rc=$GATE_RC" "$GATE_STDERR"
       ;;
   esac
 }
@@ -224,24 +269,15 @@ for PR in $PR_NUMBERS; do
 
   if [ "$AUTH_RC" -eq 0 ]; then
     # #6926: deixou de ser skip incondicional. Já existe review independente
-    # (talvez de formato legado, sem `verdict=`) — pular a REVISÃO (não
-    # revisar de novo à toa), mas ir direto ao portão de merge. Precisa do
-    # HEAD atual como "reviewed-head-sha" pra `check-continuo-merge-gate.ts`
-    # (não há SHA de revisão conhecido pra comparar aqui — ver docstring de
-    # `--assume-approved`).
+    # — pular a REVISÃO (não revisar de novo à toa), mas ir direto ao
+    # portão de merge. `check-continuo-merge-gate.ts` auto-deriva o SHA
+    # revisado do PRÓPRIO marcador (campo `head=`, #6932 P0/P1) — nada pra
+    # buscar/fabricar aqui. Marcador legado sem `head=` (pré-#6926) resolve
+    # sozinho pra `reviewedHeadSha=null` → o gate escala, nunca assume que
+    # o HEAD atual é o que foi revisado.
     echo "[continuo-pr-review] PR #$PR já tem review independente (verdict=pass) — pulando revisão, indo direto ao portão de merge (#6926)"
     SKIPPED=$((SKIPPED + 1))
-    set +e
-    CURRENT_HEAD_SHA=$(gh api "repos/{owner}/{repo}/pulls/$PR" --jq '.head.sha' 2>&1)
-    HEAD_RC=$?
-    set -e
-    if [ "$HEAD_RC" -ne 0 ]; then
-      echo "[continuo-pr-review] PR #$PR: gh api pulls falhou ao buscar head.sha pro portão de merge — pulando esta rodada" >&2
-      INFRA_ERRORS=$((INFRA_ERRORS + 1))
-      log_infra_error "$PR" "head_sha_rc=$HEAD_RC" "$CURRENT_HEAD_SHA"
-      continue
-    fi
-    try_merge_gate "$PR" "$CURRENT_HEAD_SHA" "--assume-approved"
+    try_merge_gate "$PR"
     continue
   fi
   if [ "$AUTH_RC" -eq 3 ]; then
@@ -302,8 +338,14 @@ for PR in $PR_NUMBERS; do
   # `reject`; qualquer outro valor faz o marcador inteiro não casar o
   # formato COM campo — cai no formato antigo sem campo, que o gate de
   # merge trata como "sem veredito", nunca "approve" por omissão.
+  # #6926/#6932 (P0/P1): `head=${HEAD_SHA}` é o SHA REAL, já conhecido por
+  # ESTE script (bloco `gh api pulls` acima) — embutido diretamente, nunca
+  # pedido ao modelo pra preencher. O modelo só decide `{VEREDITO}`; o SHA
+  # não depende de o modelo copiar/adivinhar corretamente, e é o que
+  # `check-continuo-merge-gate.ts` compara contra o HEAD atual da PR pra
+  # fechar a corrida do #5716.
   MARKER_PREFIX="<!-- continuo-review: run=${RUN_ID} at=${AT} verdict="
-  MARKER_SUFFIX=" -->"
+  MARKER_SUFFIX=" head=${HEAD_SHA} -->"
 
   PROMPT="Você é o review externo do contínuo do diaria-studio — uma sessão SEPARADA da que abriu esta PR (a delegação do contínuo não tem ferramenta Agent, #6712; você tem assinatura claude.ai e está revisando de verdade). Revise a PR #$PR (\`$PR_TITLE\`), diff \`git diff $BASE_SHA..$HEAD_SHA\`, commits \`git log --oneline $BASE_SHA..$HEAD_SHA\`.
 
@@ -341,11 +383,13 @@ VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramen
   REVIEWED=$((REVIEWED + 1))
 
   # #6926: portão de merge — SÓ depois da sessão de review já ter saído
-  # (CLAUDE_RC=0 confirmado acima). Usa HEAD_SHA capturado ANTES da sessão
-  # rodar (bloco `gh api pulls` acima) como reviewed-head-sha: se algo
-  # empurrou um commit novo enquanto a sessão revisava, o gate detecta a
-  # divergência e escala (corrida do #5716).
-  try_merge_gate "$PR" "$HEAD_SHA"
+  # (CLAUDE_RC=0 confirmado acima). `check-continuo-merge-gate.ts` auto-
+  # deriva o SHA revisado do marcador que acabou de ser postado (`head=`,
+  # embutido acima com o valor REAL de $HEAD_SHA capturado ANTES da sessão
+  # rodar) — se algo empurrou um commit novo enquanto a sessão revisava, o
+  # gate compara esse SHA contra o HEAD atual da PR e detecta a divergência
+  # (corrida do #5716).
+  try_merge_gate "$PR"
 done
 
 echo "[continuo-pr-review] concluído — revisadas=$REVIEWED já-tinham-review=$SKIPPED falharam=$FAILED erros-de-infra=$INFRA_ERRORS mergeadas=$MERGED escaladas=$ESCALATED rejeitadas=$REJECTED"

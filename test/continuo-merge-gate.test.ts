@@ -55,6 +55,23 @@ describe("evaluateContinuoMergeGate (#6926) — cada portão NEGANDO merge", () 
     assert.equal(result.action, "escalate");
   });
 
+  it("reviewedHeadSha null (nenhum review independente, ou marcador legado sem head=) → escalate — NUNCA trata como 'igual ao atual'", () => {
+    // Achado do review da PR #6932 (P0/P1, confiança alta, 2 agentes
+    // independentes): um caminho que fabricasse reviewedHeadSha = HEAD
+    // atual neutralizaria o portão de corrida do #5716 por construção —
+    // os dois SEMPRE bateriam. Este teste trava que `null` explícito
+    // escala, nunca cola como "sem HEAD revisado conhecido, mas tudo bem".
+    const result = evaluateContinuoMergeGate({ ...GREEN, reviewedHeadSha: null });
+    assert.equal(result.action, "escalate");
+    assert.match(result.reason, /SHA revisado desconhecido/);
+  });
+
+  it("reviewedHeadSha null vence sobre currentHeadSha coincidentemente igual a algum valor (não há como comparar 'igual a null')", () => {
+    const result = evaluateContinuoMergeGate({ ...GREEN, reviewedHeadSha: null, currentHeadSha: null });
+    assert.equal(result.action, "escalate");
+    assert.match(result.reason, /SHA revisado desconhecido/);
+  });
+
   it("sensitive=true (caminho sensível) → escalate", () => {
     const result = evaluateContinuoMergeGate({ ...GREEN, sensitive: true });
     assert.equal(result.action, "escalate");

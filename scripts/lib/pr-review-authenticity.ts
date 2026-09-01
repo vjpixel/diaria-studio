@@ -113,9 +113,20 @@ export const SELF_REVIEW_MARKER = "<!-- self-review: true -->";
  * `SELF_REVIEW_MARKER` com um literal exato. `run=` continua `\S+`
  * (formato menos previsível, sem um padrão fixo pra travar sem também
  * travar o gerador do script).
+ *
+ * #6926: `head=<sha>` é o SHA do HEAD da PR no momento em que
+ * `continuo-pr-review.sh` iniciou a revisão — gerado pelo PRÓPRIO SCRIPT
+ * (não pelo modelo, que só preenche `verdict=`), então não depende de o
+ * modelo copiar um SHA corretamente. É o que fecha a corrida do #5716 no
+ * gate de merge: `extractIndependentReviewHeadSha` abaixo devolve este
+ * valor pra `scripts/lib/continuo-merge-gate.ts` comparar contra o HEAD
+ * ATUAL da PR — se divergirem, a revisão não cobre o código que seria
+ * mergeado, e o gate escala em vez de mergear. Sem este campo (marcador
+ * legado, pré-#6926), a comparação é impossível e o gate trata como SHA
+ * desconhecido — nunca "assume que não mudou".
  */
 const INDEPENDENT_REVIEW_MARKER_RE =
-  /^<!-- continuo-review: run=\S+ at=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z(?: verdict=(approve|reject))? -->$/;
+  /^<!-- continuo-review: run=\S+ at=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z(?: verdict=(approve|reject))?(?: head=(\S+))? -->$/;
 
 export type ReviewCommentKind = "self-review" | "independent-review" | "other";
 
@@ -174,7 +185,23 @@ export type ReviewVerdict = "approve" | "reject";
  * review independente anterior também retorna `null` (o self-review é o
  * sinal vigente, não uma aprovação anterior obsoleta).
  */
-export function extractIndependentReviewVerdict(comments: unknown): ReviewVerdict | null {
+interface MostRecentIndependentReviewMarker {
+  verdict: ReviewVerdict | null;
+  headSha: string | null;
+}
+
+/**
+ * Núcleo de varredura compartilhado por `extractIndependentReviewVerdict` e
+ * `extractIndependentReviewHeadSha` (#6926) — as duas leem campos do MESMO
+ * marcador/comentário, então escaneiam uma vez só, juntas, garantindo que
+ * `verdict` e `headSha` sempre vêm da mesma ocorrência (nunca um campo de
+ * um comentário e o outro campo de outro, que poderiam divergir se cada
+ * extractor escaneasse independentemente). Retorna `null` quando nenhum
+ * marcador independente é o sinal mais recente (self-review mais novo, ou
+ * nenhum review encontrado) — os dois extractors tratam isso como "nenhum
+ * dado", igual a um marcador encontrado mas sem o campo pedido.
+ */
+function findMostRecentIndependentReviewMarker(comments: unknown): MostRecentIndependentReviewMarker | null {
   if (!Array.isArray(comments)) return null;
 
   for (let i = comments.length - 1; i >= 0; i--) {
@@ -187,12 +214,33 @@ export function extractIndependentReviewVerdict(comments: unknown): ReviewVerdic
     for (const line of lines) {
       const match = INDEPENDENT_REVIEW_MARKER_RE.exec(line);
       if (match) {
-        return match[2] === "approve" || match[2] === "reject" ? match[2] : null;
+        return {
+          verdict: match[2] === "approve" || match[2] === "reject" ? match[2] : null,
+          headSha: typeof match[3] === "string" && match[3].length > 0 ? match[3] : null,
+        };
       }
     }
   }
 
   return null;
+}
+
+export function extractIndependentReviewVerdict(comments: unknown): ReviewVerdict | null {
+  return findMostRecentIndependentReviewMarker(comments)?.verdict ?? null;
+}
+
+/**
+ * #6926: SHA do HEAD que a revisão mais recente de fato cobriu — ver o
+ * docstring de `head=<sha>` acima de `INDEPENDENT_REVIEW_MARKER_RE`. Mesmo
+ * contrato de nulidade de `extractIndependentReviewVerdict`: `null` cobre
+ * tanto "nenhum review independente encontrado" quanto "marcador
+ * encontrado mas sem o campo `head=`" (formato legado). O chamador
+ * (`scripts/lib/continuo-merge-gate.ts`) trata SHA desconhecido como
+ * "não posso confirmar que a revisão cobre o código atual" — escala, nunca
+ * assume que está tudo bem.
+ */
+export function extractIndependentReviewHeadSha(comments: unknown): string | null {
+  return findMostRecentIndependentReviewMarker(comments)?.headSha ?? null;
 }
 
 export type PrReviewAuthenticityVerdict = "pass" | "self_review" | "no_review" | "error";

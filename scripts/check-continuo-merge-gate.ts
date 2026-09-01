@@ -4,18 +4,29 @@
  *
  * CLI que decide se `continuo-pr-review.sh` pode mergear a PR que acabou de
  * revisar — ver `scripts/lib/continuo-merge-gate.ts` pra lógica pura/ordem
- * dos portões. Este arquivo só faz I/O: 1 chamada `gh pr view` (todos os
- * campos precisados de uma vez — headRefOid, mergeable, statusCheckRollup,
- * comments, body, additions, deletions, files — em vez de 3+ chamadas
- * separadas), 1 chamada `gh issue view` por issue referenciada pelo corpo
- * (tipicamente 0 ou 1), e imprime o veredito como JSON.
+ * dos portões. Este arquivo só faz I/O: 1 chamada `gh pr view` (a maioria
+ * dos campos precisados de uma vez — headRefOid, mergeable,
+ * statusCheckRollup, comments, body, additions, deletions), 1 chamada
+ * paginada `gh api .../pulls/{n}/files` (ver nota abaixo sobre por que NÃO
+ * é `gh pr view --json files`), 1 chamada `gh issue view` por issue
+ * referenciada pelo corpo (tipicamente 0 ou 1), e imprime o veredito como
+ * JSON.
  *
  * Uso:
- *   npx tsx scripts/check-continuo-merge-gate.ts --pr 6929 --reviewed-head-sha abc123
+ *   npx tsx scripts/check-continuo-merge-gate.ts --pr 6929
  *
- * `--reviewed-head-sha`: o SHA do HEAD capturado pelo script bash ANTES de
- * invocar a sessão de review — comparado contra o HEAD atual pra fechar a
- * corrida do #5716 (revisão que não cobre commit pós-revisão).
+ * Sem flag de SHA revisado: `reviewedHeadSha` é SEMPRE auto-derivado do
+ * marcador de review mais recente (`extractIndependentReviewHeadSha`,
+ * `scripts/lib/pr-review-authenticity.ts`) — NUNCA recebido como argumento
+ * do chamador. Achado do review da PR #6932 (P0/P1, 2 agentes
+ * independentes): uma versão anterior aceitava `--reviewed-head-sha` como
+ * flag, e o caminho "PR já tinha review independente" (`AUTH_RC=0` de
+ * `continuo-pr-review.sh`) passava o HEAD ATUAL como se fosse o SHA
+ * revisado — o portão de corrida do #5716 (`currentHeadSha !==
+ * reviewedHeadSha`) comparava um valor consigo mesmo e nunca podia
+ * disparar. Auto-derivar do marcador fecha isso por construção: o único
+ * jeito de `reviewedHeadSha` bater com `currentHeadSha` é a revisão ter
+ * mesmo coberto o HEAD atual.
  *
  * `--diff-threshold` (opcional): override do limiar de linhas de diff —
  * default é `EFFORT_DIFF_LINE_THRESHOLD` (DUPLICADO, não importado, de
@@ -24,23 +35,28 @@
  * não inventar limiar novo). Existe só pra teste/debug; o cron nunca
  * precisa passá-lo.
  *
- * `--assume-approved` (flag booleana, sem valor): trata veredito ausente
- * (`null`) como `approve` — cobre o caminho "AUTH_RC=0" de
- * `continuo-pr-review.sh` (PR que já tinha review independente ANTES do
- * campo `verdict=` existir, #6926). Nunca sobrescreve um `verdict=reject`
- * explícito. Só o chamador que já confirmou `check-pr-review-
- * authenticity.ts` → `pass` deve passar esta flag.
- *
  * Exit codes (fail-closed — todo valor != 0 significa "NÃO mergear"):
  *   0 = merge     (todos os portões passaram)
  *   1 = escalate  (algum portão pediu revisão humana/próximo tick — não é
  *                  erro, é "ainda não dá pra decidir sozinho")
  *   2 = reject    (superseded, ou veredito da revisão foi reject)
- *   3 = error     (gh falhou, PR inexistente, JSON malformado, uso inválido)
+ *   3 = error     (gh falhou, PR inexistente, JSON malformado, uso
+ *                  inválido, OU exceção não-tratada — ver nota abaixo)
+ *
+ * Nota sobre exit 3 e exceções (#6932, P2): o corpo principal roda dentro
+ * de um try/catch que mapeia QUALQUER exceção não prevista para exit 3.
+ * Sem isso, uma exceção síncrona não capturada faria o Node sair com o
+ * código default 1 — que colide de propósito com o exit code de
+ * `escalate` acima, fazendo um CRASH real do script (bug, payload
+ * inesperado do `gh`) se passar por `gh pr view — deixando pro pickup do
+ * overnight` no log do cron, indistinguível de uma escalada normal e
+ * invisível pro `INFRA_ERRORS`/`log_infra_error` que `continuo-pr-
+ * review.sh` mantém especificamente pra não perder rastro desse tipo de
+ * falha (#6910).
  *
  * @see scripts/lib/continuo-merge-gate.ts
  * @see scripts/lib/continuo-superseded-check.ts
- * @see scripts/lib/pr-review-authenticity.ts (extractIndependentReviewVerdict)
+ * @see scripts/lib/pr-review-authenticity.ts (extractIndependentReviewVerdict/HeadSha)
  * @see scripts/lib/pr-checks-gate.ts (evaluatePrChecksGate)
  * @see scripts/lib/sensitive-path-guard.ts (classifyChangedPaths)
  * @see hermes/scripts/continuo-pr-review.sh
@@ -50,7 +66,7 @@ import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { evaluatePrChecksGate } from "./lib/pr-checks-gate.ts";
 import { classifyChangedPaths } from "./lib/sensitive-path-guard.ts";
-import { extractIndependentReviewVerdict } from "./lib/pr-review-authenticity.ts";
+import { extractIndependentReviewVerdict, extractIndependentReviewHeadSha } from "./lib/pr-review-authenticity.ts";
 import { extractClosingIssueNumbers, computeSupersededVerdict } from "./lib/continuo-superseded-check.ts";
 import { evaluateContinuoMergeGate, type ContinuoMergeGateResult } from "./lib/continuo-merge-gate.ts";
 
@@ -75,7 +91,6 @@ interface GhPrViewPayload {
   body?: unknown;
   additions?: unknown;
   deletions?: unknown;
-  files?: unknown;
 }
 
 interface GhIssueViewPayload {
@@ -98,11 +113,38 @@ function ghJson<T>(args: string[], cwd: string): { ok: true; data: T } | { ok: f
   }
 }
 
+/**
+ * Lista de paths alterados via REST paginado (`gh api .../pulls/{n}/files
+ * --paginate`), NÃO `gh pr view --json files` (achado do review da PR
+ * #6932, P2): o campo GraphQL `files` de `gh pr view` é uma connection sem
+ * garantia documentada de que o `gh` CLI a pagina até o fim — um PR
+ * tocando muitos arquivos poderia ter a lista truncada silenciosamente,
+ * sub-relatando `sensitive` como `false` pra arquivos além do corte. REST
+ * paginado é o mesmo padrão que o resto do repo já usa pra diff de PR
+ * (`changedPathsFromGit` em `sensitive-path-guard.ts` usa `git diff`
+ * local; aqui não há checkout, então REST paginado é o equivalente
+ * correto). Retorna `null` em qualquer falha — fail-closed via `sensitive:
+ * null` no chamador, nunca "lista vazia = nada sensível".
+ */
+function fetchChangedFiles(prNumber: number, cwd: string): string[] | null {
+  const result = spawnSync(
+    "gh",
+    ["api", `repos/{owner}/{repo}/pulls/${prNumber}/files`, "--paginate", "--jq", ".[].filename"],
+    { cwd, encoding: "utf8", timeout: 30_000 },
+  );
+  if (result.error || result.status !== 0) return null;
+  const stdout = (result.stdout ?? "").toString();
+  return stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
 /** Estado (`OPEN`/`CLOSED`) de cada issue referenciada pelo corpo, via `gh
  *  issue view` — 1 chamada por número (tipicamente 0 ou 1 issue por PR).
- *  Issue que falha ao buscar (fechada indevidamente, `gh` com erro
- *  transitório, número inexistente) fica SEM entrada no mapa — tratada como
- *  estado desconhecido por `computeSupersededVerdict` (fail-closed: nunca
+ *  Issue que falha ao buscar (deletada, transferida pra outro repo, `gh`
+ *  com erro transitório) fica SEM entrada no mapa — tratada como estado
+ *  desconhecido por `computeSupersededVerdict` (fail-closed: nunca
  *  "CLOSED" por omissão). */
 function fetchIssueStates(numbers: readonly number[], cwd: string): Map<number, "OPEN" | "CLOSED"> {
   const states = new Map<number, "OPEN" | "CLOSED">();
@@ -121,33 +163,26 @@ const EXIT_CODES: Record<ContinuoMergeGateResult["action"], number> = {
   reject: 2,
 };
 
-if (isMainModule(import.meta.url)) {
-  const { values, flags } = parseArgs(process.argv.slice(2));
+function run(): number {
+  const { values } = parseArgs(process.argv.slice(2));
   const prRaw = values.pr;
   const prNumber = prRaw ? Number(prRaw) : NaN;
-  const reviewedHeadSha = values["reviewed-head-sha"];
   const diffThreshold = values["diff-threshold"] ? Number(values["diff-threshold"]) : EFFORT_DIFF_LINE_THRESHOLD;
 
-  if (!prRaw || !Number.isInteger(prNumber) || prNumber <= 0 || !reviewedHeadSha) {
-    console.error("[check-continuo-merge-gate] uso: --pr N --reviewed-head-sha SHA [--diff-threshold N]");
-    process.exit(3);
+  if (!prRaw || !Number.isInteger(prNumber) || prNumber <= 0) {
+    console.error("[check-continuo-merge-gate] uso: --pr N [--diff-threshold N]");
+    return 3;
   }
 
   const cwd = process.cwd();
   const prView = ghJson<GhPrViewPayload>(
-    [
-      "pr",
-      "view",
-      String(prNumber),
-      "--json",
-      "headRefOid,mergeable,statusCheckRollup,comments,body,additions,deletions,files",
-    ],
+    ["pr", "view", String(prNumber), "--json", "headRefOid,mergeable,statusCheckRollup,comments,body,additions,deletions"],
     cwd,
   );
 
   if (!prView.ok) {
     console.error(`[check-continuo-merge-gate] PR #${prNumber}: erro ao buscar dados — ${prView.reason}`);
-    process.exit(3);
+    return 3;
   }
 
   const payload = prView.data;
@@ -159,27 +194,10 @@ if (isMainModule(import.meta.url)) {
   const checksResult = evaluatePrChecksGate(payload.statusCheckRollup, {
     mergeable: typeof payload.mergeable === "string" ? payload.mergeable : undefined,
   });
-  let verdict = extractIndependentReviewVerdict(payload.comments);
-  // #6926: `--assume-approved` cobre o caminho "AUTH_RC=0" de
-  // continuo-pr-review.sh — PR que já tinha review independente ANTES do
-  // campo `verdict=` existir (marcador legado, pré-#6926), então
-  // `extractIndependentReviewVerdict` devolve `null` mesmo com review de
-  // verdade presente. O chamador só passa esta flag depois de confirmar via
-  // `check-pr-review-authenticity.ts` (`AUTH_RC=0`, verdict="pass") que
-  // existe review independente — nunca por padrão, nunca quando o veredito é
-  // `null` por AUSÊNCIA de qualquer review (aí não há nada legado pra
-  // assumir). Um `verdict="reject"` explícito (review MAIS recente que já
-  // usa o campo novo) sempre vence — a flag só preenche o silêncio, nunca
-  // sobrescreve um veredito que já existe.
-  if (flags.has("assume-approved") && verdict === null) {
-    verdict = "approve";
-  }
+  const verdict = extractIndependentReviewVerdict(payload.comments);
+  const reviewedHeadSha = extractIndependentReviewHeadSha(payload.comments);
 
-  const files = Array.isArray(payload.files)
-    ? (payload.files as Array<{ path?: unknown }>)
-        .map((f) => (typeof f?.path === "string" ? f.path : null))
-        .filter((p): p is string => p !== null)
-    : null;
+  const files = fetchChangedFiles(prNumber, cwd);
   const sensitive = files === null ? null : classifyChangedPaths(files).sensitive;
 
   const closingIssueNumbers = extractClosingIssueNumbers(payload.body);
@@ -219,9 +237,31 @@ if (isMainModule(import.meta.url)) {
     },
   };
 
+  // Sempre no stdout, SEMPRE a última coisa escrita nele — o chamador
+  // (`try_merge_gate` em continuo-pr-review.sh) lê stdout e stderr em
+  // streams SEPARADOS (não `2>&1` misturado) e faz `jq` sobre esta linha
+  // pra extrair `action`/`reason`/`details.reviewedHeadSha`, nunca
+  // depende de ordem relativa entre stdout/stderr (#6932, P3 — a versão
+  // anterior fazia `tail -1` sobre os dois streams misturados, que não
+  // tem ordem de interleaving garantida).
   console.log(JSON.stringify(output));
   if (result.action !== "merge") {
     console.error(`[check-continuo-merge-gate] PR #${prNumber}: ${result.action} — ${result.reason}`);
   }
-  process.exit(EXIT_CODES[result.action]);
+  return EXIT_CODES[result.action];
+}
+
+if (isMainModule(import.meta.url)) {
+  let exitCode: number;
+  try {
+    exitCode = run();
+  } catch (e) {
+    // #6932 (P2): nunca deixar uma exceção não-prevista cair no exit code
+    // default do Node (1) — colide de propósito com `escalate` (ver
+    // docblock do topo). Qualquer bug/payload inesperado vira exit 3
+    // (`error`), sempre distinguível de uma escalada legítima.
+    console.error(`[check-continuo-merge-gate] exceção não tratada: ${(e as Error)?.stack ?? String(e)}`);
+    exitCode = 3;
+  }
+  process.exit(exitCode);
 }
