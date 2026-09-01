@@ -844,9 +844,13 @@ export async function main(rootDirOverride?: string): Promise<void> {
 
   // #4517: popula o token opaco de voto (`POLL_TOKEN`) pra TODA a lista Brevo
   // ANTES de criar a campanha — paridade com a proteção Beehiiv do #4487.
-  // Roda INLINE (não uma task agendada, diferente da Beehiiv) porque a lista
-  // aqui é capada em `daily_send_cap` — barato o bastante por envio, e
-  // garante que NUNCA falta rodar essa etapa antes de um disparo real.
+  // Roda INLINE (não uma task agendada, diferente da Beehiiv). Histórico: a
+  // premissa original era "a lista aqui é capada em `daily_send_cap` —
+  // barato o bastante por envio" — **correção #6940**: `daily_send_cap` não
+  // capa mais nada (`checkDailySendCap` esvaziado pelo #6793), então o custo
+  // real depende só do tamanho atual da lista Brevo. Continua rodando
+  // inline mesmo assim — garante que NUNCA falta rodar essa etapa antes de
+  // um disparo real, independente do tamanho.
   const pollTokenGuard = checkPollTokenGuards({
     pollSecret: process.env.POLL_SECRET,
     cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID,
