@@ -99,6 +99,29 @@ e escrita. **Reverter é apagar o ponteiro no `CLAUDE.md` e este arquivo.**
 | 29/08 | `z-ai/glm-5.3-flash` | 613 | 1,7160 | 0,0028 |
 | 28/08 | `z-ai/glm-5.3-flash` | 69 | 0,1016 | 0,0015 |
 
+## Harness (#6930)
+
+`scripts/dispatch-glm-lane-unit.sh <ISSUE>` — despacha 1 unidade. Impõe (b)
+e (c) mecanicamente: `--tools` explícito omite `gh pr merge`/`gh pr
+review`/`gh issue close|edit`; `--model z-ai/glm-5.3-flash` sempre passado.
+Reivindica a issue (`session-registry.ts claim-issue`), roda num worktree
+isolado, invoca `hermes/scripts/claude-openrouter.sh` UMA VEZ (nunca sessão
+de vida longa), tira snapshot de `/api/v1/credits`
+(`scripts/glm-lane-credits.ts`) antes e depois, e registra a unidade
+append-only em `data/glm-lane/units.jsonl`
+(`scripts/record-glm-lane-unit.ts`).
+
+Antes de CADA despacho, `scripts/check-glm-lane-gate.ts` (lógica pura em
+`scripts/lib/glm-lane-gate.ts`) avalia o teto de 10 unidades e os 3
+critérios de morte contra o histórico já registrado — recusa a 11ª
+unidade e qualquer unidade além de um critério disparado, por construção.
+A condição (a) — issue de aceite mecânico — continua seleção humana; o
+harness recebe o número da issue já escolhida, nunca decide isso sozinho.
+
+**Nenhuma unidade real foi despachada ainda** — harness entregue com
+teste (`test/glm-lane-*.test.ts`, `test/dispatch-glm-lane-unit.test.ts`),
+aguardando a 1ª issue escolhida pelo coordenador.
+
 ## Relacionadas
 
 #6930 (a proposta e o desenho), #6716 (o vazamento de Sonnet no wrapper),
