@@ -49,6 +49,7 @@ import {
   parseJournalUnitOutcomes,
   evaluateUnitFailureRate,
   isAlarmingRateVerdict,
+  detectPossibleParserDesync,
   DEFAULT_WINDOW_SIZE,
   DEFAULT_FAILURE_THRESHOLD,
   type UnitFailureRateEvaluation,
@@ -281,6 +282,18 @@ async function main(): Promise<void> {
     if (lines === null) continue; // journalctl indisponível pra esta unit/máquina
     anyJournalReadable = true;
     const outcomes = parseJournalUnitOutcomes(lines, unit.unitName);
+    // #6905 — sinal antes de agir: journal com linhas, zero sucessos
+    // reconhecidos, pelo menos 1 falha reconhecida. Não bloqueia o alarme
+    // (a unit pode genuinamente só estar falhando), só avisa alto — é o
+    // padrão exato que o bug do formato de sucesso produzia (as 2 linhas
+    // de falha usam `: `, que nunca mudou; só o sucesso ficava invisível).
+    if (detectPossibleParserDesync(outcomes, lines.length > 0)) {
+      console.warn(
+        `${LOG_PREFIX} ⚠️  ${unit.unitName}: journal tem linhas e o parser achou falha(s), mas ZERO sucesso reconhecido — ` +
+          `possível dessincronia do parser com o formato do journal desta máquina (achado ao vivo #6905). ` +
+          `Verificar manualmente antes de confiar na taxa: journalctl --user -u ${unit.unitName} -n 50`,
+      );
+    }
     const evaluation = evaluateUnitFailureRate(outcomes, {
       windowSize: DEFAULT_WINDOW_SIZE,
       failureThreshold: DEFAULT_FAILURE_THRESHOLD,
