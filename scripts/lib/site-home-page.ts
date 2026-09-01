@@ -30,6 +30,7 @@ import { escHtml } from "./html-escape.ts";
 import { parseSitemap } from "./fetch-sitemap.ts";
 import { HUB_META } from "../../workers/arquivo/src/hubs/meta.ts";
 import { COLORS } from "./shared/design-tokens.ts";
+import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
 
 /**
  * Converte um hex `#RRGGBB` do DS pra `rgba(r,g,b,alpha)` — usado só pra
@@ -82,6 +83,36 @@ const INK_FAINT = hexToRgba(COLORS.ink, 0.5);
 const TEAL_DEEP = "#007a7a";
 const ERROR_LIGHT = "#b3261e";
 const ERROR_DARK = "#ffb3a8";
+
+/**
+ * Raio de canto dos "cards" da home (#7011, achado 3 do editor numa revisão
+ * ao vivo). Antes desta constante, cada caixa da página usava um valor
+ * DIFERENTE sem nenhuma decisão registrada: `.feature-media img` tinha 6px
+ * "solto"; `.special-card`, `.archive-card` (que ganha capa nesta mesma PR,
+ * ver `archiveCards` em `buildIndexHtml`) e `.faq-item` não tinham raio
+ * nenhum (cantos retos). A
+ * home inteira só usava, além disso, 999px em pílulas (botões/tags — 5
+ * ocorrências). Uma constante única elimina esse terceiro valor arbitrário e
+ * dá o mesmo raio a toda caixa de conteúdo.
+ *
+ * LOCAL a este módulo, não token de `design-tokens.ts` — mesmo motivo do
+ * `TEAL_DEEP`/`ERROR_*` acima: o DS espelhado do repo `diaria-design` não
+ * declara raio nenhum (`grep -nE "radius" design-tokens.ts` vazio), então
+ * promover um valor aqui faria o mirror divergir na direção errada (ele
+ * lidera, nunca segue). Se/quando `diaria-design` declarar um token de raio,
+ * a promoção nasce lá primeiro, não direto neste módulo.
+ *
+ * 8px — o raio dominante da home Beehiiv (`diaria.beehiiv.com`, referência
+ * visual já usada nas #6978/#6986/#6995/#7011), medida em 185 ocorrências
+ * contra o único uso solto de 6px que existia aqui antes desta mudança.
+ *
+ * Aplicada a `.special-card` e `.faq-item` mesmo onde a caixa não tem
+ * borda/fundo fechado hoje (`.faq-item` só tem `border-top` — o raio não
+ * produz efeito visual sozinho ali) — decisão deliberada de consistência
+ * antecipada: se uma borda/fundo completo entrar depois nesses seletores, o
+ * raio já está certo, em vez de mais um ponto pra lembrar de sincronizar.
+ */
+const CARD_RADIUS = "8px";
 
 export interface HomeFeedEntry {
   slug: string;
@@ -354,6 +385,26 @@ function renderSignupForm(opts: { id: string; onDark?: boolean }): string {
  * path independente de host, então as duas formas satisfariam o eixo; só a
  * absoluta de fato funciona pro leitor.
  */
+/**
+ * Wordmark de display "diar.ia.br" (nav `.logo` + `<h1>` do masthead, #7010)
+ * — consome a ESTRUTURA canônica de `WORDMARK_DISPLAY_SEGMENTS`
+ * (`brand-wordmark.ts`) em vez de escrever "diar" + "." + "ia" + ".br" à mão
+ * de novo aqui (foi assim que o #7010 nasceu: o markup duplicado só tinha os
+ * PONTOS em teal, nunca o ".br" inteiro). A classe `.dot` é LOCAL a este
+ * módulo (`.logo .dot`/`.masthead h1 .dot`, ver `<style>` abaixo) — o
+ * canônico exporta só QUAIS letras são teal, nunca HTML pronto, porque
+ * `applyBrandWordmark` (a outra saída do módulo) injeta `<strong>`/`style`
+ * inline pensado pra prosa corrida, não pro tamanho de fonte `clamp(...)`
+ * gigante do display.
+ */
+function renderWordmark(): string {
+  return WORDMARK_DISPLAY_SEGMENTS.map((seg) => {
+    const cls = seg.teal ? ' class="dot"' : "";
+    const hidden = seg.decorative ? ' aria-hidden="true"' : "";
+    return `<span${cls}${hidden}>${escHtml(seg.text)}</span>`;
+  }).join("");
+}
+
 function renderTopicLinks(): string {
   return HUB_META.map(
     (hub) =>
@@ -548,16 +599,28 @@ export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
       </div>`
       : featureBody;
 
+  // Capa por card (#7011) — mesma degradação do destaque (`featureHtml`
+  // acima): `entry.image` vem de `extractHeroImage`/`buildHomeFeed`, `null`
+  // quando a página não tem `img.hero` — o card cai pro layout só-texto de
+  // sempre, nunca quebra por capa ausente. `loading="lazy"` obrigatório
+  // aqui (nunca no destaque, que é sempre a 1ª imagem visível da página):
+  // são até ~10 cards, e sem lazy a home carregaria 10 imagens de uma vez.
   const archiveCards = archive
-    .map(
-      (entry) => `<article class="archive-card">
+    .map((entry) => {
+      const media = entry.image
+        ? `<a class="archive-media" href="${escHtml(entry.url)}" tabindex="-1" aria-hidden="true">
+          <img src="${escHtml(entry.image)}" alt="${escHtml(entry.title)}" loading="lazy">
+        </a>`
+        : "";
+      return `<article class="archive-card">
+        ${media}
         <div class="archive-meta">
           <span>${escHtml(formatDateLong(entry.date))}</span>
         </div>
         <h3 class="archive-title"><a href="${escHtml(entry.url)}">${escHtml(entry.title)}</a></h3>
         <p class="archive-dek">${escHtml(entry.description)}</p>
-      </article>`,
-    )
+      </article>`;
+    })
     .join("\n");
 
   const faqItems = FAQS.map(
@@ -683,14 +746,14 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .feature-hint { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
 .feature-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center; }
 .feature-media { display: block; }
-.feature-media img { display: block; width: 100%; height: auto; border-radius: 6px; }
+.feature-media img { display: block; width: 100%; height: auto; border-radius: ${CARD_RADIUS}; }
 
 /* Specials */
 .specials { padding: 64px 0 72px; background: var(--paper-alt); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
 .specials-head h2 { font-size: clamp(32px, 6vw, 56px); font-weight: 500; letter-spacing: -0.02em; line-height: 1; margin: 10px 0 32px; }
 .specials-head h2 .accent { font-style: italic; color: var(--teal-deep); }
 .specials-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-.special-card { padding: 30px; border: 1px solid var(--rule); background: var(--paper); display: flex; flex-direction: column; gap: 14px; }
+.special-card { padding: 30px; border: 1px solid var(--rule); background: var(--paper); display: flex; flex-direction: column; gap: 14px; border-radius: ${CARD_RADIUS}; }
 .special-card--dark { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 .special-card h3 { font-size: 34px; font-weight: 500; letter-spacing: -0.02em; line-height: 1; }
 .special-card p { font-size: 14px; line-height: 1.5; color: var(--ink-soft); margin: 0; }
@@ -704,7 +767,15 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .archive-head h2 { font-size: clamp(28px, 5vw, 40px); font-weight: 500; letter-spacing: -0.02em; }
 .archive-head a { font-size: 13px; text-decoration: underline; text-underline-offset: 4px; }
 .archive-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px 28px; margin-top: 32px; }
-.archive-card { display: flex; flex-direction: column; gap: 10px; }
+.archive-card { display: flex; flex-direction: column; gap: 10px; border-radius: ${CARD_RADIUS}; }
+/* Capa do card (#7011) — topo, mesma proporção 2:1 do crop de destaque
+   (04-{d}-2x1.jpg, ver extractHeroImage/HomeFeedEntry.image).
+   aspect-ratio + object-fit: cover (em vez de height: auto como
+   .feature-media) porque aqui são até ~10 thumbnails pequenas lado a lado
+   na mesma grade — sem uma proporção fixa, uma imagem com crop levemente
+   diferente desalinharia a grade verticalmente entre colunas. */
+.archive-media { display: block; }
+.archive-media img { display: block; width: 100%; aspect-ratio: 2 / 1; object-fit: cover; border-radius: ${CARD_RADIUS}; }
 .archive-meta { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
 .archive-title { font-size: 20px; line-height: 1.15; letter-spacing: -0.01em; font-weight: 500; }
 .archive-title a:hover { color: var(--teal-deep); }
@@ -723,7 +794,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .faqs { padding: 64px 0; }
 .faqs .wrap { display: grid; grid-template-columns: 1fr 1.4fr; gap: 48px; }
 .faqs h2 { font-size: clamp(30px, 5vw, 44px); font-weight: 500; letter-spacing: -0.02em; margin-top: 10px; }
-.faq-item { border-top: 1px solid var(--rule); padding: 20px 0; display: grid; grid-template-columns: 28px 1fr; gap: 14px; }
+.faq-item { border-top: 1px solid var(--rule); padding: 20px 0; display: grid; grid-template-columns: 28px 1fr; gap: 14px; border-radius: ${CARD_RADIUS}; }
 .faq-num { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-faint); padding-top: 4px; }
 .faq-q { font-size: 18px; font-weight: 500; }
 .faq-a { font-size: 14px; line-height: 1.5; color: var(--ink-soft); margin: 8px 0 0; }
@@ -753,7 +824,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 <body>
   <nav class="nav" id="nav">
     <div class="wrap">
-      <div class="logo"><span>diar</span><span class="dot" aria-hidden="true">.</span><span>ia</span><span class="dot" aria-hidden="true">.</span><span>br</span></div>
+      <div class="logo">${renderWordmark()}</div>
       <div class="nav-links">
         <a href="https://arquivo.diar.ia.br/">Edições</a>
         <a href="https://especial.diar.ia.br/">Especiais</a>
@@ -769,13 +840,22 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 
   <header class="masthead" id="masthead">
     <div class="wrap">
+      <!-- #7010 achado 4: par esquerda/direita nas 2 réguas, mesma estrutura
+           da home Beehiiv (diaria.beehiiv.com) — layout é escopo desta PR, a
+           COPY é decisão do editor, então os 4 textos abaixo são os da
+           própria Beehiiv (transcritos ao vivo pelo editor), não inventados
+           aqui. .masthead-meta/.masthead-sub já eram display:flex;
+           justify-content:space-between antes desta mudança — só tinham 1
+           filho cada, então o espaço vazio à direita nunca aparecia. -->
       <div class="masthead-meta">
-        <span class="mono">Diário · de segunda a sexta · São Paulo, BR</span>
+        <span class="mono">NOTÍCIAS · PESQUISAS · TENDÊNCIAS · TUTORIAIS</span>
+        <span class="mono">DE SEGUNDA A SEXTA</span>
       </div>
       <hr class="rule rule--thick">
-      <h1>diar<span class="dot" aria-hidden="true">.</span>ia<span class="dot" aria-hidden="true">.</span>br</h1>
+      <h1>${renderWordmark()}</h1>
       <div class="masthead-sub">
-        <span class="kicker">Seu filtro no caos</span>
+        <span class="kicker">A IA JÁ ESTÁ MUDANDO O SEU TRABALHO.</span>
+        <span class="kicker">MELHOR SABER USAR.</span>
       </div>
       <hr class="rule rule--thick">
       <div class="masthead-grid">

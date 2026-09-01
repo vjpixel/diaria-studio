@@ -24,6 +24,24 @@ import {
   slugFromCanonicalUrl,
 } from "../scripts/lib/site-home-page.ts";
 import { buildSitemapXml, addSitemapEntry, sitemapEntryFromPost } from "../scripts/lib/site-archive-pages.ts";
+import { WORDMARK_DISPLAY_SEGMENTS } from "../scripts/lib/shared/brand-wordmark.ts";
+
+/** Regex-escapa `s` — usado pra montar `RegExp` a partir de markup literal. */
+function reEscape(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Markup canônico do wordmark de display, derivado por VALOR de
+ * `WORDMARK_DISPLAY_SEGMENTS` — não hardcoded aqui, senão o teste trava só a
+ * cópia do dia em que foi escrito e não pega drift se `brand-wordmark.ts`
+ * mudar a estrutura sem `site-home-page.ts` acompanhar (#7010).
+ */
+const WORDMARK_HTML = WORDMARK_DISPLAY_SEGMENTS.map((seg) => {
+  const cls = seg.teal ? ' class="dot"' : "";
+  const hidden = seg.decorative ? ' aria-hidden="true"' : "";
+  return `<span${cls}${hidden}>${seg.text}</span>`;
+}).join("");
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC_DIR = resolve(ROOT, "workers", "site", "public");
@@ -256,6 +274,44 @@ describe("buildIndexHtml", () => {
       "a feature apareceu duplicada dentro do bloco #archive",
     );
     assert.match(archiveSection, /edicao-anterior/);
+  });
+
+  it("nav .logo e masthead h1 usam a MESMA estrutura canônica do wordmark (#7010 — '.br' inteiro em teal, não só o ponto)", () => {
+    assert.match(html, new RegExp(`<div class="logo">${reEscape(WORDMARK_HTML)}</div>`));
+    assert.match(html, new RegExp(`<h1>${reEscape(WORDMARK_HTML)}</h1>`));
+    // Trava especificamente a causa raiz do #7010: o "br" tem que estar DENTRO
+    // do span teal (class="dot"), não como texto solto atrás dele.
+    assert.match(html, /<span class="dot">br<\/span>/);
+  });
+
+  it("wordmark: as LETRAS teal ('br') nunca ficam aria-hidden — só o ponto separador esconde de leitor de tela", () => {
+    assert.ok(
+      !html.includes('<span class="dot" aria-hidden="true">br</span>'),
+      "'br' não pode estar aria-hidden — um leitor de tela pularia parte do nome da marca",
+    );
+    // Os 2 pontos separadores continuam aria-hidden (comportamento pré-existente).
+    assert.equal((html.match(/<span class="dot" aria-hidden="true">\.<\/span>/g) ?? []).length, 4);
+  });
+
+  it("renderiza a capa do card do arquivo (#7011) quando entry.image existe", () => {
+    const withImage = buildIndexHtml({
+      feature,
+      archive: [{ ...archive[0], image: "https://eia.diar.ia.br/img/img-x-04-d2-2x1-x.jpg" }],
+    });
+    assert.match(
+      withImage,
+      /<a class="archive-media" href="https:\/\/diar\.ia\.br\/p\/edicao-anterior" tabindex="-1" aria-hidden="true">\s*<img src="https:\/\/eia\.diar\.ia\.br\/img\/img-x-04-d2-2x1-x\.jpg" alt="Edição anterior" loading="lazy">/,
+    );
+  });
+
+  it("card do arquivo degrada pro layout só-texto sem quebrar quando entry.image é null (#7011)", () => {
+    // A fixture `archive` já usa `image: null` — mesmo espírito do teste
+    // equivalente da feature acima (#6978).
+    assert.ok(
+      !html.includes('<a class="archive-media"'),
+      "não deve montar a capa do arquivo pra entrada sem image",
+    );
+    assert.match(html, /<h3 class="archive-title"><a href="https:\/\/diar\.ia\.br\/p\/edicao-anterior">Edição anterior<\/a><\/h3>/);
   });
 
   it("data fora de faixa (mês inválido) degrada pra string vazia em vez de vazar 'undefined'", () => {
