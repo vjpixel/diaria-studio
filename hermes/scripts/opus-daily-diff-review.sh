@@ -13,7 +13,8 @@
 # #6865 (31/08/2026): renomeado de `daily-consolidated-review.sh`. O papel
 # deste script (varredura consolidada do diff acumulado, 1x/dia, Opus) NÃO
 # mudou — o que mudou é que ele passou a ter um IRMÃO,
-# `continuo-pr-review.sh` (Sonnet, ~4h, review de PR individual do
+# `continuo-pr-review.sh` (Sonnet, cron próprio — cadência: derivar com
+# `hermes cron list --all`, nunca esta prosa, #6928; review de PR individual do
 # contínuo) — com dois scripts de review no diretório, "daily-consolidated-
 # review" sozinho passou a ler como "o único review que existe", o que
 # deixou de ser verdade. Cadência e modelo deste script são os MESMOS de
