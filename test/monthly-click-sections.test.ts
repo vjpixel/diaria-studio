@@ -270,6 +270,135 @@ describe("parseEdition", () => {
     assert.equal(it5.length, 1);
     assert.equal(it5[0].baseUrl, "https://news.com/z");
   });
+
+  // #6867, achado ao vivo ciclo 2608-09: conteúdo de box de divulgação/CTA
+  // rotativo (host VARIÁVEL — evento de terceiro, votação comunitária) vazava
+  // pro Radar porque `parseEdition` classificava pela seção precedente, sem
+  // reconhecer que um bloco na lacuna entre dois destaques é um BOX, não
+  // notícia. `wa.me` (bloco fixo "Convide um amigo") entra pela lista de hosts
+  // (OWN_PROMO_HOSTS_RE); hosts imprevisíveis (SXSW, Sympla) entram pela
+  // detecção ESTRUTURAL (extractBoxDivulgacao{0,1,2,3}), reusada de
+  // `newsletter-parse.ts` — mesma lógica que `stitch-newsletter.ts` já usa
+  // pra localizar esses blocos, marcador-agnóstica.
+  it("#6867: filtra link de box de divulgação na lacuna entre 2 destaques (slot 1), independente do host", () => {
+    const md6 = [
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "[**Foo lança bar**](https://foo.com/bar)",
+      "",
+      "corpo do destaque",
+      "",
+      "Por que isso importa:",
+      "",
+      "porque sim",
+      "",
+      "---",
+      "",
+      "**🗳️ Vote no tema do SXSW 2027**",
+      "",
+      "Ajude a escolher o próximo painel da diar.ia.br.",
+      "",
+      "[Vote aqui](https://participate.sxsw.com/vote/xyz)",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | 🤖 NOTÍCIA**",
+      "",
+      "[**Bar lança baz**](https://bar.com/baz)",
+      "",
+      "corpo do destaque",
+      "",
+      "Por que isso importa:",
+      "",
+      "porque sim",
+      "",
+      "---",
+      "",
+      "**📰 OUTRAS NOTÍCIAS**",
+      "",
+      "[**Notícia real**](https://news.com/w)",
+      "desc",
+      "",
+    ].join("\n");
+    const it6 = parseEdition("260606", md6);
+    assert.ok(
+      it6.every((i) => !i.baseUrl.includes("participate.sxsw.com")),
+      "link do box (SXSW) não deve aparecer em NENHUMA seção, inclusive 'outro'",
+    );
+    const urls6 = it6.map((i) => i.baseUrl).sort();
+    assert.deepEqual(urls6, ["https://bar.com/baz", "https://foo.com/bar", "https://news.com/w"]);
+  });
+
+  it("#6867: filtra wa.me (bloco fixo 'Convide um amigo'/compartilhamento) por host, mesmo fora de um box estrutural", () => {
+    const md7 = [
+      "**📰 OUTRAS NOTÍCIAS**",
+      "",
+      "[**Notícia real**](https://news.com/v)",
+      "desc",
+      "",
+      "[**Convide pelo WhatsApp →**](https://wa.me/?text=confira)",
+      "desc convite",
+      "",
+    ].join("\n");
+    const it7 = parseEdition("260607", md7);
+    assert.equal(it7.length, 1);
+    assert.equal(it7[0].baseUrl, "https://news.com/v");
+  });
+
+  // Review PR #7004, finding 1: a exclusão por box-URL não pode varrer um
+  // destaque REAL só porque a mesma baseUrl também aparece dentro de um box
+  // de divulgação/CTA da mesma edição — a exclusão existe pra impedir que o
+  // conteúdo do BOX compita como notícia, não pra apagar o destaque.
+  it("#7004 finding 1: mesma URL como destaque E dentro de um box — o destaque sobrevive, a ocorrência de box não entra no pool", () => {
+    const md8 = [
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "[**Foo lança bar**](https://foo.com/bar)",
+      "",
+      "corpo do destaque",
+      "",
+      "Por que isso importa:",
+      "",
+      "porque sim",
+      "",
+      "---",
+      "",
+      "**🗳️ Vote no tema do mês**",
+      "",
+      "Ajude a escolher o próximo painel.",
+      "",
+      "[Vote aqui](https://foo.com/bar)",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | 🤖 NOTÍCIA**",
+      "",
+      "[**Bar lança baz**](https://bar.com/baz)",
+      "",
+      "corpo do destaque",
+      "",
+      "Por que isso importa:",
+      "",
+      "porque sim",
+      "",
+      "---",
+      "",
+      "**📰 OUTRAS NOTÍCIAS**",
+      "",
+      "[**Notícia real**](https://news.com/w)",
+      "desc",
+      "",
+    ].join("\n");
+    const it8 = parseEdition("260608", md8);
+    const foos = it8.filter((i) => i.baseUrl === "https://foo.com/bar");
+    // Exatamente 1 ocorrência sobrevive: a do destaque real, não a do box
+    // (mesma baseUrl, linha diferente) — o box some, o destaque não.
+    assert.equal(foos.length, 1);
+    assert.equal(foos[0].section, "destaque");
+    const urls8 = it8.map((i) => i.baseUrl).sort();
+    assert.deepEqual(urls8, ["https://bar.com/baz", "https://foo.com/bar", "https://news.com/w"]);
+  });
+
   it("carrega a edição em cada item", () => {
     assert.ok(items.every((i) => i.edition === "260601"));
   });
