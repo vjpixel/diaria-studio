@@ -18,7 +18,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { applyBrandWordmark } from "../scripts/lib/shared/brand-wordmark.ts";
+import { applyBrandWordmark, WORDMARK_DISPLAY_SEGMENTS } from "../scripts/lib/shared/brand-wordmark.ts";
 import { renderInlineLinks } from "../scripts/lib/shared/markdown-links.ts";
 import { renderCuradoriaFooter } from "../scripts/lib/shared/curadoria-page.ts";
 import { renderHubPage, type HubContent } from "../scripts/lib/shared/hub-page.ts";
@@ -190,5 +190,28 @@ describe("workers/poll — sub-superfície separada, varredura própria de texto
   it("botões/CTAs curtos (\"Assinar a diar.ia.br (grátis)\") ficam de fora — mesma exclusão de nav/link do site", () => {
     const html = renderInlineSignupFormBlock();
     assert.match(html, /<button type="submit" class="signup-btn">Assinar a diar\.ia\.br \(grátis\)<\/button>/);
+  });
+});
+
+describe("WORDMARK_DISPLAY_SEGMENTS (#7010 — estrutura pro wordmark de DISPLAY, consumida por site-home-page.ts)", () => {
+  it("concatenados formam 'diar.ia.br'", () => {
+    assert.equal(WORDMARK_DISPLAY_SEGMENTS.map((s) => s.text).join(""), "diar.ia.br");
+  });
+
+  it("segmentos teal são exatamente os 2 separadores '.' e as letras 'br' — nunca só o ponto (causa raiz do #7010)", () => {
+    const teal = WORDMARK_DISPLAY_SEGMENTS.filter((s) => s.teal).map((s) => s.text);
+    assert.deepEqual(teal, [".", ".", "br"]);
+  });
+
+  it("'br' é teal mas NÃO decorativo — não pode ser candidato a aria-hidden (perderia parte do nome falado)", () => {
+    const br = WORDMARK_DISPLAY_SEGMENTS.find((s) => s.text === "br");
+    assert.equal(br?.teal, true);
+    assert.equal(br?.decorative, false);
+  });
+
+  it("os separadores '.' são decorativos (candidatos a aria-hidden) — 'diar'/'ia' não são", () => {
+    for (const seg of WORDMARK_DISPLAY_SEGMENTS) {
+      assert.equal(seg.decorative, seg.text === ".", `segmento "${seg.text}": decorative deveria ser ${seg.text === "."}`);
+    }
   });
 });

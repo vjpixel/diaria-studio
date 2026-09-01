@@ -111,14 +111,14 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .feature-hint { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
 .feature-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center; }
 .feature-media { display: block; }
-.feature-media img { display: block; width: 100%; height: auto; border-radius: 6px; }
+.feature-media img { display: block; width: 100%; height: auto; border-radius: 8px; }
 
 /* Specials */
 .specials { padding: 64px 0 72px; background: var(--paper-alt); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
 .specials-head h2 { font-size: clamp(32px, 6vw, 56px); font-weight: 500; letter-spacing: -0.02em; line-height: 1; margin: 10px 0 32px; }
 .specials-head h2 .accent { font-style: italic; color: var(--teal-deep); }
 .specials-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-.special-card { padding: 30px; border: 1px solid var(--rule); background: var(--paper); display: flex; flex-direction: column; gap: 14px; }
+.special-card { padding: 30px; border: 1px solid var(--rule); background: var(--paper); display: flex; flex-direction: column; gap: 14px; border-radius: 8px; }
 .special-card--dark { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 .special-card h3 { font-size: 34px; font-weight: 500; letter-spacing: -0.02em; line-height: 1; }
 .special-card p { font-size: 14px; line-height: 1.5; color: var(--ink-soft); margin: 0; }
@@ -132,7 +132,15 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .archive-head h2 { font-size: clamp(28px, 5vw, 40px); font-weight: 500; letter-spacing: -0.02em; }
 .archive-head a { font-size: 13px; text-decoration: underline; text-underline-offset: 4px; }
 .archive-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px 28px; margin-top: 32px; }
-.archive-card { display: flex; flex-direction: column; gap: 10px; }
+.archive-card { display: flex; flex-direction: column; gap: 10px; border-radius: 8px; }
+/* Capa do card (#7011) — topo, mesma proporção 2:1 do crop de destaque
+   (04-{d}-2x1.jpg, ver extractHeroImage/HomeFeedEntry.image).
+   aspect-ratio + object-fit: cover (em vez de height: auto como
+   .feature-media) porque aqui são até ~10 thumbnails pequenas lado a lado
+   na mesma grade — sem uma proporção fixa, uma imagem com crop levemente
+   diferente desalinharia a grade verticalmente entre colunas. */
+.archive-media { display: block; }
+.archive-media img { display: block; width: 100%; aspect-ratio: 2 / 1; object-fit: cover; border-radius: 8px; }
 .archive-meta { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
 .archive-title { font-size: 20px; line-height: 1.15; letter-spacing: -0.01em; font-weight: 500; }
 .archive-title a:hover { color: var(--teal-deep); }
@@ -151,7 +159,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .faqs { padding: 64px 0; }
 .faqs .wrap { display: grid; grid-template-columns: 1fr 1.4fr; gap: 48px; }
 .faqs h2 { font-size: clamp(30px, 5vw, 44px); font-weight: 500; letter-spacing: -0.02em; margin-top: 10px; }
-.faq-item { border-top: 1px solid var(--rule); padding: 20px 0; display: grid; grid-template-columns: 28px 1fr; gap: 14px; }
+.faq-item { border-top: 1px solid var(--rule); padding: 20px 0; display: grid; grid-template-columns: 28px 1fr; gap: 14px; border-radius: 8px; }
 .faq-num { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-faint); padding-top: 4px; }
 .faq-q { font-size: 18px; font-weight: 500; }
 .faq-a { font-size: 14px; line-height: 1.5; color: var(--ink-soft); margin: 8px 0 0; }
@@ -181,7 +189,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 <body>
   <nav class="nav" id="nav">
     <div class="wrap">
-      <div class="logo"><span>diar</span><span class="dot" aria-hidden="true">.</span><span>ia</span><span class="dot" aria-hidden="true">.</span><span>br</span></div>
+      <div class="logo"><span>diar</span><span class="dot" aria-hidden="true">.</span><span>ia</span><span class="dot" aria-hidden="true">.</span><span class="dot">br</span></div>
       <div class="nav-links">
         <a href="https://arquivo.diar.ia.br/">Edições</a>
         <a href="https://especial.diar.ia.br/">Especiais</a>
@@ -197,13 +205,22 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 
   <header class="masthead" id="masthead">
     <div class="wrap">
+      <!-- #7010 achado 4: par esquerda/direita nas 2 réguas, mesma estrutura
+           da home Beehiiv (diaria.beehiiv.com) — layout é escopo desta PR, a
+           COPY é decisão do editor, então os 4 textos abaixo são os da
+           própria Beehiiv (transcritos ao vivo pelo editor), não inventados
+           aqui. .masthead-meta/.masthead-sub já eram display:flex;
+           justify-content:space-between antes desta mudança — só tinham 1
+           filho cada, então o espaço vazio à direita nunca aparecia. -->
       <div class="masthead-meta">
-        <span class="mono">Diário · de segunda a sexta · São Paulo, BR</span>
+        <span class="mono">NOTÍCIAS · PESQUISAS · TENDÊNCIAS · TUTORIAIS</span>
+        <span class="mono">DE SEGUNDA A SEXTA</span>
       </div>
       <hr class="rule rule--thick">
-      <h1>diar<span class="dot" aria-hidden="true">.</span>ia<span class="dot" aria-hidden="true">.</span>br</h1>
+      <h1><span>diar</span><span class="dot" aria-hidden="true">.</span><span>ia</span><span class="dot" aria-hidden="true">.</span><span class="dot">br</span></h1>
       <div class="masthead-sub">
-        <span class="kicker">Seu filtro no caos</span>
+        <span class="kicker">A IA JÁ ESTÁ MUDANDO O SEU TRABALHO.</span>
+        <span class="kicker">MELHOR SABER USAR.</span>
       </div>
       <hr class="rule rule--thick">
       <div class="masthead-grid">
@@ -290,6 +307,9 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
       <hr class="rule">
       <div class="archive-grid">
 <article class="archive-card">
+        <a class="archive-media" href="https://diar.ia.br/p/brasil-investe-r-2-3-bi-em-infraestrutura-de-ia" tabindex="-1" aria-hidden="true">
+          <img src="https://eia.diar.ia.br/img/img-260825-04-d1-2x1-39233390.jpg" alt="Brasil investe R$ 2,3 bi em infraestrutura de IA" loading="lazy">
+        </a>
         <div class="archive-meta">
           <span>25 ago 2026</span>
         </div>
@@ -297,6 +317,9 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <p class="archive-dek">Brasil investe R$ 2,3 bi em infraestrutura de IA. Grátis, poderoso e sem dono: o mistério Ox Alpha | SoftBank capta US$ 6,3 bi para apostar na OpenAI</p>
       </article>
 <article class="archive-card">
+        <a class="archive-media" href="https://diar.ia.br/p/roteiristas-pagos-para-treinar-quem-os-substitui" tabindex="-1" aria-hidden="true">
+          <img src="https://eia.diar.ia.br/img/img-260824-04-d1-2x1-f9ab9b24.jpg" alt="Roteiristas pagos para treinar quem os substitui" loading="lazy">
+        </a>
         <div class="archive-meta">
           <span>24 ago 2026</span>
         </div>
@@ -304,6 +327,9 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <p class="archive-dek">Roteiristas pagos para treinar quem os substitui. O estudo que fura o hype do uso no trabalho | Google lança simulado do Enem no Gemini</p>
       </article>
 <article class="archive-card">
+        <a class="archive-media" href="https://diar.ia.br/p/marca-d-agua-do-claude-cai-em-horas" tabindex="-1" aria-hidden="true">
+          <img src="https://eia.diar.ia.br/img/img-260821-04-d1-2x1-8b47e0a5.jpg" alt="Marca d&#39;água do Claude cai em horas" loading="lazy">
+        </a>
         <div class="archive-meta">
           <span>21 ago 2026</span>
         </div>
@@ -311,6 +337,9 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <p class="archive-dek">Marca d&#39;água do Claude cai em horas. Sua empresa é dado de treino alheio | ATS: o filtro que decide seu currículo</p>
       </article>
 <article class="archive-card">
+        <a class="archive-media" href="https://diar.ia.br/p/openai-pausa-treinamento-apos-invasao-critica" tabindex="-1" aria-hidden="true">
+          <img src="https://eia.diar.ia.br/img/img-260820-04-d1-2x1-ba1eb142.jpg" alt="OpenAI pausa treinamento após invasão crítica" loading="lazy">
+        </a>
         <div class="archive-meta">
           <span>20 ago 2026</span>
         </div>
@@ -318,6 +347,9 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <p class="archive-dek">OpenAI pausa treinamento após invasão crítica. OpenAI chega ao Brasil com foco em empresas | Promessa de menos trabalho esbarra em 90h</p>
       </article>
 <article class="archive-card">
+        <a class="archive-media" href="https://diar.ia.br/p/tse-exige-aviso-em-propaganda-eleitoral-com-ia" tabindex="-1" aria-hidden="true">
+          <img src="https://eia.diar.ia.br/img/img-260819-04-d1-2x1-b590fda7.jpg" alt="TSE exige aviso em propaganda eleitoral com IA" loading="lazy">
+        </a>
         <div class="archive-meta">
           <span>19 ago 2026</span>
         </div>
@@ -325,6 +357,9 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <p class="archive-dek">TSE exige aviso em propaganda eleitoral com IA. Grupo hacker usou Claude em 8 invasões | ChatGPT for Teens chega com proteções extras</p>
       </article>
 <article class="archive-card">
+        <a class="archive-media" href="https://diar.ia.br/p/anthropic-so-curar-cancer-convence-publico" tabindex="-1" aria-hidden="true">
+          <img src="https://eia.diar.ia.br/img/img-260818-04-d1-2x1-b0eb641c.jpg" alt="Anthropic: só curar câncer convence público" loading="lazy">
+        </a>
         <div class="archive-meta">
           <span>18 ago 2026</span>
         </div>
@@ -332,6 +367,9 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <p class="archive-dek">Anthropic: só curar câncer convence público. Oito agentes autônomos mapearam Taiwan sozinhos | Excel perde função COPILOT em setembro</p>
       </article>
 <article class="archive-card">
+        <a class="archive-media" href="https://diar.ia.br/p/reglab-estima-r-986-bi-extra-no-pib-ate-2030" tabindex="-1" aria-hidden="true">
+          <img src="https://eia.diar.ia.br/img/img-260817-04-d1-2x1-b3018cea.jpg" alt="Reglab estima R$986 bi extra no PIB até 2030" loading="lazy">
+        </a>
         <div class="archive-meta">
           <span>17 ago 2026</span>
         </div>
@@ -339,6 +377,9 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <p class="archive-dek">Reglab estima R$986 bi extra no PIB até 2030. ChatGPT, Claude e Gemini vazavam raciocínio | 810 conversas revelam padrão de risco mental</p>
       </article>
 <article class="archive-card">
+        <a class="archive-media" href="https://diar.ia.br/p/claude-cowork-chega-ao-painel-do-chrome" tabindex="-1" aria-hidden="true">
+          <img src="https://eia.diar.ia.br/img/img-260814-04-d1-2x1-50b95545.jpg" alt="Claude Cowork chega ao painel do Chrome" loading="lazy">
+        </a>
         <div class="archive-meta">
           <span>14 ago 2026</span>
         </div>
@@ -346,6 +387,9 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <p class="archive-dek">Claude Cowork chega ao painel do Chrome. Gemini 3.7 Flash chega 3 semanas após o 3.6 | GPT-5.6 Sol roda 14× mais rápido na OpenAI</p>
       </article>
 <article class="archive-card">
+        <a class="archive-media" href="https://diar.ia.br/p/amodei-previu-colapso-do-emprego-nao-veio" tabindex="-1" aria-hidden="true">
+          <img src="https://eia.diar.ia.br/img/img-260813-04-d1-2x1-d69685eb.jpg" alt="Amodei previu colapso do emprego. Não veio" loading="lazy">
+        </a>
         <div class="archive-meta">
           <span>13 ago 2026</span>
         </div>
