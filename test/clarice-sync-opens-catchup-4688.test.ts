@@ -88,6 +88,42 @@ test("collectDeliveredStats: conta campanhas entregues e usa a data mais recente
   assert.deepEqual(stats.get("a@x.com"), { count: 2, lastSentAt: "2026-08-03T10:00:00.000Z" });
   assert.equal(stats.has("b@x.com"), false);
 });
+
+// REGRESSÃO (review da PR #6887, P2 média confiança): `deliveredAt`
+// malformado como PRIMEIRO candidato processado passava direto (o
+// curto-circuito `!current.lastSentAt` pulava a validação), corrompendo
+// `lastSentAt` com um valor que `Date.parse` nunca conseguiria comparar
+// depois — nenhum candidato válido posterior o corrigia.
+test("collectDeliveredStats: deliveredAt malformado como 1º candidato NÃO corrompe lastSentAt — candidato válido seguinte prevalece", () => {
+  const stats = collectDeliveredStats([
+    {
+      campaignId: 1,
+      campaignName: "A",
+      exportedAt: "2026-08-02T00:00:00.000Z",
+      recipients: { "a@x.com": { delivered: true, deliveredAt: "N/A", opened: false, bounced: false, unsubscribed: false } },
+    },
+    {
+      campaignId: 2,
+      campaignName: "B",
+      exportedAt: "2026-08-04T00:00:00.000Z",
+      recipients: { "a@x.com": { delivered: true, deliveredAt: "2026-08-03T10:00:00.000Z", opened: false, bounced: false, unsubscribed: false } },
+    },
+  ]);
+  assert.deepEqual(stats.get("a@x.com"), { count: 2, lastSentAt: "2026-08-03T10:00:00.000Z" });
+});
+
+test("collectDeliveredStats: deliveredAt malformado como ÚNICO candidato → lastSentAt fica null, nunca o valor corrompido", () => {
+  const stats = collectDeliveredStats([
+    {
+      campaignId: 1,
+      campaignName: "A",
+      exportedAt: "2026-08-02T00:00:00.000Z",
+      recipients: { "a@x.com": { delivered: true, deliveredAt: "N/A", opened: false, bounced: false, unsubscribed: false } },
+    },
+  ]);
+  assert.deepEqual(stats.get("a@x.com"), { count: 1, lastSentAt: null });
+});
+
 test("collectOpenedEmails: sem caches ou sem nenhum opened → conjunto vazio", () => {
   assert.equal(collectOpenedEmails([]).size, 0);
   assert.equal(
@@ -200,6 +236,60 @@ test("runOpensCatchup: entrega sem abertura faz backfill de sends_count e last_s
   assert.equal(saved.sends_count, 1);
   assert.equal(saved.last_sent_at, "2026-08-01 10:00:00");
 });
+
+// REGRESSÃO (review da PR #6887, P2 média confiança): quando delivery.count
+// > cols.sends_count (ramo `if`), cols.last_sent_at (vindo do GET AO VIVO,
+// sem limite de janela) era sobrescrito INCONDICIONALMENTE por
+// delivery.lastSentAt (limitado à janela do catch-up) — mesmo quando o GET
+// ao vivo já tinha um envio MAIS RECENTE que qualquer coisa na janela.
+// Cenário real: o GET ao vivo (`messagesSent`) pode subcontar sends
+// (sends_count=1) mas ainda assim conhecer um envio mais recente do que o
+// que o export de campanhas da janela do catch-up encontrou (2 campanhas,
+// a mais recente delas mais ANTIGA que o único send que o GET conhece).
+test("runOpensCatchup: last_sent_at do GET ao vivo, MAIS RECENTE que a janela do catch-up, NÃO é regredido pelo backfill", async () => {
+  const c1 = fakeCampaign(1, 1);
+  const c2 = fakeCampaign(2, 2);
+  const client: CampaignExportClient = {
+    async listSentCampaigns() {
+      return [c1, c2];
+    },
+    async exportRecipients(campaignId) {
+      return { processId: `p-${campaignId}` };
+    },
+    async pollProcess(processId) {
+      const id = Number(String(processId).replace("p-", ""));
+      return { status: "completed", exportUrl: `fake://export/${id}` };
+    },
+    async downloadCsv(url) {
+      const id = Number(url.replace("fake://export/", ""));
+      // As 2 campanhas entregues à contato, ambas MAIS ANTIGAS que o envio
+      // que o GET ao vivo abaixo já conhece (2026-08-05).
+      const date = id === 1 ? "2026-08-01 08:00:00" : "2026-08-02 08:00:00";
+      return `Email_ID,Delivered_Date,Total Opens\na@x.com,${date},0\n`;
+    },
+  };
+  let saved: any;
+  const result = await runOpensCatchup({
+    client,
+    // sends_count=1 (1 messagesSent) < delivery.count=2 (2 campanhas
+    // entregues na janela) — dispara o ramo `if` que sobrescrevia
+    // last_sent_at incondicionalmente.
+    fetchContact: async (email) => ({
+      email,
+      statistics: { messagesSent: [{ eventTime: "2026-08-05T00:00:00.000Z" }] },
+    }),
+    upsert: (cols) => {
+      saved = cols;
+    },
+    cacheDir: mkdtempSync(resolve(tmpdir(), "opens-catchup-cache-")),
+  });
+  assert.equal(result.deliveredBackfilled, 1);
+  assert.equal(saved.sends_count, 2, "sends_count é backfilled pra 2 (delivery.count > GET)");
+  // O GET ao vivo já sabia de um envio em 05/08 — mais recente que as 2
+  // campanhas da janela do catch-up (01/08, 02/08). NUNCA deve regredir.
+  assert.equal(saved.last_sent_at, "2026-08-05T00:00:00.000Z");
+});
+
 test("runOpensCatchup: falha no export de UMA campanha não aborta as demais (fail-soft)", async (t) => {
   const c1 = fakeCampaign(1, 1);
   const c2 = fakeCampaign(2, 1);

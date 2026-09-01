@@ -241,17 +241,6 @@ export interface CampaignCache {
   recipients: Record<string, CampaignRecipientFlags>;
 }
 
-/** #6814: retorna os e-mails entregues em pelo menos uma campanha. */
-export function collectDeliveredEmails(caches: CampaignCache[]): Set<string> {
-  const out = new Set<string>();
-  for (const cache of caches) {
-    for (const [email, flags] of Object.entries(cache.recipients)) {
-      if (flags.delivered) out.add(email);
-    }
-  }
-  return out;
-}
-
 /**
  * Agrega as linhas de UM export de campanha num `CampaignCache`. Pura.
  * OR-merge defensivo se o mesmo email aparecer 2x na mesma campanha (não

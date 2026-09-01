@@ -299,9 +299,24 @@ export function collectDeliveredStats(caches: CampaignCache[]): Map<string, Deli
       if (!flags.delivered) continue;
       const current = out.get(email) ?? { count: 0, lastSentAt: null };
       current.count += 1;
+      // #6887 (review, P2 média confiança): `isFilled()` só checa string
+      // não-vazia, não valida formato de data — uma `Delivered_Date`
+      // malformada (locale diferente, "N/A", etc.) que fosse o PRIMEIRO
+      // candidato processado passava direto (`!current.lastSentAt` curto-
+      // circuita antes de comparar), corrompendo `lastSentAt` com um valor
+      // não-parseável que nenhum candidato válido posterior corrigiria
+      // (`Date.parse` de um valor corrompido é sempre NaN, então
+      // `candidateTime > currentTime` nunca mais seria true). Validar
+      // `Date.parse` explicitamente ANTES de aceitar qualquer candidato —
+      // nunca aceitar NaN, seja como candidato novo ou como base de
+      // comparação.
       const candidate = flags.deliveredAt ?? cache.sentDate ?? null;
-      if (candidate && (!current.lastSentAt || Date.parse(candidate) > Date.parse(current.lastSentAt))) {
-        current.lastSentAt = candidate;
+      const candidateTime = candidate ? Date.parse(candidate) : NaN;
+      if (!Number.isNaN(candidateTime)) {
+        const currentTime = current.lastSentAt ? Date.parse(current.lastSentAt) : NaN;
+        if (Number.isNaN(currentTime) || candidateTime > currentTime) {
+          current.lastSentAt = candidate;
+        }
       }
       out.set(email, current);
     }
@@ -541,7 +556,18 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
       const delivery = deliveredStats.get(email);
       if (delivery && delivery.count > cols.sends_count) {
         cols.sends_count = delivery.count;
-        if (delivery.lastSentAt) cols.last_sent_at = delivery.lastSentAt;
+        // #6887 (review, P2 média confiança): este ramo sobrescrevia
+        // `cols.last_sent_at` (vindo do GET AO VIVO do contato, sem limite
+        // de janela) incondicionalmente por `delivery.lastSentAt`
+        // (derivado dos exports de campanha, limitado à janela do
+        // catch-up — default 7 dias). Se o GET ao vivo já tivesse um envio
+        // MAIS RECENTE que qualquer coisa na janela do catch-up, este ramo
+        // regredia o dado. O ramo `else if` abaixo já era defensivo
+        // (só preenche se vazio); aplicar o mesmo "mais recente vence" aqui
+        // também, em vez de sobrescrita cega.
+        if (delivery.lastSentAt && (!cols.last_sent_at || Date.parse(delivery.lastSentAt) > Date.parse(cols.last_sent_at))) {
+          cols.last_sent_at = delivery.lastSentAt;
+        }
         deliveredBackfilled++;
       } else if (delivery?.lastSentAt && !cols.last_sent_at) {
         cols.last_sent_at = delivery.lastSentAt;
