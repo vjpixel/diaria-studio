@@ -1286,6 +1286,11 @@ export function heartbeat(
  * basta pro caso órfão, e contenção real com um escritor VIVO deve mesmo
  * esperar os 10s e falhar de forma visível — não há o que reconciliar numa
  * remoção.
+ *
+ * **Quem chama isto deve ter feito todas as recusas ANTES.** A primeira coisa
+ * que esta função faz é quebrar lock órfão, que é destrutivo sobre estado
+ * compartilhado; um guard avaliado depois já não tem como desfazer isso. Ver
+ * o comentário de ordem no caso `end` do CLI.
  */
 export function endSession(
   repoRoot: string,
@@ -3975,6 +3980,20 @@ function main(): void {
           break;
         }
         if (endGuard.warning) process.stderr.write(endGuard.warning);
+        // ORDEM IMPORTANTE, e o motivo não é legibilidade (#6952): o guard
+        // acima é LEITURA PURA (`git status` + interseção de paths) e é o
+        // único dos dois passos que pode dizer "não prossiga". O `endSession`
+        // abaixo começa quebrando `.lock` órfão — AÇÃO DESTRUTIVA sobre
+        // estado compartilhado, porque outro processo pode estar prestes a
+        // adquirir aquele lock legitimamente.
+        //
+        // Invertendo (quebrar o lock e só então avaliar o guard), uma recusa
+        // deixa o sistema PIOR do que se ninguém tivesse tentado: lock de
+        // terceiro quebrado e nada encerrado. Como o guard não tem efeito
+        // colateral, adiá-lo não compra nada.
+        //
+        // A regra geral: **ação destrutiva por último, depois de todas as
+        // recusas possíveis.**
         const removed = endSession(repoRoot, kind, sessionId, tag);
         if (removed) {
           process.stdout.write("session-registry: ended\n");
