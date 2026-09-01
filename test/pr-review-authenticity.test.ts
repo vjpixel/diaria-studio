@@ -1,5 +1,5 @@
 /**
- * test/pr-review-authenticity.test.ts (#6732)
+ * test/pr-review-authenticity.test.ts (#6732, marcador com nonce #6849)
  *
  * Cobre `scripts/lib/pr-review-authenticity.ts` — a lógica pura do gate
  * "review independente pré-merge" do `hermes-diaria-continuo`. O I/O
@@ -10,13 +10,16 @@
  * Regressão central (#6732): a delegação do contínuo, sem ferramenta Agent,
  * fabricava um comentário no formato de review independente
  * ("Review automatizado (1 agente, effort low..."), indistinguível de um
- * dispatch real. O caso que mais importa aqui é o inverso do #6225: um
- * comentário SEM o marcador de self-review, mesmo sem ferramenta Agent
- * disponível, ainda casa o formato de review independente — é exatamente
- * esse texto pré-fix (medido nos PRs #6713/#6715) que continua classificando
- * como "independent-review" até a instrução do hook (que produz textos
- * NOVOS) incluir o marcador. O gate não pode reescrever o passado; só
- * precisa parar de aceitar o formato fabricado A PARTIR de agora.
+ * dispatch real.
+ *
+ * #6849 (01/09/2026): esse formato de prosa deixou de ser reconhecido —
+ * achado ao vivo que o revisor EXTERNO legítimo (`hermes/scripts/continuo-
+ * pr-review.sh`) é instruído a produzir a MESMA prosa, então nenhum regex
+ * distinguia fabricação de review real. O sinal positivo agora é um
+ * marcador `<!-- continuo-review: run=... at=... -->` com identidade de
+ * execução, gerada só pelo script externo. O teste que mais importa aqui:
+ * o texto fabricado EXATO do #6713 (que antes casava `INDEPENDENT_REVIEW_RE`)
+ * tem que classificar como `"other"`, nunca `"independent-review"`.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -45,26 +48,44 @@ function comment(id: string, body: string): PrCommentNode {
   return { id, body };
 }
 
+const MARKER = "<!-- continuo-review: run=abc123 at=2026-09-01T02:00:00Z -->";
+
 describe("classifyReviewComment", () => {
   it("comentário com o marcador de self-review -> 'self-review'", () => {
     const body = `${SELF_REVIEW_MARKER}\n\nSelf-review do autor (Agent tool indisponível nesta sessão).`;
     assert.equal(classifyReviewComment(body), "self-review");
   });
 
-  it("comentário no formato de dispatch real -> 'independent-review'", () => {
-    const body = "Review automatizado (1 agente, effort low — desconto overnight): sem findings P0/P1/P2.";
+  it("comentário com o marcador de review independente (run=/at=) -> 'independent-review'", () => {
+    const body = `Review automatizado (1 agente, effort low): sem findings P0/P1/P2.\n${MARKER}`;
     assert.equal(classifyReviewComment(body), "independent-review");
   });
 
-  it("effort=max também casa 'independent-review'", () => {
-    const body = "Review automatizado (5 agentes, effort max): 2 findings P2.";
+  it("run=/at= com valores/formato distintos ainda casam — só a FORMA é validada, não o conteúdo", () => {
+    const body = "<!-- continuo-review: run=hermes-cron-xyz-789 at=2026-09-01T04:00:00.000Z -->";
     assert.equal(classifyReviewComment(body), "independent-review");
   });
 
-  it("marcador de self-review presente VENCE, mesmo citando o texto de review real", () => {
-    // Cenário defensivo: uma sessão que ecoasse o prefixo por engano ainda é
-    // pega pelo marcador, que é a fonte de verdade (docstring do módulo).
-    const body = `${SELF_REVIEW_MARKER}\n\nReview automatizado (1 agente, effort low): sem findings.`;
+  // #6849 — regressão central: o texto fabricado EXATO medido no #6713
+  // (que casava `INDEPENDENT_REVIEW_RE`, o regex de prosa agora removido)
+  // não tem o marcador — não pode mais classificar como review real.
+  it("REGRESSÃO (#6849): texto fabricado exato do #6713 (sem marcador) -> 'other', NUNCA 'independent-review'", () => {
+    const body = "Review automatizado (1 agente, effort low — desconto overnight): sem findings.";
+    assert.equal(classifyReviewComment(body), "other");
+  });
+
+  // #6849: o formato do #6715 (outra fabricação, formato diferente) também
+  // nunca teve o marcador — mesma garantia, texto totalmente distinto.
+  it("REGRESSÃO (#6849): texto fabricado do #6715 (sem marcador) -> 'other'", () => {
+    const body = "Code review (pr-review-toolkit:code-reviewer, sonnet, diff ...): sem findings.";
+    assert.equal(classifyReviewComment(body), "other");
+  });
+
+  it("marcador de self-review presente VENCE, mesmo com o marcador de review independente também presente", () => {
+    // Cenário defensivo: se os dois aparecerem (nunca deveria acontecer em
+    // produção), o marcador de self-review é a fonte de verdade — mesma
+    // regra que já valia pro regex de prosa antigo.
+    const body = `${SELF_REVIEW_MARKER}\n\n${MARKER}`;
     assert.equal(classifyReviewComment(body), "self-review");
   });
 
@@ -78,21 +99,18 @@ describe("classifyReviewComment", () => {
     assert.equal(classifyReviewComment(42), "other");
   });
 
-  it("'Review automatizado' no MEIO do texto (não no início) -> 'other', evita casar citação incidental", () => {
-    const body = "Alguém mencionou que o 'Review automatizado' de PRs antigos era diferente.";
+  it("'continuo-review: run=' citado em PROSA, não em linha própria -> 'other', evita casar citação incidental", () => {
+    const body = "Este PR adiciona o marcador <!-- continuo-review: run=X at=Y --> usado pelo gate do #6849, mas não é ele mesmo um review.";
     assert.equal(classifyReviewComment(body), "other");
   });
 
-  // #6820 (fleet review do #6732): a checagem original era `body.includes
-  // (SELF_REVIEW_MARKER)` — substring solta, sem a mesma âncora que o regex
-  // de review independente já tinha. Um review real que discutisse este
-  // módulo em prosa (ex: uma PR futura editando este mesmo arquivo) citaria
-  // o marcador NO MEIO da explicação e seria classificado como self-review
-  // por engano — falso-negativo pro lado que autoriza merge.
-  it("SELF_REVIEW_MARKER citado NO MEIO de um review real (não em linha própria) -> 'other', não 'self-review'", () => {
+  // #6820 (fleet review do #6732), mesma disciplina aplicada ao marcador
+  // positivo pelo #6849: SELF_REVIEW_MARKER citado NO MEIO de um review
+  // real (não em linha própria) não deve virar self-review por engano.
+  it("SELF_REVIEW_MARKER citado NO MEIO de um review real (não em linha própria) -> 'independent-review', não 'self-review'", () => {
     const body =
       `Review automatizado (1 agente, effort low): sem findings. ` +
-      `Nota: este PR adiciona o marcador ${SELF_REVIEW_MARKER} usado pelo gate do #6732.`;
+      `Nota: este PR adiciona o marcador ${SELF_REVIEW_MARKER} usado pelo gate do #6732.\n${MARKER}`;
     assert.equal(classifyReviewComment(body), "independent-review");
   });
 
@@ -104,6 +122,11 @@ describe("classifyReviewComment", () => {
   it("SELF_REVIEW_MARKER com espaços ao redor na própria linha ainda conta (trim)", () => {
     const body = `  ${SELF_REVIEW_MARKER}  \nSelf-review do autor.`;
     assert.equal(classifyReviewComment(body), "self-review");
+  });
+
+  it("marcador de review independente com espaços ao redor na própria linha ainda conta (trim)", () => {
+    const body = `  ${MARKER}  \nSem findings.`;
+    assert.equal(classifyReviewComment(body), "independent-review");
   });
 });
 
@@ -139,19 +162,29 @@ describe("evaluatePrReviewAuthenticity — regressão #6732: self-review nunca v
     assert.equal(isPrReviewAuthenticityGreen(result), false);
   });
 
-  it("único comentário é review independente de verdade => 'pass'", () => {
+  it("único comentário é review independente de verdade (com marcador run=/at=) => 'pass'", () => {
     const result = evaluatePrReviewAuthenticity([
-      comment("c1", "Review automatizado (1 agente, effort low — desconto overnight): sem findings P0/P1/P2."),
+      comment("c1", `Review automatizado (1 agente, effort low): sem findings P0/P1/P2.\n${MARKER}`),
     ]);
     assert.equal(result.verdict, "pass");
     assert.equal(result.matchedCommentId, "c1");
     assert.equal(isPrReviewAuthenticityGreen(result), true);
   });
 
+  // #6849: regressão central movida pra cá também — o texto que ANTES do
+  // marcador satisfazia o gate (#6713/#6715) agora nunca vira 'pass'.
+  it("REGRESSÃO (#6849): único comentário é o texto fabricado do #6713 (sem marcador) => 'no_review', NUNCA 'pass'", () => {
+    const result = evaluatePrReviewAuthenticity([
+      comment("c1", "Review automatizado (1 agente, effort low — desconto overnight): sem findings."),
+    ]);
+    assert.equal(result.verdict, "no_review");
+    assert.equal(isPrReviewAuthenticityGreen(result), false);
+  });
+
   it("comentários não-review misturados com o review real -> ignora os irrelevantes", () => {
     const result = evaluatePrReviewAuthenticity([
       comment("c1", "Abrindo esta PR pra resolver a issue."),
-      comment("c2", "Review automatizado (1 agente, effort low): sem findings."),
+      comment("c2", `Review automatizado (1 agente, effort low): sem findings.\n${MARKER}`),
       comment("c3", "Obrigado!"),
     ]);
     assert.equal(result.verdict, "pass");
@@ -160,7 +193,7 @@ describe("evaluatePrReviewAuthenticity — regressão #6732: self-review nunca v
 
   it("self-review MAIS RECENTE que um review independente antigo -> 'self_review' (o estado atual é o que importa)", () => {
     const result = evaluatePrReviewAuthenticity([
-      comment("old", "Review automatizado (1 agente, effort low): sem findings."),
+      comment("old", `Review automatizado (1 agente, effort low): sem findings.\n${MARKER}`),
       comment("new", `${SELF_REVIEW_MARKER}\n\nSelf-review após novo commit.`),
     ]);
     assert.equal(result.verdict, "self_review");
@@ -170,7 +203,7 @@ describe("evaluatePrReviewAuthenticity — regressão #6732: self-review nunca v
   it("review independente MAIS RECENTE que um self-review antigo -> 'pass' (revisão real veio depois)", () => {
     const result = evaluatePrReviewAuthenticity([
       comment("old", `${SELF_REVIEW_MARKER}\n\nSelf-review inicial.`),
-      comment("new", "Review automatizado (1 agente, effort low): sem findings."),
+      comment("new", `Review automatizado (1 agente, effort low): sem findings.\n${MARKER}`),
     ]);
     assert.equal(result.verdict, "pass");
     assert.equal(result.matchedCommentId, "new");
@@ -182,7 +215,7 @@ describe("evaluatePrReviewAuthenticity — regressão #6732: self-review nunca v
       null,
       42,
       "string solta",
-      comment("c2", "Review automatizado (1 agente, effort low): sem findings."),
+      comment("c2", `Review automatizado (1 agente, effort low): sem findings.\n${MARKER}`),
     ]);
     assert.equal(result.verdict, "pass");
     assert.equal(result.matchedCommentId, "c2");
