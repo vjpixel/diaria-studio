@@ -267,9 +267,19 @@ rodando agora" de "tick que terminou há 50 min" — na prática, overnight e
 develop pulam issues por até 90 minutos por causa de claims de um tick morto.
 Ao fechar o tick: `git status --porcelain` limpo (sujo → commitar, stashar ou
 mover pra fora do repo; **nunca** encerrar deixando trabalho não commitado em
-`master` no checkout compartilhado — foi exatamente o que um tick fez em
-26/08, reportando "concluído"), depois `npx tsx
-scripts/lib/session-registry.ts end --kind continuo` (standalone).
+`master` no checkout compartilhado — aconteceu 2×, 26/08 e de novo em 01/09
+com a #6952 — 498 linhas nunca commitadas, sem PR — ambas relatadas como
+"concluído", ver #6922), depois `npx tsx scripts/lib/session-registry.ts end
+--kind continuo` (standalone).
+
+**Desde o #6922 esse `git status` deixou de depender só de o modelo lembrar
+de rodar** — o próprio `end` recusa (`exit 1`, mensagem nomeando o(s)
+arquivo(s) sujo(s)) quando `repoRoot` tem mudanças não commitadas, antes de
+remover o registro da sessão. `--allow-dirty` bypassa quando a sujeira for
+confirmadamente de OUTRA sessão concorrente no mesmo checkout compartilhado
+(#6168) — nunca usar por padrão, só depois de checar `git status
+--porcelain` manualmente e reconhecer que os arquivos listados não são
+trabalho desta sessão.
 
 **Consentimento (revisado #5332, 15/08/2026 — não é mais
 `disable-model-invocation`).** O gate de consentimento original — a flag no

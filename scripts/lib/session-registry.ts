@@ -65,12 +65,15 @@
  * hook, ver acima):
  *   npx tsx scripts/lib/session-registry.ts register --kind overnight|develop|continuo [--pid N]
  *   npx tsx scripts/lib/session-registry.ts heartbeat --kind ... [--phase X] [--active-worktrees N]
- *   npx tsx scripts/lib/session-registry.ts end --kind ... [--tag MAQUINA]
+ *   npx tsx scripts/lib/session-registry.ts end --kind ... [--tag MAQUINA] [--allow-dirty]
  *     (`--tag` opcional, #5797: default é o machineTag() local; passar o tag de
  *     OUTRA máquina permite encerrar daqui um registro que não é seu — ver
  *     "Defeito 4" do #5797. `end` também distingue "removeu de fato" de "não
  *     havia nada pra remover": esta última reporta `exit 1` e a mensagem
- *     "nothing to end", nunca "ended".)
+ *     "nothing to end", nunca "ended". #6922: `end` recusa (`exit 1`) quando
+ *     `repoRoot` tem mudanças não commitadas — ver `evaluateEndGuard`;
+ *     `--allow-dirty` bypassa quando a sujeira é de outra sessão concorrente
+ *     no mesmo checkout compartilhado.)
  *   npx tsx scripts/lib/session-registry.ts claim-issue --kind ... --issue N [--force]
  *     (#6236: check-and-set — recusa (`exit 1`) quando outra sessão ATIVA já
  *     segura a issue, imprimindo quem/desde quando. `--force` toma o claim
@@ -1057,6 +1060,91 @@ export function endSession(repoRoot: string, kind: SessionKind, sessionId: strin
   if (!existsSync(path)) return false;
   rmSync(path);
   return true;
+}
+
+/**
+ * Resultado de `checkRepoTreeClean` — árvore limpa ou lista de linhas de
+ * `git status --porcelain` (uma por caminho sujo).
+ */
+export interface RepoTreeCleanResult {
+  clean: boolean;
+  files: string[];
+}
+
+/**
+ * Roda `git status --porcelain` em `repoRoot` e reporta se a árvore está
+ * limpa (#6922). Existe pra dar ao CLI `end` (ver `evaluateEndGuard` abaixo)
+ * um jeito MECÂNICO de checar a regra que já estava em prosa no `SKILL.md`
+ * de `/diaria-continuo` ("nunca encerrar deixando trabalho não commitado em
+ * `master` no checkout compartilhado") — a prosa sozinha não bastou: um tick
+ * relatou "concluído" em 26/08 com trabalho solto no checkout, e a mesma
+ * classe se repetiu em 01/09 (498 linhas da #6952 nunca commitadas, nunca
+ * enviadas, sem PR — ver #6922, comentário de 01/09 21:45 BRT). Nas duas
+ * ocorrências o `end` do tick não encontrou nenhum obstáculo — a única
+ * defesa era o modelo lembrar de rodar `git status` por conta própria antes
+ * de encerrar.
+ *
+ * Fail-soft: se o comando `git` falhar (não é repo git, git indisponível,
+ * timeout) devolve `clean: true` — mesma direção de falha de
+ * `resolveRepoRoot` acima (nunca bloquear por causa de uma checagem que não
+ * rodou, só por uma que rodou e achou sujeira de verdade).
+ */
+export function checkRepoTreeClean(repoRoot: string): RepoTreeCleanResult {
+  try {
+    const res = spawnSync("git", ["status", "--porcelain"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    if (res.status !== 0) return { clean: true, files: [] };
+    const files = (res.stdout ?? "")
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .filter((line) => line.length > 0);
+    return { clean: files.length === 0, files };
+  } catch {
+    return { clean: true, files: [] };
+  }
+}
+
+/**
+ * Resultado de `evaluateEndGuard` — se o `end` pode prosseguir, e a mensagem
+ * de recusa (só presente quando `ok: false`) pro CLI imprimir.
+ */
+export interface EndGuardResult {
+  ok: boolean;
+  message?: string;
+}
+
+/**
+ * Guard chamado pelo CLI `end` ANTES de remover o registro da sessão
+ * (#6922). Recusa encerrar o tick quando o checkout compartilhado está
+ * sujo — força o commit/push/stash a acontecer (ou o `--allow-dirty`
+ * explícito) em vez de deixar o `end` reportar sucesso silenciosamente
+ * sobre trabalho perdido, mesmo padrão de "recusar e forçar atenção" já
+ * usado no guard de merge de subagente (`.claude/hooks/
+ * block-gh-pr-merge-subagent.mjs`, item 11 de
+ * `context/overnight-dispatch-rules.md`).
+ *
+ * `allowDirty: true` bypassa a checagem de propósito — o checkout é
+ * compartilhado entre coordenadores/sessões concorrentes (#6168), então a
+ * sujeira encontrada pode pertencer a OUTRA sessão ainda ativa, não à que
+ * está chamando `end`; nesse caso confirmar explicitamente com a flag é
+ * mais seguro que a função tentar (e errar) atribuir autoria da sujeira.
+ */
+export function evaluateEndGuard(repoRoot: string, allowDirty: boolean): EndGuardResult {
+  if (allowDirty) return { ok: true };
+  const { clean, files } = checkRepoTreeClean(repoRoot);
+  if (clean) return { ok: true };
+  const fileList = files.map((f) => `  ${f}`).join("\n");
+  return {
+    ok: false,
+    message:
+      `session-registry: end RECUSADO — árvore suja em ${repoRoot} (${files.length} arquivo(s)):\n${fileList}\n` +
+      "Commitar, dar push, ou mover o trabalho pra fora do repo antes de encerrar o tick — nunca encerrar " +
+      "deixando trabalho não commitado no checkout compartilhado (#6922). Se a sujeira é de OUTRA sessão " +
+      "concorrente (checkout compartilhado, #6168), usar --allow-dirty pra confirmar isso explicitamente.\n",
+  };
 }
 
 /** Nomes de arquivo `.json` de sessão (real ou backup) em `data/sessions/` —
@@ -3310,6 +3398,15 @@ function main(): void {
         // (data/sessions/ é compartilhado via OneDrive) sem exigir rodar o
         // comando fisicamente naquela máquina.
         const tag = values.tag ?? machineTag();
+        // #6922: recusa encerrar o tick com o checkout sujo — ver docstring
+        // de `evaluateEndGuard` acima. `--allow-dirty` bypassa de propósito
+        // (sujeira pode ser de outra sessão concorrente no mesmo checkout).
+        const endGuard = evaluateEndGuard(repoRoot, flags.has("allow-dirty"));
+        if (!endGuard.ok) {
+          process.stdout.write(endGuard.message ?? "session-registry: end recusado (árvore suja)\n");
+          process.exitCode = 1;
+          break;
+        }
         const removed = endSession(repoRoot, kind, sessionId, tag);
         if (removed) {
           process.stdout.write("session-registry: ended\n");
@@ -3600,6 +3697,8 @@ function main(): void {
             "(não-stale) do kind K? `--session-id` exclui a própria sessão da resposta (#6277).\n" +
             "  --tag (só \"end\"): machineTag() da sessão a encerrar (default: machineTag() local) — necessário " +
             "pra encerrar da máquina local o registro de OUTRA máquina em data/sessions/ (#5797).\n" +
+            "  --allow-dirty (só \"end\"): bypassa a recusa (#6922) quando repoRoot tem mudanças não commitadas — " +
+            "usar só quando a sujeira é confirmadamente de outra sessão concorrente no mesmo checkout.\n" +
             "  conflicts [--paths a,b] [--branch X]: CONSULTA (#6168) — quem mais está mexendo nisto agora. " +
             "exit 1 = sobreposição com peer VIVO; exit 0 = livre. Nunca cria arquivo nem adquire nada.\n" +
             "  grant-merge --kind {overnight|develop|continuo} --granted-to X [--pr N]: concede janela de merge a " +
