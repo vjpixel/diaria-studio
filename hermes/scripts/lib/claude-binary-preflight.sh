@@ -23,8 +23,21 @@
 # segue.
 #
 # Uso: sourced pelos 3 scripts, chamado logo após `set -euo pipefail`:
-#   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/claude-binary-preflight.sh"
+#   source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/lib/claude-binary-preflight.sh"
 #   claude_binary_preflight
+#
+# #6943 (01/09/2026): o `readlink -f` é OBRIGATÓRIO no chamador, não
+# opcional/estilístico. `${BASH_SOURCE[0]}` sozinho, sem resolver o
+# symlink primeiro, resolve pro caminho de INVOCAÇÃO quando o script é
+# deployado como symlink (`~/.hermes/scripts/claude-openrouter.sh ->
+# .../hermes/scripts/claude-openrouter.sh`, o caso real no `helios`) — o
+# `dirname` cai fora do repo, e este `source` nunca encontra o arquivo.
+# `continuo-pr-review.sh` sobrevivia ao mesmo bug só porque foi deployado
+# como STUB com `exec` (troca de processo, `BASH_SOURCE` novo já é o
+# caminho real) — dois formatos de deploy convivendo, um quebrado e um
+# não, e nada no código avisava disso. Contínuo ficou 8 de 11 ticks sem
+# fazer nada (#6922/#6943) porque o wrapper morria antes de qualquer
+# chamada, sempre no mesmo lugar.
 #
 # Sai com exit 5 (mesmo código de antes) se o binário estiver ausente/quebrado
 # E o reparo não resolver.
