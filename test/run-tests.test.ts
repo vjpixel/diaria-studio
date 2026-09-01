@@ -22,9 +22,11 @@ import {
   splitIntoWorkerGroups,
   finalizeExitCode,
   runTestBatchesParallel,
+  cleanChildEnv,
   DEFAULT_WORKER_COUNT,
   BATCH_SIZE,
   DEFAULT_BATCH_TIMEOUT_MS,
+  type RunTestBatchesParallelOptions,
 } from "../scripts/run-tests.ts";
 
 /** Sumário mínimo válido do node:test (reporter tap, o default sem TTY —
@@ -797,6 +799,18 @@ describe("finalizeExitCode (#6877, extraído do check final de #6822)", () => {
   });
 });
 
+// `spawn` não está no tipo público de `RunTestBatchesParallelOptions`
+// (produção nunca injeta — o caminho `fork()` não tem como cruzar uma
+// função pela fronteira de IPC) — mas o fallback sequencial (`workerCount
+// <= 1`/1 batch só) delega em `runTestBatches`, que aceita normalmente via
+// duck typing em runtime. Tipo local, mais estreito que `as never` (achado
+// do review da PR #6909, P3: `as never` desligava a checagem de tipo do
+// objeto INTEIRO, não só de `spawn` — um typo em `workerCont`/`batchSize`
+// no mesmo literal não seria pego).
+type ParallelOptionsWithSpawn = RunTestBatchesParallelOptions & {
+  spawn: typeof import("node:child_process").spawnSync;
+};
+
 describe("runTestBatchesParallel (#6877) — roteamento pro caminho sequencial", () => {
   it("workerCount <= 1 → cai no runTestBatches de sempre (spawn injetado é respeitado, sem fork nenhum)", async () => {
     let calls = 0;
@@ -804,18 +818,11 @@ describe("runTestBatchesParallel (#6877) — roteamento pro caminho sequencial",
       files: ["/a.test.ts", "/b.test.ts"],
       batchSize: 10,
       workerCount: 1,
-      // `spawn` não está no tipo público de RunTestBatchesParallelOptions
-      // (produção nunca injeta) — mas o runtime aceita normalmente via
-      // duck typing, e é assim que este teste prova que o roteamento cai
-      // no runTestBatches existente (52 vezes já testado) sem duplicar
-      // cobertura aqui.
-      ...({
-        spawn: (() => {
-          calls++;
-          return { status: 0, stdout: "# tests 1\n# pass 1\n# fail 0\n", stderr: "" };
-        }) as unknown as typeof import("node:child_process").spawnSync,
-      } as Record<string, unknown>),
-    } as never);
+      spawn: (() => {
+        calls++;
+        return { status: 0, stdout: "# tests 1\n# pass 1\n# fail 0\n", stderr: "" };
+      }) as unknown as typeof import("node:child_process").spawnSync,
+    } as ParallelOptionsWithSpawn);
     assert.equal(exit, 0);
     assert.equal(calls, 1, "1 batch só (batchSize=10, 2 arquivos) → 1 chamada de spawn, caminho sequencial de sempre");
   });
@@ -826,13 +833,11 @@ describe("runTestBatchesParallel (#6877) — roteamento pro caminho sequencial",
       files: ["/a.test.ts"],
       batchSize: 150,
       workerCount: 4,
-      ...({
-        spawn: (() => {
-          calls++;
-          return { status: 0, stdout: "# tests 1\n# pass 1\n# fail 0\n", stderr: "" };
-        }) as unknown as typeof import("node:child_process").spawnSync,
-      } as Record<string, unknown>),
-    } as never);
+      spawn: (() => {
+        calls++;
+        return { status: 0, stdout: "# tests 1\n# pass 1\n# fail 0\n", stderr: "" };
+      }) as unknown as typeof import("node:child_process").spawnSync,
+    } as ParallelOptionsWithSpawn);
     assert.equal(exit, 0);
     assert.equal(calls, 1);
   });
@@ -841,13 +846,11 @@ describe("runTestBatchesParallel (#6877) — roteamento pro caminho sequencial",
     let calls = 0;
     const exit = await runTestBatchesParallel({
       files: [],
-      ...({
-        spawn: (() => {
-          calls++;
-          return { status: 0 } as ReturnType<typeof import("node:child_process").spawnSync>;
-        }) as unknown as typeof import("node:child_process").spawnSync,
-      } as Record<string, unknown>),
-    } as never);
+      spawn: (() => {
+        calls++;
+        return { status: 0 } as ReturnType<typeof import("node:child_process").spawnSync>;
+      }) as unknown as typeof import("node:child_process").spawnSync,
+    } as ParallelOptionsWithSpawn);
     assert.equal(exit, 0);
     assert.equal(calls, 0);
   });
@@ -902,5 +905,67 @@ describe("runTestBatchesParallel (#6877) — integração REAL com fork() (sem s
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // REGRESSÃO (achado do fleet review da PR #6909, P1/P2 confiança alta,
+  // reportado por 3 dos 5 agentes independentemente): nenhum teste forçava
+  // um worker a morrer SEM mandar o resultado via IPC — exatamente o
+  // cenário que o `child.on("exit")` de `runWorker` existe pra cobrir
+  // (docstring do módulo: "nunca deixa resultado ausente virar sucesso,
+  // mesmo princípio do #6822 aplicado ao nível de worker"). `scriptPath`
+  // aponta pra um script REAL, minúsculo, que sai com `process.exit(1)`
+  // SEM NUNCA chamar `process.send` — simula um crash puro (SIGSEGV, OOM,
+  // exceção não-tratada antes do `runAsWorker` terminar).
+  it("REGRESSÃO (#6909): worker morre SEM enviar resultado via IPC → exit 1, nunca mascarado como sucesso", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "run-tests-parallel-it-crash-"));
+    try {
+      const crashingScript = join(dir, "crashing-worker.mjs");
+      // Nunca chama process.send — simula um crash antes do runAsWorker
+      // conseguir mandar o resultado (o `fork()` real ainda estabelece o
+      // canal IPC normalmente; o que falta é o PROCESSO usá-lo).
+      writeFileSync(crashingScript, "process.exit(1);\n");
+      const okTest = `import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("ok", () => { assert.equal(1, 1); });\n`;
+      const fileA = join(dir, "a.test.ts");
+      const fileB = join(dir, "b.test.ts");
+      writeFileSync(fileA, okTest);
+      writeFileSync(fileB, okTest);
+
+      const exit = await runTestBatchesParallel({
+        // #6877: `batches.length <= 1` cai no fallback sequencial mesmo com
+        // `workerCount > 1` — 2 arquivos/batchSize 1 força 2 batches, então
+        // o caminho `fork()` real (que é o que este teste precisa exercitar)
+        // realmente dispara em vez de silenciosamente cair pro sequencial
+        // (que ignoraria `scriptPath` — nunca chamaria o script crashado).
+        files: [fileA, fileB],
+        batchSize: 1,
+        workerCount: 2,
+        scriptPath: crashingScript,
+      });
+      assert.equal(exit, 1, "worker crashado sem IPC nunca pode sair como sucesso — mesmo princípio do #6822");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Teste direto de `cleanChildEnv` (achado do review, P3: só era exercitada
+  // indiretamente pelos 2 testes de integração real acima — uma regressão
+  // aqui apareceria como "exit code errado" sem nomear a causa real).
+  it("REGRESSÃO (#6909): cleanChildEnv remove NODE_TEST_CONTEXT/NODE_TEST_WORKER_ID, preserva o resto do env", () => {
+    const fakeEnv = {
+      NODE_TEST_CONTEXT: "1",
+      NODE_TEST_WORKER_ID: "3",
+      PATH: "/usr/bin",
+      HOME: "/home/x",
+    };
+    const cleaned = cleanChildEnv(fakeEnv as NodeJS.ProcessEnv);
+    assert.equal("NODE_TEST_CONTEXT" in cleaned, false);
+    assert.equal("NODE_TEST_WORKER_ID" in cleaned, false);
+    assert.equal(cleaned.PATH, "/usr/bin");
+    assert.equal(cleaned.HOME, "/home/x");
+  });
+
+  it("cleanChildEnv: env sem as chaves NODE_TEST_* não lança, devolve intacto", () => {
+    const fakeEnv = { PATH: "/usr/bin" };
+    assert.deepEqual(cleanChildEnv(fakeEnv as NodeJS.ProcessEnv), fakeEnv);
   });
 });

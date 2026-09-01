@@ -54,12 +54,18 @@
  * ~32767 caracteres, e caminhos absolutos * ~1400 arquivos estoura essa
  * margem em máquinas de desenvolvimento (o editor roda localmente no
  * Windows, ver `CLAUDE.md`). Em vez disso, os arquivos são despachados em
- * BATCHES sequenciais de tamanho fixo (`BATCH_SIZE`), cada um bem dentro do
- * limite em qualquer profundidade de path razoável; dentro de cada batch o
- * `node --test` ainda paraleliza normalmente (concorrência default do
- * runner). O exit code final é 1 se qualquer batch falhar; todos os batches
- * rodam até o fim (mesmo após uma falha) para reportar o quadro completo,
- * igual ao comportamento nativo de `node --test` sobre múltiplos arquivos.
+ * BATCHES de tamanho fixo (`BATCH_SIZE`), cada um bem dentro do limite em
+ * qualquer profundidade de path razoável; dentro de cada batch o `node
+ * --test` ainda paraleliza normalmente (concorrência default do runner).
+ * **Desde o #6877, o caminho de PRODUÇÃO (CLI) roda os batches em
+ * PARALELO** — vários processos worker concorrentes, ver a seção
+ * "#6877 — paralelismo de batches" mais abaixo no arquivo; a versão
+ * sequencial descrita aqui (um batch de cada vez) é `runTestBatches`, ainda
+ * usada como fallback e como a função que os testes deste módulo exercitam
+ * diretamente. O exit code final é 1 se qualquer batch falhar; todos os
+ * batches rodam até o fim (mesmo após uma falha) para reportar o quadro
+ * completo, igual ao comportamento nativo de `node --test` sobre múltiplos
+ * arquivos.
  *
  * Args extras de CLI (`npm test -- --test-name-pattern X --update-snapshots`,
  * usado por `test/orchestrator-prompt.test.ts` e `test/ds-golden-*.test.ts`
@@ -190,7 +196,7 @@ export const BATCH_SIZE = 150;
  *  do #6877 (que precisa rodar `node --test` de dentro da própria suíte pra
  *  provar o `fork()`) expôs exatamente esse cenário — corrigido na fonte
  *  (nunca propagar a marca), não contornado só no teste. */
-function cleanChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function cleanChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const { NODE_TEST_CONTEXT: _ctx, NODE_TEST_WORKER_ID: _wid, ...rest } = env;
   return rest;
 }
@@ -391,7 +397,8 @@ export function bisectHangingBatch(
 }
 
 /** Formata o resultado de `bisectHangingBatch` pra uma linha de log —
- *  centraliza a mensagem pros 3 call sites de `runTestBatches` (spawn
+ *  centraliza a mensagem pros 3 call sites de `processChunkedBatches`
+ *  (#6877: extraída de `runTestBatches`, mesmos 3 call sites — spawn
  *  ETIMEDOUT, morte por sinal, sem sumário) que hoje só imprimem a lista
  *  crua do batch inteiro. */
 export function formatBisectResult(result: BisectResult): string {
@@ -668,14 +675,23 @@ export function finalizeExitCode(
 // Caminho escolhido (opção 1 da issue — "paralelismo dentro do runner"):
 // processo pai divide os batches (já chunkados por `BATCH_SIZE`, mesma
 // regra de sempre) em `workerCount` grupos e usa `child_process.fork` pra
-// rodar cada grupo num PROCESSO Node separado — não `worker_threads`,
-// porque `spawnSync` bloqueia só a THREAD chamadora, e workers de thread
-// ainda competem pelo mesmo processo/heap; processos separados dão
-// paralelismo de CPU de verdade, e o script já usa `spawnSync` (bloqueante)
-// dentro de cada grupo de qualquer forma — replicar essa mesma lógica em N
-// processos é a mudança mínima que preserva 100% da lógica de retry/
-// timeout/bisecção existente (`processChunkedBatches`, extraída acima,
-// roda IDÊNTICA nos dois caminhos).
+// rodar cada grupo num PROCESSO Node separado — não `worker_threads`.
+// Correção de uma alegação anterior deste comentário (achado do review da
+// PR #6909, P3): `worker_threads` TAMBÉM têm heap/isolate V8 próprios e
+// conseguem paralelismo real de CPU — não é essa a razão da escolha. A
+// razão real é REUSO: o script já é um executável CLI que se re-invoca via
+// `spawnSync(process.execPath, [...])` pra cada BATCH; `fork()` estende o
+// MESMO padrão (processo re-invoca a si mesmo, `node --import tsx`, IPC
+// automático) pro nível de GRUPO, sem precisar de um segundo mecanismo de
+// carregamento de módulo/comunicação (`worker_threads` exigiria adaptar
+// como `tsx` registra o loader dentro de uma thread, e um canal
+// `postMessage`/`SharedArrayBuffer` novo em vez do IPC de `fork` que já
+// serve). Processos separados também isolam falhas de verdade — um worker
+// que crasha (SIGSEGV, OOM) nunca derruba os outros nem o pai, o que um
+// worker_thread quebrando PODE fazer dependendo do tipo de erro. A lógica
+// de retry/timeout/bisecção existente (`processChunkedBatches`, extraída
+// acima) roda IDÊNTICA nos dois caminhos — replicar essa mesma lógica em N
+// processos via `fork()` foi a mudança que preservou 100% dela sem reescrita.
 //
 // Cada worker é uma re-invocação deste MESMO script com `--worker <payload>`
 // — o payload (grupo de batches + config) vai por ARQUIVO temporário, nunca
@@ -759,29 +775,70 @@ export const DEFAULT_WORKER_COUNT = (() => {
   }
 })();
 
+/** Margem fixa somada ao teto do worker (ver `runWorker`) além da soma dos
+ *  timeouts de cada batch — cobre overhead de startup do processo (V8/tsx)
+ *  e do I/O de leitura do payload, nunca zero (#6822: teto sempre finito,
+ *  nunca "confiar que os batches internos bastam"). */
+const WORKER_TIMEOUT_MARGIN_MS = 2 * 60 * 1000;
+
 /** Roda um único worker (processo `fork`ado) até o fim — resolve com o
  *  `WorkerResult` recebido via IPC, ou com `{exitCode:1, completedFiles:0}`
- *  se o processo morrer sem mandar mensagem (crash, OOM, kill externo —
- *  nunca deixa "resultado ausente" virar sucesso, mesmo princípio do #6822
- *  aplicado ao nível de worker). stdout/stderr do worker são encanados pro
- *  processo pai em tempo real (`pipe`, forwarded) — múltiplos workers
- *  escrevendo ao mesmo tempo interlaçam no log combinado, tradeoff aceito
- *  (mesmo processo/1 job de CI, não shards separados — a issue autoriza
- *  esse tradeoff na opção 1). */
+ *  se o processo morrer sem mandar mensagem (crash, OOM, kill externo, OU
+ *  timeout deste nível — nunca deixa "resultado ausente" virar sucesso,
+ *  mesmo princípio do #6822 aplicado ao nível de worker).
+ *
+ *  Teto de tempo PRÓPRIO deste nível (`fork()` não tem timeout nativo,
+ *  diferente de `spawnSync`) — achado do review da PR #6909 (P2, confiança
+ *  média): cada BATCH dentro do worker já tem `batchTimeoutMs`+SIGKILL
+ *  (dentro de `processChunkedBatches`), mas nada limitava o WORKER inteiro
+ *  se ele travasse fora de um `spawnSync` (ex: lendo o payload, entre
+ *  batches) — teto = soma dos timeouts de todos os batches do grupo mais
+ *  uma margem fixa de startup, nunca infinito.
+ *
+ *  stdout/stderr do worker são encanados pro processo pai em tempo real
+ *  (`pipe`, forwarded) — múltiplos workers escrevendo ao mesmo tempo
+ *  interlaçam no log combinado; tradeoff aceito da opção 1 da issue
+ *  (paralelismo dentro de UM processo/job de CI, não shards separados —
+ *  decisão nossa ao escolher essa opção, a issue em si não discute
+ *  interlaçamento de log explicitamente). Listener de `error` nos streams
+ *  (achado do review, P3): sem ele, um erro de stream (ex: EPIPE) derrubaria
+ *  o processo PAI inteiro sem a mensagem diagnóstica que todo outro caminho
+ *  de falha deste arquivo tem. */
 function runWorker(payload: WorkerPayload, scriptPath: string, payloadPath: string): Promise<WorkerResult> {
   return new Promise((resolvePromise) => {
     let settled = false;
+    const settle = (result: WorkerResult) => {
+      if (settled) return;
+      settled = true;
+      resolvePromise(result);
+    };
     const child: ChildProcess = fork(scriptPath, ["--worker", payloadPath], {
       execArgv: ["--import", "tsx"],
       stdio: ["inherit", "pipe", "pipe", "ipc"],
     });
+    const onStreamError = (streamName: string) => (err: Error) => {
+      console.error(`run-tests: erro no stream ${streamName} do worker (${payload.label}): ${err.message}`);
+    };
+    child.stdout?.on("error", onStreamError("stdout"));
+    child.stderr?.on("error", onStreamError("stderr"));
     child.stdout?.pipe(process.stdout);
     child.stderr?.pipe(process.stderr);
+
+    const workerTimeoutMs = payload.batches.length * payload.batchTimeoutMs + WORKER_TIMEOUT_MARGIN_MS;
+    const timer = setTimeout(() => {
+      console.error(
+        `run-tests: worker (${payload.label}) excedeu o teto de ${workerTimeoutMs}ms sem completar — matando (SIGKILL) e tratando como falha dura.`,
+      );
+      child.kill("SIGKILL");
+      settle({ exitCode: 1, completedFiles: 0 });
+    }, workerTimeoutMs);
+    timer.unref?.();
+
     child.on("message", (msg: unknown) => {
       const m = msg as Partial<WorkerResult> | null;
       if (m && typeof m.exitCode === "number" && typeof m.completedFiles === "number") {
-        settled = true;
-        resolvePromise({ exitCode: m.exitCode, completedFiles: m.completedFiles });
+        clearTimeout(timer);
+        settle({ exitCode: m.exitCode, completedFiles: m.completedFiles });
       }
     });
     child.on("exit", () => {
@@ -789,20 +846,35 @@ function runWorker(payload: WorkerPayload, scriptPath: string, payloadPath: stri
         console.error(
           `run-tests: worker (${payload.label}) terminou SEM enviar resultado via IPC (crash, OOM, ou kill externo antes de completar) — tratando como falha dura, 0 arquivos completados neste grupo.`,
         );
-        settled = true;
-        resolvePromise({ exitCode: 1, completedFiles: 0 });
       }
+      clearTimeout(timer);
+      settle({ exitCode: 1, completedFiles: 0 });
     });
     child.on("error", (err) => {
-      if (!settled) {
-        console.error(`run-tests: falha ao iniciar worker (${payload.label}): ${err.message}`);
-        settled = true;
-        resolvePromise({ exitCode: 1, completedFiles: 0 });
-      }
+      console.error(`run-tests: falha ao iniciar worker (${payload.label}): ${err.message}`);
+      clearTimeout(timer);
+      settle({ exitCode: 1, completedFiles: 0 });
     });
   });
 }
 
+/** `spawn`/`stdout`/`stderr` de `RunTestsOptions` ficam de fora do tipo
+ *  PÚBLICO aqui — produção nunca os injeta (o caminho `fork()` não tem como
+ *  cruzar uma função `spawn` pela fronteira de processo/IPC; só o payload
+ *  JSON atravessa). Achado do review da PR #6909 (P3, confiança alta):
+ *  isto é só a fronteira do TIPO, não do runtime — a checagem de excesso de
+ *  propriedade do TS não se aplica a uma variável já tipada sendo repassada
+ *  (só a literais), então um objeto que TENHA essas chaves em runtime ainda
+ *  as propaga corretamente pro fallback sequencial (`runTestBatches(opts)`
+ *  quando `workerCount<=1`, que aceita `RunTestsOptions` de verdade) — é
+ *  assim que `test/run-tests.test.ts` injeta `spawn` fake nesse caminho
+ *  de teste, via cast. **Comportamento diverge deliberadamente entre os
+ *  dois caminhos**: o fallback sequencial HONRA um `spawn` injetado (não
+ *  tem fork nenhum de por meio); o caminho `fork()` real IGNORA
+ *  silenciosamente (funções não atravessam IPC) — por isso os 2 testes de
+ *  integração real deste módulo usam `scriptPath` (o único hook que o
+ *  caminho paralelo de fato aceita) pra apontar pra um script de teste
+ *  real, em vez de tentar injetar `spawn`. */
 export interface RunTestBatchesParallelOptions extends Omit<RunTestsOptions, "spawn" | "stdout" | "stderr"> {
   /** Quantos processos worker concorrentes — default `DEFAULT_WORKER_COUNT`.
    *  `<= 1` (ou batches insuficientes pra valer a pena) cai no caminho
@@ -839,28 +911,48 @@ export async function runTestBatchesParallel(opts: RunTestBatchesParallelOptions
   }
   const groups = splitIntoWorkerGroups(batches, workerCount);
   const tmpDir = mkdtempSync(join(tmpdir(), "run-tests-workers-"));
+  // Review #6909 (P3, confiança média): escrever TODOS os payloads ANTES de
+  // dar fork em qualquer worker — se `writeFileSync` lançar no meio do loop
+  // (disco cheio, permissão), a versão anterior (escreve+fork intercalados
+  // dentro do MESMO `.map`) já tinha disparado `fork()` pros grupos
+  // anteriores, que ficariam órfãos (nunca mortos, nunca aguardados) quando
+  // a exceção escapasse do `Promise.all`. Separar em duas fases — escrever
+  // tudo, DEPOIS forkar tudo — garante que um erro de escrita nunca deixa
+  // processo filho nenhum no ar.
+  const payloads = groups.map((groupBatches, i): { payload: WorkerPayload; payloadPath: string } => {
+    const label = `grupo ${i + 1}/${groups.length}`;
+    const payload: WorkerPayload = {
+      batches: groupBatches,
+      extraArgs,
+      batchTimeoutMs,
+      bisectTimeoutMs,
+      bisectBudgetMs,
+      label,
+    };
+    const payloadPath = join(tmpDir, `worker-${i}.json`);
+    writeFileSync(payloadPath, JSON.stringify(payload));
+    return { payload, payloadPath };
+  });
   try {
     const results = await Promise.all(
-      groups.map((groupBatches, i) => {
-        const label = `grupo ${i + 1}/${groups.length}`;
-        const payload: WorkerPayload = {
-          batches: groupBatches,
-          extraArgs,
-          batchTimeoutMs,
-          bisectTimeoutMs,
-          bisectBudgetMs,
-          label,
-        };
-        const payloadPath = join(tmpDir, `worker-${i}.json`);
-        writeFileSync(payloadPath, JSON.stringify(payload));
-        return runWorker(payload, scriptPath, payloadPath);
-      }),
+      payloads.map(({ payload, payloadPath }) => runWorker(payload, scriptPath, payloadPath)),
     );
     const exitCode = results.some((r) => r.exitCode !== 0) ? 1 : 0;
     const completedFiles = results.reduce((sum, r) => sum + r.completedFiles, 0);
     return finalizeExitCode(exitCode, completedFiles, files.length, process.stderr);
   } finally {
-    rmSync(tmpDir, { recursive: true, force: true });
+    // Review #6909 (P2, confiança alta): sem o try/catch PRÓPRIO aqui, uma
+    // exceção de `rmSync` (Windows EBUSY/EPERM, glitch de FS) dentro do
+    // `finally` OBSCURECE o valor já computado no `try` — o processo sairia
+    // reportando "erro inesperado no orquestrador paralelo" (via o `.catch`
+    // do caller no CLI) em vez do resultado REAL dos testes, mandando quem
+    // depura pro lugar errado. Falha de cleanup nunca deve mascarar/
+    // sobrescrever um resultado de teste já decidido — só loga e segue.
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch (e) {
+      console.error(`run-tests: falha ao limpar diretório temporário ${tmpDir} (não afeta o resultado dos testes): ${(e as Error).message}`);
+    }
   }
 }
 
