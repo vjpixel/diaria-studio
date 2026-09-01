@@ -43,6 +43,8 @@ import {
   planSessionGc,
   garbageCollectSessions,
   resolveRepoRoot,
+  checkRepoTreeClean,
+  evaluateEndGuard,
   GC_CONSERVATIVE_MAX_AGE_MS,
   GC_ORPHAN_LIVENESS_MARGIN,
   MAX_SESSION_AGE_MS,
@@ -159,6 +161,113 @@ describe("resolveRepoRoot — resolve o checkout PRINCIPAL, nunca o worktree/cwd
     mkdirSync(notARepo, { recursive: true });
     roots.push(notARepo);
     assert.equal(resolveRepoRoot(notARepo), notARepo);
+  });
+});
+
+// ─── checkRepoTreeClean / evaluateEndGuard (#6922) ─────────────────────────
+//
+// Regressão: um tick de `/diaria-continuo` reportou "concluído" (26/08) e de
+// novo em 01/09 (#6952, 498 linhas) com trabalho não commitado solto no
+// checkout compartilhado — o `end` do tick não encontrou nenhum obstáculo
+// mecânico, só a prosa do SKILL.md pedindo pra checar `git status` antes de
+// encerrar. Estes testes travam que, a partir de agora, uma árvore suja é
+// detectada e bloqueia o `end` por padrão.
+
+function initGitRepo(root: string): void {
+  mkdirSync(root, { recursive: true });
+  const run = (args: string[]) => {
+    const res = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+    assert.equal(res.status, 0, `git ${args.join(" ")} falhou: ${res.stderr}`);
+  };
+  run(["init", "-q", "-b", "main"]);
+  run(["config", "user.email", "test@example.com"]);
+  run(["config", "user.name", "Test"]);
+  run(["commit", "-q", "--allow-empty", "-m", "init"]);
+}
+
+describe("checkRepoTreeClean — #6922", { skip: !gitSupportsPathFormat() }, () => {
+  it("árvore limpa logo após o init: clean: true, files vazio", () => {
+    const root = freshRoot();
+    initGitRepo(root);
+    assert.deepEqual(checkRepoTreeClean(root), { clean: true, files: [] });
+  });
+
+  it("arquivo não rastreado deixa a árvore suja: clean: false, files não-vazio", () => {
+    const root = freshRoot();
+    initGitRepo(root);
+    writeFileSync(join(root, "trabalho-nao-commitado.txt"), "498 linhas soltas\n");
+    const result = checkRepoTreeClean(root);
+    assert.equal(result.clean, false);
+    assert.equal(result.files.length, 1);
+    assert.match(result.files[0], /trabalho-nao-commitado\.txt/);
+  });
+
+  it("fail-soft: fora de repo git nenhum, devolve clean: true (nunca bloqueia por checagem que não rodou)", () => {
+    const notARepo = join(tmpdir(), `session-registry-test-tree-not-a-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(notARepo, { recursive: true });
+    roots.push(notARepo);
+    assert.deepEqual(checkRepoTreeClean(notARepo), { clean: true, files: [] });
+  });
+});
+
+describe("evaluateEndGuard — #6922", { skip: !gitSupportsPathFormat() }, () => {
+  it("árvore limpa: ok: true, sem mensagem", () => {
+    const root = freshRoot();
+    initGitRepo(root);
+    assert.deepEqual(evaluateEndGuard(root, false), { ok: true });
+  });
+
+  it("árvore suja + allowDirty: false + arquivo sujo EM touched_paths/dirty_paths — recusa e nomeia o(s) arquivo(s)", () => {
+    const root = freshRoot();
+    initGitRepo(root);
+    writeFileSync(join(root, "trabalho-nao-commitado.txt"), "conteúdo\n");
+    const result = evaluateEndGuard(root, false, ["trabalho-nao-commitado.txt"]);
+    assert.equal(result.ok, false);
+    assert.match(result.message ?? "", /RECUSADO/);
+    assert.match(result.message ?? "", /trabalho-nao-commitado\.txt/);
+  });
+
+  it("árvore suja + allowDirty: true (--allow-dirty explícito) — bypassa, ok: true mesmo com ownPaths casando", () => {
+    const root = freshRoot();
+    initGitRepo(root);
+    writeFileSync(join(root, "trabalho-nao-commitado.txt"), "conteúdo\n");
+    assert.deepEqual(evaluateEndGuard(root, true, ["trabalho-nao-commitado.txt"]), { ok: true });
+  });
+
+  // Regressão (finding do review do coordenador em #6997/#6922): a sujeira
+  // do checkout compartilhado quase nunca é da sessão que está encerrando
+  // (#6168 é a norma, não a exceção) — recusar por sujeira ALHEIA agrava
+  // #6623/#6624 (claims presas sem quem digite --allow-dirty). O `end` só
+  // pode recusar quando a sujeira intersecta touched_paths/dirty_paths da
+  // PRÓPRIA sessão.
+  it("árvore suja SÓ com arquivo fora de touched_paths/dirty_paths da sessão — prossegue (ok: true) com aviso", () => {
+    const root = freshRoot();
+    initGitRepo(root);
+    writeFileSync(join(root, "arquivo-de-outra-sessao.txt"), "sujeira alheia\n");
+    const result = evaluateEndGuard(root, false, ["scripts/lib/algo-que-esta-sessao-tocou.ts"]);
+    assert.equal(result.ok, true);
+    assert.match(result.warning ?? "", /arquivo-de-outra-sessao\.txt/);
+    assert.match(result.warning ?? "", /OUTRA sessão/);
+  });
+
+  it("sem ownPaths (registro sem beacon, ou nenhum passado) — nunca atribui a si, sempre prossegue avisando", () => {
+    const root = freshRoot();
+    initGitRepo(root);
+    writeFileSync(join(root, "trabalho-nao-commitado.txt"), "conteúdo\n");
+    const result = evaluateEndGuard(root, false);
+    assert.equal(result.ok, true);
+    assert.ok(result.warning);
+  });
+
+  it("sujeira mista (própria + alheia) — recusa citando só a própria, mas menciona a contagem de alheia", () => {
+    const root = freshRoot();
+    initGitRepo(root);
+    writeFileSync(join(root, "meu-arquivo.txt"), "meu trabalho\n");
+    writeFileSync(join(root, "arquivo-de-outra-sessao.txt"), "sujeira alheia\n");
+    const result = evaluateEndGuard(root, false, ["meu-arquivo.txt"]);
+    assert.equal(result.ok, false);
+    assert.match(result.message ?? "", /meu-arquivo\.txt/);
+    assert.doesNotMatch(result.message ?? "", /arquivo-de-outra-sessao\.txt/);
   });
 });
 
