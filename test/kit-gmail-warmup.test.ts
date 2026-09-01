@@ -16,6 +16,7 @@ import {
   buildWaveEntry,
   computeOutOfBandReturned,
   buildOutOfBandWaveEntry,
+  partitionByConfirmedTag,
   WARMUP_INITIAL_WAVE_SIZE,
   WARMUP_GROWTH_FACTOR,
   type KitGmailWarmupState,
@@ -417,5 +418,90 @@ describe("regressão #6964 — onda size:0 + aplicação out-of-band", () => {
     });
     assert.equal(plan.skipped, true);
     assert.equal(plan.size, 0);
+  });
+});
+
+describe("partitionByConfirmedTag (#6984 finding 1)", () => {
+  it("separa quem a releitura confirmou na tag de quem segue pendente", () => {
+    const { alreadyTagged, stillPending } = partitionByConfirmedTag(
+      ["a@gmail.com", "b@gmail.com", "c@gmail.com"],
+      new Set(["b@gmail.com"]),
+    );
+    assert.deepEqual(alreadyTagged, ["b@gmail.com"]);
+    assert.deepEqual(stillPending, ["a@gmail.com", "c@gmail.com"]);
+  });
+
+  it("normaliza antes de comparar", () => {
+    const { alreadyTagged } = partitionByConfirmedTag([" A@Gmail.COM "], new Set(["a@gmail.com"]));
+    assert.deepEqual(alreadyTagged, [" A@Gmail.COM "]);
+  });
+
+  it("conjunto vazio de confirmados deixa tudo pendente", () => {
+    const { alreadyTagged, stillPending } = partitionByConfirmedTag(["a@gmail.com"], new Set());
+    assert.deepEqual(alreadyTagged, []);
+    assert.deepEqual(stillPending, ["a@gmail.com"]);
+  });
+});
+
+describe("regressão #6984 finding 1 — listagem em massa defasada não faz re-propor quem já migrou", () => {
+  /**
+   * `GET /v4/tags/{id}/subscribers` mente por ~180s depois de uma escrita
+   * (armadilha 5 de `kit-client.ts`): devolve `has_next_page: false` como se
+   * a lista estivesse completa. A sequência operacional NORMAL do #6964 é
+   * justamente "aplicar por kit-ramp-cohort.ts e rodar a rampa em seguida" —
+   * dentro da janela em que a listagem ainda não reflete.
+   */
+  const cohort = Array.from({ length: 30 }, (_, i) => `q${String(i).padStart(2, "0")}@gmail.com`);
+  const migradosAgora = cohort.slice(0, 3);
+
+  it("a listagem em massa defasada sozinha deixaria a onda com quem acabou de migrar", () => {
+    const state = buildInitialState(1, [...cohort]);
+    // Listagem defasada: não devolve ninguém, embora 3 já estejam tagueados.
+    const driftPelaListagem = computeOutOfBandReturned(state.rejectedEmails, returnedEmails(state), []);
+    assert.deepEqual(driftPelaListagem, [], "a listagem defasada não acusa nada — é o piso mentindo");
+
+    const plan = planNextWave({
+      rejectedEmails: state.rejectedEmails,
+      alreadyReturned: returnedEmails(state),
+      lastWaveSize: null,
+      gate: PODE_CRESCER,
+    });
+    assert.ok(migradosAgora.every((e) => plan.emails.includes(e)), "sem o passo 2, os recém-migrados entram na onda");
+  });
+
+  it("a releitura da onda (direção confiável) tira os recém-migrados antes de propor", () => {
+    const state = buildInitialState(1, [...cohort]);
+    const plan = planNextWave({
+      rejectedEmails: state.rejectedEmails,
+      alreadyReturned: returnedEmails(state),
+      lastWaveSize: null,
+      gate: PODE_CRESCER,
+    });
+
+    const { alreadyTagged, stillPending } = partitionByConfirmedTag(plan.emails, new Set(migradosAgora));
+    assert.deepEqual(alreadyTagged, migradosAgora);
+    for (const email of migradosAgora) {
+      assert.ok(!stillPending.includes(email), `${email} acabou de migrar — não pode ser proposto`);
+    }
+    // A onda sai MENOR que o planejado — preferível a propor quem já migrou.
+    assert.equal(stillPending.length, plan.size - migradosAgora.length);
+  });
+});
+
+describe("regressão #6984 finding 2 — absorção não engole violação de envio em dobro", () => {
+  it("registra em needsBeehiivDeactivation quem foi absorvido mas continua ativo na Beehiiv", () => {
+    const state = buildInitialState(1, ["a@gmail.com", "b@gmail.com"]);
+    const absorbed = buildOutOfBandWaveEntry(state, 1, PODE_CRESCER, ["a@gmail.com", "b@gmail.com"], ["b@gmail.com"]);
+    // Os dois seguem absorvidos (migraram de fato no lado do Kit)...
+    assert.deepEqual(absorbed.emails, ["a@gmail.com", "b@gmail.com"]);
+    assert.equal(absorbed.size, 2);
+    // ...mas a violação fica gravada em vez de sumir.
+    assert.deepEqual(absorbed.needsBeehiivDeactivation, ["b@gmail.com"]);
+  });
+
+  it("sem ninguém ativo na Beehiiv, a absorção não inventa pendência", () => {
+    const state = buildInitialState(1, ["a@gmail.com"]);
+    const absorbed = buildOutOfBandWaveEntry(state, 1, PODE_CRESCER, ["a@gmail.com"]);
+    assert.deepEqual(absorbed.needsBeehiivDeactivation, []);
   });
 });

@@ -56,7 +56,7 @@ import { computeProviderSplit, verificarIntegridade, avaliarRampa, type RampaVer
 import { getBroadcastStats } from "./lib/kit-client.ts";
 import { findTagIdByName, tagSubscriber, listSubscriberTags } from "./lib/kit-broadcasts.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
-import { listAllSubscribersForTag } from "./kit-ramp-cohort.ts";
+import { listAllSubscribersForTag, findKitSubscriberByEmail, fetchSubscriberTagIds } from "./kit-ramp-cohort.ts";
 import { createOrUpdateSubscriber, listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import { isApoioNivel, type ApoioNivel } from "./sync-apoio-nivel-beehiiv.ts";
 import { resolveBeehiivConfig } from "./lib/beehiiv-config.ts";
@@ -69,6 +69,7 @@ import {
   lastPushedWaveSize,
   computeOutOfBandReturned,
   buildOutOfBandWaveEntry,
+  partitionByConfirmedTag,
   buildInitialState,
   buildWaveEntry,
   DEFAULT_KIT_GMAIL_WARMUP_STATE_PATH,
@@ -162,6 +163,72 @@ async function listTaggedEmails(tagId: number): Promise<string[]> {
   return listAllSubscribersForTag(tagId, resolved.config);
 }
 
+/**
+ * Espaçamento entre chamadas SINGULARES ao Kit. A docstring de
+ * `kit-client.ts` (§Rate limit, #6047) mede o limite e dá a regra: endpoints
+ * singulares toleram só dezenas de chamadas sequenciais sem espera antes de
+ * 429; o retry embutido absorve um blip ISOLADO mas **não** é recuperação de
+ * rate limit; quem itera precisa se auto-espaçar em ~350ms. Medido nesta
+ * issue: uma onda de 102 endereços (2 chamadas cada) sem espaçamento tomou
+ * 429 já nas primeiras dezenas.
+ */
+const KIT_CALL_SPACING_MS = 350;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Confirma, pela direção CONFIÁVEL, quais dos endereços dados já estão na
+ * tag — `GET /v4/subscribers/{id}/tags`, a leitura que a armadilha 5 de
+ * `kit-client.ts` mediu refletindo a mutação IMEDIATAMENTE (ao contrário da
+ * listagem por tag, que mentiu por 180s com `has_next_page: false`).
+ *
+ * Chamada só sobre a onda prestes a ser proposta, nunca sobre o cohort
+ * inteiro: 2 chamadas por endereço custam pouco em cima de uma onda e muito
+ * em cima de 300 endereços. Com o espaçamento obrigatório
+ * (`KIT_CALL_SPACING_MS`), uma onda de 100 endereços leva ~70s de relógio —
+ * custo aceito de propósito numa rodada diária, em troca de nunca propor
+ * quem acabou de migrar.
+ *
+ * Erro por endereço NÃO aborta a rodada e NÃO é engolido: o e-mail sai em
+ * `unconfirmed`, segue sendo proposto (re-taguear é idempotente, e a
+ * partição Beehiiv ainda protege contra envio em dobro) e aparece no
+ * relatório. Falhar fechado aqui — abortar a onda inteira por uma consulta
+ * flaky — custaria mais do que o risco que evita.
+ */
+async function confirmTaggedEmails(
+  emails: readonly string[],
+  tagId: number,
+  spacingMs: number = KIT_CALL_SPACING_MS,
+): Promise<{ tagged: Set<string>; unconfirmed: string[] }> {
+  const resolved = resolveKitConfig();
+  if (!resolved.ok) {
+    throw new Error(
+      `[kit-gmail-warmup-ramp] credenciais do Kit indisponíveis (${resolved.reason}) — abortando antes de propor a onda.`,
+    );
+  }
+  const tagged = new Set<string>();
+  const unconfirmed: string[] = [];
+  let first = true;
+  for (const email of emails) {
+    if (!first && spacingMs > 0) await sleep(spacingMs);
+    first = false;
+    try {
+      const subscriber = await findKitSubscriberByEmail(email, resolved.config);
+      if (!subscriber) continue; // nunca criado no Kit ⇒ certamente não tagueado
+      if (spacingMs > 0) await sleep(spacingMs);
+      const tagIds = await fetchSubscriberTagIds(subscriber.id, resolved.config);
+      if (tagIds.has(tagId)) tagged.add(email.trim().toLowerCase());
+    } catch (e) {
+      unconfirmed.push(email);
+      process.stderr.write(
+        `[kit-gmail-warmup-ramp] aviso: não consegui confirmar a tag de ${email} ` +
+          `(${e instanceof Error ? e.message : String(e)}) — seguindo com ele na onda (re-taguear é idempotente).\n`,
+      );
+    }
+  }
+  return { tagged, unconfirmed };
+}
+
 /** Mede o gate (entrega+abertura Gmail) de um broadcast — mesmo cálculo de `kit-provider-split.ts`. */
 async function measureGate(broadcastId: number): Promise<RampaVeredito> {
   const [sent, delivered, opens, clicks, stats] = await todasOuNenhuma<
@@ -225,6 +292,16 @@ export interface WarmupRampResult {
    *  Absorvidos no estado ANTES de planejar esta rodada; em dry-run a
    *  absorção existe só em memória. Vazio quando estado e tag concordam. */
   outOfBandReturned: string[];
+  /** Subconjunto de `outOfBandReturned` que continua ATIVO na Beehiiv —
+   *  violação do invariante de envio em dobro (`kit-ramp-cohort.ts` tagueou
+   *  no Kit mas a Fase B de desativação não fechou pra esses). Absorver não
+   *  pode fazer isso sumir: o editor precisa desativá-los à mão. Vazio no
+   *  caminho normal. */
+  outOfBandStillActiveOnBeehiiv: string[];
+  /** Endereços da onda cuja pertença à tag NÃO pôde ser confirmada pela
+   *  releitura (erro de rede/API na consulta). Seguem na onda — re-taguear é
+   *  idempotente —, mas ficam visíveis em vez de virarem silêncio. */
+  unconfirmedTagEmails: string[];
 }
 
 export async function runWarmupRamp(opts: {
@@ -265,26 +342,51 @@ export async function runWarmupRamp(opts: {
 
   const gate = await measureGate(opts.gateBroadcastId);
 
-  // #6964 — antes de planejar, reconcilia com a REALIDADE: quem já está na
-  // tag do Kit conta como devolvido mesmo que nenhuma onda desta rampa o
-  // tenha registrado (caso típico: `kit-ramp-cohort.ts` aplicou a onda).
-  // Sempre ANTES de taguear qualquer coisa nesta rodada, pra que a leitura
-  // não enxergue a própria escrita (a listagem por tag leva ~180s pra
-  // refletir — ver `listAllSubscribersForTag`).
   const tagName = readAudienceTagName();
   const tagId = await resolveAudienceTagId(tagName);
-  const outOfBand = computeOutOfBandReturned(
-    state.rejectedEmails,
-    returnedEmails(state),
-    await listTaggedEmails(tagId),
-  );
-  if (outOfBand.length > 0) {
-    const absorbed = buildOutOfBandWaveEntry(state, opts.gateBroadcastId, gate, outOfBand);
-    state = { ...state, waves: [...state.waves, absorbed] };
-    // Persiste a absorção SEPARADAMENTE da onda desta rodada: se o tagueamento
-    // abaixo falhar no meio, o que já era verdade no Kit continua registrado.
-    if (opts.push) saveState(state, statePath);
+
+  // Ativos na Beehiiv: resolvido ANTES da absorção (finding 2 do review da
+  // PR #6984) porque quem migrou fora da rampa e continua ativo na Beehiiv
+  // viola o invariante de envio em dobro — absorver sem checar tornaria esse
+  // defeito silencioso (ver docstring de `buildOutOfBandWaveEntry`).
+  const beehiivCfg = resolveBeehiivConfig();
+  const activeBeehiiv = beehiivCfg.ok
+    ? new Set((await fetchActiveBeehiivEmails(beehiivCfg.config.apiKey, beehiivCfg.config.publicationId)).map((e) => e.trim().toLowerCase()))
+    : new Set<string>();
+  if (!beehiivCfg.ok) {
+    process.stderr.write(
+      `[kit-gmail-warmup-ramp] aviso: não consegui checar ativos na Beehiiv (${beehiivCfg.reason}) — ` +
+        `tratando TODOS os endereços da onda como "precisa de desativação manual" (falha segura, nunca duplica envio).\n`,
+    );
   }
+
+  const outOfBandReturned: string[] = [];
+  const outOfBandStillActiveOnBeehiiv: string[] = [];
+  /** Absorve no estado quem já migrou fora da rampa, registrando quem entre
+   *  eles continua ativo na Beehiiv. Persiste SEPARADAMENTE da onda desta
+   *  rodada: se o tagueamento adiante falhar no meio, o que já era verdade no
+   *  Kit continua registrado. */
+  const absorb = (base: KitGmailWarmupState, emails: string[]): KitGmailWarmupState => {
+    if (emails.length === 0) return base;
+    const stillActive = emails.filter((e) => activeBeehiiv.has(e.trim().toLowerCase()));
+    const next: KitGmailWarmupState = {
+      ...base,
+      waves: [...base.waves, buildOutOfBandWaveEntry(base, opts.gateBroadcastId, gate, emails, stillActive)],
+    };
+    outOfBandReturned.push(...emails);
+    outOfBandStillActiveOnBeehiiv.push(...stillActive);
+    if (opts.push) saveState(next, statePath);
+    return next;
+  };
+
+  // #6964 passo 1 — reconciliação em MASSA com a tag do Kit. Sempre ANTES de
+  // taguear qualquer coisa nesta rodada, pra que a leitura não enxergue a
+  // própria escrita. É um PISO: a listagem por tag pode sub-reportar por
+  // ~180s (armadilha 5 de `kit-client.ts`); o passo 2 cobre o resto.
+  state = absorb(
+    state,
+    computeOutOfBandReturned(state.rejectedEmails, returnedEmails(state), await listTaggedEmails(tagId)),
+  );
 
   const plan = planNextWave({
     rejectedEmails: state.rejectedEmails,
@@ -297,23 +399,43 @@ export async function runWarmupRamp(opts: {
     // Onda vazia (segurada pelo gate, ou já esgotada) — registrar como
     // proposta não-empurrada é ruído (nenhum e-mail, nenhuma decisão nova) e
     // infla o histórico sem valor; não grava wave.
-    return { state, plan, safeToTag: [], needsBeehiivDeactivation: [], pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned: outOfBand };
+    return { state, plan, safeToTag: [], needsBeehiivDeactivation: [], pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails: [] };
   }
 
-  const beehiivCfg = resolveBeehiivConfig();
-  const activeBeehiiv = beehiivCfg.ok
-    ? new Set((await fetchActiveBeehiivEmails(beehiivCfg.config.apiKey, beehiivCfg.config.publicationId)).map((e) => e.trim().toLowerCase()))
-    : new Set<string>();
-  if (!beehiivCfg.ok) {
-    process.stderr.write(
-      `[kit-gmail-warmup-ramp] aviso: não consegui checar ativos na Beehiiv (${beehiivCfg.reason}) — ` +
-        `tratando TODOS os endereços da onda como "precisa de desativação manual" (falha segura, nunca duplica envio).\n`,
-    );
+  // #6964 passo 2 (finding 1 do review da PR #6984) — confere a onda proposta
+  // pela direção CONFIÁVEL antes de propor. A listagem em massa acima mente
+  // por ~180s depois de uma escrita, e a sequência que ESTA issue trata é
+  // justamente "rodar `kit-ramp-cohort.ts` e em seguida a rampa": sem esta
+  // conferência, a onda sairia com endereços que acabaram de migrar.
+  const { tagged: confirmedTagged, unconfirmed: unconfirmedTagEmails } = await confirmTaggedEmails(plan.emails, tagId);
+  const { alreadyTagged, stillPending } = partitionByConfirmedTag(plan.emails, confirmedTagged);
+  state = absorb(state, alreadyTagged);
+
+  // A onda pode sair MENOR que o tamanho planejado quando a listagem em massa
+  // estava defasada — preferível a propor quem já migrou. A rodada seguinte
+  // parte do número correto, porque estes acabaram de ser absorvidos.
+  const effectivePlan: WavePlan =
+    alreadyTagged.length === 0
+      ? plan
+      : {
+          ...plan,
+          emails: stillPending,
+          size: stillPending.length,
+          skipped: stillPending.length === 0,
+          reason:
+            stillPending.length === 0
+              ? `os ${alreadyTagged.length} endereço(s) da onda já estavam na tag do Kit (releitura confirmou) — nada novo a propor nesta rodada.`
+              : `${plan.reason} — ${alreadyTagged.length} já estava(m) na tag e foi(ram) absorvido(s).`,
+        };
+
+  if (effectivePlan.emails.length === 0) {
+    return { state, plan: effectivePlan, safeToTag: [], needsBeehiivDeactivation: [], pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails };
   }
-  const { safeToTag, needsBeehiivDeactivation } = resolveWarmupBeehiivPartition(plan.emails, beehiivCfg.ok, activeBeehiiv);
+
+  const { safeToTag, needsBeehiivDeactivation } = resolveWarmupBeehiivPartition(effectivePlan.emails, beehiivCfg.ok, activeBeehiiv);
 
   if (!opts.push) {
-    return { state, plan, safeToTag, needsBeehiivDeactivation, pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned: outOfBand };
+    return { state, plan: effectivePlan, safeToTag, needsBeehiivDeactivation, pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails };
   }
 
   const unverifiedEmails: string[] = [];
@@ -347,7 +469,7 @@ export async function runWarmupRamp(opts: {
   state = { ...state, waves: [...state.waves, wave] };
   saveState(state, statePath);
 
-  return { state, plan, safeToTag: actuallyTagged, needsBeehiivDeactivation, pushed: true, unverifiedEmails, failedEmails, outOfBandReturned: outOfBand };
+  return { state, plan: effectivePlan, safeToTag: actuallyTagged, needsBeehiivDeactivation, pushed: true, unverifiedEmails, failedEmails, outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails };
 }
 
 export function formatReport(result: WarmupRampResult): string {
@@ -357,7 +479,24 @@ export function formatReport(result: WarmupRampResult): string {
   if (result.outOfBandReturned.length > 0) {
     lines.push(
       `  ↳ ${result.outOfBandReturned.length} deles migrados FORA desta rampa (tag do Kit, tipicamente kit-ramp-cohort.ts) e ` +
-        `absorvidos ${result.pushed ? "no estado" : "só em memória (dry-run)"} agora — #6964.`,
+        `absorvidos ${result.pushed ? "no estado" : "só em memória (dry-run)"} agora — #6964:\n` +
+        result.outOfBandReturned.map((e) => `      - ${e}`).join("\n"),
+    );
+  }
+  if (result.outOfBandStillActiveOnBeehiiv.length > 0) {
+    // Invariante de envio em dobro violado: tagueado no Kit E ativo na
+    // Beehiiv. Absorver não pode engolir isto (ver buildOutOfBandWaveEntry).
+    lines.push(
+      `  ⚠️ ENVIO EM DOBRO — ${result.outOfBandStillActiveOnBeehiiv.length} do(s) absorvido(s) continua(m) ATIVO(s) na Beehiiv ` +
+        `(tagueado no Kit sem a desativação correspondente). Desativar à mão na Beehiiv, ou rodar ` +
+        `\`kit-ramp-cohort.ts --audit\`:\n` +
+        result.outOfBandStillActiveOnBeehiiv.map((e) => `      - ${e}`).join("\n"),
+    );
+  }
+  if (result.unconfirmedTagEmails.length > 0) {
+    lines.push(
+      `  ⚠️ não deu pra confirmar a tag de ${result.unconfirmedTagEmails.length} endereço(s) da onda (erro na releitura) — ` +
+        `seguem propostos, re-taguear é idempotente: ${result.unconfirmedTagEmails.join(", ")}`,
     );
   }
   if (result.plan.skipped) {

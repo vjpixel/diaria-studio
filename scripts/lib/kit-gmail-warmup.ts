@@ -303,6 +303,15 @@ export const DEFAULT_KIT_GMAIL_WARMUP_STATE_PATH = "data/kit-gmail-warmup/state.
  * medição de 01/09, 179 membros para 93 do cohort. Sem o filtro, gente de
  * fora do aquecimento contaria como "devolvida".
  *
+ * **`liveTaggedEmails` é um PISO, não a verdade.** Vindo da listagem em
+ * massa da tag (`GET /v4/tags/{id}/subscribers`), pode sub-reportar por
+ * ~180s depois de uma escrita — com `has_next_page: false` afirmando que a
+ * lista está completa (armadilha 5 de `kit-client.ts`). Sub-reportar aqui só
+ * faz ABSORVER MENOS (nunca absorver quem não migrou), e a rodada seguinte
+ * pega o resto. O que essa defasagem NÃO cobre é a onda prestes a ser
+ * proposta — daí `partitionByConfirmedTag`, que confere pela direção
+ * confiável antes de propor.
+ *
  * Ordem de saída é a de `rejectedEmails` (estável, mesma de
  * `computeGmailRejectedEmails`), nunca a da API.
  */
@@ -334,18 +343,63 @@ export function computeOutOfBandReturned(
  * é medido a cada rodada e segura o crescimento se a entrega piorar
  * (`planNextWave` respeita `gate.podeCrescer` antes de qualquer tamanho) —
  * o tamanho nunca é a única proteção.
+ *
+ * ## `stillActiveOnBeehiiv` — o invariante que a absorção NÃO pode engolir
+ *
+ * Absorver significa "esta pessoa já migrou, saia da fila". Mas
+ * `kit-ramp-cohort.ts` aplica em DUAS fases (tagueia todo mundo no Kit,
+ * depois desativa cada um na Beehiiv) e a Fase B pode falhar por e-mail sem
+ * desfazer a Fase A — sobra alguém tagueado no Kit E ativo na Beehiiv, que é
+ * exatamente o estado de ENVIO EM DOBRO que `partitionByBeehiivActive`
+ * existe pra impedir.
+ *
+ * Antes desta absorção existir, a rampa tropeçava nesse caso por acidente:
+ * re-propunha o endereço, e a partição Beehiiv ao vivo o pegava. Absorver
+ * sem checar apagaria esse acidente feliz e tornaria o defeito silencioso.
+ * Por isso quem absorve PRECISA passar quem continua ativo na Beehiiv: fica
+ * gravado no registro e o relatório grita. A pessoa segue absorvida (migrou
+ * de fato no lado do Kit) — o que não pode é a violação sumir.
  */
 export function buildOutOfBandWaveEntry(
   state: KitGmailWarmupState,
   gateBroadcastId: number,
   gate: RampaVeredito,
   emails: string[],
+  stillActiveOnBeehiiv: string[] = [],
   now: Date = new Date(),
 ): KitGmailWarmupWave {
   return {
-    ...buildWaveEntry(state, gateBroadcastId, gate, emails, [], true, now, []),
+    ...buildWaveEntry(state, gateBroadcastId, gate, emails, stillActiveOnBeehiiv, true, now, []),
     outOfBand: true,
   };
+}
+
+/**
+ * Separa uma onda PROPOSTA entre quem já está confirmadamente na tag do Kit
+ * e quem segue realmente pendente (#6964, finding do review da PR #6984).
+ *
+ * Existe porque a listagem em massa da tag (`GET /v4/tags/{id}/subscribers`)
+ * é um PISO, nunca a verdade: a armadilha 5 de `kit-client.ts` mediu 180s de
+ * atraso com `has_next_page: false` mentindo que a lista estava completa. Se
+ * `kit-ramp-cohort.ts` acabou de aplicar uma onda — a sequência operacional
+ * NORMAL, e justamente a que o #6964 trata —, a listagem pode não refletir, e
+ * a rampa re-proporia quem já migrou: o mesmo bug entrando por outra porta.
+ *
+ * `confirmedTagged` vem da direção CONFIÁVEL (`GET /v4/subscribers/{id}/tags`,
+ * sem atraso observado), consultada só para os endereços que a rodada está
+ * prestes a propor — o custo fica no tamanho da ONDA, não do cohort inteiro.
+ */
+export function partitionByConfirmedTag(
+  emails: readonly string[],
+  confirmedTagged: ReadonlySet<string>,
+): { alreadyTagged: string[]; stillPending: string[] } {
+  const alreadyTagged: string[] = [];
+  const stillPending: string[] = [];
+  for (const email of emails) {
+    if (confirmedTagged.has(email.trim().toLowerCase())) alreadyTagged.push(email);
+    else stillPending.push(email);
+  }
+  return { alreadyTagged, stillPending };
 }
 
 /** União dos e-mails de todas as ondas PUSHADAS. Pura. */

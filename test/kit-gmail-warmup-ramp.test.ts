@@ -78,6 +78,8 @@ function fakeResult(overrides: Partial<WarmupRampResult> = {}): WarmupRampResult
     unverifiedEmails: [],
     failedEmails: [],
     outOfBandReturned: [],
+    outOfBandStillActiveOnBeehiiv: [],
+    unconfirmedTagEmails: [],
     ...overrides,
   };
 }
@@ -171,5 +173,32 @@ describe("formatReport — reconciliação out-of-band (#6964)", () => {
   it("com --push, diz que a absorção foi persistida no estado", () => {
     const out = formatReport(fakeResult({ outOfBandReturned: ["x@gmail.com"], pushed: true }));
     assert.match(out, /absorvidos no estado/);
+  });
+});
+
+describe("formatReport — invariante de envio em dobro e releitura não confirmada (#6984)", () => {
+  it("lista os endereços absorvidos, não só a contagem", () => {
+    const out = formatReport(fakeResult({ outOfBandReturned: ["x@gmail.com", "y@gmail.com"] }));
+    assert.match(out, /- x@gmail\.com/);
+    assert.match(out, /- y@gmail\.com/);
+  });
+
+  it("GRITA quando alguém absorvido continua ativo na Beehiiv (envio em dobro)", () => {
+    const out = formatReport(
+      fakeResult({ outOfBandReturned: ["dobro@gmail.com"], outOfBandStillActiveOnBeehiiv: ["dobro@gmail.com"] }),
+    );
+    assert.match(out, /ENVIO EM DOBRO/);
+    assert.match(out, /dobro@gmail\.com/);
+    assert.match(out, /--audit/);
+  });
+
+  it("não menciona envio em dobro quando o invariante está intacto", () => {
+    assert.doesNotMatch(formatReport(fakeResult({ outOfBandReturned: ["ok@gmail.com"] })), /ENVIO EM DOBRO/);
+  });
+
+  it("mostra os endereços cuja tag não pôde ser confirmada, em vez de silenciá-los", () => {
+    const out = formatReport(fakeResult({ unconfirmedTagEmails: ["flaky@gmail.com"] }));
+    assert.match(out, /não deu pra confirmar a tag de 1 endereço/);
+    assert.match(out, /flaky@gmail\.com/);
   });
 });
