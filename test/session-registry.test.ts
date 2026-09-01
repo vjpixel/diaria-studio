@@ -9,7 +9,7 @@
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -43,6 +43,7 @@ import {
   isMergeGrantLive,
   findLiveMergeGrant,
   consumeMergeGrant,
+  machineTag,
   planSessionGc,
   garbageCollectSessions,
   resolveRepoRoot,
@@ -3155,5 +3156,278 @@ describe("#6952 (2ª metade) — merge_grant sobrevive à união de cópias de c
     );
     assert.equal(found!.grant.pr, 6952);
     assert.equal(found!.grantedBy.sessionId, "coord-6952");
+  });
+});
+
+// ─── #6952 — consumir a concessão ERRADA por troca durante a espera do lock ──
+//
+// Achado do 3º review independente (fio: identidade cross-máquina). O
+// `consumeMergeGrant` confere a identidade `(grantedBy, grantedTo, grantedAt)`
+// ANTES de pedir o lock, e o `merge` do CAS só checava `if (!current
+// ?.merge_grant) throw` — nunca RECOMPARAVA a identidade contra a concessão
+// que veio consumir. Entre a conferência e a aquisição do lock, o grant pode
+// ter sido trocado por OUTRO, vivo e legítimo, de outro beneficiário; o
+// consumidor carimbava esse.
+//
+// Efeito: mata a janela viva de terceiro em silêncio, devolvendo `ok`. É o
+// mesmo sintoma que esta PR existe pra eliminar, por outra porta.
+//
+// A lacuna existe no `master` também, mas era praticamente inalcançável: lá a
+// escrita vinha logo após a leitura, janela de microssegundos — a mesma classe
+// que os testes acima argumentam não ser atingível por tempo. É ESTA PR que
+// roteia a escrita por um laço de lock-and-wait, tornando a janela alcançável
+// por contenção ordinária — contenção que a PR introduz de propósito, já que o
+// beacon passa a pegar o mesmo lock a cada chamada de ferramenta. Não é bug
+// escrito aqui; é bug que passou a ser alcançável aqui, e por isso se fecha
+// aqui.
+//
+// O molde do conserto já existia no repo: `consumeOneUnderLock`, no
+// `.claude/hooks/consume-merge-grant-on-merge.mjs`, já refaz a conferência
+// fresca dentro do lock. O caminho quente estava certo; o CLI em TS não.
+describe("#6952 — troca de concessão durante a espera do lock", () => {
+  const CLI = fileURLToPath(new URL("../scripts/lib/session-registry.ts", import.meta.url));
+  const TSX = pathToFileURL(
+    fileURLToPath(new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url)),
+  ).href;
+  const roots: string[] = [];
+  after(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });
+
+  it("NÃO carimba a concessão de OUTRO beneficiário trocada enquanto esperava o lock", async () => {
+    const root = mkdtempSync(join(tmpdir(), "swap-6952-"));
+    roots.push(root);
+    const sessionsDir = join(root, "data", "sessions");
+    mkdirSync(sessionsDir, { recursive: true });
+
+    const nowIso = new Date().toISOString();
+    const recordPath = join(sessionsDir, `overnight-${machineTag()}-coord-6952.json`);
+    const base = {
+      kind: "overnight",
+      machineTag: machineTag(),
+      sessionId: "coord-6952",
+      startedAt: nowIso,
+      lastHeartbeat: nowIso,
+      claimed_issues: [],
+    };
+    const grantBenef1 = {
+      grantedTo: "benef-1",
+      grantedBy: "coord-6952",
+      grantedAt: nowIso,
+      pr: 1111,
+    };
+    writeFileSync(recordPath, JSON.stringify({ ...base, merge_grant: grantBenef1 }), "utf8");
+
+    // Segura o lock por fora — mesma técnica dos testes acima: não corre
+    // contra o relógio, força a ordem.
+    const lockPath = `${recordPath}.lock`;
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      try { closeSync(openSync(lockPath, "wx")); break; } catch (e: any) {
+        if (e?.code !== "EEXIST") throw e;
+        if (Date.now() >= deadline) throw new Error(`lock timeout: ${lockPath}`);
+        const end = Date.now() + 10;
+        while (Date.now() < end) { /* busy wait */ }
+      }
+    }
+
+    // benef-1 tenta consumir a SUA concessão — e fica bloqueado no lock.
+    const child = spawn(
+      process.execPath,
+      ["--import", TSX, CLI, "consume-merge-grant", "--session-id", "benef-1"],
+      { cwd: root, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let stdout = "";
+    child.stdout.on("data", (c) => (stdout += String(c)));
+
+    await new Promise((r) => setTimeout(r, 1200));
+
+    // Com ele parado, a coordenadora troca a concessão por uma NOVA, de outro
+    // beneficiário, viva e legítima. (Na prática: a janela de benef-1 expirou
+    // ou foi revogada, e a coordenadora concedeu a outra sessão.)
+    const grantBenef2 = {
+      grantedTo: "benef-2",
+      grantedBy: "coord-6952",
+      grantedAt: new Date(Date.now() + 1000).toISOString(),
+      pr: 2222,
+    };
+    const tmp = `${recordPath}.tmp-swap`;
+    writeFileSync(tmp, JSON.stringify({ ...base, merge_grant: grantBenef2 }), "utf8");
+    renameSync(tmp, recordPath);
+    unlinkSync(lockPath);
+
+    await new Promise((r) => child.on("close", r));
+
+    const after = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.equal(
+      after.merge_grant?.grantedTo,
+      "benef-2",
+      "sanity: a concessão no disco é a de benef-2",
+    );
+    assert.equal(
+      after.merge_grant?.consumedAt,
+      undefined,
+      "o consumidor de benef-1 carimbou a concessão VIVA de benef-2 — matou janela alheia em silêncio",
+    );
+    assert.match(
+      stdout,
+      /no-op \(nenhuma janela viva\)/,
+      `o consumo devia recusar, não reportar sucesso — stdout: ${stdout}`,
+    );
+  });
+});
+
+// ─── #6952 — a fronteira de MÁQUINA no dedupe ───────────────────────────────
+//
+// Achado do 3º review independente. `dedupeBySessionId` agrupava por
+// `sessionId` puro, ignorando `machineTag`. O propósito dele é intra-máquina
+// (uma sessão promovida de `interactive` pra coordenadora mantém o
+// `sessionId` e troca o `kind`, no MESMO host) — então dois registros com o
+// mesmo `sessionId` e tags diferentes não são a mesma sessão, e fundi-los
+// mistura duas.
+//
+// Antes desta PR quase não tinha consequência: só `claimed_issues` era unido
+// e o resto vinha do `primary`, então um `merge_grant` só cruzava a fronteira
+// de máquina por coincidência de heartbeat. Com o `merge_grant` na união, o
+// vazamento passaria a ser sistemático. `data/sessions/` é compartilhado via
+// OneDrive entre as máquinas — a fronteira é real, não teórica.
+//
+// Dormente (nada num fluxo normal produz o mesmo `sessionId` sob duas tags),
+// então o que se entrega é a chave + este teste, não mecanismo novo.
+describe("#6952 — dedupe respeita a fronteira de máquina", () => {
+  const roots: string[] = [];
+  after(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });
+
+  it("mesmo sessionId em máquinas DIFERENTES não vira um record só (grant não vaza)", () => {
+    const root = mkdtempSync(join(tmpdir(), "crossmachine-6952-"));
+    roots.push(root);
+    const sessionsDir = join(root, "data", "sessions");
+    mkdirSync(sessionsDir, { recursive: true });
+    const now = Date.now();
+    const iso = (offsetMs: number) => new Date(now + offsetMs).toISOString();
+
+    const shared = {
+      kind: "develop" as const,
+      sessionId: "sess-colisao",
+      startedAt: iso(-60_000),
+      claimed_issues: [],
+    };
+    // Neo: concedeu uma janela.
+    writeFileSync(
+      join(sessionsDir, "develop-Neo-sess-colisao.json"),
+      JSON.stringify({
+        ...shared,
+        machineTag: "Neo",
+        lastHeartbeat: iso(-1000),
+        merge_grant: {
+          grantedTo: "benef-6952",
+          grantedBy: "sess-colisao",
+          grantedAt: iso(-2000),
+          pr: 6952,
+        },
+      }),
+      "utf8",
+    );
+    // helios: MESMO sessionId (colisão), sem concessão nenhuma.
+    writeFileSync(
+      join(sessionsDir, "develop-helios-sess-colisao.json"),
+      JSON.stringify({ ...shared, machineTag: "helios", lastHeartbeat: iso(0) }),
+      "utf8",
+    );
+
+    const active = listActiveSessions(root, now);
+    const colisao = active.filter((r) => r.sessionId === "sess-colisao");
+    assert.equal(
+      colisao.length,
+      2,
+      "os dois registros viraram um só — duas sessões de máquinas diferentes fundidas",
+    );
+
+    const neo = colisao.find((r) => r.machineTag === "Neo");
+    const helios = colisao.find((r) => r.machineTag === "helios");
+    assert.ok(neo && helios, "as duas tags precisam sobreviver ao dedupe");
+    assert.ok(neo!.merge_grant, "a concessão do Neo tem que continuar no registro do Neo");
+    assert.equal(
+      helios!.merge_grant,
+      undefined,
+      "a concessão do Neo vazou pro registro do helios — grant cruzando a fronteira de máquina",
+    );
+  });
+});
+
+// ─── #6952 — endSession e o lock órfão ──────────────────────────────────────
+//
+// Achado do 4º review independente, reproduzido. A rodada 2 desta PR fez o
+// `endSession` envolver a remoção em `withFileLock` — certo, fecha a corrida
+// em que um CAS concorrente RECRIA o registro recém-encerrado. Mas, diferente
+// do `writeJsonSafeWithCas` (que chama `breakStaleLock` antes de CADA
+// tentativa), o `endSession` chamava `withFileLock` uma vez, sem quebrar
+// órfão: com um `.lock` deixado por um processo que morreu segurando-o, o
+// `end` gastava o timeout inteiro (10s) e LANÇAVA, e o registro sobrevivia.
+//
+// Ou seja: o modo de falha que o `breakStaleLock` existe pra eliminar,
+// reaberto num call site que esta mesma PR criou.
+//
+// É P1 e não P2 por uma razão específica: `end` é a ÚLTIMA operação sobre o
+// arquivo. Os outros escritores se autocurariam na escrita seguinte — aqui
+// não há escrita seguinte. E `end` é o passo final obrigatório de toda rodada
+// overnight/develop/contínuo.
+describe("#6952 — endSession quebra lock órfão antes de adquirir", () => {
+  const roots: string[] = [];
+  after(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });
+
+  function makeSession(): { root: string; path: string } {
+    const root = mkdtempSync(join(tmpdir(), "endorphan-6952-"));
+    roots.push(root);
+    const dir = join(root, "data", "sessions");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `develop-${machineTag()}-orphan-6952.json`);
+    const now = new Date().toISOString();
+    writeFileSync(
+      path,
+      JSON.stringify({
+        kind: "develop",
+        machineTag: machineTag(),
+        sessionId: "orphan-6952",
+        startedAt: now,
+        lastHeartbeat: now,
+        claimed_issues: [],
+      }),
+      "utf8",
+    );
+    return { root, path };
+  }
+
+  it("lock ÓRFÃO não impede encerrar a sessão (era 10s + throw, com o registro sobrevivendo)", () => {
+    const { root, path } = makeSession();
+    const lockPath = `${path}.lock`;
+    closeSync(openSync(lockPath, "wx"));
+    // Envelhece além do STALE_LOCK_MS: é o que sobra de um processo morto com
+    // SIGKILL/OOM, ou do binário quebrando no meio (9× num único dia).
+    const old = new Date(Date.now() - 150_000);
+    utimesSync(lockPath, old, old);
+
+    const started = Date.now();
+    const removed = endSession(root, "develop", "orphan-6952", machineTag());
+    const elapsed = Date.now() - started;
+
+    assert.equal(removed, true, "o end recusou por causa de um lock que ninguém segura");
+    assert.equal(existsSync(path), false, "o registro sobreviveu ao end — sessão encerrada que nunca sai");
+    assert.ok(
+      elapsed < 5_000,
+      `o end gastou ${elapsed}ms esperando um lock órfão (o timeout é 10s) em vez de quebrá-lo`,
+    );
+  });
+
+  it("lock VIVO (recém-criado) continua sendo respeitado — não sai quebrando tudo", () => {
+    const { root, path } = makeSession();
+    const lockPath = `${path}.lock`;
+    closeSync(openSync(lockPath, "wx")); // recém-criado: outro escritor está na seção crítica
+
+    assert.throws(
+      () => endSession(root, "develop", "orphan-6952", machineTag()),
+      /lock timeout/,
+      "o end quebrou um lock VIVO — a quebra é só por IDADE, nunca incondicional",
+    );
+    assert.equal(existsSync(path), true, "o registro não pode sumir enquanto outro escritor tem o lock");
+    unlinkSync(lockPath);
   });
 });
