@@ -1459,6 +1459,20 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // é ação POSTERIOR do editor.
     issue: "#6189",
   },
+  {
+    name: "Diaria-Claude-Session-Version-Drift-Alarm",
+    description:
+      "alarme sem politica: sessao Claude Code de vida longa (--remote-control) com binario em memoria defasado do disco (#6875/#6891)",
+    steps: [{ key: "check", script: "scripts/claude-session-version-drift-alarm.ts" }],
+    logPath: "claude-session-version-drift-alarm/.alarm.log",
+    // A cada 6h — a condição em si só passa a existir depois de threshold
+    // (24h) de vida da sessão, então checar com essa cadência dá folga de
+    // sobra sem deixar o achado dias sem e-mail. Linux apenas (depende de
+    // /proc/<pid>/exe) — o script sai 0 sem checar nada em qualquer outra
+    // plataforma.
+    schedule: { kind: "interval", hours: 6 },
+    issue: "#6927",
+  },
 ];
 
 /**
