@@ -218,7 +218,17 @@ function breakStaleLock(lockPath) {
  * de saída (PostToolUse é side-effect puro), então a distinção não teria onde
  * aparecer; quem precisa dela é o CLI, não aqui.
  */
-export function consumeGrantUnderLock(repoRoot, sessionId, nowIso = new Date().toISOString()) {
+export function consumeGrantUnderLock(
+  repoRoot,
+  sessionId,
+  nowIso = new Date().toISOString(),
+  // Só pra teste: o caso "lock retido é respeitado" precisa esperar o
+  // orçamento estourar, e os 3×2s de produção custavam 6s de wall-clock na
+  // suíte — o bastante, somado aos outros testes de lock, pra estourar o
+  // orçamento de 300s do batch do runner paralelo. Produção nunca passa isto.
+  attempts = CAS_ATTEMPTS,
+  lockTimeoutMs = LOCK_TIMEOUT_MS,
+) {
   // #6952 (achado do review independente): varre o GRUPO inteiro — arquivo
   // real E cópias `-safeBackup-*`. Desde que `mergeSessionRecords` passou a
   // UNIR o `merge_grant`, uma concessão que vive só numa cópia de conflito é
@@ -230,20 +240,20 @@ export function consumeGrantUnderLock(repoRoot, sessionId, nowIso = new Date().t
   for (;;) {
     const initial = findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true);
     if (!initial) return consumedAny;
-    if (!consumeOneUnderLock(initial, nowIso)) return consumedAny;
+    if (!consumeOneUnderLock(initial, nowIso, attempts, lockTimeoutMs)) return consumedAny;
     consumedAny = true;
   }
 }
 
 /** Marca `consumedAt` num único arquivo do grupo, sob o lock dele. */
-function consumeOneUnderLock(initial, nowIso) {
+function consumeOneUnderLock(initial, nowIso, attempts = CAS_ATTEMPTS, lockTimeoutMs = LOCK_TIMEOUT_MS) {
   const lockPath = `${initial.path}.lock`;
 
-  for (let i = 0; i < CAS_ATTEMPTS; i++) {
+  for (let i = 0; i < attempts; i++) {
     let acquired = false;
     try {
       breakStaleLock(lockPath);
-      const deadline = Date.now() + LOCK_TIMEOUT_MS;
+      const deadline = Date.now() + lockTimeoutMs;
       for (;;) {
         try { closeSync(openSync(lockPath, "wx")); acquired = true; break; } catch (e) {
           if (e?.code !== "EEXIST") throw e;

@@ -1287,7 +1287,20 @@ export function heartbeat(
  * esperar os 10s e falhar de forma visível — não há o que reconciliar numa
  * remoção.
  */
-export function endSession(repoRoot: string, kind: SessionKind, sessionId: string, tag: string = machineTag()): boolean {
+export function endSession(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  tag: string = machineTag(),
+  // Só pra teste: o caso "lock VIVO é respeitado" precisa ESPERAR o timeout
+  // estourar pra provar que a quebra é por IDADE e nunca incondicional, e
+  // esperar os 10s de produção custava 10s de wall-clock na suíte — o
+  // suficiente, somado aos outros testes de lock, pra estourar o orçamento de
+  // 300s do batch do runner paralelo (medido: o batch de 150 arquivos que
+  // contém estes testes passou a dar ETIMEDOUT). Produção nunca passa este
+  // argumento.
+  lockTimeoutMs: number = 10_000,
+): boolean {
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
   if (!existsSync(path)) return false;
   breakStaleLock(`${path}.lock`);
@@ -1297,7 +1310,7 @@ export function endSession(repoRoot: string, kind: SessionKind, sessionId: strin
     if (!existsSync(path)) return false;
     rmSync(path);
     return true;
-  });
+  }, lockTimeoutMs);
 }
 
 /**

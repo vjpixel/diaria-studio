@@ -3423,7 +3423,9 @@ describe("#6952 — endSession quebra lock órfão antes de adquirir", () => {
     closeSync(openSync(lockPath, "wx")); // recém-criado: outro escritor está na seção crítica
 
     assert.throws(
-      () => endSession(root, "develop", "orphan-6952", machineTag()),
+      // Timeout curto: o ponto é PROVAR que espera e falha, não gastar os 10s
+      // de produção fazendo isso (ver o parâmetro no `endSession`).
+      () => endSession(root, "develop", "orphan-6952", machineTag(), 300),
       /lock timeout/,
       "o end quebrou um lock VIVO — a quebra é só por IDADE, nunca incondicional",
     );

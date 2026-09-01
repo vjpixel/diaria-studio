@@ -812,7 +812,9 @@ describe("#6952 — consume hook escreve sob o lock compartilhado", () => {
     closeSync(openSync(lockPath, "wx")); // outro escritor está na seção crítica
 
     const before = readFileSync(recordPath, "utf8");
-    const ok = consumeGrantUnderLock(root, "benef-6952", "2026-09-01T12:00:00.000Z");
+    // Orçamento curto: prova que espera e desiste, sem gastar os 3×2s de
+    // produção (ver os parâmetros em `consumeGrantUnderLock`).
+    const ok = consumeGrantUnderLock(root, "benef-6952", "2026-09-01T12:00:00.000Z", 2, 150);
 
     assert.equal(ok, false, "com o lock retido não há como consumir — desiste em vez de atropelar");
     assert.equal(
