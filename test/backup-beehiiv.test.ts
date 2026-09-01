@@ -319,9 +319,9 @@ describe("summarizeManifest — subscriberEngagementGap explícito (#6465)", () 
       endpoints: [],
       posts: { fetched: 0, errors: 0 },
       subscribers: null,
-      subscriberEngagementGap: { total: 254, ok: 254, partial: 0, error: 0, pending: 0, closed: true },
+      subscriberEngagementGap: { total: 254, ok: 254, partial: 0, error: 0, pending: 0, not_applicable: 0, closed: true },
     });
-    assert.deepEqual(m.subscriber_engagement_gap, { total: 254, ok: 254, partial: 0, error: 0, pending: 0, closed: true });
+    assert.deepEqual(m.subscriber_engagement_gap, { total: 254, ok: 254, partial: 0, error: 0, pending: 0, not_applicable: 0, closed: true });
   });
 });
 
@@ -349,7 +349,7 @@ describe("readSubscriberEngagementGapCoverage (#6465) — leitura best-effort, n
       posts: [{ post_id: "p1", status: "ok" }, { post_id: "p2", status: "ok" }],
     });
     const got = readSubscriberEngagementGapCoverage("qualquer.json", () => manifestJson);
-    assert.deepEqual(got, { total: 2, ok: 2, partial: 0, error: 0, pending: 0, closed: true });
+    assert.deepEqual(got, { total: 2, ok: 2, partial: 0, error: 0, pending: 0, not_applicable: 0, closed: true });
   });
 
   it("manifest válido parcial → closed=false", () => {

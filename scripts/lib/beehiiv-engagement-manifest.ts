@@ -35,8 +35,15 @@
  *               pra efeitos de retomada.
  * `error`     — tentativa falhou (MCP indisponível, erro de escrita).
  *               Conta como pendente pra efeitos de retomada.
+ * `not_applicable` — post NUNCA foi enviado (rascunho, `publish_date: null`):
+ *               não existe engajamento assinante × post pra drenar, e a MCP
+ *               responde `Resource not found` (#6465, achado 01/09/2026 com
+ *               `post_569ba7e3`, o único do acervo nessa condição). NÃO conta
+ *               como pendente — senão a cobertura nunca fecha esperando um
+ *               dado que não existe. Derivado mecanicamente do arquivo de
+ *               backup do post (`isNeverSentPost`), nunca a dedo.
  */
-export type EngagementEntryStatus = "pending" | "ok" | "partial" | "error";
+export type EngagementEntryStatus = "pending" | "ok" | "partial" | "error" | "not_applicable";
 
 export interface EngagementManifestEntry {
   post_id: string;
@@ -81,14 +88,25 @@ export function buildInitialManifest(
  */
 export function mergeManifestPosts(
   existing: EngagementManifest,
-  discovered: Array<{ id: string; title?: string }>,
+  discovered: Array<{ id: string; title?: string; neverSent?: boolean }>,
   generatedAt: string,
 ): EngagementManifest {
   const byId = new Map<string, EngagementManifestEntry>(existing.posts.map((e) => [e.post_id, e]));
   for (const p of discovered) {
     const current = byId.get(p.id);
+    // Post nunca enviado nasce (e permanece) `not_applicable` — exceto se
+    // uma corrida anterior já drenou dado real dele (`ok`), que nunca é
+    // rebaixado. Idempotente: re-scan reafirma o mesmo estado.
+    const naStatus: EngagementManifestEntry["status"] = "not_applicable";
     if (!current) {
-      byId.set(p.id, { post_id: p.id, title: p.title, status: "pending" });
+      byId.set(p.id, {
+        post_id: p.id,
+        title: p.title,
+        status: p.neverSent ? naStatus : "pending",
+        ...(p.neverSent ? { error: NEVER_SENT_REASON } : {}),
+      });
+    } else if (p.neverSent && current.status !== "ok" && current.status !== naStatus) {
+      byId.set(p.id, { ...current, title: current.title ?? p.title, status: naStatus, error: NEVER_SENT_REASON });
     } else if (!current.title && p.title) {
       byId.set(p.id, { ...current, title: p.title });
     }
@@ -114,7 +132,7 @@ export function upsertEntry(manifest: EngagementManifest, entry: EngagementManif
  * foi confirmado.
  */
 export function pendingEntries(manifest: EngagementManifest): EngagementManifestEntry[] {
-  return manifest.posts.filter((p) => p.status !== "ok");
+  return manifest.posts.filter((p) => p.status !== "ok" && p.status !== "not_applicable");
 }
 
 export interface EngagementCoverageSummary {
@@ -123,7 +141,14 @@ export interface EngagementCoverageSummary {
   partial: number;
   error: number;
   pending: number;
-  /** `true` somente quando TODO post do manifest está `ok` — sinaliza que o gap está fechado. */
+  /** Posts que nunca foram enviados — não há engajamento a drenar. */
+  not_applicable: number;
+  /**
+   * `true` quando não sobra nada a drenar: todo post está `ok` ou
+   * `not_applicable`. Rascunho nunca enviado não pode manter o gap "aberto"
+   * pra sempre — mas `not_applicable` é derivado mecanicamente do arquivo de
+   * backup, nunca de uma falha de MCP, então isso não mascara buraco real.
+   */
   closed: boolean;
 }
 
@@ -133,14 +158,15 @@ export interface EngagementCoverageSummary {
  * (ou não) fechado, sem tocar a MCP (leitura pura do manifest em disco).
  */
 export function coverageSummary(manifest: EngagementManifest): EngagementCoverageSummary {
-  const summary: EngagementCoverageSummary = { total: manifest.posts.length, ok: 0, partial: 0, error: 0, pending: 0, closed: false };
+  const summary: EngagementCoverageSummary = { total: manifest.posts.length, ok: 0, partial: 0, error: 0, pending: 0, not_applicable: 0, closed: false };
   for (const p of manifest.posts) {
     if (p.status === "ok") summary.ok++;
     else if (p.status === "partial") summary.partial++;
     else if (p.status === "error") summary.error++;
+    else if (p.status === "not_applicable") summary.not_applicable++;
     else summary.pending++;
   }
-  summary.closed = summary.total > 0 && summary.ok === summary.total;
+  summary.closed = summary.total > 0 && summary.ok + summary.not_applicable === summary.total;
   return summary;
 }
 
@@ -154,7 +180,7 @@ export function coverageSummary(manifest: EngagementManifest): EngagementCoverag
  *     `beehiiv-sync.ts`, shape `{id, title, stats: {...}}`.
  * Retorna `null` se nenhum shape reconhecido tiver um `id` string.
  */
-export function extractPostRefFromBackupFile(raw: unknown): { id: string; title?: string } | null {
+export function extractPostRefFromBackupFile(raw: unknown): { id: string; title?: string; neverSent?: boolean } | null {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
   const nested = obj.data && typeof obj.data === "object" ? (obj.data as Record<string, unknown>) : null;
@@ -164,5 +190,28 @@ export function extractPostRefFromBackupFile(raw: unknown): { id: string; title?
     (typeof obj.title === "string" && obj.title) ||
     (nested && typeof nested.title === "string" && nested.title) ||
     undefined;
-  return { id, title };
+  // `neverSent` só aparece quando VERDADEIRO — manter o shape `{id, title}`
+  // pro caso comum evita que todo consumidor precise saber do campo novo.
+  return isNeverSentPost(raw) ? { id, title, neverSent: true } : { id, title };
+}
+
+/** Motivo gravado em `error` das entries `not_applicable` — texto estável, usado em teste. */
+export const NEVER_SENT_REASON = "post nunca enviado (rascunho) — sem engajamento a drenar";
+
+/**
+ * `true` quando o arquivo de backup do post indica que ele NUNCA foi enviado
+ * — `status: "draft"` ou `publish_date` ausente/nulo. A MCP responde
+ * `Resource not found` pra esses posts (não "0 registros"), então tratá-los
+ * como pendentes deixaria a cobertura eternamente aberta. Tolera os mesmos 2
+ * shapes de `extractPostRefFromBackupFile` (`{data: {...}}` ou plano).
+ */
+export function isNeverSentPost(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const obj = raw as Record<string, unknown>;
+  const src = obj.data && typeof obj.data === "object" ? (obj.data as Record<string, unknown>) : obj;
+  if (src.status === "draft") return true;
+  // `publish_date` só é null/ausente em post não publicado; posts do cache
+  // (`beehiiv-sync.ts`) podem não trazer o campo — nesse shape, ausência não
+  // prova rascunho, então só conta quando o campo EXISTE e é nulo.
+  return "publish_date" in src && src.publish_date == null;
 }
