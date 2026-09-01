@@ -175,6 +175,35 @@ export function resolveExitCode({
   return 0;
 }
 
+/**
+ * Pura — exit code do catch de topo, PRESERVANDO um "achou vazamento" já
+ * decidido.
+ *
+ * #6983 (review independente, P1 reproduzido por execução): o catch fazia
+ * `process.exitCode = 1` incondicional e sobrescrevia o 3 que `main()` já
+ * tinha setado de propósito antes de alarmar. Rodando o script real com
+ * vazamento verdadeiro e sem credencial do Gmail — o que faz
+ * `sendGmailMessage` lançar como lançaria em produção com token expirado —
+ * saía:
+ *
+ *     janela=2026-08-31 vazado=US$1.2064 achados=1
+ *     erro: GoogleAuthError: Credenciais não encontradas...
+ *     EXIT_CODE=1        ← devia ser 3
+ *
+ * Ou seja: o vazamento aparecia no log, e o canal que o docstring deste
+ * arquivo chama de autoritativo (o exit code) colapsava "achou" em
+ * "quebrou". Um runner que só olha o código de saída — que é o ponto de ter
+ * um código dedicado — trataria o dia do vazamento como um erro qualquer.
+ *
+ * A ironia que o review nomeou, e que vale deixar escrita: `resolveExitCode`
+ * foi extraída pra tornar testável "traduzir avaliação → exit code", e esta
+ * função existe porque "o processo termina com o código que aquela disse"
+ * era um segundo passo, igualmente não testado, na mesma cadeia.
+ */
+export function resolveFatalExitCode(current: number | undefined): number {
+  return current === LEAK_FOUND_EXIT_CODE ? LEAK_FOUND_EXIT_CODE : 1;
+}
+
 async function main(): Promise<void> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
@@ -290,6 +319,6 @@ async function main(): Promise<void> {
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(`${LOG_PREFIX} erro:`, e);
-    process.exitCode = 1;
+    process.exitCode = resolveFatalExitCode(process.exitCode);
   });
 }

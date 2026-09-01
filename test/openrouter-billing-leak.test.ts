@@ -29,6 +29,7 @@ import {
   saveState,
   parseActivityRows,
   resolveExitCode,
+  resolveFatalExitCode,
   LEAK_FOUND_EXIT_CODE,
 } from "../scripts/openrouter-billing-leak-check.ts";
 
@@ -252,6 +253,25 @@ describe("resolveExitCode (#6716) — o que não foi medido nunca sai 0", () => 
   it("vazamento → 3, e continua 3 mesmo com leitura parcial", () => {
     assert.equal(resolveExitCode({ hasLeaks: true, partialRead: false, emptyWindow: false }), LEAK_FOUND_EXIT_CODE);
     assert.equal(resolveExitCode({ hasLeaks: true, partialRead: true, emptyWindow: true }), LEAK_FOUND_EXIT_CODE);
+  });
+
+  // #6983 (review independente, P1 REPRODUZIDO POR EXECUÇÃO): o catch de topo
+  // fazia `process.exitCode = 1` incondicional e apagava o 3 que `main()`
+  // tinha setado antes de alarmar. Com vazamento real + Gmail sem credencial
+  // (token expirado em produção), o script logava `achados=1 vazado=US$1.2064`
+  // e SAÍA 1 — o vazamento visível no log, invisível no canal autoritativo.
+  it("throw depois de achar vazamento PRESERVA o 3 — não colapsa em 'quebrou'", () => {
+    assert.equal(
+      resolveFatalExitCode(LEAK_FOUND_EXIT_CODE),
+      LEAK_FOUND_EXIT_CODE,
+      "Gmail/disco falhando não apaga o fato de haver gasto não pedido a olhar",
+    );
+  });
+
+  it("throw sem vazamento pendente → 1", () => {
+    assert.equal(resolveFatalExitCode(0), 1);
+    assert.equal(resolveFatalExitCode(1), 1);
+    assert.equal(resolveFatalExitCode(undefined), 1, "exitCode ainda não setado");
   });
 
   it("3 é distinto de 1 — o runner precisa separar 'achou' de 'quebrou'", () => {
