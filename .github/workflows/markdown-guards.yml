@@ -1,0 +1,55 @@
+name: Markdown guards
+
+# #6935 (Defeito 1) — job DEDICADO e leve, SEM paths-ignore, pros poucos
+# testes cujo SUJEITO é conteúdo versionado em markdown (hoje: o teto de
+# tamanho do CLAUDE.md, #5904, e as asserções de conteúdo que travam
+# CLAUDE.md contra regressão de texto documentadas em outras 3 suites).
+#
+# Por que existe: `ci.yml` (job `test`, ~7min) tem `paths-ignore:` pra
+# CLAUDE.md/**/*.md/docs/** (#6711, #5901 — economiza a suíte inteira em
+# PRs docs-only) — mas isso também pula `test/claude-md-size.test.ts`,
+# o ÚNICO guard cujo objetivo é vigiar justamente essas mudanças. Achado
+# ao vivo (#6935): a PR #6931 (só CLAUDE.md) mergeou, o guard de tamanho
+# não rodou, o arquivo estourou o teto em silêncio, e a falha só apareceu
+# 3 minutos depois na PR de CÓDIGO seguinte (#6929) — cuja diff não tinha
+# nada a ver, invertendo a atribuição de culpa (gerou o diagnóstico
+# errado da #6933).
+#
+# Este job roda INCONDICIONALMENTE (sem `paths-ignore`, sem `paths:`) —
+# de propósito: o defeito que esta issue conserta É um path filter que
+# pulou o teste errado; adicionar OUTRO path filter aqui reintroduziria a
+# mesma classe de risco. O custo de rodar sempre é desprezível — os 4
+# arquivos abaixo levam ~200ms de execução de teste (medido), a maior
+# parte do tempo do job é checkout/setup-node/npm ci, não a suíte em si.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: markdown-guards-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
+
+jobs:
+  markdown-guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      # Lista explícita, não descoberta automática (#6495 documenta por que
+      # `npm test`/`run-tests.ts` evita descoberta assíncrona do runner
+      # nativo) — cada arquivo aqui tem CLAUDE.md como SUJEITO de pelo
+      # menos 1 assert (não é "menciona CLAUDE.md incidentalmente" — ver
+      # `test/sensitive-path-guard.test.ts`, que cita CLAUDE.md só como
+      # exemplo de path e por isso NÃO entra aqui). Se um novo guard de
+      # conteúdo do CLAUDE.md nascer, adicionar à lista.
+      - run: >-
+          node --experimental-strip-types --test
+          test/claude-md-size.test.ts
+          test/diaria-develop-goal-exhaust-all-4319.test.ts
+          test/diaria-overnight-rescan-sem-cap-5272.test.ts
+          test/overnight-paralelo-contrato.test.ts
