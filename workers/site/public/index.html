@@ -453,8 +453,8 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
   // absoluta-por-path) — sem isto, a atribuição morreria aqui mesmo com a
   // página /assinar (workers/site/public/assinar/) pronta pra recebê-la.
   // #6976: os 2 pills de masthead/footer deixaram de ser anchors (viraram
-  // <form>, ver wireSignupForm abaixo) — este bloco agora só toca o CTA do
-  // nav, que continua um link simples pra /assinar.
+  // <form>, ver signupFormScript() logo abaixo) — este bloco agora só toca
+  // o CTA do nav, que continua um link simples pra /assinar.
   (function () {
     if (!window.location.search) return;
     var ctas = document.querySelectorAll('a[href="/assinar"]');
@@ -462,14 +462,8 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
       ctas[i].setAttribute("href", "/assinar" + window.location.search);
     }
   })();
-
-  // #6976: resolve a inscrição no próprio hero (masthead + footer) — mesmo
-  // mecanismo de workers/site/public/assinar/index.html (POST JSON pra
-  // https://eia.diar.ia.br/jogar/subscribe, progressive enhancement, status
-  // inline), mas fatorado numa função que recebe o FORM como argumento e é
-  // chamada 1x por instância — nunca getElementById fixo — pra os 2 forms
-  // da mesma página (ids distintos: masthead-form / footer-form) não
-  // colidirem entre si.
+  </script>
+<script>
   (function () {
     function wireSignupForm(form) {
       if (!form) return;
@@ -522,13 +516,26 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
           form.submit();
           return;
         }
+        // #6979 achado 1: aborta o fetch depois de SIGNUP_FORM_FETCH_TIMEOUT_MS
+        // e cai no MESMO .catch() de erro de rede abaixo (mesma mensagem,
+        // botão reabilitado) — nunca deixa "Enviando…" pendurado pra sempre.
+        var timeoutId = null;
+        var controller = typeof window.AbortController === "function" ? new window.AbortController() : null;
+        if (controller) {
+          timeoutId = setTimeout(function () {
+            controller.abort();
+          }, 12000);
+        }
+        var fetchOpts = {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        };
+        if (controller) fetchOpts.signal = controller.signal;
         window
-          .fetch(form.getAttribute("action"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          })
+          .fetch(form.getAttribute("action"), fetchOpts)
           .then(function (res) {
+            if (timeoutId) clearTimeout(timeoutId);
             return res.json().then(
               function (d) {
                 return { status: res.status, body: d };
@@ -542,7 +549,13 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
             if (r.status === 200 && r.body && r.body.ok) {
               form.reset();
               setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
-              if (btn) btn.disabled = true;
+              // #6979 achado 4: mesmo tratamento de sucesso de /assinar —
+              // desabilita E esconde os campos, não só o botão.
+              var fields = form.querySelectorAll("input, button");
+              for (var i = 0; i < fields.length; i++) {
+                fields[i].disabled = true;
+                fields[i].style.display = "none";
+              }
             } else if (r.status === 429) {
               setStatus("Muitas tentativas. Tente de novo mais tarde.", false);
               if (btn) btn.disabled = false;
@@ -555,6 +568,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
             }
           })
           .catch(function () {
+            if (timeoutId) clearTimeout(timeoutId);
             setStatus("Erro de conexão. Tente de novo.", false);
             if (btn) btn.disabled = false;
           });

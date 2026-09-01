@@ -202,6 +202,14 @@ const FAQS: Array<{ q: string; a: string }> = [
  * (que continua pixel a pixel igual ao design existente — só input + botão)
  * pra não alterar sua geometria; entra como uma linha compacta abaixo dela,
  * antes do `.signup-reassure` que já existia.
+ *
+ * O campo `website` (honeypot, escondido em `.hp`) some no servidor, não
+ * aqui: se vier preenchido, `validateSubscribeInput` (`workers/poll/src/
+ * subscribe.ts`) responde 200 fake-success SEM assinar ninguém — pra não
+ * sinalizar ao bot que foi pego. O widget não distingue esse caso do
+ * sucesso real: quem preenche o honeypot vê a MESMA mensagem "Pronto!
+ * Confira seu e-mail…" de uma inscrição de verdade (#6979, achado 3 do
+ * review da PR #6976).
  */
 function renderSignupForm(opts: { id: string; onDark?: boolean }): string {
   const dark = opts.onDark ?? false;
@@ -263,6 +271,164 @@ function renderTopicLinks(): string {
     (hub) =>
       `        <a href="https://arquivo.diar.ia.br/temas/${escHtml(hub.slug)}">${escHtml(hub.label)}</a>`,
   ).join("\n");
+}
+
+/**
+ * Timeout do fetch de inscrição no hero/rodapé da home (#6979, achado 1 do
+ * review da PR #6976). Sem `AbortController`+timeout, uma promise que nunca
+ * resolve (DNS travado, proxy/firewall engolindo o POST cross-origin pra
+ * `eia.diar.ia.br`, Worker pendurado) deixa o botão desabilitado e
+ * "Enviando…" pra sempre — sem erro visível, sem caminho de retry a não ser
+ * recarregar a página, e o visitante acha que assinou.
+ *
+ * 12s (dentro da faixa 10–15s pedida no review): dá margem sobre o pior caso
+ * conhecido do lado SERVIDOR — `SUBSCRIBE_FETCH_TIMEOUT_MS` (8s,
+ * `workers/poll/src/subscribe.ts`) é o timeout do próprio Worker pro fetch
+ * upstream Beehiiv/Kit — mais o overhead de parse/rate-limit (KV) antes
+ * disso, sem deixar o visitante esperando 15s+ numa falha de rede real que
+ * já devia ter caído no `.catch()`.
+ */
+export const SIGNUP_FORM_FETCH_TIMEOUT_MS = 12_000;
+
+/**
+ * Script (IIFE) que resolve a inscrição no próprio hero (masthead + rodapé,
+ * #6976) — fatorado numa função exportada e testável (#6979, achado 2 do
+ * review da PR #6976: até aqui só havia asserção de MARKUP sobre o HTML
+ * gerado, nada exercitava a lógica de submit). Mesma técnica de
+ * `identityFormScript` em `workers/poll/src/jogar.ts` (ver
+ * `test/poll-jogar-identify-native-submit-4031.test.ts`): o teste extrai o
+ * corpo JS de dentro de `<script>…</script>` e roda via
+ * `new Function("window", "document", body)` sobre um DOM mínimo.
+ *
+ * `wireSignupForm` nunca usa `getElementById` fixo, sempre recebe o `<form>`
+ * como argumento — as 2 instâncias na mesma página (masthead × footer, ids
+ * distintos) se comportam de forma independente.
+ *
+ * Estado de sucesso alinhado com `workers/site/public/assinar/index.html`
+ * (#6979, achado 4): desabilita E ESCONDE todos os campos, não só o botão —
+ * sem isso, o `input`/checkbox continuavam visíveis, habilitados e (por
+ * causa do `form.reset()`) em branco de novo, logo ao lado da mensagem de
+ * sucesso — inconsistência evitável entre as 2 instâncias do mesmo
+ * mecanismo. Decisão: reusar o padrão já existente em vez de documentar a
+ * divergência.
+ */
+export function signupFormScript(): string {
+  return `<script>
+  (function () {
+    function wireSignupForm(form) {
+      if (!form) return;
+      var qs = new URLSearchParams(window.location.search);
+      ["utm_source", "utm_medium", "utm_campaign"].forEach(function (key) {
+        var el = form.querySelector('input[name="' + key + '"]');
+        var v = qs.get(key);
+        if (el && v) el.value = v;
+      });
+
+      var status = form.querySelector(".signup-status");
+      function setStatus(msg, ok) {
+        if (!status) return;
+        status.style.display = "block";
+        status.textContent = msg;
+        status.className = "signup-status" + (ok ? " ok" : " err");
+      }
+      function val(sel) {
+        var el = form.querySelector(sel);
+        return el ? el.value : "";
+      }
+      form.addEventListener("submit", function (ev) {
+        ev.preventDefault();
+        var optin = form.querySelector('input[name="optin"]');
+        if (!optin || !optin.checked) {
+          setStatus("Marque a caixinha de consentimento pra assinar.", false);
+          return;
+        }
+        var email = (val('input[name="email"]') || "").trim();
+        if (!email || email.indexOf("@") < 0) {
+          setStatus("Digite um e-mail válido.", false);
+          return;
+        }
+        var btn = form.querySelector('button[type="submit"]');
+        if (btn) btn.disabled = true;
+        setStatus("Enviando…", true);
+        var payload = {
+          email: email,
+          optin: true,
+          website: val('input[name="website"]') || "",
+          source: "apex",
+          utm_source: val('input[name="utm_source"]'),
+          utm_medium: val('input[name="utm_medium"]'),
+          utm_campaign: val('input[name="utm_campaign"]'),
+        };
+        if (typeof window.fetch !== "function") {
+          // Sem fetch: deixa o form nativo submeter normalmente
+          // (progressive enhancement) — ev.preventDefault() já foi chamado,
+          // então reenvia.
+          form.submit();
+          return;
+        }
+        // #6979 achado 1: aborta o fetch depois de SIGNUP_FORM_FETCH_TIMEOUT_MS
+        // e cai no MESMO .catch() de erro de rede abaixo (mesma mensagem,
+        // botão reabilitado) — nunca deixa "Enviando…" pendurado pra sempre.
+        var timeoutId = null;
+        var controller = typeof window.AbortController === "function" ? new window.AbortController() : null;
+        if (controller) {
+          timeoutId = setTimeout(function () {
+            controller.abort();
+          }, ${SIGNUP_FORM_FETCH_TIMEOUT_MS});
+        }
+        var fetchOpts = {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        };
+        if (controller) fetchOpts.signal = controller.signal;
+        window
+          .fetch(form.getAttribute("action"), fetchOpts)
+          .then(function (res) {
+            if (timeoutId) clearTimeout(timeoutId);
+            return res.json().then(
+              function (d) {
+                return { status: res.status, body: d };
+              },
+              function () {
+                return { status: res.status, body: null };
+              },
+            );
+          })
+          .then(function (r) {
+            if (r.status === 200 && r.body && r.body.ok) {
+              form.reset();
+              setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
+              // #6979 achado 4: mesmo tratamento de sucesso de /assinar —
+              // desabilita E esconde os campos, não só o botão.
+              var fields = form.querySelectorAll("input, button");
+              for (var i = 0; i < fields.length; i++) {
+                fields[i].disabled = true;
+                fields[i].style.display = "none";
+              }
+            } else if (r.status === 429) {
+              setStatus("Muitas tentativas. Tente de novo mais tarde.", false);
+              if (btn) btn.disabled = false;
+            } else if (r.status === 503) {
+              setStatus("Cadastro indisponível agora. Tente de novo em instantes.", false);
+              if (btn) btn.disabled = false;
+            } else {
+              setStatus("Não deu pra assinar agora. Confira o e-mail e tente de novo.", false);
+              if (btn) btn.disabled = false;
+            }
+          })
+          .catch(function () {
+            if (timeoutId) clearTimeout(timeoutId);
+            setStatus("Erro de conexão. Tente de novo.", false);
+            if (btn) btn.disabled = false;
+          });
+      });
+    }
+
+    var forms = document.querySelectorAll("form.signup");
+    for (var i = 0; i < forms.length; i++) wireSignupForm(forms[i]);
+  })();
+  </script>`;
 }
 
 export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
@@ -620,8 +786,8 @@ ${faqItems}
   // absoluta-por-path) — sem isto, a atribuição morreria aqui mesmo com a
   // página /assinar (workers/site/public/assinar/) pronta pra recebê-la.
   // #6976: os 2 pills de masthead/footer deixaram de ser anchors (viraram
-  // <form>, ver wireSignupForm abaixo) — este bloco agora só toca o CTA do
-  // nav, que continua um link simples pra /assinar.
+  // <form>, ver signupFormScript() logo abaixo) — este bloco agora só toca
+  // o CTA do nav, que continua um link simples pra /assinar.
   (function () {
     if (!window.location.search) return;
     var ctas = document.querySelectorAll('a[href="/assinar"]');
@@ -629,109 +795,8 @@ ${faqItems}
       ctas[i].setAttribute("href", "/assinar" + window.location.search);
     }
   })();
-
-  // #6976: resolve a inscrição no próprio hero (masthead + footer) — mesmo
-  // mecanismo de workers/site/public/assinar/index.html (POST JSON pra
-  // https://eia.diar.ia.br/jogar/subscribe, progressive enhancement, status
-  // inline), mas fatorado numa função que recebe o FORM como argumento e é
-  // chamada 1x por instância — nunca getElementById fixo — pra os 2 forms
-  // da mesma página (ids distintos: masthead-form / footer-form) não
-  // colidirem entre si.
-  (function () {
-    function wireSignupForm(form) {
-      if (!form) return;
-      var qs = new URLSearchParams(window.location.search);
-      ["utm_source", "utm_medium", "utm_campaign"].forEach(function (key) {
-        var el = form.querySelector('input[name="' + key + '"]');
-        var v = qs.get(key);
-        if (el && v) el.value = v;
-      });
-
-      var status = form.querySelector(".signup-status");
-      function setStatus(msg, ok) {
-        if (!status) return;
-        status.style.display = "block";
-        status.textContent = msg;
-        status.className = "signup-status" + (ok ? " ok" : " err");
-      }
-      function val(sel) {
-        var el = form.querySelector(sel);
-        return el ? el.value : "";
-      }
-      form.addEventListener("submit", function (ev) {
-        ev.preventDefault();
-        var optin = form.querySelector('input[name="optin"]');
-        if (!optin || !optin.checked) {
-          setStatus("Marque a caixinha de consentimento pra assinar.", false);
-          return;
-        }
-        var email = (val('input[name="email"]') || "").trim();
-        if (!email || email.indexOf("@") < 0) {
-          setStatus("Digite um e-mail válido.", false);
-          return;
-        }
-        var btn = form.querySelector('button[type="submit"]');
-        if (btn) btn.disabled = true;
-        setStatus("Enviando…", true);
-        var payload = {
-          email: email,
-          optin: true,
-          website: val('input[name="website"]') || "",
-          source: "apex",
-          utm_source: val('input[name="utm_source"]'),
-          utm_medium: val('input[name="utm_medium"]'),
-          utm_campaign: val('input[name="utm_campaign"]'),
-        };
-        if (typeof window.fetch !== "function") {
-          // Sem fetch: deixa o form nativo submeter normalmente
-          // (progressive enhancement) — ev.preventDefault() já foi chamado,
-          // então reenvia.
-          form.submit();
-          return;
-        }
-        window
-          .fetch(form.getAttribute("action"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          })
-          .then(function (res) {
-            return res.json().then(
-              function (d) {
-                return { status: res.status, body: d };
-              },
-              function () {
-                return { status: res.status, body: null };
-              },
-            );
-          })
-          .then(function (r) {
-            if (r.status === 200 && r.body && r.body.ok) {
-              form.reset();
-              setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
-              if (btn) btn.disabled = true;
-            } else if (r.status === 429) {
-              setStatus("Muitas tentativas. Tente de novo mais tarde.", false);
-              if (btn) btn.disabled = false;
-            } else if (r.status === 503) {
-              setStatus("Cadastro indisponível agora. Tente de novo em instantes.", false);
-              if (btn) btn.disabled = false;
-            } else {
-              setStatus("Não deu pra assinar agora. Confira o e-mail e tente de novo.", false);
-              if (btn) btn.disabled = false;
-            }
-          })
-          .catch(function () {
-            setStatus("Erro de conexão. Tente de novo.", false);
-            if (btn) btn.disabled = false;
-          });
-      });
-    }
-
-    var forms = document.querySelectorAll("form.signup");
-    for (var i = 0; i < forms.length; i++) wireSignupForm(forms[i]);
-  })();
   </script>
+${signupFormScript()}
 </body>
 </html>
 `;
