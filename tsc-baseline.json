@@ -86,6 +86,7 @@
   "test/compare-cohorts.test.ts::TS2578": 1,
   "test/compress-jpeg.test.ts::TS2769": 1,
   "test/continuo-infra-consumidor-externo.test.ts::TS7016": 2,
+  "test/continuo-merge-gate-threshold-sync.test.ts::TS7016": 1,
   "test/control-edition-compare.test.ts::TS2345": 2,
   "test/crop-resize.test.ts::TS2769": 1,
   "test/curadoria-sitemap-robots.test.ts::TS2322": 1,

@@ -26,6 +26,8 @@ import assert from "node:assert/strict";
 import {
   classifyReviewComment,
   evaluatePrReviewAuthenticity,
+  extractIndependentReviewVerdict,
+  extractIndependentReviewHeadSha,
   isPrReviewAuthenticityGreen,
   SELF_REVIEW_MARKER,
   type PrCommentNode,
@@ -240,5 +242,101 @@ describe("evaluatePrReviewAuthenticity — regressão #6732: self-review nunca v
       comment("c2", "Obrigado pela PR."),
     ]);
     assert.equal(result.verdict, "no_review");
+  });
+});
+
+// #6926: marcador ganha campo opcional verdict=approve|reject — o gate de
+// merge de continuo-pr-review.sh lê ESTE veredito estruturado, não prosa.
+describe("extractIndependentReviewVerdict (#6926)", () => {
+  it("marcador com verdict=approve -> 'approve'", () => {
+    const body = "Review automatizado: sem findings.\n<!-- continuo-review: run=x at=2026-09-01T02:00:00Z verdict=approve -->";
+    assert.equal(extractIndependentReviewVerdict([comment("c1", body)]), "approve");
+  });
+
+  it("marcador com verdict=reject -> 'reject'", () => {
+    const body = "Achei um bug P1.\n<!-- continuo-review: run=x at=2026-09-01T02:00:00Z verdict=reject -->";
+    assert.equal(extractIndependentReviewVerdict([comment("c1", body)]), "reject");
+  });
+
+  it("marcador SEM campo verdict= (formato legado pré-#6926) -> null, nunca aprovação implícita", () => {
+    assert.equal(extractIndependentReviewVerdict([comment("c1", `x\n${MARKER}`)]), null);
+  });
+
+  it("nenhum comentário de review -> null", () => {
+    assert.equal(extractIndependentReviewVerdict([comment("c1", "conversa normal")]), null);
+  });
+
+  it("comments não é array -> null, nunca lança", () => {
+    assert.equal(extractIndependentReviewVerdict(undefined), null);
+    assert.equal(extractIndependentReviewVerdict(null), null);
+  });
+
+  it("self-review mais recente que review independente anterior -> null (sinal vigente é o self-review)", () => {
+    const result = extractIndependentReviewVerdict([
+      comment("c1", `x\n<!-- continuo-review: run=x at=2026-09-01T02:00:00Z verdict=approve -->`),
+      comment("c2", SELF_REVIEW_MARKER),
+    ]);
+    assert.equal(result, null);
+  });
+
+  it("valor inválido em verdict= (não approve/reject) não casa o grupo opcional -> trata como marcador sem campo, null", () => {
+    const body = "<!-- continuo-review: run=x at=2026-09-01T02:00:00Z verdict=talvez -->";
+    // O grupo opcional só casa "approve"/"reject" — "talvez" faz o `(?:...)?`
+    // inteiro falhar em casar, então cai no formato SEM o campo (linha ainda
+    // bate o resto do marcador só se o sufixo bater exatamente " -->").
+    // Aqui o marcador não casa `INDEPENDENT_REVIEW_MARKER_RE` de jeito
+    // nenhum (sufixo "verdict=talvez -->" não é nem o formato com campo
+    // válido nem o formato sem campo) — evaluatePrReviewAuthenticity trataria
+    // isso como comentário comum ("other"), então o resultado aqui é null
+    // pela ausência de qualquer marcador reconhecido, não por rejeição
+    // explícita do campo.
+    assert.equal(extractIndependentReviewVerdict([comment("c1", body)]), null);
+  });
+});
+
+// #6926 (P0/P1 do review da PR #6932): `head=<sha>` fecha a corrida do
+// #5716 — o chamador NUNCA deve fabricar reviewedHeadSha a partir do HEAD
+// atual; tem que vir do marcador que a revisão de fato cobriu.
+describe("extractIndependentReviewHeadSha (#6926)", () => {
+  it("marcador com head=<sha> -> extrai o sha", () => {
+    const body = "<!-- continuo-review: run=x at=2026-09-01T02:00:00Z verdict=approve head=abc123 -->";
+    assert.equal(extractIndependentReviewHeadSha([comment("c1", body)]), "abc123");
+  });
+
+  it("marcador SEM campo head= (formato legado pré-#6926) -> null, nunca assume HEAD atual", () => {
+    assert.equal(extractIndependentReviewHeadSha([comment("c1", `x\n${MARKER}`)]), null);
+  });
+
+  it("marcador com verdict= mas sem head= -> verdict extraído normalmente, head null (campos independentes)", () => {
+    const body = "<!-- continuo-review: run=x at=2026-09-01T02:00:00Z verdict=approve -->";
+    const c = [comment("c1", body)];
+    assert.equal(extractIndependentReviewVerdict(c), "approve");
+    assert.equal(extractIndependentReviewHeadSha(c), null);
+  });
+
+  it("nenhum comentário de review -> null", () => {
+    assert.equal(extractIndependentReviewHeadSha([comment("c1", "conversa normal")]), null);
+  });
+
+  it("comments não é array -> null, nunca lança", () => {
+    assert.equal(extractIndependentReviewHeadSha(undefined), null);
+    assert.equal(extractIndependentReviewHeadSha(null), null);
+  });
+
+  it("self-review mais recente que review independente anterior -> null (sinal vigente é o self-review)", () => {
+    const result = extractIndependentReviewHeadSha([
+      comment("c1", `x\n<!-- continuo-review: run=x at=2026-09-01T02:00:00Z verdict=approve head=abc123 -->`),
+      comment("c2", SELF_REVIEW_MARKER),
+    ]);
+    assert.equal(result, null);
+  });
+
+  it("verdict e head do MESMO comentário mais recente, mesmo com comentário de review mais antigo diferente antes", () => {
+    const c = [
+      comment("c1", "<!-- continuo-review: run=old at=2026-08-31T00:00:00Z verdict=reject head=old-sha -->"),
+      comment("c2", "<!-- continuo-review: run=new at=2026-09-01T02:00:00Z verdict=approve head=new-sha -->"),
+    ];
+    assert.equal(extractIndependentReviewVerdict(c), "approve");
+    assert.equal(extractIndependentReviewHeadSha(c), "new-sha");
   });
 });

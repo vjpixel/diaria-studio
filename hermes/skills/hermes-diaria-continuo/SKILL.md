@@ -268,11 +268,28 @@ ordem:
    `/diaria-overnight` (server, desassistido), não a uma sessão interativa
    (#5751, "sessão interativa não faz o que o helios faria sozinho"). Na
    prática, um PR self-reviewed do contínuo fica aberto até a próxima rodada
-   `/diaria-overnight` rodar a Fase 0 — não mais indefinidamente, mas também
-   não instantâneo; nem `opus-daily-diff-review.sh` (ex-`daily-consolidated-
-   review.sh`) nem `continuo-pr-review.sh` (#6865) fecham esse loop —
-   ambos só geram achados/comentários de review, NUNCA mergeiam PR aberta;
-   o pickup acima continua sendo o único ponto de merge.
+   `/diaria-overnight` rodar a Fase 0, OU até o próximo tick de
+   `continuo-pr-review.sh` (a cada 120min) revisar e mergear sozinho — ver
+   próximo parágrafo. `opus-daily-diff-review.sh` (ex-`daily-consolidated-
+   review.sh`) continua só gerando achados/comentários, nunca mergeando.
+
+   **`continuo-pr-review.sh` ganhou autoridade de merge própria desde o
+   #6926 (01/09/2026) — o pickup acima deixou de ser o único ponto de
+   merge, virou FALLBACK.** Motivo: o pickup só roda quando o editor inicia
+   uma rodada `/diaria-overnight` manualmente (sem agendador) — uma PR
+   pronta (review independente + CI verde) podia ficar parada indefinidamente
+   (medido ao vivo: PR #6901, 10h29 parada). `continuo-pr-review.sh`
+   continua NUNCA dando a ferramenta `gh pr merge` ao MODELO da sessão de
+   review (`--allowedTools` travado, `test/continuo-pr-review-never-
+   merges.test.ts`) — quem mergeia é o SCRIPT BASH, depois que a sessão já
+   saiu, atrás de 5 portões fail-closed em `scripts/check-continuo-merge-
+   gate.ts` (superseded, veredito `approve`/`reject` gravado no marcador
+   de review, HEAD não mudou desde o início da revisão — corrida do #5716,
+   caminho não-sensível, CI verde + mergeable, diff dentro do limiar de
+   effort de `pr-create-review.mjs`). Dois casos ainda escalam pro pickup
+   (fallback, não mais caminho único): caminho sensível, e diff ≥ limiar —
+   a revisão desta sessão é rasa por design, só decide sobre o que
+   consegue julgar.
 
 ### 4. Implementar issues elegíveis — via harness delegado
 
@@ -519,6 +536,21 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Changelog
 
+- 0.5.13 (01/09/2026): #6926 — `continuo-pr-review.sh` ganha autoridade de
+  merge própria; o pickup do `/diaria-overnight` (§3 acima, #6823) deixa
+  de ser o único ponto de merge, vira FALLBACK (caminho sensível, diff ≥
+  limiar). Motivo: pickup só roda quando o editor inicia rodada manual —
+  PR pronta podia ficar parada indefinidamente (PR #6901, 10h29). O
+  MODELO da sessão de review continua sem `gh pr merge` (`--allowedTools`
+  intocado, #6864/#6865 seguem valendo) — quem mergeia é o script bash,
+  atrás de 5 portões fail-closed (`scripts/check-continuo-merge-gate.ts`):
+  superseded, veredito `approve`/`reject` no marcador de review, HEAD
+  inalterado desde o início da revisão (corrida do #5716), caminho
+  não-sensível, CI verde + mergeable, diff dentro do limiar de effort de
+  `pr-create-review.mjs`. Corrige junto (#6928): a cadência real do job é
+  `every 120m`, não `every 240m`/"~4h" como as entradas anteriores deste
+  changelog registravam — não citar número de cadência sem checar
+  `hermes cron list --all` (CLAUDE.md).
 - 0.5.12 (01/09/2026): #6917 — "PR aberta NUNCA encerra o tick" ganha
   estatuto de afirmação própria, em negrito, separada do bloco de
   proibição de merge (§3). Achado ao vivo: um tick com 36 issues
