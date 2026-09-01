@@ -18,22 +18,31 @@ duro ≥2%, bounce total ≥5%, spam ≥0,1%, unsub ≥3%
 (`scripts/lib/brevo-diaria-guardrail.ts`, reusa `evaluateArmGuardrails`/
 `thresholds.ts` sem reimplementar limiar).
 
-**Abertura furada sozinha NUNCA pausa** (decisão explícita da issue: cohort
-fria de 7+ meses, "não é fracasso, é informação") — só bounce/spam/unsub
-pausam.
+**#6793 "Faixa B" item 1 (01/09/2026, decisão do editor): o freio automático
+foi REMOVIDO.** `shouldPauseRollout` sempre retorna `false` — bounce/spam/
+unsub cruzando o limiar não pausa mais nada sozinho. Este script continua
+avaliando/logando os breaches normalmente (`nonOpenBreach` no log — nada
+ficou cego), só não age mais.
 
-## Efeito da pausa
+**Histórico (até 01/09/2026): abertura furada sozinha NUNCA pausava**
+(decisão explícita da issue #4476: cohort fria de 7+ meses, "não é fracasso,
+é informação") — só bounce/spam/unsub pausavam.
+
+## Efeito da pausa (mecanismo preservado, só não é mais disparado automaticamente)
 
 `sync-pending-to-brevo.ts` lê o latch persistido
-(`data/brevo-diaria/guardrail-state.json`) e zera o backfill (nenhum contato
-novo ingerido) enquanto pausado, mesmo com slots livres na fila top-300
-(item 5).
+(`data/brevo-diaria/guardrail-state.json`) e zeraria o backfill (nenhum
+contato novo ingerido) enquanto pausado, mesmo com slots livres na fila
+(que também não tem mais teto, #6793 item 6) — SE o estado estiver
+`rollout_paused: true`, o que só acontece hoje por estado legado ou
+manual, nunca mais automaticamente.
 
 ## Latch, não breaker automático
 
-Uma vez pausado, **não despausa sozinho** numa checagem seguinte saudável —
-só `npx tsx scripts/check-brevo-diaria-guardrail.ts --unpause` (ação
-explícita do editor) limpa.
+A MÁQUINA DE ESTADO continua igual: uma vez pausado (por qualquer motivo),
+**não despausa sozinho** numa checagem seguinte saudável — só
+`npx tsx scripts/check-brevo-diaria-guardrail.ts --unpause` (ação explícita
+do editor) limpa. O que mudou é só que nada entra nesse estado sozinho.
 
 Alarme por e-mail (Gmail) na 1ª pausa é best-effort — falha no envio nunca
 reverte o estado já persistido.
