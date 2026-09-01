@@ -196,23 +196,31 @@ function isOwnPromoLink(url: string): boolean {
 // Puramente textual sobre o `02-reviewed.md` já lido — não depende de
 // `data/snippets/` existir neste processo (o conteúdo do box já foi
 // materializado no markdown pelo stitch antes deste script rodar).
-function extractBoxUrls(md: string): Set<string> {
-  const urls = new Set<string>();
+// Review PR #7004, finding 1: um Set<string> de baseUrl (versão anterior)
+// exclui pela URL em si, em QUALQUER lugar do documento — inclusive se a
+// MESMA baseUrl também for a URL de um destaque real (`current === "destaque"`
+// na hora do parse), apagando o destaque em silêncio. Aqui rastreamos as
+// LINHAS que pertencem ao texto literal de um box (via posição no `md`,
+// mesmo split `/\r?\n/` de `parseEdition`) — só a ocorrência que está
+// FISICAMENTE dentro do box é excluída; a mesma URL usada como headline de um
+// destaque, em outro ponto do documento, nunca é tocada por este mecanismo.
+function extractBoxLineRanges(md: string): Set<number> {
   const boxTexts = [
     extractBoxDivulgacao0(md),
     extractBoxDivulgacao1(md),
     extractBoxDivulgacao2(md),
     extractBoxDivulgacao3(md),
   ];
+  const boxLines = new Set<number>();
   for (const boxText of boxTexts) {
     if (!boxText) continue;
-    const re = new RegExp(LINK_RE.source, "g");
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(boxText)) !== null) {
-      urls.add(baseUrl(m[2].trim()));
-    }
+    const idx = md.indexOf(boxText);
+    if (idx === -1) continue;
+    const startLine = md.slice(0, idx).split(/\r?\n/).length - 1;
+    const lineCount = boxText.split(/\r?\n/).length;
+    for (let i = startLine; i < startLine + lineCount; i++) boxLines.add(i);
   }
-  return urls;
+  return boxLines;
 }
 
 export function parseEdition(edition: string, md: string): LinkItem[] {
@@ -220,8 +228,10 @@ export function parseEdition(edition: string, md: string): LinkItem[] {
   const items: LinkItem[] = [];
   let current: Section = "outro";
   // #6867: links dentro de um box de divulgação/CTA (qualquer slot 0-3) nunca
-  // são notícia, independente do host — ver `extractBoxUrls`.
-  const boxUrls = extractBoxUrls(md);
+  // são notícia, independente do host — ver `extractBoxLineRanges`. Excluímos
+  // por LINHA (não por URL global) para não apagar um destaque real que
+  // coincida em baseUrl com o conteúdo de um box (finding 1, PR #7004).
+  const boxLines = extractBoxLineRanges(md);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -262,8 +272,11 @@ export function parseEdition(edition: string, md: string): LinkItem[] {
     if (isOwnPromoLink(firstLinkOnLine.url)) continue;
     // #6867: filtra qualquer link que vive DENTRO de um box de divulgação/CTA
     // (host variável — evento de terceiro, votação comunitária, etc.), achado
-    // ao vivo no ciclo 2608-09 quando conteúdo de box vazou pro Radar.
-    if (boxUrls.has(baseUrl(firstLinkOnLine.url))) continue;
+    // ao vivo no ciclo 2608-09 quando conteúdo de box vazou pro Radar. Checa
+    // a LINHA (não a URL global — review PR #7004, finding 1): só a
+    // ocorrência fisicamente dentro do box é excluída, então um destaque real
+    // cuja URL coincida com a de um box em outro ponto da edição sobrevive.
+    if (boxLines.has(i)) continue;
 
     let title = firstLinkOnLine.title;
     if (!title) {

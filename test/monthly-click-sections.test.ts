@@ -345,6 +345,60 @@ describe("parseEdition", () => {
     assert.equal(it7[0].baseUrl, "https://news.com/v");
   });
 
+  // Review PR #7004, finding 1: a exclusão por box-URL não pode varrer um
+  // destaque REAL só porque a mesma baseUrl também aparece dentro de um box
+  // de divulgação/CTA da mesma edição — a exclusão existe pra impedir que o
+  // conteúdo do BOX compita como notícia, não pra apagar o destaque.
+  it("#7004 finding 1: mesma URL como destaque E dentro de um box — o destaque sobrevive, a ocorrência de box não entra no pool", () => {
+    const md8 = [
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "[**Foo lança bar**](https://foo.com/bar)",
+      "",
+      "corpo do destaque",
+      "",
+      "Por que isso importa:",
+      "",
+      "porque sim",
+      "",
+      "---",
+      "",
+      "**🗳️ Vote no tema do mês**",
+      "",
+      "Ajude a escolher o próximo painel.",
+      "",
+      "[Vote aqui](https://foo.com/bar)",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | 🤖 NOTÍCIA**",
+      "",
+      "[**Bar lança baz**](https://bar.com/baz)",
+      "",
+      "corpo do destaque",
+      "",
+      "Por que isso importa:",
+      "",
+      "porque sim",
+      "",
+      "---",
+      "",
+      "**📰 OUTRAS NOTÍCIAS**",
+      "",
+      "[**Notícia real**](https://news.com/w)",
+      "desc",
+      "",
+    ].join("\n");
+    const it8 = parseEdition("260608", md8);
+    const foos = it8.filter((i) => i.baseUrl === "https://foo.com/bar");
+    // Exatamente 1 ocorrência sobrevive: a do destaque real, não a do box
+    // (mesma baseUrl, linha diferente) — o box some, o destaque não.
+    assert.equal(foos.length, 1);
+    assert.equal(foos[0].section, "destaque");
+    const urls8 = it8.map((i) => i.baseUrl).sort();
+    assert.deepEqual(urls8, ["https://bar.com/baz", "https://foo.com/bar", "https://news.com/w"]);
+  });
+
   it("carrega a edição em cada item", () => {
     assert.ok(items.every((i) => i.edition === "260601"));
   });

@@ -185,10 +185,13 @@ export function checkFooterLabels(draft: string): FooterLabelsCheckResult {
   const missing = FOOTER_LABELS.filter((label) => {
     // Rótulo na sua própria linha, seguido (linha seguinte, sem linha em
     // branco entre os dois — mesma exigência do template/render) por uma
-    // linha de lista `- [...]`. `[ \t]*` (não `\s*`) antes do `\n` — `\s`
+    // linha de lista `- [...]`. `[ \t]*` (não `\s*`) antes de CADA `\n` — `\s`
     // casaria newline também, absorvendo silenciosamente uma linha em
-    // branco entre rótulo e lista, que é justo o caso que precisa falhar.
-    const re = new RegExp(`^${escapeRegex(label)}[ \\t]*\\r?\\n-\\s*\\[`, "m");
+    // branco entre rótulo e lista (ou antes do `[` da lista), que é justo o
+    // caso que precisa falhar. Mesmo cuidado nos 2 lados (review PR #7004,
+    // finding 3): o lado do rótulo já usava `[ \t]*`, o lado da lista usava
+    // `\s*` por inconsistência.
+    const re = new RegExp(`^${escapeRegex(label)}[ \\t]*\\r?\\n-[ \\t]*\\[`, "m");
     return !re.test(encerrar);
   });
   return { ok: missing.length === 0, missing };
