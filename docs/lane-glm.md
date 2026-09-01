@@ -47,6 +47,13 @@ nenhum discriminador textual separava review legítimo de review fabricado.
 O lane abre PR em branch `continuo/*`; quem julga é `continuo-pr-review.sh`
 (Sonnet, assinatura claude.ai) mais os portões determinísticos do #6926.
 
+**#6926 ainda estava ABERTA quando esta exceção foi escrita**, e ela é
+pré-requisito do piloto — não decoração. Enquanto não entrar, o único merger
+de PR `continuo/*` é o pickup manual do `/diaria-overnight`, que roda quando o
+editor o inicia. Sem merger automático, as PRs do lane empilham exatamente
+como a #6901 empilhou por 10h29, e o lane barato vira uma fila que só o editor
+drena. **O piloto não começa antes da #6926 mergear.**
+
 ### (c) `--model` explícito, sempre
 
 A invocação passa **`--model z-ai/glm-5.3-flash`**. Não é detalhe: sem
