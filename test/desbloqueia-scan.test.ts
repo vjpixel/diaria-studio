@@ -228,6 +228,27 @@ describe("classifyDesbloqueioCandidate", () => {
     assert.equal(result?.status, "bloqueio-confirmado");
   });
 
+  it("decided_at === recorded_at (empate exato) → decisão vence, ja-destravada (#7013 self-review)", () => {
+    const tie = "2026-08-20T00:00:00Z";
+    const decision = formatDecisionMarker({
+      decided_at: tie,
+      pergunta: "?",
+      resposta: "resolvido no empate",
+      sessao: "develop",
+    });
+    const block = formatExecutionBlockMarker({
+      recorded_at: tie,
+      motivo: "bloqueio registrado no mesmo instante",
+      sessao: "overnight",
+    });
+    const input = baseInput({
+      updatedAt: "2026-08-01T00:00:00Z",
+      comments: [block, decision],
+    });
+    const result = classifyDesbloqueioCandidate(input);
+    assert.equal(result?.status, "ja-destravada");
+  });
+
   it("commentsFetchError força erro-leitura, NUNCA precisa-pergunta, mesmo com comments vazio (#6632)", () => {
     const input = baseInput({ comments: [], commentsFetchError: "gh issue view #1234 falhou (status 1)" });
     const result = classifyDesbloqueioCandidate(input);
