@@ -981,7 +981,7 @@ Exemplo: sessão já esgotou o grupo 3 uma vez (o único disparo registrado em `
 - Paralelização preserva o invariante de não-colisão do #636; cat. D sempre solo + Gate B.
 - Toda issue **trabalhada ou bloqueada** recebe comentário com o que foi feito / o que falta (com dedup).
 - `data/develop/` segue o blanket gitignore de `data/`.
-- Stall passivo é inaceitável (#738): toda espera de CI usa `gh pr checks --watch` em background; timeout de CI = 30 min → tratar como CI vermelho.
+- Stall passivo é inaceitável (#738): toda espera de CI usa `gh pr checks --watch` em background; timeout de CI = 30 min → tratar como CI vermelho. **Preferir `scripts/lib/wait-pr-checks.sh {N}` a um laço escrito à mão** (#6921: laços sem teto mecânico ficaram órfãos no `helios` por até 15h) — o helper já embute os 30min desta regra no próprio processo.
 - **Ação do coordenador que muda elegibilidade de issue já conhecida da sessão vira pendência de re-triagem (#5476, mesmo mecanismo do overnight).** Aplicar `gh issue edit N --add-label {not-this-week|trade-off-real|external-blocker|...}` <!-- route-issue-exempt: define o GATILHO da regra #5476, não instrui rodar o comando --> fora do fluxo normal de decisão do Gate 1 (ex: reconciliação ad-hoc de labels da Triagem), ou encerrar/remover manualmente uma claim de `session-registry` mid-sessão, exige registrar: `npx tsx scripts/check-state-changed-pending.ts --add-pending {N} --plan data/develop/{AAMMDD}/plan.json`. Antes de escrever o relatório da Fase 2, checar `npx tsx scripts/check-state-changed-pending.ts --plan data/develop/{AAMMDD}/plan.json` — pendência (`exit 1`) → reavaliar dispatch pra essa issue (com o editor, se cair em cat. C) antes de fechar a sessão.
 
 ## Paralelismo entre sessões (#5156)

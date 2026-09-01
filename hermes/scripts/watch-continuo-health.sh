@@ -249,6 +249,55 @@ Sem limiar de alarme calibrado ainda (#6912 pede baseline medida antes de decidi
   fi
 fi
 
+# ── 7. laços de espera de CI órfãos (#6921) ─────────────────────────────────
+# Achado ao vivo: 5 laços `while true; do gh pr checks ...; sleep N; done`
+# escritos à mão por sessões de agente ficaram rodando por até 15h depois
+# da sessão que os criou já ter ido embora, todos vigiando PRs já
+# mergeadas. Observa e reporta, NUNCA mata (mesmo princípio do #6771) —
+# o fix estrutural é `scripts/lib/wait-pr-checks.sh` (teto de vida
+# embutido); esta checagem é a rede de segurança pro que ainda for escrito
+# à mão sem usar o helper.
+ORPHANS=$(pgrep -af 'gh pr checks' 2>/dev/null)
+PGREP_RC=$?
+# #6937 (review): pgrep exit 1 = "nenhum processo casou" (esperado, não é
+# falha); exit 2/3+ = erro genuíno (padrão inválido, /proc ilegível) —
+# mesma disciplina de "indeterminado incrementa FAILS" que as checagens
+# 1-6 deste arquivo já seguem. Sem essa distinção, um pgrep quebrado
+# reportaria "nenhum órfão" em vez de "não consegui checar".
+if [ "$PGREP_RC" -eq 1 ]; then
+  echo "[watch] laços de espera de CI: nenhum encontrado (pgrep sem match — ok)"
+  ORPHANS=""
+elif [ "$PGREP_RC" -ne 0 ]; then
+  echo "[watch] laços de espera de CI: INDETERMINADO (pgrep saiu com rc=$PGREP_RC)" >&2
+  FAILS=$((FAILS + 1))
+  ORPHANS=""
+fi
+OLD_ORPHANS=""
+if [ -n "$ORPHANS" ]; then
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    PID=$(echo "$line" | awk '{print $1}')
+    ETIME=$(ps -o etimes= -p "$PID" 2>/dev/null | tr -d ' ')
+    if [ -n "$ETIME" ] && [ "$ETIME" -gt 3600 ] 2>/dev/null; then
+      OLD_ORPHANS="${OLD_ORPHANS}pid=$PID idade=$((ETIME / 60))min: $line"$'\n'
+    fi
+  done <<< "$ORPHANS"
+fi
+if [ -n "$OLD_ORPHANS" ]; then
+  file_issue "[watch-continuo] laço de espera de CI órfão" \
+    "[watch-continuo] laço(s) de espera de CI rodando há mais de 1h — possível órfão" \
+    "bug,P2" \
+    "Detectado por watch-continuo-health.sh via \`pgrep -af 'gh pr checks'\` + idade (\`ps -o etimes=\`) — processo(s) com mais de 1h vigiando checks de PR:
+
+\`\`\`
+$OLD_ORPHANS
+\`\`\`
+
+Confirmar se a(s) PR(s) já foram mergeadas/fechadas (nesse caso, seguro matar o PID) antes de agir — este watchdog NUNCA mata sozinho, só observa e reporta (#6771). Fix estrutural: usar \`scripts/lib/wait-pr-checks.sh\` (teto de vida embutido, #6921) em vez de um laço escrito à mão."
+else
+  echo "[watch] laços de espera de CI: nenhum com mais de 1h"
+fi
+
 echo "[watch] varredura concluída (checagens indeterminadas/falhas de infra: $FAILS)"
 # Exit honesto (finding P2 do review #6469): FAILS>0 = o observador NÃO pôde
 # garantir a varredura — o cron do Hermes registra a falha e o failure_streak
