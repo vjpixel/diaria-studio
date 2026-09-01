@@ -105,18 +105,67 @@ describe("scheduleToOnCalendar — validação real via systemd-analyze (quando 
     hasSystemdAnalyze = false;
   }
 
+  /**
+   * #6974 — o `systemd-analyze` renderiza o resultado no TZ DO PROCESSO, e
+   * isso mudava se o teste passava ou não:
+   *
+   *   TZ=UTC               ->  "Next elapse: ... 11:30:00 UTC"        (1 linha)
+   *   TZ=America/Sao_Paulo ->  "Next elapse: ... 08:30:00 -03"
+   *                            "   (in UTC): ... 11:30:00 UTC"        (2 linhas)
+   *
+   * O regex antigo (`/Next elapse: .* 11:30:00 UTC/`) exigia o UTC na MESMA
+   * linha do `Next elapse:`, e `.` não casa newline — então ele só passava
+   * onde o processo roda em UTC. O CI roda em UTC e ficava verde; toda máquina
+   * ou sessão em BRT (o `helios` com `TZ` no ambiente, o Windows do editor)
+   * ficava permanentemente vermelha, num teste cujo COMPORTAMENTO sob teste
+   * estava certo o tempo todo.
+   *
+   * Conserto em duas camadas, porque as duas resolvem coisas diferentes:
+   *
+   * 1. `TZ=UTC` no `env` do subprocesso torna a saída DETERMINÍSTICA em
+   *    qualquer máquina. É legítimo porque o `OnCalendar` carrega o fuso
+   *    explícito (`America/Sao_Paulo`): o INSTANTE calculado não depende do TZ
+   *    do processo, só a renderização depende. Forçar o TZ fixa a renderização
+   *    sem tocar no que está sendo verificado.
+   * 2. O regex aceita o UTC vindo de QUALQUER uma das duas linhas. Só a camada
+   *    1 já bastaria hoje, mas ela depende de o systemd continuar omitindo a
+   *    linha `(in UTC):` quando o TZ é UTC — um detalhe de formatação que não
+   *    é contrato. A camada 2 sobrevive a essa mudança.
+   *
+   * E a asserção negativa (`nunca 08:30 UTC`) passou a ser explícita: era o
+   * ponto do teste desde o #4807 e estava implícito num regex que só afirmava
+   * o positivo.
+   */
   it("Diaria-Clarice-Sync (08:30 registry) calcula next-elapse em 08:30 BRT = 11:30 UTC, nunca 08:30 UTC", { skip: !hasSystemdAnalyze }, () => {
     const task = getScheduledTaskByName("Diaria-Clarice-Sync")!;
     const onCalendar = scheduleToOnCalendar(task.schedule);
-    const out = execFileSync("systemd-analyze", ["calendar", "--iterations=1", onCalendar], { encoding: "utf8" });
-    assert.match(out, /Next elapse: .* 11:30:00 UTC/, `saída completa: ${out}`);
+    const out = execFileSync("systemd-analyze", ["calendar", "--iterations=1", onCalendar], {
+      encoding: "utf8",
+      env: { ...process.env, TZ: "UTC" },
+    });
+    assert.match(
+      out,
+      /(?:Next elapse|\(in UTC\)):.*\b11:30:00 UTC\b/,
+      `o horário UTC calculado não é 11:30 — saída completa: ${out}`,
+    );
+    assert.doesNotMatch(
+      out,
+      /\b08:30:00 UTC\b/,
+      `08:30 foi interpretado COMO UTC em vez de BRT (o fuso do OnCalendar não pegou) — saída completa: ${out}`,
+    );
   });
 
   it("todo SCHEDULED_TASKS gera um valor de OnCalendar= aceito pelo parser do systemd", { skip: !hasSystemdAnalyze }, () => {
     for (const t of SCHEDULED_TASKS) {
       const onCalendar = scheduleToOnCalendar(t.schedule);
       assert.doesNotThrow(
-        () => execFileSync("systemd-analyze", ["calendar", onCalendar], { stdio: "pipe" }),
+        // #6974: mesmo TZ fixo do teste acima — aqui só se verifica que o
+        // parser ACEITA o valor, mas manter o ambiente igual evita que uma
+        // diferença de fuso vire diferença de resultado no futuro.
+        () => execFileSync("systemd-analyze", ["calendar", onCalendar], {
+          stdio: "pipe",
+          env: { ...process.env, TZ: "UTC" },
+        }),
         `${t.name}: "${onCalendar}" rejeitado pelo systemd-analyze`,
       );
     }

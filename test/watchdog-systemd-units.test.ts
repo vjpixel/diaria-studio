@@ -79,8 +79,30 @@ describe("buildWatchdogOnCalendar — validação real via systemd-analyze (quan
     skip: !hasSystemdAnalyze,
   }, () => {
     const onCalendar = buildWatchdogOnCalendar();
-    const out = execFileSync("systemd-analyze", ["calendar", "--iterations=20", onCalendar], { encoding: "utf8" });
-    // "Next elapse"/"Iteration #N" vêm em UTC (`helios` roda em Etc/UTC) —
+    // #6974: `TZ=UTC` explícito, pelo mesmo motivo de
+    // `test/systemd-units.test.ts` — o `systemd-analyze` renderiza no TZ DO
+    // PROCESSO, e o horário só sai com sufixo `UTC` na linha `Next elapse:`
+    // quando o processo já está em UTC; fora disso ele vai pra uma linha
+    // `(in UTC):` separada.
+    //
+    // Este teste sobrevivia às duas formas por CONSTRUÇÃO (o regex abaixo
+    // procura o literal `UTC` em qualquer linha, e a linha `(in UTC):`
+    // aparece em toda iteração) — medido: 20 horários extraídos tanto em
+    // `TZ=UTC` quanto em `TZ=America/Sao_Paulo`. Mas isso é depender de um
+    // detalhe de formatação que não é contrato: bastaria o systemd omitir
+    // `(in UTC):` numa iteração pra `times` encolher em silêncio, e o
+    // `times.length > 0` abaixo passaria feliz validando 1 ocorrência em vez
+    // de 20. Forçar o TZ remove a dependência em vez de confiar nela.
+    //
+    // O comentário anterior justificava isto dizendo que "`helios` roda em
+    // Etc/UTC". O TZ do SISTEMA é mesmo `Etc/UTC`, mas o do PROCESSO não
+    // precisa ser (a sessão que achou o #6974 rodava em `America/Sao_Paulo`
+    // por herança do shell) — a premissa era falsa e é justamente a que
+    // deixou o teste irmão vermelho.
+    const out = execFileSync("systemd-analyze", ["calendar", "--iterations=20", onCalendar], {
+      encoding: "utf8",
+      env: { ...process.env, TZ: "UTC" },
+    });
     // BRT = UTC-3, então a janela 18:00-08:59 BRT corresponde a 21:00-11:59
     // UTC. Extrai todos os HH:MM de cada linha e confirma que nenhum cai
     // fora dessa faixa.
