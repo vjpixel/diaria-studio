@@ -92,6 +92,37 @@ REVIEWED=0
 SKIPPED=0
 FAILED=0
 INFRA_ERRORS=0
+INFRA_ERROR_SUMMARY=""
+
+# #6910 (01/09/2026): o motivo de um erro de infra (exit 3 de
+# check-pr-review-authenticity.ts, ou `gh pr view` falhando) só existia em
+# $AUTH_OUT/stderr — a entrega do cron (Telegram) carrega só a linha de
+# resumo final, então "erros-de-infra=1" chegava sem NENHUM rastro de qual
+# das 3+ causas (gh indisponível, PR sumiu, JSON malformado, rede) foi. Esta
+# função persiste cada ocorrência num log append-only (sobrevive à entrega,
+# permite ver recorrência) E acumula um resumo truncado pra ir na linha
+# final — as duas formas do #6910, não só uma.
+INFRA_ERROR_LOG="$REPO/data/continuo-pr-review/infra-errors.jsonl"
+log_infra_error() {
+  local pr="$1" code="$2" reason="$3"
+  mkdir -p "$(dirname "$INFRA_ERROR_LOG")"
+  # jq -cn (compact, null-input) monta o JSON com escaping seguro — $reason
+  # pode conter aspas, quebras de linha (stderr multi-linha do gh/tsx), etc.
+  local jq_err
+  jq_err=$(jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg pr "$pr" \
+    --arg code "$code" --arg reason "$reason" \
+    '{ts: $ts, pr: ($pr | tonumber), exit_code: $code, reason: $reason}' \
+    2>&1 >> "$INFRA_ERROR_LOG")
+  if [ -n "$jq_err" ]; then
+    # Review do #6910 (P2): silenciar a falha do próprio logger de infra
+    # reintroduziria exatamente a classe de falha silenciosa que esta PR
+    # existe pra eliminar. Nunca aborta o script (best-effort, mesmo
+    # espírito do `|| true` anterior) — só torna a falha VISÍVEL em stderr.
+    echo "[continuo-pr-review] log_infra_error: falha ao escrever em $INFRA_ERROR_LOG: $jq_err" >&2
+  fi
+  local truncated="${reason:0:200}"
+  INFRA_ERROR_SUMMARY="${INFRA_ERROR_SUMMARY}PR #$pr ($code): $truncated"$'\n'
+}
 
 for PR in $PR_NUMBERS; do
   set +e
@@ -114,6 +145,7 @@ for PR in $PR_NUMBERS; do
     # de PRs continuo/* abertas, escondendo que essa PR nem chegou a ser
     # avaliada de verdade.
     INFRA_ERRORS=$((INFRA_ERRORS + 1))
+    log_infra_error "$PR" "auth_rc=3" "$AUTH_OUT"
     continue
   fi
   # AUTH_RC 1 (self_review) ou 2 (no_review): precisa de review real.
@@ -135,6 +167,7 @@ for PR in $PR_NUMBERS; do
   if [ "$VIEW_RC" -ne 0 ]; then
     echo "[continuo-pr-review] PR #$PR: gh pr view falhou ao buscar base/head/title — pulando esta rodada" >&2
     INFRA_ERRORS=$((INFRA_ERRORS + 1))
+    log_infra_error "$PR" "gh_pr_view_rc=$VIEW_RC" "$BASE_SHA / $HEAD_SHA / $PR_TITLE"
     continue
   fi
 
@@ -187,3 +220,13 @@ VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramen
 done
 
 echo "[continuo-pr-review] concluído — revisadas=$REVIEWED já-tinham-review=$SKIPPED falharam=$FAILED erros-de-infra=$INFRA_ERRORS"
+# #6910: motivo vai NA ENTREGA (não só no stderr) quando houve erro de
+# infra — a linha de resumo é o que o Telegram carrega; sem isso
+# "erros-de-infra=1" chegava sem nenhum rastro de causa. Log completo
+# (não-truncado, todas as ocorrências, não só as desta rodada) sempre em
+# $INFRA_ERROR_LOG.
+if [ "$INFRA_ERRORS" -gt 0 ]; then
+  echo "[continuo-pr-review] motivo(s) do(s) erro(s) de infra desta rodada:"
+  printf '%s' "$INFRA_ERROR_SUMMARY"
+  echo "[continuo-pr-review] log completo: $INFRA_ERROR_LOG"
+fi
