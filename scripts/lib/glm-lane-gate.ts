@@ -18,12 +18,20 @@
  *
  * 1. **Teto de 10 unidades.** Esgotadas, o piloto acaba — continuar exige
  *    decisão nova e escrita (não é este módulo que decide "mais 10").
- * 2. **Zero PRs nos 3 primeiros despachos.** Sinal medido em #6922 (10
- *    ticks do primário mais barato → zero claims, zero PRs, relatório
- *    coerente) — o modo de falha do modelo barato em trabalho autônomo
- *    não é "erra", é "para cedo e relata bem". Só avaliável com >= 3
- *    unidades já despachadas; com menos, `firstThreeHadAnyPr` é `null`
- *    (ainda não dá pra saber) e este critério não decide nada.
+ * 2. **Zero PRs MERGEADAS nos 3 primeiros despachos.** Sinal medido em
+ *    #6922 (10 ticks do primário mais barato → zero claims, zero PRs,
+ *    relatório coerente) — o modo de falha do modelo barato em trabalho
+ *    autônomo não é "erra", é "para cedo e relata bem". Só avaliável com
+ *    >= 3 unidades já despachadas; com menos, `firstThreeHadAnyMergedPr`
+ *    é `null` (ainda não dá pra saber) e este critério não decide nada.
+ *    **Corrigido no #6954 (achado ao vivo, unidade 2 do piloto):** a
+ *    versão original media "abriu PR", não "PR mergeou" — a unidade 2
+ *    abriu a #6950, que não podia mergear (3 findings de review, um P1),
+ *    e o critério contava isso como sucesso. "Abriu PR" mede atividade;
+ *    "PR mergeou" mede entrega. `computeGlmLaneState` recebe
+ *    `mergedPrNumbers` (fetch AO VIVO via `gh`, feito no CLI wrapper —
+ *    o merge pode acontecer bem depois do despacho que abriu a PR, então
+ *    não dá pra gravar isso no momento do registro em `units.jsonl`).
  * 3. **Média de rodadas de review > 2.** Precisa de `avgReviewRounds`
  *    calculado sobre unidades cujo PR já foi revisado ao menos uma vez —
  *    `null` (sem dado ainda) nunca bloqueia.
@@ -49,10 +57,11 @@ export interface GlmLaneState {
   /** Teto do piloto — `docs/lane-glm.md` diz 10; parametrizado aqui só
    *  pra não hardcodar um mágico dentro da função pura. */
   unitsCap: number;
-  /** `true` = ao menos 1 PR entre as 3 primeiras unidades; `false` =
-   *  nenhuma das 3 primeiras abriu PR; `null` = ainda não há 3 unidades
-   *  despachadas, critério não avaliável ainda. */
-  firstThreeHadAnyPr: boolean | null;
+  /** `true` = ao menos 1 PR das 3 primeiras unidades está MERGEADA
+   *  (`#6954` — não basta ter aberto, precisa ter sido aceita); `false` =
+   *  nenhuma das 3 primeiras tem PR mergeada; `null` = ainda não há 3
+   *  unidades despachadas, critério não avaliável ainda. */
+  firstThreeHadAnyMergedPr: boolean | null;
   /** Média de rodadas de review entre as unidades com PR revisado pelo
    *  menos uma vez. `null` = sem dado (nenhuma unidade revisada ainda). */
   avgReviewRounds: number | null;
@@ -62,7 +71,7 @@ export interface GlmLaneState {
    *  "infra-error"`). Pode SUBESTIMAR o custo real por resultado: uma
    *  sequência de tentativas caras sem PR não eleva este número — quem
    *  cobre esse modo de falha complementar é o critério 2
-   *  (`firstThreeHadAnyPr`), não este campo. `null` = sem unidade com
+   *  (`firstThreeHadAnyMergedPr`), não este campo. `null` = sem unidade com
    *  custo medido (e com PR) ainda. */
   costPerIssueUsd: number | null;
   /** Baseline de `$/issue` do lane Sonnet, pra comparação. `null` =
@@ -86,10 +95,10 @@ export function evaluateGlmLaneGate(state: GlmLaneState): GlmLaneGateVerdict {
     };
   }
 
-  if (state.firstThreeHadAnyPr === false) {
+  if (state.firstThreeHadAnyMergedPr === false) {
     return {
       allow: false,
-      reason: "critério de morte: zero PRs nos 3 primeiros despachos (mesmo modo de falha medido no #6922 — para cedo e relata bem)",
+      reason: "critério de morte: zero PRs MERGEADAS nos 3 primeiros despachos (mesmo modo de falha medido no #6922 — para cedo e relata bem; #6954 — abrir PR que não mergeia não conta)",
     };
   }
 
@@ -148,7 +157,7 @@ export interface GlmLaneUnitRecord {
    *  `"infra-error"` = ela falhou/deu timeout — a unidade ainda CONTA pro
    *  teto de 10 (consumiu um despacho, possivelmente custou dinheiro),
    *  mas é EXCLUÍDA das estatísticas que julgam o comportamento do
-   *  modelo (firstThreeHadAnyPr, avgReviewRounds, costPerIssueUsd) —
+   *  modelo (firstThreeHadAnyMergedPr, avgReviewRounds, costPerIssueUsd) —
    *  ver `computeGlmLaneState`. */
   status: "completed" | "infra-error";
 }
@@ -157,11 +166,37 @@ export interface GlmLaneUnitRecord {
  * Deriva `GlmLaneState` a partir dos registros já persistidos — pura,
  * sem tocar `gh`/rede. `sonnetLaneCostPerIssueUsd` é sempre repassado
  * como veio (não calculado aqui: não há fonte no repo, ver docstring do
- * campo em `GlmLaneState`).
+ * campo em `GlmLaneState`). `mergedPrNumbers` (#6954) também é sempre
+ * repassado como veio — o fetch AO VIVO do estado de merge de cada PR
+ * roda no CLI wrapper (`check-glm-lane-gate.ts`), nunca aqui: esta função
+ * fica pura por construção, e o momento em que uma PR mergeia é
+ * necessariamente POSTERIOR ao despacho que a abriu, então não dá pra
+ * gravar isso em `units.jsonl` no momento do registro (append-only) —
+ * tem que ser reconsultado a cada avaliação do gate.
  */
+/**
+ * Pura — seleciona as PRIMEIRAS 3 unidades de MODELO (`status !==
+ * "infra-error"`) do histórico e devolve só os `prNumber` não-nulos delas.
+ * Extraída (#6954 review — achado convergente de type-design-analyzer E
+ * pr-test-analyzer) porque `computeGlmLaneState` e o CLI wrapper
+ * (`check-glm-lane-gate.ts`, que precisa saber QUAIS PRs consultar no
+ * `gh` antes de montar `mergedPrNumbers`) reescreviam essa mesma seleção
+ * de forma independente — duas cópias do critério "quais são as 3
+ * primeiras" que podiam divergir silenciosamente numa edição futura de
+ * só um dos dois lados. Agora é uma única fonte, testável isoladamente,
+ * e o CLI wrapper vira consumidor burro dela.
+ */
+export function selectFirstThreeModelPrNumbers(records: readonly GlmLaneUnitRecord[]): number[] {
+  return records
+    .filter((r) => r.status !== "infra-error")
+    .slice(0, 3)
+    .map((r) => r.prNumber)
+    .filter((pr): pr is number => pr !== null);
+}
+
 export function computeGlmLaneState(
   records: readonly GlmLaneUnitRecord[],
-  opts: { unitsCap: number; sonnetLaneCostPerIssueUsd: number | null },
+  opts: { unitsCap: number; sonnetLaneCostPerIssueUsd: number | null; mergedPrNumbers: ReadonlySet<number> },
 ): GlmLaneState {
   // O TETO conta toda unidade despachada, infra-error incluído — ela
   // consumiu um dos 10 slots do piloto de qualquer jeito. Os critérios
@@ -171,9 +206,10 @@ export function computeGlmLaneState(
   const unitsDispatched = records.length;
   const modelRecords = records.filter((r) => r.status !== "infra-error");
 
-  let firstThreeHadAnyPr: boolean | null = null;
+  let firstThreeHadAnyMergedPr: boolean | null = null;
   if (modelRecords.length >= 3) {
-    firstThreeHadAnyPr = modelRecords.slice(0, 3).some((r) => r.prNumber !== null);
+    const firstThreePrNumbers = selectFirstThreeModelPrNumbers(records);
+    firstThreeHadAnyMergedPr = firstThreePrNumbers.some((pr) => opts.mergedPrNumbers.has(pr));
   }
 
   const roundsKnown = modelRecords.map((r) => r.reviewRounds).filter((r): r is number => r !== null);
@@ -182,7 +218,7 @@ export function computeGlmLaneState(
   // `costPerIssueUsd` é a média SÓ sobre unidades que abriram PR — uma
   // sequência de tentativas caras sem PR nenhum não eleva este número
   // (fica fora da média), então ela por si só NÃO detecta "gastando
-  // muito e não produzindo nada"; é o critério 2 (firstThreeHadAnyPr)
+  // muito e não produzindo nada"; é o critério 2 (firstThreeHadAnyMergedPr)
   // que cobre esse modo de falha complementar.
   const costsWithPr = modelRecords
     .filter((r) => r.prNumber !== null && r.costUsd !== null)
@@ -193,7 +229,7 @@ export function computeGlmLaneState(
   return {
     unitsDispatched,
     unitsCap: opts.unitsCap,
-    firstThreeHadAnyPr,
+    firstThreeHadAnyMergedPr,
     avgReviewRounds,
     costPerIssueUsd,
     sonnetLaneCostPerIssueUsd: opts.sonnetLaneCostPerIssueUsd,

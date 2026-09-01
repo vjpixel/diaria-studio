@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   evaluateGlmLaneGate,
   computeGlmLaneState,
+  selectFirstThreeModelPrNumbers,
   type GlmLaneState,
   type GlmLaneUnitRecord,
 } from "../scripts/lib/glm-lane-gate.ts";
@@ -10,7 +11,7 @@ import {
 const GREEN: GlmLaneState = {
   unitsDispatched: 2,
   unitsCap: 10,
-  firstThreeHadAnyPr: null,
+  firstThreeHadAnyMergedPr: null,
   avgReviewRounds: null,
   costPerIssueUsd: null,
   sonnetLaneCostPerIssueUsd: null,
@@ -35,19 +36,19 @@ describe("evaluateGlmLaneGate (#6930) — cada critério de morte", () => {
     assert.equal(result.allow, false);
   });
 
-  it("zero PRs nos 3 primeiros despachos → deny", () => {
-    const result = evaluateGlmLaneGate({ ...GREEN, firstThreeHadAnyPr: false });
+  it("zero PRs MERGEADAS nos 3 primeiros despachos → deny", () => {
+    const result = evaluateGlmLaneGate({ ...GREEN, firstThreeHadAnyMergedPr: false });
     assert.equal(result.allow, false);
     assert.match(result.reason, /6922/);
   });
 
-  it("ao menos 1 PR nos 3 primeiros → não nega por esse critério", () => {
-    const result = evaluateGlmLaneGate({ ...GREEN, firstThreeHadAnyPr: true });
+  it("ao menos 1 PR MERGEADA nos 3 primeiros → não nega por esse critério", () => {
+    const result = evaluateGlmLaneGate({ ...GREEN, firstThreeHadAnyMergedPr: true });
     assert.equal(result.allow, true);
   });
 
-  it("firstThreeHadAnyPr null (menos de 3 unidades) → não nega por esse critério", () => {
-    const result = evaluateGlmLaneGate({ ...GREEN, firstThreeHadAnyPr: null });
+  it("firstThreeHadAnyMergedPr null (menos de 3 unidades) → não nega por esse critério", () => {
+    const result = evaluateGlmLaneGate({ ...GREEN, firstThreeHadAnyMergedPr: null });
     assert.equal(result.allow, true);
   });
 
@@ -94,7 +95,7 @@ describe("evaluateGlmLaneGate (#6930) — precedência", () => {
     const result = evaluateGlmLaneGate({
       ...GREEN,
       unitsDispatched: 10,
-      firstThreeHadAnyPr: true,
+      firstThreeHadAnyMergedPr: true,
       avgReviewRounds: 0,
       costPerIssueUsd: 0,
       sonnetLaneCostPerIssueUsd: 999,
@@ -120,46 +121,54 @@ function unit(overrides: Partial<GlmLaneUnitRecord> = {}): GlmLaneUnitRecord {
 
 describe("computeGlmLaneState (#6930)", () => {
   it("0 registros → estado inicial neutro (tudo null, unitsDispatched=0)", () => {
-    const state = computeGlmLaneState([], { unitsCap: 10, sonnetLaneCostPerIssueUsd: null });
+    const state = computeGlmLaneState([], { unitsCap: 10, sonnetLaneCostPerIssueUsd: null, mergedPrNumbers: new Set() });
     assert.equal(state.unitsDispatched, 0);
-    assert.equal(state.firstThreeHadAnyPr, null);
+    assert.equal(state.firstThreeHadAnyMergedPr, null);
     assert.equal(state.avgReviewRounds, null);
     assert.equal(state.costPerIssueUsd, null);
   });
 
-  it("< 3 registros → firstThreeHadAnyPr permanece null (não avaliável ainda)", () => {
-    const state = computeGlmLaneState([unit(), unit()], { unitsCap: 10, sonnetLaneCostPerIssueUsd: null });
-    assert.equal(state.firstThreeHadAnyPr, null);
+  it("< 3 registros → firstThreeHadAnyMergedPr permanece null (não avaliável ainda)", () => {
+    const state = computeGlmLaneState([unit(), unit()], { unitsCap: 10, sonnetLaneCostPerIssueUsd: null, mergedPrNumbers: new Set() });
+    assert.equal(state.firstThreeHadAnyMergedPr, null);
   });
 
-  it("exatamente 3 registros, nenhum com PR → firstThreeHadAnyPr=false", () => {
+  it("exatamente 3 registros, nenhum com PR → firstThreeHadAnyMergedPr=false", () => {
     const state = computeGlmLaneState(
       [unit({ prNumber: null }), unit({ prNumber: null }), unit({ prNumber: null })],
-      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null },
+      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null, mergedPrNumbers: new Set() },
     );
-    assert.equal(state.firstThreeHadAnyPr, false);
+    assert.equal(state.firstThreeHadAnyMergedPr, false);
   });
 
-  it("3 registros, 1 com PR → firstThreeHadAnyPr=true", () => {
+  it("3 registros, 1 com PR MERGEADA → firstThreeHadAnyMergedPr=true", () => {
     const state = computeGlmLaneState(
       [unit({ prNumber: null }), unit({ prNumber: 42 }), unit({ prNumber: null })],
-      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null },
+      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null, mergedPrNumbers: new Set([42]) },
     );
-    assert.equal(state.firstThreeHadAnyPr, true);
+    assert.equal(state.firstThreeHadAnyMergedPr, true);
   });
 
-  it("> 3 registros: só os 3 PRIMEIROS contam pro critério (unidade 4 com PR não salva um início ruim)", () => {
+  it("#6954 — 3 registros, 1 com PR ABERTA mas NÃO mergeada → firstThreeHadAnyMergedPr=false (o bug real: abrir não basta)", () => {
+    const state = computeGlmLaneState(
+      [unit({ prNumber: null }), unit({ prNumber: 42 }), unit({ prNumber: null })],
+      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null, mergedPrNumbers: new Set() },
+    );
+    assert.equal(state.firstThreeHadAnyMergedPr, false);
+  });
+
+  it("> 3 registros: só os 3 PRIMEIROS contam pro critério (unidade 4 com PR mergeada não salva um início ruim)", () => {
     const state = computeGlmLaneState(
       [unit({ prNumber: null }), unit({ prNumber: null }), unit({ prNumber: null }), unit({ prNumber: 42 })],
-      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null },
+      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null, mergedPrNumbers: new Set([42]) },
     );
-    assert.equal(state.firstThreeHadAnyPr, false);
+    assert.equal(state.firstThreeHadAnyMergedPr, false);
   });
 
   it("avgReviewRounds ignora registros com reviewRounds null (sem dado ainda)", () => {
     const state = computeGlmLaneState(
       [unit({ reviewRounds: null }), unit({ reviewRounds: 4 }), unit({ reviewRounds: 2 })],
-      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null },
+      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null, mergedPrNumbers: new Set() },
     );
     assert.equal(state.avgReviewRounds, 3);
   });
@@ -167,13 +176,13 @@ describe("computeGlmLaneState (#6930)", () => {
   it("costPerIssueUsd só considera unidades COM pr aberta e custo conhecido", () => {
     const state = computeGlmLaneState(
       [unit({ prNumber: 1, costUsd: 0.1 }), unit({ prNumber: null, costUsd: 999 }), unit({ prNumber: 2, costUsd: 0.3 })],
-      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null },
+      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null, mergedPrNumbers: new Set() },
     );
     assert.equal(state.costPerIssueUsd, 0.2); // média de 0.1 e 0.3, ignora a sem PR
   });
 
   it("sonnetLaneCostPerIssueUsd é repassado como veio (não calculado aqui)", () => {
-    const state = computeGlmLaneState([], { unitsCap: 10, sonnetLaneCostPerIssueUsd: 1.23 });
+    const state = computeGlmLaneState([], { unitsCap: 10, sonnetLaneCostPerIssueUsd: 1.23, mergedPrNumbers: new Set() });
     assert.equal(state.sonnetLaneCostPerIssueUsd, 1.23);
   });
 });
@@ -183,31 +192,61 @@ describe("computeGlmLaneState (#6941) — status:'infra-error' excluído dos cri
     const state = computeGlmLaneState([unit({ status: "infra-error" })], {
       unitsCap: 10,
       sonnetLaneCostPerIssueUsd: null,
+      mergedPrNumbers: new Set(),
     });
     assert.equal(state.unitsDispatched, 1);
   });
 
-  it("3 unidades infra-error não contam pro firstThreeHadAnyPr — critério continua null (não avaliável)", () => {
+  it("3 unidades infra-error não contam pro firstThreeHadAnyMergedPr — critério continua null (não avaliável)", () => {
     const state = computeGlmLaneState(
       [unit({ status: "infra-error", prNumber: null }), unit({ status: "infra-error", prNumber: null }), unit({ status: "infra-error", prNumber: null })],
-      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null },
+      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null, mergedPrNumbers: new Set() },
     );
-    assert.equal(state.firstThreeHadAnyPr, null);
+    assert.equal(state.firstThreeHadAnyMergedPr, null);
   });
 
-  it("2 unidades completed sem PR + 1 infra-error (total 3 registros) → firstThreeHadAnyPr ainda null (só 2 unidades de MODELO)", () => {
+  it("2 unidades completed sem PR + 1 infra-error (total 3 registros) → firstThreeHadAnyMergedPr ainda null (só 2 unidades de MODELO)", () => {
     const state = computeGlmLaneState(
       [unit({ status: "completed", prNumber: null }), unit({ status: "infra-error", prNumber: null }), unit({ status: "completed", prNumber: null })],
-      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null },
+      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null, mergedPrNumbers: new Set() },
     );
-    assert.equal(state.firstThreeHadAnyPr, null);
+    assert.equal(state.firstThreeHadAnyMergedPr, null);
   });
 
   it("custo de unidade infra-error nunca entra em costPerIssueUsd, mesmo com PR/custo preenchidos", () => {
     const state = computeGlmLaneState(
       [unit({ status: "infra-error", prNumber: 1, costUsd: 999 }), unit({ status: "completed", prNumber: 2, costUsd: 0.1 })],
-      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null },
+      { unitsCap: 10, sonnetLaneCostPerIssueUsd: null, mergedPrNumbers: new Set() },
     );
     assert.equal(state.costPerIssueUsd, 0.1);
+  });
+});
+
+describe("selectFirstThreeModelPrNumbers (#6954)", () => {
+  it("exclui infra-error e devolve só prNumber não-nulos, das 3 primeiras unidades de MODELO", () => {
+    const records = [
+      unit({ status: "infra-error", prNumber: 1 }),
+      unit({ status: "completed", prNumber: null }),
+      unit({ status: "completed", prNumber: 42 }),
+      unit({ status: "completed", prNumber: 43 }),
+      unit({ status: "completed", prNumber: 999 }), // 4ª unidade de modelo — fora
+    ];
+    assert.deepEqual(selectFirstThreeModelPrNumbers(records), [42, 43]);
+  });
+
+  it("lista vazia quando não há registros", () => {
+    assert.deepEqual(selectFirstThreeModelPrNumbers([]), []);
+  });
+
+  it("é a MESMA seleção que computeGlmLaneState usa internamente (fonte única, #6954 review)", () => {
+    const records = [unit({ prNumber: 10 }), unit({ prNumber: null }), unit({ prNumber: 20 })];
+    const prNumbers = selectFirstThreeModelPrNumbers(records);
+    // simula o CLI: só as PRs selecionadas por essa função "mergeiam"
+    const state = computeGlmLaneState(records, {
+      unitsCap: 10,
+      sonnetLaneCostPerIssueUsd: null,
+      mergedPrNumbers: new Set(prNumbers),
+    });
+    assert.equal(state.firstThreeHadAnyMergedPr, true);
   });
 });

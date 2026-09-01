@@ -30,68 +30,102 @@ function readScript(): string {
   return readFileSync(SCRIPT_PATH, "utf8");
 }
 
-function extractToolsValue(src: string): string {
-  const m = src.match(/--tools\s+"([^"]+)"/);
-  assert.ok(m, 'não encontrou --tools "..." no script');
-  return m![1];
+/**
+ * #6954: o script agora define DUAS strings `--tools` literais — uma pro
+ * modo padrão (1ª rodada, abre PR nova) e uma pro modo `--pr N` (2ª+
+ * rodada, itera sobre PR existente, `gh pr create` OMITIDO de propósito).
+ * Extrai as DUAS (via a atribuição `TOOLS="..."`, não `--tools "..."`,
+ * que na invocação real é só `--tools "$TOOLS"` — a variável) pra checar
+ * cada uma nas propriedades que lhe cabem.
+ */
+function extractToolsValues(src: string): string[] {
+  const matches = [...src.matchAll(/TOOLS="([^"]+)"/g)];
+  assert.ok(matches.length >= 2, `esperava >= 2 definições de TOOLS="..." no script (modo padrão + --pr), achou ${matches.length}`);
+  return matches.map((m) => m[1]);
 }
 
 const FORBIDDEN_TOOL_SUBSTRINGS = ["gh pr merge", "gh pr review", "gh issue close", "gh issue edit"];
 
 describe("dispatch-glm-lane-unit.sh — condição (b) do docs/lane-glm.md, produtor apenas", () => {
-  it("--tools nunca contém gh pr merge/review nem gh issue close/edit", () => {
-    const value = extractToolsValue(readScript());
-    for (const forbidden of FORBIDDEN_TOOL_SUBSTRINGS) {
-      assert.ok(!value.includes(forbidden), `--tools contém '${forbidden}' — condição (b) do lane-glm.md violada`);
+  it("nenhuma das --tools (padrão ou --pr) contém gh pr merge/review nem gh issue close/edit", () => {
+    for (const value of extractToolsValues(readScript())) {
+      for (const forbidden of FORBIDDEN_TOOL_SUBSTRINGS) {
+        assert.ok(!value.includes(forbidden), `--tools contém '${forbidden}' — condição (b) do lane-glm.md violada`);
+      }
     }
   });
 
-  it("--tools não usa 'Bash' genérico/irrestrito (teria que ser Bash(cmd:*) escopado)", () => {
-    const value = extractToolsValue(readScript());
-    const parts = value.split(",");
-    assert.ok(!parts.includes("Bash"), "--tools inclui 'Bash' sem escopo — reabre exatamente o que o #6864 fechou");
+  it("nenhuma --tools usa 'Bash' genérico/irrestrito (teria que ser Bash(cmd:*) escopado)", () => {
+    for (const value of extractToolsValues(readScript())) {
+      const parts = value.split(",");
+      assert.ok(!parts.includes("Bash"), "--tools inclui 'Bash' sem escopo — reabre exatamente o que o #6864 fechou");
+    }
   });
 
-  it("#6941 P0: --tools nunca contém Bash(git:*) genérico — permitiria 'git push origin HEAD:master'", () => {
-    const value = extractToolsValue(readScript());
-    const parts = value.split(",");
-    assert.ok(!parts.includes("Bash(git:*)"), "--tools contém Bash(git:*) sem escopo — permite push direto pra master");
+  it("#6941 P0: nenhuma --tools contém Bash(git:*) genérico — permitiria 'git push origin HEAD:master'", () => {
+    for (const value of extractToolsValues(readScript())) {
+      const parts = value.split(",");
+      assert.ok(!parts.includes("Bash(git:*)"), "--tools contém Bash(git:*) sem escopo — permite push direto pra master");
+    }
   });
 
-  it("#6941 P0: --tools nunca contém Bash(npm:*) genérico — permitiria 'npm exec -- gh pr merge'", () => {
-    const value = extractToolsValue(readScript());
-    const parts = value.split(",");
-    assert.ok(!parts.includes("Bash(npm:*)"), "--tools contém Bash(npm:*) sem escopo — permite 'npm exec -- gh ...'");
+  it("#6941 P0: nenhuma --tools contém Bash(npm:*) genérico — permitiria 'npm exec -- gh pr merge'", () => {
+    for (const value of extractToolsValues(readScript())) {
+      const parts = value.split(",");
+      assert.ok(!parts.includes("Bash(npm:*)"), "--tools contém Bash(npm:*) sem escopo — permite 'npm exec -- gh ...'");
+    }
   });
 
-  it("#6941 P0: --tools nunca contém Bash(npx:*) genérico — permitiria rodar qualquer pacote/binário via npx", () => {
-    const value = extractToolsValue(readScript());
-    const parts = value.split(",");
-    assert.ok(!parts.includes("Bash(npx:*)"), "--tools contém Bash(npx:*) sem escopo");
+  it("#6941 P0: nenhuma --tools contém Bash(npx:*) genérico — permitiria rodar qualquer pacote/binário via npx", () => {
+    for (const value of extractToolsValues(readScript())) {
+      const parts = value.split(",");
+      assert.ok(!parts.includes("Bash(npx:*)"), "--tools contém Bash(npx:*) sem escopo");
+    }
   });
 
-  it("#6941: cada pattern Bash(git ...) presente é um subcomando de escrita local seguro (add/commit/status/diff/log/branch/push escopado à branch)", () => {
-    const value = extractToolsValue(readScript());
-    const gitPatterns = value.split(",").filter((p) => p.startsWith("Bash(git "));
-    assert.ok(gitPatterns.length > 0, "esperava pelo menos 1 pattern Bash(git ...)");
-    const SAFE_GIT_PREFIXES = ["Bash(git add:", "Bash(git commit:", "Bash(git status:", "Bash(git diff:", "Bash(git log:", "Bash(git branch:", "Bash(git push -u origin "];
-    for (const pattern of gitPatterns) {
-      assert.ok(
-        SAFE_GIT_PREFIXES.some((prefix) => pattern.startsWith(prefix)),
-        `pattern git '${pattern}' não está na allowlist de prefixos seguros conhecidos`,
+  it("#6941: cada pattern Bash(git ...) presente, nas DUAS --tools, é um subcomando de escrita local seguro escopado à branch", () => {
+    const SAFE_GIT_PREFIXES = [
+      "Bash(git add:",
+      "Bash(git commit:",
+      "Bash(git status:",
+      "Bash(git diff:",
+      "Bash(git log:",
+      "Bash(git branch:",
+      "Bash(git push -u origin ",
+      "Bash(git push origin ",
+    ];
+    for (const value of extractToolsValues(readScript())) {
+      const gitPatterns = value.split(",").filter((p) => p.startsWith("Bash(git "));
+      assert.ok(gitPatterns.length > 0, "esperava pelo menos 1 pattern Bash(git ...)");
+      for (const pattern of gitPatterns) {
+        assert.ok(
+          SAFE_GIT_PREFIXES.some((prefix) => pattern.startsWith(prefix)),
+          `pattern git '${pattern}' não está na allowlist de prefixos seguros conhecidos`,
+        );
+      }
+    }
+  });
+
+  it("#6941: git push é escopado à branch EXATA desta unidade ($BRANCH interpolado), nunca uma branch arbitrária, nas DUAS --tools", () => {
+    for (const value of extractToolsValues(readScript())) {
+      assert.match(
+        value,
+        /Bash\(git push(?: -u)? origin \$\{BRANCH\}:\*\)/,
+        "git push deveria ser escopado a ${BRANCH}, a variável da branch desta unidade",
       );
     }
   });
 
-  it("#6941: git push é escopado à branch EXATA desta unidade ($BRANCH interpolado), nunca uma branch arbitrária", () => {
-    const src = readScript();
-    const value = extractToolsValue(src);
-    assert.match(value, /Bash\(git push -u origin \$\{BRANCH\}:\*\)/, "git push deveria ser escopado a ${BRANCH}, a variável da branch desta unidade");
+  it("--tools do modo PADRÃO inclui gh pr create (o produtor PRECISA poder abrir PR na 1ª rodada)", () => {
+    const [defaultTools] = extractToolsValues(readScript()).filter((v) => v.includes("git push -u origin"));
+    assert.ok(defaultTools, "não achei a --tools do modo padrão (git push -u origin)");
+    assert.ok(defaultTools.includes("gh pr create"), "--tools do modo padrão deveria permitir 'gh pr create'");
   });
 
-  it("--tools inclui gh pr create (o produtor PRECISA poder abrir PR)", () => {
-    const value = extractToolsValue(readScript());
-    assert.ok(value.includes("gh pr create"), "--tools deveria permitir 'gh pr create' — sem isso o lane não produz nada");
+  it("#6954: --tools do modo --pr OMITE gh pr create — mecanicamente impossível abrir PR duplicada", () => {
+    const [prTools] = extractToolsValues(readScript()).filter((v) => !v.includes("git push -u origin"));
+    assert.ok(prTools, "não achei a --tools do modo --pr");
+    assert.ok(!prTools.includes("gh pr create"), "--tools do modo --pr NÃO deveria permitir 'gh pr create' — instrução de prompt não basta (#6864/#6849)");
   });
 });
 
@@ -226,5 +260,80 @@ describe("dispatch-glm-lane-unit.sh — snapshot de custo por unidade (condiçã
     const lastClaudeRcCheck = src.lastIndexOf("CLAUDE_RC");
     const tail = src.slice(lastClaudeRcCheck);
     assert.match(tail, /exit 1/);
+  });
+});
+
+describe("dispatch-glm-lane-unit.sh — modo --pr N, segunda rodada (#6954)", () => {
+  it("aceita --pr como segundo argumento posicional/flag e resolve a branch HEAD via gh pr view", () => {
+    const src = readScript();
+    assert.match(src, /EXISTING_PR="\$\{2:\?uso: --pr requer um número de PR\}"/);
+    assert.match(src, /gh pr view "\$EXISTING_PR" --json headRefName -q \.headRefName/);
+  });
+
+  it("worktree do modo --pr usa -B (reset idempotente) em cima de origin/<branch existente>, nunca -b (criar do zero)", () => {
+    const src = readScript();
+    assert.match(src, /git worktree add -B "\$BRANCH" "\$WORKTREE_DIR" "origin\/\$BRANCH"/);
+  });
+
+  it("injeta os comentários de review já postados via gh pr view --json comments", () => {
+    const src = readScript();
+    assert.match(src, /gh pr view "\$EXISTING_PR" --json comments/);
+    assert.match(src, /REVIEW_COMMENTS=/);
+  });
+
+  it("o prompt do modo --pr diz explicitamente para NÃO chamar gh pr create", () => {
+    const src = readScript();
+    const promptIdx = src.indexOf('PROMPT="Esta é uma ITERAÇÃO');
+    assert.ok(promptIdx !== -1, "não achei o prompt do modo --pr");
+    assert.match(src.slice(promptIdx, promptIdx + 400), /NÃO chame 'gh pr create'/);
+  });
+
+  it("#6954: guard de CI-wait presente nos DOIS prompts (padrão e --pr) — nunca esperar CI dentro da unidade", () => {
+    const src = readScript();
+    const guardCount = (src.match(/NUNCA rode 'gh pr checks', 'gh run watch'/g) ?? []).length;
+    // A string CI_WAIT_GUARD é definida 1x e interpolada nos 2 prompts —
+    // basta achar a definição + as 2 interpolações via $CI_WAIT_GUARD.
+    assert.ok(guardCount >= 1, "guard de CI-wait não encontrado no script");
+    const interpolations = (src.match(/\$CI_WAIT_GUARD/g) ?? []).length;
+    assert.equal(interpolations, 2, "guard de CI-wait deveria ser interpolado nos 2 prompts (padrão e --pr)");
+  });
+
+  it("PR_NUMBER no modo --pr é o EXISTING_PR direto, não uma nova busca via gh pr list", () => {
+    const src = readScript();
+    assert.match(src, /if \[ -n "\$EXISTING_PR" \]; then\s*\n\s*PR_NUMBER="\$EXISTING_PR"/);
+  });
+
+  it("#6954: mensagem final de infra-error NUNCA diz 'considere retentar' quando já existe uma PR — diria 'revise-a' / '--pr'", () => {
+    const src = readScript();
+    const tailIdx = src.lastIndexOf('if [ "$CLAUDE_RC" -ne 0 ]; then');
+    const tail = src.slice(tailIdx);
+    assert.match(tail, /PR_NUMBER.*revise-a/s, "quando PR_NUMBER existe, a mensagem deveria mandar revisar a PR, não retentar");
+    assert.match(tail, /considere retentar do zero \(sem --pr\)/, "só quando NÃO há PR ainda é que 'considere retentar' é seguro");
+  });
+});
+
+describe("dispatch-glm-lane-unit.sh — P0 do review da #6955: headRefName validado antes de virar --tools", () => {
+  it("faz source do guard e CHAMA is_safe_glm_branch_ref antes de atribuir $BRANCH no modo --pr", () => {
+    const src = readScript();
+    assert.match(src, /source "\$REPO\/scripts\/lib\/glm-lane-headref-guard\.sh"/);
+    const guardIdx = src.indexOf("if ! is_safe_glm_branch_ref");
+    const branchAssignIdx = src.indexOf('BRANCH="$HEAD_REF"');
+    assert.ok(guardIdx !== -1, "script deveria chamar is_safe_glm_branch_ref");
+    assert.ok(branchAssignIdx !== -1, 'script deveria atribuir BRANCH="$HEAD_REF"');
+    assert.ok(guardIdx < branchAssignIdx, "a validação tem que vir ANTES de $HEAD_REF virar $BRANCH (que é o que entra no --tools)");
+  });
+
+  it("recusa (exit != 0) quando a validação falha, nunca segue com o valor não-validado", () => {
+    const src = readScript();
+    const guardIdx = src.indexOf("if ! is_safe_glm_branch_ref");
+    const after = src.slice(guardIdx, guardIdx + 600);
+    assert.match(after, /exit 2/);
+  });
+
+  it("#6954 P3: gh pr comment / gh issue comment escopados ao número exato, nunca ':*' aberto", () => {
+    for (const value of extractToolsValues(readScript())) {
+      assert.ok(!value.includes("Bash(gh pr comment:*)"), "gh pr comment não deveria ser irrestrito");
+      assert.ok(!value.includes("Bash(gh issue comment:*)"), "gh issue comment não deveria ser irrestrito");
+    }
   });
 });

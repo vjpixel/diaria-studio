@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { readGlmLaneUnits } from "../scripts/check-glm-lane-gate.ts";
+import { readGlmLaneUnits, fetchMergedPrNumbers, type GhExec } from "../scripts/check-glm-lane-gate.ts";
 
 const dirs: string[] = [];
 function tmpFile(content: string | null): string {
@@ -113,5 +113,50 @@ describe("readGlmLaneUnits (#6930/#6941)", () => {
       assert.equal(result.records.length, 2);
       assert.equal(result.malformedCount, 1);
     });
+  });
+});
+
+describe("fetchMergedPrNumbers (#6954)", () => {
+  it("lista vazia de PRs → Set vazio, nunca chama gh", () => {
+    let calls = 0;
+    const fakeGh: GhExec = () => {
+      calls++;
+      return "";
+    };
+    const result = fetchMergedPrNumbers([], fakeGh);
+    assert.deepEqual(result, new Set());
+    assert.equal(calls, 0);
+  });
+
+  it("PR MERGED entra no Set, PR OPEN/CLOSED não", () => {
+    const fakeGh: GhExec = (args) => {
+      const pr = args[2];
+      if (pr === "100") return "MERGED\n";
+      if (pr === "101") return "OPEN\n";
+      return "CLOSED\n";
+    };
+    const result = fetchMergedPrNumbers([100, 101, 102], fakeGh);
+    assert.deepEqual(result, new Set([100]));
+  });
+
+  it("gh falhando numa PR individual não derruba as demais — a que falhou fica de fora do Set (conservador)", () => {
+    const fakeGh: GhExec = (args) => {
+      const pr = args[2];
+      if (pr === "200") throw new Error("gh: rate limited");
+      return "MERGED\n";
+    };
+    const result = fetchMergedPrNumbers([200, 201], fakeGh);
+    assert.deepEqual(result, new Set([201]));
+  });
+
+  it("chama gh exatamente 1x por pr number, com o comando esperado", () => {
+    const calls: string[][] = [];
+    const fakeGh: GhExec = (args) => {
+      calls.push(args);
+      return "MERGED\n";
+    };
+    fetchMergedPrNumbers([42], fakeGh);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0], ["pr", "view", "42", "--json", "state", "-q", ".state"]);
   });
 });
