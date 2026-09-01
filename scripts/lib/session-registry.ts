@@ -70,10 +70,12 @@
  *     OUTRA máquina permite encerrar daqui um registro que não é seu — ver
  *     "Defeito 4" do #5797. `end` também distingue "removeu de fato" de "não
  *     havia nada pra remover": esta última reporta `exit 1` e a mensagem
- *     "nothing to end", nunca "ended". #6922: `end` recusa (`exit 1`) quando
- *     `repoRoot` tem mudanças não commitadas — ver `evaluateEndGuard`;
- *     `--allow-dirty` bypassa quando a sujeira é de outra sessão concorrente
- *     no mesmo checkout compartilhado.)
+ *     "nothing to end", nunca "ended". #6922: `end` recusa (`exit 1`) só quando
+ *     `repoRoot` tem mudanças não commitadas ATRIBUÍVEIS a esta sessão
+ *     (interseção com touched_paths/dirty_paths do próprio registro) — ver
+ *     `evaluateEndGuard`; sujeira de outra sessão concorrente no mesmo
+ *     checkout compartilhado (#6168, a norma) nunca bloqueia, só avisa.
+ *     `--allow-dirty` bypassa tudo explicitamente.)
  *   npx tsx scripts/lib/session-registry.ts claim-issue --kind ... --issue N [--force]
  *     (#6236: check-and-set — recusa (`exit 1`) quando outra sessão ATIVA já
  *     segura a issue, imprimindo quem/desde quando. `--force` toma o claim
@@ -1109,41 +1111,96 @@ export function checkRepoTreeClean(repoRoot: string): RepoTreeCleanResult {
 
 /**
  * Resultado de `evaluateEndGuard` — se o `end` pode prosseguir, e a mensagem
- * de recusa (só presente quando `ok: false`) pro CLI imprimir.
+ * de recusa (só presente quando `ok: false`) pro CLI imprimir. `warning`
+ * carrega um aviso informativo (stderr) quando o `end` PROSSEGUE apesar de
+ * sujeira alheia — nunca aborta, só avisa (#6922 reaberto).
  */
 export interface EndGuardResult {
   ok: boolean;
   message?: string;
+  warning?: string;
+}
+
+/**
+ * Extrai o caminho de cada linha de `git status --porcelain` (formato
+ * `XY caminho` ou `XY orig -> novo` pra renames — usa o lado NOVO). Best-effort:
+ * uma linha em formato inesperado é devolvida como está, o pior caso é uma
+ * interseção que não casa (fail-direction segura — vira "sujeira alheia" e
+ * o `end` avisa em vez de recusar, nunca o contrário).
+ */
+function extractPorcelainPath(line: string): string {
+  const body = line.slice(3); // remove "XY " (2 chars de status + 1 espaço)
+  const arrowIdx = body.indexOf(" -> ");
+  return arrowIdx === -1 ? body : body.slice(arrowIdx + 4);
 }
 
 /**
  * Guard chamado pelo CLI `end` ANTES de remover o registro da sessão
- * (#6922). Recusa encerrar o tick quando o checkout compartilhado está
- * sujo — força o commit/push/stash a acontecer (ou o `--allow-dirty`
- * explícito) em vez de deixar o `end` reportar sucesso silenciosamente
- * sobre trabalho perdido, mesmo padrão de "recusar e forçar atenção" já
- * usado no guard de merge de subagente (`.claude/hooks/
- * block-gh-pr-merge-subagent.mjs`, item 11 de
- * `context/overnight-dispatch-rules.md`).
+ * (#6922, revisado — ver comentário de 01/09 sobre a fail-direction
+ * invertida). Recusa encerrar o tick **só quando a sujeira do checkout
+ * compartilhado é atribuível à PRÓPRIA sessão** (interseção entre
+ * `git status --porcelain` e os `touched_paths`/`dirty_paths` que o beacon
+ * desta sessão já registrou) — força o commit/push/stash a acontecer (ou o
+ * `--allow-dirty` explícito) só nesse caso.
  *
- * `allowDirty: true` bypassa a checagem de propósito — o checkout é
- * compartilhado entre coordenadores/sessões concorrentes (#6168), então a
- * sujeira encontrada pode pertencer a OUTRA sessão ainda ativa, não à que
- * está chamando `end`; nesse caso confirmar explicitamente com a flag é
- * mais seguro que a função tentar (e errar) atribuir autoria da sujeira.
+ * Sujeira que NÃO intersecta os caminhos da própria sessão é quase sempre de
+ * OUTRA sessão viva no mesmo checkout compartilhado (#6168 é a norma
+ * documentada, não a exceção) — recusar por ela agrava exatamente os
+ * problemas que #6623/#6624 descrevem (sessões desassistidas sem quem digite
+ * `--allow-dirty`, claims presas até a staleness). Nesse caso o `end`
+ * PROSSEGUE e devolve `warning` (informativo, pro CLI imprimir em stderr) em
+ * vez de abortar.
+ *
+ * `allowDirty: true` continua bypassando tudo, de propósito — escape
+ * residual pro caso em que o operador quer confirmar manualmente que é
+ * seguro seguir mesmo com sujeira própria.
+ *
+ * `ownPaths` — união de `touched_paths` e `dirty_paths` do PRÓPRIO registro
+ * (já normalizados/coletados pelo chamador antes de `endSession` remover o
+ * arquivo). Vazio/ausente (sessão sem beacon de paths, registros antigos
+ * pré-#6168 Parte A) → nenhuma sujeira é atribuível à sessão → sempre avisa,
+ * nunca recusa (mesma fail-direction: never bloquear por dado ausente).
  */
-export function evaluateEndGuard(repoRoot: string, allowDirty: boolean): EndGuardResult {
+export function evaluateEndGuard(
+  repoRoot: string,
+  allowDirty: boolean,
+  ownPaths: readonly string[] = [],
+): EndGuardResult {
   if (allowDirty) return { ok: true };
   const { clean, files } = checkRepoTreeClean(repoRoot);
   if (clean) return { ok: true };
-  const fileList = files.map((f) => `  ${f}`).join("\n");
+
+  const normalizedOwn = [...new Set(ownPaths.map(normalizeBeaconPath))].filter((p) => p !== "");
+  const own: string[] = [];
+  const foreign: string[] = [];
+  for (const line of files) {
+    const path = normalizeBeaconPath(extractPorcelainPath(line));
+    const isOwn = path !== "" && normalizedOwn.some((op) => beaconPathsOverlap(op, path));
+    (isOwn ? own : foreign).push(line);
+  }
+
+  if (own.length === 0) {
+    const fileList = foreign.map((f) => `  ${f}`).join("\n");
+    return {
+      ok: true,
+      warning:
+        `session-registry: end prossegue com árvore suja em ${repoRoot} (${foreign.length} arquivo(s)) — ` +
+        `nenhum casa com touched_paths/dirty_paths desta sessão, tratado como sujeira de OUTRA sessão no ` +
+        `checkout compartilhado (#6168):\n${fileList}\n`,
+    };
+  }
+
+  const ownList = own.map((f) => `  ${f}`).join("\n");
+  const foreignSuffix =
+    foreign.length > 0 ? ` (mais ${foreign.length} arquivo(s) de sujeira alheia, ignorados nesta checagem)` : "";
   return {
     ok: false,
     message:
-      `session-registry: end RECUSADO — árvore suja em ${repoRoot} (${files.length} arquivo(s)):\n${fileList}\n` +
+      `session-registry: end RECUSADO — árvore suja em ${repoRoot} com ${own.length} arquivo(s) atribuível(is) ` +
+      `a esta sessão (touched_paths/dirty_paths)${foreignSuffix}:\n${ownList}\n` +
       "Commitar, dar push, ou mover o trabalho pra fora do repo antes de encerrar o tick — nunca encerrar " +
-      "deixando trabalho não commitado no checkout compartilhado (#6922). Se a sujeira é de OUTRA sessão " +
-      "concorrente (checkout compartilhado, #6168), usar --allow-dirty pra confirmar isso explicitamente.\n",
+      "deixando trabalho PRÓPRIO não commitado no checkout compartilhado (#6922). --allow-dirty bypassa " +
+      "explicitamente se necessário.\n",
   };
 }
 
@@ -3398,15 +3455,21 @@ function main(): void {
         // (data/sessions/ é compartilhado via OneDrive) sem exigir rodar o
         // comando fisicamente naquela máquina.
         const tag = values.tag ?? machineTag();
-        // #6922: recusa encerrar o tick com o checkout sujo — ver docstring
-        // de `evaluateEndGuard` acima. `--allow-dirty` bypassa de propósito
-        // (sujeira pode ser de outra sessão concorrente no mesmo checkout).
-        const endGuard = evaluateEndGuard(repoRoot, flags.has("allow-dirty"));
+        // #6922 (revisado): recusa encerrar o tick só quando a sujeira é
+        // ATRIBUÍVEL à própria sessão (interseção com touched_paths/
+        // dirty_paths do próprio registro, lido ANTES de endSession remover
+        // o arquivo) — ver docstring de `evaluateEndGuard` acima.
+        // `--allow-dirty` bypassa de propósito (mesmo em sujeira própria).
+        const ownRecordPath = sessionFilePath(repoRoot, kind, tag, sessionId);
+        const ownRecord = readJsonSafe<SessionRecord>(ownRecordPath);
+        const ownPaths = [...(ownRecord?.touched_paths ?? []), ...(ownRecord?.dirty_paths ?? [])];
+        const endGuard = evaluateEndGuard(repoRoot, flags.has("allow-dirty"), ownPaths);
         if (!endGuard.ok) {
           process.stdout.write(endGuard.message ?? "session-registry: end recusado (árvore suja)\n");
           process.exitCode = 1;
           break;
         }
+        if (endGuard.warning) process.stderr.write(endGuard.warning);
         const removed = endSession(repoRoot, kind, sessionId, tag);
         if (removed) {
           process.stdout.write("session-registry: ended\n");
@@ -3697,8 +3760,9 @@ function main(): void {
             "(não-stale) do kind K? `--session-id` exclui a própria sessão da resposta (#6277).\n" +
             "  --tag (só \"end\"): machineTag() da sessão a encerrar (default: machineTag() local) — necessário " +
             "pra encerrar da máquina local o registro de OUTRA máquina em data/sessions/ (#5797).\n" +
-            "  --allow-dirty (só \"end\"): bypassa a recusa (#6922) quando repoRoot tem mudanças não commitadas — " +
-            "usar só quando a sujeira é confirmadamente de outra sessão concorrente no mesmo checkout.\n" +
+            "  --allow-dirty (só \"end\"): bypassa a recusa (#6922) — a recusa em si já só dispara quando a " +
+            "sujeira intersecta touched_paths/dirty_paths da PRÓPRIA sessão; sujeira alheia de outra sessão " +
+            "concorrente no mesmo checkout prossegue com aviso, nunca exit 1.\n" +
             "  conflicts [--paths a,b] [--branch X]: CONSULTA (#6168) — quem mais está mexendo nisto agora. " +
             "exit 1 = sobreposição com peer VIVO; exit 0 = livre. Nunca cria arquivo nem adquire nada.\n" +
             "  grant-merge --kind {overnight|develop|continuo} --granted-to X [--pr N]: concede janela de merge a " +

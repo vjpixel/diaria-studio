@@ -217,21 +217,57 @@ describe("evaluateEndGuard — #6922", { skip: !gitSupportsPathFormat() }, () =>
     assert.deepEqual(evaluateEndGuard(root, false), { ok: true });
   });
 
-  it("árvore suja + allowDirty: false (default do CLI `end`) — recusa e nomeia o(s) arquivo(s)", () => {
+  it("árvore suja + allowDirty: false + arquivo sujo EM touched_paths/dirty_paths — recusa e nomeia o(s) arquivo(s)", () => {
     const root = freshRoot();
     initGitRepo(root);
     writeFileSync(join(root, "trabalho-nao-commitado.txt"), "conteúdo\n");
-    const result = evaluateEndGuard(root, false);
+    const result = evaluateEndGuard(root, false, ["trabalho-nao-commitado.txt"]);
     assert.equal(result.ok, false);
     assert.match(result.message ?? "", /RECUSADO/);
     assert.match(result.message ?? "", /trabalho-nao-commitado\.txt/);
   });
 
-  it("árvore suja + allowDirty: true (--allow-dirty explícito) — bypassa, ok: true", () => {
+  it("árvore suja + allowDirty: true (--allow-dirty explícito) — bypassa, ok: true mesmo com ownPaths casando", () => {
     const root = freshRoot();
     initGitRepo(root);
     writeFileSync(join(root, "trabalho-nao-commitado.txt"), "conteúdo\n");
-    assert.deepEqual(evaluateEndGuard(root, true), { ok: true });
+    assert.deepEqual(evaluateEndGuard(root, true, ["trabalho-nao-commitado.txt"]), { ok: true });
+  });
+
+  // Regressão (finding do review do coordenador em #6997/#6922): a sujeira
+  // do checkout compartilhado quase nunca é da sessão que está encerrando
+  // (#6168 é a norma, não a exceção) — recusar por sujeira ALHEIA agrava
+  // #6623/#6624 (claims presas sem quem digite --allow-dirty). O `end` só
+  // pode recusar quando a sujeira intersecta touched_paths/dirty_paths da
+  // PRÓPRIA sessão.
+  it("árvore suja SÓ com arquivo fora de touched_paths/dirty_paths da sessão — prossegue (ok: true) com aviso", () => {
+    const root = freshRoot();
+    initGitRepo(root);
+    writeFileSync(join(root, "arquivo-de-outra-sessao.txt"), "sujeira alheia\n");
+    const result = evaluateEndGuard(root, false, ["scripts/lib/algo-que-esta-sessao-tocou.ts"]);
+    assert.equal(result.ok, true);
+    assert.match(result.warning ?? "", /arquivo-de-outra-sessao\.txt/);
+    assert.match(result.warning ?? "", /OUTRA sessão/);
+  });
+
+  it("sem ownPaths (registro sem beacon, ou nenhum passado) — nunca atribui a si, sempre prossegue avisando", () => {
+    const root = freshRoot();
+    initGitRepo(root);
+    writeFileSync(join(root, "trabalho-nao-commitado.txt"), "conteúdo\n");
+    const result = evaluateEndGuard(root, false);
+    assert.equal(result.ok, true);
+    assert.ok(result.warning);
+  });
+
+  it("sujeira mista (própria + alheia) — recusa citando só a própria, mas menciona a contagem de alheia", () => {
+    const root = freshRoot();
+    initGitRepo(root);
+    writeFileSync(join(root, "meu-arquivo.txt"), "meu trabalho\n");
+    writeFileSync(join(root, "arquivo-de-outra-sessao.txt"), "sujeira alheia\n");
+    const result = evaluateEndGuard(root, false, ["meu-arquivo.txt"]);
+    assert.equal(result.ok, false);
+    assert.match(result.message ?? "", /meu-arquivo\.txt/);
+    assert.doesNotMatch(result.message ?? "", /arquivo-de-outra-sessao\.txt/);
   });
 });
 
