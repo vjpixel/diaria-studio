@@ -43,30 +43,40 @@ claude_binary_preflight() {
     return 0
   fi
 
-  local repair_cmd="${CLAUDE_BINARY_PREFLIGHT_REPAIR_CMD:-}"
-  local install_cjs=""
-  if [ -z "$repair_cmd" ]; then
+  local install_cjs="" repair_attempted=0
+
+  if [ -n "${CLAUDE_BINARY_PREFLIGHT_REPAIR_CMD:-}" ]; then
+    # Override explícito (teste/operador) — string de comando, precisa de
+    # `eval` mesmo (é o próprio propósito do override). Nunca o caminho
+    # default de produção.
+    eval "$CLAUDE_BINARY_PREFLIGHT_REPAIR_CMD" >/dev/null 2>&1 || true
+    repair_attempted=1
+  else
     # Deriva o caminho do install.cjs do prefixo REAL do npm nesta máquina
     # (`~/.npmrc`/config, não uma constante — #6891 nomeia isso
     # explicitamente: hardcodar `~/.npm-global/...` quebra em qualquer
-    # máquina com prefixo diferente).
+    # máquina com prefixo diferente). Achado do review da PR #6894 (P3,
+    # média-alta): `node "$install_cjs"` roda direto (sem `eval`) — o
+    # output de `npm root -g` nunca precisa ser re-interpretado pelo shell.
     local npm_cmd="${CLAUDE_BINARY_PREFLIGHT_NPM_CMD:-npm}"
     local npm_root
     npm_root="$("$npm_cmd" root -g 2>/dev/null)" || npm_root=""
     if [ -n "$npm_root" ]; then
       install_cjs="${npm_root}/@anthropic-ai/claude-code/install.cjs"
-      repair_cmd="node \"$install_cjs\""
+      node "$install_cjs" >/dev/null 2>&1 || true
+      repair_attempted=1
     fi
   fi
 
-  if [ -n "$repair_cmd" ]; then
-    eval "$repair_cmd" >/dev/null 2>&1 || true
-    if "$cmd" --version >/dev/null 2>&1; then
-      echo "AVISO: binário Claude Code estava quebrado — reparado automaticamente (#6891)${install_cjs:+" via $install_cjs"}. A frequência desta mensagem é o dado que abriu a issue — não ignorar se aparecer com frequência." >&2
-      return 0
-    fi
+  if [ "$repair_attempted" -eq 1 ] && "$cmd" --version >/dev/null 2>&1; then
+    echo "AVISO: binário Claude Code estava quebrado — reparado automaticamente (#6891)${install_cjs:+" via $install_cjs"}. A frequência desta mensagem é o dado que abriu a issue — não ignorar se aparecer com frequência." >&2
+    return 0
   fi
 
-  echo "ERRO: binário Claude Code quebrado — reparo automático não resolveu${install_cjs:+" ($install_cjs)"} — rodar manualmente: node \$(npm root -g)/@anthropic-ai/claude-code/install.cjs" >&2
+  if [ "$repair_attempted" -eq 1 ]; then
+    echo "ERRO: binário Claude Code quebrado — reparo automático não resolveu${install_cjs:+" ($install_cjs)"} — rodar manualmente: node \$(npm root -g)/@anthropic-ai/claude-code/install.cjs" >&2
+  else
+    echo "ERRO: binário Claude Code quebrado — reparo automático NÃO foi tentado (\`npm root -g\` não resolveu um prefixo) — rodar manualmente: node \$(npm root -g)/@anthropic-ai/claude-code/install.cjs" >&2
+  fi
   exit 5
 }

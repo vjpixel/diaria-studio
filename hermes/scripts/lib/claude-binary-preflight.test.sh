@@ -106,6 +106,30 @@ assert_eq "reparo não resolve: preflight sai com exit 5" "5" "$RC_BROKEN"
 assert_contains "reparo não resolve: mensagem nomeada, não enigmática" "$STDERR_BROKEN" "ERRO: binário Claude Code quebrado"
 assert_contains "reparo não resolve: mensagem cita que o reparo foi tentado" "$STDERR_BROKEN" "reparo automático não resolveu"
 
+# ── npm root -g falha/vazio: reparo NUNCA é tentado (mensagem distinta) ───
+# Achado do review PR #6894 (P3): sem prefixo npm resolvido, "reparo não
+# resolveu" seria enganoso — o reparo nem chegou a rodar.
+
+cat > "$WORKDIR/npm-fail" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$WORKDIR/npm-fail"
+
+set +e
+STDERR_NO_NPM_ROOT="$(
+  (
+    CLAUDE_BINARY_PREFLIGHT_CMD="$WORKDIR/claude-broken"
+    CLAUDE_BINARY_PREFLIGHT_NPM_CMD="$WORKDIR/npm-fail"
+    unset CLAUDE_BINARY_PREFLIGHT_REPAIR_CMD
+    claude_binary_preflight
+  ) 2>&1 1>/dev/null
+)"
+RC_NO_NPM_ROOT=$?
+set -e
+assert_eq "npm root -g falha: preflight sai com exit 5" "5" "$RC_NO_NPM_ROOT"
+assert_contains "npm root -g falha: mensagem diz que o reparo NÃO foi tentado (nunca 'não resolveu')" "$STDERR_NO_NPM_ROOT" "reparo automático NÃO foi tentado"
+
 # ── Binário ausente (sem override de reparo) — mesmo comportamento de antes ─
 
 set +e
