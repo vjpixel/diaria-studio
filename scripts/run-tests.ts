@@ -158,15 +158,42 @@
  * sair naturalmente depois do event loop drenar as escritas pendentes, sem
  * segurar a saída se não houver mais nenhum handle ativo).
  */
-import { spawnSync } from "node:child_process";
+import { spawnSync, fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { availableParallelism } from "node:os";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { listTestFiles } from "./assert-test-discovery.ts";
-import { isMainModule } from "./lib/cli-args.ts";
+import { isMainModule, getArg } from "./lib/cli-args.ts";
 
 /** Batches de 150 arquivos: bem abaixo do teto de ~32767 chars do Windows
  *  mesmo com paths absolutos longos (150 × ~150 chars ≈ 22.500), com folga
  *  suficiente pra não precisar recalibrar a cada arquivo novo no repo. */
 export const BATCH_SIZE = 150;
+
+/** #6877 (achado ao vivo, escrevendo o teste de integração real deste
+ *  módulo): `node:test` marca o processo em que está rodando com
+ *  `NODE_TEST_CONTEXT`/`NODE_TEST_WORKER_ID` (env vars internas do próprio
+ *  Node) — `spawnSync`/`fork` herdam `process.env` por padrão, então um
+ *  processo que já roda DENTRO de um `node --test` (ex: este próprio módulo
+ *  sendo exercitado por `test/run-tests.test.ts`, ou qualquer wrapper de CI
+ *  que algum dia rode `npm test` a partir de um contexto de teste já ativo)
+ *  propaga essas vars pro GRANDCHILD que `runOne`/`bisectHangingBatch`
+ *  disparam (`node --test <batch>`) — o Node detecta a marca herdada e
+ *  imprime `"run() is being called recursively within a test file. skipping
+ *  running files."`, e o batch/sub-lista sai sem rodar NENHUM teste (sumário
+ *  ausente, tratado corretamente como falha pelo #6822 — mas silenciosa na
+ *  causa: sem isto, alguém vendo "sem sumário" ia procurar hang, não
+ *  herança de env). Nunca acontece no caminho de produção normal (`npm test`
+ *  não roda dentro de outro `node --test`), mas o teste de integração real
+ *  do #6877 (que precisa rodar `node --test` de dentro da própria suíte pra
+ *  provar o `fork()`) expôs exatamente esse cenário — corrigido na fonte
+ *  (nunca propagar a marca), não contornado só no teste. */
+function cleanChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const { NODE_TEST_CONTEXT: _ctx, NODE_TEST_WORKER_ID: _wid, ...rest } = env;
+  return rest;
+}
 
 /** Pure: parte uma lista em batches de tamanho `size` (último pode ser menor). */
 export function chunk<T>(items: T[], size: number): T[][] {
@@ -336,6 +363,7 @@ export function bisectHangingBatch(
     maxBuffer: 256 * 1024 * 1024,
     timeout: subTimeoutMs,
     killSignal: "SIGKILL",
+    env: cleanChildEnv(),
   });
   const out = result.stdout ? String(result.stdout) : "";
   const err = result.stderr ? String(result.stderr) : "";
@@ -382,28 +410,65 @@ export function formatBisectResult(result: BisectResult): string {
   return parts.join(" | ");
 }
 
-/** Roda `node --import tsx --test <batch...>` em batches sequenciais.
- *  Retorna o exit code agregado (0 só se TODOS os batches saírem 0). */
-export function runTestBatches(opts: RunTestsOptions): number {
+/** Subconjunto de `RunTestsOptions` que `processChunkedBatches` precisa —
+ *  tudo MENOS `files`/`batchSize` (o caller já fez o `chunk`). Extraído pro
+ *  #6877: o mesmo processamento sequencial de uma lista de batches roda
+ *  tanto no caminho single-process (`runTestBatches`, batches = TODOS)
+ *  quanto dentro de cada worker do caminho paralelo (batches = só a fatia
+ *  daquele worker) — sem duplicar a lógica de retry/timeout/bisecção. */
+export interface ProcessChunkedBatchesOptions {
+  extraArgs?: string[];
+  spawn?: typeof spawnSync;
+  stdout?: { write(chunk: string): unknown };
+  stderr?: { write(chunk: string): unknown };
+  batchTimeoutMs?: number;
+  bisectTimeoutMs?: number;
+  bisectBudgetMs?: number;
+  /** #6877: rótulo do batch no log inclui "grupo N" quando rodando dentro
+   *  de um worker paralelo (só pra legibilidade do log combinado — não
+   *  afeta nenhuma decisão). `undefined` no caminho single-process
+   *  (comportamento idêntico ao de antes do #6877). */
+  labelPrefix?: string;
+}
+
+export interface ProcessChunkedBatchesResult {
+  exitCode: number;
+  /** Quantos arquivos tiveram um sumário GENUÍNO do node:test confirmado
+   *  (batch terminou de rodar, passou ou falhou — os dois contam). Comparado
+   *  pelo CALLER contra o total esperado — este função não conhece o total
+   *  geral quando roda só a fatia de um worker. */
+  completedFiles: number;
+}
+
+/** Processa uma lista JÁ CHUNKADA de batches, sequencialmente — mesma lógica
+ *  de retry (#6495/#6857), timeout+SIGKILL e bisecção de hang (#6822) que
+ *  `runTestBatches` sempre teve, agora reutilizável pelo caminho paralelo do
+ *  #6877 (cada worker chama isto só com a sua fatia de batches). NÃO faz o
+ *  check final de `completedFiles === total esperado` — isso é
+ *  responsabilidade do CALLER, que é quem sabe o total (a fatia de um
+ *  worker sozinho nunca bate com `files.length` inteiro). */
+export function processChunkedBatches(
+  batches: string[][],
+  opts: ProcessChunkedBatchesOptions = {},
+): ProcessChunkedBatchesResult {
   const {
-    files,
     extraArgs = [],
-    batchSize = BATCH_SIZE,
     spawn = spawnSync,
     stdout = process.stdout,
     stderr = process.stderr,
     batchTimeoutMs = DEFAULT_BATCH_TIMEOUT_MS,
     bisectTimeoutMs = DEFAULT_BISECT_TIMEOUT_MS,
     bisectBudgetMs = DEFAULT_BISECT_BUDGET_MS,
+    labelPrefix,
   } = opts;
   /** #6822 (Defeito B): tenta isolar o(s) arquivo(s) culpado(s) de um batch
    *  que não produziu sumário — só roda se houver orçamento (`bisectBudgetMs
    *  > 0`); escreve o resultado formatado em `stderr` como uma linha extra,
    *  sem alterar `exitCode` (a falha do batch já foi decidida pelo caller).
    *  Isolado numa closure porque os 3 call sites precisam do mesmo
-   *  `deadline` por CHAMADA de `runTestBatches` (não por batch — um batch
-   *  travado já consumiu tempo real da suíte; não vale a pena dar orçamento
-   *  cheio de novo pra cada ocorrência dentro da mesma rodada de CI). */
+   *  `deadline` por CHAMADA (não por batch — um batch travado já consumiu
+   *  tempo real da suíte; não vale a pena dar orçamento cheio de novo pra
+   *  cada ocorrência dentro da mesma rodada de CI/worker). */
   const bisectDeadline = Date.now() + bisectBudgetMs;
   const tryBisect = (batch: string[]): string => {
     if (bisectBudgetMs <= 0) {
@@ -412,18 +477,7 @@ export function runTestBatches(opts: RunTestsOptions): number {
     const result = bisectHangingBatch(batch, spawn, extraArgs, bisectTimeoutMs, bisectDeadline);
     return formatBisectResult(result);
   };
-  if (files.length === 0) {
-    // Sem arquivos: deixa o guard `assert-test-discovery.ts` (pretest) ser
-    // quem falha alto nesse caso — este wrapper não duplica esse julgamento.
-    return 0;
-  }
-  const batches = chunk(files, batchSize);
   let exitCode = 0;
-  // #6822: quantos arquivos tiveram um sumário GENUÍNO do node:test
-  // confirmado (batch rodou até o fim, passou ou falhou — não importa,
-  // desde que tenha terminado de verdade). Comparado contra `files.length`
-  // no final — a mesma contagem que o pretest (`assert-test-discovery.ts`)
-  // produz via `listTestFiles` compartilhado.
   let completedFiles = 0;
 
   const runOne = (batch: string[]) =>
@@ -444,6 +498,11 @@ export function runTestBatches(opts: RunTestsOptions): number {
       // numa promise pendente pode ignorar SIGTERM.
       timeout: batchTimeoutMs,
       killSignal: "SIGKILL",
+      // #6877 — ver docstring de `cleanChildEnv`: nunca propagar
+      // NODE_TEST_CONTEXT/NODE_TEST_WORKER_ID herdados (processo pai já
+      // rodando dentro de outro `node --test`) pro batch, senão o `--test`
+      // deste grandchild se recusa a rodar ("run() called recursively").
+      env: cleanChildEnv(),
     });
 
   /** `spawn` está tipado como `typeof spawnSync` (assinatura genérica) —
@@ -461,7 +520,7 @@ export function runTestBatches(opts: RunTestsOptions): number {
   };
 
   batches.forEach((batch, idx) => {
-    const label = `batch ${idx + 1}/${batches.length}`;
+    const label = labelPrefix ? `${labelPrefix} batch ${idx + 1}/${batches.length}` : `batch ${idx + 1}/${batches.length}`;
     // #6822 (Defeito B, instrumentação): loga os candidatos ANTES de
     // despachar — se este batch travar, o próximo hang já sai com o
     // universo de arquivos suspeitos no log, sem precisar esperar o
@@ -551,37 +610,323 @@ export function runTestBatches(opts: RunTestsOptions): number {
     if ((result.status ?? 1) !== 0) exitCode = 1;
   });
 
-  // #6822: confronta o que de fato completou contra o que deveria ter
-  // rodado (`files.length`, a mesma contagem que `listTestFiles` produz
-  // pro pretest `assert-test-discovery.ts`). Defesa em profundidade — cada
-  // batch problemático já marca `exitCode = 1` sozinho acima, mas este
-  // check final é o que a issue pede explicitamente: nunca deixar cobertura
-  // parcial sair 0, mesmo que o motivo específico do gap não tenha sido
-  // capturado por nenhum dos ramos acima.
-  if (completedFiles !== files.length) {
-    exitCode = 1;
-    stderr.write(
-      `\nrun-tests: cobertura incompleta — ${completedFiles}/${files.length} arquivos *.test.ts confirmados via sumário do node:test (mesma contagem que scripts/assert-test-discovery.ts, o pretest, produz via listTestFiles). ${
-        files.length - completedFiles
-      } arquivo(s) nunca produziram um resultado válido — pelo menos 1 batch travou ou falhou ao terminar. Nunca sai 0 com cobertura parcial (#6822).\n`,
-    );
-  }
+  return { exitCode, completedFiles };
+}
 
+/** Roda `node --import tsx --test <batch...>` em batches sequenciais, num
+ *  processo só (comportamento idêntico ao de antes do #6877 — usado pelos
+ *  testes existentes deste arquivo, e como fallback do caminho paralelo
+ *  quando `workerCount <= 1`). Retorna o exit code agregado (0 só se TODOS
+ *  os batches saírem 0 E a cobertura bater com `files.length`). */
+export function runTestBatches(opts: RunTestsOptions): number {
+  const { files, batchSize = BATCH_SIZE, stderr = process.stderr } = opts;
+  if (files.length === 0) {
+    // Sem arquivos: deixa o guard `assert-test-discovery.ts` (pretest) ser
+    // quem falha alto nesse caso — este wrapper não duplica esse julgamento.
+    return 0;
+  }
+  const batches = chunk(files, batchSize);
+  const { exitCode, completedFiles } = processChunkedBatches(batches, opts);
+  return finalizeExitCode(exitCode, completedFiles, files.length, stderr);
+}
+
+/** #6822: confronta o que de fato completou contra o que deveria ter rodado
+ *  (`totalFiles`, a mesma contagem que `listTestFiles` produz pro pretest
+ *  `assert-test-discovery.ts`). Defesa em profundidade — cada batch
+ *  problemático já marca sua própria falha, mas este check final é o que a
+ *  issue original pediu explicitamente: nunca deixar cobertura parcial sair
+ *  0. Extraído pro #6877: o caminho paralelo faz o MESMO check, mas somando
+ *  `completedFiles` de TODOS os workers antes de comparar — nunca por
+ *  worker isolado (a fatia de 1 worker nunca bate com o total geral). */
+export function finalizeExitCode(
+  exitCode: number,
+  completedFiles: number,
+  totalFiles: number,
+  stderr: { write(chunk: string): unknown } = process.stderr,
+): number {
+  if (completedFiles !== totalFiles) {
+    stderr.write(
+      `\nrun-tests: cobertura incompleta — ${completedFiles}/${totalFiles} arquivos *.test.ts confirmados via sumário do node:test (mesma contagem que scripts/assert-test-discovery.ts, o pretest, produz via listTestFiles). ${
+        totalFiles - completedFiles
+      } arquivo(s) nunca produziram um resultado válido — pelo menos 1 batch/worker travou ou falhou ao terminar. Nunca sai 0 com cobertura parcial (#6822).\n`,
+    );
+    return 1;
+  }
   return exitCode;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// #6877 — paralelismo de batches
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Medição da issue: em 12 runs de CI (7 sucessos + 5 falhas), a soma dos
+// `duration_ms` que o próprio `node:test` reporta por batch bate com a
+// duração do step inteiro (diff <1%) — não é hang (#6822 continua dona
+// dessa pergunta, separada), é custo SEQUENCIAL genuíno: 10 batches de
+// ~150 arquivos cada, um de cada vez, ~444s de trabalho real.
+//
+// Caminho escolhido (opção 1 da issue — "paralelismo dentro do runner"):
+// processo pai divide os batches (já chunkados por `BATCH_SIZE`, mesma
+// regra de sempre) em `workerCount` grupos e usa `child_process.fork` pra
+// rodar cada grupo num PROCESSO Node separado — não `worker_threads`,
+// porque `spawnSync` bloqueia só a THREAD chamadora, e workers de thread
+// ainda competem pelo mesmo processo/heap; processos separados dão
+// paralelismo de CPU de verdade, e o script já usa `spawnSync` (bloqueante)
+// dentro de cada grupo de qualquer forma — replicar essa mesma lógica em N
+// processos é a mudança mínima que preserva 100% da lógica de retry/
+// timeout/bisecção existente (`processChunkedBatches`, extraída acima,
+// roda IDÊNTICA nos dois caminhos).
+//
+// Cada worker é uma re-invocação deste MESMO script com `--worker <payload>`
+// — o payload (grupo de batches + config) vai por ARQUIVO temporário, nunca
+// por argv (razão original do próprio batching: o teto de ~32767 chars do
+// `CreateProcessW` do Windows; um grupo pode ter várias centenas de
+// arquivos, argv de novo seria arriscado). Comunicação do resultado de
+// volta ao pai é por IPC (`fork` estabelece o canal automaticamente,
+// `process.send`/`on("message")`) — nunca por parsing de stdout (frágil
+// com múltiplos workers escrevendo ao mesmo tempo).
+//
+// Cuidados que a issue pediu, endereçados:
+//   - Guard de sumário (#6833/#6822) nunca regride: `processChunkedBatches`
+//     é a MESMA função nos dois caminhos, sem bifurcação de lógica.
+//   - Worker que morre/crasha SEM mandar o `message` de resultado conta como
+//     falha dura, `completedFiles` fica em 0 pra aquele grupo — mesmo
+//     princípio do #6822 ("resultado ausente nunca é sucesso"), agora
+//     também no nível de worker, não só de batch.
+//   - `finalizeExitCode` (extraído acima) faz o mesmo check de cobertura
+//     completa, agora somando `completedFiles` de TODOS os workers antes de
+//     comparar com o total — nunca por worker isolado.
+//   - Testes que dependem de recurso compartilhado sob concorrência: fora
+//     de escopo consertar aqui (a issue já avisa) — se aparecer flake novo,
+//     a causa provável é essa, tratado em issue própria.
+
+/** Pura: distribui `batches` em `groupCount` grupos por ROUND-ROBIN (item i
+ *  vai pro grupo `i % groupCount`) — não contíguo. Batches têm duração
+ *  parecida entre si (mesmo `BATCH_SIZE`), mas qualquer ponto sistematicamente
+ *  mais lento do repo (ex: um arquivo pesado que sempre cai no mesmo batch,
+ *  já aconteceu com `alarm-issues.test.ts` no #6822) fica espalhado entre
+ *  workers diferentes em vez de concentrado num grupo contíguo só — reduz a
+ *  chance de UM worker carregar desproporcionalmente mais trabalho que os
+ *  outros. Grupos vazios (mais workers que batches) são removidos do
+ *  resultado — nunca faz sentido pagar overhead de `fork()` pra um grupo
+ *  sem nada pra processar. */
+export function splitIntoWorkerGroups<T>(batches: T[], groupCount: number): T[][] {
+  if (groupCount <= 0) throw new Error(`splitIntoWorkerGroups: groupCount deve ser > 0, recebeu ${groupCount}`);
+  const groups: T[][] = Array.from({ length: groupCount }, () => []);
+  batches.forEach((batch, i) => {
+    groups[i % groupCount].push(batch);
+  });
+  return groups.filter((g) => g.length > 0);
+}
+
+/** Payload que o processo PAI escreve num arquivo temporário e o WORKER lê —
+ *  nunca passado via argv (mesma razão do teto do Windows que motivou o
+ *  batching original). */
+interface WorkerPayload {
+  batches: string[][];
+  extraArgs: string[];
+  batchTimeoutMs: number;
+  bisectTimeoutMs: number;
+  bisectBudgetMs: number;
+  /** Rótulo pro log combinado (ex: "grupo 1/4") — só legibilidade. */
+  label: string;
+}
+
+/** Resultado que o WORKER manda de volta ao pai via IPC (`process.send`). */
+interface WorkerResult {
+  exitCode: number;
+  completedFiles: number;
+}
+
+/** Default de workers concorrentes — min(4, CPUs disponíveis), nunca mais
+ *  que o hardware tem (oversubscrever CPU move o gargalo de I/O sequencial
+ *  pra contenção de scheduler, sem ganho real). `4` é o teto porque o ganho
+ *  marginal do 5º worker em diante é pequeno frente ao overhead de spawnar
+ *  mais um processo Node (~100-200ms de startup do V8/tsx cada) pra um job
+ *  de ~8min total. Overridável via `RUN_TESTS_WORKERS` (`1` desliga o
+ *  paralelismo inteiro — cai no caminho single-process de sempre). */
+export const DEFAULT_WORKER_COUNT = (() => {
+  const raw = process.env.RUN_TESTS_WORKERS;
+  const parsed = raw ? Number(raw) : NaN;
+  if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  try {
+    return Math.max(1, Math.min(4, availableParallelism()));
+  } catch {
+    // `availableParallelism` pode lançar em sandbox/container restrito —
+    // fail-soft pro caminho single-process (workerCount=1 desliga o
+    // paralelismo em `runTestBatchesParallel`, nunca lança).
+    return 1;
+  }
+})();
+
+/** Roda um único worker (processo `fork`ado) até o fim — resolve com o
+ *  `WorkerResult` recebido via IPC, ou com `{exitCode:1, completedFiles:0}`
+ *  se o processo morrer sem mandar mensagem (crash, OOM, kill externo —
+ *  nunca deixa "resultado ausente" virar sucesso, mesmo princípio do #6822
+ *  aplicado ao nível de worker). stdout/stderr do worker são encanados pro
+ *  processo pai em tempo real (`pipe`, forwarded) — múltiplos workers
+ *  escrevendo ao mesmo tempo interlaçam no log combinado, tradeoff aceito
+ *  (mesmo processo/1 job de CI, não shards separados — a issue autoriza
+ *  esse tradeoff na opção 1). */
+function runWorker(payload: WorkerPayload, scriptPath: string, payloadPath: string): Promise<WorkerResult> {
+  return new Promise((resolvePromise) => {
+    let settled = false;
+    const child: ChildProcess = fork(scriptPath, ["--worker", payloadPath], {
+      execArgv: ["--import", "tsx"],
+      stdio: ["inherit", "pipe", "pipe", "ipc"],
+    });
+    child.stdout?.pipe(process.stdout);
+    child.stderr?.pipe(process.stderr);
+    child.on("message", (msg: unknown) => {
+      const m = msg as Partial<WorkerResult> | null;
+      if (m && typeof m.exitCode === "number" && typeof m.completedFiles === "number") {
+        settled = true;
+        resolvePromise({ exitCode: m.exitCode, completedFiles: m.completedFiles });
+      }
+    });
+    child.on("exit", () => {
+      if (!settled) {
+        console.error(
+          `run-tests: worker (${payload.label}) terminou SEM enviar resultado via IPC (crash, OOM, ou kill externo antes de completar) — tratando como falha dura, 0 arquivos completados neste grupo.`,
+        );
+        settled = true;
+        resolvePromise({ exitCode: 1, completedFiles: 0 });
+      }
+    });
+    child.on("error", (err) => {
+      if (!settled) {
+        console.error(`run-tests: falha ao iniciar worker (${payload.label}): ${err.message}`);
+        settled = true;
+        resolvePromise({ exitCode: 1, completedFiles: 0 });
+      }
+    });
+  });
+}
+
+export interface RunTestBatchesParallelOptions extends Omit<RunTestsOptions, "spawn" | "stdout" | "stderr"> {
+  /** Quantos processos worker concorrentes — default `DEFAULT_WORKER_COUNT`.
+   *  `<= 1` (ou batches insuficientes pra valer a pena) cai no caminho
+   *  single-process de sempre (`runTestBatches`), sem overhead de fork. */
+  workerCount?: number;
+  /** Path absoluto DESTE script — usado pra `fork()`. Injetável pra teste;
+   *  default resolve via `import.meta.url` no caller de produção. */
+  scriptPath?: string;
+}
+
+/** Caminho de produção do #6877: divide os batches entre `workerCount`
+ *  processos concorrentes. Cai automaticamente no caminho single-process
+ *  (`runTestBatches`, comportamento idêntico a antes do #6877) quando
+ *  `workerCount <= 1` ou há batches demais pouco pra valer o overhead de
+ *  fork (1 batch só). Assíncrona (fork+IPC são inerentemente async) — o
+ *  caminho single-process continua 100% síncrono e é o que os testes deste
+ *  arquivo exercitam diretamente. */
+export async function runTestBatchesParallel(opts: RunTestBatchesParallelOptions): Promise<number> {
+  const {
+    files,
+    extraArgs = [],
+    batchSize = BATCH_SIZE,
+    batchTimeoutMs = DEFAULT_BATCH_TIMEOUT_MS,
+    bisectTimeoutMs = DEFAULT_BISECT_TIMEOUT_MS,
+    bisectBudgetMs = DEFAULT_BISECT_BUDGET_MS,
+    workerCount = DEFAULT_WORKER_COUNT,
+    scriptPath = fileURLToPath(import.meta.url),
+  } = opts;
+  if (files.length === 0) return 0;
+  const batches = chunk(files, batchSize);
+  if (workerCount <= 1 || batches.length <= 1) {
+    // Nada a paralelizar (ou paralelismo desligado) — caminho de sempre.
+    return runTestBatches(opts);
+  }
+  const groups = splitIntoWorkerGroups(batches, workerCount);
+  const tmpDir = mkdtempSync(join(tmpdir(), "run-tests-workers-"));
+  try {
+    const results = await Promise.all(
+      groups.map((groupBatches, i) => {
+        const label = `grupo ${i + 1}/${groups.length}`;
+        const payload: WorkerPayload = {
+          batches: groupBatches,
+          extraArgs,
+          batchTimeoutMs,
+          bisectTimeoutMs,
+          bisectBudgetMs,
+          label,
+        };
+        const payloadPath = join(tmpDir, `worker-${i}.json`);
+        writeFileSync(payloadPath, JSON.stringify(payload));
+        return runWorker(payload, scriptPath, payloadPath);
+      }),
+    );
+    const exitCode = results.some((r) => r.exitCode !== 0) ? 1 : 0;
+    const completedFiles = results.reduce((sum, r) => sum + r.completedFiles, 0);
+    return finalizeExitCode(exitCode, completedFiles, files.length, process.stderr);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+/** Modo worker do CLI — invocado só internamente por `runTestBatchesParallel`
+ *  via `fork()`, nunca diretamente por um humano/CI. Lê o payload do
+ *  arquivo, processa a fatia de batches com `spawnSync` REAL (não injetado —
+ *  produção, não teste), e manda o resultado de volta ao pai via
+ *  `process.send`. */
+function runAsWorker(payloadPath: string): void {
+  const payload = JSON.parse(readFileSync(payloadPath, "utf8")) as WorkerPayload;
+  const { exitCode, completedFiles } = processChunkedBatches(payload.batches, {
+    extraArgs: payload.extraArgs,
+    batchTimeoutMs: payload.batchTimeoutMs,
+    bisectTimeoutMs: payload.bisectTimeoutMs,
+    bisectBudgetMs: payload.bisectBudgetMs,
+    labelPrefix: payload.label,
+  });
+  const result: WorkerResult = { exitCode, completedFiles };
+  if (process.send) {
+    process.send(result);
+  } else {
+    // `fork()` sempre estabelece o canal IPC — `process.send` ausente
+    // significaria que este processo foi iniciado de outro jeito (nunca
+    // deveria acontecer no uso normal). Fail loud, não silencioso.
+    console.error("run-tests: modo --worker sem canal IPC (process.send ausente) — inesperado, saindo com falha.");
+    process.exitCode = 1;
+    return;
+  }
+  process.exitCode = exitCode;
 }
 
 // CLI guard (#cli-guard): só roda como main; importável em testes sem disparar.
 if (isMainModule(import.meta.url)) {
-  const root = fileURLToPath(new URL("..", import.meta.url));
-  const files = listTestFiles(root);
-  const extraArgs = process.argv.slice(2);
-  // #6822: `process.exit(code)` síncrono, chamado logo após o último
-  // `stdout.write`/`stderr.write` de `runTestBatches`, pode truncar a
-  // cauda do buffer se a escrita ainda não drenou — `process.stdout` é
-  // ASSÍNCRONO quando conectado a um pipe não-TTY (o caso normal da CI).
-  // `process.exitCode` deixa o processo sair sozinho depois que o event
-  // loop esvaziar (inclusive as escritas pendentes), sem segurar a saída
-  // caso não sobre nenhum handle ativo (não há nenhum aqui — todo o
-  // trabalho de `runTestBatches` é síncrono via `spawnSync`).
-  process.exitCode = runTestBatches({ files, extraArgs });
+  const workerPayloadPath = getArg(process.argv.slice(2), "worker");
+  if (workerPayloadPath) {
+    // #6877: este processo é um WORKER — despachado internamente por
+    // `runTestBatchesParallel` via `fork()`, processa só a sua fatia e
+    // reporta de volta via IPC. Nunca invocado assim por um humano/CI.
+    runAsWorker(workerPayloadPath);
+  } else {
+    const root = fileURLToPath(new URL("..", import.meta.url));
+    const files = listTestFiles(root);
+    const extraArgs = process.argv.slice(2);
+    // #6822: `process.exit(code)` síncrono, chamado logo após o último
+    // `stdout.write`/`stderr.write`, pode truncar a cauda do buffer se a
+    // escrita ainda não drenou — `process.stdout` é ASSÍNCRONO quando
+    // conectado a um pipe não-TTY (o caso normal da CI). `process.exitCode`
+    // deixa o processo sair sozinho depois que o event loop esvaziar
+    // (inclusive as escritas pendentes e os workers `fork`ados do #6877).
+    //
+    // #6877: `runTestBatchesParallel` (não mais `runTestBatches` direto)
+    // é o caminho de produção — divide em `DEFAULT_WORKER_COUNT` processos
+    // concorrentes, com fallback automático pro caminho single-process de
+    // sempre quando não há paralelismo a ganhar (`RUN_TESTS_WORKERS=1`,
+    // ou 1 batch só). `.catch` nunca deveria disparar (a função só rejeita
+    // se `fork()`/IPC lançarem de um jeito não previsto pelos handlers
+    // `error`/`exit` de `runWorker`) — mas um wrapper síncrono que decidiu
+    // nunca deixar uma rejeição não-tratada sair como crash sem contexto.
+    runTestBatchesParallel({ files, extraArgs }).then(
+      (code) => {
+        process.exitCode = code;
+      },
+      (err: unknown) => {
+        console.error(`run-tests: erro inesperado no orquestrador paralelo: ${(err as Error).message}`);
+        process.exitCode = 1;
+      },
+    );
+  }
 }

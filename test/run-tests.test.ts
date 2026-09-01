@@ -7,6 +7,10 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   chunk,
   runTestBatches,
@@ -15,6 +19,10 @@ import {
   hasTestSummary,
   bisectHangingBatch,
   formatBisectResult,
+  splitIntoWorkerGroups,
+  finalizeExitCode,
+  runTestBatchesParallel,
+  DEFAULT_WORKER_COUNT,
   BATCH_SIZE,
   DEFAULT_BATCH_TIMEOUT_MS,
 } from "../scripts/run-tests.ts";
@@ -731,5 +739,168 @@ describe("runTestBatches — bisecção automática no caminho de falha (#6822 D
       written.some((s) => s.includes("bisecção") && s.includes("/culpado.test.ts") && !s.includes("/inocente.test.ts")),
       `deve isolar o culpado via bisecção no caminho de sumário ausente, veio: ${JSON.stringify(written)}`,
     );
+  });
+});
+
+// --- #6877: paralelismo de batches ----------------------------------------
+
+describe("splitIntoWorkerGroups (#6877)", () => {
+  it("distribui por ROUND-ROBIN (item i vai pro grupo i % groupCount), não contíguo", () => {
+    const batches = ["b1", "b2", "b3", "b4", "b5"];
+    assert.deepEqual(splitIntoWorkerGroups(batches, 2), [
+      ["b1", "b3", "b5"],
+      ["b2", "b4"],
+    ]);
+  });
+
+  it("mais grupos que itens → grupos vazios são REMOVIDOS do resultado", () => {
+    assert.deepEqual(splitIntoWorkerGroups(["b1", "b2"], 5), [["b1"], ["b2"]]);
+  });
+
+  it("groupCount igual ao número de itens → 1 item por grupo", () => {
+    assert.deepEqual(splitIntoWorkerGroups(["b1", "b2", "b3"], 3), [["b1"], ["b2"], ["b3"]]);
+  });
+
+  it("lista vazia → array vazio, nenhum grupo (nem vazio)", () => {
+    assert.deepEqual(splitIntoWorkerGroups([], 4), []);
+  });
+
+  it("groupCount <= 0 lança (mesmo guard de chunk)", () => {
+    assert.throws(() => splitIntoWorkerGroups(["b1"], 0), /groupCount deve ser > 0/);
+    assert.throws(() => splitIntoWorkerGroups(["b1"], -1), /groupCount deve ser > 0/);
+  });
+
+  it("todos os itens preservados, nenhum duplicado, em QUALQUER groupCount", () => {
+    const batches = Array.from({ length: 17 }, (_, i) => `b${i}`);
+    for (const groupCount of [1, 2, 3, 4, 5, 20]) {
+      const groups = splitIntoWorkerGroups(batches, groupCount);
+      const flat = groups.flat().sort();
+      assert.deepEqual(flat, [...batches].sort(), `groupCount=${groupCount} perdeu ou duplicou item`);
+    }
+  });
+});
+
+describe("finalizeExitCode (#6877, extraído do check final de #6822)", () => {
+  it("completedFiles === totalFiles → devolve o exitCode recebido, sem mexer", () => {
+    assert.equal(finalizeExitCode(0, 10, 10), 0);
+    assert.equal(finalizeExitCode(1, 10, 10), 1, "exitCode 1 de falha real de teste não é mascarado");
+  });
+
+  it("completedFiles !== totalFiles → SEMPRE 1, mesmo se exitCode recebido fosse 0 (#6822: nunca cobertura parcial vira sucesso)", () => {
+    assert.equal(finalizeExitCode(0, 8, 10), 1);
+  });
+
+  it("cobertura incompleta escreve mensagem diagnóstica no stderr injetado, citando a contagem real", () => {
+    const written: string[] = [];
+    finalizeExitCode(0, 8, 10, { write: (s: string) => written.push(s) });
+    assert.ok(written.some((s) => s.includes("8/10") && s.includes("cobertura incompleta")));
+  });
+});
+
+describe("runTestBatchesParallel (#6877) — roteamento pro caminho sequencial", () => {
+  it("workerCount <= 1 → cai no runTestBatches de sempre (spawn injetado é respeitado, sem fork nenhum)", async () => {
+    let calls = 0;
+    const exit = await runTestBatchesParallel({
+      files: ["/a.test.ts", "/b.test.ts"],
+      batchSize: 10,
+      workerCount: 1,
+      // `spawn` não está no tipo público de RunTestBatchesParallelOptions
+      // (produção nunca injeta) — mas o runtime aceita normalmente via
+      // duck typing, e é assim que este teste prova que o roteamento cai
+      // no runTestBatches existente (52 vezes já testado) sem duplicar
+      // cobertura aqui.
+      ...({
+        spawn: (() => {
+          calls++;
+          return { status: 0, stdout: "# tests 1\n# pass 1\n# fail 0\n", stderr: "" };
+        }) as unknown as typeof import("node:child_process").spawnSync,
+      } as Record<string, unknown>),
+    } as never);
+    assert.equal(exit, 0);
+    assert.equal(calls, 1, "1 batch só (batchSize=10, 2 arquivos) → 1 chamada de spawn, caminho sequencial de sempre");
+  });
+
+  it("1 batch só (mesmo com workerCount > 1) → cai no caminho sequencial, sem overhead de fork", async () => {
+    let calls = 0;
+    const exit = await runTestBatchesParallel({
+      files: ["/a.test.ts"],
+      batchSize: 150,
+      workerCount: 4,
+      ...({
+        spawn: (() => {
+          calls++;
+          return { status: 0, stdout: "# tests 1\n# pass 1\n# fail 0\n", stderr: "" };
+        }) as unknown as typeof import("node:child_process").spawnSync,
+      } as Record<string, unknown>),
+    } as never);
+    assert.equal(exit, 0);
+    assert.equal(calls, 1);
+  });
+
+  it("lista vazia → 0 sem chamar spawn, mesmo guard de sempre", async () => {
+    let calls = 0;
+    const exit = await runTestBatchesParallel({
+      files: [],
+      ...({
+        spawn: (() => {
+          calls++;
+          return { status: 0 } as ReturnType<typeof import("node:child_process").spawnSync>;
+        }) as unknown as typeof import("node:child_process").spawnSync,
+      } as Record<string, unknown>),
+    } as never);
+    assert.equal(exit, 0);
+    assert.equal(calls, 0);
+  });
+
+  it("DEFAULT_WORKER_COUNT é um inteiro positivo (nunca 0, nunca fracionário)", () => {
+    assert.ok(Number.isInteger(DEFAULT_WORKER_COUNT) && DEFAULT_WORKER_COUNT > 0);
+  });
+});
+
+describe("runTestBatchesParallel (#6877) — integração REAL com fork() (sem spawn injetado)", () => {
+  it("2 batches distribuídos em 2 workers reais (fork + IPC) → exit 0, ambos completam", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "run-tests-parallel-it-"));
+    try {
+      const okTest = (name: string) =>
+        `import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("${name}", () => { assert.equal(1, 1); });\n`;
+      const fileA = join(dir, "a.test.ts");
+      const fileB = join(dir, "b.test.ts");
+      writeFileSync(fileA, okTest("a"));
+      writeFileSync(fileB, okTest("b"));
+      const scriptPath = fileURLToPath(new URL("../scripts/run-tests.ts", import.meta.url));
+
+      const exit = await runTestBatchesParallel({
+        files: [fileA, fileB],
+        batchSize: 1, // força 2 batches → 2 workers reais em paralelo
+        workerCount: 2,
+        scriptPath,
+      });
+      assert.equal(exit, 0, "2 arquivos de teste genuinamente OK, rodados via fork() real → exit 0");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("1 dos 2 batches falha de verdade → exit agregado 1 (falha real de um worker não é engolida)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "run-tests-parallel-it-fail-"));
+    try {
+      const okTest = `import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("ok", () => { assert.equal(1, 1); });\n`;
+      const failTest = `import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("fail", () => { assert.equal(1, 2); });\n`;
+      const fileOk = join(dir, "ok.test.ts");
+      const fileFail = join(dir, "fail.test.ts");
+      writeFileSync(fileOk, okTest);
+      writeFileSync(fileFail, failTest);
+      const scriptPath = fileURLToPath(new URL("../scripts/run-tests.ts", import.meta.url));
+
+      const exit = await runTestBatchesParallel({
+        files: [fileOk, fileFail],
+        batchSize: 1,
+        workerCount: 2,
+        scriptPath,
+      });
+      assert.equal(exit, 1, "1 worker com falha real de asserção → agregado nunca vira 0");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
