@@ -12,6 +12,8 @@ import {
   createOrUpdateSubscriber,
   getSubscriberById,
   updateSubscriberFields,
+  listFormSubscribersPage,
+  listAllFormSubscribers,
 } from "../scripts/lib/kit-subscribers.ts";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -185,5 +187,60 @@ describe("updateSubscriberFields (#6049)", () => {
       ),
       /updateSubscriberFields\(42\).*sem o envelope/,
     );
+  });
+});
+
+describe("listFormSubscribersPage (#6810)", () => {
+  it("monta a URL com o form id e devolve subscribers+pagination", async () => {
+    let capturedUrl = "";
+    const result = await withMockFetch(
+      (async (url: string) => {
+        capturedUrl = url;
+        return jsonResponse(200, {
+          subscribers: [{ id: 1, email_address: "a@b.com", state: "inactive", created_at: "x" }],
+          pagination: emptyPagination,
+        });
+      }) as typeof fetch,
+      () => listFormSubscribersPage(9839463, { perPage: 50, config: TEST_CONFIG }),
+    );
+    assert.match(capturedUrl, /\/forms\/9839463\/subscribers/);
+    assert.match(capturedUrl, /per_page=50/);
+    assert.equal(result.subscribers.length, 1);
+  });
+});
+
+describe("listAllFormSubscribers (#6810)", () => {
+  it("pagina até esgotar (has_next_page:false)", async () => {
+    let calls = 0;
+    const result = await withMockFetch(
+      (async () => {
+        calls++;
+        if (calls === 1) {
+          return jsonResponse(200, {
+            subscribers: [{ id: 1, email_address: "a@b.com", state: "inactive", created_at: "x" }],
+            pagination: { ...emptyPagination, has_next_page: true, end_cursor: "cursor2" },
+          });
+        }
+        return jsonResponse(200, {
+          subscribers: [{ id: 2, email_address: "b@b.com", state: "inactive", created_at: "x" }],
+          pagination: emptyPagination,
+        });
+      }) as typeof fetch,
+      () => listAllFormSubscribers(9839463, TEST_CONFIG),
+    );
+    assert.equal(calls, 2);
+    assert.deepEqual(result.map((s) => s.id), [1, 2]);
+  });
+
+  it("1 página só: não faz 2ª chamada", async () => {
+    let calls = 0;
+    await withMockFetch(
+      (async () => {
+        calls++;
+        return jsonResponse(200, { subscribers: [], pagination: emptyPagination });
+      }) as typeof fetch,
+      () => listAllFormSubscribers(9839463, TEST_CONFIG),
+    );
+    assert.equal(calls, 1);
   });
 });
