@@ -3,9 +3,11 @@
  *
  * Cobre o redesign da home (`workers/site/public/index.html`, Direção A ·
  * Edição diária) — miolo puro (`scripts/lib/site-home-page.ts`) com fixtures
- * em memória, e o arquivo COMMITTED (7 blocos esperados, form → /assinar (#6427,
- * antes /subscribe),
- * link do destaque do dia → um `/p/{slug}` real do cache).
+ * em memória, e o arquivo COMMITTED (7 blocos esperados, `<form>` de
+ * inscrição inline no masthead/footer, `id`s próprios (#6976, antes
+ * `<a href="/assinar">` — ver `test/site-home-signup-6976.test.ts` pro
+ * mecanismo completo do form), link do destaque do dia → um `/p/{slug}`
+ * real do cache).
  */
 
 import { describe, it } from "node:test";
@@ -121,9 +123,9 @@ describe("buildIndexHtml", () => {
     }
   });
 
-  it("form do masthead E do footer apontam pro /assinar (#6427)", () => {
-    assert.match(html, /id="masthead-form"[^>]*href="\/assinar"/);
-    assert.match(html, /id="footer-form"[^>]*href="\/assinar"/);
+  it("masthead E footer são <form> reais (não mais <a> disfarçado, #6976)", () => {
+    assert.match(html, /<form class="signup"[^>]*id="masthead-form"[^>]*action="https:\/\/eia\.diar\.ia\.br\/jogar\/subscribe"/);
+    assert.match(html, /<form class="signup signup--dark"[^>]*id="footer-form"[^>]*action="https:\/\/eia\.diar\.ia\.br\/jogar\/subscribe"/);
   });
 
   it("link do destaque do dia aponta pra a URL real da feature", () => {
@@ -224,9 +226,9 @@ describe("workers/site/public/index.html — committed (#6375)", () => {
     }
   });
 
-  it("form aponta pro /assinar (masthead + footer, #6427)", () => {
-    assert.match(html, /id="masthead-form"[^>]*href="\/assinar"/);
-    assert.match(html, /id="footer-form"[^>]*href="\/assinar"/);
+  it("masthead E footer são <form> reais (não mais <a> disfarçado, #6976)", () => {
+    assert.match(html, /<form class="signup"[^>]*id="masthead-form"[^>]*action="https:\/\/eia\.diar\.ia\.br\/jogar\/subscribe"/);
+    assert.match(html, /<form class="signup signup--dark"[^>]*id="footer-form"[^>]*action="https:\/\/eia\.diar\.ia\.br\/jogar\/subscribe"/);
   });
 
   it("V1Specials linka pros hubs reais já existentes (livros/cursos)", () => {
