@@ -1,11 +1,16 @@
 /**
  * brevo-diaria-max-add.ts (#5772)
  *
- * Deriva `--max-add N` pro dispatch automático do canal Brevo diária na
- * Etapa 5 (`brevo-diaria-stage5-dispatch.ts`) — substitui o gate humano do
- * Passo 4 de `/diaria-brevo-diaria` (que continua existindo pro disparo
- * manual/ad-hoc, ver SKILL.md) por um cálculo determinístico, coerente com
- * "Perguntar é exceção" (CLAUDE.md, #5321).
+ * Deriva `N` (o que seria `--max-add N`) pro dispatch automático do canal
+ * Brevo diária na Etapa 5 (`brevo-diaria-stage5-dispatch.ts`). **#6793
+ * Faixa A item 7 (01/09/2026, decisão do editor de remover o teto de
+ * crescimento diário): o valor deixou de ser PASSADO a `--apply`** — o
+ * dispatch não limita mais o backfill por este cálculo, `resolveStage5MaxAdd`
+ * hoje só é chamado pra logar o que teria resolvido (informativo, nunca
+ * gate). Substituía o gate humano do Passo 4 de `/diaria-brevo-diaria` (que
+ * continua existindo pro disparo manual/ad-hoc, ver SKILL.md) por um
+ * cálculo determinístico, coerente com "Perguntar é exceção" (CLAUDE.md,
+ * #5321) — a substituição em si segue viva, só o efeito de limitar sumiu.
  *
  * Fórmula (decisão do editor, comentário 2026-08-20 da issue #5772):
  *   N = max(0, targetTotal - totalAtual)
