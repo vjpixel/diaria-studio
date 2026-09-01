@@ -174,6 +174,26 @@ export interface GlmLaneUnitRecord {
  * gravar isso em `units.jsonl` no momento do registro (append-only) —
  * tem que ser reconsultado a cada avaliação do gate.
  */
+/**
+ * Pura — seleciona as PRIMEIRAS 3 unidades de MODELO (`status !==
+ * "infra-error"`) do histórico e devolve só os `prNumber` não-nulos delas.
+ * Extraída (#6953 review — achado convergente de type-design-analyzer E
+ * pr-test-analyzer) porque `computeGlmLaneState` e o CLI wrapper
+ * (`check-glm-lane-gate.ts`, que precisa saber QUAIS PRs consultar no
+ * `gh` antes de montar `mergedPrNumbers`) reescreviam essa mesma seleção
+ * de forma independente — duas cópias do critério "quais são as 3
+ * primeiras" que podiam divergir silenciosamente numa edição futura de
+ * só um dos dois lados. Agora é uma única fonte, testável isoladamente,
+ * e o CLI wrapper vira consumidor burro dela.
+ */
+export function selectFirstThreeModelPrNumbers(records: readonly GlmLaneUnitRecord[]): number[] {
+  return records
+    .filter((r) => r.status !== "infra-error")
+    .slice(0, 3)
+    .map((r) => r.prNumber)
+    .filter((pr): pr is number => pr !== null);
+}
+
 export function computeGlmLaneState(
   records: readonly GlmLaneUnitRecord[],
   opts: { unitsCap: number; sonnetLaneCostPerIssueUsd: number | null; mergedPrNumbers: ReadonlySet<number> },
@@ -188,9 +208,8 @@ export function computeGlmLaneState(
 
   let firstThreeHadAnyMergedPr: boolean | null = null;
   if (modelRecords.length >= 3) {
-    firstThreeHadAnyMergedPr = modelRecords
-      .slice(0, 3)
-      .some((r) => r.prNumber !== null && opts.mergedPrNumbers.has(r.prNumber));
+    const firstThreePrNumbers = selectFirstThreeModelPrNumbers(records);
+    firstThreeHadAnyMergedPr = firstThreePrNumbers.some((pr) => opts.mergedPrNumbers.has(pr));
   }
 
   const roundsKnown = modelRecords.map((r) => r.reviewRounds).filter((r): r is number => r !== null);

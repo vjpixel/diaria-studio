@@ -190,7 +190,6 @@ elif [ "$GATE_RC" -ne 0 ]; then
 fi
 
 ISSUE_TITLE=$(gh issue view "$ISSUE" --json title -q .title)
-ISSUE_BODY=$(gh issue view "$ISSUE" --json body -q .body)
 
 # CI-wait guard (#6953, achado ao vivo): a unidade 2 do piloto abriu a PR
 # e ficou girando DEPOIS disso, provavelmente num laço `gh pr view`
@@ -203,23 +202,56 @@ CI_WAIT_GUARD="NUNCA rode 'gh pr checks', 'gh run watch', nem qualquer laço esp
 
 if [ -n "$EXISTING_PR" ]; then
   echo "[glm-lane] modo --pr $EXISTING_PR — segunda rodada, checkout da branch já existente..."
-  HEAD_REF=$(gh pr view "$EXISTING_PR" --json headRefName -q .headRefName)
+  # #6953 (achado de review, silent-failure-hunter): sob 'set -e', uma
+  # FALHA do 'gh pr view' (rede, auth, rate limit) derrubaria o script
+  # ANTES do 'if [ -z ... ]' abaixo, então o diagnóstico específico
+  # planejado pra esse 'if' nunca dispararia no caso mais provável de
+  # erro — só no caso raro de 'gh' sair rc=0 com campo vazio. 'set +e' +
+  # checagem explícita do rc cobre os dois casos com mensagens distintas.
+  set +e
+  HEAD_REF=$(gh pr view "$EXISTING_PR" --json headRefName -q .headRefName 2>&1)
+  HEAD_REF_RC=$?
+  set -e
+  if [ "$HEAD_REF_RC" -ne 0 ]; then
+    echo "[glm-lane] ERRO — 'gh pr view $EXISTING_PR --json headRefName' falhou (rc=$HEAD_REF_RC): $HEAD_REF" >&2
+    exit 2
+  fi
   if [ -z "$HEAD_REF" ]; then
-    echo "[glm-lane] ERRO — não deu pra resolver a branch HEAD da PR #$EXISTING_PR." >&2
+    echo "[glm-lane] ERRO — 'gh pr view $EXISTING_PR' respondeu sem erro, mas headRefName veio vazio — PR #$EXISTING_PR existe mesmo?" >&2
     exit 2
   fi
   BRANCH="$HEAD_REF"
   git fetch origin "$BRANCH" -q
   echo "[glm-lane] criando worktree $WORKTREE_DIR em cima de origin/$BRANCH (existente)..."
+  # git worktree prune ANTES do -B (achado de review, code-reviewer P2):
+  # um retry --pr anterior morto por kill -9/OOM/reboot (o trap EXIT não
+  # cobre esses casos) deixa a branch $BRANCH marcada como "checked out"
+  # num worktree cujo diretório já não existe mais — sem o prune, o
+  # 'git worktree add -B' seguinte falharia com "already checked out"
+  # mesmo a branch sendo reaproveitável.
+  git worktree prune
   # -B (não -b): reseta/cria a branch local com o mesmo nome apontando
   # pro HEAD remoto atual da PR — idempotente entre retries desta mesma
   # PR, nunca colide com "branch já existe" de uma tentativa anterior
   # cujo worktree já foi limpo.
   git worktree add -B "$BRANCH" "$WORKTREE_DIR" "origin/$BRANCH"
 
-  REVIEW_COMMENTS=$(gh pr view "$EXISTING_PR" --json comments -q '[.comments[] | "--- comentário de \(.author.login) em \(.createdAt) ---\n\(.body)"] | join("\n\n")')
-  if [ -z "$REVIEW_COMMENTS" ]; then
-    REVIEW_COMMENTS="(nenhum comentário encontrado via 'gh pr view --json comments' — confira você mesmo com 'gh pr view $EXISTING_PR' se isso for inesperado.)"
+  set +e
+  REVIEW_COMMENTS=$(gh pr view "$EXISTING_PR" --json comments -q '[.comments[] | "--- comentário de \(.author.login) em \(.createdAt) ---\n\(.body)"] | join("\n\n")' 2>&1)
+  REVIEW_COMMENTS_RC=$?
+  set -e
+  if [ "$REVIEW_COMMENTS_RC" -ne 0 ]; then
+    echo "[glm-lane] AVISO — 'gh pr view $EXISTING_PR --json comments' falhou (rc=$REVIEW_COMMENTS_RC): $REVIEW_COMMENTS — seguindo sem os comentários no prompt (o modelo vai ter que consultar 'gh pr view' sozinho)." >&2
+    REVIEW_COMMENTS="(a consulta automática de comentários FALHOU — rode 'gh pr view $EXISTING_PR' você mesmo pra ver o que precisa endereçar.)"
+  elif [ -z "$REVIEW_COMMENTS" ]; then
+    # #6953 (achado de review, silent-failure-hunter): 'gh pr view --json
+    # comments' só devolve comentários de CONVERSA — reviews formais
+    # ('gh pr review') e comentários inline de diff feitos pela UI do
+    # GitHub NÃO aparecem aqui. Mesma convenção já usada por
+    # scripts/lib/pr-review-authenticity.ts (o review automatizado deste
+    # repo sempre posta via 'gh pr comment', nunca 'gh pr review') —
+    # consistente, mas vale nomear o limite pro leitor futuro.
+    REVIEW_COMMENTS="(nenhum comentário de CONVERSA encontrado via 'gh pr view --json comments' — isso NÃO cobre reviews formais nem comentários inline de diff feitos pela UI; confira você mesmo com 'gh pr view $EXISTING_PR' se esperava achar algo.)"
   fi
 
   PROMPT="Esta é uma ITERAÇÃO sobre a PR #$EXISTING_PR já aberta (branch $BRANCH) pro repo diaria-studio, referente à issue #$ISSUE (título: \"$ISSUE_TITLE\"). NÃO chame 'gh pr create' — a ferramenta nem está disponível nesta sessão, de propósito.
@@ -240,6 +272,7 @@ else
   git fetch origin -q
   BRANCH="continuo/glm-${ISSUE}-${RUN_TAG}"
   git worktree add -b "$BRANCH" "$WORKTREE_DIR" origin/master
+  ISSUE_BODY=$(gh issue view "$ISSUE" --json body -q .body)
 
   PROMPT="Implemente a issue #$ISSUE do repo diaria-studio (título: \"$ISSUE_TITLE\").
 
@@ -287,7 +320,21 @@ set +e
 if [ -n "$EXISTING_PR" ]; then
   PR_NUMBER="$EXISTING_PR"
 else
-  PR_NUMBER=$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)
+  # #6953 (achado de review, silent-failure-hunter, HIGH): o '2>/dev/null'
+  # descartava QUALQUER falha do 'gh pr list' (rede, rate limit, lag de
+  # consistência da API logo após o 'gh pr create' da sessão do GLM) —
+  # indistinguível de "o modelo não abriu PR nenhuma". Isso gravaria
+  # prNumber:null pra uma unidade que PODE ter aberto PR de verdade
+  # (append-only, nunca mais corrigível), e a mensagem final recomendaria
+  # "considere retentar" — reabrindo, por uma falha de CONSULTA, o exato
+  # risco de PR duplicada que o modo --pr existe pra eliminar.
+  PR_LIST_STDERR_TMP="$(mktemp)"
+  PR_NUMBER=$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>"$PR_LIST_STDERR_TMP")
+  PR_LIST_RC=$?
+  if [ "$PR_LIST_RC" -ne 0 ]; then
+    echo "[glm-lane] AVISO — 'gh pr list --head $BRANCH' falhou (rc=$PR_LIST_RC): $(cat "$PR_LIST_STDERR_TMP") — NÃO É O MESMO que 'nenhuma PR aberta', pode haver PR real não detectada. Confira manualmente com 'gh pr list --head $BRANCH' antes de confiar na mensagem final desta unidade." >&2
+  fi
+  rm -f "$PR_LIST_STDERR_TMP"
 fi
 set -e
 

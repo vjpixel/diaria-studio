@@ -140,7 +140,22 @@ ambos os modos inclui um guard explícito contra esperar CI dentro da
 unidade (`gh pr checks`/`gh run watch`/qualquer laço de poll) — achado ao
 vivo: a unidade 2 ficou girando DEPOIS de abrir a PR (provavelmente
 esperando CI), custando 22× mais que a unidade que não esperou nada
-(US$0,2407 vs. US$0,0108). Impõe (b)
+(US$0,2407 vs. US$0,0108).
+
+**Retry via `--pr N` consome 1 slot do teto de 10 e entra normalmente no
+critério "3 primeiras" (achado de review, #6953, não resolvido — registrado
+de propósito):** cada invocação do script grava um registro NOVO em
+`units.jsonl`, `--pr` incluso. Uma issue que precisou de 2 rodadas (1ª +
+1 retry `--pr`) consome 2 dos 10 slots do piloto por 1 issue só, e se esse
+retry cair entre as 3 primeiras unidades despachadas, o critério de morte 2
+passa a julgar 2 registros da MESMA issue/PR em vez de 3 issues
+independentes — dilui exatamente o tipo de sinal estatístico que o #6922
+media (comportamento do modelo em trabalho autônomo através de issues
+distintas). Não corrigido nesta PR — decisão a tomar quando/se isso
+acontecer na prática (contar por issue única em vez de por registro?
+excluir retries do teto?).
+
+Impõe (b)
 e (c) mecanicamente: `--tools` explícito omite `gh pr merge`/`gh pr
 review`/`gh issue close|edit` E escopa `git`/`npm`/`npx` a subcomandos
 específicos (nunca `Bash(git:*)`/`Bash(npm:*)`/`Bash(npx:*)` genéricos —

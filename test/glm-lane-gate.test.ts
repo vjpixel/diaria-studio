@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   evaluateGlmLaneGate,
   computeGlmLaneState,
+  selectFirstThreeModelPrNumbers,
   type GlmLaneState,
   type GlmLaneUnitRecord,
 } from "../scripts/lib/glm-lane-gate.ts";
@@ -35,13 +36,13 @@ describe("evaluateGlmLaneGate (#6930) — cada critério de morte", () => {
     assert.equal(result.allow, false);
   });
 
-  it("zero PRs nos 3 primeiros despachos → deny", () => {
+  it("zero PRs MERGEADAS nos 3 primeiros despachos → deny", () => {
     const result = evaluateGlmLaneGate({ ...GREEN, firstThreeHadAnyMergedPr: false });
     assert.equal(result.allow, false);
     assert.match(result.reason, /6922/);
   });
 
-  it("ao menos 1 PR nos 3 primeiros → não nega por esse critério", () => {
+  it("ao menos 1 PR MERGEADA nos 3 primeiros → não nega por esse critério", () => {
     const result = evaluateGlmLaneGate({ ...GREEN, firstThreeHadAnyMergedPr: true });
     assert.equal(result.allow, true);
   });
@@ -218,5 +219,34 @@ describe("computeGlmLaneState (#6941) — status:'infra-error' excluído dos cri
       { unitsCap: 10, sonnetLaneCostPerIssueUsd: null, mergedPrNumbers: new Set() },
     );
     assert.equal(state.costPerIssueUsd, 0.1);
+  });
+});
+
+describe("selectFirstThreeModelPrNumbers (#6953)", () => {
+  it("exclui infra-error e devolve só prNumber não-nulos, das 3 primeiras unidades de MODELO", () => {
+    const records = [
+      unit({ status: "infra-error", prNumber: 1 }),
+      unit({ status: "completed", prNumber: null }),
+      unit({ status: "completed", prNumber: 42 }),
+      unit({ status: "completed", prNumber: 43 }),
+      unit({ status: "completed", prNumber: 999 }), // 4ª unidade de modelo — fora
+    ];
+    assert.deepEqual(selectFirstThreeModelPrNumbers(records), [42, 43]);
+  });
+
+  it("lista vazia quando não há registros", () => {
+    assert.deepEqual(selectFirstThreeModelPrNumbers([]), []);
+  });
+
+  it("é a MESMA seleção que computeGlmLaneState usa internamente (fonte única, #6953 review)", () => {
+    const records = [unit({ prNumber: 10 }), unit({ prNumber: null }), unit({ prNumber: 20 })];
+    const prNumbers = selectFirstThreeModelPrNumbers(records);
+    // simula o CLI: só as PRs selecionadas por essa função "mergeiam"
+    const state = computeGlmLaneState(records, {
+      unitsCap: 10,
+      sonnetLaneCostPerIssueUsd: null,
+      mergedPrNumbers: new Set(prNumbers),
+    });
+    assert.equal(state.firstThreeHadAnyMergedPr, true);
   });
 });
