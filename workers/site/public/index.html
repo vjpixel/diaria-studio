@@ -63,14 +63,40 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .lede { font-family: Georgia, serif; font-size: clamp(18px, 2.4vw, 28px); line-height: 1.3; font-style: italic; }
 .lede .accent { color: var(--teal-deep); font-style: normal; }
 
-/* Signup pill (masthead + footer) */
+/* Signup pill (masthead + footer) — #6976: form real, mesma geometria da pill antiga */
 .signup { display: block; margin-top: 14px; }
 .signup-pill { display: flex; border: 1px solid var(--ink); border-radius: 999px; padding: 4px; background: #fff; overflow: hidden; }
-.signup-input { flex: 1; padding: 10px 16px; font-size: 14px; color: var(--ink-faint); }
-.signup-btn { background: var(--ink); color: var(--paper); padding: 10px 20px; border-radius: 999px; font-size: 14px; font-weight: 500; white-space: nowrap; }
+.signup-input {
+  flex: 1; min-width: 0; padding: 10px 16px; font-size: 14px; color: var(--ink);
+  font-family: inherit; line-height: inherit; border: 0; outline: 0; background: transparent;
+  appearance: none; -webkit-appearance: none;
+}
+.signup-input::placeholder { color: var(--ink-faint); opacity: 1; }
+.signup-input:focus-visible { outline: 2px solid var(--teal-deep); outline-offset: -2px; border-radius: 999px; }
+.signup-btn {
+  background: var(--ink); color: var(--paper); padding: 10px 20px; border-radius: 999px;
+  font-size: 14px; font-weight: 500; white-space: nowrap; border: 0; cursor: pointer;
+  font-family: inherit; appearance: none; -webkit-appearance: none;
+}
+.signup-btn:focus-visible { outline: 2px solid var(--teal-deep); outline-offset: -3px; }
+.signup-btn:disabled { opacity: 0.6; cursor: default; }
 .signup--dark .signup-pill { border-color: rgba(244,239,226,0.3); background: transparent; }
-.signup--dark .signup-input { color: rgba(244,239,226,0.55); }
+.signup--dark .signup-input { color: rgba(244,239,226,0.92); }
+.signup--dark .signup-input::placeholder { color: rgba(244,239,226,0.55); }
 .signup--dark .signup-btn { background: var(--paper); color: var(--ink); }
+.signup-label {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+.hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+.signup-optin { display: flex; gap: 6px; align-items: flex-start; margin-top: 8px; font-size: 11px; line-height: 1.35; color: var(--ink-faint); }
+.signup-optin input { margin-top: 2px; flex-shrink: 0; }
+.signup--dark .signup-optin { color: rgba(244,239,226,0.55); }
+.signup-status { margin-top: 8px; font-size: 12px; display: none; }
+.signup-status.ok { color: var(--teal-deep); display: block; }
+.signup-status.err { color: #b3261e; display: block; }
+.signup--dark .signup-status.ok { color: var(--paper); }
+.signup--dark .signup-status.err { color: #ffb3a8; }
 .signup-reassure { display: flex; gap: 16px; margin-top: 14px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); flex-wrap: wrap; }
 .signup--dark + .signup-reassure { color: rgba(244,239,226,0.55); }
 
@@ -181,12 +207,25 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <p class="lede">Um resumo diário das principais pesquisas, notícias, tendências e insights — para ler em 5 minutos, se manter atualizado e usar IA <span class="accent">melhor</span>.</p>
         <div>
           <span class="kicker kicker--teal">Comece a receber hoje</span>
-          <a class="signup" id="masthead-form" href="/assinar" aria-label="Assinar diar.ia.br gratuitamente">
+          <form class="signup" id="masthead-form" method="POST" action="https://eia.diar.ia.br/jogar/subscribe" aria-label="Assinar diar.ia.br gratuitamente" novalidate>
+    <input type="hidden" name="source" value="apex">
+    <input type="hidden" name="utm_source" value="">
+    <input type="hidden" name="utm_medium" value="">
+    <input type="hidden" name="utm_campaign" value="">
+    <div class="hp" aria-hidden="true">
+      <label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label>
+    </div>
+    <label class="signup-label" for="masthead-form-email">Seu e-mail</label>
     <span class="signup-pill">
-      <span class="signup-input" aria-hidden="true">seu@email.com</span>
-      <span class="signup-btn">Assinar grátis</span>
+      <input type="email" class="signup-input" id="masthead-form-email" name="email" placeholder="seu@email.com" required autocomplete="email">
+      <button type="submit" class="signup-btn">Assinar grátis</button>
     </span>
-  </a>
+    <label class="signup-optin">
+      <input type="checkbox" name="optin" value="on" required>
+      <span>Aceito receber a diar.ia.br por e-mail.</span>
+    </label>
+    <p class="signup-status" role="status" aria-live="polite"></p>
+  </form>
           <div class="signup-reassure">
             <span>✓ Seg–Sex</span><span>✓ 5 min</span><span>✓ Cancelar quando quiser</span>
           </div>
@@ -374,12 +413,25 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <div class="footer-headline">5 minutos.<br><span class="accent">Toda manhã.</span></div>
         <div>
           <span class="footer-label">Assine grátis</span>
-          <a class="signup signup--dark" id="footer-form" href="/assinar" aria-label="Assinar diar.ia.br gratuitamente">
+          <form class="signup signup--dark" id="footer-form" method="POST" action="https://eia.diar.ia.br/jogar/subscribe" aria-label="Assinar diar.ia.br gratuitamente" novalidate>
+    <input type="hidden" name="source" value="apex">
+    <input type="hidden" name="utm_source" value="">
+    <input type="hidden" name="utm_medium" value="">
+    <input type="hidden" name="utm_campaign" value="">
+    <div class="hp" aria-hidden="true">
+      <label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label>
+    </div>
+    <label class="signup-label" for="footer-form-email">Seu e-mail</label>
     <span class="signup-pill">
-      <span class="signup-input" aria-hidden="true">seu@email.com</span>
-      <span class="signup-btn">Assinar grátis</span>
+      <input type="email" class="signup-input" id="footer-form-email" name="email" placeholder="seu@email.com" required autocomplete="email">
+      <button type="submit" class="signup-btn">Assinar grátis</button>
     </span>
-  </a>
+    <label class="signup-optin">
+      <input type="checkbox" name="optin" value="on" required>
+      <span>Aceito receber a diar.ia.br por e-mail.</span>
+    </label>
+    <p class="signup-status" role="status" aria-live="polite"></p>
+  </form>
           <div class="signup-reassure">
             <span>Seg–Sex · 8h</span><span>Sem spam</span><span>Cancele quando quiser</span>
           </div>
@@ -394,21 +446,123 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
   </footer>
   <script>
   // #6427: repassa a query string ATUAL (UTM da Clarice News, tráfego pago,
-  // etc — ver withClariceUtm em scripts/lib/mensal/monthly-render.ts) pros
-  // 3 CTAs de assinatura desta home antes de o visitante clicar. Um anchor
+  // etc — ver withClariceUtm em scripts/lib/mensal/monthly-render.ts) pro
+  // CTA "Assinar" do nav antes de o visitante clicar. Um anchor
   // href="/assinar" estático NUNCA carrega o utm_source=... da URL atual
   // sozinho (resolução de URL relativa não herda query de referência
   // absoluta-por-path) — sem isto, a atribuição morreria aqui mesmo com a
   // página /assinar (workers/site/public/assinar/) pronta pra recebê-la.
-  // Escopo mínimo: só os 3 anchors que de fato apontam pra /assinar — nunca
-  // toca outros hrefs da página (ex: "Ler edição", que usam a mesma classe
-  // .btn-ink com destino diferente).
+  // #6976: os 2 pills de masthead/footer deixaram de ser anchors (viraram
+  // <form>, ver wireSignupForm abaixo) — este bloco agora só toca o CTA do
+  // nav, que continua um link simples pra /assinar.
   (function () {
     if (!window.location.search) return;
     var ctas = document.querySelectorAll('a[href="/assinar"]');
     for (var i = 0; i < ctas.length; i++) {
       ctas[i].setAttribute("href", "/assinar" + window.location.search);
     }
+  })();
+
+  // #6976: resolve a inscrição no próprio hero (masthead + footer) — mesmo
+  // mecanismo de workers/site/public/assinar/index.html (POST JSON pra
+  // https://eia.diar.ia.br/jogar/subscribe, progressive enhancement, status
+  // inline), mas fatorado numa função que recebe o FORM como argumento e é
+  // chamada 1x por instância — nunca getElementById fixo — pra os 2 forms
+  // da mesma página (ids distintos: masthead-form / footer-form) não
+  // colidirem entre si.
+  (function () {
+    function wireSignupForm(form) {
+      if (!form) return;
+      var qs = new URLSearchParams(window.location.search);
+      ["utm_source", "utm_medium", "utm_campaign"].forEach(function (key) {
+        var el = form.querySelector('input[name="' + key + '"]');
+        var v = qs.get(key);
+        if (el && v) el.value = v;
+      });
+
+      var status = form.querySelector(".signup-status");
+      function setStatus(msg, ok) {
+        if (!status) return;
+        status.style.display = "block";
+        status.textContent = msg;
+        status.className = "signup-status" + (ok ? " ok" : " err");
+      }
+      function val(sel) {
+        var el = form.querySelector(sel);
+        return el ? el.value : "";
+      }
+      form.addEventListener("submit", function (ev) {
+        ev.preventDefault();
+        var optin = form.querySelector('input[name="optin"]');
+        if (!optin || !optin.checked) {
+          setStatus("Marque a caixinha de consentimento pra assinar.", false);
+          return;
+        }
+        var email = (val('input[name="email"]') || "").trim();
+        if (!email || email.indexOf("@") < 0) {
+          setStatus("Digite um e-mail válido.", false);
+          return;
+        }
+        var btn = form.querySelector('button[type="submit"]');
+        if (btn) btn.disabled = true;
+        setStatus("Enviando…", true);
+        var payload = {
+          email: email,
+          optin: true,
+          website: val('input[name="website"]') || "",
+          source: "apex",
+          utm_source: val('input[name="utm_source"]'),
+          utm_medium: val('input[name="utm_medium"]'),
+          utm_campaign: val('input[name="utm_campaign"]'),
+        };
+        if (typeof window.fetch !== "function") {
+          // Sem fetch: deixa o form nativo submeter normalmente
+          // (progressive enhancement) — ev.preventDefault() já foi chamado,
+          // então reenvia.
+          form.submit();
+          return;
+        }
+        window
+          .fetch(form.getAttribute("action"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          })
+          .then(function (res) {
+            return res.json().then(
+              function (d) {
+                return { status: res.status, body: d };
+              },
+              function () {
+                return { status: res.status, body: null };
+              },
+            );
+          })
+          .then(function (r) {
+            if (r.status === 200 && r.body && r.body.ok) {
+              form.reset();
+              setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
+              if (btn) btn.disabled = true;
+            } else if (r.status === 429) {
+              setStatus("Muitas tentativas. Tente de novo mais tarde.", false);
+              if (btn) btn.disabled = false;
+            } else if (r.status === 503) {
+              setStatus("Cadastro indisponível agora. Tente de novo em instantes.", false);
+              if (btn) btn.disabled = false;
+            } else {
+              setStatus("Não deu pra assinar agora. Confira o e-mail e tente de novo.", false);
+              if (btn) btn.disabled = false;
+            }
+          })
+          .catch(function () {
+            setStatus("Erro de conexão. Tente de novo.", false);
+            if (btn) btn.disabled = false;
+          });
+      });
+    }
+
+    var forms = document.querySelectorAll("form.signup");
+    for (var i = 0; i < forms.length; i++) wireSignupForm(forms[i]);
   })();
   </script>
 </body>

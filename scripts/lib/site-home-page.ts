@@ -168,30 +168,63 @@ const FAQS: Array<{ q: string; a: string }> = [
 ];
 
 /**
- * Widget de inscrição — pill visual (input decorativo + botão), inteiro
- * ENVOLVIDO por um único `<a href="/assinar">` (decisão documentada no PR
- * desta unidade, #6375: a issue original pedia POST direto na API do Kit,
- * mas isso dependia do #6318, aberta na época — UTM/atribuição de cadastro
- * não estava fechada, e `CLAUDE.md`/README deste Worker eram explícitos que
- * aquela PR NÃO devia implementar esse POST). Um `<input>` que aceitasse
- * digitação sem um endpoint real por trás seria pior que o link simples —
- * por isso a pill inteira é navegável, não um form fingindo funcionar.
+ * Widget de inscrição — pill visual (input + botão) que resolve a inscrição
+ * NO PRÓPRIO hero, sem tirar o visitante da home (#6976).
  *
- * #6427: o alvo migrou de `/subscribe` (302 estático pro perfil hospedado da
- * Kit, sem UTM) pra `/assinar` (`workers/site/public/assinar/`, form real
- * que POSTa em `POST /jogar/subscribe`, `source: "apex"` — ver
- * `workers/poll/src/subscribe.ts`). `/subscribe` continua existindo como
- * fallback externo (não removido), mas deixou de ser o alvo dos 2 CTAs
- * principais da home.
+ * Histórico: até o #6976 a pill inteira era um único `<a href="/assinar">`
+ * com um `<span>` decorativo fingindo ser input (`aria-hidden="true"`) — o
+ * visitante clicava, ia pra `/assinar` e digitava o e-mail de novo. Motivo
+ * histórico (#6375: dependia do #6318, então em aberto — UTM/atribuição de
+ * cadastro não estava fechada) deixou de valer com o #6427, que fechou esse
+ * mecanismo em `/assinar` (`workers/site/public/assinar/index.html`) — e é
+ * exatamente esse mecanismo que este widget agora REUSA, em vez de inventar
+ * um novo: `<form method="POST" action="https://eia.diar.ia.br/jogar/subscribe">`
+ * (cross-origin, `diar.ia.br` na allowlist `ALLOWED_ORIGINS` do worker
+ * `poll`) progressivamente aprimorado por um script inline que faz fetch
+ * JSON e mostra status sem sair da página — ver o `<script>` no fim de
+ * `buildIndexHtml`.
+ *
+ * `source: "apex"` no payload (mesmo valor de `/assinar` — a home é a MESMA
+ * família de superfície do apex) aceita `utm_source`/`utm_medium`/
+ * `utm_campaign` DINÂMICOS lidos da própria query string da página (mesma
+ * allowlist de prefixo `isAllowedClientUtmSource` do worker `poll`); os 3
+ * campos ocultos nascem vazios e são populados no load pelo script.
+ *
+ * `id` distinto por chamada (masthead × footer) evita colisão — o script
+ * nunca usa `getElementById` fixo, sempre `document.querySelectorAll(".signup")`
+ * + uma função que recebe o form como argumento, então as duas instâncias na
+ * mesma página se comportam de forma independente.
+ *
+ * A checkbox de opt-in (LGPD) é obrigatória no servidor pra QUALQUER
+ * `source` (`optin_required`, ver `workers/poll/src/subscribe.ts`) — mesma
+ * exigência que já existe em TODO outro form inline do repo (`/assinar`,
+ * `livros-hero`/`livros-footer`, `arquivo`/`hub`). Fica fora da pill em si
+ * (que continua pixel a pixel igual ao design existente — só input + botão)
+ * pra não alterar sua geometria; entra como uma linha compacta abaixo dela,
+ * antes do `.signup-reassure` que já existia.
  */
 function renderSignupForm(opts: { id: string; onDark?: boolean }): string {
   const dark = opts.onDark ?? false;
-  return `<a class="signup${dark ? " signup--dark" : ""}" id="${opts.id}" href="/assinar" aria-label="Assinar diar.ia.br gratuitamente">
+  const emailId = `${opts.id}-email`;
+  return `<form class="signup${dark ? " signup--dark" : ""}" id="${opts.id}" method="POST" action="https://eia.diar.ia.br/jogar/subscribe" aria-label="Assinar diar.ia.br gratuitamente" novalidate>
+    <input type="hidden" name="source" value="apex">
+    <input type="hidden" name="utm_source" value="">
+    <input type="hidden" name="utm_medium" value="">
+    <input type="hidden" name="utm_campaign" value="">
+    <div class="hp" aria-hidden="true">
+      <label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label>
+    </div>
+    <label class="signup-label" for="${emailId}">Seu e-mail</label>
     <span class="signup-pill">
-      <span class="signup-input" aria-hidden="true">seu@email.com</span>
-      <span class="signup-btn">Assinar grátis</span>
+      <input type="email" class="signup-input" id="${emailId}" name="email" placeholder="seu@email.com" required autocomplete="email">
+      <button type="submit" class="signup-btn">Assinar grátis</button>
     </span>
-  </a>`;
+    <label class="signup-optin">
+      <input type="checkbox" name="optin" value="on" required>
+      <span>Aceito receber a diar.ia.br por e-mail.</span>
+    </label>
+    <p class="signup-status" role="status" aria-live="polite"></p>
+  </form>`;
 }
 
 /**
@@ -335,14 +368,40 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .lede { font-family: Georgia, serif; font-size: clamp(18px, 2.4vw, 28px); line-height: 1.3; font-style: italic; }
 .lede .accent { color: var(--teal-deep); font-style: normal; }
 
-/* Signup pill (masthead + footer) */
+/* Signup pill (masthead + footer) — #6976: form real, mesma geometria da pill antiga */
 .signup { display: block; margin-top: 14px; }
 .signup-pill { display: flex; border: 1px solid var(--ink); border-radius: 999px; padding: 4px; background: #fff; overflow: hidden; }
-.signup-input { flex: 1; padding: 10px 16px; font-size: 14px; color: var(--ink-faint); }
-.signup-btn { background: var(--ink); color: var(--paper); padding: 10px 20px; border-radius: 999px; font-size: 14px; font-weight: 500; white-space: nowrap; }
+.signup-input {
+  flex: 1; min-width: 0; padding: 10px 16px; font-size: 14px; color: var(--ink);
+  font-family: inherit; line-height: inherit; border: 0; outline: 0; background: transparent;
+  appearance: none; -webkit-appearance: none;
+}
+.signup-input::placeholder { color: var(--ink-faint); opacity: 1; }
+.signup-input:focus-visible { outline: 2px solid var(--teal-deep); outline-offset: -2px; border-radius: 999px; }
+.signup-btn {
+  background: var(--ink); color: var(--paper); padding: 10px 20px; border-radius: 999px;
+  font-size: 14px; font-weight: 500; white-space: nowrap; border: 0; cursor: pointer;
+  font-family: inherit; appearance: none; -webkit-appearance: none;
+}
+.signup-btn:focus-visible { outline: 2px solid var(--teal-deep); outline-offset: -3px; }
+.signup-btn:disabled { opacity: 0.6; cursor: default; }
 .signup--dark .signup-pill { border-color: rgba(244,239,226,0.3); background: transparent; }
-.signup--dark .signup-input { color: rgba(244,239,226,0.55); }
+.signup--dark .signup-input { color: rgba(244,239,226,0.92); }
+.signup--dark .signup-input::placeholder { color: rgba(244,239,226,0.55); }
 .signup--dark .signup-btn { background: var(--paper); color: var(--ink); }
+.signup-label {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+.hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+.signup-optin { display: flex; gap: 6px; align-items: flex-start; margin-top: 8px; font-size: 11px; line-height: 1.35; color: var(--ink-faint); }
+.signup-optin input { margin-top: 2px; flex-shrink: 0; }
+.signup--dark .signup-optin { color: rgba(244,239,226,0.55); }
+.signup-status { margin-top: 8px; font-size: 12px; display: none; }
+.signup-status.ok { color: var(--teal-deep); display: block; }
+.signup-status.err { color: #b3261e; display: block; }
+.signup--dark .signup-status.ok { color: var(--paper); }
+.signup--dark .signup-status.err { color: #ffb3a8; }
 .signup-reassure { display: flex; gap: 16px; margin-top: 14px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); flex-wrap: wrap; }
 .signup--dark + .signup-reassure { color: rgba(244,239,226,0.55); }
 
@@ -554,21 +613,123 @@ ${faqItems}
   </footer>
   <script>
   // #6427: repassa a query string ATUAL (UTM da Clarice News, tráfego pago,
-  // etc — ver withClariceUtm em scripts/lib/mensal/monthly-render.ts) pros
-  // 3 CTAs de assinatura desta home antes de o visitante clicar. Um anchor
+  // etc — ver withClariceUtm em scripts/lib/mensal/monthly-render.ts) pro
+  // CTA "Assinar" do nav antes de o visitante clicar. Um anchor
   // href="/assinar" estático NUNCA carrega o utm_source=... da URL atual
   // sozinho (resolução de URL relativa não herda query de referência
   // absoluta-por-path) — sem isto, a atribuição morreria aqui mesmo com a
   // página /assinar (workers/site/public/assinar/) pronta pra recebê-la.
-  // Escopo mínimo: só os 3 anchors que de fato apontam pra /assinar — nunca
-  // toca outros hrefs da página (ex: "Ler edição", que usam a mesma classe
-  // .btn-ink com destino diferente).
+  // #6976: os 2 pills de masthead/footer deixaram de ser anchors (viraram
+  // <form>, ver wireSignupForm abaixo) — este bloco agora só toca o CTA do
+  // nav, que continua um link simples pra /assinar.
   (function () {
     if (!window.location.search) return;
     var ctas = document.querySelectorAll('a[href="/assinar"]');
     for (var i = 0; i < ctas.length; i++) {
       ctas[i].setAttribute("href", "/assinar" + window.location.search);
     }
+  })();
+
+  // #6976: resolve a inscrição no próprio hero (masthead + footer) — mesmo
+  // mecanismo de workers/site/public/assinar/index.html (POST JSON pra
+  // https://eia.diar.ia.br/jogar/subscribe, progressive enhancement, status
+  // inline), mas fatorado numa função que recebe o FORM como argumento e é
+  // chamada 1x por instância — nunca getElementById fixo — pra os 2 forms
+  // da mesma página (ids distintos: masthead-form / footer-form) não
+  // colidirem entre si.
+  (function () {
+    function wireSignupForm(form) {
+      if (!form) return;
+      var qs = new URLSearchParams(window.location.search);
+      ["utm_source", "utm_medium", "utm_campaign"].forEach(function (key) {
+        var el = form.querySelector('input[name="' + key + '"]');
+        var v = qs.get(key);
+        if (el && v) el.value = v;
+      });
+
+      var status = form.querySelector(".signup-status");
+      function setStatus(msg, ok) {
+        if (!status) return;
+        status.style.display = "block";
+        status.textContent = msg;
+        status.className = "signup-status" + (ok ? " ok" : " err");
+      }
+      function val(sel) {
+        var el = form.querySelector(sel);
+        return el ? el.value : "";
+      }
+      form.addEventListener("submit", function (ev) {
+        ev.preventDefault();
+        var optin = form.querySelector('input[name="optin"]');
+        if (!optin || !optin.checked) {
+          setStatus("Marque a caixinha de consentimento pra assinar.", false);
+          return;
+        }
+        var email = (val('input[name="email"]') || "").trim();
+        if (!email || email.indexOf("@") < 0) {
+          setStatus("Digite um e-mail válido.", false);
+          return;
+        }
+        var btn = form.querySelector('button[type="submit"]');
+        if (btn) btn.disabled = true;
+        setStatus("Enviando…", true);
+        var payload = {
+          email: email,
+          optin: true,
+          website: val('input[name="website"]') || "",
+          source: "apex",
+          utm_source: val('input[name="utm_source"]'),
+          utm_medium: val('input[name="utm_medium"]'),
+          utm_campaign: val('input[name="utm_campaign"]'),
+        };
+        if (typeof window.fetch !== "function") {
+          // Sem fetch: deixa o form nativo submeter normalmente
+          // (progressive enhancement) — ev.preventDefault() já foi chamado,
+          // então reenvia.
+          form.submit();
+          return;
+        }
+        window
+          .fetch(form.getAttribute("action"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          })
+          .then(function (res) {
+            return res.json().then(
+              function (d) {
+                return { status: res.status, body: d };
+              },
+              function () {
+                return { status: res.status, body: null };
+              },
+            );
+          })
+          .then(function (r) {
+            if (r.status === 200 && r.body && r.body.ok) {
+              form.reset();
+              setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
+              if (btn) btn.disabled = true;
+            } else if (r.status === 429) {
+              setStatus("Muitas tentativas. Tente de novo mais tarde.", false);
+              if (btn) btn.disabled = false;
+            } else if (r.status === 503) {
+              setStatus("Cadastro indisponível agora. Tente de novo em instantes.", false);
+              if (btn) btn.disabled = false;
+            } else {
+              setStatus("Não deu pra assinar agora. Confira o e-mail e tente de novo.", false);
+              if (btn) btn.disabled = false;
+            }
+          })
+          .catch(function () {
+            setStatus("Erro de conexão. Tente de novo.", false);
+            if (btn) btn.disabled = false;
+          });
+      });
+    }
+
+    var forms = document.querySelectorAll("form.signup");
+    for (var i = 0; i < forms.length; i++) wireSignupForm(forms[i]);
   })();
   </script>
 </body>
