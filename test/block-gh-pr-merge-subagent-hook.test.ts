@@ -586,6 +586,123 @@ describe("readActiveCoordinatorScan (#6303 Finding B)", () => {
   });
 });
 
+// ─── crossMachine (#6621) — leniência de merge não pode subcontar coordenadora
+// de outra máquina ────────────────────────────────────────────────────────
+
+describe("readActiveCoordinatorScan opts.crossMachine (#6621)", () => {
+  const roots = [];
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+  function freshRoot() {
+    const root = join(tmpdir(), `scan-crossmachine-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    roots.push(root);
+    return root;
+  }
+  function writeSession(root, filename, record) {
+    const dir = sessionsDir(root);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, filename), JSON.stringify(record), "utf8");
+  }
+  const NOW = Date.parse("2026-08-28T18:14:00.000Z");
+  const ONE_HOUR_MS = 60 * 60 * 1000;
+
+  it("default (crossMachine ausente/false) preserva o filtro por máquina — sessão de outra máquina excluída", () => {
+    const root = freshRoot();
+    writeSession(root, "overnight-helios-eXXX.json", {
+      kind: "overnight",
+      sessionId: "coordenadora-helios",
+      lastHeartbeat: new Date(NOW - ONE_HOUR_MS).toISOString(),
+      machineTag: "outra-maquina-qualquer",
+    });
+    const scan = readActiveCoordinatorScan(root, NOW);
+    assert.deepEqual(scan.ids, new Set());
+  });
+
+  it("crossMachine: true inclui coordenadora de OUTRA máquina", () => {
+    const root = freshRoot();
+    writeSession(root, "overnight-helios-eXXX.json", {
+      kind: "overnight",
+      sessionId: "coordenadora-helios",
+      lastHeartbeat: new Date(NOW - ONE_HOUR_MS).toISOString(),
+      machineTag: "outra-maquina-qualquer",
+    });
+    const scan = readActiveCoordinatorScan(root, NOW, { crossMachine: true });
+    assert.deepEqual(scan.ids, new Set(["coordenadora-helios"]));
+  });
+
+  it("crossMachine: true soma coordenadoras da máquina local E de outra — size reflete o total global", () => {
+    const root = freshRoot();
+    writeSession(root, "overnight-helios-eXXX.json", {
+      kind: "overnight",
+      sessionId: "coordenadora-helios",
+      lastHeartbeat: new Date(NOW - ONE_HOUR_MS).toISOString(),
+      machineTag: "outra-maquina-qualquer",
+    });
+    writeSession(root, "develop-neo-eYYY.json", {
+      kind: "develop",
+      sessionId: "coordenadora-neo",
+      lastHeartbeat: new Date(NOW - ONE_HOUR_MS).toISOString(),
+      machineTag: "neo",
+    });
+    const scan = readActiveCoordinatorScan(root, NOW, { crossMachine: true });
+    assert.equal(scan.ids.size, 2);
+  });
+});
+
+describe("classifyMergeBlockCause com scan crossMachine (#6621, incidente PR #6614)", () => {
+  const roots = [];
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+  function freshRoot() {
+    const root = join(tmpdir(), `classify-crossmachine-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    roots.push(root);
+    return root;
+  }
+  function writeSession(root, filename, record) {
+    const dir = sessionsDir(root);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, filename), JSON.stringify(record), "utf8");
+  }
+  const NOW = Date.parse("2026-08-28T18:14:00.000Z");
+  const ONE_HOUR_MS = 60 * 60 * 1000;
+
+  it("coordenadora VIVA só em outra máquina: sessão interativa local sem grant/identidade é BLOQUEADA (regressão do incidente #6621)", () => {
+    // Reproduz o incidente literal do #6621: overnight vivo em helios,
+    // sessão interativa em Neo sem concessão nenhuma tenta `gh pr merge`. Com
+    // o scan LOCAL (sem crossMachine), a coordenadora de helios não entra no
+    // Set em Neo, `coordinators.size` vale 0, e `classifyMergeBlockCause`
+    // permitia (retornava null) — o merge sem lock que o guard existe pra
+    // barrar. Com `crossMachine: true` alimentando a função (o que o
+    // entrypoint CLI agora faz), a coordenadora de helios entra na contagem
+    // e o caller sem identidade é bloqueado.
+    const root = freshRoot();
+    writeSession(root, "overnight-helios-eXXX.json", {
+      kind: "overnight",
+      sessionId: "coordenadora-helios",
+      lastHeartbeat: new Date(NOW - ONE_HOUR_MS / 6).toISOString(), // 10min atrás
+      machineTag: "outra-maquina-qualquer",
+    });
+
+    const localScan = readActiveCoordinatorScan(root, NOW); // sem crossMachine
+    assert.equal(localScan.ids.size, 0, "scan local não vê a coordenadora de helios");
+    assert.equal(
+      classifyMergeBlockCause(localScan.ids, "sessao-interativa-neo", { mergeLockHolder: null, scanDegraded: false }),
+      null,
+      "com o scan LOCAL (comportamento pré-fix), o bug se reproduz: permite",
+    );
+
+    const crossScan = readActiveCoordinatorScan(root, NOW, { crossMachine: true });
+    assert.equal(crossScan.ids.size, 1, "scan cross-máquina vê a coordenadora de helios");
+    assert.equal(
+      classifyMergeBlockCause(crossScan.ids, "sessao-interativa-neo", { mergeLockHolder: null, scanDegraded: false }),
+      "not-authorized",
+      "com o scan CROSS-MÁQUINA (fix), o caller sem identidade/grant é bloqueado",
+    );
+  });
+});
+
 describe("shouldBlockGhPrMerge — varredura degradada anula a leniência solo (#6303 Finding B)", () => {
   const coords = new Set(["coord-a"]);
 
