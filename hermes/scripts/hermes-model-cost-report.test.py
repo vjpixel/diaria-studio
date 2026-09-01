@@ -99,9 +99,17 @@ def _seed_usage_only(db_path: Path) -> None:
 
 
 def _seed_tick_composition(db_path: Path, job_id: str) -> None:
-    """Banco com 3 ticks do continuo — 1 saudavel (100% primario), 1
-    degradado (chamou o fallback local), 1 fora do padrao de session_id (nao
-    e do job continuo, nao deve entrar na composicao)."""
+    """Banco com 4 ticks do continuo — 1 saudavel (100% primario), 1
+    degradado (chamou o fallback local), 1 com o id do modelo prefixado, 1
+    no formato historico de hifens — e 1 sessao fora do padrao (nao e do
+    job continuo, nao deve entrar na composicao).
+
+    #6963: os session_id usam o formato REAL de producao,
+    `cron_{job_id}_<data>_<hora>` (UNDERSCORE). A fixture antiga usava
+    `hermes-cron-{job_id}-*`, o MESMO padrao errado da implementacao — por
+    isso o teste ficava verde enquanto a query casava zero linhas no banco
+    de verdade (0 contra 238, medido em producao em 01/09). Um teste que
+    seeda a suposicao da implementacao nao testa nada alem dela mesma."""
     con = sqlite3.connect(db_path)
     con.execute(
         """
@@ -121,16 +129,20 @@ def _seed_tick_composition(db_path: Path, job_id: str) -> None:
     now = time.time()
     rows = [
         # tick saudavel: só primário.
-        (f"hermes-cron-{job_id}-aaa111", "gpt-5.6-luna", "openai-codex", 5, 1000, 500, 0.0, 0.0, now),
+        (f"cron_{job_id}_20260901_010101", "gpt-5.6-luna", "openai-codex", 5, 1000, 500, 0.0, 0.0, now),
         # tick degradado: maioria no primário, mas ALGUMA chamada caiu no
         # fallback local (qwen) — degraded=True mesmo sendo minoria.
-        (f"hermes-cron-{job_id}-bbb222", "gpt-5.6-luna", "openai-codex", 8, 2000, 1000, 0.0, 0.0, now),
-        (f"hermes-cron-{job_id}-bbb222", "qwen3.5:latest", "custom", 2, 200, 100, 0.0, 0.0, now),
+        (f"cron_{job_id}_20260901_020202", "gpt-5.6-luna", "openai-codex", 8, 2000, 1000, 0.0, 0.0, now),
+        (f"cron_{job_id}_20260901_020202", "qwen3.5:latest", "custom", 2, 200, 100, 0.0, 0.0, now),
         # tick saudável cuja chamada foi gravada com o id PREFIXADO do
         # mesmo modelo primário (PAID_ALLOWLIST já prova que as duas formas
         # aparecem em produção) — precisa contar como primário, não cair em
         # other_calls (finding do review do #6912).
-        (f"hermes-cron-{job_id}-ccc333", "openai-codex/gpt-5.6-luna", "openai-codex", 4, 800, 400, 0.0, 0.0, now),
+        (f"cron_{job_id}_20260901_030303", "openai-codex/gpt-5.6-luna", "openai-codex", 4, 800, 400, 0.0, 0.0, now),
+        # #6963: formato HISTORICO de hifens — segue aceito de proposito,
+        # pra um deploy antigo/futuro do Hermes que volte a produzi-lo nao
+        # ficar invisivel do mesmo jeito que o real ficou.
+        (f"hermes-cron-{job_id}-ddd444", "gpt-5.6-luna", "openai-codex", 3, 300, 150, 0.0, 0.0, now),
         # sessão fora do padrão (não é job continuo) — não deve aparecer.
         ("outra-sessao-qualquer", "gpt-5.6-luna", "openai-codex", 9, 900, 900, 0.0, 0.0, now),
     ]
@@ -184,21 +196,35 @@ def main() -> int:
         session_ids = {t["session_id"] for t in ticks}
 
         assert_true(
-            "collect_tick_composition() só retorna sessões do padrão hermes-cron-{JOB_ID}-* (3, não 4)",
-            len(ticks) == 3,
+            "collect_tick_composition() só retorna sessões do job contínuo (4, não 5 — a alheia fica de fora)",
+            len(ticks) == 4,
         )
         assert_true(
             "sessão fora do padrão (outra-sessao-qualquer) NÃO entra na composição",
             "outra-sessao-qualquer" not in session_ids,
         )
 
-        saudavel = next(t for t in ticks if t["session_id"].endswith("aaa111"))
+        # #6963 — O TESTE QUE TERIA PEGO O BUG. O formato real de producao e
+        # `cron_{id}_...` (underscore); a query usava `hermes-cron-{id}-%`
+        # (hifens) e casava ZERO linhas — 0 contra 238 no banco real. Com a
+        # fixture antiga (que seedava hifens) tudo passava. Esta assercao
+        # falha contra a implementacao anterior.
+        assert_true(
+            "#6963: session_id no formato REAL de producao (cron_{id}_data_hora) entra na composição",
+            any(t["session_id"].startswith(f"cron_{mod.CONTINUO_JOB_ID}_") for t in ticks),
+        )
+        assert_true(
+            "#6963: formato histórico de hifens continua aceito (nenhum dos dois fica invisível)",
+            any(t["session_id"].startswith(f"hermes-cron-{mod.CONTINUO_JOB_ID}-") for t in ticks),
+        )
+
+        saudavel = next(t for t in ticks if t["session_id"].endswith("010101"))
         assert_true(
             "tick 100% no modelo primário -> degraded=False",
             saudavel["degraded"] is False and saudavel["primary_pct"] == 100.0,
         )
 
-        degradado = next(t for t in ticks if t["session_id"].endswith("bbb222"))
+        degradado = next(t for t in ticks if t["session_id"].endswith("020202"))
         assert_true(
             "tick com QUALQUER chamada no fallback local -> degraded=True, mesmo sendo minoria das chamadas",
             degradado["degraded"] is True and degradado["local_fallback_pct"] > 0
@@ -208,7 +234,7 @@ def main() -> int:
         # #6912 (review): PAID_ALLOWLIST já prova que o mesmo modelo aparece
         # sob 2 ids ("gpt-5.6-luna" e "openai-codex/gpt-5.6-luna") — a forma
         # prefixada tinha que contar como primário, não cair em other_calls.
-        prefixado = next(t for t in ticks if t["session_id"].endswith("ccc333"))
+        prefixado = next(t for t in ticks if t["session_id"].endswith("030303"))
         assert_true(
             "tick com modelo primário sob o id PREFIXADO (openai-codex/gpt-5.6-luna) -> conta como primário, não other_calls",
             prefixado["degraded"] is False and prefixado["primary_pct"] == 100.0
