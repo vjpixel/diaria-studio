@@ -39,24 +39,45 @@
  * self-review explícito NUNCA autorizam merge. Só `"independent-review"`
  * autoriza.
  *
+ * ## #6849 (01/09/2026) — o lado positivo trocou de prosa livre pra marcador com nonce
+ *
+ * `INDEPENDENT_REVIEW_RE` (regex sobre a prosa "Review automatizado (N
+ * agentes, effort X): ...") **caiu**. Achado ao vivo: `hermes/scripts/
+ * continuo-pr-review.sh` — o revisor EXTERNO legítimo do #6871/#6865 — é
+ * instruído a produzir exatamente essa prosa, então uma sessão fabricando
+ * (mesmo padrão do #6713/#6715) e o revisor de verdade emitem a MESMA
+ * primeira linha. Nenhum regex sobre texto livre distingue os dois — o
+ * formato é público (script versionado) e trivialmente copiável. Não é um
+ * regex frouxo que precisa endurecer; é um discriminador impossível.
+ *
+ * A correção não fecha essa lacuna de fundo (nada fecha por texto puro) —
+ * troca o QUE conta como sinal: só o revisor externo (`continuo-pr-
+ * review.sh`) conhece o `run`/`at` que ELE MESMO gerou antes de invocar a
+ * sessão de review, e instrui essa sessão a colar esse valor, literal, no
+ * comentário. Uma sessão fabricando o review (a delegação do próprio PR,
+ * sem ferramenta Agent) não tem acesso a esse valor gerado pelo script
+ * externo — só pode reproduzir o FORMATO do marcador (o script é público),
+ * nunca o valor de uma execução real sem tê-lo visto. Ver `## Limitação
+ * residual` abaixo — isto não é criptografia, é remover o acidente.
+ *
  * ## Limitação residual, registrada explicitamente (achado do fleet review)
  *
  * Este gate é **honor-system em ambos os lados**, não uma verificação
  * criptográfica de que um dispatch real aconteceu. O lado negativo
- * (self-review) tem uma âncora forte — `SELF_REVIEW_MARKER` é um literal
- * exato que só aparece se a sessão seguir a instrução nova. O lado positivo
- * (`INDEPENDENT_REVIEW_RE`) é regex sobre prosa livre que um LLM compõe —
- * e a própria descoberta de que #6713/#6715 fabricaram em DOIS formatos
- * diferentes mostra que a mesma sessão pode produzir texto que nem o
- * marcador de self-review nem o regex reconhecem (caindo em `"other"` →
- * `no_review`, fail-closed — nunca um falso `"pass"`) ou que, por acaso,
- * COINCIDE com `INDEPENDENT_REVIEW_RE` sem um dispatch real ter ocorrido.
- * Nada aqui prova criptograficamente que a ferramenta Agent foi de fato
- * invocada. O gate garante uma coisa, e só uma: uma sessão que segue a nova
- * instrução do hook nunca produz um falso `"pass"` disfarçado de self-review
- * explícito — não garante que toda prosa de review genuína seja reconhecida,
- * nem impede uma fabricação em formato ainda não observado de colar por
- * acidente no regex positivo.
+ * (self-review) e o lado positivo (`INDEPENDENT_REVIEW_MARKER_RE`, desde o
+ * #6849) têm a MESMA forma de âncora agora — um literal/padrão que só
+ * aparece numa linha própria se a sessão seguir a instrução do respectivo
+ * script. Nada aqui prova criptograficamente que a ferramenta Agent foi de
+ * fato invocada, nem que o `run`/`at` do marcador vieram de uma execução
+ * real do `continuo-pr-review.sh` (uma sessão que leia esse script consegue
+ * fabricar um marcador com a mesma FORMA). O que muda desde o #6849: fabricar
+ * deixa de acontecer por ACIDENTE — a prosa antiga é a forma natural de uma
+ * sessão descrever o que ela acha que fez; um marcador com identidade de
+ * execução não sai sem intenção explícita de reproduzi-lo. Se o blast radius
+ * voltar a ser merge indevido (hoje, pós-#6864, o pior caso é PR órfã
+ * pulada pelo pickup do overnight — ver SKILL do #6864), a opção descartada
+ * no #6849 (credencial de review separada) é o próximo passo, não este
+ * marcador.
  */
 
 /** Marcador literal que a instrução do hook manda postar quando o Agent tool
@@ -67,14 +88,33 @@
 export const SELF_REVIEW_MARKER = "<!-- self-review: true -->";
 
 /**
- * Formato exato que `buildReviewInstruction` pede para um review DE VERDADE
- * (dispatch via Agent, `pr-create-review.mjs`) — não é o único texto válido
- * possível no mundo, mas é o que este repo produz em todo caminho onde o
- * dispatch de fato acontece (interativo, overnight, develop). Âncora no
- * início da linha (após trim) para não casar uma citação incidental da frase
- * em outro contexto.
+ * #6849: marcador com IDENTIDADE DE EXECUÇÃO que `hermes/scripts/
+ * continuo-pr-review.sh` gera (`run`/`at`) ANTES de invocar a sessão de
+ * review externa, e instrui a sessão a colar literalmente no comentário —
+ * substitui `INDEPENDENT_REVIEW_RE` (regex sobre a prosa "Review
+ * automatizado (...)"), que o revisor legítimo E uma sessão fabricando
+ * produzem igual (ver docstring do módulo, "o lado positivo trocou de prosa
+ * livre pra marcador com nonce"). Mesma âncora de LINHA PRÓPRIA que
+ * `SELF_REVIEW_MARKER` — um review legítimo que discuta este módulo em
+ * prosa citaria o literal e se autoclassificaria por engano, do mesmo jeito
+ * que o #6820 corrigiu pro marcador de self-review.
+ *
+ * `run=` e `at=` não são validados contra nada FORA do comentário (sem
+ * lookup externo, sem verificação criptográfica) — não prova que a
+ * execução foi real. Ver "Limitação residual" no docstring do módulo:
+ * fabricar deixou de ser algo que sai por acidente, não deixou de ser
+ * possível. `at=` EXIGE o formato ISO 8601 UTC exato que `date -u
+ * +%Y-%m-%dT%H:%M:%SZ` produz em `continuo-pr-review.sh` (frações de
+ * segundo opcionais) — achado do review da PR #6903 (P2, confiança alta):
+ * com `\S+` solto, a PRÓPRIA notação de placeholder usada nesta docstring
+ * (`run=<id> at=<iso>`), se citada em linha própria por um review futuro
+ * que discuta este módulo, colaria no regex sem nenhuma execução real ter
+ * ocorrido — mesma classe de colisão acidental que o #6820 fechou pro
+ * `SELF_REVIEW_MARKER` com um literal exato. `run=` continua `\S+`
+ * (formato menos previsível, sem um padrão fixo pra travar sem também
+ * travar o gerador do script).
  */
-const INDEPENDENT_REVIEW_RE = /^Review automatizado \(\d+ agentes?, effort (?:low|max)\b/i;
+const INDEPENDENT_REVIEW_MARKER_RE = /^<!-- continuo-review: run=\S+ at=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z -->$/;
 
 export type ReviewCommentKind = "self-review" | "independent-review" | "other";
 
@@ -83,26 +123,25 @@ export type ReviewCommentKind = "self-review" | "independent-review" | "other";
  *
  * #6820 (fleet review do #6732): a checagem original fazia `body.includes
  * (SELF_REVIEW_MARKER)` — substring solta em QUALQUER lugar do corpo, sem a
- * mesma âncora que `INDEPENDENT_REVIEW_RE` já tinha (início de linha, pra
- * não casar uma citação incidental). Um comentário de review LEGÍTIMO que
- * discutisse este próprio módulo/marcador em prosa (ex: um review de uma PR
- * futura que edite este arquivo) citaria o literal `SELF_REVIEW_MARKER` e
- * seria classificado `"self-review"` por engano — falso-negativo pro lado
- * que autoriza merge (fail-closed, nunca inseguro, mas bloqueia review real).
- * Fix: exigir que o marcador apareça como uma LINHA PRÓPRIA (trimmed),
- * exatamente como a instrução do hook manda postar — "a linha literal
- * `<!-- self-review: true -->` na própria linha".
+ * mesma âncora que o sinal positivo já tinha. Um comentário de review
+ * LEGÍTIMO que discutisse este próprio módulo/marcador em prosa (ex: um
+ * review de uma PR futura que edite este arquivo) citaria o literal
+ * `SELF_REVIEW_MARKER` e seria classificado `"self-review"` por engano —
+ * falso-negativo pro lado que autoriza merge (fail-closed, nunca inseguro,
+ * mas bloqueia review real). Fix: exigir que o marcador apareça como uma
+ * LINHA PRÓPRIA (trimmed), exatamente como a instrução do hook manda
+ * postar — "a linha literal `<!-- self-review: true -->` na própria
+ * linha". #6849 aplica o MESMO tratamento ao marcador positivo
+ * (`INDEPENDENT_REVIEW_MARKER_RE`), pelo mesmo motivo.
  */
 export function classifyReviewComment(body: unknown): ReviewCommentKind {
   if (typeof body !== "string" || body.length === 0) return "other";
+  const lines = body.split("\n").map((line) => line.trim());
   // Checar o marcador de self-review PRIMEIRO: uma sessão que copiasse o
   // texto de review real por engano ainda deve contar como self-review se
   // carregar o marcador — o marcador é a fonte de verdade, não o prefixo.
-  const hasOwnLineMarker = body
-    .split("\n")
-    .some((line) => line.trim() === SELF_REVIEW_MARKER);
-  if (hasOwnLineMarker) return "self-review";
-  if (INDEPENDENT_REVIEW_RE.test(body.trim())) return "independent-review";
+  if (lines.some((line) => line === SELF_REVIEW_MARKER)) return "self-review";
+  if (lines.some((line) => INDEPENDENT_REVIEW_MARKER_RE.test(line))) return "independent-review";
   return "other";
 }
 
@@ -150,7 +189,7 @@ export function evaluatePrReviewAuthenticity(comments: unknown): PrReviewAuthent
     if (kind === "independent-review") {
       return {
         verdict: "pass",
-        reason: "review independente encontrado (formato de dispatch via Agent)",
+        reason: "review independente encontrado (marcador com identidade de execução, #6849)",
         matchedCommentId: typeof node?.id === "string" ? node.id : undefined,
       };
     }

@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.9
+version: 0.5.10
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -202,9 +202,17 @@ issue nova é reivindicada. Para cada PR, nesta ordem:
    (`check-pr-review-authenticity.ts`) é honor-system por CONSTRUÇÃO —
    avaliador (esta delegação) e avaliado (a PR que ela mesma abriu) são o
    MESMO processo, com a MESMA credencial `gh`, escrevendo no MESMO lugar.
-   `INDEPENDENT_REVIEW_RE` já aprovou o texto fabricado exato do incidente
-   #6713 uma vez — endurecer a regex só encarece fabricar, não muda quem
-   decide. A investigação do #6849 esgotou a busca por sinal fora do texto
+   o regex de prosa original (`INDEPENDENT_REVIEW_RE`, removido no #6849 —
+   ver "Marcador com nonce" no changelog abaixo) já aprovou o texto
+   fabricado exato do incidente #6713 uma vez, e o #6849 achou que o
+   revisor externo LEGÍTIMO (`continuo-pr-review.sh`) produzia a MESMA
+   prosa — endurecer a regex nunca teria fechado isso, era um
+   discriminador impossível por texto. O marcador com identidade de
+   execução que o #6849 introduziu reduz o caso de fabricação POR ACIDENTE,
+   mas não muda a conclusão desta seção: avaliador e avaliado seguem sendo
+   o MESMO processo com a MESMA credencial `gh`, então nada aqui autoriza
+   merge de volta pra esta delegação — a investigação do #6849 esgotou a
+   busca por sinal fora do texto
    (autor — `["vjpixel"]` é o único ator que já comentou neste repo, sem
    bot/App; `kind` do session-registry; `gh pr comment` × `gh pr review`;
    telemetria de dispatch) e não achou nenhum. **Remover a capacidade de
@@ -451,6 +459,25 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Changelog
 
+- 0.5.10 (01/09/2026): #6849 — "Marcador com nonce": o sinal positivo de
+  `pr-review-authenticity.ts` deixou de ser `INDEPENDENT_REVIEW_RE` (regex
+  sobre a prosa "Review automatizado (N agentes, effort X): ..."). Achado
+  ao vivo (corrigindo uma leitura errada anterior desta mesma issue): o
+  revisor externo LEGÍTIMO — `continuo-pr-review.sh` — é instruído a
+  produzir exatamente essa prosa, então nenhum regex textual distinguia
+  fabricação de review real; endurecer o regex era correção impossível,
+  não parcial. Fix: `continuo-pr-review.sh` gera `RUN_ID`/`AT` (identidade
+  da execução) ANTES de invocar a sessão de review e instrui-a a colar o
+  marcador `<!-- continuo-review: run=<id> at=<iso> -->`; o gate passa a
+  exigir esse marcador, em linha própria (mesmo tratamento que o #6820 deu
+  ao `SELF_REVIEW_MARKER`). A prosa "Review automatizado (...)" continua
+  sendo a primeira linha, só pra leitura humana — não decide mais nada.
+  **Não fecha o honor-system** (avaliador e avaliado seguem o mesmo
+  processo/credencial `gh`, e o formato do marcador é público, num script
+  versionado) — o que muda é que fabricar deixa de sair por ACIDENTE,
+  porque o `run`/`at` só existem porque o script externo os gerou agora. A
+  conclusão do #6864 abaixo (nunca mergear a própria PR) segue de pé —
+  este item não a revoga nem depende dela.
 - 0.5.9 (31/08/2026): #6864 — a delegação PARA de mergear a própria PR.
   §3 (fila de PRs abertos) removeu a instrução "exit 0 → merge no mesmo
   tick" — `check-pr-review-authenticity.ts` vira rótulo informativo pro

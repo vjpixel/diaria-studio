@@ -37,19 +37,27 @@
 # ## O comentário satisfaz o gate de autenticidade de verdade (#6849/#6732)
 #
 # `check-pr-review-authenticity.ts` classifica um comentário como
-# `independent-review` por CASAR COM UM FORMATO DE TEXTO
-# (`INDEPENDENT_REVIEW_RE`) — o #6849 documentou que isso é, por
-# construção, honor-system: nenhum classificador textual distingue review
-# feito de review declarado. Este script não fecha essa lacuna de desenho
-# (nada fecha, ver #6849) — o que ele FAZ é garantir que, quando o formato
-# aparece, ele veio de um dispatch real: uma sessão Sonnet SEPARADA da
-# delegação que abriu a PR (delegação usa OpenRouter via
-# `claude-openrouter.sh`, sem ferramenta Agent, #6712; este script usa a
-# assinatura claude.ai, tem `--allowedTools` de leitura, e roda num cron
-# distinto). O comentário deixa de ser "texto que uma sessão sem Agent tool
-# escreveu tentando cumprir a instrução" e passa a ser "texto que uma
-# sessão com autoridade e capacidade de revisar de verdade escreveu depois
-# de ler o diff" — mesma classe do review Opus diário, só que por PR.
+# `independent-review` por um MARCADOR com identidade de execução (#6849,
+# 01/09/2026) — `<!-- continuo-review: run=<id> at=<iso> -->`, gerado
+# ABAIXO (`RUN_ID`/`AT`) por ESTE script antes de invocar a sessão de
+# review, nunca pela sessão que o comentário representa. Substitui o
+# `INDEPENDENT_REVIEW_RE` original (regex sobre a prosa "Review
+# automatizado (...)"): achado ao vivo que o revisor externo (este script)
+# e uma sessão FABRICANDO review (a delegação do próprio PR, sem
+# ferramenta Agent) produziam a MESMA prosa — nenhum regex textual
+# distingue os dois quando o formato-alvo é público e citado neste
+# arquivo versionado. O marcador não fecha essa lacuna por completo
+# (honor-system nos dois lados continua — ver docstring de
+# `pr-review-authenticity.ts`), mas fecha o caminho de fabricação POR
+# ACIDENTE: `RUN_ID`/`AT` só existem porque ESTE processo os gerou agora,
+# a sessão de review só os vê porque este script os passa no prompt — a
+# delegação do PR (que roda ANTES/em paralelo, nunca dentro deste script)
+# nunca tem acesso a esse valor específico. O comentário deixa de ser
+# "texto que uma sessão sem Agent tool escreveu tentando cumprir a
+# instrução" e passa a ser "texto que uma sessão com autoridade e
+# capacidade de revisar de verdade escreveu depois de ler o diff, contendo
+# um valor que só ESTE processo poderia ter fornecido" — mesma classe do
+# review Opus diário, só que por PR.
 #
 # AUTH: assinatura claude.ai (OAuth), mesmo padrão do
 # `opus-daily-diff-review.sh` — este script NÃO seta
@@ -132,6 +140,18 @@ for PR in $PR_NUMBERS; do
 
   echo "[continuo-pr-review] revisando PR #$PR ($PR_TITLE, $BASE_SHA..$HEAD_SHA)..."
 
+  # #6849: identidade de execução gerada AQUI, pelo processo externo — a
+  # sessão de review abaixo só a conhece porque este script a passa no
+  # prompt; a delegação do PR (que roda em processo separado, sem visão
+  # deste script em execução) nunca a vê. Não é validada contra nada
+  # depois (sem lookup, sem log paralelo) — só a FORMA do marcador conta
+  # pro gate (`pr-review-authenticity.ts`); o valor em si só precisa ser
+  # algo que a sessão fabricando o review não teria como adivinhar/copiar
+  # de uma execução anterior.
+  RUN_ID="$(date -u +%s)-$$-${RANDOM}"
+  AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  MARKER="<!-- continuo-review: run=${RUN_ID} at=${AT} -->"
+
   PROMPT="Você é o review externo do contínuo do diaria-studio — uma sessão SEPARADA da que abriu esta PR (a delegação do contínuo não tem ferramenta Agent, #6712; você tem assinatura claude.ai e está revisando de verdade). Revise a PR #$PR (\`$PR_TITLE\`), diff \`git diff $BASE_SHA..$HEAD_SHA\`, commits \`git log --oneline $BASE_SHA..$HEAD_SHA\`.
 
 Procure, nesta ordem de prioridade:
@@ -142,9 +162,12 @@ Procure, nesta ordem de prioridade:
 
 Reporte TODOS os achados, incluindo baixa confiança — a filtragem por confiança/severidade é um passo separado, não seu trabalho aqui (mesma regra do #5304 já aplicada ao review automatizado deste repo). Tag cada achado com confiança (alta/média/baixa) e severidade (P0-P3).
 
-OBRIGATÓRIO: poste seu review como comentário via \`gh pr comment $PR --body \"...\"\`. A PRIMEIRA LINHA do comentário tem que ser EXATAMENTE no formato \`Review automatizado (1 agente, effort low): <resumo de 1 frase>\` — é o formato que o gate de autenticidade (\`scripts/check-pr-review-authenticity.ts\`, #6732) reconhece como review independente de verdade. Sem essa linha exata no início, seu review não conta pro gate, mesmo sendo genuíno.
+OBRIGATÓRIO: poste seu review como comentário via \`gh pr comment $PR --body \"...\"\`. A primeira linha pode ser prosa legível pra humano, no formato \`Review automatizado (1 agente, effort low): <resumo de 1 frase>\` — mas isso NÃO é mais o que o gate reconhece (#6849: esse formato de prosa é público e qualquer sessão pode reproduzi-lo, review real ou fabricado). O que o gate de autenticidade (\`scripts/lib/pr-review-authenticity.ts\`) exige, em UMA LINHA PRÓPRIA em qualquer lugar do comentário, é este marcador EXATO, copiado literalmente, sem alterar um único caractere:
+${MARKER}
 
-Se não encontrar NENHUM achado de confiança alta ou média: poste mesmo assim, com \`Review automatizado (1 agente, effort low): sem findings de confiança alta/média.\` — comentário vazio não satisfaz o gate.
+Sem essa linha exata, seu review não conta pro gate, mesmo sendo genuíno.
+
+Se não encontrar NENHUM achado de confiança alta ou média: poste mesmo assim, com \`Review automatizado (1 agente, effort low): sem findings de confiança alta/média.\` seguido da linha do marcador acima — comentário vazio não satisfaz o gate.
 
 VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramentas permitidas, e mesmo que estivesse, mergear PR do contínuo é decisão exclusiva do pickup (\`hermes-diaria-continuo/SKILL.md\` §3 passo 3, #6823), nunca deste review."
 
