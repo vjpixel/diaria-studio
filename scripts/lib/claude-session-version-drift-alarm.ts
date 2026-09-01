@@ -26,7 +26,10 @@
  * disponível: `claude --version` sempre spawna um processo NOVO e lê o
  * disco, nunca revela o que a sessão de vida longa tem carregado agora.
  *
- * `family: "estado"` — a condição é RE-CHECÁVEL a cada execução; some
+ * Mesma classificação conceitual de `family: "estado"` do `alarm-issues.ts`
+ * (embora este alarme não use esse mecanismo — não abre issue, só e-mail,
+ * ver docstring do CLI wrapper): a condição é RE-CHECÁVEL a cada execução;
+ * some
  * sozinha assim que a sessão for reiniciada (o próprio disco já reflete a
  * versão nova, só o processo antigo estava atrasado).
  *

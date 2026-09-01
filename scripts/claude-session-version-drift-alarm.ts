@@ -107,20 +107,28 @@ const defaultOps: SessionDiscoveryOps = { execFileSync, readlinkSync };
 
 /**
  * Enumera processos `claude ... --remote-control` vivos via `ps -eo
- * pid=,etimes=,args=` — só sessões de vida longa não-interativas contam
- * (o achado do #6875 foi medido nelas; uma sessão interativa comum no
- * terminal não fica dias viva). `ps` ausente/erro → lista vazia (fail-soft:
- * plataforma sem `ps`, ou nenhum processo do usuário visível — não é
- * motivo pra falhar o timer, só pra não achar nada).
+ * pid=,etimes=,args=` — só sessões de vida longa via Remote Control (tmux,
+ * sem terminal anexado) contam (o achado do #6875 foi medido nelas; uma
+ * sessão comum num terminal anexado não fica dias viva).
+ *
+ * `ps` falhando PROPAGA (nunca vira lista vazia) — achado do #6953 (review
+ * silent-failure-hunter): num host Linux (este script já saiu cedo em
+ * qualquer outro `process.platform`), `ps` está sempre presente; uma falha
+ * aqui é ela mesma uma anomalia do host (binário quebrado, `/proc`
+ * indisponível, recurso exaurido), nunca "confirmado zero sessões". Tratar
+ * como lista vazia faria exatamente o que este alarme existe pra evitar em
+ * QUALQUER outro lugar do módulo (indeterminado virando "ok" por omissão)
+ * — e tem efeito colateral pior: uma falha transitória de `ps` zeraria
+ * `evaluations`, `advanceClaudeSessionDriftAlarmState` leria isso como
+ * "nada pendente" e resetaria `lastAlarmedFingerprint` pra `null`, fazendo
+ * a PRÓXIMA execução bem-sucedida re-alarmar um drift que já tinha sido
+ * avisado (duplicata) em vez de simplesmente re-tentar a checagem que
+ * falhou. Deixar propagar faz `main()` sair com `exitCode = 1` sem tocar
+ * `saveState` — o task-runner registra a run como falha de verdade, e o
+ * cursor de idempotência fica intacto pra próxima tentativa.
  */
 export function listLongLivedClaudeProcesses(ops: SessionDiscoveryOps = defaultOps): ClaudeSessionProcess[] {
-  let raw: string;
-  try {
-    raw = ops.execFileSync("ps", ["-eo", "pid=,etimes=,args="], { encoding: "utf8" });
-  } catch (e) {
-    console.warn(`${LOG_PREFIX} \`ps\` falhou ou não está disponível: ${(e as Error).message}`);
-    return [];
-  }
+  const raw = ops.execFileSync("ps", ["-eo", "pid=,etimes=,args="], { encoding: "utf8" });
 
   const sessions: ClaudeSessionProcess[] = [];
   for (const line of raw.split("\n")) {

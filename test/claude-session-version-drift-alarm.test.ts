@@ -217,14 +217,13 @@ describe("listLongLivedClaudeProcesses (#6927) — I/O", () => {
     assert.equal(result[0].ageSeconds, 100);
   });
 
-  it("`ps` lançando erro -> lista vazia, nunca lança (fail-soft)", () => {
+  it("`ps` lançando erro -> PROPAGA (nunca vira lista vazia — achado #6953: numa run Linux, `ps` falhar é anomalia real, não 'zero sessões')", () => {
     const ops = fakeOps({
       execFileSync: (() => {
         throw new Error("ps: command not found");
       }) as unknown as SessionDiscoveryOps["execFileSync"],
     });
-    assert.doesNotThrow(() => listLongLivedClaudeProcesses(ops));
-    assert.deepEqual(listLongLivedClaudeProcesses(ops), []);
+    assert.throws(() => listLongLivedClaudeProcesses(ops), /ps: command not found/);
   });
 
   it("linha que não casa o formato pid/etimes/args é ignorada, não derruba o parse das demais", () => {
