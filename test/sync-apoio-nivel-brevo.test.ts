@@ -233,21 +233,27 @@ describe("diffApoioBrevo — caso 6: membro atual sem contato apoia.se correspon
   });
 });
 
-describe("evaluateBrevoBlastRadiusGuard — limiar 30% (#4436, paridade #4572)", () => {
-  it("no limiar EXATO (30%) não bloqueia", () => {
+describe("evaluateBrevoBlastRadiusGuard — freio removido (#6793 Faixa A, item 8)", () => {
+  it("no limiar EXATO (30%) não bloqueia — nunca bloqueou, comportamento preservado", () => {
     const result = evaluateBrevoBlastRadiusGuard(3, 10, false);
     assert.equal(result.ratio, 0.3);
     assert.equal(result.blocked, false);
   });
 
-  it("acima do limiar bloqueia", () => {
+  it("#6793: acima do limiar histórico (30%) NÃO bloqueia mais — guard desativado", () => {
     const result = evaluateBrevoBlastRadiusGuard(4, 10, false);
     assert.ok(result.ratio > 0.3);
-    assert.equal(result.blocked, true);
+    assert.equal(result.blocked, false);
   });
 
-  it("--force-blast-radius sempre libera, mesmo muito acima do limiar", () => {
+  it("--force-blast-radius: sem efeito (guard já não bloqueia nada), sempre libera", () => {
     const result = evaluateBrevoBlastRadiusGuard(9, 10, true);
+    assert.equal(result.blocked, false);
+  });
+
+  it("#6793: mesmo removendo 100% dos membros, não bloqueia", () => {
+    const result = evaluateBrevoBlastRadiusGuard(10, 10, false);
+    assert.equal(result.ratio, 1);
     assert.equal(result.blocked, false);
   });
 
@@ -655,11 +661,14 @@ describe("sync-apoio-nivel-brevo.ts exit semantics (#4651, mesma classe do #4638
   // (runApoioReconciliationCycle, buildApoiosData, fetchCurrentBrevoApoiadoresState
   // e/ou applyBrevoApoioDiff) derruba o processo no Windows com
   // UV_HANDLE_CLOSING enquanto o fetch agent ainda tem sockets keep-alive
-  // abertos. Fix: process.exitCode nos 3 branches pós-await (erro de
-  // autenticação apoia.se, guard de blast radius, resumo do --push) e no
-  // catch handler do isMainModule(). Os guards pré-await (config ausente,
-  // list_id ausente, API key ausente) ficam como process.exit(2) de
-  // propósito — nenhum fetch rodou ainda nesses pontos.
+  // abertos. Fix: process.exitCode nos branches pós-await (erro de
+  // autenticação apoia.se, resumo do --push) e no catch handler do
+  // isMainModule(). Os guards pré-await (config ausente, list_id ausente,
+  // API key ausente) ficam como process.exit(2) de propósito — nenhum fetch
+  // rodou ainda nesses pontos. #6793 "Faixa A" item 8 (30/08/2026): o 3º
+  // branch original (guard de blast radius bloqueado) foi REMOVIDO junto
+  // com o guard — nunca mais executava (blocked sempre false) — por isso a
+  // contagem abaixo caiu de 3 para 2.
   const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "sync-apoio-nivel-brevo.ts");
 
   function readMainAndCatchBodies(): { mainBody: string; catchBody: string } {
@@ -672,16 +681,18 @@ describe("sync-apoio-nivel-brevo.ts exit semantics (#4651, mesma classe do #4638
     return { mainBody: mainMatch[0], catchBody: catchMatch[0] };
   }
 
-  it("branches pós-await (exit 1 — authError, blast radius, resumo --push) usam process.exitCode, não process.exit (#4651)", () => {
+  it("#6793: branches pós-await (exit 1 — authError, resumo --push) usam process.exitCode, não process.exit (#4651)", () => {
     const { mainBody } = readMainAndCatchBodies();
     assert.equal(
       /process\.exit\(1\)/.test(mainBody),
       false,
       "process.exit(1) não deveria mais existir em main() — usar process.exitCode (#4651 Windows crash)",
     );
-    // 3 ocorrências esperadas: authError, blast radius bloqueado, resumo do --push.
+    // 2 ocorrências esperadas desde #6793 (era 3): authError, resumo do
+    // --push. O 3º branch (blast radius bloqueado) foi removido — o guard
+    // nunca mais bloqueia (item 8).
     const matches = mainBody.match(/process\.exitCode = 1/g) ?? [];
-    assert.equal(matches.length, 3, `esperava 3 ocorrências de process.exitCode = 1, achei ${matches.length}`);
+    assert.equal(matches.length, 2, `esperava 2 ocorrências de process.exitCode = 1 (#6793), achei ${matches.length}`);
   });
 
   it("guards pré-await (exit 2 — config, list_id, API key) continuam com process.exit — sem risco libuv (#4651)", () => {

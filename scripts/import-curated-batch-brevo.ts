@@ -79,7 +79,6 @@ import { buildOrigin } from "./lib/shared/brevo-diaria-origin.ts"; // #6678
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_CURATED_LOG_PATH = resolve(ROOT, "data/brevo-diaria/curated-import-log.jsonl");
-const DEFAULT_QUEUE_CAP = 300;
 
 export interface CuratedImportLogEntry {
   email: string;
@@ -219,16 +218,18 @@ export async function importOneCuratedContact(params: {
   return { outcome: { kind: "imported", mvResult: mv.result }, nextStore };
 }
 
-function readQueueCap(log: (msg: string) => void): number {
-  try {
-    const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
-      brevo_diaria?: { daily_send_cap?: number };
-    };
-    return cfg.brevo_diaria?.daily_send_cap ?? DEFAULT_QUEUE_CAP;
-  } catch (e) {
-    log(`aviso: falha ao ler platform.config.json (${(e as Error).message}) — usando cap default ${DEFAULT_QUEUE_CAP}.`);
-    return DEFAULT_QUEUE_CAP;
-  }
+/**
+ * #6793 "Faixa A" (30/08/2026, decisão do editor, item 8): freio automático
+ * de VOLUME da fila compartilhada removido — este lote curado deixou de ter
+ * teto de contatos ativos simultâneos. `daily_send_cap`/`DEFAULT_QUEUE_CAP`
+ * continuam existindo (item 5, `checkDailySendCap` em publish-daily-brevo.ts
+ * segue lendo `daily_send_cap` como teto de ENVIO diário) — só o uso daqui,
+ * como cap da FILA compartilhada, foi removido. Mantida como função (em vez
+ * de inlinar `Number.POSITIVE_INFINITY` nos 2 call sites) pra preservar o
+ * ponto único de mudança se a decisão for revertida.
+ */
+function readQueueCap(_log: (msg: string) => void): number {
+  return Number.POSITIVE_INFINITY;
 }
 
 export function formatPlanReport(params: {
@@ -244,7 +245,7 @@ export function formatPlanReport(params: {
   lines.push(`[import-curated-batch-brevo] arquivo: ${params.inputPath}`);
   lines.push(`[import-curated-batch-brevo] ${params.total} registro(s) no lote.`);
   lines.push(
-    `[import-curated-batch-brevo] fila compartilhada: ${params.currentActiveCount}/${params.cap} ocupados, ` +
+    `[import-curated-batch-brevo] fila compartilhada: ${params.currentActiveCount} ocupados, sem teto (#6793) — ` +
       `${computeAvailableSlots(params.currentActiveCount, params.cap)} slot(s) livre(s).`,
   );
   lines.push(`[import-curated-batch-brevo] ${params.selected.length} elegível(is) após dedup + cap.`);

@@ -78,10 +78,13 @@ import { brevoGet } from "./brevo-client.ts";
 
 /**
  * Teto diário do plano free da Brevo — balde único, transacional +
- * marketing. Mesmo valor já usado como fallback hardcoded em
- * `publish-daily-brevo.ts` (`?? 300`) e `sync-pending-to-brevo.ts`
- * (`DEFAULT_QUEUE_CAP`), mas ali representando outra coisa (teto da FILA);
- * aqui é o limite real da plataforma.
+ * marketing. Este é o limite real da PLATAFORMA (item 4 da issue #6793,
+ * INTOCADO — não é um freio nosso, é o teto da conta Brevo em si).
+ * Histórico: até 30/08/2026, `sync-pending-to-brevo.ts` tinha uma
+ * `DEFAULT_QUEUE_CAP = 300` própria representando outra coisa (teto da
+ * FILA, item 6) — removida em #6793 "Faixa A" (a fila deixou de ter teto).
+ * `publish-daily-brevo.ts` ainda usa `?? 300` como fallback pro teto de
+ * ENVIO diário da LISTA (item 5, também #6793, INTOCADO).
  */
 export const BREVO_FREE_DAILY_SEND_LIMIT = 300;
 

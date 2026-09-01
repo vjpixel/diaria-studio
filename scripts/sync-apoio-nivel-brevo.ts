@@ -82,7 +82,7 @@
  * real nos testes).
  *
  * Uso:
- *   npx tsx scripts/sync-apoio-nivel-brevo.ts [--push] [--allow-partial] [--force-blast-radius]
+ *   npx tsx scripts/sync-apoio-nivel-brevo.ts [--push] [--allow-partial]
  */
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -311,14 +311,19 @@ export interface BrevoBlastRadiusGuardResult {
 }
 
 /**
- * Pure: recusa o `--push` inteiro quando as remoções calculadas excedem
- * `BLAST_RADIUS_THRESHOLD` (30%) de quem é membro HOJE da lista Brevo
- * dedicada — mesmo racional/limiar de `evaluateBlastRadiusGuard`
- * (sync-apoio-nivel-beehiiv.ts, #4436), denominador adaptado pro modelo de
- * membresia de lista (não há campo `apoioNivel` por membro no estado atual
- * aqui — só o e-mail já implica "é alvo", ver `fetchCurrentBrevoApoiadoresState`).
- * "Passar de" é estrito — exatamente no limiar não bloqueia.
- * `force` (`--force-blast-radius`) é o escape hatch explícito, sempre logado.
+ * Pure: calcula a magnitude das remoções (`ratio`) contra quem é membro HOJE
+ * da lista Brevo dedicada, pro log/observabilidade do `--push`.
+ *
+ * #6793 "Faixa A" (30/08/2026, decisão do editor, item 8): freio automático
+ * de blast radius REMOVIDO — `blocked` é sempre `false`, `--push` nunca é
+ * recusado por magnitude de remoção. Antes disso, recusava quando `ratio`
+ * excedia `BLAST_RADIUS_THRESHOLD` (30%, mesmo racional/limiar de
+ * `evaluateBlastRadiusGuard`, sync-apoio-nivel-beehiiv.ts, #4436) — o
+ * cálculo do `ratio` continua aqui só pra o caller logar a magnitude real
+ * de cada `--push`, nunca pra bloquear.
+ * `force`/`BLAST_RADIUS_THRESHOLD` seguem existindo (assinatura/constante
+ * seguem paridade com o histórico e com o par Beehiiv) mas não afetam mais
+ * `blocked` — mantidos como documentação viva do limiar que valia antes.
  */
 export function evaluateBrevoBlastRadiusGuard(
   removalCount: number,
@@ -326,7 +331,8 @@ export function evaluateBrevoBlastRadiusGuard(
   force: boolean,
 ): BrevoBlastRadiusGuardResult {
   const ratio = currentMemberCount > 0 ? removalCount / currentMemberCount : 0;
-  const blocked = !force && ratio > BLAST_RADIUS_THRESHOLD;
+  void force; // #6793: escape hatch ficou sem efeito — guard nunca bloqueia mais.
+  const blocked = false;
   return { blocked, removalCount, currentMemberCount, ratio };
 }
 
@@ -640,27 +646,19 @@ async function main(): Promise<void> {
   const diff = diffApoioBrevo(desired, current);
   const allowPartial = hasFlag(argv, "allow-partial");
   const removalsBlockedByPartialData = shouldBlockRemovals(data.error, { skippedUnresolved: diff.skippedUnresolved }, allowPartial);
-  const forceBlastRadius = hasFlag(argv, "force-blast-radius");
-  const blastGuard = evaluateBrevoBlastRadiusGuard(diff.toRemove.length, current.length, forceBlastRadius);
+  // #6793 "Faixa A" item 8 (30/08/2026): evaluateBrevoBlastRadiusGuard nunca
+  // bloqueia mais (blocked sempre false) — `--force-blast-radius` ficou sem
+  // efeito e foi removido da CLI (era o escape hatch de um guard que não
+  // existe mais). `force: false` fixo aqui só preserva a assinatura da
+  // função pura (mantida pra paridade com sync-apoio-nivel-beehiiv.ts e
+  // testabilidade histórica).
+  const blastGuard = evaluateBrevoBlastRadiusGuard(diff.toRemove.length, current.length, false);
 
   logDiff(diff, removalsBlockedByPartialData);
   logBlastRadiusGuard(blastGuard);
 
   if (!push) {
     log("dry-run (default) — NENHUMA mutação aplicada. Use --push para gravar.");
-    return;
-  }
-
-  if (blastGuard.blocked) {
-    log(
-      "RECUSANDO o --push inteiro (guard de blast radius acima) — nenhuma mutação foi aplicada, nem " +
-        "adições nem remoções. Confira se é uma virada de mês/instabilidade da apoia.se antes de usar " +
-        "--force-blast-radius (decisão consciente do editor, sempre logada).",
-    );
-    // Windows fix (#4651): já houve await fetch (runApoioReconciliationCycle,
-    // buildApoiosData e, quando list_id/apiKey presentes,
-    // fetchCurrentBrevoApoiadoresState) antes deste ponto.
-    process.exitCode = 1;
     return;
   }
 

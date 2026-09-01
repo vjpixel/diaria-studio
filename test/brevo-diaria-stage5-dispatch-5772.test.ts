@@ -154,7 +154,7 @@ describe("runStage5BrevoDispatch — fail-soft (#5772)", () => {
 });
 
 describe("runStage5BrevoDispatch — addedActual distingue intenção de resultado (#5839)", () => {
-  it("--max-add > 0 mas 0 contatos de fato adicionados → addedActual=0 + warning no stderr, status ainda 'ok'", () => {
+  it("#6793: sem cap, maxAdd é só informativo — 0 contatos de fato adicionados → addedActual=0, status ainda 'ok', sem warning de 'vaga pedida'", () => {
     const contacts = Array.from({ length: 92 }, (_, i) => ({ email: `u${i}@x.com`, status: "in_brevo" })) as unknown as readonly BrevoDiariaContact[];
     const deps = makeDeps({
       // `--apply` não mutou nada de fato (todos os candidatos foram excluídos
@@ -183,7 +183,10 @@ describe("runStage5BrevoDispatch — addedActual distingue intenção de resulta
       assert.equal(result.addedActual, 0, "0 contatos de fato adicionados, distinto de maxAdd (198)");
       assert.equal(result.maxAdd, 290 - 92); // 198
     }
-    assert.match(stderrOutput, /Brevo diária: fila em 92\/290 — 198 vaga\(s\) pedida\(s\), 0 preenchida\(s\)/);
+    // #6793: sem cap, não há mais warning de "vaga(s) pedida(s)" — só o log
+    // informativo de total_atual/target, sem aplicar nenhum teto real.
+    assert.doesNotMatch(stderrOutput, /vaga\(s\) pedida\(s\)/);
+    assert.match(stderrOutput, /total_atual=92 target-informativo=290 \(sem teto aplicado, #6793/);
   });
 
   it("addedActual === maxAdd (todos os candidatos entraram) → sem warning", () => {
@@ -221,7 +224,7 @@ describe("runStage5BrevoDispatch — addedActual distingue intenção de resulta
 });
 
 describe("runStage5BrevoDispatch — args passados aos sub-scripts (#5772)", () => {
-  it("passa --max-add derivado e edition-dir corretos", () => {
+  it("#6793: NÃO passa mais --max-add (freio de volume removido) — só --apply, edition-dir correto no publish", () => {
     const calls: Array<{ script: string; args: string[] }> = [];
     const deps = makeDeps({
       calls,
@@ -235,7 +238,7 @@ describe("runStage5BrevoDispatch — args passados aos sub-scripts (#5772)", () 
     runStage5BrevoDispatch(EDITION_DIR, deps);
     const applyCall = calls.find((c) => c.script === "scripts/brevo-diaria-run.ts");
     assert.ok(applyCall);
-    assert.deepEqual(applyCall!.args, ["--apply", "--max-add", "190"]); // 290 - 100
+    assert.deepEqual(applyCall!.args, ["--apply"]);
     const publishCall = calls.find((c) => c.script === "scripts/publish-daily-brevo.ts");
     assert.ok(publishCall);
     assert.deepEqual(publishCall!.args, [EDITION_DIR, "--i-reviewed-the-copy"]);
