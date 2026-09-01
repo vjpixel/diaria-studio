@@ -45,8 +45,15 @@ allowlist tinha de fato ocorrido). `vazamento_pago`/`_is_leak` NAO usava
 `pedido` pra nada — deriva so de `model`/`provider`, os campos REALMENTE
 cobrados — e continua correto sem nenhuma mudanca.
 
+#6912 (01/09/2026): `--tick-composition` reporta a composicao de modelo POR
+TICK do job `continuo` (ver `collect_tick_composition`) — detecta degradacao
+silenciosa pra fallback local (qwen) que `collect()` esconde ao agregar por
+dia+modelo. So DETECTA/reporta por enquanto (consumido por
+`watch-continuo-health.sh`); o limiar de alarme fica pra depois que houver
+linha de base medida (issue #6912 pede baseline antes de calibrar).
+
 Uso:
-    python3 hermes-model-cost-report.py [--days N] [--json]
+    python3 hermes-model-cost-report.py [--days N] [--json] [--tick-composition]
 """
 
 from __future__ import annotations
@@ -67,6 +74,23 @@ PAID_ALLOWLIST = {
     "openai-codex/gpt-5.6-luna",
     "gpt-5.6-luna",
 }
+
+# #6912 (01/09/2026): cadeia de modelo do job `continuo` — MANTIDA A MAO
+# neste arquivo, igual ao PAID_ALLOWLIST acima. `~/.hermes/cron/jobs.json` e
+# `~/.hermes/config.yaml` (onde a cadeia REAL de smart_model_routing vive)
+# sao fora de escopo deste repo (mesma fronteira do #6708 no topo do
+# docstring) — nunca ler de la a partir daqui. Se a cadeia mudar no Hermes
+# core, estas constantes ficam defasadas ate alguem atualizar a mao; e o
+# mesmo trade-off ja aceito pro PAID_ALLOWLIST.
+CONTINUO_JOB_ID = "5d791ef6fc2c"
+# #6912 (review): o PAID_ALLOWLIST acima ja prova que o MESMO modelo aparece
+# gravado sob 2 ids diferentes ("gpt-5.6-luna" e "openai-codex/gpt-5.6-luna",
+# dependendo do provider/rota) — casar so a forma nua deixava a forma
+# prefixada cair silenciosamente em other_calls, sem aparecer em nenhum
+# percentual, corrompendo justo a linha de base que esta issue quer coletar.
+CONTINUO_PRIMARY_MODEL_IDS = {"gpt-5.6-luna", "openai-codex/gpt-5.6-luna"}
+CONTINUO_LOCAL_FALLBACK_HINT = "qwen"
+CONTINUO_PAID_FALLBACK_MODEL = "z-ai/glm-5.3-flash"
 
 
 def _connect() -> sqlite3.Connection:
@@ -153,6 +177,79 @@ def collect(days: int) -> list[dict]:
     return out
 
 
+def collect_tick_composition(days: int) -> list[dict]:
+    """Composicao de modelo POR TICK do job `continuo` (#6912).
+
+    Motivacao: `collect()` agrupa por `(dia, model, provider)` — isso ESCONDE
+    qual tick/sessao especifico rodou em qual modelo. Uma sessao inteira que
+    degradou pro fallback local (qwen) some dentro da media do dia junto com
+    dezenas de outras sessoes/jobs que rodaram normal no primario — o sintoma
+    "silencioso" que o #6708 documentou no topo do arquivo, so que na camada
+    de TICK em vez de cobranca.
+
+    `session_id` do continuo segue o padrao `hermes-cron-{JOB_ID}-<algo>`
+    (jobs do cron do Hermes prefixam a sessao com o proprio job id) — agrupa
+    por essa coluna diretamente, sem JOIN com `sessions` (mesma licao do
+    #6880: nao reintroduzir uma dependencia que ja se provou artefato).
+    """
+    cutoff = (dt.datetime.now() - dt.timedelta(days=days)).timestamp()
+    con = _connect()
+    like_pattern = f"hermes-cron-{CONTINUO_JOB_ID}-%"
+    rows = con.execute(
+        """
+        SELECT u.session_id,
+               MIN(date(u.first_seen, 'unixepoch', 'localtime')) AS dia,
+               u.model,
+               SUM(u.api_call_count)
+          FROM session_model_usage u
+         WHERE u.first_seen > ? AND u.session_id LIKE ?
+         GROUP BY u.session_id, u.model
+         ORDER BY dia ASC, u.session_id ASC
+        """,
+        (cutoff, like_pattern),
+    ).fetchall()
+    con.close()
+
+    ticks: dict[str, dict] = {}
+    for session_id, dia, model, calls in rows:
+        model = model or "?"
+        calls = calls or 0
+        t = ticks.setdefault(
+            session_id,
+            {"session_id": session_id, "dia": dia, "primary_calls": 0,
+             "local_fallback_calls": 0, "paid_fallback_calls": 0,
+             "other_calls": 0, "total_calls": 0},
+        )
+        t["total_calls"] += calls
+        if model in CONTINUO_PRIMARY_MODEL_IDS:
+            t["primary_calls"] += calls
+        elif CONTINUO_LOCAL_FALLBACK_HINT in model:
+            t["local_fallback_calls"] += calls
+        elif model == CONTINUO_PAID_FALLBACK_MODEL:
+            t["paid_fallback_calls"] += calls
+        else:
+            t["other_calls"] += calls
+
+    out = []
+    for t in ticks.values():
+        total = t["total_calls"] or 1
+        out.append(
+            {
+                **t,
+                "primary_pct": round(100 * t["primary_calls"] / total, 1),
+                "local_fallback_pct": round(100 * t["local_fallback_calls"] / total, 1),
+                "paid_fallback_pct": round(100 * t["paid_fallback_calls"] / total, 1),
+                # degraded = QUALQUER chamada no fallback local — sem limiar,
+                # a mera presenca ja prova que o primario falhou naquele
+                # tick (o limiar de alarme fica pra depois, quando houver
+                # linha de base medida — ver #6912).
+                "degraded": t["local_fallback_calls"] > 0,
+            }
+        )
+    out.sort(key=lambda r: (r["dia"], r["session_id"]))
+    return out
+
+
 def render(rows: list[dict], days: int) -> None:
     if not rows:
         print(f"Nenhum uso registrado nos ultimos {days} dias.")
@@ -201,7 +298,23 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--days", type=int, default=7, help="janela em dias (default 7)")
     ap.add_argument("--json", action="store_true", help="saida JSON")
+    ap.add_argument("--tick-composition", action="store_true",
+                     help="composicao de modelo por TICK do job continuo (#6912), em vez do relatorio por dia/modelo")
     args = ap.parse_args()
+
+    if args.tick_composition:
+        rows = collect_tick_composition(args.days)
+        if args.json:
+            print(json.dumps(rows, indent=2, ensure_ascii=False))
+        else:
+            if not rows:
+                print(f"Nenhum tick do continuo registrado nos ultimos {args.days} dias.")
+            for r in rows:
+                flag = "  <-- DEGRADADO (usou fallback local)" if r["degraded"] else ""
+                print(f"{r['dia']:11} {r['session_id']:40} "
+                      f"primario={r['primary_pct']:5.1f}%  local={r['local_fallback_pct']:5.1f}%  "
+                      f"pago={r['paid_fallback_pct']:5.1f}%{flag}")
+        return
 
     rows = collect(args.days)
     if args.json:
