@@ -78,13 +78,14 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   const pendingCount = plan.filter((e) => e.action === "pending-reconciliation").length;
   const hasGrantCount = plan.filter((e) => e.action === "has-merge-grant").length;
   const unreadableRealCount = plan.filter((e) => e.action === "skipped-unreadable-real").length;
+  const orphanCount = plan.filter((e) => e.action === "orphan-backups-only").length;
   const totalBackupsRemoved = removableEntries.reduce((sum, e) => sum + e.backupPaths.length, 0);
 
   console.log(
     `${LOG_PREFIX} ${isPush ? "" : "--dry-run: "}${removableEntries.length}/${plan.length} grupo(s) ` +
       `${isPush ? "recolhidos" : "seriam recolhidos"}, ${totalBackupsRemoved} backup(s) ${isPush ? "removido(s)" : "seriam removido(s)"}. ` +
       `${pendingCount} grupo(s) aguardando reconciliação de claims, ${hasGrantCount} preservado(s) por carregar merge_grant, ` +
-      `${unreadableRealCount} real(is) ilegível(is) (pulado(s)).`,
+      `${unreadableRealCount} real(is) ilegível(is) (pulado(s)), ${orphanCount} backup(s) órfão(s) (fora do escopo deste script — ver GC).`,
   );
 
   if (unreadableRealCount > 0) {

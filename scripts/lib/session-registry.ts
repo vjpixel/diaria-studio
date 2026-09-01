@@ -2999,12 +2999,19 @@ export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
 // existir; o custo de errar pro lado conservador aqui é só "um backup a
 // mais em disco", nunca corrupção). Reavaliar este limite quando o #6952
 // mergear.
-export type SafeBackupCleanupAction = "removable" | "pending-reconciliation" | "has-merge-grant" | "skipped-unreadable-real";
+export type SafeBackupCleanupAction =
+  | "removable"
+  | "pending-reconciliation"
+  | "has-merge-grant"
+  | "skipped-unreadable-real"
+  | "orphan-backups-only";
 
 export interface SafeBackupCleanupResult {
-  /** Stem do arquivo real (mesma identidade de `ClaimReconciliationResult`). */
+  /** Stem do arquivo real (mesma identidade de `ClaimReconciliationResult`), ou
+   * `orphan-backup:{arquivo}` pra um backup sem real correspondente. */
   identity: string;
-  realPath: string;
+  /** Path absoluto do arquivo real do grupo — `null` só pra `orphan-backups-only`. */
+  realPath: string | null;
   backupPaths: string[];
   action: SafeBackupCleanupAction;
   reason: string;
@@ -3017,18 +3024,27 @@ export interface SafeBackupCleanupResult {
  * `planClaimReconciliation` já usa, evitando uma 2ª regra de merge que
  * divergiria da 1ª (mesmo princípio citado na issue #6970).
  *
- * Grupo sem nenhum backup nunca aparece no resultado (nada a fazer).
+ * Grupo sem nenhum backup nunca aparece no resultado (nada a fazer). Backup
+ * ÓRFÃO (sem arquivo real correspondente — sessão já encerrada, GC ainda não
+ * passou) é reportado com `action: "orphan-backups-only"` — mesma
+ * observabilidade que `planClaimReconciliation` já dá pro caso irmão
+ * (#7005 self-review finding 2): este planejador nunca toca esses backups
+ * (quem decide o destino deles é `planSessionGc`, pela liveness do grupo),
+ * mas omiti-los do output silenciosamente sugeria "nada a revisar" quando na
+ * verdade pode haver estado importante ali (achado ao vivo #7002).
  */
 export function planSafeBackupCleanup(repoRoot: string): SafeBackupCleanupResult[] {
   const dir = sessionsDir(repoRoot);
   const names = listSessionJsonFiles(repoRoot);
   const realNames = names.filter((n) => !n.includes("-safeBackup-")).sort();
   const backupsByRealStem = groupBackupsByRealStem(names);
+  const claimedBackupNames = new Set<string>();
   const results: SafeBackupCleanupResult[] = [];
 
   for (const realName of realNames) {
     const stem = realName.slice(0, -".json".length);
     const backupNames = (backupsByRealStem.get(stem) ?? []).sort();
+    for (const b of backupNames) claimedBackupNames.add(b);
     if (backupNames.length === 0) continue; // sem backup — nada a recolher
 
     const realPath = join(dir, realName);
@@ -3086,6 +3102,19 @@ export function planSafeBackupCleanup(repoRoot: string): SafeBackupCleanupResult
     });
   }
 
+  const orphanBackups = names.filter((n) => n.includes("-safeBackup-") && !claimedBackupNames.has(n)).sort();
+  for (const orphan of orphanBackups) {
+    results.push({
+      identity: `orphan-backup:${orphan}`,
+      realPath: null,
+      backupPaths: [join(dir, orphan)],
+      action: "orphan-backups-only",
+      reason:
+        "backup sem arquivo real correspondente — este planejador nunca toca backup órfão; " +
+        "o GC (`planSessionGc`) decide o destino dele com os critérios de liveness dele",
+    });
+  }
+
   return results;
 }
 
@@ -3106,7 +3135,7 @@ export function planSafeBackupCleanup(repoRoot: string): SafeBackupCleanupResult
 export function cleanupReconciledSafeBackups(repoRoot: string): SafeBackupCleanupResult[] {
   const plan = planSafeBackupCleanup(repoRoot);
   for (const entry of plan) {
-    if (entry.action !== "removable") continue;
+    if (entry.action !== "removable" || !entry.realPath) continue; // "removable" nunca tem realPath null (só "orphan-backups-only" tem)
 
     const freshReal = readJsonSafe<SessionRecord>(entry.realPath);
     if (!freshReal) {

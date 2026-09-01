@@ -100,17 +100,18 @@ describe("planSafeBackupCleanup (#6970)", () => {
     assert.equal(plan[0]!.action, "has-merge-grant");
   });
 
-  it("backups ÓRFÃOS (real desapareceu por completo, claims+grant vivos só nos backups) NUNCA aparecem no plano deste módulo (#7002, incidente ao vivo 01/09/2026)", () => {
+  it("backups ÓRFÃOS (real desapareceu por completo, claims+grant vivos só nos backups) NUNCA são REMOVIDOS por este módulo, mas SÃO reportados como orphan-backups-only (#7002 incidente ao vivo 01/09/2026; observabilidade adicionada em resposta ao self-review finding 2 do #7005)", () => {
     // Reprodução do incidente real relatado pela coordenadora durante esta
     // rodada: o arquivo REAL overnight-helios-{sessionId}.json sumiu do
     // disco (lost-update, vizinho de #6952/#6573) enquanto a sessão seguia
     // viva; só sobraram 2 cópias -safeBackup- carregando 10 claims + um
-    // merge_grant íntegros. planSafeBackupCleanup itera só sobre REAIS
-    // existentes — um grupo sem real correspondente é ÓRFÃO e nunca entra
-    // no plano deste módulo (correto: "recolher backup já reconciliado" não
-    // é o mesmo problema que "real sumiu e o read-path descartou o grupo
-    // inteiro" — a causa raiz desse 2º problema é outra, ver #7002; o ponto
-    // deste teste é só travar que este módulo NUNCA remove um órfão desses).
+    // merge_grant íntegros. planSafeBackupCleanup itera os REAIS existentes
+    // pra decidir remoção — um grupo sem real correspondente é ÓRFÃO e NUNCA
+    // tem seus backups tocados/removidos por este módulo (quem decide o
+    // destino é o GC, pela liveness dele) — mas, diferente do comportamento
+    // original, agora aparece no plano com `action: "orphan-backups-only"`
+    // em vez de ficar invisível: um operador rodando `--dry-run` precisa ver
+    // que há estado órfão a revisar, não concluir "nada a fazer".
     const root = freshRoot();
     writeRawSessionFile(root, "overnight-helios-sessXYZ-safeBackup-0001.json", {
       kind: "overnight",
@@ -143,12 +144,17 @@ describe("planSafeBackupCleanup (#6970)", () => {
     });
 
     const plan = planSafeBackupCleanup(root);
-    // Nenhuma entrada do plano referencia os 2 backups órfãos — eles não
-    // batem o stem de NENHUM real existente ("interactive-helios-sessXYZ"
-    // tem no próprio nome "sessXYZ" mas kind diferente de "overnight", e o
-    // agrupamento é por STEM completo do arquivo, não só sessionId).
-    const touchesOrphans = plan.some((e) => e.backupPaths.some((p) => p.includes("overnight-helios-sessXYZ")));
-    assert.equal(touchesOrphans, false, "backups órfãos nunca devem ser tocados por este módulo");
+    // Os 2 backups órfãos aparecem no plano — mas SEMPRE com action
+    // "orphan-backups-only", nunca "removable" (eles não batem o stem de
+    // NENHUM real existente: "interactive-helios-sessXYZ" tem no próprio
+    // nome "sessXYZ" mas kind diferente de "overnight", e o agrupamento é
+    // por STEM completo do arquivo, não só sessionId).
+    const orphanEntries = plan.filter((e) => e.backupPaths.some((p) => p.includes("overnight-helios-sessXYZ")));
+    assert.equal(orphanEntries.length, 2, "cada backup órfão vira 1 entrada própria no plano");
+    for (const e of orphanEntries) {
+      assert.equal(e.action, "orphan-backups-only");
+      assert.equal(e.realPath, null, "órfão não tem arquivo real — realPath é null");
+    }
   });
 
   it("real ilegível → skipped-unreadable-real, nunca remove o backup", () => {
