@@ -157,7 +157,7 @@ export function waveDateFragment(date: string): string {
  *     #5140 lista como guardrail.
  *   - `clarice-abc-state.json` continua `encerrado` sem que este teste o
  *     toque. Reabri-lo traria de volta a ressalva de poder baixo do #4559,
- *     que zera o passo adaptativo de volume (ver docs/clarice-envio-daily-setup.md).
+ *     que zera o passo de volume (fixo desde #6888, ver docs/clarice-envio-daily-setup.md).
  */
 export type HourCell = `H${string}`;
 

@@ -31,7 +31,7 @@
  *      testado.
  *   2. `clarice-abc-state.json` está `encerrado` desde 11/08/2026 (#5055).
  *      Reabri-lo devolve a ressalva de poder baixo do #4559, e
- *      `clarice-envio-run.ts` ZERA o passo adaptativo de volume quando há
+ *      `clarice-envio-run.ts` ZERA o passo de volume (fixo desde #6888) quando há
  *      ressalva — o laço auto-alimentado "base pequena → poder baixo → passo
  *      zerado → base nunca cresce" documentado em
  *      docs/clarice-envio-daily-setup.md. Um teste de horário que, de efeito

@@ -84,7 +84,7 @@ describe("#4705 — regressão da catraca: abertura NUNCA freia volume", () => {
     const brake = decideBrake(HEALTHY, SPAM_OK);
     assert.equal(brake.level, "ok", "abertura de 1% não pode produzir hold/stop");
 
-    const step = adaptiveStep(HEALTHY, SPAM_OK);
+    const step = adaptiveStep();
     assert.equal(step, FIXED_DAILY_STEP, `passo é sempre fixo desde #6888, veio ${step}`);
 
     // E o volume proposto CRESCE — nunca corta.
@@ -122,7 +122,7 @@ describe("#4705 — regressão da catraca: abertura NUNCA freia volume", () => {
     // Mesmíssimas entradas de risco => mesmíssima decisão. A tendência é
     // relatório; não existe caminho de código dela pro freio.
     assert.equal(decideBrake(HEALTHY, SPAM_OK).level, "ok");
-    assert.equal(adaptiveStep(HEALTHY, SPAM_OK), FIXED_DAILY_STEP);
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
   });
 
   it("#6888: sem NENHUM envio na janela, decideBrake.level é 'ok' (freio removido, #6793) E adaptiveStep cresce 10% mesmo assim (guard sufficientData→0 REMOVIDO por pedido explícito do editor, #6888)", () => {
@@ -137,7 +137,7 @@ describe("#4705 — regressão da catraca: abertura NUNCA freia volume", () => {
     const brake = decideBrake(noSends, SPAM_OK);
     assert.equal(brake.level, "ok", "#6793: decideBrake nunca mais produz hold/stop, nem sobre dado ausente");
     assert.equal(
-      adaptiveStep(noSends, SPAM_OK),
+      adaptiveStep(),
       FIXED_DAILY_STEP,
       "#6888: adaptiveStep cresce 10% mesmo sem NENHUM envio na janela — decisão explícita do editor, era 0 até 01/09/2026",
     );
@@ -239,7 +239,7 @@ describe("riskUtilization", () => {
       SPAM_INDETERMINATE,
     );
     assert.equal(b.level, "ok");
-    assert.equal(adaptiveStep({ ...HEALTHY, sent: 0 }, SPAM_INDETERMINATE), FIXED_DAILY_STEP);
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
   });
 
   it("valor não-finito nunca vaza pra comparação (NaN >= 1 seria um 'ok' fabricado)", () => {
@@ -280,7 +280,7 @@ describe("decideBrake — freio removido (#6793 Faixa B, item 2, 01/09/2026) —
     assert.equal(b.level, "ok");
     assert.ok(Math.abs(b.maxUtil - 0.7) < 1e-9);
     assert.equal(
-      adaptiveStep(risk({ hardBounceRatePct: 1.4 }), SPAM_OK),
+      adaptiveStep(),
       FIXED_DAILY_STEP,
       "#6888: passo fixo cresce mesmo em zona de atenção (maxUtil>=HOLD_UTIL) — decisão explícita do editor",
     );
@@ -289,7 +289,7 @@ describe("decideBrake — freio removido (#6793 Faixa B, item 2, 01/09/2026) —
   it("hard bounce 0,5% => ok com passo fixo de 10%", () => {
     const m = risk({ hardBounceRatePct: 0.5 });
     assert.equal(decideBrake(m, SPAM_OK).level, "ok");
-    assert.equal(adaptiveStep(m, SPAM_OK), FIXED_DAILY_STEP);
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
   });
 
   it("#6793: bounce total 5% => level 'ok' (era stop); 4,9% também 'ok' (já era antes)", () => {
@@ -313,7 +313,7 @@ describe("decideBrake — freio removido (#6793 Faixa B, item 2, 01/09/2026) —
     const b = decideBrake(HEALTHY, SPAM_INDETERMINATE);
     assert.equal(b.level, "ok");
     assert.equal(
-      adaptiveStep(HEALTHY, SPAM_INDETERMINATE),
+      adaptiveStep(),
       FIXED_DAILY_STEP,
       "#6888: passo fixo, spam sem leitura não zera mais",
     );
@@ -364,45 +364,40 @@ describe("adaptiveStep — passo fixo de 10%/dia, incondicional (#6888, 01/09/20
   // editor o passo deixou de depender de risco — as asserções abaixo afirmam
   // o OPOSTO do que afirmavam antes. O teste antigo não foi apagado: foi
   // invertido, citando esta issue, como o critério de fechamento pede.
+  //
+  // #6958 (achado 9 do review, type-design-analyzer): `adaptiveStep` perdeu
+  // os parâmetros `accelRisk`/`spam`/`t` — eram ignorados desde #6888, e o
+  // único call site (`clarice-envio-risk.ts`) não precisava deles pra nada.
+  // Os testes "estado 1-4" abaixo, que antes variavam risco/spam pra provar
+  // que o resultado não mudava, viraram a MESMA chamada `adaptiveStep()`
+  // repetida — mantidos como regressão nomeada (documentam qual estado
+  // histórico cada um cobria antes do #6888), mas sem mais poder EXPRESSAR
+  // "input variado, output igual": essa garantia agora é ESTRUTURAL (a
+  // função não tem entrada pra variar), não mais testável por asserção. O
+  // teste "incondicional" que fechava esse describe testando NaN/negativo/
+  // extremo foi removido por não ser mais expressável — a garantia que ele
+  // checava é a mesma que a assinatura `(): number` agora impõe em tempo de
+  // compilação.
 
   it("estado 1 — risco zero, dados suficientes => 10% (antes: 0,25 = teto/MAX_DAILY_STEP)", () => {
-    const zero: RiskMetrics = {
-      hardBounceRatePct: 0,
-      bounceRatePct: 0,
-      unsubRatePct: 0,
-      sent: 10_000,
-      delivered: 10_000,
-    };
-    assert.equal(adaptiveStep(zero, { source: "postmaster", ratePct: 0 }), FIXED_DAILY_STEP);
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
   });
 
   it("estado 2 — risco na metade da folga (hardBounce 0,5% => util 0,25) => 10% (antes: ~0,1607)", () => {
-    assert.equal(adaptiveStep(risk({ hardBounceRatePct: 0.5 }), SPAM_OK), FIXED_DAILY_STEP);
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
   });
 
   it("estado 3 — maxUtil >= 0,7 (zona de atenção) => 10% (antes: 0 — congelava)", () => {
-    const steps = [1.4, 1.8, 2.0, 8].map((hb) =>
-      adaptiveStep(risk({ hardBounceRatePct: hb }), { source: "postmaster", ratePct: 0 }),
-    );
-    for (const s of steps) {
-      assert.equal(s, FIXED_DAILY_STEP, `passo deveria ser fixo mesmo em zona de atenção, veio ${s}`);
-    }
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
   });
 
   it("estado 4 — sufficientData: false (sem NENHUM envio na janela de 30 dias) => 10% (antes: 0 — nunca escalava sobre dado ausente)", () => {
-    const noSends: RiskMetrics = { hardBounceRatePct: 0, bounceRatePct: 0, unsubRatePct: 0, sent: 0, delivered: 0 };
-    assert.equal(adaptiveStep(noSends, SPAM_OK), FIXED_DAILY_STEP);
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
   });
 
-  it("incondicional: nenhuma combinação de risco/spam muda o passo — sempre FIXED_DAILY_STEP", () => {
-    const combos: Array<[RiskMetrics, SpamSignalLike]> = [
-      [risk({ hardBounceRatePct: 100 }), { source: "postmaster", ratePct: 100 }],
-      [risk({ unsubRatePct: -5 }), SPAM_INDETERMINATE],
-      [risk({ hardBounceRatePct: Number.NaN }), SPAM_OK],
-    ];
-    for (const [r, s] of combos) {
-      assert.equal(adaptiveStep(r, s), FIXED_DAILY_STEP);
-    }
+  it("FIXED_DAILY_STEP é a única fonte do passo — sem argumentos, `adaptiveStep()` não tem como variar (#6958)", () => {
+    assert.equal(adaptiveStep(), FIXED_DAILY_STEP);
+    assert.equal(adaptiveStep.length, 0, "assinatura sem parâmetros — TypeScript garante isto em compile-time");
   });
 });
 

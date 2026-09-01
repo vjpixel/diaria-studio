@@ -25,7 +25,9 @@
  *      `DEFAULT_WEEK_STEP`), com teto de +25%/dia. **SUPERSEDIDO pelo item 3
  *      da #6888 (01/09/2026) — ver `adaptiveStep` abaixo: o passo voltou a
  *      ser fixo, agora em 10%/dia, incondicional (nunca mais consulta risco).**
- *   4. SEM teto absoluto de volume — limitam só a fila, o crédito Brevo e o freio.
+ *   4. SEM teto absoluto de volume — desde #6793/#6888 (freio nunca mais
+ *      trava, passo é fixo) os únicos limitadores reais que sobram são a
+ *      fila e o crédito Brevo.
  *   5. SUNSET de não-abridores (`shouldSunsetNonOpener`): ≥2 envios e 0 aberturas
  *      vira inelegível, cortando o laço que alimenta spam.
  *
@@ -199,7 +201,9 @@ export const RED_RISK_THRESHOLDS: RiskThresholdsPct = {
 export const INDETERMINATE_SPAM_UTIL = 0.7;
 
 export interface RiskUtilization {
-  /** Maior utilização entre as 4 métricas — é ela que decide freio e passo. */
+  /** Maior utilização entre as 4 métricas. Não decide mais nada desde #6888
+   * (passo) e #6793 (freio) — só alimenta `decideBrake.reasons`/`flagged`
+   * (texto de observabilidade pro relatório), nunca uma ação. */
   readonly maxUtil: number;
   /** Utilização por métrica (`valor ÷ limiar vermelho`). */
   readonly byMetric: Readonly<Record<string, number>>;
@@ -225,11 +229,21 @@ export interface RiskUtilization {
    * desta janela — ver comentário abaixo), `maxUtil` ficava baixo e
    * `decideBrake`/`adaptiveStep` liberavam escalada **sem nenhuma evidência
    * de envio real na janela** — o exato "ok fabricado" que este módulo diz
-   * evitar, só que por ausência de dado em vez de `NaN`. Continua calculado e
-   * reportado (o relatório precisa dizer "sem dado", não "saudável"), mas
-   * desde #6793 (`decideBrake`, nível sempre `ok`) e #6888 (`adaptiveStep`,
-   * passo sempre `FIXED_DAILY_STEP`) NENHUM dos dois consumidores age mais
-   * sobre `false` aqui — `true` só quando `hasSent` é `true`.
+   * evitar, só que por ausência de dado em vez de `NaN`. Desde #6793
+   * (`decideBrake`, nível sempre `ok`) e #6888 (`adaptiveStep`, passo sempre
+   * `FIXED_DAILY_STEP`) NENHUM dos dois consumidores AGE mais sobre `false`
+   * aqui — `true` só quando `hasSent` é `true` — mas as duas janelas que o
+   * consomem hoje diferem em quem ainda REPORTA:
+   *   - **janela fresca** (3 dias, `decideBrake`/`freshRisk`): continua
+   *     calculado e reportado — `brake.reasons` nomeia "sem NENHUM envio na
+   *     janela" quando `false` aqui (ver `decideBrake` acima).
+   *   - **janela accel** (30 dias, `accelRisk`): até #6958, NINGUÉM chamava
+   *     `riskUtilization(accelRisk, …)` — `adaptiveStep` parou de consumi-la
+   *     no #6888 e nada mais a lia, então este campo nem era CALCULADO pra
+   *     essa janela, e um canal dormente >30 dias reativado crescia 10%/dia
+   *     sem nenhum aviso. #6958 fecha isso: `RiskSnapshot.accelWindow.
+   *     utilization` carrega o resultado e `clarice-envio-run.ts` reporta
+   *     quando vem `false` — só observabilidade, nenhuma ação nova.
    */
   readonly sufficientData: boolean;
 }
@@ -416,7 +430,7 @@ export function decideBrake(
   // noDataMetrics no fim (Finding 1 do review).
   if (!util.sufficientData && flagged.length === 0) {
     reasons.push(
-      "sem NENHUM envio na janela do freio — segurando por falta de dado, nunca escalando sobre 'não sabemos'.",
+      "sem NENHUM envio na janela do freio — nota informativa só (freio não segura mais nada, #6793); o passo fixo de +10%/dia (#6888) escala mesmo sobre este 'não sabemos'.",
     );
   }
 
@@ -492,18 +506,17 @@ export const FIXED_DAILY_STEP = 0.1;
  * Passo de crescimento do dia. Incondicional desde #6888 — sempre
  * `FIXED_DAILY_STEP`, nunca consulta risco.
  *
- * `accelRisk`/`spam`/`t` ficam SEM USO aqui de propósito — mantidos na
- * assinatura pra não quebrar o call site existente
- * (`scripts/clarice-envio-risk.ts:213`) e pra deixar uma eventual reversão
- * barata (a decisão #6888 é "não reabrir sem pedido explícito do editor",
- * não "definitiva pra sempre" — ver o histórico da escalada por risco que
- * este comentário substituiu em `FIXED_DAILY_STEP` acima).
+ * SEM PARÂMETROS de propósito (#6958, achado do type-design-analyzer): até
+ * aqui a assinatura mantinha `accelRisk`/`spam`/`t` ignorados, justificando
+ * isso como "barato reverter" — mas a reversão barata deste repo pra esta
+ * classe de decisão já É o git history (o parágrafo acima manda rodar `git
+ * log --all --grep=6888`; o próprio #6888 aposentou `MAX_DAILY_STEP` de vez,
+ * sem guardá-la "por via das dúvidas"). Único call site
+ * (`scripts/clarice-envio-risk.ts`) — dropar os 3 parâmetros é 1 linha, não
+ * migração. Se algum dia isto voltar a consultar risco, a assinatura muda
+ * de novo então; até lá, `()` é o sinal honesto de que não há entrada.
  */
-export function adaptiveStep(
-  accelRisk: RiskMetrics,
-  spam: SpamSignalLike,
-  t: RiskThresholdsPct = RED_RISK_THRESHOLDS,
-): number {
+export function adaptiveStep(): number {
   return FIXED_DAILY_STEP;
 }
 
@@ -547,7 +560,7 @@ export interface NextVolumeDecision {
    * substring-matched em vez de tipo):
    * - `"stop"`: freio `stop` — volume 0, cancelar onda já agendada;
    * - `"hold"`: freio `hold` — repetiu a base, sem escalar;
-   * - `"step"`: caminho normal — o passo adaptativo definiu o volume;
+   * - `"step"`: caminho normal — o passo fixo (`FIXED_DAILY_STEP`, #6888) definiu o volume;
    * - `"queue"` / `"credit"`: a fila ou o crédito cortaram abaixo do proposto
    *   (quando os DOIS cortam, `cappedBy` é o ÚLTIMO a agir — `"credit"`, já
    *   que crédito é checado depois da fila — mas `note` sempre registra os
