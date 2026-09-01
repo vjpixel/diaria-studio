@@ -125,27 +125,32 @@ describe("#4705 — regressão da catraca: abertura NUNCA freia volume", () => {
     assert.ok(adaptiveStep(HEALTHY, SPAM_OK) > 0);
   });
 
-  it("REGRESSÃO (Finding 1, silent-failure-hunter): sem NENHUM envio na janela, spam saudável não pode virar 'ok' fabricado", () => {
-    // Antes do fix: sent=0 zera as 3 métricas de e-mail (nada pra dividir), e
-    // se o Postmaster (sinal de DOMÍNIO, independente de `sent` desta janela)
-    // calhar de vir saudável no mesmo dia, maxUtil ficava baixo e o freio
-    // liberava 'ok' + passo positivo SEM NENHUMA evidência de envio real —
-    // o mesmo "ok fabricado" que este módulo existe pra evitar, só que por
-    // ausência de dado em vez de NaN. Este é o cenário exato do achado.
+  it("#6793: sem NENHUM envio na janela, decideBrake.level é 'ok' (freio removido) — mas adaptiveStep continua sem escalar (proteção contra crescer sobre dado ausente preservada, INTOCADA por #6793)", () => {
+    // Histórico (Finding 1, silent-failure-hunter, até #6793): sent=0 zera as
+    // 3 métricas de e-mail (nada pra dividir), e se o Postmaster (sinal de
+    // DOMÍNIO, independente de `sent` desta janela) calhar de vir saudável no
+    // mesmo dia, maxUtil ficava baixo — decideBrake produzia 'hold' pra nunca
+    // fabricar 'ok' sobre ausência de dado. #6793 removeu o freio de
+    // decideBrake (item 2), então level agora é sempre 'ok' — mas a proteção
+    // de fundo (nunca ESCALAR volume sobre dado ausente) sobrevive porque
+    // adaptiveStep tem seu PRÓPRIO guard sufficientData→0, função separada,
+    // fora do escopo do item 2 (que nomeia só decideBrake).
     const noSends: RiskMetrics = { hardBounceRatePct: 0, bounceRatePct: 0, unsubRatePct: 0, sent: 0, delivered: 0 };
     const brake = decideBrake(noSends, SPAM_OK);
-    assert.equal(brake.level, "hold", "sem dado suficiente NUNCA pode resultar em 'ok'");
-    assert.equal(adaptiveStep(noSends, SPAM_OK), 0, "sem dado suficiente NUNCA escala");
+    assert.equal(brake.level, "ok", "#6793: decideBrake nunca mais produz hold/stop, nem sobre dado ausente");
+    assert.equal(adaptiveStep(noSends, SPAM_OK), 0, "sem dado suficiente NUNCA escala — guard de adaptiveStep intocado por #6793");
     assert.ok(
       brake.reasons.some((r) => r.includes("sem NENHUM envio na janela")),
-      "a razão principal precisa nomear a falta de envio, não só aparecer como aviso lateral",
+      "a razão principal continua nomeando a falta de envio, mesmo sem mais pausar por causa dela",
     );
   });
 
-  it("mas um spam REAL e ruim ainda para a onda mesmo sem envio na janela (spam é sinal de domínio, não da janela)", () => {
+  it("#6793: spam REAL e ruim não para mais a onda (freio removido) — mas reasons ainda nomeia o breach real", () => {
     const noSends: RiskMetrics = { hardBounceRatePct: 0, bounceRatePct: 0, unsubRatePct: 0, sent: 0, delivered: 0 };
     const badSpam: SpamSignalLike = { source: "postmaster", ratePct: 0.5 }; // acima do limiar de 0,3%
-    assert.equal(decideBrake(noSends, badSpam).level, "stop");
+    const brake = decideBrake(noSends, badSpam);
+    assert.equal(brake.level, "ok", "#6793: era 'stop' até 01/09/2026 — freio removido, spam ruim não zera mais o volume sozinho");
+    assert.ok(brake.reasons.some((r) => r.includes("spam (Postmaster)")), "o breach real continua visível no relatório, só não age mais");
   });
 });
 
@@ -226,12 +231,12 @@ describe("riskUtilization", () => {
     assert.ok(brake.reasons.some((r) => r.includes("sem dado na janela")));
   });
 
-  it("denominador zero + spam sem leitura => hold (nada é confirmado saudável)", () => {
+  it("#6793: denominador zero + spam sem leitura => level 'ok' (era hold); adaptiveStep continua 0 (guard próprio, intocado — nada é confirmado saudável pro fim de ESCALAR)", () => {
     const b = decideBrake(
       { hardBounceRatePct: 0, bounceRatePct: 0, unsubRatePct: 0, sent: 0, delivered: 0 },
       SPAM_INDETERMINATE,
     );
-    assert.equal(b.level, "hold");
+    assert.equal(b.level, "ok");
     assert.equal(adaptiveStep({ ...HEALTHY, sent: 0 }, SPAM_INDETERMINATE), 0);
   });
 
@@ -260,19 +265,19 @@ describe("riskUtilization", () => {
 // decideBrake
 // ---------------------------------------------------------------------------
 
-describe("decideBrake — só risco de ISP", () => {
-  it("hard bounce 2,0% (100% do limiar) => stop", () => {
+describe("decideBrake — freio removido (#6793 Faixa B, item 2, 01/09/2026) — level sempre 'ok', reasons continuam nomeando o risco real", () => {
+  it("#6793: hard bounce 2,0% (100% do limiar) => level 'ok' (era stop até 01/09/2026), maxUtil e reasons continuam corretos", () => {
     const b = decideBrake(risk({ hardBounceRatePct: 2 }), SPAM_OK);
-    assert.equal(b.level, "stop");
+    assert.equal(b.level, "ok");
     assert.equal(b.maxUtil, 1);
     assert.ok(b.reasons.some((r) => r.includes("hard bounce") && r.includes("2,00%")));
   });
 
-  it("hard bounce 1,4% (70% do limiar) => hold", () => {
+  it("#6793: hard bounce 1,4% (70% do limiar) => level 'ok' (era hold até 01/09/2026); adaptiveStep continua 0 (guard próprio, intocado)", () => {
     const b = decideBrake(risk({ hardBounceRatePct: 1.4 }), SPAM_OK);
-    assert.equal(b.level, "hold");
+    assert.equal(b.level, "ok");
     assert.ok(Math.abs(b.maxUtil - 0.7) < 1e-9);
-    assert.equal(adaptiveStep(risk({ hardBounceRatePct: 1.4 }), SPAM_OK), 0);
+    assert.equal(adaptiveStep(risk({ hardBounceRatePct: 1.4 }), SPAM_OK), 0, "adaptiveStep é função separada, fora do escopo do item 2 — segue não escalando em risco alto");
   });
 
   it("hard bounce 0,5% => ok com passo positivo", () => {
@@ -281,27 +286,27 @@ describe("decideBrake — só risco de ISP", () => {
     assert.ok(adaptiveStep(m, SPAM_OK) > 0);
   });
 
-  it("bounce total 5% => stop; 4,9% ainda não", () => {
-    assert.equal(decideBrake(risk({ bounceRatePct: 5 }), SPAM_OK).level, "stop");
-    assert.notEqual(decideBrake(risk({ bounceRatePct: 4.9 }), SPAM_OK).level, "stop");
+  it("#6793: bounce total 5% => level 'ok' (era stop); 4,9% também 'ok' (já era antes)", () => {
+    assert.equal(decideBrake(risk({ bounceRatePct: 5 }), SPAM_OK).level, "ok");
+    assert.equal(decideBrake(risk({ bounceRatePct: 4.9 }), SPAM_OK).level, "ok");
   });
 
-  it("unsub 3% => stop", () => {
+  it("#6793: unsub 3% => level 'ok' (era stop até 01/09/2026), reason continua nomeando o descadastro", () => {
     const b = decideBrake(risk({ unsubRatePct: 3 }), SPAM_OK);
-    assert.equal(b.level, "stop");
+    assert.equal(b.level, "ok");
     assert.ok(b.reasons.some((r) => r.includes("descadastro")));
   });
 
-  it("spam do Postmaster 0,3% => stop", () => {
+  it("#6793: spam do Postmaster 0,3% => level 'ok' (era stop até 01/09/2026), reason continua nomeando o spam", () => {
     const b = decideBrake(HEALTHY, { source: "postmaster", ratePct: 0.3 });
-    assert.equal(b.level, "stop");
+    assert.equal(b.level, "ok");
     assert.ok(b.reasons.some((r) => r.includes("spam (Postmaster)")));
   });
 
-  it("spam indeterminate => hold e passo 0", () => {
+  it("#6793: spam indeterminate => level 'ok' (era hold); adaptiveStep continua 0 (guard próprio, intocado)", () => {
     const b = decideBrake(HEALTHY, SPAM_INDETERMINATE);
-    assert.equal(b.level, "hold");
-    assert.equal(adaptiveStep(HEALTHY, SPAM_INDETERMINATE), 0);
+    assert.equal(b.level, "ok");
+    assert.equal(adaptiveStep(HEALTHY, SPAM_INDETERMINATE), 0, "adaptiveStep é função separada, fora do escopo do item 2");
     assert.ok(b.reasons.some((r) => r.includes("sem leitura confiável")));
   });
 
@@ -312,10 +317,13 @@ describe("decideBrake — só risco de ISP", () => {
     assert.ok(b.reasons[0].includes("dentro dos limiares"));
   });
 
-  it("a PIOR métrica manda (nunca a média)", () => {
-    // 3 métricas ótimas + 1 estourada => stop.
+  it("#6793: NENHUMA combinação de métricas produz stop/hold — level sempre 'ok'", () => {
+    // 3 métricas ótimas + 1 estourada — antes 'a pior métrica manda' (stop);
+    // agora level é sempre 'ok', mas a pior métrica AINDA manda no relatório
+    // (reasons/flagged continuam ordenados pela pior utilização).
     const b = decideBrake(risk({ unsubRatePct: 3.6 }), SPAM_OK);
-    assert.equal(b.level, "stop");
+    assert.equal(b.level, "ok");
+    assert.ok(b.reasons.some((r) => r.includes("descadastro")), "a pior métrica ainda aparece no relatório");
   });
 
   it("Finding 2 (silent-failure-hunter): valor NaN/Infinity nunca vaza pro texto de 'reasons' — nunca 'NaN%'", () => {

@@ -92,7 +92,7 @@ resolve tudo isso sozinho:
 |---|---|
 | `--cycle` digitado | `computeExpectedEnvioCycle(hoje)` (calendário) comparado contra `resolveLatestMonthlyCycleFromDisk()` (conteúdo pronto) — só prossegue se baterem; senão PARA (nunca cai pro ciclo antigo em silêncio, decisão do editor 260811). |
 | `--dates` digitado, horizonte de N dias | Sempre **1 data** = hoje+1 BRT — uma rodada planeja um dia, com dado fresco a cada execução. |
-| Volume: semáforo do dashboard (inclui abertura) | Motor novo (#5025, `scripts/lib/clarice-envio-policy.ts`) — abertura NUNCA freia; freio = só risco de ISP (hard bounce/bounce/unsub/spam Postmaster), escalada adaptativa pela folga. |
+| Volume: semáforo do dashboard (inclui abertura) | Motor novo (#5025, `scripts/lib/clarice-envio-policy.ts`) — abertura NUNCA freia. **#6793 "Faixa B" item 2 (01/09/2026, decisão do editor): o freio automático de risco de ISP (`decideBrake`) foi REMOVIDO** — `level` é sempre `"ok"`, `stop`/`hold` nunca mais são produzidos sozinhos; `reasons`/`maxUtil` continuam calculados e reportados (observabilidade preservada). `adaptiveStep` (escalada adaptativa pela folga) é função SEPARADA, intocada — seu próprio guard contra escalar sobre dado ausente/risco alto continua ativo. |
 | Teste A/B/C: skill propõe, editor confirma (#4657) | Decide sozinha pra `continuar`/`travar` (cálculo já determinístico); `iniciar` (exige 3 assuntos novos) PARA e pede o editor — não foi revogado, só automatizado onde já era mecânico. |
 | `--subject`/assunto digitado | Herdado da onda anterior do mesmo ciclo (`resolveInheritedSubjects`) — nunca digitado. |
 | `--send-test` + agente `review-test-email` | Removido do caminho (decisão do editor 260811) — o HTML é o mesmo da edição inteira do ciclo, já revisado na Etapa 4 do `/diaria-mensal`; era o último LLM no caminho de um envio irreversível. |
@@ -122,15 +122,19 @@ decisão automática (a maioria PARA limpo com `exit 0`; só uma minoria é erro
 | Onda parcialmente montada | falha no meio do loop de células (`continuar`) — as já confirmadas SÃO campanhas reais e disparam; relatório torna isso explícito. | `1` |
 | Agendamento incerto | POST aceito, GET-verify não confirma → `exit 2` (não é erro nem sucesso; reconciliável na próxima rodada). |
 
-**Zero volume final** (freio `stop`, ou base ≤ 0) → sai limpo, grava
-relatório, **exit 0** (não é erro).
+**Zero volume final** (base ≤ 0, ou freio `stop` — **#6793 item 2, 01/09/2026:
+`decideBrake` nunca mais produz `stop` sozinho**, então este caso hoje só
+acontece via `handlePrereqFailure`/item 3 da mesma issue, INTOCADO, ou base
+≤ 0) → sai limpo, grava relatório, **exit 0** (não é erro).
 
-**Override persistente do freio (#5515).** Quando o editor confirma que um
-`stop` calculado é falso-positivo (ex: pico de campanha antiga sem
-decaimento, #5487) e a correção precisa sobreviver a mais de um ciclo (o
-próximo `Diaria-Clarice-Envio` das 19:00 E o `Diaria-Clarice-Envio-Guard`
-das 05:00 seguinte recomputam o freio do zero), gravar um override em
-`data/clarice-envio-override.json` via:
+**Override persistente do freio (#5515) — dormente desde #6793 item 2.**
+Existia pra quando o editor confirmava que um `stop` calculado era
+falso-positivo (ex: pico de campanha antiga sem decaimento, #5487) e a
+correção precisava sobreviver a mais de um ciclo. Como `decideBrake` nunca
+mais produz `stop` automaticamente, não há mais o que rebaixar nesse
+caminho — a ferramenta continua existindo (não removida, é do editor) mas
+fica sem efeito prático até/se o freio voltar. Uso histórico, gravar um
+override em `data/clarice-envio-override.json` via:
 
 ```bash
 npx tsx scripts/lib/clarice-envio-override.ts --set \

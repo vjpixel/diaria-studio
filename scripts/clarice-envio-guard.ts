@@ -2,6 +2,16 @@
 /**
  * clarice-envio-guard.ts (#5026)
  *
+ * NOTA (#6793 "Faixa B" item 2, 01/09/2026 — item 3 desta issue,
+ * `handlePrereqFailure`, ainda NÃO tocado): `decideBrake` (fonte do freio
+ * de risco de ISP re-checado abaixo) não produz mais `"stop"`/`"hold"`
+ * sozinho — o snapshot re-lido aqui virá `"ok"` na imensa maioria das
+ * rodadas. Os caminhos `stop`/`hold` deste arquivo seguem funcionando
+ * (defesa em profundidade, testados), só ficam inalcançáveis via
+ * `decideBrake` — continuam alcançáveis por `handlePrereqFailure`
+ * (fail-closed por falha de PRÉ-REQUISITO, não por risco de ISP — mesma
+ * distinção que #6793 item 3 vai precisar respeitar) e por override manual.
+ *
  * Task `Diaria-Clarice-Envio-Guard` (05:00 BRT) — segunda metade do par com
  * `clarice-envio-run.ts` (19:00 BRT). A onda de HOJE foi planejada e
  * AGENDADA ontem às 19:00, com o risco medido NAQUELE momento (a Brevo

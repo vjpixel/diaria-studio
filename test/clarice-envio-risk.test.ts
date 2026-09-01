@@ -206,7 +206,7 @@ describe("fetchRiskSnapshot — override persistente (#5515)", () => {
 
   const now = new Date("2026-08-17T22:00:00.000Z"); // dentro da janela de override (até 19/08)
 
-  it("sem override no rootDir -> freio calculado STOP passa direto, overrideApplied false", async () => {
+  it("#6793 (Faixa B item 2, 01/09/2026): sem override no rootDir -> freio calculado é 'ok' (decideBrake nunca mais produz stop), overrideApplied false", async () => {
     const root = freshRoot("absent");
     const snapshot = await fetchRiskSnapshot({
       dashboardUrl: "https://fake.example",
@@ -214,12 +214,15 @@ describe("fetchRiskSnapshot — override persistente (#5515)", () => {
       fetchFn: fakeFetchFor(stopCampaigns()),
       rootDir: root,
     });
-    assert.equal(snapshot.brake.level, "stop");
+    // stopCampaigns() ainda descreve o cenário que ERA garantido virar STOP
+    // (hard bounce 150% do limiar) — mantido pra provar que mesmo esse
+    // cenário de risco real não pausa mais nada, #6793 item 2.
+    assert.equal(snapshot.brake.level, "ok");
     assert.equal(snapshot.overrideApplied, false);
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("override ativo no rootDir -> STOP calculado é rebaixado pra HOLD, overrideApplied true, reasons cita o override", async () => {
+  it("#6793 (Faixa B item 2, 01/09/2026): override ativo no rootDir -> DORMENTE, sem efeito (nada mais chega a 'stop' pra rebaixar), overrideApplied false", async () => {
     const root = freshRoot("active");
     writeOverride(root);
     const snapshot = await fetchRiskSnapshot({
@@ -228,14 +231,17 @@ describe("fetchRiskSnapshot — override persistente (#5515)", () => {
       fetchFn: fakeFetchFor(stopCampaigns()),
       rootDir: root,
     });
-    assert.equal(snapshot.brake.level, "hold");
-    assert.equal(snapshot.overrideApplied, true);
-    assert.match(snapshot.brake.reasons[0], /OVERRIDE do editor/);
-    assert.match(snapshot.brake.reasons[0], /5487/);
+    // Histórico (até #6793 item 2): um override ativo rebaixava STOP->HOLD.
+    // applyEnvioOverride (scripts/lib/clarice-envio-override.ts) só age
+    // quando brake.level === "stop" — como decideBrake nunca mais produz
+    // isso, o override nunca mais tem o que rebaixar. Mecanismo preservado
+    // (não removido, é ferramenta do editor), só sem efeito prático hoje.
+    assert.equal(snapshot.brake.level, "ok");
+    assert.equal(snapshot.overrideApplied, false);
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("override EXPIRADO no rootDir -> ignorado, STOP calculado passa direto (sem warning)", async () => {
+  it("#6793 (Faixa B item 2, 01/09/2026): override EXPIRADO no rootDir -> continua sem efeito (não havia stop pra ignorar de qualquer forma), sem warning", async () => {
     const root = freshRoot("expired");
     writeOverride(root, { until: "2026-08-16T00:00:00.000Z" }); // antes de `now`
     const warnings: string[] = [];
@@ -246,7 +252,7 @@ describe("fetchRiskSnapshot — override persistente (#5515)", () => {
       rootDir: root,
       onInvalidOverride: (m) => warnings.push(m),
     });
-    assert.equal(snapshot.brake.level, "stop");
+    assert.equal(snapshot.brake.level, "ok");
     assert.equal(snapshot.overrideApplied, false);
     assert.deepEqual(warnings, [], "expiração é silenciosa — nunca warning");
     rmSync(root, { recursive: true, force: true });

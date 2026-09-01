@@ -1161,6 +1161,11 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       report.note("volume final é 0 — nada a agendar nesta rodada.");
       lockPath && releaseEnvioLock(lockPath);
       lockPath = null;
+      // #6793 item 2 (01/09/2026): risk.brake.level === "stop" nunca mais
+      // acontece via decideBrake (freio removido) — este ramo fica vivo só
+      // pra item 3 (clarice-envio-guard.ts, handlePrereqFailure) ou um
+      // override manual futuro que reintroduza "stop"; "sem-volume" é o
+      // caminho comum hoje (baseVolume ≤ 0).
       const reasonSlug = risk.brake.level === "stop" ? "freio-stop" : "sem-volume";
       const reportId = `envio-${aammdd}-${reasonSlug}`;
       writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio ${aammdd} — sem volume (${risk.brake.level})`, report.build());

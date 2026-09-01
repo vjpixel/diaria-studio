@@ -356,16 +356,26 @@ function observedValue(
  * terminologia deliberada por causa de gaps de envio). `ok` = livre pra
  * escalar o quanto `adaptiveStep` liberar.
  *
- * **`sufficientData: false` NUNCA produz `ok`** (achado CRITICAL do
- * silent-failure-hunter no review da PR): `sent === 0` na janela zera as 3
- * métricas de e-mail por falta de denominador, e se a leitura do Postmaster
- * (independente de `sent` — é sinal de DOMÍNIO) calhar de vir saudável nesse
- * mesmo dia, `maxUtil` ficava baixo e o freio liberava `ok` **sem nenhuma
- * evidência de envio real na janela** — o "ok fabricado" que este módulo
- * existe pra evitar, só que por ausência de dado em vez de `NaN`. `stop`
- * continua alcançável mesmo sem `sent` na janela: um spam do Postmaster
- * genuinamente ruim é sinal real e independente, nunca deve ser mascarado
- * por "não enviamos nada esta semana".
+ * **#6793 "Faixa B" item 2 (01/09/2026, decisão do editor): o freio
+ * automático foi REMOVIDO — `level` é sempre `"ok"`, `stop`/`hold` nunca
+ * mais são produzidos.** `util`/`flagged`/`reasons` continuam calculados
+ * e reportados normalmente (observabilidade preservada — o relatório
+ * continua nomeando QUAL métrica estouraria o limiar antigo, só não age
+ * mais sobre isso). A proteção contra "crescer sobre dado ausente" NÃO
+ * desapareceu: `adaptiveStep` (função separada, INTOCADA por #6793,
+ * fora do escopo do item 2 — que nomeia só `decideBrake`) mantém seu
+ * próprio guard `sufficientData → passo 0`, então mesmo sem freio, um dia
+ * sem envio na janela não escala volume (o passo fica 0, `proposeNextVolume`
+ * repete a base — mesmo efeito numérico que o antigo `hold` produzia pra
+ * esse caso específico, só sem o rótulo `hold`).
+ *
+ * Histórico (#4476/#4705, até 01/09/2026): `sufficientData: false` NUNCA
+ * produzia `ok` (achado CRITICAL do silent-failure-hunter) — `sent === 0`
+ * na janela zera as 3 métricas de e-mail por falta de denominador, e um
+ * Postmaster saudável nesse mesmo dia faria `maxUtil` ficar baixo e o freio
+ * liberar `ok` sem nenhuma evidência de envio real. `stop` era alcançável
+ * mesmo sem `sent` na janela quando um spam do Postmaster genuinamente ruim
+ * (sinal de domínio, independente da janela) cruzava o limiar.
  *
  * ABERTURA NÃO ENTRA AQUI, por decisão do editor (#4705) — e nem tem como
  * entrar: `RiskMetrics` não carrega o número, e `RiskThresholdsPct` não tem
@@ -378,12 +388,9 @@ export function decideBrake(
   t: RiskThresholdsPct = RED_RISK_THRESHOLDS,
 ): BrakeDecision {
   const util = riskUtilization(freshRisk, spam, t);
-  const level: BrakeLevel =
-    util.maxUtil >= STOP_UTIL
-      ? "stop"
-      : util.maxUtil >= HOLD_UTIL || !util.sufficientData
-        ? "hold"
-        : "ok";
+  // #6793: level hardcoded pra "ok" — util/flagged/reasons abaixo continuam
+  // calculados e reportados por inteiro (observabilidade), só a AÇÃO saiu.
+  const level: BrakeLevel = "ok";
 
   // Uma linha por métrica que já chegou na zona de atenção, da pior pra menos
   // pior — o editor lê o relatório e sabe na hora QUEM segurou a onda.
