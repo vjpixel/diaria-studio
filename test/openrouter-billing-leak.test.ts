@@ -213,9 +213,29 @@ describe("parseActivityRows (#6716) — I/O", () => {
   });
 });
 
-describe("resolveExitCode (#6716) — leitura parcial nunca sai 0", () => {
-  it("sem vazamento e leitura íntegra → 0", () => {
-    assert.equal(resolveExitCode({ hasLeaks: false, partialRead: false }), 0);
+describe("resolveExitCode (#6716) — o que não foi medido nunca sai 0", () => {
+  it("sem vazamento, leitura íntegra e janela POVOADA → 0", () => {
+    assert.equal(resolveExitCode({ hasLeaks: false, partialRead: false, emptyWindow: false }), 0);
+  });
+
+  // Levantado pela peer no review do #6983: o `/api/v1/activity` agrega por
+  // dias UTC COMPLETOS e não cobre o dia corrente — uma janela que só
+  // pergunte por "hoje" volta vazia SEMPRE. Se zero linhas pudesse virar
+  // exit 0, o guard reportaria "sem vazamento" por ausência de dado, não por
+  // ausência de gasto. É a 3ª vez que esta família de detector aparece com o
+  // silêncio cego indistinguível de saúde (#6966: `LIKE` casando zero linhas
+  // com o watchdog imprimindo "tick ok"; #6927: sinal que some quando o
+  // updater desliga). Aqui isso é impossível por construção.
+  it("JANELA VAZIA nunca sai 0 — zero linhas é indeterminado, não 'limpo'", () => {
+    assert.equal(
+      resolveExitCode({ hasLeaks: false, partialRead: false, emptyWindow: true }),
+      1,
+      "endpoint sem consolidar e gasto zero real são indistinguíveis daqui — não afirmar nenhum dos dois",
+    );
+  });
+
+  it("janela vazia E leitura parcial → 1 (as duas são ausência de dado)", () => {
+    assert.equal(resolveExitCode({ hasLeaks: false, partialRead: true, emptyWindow: true }), 1);
   });
 
   // #6983 (review, CRÍTICO): antes disso, `skipped > 0` era só um
@@ -223,15 +243,15 @@ describe("resolveExitCode (#6716) — leitura parcial nunca sai 0", () => {
   // implicava "sem vazamento" sobre uma medição admitidamente incompleta.
   it("sem vazamento MAS leitura parcial → 1, nunca 0", () => {
     assert.equal(
-      resolveExitCode({ hasLeaks: false, partialRead: true }),
+      resolveExitCode({ hasLeaks: false, partialRead: true, emptyWindow: false }),
       1,
       "não medi ≠ está limpo — é a falha que este guard existe pra não repetir",
     );
   });
 
   it("vazamento → 3, e continua 3 mesmo com leitura parcial", () => {
-    assert.equal(resolveExitCode({ hasLeaks: true, partialRead: false }), LEAK_FOUND_EXIT_CODE);
-    assert.equal(resolveExitCode({ hasLeaks: true, partialRead: true }), LEAK_FOUND_EXIT_CODE);
+    assert.equal(resolveExitCode({ hasLeaks: true, partialRead: false, emptyWindow: false }), LEAK_FOUND_EXIT_CODE);
+    assert.equal(resolveExitCode({ hasLeaks: true, partialRead: true, emptyWindow: true }), LEAK_FOUND_EXIT_CODE);
   });
 
   it("3 é distinto de 1 — o runner precisa separar 'achou' de 'quebrou'", () => {

@@ -159,9 +159,19 @@ export function parseActivityRows(payload: unknown): { rows: BillingRow[]; skipp
  * forte que "faltou dado" — as duas condições saem diferente de 0 de todo
  * jeito, e o 3 diz ao runner que há gasto concreto a olhar.
  */
-export function resolveExitCode({ hasLeaks, partialRead }: { hasLeaks: boolean; partialRead: boolean }): number {
+export function resolveExitCode({
+  hasLeaks,
+  partialRead,
+  emptyWindow,
+}: {
+  hasLeaks: boolean;
+  partialRead: boolean;
+  /** Nenhuma linha sobrou na janela — o endpoint pode simplesmente não ter
+   *  consolidado ainda. Ver `JANELA VAZIA` abaixo. */
+  emptyWindow: boolean;
+}): number {
   if (hasLeaks) return LEAK_FOUND_EXIT_CODE;
-  if (partialRead) return 1;
+  if (partialRead || emptyWindow) return 1;
   return 0;
 }
 
@@ -231,11 +241,18 @@ async function main(): Promise<void> {
     console.log(`${LOG_PREFIX}   ${l.date} ${l.model} — ${l.requests} req US$${l.usageUsd.toFixed(4)}`);
   }
 
+  // JANELA VAZIA — o modo de falha que mais aparece nesta família de guards
+  // (#6966: `LIKE` casando zero linhas e o watchdog imprimindo "tick ok";
+  // #6927: sinal que some por construção quando o updater desliga). Aqui
+  // "zero linhas" tem DUAS causas indistinguíveis daqui: gasto realmente
+  // zero, ou o endpoint ainda não ter consolidado a janela pedida (ele
+  // agrega por dias UTC completos e NÃO cobre o dia corrente). Como não dá
+  // pra separar, nunca sai 0.
   if (evaluation.daysCovered.length === 0) {
     console.error(
-      `${LOG_PREFIX} INDETERMINADO — nenhuma linha na janela. Pode ser gasto zero de verdade OU o endpoint não ter consolidado; este guard não distingue, e não afirma "ok".`,
+      `${LOG_PREFIX} INDETERMINADO — nenhuma linha na janela (cutoff ${cutoff}, --days ${days}). Pode ser gasto zero de verdade OU o endpoint não ter consolidado; este guard não distingue, e não afirma "ok".`,
     );
-    process.exitCode = 1;
+    process.exitCode = resolveExitCode({ hasLeaks: false, partialRead, emptyWindow: true });
     return;
   }
 
@@ -244,7 +261,11 @@ async function main(): Promise<void> {
   // exceção sobe pro catch de `main()` — que setava 1 e apagava a distinção
   // entre "quebrou" e "achou vazamento E quebrou ao avisar". O runner
   // precisa saber que havia vazamento pendente mesmo quando o aviso falhou.
-  process.exitCode = resolveExitCode({ hasLeaks: evaluation.leaks.length > 0, partialRead });
+  process.exitCode = resolveExitCode({
+    hasLeaks: evaluation.leaks.length > 0,
+    partialRead,
+    emptyWindow: false, // já retornou acima se fosse vazia
+  });
 
   const state = loadState();
   if (shouldAlarmBillingLeak(state, evaluation)) {
