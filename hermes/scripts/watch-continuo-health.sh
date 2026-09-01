@@ -231,8 +231,30 @@ try:
         print(f\"{t['dia']} {t['session_id']} local={t['local_fallback_pct']}%\")
 except Exception:
     print('__ERR__')" 2>/dev/null || echo "__ERR__")
+  # #6963: janela com ZERO ticks NUNCA pode ser lida como "ok". Antes deste
+  # guard, lista vazia por detector quebrado e lista vazia por "tudo
+  # saudável" produziam a MESMA linha verde — e foi exatamente assim que o
+  # detector do #6912 passou meses sem poder disparar (o `LIKE` casava zero
+  # linhas) enquanto o relatório diário afirmava "sem degradação". Um
+  # detector de falha silenciosa que falha em silêncio é pior que não ter
+  # detector: ele consome a atenção que existiria pra vigiar de outro jeito.
+  #
+  # Zero ticks é INDETERMINADO, não saudável: pode ser job pausado de
+  # propósito (legítimo, e aí a linha indeterminada é ruído aceitável de 1
+  # linha/dia) ou o contínuo morto/o detector cego (o caso que importa). As
+  # duas coisas precisam de olho humano; nenhuma delas é "ok".
+  TICKCOUNT=$(printf '%s' "$TICKCOMP" | python3 -c "
+import sys, json
+try:
+    print(len(json.load(sys.stdin)))
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+
   if [ "$DEGRADED" = "__ERR__" ]; then
     echo "[watch] composição de tick: parse do resultado falhou" >&2; FAILS=$((FAILS + 1))
+  elif [ "$TICKCOUNT" = "0" ]; then
+    echo "[watch] composição de tick: INDETERMINADO — ZERO ticks do contínuo na janela (#6963). Não é 'ok': ou o job está pausado de propósito, ou o contínuo parou, ou o detector voltou a ficar cego. Conferir com 'hermes cron list --all' e com o formato de session_id em session_model_usage." >&2
+    FAILS=$((FAILS + 1))
   elif [ -n "$DEGRADED" ]; then
     file_issue "[watch-continuo] degradação de modelo por tick" \
       "[watch-continuo] tick(s) do contínuo caíram no fallback local nas últimas 24h" \

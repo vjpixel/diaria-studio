@@ -187,14 +187,44 @@ def collect_tick_composition(days: int) -> list[dict]:
     "silencioso" que o #6708 documentou no topo do arquivo, so que na camada
     de TICK em vez de cobranca.
 
-    `session_id` do continuo segue o padrao `hermes-cron-{JOB_ID}-<algo>`
-    (jobs do cron do Hermes prefixam a sessao com o proprio job id) — agrupa
-    por essa coluna diretamente, sem JOIN com `sessions` (mesma licao do
-    #6880: nao reintroduzir uma dependencia que ja se provou artefato).
+    `session_id` do continuo e prefixado com o proprio job id do cron do
+    Hermes — agrupa por essa coluna diretamente, sem JOIN com `sessions`
+    (mesma licao do #6880: nao reintroduzir uma dependencia que ja se
+    provou artefato).
+
+    #6963: o formato REAL gravado em `session_model_usage` e
+    `cron_{JOB_ID}_<data>_<hora>` (UNDERSCORE, sem prefixo `hermes-`) —
+    ex. `cron_5d791ef6fc2c_20260901_170808`. O padrao anterior usado aqui,
+    `hermes-cron-{JOB_ID}-%`, casava **ZERO** linhas: medido no banco de
+    producao em 01/09, 0 linhas contra 238 do formato real. Ou seja, esta
+    funcao SEMPRE devolveu `[]` e o detector de degradacao silenciosa do
+    #6912 nunca teve como disparar. O teste nao pegou porque seedava a
+    fixture com o mesmo padrao errado da implementacao — codificou a
+    suposicao em vez da realidade do banco.
+
+    Os DOIS padroes sao aceitos de proposito: o real (`cron_..._%`) e o
+    hifenizado (`hermes-cron-...-%`), por precaucao. **O hifenizado NUNCA
+    foi confirmado nesta tabela** — achado do review da PR #6966: o formato
+    com hifens que aparece no repo e o `sessionId` do `session-registry.ts`
+    (claims em `data/sessions/*.json`), um namespace DIFERENTE do
+    `session_id` que o Hermes grava em `session_model_usage`. A medicao de
+    0 linhas e compativel tanto com "ja existiu e parou" quanto com "nunca
+    existiu aqui", e nao ha evidencia de qual das duas. Fica aceito porque
+    o `OR` e defensivo e sem custo (nenhuma sessao alheia casa qualquer um
+    dos dois padroes) — nao porque se saiba que foi usado. Aceitar a menos
+    foi exatamente o bug.
+
+    Os `_` do padrao real sao ESCAPADOS: em `LIKE` do SQL, `_` e curinga de
+    UM caractere, entao `cron_{id}_%` sem escape tambem casaria
+    `cronX{id}Y...`. Aqui isso seria overmatch inofensivo (nenhuma outra
+    sessao tem essa forma), mas deixar o curinga implicito num padrao que
+    parece literal e a semente da proxima leitura errada — e foi
+    exatamente uma leitura errada de formato que originou este bug.
     """
     cutoff = (dt.datetime.now() - dt.timedelta(days=days)).timestamp()
     con = _connect()
-    like_pattern = f"hermes-cron-{CONTINUO_JOB_ID}-%"
+    like_underscore = f"cron\\_{CONTINUO_JOB_ID}\\_%"
+    like_hyphen = f"hermes-cron-{CONTINUO_JOB_ID}-%"
     rows = con.execute(
         """
         SELECT u.session_id,
@@ -202,11 +232,12 @@ def collect_tick_composition(days: int) -> list[dict]:
                u.model,
                SUM(u.api_call_count)
           FROM session_model_usage u
-         WHERE u.first_seen > ? AND u.session_id LIKE ?
+         WHERE u.first_seen > ?
+           AND (u.session_id LIKE ? ESCAPE '\\' OR u.session_id LIKE ?)
          GROUP BY u.session_id, u.model
          ORDER BY dia ASC, u.session_id ASC
         """,
-        (cutoff, like_pattern),
+        (cutoff, like_underscore, like_hyphen),
     ).fetchall()
     con.close()
 
