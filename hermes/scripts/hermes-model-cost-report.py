@@ -83,7 +83,12 @@ PAID_ALLOWLIST = {
 # core, estas constantes ficam defasadas ate alguem atualizar a mao; e o
 # mesmo trade-off ja aceito pro PAID_ALLOWLIST.
 CONTINUO_JOB_ID = "5d791ef6fc2c"
-CONTINUO_PRIMARY_MODEL = "gpt-5.6-luna"
+# #6912 (review): o PAID_ALLOWLIST acima ja prova que o MESMO modelo aparece
+# gravado sob 2 ids diferentes ("gpt-5.6-luna" e "openai-codex/gpt-5.6-luna",
+# dependendo do provider/rota) — casar so a forma nua deixava a forma
+# prefixada cair silenciosamente em other_calls, sem aparecer em nenhum
+# percentual, corrompendo justo a linha de base que esta issue quer coletar.
+CONTINUO_PRIMARY_MODEL_IDS = {"gpt-5.6-luna", "openai-codex/gpt-5.6-luna"}
 CONTINUO_LOCAL_FALLBACK_HINT = "qwen"
 CONTINUO_PAID_FALLBACK_MODEL = "z-ai/glm-5.3-flash"
 
@@ -193,7 +198,7 @@ def collect_tick_composition(days: int) -> list[dict]:
     rows = con.execute(
         """
         SELECT u.session_id,
-               date(u.first_seen, 'unixepoch', 'localtime') AS dia,
+               MIN(date(u.first_seen, 'unixepoch', 'localtime')) AS dia,
                u.model,
                SUM(u.api_call_count)
           FROM session_model_usage u
@@ -216,7 +221,7 @@ def collect_tick_composition(days: int) -> list[dict]:
              "other_calls": 0, "total_calls": 0},
         )
         t["total_calls"] += calls
-        if model == CONTINUO_PRIMARY_MODEL:
+        if model in CONTINUO_PRIMARY_MODEL_IDS:
             t["primary_calls"] += calls
         elif CONTINUO_LOCAL_FALLBACK_HINT in model:
             t["local_fallback_calls"] += calls

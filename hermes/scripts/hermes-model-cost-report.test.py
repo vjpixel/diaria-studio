@@ -126,6 +126,11 @@ def _seed_tick_composition(db_path: Path, job_id: str) -> None:
         # fallback local (qwen) — degraded=True mesmo sendo minoria.
         (f"hermes-cron-{job_id}-bbb222", "gpt-5.6-luna", "openai-codex", 8, 2000, 1000, 0.0, 0.0, now),
         (f"hermes-cron-{job_id}-bbb222", "qwen3.5:latest", "custom", 2, 200, 100, 0.0, 0.0, now),
+        # tick saudável cuja chamada foi gravada com o id PREFIXADO do
+        # mesmo modelo primário (PAID_ALLOWLIST já prova que as duas formas
+        # aparecem em produção) — precisa contar como primário, não cair em
+        # other_calls (finding do review do #6912).
+        (f"hermes-cron-{job_id}-ccc333", "openai-codex/gpt-5.6-luna", "openai-codex", 4, 800, 400, 0.0, 0.0, now),
         # sessão fora do padrão (não é job continuo) — não deve aparecer.
         ("outra-sessao-qualquer", "gpt-5.6-luna", "openai-codex", 9, 900, 900, 0.0, 0.0, now),
     ]
@@ -179,8 +184,8 @@ def main() -> int:
         session_ids = {t["session_id"] for t in ticks}
 
         assert_true(
-            "collect_tick_composition() só retorna sessões do padrão hermes-cron-{JOB_ID}-* (2, não 3)",
-            len(ticks) == 2,
+            "collect_tick_composition() só retorna sessões do padrão hermes-cron-{JOB_ID}-* (3, não 4)",
+            len(ticks) == 3,
         )
         assert_true(
             "sessão fora do padrão (outra-sessao-qualquer) NÃO entra na composição",
@@ -198,6 +203,16 @@ def main() -> int:
             "tick com QUALQUER chamada no fallback local -> degraded=True, mesmo sendo minoria das chamadas",
             degradado["degraded"] is True and degradado["local_fallback_pct"] > 0
             and degradado["primary_pct"] > degradado["local_fallback_pct"],
+        )
+
+        # #6912 (review): PAID_ALLOWLIST já prova que o mesmo modelo aparece
+        # sob 2 ids ("gpt-5.6-luna" e "openai-codex/gpt-5.6-luna") — a forma
+        # prefixada tinha que contar como primário, não cair em other_calls.
+        prefixado = next(t for t in ticks if t["session_id"].endswith("ccc333"))
+        assert_true(
+            "tick com modelo primário sob o id PREFIXADO (openai-codex/gpt-5.6-luna) -> conta como primário, não other_calls",
+            prefixado["degraded"] is False and prefixado["primary_pct"] == 100.0
+            and prefixado["other_calls"] == 0,
         )
 
     if FAILED:

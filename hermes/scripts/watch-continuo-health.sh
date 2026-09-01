@@ -237,7 +237,7 @@ except Exception:
     file_issue "[watch-continuo] degradação de modelo por tick" \
       "[watch-continuo] tick(s) do contínuo caíram no fallback local nas últimas 24h" \
       "bug,P2" \
-      "Detectado por watch-continuo-health.sh via hermes-model-cost-report.py --tick-composition — tick(s) com chamadas no fallback local (qwen), sinal de que o modelo primário (CONTINUO_PRIMARY_MODEL, hardcoded em hermes-model-cost-report.py) falhou naquele tick:
+      "Detectado por watch-continuo-health.sh via hermes-model-cost-report.py --tick-composition — tick(s) com chamadas no fallback local (qwen), sinal de que o modelo primário (CONTINUO_PRIMARY_MODEL_IDS, hardcoded em hermes-model-cost-report.py) falhou naquele tick:
 
 \`\`\`
 $DEGRADED
