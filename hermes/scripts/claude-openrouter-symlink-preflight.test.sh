@@ -41,6 +41,7 @@ mkdir -p "$FAKE_BIN"
 cat > "$FAKE_BIN/claude" <<'FAKE'
 #!/usr/bin/env bash
 if [ "$1" = "--version" ]; then echo "1.0.0 (fake)"; exit 0; fi
+echo "resposta fake (#6943, prova que chegou até aqui)"
 exit 0
 FAKE
 chmod +x "$FAKE_BIN/claude"
@@ -62,6 +63,21 @@ if printf '%s' "$OUT" | grep -qiE "(claude-binary-preflight\.sh|free-quota-exhau
 fi
 
 echo "ok: source através do symlink resolveu sem erro de arquivo não encontrado (rc=$RC)"
-echo "$OUT" | grep -q "preflight" && { echo "FAIL: menção residual a 'preflight' na saída sugere falha de resolução: $OUT"; exit 1; }
-echo "ok: nenhuma menção a falha de preflight na saída"
+
+# Positivo, não só ausência de erro (achado de review, PR #6944): exige
+# que a execução tenha chegado a um dos 2 desfechos ESPERADOS pós-source
+# — sucesso de verdade (claude fake responde 0 o tempo todo) ou o erro
+# nomeado de auth.json ausente (#6943 nomeia esse arquivo hardcoded,
+# `/home/vjpixel/.hermes/auth.json` — pode existir de verdade nesta
+# máquina ou não, os dois são desfechos válidos). Qualquer OUTRA coisa
+# (crash inesperado, erro de sintaxe introduzido alhures) derruba o teste
+# em vez de passar por omissão.
+if [ "$RC" -eq 0 ] || printf '%s' "$OUT" | grep -q "nenhuma chave OpenRouter legível"; then
+  echo "ok: desfecho pós-source é um dos esperados (rc=$RC)"
+else
+  echo "FAIL: desfecho inesperado pós-source (rc=$RC) — nem sucesso nem o erro nomeado de auth.json ausente:"
+  echo "$OUT"
+  exit 1
+fi
+
 exit 0
