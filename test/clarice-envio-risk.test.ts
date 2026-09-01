@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { aggregateRisk, toOpenTrendPoints, toSpamSignalLike, fetchRiskSnapshot } from "../scripts/clarice-envio-risk.ts";
 import { TransientDashboardError } from "../scripts/lib/transient-dashboard-error.ts";
+import { FIXED_DAILY_STEP } from "../scripts/lib/clarice-envio-policy.ts";
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
 
 function campaign(over: Partial<BrevoCampaign> & { sentDate: string }): BrevoCampaign {
@@ -109,7 +110,10 @@ describe("fetchRiskSnapshot — smoke test com fetch fake (sem rede real)", () =
     const snapshot = await fetchRiskSnapshot({ dashboardUrl: "https://fake.example", now, fetchFn: fakeFetch });
     assert.equal(snapshot.spamSignal.source, "indeterminate", "sem entry no postmaster-spam => indeterminate");
     assert.ok(["ok", "hold", "stop"].includes(snapshot.brake.level));
-    assert.ok(snapshot.step >= 0 && snapshot.step <= 0.25);
+    // #6888 (01/09/2026): adaptiveStep é passo FIXO, sempre FIXED_DAILY_STEP —
+    // não há mais faixa [0, 0,25] pra checar (era o teto da escalada por
+    // risco, removida por pedido explícito do editor).
+    assert.equal(snapshot.step, FIXED_DAILY_STEP);
     assert.equal(snapshot.freshWindow.sent, 3800); // ambas campanhas caem nos últimos 3 dias de envio
   });
 
