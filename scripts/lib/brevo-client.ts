@@ -674,6 +674,10 @@ export async function fetchSentCampaignListIds(apiKey: string): Promise<Set<stri
   return fetchCampaignListIdsByStatus(apiKey, "sent");
 }
 
+/** #6458: 2 retries curtos (3s, 8s) além da tentativa original — ver
+ *  docstring de `fetchCommittedCampaignListIds` pro porquê. */
+const COMMITTED_LOOKUP_RETRY_DELAYS_MS = [3000, 8000];
+
 /**
  * #3682: entrypoint recomendado pros consumidores de exclusão de audiência
  * (`weekly-send-plan-audience.ts`, `clarice-schedule-ramp.ts`,
@@ -681,13 +685,47 @@ export async function fetchSentCampaignListIds(apiKey: string): Promise<Set<stri
  * paralelo. Um contato comprometido com QUALQUER campanha do ciclo (agendada
  * OU já disparada) deve ser excluído da próxima seleção; `sends_count=0`
  * local não é confiável sozinho pra nenhum dos dois casos.
+ *
+ * #6458 (01/09/2026): esta função sempre foi documentada pra FALHAR ALTO
+ * (comentário do call site em `clarice-plan-wave.ts`) — mas até aqui
+ * "falhar" significava desistir na 1ª tentativa. `brevoGet` JÁ retenta
+ * 429/5xx internamente (`for (attempt <= RETRY_MS.length)` acima) — mas o
+ * `await fetch(...)` daquele loop não está dentro de um try/catch: se o
+ * `fetch()` em si LANÇAR (erro de rede — ECONNRESET, timeout, DNS — nunca
+ * chega a existir uma `Response` com `.status` pra checar), a exceção
+ * escapa direto do loop de retry do `brevoGet`, sem NENHUMA tentativa
+ * extra. É essa camada — falha de rede genuína, não resposta HTTP de
+ * erro — que fica descoberta. Medido ao vivo: `diaria-clarice-envio.service`
+ * (a task que materializa a rampa de crescimento da Clarice) abortou 2×
+ * (27/08, 30/08) com "consulta de campanhas comprometidas na Brevo
+ * falhou" — as DUAS vezes dentro da janela 22:00-22:04 BRT em que ~60
+ * timers `diaria-*` disparam juntos no mesmo host, candidato forte a
+ * contenção de rede transitória (não HTTP 429/5xx, que já teria retry
+ * dentro do próprio `brevoGet`). Este retry NÃO muda o contrato
+ * "falha alto sem exclusão confiável" (#3682/#5395) — só exige que a
+ * falha SOBREVIVA a mais 2 tentativas (3s, 8s de backoff) antes de virar
+ * bloqueio estrutural no chamador, em vez de desistir na primeira.
+ * `_sleep` injetável pra teste, mesmo padrão do resto desta lib.
  */
-export async function fetchCommittedCampaignListIds(apiKey: string): Promise<Set<string>> {
-  const [queued, sent] = await Promise.all([
-    fetchQueuedCampaignListIds(apiKey),
-    fetchSentCampaignListIds(apiKey),
-  ]);
-  return new Set([...queued, ...sent]);
+export async function fetchCommittedCampaignListIds(
+  apiKey: string,
+  _sleep = _defaultSleep,
+): Promise<Set<string>> {
+  let lastErr: unknown;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const [queued, sent] = await Promise.all([
+        fetchQueuedCampaignListIds(apiKey),
+        fetchSentCampaignListIds(apiKey),
+      ]);
+      return new Set([...queued, ...sent]);
+    } catch (err) {
+      lastErr = err;
+      const delay = COMMITTED_LOOKUP_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined) throw lastErr; // orçamento de retry esgotado
+      await _sleep(delay);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

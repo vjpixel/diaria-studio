@@ -119,6 +119,60 @@ describe("fetchCommittedCampaignListIds (#3682) — união queued+sent", () => {
     }
   });
 
+  // #6458: `brevoGet` retenta 429/5xx internamente, mas o `await fetch(...)`
+  // do loop dele NÃO está em try/catch — se `fetch()` em si LANÇAR (erro de
+  // rede genuíno: ECONNRESET/timeout/DNS, nunca chega a existir uma
+  // `Response` com `.status` pra checar), a exceção escapa direto, sem
+  // nenhuma tentativa extra do `brevoGet`. É essa camada — falha de REDE,
+  // não resposta HTTP de erro — que fica descoberta e este retry cobre.
+  // Medido ao vivo: diaria-clarice-envio.service abortou 2x com "consulta
+  // de campanhas comprometidas na Brevo falhou", coincidindo com a janela
+  // de ~60 timers diaria-* disparando juntos (22:00-22:04 BRT).
+  it("REGRESSÃO (#6458): fetch() LANÇA (erro de rede, não resposta HTTP) na 1ª tentativa, sucede na 2ª → retorna normalmente", async () => {
+    const orig = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async (url: string | URL) => {
+      calls++;
+      const urlStr = String(url);
+      // Só a PRIMEIRA rodada de chamadas (queued+sent em paralelo, calls 1-2)
+      // falha — fetch() LANÇA, nunca retorna uma Response (diferente de um
+      // 503, que brevoGet já retentaria sozinho). A segunda rodada (calls
+      // 3-4, após o retry desta função) sucede.
+      if (calls <= 2) throw new Error("fetch failed: ECONNRESET");
+      if (urlStr.includes("status=queued")) return makeJsonResponse({ campaigns: [{ id: 1, recipients: { lists: [74] } }] });
+      if (urlStr.includes("status=sent")) return makeJsonResponse({ campaigns: [] });
+      throw new Error(`URL inesperada: ${urlStr}`);
+    }) as unknown as typeof fetch;
+    const sleeps: number[] = [];
+    const fakeSleep = async (ms: number) => {
+      sleeps.push(ms);
+    };
+    try {
+      const ids = await fetchCommittedCampaignListIds("fake-key", fakeSleep);
+      assert.deepEqual([...ids].sort(), ["74"]);
+      assert.deepEqual(sleeps, [3000], "1 retry consumido, o 2º nem precisou ser tentado");
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  it("REGRESSÃO (#6458): fetch() lança em TODAS as tentativas (original + 2 retries) → lança o erro real, nunca engole em silêncio", async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error("fetch failed: ECONNRESET");
+    }) as unknown as typeof fetch;
+    const sleeps: number[] = [];
+    const fakeSleep = async (ms: number) => {
+      sleeps.push(ms);
+    };
+    try {
+      await assert.rejects(() => fetchCommittedCampaignListIds("fake-key", fakeSleep), /ECONNRESET/);
+      assert.deepEqual(sleeps, [3000, 8000], "os 2 retries foram consumidos antes de desistir — nunca menos, nunca mais");
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
   it("cenário do incidente real: contato com sends_count=0 (lag) mas em lista SENT é excluído da próxima seleção", async () => {
     // Réplica do incidente 260716-260721 (#3682): envio 4 (lista 72, w1-ter)
     // e envio 5 (lista 73, w2-sex) já são SENT; um contato dessas listas
