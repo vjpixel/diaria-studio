@@ -77,6 +77,11 @@ function fakeResult(overrides: Partial<WarmupRampResult> = {}): WarmupRampResult
     pushed: false,
     unverifiedEmails: [],
     failedEmails: [],
+    outOfBandReturned: [],
+    outOfBandStillActiveOnBeehiiv: [],
+    unconfirmedTagEmails: [],
+    beehiivCheckOk: true,
+    statePersisted: false,
     ...overrides,
   };
 }
@@ -153,5 +158,96 @@ describe("formatReport", () => {
   it("omite a seção de desativação manual quando ninguém precisa dela", () => {
     const out = formatReport(fakeResult({ needsBeehiivDeactivation: [] }));
     assert.doesNotMatch(out, /desativação manual/);
+  });
+});
+
+describe("formatReport — reconciliação out-of-band (#6964)", () => {
+  it("omite a linha quando estado e tag do Kit concordam", () => {
+    assert.doesNotMatch(formatReport(fakeResult()), /FORA desta rampa/);
+  });
+
+  it("informa quantos migraram fora da rampa e que a absorção foi só em memória no dry-run", () => {
+    const out = formatReport(fakeResult({ outOfBandReturned: ["x@gmail.com", "y@gmail.com"], pushed: false }));
+    assert.match(out, /2 deles migrados FORA desta rampa/);
+    assert.match(out, /só em memória \(dry-run\)/);
+  });
+
+  it("com --push, diz que a absorção foi persistida no estado", () => {
+    // A rotulagem segue `statePersisted` (o que de fato foi escrito), não
+    // `pushed` (se uma onda foi tagueada) — ver finding 2 da 2ª rodada.
+    const out = formatReport(fakeResult({ outOfBandReturned: ["x@gmail.com"], pushed: true, statePersisted: true }));
+    assert.match(out, /absorvidos no estado/);
+  });
+});
+
+describe("formatReport — invariante de envio em dobro e releitura não confirmada (#6984)", () => {
+  it("lista os endereços absorvidos, não só a contagem", () => {
+    const out = formatReport(fakeResult({ outOfBandReturned: ["x@gmail.com", "y@gmail.com"] }));
+    assert.match(out, /- x@gmail\.com/);
+    assert.match(out, /- y@gmail\.com/);
+  });
+
+  it("GRITA quando alguém absorvido continua ativo na Beehiiv (envio em dobro)", () => {
+    const out = formatReport(
+      fakeResult({ outOfBandReturned: ["dobro@gmail.com"], outOfBandStillActiveOnBeehiiv: ["dobro@gmail.com"] }),
+    );
+    assert.match(out, /ENVIO EM DOBRO/);
+    assert.match(out, /dobro@gmail\.com/);
+    assert.match(out, /--audit/);
+  });
+
+  it("não menciona envio em dobro quando o invariante está intacto", () => {
+    assert.doesNotMatch(formatReport(fakeResult({ outOfBandReturned: ["ok@gmail.com"] })), /ENVIO EM DOBRO/);
+  });
+
+  it("mostra os endereços cuja tag não pôde ser confirmada, em vez de silenciá-los", () => {
+    const out = formatReport(fakeResult({ unconfirmedTagEmails: ["flaky@gmail.com"] }));
+    assert.match(out, /não deu pra confirmar a tag de 1 endereço/);
+    assert.match(out, /flaky@gmail\.com/);
+  });
+});
+
+describe("formatReport — persistência e checagem da Beehiiv (#6984 2ª rodada)", () => {
+  it("REGRESSÃO finding 2: absorção gravada numa rodada sem onda não é rotulada como dry-run", () => {
+    // --push + gate segurou: nenhuma onda tagueada (pushed=false), mas a
+    // absorção foi pro disco. Dizer "só em memória" seria mentir sobre o
+    // estado — a classe de erro que o #573 existe pra impedir.
+    const out = formatReport(
+      fakeResult({ outOfBandReturned: ["x@gmail.com"], pushed: false, statePersisted: true }),
+    );
+    assert.match(out, /absorvidos no estado/);
+    assert.doesNotMatch(out, /só em memória/);
+  });
+
+  it("dry-run de verdade continua dizendo que nada foi escrito", () => {
+    const out = formatReport(
+      fakeResult({ outOfBandReturned: ["x@gmail.com"], pushed: false, statePersisted: false }),
+    );
+    assert.match(out, /só em memória \(dry-run\)/);
+  });
+
+  it("REGRESSÃO finding 1: sem checagem da Beehiiv, o alarme não AFIRMA que estão ativos", () => {
+    const out = formatReport(
+      fakeResult({
+        outOfBandReturned: ["x@gmail.com"],
+        outOfBandStillActiveOnBeehiiv: ["x@gmail.com"],
+        beehiivCheckOk: false,
+      }),
+    );
+    assert.match(out, /NÃO VERIFICADO/);
+    assert.match(out, /SEM checagem/);
+    assert.match(out, /--audit/);
+  });
+
+  it("com checagem OK, o alarme afirma a violação sem ressalva", () => {
+    const out = formatReport(
+      fakeResult({
+        outOfBandReturned: ["x@gmail.com"],
+        outOfBandStillActiveOnBeehiiv: ["x@gmail.com"],
+        beehiivCheckOk: true,
+      }),
+    );
+    assert.match(out, /ENVIO EM DOBRO —/);
+    assert.doesNotMatch(out, /NÃO VERIFICADO/);
   });
 });
