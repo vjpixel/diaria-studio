@@ -20,21 +20,33 @@ Sobrevive a atualizacao do Hermes porque nao toca no codigo dele.
 
 LIMITACAO CONHECIDA (#6708, 29/08/2026): este script so DETECTA a cobranca
 indevida depois do fato (le o billing ja gravado) — nao valida o override
-ANTES da chamada disparar. A causa raiz de "pedido X, cobrado Y" fica na
-resolucao de modelo do Hermes CORE (overrides de sessao persistidos,
-provavelmente `~/.hermes/sessions/sessions.json`, mais a cadeia de
-smart_model_routing em `~/.hermes/config.yaml`) — nenhum dos dois vive
-neste repo, e nao existem nesta maquina/worktree (checado em 29/08/2026:
-`~/.hermes/` inteiro ausente aqui, por design — so existe no `helios`).
-Investigar/corrigir a causa raiz exige acesso a essa maquina; nao
-reproduzido nem instrumentado a partir daqui. O que ESTE script ja cobre
-(deteccao pos-fato via `vazamento_pago`/`_is_leak`) e o que
-`watch-continuo-health.sh` ja consome pra abrir issue automaticamente
-segue valido e e a mitigacao disponivel enquanto a causa raiz no Hermes
-core nao for corrigida.
+ANTES da chamada disparar. A causa raiz da resolucao de modelo fica no
+Hermes CORE (overrides de sessao persistidos, provavelmente
+`~/.hermes/sessions/sessions.json`, mais a cadeia de smart_model_routing
+em `~/.hermes/config.yaml`) — nenhum dos dois vive neste repo, e nao
+existem nesta maquina/worktree (checado em 29/08/2026: `~/.hermes/`
+inteiro ausente aqui, por design — so existe no `helios`). Investigar/
+corrigir a causa raiz exige acesso a essa maquina; nao reproduzido nem
+instrumentado a partir daqui. O que ESTE script ja cobre (deteccao
+pos-fato via `vazamento_pago`/`_is_leak`, com base no `model`/`provider`
+REALMENTE cobrados) e o que `watch-continuo-health.sh` ja consome pra
+abrir issue automaticamente segue valido e e a mitigacao disponivel
+enquanto a causa raiz no Hermes core nao for corrigida.
+
+#6880 (01/09/2026, decorre do #6708): a coluna `pedido` (e o campo
+derivado `substituido`) FORAM REMOVIDOS. `pedido` vinha de `sessions.model`
+via `LEFT JOIN sessions s ON s.id = u.session_id` — mas `sessions.model` e
+o modelo CORRENTE da sessao (mutavel), nao o modelo pedido NA CHAMADA que
+gerou aquela linha agregada de `session_model_usage`. Qualquer sessao que
+trocasse de modelo DEPOIS de fazer chamadas com um modelo mais antigo
+fabricava uma "substituicao" que nunca aconteceu — foi exatamente esse
+artefato de JOIN que abriu o #6708 como falso P1 (nenhuma cobranca fora da
+allowlist tinha de fato ocorrido). `vazamento_pago`/`_is_leak` NAO usava
+`pedido` pra nada — deriva so de `model`/`provider`, os campos REALMENTE
+cobrados — e continua correto sem nenhuma mudanca.
 
 Uso:
-    python3 hermes-model-cost-report.py [--days N] [--sessions] [--json]
+    python3 hermes-model-cost-report.py [--days N] [--json]
 """
 
 from __future__ import annotations
@@ -107,7 +119,6 @@ def collect(days: int) -> list[dict]:
         """
         SELECT date(u.first_seen, 'unixepoch', 'localtime') AS dia,
                u.model,
-               s.model AS pedido,
                u.billing_provider,
                SUM(u.api_call_count),
                SUM(u.input_tokens),
@@ -115,37 +126,34 @@ def collect(days: int) -> list[dict]:
                SUM(COALESCE(u.actual_cost_usd, 0)),
                SUM(COALESCE(u.estimated_cost_usd, 0))
           FROM session_model_usage u
-          LEFT JOIN sessions s ON s.id = u.session_id
          WHERE u.first_seen > ?
-         GROUP BY dia, u.model, s.model, u.billing_provider
-         ORDER BY dia DESC, 9 DESC, 5 DESC
+         GROUP BY dia, u.model, u.billing_provider
+         ORDER BY dia DESC, 8 DESC, 4 DESC
         """,
         (cutoff,),
     ).fetchall()
     con.close()
 
     out = []
-    for dia, model, pedido, prov, calls, tin, tout, actual, est in rows:
+    for dia, model, prov, calls, tin, tout, actual, est in rows:
         model = model or "?"
         out.append(
             {
                 "dia": dia,
                 "modelo": model,
-                "pedido": pedido or "?",
                 "provider": prov or "?",
                 "chamadas": calls or 0,
                 "tokens_in": tin or 0,
                 "tokens_out": tout or 0,
                 "custo_real": round(actual or 0, 6),
                 "custo_estimado": round(est or 0, 6),
-                "substituido": bool(pedido and pedido != model),
                 "vazamento_pago": _is_leak(model, prov or ""),
             }
         )
     return out
 
 
-def render(rows: list[dict], days: int, show_sessions: bool) -> None:
+def render(rows: list[dict], days: int) -> None:
     if not rows:
         print(f"Nenhum uso registrado nos ultimos {days} dias.")
         return
@@ -160,11 +168,7 @@ def render(rows: list[dict], days: int, show_sessions: bool) -> None:
         if dia_atual and r["dia"] != dia_atual:
             print()
         dia_atual = r["dia"]
-        flag = ""
-        if r["vazamento_pago"]:
-            flag = "  <-- PAGO FORA DA ALLOWLIST"
-        elif r["substituido"]:
-            flag = f"  (pedido: {r['pedido']})"
+        flag = "  <-- PAGO FORA DA ALLOWLIST" if r["vazamento_pago"] else ""
         print(
             f"{r['dia']:11} {r['modelo'][:40]:40} {r['chamadas']:>6} "
             f"{r['tokens_in']:>9} {r['tokens_out']:>8} "
@@ -189,25 +193,13 @@ def render(rows: list[dict], days: int, show_sessions: bool) -> None:
         print(f"\n!! {len(leaks)} linha(s) cobradas em id PAGO fora da "
               f"allowlist — total ${sum(x['custo_estimado'] for x in leaks):.4f}")
         for r in leaks:
-            print(f"   {r['dia']}  {r['modelo']}  (pedido: {r['pedido']})"
-                  f"  ${r['custo_estimado']:.4f}")
-
-    if show_sessions:
-        print("\n=== Sessoes com substituicao de modelo ===")
-        subs = [r for r in rows if r["substituido"]]
-        if not subs:
-            print("  (nenhuma)")
-        for r in subs:
-            print(f"  {r['dia']}  {r['pedido']:34} -> {r['modelo']:34}"
-                  f"  ${r['custo_estimado']:.4f}")
+            print(f"   {r['dia']}  {r['modelo']}  ${r['custo_estimado']:.4f}")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--days", type=int, default=7, help="janela em dias (default 7)")
-    ap.add_argument("--sessions", action="store_true",
-                    help="lista as substituicoes de modelo pedido -> cobrado")
     ap.add_argument("--json", action="store_true", help="saida JSON")
     args = ap.parse_args()
 
@@ -215,7 +207,7 @@ def main() -> None:
     if args.json:
         print(json.dumps(rows, indent=2, ensure_ascii=False))
     else:
-        render(rows, args.days, args.sessions)
+        render(rows, args.days)
 
 
 if __name__ == "__main__":
