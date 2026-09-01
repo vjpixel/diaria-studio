@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/dispatch-glm-lane-unit.sh (#6930)
+# scripts/dispatch-glm-lane-unit.sh (#6930, --pr N no #6953)
 #
 # Despacha UMA unidade do piloto `z-ai/glm-5.3-flash` — ver `docs/lane-
 # glm.md` (normativo) antes de mexer aqui. Este script implementa as
@@ -17,7 +17,9 @@
 #       executando o `gh` real por uma invocação que não começa com `gh`,
 #       driblando o allowlist inteiro). `git push` é escopado à branch
 #       EXATA desta unidade (`$BRANCH`, interpolada abaixo), nunca a
-#       branch nenhuma.
+#       branch nenhuma. Em modo `--pr` (segunda rodada), `gh pr create`
+#       é OMITIDO do `--tools` — mecanicamente impossível abrir uma PR
+#       duplicada nesse modo, não só desaconselhado por texto.
 #
 #       **Risco residual, registrado em vez de fingido resolvido**: nada
 #       aqui é uma sandbox real. `Bash(npx tsx:*)` continua podendo rodar
@@ -27,7 +29,7 @@
 #       isso por completo exigiria tirar `Write`/`Edit` (inviável — o
 #       produtor existe pra editar código) ou rodar em sandbox de
 #       processo/container (fora de escopo desta PR, piloto de 10
-#       unidades). O que este script FECHA são os 2 desvios triviais e já
+#       unidades). O que este script FECHA são os desvios triviais e já
 #       demonstrados (push direto, `npm exec`); o que fica em aberto é o
 #       mesmo risco de "modelo adversarial com Write + interpretador" que
 #       nenhum outro produtor autônomo deste repo resolve hoje (a própria
@@ -72,17 +74,33 @@
 #
 # Antes de cada despacho, o gate de critérios de morte
 # (scripts/lib/glm-lane-gate.ts, via scripts/check-glm-lane-gate.ts) é
-# consultado — teto de 10 unidades, zero PRs nos 3 primeiros despachos
-# (#6922), média de rodadas de review > 2, $/issue vs. lane Sonnet (os 3
-# últimos ainda não normativos em docs/lane-glm.md § Teto e reversão —
+# consultado — teto de 10 unidades, zero PRs MERGEADAS nos 3 primeiros
+# despachos (#6922, corrigido de "abertas" pra "mergeadas" no #6953),
+# média de rodadas de review > 2, $/issue vs. lane Sonnet (os 3 últimos
+# ainda não normativos em docs/lane-glm.md § Teto e reversão —
 # especificados pelo coordenador durante a construção deste harness;
 # emendar aquela seção antes do 1º despacho real, não só este comentário).
 # `exit != 0` = NÃO despachar — o script recusa a 11ª unidade (e qualquer
 # unidade além de um critério de morte disparado) por construção.
 #
+# ## Modo `--pr N` (#6953) — SEGUNDA RODADA numa PR já aberta
+#
+# Sem `--pr`, este script SEMPRE cria branch/worktree novos a partir de
+# `origin/master` — despachar de novo pra uma issue cuja unidade anterior
+# já abriu PR abriria uma PR DUPLICADA (achado ao vivo, unidade 2 do
+# piloto: a #6950 recebeu 3 findings de review e não tinha como o
+# harness endereçá-los sem duplicar). `--pr N` resolve isso: em vez de
+# `origin/master`, faz checkout da branch HEAD da PR N (`gh pr view N
+# --json headRefName`) e injeta no prompt os comentários de review já
+# postados nela (`gh pr view N --json comments`) — o modelo comita POR
+# CIMA do que já existe, e `gh pr create` fica FORA do `--tools` nesse
+# modo (mecanicamente impossível duplicar). `git push` continua escopado
+# à branch exata (agora a da PR, não uma nova).
+#
 # Uso:
 #   npx tsx scripts/lib/session-registry.ts claim-issue --issue N --kind continuo
-#   scripts/dispatch-glm-lane-unit.sh N
+#   scripts/dispatch-glm-lane-unit.sh N               # 1ª rodada — abre PR nova
+#   scripts/dispatch-glm-lane-unit.sh N --pr M         # 2ª+ rodada — itera sobre a PR M já aberta
 #   npx tsx scripts/lib/session-registry.ts unclaim-issue --issue N --kind continuo
 #
 # Variáveis de ambiente:
@@ -94,7 +112,13 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
-ISSUE="${1:?uso: dispatch-glm-lane-unit.sh <ISSUE> (issue já precisa estar reivindicada — ver docstring)}"
+ISSUE="${1:?uso: dispatch-glm-lane-unit.sh <ISSUE> [--pr N] (issue já precisa estar reivindicada — ver docstring)}"
+shift || true
+EXISTING_PR=""
+if [ "${1:-}" = "--pr" ]; then
+  EXISTING_PR="${2:?uso: --pr requer um número de PR}"
+fi
+
 UNITS_LOG="$REPO/data/glm-lane/units.jsonl"
 CAP="${GLM_LANE_UNITS_CAP:-10}"
 SONNET_BASELINE="${GLM_LANE_SONNET_COST_PER_ISSUE_USD:-}"
@@ -103,8 +127,11 @@ SONNET_BASELINE="${GLM_LANE_SONNET_COST_PER_ISSUE_USD:-}"
 # "diretório já existe" no `git worktree add`, antes até de invocar o
 # modelo, porque a 1ª tentativa nunca limpava o próprio diretório.
 RUN_TAG="$(date -u +%Y%m%d%H%M%S)"
-WORKTREE_DIR="$REPO/.claude/worktrees/glm-${ISSUE}-${RUN_TAG}"
-BRANCH="continuo/glm-${ISSUE}-${RUN_TAG}"
+if [ -n "$EXISTING_PR" ]; then
+  WORKTREE_DIR="$REPO/.claude/worktrees/glm-pr${EXISTING_PR}-${RUN_TAG}"
+else
+  WORKTREE_DIR="$REPO/.claude/worktrees/glm-${ISSUE}-${RUN_TAG}"
+fi
 
 mkdir -p "$(dirname "$UNITS_LOG")"
 
@@ -162,12 +189,70 @@ elif [ "$GATE_RC" -ne 0 ]; then
   exit 2
 fi
 
-echo "[glm-lane] criando worktree $WORKTREE_DIR em $BRANCH..."
-git fetch origin -q
-git worktree add -b "$BRANCH" "$WORKTREE_DIR" origin/master
-
 ISSUE_TITLE=$(gh issue view "$ISSUE" --json title -q .title)
 ISSUE_BODY=$(gh issue view "$ISSUE" --json body -q .body)
+
+# CI-wait guard (#6953, achado ao vivo): a unidade 2 do piloto abriu a PR
+# e ficou girando DEPOIS disso, provavelmente num laço `gh pr view`
+# esperando CI — custou US$ 0,2407 contra US$ 0,0108 de uma unidade que
+# não esperou nada. Checar/esperar CI é trabalho do revisor externo
+# (continuo-pr-review.sh, opus-daily-diff-review.sh, pickup do overnight),
+# nunca desta unidade — ela tem que soltar a sessão assim que git push +
+# (gh pr create, se for a 1ª vez) terminarem.
+CI_WAIT_GUARD="NUNCA rode 'gh pr checks', 'gh run watch', nem qualquer laço esperando o CI terminar — não é seu trabalho e cada segundo de espera é faturado. Assim que você fizer 'git push' (e 'gh pr create' se for a 1ª vez nesta issue), a sessão está PRONTA e deve finalizar imediatamente."
+
+if [ -n "$EXISTING_PR" ]; then
+  echo "[glm-lane] modo --pr $EXISTING_PR — segunda rodada, checkout da branch já existente..."
+  HEAD_REF=$(gh pr view "$EXISTING_PR" --json headRefName -q .headRefName)
+  if [ -z "$HEAD_REF" ]; then
+    echo "[glm-lane] ERRO — não deu pra resolver a branch HEAD da PR #$EXISTING_PR." >&2
+    exit 2
+  fi
+  BRANCH="$HEAD_REF"
+  git fetch origin "$BRANCH" -q
+  echo "[glm-lane] criando worktree $WORKTREE_DIR em cima de origin/$BRANCH (existente)..."
+  # -B (não -b): reseta/cria a branch local com o mesmo nome apontando
+  # pro HEAD remoto atual da PR — idempotente entre retries desta mesma
+  # PR, nunca colide com "branch já existe" de uma tentativa anterior
+  # cujo worktree já foi limpo.
+  git worktree add -B "$BRANCH" "$WORKTREE_DIR" "origin/$BRANCH"
+
+  REVIEW_COMMENTS=$(gh pr view "$EXISTING_PR" --json comments -q '[.comments[] | "--- comentário de \(.author.login) em \(.createdAt) ---\n\(.body)"] | join("\n\n")')
+  if [ -z "$REVIEW_COMMENTS" ]; then
+    REVIEW_COMMENTS="(nenhum comentário encontrado via 'gh pr view --json comments' — confira você mesmo com 'gh pr view $EXISTING_PR' se isso for inesperado.)"
+  fi
+
+  PROMPT="Esta é uma ITERAÇÃO sobre a PR #$EXISTING_PR já aberta (branch $BRANCH) pro repo diaria-studio, referente à issue #$ISSUE (título: \"$ISSUE_TITLE\"). NÃO chame 'gh pr create' — a ferramenta nem está disponível nesta sessão, de propósito.
+
+Comentários de review já postados na PR #$EXISTING_PR:
+
+$REVIEW_COMMENTS
+
+Enderece CADA achado acima. Você está num WORKTREE isolado, já no checkout da branch $BRANCH — trabalhe só aqui. Edite com edições cirúrgicas, rode os testes afetados. Quando terminar, rode 'git add' + 'git commit' + 'git push origin $BRANCH'.
+
+$CI_WAIT_GUARD
+
+VOCÊ NUNCA MERGEIA, NUNCA REVISA PR, NUNCA FECHA NEM EDITA ISSUE — não tente, essas ferramentas não estão disponíveis pra você nesta sessão de propósito (piloto #6930, condição (b) do docs/lane-glm.md: quem julga é o revisor externo e os portões do #6926, não você). Se algum comentário for inviável/ambíguo além do trivial, comente na PR via 'gh pr comment' explicando o bloqueio e pare — não force uma solução errada."
+
+  TOOLS="Read,Grep,Glob,Edit,Write,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git branch:*),Bash(git push origin ${BRANCH}:*),Bash(npm test:*),Bash(npx tsx:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue comment:*)"
+else
+  echo "[glm-lane] criando worktree $WORKTREE_DIR em branch nova..."
+  git fetch origin -q
+  BRANCH="continuo/glm-${ISSUE}-${RUN_TAG}"
+  git worktree add -b "$BRANCH" "$WORKTREE_DIR" origin/master
+
+  PROMPT="Implemente a issue #$ISSUE do repo diaria-studio (título: \"$ISSUE_TITLE\").
+
+$ISSUE_BODY
+
+Siga o CLAUDE.md. Você está num WORKTREE isolado, branch $BRANCH — trabalhe só aqui. Edite com edições cirúrgicas, adicione teste de regressão se for bugfix (#633), rode os testes afetados. Quando terminar, rode 'git add' + 'git commit' + 'git push -u origin $BRANCH' + 'gh pr create' referenciando a issue (Closes #$ISSUE no corpo).
+
+$CI_WAIT_GUARD
+
+VOCÊ NUNCA MERGEIA, NUNCA REVISA PR, NUNCA FECHA NEM EDITA ISSUE — não tente, essas ferramentas não estão disponíveis pra você nesta sessão de propósito (piloto #6930, condição (b) do docs/lane-glm.md: quem julga é o revisor externo e os portões do #6926, não você). Se a issue for inviável/ambígua além do trivial, comente nela via 'gh issue comment' explicando o bloqueio e pare — não force uma solução errada."
+
+  TOOLS="Read,Grep,Glob,Edit,Write,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git branch:*),Bash(git push -u origin ${BRANCH}:*),Bash(npm test:*),Bash(npx tsx:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*),Bash(gh issue comment:*)"
+fi
 
 # Snapshots de crédito: stdout e stderr SEPARADOS (arquivo temporário) —
 # achado de review (#6941, P3): `2>&1` misturado arrisca stray stderr
@@ -180,20 +265,12 @@ rm -f "$CREDITS_STDERR_TMP"
 STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 START_EPOCH=$(date +%s)
 
-PROMPT="Implemente a issue #$ISSUE do repo diaria-studio (título: \"$ISSUE_TITLE\").
-
-$ISSUE_BODY
-
-Siga o CLAUDE.md. Você está num WORKTREE isolado, branch $BRANCH — trabalhe só aqui. Edite com edições cirúrgicas, adicione teste de regressão se for bugfix (#633), rode os testes afetados. Quando terminar, rode 'git add' + 'git commit' + 'git push -u origin $BRANCH' + 'gh pr create' referenciando a issue (Closes #$ISSUE no corpo).
-
-VOCÊ NUNCA MERGEIA, NUNCA REVISA PR, NUNCA FECHA NEM EDITA ISSUE — não tente, essas ferramentas não estão disponíveis pra você nesta sessão de propósito (piloto #6930, condição (b) do docs/lane-glm.md: quem julga é o revisor externo e os portões do #6926, não você). Se a issue for inviável/ambígua além do trivial, comente nela via 'gh issue comment' explicando o bloqueio e pare — não force uma solução errada."
-
-echo "[glm-lane] despachando claude-openrouter.sh --model z-ai/glm-5.3-flash (issue #$ISSUE)..."
+echo "[glm-lane] despachando claude-openrouter.sh --model z-ai/glm-5.3-flash (issue #$ISSUE${EXISTING_PR:+, PR #$EXISTING_PR})..."
 set +e
 printf '%s' "$PROMPT" | "$REPO/hermes/scripts/claude-openrouter.sh" \
   --model z-ai/glm-5.3-flash \
   --cwd "$WORKTREE_DIR" \
-  --tools "Read,Grep,Glob,Edit,Write,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git branch:*),Bash(git push -u origin ${BRANCH}:*),Bash(npm test:*),Bash(npx tsx:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*),Bash(gh issue comment:*)" \
+  --tools "$TOOLS" \
   --timeout 2400
 CLAUDE_RC=$?
 set -e
@@ -207,14 +284,19 @@ CREDITS_AFTER_JSON=$(npx tsx scripts/glm-lane-credits.ts 2>"$CREDITS_STDERR_TMP"
 rm -f "$CREDITS_STDERR_TMP"
 
 set +e
-PR_NUMBER=$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)
+if [ -n "$EXISTING_PR" ]; then
+  PR_NUMBER="$EXISTING_PR"
+else
+  PR_NUMBER=$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)
+fi
 set -e
 
 # #6941 (P0/P1, achado de review): CLAUDE_RC nunca pode virar só uma
-# linha de log — o gate (#6922: zero PRs nos 3 primeiros despachos) tem
-# que distinguir "o modelo terminou e não abriu PR" (o sinal real) de
-# "a invocação nem chegou a terminar direito" (infra, não é sinal sobre o
-# modelo). `--status` carrega essa distinção pro registro.
+# linha de log — o gate (#6922: zero PRs MERGEADAS nos 3 primeiros
+# despachos, #6953) tem que distinguir "o modelo terminou e não abriu
+# PR" (o sinal real) de "a invocação nem chegou a terminar direito"
+# (infra, não é sinal sobre o modelo). `--status` carrega essa distinção
+# pro registro.
 STATUS="completed"
 if [ "$CLAUDE_RC" -ne 0 ]; then
   STATUS="infra-error"
@@ -236,6 +318,15 @@ npx tsx scripts/record-glm-lane-unit.ts \
 echo "[glm-lane] registrado em $UNITS_LOG"
 
 if [ "$CLAUDE_RC" -ne 0 ]; then
-  echo "[glm-lane] a invocação do claude-openrouter.sh saiu com rc=$CLAUDE_RC — unidade registrada como infra-error, não conta pros critérios de morte que medem o MODELO. Issue #$ISSUE provavelmente ainda precisa de trabalho; considere retentar." >&2
+  # #6953 (achado ao vivo): o conselho aqui NUNCA pode ser "retente" quando
+  # já existe uma PR pra esta issue — retentar sem --pr abriria uma
+  # DUPLICATA, e um agente autônomo lendo esta linha obedeceria ao
+  # conselho literalmente. Só "considere retentar" quando NENHUMA PR
+  # existe ainda (nesse caso, sim, é seguro despachar de novo do zero).
+  if [ -n "${PR_NUMBER:-}" ]; then
+    echo "[glm-lane] a invocação do claude-openrouter.sh saiu com rc=$CLAUDE_RC — unidade registrada como infra-error, não conta pros critérios de morte que medem o MODELO. JÁ EXISTE a PR #$PR_NUMBER pra esta issue — revise-a, ou rode de novo com 'scripts/dispatch-glm-lane-unit.sh $ISSUE --pr $PR_NUMBER' pra iterar. NÃO despache sem --pr, isso abriria uma PR duplicada." >&2
+  else
+    echo "[glm-lane] a invocação do claude-openrouter.sh saiu com rc=$CLAUDE_RC — unidade registrada como infra-error, não conta pros critérios de morte que medem o MODELO. Nenhuma PR foi aberta ainda pra issue #$ISSUE; considere retentar do zero (sem --pr)." >&2
+  fi
   exit 1
 fi

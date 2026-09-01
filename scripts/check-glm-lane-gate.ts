@@ -21,6 +21,7 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { computeGlmLaneState, evaluateGlmLaneGate, type GlmLaneUnitRecord } from "./lib/glm-lane-gate.ts";
 
@@ -89,6 +90,41 @@ export function readGlmLaneUnits(path: string): ReadGlmLaneUnitsResult {
   return { records, malformedCount };
 }
 
+/** Injeção de `execFileSync` — só pra testabilidade determinística, sem
+ *  depender do `gh` real (mesmo racional de `SessionDiscoveryOps` em
+ *  `claude-session-version-drift-alarm.ts`). */
+export type GhExec = (args: string[]) => string;
+
+const defaultGhExec: GhExec = (args) => execFileSync("gh", args, { encoding: "utf8" });
+
+/**
+ * Consulta o `gh` UMA vez por PR nos `prNumbers` dados e devolve o
+ * subconjunto que está `MERGED` agora (#6953 — o critério de morte 2
+ * precisa saber "mergeou", não só "foi aberta", e isso só é conhecível
+ * fazendo o fetch AO VIVO — o estado muda depois do momento em que a
+ * unidade que abriu a PR terminou e gravou seu registro em `units.jsonl`).
+ *
+ * Falha do `gh` numa PR individual (rede, rate limit, PR deletada) NUNCA
+ * derruba a checagem inteira — vira warning em stderr e aquela PR conta
+ * como "não confirmada mergeada" (direção conservadora: um erro de
+ * consulta não deve fabricar um "sim" que destrava o próximo despacho
+ * silenciosamente; na pior hipótese, um falso-negativo aqui só faz o
+ * critério de morte ficar 1 tick mais cedo em avaliar "zero mergeadas",
+ * nunca esconde um problema real).
+ */
+export function fetchMergedPrNumbers(prNumbers: readonly number[], ghExec: GhExec = defaultGhExec): Set<number> {
+  const merged = new Set<number>();
+  for (const pr of prNumbers) {
+    try {
+      const state = ghExec(["pr", "view", String(pr), "--json", "state", "-q", ".state"]).trim();
+      if (state === "MERGED") merged.add(pr);
+    } catch (e) {
+      console.error(`[check-glm-lane-gate] não deu pra consultar o estado da PR #${pr} via gh: ${(e as Error).message}`);
+    }
+  }
+  return merged;
+}
+
 if (isMainModule(import.meta.url)) {
   const { values } = parseArgs(process.argv.slice(2));
   const unitsLogPath = values["units-log"];
@@ -110,9 +146,22 @@ if (isMainModule(import.meta.url)) {
   }
 
   const { records, malformedCount } = readGlmLaneUnits(unitsLogPath);
+
+  // #6953 — só consulta o `gh` pras PRs que de fato entram no critério 2
+  // (as 3 primeiras unidades de MODELO, status !== "infra-error"), nunca
+  // o histórico inteiro — mantém o custo de rede proporcional ao que a
+  // decisão realmente precisa, mesmo com `units.jsonl` crescendo.
+  const firstThreePrNumbers = records
+    .filter((r) => r.status !== "infra-error")
+    .slice(0, 3)
+    .map((r) => r.prNumber)
+    .filter((pr): pr is number => pr !== null);
+  const mergedPrNumbers = fetchMergedPrNumbers(firstThreePrNumbers);
+
   const state = computeGlmLaneState(records, {
     unitsCap: Number(unitsCapRaw),
     sonnetLaneCostPerIssueUsd: sonnetCostRaw ? Number(sonnetCostRaw) : null,
+    mergedPrNumbers,
   });
   const verdict = evaluateGlmLaneGate(state);
 
