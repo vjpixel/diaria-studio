@@ -68,15 +68,24 @@ com dois scripts de review no diretório, o nome genérico deixou de
 distinguir qual é qual) segue 1x/dia, Opus, varredura do diff ACUMULADO do
 dia — cadência e modelo INALTERADOS, só o nome ficou mais específico
 (job `645d5debb7f0`, mesmo job de antes, só o `--script` do stub mudou de
-alvo). `continuo-pr-review.sh` é NOVO: Sonnet, `every 240m`, review de UMA
-PR aberta `continuo/*` por vez (não o diff do dia) — existe pra fechar o
-descompasso 12:1 entre o contínuo (`every 120m`) e o revisor antigo
-(`0 12 * * *`, ver #6849/#6864/#6865) sem trocar o modelo do review
-profundo diário por um mais barato (job `3330b108a5b2`). **NUNCA
-mergeia** (só posta comentário de review) — o pickup de PR órfã do
-contínuo (`hermes-diaria-continuo/SKILL.md` §3, #6823/#6864) continua
-sendo o ÚNICO ponto de merge, evitando a corrida que o guard do #5716
-existe pra prevenir (dois processos mergeando a mesma PR). O antigo
+alvo). `continuo-pr-review.sh` é NOVO: Sonnet, review de UMA PR aberta
+`continuo/*` por vez (não o diff do dia) — existe pra fechar o descompasso
+entre o contínuo e o revisor antigo (`0 12 * * *`, ver #6849/#6864/#6865)
+sem trocar o modelo do review profundo diário por um mais barato (job
+`3330b108a5b2`). **Cadência (#6908 Passo 2, aplicado 01/09/2026 na config
+viva): contínuo `5d791ef6fc2c` a `every 60m`, revisor `3330b108a5b2` a
+`every 120m` — sempre nos dois JUNTOS (razão 1:2), nunca só o primeiro,
+senão reintroduz o descompasso 12:1 que o #6865 corrigiu.** Eram
+`every 120m`/`every 240m` (o par original 12:1, com o revisor rodando
+menos vezes que o contínuo) até essa mudança. `#6907`/`#6908` seguem
+donas da decisão sobre o MODELO primário do job `5d791ef6fc2c`
+(`gpt-5.6-luna` desde #6884/#6907, medição de conclusão de trabalho ainda
+em aberto naquelas issues no momento desta edição — não repetir o estado
+aqui, ele muda mais rápido que este arquivo). **NUNCA mergeia** (só posta
+comentário de review) — o pickup de PR órfã do contínuo
+(`hermes-diaria-continuo/SKILL.md` §3, #6823/#6864) continua sendo o
+ÚNICO ponto de merge, evitando a corrida que o guard do #5716 existe pra
+prevenir (dois processos mergeando a mesma PR). O antigo
 `~/.hermes/scripts/daily-consolidated-review.sh` foi aposentado como
 `daily-consolidated-review.sh.retired-260831` (não apagado — histórico).
 
