@@ -114,7 +114,8 @@ export const SELF_REVIEW_MARKER = "<!-- self-review: true -->";
  * (formato menos previsível, sem um padrão fixo pra travar sem também
  * travar o gerador do script).
  */
-const INDEPENDENT_REVIEW_MARKER_RE = /^<!-- continuo-review: run=\S+ at=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z -->$/;
+const INDEPENDENT_REVIEW_MARKER_RE =
+  /^<!-- continuo-review: run=\S+ at=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z(?: verdict=(approve|reject))? -->$/;
 
 export type ReviewCommentKind = "self-review" | "independent-review" | "other";
 
@@ -143,6 +144,55 @@ export function classifyReviewComment(body: unknown): ReviewCommentKind {
   if (lines.some((line) => line === SELF_REVIEW_MARKER)) return "self-review";
   if (lines.some((line) => INDEPENDENT_REVIEW_MARKER_RE.test(line))) return "independent-review";
   return "other";
+}
+
+export type ReviewVerdict = "approve" | "reject";
+
+/**
+ * #6926: `continuo-pr-review.sh` passou a instruir a sessão de review a
+ * gravar `verdict=approve|reject` no próprio marcador de identidade de
+ * execução (`INDEPENDENT_REVIEW_MARKER_RE` acima) — o portão 1 do merge
+ * autônomo dessa PR lê ESTE veredito, não mais prosa livre a ser
+ * interpretada (mesmo motivo do #6849 pro resto do marcador: texto livre
+ * não é discriminável).
+ *
+ * Retorna `null` em dois casos DISTINTOS que o chamador (`scripts/lib/
+ * continuo-merge-gate.ts`) trata IGUAL (fail-closed: sem veredito explícito,
+ * não decide merge sozinho) mas que valem registrar aqui: (a) nenhum
+ * comentário de review independente encontrado (mesmo caso de `no_review`
+ * em `evaluatePrReviewAuthenticity`); (b) um marcador independente
+ * encontrado, mas SEM o campo `verdict=` — formato legado, anterior ao
+ * #6926, ou marcador de um review vindo de outra fonte que não este script.
+ * A ausência do campo não é tratada como aprovação implícita: o gate de
+ * merge escala em vez de mergear, mesmo que isso reduza o alcance do gate
+ * pra reviews antigos — nunca inferir "approve" de silêncio num portão que
+ * autoriza merge.
+ *
+ * Mesma varredura cronológica de trás para frente que
+ * `evaluatePrReviewAuthenticity` — para no primeiro comentário que seja um
+ * review (self ou independente); um self-review mais recente que qualquer
+ * review independente anterior também retorna `null` (o self-review é o
+ * sinal vigente, não uma aprovação anterior obsoleta).
+ */
+export function extractIndependentReviewVerdict(comments: unknown): ReviewVerdict | null {
+  if (!Array.isArray(comments)) return null;
+
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const node = comments[i] as PrCommentNode;
+    const body = typeof node?.body === "string" ? node.body : "";
+    const lines = body.split("\n").map((line) => line.trim());
+
+    if (lines.some((line) => line === SELF_REVIEW_MARKER)) return null;
+
+    for (const line of lines) {
+      const match = INDEPENDENT_REVIEW_MARKER_RE.exec(line);
+      if (match) {
+        return match[2] === "approve" || match[2] === "reject" ? match[2] : null;
+      }
+    }
+  }
+
+  return null;
 }
 
 export type PrReviewAuthenticityVerdict = "pass" | "self_review" | "no_review" | "error";
