@@ -40,6 +40,7 @@ const FEATURE = {
   description: "Descrição de exemplo",
   url: "https://diar.ia.br/p/exemplo",
   date: "2026-08-28",
+  image: null,
 };
 
 describe("home — bloco Por tema (#6411)", () => {
