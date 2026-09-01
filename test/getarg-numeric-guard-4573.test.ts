@@ -267,11 +267,13 @@ const ALLOWLIST: readonly DangerousMatch[] = [
   // (--refetch-window-days) foi MIGRADA pra getIntArg neste PR — "se sumiu,
   // ótimo, remova a entrada" (comentário original desta allowlist). Só
   // --concurrency (abaixo) continua no padrão antigo, fora de escopo aqui —
-  // linha deslocada de 639→671→684→707→772→776 (fix do achado 7/sends_count>0
+  // linha deslocada de 639→671→684→707→772→776→801→790 (fix do achado 7/sends_count>0
   // no #4451, o docstring de cutover formalize, #5015 — flag --push +
-  // pushCohortsToKV — e #5946, que exportou `loadCampaignCache` com um
-  // docstring novo (+4 linhas) acima dela).
-  { file: "scripts/clarice-engagement-cohorts-v2.ts", line: 776 },
+  // pushCohortsToKV — #5946, que exportou `loadCampaignCache` com um
+  // docstring novo (+4 linhas) acima dela — #6814, que adicionou
+  // `deliveredAt`/`sentDate` acima dela — e o review da PR #6887, que
+  // removeu `collectDeliveredEmails` (código morto, -11 linhas)).
+  { file: "scripts/clarice-engagement-cohorts-v2.ts", line: 790 },
 ] as const;
 
 function isAllowlisted(m: DangerousMatch): boolean {

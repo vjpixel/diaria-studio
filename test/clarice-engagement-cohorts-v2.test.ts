@@ -102,7 +102,7 @@ test("csvRowToFlags: Unsubscribe_Date preenchido → unsubscribed=true", () => {
 
 test("csvRowToFlags: linha 'limpa' (entregue, sem abertura, sem saída)", () => {
   const f = csvRowToFlags({ Email_ID: "a@x.com", Delivered_Date: "2026-07-01", "Total Opens": "0" });
-  assert.deepEqual(f, { delivered: true, opened: false, bounced: false, unsubscribed: false });
+  assert.deepEqual(f, { delivered: true, deliveredAt: "2026-07-01", opened: false, bounced: false, unsubscribed: false });
 });
 
 // ─── normalizeEmail ───────────────────────────────────────────────────────
@@ -127,8 +127,8 @@ test("buildCampaignCache: agrega linhas por email normalizado", () => {
   );
   assert.equal(cache.campaignId, 40);
   assert.equal(Object.keys(cache.recipients).length, 2);
-  assert.deepEqual(cache.recipients["a@x.com"], { delivered: true, opened: true, bounced: false, unsubscribed: false });
-  assert.deepEqual(cache.recipients["b@x.com"], { delivered: true, opened: false, bounced: false, unsubscribed: false });
+  assert.deepEqual(cache.recipients["a@x.com"], { delivered: true, deliveredAt: "2026-07-01", opened: true, bounced: false, unsubscribed: false });
+  assert.deepEqual(cache.recipients["b@x.com"], { delivered: true, deliveredAt: "2026-07-01", opened: false, bounced: false, unsubscribed: false });
 });
 
 test("buildCampaignCache: linha sem Email_ID é ignorada (sem chave vazia no mapa)", () => {
@@ -151,7 +151,7 @@ test("buildCampaignCache: email duplicado na MESMA campanha faz OR-merge defensi
     "x",
     GEN,
   );
-  assert.deepEqual(cache.recipients["a@x.com"], { delivered: true, opened: true, bounced: false, unsubscribed: false });
+  assert.deepEqual(cache.recipients["a@x.com"], { delivered: true, deliveredAt: "2026-07-01", opened: true, bounced: false, unsubscribed: false });
 });
 
 // ─── aggregateCampaignCaches — acumulação cross-campanha ─────────────────
@@ -301,7 +301,7 @@ test("getOrFetchCampaignCache: sem cache, chama export→poll→download e persi
     assert.equal(calls.exportRecipients, 1);
     assert.equal(calls.pollProcess, 1);
     assert.equal(calls.downloadCsv, 1);
-    assert.deepEqual(cache.recipients["a@x.com"], { delivered: true, opened: true, bounced: false, unsubscribed: false });
+    assert.deepEqual(cache.recipients["a@x.com"], { delivered: true, deliveredAt: "2026-07-01", opened: true, bounced: false, unsubscribed: false });
     // Persistiu no disco no path esperado.
     const fs = await import("node:fs");
     assert.ok(fs.existsSync(campaignCachePath(40, dir)));
@@ -398,7 +398,7 @@ test("getOrFetchCampaignCache: forceRefresh=true SEMPRE busca de novo, mesmo com
     assert.equal(fromCache, false);
     assert.equal(calls.exportRecipients, 1);
     // Cache em disco foi SOBRESCRITO com o dado novo (abertura tardia).
-    assert.deepEqual(cache.recipients["a@x.com"], { delivered: true, opened: true, bounced: false, unsubscribed: false });
+    assert.deepEqual(cache.recipients["a@x.com"], { delivered: true, deliveredAt: "2026-07-01", opened: true, bounced: false, unsubscribed: false });
   });
 });
 
