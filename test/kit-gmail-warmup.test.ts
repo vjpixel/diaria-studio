@@ -17,6 +17,7 @@ import {
   computeOutOfBandReturned,
   buildOutOfBandWaveEntry,
   partitionByConfirmedTag,
+  resolveOutOfBandBeehiivViolation,
   WARMUP_INITIAL_WAVE_SIZE,
   WARMUP_GROWTH_FACTOR,
   type KitGmailWarmupState,
@@ -503,5 +504,42 @@ describe("regressão #6984 finding 2 — absorção não engole violação de en
     const state = buildInitialState(1, ["a@gmail.com"]);
     const absorbed = buildOutOfBandWaveEntry(state, 1, PODE_CRESCER, ["a@gmail.com"]);
     assert.deepEqual(absorbed.needsBeehiivDeactivation, []);
+  });
+});
+
+describe("resolveOutOfBandBeehiivViolation (#6984 2ª rodada — finding 1)", () => {
+  const absorvidos = ["a@gmail.com", "b@gmail.com", "c@gmail.com"];
+
+  it("com a Beehiiv acessível, acusa só quem está de fato ativo lá", () => {
+    const viol = resolveOutOfBandBeehiivViolation(absorvidos, true, new Set(["b@gmail.com"]));
+    assert.deepEqual(viol, ["b@gmail.com"]);
+  });
+
+  it("FAIL-SAFE: Beehiiv indisponível marca TODOS, nunca nenhum", () => {
+    // Set vazio por falha de leitura é indistinguível de "ninguém ativo" na
+    // membresia — e as duas leituras dão relatórios opostos. Marcar todos
+    // custa um alarme a mais; não marcar custa envio em dobro silencioso.
+    const viol = resolveOutOfBandBeehiivViolation(absorvidos, false, new Set());
+    assert.deepEqual(viol, absorvidos);
+  });
+
+  it("FAIL-SAFE não depende do conteúdo do set quando a checagem falhou", () => {
+    assert.deepEqual(resolveOutOfBandBeehiivViolation(absorvidos, false, new Set(["a@gmail.com"])), absorvidos);
+  });
+
+  it("normaliza antes de comparar", () => {
+    assert.deepEqual(resolveOutOfBandBeehiivViolation([" B@Gmail.com "], true, new Set(["b@gmail.com"])), [" B@Gmail.com "]);
+  });
+
+  it("mesma direção de falha de resolveWarmupBeehiivPartition — os dois guards concordam", () => {
+    // O guard da onda normal manda TODO MUNDO pra needsBeehiivDeactivation
+    // quando a config falha; o da absorção precisa concordar, senão o mesmo
+    // endereço é tratado como risco num caminho e como seguro no outro.
+    const { needsBeehiivDeactivation } = resolveWarmupBeehiivPartition(absorvidos, false, new Set());
+    assert.deepEqual(resolveOutOfBandBeehiivViolation(absorvidos, false, new Set()), needsBeehiivDeactivation);
+  });
+
+  it("lista vazia não inventa violação", () => {
+    assert.deepEqual(resolveOutOfBandBeehiivViolation([], false, new Set()), []);
   });
 });

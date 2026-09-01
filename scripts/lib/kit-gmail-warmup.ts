@@ -242,6 +242,15 @@ export interface KitGmailWarmupWave {
   gateMotivo: string;
   size: number;
   emails: string[];
+  /**
+   * Semântica DEPENDE de `outOfBand`, e a diferença importa pra quem lê
+   * `state.json` cru:
+   * - onda normal (`outOfBand` ausente/`false`): "ainda NÃO tagueado, esperando
+   *   o editor desativar na Beehiiv" — pendência de fluxo, esperada.
+   * - entrada `outOfBand: true`: "JÁ tagueado no Kit E ainda ativo na Beehiiv"
+   *   — violação do invariante de envio em dobro, nunca esperada (ver
+   *   `buildOutOfBandWaveEntry` e `resolveOutOfBandBeehiivViolation`).
+   */
   needsBeehiivDeactivation: string[];
   /** `false` = só proposta (dry-run) — não conta pra `alreadyReturned`/`lastWaveSize`. */
   pushed: boolean;
@@ -389,6 +398,34 @@ export function buildOutOfBandWaveEntry(
  * sem atraso observado), consultada só para os endereços que a rodada está
  * prestes a propor — o custo fica no tamanho da ONDA, não do cohort inteiro.
  */
+/**
+ * Quem, entre os endereços ABSORVIDOS como migrados fora da rampa, viola o
+ * invariante de envio em dobro — está tagueado no Kit E ainda ativo na
+ * Beehiiv (#6984, 2ª rodada de review).
+ *
+ * Espelha deliberadamente `resolveWarmupBeehiivPartition`, inclusive na
+ * direção da falha: **`beehiivCfgOk === false` marca TODOS**, nunca nenhum.
+ * Um `Set` vazio porque a checagem não pôde rodar é indistinguível, na
+ * membresia, de "ninguém está ativo" — e as duas leituras levam a relatórios
+ * opostos. Reportar "nenhuma violação" quando não se checou é o modo de
+ * falha que a absorção inteira existe pra evitar, e é pior aqui do que na
+ * onda normal: absorvido sai de `plan.emails` para sempre, então nenhuma
+ * rodada futura re-checa esses endereços — o único resto de rede é o
+ * `kit-ramp-cohort.ts --audit`, que é manual.
+ *
+ * Falso positivo (marcar todos quando a Beehiiv só estava fora do ar) custa
+ * um alarme a mais no relatório; falso negativo custa envio em dobro
+ * silencioso. A assimetria decide.
+ */
+export function resolveOutOfBandBeehiivViolation(
+  emails: readonly string[],
+  beehiivCfgOk: boolean,
+  activeBeehiivEmails: ReadonlySet<string>,
+): string[] {
+  if (!beehiivCfgOk) return [...emails];
+  return emails.filter((e) => activeBeehiivEmails.has(e.trim().toLowerCase()));
+}
+
 export function partitionByConfirmedTag(
   emails: readonly string[],
   confirmedTagged: ReadonlySet<string>,

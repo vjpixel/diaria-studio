@@ -13,8 +13,12 @@
  *
  * `--dry-run` é o DEFAULT (mesmo padrão de `clarice-schedule-ramp.ts`) —
  * chamar sem `--push` nunca escreve estado nem chama a API do Kit para
- * mutação (só leitura: sent/delivered do broadcast + lista de ativos da
- * Beehiiv). `--push` faz a mutação real: `tagSubscriber` na tag de
+ * mutação. Só leitura, mas NÃO é barato desde o #6964: sent/delivered do
+ * broadcast, lista de ativos da Beehiiv, listagem da tag do Kit, e — por
+ * endereço da onda proposta — até 2 GETs espaçados em
+ * `KIT_CALL_SPACING_MS`, o que dá ~70s numa onda de 100. O custo é
+ * deliberado (ver `confirmTaggedEmails`); a garantia de não-mutação é a
+ * mesma de sempre. `--push` faz a mutação real: `tagSubscriber` na tag de
  * `kit_diaria.audience_tag` (`platform.config.json`) pra cada endereço
  * SEGURO da onda (ver partição abaixo), e persiste o estado.
  *
@@ -70,6 +74,7 @@ import {
   computeOutOfBandReturned,
   buildOutOfBandWaveEntry,
   partitionByConfirmedTag,
+  resolveOutOfBandBeehiivViolation,
   buildInitialState,
   buildWaveEntry,
   DEFAULT_KIT_GMAIL_WARMUP_STATE_PATH,
@@ -302,6 +307,18 @@ export interface WarmupRampResult {
    *  releitura (erro de rede/API na consulta). Seguem na onda — re-taguear é
    *  idempotente —, mas ficam visíveis em vez de virarem silêncio. */
   unconfirmedTagEmails: string[];
+  /** `false` quando a lista de ativos da Beehiiv não pôde ser lida. Nesse
+   *  caso `outOfBandStillActiveOnBeehiiv` traz TODOS os absorvidos (fail-safe
+   *  de `resolveOutOfBandBeehiivViolation`) e o relatório precisa dizer
+   *  "não deu pra checar", nunca "estão ativos" — a diferença entre um
+   *  alarme honesto e uma afirmação falsa. */
+  beehiivCheckOk: boolean;
+  /** `true` quando esta invocação de fato ESCREVEU `state.json`. Distinto de
+   *  `pushed` (= "uma onda foi tagueada"): com `--push`, uma absorção
+   *  out-of-band pode ser gravada numa rodada que termina sem onda nenhuma
+   *  (gate segurou, cohort esgotado). O relatório dizia "só em memória
+   *  (dry-run)" sobre algo já em disco — 2ª rodada de review da PR #6984. */
+  statePersisted: boolean;
 }
 
 export async function runWarmupRamp(opts: {
@@ -362,20 +379,31 @@ export async function runWarmupRamp(opts: {
 
   const outOfBandReturned: string[] = [];
   const outOfBandStillActiveOnBeehiiv: string[] = [];
+  // Rastreado à parte de `pushed` (finding 2 da 2ª rodada de review): uma
+  // absorção pode ser GRAVADA numa rodada que termina sem onda nenhuma
+  // (gate segurou, cohort esgotado) — e o relatório dizia "só em memória
+  // (dry-run)" sobre algo que já estava em disco.
+  let statePersisted = false;
   /** Absorve no estado quem já migrou fora da rampa, registrando quem entre
    *  eles continua ativo na Beehiiv. Persiste SEPARADAMENTE da onda desta
    *  rodada: se o tagueamento adiante falhar no meio, o que já era verdade no
    *  Kit continua registrado. */
   const absorb = (base: KitGmailWarmupState, emails: string[]): KitGmailWarmupState => {
     if (emails.length === 0) return base;
-    const stillActive = emails.filter((e) => activeBeehiiv.has(e.trim().toLowerCase()));
+    // Fail-safe idêntico ao de `resolveWarmupBeehiivPartition`: Beehiiv fora
+    // do ar marca TODOS, nunca nenhum (ver docstring do helper) — dizer "sem
+    // violação" sem ter checado é o silêncio que a absorção existe pra evitar.
+    const stillActive = resolveOutOfBandBeehiivViolation(emails, beehiivCfg.ok, activeBeehiiv);
     const next: KitGmailWarmupState = {
       ...base,
       waves: [...base.waves, buildOutOfBandWaveEntry(base, opts.gateBroadcastId, gate, emails, stillActive)],
     };
     outOfBandReturned.push(...emails);
     outOfBandStillActiveOnBeehiiv.push(...stillActive);
-    if (opts.push) saveState(next, statePath);
+    if (opts.push) {
+      saveState(next, statePath);
+      statePersisted = true;
+    }
     return next;
   };
 
@@ -399,7 +427,7 @@ export async function runWarmupRamp(opts: {
     // Onda vazia (segurada pelo gate, ou já esgotada) — registrar como
     // proposta não-empurrada é ruído (nenhum e-mail, nenhuma decisão nova) e
     // infla o histórico sem valor; não grava wave.
-    return { state, plan, safeToTag: [], needsBeehiivDeactivation: [], pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails: [] };
+    return { state, plan, safeToTag: [], needsBeehiivDeactivation: [], pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails: [], beehiivCheckOk: beehiivCfg.ok, statePersisted };
   }
 
   // #6964 passo 2 (finding 1 do review da PR #6984) — confere a onda proposta
@@ -429,13 +457,13 @@ export async function runWarmupRamp(opts: {
         };
 
   if (effectivePlan.emails.length === 0) {
-    return { state, plan: effectivePlan, safeToTag: [], needsBeehiivDeactivation: [], pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails };
+    return { state, plan: effectivePlan, safeToTag: [], needsBeehiivDeactivation: [], pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails, beehiivCheckOk: beehiivCfg.ok, statePersisted };
   }
 
   const { safeToTag, needsBeehiivDeactivation } = resolveWarmupBeehiivPartition(effectivePlan.emails, beehiivCfg.ok, activeBeehiiv);
 
   if (!opts.push) {
-    return { state, plan: effectivePlan, safeToTag, needsBeehiivDeactivation, pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails };
+    return { state, plan: effectivePlan, safeToTag, needsBeehiivDeactivation, pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails, beehiivCheckOk: beehiivCfg.ok, statePersisted };
   }
 
   const unverifiedEmails: string[] = [];
@@ -448,10 +476,20 @@ export async function runWarmupRamp(opts: {
   // `saveState` — perdendo o rastro de e-mails já tagueados de verdade em
   // produção, e fazendo o próximo `planNextWave` reoferecê-los como se nada
   // tivesse sido tentado.
+  let firstTag = true;
   for (const email of safeToTag) {
+    // Mesmo espaçamento da confirmação (finding 3 da 2ª rodada): este loop
+    // faz 3 chamadas singulares por endereço e passou a rodar sobre ondas de
+    // ~100 — ~300 chamadas sem espera, acima do limiar de 429 medido no
+    // #6047. O `try/catch` por e-mail já evitava corrupção, mas empurrava o
+    // custo pro operador re-rodar.
+    if (!firstTag) await sleep(KIT_CALL_SPACING_MS);
+    firstTag = false;
     try {
       const subscriber = await createOrUpdateSubscriber({ email_address: email });
+      await sleep(KIT_CALL_SPACING_MS);
       await tagSubscriber(tagId, subscriber.id);
+      await sleep(KIT_CALL_SPACING_MS);
       // Confirma por releitura (subscriber→tags, sem atraso de propagação
       // medido — ver docstring de listSubscriberTags), nunca só pelo 2xx da
       // mutação (kit-client.ts, "Armadilhas da API v4").
@@ -469,7 +507,7 @@ export async function runWarmupRamp(opts: {
   state = { ...state, waves: [...state.waves, wave] };
   saveState(state, statePath);
 
-  return { state, plan: effectivePlan, safeToTag: actuallyTagged, needsBeehiivDeactivation, pushed: true, unverifiedEmails, failedEmails, outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails };
+  return { state, plan: effectivePlan, safeToTag: actuallyTagged, needsBeehiivDeactivation, pushed: true, unverifiedEmails, failedEmails, outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails, beehiivCheckOk: beehiivCfg.ok, statePersisted: true };
 }
 
 export function formatReport(result: WarmupRampResult): string {
@@ -479,18 +517,25 @@ export function formatReport(result: WarmupRampResult): string {
   if (result.outOfBandReturned.length > 0) {
     lines.push(
       `  ↳ ${result.outOfBandReturned.length} deles migrados FORA desta rampa (tag do Kit, tipicamente kit-ramp-cohort.ts) e ` +
-        `absorvidos ${result.pushed ? "no estado" : "só em memória (dry-run)"} agora — #6964:\n` +
+        `absorvidos ${result.statePersisted ? "no estado" : "só em memória (dry-run)"} agora — #6964:\n` +
         result.outOfBandReturned.map((e) => `      - ${e}`).join("\n"),
     );
   }
   if (result.outOfBandStillActiveOnBeehiiv.length > 0) {
-    // Invariante de envio em dobro violado: tagueado no Kit E ativo na
-    // Beehiiv. Absorver não pode engolir isto (ver buildOutOfBandWaveEntry).
+    // Invariante de envio em dobro: tagueado no Kit E ativo na Beehiiv.
+    // Absorver não pode engolir isto (ver buildOutOfBandWaveEntry). A
+    // redação MUDA quando a checagem não rodou — afirmar "estão ativos" sem
+    // ter checado seria inventar um fato pra não perder o alarme.
     lines.push(
-      `  ⚠️ ENVIO EM DOBRO — ${result.outOfBandStillActiveOnBeehiiv.length} do(s) absorvido(s) continua(m) ATIVO(s) na Beehiiv ` +
-        `(tagueado no Kit sem a desativação correspondente). Desativar à mão na Beehiiv, ou rodar ` +
-        `\`kit-ramp-cohort.ts --audit\`:\n` +
-        result.outOfBandStillActiveOnBeehiiv.map((e) => `      - ${e}`).join("\n"),
+      result.beehiivCheckOk
+        ? `  ⚠️ ENVIO EM DOBRO — ${result.outOfBandStillActiveOnBeehiiv.length} do(s) absorvido(s) continua(m) ATIVO(s) na Beehiiv ` +
+            `(tagueado no Kit sem a desativação correspondente). Desativar à mão na Beehiiv, ou rodar ` +
+            `\`kit-ramp-cohort.ts --audit\`:\n` +
+            result.outOfBandStillActiveOnBeehiiv.map((e) => `      - ${e}`).join("\n")
+        : `  ⚠️ ENVIO EM DOBRO NÃO VERIFICADO — a lista de ativos da Beehiiv não pôde ser lida, então os ` +
+            `${result.outOfBandStillActiveOnBeehiiv.length} absorvido(s) desta rodada estão SEM checagem (podem ou não estar ativos lá). ` +
+            `Absorvido não volta a ser re-checado por esta rampa: rodar \`kit-ramp-cohort.ts --audit\` quando a Beehiiv voltar:\n` +
+            result.outOfBandStillActiveOnBeehiiv.map((e) => `      - ${e}`).join("\n"),
     );
   }
   if (result.unconfirmedTagEmails.length > 0) {
