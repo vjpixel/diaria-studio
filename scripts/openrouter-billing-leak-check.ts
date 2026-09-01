@@ -200,7 +200,12 @@ export function resolveExitCode({
  * função existe porque "o processo termina com o código que aquela disse"
  * era um segundo passo, igualmente não testado, na mesma cadeia.
  */
-export function resolveFatalExitCode(current: number | undefined): number {
+// O parâmetro é largo de propósito: `process.exitCode` é tipado
+// `string | number | null | undefined` no Node, e estreitar pra `number`
+// obrigaria um cast no call site — que é exatamente onde um valor
+// inesperado precisa ser tratado, não silenciado. Só o 3 EXATO (número)
+// preserva; qualquer outra coisa, inclusive `"3"` string, vira 1.
+export function resolveFatalExitCode(current: string | number | null | undefined): number {
   return current === LEAK_FOUND_EXIT_CODE ? LEAK_FOUND_EXIT_CODE : 1;
 }
 

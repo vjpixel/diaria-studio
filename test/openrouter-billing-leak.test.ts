@@ -272,6 +272,8 @@ describe("resolveExitCode (#6716) — o que não foi medido nunca sai 0", () => 
     assert.equal(resolveFatalExitCode(0), 1);
     assert.equal(resolveFatalExitCode(1), 1);
     assert.equal(resolveFatalExitCode(undefined), 1, "exitCode ainda não setado");
+    assert.equal(resolveFatalExitCode(null), 1, "`process.exitCode` é tipado com null no Node");
+    assert.equal(resolveFatalExitCode("3"), 1, "string '3' não é o nosso 3 — só o número exato preserva");
   });
 
   it("3 é distinto de 1 — o runner precisa separar 'achou' de 'quebrou'", () => {
