@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.10
+version: 0.5.11
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -319,9 +319,39 @@ Para cada issue elegível (após claim):
      rodado.
    - `claim-issue` com `exit 1` = outra sessão segura a issue → pular só ela.
      Sessões stale (heartbeat > 90min) não bloqueiam.
-2. **Delegar a implementação ao harness**:
+2. **Delegar a implementação ao harness — com renovador de heartbeat em
+   background (#6885).** A delegação abaixo é uma chamada ÚNICA e
+   BLOQUEANTE de até `--timeout 2400` (40min) — durante esse tempo inteiro,
+   `session-registry.ts heartbeat` (passo 1.3) não roda de novo, porque
+   esta sessão está travada esperando o subprocesso. Um tick vivo rodando
+   há 30min fica com o MESMO heartbeat "velho" que um tick morto há 30min —
+   indistinguíveis pro guard de merge (#5716), que só sabe ler idade de
+   heartbeat.
+   
+   **Por que é um processo em background, não uma instrução pra chamar
+   heartbeat "de vez em quando"**: uma instrução em prosa depende do
+   agente lembrar de executá-la no meio de um trabalho que está
+   absorvendo a atenção dele — falha exatamente como a #6849 mediu pro
+   marcador de review (o comportamento correto existe só enquanto quem
+   executa coopera). Um renovador destacado, iniciado ANTES da delegação
+   e morto DEPOIS dela, não depende de julgamento nenhum: se o processo
+   pai (este tick) está vivo, o `wait`/`kill` no fim do bloco garante que
+   ele para; se o pai morre no meio (SIGKILL do gateway, #6885), o teto de
+   15 iterações (~45min, folga sobre os 40min do `--timeout`) garante que
+   o renovador nunca fica batendo heartbeat pra sempre num tick que já
+   morreu — o mesmo problema que existe pra resolver, só que órfão em vez
+   de esquecido.
 
 ```bash
+(
+  for _ in $(seq 1 15); do
+    sleep 180
+    npx tsx scripts/lib/session-registry.ts heartbeat \
+      --kind continuo --session-id "$SESSION_ID" >/dev/null 2>&1 || true
+  done
+) &
+HEARTBEAT_PID=$!
+
 printf '%s' "Implemente a issue #N do repo atual (leia com gh issue view N).
 Siga o CLAUDE.md. Crie branch com o prefixo continuo/ (convenção
 continuo/fix-N-slug — é o que faz o PR aparecer como CONTINUO na Triagem
@@ -334,7 +364,17 @@ além do trivial, comente nela o bloqueio via gh issue comment e pare." | \
   ~/.hermes/scripts/claude-openrouter.sh \
     --tools "Read,Grep,Glob,Bash,Edit,Write" \
     --budget 20.0 --timeout 2400
+
+kill "$HEARTBEAT_PID" 2>/dev/null || true
+wait "$HEARTBEAT_PID" 2>/dev/null || true
 ```
+
+Mesmo padrão se aplica a qualquer OUTRA chamada de subprocesso de duração
+comparável dentro do mesmo tick (nenhuma identificada hoje além desta —
+classificação é mecânica/rápida, os checks dos passos 0/3 são scripts
+curtos) — se um novo passo longo e bloqueante entrar na skill no futuro,
+envolvê-lo com o mesmo renovador em vez de assumir que o heartbeat do
+passo 1.3 ainda está fresco.
 
 **NUNCA baixar o `--budget` para "economizar" (#6712).** Ele não controla o
 gasto desta pipeline — o CLI não reconhece o slug do gateway e estima o custo
@@ -459,6 +499,25 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Changelog
 
+- 0.5.11 (01/09/2026): #6885 — renovador de heartbeat em background durante
+  a delegação (passo 4.2). Achado: heartbeat só era gravado 1x por tick
+  (passo 1.3), nunca renovado — durante a delegação bloqueante (até 40min,
+  `--timeout 2400`), um tick vivo e um tick morto no mesmo instante ficam
+  com heartbeat igualmente "velho", indistinguíveis pro guard de merge
+  (#5716). Fix MECÂNICO (não instrução em prosa pro agente lembrar — mesma
+  lição do #6849 sobre honor-system): subshell em background, iniciado
+  antes da delegação, renovando a cada 3min, morto (`kill`/`wait`) depois
+  dela retornar; teto de 15 iterações (~45min) faz o renovador se
+  auto-extinguir mesmo se o processo pai morrer sem matá-lo (SIGKILL do
+  gateway), nunca ficando órfão batendo heartbeat pra sempre. Medição de
+  duração real dos ticks (p50 7,6min, p99 59,1min, n=97) confirma que
+  `SOFT_STALE_MS` (90min) já é a calibração correta pro desenho ATUAL
+  (heartbeat sem renovação) — **não foi alterado nesta versão**: a
+  sequência decidida é entregar a renovação, medir algumas semanas que ela
+  de fato acontece em produção, só então encurtar o limiar. Encurtar em
+  cima de uma renovação não confirmada trocaria "merge espera demais" por
+  "merge concorrente por cima de tick ainda vivo" — a corrida que o #5716
+  existe pra impedir.
 - 0.5.10 (01/09/2026): #6849 — "Marcador com nonce": o sinal positivo de
   `pr-review-authenticity.ts` deixou de ser `INDEPENDENT_REVIEW_RE` (regex
   sobre a prosa "Review automatizado (N agentes, effort X): ..."). Achado
