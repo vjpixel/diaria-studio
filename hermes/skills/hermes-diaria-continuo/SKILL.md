@@ -169,10 +169,18 @@ gh issue list --state open --json number,labels \
 Precisou de um campo que não está aqui: `gh pr view N --json 2>&1 | head`
 lista os campos válidos — consultar antes de chutar.
 
-### 3. Fila de PRs abertos PRIMEIRO (regra dura, inalterada)
+### 3. Fila de PRs abertos PRIMEIRO (ordem de PROCESSAMENTO no tick — não bloqueia reivindicar issue)
 
-Enquanto houver PR aberto do fluxo autônomo pendente de review/merge, nenhuma
-issue nova é reivindicada. Para cada PR, nesta ordem:
+**Correção (#6917, 01/09/2026): a frase anterior deste cabeçalho dizia "nenhuma
+issue nova é reivindicada" enquanto houvesse PR aberto pendente — e essa
+frase era, lida ao pé da letra, a MESMA regra fabricada que o tick do #6917
+citou pra justificar não trabalhar (já que #6864 faz o contínuo NUNCA
+mergear a própria PR, "PR pendente de merge" é quase sempre verdade). "PRIMEIRO"
+aqui é ordem de PROCESSAMENTO dentro do tick — rotular/decidir cada PR aberto
+antes de seguir pra fila de issues — nunca uma condição de parada. Ver "PR
+aberta NUNCA encerra o tick" no passo 3 abaixo, que é a afirmação
+autoritativa sobre isto.** Para cada PR aberto do fluxo autônomo, nesta
+ordem:
 
 1. **Superseded-check** (pitfall real #6238, 26/08): `git log origin/master
    --oneline -- <arquivos-do-pr> | head -5` — se o master atual já tratou a
@@ -234,7 +242,7 @@ issue nova é reivindicada. Para cada PR, nesta ordem:
    de propósito — ver "Custo aceito" na issue.**
 
    **PR aberta NUNCA encerra o tick (#6917, 01/09/2026).** Depois de
-   rotular a PR, siga para a próxima issue da fila e trabalhe
+   rotular a PR, siga para a próxima issue/PR da fila e trabalhe
    normalmente. "Há PR aguardando review externo" descreve o estado
    DAQUELA PR, não uma condição de parada do tick — não existe regra que
    limite o contínuo a uma PR por vez. Se há issue `track=overnight`
@@ -525,7 +533,13 @@ MESMO ciclo enquanto houver orçamento.
   textual — nenhum mecanismo/script mudou. Detectores de tick improdutivo
   (propostas 1-3 do #6917) ficam para depois, calibrados com a taxa
   medida PÓS-conserto (senão a linha de base fica contaminada pelo
-  próprio defeito).
+  próprio defeito). **Review do #6919 (achado P1, confiança alta):** o
+  CABEÇALHO da própria §3 ("Fila de PRs abertos PRIMEIRO... enquanto
+  houver PR aberto... nenhuma issue nova é reivindicada") era, lido ao
+  pé da letra, a MESMA regra fabricada que o tick citou — corrigido
+  também: "PRIMEIRO" agora é explicitamente ordem de PROCESSAMENTO
+  dentro do tick, não condição de parada; a frase fabricada é citada e
+  negada no próprio cabeçalho, mesmo princípio aplicado ao corpo.
 - 0.5.11 (01/09/2026): #6885 — renovador de heartbeat em background durante
   a delegação (passo 4.2). Achado: heartbeat só era gravado 1x por tick
   (passo 1.3), nunca renovado — durante a delegação bloqueante (até 40min,
