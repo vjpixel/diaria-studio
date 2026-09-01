@@ -74,11 +74,11 @@ describe("evaluateSessionDrift (#6927) — detector puro", () => {
 
 describe("isSessionDriftPending (#6927)", () => {
   it("drift e unresolved pendem; too-young e ok não", () => {
-    const base = { pid: 1, cmd: "x", ageHours: 30 } as Pick<SessionDriftEvaluation, "status">;
-    assert.equal(isSessionDriftPending({ ...base, status: "drift" }), true);
-    assert.equal(isSessionDriftPending({ ...base, status: "unresolved" }), true);
-    assert.equal(isSessionDriftPending({ ...base, status: "too-young" }), false);
-    assert.equal(isSessionDriftPending({ ...base, status: "ok" }), false);
+    const of = (status: SessionDriftEvaluation["status"]): Pick<SessionDriftEvaluation, "status"> => ({ status });
+    assert.equal(isSessionDriftPending(of("drift")), true);
+    assert.equal(isSessionDriftPending(of("unresolved")), true);
+    assert.equal(isSessionDriftPending(of("too-young")), false);
+    assert.equal(isSessionDriftPending(of("ok")), false);
   });
 });
 
