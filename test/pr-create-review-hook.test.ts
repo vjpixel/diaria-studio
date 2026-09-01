@@ -1567,8 +1567,8 @@ describe("extractPrNumberFromUrl (#6920)", () => {
 
 describe("ensureCloseKeywords (#6920)", () => {
   it("anexa 'Closes #N' via gh pr edit quando o corpo só tem a forma em português", () => {
-    const calls = [];
-    const execFn = (cmd, args) => {
+    const calls: [string, string[]][] = [];
+    const execFn = (cmd: string, args: string[]) => {
       calls.push([cmd, args]);
       if (args[1] === "view") return "Fecha #6920\n";
       return "";
@@ -1584,8 +1584,8 @@ describe("ensureCloseKeywords (#6920)", () => {
   });
 
   it("não chama 'gh pr edit' quando o corpo já está correto", () => {
-    const calls = [];
-    const execFn = (cmd, args) => {
+    const calls: string[] = [];
+    const execFn = (_cmd: string, args: string[]) => {
       calls.push(args[1]);
       return "Closes #6920\n";
     };
