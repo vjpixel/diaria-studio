@@ -104,6 +104,19 @@ describe("classifyReviewComment", () => {
     assert.equal(classifyReviewComment(body), "other");
   });
 
+  // REGRESSÃO (review da PR #6903, P2 confiança alta): a notação de
+  // PLACEHOLDER usada na própria docstring do módulo (`run=<id> at=<iso>`)
+  // não pode colar no regex mesmo citada em LINHA PRÓPRIA — um review
+  // futuro que discuta este mecanismo em prosa (ex: revisando esta mesma
+  // PR) citaria essa notação exatamente assim, e `\S+` sem restrição em
+  // `at=` colava nela por acidente (achado ao vivo: `<iso>` é não-espaço,
+  // então `run=\S+ at=\S+` casava). Fix: `at=` exige o formato ISO 8601
+  // UTC exato que `date -u +%Y-%m-%dT%H:%M:%SZ` produz — `<iso>` nunca bate.
+  it("REGRESSÃO (#6903): notação de placeholder da docstring ('run=<id> at=<iso>') em linha própria -> 'other', não 'independent-review'", () => {
+    const body = "<!-- continuo-review: run=<id> at=<iso> -->";
+    assert.equal(classifyReviewComment(body), "other");
+  });
+
   // #6820 (fleet review do #6732), mesma disciplina aplicada ao marcador
   // positivo pelo #6849: SELF_REVIEW_MARKER citado NO MEIO de um review
   // real (não em linha própria) não deve virar self-review por engano.

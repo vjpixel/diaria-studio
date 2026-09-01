@@ -99,13 +99,22 @@ export const SELF_REVIEW_MARKER = "<!-- self-review: true -->";
  * prosa citaria o literal e se autoclassificaria por engano, do mesmo jeito
  * que o #6820 corrigiu pro marcador de self-review.
  *
- * `run=` e `at=` não são validados contra nada (sem lookup externo, sem
- * verificação criptográfica) — só a FORMA (linha própria, prefixo/sufixo
- * exatos, ambos os campos não-vazios) é checada. Ver "Limitação residual"
- * no docstring do módulo: isto não prova que a execução foi real, só que
- * fabricar deixou de ser algo que sai por acidente.
+ * `run=` e `at=` não são validados contra nada FORA do comentário (sem
+ * lookup externo, sem verificação criptográfica) — não prova que a
+ * execução foi real. Ver "Limitação residual" no docstring do módulo:
+ * fabricar deixou de ser algo que sai por acidente, não deixou de ser
+ * possível. `at=` EXIGE o formato ISO 8601 UTC exato que `date -u
+ * +%Y-%m-%dT%H:%M:%SZ` produz em `continuo-pr-review.sh` (frações de
+ * segundo opcionais) — achado do review da PR #6903 (P2, confiança alta):
+ * com `\S+` solto, a PRÓPRIA notação de placeholder usada nesta docstring
+ * (`run=<id> at=<iso>`), se citada em linha própria por um review futuro
+ * que discuta este módulo, colaria no regex sem nenhuma execução real ter
+ * ocorrido — mesma classe de colisão acidental que o #6820 fechou pro
+ * `SELF_REVIEW_MARKER` com um literal exato. `run=` continua `\S+`
+ * (formato menos previsível, sem um padrão fixo pra travar sem também
+ * travar o gerador do script).
  */
-const INDEPENDENT_REVIEW_MARKER_RE = /^<!-- continuo-review: run=\S+ at=\S+ -->$/;
+const INDEPENDENT_REVIEW_MARKER_RE = /^<!-- continuo-review: run=\S+ at=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z -->$/;
 
 export type ReviewCommentKind = "self-review" | "independent-review" | "other";
 
@@ -180,7 +189,7 @@ export function evaluatePrReviewAuthenticity(comments: unknown): PrReviewAuthent
     if (kind === "independent-review") {
       return {
         verdict: "pass",
-        reason: "review independente encontrado (formato de dispatch via Agent)",
+        reason: "review independente encontrado (marcador com identidade de execução, #6849)",
         matchedCommentId: typeof node?.id === "string" ? node.id : undefined,
       };
     }
