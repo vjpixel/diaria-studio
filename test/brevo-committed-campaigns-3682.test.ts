@@ -138,7 +138,7 @@ describe("fetchCommittedCampaignListIds (#3682) — união queued+sent", () => {
       // falha — fetch() LANÇA, nunca retorna uma Response (diferente de um
       // 503, que brevoGet já retentaria sozinho). A segunda rodada (calls
       // 3-4, após o retry desta função) sucede.
-      if (calls <= 2) throw new Error("fetch failed: ECONNRESET");
+      if (calls <= 2) throw new TypeError("fetch failed: ECONNRESET");
       if (urlStr.includes("status=queued")) return makeJsonResponse({ campaigns: [{ id: 1, recipients: { lists: [74] } }] });
       if (urlStr.includes("status=sent")) return makeJsonResponse({ campaigns: [] });
       throw new Error(`URL inesperada: ${urlStr}`);
@@ -159,7 +159,7 @@ describe("fetchCommittedCampaignListIds (#3682) — união queued+sent", () => {
   it("REGRESSÃO (#6458): fetch() lança em TODAS as tentativas (original + 2 retries) → lança o erro real, nunca engole em silêncio", async () => {
     const orig = globalThis.fetch;
     globalThis.fetch = (async () => {
-      throw new Error("fetch failed: ECONNRESET");
+      throw new TypeError("fetch failed: ECONNRESET");
     }) as unknown as typeof fetch;
     const sleeps: number[] = [];
     const fakeSleep = async (ms: number) => {
@@ -168,6 +168,30 @@ describe("fetchCommittedCampaignListIds (#3682) — união queued+sent", () => {
     try {
       await assert.rejects(() => fetchCommittedCampaignListIds("fake-key", fakeSleep), /ECONNRESET/);
       assert.deepEqual(sleeps, [3000, 8000], "os 2 retries foram consumidos antes de desistir — nunca menos, nunca mais");
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  // #6458 (P2 do review): erro que NÃO é falha de rede (brevoGet já lança
+  // Error deliberado de fail-fast — 401, orçamento de 429 esgotado, corpo
+  // não-JSON) não deve ser retentado — retry nunca resolveria e só gastaria
+  // 11s + 2 rodadas extras de /emailCampaigns à toa.
+  it("REGRESSÃO (#6458 review): erro que não é TypeError (fail-fast deliberado do brevoGet) propaga IMEDIATAMENTE, sem retry", async () => {
+    const orig = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      throw new Error("Brevo 401: chave invalida");
+    }) as unknown as typeof fetch;
+    const sleeps: number[] = [];
+    const fakeSleep = async (ms: number) => {
+      sleeps.push(ms);
+    };
+    try {
+      await assert.rejects(() => fetchCommittedCampaignListIds("fake-key", fakeSleep), /401/);
+      assert.deepEqual(sleeps, [], "nenhum retry consumido — erro não é de rede");
+      assert.equal(calls, 2, "só a rodada original (queued+sent em paralelo), nenhuma tentativa extra");
     } finally {
       globalThis.fetch = orig;
     }

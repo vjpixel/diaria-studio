@@ -706,6 +706,15 @@ const COMMITTED_LOOKUP_RETRY_DELAYS_MS = [3000, 8000];
  * falha SOBREVIVA a mais 2 tentativas (3s, 8s de backoff) antes de virar
  * bloqueio estrutural no chamador, em vez de desistir na primeira.
  * `_sleep` injetável pra teste, mesmo padrão do resto desta lib.
+ *
+ * #6458 (review, 01/09/2026): o retry só engaja pra `TypeError` — é essa a
+ * classe que Node/undici lança quando `fetch()` em si falha por rede (o caso
+ * que este fix cobre). `brevoGet` já lança `Error`s deliberados de
+ * fail-fast (401 de auth, orçamento de retry de 429 esgotado, corpo não-JSON)
+ * que retry NUNCA resolve — deixá-los passar pelo `if (delay === undefined)`
+ * gastaria 11s + 2 rodadas extras de `/emailCampaigns` (endpoint com quota
+ * apertada, ver CLAUDE.md) numa falha que não é de rede e não muda de
+ * resultado tentando de novo.
  */
 export async function fetchCommittedCampaignListIds(
   apiKey: string,
@@ -721,6 +730,7 @@ export async function fetchCommittedCampaignListIds(
       return new Set([...queued, ...sent]);
     } catch (err) {
       lastErr = err;
+      if (!(err instanceof TypeError)) throw err; // não é falha de rede — retry não ajudaria
       const delay = COMMITTED_LOOKUP_RETRY_DELAYS_MS[attempt];
       if (delay === undefined) throw lastErr; // orçamento de retry esgotado
       await _sleep(delay);
