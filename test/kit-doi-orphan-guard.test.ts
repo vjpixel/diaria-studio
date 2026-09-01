@@ -14,6 +14,7 @@ import {
   isKitDoiOrphan,
   findKitDoiOrphans,
   computeKitDoiOrphanFingerprint,
+  kitDoiOrphanFindingKey,
   shouldAlarmKitDoiOrphans,
   advanceKitDoiOrphanState,
   emptyKitDoiOrphanAlarmState,
@@ -21,6 +22,7 @@ import {
   ORPHAN_THRESHOLD_HOURS,
   type KitDoiOrphan,
 } from "../scripts/lib/kit-doi-orphan-guard.ts";
+import { toAlarmFinding } from "../scripts/kit-doi-orphan-guard.ts";
 
 const NOW = new Date("2026-08-30T12:00:00.000Z");
 
@@ -145,23 +147,83 @@ describe("buildKitDoiOrphanAlarmEmail", () => {
     assert.match(body, /#6810/);
   });
 
-  it("issueRef presente → corpo cita o número da issue", () => {
-    const { body } = buildKitDoiOrphanAlarmEmail([orphan], NOW, {
-      issueNumber: 9001,
-      url: "https://github.com/x/y/issues/9001",
-      action: "created",
-    });
+  it("issueRefs presente → corpo cita o número da issue daquele órfão", () => {
+    const issueRefs = new Map([
+      [kitDoiOrphanFindingKey(orphan), { issueNumber: 9001, url: "https://github.com/x/y/issues/9001", action: "created" }],
+    ]);
+    const { body } = buildKitDoiOrphanAlarmEmail([orphan], NOW, issueRefs);
     assert.match(body, /#9001/);
   });
 
-  it("issueRef com action failed → corpo cita a falha, não um número inventado", () => {
-    const { body } = buildKitDoiOrphanAlarmEmail([orphan], NOW, {
-      issueNumber: null,
-      url: null,
-      action: "failed",
-      error: "gh não autenticado",
-    });
+  it("issueRefs com action failed → corpo cita a falha, não um número inventado", () => {
+    const issueRefs = new Map([
+      [kitDoiOrphanFindingKey(orphan), { issueNumber: null, url: null, action: "failed", error: "gh não autenticado" }],
+    ]);
+    const { body } = buildKitDoiOrphanAlarmEmail([orphan], NOW, issueRefs);
     assert.match(body, /falha ao criar\/reusar/);
     assert.match(body, /gh não autenticado/);
+  });
+
+  it("2 órfãos, só 1 com issueRef → issue citada só na linha certa", () => {
+    const orphan2: KitDoiOrphan = { id: 43, email_address: "outro@x.com", created_at: hoursAgo(60), ageHours: 60 };
+    const issueRefs = new Map([
+      [kitDoiOrphanFindingKey(orphan2), { issueNumber: 777, url: "https://github.com/x/y/issues/777", action: "created" }],
+    ]);
+    const { body } = buildKitDoiOrphanAlarmEmail([orphan, orphan2], NOW, issueRefs);
+    assert.match(body, /#777/);
+    const orphanIssueLine = body.split("\n").findIndex((l) => l.includes("id 42"));
+    assert.equal(body.split("\n")[orphanIssueLine + 1].includes("Issue:"), false);
+  });
+});
+
+describe("kitDoiOrphanFindingKey — estável por órfão individual", () => {
+  const orphan1: KitDoiOrphan = { id: 1, email_address: "a@x.com", created_at: hoursAgo(72), ageHours: 72 };
+  const orphan2: KitDoiOrphan = { id: 2, email_address: "b@x.com", created_at: hoursAgo(60), ageHours: 60 };
+
+  it("2 ids distintos → chaves distintas", () => {
+    assert.notEqual(kitDoiOrphanFindingKey(orphan1), kitDoiOrphanFindingKey(orphan2));
+  });
+
+  it("mesmo id em execuções diferentes (idade mudou) → mesma chave", () => {
+    const laterRun: KitDoiOrphan = { ...orphan1, ageHours: 96 };
+    assert.equal(kitDoiOrphanFindingKey(orphan1), kitDoiOrphanFindingKey(laterRun));
+  });
+});
+
+describe("toAlarmFinding (scripts/kit-doi-orphan-guard.ts) — 1 finding por órfão (#6993 review)", () => {
+  const orphan1: KitDoiOrphan = { id: 1, email_address: "a@x.com", created_at: hoursAgo(72), ageHours: 72 };
+  const orphan2: KitDoiOrphan = { id: 2, email_address: "b@x.com", created_at: hoursAgo(60), ageHours: 60 };
+
+  it("2 órfãos → 2 findings com fingerprints distintos", () => {
+    const findings = [orphan1, orphan2].map(toAlarmFinding);
+    assert.equal(findings.length, 2);
+    assert.notEqual(findings[0].fingerprint, findings[1].fingerprint);
+    assert.equal(findings[0].fingerprint, "kit-doi-orphan:1");
+    assert.equal(findings[1].fingerprint, "kit-doi-orphan:2");
+  });
+
+  it("check == fingerprint (chave por órfão, não um valor constante compartilhado)", () => {
+    const finding = toAlarmFinding(orphan1);
+    assert.equal(finding.check, finding.fingerprint);
+  });
+
+  it("mesmo órfão em duas execuções (só ageHours muda) → mesmo fingerprint — issue permanece estável", () => {
+    const run1 = toAlarmFinding(orphan1);
+    const run2 = toAlarmFinding({ ...orphan1, ageHours: 96 });
+    assert.equal(run1.fingerprint, run2.fingerprint);
+  });
+
+  it("um 3º órfão aparecendo não muda o fingerprint dos 2 já existentes", () => {
+    const before = [orphan1, orphan2].map(toAlarmFinding);
+    const orphan3: KitDoiOrphan = { id: 3, email_address: "c@x.com", created_at: hoursAgo(50), ageHours: 50 };
+    const after = [orphan1, orphan2, orphan3].map(toAlarmFinding);
+    assert.equal(before[0].fingerprint, after[0].fingerprint);
+    assert.equal(before[1].fingerprint, after[1].fingerprint);
+  });
+
+  it("priority P1, family estado", () => {
+    const finding = toAlarmFinding(orphan1);
+    assert.equal(finding.priority, "P1");
+    assert.equal(finding.family, "estado");
   });
 });

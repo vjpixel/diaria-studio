@@ -124,12 +124,29 @@ export function emptyKitDoiOrphanAlarmState(): KitDoiOrphanAlarmState {
 
 /** Pura — fingerprint estável (determinístico, independente da ordem de
  *  chegada) do conjunto de órfãos pendentes — mesmo padrão de
- *  `computeSubscribeDriftFingerprint`. */
+ *  `computeSubscribeDriftFingerprint`. Usado só pra idempotência do E-MAIL
+ *  (`shouldAlarmKitDoiOrphans`/`advanceKitDoiOrphanState`); a issue por
+ *  achado usa `kitDoiOrphanFindingKey`, estável por ÓRFÃO individual (ver
+ *  abaixo) — as duas granularidades são propositalmente diferentes: o
+ *  e-mail resume o conjunto inteiro, a issue rastreia cada assinante. */
 export function computeKitDoiOrphanFingerprint(orphans: readonly KitDoiOrphan[]): string {
   return orphans
     .map((o) => String(o.id))
     .sort()
     .join("|");
+}
+
+/** Pura — fingerprint estável de UM órfão individual, chave usada tanto
+ *  pelo `AlarmFinding.fingerprint`/`.check` quanto pelo `Map` de
+ *  `issueRefs` repassado a `buildKitDoiOrphanAlarmEmail`. Mesmo padrão de
+ *  `hubDriftFindingKey`/`subscribeDriftFindingKey`: 1 issue por ÓRFÃO, não
+ *  1 por conjunto — um novo órfão aparecendo (ou um antigo sendo resgatado)
+ *  não muda o fingerprint dos demais, então a issue de cada assinante que
+ *  continua órfão permanece a MESMA em vez de fechar/reabrir a cada
+ *  mudança de composição do conjunto. Só o id entra na chave — nunca
+ *  `ageHours` (varia a cada execução, quebraria a idempotência). */
+export function kitDoiOrphanFindingKey(o: Pick<KitDoiOrphan, "id">): string {
+  return `kit-doi-orphan:${o.id}`;
 }
 
 /** Pura — avança o cursor. `fingerprint: null` quando não há órfão
@@ -151,14 +168,16 @@ export function shouldAlarmKitDoiOrphans(
 // ─── Corpo do e-mail de alarme (puro) ──────────────────────────────────────
 
 /** Pura — monta assunto + corpo do e-mail de alarme (texto puro, mesmo
- *  padrão de `buildSubscribeDriftAlarmEmail`). `issueRef` (opcional) — a
- *  issue já criada/reusada por `scripts/lib/alarm-issues.ts` pro achado
- *  agregado (1 issue por rodada de órfãos pendentes, não 1 por assinante —
- *  ver docstring do script CLI). */
+ *  padrão de `buildSubscribeDriftAlarmEmail`). `issueRefs` (opcional) —
+ *  mapa `kitDoiOrphanFindingKey -> {issueNumber, url, action, error}` de
+ *  `scripts/lib/alarm-issues.ts`, 1 entrada por órfão pendente (não 1
+ *  agregada — cada assinante tem sua própria issue estável, ver docstring
+ *  do script CLI). `undefined` (dry-run, ou wiring ainda não chamado)
+ *  omite a citação sem quebrar nada. */
 export function buildKitDoiOrphanAlarmEmail(
   orphans: readonly KitDoiOrphan[],
   now: Date = new Date(),
-  issueRef?: { issueNumber: number | null; url: string | null; action: string; error?: string },
+  issueRefs?: ReadonlyMap<string, { issueNumber: number | null; url: string | null; action: string; error?: string }>,
 ): { subject: string; body: string } {
   const subject = `[diar.ia.br] ${orphans.length} cadastro(s) Kit preso(s) em inactive sem confirmação (double opt-in)`;
 
@@ -176,15 +195,14 @@ export function buildKitDoiOrphanAlarmEmail(
 
   for (const o of orphans) {
     lines.push(`  - ${o.email_address} (id ${o.id}) — criado em ${o.created_at}, ${o.ageHours.toFixed(1)}h atrás`);
-  }
-
-  if (issueRef) {
-    lines.push("");
-    lines.push(
-      issueRef.action === "failed"
-        ? `Issue: falha ao criar/reusar (${issueRef.error})`
-        : `Issue: #${issueRef.issueNumber} (${issueRef.url})`,
-    );
+    const ref = issueRefs?.get(kitDoiOrphanFindingKey(o));
+    if (ref) {
+      lines.push(
+        ref.action === "failed"
+          ? `    Issue: falha ao criar/reusar (${ref.error})`
+          : `    Issue: #${ref.issueNumber} (${ref.url})`,
+      );
+    }
   }
 
   lines.push(

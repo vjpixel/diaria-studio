@@ -75,6 +75,7 @@ import { resolveKitConfig } from "./lib/kit-config.ts";
 import {
   findKitDoiOrphans,
   computeKitDoiOrphanFingerprint,
+  kitDoiOrphanFindingKey,
   shouldAlarmKitDoiOrphans,
   advanceKitDoiOrphanState,
   emptyKitDoiOrphanAlarmState,
@@ -144,34 +145,38 @@ export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string 
   writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
 }
 
-/** Converte o conjunto de órfãos pendentes em UM `AlarmFinding` agregado
- *  (1 issue por CONJUNTO, não 1 por assinante — mesmo racional de
- *  `hub-drift-check.ts` pro conjunto de keywords: o fingerprint agregado já
- *  muda quando o conjunto muda, e listar todos num corpo só é mais legível
- *  pro editor do que N issues fragmentadas). Prioridade `P1` — mesmo bug
+/** Converte UM órfão individual no `AlarmFinding` que
+ *  `scripts/lib/alarm-issues.ts` consome — 1 issue por ASSINANTE, não 1
+ *  agregada pro conjunto inteiro (mesmo padrão de `toAlarmFinding` em
+ *  `hub-drift-check.ts`/`subscribe-redirect-drift-check.ts`: `check` e
+ *  `fingerprint` usam `kitDoiOrphanFindingKey`, estável por órfão). Um
+ *  fingerprint agregado do CONJUNTO faria a issue de um órfão que continua
+ *  pendente "fechar" (e uma nova abrir) sempre que a composição mudasse —
+ *  novo órfão surgindo ou um antigo sendo resgatado — mesmo sem nenhuma
+ *  mudança no estado daquele assinante específico (achado de review do PR
+ *  #6993, corrigido aqui antes do merge). Prioridade `P1` — mesmo bug
  *  original da issue #6810: cadastro real, silencioso, sem workaround
  *  automático. */
-export function toAlarmFinding(orphans: readonly KitDoiOrphan[]): AlarmFinding {
-  const fingerprint = computeKitDoiOrphanFingerprint(orphans);
+export function toAlarmFinding(orphan: KitDoiOrphan): AlarmFinding {
+  const fingerprint = kitDoiOrphanFindingKey(orphan);
   return {
-    check: "kit-doi-orphan",
+    check: fingerprint,
     fingerprint,
     family: "estado",
-    title: `[diar.ia.br] ${orphans.length} cadastro(s) Kit preso(s) em inactive sem confirmação (double opt-in)`,
+    title: `[diar.ia.br] cadastro Kit preso em inactive sem confirmação (double opt-in) — ${orphan.email_address}`,
     body: [
       "Achado automático do alarme `Diaria-Kit-Doi-Orphan-Guard`",
       "(`scripts/kit-doi-orphan-guard.ts`).",
       "",
-      `Assinante(s) órfão(s) (${orphans.length}):`,
-      ...orphans.map((o) => `  - ${o.email_address} (id ${o.id}) — criado em ${o.created_at}, ${o.ageHours.toFixed(1)}h atrás`),
+      `Assinante órfão: ${orphan.email_address} (id ${orphan.id}) — criado em ${orphan.created_at}, ${orphan.ageHours.toFixed(1)}h atrás.`,
       "",
       "Resgate manual (Ação 1 da issue #6810 — decisão do editor, envia",
-      "e-mail real a cada assinante listado):",
+      "e-mail real a este assinante):",
       "`POST /v4/forms/{KIT_DOI_FORM_ID}/subscribers/{id}` dispara a",
       "confirmação com atraso.",
       "",
       "Esta issue é criada automaticamente pelo alarme e será",
-      "comentada/fechada sozinha quando o conjunto de órfãos deixar de",
+      "comentada/fechada sozinha quando este órfão deixar de",
       `reproduzir por ${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
     ].join("\n"),
     labels: ["bug"],
@@ -229,9 +234,9 @@ async function main(): Promise<void> {
   // Reconcilia issue ANTES de montar o e-mail (o e-mail cita a issue),
   // mesmo padrão de subscribe-redirect-drift-check.ts. Roda toda execução
   // não-dry-run, independente de um e-mail novo disparar nesta rodada.
-  const alarmFindings: AlarmFinding[] = orphans.length > 0 ? [toAlarmFinding(orphans)] : [];
+  const alarmFindings: AlarmFinding[] = orphans.map(toAlarmFinding);
   const alarmState = loadAlarmIssuesState();
-  let issueRef: { issueNumber: number | null; url: string | null; action: string; error?: string } | undefined;
+  let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
@@ -245,19 +250,23 @@ async function main(): Promise<void> {
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
     saveAlarmIssuesState(nextState);
-    const outcome = findingOutcomes[0];
-    if (outcome) {
-      issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
-      if (outcome.action === "failed") {
-        console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
+    issueRefs = new Map(
+      findingOutcomes.map((o) => [
+        o.fingerprint,
+        { issueNumber: o.issueNumber, url: o.url, action: o.action, error: o.error },
+      ]),
+    );
+    for (const o of findingOutcomes) {
+      if (o.action === "failed") {
+        console.error(`${LOG_PREFIX} [${o.check}] issue não criada/reusada: ${o.error}`);
       } else {
-        console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
+        console.log(`${LOG_PREFIX} [${o.check}] issue #${o.issueNumber} (${o.action}): ${o.url}`);
       }
     }
   }
 
   if (shouldAlarmKitDoiOrphans(state, orphans)) {
-    const { subject, body } = buildKitDoiOrphanAlarmEmail(orphans, now, issueRef);
+    const { subject, body } = buildKitDoiOrphanAlarmEmail(orphans, now, issueRefs);
     const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
       console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
