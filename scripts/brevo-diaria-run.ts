@@ -33,18 +33,20 @@
  *    material bruto pro gate humano do Passo 4 — apresentar ao editor,
  *    nunca decidir `--max-add` por conta própria.
  *
- *  `--apply --max-add N [--confirm-mv]` — roda a sequência de MUTAÇÃO REAL
+ *  `--apply [--max-add N] [--confirm-mv]` — roda a sequência de MUTAÇÃO REAL
  *    na ordem fixa do Passo 4: evaluate --push, refresh-pending-pool --push,
  *    score-pending-origin, verify-pending-emails-mv, sync-pending-to-brevo
- *    --push --max-add N. Só deve ser invocado DEPOIS que o editor confirmou
+ *    --push [--max-add N]. Só deve ser invocado DEPOIS que o editor confirmou
  *    o gate humano do Passo 4 (o próprio script não pergunta nada — a
  *    confirmação é responsabilidade de quem o invoca, a skill/agente
  *    top-level, exatamente como `clarice-novos-run.ts` nunca pergunta e
  *    depende do kill switch/flags de quem o dispara).
- *    `--max-add 0` é a forma explícita de "nenhum contato novo" (mesma
- *    semântica do `sync-pending-to-brevo.ts` original) — sempre roda os
- *    Passos 1-2 (evaluate + refresh do pool) mesmo com `--max-add 0`, só
- *    não ingere ninguém no Passo 3.
+ *    `--max-add` é OPCIONAL (#6895) — ausência da flag propaga como ausência
+ *    da flag pro `sync-pending-to-brevo.ts`, que trata isso como "sem teto"
+ *    (`applyMaxAddGate`, #6793 Faixa A item 6). `--max-add 0` é a forma
+ *    explícita de "nenhum contato novo" — sempre roda os Passos 1-2
+ *    (evaluate + refresh do pool) mesmo com `--max-add 0`, só não ingere
+ *    ninguém no Passo 3.
  *    `--confirm-mv` repassa `--confirm` pro `verify-pending-emails-mv.ts`
  *    (guard de custo real, `MV_COST_GUARD_THRESHOLD=500` — criterio 3 de
  *    "Perguntar é exceção" no CLAUDE.md, gasto real acima do trivial).
@@ -71,7 +73,7 @@
  *
  * Uso:
  *   npx tsx scripts/brevo-diaria-run.ts --preflight
- *   npx tsx scripts/brevo-diaria-run.ts --apply --max-add N [--confirm-mv] [--i-know-this-skips-mv]
+ *   npx tsx scripts/brevo-diaria-run.ts --apply [--max-add N] [--confirm-mv] [--i-know-this-skips-mv]
  *
  * @see .claude/skills/diaria-brevo-diaria/SKILL.md (Passos 1-4 em prosa —
  *      espelha este script; a skill passa a delegar pra cá em vez de
@@ -179,15 +181,22 @@ export function parseBrevoDiariaRunArgs(argv: string[]): BrevoDiariaRunOptions {
   }
 
   const maxAddRaw = getArg(argv, "max-add");
-  // `getArg` devolve `""` (nunca `undefined`) quando a flag está ausente —
-  // mesma armadilha documentada em verify-pending-emails-mv.ts (#4494
-  // achado): `Number("") === 0` passaria silenciosamente como "--max-add 0"
-  // mesmo sem a flag. Checagem explícita de string vazia evita essa classe
-  // de bug aqui.
+  // #6895 (01/09/2026): `--max-add` virou OPCIONAL em `--apply`, espelhando a
+  // semântica que `sync-pending-to-brevo.ts` já tem desde o #6793 Faixa A
+  // item 6 (`maxAdd === undefined` → sem teto, `applyMaxAddGate`). Antes
+  // desta correção, a flag era exigida incondicionalmente — regressão
+  // introduzida pelo próprio #6793 Faixa A item 7, que fez
+  // `brevo-diaria-stage5-dispatch.ts` parar de passar `--max-add` (freio de
+  // volume removido do dispatch automático) sem atualizar este parser pra
+  // aceitar a ausência da flag. Resultado: `--apply` sempre abortava no
+  // dispatch automático (bloqueava o canal Brevo diária em toda edição desde
+  // o merge do #6793 Faixa A). `--max-add 0` continua a forma explícita de
+  // "nenhum contato novo" — ausência da flag agora é "sem teto", nunca 0
+  // implícito (`getArg` devolve `""`, nunca `undefined`, quando a flag está
+  // ausente — mesma armadilha documentada em verify-pending-emails-mv.ts
+  // #4494 — daí a checagem explícita de string vazia abaixo).
   if (maxAddRaw === "") {
-    throw new BrevoDiariaAbort(
-      '❌ --apply exige --max-add N (inteiro ≥0) — "nenhum contato novo" é --max-add 0, explícito, nunca a ausência da flag.',
-    );
+    return { mode: "apply", maxAdd: undefined, confirmMv, iKnowThisSkipsMv };
   }
   const maxAdd = Number(maxAddRaw);
   if (!Number.isFinite(maxAdd) || !Number.isInteger(maxAdd) || maxAdd < 0) {
@@ -269,7 +278,7 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
         steps,
         summary:
           "preflight concluído — nenhuma mutação aplicada. Apresente o stderr dos 3 passos ao editor no gate " +
-          "(Passo 4 do SKILL.md) antes de rodar `--apply --max-add N`.",
+          "(Passo 4 do SKILL.md) antes de rodar `--apply` (--max-add N opcional, #6895).",
       };
     }
 
@@ -284,19 +293,25 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
       "scripts/verify-pending-emails-mv.ts",
       opts.confirmMv ? ["--confirm"] : [],
     );
+    // #6895: --max-add só é repassado quando explicitamente informado —
+    // omissão (opts.maxAdd === undefined) propaga como AUSÊNCIA da flag pro
+    // sync-pending-to-brevo.ts, que já trata isso como "sem teto"
+    // (applyMaxAddGate, #6793 Faixa A item 6). Nunca inventar um valor aqui.
+    const maxAddArgs = opts.maxAdd !== undefined ? ["--max-add", String(opts.maxAdd)] : [];
+    const maxAddLabel = opts.maxAdd !== undefined ? ` --max-add ${opts.maxAdd}` : " (sem --max-add, sem teto)";
     step(
       deps,
       steps,
-      `Passo 3 — sync-pending-to-brevo --push --max-add ${opts.maxAdd}`,
+      `Passo 3 — sync-pending-to-brevo --push${maxAddLabel}`,
       "scripts/sync-pending-to-brevo.ts",
-      ["--push", "--max-add", String(opts.maxAdd), ...(opts.iKnowThisSkipsMv ? ["--i-know-this-skips-mv"] : [])],
+      ["--push", ...maxAddArgs, ...(opts.iKnowThisSkipsMv ? ["--i-know-this-skips-mv"] : [])],
     );
 
     return {
       code: 0,
       mode: "apply",
       steps,
-      summary: `apply concluído — 5 passo(s) aplicado(s) na ordem fixa do Passo 4, --max-add ${opts.maxAdd}.`,
+      summary: `apply concluído — 5 passo(s) aplicado(s) na ordem fixa do Passo 4${maxAddLabel}.`,
     };
   } catch (e) {
     const abort = e instanceof BrevoDiariaAbort ? e : new BrevoDiariaAbort(`❌ erro inesperado: ${(e as Error).message}`);

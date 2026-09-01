@@ -74,8 +74,10 @@ describe("parseBrevoDiariaRunArgs", () => {
     assert.throws(() => parseBrevoDiariaRunArgs(["--apply", "--preflight", "--max-add", "5"]), BrevoDiariaAbort);
   });
 
-  it("--apply sem --max-add aborta — ausência da flag nunca vira 0 implícito", () => {
-    assert.throws(() => parseBrevoDiariaRunArgs(["--apply"]), BrevoDiariaAbort);
+  it("#6895: --apply sem --max-add é válido — maxAdd undefined, nunca 0 implícito", () => {
+    const opts = parseBrevoDiariaRunArgs(["--apply"]);
+    assert.equal(opts.mode, "apply");
+    assert.equal(opts.maxAdd, undefined);
   });
 
   it("--apply --max-add 0 é válido — forma explícita de 'nenhum contato novo'", () => {
@@ -158,6 +160,14 @@ describe("runBrevoDiaria — modo apply", () => {
     const { exec, calls } = makeFakeExec(handlers);
     runBrevoDiaria(["--apply", "--max-add", "0"], deps(exec));
     assert.deepEqual(calls[4].args, ["--push", "--max-add", "0"]);
+  });
+
+  it("#6895: --apply SEM --max-add omite a flag pro sync-pending-to-brevo (sem teto, nunca 0 implícito)", () => {
+    const handlers = Object.fromEntries(APPLY_SCRIPTS.map((s) => [s, ok()]));
+    const { exec, calls } = makeFakeExec(handlers);
+    const result = runBrevoDiaria(["--apply"], deps(exec));
+    assert.equal(result.code, 0);
+    assert.deepEqual(calls[4].args, ["--push"]);
   });
 
   it("--confirm-mv repassa --confirm só pro verify-pending-emails-mv, nenhum outro passo", () => {
