@@ -197,6 +197,58 @@ else
   echo "[watch] convenção de branch ok"
 fi
 
+# ── 6. composição de modelo por tick (degradação silenciosa, #6912) ─────────
+# Diferente das checagens 1-5 (que só criam issue se degradar), esta SEMPRE
+# ecoa a composição no resumo diário — a issue #6912 pede explicitamente
+# uma linha de base ANTES de calibrar qualquer limiar de alarme (por isso
+# nenhum threshold de "% aceitável de fallback" existe ainda; a mera
+# PRESENÇA de uma chamada no fallback local já prova que o primário falhou
+# naquele tick, então o gate de issue não precisa de limiar pra ser real).
+TICKCOMP=$(python3 /home/vjpixel/.hermes/scripts/hermes-model-cost-report.py --tick-composition --days 1 --json 2>/dev/null)
+if [ -z "$TICKCOMP" ]; then
+  echo "[watch] composição de tick: INDETERMINADO (cost-report --tick-composition falhou)" >&2
+  FAILS=$((FAILS + 1))
+else
+  echo "[watch] composição de tick (últimas 24h):"
+  echo "$TICKCOMP" | python3 -c "
+import sys, json
+try:
+    ticks = json.load(sys.stdin)
+    if not ticks:
+        print('  nenhum tick do continuo nas últimas 24h')
+    for t in ticks:
+        flag = '  <-- DEGRADADO' if t.get('degraded') else ''
+        print(f\"  {t['dia']} {t['session_id']}  primario={t['primary_pct']}%  local={t['local_fallback_pct']}%  pago={t['paid_fallback_pct']}%{flag}\")
+except Exception:
+    print('  __ERR__ (json malformado)')
+"
+  DEGRADED=$(printf '%s' "$TICKCOMP" | python3 -c "
+import sys, json
+try:
+    ticks = json.load(sys.stdin)
+    bad = [t for t in ticks if t.get('degraded')]
+    for t in bad:
+        print(f\"{t['dia']} {t['session_id']} local={t['local_fallback_pct']}%\")
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+  if [ "$DEGRADED" = "__ERR__" ]; then
+    echo "[watch] composição de tick: parse do resultado falhou" >&2; FAILS=$((FAILS + 1))
+  elif [ -n "$DEGRADED" ]; then
+    file_issue "[watch-continuo] degradação de modelo por tick" \
+      "[watch-continuo] tick(s) do contínuo caíram no fallback local nas últimas 24h" \
+      "bug,P2" \
+      "Detectado por watch-continuo-health.sh via hermes-model-cost-report.py --tick-composition — tick(s) com chamadas no fallback local (qwen), sinal de que o modelo primário (CONTINUO_PRIMARY_MODEL, hardcoded em hermes-model-cost-report.py) falhou naquele tick:
+
+\`\`\`
+$DEGRADED
+\`\`\`
+
+Sem limiar de alarme calibrado ainda (#6912 pede baseline medida antes de decidir o que é aceitável) — esta issue É a coleta da baseline. P2: sintoma 'agente burro hoje' sem custo pago associado (diferente da checagem 4, que é vazamento pago)."
+  else
+    echo "[watch] composição de tick ok (sem degradação nas últimas 24h)"
+  fi
+fi
+
 echo "[watch] varredura concluída (checagens indeterminadas/falhas de infra: $FAILS)"
 # Exit honesto (finding P2 do review #6469): FAILS>0 = o observador NÃO pôde
 # garantir a varredura — o cron do Hermes registra a falha e o failure_streak

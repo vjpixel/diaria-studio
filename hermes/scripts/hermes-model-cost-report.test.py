@@ -19,6 +19,15 @@ Cobre:
      `model`/`provider`, nunca tocaram `pedido`) — não é uma regressão
      por associação com o fix.
 
+#6912 (01/09/2026): também cobre `collect_tick_composition` — o detector de
+degradação silenciosa POR TICK do job `continuo` (fallback local invisível
+quando agregado por dia+modelo, ver docstring da função):
+  4. tick 100% no modelo primário -> degraded=False.
+  5. tick com qualquer chamada no fallback local (qwen) -> degraded=True,
+     mesmo que a maioria das chamadas tenha sido no primário.
+  6. session_id fora do padrão `hermes-cron-{JOB_ID}-*` não entra na
+     composição (não é o job continuo).
+
 Uso: python3 hermes/scripts/hermes-model-cost-report.test.py
 """
 
@@ -89,6 +98,44 @@ def _seed_usage_only(db_path: Path) -> None:
     con.close()
 
 
+def _seed_tick_composition(db_path: Path, job_id: str) -> None:
+    """Banco com 3 ticks do continuo — 1 saudavel (100% primario), 1
+    degradado (chamou o fallback local), 1 fora do padrao de session_id (nao
+    e do job continuo, nao deve entrar na composicao)."""
+    con = sqlite3.connect(db_path)
+    con.execute(
+        """
+        CREATE TABLE session_model_usage (
+            session_id TEXT,
+            model TEXT,
+            billing_provider TEXT,
+            api_call_count INTEGER,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            actual_cost_usd REAL,
+            estimated_cost_usd REAL,
+            first_seen REAL
+        )
+        """
+    )
+    now = time.time()
+    rows = [
+        # tick saudavel: só primário.
+        (f"hermes-cron-{job_id}-aaa111", "gpt-5.6-luna", "openai-codex", 5, 1000, 500, 0.0, 0.0, now),
+        # tick degradado: maioria no primário, mas ALGUMA chamada caiu no
+        # fallback local (qwen) — degraded=True mesmo sendo minoria.
+        (f"hermes-cron-{job_id}-bbb222", "gpt-5.6-luna", "openai-codex", 8, 2000, 1000, 0.0, 0.0, now),
+        (f"hermes-cron-{job_id}-bbb222", "qwen3.5:latest", "custom", 2, 200, 100, 0.0, 0.0, now),
+        # sessão fora do padrão (não é job continuo) — não deve aparecer.
+        ("outra-sessao-qualquer", "gpt-5.6-luna", "openai-codex", 9, 900, 900, 0.0, 0.0, now),
+    ]
+    con.executemany(
+        "INSERT INTO session_model_usage VALUES (?,?,?,?,?,?,?,?,?)", rows
+    )
+    con.commit()
+    con.close()
+
+
 def main() -> int:
     mod = _load_module()
 
@@ -121,6 +168,36 @@ def main() -> int:
         assert_true(
             "linha paga fora da allowlist (sem :free, sem match na allowlist) -> vazamento_pago=True",
             leak_row["vazamento_pago"] is True,
+        )
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "state.db"
+        _seed_tick_composition(db_path, mod.CONTINUO_JOB_ID)
+        mod.STATE_DB = db_path
+
+        ticks = mod.collect_tick_composition(days=1)
+        session_ids = {t["session_id"] for t in ticks}
+
+        assert_true(
+            "collect_tick_composition() só retorna sessões do padrão hermes-cron-{JOB_ID}-* (2, não 3)",
+            len(ticks) == 2,
+        )
+        assert_true(
+            "sessão fora do padrão (outra-sessao-qualquer) NÃO entra na composição",
+            "outra-sessao-qualquer" not in session_ids,
+        )
+
+        saudavel = next(t for t in ticks if t["session_id"].endswith("aaa111"))
+        assert_true(
+            "tick 100% no modelo primário -> degraded=False",
+            saudavel["degraded"] is False and saudavel["primary_pct"] == 100.0,
+        )
+
+        degradado = next(t for t in ticks if t["session_id"].endswith("bbb222"))
+        assert_true(
+            "tick com QUALQUER chamada no fallback local -> degraded=True, mesmo sendo minoria das chamadas",
+            degradado["degraded"] is True and degradado["local_fallback_pct"] > 0
+            and degradado["primary_pct"] > degradado["local_fallback_pct"],
         )
 
     if FAILED:
