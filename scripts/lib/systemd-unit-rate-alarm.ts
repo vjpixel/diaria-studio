@@ -95,12 +95,29 @@ function escapeRegExp(s: string): string {
  * versão do journalctl/locale) — casa só a SUBSTRING `"<unit>: <mensagem>"`
  * em qualquer posição da linha, mesma tolerância de
  * `parseSystemctlListUnitsFailedOutput` em `systemd-failed-units-alarm.ts`.
+ *
+ * **#6905 (01/09/2026) — sucesso tinha SÓ UM formato reconhecido, e não é
+ * o que o `systemd` 259 (helios) emite.** Achado ao vivo: `"<unit>:
+ * Deactivated successfully."` tem ZERO ocorrências no journal real desta
+ * máquina — o que `systemd[1]` de fato loga ao concluir uma oneshot bem-
+ * sucedida ali é `"Finished <unit> - <descrição>."` (unit seguido de
+ * ` - `, não de `: `). Consequência: `successRe` nunca casava nada nesta
+ * máquina, então TODA invocação bem-sucedida virava invisível pro parser —
+ * só as 2 linhas de FALHA (que usam `: `, formato inalterado) continuavam
+ * casando. O alarme de taxa mediu "falhas dentre falhas" por um período
+ * inteiro, gerando ≥5 issues de falso P1 (#6456, #6457, #6458, #6794,
+ * #6843) — indistinguível de uma unit saudável rodando sem log nenhum
+ * (mesma classe do #5563: parser que não casa nada é indistinguível de
+ * unit que nunca rodou). Fix: aceitar OS DOIS formatos — não trocar um
+ * pelo outro, porque não há medição de qual versão do systemd roda em
+ * outra máquina do projeto (Windows, outra sessão helios futura); trocar
+ * só moveria o mesmo silêncio pra outra combinação de host/versão.
  */
 export function parseJournalUnitOutcomes(lines: readonly string[], unitName: string): UnitInvocationOutcome[] {
   const escaped = escapeRegExp(unitName);
   const exitRe = new RegExp(`${escaped}: Main process exited, code=exited, status=(\\d+)`);
   const failedRe = new RegExp(`${escaped}: Failed with result 'exit-code'`);
-  const successRe = new RegExp(`${escaped}: Deactivated successfully\\.`);
+  const successRe = new RegExp(`(?:${escaped}: Deactivated successfully\\.|Finished ${escaped}\\b)`);
 
   const outcomes: UnitInvocationOutcome[] = [];
   let pendingExitCode: number | null = null;
@@ -199,4 +216,28 @@ export function evaluateUnitFailureRate(
 
 export function isAlarmingRateVerdict(verdict: UnitFailureRateVerdict): boolean {
   return verdict === "alarm-rate";
+}
+
+/**
+ * #6905 — detecta o PRÓXIMO silêncio antes que ele vire outra rodada de
+ * falso positivo: o journal TEM linhas pra esta unit (não é ausência de
+ * dado), o parser extraiu pelo menos 1 outcome, mas ZERO deles é
+ * `"success"` e pelo menos 1 é `"failure"`. Uma unit que só falha existe de
+ * verdade, mas é rara o bastante pra merecer verificação humana em vez de
+ * um `N/N` que parece medição confiável — é exatamente o padrão que o
+ * bug original produzia (as 2 linhas de FALHA usam `: `, formato que nunca
+ * mudou, então continuavam casando; só o SUCESSO ficava invisível).
+ *
+ * Pura, nunca lança. `journalHasLines` distingue "unit sem NENHUMA linha
+ * no journal" (rotação de log, unit nova — nada a suspeitar) de "unit com
+ * linhas, mas o parser não reconheceu nenhum sucesso" (o caso suspeito).
+ */
+export function detectPossibleParserDesync(
+  outcomes: readonly UnitInvocationOutcome[],
+  journalHasLines: boolean,
+): boolean {
+  if (!journalHasLines || outcomes.length === 0) return false;
+  const hasSuccess = outcomes.some((o) => o.kind === "success");
+  const hasFailure = outcomes.some((o) => o.kind === "failure");
+  return !hasSuccess && hasFailure;
 }

@@ -10,6 +10,7 @@ import {
   parseJournalUnitOutcomes,
   evaluateUnitFailureRate,
   isAlarmingRateVerdict,
+  detectPossibleParserDesync,
   DEFAULT_WINDOW_SIZE,
   DEFAULT_FAILURE_THRESHOLD,
   type UnitInvocationOutcome,
@@ -35,6 +36,37 @@ function failure(exitCode: number | null = 1): UnitInvocationOutcome {
 describe("parseJournalUnitOutcomes", () => {
   it("reconhece sucesso ('Deactivated successfully.')", () => {
     const lines = [`Aug 18 09:00:05 helios systemd[1234]: ${UNIT}: Deactivated successfully.`];
+    assert.deepEqual(parseJournalUnitOutcomes(lines, UNIT), [{ kind: "success" }]);
+  });
+
+  // REGRESSÃO (#6905): systemd 259 (medido ao vivo no helios) NUNCA emite
+  // "Deactivated successfully." — emite "Finished <unit> - <descrição>."
+  // (unit seguido de ` - `, não de `: `). O regex original só reconhecia o
+  // primeiro formato, então TODO sucesso ficava invisível nesta máquina —
+  // as 2 linhas de FALHA (formato `: `, inalterado) continuavam casando, e
+  // o alarme de taxa mediu "falhas dentre falhas" (≥5 issues de falso P1:
+  // #6456, #6457, #6458, #6794, #6843).
+  it("REGRESSÃO (#6905): reconhece sucesso no formato do systemd 259 ('Finished <unit> - <desc>.')", () => {
+    const lines = [`Aug 31 21:01:43 helios systemd[1]: Finished ${UNIT} - Diária Clarice Novos.`];
+    assert.deepEqual(parseJournalUnitOutcomes(lines, UNIT), [{ kind: "success" }]);
+  });
+
+  it("REGRESSÃO (#6905): os DOIS formatos de sucesso coexistem na mesma sequência sem perder nenhum", () => {
+    const lines = [
+      `${UNIT}: Deactivated successfully.`,
+      `Finished ${UNIT} - Diária Clarice Novos.`,
+      `${UNIT}: Main process exited, code=exited, status=1/FAILURE`,
+      `${UNIT}: Failed with result 'exit-code'.`,
+    ];
+    assert.deepEqual(parseJournalUnitOutcomes(lines, UNIT), [
+      { kind: "success" },
+      { kind: "success" },
+      { kind: "failure", exitCode: 1 },
+    ]);
+  });
+
+  it("REGRESSÃO (#6905): formato 'Finished' de OUTRA unit é ignorado (filtro por nome exato preservado)", () => {
+    const lines = [`Finished diaria-outra-task.service - Outra task.`, `Finished ${UNIT} - Diária Clarice Novos.`];
     assert.deepEqual(parseJournalUnitOutcomes(lines, UNIT), [{ kind: "success" }]);
   });
 
@@ -77,6 +109,32 @@ describe("parseJournalUnitOutcomes", () => {
 
   it("saída vazia → array vazio", () => {
     assert.deepEqual(parseJournalUnitOutcomes([], UNIT), []);
+  });
+});
+
+describe("detectPossibleParserDesync (#6905)", () => {
+  it("journal com linhas, zero sucesso, alguma falha → true (o padrão exato do bug original)", () => {
+    assert.equal(detectPossibleParserDesync([failure(), failure()], true), true);
+  });
+
+  it("journal com linhas, tem sucesso E falha → false (unit saudável ou parcialmente falhando, nada suspeito)", () => {
+    assert.equal(detectPossibleParserDesync([success(), failure()], true), false);
+  });
+
+  it("journal com linhas, só sucesso → false", () => {
+    assert.equal(detectPossibleParserDesync([success(), success()], true), false);
+  });
+
+  it("journal SEM linhas (unit nova/sem histórico) → false, mesmo com outcomes vazio", () => {
+    assert.equal(detectPossibleParserDesync([], false), false);
+  });
+
+  it("journal com linhas mas outcomes vazio (nada reconhecido, nem sucesso nem falha) → false — sinal diferente (#5563), não este", () => {
+    assert.equal(detectPossibleParserDesync([], true), false);
+  });
+
+  it("journal SEM linhas mas outcomes não-vazio (estado impossível na prática) → false, journalHasLines manda", () => {
+    assert.equal(detectPossibleParserDesync([failure()], false), false);
   });
 });
 
