@@ -21,11 +21,11 @@
   --teal: #00A0A0;
   --teal-deep: #007a7a;
   --ink: #171411;
-  --ink-soft: rgba(23,17,15,0.72);
-  --ink-faint: rgba(23,17,15,0.5);
+  --ink-soft: rgba(23,20,17,0.72);
+  --ink-faint: rgba(23,20,17,0.5);
   --paper: #FBFAF6;
   --paper-alt: #EBE5D0;
-  --rule: rgba(23,20,17,0.18);
+  --rule: #EBE5D0;
 }
 * { box-sizing: border-box; }
 body {
@@ -65,7 +65,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 
 /* Signup pill (masthead + footer) — #6976: form real, mesma geometria da pill antiga */
 .signup { display: block; margin-top: 14px; }
-.signup-pill { display: flex; border: 1px solid var(--ink); border-radius: 999px; padding: 4px; background: #fff; overflow: hidden; }
+.signup-pill { display: flex; border: 1px solid var(--ink); border-radius: 999px; padding: 4px; background: var(--paper); overflow: hidden; }
 .signup-input {
   flex: 1; min-width: 0; padding: 10px 16px; font-size: 14px; color: var(--ink);
   font-family: inherit; line-height: inherit; border: 0; outline: 0; background: transparent;
@@ -109,6 +109,9 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .feature-dek { font-family: Georgia, serif; font-size: 18px; line-height: 1.45; color: var(--ink-soft); font-style: italic; margin-top: 20px; max-width: 62ch; }
 .feature-actions { display: flex; align-items: center; gap: 14px; margin-top: 28px; flex-wrap: wrap; }
 .feature-hint { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
+.feature-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center; }
+.feature-media { display: block; }
+.feature-media img { display: block; width: 100%; height: auto; border-radius: 6px; }
 
 /* Specials */
 .specials { padding: 64px 0 72px; background: var(--paper-alt); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
@@ -166,7 +169,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .footer-bottom a + a { margin-left: 8px; }
 
 @media (max-width: 860px) {
-  .masthead-grid, .specials-grid, .faqs .wrap, .footer-top { grid-template-columns: 1fr; }
+  .masthead-grid, .specials-grid, .faqs .wrap, .footer-top, .feature-grid { grid-template-columns: 1fr; }
   .archive-grid { grid-template-columns: repeat(2, 1fr); }
   .nav-links { order: 3; width: 100%; }
 }
@@ -239,13 +242,18 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
       <div class="feature-head">
         <span class="kicker kicker--teal">● Edição de hoje</span>
       </div>
-      <a class="feature-title-link" href="https://diar.ia.br/p/empresas-recontratam-quem-demitiu-por-ia">
+      <div class="feature-grid">
+        <div class="feature-body"><a class="feature-title-link" href="https://diar.ia.br/p/empresas-recontratam-quem-demitiu-por-ia">
         <h2 class="feature-title">Empresas recontratam quem demitiu por IA</h2>
       </a>
       <p class="feature-dek">Empresas recontratam quem demitiu por IA. Infraestrutura trava 1 em cada 3 startups de IA | Google mira escritórios de advocacia com Gemini</p>
       <div class="feature-actions">
         <a class="btn btn-ink" href="https://diar.ia.br/p/empresas-recontratam-quem-demitiu-por-ia">Ler edição</a>
         <span class="feature-hint">ou pelo email →</span>
+      </div></div>
+        <a class="feature-media" href="https://diar.ia.br/p/empresas-recontratam-quem-demitiu-por-ia" tabindex="-1" aria-hidden="true">
+          <img src="https://eia.diar.ia.br/img/img-260826-04-d1-2x1-3bc9b93f.jpg" alt="Empresas recontratam quem demitiu por IA" loading="lazy">
+        </a>
       </div>
     </div>
   </section>

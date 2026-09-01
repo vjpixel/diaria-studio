@@ -29,6 +29,59 @@ import { stripHtmlBasic } from "./strip-html.ts";
 import { escHtml } from "./html-escape.ts";
 import { parseSitemap } from "./fetch-sitemap.ts";
 import { HUB_META } from "../../workers/arquivo/src/hubs/meta.ts";
+import { COLORS } from "./shared/design-tokens.ts";
+
+/**
+ * Converte um hex `#RRGGBB` do DS pra `rgba(r,g,b,alpha)` — usado só pra
+ * derivar `--ink-soft`/`--ink-faint` de `COLORS.ink` (o DS não declara essas
+ * duas variantes de opacidade como tokens de 1ª classe, ver docstring de
+ * `design-tokens.ts`: "ink-soft/ink-faint → ink; não há cinzas na
+ * paleta" — mas o CSS estático da home precisa de uma cor de texto
+ * secundário/terciário mais fraca sobre `--paper`, então este módulo deriva
+ * localmente).
+ *
+ * Fonte da #6986: até aqui os dois eram literais `rgba(23,17,15,…)` escritos
+ * à mão, com os canais G/B TROCADOS em relação ao `--ink` real
+ * (`#171411` = `rgb(23,20,17)`) — outra cor, não o mesmo tom com opacidade.
+ * Derivar programaticamente do MESMO hex garante que nunca mais diverge.
+ */
+function hexToRgba(hex: string, alpha: number): string {
+  const clean = hex.replace("#", "");
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+/** `--ink-soft`/`--ink-faint` — sempre derivados de `COLORS.ink`, nunca hardcoded (#6986). */
+const INK_SOFT = hexToRgba(COLORS.ink, 0.72);
+const INK_FAINT = hexToRgba(COLORS.ink, 0.5);
+
+/**
+ * Cores semânticas (erro, acento de hover/foco) — item "decidir onde ficam"
+ * da #6986. DECISÃO: mantidas LOCAIS a este módulo, **não** promovidas a
+ * `design-tokens.ts`.
+ *
+ * Motivo: `design-tokens.ts` se declara "espelho fiel" do repo
+ * `diaria-design` (a fonte da verdade da marca, ver a docstring do módulo) —
+ * acrescentar tokens aqui que não existem lá faria esse espelho divergir
+ * silenciosamente, na direção errada (o mirror lidera, nunca segue). Se/quando
+ * a #6981 tocar as ~10 superfícies de formulário que vão precisar de
+ * erro/sucesso, a promoção correta nasce no repo `diaria-design` primeiro
+ * (PR lá + re-mirror pra cá), não direto neste módulo. Este comentário É o
+ * registro que a issue #6986 pedia — a pior saída era o valor mágico sem
+ * justificativa, que era o estado antes desta mudança.
+ *
+ * `TEAL_DEEP` não é "sucesso" formal — é a variante escurecida do brand teal
+ * (`COLORS.brand`, `#00A0A0`) usada em contexto de TEXTO/hover/foco sobre
+ * `--paper` (o teal cheio já é usado em fundos de botão/ícone via
+ * `var(--teal)`; como cor de texto direto sobre papel claro ele fica
+ * ofuscado — daí o tom mais escuro só pra esse uso). `ERROR_*` é o único par
+ * erro claro/escuro do repo hoje, introduzido pela #6976 sem registro.
+ */
+const TEAL_DEEP = "#007a7a";
+const ERROR_LIGHT = "#b3261e";
+const ERROR_DARK = "#ffb3a8";
 
 export interface HomeFeedEntry {
   slug: string;
@@ -36,6 +89,11 @@ export interface HomeFeedEntry {
   description: string;
   url: string;
   date: string | null;
+  /** Src do primeiro `<img class="hero">` da página da edição — capa do D1
+   *  (#6978 item 1). `null` quando a página não tem `img.hero`, o parse
+   *  falha, ou o `src` vem vazio — a home nunca quebra por capa ausente,
+   *  degrada pra layout só-texto (ver `extractHeroImage`). */
+  image: string | null;
 }
 
 /**
@@ -70,6 +128,30 @@ export function extractPageMeta(html: string): { title: string; description: str
     title: titleMatch ? stripHtmlBasic(titleMatch[1]) : "",
     description: descMatch ? stripHtmlBasic(descMatch[1]) : "",
   };
+}
+
+/**
+ * Extrai o `src` do PRIMEIRO `<img class="hero">` do HTML de uma página de
+ * edição já gerada (#6978 item 1) — é a capa do D1 (ver docstring de
+ * `buildArchivePageHtml`/`site-archive-pages.ts`: o post sempre renderiza um
+ * `img.hero` por destaque, na ordem D1→D2→D3, então o primeiro é sempre o
+ * D1). Não há `og:image` nessas páginas, então `img.hero` é o único seletor
+ * disponível.
+ *
+ * Nunca lança: sem `img.hero` no HTML, ou com `src` vazio, devolve `null` —
+ * mesmo espírito de degradação de `extractPageMeta` (título vazio → `""`),
+ * só que aqui o `null` NUNCA pula a entrada do feed (diferente de título
+ * vazio) — `buildHomeFeed` só loga e segue, porque a home não pode quebrar
+ * por causa de uma capa ausente.
+ */
+export function extractHeroImage(html: string): string | null {
+  const imgTags = html.match(/<img\b[^>]*>/gi) ?? [];
+  for (const tag of imgTags) {
+    if (!/\bclass=["']hero["']/i.test(tag)) continue;
+    const srcMatch = tag.match(/\bsrc=["']([^"']+)["']/i);
+    if (srcMatch && srcMatch[1]) return srcMatch[1];
+  }
+  return null;
 }
 
 /**
@@ -114,7 +196,13 @@ export function buildHomeFeed(
       console.warn(`site-home-page: <title> vazio/ilegível pra slug "${slug}" — pulando do feed da home`);
       continue;
     }
-    feed.push({ slug, title, description, url: entry.loc, date: entry.lastmod });
+    const image = extractHeroImage(html);
+    if (!image) {
+      // Nunca pula a entrada por isso (diferente do <title> vazio acima) —
+      // só loga: a home renderiza a edição sem capa, layout só-texto (#6978).
+      console.warn(`site-home-page: sem <img class="hero"> pra slug "${slug}" — entrada do feed sem capa`);
+    }
+    feed.push({ slug, title, description, url: entry.loc, date: entry.lastmod, image });
   }
   return feed;
 }
@@ -436,7 +524,10 @@ export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
   const topicLinks = renderTopicLinks();
   const archive = feature ? opts.archive.filter((entry) => entry.slug !== feature.slug) : opts.archive;
 
-  const featureHtml = feature
+  // Capa do destaque (#6978 item 1) — só monta o grid 2 colunas quando a
+  // edição TEM `image` (ver `extractHeroImage`). Sem imagem, cai pro layout
+  // só-texto de sempre (nenhuma quebra, nenhum bloco vazio no lugar da capa).
+  const featureBody = feature
     ? `<a class="feature-title-link" href="${escHtml(feature.url)}">
         <h2 class="feature-title">${escHtml(feature.title)}</h2>
       </a>
@@ -446,6 +537,16 @@ export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
         <span class="feature-hint">ou pelo email →</span>
       </div>`
     : `<p class="feature-dek">Nenhuma edição publicada ainda.</p>`;
+
+  const featureHtml =
+    feature && feature.image
+      ? `<div class="feature-grid">
+        <div class="feature-body">${featureBody}</div>
+        <a class="feature-media" href="${escHtml(feature.url)}" tabindex="-1" aria-hidden="true">
+          <img src="${escHtml(feature.image)}" alt="${escHtml(feature.title)}" loading="lazy">
+        </a>
+      </div>`
+      : featureBody;
 
   const archiveCards = archive
     .map(
@@ -489,14 +590,14 @@ export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
 <meta name="twitter:description" content="5 minutos diários pra se manter atualizado e usar melhor as IAs.">
 <style>
 :root {
-  --teal: #00A0A0;
-  --teal-deep: #007a7a;
-  --ink: #171411;
-  --ink-soft: rgba(23,17,15,0.72);
-  --ink-faint: rgba(23,17,15,0.5);
-  --paper: #FBFAF6;
-  --paper-alt: #EBE5D0;
-  --rule: rgba(23,20,17,0.18);
+  --teal: ${COLORS.brand};
+  --teal-deep: ${TEAL_DEEP};
+  --ink: ${COLORS.ink};
+  --ink-soft: ${INK_SOFT};
+  --ink-faint: ${INK_FAINT};
+  --paper: ${COLORS.paper};
+  --paper-alt: ${COLORS.paperAlt};
+  --rule: ${COLORS.rule};
 }
 * { box-sizing: border-box; }
 body {
@@ -536,7 +637,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 
 /* Signup pill (masthead + footer) — #6976: form real, mesma geometria da pill antiga */
 .signup { display: block; margin-top: 14px; }
-.signup-pill { display: flex; border: 1px solid var(--ink); border-radius: 999px; padding: 4px; background: #fff; overflow: hidden; }
+.signup-pill { display: flex; border: 1px solid var(--ink); border-radius: 999px; padding: 4px; background: var(--paper); overflow: hidden; }
 .signup-input {
   flex: 1; min-width: 0; padding: 10px 16px; font-size: 14px; color: var(--ink);
   font-family: inherit; line-height: inherit; border: 0; outline: 0; background: transparent;
@@ -565,9 +666,9 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .signup--dark .signup-optin { color: rgba(244,239,226,0.55); }
 .signup-status { margin-top: 8px; font-size: 12px; display: none; }
 .signup-status.ok { color: var(--teal-deep); display: block; }
-.signup-status.err { color: #b3261e; display: block; }
+.signup-status.err { color: ${ERROR_LIGHT}; display: block; }
 .signup--dark .signup-status.ok { color: var(--paper); }
-.signup--dark .signup-status.err { color: #ffb3a8; }
+.signup--dark .signup-status.err { color: ${ERROR_DARK}; }
 .signup-reassure { display: flex; gap: 16px; margin-top: 14px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); flex-wrap: wrap; }
 .signup--dark + .signup-reassure { color: rgba(244,239,226,0.55); }
 
@@ -580,6 +681,9 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .feature-dek { font-family: Georgia, serif; font-size: 18px; line-height: 1.45; color: var(--ink-soft); font-style: italic; margin-top: 20px; max-width: 62ch; }
 .feature-actions { display: flex; align-items: center; gap: 14px; margin-top: 28px; flex-wrap: wrap; }
 .feature-hint { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
+.feature-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center; }
+.feature-media { display: block; }
+.feature-media img { display: block; width: 100%; height: auto; border-radius: 6px; }
 
 /* Specials */
 .specials { padding: 64px 0 72px; background: var(--paper-alt); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
@@ -637,7 +741,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .footer-bottom a + a { margin-left: 8px; }
 
 @media (max-width: 860px) {
-  .masthead-grid, .specials-grid, .faqs .wrap, .footer-top { grid-template-columns: 1fr; }
+  .masthead-grid, .specials-grid, .faqs .wrap, .footer-top, .feature-grid { grid-template-columns: 1fr; }
   .archive-grid { grid-template-columns: repeat(2, 1fr); }
   .nav-links { order: 3; width: 100%; }
 }
