@@ -66,6 +66,16 @@
 #     [--cwd DIR] [--budget USD] [--timeout SECS] [--model SLUG] [--effort LEVEL]
 set -euo pipefail
 
+# #6891 (01/09/2026): desliga o auto-updater DENTRO deste processo — nunca
+# export persistente de shell (mesma disciplina do #6714 pras
+# ANTHROPIC_BASE_URL/AUTH_TOKEN). `export` aqui só vive neste script e seus
+# filhos (é um processo próprio invocado pelo cron, nunca sourced numa
+# sessão interativa) — as sessões do editor continuam atualizando
+# normalmente. Ataca a CAUSA da quebra recorrente medida em #6875/#6891 (o
+# updater reinstala em ciclo e abre uma janela em que o shim aponta pro
+# binário antes do postinstall terminar).
+export DISABLE_AUTOUPDATER=1
+
 # Preflight (#6875, extraído pro lib compartilhado no #6879): falha do
 # binário precisa ser nomeada, não enigmática.
 # shellcheck source=./lib/claude-binary-preflight.sh

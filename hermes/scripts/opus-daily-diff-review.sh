@@ -33,6 +33,12 @@
 # Estado: data/continuo/last-daily-review-sha (avança SÓ após review completo).
 set -euo pipefail
 
+# #6891 (01/09/2026): desliga o auto-updater DENTRO deste processo — nunca
+# export persistente de shell (mesma disciplina do #6714). Só vive neste
+# script/filhos (processo próprio invocado pelo cron, nunca sourced numa
+# sessão interativa) — sessões do editor continuam atualizando normalmente.
+export DISABLE_AUTOUPDATER=1
+
 # Preflight (#6875, extraído pro lib compartilhado no #6879): falha
 # nomeada do binário, não enigmática.
 # shellcheck source=./lib/claude-binary-preflight.sh
