@@ -29,6 +29,14 @@
 #   1 = TIMEOUT — teto de vida estourou; mensagem nomeada em stderr, nunca
 #       confundida com "ainda rodando silenciosamente"
 #   2 = uso inválido (PR ausente)
+#   3 = ERRO PERSISTENTE do gate (rc=3/"error" de check-pr-checks-gate.ts
+#       repetido `MAX_ERROR_STREAK` vezes seguidas — #6937, achado de
+#       review: uma falha TRANSITÓRIA isolada (`gh` com rate-limit, blip de
+#       rede) não pode fazer o laço concluir "parou de estar pendente" por
+#       engano — rc=3 significa "não sei", nunca "resolveu". Só retentar
+#       infinitamente também seria errado (mascara uma falha real e
+#       persistente, ex: `gh` desinstalado) — daí o teto PRÓPRIO, distinto
+#       do teto de tempo (timeout_secs), pra essa classe de erro.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -51,6 +59,8 @@ check_pr_checks_once() {
 wait_pr_checks() {
   local pr="$1" timeout_secs="${2:-1800}" poll_secs="${3:-20}"
   local start elapsed rc
+  local error_streak=0
+  local max_error_streak=5
 
   start=$(date +%s)
   while true; do
@@ -62,6 +72,23 @@ wait_pr_checks() {
 
     check_pr_checks_once "$pr"
     rc=$?
+
+    # #6937 (review da PR #6937): rc=3 ("error" — gh falhou, PR sumiu,
+    # JSON malformado) é "não sei", NUNCA "resolveu". Tratar igual a
+    # rc=2 (pending) e retentar — mas com teto PRÓPRIO de tentativas
+    # consecutivas, pra não mascarar um erro persistente (gh desinstalado,
+    # PR de fato inexistente) como espera infinita.
+    if [ "$rc" -eq 3 ]; then
+      error_streak=$((error_streak + 1))
+      if [ "$error_streak" -ge "$max_error_streak" ]; then
+        echo "[wait-pr-checks] ERRO PERSISTENTE: PR #$pr — check-pr-checks-gate.ts falhou (rc=3) $error_streak vezes seguidas — abortando espera. Investigar: gh pr view $pr" >&2
+        return 3
+      fi
+      sleep "$poll_secs"
+      continue
+    fi
+    error_streak=0
+
     if [ "$rc" -ne 2 ]; then
       echo "[wait-pr-checks] PR #$pr: checks não-pendentes após ${elapsed}s (verdict rc=$rc — chamador decide passou/falhou)"
       return 0

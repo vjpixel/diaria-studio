@@ -61,6 +61,38 @@ wait_pr_checks "3" 5 1 >/dev/null 2>&1
 RC3=$?
 assert_eq "gate retorna fail (rc=1, não-pending) -> loop ainda sai com 0" "0" "$RC3"
 
+# ── 5. rc=3 (erro do gate) ISOLADO se recupera — não conclui "resolveu" ────
+# Achado do review da PR #6937 (P2, confiança alta): rc=3 é "não sei",
+# nunca "parou de estar pendente". Uma falha TRANSITÓRIA (1 tentativa)
+# tem que ser retentada, não promovida a sucesso.
+GLM_CALL_COUNT=0
+check_pr_checks_once() {
+  GLM_CALL_COUNT=$((GLM_CALL_COUNT + 1))
+  if [ "$GLM_CALL_COUNT" -eq 1 ]; then return 3; fi # 1 erro transitório
+  return 0 # depois resolve normalmente
+}
+OUT5=$(wait_pr_checks "5" 30 1 2>&1)
+RC5=$?
+assert_eq "1 erro transitório (rc=3) seguido de sucesso -> ainda exit 0" "0" "$RC5"
+if echo "$OUT5" | grep -q "não-pendentes"; then
+  echo "ok: retentou depois do erro transitório e resolveu"
+else
+  echo "FAIL: não retentou/resolveu depois do erro transitório — obtido: $OUT5"
+  FAILED=1
+fi
+
+# ── 6. rc=3 PERSISTENTE estoura o teto de tentativas -> exit 3 (nunca 0/1) ──
+check_pr_checks_once() { return 3; } # erro do gate, sempre, nunca resolve
+OUT6=$(wait_pr_checks "6" 60 1 2>&1)
+RC6=$?
+assert_eq "erro persistente (rc=3 sempre) -> exit 3, nunca confundido com sucesso ou timeout" "3" "$RC6"
+if echo "$OUT6" | grep -q "ERRO PERSISTENTE"; then
+  echo "ok: mensagem de erro persistente presente"
+else
+  echo "FAIL: mensagem de erro persistente ausente — obtido: $OUT6"
+  FAILED=1
+fi
+
 # ── 4. uso inválido do entrypoint (PR ausente) -> exit 2 ────────────────────
 OUT4=$(bash "$DIR/wait-pr-checks.sh" 2>&1)
 RC4=$?

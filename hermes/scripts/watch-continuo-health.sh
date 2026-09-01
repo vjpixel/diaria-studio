@@ -257,8 +257,19 @@ fi
 # o fix estrutural é `scripts/lib/wait-pr-checks.sh` (teto de vida
 # embutido); esta checagem é a rede de segurança pro que ainda for escrito
 # à mão sem usar o helper.
-if ! ORPHANS=$(pgrep -af 'gh pr checks' 2>/dev/null); then
+ORPHANS=$(pgrep -af 'gh pr checks' 2>/dev/null)
+PGREP_RC=$?
+# #6937 (review): pgrep exit 1 = "nenhum processo casou" (esperado, não é
+# falha); exit 2/3+ = erro genuíno (padrão inválido, /proc ilegível) —
+# mesma disciplina de "indeterminado incrementa FAILS" que as checagens
+# 1-6 deste arquivo já seguem. Sem essa distinção, um pgrep quebrado
+# reportaria "nenhum órfão" em vez de "não consegui checar".
+if [ "$PGREP_RC" -eq 1 ]; then
   echo "[watch] laços de espera de CI: nenhum encontrado (pgrep sem match — ok)"
+  ORPHANS=""
+elif [ "$PGREP_RC" -ne 0 ]; then
+  echo "[watch] laços de espera de CI: INDETERMINADO (pgrep saiu com rc=$PGREP_RC)" >&2
+  FAILS=$((FAILS + 1))
   ORPHANS=""
 fi
 OLD_ORPHANS=""
