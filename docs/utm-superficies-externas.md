@@ -76,6 +76,51 @@ tem conversão real. Renomear custaria a série histórica sem ganhar medição.
 O `utm_medium=organic_social` fora do padrão é o marcador visível de que é
 exceção. Um mesmo valor cobre dois pontos: o botão de CTA e o campo Site.
 
+## Pré-registradas, ainda não publicadas (#5917)
+
+**Nexo Jornal** (`perfil-nexo`) e **Outras Palavras** (`perfil-outraspalavras`) —
+artigos assinados em veículo externo, link na bio do autor ao pé do artigo.
+Registradas em `EXTERNAL_UTM_SURFACES` **antes** de o artigo sair (reunião com
+o Nexo em 24/08/2026; artigo pro Outras Palavras ainda a enviar) — as duas
+ainda **sem `appliedAt`**, porque nenhum dos dois artigos foi publicado.
+
+**Por que registrar antes, diferente de toda outra entrada desta tabela:** os
+8 slots acima são campos de painel — editáveis pra sempre, dá pra corrigir o
+UTM a qualquer momento. A bio de um artigo publicado **congela** junto com o
+artigo. Errar o UTM (ou esquecer de incluir) no artigo é irreversível para
+aquele artigo especificamente — não há segunda chance de instrumentar depois
+que sai. Por isso a instrumentação precisa estar pronta e revisada *antes* do
+envio ao veículo, não depois de publicar.
+
+`appliedAt` ausente é o mecanismo que já existe pra esse estado: o detector
+de drift (`computeDrift`) trata superfície sem `appliedAt` como "ainda não
+aplicada, não converter é o esperado" — nunca acusa `sem_conversao` até o
+editor setar a data real de publicação. `panelUrl` das duas aponta pra home
+do veículo (não pra URL do artigo específico, que ainda não existe) — trocar
+pela URL do artigo real, junto com `appliedAt`, assim que sair.
+
+**Decisão de `driftKey` (#5917, precedente Apoia.se acima):** as duas nascem
+com os **3 parâmetros completos** (`driftKey` ausente = default `campaign`),
+**não** com o fallback de 1 parâmetro que o Apoia.se usa. O fallback do
+Apoia.se foi REATIVO — confirmado ao vivo que a plataforma trunca a URL no
+`&`. Não há evidência equivalente pra Nexo/Outras Palavras; presumir
+truncamento preventivamente trocaria uma exceção observada por um default
+sem base. Se o veículo truncar a query string na publicação (ou o editor do
+veículo simplesmente limpar a URL), migrar pra `driftKey: "source"` então —
+mesmo caminho que o Apoia.se percorreu, não antes.
+
+**1 campaign por VEÍCULO, nunca por artigo.** Se virar coluna recorrente
+(~1×/mês em vez de artigo avulso), `perfil-nexo`/`perfil-outraspalavras`
+continuam cobrindo todos os artigos daquele veículo — nunca criar
+`perfil-nexo-artigo-2` ou variante por artigo. O motivo é o mesmo do resto
+desta convenção: o Beehiiv só devolve agregações PLANAS (`counts` por
+source, `campaignCounts` por campaign, sem cruzamento), então um campaign por
+artigo fatiaria a série em linhas que nunca somam — o mesmo bug que o #4525
+corrigiu ao unificar `instagram-diaria` em `instagram`.
+
+**Fora de escopo desta instrumentação** (#5917): escrever o artigo e conduzir
+a conversa com os veículos — trabalho do editor, não desta fatia de código.
+
 ## Sem onde pôr link
 
 Não entraram no inventário porque não emitem nada — catalogar superfície que não

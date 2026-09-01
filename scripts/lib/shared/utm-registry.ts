@@ -1913,6 +1913,70 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     appliedAt: "2026-08-03",
   },
   {
+    id: "perfil-nexo",
+    label: "Nexo Jornal — bio do artigo assinado",
+    source: "nexo",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("nexo"),
+    // Artigo ainda não publicado (reunião 24/08/2026) — não existe URL de artigo
+    // pra apontar sem inventar. Aponta pra home do veículo como placeholder REAL
+    // (não uma URL fabricada) até o artigo sair; trocar por `panelUrl` do artigo
+    // específico assim que publicado, junto com o `appliedAt`.
+    panelUrl: "https://www.nexojornal.com.br/",
+    field: "bio do autor ao pé do artigo",
+    description:
+      "Pré-registrada ANTES da publicação (#5917) — decisão deliberada, não " +
+      "descuido: a bio de um artigo publicado CONGELA (diferente dos 8 slots de " +
+      "bio de painel acima, editáveis pra sempre), então errar o UTM no primeiro " +
+      "artigo é irreversível pra aquele artigo. `appliedAt` ausente é o sinal " +
+      "correto de 'ainda não aplicado' — `computeDrift` já trata isso como " +
+      "ausência de conversão ESPERADA, não drift (mesmo mecanismo usado por toda " +
+      "superfície nova desta lista antes de ser aplicada). " +
+      "Convenção de parâmetro (#5917, precedente Apoia.se): nasce com os 3 " +
+      "parâmetros completos (driftKey 'campaign', o default) — não com o " +
+      "fallback de 1 parâmetro que `perfil-apoiase` usa. O fallback do Apoia.se " +
+      "existe porque a plataforma foi CONFIRMADA ao vivo truncando a URL no " +
+      "`&`; não há evidência equivalente pra Nexo/Outras Palavras, e presumir " +
+      "truncamento sem confirmação trocaria uma exceção reativa por um default " +
+      "preventivo sem base. Se o veículo truncar a query string (ou o editor do " +
+      "veículo simplesmente limpar a URL) na publicação, migrar pra " +
+      "`driftKey: 'source'` então — mesmo caminho que o Apoia.se percorreu. " +
+      "Campaign é por VEÍCULO, nunca por artigo: se virar coluna recorrente " +
+      "(~1×/mês), o mesmo `perfil-nexo` cobre todos os artigos — um campaign " +
+      "por artigo fatiaria a série em linhas que o Beehiiv nunca soma (`counts` " +
+      "por source e `campaignCounts` por campaign são agregações PLANAS, sem " +
+      "cruzamento), o mesmo bug que o #4525 corrigiu ao unificar " +
+      "`instagram-diaria` em `instagram`. NÃO criar `perfil-nexo-artigo-2` " +
+      "nem variante por artigo.",
+    status: "ativo",
+  },
+  {
+    id: "perfil-outraspalavras",
+    label: "Outras Palavras — bio do artigo assinado",
+    source: "outraspalavras",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("outraspalavras"),
+    // Mesma ressalva de `perfil-nexo`: artigo ainda não enviado ao veículo, sem
+    // URL de artigo real pra registrar. Home como placeholder até publicar.
+    panelUrl: "https://outraspalavras.net/",
+    field: "bio do autor ao pé do artigo",
+    description:
+      "Pré-registrada ANTES da publicação (#5917) — mesmo racional de " +
+      "`perfil-nexo` (ler a descrição de lá): bio de artigo publicado CONGELA, " +
+      "então a instrumentação precisa estar pronta antes do envio, não depois. " +
+      "`appliedAt` ausente = ainda não aplicado, tratado por `computeDrift` " +
+      "como ausência de conversão ESPERADA. Nasce com os 3 parâmetros " +
+      "completos (driftKey 'campaign', default) pelo mesmo motivo de " +
+      "`perfil-nexo` — sem evidência de truncamento de query string por este " +
+      "veículo, não presumir o fallback de 1 parâmetro do Apoia.se " +
+      "preventivamente; migrar pra `driftKey: 'source'` só se confirmado ao " +
+      "vivo. Campaign é por VEÍCULO, nunca por artigo — mesmo racional do " +
+      "#4525 (Beehiiv só agrega PLANO por source/campaign, sem cruzamento): se " +
+      "virar coluna recorrente, `perfil-outraspalavras` cobre todos os " +
+      "artigos; nunca criar `perfil-outraspalavras-artigo-2`.",
+    status: "ativo",
+  },
+  {
     id: "diretorio-manualdousuario",
     label: "Manual do Usuário — diretório de newsletters brasileiras",
     source: "manualdousuario",

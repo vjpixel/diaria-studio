@@ -199,6 +199,84 @@ describe("#4525 — inventário das superfícies externas", () => {
   });
 });
 
+describe("#5917 — Nexo Jornal e Outras Palavras pré-registrados antes da publicação", () => {
+  const NEW_IDS = ["perfil-nexo", "perfil-outraspalavras"] as const;
+
+  it("as duas entradas existem, seguem a convenção bio/perfil-{source} e ainda não têm appliedAt", () => {
+    for (const id of NEW_IDS) {
+      const s = findExternalUtmSurface(id);
+      assert.ok(s, `${id} ausente do inventário`);
+      assert.equal(s!.medium, EXTERNAL_SURFACE_MEDIUM);
+      assert.equal(s!.campaign, buildExternalSurfaceCampaign(s!.source));
+      assert.equal(
+        s!.appliedAt,
+        undefined,
+        `${id}: artigo ainda não publicado — appliedAt tem que ficar ausente até sair`,
+      );
+      assert.equal(s!.status, "ativo");
+      assert.ok(s!.panelUrl.startsWith("https://"), `${id}: panelUrl não é URL absoluta`);
+    }
+  });
+
+  it("nascem com os 3 parâmetros completos — driftKey NÃO é 'source' sem evidência de truncamento", () => {
+    // Decisão do #5917: o fallback de 1 parâmetro (driftKey: 'source') do
+    // Apoia.se foi REATIVO — confirmado ao vivo que a plataforma trunca a URL
+    // no `&`. Sem essa confirmação pra Nexo/Outras Palavras, presumir
+    // truncamento preventivamente trocaria uma exceção por um default sem
+    // base. Migrar pra 'source' só depois de observar truncamento ao vivo.
+    for (const id of NEW_IDS) {
+      const s = findExternalUtmSurface(id);
+      assert.equal(s!.driftKey, undefined, `${id}: default esperado é 'campaign' (driftKey ausente)`);
+    }
+  });
+
+  it("utm_source nu, sem espaço/acento — nexo e outraspalavras", () => {
+    assert.equal(findExternalUtmSurface("perfil-nexo")?.source, "nexo");
+    assert.equal(findExternalUtmSurface("perfil-outraspalavras")?.source, "outraspalavras");
+  });
+
+  it("buildExternalSurfaceUrl monta a URL na convenção exata pras duas", () => {
+    for (const id of NEW_IDS) {
+      const s = findExternalUtmSurface(id)!;
+      const url = new URL(buildExternalSurfaceUrl(s));
+      assert.equal(url.searchParams.get("utm_source"), s.source);
+      assert.equal(url.searchParams.get("utm_medium"), "bio");
+      assert.equal(url.searchParams.get("utm_campaign"), `perfil-${s.source}`);
+    }
+  });
+
+  it("computeDrift NUNCA acusa drift pras duas enquanto appliedAt estiver ausente", () => {
+    // É a garantia central da pré-instrumentação: sem isso, as duas entradas
+    // virariam alarme falso permanente até os artigos de fato saírem.
+    const nexo = findExternalUtmSurface("perfil-nexo")!;
+    const outrasPalavras = findExternalUtmSurface("perfil-outraspalavras")!;
+    const findings = computeDrift(
+      [],
+      {},
+      { externals: [nexo, outrasPalavras], campaignCounts: {} },
+    );
+    assert.equal(findings.find((f) => f.key === "perfil-nexo"), undefined);
+    assert.equal(findings.find((f) => f.key === "perfil-outraspalavras"), undefined);
+  });
+
+  it("uma vez aplicada (appliedAt setado) e sem conversão, vira drift normalmente — mesmo mecanismo das demais", () => {
+    const nexoAplicado: ExternalUtmSurface = {
+      ...findExternalUtmSurface("perfil-nexo")!,
+      appliedAt: "2026-09-15",
+    };
+    const findings = computeDrift([], {}, { externals: [nexoAplicado], campaignCounts: {} });
+    assert.ok(
+      findings.some((f) => f.key === "perfil-nexo" && f.kind === "sem_conversao"),
+      "depois de aplicada, a ausência de conversão passa a ser drift normal",
+    );
+  });
+
+  it("campaign é único por VEÍCULO — não colide com nenhuma outra superfície do inventário", () => {
+    const campaigns = EXTERNAL_UTM_SURFACES.map((s) => s.campaign);
+    assert.equal(new Set(campaigns).size, campaigns.length, "utm_campaign duplicado no inventário");
+  });
+});
+
 describe("#4525 — knownUtmSources inclui as superfícies externas", () => {
   it("todo utm_source externo está em knownUtmSources()", () => {
     const known = new Set(knownUtmSources());
