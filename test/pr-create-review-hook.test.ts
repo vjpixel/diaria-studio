@@ -1536,6 +1536,16 @@ describe("computeCloseKeywordAddendum (#6920)", () => {
       null,
     );
   });
+
+  it("'resolve' está nas duas listas (PT e EN) de propósito — corpo com só 'Resolve #N' não duplica Closes", () => {
+    // PT_CLOSE_VERBS e EN_CLOSE_KEYWORDS ambos contêm "resolve" (é palavra
+    // válida nos dois idiomas e o GitHub já reconhece). Isso é intencional:
+    // travar aqui pra que um "cleanup" futuro de uma das listas não
+    // reintroduza duplicação sem que o CI acuse.
+    assert.equal(computeCloseKeywordAddendum("Resolve #10"), null);
+    assert.deepEqual(extractPtCloseIssueNumbers("Resolve #10"), [10]);
+    assert.deepEqual(extractEnCloseIssueNumbers("Resolve #10"), [10]);
+  });
 });
 
 describe("extractPtCloseIssueNumbers / extractEnCloseIssueNumbers (#6920)", () => {

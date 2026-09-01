@@ -851,11 +851,12 @@ export function ensureCloseKeywords(prUrl, { execFn = execFileSync } = {}) {
     if (!num) return { applied: false, reason: "no-pr-number" };
     const body = execFn("gh", ["pr", "view", String(num), "--json", "body", "-q", ".body"], {
       encoding: "utf8",
+      timeout: 10_000,
     });
     const addendum = computeCloseKeywordAddendum(body);
     if (!addendum) return { applied: false, reason: "not-needed" };
     const newBody = `${body.replace(/\s+$/, "")}\n\n${addendum}\n`;
-    execFn("gh", ["pr", "edit", String(num), "--body", newBody], { encoding: "utf8" });
+    execFn("gh", ["pr", "edit", String(num), "--body", newBody], { encoding: "utf8", timeout: 10_000 });
     return { applied: true, addendum };
   } catch {
     return { applied: false, reason: "error" };
