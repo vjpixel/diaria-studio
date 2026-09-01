@@ -565,6 +565,22 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#6365",
   },
   {
+    name: "Diaria-Kit-Doi-Orphan-Guard",
+    description:
+      "detecta assinantes Kit criados inactive (double opt-in do worker poll) que nunca foram vinculados ao form de confirmação — presos para sempre sem o guard, incidente de 28/08/2026",
+    steps: [{ key: "check", script: "scripts/kit-doi-orphan-guard.ts" }],
+    logPath: "kit-doi-orphan-guard/.guard-check.log",
+    // Diária 10:35 — logo depois de Diaria-Subscribe-Redirect-Drift-Check
+    // (10:30, acima), fechando o cluster matinal de checks/alarmes de
+    // cadastro; sem colisão com nenhuma outra daily já registrada (ver grep
+    // de `kind: "daily"` neste arquivo). Mesmo raciocínio dos vizinhos:
+    // órfão preso em inactive não piora rodando mais devagar — o conserto
+    // (rodar o resgate manual da Ação 1 da issue) é ação do editor, então
+    // detectar de madrugada não adianta.
+    schedule: { kind: "daily", hour: 10, minute: 35 },
+    issue: "#6810",
+  },
+  {
     name: "Diaria-Hub-Staleness-Check",
     description: "detecta edições publicadas que casam HUB_KEYWORD_PATTERNS mas não estão no dataset commitado do hub (persiste snapshot diário + alarma se >= 3 dias)",
     steps: [{ key: "check", script: "scripts/hub-staleness-check.ts" }],
