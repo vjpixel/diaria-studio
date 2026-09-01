@@ -2,15 +2,20 @@
 /**
  * clarice-envio-guard.ts (#5026)
  *
- * NOTA (#6793 "Faixa B" item 2, 01/09/2026 — item 3 desta issue,
- * `handlePrereqFailure`, ainda NÃO tocado): `decideBrake` (fonte do freio
+ * NOTA (#6793 "Faixa B" item 2, 01/09/2026): `decideBrake` (fonte do freio
  * de risco de ISP re-checado abaixo) não produz mais `"stop"`/`"hold"`
  * sozinho — o snapshot re-lido aqui virá `"ok"` na imensa maioria das
  * rodadas. Os caminhos `stop`/`hold` deste arquivo seguem funcionando
  * (defesa em profundidade, testados), só ficam inalcançáveis via
- * `decideBrake` — continuam alcançáveis por `handlePrereqFailure`
- * (fail-closed por falha de PRÉ-REQUISITO, não por risco de ISP — mesma
- * distinção que #6793 item 3 vai precisar respeitar) e por override manual.
+ * `decideBrake` — continuam alcançáveis por override manual e (só
+ * transitoriamente — ver nota em `handlePrereqFailure` abaixo) por um
+ * snapshot de freio gravado em disco ANTES deste merge. **Item 3 desta
+ * issue (`handlePrereqFailure`) foi avaliado e fechado SEM mudança de
+ * código** — o caminho "freio da rodada das 19:00" que ele lê é uma
+ * checagem de INTEGRIDADE de dado (snapshot ausente/ilegível), não um
+ * freio sobre risco medido, e por isso está fora do escopo de remoção
+ * do #6793 (distinção completa: issue #6793, comentário de fechamento
+ * do item 3).
  *
  * Task `Diaria-Clarice-Envio-Guard` (05:00 BRT) — segunda metade do par com
  * `clarice-envio-run.ts` (19:00 BRT). A onda de HOJE foi planejada e
@@ -509,6 +514,17 @@ async function handlePrereqFailure(
     return { code: 0, reportId, reportMarkdown: report.build() };
   }
 
+  // #6793 "Faixa B" item 2 (01/09/2026) — desde o merge, `decideBrake` só
+  // grava `"ok"` no snapshot de `clarice-envio-run.ts` (19:00), então o
+  // caminho `stop`/`hold` abaixo é estruturalmente TRANSITÓRIO: só dispara
+  // se `readLastBrakeSnapshot` ler um arquivo gravado ANTES deste merge
+  // (rodada das 19:00 anterior ao deploy). Uma suspensão vista logo após
+  // o deploy que cite `stop`/`hold` é esse resíduo, não uma regressão —
+  // ela se resolve sozinha na PRÓXIMA rodada das 19:00 (que já grava
+  // `"ok"`). Item 3 desta issue avaliou este código e o manteve
+  // intocado: a checagem abaixo é sobre INTEGRIDADE do snapshot (ausente/
+  // ilegível), não sobre risco medido — fora do escopo de remoção.
+  //
   // #5698 — "snapshot ausente" (nunca gravado, ex: rodada de ontem parou no
   // short-circuit de onda-já-existente antes do #5698, ou o run de ontem
   // abortou antes de ler o risco) e "freio medido NÃO-OK" (stop/hold, valor
