@@ -126,7 +126,12 @@ echo "$PROMPT" | timeout 5400 claude -p \
   --allowedTools "Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(gh pr list:*)" \
   --model opus --effort low | tee "$OUT_FILE"
 
-if ! grep -q "RESUMO-DAILY-REVIEW:" "$OUT_FILE"; then
+# #6987/#6989 (01/09/2026): `command grep` — neste ambiente `grep` é uma
+# função de shell que shella pro binário `claude`; se ele quebrar, todo
+# `grep` falha junto. `command grep` bypassa a função e vai direto ao
+# binário do sistema, imune à quebra (ver hermes/scripts/claude-openrouter.sh
+# pra docstring completa do mecanismo).
+if ! command grep -q "RESUMO-DAILY-REVIEW:" "$OUT_FILE"; then
   echo "[daily-review] ERRO: output não contém o marcador RESUMO-DAILY-REVIEW — review possivelmente incompleto; marco NÃO avançado (transcript em $OUT_FILE)" >&2
   exit 4
 fi

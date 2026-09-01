@@ -37,7 +37,14 @@ have_issue() {
   local marker="$1"
   local titles
   titles=$(gh issue list --state open --limit 100 --json title --jq '.[].title' 2>/dev/null) || return 2
-  printf '%s' "$titles" | grep -qF "$marker"
+  # #6987/#6989 (01/09/2026): `command grep` — sem isso, um `grep` quebrado
+  # (neste ambiente é função de shell que shella pro binário `claude`) sai
+  # não-zero, INDISTINGUÍVEL de "marcador não encontrado" (rc=1 normal desta
+  # chamada) — colapsaria "ferramenta quebrada" em "issue não existe ainda",
+  # levando `file_issue` a criar uma possível duplicata por uma causa que não
+  # tem nada a ver com o GitHub. `command grep` bypassa a função e vai direto
+  # ao binário do sistema.
+  printf '%s' "$titles" | command grep -qF "$marker"
 }
 
 file_issue() {

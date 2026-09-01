@@ -44,11 +44,11 @@ describe("reconsulta de catálogo antes do exit 4 de config-inválida (#6803)", 
 
   it("o elif de 'model not found' reconsulta o catálogo ANTES de setar SAW_CONFIG_ERROR_SIGNAL", () => {
     const modelNotFoundIdx = source.indexOf(
-      'elif grep -qiE "model not found|invalid model|not a valid model|no endpoints found|no allowed providers" "$STDERR_ONLY_LOG"; then',
+      'elif command grep -qiE "model not found|invalid model|not a valid model|no endpoints found|no allowed providers" "$STDERR_ONLY_LOG"; then',
     );
     assert.ok(modelNotFoundIdx > -1, "elif de config-inválida (model not found) não encontrado");
 
-    const nextElifIdx = source.indexOf("elif grep -qiE", modelNotFoundIdx + 1);
+    const nextElifIdx = source.indexOf("elif command grep -qiE", modelNotFoundIdx + 1);
     assert.ok(nextElifIdx > modelNotFoundIdx, "próximo elif (rate-limit) não encontrado");
     const branch = source.slice(modelNotFoundIdx, nextElifIdx);
 

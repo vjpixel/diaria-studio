@@ -41,7 +41,7 @@ describe("classificação de erro do wrapper OpenRouter (#6696)", () => {
 
   it("finding 1: o elif de budget-exceeded seta SAW_CONFIG_ERROR_SIGNAL, não SAW_QUOTA_SIGNAL", () => {
     // #6796: o padrão migrou de prosa frouxa pra string literal do CLI.
-    const budgetElifIdx = source.indexOf('elif grep -qE "Exceeded USD budget"');
+    const budgetElifIdx = source.indexOf('elif command grep -qE "Exceeded USD budget"');
     assert.ok(budgetElifIdx > -1, "elif de budget-exceeded não encontrado");
     // A próxima ocorrência de SAW_*_SIGNAL= depois deste elif é a que ele seta.
     const nextConfigSignal = source.indexOf("SAW_CONFIG_ERROR_SIGNAL=1", budgetElifIdx);
@@ -57,7 +57,7 @@ describe("classificação de erro do wrapper OpenRouter (#6696)", () => {
   });
 
   it("finding 2: os greps de config-inválida e rate-limit classificam contra um snapshot puro de stderr, não o ATTEMPT_LOG combinado com stdout", () => {
-    const modelNotFoundElif = /elif grep -qiE "model not found[^"]*" "(\$\w+)"/.exec(source);
+    const modelNotFoundElif = /elif command grep -qiE "model not found[^"]*" "(\$\w+)"/.exec(source);
     assert.ok(modelNotFoundElif, "elif de config-inválida (model not found) não encontrado");
     assert.notEqual(
       modelNotFoundElif![1],
@@ -67,7 +67,7 @@ describe("classificação de erro do wrapper OpenRouter (#6696)", () => {
         "(assunto real deste checkout) dispararia exit 4 espúrio (#6696 finding 2).",
     );
 
-    const rateLimitElif = /elif grep -qiE "rate\.\?limit[^"]*" "(\$\w+)"/.exec(source);
+    const rateLimitElif = /elif command grep -qiE "rate\.\?limit[^"]*" "(\$\w+)"/.exec(source);
     assert.ok(rateLimitElif, "elif de rate-limit não encontrado");
     assert.notEqual(
       rateLimitElif![1],
@@ -93,7 +93,7 @@ describe("classificação de erro do wrapper OpenRouter (#6696)", () => {
   it("finding 2 (regressão inversa): o grep de budget-exceeded continua vendo o STDOUT (precisa, #6666)", () => {
     // O budget error do CLI vai pro stdout — não pode migrar pro snapshot
     // stderr-only, senão o #6666 volta a quebrar.
-    const budgetElif = /elif grep -qE "Exceeded USD budget" "(\$\w+)"/.exec(source);
+    const budgetElif = /elif command grep -qE "Exceeded USD budget" "(\$\w+)"/.exec(source);
     assert.ok(budgetElif, "elif de budget-exceeded não encontrado");
     assert.equal(
       budgetElif![1],
@@ -109,7 +109,7 @@ describe("classificação de erro do wrapper OpenRouter (#6696)", () => {
     // uma resposta gerada pelo modelo discutindo o próprio bug de budget
     // (assunto real deste checkout, #6712/#6716/#6791) não casa — só o
     // texto EXATO que o CLI emite deve casar.
-    const budgetElif = /elif grep -qE "([^"]+)" "\$ATTEMPT_LOG"/.exec(source);
+    const budgetElif = /elif command grep -qE "([^"]+)" "\$ATTEMPT_LOG"/.exec(source);
     assert.ok(budgetElif, "elif de budget-exceeded não encontrado");
     const pattern = new RegExp(budgetElif![1]);
     assert.ok(
@@ -130,7 +130,7 @@ describe("classificação de erro do wrapper OpenRouter (#6696)", () => {
   it("finding 3: o filtro de ruído (grep -vE ... >&2) roda DEPOIS do check de sucesso, não antes", () => {
     const successCheckIdx = source.indexOf('if [ $RC -eq 0 ] && [ -n "$OUT" ]; then');
     const noiseFilterIdx = source.indexOf(
-      'grep -vE "not a model this version|unrecognized_model|connectors are disabled" "$ATTEMPT_LOG" >&2',
+      'command grep -vE "not a model this version|unrecognized_model|connectors are disabled" "$ATTEMPT_LOG" >&2',
     );
     assert.ok(
       successCheckIdx > -1 && noiseFilterIdx > -1,
