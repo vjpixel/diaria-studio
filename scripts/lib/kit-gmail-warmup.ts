@@ -398,6 +398,19 @@ export function buildOutOfBandWaveEntry(
  * sem atraso observado), consultada só para os endereços que a rodada está
  * prestes a propor — o custo fica no tamanho da ONDA, não do cohort inteiro.
  */
+export function partitionByConfirmedTag(
+  emails: readonly string[],
+  confirmedTagged: ReadonlySet<string>,
+): { alreadyTagged: string[]; stillPending: string[] } {
+  const alreadyTagged: string[] = [];
+  const stillPending: string[] = [];
+  for (const email of emails) {
+    if (confirmedTagged.has(email.trim().toLowerCase())) alreadyTagged.push(email);
+    else stillPending.push(email);
+  }
+  return { alreadyTagged, stillPending };
+}
+
 /**
  * Quem, entre os endereços ABSORVIDOS como migrados fora da rampa, viola o
  * invariante de envio em dobro — está tagueado no Kit E ainda ativo na
@@ -424,19 +437,6 @@ export function resolveOutOfBandBeehiivViolation(
 ): string[] {
   if (!beehiivCfgOk) return [...emails];
   return emails.filter((e) => activeBeehiivEmails.has(e.trim().toLowerCase()));
-}
-
-export function partitionByConfirmedTag(
-  emails: readonly string[],
-  confirmedTagged: ReadonlySet<string>,
-): { alreadyTagged: string[]; stillPending: string[] } {
-  const alreadyTagged: string[] = [];
-  const stillPending: string[] = [];
-  for (const email of emails) {
-    if (confirmedTagged.has(email.trim().toLowerCase())) alreadyTagged.push(email);
-    else stillPending.push(email);
-  }
-  return { alreadyTagged, stillPending };
 }
 
 /** União dos e-mails de todas as ondas PUSHADAS. Pura. */

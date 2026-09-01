@@ -20,7 +20,11 @@
  * deliberado (ver `confirmTaggedEmails`); a garantia de não-mutação é a
  * mesma de sempre. `--push` faz a mutação real: `tagSubscriber` na tag de
  * `kit_diaria.audience_tag` (`platform.config.json`) pra cada endereço
- * SEGURO da onda (ver partição abaixo), e persiste o estado.
+ * SEGURO da onda (ver partição abaixo), e persiste o estado — somando outras
+ * 3 chamadas espaçadas por endereço (~105s só de espera numa onda de 100).
+ * Somando tudo, uma rodada `--push` sobre onda de 100 leva vários MINUTOS.
+ * Relevante se um dia isto virar task agendada (hoje é invocação manual, não
+ * está em `docs/scheduled-tasks-registry.md`): o timeout precisa caber nisso.
  *
  * ## Partição Beehiiv — o guard que evita duplicar envio
  *
@@ -334,6 +338,13 @@ export async function runWarmupRamp(opts: {
 }): Promise<WarmupRampResult> {
   const statePath = opts.statePath ?? DEFAULT_KIT_GMAIL_WARMUP_STATE_PATH;
   let state = opts.reset ? null : loadState(statePath);
+  // Rastreado à parte de `pushed` (finding 2 da 2ª rodada de review): uma
+  // escrita pode acontecer numa rodada que termina sem onda nenhuma (gate
+  // segurou, cohort esgotado), e o relatório dizia "só em memória (dry-run)"
+  // sobre algo já em disco. Declarado AQUI, antes da 1ª escrita possível — a
+  // captura do cohort na 1ª invocação —, porque declarar depois dela deixava
+  // o campo mentindo justamente na primeira rodada (finding A da 3ª rodada).
+  let statePersisted = false;
 
   assertReferenceBroadcastImmutable(state, opts.referenceBroadcastId);
 
@@ -354,7 +365,10 @@ export async function runWarmupRamp(opts: {
     ]);
     const rejected = computeGmailRejectedEmails(sent.emails, delivered.emails, apoioNivelByEmail);
     state = buildInitialState(opts.referenceBroadcastId, rejected);
-    if (opts.push) saveState(state, statePath);
+    if (opts.push) {
+      saveState(state, statePath);
+      statePersisted = true;
+    }
   }
 
   const gate = await measureGate(opts.gateBroadcastId);
@@ -379,11 +393,6 @@ export async function runWarmupRamp(opts: {
 
   const outOfBandReturned: string[] = [];
   const outOfBandStillActiveOnBeehiiv: string[] = [];
-  // Rastreado à parte de `pushed` (finding 2 da 2ª rodada de review): uma
-  // absorção pode ser GRAVADA numa rodada que termina sem onda nenhuma
-  // (gate segurou, cohort esgotado) — e o relatório dizia "só em memória
-  // (dry-run)" sobre algo que já estava em disco.
-  let statePersisted = false;
   /** Absorve no estado quem já migrou fora da rampa, registrando quem entre
    *  eles continua ativo na Beehiiv. Persiste SEPARADAMENTE da onda desta
    *  rodada: se o tagueamento adiante falhar no meio, o que já era verdade no
