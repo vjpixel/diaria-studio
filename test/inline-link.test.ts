@@ -131,6 +131,62 @@ describe("parseInlineLink — strip de **...** dentro do título (regression: **
     );
     assert.equal(r?.title, "Modelos se replicam sozinhos, diz estudo inédito");
   });
+
+  // #6868: títulos com colchetes aninhados (tag de source no início, ex:
+  // `[[AINews] OpenAI shuts off Cursor](url)`) caíam no fallback do parser
+  // porque o regex `[^\]]+` parava no primeiro `]`. O scan com
+  // balanceamento de colchetes corrige isso.
+  it("colchetes aninhados no título: [[AINews] X](url) → 'AINews' + url", () => {
+    const r = parseInlineLink("[[AINews] OpenAI shuts off Cursor](https://example.com/ainews)");
+    assert.deepEqual(r, {
+      title: "[AINews] OpenAI shuts off Cursor",
+      url: "https://example.com/ainews",
+    });
+  });
+
+  it("colchetes aninhados com **wrap externo: **[[AINews] X](url)**", () => {
+    const r = parseInlineLink("**[[AINews] OpenAI shuts off Cursor](https://example.com/ainews)**");
+    assert.deepEqual(r, {
+      title: "[AINews] OpenAI shuts off Cursor",
+      url: "https://example.com/ainews",
+    });
+  });
+
+  it("colchetes aninhados com **dentro do título: [**[AINews] X**](url)", () => {
+    const r = parseInlineLink("[**[AINews] OpenAI shuts off Cursor**](https://example.com/ainews)");
+    assert.deepEqual(r, {
+      title: "[AINews] OpenAI shuts off Cursor",
+      url: "https://example.com/ainews",
+    });
+  });
+
+  it("colchetes aninhados + **duplo wrap: **[**[AINews] X**](url)**", () => {
+    const r = parseInlineLink("**[**[AINews] OpenAI shuts off Cursor**](https://example.com/ainews)**");
+    assert.deepEqual(r, {
+      title: "[AINews] OpenAI shuts off Cursor",
+      url: "https://example.com/ainews",
+    });
+  });
+
+  it("colchetes aninhados com trailing: [[AINews] X](url) summary", () => {
+    const r = parseInlineLinkWithTrailing("[[AINews] OpenAI shuts off Cursor](https://example.com/ainews) summary");
+    assert.deepEqual(r, {
+      title: "[AINews] OpenAI shuts off Cursor",
+      url: "https://example.com/ainews",
+      trailing: "summary",
+    });
+  });
+
+  it("colchetes desbalanceados (sem fechar) → null", () => {
+    assert.equal(parseInlineLink("[[AINews OpenAI shuts off Cursor](https://example.com)"), null);
+  });
+
+  it("colchetes aninhados na URL: [T](https://x.com/[path])", () => {
+    // URL com colchetes — o scan de parênteses já lida com isso, mas o
+    // título não pode interferir no destino.
+    const r = parseInlineLink("[Título](https://x.com/[path])");
+    assert.equal(r?.url, "https://x.com/[path]");
+  });
 });
 
 describe("parseInlineLinkWithTrailing (#1581)", () => {
