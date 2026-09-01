@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import {
   buildHomeFeed,
   buildIndexHtml,
+  extractHeroImage,
   extractPageMeta,
   slugFromCanonicalUrl,
 } from "../scripts/lib/site-home-page.ts";
@@ -27,8 +28,11 @@ import { buildSitemapXml, addSitemapEntry, sitemapEntryFromPost } from "../scrip
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC_DIR = resolve(ROOT, "workers", "site", "public");
 
-function fakePageHtml(title: string, description: string): string {
-  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>${title}</title><meta name="description" content="${description}"></head><body></body></html>`;
+function fakePageHtml(title: string, description: string, heroSrc?: string): string {
+  const hero = heroSrc
+    ? `<img class="hero" src="${heroSrc}" alt="${title}" width="536" style="display:block;width:100%;height:auto;border-radius:6px;margin-top:24px;" border="0">`
+    : "";
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>${title}</title><meta name="description" content="${description}"></head><body>${hero}</body></html>`;
 }
 
 describe("slugFromCanonicalUrl", () => {
@@ -56,6 +60,34 @@ describe("extractPageMeta", () => {
   });
 });
 
+describe("extractHeroImage", () => {
+  it("extrai o src do primeiro img.hero", () => {
+    const html = fakePageHtml("T", "D", "https://eia.diar.ia.br/img/img-260729-04-d1-2x1-x.jpg");
+    assert.equal(extractHeroImage(html), "https://eia.diar.ia.br/img/img-260729-04-d1-2x1-x.jpg");
+  });
+
+  it("devolve o PRIMEIRO img.hero quando há vários (D1, não D2/D3)", () => {
+    const html = `<!DOCTYPE html><html><body>
+      <img class="hero" src="https://eia.diar.ia.br/img/d1.jpg" alt="d1">
+      <img class="hero" src="https://eia.diar.ia.br/img/d2.jpg" alt="d2">
+    </body></html>`;
+    assert.equal(extractHeroImage(html), "https://eia.diar.ia.br/img/d1.jpg");
+  });
+
+  it("devolve null quando não há img.hero", () => {
+    assert.equal(extractHeroImage(fakePageHtml("T", "D")), null);
+  });
+
+  it("devolve null pra src vazio (não vaza string vazia)", () => {
+    const html = `<!DOCTYPE html><html><body><img class="hero" src="" alt="x"></body></html>`;
+    assert.equal(extractHeroImage(html), null);
+  });
+
+  it("nunca lança em HTML malformado", () => {
+    assert.doesNotThrow(() => extractHeroImage("<img class=hero src=broken"));
+  });
+});
+
 describe("buildHomeFeed", () => {
   const sitemapXml = buildSitemapXml([
     { loc: "https://diar.ia.br/p/edicao-mais-recente", lastmod: "2026-08-26" },
@@ -64,7 +96,11 @@ describe("buildHomeFeed", () => {
   ]);
 
   const pages: Record<string, string> = {
-    "edicao-mais-recente": fakePageHtml("Edição mais recente", "Resumo da mais recente"),
+    "edicao-mais-recente": fakePageHtml(
+      "Edição mais recente",
+      "Resumo da mais recente",
+      "https://eia.diar.ia.br/img/img-x-04-d1-2x1-x.jpg",
+    ),
     "edicao-anterior": fakePageHtml("Edição anterior", "Resumo da anterior"),
   };
 
@@ -73,6 +109,17 @@ describe("buildHomeFeed", () => {
     assert.equal(feed.length, 2);
     assert.equal(feed[0].slug, "edicao-mais-recente");
     assert.equal(feed[1].slug, "edicao-anterior");
+  });
+
+  it("popula image quando a página tem img.hero", () => {
+    const feed = buildHomeFeed(sitemapXml, (slug) => pages[slug] ?? null);
+    assert.equal(feed[0].image, "https://eia.diar.ia.br/img/img-x-04-d1-2x1-x.jpg");
+  });
+
+  it("image é null (nunca pula a entrada) quando a página não tem img.hero", () => {
+    const feed = buildHomeFeed(sitemapXml, (slug) => pages[slug] ?? null);
+    assert.equal(feed[1].slug, "edicao-anterior");
+    assert.equal(feed[1].image, null);
   });
 
   it("pula slug sem página gerada em vez de quebrar o lote", () => {
@@ -105,6 +152,7 @@ describe("buildIndexHtml", () => {
     description: "Resumo do destaque",
     url: "https://diar.ia.br/p/destaque-do-dia",
     date: "2026-08-27",
+    image: "https://eia.diar.ia.br/img/img-x-04-d1-2x1-x.jpg",
   };
   const archive = [
     {
@@ -113,9 +161,30 @@ describe("buildIndexHtml", () => {
       description: "Resumo anterior",
       url: "https://diar.ia.br/p/edicao-anterior",
       date: "2026-08-26",
+      image: null,
     },
   ];
   const html = buildIndexHtml({ feature, archive });
+
+  it("renderiza a capa do destaque (#6978 item 1) quando feature.image existe", () => {
+    assert.match(html, /<div class="feature-grid">/);
+    assert.match(
+      html,
+      /<img src="https:\/\/eia\.diar\.ia\.br\/img\/img-x-04-d1-2x1-x\.jpg" alt="Destaque do dia" loading="lazy">/,
+    );
+  });
+
+  it("degrada pro layout só-texto sem quebrar quando feature.image é null", () => {
+    const noImage = buildIndexHtml({
+      feature: { ...feature, image: null },
+      archive,
+    });
+    assert.ok(
+      !noImage.includes('<div class="feature-grid">'),
+      "não deve montar o grid de imagem sem capa",
+    );
+    assert.match(noImage, /<h2 class="feature-title">Destaque do dia<\/h2>/);
+  });
 
   it("contém os 7 blocos esperados (Nav, Masthead, Feature, Specials, Archive, Faqs, Footer)", () => {
     for (const id of ["nav", "masthead", "feature", "specials", "archive", "faqs", "footer"]) {
@@ -149,6 +218,7 @@ describe("buildIndexHtml", () => {
         description: `<img src=x onerror=alert(1)>`,
         url: "https://diar.ia.br/p/destaque-perigoso",
         date: "2026-08-27",
+        image: null,
       },
       archive: [
         {
@@ -157,6 +227,7 @@ describe("buildIndexHtml", () => {
           description: "ok",
           url: "https://diar.ia.br/p/arquivo-perigoso",
           date: "2026-08-26",
+          image: null,
         },
       ],
     });
@@ -197,6 +268,7 @@ describe("buildIndexHtml", () => {
           description: "ok",
           url: "https://diar.ia.br/p/data-invalida",
           date: "2026-13-40",
+          image: null,
         },
       ],
     });
