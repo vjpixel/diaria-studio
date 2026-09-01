@@ -145,7 +145,10 @@ try:
     rows = json.load(sys.stdin)
     for r in rows:
         if isinstance(r, dict) and r.get('vazamento_pago'):
-            print(f\"{r['dia']} {r['modelo']} (pedido: {r['pedido']}) est=\${r['custo_estimado']}\")
+            # #6880: 'pedido' foi removido (artefato de JOIN com
+            # sessions.model, fabricava substituicoes que nunca
+            # aconteceram — foi isso que abriu o #6708 como falso P1).
+            print(f\"{r['dia']} {r['modelo']} est=\${r['custo_estimado']}\")
 except Exception:
     print('__ERR__')" 2>/dev/null || echo "__ERR__")
 if [ "$VAZ" = "__ERR__" ]; then
