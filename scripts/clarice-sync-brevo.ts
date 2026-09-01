@@ -286,6 +286,29 @@ export function collectOpenedEmails(caches: CampaignCache[]): Set<string> {
   return out;
 }
 
+interface DeliveredStats {
+  count: number;
+  lastSentAt: string | null;
+}
+
+/** #6814: agrega entregas por contato a partir dos exports de campanha. */
+export function collectDeliveredStats(caches: CampaignCache[]): Map<string, DeliveredStats> {
+  const out = new Map<string, DeliveredStats>();
+  for (const cache of caches) {
+    for (const [email, flags] of Object.entries(cache.recipients)) {
+      if (!flags.delivered) continue;
+      const current = out.get(email) ?? { count: 0, lastSentAt: null };
+      current.count += 1;
+      const candidate = flags.deliveredAt ?? cache.sentDate ?? null;
+      if (candidate && (!current.lastSentAt || Date.parse(candidate) > Date.parse(current.lastSentAt))) {
+        current.lastSentAt = candidate;
+      }
+      out.set(email, current);
+    }
+  }
+  return out;
+}
+
 export interface OpensCatchupDeps {
   /** Cliente de export de campanha — real (`makeRealCampaignExportClient`) ou fake em teste. */
   client: CampaignExportClient;
@@ -361,6 +384,8 @@ export interface OpensCatchupResult {
   campaignsSkippedRefresh: number;
   campaignsFailed: number;
   openersFound: number;
+  deliveredFound: number;
+  deliveredBackfilled: number;
   contactsUpdated: number;
   contactsFailed: number;
 }
@@ -459,16 +484,17 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
   });
 
   const openersFull = collectOpenedEmails(caches);
+  const deliveredStats = collectDeliveredStats(caches);
   // #4722 item 2: --limit trunca o PROCESSAMENTO (fetch+upsert), não a
-  // contagem reportada — openersFound abaixo usa openersFull.size, sempre o
-  // total real da janela, mesmo com limite ativo.
-  const openerEmails =
+  // contagem reportada — openersFound/deliveredFound usam os conjuntos completos.
+  const contactEmails =
     deps.limit && deps.limit > 0
-      ? new Set(Array.from(openersFull).slice(0, deps.limit))
-      : openersFull;
+      ? new Set([...new Set([...openersFull, ...deliveredStats.keys()])].slice(0, deps.limit))
+      : new Set([...openersFull, ...deliveredStats.keys()]);
 
   let contactsUpdated = 0;
   let contactsFailed = 0;
+  let deliveredBackfilled = 0;
 
   // #4722 item 3: escrita em BATCH (mesmo padrão do flush()/BEGIN-COMMIT do
   // loop principal) — o fetch (I/O de rede) segue concorrente via pool();
@@ -504,13 +530,22 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
     }
   };
 
-  await pool(Array.from(openerEmails), concurrency, async (email) => {
+  await pool(Array.from(contactEmails), concurrency, async (email) => {
     try {
       const contact = await deps.fetchContact(email);
       const cols = parseBrevoContact(contact);
       if (!cols.email) {
         contactsFailed++; // 404/corpo vazio (contato sumiu entre o export e a re-busca)
         return;
+      }
+      const delivery = deliveredStats.get(email);
+      if (delivery && delivery.count > cols.sends_count) {
+        cols.sends_count = delivery.count;
+        if (delivery.lastSentAt) cols.last_sent_at = delivery.lastSentAt;
+        deliveredBackfilled++;
+      } else if (delivery?.lastSentAt && !cols.last_sent_at) {
+        cols.last_sent_at = delivery.lastSentAt;
+        deliveredBackfilled++;
       }
       buffer.push(cols);
       contactsUpdated++;
@@ -543,6 +578,8 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
     ).length,
     campaignsFailed,
     openersFound: openersFull.size,
+    deliveredFound: deliveredStats.size,
+    deliveredBackfilled,
     contactsUpdated,
     contactsFailed,
   };
@@ -764,6 +801,8 @@ export async function main(
         `✅ catch-up: ${result.campaignsInWindow}/${result.campaignsConsidered} campanhas na janela ` +
           `(${result.campaignsFailed} falharam, ${result.campaignsSkippedRefresh} do cache sem re-export) · ` +
           `${result.openersFound} openers · ` +
+          `${result.deliveredFound} entregues · ` +
+          `${result.deliveredBackfilled} envios backfilled · ` +
           `${result.contactsUpdated} contatos atualizados (${result.contactsFailed} falharam)`,
       );
       opensCatchup = { ok: true, result };

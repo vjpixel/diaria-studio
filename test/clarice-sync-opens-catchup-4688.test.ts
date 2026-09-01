@@ -32,6 +32,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   collectOpenedEmails,
+  collectDeliveredStats,
   runOpensCatchup,
   DEFAULT_OPENS_CATCHUP_WINDOW_DAYS,
   main,
@@ -67,6 +68,26 @@ test("collectOpenedEmails: extrai só quem tem opened=true; union sem duplicar e
   assert.deepEqual([...emails].sort(), ["a@x.com", "c@x.com"]);
 });
 
+test("collectDeliveredStats: conta campanhas entregues e usa a data mais recente", () => {
+  const stats = collectDeliveredStats([
+    {
+      campaignId: 1,
+      campaignName: "A",
+      sentDate: "2026-08-01T10:00:00.000Z",
+      exportedAt: "2026-08-02T00:00:00.000Z",
+      recipients: { "a@x.com": { delivered: true, deliveredAt: "2026-08-01T10:05:00.000Z", opened: false, bounced: false, unsubscribed: false } },
+    },
+    {
+      campaignId: 2,
+      campaignName: "B",
+      sentDate: "2026-08-03T10:00:00.000Z",
+      exportedAt: "2026-08-04T00:00:00.000Z",
+      recipients: { "a@x.com": { delivered: true, opened: false, bounced: false, unsubscribed: false }, "b@x.com": { delivered: false, opened: false, bounced: false, unsubscribed: false } },
+    },
+  ]);
+  assert.deepEqual(stats.get("a@x.com"), { count: 2, lastSentAt: "2026-08-03T10:00:00.000Z" });
+  assert.equal(stats.has("b@x.com"), false);
+});
 test("collectOpenedEmails: sem caches ou sem nenhum opened → conjunto vazio", () => {
   assert.equal(collectOpenedEmails([]).size, 0);
   assert.equal(
@@ -124,7 +145,7 @@ function makeFakeClient(
   };
 }
 
-test("runOpensCatchup: só considera campanhas DENTRO da janela; agrega openers; re-busca e upserta cada um", async () => {
+test("runOpensCatchup: só considera campanhas DENTRO da janela; agrega entregues e openers", async () => {
   const recent = fakeCampaign(1, 2); // 2 dias atrás — dentro da janela default (7d)
   const old = fakeCampaign(2, 400); // muito antiga — fora da janela
   const campaigns = [recent, old];
@@ -156,12 +177,29 @@ test("runOpensCatchup: só considera campanhas DENTRO da janela; agrega openers;
   assert.equal(result.campaignsInWindow, 1, "a campanha de 400 dias atrás fica fora da janela default");
   assert.equal(result.campaignsFailed, 0);
   assert.equal(result.openersFound, 1, "só a@x.com abriu na campanha dentro da janela");
-  assert.deepEqual(fetched, ["a@x.com"]);
-  assert.deepEqual(upserted, ["a@x.com"]);
-  assert.equal(result.contactsUpdated, 1);
+  assert.deepEqual(fetched.sort(), ["a@x.com", "b@x.com"]);
+  assert.deepEqual(upserted.sort(), ["a@x.com", "b@x.com"]);
+  assert.equal(result.deliveredFound, 2);
+  assert.equal(result.contactsUpdated, 2);
   assert.equal(result.contactsFailed, 0);
 });
 
+test("runOpensCatchup: entrega sem abertura faz backfill de sends_count e last_sent_at", async () => {
+  const campaign = fakeCampaign(1, 1);
+  const client = makeFakeClient([campaign], { 1: [{ email: "delivered-only@x.com", opened: false }] });
+  let saved: any;
+  const result = await runOpensCatchup({
+    client,
+    fetchContact: async (email) => ({ email, statistics: {} }),
+    upsert: (cols) => { saved = cols; },
+    cacheDir: mkdtempSync(resolve(tmpdir(), "opens-catchup-cache-")),
+  });
+  assert.equal(result.openersFound, 0);
+  assert.equal(result.deliveredFound, 1);
+  assert.equal(result.deliveredBackfilled, 1);
+  assert.equal(saved.sends_count, 1);
+  assert.equal(saved.last_sent_at, "2026-08-01 10:00:00");
+});
 test("runOpensCatchup: falha no export de UMA campanha não aborta as demais (fail-soft)", async (t) => {
   const c1 = fakeCampaign(1, 1);
   const c2 = fakeCampaign(2, 1);

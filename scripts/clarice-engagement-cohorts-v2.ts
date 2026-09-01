@@ -189,6 +189,8 @@ export interface CampaignRecipientRow {
 /** Flags derivados de UMA linha do CSV (1 destinatário, 1 campanha). Pura. */
 export interface CampaignRecipientFlags {
   delivered: boolean;
+  /** Data de entrega reportada pelo export, quando disponível. */
+  deliveredAt?: string;
   opened: boolean;
   bounced: boolean;
   unsubscribed: boolean;
@@ -216,8 +218,10 @@ export function normalizeEmail(v: string | undefined | null): string {
  */
 export function csvRowToFlags(row: CampaignRecipientRow): CampaignRecipientFlags {
   const totalOpens = Number(row["Total Opens"]);
+  const deliveredAt = isFilled(row.Delivered_Date) ? row.Delivered_Date!.trim() : undefined;
   return {
     delivered: isFilled(row.Delivered_Date),
+    ...(deliveredAt ? { deliveredAt } : {}),
     opened: !Number.isNaN(totalOpens) && totalOpens > 0,
     bounced: isFilled(row.Hard_Bounce_Date) || isFilled(row.Soft_Bounce_Date),
     unsubscribed: isFilled(row.Unsubscribe_Date),
@@ -231,8 +235,21 @@ export interface CampaignCache {
   campaignName: string;
   /** ISO timestamp de quando o export foi feito (não de quando a campanha foi enviada). */
   exportedAt: string;
+  /** Data de envio da campanha, usada para backfill de last_sent_at. */
+  sentDate?: string;
   /** email normalizado → flags agregados DENTRO desta campanha (OR-merge se duplicata). */
   recipients: Record<string, CampaignRecipientFlags>;
+}
+
+/** #6814: retorna os e-mails entregues em pelo menos uma campanha. */
+export function collectDeliveredEmails(caches: CampaignCache[]): Set<string> {
+  const out = new Set<string>();
+  for (const cache of caches) {
+    for (const [email, flags] of Object.entries(cache.recipients)) {
+      if (flags.delivered) out.add(email);
+    }
+  }
+  return out;
 }
 
 /**
@@ -245,6 +262,7 @@ export function buildCampaignCache(
   campaignId: number,
   campaignName: string,
   exportedAt: string,
+  sentDate?: string,
 ): CampaignCache {
   const recipients: Record<string, CampaignRecipientFlags> = {};
   for (const row of rows) {
@@ -255,13 +273,20 @@ export function buildCampaignCache(
     recipients[email] = prev
       ? {
           delivered: prev.delivered || flags.delivered,
+          deliveredAt: prev.deliveredAt ?? flags.deliveredAt,
           opened: prev.opened || flags.opened,
           bounced: prev.bounced || flags.bounced,
           unsubscribed: prev.unsubscribed || flags.unsubscribed,
         }
       : flags;
   }
-  return { campaignId, campaignName, exportedAt, recipients };
+  return {
+    campaignId,
+    campaignName,
+    exportedAt,
+    ...(sentDate ? { sentDate } : {}),
+    recipients,
+  };
 }
 
 /**
@@ -493,7 +518,7 @@ export async function getOrFetchCampaignCache(
   const csvText = await client.downloadCsv(exportUrl);
   const rows = Papa.parse<CampaignRecipientRow>(csvText, { header: true, skipEmptyLines: true }).data;
   const exportedAt = (opts.now ?? (() => new Date().toISOString()))();
-  const cache = buildCampaignCache(rows, campaign.id, campaign.name, exportedAt);
+  const cache = buildCampaignCache(rows, campaign.id, campaign.name, exportedAt, campaign.sentDate);
   saveCampaignCache(cache, cacheDir);
   return { cache, fromCache: false };
 }
