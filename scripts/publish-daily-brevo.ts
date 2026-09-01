@@ -410,6 +410,15 @@ export type DailyCapCheck = { ok: true } | { ok: false; reason: string };
  * (`clarice-reapply-scheduled-html.ts`, #4142): estado impossível é
  * hard-stop, nunca sucesso silencioso.
  */
+/**
+ * #6793 "Faixa B", item 5 (30/08/2026, decisão do editor): freio automático
+ * de VOLUME (cap da LISTA) removido — este guard não recusa mais por
+ * `netSubscribers > cap`. O piso contra estado IMPOSSÍVEL
+ * (`totalSubscribers < seedCount`) continua intacto: não é freio de volume,
+ * é detecção de dado corrompido/API instável (mesmo princípio aplicado ao
+ * guard de blast radius PRÓPRIO de `sunset-dead-subscribers.ts` — critério
+ * de correção nunca é removido junto com o freio deliberado).
+ */
 export function checkDailySendCap(
   totalSubscribers: number,
   cap: number,
@@ -425,16 +434,8 @@ export function checkDailySendCap(
         "contra o cap.",
     };
   }
-  const netSubscribers = totalSubscribers - seedCount;
-  if (netSubscribers <= cap) return { ok: true };
-  return {
-    ok: false,
-    reason:
-      `lista Brevo tem ${totalSubscribers} assinante(s) (${netSubscribers} líquido(s) dos ${seedCount} ` +
-      `EDITOR_SEED_EMAILS), acima do cap diário (${cap}). ` +
-      "Este publisher não faz rotação por ondas (fora do escopo desta unidade) — " +
-      "reduza a lista ou implemente segmentação antes de enviar.",
-  };
+  void cap; // #6793: parâmetro mantido pra compat de assinatura — não gate mais nada.
+  return { ok: true };
 }
 
 // ── guards de pré-condição fora de --dry-run (puro) ───────────────────────

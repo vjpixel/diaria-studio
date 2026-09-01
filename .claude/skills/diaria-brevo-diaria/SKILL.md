@@ -149,16 +149,27 @@ npx tsx scripts/check-brevo-diaria-guardrail.ts --dry-run
 (`openRatePct` no output — mesma métrica agregada do piso de 15% citado
 acima; não julgue "abaixo de 15%" de memória).
 
-**O cap de 300 exclui os 5 `EDITOR_SEED_EMAILS` por design (#4631,
-#5182).** `computeCurrentActiveCount` (`sync-pending-to-brevo.ts`) e
-`checkDailySendCap` (`publish-daily-brevo.ts`) subtraem os 5 seeds do
-numerador antes de comparar contra `brevo_diaria.daily_send_cap` — eles
-ficam permanentemente vinculados à lista Brevo fora deste fluxo (sondas de
-inbox placement), não fazem parte da fila gerenciada (`in_brevo`) que o cap
-rege. Ao preencher até o cap, o total BRUTO esperado na lista Brevo é
-`cap + len(EDITOR_SEED_EMAILS)` — hoje `300 + 5 = 305`, não `300`. Não
-estranhe se `publish-daily-brevo.ts` reportar "305 contato(s) na lista" com
-o cap em 300.
+**#6793 (30/08/2026, decisão do editor): o envio (item 5, Faixa B) não tem
+mais teto de volume.** `checkDailySendCap` (`publish-daily-brevo.ts`) nunca
+mais recusa por `netSubscribers > cap` — continua existindo como função (e
+o piso de estado impossível — lista com menos assinantes brutos que
+`EDITOR_SEED_EMAILS` — segue bloqueando, é detecção de dado corrompido,
+não freio de volume), mas o cap em si deixou de limitar o envio.
+**A fila (item 6, Faixa A, `computeAvailableSlots` em
+`sync-pending-to-brevo.ts` recebendo `Number.POSITIVE_INFINITY`) é PR
+separado (#6882)** — confira se já mergeou antes de assumir que também
+está sem teto; até lá, `daily_send_cap` continua limitando a fila
+normalmente. `brevo_diaria.daily_send_cap` continua em
+`platform.config.json` só como documentação histórica do valor que valia
+antes de cada item mergear.
+
+**Contexto histórico (válido até #6793, pode aparecer em log antigo): o cap
+de 300 excluía os 5 `EDITOR_SEED_EMAILS` do numerador (#4631, #5182)** —
+eles ficam permanentemente vinculados à lista Brevo fora deste fluxo
+(sondas de inbox placement), nunca fizeram parte da fila gerenciada
+(`in_brevo`). Preenchendo até o cap, o total BRUTO esperado na lista era
+`cap + len(EDITOR_SEED_EMAILS)` — `300 + 5 = 305`, não `300`. Não estranhe
+se um log antigo mostrar "305 contato(s) na lista" com o cap em 300.
 
 ### Origem/tema do backfill (achado do #4632, issue fechada NOT_PLANNED)
 

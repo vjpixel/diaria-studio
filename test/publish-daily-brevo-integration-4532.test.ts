@@ -31,6 +31,13 @@
  * guard de `checkDailySendCap` (exit 3) ainda não tinha um teste dinâmico
  * exercitando `main()` de ponta a ponta — o caso abaixo fecha essa lacuna,
  * espelhando a estrutura dos casos de exit 4/5/6.
+ *
+ * #6793 "Faixa B" item 5 (30/08/2026, decisão do editor): `checkDailySendCap`
+ * deixou de bloquear por volume — o teste original de exit(3) acima (#4651)
+ * foi reescrito pra afirmar o comportamento NOVO (prossegue mesmo bem acima
+ * do cap histórico); o piso de estado impossível (`totalSubscribers <
+ * seedCount`) segue intacto e sem teste de integração dedicado aqui (coberto
+ * a nível de unidade em publish-daily-brevo-4266.test.ts).
  */
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
@@ -336,7 +343,7 @@ describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta 
     }
   });
 
-  it("#4651 (pr-test-analyzer, achado M): checkDailySendCap falha (lista acima do cap) → aborta com exitCode 3 via main() real, sem enumerar a lista nem criar a campanha", async () => {
+  it("#6793 (Faixa B, item 5, 30/08/2026): checkDailySendCap NÃO bloqueia mais mesmo bem acima do cap — main() prossegue e cria a campanha (era exit(3) até o #4651/#6793)", async () => {
     const root = mkTmpRoot();
     try {
       writePlatformConfig(root, { daily_send_cap: 2 });
@@ -344,29 +351,25 @@ describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta 
       setAllCredentials();
 
       // totalSubscribers=10 (>= 5 EDITOR_SEED_EMAILS, não dispara o piso de
-      // anomalia do #4631) com daily_send_cap=2 → líquido de 5, acima do cap
-      // → checkDailySendCap falha e main() aborta ANTES de qualquer chamada
-      // de enumeração/injeção de token (mesmo padrão dos testes de exit
-      // 4/5/6 acima — este é o 4º ponto convertido pelo #4651, o único ainda
-      // sem teste dinâmico até esta unidade).
-      installRouter({ totalSubscribers: 10, contactsPages: [[]] });
+      // estado impossível) com daily_send_cap=2 → líquido de 5, MUITO acima
+      // do cap histórico. Antes do #6793 isto abortava com exit(3) antes de
+      // qualquer enumeração; desde #6793 o guard de volume foi removido
+      // (decisão do editor) — só o piso de estado impossível continua
+      // podendo abortar, e não é o caso aqui.
+      installRouter({ totalSubscribers: 10, contactsPages: generateContactsPages(10) });
       process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
-      mockProcessExit(); // belt-and-suspenders: se main() voltar a chamar process.exit(), este teste falha alto.
-      process.exitCode = undefined;
+      mockProcessExit();
 
-      // #4651: este branch já não chama process.exit(3) — seta
-      // process.exitCode + return, então main() RESOLVE normalmente em vez
-      // de rejeitar.
       await main(root);
-      assert.equal(process.exitCode, 3, "guard de cap diário deveria abortar com exitCode 3");
-      process.exitCode = undefined;
+
+      assert.equal(exitCode, null, "não deveria ter abortado em NENHUM guard — em particular não exit(3), o cap (removido, #6793)");
       assert.ok(
-        !calls.some((c) => c.method === "GET" && c.pathname === `/v3/contacts/lists/${LIST_ID}/contacts`),
-        `injectPollTokenBrevo nunca deveria ter enumerado a lista: ${JSON.stringify(calls)}`,
+        calls.some((c) => c.method === "GET" && c.pathname === `/v3/contacts/lists/${LIST_ID}/contacts`),
+        `deveria ter enumerado a lista normalmente (guard de cap não bloqueia mais): ${JSON.stringify(calls)}`,
       );
       assert.ok(
-        !calls.some((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns"),
-        "campanha nunca deveria ter sido criada",
+        calls.some((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns"),
+        `campanha deveria ter sido criada normalmente: ${JSON.stringify(calls)}`,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
