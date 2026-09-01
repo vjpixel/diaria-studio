@@ -28,17 +28,20 @@
  * deste script vê mais slots livres e ingere o próximo da fila — nenhum
  * mecanismo adicional de "notificação de slot livre" é necessário.
  *
- * ## Circuit breaker de campanha pausa o backfill (#4476 item 9)
+ * ## Circuit breaker de campanha (#4476 item 9) — freio automático REMOVIDO (#6793 item 1)
  *
  * Antes de calcular `availableSlots`, este script lê o latch persistido por
  * `scripts/check-brevo-diaria-guardrail.ts` (`data/brevo-diaria/guardrail-state.json`,
- * `scripts/lib/brevo-diaria-guardrail.ts`) — se `rollout_paused === true`
- * (bounce/spam/unsub agregado cruzou o limiar do ramp Clarice), o backfill é
- * ZERADO nesta rodada (nenhum contato novo ingerido), mesmo com slots livres
- * na fila top-300. Camada DIFERENTE do filtro de MV/score — este é o
- * circuit breaker AGREGADO da campanha, não decide sobre 1 pessoa. Volta a
- * funcionar normalmente só depois de `check-brevo-diaria-guardrail.ts
- * --unpause` (ação explícita do editor) — nunca despausa sozinho.
+ * `scripts/lib/brevo-diaria-guardrail.ts`) — se `rollout_paused === true`, o
+ * backfill é ZERADO nesta rodada. **#6793 "Faixa B" item 1 (01/09/2026,
+ * decisão do editor): `shouldPauseRollout` sempre retorna `false` agora**,
+ * então `rollout_paused` só chega `true` por estado legado/manual, nunca
+ * mais automaticamente por bounce/spam/unsub agregado. O mecanismo do gate
+ * em si (`applyRolloutGuardrailGate` abaixo) continua funcionando idêntico
+ * — respeita o latch se ele algum dia estiver `true` — só nada o ativa
+ * mais sozinho. Volta a funcionar normalmente só depois de
+ * `check-brevo-diaria-guardrail.ts --unpause` (ação explícita do editor) —
+ * nunca despausa sozinho (isso não mudou).
  *
  * MillionVerifier (issue #4476 item 8) — `scripts/verify-pending-emails-mv.ts`,
  * implementado 260802. 1 passada em lote sobre o pool inteiro ANTES do

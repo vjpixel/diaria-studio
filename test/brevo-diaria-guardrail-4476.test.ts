@@ -113,33 +113,43 @@ test("evaluateBrevoDiariaRolloutGuardrail — treatZeroAsBreach: 0% de abertura 
   assert.equal(evaluation!.result.openBreach, true);
 });
 
-// ─── shouldPauseRollout — regra central da issue: abertura NUNCA pausa sozinha ─
+// ─── shouldPauseRollout — freio removido (#6793 Faixa B, item 1, 01/09/2026) ─
 
-test("shouldPauseRollout — só abertura furada (cohort fria) → false, NÃO pausa (issue: 'não é fracasso, é informação')", () => {
+test("shouldPauseRollout — só abertura furada (cohort fria) → false (nunca pausou por isso, comportamento preservado)", () => {
   const evaluation = evaluateBrevoDiariaRolloutGuardrail([mkCampaign({ delivered: 1000, uniqueViews: 50 })]); // 5% abertura
   assert.equal(evaluation!.result.openBreach, true);
   assert.equal(evaluation!.result.bounceBreach, false);
   assert.equal(shouldPauseRollout(evaluation!.result), false);
 });
 
-test("shouldPauseRollout — bounce furado → true, pausa", () => {
+test("#6793: shouldPauseRollout — bounce furado → NÃO pausa mais (era true/pausava até 01/09/2026)", () => {
   const evaluation = evaluateBrevoDiariaRolloutGuardrail([mkCampaign({ sent: 1000, hardBounces: 25 })]);
-  assert.equal(shouldPauseRollout(evaluation!.result), true);
+  assert.equal(shouldPauseRollout(evaluation!.result), false);
 });
 
-test("shouldPauseRollout — spam furado → true, pausa", () => {
+test("#6793: shouldPauseRollout — spam furado → NÃO pausa mais (era true/pausava até 01/09/2026)", () => {
   const evaluation = evaluateBrevoDiariaRolloutGuardrail([mkCampaign({ sent: 10000, complaints: 20 })]);
-  assert.equal(shouldPauseRollout(evaluation!.result), true);
+  assert.equal(shouldPauseRollout(evaluation!.result), false);
 });
 
-test("shouldPauseRollout — unsub furado → true, pausa", () => {
+test("#6793: shouldPauseRollout — unsub furado → NÃO pausa mais (era true/pausava até 01/09/2026)", () => {
   const evaluation = evaluateBrevoDiariaRolloutGuardrail([mkCampaign({ sent: 1000, unsubscriptions: 40 })]);
-  assert.equal(shouldPauseRollout(evaluation!.result), true);
+  assert.equal(shouldPauseRollout(evaluation!.result), false);
 });
 
 test("shouldPauseRollout — saudável → false", () => {
   const evaluation = evaluateBrevoDiariaRolloutGuardrail([mkCampaign()]);
   assert.equal(shouldPauseRollout(evaluation!.result), false);
+});
+
+test("#6793: shouldPauseRollout — NUNCA retorna true, pra qualquer combinação de breaches (bounce+spam+unsub simultâneos)", () => {
+  const evaluation = evaluateBrevoDiariaRolloutGuardrail([
+    mkCampaign({ sent: 1000, hardBounces: 25, complaints: 5, unsubscriptions: 40 }),
+  ]);
+  assert.equal(evaluation!.result.bounceBreach, true);
+  assert.equal(evaluation!.result.spamBreach, true);
+  assert.equal(evaluation!.result.unsubBreach, true);
+  assert.equal(shouldPauseRollout(evaluation!.result), false, "mesmo com os 3 breakers furados simultaneamente, o guard não pausa mais");
 });
 
 // ─── applyGuardrailCheck — latch (pausa até --unpause explícito) ──────────
@@ -162,14 +172,14 @@ test("applyGuardrailCheck — resultado saudável, estado despausado → permane
   assert.equal(next.last_campaign_count, 1);
 });
 
-test("applyGuardrailCheck — bounce furado, estado despausado → PAUSA, grava paused_at/paused_reason", () => {
+test("#6793: applyGuardrailCheck — bounce furado, estado despausado → NÃO pausa mais (era PAUSA até 01/09/2026)", () => {
   const state = emptyRolloutGuardrailState();
   const evaluation = evaluateBrevoDiariaRolloutGuardrail([mkCampaign({ sent: 1000, hardBounces: 25 })]);
   const next = applyGuardrailCheck(state, evaluation, NOW);
-  assert.equal(next.rollout_paused, true);
-  assert.equal(next.paused_at, NOW.toISOString());
-  assert.ok(next.paused_reason && next.paused_reason.length > 0);
-  assert.match(next.paused_reason![0], /Bounce/);
+  assert.equal(next.rollout_paused, false);
+  assert.equal(next.paused_at, null);
+  assert.equal(next.paused_reason, null);
+  assert.equal(next.last_campaign_count, 1, "ainda registra a checagem/contagem, só não pausa");
 });
 
 test("applyGuardrailCheck — só abertura furada, estado despausado → NÃO pausa (regra central da issue)", () => {
@@ -179,7 +189,7 @@ test("applyGuardrailCheck — só abertura furada, estado despausado → NÃO pa
   assert.equal(next.rollout_paused, false);
 });
 
-test("applyGuardrailCheck — LATCH: já pausado + resultado SAUDÁVEL na checagem seguinte → permanece pausado (issue: 'até o editor decidir')", () => {
+test("applyGuardrailCheck — LATCH: já pausado + resultado SAUDÁVEL na checagem seguinte → permanece pausado (issue: 'até o editor decidir'). #6793: desde 01/09/2026 nada AUTOMÁTICO entra mais em rollout_paused=true, mas se o estado já estiver pausado (legado, ou setado manualmente), o latch continua respeitando 'não despausa sozinho' — só unpauseRollout explícito limpa.", () => {
   const pausedState: RolloutGuardrailState = {
     rollout_paused: true,
     paused_at: "2026-08-05T09:00:00.000Z",
@@ -262,12 +272,25 @@ test("REGRESSÃO (fleet review): sentAfter MALFORMADO (Date.parse -> NaN) não d
   assert.equal(evaluation!.campaignCount, 1, "campanha deveria contar normalmente — cutoff inválido == sem cutoff");
 });
 
-test("REGRESSÃO (achado de self-review pós-#4476): unpause seguido de recheck com dado inalterado NÃO re-pausa", () => {
-  // 1. Campanha ruim furou bounce → pausa.
+test("REGRESSÃO (achado de self-review pós-#4476, adaptado #6793): unpause seguido de recheck com dado inalterado NÃO re-pausa — estado pausado construído diretamente, já que shouldPauseRollout não produz mais essa transição sozinha", () => {
+  // 1. Campanha ruim furaria bounce — #6793: shouldPauseRollout não pausa
+  //    mais sozinho, então o estado "pausado" aqui representa um estado
+  //    LEGADO/manual (de antes da mudança, ou setado à mão) — o que este
+  //    teste continua provando é que o LATCH (uma vez pausado, por
+  //    qualquer motivo) não se auto-resurrecta sobre dado velho após um
+  //    unpause. A mecânica do latch em si não mudou, só quem entra nela.
   const badCampaign = mkCampaign({ id: 1, sentDate: "2026-08-05T09:00:00.000Z", sent: 1000, hardBounces: 25, softBounces: 0 });
   const evaluation1 = evaluateBrevoDiariaRolloutGuardrail([badCampaign]);
-  assert.ok(evaluation1 && shouldPauseRollout(evaluation1.result));
-  const pausedState = applyGuardrailCheck(emptyRolloutGuardrailState(), evaluation1, NOW);
+  assert.ok(evaluation1);
+  assert.equal(shouldPauseRollout(evaluation1.result), false, "#6793: não pausa mais sozinho — construindo o estado pausado diretamente abaixo");
+  const pausedState: RolloutGuardrailState = {
+    ...emptyRolloutGuardrailState(),
+    rollout_paused: true,
+    paused_at: NOW.toISOString(),
+    paused_reason: describeBreaches(evaluation1.result),
+    last_checked_at: NOW.toISOString(),
+    last_campaign_count: evaluation1.campaignCount,
+  };
   assert.equal(pausedState.rollout_paused, true);
 
   // 2. Editor investiga e roda --unpause.
@@ -295,7 +318,11 @@ test("REGRESSÃO (achado de self-review pós-#4476): unpause seguido de recheck 
   const evaluation3 = evaluateBrevoDiariaRolloutGuardrail([badCampaign, newBadCampaign], undefined, unpausedState.unpaused_at);
   assert.ok(evaluation3, "campanha nova pós-unpause deve produzir avaliação");
   assert.equal(evaluation3!.campaignCount, 1, "só a campanha NOVA entra no agregado — a antiga continua fora da janela");
-  assert.equal(shouldPauseRollout(evaluation3!.result), true, "campanha nova ruim ainda pausa normalmente");
+  // #6793: o BREACH em si continua detectado normalmente (o dado não
+  // desaparece) — só não pausa mais sozinho, que é justamente o que
+  // shouldPauseRollout(false) prova aqui.
+  assert.equal(evaluation3!.result.bounceBreach, true, "a janela pós-unpause NÃO esconde dano real — a campanha nova ruim continua detectada");
+  assert.equal(shouldPauseRollout(evaluation3!.result), false, "#6793: mesmo detectando o breach real, não pausa mais (era true/pausava até 01/09/2026)");
 });
 
 // ─── describeBreaches — reuso, sem duplicar formatação ────────────────────

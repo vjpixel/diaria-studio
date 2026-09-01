@@ -7,12 +7,17 @@
  * PRÓPRIA do editor — API key `platform.config.json → brevo_diaria.api_key_env`)
  * contra os mesmos limiares do ramp Clarice (abertura <15%, bounce duro ≥2%,
  * bounce total ≥5%, spam ≥0,1%, unsub ≥3% — ver
- * `scripts/lib/brevo-diaria-guardrail.ts` pro racional completo, inclusive
- * por que abertura NUNCA pausa sozinha). Se algum breaker de bounce/spam/unsub
- * for cruzado, PAUSA o rollout (latch persistido em
- * `data/brevo-diaria/guardrail-state.json`) — `sync-pending-to-brevo.ts` lê
- * esse estado e para de fazer backfill (novos contatos) enquanto pausado,
- * mesmo que ainda existam slots livres na fila top-300 (item 5).
+ * `scripts/lib/brevo-diaria-guardrail.ts` pro racional completo).
+ *
+ * **#6793 "Faixa B" item 1 (01/09/2026, decisão do editor): o freio
+ * automático foi REMOVIDO.** Até então, se algum breaker de bounce/spam/
+ * unsub fosse cruzado, o script PAUSAVA o rollout sozinho (latch em
+ * `data/brevo-diaria/guardrail-state.json`, lido por `sync-pending-to-brevo.ts`
+ * pra zerar o backfill). `shouldPauseRollout` agora retorna sempre `false` —
+ * este script continua avaliando/logando os breaches normalmente (nada aqui
+ * ficou cego), só não pausa mais nada sozinho. O latch em si (uma vez
+ * `rollout_paused: true` por algum motivo legado/manual) continua
+ * funcionando — só a transição automática saiu.
  *
  * ## Diferença deliberada do alarme do ramp Clarice (`clarice-guardrail-alarm.ts`)
  *
@@ -81,7 +86,6 @@ import {
   applyGuardrailCheck,
   unpauseRollout,
   selectUnalarmedSuspended,
-  shouldPauseRollout,
   type CampaignGuardrailInput,
   type RolloutGuardrailState,
 } from "./lib/brevo-diaria-guardrail.ts";
@@ -386,15 +390,23 @@ async function main(): Promise<void> {
   // de 7+ meses, por desenho) dominando um agregado que soma TODAS as
   // campanhas já enviadas desde sempre — o sinal que de fato pausaria
   // (bounce/spam/unsub) segue limpo, só não aparecia destacado no log.
-  // `pauseWorthyBreach` torna essa distinção explícita sem mudar NENHUMA
-  // decisão de pausa (`shouldPauseRollout`/`applyGuardrailCheck` abaixo
-  // continuam idênticos) — é puramente observabilidade.
-  const pauseWorthyBreach = shouldPauseRollout(result);
+  //
+  // #6793 (review PR #6889, achado P1 confiança alta): `pauseWorthyBreach`
+  // era `shouldPauseRollout(result)`, mas desde o item 1 dessa issue essa
+  // função é sempre `false` — usá-la aqui faria o log rotular QUALQUER
+  // breach real (bounce/spam/unsub) como "só abertura — informativo, nunca
+  // pausa sozinha", que é falso e contradiz o próprio racional deste
+  // arquivo ("nada aqui ficou cego"). `nonOpenBreach` computa a mesma
+  // condição ORIGINAL diretamente dos breach flags (independente de
+  // shouldPauseRollout, que não serve mais pra essa distinção) — segue
+  // sendo o mesmo sinal de sempre ("existe breach de bounce/spam/unsub"),
+  // só não é mais chamado de "pause-worthy" porque nada pausa mais.
+  const nonOpenBreach = result.bounceBreach || result.spamBreach || result.unsubBreach;
   log(
     `agregado de ${evaluation.campaignCount} campanha(s): anyBreach=${result.anyBreach} ` +
-      `pauseWorthyBreach=${pauseWorthyBreach}` +
-      (result.anyBreach && !pauseWorthyBreach
-        ? " (só abertura — informativo, cohort fria, nunca pausa sozinha)"
+      `nonOpenBreach=${nonOpenBreach}` +
+      (result.anyBreach && !nonOpenBreach
+        ? " (só abertura — informativo, cohort fria, nunca pausava sozinha mesmo antes do #6793)"
         : "") +
       ` (abertura ${result.openRatePct.toFixed(1)}%, bounce hard ${result.hardBounceRatePct.toFixed(2)}%/total ${result.bounceRatePct.toFixed(2)}%, ` +
       `unsub ${result.unsubRatePct.toFixed(2)}%, spam ${result.spamRatePct.toFixed(3)}%)`,

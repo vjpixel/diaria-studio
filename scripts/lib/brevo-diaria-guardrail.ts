@@ -204,16 +204,25 @@ export function evaluateBrevoDiariaRolloutGuardrail(
 }
 
 /**
- * Pura — decide se o resultado exige PAUSAR o rollout. Deliberadamente
- * ignora `openBreach` (issue #4476: "furar o piso de abertura ... não é
- * fracasso, é informação" — cohort fria, esperado). Bounce (hard OU total),
- * spam, e unsub são os 3 breakers que pausam — "qualquer breaker de
- * bounce/spam deve pausar o rollout até o editor decidir" (unsub incluído
- * pelo mesmo espírito: é dano observável à base, não ruído de amostra fria
- * como abertura baixa).
+ * #6793 "Faixa B", item 1 (01/09/2026, decisão do editor): freio automático
+ * REMOVIDO — nunca mais retorna `true`, o rollout nunca mais pausa sozinho.
+ * Continua recebendo `ArmGuardrailResult` completo e o parâmetro segue com o
+ * mesmo shape (compat com `applyGuardrailCheck`/callers) — só a decisão
+ * mudou. A MÁQUINA DE ESTADO (latch em `applyGuardrailCheck`) continua
+ * intacta: se `state.rollout_paused` já for `true` por algum motivo (estado
+ * legado de antes desta mudança, ou setado manualmente), o latch AINDA
+ * respeita "não despausa sozinho" — só `unpauseRollout` explícito limpa.
+ * O que mudou é só que NENHUMA checagem nova entra nesse estado sozinha.
+ *
+ * Histórico (#4476, até 01/09/2026): retornava `true` quando bounce (hard OU
+ * total), spam, ou unsub cruzavam o limiar — deliberadamente ignorando
+ * `openBreach` ("furar o piso de abertura... não é fracasso, é informação").
+ * Os DETECTORES que mediam esses mesmos breaches (`clarice-guardrail-alarm.ts`
+ * e os demais alarmes) continuam ativos e intocados — só o freio automático
+ * saiu, não a visibilidade.
  */
-export function shouldPauseRollout(result: ArmGuardrailResult): boolean {
-  return result.bounceBreach || result.spamBreach || result.unsubBreach;
+export function shouldPauseRollout(_result: ArmGuardrailResult): boolean {
+  return false;
 }
 
 /** Re-exporta `describeBreaches` — mesmo texto/limiar usado no alarme do
