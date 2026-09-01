@@ -1546,6 +1546,34 @@ describe("computeCloseKeywordAddendum (#6920)", () => {
     assert.deepEqual(extractPtCloseIssueNumbers("Resolve #10"), [10]);
     assert.deepEqual(extractEnCloseIssueNumbers("Resolve #10"), [10]);
   });
+
+  // #6938: a cauda de continuação (`Fecha #10 e #11`) casava qualquer `#N`
+  // até 20 chars soltos de distância do verbo, mesmo quando era só uma
+  // REFERÊNCIA de contexto na mesma linha — não uma 2ª issue fechada pelo
+  // mesmo PR. O `#N` de verdade tem que vir COLADO ao verbo (só espaço em
+  // branco entre os dois, igual à regra do GitHub).
+  it("#6938: 'Fecha #N — regressão do #M' anexa Closes só para a issue colada ao verbo", () => {
+    assert.equal(
+      computeCloseKeywordAddendum("Fecha #6935 — regressão do #6930"),
+      "Closes #6935",
+    );
+  });
+
+  it("#6938: '#N (ver #M)' anexa Closes só para a issue colada ao verbo", () => {
+    assert.equal(computeCloseKeywordAddendum("Fecha #6920 (ver #6919)"), "Closes #6920");
+  });
+
+  it("#6938: menção solta em frase separada não conta como fechamento", () => {
+    assert.equal(
+      computeCloseKeywordAddendum("Corrige o parser. Fecha #1. Relacionado: #2"),
+      "Closes #1",
+    );
+  });
+
+  it("#6938: conjunção explícita continua funcionando (não é regressão do fix)", () => {
+    assert.equal(computeCloseKeywordAddendum("Fecha #10, #11"), "Closes #10\nCloses #11");
+    assert.equal(computeCloseKeywordAddendum("Fecha #10 and #11"), "Closes #10\nCloses #11");
+  });
 });
 
 describe("extractPtCloseIssueNumbers / extractEnCloseIssueNumbers (#6920)", () => {

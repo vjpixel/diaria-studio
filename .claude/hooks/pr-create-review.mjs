@@ -751,9 +751,13 @@ export function extractCreatedPrUrl(text) {
  *
  * As duas listas abaixo compartilham o mesmo formato de regex
  * (`\b(?:verbo)\b` seguido, a até 20 chars de distância sem quebra de linha
- * nem outro `#`, de `#<número>`) para tratar "Fecha o bug #123" e "Fecha
- * #123" da mesma forma sem também casar "#123 fecha a fase 2 do projeto"
- * (o `#` tem que vir DEPOIS do verbo).
+ * nem outro `#`, do PRIMEIRO `#<número>`) para tratar "Fecha o bug #123" e
+ * "Fecha #123" da mesma forma sem também casar "#123 fecha a fase 2 do
+ * projeto" (o `#` tem que vir DEPOIS do verbo). #6938: essa folga de 20
+ * chars vale só para o PRIMEIRO número — continuar a cauda para um 2º/3º
+ * número exige conjunção explícita (`,`/`e`/`and`), nunca só proximidade;
+ * sem essa correção, "Fecha #123 — regressão do #456" capturava #456
+ * também, mesmo sendo uma referência de leitura, não um 2º fechamento.
  */
 const PT_CLOSE_VERBS = [
   "fecha",
@@ -784,12 +788,17 @@ const EN_CLOSE_KEYWORDS = [
 
 function extractIssueNumbersByVerb(body, verbs) {
   if (typeof body !== "string" || body.length === 0) return [];
-  // Captura a "cauda" inteira depois do verbo — permite "Fecha #10 e #11"
-  // (múltiplas issues no mesmo verbo), cada repetição do grupo exigindo até
-  // 20 chars sem quebra de linha nem outro `#` antes do próximo `#<número>`.
-  // A quebra de linha corta a cauda de propósito (evita colar o verbo de uma
-  // frase com o `#` de um parágrafo seguinte não relacionado).
-  const re = new RegExp(`\\b(?:${verbs.join("|")})\\b((?:[^\\n#]{0,20}#\\d+)+)`, "gi");
+  // #6938: o PRIMEIRO `#N` pode estar a até 20 chars soltos do verbo (mesma
+  // folga de sempre — sustenta "Fecha o bug #123"), mas a cauda de
+  // continuação (2º/3º número) só avança para conjunção EXPLÍCITA
+  // (`,`/`e`/`and`) logo em seguida — nunca por proximidade solta. Antes, a
+  // mesma folga de 20 chars se repetia a cada número da cauda, o que deixava
+  // "Fecha #6935 — regressão do #6930" capturar #6930 também, mesmo sendo
+  // uma referência de leitura, não um 2º fechamento.
+  const re = new RegExp(
+    `\\b(?:${verbs.join("|")})\\b[^\\n#]{0,20}(#\\d+(?:\\s*(?:,|\\be\\b|\\band\\b)\\s*#\\d+)*)`,
+    "gi",
+  );
   const nums = new Set();
   let match;
   while ((match = re.exec(body)) !== null) {
