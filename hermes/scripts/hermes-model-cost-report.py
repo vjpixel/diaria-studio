@@ -203,10 +203,16 @@ def collect_tick_composition(days: int) -> list[dict]:
     suposicao em vez da realidade do banco.
 
     Os DOIS padroes sao aceitos de proposito: o real (`cron_..._%`) e o
-    historico de hifens, caso algum deploy antigo/futuro do Hermes volte a
-    produzi-lo. Aceitar a mais nao tem custo (nenhuma sessao que nao seja
-    deste job casa qualquer um dos dois); aceitar a menos foi exatamente o
-    bug.
+    hifenizado (`hermes-cron-...-%`), por precaucao. **O hifenizado NUNCA
+    foi confirmado nesta tabela** — achado do review da PR #6966: o formato
+    com hifens que aparece no repo e o `sessionId` do `session-registry.ts`
+    (claims em `data/sessions/*.json`), um namespace DIFERENTE do
+    `session_id` que o Hermes grava em `session_model_usage`. A medicao de
+    0 linhas e compativel tanto com "ja existiu e parou" quanto com "nunca
+    existiu aqui", e nao ha evidencia de qual das duas. Fica aceito porque
+    o `OR` e defensivo e sem custo (nenhuma sessao alheia casa qualquer um
+    dos dois padroes) — nao porque se saiba que foi usado. Aceitar a menos
+    foi exatamente o bug.
 
     Os `_` do padrao real sao ESCAPADOS: em `LIKE` do SQL, `_` e curinga de
     UM caractere, entao `cron_{id}_%` sem escape tambem casaria
