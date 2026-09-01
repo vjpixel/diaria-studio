@@ -78,6 +78,47 @@
  * pulada pelo pickup do overnight — ver SKILL do #6864), a opção descartada
  * no #6849 (credencial de review separada) é o próximo passo, não este
  * marcador.
+ *
+ * ## Escopo do veredito `no_review` (#6956, 01/09/2026) — leia antes de usar este gate fora do pickup do `continuo`
+ *
+ * **`no_review` significa "não revisado pelo `hermes/scripts/continuo-pr-
+ * review.sh` especificamente" — NUNCA "não revisado" em geral.** Medido ao
+ * vivo: 3 PRs (#6955, #6951, #6950) com review real despachado por sessão
+ * coordenadora via ferramenta `Agent` (`pr-review-toolkit:code-reviewer`),
+ * findings tabelados postados em prosa no PR — um deles com P0 reproduzido
+ * — todas saíram `no_review` deste gate. O gate está se comportando
+ * exatamente como projetado (só reconhece o marcador com identidade de
+ * execução que SÓ o script gera, #6849) — o erro está em quem lê o
+ * veredito como proxy de "foi revisado?" fora do contexto em que ele nasceu.
+ *
+ * **Este módulo tem um único consumidor legítimo hoje:** o passo 2b (pickup
+ * de PR órfão) de `.claude/skills/diaria-overnight/SKILL.md`, que filtra
+ * PRs por branch prefix `continuo/` ANTES de rodar este gate — ou seja, só
+ * roda contra PRs que o `continuo-pr-review.sh` deveria ter revisado. Rodar
+ * `check-pr-review-authenticity.ts` contra uma PR qualquer (de sessão
+ * interativa, overnight, develop) fora desse fluxo específico é um uso fora
+ * do contrato do gate — o `no_review` resultante não informa nada sobre se
+ * a PR foi de fato revisada, só que não foi revisada POR ESTE SCRIPT.
+ *
+ * **Por que a direção "óbvia" (dar ao dispatch por sessão interativa um
+ * jeito de gerar o mesmo marcador) não foi implementada aqui (#6956
+ * Direção 1):** o nonce/timestamp/head-sha precisam vir de um HOOK, nunca
+ * do modelo (mesma exigência que fechou o #6849) — o candidato mais óbvio
+ * seria um hook `PostToolUse` no tool_name `"Agent"` (quando
+ * `subagent_type` for um agente de review) + um segundo hook em `gh pr
+ * comment*` que injetasse o marcador mecanicamente. Nenhum hook deste repo
+ * hoje casa o tool_name `"Agent"` — não há precedente confirmado de que
+ * `PreToolUse`/`PostToolUse` disparam para esse tool_name específico nesta
+ * versão do harness, nem confirmação do formato exato do payload
+ * (`tool_input.subagent_type` é uma suposição, não uma leitura de um caso
+ * real). Implementar um mecanismo NÃO VERIFICÁVEL sobre um gate de
+ * confiança pré-merge — onde um hook que falha silenciosamente ou um
+ * payload com schema diferente do assumido produziria um marcador ausente
+ * OU, pior, mal-formado — é mais arriscado que documentar o gap
+ * honestamente e manter o comportamento atual. Se/quando o comportamento de
+ * hooks sobre `Agent` for confirmado (ou a telemetria de dispatch da
+ * Direção 2 existir), reabrir esta questão — não reabrir "porque parece
+ * simples", reabrir com um caso real observado do payload do hook.
  */
 
 /** Marcador literal que a instrução do hook manda postar quando o Agent tool
@@ -303,7 +344,13 @@ export function evaluatePrReviewAuthenticity(comments: unknown): PrReviewAuthent
 
   return {
     verdict: "no_review",
-    reason: "nenhum comentário de review (independente ou self-review) encontrado no PR",
+    reason:
+      "nenhum marcador de review reconhecido por ESTE gate encontrado no PR (#6956: 'no_review' aqui " +
+      "significa \"não revisado pelo hermes/scripts/continuo-pr-review.sh especificamente\", NUNCA " +
+      "\"não revisado\" em geral — uma review real despachada por sessão interativa via ferramenta " +
+      "Agent, com findings postados em prosa, também sai como 'no_review' porque só o script externo " +
+      "sabe gerar o marcador com identidade de execução que este gate reconhece; ver docstring do " +
+      "módulo, seção 'Escopo do veredito no_review')",
   };
 }
 
