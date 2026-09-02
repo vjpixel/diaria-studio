@@ -40,7 +40,7 @@ editorial das fontes — público BR, tema compatível, sem infoproduto/growth-h
 | Criadores que RECOMENDAMOS | ✅ 3 curados (ver abaixo) | 01/09/2026 |
 | Quem NOS recomenda | ⬜ ninguém ainda (Incoming zerado) | 01/09/2026 |
 | Slot de exibição no nosso funil | ✅ ligado — **cobre só parte do funil**, ver ressalva | 01/09/2026 |
-| Atribuição de origem nos assinantes novos | ⬜ não verificado | — |
+| Atribuição de origem nos assinantes novos | ✅ verificado — mede pelo form `id 9870650`, não por campo `creator_network` (ver "Como medir") | 02/09/2026 |
 
 ---
 
@@ -200,19 +200,30 @@ Sem atribuição, o canal fica invisível na contabilidade de CAC/leitor
 
 1. ~~Se o assinante criado pela rede carrega origem identificável (`attribution`, tag, ou
    campo equivalente) — e qual o valor exato.~~ **RESPONDIDO em 02/09/2026 — ver abaixo.**
-2. Se sim, incluir o canal na agregação por UTM/origem já consumida pelo Studio
-   (`scripts/count-subscriptions-by-utm.ts` → `studio-ui/studio-utms.ts`). **Pendente** —
-   depende de existir volume pra agregar (hoje é zero).
+2. ~~Se sim, incluir o canal na agregação por UTM/origem já consumida pelo Studio
+   (`scripts/count-subscriptions-by-utm.ts` → `studio-ui/studio-utms.ts`).~~ **O plano deste
+   item ficou obsoleto pela resposta do item (1)** — `count-subscriptions-by-utm.ts` é 100%
+   Beehiiv (`BEEHIIV_API_KEY`, agrega por `utm_source` de assinantes Beehiiv) e a rede não
+   passa por `utm_source` nenhum. O mecanismo real é atribuição NATIVA da Kit por form id,
+   cuja infra já existe em `scripts/lib/kit-attribution.ts` / `kit-subscribers.ts` — é ali que
+   a agregação tem que entrar, se e quando houver volume. **Pendente** (hoje é zero).
 
 ### (1) RESPONDIDO: dá pra medir, mas pelo FORM, não por um campo `creator_network`
 
 Medido ao vivo em 02/09/2026 via MCP `kit`.
 
-**Não existe** valor `creator_network` em `source_type`/`source_mechanism`. Procurar por ele é
-beco sem saída: `filter_subscribers` aceita `attribution.kit_source.mechanism` com string
-ARBITRÁRIA e devolve `0` sem erro pra qualquer valor inventado — um zero ali não prova nada
-(mesma armadilha de [[negative-claims-need-verification]]). Os `source_type` que a API
-documenta são só `form_subscription`, `api_subscription` e `manual`.
+**`source_type` não tem valor `creator_network`** — isto é fato verificado, não ausência de
+busca: a própria API documenta o enum fechado `form_subscription` | `api_subscription` |
+`manual`.
+
+**`source_mechanism` é outra história, e a distinção importa.** Não encontrei valor de
+mecanismo ligado à rede, mas o método disponível **não consegue provar que não existe**:
+`filter_subscribers` aceita um `kit_source` com `mechanism` de string ARBITRÁRIA e devolve `0`
+sem erro pra qualquer valor inventado (testado com `"recommendation"`). Ou seja, ali um zero
+não distingue "o valor não existe" de "o valor existe e ninguém casou ainda" — registrar como
+*não encontrado por este método*, nunca como *inexistente*. (Nota de precisão: `kit_source` é
+um item de `all[].any[]` com campo `mechanism`; `attribution.kit_source.mechanism` é só
+abreviação em prosa, não um path literal que se possa copiar pra chamada.)
 
 **O que de fato identifica a rede é um form dedicado que a Kit criou sozinha no opt-in:**
 
@@ -227,23 +238,35 @@ Consulta reprodutível — este é o número do canal:
 
 ```
 filter_subscribers(
-  all = [{ type: "attribution", any: [{ type: "forms", ids: [9870650] }] }],
+  all = [
+    { type: "subscriber_state", states: ["active"] },
+    { type: "attribution", any: [{ type: "forms", ids: [9870650] }] }
+  ],
   include_total_count = true
 )
 ```
 
-Leitura em 02/09/2026: **0**. Consistente com `subscriber_count: 0` do próprio form e com o
-painel Incoming/Outgoing zerado — o perfil tem 1 dia.
+⚠️ **O filtro `subscriber_state` é obrigatório na query, não decoração.** O default
+`active` da tool só vale quando `all` é OMITIDO por inteiro; passando `all` explícito, ele
+some e o retorno passa a somar `cancelled`/`bounced`/`complained`/`inactive`. Medido: no form
+de controle a mesma query dá **4 sem** o filtro e **3 com** ele. Como este doc alimenta
+`scripts/lib/cac.ts`/`leitor.ts`, e `leitor-v1` exige `status=active`, copiar a versão sem o
+filtro infla o canal.
+
+Leitura em 02/09/2026: **0** (com e sem o filtro de estado — zero é subconjunto de zero).
+Consistente com `subscriber_count: 0` do próprio form e com o painel Incoming/Outgoing
+zerado: o perfil tem 1 dia.
 
 **A consulta foi validada contra um controle**, senão um zero de query quebrada seria
 indistinguível de zero real: a mesma query com `ids: [9839463]` (`Newsletter site`) devolve
-resultado não-vazio. A query funciona; o zero é real.
+resultado não-vazio (3 ativos). A query funciona; o zero é real.
 
 ### ⚠️ `subscriber_count` do form ≠ contagem por atribuição — não são a mesma população
 
 Achado colateral da validação acima, e importa pra não reportar número errado depois:
 `Newsletter site` (id 9839463) reporta `subscriber_count: 22`, mas a query de atribuição por
-esse mesmo form id devolve **4**. Não é bug — são perguntas diferentes:
+esse mesmo form id devolve **4** (3 se filtrar por `active`). Não é bug — são perguntas
+diferentes:
 
 - `subscriber_count` = quantos assinantes estão ASSOCIADOS ao form hoje;
 - filtro de `attribution` = quantos têm aquele form como origem do cadastro ORIGINAL.
@@ -253,14 +276,33 @@ A divergência é esperada aqui porque os 3 workers cadastram via API e associam
 tido o form como origem. **Pra contabilidade de aquisição, usar sempre o filtro de
 atribuição**, nunca o `subscriber_count`.
 
-Confirmação de que os workers dominam a base: numa amostra dos 37 cadastros desde 25/08, todos
-menos um vieram como `source_type: api_subscription` / `source_mechanism: direct_api_call`,
-com `utm_*` e `referrer` nulos. O único de form trouxe
-`source_type: form_subscription`, `source_name: "Newsletter site"`,
-`source_mechanism: "newsletter"`, `referrer: https://diar-ia-br.kit.com/`.
+(A tabela "Estado do canal" no topo registra 20 assinantes pro form 9839463 em 01/09 e aqui
+aparece `subscriber_count: 22` em 02/09 — é crescimento de 1 dia, não erro de digitação.)
 
-Enquanto o volume for zero, qualquer número atribuído à rede segue sendo estimativa, não
-medição — mas agora a medição EXISTE e é uma query só, não leitura de painel à mão.
+Confirmação de que os workers dominam a base — query que gerou o número:
+
+```
+filter_subscribers(
+  all = [
+    { type: "subscriber_state", states: ["active"] },
+    { type: "subscribed", after: "2026-08-25" }
+  ],
+  include = [{ type: "attribution" }],
+  sort_field = "created_at", sort_order = "desc",
+  per_page = 25, include_total_count = true
+)
+```
+
+Em 02/09/2026 devolveu `total_count: 37`; na 1ª página (25 linhas) todas menos uma vieram como
+`source_type: api_subscription` / `source_mechanism: direct_api_call`, com `utm_*` e
+`referrer` nulos. A única de form trouxe `source_type: form_subscription`,
+`source_name: "Newsletter site"`, `source_mechanism: "newsletter"`,
+`referrer: https://diar-ia-br.kit.com/`.
+
+O canal já é MENSURÁVEL: a query acima é medição, não estimativa, e o `0` de hoje é um zero
+medido. O que ainda não dá pra fazer é *projetar* o canal — com volume zero não há taxa de
+conversão nem CAC pra estimar. Some a leitura de painel à mão como fonte primária: virou uma
+query.
 
 **Fonte disponível hoje, sem depender de (1):** a própria aba Recommendations
 (`app.kit.com/creator-network`) tem painel partido em **Incoming** (quem nos recomendou →
@@ -275,8 +317,10 @@ nos dois lados** — esperado, o perfil nasceu no dia. Recomendação da rede **
 ## Pendências
 
 - [x] ~~Responder (1) acima: a API/MCP `kit` expõe origem `creator_network` por assinante?~~
-      **Respondido em 02/09/2026** (#6674): não existe campo `creator_network`, mas o form
-      dedicado `id 9870650` mede o canal por atribuição. Query na seção "Como medir".
+      **Respondido em 02/09/2026** (#6674): `source_type` não tem `creator_network` (enum
+      fechado, fato); `source_mechanism` não foi encontrado, mas o método não prova
+      inexistência. O que mede o canal é o form dedicado `id 9870650`, por atribuição —
+      query (com filtro de estado obrigatório) na seção "Como medir".
 - [ ] Rodar a query do form 9870650 daqui a algumas semanas — enquanto der 0, o canal não
       entra em relatório de aquisição. Só faz sentido ligar a agregação do item (2) quando
       houver volume.
