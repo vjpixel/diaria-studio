@@ -196,12 +196,20 @@ export function resolveIdentitiesByEmail(
   now: string = new Date().toISOString(),
 ): IdentityResolutionSummary {
   const rows = db
-    .prepare("SELECT subscriber_id, email FROM identity_alias WHERE email IS NOT NULL")
+    .prepare("SELECT subscriber_id, email FROM identity_alias WHERE email IS NOT NULL AND email != ''")
     .all() as Array<{ subscriber_id: number; email: string }>;
 
   const groups = new Map<string, Set<number>>();
   for (const r of rows) {
     const canon = canonicalizeGmail(r.email);
+    // Defensivo: uma string vazia/sem "@" canonicaliza pra si mesma
+    // (`canonicalizeGmail("")` → `""`) — sem este guard, um futuro caller
+    // que grave `identity_alias.email = ""` faria TODOS os aliases vazios
+    // colidirem num "grupo" só e se fundirem por acidente. Nenhum caller
+    // hoje faz isso (Kit/Brevo já filtram e-mail vazio antes de chamar
+    // `ensureSubscriber`), mas a regra "só e-mail canonicalizado casa"
+    // pressupõe um e-mail de verdade, não a ausência de um.
+    if (!canon || !canon.includes("@")) continue;
     let set = groups.get(canon);
     if (!set) {
       set = new Set();

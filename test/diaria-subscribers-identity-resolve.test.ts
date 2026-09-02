@@ -251,6 +251,34 @@ describe("resolveIdentitiesByEmail — conflito de subscription na mesma platafo
   });
 });
 
+describe("resolveIdentitiesByEmail — defensivo contra e-mail vazio (nunca ocorre via ensureSubscriber, mas guarda o invariante)", () => {
+  it("NÃO funde 2 subscribers cujo alias tem email = '' (bypass direto de SQL, fora do caminho público)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    // ensureSubscriber normaliza email:"" para NULL antes de gravar (ternária
+    // `email ? ... : null`) — este teste simula um INSERT direto que
+    // contornasse esse caminho, pra travar que resolveIdentitiesByEmail
+    // nunca trata "" como um e-mail canonicalizável de verdade.
+    db.exec("BEGIN");
+    db.prepare("INSERT INTO subscriber (created_at, updated_at) VALUES (?, ?)").run(NOW, NOW);
+    const s1 = (db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id;
+    db.prepare(
+      "INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, 'beehiiv', 'ext-1', '', ?)",
+    ).run(s1, NOW);
+    db.prepare("INSERT INTO subscriber (created_at, updated_at) VALUES (?, ?)").run(NOW, NOW);
+    const s2 = (db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id;
+    db.prepare(
+      "INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, 'kit', 'ext-2', '', ?)",
+    ).run(s2, NOW);
+    db.exec("COMMIT");
+
+    const summary = resolveIdentitiesByEmail(db, NOW);
+
+    assert.equal(summary.subscribers_merged, 0);
+    assert.equal(getStoreCounts(db).subscribers, 2);
+    db.close();
+  });
+});
+
 describe("resolveIdentitiesByEmail — regressão onda 1 (#6504): 81 casam 81/81", () => {
   it("81 assinantes migrados por e-mail exato (Beehiiv desativado + Kit taggeado) casam 81/81", () => {
     const db = openDiariaSubscribersDb(":memory:");
