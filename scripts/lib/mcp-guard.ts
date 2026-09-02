@@ -126,9 +126,16 @@ export function emitHaltBanner(
   reason: string,
 ): void {
   const scriptPath = resolve(ROOT, "scripts/render-halt-banner.ts");
-  spawnSync(
-    "npx",
+  // Spawna o próprio `node`, nunca `npx` (#7053). `spawnSync("npx", ...)` sem
+  // `shell` falha com ENOENT no Windows (o executável é `npx.cmd`), e este
+  // banner é o mecanismo de fail-fast do #738 — ele falhando em silêncio
+  // significa que "MCP indisponível" deixa de avisar exatamente na máquina do
+  // editor, que é onde os gates interativos rodam. `shell: true` não serve:
+  // `scriptPath` é caminho ABSOLUTO e o cmd.exe reprocessa o quoting (#6206).
+  const res = spawnSync(
+    process.execPath,
     [
+      "--import",
       "tsx",
       scriptPath,
       "--stage",
@@ -140,6 +147,14 @@ export function emitHaltBanner(
     ],
     { stdio: "inherit" },
   );
+  // O banner é o último aviso antes de a pipeline parar; se nem ele saiu, o
+  // operador precisa saber — senão a falha de infra vira silêncio total.
+  if (res.error || (res.status ?? 1) !== 0) {
+    console.error(
+      `[mcp-guard] FALHA ao renderizar o halt banner (${res.error?.message ?? `exit ${res.status}`}). ` +
+        `Motivo original: ${mcpName} — ${reason} (${stage}).`,
+    );
+  }
 }
 
 /**

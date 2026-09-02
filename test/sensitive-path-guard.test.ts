@@ -202,8 +202,33 @@ describe("CLI (#6277, achado do review — main() não tinha teste nenhum)", () 
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const script = resolve(repoRoot, "scripts/lib/sensitive-path-guard.ts");
 
+  /**
+   * Spawna o próprio `node` em vez de `npx` (#6206, ressalva de
+   * `test/_helpers/spawn-npx.ts`).
+   *
+   * `spawnSync("npx", ...)` sem `shell` falha com **ENOENT no Windows** — lá
+   * o executável é `npx.cmd` e o PATH não resolve o nome sem extensão. Todos
+   * os outros chamadores de `npx` no `test/` já passam `shell`; este era o
+   * único que não, e por isso as 6 asserções abaixo falhavam na máquina do
+   * editor enquanto o CI (Linux) ficava verde.
+   *
+   * `shell: true` resolveria o ENOENT mas NÃO serve aqui: este teste passa
+   * `script` como caminho ABSOLUTO do Windows, e o `cmd.exe` reprocessa o
+   * quoting — o caso exato que o #6206 mediu estourando
+   * `ERR_UNSUPPORTED_ESM_URL_SCHEME`. Spawnar `process.execPath` dispensa
+   * shell e resolução de `npx` de uma vez.
+   */
   function runCli(args: string[]) {
-    return spawnSync("npx", ["tsx", script, ...args], { cwd: repoRoot, encoding: "utf8" });
+    const r = spawnSync(process.execPath, ["--import", "tsx", script, ...args], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    // Sem isto, uma falha de SPAWN (o binário não existe) chega às asserções
+    // como `status: null` e o relatório vira `null !== 0` — que não diz nada
+    // sobre a causa e manda quem for depurar procurar bug no CLI, não no
+    // spawn. Foi o que aconteceu ao vivo (01/09/2026).
+    assert.equal(r.error, undefined, `falha ao spawnar o CLI: ${r.error?.message}`);
+    return r;
   }
 
   it("--files com caminho sensível → exit 0 e veredito SENSÍVEL no stdout", () => {
