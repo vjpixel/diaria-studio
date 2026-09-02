@@ -136,6 +136,20 @@ export interface ClicksCsvRow {
   canal: string;
   data_apuracao: DateOnlyString;
   gasto_acumulado: number;
+  /** #5239 — coluna OPCIONAL (`leitores_acumulado`), leitores-v1
+   *  (`scripts/lib/leitor.ts`) atribuídos a este braço até esta data,
+   *  cruzados manualmente pelo editor contra `cac-report.ts` (mesma
+   *  disciplina de reconciliação manual de `gasto_acumulado`, §8.3).
+   *  `null` quando a coluna está ausente do header OU vazia nesta linha —
+   *  nunca um erro (a linha continua válida pra `gasto_acumulado`/cobertura;
+   *  só fica sem amostra pro kill switch até o editor preencher). Coluna
+   *  presente mas com valor não-numérico/negativo É erro (mesma disciplina
+   *  das demais colunas numéricas). Campo OPCIONAL no tipo (não só no CSV) —
+   *  objetos construídos à mão (testes, código pré-#5239) continuam
+   *  válidos sem precisar declarar este campo; `undefined` e `null` são
+   *  tratados de forma idêntica por `buildArmCostSamplesFromRows`
+   *  (`scripts/lib/ads-kill-switch.ts`). */
+  leitoresAcumulado?: number | null;
 }
 
 export interface ClicksCsvRowError {
@@ -187,7 +201,21 @@ export function parseClicksCsv(content: string): ClicksCsvParseResult {
       errors.push({ line, reason: `"gasto_acumulado" não é um número não-negativo válido: "${gastoRaw}"` });
       return;
     }
-    rows.push({ canal, data_apuracao, gasto_acumulado });
+    // #5239 — coluna OPCIONAL: ausente do header OU vazia nesta linha ->
+    // `null` (sem amostra pro kill switch ainda, nunca um erro da linha
+    // inteira). Presente E não-vazia -> valida como as demais colunas
+    // numéricas (não-numérico/negativo É erro, nunca coagido em silêncio).
+    let leitoresAcumulado: number | null = null;
+    const leitoresRaw = (raw.leitores_acumulado ?? "").trim();
+    if (leitoresRaw !== "") {
+      const parsedLeitores = Number(leitoresRaw);
+      if (!Number.isFinite(parsedLeitores) || parsedLeitores < 0) {
+        errors.push({ line, reason: `"leitores_acumulado" não é um número não-negativo válido: "${leitoresRaw}"` });
+        return;
+      }
+      leitoresAcumulado = parsedLeitores;
+    }
+    rows.push({ canal, data_apuracao, gasto_acumulado, leitoresAcumulado });
   });
   return { rows, errors };
 }
