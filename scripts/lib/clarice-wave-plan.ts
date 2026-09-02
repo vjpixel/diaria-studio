@@ -1294,6 +1294,20 @@ export interface WaveProposalInput {
    * #3682, que reenviou 100% pra quem já tinha recebido.
    */
   committedLookupFailed: boolean;
+  /**
+   * #7007 — `err.message` (ou `String(err)`) da exceção que fez
+   * `committedLookupFailed` virar `true`, quando disponível. Antes disso, a
+   * causa real (429 exaurindo o orçamento de retry do `brevoGet`, erro de
+   * rede, 401, corpo não-JSON) morria num `console.error` dentro de
+   * `clarice-plan-wave.ts` — stderr de um subprocesso que `clarice-envio-run.ts`
+   * nunca lê nem persiste. Resultado: 3 ocorrências (#6421-classe, 260827/
+   * 260830/260901) do MESMO `reportId` genérico `envio-{aammdd}-abort`,
+   * cada uma exigindo uma investigação do zero sem conseguir ver o motivo
+   * real. `undefined`/`null` (chamador antigo, ou falha sem `Error` — só o
+   * `else` de "sem chave" em `clarice-plan-wave.ts`) omite o detalhe sem
+   * quebrar nada — mesmo padrão fail-soft do resto do módulo.
+   */
+  committedLookupError?: string | null;
   /** #4664 — frescor do último `/diaria-clarice-novos`. Ver seção acima. */
   novosFreshness: NovosFreshness;
   /** #5405 item 2 — desfecho da ÚLTIMA tentativa (`last-novos-run-status.json`),
@@ -1388,10 +1402,14 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
   const warnings: string[] = [];
 
   if (input.committedLookupFailed) {
+    // #7007 — motivo real (quando disponível) anexado à mensagem, pra não
+    // repetir 3× a mesma investigação às cegas (ver docstring de
+    // `committedLookupError` acima).
     blockers.push(
       "Consulta de campanhas comprometidas (queued/sent) FALHOU — sem ela a fila disponível é superestimada e " +
         "quem já está agendado pode receber de novo (#3682). `fetchCommittedCampaignListIds` é documentada pra falhar alto; " +
-        "não agendar até a consulta voltar.",
+        "não agendar até a consulta voltar." +
+        (input.committedLookupError ? ` Motivo: ${input.committedLookupError}` : ""),
     );
   }
 

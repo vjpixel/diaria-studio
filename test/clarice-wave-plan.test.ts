@@ -1764,6 +1764,22 @@ describe("buildWaveProposal (#4657)", () => {
     assert.match(p.blockers.join(" "), /#3682/);
   });
 
+  it("REGRESSÃO #7007: motivo real da falha de comprometidos entra no blocker quando disponível", () => {
+    // 3 ocorrências (260827/260830/260901) do mesmo reportId genérico
+    // `envio-{aammdd}-abort` exigiram investigação do zero cada vez porque
+    // a causa real (429? erro de rede? 401?) nunca sobrevivia além de um
+    // console.error de subprocesso. `committedLookupError` fecha esse furo.
+    const p = buildWaveProposal(
+      proposalInput({ committedLookupFailed: true, committedLookupError: "Brevo GET /emailCampaigns HTTP 429" }),
+    );
+    assert.match(p.blockers.join(" "), /Motivo: Brevo GET \/emailCampaigns HTTP 429/);
+  });
+
+  it("sem committedLookupError — blocker sai sem 'Motivo:' pendurado (fail-soft, chamador antigo)", () => {
+    const p = buildWaveProposal(proposalInput({ committedLookupFailed: true }));
+    assert.doesNotMatch(p.blockers.join(" "), /Motivo:/);
+  });
+
   it("REGRESSÃO: perDay que não cobre dates LANÇA, nunca preenche com 0", () => {
     // Antes caía num `?? 0` silencioso — uma onda de volume ZERO renderizada
     // como se fosse plano legítimo.
