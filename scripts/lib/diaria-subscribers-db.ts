@@ -28,13 +28,14 @@
  *   - `identity_alias`   — `(platform, external_id, email) → subscriber_id`.
  *     NUNCA PK ingênua por e-mail: `canonicalizeGmail` já mostra que o mesmo
  *     humano usa formas distintas de e-mail, e há identidade que
- *     legitimamente NÃO junta (voto anônimo do É IA?). A resolução
- *     determinística cross-plataforma (quando dois aliases de plataformas
- *     DIFERENTES são a mesma pessoa) é a fatia 5 do épico — **fora do
- *     escopo desta issue**. O que este módulo garante hoje: reingestão da
- *     MESMA plataforma com a MESMA identidade externa é idempotente (nunca
- *     cria um 2º `subscriber` pro mesmo alias já visto) — ver
- *     `ensureSubscriber`.
+ *     legitimamente NÃO junta (voto anônimo do É IA?). Reingestão da MESMA
+ *     plataforma com a MESMA identidade externa é idempotente (nunca cria
+ *     um 2º `subscriber` pro mesmo alias já visto) — ver `ensureSubscriber`.
+ *     A resolução determinística CROSS-plataforma (quando dois aliases de
+ *     plataformas DIFERENTES são a mesma pessoa, por e-mail canonicalizado)
+ *     é a fatia 5 do épico — implementada em
+ *     `diaria-subscribers-identity-resolve.ts` (#6589), como um passo
+ *     SEPARADO que roda depois da ingestão, não dentro de `ensureSubscriber`.
  *   - `subscription`     — 1 linha por `(subscriber × platform)`: status,
  *     datas de entrada/saída, origem/UTM.
  *   - `event`            — o fato: `{subscriber_id, platform, type, ts, ...}`.
@@ -305,11 +306,12 @@ export function openDiariaSubscribersDbSafe(
  * sempre retorna o MESMO `subscriber_id` — nunca cria um 2º subscriber pro
  * alias já visto.
  *
- * Não faz merge cross-plataforma (fatia 5, fora de escopo aqui) — dois
- * aliases de PLATAFORMAS DIFERENTES pra mesma pessoa real criam, por hoje,
- * dois `subscriber` distintos. O campo existe pronto pra fatia 5 reconciliar
- * depois (ex: um `UPDATE identity_alias SET subscriber_id = ?` que funde
- * dois subscribers em um).
+ * Não faz merge cross-plataforma — dois aliases de PLATAFORMAS DIFERENTES
+ * pra mesma pessoa real criam, nesta chamada, dois `subscriber` distintos.
+ * Isso é esperado e transitório: `resolveIdentitiesByEmail`
+ * (`diaria-subscribers-identity-resolve.ts`, fatia 5, #6589) roda DEPOIS da
+ * ingestão e funde por e-mail canonicalizado (`UPDATE identity_alias SET
+ * subscriber_id = ?`) — este helper nunca precisa saber disso.
  *
  * `externalId`/`email` podem ser `null` individualmente, mas ao menos um dos
  * dois precisa estar presente (senão não há como reidentificar o alias numa
@@ -457,9 +459,11 @@ export function findSubscriberIdByAlias(
 
 /** Todos os subscriber_id associados a um e-mail, em qualquer plataforma —
  * ponto de entrada mais comum pra busca no painel (editor digita um e-mail,
- * não sabe de antemão em qual plataforma). Sem merge cross-plataforma
- * (fatia 5): pode retornar mais de 1 id se o e-mail aparece em plataformas
- * diferentes ainda não reconciliadas. */
+ * não sabe de antemão em qual plataforma). Depois de
+ * `resolveIdentitiesByEmail` (fatia 5, #6589) rodar, retorna no máximo 1 id
+ * pra este e-mail exato — mais de 1 só aparece transitoriamente, ANTES da
+ * resolução rodar (ex: entre duas ingestões e o próximo `npx tsx
+ * scripts/diaria-subscribers-resolve-identity.ts`). */
 export function findSubscriberIdsByEmail(
   db: DatabaseSync,
   email: string,
