@@ -131,7 +131,15 @@ export type {
  * Implementação local — sem dependência nova, ~15 linhas.
  */
 
-export const RECENT_STATS_TTL = 1800; // segundos (30min) — #2282
+// #7007: subindo de 1800s (30min) pra 4200s (70min) — o precompute horário
+// (Diaria-Clarice-Dashboard-Precompute, scripts/clarice-dashboard-precompute.ts)
+// roda a cada 3600s e SEMPRE achava o TTL de 30min já vencido, forçando um
+// re-fetch completo de globalStats+linksStats de TODAS as campanhas <7d em
+// TODA execução horária — ~57 chamadas/render, 57% do orçamento de 100
+// req/hora da conta Brevo, e a causa raiz de 2 aborts do envio diário
+// (#6831, #7007). 70min dá margem (>60min) pro precompute reaproveitar o
+// cache do ciclo anterior mesmo com jitter do timer systemd.
+export const RECENT_STATS_TTL = 4200; // segundos (70min) — #2282, elevado no #7007
 
 // #2426: chave KV das coortes de engajamento, gravada por
 // scripts/clarice-engagement-cohorts.ts. Mantida em sincronia com COHORTS_KV_KEY

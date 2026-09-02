@@ -18,6 +18,8 @@
  *  - #2282: RECENT_STATS_TTL foi elevado a 1800s (≥ 900 pra ser defensivo).
  *    (#2733 removeu o HTML lastgood + djb2Hash + write condicional por hash;
  *     o fallback de rate-limit agora re-renderiza com campanhas cruas do KV.)
+ *    (#7007 elevou de novo, pra 4200s — o teste abaixo lê a constante ao
+ *     vivo via import, então continua correto sem mudança.)
  */
 
 import { test, describe } from "node:test";

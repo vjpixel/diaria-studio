@@ -501,7 +501,7 @@ describe("fetchRecentCampaigns (integration com KV mock)", () => {
 
   test("#2270/#2314: campanha recente é cacheada com TTL (expirationTtl) na chave unificada stats:{id}", async () => {
     // #2314: chave coalesced stats:{id} substitui gstats:+lstats: separados.
-    // #2282: TTL é RECENT_STATS_TTL (agora 1800s), não hardcoded 300.
+    // #2282/#7007: TTL é RECENT_STATS_TTL (agora 4200s), não hardcoded 300.
     const { kv, putOpts, putCalls } = makeKVMock({ "list:7": JSON.stringify(fakeList) });
     const mockFetch = async <T>(path: string): Promise<T> => {
       if (path.includes("emailCampaigns?status=sent")) return { campaigns: [recentCampaign] } as T;
