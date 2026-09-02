@@ -31,6 +31,7 @@ import { parseSitemap } from "./fetch-sitemap.ts";
 import { HUB_META } from "../../workers/arquivo/src/hubs/meta.ts";
 import { COLORS } from "./shared/design-tokens.ts";
 import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
+import { GEO_AUTHOR } from "./shared/geo-faq.ts";
 
 /**
  * Converte um hex `#RRGGBB` do DS pra `rgba(r,g,b,alpha)` — usado só pra
@@ -114,6 +115,36 @@ const ERROR_DARK = "#ffb3a8";
  */
 const CARD_RADIUS = "8px";
 
+/**
+ * Nº máximo de cards de "Edições anteriores" renderizados no HTML estático
+ * da home (#7022 item 3). A Beehiiv mostra 6 + botão "Carregar mais"; nossa
+ * renderizava 9 de uma vez — com as capas 2:1 do #7011 isso virou 9 imagens
+ * no primeiro paint, boa parte do porquê de `scrollHeight` bater 4005 contra
+ * 3070 da Beehiiv (medido na issue).
+ *
+ * DECISÃO (a issue pedia pra registrar o porquê, não só aplicar): a home é
+ * **estática, gerada em build** (`gen-home-page.ts`) — não existe backend
+ * pra paginar um "carregar mais" real. Duas saídas possíveis:
+ *   (a) renderizar os 9 no HTML e revelar os últimos 3 via CSS/JS no clique
+ *       — sem round-trip de rede, mas o documento continua carregando as
+ *       9 imagens (só esconde visualmente; não resolve o `scrollHeight`
+ *       nem o custo de paint que motivou o item);
+ *   (b) limitar a render a 6 e mandar o resto pro acervo completo
+ *       (`arquivo.diar.ia.br`, já existe, já é exatamente essa página).
+ * Escolhida (b): a saída (a) duplicaria as MESMAS 9 edições em 2 lugares
+ * (`arquivo.diar.ia.br` E a home, sem necessidade); (b) usa a superfície
+ * que já existe pra esse fim, e resolve de fato o custo de paint/altura que
+ * o item aponta — (a) só esconderia o sintoma no visual, mantendo o HTML
+ * pesado. O link "Ver arquivo completo →" na régua da seção (item 4) já é
+ * o caminho pra quem quer mais.
+ *
+ * `buildIndexHtml` corta em `ARCHIVE_CARD_LIMIT` DEFENSIVAMENTE (não confia
+ * só em `gen-home-page.ts` já passar 6 entradas) — mesmo espírito do filtro
+ * de `feature` duplicada na `archive` logo abaixo: a invariante fica
+ * correta independente do que um caller futuro passar.
+ */
+const ARCHIVE_CARD_LIMIT = 6;
+
 export interface HomeFeedEntry {
   slug: string;
   title: string;
@@ -125,6 +156,12 @@ export interface HomeFeedEntry {
    *  falha, ou o `src` vem vazio — a home nunca quebra por capa ausente,
    *  degrada pra layout só-texto (ver `extractHeroImage`). */
   image: string | null;
+  /** Tempo de leitura estimado em minutos, arredondado (#7022 item 2).
+   *  `null`/ausente quando o HTML não rende nenhuma palavra — o card
+   *  omite o "N min de leitura" em vez de quebrar (ver
+   *  `estimateReadingMinutes`). Opcional: fixtures de teste que constroem
+   *  `HomeFeedEntry` à mão (fora de `buildHomeFeed`) não precisam setar. */
+  readingMinutes?: number | null;
 }
 
 /**
@@ -186,6 +223,49 @@ export function extractHeroImage(html: string): string | null {
 }
 
 /**
+ * Velocidade de leitura usada por `estimateReadingMinutes` — 200
+ * palavras/minuto é a mediana comumente citada pra leitura silenciosa em
+ * adultos (não há benchmark PT-BR próprio neste repo; escolhida como
+ * estimativa honesta, não como medição de precisão). Constante isolada e
+ * exportada de propósito (#7022 item 2, "não invente 5 min fixo") — pra
+ * ficar óbvio, no código e em teste, que o número por card É DERIVADO do
+ * texto real de cada edição, nunca hardcoded.
+ */
+export const WORDS_PER_MINUTE = 200;
+
+/**
+ * Estima o tempo de leitura (minutos, arredondado, mínimo 1) a partir do
+ * MESMO HTML de `/p/{slug}/index.html` que `extractPageMeta`/
+ * `extractHeroImage` acima já leem — nenhuma leitura extra de disco.
+ *
+ * Remove `<script>`/`<style>`/`<svg>` inteiros antes de tirar as tags
+ * restantes (via `stripHtmlBasic`): sem isso, JS/CSS/paths de ícone SVG
+ * inflam a contagem de "palavras" com tokens que ninguém lê. O que sobra
+ * ainda inclui nav/rodapé/botões de compartilhar do shell da Beehiiv além
+ * do corpo da edição — um offset praticamente CONSTANTE entre edições
+ * (mesmo shell em todas), então não distorce a comparação relativa entre
+ * cards nem empurra o resultado pra fora de uma faixa plausível: medido
+ * contra 5 edições reais do acervo (#7022), a estimativa saiu entre 5 e 8
+ * minutos — perto da promessa de marca "5 minutos" precisamente porque
+ * NÃO foi fixada nesse valor, e sim calculada.
+ *
+ * `null` só quando não sobra nenhuma palavra (HTML vazio/só markup) — o
+ * card degrada omitindo o "N min de leitura", mesmo espírito de
+ * `extractHeroImage` (nunca quebra a home por um dado ausente).
+ */
+export function estimateReadingMinutes(html: string): number | null {
+  const withoutNoise = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, " ");
+  const text = stripHtmlBasic(withoutNoise);
+  if (!text) return null;
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  if (!wordCount) return null;
+  return Math.max(1, Math.round(wordCount / WORDS_PER_MINUTE));
+}
+
+/**
  * Monta a lista de edições reais (mais recente primeiro) a partir do
  * `sitemap.xml` já commitado + um reader de página injetado (produção lê
  * `workers/site/public/p/{slug}/index.html`; teste injeta fixtures em
@@ -233,7 +313,8 @@ export function buildHomeFeed(
       // só loga: a home renderiza a edição sem capa, layout só-texto (#6978).
       console.warn(`site-home-page: sem <img class="hero"> pra slug "${slug}" — entrada do feed sem capa`);
     }
-    feed.push({ slug, title, description, url: entry.loc, date: entry.lastmod, image });
+    const readingMinutes = estimateReadingMinutes(html);
+    feed.push({ slug, title, description, url: entry.loc, date: entry.lastmod, image, readingMinutes });
   }
   return feed;
 }
@@ -604,19 +685,32 @@ export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
   // quando a página não tem `img.hero` — o card cai pro layout só-texto de
   // sempre, nunca quebra por capa ausente. `loading="lazy"` obrigatório
   // aqui (nunca no destaque, que é sempre a 1ª imagem visível da página):
-  // são até ~10 cards, e sem lazy a home carregaria 10 imagens de uma vez.
+  // são até ARCHIVE_CARD_LIMIT cards, e sem lazy a home carregaria todas de
+  // uma vez.
   const archiveCards = archive
+    .slice(0, ARCHIVE_CARD_LIMIT)
     .map((entry) => {
       const media = entry.image
         ? `<a class="archive-media" href="${escHtml(entry.url)}" tabindex="-1" aria-hidden="true">
           <img src="${escHtml(entry.image)}" alt="${escHtml(entry.title)}" loading="lazy">
         </a>`
         : "";
+      // Meta line (#7022 item 2) — data + tempo de leitura estimado
+      // (`estimateReadingMinutes`, derivado do texto real, nunca "5 min"
+      // fixo) + autoria (`GEO_AUTHOR`, o mesmo identificador nomeado e
+      // verificável já usado em livros/cursos/arquivo — `geo-faq.ts`; sem
+      // avatar porque não existe nenhum asset de avatar no repo hoje).
+      // Segmentos ausentes (data inválida, HTML sem palavra nenhuma) são
+      // omitidos em vez de vazar string vazia/"undefined".
+      const metaParts: string[] = [];
+      const dateLabel = formatDateLong(entry.date);
+      if (dateLabel) metaParts.push(escHtml(dateLabel));
+      if (entry.readingMinutes) metaParts.push(`${entry.readingMinutes} min de leitura`);
+      metaParts.push(`Por <a href="${escHtml(GEO_AUTHOR.url)}" rel="author">${escHtml(GEO_AUTHOR.name)}</a>`);
+      const metaHtml = metaParts.join(' <span aria-hidden="true">·</span> ');
       return `<article class="archive-card">
         ${media}
-        <div class="archive-meta">
-          <span>${escHtml(formatDateLong(entry.date))}</span>
-        </div>
+        <div class="archive-meta">${metaHtml}</div>
         <h3 class="archive-title"><a href="${escHtml(entry.url)}">${escHtml(entry.title)}</a></h3>
         <p class="archive-dek">${escHtml(entry.description)}</p>
       </article>`;
@@ -777,6 +871,8 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .archive-media { display: block; }
 .archive-media img { display: block; width: 100%; aspect-ratio: 2 / 1; object-fit: cover; border-radius: ${CARD_RADIUS}; }
 .archive-meta { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
+.archive-meta a { color: inherit; text-decoration: none; }
+.archive-meta a:hover { color: var(--teal-deep); text-decoration: underline; text-underline-offset: 3px; }
 .archive-title { font-size: 20px; line-height: 1.15; letter-spacing: -0.01em; font-weight: 500; }
 .archive-title a:hover { color: var(--teal-deep); }
 .archive-dek { font-family: Georgia, serif; font-size: 13px; line-height: 1.4; color: var(--ink-soft); font-style: italic; margin: 0; }
@@ -886,16 +982,29 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <span class="kicker kicker--teal">Cadernos especiais · curadoria contínua</span>
         <h2>O que <span class="accent">não cabe</span> em 5 minutos.</h2>
       </div>
+      <!-- #7022 itens 1/5/6: título numa linha só (sem quebra) e sem
+           itálico/teal — decisão do editor no triage da issue (item 5): a
+           Beehiiv usa itálico/teal na 2ª metade do título e quebra em duas
+           linhas, mas o editor preferiu texto plano numa linha só (mantém
+           o span class=accent em "Cursos" sem NENHUMA regra CSS escopada a
+           special-card h3 accent — é inerte de propósito, não um esqueleto
+           de itálico/teal esquecido). Os 2 cards seguem caixa fechada com
+           kicker (item 6, decisão do editor: manter a NOSSA versão, não a
+           da Beehiiv, que deixa "Livros" solto sem card). O bug de
+           acessibilidade do item 1 (quebra de linha sem espaço grudava as
+           palavras no texto extraído) segue corrigido — só que aqui a
+           correção é REMOVER a quebra de linha (não mais duas linhas), não
+           adicionar espaço antes dela. -->
       <div class="specials-grid">
         <div class="special-card">
           <span class="kicker kicker--teal">● Lista aberta</span>
-          <h3>Livros<br>sobre IA.</h3>
+          <h3>Livros sobre IA.</h3>
           <p>Iniciantes, profissionais e quem quer ir a fundo — curadoria contínua por nível, autor e ano de publicação.</p>
           <a class="btn btn-ink" href="https://livros.diar.ia.br/">Acessar a estante completa →</a>
         </div>
         <div class="special-card special-card--dark">
           <span class="kicker" style="color: var(--teal)">● Para assinantes</span>
-          <h3>Cursos<br><span class="accent">gratuitos.</span></h3>
+          <h3>Cursos <span class="accent">gratuitos.</span></h3>
           <p>Selecionados entre os melhores cursos abertos sobre IA. Atualizamos toda semana.</p>
           <a class="btn btn-ink" href="https://cursos.diar.ia.br/">Ver todos os cursos →</a>
         </div>
@@ -933,7 +1042,7 @@ ${topicLinks}
     <div class="wrap">
       <div>
         <span class="kicker">Antes de assinar</span>
-        <h2>Perguntas<br>frequentes.</h2>
+        <h2>Perguntas <br>frequentes.</h2>
       </div>
       <div>
 ${faqItems}
@@ -945,7 +1054,7 @@ ${faqItems}
   <footer class="footer" id="footer">
     <div class="wrap">
       <div class="footer-top">
-        <div class="footer-headline">5 minutos.<br><span class="accent">Toda manhã.</span></div>
+        <div class="footer-headline">5 minutos. <br><span class="accent">Toda manhã.</span></div>
         <div>
           <span class="footer-label">Assine grátis</span>
           ${renderSignupForm({ id: "footer-form", onDark: true })}

@@ -14,7 +14,7 @@
  * mão" descrita em `workers/site/README.md`.
  *
  * Uso:
- *   npx tsx scripts/gen-home-page.ts [--sitemap workers/site/public/sitemap.xml] [--pages-dir workers/site/public/p] [--out workers/site/public/index.html] [--archive-limit 9]
+ *   npx tsx scripts/gen-home-page.ts [--sitemap workers/site/public/sitemap.xml] [--pages-dir workers/site/public/p] [--out workers/site/public/index.html] [--archive-limit 6]
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -27,7 +27,13 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_SITEMAP_PATH = resolve(ROOT, "workers", "site", "public", "sitemap.xml");
 const DEFAULT_PAGES_DIR = resolve(ROOT, "workers", "site", "public", "p");
 const DEFAULT_OUT_PATH = resolve(ROOT, "workers", "site", "public", "index.html");
-const DEFAULT_ARCHIVE_LIMIT = 9;
+// 6, não 9 (#7022 item 3) — Beehiiv mostra 6 cards + "Carregar mais"; a
+// home estática manda o resto pro acervo completo (arquivo.diar.ia.br) em
+// vez de renderizar tudo de uma vez (rationale completo em
+// ARCHIVE_CARD_LIMIT, scripts/lib/site-home-page.ts). buildIndexHtml
+// também corta em 6 defensivamente, então mudar isto só evita ler/computar
+// (word count, capa) páginas que nunca aparecem no HTML final.
+const DEFAULT_ARCHIVE_LIMIT = 6;
 
 function main() {
   const { values } = parseArgs(process.argv.slice(2));
