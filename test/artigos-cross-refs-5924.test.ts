@@ -98,24 +98,11 @@ describe("workers/artigos/public — coerência interna das páginas (#5924)", (
 
   it("toda âncora do índice aponta para um id que existe na página", () => {
     for (const a of articles) {
-      // Artigo Especial GATEADO (#7030): `public/{ano}/{slug}/index.html` é o
-      // TEASER estático (`scripts/build-artigo-especial-teaser.ts`), cortado
-      // no marcador `ESPECIAL:GATE_CUT` — antes da 1ª seção nomeada (s02+).
-      // O índice/TOC lista TODAS as seções do artigo completo de propósito
-      // (mostra ao visitante o que tem atrás do gate), mas só a seção s01
-      // efetivamente existe na página estática — o resto vive em
-      // `src/{slug}-full.generated.ts`, servido pelo worker só pós-gate. O
-      // marcador `especial-gate-cta` (`artigo-especial-gate-cta.ts`) sinaliza
-      // essa truncagem intencional; sem ele, a página é íntegra e o guard
-      // original (#5924) vale sem exceção.
-      const isGatedTeaser = a.html.includes('class="especial-gate-cta"');
       const ancoras = [...a.html.matchAll(/<a href="#(s\d+)"/g)].map((m) => m[1]);
       if (ancoras.length === 0) continue; // artigo sem índice: nada a checar
       for (const id of ancoras) {
-        const existe = a.html.includes(`id="${id}"`);
-        if (isGatedTeaser && !existe) continue; // âncora aponta pro conteúdo gateado — esperado
         assert.ok(
-          existe,
+          a.html.includes(`id="${id}"`),
           `${a.year}/${a.slug}: índice aponta para #${id}, que não existe na página`,
         );
       }
