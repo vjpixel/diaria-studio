@@ -480,7 +480,7 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
     assert.ok(runner.calls.some((c) => c.cmd === "git" && c.args[0] === "worktree" && c.args[1] === "remove"), "worktree deve ser removido após merge");
   });
 
-  it("CI vermelho no lote de 3 → bissecta em {2,1} → o de 2 passa, o de 1 vai solo", async () => {
+  it("CI vermelho CONFIRMADO (2 execuções, #7064) no lote de 3 → bissecta em {2,1} → o de 2 passa, o de 1 vai solo", async () => {
     const runner = fullRunner();
     let createCalls = 0;
     runner.on("gh", (a) => a[0] === "pr" && a[1] === "create", () => {
@@ -488,8 +488,29 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
       return ok(`https://github.com/x/y/pull/900${createCalls}\n`);
     });
     let viewCalls = 0;
-    // Sobrescreve especificamente o PR-trem (número != PR original) pra simular vermelho na 1ª tentativa —
-    // as revalidações de Gate 2 dos PRs 100/101/102 continuam caindo no handler genérico de fullRunner() (verde).
+    // Sobrescreve especificamente o PR-trem (número != PR original) pra simular vermelho nas 2 execuções
+    // (1ª + reconfirmação, #7064) — as revalidações de Gate 2 dos PRs 100/101/102 e o trem-filho da
+    // bissecção (outro número de PR) continuam caindo no handler genérico de fullRunner() (verde).
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "view" && a[2] === "9001" && a.includes("statusCheckRollup"), () => {
+      viewCalls++;
+      return ok(JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", name: "test", conclusion: "FAILURE", status: "COMPLETED" }] }));
+    });
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok());
+
+    const outcomes = await runMergeTrain(runner, { prs: [100, 101, 102] }, prInfos3, { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD, ciPollIntervalMs: 1 });
+    assert.ok(viewCalls >= 2, "reconfirmação (#7064) deve consultar o PR-trem 9001 pelo menos 2x antes de bissectar");
+    const statuses = outcomes.map((o) => o.status);
+    assert.ok(statuses.includes("abandoned"), "lote original vermelho deve aparecer como abandoned");
+    assert.ok(statuses.includes("merged") || statuses.includes("solo-merged"), "algum sub-lote deve fechar com sucesso");
+  });
+
+  it("regressão #7064: 1ª execução fail + reconfirmação pass → 'indeterminate', NUNCA bissecta e NUNCA mergeia", async () => {
+    const runner = fullRunner();
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "create", () => ok("https://github.com/x/y/pull/9001\n"));
+    let viewCalls = 0;
+    // Simula exatamente a corrida do #7060 medida ao vivo: 1ª execução do CI
+    // do lote reprova, a reconfirmação (2ª execução, mesmo PR-trem/sha)
+    // aprova — discordância é a assinatura da corrida, nunca reprovação.
     runner.on("gh", (a) => a[0] === "pr" && a[1] === "view" && a[2] === "9001" && a.includes("statusCheckRollup"), () => {
       viewCalls++;
       const conclusion = viewCalls === 1 ? "FAILURE" : "SUCCESS";
@@ -498,9 +519,15 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
     runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok());
 
     const outcomes = await runMergeTrain(runner, { prs: [100, 101, 102] }, prInfos3, { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD, ciPollIntervalMs: 1 });
-    const statuses = outcomes.map((o) => o.status);
-    assert.ok(statuses.includes("abandoned"), "lote original vermelho deve aparecer como abandoned");
-    assert.ok(statuses.includes("merged") || statuses.includes("solo-merged"), "algum sub-lote deve fechar com sucesso");
+
+    assert.equal(viewCalls, 2, "deve consultar o PR-trem exatamente 2x (1ª execução + reconfirmação) — nunca uma 3ª");
+    assert.equal(outcomes.length, 1, "lote não deve ser bissectado — discordância vira 1 outcome terminal, não 2 sub-lotes na fila");
+    assert.equal(outcomes[0].status, "indeterminate");
+    assert.match(outcomes[0].detail, /discord[âa]ncia/i);
+    assert.ok(!outcomes.some((o) => o.status === "abandoned"), "discordância nunca deve aparecer como abandoned/bissecção");
+    assert.ok(!outcomes.some((o) => o.status === "merged" || o.status === "solo-merged"), "discordância nunca deve mergear — 'nunca aprovação' tanto quanto 'nunca reprovação'");
+    assert.ok(!runner.calls.some((c) => c.cmd === "gh" && c.args[0] === "pr" && c.args[1] === "merge"), "gh pr merge nunca deve ser chamado num lote indeterminado");
+    assert.ok(runner.calls.some((c) => c.cmd === "gh" && c.args[0] === "pr" && c.args[1] === "close" && c.args[2] === "9001"), "PR-trem descartável deve ser fechado mesmo em estado indeterminado");
   });
 
   it("conflito de integração bissecta em vez de abortar tudo — checkout principal nunca é envenenado (worktree isolado)", async () => {

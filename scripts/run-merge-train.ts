@@ -28,11 +28,15 @@
  *
  * Exit codes:
  *   0 = todos os PRs candidatos terminaram em `merged`/`solo-merged`
- *   1 = pelo menos 1 terminou `solo-failed` OU `lock-blocked` (falha real
- *       de merge — não "vermelho de CI", que sempre resolve via bisecção
- *       até o piso; `lock-blocked` é um lote que provou passar junto no CI
- *       mas não conseguiu a janela de merge lock após retries, ou falhou
- *       na revalidação de Gate 2 — ver `scripts/lib/merge-train-live.ts`)
+ *   1 = pelo menos 1 terminou `solo-failed`, `lock-blocked` OU
+ *       `indeterminate` (falha real de merge, ou lote sem resolução — não
+ *       "vermelho de CI", que sempre resolve via bisecção até o piso;
+ *       `lock-blocked` é um lote que provou passar junto no CI mas não
+ *       conseguiu a janela de merge lock após retries, ou falhou na
+ *       revalidação de Gate 2; `indeterminate` (#7064) é um lote cujas 2
+ *       execuções de reconfirmação discordaram — assinatura da corrida do
+ *       #7060, nunca reprovação — precisa de nova invocação do trem, não
+ *       de um fixer — ver `scripts/lib/merge-train-live.ts`)
  *       OU `gh`/preparação falhou antes de processar qualquer lote
  *   2 = uso inválido (--session-id/--kind ausentes; nem --prs nem --open;
  *       --prs vazio/token inválido; --max-batch-size inválido)
@@ -165,8 +169,12 @@ async function main() {
   // sempre bissectado e reprocessado até virar um dos status terminais
   // abaixo (registrado no array só como rastro de ONDE a bisecção
   // aconteceu). Falha real = solo-failed (piso da bissecção falhou) OU
-  // lock-blocked (lote provou passar mas não conseguiu mergear).
-  const hasRealFailure = allOutcomes.some((o) => o.status === "solo-failed" || o.status === "lock-blocked");
+  // lock-blocked (lote provou passar mas não conseguiu mergear) OU
+  // indeterminate (#7064 — 2 execuções de reconfirmação discordaram; não é
+  // "PR com defeito", mas também não é "resolvido" — precisa de nova
+  // invocação do trem, então conta pro exit != 0 pelo mesmo motivo que
+  // lock-blocked conta: sinaliza trabalho pendente, não bug de código).
+  const hasRealFailure = allOutcomes.some((o) => o.status === "solo-failed" || o.status === "lock-blocked" || o.status === "indeterminate");
   process.exit(hasRealFailure ? 1 : 0);
 }
 
