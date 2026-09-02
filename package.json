@@ -7,6 +7,9 @@
   "engines": {
     "node": ">=22.18.0"
   },
+  "workspaces": [
+    "workers/*"
+  ],
   "scripts": {
     "knip": "knip --reporter compact",
     "sync-sources": "tsx scripts/sync-sources.ts",

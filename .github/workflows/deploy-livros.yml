@@ -66,11 +66,13 @@ jobs:
           node-version: '24'
           cache: 'npm'
 
+      # #7117: workers/ virou npm workspace — este npm ci na RAIZ já instala
+      # (e hoista) as deps de TODOS os workers, incluindo wrangler; o passo
+      # separado "Install livros worker deps" (npm ci dentro de workers/livros)
+      # foi removido porque não existe mais lockfile por worker pra ele rodar
+      # contra. `npm run deploy` abaixo acha o `wrangler` hoistado via PATH
+      # (node_modules/.bin da raiz, resolução padrão do npm em ancestrais).
       - run: npm ci
-
-      - name: Install livros worker deps
-        working-directory: workers/livros
-        run: npm ci
 
       - name: Deploy to Cloudflare Workers
         working-directory: workers/livros

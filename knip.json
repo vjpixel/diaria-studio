@@ -1,25 +1,34 @@
-﻿{
+{
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "entry": [
-    "scripts/*.ts",
-    "scripts/overnight/*.ts",
-    "workers/*/src/index.ts",
-    "test/**/*.test.ts",
-    "workers/*/test/**/*.test.ts"
-  ],
-  "project": [
-    "scripts/**/*.ts",
-    "workers/**/*.ts"
-  ],
+  // #7117: `workers/` virou npm workspace (`workspaces: ["workers/*"]` no
+  // package.json raiz) — o knip DETECTA isso sozinho a partir do
+  // package.json e passa a tratar cada worker como workspace próprio (13
+  // workspaces: raiz + 12), atribuindo cada arquivo ao workspace mais
+  // específico que o contém. Uma vez que a chave "workspaces" abaixo existe,
+  // knip IGNORA entry/project no nível raiz do arquivo — cada workspace
+  // (inclusive ".") precisa declarar os seus. "." replica exatamente o que
+  // era top-level antes (`scripts/`+`test/`); "workers/*" ganha bloco
+  // próprio (senão cai no default do knip — só `src/index.ts` como entry —
+  // e QUALQUER arquivo de teste dentro de um worker vira falso-positivo
+  // "Unused files", achado ao vivo com `workers/linkedin-cron/test/*.test.ts`,
+  // o único worker com pasta de teste própria).
+  "workspaces": {
+    ".": {
+      "entry": [
+        "scripts/*.ts",
+        "scripts/overnight/*.ts",
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "scripts/**/*.ts"
+      ]
+    },
+    "workers/*": {
+      "entry": ["src/index.ts", "test/**/*.test.ts"],
+      "project": ["**/*.ts"]
+    }
+  },
   "ignoreExportsUsedInFile": true,
-  // #3164: ci.yml passou a rodar `npx tsc -p tsconfig.json --noEmit` dentro de
-  // workers/brevo-dashboard/ — o plugin de GitHub Actions do knip lê esse `run:`,
-  // resolve workers/brevo-dashboard/tsconfig.json e checa a dependência declarada
-  // em `compilerOptions.types` (@cloudflare/workers-types) contra o package.json
-  // RAIZ (knip.json não declara "workspaces" pra reconhecer o package.json próprio
-  // do worker). Falso-positivo: a dep está corretamente listada em
-  // workers/brevo-dashboard/package.json (devDependencies), só não no root.
-  "ignoreDependencies": ["@cloudflare/workers-types"],
   // test/systemd-units.test.ts (#4807) faz shell-out condicional pro parser
   // real do systemd (`systemd-analyze calendar`) pra validar o OnCalendar=
   // gerado -- binário do sistema (Linux), nunca uma dependência npm; o teste

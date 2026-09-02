@@ -77,11 +77,13 @@ jobs:
         with:
           node-version: '24'
           cache: 'npm'
+      # #7117: workers/ virou npm workspace — este npm ci na RAIZ já instala
+      # (e hoista) as deps de TODOS os workers, incluindo brevo-dashboard; o
+      # passo separado "Install brevo-dashboard worker deps" (npm ci dentro
+      # de workers/brevo-dashboard) foi removido porque não existe mais
+      # lockfile por worker pra ele rodar contra.
       - run: npm ci
       - run: npm run typecheck
-      - name: Install brevo-dashboard worker deps
-        working-directory: workers/brevo-dashboard
-        run: npm ci
       - name: Typecheck brevo-dashboard worker (#3164)
         working-directory: workers/brevo-dashboard
         run: npx tsc -p tsconfig.json --noEmit

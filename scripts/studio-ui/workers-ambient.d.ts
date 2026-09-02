@@ -4,9 +4,12 @@
  * Shim ambiente para os poucos globals do runtime Cloudflare Workers
  * (`KVNamespace`, `CacheStorage.default`) que `workers/diaria-dashboard/src/index.ts`
  * e `workers/brevo-dashboard/src/*.ts` assumem disponíveis via
- * `@cloudflare/workers-types` — instalado só no `node_modules` PRÓPRIO de
- * cada worker (`workers/{nome}/package-lock.json`, projeto wrangler separado), não
- * hoisted pro `node_modules` da raiz.
+ * `@cloudflare/workers-types` — presente no `node_modules` (raiz, hoistado
+ * via npm workspace desde #7117; cada worker segue com seu próprio
+ * `package.json`/`tsconfig.json`, só o lockfile virou único na raiz), mas o
+ * `tsconfig.json` raiz não declara `"types": ["@cloudflare/workers-types"]`
+ * — o pacote estar presente no disco não basta, o `tsc` da raiz só enxerga
+ * globals de tipos declarados explicitamente nesse array.
  *
  * #3563 é a primeira fatia a importar esses módulos como VALOR (`import {
  * renderDashboardHtml } from "...index.ts"`, não `import type`) a partir de
