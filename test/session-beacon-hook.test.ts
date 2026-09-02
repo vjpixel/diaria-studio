@@ -303,6 +303,46 @@ describe("#6168 Parte B — o beacon nunca destrói estado alheio", () => {
     }
   });
 
+  it("#6934 review fleet (PR #7051, finding 5) — interactive- + continuo-review- presentes, SEM outra coordenadora → escolhe interactive- (continuo-review NÃO é coordenador, é o kind dedicado do merge-lock do #6934)", () => {
+    // "continuo-review-..." COMEÇA com "continuo-" — mesma classe de bug de
+    // substring que a exclusão em findExistingSessionFile existe pra
+    // prevenir. Este teste, ao ser escrito, PEGOU um bug real na versão
+    // original da PR: excluir "continuo-review-*" só de `coordinatorMatches`
+    // (não de `matches`) deixava esse arquivo sobrevivendo no fallback
+    // `matches.sort()[0]` — e "continuo-review" < "interactive"
+    // alfabeticamente, então ele venceria um interactive- genuíno sem
+    // NENHUM coordenador real presente (o mesmo bug de ordem lexicográfica
+    // que o #6326 já tinha corrigido pro par overnight/interactive,
+    // reintroduzido por este kind novo). Corrigido movendo a exclusão pro
+    // filtro de `matches` — ver docblock da função.
+    const root = mkdtempSync(join(tmpdir(), "beacon-find6-"));
+    const dir = join(root, "sessions");
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "interactive-helios-sess-1.json"), "{}", "utf8");
+      writeFileSync(join(dir, "continuo-review-helios-sess-1.json"), "{}", "utf8");
+      assert.equal(findExistingSessionFile(dir, "sess-1"), "interactive-helios-sess-1.json");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#6934 review fleet (PR #7051, finding 5) — só continuo-review- presente (sem interactive/coordenador nenhum) → null, nunca o próprio continuo-review-", () => {
+    // continuo-review não faz parte do espaço de identidade que esta
+    // função resolve (nunca é escrito por `registerSession` — só pelo
+    // merge-lock) — mesmo sozinho no diretório, não deve nunca ser
+    // devolvido como "o registro existente desta sessão".
+    const root = mkdtempSync(join(tmpdir(), "beacon-find7-"));
+    const dir = join(root, "sessions");
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "continuo-review-helios-sess-1.json"), "{}", "utf8");
+      assert.equal(findExistingSessionFile(dir, "sess-1"), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // ─── #6326 fleet review item 3 — re-resolução no instante do write ──────
 
   it("resolveWritePathAtWriteTime: path resolvido AINDA existe → usa ele sem re-resolver", () => {

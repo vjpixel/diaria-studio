@@ -209,33 +209,58 @@ log_infra_error() {
 # Retorna 0 quando adquiriu, 1 quando esgotou as tentativas — o chamador
 # decide o que fazer (aqui: pular esta PR nesta rodada, tentar de novo no
 # próximo tick).
+#
+# Review fleet PR #7051 (finding 1, P1): a versão original não capturava
+# stdout/stderr do `session-registry.ts merge-lock-acquire` — qualquer saída
+# não-zero (negação legítima, `--session-id` ausente, `npx`/`tsx` quebrado,
+# `data/sessions/` ilegível, erro de I/O ao escrever `.merge-lock.json`) era
+# tratada como a MESMA coisa: "outra coordenadora está mergeando". Se a causa
+# real fosse sistêmica (não contenção), o diagnóstico errado se repetiria a
+# cada tick, pra toda PR, indefinidamente — o #6934 pararia de funcionar em
+# silêncio. Agora a saída real é capturada em `LOCK_ACQUIRE_LAST_OUTPUT`
+# (global, lida pelo chamador) e ecoada em cada retry — não resolve a
+# ambiguidade na origem (isso é da lib, `main()` de `session-registry.ts` já
+# colapsa "denied" e "erro —" no mesmo exit 1; fora do escopo mínimo daqui),
+# só para de descartar o sinal.
+LOCK_ACQUIRE_LAST_OUTPUT=""
 acquire_merge_lock_with_retry() {
   local attempt=0
+  local out
   while :; do
-    if npx tsx scripts/lib/session-registry.ts merge-lock-acquire \
-      --kind continuo-review --session-id "$SESSION_ID"; then
+    if out=$(npx tsx scripts/lib/session-registry.ts merge-lock-acquire \
+      --kind continuo-review --session-id "$SESSION_ID" 2>&1); then
       return 0
     fi
+    LOCK_ACQUIRE_LAST_OUTPUT="$out"
     attempt=$((attempt + 1))
     if [ "$attempt" -ge "$MERGE_LOCK_MAX_RETRIES" ]; then
       return 1
     fi
-    echo "[continuo-pr-review] merge-lock negado (tentativa $attempt/$MERGE_LOCK_MAX_RETRIES) — outra coordenadora está mergeando agora, retry em ${MERGE_LOCK_RETRY_DELAY_S}s" >&2
+    echo "[continuo-pr-review] merge-lock negado (tentativa $attempt/$MERGE_LOCK_MAX_RETRIES) — outra coordenadora está mergeando agora, retry em ${MERGE_LOCK_RETRY_DELAY_S}s: $out" >&2
     sleep "$MERGE_LOCK_RETRY_DELAY_S"
   done
 }
 
-# Libera o lock que a PRÓPRIA sessão detém. `|| true`: `merge-lock-release`
-# só falha (exit 1) quando o lock pertence a OUTRA sessão (nunca deveria
-# acontecer aqui — esta função só é chamada depois de um
+# Libera o lock que a PRÓPRIA sessão detém. Nunca derruba o script —
+# best-effort, mesmo espírito de `log_infra_error`/outros pontos deste
+# arquivo — mas a saída não-zero pode significar coisas bem diferentes:
+# `merge-lock-release` legitimamente falha (exit 1) quando o lock pertence a
+# OUTRA sessão (nunca deveria acontecer aqui — só chamamos depois de um
 # `acquire_merge_lock_with_retry` bem-sucedido pela MESMA `$SESSION_ID`) ou
 # quando já não havia lock nenhum (idempotente, tratado como sucesso pelo
-# próprio `releaseMergeLock`). De qualquer forma, nunca deve derrubar o
-# script — best-effort, mesmo espírito de `log_infra_error`/outros pontos
-# deste arquivo.
+# próprio `releaseMergeLock`) — mas TAMBÉM pode ser `npx tsx` quebrado ou
+# outro erro de infra, caso em que o bash segue achando que liberou mas o
+# `.merge-lock.json` continua detido pela `$SESSION_ID` já obsoleta (o TTL de
+# 2min limita o dano, mas o estado diverge sem log nenhum — review fleet PR
+# #7051, finding 2). A saída é capturada e ecoada em stderr em qualquer saída
+# não-zero, pra causa real não ficar muda; não precisa virar `log_infra_error`
+# (não é um erro NA ENTREGA, só um rastro pra quem investigar depois).
 release_merge_lock() {
-  npx tsx scripts/lib/session-registry.ts merge-lock-release \
-    --kind continuo-review --session-id "$SESSION_ID" || true
+  local out
+  if ! out=$(npx tsx scripts/lib/session-registry.ts merge-lock-release \
+    --kind continuo-review --session-id "$SESSION_ID" 2>&1); then
+    echo "[continuo-pr-review] release_merge_lock: saída não-zero (motivo pode ser lock alheio, idempotência, ou erro de infra) — $out" >&2
+  fi
 }
 
 # #6926: portão de merge — chama scripts/check-continuo-merge-gate.ts
@@ -277,6 +302,22 @@ try_merge_gate() {
       if ! acquire_merge_lock_with_retry; then
         echo "[continuo-pr-review] PR #$pr: merge-lock negado após $MERGE_LOCK_MAX_RETRIES tentativas — outra coordenadora segue mergeando; pulando esta PR nesta rodada, tenta de novo no próximo tick" >&2
         LOCK_BLOCKED=$((LOCK_BLOCKED + 1))
+        # Finding 1 (PR #7051): o motivo real (negação legítima OU erro de
+        # infra indistinguível dela, ver comentário de
+        # `acquire_merge_lock_with_retry` acima) é persistido no mesmo log
+        # append-only que as outras 6 categorias de falha deste script usam
+        # (#6910) — permite ver recorrência (a mesma PR bloqueada tick após
+        # tick é o sinal de causa sistêmica, não contenção normal).
+        # Deliberadamente NÃO incrementa `INFRA_ERRORS` (que controlaria o
+        # bloco extra impresso NA ENTREGA no fim do script): o docblock de
+        # `acquire_merge_lock_with_retry` é explícito — lock negado "NUNCA um
+        # erro" — e a maioria das ocorrências É contenção legítima e
+        # rotineira; tratar toda negativa como "erro de infra" no resumo
+        # entregue (Telegram) seria alarme falso a cada tick concorrido. O
+        # rastro fica no log append-only pra quem for investigar um padrão
+        # suspeito; `LOCK_BLOCKED` no resumo final segue sendo o sinal
+        # agregado de "isto aconteceu N vezes".
+        log_infra_error "$pr" "lock_blocked" "${LOCK_ACQUIRE_LAST_OUTPUT:-motivo desconhecido — saída do merge-lock-acquire não capturada}"
         # `return`, não `break`: estamos dentro de `try_merge_gate()` (uma
         # função), não num loop — `break` aqui não teria o que interromper.
         # Retornar sai da função (equivalente a "acabou o `case`", já que a
@@ -343,9 +384,16 @@ try_merge_gate() {
       # Falha do `git pull` é NÃO-bloqueante (mesmo padrão de
       # `mergeSoloPr`) — o merge remoto já aconteceu; o checkout local
       # compartilhado só fica defasado até o próximo fetch/pull de alguém.
+      # `--ff-only` (review fleet PR #7051, finding 3): `scripts/lib/
+      # git-sync.ts` (usado por `sync-code.ts`, citado no CLAUDE.md) já
+      # estabelece o padrão pra tocar este checkout compartilhado sem
+      # interação — um `git pull` bare, com o checkout sujo, pode criar
+      # merge commit e sair exit 0, escapando de $PULL_RC e do log
+      # inteiramente (sucesso com efeito colateral, o único caminho que
+      # escaparia da rede de logging desta PR).
       if [ "$MERGE_CONFIRMED" -eq 1 ]; then
         set +e
-        git pull
+        git pull --ff-only
         PULL_RC=$?
         set -e
         if [ "$PULL_RC" -ne 0 ]; then

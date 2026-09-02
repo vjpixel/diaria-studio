@@ -119,6 +119,15 @@ export function findActiveContinuoSession(repoRoot, sessionId, nowMs = Date.now(
     if (!name.startsWith("continuo-") || !name.endsWith(suffix)) continue;
     try {
       const record = JSON.parse(readFileSync(join(dir, name), "utf8"));
+      // #6934 review fleet (PR #7051, finding 6): "continuo" é um prefixo
+      // verdadeiro de "continuo-review" (kind dedicado do merge-lock do
+      // #6934, nunca registra em data/sessions/ hoje, mas o startsWith
+      // acima casaria um arquivo continuo-review-*.json por acidente de
+      // substring — mesma classe de bug corrigida em `parseSessionFileName`
+      // e em `findExistingSessionFile`, session-beacon.mjs). Validar o
+      // `kind` do próprio registro, não confiar só no prefixo do nome do
+      // arquivo, fecha os 3 pontos da mesma classe de uma vez.
+      if (record.kind !== "continuo") continue;
       if (record.sessionId !== sessionId) continue;
       const heartbeatIso = record.lastHeartbeat ?? record.startedAt;
       const heartbeatMs = Date.parse(heartbeatIso ?? "");

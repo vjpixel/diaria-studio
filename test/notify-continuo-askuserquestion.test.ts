@@ -116,6 +116,28 @@ describe("findActiveContinuoSession (#5293)", () => {
     }
   });
 
+  it("#6934 review fleet (PR #7051, finding 6) — arquivo continuo-review-*.json (kind dedicado do merge-lock, NÃO continuo) não conta, mesmo casando o filtro de nome por prefixo", () => {
+    // "continuo-review-tag-id.json" começa com "continuo-" — o filtro de
+    // nome (`name.startsWith("continuo-")`) sozinho deixaria passar um
+    // registro que NUNCA deveria disparar a notificação de continuo (mesma
+    // classe de bug corrigida em `findExistingSessionFile`,
+    // session-beacon.mjs, e `parseSessionFileName`, session-registry.ts).
+    // `continuo-pr-review.sh` nunca escreve esse arquivo hoje (só chama
+    // merge-lock-acquire/-release) — este teste é defesa preventiva, mesmo
+    // racional do commit que corrigiu session-beacon.mjs.
+    const dir = tmp();
+    try {
+      writeSession(dir, "continuo-review", "helios", "sess-x", {
+        kind: "continuo-review",
+        sessionId: "sess-x",
+        lastHeartbeat: "2026-08-14T11:55:00.000Z",
+      });
+      assert.equal(findActiveContinuoSession(dir, "sess-x", NOW), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("sessão continuo STALE (heartbeat > 24h atrás) → null", () => {
     const dir = tmp();
     try {

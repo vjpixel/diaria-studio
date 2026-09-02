@@ -97,6 +97,17 @@ case "$script" in
     sub="$1"; shift
     case "$sub" in
       merge-lock-acquire)
+        # Finding 4 (PR #7051): modo de ERRO genuíno, distinto da negação
+        # legítima — nunca imprime "denied", simula `npx tsx` quebrado /
+        # session-registry.ts lançando (main() captura e escreve
+        # "session-registry: erro — ..." em stderr, rc=1). O conjunto de
+        # cenários original só testava a negação — reforçando, sem provar, a
+        # suposição de que "qualquer rc≠0 é contenção normal" (finding 1).
+        if [ "${ACQUIRE_ERROR_MODE:-0}" = "1" ]; then
+          echo "acquire-error" >> "$EVENTS_LOG"
+          echo "session-registry: erro — ENOENT: data/sessions ilegível (simulado)" >&2
+          exit 1
+        fi
         remaining=$(cat "$ACQUIRE_DENY_COUNT" 2>/dev/null || echo 0)
         if [ "$remaining" -gt 0 ]; then
           echo $((remaining - 1)) > "$ACQUIRE_DENY_COUNT"
@@ -172,8 +183,9 @@ run_scenario() {
   (
     export EVENTS_LOG GATE_JSON_FIXTURE="$WORKDIR/gate.json" GATE_RC_FIXTURE="$WORKDIR/gate.rc"
     export ACQUIRE_DENY_COUNT GH_MERGE_RC_FIXTURE GH_VIEW_STATE_FIXTURE GIT_PULL_RC_FIXTURE
+    export ACQUIRE_ERROR_MODE="${ACQUIRE_ERROR_MODE:-0}"
     export PATH="$WORKDIR/bin:$PATH"
-    export INFRA_ERROR_LOG="$WORKDIR/infra-errors.jsonl"
+    export INFRA_ERROR_LOG="${INFRA_ERROR_LOG:-$WORKDIR/infra-errors.jsonl}"
     export SESSION_ID="continuo-review-test-$$"
     export MERGE_LOCK_MAX_RETRIES=3
     export MERGE_LOCK_RETRY_DELAY_S=0
@@ -255,6 +267,8 @@ ACQUIRE_DENY_COUNT="$WORKDIR/acquire-deny-d"
 GH_MERGE_RC_FIXTURE="$WORKDIR/nao-deveria-ser-lido-d"
 GH_VIEW_STATE_FIXTURE="$WORKDIR/nao-deveria-ser-lido-d"
 GIT_PULL_RC_FIXTURE="$WORKDIR/nao-deveria-ser-lido-d"
+ACQUIRE_ERROR_MODE=0
+INFRA_ERROR_LOG="$WORKDIR/infra-errors-d.jsonl"
 run_scenario
 EVENTS_D="$(cat "$EVENTS_LOG" | tr '\n' ',')"
 assert_eq "cenário D — 3 tentativas negadas (MERGE_LOCK_MAX_RETRIES=3), desiste — NUNCA chama merge" \
@@ -268,6 +282,45 @@ if command grep -q 'merge-called' "$WORKDIR/events-d.log"; then
 else
   assert_true "cenário D — 'gh pr merge' realmente nunca rodou (nenhum evento merge-called)" "1"
 fi
+# Finding 1 (PR #7051): a negação legítima TAMBÉM vira um registro em
+# log_infra_error (não distinguimos a causa na origem — só paramos de
+# descartar o sinal). A entrega (INFRA_ERRORS/resumo final) continua
+# ignorando isto — só o log append-only recebe, pra permitir ver recorrência
+# sem transformar contenção normal num alarme a cada tick.
+assert_true "cenário D — log_infra_error registrou 'lock_blocked' com a saída REAL de negação (denied)" \
+  "$(command grep -q '\"exit_code\":\"lock_blocked\".*denied' "$WORKDIR/infra-errors-d.jsonl" 2>/dev/null && echo 1 || echo 0)"
+
+# ─── Cenário E (finding 4, PR #7051): ERRO genuíno na aquisição do lock —  ─
+#     distinto de negação legítima. `npx tsx` "quebrado" (session-registry ─
+#     lançando/`--session-id` ausente/I-O), NUNCA a mensagem "denied". O    ─
+#     conjunto original só cobria a negação — reforçando sem provar a      ─
+#     suposição de que "rc≠0 é sempre contenção normal" (finding 1). Prova ─
+#     que o script trata isso IGUAL à negação no fluxo de controle (retry, ─
+#     desiste, nunca chama merge) mas com a saída REAL preservada no log.  ─
+EVENTS_LOG="$WORKDIR/events-e.log"
+: > "$EVENTS_LOG"
+echo 0 > "$WORKDIR/acquire-deny-e" # não usado — ACQUIRE_ERROR_MODE tem prioridade no fake npx
+ACQUIRE_DENY_COUNT="$WORKDIR/acquire-deny-e"
+GH_MERGE_RC_FIXTURE="$WORKDIR/nao-deveria-ser-lido-e"
+GH_VIEW_STATE_FIXTURE="$WORKDIR/nao-deveria-ser-lido-e"
+GIT_PULL_RC_FIXTURE="$WORKDIR/nao-deveria-ser-lido-e"
+ACQUIRE_ERROR_MODE=1
+INFRA_ERROR_LOG="$WORKDIR/infra-errors-e.jsonl"
+run_scenario
+EVENTS_E="$(cat "$EVENTS_LOG" | tr '\n' ',')"
+assert_eq "cenário E — erro genuíno (não negação) tratado igual no fluxo: 3 tentativas, desiste, NUNCA chama merge" \
+  "$EVENTS_E" "gate-called,acquire-error,acquire-error,acquire-error,"
+assert_true "cenário E — LOCK_BLOCKED=1 mesmo sendo ERRO, não contenção (é essa a ambiguidade do finding 1)" \
+  "$(command grep -q 'LOCK_BLOCKED=1' "$WORKDIR/counters.txt" && echo 1 || echo 0)"
+if command grep -q 'merge-called' "$WORKDIR/events-e.log"; then
+  assert_true "cenário E — 'gh pr merge' nunca roda mesmo com erro genuíno na aquisição" "0"
+else
+  assert_true "cenário E — 'gh pr merge' nunca roda mesmo com erro genuíno na aquisição" "1"
+fi
+assert_true "cenário E — log_infra_error registrou 'lock_blocked' com a saída REAL do erro (não a string 'denied')" \
+  "$(command grep -q '\"exit_code\":\"lock_blocked\"' "$WORKDIR/infra-errors-e.jsonl" 2>/dev/null && \
+     command grep -q 'ENOENT' "$WORKDIR/infra-errors-e.jsonl" 2>/dev/null && \
+     ! command grep -q 'denied' "$WORKDIR/infra-errors-e.jsonl" 2>/dev/null && echo 1 || echo 0)"
 
 if [ "$FAILED" -ne 0 ]; then
   echo "FALHOU"

@@ -391,6 +391,19 @@ export function buildBeaconRecord(previous, event) {
  * `continuo-review-*.json` (`continuo-pr-review.sh` só chama
  * `merge-lock-acquire`/`-release`, que não tocam `data/sessions/`) — a
  * exclusão é preventiva, não correção de um caso já observado.
+ *
+ * A exclusão é no filtro de `matches`, não só no de `coordinatorMatches`
+ * (achado ao vivo ao escrever a cobertura de regressão desta classe, review
+ * fleet PR #7051 finding 5): excluir `continuo-review` só de
+ * `coordinatorMatches` deixava o arquivo sobrevivendo no fallback
+ * alfabético `matches.sort()[0]` — e "continuo-review" < "interactive"
+ * lexicograficamente, então ele venceria um `interactive-*` genuíno na
+ * ausência de qualquer coordenador de verdade, o MESMO bug de ordenação
+ * lexicográfica que o #6326 já corrigiu pro caso overnight/interactive,
+ * só que reintroduzido por este kind novo. `continuo-review` nunca é
+ * escrito por `registerSession` (só merge-lock) — não faz parte do espaço
+ * de identidade que esta função resolve, então fica fora de `matches` por
+ * completo, não só fora do desempate de coordenador.
  */
 export function findExistingSessionFile(sessionsDir, sessionId, fs = { existsSync, readdirSync }) {
   try {
@@ -398,11 +411,15 @@ export function findExistingSessionFile(sessionsDir, sessionId, fs = { existsSyn
     const suffix = `-${sessionId}.json`;
     const matches = fs
       .readdirSync(sessionsDir)
-      .filter((n) => n.endsWith(suffix) && !n.startsWith(".") && !n.includes("-safeBackup-"));
+      .filter(
+        (n) =>
+          n.endsWith(suffix) &&
+          !n.startsWith(".") &&
+          !n.includes("-safeBackup-") &&
+          !n.startsWith("continuo-review-"),
+      );
     if (matches.length === 0) return null;
-    const coordinatorMatches = matches
-      .filter((n) => COORDINATOR_KIND_PREFIXES.some((k) => n.startsWith(`${k}-`)) && !n.startsWith("continuo-review-"))
-      .sort();
+    const coordinatorMatches = matches.filter((n) => COORDINATOR_KIND_PREFIXES.some((k) => n.startsWith(`${k}-`))).sort();
     if (coordinatorMatches.length > 0) return coordinatorMatches[0];
     return matches.sort()[0];
   } catch {
