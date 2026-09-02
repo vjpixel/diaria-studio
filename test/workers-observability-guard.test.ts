@@ -10,9 +10,11 @@
  * 200 some também do gráfico de erro nativo do Cloudflare. Cada worker novo
  * ou refactor que esqueça a sessão de observabilidade entra em produção cego.
  *
- * Workers sem `main` (static-only, ex: diaria-artigos) ou sem rota pública
- * (internos, ex: brevo-dashboard) são excluídos deliberadamente — não têm
- * `console.log` de instrumentação pra expor.
+ * Workers sem `main` (static-only) ou sem rota pública (internos, ex:
+ * brevo-dashboard) são excluídos deliberadamente — não têm `console.log`
+ * de instrumentação pra expor. Nenhum worker static-only existe hoje no
+ * repo (`diaria-artigos`, o último exemplo, ganhou `main` no #7030) — a
+ * exclusão continua válida por design, só não tem exemplo vivo no momento.
  *
  * Fix do drift: adicionar bloco abaixo no wrangler.toml correspondente:
  *   [observability]
@@ -91,27 +93,35 @@ describe("workers públicos com main têm Workers Logs ligado (#5920)", () => {
     }
   });
 
-  it("workers sem main (static-only) NÃO são exigidos a ter observabilidade", () => {
-    // Teste DOCUMENTAL: trava a REGRA (não a contagem) — nenhum worker
-    // static-only (sem `main`) deve ser cobrado de ter [observability],
-    // porque não tem console.log de instrumentação no bundle. Não exige que
-    // o conjunto seja não-vazio: `diaria-artigos` era o exemplo vivo até o
-    // #7030 convertê-lo de static-assets-only para worker com script
-    // (`main = "src/index.ts"`, teaser + gate por apoio) — hoje TODOS os
-    // workers do repo têm `main`, e isso é esperado, não uma regressão do
-    // guard. Se um worker static-only voltar a existir no futuro, esta
-    // asserção garante que ele continua isento sem exigir observabilidade.
-    const staticOnly = workers.filter((w) => !w.hasMain);
-    for (const w of staticOnly) {
-      assert.equal(
-        w.hasMain && w.hasPublicRoute && !w.hasObservability,
-        false,
-        `worker static-only ${w.worker} não deveria contar como violação de observabilidade`,
-      );
-    }
-    // Sem staticOnly.length >= 1: o conjunto pode ficar vazio (hoje fica,
-    // pós-#7030) sem falsear a regra — é um `for` sobre 0 itens, passa
-    // trivialmente. O que este teste trava é a REGRA, não a existência de
-    // um exemplo vivo.
+  it("workers sem main (static-only) NÃO são exigidos a ter observabilidade (documental)", () => {
+    // Teste DOCUMENTAL — não asserta a isenção em si. Quem trava a regra de
+    // verdade é o PRIMEIRO `it` deste describe ("todo worker com main +
+    // rota pública tem [observability]"): o filtro de violações de lá
+    // começa com `w.hasMain &&`, então qualquer worker com `hasMain: false`
+    // fica estruturalmente fora do universo de violações possíveis — não
+    // por dado observado agora, mas pela própria forma da expressão
+    // booleana.
+    //
+    // Por que não há asserção aqui (2 tentativas descartadas no review do
+    // PR #7054): (1) `assert.equal(w.hasMain && w.hasPublicRoute &&
+    // !w.hasObservability, false, ...)` filtrado por `!w.hasMain` é
+    // tautológico — `w.hasMain` já é `false` por construção do próprio
+    // filtro, então a expressão inteira é sempre `false`, independente de
+    // `hasPublicRoute`/`hasObservability`: nunca pode falhar. (2)
+    // `assert.equal(w.hasPublicRoute && !w.hasObservability, false, ...)`
+    // (removendo `w.hasMain` da expressão pra "testar algo") INVERTE a
+    // regra — um worker static-only com rota pública e sem observabilidade
+    // é exatamente o caso LEGAL que a isenção existe para permitir, então
+    // essa asserção falharia no worker que está correto. Nenhuma das duas
+    // é aceitável: a primeira finge cobertura que não existe, a segunda
+    // proíbe o que deveria isentar.
+    //
+    // Hoje (pós-#7030) não existe nenhum worker static-only no repo:
+    // `diaria-artigos`, o único exemplo vivo até então, ganhou
+    // `main = "src/index.ts"` no #7030 (teaser + gate por apoio nos
+    // Artigos Especiais) — esperado, não uma regressão do guard. Se um
+    // worker static-only voltar a existir, a isenção dele continua
+    // garantida pela estrutura do filtro do primeiro `it`, não por este.
+    void workers;
   });
 });
