@@ -228,8 +228,12 @@ a regra "1 PR aberto por vez" do `CLAUDE.md`):
    validar com os golden tests existentes antes de merge.
 4. `renderPillButton` (item 5) — reconciliar as 5 implementações; provavelmente precisa
    de 1 decisão editorial pequena (padronizar padding/fontSize) antes.
-5. `findMarkdownLinks` compartilhado (item 6) — trocar o scanner duplicado do mensal
-   pelo do diário.
+5. ~~`findMarkdownLinks` compartilhado (item 6)~~ **feito no #7126** (ver seção 8) —
+   não foi `findMarkdownLinks` inteira que virou compartilhada (a diária mantém o
+   nome/assinatura própria, usada por vários callers), mas o SCANNER de baixo nível
+   por trás dela (`scanBalancedParenClose`), que era a parte genuinamente duplicada
+   nos 2 renderers + `countDoubleAsterisk`/`isUnpairedBoldMarker` (item 1 da issue
+   #7126, achado à parte deste plano — 4/3 cópias byte-idênticas).
 6. `imageGeneratorCredit`/`GENERATOR_LABELS` (item 7) — **pede decisão do editor**
    primeiro (qual legenda é a correta por gerador); depois é mecânico.
 7. É IA? (`renderEIA`/`renderEia`, item 8) — só depois dos itens 1–6 estarem
@@ -271,3 +275,58 @@ persiste para `applyBrandWordmark`, e os componentes de maior payoff — boxes/p
 seguem duplicados). Ele serve de prova de conceito de baixo risco para o padrão de
 extração recomendado na seção 6, e remove 1 dos 2 imports cruzados citados como sintoma
 na issue original.
+
+---
+
+## 8. #7126 — extração das primitivas de markdown (fatia 14 do epic #7112)
+
+`git log --all --grep=3269` (citado pelo #7126 como evidência de que o plano da seção
+6 parou) retornava só o commit da seção 7 acima — os itens 3, 4, 5, 7 e 8 daquela lista
+nunca saíram do papel. O #7126 não é mais um desses itens numerados (nenhum deles é
+"extrair `countDoubleAsterisk`/`isUnpairedBoldMarker`" — essa duplicação foi achada à
+parte, fora do escopo original desta issue), mas fecha o item 6 (linha 5 da lista da
+seção 6, riscada acima) por um caminho mais estreito e mais seguro do que "trocar o
+scanner duplicado do mensal pelo do diário" (a formulação original assumia que dava
+pra importar `findMarkdownLinks` inteira do diário pro mensal — decisão descartada:
+ver o mesmo motivo já documentado na seção 7 sobre `applyBrandWordmark`/`tealDot`, a
+mensal não deveria herdar a cadeia de import do diário por acoplamento).
+
+**O que mudou:** novo módulo `scripts/lib/shared/markdown-primitives.ts`, com 3
+primitivas puras extraídas:
+
+- `countDoubleAsterisk` — 4 cópias byte-idênticas (`newsletter-render-html.ts`,
+  `mensal/monthly-render.ts`, `inline-link.ts`, `lint-checks/callout-placement.ts`);
+  `isUnpairedBoldMarker` — as mesmas 3 primeiras (`callout-placement.ts` não
+  precisava dela, só de `countDoubleAsterisk`).
+- `scanBalancedParenClose` — o loop de balanceamento de parênteses (`(` aprofunda,
+  `)` em depth 0 fecha) que estava inline em `findMarkdownLinks`/`tokenizeInline`
+  (diária) e em `nextLinkStartIndex`/`renderInline` (mensal) — mesma lógica, 4
+  ocorrências, nunca chamada por nome porque nunca tinha nome.
+
+`inline-link.ts` e `lint-checks/callout-placement.ts` (camadas de PARSE/lint, não de
+RENDER) agora importam de `shared/` em vez de duplicar — a razão original pra
+duplicar ali ("não deveria depender de `newsletter-render-html.ts`") não se aplica a
+`shared/`, que é a camada mais baixa que ambas já podiam depender.
+`lint-checks/callout-placement.ts` re-exporta `countDoubleAsterisk` por back-compat
+(`newsletter-parse.ts` importa esse nome especificamente dali, #3762).
+
+**O que NÃO mudou:** `findMarkdownLinks` em si continua só na diária (a mensal nunca
+precisou da forma `{url, label, start, end}[]` — só do índice de fechamento). Os
+componentes de maior payoff da seção 6 (itens 2-4, 6-7: `applyBrandWordmark` fora do
+`tealDot`, boxes/pill, `imageGeneratorCredit`, É IA?) seguem fora de escopo — #7126 é
+só a fatia 14 do epic #7112, não uma retomada completa deste plano.
+
+**Verificação de byte-identidade:** `npx tsc --noEmit` limpo; suíte de goldens
+(`ds-golden-full-render.test.ts`, `ds-golden-components.test.ts`,
+`monthly-render-extracted.test.ts`, `monthly-render-3181-3183.test.ts`,
+`monthly-render-3299.test.ts`, `monthly-render-bold-inside-link.test.ts`,
+`monthly-render-boxes.test.ts`, `monthly-render-sections.test.ts`,
+`inline-link*.test.ts`, `lint-checks-extracted.test.ts`, `lint-monthly-draft.test.ts`,
+`render-newsletter-*.test.ts`, `render-box-divulgacao.test.ts`) — 562 testes, 0
+falhas, **nenhum golden precisou de update** (o mecanismo de golden só passa sem
+`NODE_TEST_SNAPSHOTS=1` se o HTML renderizado bate byte a byte com o snapshot
+committed). Novo teste dedicado das 3 primitivas + do re-export de back-compat:
+`test/markdown-primitives-7126.test.ts`. `test/lib-boundary.test.ts` (fronteira
+`shared/`↔`diaria/`↔`mensal/`) permanece verde — `shared/markdown-primitives.ts` não
+importa de `diaria/` nem `mensal/`, mesmo padrão de `shared/email-components.ts`
+(seção 7).

@@ -66,6 +66,9 @@
  * última) sem reintroduzir o falso-negativo original.
  */
 
+import { countDoubleAsterisk } from "../shared/markdown-primitives.ts"; // #7126 — re-exportada abaixo por back-compat (ver nota antes de `isSingleBoldWrap`)
+export { countDoubleAsterisk };
+
 export interface CalloutPlacementMatch {
   line: number;
   context: string;
@@ -91,27 +94,13 @@ const FULL_BOLD_LINE_RE = /^\*\*[\s\S]+\*\*$/;
 const EMOJI_LEAD_RE =
   /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]*\s+/u;
 
-/**
- * #3315: conta ocorrências NÃO sobrepostas de `**` numa string (avança 2
- * posições a cada match — "****" conta como 2, não 3). Mesma convenção de
- * `countDoubleAsterisk` em `newsletter-render-html.ts` (não exportada de lá —
- * duplicada aqui, escopo pequeno o bastante pra não justificar mover pra
- * shared/).
- *
- * #3762: exportada — reusada por `extractCoverageLineTrailer`
- * (`newsletter-parse.ts`) pro mesmo guard de ambiguidade (exigir EXATAMENTE 2
- * ocorrências de `**` no blob inteiro pra confirmar bold-wrap único), em vez
- * de duplicar uma 3ª cópia.
- */
-export function countDoubleAsterisk(str: string): number {
-  let count = 0;
-  let idx = str.indexOf("**");
-  while (idx !== -1) {
-    count++;
-    idx = str.indexOf("**", idx + 2);
-  }
-  return count;
-}
+// #7126: `countDoubleAsterisk` (conta ocorrências NÃO sobrepostas de `**`
+// numa string) foi extraída pra `shared/markdown-primitives.ts` (item 6 do
+// plano do #3269) — era cópia byte-idêntica de `newsletter-render-html.ts`/
+// `inline-link.ts`/`mensal/monthly-render.ts`. Importada e re-exportada logo
+// acima de `CalloutPlacementMatch` por back-compat: `newsletter-parse.ts`'s
+// `extractCoverageLineTrailer` (#3762) já importa `countDoubleAsterisk`
+// especificamente deste módulo.
 
 /**
  * #3315: o parágrafo inteiro (já joined multi-linha) é um único bold-wrap —
