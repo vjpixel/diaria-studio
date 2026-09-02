@@ -18,15 +18,16 @@
  *
  * ## As 4 saídas
  *
- *   - `ja-destravada`      — existe `decisao-editor` cujo `decided_at` é
- *     posterior (ou igual) ao `updatedAt` da issue. A decisão que resolve o
+ *   - `ja-destravada`      — existe `decisao-editor` e ela é o marcador MAIS
+ *     RECENTE da thread (seu `decided_at` não é anterior ao `recorded_at`
+ *     de um eventual `bloqueio-execucao`). A decisão que resolve o
  *     trade-off já está na thread; nenhuma pergunta nova é necessária — o
  *     chamador re-rotea direto (`route-issue.ts`).
- *   - `bloqueio-confirmado` — sem decisão nova, mas existe um
- *     `bloqueio-execucao` cujo `recorded_at` é posterior (ou igual) ao
- *     `updatedAt`. O que falta já está documentado (token que não chegou,
- *     conta que não existe) — perguntar de novo não muda nada; o chamador
- *     comenta lembrando o estado e segue sem pergunta.
+ *   - `bloqueio-confirmado` — existe um `bloqueio-execucao` mais recente que
+ *     qualquer `decisao-editor` presente (ou sem decisão nenhuma). O que
+ *     falta já está documentado (token que não chegou, conta que não
+ *     existe) — perguntar de novo não muda nada; o chamador comenta
+ *     lembrando o estado e segue sem pergunta.
  *   - `precisa-pergunta`   — nem decisão nem bloqueio recentes cobrem o
  *     estado atual da issue. Candidata real à bateria de `AskUserQuestion`.
  *   - `erro-leitura`       — o caller não conseguiu ler a thread completa
@@ -41,10 +42,28 @@
  *     leitura falhou"). O chamador NUNCA pergunta pra esta issue — reporta
  *     o erro e sugere retry.
  *
- * Mesmo critério de comparação `decided_at`/`recorded_at` vs `updatedAt` já
- * usado em prosa por `.claude/skills/diaria-develop/SKILL.md` ("Antes de
- * classificar como cat. C") — este módulo só o torna reusável e testável
- * fora daquela skill.
+ * ## Por que a comparação NÃO usa `updatedAt` (#6961)
+ *
+ * A versão original comparava `decided_at`/`recorded_at` contra o
+ * `updatedAt` da issue ("a decisão cobre o estado ATUAL?"). Isso quebrava
+ * por construção: o PRÓPRIO comentário que grava um marcador bumpa o
+ * `updatedAt` da issue para o instante do POST — sempre um pouco DEPOIS do
+ * `decided_at`/`recorded_at` embutido no payload (gerado antes de o
+ * comentário ser de fato enviado). Toda decisão nascia comparando
+ * `decided_at < updatedAt-do-seu-próprio-post` e caía em
+ * `precisa-pergunta` — não uma corrida rara, o caso normal (medição: 6/6
+ * marcadores gravados em 01/09/2026 voltaram como `precisa-pergunta` na
+ * varredura seguinte). E nenhuma outra causa de `updatedAt` avançar (label,
+ * comentário de rodada do overnight, `route-issue.ts`) invalida de fato uma
+ * decisão do editor — comparar contra ela não protegia nada.
+ *
+ * A comparação correta é entre os DOIS marcadores em si: uma `decisao-editor`
+ * vale enquanto não houver um `bloqueio-execucao` MAIS RECENTE que ela na
+ * mesma thread (e vice-versa) — "o marcador não expira por tempo, só por
+ * evento" (opção 3 da issue). Como `comments` já é a thread INTEIRA (nunca
+ * uma amostra — ver `commentsFetchError` abaixo), um evento que reabrisse a
+ * questão apareceria como um marcador mais novo, que `latestDecisionFor`/
+ * `latestExecutionBlockFor` já capturam.
  *
  * Determinístico: recebe dados já buscados (`gh issue list`/`gh issue view`
  * com `--json`), sem rede, sem `gh`. O CLI wrapper (`scripts/desbloqueia-scan.ts`)
@@ -66,7 +85,10 @@ export interface DesbloqueioIssueInput {
   labels: string[];
   body: string | null;
   state: string;
-  /** ISO 8601 — `updatedAt` de `gh issue view --json updatedAt`. */
+  /** ISO 8601 — `updatedAt` de `gh issue view --json updatedAt`. Mantido na
+   * entrada por ser um campo padrão de toda leitura de issue (auditoria,
+   * logging do chamador), mas `classifyDesbloqueioCandidate` NÃO o usa mais
+   * na decisão (#6961 — ver docstring do módulo acima). */
   updatedAt: string;
   /** Bodies de TODOS os comentários da issue, na ordem — não um subconjunto.
    * Se a leitura falhou, o caller passa `[]` aqui E preenche
@@ -130,10 +152,16 @@ export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): Desb
   const decision = latestDecisionFor(input.comments);
   const executionBlock = latestExecutionBlockFor(input.comments);
 
+  // #6961: comparação é entre os dois marcadores, nunca contra
+  // `input.updatedAt` (ver docstring do módulo — o próprio POST do
+  // marcador bumpa `updatedAt` para depois do timestamp embutido nele,
+  // tornando `decided_at >= updatedAt` insatisfazível por construção).
+  // Marcador MAIS RECENTE (por `decided_at`/`recorded_at`) vence; empate
+  // favorece a decisão (sinal mais forte — resolução explícita do editor).
   let status: DesbloqueioStatus;
-  if (decision && decision.decided_at >= input.updatedAt) {
+  if (decision && (!executionBlock || decision.decided_at >= executionBlock.recorded_at)) {
     status = "ja-destravada";
-  } else if (executionBlock && executionBlock.recorded_at >= input.updatedAt) {
+  } else if (executionBlock && (!decision || executionBlock.recorded_at > decision.decided_at)) {
     status = "bloqueio-confirmado";
   } else {
     status = "precisa-pergunta";

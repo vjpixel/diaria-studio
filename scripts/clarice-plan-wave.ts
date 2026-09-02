@@ -314,16 +314,24 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   // estrutural, como o crédito não-consultado já fazia.
   let committed = new Set<string>();
   let committedLookupFailed = false;
+  // #7007 — `err.message` sobrevive além do `console.error` (stderr de um
+  // subprocesso que `clarice-envio-run.ts` nunca lê) e vira parte do bloqueio
+  // que `buildWaveProposal` monta abaixo — 3 ocorrências do mesmo `-abort`
+  // genérico (260827/260830/260901) exigiram investigação do zero cada vez
+  // porque a causa real (429? erro de rede? 401?) nunca chegava no relatório.
+  let committedLookupError: string | null = null;
   if (apiKey) {
     try {
       committed = await fetchCommittedCampaignListIds(apiKey);
     } catch (err) {
       committedLookupFailed = true;
-      console.error(`⚠️  Consulta de campanhas comprometidas falhou: ${err instanceof Error ? err.message : err}`);
+      committedLookupError = err instanceof Error ? err.message : String(err);
+      console.error(`⚠️  Consulta de campanhas comprometidas falhou: ${committedLookupError}`);
     }
   } else {
     // Sem chave a checagem nem foi tentada — mesma consequência prática.
     committedLookupFailed = true;
+    committedLookupError = "BREVO_CLARICE_API_KEY ausente — checagem nem foi tentada.";
   }
   // #5395 — `excludeCommittedToQueuedCampaigns` sozinho só cobre quem está
   // COMMITTED numa campanha Brevo queued/sent; um contato que entrou numa
@@ -417,6 +425,7 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     // Continua a numeração do ciclo — `d6` depois de `d5`, nunca reinicia.
     startingWaveNumber: computeNextWaveNumber(state.waves),
     committedLookupFailed,
+    committedLookupError,
     novosFreshness,
     novosLastAbort,
     novosPending,

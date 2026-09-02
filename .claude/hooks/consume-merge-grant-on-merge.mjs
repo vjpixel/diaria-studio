@@ -65,7 +65,7 @@
 // porque ao contrário das duas irmãs ela vai ESCREVER de volta
 // (`merge_grant.consumedAt`) — as duas irmãs só respondem "existe uma viva?".
 
-import { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -119,7 +119,7 @@ export function sessionsDir(repoRoot) {
  * em qualquer estado onde não dá pra confirmar uma concessão viva — nunca
  * lança.
  */
-export function findLiveMergeGrantFile(repoRoot, sessionId, now = Date.now()) {
+export function findLiveMergeGrantFile(repoRoot, sessionId, now = Date.now(), includeBackups = false) {
   if (typeof sessionId !== "string" || sessionId === "") return null;
   const dir = sessionsDir(repoRoot);
   let entries;
@@ -130,7 +130,11 @@ export function findLiveMergeGrantFile(repoRoot, sessionId, now = Date.now()) {
     return null;
   }
   for (const name of entries) {
-    if (!name.endsWith(".json") || name.startsWith(".") || name.includes("-safeBackup-")) continue;
+    if (!name.endsWith(".json") || name.startsWith(".")) continue;
+    // #6952: as cópias de conflito do OneDrive entram só quando quem chama
+    // pede — ver `consumeGrantUnderLock`. O default segue excluindo, pra não
+    // mudar em silêncio o que o resto do arquivo considera "o registro".
+    if (!includeBackups && name.includes("-safeBackup-")) continue;
     const path = join(dir, name);
     let record;
     try {
@@ -167,6 +171,132 @@ function writeJsonAtomic(path, value) {
   renameSync(tmp, path);
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// #6952 — este hook é o TERCEIRO escritor do registro de sessão
+// ───────────────────────────────────────────────────────────────────────────
+//
+// O #6952 fechou o lost update em `scripts/lib/session-registry.ts` e em
+// `session-beacon.mjs`, serializando os dois sobre `{path}.lock`. Este arquivo
+// tinha ficado de fora — e ele é justamente quem grava `merge_grant.consumedAt`
+// no caminho quente de produção (o `consume-merge-grant` do CLI quase nunca é
+// chamado de fato; ver "POR QUE ISTO EXISTE" no topo).
+//
+// Sem participar do lock, ele continua fazendo read-modify-write solto:
+// `findLiveMergeGrantFile` lê o record, e o `writeJsonAtomic` grava
+// `{...found.record, merge_grant:{...consumedAt}}` depois — apagando qualquer
+// coisa que o beacon ou a skill tenham gravado nesse meio (um `claimed_issues`
+// novo, um `touched_paths`). Dois escritores serializados e um terceiro solto
+// não é exclusão mútua: é o mesmo bug com uma testemunha a menos.
+//
+// Pior: o que este hook perde é o `consumedAt`. Perdê-lo deixa uma concessão
+// JÁ USADA viva pelo resto do TTL — uso duplo, que é o dano que o #6952
+// classifica como pior que a perda.
+//
+// Orçamento de bloqueio pequeno pelo mesmo motivo do beacon: isto é um
+// PostToolUse que roda logo depois de um `gh pr merge` bem-sucedido, e não
+// pode segurar o editor. Fail-open igual ao resto do arquivo.
+
+const STALE_LOCK_MS = 60_000;
+const LOCK_TIMEOUT_MS = 2_000;
+const CAS_ATTEMPTS = 3;
+
+/** Remove um `.lock` órfão (processo morto segurando). Nunca lança. */
+function breakStaleLock(lockPath) {
+  try {
+    if (Date.now() - statSync(lockPath).mtimeMs < STALE_LOCK_MS) return;
+    unlinkSync(lockPath);
+  } catch { /* inexistente, ou outro quebrador ganhou — segue */ }
+}
+
+/**
+ * Marca a concessão viva de `sessionId` como consumida, sob o MESMO
+ * `{path}.lock` que os outros dois escritores usam, relendo o record fresco
+ * DENTRO do lock (nunca o snapshot que `findLiveMergeGrantFile` leu antes).
+ *
+ * Devolve `true` se gravou. `false` cobre tanto "não havia concessão viva"
+ * quanto "não consegui gravar" — este hook é fail-open total e não tem canal
+ * de saída (PostToolUse é side-effect puro), então a distinção não teria onde
+ * aparecer; quem precisa dela é o CLI, não aqui.
+ */
+export function consumeGrantUnderLock(
+  repoRoot,
+  sessionId,
+  nowIso = new Date().toISOString(),
+  // Só pra teste: o caso "lock retido é respeitado" precisa esperar o
+  // orçamento estourar, e os 3×2s de produção custavam 6s de wall-clock na
+  // suíte — o bastante, somado aos outros testes de lock, pra estourar o
+  // orçamento de 300s do batch do runner paralelo. Produção nunca passa isto.
+  attempts = CAS_ATTEMPTS,
+  lockTimeoutMs = LOCK_TIMEOUT_MS,
+) {
+  // #6952 (achado do review independente): varre o GRUPO inteiro — arquivo
+  // real E cópias `-safeBackup-*`. Desde que `mergeSessionRecords` passou a
+  // UNIR o `merge_grant`, uma concessão que vive só numa cópia de conflito é
+  // ENCONTRADA por `findLiveMergeGrant`; se este hook (que é quem consome no
+  // caminho quente) continuasse cego a backup, essa concessão seria
+  // encontrável e inconsumível — viva o TTL inteiro. Consumir de mais nunca é
+  // o lado perigoso: fecha janela, não abre.
+  let consumedAny = false;
+  for (;;) {
+    const initial = findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true);
+    if (!initial) return consumedAny;
+    if (!consumeOneUnderLock(initial, nowIso, attempts, lockTimeoutMs)) return consumedAny;
+    consumedAny = true;
+  }
+}
+
+/** Marca `consumedAt` num único arquivo do grupo, sob o lock dele. */
+function consumeOneUnderLock(initial, nowIso, attempts = CAS_ATTEMPTS, lockTimeoutMs = LOCK_TIMEOUT_MS) {
+  const lockPath = `${initial.path}.lock`;
+
+  for (let i = 0; i < attempts; i++) {
+    let acquired = false;
+    try {
+      breakStaleLock(lockPath);
+      const deadline = Date.now() + lockTimeoutMs;
+      for (;;) {
+        try { closeSync(openSync(lockPath, "wx")); acquired = true; break; } catch (e) {
+          if (e?.code !== "EEXIST") throw e;
+          if (Date.now() >= deadline) throw new Error(`lock timeout: ${lockPath}`);
+          const end = Date.now() + 50;
+          while (Date.now() < end) { /* busy wait */ }
+        }
+      }
+
+      // Relê ESTE arquivo dentro do lock — nunca o snapshot de fora, e nunca
+      // uma busca global nova (que poderia cair noutro arquivo do grupo e
+      // gravar no lugar errado, com o lock do arquivo errado na mão).
+      const record = JSON.parse(readFileSync(initial.path, "utf8"));
+      const grant = record?.merge_grant;
+      // Sumiu, virou outra concessão, ou já foi consumida por outro caminho
+      // entre a busca e o lock: nada a fazer, e forçar ressuscitaria o velho.
+      if (
+        !grant ||
+        grant.grantedTo !== initial.grant.grantedTo ||
+        grant.grantedBy !== initial.grant.grantedBy ||
+        grant.grantedAt !== initial.grant.grantedAt ||
+        grant.consumedAt
+      ) {
+        return false;
+      }
+
+      writeJsonAtomic(initial.path, buildConsumedRecord({ record, grant }, nowIso));
+
+      const onDisk = JSON.parse(readFileSync(initial.path, "utf8"));
+      if (onDisk?.merge_grant?.consumedAt !== nowIso) {
+        throw new Error("CAS verify failed: outro escritor sobrescreveu o consumedAt");
+      }
+      return true;
+    } catch {
+      // Retry: contenção de lock, ou verify perdido pro caminho advisory
+      // cross-máquina do OneDrive (#6182).
+    } finally {
+      if (acquired) { try { unlinkSync(lockPath); } catch { /* ignore */ } }
+    }
+  }
+  return false;
+}
+
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
 // entrypoint (nunca ao ser importado por test/session-conflicts-and-merge-grant.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
@@ -180,10 +310,9 @@ if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_ar
       const sessionId = payload.session_id;
       if (!sessionId) return; // sem identidade não há concessão pra procurar
       const repoRoot = resolveMainRepoRoot();
-      const found = findLiveMergeGrantFile(repoRoot, sessionId);
-      if (!found) return; // no-op silencioso: caso comum, nenhuma concessão pra consumir
-      const record = buildConsumedRecord(found, new Date().toISOString());
-      writeJsonAtomic(found.path, record);
+      // #6952: sob o lock compartilhado, relendo fresco lá dentro — nunca o
+      // read-modify-write solto que apagava a escrita concorrente do beacon.
+      consumeGrantUnderLock(repoRoot, sessionId);
       // Nunca emitir saída — PostToolUse aqui é side-effect puro, nunca decisão.
     } catch {
       // Fail-open total — ver "FAIL-OPEN TOTAL" no topo do arquivo.
