@@ -15,11 +15,17 @@
  * workflow correspondente quebra o CI imediatamente, em vez de esperar até
  * 6h (cadência do alarme) ou até um incidente.
  *
- * O 2º teste (#5531) cobre a classe seguinte, que a primeira não pega: o
- * workflow EXISTE mas morre no `npm ci` do próprio worker — lockfile
- * ausente ou dessincronizado do package.json. Mesmo desfecho (deploy
- * automático que nunca roda, drift só visível pelo alarme ou por e-mail de
- * run failed), origem diferente.
+ * O 2º teste (#5531, reescrito no #7117) cobre a classe seguinte, que a
+ * primeira não pega: o workflow EXISTE mas morre no passo de instalação —
+ * até o #7117, cada worker tinha SEU PRÓPRIO `package-lock.json` e o
+ * `npm ci` rodava dentro de `workers/{worker}/`; agora `workers/` é um npm
+ * workspace (`workspaces: ["workers/*"]` na raiz) com UM lockfile só na
+ * raiz, e o `npm ci` dentro do worker foi removido de todo `deploy-*.yml`
+ * (o `npm ci` na raiz já cobre o workspace inteiro). O teste original
+ * checava package.json+lockfile do worker em sincronia; a versão pós-#7117
+ * checa a mesma coisa contra o SHAPE do lockfile unificado (`packages["workers/{dir}"]`
+ * no lockfile raiz) e, como regressão do drift que motivou o #7117, garante
+ * que nenhum worker reintroduziu um `package-lock.json` próprio.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -60,56 +66,65 @@ describe("cobertura de deploy workflow por worker (#5337)", () => {
     );
   });
 
-  // Regressão do deploy quebrado de 17/08/2026: workers/reativar tinha
-  // workflow (o teste acima passava) mas nunca teve package-lock.json
-  // commitado — o passo "Install reativar worker deps" (`npm ci` dentro do
-  // worker) falhava com EUSAGE em TODA execução, então o deploy automático
-  // que o #5337 entregou nunca chegou a rodar uma vez. `npm ci` exige
-  // lockfile por definição; o único sinal era e-mail de run failed.
-  //
-  // O teste cobre as 3 formas de quebrar esse mesmo passo: package.json
-  // ausente, lockfile ausente, e lockfile fora de sincronia com o
-  // package.json (o caso do próximo bump de dependência — `npm ci` aborta
-  // igual). Nenhuma delas pode ser pulada em silêncio.
-  it("todo worker coberto por `npm ci` no deploy tem package.json E package-lock.json em sincronia", () => {
+  // #7117: `workers/` virou npm workspace — regressão de dois ângulos que o
+  // teste original (#5531, package.json+lockfile POR WORKER) não cobre mais
+  // porque o lockfile por worker não existe: (1) ninguém reintroduziu um
+  // `package-lock.json` dentro de um worker (voltaria o drift de 19.550
+  // linhas que motivou o #7117); (2) o lockfile RAIZ unificado tem uma
+  // entrada em sincronia (`packages["workers/{dir}"]`) para cada worker —
+  // mesma checagem de fundo do teste original (declared === locked), só que
+  // contra o shape do lockfile de workspace em vez do lockfile solo.
+  it("nenhum worker tem package-lock.json próprio (unificado no lockfile raiz desde #7117)", () => {
+    const workers = discoverWorkers();
+    const reintroduced = workers
+      .map((w) => w.workerDir)
+      .filter((dir) => existsSync(resolve(ROOT, "workers", dir, "package-lock.json")));
+
+    assert.deepEqual(
+      reintroduced,
+      [],
+      `worker(s) com package-lock.json PRÓPRIO: ${reintroduced.join(", ")} — ` +
+        "desde #7117 workers/ é um npm workspace com lockfile único na raiz; " +
+        "rodar `npm install` na raiz (nunca `npm install`/`npm ci` dentro do worker) " +
+        "e remover o lockfile solo reintroduzido.",
+    );
+  });
+
+  it("todo worker coberto por `npm ci` (raiz, via workspace) tem package.json em sincronia com o lockfile raiz", () => {
     const workers = discoverWorkers();
     const workflowContents = readWorkflowContents();
     const broken: string[] = [];
 
+    const rootLockPath = resolve(ROOT, "package-lock.json");
+    assert.ok(existsSync(rootLockPath), "package-lock.json da raiz não existe — rodar `npm install` antes.");
+    const rootLock = JSON.parse(readFileSync(rootLockPath, "utf8"));
+
     for (const worker of workers) {
-      // Só cobra os arquivos de quem de fato tem um passo `npm ci` rodando
-      // dentro do diretório do worker — pular em silêncio quem tem o passo
-      // seria recriar, pro package.json, o mesmo buraco que este teste
-      // fecha pro lockfile (nenhum deploy-*.yml guarda esse passo com `if:`).
-      const runsNpmCi = workflowContents.some(
-        (content) => content.includes(`working-directory: workers/${worker.workerDir}`) && content.includes("npm ci"),
+      // Só cobra worker de fato deployado via `npm run deploy` num
+      // deploy-*.yml — pular em silêncio quem não tem workflow seria
+      // recriar, pro package.json do workspace, o mesmo buraco que a
+      // versão pré-#7117 deste teste fechava pro lockfile solo.
+      const isDeployed = workflowContents.some(
+        (content) => content.includes(`working-directory: workers/${worker.workerDir}`) && content.includes("npm run deploy"),
       );
-      if (!runsNpmCi) continue;
+      if (!isDeployed) continue;
 
-      const dir = resolve(ROOT, "workers", worker.workerDir);
-      const pkgPath = resolve(dir, "package.json");
-      const lockPath = resolve(dir, "package-lock.json");
-
+      const pkgPath = resolve(ROOT, "workers", worker.workerDir, "package.json");
       if (!existsSync(pkgPath)) {
         broken.push(`${worker.workerDir} (sem package.json)`);
         continue;
       }
-      if (!existsSync(lockPath)) {
-        broken.push(`${worker.workerDir} (sem package-lock.json)`);
+
+      const lockEntry = rootLock.packages?.[`workers/${worker.workerDir}`];
+      if (!lockEntry) {
+        broken.push(`${worker.workerDir} (sem entrada "workers/${worker.workerDir}" no package-lock.json raiz — rodar \`npm install\` na raiz)`);
         continue;
       }
 
-      // `npm ci` também aborta quando o lockfile existe mas está DESSINCRONIZADO
-      // do package.json — o caso do próximo bump de dependência em qualquer
-      // worker. `packages[""]` do lockfileVersion >= 2 espelha os ranges
-      // declarados, então a comparação é exata e não precisa de rede.
       const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-      const lock = JSON.parse(readFileSync(lockPath, "utf8"));
-      const lockRoot = lock.packages?.[""] ?? {};
-
       for (const field of ["dependencies", "devDependencies"] as const) {
         const declared = JSON.stringify(pkg[field] ?? {});
-        const locked = JSON.stringify(lockRoot[field] ?? {});
+        const locked = JSON.stringify(lockEntry[field] ?? {});
         if (declared !== locked) {
           broken.push(`${worker.workerDir} (${field} fora de sincronia: package.json ${declared} vs lock ${locked})`);
         }
@@ -119,10 +134,8 @@ describe("cobertura de deploy workflow por worker (#5337)", () => {
     assert.deepEqual(
       broken,
       [],
-      `worker(s) que quebram o \`npm ci\` do próprio deploy: ${broken.join("; ")} — ` +
-        "regenerar com `npm install --package-lock-only` no diretório do worker e commitar. " +
-        "Se falhar com ERESOLVE (wrangler >4.101 exige `@cloudflare/workers-types@^5.x` via peerOptional), " +
-        "bumpar workers-types pra `^5.x` antes, como workers/livros e workers/reativar já fazem.",
+      `worker(s) fora de sincronia com o lockfile raiz: ${broken.join("; ")} — ` +
+        "rodar `npm install` na RAIZ do repo (nunca dentro do worker) e commitar o package-lock.json atualizado.",
     );
   });
 });

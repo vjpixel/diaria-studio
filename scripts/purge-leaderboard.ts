@@ -95,18 +95,22 @@ import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #4474
 import { summarizePurgeDoResults, type PurgeDoStepResult } from "./lib/purge-leaderboard-do-summary.ts"; // #4477 achado 1
 import type { Brand } from "../workers/poll/src/lib.ts"; // #4477 achado 3
 import { sanitizedCloudflareOAuthEnv } from "./lib/cloudflare-oauth-env.ts"; // #6900
+import { resolveWranglerBin } from "./lib/resolve-wrangler-bin.ts"; // #7117
 
 // #2265: NAMESPACE_ID do POLL (KV). Auth e acesso ao KV vão pelo WRANGLER (auth
 // global do CLI), não mais pela CF REST API com CLOUDFLARE_API_TOKEN — o token
 // avulso vivia dando 401 (sem permissão de KV) e quebrava purge + /diaria-remover-votos-pixel.
 const NAMESPACE_ID = "72784da4ae39444481eb422ebac357c6"; // POLL namespace (KV)
 
-// Roda o wrangler instalado em workers/poll via `node <bin>` (sem npx/shell) —
-// args como array, então chaves com chars especiais (ex: `{{+contact.email+}}`)
-// passam literais, sem inferno de quoting. cwd=workers/poll p/ achar a config/auth.
+// Roda o wrangler via `node <bin>` (sem npx/shell) — args como array, então
+// chaves com chars especiais (ex: `{{+contact.email+}}`) passam literais, sem
+// inferno de quoting. cwd=workers/poll p/ achar a config/auth. O binário é
+// resolvido via `resolveWranglerBin` (#7117) — desde que `workers/` virou
+// npm workspace, `wrangler` é hoistado pro node_modules da RAIZ, não mais
+// `workers/poll/node_modules` (que não existe mais).
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_DIR = resolve(ROOT, "workers", "poll");
-const WRANGLER_BIN = resolve(POLL_DIR, "node_modules", "wrangler", "bin", "wrangler.js");
+const WRANGLER_BIN = resolveWranglerBin(import.meta.url);
 
 function wrangler(wargs: string[]): string {
   // Tira CLOUDFLARE_API_TOKEN (auth) E CLOUDFLARE_ACCOUNT_ID (seleção de conta)
