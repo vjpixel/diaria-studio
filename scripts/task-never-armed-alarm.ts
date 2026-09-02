@@ -127,7 +127,10 @@ export function readArmedTimerUnitBaseNames(
     }
     // Qualquer outra falha (bus indisponível, timeout, permissão, systemctl
     // presente mas quebrado) é "não sei", nunca "sei que está vazio".
-    return { status: "check-failed", message: err.message ?? String(e) };
+    return {
+      status: "check-failed",
+      message: typeof err.message === "string" ? err.message : String(e),
+    };
   }
 }
 
