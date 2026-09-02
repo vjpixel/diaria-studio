@@ -149,10 +149,7 @@ describe("hermes-diaria-continuo SKILL.md size (#6712 Parte B)", () => {
   it(`SKILL.md ≤ ${CONTINUO_SKILL_MAX_BYTES} bytes (teto #6712)`, () => {
     const size = readFileSync(SKILL_MD).length;
     const evaluation = evaluateContinuoSkillSize(size);
-    if (evaluation.status === "over") {
-      assert.fail(evaluation.message);
-    }
-    assert.ok(size <= CONTINUO_SKILL_MAX_BYTES);
+    assert.ok(evaluation.status !== "over", evaluation.message);
   });
 
   it(`alarme de proximidade: avisa sem falhar quando SKILL.md cruza ${Math.round(CONTINUO_SKILL_WARN_RATIO * 100)}% do teto`, () => {

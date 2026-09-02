@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.12
+version: 0.5.14
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -211,7 +211,7 @@ ordem:
    avaliador (esta delegação) e avaliado (a PR que ela mesma abriu) são o
    MESMO processo, com a MESMA credencial `gh`, escrevendo no MESMO lugar.
    o regex de prosa original (`INDEPENDENT_REVIEW_RE`, removido no #6849 —
-   ver "Marcador com nonce" no changelog abaixo) já aprovou o texto
+   ver "Marcador com nonce" em `references/changelog.md`, entrada v0.5.10) já aprovou o texto
    fabricado exato do incidente #6713 uma vez, e o #6849 achou que o
    revisor externo LEGÍTIMO (`continuo-pr-review.sh`) produzia a MESMA
    prosa — endurecer a regex nunca teria fechado isso, era um
