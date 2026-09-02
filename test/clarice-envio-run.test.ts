@@ -1307,12 +1307,12 @@ describe("clarice-envio-run (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
-    it("#6288 (decisão do editor, uniformiza com brevoGet/withBrevo429Retry): retryAfterSecs absurdamente alto excede o cap de 35min => desiste JÁ, nunca dorme o teto à toa", async () => {
+    it("#6288 (decisão do editor, uniformiza com brevoGet/withBrevo429Retry): retryAfterSecs absurdamente alto excede o cap de 70min (#6831, era 35min) => desiste JÁ, nunca dorme o teto à toa", async () => {
       const root = freshRoot();
       const sleeps: number[] = [];
       const { exec, calls } = makeFakeExec({
         ...goldenHandlers(),
-        "scripts/clarice-plan-wave.ts": [transientResult(3600), jsonResult(goldenProposal())], // 1h > cap de 35min
+        "scripts/clarice-plan-wave.ts": [transientResult(4300), jsonResult(goldenProposal())], // ~72min > cap de 70min (#6831)
       });
       const r = await runEnvio(baseDeps(root, { exec, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } }));
       assert.equal(r.code, 1, r.reportMarkdown);
@@ -1348,6 +1348,106 @@ describe("clarice-envio-run (#5026)", () => {
       assert.equal(r.code, 1, r.reportMarkdown);
       assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 1, "erro não-transitório NUNCA retenta");
       assert.equal(sleepCalls, 0);
+      rmSync(root, { recursive: true, force: true });
+    });
+  });
+
+  describe("runEnvio — retryProposalOnCommittedRateLimit (#6831)", () => {
+    it("committedLookupFailed com retryAfterSecs (rate limit real) => retenta o passo INTEIRO e completa (code 0)", async () => {
+      const root = freshRoot();
+      const sleeps: number[] = [];
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": [
+          jsonResult(goldenProposal({ committedLookupFailed: true, committedLookupRetryAfterSecs: 300 })),
+          jsonResult(goldenProposal()),
+        ],
+      });
+      const r = await runEnvio(baseDeps(root, { exec, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 2, "retentou 1× e a 2ª chamada teve sucesso");
+      assert.deepEqual(sleeps, [300_000], "esperou exatamente retryAfterSecs*1000");
+      assert.match(r.reportMarkdown, /#6831/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("retryAfterSecs EXATAMENTE no limite do orçamento (70min) => ainda retenta (cabe, não excede)", async () => {
+      const root = freshRoot();
+      const sleeps: number[] = [];
+      const CAP_SECS = 70 * 60; // 4200 — mesmo valor de TRANSIENT_RETRY_CAP_MS (regressão indireta do #6831)
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": [
+          jsonResult(goldenProposal({ committedLookupFailed: true, committedLookupRetryAfterSecs: CAP_SECS })),
+          jsonResult(goldenProposal()),
+        ],
+      });
+      const r = await runEnvio(baseDeps(root, { exec, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.deepEqual(sleeps, [CAP_SECS * 1000]);
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 2);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("retryAfterSecs 1s ACIMA do orçamento de 70min => desiste JÁ, nunca dorme, segue com o bloqueio original", async () => {
+      const root = freshRoot();
+      const sleeps: number[] = [];
+      const OVER_CAP_SECS = 70 * 60 + 1; // 4201 — 1s acima do cap (regressão indireta: trava o valor de TRANSIENT_RETRY_CAP_MS)
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": jsonResult(
+          goldenProposal({ committedLookupFailed: true, committedLookupRetryAfterSecs: OVER_CAP_SECS }),
+        ),
+      });
+      const r = await runEnvio(baseDeps(root, { exec, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } }));
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.deepEqual(sleeps, [], "nunca dorme quando o Retry-After já excede o orçamento");
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 1, "1 única chamada — desiste sem retentar");
+      assert.match(r.reportMarkdown, /consulta de campanhas comprometidas/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("committedLookupFailed SEM retryAfterSecs (falha estrutural — 401/rede/chave ausente) => aborta na 1ª tentativa, comportamento INALTERADO", async () => {
+      const root = freshRoot();
+      const sleeps: number[] = [];
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": jsonResult(goldenProposal({ committedLookupFailed: true, committedLookupRetryAfterSecs: null })),
+      });
+      const r = await runEnvio(baseDeps(root, { exec, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } }));
+      assert.equal(r.code, 1);
+      assert.deepEqual(sleeps, []);
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 1);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("committedLookupFailed persiste em TODAS as tentativas (rate limit contínuo) => esgota o orçamento (3 tentativas) e aborta (code 1)", async () => {
+      const root = freshRoot();
+      let sleepCalls = 0;
+      const persistent = jsonResult(goldenProposal({ committedLookupFailed: true, committedLookupRetryAfterSecs: 60 }));
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": [persistent, persistent, persistent],
+      });
+      const r = await runEnvio(baseDeps(root, { exec, sleep: () => { sleepCalls++; return Promise.resolve(); } }));
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 3, "exatamente 3 tentativas totais, não mais");
+      assert.equal(sleepCalls, 2, "espera ENTRE tentativas (2 esperas pra 3 tentativas)");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("proposta sem o campo (chamador antigo, undefined) => tratado igual a null, nunca lança nem retenta", async () => {
+      const root = freshRoot();
+      const sleeps: number[] = [];
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        // committedLookupRetryAfterSecs OMITIDO de propósito — undefined.
+        "scripts/clarice-plan-wave.ts": jsonResult(goldenProposal({ committedLookupFailed: true })),
+      });
+      const r = await runEnvio(baseDeps(root, { exec, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } }));
+      assert.equal(r.code, 1);
+      assert.deepEqual(sleeps, []);
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 1);
       rmSync(root, { recursive: true, force: true });
     });
   });

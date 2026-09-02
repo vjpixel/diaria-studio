@@ -49,6 +49,7 @@ export {
   assertCampaignQuotaHeadroom,
   BrevoCampaignQuotaLowError,
   readCampaignQuotaState,
+  warnIfCampaignQuotaLow, // #6458
   type BrevoCampaignQuotaState,
 } from "./brevo-rate-state.ts";
 
@@ -174,10 +175,11 @@ export async function withBrevo429Retry<T>(
         // novo (mesma janela horária ainda estourada) — desiste JÁ, sem
         // dormir, em vez de queimar as tentativas restantes.
         if (retryAfterSecs != null && retryAfterSecs * 1000 > BREVO_RETRY_GIVE_UP_MS) {
-          throw new Error(
+          throw new BrevoRateLimitError(
             `Brevo API 429 — Retry-After ${retryAfterSecs}s excede o orçamento de ` +
             `${BREVO_RETRY_GIVE_UP_MS / 1000}s por tentativa — desistindo agora em vez de dormir ` +
             `e falhar igual (rate limit é por CONTA/HORA, ver docs/brevo-rate-limits.md).`,
+            retryAfterSecs,
           );
         }
         if (attempt < MAX_ATTEMPTS - 1) {
@@ -185,10 +187,13 @@ export async function withBrevo429Retry<T>(
           await _sleep(waitMs);
           continue;
         }
-        // Esgotou tentativas
-        throw new Error(
+        // Esgotou tentativas — #6831: retryAfterSecs da ÚLTIMA resposta 429
+        // (pode ser não-null mesmo aqui, quando estava dentro do orçamento
+        // de 30s mas a Brevo continuou 429 nas 3 tentativas).
+        throw new BrevoRateLimitError(
           `Brevo API 429 após ${MAX_ATTEMPTS} tentativas. ` +
           `Retry-After: ${e.response.headers.get("retry-after") ?? e.response.headers.get("x-sib-ratelimit-reset") ?? "n/a"}`,
+          retryAfterSecs,
         );
       }
       throw e; // erros não-429 propagam imediatamente
@@ -203,6 +208,36 @@ export class Brevo429Signal extends Error {
   constructor(public readonly response: Response) {
     super("Brevo 429");
     this.name = "Brevo429Signal";
+  }
+}
+
+/**
+ * #6831 — erro TIPADO que `withBrevo429Retry` lança quando desiste (nos
+ * dois caminhos: `Retry-After` excede o orçamento por tentativa, OU
+ * `MAX_ATTEMPTS` esgotadas ainda em 429). Antes desta classe, os dois
+ * caminhos lançavam `Error` genérico com `retryAfterSecs` só embutido na
+ * MENSAGEM — um chamador que precisasse decidir "isto é transitório, vale
+ * a pena um retry com orçamento MAIOR" (ex: `clarice-plan-wave.ts`, que
+ * roda com ~11h de folga antes do disparo, bem mais que o orçamento de 30s
+ * por tentativa deste módulo) tinha que fazer parsing de string pra
+ * recuperar o número — exatamente a classe de "prosa substring-matched em
+ * vez de tipo" que este projeto evita (ver `clarice-envio-policy.ts`,
+ * `NextVolumeDecision.cappedBy`, mesmo racional). `retryAfterSecs` aqui é
+ * `null` só quando a Brevo não informou nenhum header utilizável — nunca
+ * inventado.
+ *
+ * Mensagem preservada IDÊNTICA à versão anterior (`Error` genérico) —
+ * `assert.rejects(fn, /regex/)` em testes existentes (`test/brevo-429-
+ * retry-budget-6035.test.ts` e outros) continua passando sem alteração;
+ * `instanceof Error` também continua `true` (subclasse).
+ */
+export class BrevoRateLimitError extends Error {
+  constructor(
+    message: string,
+    readonly retryAfterSecs: number | null,
+  ) {
+    super(message);
+    this.name = "BrevoRateLimitError";
   }
 }
 
@@ -515,6 +550,13 @@ export async function brevoGet(
   _sleep: (ms: number) => Promise<void> = _defaultSleep, // injetável p/ teste (igual ao resto da lib)
 ): Promise<{ status: number; body: any }> {
   let lastErr: unknown;
+  // #6831 — último `retryAfterSecs` VÁLIDO observado num 429/5xx desta
+  // invocação (`null` até o 1º header utilizável aparecer). Só é atribuído
+  // dentro do ramo 429/5xx abaixo — nenhum outro branch deste loop chega a
+  // `continue` (404/4xx/não-JSON lançam imediatamente), então, se o loop
+  // esgotar `RETRY_MS`, este valor reflete SEMPRE a última tentativa 429/5xx,
+  // nunca um resquício de uma falha de tipo diferente.
+  let lastRetryAfterSecs: number | null = null;
   for (let attempt = 0; attempt <= RETRY_MS.length; attempt++) {
     const r = await fetch(`https://api.brevo.com/v3${path}`, {
       headers: { "api-key": apiKey, Accept: "application/json" },
@@ -559,12 +601,22 @@ export async function brevoGet(
       // limit é por CONTA/HORA, não se resolve em segundos). Desiste JÁ, sem
       // dormir nem queimar as tentativas restantes.
       const retryAfterSecs = parseRetryAfterSecs(r.headers);
+      if (retryAfterSecs != null) lastRetryAfterSecs = retryAfterSecs;
       if (retryAfterSecs != null && retryAfterSecs * 1000 > BREVO_RETRY_GIVE_UP_MS) {
         await r.body?.cancel().catch(() => {});
-        throw new Error(
+        // #6831 — BrevoRateLimitError TIPADO (era `Error` genérico): sem
+        // isto, `fetchCommittedCampaignListIds`/`fetchQueuedCampaignListIds`/
+        // `fetchSentCampaignListIds` (todos passam por `brevoGet`) nunca
+        // conseguiam sinalizar `retryAfterSecs` de forma estruturada pro
+        // chamador — exatamente o gap que fez `clarice-plan-wave.ts`
+        // silenciar esta falha como `committedLookupFailed` sem nenhuma
+        // informação de quanto esperar (ver docstring de
+        // `WaveProposalInput.committedLookupRetryAfterSecs`).
+        throw new BrevoRateLimitError(
           `Brevo GET ${path} HTTP ${r.status} — Retry-After ${retryAfterSecs}s excede o orçamento de ` +
           `${BREVO_RETRY_GIVE_UP_MS / 1000}s por tentativa — desistindo agora em vez de dormir ` +
           `e falhar igual (rate limit é por CONTA/HORA, ver docs/brevo-rate-limits.md).`,
+          retryAfterSecs,
         );
       }
       // #2307: honrar Retry-After / x-sib-ratelimit-reset (header-aware backoff).
@@ -589,7 +641,18 @@ export async function brevoGet(
       throw new Error(`Brevo GET ${path}: resposta não-JSON`);
     }
   }
-  throw new Error(`Brevo GET ${path} falhou após ${RETRY_MS.length + 1} tentativas: ${String(lastErr)}`);
+  // #6831 — este ponto só é alcançado quando TODAS as tentativas caíram no
+  // ramo 429/5xx acima (qualquer outro status lança imediatamente, sem
+  // `continue`) — `lastRetryAfterSecs` reflete a última leitura válida
+  // (`null` se a Brevo nunca informou um header utilizável em nenhuma
+  // tentativa). Mesmo tipo (`BrevoRateLimitError`) do give-up antecipado
+  // acima, pro chamador nunca precisar distinguir "desistiu cedo" de
+  // "esgotou tentativas" pra saber se vale a pena retentar num nível
+  // superior com orçamento maior.
+  throw new BrevoRateLimitError(
+    `Brevo GET ${path} falhou após ${RETRY_MS.length + 1} tentativas: ${String(lastErr)}`,
+    lastRetryAfterSecs,
+  );
 }
 
 // ---------------------------------------------------------------------------

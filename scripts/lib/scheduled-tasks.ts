@@ -744,9 +744,21 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `readNovosCutoff()`) em vez de um ser subconjunto do outro — a
     // exclusão não depende mais da campanha do `novos` ter assentado em
     // `sent` antes das 19:00.
-    // Sem colisão com nenhuma outra task
-    // armada (a mais próxima é o ciclo de 4h do Clarice-Guardrail-Alarm).
-    schedule: { kind: "daily", hour: 19, minute: 0 },
+    // #5826 (02/09/2026): minuto movido de :00 pra :10 — `Diaria-Clarice-
+    // Dashboard-Precompute` roda em `interval hours:1`, que `scheduleToOnCalendar`
+    // traduz SEMPRE pro minuto :00 de cada hora (`OnCalendar=*-*-* 0/N:00:00`,
+    // ver o tipo `ScheduledTaskSchedule` no topo deste arquivo) — ou seja,
+    // TODA hora cheia, inclusive 19:00, o precompute dispara. Com esta task
+    // também em :00, as duas batiam no MESMO minuto TODO dia (confirmado ao
+    // vivo: journal mostra as duas arrancando "19:00:08" em 01/09/2026),
+    // contribuindo pra estourar o teto de 100 req/hora POR CONTA da Brevo
+    // (docs/brevo-rate-limits.md) — 1 dos 3 achados que #6458/#5826/#6945
+    // deixaram registrado sobre a MESMA falha intermitente (#6831/#7007).
+    // :10 elimina a colisão determinística com QUALQUER task `interval`
+    // deste registro (todas caem em :00 por construção) sem precisar
+    // remanejar nada mais — nenhuma outra task `daily` ocupa a hora 19 (ver
+    // grep de `kind: "daily"` neste arquivo).
+    schedule: { kind: "daily", hour: 19, minute: 10 },
     // Mesmo guard do Diaria-Clarice-Novos (#4552/#4941): sem o store, o
     // planejamento leria uma base vazia e derivaria volume/freio de nada —
     // pior que não rodar. Independente do kill switch acima: este cobre
@@ -837,12 +849,18 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     description: "alarme de rodada falha do Diaria-Clarice-Envio - le o relatorio do dia e alarma se a onda nao foi agendada",
     steps: [{ key: "alarm", script: "scripts/clarice-envio-alarm.ts" }],
     logPath: "clarice-subscribers/.envio-alarm.log",
-    // 20:30 BRT (#5058): 1h30 depois do Diaria-Clarice-Envio das 19:00 --
-    // folga suficiente pro retry-com-backoff embutido em clarice-envio-run.ts
-    // (ate 3 tentativas, cap de 35min cada, ~1h10 no pior caso) esgotar
-    // ANTES desta checagem rodar, senao ela alarmaria em cima de um retry
-    // ainda em curso que teria sucesso minutos depois.
-    schedule: { kind: "daily", hour: 20, minute: 30 },
+    // 22:45 BRT (#6831, 02/09/2026 -- era 20:30/#5058): Diaria-Clarice-Envio
+    // moveu pra 19:10 (#5826) e seu orcamento de retry subiu de 35min pra
+    // 70min por tentativa (TRANSIENT_RETRY_CAP_MS, clarice-envio-run.ts) --
+    // pior caso agora e ~2h20 so pro retry do sinal 429/503 do dashboard
+    // (2 esperas x 70min), mais a nova retentativa dedicada da consulta de
+    // campanhas comprometidas (retryProposalOnCommittedRateLimit, mesmo
+    // orcamento, mesmo #6831) que pode somar tempo em cima disso numa
+    // rodada genuinamente azarada. 22:45 (19:10 + 3h35) da folga real pro
+    // pior caso plausivel antes de alarmar -- sem isso, a checagem antiga
+    // (20:30) alarmaria em cima de um retry legitimo ainda em curso quase
+    // toda vez que o orcamento maior fosse de fato usado.
+    schedule: { kind: "daily", hour: 22, minute: 45 },
     // Mesmo guard das outras 2 tasks Clarice-Envio acima -- sem o store, a
     // rodada das 19:00 nunca teria rodado de verdade nesta maquina, entao um
     // alarme "nenhum relatorio encontrado" seria ruido, nao sinal real.
@@ -856,6 +874,72 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // registrada depois do cutover systemd/epica #4798). Via de execucao
     // real: par `.service`/`.timer` gerado por scripts/setup-systemd-timers.ts.
     issue: "#5058",
+  },
+  {
+    name: "Diaria-Clarice-Envio-Engajados",
+    description: "estende a orquestracao diaria do ramp-warm ao grupo engajados (retencao) -- teto de volume + kill switch dedicado, #6945",
+    // Kill switch dedicado, DIFERENTE do Diaria-Clarice-Envio: nasce
+    // DESLIGADO (clarice-envio-engajados-enabled.ts) -- automacao NOVA que
+    // dispara e-mail real pra ate ENGAJADOS_MAX_DAILY_VOLUME contatos/dia
+    // sem gate humano no caminho normal; o editor liga explicitamente
+    // depois de revisar a 1a rodada. Ver docstring do script pro racional
+    // completo (mesma inversao de default de clarice-novos-enabled.ts).
+    steps: [{ key: "run", script: "scripts/clarice-envio-engajados-run.ts" }],
+    logPath: "clarice-subscribers/.envio-engajados-run.log",
+    // 20:15 BRT: depois do Diaria-Clarice-Envio das 19:10 (#5826) -- reusa
+    // o assunto do dia JA TRAVADO por aquela rodada (mesma edicao, publico
+    // diferente) e compartilha o MESMO lock por ciclo
+    // (clarice-envio-lock.ts) -- 1h+ de folga cobre o caso comum (ramp-warm
+    // termina em minutos); numa rodada rara em que o ramp-warm ainda esta
+    // retentando (#6831, ate ~2h20 no pior caso), esta task recebe
+    // LockHeldError e sai com exit 4 (nao e falha -- ver successExitCodes
+    // abaixo), self-healing no dia seguinte (a escalada de volume nao perde
+    // progresso num dia pulado, ver clarice-envio-engajados-state.ts).
+    schedule: { kind: "daily", hour: 20, minute: 15 },
+    // Mesmo guard das outras tasks Clarice-Envio -- sem o store, o
+    // planejamento leria uma base vazia.
+    guard: {
+      requiredFile: "clarice-subscribers/clarice-users.db",
+      abortMessage:
+        "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
+        "data/ nao montada ainda; abortando por seguranca.",
+    },
+    // exit 4 = lock ja detido por rodada concorrente (ramp-warm no mesmo
+    // ciclo, ou outra sessao manual) -- abort SEGURO, nunca falha genuina,
+    // mesmo padrao/codigo do Diaria-Clarice-Envio acima (mesmo lock
+    // compartilhado por design, ver docstring do script).
+    successExitCodes: [4],
+    // DECLARADA, NAO ARMADA nesta unidade (mesma disciplina do
+    // Diaria-Branch-Cleanup acima) -- armar requer, na helios, apos o
+    // merge E o editor confirmar a 1a rodada manual/dry-run e ligar o kill
+    // switch:
+    //   npx tsx scripts/clarice-envio-engajados-run.ts --dry-run   # revisar
+    //   npx tsx scripts/lib/clarice-envio-engajados-enabled.ts --set enabled
+    //   npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Envio-Engajados
+    //   npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Envio-Engajados
+    issue: "#6945",
+  },
+  {
+    name: "Diaria-Clarice-Envio-Engajados-Alarm",
+    description: "alarme de rodada falha do Diaria-Clarice-Envio-Engajados -- le o relatorio do dia e alarma se a onda nao foi agendada",
+    steps: [{ key: "alarm", script: "scripts/clarice-envio-engajados-alarm.ts" }],
+    logPath: "clarice-subscribers/.envio-engajados-alarm.log",
+    // 21:15 BRT -- 1h depois do Diaria-Clarice-Envio-Engajados (20:15).
+    // Diferente do ramp-warm, esta task NAO tem retry-com-backoff proprio
+    // (ver docstring de clarice-envio-engajados-run.ts) -- 1h e folga ampla
+    // pra uma rodada sem retry terminar.
+    schedule: { kind: "daily", hour: 21, minute: 15 },
+    guard: {
+      requiredFile: "clarice-subscribers/clarice-users.db",
+      abortMessage:
+        "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
+        "data/ nao montada ainda; sem sentido checar relatorio de uma rodada que nunca roda nesta maquina.",
+    },
+    // DECLARADA, NAO ARMADA nesta unidade -- mesmo par do zelador acima,
+    // armar junto com Diaria-Clarice-Envio-Engajados:
+    //   npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Envio-Engajados-Alarm
+    //   npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Envio-Engajados-Alarm
+    issue: "#6945",
   },
   {
     name: "Diaria-Postmaster-Spam-Sync",

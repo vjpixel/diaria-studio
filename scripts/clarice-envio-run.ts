@@ -195,6 +195,66 @@ function committedLookupFailedMessage(suffixLabel: string, reason: string | null
   );
 }
 
+/**
+ * #6831 — quando `clarice-plan-wave.ts` retorna normalmente (exit 0/2, ele
+ * NUNCA lança por causa disto — ver docstring de
+ * `WaveProposalInput.committedLookupRetryAfterSecs` em `clarice-wave-plan.ts`)
+ * mas `proposal.committedLookupFailed` foi causado por rate-limit REAL da
+ * Brevo (`committedLookupRetryAfterSecs != null`), retenta a MESMA
+ * invocação de `clarice-plan-wave` com o MESMO orçamento generoso já usado
+ * pro sinal de 429/503 do dashboard (`TRANSIENT_RETRY_*` — esta rodada tem
+ * ~11h de folga antes do disparo das 06:00). Antes desta função, essa falha
+ * específica NUNCA tinha retry neste nível — só o `withBrevo429Retry`
+ * INTERNO de `fetchCommittedCampaignListIds` (capado em 30s,
+ * `BREVO_RETRY_GIVE_UP_MS`), curto demais pra um rate limit HORÁRIO
+ * (achado #6421/#6831: `Retry-After` observado de 486-3570s).
+ *
+ * Devolve o ÚLTIMO `proposal` obtido (retentado ou não) — o call site
+ * decide o que fazer se `committedLookupFailed` continuar `true` depois de
+ * esgotar (mesmo texto de abort de sempre, `committedLookupFailedMessage`).
+ *
+ * Deliberadamente ISOLADO aqui — `clarice-envio-guard.ts` (que também chama
+ * `clarice-plan-wave.ts --json`, mas com orçamento de retry MENOR por rodar
+ * numa janela de ~1h antes do disparo, #6221) nunca precisa lidar com isto:
+ * só consome `proposal.state.waves`, nunca `committed`, e o contrato de
+ * retorno de `planWave()` continua idêntico ao de antes desta issue.
+ */
+async function retryProposalOnCommittedRateLimit(
+  deps: EnvioRunDeps,
+  report: ReportBuilder,
+  label: string,
+  scriptRelPath: string,
+  args: string[],
+  initial: { result: StepResult; json: WaveProposal | undefined },
+): Promise<WaveProposal | undefined> {
+  let current = initial;
+  let attempts = 1;
+  while (
+    current.json?.committedLookupFailed &&
+    current.json.committedLookupRetryAfterSecs != null &&
+    attempts < TRANSIENT_RETRY_MAX_ATTEMPTS
+  ) {
+    const retryAfterSecs = current.json.committedLookupRetryAfterSecs;
+    if (retryAfterSecs * 1000 > TRANSIENT_RETRY_CAP_MS) {
+      report.note(
+        `⚠️  ${label}: consulta de campanhas comprometidas com Retry-After ${retryAfterSecs}s, acima do orçamento de ` +
+          `${Math.round(TRANSIENT_RETRY_CAP_MS / 1000)}s por tentativa — desistindo do retry (#6831), seguindo com o bloqueio.`,
+      );
+      break;
+    }
+    const waitMs = Math.min(retryAfterSecs * 1000, TRANSIENT_RETRY_CAP_MS);
+    report.note(
+      `⚠️  ${label}: consulta de campanhas comprometidas bateu rate limit real da Brevo (Retry-After ${retryAfterSecs}s) — ` +
+        `aguardando ${Math.round(waitMs / 1000)}s antes de retentar o planejamento inteiro ` +
+        `(tentativa ${attempts + 1}/${TRANSIENT_RETRY_MAX_ATTEMPTS}, #6831).`,
+    );
+    await deps.sleep(waitMs);
+    attempts++;
+    current = await stepWithTransientRetry<WaveProposal>(deps, report, label, scriptRelPath, args, [0, 2]);
+  }
+  return current.json;
+}
+
 // ---------------------------------------------------------------------------
 // Datas — hoje/amanhã em BRT.
 // ---------------------------------------------------------------------------
@@ -397,14 +457,33 @@ function step<T = unknown>(
 
 const TRANSIENT_RETRY_MAX_ATTEMPTS = 3;
 const TRANSIENT_RETRY_FALLBACK_MS = 60_000; // 1min — quando retryAfterSecs não veio
-// 35min — cobre os 2 valores REAIS já observados (258s em 260811, e
-// `retryAfterSecs: 1916` ≈32min no achado ao vivo de 05/08 documentado em
-// .claude/skills/diaria-clarice-envio/SKILL.md) com folga, sem pendurar a
-// rodada indefinidamente numa leitura de header absurda. A task roda às
-// 19:00 com horas de sobra antes do envio das 06:00 — esperar até ~1h no
-// pior caso (2 esperas de 35min pras 3 tentativas) não compete com nenhum
-// prazo real.
-const TRANSIENT_RETRY_CAP_MS = 35 * 60_000;
+// 70min (#6831, 02/09/2026 — subiu de 35min): 35min NUNCA cobriu o `Retry-After`
+// REAL de um endpoint com janela HORÁRIA (100 req/HORA por conta,
+// docs/brevo-rate-limits.md) — só coincidiu por sorte com os 2 valores
+// pequenos observados até 05/08 (258s, ~32min). Ocorrências maiores
+// chegaram depois: `retryAfterSecs: 2650s` (~44min, 260831),
+// `retryAfterSecs: 3570s`/`3546s` (~59,5min, 260901 — #6831/#7007) — TODAS
+// acima do teto antigo, cada uma abortando a rodada inteira sem nenhuma
+// chance de esperar a janela virar. 70min cobre com folga qualquer
+// `Retry-After` possível dentro de uma janela HORÁRIA (nunca excede 3600s
+// por definição) — 1 única espera já é suficiente pra garantir que a
+// próxima tentativa cai numa janela nova. A task roda às 19:00 com ~11h de
+// sobra antes do envio das 06:00 — mesmo o pior caso (2 esperas de 70min
+// pras 3 tentativas, ~2h20) não compete com nenhum prazo real.
+//
+// PREMISSA DECLARADA (achado do #6421/#6831): esperar até ~70min por
+// tentativa é aceitável só PORQUE esta task tem margem de horas — não é o
+// conserto certo pra `clarice-envio-guard.ts` (janela de ~1h antes do
+// disparo das 06:00), que usa `GUARD_TRANSIENT_RETRY_BUDGET`
+// (clarice-envio-guard.ts) DELIBERADAMENTE menor (2min, #6221) — dentro da
+// janela curta do guard, esperar mais NÃO aumenta a chance real de a janela
+// horária ter virado (mesmo racional documentado lá), então o guard
+// continua desistindo rápido e caindo no fallback seguro
+// (`handlePrereqFailure`, que já lê o último freio conhecido em vez de
+// reconsultar a Brevo) — NÃO alterado nesta issue, de propósito. As duas
+// constantes protegem contextos com orçamentos de tempo genuinamente
+// diferentes; não são a mesma decisão com números diferentes.
+const TRANSIENT_RETRY_CAP_MS = 70 * 60_000;
 
 /**
  * Variante de `step()` que reconhece o exit code 3 (falha TRANSITÓRIA,
@@ -414,9 +493,11 @@ const TRANSIENT_RETRY_CAP_MS = 35 * 60_000;
  *
  * #5220 — molde extraído pra `lib/transient-step-retry.ts` pra reuso pelo
  * guard das 05:00 (`clarice-envio-guard.ts`), que precisa do MESMO
- * mecanismo com um orçamento de espera MENOR. Este wrapper preserva o
- * orçamento ORIGINAL (3 tentativas, fallback 1min, cap 35min) — nenhuma
- * mudança de orçamento aqui.
+ * mecanismo com um orçamento de espera MENOR (`GUARD_TRANSIENT_RETRY_BUDGET`,
+ * inalterado por esta issue — ver #6831 na constante `TRANSIENT_RETRY_CAP_MS`
+ * abaixo pro porquê os dois orçamentos são deliberadamente diferentes, não
+ * a mesma decisão desalinhada). Este wrapper usa o orçamento desta task
+ * (3 tentativas, fallback 1min, cap 70min desde #6831 — era 35min).
  *
  * #6288 — o motor compartilhado (`lib/transient-step-retry.ts`) passou a
  * desistir na hora quando `retryAfterSecs` excede o `capMs`, em vez de
@@ -804,7 +885,17 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       planWaveArgs,
       [0, 2], // 2 = blockers presentes, ainda assim JSON válido — tratamos os blockers abaixo, não aqui.
     );
-    let proposal = planStep.json;
+    // #6831 — retenta o passo INTEIRO (orçamento generoso, ~11h de folga)
+    // quando o único problema é a consulta de campanhas comprometidas ter
+    // batido rate limit real da Brevo — no-op quando não é o caso.
+    let proposal = await retryProposalOnCommittedRateLimit(
+      deps,
+      report,
+      "clarice-plan-wave",
+      "scripts/clarice-plan-wave.ts",
+      planWaveArgs,
+      planStep,
+    );
     if (!proposal) throw new EnvioAbort("❌ clarice-plan-wave não devolveu JSON parseável.");
 
     if (proposal.staleNote) {
@@ -1114,9 +1205,19 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
           planWaveArgs,
           [0, 2],
         );
-        if (replan.json) {
-          queueAvailable = replan.json.availableFirstSend;
-          proposal = replan.json;
+        // #6831 — mesmo retry-com-orçamento-generoso da 1ª chamada, pro
+        // mesmo sinal (committedLookupFailed causado por rate limit real).
+        const replanProposal = await retryProposalOnCommittedRateLimit(
+          deps,
+          report,
+          "clarice-plan-wave (pós-MV)",
+          "scripts/clarice-plan-wave.ts",
+          planWaveArgs,
+          replan,
+        );
+        if (replanProposal) {
+          queueAvailable = replanProposal.availableFirstSend;
+          proposal = replanProposal;
           report.note(`fila após MV sob demanda: ${queueAvailable}.`);
           // Achado do code-reviewer no review da PR: os guards estruturais
           // do Passo 1 (crédito/committed-lookup/novosFreshness) só eram
