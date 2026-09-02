@@ -68,11 +68,18 @@ jobs:
           # não em qualquer menção. O `grep -q` literal anterior também casava
           # um comentário — colar o id real e deixar o nome do placeholder
           # escrito numa linha `#` acima manteria o deploy pulado para sempre,
-          # em silêncio. Mesma regra de `parseDeployBlockingPlaceholders`
-          # (scripts/lib/worker-drift-check.ts), que o alarme de drift usa;
-          # test/worker-drift-deploy-blocked-7092.test.ts trava a concordância
-          # entre os dois lendo este mesmo wrangler.toml.
-          if grep -qE '^[^#]*[=:][[:space:]]*"PLACEHOLDER_[A-Z0-9_]*"' wrangler.toml; then
+          # em silêncio.
+          #
+          # Aceita aspas SIMPLES além das duplas (TOML permite as duas): sem
+          # isso, `id = 'PLACEHOLDER_X'` fazia o alarme de drift calar (ele já
+          # reconhecia a forma) enquanto este guard não pulava — o deploy
+          # rodava e falhava com ninguém avisado.
+          #
+          # Este padrão e o de `parseDeployBlockingPlaceholders`
+          # (scripts/lib/worker-drift-check.ts) precisam decidir IGUAL;
+          # test/worker-drift-deploy-blocked-7092.test.ts roda os dois sobre
+          # uma tabela de casos e sobre este wrangler.toml real.
+          if grep -qE "^[^#]*[=:][[:space:]]*(\"PLACEHOLDER_[A-Z0-9_]*\"|'PLACEHOLDER_[A-Z0-9_]*')" wrangler.toml; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::warning::ARTIGOS_APOIO_NIVEL ainda tem id PLACEHOLDER em wrangler.toml — pulando deploy (#7030). Rode 'wrangler kv namespace create ARTIGOS_APOIO_NIVEL' e cole o id real pra reativar."
           else

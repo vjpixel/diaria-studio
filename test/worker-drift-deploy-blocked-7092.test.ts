@@ -218,13 +218,70 @@ describe("CI e alarme concordam sobre os arquivos REAIS (#7092)", () => {
 
   /** Reimplementa em JS o `grep -qE` do passo "Guard - KV namespace
    * provisionado?" de `.github/workflows/deploy-artigos.yml`. Se o workflow
-   * mudar o padrão sem mudar este teste, a asserção de equivalência abaixo
-   * quebra — que é o ponto: a divergência entre os dois mecanismos foi o
-   * bug. */
+   * mudar o padrão sem mudar este teste, o teste de "o workflow ainda usa
+   * este padrão" (abaixo) quebra — sem essa amarra, este helper viraria uma
+   * ficção que concorda consigo mesma enquanto o CI real diverge. */
   const ciGrepSkips = (toml: string) =>
-    toml.split("\n").some((line) => /^[^#]*[=:]\s*"PLACEHOLDER_[A-Z0-9_]*"/.test(line));
+    toml
+      .split("\n")
+      .some((line) => /^[^#]*[=:][ \t]*("PLACEHOLDER_[A-Z0-9_]*"|'PLACEHOLDER_[A-Z0-9_]*')/.test(line));
 
-  it("o padrão do workflow e o do alarme decidem IGUAL sobre workers/artigos/wrangler.toml", () => {
+  /** Cada caso já divergiu (ou poderia divergir) entre os dois mecanismos.
+   * `blocks` é o veredito CORRETO que AMBOS devem dar. */
+  const CASES: Array<{ nome: string; toml: string; blocks: boolean }> = [
+    {
+      nome: "o arquivo real de hoje (placeholder por resolver, aspas duplas)",
+      toml: 'id = "PLACEHOLDER_RODAR_WRANGLER_KV_NAMESPACE_CREATE"',
+      blocks: true,
+    },
+    {
+      nome: "id real colado — nada bloqueia",
+      toml: 'id = "a1b2c3d4e5f6"',
+      blocks: false,
+    },
+    {
+      nome: "REVIEW #7156 achado 1: assignment COMENTADO (o alarme casava, o grep não)",
+      toml: ['# id = "PLACEHOLDER_ANTIGO"', 'id = "a1b2c3d4e5f6"'].join("\n"),
+      blocks: false,
+    },
+    {
+      nome: "REVIEW #7156 achado 2: aspas SIMPLES (o alarme casava, o grep não — deploy rodava e falhava)",
+      toml: "id = 'PLACEHOLDER_X'",
+      blocks: true,
+    },
+    {
+      nome: "menção em prosa dentro de comentário (o caso original da #7092)",
+      toml: [
+        "# PLACEHOLDER — rodar `wrangler kv namespace create` e colar o id aqui.",
+        'id = "a1b2c3d4e5f6"',
+      ].join("\n"),
+      blocks: false,
+    },
+    {
+      nome: "placeholder com comentário DEPOIS na mesma linha (cortar o comentário não pode comer o valor)",
+      toml: 'id = "PLACEHOLDER_X" # trocar antes do deploy',
+      blocks: true,
+    },
+    {
+      nome: "aspas desemparelhadas não são literal válido em nenhum dos formatos",
+      toml: "id = \"PLACEHOLDER_X'",
+      blocks: false,
+    },
+    {
+      nome: "arquivo sem nenhum id",
+      toml: 'name = "diaria-artigos"',
+      blocks: false,
+    },
+  ];
+
+  for (const c of CASES) {
+    it(`CI e alarme concordam: ${c.nome}`, () => {
+      assert.equal(parseDeployBlockingPlaceholders(c.toml).length > 0, c.blocks, "alarme divergiu");
+      assert.equal(ciGrepSkips(c.toml), c.blocks, "CI divergiu");
+    });
+  }
+
+  it("os dois decidem IGUAL sobre o workers/artigos/wrangler.toml REAL", () => {
     const toml = readRoot("workers/artigos/wrangler.toml");
     const alarmBlocks = parseDeployBlockingPlaceholders(toml).length > 0;
     assert.equal(
@@ -234,20 +291,15 @@ describe("CI e alarme concordam sobre os arquivos REAIS (#7092)", () => {
     );
   });
 
-  it("o workflow ainda usa o padrão em posição de VALOR, não um grep literal solto", () => {
-    // Guard contra regressão do próprio fix: voltar pro `grep -q "PLACEHOLDER_..."`
-    // literal reintroduz o falso-positivo por comentário.
+  it("o workflow ainda usa ESTE padrão — o helper acima não pode virar ficção", () => {
+    // Guard contra regressão do próprio fix: voltar pro `grep -q` literal
+    // reintroduz o falso-positivo por comentário; perder a alternância de
+    // aspas reintroduz o achado 2 do review.
     const wf = readRoot(".github/workflows/deploy-artigos.yml");
-    assert.match(wf, /grep -qE '\^\[\^#\]\*\[=:\]\[\[:space:\]\]\*"PLACEHOLDER_\[A-Z0-9_\]\*"'/);
-  });
-
-  it("uma MENÇÃO em comentário não faz nenhum dos dois pular (o caso que divergia)", () => {
-    const toml = [
-      "# id = PLACEHOLDER_RODAR_WRANGLER_KV_NAMESPACE_CREATE (histórico, já resolvido)",
-      'id = "a1b2c3d4e5f6"',
-    ].join("\n");
-    assert.equal(parseDeployBlockingPlaceholders(toml).length > 0, false);
-    assert.equal(ciGrepSkips(toml), false);
+    assert.match(wf, /grep -qE/);
+    assert.match(wf, /\^\[\^#\]\*\[=:\]\[\[:space:\]\]\*/);
+    assert.match(wf, /"PLACEHOLDER_\[A-Z0-9_\]\*\\?"/);
+    assert.match(wf, /'PLACEHOLDER_\[A-Z0-9_\]\*'/);
   });
 });
 

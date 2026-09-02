@@ -125,21 +125,59 @@ export function parseWranglerJsoncName(jsoncContent: string): string | null {
  * Reconhecer o placeholder pelo PREFIXO (e não pelo literal exato que o
  * workflow grepa) é deliberado: a convenção "valor que o editor precisa
  * substituir antes do deploy" é do repo, não daquele worker — um worker novo
- * gated do mesmo jeito passa a ser reconhecido sem tocar neste módulo. Casar
- * só em posição de VALOR (depois de `=`/`:`, entre aspas) evita que uma
- * MENÇÃO em comentário — o próprio `wrangler.toml` do artigos explica o
- * placeholder num comentário logo acima — seja confundida com o placeholder
- * em si.
+ * gated do mesmo jeito passa a ser reconhecido sem tocar neste módulo.
+ *
+ * ─── Três regras que existem só pra CASAR com o `grep` do workflow ─────────
+ *
+ * A garantia que esta função vende é "decide igual ao CI". Cada uma destas
+ * regras fecha um caso onde a 1ª versão do #7092 divergia (achados do review
+ * do PR, todos reproduzidos):
+ *
+ *   1. **Por LINHA, com o comentário cortado fora.** Sem isso,
+ *      `# id = "PLACEHOLDER_ANTIGO"` (assignment comentado — exemplo
+ *      histórico deixado no arquivo) casava aqui e NÃO casava no `grep`
+ *      (`^[^#]*` recusa `#` antes do `=`): o alarme silenciava um worker que
+ *      o CI ia tentar deployar. `#` é comentário de TOML e `//` de JSONC —
+ *      os dois são cortados, porque `discoverWorkers` usa esta função pros
+ *      dois formatos. Nenhum dos dois pode aparecer DENTRO de um valor
+ *      `PLACEHOLDER_[A-Z0-9_]*`, então cortar é seguro.
+ *   2. **Aspas simples contam.** TOML aceita `id = 'PLACEHOLDER_X'`. A 1ª
+ *      versão casava aqui mas o `grep` (só aspas duplas) não — a divergência
+ *      PIOR das duas, porque o alarme calava e o deploy automático rodava
+ *      assim mesmo, falhando sem ninguém avisado. O workflow passou a aceitar
+ *      as duas formas junto com esta função.
+ *   3. **O par de aspas tem que fechar igual.** `"PLACEHOLDER_X'` não é
+ *      literal válido em nenhum dos dois formatos; aceitar isso era só
+ *      frouxidão do padrão.
+ *
+ * `test/worker-drift-deploy-blocked-7092.test.ts` roda os dois padrões sobre
+ * uma tabela de casos e exige veredito idêntico em todos — é lá que a
+ * concordância fica travada, não neste comentário.
  *
  * Nunca lança: conteúdo vazio/malformado devolve `[]` (o caller trata como
  * "nada bloqueando", preservando o comportamento pré-#7092).
  */
 export function parseDeployBlockingPlaceholders(configContent: string): string[] {
   const found = new Set<string>();
-  const re = /[=:]\s*["'](PLACEHOLDER_[A-Z0-9_]*)["']/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(configContent)) !== null) found.add(m[1]);
+  // Par de aspas casado (não `["']...["']`, que aceitaria `"X'`).
+  const re = /[=:]\s*(?:"(PLACEHOLDER_[A-Z0-9_]*)"|'(PLACEHOLDER_[A-Z0-9_]*)')/g;
+  for (const rawLine of configContent.split("\n")) {
+    const line = stripConfigComment(rawLine);
+    let m: RegExpExecArray | null;
+    re.lastIndex = 0;
+    while ((m = re.exec(line)) !== null) found.add(m[1] ?? m[2]);
+  }
   return [...found].sort();
+}
+
+/** Pura — devolve `line` até o início do 1º comentário (`#` do TOML ou `//`
+ * do JSONC), ou a linha inteira se não houver. Ver regra 1 da docstring de
+ * `parseDeployBlockingPlaceholders`. */
+function stripConfigComment(line: string): string {
+  const hash = line.indexOf("#");
+  const slashes = line.indexOf("//");
+  const cuts = [hash, slashes].filter((i) => i >= 0);
+  return cuts.length === 0 ? line : line.slice(0, Math.min(...cuts));
 }
 
 // ─── Avaliação de drift por worker (pura) ──────────────────────────────────
