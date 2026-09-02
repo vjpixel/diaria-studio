@@ -71,13 +71,30 @@ export interface ClaimBearingSession {
   sessionId: string;
   claimed_issues?: number[];
   claimed_issues_at?: Record<string, string>;
+  /** #6623: quando presente, é a fonte preferida — já resolve staleness
+   * (vazio quando a sessão está `stale`). Ausente (fixture antiga, ou
+   * chamador que não passou por `listActiveSessions`) cai no fallback
+   * `claimed_issues` bruto, comportamento anterior preservado. */
+  claimed_issues_effective?: number[];
 }
 
-/** Pure: achata `claimed_issues` de cada sessão numa lista de `ClaimEntry`. */
+/** Pure: achata as claims EFETIVAS de cada sessão numa lista de `ClaimEntry`.
+ *
+ * #6623: lê `claimed_issues_effective` quando presente (já resolve
+ * staleness — vazio pra sessão `stale`) em vez de `claimed_issues` bruto.
+ * Antes deste fix, uma sessão `continuo` que nunca fica `stale` (heartbeat
+ * perpétuo, ver docstring do módulo) continuava correta — mas qualquer
+ * OUTRA sessão `stale` cujo claim já não vale mais (`is-claimed` já o trata
+ * como livre) ainda entrava na lista de "claims envelhecidas" deste módulo,
+ * reportando staleness sobre uma reivindicação que já não existe de fato.
+ * Fallback pra `claimed_issues` bruto quando `claimed_issues_effective` não
+ * foi passado (fixtures antigas / chamador fora de `listActiveSessions`) —
+ * nunca uma mudança de comportamento pra quem já não tinha o campo. */
 export function flattenClaims(sessions: readonly ClaimBearingSession[]): ClaimEntry[] {
   const out: ClaimEntry[] = [];
   for (const session of sessions) {
-    for (const issueNumber of session.claimed_issues ?? []) {
+    const issues = session.claimed_issues_effective ?? session.claimed_issues ?? [];
+    for (const issueNumber of issues) {
       const claimedAt = session.claimed_issues_at?.[String(issueNumber)] ?? null;
       out.push({
         issueNumber,
