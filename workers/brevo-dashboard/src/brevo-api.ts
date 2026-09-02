@@ -301,6 +301,12 @@ export function isImmutableCampaign(sentDate: string | null, nowMs = Date.now())
  * editor consulta a dashboard para ver padrão de envios passados, não stats
  * ao segundo). Justificativa: free-tier = 1000 writes/dia shared; queremos
  * margem confortável para o poll worker (votos em produção são P0).
+ *
+ * #7007: subindo de novo, 1800s → 4200s (70min) — o precompute horário
+ * (interval 3600s) sempre achava o TTL de 30min vencido e refazia globalStats
+ * +linksStats de toda campanha <7d a cada execução (~57 chamadas, 57% do
+ * orçamento de 100 req/hora da Brevo), causa raiz de 2 aborts do envio diário.
+ * 70min dá margem sobre o intervalo de 60min do precompute mesmo com jitter.
  */
 
 
@@ -2369,7 +2375,7 @@ export async function fetchRecentCampaigns(
         // Impede que `ls === undefined` no JSON → `cachedLs = null` → re-fetch+re-write em
         // toda render dentro do TTL (KV-write churn). Quando true, o ls-fetch é pulado e
         // o resultado é idêntico ao caso "ls fetch falhou" — links section fica sem dados
-        // até a entrada TTL expirar (RECENT_STATS_TTL = 30min) e uma nova tentativa ocorrer.
+        // até a entrada TTL expirar (RECENT_STATS_TTL, #7007: 70min) e uma nova tentativa ocorrer.
         let cachedLsWasPending = false;
         if (!isFresh && env.STATS_CACHE) {
           // #2314: tenta chave unificada primeiro; fallback retrocompatível para as legadas.
