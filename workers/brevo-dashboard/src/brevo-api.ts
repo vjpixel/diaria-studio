@@ -307,6 +307,10 @@ export function isImmutableCampaign(sentDate: string | null, nowMs = Date.now())
  * +linksStats de toda campanha <7d a cada execução (~57 chamadas, 57% do
  * orçamento de 100 req/hora da Brevo), causa raiz de 2 aborts do envio diário.
  * 70min dá margem sobre o intervalo de 60min do precompute mesmo com jitter.
+ * Atualiza também a conta de writes/dia do #2282 acima: ~13 campanhas × 2
+ * chaves × (86400/4200) ≈ ~89 writes/dia — MENOS que os ~208 estimados a
+ * 1800s (TTL maior = menos ciclos de expiração), então a margem do #2282
+ * pro free-tier compartilhado com o poll worker só aumenta.
  */
 
 
