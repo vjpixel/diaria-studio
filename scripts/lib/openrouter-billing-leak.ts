@@ -108,6 +108,47 @@ export function isBillingLeak(row: BillingRow, expected: ReadonlySet<string> = E
 }
 
 /**
+ * Dias de calendário UTC esperados na janela `[cutoff .. D-1]`, onde D-1 é
+ * ontem.
+ *
+ * O endpoint `/api/v1/activity` agrega por dias UTC completos e **não cobre o
+ * dia corrente** (~1 dia de consolidação). "Últimos N dias" aqui significa N
+ * dias de calendário UTC que TERMINAM ontem — nunca o dia corrente. A data de
+ * `cutoff` usada em `openrouter-billing-leak-check.ts` é derivada de
+ * `Date.now() - days * 24h` em UTC; este cálculo espelha esse mesmo referencial
+ * para que os dois lados da comparação nunca divergam.
+ *
+ * #6992: `daysCovered` é comparado contra este conjunto. Ausência de qualquer
+ * dia esperado — especialmente os mais recentes, onde um vazamento fresco seria
+ * visível — vira INDETERMINADO, não "sem vazamento". Um dia com gasto realmente
+ * zero (nenhuma chamada feita) também não aparece no activity, então o ruído de
+ * "indeterminado em dia ocioso" é aceito de propósito: prevenir um
+ * falso-negativo de vazamento pesa mais que um alarme extra num dia quieto.
+ */
+export function computeExpectedDays(days: number, now: Date = new Date()): string[] {
+  if (days <= 0) return [];
+  const result: string[] = [];
+  for (let i = 1; i <= days; i++) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
+    result.push(d.toISOString().slice(0, 10));
+  }
+  return result.sort();
+}
+
+/**
+ * `true` quando `daysCovered` falta algum dia esperado na janela.
+ *
+ * #6992: o guard original só tratava janela 100% vazia como indeterminado.
+ * Presença parcial (ex: só D-3 presente, faltando D-2 e D-1) era lida como
+ * cobertura completa — e um vazamento fresco nos dias recentes escapava sempre,
+ * pois o dado consolidado daquele dia ainda não tinha chegado.
+ */
+export function hasPartialCoverage(daysCovered: readonly string[], expectedDays: readonly string[]): boolean {
+  const covered = new Set(daysCovered);
+  return expectedDays.some((d) => !covered.has(d));
+}
+
+/**
  * Pura — agrega as linhas do gateway e devolve o que foi cobrado fora da
  * allowlist. Linhas do MESMO modelo em dias diferentes ficam separadas de
  * propósito: saber que o vazamento voltou HOJE, e não só que existiu na

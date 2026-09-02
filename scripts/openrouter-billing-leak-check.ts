@@ -26,10 +26,10 @@
  * enviar. Estado: `data/openrouter-billing-leak/state.json`.
  *
  * Exit codes: 0 = sem vazamento; 1 = erro de execução OU **indeterminado**
- * (sem key, HTTP não-ok, janela vazia, leitura parcial — nunca 0, porque
- * "não consegui medir" jamais pode virar "está limpo"); **3 = vazamento
- * encontrado** — distinto de 1 de propósito, pra um runner poder tratar
- * "achou" diferente de "quebrou".
+ * (sem key, HTTP não-ok, janela vazia, leitura parcial, **presença parcial
+ * de dias (#6992)** — nunca 0, porque "não consegui medir" jamais pode
+ * virar "está limpo"); **3 = vazamento encontrado** — distinto de 1 de
+ * propósito, pra um runner poder tratar "achou" diferente de "quebrou".
  *
  * **`--dry-run` NÃO força exit 0** (#6983 review, achado 2 — a redação
  * anterior dizia "0 = sem vazamento (ou dry-run)" e o código nunca fez
@@ -61,6 +61,8 @@ import {
   advanceBillingLeakAlarmState,
   emptyBillingLeakAlarmState,
   buildBillingLeakAlarmEmail,
+  computeExpectedDays,
+  hasPartialCoverage,
   type BillingRow,
   type BillingLeakAlarmState,
 } from "./lib/openrouter-billing-leak.ts";
@@ -133,6 +135,13 @@ export function parseActivityRows(payload: unknown): { rows: BillingRow[]; skipp
   const rows: BillingRow[] = [];
   let skipped = 0;
   for (const item of data) {
+    // #6991 (pr-test-analyzer, P2): null/undefined/string/number no array
+    // `data` faziam `o.date` lançar TypeError — crash silencioso no meio do
+    // parse, antes de chegar no skip-count. Guard de objeto primeiro.
+    if (typeof item !== "object" || item === null) {
+      skipped++;
+      continue;
+    }
     const o = item as Record<string, unknown>;
     const date = typeof o.date === "string" ? o.date : null;
     const model = typeof o.model === "string" ? o.model : null;
@@ -163,15 +172,21 @@ export function resolveExitCode({
   hasLeaks,
   partialRead,
   emptyWindow,
+  partialCoverage,
 }: {
   hasLeaks: boolean;
   partialRead: boolean;
   /** Nenhuma linha sobrou na janela — o endpoint pode simplesmente não ter
    *  consolidado ainda. Ver `JANELA VAZIA` abaixo. */
   emptyWindow: boolean;
+  /** #6992: algum dia esperado na janela está ausente do dado retornado —
+   *  presença parcial da janela lida como cobertura completa pelo guard
+   *  original. Ausência de dias recentes (onde um vazamento fresco seria
+   *  visível) vira INDETERMINADO, não "sem vazamento". */
+  partialCoverage: boolean;
 }): number {
   if (hasLeaks) return LEAK_FOUND_EXIT_CODE;
-  if (partialRead || emptyWindow) return 1;
+  if (partialRead || emptyWindow || partialCoverage) return 1;
   return 0;
 }
 
@@ -286,8 +301,25 @@ async function main(): Promise<void> {
     console.error(
       `${LOG_PREFIX} INDETERMINADO — nenhuma linha na janela (cutoff ${cutoff}, --days ${days}). Pode ser gasto zero de verdade OU o endpoint não ter consolidado; este guard não distingue, e não afirma "ok".`,
     );
-    process.exitCode = resolveExitCode({ hasLeaks: false, partialRead, emptyWindow: true });
+    process.exitCode = resolveExitCode({ hasLeaks: false, partialRead, emptyWindow: true, partialCoverage: false });
     return;
+  }
+
+  // #6992: além de "janela 100% vazia", o guard também detecta PRESENÇA
+  // PARCIAL — dias esperados ausentes no dado retornado. Um dia com gasto
+  // realmente zero não aparece no activity, então `partialCoverage` pode
+  // sinalizar indeterminado num dia ocioso — ruído aceito de propósito
+  // (#6992: prevenir falso-negativo de vazamento pesa mais que alarme extra
+  // num dia quieto). O cálculo de dias esperados usa o mesmo referencial UTC
+  // do `cutoff` acima para não divergir do filtro aplicado.
+  const expectedDays = computeExpectedDays(days);
+  const partialCoverage = hasPartialCoverage(evaluation.daysCovered, expectedDays);
+  if (partialCoverage) {
+    const covered = new Set(evaluation.daysCovered);
+    const missing = expectedDays.filter((d) => !covered.has(d));
+    console.error(
+      `${LOG_PREFIX} PARCIAL — dias esperados ausentes: ${missing.join(", ")}. Não dá pra afirmar ausência de vazamento sobre janela de ${days} dias com apenas ${evaluation.daysCovered.length} presente(s).`,
+    );
   }
 
   // #6983 (review): o exit code de "achou vazamento" é setado ANTES de
@@ -299,6 +331,7 @@ async function main(): Promise<void> {
     hasLeaks: evaluation.leaks.length > 0,
     partialRead,
     emptyWindow: false, // já retornou acima se fosse vazia
+    partialCoverage,
   });
 
   const state = loadState();
