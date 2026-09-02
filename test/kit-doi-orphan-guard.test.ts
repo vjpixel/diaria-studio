@@ -7,6 +7,17 @@
  *   2. inactive < 48h (ainda dentro da janela normal) → NÃO órfão
  *   3. inactive vinculado ao form → NÃO órfão, mesmo velho
  *   4. active → NÃO órfão, mesmo sem vínculo/velho
+ *
+ * Um 5º bloco ("regressão #6810 — falso positivo sistemático") cobre o
+ * SEAM de I/O que a suíte acima não exercita: como `formSubscriberIds` é
+ * MONTADO a partir de `listAllFormSubscribers` (`scripts/lib/kit-
+ * subscribers.ts`), com `globalThis.fetch` mockado pra simular o
+ * comportamento REAL medido do Kit (`GET /forms/{id}/subscribers` sem
+ * `status` devolve só `active`) — reproduz o falso positivo relatado ao
+ * vivo (`maribmgv@uol.com.br`/`jessicadantasx@gmail.com`, ambos
+ * `inactive` e vinculados ao form, acusados como órfãos pela versão sem
+ * `status: "all"`) e confirma que o fix (`status: "all"` na chamada em
+ * `scripts/kit-doi-orphan-guard.ts`) resolve.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -23,6 +34,7 @@ import {
   type KitDoiOrphan,
 } from "../scripts/lib/kit-doi-orphan-guard.ts";
 import { toAlarmFinding } from "../scripts/kit-doi-orphan-guard.ts";
+import { listAllFormSubscribers } from "../scripts/lib/kit-subscribers.ts";
 
 const NOW = new Date("2026-08-30T12:00:00.000Z");
 
@@ -225,5 +237,83 @@ describe("toAlarmFinding (scripts/kit-doi-orphan-guard.ts) — 1 finding por ór
     const finding = toAlarmFinding(orphan1);
     assert.equal(finding.priority, "P1");
     assert.equal(finding.family, "estado");
+  });
+});
+
+describe("regressão #6810 — falso positivo sistemático (formSubscriberIds mal-formado sem status=all)", () => {
+  /** Simula o backend real do Kit: `GET /forms/{id}/subscribers` só devolve
+   *  quem está em `activeIds` A MENOS que a chamada passe `status=all` na
+   *  querystring — é exatamente o comportamento documentado
+   *  (developers.kit.com/api-reference/forms/list-subscribers-for-a-form.md,
+   *  "By default only `active` subscribers are returned") e medido ao vivo
+   *  (achado 01/09/2026: 23 `active` no form, 0 `inactive`, mesmo com
+   *  `inactive` de fato vinculados). */
+  function fakeKitForm(allSubscribers: { id: number; email_address: string; state: string }[]) {
+    return (async (url: string) => {
+      const includesAll = /status=all/.test(url);
+      const filtered = includesAll ? allSubscribers : allSubscribers.filter((s) => s.state === "active");
+      return new Response(
+        JSON.stringify({
+          subscribers: filtered.map((s) => ({ ...s, created_at: "2026-08-01T00:00:00.000Z" })),
+          pagination: { has_previous_page: false, has_next_page: false, start_cursor: null, end_cursor: null, per_page: 500 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+  }
+
+  async function withMockFetch<T>(handler: typeof fetch, fn: () => Promise<T>): Promise<T> {
+    const orig = globalThis.fetch;
+    globalThis.fetch = handler;
+    try {
+      return await fn();
+    } finally {
+      globalThis.fetch = orig;
+    }
+  }
+
+  // Cenário do achado ao vivo (01/09/2026): 1 inactive VINCULADO ao form
+  // (aguardando clique — legítimo, é o "maribmgv@uol.com.br" do relato) e 1
+  // inactive NUNCA vinculado (órfão de verdade). Os dois `inactive`, os
+  // dois > 48h.
+  const allFormLinks = [
+    { id: 100, email_address: "vinculado-aguardando-clique@x.com", state: "inactive" },
+    { id: 200, email_address: "confirmado-de-outro-jeito@x.com", state: "active" },
+  ];
+  // orphan real (id 999) nunca aparece em `allFormLinks` — NUNCA foi
+  // vinculado ao form, em NENHUM cenário de status.
+  const inactiveSubscribers = [
+    { id: 100, email_address: "vinculado-aguardando-clique@x.com", state: "inactive", created_at: hoursAgo(72) },
+    { id: 999, email_address: "nunca-vinculado@x.com", state: "inactive", created_at: hoursAgo(72) },
+  ];
+
+  it("SEM status=all (comportamento pré-fix): o vinculado-mas-inactive vira falso positivo", async () => {
+    const formSubscribers = await withMockFetch(fakeKitForm(allFormLinks), () =>
+      // Reproduz a chamada ORIGINAL do #6993 (sem opts.status) — o mock
+      // acima devolve só os `active` do form, então id 100 (inactive,
+      // vinculado) fica FORA do set, exatamente como a API real fez.
+      listAllFormSubscribers(9839463, { apiKey: "kit_test_key" }),
+    );
+    const formSubscriberIds = new Set(formSubscribers.map((s) => s.id));
+    assert.equal(formSubscriberIds.has(100), false, "pré-fix: o vinculado-mas-inactive não aparece no set (bug)");
+
+    const orphans = findKitDoiOrphans(inactiveSubscribers, formSubscriberIds, NOW);
+    const orphanIds = orphans.map((o) => o.id).sort();
+    // Reproduz o bug relatado: os 2 acusados, incluindo o legítimo (100).
+    assert.deepEqual(orphanIds, [100, 999]);
+  });
+
+  it("COM status='all' (fix): o vinculado-mas-inactive NÃO é mais falso positivo, e o órfão real continua detectado", async () => {
+    const formSubscribers = await withMockFetch(fakeKitForm(allFormLinks), () =>
+      // Chamada corrigida — `scripts/kit-doi-orphan-guard.ts` passa isto.
+      listAllFormSubscribers(9839463, { apiKey: "kit_test_key" }, { status: "all" }),
+    );
+    const formSubscriberIds = new Set(formSubscribers.map((s) => s.id));
+    assert.equal(formSubscriberIds.has(100), true, "pós-fix: o vinculado-mas-inactive aparece no set");
+
+    const orphans = findKitDoiOrphans(inactiveSubscribers, formSubscriberIds, NOW);
+    const orphanIds = orphans.map((o) => o.id);
+    // Só o órfão de verdade (999) — o falso positivo (100) sumiu.
+    assert.deepEqual(orphanIds, [999]);
   });
 });

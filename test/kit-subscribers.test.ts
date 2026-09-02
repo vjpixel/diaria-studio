@@ -207,6 +207,30 @@ describe("listFormSubscribersPage (#6810)", () => {
     assert.match(capturedUrl, /per_page=50/);
     assert.equal(result.subscribers.length, 1);
   });
+
+  it("sem `status`, a querystring NÃO leva o parâmetro (Kit filtra pra `active` por default — #6810)", async () => {
+    let capturedUrl = "";
+    await withMockFetch(
+      (async (url: string) => {
+        capturedUrl = url;
+        return jsonResponse(200, { subscribers: [], pagination: emptyPagination });
+      }) as typeof fetch,
+      () => listFormSubscribersPage(9839463, { config: TEST_CONFIG }),
+    );
+    assert.doesNotMatch(capturedUrl, /status=/);
+  });
+
+  it("`status: \"all\"` → querystring leva `status=all` (fix do falso positivo #6810)", async () => {
+    let capturedUrl = "";
+    await withMockFetch(
+      (async (url: string) => {
+        capturedUrl = url;
+        return jsonResponse(200, { subscribers: [], pagination: emptyPagination });
+      }) as typeof fetch,
+      () => listFormSubscribersPage(9839463, { status: "all", config: TEST_CONFIG }),
+    );
+    assert.match(capturedUrl, /status=all/);
+  });
 });
 
 describe("listAllFormSubscribers (#6810)", () => {
@@ -242,5 +266,24 @@ describe("listAllFormSubscribers (#6810)", () => {
       () => listAllFormSubscribers(9839463, TEST_CONFIG),
     );
     assert.equal(calls, 1);
+  });
+
+  it("`opts.status` é repassado pra CADA página buscada (#6810)", async () => {
+    const capturedUrls: string[] = [];
+    await withMockFetch(
+      (async (url: string) => {
+        capturedUrls.push(url);
+        if (capturedUrls.length === 1) {
+          return jsonResponse(200, {
+            subscribers: [{ id: 1, email_address: "a@b.com", state: "inactive", created_at: "x" }],
+            pagination: { ...emptyPagination, has_next_page: true, end_cursor: "cursor2" },
+          });
+        }
+        return jsonResponse(200, { subscribers: [], pagination: emptyPagination });
+      }) as typeof fetch,
+      () => listAllFormSubscribers(9839463, TEST_CONFIG, { status: "all" }),
+    );
+    assert.equal(capturedUrls.length, 2);
+    for (const url of capturedUrls) assert.match(url, /status=all/);
   });
 });

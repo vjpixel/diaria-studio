@@ -34,6 +34,29 @@
  * (4 patrono + 6 mantenedor + 9 apoiador + 3 amigo = 22; 585 - 22 = 563
  * nenhum). Os IDs abaixo são os reais desta conta — únicos por conta Kit,
  * não recriar o segmento achando que o ID vai bater numa conta nova.
+ *
+ * ## Correspondência valor-em-R$ ↔ nível (canônica, #7030)
+ *
+ * As 4 faixas de valor mensal pago no apoia.se, fonte única
+ * `computeRewardGroup` em `scripts/studio-ui/studio-apoios.ts`
+ * (`REWARD_TIER_*_MIN`) — é o que decide `nivel` acima e o custom field
+ * `apoio_nivel` sincronizado pelo `sync-apoio-nivel-beehiiv.ts`:
+ *
+ * | nível        | faixa de valor mensal |
+ * |--------------|------------------------|
+ * | `amigo`      | R$5 até <R$10          |
+ * | `apoiador`   | R$10 até <R$25         |
+ * | `mantenedor` | R$25 até <R$50         |
+ * | `patrono`    | R$50 ou mais           |
+ *
+ * **Limiar "R$10/mês ou mais" (usado por gates que restringem conteúdo a
+ * quem apoia R$10+/mês — ex: `ARTIGOS_ESPECIAIS_APOIO_THRESHOLD` em
+ * `workers/artigos/src/apoio-gate-config.ts`, #7030) = todos os níveis
+ * EXCETO `amigo`** — ou seja, `["apoiador", "mantenedor", "patrono"]`.
+ * Decisão do editor, 02/09/2026 (issue #7030): `amigo` fica de fora porque
+ * sua faixa (R$5–10) não atinge o piso de R$10. Qualquer gate futuro com o
+ * mesmo limiar de R$10+/mês reusa este mesmo subconjunto — não redefinir a
+ * correspondência valor↔nível em outro lugar do repo.
  */
 
 import type { ApoioNivel } from "../sync-apoio-nivel-beehiiv.ts";

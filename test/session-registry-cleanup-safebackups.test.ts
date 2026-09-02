@@ -70,21 +70,27 @@ describe("planSafeBackupCleanup (#6970)", () => {
     assert.equal(plan[0]!.action, "pending-reconciliation");
   });
 
-  it("claims reconciliadas mas backup carrega merge_grant → has-merge-grant, NUNCA removable (#6952 em aberto)", () => {
+  it("claims reconciliadas mas backup carrega merge_grant AINDA VIVO, ausente do real → has-merge-grant, NUNCA removable (#6573 pós-#6952 — risco de PERDA)", () => {
     const root = freshRoot();
+    const grantedAt = "2026-08-01T00:00:00.000Z";
     writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
     writeRawSessionFile(root, "develop-Neo-s1-safeBackup-0001.json", {
       ...BASE,
       claimed_issues: [1],
-      merge_grant: { grantedTo: "outra-sessao", grantedBy: "s1", grantedAt: "2026-08-01T00:00:00.000Z" },
+      merge_grant: { grantedTo: "outra-sessao", grantedBy: "s1", grantedAt },
     });
-    const plan = planSafeBackupCleanup(root);
+    // `now` fixado 5min depois da concessão — dentro do TTL de 10min
+    // (`MERGE_GRANT_TTL_MS`), então a concessão AINDA está viva: o real não
+    // a reproduz, então removê-la perderia a única cópia utilizável.
+    const now = Date.parse(grantedAt) + 5 * 60_000;
+    const plan = planSafeBackupCleanup(root, { now });
     assert.equal(plan.length, 1);
     assert.equal(plan[0]!.action, "has-merge-grant");
   });
 
-  it("merge_grant CONSUMIDO/expirado no backup ainda preserva (conservador — não distingue consumido de vivo)", () => {
+  it("merge_grant CONSUMIDO no backup, ausente do real → agora removable (#6573: a união já sabe que está morto, nada a perder)", () => {
     const root = freshRoot();
+    const grantedAt = "2026-01-01T00:00:00.000Z";
     writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
     writeRawSessionFile(root, "develop-Neo-s1-safeBackup-0001.json", {
       ...BASE,
@@ -92,12 +98,70 @@ describe("planSafeBackupCleanup (#6970)", () => {
       merge_grant: {
         grantedTo: "outra-sessao",
         grantedBy: "s1",
-        grantedAt: "2026-01-01T00:00:00.000Z",
+        grantedAt,
         consumedAt: "2026-01-01T00:05:00.000Z",
       },
     });
-    const plan = planSafeBackupCleanup(root);
-    assert.equal(plan[0]!.action, "has-merge-grant");
+    // `now` logo após a concessão (ainda dentro do TTL se não fosse
+    // consumida) — o ponto do teste é que CONSUMIDA já é morta
+    // independente do TTL, então nada se perde em remover.
+    const now = Date.parse(grantedAt) + 5 * 60_000;
+    const plan = planSafeBackupCleanup(root, { now });
+    assert.equal(plan[0]!.action, "removable");
+  });
+
+  it("merge_grant TTL-expirado no backup, nunca consumido, ausente do real → agora removable (#6573: TTL nunca desexpira)", () => {
+    const root = freshRoot();
+    const grantedAt = "2026-01-01T00:00:00.000Z";
+    writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
+    writeRawSessionFile(root, "develop-Neo-s1-safeBackup-0001.json", {
+      ...BASE,
+      claimed_issues: [1],
+      merge_grant: { grantedTo: "outra-sessao", grantedBy: "s1", grantedAt },
+    });
+    // `now` bem além do TTL de 10min (1h depois) — nunca consumida, mas
+    // morta por idade mesmo assim.
+    const now = Date.parse(grantedAt) + 60 * 60_000;
+    const plan = planSafeBackupCleanup(root, { now });
+    assert.equal(plan[0]!.action, "removable");
+  });
+
+  it("merge_grant CONSUMIDO só no backup, MAS o real carrega a MESMA identidade SEM consumedAt e ainda dentro do TTL → has-merge-grant (risco de RESSURREIÇÃO — o real sozinho pareceria viva de novo)", () => {
+    const root = freshRoot();
+    const grantedAt = "2026-08-01T00:00:00.000Z";
+    const identity = { grantedTo: "outra-sessao", grantedBy: "s1", grantedAt };
+    writeRawSessionFile(root, "develop-Neo-s1.json", {
+      ...BASE,
+      claimed_issues: [1],
+      merge_grant: { ...identity }, // real tem a MESMA concessão, mas sem o carimbo de consumo
+    });
+    writeRawSessionFile(root, "develop-Neo-s1-safeBackup-0001.json", {
+      ...BASE,
+      claimed_issues: [1],
+      merge_grant: { ...identity, consumedAt: "2026-08-01T00:03:00.000Z" }, // só o backup sabe que já foi consumida
+    });
+    const now = Date.parse(grantedAt) + 5 * 60_000; // dentro do TTL — o real, sozinho, ainda pareceria viva
+    const plan = planSafeBackupCleanup(root, { now });
+    assert.equal(
+      plan[0]!.action,
+      "has-merge-grant",
+      "remover o backup apagaria a PROVA de consumo — o real sozinho reabriria a concessão como se ainda estivesse disponível",
+    );
+  });
+
+  it("merge_grant já integralmente reproduzido no real (mesma identidade, mesmo consumedAt) → removable mesmo com a concessão ainda 'viva'", () => {
+    const root = freshRoot();
+    const grantedAt = "2026-08-01T00:00:00.000Z";
+    const identity = { grantedTo: "outra-sessao", grantedBy: "s1", grantedAt };
+    writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1], merge_grant: { ...identity } });
+    writeRawSessionFile(root, "develop-Neo-s1-safeBackup-0001.json", {
+      ...BASE,
+      claimed_issues: [1],
+      merge_grant: { ...identity },
+    });
+    const now = Date.parse(grantedAt) + 5 * 60_000; // dentro do TTL — mas o real JÁ carrega exatamente o mesmo estado
+    const plan = planSafeBackupCleanup(root, { now });
+    assert.equal(plan[0]!.action, "removable");
   });
 
   it("backups ÓRFÃOS (real desapareceu por completo, claims+grant vivos só nos backups) NUNCA são REMOVIDOS por este módulo, mas SÃO reportados como orphan-backups-only (#7002 incidente ao vivo 01/09/2026; observabilidade adicionada em resposta ao self-review finding 2 do #7005)", () => {
@@ -196,19 +260,43 @@ describe("cleanupReconciledSafeBackups (#6970) — execução real, isolada em t
     assert.ok(!existsSync(backupPath), "backup deveria ter sido removido");
   });
 
-  it("NUNCA remove backup com merge_grant, mesmo com claims já reconciliadas", () => {
+  it("NUNCA remove backup com merge_grant AINDA VIVO e ausente do real, mesmo com claims já reconciliadas", () => {
     const root = freshRoot();
+    const grantedAt = "2026-08-01T00:00:00.000Z";
     writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
     const backupPath = join(sessionsDir(root), "develop-Neo-s1-safeBackup-0001.json");
     writeRawSessionFile(root, "develop-Neo-s1-safeBackup-0001.json", {
       ...BASE,
       claimed_issues: [1],
-      merge_grant: { grantedTo: "outra-sessao", grantedBy: "s1", grantedAt: "2026-08-01T00:00:00.000Z" },
+      merge_grant: { grantedTo: "outra-sessao", grantedBy: "s1", grantedAt },
     });
 
-    const plan = cleanupReconciledSafeBackups(root);
+    const now = Date.parse(grantedAt) + 5 * 60_000; // dentro do TTL de 10min — ainda vivo
+    const plan = cleanupReconciledSafeBackups(root, { now });
     assert.equal(plan[0]!.action, "has-merge-grant");
-    assert.ok(existsSync(backupPath), "backup com merge_grant NUNCA pode ser removido enquanto #6952 estiver aberta");
+    assert.ok(existsSync(backupPath), "backup com merge_grant ainda VIVO e não reproduzido no real nunca pode ser removido (#6573)");
+  });
+
+  it("remove backup com merge_grant já MORTO (consumido, ausente do real) — relaxamento do #6573", () => {
+    const root = freshRoot();
+    const grantedAt = "2026-01-01T00:00:00.000Z";
+    writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
+    const backupPath = join(sessionsDir(root), "develop-Neo-s1-safeBackup-0001.json");
+    writeRawSessionFile(root, "develop-Neo-s1-safeBackup-0001.json", {
+      ...BASE,
+      claimed_issues: [1],
+      merge_grant: {
+        grantedTo: "outra-sessao",
+        grantedBy: "s1",
+        grantedAt,
+        consumedAt: "2026-01-01T00:05:00.000Z",
+      },
+    });
+
+    const now = Date.parse(grantedAt) + 5 * 60_000;
+    const plan = cleanupReconciledSafeBackups(root, { now });
+    assert.equal(plan[0]!.action, "removable");
+    assert.ok(!existsSync(backupPath), "backup com merge_grant já consumido/morto deve ser removido — nada se perde");
   });
 
   it("grupo pending-reconciliation nunca remove nada", () => {

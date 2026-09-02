@@ -110,7 +110,7 @@ describe("ensureSubscriber / upsertSubscription / recordEvent — fixture 3 plat
     );
     const brevoId = ensureSubscriber(
       db,
-      "brevo",
+      "brevo_diaria",
       "brevo-ext-1",
       "leitor@example.com",
       now,
@@ -138,7 +138,7 @@ describe("ensureSubscriber / upsertSubscription / recordEvent — fixture 3 plat
     upsertSubscription(
       db,
       brevoId,
-      "brevo",
+      "brevo_diaria",
       { status: "pending", enteredAt: "2025-06-01", exitedAt: null, source: "reativacao" },
       now,
     );
@@ -160,7 +160,7 @@ describe("ensureSubscriber / upsertSubscription / recordEvent — fixture 3 plat
     });
     recordEvent(db, {
       subscriberId: brevoId,
-      platform: "brevo",
+      platform: "brevo_diaria",
       type: "click",
       externalEventId: "brevo-campaign-9:leitor@example.com",
       edicao: "brevo-campaign-9",
@@ -233,17 +233,17 @@ describe("ensureSubscriber / upsertSubscription / recordEvent — fixture 3 plat
 
   it("recordEvent retorna inserted:false quando o evento já existia (mesma chave natural)", () => {
     const db = openDiariaSubscribersDb(":memory:");
-    const subscriberId = ensureSubscriber(db, "brevo", "brevo-1", "a@example.com");
+    const subscriberId = ensureSubscriber(db, "brevo_diaria", "brevo-1", "a@example.com");
     const first = recordEvent(db, {
       subscriberId,
-      platform: "brevo",
+      platform: "brevo_diaria",
       type: "sent",
       externalEventId: "campanha-1:a@example.com",
       ts: "2026-08-01T00:00:00.000Z",
     });
     const second = recordEvent(db, {
       subscriberId,
-      platform: "brevo",
+      platform: "brevo_diaria",
       type: "sent",
       externalEventId: "campanha-1:a@example.com",
       ts: "2026-08-01T00:00:00.000Z",
@@ -302,7 +302,7 @@ describe("getSubscriberTimeline — timeline de 1 assinante", () => {
     });
     recordEvent(db, {
       subscriberId,
-      platform: "brevo",
+      platform: "brevo_diaria",
       type: "click",
       externalEventId: "brevo-campaign-2:jornada@example.com",
       ts: "2025-08-01T00:00:00.000Z",
@@ -319,7 +319,7 @@ describe("getSubscriberTimeline — timeline de 1 assinante", () => {
     assert.equal(timeline.length, 4);
     assert.deepEqual(
       timeline.map((e) => e.platform),
-      ["beehiiv", "beehiiv", "brevo", "kit"],
+      ["beehiiv", "beehiiv", "brevo_diaria", "kit"],
     );
     // ordenado por ts asc
     for (let i = 1; i < timeline.length; i++) {
@@ -334,7 +334,7 @@ describe("getCohortEventCounts — coorte por plataforma/período", () => {
     const db = openDiariaSubscribersDb(":memory:");
     const s1 = ensureSubscriber(db, "kit", "kit-1", "a@example.com");
     const s2 = ensureSubscriber(db, "kit", "kit-2", "b@example.com");
-    const s3 = ensureSubscriber(db, "brevo", "brevo-1", "c@example.com");
+    const s3 = ensureSubscriber(db, "brevo_diaria", "brevo-1", "c@example.com");
 
     recordEvent(db, {
       subscriberId: s1,
@@ -368,7 +368,7 @@ describe("getCohortEventCounts — coorte por plataforma/período", () => {
     // outra plataforma — não deve contar na coorte "kit".
     recordEvent(db, {
       subscriberId: s3,
-      platform: "brevo",
+      platform: "brevo_diaria",
       type: "open",
       externalEventId: "brevo-c1:c@example.com",
       ts: "2026-08-10T00:00:00.000Z",
@@ -390,9 +390,9 @@ describe("getCohortEventCounts — coorte por plataforma/período", () => {
 describe("findSubscriberIdByAlias / findSubscriberIdsByEmail", () => {
   it("resolve subscriber_id a partir de um alias conhecido, e via busca por e-mail", () => {
     const db = openDiariaSubscribersDb(":memory:");
-    const id = ensureSubscriber(db, "brevo", "ext-x", "busca@example.com");
-    assert.equal(findSubscriberIdByAlias(db, "brevo", "ext-x", "busca@example.com"), id);
-    assert.equal(findSubscriberIdByAlias(db, "brevo", "outro-ext", "busca@example.com"), null);
+    const id = ensureSubscriber(db, "brevo_diaria", "ext-x", "busca@example.com");
+    assert.equal(findSubscriberIdByAlias(db, "brevo_diaria", "ext-x", "busca@example.com"), id);
+    assert.equal(findSubscriberIdByAlias(db, "brevo_diaria", "outro-ext", "busca@example.com"), null);
     assert.deepEqual(findSubscriberIdsByEmail(db, "busca@example.com"), [id]);
     assert.deepEqual(findSubscriberIdsByEmail(db, "BUSCA@example.com"), [id]);
     db.close();
@@ -400,13 +400,15 @@ describe("findSubscriberIdByAlias / findSubscriberIdsByEmail", () => {
 });
 
 describe("isPlatform / isEventType", () => {
-  it("valida os 3 valores de plataforma e os 7 tipos de evento do épico", () => {
-    for (const p of ["beehiiv", "brevo", "kit"] as Platform[]) {
+  it("valida os 4 valores de plataforma e os 8 tipos de evento do épico", () => {
+    for (const p of ["beehiiv", "brevo_diaria", "brevo_clarice", "kit"] as Platform[]) {
       assert.ok(isPlatform(p));
     }
+    assert.equal(isPlatform("brevo"), false); // #6587: "brevo" genérico foi substituído pelas 2 contas
     assert.equal(isPlatform("mailchimp"), false);
     for (const t of [
       "sent",
+      "delivered", // #6586: eixo de 1ª classe do Kit
       "open",
       "click",
       "subscribe",

@@ -98,17 +98,45 @@ export const DEFAULT_DB_PATH = resolve(
 // Tipos
 // ---------------------------------------------------------------------------
 
-/** As 3 plataformas cobertas pelo épico #6464. */
-export const PLATFORMS = ["beehiiv", "brevo", "kit"] as const;
+/**
+ * As plataformas cobertas pelo épico #6464. `brevo_diaria`/`brevo_clarice`
+ * (#6587, fatia 4) substituem o que teria sido um `"brevo"` genérico — a
+ * Brevo tem DUAS contas reais (tenants distintos, quota independente, ver
+ * `docs/brevo-rate-limits.md`), e o mesmo e-mail pode legitimamente ter
+ * histórico nas duas ao mesmo tempo. Colapsar as duas num só valor
+ * `"brevo"` teria feito exatamente a fusão indevida que a fatia 5
+ * (reconciliação cross-plataforma, fora de escopo aqui) precisa decidir
+ * deliberadamente, não herdar por acidente de modelagem — `subscription`
+ * tem UNIQUE(subscriber_id, platform), então duas contas com o mesmo valor
+ * de `platform` colidiriam numa linha só em vez de preservar as duas
+ * `subscription` que a issue #6587 pede explicitamente ("são duas
+ * `subscription`, um `subscriber`").
+ */
+export const PLATFORMS = [
+  "beehiiv",
+  "brevo_diaria",
+  "brevo_clarice",
+  "kit",
+] as const;
 export type Platform = (typeof PLATFORMS)[number];
 
 export function isPlatform(value: unknown): value is Platform {
   return typeof value === "string" && (PLATFORMS as readonly string[]).includes(value);
 }
 
-/** Tipos de evento do épico (corpo da issue #6464). */
+/**
+ * Tipos de evento do épico (corpo da issue #6464). `"delivered"` (#6586,
+ * fatia 3) entra como eixo de 1ª classe pro Kit — a diferença `sent −
+ * delivered` carrega o sinal que abertura sozinha esconde (achado #6504: o
+ * Gmail recusou 72% do 1º envio em massa). Bounce explícito continua
+ * existindo (Brevo expõe hard/soft bounce como evento próprio); pro Kit,
+ * que não expõe bounce em `/broadcasts/{id}/stats`, o consumidor deriva
+ * bounce por `sent − delivered` na LEITURA em vez de gravar um evento
+ * `bounce` sintético que a fonte nunca confirmou individualmente.
+ */
 export const EVENT_TYPES = [
   "sent",
+  "delivered",
   "open",
   "click",
   "subscribe",

@@ -133,6 +133,35 @@ describe("deriveCandidateIssues", () => {
     assert.deepEqual(deriveCandidateIssues(issues, new Map()), []);
   });
 
+  // #7069 — a SEGUNDA exceção que a SKILL do overnight documenta, e que o
+  // #7065 não cobriu: `sem-resposta` é o "decido depois" do briefing (Fase 0
+  // passo 5). A SKILL é explícita — "a issue não foi prometida, então não
+  // recebe comentário". Não há veredito da rodada a gravar: o editor decidiu
+  // não decidir.
+  it("issue pulada com motivo sem-resposta NUNCA é candidata (#7069)", () => {
+    const issues: PlanIssueLike[] = [
+      { number: 7101, status: "pulada", motivo: "sem-resposta" },
+      { number: 7102, status: "pulada", motivo: "sem-resposta" },
+    ];
+    assert.deepEqual(deriveCandidateIssues(issues, new Map()), []);
+  });
+
+  // #7069 — o guard que impede a isenção de virar afrouxamento geral: motivo
+  // NORMAL continua sendo cobrado. A isenção é nominal (3 motivos listados),
+  // nunca "pulada não precisa de comentário".
+  it("motivo normal CONTINUA exigindo comentário — a isenção é nominal (#7069)", () => {
+    const issues: PlanIssueLike[] = [
+      { number: 7103, status: "pulada", motivo: "bloqueio-externo" },
+      { number: 7104, status: "pulada", motivo: "ambigua" },
+      { number: 7105, status: "pulada", motivo: "requer-sessao-local" },
+    ];
+    assert.deepEqual(deriveCandidateIssues(issues, new Map()), [
+      { number: 7103, reason: "pulada-sem-comentario" },
+      { number: 7104, reason: "pulada-sem-comentario" },
+      { number: 7105, reason: "pulada-sem-comentario" },
+    ]);
+  });
+
   // #7065 — o mesmo raciocínio do #5909 se aplica a `claimed-por-outra-sessao`
   // (a skill diz explicitamente que este motivo também não leva comentário):
   // outra sessão ativa já está trabalhando a issue, então commentar seria

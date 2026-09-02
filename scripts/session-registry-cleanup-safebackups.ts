@@ -15,13 +15,14 @@
  * escrita concorrente do OneDrive entre `Neo`/`helios`) está ativo, não é
  * resíduo histórico.
  *
- * **Restrição deliberada (ver docstring de `planSafeBackupCleanup` em
- * `scripts/lib/session-registry.ts` pro racional completo):** `mergeSessionRecords`
- * ainda não une `merge_grant` entre arquivos do grupo (isso é o objeto do
- * #6952, PR #6969, ainda ABERTA) — então qualquer backup que carregue
- * `merge_grant` (mesmo consumido/expirado) NUNCA é removido por este script,
- * mesmo com claims já reconciliadas. Reavaliar esse limite quando o #6952
- * mergear e `merge_grant` passar a ser unido como `claimed_issues` já é.
+ * **Restrição de `merge_grant` (ver docstring de `planSafeBackupCleanup`/
+ * `mergeGrantBlocksBackupCleanup` em `scripts/lib/session-registry.ts` pro
+ * racional completo):** desde o #6952 (mergeado), `mergeSessionRecords` UNE
+ * `merge_grant` entre os arquivos do grupo — então este script não bloqueia
+ * mais TODO backup que carregue `merge_grant`, só o que carrega uma
+ * concessão ainda utilizável que o arquivo real sozinho não reproduziria
+ * (viva sem cópia no real, ou consumida só no backup enquanto o real ainda
+ * pareceria viva sem o carimbo) — #6573.
  *
  * Uso:
  *   npx tsx scripts/session-registry-cleanup-safebackups.ts              # dry-run (default) — avalia + imprime, NÃO remove
@@ -32,7 +33,8 @@
  * caso contrário — sinal ESTRUTURAL de que algo precisa de atenção manual.
  * `"pending-reconciliation"`/`"has-merge-grant"` não são erro — são estados
  * esperados (rode `session-registry-reconcile-claims.ts --push` primeiro
- * pro 1º; o 2º se resolve sozinho quando o #6952 mergear).
+ * pro 1º; o 2º se resolve sozinho quando o TTL de 10min da concessão expira,
+ * ou quando `consumeMergeGrant` propagar o carimbo pro real).
  *
  * Guard de máquina sem `data/` (sessão cloud, clone fresco): pulado
  * inteiramente — `planSafeBackupCleanup`/`cleanupReconciledSafeBackups` já

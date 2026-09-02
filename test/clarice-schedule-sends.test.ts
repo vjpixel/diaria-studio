@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   scheduledAtFor,
   assertScheduledAtFuture,
+  assertScheduleLeadTimeForCampaign,
   SUBJECTS,
   PREVIEW_TEXT,
   buildKeysInScope,
@@ -140,6 +141,38 @@ describe("assertScheduledAtFuture (#2101/#2775 — guard de data futura em --cre
   it("n=0 lança erro de range (delegado a scheduledAtFor)", () => {
     const rangeRe = new RegExp(`n deve ser inteiro 1\\.\\.${SENDS.length}`);
     assert.throws(() => assertScheduledAtFuture(SENDS, 0, BEFORE_CYCLE), rangeRe);
+  });
+});
+
+describe("assertScheduleLeadTimeForCampaign (#7047 — camada NOVA além de assertScheduledAtFuture: antecedência mínima)", () => {
+  const NOW = new Date("2026-09-01T14:00:00.000Z");
+
+  it("REGRESSÃO #7047: antecedência insuficiente (30s) lança, prefixado com a identidade da campanha", () => {
+    const raw = new Date(NOW.getTime() + 30_000).toISOString();
+    assert.throws(
+      () => assertScheduleLeadTimeForCampaign("d01-A", raw, { now: NOW }),
+      /d01-A: .*antecedência mínima/is,
+    );
+  });
+
+  it("antecedência suficiente (2h) não lança", () => {
+    const raw = new Date(NOW.getTime() + 2 * 3600_000).toISOString();
+    assert.doesNotThrow(() => assertScheduleLeadTimeForCampaign("d01-A", raw, { now: NOW }));
+  });
+
+  it("allowImminent=true permite antecedência insuficiente", () => {
+    const raw = new Date(NOW.getTime() + 30_000).toISOString();
+    assert.doesNotThrow(() => assertScheduleLeadTimeForCampaign("d01-A", raw, { now: NOW, allowImminent: true }));
+  });
+
+  it("horário fora do canônico (09:00 UTC = 06:00 BRT) avisa via logFn sem lançar", () => {
+    const raw = "2026-09-02T17:00:00.000Z";
+    const calls: string[] = [];
+    assertScheduleLeadTimeForCampaign("d01-A", raw, { now: NOW }, (m) => calls.push(m));
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /fora do horário canônico/i);
+    assert.match(calls[0], /09:00 UTC/);
+    assert.match(calls[0], /06:00 BRT/);
   });
 });
 
@@ -643,5 +676,92 @@ describe("runScheduleLoop (#3658 — persistência per-iteração, não só no f
       /passado\/presente/,
     );
     assert.equal(putCalls.length, 0, "guard deve barrar ANTES de chamar putFn");
+  });
+
+  // ---------------------------------------------------------------------
+  // #7047 — antecedência mínima (SCHEDULE_AT_MIN_LEAD_MS, extraída do #7042
+  // pra scripts/lib/schedule-guard.ts). Antes desta issue, este script só
+  // recusava passado/presente (teste acima) — exatamente o estado em que
+  // clarice-schedule-group.ts estava antes do incidente de 01/09/2026 (3
+  // campanhas Clarice destinadas ao dia seguinte saindo no mesmo dia).
+  // `deps.now` sempre INJETADO com clock fixo — nunca `new Date()` real.
+  // ---------------------------------------------------------------------
+  it("REGRESSÃO #7047: scheduledAt a 30s de 'agora' (antecedência insuficiente) lança ANTES do putFn", async () => {
+    const NOW = new Date("2026-09-01T14:00:00.000Z");
+    const c1 = makeCampaign("d01", 1);
+    c1.scheduledAt = new Date(NOW.getTime() + 30_000).toISOString(); // 30s no futuro — passa no guard "no futuro", falha no de antecedência
+    const campaigns = [c1];
+    const keysInScope = new Set(["d01"]);
+    const putCalls: string[] = [];
+
+    await assert.rejects(
+      () => runScheduleLoop(campaigns, keysInScope, "/fake/path", {
+        putFn: async (c) => { putCalls.push(c.key); },
+        verifyFn: async () => ({ status: "scheduled" }),
+        writeFn: () => {},
+        logFn: () => {},
+        now: () => NOW,
+      }),
+      /antecedência mínima/i,
+    );
+    assert.equal(putCalls.length, 0, "guard de antecedência deve barrar ANTES de chamar putFn — não bastava passar em 'no futuro'");
+    assert.equal(c1.status, "draft", "nunca foi agendado de fato");
+  });
+
+  it("#7047: allowImminent=true no deps permite o mesmo scheduledAt imminente (escape nomeado)", async () => {
+    const NOW = new Date("2026-09-01T14:00:00.000Z");
+    const c1 = makeCampaign("d01", 1);
+    c1.scheduledAt = new Date(NOW.getTime() + 30_000).toISOString();
+    const campaigns = [c1];
+    const keysInScope = new Set(["d01"]);
+    const putCalls: string[] = [];
+
+    await runScheduleLoop(campaigns, keysInScope, "/fake/path", {
+      putFn: async (c) => { putCalls.push(c.key); },
+      verifyFn: async () => ({ status: "scheduled" }),
+      writeFn: () => {},
+      logFn: () => {},
+      now: () => NOW,
+      allowImminent: true,
+    });
+    assert.deepEqual(putCalls, ["d01"]);
+    assert.equal(c1.status, "scheduled");
+  });
+
+  it("#7047: antecedência exatamente suficiente (2h) → agenda normalmente", async () => {
+    const NOW = new Date("2026-09-01T14:00:00.000Z");
+    const c1 = makeCampaign("d01", 1);
+    c1.scheduledAt = new Date(NOW.getTime() + 2 * 3600_000).toISOString();
+    const campaigns = [c1];
+    const keysInScope = new Set(["d01"]);
+    const putCalls: string[] = [];
+
+    await runScheduleLoop(campaigns, keysInScope, "/fake/path", {
+      putFn: async (c) => { putCalls.push(c.key); },
+      verifyFn: async () => ({ status: "scheduled" }),
+      writeFn: () => {},
+      logFn: () => {},
+      now: () => NOW,
+    });
+    assert.deepEqual(putCalls, ["d01"]);
+  });
+
+  it("#7047: horário fora do canônico (≠ 09:00 UTC) não bloqueia — só avisa via logFn", async () => {
+    const NOW = new Date("2026-09-01T14:00:00.000Z");
+    const c1 = makeCampaign("d01", 1);
+    c1.scheduledAt = "2026-09-02T17:00:00.000Z"; // futuro suficiente, hora não-canônica
+    const campaigns = [c1];
+    const keysInScope = new Set(["d01"]);
+    const logs: string[] = [];
+
+    await runScheduleLoop(campaigns, keysInScope, "/fake/path", {
+      putFn: async () => {},
+      verifyFn: async () => ({ status: "scheduled" }),
+      writeFn: () => {},
+      logFn: (m) => logs.push(m),
+      now: () => NOW,
+    });
+    assert.equal(c1.status, "scheduled", "aviso não bloqueia o agendamento");
+    assert.ok(logs.some((m) => /fora do horário canônico/i.test(m)), "esperava o aviso nomeado no log");
   });
 });

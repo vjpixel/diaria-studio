@@ -28,20 +28,25 @@
  *
  * Exit codes:
  *   0 = todos os PRs candidatos terminaram em `merged`/`solo-merged`
- *   1 = pelo menos 1 terminou `solo-failed` OU `lock-blocked` (falha real
- *       de merge — não "vermelho de CI", que sempre resolve via bisecção
- *       até o piso; `lock-blocked` é um lote que provou passar junto no CI
- *       mas não conseguiu a janela de merge lock após retries, ou falhou
- *       na revalidação de Gate 2 — ver `scripts/lib/merge-train-live.ts`)
+ *   1 = pelo menos 1 terminou `solo-failed`, `lock-blocked` OU
+ *       `indeterminate` (falha real de merge, ou lote sem resolução — não
+ *       "vermelho de CI", que sempre resolve via bisecção até o piso;
+ *       `lock-blocked` é um lote que provou passar junto no CI mas não
+ *       conseguiu a janela de merge lock após retries, ou falhou na
+ *       revalidação de Gate 2; `indeterminate` (#7064) é um lote cujas 2
+ *       execuções de reconfirmação discordaram — assinatura da corrida do
+ *       #7060, nunca reprovação — precisa de nova invocação do trem, não
+ *       de um fixer — ver `scripts/lib/merge-train-live.ts`)
  *       OU `gh`/preparação falhou antes de processar qualquer lote
  *   2 = uso inválido (--session-id/--kind ausentes; nem --prs nem --open;
  *       --prs vazio/token inválido; --max-batch-size inválido)
  */
 
 import { isMainModule, parseArgs, getIntArg, getStringArg } from "./lib/cli-args.ts";
-import { composeTrainBatches, type TrainCandidate, type TrainPrInfo } from "./lib/merge-train.ts";
+import { composeTrainBatches, summarizeTrainCiRuns, type TrainCandidate, type TrainPrInfo } from "./lib/merge-train.ts";
 import { filesForPr, discoverOpenPrs, parsePrsArg } from "./lib/merge-train-discovery.ts";
 import { createRealTrainRunner, fetchTrainPrInfo, runMergeTrain, type TrainBatchOutcome } from "./lib/merge-train-live.ts";
+import { logEvent } from "./lib/run-log.ts";
 
 const DEFAULT_MAX_BATCH_SIZE = 3; // "K não deve ser grande. Começar em 3." — issue #6300
 const VALID_KINDS = ["overnight", "develop", "continuo"] as const;
@@ -161,12 +166,43 @@ async function main() {
   console.log(`run-merge-train: ${allOutcomes.length} resultado(s):`);
   for (const o of allOutcomes) console.log(printOutcome(o));
 
+  // Instrumentação de medição antes/depois (#6300, último critério de
+  // aceite: "runs de CI por issue mergeada"). Derivado dos outcomes já
+  // computados acima, sem I/O extra — ver docstring de `summarizeTrainCiRuns`
+  // em scripts/lib/merge-train.ts pro racional completo de cada campo.
+  // Emitido SEMPRE, mesmo quando nenhum lote ≥2 se formou (ciRunsUsed=0) —
+  // presença do evento é o sinal de "o trem rodou", não o valor.
+  const ciRunsSummary = summarizeTrainCiRuns(allOutcomes, prInfos);
+  console.log(
+    `run-merge-train: CI runs — ${ciRunsSummary.ciRunsUsed} usado(s) pelo trem vs. ${ciRunsSummary.prsInvolvedInBatches}` +
+      ` que seriam gastos sem ele (${ciRunsSummary.issuesInvolvedInBatches} issue(s) cobertas em lote, ${ciRunsSummary.soloPrs} PR(s) solo fora do trem)`,
+  );
+  logEvent({
+    edition: null,
+    stage: null,
+    agent: kind,
+    level: "info",
+    message: "merge_train_ci_runs",
+    details: {
+      ci_runs_used: ciRunsSummary.ciRunsUsed,
+      ci_runs_without_train: ciRunsSummary.prsInvolvedInBatches,
+      prs_involved_in_batches: ciRunsSummary.prsInvolvedInBatches,
+      issues_involved_in_batches: ciRunsSummary.issuesInvolvedInBatches,
+      solo_prs: ciRunsSummary.soloPrs,
+      batches: batches.length,
+    },
+  });
+
   // "abandoned" NUNCA é status final por si só — todo lote abandoned é
   // sempre bissectado e reprocessado até virar um dos status terminais
   // abaixo (registrado no array só como rastro de ONDE a bisecção
   // aconteceu). Falha real = solo-failed (piso da bissecção falhou) OU
-  // lock-blocked (lote provou passar mas não conseguiu mergear).
-  const hasRealFailure = allOutcomes.some((o) => o.status === "solo-failed" || o.status === "lock-blocked");
+  // lock-blocked (lote provou passar mas não conseguiu mergear) OU
+  // indeterminate (#7064 — 2 execuções de reconfirmação discordaram; não é
+  // "PR com defeito", mas também não é "resolvido" — precisa de nova
+  // invocação do trem, então conta pro exit != 0 pelo mesmo motivo que
+  // lock-blocked conta: sinaliza trabalho pendente, não bug de código).
+  const hasRealFailure = allOutcomes.some((o) => o.status === "solo-failed" || o.status === "lock-blocked" || o.status === "indeterminate");
   process.exit(hasRealFailure ? 1 : 0);
 }
 
