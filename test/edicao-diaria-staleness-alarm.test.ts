@@ -10,12 +10,14 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { sep } from "node:path";
 import {
   parseOvernightScheduleLogLine,
   findLastEdicaoLogEntry,
   isEdicaoDiariaScheduledWeekday,
   evaluateEdicaoDiariaStaleness,
   isAlarmingVerdict,
+  edicaoDirCandidates,
   shouldSendEdicaoDiariaStalenessAlarm,
   markEdicaoDiariaStalenessAlarmed,
   emptyEdicaoDiariaStalenessAlarmState,
@@ -198,5 +200,79 @@ describe("buildEdicaoDiariaStalenessAlarmEmail", () => {
       { issueNumber: 9999, url: "https://github.com/x/y/issues/9999", action: "created" },
     );
     assert.match(body, /#9999/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #6898 — os dois defeitos que faziam o alarme acusar edição preparada
+// ---------------------------------------------------------------------------
+
+describe("#6898 defeito 2 — timer desarmado de propósito não é falha", () => {
+  const now = new Date("2026-09-01T21:20:00Z");
+
+  it("timer `disabled` sem edição em disco → timer-disabled, e NÃO alarma", () => {
+    // O estado real do helios em 01/09/2026: unit `disabled` desde 17/08 e
+    // última linha do log um FAIL antigo (edição 260818). Antes do #6898
+    // isso rendia `alarm-never-fired`/`alarm-failed` todo dia.
+    const ev = evaluateEdicaoDiariaStaleness("260902", true, false, null, now, "disabled");
+    assert.equal(ev.verdict, "timer-disabled");
+    assert.equal(isAlarmingVerdict(ev.verdict), false);
+  });
+
+  it("timer `disabled` silencia mesmo com FAIL na última linha do log", () => {
+    const fail = { timestampIso: "2026-08-17T16:00:02-03:00", status: "FAIL" as const, edition: "260902" };
+    const ev = evaluateEdicaoDiariaStaleness("260902", true, false, fail, now, "disabled");
+    assert.equal(ev.verdict, "timer-disabled");
+  });
+
+  it("`unknown` PRESERVA o alarme — direção de falha segura (#5563 é o buraco que isto cobre)", () => {
+    const ev = evaluateEdicaoDiariaStaleness("260902", true, false, null, now, "unknown");
+    assert.equal(ev.verdict, "alarm-never-fired");
+    assert.equal(isAlarmingVerdict(ev.verdict), true);
+  });
+
+  it("`armed` sem edição segue alarmando — o caso que o alarme existe pra pegar", () => {
+    const ev = evaluateEdicaoDiariaStaleness("260902", true, false, null, now, "armed");
+    assert.equal(ev.verdict, "alarm-never-fired");
+  });
+
+  it("default (caller que não consulta) equivale a `unknown` — compat com os call-sites antigos", () => {
+    const semParam = evaluateEdicaoDiariaStaleness("260902", true, false, null, now);
+    const comUnknown = evaluateEdicaoDiariaStaleness("260902", true, false, null, now, "unknown");
+    assert.deepEqual(semParam, comUnknown);
+  });
+
+  it("edição existente vence sobre timer desarmado — ok, nunca timer-disabled", () => {
+    const ev = evaluateEdicaoDiariaStaleness("260902", true, true, null, now, "disabled");
+    assert.equal(ev.verdict, "ok");
+  });
+
+  it("dia não-agendado vence sobre tudo", () => {
+    const ev = evaluateEdicaoDiariaStaleness("260905", false, false, null, now, "disabled");
+    assert.equal(ev.verdict, "not-applicable");
+  });
+});
+
+describe("#6898 defeito 1 — edicaoDirCandidates cobre o layout real do disco", () => {
+  it("primeiro candidato é o layout NESTED canônico (#2463)", () => {
+    const [primeiro] = edicaoDirCandidates("260901");
+    assert.equal(primeiro.split(sep).join("/"), "data/editions/2609/260901");
+  });
+
+  it("mantém o FLAT como fallback — data/editions/ ainda tem pastas não migradas", () => {
+    const cands = edicaoDirCandidates("260708").map((c) => c.split(sep).join("/"));
+    assert.deepEqual(cands, ["data/editions/2607/260708", "data/editions/260708"]);
+  });
+
+  it("regressão do falso positivo: o caminho que o alarme checava sozinho NÃO é o canônico", () => {
+    // Antes do #6898 o alarme só olhava `data/editions/{AAMMDD}` e por isso
+    // declarava "não foi preparada" sobre a 260901, completa em disco.
+    const cands = edicaoDirCandidates("260901").map((c) => c.split(sep).join("/"));
+    assert.ok(cands.includes("data/editions/2609/260901"));
+    assert.notEqual(cands[0], "data/editions/260901");
+  });
+
+  it("propaga a validação de AAMMDD de editionDir", () => {
+    assert.throws(() => edicaoDirCandidates("2609"), /AAMMDD inválido/);
   });
 });

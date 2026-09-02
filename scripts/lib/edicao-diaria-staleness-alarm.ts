@@ -20,16 +20,23 @@
  *   - nunca disparou            → só este módulo detecta (`alarm-never-fired`)
  *   - disparou e falhou         → os dois detectam (redundância aceita)
  *   - disparou e pulou (idempotência, edição já iniciada à mão) → NENHUM
- *     dos dois alarma — `data/editions/{AAMMDD}/` existe, caso legítimo.
+ *     dos dois alarma — a edição existe em disco, caso legítimo.
+ *   - desligado de propósito pelo editor → `timer-disabled` (#6898), não
+ *     alarma: até então indistinguível de "nunca disparou".
  *
  * **Fonte de dado:** `data/overnight-schedule.log` (linha por execução,
  * formato `${ISO} | ${STATUS}  edition=${AAMMDD} ...` — ver
  * `scripts/overnight/run-scheduled-edicao.ts`) + existência de
- * `data/editions/{AAMMDD}/`. I/O (leitura do log, `existsSync`, envio de
- * e-mail) fica em `scripts/edicao-diaria-staleness-alarm.ts`.
+ * a existência da edição em disco (ver `edicaoDirCandidates`) + o estado de
+ * armamento da unit (`EdicaoTimerState`). I/O (leitura do log, `existsSync`,
+ * `systemctl`, envio de e-mail) fica em
+ * `scripts/edicao-diaria-staleness-alarm.ts`.
  */
 
+import { join } from "node:path";
+
 import { BRT_TIMEZONE } from "./next-edition-date.ts";
+import { editionDir } from "./edition-paths.ts";
 import type { AlarmIssueResult } from "./alarm-issues.ts";
 
 // ---------------------------------------------------------------------------
@@ -70,6 +77,27 @@ export function findLastEdicaoLogEntry(lines: string[], aammdd: string): EdicaoL
 }
 
 // ---------------------------------------------------------------------------
+// Onde a edição mora em disco (#6898 defeito 1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure — os caminhos (relativos à raiz do repo) em que a edição `aammdd`
+ * pode existir, em ordem de preferência.
+ *
+ * O layout canônico é NESTED (`data/editions/{YYMM}/{AAMMDD}`, #2463) e é o
+ * que `editionDir()` constrói. O alarme, porém, nasceu (#5563) checando o
+ * layout FLAT e nunca acompanhou a migração — resultado medido em 01/09/2026:
+ * ele afirmava "edição 260901 não foi preparada" enquanto
+ * `data/editions/2609/260901/` tinha as 6 etapas concluídas. O flat segue
+ * na lista como fallback porque `data/editions/` ainda tem pastas não
+ * migradas (`260708` etc.; a migração do #2463 é gated com o editor) — é
+ * checar os DOIS que mantém o alarme correto durante e depois da migração.
+ */
+export function edicaoDirCandidates(aammdd: string): string[] {
+  return [editionDir(aammdd), join("data", "editions", aammdd)];
+}
+
+// ---------------------------------------------------------------------------
 // Dia da semana coberto pelo timer (Sun-Thu, produz edição Mon-Fri)
 // ---------------------------------------------------------------------------
 
@@ -90,9 +118,19 @@ export function isEdicaoDiariaScheduledWeekday(now: Date): boolean {
 // Veredito combinado
 // ---------------------------------------------------------------------------
 
+/**
+ * #6898 — estado de armamento do `diaria-edicao-diaria.timer` como o caller o
+ * obteve (`queryTaskArmed` de `scheduled-task-status.ts`). `"unknown"` cobre
+ * TODOS os casos em que a consulta não deu resposta confiável
+ * (`cannot_verify`, `not_armed`, ou caller que nem consultou) — ver
+ * `evaluateEdicaoDiariaStaleness` pro porquê de só `"disabled"` silenciar.
+ */
+export type EdicaoTimerState = "armed" | "disabled" | "unknown";
+
 export type EdicaoDiariaStalenessVerdict =
   | "not-applicable" // sexta/sábado — timer não dispara, nada a checar
-  | "ok" // data/editions/{AAMMDD}/ existe — sucesso OU editor já iniciou manualmente (idempotência, caso legítimo)
+  | "timer-disabled" // #6898: unit `disabled` — automação desligada de propósito, não é falha
+  | "ok" // data/editions/{YYMM}/{AAMMDD}/ existe — sucesso OU editor já iniciou manualmente (idempotência, caso legítimo)
   | "in-progress" // START logado recentemente, ainda dentro da margem de duração esperada da run
   | "alarm-never-fired" // nenhuma linha no log pra esta edição — timer não disparou (ou nunca foi armado)
   | "alarm-failed" // última linha é FAIL — ou START MUITO antigo (run travada além da margem, tratado como falha)
@@ -125,9 +163,17 @@ export function evaluateEdicaoDiariaStaleness(
   editionExists: boolean,
   lastEntry: EdicaoLogEntry | null,
   now: Date,
+  timerState: EdicaoTimerState = "unknown",
 ): EdicaoDiariaStalenessEvaluation {
   if (!isScheduledDay) return { verdict: "not-applicable", aammdd };
   if (editionExists) return { verdict: "ok", aammdd };
+  // #6898 defeito 2 — SÓ `"disabled"` silencia. `"unknown"` (systemctl
+  // indisponível, máquina sem agendador reconhecido, unit ausente) mantém o
+  // comportamento histórico de alarmar: a direção de falha segura aqui é o
+  // falso POSITIVO, porque "nunca disparou" é justamente o buraco que este
+  // alarme existe pra cobrir (#5563) — silenciá-lo por uma consulta que não
+  // deu resposta reintroduziria o incidente original, e em silêncio.
+  if (timerState === "disabled") return { verdict: "timer-disabled", aammdd };
   if (lastEntry === null) return { verdict: "alarm-never-fired", aammdd };
   if (lastEntry.status === "FAIL") return { verdict: "alarm-failed", aammdd };
   if (lastEntry.status === "START") {
