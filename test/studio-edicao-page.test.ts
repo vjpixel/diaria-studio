@@ -45,29 +45,12 @@ describe("GET /edicao/:aammdd (#3558)", () => {
     assert.ok(body.includes("gate-6"));
   });
 
-  it("#3870: edicao.html expõe o markup do banner de gate pendente no topo do cockpit", async () => {
-    const res = await fetch(new URL("/edicao/260716", server.url));
-    const body = await res.text();
-    assert.ok(body.includes("gate-chat-banner"));
-    assert.ok(body.includes("gate-chat-banner-text"));
-    assert.ok(body.includes("gate-chat-banner-btn"));
-  });
-
-  it("#3870: edicao.js importa gate-chat-bridge.js e monta o botão 'Responder no chat' (wiring cockpit → card do chat drawer)", async () => {
+  it("#6942: edicao.js mostra o gate como pendente e instrui aprovar no terminal (chat do Studio removido)", async () => {
     const res = await fetch(new URL("/edicao.js", server.url));
     const body = await res.text();
-    assert.ok(body.includes("gate-chat-bridge.js"), "edicao.js deve importar o módulo puro de decisão da ponte");
-    assert.ok(body.includes("Responder no chat"), "deve montar o botão de ação que leva ao card do chat");
-    assert.ok(body.includes("esta sessão está rodando no terminal"), "deve explicar a ausência de botão quando o gate é de sessão-terminal (proposta item 2)");
-    assert.ok(body.includes("scrollToPendingCard"), "deve chamar a ponte de scroll exposta por chat-drawer.js");
-  });
-
-  it("#3870: GET /gate-chat-bridge.js é servido com content-type JS (módulo puro consumido por edicao.js)", async () => {
-    const res = await fetch(new URL("/gate-chat-bridge.js", server.url));
-    assert.equal(res.status, 200);
-    assert.match(res.headers.get("content-type") ?? "", /javascript/);
-    const body = await res.text();
-    assert.ok(body.includes("resolveGateChatBridge"));
+    assert.ok(body.includes("/diaria-4-revisao"), "deve instruir a aprovar via terminal");
+    assert.ok(body.includes("/diaria-6-agendamento"), "deve instruir a aprovar via terminal (gate 6)");
+    assert.ok(!body.includes("gate-chat-bridge"), "não deve mais referenciar a ponte com o chat (removida no #6942)");
   });
 
   it("aceita AAMMDD com trailing slash", async () => {

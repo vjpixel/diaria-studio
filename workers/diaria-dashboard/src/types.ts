@@ -321,9 +321,6 @@ export interface StudioSnapshot {
   /** Contagem de gates de PIPELINE pendentes (stage 4/6), somada entre
    * todas as edições — nunca o conteúdo do gate. */
   gates_pending_count: number;
-  /** Contagem de gates `AskUserQuestion` do chat drawer aguardando
-   * resposta — nunca `firstQuestion`/texto da pergunta. */
-  chat_gates_pending_count: number;
   overnight: StudioSnapshotPlanSummary | null;
   develop: StudioSnapshotPlanSummary | null;
 }

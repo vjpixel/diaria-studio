@@ -117,20 +117,6 @@
 }
 .rv-hl-save-btn:disabled { opacity: 0.5; cursor: default; }
 
-/* #6447 Fatia 4 (achado 6): "Reescrever com IA" — mesmo tamanho do botão
-   Salvar, visual secundário (não é a ação primária do card). */
-.rv-hl-rewrite-btn {
-  font: inherit;
-  font-size: 0.85rem;
-  padding: 0.4rem 0.9rem;
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-  background: var(--paper-alt);
-  color: inherit;
-  cursor: pointer;
-}
-.rv-hl-rewrite-btn:hover { border-color: var(--ink); }
-
 .rv-hl-empty { font-size: 0.85rem; opacity: 0.75; }
 
 .rv-hl-pool { margin-top: 0.4rem; }
@@ -152,7 +138,6 @@
 @media (max-width: 640px) {
   .rv-hl-header button,
   .rv-hl-save-btn,
-  .rv-hl-rewrite-btn,
   .rv-hl-body-add-btn,
   .rv-hl-body-remove-btn { min-height: 44px; }
 }

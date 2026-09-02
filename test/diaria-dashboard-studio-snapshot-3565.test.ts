@@ -74,7 +74,6 @@ function makeSnapshot(overrides: Partial<StudioSnapshot> = {}): StudioSnapshot {
     current_stage: 4,
     stage_label: "Revisão",
     gates_pending_count: 2,
-    chat_gates_pending_count: 1,
     overnight: { sessionId: "260715", totalIssues: 5, counts: { merged: 3, draft: 1, pulada: 1 } },
     develop: null,
     ...overrides,

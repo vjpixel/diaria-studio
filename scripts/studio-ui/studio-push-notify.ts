@@ -2,16 +2,15 @@
  * studio-push-notify.ts (#3564, fatia 10 do epic "Studio UI" #3554; canal
  * e-mail #5341 — renomeado do módulo do canal anterior)
  *
- * Fecha o loop mobile: quando algo espera o editor — gate 4/6 pendente
- * (`studio-state.ts` `gatesPending`) ou `AskUserQuestion` pendente no chat
- * drawer (`studio-chat.ts` `chatPermissionsPending`) — dispara uma
- * notificação push por e-mail com deep-link pra tela certa do Studio, via o
- * client genérico de `scripts/lib/push-notify.ts` (fail-soft TOTAL:
- * qualquer falha de auth/rede, o Studio segue funcionando normalmente —
- * isso é só observabilidade extra). #5341 (15/08/2026, decisão do editor):
- * canal padronizado em Gmail (`sendGmailMessage`) — o editor decidiu não
- * exigir a instalação de um app de mensagens novo; o canal anterior era um
- * no-op silencioso sem credenciais configuradas.
+ * Fecha o loop mobile: quando um gate 4/6 fica pendente (`studio-state.ts`
+ * `gatesPending`) — dispara uma notificação push por e-mail com deep-link
+ * pra tela certa do Studio, via o client genérico de
+ * `scripts/lib/push-notify.ts` (fail-soft TOTAL: qualquer falha de
+ * auth/rede, o Studio segue funcionando normalmente — isso é só
+ * observabilidade extra). #5341 (15/08/2026, decisão do editor): canal
+ * padronizado em Gmail (`sendGmailMessage`) — o editor decidiu não exigir a
+ * instalação de um app de mensagens novo; o canal anterior era um no-op
+ * silencioso sem credenciais configuradas.
  *
  * Deep-link (#3560 nota): o Studio ainda roda só local
  * (`http://127.0.0.1:4174`) — não existe deploy público (`studio.diar.ia.br`
@@ -61,34 +60,6 @@
  * TODO(#3564-ci-watch): quando `studio-issues.ts` ganhar histórico de CI por
  * PR, adicionar um 3º ramo de polling aqui (draft criado por subagente +
  * CI vermelho há mais de N minutos) reusando o mesmo `notifyOnceKey`+dedup.
- *
- * ── Notificação de turno de chat concluído (#3822) ─────────────────────────
- *
- * Diferente dos dois casos acima ("está esperando você" — gate 4/6 ou
- * `AskUserQuestion` pendente), este é o caso "acabei de terminar, e não
- * preciso de nada de você agora": o editor manda uma tarefa pelo chat
- * drawer, sai da tela, e quer saber quando terminou sem ficar checando o
- * painel. NÃO é coberto por `runPushNotifyTick`/`buildStudioState` (polling)
- * porque o turno pode terminar entre ticks e a mensagem perderia o timing de
- * ser útil — em vez disso, `maybeNotifyChatDone` é chamada DIRETO pelo
- * handler HTTP de `POST /api/chat` (`server.ts`, `handleApiChat`) no exato
- * momento em que o evento `ChatDoneEvent` (`studio-chat.ts`) é emitido, no
- * mesmo `onEvent` callback que já traduz eventos pro SSE do browser — sem
- * loop de polling próprio.
- *
- * Threshold de duração (`CHAT_DONE_NOTIFY_THRESHOLD_MS`, default 30s):
- * decisão conservadora tomada na implementação (#3822 deixou em aberto entre
- * threshold-por-duração e flag explícito de opt-in) — um threshold evita
- * notificar em toda troca curta ("ok", "obrigado") sem exigir que o editor
- * lembre de ligar/desligar um flag toda vez que for sair da tela. Ajustável
- * via `STUDIO_CHAT_DONE_NOTIFY_THRESHOLD_MS` (ms) sem precisar editar código,
- * caso o editor ache 30s muito/pouco sensível na prática.
- *
- * Dedup: propositalmente NÃO tem (#3822 "fora de escopo" — múltiplas tarefas
- * encadeadas rápidas no mesmo turno cada uma notifica separadamente se cada
- * uma sozinha já passar do threshold). O próprio threshold já mitiga o caso
- * degenerado de spam (trocas curtas ficam abaixo dele e nunca notificam) —
- * revisar só se aparecer como problema real de verdade.
  */
 
 import {
@@ -102,7 +73,6 @@ import {
 } from "../lib/push-notify.ts";
 import { resolve } from "node:path";
 import { buildStudioState, type StudioState } from "./studio-state.ts";
-import type { ChatDoneEvent } from "./studio-chat.ts";
 
 // Re-exportado por conveniência — `formatHaltNotifyMessage` mora em
 // `scripts/lib/push-notify.ts` (não é Studio-específico, ver doc-comment
@@ -150,23 +120,6 @@ export function formatEditionGateMessage(
   };
 }
 
-/** Mensagem + deep-link pro chat drawer (o badge global de
- * `chatPermissionsPending` aparece em qualquer página do Studio — não há
- * ainda uma tela dedicada por gate, só o drawer embutido no shell, então o
- * deep-link é a home). `question` é o preview (`firstQuestion` de
- * `PendingPermissionSummary`) — omitido se indisponível. */
-export function formatChatGateMessage(
-  question: string | null,
-  baseUrl: string,
-): PushMessage {
-  const url = `${baseUrl}/`;
-  const preview = question ? `\n"${question}"` : "";
-  return {
-    subject: "[diar.ia.br Studio] Pergunta pendente no chat",
-    body: [`A sessão está esperando uma resposta do editor.${preview}`, url].join("\n"),
-  };
-}
-
 // ─── diff puro: quais chaves notificar / esquecer nesta rodada ────────────
 
 export interface GateNotificationPlan {
@@ -196,10 +149,6 @@ function editionGateKey(edition: string, stage: number): string {
   return `edition-gate:${edition}:${stage}`;
 }
 
-function chatGateKey(toolUseId: string): string {
-  return `chat-gate:${toolUseId}`;
-}
-
 // ─── tick de polling (I/O injetável, testável sem setInterval real) ───────
 
 export interface PushNotifyTickOptions {
@@ -217,9 +166,8 @@ export interface PushNotifyTickOptions {
 
 /**
  * Roda UMA rodada de diff+notify sobre o `rootDir` dado, usando `store` como
- * registro de dedup (mutado in-place — mesmo padrão de `Map`/`Set` já usado
- * por `studio-chat.ts`). Retorna as chaves notificadas nesta rodada (só pra
- * inspeção/teste — o caller normalmente ignora o retorno).
+ * registro de dedup (mutado in-place). Retorna as chaves notificadas nesta
+ * rodada (só pra inspeção/teste — o caller normalmente ignora o retorno).
  */
 export async function runPushNotifyTick(
   rootDir: string,
@@ -232,9 +180,7 @@ export async function runPushNotifyTick(
 
   const state = buildStateFn(rootDir);
 
-  const editionKeys = state.gatesPending.map((g) => editionGateKey(g.edition, g.stage));
-  const chatKeys = state.chatPermissionsPending.map((p) => chatGateKey(p.toolUseId));
-  const currentKeys = [...editionKeys, ...chatKeys];
+  const currentKeys = state.gatesPending.map((g) => editionGateKey(g.edition, g.stage));
 
   const plan = computeGateNotifications(currentKeys, store.keys());
 
@@ -257,15 +203,6 @@ export async function runPushNotifyTick(
       const result = await notifyFn(
         formatEditionGateMessage(editionGate.edition, editionGate.stage as 4 | 6, baseUrl),
       );
-      if (result.ok) {
-        store.add(key);
-        notified.push(key);
-      }
-      continue;
-    }
-    const chatGate = state.chatPermissionsPending.find((p) => chatGateKey(p.toolUseId) === key);
-    if (chatGate) {
-      const result = await notifyFn(formatChatGateMessage(chatGate.firstQuestion, baseUrl));
       if (result.ok) {
         store.add(key);
         notified.push(key);
@@ -293,8 +230,7 @@ export function startPushNotifyWatcher(
   // #6125 — dedup PERSISTENTE em disco: o processo do studio-server tem
   // histórico documentado de restart (#5674 self-restart, #5737/#5759 zumbi)
   // e cada restart zerava o store em memória, re-notificando gates ainda
-  // pendentes. O arquivo vive em `data/` (mesmo padrão de
-  // `data/studio-chat-enabled.json`): sobrevive a restarts e é fail-soft
+  // pendentes. O arquivo vive em `data/`: sobrevive a restarts e é fail-soft
   // (leitura/escrita que falharem degradam pra comportamento em memória).
   const store =
     opts.store ??
@@ -308,91 +244,4 @@ export function startPushNotifyWatcher(
   }, opts.pollIntervalMs ?? 15_000);
 
   return { close: () => clearInterval(interval) };
-}
-
-// ─── notificação de turno de chat concluído (#3822) ────────────────────────
-
-/** Default do threshold de duração — só notifica turnos que levaram pelo
- * menos isso (ver doc-comment do módulo pra motivação da escolha de 30s). */
-export const CHAT_DONE_NOTIFY_THRESHOLD_MS = 30_000;
-
-/** Resolve o threshold via `STUDIO_CHAT_DONE_NOTIFY_THRESHOLD_MS` (ms) —
- * fallback pro default acima se ausente, vazio ou não-numérico/negativo
- * (nunca lança; um valor malformado no env não deve derrubar o Studio). */
-export function resolveChatDoneNotifyThresholdMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env.STUDIO_CHAT_DONE_NOTIFY_THRESHOLD_MS;
-  if (!raw) return CHAT_DONE_NOTIFY_THRESHOLD_MS;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : CHAT_DONE_NOTIFY_THRESHOLD_MS;
-}
-
-/** Tamanho máximo do resumo (1ª linha da resposta final) antes de truncar
- * com reticências — corpo de e-mail cabe bem mais que isso, o teto é só pra
- * manter a notificação como um PREVIEW, não a resposta inteira. */
-export const CHAT_DONE_SUMMARY_MAX_CHARS = 200;
-
-/** Extrai a 1ª linha não-vazia de `resultText` e trunca a
- * `CHAT_DONE_SUMMARY_MAX_CHARS`. Pura. Retorna a mensagem genérica quando
- * não há texto final (turno terminou só com tool calls, ou é um evento de
- * erro sem `result` — `sdkMessageToChatEvents` só popula `result` no
- * caminho de sucesso). Ao contrário da versão do canal anterior, não
- * precisa mais sanitizar caracteres de Markdown — o corpo do e-mail é texto
- * puro (ver `buildMimeMessage`, `scripts/lib/gmail-send.ts`). */
-export function summarizeChatResult(resultText: string | null): string {
-  const GENERIC = "Tarefa concluída no chat drawer.";
-  if (!resultText) return GENERIC;
-  const firstLine = resultText.split("\n").find((line) => line.trim().length > 0);
-  if (!firstLine) return GENERIC;
-  const trimmed = firstLine.trim();
-  if (!trimmed) return GENERIC;
-  if (trimmed.length <= CHAT_DONE_SUMMARY_MAX_CHARS) return trimmed;
-  return `${trimmed.slice(0, CHAT_DONE_SUMMARY_MAX_CHARS - 1)}…`;
-}
-
-/** Mensagem + deep-link pra home (mesmo destino de `formatChatGateMessage` —
- * o chat drawer é injetado em toda página, não há tela dedicada por turno).
- * Assunto distingue turno concluído com erro (`isError`) do caminho feliz —
- * `summarizeChatResult` já cai no genérico nesse caso porque `result` vem
- * `null` em erro (`sdkMessageToChatEvents`), então o assunto é o único sinal
- * de que algo deu errado. */
-export function formatChatDoneMessage(event: ChatDoneEvent, baseUrl: string): PushMessage {
-  const url = `${baseUrl}/`;
-  const subject = event.data.isError
-    ? "[diar.ia.br Studio] Turno do chat terminou com erro"
-    : "[diar.ia.br Studio] Tarefa concluída";
-  const summary = summarizeChatResult(event.data.result);
-  return { subject, body: [summary, url].join("\n") };
-}
-
-export interface ChatDoneNotifyOptions {
-  /** Envia a notificação — default `sendPushNotification`, injetável em
-   * testes (mesmo padrão de `PushNotifyTickOptions.notifyFn`). */
-  notifyFn?: (msg: PushMessage, opts?: SendPushNotificationOptions) => Promise<PushNotifyResult>;
-  baseUrl?: string;
-  /** Override do threshold — default `resolveChatDoneNotifyThresholdMs()`. */
-  thresholdMs?: number;
-}
-
-/**
- * Decide se `event` (um `ChatDoneEvent` recém-emitido) merece notificação —
- * só quando `durationMs` (medido pelo caller, ver `handleApiChat` em
- * `server.ts`) atinge o threshold — e, se sim, envia via `notifyFn`.
- * Chamada DIRETO do `onEvent` de `handleApiChat`, sem polling (ver
- * doc-comment do módulo). Fail-soft: nunca lança (delega a
- * `sendPushNotification`, que também não lança); um turno curto simplesmente
- * retorna `{ok:false, skipped:true, reason:"below-threshold"}` sem tentar
- * rede nenhuma.
- */
-export async function maybeNotifyChatDone(
-  event: ChatDoneEvent,
-  durationMs: number,
-  opts: ChatDoneNotifyOptions = {},
-): Promise<PushNotifyResult & { reason?: string }> {
-  const thresholdMs = opts.thresholdMs ?? resolveChatDoneNotifyThresholdMs();
-  if (durationMs < thresholdMs) {
-    return { ok: false, skipped: true, reason: "below-threshold" };
-  }
-  const notifyFn = opts.notifyFn ?? sendPushNotification;
-  const baseUrl = opts.baseUrl ?? resolveStudioPublicBaseUrl();
-  return notifyFn(formatChatDoneMessage(event, baseUrl));
 }

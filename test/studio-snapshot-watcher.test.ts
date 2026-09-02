@@ -21,7 +21,6 @@ function fakeResult(pushed: boolean): PushStudioSnapshotResult {
       current_stage: "unknown",
       stage_label: "Desconhecido",
       gates_pending_count: 0,
-      chat_gates_pending_count: 0,
       overnight: null,
       develop: null,
     },

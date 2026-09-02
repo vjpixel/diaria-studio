@@ -13,7 +13,7 @@
 // #3853: /painel/diaria passou a ser página nativa do menu (item
 // "painel-diaria" em NAV_ITEMS, abaixo) — `renderDashboardHtml`
 // (`workers/diaria-dashboard/src/index.ts`) agora injeta os assets
-// compartilhados (tokens/nav/chat-drawer) + `#app-nav` + `window.STUDIO_PAGE`
+// compartilhados (tokens/nav) + `#app-nav` + `window.STUDIO_PAGE`
 // QUANDO `studioMode: true`, gate que só `dashboard-diaria.ts` (studio-server)
 // liga — o deploy de produção do MESMO Worker (studioMode false/ausente)
 // continua servindo o documento autocontido de sempre, sem esses assets.

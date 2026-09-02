@@ -10,7 +10,6 @@
 // (fatia 1, #3555) e desenha.
 
 import { computeStageAge } from "./edicao-stage-age.js";
-import { resolveGateChatBridge, formatWaitingSince, pickBannerGate } from "./gate-chat-bridge.js";
 import { createLogDeduper } from "./log-dedup.js";
 
 const STAGE_ORDER = [0, 1, 2, 3, 4, 5, 6];
@@ -48,9 +47,6 @@ const el = {
   gate6: document.getElementById("gate-6"),
   logList: document.getElementById("edicao-log-list"),
   reviewLink: document.getElementById("review-link"),
-  gateBanner: document.getElementById("gate-chat-banner"),
-  gateBannerText: document.getElementById("gate-chat-banner-text"),
-  gateBannerBtn: document.getElementById("gate-chat-banner-btn"),
 };
 
 /** AAMMDD a partir do path — `/edicao/260716` → `260716`. Pura, testável
@@ -116,12 +112,6 @@ let expandedStage = null;
 // Buffer só dos eventos de run-log que pertencem a ESTA edição — o SSE
 // manda o run-log inteiro (todas as edições), filtramos aqui.
 let logBuffer = [];
-// #3870: espelha `state.chatPermissionsPending` (mesmo payload de
-// `GET /api/state`, empurrado a cada evento SSE `state`) — fonte pra
-// `resolveGateChatBridge` decidir se o gate 4/6 pendente tem card ativo no
-// chat drawer desta MESMA página. Não é filtrado por edição (o wire não
-// carrega essa informação — ver doc-comment de gate-chat-bridge.js).
-let chatPermissionsPending = [];
 
 // #3891 (item 6): mesmo problema/fix de app.js (ver doc-comment de
 // log-dedup.js) — o reconnect do SSE reenvia a TAIL inteira via `log-init`,
@@ -148,13 +138,6 @@ function renderHeader(detail) {
     } else {
       el.reviewLink.style.display = "none";
     }
-  }
-  // #3687: esta página não tem "arquivo"/"aba" (é a timeline de estágios da
-  // edição, não o editor de conteúdo — ver revisao.js pra esse par) — só a
-  // edição mesmo entra no contexto do chat. Fail-soft: mesmo guard de
-  // revisao.js (`syncChatContext`) pra ordem de script.
-  if (window.diariaStudioChat && typeof window.diariaStudioChat.setContext === "function") {
-    window.diariaStudioChat.setContext({ edition: detail.edition });
   }
 }
 
@@ -254,65 +237,25 @@ function renderFileList(container, files) {
   container.appendChild(ul);
 }
 
-// #3870: clique de "Responder no chat" (card de gate OU banner do topo) —
-// expande o drawer e rola até o card ainda não resolvido. Fail-soft: o
-// script do drawer pode não ter montado ainda (ordem de `<script>` na
-// página) — mesmo guard defensivo já usado por `renderHeader` acima pra
-// `setContext`.
-function openChatAtPendingCard() {
-  if (window.diariaStudioChat && typeof window.diariaStudioChat.scrollToPendingCard === "function") {
-    window.diariaStudioChat.scrollToPendingCard();
-  } else if (window.diariaStudioChat && typeof window.diariaStudioChat.openDrawer === "function") {
-    window.diariaStudioChat.openDrawer();
-  }
-}
-
-/** Acrescenta a linha "Responder no chat" + "esperando há Xmin" dentro do
- * card de gate (#3870), só quando `bridge.hasCard` é true — chamada por
- * `renderGate4`/`renderGate6` logo depois do parágrafo de status. */
-function appendGateChatBridgeRow(container, bridge) {
-  if (!bridge.hasCard) return;
-  const row = document.createElement("div");
-  row.className = "gate-chat-bridge-row";
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "gate-chat-bridge-btn";
-  btn.textContent = "Responder no chat →";
-  btn.addEventListener("click", openChatAtPendingCard);
-  row.appendChild(btn);
-  const wait = document.createElement("span");
-  wait.className = "gate-chat-bridge-wait";
-  wait.textContent = formatWaitingSince(bridge.oldestAskedAt);
-  row.appendChild(wait);
-  container.appendChild(row);
-}
-
 function renderGate4(detail) {
   el.gate4.innerHTML = "";
   if (!detail.found) return;
-  const bridge = resolveGateChatBridge(4, detail.gatesPending, chatPermissionsPending);
+  const pending = detail.gatesPending.includes(4);
   const status = document.createElement("p");
-  status.className = "gate-status " + (bridge.pending ? "gate-status-pending" : "gate-status-idle");
-  if (bridge.pending && bridge.hasCard) {
-    // #3870: a ação real mora no card do chat drawer desta mesma página —
-    // o botão abaixo (appendGateChatBridgeRow) leva até ele em 1 clique.
-    // #6447 Fatia 4 (achado 7): "Aprovar gate" no painel de Revisão grava
-    // a decisão em disco (_internal/.step-4-decision.json) — a sessão do
-    // terminal ainda precisa ver o resultado e prosseguir manualmente
-    // (escopo intencionalmente parcial, ver stage4-decision.ts).
-    status.textContent = "Gate pendente — responda pelo card no chat desta página (botão abaixo), clique \"Aprovar gate\" no painel de Revisão, ou aprove no terminal (/diaria-4-revisao).";
-  } else if (bridge.pending) {
-    // #3870 proposta item 2: sem card no chat = sessão rodando no
-    // terminal — explícito que a UI só observa (nada escondido, sem botão
-    // pra clicar aqui).
-    status.textContent = "Gate pendente — esta sessão está rodando no terminal (não no chat desta página); a UI só observa. Aprove no terminal com /diaria-4-revisao, ou clique \"Aprovar gate\" no painel de Revisão (grava a decisão em disco; a sessão do terminal ainda precisa prosseguir manualmente).";
+  status.className = "gate-status " + (pending ? "gate-status-pending" : "gate-status-idle");
+  if (pending) {
+    // #6942: responder gate só é possível no terminal (chat do Studio
+    // removido) — "Aprovar gate" no painel de Revisão grava a decisão em
+    // disco (_internal/.step-4-decision.json), mas a sessão do terminal
+    // ainda precisa ver o resultado e prosseguir manualmente (escopo
+    // intencionalmente parcial, ver stage4-decision.ts).
+    status.textContent = "Gate pendente — a UI só observa. Aprove no terminal com /diaria-4-revisao, ou clique \"Aprovar gate\" no painel de Revisão (grava a decisão em disco; a sessão do terminal ainda precisa prosseguir manualmente).";
   } else if (detail.currentStage === "unknown" || (typeof detail.currentStage === "number" && detail.currentStage < 4)) {
     status.textContent = "Ainda não chegou no Stage 4.";
   } else {
     status.textContent = "Sem gate pendente aqui agora (já aprovado ou stage ainda não concluiu os pré-requisitos).";
   }
   el.gate4.appendChild(status);
-  appendGateChatBridgeRow(el.gate4, bridge);
 
   const files = detail.gateFacingFiles.filter((f) => GATE_4_FILES.includes(f.name));
   renderFileList(el.gate4, files);
@@ -321,13 +264,11 @@ function renderGate4(detail) {
 function renderGate6(detail) {
   el.gate6.innerHTML = "";
   if (!detail.found) return;
-  const bridge = resolveGateChatBridge(6, detail.gatesPending, chatPermissionsPending);
+  const pending = detail.gatesPending.includes(6);
   const status = document.createElement("p");
-  status.className = "gate-status " + (bridge.pending ? "gate-status-pending" : "gate-status-idle");
-  if (bridge.pending && bridge.hasCard) {
-    status.textContent = "Gate pendente — responda pelo card no chat desta página (botão abaixo) ou aprove no terminal (/diaria-6-agendamento).";
-  } else if (bridge.pending) {
-    status.textContent = "Gate pendente — esta sessão está rodando no terminal (não no chat desta página); a UI só observa. Aprove no terminal com /diaria-6-agendamento.";
+  status.className = "gate-status " + (pending ? "gate-status-pending" : "gate-status-idle");
+  if (pending) {
+    status.textContent = "Gate pendente — a UI só observa. Aprove no terminal com /diaria-6-agendamento.";
   } else if (detail.currentStage === "unknown" || (typeof detail.currentStage === "number" && detail.currentStage < 6)) {
     status.textContent = "Ainda não chegou no Stage 6.";
   } else if (detail.currentStage === "done") {
@@ -336,7 +277,6 @@ function renderGate6(detail) {
     status.textContent = "Sem gate pendente aqui agora.";
   }
   el.gate6.appendChild(status);
-  appendGateChatBridgeRow(el.gate6, bridge);
 
   const stageStatusFile = detail.gateFacingFiles.find((f) => f.name === "stage-status.md");
   if (stageStatusFile) {
@@ -348,36 +288,6 @@ function renderGate6(detail) {
     el.gate6.appendChild(p);
   }
 }
-
-/** Banner de gate pendente no TOPO do cockpit (#3870 proposta item 3) — não
- * substitui os cards de Gate 4/6 (que continuam com o detalhe completo),
- * só dá um segundo sinal mais visível que o badge pequeno do rail do chat
- * colapsado. `el.gateBannerBtn` é reaproveitado entre renders (é markup
- * estático do HTML, não recriado) — o listener de clique é registrado uma
- * vez, fora desta função (ver abaixo). */
-function renderGateBanner(detail) {
-  if (!detail.found) {
-    el.gateBanner.hidden = true;
-    return;
-  }
-  const bridge4 = resolveGateChatBridge(4, detail.gatesPending, chatPermissionsPending);
-  const bridge6 = resolveGateChatBridge(6, detail.gatesPending, chatPermissionsPending);
-  const picked = pickBannerGate(bridge4, bridge6);
-  if (!picked) {
-    el.gateBanner.hidden = true;
-    return;
-  }
-  el.gateBanner.hidden = false;
-  const label = picked.gate === 4 ? "Gate 4 — Revisão editorial" : "Gate 6 — Agendamento";
-  if (picked.hasCard) {
-    el.gateBannerText.textContent = `${label} pendente — ${formatWaitingSince(picked.oldestAskedAt)}`;
-    el.gateBannerBtn.hidden = false;
-  } else {
-    el.gateBannerText.textContent = `${label} pendente — esta sessão roda no terminal; a UI só observa.`;
-    el.gateBannerBtn.hidden = true;
-  }
-}
-el.gateBannerBtn.addEventListener("click", openChatAtPendingCard);
 
 function renderAlerts() {
   const errors = logBuffer.filter((e) => e.level === "error");
@@ -437,7 +347,6 @@ function renderAll(detail) {
   renderTimeline(detail);
   renderGate4(detail);
   renderGate6(detail);
-  renderGateBanner(detail);
   renderAlerts();
   renderLogList();
   markUpdatedNow();
@@ -498,10 +407,6 @@ let eventSource = null;
 function connect() {
   if (eventSource) eventSource.close();
   eventSource = new EventSource("/api/events");
-  // #3891 (item 4): publica a conexão pra chat-drawer.js (injetado logo
-  // abaixo no HTML, sempre o ÚLTIMO <script> — ver shared-event-source.js)
-  // reusar em vez de abrir uma segunda conexão só pro badge global.
-  window.__studioEvents = eventSource;
 
   eventSource.addEventListener("open", () => setConn("ok"));
   eventSource.addEventListener("error", () => setConn("down"));
@@ -527,24 +432,8 @@ function connect() {
     }
   });
 
-  eventSource.addEventListener("state", (ev) => {
+  eventSource.addEventListener("state", () => {
     setConn("ok");
-    // #3870: `state` já carrega `chatPermissionsPending` (mesmo shape de
-    // GET /api/state) — atualiza o espelho local e reflete no gate 4/6 +
-    // banner IMEDIATAMENTE, sem esperar o debounce de 500ms de
-    // `scheduleRefetch` (que ainda roda, pro resto da timeline/status).
-    try {
-      const state = JSON.parse(ev.data);
-      chatPermissionsPending = Array.isArray(state.chatPermissionsPending) ? state.chatPermissionsPending : [];
-    } catch {
-      // payload malformado neste tick — mantém o último valor conhecido
-      // (fail-soft, mesma disciplina de pushLogEvents/renderAlerts).
-    }
-    if (currentDetail) {
-      renderGate4(currentDetail);
-      renderGate6(currentDetail);
-      renderGateBanner(currentDetail);
-    }
     scheduleRefetch();
   });
 

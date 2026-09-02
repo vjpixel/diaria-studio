@@ -50,11 +50,9 @@ describe("buildDiariaDashboardHtml (#3563, endereça #3550)", () => {
     assert.match(html, /<link rel="stylesheet" href="\/tokens\.generated\.css"/);
     assert.match(html, /<link rel="stylesheet" href="\/style\.css"/);
     assert.match(html, /<link rel="stylesheet" href="\/nav\.css"/);
-    assert.match(html, /<link rel="stylesheet" href="\/chat-drawer\.css"/);
     assert.match(html, /id="app-nav" class="app-nav" aria-label="Navegação do Studio"/);
     assert.match(html, /window\.STUDIO_PAGE = "painel-diaria";/);
     assert.match(html, /<script src="\/nav\.js" type="module">/);
-    assert.match(html, /<script src="\/chat-drawer\.js" type="module">/);
   });
 });
 

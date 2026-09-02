@@ -66,9 +66,7 @@ function summarizePlan(
  * que decide o que entra/fica de fora do payload exposto ao mundo — todo
  * campo aqui é número/enum/rótulo de data, nunca PII (ver header do
  * arquivo). Em particular: NÃO inclui `state.rootDir` (path absoluto local,
- * pode vazar username da máquina do editor) nem `state.chatPermissionsPending`
- * completo (que carrega `firstQuestion` — só a CONTAGEM (`.length`) sai
- * daqui).
+ * pode vazar username da máquina do editor).
  */
 export function buildStudioSnapshot(state: StudioState, now: Date = new Date()): StudioSnapshot {
   const currentEditionSummary =
@@ -79,7 +77,6 @@ export function buildStudioSnapshot(state: StudioState, now: Date = new Date()):
     current_stage: currentEditionSummary?.currentStage ?? "unknown",
     stage_label: currentEditionSummary?.stageLabel ?? "Desconhecido",
     gates_pending_count: state.gatesPending.length,
-    chat_gates_pending_count: state.chatPermissionsPending.length,
     overnight: summarizePlan(state.overnight),
     develop: summarizePlan(state.develop),
   };

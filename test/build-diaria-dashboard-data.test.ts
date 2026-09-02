@@ -818,9 +818,7 @@ describe("renderDashboardHtml — assets do menu unificado do Studio (#3853)", (
     assert.ok(!html.includes("/tokens.generated.css"), "não deve carregar tokens.generated.css");
     assert.ok(!html.includes("/style.css"), "não deve carregar style.css");
     assert.ok(!html.includes("/nav.css"), "não deve carregar nav.css");
-    assert.ok(!html.includes("/chat-drawer.css"), "não deve carregar chat-drawer.css");
     assert.ok(!html.includes("/nav.js"), "não deve carregar nav.js");
-    assert.ok(!html.includes("/chat-drawer.js"), "não deve carregar chat-drawer.js");
     assert.ok(!html.includes('id="app-nav"'), "não deve ter o container #app-nav");
     assert.ok(!html.includes("window.STUDIO_PAGE"), "não deve setar window.STUDIO_PAGE");
   });
@@ -839,17 +837,15 @@ describe("renderDashboardHtml — assets do menu unificado do Studio (#3853)", (
     assert.match(html, /:root\s*\{\s*--brand:\s*#00A0A0;/);
   });
 
-  test("COM studioMode:true: inclui os 4 links de assets compartilhados + container de nav + STUDIO_PAGE + scripts", async () => {
+  test("COM studioMode:true: inclui os 3 links de assets compartilhados + container de nav + STUDIO_PAGE + scripts", async () => {
     const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
     const html = renderDashboardHtml(makeMinimalData(), { studioMode: true });
     assert.match(html, /<link rel="stylesheet" href="\/tokens\.generated\.css"\s*\/>/);
     assert.match(html, /<link rel="stylesheet" href="\/style\.css"\s*\/>/);
     assert.match(html, /<link rel="stylesheet" href="\/nav\.css"\s*\/>/);
-    assert.match(html, /<link rel="stylesheet" href="\/chat-drawer\.css"\s*\/>/);
     assert.match(html, /id="app-nav" class="app-nav" aria-label="Navegação do Studio"/);
     assert.match(html, /window\.STUDIO_PAGE = "painel-diaria";/);
     assert.match(html, /<script src="\/nav\.js" type="module">/);
-    assert.match(html, /<script src="\/chat-drawer\.js" type="module">/);
   });
 
   test("COM studioMode:true: NÃO redeclara :root local — tokens.generated.css fica no controle", async () => {

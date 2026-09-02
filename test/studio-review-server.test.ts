@@ -870,17 +870,8 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
   // #3828: a seção "Ações rápidas" (cards "Reescrever título"/"Regenerar
   // imagem"/swap de destaque) foi removida do painel — cobertura antiga
   // desses cards + de `/revisao-prompts.js` (módulo deletado) vivia aqui.
-  // `chat-drawer.js` em si (usado por várias outras páginas do Studio, não
-  // só /revisao) segue coberto abaixo.
-
-  it("GET /chat-drawer.js expõe prefillMessage em window.diariaStudioChat", async () => {
-    const res = await fetch(new URL("/chat-drawer.js", server.url));
-    assert.equal(res.status, 200);
-    assert.match(res.headers.get("content-type") ?? "", /javascript/);
-    const body = await res.text();
-    assert.match(body, /function prefillMessage\(/);
-    assert.match(body, /window\.diariaStudioChat\s*=\s*\{[^}]*prefillMessage/);
-  });
+  // `chat-drawer.js` foi removido por sua vez no #6942 (chat do Studio
+  // inteiro) — não sobrou cobertura equivalente aqui de propósito.
 
   // #3663: contrato do wiring aba social → endpoint de preview social —
   // mesmo padrão de teste "só contrato estático" dos casos acima (sem harness
