@@ -78,15 +78,28 @@ export interface KitIngestDeps {
   sleep: (ms: number) => Promise<void>;
 }
 
-/** Pagina `GET /broadcasts?status=completed` até o fim — só broadcasts
- *  efetivamente enviados têm audiência real pra ingerir. */
-async function listAllCompletedBroadcasts(): Promise<KitBroadcastSummary[]> {
+/**
+ * Pagina `GET /broadcasts?status=completed` até o fim — só broadcasts
+ * efetivamente enviados têm audiência real pra ingerir.
+ *
+ * `has_next_page=true` sem `end_cursor` é envelope malformado, NUNCA fim de
+ * lista silencioso — mesma disciplina de `drainPages` (`kit-provider-split.ts`,
+ * achado do review #6491): uma lista de broadcasts truncada em silêncio
+ * deixaria broadcasts inteiros fora da enumeração, sem nenhum sinal de erro.
+ */
+export async function listAllCompletedBroadcasts(): Promise<KitBroadcastSummary[]> {
   const out: KitBroadcastSummary[] = [];
   let after: string | undefined;
   for (;;) {
     const { broadcasts, pagination } = await listBroadcasts({ status: "completed", perPage: 100, after });
     out.push(...broadcasts);
-    if (!pagination.has_next_page || !pagination.end_cursor) break;
+    if (!pagination.has_next_page) break;
+    if (!pagination.end_cursor) {
+      throw new Error(
+        "[diaria-subscribers-ingest-kit] listagem de broadcasts: has_next_page=true mas end_cursor " +
+          "ausente — lista truncada, abortando em vez de tratar como fim de lista (#6491).",
+      );
+    }
     after = pagination.end_cursor;
   }
   return out;
