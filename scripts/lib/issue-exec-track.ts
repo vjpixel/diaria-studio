@@ -606,6 +606,72 @@ export function classifyExecTrack(input: ExecTrackInput): ExecTrack {
   return classifyExecTrackWithRule(input).track;
 }
 
+/**
+ * Shape cru de um item de `gh issue list --json ...` — labels tanto como
+ * array de string quanto array de `{ name }` (o `gh` devolve o 2º; testes e
+ * fixtures às vezes já normalizam pro 1º), e QUALQUER outro campo que o
+ * `--json` tenha incluído (title, url, updatedAt, ...) — ignorados aqui,
+ * preservados no objeto de entrada pro caller que quiser.
+ */
+export interface GhIssueListRawItem {
+  number?: unknown;
+  labels?: Array<string | { name?: string } | null | undefined> | null;
+  body?: unknown;
+  state?: unknown;
+  [key: string]: unknown;
+}
+
+function normalizeGhIssueListLabels(raw: GhIssueListRawItem["labels"]): string[] {
+  return (raw ?? [])
+    .map((l) => (typeof l === "string" ? l : l?.name))
+    .filter((n): n is string => typeof n === "string" && n.length > 0);
+}
+
+/**
+ * #7018 — entrada FAIL-CLOSED pra classificar um item cru de `gh issue list`,
+ * em vez de montar `ExecTrackInput` à mão (o caminho que permitiu o bug
+ * original). `classifyExecTrack`/`classifyExecTrackWithRule` continuam
+ * aceitando `body` ausente/`undefined` sem reclamar — mudar isso quebraria
+ * todo caller de produção e teste que passa `body: ""` deliberadamente para
+ * dizer "sem marcador" (ambíguo, à propósito, com "não sei se tem corpo").
+ * A ambiguidade real só existe no ponto de ENTRADA de uma varredura de `gh
+ * issue list`: ali, "a chave `body` não veio no objeto" é sempre um bug de
+ * comando (`--json` sem `body` no campo) — nunca uma issue com corpo vazio
+ * de propósito (`gh` sempre devolve `body: null`/`""`, nunca omite a
+ * chave, quando o campo É pedido).
+ *
+ * Por isso a checagem é sobre a CHAVE (`"body" in raw`), não sobre o VALOR:
+ * `{ body: null }` e `{ body: "" }` passam normalmente (corpo vazio de
+ * verdade); só a ausência total da chave lança.
+ *
+ * Lança `Error` (fail-closed) em vez de degradar pro track mais permissivo
+ * (`overnight`) — que é exatamente a regressão silenciosa do #7018: 4
+ * issues `agendada` (marcador `aguardando-ate:` no corpo) foram dispatchadas
+ * como `overnight` porque a varredura da rodada rodou sem `body`, sem
+ * nenhum sinal de erro.
+ */
+export function classifyExecTrackFromListItem(
+  raw: GhIssueListRawItem,
+  opts?: { now?: Date },
+): ExecTrack {
+  if (!("body" in raw)) {
+    throw new Error(
+      `classifyExecTrackFromListItem: item${
+        typeof raw.number === "number" ? ` #${raw.number}` : ""
+      } sem a chave "body" — 'gh issue list --json ...' precisa incluir 'body' na lista de campos. ` +
+        "Sem ela, o marcador 'aguardando-ate:' fica invisível e uma issue Agendada degrada silenciosamente " +
+        "para Overnight, o track mais permissivo (#7018). Use scripts/lib/issue-triage-fetch.ts " +
+        "(fetchOpenIssuesForTriage) em vez de montar o comando 'gh issue list' à mão.",
+    );
+  }
+  return classifyExecTrack({
+    labels: normalizeGhIssueListLabels(raw.labels),
+    body: (raw.body ?? null) as string | null,
+    state: (raw.state ?? null) as string | null,
+    now: opts?.now,
+  });
+}
+
 /** Rótulo curto pra UI (badge/dropdown). Separado do tipo pra manter o valor
  * serializado estável mesmo se o texto visível mudar.
  *
