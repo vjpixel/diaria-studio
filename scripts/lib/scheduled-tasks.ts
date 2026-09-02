@@ -1480,6 +1480,38 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // (`helios`) e acao POSTERIOR do editor.
     issue: "#6960",
   },
+  {
+    name: "Diaria-Openrouter-Billing-Leak-Alarm",
+    description: "alarme diario de modelo pago nao pedido faturado no gateway OpenRouter (#6716 escopo 3)",
+    steps: [{ key: "check", script: "scripts/openrouter-billing-leak-check.ts" }],
+    logPath: "openrouter-billing-leak/.alarm.log",
+    // 21:45 BRT = 00:45 UTC -- depois da meia-noite UTC, que é quando o
+    // `/api/v1/activity` fecha o dia UTC anterior (o script é
+    // estruturalmente D-1, ver docblock de scripts/lib/openrouter-billing-leak.ts).
+    // A doc da OpenRouter recomenda esperar ~30min pós-virada antes de
+    // confiar no dia anterior (#6985 item 3); 45min de folga sobre esse
+    // mínimo, sem colidir com Diaria-Clarice-Cohorts-Crawl (21:00, único
+    // outro daily na faixa 21h-22h do registro).
+    schedule: { kind: "daily", hour: 21, minute: 45 },
+    // successExitCodes: [3] -- exit 3 ("achou vazamento") já envia o
+    // e-mail de alarme por dentro do próprio script (ver
+    // buildBillingLeakAlarmEmail); a task TERMINOU O TRABALHO que existe
+    // pra fazer, não falhou em fazê-lo, então não deve marcar a unit
+    // systemd como `failed` nem contar como falha no
+    // Diaria-Systemd-Unit-Rate-Alarm. **Exit 1 (indeterminado/erro) fica
+    // DE FORA de propósito** (#6985: "exit 1 significa 'não mediu' e não
+    // pode ser silenciado como erro cosmético") -- só ele deve continuar
+    // reprovando a unit e contando pra taxa de falha, senão o guard vira
+    // inerte de novo pela porta do runner em vez da porta do cron ausente.
+    // 3 = LEAK_FOUND_EXIT_CODE (scripts/openrouter-billing-leak-check.ts) --
+    // literal, não importado: scripts/lib/ não importa de scripts/ soltos
+    // (test/lib-boundary.test.ts não cobre essa direção específica, mas o
+    // padrão do resto do registro -- ex: o `[75]` de
+    // Diaria-Clarice-Guardrail-Alarm acima -- já é valor literal com
+    // comentário apontando a constante de origem, não import cruzado).
+    successExitCodes: [3],
+    issue: "#6985, #6716 escopo 3, #6983",
+  },
 ];
 
 /**
