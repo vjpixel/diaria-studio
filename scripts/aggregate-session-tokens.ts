@@ -41,6 +41,17 @@
  * caem em `unavailableCount` por kind/categoria, sempre reportado ao lado
  * do total, para nunca confundir "consumiu 0" com "não foi possível medir".
  *
+ * **Rodada que não emitiu evento NENHUM não vira zero nem n/d: virava
+ * AUSÊNCIA (#6634).** Até o #6634 uma rodada cujo coordenador esqueceu os 4
+ * checkpoints simplesmente não aparecia em linha nenhuma — o painel lia
+ * "rodada barata" onde havia "rodada não instrumentada" (caso 260811, 0
+ * eventos `subagent_metrics`, #5009). Desde o #6634, as rodadas que
+ * RODARAM são descobertas em `data/{overnight,develop,continuo}/{roundId}/`
+ * (dir com `plan.json`) e as que não contribuíram com nenhum evento de
+ * custo aparecem em `roundsWithoutEvents`, marcadas na tabela como
+ * `(N rodada(s) sem evento)` ao lado do total — e uma rodada muda sozinha
+ * ganha linha própria em vez de sumir.
+ *
  * Uso:
  *   npx tsx scripts/aggregate-session-tokens.ts
  *   npx tsx scripts/aggregate-session-tokens.ts --since 260801 --until 260828
@@ -57,7 +68,7 @@
  * @see scripts/check-overnight-token-instrumentation.ts (presença, não soma)
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -122,11 +133,20 @@ export interface KindDayTotals {
    * normal (inclusive toda linha de `edicao`).
    *
    * **São as rodadas que CONTRIBUÍRAM dado, não as que rodaram**: rodada que
-   * não emitiu nenhum dos 4 eventos de custo não aparece aqui (é justamente
-   * o buraco do #6634 — instrumentação que depende do coordenador lembrar).
-   * Ler `×3` como "3 rodadas naquele dia" subestima quando alguma ficou muda.
+   * não emitiu nenhum dos 4 eventos de custo não aparece aqui — desde o
+   * #6634 ela aparece em `roundsWithoutEvents` (antes deste fix ela sumia
+   * por inteiro da contagem).
    */
   rounds: string[];
+  /**
+   * Rodadas que RODARAM (descobertas via `plan.json` sob
+   * `data/{overnight,develop,continuo}/{roundId}/`) mas não emitiram NENHUM
+   * evento de custo reconhecido (#6634). Ausente = nenhuma. É a distinção
+   * "rodada barata" vs "rodada não instrumentada": total baixo com
+   * `roundsWithoutEvents` populado é instrumentação faltando, não consumo
+   * baixo. `edicao` nunca popula (não tem coordenador/rodadas de run-log).
+   */
+  roundsWithoutEvents?: string[];
   totalTokens: number;
   /** Split in/out — só populado para `kind: "edicao"` (única fonte com dado real). */
   tokensIn?: number;
@@ -294,7 +314,7 @@ export function mergeKindDayTotals(rows: KindDayTotals[]): KindDayTotals[] {
       for (const [name, cat] of Object.entries(row.categories) as [TokenCategory, CategoryTotals][]) {
         categories[name] = { ...cat };
       }
-      byKey.set(key, { ...row, rounds: [...row.rounds], categories });
+      byKey.set(key, { ...row, rounds: [...row.rounds], roundsWithoutEvents: row.roundsWithoutEvents ? [...row.roundsWithoutEvents] : undefined, categories });
       continue;
     }
     acc.totalTokens += row.totalTokens;
@@ -312,8 +332,107 @@ export function mergeKindDayTotals(rows: KindDayTotals[]): KindDayTotals[] {
       target.eventCount += cat.eventCount;
       target.unavailableCount += cat.unavailableCount;
     }
+    for (const id of row.roundsWithoutEvents ?? []) {
+      if (!acc.roundsWithoutEvents?.includes(id)) (acc.roundsWithoutEvents ??= []).push(id);
+    }
+    acc.roundsWithoutEvents?.sort();
   }
   return [...byKey.values()];
+}
+
+// ---------------------------------------------------------------------------
+// Rodadas que rodaram sem emitir evento algum (#6634)
+// ---------------------------------------------------------------------------
+
+/** Raiz de dados por kind — onde um dir `{roundId}/plan.json` prova que a rodada rodou. */
+const ROUND_DATA_DIR: Record<Exclude<SessionKind, "edicao">, string> = {
+  overnight: "data/overnight",
+  develop: "data/develop",
+  continuo: "data/continuo",
+};
+
+/**
+ * Descobre as rodadas que RODARAM no período: diretório `data/{kind}/{roundId}/`
+ * contendo `plan.json` (a rodada passou da Fase 0 — mesmo critério de
+ * `continuo-cost-summary.ts`, que só considera dias com `plan.json`).
+ *
+ * Entradas que não provam rodada são ignoradas fail-soft: arquivos soltos no
+ * kind dir (`data/overnight/issues-raw.json`, `pp.mjs` — observado ao vivo),
+ * dir sem `plan.json` (abortada antes da Fase 0 gravar), kind dir ausente
+ * inteiro (worktree de teste, clone fresco). Janela por DIA CIVIL via
+ * `roundDayFromEdition`, mesma semântica dos eventos (#6638).
+ */
+export function discoverRanRounds(
+  rootDir: string,
+  opts: { since?: string; until?: string } = {},
+): Partial<Record<Exclude<SessionKind, "edicao">, string[]>> {
+  const out: Partial<Record<Exclude<SessionKind, "edicao">, string[]>> = {};
+  for (const [kind, rel] of Object.entries(ROUND_DATA_DIR) as [Exclude<SessionKind, "edicao">, string][]) {
+    const kindDir = resolve(rootDir, rel);
+    if (!existsSync(kindDir)) continue;
+    let entries: string[];
+    try {
+      entries = readdirSync(kindDir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const day = roundDayFromEdition(entry);
+      if (opts.since && day < opts.since) continue;
+      if (opts.until && day > opts.until) continue;
+      let isFile = false;
+      try {
+        isFile = statSync(resolve(kindDir, entry, "plan.json")).isFile();
+      } catch {
+        continue;
+      }
+      if (!isFile) continue;
+      (out[kind] ??= []).push(entry);
+    }
+  }
+  for (const ids of Object.values(out)) ids!.sort();
+  return out;
+}
+
+/**
+ * Pure: marca nas linhas agregadas as rodadas que rodaram sem emitir evento
+ * nenhum (#6634). Rodada muda numa linha existente entra em
+ * `roundsWithoutEvents`; rodada muda num (kind, dia) SEM linha alguma ganha
+ * linha própria com `totalTokens: 0` — é o caso que antes SUMIA da tabela
+ * (regressão: linha ausente era lida como "não houve rodada"/"rodada barata").
+ */
+export function markUninstrumentedRounds(
+  rows: KindDayTotals[],
+  ranRounds: Partial<Record<Exclude<SessionKind, "edicao">, string[]>>,
+): KindDayTotals[] {
+  // Cópia defensiva: as linhas de entrada vêm de `mergeKindDayTotals` (que já
+  // copia), mas a função é exportada e o `push` abaixo mutaria a entrada.
+  // Anotação explícita: sem ela o `map` infere `roundsWithoutEvents` como
+  // propriedade OBRIGATÓRIA `string[] | undefined` (o literal sempre a
+  // escreve), e aí o literal de linha nova abaixo — que legitimamente a omite
+  // ("ausente = nenhuma") — deixa de ser atribuível ao próprio elemento do
+  // array. `KindDayTotals` a declara opcional; é esse o contrato.
+  const out: KindDayTotals[] = rows.map((r) => ({
+    ...r,
+    rounds: [...r.rounds],
+    roundsWithoutEvents: r.roundsWithoutEvents ? [...r.roundsWithoutEvents] : undefined,
+  }));
+  for (const [kind, ids] of Object.entries(ranRounds) as [Exclude<SessionKind, "edicao">, string[]][]) {
+    for (const id of ids) {
+      const day = roundDayFromEdition(id);
+      let row = out.find((r) => r.kind === kind && r.day === day);
+      if (!row) {
+        row = { kind, day, rounds: [], totalTokens: 0, categories: {} };
+        out.push(row);
+      }
+      if (row.rounds.includes(id)) continue; // contribuiu com evento — instrumentada
+      if (!row.roundsWithoutEvents?.includes(id)) {
+        (row.roundsWithoutEvents ??= []).push(id);
+        row.roundsWithoutEvents.sort();
+      }
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +510,7 @@ export function buildSessionTokensSummary(opts: BuildSummaryOptions, now: Date =
   const editions = aggregateCosts({ editionsDir, since, until });
   const editionRows = editionCostsToKindDayTotals(editions);
 
-  const rows = mergeKindDayTotals([...editionRows, ...logRows]).sort(
+  const rows = markUninstrumentedRounds(mergeKindDayTotals([...editionRows, ...logRows]), discoverRanRounds(rootDir, { since, until })).sort(
     (a, b) => a.day.localeCompare(b.day) || a.kind.localeCompare(b.kind),
   );
 
@@ -449,8 +568,12 @@ function formatByDayTable(rows: KindDayTotals[]): string {
       // `×N` = N rodadas do mesmo dia somadas nesta linha (#6638). Sem isso a
       // fusão apagaria a diferença entre um dia de 1 rodada e um de 7.
       const kindStr = row.rounds.length > 1 ? `${KIND_LABEL[row.kind]} ×${row.rounds.length}` : KIND_LABEL[row.kind];
+      // Rodada que rodou sem emitir evento nenhum (#6634) — nunca lida como
+      // "rodada barata": o total baixo vem de instrumentação faltando.
+      const silent = row.roundsWithoutEvents?.length ?? 0;
+      const totalStr = `${fmtTokens(row.totalTokens)}${silent ? ` (${silent} rodada${silent > 1 ? "s" : ""} sem evento)` : ""}`;
       lines.push(
-        `| ${day} | ${kindStr} | ${fmtTokens(row.totalTokens)} | ${fmtCost(row.costUsd, row.costEstimated)} | ${coordStr} | ${implStr} | ${reviewStr} |`,
+        `| ${day} | ${kindStr} | ${totalStr} | ${fmtCost(row.costUsd, row.costEstimated)} | ${coordStr} | ${implStr} | ${reviewStr} |`,
       );
     }
   }
@@ -503,6 +626,7 @@ ${formatByDayTable(summary.rows)}
 ---
 _Fontes: \`_internal/stage-status.json\` por edição (kind "Edição", via \`aggregate-costs.ts\`) + \`data/run-log.jsonl\` eventos \`subagent_metrics\`/\`coordinator_tokens_estimate\`/\`review_metrics\`/\`fleet_review_metrics\` filtrados por \`agent ∈ {overnight, develop, continuo}\` (#3453/#4815)._
 _"n/d" ao lado de uma categoria = eventos com \`source: "unavailable"\` (harness não expôs tokens, ou coordenador esqueceu o checkpoint) — NUNCA contados como zero, só reportados à parte para não subestimar o consumo em silêncio._
+_"(N rodada(s) sem evento)" ao lado do total = rodada que rodou (tem \`plan.json\` sob \`data/{overnight,develop,continuo}/\`) mas não emitiu NENHUM evento de custo (#6634) — é "não instrumentada", não "barata"; a rodada inteiramente muda ganha linha própria com total \`-\`._
 _"Dia" é dia CIVIL: rodadas do mesmo dia (\`260814\`, \`260814b\`, \`260814c\`) somam numa linha só, e \`×N\` ao lado do kind diz quantas foram (#6638)._
 _"Edição" tem split real \`tokens_in\`/\`tokens_out\` e \`$\` por modelo (via transcript local); overnight/develop/continuo só têm o total por invocação, sem split in/out._
 _**Não compare os percentuais entre kinds:** as duas fontes medem bases diferentes — "Edição" soma \`input + cache_creation + cache_read\` do transcript e NÃO inclui subagentes (#5413), overnight/develop/continuo somam o total por subagente e não incluem o coordenador (#6634). Ver #6633._
