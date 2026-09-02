@@ -328,6 +328,7 @@ describe("toAlarmFinding — family (#5558)", () => {
       lastCommitAt: "2026-08-05T10:00:00Z",
       driftMs: 4 * 24 * 60 * 60 * 1000,
       message: "commit mais recente que o último deploy publicado",
+      deployBlockedBy: [],
     };
     assert.equal(toAlarmFinding(r).family, "estado");
   });

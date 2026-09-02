@@ -71,6 +71,14 @@ run_worker_first = [
 # `apoio_nivel` já mantido pela Beehiiv). PLACEHOLDER — rodar `wrangler kv
 # namespace create ARTIGOS_APOIO_NIVEL` e colar o id retornado aqui antes do
 # deploy (mesmo procedimento de `workers/cursos/wrangler.toml`).
+#
+# Enquanto este id for um `PLACEHOLDER_...`, DOIS mecanismos pulam o deploy
+# de propósito (#7092): o passo "Guard - KV namespace provisionado?" de
+# `.github/workflows/deploy-artigos.yml` e o alarme de drift
+# (`scripts/worker-drift-check.ts`, status `deploy_blocked`). O que falta pra
+# destravar — KV + `COOKIE_HMAC_SECRET` + 1º deploy — está rastreado na
+# **#7152**; até lá o gate dos Artigos Especiais NÃO está no ar (produção
+# serve o artigo completo). Colar o id real reativa os dois sozinho.
 [[kv_namespaces]]
 binding = "ARTIGOS_APOIO_NIVEL"
 id = "PLACEHOLDER_RODAR_WRANGLER_KV_NAMESPACE_CREATE"

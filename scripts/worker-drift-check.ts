@@ -23,6 +23,18 @@
  * este arquivo). Ver `scripts/lib/worker-drift-check.ts` pros parsers puros
  * (`parseWranglerTomlName`/`parseWranglerJsoncName`).
  *
+ * **Deploy deliberadamente bloqueado não alarma (#7092).** Se o
+ * `wrangler.toml`/`.jsonc` do worker ainda tiver um valor
+ * `PLACEHOLDER_...` não resolvido, o drift vira status `deploy_blocked`:
+ * aparece no log e no relatório, mas NÃO conta como pendência, não dispara
+ * e-mail e não abre issue. Motivo: nesse estado `wrangler deploy` falha, e
+ * `.github/workflows/deploy-*.yml` já pula o deploy automático pelo mesmo
+ * sinal — o alarme estava mandando o editor rodar o único comando que não
+ * funciona (issue #7092, worker `diaria-artigos`). Ver
+ * `parseDeployBlockingPlaceholders` em `scripts/lib/worker-drift-check.ts`.
+ * O trabalho REAL de destravar (provisionar KV/secret) é rastreado na issue
+ * do worker, não por este alarme.
+ *
  * ─── Por que Cloudflare REST API em vez de `wrangler deployments list` ─────
  *
  * Ver o header de `scripts/lib/worker-drift-check.ts` — mesmo racional já
@@ -81,6 +93,7 @@ import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import {
   parseWranglerTomlName,
   parseWranglerJsoncName,
+  parseDeployBlockingPlaceholders,
   evaluateAllWorkerDrift,
   hasPendingDrift,
   computeDriftFingerprint,
@@ -214,6 +227,10 @@ export interface DiscoveredWorker {
   workerDir: string;
   /** `name` extraído do wrangler.toml/.jsonc — pode diferir de `workerDir` (ex: "artigos" -> "diaria-artigos"). */
   workerName: string;
+  /** Placeholders não resolvidos no config deste worker (#7092) — `[]` no
+   * caso normal. Lido aqui porque o config JÁ foi aberto pra extrair o
+   * `name`: nenhum I/O extra. */
+  deployBlockedBy: string[];
 }
 
 /**
@@ -232,14 +249,21 @@ export function discoverWorkers(workersDir: string = WORKERS_DIR): DiscoveredWor
     const jsoncPath = join(workersDir, dir, "wrangler.jsonc");
 
     let name: string | null = null;
+    let configContent = "";
     if (existsSync(tomlPath)) {
-      name = parseWranglerTomlName(readFileSync(tomlPath, "utf8"));
+      configContent = readFileSync(tomlPath, "utf8");
+      name = parseWranglerTomlName(configContent);
     } else if (existsSync(jsoncPath)) {
-      name = parseWranglerJsoncName(readFileSync(jsoncPath, "utf8"));
+      configContent = readFileSync(jsoncPath, "utf8");
+      name = parseWranglerJsoncName(configContent);
     }
 
     if (name) {
-      discovered.push({ workerDir: dir, workerName: name });
+      discovered.push({
+        workerDir: dir,
+        workerName: name,
+        deployBlockedBy: parseDeployBlockingPlaceholders(configContent),
+      });
     } else {
       console.error(`${LOG_PREFIX} aviso: ${dir}/ não tem wrangler.toml/.jsonc com um "name" reconhecível — pulado.`);
     }
@@ -416,6 +440,7 @@ async function main(): Promise<void> {
     lastDeployedAt: metadata ? resolveLastDeployedAt(w.workerName, metadata) : null,
     lastCommitAt: getLastCommitAt(w.workerDir, ROOT, productionRef),
     deployError: metadataError,
+    deployBlockedBy: w.deployBlockedBy,
   }));
 
   const now = new Date();
