@@ -71,8 +71,29 @@
 
 /** N execuções fechadas como "sem ação" (ver critério acima) a partir das
  * quais um `check` vira candidato a aposentadoria — decisão do editor
- * (01/09/2026, #6798: "Regra de auto-aposentadoria com N=3"). Ajustável
- * nesta linha; nenhum outro lugar do código precisa mudar. */
+ * (01/09/2026, #6798: "Regra de auto-aposentadoria com N=3"), RATIFICADA
+ * em 02/09/2026 (mesma issue, item 5) depois de medir o efeito de subir
+ * pra N=5: N=3 flagra o `[watch-continuo] PRs sem prefixo` (3 issues, 0
+ * correções — o menor ofensor real da auditoria), N=5 deixaria esse caso
+ * passar batido. Ajustável nesta linha; nenhum outro lugar do código
+ * precisa mudar. O resultado deste threshold é sempre uma LISTA DE
+ * CANDIDATOS revisada por humano — nunca corte automático (ver docstring
+ * do módulo acima).
+ *
+ * **Ressalva descoberta na ratificação de 02/09/2026, que limita pra
+ * sempre o que este mecanismo pode virar:** um alarme cuja CORREÇÃO real é
+ * uma OPERAÇÃO (desarmar um timer systemd, religar um serviço) em vez de
+ * um commit vai aparecer como candidato mesmo funcionando — o editor
+ * conserta à mão fora do repo, o alarme para de reproduzir e auto-fecha
+ * (`NOT_PLANNED` por falta de commit associado, não por descarte), e isso
+ * lê exatamente como "3 execuções sem ação". Casos reais vistos nesta
+ * mesma issue: o timer órfão de `systemd-unit-rate-alarm` (desarmado à mão
+ * no `helios`) e de `cursos-error-alarm` (idem). Se a lista de candidatos
+ * começar a dar falso positivo por esse padrão, o conserto correto NÃO é
+ * subir `ALARM_RETIREMENT_THRESHOLD` — é ensinar o mecanismo a distinguir
+ * "fechou porque alguém agiu (ainda que fora do repo)" de "fechou porque
+ * ninguém agiu". É exatamente essa distinção não resolvida que impede
+ * ligar este mecanismo a corte automático algum dia. */
 export const ALARM_RETIREMENT_THRESHOLD = 3;
 
 /**

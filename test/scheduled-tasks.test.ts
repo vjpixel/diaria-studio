@@ -1151,29 +1151,6 @@ describe("#6130 — Diaria-Session-Registry-Gc registrada, diária, systemd-only
   });
 });
 
-describe("#6130 — Diaria-Session-Registry-SafeBackup-Alarm registrada, diária, systemd-only", () => {
-  it("está presente no registro, com o step apontando pro script correto, diária às 10:05", () => {
-    const t = getScheduledTaskByName("Diaria-Session-Registry-SafeBackup-Alarm");
-    assert.ok(t, "Diaria-Session-Registry-SafeBackup-Alarm ausente de SCHEDULED_TASKS");
-    assert.deepEqual(
-      t!.steps.map((s) => s.script),
-      ["scripts/session-registry-safebackup-alarm.ts"],
-    );
-    assert.deepEqual(t!.schedule, { kind: "daily", hour: 10, minute: 5 });
-  });
-
-  it("horário de 10:05 não colide com nenhuma outra daily do registro", () => {
-    const dailies = SCHEDULED_TASKS.filter(
-      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
-        t.schedule.kind === "daily",
-    );
-    const collisions = dailies.filter(
-      (t) => t.name !== "Diaria-Session-Registry-SafeBackup-Alarm" && t.schedule.hour === 10 && t.schedule.minute === 5,
-    );
-    assert.deepEqual(collisions, []);
-  });
-});
-
 describe("#6198 — Diaria-Backlog-Reconcile registrada, diária, systemd-only", () => {
   it("está presente no registro, com o step apontando pro script correto, diária às 10:10", () => {
     const t = getScheduledTaskByName("Diaria-Backlog-Reconcile");

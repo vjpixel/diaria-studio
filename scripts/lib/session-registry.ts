@@ -1952,18 +1952,6 @@ export function checkSessionsScanHealth(repoRoot: string): SessionsScanHealth {
 }
 
 /**
- * Nomes de toda cópia de conflito do OneDrive (`-safeBackup-NNNN`) presente
- * em `data/sessions/` — usado pelo alarme dedicado (#6130,
- * `scripts/session-registry-safebackup-alarm.ts`) pra sinalizar que o sync
- * de `data/` teve um conflito de escrita concorrente, órfão ou não.
- */
-export function listSafeBackupFiles(repoRoot: string): string[] {
-  return listSessionJsonFiles(repoRoot)
-    .filter((n) => n.includes("-safeBackup-"))
-    .sort();
-}
-
-/**
  * Une um grupo de registros (arquivo real + eventuais cópias de conflito do
  * MESMO sessionId, #6130) num único `SessionRecord` efetivo:
  *   - `claimed_issues`: UNIÃO de todos os arrays do grupo — fail-safe,

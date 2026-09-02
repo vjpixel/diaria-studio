@@ -1462,25 +1462,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#6130",
   },
   {
-    name: "Diaria-Session-Registry-SafeBackup-Alarm",
-    description:
-      "alarme de cópia de conflito do OneDrive (*-safeBackup-*) presente em data/sessions/ — cria/reusa/fecha " +
-      "issue por arquivo via alarm-issues.ts",
-    steps: [{ key: "alarm", script: "scripts/session-registry-safebackup-alarm.ts" }],
-    logPath: "sessions/.safebackup-alarm.log",
-    // 10:05 BRT — logo depois do GC (09:55, acima), pra alarmar sobre
-    // qualquer backup que o GC não pôde limpar ainda (ex: ancorado a uma
-    // sessão ainda ativa) na mesma janela matinal de checks/alarmes.
-    schedule: { kind: "daily", hour: 10, minute: 5 },
-    // Sem guard — listSafeBackupFiles/o wrapper já tratam data/ ausente
-    // como "nada a checar" (ver scripts/session-registry-safebackup-alarm.ts).
-    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
-    // disciplina do #5845/#5908/#5754 acima) — armar via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
-    // é ação POSTERIOR do editor.
-    issue: "#6130",
-  },
-  {
     name: "Diaria-Backlog-Reconcile",
     description:
       "reconciliação diária do backlog aberto — corrige mecanicamente marcador aguardando-ate: em conflito com " +
@@ -1488,10 +1469,10 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       "e checkbox aberto em issue fora-de-rodada (padrões 3/4)",
     steps: [{ key: "reconcile", script: "scripts/backlog-reconcile.ts" }],
     logPath: "backlog-reconcile/.reconcile.log",
-    // 10:10 BRT — logo depois do Diaria-Session-Registry-SafeBackup-Alarm
-    // (10:05, acima), fechando o cluster matinal de checks/alarmes
-    // 09:00-10:20 (ver grep de `kind: "daily"` neste arquivo) sem colidir
-    // com nenhuma outra entrada já registrada.
+    // 10:10 BRT — fim do cluster matinal de checks/alarmes 09:00-10:20 (ver
+    // grep de `kind: "daily"` neste arquivo) sem colidir com nenhuma outra
+    // entrada já registrada. O slot 10:05, que precedia este até o corte
+    // de Diaria-Session-Registry-SafeBackup-Alarm (#6798 item 5), está livre.
     schedule: { kind: "daily", hour: 10, minute: 10 },
     // Sem guard — `fetchOpenBacklog` já é fail-soft (falha do `gh` devolve
     // `null`, o CLI aborta com exit 1 sem escrever nada; nunca trata "gh
