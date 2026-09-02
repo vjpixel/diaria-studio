@@ -39,8 +39,8 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { isMainModule } from "./lib/cli-args.ts";
-import { GATE_CUT_MARKER, splitAtMarker, buildTeaserDocument } from "./lib/shared/html-teaser-split.ts";
-import { renderGateCta } from "./lib/shared/artigo-especial-gate-cta.ts";
+import { GATE_CUT_MARKER, splitAtMarker, buildTeaserDocument, rewriteGatedTocAnchors } from "./lib/shared/html-teaser-split.ts";
+import { renderGateCta, GATE_CTA_ID } from "./lib/shared/artigo-especial-gate-cta.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WORKER_DIR = resolve(ROOT, "workers", "artigos");
@@ -88,7 +88,8 @@ export function buildArticleArtifacts(
     throw new Error(`${article.slug}: marcador ${GATE_CUT_MARKER} não encontrado em articles-src/${article.slug}.html`);
   }
   const full = `${split.before}${split.after}`;
-  const teaser = buildTeaserDocument(split.before, renderGateCta(article.slug), full);
+  const before = rewriteGatedTocAnchors(split.before, GATE_CTA_ID);
+  const teaser = buildTeaserDocument(before, renderGateCta(article.slug), full);
   return { full, teaser };
 }
 

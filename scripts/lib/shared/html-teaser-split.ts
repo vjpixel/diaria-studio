@@ -69,6 +69,25 @@ export function extractLdJsonScript(html: string): string {
 }
 
 /**
+ * Reescreve, dentro de `before` (a metade do artigo que sobra no teaser
+ * estático), toda âncora `href="#sNN"` cujo `id="sNN"` correspondente NÃO
+ * existe em `before` — ou seja, aponta pra uma seção que só existe no HTML
+ * completo pós-gate. O destino vira `#${ctaId}` (o bloco de convite ao fim
+ * do teaser, ver `GATE_CTA_ID` em `artigo-especial-gate-cta.ts`): clicar
+ * numa seção bloqueada no índice leva direto a como destravá-la, em vez de
+ * âncora morta (test/artigos-cross-refs-5924.test.ts pegou esse caso —
+ * o TOC lista as 5 seções do artigo de propósito, como isca do gate, mas só
+ * a 1ª sobrevive no teaser estático). Âncoras cujo id JÁ existe em `before`
+ * (a seção s01, sempre presente) não são tocadas.
+ */
+export function rewriteGatedTocAnchors(before: string, ctaId: string): string {
+  const presentIds = new Set([...before.matchAll(/\bid="(s\d+)"/g)].map((m) => m[1]));
+  return before.replace(/href="#(s\d+)"/g, (full, id: string) =>
+    presentIds.has(id) ? full : `href="#${ctaId}"`,
+  );
+}
+
+/**
  * Monta o documento teaser: `before` + bloco de CTA + JSON-LD (se presente
  * em `fullHtml`, mesmo cuidado de SEO do docstring de `extractLdJsonScript`)
  * + `</div>` suficientes pra fechar a árvore + `</body></html>`. `ctaHtml` é

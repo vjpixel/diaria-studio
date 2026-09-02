@@ -19,10 +19,19 @@
  * correspondência é o item explicitamente deixado em aberto pela issue (ver
  * `workers/artigos/src/apoio-gate-config.ts`). O texto aqui não muda
  * dependendo da resposta.
+ *
+ * `GATE_CTA_ID` é o id do bloco abaixo — âncora de destino de qualquer item
+ * do TOC do teaser que aponte pra uma seção gateada (ver
+ * `rewriteGatedTocAnchors` em `html-teaser-split.ts`): clicar em "s03" no
+ * índice leva direto ao convite de apoio, em vez de âncora morta. Exportado
+ * (não hardcoded no outro módulo) porque os dois precisam concordar no
+ * mesmo valor.
  */
+export const GATE_CTA_ID = "especial-gate-cta";
+
 export function renderGateCta(articleSlug: string): string {
   return `
-<div class="especial-gate-cta" style="max-width:42rem;margin:2.5rem auto 0;padding:1.75rem 1.5rem;border-top:1px solid #EBE5D0;background:linear-gradient(to bottom, transparent, #FBFAF6 40%);position:relative;">
+<div class="especial-gate-cta" id="${GATE_CTA_ID}" style="max-width:42rem;margin:2.5rem auto 0;padding:1.75rem 1.5rem;border-top:1px solid #EBE5D0;background:linear-gradient(to bottom, transparent, #FBFAF6 40%);position:relative;">
   <div aria-hidden="true" style="position:absolute;top:-4.5rem;left:0;right:0;height:4.5rem;background:linear-gradient(to bottom, transparent, #FBFAF6);pointer-events:none;"></div>
   <p style="font-family:Georgia,serif;font-size:1.15rem;font-weight:600;margin:0 0 0.6rem;">O resto deste Artigo Especial é pra quem apoia a diar.ia.br.</p>
   <p style="font-size:0.95rem;line-height:1.55;margin:0 0 1.25rem;">A partir de R$10/mês de apoio, o Artigo Especial mensal sai completo — texto inteiro, mais aprofundado, com acesso a todo o histórico já publicado.</p>
