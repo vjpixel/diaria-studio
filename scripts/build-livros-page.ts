@@ -85,6 +85,7 @@ import {
   type GeoFaqItem,
 } from "./lib/shared/geo-faq.ts"; // #4558 Parte B: estrutura GEO (FAQ + JSON-LD FAQPage/Article + autoria)
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #4051: /jogar/subscribe mora no worker `poll` (eia.diar.ia.br)
+import { SIGNUP_FORM_FETCH_TIMEOUT_MS } from "./lib/site-home-page.ts"; // #6981: mesmo timeout do form da home (#6979) — reusa a constante em vez de escolher outro número
 import { LIVROS_FOOTER_NAV_UTM } from "./lib/shared/utm-registry.ts"; // #4537 item 2 — era literal solto, último dos 3 (Cursos/Arquivo já migrados) fora do registry
 import {
   isSafeUrl,
@@ -285,11 +286,14 @@ function renderSubscribeCta(v: SubscribeCtaVariant, variantClass: "hero" | "end"
  * — hero + fim de lista). `data-source` em cada `<form>` vira o campo `source`
  * do payload; o servidor resolve o UTM certo (nunca o cliente manda utm_* cru).
  * Mesmo padrão de validação leve (opt-in + `@`) + estados de erro de
- * `inlineSignupScript` (workers/poll/src/jogar.ts) — duplicado aqui de
- * propósito: bundles CSS/JS separados (scripts/ vs workers/poll/), sem import
- * cross-repo viável entre eles.
+ * `inlineSignupScript` (workers/poll/src/jogar.ts) — o CORPO do script
+ * continua duplicado de propósito (cada superfície tem seu próprio dialeto
+ * de seletor/endpoint); só a constante `SIGNUP_FORM_FETCH_TIMEOUT_MS` é
+ * IMPORTADA (#6981) — o cross-import scripts/ <-> workers/poll/ é viável
+ * (ver `jogar.ts`, que já importa `renderAnalyticsHead` de `scripts/lib/`),
+ * só não vale a pena pro resto do corpo por ora.
  */
-function renderSubscribeCtaScript(): string {
+export function renderSubscribeCtaScript(): string {
   return `<script>
   (function () {
     var forms = Array.prototype.slice.call(document.querySelectorAll(".cta-subscribe-form"));
@@ -322,11 +326,23 @@ function renderSubscribeCtaScript(): string {
           if (btn) btn.disabled = false;
           return;
         }
-        window.fetch(${JSON.stringify(SUBSCRIBE_ENDPOINT)}, {
+        // #6981: aborta o fetch depois de ${SIGNUP_FORM_FETCH_TIMEOUT_MS}ms e
+        // cai no MESMO .catch() de erro de rede abaixo — sem isso, uma
+        // promise que nunca resolve deixa "Enviando…" pendurado pra sempre,
+        // sem erro visível. Mesma técnica de signupFormScript() (site-home-page.ts, #6979).
+        var timeoutId = null;
+        var controller = typeof window.AbortController === "function" ? new window.AbortController() : null;
+        if (controller) {
+          timeoutId = setTimeout(function () { controller.abort(); }, ${SIGNUP_FORM_FETCH_TIMEOUT_MS});
+        }
+        var fetchOpts = {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
-        }).then(function (res) {
+        };
+        if (controller) fetchOpts.signal = controller.signal;
+        window.fetch(${JSON.stringify(SUBSCRIBE_ENDPOINT)}, fetchOpts).then(function (res) {
+          if (timeoutId) clearTimeout(timeoutId);
           return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
         }).then(function (r) {
           if (r.status === 200 && r.body && r.body.ok) {
@@ -346,6 +362,7 @@ function renderSubscribeCtaScript(): string {
             if (btn) btn.disabled = false;
           }
         }).catch(function () {
+          if (timeoutId) clearTimeout(timeoutId);
           setStatus("Erro de conexão. Tente de novo.", false);
           if (btn) btn.disabled = false;
         });

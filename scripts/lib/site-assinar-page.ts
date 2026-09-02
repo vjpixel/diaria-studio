@@ -22,6 +22,7 @@
  */
 import { escHtml } from "./html-escape.ts";
 import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
+import { SIGNUP_FORM_FETCH_TIMEOUT_MS } from "./site-home-page.ts"; // #6981: reusa o mesmo timeout do form da home (#6979) — dois números diferentes sem motivo seria dívida
 
 /**
  * Mesmo padrão de `renderWordmark()` em `site-home-page.ts` (#7010): consome
@@ -62,8 +63,9 @@ export function buildAssinarHtml(): string {
 
   \`source: "apex"\` no payload — o único \`SubscribeSource\` que aceita
   \`utm_source\`/\`utm_medium\`/\`utm_campaign\` DINÂMICOS do cliente, validados
-  contra a allowlist de prefixo (\`clarice-*\`, \`ads-*\`,
-  \`isAllowedClientUtmSource\`) antes de o servidor os usar; fora da
+  contra a allowlist de prefixo (\`clarice-*\`, \`google-ads-*\`,
+  \`microsoft-ads-*\`, \`meta-ads-*\`, \`isAllowedClientUtmSource\`) antes de o
+  servidor os usar; fora da
   allowlist, cai no triplo default \`SUBSCRIBE_UTM_BY_SOURCE.apex\`. Os 3
   valores são lidos da PRÓPRIA query string desta página (\`location.search\`)
   — chegam aqui porque a home (\`index.html\`) repassa \`location.search\` no
@@ -210,11 +212,25 @@ button[type="submit"]:disabled { opacity: 0.6; cursor: default; }
         form.submit();
         return;
       }
-      window.fetch(form.getAttribute("action"), {
+      // #6981: aborta o fetch depois de SIGNUP_FORM_FETCH_TIMEOUT_MS e cai no
+      // MESMO .catch() de erro de rede abaixo (mesma mensagem, botão
+      // reabilitado) — sem isso, uma promise que nunca resolve (DNS travado,
+      // proxy/firewall engolindo o POST cross-origin, Worker pendurado)
+      // deixa "Enviando…" pendurado pra sempre, sem erro visível. Mesma
+      // técnica de \`signupFormScript()\` em \`site-home-page.ts\` (#6979).
+      var timeoutId = null;
+      var controller = typeof window.AbortController === "function" ? new window.AbortController() : null;
+      if (controller) {
+        timeoutId = setTimeout(function () { controller.abort(); }, ${SIGNUP_FORM_FETCH_TIMEOUT_MS});
+      }
+      var fetchOpts = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
-      }).then(function (res) {
+      };
+      if (controller) fetchOpts.signal = controller.signal;
+      window.fetch(form.getAttribute("action"), fetchOpts).then(function (res) {
+        if (timeoutId) clearTimeout(timeoutId);
         return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
       }).then(function (r) {
         if (r.status === 200 && r.body && r.body.ok) {
@@ -233,6 +249,7 @@ button[type="submit"]:disabled { opacity: 0.6; cursor: default; }
           if (btn) btn.disabled = false;
         }
       }).catch(function () {
+        if (timeoutId) clearTimeout(timeoutId);
         setStatus("Erro de conexão. Tente de novo.", false);
         if (btn) btn.disabled = false;
       });

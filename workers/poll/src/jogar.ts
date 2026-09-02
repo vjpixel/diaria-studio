@@ -69,6 +69,7 @@ import {
   todayAammddBrt,
 } from "./lib";
 import { renderAnalyticsHead } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM
+import { SIGNUP_FORM_FETCH_TIMEOUT_MS } from "../../../scripts/lib/site-home-page.ts"; // #6981: mesmo timeout do form da home (#6979) — reusa a constante em vez de escolher outro número
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 // #3517: share card pós-jogo — script de wiring dos botões (Web Share API +
 // fallback copiar-link) reusado LITERALMENTE do mesmo helper que
@@ -582,11 +583,23 @@ export function inlineSignupScript(source: string = ""): string {
       if (btn) btn.disabled = false;
       return;
     }
-    window.fetch("/jogar/subscribe", {
+    // #6981: aborta o fetch depois de ${SIGNUP_FORM_FETCH_TIMEOUT_MS}ms e cai
+    // no MESMO .catch() de erro de rede abaixo — sem isso, uma promise que
+    // nunca resolve deixa "Enviando…" pendurado pra sempre, sem erro
+    // visível. Mesma técnica de signupFormScript() (site-home-page.ts, #6979).
+    var timeoutId = null;
+    var controller = typeof window.AbortController === "function" ? new window.AbortController() : null;
+    if (controller) {
+      timeoutId = setTimeout(function () { controller.abort(); }, ${SIGNUP_FORM_FETCH_TIMEOUT_MS});
+    }
+    var fetchOpts = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
-    }).then(function (res) {
+    };
+    if (controller) fetchOpts.signal = controller.signal;
+    window.fetch("/jogar/subscribe", fetchOpts).then(function (res) {
+      if (timeoutId) clearTimeout(timeoutId);
       return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
     }).then(function (r) {
       if (r.status === 200 && r.body && r.body.ok) {
@@ -606,6 +619,7 @@ export function inlineSignupScript(source: string = ""): string {
         if (btn) btn.disabled = false;
       }
     }).catch(function () {
+      if (timeoutId) clearTimeout(timeoutId);
       setStatus("Erro de conexão. Tente de novo.", false);
       if (btn) btn.disabled = false;
     });

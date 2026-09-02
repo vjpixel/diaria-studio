@@ -217,11 +217,23 @@
           if (btn) btn.disabled = false;
           return;
         }
-        window.fetch("https://eia.diar.ia.br/jogar/subscribe", {
+        // #6981: aborta o fetch depois de 12000ms e
+        // cai no MESMO .catch() de erro de rede abaixo — sem isso, uma
+        // promise que nunca resolve deixa "Enviando…" pendurado pra sempre,
+        // sem erro visível. Mesma técnica de signupFormScript() (site-home-page.ts, #6979).
+        var timeoutId = null;
+        var controller = typeof window.AbortController === "function" ? new window.AbortController() : null;
+        if (controller) {
+          timeoutId = setTimeout(function () { controller.abort(); }, 12000);
+        }
+        var fetchOpts = {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
-        }).then(function (res) {
+        };
+        if (controller) fetchOpts.signal = controller.signal;
+        window.fetch("https://eia.diar.ia.br/jogar/subscribe", fetchOpts).then(function (res) {
+          if (timeoutId) clearTimeout(timeoutId);
           return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
         }).then(function (r) {
           if (r.status === 200 && r.body && r.body.ok) {
@@ -241,6 +253,7 @@
             if (btn) btn.disabled = false;
           }
         }).catch(function () {
+          if (timeoutId) clearTimeout(timeoutId);
           setStatus("Erro de conexão. Tente de novo.", false);
           if (btn) btn.disabled = false;
         });

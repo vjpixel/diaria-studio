@@ -32,6 +32,7 @@ import { HUB_META } from "../../workers/arquivo/src/hubs/meta.ts";
 import { COLORS } from "./shared/design-tokens.ts";
 import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
 import { GEO_AUTHOR } from "./shared/geo-faq.ts";
+import { renderAnalyticsHead } from "./shared/seo-meta.ts"; // #6977: container GTM/GA4 — apex era o único host servido por Worker nosso sem instrumentação
 
 /**
  * Converte um hex `#RRGGBB` do DS pra `rgba(r,g,b,alpha)` — usado só pra
@@ -745,6 +746,7 @@ export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="diar.ia.br">
 <meta name="twitter:description" content="5 minutos diários pra se manter atualizado e usar melhor as IAs.">
+${renderAnalyticsHead()}
 <style>
 :root {
   --teal: ${COLORS.brand};
