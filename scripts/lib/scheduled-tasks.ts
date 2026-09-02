@@ -611,7 +611,13 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     description:
       "alarma quando uma edição nova casa o padrão de uma entidade publicada mas ainda não está no mentions dela (mesmo mecanismo de aging de Diaria-Hub-Staleness-Check, agora sem a regen — essa segue diária em Diaria-Entity-Pages-Regen)",
     steps: [{ key: "alarm", script: "scripts/regenerate-entity-pages.ts", args: ["--alarm-only", "--threshold-days", "1"] }],
-    logPath: "entities/.regen.log",
+    // logPath PRÓPRIO, distinto de Diaria-Entity-Pages-Regen (review da PR
+    // #7164) — mesma convenção já testada pro par Diaria-Clarice-Novos/
+    // Diaria-Clarice-Novos-Tarde (`test/scheduled-tasks.test.ts`,
+    // "logs separados — não misturar as duas rodadas no mesmo arquivo").
+    // Cadências e conteúdo diferentes (regen mecânica diária vs. alarme
+    // semanal) não deveriam interlaçar no mesmo arquivo.
+    logPath: "entities/.staleness-alarm.log",
     // #7147 (02/09/2026): metade nova do split de Diaria-Entity-Pages-Regen
     // — mesmo racional de cadência de Diaria-Hub-Staleness-Check acima
     // (achado muda na cadência de publicação, não de checagem; threshold

@@ -477,6 +477,12 @@ describe("#7147 — Diaria-Entity-Pages-Staleness-Alarm registrada, semanal, sys
     assert.deepEqual(collisions, []);
   });
 
+  it("logPath próprio, distinto de Diaria-Entity-Pages-Regen (review #7164 — mesma convenção do par Clarice-Novos)", () => {
+    const alarm = getScheduledTaskByName("Diaria-Entity-Pages-Staleness-Alarm")!;
+    const regen = getScheduledTaskByName("Diaria-Entity-Pages-Regen")!;
+    assert.notEqual(alarm.logPath, regen.logPath, "logs separados — não misturar regen diária e alarme semanal no mesmo arquivo");
+  });
+
   it("roda depois de Diaria-Hub-Staleness-Check no mesmo domingo (ordem editorial, não crítica mecanicamente)", () => {
     const alarm = getScheduledTaskByName("Diaria-Entity-Pages-Staleness-Alarm")!;
     const hub = getScheduledTaskByName("Diaria-Hub-Staleness-Check")!;

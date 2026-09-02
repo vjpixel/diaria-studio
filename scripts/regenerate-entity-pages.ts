@@ -77,7 +77,9 @@
  * Estado: `data/entities/staleness-state.json` (idempotência do alarme +
  * memória de 1ª-detecção, mesmo par de campos de `hub-staleness-check.ts`'s
  * `PersistedState`) — `data/entities/staleness-{YYYY-MM-DD}.json` (snapshot
- * diário, histórico; sempre escrito, mesmo sem pendência).
+ * histórico, sempre escrito quando a Parte 2 roda — hoje `Diaria-Entity-
+ * Pages-Staleness-Alarm`, SEMANAL desde #7147, então na prática este
+ * arquivo passou a ser gravado semanalmente, não diariamente).
  *
  * Como os outros alarmes locais deste repo (#4320/#4382/#4490/#4534/#4723/
  * #4740/#4750/#5123), o registro da task no systemd e a 1ª execução ao vivo
