@@ -27,11 +27,21 @@
  * garantia real, chamada pelo array vazio caso a lista de issues seja `[]`
  * e a checagem acima nunca rode).
  *
+ * `opts.since` (#7018 item 3) dá ao `/diaria-continuo` o mesmo caminho
+ * fail-closed SEM forçá-lo pro full-scan que overnight/develop usam —
+ * `continuo` varre incrementalmente por desenho (#5344 Parte B6, evita
+ * reclassificar o backlog aberto inteiro a cada tick); antes deste item, a
+ * varredura incremental do passo 2 do SKILL.md era montada à mão em prosa
+ * (`gh issue list --json number,title,labels,updatedAt --search
+ * "updated:>={last_scan_at}"`), sem `body` no `--json` — o mesmo bug do
+ * #7018, só que na varredura incremental em vez da varredura completa que o
+ * item 2 já fechou para overnight/develop.
+ *
  * @see scripts/lib/issue-exec-track.ts (classifyExecTrackFromListItem)
  * @see scripts/lib/state-changed-tracker.ts (fetchOpenIssuesForConvergence — mesmo padrão, escopo de campos menor)
  * @see .claude/skills/diaria-overnight/SKILL.md § Fase 0 passo 3
  * @see .claude/skills/diaria-develop/SKILL.md § Fase 0 passo 3
- * @see .claude/skills/diaria-continuo/SKILL.md
+ * @see .claude/skills/diaria-continuo/SKILL.md § Loop invariável, passo 2 (--since)
  */
 
 import { spawnSync } from "node:child_process";
@@ -63,10 +73,34 @@ export interface FetchOpenIssuesForTriageResult {
 /** Campos exigidos pela classificação completa da Fase 0 — `body` é o campo
  * cuja ausência este módulo existe pra prevenir; os demais (title, url,
  * updatedAt) são consumidos pelo passo 4 do overnight/develop (comparação
- * com `decided_at`, exibição no plano). */
+ * com `decided_at`, exibição no plano). Vale para os dois modos (full scan
+ * e incremental, `opts.since` abaixo) — `body` nunca foi o campo caro da
+ * varredura, é o volume de issues retornadas que `since` reduz. */
 const TRIAGE_JSON_FIELDS = "number,title,labels,body,url,updatedAt,state";
 
 const TRIAGE_ISSUE_LIMIT = 200;
+
+export interface FetchOpenIssuesForTriageOptions {
+  /** Injetável pra teste; default `new Date()`. */
+  now?: Date;
+  /**
+   * ISO 8601 (`plan.json.last_scan_at`) — quando fornecido, restringe a
+   * varredura a issues atualizadas desde este instante via `gh issue list
+   * --search "updated:>={since}"`, em vez do backlog aberto inteiro (#7018
+   * item 3). Existe pra dar ao `/diaria-continuo` (SKILL.md passo 2) um
+   * caminho fail-closed SEM forçá-lo pro full-scan caro que motivou a
+   * varredura incremental em primeiro lugar (#5344 Parte B6) — overnight e
+   * develop nunca passam esta opção, continuam em full-scan.
+   *
+   * `TRIAGE_JSON_FIELDS` (incluindo `body`) não muda com `since` presente
+   * — a garantia fail-closed de `classifyExecTrackFromListItem` abaixo
+   * cobre os dois modos igualmente, porque o único campo que este módulo
+   * exige (`body`) nunca foi o custo que `since` existe pra evitar (custo é
+   * RECLASSIFICAR TODO o backlog a cada tick, não buscar 1 campo a mais por
+   * item já retornado).
+   */
+  since?: string;
+}
 
 /**
  * Busca as issues abertas (até `TRIAGE_ISSUE_LIMIT`) via `gh issue list`
@@ -76,13 +110,21 @@ const TRIAGE_ISSUE_LIMIT = 200;
  * `gh` responder sem a chave `body` no `--json` — nesse caso o bug é NOSSO
  * (comando errado), não uma falha de transporte, então fail-soft
  * mascararia exatamente a classe de erro que este módulo existe pra pegar.
+ *
+ * `opts.since` (#7018 item 3) restringe a varredura ao delta desde aquele
+ * instante (`--search "updated:>={since}"`) em vez do backlog aberto
+ * inteiro — omitido/`undefined` preserva o comportamento original (full
+ * scan), o único modo que overnight/develop usam.
  */
-export function fetchOpenIssuesForTriage(cwd: string, now?: Date): FetchOpenIssuesForTriageResult {
-  const result = spawnSync(
-    "gh",
-    ["issue", "list", "--state", "open", "--limit", String(TRIAGE_ISSUE_LIMIT), "--json", TRIAGE_JSON_FIELDS],
-    { cwd, encoding: "utf8", timeout: 30_000 },
-  );
+export function fetchOpenIssuesForTriage(
+  cwd: string,
+  opts?: FetchOpenIssuesForTriageOptions,
+): FetchOpenIssuesForTriageResult {
+  const args = ["issue", "list", "--state", "open", "--limit", String(TRIAGE_ISSUE_LIMIT), "--json", TRIAGE_JSON_FIELDS];
+  if (opts?.since) {
+    args.push("--search", `updated:>=${opts.since}`);
+  }
+  const result = spawnSync("gh", args, { cwd, encoding: "utf8", timeout: 30_000 });
   if (result.error) {
     return { issues: [], error: `gh não pôde ser executado: ${result.error.message}` };
   }
@@ -125,7 +167,7 @@ export function fetchOpenIssuesForTriage(cwd: string, now?: Date): FetchOpenIssu
     state: (item.state ?? null) as string | null,
     // Lança (fail-closed, #7018) se `body` estiver ausente — não capturado
     // aqui de propósito, propaga pro caller do fetch inteiro.
-    execTrack: classifyExecTrackFromListItem(item, { now }),
+    execTrack: classifyExecTrackFromListItem(item, { now: opts?.now }),
   }));
   return { issues };
 }
