@@ -142,6 +142,8 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .archive-media { display: block; }
 .archive-media img { display: block; width: 100%; aspect-ratio: 2 / 1; object-fit: cover; border-radius: 8px; }
 .archive-meta { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
+.archive-meta a { color: inherit; text-decoration: none; }
+.archive-meta a:hover { color: var(--teal-deep); text-decoration: underline; text-underline-offset: 3px; }
 .archive-title { font-size: 20px; line-height: 1.15; letter-spacing: -0.01em; font-weight: 500; }
 .archive-title a:hover { color: var(--teal-deep); }
 .archive-dek { font-family: Georgia, serif; font-size: 13px; line-height: 1.4; color: var(--ink-soft); font-style: italic; margin: 0; }
@@ -281,16 +283,29 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <span class="kicker kicker--teal">Cadernos especiais · curadoria contínua</span>
         <h2>O que <span class="accent">não cabe</span> em 5 minutos.</h2>
       </div>
+      <!-- #7022 itens 1/5/6: título numa linha só (sem quebra) e sem
+           itálico/teal — decisão do editor no triage da issue (item 5): a
+           Beehiiv usa itálico/teal na 2ª metade do título e quebra em duas
+           linhas, mas o editor preferiu texto plano numa linha só (mantém
+           o span class=accent em "Cursos" sem NENHUMA regra CSS escopada a
+           special-card h3 accent — é inerte de propósito, não um esqueleto
+           de itálico/teal esquecido). Os 2 cards seguem caixa fechada com
+           kicker (item 6, decisão do editor: manter a NOSSA versão, não a
+           da Beehiiv, que deixa "Livros" solto sem card). O bug de
+           acessibilidade do item 1 (quebra de linha sem espaço grudava as
+           palavras no texto extraído) segue corrigido — só que aqui a
+           correção é REMOVER a quebra de linha (não mais duas linhas), não
+           adicionar espaço antes dela. -->
       <div class="specials-grid">
         <div class="special-card">
           <span class="kicker kicker--teal">● Lista aberta</span>
-          <h3>Livros<br>sobre IA.</h3>
+          <h3>Livros sobre IA.</h3>
           <p>Iniciantes, profissionais e quem quer ir a fundo — curadoria contínua por nível, autor e ano de publicação.</p>
           <a class="btn btn-ink" href="https://livros.diar.ia.br/">Acessar a estante completa →</a>
         </div>
         <div class="special-card special-card--dark">
           <span class="kicker" style="color: var(--teal)">● Para assinantes</span>
-          <h3>Cursos<br><span class="accent">gratuitos.</span></h3>
+          <h3>Cursos <span class="accent">gratuitos.</span></h3>
           <p>Selecionados entre os melhores cursos abertos sobre IA. Atualizamos toda semana.</p>
           <a class="btn btn-ink" href="https://cursos.diar.ia.br/">Ver todos os cursos →</a>
         </div>
@@ -310,9 +325,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <a class="archive-media" href="https://diar.ia.br/p/brasil-investe-r-2-3-bi-em-infraestrutura-de-ia" tabindex="-1" aria-hidden="true">
           <img src="https://eia.diar.ia.br/img/img-260825-04-d1-2x1-39233390.jpg" alt="Brasil investe R$ 2,3 bi em infraestrutura de IA" loading="lazy">
         </a>
-        <div class="archive-meta">
-          <span>25 ago 2026</span>
-        </div>
+        <div class="archive-meta">25 ago 2026 <span aria-hidden="true">·</span> 8 min de leitura <span aria-hidden="true">·</span> Por <a href="https://www.linkedin.com/in/vjpixel/" rel="author">Pixel</a></div>
         <h3 class="archive-title"><a href="https://diar.ia.br/p/brasil-investe-r-2-3-bi-em-infraestrutura-de-ia">Brasil investe R$ 2,3 bi em infraestrutura de IA</a></h3>
         <p class="archive-dek">Brasil investe R$ 2,3 bi em infraestrutura de IA. Grátis, poderoso e sem dono: o mistério Ox Alpha | SoftBank capta US$ 6,3 bi para apostar na OpenAI</p>
       </article>
@@ -320,9 +333,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <a class="archive-media" href="https://diar.ia.br/p/roteiristas-pagos-para-treinar-quem-os-substitui" tabindex="-1" aria-hidden="true">
           <img src="https://eia.diar.ia.br/img/img-260824-04-d1-2x1-f9ab9b24.jpg" alt="Roteiristas pagos para treinar quem os substitui" loading="lazy">
         </a>
-        <div class="archive-meta">
-          <span>24 ago 2026</span>
-        </div>
+        <div class="archive-meta">24 ago 2026 <span aria-hidden="true">·</span> 7 min de leitura <span aria-hidden="true">·</span> Por <a href="https://www.linkedin.com/in/vjpixel/" rel="author">Pixel</a></div>
         <h3 class="archive-title"><a href="https://diar.ia.br/p/roteiristas-pagos-para-treinar-quem-os-substitui">Roteiristas pagos para treinar quem os substitui</a></h3>
         <p class="archive-dek">Roteiristas pagos para treinar quem os substitui. O estudo que fura o hype do uso no trabalho | Google lança simulado do Enem no Gemini</p>
       </article>
@@ -330,9 +341,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <a class="archive-media" href="https://diar.ia.br/p/marca-d-agua-do-claude-cai-em-horas" tabindex="-1" aria-hidden="true">
           <img src="https://eia.diar.ia.br/img/img-260821-04-d1-2x1-8b47e0a5.jpg" alt="Marca d&#39;água do Claude cai em horas" loading="lazy">
         </a>
-        <div class="archive-meta">
-          <span>21 ago 2026</span>
-        </div>
+        <div class="archive-meta">21 ago 2026 <span aria-hidden="true">·</span> 7 min de leitura <span aria-hidden="true">·</span> Por <a href="https://www.linkedin.com/in/vjpixel/" rel="author">Pixel</a></div>
         <h3 class="archive-title"><a href="https://diar.ia.br/p/marca-d-agua-do-claude-cai-em-horas">Marca d&#39;água do Claude cai em horas</a></h3>
         <p class="archive-dek">Marca d&#39;água do Claude cai em horas. Sua empresa é dado de treino alheio | ATS: o filtro que decide seu currículo</p>
       </article>
@@ -340,9 +349,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <a class="archive-media" href="https://diar.ia.br/p/openai-pausa-treinamento-apos-invasao-critica" tabindex="-1" aria-hidden="true">
           <img src="https://eia.diar.ia.br/img/img-260820-04-d1-2x1-ba1eb142.jpg" alt="OpenAI pausa treinamento após invasão crítica" loading="lazy">
         </a>
-        <div class="archive-meta">
-          <span>20 ago 2026</span>
-        </div>
+        <div class="archive-meta">20 ago 2026 <span aria-hidden="true">·</span> 7 min de leitura <span aria-hidden="true">·</span> Por <a href="https://www.linkedin.com/in/vjpixel/" rel="author">Pixel</a></div>
         <h3 class="archive-title"><a href="https://diar.ia.br/p/openai-pausa-treinamento-apos-invasao-critica">OpenAI pausa treinamento após invasão crítica</a></h3>
         <p class="archive-dek">OpenAI pausa treinamento após invasão crítica. OpenAI chega ao Brasil com foco em empresas | Promessa de menos trabalho esbarra em 90h</p>
       </article>
@@ -350,9 +357,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <a class="archive-media" href="https://diar.ia.br/p/tse-exige-aviso-em-propaganda-eleitoral-com-ia" tabindex="-1" aria-hidden="true">
           <img src="https://eia.diar.ia.br/img/img-260819-04-d1-2x1-b590fda7.jpg" alt="TSE exige aviso em propaganda eleitoral com IA" loading="lazy">
         </a>
-        <div class="archive-meta">
-          <span>19 ago 2026</span>
-        </div>
+        <div class="archive-meta">19 ago 2026 <span aria-hidden="true">·</span> 7 min de leitura <span aria-hidden="true">·</span> Por <a href="https://www.linkedin.com/in/vjpixel/" rel="author">Pixel</a></div>
         <h3 class="archive-title"><a href="https://diar.ia.br/p/tse-exige-aviso-em-propaganda-eleitoral-com-ia">TSE exige aviso em propaganda eleitoral com IA</a></h3>
         <p class="archive-dek">TSE exige aviso em propaganda eleitoral com IA. Grupo hacker usou Claude em 8 invasões | ChatGPT for Teens chega com proteções extras</p>
       </article>
@@ -360,41 +365,9 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <a class="archive-media" href="https://diar.ia.br/p/anthropic-so-curar-cancer-convence-publico" tabindex="-1" aria-hidden="true">
           <img src="https://eia.diar.ia.br/img/img-260818-04-d1-2x1-b0eb641c.jpg" alt="Anthropic: só curar câncer convence público" loading="lazy">
         </a>
-        <div class="archive-meta">
-          <span>18 ago 2026</span>
-        </div>
+        <div class="archive-meta">18 ago 2026 <span aria-hidden="true">·</span> 7 min de leitura <span aria-hidden="true">·</span> Por <a href="https://www.linkedin.com/in/vjpixel/" rel="author">Pixel</a></div>
         <h3 class="archive-title"><a href="https://diar.ia.br/p/anthropic-so-curar-cancer-convence-publico">Anthropic: só curar câncer convence público</a></h3>
         <p class="archive-dek">Anthropic: só curar câncer convence público. Oito agentes autônomos mapearam Taiwan sozinhos | Excel perde função COPILOT em setembro</p>
-      </article>
-<article class="archive-card">
-        <a class="archive-media" href="https://diar.ia.br/p/reglab-estima-r-986-bi-extra-no-pib-ate-2030" tabindex="-1" aria-hidden="true">
-          <img src="https://eia.diar.ia.br/img/img-260817-04-d1-2x1-b3018cea.jpg" alt="Reglab estima R$986 bi extra no PIB até 2030" loading="lazy">
-        </a>
-        <div class="archive-meta">
-          <span>17 ago 2026</span>
-        </div>
-        <h3 class="archive-title"><a href="https://diar.ia.br/p/reglab-estima-r-986-bi-extra-no-pib-ate-2030">Reglab estima R$986 bi extra no PIB até 2030</a></h3>
-        <p class="archive-dek">Reglab estima R$986 bi extra no PIB até 2030. ChatGPT, Claude e Gemini vazavam raciocínio | 810 conversas revelam padrão de risco mental</p>
-      </article>
-<article class="archive-card">
-        <a class="archive-media" href="https://diar.ia.br/p/claude-cowork-chega-ao-painel-do-chrome" tabindex="-1" aria-hidden="true">
-          <img src="https://eia.diar.ia.br/img/img-260814-04-d1-2x1-50b95545.jpg" alt="Claude Cowork chega ao painel do Chrome" loading="lazy">
-        </a>
-        <div class="archive-meta">
-          <span>14 ago 2026</span>
-        </div>
-        <h3 class="archive-title"><a href="https://diar.ia.br/p/claude-cowork-chega-ao-painel-do-chrome">Claude Cowork chega ao painel do Chrome</a></h3>
-        <p class="archive-dek">Claude Cowork chega ao painel do Chrome. Gemini 3.7 Flash chega 3 semanas após o 3.6 | GPT-5.6 Sol roda 14× mais rápido na OpenAI</p>
-      </article>
-<article class="archive-card">
-        <a class="archive-media" href="https://diar.ia.br/p/amodei-previu-colapso-do-emprego-nao-veio" tabindex="-1" aria-hidden="true">
-          <img src="https://eia.diar.ia.br/img/img-260813-04-d1-2x1-d69685eb.jpg" alt="Amodei previu colapso do emprego. Não veio" loading="lazy">
-        </a>
-        <div class="archive-meta">
-          <span>13 ago 2026</span>
-        </div>
-        <h3 class="archive-title"><a href="https://diar.ia.br/p/amodei-previu-colapso-do-emprego-nao-veio">Amodei previu colapso do emprego. Não veio</a></h3>
-        <p class="archive-dek">Amodei previu colapso do emprego. Não veio. Marca d&#39;água do Claude falha no mundo real | Claude avança em problema da hipótese de Riemann</p>
       </article>
       </div>
     </div>
@@ -423,7 +396,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
     <div class="wrap">
       <div>
         <span class="kicker">Antes de assinar</span>
-        <h2>Perguntas<br>frequentes.</h2>
+        <h2>Perguntas <br>frequentes.</h2>
       </div>
       <div>
 <div class="faq-item">
@@ -462,7 +435,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
   <footer class="footer" id="footer">
     <div class="wrap">
       <div class="footer-top">
-        <div class="footer-headline">5 minutos.<br><span class="accent">Toda manhã.</span></div>
+        <div class="footer-headline">5 minutos. <br><span class="accent">Toda manhã.</span></div>
         <div>
           <span class="footer-label">Assine grátis</span>
           <form class="signup signup--dark" id="footer-form" method="POST" action="https://eia.diar.ia.br/jogar/subscribe" aria-label="Assinar diar.ia.br gratuitamente" novalidate>
