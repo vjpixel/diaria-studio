@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Pipeline Claude Code para produção da newsletter diar.ia.br",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=22.18.0"
   },
   "scripts": {
     "knip": "knip --reporter compact",
