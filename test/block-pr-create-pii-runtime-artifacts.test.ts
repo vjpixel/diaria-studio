@@ -113,6 +113,37 @@ describe("isRuntimeArtifactPath (#6753)", () => {
   it("#6776-finding-3: NÃO acusa arquivo cujo nome só começa com 'backup-' (prefixo, não sufixo)", () => {
     assert.equal(isRuntimeArtifactPath("scripts/lib/backup-strategy.ts"), false);
   });
+
+  // #6971 — Direção 3 ("parar de usar o checkout como área de rascunho entre
+  // sessões"): estes são os nomes de arquivo REAIS achados soltos na raiz do
+  // checkout compartilhado no `git status` da rodada 01-02/09/2026, mais o
+  // nome exato do arquivo do incidente de origem da issue. Não bloqueiam a
+  // ESCRITA (nenhum hook cobre isso — ver docblock do #6971 em
+  // block-unsafe-shared-checkout-ops.mjs), mas barram que virem parte da PR.
+  it("#6971: acusa arquivo bare *_tmp.ext (sufixo — forma que o prefixo _tmp_ não cobria)", () => {
+    assert.equal(isRuntimeArtifactPath("all_issues_tmp.json"), true);
+    assert.equal(isRuntimeArtifactPath("rest_issues_tmp.json"), true);
+  });
+
+  it("#6971: acusa scratch-*.ext solto na raiz (scratch-drift.ts, achado ao vivo)", () => {
+    assert.equal(isRuntimeArtifactPath("scratch-drift.ts"), true);
+    assert.equal(isRuntimeArtifactPath("scratch_notes.md"), true);
+  });
+
+  it("#6971: acusa .prNNNN-review.md — nome exato do arquivo apagado no incidente de origem", () => {
+    assert.equal(isRuntimeArtifactPath(".pr6950-review.md"), true);
+    assert.equal(isRuntimeArtifactPath(".pr123-review.md"), true);
+  });
+
+  it("#6971: acusa _prbody*/_commitmsg* — corpo de PR/commit rascunhado em arquivo solto", () => {
+    assert.equal(isRuntimeArtifactPath("_prbody.md"), true);
+    assert.equal(isRuntimeArtifactPath("_commitmsg.txt"), true);
+  });
+
+  it("#6971: NÃO acusa arquivo de código-fonte real cujo nome só contém 'scratch'/'tmp' como parte de outra palavra", () => {
+    assert.equal(isRuntimeArtifactPath("scripts/lib/scratchpad-cleanup.ts"), false); // "scratch" sem -/_/. logo depois
+    assert.equal(isRuntimeArtifactPath("scripts/lib/tmpdir-helper.ts"), false); // "tmp" sem "_" antes / "." logo depois
+  });
 });
 
 describe("isFixturePath (#6753)", () => {
