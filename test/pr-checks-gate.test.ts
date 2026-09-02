@@ -531,11 +531,18 @@ describe("evaluatePrChecksGate — regressão #7060: janela de corrida (merge re
   const RUN_STARTED_RACE = "2026-09-02T02:14:00Z";
   // Bem fora da janela default (20s) — 5min depois do push, caso normal.
   const RUN_STARTED_SAFE = "2026-09-02T02:18:53Z";
+  // #7105: "agora" perto do push — a avaliação em si acontece dentro da
+  // janela, cenário em que a heurística ainda deve desconfiar.
+  const NOW_WITHIN_WINDOW = "2026-09-02T02:14:05Z";
+  // #7105: "agora" bem depois do push — mesmo gap de 7s entre push e
+  // startedAt, mas a AVALIAÇÃO acontece minutos depois, quando o CI já
+  // teve tempo de sobra pra rodar de verdade.
+  const NOW_LONG_AFTER = "2026-09-02T03:00:00Z";
 
   it("check FAILURE que começou 7s após o push do HEAD => 'pending', nunca 'fail' (o caso medido ao vivo)", () => {
     const r = evaluatePrChecksGate(
       [{ name: "workers-observability-guard", status: "COMPLETED", conclusion: "FAILURE", startedAt: RUN_STARTED_RACE }],
-      { headCommittedAt: HEAD_PUSHED_AT },
+      { headCommittedAt: HEAD_PUSHED_AT, now: NOW_WITHIN_WINDOW },
     );
     assert.equal(r.verdict, "pending");
     assert.match(r.reason, /corrida/);
@@ -546,9 +553,50 @@ describe("evaluatePrChecksGate — regressão #7060: janela de corrida (merge re
   it("check SUCCESS que começou 7s após o push do HEAD => 'pending', nunca 'pass' (falso-verde é o outro lado do mesmo defeito)", () => {
     const r = evaluatePrChecksGate([{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS", startedAt: RUN_STARTED_RACE }], {
       headCommittedAt: HEAD_PUSHED_AT,
+      now: NOW_WITHIN_WINDOW,
     });
     assert.equal(r.verdict, "pending");
     assert.match(r.reason, /corrida/);
+  });
+
+  // #7105 — regressão: mesmo teste que a issue #7105 pede explicitamente
+  // ("Cobertura de teste ausente"): rollup COMPLETED, startedAt 7s após
+  // headCommittedAt, e uma noção de "agora" bem posterior => deve resolver
+  // pro veredito bruto, nunca ficar preso em `pending` para sempre.
+  it("#7105: mesmo gap de 7s, avaliado MUITO depois do push => resolve 'pass', não fica 'pending' pra sempre", () => {
+    const r = evaluatePrChecksGate([{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS", startedAt: RUN_STARTED_RACE }], {
+      headCommittedAt: HEAD_PUSHED_AT,
+      now: NOW_LONG_AFTER,
+    });
+    assert.equal(r.verdict, "pass", "a janela expirou porque a AVALIAÇÃO aconteceu bem depois do push — nunca fica presa no gap fixo de 7s");
+  });
+
+  it("#7105: mesmo gap de 7s, avaliado MUITO depois do push, com FAILURE => resolve 'fail' de verdade, não 'pending' pra sempre", () => {
+    const r = evaluatePrChecksGate([{ name: "ci", status: "COMPLETED", conclusion: "FAILURE", startedAt: RUN_STARTED_RACE }], {
+      headCommittedAt: HEAD_PUSHED_AT,
+      now: NOW_LONG_AFTER,
+    });
+    assert.equal(r.verdict, "fail");
+  });
+
+  it("#7105: `now` omitido usa Date.now() real — headCommittedAt de um passado distante já não ativa a janela", () => {
+    // Nenhum mock de tempo: um push de anos atrás garante que o Date.now()
+    // real da execução do teste está muito além de qualquer windowMs
+    // plausível — a heurística precisa se autodesarmar sem ajuda.
+    const r = evaluatePrChecksGate([{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2020-01-01T00:00:07Z" }], {
+      headCommittedAt: "2020-01-01T00:00:00Z",
+    });
+    assert.equal(r.verdict, "pass");
+  });
+
+  it("#7105: run que começou ANTES do push (run supersedido de commit anterior) nunca é lido como corrida", () => {
+    // gapMs negativo — Math.abs da versão anterior tratava isso como
+    // corrida também, mais uma fonte de `pending` permanente.
+    const r = evaluatePrChecksGate(
+      [{ name: "ci", status: "COMPLETED", conclusion: "FAILURE", startedAt: "2026-09-02T02:13:50Z" }],
+      { headCommittedAt: HEAD_PUSHED_AT, now: NOW_WITHIN_WINDOW },
+    );
+    assert.equal(r.verdict, "fail", "startedAt ANTES do push não é gap de corrida — nunca vira pending por causa dele");
   });
 
   it("check FAILURE que começou 5min após o push do HEAD => 'fail' normalmente (fora da janela, comportamento pré-#7060)", () => {
@@ -588,6 +636,7 @@ describe("evaluatePrChecksGate — regressão #7060: janela de corrida (merge re
     const r = evaluatePrChecksGate([{ name: "ci", status: "COMPLETED", conclusion: "FAILURE", startedAt: RUN_STARTED_SAFE }], {
       headCommittedAt: HEAD_PUSHED_AT,
       raceWindowMs: 10 * 60 * 1000, // 10min — cobre o gap de 5min do fixture "SAFE"
+      now: NOW_WITHIN_WINDOW,
     });
     assert.equal(r.verdict, "pending");
   });
@@ -598,7 +647,7 @@ describe("evaluatePrChecksGate — regressão #7060: janela de corrida (merge re
         { name: "rapido-suspeito", status: "COMPLETED", conclusion: "SUCCESS", startedAt: RUN_STARTED_RACE },
         { name: "lento-normal", status: "COMPLETED", conclusion: "FAILURE", startedAt: RUN_STARTED_SAFE },
       ],
-      { headCommittedAt: HEAD_PUSHED_AT },
+      { headCommittedAt: HEAD_PUSHED_AT, now: NOW_WITHIN_WINDOW },
     );
     // O check que já reprovou (lento-normal) está fora da janela — mas o
     // mais antigo do grupo (rapido-suspeito) está dentro, então o veredito
@@ -609,6 +658,7 @@ describe("evaluatePrChecksGate — regressão #7060: janela de corrida (merge re
   it("isPrChecksGateGreen nunca é true dentro da janela de corrida", () => {
     const r = evaluatePrChecksGate([{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS", startedAt: RUN_STARTED_RACE }], {
       headCommittedAt: HEAD_PUSHED_AT,
+      now: NOW_WITHIN_WINDOW,
     });
     assert.equal(isPrChecksGateGreen(r), false);
   });
