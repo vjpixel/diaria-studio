@@ -1,19 +1,20 @@
 /**
- * test/session-conflicts-and-merge-grant.test.ts (#6168 Partes C/F + #6296)
+ * test/session-conflicts-and-merge-grant.test.ts (#6168 Parte C + #6296)
  *
- * Três mecanismos que nasceram juntos porque um depende do outro:
+ * Dois mecanismos:
  *
  *   - **`conflicts` (Parte C)** — CONSULTA "quem mais está mexendo nisto?".
  *     Nunca adquire nada, nunca cria arquivo (critério de aceite explícito da
  *     issue: nada além de `.merge-lock.json` aparece em `data/sessions/`).
- *   - **Ordenação de merge (Parte F)** — as duas pontas calculam o MESMO
- *     vencedor sozinhas, sem barganha e sem round-trip. E silêncio nunca é
- *     cessão.
- *   - **Concessão de janela (#6296)** — o que faltava pra conversa da Parte F
- *     ter efeito: medido ao vivo em 260826, o protocolo inteiro rodou, o peer
- *     concedeu a janela, o merge lock foi adquirido, e o `gh pr merge` foi
- *     bloqueado assim mesmo porque o guard do #5716 só olhava `session_id`
- *     contra o registro.
+ *   - **Concessão de janela (#6296)** — protocolo de merge real, medido ao
+ *     vivo em 260826: o peer concedeu a janela, o merge lock foi adquirido, e
+ *     o `gh pr merge` foi bloqueado assim mesmo porque o guard do #5716 só
+ *     olhava `session_id` contra o registro.
+ *
+ * A Parte F (`MergeAnnouncement`/`decideMergeOrder`/`resolveMergeAdmission`)
+ * foi removida no #7123 — anúncio+admissão nunca teve consumidor real (nada
+ * no repo escrevia `merge_announcement`); o protocolo de merge que de fato
+ * roda é o lock (`merge-lock-*`) + a concessão (`merge_grant`) testada abaixo.
  */
 
 import { describe, it, after } from "node:test";
@@ -31,7 +32,6 @@ import {
   beaconPathsOverlap,
   collapseTouchedPaths,
   consumeMergeGrant,
-  decideMergeOrder,
   findLiveMergeGrant,
   findSessionConflicts,
   grantMergeWindow,
@@ -40,9 +40,7 @@ import {
   listActiveSessions,
   normalizeBeaconPath,
   registerSession,
-  resolveMergeAdmission,
   type ActiveSessionRecord,
-  type MergeAnnouncement,
 } from "../scripts/lib/session-registry.ts";
 import {
   CLOCK_SKEW_TOLERANCE_MS as HOOK_CLOCK_SKEW_TOLERANCE_MS,
@@ -256,87 +254,6 @@ describe("#6168 Parte C — conflicts é consulta, e nunca cria arquivo", () => 
       }),
       [],
     );
-  });
-});
-
-// ─── Parte F: ordenação determinística e "silêncio nunca é cessão" ─────────
-
-describe("#6168 Parte F — ordenação de merge", () => {
-  const ann = (sessionId: string, at: string): MergeAnnouncement => ({ sessionId, announcedAt: at });
-
-  it("timestamp mais ANTIGO vence", () => {
-    const a = ann("zzz", "2026-08-26T12:00:00.000Z");
-    const b = ann("aaa", "2026-08-26T12:00:05.000Z");
-    assert.equal(decideMergeOrder(a, b).sessionId, "zzz");
-  });
-
-  it("empate de timestamp resolve pelo sessionId lexicograficamente MENOR", () => {
-    const a = ann("zzz", "2026-08-26T12:00:00.000Z");
-    const b = ann("aaa", "2026-08-26T12:00:00.000Z");
-    assert.equal(decideMergeOrder(a, b).sessionId, "aaa");
-  });
-
-  it("AS DUAS PONTAS chegam ao MESMO vencedor, em qualquer ordem de argumento", () => {
-    // É a propriedade que substitui o lock como mecanismo primário sem
-    // introduzir deadlock: cada ponta calcula sozinha e nenhuma precisa
-    // esperar resposta pra saber quem venceu.
-    const a = ann("neo-abc", "2026-08-26T12:00:03.000Z");
-    const b = ann("helios-xyz", "2026-08-26T12:00:01.000Z");
-    assert.equal(decideMergeOrder(a, b).sessionId, decideMergeOrder(b, a).sessionId);
-    assert.equal(decideMergeOrder(a, b).sessionId, "helios-xyz");
-  });
-
-  it("timestamp ilegível de um lado perde pro legível do outro (total, nunca indefinido)", () => {
-    const bom = ann("bom", "2026-08-26T12:00:00.000Z");
-    const ruim = ann("ruim", "não-é-data");
-    assert.equal(decideMergeOrder(bom, ruim).sessionId, "bom");
-    assert.equal(decideMergeOrder(ruim, bom).sessionId, "bom");
-  });
-});
-
-describe("#6168 Parte F — silêncio NUNCA é cessão", () => {
-  const mine: MergeAnnouncement = { sessionId: "eu", announcedAt: "2026-08-26T12:00:00.000Z" };
-
-  it("peer sem ACK explícito → fallback-to-lock, nunca proceed", () => {
-    // Regra dura da issue. Sem isto, a conversa vira canal de falso consenso:
-    // "ninguém reclamou, então é meu".
-    const r = resolveMergeAdmission(mine, [{ sessionId: "outro", announcedAt: "" }]);
-    assert.equal(r.admission, "fallback-to-lock");
-    assert.match(r.reason, /silêncio NUNCA é cessão/);
-  });
-
-  it("peer com acked:false também é silêncio", () => {
-    const r = resolveMergeAdmission(mine, [{ sessionId: "outro", announcedAt: "", acked: false }]);
-    assert.equal(r.admission, "fallback-to-lock");
-  });
-
-  it("nenhum peer alcançável → fallback-to-lock (o piso), nunca proceed", () => {
-    const r = resolveMergeAdmission(mine, []);
-    assert.equal(r.admission, "fallback-to-lock");
-  });
-
-  it("todos deram ACK e ninguém anunciou merge concorrente → proceed", () => {
-    const r = resolveMergeAdmission(mine, [{ sessionId: "outro", announcedAt: "", acked: true }]);
-    assert.equal(r.admission, "proceed");
-  });
-
-  it("anúncio concorrente que VENCE a ordenação → yield, mesmo com ACK", () => {
-    // Anúncio concorrente é sinal independente do ACK: quem perde a
-    // ordenação cede e espera o aviso de "mergeado" pra dar git pull ANTES
-    // do próprio CI — que é o que o lock nunca deu (ele solta a janela sem
-    // dizer O QUE mudou).
-    const r = resolveMergeAdmission(mine, [
-      { sessionId: "outro", announcedAt: "2026-08-26T11:59:00.000Z", acked: true, pr: 42 },
-    ]);
-    assert.equal(r.admission, "yield");
-    assert.equal(r.winner?.sessionId, "outro");
-  });
-
-  it("anúncio concorrente que PERDE a ordenação não impede proceed", () => {
-    const r = resolveMergeAdmission(mine, [
-      { sessionId: "outro", announcedAt: "2026-08-26T12:01:00.000Z", acked: true, pr: 42 },
-    ]);
-    assert.equal(r.admission, "proceed");
   });
 });
 

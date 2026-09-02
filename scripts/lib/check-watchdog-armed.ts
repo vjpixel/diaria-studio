@@ -37,9 +37,9 @@
  * `not_armed_warn` mesmo com a task presente e Ready. Fix: a detecção
  * principal agora usa o **exit code** de `schtasks /query /tn "..."`
  * (0 = task existe, != 0 = não existe) — locale-agnóstico, ver
- * `queryWatchdogTaskExitCode` abaixo. `isWatchdogTaskScheduled` (parser
- * textual legado) é mantido só porque `test/check-watchdog-armed.test.ts` o
- * cobre com fixtures — não é mais usado no caminho de detecção real.
+ * `queryWatchdogTaskExitCode` abaixo. O parser textual legado que motivou
+ * este fix (`isWatchdogTaskScheduled`) foi removido no #7123 — não era mais
+ * usado no caminho de detecção real, só seguia coberto por fixture próprio.
  *
  * #4800 (260809): bug distinto dos anteriores — não é sobre a task estar
  * presente/saudável, é sobre em QUE MÁQUINA a checagem roda. `ExecMode`
@@ -127,45 +127,6 @@ export const WATCHDOG_TASK_NAME = "Diaria-Overnight-Watchdog";
 // ---------------------------------------------------------------------------
 // Parser puro (testável com fixtures de string — nunca chama schtasks real)
 // ---------------------------------------------------------------------------
-
-/**
- * Parseia o output de `schtasks /query /tn "Diaria-Overnight-Watchdog" /fo LIST`
- * (ou `/query /fo LIST` sem filtro, output completo) e determina se a task
- * está registrada.
- *
- * Formato real do Windows quando a task existe (via `/fo LIST`):
- *   ```
- *   Folder: \
- *   HostName:                             MEUPC
- *   TaskName:                             \Diaria-Overnight-Watchdog
- *   Next Run Time:                        7/1/2026 6:00:00 PM
- *   Status:                               Ready
- *   ...
- *   ```
- *
- * Quando a task NÃO existe, `schtasks /query /tn "..."` sai com exit code
- * != 0 e imprime (stdout ou stderr, varia por locale):
- *   `ERROR: The system cannot find the file specified.`
- *
- * Contrato: qualquer output que não contenha uma linha `TaskName:` cujo
- * valor (ignorando o `\` prefixo de tasks na raiz e maiúsc/minúsc) bata com
- * `WATCHDOG_TASK_NAME` é tratado como "não armada" — inclui strings vazias,
- * mensagens de erro, e output malformado/truncado.
- */
-export function isWatchdogTaskScheduled(schtasksOutput: string): boolean {
-  if (!schtasksOutput || !schtasksOutput.trim()) return false;
-
-  const lines = schtasksOutput.split(/\r?\n/);
-  for (const line of lines) {
-    const m = line.match(/^\s*TaskName:\s*(.+?)\s*$/i);
-    if (!m) continue;
-    const value = m[1].trim().replace(/^\\+/, "");
-    if (value.toLowerCase() === WATCHDOG_TASK_NAME.toLowerCase()) {
-      return true;
-    }
-  }
-  return false;
-}
 
 // ---------------------------------------------------------------------------
 // Decisão pura (dado modo + estado de arming, decide a ação)
@@ -264,8 +225,8 @@ export function buildWatchdogCannotVerifyMessage(schedulerKind: TaskSchedulerKin
  * existe e `!= 0` quando não existe (tipicamente `1`) — esse contrato de
  * exit code não é afetado pelo idioma do Windows, ao contrário das strings
  * impressas em stdout/stderr (que a versão anterior deste módulo parseava
- * via `isWatchdogTaskScheduled`, e que quebravam em locales não-EN — ex.
- * PT-BR "Nome da Tarefa:" em vez de "TaskName:", causando falso-negativo
+ * via um parser textual — removido no #7123 —, e que quebravam em locales
+ * não-EN — ex. PT-BR "Nome da Tarefa:" em vez de "TaskName:", causando falso-negativo
  * permanente mesmo com a task presente e Ready). Este é o caminho usado por
  * `checkWatchdogArmed` para a detecção real.
  *
@@ -324,7 +285,7 @@ export function queryWatchdogTaskExitCode(
  * output verbose (`schtasks /query /tn "..." /v /fo LIST`).
  *
  * Nota de locale (#2814 já documentou o mesmo risco para o parser textual
- * legado `isWatchdogTaskScheduled`): os rótulos destes campos também podem
+ * legado removido no #7123): os rótulos destes campos também podem
  * vir traduzidos em Windows não-EN. Diferente da detecção de presença (que
  * usa exit code, 100% locale-agnóstico), aqui não há alternativa
  * locale-agnóstica — `schtasks` não expõe esses detalhes via exit code.
@@ -352,8 +313,8 @@ export interface WatchdogTaskState {
 /**
  * Parser puro do output verbose de
  * `schtasks /query /tn "Diaria-Overnight-Watchdog" /v /fo LIST`. Nunca
- * chama `schtasks` — só strings fixture (mesmo padrão de
- * `isWatchdogTaskScheduled`). Case-insensitive nos rótulos dos campos.
+ * chama `schtasks` — só strings fixture. Case-insensitive nos rótulos dos
+ * campos.
  */
 export function parseWatchdogTaskState(schtasksOutput: string): WatchdogTaskState {
   const lines = (schtasksOutput ?? "").split(/\r?\n/);
