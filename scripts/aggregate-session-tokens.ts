@@ -407,7 +407,12 @@ export function markUninstrumentedRounds(
 ): KindDayTotals[] {
   // Cópia defensiva: as linhas de entrada vêm de `mergeKindDayTotals` (que já
   // copia), mas a função é exportada e o `push` abaixo mutaria a entrada.
-  const out = rows.map((r) => ({
+  // Anotação explícita: sem ela o `map` infere `roundsWithoutEvents` como
+  // propriedade OBRIGATÓRIA `string[] | undefined` (o literal sempre a
+  // escreve), e aí o literal de linha nova abaixo — que legitimamente a omite
+  // ("ausente = nenhuma") — deixa de ser atribuível ao próprio elemento do
+  // array. `KindDayTotals` a declara opcional; é esse o contrato.
+  const out: KindDayTotals[] = rows.map((r) => ({
     ...r,
     rounds: [...r.rounds],
     roundsWithoutEvents: r.roundsWithoutEvents ? [...r.roundsWithoutEvents] : undefined,
