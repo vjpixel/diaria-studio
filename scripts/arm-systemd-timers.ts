@@ -397,10 +397,15 @@ export function armSystemdTimers(
 // ---------------------------------------------------------------------------
 
 export type VerifyOutcome =
-  /** `systemctl` indisponível nesta consulta (ENOENT/erro sem stdout) —
-   * mesmo fail-soft de `task-never-armed-alarm.ts`: "nada detectável",
-   * nunca um drift. Windows (sem `systemctl` nenhum) sempre cai aqui. */
+  /** `systemctl` genuinamente ausente (ENOENT) — fail-soft honesto, "nada
+   * detectável". Windows (sem `systemctl` nenhum) sempre cai aqui. */
   | { kind: "unavailable" }
+  /** #7039: `systemctl` existe mas a consulta falhou por motivo transitório
+   * (bus indisponível, timeout, permissão) — "não sei", nunca "nada a
+   * comparar". Precisa de exit code diferente de 0 e de "unavailable",
+   * senão colapsa de volta no mesmo bug que esta issue corrige na origem
+   * (`task-never-armed-alarm.ts`). */
+  | { kind: "check-failed"; message: string }
   | { kind: "evaluated"; evaluation: TaskNeverArmedEvaluation };
 
 /**
@@ -412,20 +417,34 @@ export type VerifyOutcome =
  * fronteira: injeta `exec` fake, nunca spawna `systemctl` de verdade).
  */
 export function runVerify(exec: typeof execFileSync = execFileSync): VerifyOutcome {
-  const armed = readArmedTimerUnitBaseNames(exec);
-  if (armed === null) return { kind: "unavailable" };
-  const evaluation = evaluateTaskNeverArmed(listScheduledTaskNames(), armed, listDisabledScheduledTaskNames());
+  const armedResult = readArmedTimerUnitBaseNames(exec);
+  if (armedResult.status === "no-systemd") return { kind: "unavailable" };
+  if (armedResult.status === "check-failed") return { kind: "check-failed", message: armedResult.message };
+  const evaluation = evaluateTaskNeverArmed(
+    listScheduledTaskNames(),
+    armedResult.unitBaseNames,
+    listDisabledScheduledTaskNames(),
+  );
   return { kind: "evaluated", evaluation };
 }
 
 /** Imprime o relatório de `runVerify` e devolve o exit code — `1` se
- * qualquer direção tiver achado, `0` no caso limpo OU quando `systemctl`
- * está indisponível (fail-soft, não é drift). @pure quanto ao exit code;
- * `console.*` é o único efeito colateral. */
+ * qualquer direção tiver achado OU se a consulta falhou por motivo
+ * transitório (#7039 — "não sei" precisa reportar erro, não sair 0 como
+ * se estivesse tudo ok), `0` no caso limpo OU quando `systemctl` está
+ * genuinamente ausente (fail-soft, não é drift). @pure quanto ao exit
+ * code; `console.*` é o único efeito colateral. */
 export function reportVerifyOutcome(outcome: VerifyOutcome): number {
   if (outcome.kind === "unavailable") {
     console.log("[verify] systemctl --user indisponível nesta máquina (ex: Windows) — nada a comparar aqui.");
     return 0;
+  }
+  if (outcome.kind === "check-failed") {
+    console.error(
+      `[verify] systemctl falhou ao consultar timers (motivo transitório, NÃO "sem systemd"): ${outcome.message} ` +
+        "— não foi possível comparar registro × armado nesta execução.",
+    );
+    return 1;
   }
   const { evaluation } = outcome;
   if (!isAlarmingVerdict(evaluation.verdict)) {
