@@ -477,6 +477,6 @@ Frase normal. **Trecho em negrito no slide do carrossel.** Mais texto.
     const groups = groupByDestaque(parsePlatforms(MD), IMAGES);
     const html = renderDestaqueGroup(groups[0], "#000");
     assert.ok(html.includes("<strong>Trecho em negrito no slide do carrossel.</strong>"));
-    assert.ok(!html.includes("**"), "preview não deve mostrar asterisco literal — o texto REAL publicado também não tem (stripMarkdownBold)");
+    assert.ok(!html.includes("**"), "preview não deve mostrar asterisco literal — o texto REAL publicado também não tem (stripMarkdownEmphasis, #6862)");
   });
 });
