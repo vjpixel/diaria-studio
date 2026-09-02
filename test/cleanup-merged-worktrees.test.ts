@@ -19,6 +19,7 @@ import {
   selectInUseWorktreeNames,
   worktreeNameFromPath,
   filterOutInUseWorktrees,
+  filterOutLockedWorktrees,
   ORPHAN_STALE_THRESHOLD_MS,
 } from "../scripts/cleanup-merged-worktrees.ts";
 import type { SessionRecord } from "../scripts/lib/session-registry.ts";
@@ -72,6 +73,31 @@ test("parseWorktreePorcelain — normaliza backslash pra forward slash no path (
   const output = ["worktree C:\\Users\\vjpix\\repo", "branch refs/heads/master", ""].join("\n");
   const entries = parseWorktreePorcelain(output);
   assert.equal(entries[0].path, "C:/Users/vjpix/repo");
+});
+
+test("#7048 — parseWorktreePorcelain marca locked=true quando a linha 'locked ...' aparece", () => {
+  const output = [
+    "worktree /repo/.claude/worktrees/agent-abc",
+    "HEAD 1234567",
+    "branch refs/heads/overnight/fix-1",
+    "locked claude agent agent-abc (pid 4242)",
+    "",
+  ].join("\n");
+  const entries = parseWorktreePorcelain(output);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].locked, true);
+});
+
+test("#7048 — parseWorktreePorcelain marca locked=true mesmo sem razão (linha 'locked' isolada)", () => {
+  const output = ["worktree /repo/.claude/worktrees/agent-abc", "branch refs/heads/x", "locked", ""].join("\n");
+  const entries = parseWorktreePorcelain(output);
+  assert.equal(entries[0].locked, true);
+});
+
+test("parseWorktreePorcelain — locked=false quando a linha 'locked' está ausente", () => {
+  const output = ["worktree /repo/.claude/worktrees/agent-abc", "branch refs/heads/x", ""].join("\n");
+  const entries = parseWorktreePorcelain(output);
+  assert.equal(entries[0].locked, false);
 });
 
 // ── filterUnderWorktreesDir ──
@@ -311,10 +337,73 @@ test("#7045 — extractWorktreeNamesFromPaths ignora paths fora de worktrees/", 
   assert.deepEqual([...extractWorktreeNamesFromPaths(["scripts/lib/foo.ts", ".claude/hooks/bar.mjs"])], []);
 });
 
+test("#7048 — extractWorktreeNamesFromPaths casa path sob .claude/worktrees/", () => {
+  assert.deepEqual(
+    [...extractWorktreeNamesFromPaths([".claude/worktrees/agent-a/scripts/foo.ts"])],
+    ["agent-a"],
+  );
+});
+
+test("#7048 — extractWorktreeNamesFromPaths NÃO casa 'worktrees/' fora de .claude/ (regex não-ancorado do PR #7048)", () => {
+  // Antes do fix, /[/\\]worktrees[/\\]([^/\\]+)/ casaria QUALQUER segmento
+  // "worktrees/{nome}" em qualquer lugar do repo — não só .claude/worktrees.
+  // Um path legítimo como "some/other/worktrees/agent-a/x.ts" (repo
+  // secundário, diretório de terceiros, etc.) nunca deveria alimentar o
+  // conjunto de exclusão deste script.
+  assert.deepEqual(
+    [...extractWorktreeNamesFromPaths(["some/other/worktrees/agent-a/x.ts"])],
+    [],
+  );
+});
+
 test("#7045 — worktreeNameFromPath extrai o basename, tolerando barra final e backslash", () => {
   assert.equal(worktreeNameFromPath("C:/repo/.claude/worktrees/agent-a"), "agent-a");
   assert.equal(worktreeNameFromPath("C:/repo/.claude/worktrees/agent-a/"), "agent-a");
   assert.equal(worktreeNameFromPath("C:\\repo\\.claude\\worktrees\\agent-a".replace(/\\/g, "/")), "agent-a");
+});
+
+// ── filterOutLockedWorktrees (#7048) ──
+
+test("#7048 — worktree locked com PR mergeada e SEM touched_paths é preservado, mesmo elegível por merge", () => {
+  const entries = [
+    { path: "C:/repo/.claude/worktrees/agent-locked", branch: "overnight/fix-1", locked: true },
+    { path: "C:/repo/.claude/worktrees/agent-free", branch: "overnight/fix-2", locked: false },
+  ];
+  // Nenhuma sessão registrou touched_paths pra nenhum dos dois — simula um
+  // agent recém-despachado, worktree já pinado (locked) antes do 1º
+  // heartbeat gravar footprint no session-registry.
+  const inUseNames = selectInUseWorktreeNames([]);
+  const afterInUse = filterOutInUseWorktrees(entries, inUseNames);
+  const candidates = filterOutLockedWorktrees(afterInUse);
+
+  // O locked NUNCA chega a candidates, então nunca é avaliado por
+  // selectMergedForRemoval — mesmo com um checker que sempre confirma merge.
+  const toRemove = selectMergedForRemoval(candidates, () => true);
+  assert.deepEqual(
+    toRemove.map((e) => e.path),
+    ["C:/repo/.claude/worktrees/agent-free"],
+  );
+  assert.ok(!toRemove.some((e) => e.path.includes("agent-locked")));
+});
+
+test("#7048 — worktree NÃO-locked, PR mergeada, livre e limpo é removido", () => {
+  const entries = [{ path: "C:/repo/.claude/worktrees/agent-livre", branch: "overnight/fix-3", locked: false }];
+  const inUseNames = selectInUseWorktreeNames([]);
+  const candidates = filterOutLockedWorktrees(filterOutInUseWorktrees(entries, inUseNames));
+  const toRemove = selectMergedForRemoval(candidates, () => true);
+  assert.deepEqual(
+    toRemove.map((e) => e.path),
+    ["C:/repo/.claude/worktrees/agent-livre"],
+  );
+});
+
+test("#7048 — filterOutLockedWorktrees remove só os locked, preserva os demais na mesma ordem", () => {
+  const entries = [
+    { path: "/a", branch: "b1", locked: false },
+    { path: "/b", branch: "b2", locked: true },
+    { path: "/c", branch: "b3", locked: false },
+  ];
+  assert.deepEqual(filterOutLockedWorktrees(entries).map((e) => e.path), ["/a", "/c"]);
 });
 
 // ── shouldSkipEntireScanForUnreadableRegistry (#7045 checklist item 3) ──

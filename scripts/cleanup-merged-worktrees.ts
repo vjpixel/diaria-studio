@@ -107,24 +107,41 @@ export interface WorktreeEntry {
   path: string;
   /** Nome da branch (sem `refs/heads/`), ou `null` se detached/bare. */
   branch: string | null;
+  /**
+   * `true` se `git worktree list --porcelain` emitiu uma linha `locked` pra
+   * este worktree (#7048, review do PR #7048). `git worktree lock` — usado
+   * pelo harness pra pinar um worktree a um agent ativo, ex: `locked claude
+   * agent {nome} (pid {pid})` — é o sinal MAIS DIRETO de "em uso" que existe:
+   * não depende do registro em `data/sessions/` ter sido escrito ainda (um
+   * agent recém-despachado que ainda não gravou `touched_paths` teria o
+   * worktree elegível a remoção pelo critério de `selectInUseWorktreeNames`
+   * sozinho). Um worktree `locked` NUNCA é removido, independente de
+   * `touched_paths`/`dirty_paths` — ver `filterOutLockedWorktrees`.
+   */
+  locked: boolean;
 }
 
 /**
  * Parseia a saída de `git worktree list --porcelain`. Blocos separados por
  * linha em branco; cada bloco tem `worktree <path>`, opcionalmente `HEAD
- * <sha>`, e um de `branch refs/heads/<nome>` / `detached` / `bare`.
+ * <sha>`, um de `branch refs/heads/<nome>` / `detached` / `bare`, e
+ * opcionalmente `locked` (sem razão) ou `locked <razão>` (#7048 — ex: `locked
+ * claude agent {nome} (pid {pid})`, emitida pelo harness pra worktree pinado
+ * a um agent ativo).
  */
 export function parseWorktreePorcelain(output: string): WorktreeEntry[] {
   const entries: WorktreeEntry[] = [];
   let currentPath: string | null = null;
   let currentBranch: string | null = null;
+  let currentLocked = false;
 
   const flush = () => {
     if (currentPath !== null) {
-      entries.push({ path: currentPath, branch: currentBranch });
+      entries.push({ path: currentPath, branch: currentBranch, locked: currentLocked });
     }
     currentPath = null;
     currentBranch = null;
+    currentLocked = false;
   };
 
   for (const rawLine of output.split("\n")) {
@@ -141,8 +158,11 @@ export function parseWorktreePorcelain(output: string): WorktreeEntry[] {
     } else if (line.startsWith("branch ")) {
       const ref = line.slice("branch ".length).trim();
       currentBranch = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
+    } else if (line === "locked" || line.startsWith("locked ")) {
+      currentLocked = true;
     }
-    // "HEAD <sha>", "detached", "bare" — ignorados (branch fica null se nunca setado).
+    // "HEAD <sha>", "detached", "bare", "prunable[...]" — ignorados (branch
+    // fica null se nunca setado).
   }
   flush();
 
@@ -380,10 +400,22 @@ export function shouldSkipForSharedSession(activeSessions: SessionRecord[], conf
  * uma lista de caminhos relativos — mesmo formato gravado em
  * `touched_paths`/`dirty_paths` pelo beacon (`.claude/hooks/session-beacon.mjs`).
  * Aceita `/` e `\` como separador (Windows).
+ *
+ * **Ancorado em `.claude/worktrees` (#7048, review do PR #7048).** O regex
+ * anterior (`/[/\\]worktrees[/\\]([^/\\]+)/`) casava qualquer segmento
+ * `worktrees/{algo}` em QUALQUER lugar do path — inclusive fora de
+ * `.claude/`, ex: um repo secundário clonado em `some/other/worktrees/foo/`
+ * dentro de um `touched_paths` legítimo teria seu `foo` tratado como nome de
+ * worktree em `.claude/worktrees/`, potencialmente marcando um worktree
+ * homônimo (mas não relacionado) como "em uso" — ou, na direção oposta,
+ * nunca casando de fato o path real quando `.claude` viesse antes sem
+ * `worktrees` logo depois. Ancorar em `\.claude[/\\]worktrees` garante que só
+ * o diretório que este script de fato varre (`filterUnderWorktreesDir`)
+ * alimenta o conjunto de exclusão.
  */
 export function extractWorktreeNamesFromPaths(paths: string[]): Set<string> {
   const names = new Set<string>();
-  const re = /[/\\]worktrees[/\\]([^/\\]+)/;
+  const re = /(?:^|[/\\])\.claude[/\\]worktrees[/\\]([^/\\]+)/;
   for (const p of paths) {
     const m = re.exec(p);
     if (m) names.add(m[1]);
@@ -418,6 +450,18 @@ export function worktreeNameFromPath(path: string): string {
 /** Remove de `entries` os worktrees cujo nome está em `inUseNames` — pura. */
 export function filterOutInUseWorktrees(entries: WorktreeEntry[], inUseNames: Set<string>): WorktreeEntry[] {
   return entries.filter((e) => !inUseNames.has(worktreeNameFromPath(e.path)));
+}
+
+/**
+ * Remove de `entries` os worktrees marcados `locked` pelo git (#7048, review
+ * do PR #7048) — nunca elegíveis a remoção, independente de
+ * `touched_paths`/`dirty_paths`. `git worktree lock` é o sinal mais direto de
+ * "em uso" disponível: cobre a janela entre um agent ser despachado e ele
+ * escrever seu primeiro `touched_paths` no session-registry, janela em que
+ * `selectInUseWorktreeNames` sozinho não protegeria o worktree.
+ */
+export function filterOutLockedWorktrees(entries: WorktreeEntry[]): WorktreeEntry[] {
+  return entries.filter((e) => !e.locked);
 }
 
 /**
@@ -485,12 +529,23 @@ function main(): void {
     const all = listWorktreesSafe(repoRoot);
     const candidatesAll = filterUnderWorktreesDir(all, worktreesDir);
     const inUse = candidatesAll.filter((e) => inUseNames.has(worktreeNameFromPath(e.path)));
-    const candidates = filterOutInUseWorktrees(candidatesAll, inUseNames);
+    // #7048: worktree `locked` (git worktree lock — pinado a um agent ativo)
+    // é excluído independentemente de aparecer em `inUse` — cobre a janela
+    // antes do primeiro `touched_paths` do agent chegar ao session-registry.
+    const locked = candidatesAll.filter((e) => e.locked && !inUseNames.has(worktreeNameFromPath(e.path)));
+    const candidates = filterOutLockedWorktrees(filterOutInUseWorktrees(candidatesAll, inUseNames));
 
     if (inUse.length > 0) {
       console.log(
         `[cleanup-merged-worktrees] ${inUse.length} worktree(s) em uso por sessão ativa — preservados sem checar ` +
           `merge/staleness (#7045): ${inUse.map((e) => worktreeNameFromPath(e.path)).join(", ")}.`,
+      );
+    }
+
+    if (locked.length > 0) {
+      console.log(
+        `[cleanup-merged-worktrees] ${locked.length} worktree(s) locked pelo git (agent ativo, #7048) — ` +
+          `preservados sem checar merge/staleness: ${locked.map((e) => worktreeNameFromPath(e.path)).join(", ")}.`,
       );
     }
 
