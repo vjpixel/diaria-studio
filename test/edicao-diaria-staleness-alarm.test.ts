@@ -18,6 +18,7 @@ import {
   evaluateEdicaoDiariaStaleness,
   isAlarmingVerdict,
   edicaoDirCandidates,
+  TIMER_DISABLED_CROSS_MACHINE_CAVEAT,
   shouldSendEdicaoDiariaStalenessAlarm,
   markEdicaoDiariaStalenessAlarmed,
   emptyEdicaoDiariaStalenessAlarmState,
@@ -274,5 +275,26 @@ describe("#6898 defeito 1 — edicaoDirCandidates cobre o layout real do disco",
 
   it("propaga a validação de AAMMDD de editionDir", () => {
     assert.throws(() => edicaoDirCandidates("2609"), /AAMMDD inválido/);
+  });
+});
+
+describe("#6898 — limitação cross-machine do silenciamento (review da PR #7033)", () => {
+  it("o caveat nomeia o que `disabled` NÃO atesta — é o rastro de log da limitação", () => {
+    // Guard de documentação: se alguém trocar a mensagem por algo que não
+    // diz que a consulta é LOCAL, o rastro deixa de servir pra alguém notar
+    // que o alarme está calado sobre o agendador de outra máquina.
+    assert.match(TIMER_DISABLED_CROSS_MACHINE_CAVEAT, /LOCAL/);
+    assert.match(TIMER_DISABLED_CROSS_MACHINE_CAVEAT, /outra máquina/);
+  });
+
+  it("silenciar exige `disabled` EXPLÍCITO — nenhum outro estado silencia", () => {
+    // A limitação cross-machine só morde no caminho `disabled`. Travar aqui
+    // que os demais estados alarmam é o que impede alguém de "consertar" um
+    // falso positivo futuro alargando o silenciamento pra unknown/armed.
+    const now = new Date("2026-09-01T21:20:00Z");
+    for (const estado of ["armed", "unknown"] as const) {
+      const ev = evaluateEdicaoDiariaStaleness("260902", true, false, null, now, estado);
+      assert.equal(isAlarmingVerdict(ev.verdict), true, `estado ${estado} deveria alarmar`);
+    }
   });
 });

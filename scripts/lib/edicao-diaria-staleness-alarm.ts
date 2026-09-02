@@ -127,6 +127,33 @@ export function isEdicaoDiariaScheduledWeekday(now: Date): boolean {
  */
 export type EdicaoTimerState = "armed" | "disabled" | "unknown";
 
+/**
+ * LIMITAÇÃO CONHECIDA de `"disabled"` — cross-machine (#6898, apontada no
+ * review da PR #7033).
+ *
+ * Quem produz este valor (`queryTaskArmed`) só enxerga o agendador da
+ * máquina em que O ALARME roda. Hoje as duas coisas coincidem: nada está
+ * agendado em máquina nenhuma e a edição é rodada à mão por decisão do
+ * editor (19/08/2026, banner de `docs/scheduled-edicao-setup.md`), então
+ * `disabled` no `helios` é a resposta certa sobre o mundo inteiro.
+ *
+ * O que quebra a coincidência: o #5611 desenhou a via WINDOWS como ativa,
+ * com o par Linux ficando `disabled` de propósito, "pronto para reativação
+ * se a via Windows precisar de fallback". Se esse arranjo voltar, um alarme
+ * rodando no `helios` responderá `disabled` sobre o timer Linux —
+ * confiante e ERRADO sobre o agendador que de fato importa — e toda falha
+ * silenciosa da via Windows viraria `timer-disabled`, nunca um alarme. É a
+ * classe de regressão do #5563 de volta, que é o que este módulo existe
+ * pra impedir.
+ *
+ * Por isso o caller LOGA em nível de aviso toda vez que silencia por
+ * `disabled` (ver `scripts/edicao-diaria-staleness-alarm.ts`): enquanto não
+ * houver atestação cross-machine, o rastro no log é o que permite alguém
+ * notar que o alarme está calado por um estado que deixou de ser verdade.
+ */
+export const TIMER_DISABLED_CROSS_MACHINE_CAVEAT =
+  "silenciado por `systemctl is-enabled` da máquina LOCAL — não atesta o agendador de outra máquina (#6898)";
+
 export type EdicaoDiariaStalenessVerdict =
   | "not-applicable" // sexta/sábado — timer não dispara, nada a checar
   | "timer-disabled" // #6898: unit `disabled` — automação desligada de propósito, não é falha
@@ -150,9 +177,10 @@ export interface EdicaoDiariaStalenessEvaluation {
 const IN_PROGRESS_TOLERANCE_MS = 3 * 60 * 60 * 1000; // 3h
 
 /**
- * Pure — combina os sinais (`editionExists` e `lastEntry`, ambos I/O do
- * caller) num veredito único. Prioridade: dia não-agendado vence tudo
- * (nada esperado); `editionExists` vence sobre o log (cobre sucesso E
+ * Pure — combina os sinais (`editionExists`, `timerState` e `lastEntry`,
+ * todos I/O do caller) num veredito único. Prioridade, nesta ordem:
+ * dia não-agendado (nada esperado) → `editionExists` → `timerState ===
+ * "disabled"` (#6898) → o log. `editionExists` vence sobre o log (cobre sucesso E
  * "pulou por idempotência" com o MESMO veredito `"ok"` — ambos são
  * legítimos e a distinção entre eles não muda a ação do editor, ver
  * docstring do módulo).

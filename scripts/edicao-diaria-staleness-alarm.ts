@@ -53,6 +53,7 @@ import {
   buildEdicaoDiariaStalenessAlarmEmail,
   isAlarmingVerdict,
   edicaoDirCandidates,
+  TIMER_DISABLED_CROSS_MACHINE_CAVEAT,
   type EdicaoDiariaStalenessAlarmState,
   type EdicaoDiariaStalenessEvaluation,
   type EdicaoTimerState,
@@ -200,12 +201,20 @@ async function main(): Promise<void> {
   const aammdd = nextEditionDate(now);
   const isScheduledDay = isEdicaoDiariaScheduledWeekday(now);
   const editionExists = edicaoExists(aammdd);
-  const timerState = editionExists ? "unknown" : queryTimerState();
+  // `skipped` NÃO é um EdicaoTimerState — é só rótulo de log (#6898, finding
+  // 3 do review): quando a edição existe, o evaluator nunca consulta
+  // `timerState`, e imprimir `unknown` faria uma consulta NÃO FEITA parecer
+  // uma consulta inconclusiva pra quem debugga pelo .alarm.log.
+  const timerState: EdicaoTimerState = editionExists ? "unknown" : queryTimerState();
+  const timerStateLabel = editionExists ? "skipped" : timerState;
+  if (timerState === "disabled") {
+    console.warn(`${LOG_PREFIX} ${TIMER_DISABLED_CROSS_MACHINE_CAVEAT}`);
+  }
   const lastEntry = editionExists ? null : findLastEdicaoLogEntry(readScheduleLogLines(), aammdd);
 
   const evaluation = evaluateEdicaoDiariaStaleness(aammdd, isScheduledDay, editionExists, lastEntry, now, timerState);
   console.log(
-    `${LOG_PREFIX} aammdd=${aammdd} scheduledDay=${isScheduledDay} editionExists=${editionExists} timerState=${timerState} verdict=${evaluation.verdict}`,
+    `${LOG_PREFIX} aammdd=${aammdd} scheduledDay=${isScheduledDay} editionExists=${editionExists} timerState=${timerStateLabel} verdict=${evaluation.verdict}`,
   );
 
   const state = loadState();
