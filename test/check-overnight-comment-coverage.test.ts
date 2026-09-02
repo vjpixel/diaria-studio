@@ -120,13 +120,28 @@ describe("deriveCandidateIssues", () => {
     assert.deepEqual(candidates, [{ number: 5797, reason: "pulada-sem-comentario" }]);
   });
 
-  // #5909 — `deixado-para-o-helios` é isento de comentário por desenho:
-  // a skill documenta que este motivo não leva comentário (ruído em massa)
-  // e o roteamento label-driven já recoloca a issue no track develop/Neo.
+  // #5909 + #7065 — motivos de Coordenação de sessão são isentos de
+  // propósito por desenho: a skill `.claude/skills/diaria-develop/SKILL.md`
+  // diz explicitamente que ambos NÃO levam comentário na issue ("corrida
+  // evitada, não bloqueio"), e o roteamento label-driven
+  // (`classifyExecTrack`) já recoloca cada uma no track certo.
   it("issue pulada com motivo deixado-para-o-helios NUNCA é candidata (#5909)", () => {
     const issues: PlanIssueLike[] = [
       { number: 5878, status: "pulada", motivo: "deixado-para-o-helios" },
       { number: 5869, status: "pulada", motivo: "deixado-para-o-helios" },
+    ];
+    assert.deepEqual(deriveCandidateIssues(issues, new Map()), []);
+  });
+
+  // #7065 — o mesmo raciocínio do #5909 se aplica a `claimed-por-outra-sessao`
+  // (a skill diz explicitamente que este motivo também não leva comentário):
+  // outra sessão ativa já está trabalhando a issue, então commentar seria
+  // ruído — e o gate a acusava de falso positivo em rodada real (7 issues).
+  it("issue pulada com motivo claimed-por-outra-sessao NUNCA é candidata (#7065)", () => {
+    const issues: PlanIssueLike[] = [
+      { number: 6634, status: "pulada", motivo: "claimed-por-outra-sessao" },
+      { number: 6977, status: "pulada", motivo: "claimed-por-outra-sessao" },
+      { number: 6980, status: "pulada", motivo: "claimed-por-outra-sessao" },
     ];
     assert.deepEqual(deriveCandidateIssues(issues, new Map()), []);
   });

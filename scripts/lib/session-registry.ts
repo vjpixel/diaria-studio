@@ -143,7 +143,7 @@
  */
 
 import { basename, dirname, join } from "node:path";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./cli-args.ts";
@@ -352,8 +352,20 @@ export interface SessionRecord {
  * na assinatura transforma isso de disciplina em garantia: o compilador
  * recusa a lista crua, e quem quiser consultá-la precisa ir por
  * `listActiveSessions` primeiro.
+ *
+ * `claimed_issues_effective` (#6623): `claimed_issues` bruto continua no
+ * record (diagnóstico/histórico), mas quem só quer saber "quais issues esta
+ * sessão segura DE VERDADE agora" lê este campo em vez de re-derivar —
+ * mesmo princípio de `issue-decisions.ts`/`classifyExecTrack`, julgamento
+ * feito uma vez aqui, nunca re-heurística por call site. Vazio quando
+ * `stale === true` (a mesma regra que `is-claimed` já aplica via
+ * `SOFT_STALE_MS`/`isIssueClaimedByOther` — passados `SOFT_STALE_MS`
+ * (90min; 15min pra `interactive`), o claim para de valer, mas o `list-active`
+ * cru continuava expondo `claimed_issues` como se ainda valesse, escondendo
+ * issues elegíveis de quem lia ingenuamente — 10 de 26 numa triagem real,
+ * ver #6623). Igual a `claimed_issues` quando a sessão está viva.
  */
-export type ActiveSessionRecord = SessionRecord & { stale: boolean };
+export type ActiveSessionRecord = SessionRecord & { stale: boolean; claimed_issues_effective: number[] };
 
 interface MergeLockRecord {
   heldBy: string;
@@ -1312,6 +1324,55 @@ export function heartbeat(
 }
 
 /**
+ * Evento de instrumentação do ciclo de vida de uma sessão COORDENADORA
+ * (#6624) — JSONL append-only em `data/session-lifecycle.jsonl`, mesmo
+ * padrão de `data/run-log.jsonl`. Existe pra responder, com DADO em vez de
+ * suposição, a pergunta que a issue faz: "sessões coordenadoras terminam sem
+ * chamar `end` com que frequência?".
+ *
+ *   - `"ended"` — `endSession` de fato removeu um registro coordenador (fim
+ *     limpo, o caminho que a skill percorre normalmente ao terminar).
+ *   - `"gc-removed-without-end"` — o GC (`garbageCollectSessions`) removeu o
+ *     arquivo REAL de um grupo coordenador por staleness (não um backup
+ *     órfão de um grupo já sem real — esse é resíduo de uma sessão que JÁ
+ *     tinha chamado `end`, não o caso que esta issue investiga). É o sinal
+ *     direto de "esta sessão nunca chamou `end`" — só o GC (que decide por
+ *     heartbeat/PID morto) chega a remover um arquivo real coordenador vivo
+ *     o bastante pra nunca ter passado pela Fase 2 de encerramento da skill.
+ */
+export interface SessionLifecycleEvent {
+  event: "ended" | "gc-removed-without-end";
+  kind: SessionKind;
+  machineTag: string;
+  sessionId: string;
+  /** ISO — momento em que o evento foi registrado (nunca o `lastHeartbeat`
+   * do record removido, que é outra coisa). */
+  ts: string;
+  /** Idade da sessão (`ts` do evento menos `startedAt` do record removido),
+   * em ms — `undefined` quando `startedAt` não foi legível. Só contexto pra
+   * quem for analisar o log depois; não entra em nenhuma decisão. */
+  ageMs?: number;
+}
+
+function sessionLifecycleLogPath(repoRoot: string): string {
+  return join(repoRoot, "data", "session-lifecycle.jsonl");
+}
+
+/** Best-effort, nunca lança — instrumentação não pode derrubar o caminho
+ * principal de `endSession`/`garbageCollectSessions`. `data/` ausente (sessão
+ * cloud/clone fresco) é um no-op silencioso, mesma disciplina fail-soft do
+ * resto do módulo. */
+function logSessionLifecycleEvent(repoRoot: string, event: SessionLifecycleEvent): void {
+  try {
+    const dataDir = join(repoRoot, "data");
+    if (!existsSync(dataDir)) return;
+    appendFileSync(sessionLifecycleLogPath(repoRoot), `${JSON.stringify(event)}\n`, "utf8");
+  } catch {
+    // best-effort — nunca propaga.
+  }
+}
+
+/**
  * Remove o registro de uma sessão. Idempotente — no-op se já ausente.
  *
  * Retorna `true` quando um registro de fato existia e foi removido, `false`
@@ -1322,6 +1383,10 @@ export function heartbeat(
  * encerrar da máquina local o registro de outra máquina sem passar `--tag`
  * explicitamente — `tag` aqui default pra `machineTag()` local, então sem a
  * flag o path procurado nunca é o da outra máquina).
+ *
+ * #6624: quando `kind` é coordenador (`COORDINATOR_SESSION_KINDS`), registra
+ * um evento `"ended"` no log de ciclo de vida — instrumentação, nunca afeta
+ * o retorno nem lança.
  *
  * **#6952 (achado do review da PR): a remoção também entra no lock.** Todo
  * ESCRITOR do registro passou a serializar em `{path}.lock`, mas o REMOVEDOR
@@ -1385,13 +1450,33 @@ export function endSession(
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
   if (!existsSync(path)) return false;
   breakStaleLock(`${path}.lock`);
-  return withFileLock(`${path}.lock`, () => {
+  // #6624 × #6952: a leitura do registro pra instrumentação acontece DENTRO
+  // do lock, junto da remoção — lida fora, o `startedAt` poderia vir de um
+  // registro que outro escritor já trocou entre a leitura e o `rmSync`. O
+  // EVENTO é emitido depois de soltar o lock: é append num arquivo diferente,
+  // não precisa da exclusão do registro, e prender o lock por ele alongaria a
+  // janela da única operação que não tem escrita seguinte pra se autocurar.
+  const outcome = withFileLock<{ removed: boolean; record: SessionRecord | null }>(`${path}.lock`, () => {
     // Re-checa DENTRO do lock: outro `end`/GC concorrente pode ter removido
     // entre o `existsSync` acima e a aquisição.
-    if (!existsSync(path)) return false;
+    if (!existsSync(path)) return { removed: false, record: null };
+    const record = isCoordinatorKind(kind) ? readJsonSafe<SessionRecord>(path) : null;
     rmSync(path);
-    return true;
+    return { removed: true, record };
   }, lockTimeoutMs);
+  if (outcome.record) {
+    const now = Date.now();
+    const startedMs = Date.parse(outcome.record.startedAt ?? "");
+    logSessionLifecycleEvent(repoRoot, {
+      event: "ended",
+      kind,
+      machineTag: tag,
+      sessionId,
+      ts: new Date(now).toISOString(),
+      ageMs: Number.isFinite(startedMs) ? now - startedMs : undefined,
+    });
+  }
+  return outcome.removed;
 }
 
 /**
@@ -1888,7 +1973,11 @@ export function listActiveSessions(
     // #6168: a janela é POR KIND — `interactive` usa a sua, bem menor, porque
     // não emite heartbeat depois que a conversa acaba (ver
     // `INTERACTIVE_SOFT_STALE_MS`). Os 3 kinds coordenadores não mudam.
-    out.push({ ...record, stale: ageMs > softStaleMsForKind(record.kind) });
+    const stale = ageMs > softStaleMsForKind(record.kind);
+    // #6623: `claimed_issues_effective` — vazio quando `stale`, mesmo campo
+    // bruto quando viva. Mesma regra de validade que `isIssueClaimedByOther`
+    // já aplica (abaixo), carregada aqui pra quem só lê `list-active`.
+    out.push({ ...record, stale, claimed_issues_effective: stale ? [] : (record.claimed_issues ?? []) });
   }
   return out;
 }
@@ -3030,11 +3119,27 @@ export function planSessionGc(repoRoot: string, opts: SessionGcOptions = {}): Se
  * arquivo: se um `rmSync` individual falhar (ex: I/O transitório do
  * OneDrive), os demais arquivos do plano continuam sendo processados — a
  * próxima execução retenta o que sobrou.
+ *
+ * #6624: quando o grupo removido tem ARQUIVO REAL coordenador (não é
+ * `orphan-backup:*` — esse é resíduo de uma sessão que já chamou `end`
+ * corretamente) e `kind` está em `COORDINATOR_SESSION_KINDS`, registra
+ * `"gc-removed-without-end"` no log de ciclo de vida — é o sinal direto de
+ * "esta sessão nunca chamou `end`", a pergunta que a issue faz.
  */
 export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions = {}): SessionGcResult[] {
   const plan = planSessionGc(repoRoot, opts);
+  const now = opts.now ?? Date.now();
   for (const entry of plan) {
     if (entry.action !== "removed") continue;
+    // #6624: lê o record ANTES de remover, só pra grupos coordenadores com
+    // arquivo real (identity sem o prefixo "orphan-backup:") — instrumentação,
+    // nunca afeta a decisão de remoção em si.
+    const isOrphanGroup = entry.identity.startsWith("orphan-backup:");
+    let lifecycleRecord: SessionRecord | null = null;
+    if (!isOrphanGroup) {
+      const realFile = entry.files.find((f) => !f.includes("-safeBackup-"));
+      lifecycleRecord = realFile ? readJsonSafe<SessionRecord>(realFile) : null;
+    }
     // #6130 (achado HIGH do fleet review): antes disto, uma falha de rmSync
     // era engolida em silêncio E a entry continuava reportando "removed" —
     // o operador via "removido" no output do CLI mesmo com o arquivo ainda
@@ -3054,6 +3159,18 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
     if (!allRemoved) {
       entry.action = "kept";
       entry.reason = `${entry.reason} [remoção falhou parcialmente — reportado como "kept", próxima execução retenta]`;
+      continue;
+    }
+    if (lifecycleRecord && isCoordinatorKind(lifecycleRecord.kind)) {
+      const startedMs = Date.parse(lifecycleRecord.startedAt ?? "");
+      logSessionLifecycleEvent(repoRoot, {
+        event: "gc-removed-without-end",
+        kind: lifecycleRecord.kind,
+        machineTag: lifecycleRecord.machineTag,
+        sessionId: lifecycleRecord.sessionId,
+        ts: new Date(now).toISOString(),
+        ageMs: Number.isFinite(startedMs) ? now - startedMs : undefined,
+      });
     }
   }
   return plan;
@@ -3364,6 +3481,220 @@ export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
     } catch (e) {
       entry.action = "write-failed";
       entry.reason = `${entry.reason} [escrita falhou: ${(e as Error)?.message ?? String(e)} — próxima execução retenta]`;
+    }
+  }
+  return plan;
+}
+
+// ─── Recolhimento de -safeBackup- já reconciliados (#6970) ─────────────────
+//
+// `reconcileClaims` (#6581, acima) já funde `claimed_issues` de um grupo no
+// arquivo REAL, mas DELIBERADAMENTE nunca remove os `-safeBackup-*` — "quem
+// remove é o GC", e `planSessionGc` só recolhe backup ÓRFÃO (sessão já
+// ENCERRADA, arquivo real ausente). O caso que fica de fora dos dois
+// mecanismos: uma sessão VIVA cujo real já reflete tudo que os backups do
+// grupo carregam (reconciliação em dia), mas os backups continuam em disco
+// para sempre — o #6970 mediu 15 arquivos `-safeBackup-` em `data/sessions/`
+// do helios, um criado no mesmo dia da medição.
+//
+// **Restrição que limita o escopo aqui, deliberadamente:** `mergeSessionRecords`
+// ainda NÃO une `merge_grant` entre os arquivos do grupo (essa união é o
+// objeto do #6952/PR #6969, que segue ABERTA — ver #6972, que documenta a
+// consequência de uni-los sem também ensinar o gate de merge a considerar
+// backup). Enquanto essa união não existe, um `merge_grant` que sobreviva
+// SÓ num backup pode ser a única cópia legível dele (dependendo de qual
+// registro do grupo `mergeSessionRecords` escolhe como `primary` por
+// heartbeat) — apagar esse backup cegamente arriscaria descartar um grant
+// vivo sem jeito de recuperá-lo depois. Por isso este planejador NUNCA marca
+// um grupo como removível se QUALQUER backup dele carrega `merge_grant`
+// (mesmo consumido/expirado — não há como saber se outro processo ainda vai
+// gravar um NOVO grant que dependa desse backup até a união do #6952
+// existir; o custo de errar pro lado conservador aqui é só "um backup a
+// mais em disco", nunca corrupção). Reavaliar este limite quando o #6952
+// mergear.
+export type SafeBackupCleanupAction =
+  | "removable"
+  | "pending-reconciliation"
+  | "has-merge-grant"
+  | "skipped-unreadable-real"
+  | "orphan-backups-only";
+
+export interface SafeBackupCleanupResult {
+  /** Stem do arquivo real (mesma identidade de `ClaimReconciliationResult`), ou
+   * `orphan-backup:{arquivo}` pra um backup sem real correspondente. */
+  identity: string;
+  /** Path absoluto do arquivo real do grupo — `null` só pra `orphan-backups-only`. */
+  realPath: string | null;
+  backupPaths: string[];
+  action: SafeBackupCleanupAction;
+  reason: string;
+}
+
+/**
+ * Plano PURO (sem I/O) de quais grupos de `-safeBackup-*` já reconciliados
+ * podem ser removidos com segurança. Reusa `groupBackupsByRealStem` e
+ * `decideClaimReconciliation` — a MESMA primitiva de união que
+ * `planClaimReconciliation` já usa, evitando uma 2ª regra de merge que
+ * divergiria da 1ª (mesmo princípio citado na issue #6970).
+ *
+ * Grupo sem nenhum backup nunca aparece no resultado (nada a fazer). Backup
+ * ÓRFÃO (sem arquivo real correspondente — sessão já encerrada, GC ainda não
+ * passou) é reportado com `action: "orphan-backups-only"` — mesma
+ * observabilidade que `planClaimReconciliation` já dá pro caso irmão
+ * (#7005 self-review finding 2): este planejador nunca toca esses backups
+ * (quem decide o destino deles é `planSessionGc`, pela liveness do grupo),
+ * mas omiti-los do output silenciosamente sugeria "nada a revisar" quando na
+ * verdade pode haver estado importante ali (achado ao vivo #7002).
+ */
+export function planSafeBackupCleanup(repoRoot: string): SafeBackupCleanupResult[] {
+  const dir = sessionsDir(repoRoot);
+  const names = listSessionJsonFiles(repoRoot);
+  const realNames = names.filter((n) => !n.includes("-safeBackup-")).sort();
+  const backupsByRealStem = groupBackupsByRealStem(names);
+  const claimedBackupNames = new Set<string>();
+  const results: SafeBackupCleanupResult[] = [];
+
+  for (const realName of realNames) {
+    const stem = realName.slice(0, -".json".length);
+    const backupNames = (backupsByRealStem.get(stem) ?? []).sort();
+    for (const b of backupNames) claimedBackupNames.add(b);
+    if (backupNames.length === 0) continue; // sem backup — nada a recolher
+
+    const realPath = join(dir, realName);
+    const backupPaths = backupNames.map((n) => join(dir, n));
+    const realRecord = readJsonSafe<SessionRecord>(realPath);
+    if (!realRecord) {
+      results.push({
+        identity: stem,
+        realPath,
+        backupPaths,
+        action: "skipped-unreadable-real",
+        reason: "arquivo real ilegível/corrompido — grupo pulado (fail-soft, mesma disciplina de planClaimReconciliation)",
+      });
+      continue;
+    }
+
+    const backupRecords: SessionRecord[] = [];
+    for (const b of backupNames) {
+      const r = readJsonSafe<SessionRecord>(join(dir, b));
+      if (r) backupRecords.push(r);
+    }
+
+    const { addedIssues } = decideClaimReconciliation(realRecord, backupRecords);
+    if (addedIssues.length > 0) {
+      results.push({
+        identity: stem,
+        realPath,
+        backupPaths,
+        action: "pending-reconciliation",
+        reason: `${addedIssues.length} claim(s) do grupo ainda não estão no real — rode reconcileClaims primeiro`,
+      });
+      continue;
+    }
+
+    const anyBackupHasGrant = backupRecords.some((r) => r.merge_grant != null);
+    if (anyBackupHasGrant) {
+      results.push({
+        identity: stem,
+        realPath,
+        backupPaths,
+        action: "has-merge-grant",
+        reason:
+          "claims reconciliadas, mas um backup do grupo carrega merge_grant — mergeSessionRecords ainda não une " +
+          "grant entre arquivos (#6952 em aberto), então remover arriscaria perder a única cópia legível dele; preservado",
+      });
+      continue;
+    }
+
+    results.push({
+      identity: stem,
+      realPath,
+      backupPaths,
+      action: "removable",
+      reason: `claims já reconciliadas no real, nenhum backup carrega merge_grant — ${backupPaths.length} backup(s) removível(is)`,
+    });
+  }
+
+  const orphanBackups = names.filter((n) => n.includes("-safeBackup-") && !claimedBackupNames.has(n)).sort();
+  for (const orphan of orphanBackups) {
+    results.push({
+      identity: `orphan-backup:${orphan}`,
+      realPath: null,
+      backupPaths: [join(dir, orphan)],
+      action: "orphan-backups-only",
+      reason:
+        "backup sem arquivo real correspondente — este planejador nunca toca backup órfão; " +
+        "o GC (`planSessionGc`) decide o destino dele com os critérios de liveness dele",
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Aplica `planSafeBackupCleanup`: para cada grupo `"removable"`, RELÊ o real
+ * e os backups no momento da escrita e RECOMPUTA a decisão contra esse
+ * estado FRESCO — mesma disciplina de `reconcileClaims` (evita remover um
+ * backup que recebeu uma claim ou um merge_grant NOVO entre o plano e a
+ * execução; a corrida é real, `data/sessions/` é escrito por sessões
+ * concorrentes o tempo todo). Remoção é best-effort (`rmSync`, nunca lança)
+ * — mesmo idioma de `garbageCollectSessions`: uma falha rebaixa a entry pra
+ * `"kept"` com o motivo anexado, e a próxima execução retenta.
+ *
+ * Nunca escreve no arquivo real — só remove backups já subsumidos por ele.
+ * Idempotente por construção: rodar duas vezes sobre o mesmo estado não
+ * remove nada na 2ª vez (os backups já não existem).
+ */
+export function cleanupReconciledSafeBackups(repoRoot: string): SafeBackupCleanupResult[] {
+  const plan = planSafeBackupCleanup(repoRoot);
+  for (const entry of plan) {
+    if (entry.action !== "removable" || !entry.realPath) continue; // "removable" nunca tem realPath null (só "orphan-backups-only" tem)
+
+    const freshReal = readJsonSafe<SessionRecord>(entry.realPath);
+    if (!freshReal) {
+      entry.action = "skipped-unreadable-real";
+      entry.reason = `${entry.reason} [ficou ilegível entre o plano e a remoção — pulado, próxima execução retenta]`;
+      continue;
+    }
+    const freshBackupRecords: SessionRecord[] = [];
+    const freshBackupPaths: string[] = [];
+    for (const backupPath of entry.backupPaths) {
+      const r = readJsonSafe<SessionRecord>(backupPath);
+      if (r) {
+        freshBackupRecords.push(r);
+        freshBackupPaths.push(backupPath);
+      }
+      // backup que sumiu entre o plano e agora (removido por outra execução
+      // concorrente) simplesmente não entra na releitura — nada a remover ali.
+    }
+    if (freshBackupPaths.length === 0) {
+      entry.action = "removable"; // nada restava — já recolhido por outra execução
+      entry.reason = `${entry.reason} [já não havia backup(s) no momento da remoção — outra execução chegou primeiro]`;
+      continue;
+    }
+
+    const { addedIssues } = decideClaimReconciliation(freshReal, freshBackupRecords);
+    if (addedIssues.length > 0) {
+      entry.action = "pending-reconciliation";
+      entry.reason = `${entry.reason} [claim nova apareceu num backup entre o plano e a remoção — pulado, retenta depois de reconciliar]`;
+      continue;
+    }
+    if (freshBackupRecords.some((r) => r.merge_grant != null)) {
+      entry.action = "has-merge-grant";
+      entry.reason = `${entry.reason} [merge_grant apareceu num backup entre o plano e a remoção — pulado]`;
+      continue;
+    }
+
+    let allRemoved = true;
+    for (const backupPath of freshBackupPaths) {
+      try {
+        rmSync(backupPath, { force: true });
+      } catch {
+        allRemoved = false;
+      }
+    }
+    if (!allRemoved) {
+      entry.reason = `${entry.reason} [remoção falhou parcialmente — próxima execução retenta o que sobrou]`;
     }
   }
   return plan;
