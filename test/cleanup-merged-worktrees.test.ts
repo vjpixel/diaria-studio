@@ -104,9 +104,9 @@ test("parseWorktreePorcelain — locked=false quando a linha 'locked' está ause
 
 test("filterUnderWorktreesDir — mantém só os sob o diretório, nunca o worktree principal do repo", () => {
   const entries = [
-    { path: "C:/repo", branch: "master" },
-    { path: "C:/repo/.claude/worktrees/agent-a", branch: "overnight/fix-1" },
-    { path: "C:/repo/.claude/worktrees/agent-b", branch: "develop/fix-2" },
+    { path: "C:/repo", branch: "master", locked: false },
+    { path: "C:/repo/.claude/worktrees/agent-a", branch: "overnight/fix-1", locked: false },
+    { path: "C:/repo/.claude/worktrees/agent-b", branch: "develop/fix-2", locked: false },
   ];
   const result = filterUnderWorktreesDir(entries, "C:/repo/.claude/worktrees");
   assert.equal(result.length, 2);
@@ -115,8 +115,8 @@ test("filterUnderWorktreesDir — mantém só os sob o diretório, nunca o workt
 
 test("filterUnderWorktreesDir — não confunde prefixo parcial de path (ex: 'worktrees-old')", () => {
   const entries = [
-    { path: "C:/repo/.claude/worktrees-old/agent-x", branch: "b" },
-    { path: "C:/repo/.claude/worktrees/agent-y", branch: "b2" },
+    { path: "C:/repo/.claude/worktrees-old/agent-x", branch: "b", locked: false },
+    { path: "C:/repo/.claude/worktrees/agent-y", branch: "b2", locked: false },
   ];
   const result = filterUnderWorktreesDir(entries, "C:/repo/.claude/worktrees");
   assert.equal(result.length, 1);
@@ -124,7 +124,7 @@ test("filterUnderWorktreesDir — não confunde prefixo parcial de path (ex: 'wo
 });
 
 test("filterUnderWorktreesDir — tolera barra final no worktreesDir", () => {
-  const entries = [{ path: "C:/repo/.claude/worktrees/agent-a", branch: "b" }];
+  const entries = [{ path: "C:/repo/.claude/worktrees/agent-a", branch: "b", locked: false }];
   const result = filterUnderWorktreesDir(entries, "C:/repo/.claude/worktrees/");
   assert.equal(result.length, 1);
 });
@@ -133,9 +133,9 @@ test("filterUnderWorktreesDir — tolera barra final no worktreesDir", () => {
 
 test("selectMergedForRemoval — só seleciona os que o checker confirma como mergeados", () => {
   const entries = [
-    { path: "/a", branch: "overnight/fix-1" },
-    { path: "/b", branch: "overnight/fix-2" },
-    { path: "/c", branch: "develop/fix-3" },
+    { path: "/a", branch: "overnight/fix-1", locked: false },
+    { path: "/b", branch: "overnight/fix-2", locked: false },
+    { path: "/c", branch: "develop/fix-3", locked: false },
   ];
   const merged = new Set(["overnight/fix-1", "develop/fix-3"]);
   const result = selectMergedForRemoval(entries, (b) => merged.has(b));
@@ -146,15 +146,15 @@ test("selectMergedForRemoval — só seleciona os que o checker confirma como me
 });
 
 test("selectMergedForRemoval — worktree detached (branch null) nunca é selecionado, mesmo com checker sempre-true", () => {
-  const entries = [{ path: "/a", branch: null }];
+  const entries = [{ path: "/a", branch: null, locked: false }];
   const result = selectMergedForRemoval(entries, () => true);
   assert.equal(result.length, 0);
 });
 
 test("selectMergedForRemoval — nenhum mergeado -> array vazio (fail-soft: nunca remove por engano)", () => {
   const entries = [
-    { path: "/a", branch: "overnight/fix-1" },
-    { path: "/b", branch: "overnight/fix-2" },
+    { path: "/a", branch: "overnight/fix-1", locked: false },
+    { path: "/b", branch: "overnight/fix-2", locked: false },
   ];
   const result = selectMergedForRemoval(entries, () => false);
   assert.deepEqual(result, []);
@@ -171,7 +171,7 @@ const EIGHT_DAYS_AGO = NOW - 8 * 24 * 60 * 60 * 1000;
 const ONE_DAY_AGO = NOW - 1 * 24 * 60 * 60 * 1000;
 
 test("selectOrphanedForStaleRemoval — worktree detached HEAD antigo (>7 dias) é removido", () => {
-  const entries = [{ path: "/a", branch: null }];
+  const entries = [{ path: "/a", branch: null, locked: false }];
   const result = selectOrphanedForStaleRemoval(
     entries,
     [],
@@ -183,7 +183,7 @@ test("selectOrphanedForStaleRemoval — worktree detached HEAD antigo (>7 dias) 
 });
 
 test("selectOrphanedForStaleRemoval — worktree detached HEAD recente (<7 dias) é preservado", () => {
-  const entries = [{ path: "/a", branch: null }];
+  const entries = [{ path: "/a", branch: null, locked: false }];
   const result = selectOrphanedForStaleRemoval(
     entries,
     [],
@@ -195,7 +195,7 @@ test("selectOrphanedForStaleRemoval — worktree detached HEAD recente (<7 dias)
 });
 
 test("selectOrphanedForStaleRemoval — branch com ref local deletado e antigo é removido", () => {
-  const entries = [{ path: "/a", branch: "overnight/fix-old" }];
+  const entries = [{ path: "/a", branch: "overnight/fix-old", locked: false }];
   const result = selectOrphanedForStaleRemoval(
     entries,
     [],
@@ -207,7 +207,7 @@ test("selectOrphanedForStaleRemoval — branch com ref local deletado e antigo �
 });
 
 test("selectOrphanedForStaleRemoval — branch local ainda existe, mesmo antigo, NUNCA é removido (decisão de escopo #5418)", () => {
-  const entries = [{ path: "/a", branch: "overnight/fix-still-open" }];
+  const entries = [{ path: "/a", branch: "overnight/fix-still-open", locked: false }];
   const result = selectOrphanedForStaleRemoval(
     entries,
     [],
@@ -219,7 +219,7 @@ test("selectOrphanedForStaleRemoval — branch local ainda existe, mesmo antigo,
 });
 
 test("selectOrphanedForStaleRemoval — mtime desconhecido (stat falhou) nunca conta como stale (fail-soft)", () => {
-  const entries = [{ path: "/a", branch: null }];
+  const entries = [{ path: "/a", branch: null, locked: false }];
   const result = selectOrphanedForStaleRemoval(
     entries,
     [],
@@ -231,8 +231,8 @@ test("selectOrphanedForStaleRemoval — mtime desconhecido (stat falhou) nunca c
 });
 
 test("selectOrphanedForStaleRemoval — worktree já selecionado por merge não é duplicado", () => {
-  const entries = [{ path: "/a", branch: null }];
-  const alreadySelected = [{ path: "/a", branch: null }];
+  const entries = [{ path: "/a", branch: null, locked: false }];
+  const alreadySelected = [{ path: "/a", branch: null, locked: false }];
   const result = selectOrphanedForStaleRemoval(
     entries,
     alreadySelected,
@@ -244,7 +244,7 @@ test("selectOrphanedForStaleRemoval — worktree já selecionado por merge não 
 });
 
 test("selectOrphanedForStaleRemoval — respeita threshold customizado", () => {
-  const entries = [{ path: "/a", branch: null }];
+  const entries = [{ path: "/a", branch: null, locked: false }];
   const twoDaysAgo = NOW - 2 * 24 * 60 * 60 * 1000;
   const oneDayThreshold = 24 * 60 * 60 * 1000;
   const result = selectOrphanedForStaleRemoval(entries, [], () => true, () => twoDaysAgo, NOW, oneDayThreshold);
@@ -265,7 +265,7 @@ test("ORPHAN_STALE_THRESHOLD_MS — 7 dias em ms", () => {
 // não-stale fica de fora — os demais seguem avaliados normalmente mesmo com
 // outras sessões ativas.
 test("#7045 — sessão ativa NÃO bloqueia mais a varredura inteira: worktree sem footprint segue elegível", () => {
-  const entries = [{ path: "/a", branch: null }];
+  const entries = [{ path: "/a", branch: null, locked: false }];
   const wouldRemoveInIsolation = selectOrphanedForStaleRemoval(
     entries,
     [],
@@ -294,8 +294,8 @@ test("#7045 — sessão ativa NÃO bloqueia mais a varredura inteira: worktree s
 
 test("#7045 — worktree É excluído quando seu nome aparece em touched_paths/dirty_paths de sessão ativa", () => {
   const entries = [
-    { path: "C:/repo/.claude/worktrees/agent-em-uso", branch: "develop/fix-1" },
-    { path: "C:/repo/.claude/worktrees/agent-livre", branch: "overnight/fix-2" },
+    { path: "C:/repo/.claude/worktrees/agent-em-uso", branch: "develop/fix-1", locked: false },
+    { path: "C:/repo/.claude/worktrees/agent-livre", branch: "overnight/fix-2", locked: false },
   ];
   const activeSession: SessionRecord = {
     kind: "continuo",
@@ -311,7 +311,7 @@ test("#7045 — worktree É excluído quando seu nome aparece em touched_paths/d
 });
 
 test("#7045 — sessão STALE não exclui worktree nenhum (mesmo com footprint)", () => {
-  const entries = [{ path: "C:/repo/.claude/worktrees/agent-x", branch: "develop/fix-1" }];
+  const entries = [{ path: "C:/repo/.claude/worktrees/agent-x", branch: "develop/fix-1", locked: false }];
   const staleSession: SessionRecord = {
     kind: "overnight",
     machineTag: "helios",
