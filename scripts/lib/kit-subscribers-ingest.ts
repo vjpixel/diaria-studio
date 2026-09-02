@@ -126,6 +126,14 @@ export function ingestBroadcastAudience(
       platform: "kit",
       type,
       externalEventId: buildKitEventExternalId(email, broadcastId, axis),
+      // #6591: `edicao` = o broadcast — o Kit já grava exatamente 1 evento
+      // "click" por (assinante × broadcast) (a chave natural acima não tem
+      // eixo de link), então `edicao` aqui é redundante com a chave natural
+      // pra ESTE eixo, mas populá-lo sempre (não só em "click") é o que
+      // permite `leitor-store.ts` contar "recebidas"/"únicas clicadas" por
+      // `COUNT(DISTINCT edicao)` de forma simétrica entre plataformas, sem
+      // um caso especial pro Kit.
+      edicao: String(broadcastId),
       ts,
     });
     if (inserted) newEvents++;

@@ -172,3 +172,35 @@ Escreve `data/aquisicao/origem-original.json`:
 Rodando localmente contra os 3 snapshots disponíveis (2026-06-05 / 2026-06-17 / 2026-08-14, junction OneDrive): dos 44 contatos com `utm_source: "brevo-diaria"` no snapshot mais recente, 40 recuperam origem de um snapshot anterior e 4 não têm nenhuma aparição pré-promoção capturada. **Este número é menor que o "191 já sobrescritos" citado no corpo da issue #5235** — a medição da issue é de um ponto do dia 260814 mais tardio que o snapshot mais recente disponível localmente (gerado às 04:06 UTC do mesmo dia pela task `Diaria-Beehiiv-Backup`); a cobertura de recuperação cresce a cada snapshot semanal novo que capturar contatos antes da próxima promoção.
 
 **Só leitura local** — nunca chama a API Beehiiv ao vivo, mesma disciplina de `leitor.ts`.
+
+## `leitor-v1` cross-plataforma (#6464 fatia 7 — #6591)
+
+`scripts/lib/leitor-store.ts` — módulo IRMÃO de `leitor.ts` (ver "Regra de versionamento" acima): mesma definição v1 (`isLeitorV1`, `LEITOR_V1_THRESHOLDS`, `computeCtrPct`), fonte de dado nova — o store unificado do épico #6464 (`scripts/lib/diaria-subscribers-db.ts`, fatias 2-5: #6585/#6586/#6587/#6589), que soma recebidas e cliques ao longo da vida do assinante **atravessando** Beehiiv/Brevo/Kit, em vez de enxergar 1 plataforma por vez.
+
+**Decisão de substituir vs. coexistir com a definição por snapshot: adiada de propósito.** A issue #6591 pediu explicitamente decidir "com o número na mão, não agora" — as duas definições coexistem (`leitor.ts` intocado; `leitor-store.ts` só adiciona um caminho novo de cálculo) até essa decisão ser tomada contra dado real. Sem ingestão real rodada ainda (`data/diaria-subscribers/` não existe nesta sessão), essa decisão continua pendente.
+
+### Por que `brevo_clarice` fica de fora
+
+`PLATFORMS` do store inclui `brevo_clarice` — a base de reativação da Clarice News (~435k contatos, produto/audiência diferente, `scripts/lib/clarice-db.ts`), ingerida no MESMO store só pelo valor de resolução de identidade cross-produto. `leitor-v1` é a unidade de qualidade da **diária**; somar engajamento da Clarice inflaria as duas pontas da fração com um produto diferente — alguém pode ler a Clarice todo dia e nunca ter recebido uma edição da diária. `LEITOR_DIARIA_PLATFORMS = PLATFORMS.filter(p => p !== "brevo_clarice")` — as 3 plataformas da diária (Beehiiv, Brevo diária, Kit).
+
+### Recebidas: `delivered` explícito, ou `sent − bounce` quando a plataforma não expõe `delivered`
+
+Mesma disciplina de `EVENT_TYPES` em `diaria-subscribers-db.ts`: o Kit ingere `delivered` como eixo de 1ª classe (#6586, achado #6504 — Gmail recusou 72% de um envio em massa) — usado direto quando presente. A API da Brevo nunca expõe `delivered` por contato (só `messagesSent`, mapeado pra `"sent"`), mas expõe bounce explícito — por simetria (Kit deriva bounce = sent−delivered; Brevo deriva delivered = sent−bounce), "recebidas" da Brevo é `max(0, sent − bounce)`. Qual caminho usar é **detectado do dado** (`detectPlatformCapabilities` — alguma plataforma já gravou algum evento `delivered`?), nunca hardcoded por nome de plataforma.
+
+### "Únicas clicadas": por edição, não por evento de clique
+
+`total_unique_clicked` conta EDIÇÕES em que o assinante clicou ao menos 1 link — nunca o total de eventos de clique. O Kit já grava 1 evento `click` por (assinante × broadcast); a Brevo grava 1 evento POR LINK (`links[]` de `contact.statistics.clicked`), então 2 links clicados na mesma campanha contariam como 2 "cliques únicos" sem deduplicar — o mesmo viés de inflação que `leitor-v1` inteiro existe pra evitar. Por isso `kit-subscribers-ingest.ts`/`brevo-subscribers-ingest.ts` passaram a gravar `event.edicao` (broadcastId/campaignId, coluna já existia no schema, só não populada) e `leitor-store.ts` conta `COUNT(DISTINCT COALESCE(edicao, external_event_id))` por tipo de evento — o fallback pra `external_event_id` só protege dado legado sem `edicao` (não existe hoje).
+
+### PISO, nunca exato
+
+Herdado de `diaria-subscribers-identity-resolve.ts` (#6589): identidade não-casada aparece como um `subscriber` separado por plataforma (churn + cadastro novo, nunca continuidade) — `summarizeStoreLeitores` sempre devolve `note` (`CROSS_PLATFORM_FLOOR_NOTE`) ao lado do número. "Temos ao menos N leitores" é defensável; "temos N leitores" não é.
+
+### CLI
+
+```bash
+npx tsx scripts/lib/leitor-store.ts
+# --db <path> (default: data/diaria-subscribers/diaria-subscribers.db)
+# --ctr-min 2 --received-min 20 (mesmos defaults de leitor.ts)
+```
+
+Só leitura local, nunca chama API nenhuma ao vivo. Sem o store (clone fresco, sessão cloud, ou nenhuma ingestão rodada ainda), sai com erro explícito — nunca degrada silenciosamente pra zero.

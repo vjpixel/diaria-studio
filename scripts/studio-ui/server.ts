@@ -147,6 +147,18 @@
  *     `refreshPollEiaSummaryLocal` — sem a flag, um refresh repetido dentro do
  *     TTL serve o `poll-eia-summary.json` já em disco sem novo fetch (o fetch
  *     completo percorre N edições × M meses de leaderboard, historicamente >25s).
+ *   - `GET /api/subscribers/search?email=...` (#6590) — timeline unificada
+ *     das 3 plataformas (Beehiiv/Brevo/Kit) pra 1 e-mail, sobre o store
+ *     `diaria-subscribers-db.ts` (épico #6464). `GET /api/subscribers/cohort`
+ *     — visão de coorte: subscribers por plataforma, migrações pairwise,
+ *     reativação via Brevo, relatório de não-casados (#6589) — toda métrica
+ *     cross-plataforma vem com a nota de piso ao lado, nunca sozinha (ver
+ *     `studio-subscribers.ts`). `GET /assinantes` — página (#6590): mesma
+ *     estratégia de rewrite de `/apoios`/`/ads`, servindo
+ *     `public/assinantes.html`. Read-only por construção — decisão do
+ *     editor (corpo da issue #6590): sem fusão manual de identidade, sem
+ *     edição de assinante, zero endpoint de escrita. Fail-soft sem `data/`
+ *     ou sem nenhuma ingestão rodada ainda (mesmo padrão de `/api/ads`).
  *   - `GET /caixas` — seção "Caixas" (#3924): mesma estratégia de rewrite de
  *     `/apoios`/`/relatorios`, servindo `public/caixas.html`. Consome
  *     `GET /api/boxes` (lista dinâmica de `data/snippets/*.md`, exceto
@@ -350,6 +362,10 @@ import { refreshPollEiaSummaryLocal } from "../build-poll-eia-data.ts";
 // #5236: custo por leitor por canal — qual canal traz leitor mais barato,
 // abertura da coorte vs. base, orçamento do mês, degradação. Ver studio-ads.ts.
 import { buildAdsData } from "./studio-ads.ts";
+// #6590: busca por e-mail -> timeline unificada + coorte por migração,
+// sobre o store diaria-subscribers-db.ts (épico #6464). Read-only por
+// construção — ver studio-subscribers.ts.
+import { searchSubscribersByEmail, buildSubscribersCohortData } from "./studio-subscribers.ts";
 import { watchStudioSource, type StudioSourceChange, type StudioSourceWatchHandle } from "./studio-source-watch.ts";
 // #5894: sendJson + readRequestBody extraídos pra http-utils.ts; handlers de
 // Caixas extraídos pra routes/boxes.ts — server.ts encolheu de 2389 → ~1700 linhas.
@@ -1234,6 +1250,39 @@ function handleApiAds(rootDir: string, req: IncomingMessage, res: ServerResponse
   }
 }
 
+// ── #6590: busca por e-mail + coorte por migração (store diaria-subscribers) ──
+
+/** `GET /api/subscribers/search?email=...` — timeline unificada das 3
+ * plataformas pra 1 e-mail (#6590). `email` ausente/vazio devolve 200 com
+ * `subscribers: []` em vez de 400 — a página em branco (sem busca ainda)
+ * é um estado normal da UI, não um erro. Sempre 200: `searchSubscribersByEmail`
+ * é fail-soft (mesmo padrão de `handleApiAds`). Read-only — nenhum verbo
+ * além de GET nesta rota, de propósito (ver studio-subscribers.ts). */
+function handleApiSubscribersSearch(rootDir: string, req: IncomingMessage, res: ServerResponse): void {
+  try {
+    const email = (new URL(req.url ?? "/", "http://localhost").searchParams.get("email") ?? "").trim();
+    if (!email) {
+      sendJson(res, 200, { query: "", db: { dbPath: "", hasDataDir: false, available: false, error: null }, subscribers: [], note: "" });
+      return;
+    }
+    sendJson(res, 200, searchSubscribersByEmail(rootDir, email));
+  } catch (e) {
+    sendJson(res, 500, { error: (e as Error).message });
+  }
+}
+
+/** `GET /api/subscribers/cohort` — visão de coorte: subscribers por
+ * plataforma, migrações pairwise, reativação via Brevo, relatório de
+ * não-casados (#6589) — toda métrica cross-plataforma com a nota de piso
+ * ao lado (#6590 critério de pronto). Sempre 200, fail-soft. */
+function handleApiSubscribersCohort(rootDir: string, res: ServerResponse): void {
+  try {
+    sendJson(res, 200, buildSubscribersCohortData(rootDir));
+  } catch (e) {
+    sendJson(res, 500, { error: (e as Error).message });
+  }
+}
+
 /** `POST /api/painel/eia/refresh` — botão "Atualizar É IA?" (#3861): regenera
  * SÓ `data/poll-eia-summary.json` local a partir dos endpoints públicos do
  * worker poll (`refreshPollEiaSummaryLocal`) — NUNCA dispara o push paralelo
@@ -1495,6 +1544,15 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleApiAds(rootDir, req, res);
         return;
       }
+      // #6590: busca por e-mail -> timeline unificada + coorte por migração.
+      if (urlPath === "/api/subscribers/search") {
+        handleApiSubscribersSearch(rootDir, req, res);
+        return;
+      }
+      if (urlPath === "/api/subscribers/cohort") {
+        handleApiSubscribersCohort(rootDir, res);
+        return;
+      }
       // #3924: seção "Caixas" — GET (PUT de save já tratado acima, antes do
       // guard de método). Lista checada antes do get-por-slug pra não colidir
       // (regex de slug `[^/]+` casaria "boxes" também se checado depois, mas
@@ -1701,6 +1759,16 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #5236: mesma estratégia de rewrite — a página busca /api/ads.
       if (urlPath === "/ads" || urlPath === "/ads/") {
         const served = serveStaticFile(PUBLIC_DIR, "/ads.html", res, req);
+        if (!served) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found");
+        }
+        return;
+      }
+      // #6590: mesma estratégia de rewrite — a página busca
+      // /api/subscribers/search + /api/subscribers/cohort.
+      if (urlPath === "/assinantes" || urlPath === "/assinantes/") {
+        const served = serveStaticFile(PUBLIC_DIR, "/assinantes.html", res, req);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");

@@ -1,0 +1,118 @@
+/* assinantes.css (#6590) — busca por e-mail + coorte por migração, sobre o
+   store unificado do épico #6464. Estende style.css/triagem.css/
+   integracoes.css/apoios.css (mesma fonte de tokens, /tokens.generated.css)
+   — só o que é específico desta página vive aqui. Nenhum hex cru, ver
+   test/studio-css-no-raw-hex.test.ts. */
+
+.assinantes-search-form {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.assinantes-search-form input[type="text"] {
+  font: inherit;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+  min-width: 18rem;
+  flex: 1 1 18rem;
+}
+
+.assinantes-search-form button {
+  font: inherit;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--ink);
+  border-radius: 4px;
+  background: var(--paper-alt);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+/* Banner de margem/piso (#6589) — critério de pronto explícito do #6590:
+   "número + margem de não-casados", nunca só o número. Visualmente distinto
+   de .alert-banner (que sinaliza erro) — aqui não há erro nenhum, é aviso
+   metodológico permanente. */
+.assinantes-floor-note {
+  background: var(--paper-alt);
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--brand);
+  border-radius: 4px;
+  padding: 0.6rem 0.9rem;
+  font-size: 0.85rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.assinantes-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.75rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.assinantes-tile {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  background: var(--paper-alt);
+}
+
+.assinantes-tile-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.7;
+}
+
+.assinantes-tile-value {
+  font-family: var(--font-mono);
+  font-size: 1.3rem;
+  font-weight: 700;
+  margin-top: 0.15rem;
+}
+
+/* Ficha de 1 subscriber encontrado na busca. */
+.assinantes-subscriber-card {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin: 0.75rem 0;
+  background: var(--paper-alt);
+}
+
+.assinantes-subscriber-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.4rem;
+}
+
+.assinantes-subscriber-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.assinantes-platform-badge {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  text-transform: lowercase;
+}
+
+.assinantes-leitor-yes {
+  color: var(--brand);
+  font-weight: 700;
+}
+
+.assinantes-multi-warning {
+  font-size: 0.78rem;
+  opacity: 0.85;
+  margin: 0.3rem 0 0.6rem;
+}
