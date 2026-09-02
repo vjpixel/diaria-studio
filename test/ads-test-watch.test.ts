@@ -142,6 +142,33 @@ describe("#5845 — ads-test-watch: parseClicksCsv", () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].canal, "Google Ads (teste 2608)");
     assert.equal(rows[0].gasto_acumulado, 71.43);
+    assert.equal(rows[0].leitoresAcumulado, null, "sem a coluna 'leitores_acumulado' no header -> null, nunca erro (#5239)");
+  });
+
+  it("#5239 — coluna OPCIONAL 'leitores_acumulado' presente e preenchida -> parseia como número", () => {
+    const headerWithLeitores = HEADER.trim() + ",leitores_acumulado\n";
+    const csv = headerWithLeitores + "Google Ads (teste 2608),2026-08-26,71.43,10,1000,7.1,1,71.43,,,painel Google,12\n";
+    const { rows, errors } = parseClicksCsv(csv);
+    assert.equal(errors.length, 0);
+    assert.equal(rows[0].leitoresAcumulado, 12);
+  });
+
+  it("#5239 — coluna presente mas VAZIA nesta linha -> null, não é erro (editor ainda não reconciliou este campo)", () => {
+    const headerWithLeitores = HEADER.trim() + ",leitores_acumulado\n";
+    const csv = headerWithLeitores + "Google Ads (teste 2608),2026-08-26,71.43,10,1000,7.1,1,71.43,,,painel Google,\n";
+    const { rows, errors } = parseClicksCsv(csv);
+    assert.equal(errors.length, 0);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].leitoresAcumulado, null);
+  });
+
+  it("#5239 — coluna presente com valor NÃO-numérico -> erro (mesma disciplina das demais colunas numéricas)", () => {
+    const headerWithLeitores = HEADER.trim() + ",leitores_acumulado\n";
+    const csv = headerWithLeitores + "Google Ads (teste 2608),2026-08-26,71.43,10,1000,7.1,1,71.43,,,painel Google,abc\n";
+    const { rows, errors } = parseClicksCsv(csv);
+    assert.equal(rows.length, 0);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].reason, /leitores_acumulado/);
   });
 
   it("lança se o header estiver faltando uma coluna obrigatória", () => {
