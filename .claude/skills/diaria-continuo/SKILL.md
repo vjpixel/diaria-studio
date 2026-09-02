@@ -514,17 +514,45 @@ preempta a rodada inteira ao detectar a edição diária em curso.
 
 0. **Sync de master (#5397)** — no início de CADA reentrada neste loop
    (entrada fresca da sessão e cada retomada via wake `/loop`/
-   `ScheduleWakeup`), rodar `npx tsx scripts/sync-code.ts` (mesmo wrapper
-   fail-soft do #2686 usado no Passo 0 de `/diaria-edicao`: fetch + `git
-   checkout master && git pull --ff-only`). **Fail-soft invariável**:
-   qualquer falha de sync (offline, divergência, conflito de stash) vira
-   warning no log e o loop segue normalmente — nunca bloqueia. Cobre o
-   cenário em que outra máquina/sessão mergeou algo enquanto esta sessão
-   dormia entre ciclos do loop — sem este passo, um wake abriria worktree a
-   partir de um `master` local defasado até o próprio loop mergear algo
-   (passo 1, item 6, reusado do overnight), reintroduzindo bugs já corrigidos
-   alhures. Não substitui o `git pull` pós-merge do passo 1 (item 6) — este
-   passo 0 cobre a janela ANTES do primeiro merge de cada reentrada.
+   `ScheduleWakeup`):
+
+   0a. **Recuperação mecânica de tick interrompido (#7130), SEMPRE ANTES do
+   sync abaixo.** Medição ao vivo (#6908, 02/09): 2 de 3 ticks longos
+   produziram diff real e não fecharam o laço — sem claim, sem commit, sem
+   PR, árvore de trabalho deixada suja em `master` no checkout compartilhado
+   (#6952: 498 linhas nunca commitadas). O guard existente em `end` (#6922)
+   só protege quando o tick CHEGA a chamar `end` — o modo de falha medido é
+   justamente o tick morrer antes disso (budget estourado, crash, kill do
+   gateway). Em vez de depender do próximo tick lembrar de checar
+   `git status` antes de fazer qualquer coisa (prosa, não invariante), rodar
+   **mecanicamente**, toda reentrada, antes de qualquer outro comando:
+   `npx tsx scripts/rescue-continuo-orphaned-work.ts --push`. `outcome:
+   "clean"` (exit 0) é o caso comum — segue pro passo 0b. `outcome: "rescued"`
+   (exit 0 com `--push` bem-sucedido) commitou o trabalho órfão numa branch
+   dedicada (`continuo/rescue-{timestamp}`) e, quando `gh pr create` também
+   funcionou, abriu PR `REFS #7130, NÃO CLOSES` pra triagem manual — reportar
+   isso no relatório do tick (não é resolução da issue de origem, é
+   preservação do trabalho perdido; a issue original que gerou aquele diff
+   continua sem tratamento). `outcome: "rescue_failed"` OU `"rescued"` com
+   `--push` que falhou (exit 1): **parar e diagnosticar antes de prosseguir**
+   — mesma disciplina de qualquer `exit 1` inesperado (item 18 de
+   `context/overnight-dispatch-rules.md`), nunca ignorar e seguir pro sync.
+
+   0b. **Sync propriamente dito** — rodar `npx tsx scripts/sync-code.ts`
+   (mesmo wrapper fail-soft do #2686 usado no Passo 0 de `/diaria-edicao`:
+   fetch + `git checkout master && git pull --ff-only`). **Fail-soft
+   invariável**: qualquer falha de sync (offline, divergência, conflito de
+   stash) vira warning no log e o loop segue normalmente — nunca bloqueia.
+   Cobre o cenário em que outra máquina/sessão mergeou algo enquanto esta
+   sessão dormia entre ciclos do loop — sem este passo, um wake abriria
+   worktree a partir de um `master` local defasado até o próprio loop
+   mergear algo (passo 1, item 6, reusado do overnight), reintroduzindo bugs
+   já corrigidos alhures. Não substitui o `git pull` pós-merge do passo 1
+   (item 6) — este passo 0 cobre a janela ANTES do primeiro merge de cada
+   reentrada. Rodar DEPOIS de 0a, nunca antes — `sync-code.ts` também mexe
+   em `git stash` quando a árvore está suja; rodar a recuperação primeiro
+   evita que o stash do sync misture o trabalho órfão de um tick morto com
+   o dele.
 
 **Mudança de config de sessão nunca é sinal de pausa (#5327 item 1, achado
 ao vivo 260814).** Comandos como `/effort medium`, `/fast`, ou qualquer outro
