@@ -29,7 +29,8 @@
  * mesmo repo dentro da janela do stage: medido na edição 260814, isso inflou
  * o total em 29% (303M de 1.001M vieram de 5 sessões paralelas). O resultado
  * agora sempre carrega `session_filter` e `sessions_excluded` — e
- * `subagent_tokens_in: null`, que significa NÃO REGISTRADO pelo harness, não
+ * `subagent_tokens_in: null`, que significa SEM DISPATCH DE `Agent()` nesta
+ * janela (até o #7084: NÃO REGISTRADO pelo harness — ver nota abaixo), nunca
  * "custou zero".
  *
  * Fail-soft (#738-adjacent, mesma disciplina de `update-stage-status.ts`):
@@ -102,11 +103,14 @@ export interface CaptureResult {
   /** Sessões concorrentes com turnos na mesma janela que ficaram de fora. */
   sessions_excluded?: number;
   /**
-   * `null` = custo de subagente NÃO REGISTRADO pelo harness, não zero. Campo
+   * `null` = sem dispatch de `Agent()` nesta janela, não zero. Campo
    * explícito de propósito: antes do #5413 esse custo não tinha campo nenhum
    * — ficava simplesmente ausente, e `tokens_in` era lido como se já fosse o
    * total do stage. O buraco não inflava o número, tornava-o incompleto sem
-   * deixar rastro.
+   * deixar rastro. Entre o #5413 e o #7084 o campo existia mas ficava
+   * SEMPRE `null` (harness não gravava transcript de subagente nenhum); desde
+   * o #7084 (`scripts/lib/session-transcript.ts`) o dado real é capturado de
+   * `{sessionId}/subagents/*.jsonl` quando presente.
    */
   subagent_tokens_in?: number | null;
   subagent_tokens_out?: number | null;

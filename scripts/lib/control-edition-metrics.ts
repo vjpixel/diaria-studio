@@ -21,10 +21,12 @@
  *   3. **contexto médio por turno** — não existe como campo em lugar nenhum;
  *      é sempre derivado (`tokens_in / turns`), nunca uma métrica capturada
  *      separadamente.
- *   4. **`subagent_tokens`** — já capturado por #5413
- *      (`subagent_tokens_in`/`subagent_tokens_out` em `stage-status.json`),
- *      `null` explícito quando o harness não registrou nenhum turno
- *      `isSidechain` na janela (caso observado em 100% da amostra do #5413).
+ *   4. **`subagent_tokens`** — capturado em `stage-status.json`
+ *      (`subagent_tokens_in`/`subagent_tokens_out`, campo introduzido no
+ *      #5413; dado real preenchido a partir do #7084, que passou a varrer
+ *      `{sessionId}/subagents/*.jsonl` — ver `scripts/lib/session-transcript.ts`).
+ *      `null` explícito quando nenhum turno `isSidechain` caiu na janela —
+ *      sem dispatch de `Agent()` no stage, ou dispatch fora do intervalo.
  *      Este módulo só repassa o campo — nunca substitui `null` por `0`.
  *
  * `data/run-log.jsonl` foi checado como fonte candidata (citada na #5547) e
@@ -80,8 +82,10 @@ export interface StageControlMetrics {
   /** `tokens_in / turns`, arredondado. `null` quando faltar qualquer um dos
    * dois insumos, ou `turns === 0` (evita divisão por zero). */
   avg_context_per_turn: number | null;
-  /** `null` = subagente não registrado pelo harness nesta janela (#5413) —
-   * NUNCA "custou zero". Repassado sem alteração de `stage-status.json`. */
+  /** `null` = sem dispatch de `Agent()` nesta janela — NUNCA "custou zero"
+   * (até o #7084, `null` também podia significar "harness não registra
+   * custo de subagente"; hoje o dado é capturado quando existe). Repassado
+   * sem alteração de `stage-status.json`. */
   subagent_tokens_in: number | null;
   subagent_tokens_out: number | null;
   /** Procedência de `tokens_in`/`tokens_out` (persistidos por #5413). */
