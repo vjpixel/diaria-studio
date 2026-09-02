@@ -25,6 +25,7 @@ import { hasFlag, getIntArg, isMainModule } from "./lib/cli-args.ts";
 import { ALARM_LABEL } from "./lib/alarm-issues.ts";
 import {
   findAlarmRetirementCandidates,
+  parseGithubStateReason,
   ALARM_RETIREMENT_THRESHOLD,
   type ClosedAlarmIssueRecord,
 } from "./lib/alarm-retirement-candidates.ts";
@@ -39,7 +40,7 @@ const LOG_PREFIX = "[check-alarm-retirement-candidates]";
  * issue list` não expõe esse campo, só a REST clássica expõe). O endpoint
  * `/issues` do repo devolve issues E pull requests juntos — `pull_request`
  * só existe na entrada quando é um PR, daí o filtro abaixo. */
-interface GhApiIssueRow {
+export interface GhApiIssueRow {
   number: number;
   title: string;
   body: string | null;
@@ -48,14 +49,52 @@ interface GhApiIssueRow {
   pull_request?: unknown;
 }
 
+/**
+ * Pura — parseia o array bruto devolvido por `gh api .../issues` (REST, ver
+ * `GhApiIssueRow`), filtra pull requests (o endpoint mistura issues e PRs) e
+ * normaliza `state_reason` via `parseGithubStateReason`. Extraída do
+ * `spawnSync` pra ser testável com fixture, sem processo filho nem rede —
+ * finding P1 do fleet review (PR #7049): o bug de casing que a normalização
+ * abaixo corrige (achado no self-review original desta PR, ver histórico do
+ * commit) não tinha NENHUM teste cobrindo este caminho — só a lógica pura
+ * downstream, com fixtures já normalizadas, que não pega regressão aqui.
+ * Um `JSON.parse` malformado propaga a exceção pro caller (`fetchClosedAlarmIssues`
+ * decide o que fazer com ela).
+ */
+export function parseGhApiIssueRows(raw: string): ClosedAlarmIssueRecord[] {
+  const rows = JSON.parse(raw) as GhApiIssueRow[];
+  return rows
+    .filter((r) => !("pull_request" in r))
+    .map((r) => ({
+      number: r.number,
+      title: r.title,
+      body: r.body ?? "",
+      stateReason: parseGithubStateReason(r.state_reason),
+      closedAt: r.closed_at ?? null,
+    }));
+}
+
+/** Resultado discriminado de `fetchClosedAlarmIssues` — substitui o antigo
+ * `T[] | null` (finding P2 do fleet review, PR #7049): `null` sozinho
+ * descartava o diagnóstico real (stderr do `gh`, erro de spawn, mensagem da
+ * exceção de parse) e o caller imprimia sempre a mesma frase genérica
+ * chutando 5 causas possíveis. `reason` carrega o sinal de verdade. */
+type FetchClosedAlarmIssuesResult =
+  | { ok: true; data: ClosedAlarmIssueRecord[] }
+  | { ok: false; reason: string };
+
 /** Busca todas as issues FECHADAS com a label `alarm` — fail-soft: `gh`
- * indisponível/rate-limited/JSON malformado devolve `null` (nunca lista
- * vazia fabricada, que pareceria "nenhum candidato" em vez de "não sei").
+ * indisponível/rate-limited/JSON malformado devolve `{ ok: false, reason }`
+ * (nunca lista vazia fabricada, que pareceria "nenhum candidato" em vez de
+ * "não sei") com o diagnóstico real, não um chute genérico.
  * `--paginate` percorre todas as páginas (o backlog de alarme já passou de
  * 100 issues fechadas na auditoria original do #6798 — um único `per_page`
  * não bastaria) e o `gh` moderno concatena as páginas num único array JSON
- * válido no stdout. */
-function fetchClosedAlarmIssues(cwd: string): ClosedAlarmIssueRecord[] | null {
+ * válido no stdout. `maxBuffer` explícito: as 117 issues fechadas atuais já
+ * produzem 626KB de JSON (medido no fleet review, PR #7049) contra o
+ * default de 1MB do Node — o backlog só cresce, então sobe a folga antes de
+ * estourar em silêncio, não depois. */
+function fetchClosedAlarmIssues(cwd: string): FetchClosedAlarmIssuesResult {
   const res = spawnSync(
     "gh",
     [
@@ -63,30 +102,16 @@ function fetchClosedAlarmIssues(cwd: string): ClosedAlarmIssueRecord[] | null {
       "--paginate",
       `/repos/{owner}/{repo}/issues?state=closed&labels=${encodeURIComponent(ALARM_LABEL)}&per_page=100`,
     ],
-    { cwd, encoding: "utf8", timeout: 45_000 },
+    { cwd, encoding: "utf8", timeout: 45_000, maxBuffer: 10 * 1024 * 1024 },
   );
-  if (res.status !== 0) return null;
+  if (res.error) return { ok: false, reason: res.error.message };
+  if (res.status !== 0) {
+    return { ok: false, reason: res.stderr?.trim() || `gh saiu com status ${res.status}` };
+  }
   try {
-    const rows = JSON.parse(res.stdout) as GhApiIssueRow[];
-    return rows
-      .filter((r) => !("pull_request" in r))
-      .map((r) => ({
-        number: r.number,
-        title: r.title,
-        body: r.body ?? "",
-        // REST devolve `state_reason` em minúsculas ("not_planned",
-        // "completed", "duplicate") — normalizado pra MAIÚSCULAS aqui
-        // porque `alarm-retirement-candidates.ts` (e a docstring de
-        // `closeAlarmIssue` em `alarm-issues.ts`, que este módulo cita)
-        // descreve o valor na convenção GraphQL (`NOT_PLANNED`). Achado ao
-        // vivo (self-review desta PR): sem esta normalização, o critério
-        // nunca casava com dado real — 19 issues `not_planned` no repo no
-        // momento desta PR, 0 candidatos detectados até a correção.
-        stateReason: r.state_reason ? r.state_reason.toUpperCase() : null,
-        closedAt: r.closed_at ?? null,
-      }));
-  } catch {
-    return null;
+    return { ok: true, data: parseGhApiIssueRows(res.stdout) };
+  } catch (e) {
+    return { ok: false, reason: `JSON malformado: ${(e as Error).message}` };
   }
 }
 
@@ -119,10 +144,24 @@ if (isMainModule(import.meta.url)) {
     console.error(`${LOG_PREFIX} ${(e as Error).message} — usando default (${ALARM_RETIREMENT_THRESHOLD}).`);
   }
 
-  const closedIssues = fetchClosedAlarmIssues(process.cwd());
-  if (closedIssues === null) {
-    console.error(`${LOG_PREFIX} gh issue list falhou (offline, não autenticado, ou rate limit) — sem dado pra avaliar.`);
+  const fetchResult = fetchClosedAlarmIssues(process.cwd());
+  if (!fetchResult.ok) {
+    console.error(`${LOG_PREFIX} gh issue list falhou — sem dado pra avaliar. Motivo: ${fetchResult.reason}`);
     process.exit(0);
+  }
+  const closedIssues = fetchResult.data;
+
+  // Finding P2 do fleet review (PR #7049): se o parse não reconhecer um
+  // `stateReason`, ele vira "UNKNOWN" (nunca silêncio, ver
+  // `parseGithubStateReason`) — mas UNKNOWN só é útil como rede de proteção
+  // se aparecer. Foi só a contagem estranha ("0 candidatos com 19
+  // not_planned reais") que expôs o bug de casing original; o próximo bug
+  // da mesma classe precisa se denunciar sozinho.
+  const unknownCount = closedIssues.filter((i) => i.stateReason === "UNKNOWN").length;
+  if (unknownCount > 0) {
+    console.error(
+      `${LOG_PREFIX} ${unknownCount} issue(s) com stateReason não-reconhecido (UNKNOWN) — fora da contagem de "sem ação"; investigar se é um caso legítimo (issue reaberta/refechada sem reason) ou uma regressão de parse.`,
+    );
   }
 
   const candidates = findAlarmRetirementCandidates(closedIssues, threshold);

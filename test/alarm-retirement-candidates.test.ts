@@ -1,8 +1,9 @@
 /**
- * test/alarm-retirement-candidates.test.ts (#6798)
+ * test/alarm-retirement-candidates.test.ts (#6798, ampliado no #7049)
  *
  * Cobre a lógica PURA de `scripts/lib/alarm-retirement-candidates.ts`:
- * extração do `check` do marcador de dedup, o critério "sem ação"
+ * extração do `check` do marcador de dedup, o parse de `stateReason` na
+ * fronteira (`parseGithubStateReason`), o critério "sem ação"
  * (`stateReason === "NOT_PLANNED"`), o limiar N e a limitação assumida
  * (DUPLICATE fica de fora, COMPLETED nunca conta). Fixtures inline —
  * nunca rede, nunca `data/` real.
@@ -12,12 +13,16 @@ import assert from "node:assert/strict";
 import {
   extractAlarmCheck,
   findAlarmRetirementCandidates,
+  parseGithubStateReason,
   ALARM_RETIREMENT_THRESHOLD,
   type ClosedAlarmIssueRecord,
+  type AlarmIssueStateReason,
 } from "../scripts/lib/alarm-retirement-candidates.ts";
 import { alarmFindingMarker } from "../scripts/lib/alarm-issues.ts";
 
-function makeIssue(overrides: Partial<ClosedAlarmIssueRecord> & { check?: string; fingerprint?: string }): ClosedAlarmIssueRecord {
+function makeIssue(
+  overrides: Partial<ClosedAlarmIssueRecord> & { check?: string; fingerprint?: string },
+): ClosedAlarmIssueRecord {
   const check = overrides.check ?? "some-check";
   const fingerprint = overrides.fingerprint ?? "fp-1";
   const marker = alarmFindingMarker(check, fingerprint);
@@ -25,10 +30,7 @@ function makeIssue(overrides: Partial<ClosedAlarmIssueRecord> & { check?: string
     number: overrides.number ?? 1,
     title: overrides.title ?? `achado de ${check}`,
     body: overrides.body ?? `corpo qualquer\n\n${marker}\n`,
-    // "stateReason" in overrides (não ?? — null é um valor EXPLÍCITO que
-    // vale a pena testar, ver caso "stateReason null" abaixo; ?? o
-    // colapsaria de volta pro default "NOT_PLANNED").
-    stateReason: "stateReason" in overrides ? (overrides.stateReason ?? null) : "NOT_PLANNED",
+    stateReason: overrides.stateReason ?? "NOT_PLANNED",
     closedAt: overrides.closedAt ?? "2026-08-01T00:00:00Z",
   };
 }
@@ -95,11 +97,11 @@ describe("findAlarmRetirementCandidates — critério e agrupamento", () => {
     assert.deepEqual(findAlarmRetirementCandidates(issues), []);
   });
 
-  it("stateReason null (issue reaberta/refechada sem reason) nunca conta como sem ação", () => {
+  it("stateReason UNKNOWN (issue reaberta/refechada sem reason, ou valor não-reconhecido) nunca conta como sem ação", () => {
     const issues = [
-      makeIssue({ number: 1, check: "x", fingerprint: "a", stateReason: null }),
-      makeIssue({ number: 2, check: "x", fingerprint: "b", stateReason: null }),
-      makeIssue({ number: 3, check: "x", fingerprint: "c", stateReason: null }),
+      makeIssue({ number: 1, check: "x", fingerprint: "a", stateReason: "UNKNOWN" }),
+      makeIssue({ number: 2, check: "x", fingerprint: "b", stateReason: "UNKNOWN" }),
+      makeIssue({ number: 3, check: "x", fingerprint: "c", stateReason: "UNKNOWN" }),
     ];
     assert.deepEqual(findAlarmRetirementCandidates(issues), []);
   });
@@ -108,7 +110,7 @@ describe("findAlarmRetirementCandidates — critério e agrupamento", () => {
     const issues = [
       makeIssue({ number: 1, check: "x", fingerprint: "a" }),
       makeIssue({ number: 2, check: "x", fingerprint: "b" }),
-      { number: 3, title: "sem marcador", body: "corpo qualquer sem marcador", stateReason: "NOT_PLANNED", closedAt: null },
+      { number: 3, title: "sem marcador", body: "corpo qualquer sem marcador", stateReason: "NOT_PLANNED" as const, closedAt: null },
     ];
     // só 2 do check "x" com marcador — abaixo do limiar.
     assert.deepEqual(findAlarmRetirementCandidates(issues), []);
@@ -163,5 +165,42 @@ describe("findAlarmRetirementCandidates — critério e agrupamento", () => {
 
   it("lista vazia de issues nunca produz candidato", () => {
     assert.deepEqual(findAlarmRetirementCandidates([]), []);
+  });
+});
+
+describe("parseGithubStateReason (#7049, finding P2 — união fechada + parse na fronteira)", () => {
+  it("normaliza os 3 valores reais da REST (minúsculas, snake_case) pra maiúsculas", () => {
+    const cases: Array<[string, AlarmIssueStateReason]> = [
+      ["not_planned", "NOT_PLANNED"],
+      ["completed", "COMPLETED"],
+      ["duplicate", "DUPLICATE"],
+    ];
+    for (const [raw, expected] of cases) {
+      assert.equal(parseGithubStateReason(raw), expected);
+    }
+  });
+
+  it("já aceita a convenção GraphQL (maiúsculas) sem quebrar", () => {
+    assert.equal(parseGithubStateReason("NOT_PLANNED"), "NOT_PLANNED");
+  });
+
+  it("tolera espaço em volta (defensivo, trim antes de comparar)", () => {
+    assert.equal(parseGithubStateReason(" not_planned "), "NOT_PLANNED");
+  });
+
+  it("null vira UNKNOWN, nunca um dos 3 valores conhecidos por engano", () => {
+    assert.equal(parseGithubStateReason(null), "UNKNOWN");
+  });
+
+  it("undefined vira UNKNOWN", () => {
+    assert.equal(parseGithubStateReason(undefined), "UNKNOWN");
+  });
+
+  it("string vazia vira UNKNOWN", () => {
+    assert.equal(parseGithubStateReason(""), "UNKNOWN");
+  });
+
+  it("valor não-reconhecido (typo, novo state_reason do GitHub) vira UNKNOWN — nunca silêncio", () => {
+    assert.equal(parseGithubStateReason("not_a_real_reason"), "UNKNOWN");
   });
 });

@@ -18,12 +18,16 @@
  * mas o ALARME passa a ler os contadores, não o texto.
  *
  * Este módulo é o ÚNICO ponto que define as chaves KV e a lógica de
- * incremento — importado tanto pelo worker (`workers/cursos/src/index.ts`,
+ * incremento — importado pelo worker (`workers/cursos/src/index.ts`,
  * `subscribe.ts`, via path relativo, mesmo padrão de
- * `scripts/lib/shared/rate-limit.ts`/`subscriber-verify.ts`) quanto,
- * indiretamente (só as chaves), por `scripts/cursos-error-alarm.ts` (lado
- * Node, lê via `getTextFromWorkerKV` — HTTP fetch injetável, não o binding
- * KV nativo do runtime Workers).
+ * `scripts/lib/shared/rate-limit.ts`/`subscriber-verify.ts`). Até #6798
+ * (01/09/2026) também tinha um leitor indireto (só as chaves) em
+ * `scripts/cursos-error-alarm.ts` (lado Node, via `getTextFromWorkerKV` —
+ * HTTP fetch injetável, não o binding KV nativo do runtime Workers); esse
+ * leitor foi removido nessa issue (279 execuções, 0 disparos, ver
+ * `docs/cursos-worker-alarm-setup.md`). Os contadores continuam sendo
+ * gravados sem leitor hoje — removê-los exigiria deploy do worker sem
+ * ganho claro (decisão do editor, #6798).
  */
 
 /** Chaves KV dos 4 contadores cumulativos — nunca resetam sozinhas, só somam.

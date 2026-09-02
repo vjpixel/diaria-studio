@@ -91,7 +91,6 @@
   "test/control-edition-compare.test.ts::TS2345": 2,
   "test/crop-resize.test.ts::TS2769": 1,
   "test/curadoria-sitemap-robots.test.ts::TS2322": 1,
-  "test/cursos-error-alarm.test.ts::TS2345": 2,
   "test/cursos-gate-subscribe-kit-6048.test.ts::TS2304": 1,
   "test/cursos-gate.test.ts::TS2304": 2,
   "test/dashboard-tab-enhance.test.ts::TS2739": 1,

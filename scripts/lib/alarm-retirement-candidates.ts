@@ -26,19 +26,20 @@
  * Uma issue de alarme (label `alarm`, ver `ALARM_LABEL`) fechada com
  * `stateReason === "NOT_PLANNED"`. Duas rotas produzem esse estado:
  *
- *   1. Auto-close MECÂNICO deste próprio módulo (`closeAlarmIssue` — achado
- *      parou de reproduzir por N execuções consecutivas do alarme, sem
- *      nenhum PR envolvido).
+ *   1. Auto-close MECÂNICO (`closeAlarmIssue`, em `scripts/lib/alarm-issues.ts`
+ *      — este módulo não a importa, só cita a convenção que ela produz —
+ *      achado parou de reproduzir por N execuções consecutivas do alarme,
+ *      sem nenhum PR envolvido).
  *   2. Fechamento MANUAL do editor com `gh issue close --reason "not
  *      planned"` (varredura de limpeza, achado descartado como não
  *      acionável) — a MESMA convenção, só que humana em vez de mecânica.
  *
  * Uma issue fechada de verdade por `Closes #NNNN` num PR mergeado continua
  * `stateReason: "COMPLETED"` (não passa por `closeAlarmIssue`, e a
- * convenção de commit do repo — CLAUDE.md #9/#5010 — exige `Closes` por
- * issue totalmente resolvida) — então `"COMPLETED"` é o proxy de "gerou
- * ação real", e este módulo NUNCA conta uma issue `COMPLETED` como "sem
- * ação".
+ * convenção do repo — `.github/pull_request_template.md`, campo `Closes #`
+ * — exige isso por issue totalmente resolvida) — então `"COMPLETED"` é o
+ * proxy de "gerou ação real", e este módulo NUNCA conta uma issue
+ * `COMPLETED` como "sem ação".
  *
  * ─── Limitação assumida, documentada em vez de escondida ───────────────────
  *
@@ -74,20 +75,52 @@
  * nesta linha; nenhum outro lugar do código precisa mudar. */
 export const ALARM_RETIREMENT_THRESHOLD = 3;
 
+/**
+ * Os `stateReason` que este módulo distingue explicitamente — união
+ * FECHADA em vez de `string` cru (finding P1 do fleet review, PR #7049:
+ * um `string | null` sem parse na fronteira foi exatamente o que deixou a
+ * divergência de caixa `not_planned` vs. `NOT_PLANNED` passar batido — ver
+ * `parseGithubStateReason` abaixo e o precedente `PublishState` em
+ * `scripts/lib/publish-state.ts`, criado pro mesmo problema de raiz — API
+ * externa devolvendo estado ambíguo/inconsistente sem normalização).
+ * `"UNKNOWN"` é membro explícito, não um `null`/omissão silenciosa — issue
+ * reaberta/refechada sem reason, API antiga, ou qualquer valor não
+ * reconhecido caem aqui, nunca em um dos três valores conhecidos por
+ * engano. `check-alarm-retirement-candidates.ts` conta e reporta
+ * `"UNKNOWN"` no relatório (não é descartado em silêncio).
+ */
+export type AlarmIssueStateReason = "NOT_PLANNED" | "COMPLETED" | "DUPLICATE" | "UNKNOWN";
+
+/**
+ * Parse na FRONTEIRA — único lugar que decide qual `stateReason` cru (REST
+ * devolve minúsculas, GraphQL maiúsculas) vira qual membro de
+ * `AlarmIssueStateReason`. `null`/vazio/desconhecido sempre mapeiam pra
+ * `"UNKNOWN"` — nunca um `?? "UNKNOWN"` implícito no meio de outra lógica.
+ */
+export function parseGithubStateReason(raw: string | null | undefined): AlarmIssueStateReason {
+  const normalized = (raw ?? "").trim().toUpperCase();
+  if (normalized === "NOT_PLANNED" || normalized === "COMPLETED" || normalized === "DUPLICATE") {
+    return normalized;
+  }
+  return "UNKNOWN";
+}
+
 /** GitHub `stateReason` que marca "fechada sem ação" pela convenção deste
  * repo (ver docstring do módulo). */
-const NO_ACTION_STATE_REASON = "NOT_PLANNED";
+const NO_ACTION_STATE_REASON: AlarmIssueStateReason = "NOT_PLANNED";
 
 /** Formato mínimo consumido por este módulo — subconjunto do que `gh issue
  * list --json number,title,body,stateReason,closedAt --label alarm --state
- * closed` devolve. `stateReason`/`closedAt` chegam `null` quando o GitHub
- * não os preenche (issue reaberta e refechada sem reason, ou API antiga) —
- * tratados como "não é NOT_PLANNED"/"data desconhecida", nunca fabricados. */
+ * closed` devolve, já com `stateReason` parseado (`parseGithubStateReason`)
+ * na fronteira de I/O — nunca `string` cru aqui dentro. `closedAt` chega
+ * `null` quando o GitHub não o preenche (issue reaberta e refechada sem
+ * reason, ou API antiga) — tratado como "data desconhecida", nunca
+ * fabricado. */
 export interface ClosedAlarmIssueRecord {
   number: number;
   title: string;
   body: string;
-  stateReason: string | null;
+  stateReason: AlarmIssueStateReason;
   closedAt: string | null;
 }
 

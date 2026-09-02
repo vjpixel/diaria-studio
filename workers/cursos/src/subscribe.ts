@@ -333,10 +333,13 @@ export async function handleGateSubscribe(
     // worker, uma falha real do Kit (ex: KIT_API_KEY inválida, o cenário
     // exato que o log novo de subscribeToKit existe pra capturar) logava
     // "BEEHIIV_API_KEY ausentes", apontando pro backend errado. O nome da
-    // chave do contador (`fatalCadastroBeehiivFalhou`) NÃO foi renomeado —
-    // tem consumidores externos (scripts/cursos-error-alarm.ts e outros,
-    // grep confirma) que dependem do nome exato; renomear é trabalho à
-    // parte, fora de escopo desta correção pontual.
+    // chave do contador (`fatalCadastroBeehiivFalhou`) NÃO foi renomeado
+    // aqui — trabalho à parte, fora de escopo desta correção pontual.
+    // (Histórico: quando este comentário foi escrito, a justificativa era
+    // ter consumidor externo — `scripts/cursos-error-alarm.ts`; esse
+    // consumidor foi removido em #6798, 01/09/2026, e um regrep não achou
+    // nenhum outro. Renomear agora é seguro, só não foi feito porque
+    // ninguém precisou até este ponto.)
     // Preposição concorda com o gênero de cada backend ("a Beehiiv" / "o
     // Kit") — mantém a mensagem da Beehiiv EXATAMENTE como era (regex de
     // `test/cursos-gate.test.ts` depende do texto literal).

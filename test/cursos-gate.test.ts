@@ -106,10 +106,11 @@ describe("workers/cursos GET / (#4052)", () => {
     assert.match(getCookieHeader(res) ?? "", /HttpOnly/);
   });
 
-  // #4320: sem esta linha, o alarme de erro do worker (scripts/cursos-error-alarm.ts)
-  // não tinha denominador pra calcular a taxa de "?email= não confirmado" — só
-  // o numerador (o branch de falha logo abaixo já logava). Mesmo cuidado de
-  // redação dos `console.warn` de falha: NUNCA interpolar o e-mail no log.
+  // #4320: sem esta linha, o alarme de erro do worker (scripts/cursos-error-alarm.ts,
+  // removido em #6798) não tinha denominador pra calcular a taxa de "?email=
+  // não confirmado" — só o numerador (o branch de falha logo abaixo já
+  // logava). Mesmo cuidado de redação dos `console.warn` de falha: NUNCA
+  // interpolar o e-mail no log.
   it("?email= de assinante ativo → loga a confirmação (console.log), SEM vazar o e-mail (#4320)", async () => {
     const email = "assinante-log@example.com";
     const key = await subscriberKvKey(email);
@@ -1062,9 +1063,10 @@ describe("workers/cursos: cooldown do branch ?email= (#4390)", () => {
  * #4382: contadores de alarme no KV — substituem o grep de texto via
  * Cloudflare GraphQL Analytics API (dataset `workersInvocationsAdaptiveGroups`
  * confirmado inexistente ao vivo). Cada ponto que já loga uma das 2 condições
- * fatais ou o resultado do gate `?email=` agora também incrementa um contador
+ * fatais ou o resultado do gate `?email=` também incrementa um contador
  * cumulativo no MESMO KV (`CURSOS_SUBSCRIBERS`) que `scripts/cursos-error-alarm.ts`
- * passa a ler.
+ * lia — esse alarme foi removido em #6798 (01/09/2026), mas os contadores
+ * continuam sendo gravados sem leitor hoje (ver docs/cursos-worker-alarm-setup.md).
  */
 describe("workers/cursos: contadores de alarme no KV (#4382)", () => {
   it("sem COOKIE_HMAC_SECRET, GET / incrementa o contador fatal", async () => {

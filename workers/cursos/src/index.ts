@@ -157,13 +157,18 @@ export const GATED_INDEX_PATHS = ["/", "/index.html"];
  * O custo disso é observabilidade — 200 silencioso não aparece no gráfico de
  * erro nativo do Cloudflare como um 500 apareceria. Mitigado desde #4320:
  * todo caminho de degradação deste handler loga, `[observability]` está
- * ligado no `wrangler.toml`, e agora `scripts/cursos-error-alarm.ts` consome
- * esses logs (Cloudflare GraphQL Analytics API) numa cadência agendada (task
- * "Diaria-Cursos-Error-Alarm", a cada 2h) e alarma o editor por
- * e-mail quando uma linha fatal aparece ou a taxa de `?email= não
- * confirmado` estoura o limiar. Ainda vale a ressalva de que Workers Logs
- * amostra sob volume alto (o sinal pode degradar justo durante uma pane
- * total), mas o caminho de descoberta deixou de ser "um leitor reclamar". */
+ * ligado no `wrangler.toml`. Até #6798 (01/09/2026) `scripts/cursos-error-alarm.ts`
+ * consumia esses logs (Cloudflare GraphQL Analytics API) numa cadência
+ * agendada (task "Diaria-Cursos-Error-Alarm", a cada 2h) e alarmava o
+ * editor por e-mail quando uma linha fatal aparecia ou a taxa de `?email=
+ * não confirmado` estourava o limiar — **removido** nessa mesma issue
+ * (279 execuções, 0 disparos, 24 dias de vida; ver
+ * `docs/cursos-worker-alarm-setup.md`). Os contadores KV que alimentavam
+ * esse alarme (`incrementKvCounter`, comentários abaixo) continuam
+ * gravando — sem leitor hoje, mas prontos pra um alarme futuro com
+ * critério diferente. Ainda vale a ressalva de que Workers Logs amostra
+ * sob volume alto (o sinal pode degradar justo durante uma pane total),
+ * mas o caminho de descoberta deixou de ser "um leitor reclamar". */
 async function handleIndex(request: Request, env: Env): Promise<Response> {
   try {
     const url = new URL(request.url);
@@ -183,9 +188,10 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
       // secret serviria teaser pra assinante ativo vindo da newsletter com
       // zero sinal em qualquer camada: nem status HTTP, nem log.
       console.error("[cursos] COOKIE_HMAC_SECRET ausente — servindo teaser; NINGUÉM consegue desbloquear");
-      // #4382: contraparte em KV do log acima — scripts/cursos-error-alarm.ts
-      // lê este contador (não mais grep de texto via Cloudflare GraphQL
-      // Analytics API, dataset inexistente — ver scripts/lib/cursos-error-alarm.ts).
+      // #4382: contraparte em KV do log acima. `scripts/cursos-error-alarm.ts`
+      // lia este contador até ser removido em #6798 (01/09/2026, sem leitor
+      // hoje — ver docs/cursos-worker-alarm-setup.md); o incremento continua
+      // porque é instrumentação do worker, não do alarme que a consumia.
       await incrementKvCounter(env.CURSOS_SUBSCRIBERS, CURSOS_ALARM_COUNTER_KEYS.fatalCookieHmacSecretAusente);
     }
 
@@ -224,8 +230,9 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
         if (outcome.status === "active") {
           // #4320: contraparte do log de "não confirmado" logo abaixo — sem
           // este log, o caminho de SUCESSO nunca aparecia em nenhuma linha,
-          // e o alarme de taxa (scripts/cursos-error-alarm.ts) não tinha
-          // denominador pra calcular "% não confirmado" (só o numerador).
+          // e o alarme de taxa (scripts/cursos-error-alarm.ts, removido em
+          // #6798) não tinha denominador pra calcular "% não confirmado"
+          // (só o numerador).
           // Mesmo cuidado de redação dos dois `console.warn` logo abaixo:
           // NUNCA interpola `emailParam` — a contagem é o que importa, não
           // quem.
