@@ -1,0 +1,72 @@
+name: Deploy Worker (reusable)
+
+# #7118 (fatia 6 do epic #7112): 8 dos 12 deploy-*.yml eram byte-idênticos
+# depois de normalizar o nome do worker — 31 linhas de código cada,
+# comentário de proveniência à parte (checkout@v4 -> setup-node@v4 node 24
+# -> npm ci na raiz -> `wrangler deploy` via `npm run deploy`). Este
+# workflow reutilizável extrai esse bloco; os callers em
+# deploy-{draft,poll,linkedin-cron,site,artigo-mensal,diaria-dashboard,
+# reativar,brevo-dashboard}.yml passam a chamar via `workflow_call`,
+# parametrizando só o que de fato varia (nome do worker — trigger `paths:`,
+# `concurrency.group` e `working-directory` continuam declarados em cada
+# caller, que é quem os usa antes/depois da chamada).
+#
+# Por que `workflow_call` entre ARQUIVOS aqui e não o padrão de `ci.yml`
+# (#6711, que optou por DUPLICAR o bloco entre os dois triggers de um mesmo
+# workflow e travar a sincronia por teste): são situações diferentes. O
+# `ci.yml` duplica dentro de UM arquivo entre dois ramos (`push`/
+# `pull_request`) do MESMO trigger — GitHub Actions não tem include nativo
+# de steps dentro de um workflow, e a escolha ali foi manter os dois ramos
+# lado a lado, legíveis, presos por teste. Aqui a duplicação é entre 8
+# WORKFLOWS INDEPENDENTES — triggers, concurrency group e worker diferentes
+# cada um — cujo ÚNICO ponto em comum (os steps de deploy em si) é
+# exatamente o que `workflow_call` foi desenhado para compartilhar sem
+# perder a independência dos triggers. Não há tensão de legibilidade
+# "dois ramos num arquivo só": são 8 arquivos que já eram pequenos e
+# continuam pequenos, só que sem repetir os mesmos 4 steps.
+#
+# Os 4 workers com pós-processamento divergente (arquivo, artigos, cursos,
+# livros — IndexNow ping e/ou guard de KV namespace) permanecem como
+# workflows standalone, decisão explícita da issue: convergir só pra
+# parametrizar o bloco IndexNow trocaria duplicação por uma matriz
+# condicional mais difícil de ler que os steps lineares atuais.
+
+on:
+  workflow_call:
+    inputs:
+      worker:
+        description: "Nome do diretório em workers/{worker} a deployar"
+        required: true
+        type: string
+    secrets:
+      CLOUDFLARE_WORKERS_TOKEN:
+        required: true
+      CLOUDFLARE_ACCOUNT_ID:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      # #7117: workers/ virou npm workspace — este npm ci na RAIZ já instala
+      # (e hoista) as deps de TODOS os workers, incluindo wrangler; não há
+      # mais lockfile por worker pra um passo de install separado rodar
+      # contra. `npm run deploy` abaixo acha o `wrangler` hoistado via PATH
+      # (node_modules/.bin da raiz, resolução padrão do npm em ancestrais).
+      - run: npm ci
+
+      - name: Deploy to Cloudflare Workers
+        working-directory: workers/${{ inputs.worker }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm run deploy

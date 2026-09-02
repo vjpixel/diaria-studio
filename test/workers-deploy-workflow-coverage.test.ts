@@ -26,6 +26,17 @@
  * checa a mesma coisa contra o SHAPE do lockfile unificado (`packages["workers/{dir}"]`
  * no lockfile raiz) e, como regressão do drift que motivou o #7117, garante
  * que nenhum worker reintroduziu um `package-lock.json` próprio.
+ *
+ * #7118: 8 dos 12 `deploy-*.yml` viraram callers finos de
+ * `.github/workflows/deploy-worker.yml` (`uses: ./.github/workflows/
+ * deploy-worker.yml` + `with: worker: {dir}`) — o literal `working-
+ * directory: workers/{dir}` + `npm run deploy` que o 3º teste procurava
+ * não aparece mais no CALLER (só existe, templatizado via `${{ inputs.worker
+ * }}`, dentro do reusable). `isDeployedViaWorker()` reconhece esse 2º
+ * formato: caller com `uses: ./.github/workflows/deploy-worker.yml` +
+ * `with:` contendo `worker: {dir}` conta como "deployado" tanto quanto o
+ * padrão antigo (inline, ainda usado pelos 4 workers com pós-processamento
+ * divergente: arquivo, artigos, cursos, livros).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -39,8 +50,34 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WORKFLOWS_DIR = resolve(ROOT, ".github", "workflows");
 
 function readWorkflowContents(): string[] {
+  return readWorkflowFiles().map((f) => f.content);
+}
+
+function readWorkflowFiles(): { name: string; content: string }[] {
   const files = readdirSync(WORKFLOWS_DIR).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"));
-  return files.map((f) => readFileSync(resolve(WORKFLOWS_DIR, f), "utf8"));
+  return files.map((f) => ({ name: f, content: readFileSync(resolve(WORKFLOWS_DIR, f), "utf8") }));
+}
+
+/** #7118: um worker é "deployado" tanto pelo padrão antigo — steps de
+ *  deploy inline no próprio deploy-{worker}.yml, `working-directory:
+ *  workers/{dir}` + `npm run deploy` no mesmo arquivo (os 4 workers com
+ *  pós-processamento divergente) — quanto pelo novo — um caller fino que
+ *  chama `deploy-worker.yml` via `workflow_call` passando `worker: {dir}`
+ *  (os 8 workers convergidos). */
+function isDeployedViaWorker(workerDir: string, workflowFiles: { name: string; content: string }[]): boolean {
+  const inlinePattern = (content: string) =>
+    content.includes(`working-directory: workers/${workerDir}`) && content.includes("npm run deploy");
+
+  const callsReusableFor = (content: string) => {
+    if (!content.includes("./.github/workflows/deploy-worker.yml")) return false;
+    // `with: worker: {dir}` — casar a linha inteira evita que "poll" case
+    // dentro de "poll-2" ou que um prefixo comum entre dois worker dirs
+    // produza falso positivo.
+    const workerLine = new RegExp(`^\\s*worker:\\s*${workerDir}\\s*$`, "m");
+    return workerLine.test(content);
+  };
+
+  return workflowFiles.some(({ content }) => inlinePattern(content) || callsReusableFor(content));
 }
 
 describe("cobertura de deploy workflow por worker (#5337)", () => {
@@ -92,7 +129,7 @@ describe("cobertura de deploy workflow por worker (#5337)", () => {
 
   it("todo worker coberto por `npm ci` (raiz, via workspace) tem package.json em sincronia com o lockfile raiz", () => {
     const workers = discoverWorkers();
-    const workflowContents = readWorkflowContents();
+    const workflowFiles = readWorkflowFiles();
     const broken: string[] = [];
 
     const rootLockPath = resolve(ROOT, "package-lock.json");
@@ -100,13 +137,13 @@ describe("cobertura de deploy workflow por worker (#5337)", () => {
     const rootLock = JSON.parse(readFileSync(rootLockPath, "utf8"));
 
     for (const worker of workers) {
-      // Só cobra worker de fato deployado via `npm run deploy` num
-      // deploy-*.yml — pular em silêncio quem não tem workflow seria
-      // recriar, pro package.json do workspace, o mesmo buraco que a
-      // versão pré-#7117 deste teste fechava pro lockfile solo.
-      const isDeployed = workflowContents.some(
-        (content) => content.includes(`working-directory: workers/${worker.workerDir}`) && content.includes("npm run deploy"),
-      );
+      // Só cobra worker de fato deployado — inline (`npm run deploy` +
+      // `working-directory: workers/{dir}` no próprio deploy-*.yml) OU via
+      // caller fino de deploy-worker.yml (#7118, ver isDeployedViaWorker
+      // acima) — pular em silêncio quem não tem workflow seria recriar, pro
+      // package.json do workspace, o mesmo buraco que a versão pré-#7117
+      // deste teste fechava pro lockfile solo.
+      const isDeployed = isDeployedViaWorker(worker.workerDir, workflowFiles);
       if (!isDeployed) continue;
 
       const pkgPath = resolve(ROOT, "workers", worker.workerDir, "package.json");
@@ -136,6 +173,40 @@ describe("cobertura de deploy workflow por worker (#5337)", () => {
       [],
       `worker(s) fora de sincronia com o lockfile raiz: ${broken.join("; ")} — ` +
         "rodar `npm install` na RAIZ do repo (nunca dentro do worker) e commitar o package-lock.json atualizado.",
+    );
+  });
+
+  // #7118: os 8 callers finos de deploy-worker.yml (draft, poll,
+  // linkedin-cron, site, artigo-mensal, diaria-dashboard, reativar,
+  // brevo-dashboard) passam `worker: {dir}` via `with:` — um copy-paste que
+  // colar o worker ERRADO num arquivo (ex: deploy-poll.yml passando
+  // `worker: draft`) não quebraria os 2 testes acima (o worker "draft"
+  // continuaria coberto, só que 2x, e "poll" ficaria descoberto por um
+  // arquivo cujo `paths:` ainda aponta certo) — guard dedicado, self-review
+  // do PR #7118 nomeado na issue.
+  it("cada caller de deploy-worker.yml passa worker: {dir} correspondente ao próprio nome do arquivo (#7118)", () => {
+    const workflowFiles = readWorkflowFiles();
+    const callers = workflowFiles.filter(({ content }) => content.includes("./.github/workflows/deploy-worker.yml"));
+
+    assert.ok(callers.length > 0, "nenhum caller de deploy-worker.yml encontrado — reusable workflow ficou órfão?");
+
+    const mismatched: string[] = [];
+    for (const { name, content } of callers) {
+      const expectedWorker = name.replace(/^deploy-/, "").replace(/\.ya?ml$/, "");
+      const workerLine = new RegExp(`^\\s*worker:\\s*(\\S+)\\s*$`, "m").exec(content);
+      if (!workerLine) {
+        mismatched.push(`${name} (chama deploy-worker.yml mas não passa 'worker:' em with:)`);
+        continue;
+      }
+      if (workerLine[1] !== expectedWorker) {
+        mismatched.push(`${name} (passa worker: ${workerLine[1]}, esperava worker: ${expectedWorker} pelo próprio nome do arquivo)`);
+      }
+    }
+
+    assert.deepEqual(
+      mismatched,
+      [],
+      `caller(s) de deploy-worker.yml com worker: divergente do nome do arquivo: ${mismatched.join("; ")}`,
     );
   });
 });
