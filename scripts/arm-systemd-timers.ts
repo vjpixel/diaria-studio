@@ -34,9 +34,37 @@
  * armando) é sempre armado, independente da flag: o guard protege contra
  * RELIGAR algo parado deliberadamente, não contra armar pela primeira vez.
  *
+ * **`--verify` (#7032):** modo SÓ-LEITURA, separado do fluxo de armar acima
+ * — cruza o registro declarativo inteiro (`scripts/lib/scheduled-tasks.ts`)
+ * contra `systemctl --user list-timers --all` nas DUAS direções e sai com
+ * `exit 1` se qualquer uma tiver achado, `exit 0` se estiver tudo em
+ * sincronia. Não arma, não desarma, nunca chama `enable`/`disable`/`stop`.
+ * Existe pra fechar o buraco descrito na issue: task declarada sem timer
+ * armado nunca dispara (silêncio perfeito — não gera `failed`, não gera
+ * alarme de nada até alguém notar por fora) e timer armado sem task no
+ * registro dispara e falha alto (`run-task.ts` sai com "Task desconhecida").
+ * Reusa a mesma lógica PURA (`evaluateTaskNeverArmed`,
+ * `parseSystemctlListTimersOutput`) e a mesma leitura de `list-timers`
+ * (`readArmedTimerUnitBaseNames`) já usadas por `Diaria-Task-Never-Armed-Alarm`
+ * (`scripts/task-never-armed-alarm.ts`, #5607/#6773) — de propósito: ter DUAS
+ * implementações independentes da mesma comparação seria o mesmo tipo de
+ * drift silencioso que esta issue existe pra fechar. A diferença é só a
+ * CASCA: aquele script envia e-mail + abre issue com dedup/estado próprio
+ * (pensado pra rodar como task agendada, cadência diária); `--verify` aqui é
+ * síncrono, sem estado, sem side-effect — pensado pra chamada ad-hoc (ex:
+ * fim de PR que mexeu no registro) ou, no futuro, um passo `exit 1` dentro de
+ * outra automação. **Nenhuma task agendada nova foi criada por este PR** —
+ * decisão deliberadamente fora de escopo, ver #6798.
+ *
+ * Timer parado deliberadamente (`systemctl --user stop` manual, sem
+ * `disable`) continua aparecendo em `list-timers --all` (`LoadState=loaded`,
+ * só `ActiveState=inactive`) — `--verify` não o trata como drift, mesma
+ * decisão do guard `--rearm-stopped` acima.
+ *
  * Uso:
  *   npx tsx scripts/arm-systemd-timers.ts [--task <Nome>] [--rearm-stopped]
  *     [--units-dir <dir>] [--target-dir <dir>]
+ *   npx tsx scripts/arm-systemd-timers.ts --verify
  *
  * --task:        arma só a task nomeada (default: todas as SCHEDULED_TASKS).
  * --rearm-stopped: religa mesmo os timers já existentes e `inactive`
@@ -64,8 +92,16 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { getScheduledTaskByName, SCHEDULED_TASKS, type ScheduledTaskDefinition } from "./lib/scheduled-tasks.ts";
+import {
+  getScheduledTaskByName,
+  listDisabledScheduledTaskNames,
+  listScheduledTaskNames,
+  SCHEDULED_TASKS,
+  type ScheduledTaskDefinition,
+} from "./lib/scheduled-tasks.ts";
 import { unitBaseName } from "./lib/systemd-units.ts";
+import { evaluateTaskNeverArmed, isAlarmingVerdict, type TaskNeverArmedEvaluation } from "./lib/task-never-armed-alarm.ts";
+import { readArmedTimerUnitBaseNames } from "./task-never-armed-alarm.ts";
 
 const DEFAULT_UNITS_DIR = ".systemd-units";
 
@@ -348,10 +384,69 @@ export function armSystemdTimers(
 }
 
 // ---------------------------------------------------------------------------
+// --verify (#7032) — comparação declarado × armado, nas duas direções
+// ---------------------------------------------------------------------------
+
+export type VerifyOutcome =
+  /** `systemctl` indisponível nesta consulta (ENOENT/erro sem stdout) —
+   * mesmo fail-soft de `task-never-armed-alarm.ts`: "nada detectável",
+   * nunca um drift. Windows (sem `systemctl` nenhum) sempre cai aqui. */
+  | { kind: "unavailable" }
+  | { kind: "evaluated"; evaluation: TaskNeverArmedEvaluation };
+
+/**
+ * Runner de `--verify` — só orquestra I/O (`readArmedTimerUnitBaseNames`,
+ * injetável) + o registro declarativo; a comparação em si é
+ * `evaluateTaskNeverArmed` (`./lib/task-never-armed-alarm.ts`, #5607), pura
+ * e já coberta por `test/task-never-armed-alarm.test.ts` — não reimplementa
+ * a lógica, só reusa. @see test/arm-systemd-timers.test.ts (cobertura desta
+ * fronteira: injeta `exec` fake, nunca spawna `systemctl` de verdade).
+ */
+export function runVerify(exec: typeof execFileSync = execFileSync): VerifyOutcome {
+  const armed = readArmedTimerUnitBaseNames(exec);
+  if (armed === null) return { kind: "unavailable" };
+  const evaluation = evaluateTaskNeverArmed(listScheduledTaskNames(), armed, listDisabledScheduledTaskNames());
+  return { kind: "evaluated", evaluation };
+}
+
+/** Imprime o relatório de `runVerify` e devolve o exit code — `1` se
+ * qualquer direção tiver achado, `0` no caso limpo OU quando `systemctl`
+ * está indisponível (fail-soft, não é drift). @pure quanto ao exit code;
+ * `console.*` é o único efeito colateral. */
+export function reportVerifyOutcome(outcome: VerifyOutcome): number {
+  if (outcome.kind === "unavailable") {
+    console.log("[verify] systemctl --user indisponível nesta máquina (ex: Windows) — nada a comparar aqui.");
+    return 0;
+  }
+  const { evaluation } = outcome;
+  if (!isAlarmingVerdict(evaluation.verdict)) {
+    console.log("[verify] OK — registro declarativo e timers armados em sincronia.");
+    return 0;
+  }
+  if (evaluation.neverArmed.length > 0) {
+    console.error(
+      `[verify] DECLARADA MAS NÃO ARMADA (${evaluation.neverArmed.length}) — nunca vai disparar até alguém armar:`,
+    );
+    for (const name of evaluation.neverArmed) console.error(`  - ${name}`);
+  }
+  if (evaluation.orphanTimers.length > 0) {
+    console.error(
+      `[verify] ARMADA MAS NÃO DECLARADA (${evaluation.orphanTimers.length}) — vai disparar e falhar com "Task desconhecida":`,
+    );
+    for (const unit of evaluation.orphanTimers) console.error(`  - ${unit}.timer`);
+  }
+  return 1;
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
 export function main(argv: string[], repoRootAbs: string): number {
+  if (hasFlag(argv, "verify")) {
+    return reportVerifyOutcome(runVerify());
+  }
+
   let taskName: string | undefined;
   let unitsDirArg: string | undefined;
   let targetDirArg: string | undefined;

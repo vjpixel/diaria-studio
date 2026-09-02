@@ -26,9 +26,16 @@ import {
   main as armSystemdTimersMain,
   parseUnitStateOutput,
   queryUnitState,
+  reportVerifyOutcome,
+  runVerify,
   type SystemdUnitState,
 } from "../scripts/arm-systemd-timers.ts";
-import type { ScheduledTaskDefinition } from "../scripts/lib/scheduled-tasks.ts";
+import {
+  listDisabledScheduledTaskNames,
+  listScheduledTaskNames,
+  type ScheduledTaskDefinition,
+} from "../scripts/lib/scheduled-tasks.ts";
+import { unitBaseName } from "../scripts/lib/systemd-units.ts";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -453,6 +460,126 @@ describe("main() — validação de argumentos (nunca chega a chamar systemctl r
       assert.equal(code, 1);
     } finally {
       console.error = originalError;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// --verify (#7032) — declarado × armado, nas duas direções.
+//
+// Reusa a mesma leitura de `list-timers --all` (`readArmedTimerUnitBaseNames`)
+// e a mesma comparação pura (`evaluateTaskNeverArmed`) de
+// `scripts/task-never-armed-alarm.ts`/`scripts/lib/task-never-armed-alarm.ts`
+// (#5607/#6773, já cobertas por `test/task-never-armed-alarm.test.ts`) — os
+// testes aqui cobrem a FRONTEIRA nova (`runVerify`/`reportVerifyOutcome`/
+// `main --verify`), não reimplementam a cobertura da comparação em si.
+// `exec` é sempre mockado — nunca spawna `systemctl` de verdade (mesmo
+// padrão do resto do arquivo); a única exceção é o teste explícito da
+// fronteira Windows abaixo, que usa o `execFileSync` real e depende de
+// `systemctl` não existir nesta máquina (ENOENT), nunca de um output real.
+// ---------------------------------------------------------------------------
+
+describe("runVerify / reportVerifyOutcome (#7032)", () => {
+  /** Uma linha de `systemctl --user list-timers --all --plain --no-legend`
+   * real tem várias colunas com espaços internos (datas, durações) — só o
+   * token terminando em `.timer` importa pro parser
+   * (`parseSystemctlListTimersOutput`). `n/a` nas colunas NEXT/LEFT é
+   * exatamente o que aparece pra um timer que existe mas está parado
+   * (`ActiveState=inactive`, `LoadState=loaded`) — usado no teste de
+   * "parado deliberadamente" abaixo pra não fingir uma coluna que a
+   * ferramenta real não produziria para esse caso. */
+  function timerLine(unitBase: string, opts: { stopped?: boolean } = {}): string {
+    const next = opts.stopped ? "n/a" : "Tue 2026-09-02 09:00:00 -03";
+    const left = opts.stopped ? "n/a" : "8h left";
+    return `${next} ${left} n/a n/a ${unitBase}.timer ${unitBase}.service`;
+  }
+
+  function execListTimers(unitBases: string[], opts: { stopped?: string[] } = {}): typeof execFileSync {
+    const stoppedSet = new Set(opts.stopped ?? []);
+    return ((cmd: string, args: string[]) => {
+      if (cmd === "systemctl" && args[1] === "list-timers") {
+        return unitBases.map((u) => timerLine(u, { stopped: stoppedSet.has(u) })).join("\n") + "\n";
+      }
+      throw new Error(`exec inesperado em teste --verify: ${cmd} ${args.join(" ")}`);
+    }) as unknown as typeof execFileSync;
+  }
+
+  /** Tasks habilitadas do registro REAL — `--verify` sempre lê
+   * `scripts/lib/scheduled-tasks.ts` de verdade (não é injetável, só a
+   * leitura de `systemctl` é), então os testes constroem cenários a partir
+   * dele em vez de fixtures isoladas. */
+  function enabledTaskNames(): string[] {
+    const disabled = new Set(listDisabledScheduledTaskNames());
+    return listScheduledTaskNames().filter((n) => !disabled.has(n));
+  }
+
+  it("caso limpo — toda task habilitada tem timer armado -> evaluated/ok, exit 0", () => {
+    const declared = enabledTaskNames();
+    const outcome = runVerify(execListTimers(declared.map(unitBaseName)));
+    assert.equal(outcome.kind, "evaluated");
+    assert.equal(outcome.kind === "evaluated" && outcome.evaluation.verdict, "ok");
+    assert.equal(reportVerifyOutcome(outcome), 0);
+  });
+
+  it("declarada mas não armada (caso real #6810) -> exit 1, neverArmed inclui a task", () => {
+    const declared = enabledTaskNames();
+    assert.ok(declared.length > 1, "precisa de >=2 tasks habilitadas no registro real pro cenário");
+    const [missing, ...rest] = declared;
+    const outcome = runVerify(execListTimers(rest.map(unitBaseName)));
+    assert.equal(outcome.kind, "evaluated");
+    if (outcome.kind !== "evaluated") return;
+    assert.ok(["alarm-never-armed", "alarm-both"].includes(outcome.evaluation.verdict));
+    assert.ok(outcome.evaluation.neverArmed.includes(missing));
+    assert.equal(reportVerifyOutcome(outcome), 1);
+  });
+
+  it("armada mas não declarada (caso real #6798) -> exit 1, orphanTimers inclui o unit", () => {
+    const declared = enabledTaskNames();
+    const orphan = "diaria-timer-orfao-de-teste-7032";
+    const outcome = runVerify(execListTimers([...declared.map(unitBaseName), orphan]));
+    assert.equal(outcome.kind, "evaluated");
+    if (outcome.kind !== "evaluated") return;
+    assert.ok(["alarm-orphan-timers", "alarm-both"].includes(outcome.evaluation.verdict));
+    assert.ok(outcome.evaluation.orphanTimers.includes(orphan));
+    assert.equal(reportVerifyOutcome(outcome), 1);
+  });
+
+  it("timer parado deliberadamente (systemctl stop sem disable) continua listado -> NÃO é reportado como drift", () => {
+    const declared = enabledTaskNames();
+    const [stopped, ...rest] = declared;
+    const outcome = runVerify(
+      execListTimers(declared.map(unitBaseName), { stopped: [unitBaseName(stopped)] }),
+    );
+    assert.equal(outcome.kind, "evaluated");
+    if (outcome.kind !== "evaluated") return;
+    // presente em list-timers --all (mesmo "n/a"/"n/a") -> conta como
+    // armado; nada aqui deve aparecer em neverArmed nem orphanTimers.
+    assert.equal(outcome.evaluation.verdict, "ok");
+    assert.deepEqual(outcome.evaluation.neverArmed, []);
+    void rest; // só documenta a forma do array desestruturado acima
+  });
+
+  it("systemctl indisponível (ENOENT) -> kind unavailable, exit 0, nunca lança", () => {
+    const exec = (() => {
+      throw Object.assign(new Error("spawn systemctl ENOENT"), { code: "ENOENT" });
+    }) as unknown as typeof execFileSync;
+    const outcome = runVerify(exec);
+    assert.deepEqual(outcome, { kind: "unavailable" });
+    assert.equal(reportVerifyOutcome(outcome), 0);
+  });
+
+  it("main(['--verify']) sem exec injetado, nesta máquina sem systemctl (Windows) -> nunca lança, sai 0", () => {
+    // Única chamada do arquivo que NÃO injeta exec — depende de systemctl
+    // não existir nesta máquina (ENOENT real), não de nenhum output
+    // fabricado. É exatamente a fronteira que o dispatch pediu pra isolar:
+    // o miolo é puro/testável em qualquer SO, só este teste depende do SO.
+    const originalLog = console.log;
+    console.log = () => {};
+    try {
+      const code = armSystemdTimersMain(["--verify"], "/repo/abs");
+      assert.equal(code, 0);
+    } finally {
+      console.log = originalLog;
     }
   });
 });
