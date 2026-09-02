@@ -3497,21 +3497,32 @@ export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
 // para sempre — o #6970 mediu 15 arquivos `-safeBackup-` em `data/sessions/`
 // do helios, um criado no mesmo dia da medição.
 //
-// **Restrição que limita o escopo aqui, deliberadamente:** `mergeSessionRecords`
-// ainda NÃO une `merge_grant` entre os arquivos do grupo (essa união é o
-// objeto do #6952/PR #6969, que segue ABERTA — ver #6972, que documenta a
-// consequência de uni-los sem também ensinar o gate de merge a considerar
-// backup). Enquanto essa união não existe, um `merge_grant` que sobreviva
-// SÓ num backup pode ser a única cópia legível dele (dependendo de qual
-// registro do grupo `mergeSessionRecords` escolhe como `primary` por
-// heartbeat) — apagar esse backup cegamente arriscaria descartar um grant
-// vivo sem jeito de recuperá-lo depois. Por isso este planejador NUNCA marca
-// um grupo como removível se QUALQUER backup dele carrega `merge_grant`
-// (mesmo consumido/expirado — não há como saber se outro processo ainda vai
-// gravar um NOVO grant que dependa desse backup até a união do #6952
-// existir; o custo de errar pro lado conservador aqui é só "um backup a
-// mais em disco", nunca corrupção). Reavaliar este limite quando o #6952
-// mergear.
+// **Restrição de `merge_grant`, reavaliada no #6573 pós-#6952.** Até o
+// #6952 (PR #6969, mergeada), `mergeSessionRecords` NÃO unia `merge_grant`
+// entre os arquivos do grupo — um `merge_grant` que sobrevivesse só num
+// backup podia ser descartado em SILÊNCIO na leitura, então este planejador
+// bloqueava qualquer grupo com QUALQUER backup carregando `merge_grant`,
+// sem distinguir vivo de morto. Essa premissa ficou obsoleta ANTES mesmo de
+// ser escrita em prosa aqui: o commit da união (`353f73f1`, #6969) mergeou
+// ~2h antes do commit que introduziu esta restrição (`887abfe5`, #7005),
+// mesma madrugada — achado do review consolidado da rodada 260901.
+//
+// Com a união em vigor, `mergeGrantBlocksBackupCleanup` (abaixo) substitui o
+// bloqueio incondicional por um mais estreito, que protege só os dois riscos
+// que sobram depois que a leitura já une corretamente:
+//   1. **Perda** — a concessão AGREGADA (real + backups) ainda está viva
+//      (não consumida, dentro do TTL) e o real sozinho não a reproduz.
+//      Remover os backups apagaria a única cópia utilizável.
+//   2. **Ressurreição** — a concessão agregada já está CONSUMIDA (o carimbo
+//      só existe em algum backup), mas o real sozinho, sem esse carimbo,
+//      ainda pareceria viva (dentro do TTL). Remover o backup apagaria a
+//      PROVA de consumo e a concessão voltaria a parecer usável — o mesmo
+//      tipo de dano que a união do #6952 fechou do lado da leitura, agora do
+//      lado da remoção física.
+// Uma concessão já morta por QUALQUER outro motivo (TTL expirado — nunca
+// "desexpira" — ou consumida com o real já refletindo o carimbo) nunca
+// bloqueia: nenhuma leitura futura voltaria a tratá-la como usável, união ou
+// não, então perder a única cópia física dela não muda nada.
 export type SafeBackupCleanupAction =
   | "removable"
   | "pending-reconciliation"
@@ -3531,6 +3542,63 @@ export interface SafeBackupCleanupResult {
 }
 
 /**
+ * Verdadeiro quando remover TODOS os backups de um grupo perderia
+ * informação de `merge_grant` que nenhum arquivo remanescente (só o real,
+ * depois da remoção) reproduziria — os dois riscos descritos na docstring
+ * acima ("Perda"/"Ressurreição"). Pura.
+ *
+ * `winner` é a concessão da UNIÃO do grupo inteiro (`mergeSessionRecords`,
+ * que já sabe escolher o `grantedAt` mais recente e propagar `consumedAt` de
+ * qualquer cópia — #6952) — a verdade atual, com os backups ainda no disco.
+ * `realGrant` é o que o arquivo REAL carrega SOZINHO — o que sobra depois
+ * que os backups são removidos. As duas únicas formas de perder algo que
+ * importa:
+ *
+ *   1. **Perda**: `winner` ainda está viva e o real sozinho não reproduz a
+ *      MESMA concessão (identidade `grantedBy`+`grantedTo`+`grantedAt`) —
+ *      union só existe enquanto os backups existem; apagá-los apagaria a
+ *      única cópia legível de uma concessão ainda utilizável.
+ *   2. **Ressurreição**: `winner` já está CONSUMIDA (`consumedAt` veio de
+ *      algum backup), mas o real sozinho — sem esse carimbo — ainda estaria
+ *      dentro do TTL e pareceria viva. Uma concessão já usada não pode
+ *      voltar a parecer disponível só porque a prova de consumo morava só
+ *      no arquivo que foi removido.
+ *
+ * Uma concessão sem nenhum dos dois riscos (já morta por TTL de qualquer
+ * jeito, ou já integralmente reproduzida no real, carimbo de consumo
+ * incluso) nunca bloqueia — é exatamente o volume que este relaxamento (#6573,
+ * pós-#6952) existe para liberar: backups antigos carregando concessões de
+ * TTL 10min havia muito expiradas.
+ */
+function mergeGrantBlocksBackupCleanup(
+  realRecord: SessionRecord,
+  backupRecords: readonly SessionRecord[],
+  now: number,
+): boolean {
+  const winner = mergeSessionRecords([realRecord, ...backupRecords]).merge_grant;
+  if (!winner) return false; // grupo não carrega merge_grant nenhum — nada a proteger
+
+  const real = realRecord.merge_grant;
+  const sameIdentity =
+    real != null &&
+    real.grantedBy === winner.grantedBy &&
+    real.grantedTo === winner.grantedTo &&
+    real.grantedAt === winner.grantedAt;
+
+  if (sameIdentity && real!.consumedAt === winner.consumedAt) return false; // real sozinho já reproduz exatamente o que a união mostra
+
+  // A partir daqui, ou a identidade nem existe no real, ou o real não tem o
+  // carimbo de consumo que a união (com os backups) mostra — nos dois casos,
+  // `real.consumedAt` está garantidamente ausente aqui (união propaga
+  // `consumedAt` de QUALQUER cópia do grupo; se o real tivesse o carimbo,
+  // `winner.consumedAt` também teria, e o `if` acima já teria retornado).
+  const realAloneWouldLookLive = sameIdentity && isMergeGrantLive(real!, real!.grantedTo, now);
+  if (realAloneWouldLookLive) return true; // risco de ressurreição — real, sem o carimbo, ainda pareceria viva
+
+  return isMergeGrantLive(winner, winner.grantedTo, now); // risco de perda — só bloqueia se a união ainda está viva
+}
+
+/**
  * Plano PURO (sem I/O) de quais grupos de `-safeBackup-*` já reconciliados
  * podem ser removidos com segurança. Reusa `groupBackupsByRealStem` e
  * `decideClaimReconciliation` — a MESMA primitiva de união que
@@ -3545,8 +3613,13 @@ export interface SafeBackupCleanupResult {
  * (quem decide o destino deles é `planSessionGc`, pela liveness do grupo),
  * mas omiti-los do output silenciosamente sugeria "nada a revisar" quando na
  * verdade pode haver estado importante ali (achado ao vivo #7002).
+ *
+ * `opts.now` — injeção pra teste (mesmo padrão de `planSessionGc`); default
+ * `Date.now()`. Só importa pra decidir liveness/TTL de `merge_grant`
+ * (`mergeGrantBlocksBackupCleanup`) — claims não têm noção de tempo aqui.
  */
-export function planSafeBackupCleanup(repoRoot: string): SafeBackupCleanupResult[] {
+export function planSafeBackupCleanup(repoRoot: string, opts: { now?: number } = {}): SafeBackupCleanupResult[] {
+  const now = opts.now ?? Date.now();
   const dir = sessionsDir(repoRoot);
   const names = listSessionJsonFiles(repoRoot);
   const realNames = names.filter((n) => !n.includes("-safeBackup-")).sort();
@@ -3592,16 +3665,15 @@ export function planSafeBackupCleanup(repoRoot: string): SafeBackupCleanupResult
       continue;
     }
 
-    const anyBackupHasGrant = backupRecords.some((r) => r.merge_grant != null);
-    if (anyBackupHasGrant) {
+    if (mergeGrantBlocksBackupCleanup(realRecord, backupRecords, now)) {
       results.push({
         identity: stem,
         realPath,
         backupPaths,
         action: "has-merge-grant",
         reason:
-          "claims reconciliadas, mas um backup do grupo carrega merge_grant — mergeSessionRecords ainda não une " +
-          "grant entre arquivos (#6952 em aberto), então remover arriscaria perder a única cópia legível dele; preservado",
+          "claims reconciliadas, mas um backup do grupo carrega merge_grant que a união (#6952) mostra ainda " +
+          "utilizável e o real sozinho não reproduz — remover perderia a única cópia legível dele; preservado",
       });
       continue;
     }
@@ -3644,9 +3716,15 @@ export function planSafeBackupCleanup(repoRoot: string): SafeBackupCleanupResult
  * Nunca escreve no arquivo real — só remove backups já subsumidos por ele.
  * Idempotente por construção: rodar duas vezes sobre o mesmo estado não
  * remove nada na 2ª vez (os backups já não existem).
+ *
+ * `opts.now` — mesma injeção de `planSafeBackupCleanup`, propagada tanto pro
+ * plano inicial quanto pra RECOMPUTAÇÃO fresca de `mergeGrantBlocksBackupCleanup`
+ * logo abaixo (mesmo instante lógico das duas checagens — nunca um relógio
+ * congelado do plano contra um "agora" resolvido de novo na escrita).
  */
-export function cleanupReconciledSafeBackups(repoRoot: string): SafeBackupCleanupResult[] {
-  const plan = planSafeBackupCleanup(repoRoot);
+export function cleanupReconciledSafeBackups(repoRoot: string, opts: { now?: number } = {}): SafeBackupCleanupResult[] {
+  const now = opts.now ?? Date.now();
+  const plan = planSafeBackupCleanup(repoRoot, { now });
   for (const entry of plan) {
     if (entry.action !== "removable" || !entry.realPath) continue; // "removable" nunca tem realPath null (só "orphan-backups-only" tem)
 
@@ -3679,9 +3757,9 @@ export function cleanupReconciledSafeBackups(repoRoot: string): SafeBackupCleanu
       entry.reason = `${entry.reason} [claim nova apareceu num backup entre o plano e a remoção — pulado, retenta depois de reconciliar]`;
       continue;
     }
-    if (freshBackupRecords.some((r) => r.merge_grant != null)) {
+    if (mergeGrantBlocksBackupCleanup(freshReal, freshBackupRecords, now)) {
       entry.action = "has-merge-grant";
-      entry.reason = `${entry.reason} [merge_grant apareceu num backup entre o plano e a remoção — pulado]`;
+      entry.reason = `${entry.reason} [merge_grant utilizável apareceu/persistiu num backup entre o plano e a remoção — pulado]`;
       continue;
     }
 
