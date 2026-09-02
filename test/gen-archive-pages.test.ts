@@ -23,7 +23,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   type ArchivePost,
   isPublishedPost,
@@ -35,10 +36,13 @@ import {
   buildSitemapXml,
   sitemapEntriesForPosts,
   kitUnifiedPostToArchivePost,
+  dedupeStyleBlocksInPage,
   UnresolvedMergeTagError,
 } from "../scripts/lib/site-archive-pages.ts";
 import { generateArchivePages, loadPosts, loadKitArchivePosts } from "../scripts/gen-archive-pages.ts";
 import type { UnifiedCachedPost } from "../scripts/lib/shared/edition-cache-reader.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function makePost(overrides: Partial<ArchivePost> = {}): ArchivePost {
   return {
@@ -230,6 +234,128 @@ describe("buildArchivePageHtml", () => {
   it("lança se o post não tem content.free.web", () => {
     const post = makePost({ content: { free: { web: null } } });
     assert.throws(() => buildArchivePageHtml(post));
+  });
+
+  it("dedupa <style> byte-idênticos repetidos dentro da mesma página (#7116)", () => {
+    const post = makePost({
+      content: {
+        free: {
+          web:
+            "<!DOCTYPE html><html><head>" +
+            "<style>.a{color:red}</style>" +
+            "<style>.a{color:red}</style>" +
+            "</head><body><style>.a{color:red}</style><h1>x</h1></body></html>",
+        },
+      },
+    });
+    const html = buildArchivePageHtml(post);
+    assert.equal((html.match(/<style>\.a\{color:red\}<\/style>/g) ?? []).length, 1);
+    // corpo intacto — a dedup não mexe em nada fora de <style>
+    assert.match(html, /<h1>x<\/h1>/);
+  });
+
+  it("mantém <style> com corpo DIFERENTE, mesmo com atributos iguais (não é dedup por posição)", () => {
+    const post = makePost({
+      content: {
+        free: {
+          web:
+            "<!DOCTYPE html><html><head>" +
+            "<style>.a{color:red}</style>" +
+            "<style>.b{color:blue}</style>" +
+            "</head><body><h1>x</h1></body></html>",
+        },
+      },
+    });
+    const html = buildArchivePageHtml(post);
+    assert.match(html, /<style>\.a\{color:red\}<\/style>/);
+    assert.match(html, /<style>\.b\{color:blue\}<\/style>/);
+  });
+});
+
+describe("dedupeStyleBlocksInPage (#7116, Tier 1)", () => {
+  it("remove ocorrências repetidas byte-idênticas, mantendo a 1ª", () => {
+    const html = "<a><style>x{color:red}</style><b><style>x{color:red}</style></b></a>";
+    const out = dedupeStyleBlocksInPage(html);
+    assert.equal((out.match(/<style>/g) ?? []).length, 1);
+    assert.match(out, /<a><style>x\{color:red\}<\/style><b><\/b><\/a>/);
+  });
+
+  it("mantém blocos que diferem por qualquer byte (whitespace incluso)", () => {
+    const html = "<style>x{color:red}</style><style>x{ color:red }</style>";
+    const out = dedupeStyleBlocksInPage(html);
+    assert.equal((out.match(/<style>/g) ?? []).length, 2);
+  });
+
+  it("distingue blocos com atributos diferentes na tag de abertura (tag inteira faz parte da chave)", () => {
+    const html = "<style>x{color:red}</style><style type='text/css'>x{color:red}</style>";
+    const out = dedupeStyleBlocksInPage(html);
+    assert.equal((out.match(/<style/g) ?? []).length, 2);
+  });
+
+  it("no-op quando não há repetição", () => {
+    const html = "<style>.a{}</style><body>y</body><style>.b{}</style>";
+    assert.equal(dedupeStyleBlocksInPage(html), html);
+  });
+
+  it("não mexe em nada fora de <style>...</style>", () => {
+    const html = '<div style="color:red">x</div><style>.a{}</style><style>.a{}</style>';
+    const out = dedupeStyleBlocksInPage(html);
+    assert.match(out, /<div style="color:red">x<\/div>/);
+    assert.equal((out.match(/<style>/g) ?? []).length, 1);
+  });
+
+  // Teste de CARACTERIZAÇÃO sobre HTML REAL do acervo (não fixture
+  // sintética) — congelado em test/fixtures/archive-pages/ a partir do
+  // conteúdo pré-dedup de 3 páginas reais, ANTES desta PR aplicar o
+  // transform às 255 páginas já publicadas (ver PR body). As 3 escolhidas
+  // cobrem o espectro medido no #7116: 1 bloco/página (sem duplicata),
+  // ~27 (perto da média medida de 26,7), e 62 (teto medido). Congelar num
+  // arquivo — em vez de ler `workers/site/public/p/` ao vivo — mantém o
+  // teste estável mesmo depois que essas páginas forem regeneradas do
+  // cache (que já sairia deduplicado, sem duplicata pra exercitar aqui).
+  // Trava que o ÚNICO delta do transform é a remoção de blocos <style>
+  // byte-idênticos repetidos — nenhuma outra diferença no documento.
+  describe("congelamento sobre páginas reais do acervo", () => {
+    const REAL_PAGES = [
+      { slug: "tem-22-a-25-anos-a-ia-ja-pode-afetar-seu-emprego", expectDup: false }, // 1 <style> só
+      { slug: "claude-opus-3-se-aposenta-e-vira-blogueiro", expectDup: true }, // 27, perto da média medida
+      { slug: "fim-do-colarinho-branco-microsoft-prev-automa-o-total-em-18-meses", expectDup: true }, // 62, teto medido
+    ];
+
+    for (const { slug, expectDup } of REAL_PAGES) {
+      it(`slug="${slug}": único delta é a remoção de <style> duplicado`, () => {
+        const path = resolve(ROOT, "test", "fixtures", "archive-pages", `${slug}.html`);
+        const before = readFileSync(path, "utf8");
+        const after = dedupeStyleBlocksInPage(before);
+
+        const styleRe = /<style[^>]*>[\s\S]*?<\/style>/gi;
+        const stylesBefore = before.match(styleRe) ?? [];
+        const stylesAfter = after.match(styleRe) ?? [];
+
+        // 1) o conteúdo NÃO-style é idêntico antes/depois (só os <style>
+        // duplicados desaparecem — tudo mais, byte a byte, permanece).
+        assert.equal(before.replace(styleRe, ""), after.replace(styleRe, ""));
+
+        // 2) o conjunto de conteúdos ÚNICOS de <style> é preservado (nada
+        // de conteúdo novo, nada de conteúdo perdido — só ocorrências
+        // repetidas somem).
+        assert.deepEqual(new Set(stylesAfter), new Set(stylesBefore));
+
+        // 3) depois do dedup, cada bloco <style> aparece exatamente 1 vez.
+        assert.equal(stylesAfter.length, new Set(stylesAfter).size);
+
+        // 4) se a página já não tinha duplicata, o transform é literalmente
+        // um no-op (cobre o caso "1 <style> só"); senão, precisa reduzir de
+        // fato — a fixture foi escolhida sabendo qual dos dois é o caso.
+        if (!expectDup) {
+          assert.equal(stylesBefore.length, new Set(stylesBefore).size, "fixture não devia ter duplicata");
+          assert.equal(after, before);
+        } else {
+          assert.ok(stylesBefore.length > new Set(stylesBefore).size, "fixture devia ter duplicata");
+          assert.ok(stylesAfter.length < stylesBefore.length, "esperava reduzir contagem de <style>");
+        }
+      });
+    }
   });
 });
 
