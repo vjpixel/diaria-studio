@@ -62,12 +62,16 @@
 # diferente) continuam sendo dois processos distintos — a mesma separação
 # que já autorizava o pickup do overnight a mergear.
 #
-# Lacuna conhecida, registrada e não bloqueante (#6934): este script NÃO
-# adquire o merge-lock cross-sessão (`session-registry.ts merge-lock-
-# acquire`, usado por overnight/develop) antes de `gh pr merge` — integrar
-# exige desenhar que `kind`/`session-id` este cron deveria reivindicar, o
-# que não foi decidido ainda. Blast radius aceito por ora: PRs pequenas,
-# CI obrigatória, revert de 1 comando.
+# Lacuna do #6934 FECHADA: este script agora adquire o merge-lock
+# cross-sessão (`session-registry.ts merge-lock-acquire`/`-release`, o
+# mesmo usado por overnight/develop) imediatamente antes do `gh pr merge` e
+# libera logo após o `git pull` que o segue — ver `try_merge_gate()` mais
+# abaixo e o comentário durável de decisão na issue #6934 (kind
+# `continuo-review` dedicado, `--session-id` derivado do `RUN_ID`/`$$` do
+# próprio tick, TTL inalterado). Lock negado retenta um número pequeno e
+# fixo de vezes (`MERGE_LOCK_MAX_RETRIES`/`MERGE_LOCK_RETRY_DELAY_S`) antes
+# de desistir desta PR nesta rodada — nunca segue pro `gh pr merge` sem o
+# lock, e nunca vaza o lock em caminho de erro (`trap ... EXIT`).
 #
 # Dois portões que ESTE script NUNCA decide sozinho — sempre `escalate`,
 # nunca `merge` nem `reject`: caminho sensível de publicação/render, e
@@ -122,6 +126,32 @@ REPO="/home/vjpixel/diaria-studio"
 cd "$REPO"
 git fetch origin -q
 
+# #6934: identidade de sessão pro merge-lock cross-sessão (`session-registry.ts
+# merge-lock-acquire`/`-release`) — decisão (b) do comentário durável da
+# issue. Gerada UMA VEZ aqui, no topo do tick (não dentro do laço por PR nem
+# dentro de `try_merge_gate`), pela mesma razão que a issue documenta:
+# estável DURANTE o tick inteiro (várias PRs do mesmo tick usam a mesma
+# identidade — o lock protege o checkout compartilhado, não uma PR
+# individual), distinta ENTRE ticks (cada execução do cron é um processo
+# novo, `$$` muda). Mesmo padrão `date+PID` que `RUN_ID` (gerado mais abaixo,
+# por PR, pro marcador de autenticidade do review) já usa — não um esquema
+# novo, só o mesmo padrão numa escala diferente (por tick, não por PR).
+# Prefixo `continuo-review-` deixa o `heldBy` do `.merge-lock.json`
+# autodescritivo mesmo sem consultar `data/sessions/` (este script nunca
+# chama `register` — ver docstring do kind `continuo-review` em
+# `scripts/lib/session-registry.ts`).
+SESSION_ID="continuo-review-$(date -u +%s)-$$"
+
+# #6934 decisão (c): TTL do lock (`MERGE_LOCK_TTL_MS` em session-registry.ts)
+# não muda — só o retry ao redor da AQUISIÇÃO é deste script. Pequeno e fixo
+# (decisão item 4 da issue), mesmo valor já usado pelo overnight/develop pro
+# MESMO lock (`MAX_LOCK_RETRIES`/`LOCK_RETRY_DELAY_MS` em
+# `scripts/lib/merge-train-live.ts`) — lock negado é "outra coordenadora
+# mergeando agora", não erro; poucas tentativas curtas cobrem contenção
+# transitória sem prender o tick pela janela inteira do TTL (2min).
+MERGE_LOCK_MAX_RETRIES=3
+MERGE_LOCK_RETRY_DELAY_S=20
+
 PR_NUMBERS=$(gh pr list --state open --json number,headRefName \
   --jq '.[] | select(.headRefName | startswith("continuo/")) | .number')
 
@@ -138,6 +168,7 @@ INFRA_ERROR_SUMMARY=""
 MERGED=0
 ESCALATED=0
 REJECTED=0
+LOCK_BLOCKED=0
 
 # #6910 (01/09/2026): o motivo de um erro de infra (exit 3 de
 # check-pr-review-authenticity.ts, ou `gh pr view` falhando) só existia em
@@ -167,6 +198,44 @@ log_infra_error() {
   fi
   local truncated="${reason:0:200}"
   INFRA_ERROR_SUMMARY="${INFRA_ERROR_SUMMARY}PR #$pr ($code): $truncated"$'\n'
+}
+
+# #6934: adquire o merge-lock cross-sessão com um número pequeno e FIXO de
+# retries (`MERGE_LOCK_MAX_RETRIES`/`MERGE_LOCK_RETRY_DELAY_S` acima) — lock
+# negado significa "outra coordenadora (overnight/develop/continuo, ou este
+# mesmo script noutro tick sobreposto) está no meio do PRÓPRIO merge agora",
+# NUNCA um erro: nunca aborta o tick na primeira negativa, e nunca segue pro
+# `gh pr merge` sem antes ter conseguido o lock (item 4 da decisão da issue).
+# Retorna 0 quando adquiriu, 1 quando esgotou as tentativas — o chamador
+# decide o que fazer (aqui: pular esta PR nesta rodada, tentar de novo no
+# próximo tick).
+acquire_merge_lock_with_retry() {
+  local attempt=0
+  while :; do
+    if npx tsx scripts/lib/session-registry.ts merge-lock-acquire \
+      --kind continuo-review --session-id "$SESSION_ID"; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge "$MERGE_LOCK_MAX_RETRIES" ]; then
+      return 1
+    fi
+    echo "[continuo-pr-review] merge-lock negado (tentativa $attempt/$MERGE_LOCK_MAX_RETRIES) — outra coordenadora está mergeando agora, retry em ${MERGE_LOCK_RETRY_DELAY_S}s" >&2
+    sleep "$MERGE_LOCK_RETRY_DELAY_S"
+  done
+}
+
+# Libera o lock que a PRÓPRIA sessão detém. `|| true`: `merge-lock-release`
+# só falha (exit 1) quando o lock pertence a OUTRA sessão (nunca deveria
+# acontecer aqui — esta função só é chamada depois de um
+# `acquire_merge_lock_with_retry` bem-sucedido pela MESMA `$SESSION_ID`) ou
+# quando já não havia lock nenhum (idempotente, tratado como sucesso pelo
+# próprio `releaseMergeLock`). De qualquer forma, nunca deve derrubar o
+# script — best-effort, mesmo espírito de `log_infra_error`/outros pontos
+# deste arquivo.
+release_merge_lock() {
+  npx tsx scripts/lib/session-registry.ts merge-lock-release \
+    --kind continuo-review --session-id "$SESSION_ID" || true
 }
 
 # #6926: portão de merge — chama scripts/check-continuo-merge-gate.ts
@@ -201,6 +270,31 @@ try_merge_gate() {
       REVIEWED_HEAD_SHA=$(printf '%s' "$GATE_JSON" | jq -r '.details.reviewedHeadSha // empty')
       echo "[continuo-pr-review] PR #$pr: gate=merge (head=$REVIEWED_HEAD_SHA)"
       echo "$GATE_JSON"
+
+      # #6934: adquire o merge-lock cross-sessão IMEDIATAMENTE ANTES do
+      # `gh pr merge` — nunca antes disso (o gate acima não toca o checkout
+      # compartilhado), nunca depois do `gh pr merge` já ter rodado.
+      if ! acquire_merge_lock_with_retry; then
+        echo "[continuo-pr-review] PR #$pr: merge-lock negado após $MERGE_LOCK_MAX_RETRIES tentativas — outra coordenadora segue mergeando; pulando esta PR nesta rodada, tenta de novo no próximo tick" >&2
+        LOCK_BLOCKED=$((LOCK_BLOCKED + 1))
+        # `return`, não `break`: estamos dentro de `try_merge_gate()` (uma
+        # função), não num loop — `break` aqui não teria o que interromper.
+        # Retornar sai da função (equivalente a "acabou o `case`", já que a
+        # ramificação `0)` é a última coisa que importa fazer neste caminho).
+        return
+      fi
+      # A partir daqui o lock é NOSSO — release SEMPRE roda ao sair deste
+      # branch, sucesso ou erro (item 5 da decisão: `gh pr merge` pode
+      # falhar por SHA desatualizado, `--match-head-commit` acima, e mesmo
+      # assim o lock não pode vazar). `trap ... EXIT` em vez de só uma
+      # chamada no fim do bloco: sob `set -euo pipefail` (topo do script),
+      # qualquer comando não protegido por `set +e`/`if`/`||` que falhar
+      # aqui dentro sai do script INTEIRO, não só desta função — só um trap
+      # de EXIT garante que `release_merge_lock` roda nesse caminho também.
+      # Desarmado (`trap - EXIT`) assim que a janela fecha, pra não vazar
+      # pro resto do tick (próxima PR do laço, ou o fim do script).
+      trap release_merge_lock EXIT
+
       set +e
       # `--match-head-commit`: o GitHub recusa o merge se o HEAD real da PR
       # divergir do SHA que o gate acabou de confirmar — fecha o intervalo
@@ -214,6 +308,7 @@ try_merge_gate() {
       fi
       MERGE_RC=$?
       set -e
+      MERGE_CONFIRMED=0
       if [ "$MERGE_RC" -ne 0 ]; then
         # #573: confirmar estado real em vez de confiar só no exit code do
         # `gh pr merge` — mesmo princípio já aplicado ao merge do overnight.
@@ -229,6 +324,7 @@ try_merge_gate() {
         if echo "$MERGED_STATE" | command grep -q "^MERGED"; then
           echo "[continuo-pr-review] PR #$pr: gh pr merge saiu com erro (rc=$MERGE_RC) mas o estado remoto confirma MERGED — contando como mergeada"
           MERGED=$((MERGED + 1))
+          MERGE_CONFIRMED=1
         else
           echo "[continuo-pr-review] PR #$pr: gh pr merge falhou (rc=$MERGE_RC) e estado remoto não confirma merge — não conta como mergeada, tenta de novo no próximo tick" >&2
           INFRA_ERRORS=$((INFRA_ERRORS + 1))
@@ -236,8 +332,34 @@ try_merge_gate() {
         fi
       else
         MERGED=$((MERGED + 1))
+        MERGE_CONFIRMED=1
         echo "[continuo-pr-review] PR #$pr: mergeada"
       fi
+
+      # `git pull` só quando o merge foi de fato confirmado — mesmo critério
+      # de `mergeSoloPr` (scripts/lib/merge-train-live.ts): sem merge
+      # confirmado não há nada novo pra puxar, e a janela do lock existe
+      # pra proteger exatamente "gh pr merge → git pull", não um pull solto.
+      # Falha do `git pull` é NÃO-bloqueante (mesmo padrão de
+      # `mergeSoloPr`) — o merge remoto já aconteceu; o checkout local
+      # compartilhado só fica defasado até o próximo fetch/pull de alguém.
+      if [ "$MERGE_CONFIRMED" -eq 1 ]; then
+        set +e
+        git pull
+        PULL_RC=$?
+        set -e
+        if [ "$PULL_RC" -ne 0 ]; then
+          echo "[continuo-pr-review] PR #$pr: merge confirmado, mas git pull local falhou (rc=$PULL_RC, não bloqueante) — checkout compartilhado fica defasado até o próximo fetch/pull" >&2
+          INFRA_ERRORS=$((INFRA_ERRORS + 1))
+          log_infra_error "$pr" "git_pull_rc=$PULL_RC" "merge confirmado, git pull local falhou"
+        fi
+      fi
+
+      # Fecha a janela: libera o lock explicitamente e desarma o trap (que
+      # senão rodaria de novo, inofensivo mas redundante, na saída do
+      # script) — mesma ordem de `mergeSoloPr`.
+      release_merge_lock
+      trap - EXIT
       ;;
     1)
       echo "[continuo-pr-review] PR #$pr: gate=escalate — deixando pro pickup do /diaria-overnight (fallback, #6823)"
@@ -404,7 +526,7 @@ VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramen
   try_merge_gate "$PR"
 done
 
-echo "[continuo-pr-review] concluído — revisadas=$REVIEWED já-tinham-review=$SKIPPED falharam=$FAILED erros-de-infra=$INFRA_ERRORS mergeadas=$MERGED escaladas=$ESCALATED rejeitadas=$REJECTED"
+echo "[continuo-pr-review] concluído — revisadas=$REVIEWED já-tinham-review=$SKIPPED falharam=$FAILED erros-de-infra=$INFRA_ERRORS mergeadas=$MERGED escaladas=$ESCALATED rejeitadas=$REJECTED bloqueadas-por-lock=$LOCK_BLOCKED"
 # #6910: motivo vai NA ENTREGA (não só no stderr) quando houve erro de
 # infra — a linha de resumo é o que o Telegram carrega; sem isso
 # "erros-de-infra=1" chegava sem nenhum rastro de causa. Log completo

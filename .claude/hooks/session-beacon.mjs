@@ -380,6 +380,17 @@ export function buildBeaconRecord(previous, event) {
  * dali em diante. Agora: se QUALQUER match for de kind coordenador
  * (`COORDINATOR_KIND_PREFIXES`), prefere ele explicitamente sobre
  * `interactive` — nunca depende de ordenação lexicográfica de novo.
+ *
+ * **#6934 — `continuo-review` (novo `SessionKind`, NÃO coordenador) é um
+ * prefixo verdadeiro de `continuo` (`"continuo-review-tag-id".startsWith(
+ * "continuo-")` é `true`).** Sem a exclusão abaixo, um eventual arquivo
+ * `continuo-review-*` seria classificado como coordenador por acidente de
+ * substring — mesma classe de bug corrigida em `parseSessionFileName`
+ * (`scripts/lib/session-registry.ts`), que este hook duplica por ser
+ * self-contained. Hoje nenhum caminho de produção cria
+ * `continuo-review-*.json` (`continuo-pr-review.sh` só chama
+ * `merge-lock-acquire`/`-release`, que não tocam `data/sessions/`) — a
+ * exclusão é preventiva, não correção de um caso já observado.
  */
 export function findExistingSessionFile(sessionsDir, sessionId, fs = { existsSync, readdirSync }) {
   try {
@@ -390,7 +401,7 @@ export function findExistingSessionFile(sessionsDir, sessionId, fs = { existsSyn
       .filter((n) => n.endsWith(suffix) && !n.startsWith(".") && !n.includes("-safeBackup-"));
     if (matches.length === 0) return null;
     const coordinatorMatches = matches
-      .filter((n) => COORDINATOR_KIND_PREFIXES.some((k) => n.startsWith(`${k}-`)))
+      .filter((n) => COORDINATOR_KIND_PREFIXES.some((k) => n.startsWith(`${k}-`)) && !n.startsWith("continuo-review-"))
       .sort();
     if (coordinatorMatches.length > 0) return coordinatorMatches[0];
     return matches.sort()[0];

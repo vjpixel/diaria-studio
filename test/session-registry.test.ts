@@ -1527,9 +1527,19 @@ describe("requireKind aceita o kind \"continuo\" (#5293)", () => {
     assert.equal(requireKind("interactive"), "interactive");
   });
 
-  it("rejeita valor inválido/ausente com mensagem citando os 4 kinds válidos", () => {
-    assert.throws(() => requireKind("bogus"), /--kind deve ser "overnight", "develop", "continuo" ou "interactive"/);
-    assert.throws(() => requireKind(undefined), /--kind deve ser "overnight", "develop", "continuo" ou "interactive"/);
+  it("aceita também \"continuo-review\" desde o #6934 — hermes/scripts/continuo-pr-review.sh", () => {
+    assert.equal(requireKind("continuo-review"), "continuo-review");
+  });
+
+  it("rejeita valor inválido/ausente com mensagem citando os 5 kinds válidos", () => {
+    assert.throws(
+      () => requireKind("bogus"),
+      /--kind deve ser "overnight", "develop", "continuo", "interactive" ou "continuo-review"/,
+    );
+    assert.throws(
+      () => requireKind(undefined),
+      /--kind deve ser "overnight", "develop", "continuo", "interactive" ou "continuo-review"/,
+    );
   });
 });
 
@@ -2589,8 +2599,8 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
 
 // ─── parseSessionFileName (#6338) ──────────────────────────────────────────
 
-describe("parseSessionFileName valida o prefixo contra os 4 SessionKind conhecidos (#6338)", () => {
-  it("parseia os 4 kinds válidos com tag/sessionId simples (sem hífen)", () => {
+describe("parseSessionFileName valida o prefixo contra os 5 SessionKind conhecidos (#6338, #6934)", () => {
+  it("parseia os 5 kinds válidos com tag/sessionId simples (sem hífen)", () => {
     for (const kind of ALL_SESSION_KINDS) {
       assert.deepEqual(parseSessionFileName(`${kind}-hostA-sess1.json`), {
         kind,
@@ -2622,11 +2632,33 @@ describe("parseSessionFileName valida o prefixo contra os 4 SessionKind conhecid
     assert.equal(parseSessionFileName("overnight-.json"), null);
   });
 
-  it("não confunde kind por substring (ex: nome começando por outro prefixo)", () => {
-    // "continuo" não é prefixo de nenhum outro kind e vice-versa — mas o
-    // guard de shape ainda precisa recusar um nome que não bate com NENHUM
-    // dos 4, mesmo que "pareça" um kind truncado.
+  it("não confunde kind por substring truncado (ex: nome começando por outro prefixo)", () => {
+    // O guard de shape precisa recusar um nome que não bate com NENHUM dos
+    // 5 kinds, mesmo que "pareça" um kind truncado.
     assert.equal(parseSessionFileName("overnigh-hostA-sess1.json"), null);
+  });
+
+  it("#6934 — \"continuo\" É prefixo verdadeiro de \"continuo-review\": resolve pro kind MAIS ESPECÍFICO (mais longo), não pelo primeiro match da ordem de ALL_SESSION_KINDS", () => {
+    // Diferente do caso acima ("overnigh" não é NENHUM kind), aqui
+    // "continuo-review-tag-sess1.json" genuinamente COMEÇA com "continuo-" —
+    // um `.find()` ingênuo na ordem de declaração de `ALL_SESSION_KINDS`
+    // (onde "continuo" vem antes de "continuo-review") devolveria
+    // {kind: "continuo", tag: "review", sessionId: "tag-sess1"}, errado em
+    // silêncio. `parseSessionFileName` precisa desempatar pelo prefixo mais
+    // longo (mesma técnica de `groupBackupsByRealStem`), não pela ordem do
+    // array.
+    assert.deepEqual(parseSessionFileName("continuo-review-helios-sess1.json"), {
+      kind: "continuo-review",
+      tag: "helios",
+      sessionId: "sess1",
+    });
+    // Um registro "continuo" de verdade (sem o sufixo "-review") continua
+    // resolvendo pro kind certo — a correção não quebra o caso comum.
+    assert.deepEqual(parseSessionFileName("continuo-helios-sess1.json"), {
+      kind: "continuo",
+      tag: "helios",
+      sessionId: "sess1",
+    });
   });
 
   it(".merge-lock.json (arquivo de sistema, não registro de sessão) não é um SessionKind válido", () => {
