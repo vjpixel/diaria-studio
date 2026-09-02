@@ -33,12 +33,11 @@
  *
  * Estado (idempotência): `data/geo-citations/staleness-alarm-state.json`.
  */
-import { existsSync, readFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import {
@@ -64,6 +63,8 @@ import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
+  saveAlarmIssuesState,
+  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
   type AlarmIssueResult,
@@ -108,16 +109,15 @@ export function loadState(statePath: string = STATE_PATH): GeoCitationStalenessA
   }
 }
 
-export function saveState(state: GeoCitationStalenessAlarmState, statePath: string = STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
+// saveState/saveAlarmIssuesState: consolidados em scripts/lib/alarm-issues.ts
+// (#7124) — importados acima. Arquivo separado de STATE_PATH de propósito:
+// idempotência do E-MAIL (acima) e tracking de ISSUE por achado são
+// preocupações independentes.
+export { saveState };
 
-// ─── Estado (dedup/reconciliação de ISSUE por achado, #5339) ──────────────
-// Arquivo separado de STATE_PATH de propósito — mesmo racional dos demais
-// alarmes deste lote: idempotência do E-MAIL (acima) e tracking de ISSUE
-// por achado são preocupações independentes.
-
+// loadAlarmIssuesState continua LOCAL (#7124) — diverge do padrão comum ao
+// logar o parse error via console.error, não só um catch silencioso; não
+// forçado para o helper genérico pra não perder o diagnóstico.
 export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
   if (!existsSync(statePath)) return emptyAlarmIssuesState();
   try {
@@ -128,11 +128,6 @@ export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH
     console.error(`${LOG_PREFIX} estado de alarm-issues corrompido/ilegível em ${ALARM_ISSUES_STATE_PATH} — resetando pra vazio: ${(e as Error).message}`);
     return emptyAlarmIssuesState();
   }
-}
-
-export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
 }
 
 /** Converte o veredito de staleness (agregado, #4900) num `AlarmFinding`
@@ -363,7 +358,7 @@ async function main(): Promise<void> {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
-    saveAlarmIssuesState(nextState);
+    saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
     issueRefs = new Map(
       findingOutcomes.map((o) => [
         o.check,
@@ -423,7 +418,7 @@ async function main(): Promise<void> {
 
   const nextFingerprint = check.isStale ? fingerprint : null;
   const nextMissingProviderFingerprint = missingCheck.hasMissing ? missingCheck.fingerprint : null;
-  saveState(advanceState(nextFingerprint, now, nextMissingProviderFingerprint));
+  saveState(advanceState(nextFingerprint, now, nextMissingProviderFingerprint), STATE_PATH);
 }
 
 if (isMainModule(import.meta.url)) {

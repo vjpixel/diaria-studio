@@ -47,13 +47,12 @@
  *
  * Estado (idempotência): `data/apoios-diff-alarm-state.json`.
  */
-import { existsSync, readFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig } from "./lib/beehiiv-config.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
@@ -82,6 +81,9 @@ import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
+  loadAlarmIssuesState,
+  saveAlarmIssuesState,
+  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
@@ -109,31 +111,14 @@ export function loadState(statePath: string = STATE_PATH): ApoiosDiffAlarmState 
   }
 }
 
-export function saveState(state: ApoiosDiffAlarmState, statePath: string = STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
+export { saveState };
 
 // ─── Estado (dedup/reconciliação de ISSUE, #5339) ──────────────────────────
 // Arquivo separado de STATE_PATH de propósito — mesmo racional dos outros
 // alarmes deste lote: idempotência do E-MAIL (acima) e tracking de ISSUE
 // são preocupações independentes.
-
-export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
-  if (!existsSync(statePath)) return emptyAlarmIssuesState();
-  try {
-    const raw = JSON.parse(readFileSync(statePath, "utf8"));
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
-    return emptyAlarmIssuesState();
-  } catch {
-    return emptyAlarmIssuesState();
-  }
-}
-
-export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
+// loadAlarmIssuesState/saveAlarmIssuesState: consolidados em
+// scripts/lib/alarm-issues.ts (#7124) — importados abaixo.
 
 /** Converte o diff pendente INTEIRO (não cada entry — `vjpixel/diaria-studio`
  * é repo PÚBLICO, e cada entry carrega o e-mail de um assinante/apoiador;
@@ -296,7 +281,7 @@ async function main(): Promise<void> {
   // corpo por ser repo PÚBLICO) ANTES de montar o e-mail. Roda toda execução
   // não-dry-run, independente de um e-mail novo disparar nesta rodada.
   const alarmFindings = hasPendingDiff(input) ? [toAlarmFinding(input)] : [];
-  const alarmState = loadAlarmIssuesState();
+  const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
   let issueRef: { issueNumber: number | null; url: string | null; action: string; error?: string } | undefined;
 
   if (isDryRun) {
@@ -310,7 +295,7 @@ async function main(): Promise<void> {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
-    saveAlarmIssuesState(nextState);
+    saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
     const outcome = findingOutcomes[0];
     if (outcome) {
       issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
@@ -354,7 +339,7 @@ async function main(): Promise<void> {
   }
 
   const nextFingerprint = hasPendingDiff(input) ? computeDiffFingerprint(input) : null;
-  saveState(advanceState(nextFingerprint, now));
+  saveState(advanceState(nextFingerprint, now), STATE_PATH);
 }
 
 if (isMainModule(import.meta.url)) {

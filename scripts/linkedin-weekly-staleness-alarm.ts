@@ -23,12 +23,11 @@
  * Estado (idempotência): `data/weekly/linkedin-staleness-alarm-state.json` —
  * 1 alarme por ciclo, mesmo que esta task rode mais de 1x na mesma semana.
  */
-import { existsSync, readFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
@@ -45,6 +44,8 @@ import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
+  saveAlarmIssuesState,
+  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
   type AlarmIssueResult,
@@ -73,16 +74,12 @@ export function loadState(statePath: string = STATE_PATH): LinkedinWeeklyStalene
   }
 }
 
-export function saveState(state: LinkedinWeeklyStalenessAlarmState, statePath: string = STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
+// saveState/saveAlarmIssuesState: consolidados em scripts/lib/alarm-issues.ts
+// (#7124) — importados acima.
 
-// ─── Estado (dedup/reconciliação de ISSUE por achado, #5339) ──────────────
-// Arquivo separado de STATE_PATH de propósito — mesmo racional dos demais
-// alarmes deste lote: idempotência do E-MAIL (acima) e tracking de ISSUE
-// por achado são preocupações independentes.
-
+// loadAlarmIssuesState continua LOCAL (#7124) — diverge do padrão comum ao
+// logar o parse error via console.error, não só um catch silencioso; não
+// forçado para o helper genérico pra não perder o diagnóstico.
 export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
   if (!existsSync(statePath)) return emptyAlarmIssuesState();
   try {
@@ -93,11 +90,6 @@ export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH
     console.error(`${LOG_PREFIX} estado de alarm-issues corrompido/ilegível em ${ALARM_ISSUES_STATE_PATH} — resetando pra vazio: ${(e as Error).message}`);
     return emptyAlarmIssuesState();
   }
-}
-
-export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
 }
 
 /** Converte o ciclo faltante num `AlarmFinding` (#5339) — `fingerprint` =
@@ -158,7 +150,7 @@ async function main(): Promise<void> {
   // e-mail, mesmo padrão dos demais alarmes deste lote. Roda toda execução
   // não-dry-run, independente de um e-mail novo disparar nesta rodada.
   const alarmFindings: AlarmFinding[] = evaluation.verdict === "alarm-missing" ? [toAlarmFinding(cycle)] : [];
-  const alarmState = loadAlarmIssuesState();
+  const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
   let issueRef: AlarmIssueResult | undefined;
 
   if (isDryRun) {
@@ -172,7 +164,7 @@ async function main(): Promise<void> {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
-    saveAlarmIssuesState(nextState);
+    saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
     const outcome = findingOutcomes[0];
     if (outcome) {
       issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
@@ -201,7 +193,7 @@ async function main(): Promise<void> {
     return;
   }
   await sendGmailMessage(to, subject, body);
-  saveState(markLinkedinWeeklyStalenessAlarmed(cycle));
+  saveState(markLinkedinWeeklyStalenessAlarmed(cycle), STATE_PATH);
   console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (cycle=${cycle}).`);
 }
 
