@@ -8,7 +8,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import {
@@ -169,5 +169,72 @@ describe("main() — as DUAS contas, fail-soft por key ausente", () => {
       BREVO_ACCOUNTS.map((a) => a.platform).sort(),
       ["brevo_clarice", "brevo_diaria"],
     );
+  });
+});
+
+describe("main() — ponta a ponta com fixtures das DUAS contas (#6587 critério de pronto)", () => {
+  it("ingere brevo_diaria E brevo_clarice na mesma rodada, sem cruzar identidade entre contas", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-ingest-2contas-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/brevo-ingest-manifest.json");
+
+    // 2 contas, 2 keys, 2 listagens de contato DIFERENTES — o mesmo e-mail
+    // (compartilhado@x.com) aparece nas duas, propositalmente, pra provar
+    // que vira 2 subscriber distintos (1 por conta), nunca fundido.
+    const listingByKey: Record<string, Array<{ id: number; email: string }>> = {
+      "key-diaria": [{ id: 1, email: "compartilhado@x.com" }],
+      "key-clarice": [{ id: 101, email: "compartilhado@x.com" }],
+    };
+    const contactByKeyAndId: Record<string, Record<number, Record<string, any>>> = {
+      "key-diaria": {
+        1: { id: 1, email: "compartilhado@x.com", statistics: { messagesSent: [{ campaignId: 5, eventTime: "2026-08-01T00:00:00Z" }] } },
+      },
+      "key-clarice": {
+        101: { id: 101, email: "compartilhado@x.com", statistics: { opened: [{ campaignId: 7, eventTime: "2026-08-02T00:00:00Z" }] } },
+      },
+    };
+
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      const apiKey = headers?.["api-key"] ?? "";
+      if (String(url).includes("/contacts?")) return jsonResponse({ contacts: listingByKey[apiKey] ?? [] });
+      const match = String(url).match(/\/contacts\/(\d+)$/);
+      if (match) return jsonResponse(contactByKeyAndId[apiKey]?.[Number(match[1])] ?? {});
+      throw new Error(`fetch inesperado no teste: ${url}`);
+    }) as typeof fetch;
+
+    const origDiaria = process.env.BREVO_DIARIA_API_KEY;
+    const origClarice = process.env.BREVO_CLARICE_API_KEY;
+    process.env.BREVO_DIARIA_API_KEY = "key-diaria";
+    process.env.BREVO_CLARICE_API_KEY = "key-clarice";
+
+    try {
+      await main(["--db", dbPath, "--manifest", manifestPath]);
+    } finally {
+      globalThis.fetch = orig;
+      if (origDiaria !== undefined) process.env.BREVO_DIARIA_API_KEY = origDiaria;
+      else delete process.env.BREVO_DIARIA_API_KEY;
+      if (origClarice !== undefined) process.env.BREVO_CLARICE_API_KEY = origClarice;
+      else delete process.env.BREVO_CLARICE_API_KEY;
+    }
+
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const ids = manifest.entries.map((e: { id: string }) => e.id).sort();
+    assert.deepEqual(ids, ["brevo_clarice", "brevo_diaria"]);
+    assert.ok(manifest.entries.every((e: { status: string }) => e.status === "ok"));
+
+    const db = openDiariaSubscribersDb(dbPath);
+    const subs = findSubscriberIdsByEmail(db, "compartilhado@x.com");
+    assert.equal(subs.length, 2, "mesmo e-mail nas 2 contas → 2 subscriber distintos, nunca fundidos");
+    const platforms = db
+      .prepare("SELECT DISTINCT platform FROM subscription WHERE subscriber_id IN (?, ?)")
+      .all(subs[0], subs[1])
+      .map((r: any) => r.platform)
+      .sort();
+    assert.deepEqual(platforms, ["brevo_clarice", "brevo_diaria"]);
+    assert.equal(getStoreCounts(db).events, 2); // 1 sent (diária) + 1 open (clarice)
+    db.close();
   });
 });
