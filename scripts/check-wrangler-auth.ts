@@ -22,10 +22,13 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { sanitizedCloudflareOAuthEnv } from "./lib/cloudflare-oauth-env.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { resolveWranglerBin } from "./lib/resolve-wrangler-bin.ts"; // #7117
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_DIR = resolve(ROOT, "workers", "poll");
-export const WRANGLER_BIN = resolve(POLL_DIR, "node_modules", "wrangler", "bin", "wrangler.js");
+// #7117: workers/ virou npm workspace — wrangler hoista pro node_modules da
+// RAIZ, não mais workers/poll/node_modules (mesmo fix de scripts/purge-leaderboard.ts).
+export const WRANGLER_BIN = resolveWranglerBin(import.meta.url);
 
 /** Assinatura mínima de `execFileSync` usada por `checkWranglerAuth` —
  * injetável pra teste de regressão do #6900 sem tocar wrangler de verdade. */
