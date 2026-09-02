@@ -20,6 +20,7 @@ import { escHtml } from "../html-escape.ts"; // #1990: local usage
 import { applyWordJoiner } from "../word-joiner.ts"; // #2018 — shared helper (refs #2048)
 import { applyBrandWordmark } from "../shared/brand-wordmark.ts"; // wordmark diar.ia.br, mesmo da diária (#3181) — movido pra shared/ no #4797 (extraído de newsletter-render-html.ts, que agora só re-exporta por back-compat)
 import { tealDot } from "../shared/email-components.ts"; // #3269 — extraído de newsletter-render-html.ts pra shared/ (era o mesmo import cruzado ad-hoc do applyBrandWordmark acima; ponto ● teal, #3181)
+import { isUnpairedBoldMarker, scanBalancedParenClose } from "../shared/markdown-primitives.ts"; // #7126 — item 6 do plano do #3269, antes duplicado aqui
 import { buildMensalStyleBlock } from "../shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
 // #4040/#4041: fonte única dos valores de UTM + composição do sufixo de posição.
 import {
@@ -374,38 +375,12 @@ export function capitalizeFirstLetter(text: string): string {
   return text.replace(/^([\s*_["'(]*)(\p{L})/u, (_m, pre, ch) => pre + ch.toLocaleUpperCase("pt-BR"));
 }
 
-/**
- * Conta ocorrências NÃO sobrepostas de `**` numa string (avança 2 posições a
- * cada match — "****" conta como 2, não 3). Espelha `countDoubleAsterisk` de
- * `../newsletter-render-html.ts` (#3299 — porta o merge bold+link do
- * #3220/#3280/#3284/#3316 pra cá). Duplicado em vez de importado: a mensal
- * mantém seu parser markdown self-contained (ver
- * `docs/render-unification-analysis-3269.md` §2.3 — extrair o scanner de
- * baixo nível pro shared/ é candidato Tier 1 de baixo risco mas não
- * obrigatório; o objetivo aqui é fechar o bug, não a unificação).
- */
-function countDoubleAsterisk(str: string): number {
-  let count = 0;
-  let idx = str.indexOf("**");
-  while (idx !== -1) {
-    count++;
-    idx = str.indexOf("**", idx + 2);
-  }
-  return count;
-}
-
-/**
- * O `**` candidato (adjacente a um link) é um marcador genuinamente
- * desemparelhado no texto adjacente — livre pra fundir com o link — ou já
- * está auto-pareado ali (não deve fundir)? Contagem PAR de `**` em
- * `adjacentText` = tudo já pareado, o candidato está livre; ÍMPAR = sobra um
- * marcador anterior sem par, que consome o candidato. Espelha
- * `isUnpairedBoldMarker` de `../newsletter-render-html.ts` (#3280) — ver lá a
- * explicação completa da heurística.
- */
-function isUnpairedBoldMarker(adjacentText: string): boolean {
-  return countDoubleAsterisk(adjacentText) % 2 === 0;
-}
+// `countDoubleAsterisk`/`isUnpairedBoldMarker` moraram aqui (duplicadas de
+// `../newsletter-render-html.ts`, #3299) até #7126 — extraídas pra
+// `../shared/markdown-primitives.ts` (item 6 do plano do
+// `docs/render-unification-analysis-3269.md` §6/§2.3) por serem cópia
+// byte-idêntica, junto de `scanBalancedParenClose` (o scanner de parênteses
+// balanceados usado por `nextLinkStartIndex`/`renderInline` abaixo).
 
 /**
  * Índice do próximo `[label](url)` VÁLIDO (URL não-vazia, parênteses
@@ -421,16 +396,7 @@ function nextLinkStartIndex(str: string, from: number): number {
   let m: RegExpExecArray | null;
   while ((m = linkStart.exec(rest)) !== null) {
     const destStart = m.index + m[0].length;
-    let depth = 0;
-    let j = destStart;
-    for (; j < rest.length; j++) {
-      const ch = rest[j];
-      if (ch === "(") depth++;
-      else if (ch === ")") {
-        if (depth === 0) break;
-        depth--;
-      }
-    }
+    const j = scanBalancedParenClose(rest, destStart);
     if (j >= rest.length) continue; // sem `)` de fechamento — não é link válido
     if (j > destStart) return from + m.index; // URL não-vazia
     linkStart.lastIndex = j + 1;
@@ -480,16 +446,7 @@ export function renderInline(text: string, posicao?: string): string {
   while ((m = linkStart.exec(input)) !== null) {
     const destStart = m.index + m[0].length;
     // Varre o destino balanceando parênteses: `(` aprofunda, `)` em depth 0 fecha.
-    let depth = 0;
-    let j = destStart;
-    for (; j < input.length; j++) {
-      const ch = input[j];
-      if (ch === "(") depth++;
-      else if (ch === ")") {
-        if (depth === 0) break;
-        depth--;
-      }
-    }
+    const j = scanBalancedParenClose(input, destStart);
     if (j >= input.length) continue; // sem `)` de fechamento → não é link válido
     const url = input.substring(destStart, j);
     if (url.length === 0) {
