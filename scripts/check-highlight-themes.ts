@@ -104,9 +104,9 @@ import { canonicalize } from "./lib/url-utils.ts"; // #2684 item 5: dedup cross-
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested (#3055)
 // #2716 item 1: importa a lista canônica de buckets secundários em vez de
 // hardcodar uma cópia local — SECONDARY_BUCKETS de check-secondary-themes.ts é a
-// fonte única (dedup-intra-edition.ts e check-intra-themes.ts já a consomem do
-// mesmo lugar). Ver nota "Consolidação parcial" mais abaixo, junto de
-// DEFAULT_SECONDARY_BUCKETS, para o que NÃO foi consolidado nesta passada.
+// fonte única (dedup-intra-edition.ts já a consome do mesmo lugar). Ver nota
+// "Consolidação parcial" mais abaixo, junto de DEFAULT_SECONDARY_BUCKETS, para
+// o que NÃO foi consolidado nesta passada.
 import { SECONDARY_BUCKETS } from "./check-secondary-themes.ts";
 // #2834: CategorizedJson/Highlight local consolidado no reader canônico.
 import type { CategorizedJson } from "./lib/types/categorized-json.ts";
@@ -880,8 +880,7 @@ function findPrefixTokenOverlap(
  * "use_melhor", "video"]`) que só *documentava* espelhar `SECONDARY_BUCKETS`
  * de check-secondary-themes.ts sem de fato importar — risco de as duas listas
  * divergirem silenciosamente numa mudança futura. Agora deriva diretamente da
- * constante importada (fonte única, mesma que dedup-intra-edition.ts e
- * check-intra-themes.ts já usam).
+ * constante importada (fonte única, mesma que dedup-intra-edition.ts já usa).
  *
  * Consolidação PARCIAL — o que não foi feito nesta passada e por quê:
  *   - `checkSecondaryThemes` / `SecondaryThemeWarning` deste arquivo (definidos

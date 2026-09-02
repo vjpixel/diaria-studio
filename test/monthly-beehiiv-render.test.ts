@@ -6,10 +6,17 @@
  *     CLARICE — * por inteiro, sem tocar as demais seções.
  *   - `stripRecomendacaoDiariaBlock` remove o box colado manualmente sem
  *     label própria, sem afetar o resto do corpo da seção.
- *   - `draftToEmailBeehiiv` emite `utm_source=mensal-beehiiv` (não `clarice`)
- *     e nunca vaza conteúdo Clarice-only no HTML final.
  *   - `draftToEmail` (Clarice, perfil default) continua idêntico — regressão
  *     contra a mudança de assinatura em monthly-render.ts (#633).
+ *
+ * #7121 (260902): `draftToEmailBeehiiv`/`BEEHIIV_UTM_PROFILE` foram removidos
+ * do módulo fonte (sem consumidor de runtime — o canal Beehiiv nunca enviou
+ * nada ao vivo). O describe que os testava foi removido daqui; a mesma
+ * cobertura (dispatch + UTM) hoje vive em `test/monthly-apoiadores-brevo-render.test.ts`
+ * contra `draftToEmailApoiadoresBrevo`/`APOIADORES_BREVO_UTM_PROFILE`, o
+ * caminho REALMENTE usado (Brevo). `isClariceOnlySection`/`filterDraftForBeehiiv`/
+ * `stripRecomendacaoDiariaBlock` continuam testados abaixo — são
+ * canal-agnósticas e reusadas sem modificação pelo render Brevo.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -17,16 +24,8 @@ import {
   isClariceOnlySection,
   stripRecomendacaoDiariaBlock,
   filterDraftForBeehiiv,
-  draftToEmailBeehiiv,
-  BEEHIIV_UTM_PROFILE,
 } from "../scripts/lib/mensal/monthly-beehiiv-render.ts";
 import { draftToEmail, splitByLabels, normalizeLabel } from "../scripts/lib/mensal/monthly-render.ts";
-import {
-  MENSAL_BEEHIIV_UTM_SOURCE,
-  MENSAL_BEEHIIV_UTM_MEDIUM,
-  MENSAL_UTM_SOURCE,
-  buildMensalBeehiivCampaign,
-} from "../scripts/lib/shared/utm-registry.ts";
 
 const RECOMENDACAO_BLOCK = [
   "Recomendação da equipe da Clarice",
@@ -238,62 +237,6 @@ describe("#4482 — filterDraftForBeehiiv", () => {
     // forma canônica (em-dash); este é o comportamento real, não o desejável.
     assert.match(filtered, /Você se cadastrou na Clarice/);
     assert.match(filtered, /Assine grátis/);
-  });
-});
-
-describe("#4482 — draftToEmailBeehiiv", () => {
-  it("HTML final não contém boilerplate/conteúdo Clarice-only", () => {
-    const { html } = draftToEmailBeehiiv(FULL_DRAFT, "Assunto", "2607");
-    assert.doesNotMatch(html, /se cadastrou na Clarice/);
-    assert.doesNotMatch(html, /Recomendação da equipe da Clarice/);
-    assert.doesNotMatch(html, /Assine grátis/); // CTA da seção CLARICE — DIVULGAÇÃO
-    assert.doesNotMatch(html, /Passo a passo/); // corpo da CLARICE — TUTORIAL
-  });
-
-  it("preserva os destaques, radar e encerramento", () => {
-    const { html } = draftToEmailBeehiiv(FULL_DRAFT, "Assunto", "2607");
-    assert.match(html, /Título do destaque/);
-    assert.match(html, /Outro título/);
-    assert.match(html, /Descrição do item do radar/);
-    assert.match(html, /Até o mês que vem/);
-  });
-
-  it("todo link de marca sai com utm_source=mensal-beehiiv, nunca clarice", () => {
-    const { html } = draftToEmailBeehiiv(FULL_DRAFT, "Assunto", "2607");
-    const plain = html.replace(/&amp;/g, "&");
-    const utmSources = [...plain.matchAll(/utm_source=([a-z0-9_-]+)/gi)].map((m) => m[1]);
-    assert.ok(utmSources.length > 0, "nenhum utm_source emitido — draft de teste sem link de marca?");
-    for (const s of utmSources) {
-      assert.equal(s, MENSAL_BEEHIIV_UTM_SOURCE, `utm_source inesperado: ${s}`);
-    }
-    assert.ok(!plain.includes(`utm_source=${MENSAL_UTM_SOURCE}`), "vazou utm_source=clarice na variante Beehiiv");
-  });
-
-  it("BEEHIIV_UTM_PROFILE bate com os valores do registry", () => {
-    assert.equal(BEEHIIV_UTM_PROFILE.source, MENSAL_BEEHIIV_UTM_SOURCE);
-    assert.equal(BEEHIIV_UTM_PROFILE.medium, MENSAL_BEEHIIV_UTM_MEDIUM);
-    assert.equal(BEEHIIV_UTM_PROFILE.buildCampaign("2607-08", "cta"), buildMensalBeehiivCampaign("2607-08", "cta"));
-    assert.equal(BEEHIIV_UTM_PROFILE.pollMergeTag, "{{email}}");
-    assert.equal(BEEHIIV_UTM_PROFILE.pollBrand, "mensal-beehiiv");
-  });
-
-  // #4510 (CRÍTICO 1, silent-failure-hunter): o link de voto do É IA? é
-  // embutido no HTML SÓ quando há imagem (`imageCell`, monthly-render.ts) —
-  // por isso estes 2 testes passam `eiaImageUrlA/B`, diferente dos demais
-  // testes deste describe (que exercitam o draft sem imagem, onde o link de
-  // voto nunca chega a ser renderizado).
-  it("#4510: link de voto do É IA? usa merge tag {{email}} (Beehiiv), nunca {{ contact.EMAIL }} (Brevo)", () => {
-    const { html } = draftToEmailBeehiiv(FULL_DRAFT, "Assunto", "2607", "https://img/a.jpg", "https://img/b.jpg");
-    assert.match(html, /\/vote\/[^\"]+\/A\?email=\{\{email\}\}/);
-    assert.doesNotMatch(html, /contact\.EMAIL/);
-  });
-
-  it("#4510: voto e leaderboard do É IA? vão pro brand=mensal-beehiiv, nunca brand=clarice", () => {
-    const { html } = draftToEmailBeehiiv(FULL_DRAFT, "Assunto", "2607", "https://img/a.jpg", "https://img/b.jpg");
-    const plain = html.replace(/&amp;/g, "&");
-    const brands = [...plain.matchAll(/brand=([a-z0-9_-]+)/gi)].map((m) => m[1]);
-    assert.ok(brands.length > 0, "nenhum brand emitido — draft de teste sem seção É IA?/leaderboard?");
-    for (const b of brands) assert.equal(b, "mensal-beehiiv", `brand inesperado: ${b}`);
   });
 });
 

@@ -8,13 +8,14 @@
  * nunca Amigo/Apoiador/Todos/Nenhum nem a base inteira) mesmo se a lista
  * canônica for reordenada ou ganhar segmentos novos no futuro.
  *
- * Não testamos `main()`/`renderMonthlyBeehiivEmail` fim-a-fim aqui: os dois
- * resolvem `monthlyDir(cycle)` contra o `data/monthly/` REAL (junction pro
- * OneDrive de produção neste worktree) — mesma limitação já aceita por
- * `test/render-monthly-beehiiv.test.ts`, que testa as peças puras
- * (`missingImageKeys`, `draftToEmailBeehiiv`, `buildRelink`) em vez do CLI
- * inteiro. A idempotência/dedup (a lógica nova desta issue) é 100% pura e
- * está coberta em `test/monthly-apoiadores-state.test.ts`.
+ * Não testamos `main()`/`renderMonthlyApoiadoresBrevoEmail` fim-a-fim aqui
+ * (#7121 trocou o render de Beehiiv pra Brevo — mesma limitação, nome
+ * novo): os dois resolvem `monthlyDir(cycle)` contra o `data/monthly/` REAL
+ * (junction pro OneDrive de produção neste worktree) — mesma limitação já
+ * aceita por `test/render-monthly-apoiadores-brevo.test.ts`, que testa as
+ * peças puras (`missingImageKeys`, `draftToEmailApoiadoresBrevo`,
+ * `buildRelink`) em vez do CLI inteiro. A idempotência/dedup (a lógica nova
+ * desta issue) é 100% pura e está coberta em `test/monthly-apoiadores-state.test.ts`.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";

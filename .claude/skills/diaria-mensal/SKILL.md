@@ -782,9 +782,13 @@ publicação manual). Audiência = lista Brevo dedicada (`platform.config.json`
 Patrono por `scripts/sync-apoio-nivel-brevo.ts`. O canal original era
 Beehiiv, mas o mecanismo de audiência multi-segmento ("Include and exclude
 segments") ficou bloqueado atrás do plano Scale (workspace é Launch/free,
-confirmado ao vivo no #4572/260804) — `scripts/render-monthly-beehiiv.ts` e
-`scripts/lib/mensal/monthly-beehiiv-render.ts` continuam no repo, intocados,
-mas órfãos: não são mais referenciados por este fluxo.
+confirmado ao vivo no #4572/260804). **#7121 (260902): `scripts/render-monthly-beehiiv.ts`
+foi removido** (sem consumidor de runtime — `readPublicImages`/`EXPECTED_IMAGE_KEYS`/
+`missingImageKeys`, canal-agnósticas, migraram pra `scripts/render-monthly-apoiadores-brevo.ts`);
+`scripts/lib/mensal/monthly-beehiiv-render.ts` continua no repo, mas perdeu
+`draftToEmailBeehiiv`/`BEEHIIV_UTM_PROFILE` (idem, sem consumidor) — o que
+sobra (`filterDraftForBeehiiv`/`isClariceOnlySection`/`stripRecomendacaoDiariaBlock`)
+NÃO é órfão: é reusado sem modificação pelo render Brevo real acima.
 
 Resumo das decisões de produto (issue #4482, sessão develop 260802b/260803,
 não reabertas pela migração de canal): cadência = envio EXTRA num dia sem

@@ -42,55 +42,32 @@
  * Beehiiv sempre acompanha qualquer mudança de render feita pra Clarice
  * automaticamente, sem duplicação de lógica de render.
  *
- * ## UTM próprio — nunca `withClariceUtm`/perfil default
+ * ## #7121 (260902) — canal Beehiiv esvaziado, este módulo agora é infra
+ * COMPARTILHADA da variante Brevo (não Beehiiv)
  *
- * `MonthlyUtmProfile`/`draftToEmail(..., utmProfile)` (monthly-render.ts,
- * #4482) permite injetar `utm_source=mensal-beehiiv` em vez de
- * `utm_source=clarice` — sem isso, cliques do envio Beehiiv contaminariam a
- * atribuição do canal Clarice (mesma classe de problema que motivou o #2975
- * original, só que na direção oposta). Ver `BEEHIIV_UTM_PROFILE` abaixo e
- * `scripts/lib/shared/utm-registry.ts` pros valores (`MENSAL_BEEHIIV_UTM_*`).
+ * A Beehiiv nunca enviou nada ao vivo pra este canal (bloqueada atrás do
+ * plano Scale, #4572) — o canal migrou pra Brevo (#4572/#4593). `draftToEmailBeehiiv`
+ * e `BEEHIIV_UTM_PROFILE` (o dispatch + UTM ESPECÍFICOS da variante Beehiiv)
+ * foram removidos por não terem consumidor de runtime. O que sobra aqui
+ * (`filterDraftForBeehiiv`/`isClariceOnlySection`/`stripRecomendacaoDiariaBlock`)
+ * é canal-AGNÓSTICO — filtra o markdown, não decide UTM/perfil — e é
+ * IMPORTADO POR VALOR pelo caminho Brevo REAL
+ * (`scripts/lib/mensal/monthly-apoiadores-brevo-render.ts` importa
+ * `filterDraftForBeehiiv` daqui sem modificação). O nome do arquivo/módulo
+ * ficou historicamente "beehiiv" — não renomeado nesta unidade pra manter o
+ * diff pequeno e revisável (ver PR #7121); `filterDraftForBeehiiv`/
+ * `isClariceOnlySection` continuam corretos em comportamento, só
+ * enganosos em nome.
  *
- * ## Segmentação Beehiiv — sem lógica de cruzamento nova
+ * ## Segmentação — sem lógica de cruzamento nova
  *
- * Os segmentos "Apoio — Mantenedor" e "Apoio — Patrono" já existem na
- * Beehiiv, condicionados no custom field `apoio_nivel` sincronizado por
- * `scripts/sync-apoio-nivel-beehiiv.ts` (#4436, ver
+ * Os segmentos "Apoio — Mantenedor" e "Apoio — Patrono" já existem na conta
+ * Brevo dedicada (`platform.config.json` → `brevo_apoiadores`), convergidos
+ * por `scripts/sync-apoio-nivel-brevo.ts` (#4572, ver
  * `scripts/lib/apoio-segments-canonical.ts`). Este módulo NÃO recalcula
- * "quem é apoiador" — o envio mira os segmentos já convergidos, selecionados
- * manualmente na aba Audience do post (mesmo padrão de verificação manual já
- * usado por `prep-manual-publish.ts` pra diária, ver
- * `scripts/render-monthly-beehiiv.ts`).
+ * "quem é apoiador" — o envio mira a lista já convergida.
  */
-import { splitByLabels, normalizeLabel, draftToEmail, type MonthlyUtmProfile } from "./monthly-render.ts";
-import {
-  MENSAL_BEEHIIV_UTM_SOURCE,
-  MENSAL_BEEHIIV_UTM_MEDIUM,
-  buildMensalBeehiivCampaign,
-} from "../shared/utm-registry.ts";
-
-/**
- * Perfil de UTM da variante Beehiiv (#4482) — passar como último argumento
- * de `draftToEmail` (ou usar `draftToEmailBeehiiv` abaixo, que já injeta)
- * pra que todo link de marca saia com `utm_source=mensal-beehiiv` em vez do
- * perfil default (`CLARICE_UTM_PROFILE`, `utm_source=clarice`).
- */
-export const BEEHIIV_UTM_PROFILE: MonthlyUtmProfile = {
-  source: MENSAL_BEEHIIV_UTM_SOURCE,
-  medium: MENSAL_BEEHIIV_UTM_MEDIUM,
-  buildCampaign: buildMensalBeehiivCampaign,
-  // #4510 (achado silent-failure-hunter, review pré-merge): a Beehiiv NÃO
-  // substitui a merge tag da Brevo (`{{ contact.EMAIL }}`) — antes de fixar
-  // isto, `renderEia` mandava esse literal pro link de voto no envio
-  // Beehiiv e `isValidVoteEmailFormat` (workers/poll) rejeitava 100% dos
-  // cliques. `pollBrand` isolado (`"mensal-beehiiv"`, registrado em
-  // `workers/poll/src/lib.ts` `BRAND_INFO` com `leaderboardPeriod: "year"`)
-  // evita misturar votos desta audiência (apoiadores) no leaderboard da
-  // Clarice — 2 audiências diferentes recebendo o mesmo conteúdo por canais
-  // diferentes.
-  pollMergeTag: "{{email}}",
-  pollBrand: "mensal-beehiiv",
-};
+import { splitByLabels, normalizeLabel } from "./monthly-render.ts";
 
 /**
  * Título EXATO da 1ª linha do box de recomendação da diária
@@ -230,42 +207,4 @@ export function filterDraftForBeehiiv(draft: string): string {
     kept.push(cleanedBody ? `${firstLine}\n\n${cleanedBody}` : firstLine);
   }
   return kept.join("\n\n---\n\n");
-}
-
-/**
- * Render completo da variante Beehiiv (#4482): filtra o draft (acima) e
- * chama o MESMO `draftToEmail` do envio Clarice, só trocando o
- * `utmProfile`. Assinatura espelha `draftToEmail` (menos `draft`, que aqui é
- * sempre o texto CRU — o filtro roda dentro desta função) — mesmos
- * parâmetros de imagem que `publish-monthly.ts`/`monthly-preview-cloudflare.ts`
- * já usam, pra reusar diretamente as URLs de imagem JÁ publicadas pelo
- * pipeline Clarice (mesma edição, mesmas imagens — sem upload duplicado; ver
- * `scripts/render-monthly-beehiiv.ts`, que lê `_internal/public-images.json`).
- */
-export function draftToEmailBeehiiv(
-  draft: string,
-  chosenSubject: string | null,
-  yymm: string,
-  eiaImageUrlA?: string,
-  eiaImageUrlB?: string,
-  eiaCredit?: string,
-  destaqueImageUrls?: Record<number, string>,
-  destaqueImageCaption?: string,
-  livrosImageUrl?: string,
-  eiaPrevResultLine?: string | null,
-): { subject: string; previewText: string; html: string } {
-  const filtered = filterDraftForBeehiiv(draft);
-  return draftToEmail(
-    filtered,
-    chosenSubject,
-    yymm,
-    eiaImageUrlA,
-    eiaImageUrlB,
-    eiaCredit,
-    destaqueImageUrls,
-    destaqueImageCaption,
-    livrosImageUrl,
-    eiaPrevResultLine,
-    BEEHIIV_UTM_PROFILE,
-  );
 }

@@ -72,8 +72,7 @@ import {
 } from "./dedup.ts";
 import { isValidEditionDir } from "./lib/edition-utils.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
-// #2834: CategorizedJson reexportado do reader canônico (consumido por
-// check-intra-themes.ts via `import { CategorizedJson } from "./check-secondary-themes.ts"`).
+// #2834: CategorizedJson reexportado do reader canônico.
 import type { CategorizedJson } from "./lib/types/categorized-json.ts";
 export type { CategorizedJson };
 

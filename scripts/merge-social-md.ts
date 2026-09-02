@@ -21,9 +21,9 @@
  * grava isso como seção única `# Social` — substitui `# LinkedIn` / `# Facebook`
  * / `# Instagram`. Cada publisher (`publish-linkedin.ts`/`publish-facebook.ts`/
  * `publish-instagram.ts`) injeta sua própria linha de CTA no momento do
- * publish via `scripts/lib/social-cta-lines.ts` — NUNCA aqui. `social-linkedin.md`
- * /`social-facebook.md`/`social-instagram.md` permanecem no repo como
- * referência histórica, mas não são mais dispatchados no Stage 2.
+ * publish via `scripts/lib/social-cta-lines.ts` — NUNCA aqui. Os 3 agents
+ * antigos por canal não são mais dispatchados no Stage 2 e foram removidos
+ * do repo (#7120) — o conteúdo histórico deles vive em `social-writer.md`.
  *
  * Compat com edições antigas: `03-social.md` no formato legado (3 headers de
  * plataforma, já publicado ou em progresso antes deste merge) não é

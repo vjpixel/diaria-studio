@@ -12,10 +12,6 @@ import {
   parsePublishedNewsletter,
 } from "../scripts/lib/schemas/published-newsletter.ts";
 import {
-  PublishedSocialSchema,
-  parsePublishedSocial,
-} from "../scripts/lib/schemas/published-social.ts";
-import {
   PublicImagesSchema,
   parsePublicImages,
 } from "../scripts/lib/schemas/public-images.ts";
@@ -99,80 +95,6 @@ describe("PublishedNewsletterSchema (#1132 P2.5)", () => {
     };
     const parsed = parsePublishedNewsletter(valid);
     assert.equal(parsed.test_email_sent_at, null);
-  });
-});
-
-describe("PublishedSocialSchema (#1132 P2.5)", () => {
-  it("aceita posts array vazio (no auto-publish)", () => {
-    const parsed = parsePublishedSocial({ posts: [] });
-    assert.equal(parsed.posts.length, 0);
-  });
-
-  it("aceita entries de Facebook + LinkedIn mistas", () => {
-    const valid = {
-      posts: [
-        { platform: "facebook", destaque: "d1", url: "https://fb.com/123", status: "draft" },
-        {
-          platform: "linkedin",
-          destaque: "d1",
-          subtype: "main",
-          url: null,
-          status: "scheduled",
-          scheduled_at: "2026-05-13T09:00:00-03:00",
-          route: "worker_queue",
-          worker_queue_key: "queue:...",
-          webhook_target: "diaria",
-          action: "post",
-        },
-      ],
-    };
-    const parsed = parsePublishedSocial(valid);
-    assert.equal(parsed.posts.length, 2);
-    assert.equal(parsed.posts[0].platform, "facebook");
-    assert.equal(parsed.posts[1].platform, "linkedin");
-  });
-
-  it("rejeita platform fora do enum", () => {
-    assert.throws(
-      () => parsePublishedSocial({ posts: [{ platform: "twitter", destaque: "d1", status: "draft" }] }),
-      /platform/,
-    );
-  });
-
-  it("aceita platform='instagram' + ig_media_id/ig_container_id (#49)", () => {
-    const valid = {
-      posts: [
-        {
-          platform: "instagram",
-          destaque: "d1",
-          url: "https://www.instagram.com/p/Cabc123/",
-          status: "published",
-          scheduled_at: null,
-          ig_media_id: "17896453961137500",
-          ig_container_id: "17999000111222333",
-        },
-      ],
-    };
-    const parsed = parsePublishedSocial(valid);
-    assert.equal(parsed.posts.length, 1);
-    assert.equal(parsed.posts[0].platform, "instagram");
-    // Campos ig_* preservados via .passthrough()
-    assert.equal(parsed.posts[0].ig_media_id, "17896453961137500");
-    assert.equal(parsed.posts[0].ig_container_id, "17999000111222333");
-  });
-
-  it("rejeita posts ausente", () => {
-    assert.throws(
-      () => parsePublishedSocial({}),
-      /posts/,
-    );
-  });
-
-  it("aceita is_test=true (test mode #1056)", () => {
-    const parsed = parsePublishedSocial({
-      posts: [{ platform: "linkedin", destaque: "d1", status: "scheduled", is_test: true }],
-    });
-    assert.equal(parsed.posts[0].is_test, true);
   });
 });
 
