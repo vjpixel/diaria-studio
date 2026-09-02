@@ -71,12 +71,12 @@ import {
   MIXED_TUTORIAL_ESSAY_HOSTS,
   ESSAY_ANALYSIS_TITLE_RE,
 } from "./lib/launch-heuristics.ts"; // #2833: extraído — movimentação pura
-import type { CategorizationResult } from "./lib/launch-heuristics.ts"; // #6647
+import type { CategorizationResult, CategorizationRule, FallbackCategorizationRule } from "./lib/launch-heuristics.ts"; // #6647
 
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export type { Article };
 export type { Category, Bucket };
-export type { CategorizationResult }; // #6647
+export type { CategorizationResult, CategorizationRule, FallbackCategorizationRule }; // #6647
 export {
   categoryToBucket,
   ARXIV_RELEVANT_TERMS,

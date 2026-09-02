@@ -39,6 +39,12 @@ export interface Article {
    * `isFallbackCategorizationRule` em `scripts/lib/launch-heuristics.ts`.
    * Setado por `categorizeArticles()` (scripts/categorize.ts) a partir de
    * `categorizeWithRule()`; puramente aditivo — nunca influencia `category`.
+   *
+   * Opcional (não obrigatório) porque toda edição gerada ANTES do #6647
+   * não tem este campo — `01-categorized.json` de edições antigas persiste
+   * artigos sem `category_rule`, e isso é esperado, não um dado faltando por
+   * erro. `scripts/analyze-bucket-overrides.ts --rules` trata a ausência
+   * como "sem dado" (exclui do denominador), nunca como fallback.
    */
   category_rule?: string;
 

@@ -1568,6 +1568,72 @@ export function isNonProductOfficialPost(article: Article): boolean {
   return NON_PRODUCT_OFFICIAL_PATTERNS.some((p) => p.test(title));
 }
 
+/**
+ * União fechada dos 41 IDs de regra que `categorizeWithRule` pode devolver —
+ * fonte única é `CATEGORIZATION_RULE_IDS` logo abaixo (`as const`), o tipo
+ * literal é derivado dela (`(typeof ...)[number]`) em vez de escrito à mão —
+ * um id novo em `categorizeWithRule` que não entrar aqui quebra o typecheck
+ * (#6647 review: `rule: string` deixava id trocado por copy-paste entre dois
+ * branches passar batido, silenciosamente incorreto pro consumidor de
+ * `analyze-bucket-overrides.ts --rules`).
+ */
+const CATEGORIZATION_RULE_IDS = [
+  "video-url",
+  "course-page",
+  "tutorial-domain",
+  "tutorial-pattern",
+  "use-melhor-specificity",
+  "pesquisa-domain-offtopic",
+  "pesquisa-domain",
+  "pesquisa-pattern-offtopic",
+  "pesquisa-pattern",
+  "tutorial-keyword",
+  "tutorial-domain-extra",
+  "tutorial-title-extra",
+  "lancamento-research-path",
+  "lancamento-research-slug",
+  "lancamento-roundup",
+  "lancamento-non-launch-path",
+  "lancamento-openai-frontiers",
+  "lancamento-first-party-tooling-blog",
+  "lancamento-pre-existence",
+  "lancamento-incremental-third-party",
+  "lancamento-non-product-official",
+  "lancamento-type-hint",
+  "lancamento-how-collective",
+  "lancamento-business-deal",
+  "lancamento-non-product-announcement",
+  "lancamento-customer-story",
+  "lancamento-update",
+  "lancamento-report",
+  "lancamento-explainer-title",
+  "lancamento-likely-news",
+  "lancamento-third-party-blog",
+  "lancamento-research-result",
+  "lancamento-logistics-milestone",
+  "lancamento-customer-slug",
+  "lancamento-research-title",
+  "lancamento-technique-title",
+  "lancamento-type-hint-pesquisa",
+  "lancamento-type-hint-noticia",
+  "lancamento-default",
+  "type-hint-pesquisa-secondary",
+  "noticias-default",
+] as const;
+
+// Guard de unicidade: TypeScript colapsa literais repetidos numa união
+// (`"a" | "a"` vira `"a"`) sem avisar — a única forma de pegar um id
+// duplicado por copy-paste entre 2 branches semanticamente diferentes é
+// checar em runtime, no import do módulo (falha alto e cedo, não só quando
+// o teste dedicado a isso rodar).
+if (new Set(CATEGORIZATION_RULE_IDS).size !== CATEGORIZATION_RULE_IDS.length) {
+  throw new Error(
+    "[launch-heuristics] CATEGORIZATION_RULE_IDS tem id(s) duplicado(s) — dois branches de categorizeWithRule() usam o mesmo rule id.",
+  );
+}
+
+export type CategorizationRule = (typeof CATEGORIZATION_RULE_IDS)[number];
+
 export interface CategorizationResult {
   category: Category;
   /**
@@ -1577,7 +1643,7 @@ export interface CategorizationResult {
    * instrumentação — não influencia `category`, que é sempre o mesmo valor
    * que `categorize()` já devolvia. Ver `isFallbackCategorizationRule`.
    */
-  rule: string;
+  rule: CategorizationRule;
 }
 
 /**
@@ -1848,14 +1914,34 @@ export function categorize(article: Article): Category {
 }
 
 /**
+ * Subunião explícita dos 2 pontos de fallback verdadeiros — fato sobre QUAL
+ * literal foi usado, não sobre como ele foi grafado (#6647 review: checar
+ * `rule.endsWith("-default")` deixava renomear um default sem manter o
+ * sufixo, ou adicionar um 3º que não o use, degradar a medição em
+ * silêncio — a lista abaixo é o único lugar que decide isso agora).
+ */
+const FALLBACK_CATEGORIZATION_RULE_IDS = ["lancamento-default", "noticias-default"] as const;
+
+export type FallbackCategorizationRule = (typeof FALLBACK_CATEGORIZATION_RULE_IDS)[number];
+
+const FALLBACK_CATEGORIZATION_RULE_SET: ReadonlySet<string> = new Set(FALLBACK_CATEGORIZATION_RULE_IDS);
+
+/**
  * true só para os dois pontos de fallback verdadeiros de `categorizeWithRule`
  * (`lancamento-default`/`noticias-default`) — nenhum sinal específico
  * disparou, o motor decidiu por exclusão de todas as regras acima. Todo
  * outro `rule` id representa um sinal concreto (domínio dedicado, pattern,
  * type_hint do agent, título) — "regra forte" no vocabulário da #6647.
- * Único ponto que interpreta o sufixo `-default` — consumidores (ex:
- * `analyze-bucket-overrides.ts`) não devem re-derivar isso de outra forma.
+ * Único ponto que interpreta isso — consumidores (ex:
+ * `analyze-bucket-overrides.ts`) não devem re-derivar de outra forma.
+ *
+ * Parâmetro é `string`, não `CategorizationRule`: o principal chamador fora
+ * deste módulo (`analyze-bucket-overrides.ts --rules`) lê `category_rule` de
+ * JSON persistido (`01-categorized.json`) — fronteira de `JSON.parse`, sem
+ * garantia estática de que o valor bate a união. Um `CategorizationRule`
+ * (subtipo de `string`) passa aqui sem cast, então chamadas internas não
+ * perdem precisão por isso.
  */
 export function isFallbackCategorizationRule(rule: string): boolean {
-  return rule.endsWith("-default");
+  return FALLBACK_CATEGORIZATION_RULE_SET.has(rule);
 }
