@@ -36,6 +36,16 @@
  *   3. Rodada /diaria-overnight (FALLBACK quando não há edição nem develop ativos):
  *      "{branch}  [████████░░░░] 67%  (4/6)"
  *      Encerrada: "{branch}  [████████████] 100%  (N/N)"  (barra em 100%, sempre visível)
+ *      Um `plan.json` ANTIGO não sequestra a barra — ver `isStaleDevelopPlan`
+ *      aplicado em `readTodayPlan` (#7106: mesmo guard de zumbi do item 2, que
+ *      por anos existiu só no caminho de develop). Sem ele, uma rodada que
+ *      MORREU no meio — nem todas as issues terminais, logo `isPlanConcluded`
+ *      nunca true e o guard de conclusão do #3590 nunca dispara — congelava a
+ *      barra na sua % parcial indefinidamente.
+ *      Diferente do develop, NÃO há guard de identidade de máquina aqui: o
+ *      overnight roda no `helios`, então filtrar por `machine_id` esconderia
+ *      justamente a rodada que o editor quer acompanhar. É a IDADE que separa
+ *      "rodada viva no helios" de "rodada morta de ontem".
  *
  *   4. IDLE — barra presente sem edição, develop nem overnight (#2255):
  *      Sem edição alguma:  "{branch}  [████████████] diar.ia.br · sem rodada ativa"
@@ -597,11 +607,24 @@ export function readPlanFromDir(planPath: string, readers: PlanFileReaders = def
  *   - Deve ter issues.length > 0 (plan vazio é ignorado — não é rodada real)
  *   - Não importa se a rodada está em progresso ou encerrada; renderOvernightBar
  *     decide como exibir (100% quando encerrada, % parcial quando em progresso)
+ *   - #7106: plan.json mais velho que `EDITION_STALE_THRESHOLD_MS` é PULADO
+ *     (`isStaleDevelopPlan`), guard que só existia no caminho de develop
  *
- * Isso é determinístico e não depende do relógio — corrige #2184/Finding 1 e
- * o bug de sequestro por plan antigo (#2246).
+ * A SELEÇÃO (qual dir vence) continua determinística e independente do relógio —
+ * corrige #2184/Finding 1 e o bug de sequestro por plan antigo (#2246). O que
+ * passou a depender do relógio, e só isso, é a EXPIRAÇÃO do plan escolhido
+ * (#7106) — por isso `now` é injetável em vez de lido de dentro da função.
+ *
+ * Nota sobre o fallthrough (#7106): quando o plan mais recente é filtrado por
+ * idade, o loop CONTINUA pros dirs mais antigos em vez de retornar null direto.
+ * É intencional (mesma forma do filtro de plan ilegível/vazio logo acima) e na
+ * prática inócuo — nomes de dir são derivados de data, então um dir mais antigo
+ * quase sempre tem mtime ainda mais velho e também é filtrado, e o loop termina
+ * em null. O caso em que isso importaria (algo tocando o mtime de um plan.json
+ * antigo fora de banda) é o mesmo em que a rodada mais antiga é, de fato, a
+ * escrita mais recentemente — mostrá-la é a leitura menos errada disponível.
  */
-export function readTodayPlan(cwd: string): Plan | null {
+export function readTodayPlan(cwd: string, now: Date = new Date()): Plan | null {
   try {
     const overnightDir = join(cwd, "data", "overnight");
     if (!existsSync(overnightDir)) return null;
@@ -621,6 +644,17 @@ export function readTodayPlan(cwd: string): Plan | null {
       const plan = readPlanFromDir(planPath);
       if (!plan) continue;
       if (normalizeIssues(plan).length === 0) continue;
+      // #7106: guard de zumbi — mesmo `isStaleDevelopPlan` que o caminho de develop
+      // já aplicava desde o #2800/#2803, que nunca chegou ao caminho de overnight.
+      // Sem ele, uma rodada MORTA (encerrada sem todas as issues terminais — o caso
+      // comum quando o helios para no meio) congelava a barra na sua % parcial
+      // indefinidamente: `isPlanConcluded` nunca vira true, então o guard de
+      // conclusão do #3590 não recolhe a barra, e nada mais a expira.
+      // Deliberadamente SEM `isForeignDevelopPlan` aqui: o overnight roda no
+      // `helios`, não nesta máquina — filtrar por máquina esconderia justamente a
+      // rodada que o editor quer acompanhar. É a IDADE que separa "rodada viva no
+      // helios" de "rodada morta de ontem", não a identidade da máquina.
+      if (isStaleDevelopPlan(planPath, now)) continue;
       // First entry that passes → this is the current/latest run
       return plan;
     }
@@ -640,9 +674,17 @@ export interface DevelopPlanEntry {
 }
 
 /**
- * Guard de zumbi (#2800/#2803): um `plan.json` de `/diaria-develop` ANTIGO
- * (sessão abandonada dias atrás, nunca chegou a todos-terminal) não deve
- * sequestrar a barra pra sempre. Reusa o mesmo threshold + fail-open de
+ * Guard de zumbi (#2800/#2803): um `plan.json` ANTIGO (sessão abandonada dias
+ * atrás, nunca chegou a todos-terminal) não deve sequestrar a barra pra sempre.
+ *
+ * O nome é histórico: nasceu específico de `/diaria-develop`, mas desde o #7106
+ * `readTodayPlan` (overnight) chama o mesmo guard — o schema de `plan.json` e o
+ * critério de zumbi são idênticos nos dois fluxos, então não há nada de
+ * develop-específico na lógica. Não renomeado por ser exportado e referenciado
+ * por teste/doc existentes; a distinção real entre os dois caminhos é o guard de
+ * IDENTIDADE (`isForeignDevelopPlan`), aplicado só no de develop.
+ *
+ * Reusa o mesmo threshold + fail-open de
  * `isStaleEditionDoc` (#2800/#2760) — "mesma classe de zumbi", agora aplicada
  * a `plan.json` em vez de `stage-status.json`.
  *
