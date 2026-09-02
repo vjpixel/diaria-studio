@@ -64,6 +64,10 @@ export const NAV_ITEMS = [
   // Vizinha de Apoios/Dashboard diária — mesma natureza "negócio": decisão de
   // gasto, não conteúdo editorial nem infraestrutura de sistema.
   { id: "ads", label: "Ads", href: "/ads", pageIds: ["ads"], group: "negocio" },
+  // #6590: busca por e-mail -> timeline unificada + coorte por migração,
+  // sobre o store unificado do épico #6464. Vizinha de Ads/Apoios — mesma
+  // natureza "negócio": entender o assinante, não conteúdo editorial.
+  { id: "assinantes", label: "Assinantes", href: "/assinantes", pageIds: ["assinantes"], group: "negocio" },
   // 🔌 Sistema.
   { id: "integracoes", label: "Integrações", href: "/integracoes", pageIds: ["integracoes"], group: "sistema" },
   // #4041: inventário de UTMs (o que o código emite) × conversão real no

@@ -528,3 +528,79 @@ export function getStoreCounts(db: DatabaseSync): {
     events: count("event"),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Leitura — helpers pra fatias 6 (painel Studio, #6590) e 7 (leitor-v1
+// cross-plataforma, #6591). Vivem aqui (não em cada consumidor) pela mesma
+// razão de `getSubscriberTimeline`/`findSubscriberIdsByEmail` acima: SQL
+// centralizado no módulo dono do esquema, reusável por qualquer caller.
+// ---------------------------------------------------------------------------
+
+export interface SubscriberAlias {
+  platform: Platform;
+  external_id: string | null;
+  email: string | null;
+}
+
+/** Todos os `identity_alias` de 1 subscriber — pra montar a ficha de
+ *  identidade na busca por e-mail do painel (#6590) e pra derivar o
+ *  conjunto de plataformas em que o subscriber existe (leitor-v1
+ *  cross-plataforma, #6591). */
+export function getAliasesForSubscriber(
+  db: DatabaseSync,
+  subscriberId: number,
+): SubscriberAlias[] {
+  return db
+    .prepare(
+      "SELECT platform, external_id, email FROM identity_alias WHERE subscriber_id = ?",
+    )
+    .all(subscriberId) as unknown as SubscriberAlias[];
+}
+
+export interface SubscriptionRecord {
+  platform: Platform;
+  status: string | null;
+  entered_at: string | null;
+  exited_at: string | null;
+  source: string | null;
+  updated_at: string;
+}
+
+/** Todas as `subscription` de 1 subscriber (1 por plataforma, no máximo
+ *  `PLATFORMS.length` linhas) — status/datas/origem por plataforma, pra
+ *  ficha de identidade do painel e pro status "ativo em qualquer
+ *  plataforma coberta" do leitor-v1 cross-plataforma. */
+export function getSubscriptionsForSubscriber(
+  db: DatabaseSync,
+  subscriberId: number,
+): SubscriptionRecord[] {
+  return db
+    .prepare(
+      "SELECT platform, status, entered_at, exited_at, source, updated_at FROM subscription WHERE subscriber_id = ?",
+    )
+    .all(subscriberId) as unknown as SubscriptionRecord[];
+}
+
+/** Mapa `subscriber_id -> conjunto de plataformas em que tem alias` pro
+ *  store INTEIRO — 1 scan de `identity_alias`, reusado tanto pela visão de
+ *  coorte/migração do painel (#6590) quanto pelo summary batch de
+ *  leitor-v1 cross-plataforma (#6591), que senão repetiriam a mesma
+ *  agregação (já feita, de forma privada, dentro de `buildUnmatchedReport`
+ *  em `diaria-subscribers-identity-resolve.ts`). */
+export function getAllSubscriberPlatforms(
+  db: DatabaseSync,
+): Map<number, Set<Platform>> {
+  const rows = db
+    .prepare("SELECT DISTINCT subscriber_id, platform FROM identity_alias")
+    .all() as unknown as Array<{ subscriber_id: number; platform: Platform }>;
+  const map = new Map<number, Set<Platform>>();
+  for (const r of rows) {
+    let set = map.get(r.subscriber_id);
+    if (!set) {
+      set = new Set();
+      map.set(r.subscriber_id, set);
+    }
+    set.add(r.platform);
+  }
+  return map;
+}

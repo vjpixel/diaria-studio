@@ -149,6 +149,14 @@ export function ingestBrevoContact(
       type: mapStatCategoryToEventType(ev.category),
       externalEventId: buildBrevoEventExternalId(email, ev.category, ev.campaignId, ev.ts, ev.url ?? null),
       url: ev.category === "clicked" ? ev.url ?? null : null,
+      // #6591: `edicao` = a campanha Brevo. Diferente do Kit, a chave
+      // natural de "clicked" aqui INCLUI `url` — um assinante clicando 2
+      // links da MESMA campanha grava 2 eventos "click" distintos. Sem
+      // `edicao`, `leitor-store.ts` não teria como colapsar isso de volta
+      // pra "1 edição clicada" (só `COUNT(*)` inflaria o CTR real, o mesmo
+      // viés que `leitor-v1` existe pra evitar) — `campaignId` já estava
+      // disponível aqui (`ev.campaignId`), só não persistido até agora.
+      edicao: ev.campaignId != null ? String(ev.campaignId) : null,
       ts: ev.ts,
     });
     if (inserted) newEvents++;

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>diar.ia.br Studio — Assinantes</title>
+  <link rel="stylesheet" href="/tokens.generated.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/nav.css" />
+  <link rel="stylesheet" href="/triagem.css" />
+  <link rel="stylesheet" href="/integracoes.css" />
+  <link rel="stylesheet" href="/apoios.css" />
+  <link rel="stylesheet" href="/assinantes.css" />
+</head>
+<body>
+  <header class="statusbar">
+    <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
+    <div class="statusbar-item">
+      <span class="label">Assinantes</span>
+      <span class="value" id="db-status-value">—</span>
+    </div>
+    <div class="statusbar-item conn" id="fetch-status">
+      <span class="dot" id="fetch-dot"></span>
+      <span id="fetch-label">carregando…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h1>Assinantes — histórico unificado</h1>
+      <p class="hint">
+        Beehiiv + Brevo + Kit numa timeline só (épico #6464). Read-only por
+        construção — não é uma quarta plataforma de envio: sem fusão manual
+        de identidade, sem edição de assinante. Toda métrica cross-plataforma
+        aqui é <strong>piso</strong>, nunca exata — identidade não-casada
+        aparece como churn + cadastro novo (#6589).
+      </p>
+      <div id="nodata-banner" class="hint" hidden>
+        Sem dados nesta sessão — <code>data/diaria-subscribers/</code> ausente
+        (sessão cloud sem a junction OneDrive, ou nenhuma ingestão rodou
+        ainda). Rode <code>diaria-subscribers-ingest-kit.ts</code>/
+        <code>diaria-subscribers-ingest-brevo.ts</code> numa sessão local.
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Buscar por e-mail</h2>
+      <form id="search-form" class="assinantes-search-form">
+        <input type="text" id="search-email" placeholder="leitor@exemplo.com" autocomplete="off" />
+        <button type="submit" id="search-btn">Buscar</button>
+      </form>
+      <div id="search-empty" class="hint" hidden>Nenhum assinante encontrado com este e-mail.</div>
+      <div id="search-results"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header-row">
+        <h2>Coorte por migração</h2>
+        <button id="refresh-cohort-btn" type="button">Atualizar</button>
+      </div>
+      <div id="floor-note" class="assinantes-floor-note" hidden></div>
+
+      <div class="assinantes-summary-grid" id="cohort-by-platform"></div>
+
+      <h3>Atravessaram 2+ plataformas</h3>
+      <div class="table-scroll">
+        <table class="triage-table" id="migrations-table">
+          <thead>
+            <tr><th>Plataforma A</th><th>Plataforma B</th><th>Assinantes</th></tr>
+          </thead>
+          <tbody id="migrations-tbody"></tbody>
+        </table>
+      </div>
+      <p class="hint" id="migrations-empty" hidden>Nenhuma migração — ninguém tem alias em 2+ plataformas ainda.</p>
+
+      <h3>Reativação via Brevo (canal de reativação)</h3>
+      <p class="hint" id="reactivation-stat"></p>
+
+      <h3>Não-casados (identidade não resolvida)</h3>
+      <div id="unmatched-summary"></div>
+    </section>
+  </main>
+
+  <script>window.STUDIO_PAGE = "assinantes";</script>
+  <script src="/nav.js" type="module"></script>
+  <script src="/assinantes.js" type="module"></script>
+</body>
+</html>
