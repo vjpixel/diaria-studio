@@ -90,6 +90,47 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
     assert.equal(exit, 0);
   });
 
+  // #7094 — sumário VÁLIDO com `fail 0` + status não-zero era a única
+  // atribuição de `exitCode = 1` do arquivo sem nenhuma escrita. O log
+  // terminava com `ℹ fail 0` seguido de `exit code 1` e NADA entre os dois,
+  // enquanto os dois caminhos vizinhos (batch sem sumário, cobertura parcial
+  // do #6822) já gritavam e nomeavam. O exit code sempre esteve certo; o
+  // defeito era o silêncio, que treina o re-run reflexivo.
+  it("#7094: sumário válido com fail 0 + status != 0 → exit 1 E mensagem nomeada no stderr", () => {
+    const written: string[] = [];
+    const exit = runTestBatches({
+      files: ["/a.test.ts"],
+      batchSize: 10,
+      spawn: (() => ({
+        status: 1,
+        stdout: OK_SUMMARY,
+        stderr: "Uncaught Error: boom\n    at algum-lugar\n",
+      })) as unknown as typeof import("node:child_process").spawnSync,
+      stderr: { write: (c: string) => written.push(c) },
+    });
+    assert.equal(exit, 1);
+    const out = written.join("");
+    assert.match(out, /sumário VÁLIDO \(fail 0\) mas exit status 1/);
+    assert.match(out, /SEM contabilizar falha/);
+    // O tail do stderr do filho é o que distingue as causas possíveis —
+    // sem ele a mensagem seria só mais uma afirmação sem evidência.
+    assert.match(out, /Uncaught Error: boom/);
+  });
+
+  it("#7094: sumário válido com fail 0 e status 0 → exit 0, SEM a mensagem (não vira ruído por batch)", () => {
+    const written: string[] = [];
+    const exit = runTestBatches({
+      files: ["/a.test.ts"],
+      batchSize: 10,
+      spawn: (() => ({ status: 0, stdout: OK_SUMMARY, stderr: "" })) as unknown as typeof import(
+        "node:child_process"
+      ).spawnSync,
+      stderr: { write: (c: string) => written.push(c) },
+    });
+    assert.equal(exit, 0);
+    assert.doesNotMatch(written.join(""), /sumário VÁLIDO/);
+  });
+
   it("2 batches, 1º falha e 2º passa → exit agregado 1, AMBOS batches rodam (nunca aborta cedo)", () => {
     const seenBatches: number[][] = [];
     const exit = runTestBatches({

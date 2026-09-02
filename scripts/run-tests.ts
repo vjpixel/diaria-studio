@@ -614,7 +614,32 @@ export function processChunkedBatches(
     // Sumário genuíno presente: o batch de fato terminou de rodar (passou
     // ou falhou de verdade — os dois casos contam como "completou").
     completedFiles += batch.length;
-    if ((result.status ?? 1) !== 0) exitCode = 1;
+    const status = result.status ?? 1;
+    if (status !== 0) {
+      // #7094 — o exit code aqui SEMPRE esteve certo (filho saiu não-zero =>
+      // vermelho, direção segura). O defeito era o SILÊNCIO: esta era a única
+      // atribuição de `exitCode = 1` do arquivo sem nenhuma escrita, então o
+      // log terminava com `ℹ fail 0` seguido de `exit code 1` e nada entre os
+      // dois. Os dois caminhos vizinhos — batch sem sumário (acima) e
+      // cobertura parcial (#6822) — já gritam e nomeiam; este calava.
+      //
+      // Sumário válido com `fail 0` + status não-zero significa que o
+      // node:test saiu não-zero SEM contabilizar falha: unhandled rejection
+      // depois do sumário, `process.exitCode` setado por algum arquivo de
+      // teste, ou erro de escrita em stdout. O tail do stderr é o que
+      // distingue esses casos — sem ele, a leitura fica "CI mentiu" e o
+      // reflexo vira re-run, que é como vermelho legítimo vira "flake".
+      const failCount = parseFailCount(combinedFinal);
+      const tail = toText(result.stderr).trimEnd().split("\n").slice(-12).join("\n");
+      stderr.write(
+        `\nrun-tests: ${label} terminou com sumário VÁLIDO (fail ${failCount ?? "?"}) mas exit status ${status} — ` +
+          `o node:test saiu não-zero SEM contabilizar falha (unhandled rejection após o sumário, ` +
+          `process.exitCode setado por um arquivo de teste, ou erro de escrita em stdout). ` +
+          `O vermelho está CORRETO; a causa apenas não aparece na contagem de falhas.\n` +
+          (tail ? `run-tests: ${label} últimas linhas do stderr:\n${tail}\n` : ""),
+      );
+      exitCode = 1;
+    }
   });
 
   return { exitCode, completedFiles };
