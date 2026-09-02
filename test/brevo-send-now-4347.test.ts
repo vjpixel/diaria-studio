@@ -196,7 +196,9 @@ test("resolveScheduleAtArg: ausente → { scheduledAt: undefined } (rascunho SEM
 });
 
 test("resolveScheduleAtArg: data no FUTURO → ISO normalizado", () => {
-  const future = new Date(Date.now() + 3600_000).toISOString();
+  // #7042: offset > SCHEDULE_AT_MIN_LEAD_MS (2h) — 1h já não basta mais
+  // desde a antecedência mínima; este teste cobre só a normalização ISO.
+  const future = new Date(Date.now() + 3 * 3600_000).toISOString();
   const result = resolveScheduleAtArg(future) as { scheduledAt: string };
   assert.equal(result.scheduledAt, new Date(future).toISOString());
 });
