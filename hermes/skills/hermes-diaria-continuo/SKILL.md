@@ -90,6 +90,25 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
 
 ### 1. Preparar e sincronizar (Hermes, shell direto)
 
+0. **Recuperação mecânica de tick interrompido (#7130), ANTES de qualquer
+   outro comando deste passo.** Medição ao vivo (#6908, 02/09): 2 de 3 ticks
+   longos produziram diff real e não fecharam o laço — sem claim, sem
+   commit, sem PR, árvore de trabalho deixada suja em `master` no checkout
+   compartilhado (#6952: 498 linhas nunca commitadas, sessão anterior
+   reportou "concluído"). `cd /home/vjpixel/diaria-studio && npx tsx
+   scripts/rescue-continuo-orphaned-work.ts --push`. `outcome: "clean"`
+   (exit 0, caso comum) → segue pro item 1 abaixo. `outcome: "rescued"`
+   (exit 0 com `--push` OK) → trabalho órfão de um tick anterior morto foi
+   commitado numa branch dedicada (`continuo/rescue-{timestamp}`) e, quando
+   `gh pr create` também funcionou, virou PR `REFS #7130, NÃO CLOSES` — não
+   resolve a issue original que gerou aquele diff (desconhecida por
+   construção), só preserva o trabalho em vez de deixá-lo evaporar/ser
+   varrido pelo `git add -A` de outra sessão; registrar no relatório do tick
+   (§"Relatório de tick" abaixo). `outcome: "rescue_failed"` OU `"rescued"`
+   com `--push` que falhou (exit ≠ 0) → **parar este tick e reportar como
+   `Parada`** no relatório (não tentar `sync-code.ts`/dispatch neste tick —
+   o checkout compartilhado pode estar num estado que outro comando `git`
+   piora).
 1. `cd /home/vjpixel/diaria-studio && npx tsx scripts/sync-code.ts` — fail-soft:
    warning e segue; nunca forçar pull/reset/stash.
 2. Guard de colisão editorial: `npx tsx scripts/lib/find-current-edition.ts
