@@ -1085,3 +1085,57 @@ describe("#6985 — Diaria-Openrouter-Billing-Leak-Alarm registrada, diária, sy
     assert.ok(!others.some((s) => s.script === "scripts/openrouter-billing-leak-check.ts"));
   });
 });
+
+describe("#6802 — Diaria-Branch-Cleanup registrada, diária, isolada da Diaria-Session-Registry-Gc", () => {
+  it("está presente no registro, com o step apontando pro script correto + --push, diária às 10:45", () => {
+    const t = getScheduledTaskByName("Diaria-Branch-Cleanup");
+    assert.ok(t, "Diaria-Branch-Cleanup ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/branch-cleanup.ts"],
+    );
+    assert.deepEqual(t!.steps[0]!.args, ["--push"]);
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 10, minute: 45 });
+  });
+
+  it("horário de 10:45 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Branch-Cleanup" && t.schedule.hour === 10 && t.schedule.minute === 45,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("não colide com nenhuma weekly de domingo às 10:45 (dailies também rodam domingo)", () => {
+    const weeklies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "weekly"; dayOfWeek: string; hour: number; minute: number } } =>
+        t.schedule.kind === "weekly" && t.schedule.dayOfWeek === "Sunday",
+    );
+    const collisions = weeklies.filter((t) => t.schedule.hour === 10 && t.schedule.minute === 45);
+    assert.deepEqual(collisions, []);
+  });
+
+  it("é uma task NOVA e isolada — não reaproveita nem estende os steps da Diaria-Session-Registry-Gc (decisão do editor, #6802)", () => {
+    const branchCleanup = getScheduledTaskByName("Diaria-Branch-Cleanup");
+    const sessionGc = getScheduledTaskByName("Diaria-Session-Registry-Gc");
+    assert.ok(branchCleanup);
+    assert.ok(sessionGc);
+    assert.notEqual(branchCleanup!.name, sessionGc!.name);
+    assert.deepEqual(
+      branchCleanup!.steps.map((s) => s.script),
+      ["scripts/branch-cleanup.ts"],
+    );
+    assert.deepEqual(
+      sessionGc!.steps.map((s) => s.script),
+      ["scripts/session-registry-gc.ts"],
+    );
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const others = SCHEDULED_TASKS.filter((t) => t.name !== "Diaria-Branch-Cleanup").flatMap((t) => t.steps);
+    assert.ok(!others.some((s) => s.script === "scripts/branch-cleanup.ts"));
+  });
+});

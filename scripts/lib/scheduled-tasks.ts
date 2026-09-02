@@ -1512,6 +1512,28 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     successExitCodes: [3],
     issue: "#6985, #6716 escopo 3, #6983",
   },
+  {
+    name: "Diaria-Branch-Cleanup",
+    description: "GC diario de branches locais + worktrees encerrados (--push)",
+    steps: [{ key: "cleanup", script: "scripts/branch-cleanup.ts", args: ["--push"] }],
+    logPath: "branch-cleanup/.cleanup.log",
+    // Task NOVA e isolada, deliberadamente NÃO pendurada na
+    // Diaria-Session-Registry-Gc (decisão do editor, #6802: falha de um GC
+    // não pode contaminar o outro). `--push` é necessário aqui -- sem ele
+    // o script só imprime relatório e nunca apaga nada (dry-run é o
+    // default do script, preservado); worktree/branch em uso já fica em
+    // needs-review por conta própria (locked/dirty check + re-checagem
+    // imediatamente antes de apagar, ver docstring de branch-cleanup.ts),
+    // então --push aqui não precisa de nenhuma flag adicional de segurança.
+    // 10:45 BRT: cauda do cluster matinal de checks/alarmes (09:00-10:40),
+    // logo após Diaria-Npm-Version-Drift-Alarm (10:40) e antes do próximo
+    // ocupado (Diaria-Postmaster-Spam-Sync, 12:30) -- fora das janelas
+    // quentes (envio Diaria-Clarice-Envio 19:00, janela do
+    // Diaria-Overnight-Watchdog 18:00-09:00, e a extinta edição de
+    // madrugada), sem colidir com nenhuma daily/weekly existente.
+    schedule: { kind: "daily", hour: 10, minute: 45 },
+    issue: "#6802",
+  },
 ];
 
 /**
