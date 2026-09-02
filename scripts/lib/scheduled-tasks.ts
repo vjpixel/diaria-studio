@@ -156,18 +156,6 @@ export interface ScheduledTaskDefinition {
    * outro significado (abort do semáforo D4, guard hoje removido) — os dois
    * usos nunca coexistiram. Default (campo ausente): só 0 é sucesso. */
   successExitCodes?: number[];
-  /** #5765 — opt-out do alarme de TAXA de sucesso (`Diaria-Systemd-Unit-Rate-Alarm`,
-   * `scripts/systemd-unit-rate-alarm.ts`), que mede falhas nas últimas N
-   * execuções em vez do estado instantâneo. Default (campo ausente): task
-   * é elegível normalmente. `true` só faz sentido pra task cujo exit-code
-   * não-zero varia de forma legitimamente ruidosa demais pra caber num
-   * `successExitCodes` fixo (ex: guard que aborta por condição de negócio
-   * comum, semáforo, "nada a fazer" com múltiplos exit codes distintos
-   * conforme o motivo) — preferir `successExitCodes` sempre que os exit
-   * codes "esperados" forem um conjunto fixo conhecido; este campo é o
-   * escape hatch pra quando não forem. Nenhuma task usa isto hoje — nasce
-   * disponível, não aplicada retroativamente sem investigar caso a caso. */
-  rateAlarmExempt?: boolean;
   /** Issue(s) de origem, só pra rastreabilidade em docs/erros. */
   issue: string;
   /** #5639 — enable/disable da task sem remover do registro.
@@ -563,6 +551,22 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // latência de resposta é desperdiçada.
     schedule: { kind: "daily", hour: 10, minute: 30 },
     issue: "#6365",
+  },
+  {
+    name: "Diaria-Kit-Doi-Orphan-Guard",
+    description:
+      "detecta assinantes Kit criados inactive (double opt-in do worker poll) que nunca foram vinculados ao form de confirmação — presos para sempre sem o guard, incidente de 28/08/2026",
+    steps: [{ key: "check", script: "scripts/kit-doi-orphan-guard.ts" }],
+    logPath: "kit-doi-orphan-guard/.guard-check.log",
+    // Diária 10:35 — logo depois de Diaria-Subscribe-Redirect-Drift-Check
+    // (10:30, acima), fechando o cluster matinal de checks/alarmes de
+    // cadastro; sem colisão com nenhuma outra daily já registrada (ver grep
+    // de `kind: "daily"` neste arquivo). Mesmo raciocínio dos vizinhos:
+    // órfão preso em inactive não piora rodando mais devagar — o conserto
+    // (rodar o resgate manual da Ação 1 da issue) é ação do editor, então
+    // detectar de madrugada não adianta.
+    schedule: { kind: "daily", hour: 10, minute: 35 },
+    issue: "#6810",
   },
   {
     name: "Diaria-Hub-Staleness-Check",
@@ -1113,24 +1117,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5563",
   },
   {
-    name: "Diaria-Systemd-Unit-Rate-Alarm",
-    description:
-      "alarme de TAXA de falha das ultimas 5 execucoes de cada unit do registro (complementa o sweep de estado acima, cego pra oneshot que falha cronicamente e limpa o estado a cada execucao, #5765)",
-    steps: [{ key: "alarm", script: "scripts/systemd-unit-rate-alarm.ts" }],
-    logPath: "systemd-unit-rate-alarm/.alarm.log",
-    // A cada 4h — mais espaçado que o sweep de ESTADO (2h) de propósito: o
-    // sinal aqui é uma JANELA de 5 execuções, não um instante, então não
-    // precisa da mesma cadência apertada pra ser útil (a janela já cobre
-    // horas/dias de histórico, dependendo da cadência de cada task). Mesma
-    // ordem de grandeza de `Diaria-OneDrive-Sync-Alarm` (também 4h).
-    // Achado de referência (#5763, via #5765): `Diaria-Clarice-Novos` falhou
-    // 9 de 13 execuções (~69%) numa semana inteira sem o sweep de estado
-    // nunca acusar nada persistente — a oneshot limpa `failed` a cada nova
-    // execução, sucesso ou não.
-    schedule: { kind: "interval", hours: 4 },
-    issue: "#5765",
-  },
-  {
     name: "Diaria-Studio-Liveness-Alarm",
     description:
       "GET http://127.0.0.1:4174/ do Studio server — alarma apos 2 falhas consecutivas (ponto cego do sweep --state=failed pra unit zumbi, #5759)",
@@ -1472,6 +1458,59 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // plataforma.
     schedule: { kind: "interval", hours: 6 },
     issue: "#6927",
+  },
+  {
+    name: "Diaria-Npm-Version-Drift-Alarm",
+    description:
+      "contrapeso ao updater desligado: defasagem entre a versao do Claude Code em disco e a publicada no npm, ha quantos dias (#6960)",
+    steps: [{ key: "check", script: "scripts/npm-version-drift-alarm.ts" }],
+    logPath: "npm-version-drift-alarm/.alarm.log",
+    // Diario — cadencia de release do Claude Code e quase diaria (medicao
+    // citada na #6960: 2.1.251 -> 2.1.257 em 1 dia), entao 1 checagem/dia
+    // ja da granularidade suficiente pro limiar (default 7d) sem custo de
+    // rodar mais vezes. Diferente do Diaria-Claude-Session-Version-Drift-Alarm
+    // (#6927, acima): aquele mede reinstalacao RECENTE (processo != disco)
+    // e fica mudo com o updater desligado; este mede DEFASAGEM acumulada
+    // (disco != upstream), o sinal que continua existindo mesmo sem
+    // reinstalacao nenhuma acontecer.
+    schedule: { kind: "daily", hour: 10, minute: 40 },
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do #5845/#5908/#5754/#6130/#6189 acima) — armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada
+    // (`helios`) e acao POSTERIOR do editor.
+    issue: "#6960",
+  },
+  {
+    name: "Diaria-Openrouter-Billing-Leak-Alarm",
+    description: "alarme diario de modelo pago nao pedido faturado no gateway OpenRouter (#6716 escopo 3)",
+    steps: [{ key: "check", script: "scripts/openrouter-billing-leak-check.ts" }],
+    logPath: "openrouter-billing-leak/.alarm.log",
+    // 21:45 BRT = 00:45 UTC -- depois da meia-noite UTC, que é quando o
+    // `/api/v1/activity` fecha o dia UTC anterior (o script é
+    // estruturalmente D-1, ver docblock de scripts/lib/openrouter-billing-leak.ts).
+    // A doc da OpenRouter recomenda esperar ~30min pós-virada antes de
+    // confiar no dia anterior (#6985 item 3); 45min de folga sobre esse
+    // mínimo, sem colidir com Diaria-Clarice-Cohorts-Crawl (21:00, único
+    // outro daily na faixa 21h-22h do registro).
+    schedule: { kind: "daily", hour: 21, minute: 45 },
+    // successExitCodes: [3] -- exit 3 ("achou vazamento") já envia o
+    // e-mail de alarme por dentro do próprio script (ver
+    // buildBillingLeakAlarmEmail); a task TERMINOU O TRABALHO que existe
+    // pra fazer, não falhou em fazê-lo, então não deve marcar a unit
+    // systemd como `failed` nem contar como falha no
+    // Diaria-Systemd-Unit-Rate-Alarm. **Exit 1 (indeterminado/erro) fica
+    // DE FORA de propósito** (#6985: "exit 1 significa 'não mediu' e não
+    // pode ser silenciado como erro cosmético") -- só ele deve continuar
+    // reprovando a unit e contando pra taxa de falha, senão o guard vira
+    // inerte de novo pela porta do runner em vez da porta do cron ausente.
+    // 3 = LEAK_FOUND_EXIT_CODE (scripts/openrouter-billing-leak-check.ts) --
+    // literal, não importado: scripts/lib/ não importa de scripts/ soltos
+    // (test/lib-boundary.test.ts não cobre essa direção específica, mas o
+    // padrão do resto do registro -- ex: o `[75]` de
+    // Diaria-Clarice-Guardrail-Alarm acima -- já é valor literal com
+    // comentário apontando a constante de origem, não import cruzado).
+    successExitCodes: [3],
+    issue: "#6985, #6716 escopo 3, #6983",
   },
 ];
 

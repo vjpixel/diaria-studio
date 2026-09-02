@@ -14,6 +14,19 @@ name: Deploy artigos Worker
 #
 # Secrets reusados (mesmos do deploy-poll.yml/deploy-brevo-dashboard.yml):
 # CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_WORKERS_TOKEN.
+#
+# #7030: o worker ganhou o gate dos Artigos Especiais (script + KV
+# `ARTIGOS_APOIO_NIVEL` + secret `COOKIE_HMAC_SECRET`) — nenhum dos dois
+# provisionado em produção ainda (guard de publicação da issue: subagente
+# de overnight não deploya). `wrangler.toml` tem um id PLACEHOLDER pro KV
+# namespace até o editor rodar `wrangler kv namespace create
+# ARTIGOS_APOIO_NIVEL` + `wrangler secret put COOKIE_HMAC_SECRET` (ver PR
+# body). O passo "Guard: KV namespace provisionado?" abaixo PULA o deploy
+# (nunca falha o job) enquanto o placeholder estiver no `wrangler.toml` —
+# sem isso, o merge desta PR dispararia `wrangler deploy` automaticamente e
+# falharia contra um id de KV inexistente. Remover o guard (ou deixar o
+# `grep` deixar de casar, o que já acontece sozinho assim que o editor cola
+# o id real) restaura o deploy automático de sempre.
 
 on:
   push:
@@ -45,7 +58,19 @@ jobs:
         working-directory: workers/artigos
         run: npm ci
 
+      - name: Guard - KV namespace provisionado?
+        id: kv_guard
+        working-directory: workers/artigos
+        run: |
+          if grep -q "PLACEHOLDER_RODAR_WRANGLER_KV_NAMESPACE_CREATE" wrangler.toml; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::ARTIGOS_APOIO_NIVEL ainda tem id PLACEHOLDER em wrangler.toml — pulando deploy (#7030). Rode 'wrangler kv namespace create ARTIGOS_APOIO_NIVEL' e cole o id real pra reativar."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Deploy to Cloudflare Workers
+        if: steps.kv_guard.outputs.skip != 'true'
         working-directory: workers/artigos
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}

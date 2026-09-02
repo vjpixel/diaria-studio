@@ -222,9 +222,11 @@ export async function importOneCuratedContact(params: {
  * #6793 "Faixa A" (30/08/2026, decisão do editor, item 8): freio automático
  * de VOLUME da fila compartilhada removido — este lote curado deixou de ter
  * teto de contatos ativos simultâneos. `daily_send_cap`/`DEFAULT_QUEUE_CAP`
- * continuam existindo (item 5, `checkDailySendCap` em publish-daily-brevo.ts
- * segue lendo `daily_send_cap` como teto de ENVIO diário) — só o uso daqui,
- * como cap da FILA compartilhada, foi removido. Mantida como função (em vez
+ * continuam existindo como VALORES (item 5) — **correção #6940:**
+ * `checkDailySendCap` em `publish-daily-brevo.ts` NÃO segue lendo
+ * `daily_send_cap` como teto de ENVIO diário; o mesmo #6793 esvaziou essa
+ * função (`void cap; return { ok: true }`), então o valor sobrevive sem
+ * efeito de gate em lugar nenhum. Mantida como função (em vez
  * de inlinar `Number.POSITIVE_INFINITY` nos 2 call sites) pra preservar o
  * ponto único de mudança se a decisão for revertida.
  */

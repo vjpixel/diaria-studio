@@ -83,8 +83,13 @@ import { brevoGet } from "./brevo-client.ts";
  * Histórico: até 30/08/2026, `sync-pending-to-brevo.ts` tinha uma
  * `DEFAULT_QUEUE_CAP = 300` própria representando outra coisa (teto da
  * FILA, item 6) — removida em #6793 "Faixa A" (a fila deixou de ter teto).
- * `publish-daily-brevo.ts` ainda usa `?? 300` como fallback pro teto de
- * ENVIO diário da LISTA (item 5, também #6793, INTOCADO).
+ * **Correção #6940:** `daily_send_cap`/`checkDailySendCap`
+ * (`publish-daily-brevo.ts`, item 5, também #6793) NÃO está mais intocado —
+ * `checkDailySendCap` foi esvaziado (`void cap; return { ok: true }`) e hoje
+ * só sobrevive como valor LIDO, sem efeito de gate sobre o teto de ENVIO
+ * diário da LISTA. O único freio de envio remanescente é
+ * `checkAccountSendQuota` (a função abaixo — cota da CONTA, fora do escopo
+ * do #6793), avaliada na Etapa 6.
  */
 export const BREVO_FREE_DAILY_SEND_LIMIT = 300;
 

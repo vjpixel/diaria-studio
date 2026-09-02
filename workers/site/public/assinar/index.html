@@ -22,13 +22,21 @@
 
   `source: "apex"` no payload — o único `SubscribeSource` que aceita
   `utm_source`/`utm_medium`/`utm_campaign` DINÂMICOS do cliente, validados
-  contra a allowlist de prefixo (`clarice-*`, `ads-*`,
-  `isAllowedClientUtmSource`) antes de o servidor os usar; fora da
+  contra a allowlist de prefixo (`clarice-*`, `google-ads-*`,
+  `microsoft-ads-*`, `meta-ads-*`, `isAllowedClientUtmSource`) antes de o
+  servidor os usar; fora da
   allowlist, cai no triplo default `SUBSCRIBE_UTM_BY_SOURCE.apex`. Os 3
   valores são lidos da PRÓPRIA query string desta página (`location.search`)
   — chegam aqui porque a home (`index.html`) repassa `location.search` no
   href do CTA antes de navegar (ver comentário no script de
   `buildIndexHtml`, `scripts/lib/site-home-page.ts`).
+
+  Este arquivo é GERADO por `scripts/gen-assinar-page.ts` a partir de
+  `scripts/lib/site-assinar-page.ts` (#7015) — não editar direto (o próximo
+  `npx tsx scripts/gen-assinar-page.ts` sobrescreve). O único motivo do
+  gerador existir é o tratamento canônico da marca (`renderWordmark()`,
+  ver `WORDMARK_DISPLAY_SEGMENTS` em `scripts/lib/shared/brand-wordmark.ts`)
+  — o resto do conteúdo é estático e vive em `buildAssinarHtml()`.
 -->
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -83,7 +91,7 @@ button[type="submit"]:disabled { opacity: 0.6; cursor: default; }
 </head>
 <body>
   <main class="wrap">
-    <h1>diar<span class="dot">.</span>ia<span class="dot">.</span>br</h1>
+    <h1><span>diar</span><span class="dot" aria-hidden="true">.</span><span>ia</span><span class="dot" aria-hidden="true">.</span><span class="dot">br</span></h1>
     <p class="lede">5 minutos diários pra se manter atualizado e usar IA <em>melhor</em>. Seg–Sex, direto no seu e-mail.</p>
 
     <form id="assinar-form" method="POST" action="https://eia.diar.ia.br/jogar/subscribe" novalidate>
@@ -163,11 +171,25 @@ button[type="submit"]:disabled { opacity: 0.6; cursor: default; }
         form.submit();
         return;
       }
-      window.fetch(form.getAttribute("action"), {
+      // #6981: aborta o fetch depois de SIGNUP_FORM_FETCH_TIMEOUT_MS e cai no
+      // MESMO .catch() de erro de rede abaixo (mesma mensagem, botão
+      // reabilitado) — sem isso, uma promise que nunca resolve (DNS travado,
+      // proxy/firewall engolindo o POST cross-origin, Worker pendurado)
+      // deixa "Enviando…" pendurado pra sempre, sem erro visível. Mesma
+      // técnica de `signupFormScript()` em `site-home-page.ts` (#6979).
+      var timeoutId = null;
+      var controller = typeof window.AbortController === "function" ? new window.AbortController() : null;
+      if (controller) {
+        timeoutId = setTimeout(function () { controller.abort(); }, 12000);
+      }
+      var fetchOpts = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
-      }).then(function (res) {
+      };
+      if (controller) fetchOpts.signal = controller.signal;
+      window.fetch(form.getAttribute("action"), fetchOpts).then(function (res) {
+        if (timeoutId) clearTimeout(timeoutId);
         return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
       }).then(function (r) {
         if (r.status === 200 && r.body && r.body.ok) {
@@ -186,6 +208,7 @@ button[type="submit"]:disabled { opacity: 0.6; cursor: default; }
           if (btn) btn.disabled = false;
         }
       }).catch(function () {
+        if (timeoutId) clearTimeout(timeoutId);
         setStatus("Erro de conexão. Tente de novo.", false);
         if (btn) btn.disabled = false;
       });

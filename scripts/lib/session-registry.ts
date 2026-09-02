@@ -65,12 +65,17 @@
  * hook, ver acima):
  *   npx tsx scripts/lib/session-registry.ts register --kind overnight|develop|continuo [--pid N]
  *   npx tsx scripts/lib/session-registry.ts heartbeat --kind ... [--phase X] [--active-worktrees N]
- *   npx tsx scripts/lib/session-registry.ts end --kind ... [--tag MAQUINA]
+ *   npx tsx scripts/lib/session-registry.ts end --kind ... [--tag MAQUINA] [--allow-dirty]
  *     (`--tag` opcional, #5797: default é o machineTag() local; passar o tag de
  *     OUTRA máquina permite encerrar daqui um registro que não é seu — ver
  *     "Defeito 4" do #5797. `end` também distingue "removeu de fato" de "não
  *     havia nada pra remover": esta última reporta `exit 1` e a mensagem
- *     "nothing to end", nunca "ended".)
+ *     "nothing to end", nunca "ended". #6922: `end` recusa (`exit 1`) só quando
+ *     `repoRoot` tem mudanças não commitadas ATRIBUÍVEIS a esta sessão
+ *     (interseção com touched_paths/dirty_paths do próprio registro) — ver
+ *     `evaluateEndGuard`; sujeira de outra sessão concorrente no mesmo
+ *     checkout compartilhado (#6168, a norma) nunca bloqueia, só avisa.
+ *     `--allow-dirty` bypassa tudo explicitamente.)
  *   npx tsx scripts/lib/session-registry.ts claim-issue --kind ... --issue N [--force]
  *     (#6236: check-and-set — recusa (`exit 1`) quando outra sessão ATIVA já
  *     segura a issue, imprimindo quem/desde quando. `--force` toma o claim
@@ -138,11 +143,12 @@
  */
 
 import { basename, dirname, join } from "node:path";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./cli-args.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
+import { withFileLock } from "./file-lock.ts";
 
 /**
  * #6168: `interactive` é o 4º kind — sessão comum do editor, registrada
@@ -283,6 +289,20 @@ export interface SessionRecord {
    * disco fora de `listActiveSessions`.
    */
   stale?: boolean;
+  /**
+   * #7028 — ISO timestamp de quando este registro deixou de representar uma
+   * sessão viva. Só escrito por `registerSession` no registro ANTIGO durante
+   * uma promoção de kind (ver seu docblock), como rede de segurança pro caso
+   * de a remoção best-effort do arquivo antigo falhar (`outcome:
+   * "promoted-orphan-left"`) — o conteúdo com claims/`merge_grant` migrados
+   * fica em disco, mas marcado. `dedupeBySessionId` exclui registros com
+   * `endedAt` da consideração de "sessão viva" antes de escolher a base do
+   * grupo, então um órfão carimbado nunca volta a contar como coordenador
+   * ativo pro guard de merge do #5716. Nenhum outro escritor deste módulo
+   * seta este campo — não confundir com a remoção normal via `endSession`
+   * (que APAGA o arquivo, não carimba nada).
+   */
+  endedAt?: string;
   [key: string]: unknown;
 }
 
@@ -303,8 +323,20 @@ export interface SessionRecord {
  * na assinatura transforma isso de disciplina em garantia: o compilador
  * recusa a lista crua, e quem quiser consultá-la precisa ir por
  * `listActiveSessions` primeiro.
+ *
+ * `claimed_issues_effective` (#6623): `claimed_issues` bruto continua no
+ * record (diagnóstico/histórico), mas quem só quer saber "quais issues esta
+ * sessão segura DE VERDADE agora" lê este campo em vez de re-derivar —
+ * mesmo princípio de `issue-decisions.ts`/`classifyExecTrack`, julgamento
+ * feito uma vez aqui, nunca re-heurística por call site. Vazio quando
+ * `stale === true` (a mesma regra que `is-claimed` já aplica via
+ * `SOFT_STALE_MS`/`isIssueClaimedByOther` — passados `SOFT_STALE_MS`
+ * (90min; 15min pra `interactive`), o claim para de valer, mas o `list-active`
+ * cru continuava expondo `claimed_issues` como se ainda valesse, escondendo
+ * issues elegíveis de quem lia ingenuamente — 10 de 26 numa triagem real,
+ * ver #6623). Igual a `claimed_issues` quando a sessão está viva.
  */
-export type ActiveSessionRecord = SessionRecord & { stale: boolean };
+export type ActiveSessionRecord = SessionRecord & { stale: boolean; claimed_issues_effective: number[] };
 
 interface MergeLockRecord {
   heldBy: string;
@@ -567,6 +599,164 @@ function readJsonSafe<T>(path: string): T | null {
 function writeJsonSafe(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileAtomic(path, JSON.stringify(value), { fsync: false });
+}
+
+/**
+ * #6952 — read-modify-write do record de sessão sob lock exclusivo, em vez de
+ * solto.
+ *
+ * `writeJsonSafe` torna a ESCRITA atômica (write-then-rename, #6130), mas a
+ * leitura que a precede é separada — entre `readJsonSafe` e o
+ * `writeFileAtomic` outro processo pode gravar o seu próprio registro, e a
+ * nossa escrita (com `...current`) apaga esse update. É o lost-update
+ * clássico:
+ *
+ *   t0  nós lemos current            (sem merge_grant)
+ *   t1  outro processo lê current, grava current + merge_grant
+ *   t2  nós gravamos NOSSO current  (de t0, sem merge_grant)   <- grant perdido
+ *
+ * O #6952 mediu isso ao vivo: o `grant-merge` concedeu a janela, a
+ * beneficiária confirmou `granted: true`, e antes do `gh pr merge` o beacon
+ * do concedente (que estava ativo trabalhando) reescreveu o registro a partir
+ * de um `current` sem o grant — e o grant sumiu.
+ *
+ * Esta função fecha a classe inteira (não só o `merge_grant`):
+ * `claimed_issues` (claimIssue/unclaimIssue) e os campos do beacon
+ * (`touched_paths`/`dirty_paths`/`lastHeartbeat`) correm o mesmo risco hoje,
+ * porque todos os escritores do record fazem read-modify-write com spread.
+ *
+ * Mecanismo: `withFileLock` em `{path}.lock` (criação exclusiva `wx`, spin
+ * com timeout — mesmo mecanismo de `scripts/lib/file-lock.ts`, #4125, usado
+ * já por `publish-facebook.ts`/`publish-linkedin.ts`). O lock serializa a
+ * seção read-modify-write inteira: enquanto um processo tem o lock, nenhum
+ * outro pode estar no meio da mesma seção, então o `merge(current)` lê um
+ * `current` que NINGUÉM mais vai alterar antes da nossa escrita. A escrita
+ * atômica (`writeJsonSafe`) então publica o resultado completo.
+ *
+ * `merge` é uma FUNÇÃO (não um objeto fixo) pra que o patch seja REFEITO a
+ * cada retry contra o `current` fresco — um `patch` congelado na primeira
+ * leitura repetiria exatamente o bug (preservaria o `current` STALE).
+ *
+ * `verify` roda DEPOIS da escrita, sob o mesmo lock: confirma que o que está
+ * no disco agora é de fato a NOSSA escrita. É defesa em profundidade contra o
+ * caso que o `wx` não cobre — entre máquinas via OneDrive o lock é
+ * **advisory** (#6182, mesma limitação do merge lock): cada máquina vê um
+ * inode distinto no junction e pode criar o `.lock` simultaneamente. No
+ * caminho feliz (mesma máquina, lock real) o `verify` é só uma leitura a mais
+ * e sempre passa.
+ *
+ * **O alcance do `verify` entre MÁQUINAS é limitado, e a limitação precisa
+ * ficar escrita (achado do review da PR #6969).** Ele é uma leitura-após-
+ * escrita feita na MESMA máquina que acabou de escrever: observa o próprio
+ * write, não o da outra máquina — o sync do OneDrive não é instantâneo, então
+ * no instante do `verify` a escrita remota simplesmente ainda não chegou.
+ *
+ * A autocura ("os dois lados detectam e refazem") vale quando o sync produz
+ * **cópia de conflito** (`-safeBackup-*`), que é o comportamento observado na
+ * prática — havia 15 delas em `data/sessions/` no dia em que isto foi
+ * escrito, e é por isso que a união do `mergeSessionRecords` (#6952, 2ª
+ * metade) é o que de fato recupera o dado nesse cenário: o `verify` não
+ * recupera, a UNIÃO recupera.
+ *
+ * Se em vez disso houver last-writer-wins silencioso (sem cópia de
+ * conflito), nem o `verify` nem a união ajudam: a escrita local seguinte da
+ * concedente pode sobrescrever um `consumedAt` gravado do outro lado,
+ * ressuscitando concessão já usada. Esse caminho NÃO foi reproduzido —
+ * exigiria duas máquinas sincronizando ao vivo — e está registrado aqui como
+ * limitação conhecida, não como cenário descartado.
+ *
+ * **Fail-closed quando não converge:** se `attempts` se esgotar, a função
+ * LANÇA (re-propaga a última falha) em vez de silenciosamente gravar o
+ * registro antigo. Um lost update que não foi resolvido é pior que um erro
+ * visível — sem isto o grant desaparece e o diagnosticador acha que o
+ * coordenador nunca concedeu (exatamente o diagnóstico errado do #6952).
+ * O outro escritor é o beacon (`.claude/hooks/session-beacon.mjs`), que roda
+ * a cada chamada de ferramenta mas só ESCREVE quando há novidade ou quando
+ * passaram `MIN_WRITE_INTERVAL_MS` (5s) desde o último heartbeat — e desde o
+ * #6952 ele adquire ESTA MESMA lock file, então os dois lados se serializam
+ * de verdade em vez de cada um trancar consigo mesmo. Como cada tentativa
+ * espera o lock por até 10s (`withFileLock`), o teto de `attempts` não é uma
+ * janela de tempo fixa: é quantas vezes aceitamos perder a corrida do
+ * `verify` antes de desistir, e só o caminho advisory cross-máquina (#6182)
+ * faz o `verify` falhar.
+ *
+ * `attempts` é o teto de retries (default 50). Cada retry é uma leitura +
+ * uma escrita atômica + uma verificação — 3 syscalls a mais, barato.
+ */
+/**
+ * #6952 (achado do review): idade a partir da qual um `.lock` de registro de
+ * sessão é considerado ÓRFÃO e quebrado à força.
+ *
+ * O `wx` não tem dono nem TTL: se o processo que segurava o lock morre sem
+ * rodar o `finally` (SIGKILL, OOM, a máquina suspendendo, o binário do Claude
+ * Code quebrando no meio — que aconteceu 5× num único dia), o arquivo fica no
+ * disco PARA SEMPRE. Sem quebra por idade, todo escritor seguinte — os três
+ * programas — passa a gastar o timeout inteiro e falhar, indefinidamente: um
+ * grant perdido de vez em quando viraria uma parada total do registro.
+ *
+ * 60s é folgado por construção: a seção crítica é um read-modify-write de um
+ * JSON pequeno (millissegundos), e o teto de espera de UMA tentativa é 10s.
+ * Um lock com mais de 60s não está sendo usado por ninguém vivo.
+ */
+export const STALE_LOCK_MS = 60_000;
+
+/**
+ * Remove um `.lock` órfão (mais velho que `STALE_LOCK_MS`). Devolve `true` se
+ * removeu. Fail-soft em tudo: lock inexistente, `stat` falhando, corrida com
+ * outro quebrador — nada disso lança, porque quebrar lock é melhor-esforço e
+ * nunca deve ser o motivo de uma falha.
+ */
+export function breakStaleLock(lockPath: string, now: number = Date.now()): boolean {
+  try {
+    const ageMs = now - statSync(lockPath).mtimeMs;
+    if (ageMs < STALE_LOCK_MS) return false;
+    unlinkSync(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeJsonSafeWithCas(
+  path: string,
+  merge: (current: SessionRecord | null) => SessionRecord,
+  verify: (onDisk: SessionRecord | null) => boolean,
+  attempts: number = 50,
+): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const lockPath = `${path}.lock`;
+  let lastErr: unknown = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      // Antes de esperar mais 10s por um lock, checa se ele é de um processo
+      // que morreu segurando-o. Sem isto, um lock órfão wedgeia o registro
+      // para sempre (ver `STALE_LOCK_MS`).
+      breakStaleLock(lockPath);
+      withFileLock(lockPath, () => {
+        const current = readJsonSafe<SessionRecord>(path);
+        const value = merge(current);
+        writeJsonSafe(path, value);
+        const onDisk = readJsonSafe<SessionRecord>(path);
+        if (!verify(onDisk)) {
+          // Outra sessão escreveu entre a nossa leitura e a nossa escrita, e
+          // a nossa escrita atômica a sobrescreveu — lost update (só pode
+          // acontecer no caminho advisory cross-máquina). Relê e retry.
+          throw new Error("CAS verify failed: another writer overwrote our write");
+        }
+      });
+      return;
+    } catch (e) {
+      // `withFileLock` lançou: ou verify falhou (lost update, retry), ou o
+      // lock timeout estourou (outro processo segura há 10s+ — raro, mas o
+      // beacon roda a cada ~1s então é só esperar), ou falha de I/O no
+      // read/write interno. Todas as três são retry-áveis.
+      lastErr = e;
+    }
+  }
+  throw new Error(
+    `writeJsonSafeWithCas: ${attempts} tentativas de CAS falharam em ${path} ` +
+      `— outro processo (beacon) continua escrevendo o registro; última falha: ${(lastErr as Error)?.message ?? String(lastErr)}`,
+  );
 }
 
 /**
@@ -909,40 +1099,80 @@ export function registerSession(
     }
   }
 
-  const record: SessionRecord = {
-    ...(previous ?? {}),
-    kind,
-    machineTag: tag,
-    sessionId,
-    // `startedAt` do registro ORIGINAL é preservado — re-registrar (ou
-    // promover de outro kind) não rejuvenesce a sessão (senão um `register`
-    // de correção zeraria a idade que `planSessionGc`/`listActiveSessions`
-    // usam pra decidir staleness).
-    startedAt: previous?.startedAt ?? now,
-    lastHeartbeat: now,
-    claimed_issues: previous?.claimed_issues ?? [],
-  };
-  if (meta.pid !== undefined) {
-    record.pid = meta.pid;
-  }
-  // #6326 fleet review item 5b (decisão registrada, não "corrigida" — ambas
-  // as opções são defensáveis, esta é a escolhida): quando a promoção
-  // sucede e `--pid` NÃO foi passado a ESTA chamada, o `pid` do registro
-  // ANTIGO (herdado via `...previous` acima, tipicamente `process.ppid`
-  // gravado pelo beacon — ver #6160) é PRESERVADO, não limpo. Justificativa:
-  // é o pid da MESMA sessão Claude Code (beacon e skill compartilham
-  // `process.ppid`/o processo pai), então continua correto — e é
-  // exatamente o sinal que o branch 3 de `decideSessionGc` usa pra nunca
-  // remover um registro de sessão viva (ver docblock acima). Limpar aqui
-  // destruiria esse sinal de liveness sem necessidade.
-
-  writeJsonSafe(path, record);
+  // #6952: CAS em vez de read-modify-write solto. O beacon reescreve este
+  // arquivo a cada chamada de ferramenta — um `...previous` congelado no
+  // momento acima apagaria um `merge_grant`/`claimed_issues` que o beacon
+  // gravou entre o read inicial e o write (lost update). Dentro do lock,
+  // re-deriva `record` do estado FRESCO em disco (`current`), caindo pro
+  // `previous` promovido só quando `current` é nulo (arquivo não existe na
+  // janela de lock — caso de promoção).
+  let record: SessionRecord = {} as SessionRecord;
+  writeJsonSafeWithCas(
+    path,
+    (current) => {
+      const base: Partial<SessionRecord> = current ?? previous ?? {};
+      record = {
+        ...base,
+        kind,
+        machineTag: tag,
+        sessionId,
+        // `startedAt` do registro ORIGINAL é preservado — re-registrar (ou
+        // promover de outro kind) não rejuvenesce a sessão (senão um
+        // `register` de correção zeraria a idade que
+        // `planSessionGc`/`listActiveSessions` usam pra decidir staleness).
+        startedAt: base.startedAt ?? now,
+        lastHeartbeat: now,
+        claimed_issues: base.claimed_issues ?? [],
+      };
+      if (meta.pid !== undefined) {
+        record.pid = meta.pid;
+      }
+      // #6326 fleet review item 5b (decisão registrada, não "corrigida" — ambas
+      // as opções são defensáveis, esta é a escolhida): quando a promoção
+      // sucede e `--pid` NÃO foi passado a ESTA chamada, o `pid` do registro
+      // ANTIGO (herdado via `...base` acima, tipicamente `process.ppid`
+      // gravado pelo beacon — ver #6160) é PRESERVADO, não limpo.
+      // Justificativa: é o pid da MESMA sessão Claude Code (beacon e skill
+      // compartilham `process.ppid`/o processo pai), então continua correto —
+      // e é exatamente o sinal que o branch 3 de `decideSessionGc` usa pra
+      // nunca remover um registro de sessão viva (ver docblock acima). Limpar
+      // aqui destruiria esse sinal de liveness sem necessidade.
+      return record;
+    },
+    (onDisk) =>
+      onDisk?.sessionId === sessionId &&
+      onDisk?.kind === kind &&
+      onDisk?.machineTag === tag &&
+      onDisk?.lastHeartbeat === now,
+  );
 
   if (unreadablePromotionSource) {
     return { record, outcome: "promotion-failed-unreadable", promotedFrom: unreadablePromotionSource };
   }
 
   if (promotedFrom) {
+    // #7028: carimba `endedAt` no CONTEÚDO do registro antigo ANTES de
+    // tentar removê-lo — belt-and-suspenders pro caso (best-effort, como o
+    // `rmSync` abaixo) de a remoção falhar e o arquivo permanecer em disco.
+    // Sem isto, um órfão `promoted-orphan-left` ficava indistinguível de uma
+    // sessão genuinamente viva pros leitores (`dedupeBySessionId`,
+    // `listActiveSessions`) até `SOFT_STALE_MS` (90min) expirar — achado ao
+    // vivo #7028: uma sessão `overnight` promovida de volta pra `interactive`
+    // (o `sessionId` sobrevive à mudança, o harness preserva a conversa)
+    // deixou o registro `overnight` antigo congelado no heartbeat da
+    // promoção, e ele continuou contando como COORDENADOR ATIVO — o guard do
+    // #5716 lê exatamente esse sinal pra bloquear merge cross-máquina.
+    // `writeJsonSafe` usa `node:fs` de verdade (não o `removeIo` injetável,
+    // que só existe pra simular falha de `rmSync` em teste) — se a stampagem
+    // em si falhar (I/O), cai no catch e segue pro rmSync normalmente; nunca
+    // lança, nunca aborta a promoção.
+    try {
+      if (removeIo.exists(promotedFrom)) {
+        writeJsonSafe(promotedFrom, { ...previous, endedAt: now });
+      }
+    } catch (e) {
+      warnIoError(promotedFrom, e);
+    }
     // Best-effort: o record novo já foi gravado com sucesso acima.
     // `existsSync` antes do `rmSync` (mesmo padrão de
     // `garbageCollectSessions` abaixo) evita um warning espúrio no caso
@@ -1034,10 +1264,72 @@ export function heartbeat(
   now: string = new Date().toISOString(),
 ): boolean {
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
-  const current = readJsonSafe<SessionRecord>(path);
-  if (!current) return false;
-  writeJsonSafe(path, { ...current, ...patch, lastHeartbeat: now });
+  if (!readJsonSafe<SessionRecord>(path)) return false;
+  // #6952: CAS em vez de read-modify-write solto — o beacon (mesmo arquivo)
+  // pode reescrever o record enquanto este heartbeat tenta gravar, e um
+  // `...current` congelado apagaria o `merge_grant`/`claimed_issues` dele.
+  writeJsonSafeWithCas(
+    path,
+    (current) => {
+      // Já confirmamos acima que o registro existe. Se ele sumiu entre aquela
+      // leitura e o lock (`end` concorrente), LANÇAR é o certo: recriar aqui a
+      // partir de um `{}` produziria um registro sem `kind`/`sessionId`, que é
+      // pior que a falha visível.
+      if (!current) throw new Error("heartbeat: sessão sumiu entre a leitura e a escrita");
+      return { ...current, ...patch, lastHeartbeat: now };
+    },
+    (onDisk) => onDisk?.lastHeartbeat === now,
+  );
   return true;
+}
+
+/**
+ * Evento de instrumentação do ciclo de vida de uma sessão COORDENADORA
+ * (#6624) — JSONL append-only em `data/session-lifecycle.jsonl`, mesmo
+ * padrão de `data/run-log.jsonl`. Existe pra responder, com DADO em vez de
+ * suposição, a pergunta que a issue faz: "sessões coordenadoras terminam sem
+ * chamar `end` com que frequência?".
+ *
+ *   - `"ended"` — `endSession` de fato removeu um registro coordenador (fim
+ *     limpo, o caminho que a skill percorre normalmente ao terminar).
+ *   - `"gc-removed-without-end"` — o GC (`garbageCollectSessions`) removeu o
+ *     arquivo REAL de um grupo coordenador por staleness (não um backup
+ *     órfão de um grupo já sem real — esse é resíduo de uma sessão que JÁ
+ *     tinha chamado `end`, não o caso que esta issue investiga). É o sinal
+ *     direto de "esta sessão nunca chamou `end`" — só o GC (que decide por
+ *     heartbeat/PID morto) chega a remover um arquivo real coordenador vivo
+ *     o bastante pra nunca ter passado pela Fase 2 de encerramento da skill.
+ */
+export interface SessionLifecycleEvent {
+  event: "ended" | "gc-removed-without-end";
+  kind: SessionKind;
+  machineTag: string;
+  sessionId: string;
+  /** ISO — momento em que o evento foi registrado (nunca o `lastHeartbeat`
+   * do record removido, que é outra coisa). */
+  ts: string;
+  /** Idade da sessão (`ts` do evento menos `startedAt` do record removido),
+   * em ms — `undefined` quando `startedAt` não foi legível. Só contexto pra
+   * quem for analisar o log depois; não entra em nenhuma decisão. */
+  ageMs?: number;
+}
+
+function sessionLifecycleLogPath(repoRoot: string): string {
+  return join(repoRoot, "data", "session-lifecycle.jsonl");
+}
+
+/** Best-effort, nunca lança — instrumentação não pode derrubar o caminho
+ * principal de `endSession`/`garbageCollectSessions`. `data/` ausente (sessão
+ * cloud/clone fresco) é um no-op silencioso, mesma disciplina fail-soft do
+ * resto do módulo. */
+function logSessionLifecycleEvent(repoRoot: string, event: SessionLifecycleEvent): void {
+  try {
+    const dataDir = join(repoRoot, "data");
+    if (!existsSync(dataDir)) return;
+    appendFileSync(sessionLifecycleLogPath(repoRoot), `${JSON.stringify(event)}\n`, "utf8");
+  } catch {
+    // best-effort — nunca propaga.
+  }
 }
 
 /**
@@ -1051,12 +1343,240 @@ export function heartbeat(
  * encerrar da máquina local o registro de outra máquina sem passar `--tag`
  * explicitamente — `tag` aqui default pra `machineTag()` local, então sem a
  * flag o path procurado nunca é o da outra máquina).
+ *
+ * #6624: quando `kind` é coordenador (`COORDINATOR_SESSION_KINDS`), registra
+ * um evento `"ended"` no log de ciclo de vida — instrumentação, nunca afeta
+ * o retorno nem lança.
+ *
+ * **#6952 (achado do review da PR): a remoção também entra no lock.** Todo
+ * ESCRITOR do registro passou a serializar em `{path}.lock`, mas o REMOVEDOR
+ * tinha ficado de fora — e remover é escrever. Sem o lock, esta sequência
+ * ressuscita um registro encerrado de propósito:
+ *
+ *   t0  um CAS (heartbeat/claim/beacon) lê `current` DENTRO do lock
+ *   t1  endSession apaga o arquivo, sem lock nenhum
+ *   t2  o CAS grava — e recria o arquivo que acabou de ser encerrado
+ *
+ * O gatilho é banal: o beacon da sessão dispara a cada chamada de ferramenta,
+ * inclusive na última antes de a sessão terminar, então o heartbeat final e o
+ * `end` competem por construção. Um registro ressuscitado é pior que um
+ * heartbeat perdido — ele volta a aparecer em `list-active`, segura as claims
+ * dele, e só sai no GC seguinte.
+ *
+ * Um timeout de lock aqui PROPAGA (não vira `false`): "não consegui garantir
+ * a remoção" e "não havia nada pra remover" são estados diferentes, e o CLI
+ * distingue os dois — o `main()` transforma o throw em erro nomeado com exit
+ * 1, em vez de imprimir "nothing to end" pra uma remoção que não aconteceu.
+ *
+ * **`breakStaleLock` ANTES de adquirir (achado do 4º review).** Pegar o lock
+ * sem quebrar o órfão reabre, neste call site, exatamente o modo de falha que
+ * `STALE_LOCK_MS` existe pra eliminar: com um `.lock` deixado por um processo
+ * que morreu segurando-o, o `end` gasta o timeout inteiro e LANÇA, e o
+ * registro da sessão sobrevive pra sempre. Reproduzido: 10s e `exit 1`, com o
+ * arquivo intacto.
+ *
+ * Aqui isso é mais grave que nos outros escritores, e por isso a checagem é
+ * obrigatória e não conveniência: `end` é a ÚLTIMA operação sobre este
+ * arquivo. Os demais se autocurariam na escrita seguinte — aqui não há
+ * escrita seguinte, e `end` é o passo final obrigatório de toda rodada
+ * overnight/develop/contínuo. O gatilho também não é hipotético: o binário do
+ * Claude Code quebrou 9× num único dia, e morrer segurando o lock é
+ * precisamente como o órfão nasce.
+ *
+ * Sem laço de retry, diferente do `writeJsonSafeWithCas`: uma quebra de órfão
+ * basta pro caso órfão, e contenção real com um escritor VIVO deve mesmo
+ * esperar os 10s e falhar de forma visível — não há o que reconciliar numa
+ * remoção.
+ *
+ * **Quem chama isto deve ter feito todas as recusas ANTES.** A primeira coisa
+ * que esta função faz é quebrar lock órfão, que é destrutivo sobre estado
+ * compartilhado; um guard avaliado depois já não tem como desfazer isso. Ver
+ * o comentário de ordem no caso `end` do CLI.
  */
-export function endSession(repoRoot: string, kind: SessionKind, sessionId: string, tag: string = machineTag()): boolean {
+export function endSession(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  tag: string = machineTag(),
+  // Só pra teste: o caso "lock VIVO é respeitado" precisa ESPERAR o timeout
+  // estourar pra provar que a quebra é por IDADE e nunca incondicional, e
+  // esperar os 10s de produção custava 10s de wall-clock na suíte — o
+  // suficiente, somado aos outros testes de lock, pra estourar o orçamento de
+  // 300s do batch do runner paralelo (medido: o batch de 150 arquivos que
+  // contém estes testes passou a dar ETIMEDOUT). Produção nunca passa este
+  // argumento.
+  lockTimeoutMs: number = 10_000,
+): boolean {
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
   if (!existsSync(path)) return false;
-  rmSync(path);
-  return true;
+  breakStaleLock(`${path}.lock`);
+  // #6624 × #6952: a leitura do registro pra instrumentação acontece DENTRO
+  // do lock, junto da remoção — lida fora, o `startedAt` poderia vir de um
+  // registro que outro escritor já trocou entre a leitura e o `rmSync`. O
+  // EVENTO é emitido depois de soltar o lock: é append num arquivo diferente,
+  // não precisa da exclusão do registro, e prender o lock por ele alongaria a
+  // janela da única operação que não tem escrita seguinte pra se autocurar.
+  const outcome = withFileLock<{ removed: boolean; record: SessionRecord | null }>(`${path}.lock`, () => {
+    // Re-checa DENTRO do lock: outro `end`/GC concorrente pode ter removido
+    // entre o `existsSync` acima e a aquisição.
+    if (!existsSync(path)) return { removed: false, record: null };
+    const record = isCoordinatorKind(kind) ? readJsonSafe<SessionRecord>(path) : null;
+    rmSync(path);
+    return { removed: true, record };
+  }, lockTimeoutMs);
+  if (outcome.record) {
+    const now = Date.now();
+    const startedMs = Date.parse(outcome.record.startedAt ?? "");
+    logSessionLifecycleEvent(repoRoot, {
+      event: "ended",
+      kind,
+      machineTag: tag,
+      sessionId,
+      ts: new Date(now).toISOString(),
+      ageMs: Number.isFinite(startedMs) ? now - startedMs : undefined,
+    });
+  }
+  return outcome.removed;
+}
+
+/**
+ * Resultado de `checkRepoTreeClean` — árvore limpa ou lista de linhas de
+ * `git status --porcelain` (uma por caminho sujo).
+ */
+export interface RepoTreeCleanResult {
+  clean: boolean;
+  files: string[];
+}
+
+/**
+ * Roda `git status --porcelain` em `repoRoot` e reporta se a árvore está
+ * limpa (#6922). Existe pra dar ao CLI `end` (ver `evaluateEndGuard` abaixo)
+ * um jeito MECÂNICO de checar a regra que já estava em prosa no `SKILL.md`
+ * de `/diaria-continuo` ("nunca encerrar deixando trabalho não commitado em
+ * `master` no checkout compartilhado") — a prosa sozinha não bastou: um tick
+ * relatou "concluído" em 26/08 com trabalho solto no checkout, e a mesma
+ * classe se repetiu em 01/09 (498 linhas da #6952 nunca commitadas, nunca
+ * enviadas, sem PR — ver #6922, comentário de 01/09 21:45 BRT). Nas duas
+ * ocorrências o `end` do tick não encontrou nenhum obstáculo — a única
+ * defesa era o modelo lembrar de rodar `git status` por conta própria antes
+ * de encerrar.
+ *
+ * Fail-soft: se o comando `git` falhar (não é repo git, git indisponível,
+ * timeout) devolve `clean: true` — mesma direção de falha de
+ * `resolveRepoRoot` acima (nunca bloquear por causa de uma checagem que não
+ * rodou, só por uma que rodou e achou sujeira de verdade).
+ */
+export function checkRepoTreeClean(repoRoot: string): RepoTreeCleanResult {
+  try {
+    const res = spawnSync("git", ["status", "--porcelain"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    if (res.status !== 0) return { clean: true, files: [] };
+    const files = (res.stdout ?? "")
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .filter((line) => line.length > 0);
+    return { clean: files.length === 0, files };
+  } catch {
+    return { clean: true, files: [] };
+  }
+}
+
+/**
+ * Resultado de `evaluateEndGuard` — se o `end` pode prosseguir, e a mensagem
+ * de recusa (só presente quando `ok: false`) pro CLI imprimir. `warning`
+ * carrega um aviso informativo (stderr) quando o `end` PROSSEGUE apesar de
+ * sujeira alheia — nunca aborta, só avisa (#6922 reaberto).
+ */
+export interface EndGuardResult {
+  ok: boolean;
+  message?: string;
+  warning?: string;
+}
+
+/**
+ * Extrai o caminho de cada linha de `git status --porcelain` (formato
+ * `XY caminho` ou `XY orig -> novo` pra renames — usa o lado NOVO). Best-effort:
+ * uma linha em formato inesperado é devolvida como está, o pior caso é uma
+ * interseção que não casa (fail-direction segura — vira "sujeira alheia" e
+ * o `end` avisa em vez de recusar, nunca o contrário).
+ */
+function extractPorcelainPath(line: string): string {
+  const body = line.slice(3); // remove "XY " (2 chars de status + 1 espaço)
+  const arrowIdx = body.indexOf(" -> ");
+  return arrowIdx === -1 ? body : body.slice(arrowIdx + 4);
+}
+
+/**
+ * Guard chamado pelo CLI `end` ANTES de remover o registro da sessão
+ * (#6922, revisado — ver comentário de 01/09 sobre a fail-direction
+ * invertida). Recusa encerrar o tick **só quando a sujeira do checkout
+ * compartilhado é atribuível à PRÓPRIA sessão** (interseção entre
+ * `git status --porcelain` e os `touched_paths`/`dirty_paths` que o beacon
+ * desta sessão já registrou) — força o commit/push/stash a acontecer (ou o
+ * `--allow-dirty` explícito) só nesse caso.
+ *
+ * Sujeira que NÃO intersecta os caminhos da própria sessão é quase sempre de
+ * OUTRA sessão viva no mesmo checkout compartilhado (#6168 é a norma
+ * documentada, não a exceção) — recusar por ela agrava exatamente os
+ * problemas que #6623/#6624 descrevem (sessões desassistidas sem quem digite
+ * `--allow-dirty`, claims presas até a staleness). Nesse caso o `end`
+ * PROSSEGUE e devolve `warning` (informativo, pro CLI imprimir em stderr) em
+ * vez de abortar.
+ *
+ * `allowDirty: true` continua bypassando tudo, de propósito — escape
+ * residual pro caso em que o operador quer confirmar manualmente que é
+ * seguro seguir mesmo com sujeira própria.
+ *
+ * `ownPaths` — união de `touched_paths` e `dirty_paths` do PRÓPRIO registro
+ * (já normalizados/coletados pelo chamador antes de `endSession` remover o
+ * arquivo). Vazio/ausente (sessão sem beacon de paths, registros antigos
+ * pré-#6168 Parte A) → nenhuma sujeira é atribuível à sessão → sempre avisa,
+ * nunca recusa (mesma fail-direction: never bloquear por dado ausente).
+ */
+export function evaluateEndGuard(
+  repoRoot: string,
+  allowDirty: boolean,
+  ownPaths: readonly string[] = [],
+): EndGuardResult {
+  if (allowDirty) return { ok: true };
+  const { clean, files } = checkRepoTreeClean(repoRoot);
+  if (clean) return { ok: true };
+
+  const normalizedOwn = [...new Set(ownPaths.map(normalizeBeaconPath))].filter((p) => p !== "");
+  const own: string[] = [];
+  const foreign: string[] = [];
+  for (const line of files) {
+    const path = normalizeBeaconPath(extractPorcelainPath(line));
+    const isOwn = path !== "" && normalizedOwn.some((op) => beaconPathsOverlap(op, path));
+    (isOwn ? own : foreign).push(line);
+  }
+
+  if (own.length === 0) {
+    const fileList = foreign.map((f) => `  ${f}`).join("\n");
+    return {
+      ok: true,
+      warning:
+        `session-registry: end prossegue com árvore suja em ${repoRoot} (${foreign.length} arquivo(s)) — ` +
+        `nenhum casa com touched_paths/dirty_paths desta sessão, tratado como sujeira de OUTRA sessão no ` +
+        `checkout compartilhado (#6168):\n${fileList}\n`,
+    };
+  }
+
+  const ownList = own.map((f) => `  ${f}`).join("\n");
+  const foreignSuffix =
+    foreign.length > 0 ? ` (mais ${foreign.length} arquivo(s) de sujeira alheia, ignorados nesta checagem)` : "";
+  return {
+    ok: false,
+    message:
+      `session-registry: end RECUSADO — árvore suja em ${repoRoot} com ${own.length} arquivo(s) atribuível(is) ` +
+      `a esta sessão (touched_paths/dirty_paths)${foreignSuffix}:\n${ownList}\n` +
+      "Commitar, dar push, ou mover o trabalho pra fora do repo antes de encerrar o tick — nunca encerrar " +
+      "deixando trabalho PRÓPRIO não commitado no checkout compartilhado (#6922). --allow-dirty bypassa " +
+      "explicitamente se necessário.\n",
+  };
 }
 
 /** Nomes de arquivo `.json` de sessão (real ou backup) em `data/sessions/` —
@@ -1135,10 +1655,41 @@ export function listSafeBackupFiles(repoRoot: string): string[] {
  * MESMO sessionId, #6130) num único `SessionRecord` efetivo:
  *   - `claimed_issues`: UNIÃO de todos os arrays do grupo — fail-safe,
  *     preferir "está reivindicada" a "não está" (ver docstring do módulo).
+ *   - `merge_grant`: UNIDO também, desde o #6952 — ver abaixo.
  *   - demais campos (phase, pid, active_worktrees, lastHeartbeat…): copiados
  *     do registro com o `lastHeartbeat` MAIS RECENTE do grupo — se qualquer
  *     cópia mostra atividade recente, o grupo inteiro é tratado como
  *     recente (mesmo princípio fail-safe: preferir "viva" a "stale").
+ *
+ * **#6952, segunda metade — por que `merge_grant` precisou entrar na união.**
+ * Até aqui só `claimed_issues`/`claimed_issues_at` eram unidos; todo o resto
+ * vinha de `...primary`, e `primary` é escolhido por heartbeat mais recente.
+ * Um `merge_grant` gravado num record que PERDE essa disputa — uma cópia de
+ * conflito do OneDrive com heartbeat mais novo, o cenário para o qual esta
+ * função existe — era descartado em SILÊNCIO na leitura. Exatamente o oposto
+ * do que o #6130/#6436 garantiram pra claim, e é essa assimetria que explica
+ * o sintoma medido no #6952: a claim sobrevivia e o grant sumia.
+ *
+ * Isto é uma metade independente do lost update de ESCRITA (fechado pelo
+ * `writeJsonSafeWithCas`): serializar toda escrita não ajuda em nada aqui,
+ * porque as duas cópias são gravadas corretamente, cada uma no seu arquivo, e
+ * a perda acontece depois, na hora de ler.
+ *
+ * Regra da união, e o cuidado que ela exige:
+ *   1. Vence o grant de `grantedAt` MAIS RECENTE do grupo — não o do
+ *      `primary`. Uma concessão nova nunca é ofuscada por uma velha só
+ *      porque a velha está no arquivo com heartbeat mais alto.
+ *   2. `consumedAt` PROPAGA: se QUALQUER cópia do grupo mostra a concessão
+ *      vencedora como consumida, o resultado sai consumido (com o
+ *      `consumedAt` mais ANTIGO — a primeira consumação é a real). Isto não é
+ *      simetria estética, é a direção segura: sem isto, uma cópia velha sem
+ *      `consumedAt` RESSUSCITA um grant já usado e o transforma em uso duplo
+ *      — dano pior que a perda que esta função conserta. Um guard que erra
+ *      para o lado do dano é pior que nenhum guard.
+ *
+ * As duas identidades são comparadas por `(grantedBy, grantedTo, grantedAt)`:
+ * é o que distingue "a mesma concessão em duas cópias do arquivo" de "duas
+ * concessões diferentes".
  *
  * Pura — não lê disco. `records` não pode ser vazio.
  */
@@ -1173,8 +1724,38 @@ export function mergeSessionRecords(records: readonly SessionRecord[]): SessionR
       }
     }
   }
+  // #6952 (2ª metade): `merge_grant` unido, não herdado do `primary`.
+  const grants = records.map((r) => r.merge_grant).filter((g): g is MergeGrant => Boolean(g));
+  let mergedGrant: MergeGrant | undefined;
+  if (grants.length > 0) {
+    let winner = grants[0]!;
+    for (const g of grants.slice(1)) {
+      const a = Date.parse(g.grantedAt ?? "");
+      const b = Date.parse(winner.grantedAt ?? "");
+      if (Number.isFinite(a) && (!Number.isFinite(b) || a > b)) winner = g;
+    }
+    // Toda cópia da MESMA concessão (mesma tripla de identidade). Se qualquer
+    // uma já está consumida, o resultado sai consumido — nunca ressuscitado.
+    let consumedAt: string | undefined;
+    for (const g of grants) {
+      if (
+        g.grantedBy !== winner.grantedBy ||
+        g.grantedTo !== winner.grantedTo ||
+        g.grantedAt !== winner.grantedAt
+      ) {
+        continue;
+      }
+      if (!g.consumedAt) continue;
+      if (!consumedAt || Date.parse(g.consumedAt) < Date.parse(consumedAt)) {
+        consumedAt = g.consumedAt;
+      }
+    }
+    mergedGrant = consumedAt ? { ...winner, consumedAt } : { ...winner };
+  }
+
   return {
     ...primary,
+    ...(mergedGrant ? { merge_grant: mergedGrant } : {}),
     claimed_issues: [...claimedUnion].sort((a, b) => a - b),
     claimed_issues_at: claimedAtUnion,
   };
@@ -1255,24 +1836,58 @@ function readMergedSessionGroups(repoRoot: string): SessionRecord[] {
  * vez), o de heartbeat mais recente vence como base (mesmo critério de
  * `mergeSessionRecords`).
  *
+ * **#6952: a chave de agrupamento é (`machineTag`, `sessionId`), não
+ * `sessionId` sozinho.** O propósito descrito acima é sempre INTRA-máquina —
+ * uma sessão promovida de `interactive` pra coordenadora mantém o
+ * `sessionId` e troca o `kind`, no MESMO host. Dois registros com o mesmo
+ * `sessionId` e `machineTag` DIFERENTE não são a mesma sessão; fundi-los
+ * mistura duas sessões num record só.
+ *
+ * Antes do #6952 isso quase não tinha consequência: só `claimed_issues` era
+ * unido e todo o resto vinha do `primary`, então um `merge_grant` só cruzava
+ * a fronteira de máquina por coincidência de heartbeat. Com o `merge_grant`
+ * entrando na união, o vazamento passaria a ser sistemático — uma concessão
+ * gravada no registro de uma máquina apareceria viva no record fundido da
+ * outra. `data/sessions/` é compartilhado via OneDrive entre as máquinas, e
+ * é essa a fronteira que a chave preserva.
+ *
+ * Dormente na prática (nada num fluxo normal produz o mesmo `sessionId` sob
+ * duas tags), e por isso o conserto é a chave + o teste de regressão, não
+ * um mecanismo novo.
+ *
  * Pura — opera sobre a lista já lida do disco, não lê nada sozinha.
  */
 function dedupeBySessionId(records: readonly SessionRecord[]): SessionRecord[] {
   const bySessionId = new Map<string, SessionRecord[]>();
   for (const record of records) {
-    const group = bySessionId.get(record.sessionId) ?? [];
+    // `\u0000` como separador: não pode aparecer em hostname nem em UUID de
+    // sessão, então não há como uma tag terminada em "-" colidir com um
+    // sessionId iniciado por outra coisa.
+    const key = `${record.machineTag ?? ""}\u0000${record.sessionId}`;
+    const group = bySessionId.get(key) ?? [];
     group.push(record);
-    bySessionId.set(record.sessionId, group);
+    bySessionId.set(key, group);
   }
 
   const out: SessionRecord[] = [];
   for (const group of bySessionId.values()) {
-    if (group.length === 1) {
-      out.push(group[0]!);
+    // #7028: registros com `endedAt` carimbado (promoção de kind cuja
+    // remoção do arquivo antigo falhou — ver docblock do campo em
+    // `SessionRecord`) não contam como sessão viva. Excluídos ANTES de
+    // escolher base/kind — senão o órfão `overnight` (que só tem claims
+    // MIGRADAS, já duplicadas no registro novo) continuaria vencendo sobre
+    // um `interactive` genuinamente vivo só por `isCoordinatorKind`, o
+    // sintoma medido ao vivo na #7028. Grupo inteiro encerrado (raro — só
+    // aconteceria se TODAS as cópias tivessem sido carimbadas) não produz
+    // nenhuma sessão ativa.
+    const liveGroup = group.filter((r) => !r.endedAt);
+    if (liveGroup.length === 0) continue;
+    if (liveGroup.length === 1) {
+      out.push(liveGroup[0]!);
       continue;
     }
-    const claimsUnion = mergeSessionRecords(group);
-    const coordinatorGroup = group.filter((r) => isCoordinatorKind(r.kind));
+    const claimsUnion = mergeSessionRecords(liveGroup);
+    const coordinatorGroup = liveGroup.filter((r) => isCoordinatorKind(r.kind));
     const base = coordinatorGroup.length > 0 ? mergeSessionRecords(coordinatorGroup) : claimsUnion;
     out.push({
       ...base,
@@ -1318,7 +1933,11 @@ export function listActiveSessions(
     // #6168: a janela é POR KIND — `interactive` usa a sua, bem menor, porque
     // não emite heartbeat depois que a conversa acaba (ver
     // `INTERACTIVE_SOFT_STALE_MS`). Os 3 kinds coordenadores não mudam.
-    out.push({ ...record, stale: ageMs > softStaleMsForKind(record.kind) });
+    const stale = ageMs > softStaleMsForKind(record.kind);
+    // #6623: `claimed_issues_effective` — vazio quando `stale`, mesmo campo
+    // bruto quando viva. Mesma regra de validade que `isIssueClaimedByOther`
+    // já aplica (abaixo), carregada aqui pra quem só lê `list-active`.
+    out.push({ ...record, stale, claimed_issues_effective: stale ? [] : (record.claimed_issues ?? []) });
   }
   return out;
 }
@@ -1418,22 +2037,33 @@ export function claimIssueCheckAndSet(
     }
   }
 
-  const claimed = new Set(current.claimed_issues ?? []);
-  claimed.add(issueNumber);
-  // #6436 — grava o timestamp da PRIMEIRA reivindicação, nunca sobrescreve
-  // numa re-reivindicação da mesma issue (`already-own`) — ver docstring de
-  // `claimed_issues_at` em `SessionRecord`.
-  const claimedAt = { ...(current.claimed_issues_at ?? {}) };
+  // #6952: CAS em vez de read-modify-write solto. O beacon (mesmo arquivo)
+  // pode reescrever o record enquanto este claim tenta gravar, e um
+  // `...current` congelado apagaria os campos dele (merge_grant,
+  // touched_paths, etc.) — exatamente a mesma classe do #6952.
   const issueKey = String(issueNumber);
-  if (!(issueKey in claimedAt)) {
-    claimedAt[issueKey] = now;
-  }
-  writeJsonSafe(path, {
-    ...current,
-    claimed_issues: [...claimed].sort((a, b) => a - b),
-    claimed_issues_at: claimedAt,
-    lastHeartbeat: now,
-  });
+  writeJsonSafeWithCas(
+    path,
+    (current) => {
+      if (!current) throw new Error("claimIssueCheckAndSet: sessão sumiu entre a leitura e a escrita");
+      const claimed = new Set(current.claimed_issues ?? []);
+      claimed.add(issueNumber);
+      // #6436 — grava o timestamp da PRIMEIRA reivindicação, nunca sobrescreve
+      // numa re-reivindicação da mesma issue (`already-own`) — ver docstring de
+      // `claimed_issues_at` em `SessionRecord`.
+      const claimedAt = { ...(current.claimed_issues_at ?? {}) };
+      if (!(issueKey in claimedAt)) {
+        claimedAt[issueKey] = now;
+      }
+      return {
+        ...current,
+        claimed_issues: [...claimed].sort((a, b) => a - b),
+        claimed_issues_at: claimedAt,
+        lastHeartbeat: now,
+      };
+    },
+    (onDisk) => onDisk?.lastHeartbeat === now && (onDisk?.claimed_issues ?? []).includes(issueNumber),
+  );
   return overriddenOwner ? { ok: true, reason, blockedBy: overriddenOwner } : { ok: true, reason };
 }
 
@@ -1671,12 +2301,37 @@ export function unclaimIssue(
   const claimedAt = { ...(current.claimed_issues_at ?? {}) };
   delete claimedAt[String(issueNumber)];
 
-  writeJsonSafe(path, {
-    ...current,
-    claimed_issues: claimed.filter((n) => n !== issueNumber),
-    claimed_issues_at: claimedAt,
-    lastHeartbeat: now,
-  });
+  // #6952: CAS em vez de read-modify-write solto — mesmo risco que
+  // `claimIssueCheckAndSet`/`grantMergeWindow`.
+  writeJsonSafeWithCas(
+    path,
+    (fresh) => {
+      if (!fresh) throw new Error("unclaimIssue: sessão sumiu entre a leitura e a escrita");
+      // #6952: a base é o registro MESCLADO do grupo (real + backups), não o
+      // arquivo real cru — igual ao `current` calculado fora do lock, e pelo
+      // mesmo motivo (#6481: a claim pode existir só num backup).
+      //
+      // Reler só o arquivo real aqui foi regressão de verdade, pega por
+      // `test/session-registry-reconcile-claims.test.ts`: o `unclaimIssue`
+      // deixava de trazer as claims que existiam só nos backups, e o registro
+      // real saía com MENOS issues do que o grupo tinha antes da operação.
+      // "Re-derivar do estado fresco" continua valendo — o que muda é QUAL
+      // leitura é a fresca: a do GRUPO, não a de um arquivo do grupo.
+      const base = readMergedRecordForRealFile(repoRoot, path) ?? fresh;
+      const claimed = base.claimed_issues ?? [];
+      const claimedAt = { ...(base.claimed_issues_at ?? {}) };
+      delete claimedAt[String(issueNumber)];
+      return {
+        ...base,
+        claimed_issues: claimed.filter((n) => n !== issueNumber),
+        claimed_issues_at: claimedAt,
+        lastHeartbeat: now,
+      };
+    },
+    (onDisk) =>
+      onDisk?.lastHeartbeat === now &&
+      !(onDisk?.claimed_issues ?? []).includes(issueNumber),
+  );
 
   // #6567: propaga a remoção a cada `-safeBackup-*` do grupo que ainda carrega
   // a issue — ver docstring acima. Reescrita cirúrgica: só os dois campos de
@@ -1688,11 +2343,35 @@ export function unclaimIssue(
     if (!backupClaimed.includes(issueNumber)) continue;
     const backupClaimedAt = { ...(backupRecord.claimed_issues_at ?? {}) };
     delete backupClaimedAt[String(issueNumber)];
-    writeJsonSafe(backupPath, {
-      ...backupRecord,
-      claimed_issues: backupClaimed.filter((n) => n !== issueNumber),
-      claimed_issues_at: backupClaimedAt,
-    });
+    // #6952 (4º review): esta PR promoveu este laço de `writeJsonSafe` (que
+    // praticamente nunca lança) pra `writeJsonSafeWithCas` (que PODE exaurir).
+    // Sem o try/catch, um backup que exaure interrompe o laço e os SEGUINTES
+    // nunca são tentados — assimetria introduzida por esta PR entre dois laços
+    // que ela mesma descreve como um modelado no outro (`consumeMergeGrant` já
+    // isola cada cópia). A direção de falha é segura (a união favorece "ainda
+    // reivindicada" e o retry se autocura), mas parar cedo é gratuito.
+    try {
+      writeJsonSafeWithCas(
+        backupPath,
+        (current) => {
+          if (!current) throw new Error("unclaimIssue: backup sumiu entre a leitura e a escrita");
+          const claimed = current.claimed_issues ?? [];
+          const at = { ...(current.claimed_issues_at ?? {}) };
+          delete at[String(issueNumber)];
+          return {
+            ...current,
+            claimed_issues: claimed.filter((n) => n !== issueNumber),
+            claimed_issues_at: at,
+          };
+        },
+        (onDisk) => !(onDisk?.claimed_issues ?? []).includes(issueNumber),
+      );
+    } catch {
+      // Um backup que falhou não impede limpar os outros. A remoção do
+      // arquivo REAL (acima) já aconteceu e é a que manda na leitura; um
+      // backup que ainda carregue a issue faz a união preferir "reivindicada",
+      // que é a direção segura, e a próxima execução retenta.
+    }
   }
 
   return { ok: true, reason: "unclaimed" };
@@ -2400,11 +3079,27 @@ export function planSessionGc(repoRoot: string, opts: SessionGcOptions = {}): Se
  * arquivo: se um `rmSync` individual falhar (ex: I/O transitório do
  * OneDrive), os demais arquivos do plano continuam sendo processados — a
  * próxima execução retenta o que sobrou.
+ *
+ * #6624: quando o grupo removido tem ARQUIVO REAL coordenador (não é
+ * `orphan-backup:*` — esse é resíduo de uma sessão que já chamou `end`
+ * corretamente) e `kind` está em `COORDINATOR_SESSION_KINDS`, registra
+ * `"gc-removed-without-end"` no log de ciclo de vida — é o sinal direto de
+ * "esta sessão nunca chamou `end`", a pergunta que a issue faz.
  */
 export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions = {}): SessionGcResult[] {
   const plan = planSessionGc(repoRoot, opts);
+  const now = opts.now ?? Date.now();
   for (const entry of plan) {
     if (entry.action !== "removed") continue;
+    // #6624: lê o record ANTES de remover, só pra grupos coordenadores com
+    // arquivo real (identity sem o prefixo "orphan-backup:") — instrumentação,
+    // nunca afeta a decisão de remoção em si.
+    const isOrphanGroup = entry.identity.startsWith("orphan-backup:");
+    let lifecycleRecord: SessionRecord | null = null;
+    if (!isOrphanGroup) {
+      const realFile = entry.files.find((f) => !f.includes("-safeBackup-"));
+      lifecycleRecord = realFile ? readJsonSafe<SessionRecord>(realFile) : null;
+    }
     // #6130 (achado HIGH do fleet review): antes disto, uma falha de rmSync
     // era engolida em silêncio E a entry continuava reportando "removed" —
     // o operador via "removido" no output do CLI mesmo com o arquivo ainda
@@ -2424,6 +3119,18 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
     if (!allRemoved) {
       entry.action = "kept";
       entry.reason = `${entry.reason} [remoção falhou parcialmente — reportado como "kept", próxima execução retenta]`;
+      continue;
+    }
+    if (lifecycleRecord && isCoordinatorKind(lifecycleRecord.kind)) {
+      const startedMs = Date.parse(lifecycleRecord.startedAt ?? "");
+      logSessionLifecycleEvent(repoRoot, {
+        event: "gc-removed-without-end",
+        kind: lifecycleRecord.kind,
+        machineTag: lifecycleRecord.machineTag,
+        sessionId: lifecycleRecord.sessionId,
+        ts: new Date(now).toISOString(),
+        ageMs: Number.isFinite(startedMs) ? now - startedMs : undefined,
+      });
     }
   }
   return plan;
@@ -2701,18 +3408,253 @@ export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
       continue;
     }
 
-    const claimedSet = new Set(current.claimed_issues ?? []);
-    for (const issue of fresh.addedIssues) claimedSet.add(issue);
-    const claimedIssuesAt = { ...(current.claimed_issues_at ?? {}), ...fresh.addedClaimedIssuesAt };
     try {
-      writeJsonSafe(entry.realPath, {
-        ...current,
-        claimed_issues: [...claimedSet].sort((a, b) => a - b),
-        claimed_issues_at: claimedIssuesAt,
-      });
+      // #6952: CAS em vez de read-modify-write solto — o beacon pode
+      // reescrever o record enquanto este `reconcileClaims` tenta gravar, e um
+      // `...current` congelado apagaria os campos dele.
+      writeJsonSafeWithCas(
+        entry.realPath,
+        (current) => {
+          if (!current) throw new Error("reconcileClaims: sessão sumiu entre a leitura e a escrita");
+          const set = new Set(current.claimed_issues ?? []);
+          for (const issue of fresh.addedIssues) set.add(issue);
+          const at = { ...(current.claimed_issues_at ?? {}), ...fresh.addedClaimedIssuesAt };
+          return {
+            ...current,
+            claimed_issues: [...set].sort((a, b) => a - b),
+            claimed_issues_at: at,
+          };
+        },
+        // `verify` checa PERTINÊNCIA das issues que este reconcile veio
+        // adicionar, nunca igualdade do array inteiro contra um snapshot.
+        // Comparar com um `expectedClaimed` congelado ANTES do lock seria o
+        // mesmo bug que esta PR conserta, do lado do `verify`: um escritor
+        // concorrente que adicione OUTRA issue deixa o disco correto (o
+        // `merge` acima relê fresco e produz o superconjunto) e mesmo assim a
+        // igualdade nunca casaria — as 50 tentativas se esgotariam e o
+        // reconcile reportaria `write-failed` para uma escrita que funcionou.
+        (onDisk) => {
+          const claimedOnDisk = new Set(onDisk?.claimed_issues ?? []);
+          return fresh.addedIssues.every((issue) => claimedOnDisk.has(issue));
+        },
+      );
     } catch (e) {
       entry.action = "write-failed";
       entry.reason = `${entry.reason} [escrita falhou: ${(e as Error)?.message ?? String(e)} — próxima execução retenta]`;
+    }
+  }
+  return plan;
+}
+
+// ─── Recolhimento de -safeBackup- já reconciliados (#6970) ─────────────────
+//
+// `reconcileClaims` (#6581, acima) já funde `claimed_issues` de um grupo no
+// arquivo REAL, mas DELIBERADAMENTE nunca remove os `-safeBackup-*` — "quem
+// remove é o GC", e `planSessionGc` só recolhe backup ÓRFÃO (sessão já
+// ENCERRADA, arquivo real ausente). O caso que fica de fora dos dois
+// mecanismos: uma sessão VIVA cujo real já reflete tudo que os backups do
+// grupo carregam (reconciliação em dia), mas os backups continuam em disco
+// para sempre — o #6970 mediu 15 arquivos `-safeBackup-` em `data/sessions/`
+// do helios, um criado no mesmo dia da medição.
+//
+// **Restrição que limita o escopo aqui, deliberadamente:** `mergeSessionRecords`
+// ainda NÃO une `merge_grant` entre os arquivos do grupo (essa união é o
+// objeto do #6952/PR #6969, que segue ABERTA — ver #6972, que documenta a
+// consequência de uni-los sem também ensinar o gate de merge a considerar
+// backup). Enquanto essa união não existe, um `merge_grant` que sobreviva
+// SÓ num backup pode ser a única cópia legível dele (dependendo de qual
+// registro do grupo `mergeSessionRecords` escolhe como `primary` por
+// heartbeat) — apagar esse backup cegamente arriscaria descartar um grant
+// vivo sem jeito de recuperá-lo depois. Por isso este planejador NUNCA marca
+// um grupo como removível se QUALQUER backup dele carrega `merge_grant`
+// (mesmo consumido/expirado — não há como saber se outro processo ainda vai
+// gravar um NOVO grant que dependa desse backup até a união do #6952
+// existir; o custo de errar pro lado conservador aqui é só "um backup a
+// mais em disco", nunca corrupção). Reavaliar este limite quando o #6952
+// mergear.
+export type SafeBackupCleanupAction =
+  | "removable"
+  | "pending-reconciliation"
+  | "has-merge-grant"
+  | "skipped-unreadable-real"
+  | "orphan-backups-only";
+
+export interface SafeBackupCleanupResult {
+  /** Stem do arquivo real (mesma identidade de `ClaimReconciliationResult`), ou
+   * `orphan-backup:{arquivo}` pra um backup sem real correspondente. */
+  identity: string;
+  /** Path absoluto do arquivo real do grupo — `null` só pra `orphan-backups-only`. */
+  realPath: string | null;
+  backupPaths: string[];
+  action: SafeBackupCleanupAction;
+  reason: string;
+}
+
+/**
+ * Plano PURO (sem I/O) de quais grupos de `-safeBackup-*` já reconciliados
+ * podem ser removidos com segurança. Reusa `groupBackupsByRealStem` e
+ * `decideClaimReconciliation` — a MESMA primitiva de união que
+ * `planClaimReconciliation` já usa, evitando uma 2ª regra de merge que
+ * divergiria da 1ª (mesmo princípio citado na issue #6970).
+ *
+ * Grupo sem nenhum backup nunca aparece no resultado (nada a fazer). Backup
+ * ÓRFÃO (sem arquivo real correspondente — sessão já encerrada, GC ainda não
+ * passou) é reportado com `action: "orphan-backups-only"` — mesma
+ * observabilidade que `planClaimReconciliation` já dá pro caso irmão
+ * (#7005 self-review finding 2): este planejador nunca toca esses backups
+ * (quem decide o destino deles é `planSessionGc`, pela liveness do grupo),
+ * mas omiti-los do output silenciosamente sugeria "nada a revisar" quando na
+ * verdade pode haver estado importante ali (achado ao vivo #7002).
+ */
+export function planSafeBackupCleanup(repoRoot: string): SafeBackupCleanupResult[] {
+  const dir = sessionsDir(repoRoot);
+  const names = listSessionJsonFiles(repoRoot);
+  const realNames = names.filter((n) => !n.includes("-safeBackup-")).sort();
+  const backupsByRealStem = groupBackupsByRealStem(names);
+  const claimedBackupNames = new Set<string>();
+  const results: SafeBackupCleanupResult[] = [];
+
+  for (const realName of realNames) {
+    const stem = realName.slice(0, -".json".length);
+    const backupNames = (backupsByRealStem.get(stem) ?? []).sort();
+    for (const b of backupNames) claimedBackupNames.add(b);
+    if (backupNames.length === 0) continue; // sem backup — nada a recolher
+
+    const realPath = join(dir, realName);
+    const backupPaths = backupNames.map((n) => join(dir, n));
+    const realRecord = readJsonSafe<SessionRecord>(realPath);
+    if (!realRecord) {
+      results.push({
+        identity: stem,
+        realPath,
+        backupPaths,
+        action: "skipped-unreadable-real",
+        reason: "arquivo real ilegível/corrompido — grupo pulado (fail-soft, mesma disciplina de planClaimReconciliation)",
+      });
+      continue;
+    }
+
+    const backupRecords: SessionRecord[] = [];
+    for (const b of backupNames) {
+      const r = readJsonSafe<SessionRecord>(join(dir, b));
+      if (r) backupRecords.push(r);
+    }
+
+    const { addedIssues } = decideClaimReconciliation(realRecord, backupRecords);
+    if (addedIssues.length > 0) {
+      results.push({
+        identity: stem,
+        realPath,
+        backupPaths,
+        action: "pending-reconciliation",
+        reason: `${addedIssues.length} claim(s) do grupo ainda não estão no real — rode reconcileClaims primeiro`,
+      });
+      continue;
+    }
+
+    const anyBackupHasGrant = backupRecords.some((r) => r.merge_grant != null);
+    if (anyBackupHasGrant) {
+      results.push({
+        identity: stem,
+        realPath,
+        backupPaths,
+        action: "has-merge-grant",
+        reason:
+          "claims reconciliadas, mas um backup do grupo carrega merge_grant — mergeSessionRecords ainda não une " +
+          "grant entre arquivos (#6952 em aberto), então remover arriscaria perder a única cópia legível dele; preservado",
+      });
+      continue;
+    }
+
+    results.push({
+      identity: stem,
+      realPath,
+      backupPaths,
+      action: "removable",
+      reason: `claims já reconciliadas no real, nenhum backup carrega merge_grant — ${backupPaths.length} backup(s) removível(is)`,
+    });
+  }
+
+  const orphanBackups = names.filter((n) => n.includes("-safeBackup-") && !claimedBackupNames.has(n)).sort();
+  for (const orphan of orphanBackups) {
+    results.push({
+      identity: `orphan-backup:${orphan}`,
+      realPath: null,
+      backupPaths: [join(dir, orphan)],
+      action: "orphan-backups-only",
+      reason:
+        "backup sem arquivo real correspondente — este planejador nunca toca backup órfão; " +
+        "o GC (`planSessionGc`) decide o destino dele com os critérios de liveness dele",
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Aplica `planSafeBackupCleanup`: para cada grupo `"removable"`, RELÊ o real
+ * e os backups no momento da escrita e RECOMPUTA a decisão contra esse
+ * estado FRESCO — mesma disciplina de `reconcileClaims` (evita remover um
+ * backup que recebeu uma claim ou um merge_grant NOVO entre o plano e a
+ * execução; a corrida é real, `data/sessions/` é escrito por sessões
+ * concorrentes o tempo todo). Remoção é best-effort (`rmSync`, nunca lança)
+ * — mesmo idioma de `garbageCollectSessions`: uma falha rebaixa a entry pra
+ * `"kept"` com o motivo anexado, e a próxima execução retenta.
+ *
+ * Nunca escreve no arquivo real — só remove backups já subsumidos por ele.
+ * Idempotente por construção: rodar duas vezes sobre o mesmo estado não
+ * remove nada na 2ª vez (os backups já não existem).
+ */
+export function cleanupReconciledSafeBackups(repoRoot: string): SafeBackupCleanupResult[] {
+  const plan = planSafeBackupCleanup(repoRoot);
+  for (const entry of plan) {
+    if (entry.action !== "removable" || !entry.realPath) continue; // "removable" nunca tem realPath null (só "orphan-backups-only" tem)
+
+    const freshReal = readJsonSafe<SessionRecord>(entry.realPath);
+    if (!freshReal) {
+      entry.action = "skipped-unreadable-real";
+      entry.reason = `${entry.reason} [ficou ilegível entre o plano e a remoção — pulado, próxima execução retenta]`;
+      continue;
+    }
+    const freshBackupRecords: SessionRecord[] = [];
+    const freshBackupPaths: string[] = [];
+    for (const backupPath of entry.backupPaths) {
+      const r = readJsonSafe<SessionRecord>(backupPath);
+      if (r) {
+        freshBackupRecords.push(r);
+        freshBackupPaths.push(backupPath);
+      }
+      // backup que sumiu entre o plano e agora (removido por outra execução
+      // concorrente) simplesmente não entra na releitura — nada a remover ali.
+    }
+    if (freshBackupPaths.length === 0) {
+      entry.action = "removable"; // nada restava — já recolhido por outra execução
+      entry.reason = `${entry.reason} [já não havia backup(s) no momento da remoção — outra execução chegou primeiro]`;
+      continue;
+    }
+
+    const { addedIssues } = decideClaimReconciliation(freshReal, freshBackupRecords);
+    if (addedIssues.length > 0) {
+      entry.action = "pending-reconciliation";
+      entry.reason = `${entry.reason} [claim nova apareceu num backup entre o plano e a remoção — pulado, retenta depois de reconciliar]`;
+      continue;
+    }
+    if (freshBackupRecords.some((r) => r.merge_grant != null)) {
+      entry.action = "has-merge-grant";
+      entry.reason = `${entry.reason} [merge_grant apareceu num backup entre o plano e a remoção — pulado]`;
+      continue;
+    }
+
+    let allRemoved = true;
+    for (const backupPath of freshBackupPaths) {
+      try {
+        rmSync(backupPath, { force: true });
+      } catch {
+        allRemoved = false;
+      }
+    }
+    if (!allRemoved) {
+      entry.reason = `${entry.reason} [remoção falhou parcialmente — próxima execução retenta o que sobrou]`;
     }
   }
   return plan;
@@ -3085,13 +4027,24 @@ export function grantMergeWindow(
 
   const tag = meta.tag ?? machineTag();
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
-  const current = readJsonSafe<SessionRecord>(path);
-  if (!current) return { ok: false, reason: "no-op-session-missing" };
+  if (!readJsonSafe<SessionRecord>(path)) return { ok: false, reason: "no-op-session-missing" };
 
   const now = meta.now ?? new Date().toISOString();
   const grant: MergeGrant = { grantedTo, grantedBy: sessionId, grantedAt: now };
   if (meta.pr !== undefined) grant.pr = meta.pr;
-  writeJsonSafe(path, { ...current, merge_grant: grant, lastHeartbeat: now });
+
+  // #6952: CAS em vez de read-modify-write solto. O concedente é uma sessão
+  // ATIVA e o beacon reescreve este registro a cada chamada de ferramenta —
+  // sem isto o grant é apagado pelo próprio concedente antes de a
+  // beneficiária consome-lo (exato sintoma do #6952).
+  writeJsonSafeWithCas(
+    path,
+    (current) => {
+      if (!current) throw new Error("grant-merge: sessão sumiu entre a leitura e a escrita");
+      return { ...current, merge_grant: grant, lastHeartbeat: now };
+    },
+    (onDisk) => onDisk?.merge_grant?.grantedAt === grant.grantedAt,
+  );
   return { ok: true, reason: "granted", grant };
 }
 
@@ -3147,13 +4100,93 @@ export function consumeMergeGrant(repoRoot: string, sessionId: string, now: numb
   if (!found) return false;
   const owner = found.grantedBy;
   const path = sessionFilePath(repoRoot, owner.kind, owner.machineTag, owner.sessionId);
-  const current = readJsonSafe<SessionRecord>(path);
-  if (!current || !current.merge_grant) return false;
-  writeJsonSafe(path, {
-    ...current,
-    merge_grant: { ...current.merge_grant, consumedAt: new Date(now).toISOString() },
-  });
-  return true;
+  const consumedAt = new Date(now).toISOString();
+  const grant = found.grant;
+
+  // #6952 (achado do review INDEPENDENTE da PR): consumir percorre o GRUPO
+  // inteiro — arquivo real + toda cópia `-safeBackup-*` —, não só o real.
+  //
+  // Por que isto passou a ser obrigatório NESTA PR e não era antes: a 2ª
+  // metade fez `mergeSessionRecords` UNIR o `merge_grant`, então uma concessão
+  // que vive só numa cópia de conflito do OneDrive passou a ser ENCONTRADA por
+  // `findLiveMergeGrant`. Consertar a leitura sem consertar a escrita cria um
+  // estado novo e pior que o bug original: um grant **encontrável e
+  // inconsumível**, vivo pelo TTL inteiro, porque o `consumedAt` era gravado
+  // só no arquivo real — que nesse cenário nem carrega o grant. Reproduzido ao
+  // vivo: `findLiveMergeGrant` acha, `consumeMergeGrant` devolve `false`, e o
+  // grant continua vivo na leitura seguinte.
+  //
+  // O molde é o do `unclaimIssue` (#6567) logo acima, pelo mesmo motivo e com
+  // a mesma disciplina: reescrita cirúrgica de UM campo por cópia, nunca o
+  // registro mesclado inteiro por cima de um arquivo do grupo.
+  //
+  // O retorno passa a afirmar a PÓS-CONDIÇÃO, não o número de escritas: só é
+  // `true` se a concessão de fato deixou de estar viva. Um `true` com o grant
+  // ainda vivo seria exatamente a mentira que abre uso duplo — o chamador
+  // acredita que a janela fechou e ela não fechou.
+  // Type guard (não só boolean): os dois call sites precisam do estreitamento
+  // pra mexer no grant sem `!`.
+  const identityMatches = (g: MergeGrant | undefined): g is MergeGrant =>
+    g !== undefined &&
+    g.grantedTo === grant.grantedTo &&
+    g.grantedBy === grant.grantedBy &&
+    g.grantedAt === grant.grantedAt;
+
+  let stamped = false;
+  for (const groupPath of [path, ...sessionGroupBackupPaths(repoRoot, path)]) {
+    const record = readJsonSafe<SessionRecord>(groupPath);
+    // Nada a fazer neste arquivo: ilegível, sem grant, com OUTRA concessão, ou
+    // já consumido. Nenhum dos casos é erro — a concessão pode viver em
+    // qualquer subconjunto das cópias.
+    if (!record || !identityMatches(record.merge_grant) || record.merge_grant?.consumedAt) continue;
+    try {
+      writeJsonSafeWithCas(
+        groupPath,
+        (current) => {
+          // RECONFERE a identidade DENTRO do lock. O `identityMatches` acima
+          // roda antes de pedir o lock, e entre uma coisa e outra a concessão
+          // pode ter sido trocada por OUTRA — viva, legítima e de outro
+          // beneficiário. Sem esta checagem, carimbamos `consumedAt` na janela
+          // alheia e a matamos em silêncio, devolvendo `ok`: o mesmo dano que
+          // esta função existe pra evitar, por outra porta.
+          //
+          // Não basta `if (!current?.merge_grant)`: "existe UMA concessão" não
+          // é "existe A concessão que eu vim consumir".
+          const onDiskGrant = current?.merge_grant;
+          if (!current || !identityMatches(onDiskGrant)) {
+            throw new Error(
+              "consumeMergeGrant: a concessão neste arquivo mudou entre a conferência e o lock — não é a que veio ser consumida",
+            );
+          }
+          return { ...current, merge_grant: { ...onDiskGrant, consumedAt } };
+        },
+        // `verify` também confere identidade: só `consumedAt` presente diria
+        // "alguma coisa foi carimbada", não "a NOSSA foi".
+        (onDisk) =>
+          identityMatches(onDisk?.merge_grant) && onDisk?.merge_grant?.consumedAt === consumedAt,
+      );
+      stamped = true;
+    } catch {
+      // Uma cópia que falhou não impede consumir as outras — e são as OUTRAS
+      // que mantêm a concessão viva na leitura. A pós-condição abaixo é quem
+      // decide o desfecho.
+    }
+  }
+
+  // Fail-open no contrato ("nunca lança"), mas honesto no valor. As DUAS
+  // condições são necessárias, e cada uma cobre uma mentira diferente:
+  //
+  // - `stamped`: carimbamos de fato pelo menos uma cópia da NOSSA concessão.
+  //   Sem isto, o caso "a concessão foi trocada por outra enquanto
+  //   esperávamos o lock" devolveria `true` — `findLiveMergeGrant` para ESTE
+  //   sessionId volta `null` (a janela viva agora é de outro beneficiário), e
+  //   reportaríamos "janela consumida" sem ter consumido nada.
+  // - a releitura: a janela realmente fechou. Sem isto, uma cópia que falhou
+  //   de gravar deixaria a concessão viva e ainda assim diríamos `ok`.
+  //
+  // Um `true` em qualquer dos dois casos é a mentira que abre uso duplo: o
+  // chamador acredita que a janela fechou e age sobre isso.
+  return stamped && findLiveMergeGrant(repoRoot, sessionId, now) === null;
 }
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
@@ -3310,6 +4343,35 @@ function main(): void {
         // (data/sessions/ é compartilhado via OneDrive) sem exigir rodar o
         // comando fisicamente naquela máquina.
         const tag = values.tag ?? machineTag();
+        // #6922 (revisado): recusa encerrar o tick só quando a sujeira é
+        // ATRIBUÍVEL à própria sessão (interseção com touched_paths/
+        // dirty_paths do próprio registro, lido ANTES de endSession remover
+        // o arquivo) — ver docstring de `evaluateEndGuard` acima.
+        // `--allow-dirty` bypassa de propósito (mesmo em sujeira própria).
+        const ownRecordPath = sessionFilePath(repoRoot, kind, tag, sessionId);
+        const ownRecord = readJsonSafe<SessionRecord>(ownRecordPath);
+        const ownPaths = [...(ownRecord?.touched_paths ?? []), ...(ownRecord?.dirty_paths ?? [])];
+        const endGuard = evaluateEndGuard(repoRoot, flags.has("allow-dirty"), ownPaths);
+        if (!endGuard.ok) {
+          process.stdout.write(endGuard.message ?? "session-registry: end recusado (árvore suja)\n");
+          process.exitCode = 1;
+          break;
+        }
+        if (endGuard.warning) process.stderr.write(endGuard.warning);
+        // ORDEM IMPORTANTE, e o motivo não é legibilidade (#6952): o guard
+        // acima é LEITURA PURA (`git status` + interseção de paths) e é o
+        // único dos dois passos que pode dizer "não prossiga". O `endSession`
+        // abaixo começa quebrando `.lock` órfão — AÇÃO DESTRUTIVA sobre
+        // estado compartilhado, porque outro processo pode estar prestes a
+        // adquirir aquele lock legitimamente.
+        //
+        // Invertendo (quebrar o lock e só então avaliar o guard), uma recusa
+        // deixa o sistema PIOR do que se ninguém tivesse tentado: lock de
+        // terceiro quebrado e nada encerrado. Como o guard não tem efeito
+        // colateral, adiá-lo não compra nada.
+        //
+        // A regra geral: **ação destrutiva por último, depois de todas as
+        // recusas possíveis.**
         const removed = endSession(repoRoot, kind, sessionId, tag);
         if (removed) {
           process.stdout.write("session-registry: ended\n");
@@ -3600,6 +4662,9 @@ function main(): void {
             "(não-stale) do kind K? `--session-id` exclui a própria sessão da resposta (#6277).\n" +
             "  --tag (só \"end\"): machineTag() da sessão a encerrar (default: machineTag() local) — necessário " +
             "pra encerrar da máquina local o registro de OUTRA máquina em data/sessions/ (#5797).\n" +
+            "  --allow-dirty (só \"end\"): bypassa a recusa (#6922) — a recusa em si já só dispara quando a " +
+            "sujeira intersecta touched_paths/dirty_paths da PRÓPRIA sessão; sujeira alheia de outra sessão " +
+            "concorrente no mesmo checkout prossegue com aviso, nunca exit 1.\n" +
             "  conflicts [--paths a,b] [--branch X]: CONSULTA (#6168) — quem mais está mexendo nisto agora. " +
             "exit 1 = sobreposição com peer VIVO; exit 0 = livre. Nunca cria arquivo nem adquire nada.\n" +
             "  grant-merge --kind {overnight|develop|continuo} --granted-to X [--pr N]: concede janela de merge a " +

@@ -1,0 +1,262 @@
+/**
+ * site-assinar-page.ts (#7015)
+ *
+ * Gera `workers/site/public/assinar/index.html` — página de cadastro
+ * PRÓPRIA do apex (#6427, ver o comentário original preservado abaixo).
+ * Extraído pra fechar a 3ª ocorrência do bug de wordmark: #4797 extraiu
+ * `brand-wordmark.ts` porque "nenhuma página aplicava o mesmo tratamento";
+ * #7010 achou a HOME reescrevendo a marca à mão (só os pontos em teal, sem
+ * o ".br" inteiro) e moveu `scripts/lib/site-home-page.ts` pra consumir
+ * `WORDMARK_DISPLAY_SEGMENTS`; `/assinar` tinha o MESMO bug e ficou de fora
+ * do #7010 só porque era HTML estático sem gerador — este módulo fecha essa
+ * lacuna copiando o padrão de `renderWordmark()` de `site-home-page.ts`
+ * (mesma estrutura, `.dot` como nome de classe local pro segmento teal,
+ * `aria-hidden` nos separadores decorativos).
+ *
+ * O resto do arquivo (form, CSS, script inline de UTM/fetch) é conteúdo
+ * inteiramente estático — sem nenhum dado de request/edição envolvido —
+ * então vive aqui como um único template literal, sem parâmetros. Rodar
+ * `scripts/gen-assinar-page.ts` sempre que este módulo mudar (mesma
+ * disciplina "commitado à mão" de `workers/site/README.md`, já seguida por
+ * `gen-home-page.ts`/`gen-archive-pages.ts`).
+ */
+import { escHtml } from "./html-escape.ts";
+import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
+import { SIGNUP_FORM_FETCH_TIMEOUT_MS } from "./site-home-page.ts"; // #6981: reusa o mesmo timeout do form da home (#6979) — dois números diferentes sem motivo seria dívida
+
+/**
+ * Mesmo padrão de `renderWordmark()` em `site-home-page.ts` (#7010): consome
+ * a ESTRUTURA canônica em vez de escrever "diar" + "." + "ia" + ".br" à mão
+ * — é essa reescrita manual que causou o bug original (só os pontos em
+ * teal, nunca o ".br" inteiro).
+ */
+function renderWordmark(): string {
+  return WORDMARK_DISPLAY_SEGMENTS.map((seg) => {
+    const cls = seg.teal ? ' class="dot"' : "";
+    const hidden = seg.decorative ? ' aria-hidden="true"' : "";
+    return `<span${cls}${hidden}>${escHtml(seg.text)}</span>`;
+  }).join("");
+}
+
+export function buildAssinarHtml(): string {
+  return `<!--
+  workers/site/public/assinar/index.html (#6427)
+
+  Página de cadastro PRÓPRIA do apex — fecha a perda de atribuição UTM
+  descrita na issue #6427: o CTA da home (\`workers/site/public/index.html\`,
+  gerado por \`scripts/lib/site-home-page.ts\`) apontava pro \`/subscribe\`
+  estático (\`_redirects\`, 302 sem query string pro perfil hospedado da Kit),
+  então TODO cadastro vindo do apex — inclusive o tráfego da Clarice News,
+  que injeta \`utm_source=clarice&utm_campaign=clarice-{ciclo}-{posicao}\`
+  (\`withClariceUtm\`, \`scripts/lib/mensal/monthly-render.ts\`) — entrava sem
+  nenhuma atribuição.
+
+  Mecanismo: form nativo (funciona SEM JS via POST direto — fallback
+  \`application/x-www-form-urlencoded\`, ver \`parseSubscribeBody\` em
+  \`workers/poll/src/subscribe.ts\`) progressivamente aprimorado por um script
+  inline (mesmo padrão de \`renderSubscribeCtaScript\` em
+  \`scripts/build-livros-page.ts\` e \`inlineSignupScript\` em
+  \`workers/poll/src/jogar.ts\`): intercepta o submit, faz fetch JSON pra
+  \`POST https://eia.diar.ia.br/jogar/subscribe\` (CROSS-ORIGIN — \`diar.ia.br\`
+  já está na allowlist \`ALLOWED_ORIGINS\` do worker \`poll\`, ver
+  \`workers/poll/wrangler.toml\`), e mostra status inline sem sair da página.
+
+  \`source: "apex"\` no payload — o único \`SubscribeSource\` que aceita
+  \`utm_source\`/\`utm_medium\`/\`utm_campaign\` DINÂMICOS do cliente, validados
+  contra a allowlist de prefixo (\`clarice-*\`, \`google-ads-*\`,
+  \`microsoft-ads-*\`, \`meta-ads-*\`, \`isAllowedClientUtmSource\`) antes de o
+  servidor os usar; fora da
+  allowlist, cai no triplo default \`SUBSCRIBE_UTM_BY_SOURCE.apex\`. Os 3
+  valores são lidos da PRÓPRIA query string desta página (\`location.search\`)
+  — chegam aqui porque a home (\`index.html\`) repassa \`location.search\` no
+  href do CTA antes de navegar (ver comentário no script de
+  \`buildIndexHtml\`, \`scripts/lib/site-home-page.ts\`).
+
+  Este arquivo é GERADO por \`scripts/gen-assinar-page.ts\` a partir de
+  \`scripts/lib/site-assinar-page.ts\` (#7015) — não editar direto (o próximo
+  \`npx tsx scripts/gen-assinar-page.ts\` sobrescreve). O único motivo do
+  gerador existir é o tratamento canônico da marca (\`renderWordmark()\`,
+  ver \`WORDMARK_DISPLAY_SEGMENTS\` em \`scripts/lib/shared/brand-wordmark.ts\`)
+  — o resto do conteúdo é estático e vive em \`buildAssinarHtml()\`.
+-->
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assinar — diar.ia.br</title>
+<meta name="description" content="Assine a diar.ia.br — 5 minutos diários pra se manter atualizado e usar melhor as IAs.">
+<meta name="robots" content="noindex">
+<link rel="canonical" href="https://diar.ia.br/assinar">
+<style>
+:root {
+  --teal: #00A0A0;
+  --teal-deep: #007a7a;
+  --ink: #171411;
+  --ink-soft: rgba(23,17,15,0.72);
+  --ink-faint: rgba(23,17,15,0.5);
+  --paper: #FBFAF6;
+  --rule: rgba(23,20,17,0.18);
+}
+* { box-sizing: border-box; }
+body {
+  font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  margin: 0; background: var(--paper); color: var(--ink); line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--teal-deep); }
+.wrap { max-width: 480px; margin: 0 auto; padding: 64px 24px; }
+h1 { font-family: Georgia, 'Times New Roman', serif; font-size: clamp(32px, 7vw, 44px); letter-spacing: -0.02em; margin: 0 0 8px; }
+.dot { color: var(--teal); }
+.lede { font-family: Georgia, serif; font-size: 17px; font-style: italic; color: var(--ink-soft); margin: 0 0 32px; }
+label { display: block; font-size: 13px; color: var(--ink-soft); margin-bottom: 18px; }
+label span { display: block; margin-bottom: 6px; }
+input[type="text"], input[type="email"] {
+  width: 100%; padding: 12px 14px; font-size: 15px; border: 1px solid var(--rule);
+  border-radius: 8px; background: #fff; color: var(--ink); font-family: inherit;
+}
+.optin { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--ink-soft); }
+.optin input { margin-top: 3px; }
+.hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+button[type="submit"] {
+  width: 100%; padding: 13px; margin-top: 8px; border: 0; border-radius: 999px;
+  background: var(--ink); color: var(--paper); font-size: 15px; font-weight: 500;
+  cursor: pointer; font-family: inherit;
+}
+button[type="submit"]:disabled { opacity: 0.6; cursor: default; }
+.status { margin-top: 16px; font-size: 14px; display: none; }
+.status.ok { color: var(--teal-deep); }
+.status.err { color: #b3261e; }
+.back { display: inline-block; margin-top: 32px; font-size: 13px; color: var(--ink-faint); text-decoration: underline; text-underline-offset: 3px; }
+</style>
+</head>
+<body>
+  <main class="wrap">
+    <h1>${renderWordmark()}</h1>
+    <p class="lede">5 minutos diários pra se manter atualizado e usar IA <em>melhor</em>. Seg–Sex, direto no seu e-mail.</p>
+
+    <form id="assinar-form" method="POST" action="https://eia.diar.ia.br/jogar/subscribe" novalidate>
+      <input type="hidden" name="source" value="apex">
+      <input type="hidden" name="utm_source" id="utm_source" value="">
+      <input type="hidden" name="utm_medium" id="utm_medium" value="">
+      <input type="hidden" name="utm_campaign" id="utm_campaign" value="">
+
+      <label>
+        <span>Nome (opcional)</span>
+        <input type="text" name="name" maxlength="100" autocomplete="name">
+      </label>
+      <label>
+        <span>E-mail</span>
+        <input type="email" name="email" required autocomplete="email" placeholder="seu@email.com">
+      </label>
+      <div class="hp" aria-hidden="true">
+        <label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label>
+      </div>
+      <label class="optin">
+        <input type="checkbox" name="optin" value="on" required>
+        <span>Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail.</span>
+      </label>
+      <button type="submit">Assinar grátis</button>
+      <p class="status" role="status" aria-live="polite"></p>
+    </form>
+
+    <a class="back" href="/">← Voltar pra diar.ia.br</a>
+  </main>
+
+  <script>
+  (function () {
+    // #6427: repassa utm_source/utm_medium/utm_campaign da PRÓPRIA query
+    // string desta página (que a home já propagou no href do CTA) pros 3
+    // campos ocultos do form — assim mesmo o fallback nativo sem JS (form
+    // POST direto) carrega esses valores, porque eles já estão no DOM antes
+    // do submit, não injetados só no momento do fetch.
+    var qs = new URLSearchParams(window.location.search);
+    ["utm_source", "utm_medium", "utm_campaign"].forEach(function (key) {
+      var el = document.getElementById(key);
+      var v = qs.get(key);
+      if (el && v) el.value = v;
+    });
+
+    var form = document.getElementById("assinar-form");
+    if (!form) return;
+    var status = form.querySelector(".status");
+    function setStatus(msg, ok) {
+      if (!status) return;
+      status.style.display = "block";
+      status.textContent = msg;
+      status.className = "status" + (ok ? " ok" : " err");
+    }
+    function val(sel) { var el = form.querySelector(sel); return el ? el.value : ""; }
+    form.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      var optin = form.querySelector('input[name="optin"]');
+      if (!optin || !optin.checked) { setStatus("Marque a caixinha de consentimento pra assinar.", false); return; }
+      var email = (val('input[name="email"]') || "").trim();
+      if (!email || email.indexOf("@") < 0) { setStatus("Digite um e-mail válido.", false); return; }
+      var btn = form.querySelector('button[type="submit"]');
+      if (btn) btn.disabled = true;
+      setStatus("Enviando…", true);
+      var payload = {
+        name: (val('input[name="name"]') || "").trim(),
+        email: email,
+        optin: true,
+        website: val('input[name="website"]') || "",
+        source: "apex",
+        utm_source: val("#utm_source"),
+        utm_medium: val("#utm_medium"),
+        utm_campaign: val("#utm_campaign")
+      };
+      if (typeof window.fetch !== "function") {
+        // Sem fetch: deixa o form nativo submeter normalmente (progressive
+        // enhancement) — ev.preventDefault() já foi chamado, então reenvia.
+        form.submit();
+        return;
+      }
+      // #6981: aborta o fetch depois de SIGNUP_FORM_FETCH_TIMEOUT_MS e cai no
+      // MESMO .catch() de erro de rede abaixo (mesma mensagem, botão
+      // reabilitado) — sem isso, uma promise que nunca resolve (DNS travado,
+      // proxy/firewall engolindo o POST cross-origin, Worker pendurado)
+      // deixa "Enviando…" pendurado pra sempre, sem erro visível. Mesma
+      // técnica de \`signupFormScript()\` em \`site-home-page.ts\` (#6979).
+      var timeoutId = null;
+      var controller = typeof window.AbortController === "function" ? new window.AbortController() : null;
+      if (controller) {
+        timeoutId = setTimeout(function () { controller.abort(); }, ${SIGNUP_FORM_FETCH_TIMEOUT_MS});
+      }
+      var fetchOpts = {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      };
+      if (controller) fetchOpts.signal = controller.signal;
+      window.fetch(form.getAttribute("action"), fetchOpts).then(function (res) {
+        if (timeoutId) clearTimeout(timeoutId);
+        return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
+      }).then(function (r) {
+        if (r.status === 200 && r.body && r.body.ok) {
+          form.reset();
+          setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
+          var fields = form.querySelectorAll("input, button");
+          for (var i = 0; i < fields.length; i++) { fields[i].disabled = true; fields[i].style.display = "none"; }
+        } else if (r.status === 429) {
+          setStatus("Muitas tentativas. Tente de novo mais tarde.", false);
+          if (btn) btn.disabled = false;
+        } else if (r.status === 503) {
+          setStatus("Cadastro indisponível agora. Tente de novo em instantes.", false);
+          if (btn) btn.disabled = false;
+        } else {
+          setStatus("Não deu pra assinar agora. Confira o e-mail e tente de novo.", false);
+          if (btn) btn.disabled = false;
+        }
+      }).catch(function () {
+        if (timeoutId) clearTimeout(timeoutId);
+        setStatus("Erro de conexão. Tente de novo.", false);
+        if (btn) btn.disabled = false;
+      });
+    });
+  })();
+  </script>
+</body>
+</html>
+`;
+}

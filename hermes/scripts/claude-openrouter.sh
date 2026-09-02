@@ -93,6 +93,23 @@ source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/lib/free-
 # escreveu.
 FREE_QUOTA_EXHAUSTED_MARKER="${TMPDIR:-/tmp}/claude-openrouter-free-quota-exhausted-until"
 
+# #6965 item 1 (01/09/2026, P2): rotação/limpeza dos logs crus em /tmp. Sem
+# isso, STDERR_LOG ($$-escopado, ver mais abaixo) sobrevive indefinidamente
+# quando a cadeia falha inteira — o caminho de erro nunca o remove, DE
+# PROPÓSITO (é a evidência que sobra pra investigar). O job do contínuo roda
+# a cada ~30min, sem teto de disco: acumulação silenciosa em /tmp é o tipo
+# de falha que só aparece quando o disco enche e derruba outra coisa que não
+# tem nada a ver. Teto por IDADE (não por contagem — mais simples, e já
+# cobre o caso real: ninguém investiga um log de dias atrás pra uma falha de
+# agora). NÃO alcança `claude-openrouter-last-failure.log` (path ESTÁVEL,
+# sobrescrito a cada falha nova por design, #6666 item 1 — não acumula,
+# então não precisa de rotação). Fail-soft: limpeza é higiene, nunca pode
+# abortar a delegação atual.
+STDERR_LOG_MAX_AGE_DAYS="${STDERR_LOG_MAX_AGE_DAYS:-7}"
+find "${TMPDIR:-/tmp}" -maxdepth 1 -type f \
+  \( -name 'claude-openrouter-stderr.*.log' -o -name 'claude-openrouter-attempt.*.log' -o -name 'claude-openrouter-attempt-stderr.*.log' \) \
+  -mtime "+${STDERR_LOG_MAX_AGE_DAYS}" -delete 2>/dev/null || true
+
 TOOLS="Read,Grep,Glob,Bash"
 CWD="/home/vjpixel/diaria-studio"
 BUDGET="20.0"
@@ -269,13 +286,44 @@ SAW_CONFIG_ERROR_SIGNAL=0
 # curl falhar (rede indisponível, timeout) o resultado é "não confirmado":
 # mantém o comportamento ANTERIOR (exit 4) por segurança — não dá pra provar
 # que o id existe, então não dá pra baixar a severidade.
+# #6965 item 2 (01/09/2026, P1): a chave do OpenRouter pode vazar pro log
+# cru. O log é gravado SEM FILTRO de propósito (#6666 item 1 — filtrar
+# perderia a linha real que um watchdog precisa ler), mas isso não impede
+# que a chave apareça numa mensagem de erro ecoada pelo provedor e acabe
+# persistida em /tmp — inclusive no path ESTÁVEL e previsível
+# claude-openrouter-last-failure.log. Redige o valor LITERAL de $KEY (cobre
+# o caso comum: a própria chave desta invocação) e, como rede de segurança,
+# qualquer string com o prefixo sk-or- (cobre uma chave DIFERENTE da usada
+# nesta tentativa — rotação concorrente, token de outra invocação citado em
+# texto gerado pelo modelo). Best-effort/fail-soft: falha do sed (arquivo
+# lido por outro processo no mesmo instante, disco cheio) nunca aborta a
+# cadeia — o pior caso é "log não redigido nesta tentativa", nunca
+# "delegação perdida por causa de higiene de log".
+redact_secrets_in_file() {
+  local target="$1"
+  [ -s "$target" ] || return 0
+  if [ -n "${KEY:-}" ]; then
+    local esc_key
+    esc_key=$(printf '%s' "$KEY" | sed -e 's/[.[\*^$/&|]/\\&/g')
+    sed -i "s|$esc_key|[REDACTED_OPENROUTER_KEY]|g" "$target" 2>/dev/null || true
+  fi
+  sed -i -E 's/sk-or-[A-Za-z0-9_-]{10,}/[REDACTED_OPENROUTER_KEY]/g' "$target" 2>/dev/null || true
+}
+
 model_in_openrouter_catalog() {
   local model="$1"
   local catalog
   if ! catalog=$(curl -sf --max-time 10 "https://openrouter.ai/api/v1/models" 2>/dev/null); then
     return 2
   fi
-  if printf '%s' "$catalog" | grep -qF "\"id\":\"$model\""; then
+  # #6987/#6989 (01/09/2026): `command grep` — neste ambiente `grep` é uma
+  # FUNÇÃO de shell que shella pro binário `claude` (ver docstring do topo
+  # deste arquivo, mesma issue). Se o binário quebrar, `grep` falha junto e
+  # o `if` abaixo cairia no `return 1` (modelo "ausente do catálogo"),
+  # promovendo o modelo a SAW_CONFIG_ERROR_SIGNAL (exit 4, correção manual)
+  # por uma causa que não tem nada a ver com o modelo. `command grep`
+  # bypassa a função e vai direto ao binário do sistema, imune à quebra.
+  if printf '%s' "$catalog" | command grep -qF "\"id\":\"$model\""; then
     return 0
   fi
   return 1
@@ -394,6 +442,18 @@ for MODEL in "${MODELS[@]}"; do
     # que vai pro STDOUT (não stderr), então o classify-grep de stderr nunca o via.
     # Sem isso, a cadeia falha silenciosamente com rc=1 e stderr vazio.
     echo "$OUT" >> "$ATTEMPT_LOG"
+    # #6965 item 2: redige ANTES de qualquer persistência/classificação —
+    # cobre STDERR_ONLY_LOG (snapshot puro, usado pelos classificadores de
+    # config/rate-limit) e ATTEMPT_LOG (que carrega $OUT também, e é a
+    # fonte do STDERR_LOG persistido e do last-failure.log estável abaixo).
+    redact_secrets_in_file "$STDERR_ONLY_LOG"
+    redact_secrets_in_file "$ATTEMPT_LOG"
+    # #6965 item 3 (P3): tamanho em bytes de stdout/stderr — rc + duração
+    # (já capturados pelo #6666 item 1) não distinguem "morreu instantâneo
+    # sem escrever nada" de "rodou e falhou com output"; os bytes fecham
+    # essa lacuna sem exigir leitura humana do arquivo.
+    BYTES_STDOUT=$(printf '%s' "$OUT" | wc -c)
+    BYTES_STDERR=$(wc -c < "$STDERR_ONLY_LOG" 2>/dev/null || echo 0)
     cat "$ATTEMPT_LOG" >> "$STDERR_LOG"
     if [ $RC -eq 0 ] && [ -n "$OUT" ]; then
       printf '%s\n' "$OUT"
@@ -407,13 +467,13 @@ for MODEL in "${MODELS[@]}"; do
     # em stderr (o ATTEMPT_LOG já continha $OUT quando o grep rodava),
     # duplicando log e inflando a chance de falso-positivo por substring
     # nos watchdogs que varrem esse output.
-    grep -vE "not a model this version|unrecognized_model|connectors are disabled" "$ATTEMPT_LOG" >&2 || true
+    command grep -vE "not a model this version|unrecognized_model|connectors are disabled" "$ATTEMPT_LOG" >&2 || true
     # #6666 item 1: registrar rc + duração de vida do processo — nenhum dos
     # 3 stderr logs inspecionados no incidente tinha isso, só ruído de
     # conector/unrecognized_model, então não dava pra distinguir "processo
     # morreu na hora" de "rodou até o TIMEOUT e não terminou a tempo".
-    echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT" >&2
-    echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT" >> "$STDERR_LOG"
+    echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT bytes_stdout=$BYTES_STDOUT bytes_stderr=$BYTES_STDERR" >&2
+    echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT bytes_stdout=$BYTES_STDOUT bytes_stderr=$BYTES_STDERR" >> "$STDERR_LOG"
     # #6666 item 1: cópia num path ESTÁVEL (não $$-escopado) da última
     # falha — o path com PID some junto com o processo e, sem nada
     # arquivando-o, o log fica irrecuperável assim que o PID é reciclado ou
@@ -426,7 +486,7 @@ for MODEL in "${MODELS[@]}"; do
     # linha de diagnóstico ser escrita, então o arquivo que devia sobreviver
     # não continha o próprio dado que o #6666 item 1 existe pra preservar.
     # Fix: apendar a linha de diagnóstico ao ATTEMPT_LOG antes da cópia.
-    echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT" >> "$ATTEMPT_LOG"
+    echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT bytes_stdout=$BYTES_STDOUT bytes_stderr=$BYTES_STDERR" >> "$ATTEMPT_LOG"
     cp -f "$ATTEMPT_LOG" "${TMPDIR:-/tmp}/claude-openrouter-last-failure.log" 2>/dev/null || true
     # Classificar o motivo desta tentativa (finding do review #6446 cobria só
     # rc=0/saída-vazia vs timeout vs rc≠0 genérico; #6617 acrescenta a
@@ -434,7 +494,13 @@ for MODEL in "${MODELS[@]}"; do
     if [ $RC -eq 124 ]; then
       SAW_QUOTA_SIGNAL=1
       echo "[claude-openrouter] falhou model=$MODEL: TIMEOUT (${TIMEOUT}s) — próximo da cadeia; stderr cru em $STDERR_LOG" >&2
-    elif grep -qiE "model not found|invalid model|not a valid model|no endpoints found|no allowed providers" "$STDERR_ONLY_LOG"; then
+    # #6987/#6989: `command grep` nos 3 classificadores abaixo — mesmo
+    # motivo do `model_in_openrouter_catalog` acima. Se `grep` (a função)
+    # quebrar aqui, o `elif` seguinte silenciosamente nunca casaria,
+    # empurrando a classificação pro ramo genérico errado — o binário
+    # quebrado nunca pode se disfarçar de "sem sinal claro" nem de
+    # "config inválida".
+    elif command grep -qiE "model not found|invalid model|not a valid model|no endpoints found|no allowed providers" "$STDERR_ONLY_LOG"; then
       # #6617 review finding 3: checar config-inválida ANTES de rate-limit —
       # "not a valid model" também casaria com um grep solto por "valid model"
       # numa mensagem de quota, então a ordem evita falso-negativo cruzado.
@@ -449,7 +515,7 @@ for MODEL in "${MODELS[@]}"; do
         SAW_CONFIG_ERROR_SIGNAL=1
         echo "[claude-openrouter] falhou model=$MODEL rc=$RC: MODELO INEXISTENTE/INVÁLIDO no provedor — confirmado ausente do catálogo agora (ou catálogo inacessível) (#6803); config permanente, NÃO é rate-limit; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
       fi
-    elif grep -qiE "rate.?limit|too many requests|quota exceeded|http.{0,10}429|status.{0,10}429|429.{0,10}(too many|rate)|\\(429\\)" "$STDERR_ONLY_LOG"; then
+    elif command grep -qiE "rate.?limit|too many requests|quota exceeded|http.{0,10}429|status.{0,10}429|429.{0,10}(too many|rate)|\\(429\\)" "$STDERR_ONLY_LOG"; then
       # #6617 review finding 4: "429" sozinho podia casar com ruído não
       # relacionado (contagem de bytes, linha) — agora exige contexto de
       # rate-limit textual OU o número junto de "http"/"status".
@@ -469,7 +535,7 @@ for MODEL in "${MODELS[@]}"; do
             echo "[claude-openrouter] AVISO: falha ao gravar $FREE_QUOTA_EXHAUSTED_MARKER (#6712) — próxima invocação vai tentar :free de novo, cosmético (não perde a chamada atual)" >&2
           ;;
       esac
-    elif grep -qE "Exceeded USD budget" "$ATTEMPT_LOG"; then
+    elif command grep -qE "Exceeded USD budget" "$ATTEMPT_LOG"; then
       # #6696 finding 1: budget-exceeded é DETERMINÍSTICO pro mesmo valor de
       # BUDGET — o mesmo prompt estoura em TODO run até alguém mexer no
       # valor, então não é "transitório, reset resolve" (SAW_QUOTA_SIGNAL);

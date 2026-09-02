@@ -109,6 +109,12 @@
             "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs\"",
             "shell": "bash",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-unsafe-shared-checkout-ops.mjs\"",
+            "shell": "bash",
+            "timeout": 10
           }
         ]
       },

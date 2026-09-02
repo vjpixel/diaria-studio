@@ -14,6 +14,10 @@ import {
   lastPushedWaveSize,
   buildInitialState,
   buildWaveEntry,
+  computeOutOfBandReturned,
+  buildOutOfBandWaveEntry,
+  partitionByConfirmedTag,
+  resolveOutOfBandBeehiivViolation,
   WARMUP_INITIAL_WAVE_SIZE,
   WARMUP_GROWTH_FACTOR,
   type KitGmailWarmupState,
@@ -285,5 +289,257 @@ describe("estado — returnedEmails / lastPushedWaveSize / buildInitialState / b
     const second = buildWaveEntry(state, 2, SEGURAR, [], [], false);
     assert.equal(second.index, 1);
     assert.equal(second.gateVerdict, "segurar");
+  });
+});
+
+describe("computeOutOfBandReturned (#6964)", () => {
+  const cohort = ["a@gmail.com", "b@gmail.com", "c@gmail.com", "d@gmail.com"];
+
+  it("acha quem está na tag do Kit sem nenhuma onda ter registrado", () => {
+    const drift = computeOutOfBandReturned(cohort, new Set(["a@gmail.com"]), [
+      "a@gmail.com",
+      "c@gmail.com",
+      "d@gmail.com",
+    ]);
+    assert.deepEqual(drift, ["c@gmail.com", "d@gmail.com"]);
+  });
+
+  it("ignora membro da tag que não pertence ao cohort recusado", () => {
+    // A tag `rampa-kit` tem as ondas 0/1 da migração (feitas à mão, nunca
+    // recusadas pelo Gmail): 179 membros pra 93 do cohort na medição de
+    // 01/09. Sem o filtro, gente de fora do aquecimento contaria como
+    // devolvida e encolheria o cohort pendente sem motivo.
+    const drift = computeOutOfBandReturned(cohort, new Set(), [
+      "b@gmail.com",
+      "forade@outlook.com",
+      "outro@gmail.com",
+    ]);
+    assert.deepEqual(drift, ["b@gmail.com"]);
+  });
+
+  it("normaliza os dois lados e devolve na ordem estável do cohort", () => {
+    const drift = computeOutOfBandReturned(cohort, new Set([" A@GMAIL.COM "]), [
+      "D@Gmail.com",
+      " b@gmail.com ",
+      "a@gmail.com",
+    ]);
+    assert.deepEqual(drift, ["b@gmail.com", "d@gmail.com"]);
+  });
+
+  it("devolve vazio quando estado e tag concordam", () => {
+    assert.deepEqual(
+      computeOutOfBandReturned(cohort, new Set(["a@gmail.com", "b@gmail.com"]), ["a@gmail.com", "b@gmail.com"]),
+      [],
+    );
+  });
+});
+
+describe("regressão #6964 — onda size:0 + aplicação out-of-band", () => {
+  /**
+   * O cenário exato de 01/09/2026, reduzido: a rampa propôs a onda 4 e
+   * tagueou ZERO (todos ainda ativos na Beehiiv ⇒ caíram inteiros em
+   * `needsBeehiivDeactivation`, guard funcionando como desenhado). Em
+   * seguida `kit-ramp-cohort.ts` migrou esses mesmos endereços por fora, sem
+   * escrever no estado da rampa. Antes do fix, a rodada seguinte (a)
+   * re-propunha quem já tinha migrado — alcance novo zero — e (b) reiniciava
+   * a progressão em WARMUP_INITIAL_WAVE_SIZE por causa do `size: 0`.
+   */
+  const cohort = Array.from({ length: 40 }, (_, i) => `p${String(i).padStart(2, "0")}@gmail.com`);
+  const migratedOutOfBand = cohort.slice(0, 4);
+
+  function stateComOndaZerada(): KitGmailWarmupState {
+    const base = buildInitialState(999, [...cohort]);
+    const zerada = buildWaveEntry(base, 999, PODE_CRESCER, [], [...migratedOutOfBand], true);
+    return { ...base, waves: [zerada] };
+  }
+
+  it("sem absorver, a rodada seguinte re-propõe quem já migrou (o bug)", () => {
+    const state = stateComOndaZerada();
+    const plan = planNextWave({
+      rejectedEmails: state.rejectedEmails,
+      alreadyReturned: returnedEmails(state),
+      lastWaveSize: lastPushedWaveSize(state),
+      gate: PODE_CRESCER,
+    });
+    // Prova do sintoma: os já migrados voltam na proposta, e o tamanho
+    // reinicia no inicial em vez de dobrar.
+    assert.ok(migratedOutOfBand.every((e) => plan.emails.includes(e)));
+    assert.equal(plan.size, WARMUP_INITIAL_WAVE_SIZE);
+  });
+
+  it("absorvendo a migração out-of-band, ninguém já migrado é re-proposto e a progressão dobra", () => {
+    const state = stateComOndaZerada();
+    const drift = computeOutOfBandReturned(state.rejectedEmails, returnedEmails(state), [...migratedOutOfBand]);
+    assert.deepEqual(drift, migratedOutOfBand);
+
+    const absorbed = buildOutOfBandWaveEntry(state, 999, PODE_CRESCER, drift);
+    assert.equal(absorbed.outOfBand, true);
+    assert.equal(absorbed.pushed, true);
+    assert.equal(absorbed.size, migratedOutOfBand.length);
+
+    const reconciled: KitGmailWarmupState = { ...state, waves: [...state.waves, absorbed] };
+    const plan = planNextWave({
+      rejectedEmails: reconciled.rejectedEmails,
+      alreadyReturned: returnedEmails(reconciled),
+      lastWaveSize: lastPushedWaveSize(reconciled),
+      gate: PODE_CRESCER,
+    });
+
+    for (const email of migratedOutOfBand) {
+      assert.ok(!plan.emails.includes(email), `${email} já migrou — não pode ser re-proposto`);
+    }
+    assert.equal(plan.size, migratedOutOfBand.length * WARMUP_GROWTH_FACTOR);
+  });
+
+  it("absorver é idempotente — na rodada seguinte não há mais divergência", () => {
+    const state = stateComOndaZerada();
+    const drift = computeOutOfBandReturned(state.rejectedEmails, returnedEmails(state), [...migratedOutOfBand]);
+    const reconciled: KitGmailWarmupState = {
+      ...state,
+      waves: [...state.waves, buildOutOfBandWaveEntry(state, 999, PODE_CRESCER, drift)],
+    };
+    assert.deepEqual(
+      computeOutOfBandReturned(reconciled.rejectedEmails, returnedEmails(reconciled), [...migratedOutOfBand]),
+      [],
+    );
+  });
+
+  it("o gate continua soberano — absorção não faz a rampa crescer com entrega ruim", () => {
+    const state = stateComOndaZerada();
+    const drift = computeOutOfBandReturned(state.rejectedEmails, returnedEmails(state), [...migratedOutOfBand]);
+    const reconciled: KitGmailWarmupState = {
+      ...state,
+      waves: [...state.waves, buildOutOfBandWaveEntry(state, 999, SEGURAR, drift)],
+    };
+    const plan = planNextWave({
+      rejectedEmails: reconciled.rejectedEmails,
+      alreadyReturned: returnedEmails(reconciled),
+      lastWaveSize: lastPushedWaveSize(reconciled),
+      gate: SEGURAR,
+    });
+    assert.equal(plan.skipped, true);
+    assert.equal(plan.size, 0);
+  });
+});
+
+describe("partitionByConfirmedTag (#6984 finding 1)", () => {
+  it("separa quem a releitura confirmou na tag de quem segue pendente", () => {
+    const { alreadyTagged, stillPending } = partitionByConfirmedTag(
+      ["a@gmail.com", "b@gmail.com", "c@gmail.com"],
+      new Set(["b@gmail.com"]),
+    );
+    assert.deepEqual(alreadyTagged, ["b@gmail.com"]);
+    assert.deepEqual(stillPending, ["a@gmail.com", "c@gmail.com"]);
+  });
+
+  it("normaliza antes de comparar", () => {
+    const { alreadyTagged } = partitionByConfirmedTag([" A@Gmail.COM "], new Set(["a@gmail.com"]));
+    assert.deepEqual(alreadyTagged, [" A@Gmail.COM "]);
+  });
+
+  it("conjunto vazio de confirmados deixa tudo pendente", () => {
+    const { alreadyTagged, stillPending } = partitionByConfirmedTag(["a@gmail.com"], new Set());
+    assert.deepEqual(alreadyTagged, []);
+    assert.deepEqual(stillPending, ["a@gmail.com"]);
+  });
+});
+
+describe("regressão #6984 finding 1 — listagem em massa defasada não faz re-propor quem já migrou", () => {
+  /**
+   * `GET /v4/tags/{id}/subscribers` mente por ~180s depois de uma escrita
+   * (armadilha 5 de `kit-client.ts`): devolve `has_next_page: false` como se
+   * a lista estivesse completa. A sequência operacional NORMAL do #6964 é
+   * justamente "aplicar por kit-ramp-cohort.ts e rodar a rampa em seguida" —
+   * dentro da janela em que a listagem ainda não reflete.
+   */
+  const cohort = Array.from({ length: 30 }, (_, i) => `q${String(i).padStart(2, "0")}@gmail.com`);
+  const migradosAgora = cohort.slice(0, 3);
+
+  it("a listagem em massa defasada sozinha deixaria a onda com quem acabou de migrar", () => {
+    const state = buildInitialState(1, [...cohort]);
+    // Listagem defasada: não devolve ninguém, embora 3 já estejam tagueados.
+    const driftPelaListagem = computeOutOfBandReturned(state.rejectedEmails, returnedEmails(state), []);
+    assert.deepEqual(driftPelaListagem, [], "a listagem defasada não acusa nada — é o piso mentindo");
+
+    const plan = planNextWave({
+      rejectedEmails: state.rejectedEmails,
+      alreadyReturned: returnedEmails(state),
+      lastWaveSize: null,
+      gate: PODE_CRESCER,
+    });
+    assert.ok(migradosAgora.every((e) => plan.emails.includes(e)), "sem o passo 2, os recém-migrados entram na onda");
+  });
+
+  it("a releitura da onda (direção confiável) tira os recém-migrados antes de propor", () => {
+    const state = buildInitialState(1, [...cohort]);
+    const plan = planNextWave({
+      rejectedEmails: state.rejectedEmails,
+      alreadyReturned: returnedEmails(state),
+      lastWaveSize: null,
+      gate: PODE_CRESCER,
+    });
+
+    const { alreadyTagged, stillPending } = partitionByConfirmedTag(plan.emails, new Set(migradosAgora));
+    assert.deepEqual(alreadyTagged, migradosAgora);
+    for (const email of migradosAgora) {
+      assert.ok(!stillPending.includes(email), `${email} acabou de migrar — não pode ser proposto`);
+    }
+    // A onda sai MENOR que o planejado — preferível a propor quem já migrou.
+    assert.equal(stillPending.length, plan.size - migradosAgora.length);
+  });
+});
+
+describe("regressão #6984 finding 2 — absorção não engole violação de envio em dobro", () => {
+  it("registra em needsBeehiivDeactivation quem foi absorvido mas continua ativo na Beehiiv", () => {
+    const state = buildInitialState(1, ["a@gmail.com", "b@gmail.com"]);
+    const absorbed = buildOutOfBandWaveEntry(state, 1, PODE_CRESCER, ["a@gmail.com", "b@gmail.com"], ["b@gmail.com"]);
+    // Os dois seguem absorvidos (migraram de fato no lado do Kit)...
+    assert.deepEqual(absorbed.emails, ["a@gmail.com", "b@gmail.com"]);
+    assert.equal(absorbed.size, 2);
+    // ...mas a violação fica gravada em vez de sumir.
+    assert.deepEqual(absorbed.needsBeehiivDeactivation, ["b@gmail.com"]);
+  });
+
+  it("sem ninguém ativo na Beehiiv, a absorção não inventa pendência", () => {
+    const state = buildInitialState(1, ["a@gmail.com"]);
+    const absorbed = buildOutOfBandWaveEntry(state, 1, PODE_CRESCER, ["a@gmail.com"]);
+    assert.deepEqual(absorbed.needsBeehiivDeactivation, []);
+  });
+});
+
+describe("resolveOutOfBandBeehiivViolation (#6984 2ª rodada — finding 1)", () => {
+  const absorvidos = ["a@gmail.com", "b@gmail.com", "c@gmail.com"];
+
+  it("com a Beehiiv acessível, acusa só quem está de fato ativo lá", () => {
+    const viol = resolveOutOfBandBeehiivViolation(absorvidos, true, new Set(["b@gmail.com"]));
+    assert.deepEqual(viol, ["b@gmail.com"]);
+  });
+
+  it("FAIL-SAFE: Beehiiv indisponível marca TODOS, nunca nenhum", () => {
+    // Set vazio por falha de leitura é indistinguível de "ninguém ativo" na
+    // membresia — e as duas leituras dão relatórios opostos. Marcar todos
+    // custa um alarme a mais; não marcar custa envio em dobro silencioso.
+    const viol = resolveOutOfBandBeehiivViolation(absorvidos, false, new Set());
+    assert.deepEqual(viol, absorvidos);
+  });
+
+  it("FAIL-SAFE não depende do conteúdo do set quando a checagem falhou", () => {
+    assert.deepEqual(resolveOutOfBandBeehiivViolation(absorvidos, false, new Set(["a@gmail.com"])), absorvidos);
+  });
+
+  it("normaliza antes de comparar", () => {
+    assert.deepEqual(resolveOutOfBandBeehiivViolation([" B@Gmail.com "], true, new Set(["b@gmail.com"])), [" B@Gmail.com "]);
+  });
+
+  it("mesma direção de falha de resolveWarmupBeehiivPartition — os dois guards concordam", () => {
+    // O guard da onda normal manda TODO MUNDO pra needsBeehiivDeactivation
+    // quando a config falha; o da absorção precisa concordar, senão o mesmo
+    // endereço é tratado como risco num caminho e como seguro no outro.
+    const { needsBeehiivDeactivation } = resolveWarmupBeehiivPartition(absorvidos, false, new Set());
+    assert.deepEqual(resolveOutOfBandBeehiivViolation(absorvidos, false, new Set()), needsBeehiivDeactivation);
+  });
+
+  it("lista vazia não inventa violação", () => {
+    assert.deepEqual(resolveOutOfBandBeehiivViolation([], false, new Set()), []);
   });
 });

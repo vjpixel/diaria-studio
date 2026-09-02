@@ -15,6 +15,8 @@ import {
   pendingEntries,
   coverageSummary,
   extractPostRefFromBackupFile,
+  isNeverSentPost,
+  NEVER_SENT_REASON,
   type EngagementManifest,
 } from "../scripts/lib/beehiiv-engagement-manifest.ts";
 
@@ -125,7 +127,7 @@ describe("coverageSummary", () => {
       ],
     };
     const s = coverageSummary(m);
-    assert.deepEqual(s, { total: 5, ok: 2, partial: 1, error: 1, pending: 1, closed: false });
+    assert.deepEqual(s, { total: 5, ok: 2, partial: 1, error: 1, pending: 1, not_applicable: 0, closed: false });
   });
 });
 
@@ -155,5 +157,77 @@ describe("extractPostRefFromBackupFile — tolerância de shape", () => {
     assert.equal(extractPostRefFromBackupFile(undefined), null);
     assert.equal(extractPostRefFromBackupFile("string"), null);
     assert.equal(extractPostRefFromBackupFile(42), null);
+  });
+});
+
+describe("not_applicable — post nunca enviado (#6465)", () => {
+  it("isNeverSentPost: draft e publish_date nulo (nos 2 shapes) → true", () => {
+    assert.equal(isNeverSentPost({ data: { id: "p", status: "draft", publish_date: null } }), true);
+    assert.equal(isNeverSentPost({ id: "p", status: "draft" }), true);
+    assert.equal(isNeverSentPost({ id: "p", status: "confirmed", publish_date: null }), true);
+  });
+
+  it("isNeverSentPost: post publicado → false; shape sem o campo → false", () => {
+    assert.equal(isNeverSentPost({ data: { id: "p", status: "confirmed", publish_date: 1787944034 } }), false);
+    assert.equal(isNeverSentPost({ id: "p", title: "T" }), false);
+    assert.equal(isNeverSentPost(null), false);
+  });
+
+  it("extractPostRefFromBackupFile marca neverSent só quando verdadeiro", () => {
+    assert.deepEqual(extractPostRefFromBackupFile({ id: "p1", title: "T", status: "draft" }), {
+      id: "p1",
+      title: "T",
+      neverSent: true,
+    });
+    assert.deepEqual(extractPostRefFromBackupFile({ id: "p2", title: "T" }), { id: "p2", title: "T" });
+  });
+
+  it("mergeManifestPosts: post nunca enviado entra not_applicable e sai de pendingEntries", () => {
+    const m = mergeManifestPosts(
+      { generated_at: "t0", posts: [] },
+      [{ id: "draft1", title: "Rascunho", neverSent: true }, { id: "sent1", title: "Enviado" }],
+      "t1",
+    );
+    const draft = m.posts.find((p) => p.post_id === "draft1");
+    assert.equal(draft?.status, "not_applicable");
+    assert.equal(draft?.error, NEVER_SENT_REASON);
+    assert.deepEqual(pendingEntries(m).map((p) => p.post_id), ["sent1"]);
+  });
+
+  it("mergeManifestPosts: rebaixa pending→not_applicable, mas NUNCA rebaixa ok", () => {
+    const before: EngagementManifest = {
+      generated_at: "t0",
+      posts: [
+        { post_id: "a", status: "pending" },
+        { post_id: "b", status: "ok", count: 10 },
+      ],
+    };
+    const after = mergeManifestPosts(before, [{ id: "a", neverSent: true }, { id: "b", neverSent: true }], "t1");
+    assert.equal(after.posts.find((p) => p.post_id === "a")?.status, "not_applicable");
+    assert.equal(after.posts.find((p) => p.post_id === "b")?.status, "ok");
+  });
+
+  it("coverageSummary: ok + not_applicable == total fecha o gap", () => {
+    const s = coverageSummary({
+      generated_at: "t",
+      posts: [
+        { post_id: "a", status: "ok" },
+        { post_id: "b", status: "not_applicable" },
+      ],
+    });
+    assert.equal(s.not_applicable, 1);
+    assert.equal(s.closed, true);
+  });
+
+  it("coverageSummary: not_applicable NÃO mascara partial/error pendente", () => {
+    const s = coverageSummary({
+      generated_at: "t",
+      posts: [
+        { post_id: "a", status: "ok" },
+        { post_id: "b", status: "not_applicable" },
+        { post_id: "c", status: "partial" },
+      ],
+    });
+    assert.equal(s.closed, false);
   });
 });

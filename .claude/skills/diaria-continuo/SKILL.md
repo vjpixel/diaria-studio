@@ -267,9 +267,19 @@ rodando agora" de "tick que terminou há 50 min" — na prática, overnight e
 develop pulam issues por até 90 minutos por causa de claims de um tick morto.
 Ao fechar o tick: `git status --porcelain` limpo (sujo → commitar, stashar ou
 mover pra fora do repo; **nunca** encerrar deixando trabalho não commitado em
-`master` no checkout compartilhado — foi exatamente o que um tick fez em
-26/08, reportando "concluído"), depois `npx tsx
-scripts/lib/session-registry.ts end --kind continuo` (standalone).
+`master` no checkout compartilhado — aconteceu 2×, 26/08 e de novo em 01/09
+com a #6952 — 498 linhas nunca commitadas, sem PR — ambas relatadas como
+"concluído", ver #6922), depois `npx tsx scripts/lib/session-registry.ts end
+--kind continuo` (standalone).
+
+**Desde o #6922 esse `git status` deixou de depender só de o modelo lembrar
+de rodar** — o próprio `end` recusa (`exit 1`, mensagem nomeando o(s)
+arquivo(s) sujo(s)) quando `repoRoot` tem mudanças não commitadas, antes de
+remover o registro da sessão. `--allow-dirty` bypassa quando a sujeira for
+confirmadamente de OUTRA sessão concorrente no mesmo checkout compartilhado
+(#6168) — nunca usar por padrão, só depois de checar `git status
+--porcelain` manualmente e reconhecer que os arquivos listados não são
+trabalho desta sessão.
 
 **Consentimento (revisado #5332, 15/08/2026 — não é mais
 `disable-model-invocation`).** O gate de consentimento original — a flag no
@@ -741,34 +751,34 @@ aqui.
    — se a issue tem a label `decisao-registrada` ela quase certamente tem
    marcador, mas checar mesmo sem a label (rede de segurança: label pode
    faltar em decisão gravada por outra skill antes deste PR). **Comparação
-   concreta, não estimativa:** "última mudança observável" = o campo
-   `updatedAt` da issue — o mesmo já buscado pela varredura incremental do
-   passo 2 (`gh issue list ... --json number,title,labels,updatedAt`); se
-   esta issue não veio nesse fetch (ex: varredura full-scan sem `updatedAt`
-   no field-list), rodar `gh issue view N --json updatedAt` antes de
-   comparar. Decisão encontrada com `decided_at` **posterior** a `updatedAt`
-   → **não** entra no lote — a decisão já existe; usar como
+   concreta (#6961):** a decisão vale quando é o marcador MAIS RECENTE da
+   thread (comparada contra `execution_block`, nunca contra `updatedAt` da
+   issue — o próprio POST do marcador bumpa `updatedAt`, tornando
+   `decided_at >= updatedAt` insatisfazível por construção). Decisão
+   encontrada e mais recente que um eventual bloqueio → **não** entra no
+   lote — a decisão já existe; usar como
    contexto e tratar a issue pelo que falta de fato (elegível se só faltava a
    decisão; segue bloqueada se a execução esbarra em algo novo e distinto da
-   decisão em si, sem reabrir a pergunta). Corpo/labels mudaram genuinamente
-   depois de `decided_at` → decisão pode estar desatualizada, incluir no
-   lote normalmente. Isto vale tanto pra varredura completa quanto pra
-   incremental do passo 2 — issue que não mudou desde `last_scan_at` e já
-   tem decisão registrada nunca deveria ter voltado ao lote de qualquer
-   forma.
+   decisão em si, sem reabrir a pergunta). Existir um `execution_block` mais
+   recente que a decisão → ver item seguinte. Isto vale tanto pra varredura
+   completa quanto pra incremental do passo 2 — issue que não mudou desde
+   `last_scan_at` e já tem decisão registrada nunca deveria ter voltado ao
+   lote de qualquer forma.
 
    **Bloqueio de execução já registrado (#5373 item 5) — separar "falta
    decisão" de "falta execução".** O mesmo comando acima também devolve
    `execution_block` (via `latestExecutionBlockFor`). Issue com label
    `bloqueio-execucao` (ou sem ela, rede de segurança) cujo
-   `execution_block.recorded_at` é **posterior ou igual** a `updatedAt` →
+   `execution_block.recorded_at` é **posterior ou igual** a um eventual
+   `decided_at` (#6961: os dois marcadores comparados entre si, nunca contra
+   `updatedAt`) →
    **nunca** entra no lote de perguntas nem é reclassificada como (b)
    decisão-produto — a decisão já existe (se houver `decision` também no
    retorno) e o que falta é só a execução: classificar como (c) bloqueio de
    execução/ação humana, reportando "bloqueada por execução:
    {execution_block.motivo}" na tabela do passo 5, com a decisão preservada
-   no contexto pra quando o bloqueio for resolvido fora da sessão. Corpo/
-   labels mudaram genuinamente depois de `recorded_at` → o bloqueio pode ter
+   no contexto pra quando o bloqueio for resolvido fora da sessão. Uma
+   decisão nova, mais recente que o bloqueio → o bloqueio pode ter
    sido resolvido, reavaliar normalmente antes de assumir que segue preso.
 3a. **Classificar cada issue via `classifyExecTrack` e reportar divergência (#6204, mesmo desenho do passo 4a do overnight/#5708 do develop) — consome o módulo canônico em vez de manter julgamento próprio.** A taxonomia a/b/c acima **não** é o mesmo vocabulário do overnight — é mais enxuta (3 categorias contra os 6-7 status em prosa do overnight), porque `continuo` resolve (b) direto via `AskUserQuestion` no mesmo ciclo em vez de bounce pro develop (é sessão sempre-presente-ou-notificada, não overnight desassistido). A correspondência com `ExecTrack` usa a MESMA tabela do overnight (`scripts/lib/overnight-prose-track-map.ts`) sob este mapeamento: **(a) Acionável agora → `elegivel`** (`expectedTracksForProseStatus("elegivel")` = `overnight`); **(b) Decisão de produto pendente → `precisa-resposta`** (efêmera igual — `tracks: []`, nunca compara enquanto a pergunta está pendente; comparar de novo depois que o passo 5 gravar `decisao-registrada`, quando ela vira `elegivel`); **(c) Bloqueio genuíno não-decisão → `bloqueada-externa`** (`bloqueada`, via `external-blocker`). Pra cada issue já classificada em (a)/(b)/(c), rodar `classifyExecTrack({ labels, body, state })` de `scripts/lib/issue-exec-track.ts` (puro) e comparar contra o `ExecTrack` esperado pela categoria via `isProseTrackConsistent`. Gravar `exec_track_painel`/`exec_track_divergiu` por issue em `issues[]` do `plan.json` (o mesmo campo, mesmo formato do overnight — `continuo` reusa o schema dele). **Gate de cobertura antes de dormir (passo 5, junto do gate de re-triagem):** `npx tsx scripts/check-exec-track-coverage.ts --plan data/continuo/{AAMMDD}/plan.json` — `exit 1` lista issues sem o campo ou com valor fora do enum; backfill mecânico até `exit 0`. **Isto fecha o item 3 do #5376 citado acima como "deliberadamente fora de escopo"** — não porque `plan.json` ganhou um schema NOVO pra a/b/c (continua sem), mas porque `exec_track_painel` já é o enum estruturado que faltava: qualquer divergência entre a categoria a/b/c em prosa e o veredito mecânico de `classifyExecTrack` agora é auditável campo-a-campo, sem depender só da tabela textual do passo 5 abaixo.
 4. **Perguntar** → heartbeat `--phase aguardando-resposta` **ANTES** de

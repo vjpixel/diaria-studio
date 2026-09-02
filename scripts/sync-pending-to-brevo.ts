@@ -196,9 +196,11 @@ const PER_PAGE = 100;
 interface BrevoDiariaConfig {
   api_key_env: string;
   list_id: number | null;
-  /** #4476 item 5 — cap free tier Brevo (300). Usado por `checkDailySendCap`
-   * (`publish-daily-brevo.ts`, item 5 da issue #6793) como teto de ENVIO
-   * diário — esse uso continua ativo. **Deixou de** ser reusado como teto da
+  /** #4476 item 5 — cap free tier Brevo (300). Era usado por
+   * `checkDailySendCap` (`publish-daily-brevo.ts`, item 5 da issue #6793)
+   * como teto de ENVIO diário — **correção #6940**: esse uso não está mais
+   * ativo, `checkDailySendCap` foi esvaziado no mesmo #6793 e hoje só lê o
+   * valor sem gatear nada. Também **deixou de** ser reusado como teto da
    * fila de contatos ATIVOS (`in_brevo`) — decisão do editor #6793 "Faixa A"
    * (30/08/2026, remoção deliberada dos freios automáticos de VOLUME,
    * assumindo o risco de reputação de domínio/IP conscientemente). Ver
@@ -514,9 +516,11 @@ export function assertMvGuardAcknowledged(argv: string[], coverage: MvCoverage |
  * **Desde #6793 "Faixa A" item 6 (30/08/2026, decisão do editor): os
  * call sites que gerenciam o teto de CONTATOS ativos passam
  * `Number.POSITIVE_INFINITY`** — o acoplamento com `daily_send_cap` acabou
- * PARA ESSE USO. `daily_send_cap` continua vivo pro teto de ENVIO diário
- * (item 5 da mesma issue, `checkDailySendCap` em `publish-daily-brevo.ts`)
- * — os dois deixaram de compartilhar constante. `currentActiveCount` é
+ * PARA ESSE USO. **Correção #6940:** `daily_send_cap` NÃO segue vivo pro
+ * teto de ENVIO diário (item 5 da mesma issue) — `checkDailySendCap` em
+ * `publish-daily-brevo.ts` foi esvaziado no mesmo #6793 e hoje só lê o valor
+ * sem gatear nada; os dois usos deixaram de existir como gate, não só de
+ * compartilhar constante. `currentActiveCount` é
  * `store.contacts` com `status === "in_brevo"` (quem hoje ocupa um slot —
  * `promoted_beehiiv`/`suppressed`/`unsubscribed` já liberaram o deles).
  * Nunca negativo (população acima do cap por transição de config — ex: cap

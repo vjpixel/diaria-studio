@@ -15,6 +15,8 @@
     "profileSurveyId": "f7528798-f8d5-4fcd-98c2-dc113e8c268b"
   },
   "kit": {
+    "doiFormId": "9839463",
+    "doiFormId_note": "#6810 — form de confirmação do double opt-in (mesmo id do KIT_DOI_FORM_ID em workers/poll/wrangler.toml, worker poll). Config duplicada de propósito: o worker lê via env do Cloudflare (secret/var por worker), o script Node (scripts/kit-doi-orphan-guard.ts) lê daqui — mesmo padrão de tallyFormId_note abaixo (config não-secreta central pros scripts Node, não reler wrangler.toml).",
     "tallyFormId": "xX5JJy",
     "tallyFormId_note": "#466 (24/08/2026) — survey de audiência que substitui a survey Beehiiv (Kit não tem builder nativo, editor escolheu Tally). scripts/fetch-tally-audience.ts lê este id via GET /forms/{id}/submissions. Form: https://tally.so/forms/xX5JJy/edit",
     "affiliate_url": "",

@@ -84,7 +84,7 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
 | `~/.hermes/scripts/claude-openrouter.sh` | roda `claude -p` com OpenRouter (stdin=prompt; `--tools`, `--budget`, `--timeout`) | `dots-studio/dots-3-note-preview:free` → `poolside/laguna-s-2.1:free` → `z-ai/glm-5.3-flash` |
 | `npx tsx --eval` (direto, sem LLM) | classificação determinística | nenhum |
 | `~/.hermes/scripts/opus-daily-diff-review.sh` | review Opus do diff ACUMULADO do dia (cron separado, 1x/dia; #6865, ex-`daily-consolidated-review.sh`) | Anthropic (assinatura) |
-| `~/.hermes/scripts/continuo-pr-review.sh` | review Sonnet de 1 PR `continuo/*` aberta por vez (cron separado, ~4h; #6865) — NUNCA mergeia, só comenta | Anthropic (assinatura) |
+| `~/.hermes/scripts/continuo-pr-review.sh` | review Sonnet de 1 PR `continuo/*` aberta por vez (cron separado; cadência: derivar com `hermes cron list --all` — nunca esta prosa, #6928; #6865) — NUNCA mergeia, só comenta | Anthropic (assinatura) |
 
 ## Cada ciclo (tick do cron)
 
@@ -268,8 +268,9 @@ ordem:
    `/diaria-overnight` (server, desassistido), não a uma sessão interativa
    (#5751, "sessão interativa não faz o que o helios faria sozinho"). Na
    prática, um PR self-reviewed do contínuo fica aberto até a próxima rodada
-   `/diaria-overnight` rodar a Fase 0, OU até o próximo tick de
-   `continuo-pr-review.sh` (a cada 120min) revisar e mergear sozinho — ver
+   `/diaria-overnight` rodar a Fase 0, OU até o próximo tick do cron
+   próprio de `continuo-pr-review.sh` (cadência: derivar com
+   `hermes cron list --all`, #6928) revisar e mergear sozinho — ver
    próximo parágrafo. `opus-daily-diff-review.sh` (ex-`daily-consolidated-
    review.sh`) continua só gerando achados/comentários, nunca mergeando.
 
@@ -492,11 +493,16 @@ aparecerem na classificação.
 
 ### 7. Review de PR individual (cron separado — NÃO por tick, #6865)
 
-`continuo-pr-review.sh` roda ~4h (cron próprio) com **assinatura
+`continuo-pr-review.sh` roda em cron próprio — a cadência NÃO vive nesta
+prosa: derivar com `hermes cron list --all` (#6928; já foi registrada
+errada aqui duas vezes) — com **assinatura
 Anthropic** (Sonnet) — review de 1 PR `continuo/*` ABERTA por vez, não o
-diff acumulado do dia (papel distinto do #6). Existe porque o contínuo
-roda a cada 120min e o review diário sozinho deixava PRs esperando até
-24h — descompasso 12:1 medido no #6849/#6864/#6865. Posta comentário de
+diff acumulado do dia (papel distinto do #6). Existe pra dar ao contínuo
+um revisor externo separado do tick, já que o contínuo é impedido de
+mergear a própria PR (#6864) e o review diário sozinho deixava PRs
+esperando até ~1 dia (#6849/#6864/#6865). O descompasso "12:1" que
+entrou nesta prosa e no script era derivado de cadências erradas —
+corrigido no #6928, e o motivo do script não depende da razão. Posta comentário de
 review no formato que `check-pr-review-authenticity.ts` reconhece como
 `independent-review` (#6732) — um review de verdade, de uma sessão
 distinta da que abriu a PR, então o formato reconhecido passa a
@@ -533,9 +539,36 @@ MESMO ciclo enquanto houver orçamento.
 - Rotação de modelo do Hermes (v0.4 §rotação): OBSOLETA para implementação —
   o fallback de modelo agora vive no wrapper. Mantida só para o modelo que o
   próprio Hermes usa para orquestrar/relatar.
+- **Tick falhando com `Response truncated due to output length limit` — a
+  mensagem pode estar mentindo (#6847).** Esse `RuntimeError` tem DUAS causas
+  possíveis no harness (`tests/run_agent/test_partial_stream_finish_reason.py`,
+  classe `TestCleanStreamEndMidToolCall`, em `~/hermes-agent`, fora deste
+  repo): (1) truncagem real por limite de output, ou (2) o provedor
+  derrubando o stream no meio da geração dos argumentos de uma tool call —
+  que o caminho de rotulagem pode marcar erroneamente como (1). A ação
+  correta diverge: (1) pede fatiar a saída pedida ao modelo; (2) é
+  instabilidade de provedor, e mexer em `max_tokens`/tamanho de saída não
+  resolve nada. Hoje **não há como distinguir os dois a partir do log do
+  tick** — `~/.hermes/logs/agent.log` registra a mensagem final, não o
+  `finish_reason` recebido nem se houve tool call parcial (lacuna de
+  observabilidade ainda aberta, #6847). Até essa lacuna fechar: não tratar
+  esta mensagem como "diminua o output" por padrão — checar se o tick
+  seguinte com o mesmo job reproduz (sinal a favor de (1), truncagem real)
+  ou não (sinal a favor de (2), instabilidade transitória de provedor).
+  Modo de falha vizinho, mesma janela, ainda sem discriminador: `Fire claim
+  lost; execution was not started`.
 
 ## Changelog
 
+- 0.5.14 (01/09/2026): #6928 — cadências dos 2 crons do contínuo estavam
+  erradas em prosa, ambas registrando o dobro do valor real, e o
+  descompasso/espera máxima que o #6865 citava era derivado desses números
+  errados (os valores de agora não são re-registrados aqui de propósito:
+  deriva com `hermes cron list --all`). Todas as menções numéricas de cadência
+  saíram da prosa deste arquivo, do `hermes/README.md` e dos 2 scripts de
+  review — substituídas pelo ponteiro de derivação. Guard:
+  `test/continuo-cadence-prose-drift-6928.test.ts` falha se os tokens
+  obsoletos voltarem.
 - 0.5.13 (01/09/2026): #6926 — `continuo-pr-review.sh` ganha autoridade de
   merge própria; o pickup do `/diaria-overnight` (§3 acima, #6823) deixa
   de ser o único ponto de merge, vira FALLBACK (caminho sensível, diff ≥
@@ -547,9 +580,9 @@ MESMO ciclo enquanto houver orçamento.
   superseded, veredito `approve`/`reject` no marcador de review, HEAD
   inalterado desde o início da revisão (corrida do #5716), caminho
   não-sensível, CI verde + mergeable, diff dentro do limiar de effort de
-  `pr-create-review.mjs`. Corrige junto (#6928): a cadência real do job é
-  `every 120m`, não `every 240m`/"~4h" como as entradas anteriores deste
-  changelog registravam — não citar número de cadência sem checar
+  `pr-create-review.mjs`. Corrige junto (#6928): a cadência que entradas
+  anteriores deste changelog registravam pro job estava errada (metade do
+  valor real) — não citar número de cadência em prosa; derivar com
   `hermes cron list --all` (CLAUDE.md).
 - 0.5.12 (01/09/2026): #6917 — "PR aberta NUNCA encerra o tick" ganha
   estatuto de afirmação própria, em negrito, separada do bloco de
@@ -619,7 +652,8 @@ MESMO ciclo enquanto houver orçamento.
   (avaliador e avaliado são o mesmo processo/credencial) — endurecer a
   regex de reconhecimento não muda quem decide, só encarece fabricar.
   Só seguro porque o #6865 (v0.5.8, acima) já colocou um revisor externo
-  de verdade a cada ~4h (`continuo-pr-review.sh`) — sem essa peça, PRs do
+  de verdade em cron próprio (`continuo-pr-review.sh`; cadência — derivar
+  com `hermes cron list --all`, #6928) — sem essa peça, PRs do
   contínuo ficariam órfãs até o pickup diário. Merge continua exclusivo
   do pickup (#6823) e do review consolidado — nunca desta delegação.
   Guard: `test/continuo-never-merges-own-pr.test.ts` falha se a instrução
@@ -629,8 +663,8 @@ MESMO ciclo enquanto houver orçamento.
   review.sh` renomeado pra `opus-daily-diff-review.sh` (mesma cadência
   1x/dia, mesmo modelo Opus, mesmo papel — só o nome deixou de valer
   "o único review" com um irmão novo no diretório). Novo
-  `continuo-pr-review.sh`: Sonnet, ~4h, review de 1 PR `continuo/*` por
-  vez, fecha o descompasso 12:1 entre o contínuo (`every 120m`) e o
+  `continuo-pr-review.sh`: Sonnet, cron próprio, review de 1 PR `continuo/*` por
+  vez, fecha o descompasso entre o contínuo e o
   review diário antigo (`0 12 * * *`) sem trocar o modelo do review
   profundo por um mais barato. Os dois scripts NUNCA mergeiam — o pickup
   (seção 3, passo 3, #6823) continua sendo o único ponto de merge, o que

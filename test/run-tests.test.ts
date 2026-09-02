@@ -26,6 +26,7 @@ import {
   DEFAULT_WORKER_COUNT,
   BATCH_SIZE,
   DEFAULT_BATCH_TIMEOUT_MS,
+  computeWorkerTimeoutMs,
   type RunTestBatchesParallelOptions,
 } from "../scripts/run-tests.ts";
 
@@ -799,6 +800,51 @@ describe("finalizeExitCode (#6877, extraído do check final de #6822)", () => {
   });
 });
 
+// --- #6991: worker morto vira shard AUSENTE, não teste falhando ------------
+//
+// A issue #6991 descreve uma leitura enganosa: comparar duas rodadas pelo
+// "conjunto de arquivos que falharam" é cego a um shard que nunca chegou a
+// rodar — ele nunca produz uma linha de falha, então some da comparação sem
+// deixar rastro NESSA leitura específica. O mecanismo que fecha essa lacuna
+// (`finalizeExitCode`, acima) já existe desde o #6822/#6877/#6939 — este
+// bloco fixa, em nome da própria issue, o cenário exato que ela descreve:
+// N-1 batches com sumário GENUÍNO e LIMPO (fail 0 — "conjunto de falhas"
+// vazio, a leitura que engana) e 1 batch que nunca produz sumário nenhum
+// (morto por ETIMEDOUT, igual ao "spawnSync node ETIMEDOUT" citado na
+// issue). O exit agregado precisa refletir o shard ausente, não o conjunto
+// de falhas visível — nunca 0 por "todo mundo que respondeu está limpo".
+describe("REGRESSÃO (#6991): shard morto não pode virar 'conjunto de falhas idêntico' silencioso", () => {
+  it("3 de 4 shards saem com sumário limpo (fail 0) e 1 morre por ETIMEDOUT sem sumário → exit agregado é 1, nunca 0", () => {
+    const deadShard = "/c.test.ts";
+    const exit = runTestBatches({
+      files: ["/a.test.ts", "/b.test.ts", deadShard, "/d.test.ts"],
+      batchSize: 1,
+      // Isola o resultado agregado sem o custo extra de bisecção — o alvo
+      // deste teste é o exit code final, não o diagnóstico de qual arquivo
+      // travou (já coberto pelos testes de bisecção acima).
+      bisectBudgetMs: 0,
+      spawn: ((_cmd: unknown, args: unknown) => {
+        const batch = (args as string[]).slice(3); // pula --import tsx --test
+        if (batch[0] === deadShard) {
+          // Mesma assinatura da issue: spawnSync mata o processo por timeout
+          // antes de qualquer sumário do node:test ser produzido.
+          return {
+            error: Object.assign(new Error("spawnSync node ETIMEDOUT"), { code: "ETIMEDOUT" }),
+            status: null,
+          };
+        }
+        return { status: 0, stdout: OK_SUMMARY, stderr: "" };
+      }) as unknown as typeof import("node:child_process").spawnSync,
+    });
+    assert.equal(
+      exit,
+      1,
+      "a leitura ingênua do 'conjunto de falhas' veria só shards limpos (fail 0) — o shard morto nunca " +
+        "reportou um arquivo falhando, mas também nunca completou; o exit agregado precisa ser 1 mesmo assim",
+    );
+  });
+});
+
 // `spawn` não está no tipo público de `RunTestBatchesParallelOptions`
 // (produção nunca injeta — o caminho `fork()` não tem como cruzar uma
 // função pela fronteira de IPC) — mas o fallback sequencial (`workerCount
@@ -857,6 +903,56 @@ describe("runTestBatchesParallel (#6877) — roteamento pro caminho sequencial",
 
   it("DEFAULT_WORKER_COUNT é um inteiro positivo (nunca 0, nunca fracionário)", () => {
     assert.ok(Number.isInteger(DEFAULT_WORKER_COUNT) && DEFAULT_WORKER_COUNT > 0);
+  });
+});
+
+describe("computeWorkerTimeoutMs (#6939) — teto do worker soma o orçamento de bisecção", () => {
+  it("REGRESSÃO (#6939): cenário da issue — grupo de 2 batches de 5min + bisecção de 10min cabia no teto ANTES do fix (12min < 16min de gasto real) e não cabe mais", () => {
+    const batchTimeoutMs = 5 * 60 * 1000;
+    const bisectBudgetMs = 10 * 60 * 1000;
+    const payload = { batches: [["a.test.ts"], ["b.test.ts"]], batchTimeoutMs, bisectBudgetMs };
+
+    const timeoutMs = computeWorkerTimeoutMs(payload);
+
+    // Teto ANTES do fix (#6939): só somava batches + margem — 2*5min+2min=12min.
+    const legacyTimeoutMs = payload.batches.length * batchTimeoutMs + 2 * 60 * 1000;
+    assert.equal(legacyTimeoutMs, 12 * 60 * 1000);
+
+    // Gasto real possível no pior caso descrito na issue: 1 batch travado até
+    // o SIGKILL (5min) + bisecção inteira (10min) + o outro batch saudável
+    // (~1min) — até 16min, que estourava o teto legado de 12min.
+    const worstCaseRealMs = batchTimeoutMs + bisectBudgetMs + 60 * 1000;
+    assert.ok(
+      legacyTimeoutMs < worstCaseRealMs,
+      "pré-condição da regressão: o teto legado cabia menos que o pior caso real — é isso que matava o worker no meio da bisecção",
+    );
+
+    // Teto CORRIGIDO cobre o pior caso real inteiro (com folga da própria
+    // margem de startup).
+    assert.ok(
+      timeoutMs >= worstCaseRealMs,
+      `teto corrigido (${timeoutMs}ms) deveria cobrir o pior caso real (${worstCaseRealMs}ms) — sem isso o worker ainda morre no meio da bisecção`,
+    );
+    assert.equal(timeoutMs, 2 * batchTimeoutMs + bisectBudgetMs + 2 * 60 * 1000);
+  });
+
+  it("bisecção desligada (bisectBudgetMs=0) → teto idêntico ao comportamento pré-#6939 (só batches + margem)", () => {
+    const batchTimeoutMs = 5 * 60 * 1000;
+    const timeoutMs = computeWorkerTimeoutMs({
+      batches: [["a.test.ts"], ["b.test.ts"], ["c.test.ts"]],
+      batchTimeoutMs,
+      bisectBudgetMs: 0,
+    });
+    assert.equal(timeoutMs, 3 * batchTimeoutMs + 2 * 60 * 1000);
+  });
+
+  it("grupo com 1 batch só → teto = 1 batch + bisecção + margem", () => {
+    const timeoutMs = computeWorkerTimeoutMs({
+      batches: [["a.test.ts"]],
+      batchTimeoutMs: 5 * 60 * 1000,
+      bisectBudgetMs: 10 * 60 * 1000,
+    });
+    assert.equal(timeoutMs, 5 * 60 * 1000 + 10 * 60 * 1000 + 2 * 60 * 1000);
   });
 });
 

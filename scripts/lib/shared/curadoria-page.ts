@@ -33,6 +33,7 @@ import { COLORS, FONTS } from "./design-tokens.ts";
 import { escHtml } from "../html-escape.ts"; // reusa o escaper canônico (também cobre apóstrofo)
 import { DIARIA_EIA_URL, DIARIA_ARQUIVO_URL, DIARIA_ESPECIAL_URL } from "../canonical-urls.ts"; // #3904/#5121/#5126 — fonte única dos domínios de marca de "É IA?"/Arquivo/Especial
 import { applyBrandWordmark } from "./brand-wordmark.ts"; // #4797 — wordmark da marca na linha de crédito do rodapé (compartilhada por hub/livros/cursos/arquivo)
+import { SIGNUP_FORM_FETCH_TIMEOUT_MS } from "../site-home-page.ts"; // #6981: mesmo timeout do form da home (#6979) — reusa a constante em vez de escolher outro número
 
 const TEAL = COLORS.brand;
 const INK = COLORS.ink;
@@ -239,11 +240,23 @@ export function renderCuradoriaCtaSubscribeScript(): string {
           if (btn) btn.disabled = false;
           return;
         }
-        window.fetch(${JSON.stringify(CTA_SUBSCRIBE_ENDPOINT)}, {
+        // #6981: aborta o fetch depois de ${SIGNUP_FORM_FETCH_TIMEOUT_MS}ms e
+        // cai no MESMO .catch() de erro de rede abaixo — sem isso, uma
+        // promise que nunca resolve deixa "Enviando…" pendurado pra sempre,
+        // sem erro visível. Mesma técnica de signupFormScript() (site-home-page.ts, #6979).
+        var timeoutId = null;
+        var controller = typeof window.AbortController === "function" ? new window.AbortController() : null;
+        if (controller) {
+          timeoutId = setTimeout(function () { controller.abort(); }, ${SIGNUP_FORM_FETCH_TIMEOUT_MS});
+        }
+        var fetchOpts = {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
-        }).then(function (res) {
+        };
+        if (controller) fetchOpts.signal = controller.signal;
+        window.fetch(${JSON.stringify(CTA_SUBSCRIBE_ENDPOINT)}, fetchOpts).then(function (res) {
+          if (timeoutId) clearTimeout(timeoutId);
           return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
         }).then(function (r) {
           if (r.status === 200 && r.body && r.body.ok) {
@@ -263,6 +276,7 @@ export function renderCuradoriaCtaSubscribeScript(): string {
             if (btn) btn.disabled = false;
           }
         }).catch(function () {
+          if (timeoutId) clearTimeout(timeoutId);
           setStatus("Erro de conexão. Tente de novo.", false);
           if (btn) btn.disabled = false;
         });

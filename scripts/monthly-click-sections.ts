@@ -67,6 +67,12 @@ import { isEditorial } from "./build-link-ctr.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import {
+  extractBoxDivulgacao0,
+  extractBoxDivulgacao1,
+  extractBoxDivulgacao2,
+  extractBoxDivulgacao3,
+} from "./lib/newsletter-parse.ts";
+import {
   parseMonthlyCycleArg,
   monthlyDir as resolveMonthlyDir,
 } from "./lib/mensal/monthly-paths.ts";
@@ -156,8 +162,12 @@ const LINK_RE = /\[([^\]]*?)\]\((https?:\/\/[^)\s]+)\)/g;
 // `amazon.com.br` inteiro entra porque, nesta newsletter, só aparece em
 // caixa de divulgação (livro recomendado ou vitrine `/shop/{usuário}`) —
 // nunca como fonte de notícia.
+// `wa.me` (#6867, achado ciclo 2608-09): domínio fixo do bloco "Convide um
+// amigo a assinar" (`buildConviteAmigoLink`/`buildWhatsappEditionUrl` em
+// newsletter-render-html.ts) e de qualquer CTA de compartilhamento por
+// WhatsApp injetado como box — nunca notícia, sempre infra própria.
 const OWN_PROMO_HOSTS_RE =
-  /^(apoia\.se|livros\.(diaria\.workers\.dev|diar\.ia\.br)|cursos\.(diaria\.workers\.dev|diar\.ia\.br)|link\.amazon|amazon\.com\.br)$/i;
+  /^(apoia\.se|livros\.(diaria\.workers\.dev|diar\.ia\.br)|cursos\.(diaria\.workers\.dev|diar\.ia\.br)|link\.amazon|amazon\.com\.br|wa\.me|api\.whatsapp\.com)$/i;
 function isOwnPromoLink(url: string): boolean {
   try {
     const u = new URL(url);
@@ -173,10 +183,55 @@ function isOwnPromoLink(url: string): boolean {
   }
 }
 
+// #6867: boxes de divulgação/CTA rotativos (data/snippets/*.md, injetados por
+// stitchNewsletter nos slots 0-3 — intro, gaps D1/D2 e D2/D3, e pós-último-
+// destaque) têm host VARIÁVEL por natureza (evento de terceiro, votação
+// comunitária, patrocínio pontual) — `OWN_PROMO_HOSTS_RE` acima só cobre infra
+// PRÓPRIA e ESTÁTICA, nunca cobriria todo box possível. Em vez de uma lista de
+// hosts que nunca fecha, reusamos a MESMA detecção estrutural marcador-
+// agnóstica que `stitch-newsletter.ts`/`newsletter-render-html.ts` já usam
+// pra localizar esses blocos (`extractBoxDivulgacao{0,1,2,3}` — por posição
+// entre `**DESTAQUE N` markers, não por conteúdo) e extraímos os links de
+// dentro deles pra excluir do pool do Radar/Use Melhor, independente de host.
+// Puramente textual sobre o `02-reviewed.md` já lido — não depende de
+// `data/snippets/` existir neste processo (o conteúdo do box já foi
+// materializado no markdown pelo stitch antes deste script rodar).
+// Review PR #7004, finding 1: um Set<string> de baseUrl (versão anterior)
+// exclui pela URL em si, em QUALQUER lugar do documento — inclusive se a
+// MESMA baseUrl também for a URL de um destaque real (`current === "destaque"`
+// na hora do parse), apagando o destaque em silêncio. Aqui rastreamos as
+// LINHAS que pertencem ao texto literal de um box (via posição no `md`,
+// mesmo split `/\r?\n/` de `parseEdition`) — só a ocorrência que está
+// FISICAMENTE dentro do box é excluída; a mesma URL usada como headline de um
+// destaque, em outro ponto do documento, nunca é tocada por este mecanismo.
+function extractBoxLineRanges(md: string): Set<number> {
+  const boxTexts = [
+    extractBoxDivulgacao0(md),
+    extractBoxDivulgacao1(md),
+    extractBoxDivulgacao2(md),
+    extractBoxDivulgacao3(md),
+  ];
+  const boxLines = new Set<number>();
+  for (const boxText of boxTexts) {
+    if (!boxText) continue;
+    const idx = md.indexOf(boxText);
+    if (idx === -1) continue;
+    const startLine = md.slice(0, idx).split(/\r?\n/).length - 1;
+    const lineCount = boxText.split(/\r?\n/).length;
+    for (let i = startLine; i < startLine + lineCount; i++) boxLines.add(i);
+  }
+  return boxLines;
+}
+
 export function parseEdition(edition: string, md: string): LinkItem[] {
   const lines = md.split(/\r?\n/);
   const items: LinkItem[] = [];
   let current: Section = "outro";
+  // #6867: links dentro de um box de divulgação/CTA (qualquer slot 0-3) nunca
+  // são notícia, independente do host — ver `extractBoxLineRanges`. Excluímos
+  // por LINHA (não por URL global) para não apagar um destaque real que
+  // coincida em baseUrl com o conteúdo de um box (finding 1, PR #7004).
+  const boxLines = extractBoxLineRanges(md);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -213,8 +268,15 @@ export function parseEdition(edition: string, md: string): LinkItem[] {
     // Só consideramos links editoriais (filtra beehiiv/poll/social/etc).
     if (!isEditorial(firstLinkOnLine.url)) continue;
     // Filtra infra promocional própria (apoia.se, livros/cursos, afiliado
-    // Amazon, referrals fixos) — não é notícia, não deve competir no Radar.
+    // Amazon, referrals fixos, WhatsApp) — não é notícia, não deve competir no Radar.
     if (isOwnPromoLink(firstLinkOnLine.url)) continue;
+    // #6867: filtra qualquer link que vive DENTRO de um box de divulgação/CTA
+    // (host variável — evento de terceiro, votação comunitária, etc.), achado
+    // ao vivo no ciclo 2608-09 quando conteúdo de box vazou pro Radar. Checa
+    // a LINHA (não a URL global — review PR #7004, finding 1): só a
+    // ocorrência fisicamente dentro do box é excluída, então um destaque real
+    // cuja URL coincida com a de um box em outro ponto da edição sobrevive.
+    if (boxLines.has(i)) continue;
 
     let title = firstLinkOnLine.title;
     if (!title) {

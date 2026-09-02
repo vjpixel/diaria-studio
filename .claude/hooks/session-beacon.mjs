@@ -98,7 +98,7 @@
 // si só), mas não prova mais paridade cruzada nenhuma — nem o título dos
 // testes lá afirma isso.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostname } from "node:os";
@@ -440,6 +440,159 @@ function writeJsonAtomic(path, value) {
   renameSync(tmp, path);
 }
 
+/**
+ * #6952: write atômico COM CAS (compare-and-swap) — o beacon é um dos
+ * escritores do registro de sessão (o outro é `scripts/lib/session-registry.ts`,
+ * que desde este PR usa `writeJsonSafeWithCas` sobre a MESMA lock file).
+ *
+ * O problema: o beacon lê o registro no início do hook, faz trabalho no meio
+ * (resolver a branch, colapsar paths, re-resolver o path de escrita com um
+ * `readdirSync`) e só então escreve — mesclando num `...previous` congelado
+ * LÁ NO INÍCIO. A janela é estreita (é tudo I/O de disco, sem spawn), mas o
+ * beacon dispara em TODA chamada de ferramenta de uma sessão ativa, e é
+ * justamente a sessão ativa que concede o grant. Se outro processo gravou nessa janela
+ * (a skill rodando `grant-merge`/`claim-issue`/`heartbeat`, ou o hook
+ * `consume-merge-grant-on-merge.mjs`), o beacon apaga aquilo em silêncio —
+ * o lost update do #6952, em que o `merge_grant` recém-concedido some antes
+ * de a beneficiária consumi-lo.
+ *
+ * Mecanismo, espelhando `withFileLock`/`writeJsonSafeWithCas` do lado TS:
+ *   1. Adquire `{path}.lock` por criação exclusiva (`wx` = O_CREAT|O_EXCL,
+ *      atômico): só um processo por vez entra. É a MESMA lock file que
+ *      `session-registry.ts` usa, então os dois escritores se serializam
+ *      entre si, não só cada um consigo mesmo.
+ *   2. Dentro do lock: relê o disco AGORA e reconstrói o record a partir
+ *      desse `current` fresco — nunca do `previous` congelado. Escreve.
+ *      Relê e confirma que o que ficou no disco é o nosso.
+ *   3. Verificação falhou (só possível no caminho advisory cross-máquina do
+ *      OneDrive, #6182, em que duas máquinas veem inodes distintos e podem
+ *      criar o `.lock` ao mesmo tempo): solta, relê e retenta.
+ *
+ * `buildRecord` é FUNÇÃO justamente pra que cada tentativa re-derive de um
+ * `current` fresco. Um objeto congelado passado 50 vezes repetiria o bug.
+ *
+ * `buildRecord` devolvendo `null` é o throttle do `buildBeaconRecord` ("nada
+ * novo desde o último heartbeat") — sucesso sem escrita, não erro. Repare que
+ * o throttle é reavaliado DENTRO do lock contra o estado fresco: se outro
+ * escritor acabou de gravar, o beacon corretamente decide não escrever, em
+ * vez de sobrescrever com um heartbeat redundante.
+ *
+ * Fail-open, como todo o resto do beacon: se as tentativas se esgotarem isto
+ * lança, e o `catch` do entrypoint engole — um beacon perdido nunca bloqueia
+ * a chamada de ferramenta que o disparou. É a assimetria certa: perder um
+ * heartbeat custa um registro alguns segundos mais velho; perder um
+ * `merge_grant` custa um deadlock de merge com diagnóstico invertido.
+ */
+/**
+ * #6952 (achado do review): idade a partir da qual um `.lock` é considerado
+ * ÓRFÃO e quebrado à força. Espelha `STALE_LOCK_MS` de
+ * `scripts/lib/session-registry.ts` — os TRÊS programas que escrevem o
+ * registro precisam concordar neste número, senão um quebra o lock que o
+ * outro ainda considera válido.
+ *
+ * O `wx` não tem dono nem TTL: um processo morto segurando o lock (SIGKILL,
+ * OOM, o binário do Claude Code quebrando no meio — aconteceu 5× num único
+ * dia) deixa o arquivo no disco PARA SEMPRE, e todo escritor seguinte passa a
+ * falhar. Sem quebra por idade, o conserto do #6952 trocaria um grant perdido
+ * de vez em quando por uma parada total do registro. 60s é folgado: a seção
+ * crítica é um read-modify-write de um JSON pequeno.
+ */
+const STALE_LOCK_MS = 60_000;
+
+/** Remove um `.lock` órfão. Best-effort: nunca lança. */
+function breakStaleLock(lockPath) {
+  try {
+    if (Date.now() - statSync(lockPath).mtimeMs < STALE_LOCK_MS) return;
+    unlinkSync(lockPath);
+  } catch { /* inexistente, ou outro quebrador ganhou a corrida — segue */ }
+}
+
+/**
+ * #6952 (achado do review): o ORÇAMENTO DE BLOQUEIO do beacon é deliberadamente
+ * menor que o do lado TS.
+ *
+ * Este hook roda em TODA chamada de ferramenta e a promessa dele é "nunca
+ * bloqueia". Com o teto do `session-registry.ts` (10s × 50 tentativas), uma
+ * contenção patológica seguraria uma tool call por ~500s: o hook cumpriria a
+ * letra do CAS e quebraria a razão de existir dele — além de violar o "stall
+ * silencioso > 60s é inaceitável" do CLAUDE.md.
+ *
+ * 2s × 3 = ~6s de pior caso. A assimetria com o lado TS é escolha, não
+ * descuido: lá, perder a escrita custa um grant/claim e vale esperar; aqui,
+ * custa um heartbeat alguns segundos mais velho e não vale segurar o editor.
+ */
+const BEACON_LOCK_TIMEOUT_MS = 2_000;
+const BEACON_CAS_ATTEMPTS = 3;
+
+function acquireBeaconLock(lockPath, timeoutMs = BEACON_LOCK_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      closeSync(openSync(lockPath, "wx"));
+      return;
+    } catch (e) {
+      if (e?.code !== "EEXIST") throw e;
+      if (Date.now() >= deadline) {
+        throw new Error(`[session-beacon] lock timeout after ${timeoutMs}ms: ${lockPath}`);
+      }
+      // Busy-wait de 50ms — mesmo padrão de `acquireLock` em
+      // `scripts/lib/file-lock.ts`. Síncrono de propósito: este hook é um
+      // script síncrono de ponta a ponta, e `await` aqui seria erro de sintaxe
+      // dentro de função não-async.
+      const end = Date.now() + 50;
+      while (Date.now() < end) { /* busy wait */ }
+    }
+  }
+}
+
+function releaseBeaconLock(lockPath) {
+  try { unlinkSync(lockPath); } catch { /* já removido — fail-soft */ }
+}
+
+function readJsonOrNull(path) {
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null; // ilegível/parcial — trata como ausente, nunca lança
+  }
+}
+
+function writeJsonAtomicWithCas(path, buildRecord, verify, attempts = BEACON_CAS_ATTEMPTS) {
+  const lockPath = `${path}.lock`;
+  let lastErr = null;
+  for (let i = 0; i < attempts; i++) {
+    let acquired = false;
+    try {
+      // Antes de esperar de novo, checa se o lock é de um processo que morreu
+      // segurando-o (ver STALE_LOCK_MS).
+      breakStaleLock(lockPath);
+      acquireBeaconLock(lockPath);
+      acquired = true;
+      const value = buildRecord(readJsonOrNull(path));
+      // Throttle reavaliado contra o estado fresco — "nada a escrever" é
+      // sucesso, não falha (não consome tentativa, não vira erro).
+      if (value === null) return;
+      writeJsonAtomic(path, value);
+      if (!verify(readJsonOrNull(path))) {
+        throw new Error("CAS verify failed: another writer overwrote our write");
+      }
+      return;
+    } catch (e) {
+      lastErr = e;
+    } finally {
+      // SEMPRE libera — inclusive no caminho de sucesso. Não liberar aqui
+      // deixaria o `.lock` no disco pra sempre e travaria todo escritor
+      // seguinte (o do beacon E o de session-registry.ts) até o timeout.
+      if (acquired) releaseBeaconLock(lockPath);
+    }
+  }
+  throw new Error(
+    `writeJsonAtomicWithCas: ${attempts} tentativas de CAS falharam em ${path} ` +
+      `— outro processo continua escrevendo o registro; última falha: ${lastErr?.message ?? String(lastErr)}`,
+  );
+}
+
 // #2019-style CLI guard — só roda o corpo quando este arquivo é o entrypoint
 // (nunca ao ser importado por test/session-beacon-hook.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
@@ -508,14 +661,15 @@ if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_ar
         previous = null; // ilegível/parcial — trata como novo, nunca lança
       }
 
-      const record = buildBeaconRecord(previous, {
+      const nowIso = new Date().toISOString();
+      const event = {
         kind: BEACON_KIND,
         machineTag: tag,
         sessionId,
         branch: readCurrentBranch(cwdRoot),
         newPaths: extractTouchedPaths(payload.tool_name, payload.tool_input, cwdRoot),
         verb: sniffVerb(payload.tool_input?.command),
-        nowIso: new Date().toISOString(),
+        nowIso,
         // process.ppid — mesmo racional do #6160 (premissa: harness spawna
         // este hook como filho direto da sessão, então ppid seria o pid
         // dela). #6294 mediu essa premissa como FALSA pelo menos uma vez ao
@@ -524,7 +678,10 @@ if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_ar
         // (não há fonte melhor disponível daqui), mas `decideSessionGc` não
         // trata mais "pid morto" como sinal de remoção por causa disso.
         pid: process.ppid,
-      });
+      };
+      // Throttle no estado STALE (mesmo do antes): pula o CAS inteiro quando
+      // nada mudou desde o último heartbeat.
+      const record = buildBeaconRecord(previous, event);
       if (record) {
         // #6326 fleet review item 3: re-resolve o path de escrita agora,
         // reduzindo (não eliminando — ver docstring de
@@ -532,7 +689,16 @@ if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_ar
         // `registerSession` promovendo este MESMO sessionId entre a
         // resolução original de `path` (acima) e este write.
         const writePath = resolveWritePathAtWriteTime(sessionsDir, sessionId, path);
-        writeJsonAtomic(writePath, record);
+        // #6952: CAS — `buildRecord` re-deriva de `current` fresco dentro do
+        // lock (pode re-throttlear se o arquivo foi reescrito por outro
+        // escritor entre nossa leitura e o lock; caso "nada a escrever" é
+        // sucesso fail-open, não erro). `verify` confirma que nosso
+        // heartbeat chegou ao disco.
+        writeJsonAtomicWithCas(
+          writePath,
+          (current) => buildBeaconRecord(current, event),
+          (onDisk) => onDisk?.lastHeartbeat === nowIso,
+        );
       }
       // Nunca emitir saída: este hook não altera nem bloqueia a chamada.
     } catch {

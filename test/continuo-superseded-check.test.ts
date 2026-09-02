@@ -27,6 +27,32 @@ describe("extractClosingIssueNumbers (#6926)", () => {
     assert.deepEqual(extractClosingIssueNumbers(undefined), []);
     assert.deepEqual(extractClosingIssueNumbers(null), []);
   });
+
+  // #6938: a cauda de continuação (`Closes #10 e #11`) permitia até 20 chars
+  // soltos ANTES DE CADA número da cauda, o suficiente pra engolir uma
+  // REFERÊNCIA de contexto no mesmo estilo de frase usado neste repo — a
+  // cauda só avança para um 2º/3º número com conjunção EXPLÍCITA logo em
+  // seguida, nunca por proximidade solta (o 1º número continua podendo
+  // estar a até 20 chars do verbo, ver "não extrai nada..." acima).
+  it("#6938: 'Closes #N — regression of #M' extrai só a issue colada ao verbo", () => {
+    assert.deepEqual(extractClosingIssueNumbers("Closes #6935 — regression of #6930"), [6935]);
+  });
+
+  it("#6938: '#N (see #M)' extrai só a issue colada ao verbo", () => {
+    assert.deepEqual(extractClosingIssueNumbers("Closes #6920 (see #6919)"), [6920]);
+  });
+
+  it("#6938: menção solta em frase separada não conta como fechamento", () => {
+    assert.deepEqual(
+      extractClosingIssueNumbers("Fixes the parser. Closes #1. Related: #2"),
+      [1],
+    );
+  });
+
+  it("#6938: conjunção explícita continua funcionando (não é regressão do fix)", () => {
+    assert.deepEqual(extractClosingIssueNumbers("Closes #10, #11"), [10, 11]);
+    assert.deepEqual(extractClosingIssueNumbers("Closes #10 and #11"), [10, 11]);
+  });
 });
 
 describe("computeSupersededVerdict (#6926/#6238)", () => {

@@ -35,12 +35,30 @@ apex (404 hoje) e `/sitemap.xml` já era servido certo.
   `gen-archive-pages.ts` sempre que o acervo mudar. `<title>diar.ia.br</title>`
   + meta description = tagline oficial são preservados do stub original
   (guard de regressão do #6359 continua valendo).
-  **Escopo reduzido desta unidade (documentado no PR do #6375, decisão
-  registrada porque não cabe em pergunta):** o form de inscrição (masthead
-  + footer) é visualmente idêntico ao design (pill input + botão), mas o
-  campo de e-mail é DECORATIVO — a pill inteira é um único `<a
-  href="/subscribe">`, sem POST real pra API do Kit (bloqueado pelo #6318,
-  aberta — UTM/atribuição de cadastro não fechada). V1Specials linka
+  **O form de inscrição (masthead + footer) resolve a inscrição no
+  PRÓPRIO hero (#6976, 01/09/2026) — deixou de ser decorativo.** Até o
+  #6976, a pill inteira era um único `<a href="/subscribe">` (depois
+  `/assinar`, #6427) com um `<span>` fingindo ser input (`aria-hidden`):
+  o visitante clicava, ia pra outra página e digitava o e-mail de novo.
+  Hoje é um `<form>` real (mesma geometria pixel-a-pixel da pill antiga —
+  só o `<input>`/`<button>` reais herdam a aparência via CSS) que reusa o
+  MESMO mecanismo de `public/assinar/index.html`: `POST` JSON cross-origin
+  pra `https://eia.diar.ia.br/jogar/subscribe`, `source: "apex"`, UTM
+  dinâmico repassado da própria query string da home, status inline
+  sem sair da página. Miolo em `renderSignupForm`/`wireSignupForm`
+  (`scripts/lib/site-home-page.ts`) — 1 função chamada 2x (`id`s distintos
+  `masthead-form`/`footer-form`, sem colisão). A checkbox de opt-in (LGPD,
+  `optin_required` no worker `poll`) é obrigatória em todo form deste tipo
+  no repo (`/assinar`, `livros-hero/footer`, `arquivo`/`hub`) — entra como
+  linha compacta abaixo da pill, sem alterar a geometria da pill em si.
+  `/assinar` continua existindo e funcionando como página autônoma
+  (link compartilhável, destino de quem chega por fora) — não foi
+  removida nem alterada. Desde o #7015, `public/assinar/index.html` é
+  GERADO por `scripts/gen-assinar-page.ts` (miolo em
+  `scripts/lib/site-assinar-page.ts`) — deixou de ser HTML escrito à mão
+  pra fechar o mesmo bug de wordmark do #7010 (só os pontos separadores em
+  teal, sem o `.br` inteiro); rodar o gerador depois de editar o módulo,
+  nunca editar o HTML direto. V1Specials linka
   direto pros hubs já existentes (`livros.diar.ia.br`, `cursos.diar.ia.br`)
   em vez de fonte de dado dinâmica — não achada nenhuma API própria de
   contagem de livros/cursos no repo, e os hubs já são a fonte de verdade
@@ -62,7 +80,8 @@ rica, medida ao vivo em 26/08 mas sem confirmação de que já virou decisão
 final/implementação — e checar se a atribuição aparece na UI do Kit) — não
 entrar nisso aqui. Smoke test de rotas: `test/site-worker-routes-6359.test.ts`
 (rotas/arquivos) + `test/site-home-page-6375.test.ts` (conteúdo do
-redesign — 7 blocos, form → `/subscribe`, links reais pro acervo).
+redesign — 7 blocos, links reais pro acervo) + `test/site-home-signup-6976.test.ts`
+(forms de inscrição inline do masthead/footer, POST pra `/jogar/subscribe`).
 
 Fora de escopo aqui:
 

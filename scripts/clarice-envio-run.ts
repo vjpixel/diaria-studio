@@ -180,6 +180,21 @@ export class EnvioAbort extends Error {
   }
 }
 
+/**
+ * #7007 — mensagem de abort pra `proposal.committedLookupFailed`, com o
+ * motivo real (`WaveProposal.committedLookupError`, ver docstring em
+ * `lib/clarice-wave-plan.ts`) anexado quando disponível. `suffixLabel` é
+ * `""` na 1ª checagem (Passo 1) ou `" (pós-MV)"` na 2ª (após MV sob
+ * demanda) — mesmo texto-base das duas chamadas, só o rótulo muda.
+ */
+function committedLookupFailedMessage(suffixLabel: string, reason: string | null | undefined): string {
+  return (
+    `❌${suffixLabel} consulta de campanhas comprometidas (queued/sent) na Brevo falhou — ` +
+    "nunca planejar sobre fila superestimada." +
+    (reason ? ` Motivo: ${reason}` : "")
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Datas — hoje/amanhã em BRT.
 // ---------------------------------------------------------------------------
@@ -842,7 +857,7 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
 
     // --- Blockers estruturais que NÃO dependem do semáforo antigo (aquele foi substituído). ---
     if (proposal.committedLookupFailed) {
-      throw new EnvioAbort("❌ consulta de campanhas comprometidas (queued/sent) na Brevo falhou — nunca planejar sobre fila superestimada.");
+      throw new EnvioAbort(committedLookupFailedMessage("", proposal.committedLookupError));
     }
     if (proposal.novosFreshness.status === "never-run") {
       throw new EnvioAbort("❌ /diaria-clarice-novos nunca rodou neste ciclo — cadastro novo perderia prioridade em silêncio.");
@@ -1095,7 +1110,7 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
           // como frequente neste projeto) viraria "sem limite" em vez de
           // abortar — o oposto do que o guard original garante.
           if (proposal.committedLookupFailed) {
-            throw new EnvioAbort("❌ (pós-MV) consulta de campanhas comprometidas na Brevo falhou — nunca planejar sobre fila superestimada.");
+            throw new EnvioAbort(committedLookupFailedMessage(" (pós-MV)", proposal.committedLookupError));
           }
           if (proposal.novosFreshness.status === "never-run") {
             throw new EnvioAbort("❌ (pós-MV) /diaria-clarice-novos nunca rodou neste ciclo.");

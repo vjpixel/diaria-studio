@@ -15,11 +15,11 @@
 
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, copyFileSync, rmSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, copyFileSync, rmSync, closeSync, openSync, unlinkSync, renameSync } from "node:fs";
+import { spawnSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   BEACON_KIND,
@@ -688,6 +688,388 @@ describe("#6303 P1/P2 — o beacon NÃO registra subagente", () => {
       assert.equal(isLinkedWorktree(root), false);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── #6952 — lost update: o beacon apaga o que outro escritor gravou ────────
+//
+// O defeito medido ao vivo (01/09): uma coordenadora concedeu `merge_grant`,
+// a beneficiária confirmou `granted: true`, e antes do `gh pr merge` o grant
+// tinha sumido — sem ninguém consumi-lo.
+//
+// A causa é a ESTRUTURA do beacon, não o `merge_grant`. O hook:
+//   1. lê o registro (`previous`) no início;
+//   2. faz trabalho no meio (resolver branch, colapsar paths, re-resolver o
+//      path de escrita com um `readdirSync`);
+//   3. escreve mesclando num `...previous` congelado no passo 1.
+// Qualquer escrita de outro processo entre 1 e 3 é apagada em silêncio.
+//
+// A janela é ESTREITA (o passo 2 é só I/O de disco, sem spawn), e é por isso
+// que um teste que tenta acertá-la por `setTimeout` não presta: ele passa
+// tanto com quanto sem a correção, porque a escrita concorrente quase nunca
+// cai no meio. Foi medido: uma primeira versão destes testes, cronometrada,
+// passava contra o beacon SEM correção — teste vacuoso.
+//
+// O que fecha a corrida não é a janela ser curta, é o beacon passar a
+// respeitar a MESMA lock file que `session-registry.ts` usa. Então é isso que
+// se testa, deterministicamente: com o lock retido por outro escritor, o
+// beacon TEM que esperar. Um beacon que escreve enquanto o lock está retido é
+// exatamente o beacon que apaga o grant, e o 1º teste falha nele.
+describe("#6952 — escrita concorrente durante a janela read→write do beacon", () => {
+  const REAL_HOOK = fileURLToPath(new URL("../.claude/hooks/session-beacon.mjs", import.meta.url));
+  const raceRoots: string[] = [];
+
+  after(() => {
+    for (const r of raceRoots) rmSync(r, { recursive: true, force: true });
+  });
+
+  function makeRoot(): { root: string; hookPath: string; sessionsDir: string } {
+    const root = mkdtempSync(join(tmpdir(), "beacon-6952-"));
+    raceRoots.push(root);
+    mkdirSync(join(root, ".git"), { recursive: true });
+    mkdirSync(join(root, "data", "sessions"), { recursive: true });
+    mkdirSync(join(root, ".claude", "hooks"), { recursive: true });
+    const hookPath = join(root, ".claude", "hooks", "session-beacon.mjs");
+    copyFileSync(REAL_HOOK, hookPath);
+    return { root, hookPath, sessionsDir: join(root, "data", "sessions") };
+  }
+
+  function runHookSync(hookPath: string, payload: Record<string, unknown>) {
+    return spawnSync(process.execPath, [hookPath], {
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+  }
+
+  /**
+   * Escreve `mutate(record)` no registro do jeito que um OUTRO processo
+   * escreve: sob a MESMA lock file que o beacon usa, com write atômico.
+   * É o que `session-registry.ts` faz em `grant-merge`/`claim-issue`.
+   *
+   * Sob o lock de propósito: sem isso o teste mediria "duas escritas cruas
+   * colidem", que é verdade em qualquer implementação e não prova nada sobre
+   * a correção. O que ele precisa medir é se o beacon RESPEITA um escritor
+   * que se anunciou corretamente.
+   */
+  function writeAsOtherProcess(recordPath: string, mutate: (r: any) => any): void {
+    const lockPath = `${recordPath}.lock`;
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      try {
+        closeSync(openSync(lockPath, "wx"));
+        break;
+      } catch (e: any) {
+        if (e?.code !== "EEXIST") throw e;
+        if (Date.now() >= deadline) throw new Error(`lock timeout: ${lockPath}`);
+        const end = Date.now() + 10;
+        while (Date.now() < end) { /* busy wait */ }
+      }
+    }
+    try {
+      const current = JSON.parse(readFileSync(recordPath, "utf8"));
+      const next = mutate(current);
+      const tmp = `${recordPath}.tmp-other`;
+      writeFileSync(tmp, JSON.stringify(next), "utf8");
+      renameSync(tmp, recordPath);
+    } finally {
+      try { unlinkSync(lockPath); } catch { /* ignore */ }
+    }
+  }
+
+  const GRANT = {
+    grantedTo: "benef-6952",
+    grantedBy: "coord-6952",
+    grantedAt: "2026-09-01T12:00:00.000Z",
+    pr: 6952,
+  };
+
+  function acquire(lockPath: string): void {
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      try { closeSync(openSync(lockPath, "wx")); return; } catch (e: any) {
+        if (e?.code !== "EEXIST") throw e;
+        if (Date.now() >= deadline) throw new Error(`lock timeout: ${lockPath}`);
+        const end = Date.now() + 10;
+        while (Date.now() < end) { /* busy wait */ }
+      }
+    }
+  }
+
+  it("com o lock retido por outro escritor, o beacon ESPERA — e o merge_grant sobrevive (#6952)", async () => {
+    const { root, hookPath, sessionsDir } = makeRoot();
+    const sessionId = "sess-6952-grant";
+
+    // Passo 1 — o registro já existe, sem grant. A coordenadora está viva e
+    // fazendo tool calls; foi o beacon dela que criou isto.
+    runHookSync(hookPath, {
+      session_id: sessionId,
+      tool_name: "Edit",
+      tool_input: { file_path: join(root, "a.ts") },
+    });
+    const files = readdirSync(sessionsDir);
+    assert.equal(files.length, 1, `esperava 1 registro, achou ${JSON.stringify(files)}`);
+    const recordPath = join(sessionsDir, files[0]!);
+    assert.equal(
+      JSON.parse(readFileSync(recordPath, "utf8")).merge_grant,
+      undefined,
+      "sanity: ainda não há grant",
+    );
+
+    // Passo 2 — outro processo (o `grant-merge` de session-registry.ts) entra
+    // na seção crítica e SEGURA o lock. Ele ainda não gravou nada.
+    const lockPath = `${recordPath}.lock`;
+    acquire(lockPath);
+
+    // Passo 3 — no meio disso a sessão faz outra tool call e o beacon dispara,
+    // com caminho novo pra não cair no throttle.
+    const child = spawn(process.execPath, [hookPath], { stdio: ["pipe", "pipe", "pipe"] });
+    child.stdin.end(
+      JSON.stringify({
+        session_id: sessionId,
+        tool_name: "Edit",
+        tool_input: { file_path: join(root, "b.ts") },
+      }),
+    );
+
+    // Passo 4 — ESTA é a asserção que separa o beacon corrigido do defeituoso.
+    // Com o lock retido, o beacon corrigido está bloqueado e NÃO escreveu. O
+    // beacon sem correção ignora o lock, já leu um `previous` sem grant e já
+    // gravou — e é essa gravação que, daqui a um instante, vai apagar o grant.
+    await new Promise((r) => setTimeout(r, 300));
+    const midFlight = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.ok(
+      !(midFlight.touched_paths ?? []).includes("b.ts"),
+      "o beacon escreveu com o lock retido por outro escritor — é exatamente assim que o merge_grant do #6952 é apagado",
+    );
+
+    // Passo 5 — o outro escritor grava o grant e solta o lock.
+    const withGrant = { ...midFlight, merge_grant: GRANT };
+    const tmp = `${recordPath}.tmp-other`;
+    writeFileSync(tmp, JSON.stringify(withGrant), "utf8");
+    renameSync(tmp, recordPath);
+    unlinkSync(lockPath);
+
+    // Passo 6 — o beacon acorda, relê o estado FRESCO (com grant) e escreve.
+    const status: number = await new Promise((r) => child.on("close", (c) => r(c ?? 0)));
+    assert.equal(status, 0, "o beacon nunca deve falhar a chamada de ferramenta");
+
+    const after = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.deepEqual(
+      after.merge_grant,
+      GRANT,
+      "o merge_grant foi apagado pelo beacon — lost update do #6952",
+    );
+    // Sem isto o teste passaria trivialmente por o beacon não ter escrito nada.
+    assert.ok(
+      (after.touched_paths ?? []).includes("b.ts"),
+      "o beacon precisa ter feito o trabalho dele depois de esperar, não desistido",
+    );
+  });
+
+  it("com o lock retido, uma claim gravada por outro escritor sobrevive (#6952)", async () => {
+    const { root, hookPath, sessionsDir } = makeRoot();
+    const sessionId = "sess-6952-claim";
+
+    runHookSync(hookPath, {
+      session_id: sessionId,
+      tool_name: "Edit",
+      tool_input: { file_path: join(root, "a.ts") },
+    });
+    const recordPath = join(sessionsDir, readdirSync(sessionsDir)[0]!);
+    const lockPath = `${recordPath}.lock`;
+    acquire(lockPath);
+
+    const child = spawn(process.execPath, [hookPath], { stdio: ["pipe", "pipe", "pipe"] });
+    child.stdin.end(
+      JSON.stringify({
+        session_id: sessionId,
+        tool_name: "Edit",
+        tool_input: { file_path: join(root, "b.ts") },
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 300));
+    const midFlight = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.ok(
+      !(midFlight.touched_paths ?? []).includes("b.ts"),
+      "o beacon escreveu com o lock retido — mesma classe do #6952",
+    );
+
+    const claimed = {
+      ...midFlight,
+      claimed_issues: [6952],
+      claimed_issues_at: { "6952": "2026-09-01T12:00:00.000Z" },
+    };
+    const tmp = `${recordPath}.tmp-other`;
+    writeFileSync(tmp, JSON.stringify(claimed), "utf8");
+    renameSync(tmp, recordPath);
+    unlinkSync(lockPath);
+
+    await new Promise((r) => child.on("close", r));
+
+    const after = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.deepEqual(after.claimed_issues, [6952], "a claim foi apagada pelo beacon");
+    assert.deepEqual(after.claimed_issues_at, { "6952": "2026-09-01T12:00:00.000Z" });
+    assert.ok((after.touched_paths ?? []).includes("b.ts"), "o beacon precisa ter escrito");
+  });
+
+  it("o beacon não deixa a lock file pra trás (senão trava todo escritor seguinte)", () => {
+    const { root, hookPath, sessionsDir } = makeRoot();
+    runHookSync(hookPath, {
+      session_id: "sess-6952-lock",
+      tool_name: "Edit",
+      tool_input: { file_path: join(root, "a.ts") },
+    });
+    const leftovers = readdirSync(sessionsDir).filter((f) => f.endsWith(".lock"));
+    assert.deepEqual(
+      leftovers,
+      [],
+      "lock vazada: o próximo escritor (beacon OU session-registry) ficaria bloqueado até o timeout",
+    );
+  });
+});
+
+// ─── #6952 — os DOIS escritores contendo no MESMO arquivo ───────────────────
+//
+// Achado do review de type-design da PR: os testes acima provam que o beacon
+// respeita o lock, e os de `test/session-registry.test.ts` provam que
+// `session-registry.ts` respeita o lock — cada um sozinho. Nenhum provava a
+// premissa da qual a correção inteira depende: que os dois respeitam o MESMO
+// lock e portanto se excluem MUTUAMENTE.
+//
+// Isso não é zelo: o `.mjs` do beacon é uma reimplementação à mão do
+// protocolo do lado TS (não dá pra importar `.ts` de dentro de um hook), e a
+// convenção do path do lock — `{path}.lock` — é o único elo entre as duas.
+// Se um dos lados mudar essa convenção, cada implementação continua passando
+// nos SEUS testes e a exclusão mútua evapora em silêncio, que é exatamente o
+// #6952 de volta.
+//
+// O cenário aqui é o do incidente, com os dois programas de verdade: uma
+// sessão coordenadora registrada por `session-registry.ts`, o beacon dela
+// disparando numa tool call, e um `claim-issue` concorrente — todos no mesmo
+// arquivo de registro.
+describe("#6952 — beacon e session-registry se excluem mutuamente no mesmo registro", () => {
+  const REAL_HOOK = fileURLToPath(new URL("../.claude/hooks/session-beacon.mjs", import.meta.url));
+  const REGISTRY_CLI = fileURLToPath(new URL("../scripts/lib/session-registry.ts", import.meta.url));
+  // `--import tsx` resolve pelo CWD, e o CWD aqui é a raiz temporária — então
+  // o specifier precisa ser o caminho absoluto do loader.
+  const TSX_LOADER = pathToFileURL(
+    fileURLToPath(new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url)),
+  ).href;
+  const roots: string[] = [];
+
+  after(() => {
+    for (const r of roots) rmSync(r, { recursive: true, force: true });
+  });
+
+  it("com o lock retido, beacon E claim-issue esperam — e nenhum apaga o efeito do outro", async () => {
+    const root = mkdtempSync(join(tmpdir(), "beacon-registry-6952-"));
+    roots.push(root);
+    // `.git` como diretório vazio: o beacon resolve a raiz por ele
+    // (`resolveMainRepoRootNoSpawn`), e o `git rev-parse` do CLI falha e cai
+    // no fallback do cwd — as duas resoluções concordam nesta mesma raiz.
+    mkdirSync(join(root, ".git"), { recursive: true });
+    mkdirSync(join(root, "data", "sessions"), { recursive: true });
+    mkdirSync(join(root, ".claude", "hooks"), { recursive: true });
+    const hookPath = join(root, ".claude", "hooks", "session-beacon.mjs");
+    copyFileSync(REAL_HOOK, hookPath);
+    const sessionsDir = join(root, "data", "sessions");
+    const sessionId = "coord-6952-cross";
+
+    // A coordenadora se registra pelo CLI (kind `overnight`).
+    const reg = spawnSync(
+      process.execPath,
+      ["--import", TSX_LOADER, REGISTRY_CLI, "register", "--kind", "overnight", "--session-id", sessionId],
+      { cwd: root, encoding: "utf8", timeout: 30_000 },
+    );
+    assert.equal(reg.status, 0, `register falhou: ${reg.stderr}`);
+    const files = readdirSync(sessionsDir).filter((f) => f.endsWith(".json"));
+    assert.equal(files.length, 1, `esperava 1 registro, achou ${JSON.stringify(files)}`);
+    const recordPath = join(sessionsDir, files[0]!);
+    assert.match(files[0]!, /^overnight-/, "o registro da coordenadora é do kind overnight");
+    const before = JSON.parse(readFileSync(recordPath, "utf8"));
+
+    // Um terceiro escritor entra na seção crítica e segura o lock.
+    const lockPath = `${recordPath}.lock`;
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      try { closeSync(openSync(lockPath, "wx")); break; } catch (e: any) {
+        if (e?.code !== "EEXIST") throw e;
+        if (Date.now() >= deadline) throw new Error(`lock timeout: ${lockPath}`);
+        const end = Date.now() + 10;
+        while (Date.now() < end) { /* busy wait */ }
+      }
+    }
+
+    // Agora os DOIS programas tentam escrever no mesmo registro, ao mesmo
+    // tempo. O beacon escreve no arquivo `overnight-*` (não cria um
+    // `interactive-*` paralelo) porque `findExistingSessionFile` acha o
+    // registro da sessão por sessionId, qualquer que seja o kind.
+    const beacon = spawn(process.execPath, [hookPath], { stdio: ["pipe", "pipe", "pipe"] });
+    beacon.stdin.end(
+      JSON.stringify({
+        session_id: sessionId,
+        tool_name: "Edit",
+        tool_input: { file_path: join(root, "b.ts") },
+      }),
+    );
+    const claim = spawn(
+      process.execPath,
+      ["--import", TSX_LOADER, REGISTRY_CLI,
+       "claim-issue", "--issue", "6952", "--kind", "overnight", "--session-id", sessionId],
+      { cwd: root, stdio: ["ignore", "pipe", "pipe"] },
+    );
+
+    // Com o lock retido, NENHUM dos dois pode ter escrito.
+    await new Promise((r) => setTimeout(r, 1500));
+    const midFlight = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.equal(
+      midFlight.lastHeartbeat,
+      before.lastHeartbeat,
+      "alguém escreveu com o lock retido — a exclusão mútua entre os dois programas não existe",
+    );
+    assert.ok(!(midFlight.touched_paths ?? []).includes("b.ts"), "o beacon escreveu com o lock retido");
+    assert.ok(!(midFlight.claimed_issues ?? []).includes(6952), "o claim-issue escreveu com o lock retido");
+
+    unlinkSync(lockPath);
+
+    const [beaconStatus, claimStatus] = await Promise.all([
+      new Promise<number>((r) => beacon.on("close", (c) => r(c ?? 0))),
+      new Promise<number>((r) => claim.on("close", (c) => r(c ?? 0))),
+    ]);
+    assert.equal(beaconStatus, 0, "o beacon nunca falha a chamada de ferramenta");
+    assert.equal(claimStatus, 0, "o claim-issue deve suceder depois de esperar");
+
+    // O ponto do teste: os DOIS efeitos sobrevivem. Se os dois programas não
+    // se serializassem, o último a gravar apagaria o efeito do primeiro — que
+    // é literalmente o #6952.
+    const after = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.ok(
+      (after.claimed_issues ?? []).includes(6952),
+      "a claim do session-registry foi apagada pelo beacon",
+    );
+    assert.ok(
+      (after.touched_paths ?? []).includes("b.ts"),
+      "o touched_paths do beacon foi apagado pelo session-registry",
+    );
+    // E nenhum dos dois deixou lock pra trás.
+    assert.deepEqual(readdirSync(sessionsDir).filter((f) => f.endsWith(".lock")), []);
+  });
+
+  it("a convenção do path do lock é a MESMA nos dois programas (é o único elo entre eles)", () => {
+    // Guard barato contra a drift que o teste acima detectaria só por acidente
+    // de timing: se um lado mudar `${path}.lock`, os dois continuam passando
+    // nos seus próprios testes e param de se excluir.
+    const registrySrc = readFileSync(REGISTRY_CLI, "utf8");
+    const beaconSrc = readFileSync(REAL_HOOK, "utf8");
+    for (const [nome, src] of [["session-registry.ts", registrySrc], [".mjs do beacon", beaconSrc]] as const) {
+      assert.match(
+        src,
+        /const lockPath = `\$\{path\}\.lock`/,
+        `${nome} não deriva mais o lock como \`\${path}.lock\` — a exclusão mútua com o outro escritor quebrou`,
+      );
     }
   });
 });

@@ -67,7 +67,7 @@ describe("guard de budget do wrapper (#6666)", () => {
     // (este checkout fala de orcamento/custo o tempo todo), o que e
     // perigoso porque este e o UNICO classificador que ainda le texto do
     // modelo e alimenta SAW_CONFIG_ERROR_SIGNAL (exit 4).
-    const budgetPattern = /elif grep -qE "Exceeded USD budget" "\$ATTEMPT_LOG"/;
+    const budgetPattern = /elif command grep -qE "Exceeded USD budget" "\$ATTEMPT_LOG"/;
     assert.ok(
       budgetPattern.test(source),
       "o elif de classificacao do budget-exceeded nao esta presente no wrapper — sem isso, 'Exceeded USD budget' (que vai pro STDOUT) e classificado como 'sem sinal claro' e a cadeia falha silenciosamente (#6666)",

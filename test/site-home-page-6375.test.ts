@@ -3,9 +3,11 @@
  *
  * Cobre o redesign da home (`workers/site/public/index.html`, Direção A ·
  * Edição diária) — miolo puro (`scripts/lib/site-home-page.ts`) com fixtures
- * em memória, e o arquivo COMMITTED (7 blocos esperados, form → /assinar (#6427,
- * antes /subscribe),
- * link do destaque do dia → um `/p/{slug}` real do cache).
+ * em memória, e o arquivo COMMITTED (7 blocos esperados, `<form>` de
+ * inscrição inline no masthead/footer, `id`s próprios (#6976, antes
+ * `<a href="/assinar">` — ver `test/site-home-signup-6976.test.ts` pro
+ * mecanismo completo do form), link do destaque do dia → um `/p/{slug}`
+ * real do cache).
  */
 
 import { describe, it } from "node:test";
@@ -17,16 +19,38 @@ import { fileURLToPath } from "node:url";
 import {
   buildHomeFeed,
   buildIndexHtml,
+  extractHeroImage,
   extractPageMeta,
   slugFromCanonicalUrl,
 } from "../scripts/lib/site-home-page.ts";
 import { buildSitemapXml, addSitemapEntry, sitemapEntryFromPost } from "../scripts/lib/site-archive-pages.ts";
+import { WORDMARK_DISPLAY_SEGMENTS } from "../scripts/lib/shared/brand-wordmark.ts";
+
+/** Regex-escapa `s` — usado pra montar `RegExp` a partir de markup literal. */
+function reEscape(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Markup canônico do wordmark de display, derivado por VALOR de
+ * `WORDMARK_DISPLAY_SEGMENTS` — não hardcoded aqui, senão o teste trava só a
+ * cópia do dia em que foi escrito e não pega drift se `brand-wordmark.ts`
+ * mudar a estrutura sem `site-home-page.ts` acompanhar (#7010).
+ */
+const WORDMARK_HTML = WORDMARK_DISPLAY_SEGMENTS.map((seg) => {
+  const cls = seg.teal ? ' class="dot"' : "";
+  const hidden = seg.decorative ? ' aria-hidden="true"' : "";
+  return `<span${cls}${hidden}>${seg.text}</span>`;
+}).join("");
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC_DIR = resolve(ROOT, "workers", "site", "public");
 
-function fakePageHtml(title: string, description: string): string {
-  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>${title}</title><meta name="description" content="${description}"></head><body></body></html>`;
+function fakePageHtml(title: string, description: string, heroSrc?: string): string {
+  const hero = heroSrc
+    ? `<img class="hero" src="${heroSrc}" alt="${title}" width="536" style="display:block;width:100%;height:auto;border-radius:6px;margin-top:24px;" border="0">`
+    : "";
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>${title}</title><meta name="description" content="${description}"></head><body>${hero}</body></html>`;
 }
 
 describe("slugFromCanonicalUrl", () => {
@@ -54,6 +78,34 @@ describe("extractPageMeta", () => {
   });
 });
 
+describe("extractHeroImage", () => {
+  it("extrai o src do primeiro img.hero", () => {
+    const html = fakePageHtml("T", "D", "https://eia.diar.ia.br/img/img-260729-04-d1-2x1-x.jpg");
+    assert.equal(extractHeroImage(html), "https://eia.diar.ia.br/img/img-260729-04-d1-2x1-x.jpg");
+  });
+
+  it("devolve o PRIMEIRO img.hero quando há vários (D1, não D2/D3)", () => {
+    const html = `<!DOCTYPE html><html><body>
+      <img class="hero" src="https://eia.diar.ia.br/img/d1.jpg" alt="d1">
+      <img class="hero" src="https://eia.diar.ia.br/img/d2.jpg" alt="d2">
+    </body></html>`;
+    assert.equal(extractHeroImage(html), "https://eia.diar.ia.br/img/d1.jpg");
+  });
+
+  it("devolve null quando não há img.hero", () => {
+    assert.equal(extractHeroImage(fakePageHtml("T", "D")), null);
+  });
+
+  it("devolve null pra src vazio (não vaza string vazia)", () => {
+    const html = `<!DOCTYPE html><html><body><img class="hero" src="" alt="x"></body></html>`;
+    assert.equal(extractHeroImage(html), null);
+  });
+
+  it("nunca lança em HTML malformado", () => {
+    assert.doesNotThrow(() => extractHeroImage("<img class=hero src=broken"));
+  });
+});
+
 describe("buildHomeFeed", () => {
   const sitemapXml = buildSitemapXml([
     { loc: "https://diar.ia.br/p/edicao-mais-recente", lastmod: "2026-08-26" },
@@ -62,7 +114,11 @@ describe("buildHomeFeed", () => {
   ]);
 
   const pages: Record<string, string> = {
-    "edicao-mais-recente": fakePageHtml("Edição mais recente", "Resumo da mais recente"),
+    "edicao-mais-recente": fakePageHtml(
+      "Edição mais recente",
+      "Resumo da mais recente",
+      "https://eia.diar.ia.br/img/img-x-04-d1-2x1-x.jpg",
+    ),
     "edicao-anterior": fakePageHtml("Edição anterior", "Resumo da anterior"),
   };
 
@@ -71,6 +127,17 @@ describe("buildHomeFeed", () => {
     assert.equal(feed.length, 2);
     assert.equal(feed[0].slug, "edicao-mais-recente");
     assert.equal(feed[1].slug, "edicao-anterior");
+  });
+
+  it("popula image quando a página tem img.hero", () => {
+    const feed = buildHomeFeed(sitemapXml, (slug) => pages[slug] ?? null);
+    assert.equal(feed[0].image, "https://eia.diar.ia.br/img/img-x-04-d1-2x1-x.jpg");
+  });
+
+  it("image é null (nunca pula a entrada) quando a página não tem img.hero", () => {
+    const feed = buildHomeFeed(sitemapXml, (slug) => pages[slug] ?? null);
+    assert.equal(feed[1].slug, "edicao-anterior");
+    assert.equal(feed[1].image, null);
   });
 
   it("pula slug sem página gerada em vez de quebrar o lote", () => {
@@ -103,6 +170,7 @@ describe("buildIndexHtml", () => {
     description: "Resumo do destaque",
     url: "https://diar.ia.br/p/destaque-do-dia",
     date: "2026-08-27",
+    image: "https://eia.diar.ia.br/img/img-x-04-d1-2x1-x.jpg",
   };
   const archive = [
     {
@@ -111,9 +179,30 @@ describe("buildIndexHtml", () => {
       description: "Resumo anterior",
       url: "https://diar.ia.br/p/edicao-anterior",
       date: "2026-08-26",
+      image: null,
     },
   ];
   const html = buildIndexHtml({ feature, archive });
+
+  it("renderiza a capa do destaque (#6978 item 1) quando feature.image existe", () => {
+    assert.match(html, /<div class="feature-grid">/);
+    assert.match(
+      html,
+      /<img src="https:\/\/eia\.diar\.ia\.br\/img\/img-x-04-d1-2x1-x\.jpg" alt="Destaque do dia" loading="lazy">/,
+    );
+  });
+
+  it("degrada pro layout só-texto sem quebrar quando feature.image é null", () => {
+    const noImage = buildIndexHtml({
+      feature: { ...feature, image: null },
+      archive,
+    });
+    assert.ok(
+      !noImage.includes('<div class="feature-grid">'),
+      "não deve montar o grid de imagem sem capa",
+    );
+    assert.match(noImage, /<h2 class="feature-title">Destaque do dia<\/h2>/);
+  });
 
   it("contém os 7 blocos esperados (Nav, Masthead, Feature, Specials, Archive, Faqs, Footer)", () => {
     for (const id of ["nav", "masthead", "feature", "specials", "archive", "faqs", "footer"]) {
@@ -121,9 +210,9 @@ describe("buildIndexHtml", () => {
     }
   });
 
-  it("form do masthead E do footer apontam pro /assinar (#6427)", () => {
-    assert.match(html, /id="masthead-form"[^>]*href="\/assinar"/);
-    assert.match(html, /id="footer-form"[^>]*href="\/assinar"/);
+  it("masthead E footer são <form> reais (não mais <a> disfarçado, #6976)", () => {
+    assert.match(html, /<form class="signup"[^>]*id="masthead-form"[^>]*action="https:\/\/eia\.diar\.ia\.br\/jogar\/subscribe"/);
+    assert.match(html, /<form class="signup signup--dark"[^>]*id="footer-form"[^>]*action="https:\/\/eia\.diar\.ia\.br\/jogar\/subscribe"/);
   });
 
   it("link do destaque do dia aponta pra a URL real da feature", () => {
@@ -147,6 +236,7 @@ describe("buildIndexHtml", () => {
         description: `<img src=x onerror=alert(1)>`,
         url: "https://diar.ia.br/p/destaque-perigoso",
         date: "2026-08-27",
+        image: null,
       },
       archive: [
         {
@@ -155,6 +245,7 @@ describe("buildIndexHtml", () => {
           description: "ok",
           url: "https://diar.ia.br/p/arquivo-perigoso",
           date: "2026-08-26",
+          image: null,
         },
       ],
     });
@@ -185,6 +276,44 @@ describe("buildIndexHtml", () => {
     assert.match(archiveSection, /edicao-anterior/);
   });
 
+  it("nav .logo e masthead h1 usam a MESMA estrutura canônica do wordmark (#7010 — '.br' inteiro em teal, não só o ponto)", () => {
+    assert.match(html, new RegExp(`<div class="logo">${reEscape(WORDMARK_HTML)}</div>`));
+    assert.match(html, new RegExp(`<h1>${reEscape(WORDMARK_HTML)}</h1>`));
+    // Trava especificamente a causa raiz do #7010: o "br" tem que estar DENTRO
+    // do span teal (class="dot"), não como texto solto atrás dele.
+    assert.match(html, /<span class="dot">br<\/span>/);
+  });
+
+  it("wordmark: as LETRAS teal ('br') nunca ficam aria-hidden — só o ponto separador esconde de leitor de tela", () => {
+    assert.ok(
+      !html.includes('<span class="dot" aria-hidden="true">br</span>'),
+      "'br' não pode estar aria-hidden — um leitor de tela pularia parte do nome da marca",
+    );
+    // Os 2 pontos separadores continuam aria-hidden (comportamento pré-existente).
+    assert.equal((html.match(/<span class="dot" aria-hidden="true">\.<\/span>/g) ?? []).length, 4);
+  });
+
+  it("renderiza a capa do card do arquivo (#7011) quando entry.image existe", () => {
+    const withImage = buildIndexHtml({
+      feature,
+      archive: [{ ...archive[0], image: "https://eia.diar.ia.br/img/img-x-04-d2-2x1-x.jpg" }],
+    });
+    assert.match(
+      withImage,
+      /<a class="archive-media" href="https:\/\/diar\.ia\.br\/p\/edicao-anterior" tabindex="-1" aria-hidden="true">\s*<img src="https:\/\/eia\.diar\.ia\.br\/img\/img-x-04-d2-2x1-x\.jpg" alt="Edição anterior" loading="lazy">/,
+    );
+  });
+
+  it("card do arquivo degrada pro layout só-texto sem quebrar quando entry.image é null (#7011)", () => {
+    // A fixture `archive` já usa `image: null` — mesmo espírito do teste
+    // equivalente da feature acima (#6978).
+    assert.ok(
+      !html.includes('<a class="archive-media"'),
+      "não deve montar a capa do arquivo pra entrada sem image",
+    );
+    assert.match(html, /<h3 class="archive-title"><a href="https:\/\/diar\.ia\.br\/p\/edicao-anterior">Edição anterior<\/a><\/h3>/);
+  });
+
   it("data fora de faixa (mês inválido) degrada pra string vazia em vez de vazar 'undefined'", () => {
     const badDate = buildIndexHtml({
       feature,
@@ -195,6 +324,7 @@ describe("buildIndexHtml", () => {
           description: "ok",
           url: "https://diar.ia.br/p/data-invalida",
           date: "2026-13-40",
+          image: null,
         },
       ],
     });
@@ -224,9 +354,9 @@ describe("workers/site/public/index.html — committed (#6375)", () => {
     }
   });
 
-  it("form aponta pro /assinar (masthead + footer, #6427)", () => {
-    assert.match(html, /id="masthead-form"[^>]*href="\/assinar"/);
-    assert.match(html, /id="footer-form"[^>]*href="\/assinar"/);
+  it("masthead E footer são <form> reais (não mais <a> disfarçado, #6976)", () => {
+    assert.match(html, /<form class="signup"[^>]*id="masthead-form"[^>]*action="https:\/\/eia\.diar\.ia\.br\/jogar\/subscribe"/);
+    assert.match(html, /<form class="signup signup--dark"[^>]*id="footer-form"[^>]*action="https:\/\/eia\.diar\.ia\.br\/jogar\/subscribe"/);
   });
 
   it("V1Specials linka pros hubs reais já existentes (livros/cursos)", () => {

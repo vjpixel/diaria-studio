@@ -315,11 +315,15 @@ export function groupByDestaque(
 }
 
 function renderGroupedBlock(block: GroupedBlock, color: string): string {
-  // #6871 (achado 260901): o `**` de negrito seletivo (#6086 item c, pensado
-  // pro slide do carrossel) é removido do texto REAL publicado no LinkedIn/
-  // Facebook/Instagram (stripMarkdownBold em scripts/lib/social-cta-lines.ts,
-  // via injectChannelLine) — LinkedIn/Facebook/Instagram não renderizam
-  // markdown, e antes o `**` sobrevivia literal no post. Este preview,
+  // #6871 (achado 260901; nome da função corrigido #6940 — #6862 trocou a
+  // sanitização por `stripMarkdownEmphasis`, não `stripMarkdownBold`): o `**`
+  // de negrito seletivo (#6086 item c, pensado pro slide do carrossel) é
+  // removido do texto REAL publicado no LinkedIn/Facebook/Instagram
+  // (`stripMarkdownEmphasis` em `scripts/lib/strip-markdown-emphasis.ts`,
+  // chamado no ponto de publicação de cada canal — NÃO em
+  // `injectChannelLine`, ver `scripts/lib/social-cta-lines.ts`) —
+  // LinkedIn/Facebook/Instagram não renderizam markdown, e antes o `**`
+  // sobrevivia literal no post. Este preview,
   // porém, deve mostrar a ênfase pretendida em negrito de verdade (não o
   // texto exatamente como sai publicado) — converte pra <strong> aqui, DEPOIS
   // do escHtml (`*` não é escapado por HTML, a ordem não perde nada).

@@ -14,7 +14,17 @@
  * Exit codes (fail-closed — todo valor != 0 significa "NÃO mergear ainda"):
  *   0 = pass        (review independente confirmado)
  *   1 = self_review (comentário marcado com o marcador de self-review)
- *   2 = no_review   (nenhum comentário de review encontrado)
+ *   2 = no_review   (nenhum comentário com o marcador RECONHECIDO POR ESTE
+ *       GATE — que é gerado só por `continuo-pr-review.sh` — encontrado no
+ *       PR. **#6956: NÃO significa "PR não revisada" em geral** — uma review
+ *       real despachada por sessão interativa via ferramenta Agent, com
+ *       findings postados em prosa, também sai `no_review`, porque só o
+ *       script externo sabe gerar o marcador que este gate reconhece. Este
+ *       script só tem um consumidor legítimo hoje: o pickup de PR órfã
+ *       `continuo/` do overnight (filtra por branch prefix ANTES de chamar
+ *       este gate) — ver "Escopo do veredito no_review" em
+ *       `scripts/lib/pr-review-authenticity.ts` antes de usar fora desse
+ *       fluxo.)
  *   3 = error       (gh falhou, PR inexistente, JSON malformado)
  *   4 = uso inválido (--pr ausente/não-numérico — distinto de `no_review`,
  *       #6820: antes colidia com o exit 2 do veredito, e um chamador que só

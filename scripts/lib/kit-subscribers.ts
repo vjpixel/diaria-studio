@@ -200,3 +200,53 @@ export async function updateSubscriberFields(
   }
   return data.subscriber;
 }
+
+// ---------------------------------------------------------------------------
+// Assinantes por FORM (#6810 — guard de órfão do double opt-in)
+// ---------------------------------------------------------------------------
+
+/**
+ * `GET /v4/forms/{form_id}/subscribers` — mesmo envelope/paginação de
+ * `listKitSubscribersPage`, trocando o recurso pai (form em vez de conta
+ * inteira). Usado por `scripts/kit-doi-orphan-guard.ts` (#6810) pra saber
+ * quais `inactive` já foram vinculados ao form DOI via `vincularKitDoiForm`
+ * (`workers/poll/src/subscribe.ts`) — um `inactive` fora desta lista nunca
+ * recebeu o `POST /v4/forms/{form}/subscribers/{sub}` que dispara o e-mail
+ * de confirmação, então nunca vai virar `active` sozinho.
+ *
+ * **Não confirmado ao vivo** (mesma ressalva de `fields` na leitura, ver
+ * docstring do módulo) — o shape é assumido por simetria com
+ * `listKitSubscribersPage`/o endpoint irmão de tag (`GET /tags/{id}/
+ * subscribers`, citado em `kit-client.ts` com o mesmo envelope
+ * `{subscribers, pagination}`). Reverificar contra a conta real antes do 1º
+ * `--push`/execução não-dry-run.
+ */
+export async function listFormSubscribersPage(
+  formId: number | string,
+  opts: { perPage?: number; after?: string; config?: KitConfig } = {},
+): Promise<{ subscribers: KitSubscriberSummary[]; pagination: KitPagination }> {
+  const params = new URLSearchParams();
+  if (opts.perPage) params.set("per_page", String(opts.perPage));
+  if (opts.after) params.set("after", opts.after);
+  const qs = params.toString();
+  return kitFetch(`/forms/${formId}/subscribers${qs ? `?${qs}` : ""}`, { config: opts.config });
+}
+
+/** Pagina `/v4/forms/{form_id}/subscribers` inteiro — mesmo padrão de
+ *  `listAllKitSubscribers`. Volume esperado: só quem passou pelo double
+ *  opt-in de UM worker (`poll`, #6340) — pequeno, sem checkpoint/resumo
+ *  necessário (mesmo racional do irmão). */
+export async function listAllFormSubscribers(
+  formId: number | string,
+  config?: KitConfig,
+): Promise<KitSubscriberSummary[]> {
+  const all: KitSubscriberSummary[] = [];
+  let after: string | undefined;
+  for (;;) {
+    const { subscribers, pagination } = await listFormSubscribersPage(formId, { perPage: 500, after, config });
+    all.push(...subscribers);
+    if (!pagination.has_next_page || !pagination.end_cursor) break;
+    after = pagination.end_cursor;
+  }
+  return all;
+}

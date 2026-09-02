@@ -48,7 +48,9 @@ O fio condutor:
 
 **CLARICE — DIVULGAÇÃO**
 
-[Placeholder — inserir aqui a seção de divulgação da Clarice: apresentação do produto, proposta de valor, call to action com link.]
+[Placeholder — inserir aqui a seção de divulgação da Clarice: apresentação do produto, proposta de valor, call to action com link (`→ [texto](url)`, vira botão — ver formato do CTA logo abaixo).]
+
+→ [texto do CTA](https://clarice.ai/?via=diaria)
 
 ---
 
@@ -58,15 +60,27 @@ O fio condutor:
 
 ---
 
-**CLARICE — TUTORIAL**
+**LIVROS**
 
-[Placeholder — inserir aqui um tutorial prático de uso da Clarice: dica, caso de uso ou passo a passo curto com link para saber mais.]
+Curadoria de livros sobre IA
+
+A diar.ia.br mantém uma curadoria de livros sobre IA, cada título com nota da Amazon, resenha e link de compra, e filtros por idioma, nível e tema. Encontre sua próxima leitura em segundos.
+
+→ [Confira a página de livros](https://livros.diar.ia.br)
 
 ---
 
 **DESTAQUE 3 | [TEMA]**
 
 [mesmo formato]
+
+---
+
+**CLARICE — TUTORIAL**
+
+[Placeholder — inserir aqui um tutorial prático de uso da Clarice: dica, caso de uso ou passo a passo curto com link para saber mais (`→ [texto](url)`, vira botão — mesmo formato do CTA acima).]
+
+→ [texto do CTA](https://clarice.ai/?via=diaria)
 
 ---
 

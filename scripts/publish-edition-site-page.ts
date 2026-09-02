@@ -349,21 +349,45 @@ const LOCK_RUNNER_TIMEOUT_MS = 60_000;
 type ExecFileSyncFn = (
   cmd: string,
   args: string[],
-  options: { cwd: string; stdio: ["ignore", "pipe", "pipe"]; timeout: number },
+  options: { cwd: string; stdio: ["ignore", "pipe", "pipe"]; timeout: number; shell?: boolean },
 ) => Buffer | string;
+
+/**
+ * Deriva `shell: true` pro `execFileSync` de `npx` — puro e testável sem
+ * depender de `process.platform` real (#6899). No Windows, `npx` resolve
+ * pra `npx.cmd`, não um executável direto: `execFileSync("npx", ...)` sem
+ * `shell: true` lança `ENOENT` (Windows CreateProcess não sabe rodar um
+ * `.cmd` como se fosse `.exe`) — e `execFileSync("npx.cmd", ...)` sem shell
+ * lança `EINVAL` (Windows exige o shell pra interpretar batch files
+ * corretamente). A única combinação que funciona nos dois SOs é manter
+ * `cmd: "npx"` e ligar `shell: true` só no win32; em POSIX (`linux`/`darwin`,
+ * onde `npx` já é um executável/symlink direto) `shell: true` é
+ * desnecessário e reintroduziria o risco de escaping do shell à toa.
+ */
+export function needsShellForNpx(platform: NodeJS.Platform): boolean {
+  return platform === "win32";
+}
 
 /** Fábrica do `LockRunner` real, parametrizada pela função de exec (default
  * `execFileSync` de `node:child_process`) só pra permitir o teste de
- * regressão do #6630 inspecionar as opções passadas sem invocar processo
- * de verdade. `defaultLockRunner` abaixo é `createExecFileSyncLockRunner()`
- * — nenhum comportamento de produção muda. */
-export function createExecFileSyncLockRunner(exec: ExecFileSyncFn = execFileSync): LockRunner {
+ * regressão do #6630/#6899 inspecionar as opções passadas sem invocar
+ * processo de verdade. `defaultLockRunner` abaixo é
+ * `createExecFileSyncLockRunner()` — nenhum comportamento de produção muda.
+ * `platform` é injetável pelo mesmo motivo (default `process.platform`
+ * real; teste passa `"win32"`/`"linux"` explícito pra ser determinístico
+ * em qualquer SO que rode o CI). */
+export function createExecFileSyncLockRunner(
+  exec: ExecFileSyncFn = execFileSync,
+  platform: NodeJS.Platform = process.platform,
+): LockRunner {
+  const shell = needsShellForNpx(platform);
   return (args, cwd) => {
     try {
       const stdout = exec("npx", ["tsx", "scripts/lib/session-registry.ts", ...args], {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
         timeout: LOCK_RUNNER_TIMEOUT_MS,
+        ...(shell ? { shell: true } : {}),
       }).toString("utf8");
       return { ok: true, stdout, stderr: "" };
     } catch (e) {

@@ -26,6 +26,11 @@
  * próprio `tsconfig.json`/`node_modules`, usada pelo deploy via `wrangler`) —
  * só o suficiente para o `tsc` da raiz não quebrar ao seguir os imports.
  *
+ * `Fetcher` adicionado em #7030 pelo mesmo motivo: `test/artigo-especial-gate.test.ts`
+ * importa `workers/artigos/src/index.ts` (`Env.ASSETS: Fetcher`) como VALOR
+ * — mesma classe de exposição do #3563 acima, superfície mínima (só
+ * `.fetch`, o único método chamado por `env.ASSETS.fetch(request)`).
+ *
  * Sem `import`/`export` no topo do arquivo — as declarações abaixo são
  * globais ambientes automaticamente (script, não módulo).
  */
@@ -51,4 +56,8 @@ interface KVNamespace {
 
 interface CacheStorage {
   default: Cache;
+}
+
+interface Fetcher {
+  fetch(request: Request | string, init?: RequestInit): Promise<Response>;
 }
