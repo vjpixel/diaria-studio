@@ -31,44 +31,60 @@ import {
 
 const LOG_PREFIX = "[check-alarm-retirement-candidates]";
 
-interface GhIssueListRow {
+/** Linha crua devolvida pela REST API `GET /issues` (via `gh api`) — usada
+ * em vez de `gh issue list --json` porque `stateReason` NÃO é um campo
+ * suportado por `--json` nesta versão do `gh` (confirmado ao vivo: `gh api`
+ * REST devolve `state_reason`, mas `gh issue list --json stateReason` sai
+ * `Unknown JSON field: "stateReason"` — a GraphQL-backed `--json` do `gh
+ * issue list` não expõe esse campo, só a REST clássica expõe). O endpoint
+ * `/issues` do repo devolve issues E pull requests juntos — `pull_request`
+ * só existe na entrada quando é um PR, daí o filtro abaixo. */
+interface GhApiIssueRow {
   number: number;
   title: string;
   body: string | null;
-  stateReason: string | null;
-  closedAt: string | null;
+  state_reason: string | null;
+  closed_at: string | null;
+  pull_request?: unknown;
 }
 
 /** Busca todas as issues FECHADAS com a label `alarm` — fail-soft: `gh`
  * indisponível/rate-limited/JSON malformado devolve `null` (nunca lista
- * vazia fabricada, que pareceria "nenhum candidato" em vez de "não sei"). */
+ * vazia fabricada, que pareceria "nenhum candidato" em vez de "não sei").
+ * `--paginate` percorre todas as páginas (o backlog de alarme já passou de
+ * 100 issues fechadas na auditoria original do #6798 — um único `per_page`
+ * não bastaria) e o `gh` moderno concatena as páginas num único array JSON
+ * válido no stdout. */
 function fetchClosedAlarmIssues(cwd: string): ClosedAlarmIssueRecord[] | null {
   const res = spawnSync(
     "gh",
     [
-      "issue",
-      "list",
-      "--state",
-      "closed",
-      "--label",
-      ALARM_LABEL,
-      "--json",
-      "number,title,body,stateReason,closedAt",
-      "--limit",
-      "500",
+      "api",
+      "--paginate",
+      `/repos/{owner}/{repo}/issues?state=closed&labels=${encodeURIComponent(ALARM_LABEL)}&per_page=100`,
     ],
-    { cwd, encoding: "utf8", timeout: 30_000 },
+    { cwd, encoding: "utf8", timeout: 45_000 },
   );
   if (res.status !== 0) return null;
   try {
-    const rows = JSON.parse(res.stdout) as GhIssueListRow[];
-    return rows.map((r) => ({
-      number: r.number,
-      title: r.title,
-      body: r.body ?? "",
-      stateReason: r.stateReason ?? null,
-      closedAt: r.closedAt ?? null,
-    }));
+    const rows = JSON.parse(res.stdout) as GhApiIssueRow[];
+    return rows
+      .filter((r) => !("pull_request" in r))
+      .map((r) => ({
+        number: r.number,
+        title: r.title,
+        body: r.body ?? "",
+        // REST devolve `state_reason` em minúsculas ("not_planned",
+        // "completed", "duplicate") — normalizado pra MAIÚSCULAS aqui
+        // porque `alarm-retirement-candidates.ts` (e a docstring de
+        // `closeAlarmIssue` em `alarm-issues.ts`, que este módulo cita)
+        // descreve o valor na convenção GraphQL (`NOT_PLANNED`). Achado ao
+        // vivo (self-review desta PR): sem esta normalização, o critério
+        // nunca casava com dado real — 19 issues `not_planned` no repo no
+        // momento desta PR, 0 candidatos detectados até a correção.
+        stateReason: r.state_reason ? r.state_reason.toUpperCase() : null,
+        closedAt: r.closed_at ?? null,
+      }));
   } catch {
     return null;
   }
