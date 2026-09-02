@@ -57,8 +57,8 @@
  * @see scripts/check-overnight-token-instrumentation.ts (presença, não soma)
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveRunLogPath } from "./lib/run-log.ts";
@@ -127,6 +127,18 @@ export interface KindDayTotals {
    * Ler `×3` como "3 rodadas naquele dia" subestima quando alguma ficou muda.
    */
   rounds: string[];
+  /**
+   * Rodadas que deixaram diretório em `data/{kind}/{AAMMDD}/` (ou
+   * `data/continuo/{AAMMDD}/`) mas NÃO emitiram nenhum evento de custo no
+   * run-log — o "invisible rounds" do #6634. Descobertas via filesystem scan
+   * em `discoverSessionRounds` (#6634 Direction 2), então só populado para
+   * `kind ∈ {overnight, develop, continuo}` (edições usam stage-status.json,
+   * não run-log).
+   *
+   * Só aparece na saída do dashboard quando não-vazio; não afeta o total de
+   * tokens (não há dado pra somar) mas revela o vazio invisível.
+   */
+  uninstrumentedRounds?: string[];
   totalTokens: number;
   /** Split in/out — só populado para `kind: "edicao"` (única fonte com dado real). */
   tokensIn?: number;
@@ -241,6 +253,88 @@ export function aggregateRunLogByKindAndDay(
   }
 
   return [...byKey.values()];
+}
+
+// ---------------------------------------------------------------------------
+// Descoberta de rodadas via filesystem (#6634 Direction 2 — "invisible rounds")
+// ---------------------------------------------------------------------------
+
+/** Regex para nomes de diretório de rodada — AAMMDD + sufixo opcional de
+ * letra única (b, c, ... até g observado ao vivo, 260828g). NÃO `backup`
+ * (1 letra só; evita matching de dirs como `260814backup` ou `260814replica`). */
+const ROUND_DIR_RE = /^\d{6}[a-z]?$/;
+
+/**
+ * Pure: lista ids de rodada de um kind a partir das ENTRADAS DO FILESYSTEM já
+ * lidas (não toca disco). Filtera nomes que casam com `^\d{6}[a-z]*$` e
+ * têm `plan.json`. Retorna ordenado cronologicamente (lexicográfico = cronológico
+ * em AAMMDD).
+ *
+ * Separado da filesystem I/O (`discoverSessionRounds`) pra ser testável sem tmpdir.
+ */
+export function filterRoundDirs(
+  entries: { name: string; hasPlan: boolean }[],
+): string[] {
+  return entries
+    .filter((e) => ROUND_DIR_RE.test(e.name) && e.hasPlan)
+    .map((e) => e.name)
+    .sort();
+}
+
+/**
+ * Lista todos os ids de rodada (AAMMDD ou AAMMDD+suffix) descobertos via
+ * filesystem scan de `data/{kind}/` — para `overnight` e `develop` — e
+ * `data/continuo/` — para `continuo`. Só inclui diretórios com `plan.json`
+ * (confirma que foi de fato uma rodada, não um tempdir).
+ *
+ * Fail-soft: se `data/{kind}/` não existe ou não é legível, retorna `[]`.
+ */
+export function discoverSessionRounds(
+  rootDir: string,
+  kind: Exclude<SessionKind, "edicao">,
+): string[] {
+  const kindDir =
+    kind === "continuo"
+      ? join(rootDir, "data", "continuo")
+      : join(rootDir, "data", kind);
+
+  if (!existsSync(kindDir)) return [];
+
+  let entries: { name: string; isDirectory(): boolean }[];
+  try {
+    entries = readdirSync(kindDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const roundEntries = entries
+    .filter((e) => e.isDirectory() && ROUND_DIR_RE.test(e.name))
+    .map((e) => ({
+      name: e.name,
+      hasPlan: existsSync(join(kindDir, e.name, "plan.json")),
+    }));
+
+  return filterRoundDirs(roundEntries);
+}
+
+/**
+ * Pura: dadas as rodadas descobertas no filesystem e as que CONTRIBUÍRAM evento
+ * no run-log, retorna apenas as que não emitiram nada (invisíveis).
+ *
+ * Compara no nível de `day` (dia civil): uma rodada como `260814b` cujo dia
+ * `260814` já tem eventos de `260814`/`260814c` no run-log é tratada como
+ * instrumentada (o dia recebeu dado). Só são "uninstrumented" as rodadas cujo
+ * DIA não aparece em NENHUM evento do run-log — é o que realmente ficou mudo.
+ */
+export function findUninstrumentedRounds(
+  discoveredRoundIds: string[],
+  instrumentedDays: string[],
+): string[] {
+  const instrumentedDaySet = new Set(instrumentedDays);
+  return discoveredRoundIds.filter((roundId) => {
+    const day = roundDayFromEdition(roundId);
+    return !instrumentedDaySet.has(day);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -395,6 +489,68 @@ export function buildSessionTokensSummary(opts: BuildSummaryOptions, now: Date =
     (a, b) => a.day.localeCompare(b.day) || a.kind.localeCompare(b.kind),
   );
 
+  // #6634 Direction 2: filesystem scan pra detectar rodadas que deixaram
+  // diretório mas não emitiram eventos no run-log (invisible rounds).
+  // Só para kinds de sessão autônoma (overnight/develop/continuo) —
+  // edições usam stage-status.json, não run-log.
+  //
+  // Dois casos:
+  //  (a) Dia INSTRUMENTADO (tem eventos no run-log) — marca rodadas que deixaram
+  //      dir mas não emitiram (ex: 260814b quando 260814/260814c emitiram).
+  //  (b) Dia NÃO instrumentado (nenhum evento) — cria linha placeholder com
+  //      todas as rodadas do dia marcadas como uninstrumented.
+  const instrumentedDaysByKind = new Map<SessionKind, Set<string>>();
+  for (const row of logRows) {
+    if (row.kind === "edicao") continue;
+    if (!instrumentedDaysByKind.has(row.kind)) {
+      instrumentedDaysByKind.set(row.kind, new Set());
+    }
+    for (const roundId of row.rounds) {
+      instrumentedDaysByKind.get(row.kind)!.add(roundDayFromEdition(roundId));
+    }
+  }
+
+  for (const kind of SESSION_LOG_KINDS) {
+    const instrumentedDays = instrumentedDaysByKind.get(kind);
+    const discovered = discoverSessionRounds(rootDir, kind);
+    // Agrupa discovered por dia CIVIL → 1 pass pra inserir + 1 pass pra anotar
+    const daysSet = new Set<string>();
+    for (const roundId of discovered) {
+      const day = roundDayFromEdition(roundId);
+      if (opts.since && day < opts.since) continue;
+      if (opts.until && day > opts.until) continue;
+      daysSet.add(day);
+    }
+
+    for (const day of [...daysSet].sort()) {
+      const dayRounds = discovered.filter((r) => roundDayFromEdition(r) === day);
+      const existingRow = rows.find((r) => r.kind === kind && r.day === day);
+
+      if (!existingRow) {
+        // (b) Dia não instrumentado — cria linha placeholder
+        rows.push({
+          kind,
+          day,
+          rounds: [],
+          uninstrumentedRounds: [...dayRounds],
+          totalTokens: 0,
+          categories: {},
+        });
+      } else {
+        // (a) Dia instrumentado — marca rodadas descobertas que não emitiram
+        // evento (round IDs não em existingRow.rounds)
+        const eventRoundSet = new Set(existingRow.rounds);
+        const uninstrumented = dayRounds.filter((r) => !eventRoundSet.has(r));
+        if (uninstrumented.length > 0) {
+          existingRow.uninstrumentedRounds = uninstrumented;
+        }
+      }
+    }
+  }
+
+  // Re-ordena após inserir novas linhas
+  rows.sort((a, b) => a.day.localeCompare(b.day) || a.kind.localeCompare(b.kind));
+
   const alarms = computeAlarms(rows, alarmPct);
 
   return {
@@ -448,7 +604,13 @@ function formatByDayTable(rows: KindDayTotals[]): string {
       const reviewStr = review ? `${fmtTokens(review.tokens)}${review.unavailableCount ? ` (${review.unavailableCount} n/d)` : ""}` : "-";
       // `×N` = N rodadas do mesmo dia somadas nesta linha (#6638). Sem isso a
       // fusão apagaria a diferença entre um dia de 1 rodada e um de 7.
-      const kindStr = row.rounds.length > 1 ? `${KIND_LABEL[row.kind]} ×${row.rounds.length}` : KIND_LABEL[row.kind];
+      const baseKindStr = row.rounds.length > 1 ? `${KIND_LABEL[row.kind]} ×${row.rounds.length}` : KIND_LABEL[row.kind];
+      // #6634: rodadas com diretório mas sem eventos no run-log (invisible rounds).
+      // Aparecem como nota ao lado do kind — não altera a contagem de ×N, só
+      // sinaliza o vazio que não foi instrumentado.
+      const kindStr = row.uninstrumentedRounds && row.uninstrumentedRounds.length > 0
+        ? `${baseKindStr} ⚠ ${row.uninstrumentedRounds.length} rodada(s) sem evento`
+        : baseKindStr;
       lines.push(
         `| ${day} | ${kindStr} | ${fmtTokens(row.totalTokens)} | ${fmtCost(row.costUsd, row.costEstimated)} | ${coordStr} | ${implStr} | ${reviewStr} |`,
       );
@@ -504,6 +666,7 @@ ${formatByDayTable(summary.rows)}
 _Fontes: \`_internal/stage-status.json\` por edição (kind "Edição", via \`aggregate-costs.ts\`) + \`data/run-log.jsonl\` eventos \`subagent_metrics\`/\`coordinator_tokens_estimate\`/\`review_metrics\`/\`fleet_review_metrics\` filtrados por \`agent ∈ {overnight, develop, continuo}\` (#3453/#4815)._
 _"n/d" ao lado de uma categoria = eventos com \`source: "unavailable"\` (harness não expôs tokens, ou coordenador esqueceu o checkpoint) — NUNCA contados como zero, só reportados à parte para não subestimar o consumo em silêncio._
 _"Dia" é dia CIVIL: rodadas do mesmo dia (\`260814\`, \`260814b\`, \`260814c\`) somam numa linha só, e \`×N\` ao lado do kind diz quantas foram (#6638)._
+_"⚠ N rodada(s) sem evento" ao lado do kind = rodadas que deixaram diretório em \`data/{kind}/\` mas não emitiram nenhum evento de custo no run-log (#6634 Direction 2 — invisible rounds)._
 _"Edição" tem split real \`tokens_in\`/\`tokens_out\` e \`$\` por modelo (via transcript local); overnight/develop/continuo só têm o total por invocação, sem split in/out._
 _**Não compare os percentuais entre kinds:** as duas fontes medem bases diferentes — "Edição" soma \`input + cache_creation + cache_read\` do transcript e NÃO inclui subagentes (#5413), overnight/develop/continuo somam o total por subagente e não incluem o coordenador (#6634). Ver #6633._
 `;

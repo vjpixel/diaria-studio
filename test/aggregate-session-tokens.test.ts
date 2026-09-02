@@ -22,6 +22,9 @@ import {
   defaultSinceAammdd,
   roundDayFromEdition,
   mergeKindDayTotals,
+  discoverSessionRounds,
+  filterRoundDirs,
+  findUninstrumentedRounds,
   type KindDayTotals,
 } from "../scripts/aggregate-session-tokens.ts";
 
@@ -286,6 +289,117 @@ describe("roundDayFromEdition (#6638 — dia civil vs id de rodada)", () => {
   });
 });
 
+describe("filterRoundDirs (#6634 Direction 2)", () => {
+  it("filtra nomes que casam com ^\\d{6}[a-z]*$ e têm plan.json", () => {
+    const entries = [
+      { name: "260814", hasPlan: true },
+      { name: "260814b", hasPlan: true },
+      { name: "260814c", hasPlan: false }, // sem plan.json → filtrado
+      { name: "not-a-round", hasPlan: true }, // formato inválido → filtrado
+      { name: "260814backup", hasPlan: true }, // formato inválido → filtrado
+      { name: ".tmp", hasPlan: true }, // formato inválido → filtrado
+    ];
+    assert.deepEqual(filterRoundDirs(entries), ["260814", "260814b"]);
+  });
+
+  it("ordena lexicograficamente (= cronológico em AAMMDD)", () => {
+    const entries = [
+      { name: "260814c", hasPlan: true },
+      { name: "260813", hasPlan: true },
+      { name: "260814b", hasPlan: true },
+      { name: "260814", hasPlan: true },
+    ];
+    assert.deepEqual(filterRoundDirs(entries), ["260813", "260814", "260814b", "260814c"]);
+  });
+
+  it("empty entries → empty array", () => {
+    assert.deepEqual(filterRoundDirs([]), []);
+  });
+});
+
+describe("findUninstrumentedRounds (#6634 Direction 2 — invisible rounds)", () => {
+  it("rodada cujo dia NÃO está nos instrumentedDays → uninstrumented", () => {
+    const result = findUninstrumentedRounds(
+      ["260814", "260814c"],
+      ["260813"],
+    );
+    assert.deepEqual(result, ["260814", "260814c"]);
+  });
+
+  it("rodada cujo dia ESTÁ nos instrumentedDays → filtrada", () => {
+    const result = findUninstrumentedRounds(
+      ["260814", "260814b", "260814c"],
+      ["260814"],
+    );
+    assert.deepEqual(result, []);
+  });
+
+  it("rodada b/c cujo dia a está instrumentado → ambas filtradas (dia recebeu dado)", () => {
+    const result = findUninstrumentedRounds(
+      ["260814b", "260814c"],
+      ["260814"],
+    );
+    assert.deepEqual(result, []);
+  });
+
+  it("empty discovered → empty result", () => {
+    assert.deepEqual(findUninstrumentedRounds([], ["260814"]), []);
+  });
+
+  it("empty instrumentedDays → todas as discovered são uninstrumented", () => {
+    assert.deepEqual(findUninstrumentedRounds(["260814", "260814b"], []), ["260814", "260814b"]);
+  });
+});
+
+describe("discoverSessionRounds (#6634 Direction 2 — filesystem scan)", () => {
+  it("continuo: lista dirs AAMMDD com plan.json, ordenados", () => {
+    const root = tmpRoot();
+    try {
+      mkdirSync(join(root, "data", "continuo", "260814", "_internal"), { recursive: true });
+      mkdirSync(join(root, "data", "continuo", "260813", "_internal"), { recursive: true });
+      mkdirSync(join(root, "data", "continuo", "260815", "_internal"), { recursive: true });
+      // plan.json marca um dir como rodada válida
+      for (const d of ["260813", "260814", "260815"]) {
+        writeFileSync(join(root, "data", "continuo", d, "plan.json"), "{}", "utf8");
+      }
+      // dir sem plan.json → não conta
+      mkdirSync(join(root, "data", "continuo", "260816"), { recursive: true });
+
+      const rounds = discoverSessionRounds(root, "continuo");
+      assert.deepEqual(rounds, ["260813", "260814", "260815"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("overnight: lista dirs AAMMDD+suffix com plan.json, ordenados", () => {
+    const root = tmpRoot();
+    try {
+      for (const d of ["260814", "260814b", "260814c", "260813"]) {
+        mkdirSync(join(root, "data", "overnight", d, "_internal"), { recursive: true });
+        writeFileSync(join(root, "data", "overnight", d, "plan.json"), "{}", "utf8");
+      }
+      // sufixo inválido → skip
+      mkdirSync(join(root, "data", "overnight", "260814backup"), { recursive: true });
+
+      const rounds = discoverSessionRounds(root, "overnight");
+      assert.deepEqual(rounds, ["260813", "260814", "260814b", "260814c"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("dir inexistente → retorna [] (never lança)", () => {
+    const root = tmpRoot();
+    try {
+      const rounds = discoverSessionRounds(root, "develop");
+      assert.deepEqual(rounds, []);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("aggregateRunLogByKindAndDay — dia civil (#6638, regressão #633)", () => {
   it("rodadas do mesmo dia (260814, 260814b, 260814c) somam numa linha só, com rounds preservado", () => {
     const lines = [
@@ -422,5 +536,124 @@ describe("formatSessionTokensSummary — marcação de rodadas fundidas (#6638)"
     assert.match(md, /\| 260814 \| Overnight ×3 \|/);
     assert.match(md, /\| 260815 \| Develop \|/);
     assert.doesNotMatch(md, /Develop ×/);
+  });
+});
+
+describe("buildSessionTokensSummary — invisible rounds (#6634 Direction 2)", () => {
+  it("dia com dir mas sem eventos no run-log → linha placeholder com uninstrumentedRounds", () => {
+    const root = tmpRoot();
+    try {
+      mkdirSync(join(root, "data"), { recursive: true });
+      writeFileSync(join(root, "data", "run-log.jsonl"), "", "utf8");
+
+      // continuo day 260828 existe no filesystem mas NÃO tem eventos no run-log
+      mkdirSync(join(root, "data", "continuo", "260828", "_internal"), { recursive: true });
+      writeFileSync(join(root, "data", "continuo", "260828", "plan.json"), "{}", "utf8");
+
+      const summary = buildSessionTokensSummary({ rootDir: root });
+
+      const row = summary.rows.find((r) => r.kind === "continuo" && r.day === "260828");
+      assert.ok(row, "esperava linha placeholder para dia 260828 sem eventos");
+      assert.deepEqual(row.uninstrumentedRounds, ["260828"]);
+      assert.equal(row.totalTokens, 0);
+
+      // markdown menciona o aviso de invisible rounds
+      const md = formatSessionTokensSummary(summary);
+      assert.match(md, /⚠ 1 rodada/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("dia instrumentado parcialmente (260814b sem evento, 260814c com evento) → 260814b em uninstrumentedRounds", () => {
+    const root = tmpRoot();
+    try {
+      mkdirSync(join(root, "data"), { recursive: true });
+
+      const logLines = [
+        // 260814 e 260814c emitiram eventos; 260814b NÃO
+        JSON.stringify({ agent: "overnight", edition: "260814", message: "subagent_metrics", details: { subagent_tokens: 100 } }),
+        JSON.stringify({ agent: "overnight", edition: "260814c", message: "subagent_metrics", details: { subagent_tokens: 50 } }),
+      ];
+      writeFileSync(join(root, "data", "run-log.jsonl"), logLines.join("\n") + "\n", "utf8");
+
+      // 3 dirs de rodada pra este dia
+      for (const d of ["260814", "260814b", "260814c"]) {
+        mkdirSync(join(root, "data", "overnight", d, "_internal"), { recursive: true });
+        writeFileSync(join(root, "data", "overnight", d, "plan.json"), "{}", "utf8");
+      }
+
+      const summary = buildSessionTokensSummary({ rootDir: root });
+
+      const row = summary.rows.find((r) => r.kind === "overnight" && r.day === "260814");
+      assert.ok(row, "esperava linha para dia 260814");
+      assert.deepEqual(row.rounds, ["260814", "260814c"]); // event-contributing IDs
+      assert.deepEqual(row.uninstrumentedRounds, ["260814b"]); // descoberto mas sem evento
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("dia 100% instrumentado → uninstrumentedRounds undefined (não aparece na saída)", () => {
+    const root = tmpRoot();
+    try {
+      mkdirSync(join(root, "data"), { recursive: true });
+
+      const logLines = [
+        JSON.stringify({ agent: "overnight", edition: "260814", message: "subagent_metrics", details: { subagent_tokens: 100 } }),
+        JSON.stringify({ agent: "overnight", edition: "260814b", message: "subagent_metrics", details: { subagent_tokens: 50 } }),
+      ];
+      writeFileSync(join(root, "data", "run-log.jsonl"), logLines.join("\n") + "\n", "utf8");
+
+      for (const d of ["260814", "260814b"]) {
+        mkdirSync(join(root, "data", "overnight", d, "_internal"), { recursive: true });
+        writeFileSync(join(root, "data", "overnight", d, "plan.json"), "{}", "utf8");
+      }
+
+      const summary = buildSessionTokensSummary({ rootDir: root });
+      const row = summary.rows.find((r) => r.kind === "overnight" && r.day === "260814");
+      assert.ok(row);
+      assert.equal(row.uninstrumentedRounds, undefined);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--since/--until filtra dias uninstrumentados fora da janela", () => {
+    const root = tmpRoot();
+    try {
+      mkdirSync(join(root, "data"), { recursive: true });
+      writeFileSync(join(root, "data", "run-log.jsonl"), "", "utf8");
+
+      // 260813 e 260815 existem mas sem eventos; janela 260814-260814
+      for (const d of ["260813", "260815"]) {
+        mkdirSync(join(root, "data", "continuo", d, "_internal"), { recursive: true });
+        writeFileSync(join(root, "data", "continuo", d, "plan.json"), "{}", "utf8");
+      }
+
+      const summary = buildSessionTokensSummary({ rootDir: root, since: "260814", until: "260814" });
+      assert.equal(summary.rows.length, 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("edições (kind=edicao) nunca recebem uninstrumentedRounds (usam stage-status, não run-log)", () => {
+    const root = tmpRoot();
+    try {
+      mkdirSync(join(root, "data", "editions", "2608", "260827", "_internal"), { recursive: true });
+      writeFileSync(
+        join(root, "data", "editions", "2608", "260827", "_internal", "stage-status.json"),
+        JSON.stringify({ edition: "260827", rows: [{ stage: 1, status: "done", duration_ms: 600000, cost_usd: 1.0, tokens_in: 100, tokens_out: 20, models: ["haiku"] }] }),
+        "utf8",
+      );
+
+      const summary = buildSessionTokensSummary({ rootDir: root });
+      const edicaoRow = summary.rows.find((r) => r.kind === "edicao");
+      assert.ok(edicaoRow);
+      assert.equal(edicaoRow.uninstrumentedRounds, undefined);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
