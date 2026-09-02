@@ -84,6 +84,18 @@ describe("extractBeehiivIdentity", () => {
   it("campos com tipo errado (não-string) são tratados como ausentes", () => {
     assert.equal(extractBeehiivIdentity({ subscriber_id: 123, email: null }), null);
   });
+
+  it("classe C (#7181): sem `email`, mas `subscriber_id` É um e-mail → recuperado", () => {
+    // Achado ao vivo: 100/100 linhas de post_048a8526… ("Post 11/20" no
+    // manifest) têm o endereço gravado em `subscriber_id`, sem chave `email`.
+    const id = extractBeehiivIdentity({ subscriber_id: "User@Example.com" });
+    assert.deepEqual(id, { externalId: "User@Example.com", email: "user@example.com" });
+  });
+
+  it("classe C: `email` presente vence — subscriber_id-como-email não sobrescreve", () => {
+    const id = extractBeehiivIdentity({ subscriber_id: "outro@x.com", email: "real@y.com" });
+    assert.deepEqual(id, { externalId: "outro@x.com", email: "real@y.com" });
+  });
 });
 
 describe("buildBeehiivEventExternalId", () => {
@@ -178,6 +190,61 @@ describe("resolveOrCreateBeehiivSubscriber — funde combinações inconsistente
   });
 });
 
+describe("guard anti-fantasma (#7181) — subscriber_id opaco sem e-mail nunca vira subscriber", () => {
+  it("registro stub (só subscriber_id, sem e-mail em lugar nenhum) NÃO cria subscriber", () => {
+    // Reproduz classe A do backup local de engajamento contaminado
+    // (`{"subscriber_id":"s1"}`, 768 linhas em 9 arquivos, 02/09/2026) —
+    // é o teste de regressão exigido pela issue #7181.
+    const db = openDiariaSubscribersDb(":memory:");
+    const r = ingestPostEngagement(db, "post_stub", [{ subscriber_id: "s1", status: "delivered" }]);
+    assert.equal(r.recordsProcessed, 0);
+    assert.equal(r.recordsSkippedNoIdentity, 1);
+    assert.equal(r.subscribersTouched, 0);
+    assert.equal(r.newEvents, 0);
+    assert.equal(getStoreCounts(db).subscribers, 0, "nenhum subscriber fantasma criado");
+    assert.equal(getStoreCounts(db).events, 0, "nenhum evento gravado pro registro sem identidade real");
+    db.close();
+  });
+
+  it("registro classe C (e-mail gravado em subscriber_id) É aceito — remap, não descarte", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const r = ingestPostEngagement(db, "post_c", [{ subscriber_id: "leitor@x.com", status: "delivered" }]);
+    assert.equal(r.recordsProcessed, 1);
+    assert.equal(r.recordsSkippedNoIdentity, 0);
+    assert.equal(getStoreCounts(db).subscribers, 1);
+
+    const [subId] = findSubscriberIdsByEmail(db, "leitor@x.com");
+    assert.ok(subId, "alias resolvido pelo e-mail recuperado de subscriber_id");
+    db.close();
+  });
+
+  it("subscriber_id opaco sem e-mail, mas JÁ conhecido de outra linha (mesmo alias), continua fundindo — não reintroduz o split do #7135", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const records: BeehiivEngagementRecord[] = [
+      { subscriber_id: "s1", email: "a@x.com", status: "delivered" },
+      { subscriber_id: "s1", status: "opened" }, // 2ª linha: só subscriber_id, sem email
+    ];
+    const r = ingestPostEngagement(db, "post_merge", records);
+    assert.equal(r.recordsProcessed, 2, "a 2ª linha funde com o alias já resolvido pela 1ª, não é descartada");
+    assert.equal(r.subscribersTouched, 1);
+    assert.equal(getStoreCounts(db).subscribers, 1, "nenhum subscriber a mais — nem fantasma, nem split");
+    db.close();
+  });
+
+  it("misto: registro stub puro é pulado, registro com e-mail é gravado normalmente", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const records: BeehiivEngagementRecord[] = [
+      { subscriber_id: "s1", status: "delivered" }, // stub — descartado
+      { subscriber_id: "s2", email: "b@x.com", status: "delivered" }, // real
+    ];
+    const r = ingestPostEngagement(db, "post_mix", records);
+    assert.equal(r.recordsProcessed, 1);
+    assert.equal(r.recordsSkippedNoIdentity, 1);
+    assert.equal(getStoreCounts(db).subscribers, 1);
+    db.close();
+  });
+});
+
 describe("ingestPostEngagement", () => {
   it("grava 1 subscriber + evento 'delivered' por registro delivered simples", () => {
     const db = openDiariaSubscribersDb(":memory:");
@@ -252,7 +319,10 @@ describe("ingestPostEngagement", () => {
     ingestPostEngagement(
       db,
       "post_1",
-      [{ subscriber_id: "s1", status: "delivered" }],
+      // email presente pra não cair no guard anti-fantasma do #7181 —
+      // não é o que este teste cobre (ver describe "guard anti-fantasma"
+      // abaixo pro caso sem e-mail).
+      [{ subscriber_id: "s1", email: "a@x.com", status: "delivered" }],
       "2026-01-01T00:00:00.000Z",
     );
     const row = db.prepare("SELECT ts FROM event LIMIT 1").get() as { ts: string };
