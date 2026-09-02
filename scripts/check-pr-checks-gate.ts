@@ -12,7 +12,11 @@
  * segundos após o push do commit HEAD sai como `pending` em vez de ser
  * aceito — o merge ref pode não ter sido recalculado ainda pelo GitHub, e
  * o chamador já trata `pending` como "tenta de novo", que é a reconfirmação
- * de fato (o poll seguinte reflete o estado real).
+ * de fato (o poll seguinte reflete o estado real). #7105: essa janela
+ * expira de fato agora — `evaluatePrChecksGate` recebe `now: Date.now()`
+ * explicitamente, então uma reavaliação minutos/horas depois do push (CI já
+ * concluído havia tempo) já não fica mais presa em `pending` só porque o
+ * `startedAt` do run mais antigo caiu perto do push.
  *
  * Substitui `gh pr checks {N} --json bucket --jq '...'`, que não roda no
  * `gh` 2.46.0 do `helios` (apt do Ubuntu — `--json` só chegou em `gh pr
@@ -122,7 +126,11 @@ function fetchPrChecksGate(prNumber: number, cwd: string): PrChecksGateResult {
   const rollup = payload.statusCheckRollup;
   const mergeable = typeof payload.mergeable === "string" ? payload.mergeable : undefined;
   const headCommittedAt = extractHeadCommittedAt(payload.commits) ?? undefined;
-  return evaluatePrChecksGate(rollup, { mergeable, headCommittedAt });
+  // #7105: passar `now` explicitamente (em vez de deixar `evaluatePrChecksGate`
+  // usar seu default `Date.now()` implícito) documenta no ponto de chamada que
+  // é ESTE instante — o momento da avaliação, não do push — que faz a janela
+  // de corrida do #7060 expirar.
+  return evaluatePrChecksGate(rollup, { mergeable, headCommittedAt, now: Date.now() });
 }
 
 const EXIT_CODES: Record<PrChecksGateResult["verdict"], number> = {

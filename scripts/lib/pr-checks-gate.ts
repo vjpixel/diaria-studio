@@ -240,6 +240,18 @@ function parseStartedAt(raw: string | null | undefined): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
+/**
+ * #7105: `opts.now` utilizável em ms desde epoch, ou `null` se malformado.
+ * Aceita ISO 8601 (mesmo parser de `parseStartedAt`) ou epoch ms direto.
+ * Omitido → `Date.now()` (não-determinístico de propósito: chamador real
+ * quer "agora" de verdade; testes sempre passam um valor fixo).
+ */
+function resolveNowMs(raw: string | number | undefined): number | null {
+  if (raw === undefined) return Date.now();
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  return parseStartedAt(raw);
+}
+
 export interface PrChecksGateResult {
   verdict: PrChecksGateVerdict;
   /** Nomes dos checks com conclusão que não é sucesso (só quando `verdict === "fail"`). */
@@ -271,6 +283,16 @@ const PENDING_STATES = new Set(["PENDING", "EXPECTED"]);
  * custo de errar pra "espera mais um pouco" é baixo — o próximo poll do
  * chamador (que já espera "pending" significar "tenta de novo") resolve
  * sozinho assim que os checks genuínos aparecerem.
+ *
+ * **#7105: essa última frase só ficou verdadeira depois deste fix.** A 1ª
+ * versão (#7060) comparava só dois timestamps FIXOS — `startedAt` do check
+ * e `headCommittedAt` — e nenhum dos dois muda depois que o rollup se
+ * estabiliza: um run cujo `startedAt` caísse dentro da janela deixava o
+ * veredito `pending` em TODA chamada futura, mesmo horas depois com o CI já
+ * concluído e verde — nada no código fazia "o próximo poll resolver
+ * sozinho". O fix introduziu `opts.now` (ver `EvaluatePrChecksGateOptions`)
+ * — a janela só se aplica enquanto a AVALIAÇÃO em si acontece perto do
+ * push, não só o `startedAt` do check.
  */
 export const DEFAULT_RACE_WINDOW_MS = 20_000;
 
@@ -289,6 +311,19 @@ export interface EvaluatePrChecksGateOptions {
   headCommittedAt?: string | null;
   /** Sobrescreve `DEFAULT_RACE_WINDOW_MS` — só tem efeito com `headCommittedAt` presente. */
   raceWindowMs?: number;
+  /**
+   * #7105: instante (ISO 8601 ou epoch ms) em que o veredito está sendo
+   * AVALIADO — "agora" pra decidir se a janela de corrida do #7060 ainda
+   * vale. Sem isso, a heurística comparava só dois timestamps FIXOS
+   * (`startedAt` do check × `headCommittedAt`) — nenhum dos dois muda
+   * depois que o rollup se estabiliza, então uma vez que o run mais antigo
+   * tivesse começado dentro da janela, o veredito ficava `"pending"` PARA
+   * SEMPRE, em toda chamada subsequente, mesmo horas depois com o CI já
+   * concluído e verde. Só tem efeito com `headCommittedAt` presente. Quando
+   * omitido, usa `Date.now()` — testes devem sempre passar um valor fixo
+   * pra determinismo (ver `test/pr-checks-gate.test.ts`).
+   */
+  now?: string | number;
 }
 
 /**
@@ -398,12 +433,32 @@ export function evaluatePrChecksGate(
     if (typeof opts.headCommittedAt !== "string") return null;
     const pushedAtMs = parseStartedAt(opts.headCommittedAt);
     if (pushedAtMs === null) return null;
+    const windowMs = opts.raceWindowMs ?? DEFAULT_RACE_WINDOW_MS;
+
+    // #7105: a janela só vale enquanto a AVALIAÇÃO em si acontece perto do
+    // push — não só o `startedAt` do check. `startedAt` e `headCommittedAt`
+    // são timestamps FIXOS que nunca mudam depois que o rollup se
+    // estabiliza; sem checar `now`, uma vez que o gap coubesse na janela,
+    // TODA chamada futura (minutos, horas depois) reavaliava o mesmo gap
+    // pequeno e ficava presa em `pending` para sempre — o próprio defeito
+    // desta issue. `now >= pushedAtMs + windowMs` significa "essa avaliação
+    // já não é mais próxima o bastante do push pra desconfiar" — usa o
+    // veredito bruto dali em diante, mesmo sem nenhum check novo aparecer.
+    const nowMs = resolveNowMs(opts.now);
+    if (nowMs === null || nowMs - pushedAtMs >= windowMs) return null;
+
     const startedTimestamps = vigentes.map((n) => parseStartedAt(n?.startedAt)).filter((t): t is number => t !== null);
     if (startedTimestamps.length === 0) return null; // sem nenhum startedAt utilizável, não há como julgar — nunca fica mais rígido que antes do #7060
     const earliestStartedAtMs = Math.min(...startedTimestamps);
-    const windowMs = opts.raceWindowMs ?? DEFAULT_RACE_WINDOW_MS;
-    const gapMs = Math.abs(earliestStartedAtMs - pushedAtMs);
-    if (gapMs >= windowMs) return null;
+
+    // #7105: só um gap PRA FRENTE (run começou DEPOIS do push) é sinal de
+    // corrida real — `Math.abs` da versão anterior também suspeitava de um
+    // run que começou ANTES do push (run supersedido de um commit anterior
+    // ainda presente no rollup), outra fonte de `pending` permanente que
+    // nenhuma espera resolvia.
+    const gapMs = earliestStartedAtMs - pushedAtMs;
+    if (gapMs < 0 || gapMs >= windowMs) return null;
+
     return {
       verdict: "pending",
       failingChecks: [],
@@ -411,7 +466,8 @@ export function evaluatePrChecksGate(
       reason:
         `check(s) começaram ${Math.round(gapMs / 1000)}s após o push do commit HEAD, dentro da janela de ` +
         `corrida de ${Math.round(windowMs / 1000)}s (#7060) — o merge ref pode não ter sido recalculado ainda; ` +
-        "tratando como pendente em vez de aceitar o veredito bruto (nunca aprova, nunca reprova nesta janela).",
+        "tratando como pendente em vez de aceitar o veredito bruto (nunca aprova, nunca reprova nesta janela); " +
+        "expira conforme `now` avança (#7105), mesmo sem nenhum check novo aparecer.",
     };
   };
 
