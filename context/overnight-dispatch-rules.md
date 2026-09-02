@@ -520,3 +520,57 @@ toolset do agente de review na origem (a direção preferida pela #6971)
 exigiria editar a definição do agente do plugin `pr-review-toolkit`
 (marketplace, fora deste repo) — não implementável a partir daqui. Ver o
 docblock do hook para a análise completa.
+
+## 21. Preflight de duplicidade do lado do COORDENADOR — antes do dispatch (#7020)
+
+**Escopo diferente do item 14 acima**: aquele é regra do subagente
+implementador (roda DEPOIS do dispatch, como rede de segurança). Este é
+critério do **coordenador** (overnight, develop, continuo) — roda ANTES de
+abrir worktree/dispatchar, pra nunca pagar um subagente inteiro só para
+descobrir que a issue já estava resolvida em `master`.
+
+Origem: rodada `/diaria-overnight` 260901b despachou 4 issues já resolvidas
+em `master` — o preflight do subagente (item 14) funcionou e parou sem
+duplicar trabalho, mas só depois de o dispatch já ter custado
+~0,5–0,8M tokens na rodada. `git log --all --grep` (usado pra montar um
+desses dispatches) citou um commit que vivia numa PR **fechada sem merge**
+como se estivesse em `master` — o `--all` inclui refs de PR fechada/branch
+nunca mergeada.
+
+**Mecanismo:** `npx tsx scripts/check-issue-duplicate-preflight.ts --issue N
+[--updated-at {updatedAt da issue}]` — CLI fino sobre
+`scripts/lib/issue-duplicate-preflight.ts` (`assessDuplicatePreflight`,
+puro) + `scripts/lib/master-commit-fetch.ts` (fetch real via `git log
+origin/master --grep "#N"` — **sempre `origin/master`, nunca `--all`**,
+esse é o detalhe que evita reproduzir o erro que o preflight existe pra
+prevenir). Custa um `git log`, não um subagente.
+
+Três vereditos exclusivos:
+
+- **`not-in-master`** (exit 0) — nenhum commit em `origin/master` cita a
+  issue. Sem indício de duplicidade, dispatch normal.
+- **`closes-should-be-closed`** (exit 1) — algum commit em `origin/master`
+  já usa `Closes #N` pra essa issue e ela segue aberta. Sinal forte de "já
+  resolvida por completo": não dispatchar o escopo cheio — tratar como
+  unidade de **CLOSEOUT barata** (confirmar que o commit de fato cobre o
+  pedido, comentar e fechar, sem abrir worktree/subagente pra reimplementar
+  o que já está em master).
+- **`refs-declared-residue`** (exit 1) — commit já cita `#N` sem `Closes`
+  (resíduo declarado via `Refs #N, NÃO CLOSES`, ou marcador ausente/
+  incidental). Reler o corpo da issue contra o diff desse commit e
+  dispatchar só o **resíduo real** que falta — nunca o escopo original
+  inteiro.
+
+`resolvedAfterLastUpdate: true` no resultado (o commit mais recente que cita
+a issue é posterior ao `updatedAt` dela) é sinal reforçado de "resolvida
+depois, ninguém reavaliou" — citar isso no comentário de closeout/redução de
+escopo.
+
+**Onde plugar:** logo depois de classificar uma issue como candidata a
+dispatch (overnight: Fase 0 passo 4, "Classificar", pra toda issue que sai
+`elegivel`; develop: Fase 1 passo 4, "Compor a onda", pra cada issue da onda
+antes do fan-out; continuo: passo 1 do "Loop invariável", "Trabalhar a fila
+desbloqueada", antes de dispatchar cada unidade — ver o `SKILL.md` de cada
+skill pro texto exato). O preflight do subagente (item 14) **continua como
+rede de segurança** — não é substituído por este passo, só deixa de ser a
+primeira linha de defesa.

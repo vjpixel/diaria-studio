@@ -566,6 +566,29 @@ aqui.
    consumir CI/worktrees durante a janela da edição, não é a única linha de
    defesa contra colisão.
 
+   **Preflight de duplicidade ANTES do dispatch (#7020), logo em seguida —
+   mesmo desenho do overnight, item 21 de `context/overnight-dispatch-rules.md`.**
+   Antes de reivindicar/dispatchar cada unidade (fan-out OU
+   coordenador-resolve-direto), rodar `npx tsx
+   scripts/check-issue-duplicate-preflight.ts --issue N --updated-at
+   {updatedAt da issue}`. Custa um `git log origin/master --grep "#N"` (nunca
+   `--all`), não um subagente/worktree inteiro. **`not-in-master`** (exit 0)
+   — dispatch normal. **`closes-should-be-closed`** (exit 1) — commit em
+   `origin/master` já usa `Closes #N` e a issue segue aberta: tratar como
+   CLOSEOUT barato (confirmar que o commit cobre o pedido, comentar e fechar
+   a issue — nunca dispatchar pra reimplementar o que já está em master).
+   **`refs-declared-residue`** (exit 1) — commit cita `#N` sem `Closes`
+   (resíduo declarado ou citação incidental): reler o corpo da issue contra o
+   diff do commit e dispatchar só o resíduo real que sobrar, nunca o pedido
+   original inteiro. `continuo` reusa o schema de `plan.json` do overnight
+   (ver "Reuso da maquinaria" abaixo) — **sem motivo `pulada` dedicado pra
+   este caso** (`OVERNIGHT_PULADA_MOTIVOS` não tem um equivalente a
+   `ja-resolvida-antes-da-sessao` do develop); um veredito
+   `closes-should-be-closed` não vira entrada `pulada` — a issue é fechada de
+   verdade (`gh issue close` + comentário), saindo da fila por não estar mais
+   aberta, mesmo tratamento que o overnight já documenta. O preflight do
+   subagente (item 14 do checklist) continua como rede de segurança.
+
    **Agrupamento em lotes (#5344 Parte A — lacuna fechada nesta unidade).**
    `/diaria-continuo` reusa a Fase 1 do overnight verbatim ("Reuso da
    maquinaria" acima), e essa Fase opera sobre "unidade de trabalho = issue

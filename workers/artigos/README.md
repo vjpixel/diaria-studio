@@ -47,9 +47,10 @@ Mecanismo (reusa `scripts/lib/shared/*`, não reimplementa):
   1 mês herdada de lá, não recalculada aqui).
 - `session-cookie.ts` / `rate-limit.ts` — mesmos primitivos do `cursos`
   (cookie assinado 30 dias, 8 tentativas/IP/hora em `/gate/verify`).
-- **Limiar "R$10/mês ↔ qual(is) nível(is)" é PLACEHOLDER não confirmado**
-  — ver `src/apoio-gate-config.ts`. Mudar isso é a única coisa que precisa
-  mudar quando o editor confirmar os valores reais no apoia.se.
+- **Limiar "R$10/mês ↔ qual(is) nível(is)": DECIDIDO (02/09/2026, #7030)**
+  — `["apoiador", "mantenedor", "patrono"]` (todos menos `amigo`), ver
+  `src/apoio-gate-config.ts`. Correspondência valor-em-R$ ↔ nível
+  documentada em `scripts/lib/apoio-segments-canonical-kit.ts`.
 
 Setup manual antes do 1º deploy (mesmo procedimento do `cursos`):
 1. `wrangler kv namespace create ARTIGOS_APOIO_NIVEL` → colar o id em
