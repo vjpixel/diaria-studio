@@ -59,6 +59,28 @@
  * isso é sempre seguro por definição do próprio git (só remove metadado
  * órfão, nunca um diretório que ainda existe) — o CLI roda antes de
  * qualquer classificação.
+ *
+ * ## Guard de sessão compartilhada (#7044, P0 do review da PR #7044)
+ *
+ * Este script remove o MESMO tipo de recurso (worktree + branch) no MESMO
+ * checkout compartilhado que `scripts/cleanup-merged-worktrees.ts` — que já
+ * resolvia este problema desde o #5156 item 9 e nunca era consultado aqui,
+ * apesar do script irmão fazer exatamente essa checagem antes de qualquer
+ * `git worktree remove --force`. `scripts/branch-cleanup.ts` agora chama
+ * `shouldSkipForSharedSession`/`activeSessionWorktreePaths`
+ * (`scripts/lib/shared-session-guard.ts`, generalizado do que antes só
+ * existia no script irmão) ANTES de qualquer passo — pula a varredura
+ * inteira quando há sessão coordenadora ativa não-stale, salvo
+ * `--confirm-shared`. `classifyWorktreeForCleanup` abaixo ganhou o campo
+ * `registeredBySession`, checado ANTES de `locked`/porcelain: um worktree
+ * que consta em `worktrees` de sessão ativa (qualquer `kind`, não só
+ * coordenadora) nunca é seguro remover, mesmo com árvore limpa e branch já
+ * `safe-delete` — é o cenário que `git status --porcelain` sozinho não
+ * cobre (sessão viva que por acaso está com a árvore limpa, ex: acabou de
+ * commitar/pushar e está em wrap-up: comentar na issue, reivindicar a
+ * próxima, escrever relatório). `git worktree remove --force` removeria o
+ * diretório sob os pés dela, e a vítima receberia um erro desconexo
+ * (`ENOENT`, cwd inexistente) sem correlação nenhuma com a causa.
  */
 
 export type CleanupVerdict = "safe-delete" | "needs-review";
@@ -164,6 +186,15 @@ export interface WorktreeCleanupInput {
   /** Decisão já computada pra `branch` (via `classifyBranchForCleanup`),
    * ou `null` se `branch` é `null`. */
   readonly branchDecision: CleanupDecision | null;
+  /** #7044 (P0 do review da PR #7044) — `true` quando este path consta em
+   * `worktrees` de alguma sessão ATIVA (não-stale) registrada em
+   * `session-registry.ts` (qualquer `kind`, não só coordenadora — ver
+   * `scripts/lib/shared-session-guard.ts`). Checado ANTES de
+   * `locked`/porcelain: mesmo com árvore limpa e branch `safe-delete`, um
+   * worktree reivindicado por sessão viva nunca é seguro remover — é
+   * exatamente o cenário que `git status --porcelain` sozinho não cobre
+   * (sessão viva que por acaso está com a árvore limpa nesse instante). */
+  readonly registeredBySession: boolean;
 }
 
 export interface WorktreeCleanupDecision {
@@ -174,6 +205,12 @@ export interface WorktreeCleanupDecision {
 /** Pura — decide se um worktree EXISTENTE (já passou por `git worktree
  * prune`, que cobre o caso "diretório nem existe mais") é seguro remover. */
 export function classifyWorktreeForCleanup(input: WorktreeCleanupInput): WorktreeCleanupDecision {
+  if (input.registeredBySession) {
+    return {
+      verdict: "needs-review",
+      reason: "worktree consta em session-registry.ts de sessão ativa (não-stale) — nunca remove, mesmo limpo e com branch safe-delete (#7044)",
+    };
+  }
   if (input.locked) {
     return { verdict: "needs-review", reason: "worktree está locked (git worktree lock) — sinal explícito de 'em uso', nunca remove" };
   }
@@ -194,4 +231,26 @@ export function classifyWorktreeForCleanup(input: WorktreeCleanupInput): Worktre
     verdict: "needs-review",
     reason: `branch '${input.branch}' não é safe-delete ainda (${input.branchDecision?.reason ?? "sem decisão computada"})`,
   };
+}
+
+/**
+ * Pura (#7044 item 3 do review da PR #7044) — decide se a lista de
+ * resultados de remoção (worktree + branch, mesma forma `{ok: boolean}` de
+ * `execFileSyncCaptured` em `scripts/branch-cleanup.ts`) contém pelo menos
+ * UMA falha real. `true` sse alguma remoção genuinamente falhou
+ * (`git worktree remove`/`git branch -D` retornou erro) — antes desta
+ * função, o script capturava a falha e só fazia `console.error`, sem nunca
+ * setar `process.exitCode`: a unit systemd sempre saía 0, o alarme
+ * `Diaria-Systemd-Failed-Units-Alarm` nunca disparava, e `.cleanup.log`
+ * não tinha consumidor nenhum.
+ *
+ * Lista vazia ("nada a remover" — nenhuma `safe-delete`/`safe-remove` no
+ * lote) ou lista com só `ok: true` → `false`. Não recebe as remoções que
+ * nunca chegaram a ser tentadas (dry-run, `needs-review`, "pulei por
+ * sessão ativa" via `shouldSkipForSharedSession`) — esses caminhos nunca
+ * empurram nada pra esta lista, então continuam saindo `exitCode` 0 por
+ * construção, sem precisar de um caso especial aqui.
+ */
+export function hasRemovalFailure(results: ReadonlyArray<{ readonly ok: boolean }>): boolean {
+  return results.some((r) => !r.ok);
 }

@@ -76,6 +76,15 @@
  * registrada (caso comum hoje, antes do rollout completo nas duas skills) =
  * comportamento IDÊNTICO ao pré-#5156, sem gate nenhum.
  *
+ * **#7044 — a implementação do guard (`shouldSkipForSharedSession` +
+ * `listActiveSessionsSafe`) migrou pra `scripts/lib/shared-session-guard.ts`**,
+ * generalizada pra ser reusada também por `scripts/branch-cleanup.ts` (que
+ * remove o MESMO tipo de recurso no MESMO checkout compartilhado e não
+ * consultava `session-registry.ts` — P0 do review da PR #7044). Este arquivo
+ * mantém `shouldSkipForSharedSession` re-exportado com o mesmo nome/contrato
+ * pra não quebrar `test/session-beacon-blast-radius.test.ts` e
+ * `test/cleanup-merged-worktrees.test.ts`.
+ *
  * Uso:
  *   npx tsx scripts/cleanup-merged-worktrees.ts [--dry-run] [--root <repoRoot>] [--confirm-shared]
  *
@@ -91,7 +100,11 @@ import { statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts";
-import { isCoordinatorKind, listActiveSessions, type SessionRecord } from "./lib/session-registry.ts";
+import { isCoordinatorKind, type SessionRecord } from "./lib/session-registry.ts";
+import {
+  listActiveSessionsSafe as sharedListActiveSessionsSafe,
+  shouldSkipForSharedSession,
+} from "./lib/shared-session-guard.ts";
 
 export interface WorktreeEntry {
   /** Path absoluto do worktree (normalizado com `/`). */
@@ -288,57 +301,15 @@ function listWorktreesSafe(cwd: string): WorktreeEntry[] {
   }
 }
 
-/**
- * Decide se a varredura destrutiva deve ser pulada por segurança (#5156 item
- * 9) — pura, testável sem tocar `data/sessions/` real. Pula quando existe
- * ≥1 sessão COORDENADORA ativa registrada E `confirmShared` não foi passado.
- * Registro vazio (nenhuma outra sessão rodando) nunca pula — comportamento
- * idêntico ao pré-#5156.
- *
- * **#6168 — só sessão COORDENADORA conta.** Antes desta issue a checagem era
- * "qualquer sessão ativa", o que estava certo enquanto só as 3 skills se
- * registravam. Com o beacon (`.claude/hooks/session-beacon.mjs`) registrando
- * TODA sessão interativa automaticamente, "qualquer sessão ativa" passaria a
- * ser verdade praticamente sempre — o guard viraria um `return true`
- * permanente e a limpeza de worktree nunca mais rodaria, em silêncio. É o
- * item 1 do blast radius que a Parte B da issue nomeia explicitamente.
- *
- * O que o guard protege é worktree em uso por um IMPLEMENTADOR despachado —
- * e só coordenadora despacha implementador. Uma sessão interativa não abre
- * worktree em `.claude/worktrees/` por conta própria; quando ela abre um à
- * mão, quem o remove é ela mesma.
- *
- * **#6706 — só conta sessão coordenadora NÃO-stale.** Antes desta mudança,
- * o filtro considerava qualquer registro `SessionRecord` cujo `kind` fosse
- * coordenador, ignorando o campo computado `stale` que `listActiveSessions`
- * já popula (heartbeat morto há mais de `SOFT_STALE_MS`/90min, ver
- * `scripts/lib/session-registry.ts`). Como o campo `pid` gravado no registro
- * nunca corresponde ao processo real da sessão neste harness (achado #6294,
- * reconfirmado pelo #6706 — nenhum PID de registro é resolvível em `/proc`
- * mesmo pra sessão genuinamente viva), `stale` é o ÚNICO sinal de liveness
- * prático disponível aqui; sem filtrar por ele, uma sessão overnight/develop
- * morta há 20h (dentro do teto absoluto de 24h que `listActiveSessions` usa
- * pra decidir se inclui o registro na lista, mas muito além da janela de
- * liveness de 90min) contava como "ativa" pra sempre — achado ao vivo: este
- * script recusou rodar reportando 15 sessões "ativas" quando só 2 estavam de
- * fato vivas. `s.stale` pode ser `undefined` num `SessionRecord` cru fora de
- * `listActiveSessions` (nunca persistido em disco) — `!s.stale` trata
- * `undefined` como "não-stale", preservando o comportamento de quem passar
- * uma lista sem essa checagem computada (nenhum call site real faz isso hoje;
- * `listActiveSessionsSafe` sempre passa por `listActiveSessions`).
- */
-export function shouldSkipForSharedSession(activeSessions: SessionRecord[], confirmShared: boolean): boolean {
-  const coordinators = activeSessions.filter((s) => isCoordinatorKind(s.kind) && !s.stale);
-  return coordinators.length > 0 && !confirmShared;
-}
+/** #7044 — implementação e docstring completa migraram pra
+ * `scripts/lib/shared-session-guard.ts` (reusada agora também por
+ * `scripts/branch-cleanup.ts`); re-exportado com o mesmo nome/contrato pra
+ * não quebrar `test/session-beacon-blast-radius.test.ts` e
+ * `test/cleanup-merged-worktrees.test.ts`. */
+export { shouldSkipForSharedSession } from "./lib/shared-session-guard.ts";
 
 function listActiveSessionsSafe(repoRoot: string): SessionRecord[] {
-  try {
-    return listActiveSessions(repoRoot);
-  } catch (e) {
-    console.warn(`[cleanup-merged-worktrees] listActiveSessions lançou (fail-soft, tratando como vazio): ${(e as Error).message}`);
-    return [];
-  }
+  return sharedListActiveSessionsSafe(repoRoot, "[cleanup-merged-worktrees]");
 }
 
 function main(): void {
