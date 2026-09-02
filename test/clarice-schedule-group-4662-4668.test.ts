@@ -257,6 +257,11 @@ describe("resolveScheduleAtArg (#7042 — antecedência mínima, incidente 01/09
     const result = resolveScheduleAtArg(raw, NOW);
     assert.ok("scheduledAt" in result, `esperava sucesso, recebeu erro: ${"error" in result ? result.error : ""}`);
     if (!("scheduledAt" in result)) throw new Error("unreachable");
+    // `assert.equal` (== `strictEqual`, `asserts actual is T`) estreita
+    // `result` pro membro `{ scheduledAt: string; warning?: string }` antes
+    // de acessar `.warning` — sem isto, `result` ainda inclui o membro
+    // `{ scheduledAt: undefined }` (sem `warning`) e TS2339 barra o acesso.
+    assert.equal(result.scheduledAt, raw);
     assert.ok(result.warning, "esperava warning — 09:05 não é o horário canônico exato");
     assert.match(result.warning as string, /fora do horário canônico/i);
   });
@@ -266,6 +271,7 @@ describe("resolveScheduleAtArg (#7042 — antecedência mínima, incidente 01/09
     const result = resolveScheduleAtArg(raw, NOW);
     assert.ok("scheduledAt" in result, `esperava sucesso, recebeu erro: ${"error" in result ? result.error : ""}`);
     if (!("scheduledAt" in result)) throw new Error("unreachable");
+    assert.equal(result.scheduledAt, raw);
     assert.ok(result.warning, "esperava warning — 09:00:05 não é o horário canônico exato");
     assert.match(result.warning as string, /fora do horário canônico/i);
   });
@@ -275,6 +281,7 @@ describe("resolveScheduleAtArg (#7042 — antecedência mínima, incidente 01/09
     const result = resolveScheduleAtArg(raw, NOW);
     assert.ok("scheduledAt" in result, `esperava sucesso, recebeu erro: ${"error" in result ? result.error : ""}`);
     if (!("scheduledAt" in result)) throw new Error("unreachable");
+    assert.equal(result.scheduledAt, raw);
     assert.ok(result.warning, "esperava warning — 09:00:00.500 não é o horário canônico exato");
     assert.match(result.warning as string, /fora do horário canônico/i);
   });
