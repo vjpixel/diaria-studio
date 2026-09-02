@@ -241,6 +241,137 @@ def main() -> int:
             and prefixado["other_calls"] == 0,
         )
 
+    # -----------------------------------------------------------------
+    # #6818 item 4 — aumento de preço em modelo PAGO já em uso
+    # -----------------------------------------------------------------
+    # O buraco que motiva: `_is_leak` só pergunta "está na allowlist?", então
+    # um modelo JÁ pago que dobra de preço (o degrau de 09/09 do glm-5.3-flash)
+    # não dispara nada. Estes testes travam a detecção do aumento e, tão
+    # importante quanto, travam que "não consegui medir" nunca vire "ok".
+    BASE = {"z-ai/glm-5.3-flash": {"prompt": 0.000000075, "completion": 0.00000025}}
+
+    def _catalog(*entries: dict) -> dict:
+        return {"data": list(entries)}
+
+    # 1. O CENÁRIO DA ISSUE: promoção expira, prompt dobra 0,075 -> 0,15/M.
+    dobrou = mod.extract_catalog_pricing(_catalog(
+        {"id": "z-ai/glm-5.3-flash",
+         "pricing": {"prompt": "0.00000015", "completion": "0.00000025"}},
+    ))
+    f = mod.detect_price_changes(dobrou, baseline=BASE, not_on_openrouter=set())
+    assert_true(
+        "#6818: prompt dobrando (promoção expirada) -> 1 aumento detectado, fator 2x",
+        len(f["increases"]) == 1
+        and f["increases"][0]["campo"] == "prompt"
+        and abs(f["increases"][0]["fator"] - 2.0) < 1e-9,
+    )
+    assert_true(
+        "#6818: aumento -> exit code 3 (distinto de indeterminado)",
+        mod.price_check_exit_code(f) == 3,
+    )
+
+    # 2. Preço inalterado não alarma — senão o alarme vira ruído diário.
+    igual = mod.extract_catalog_pricing(_catalog(
+        {"id": "z-ai/glm-5.3-flash",
+         "pricing": {"prompt": "0.000000075", "completion": "0.00000025"}},
+    ))
+    f_igual = mod.detect_price_changes(igual, baseline=BASE, not_on_openrouter=set())
+    assert_true(
+        "#6818: preço igual ao baseline -> nenhum achado, exit 0",
+        not any(f_igual.values()) and mod.price_check_exit_code(f_igual) == 0,
+    )
+
+    # 3. Queda de preço é reportada mas NUNCA alarma.
+    caiu = mod.extract_catalog_pricing(_catalog(
+        {"id": "z-ai/glm-5.3-flash",
+         "pricing": {"prompt": "0.00000005", "completion": "0.00000025"}},
+    ))
+    f_caiu = mod.detect_price_changes(caiu, baseline=BASE, not_on_openrouter=set())
+    assert_true(
+        "#6818: queda de preço -> reportada como 'decrease', exit 0, nunca alarme",
+        len(f_caiu["decreases"]) == 1 and not f_caiu["increases"]
+        and mod.price_check_exit_code(f_caiu) == 0,
+    )
+
+    # 4. FAIL-CLOSED: modelo do baseline sumiu do catálogo -> INDETERMINADO,
+    #    nunca silêncio. É o modo de falha que o alarme existe pra impedir.
+    f_sumiu = mod.detect_price_changes({}, baseline=BASE, not_on_openrouter=set())
+    assert_true(
+        "#6818: modelo ausente do catálogo -> unverifiable + exit 1, nunca 'ok'",
+        len(f_sumiu["unverifiable"]) == 1 and not f_sumiu["increases"]
+        and mod.price_check_exit_code(f_sumiu) == 1,
+    )
+
+    # 5. Campo de preço somiu (id existe, `prompt` não) -> também indeterminado.
+    f_campo = mod.detect_price_changes(
+        mod.extract_catalog_pricing(_catalog(
+            {"id": "z-ai/glm-5.3-flash", "pricing": {"completion": "0.00000025"}},
+        )),
+        baseline=BASE, not_on_openrouter=set(),
+    )
+    assert_true(
+        "#6818: campo de preço ausente -> unverifiable nomeando o campo, exit 1",
+        any(u.get("campo") == "prompt" for u in f_campo["unverifiable"])
+        and mod.price_check_exit_code(f_campo) == 1,
+    )
+
+    # 6. Modelo pago fora da OpenRouter é `out_of_scope`, NÃO `unverifiable`,
+    #    e NÃO alarma. Esses ids nunca vão aparecer no catálogo — somá-los ao
+    #    indeterminado faria o alarme sair INDETERMINADO todo dia, pra sempre,
+    #    e um alarme que sempre grita esconde o aumento real de 09/09.
+    f_fora = mod.detect_price_changes(
+        igual, baseline=BASE, not_on_openrouter={"openai-codex/gpt-5.6-luna"},
+    )
+    assert_true(
+        "#6818: modelo pago servido por outra rota -> out_of_scope com motivo próprio",
+        any(u["modelo"] == "openai-codex/gpt-5.6-luna" and "outra rota" in u["motivo"]
+            for u in f_fora["out_of_scope"]),
+    )
+    assert_true(
+        "#6818: out_of_scope sozinho NÃO alarma (exit 0) — fronteira conhecida não é medição falha",
+        not f_fora["unverifiable"] and mod.price_check_exit_code(f_fora) == 0,
+    )
+    # E o caso real: com o PAID_ALLOWLIST/baseline de produção e o catálogo
+    # sem alteração, a execução diária tem que sair limpa — senão o watchdog
+    # nasce ruidoso e é desligado na primeira semana.
+    f_prod = mod.detect_price_changes(igual, baseline=BASE)
+    assert_true(
+        "#6818: execução diária com preço inalterado sai exit 0, apesar dos modelos fora da OpenRouter",
+        mod.price_check_exit_code(f_prod) == 0 and len(f_prod["out_of_scope"]) == 2,
+    )
+
+    # 7. Preço não-numérico NUNCA vira 0.0 — 0.0 leria como "de graça" e
+    #    mascararia exatamente o que o alarme procura.
+    lixo = mod.extract_catalog_pricing(_catalog(
+        {"id": "z-ai/glm-5.3-flash", "pricing": {"prompt": None, "completion": "abc"}},
+    ))
+    assert_true(
+        "#6818: preço não-parseável é OMITIDO, nunca coagido a 0.0",
+        lixo.get("z-ai/glm-5.3-flash") is None
+        or ("prompt" not in lixo["z-ai/glm-5.3-flash"]
+            and "completion" not in lixo["z-ai/glm-5.3-flash"]),
+    )
+
+    # 8. Tolerância cobre ruído decimal, não variação real de preço.
+    ruido = mod.extract_catalog_pricing(_catalog(
+        {"id": "z-ai/glm-5.3-flash",
+         "pricing": {"prompt": "0.0000000753", "completion": "0.00000025"}},
+    ))
+    f_ruido = mod.detect_price_changes(ruido, baseline=BASE, not_on_openrouter=set())
+    assert_true(
+        "#6818: +0,4% (ruído de arredondamento) fica DENTRO da tolerância de 1%",
+        not f_ruido["increases"],
+    )
+
+    # 9. O baseline versionado tem que casar com a allowlist: um modelo pago
+    #    em uso que não esteja nem no baseline nem na lista de fora-da-OpenRouter
+    #    seria um ponto cego silencioso — exatamente o bug desta issue.
+    coberto = set(mod.PAID_PRICE_BASELINE) | set(mod.PAID_MODELS_NOT_ON_OPENROUTER)
+    assert_true(
+        "#6818: todo modelo do PAID_ALLOWLIST está coberto pelo baseline ou nomeado fora da OpenRouter",
+        set(mod.PAID_ALLOWLIST) <= coberto,
+    )
+
     if FAILED:
         print(f"\n{FAILED} asserção(ões) falharam")
         return 1
