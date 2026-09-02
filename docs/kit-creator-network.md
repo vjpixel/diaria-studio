@@ -198,13 +198,69 @@ e `docs/apex-cutover-status-5125.md`, já no repo. Fica registrado porque o modo
 Sem atribuição, o canal fica invisível na contabilidade de CAC/leitor
 (`scripts/lib/cac.ts`, `scripts/lib/leitor.ts`). A verificar via API/MCP `kit`:
 
-1. Se o assinante criado pela rede carrega origem identificável (`attribution`, tag, ou
-   campo equivalente) — e qual o valor exato.
+1. ~~Se o assinante criado pela rede carrega origem identificável (`attribution`, tag, ou
+   campo equivalente) — e qual o valor exato.~~ **RESPONDIDO em 02/09/2026 — ver abaixo.**
 2. Se sim, incluir o canal na agregação por UTM/origem já consumida pelo Studio
-   (`scripts/count-subscriptions-by-utm.ts` → `studio-ui/studio-utms.ts`).
+   (`scripts/count-subscriptions-by-utm.ts` → `studio-ui/studio-utms.ts`). **Pendente** —
+   depende de existir volume pra agregar (hoje é zero).
 
-Enquanto (1) não for respondido, qualquer número atribuído à rede é estimativa, não medição —
-tratar como tal em relatório.
+### (1) RESPONDIDO: dá pra medir, mas pelo FORM, não por um campo `creator_network`
+
+Medido ao vivo em 02/09/2026 via MCP `kit`.
+
+**Não existe** valor `creator_network` em `source_type`/`source_mechanism`. Procurar por ele é
+beco sem saída: `filter_subscribers` aceita `attribution.kit_source.mechanism` com string
+ARBITRÁRIA e devolve `0` sem erro pra qualquer valor inventado — um zero ali não prova nada
+(mesma armadilha de [[negative-claims-need-verification]]). Os `source_type` que a API
+documenta são só `form_subscription`, `api_subscription` e `manual`.
+
+**O que de fato identifica a rede é um form dedicado que a Kit criou sozinha no opt-in:**
+
+| campo | valor |
+|---|---|
+| nome | `Creator Network` |
+| `id` | **9870650** |
+| `uid` | `b8db78a611` |
+| `created_at` | `2026-09-01T20:04:52Z` (o próprio opt-in do #6674) |
+
+Consulta reprodutível — este é o número do canal:
+
+```
+filter_subscribers(
+  all = [{ type: "attribution", any: [{ type: "forms", ids: [9870650] }] }],
+  include_total_count = true
+)
+```
+
+Leitura em 02/09/2026: **0**. Consistente com `subscriber_count: 0` do próprio form e com o
+painel Incoming/Outgoing zerado — o perfil tem 1 dia.
+
+**A consulta foi validada contra um controle**, senão um zero de query quebrada seria
+indistinguível de zero real: a mesma query com `ids: [9839463]` (`Newsletter site`) devolve
+resultado não-vazio. A query funciona; o zero é real.
+
+### ⚠️ `subscriber_count` do form ≠ contagem por atribuição — não são a mesma população
+
+Achado colateral da validação acima, e importa pra não reportar número errado depois:
+`Newsletter site` (id 9839463) reporta `subscriber_count: 22`, mas a query de atribuição por
+esse mesmo form id devolve **4**. Não é bug — são perguntas diferentes:
+
+- `subscriber_count` = quantos assinantes estão ASSOCIADOS ao form hoje;
+- filtro de `attribution` = quantos têm aquele form como origem do cadastro ORIGINAL.
+
+A divergência é esperada aqui porque os 3 workers cadastram via API e associam ao form depois
+(ver a ressalva técnica lá em cima) — o assinante entra no `subscriber_count` sem nunca ter
+tido o form como origem. **Pra contabilidade de aquisição, usar sempre o filtro de
+atribuição**, nunca o `subscriber_count`.
+
+Confirmação de que os workers dominam a base: numa amostra dos 37 cadastros desde 25/08, todos
+menos um vieram como `source_type: api_subscription` / `source_mechanism: direct_api_call`,
+com `utm_*` e `referrer` nulos. O único de form trouxe
+`source_type: form_subscription`, `source_name: "Newsletter site"`,
+`source_mechanism: "newsletter"`, `referrer: https://diar-ia-br.kit.com/`.
+
+Enquanto o volume for zero, qualquer número atribuído à rede segue sendo estimativa, não
+medição — mas agora a medição EXISTE e é uma query só, não leitura de painel à mão.
 
 **Fonte disponível hoje, sem depender de (1):** a própria aba Recommendations
 (`app.kit.com/creator-network`) tem painel partido em **Incoming** (quem nos recomendou →
@@ -218,7 +274,12 @@ nos dois lados** — esperado, o perfil nasceu no dia. Recomendação da rede **
 
 ## Pendências
 
-- [ ] Responder (1) acima: a API/MCP `kit` expõe origem `creator_network` por assinante?
+- [x] ~~Responder (1) acima: a API/MCP `kit` expõe origem `creator_network` por assinante?~~
+      **Respondido em 02/09/2026** (#6674): não existe campo `creator_network`, mas o form
+      dedicado `id 9870650` mede o canal por atribuição. Query na seção "Como medir".
+- [ ] Rodar a query do form 9870650 daqui a algumas semanas — enquanto der 0, o canal não
+      entra em relatório de aquisição. Só faz sentido ligar a agregação do item (2) quando
+      houver volume.
 - [ ] Medir o painel Outgoing daqui a algumas semanas — a página converte, ou é só um item
       de navegação que ninguém clica?
 - [ ] Decidir se vale rotear mais cadastro pelo form nativo, pra que a decisão 2 alcance o
