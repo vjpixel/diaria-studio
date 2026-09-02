@@ -43,6 +43,8 @@ O script:
 - Roda `update-audience.ts` (spawn), que arquiva o profile atual em `docs/audience-history/{YYYY-MM-DD}.md` e gera o novo `context/audience-profile.md` com pesos por content_type, sector, themes.
 - Imprime o topo do arquivo gerado (stdout) para confirmação.
 
+**Retenção de `docs/audience-history/` (#7129).** Rodar periodicamente (fora deste fluxo, ex: mensal) `npx tsx scripts/prune-audience-history.ts` — consolida snapshots mais antigos que 90 dias em `docs/audience-history/_consolidated.md` (append-only, nunca perde conteúdo) e remove os arquivos individuais correspondentes; snapshots dentro da janela ficam intocados. Política e implementação: `scripts/lib/audience-history-retention.ts`. Standalone de propósito, não wireado no caminho de escrita acima (que roda a cada edição e é business-crítico).
+
 `--dry-run` roda a validação e mostra o que faria, sem gravar nada nem chamar `update-audience.ts` — útil pra conferir a normalização antes de aplicar de verdade.
 
 ## Exit codes
