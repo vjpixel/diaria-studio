@@ -1,27 +1,24 @@
 /**
  * check-watchdog-armed.test.ts (#2768, #2814)
  *
- * Cobre o parser puro `isWatchdogTaskScheduled` com fixtures de output real
- * (task presente / ausente / malformado) e a decisão pura
- * `decideWatchdogArmingAction`. NUNCA chama `schtasks` real nem
- * `setup-watchdog-schedule.ps1` (instrução explícita da issue #2768) —
- * apenas strings fixture, mesmo padrão de `test/exec-mode.test.ts` e
- * `test/overnight-watchdog.test.ts`.
+ * Cobre a decisão pura `decideWatchdogArmingAction`. NUNCA chama `schtasks`
+ * real nem `setup-watchdog-schedule.ps1` (instrução explícita da issue
+ * #2768) — apenas strings fixture, mesmo padrão de `test/exec-mode.test.ts`
+ * e `test/overnight-watchdog.test.ts`.
  *
  * #2814: cobre também `queryWatchdogTaskExitCode`, o caminho de detecção
  * real usado por `checkWatchdogArmed` desde o fix do bug #1 (falso-negativo
- * em Windows localizado — o parser textual acima nunca casava com
- * "Nome da Tarefa:" do schtasks PT-BR). Testado via injeção de um mock de
- * `execFileSync` (parâmetro `exec`), não via `isWatchdogTaskScheduled` — o
- * parser textual não é mais usado no caminho de detecção real, só segue
- * coberto aqui por ainda ser exportado.
+ * em Windows localizado — um parser textual legado (`isWatchdogTaskScheduled`,
+ * removido no #7123 por não ter mais consumidor de produção — a detecção
+ * real sempre foi via exit code) nunca casava com "Nome da Tarefa:" do
+ * schtasks PT-BR. Testado via injeção de um mock de `execFileSync`
+ * (parâmetro `exec`).
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
-  isWatchdogTaskScheduled,
   decideWatchdogArmingAction,
   buildWatchdogWarningMessage,
   queryWatchdogTaskExitCode,
@@ -45,92 +42,9 @@ import {
 // Fixtures de output real do `schtasks /query /tn "..." /fo LIST`
 // ---------------------------------------------------------------------------
 
-const FIXTURE_TASK_PRESENT = `
-Folder: \\
-HostName:                             DESKTOP-PIXEL
-TaskName:                             \\Diaria-Overnight-Watchdog
-Next Run Time:                        7/1/2026 6:00:00 PM
-Status:                               Ready
-Logon Mode:                           Interactive/Background
-Last Run Time:                        6/30/2026 11:50:00 PM
-Last Result:                          0
-Author:                               DESKTOP-PIXEL\\pixel
-Task To Run:                          npx tsx "C:\\Users\\pixel\\Projects\\diaria-studio\\scripts\\overnight-watchdog.ts"
-Start In:                             C:\\Users\\pixel\\Projects\\diaria-studio
-Comment:                               diar.ia.br: watchdog de stall overnight (#2688) — roda a cada 10 min entre 18:00-09:00.
-Scheduled Task State:                 Enabled
-Repeat: Every:                        0 Hours, 10 Minutes
-Repeat: Until: Time:                  None
-Repeat: Until: Duration:              15 Hours, 0 Minutes
-Repeat: Stop If Still Running:        Disabled
-`;
-
+// Único fixture ainda referenciado nesta suíte fora do parser textual
+// removido no #7123 (`isWatchdogTaskScheduled`) — mantido de propósito.
 const FIXTURE_TASK_ABSENT = `ERROR: The system cannot find the file specified.\r\n`;
-
-const FIXTURE_TASK_ABSENT_STDOUT_VARIANT = `INFO: No matching tasks were found.\r\n`;
-
-const FIXTURE_MALFORMED_TRUNCATED = `
-Folder: \\
-HostName:                             DESKTOP-PIXEL
-`;
-
-const FIXTURE_MALFORMED_GARBAGE = `<<<not even close to schtasks output>>>\n\x00\x01random binary noise`;
-
-const FIXTURE_DIFFERENT_TASK_PRESENT = `
-Folder: \\
-HostName:                             DESKTOP-PIXEL
-TaskName:                             \\SomeOtherScheduledTask
-Next Run Time:                        7/1/2026 6:00:00 PM
-Status:                               Ready
-`;
-
-// ---------------------------------------------------------------------------
-// isWatchdogTaskScheduled
-// ---------------------------------------------------------------------------
-
-describe("isWatchdogTaskScheduled", () => {
-  it("retorna true quando a task está presente (fixture real /fo LIST)", () => {
-    assert.equal(isWatchdogTaskScheduled(FIXTURE_TASK_PRESENT), true);
-  });
-
-  it("retorna false quando a task está ausente (ERROR: system cannot find)", () => {
-    assert.equal(isWatchdogTaskScheduled(FIXTURE_TASK_ABSENT), false);
-  });
-
-  it("retorna false quando a task está ausente (variante 'No matching tasks')", () => {
-    assert.equal(isWatchdogTaskScheduled(FIXTURE_TASK_ABSENT_STDOUT_VARIANT), false);
-  });
-
-  it("retorna false para output malformado/truncado (sem linha TaskName:)", () => {
-    assert.equal(isWatchdogTaskScheduled(FIXTURE_MALFORMED_TRUNCATED), false);
-  });
-
-  it("retorna false para output completamente malformado/lixo binário", () => {
-    assert.equal(isWatchdogTaskScheduled(FIXTURE_MALFORMED_GARBAGE), false);
-  });
-
-  it("retorna false quando outra task existe mas não a do watchdog", () => {
-    assert.equal(isWatchdogTaskScheduled(FIXTURE_DIFFERENT_TASK_PRESENT), false);
-  });
-
-  it("retorna false para string vazia", () => {
-    assert.equal(isWatchdogTaskScheduled(""), false);
-  });
-
-  it("retorna false para string só com espaços/whitespace", () => {
-    assert.equal(isWatchdogTaskScheduled("   \n\t  \r\n  "), false);
-  });
-
-  it("é case-insensitive e tolera prefixo de barra invertida da pasta raiz", () => {
-    const fixture = `TaskName: \\diaria-overnight-watchdog\n`;
-    assert.equal(isWatchdogTaskScheduled(fixture), true);
-  });
-
-  it("bate mesmo sem o prefixo de barra invertida (task não-raiz hipotética)", () => {
-    const fixture = `TaskName: Diaria-Overnight-Watchdog\n`;
-    assert.equal(isWatchdogTaskScheduled(fixture), true);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // decideWatchdogArmingAction
@@ -178,9 +92,11 @@ describe("queryWatchdogTaskExitCode", () => {
     const mockExec = (() => {
       const err = Object.assign(new Error("comando falhou"), {
         status: 1,
-        // Locale PT-BR: mensagem localizada que o parser antigo nunca reconhecia —
-        // o caminho por exit code não olha pra essa string, só pro status.
-        stderr: "ERRO: O sistema não pode encontrar o arquivo especificado.",
+        // Locale PT-BR: mensagem localizada que um parser textual antigo (removido
+        // no #7123) nunca reconhecia — o caminho por exit code não olha pra essa
+        // string, só pro status. Reusa o fixture EN só como corpo de mensagem
+        // qualquer — o que importa é o `status`, não o texto.
+        stderr: FIXTURE_TASK_ABSENT,
       });
       throw err;
     }) as unknown as typeof import("node:child_process").execFileSync;
@@ -208,24 +124,15 @@ describe("queryWatchdogTaskExitCode", () => {
     assert.equal(queryWatchdogTaskExitCode(mockExec), null);
   });
 
-  it("é robusto ao fixture PT-BR que quebrava isWatchdogTaskScheduled — bug 1 original (#2814)", () => {
+  it("é robusto a output PT-BR — bug 1 original (#2814)", () => {
     // Regressão direta do bug relatado: schtasks PT-BR emite "Nome da Tarefa:"
-    // em vez de "TaskName:". O parser textual falha nesse fixture (false
-    // negativo), mas o caminho por exit code (usado de fato em produção)
-    // não depende dele — só do exit code do processo real.
+    // em vez de "TaskName:". Um parser textual antigo (removido no #7123)
+    // falhava nesse fixture (falso negativo); o caminho por exit code (o
+    // único em produção) não depende do texto — só do exit code do processo
+    // real, então reconhece a task independente do locale do output.
     const PTBR_OUTPUT = "Nome da Tarefa:                       \\Diaria-Overnight-Watchdog\nStatus:                                Pronto";
-    assert.equal(
-      isWatchdogTaskScheduled(PTBR_OUTPUT),
-      false,
-      "documenta o comportamento do parser textual legado — não é mais usado na detecção real",
-    );
-
     const mockExecArmed = (() => PTBR_OUTPUT) as unknown as typeof import("node:child_process").execFileSync;
-    assert.equal(
-      queryWatchdogTaskExitCode(mockExecArmed),
-      0,
-      "caminho real (exit code) reconhece a task independente do locale do output",
-    );
+    assert.equal(queryWatchdogTaskExitCode(mockExecArmed), 0);
   });
 });
 

@@ -314,9 +314,6 @@ export interface SessionRecord {
    * além de `.merge-lock.json` aparece ali, e a #6296 já admitia "arquivo
    * dedicado OU campo no próprio record". Ver `grantMergeWindow`. */
   merge_grant?: MergeGrant;
-  /** Anúncio de merge desta sessão (#6168 Parte F) — publicado no registro pra
-   * alcançar peer que o `ListAgents` não lista naquele instante. */
-  merge_announcement?: MergeAnnouncement;
   /**
    * Campo COMPUTADO por `listActiveSessions` (#5474) — nunca persistido em
    * disco. `true` quando `now - lastHeartbeat > SOFT_STALE_MS`, sinalizando
@@ -499,20 +496,6 @@ export interface MergeGrant {
   grantedAt: string;
   /** Preenchido quando a janela é consumida; concessão consumida não vale mais. */
   consumedAt?: string;
-}
-
-/**
- * Anúncio de merge (#6168 Parte F) — "vou mergear o PR X, que fecha as issues
- * Y e toca os arquivos Z". Publicado tanto pelo canal ativo (`SendMessage` ao
- * peer vivo) quanto no registro, porque o canal só alcança peer que o
- * `ListAgents` lista naquele instante.
- */
-export interface MergeAnnouncement {
-  sessionId: string;
-  pr?: number;
-  issues?: number[];
-  paths?: string[];
-  announcedAt: string;
 }
 
 /**
@@ -4329,117 +4312,6 @@ export function findSessionConflicts(
   }
 
   return conflicts;
-}
-
-// ─── Parte F: ordenação de merge pela conversa (#6168) ─────────────────────
-
-export type MergeAdmission = "proceed" | "yield" | "fallback-to-lock";
-
-export interface PeerAnnouncement extends MergeAnnouncement {
-  /** `true` só com ACK EXPLÍCITO do peer. Ausência/`false` = silêncio. */
-  acked?: boolean;
-}
-
-/**
- * Vencedor determinístico entre dois anúncios de merge (#6168 Parte F):
- * timestamp mais ANTIGO vence; empate (ou timestamp ilegível dos dois lados)
- * resolve pelo `sessionId` lexicograficamente MENOR.
- *
- * A propriedade que importa é que **as duas pontas calculam o mesmo vencedor
- * sozinhas**, sem barganha e sem round-trip — é isso que substitui o lock
- * como mecanismo primário sem introduzir deadlock. Pura e total: timestamp
- * ilegível de um lado perde pro legível do outro (nunca deixa a comparação
- * indefinida).
- */
-export function decideMergeOrder(a: MergeAnnouncement, b: MergeAnnouncement): MergeAnnouncement {
-  const ta = Date.parse(a.announcedAt);
-  const tb = Date.parse(b.announcedAt);
-  const aOk = Number.isFinite(ta);
-  const bOk = Number.isFinite(tb);
-  if (aOk && !bOk) return a;
-  if (!aOk && bOk) return b;
-  if (aOk && bOk && ta !== tb) return ta < tb ? a : b;
-  return a.sessionId <= b.sessionId ? a : b;
-}
-
-export interface MergeAdmissionResult {
-  admission: MergeAdmission;
-  reason: string;
-  /** Anúncio vencedor quando houve disputa. */
-  winner?: MergeAnnouncement;
-  /** Peer que motivou `yield`/`fallback-to-lock`. */
-  blockedBy?: PeerAnnouncement;
-}
-
-/**
- * Decide se esta sessão pode mergear AGORA, dado o próprio anúncio e o que os
- * peers responderam (#6168 Parte F). Pura.
- *
- * Ordem de avaliação, e ela importa:
- *
- * 1. **Anúncio concorrente vence ACK.** Se algum peer anunciou merge próprio,
- *    o vencedor sai de `decideMergeOrder` — independente de ter havido ACK.
- *    Perdi → `yield` (e espero o aviso de "mergeado" pra dar `git pull` ANTES
- *    do meu CI, que é o que o lock nunca deu: ele solta a janela sem dizer o
- *    QUE mudou, e o outro descobre por conflito).
- * 2. **Silêncio NUNCA é cessão** (regra dura da issue). Peer sem `acked`
- *    explícito → `fallback-to-lock`: degrada pro `merge-lock-acquire` de
- *    sempre, nunca pra "ninguém reclamou, então é meu". É o que impede a
- *    conversa de virar canal de falso consenso.
- * 3. **Sem peer nenhum** → também `fallback-to-lock`: não há com quem
- *    combinar, então vale o piso. Degradar pro mecanismo antigo é sempre
- *    permitido; assumir exclusividade por ausência, nunca.
- * 4. Todos os peers deram ACK e ninguém anunciou merge concorrente →
- *    `proceed`.
- */
-export function resolveMergeAdmission(
-  mine: MergeAnnouncement,
-  peers: readonly PeerAnnouncement[],
-): MergeAdmissionResult {
-  const competing = peers.filter((p) => p.pr !== undefined || p.announcedAt);
-  if (competing.length > 0) {
-    let winner: MergeAnnouncement = mine;
-    let winnerPeer: PeerAnnouncement | undefined;
-    for (const peer of competing) {
-      const next = decideMergeOrder(winner, peer);
-      if (next !== winner) {
-        winner = next;
-        winnerPeer = peer;
-      }
-    }
-    if (winner.sessionId !== mine.sessionId) {
-      return {
-        admission: "yield",
-        reason:
-          `anúncio concorrente de ${winner.sessionId} (${winner.announcedAt}) vence a ordenação determinística ` +
-          "(timestamp mais antigo; empate pelo sessionId menor) — ceder e aguardar o aviso de merge concluído " +
-          "antes de dar git pull e rodar o próprio CI",
-        winner,
-        blockedBy: winnerPeer,
-      };
-    }
-  }
-
-  const silent = peers.find((p) => p.acked !== true);
-  if (silent) {
-    return {
-      admission: "fallback-to-lock",
-      reason:
-        `peer ${silent.sessionId} não deu ACK explícito — silêncio NUNCA é cessão (#6168 Parte D). ` +
-        "Cair no merge-lock-acquire de sempre.",
-      blockedBy: silent,
-    };
-  }
-  if (peers.length === 0) {
-    return {
-      admission: "fallback-to-lock",
-      reason: "nenhum peer alcançável pra combinar a ordem — vale o piso (merge-lock-acquire)",
-    };
-  }
-  return {
-    admission: "proceed",
-    reason: `${peers.length} peer(s) deram ACK explícito e nenhum anunciou merge concorrente`,
-  };
 }
 
 // ─── Concessão de janela de merge (#6296) ──────────────────────────────────
