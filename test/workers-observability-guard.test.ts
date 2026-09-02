@@ -92,13 +92,26 @@ describe("workers públicos com main têm Workers Logs ligado (#5920)", () => {
   });
 
   it("workers sem main (static-only) NÃO são exigidos a ter observabilidade", () => {
-    // diaria-artigos é static-only (sem main) — não precisa de observability
-    // porque não tem console.log de instrumentação no bundle. Este teste é
-    // documental: confirma que a exclusão deliberada do guard é intencional.
+    // Teste DOCUMENTAL: trava a REGRA (não a contagem) — nenhum worker
+    // static-only (sem `main`) deve ser cobrado de ter [observability],
+    // porque não tem console.log de instrumentação no bundle. Não exige que
+    // o conjunto seja não-vazio: `diaria-artigos` era o exemplo vivo até o
+    // #7030 convertê-lo de static-assets-only para worker com script
+    // (`main = "src/index.ts"`, teaser + gate por apoio) — hoje TODOS os
+    // workers do repo têm `main`, e isso é esperado, não uma regressão do
+    // guard. Se um worker static-only voltar a existir no futuro, esta
+    // asserção garante que ele continua isento sem exigir observabilidade.
     const staticOnly = workers.filter((w) => !w.hasMain);
-    assert.ok(
-      staticOnly.length >= 1,
-      "esperava pelo menos 1 worker static-only (ex: diaria-artigos)",
-    );
+    for (const w of staticOnly) {
+      assert.equal(
+        w.hasMain && w.hasPublicRoute && !w.hasObservability,
+        false,
+        `worker static-only ${w.worker} não deveria contar como violação de observabilidade`,
+      );
+    }
+    // Sem staticOnly.length >= 1: o conjunto pode ficar vazio (hoje fica,
+    // pós-#7030) sem falsear a regra — é um `for` sobre 0 itens, passa
+    // trivialmente. O que este teste trava é a REGRA, não a existência de
+    // um exemplo vivo.
   });
 });
