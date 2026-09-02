@@ -108,7 +108,7 @@ CONTINUO_PAID_FALLBACK_MODEL = "z-ai/glm-5.3-flash"
 # a promocao AINDA VIGENTE; o alarme dispara exatamente quando ela cair.
 #
 # MANTIDO A MAO, mesmo trade-off ja aceito pro PAID_ALLOWLIST/CONTINUO_*: se o
-# preco mudar de propósito (troca deliberada de modelo, renegociacao), alguem
+# preco mudar de proposito (troca deliberada de modelo, renegociacao), alguem
 # atualiza o baseline junto. Baseline defasado gera alarme, nunca silencio —
 # a direcao segura.
 PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {
@@ -337,6 +337,14 @@ def extract_catalog_pricing(catalog: dict) -> dict[str, dict[str, float]]:
     graca" e mascararia justamente o que o alarme procura).
     """
     out: dict[str, dict[str, float]] = {}
+    # Guard de shape (review do PR #7085): se a raiz do JSON vier como lista
+    # (ou qualquer nao-dict), `.get` lancaria AttributeError FORA do try/except
+    # de `fetch_openrouter_catalog` — o processo morreria com traceback. O
+    # exit 1 resultante coincide com "indeterminado" por acidente, nao por
+    # desenho. Aqui vira `{}`, que o `detect_price_changes` ja trata como
+    # INDETERMINADO de proposito.
+    if not isinstance(catalog, dict):
+        return out
     for entry in catalog.get("data") or []:
         if not isinstance(entry, dict):
             continue
@@ -420,7 +428,11 @@ def detect_price_changes(
                     "atual": current_price,
                     "fator": (current_price / expected_price) if expected_price else None,
                 })
-            elif current_price < expected_price:
+            # Tolerancia SIMETRICA (review do PR #7085): a 1a versao aplicava a
+            # folga so no ramo de aumento, entao um ruido decimal de -0,4% caia
+            # em `decreases` como se fosse queda real. Nao afetava exit code
+            # (queda nunca alarma), mas imprimia "queda" que nao houve.
+            elif current_price < expected_price * (1 - tolerance):
                 decreases.append({
                     "modelo": model_id,
                     "campo": field,
@@ -433,6 +445,24 @@ def detect_price_changes(
         "decreases": decreases,
         "unverifiable": unverifiable,
         "out_of_scope": out_of_scope,
+    }
+
+
+def build_catalog_unavailable_findings(motivo: str = "catalogo da OpenRouter inacessivel") -> dict:
+    """Findings de "nao consegui buscar o catalogo" (#6818 it.4).
+
+    PURA e testavel (review do PR #7085, P2): antes isto era um dict literal
+    inline no `main()` — o UNICO lugar do arquivo onde o shape de `findings`
+    era montado a mao em vez de vir de `detect_price_changes`. Um typo numa
+    chave (esquecer `out_of_scope`, por exemplo) quebraria em silencio
+    justamente no caminho de fail-closed que este alarme existe pra garantir,
+    e nenhum teste pegaria.
+    """
+    return {
+        "increases": [],
+        "decreases": [],
+        "out_of_scope": [],
+        "unverifiable": [{"modelo": "(todos)", "motivo": motivo}],
     }
 
 
@@ -554,10 +584,7 @@ def main() -> None:
         catalog = fetch_openrouter_catalog()
         if catalog is None:
             # Fail-closed: sem catalogo nao da pra afirmar nada sobre preco.
-            findings = {"increases": [], "decreases": [], "out_of_scope": [],
-                        "unverifiable": [
-                            {"modelo": "(todos)", "motivo": "catalogo da OpenRouter inacessivel"}
-                        ]}
+            findings = build_catalog_unavailable_findings()
         else:
             findings = detect_price_changes(extract_catalog_pricing(catalog))
         if args.json:
