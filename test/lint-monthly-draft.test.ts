@@ -32,6 +32,7 @@ import {
   checkSectionIntegrity,
   checkImageRenderProbe,
   checkOptionalSectionIntegrity,
+  checkFooterLabels,
   REQUIRED_SECTION_CHECKS,
 } from "../scripts/lint-monthly-draft.ts";
 
@@ -389,5 +390,113 @@ describe("checkOptionalSectionIntegrity (#2818 self-review finding 1)", () => {
     const r = checkOptionalSectionIntegrity(withoutOptional);
     assert.equal(r.ok, true, `ausência total nunca deveria falhar — missing: ${r.missing.join(", ")}`);
     assert.equal(r.missing.length, 0);
+  });
+});
+
+// #6881 item 4: regressão do desvio real observado no gate do ciclo 2608-09
+// — o draft saiu SEM os rótulos "Curadorias:"/"Da diar.ia.br:" no PARA
+// ENCERRAR, apesar de o template já documentar a exigência em prosa. Este
+// guardrail vira o desvio um FATAL mecânico do lint.
+describe("checkFooterLabels (#6881 item 4)", () => {
+  function encerrarSection(body: string): string {
+    return [
+      "**ASSUNTO**",
+      "S",
+      "**PREVIEW**",
+      "P",
+      "**PARA ENCERRAR**",
+      "",
+      body,
+      "",
+    ].join("\n");
+  }
+
+  it("os 2 rótulos presentes, cada um imediatamente antes da sua lista: ok, nada em missing", () => {
+    const draft = encerrarSection(
+      [
+        "Responda a este e-mail e conte o que achou.",
+        "",
+        "Curadorias:",
+        "- [Cursos](https://cursos.diar.ia.br)",
+        "- [Livros](https://livros.diar.ia.br)",
+        "",
+        "Da diar.ia.br:",
+        "- [Edições anteriores](https://arquivo.diar.ia.br)",
+        "- [Jogar É IA?](https://eia.diar.ia.br/jogar)",
+      ].join("\n"),
+    );
+    const r = checkFooterLabels(draft);
+    assert.equal(r.ok, true, `missing: ${r.missing.join(", ")}`);
+    assert.equal(r.missing.length, 0);
+  });
+
+  it("reproduz o desvio real 2608-09: draft sem NENHUM dos 2 rótulos — os 2 entram em missing", () => {
+    const draft = encerrarSection(
+      [
+        "Responda a este e-mail e conte o que achou.",
+        "",
+        "- [Cursos](https://cursos.diar.ia.br)",
+        "- [Livros](https://livros.diar.ia.br)",
+        "- [Edições anteriores](https://arquivo.diar.ia.br)",
+        "- [Jogar É IA?](https://eia.diar.ia.br/jogar)",
+      ].join("\n"),
+    );
+    const r = checkFooterLabels(draft);
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.missing.sort(), ["Curadorias:", "Da diar.ia.br:"]);
+  });
+
+  it("rótulo presente mas com linha em branco antes da lista (não IMEDIATAMENTE anterior): acusa missing — render cairia no fallback genérico", () => {
+    const draft = encerrarSection(
+      [
+        "Curadorias:",
+        "",
+        "- [Cursos](https://cursos.diar.ia.br)",
+        "- [Livros](https://livros.diar.ia.br)",
+        "",
+        "Da diar.ia.br:",
+        "- [Edições anteriores](https://arquivo.diar.ia.br)",
+      ].join("\n"),
+    );
+    const r = checkFooterLabels(draft);
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.missing, ["Curadorias:"]);
+  });
+
+  it("só 1 dos 2 rótulos ausente: missing contém só esse", () => {
+    const draft = encerrarSection(
+      [
+        "Curadorias:",
+        "- [Cursos](https://cursos.diar.ia.br)",
+        "",
+        "- [Edições anteriores](https://arquivo.diar.ia.br)",
+      ].join("\n"),
+    );
+    const r = checkFooterLabels(draft);
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.missing, ["Da diar.ia.br:"]);
+  });
+
+  it("seção PARA ENCERRAR ausente do draft inteiro: não é responsabilidade deste check (coberto por checkSectionIntegrity)", () => {
+    const draft = ["**ASSUNTO**", "S", "**PREVIEW**", "P"].join("\n");
+    const r = checkFooterLabels(draft);
+    assert.equal(r.ok, true);
+    assert.equal(r.missing.length, 0);
+  });
+
+  it("alias ENCERRAMENTO (legado) também é reconhecido, mesma regra", () => {
+    const draft = [
+      "**ASSUNTO**",
+      "S",
+      "**ENCERRAMENTO**",
+      "",
+      "Curadorias:",
+      "- [Cursos](https://cursos.diar.ia.br)",
+      "",
+      "- [Edições anteriores](https://arquivo.diar.ia.br)",
+    ].join("\n");
+    const r = checkFooterLabels(draft);
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.missing, ["Da diar.ia.br:"]);
   });
 });

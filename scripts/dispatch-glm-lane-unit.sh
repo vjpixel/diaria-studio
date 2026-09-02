@@ -56,11 +56,11 @@
 # de topo). Por isso: o COORDENADOR reivindica ANTES, como comando
 # standalone:
 #
-#   npx tsx scripts/lib/session-registry.ts claim-issue --issue N --kind continuo
+#   npx tsx scripts/lib/session-registry.ts claim-issue --issue N --kind interactive
 #
 # e libera DEPOIS (também standalone, mesmo motivo):
 #
-#   npx tsx scripts/lib/session-registry.ts unclaim-issue --issue N --kind continuo
+#   npx tsx scripts/lib/session-registry.ts unclaim-issue --issue N --kind interactive
 #
 # Este script SÓ CONFERE que a claim existe (`is-claimed`, leitura pura,
 # sem session_id necessário) e recusa despachar se não encontrar — fail-
@@ -98,10 +98,10 @@
 # à branch exata (agora a da PR, não uma nova).
 #
 # Uso:
-#   npx tsx scripts/lib/session-registry.ts claim-issue --issue N --kind continuo
+#   npx tsx scripts/lib/session-registry.ts claim-issue --issue N --kind interactive
 #   scripts/dispatch-glm-lane-unit.sh N               # 1ª rodada — abre PR nova
 #   scripts/dispatch-glm-lane-unit.sh N --pr M         # 2ª+ rodada — itera sobre a PR M já aberta
-#   npx tsx scripts/lib/session-registry.ts unclaim-issue --issue N --kind continuo
+#   npx tsx scripts/lib/session-registry.ts unclaim-issue --issue N --kind interactive
 #
 # Variáveis de ambiente:
 #   GLM_LANE_UNITS_CAP (default 10)
@@ -146,7 +146,7 @@ cleanup_worktree() {
   local rc=$?
   if [ -d "$WORKTREE_DIR" ]; then
     if [ "$rc" -ne 0 ]; then
-      echo "[glm-lane] ABORTADO (rc=$rc) — removendo worktree $WORKTREE_DIR. A issue #$ISSUE pode continuar reivindicada: rode 'session-registry.ts unclaim-issue --issue $ISSUE --kind continuo' se não for retentar." >&2
+      echo "[glm-lane] ABORTADO (rc=$rc) — removendo worktree $WORKTREE_DIR. A issue #$ISSUE pode continuar reivindicada: rode 'session-registry.ts unclaim-issue --issue $ISSUE --kind interactive' se não for retentar." >&2
     fi
     git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || true
   fi
@@ -166,7 +166,7 @@ set -e
 CLAIMED=$(printf '%s' "$IS_CLAIMED_OUT" | tail -1 | jq -r 'if has("claimed") then (.claimed|tostring) else "erro" end' 2>/dev/null)
 if [ "$IS_CLAIMED_RC" -ne 0 ] || [ "$CLAIMED" != "true" ]; then
   echo "[glm-lane] RECUSADO — issue #$ISSUE não está reivindicada (rc=$IS_CLAIMED_RC, claimed=$CLAIMED): $IS_CLAIMED_OUT" >&2
-  echo "[glm-lane] rode primeiro, como comando STANDALONE: npx tsx scripts/lib/session-registry.ts claim-issue --issue $ISSUE --kind continuo" >&2
+  echo "[glm-lane] rode primeiro, como comando STANDALONE: npx tsx scripts/lib/session-registry.ts claim-issue --issue $ISSUE --kind interactive" >&2
   exit 1
 fi
 

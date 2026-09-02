@@ -30,6 +30,9 @@ import { escHtml } from "./html-escape.ts";
 import { parseSitemap } from "./fetch-sitemap.ts";
 import { HUB_META } from "../../workers/arquivo/src/hubs/meta.ts";
 import { COLORS } from "./shared/design-tokens.ts";
+import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
+import { GEO_AUTHOR } from "./shared/geo-faq.ts";
+import { renderAnalyticsHead } from "./shared/seo-meta.ts"; // #6977: container GTM/GA4 — apex era o único host servido por Worker nosso sem instrumentação
 
 /**
  * Converte um hex `#RRGGBB` do DS pra `rgba(r,g,b,alpha)` — usado só pra
@@ -83,6 +86,66 @@ const TEAL_DEEP = "#007a7a";
 const ERROR_LIGHT = "#b3261e";
 const ERROR_DARK = "#ffb3a8";
 
+/**
+ * Raio de canto dos "cards" da home (#7011, achado 3 do editor numa revisão
+ * ao vivo). Antes desta constante, cada caixa da página usava um valor
+ * DIFERENTE sem nenhuma decisão registrada: `.feature-media img` tinha 6px
+ * "solto"; `.special-card`, `.archive-card` (que ganha capa nesta mesma PR,
+ * ver `archiveCards` em `buildIndexHtml`) e `.faq-item` não tinham raio
+ * nenhum (cantos retos). A
+ * home inteira só usava, além disso, 999px em pílulas (botões/tags — 5
+ * ocorrências). Uma constante única elimina esse terceiro valor arbitrário e
+ * dá o mesmo raio a toda caixa de conteúdo.
+ *
+ * LOCAL a este módulo, não token de `design-tokens.ts` — mesmo motivo do
+ * `TEAL_DEEP`/`ERROR_*` acima: o DS espelhado do repo `diaria-design` não
+ * declara raio nenhum (`grep -nE "radius" design-tokens.ts` vazio), então
+ * promover um valor aqui faria o mirror divergir na direção errada (ele
+ * lidera, nunca segue). Se/quando `diaria-design` declarar um token de raio,
+ * a promoção nasce lá primeiro, não direto neste módulo.
+ *
+ * 8px — o raio dominante da home Beehiiv (`diaria.beehiiv.com`, referência
+ * visual já usada nas #6978/#6986/#6995/#7011), medida em 185 ocorrências
+ * contra o único uso solto de 6px que existia aqui antes desta mudança.
+ *
+ * Aplicada a `.special-card` e `.faq-item` mesmo onde a caixa não tem
+ * borda/fundo fechado hoje (`.faq-item` só tem `border-top` — o raio não
+ * produz efeito visual sozinho ali) — decisão deliberada de consistência
+ * antecipada: se uma borda/fundo completo entrar depois nesses seletores, o
+ * raio já está certo, em vez de mais um ponto pra lembrar de sincronizar.
+ */
+const CARD_RADIUS = "8px";
+
+/**
+ * Nº máximo de cards de "Edições anteriores" renderizados no HTML estático
+ * da home (#7022 item 3). A Beehiiv mostra 6 + botão "Carregar mais"; nossa
+ * renderizava 9 de uma vez — com as capas 2:1 do #7011 isso virou 9 imagens
+ * no primeiro paint, boa parte do porquê de `scrollHeight` bater 4005 contra
+ * 3070 da Beehiiv (medido na issue).
+ *
+ * DECISÃO (a issue pedia pra registrar o porquê, não só aplicar): a home é
+ * **estática, gerada em build** (`gen-home-page.ts`) — não existe backend
+ * pra paginar um "carregar mais" real. Duas saídas possíveis:
+ *   (a) renderizar os 9 no HTML e revelar os últimos 3 via CSS/JS no clique
+ *       — sem round-trip de rede, mas o documento continua carregando as
+ *       9 imagens (só esconde visualmente; não resolve o `scrollHeight`
+ *       nem o custo de paint que motivou o item);
+ *   (b) limitar a render a 6 e mandar o resto pro acervo completo
+ *       (`arquivo.diar.ia.br`, já existe, já é exatamente essa página).
+ * Escolhida (b): a saída (a) duplicaria as MESMAS 9 edições em 2 lugares
+ * (`arquivo.diar.ia.br` E a home, sem necessidade); (b) usa a superfície
+ * que já existe pra esse fim, e resolve de fato o custo de paint/altura que
+ * o item aponta — (a) só esconderia o sintoma no visual, mantendo o HTML
+ * pesado. O link "Ver arquivo completo →" na régua da seção (item 4) já é
+ * o caminho pra quem quer mais.
+ *
+ * `buildIndexHtml` corta em `ARCHIVE_CARD_LIMIT` DEFENSIVAMENTE (não confia
+ * só em `gen-home-page.ts` já passar 6 entradas) — mesmo espírito do filtro
+ * de `feature` duplicada na `archive` logo abaixo: a invariante fica
+ * correta independente do que um caller futuro passar.
+ */
+const ARCHIVE_CARD_LIMIT = 6;
+
 export interface HomeFeedEntry {
   slug: string;
   title: string;
@@ -94,6 +157,12 @@ export interface HomeFeedEntry {
    *  falha, ou o `src` vem vazio — a home nunca quebra por capa ausente,
    *  degrada pra layout só-texto (ver `extractHeroImage`). */
   image: string | null;
+  /** Tempo de leitura estimado em minutos, arredondado (#7022 item 2).
+   *  `null`/ausente quando o HTML não rende nenhuma palavra — o card
+   *  omite o "N min de leitura" em vez de quebrar (ver
+   *  `estimateReadingMinutes`). Opcional: fixtures de teste que constroem
+   *  `HomeFeedEntry` à mão (fora de `buildHomeFeed`) não precisam setar. */
+  readingMinutes?: number | null;
 }
 
 /**
@@ -155,6 +224,49 @@ export function extractHeroImage(html: string): string | null {
 }
 
 /**
+ * Velocidade de leitura usada por `estimateReadingMinutes` — 200
+ * palavras/minuto é a mediana comumente citada pra leitura silenciosa em
+ * adultos (não há benchmark PT-BR próprio neste repo; escolhida como
+ * estimativa honesta, não como medição de precisão). Constante isolada e
+ * exportada de propósito (#7022 item 2, "não invente 5 min fixo") — pra
+ * ficar óbvio, no código e em teste, que o número por card É DERIVADO do
+ * texto real de cada edição, nunca hardcoded.
+ */
+export const WORDS_PER_MINUTE = 200;
+
+/**
+ * Estima o tempo de leitura (minutos, arredondado, mínimo 1) a partir do
+ * MESMO HTML de `/p/{slug}/index.html` que `extractPageMeta`/
+ * `extractHeroImage` acima já leem — nenhuma leitura extra de disco.
+ *
+ * Remove `<script>`/`<style>`/`<svg>` inteiros antes de tirar as tags
+ * restantes (via `stripHtmlBasic`): sem isso, JS/CSS/paths de ícone SVG
+ * inflam a contagem de "palavras" com tokens que ninguém lê. O que sobra
+ * ainda inclui nav/rodapé/botões de compartilhar do shell da Beehiiv além
+ * do corpo da edição — um offset praticamente CONSTANTE entre edições
+ * (mesmo shell em todas), então não distorce a comparação relativa entre
+ * cards nem empurra o resultado pra fora de uma faixa plausível: medido
+ * contra 5 edições reais do acervo (#7022), a estimativa saiu entre 5 e 8
+ * minutos — perto da promessa de marca "5 minutos" precisamente porque
+ * NÃO foi fixada nesse valor, e sim calculada.
+ *
+ * `null` só quando não sobra nenhuma palavra (HTML vazio/só markup) — o
+ * card degrada omitindo o "N min de leitura", mesmo espírito de
+ * `extractHeroImage` (nunca quebra a home por um dado ausente).
+ */
+export function estimateReadingMinutes(html: string): number | null {
+  const withoutNoise = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, " ");
+  const text = stripHtmlBasic(withoutNoise);
+  if (!text) return null;
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  if (!wordCount) return null;
+  return Math.max(1, Math.round(wordCount / WORDS_PER_MINUTE));
+}
+
+/**
  * Monta a lista de edições reais (mais recente primeiro) a partir do
  * `sitemap.xml` já commitado + um reader de página injetado (produção lê
  * `workers/site/public/p/{slug}/index.html`; teste injeta fixtures em
@@ -202,7 +314,8 @@ export function buildHomeFeed(
       // só loga: a home renderiza a edição sem capa, layout só-texto (#6978).
       console.warn(`site-home-page: sem <img class="hero"> pra slug "${slug}" — entrada do feed sem capa`);
     }
-    feed.push({ slug, title, description, url: entry.loc, date: entry.lastmod, image });
+    const readingMinutes = estimateReadingMinutes(html);
+    feed.push({ slug, title, description, url: entry.loc, date: entry.lastmod, image, readingMinutes });
   }
   return feed;
 }
@@ -354,6 +467,26 @@ function renderSignupForm(opts: { id: string; onDark?: boolean }): string {
  * path independente de host, então as duas formas satisfariam o eixo; só a
  * absoluta de fato funciona pro leitor.
  */
+/**
+ * Wordmark de display "diar.ia.br" (nav `.logo` + `<h1>` do masthead, #7010)
+ * — consome a ESTRUTURA canônica de `WORDMARK_DISPLAY_SEGMENTS`
+ * (`brand-wordmark.ts`) em vez de escrever "diar" + "." + "ia" + ".br" à mão
+ * de novo aqui (foi assim que o #7010 nasceu: o markup duplicado só tinha os
+ * PONTOS em teal, nunca o ".br" inteiro). A classe `.dot` é LOCAL a este
+ * módulo (`.logo .dot`/`.masthead h1 .dot`, ver `<style>` abaixo) — o
+ * canônico exporta só QUAIS letras são teal, nunca HTML pronto, porque
+ * `applyBrandWordmark` (a outra saída do módulo) injeta `<strong>`/`style`
+ * inline pensado pra prosa corrida, não pro tamanho de fonte `clamp(...)`
+ * gigante do display.
+ */
+function renderWordmark(): string {
+  return WORDMARK_DISPLAY_SEGMENTS.map((seg) => {
+    const cls = seg.teal ? ' class="dot"' : "";
+    const hidden = seg.decorative ? ' aria-hidden="true"' : "";
+    return `<span${cls}${hidden}>${escHtml(seg.text)}</span>`;
+  }).join("");
+}
+
 function renderTopicLinks(): string {
   return HUB_META.map(
     (hub) =>
@@ -548,16 +681,41 @@ export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
       </div>`
       : featureBody;
 
+  // Capa por card (#7011) — mesma degradação do destaque (`featureHtml`
+  // acima): `entry.image` vem de `extractHeroImage`/`buildHomeFeed`, `null`
+  // quando a página não tem `img.hero` — o card cai pro layout só-texto de
+  // sempre, nunca quebra por capa ausente. `loading="lazy"` obrigatório
+  // aqui (nunca no destaque, que é sempre a 1ª imagem visível da página):
+  // são até ARCHIVE_CARD_LIMIT cards, e sem lazy a home carregaria todas de
+  // uma vez.
   const archiveCards = archive
-    .map(
-      (entry) => `<article class="archive-card">
-        <div class="archive-meta">
-          <span>${escHtml(formatDateLong(entry.date))}</span>
-        </div>
+    .slice(0, ARCHIVE_CARD_LIMIT)
+    .map((entry) => {
+      const media = entry.image
+        ? `<a class="archive-media" href="${escHtml(entry.url)}" tabindex="-1" aria-hidden="true">
+          <img src="${escHtml(entry.image)}" alt="${escHtml(entry.title)}" loading="lazy">
+        </a>`
+        : "";
+      // Meta line (#7022 item 2) — data + tempo de leitura estimado
+      // (`estimateReadingMinutes`, derivado do texto real, nunca "5 min"
+      // fixo) + autoria (`GEO_AUTHOR`, o mesmo identificador nomeado e
+      // verificável já usado em livros/cursos/arquivo — `geo-faq.ts`; sem
+      // avatar porque não existe nenhum asset de avatar no repo hoje).
+      // Segmentos ausentes (data inválida, HTML sem palavra nenhuma) são
+      // omitidos em vez de vazar string vazia/"undefined".
+      const metaParts: string[] = [];
+      const dateLabel = formatDateLong(entry.date);
+      if (dateLabel) metaParts.push(escHtml(dateLabel));
+      if (entry.readingMinutes) metaParts.push(`${entry.readingMinutes} min de leitura`);
+      metaParts.push(`Por <a href="${escHtml(GEO_AUTHOR.url)}" rel="author">${escHtml(GEO_AUTHOR.name)}</a>`);
+      const metaHtml = metaParts.join(' <span aria-hidden="true">·</span> ');
+      return `<article class="archive-card">
+        ${media}
+        <div class="archive-meta">${metaHtml}</div>
         <h3 class="archive-title"><a href="${escHtml(entry.url)}">${escHtml(entry.title)}</a></h3>
         <p class="archive-dek">${escHtml(entry.description)}</p>
-      </article>`,
-    )
+      </article>`;
+    })
     .join("\n");
 
   const faqItems = FAQS.map(
@@ -588,6 +746,7 @@ export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="diar.ia.br">
 <meta name="twitter:description" content="5 minutos diários pra se manter atualizado e usar melhor as IAs.">
+${renderAnalyticsHead()}
 <style>
 :root {
   --teal: ${COLORS.brand};
@@ -683,14 +842,14 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .feature-hint { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
 .feature-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center; }
 .feature-media { display: block; }
-.feature-media img { display: block; width: 100%; height: auto; border-radius: 6px; }
+.feature-media img { display: block; width: 100%; height: auto; border-radius: ${CARD_RADIUS}; }
 
 /* Specials */
 .specials { padding: 64px 0 72px; background: var(--paper-alt); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
 .specials-head h2 { font-size: clamp(32px, 6vw, 56px); font-weight: 500; letter-spacing: -0.02em; line-height: 1; margin: 10px 0 32px; }
 .specials-head h2 .accent { font-style: italic; color: var(--teal-deep); }
 .specials-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-.special-card { padding: 30px; border: 1px solid var(--rule); background: var(--paper); display: flex; flex-direction: column; gap: 14px; }
+.special-card { padding: 30px; border: 1px solid var(--rule); background: var(--paper); display: flex; flex-direction: column; gap: 14px; border-radius: ${CARD_RADIUS}; }
 .special-card--dark { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 .special-card h3 { font-size: 34px; font-weight: 500; letter-spacing: -0.02em; line-height: 1; }
 .special-card p { font-size: 14px; line-height: 1.5; color: var(--ink-soft); margin: 0; }
@@ -704,8 +863,18 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .archive-head h2 { font-size: clamp(28px, 5vw, 40px); font-weight: 500; letter-spacing: -0.02em; }
 .archive-head a { font-size: 13px; text-decoration: underline; text-underline-offset: 4px; }
 .archive-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px 28px; margin-top: 32px; }
-.archive-card { display: flex; flex-direction: column; gap: 10px; }
+.archive-card { display: flex; flex-direction: column; gap: 10px; border-radius: ${CARD_RADIUS}; }
+/* Capa do card (#7011) — topo, mesma proporção 2:1 do crop de destaque
+   (04-{d}-2x1.jpg, ver extractHeroImage/HomeFeedEntry.image).
+   aspect-ratio + object-fit: cover (em vez de height: auto como
+   .feature-media) porque aqui são até ~10 thumbnails pequenas lado a lado
+   na mesma grade — sem uma proporção fixa, uma imagem com crop levemente
+   diferente desalinharia a grade verticalmente entre colunas. */
+.archive-media { display: block; }
+.archive-media img { display: block; width: 100%; aspect-ratio: 2 / 1; object-fit: cover; border-radius: ${CARD_RADIUS}; }
 .archive-meta { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
+.archive-meta a { color: inherit; text-decoration: none; }
+.archive-meta a:hover { color: var(--teal-deep); text-decoration: underline; text-underline-offset: 3px; }
 .archive-title { font-size: 20px; line-height: 1.15; letter-spacing: -0.01em; font-weight: 500; }
 .archive-title a:hover { color: var(--teal-deep); }
 .archive-dek { font-family: Georgia, serif; font-size: 13px; line-height: 1.4; color: var(--ink-soft); font-style: italic; margin: 0; }
@@ -723,7 +892,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .faqs { padding: 64px 0; }
 .faqs .wrap { display: grid; grid-template-columns: 1fr 1.4fr; gap: 48px; }
 .faqs h2 { font-size: clamp(30px, 5vw, 44px); font-weight: 500; letter-spacing: -0.02em; margin-top: 10px; }
-.faq-item { border-top: 1px solid var(--rule); padding: 20px 0; display: grid; grid-template-columns: 28px 1fr; gap: 14px; }
+.faq-item { border-top: 1px solid var(--rule); padding: 20px 0; display: grid; grid-template-columns: 28px 1fr; gap: 14px; border-radius: ${CARD_RADIUS}; }
 .faq-num { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-faint); padding-top: 4px; }
 .faq-q { font-size: 18px; font-weight: 500; }
 .faq-a { font-size: 14px; line-height: 1.5; color: var(--ink-soft); margin: 8px 0 0; }
@@ -753,7 +922,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 <body>
   <nav class="nav" id="nav">
     <div class="wrap">
-      <div class="logo"><span>diar</span><span class="dot" aria-hidden="true">.</span><span>ia</span><span class="dot" aria-hidden="true">.</span><span>br</span></div>
+      <div class="logo">${renderWordmark()}</div>
       <div class="nav-links">
         <a href="https://arquivo.diar.ia.br/">Edições</a>
         <a href="https://especial.diar.ia.br/">Especiais</a>
@@ -769,13 +938,22 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 
   <header class="masthead" id="masthead">
     <div class="wrap">
+      <!-- #7010 achado 4: par esquerda/direita nas 2 réguas, mesma estrutura
+           da home Beehiiv (diaria.beehiiv.com) — layout é escopo desta PR, a
+           COPY é decisão do editor, então os 4 textos abaixo são os da
+           própria Beehiiv (transcritos ao vivo pelo editor), não inventados
+           aqui. .masthead-meta/.masthead-sub já eram display:flex;
+           justify-content:space-between antes desta mudança — só tinham 1
+           filho cada, então o espaço vazio à direita nunca aparecia. -->
       <div class="masthead-meta">
-        <span class="mono">Diário · de segunda a sexta · São Paulo, BR</span>
+        <span class="mono">NOTÍCIAS · PESQUISAS · TENDÊNCIAS · TUTORIAIS</span>
+        <span class="mono">DE SEGUNDA A SEXTA</span>
       </div>
       <hr class="rule rule--thick">
-      <h1>diar<span class="dot" aria-hidden="true">.</span>ia<span class="dot" aria-hidden="true">.</span>br</h1>
+      <h1>${renderWordmark()}</h1>
       <div class="masthead-sub">
-        <span class="kicker">Seu filtro no caos</span>
+        <span class="kicker">A IA JÁ ESTÁ MUDANDO O SEU TRABALHO.</span>
+        <span class="kicker">MELHOR SABER USAR.</span>
       </div>
       <hr class="rule rule--thick">
       <div class="masthead-grid">
@@ -806,16 +984,29 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <span class="kicker kicker--teal">Cadernos especiais · curadoria contínua</span>
         <h2>O que <span class="accent">não cabe</span> em 5 minutos.</h2>
       </div>
+      <!-- #7022 itens 1/5/6: título numa linha só (sem quebra) e sem
+           itálico/teal — decisão do editor no triage da issue (item 5): a
+           Beehiiv usa itálico/teal na 2ª metade do título e quebra em duas
+           linhas, mas o editor preferiu texto plano numa linha só (mantém
+           o span class=accent em "Cursos" sem NENHUMA regra CSS escopada a
+           special-card h3 accent — é inerte de propósito, não um esqueleto
+           de itálico/teal esquecido). Os 2 cards seguem caixa fechada com
+           kicker (item 6, decisão do editor: manter a NOSSA versão, não a
+           da Beehiiv, que deixa "Livros" solto sem card). O bug de
+           acessibilidade do item 1 (quebra de linha sem espaço grudava as
+           palavras no texto extraído) segue corrigido — só que aqui a
+           correção é REMOVER a quebra de linha (não mais duas linhas), não
+           adicionar espaço antes dela. -->
       <div class="specials-grid">
         <div class="special-card">
           <span class="kicker kicker--teal">● Lista aberta</span>
-          <h3>Livros<br>sobre IA.</h3>
+          <h3>Livros sobre IA.</h3>
           <p>Iniciantes, profissionais e quem quer ir a fundo — curadoria contínua por nível, autor e ano de publicação.</p>
           <a class="btn btn-ink" href="https://livros.diar.ia.br/">Acessar a estante completa →</a>
         </div>
         <div class="special-card special-card--dark">
           <span class="kicker" style="color: var(--teal)">● Para assinantes</span>
-          <h3>Cursos<br><span class="accent">gratuitos.</span></h3>
+          <h3>Cursos <span class="accent">gratuitos.</span></h3>
           <p>Selecionados entre os melhores cursos abertos sobre IA. Atualizamos toda semana.</p>
           <a class="btn btn-ink" href="https://cursos.diar.ia.br/">Ver todos os cursos →</a>
         </div>
@@ -853,7 +1044,7 @@ ${topicLinks}
     <div class="wrap">
       <div>
         <span class="kicker">Antes de assinar</span>
-        <h2>Perguntas<br>frequentes.</h2>
+        <h2>Perguntas <br>frequentes.</h2>
       </div>
       <div>
 ${faqItems}
@@ -865,7 +1056,7 @@ ${faqItems}
   <footer class="footer" id="footer">
     <div class="wrap">
       <div class="footer-top">
-        <div class="footer-headline">5 minutos.<br><span class="accent">Toda manhã.</span></div>
+        <div class="footer-headline">5 minutos. <br><span class="accent">Toda manhã.</span></div>
         <div>
           <span class="footer-label">Assine grátis</span>
           ${renderSignupForm({ id: "footer-form", onDark: true })}

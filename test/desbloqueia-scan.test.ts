@@ -11,8 +11,10 @@
  *     requisito "ler a thread antes de perguntar")
  *   - issue com bloqueio de execução registrado e recente → `bloqueio-confirmado`
  *   - issue sem nenhum marcador recente → `precisa-pergunta`
- *   - decisão MAIS ANTIGA que `updatedAt` (issue mudou depois da decisão)
- *     → não conta como resolvida, volta a `precisa-pergunta`
+ *   - #6961: decisão MAIS ANTIGA que `updatedAt`, mas SEM nenhum
+ *     `bloqueio-execucao` mais novo → ainda `ja-destravada` (o próprio POST
+ *     do marcador bumpa `updatedAt`; isso nunca invalida a decisão —
+ *     regressão do bug original, que comparava contra `updatedAt`)
  *   - issue fora do escopo (`elegível`, `agendada`, `epica`, `fora-de-rodada`,
  *     `CLOSED`) → `null` / entra em `foraDoEscopo`, nunca nos grupos de ação
  *   - `commentsRead` reflete o número real de comentários passados (prova
@@ -67,7 +69,7 @@ describe("classifyDesbloqueioCandidate", () => {
     assert.equal(result?.commentsFetchError, null);
   });
 
-  it("decisão registrada ANTES de updatedAt (issue mudou depois) → precisa-pergunta", () => {
+  it("#6961: decisão registrada ANTES de updatedAt, sem bloqueio mais novo → AINDA ja-destravada (updatedAt não invalida decisão)", () => {
     const marker = formatDecisionMarker({
       decided_at: "2026-07-01T00:00:00Z",
       pergunta: "Trocar X por Y?",
@@ -79,7 +81,26 @@ describe("classifyDesbloqueioCandidate", () => {
       comments: [marker],
     });
     const result = classifyDesbloqueioCandidate(input);
-    assert.equal(result?.status, "precisa-pergunta");
+    assert.equal(result?.status, "ja-destravada");
+  });
+
+  it("#6961 — regressão do bug original: marcador grava decided_at, e o PRÓPRIO comentário que o carrega bumpa updatedAt pra DEPOIS — não deve virar precisa-pergunta", () => {
+    // Reproduz a medição da issue: decided_at gerado no payload ANTES do
+    // POST completar; updatedAt reflete o instante do POST, sempre um
+    // pouco depois. O bug original comparava decided_at >= updatedAt,
+    // condição insatisfazível por construção nesse cenário.
+    const decidedAt = "2026-09-01T20:16:42.541Z";
+    const updatedAtAposPost = "2026-09-01T20:17:47.000Z"; // depois do decided_at
+    const marker = formatDecisionMarker({
+      decided_at: decidedAt,
+      pergunta: "Qual segmento usar?",
+      resposta: "Usar o segmento B",
+      sessao: "overnight",
+    });
+    const input = baseInput({ updatedAt: updatedAtAposPost, comments: [marker] });
+    const result = classifyDesbloqueioCandidate(input);
+    assert.equal(result?.status, "ja-destravada");
+    assert.equal(result?.decision?.resposta, "Usar o segmento B");
   });
 
   it("bloqueio de execução recente sem decisão nova → bloqueio-confirmado", () => {
@@ -205,6 +226,27 @@ describe("classifyDesbloqueioCandidate", () => {
     });
     const result = classifyDesbloqueioCandidate(input);
     assert.equal(result?.status, "bloqueio-confirmado");
+  });
+
+  it("decided_at === recorded_at (empate exato) → decisão vence, ja-destravada (#7013 self-review)", () => {
+    const tie = "2026-08-20T00:00:00Z";
+    const decision = formatDecisionMarker({
+      decided_at: tie,
+      pergunta: "?",
+      resposta: "resolvido no empate",
+      sessao: "develop",
+    });
+    const block = formatExecutionBlockMarker({
+      recorded_at: tie,
+      motivo: "bloqueio registrado no mesmo instante",
+      sessao: "overnight",
+    });
+    const input = baseInput({
+      updatedAt: "2026-08-01T00:00:00Z",
+      comments: [block, decision],
+    });
+    const result = classifyDesbloqueioCandidate(input);
+    assert.equal(result?.status, "ja-destravada");
   });
 
   it("commentsFetchError força erro-leitura, NUNCA precisa-pergunta, mesmo com comments vazio (#6632)", () => {

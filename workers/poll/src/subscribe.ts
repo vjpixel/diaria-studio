@@ -239,31 +239,45 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
 };
 
 /**
- * #6427: prefixos de `utm_source` cliente que a página de cadastro do apex
- * (`source: "apex"`) tem permissão de repassar CRU pro triplo final — a
- * exceção estreita e validada ao design de `resolveSubscribeUtm`/
+ * #6427/#6980: prefixos de `utm_source` cliente que a página de cadastro do
+ * apex (`source: "apex"`) tem permissão de repassar CRU pro triplo final —
+ * a exceção estreita e validada ao design de `resolveSubscribeUtm`/
  * `SUBSCRIBE_UTM_BY_SOURCE` acima ("o servidor resolve o triplo UTM daqui —
  * NUNCA aceita utm_* vindo do cliente diretamente"). `"clarice"` cobre o
  * `utm_source=clarice` fixo que `withClariceUtm` grava em todo link de
- * marca da Clarice News (`scripts/lib/mensal/monthly-render.ts`); `"ads"`
- * cobre campanhas pagas futuras (Google/Meta Ads, `utm_source=ads-*`) — ver
- * corpo da issue #6427, opção A recomendada pelo autor e decisão do editor
- * (27/08/2026). Qualquer `utm_source` fora desta allowlist cai no triplo
- * `SUBSCRIBE_UTM_BY_SOURCE.apex` acima, igual a não ter mandado nada —
- * fechar essa allowlist é o que impede um visitante mal-intencionado de
- * forjar `utm_source=organic-fake` (ou qualquer string arbitrária) e poluir
- * a atribuição — o resto do enumerável (SubscribeSource) continua imune a
- * isso por completo, porque só `"apex"` sequer consulta esta lista.
+ * marca da Clarice News (`scripts/lib/mensal/monthly-render.ts`);
+ * `"google-ads"`/`"microsoft-ads"`/`"meta-ads"` cobrem os 3 canais pagos do
+ * teste de atribuição (#5845/#5838) — os valores CANÔNICOS declarados em
+ * `scripts/lib/shared/utm-registry.ts` (`EXTERNAL_UTM_SURFACES`, ids
+ * `ads-{google,microsoft,meta}-2608`), não o prefixo genérico `"ads-*"` que
+ * uma versão anterior desta allowlist aceitava (#6980 — os 3 `utm_source`
+ * reais nunca bateram nesse prefixo invertido, então todo cadastro vindo de
+ * campanha paga caía no default e a atribuição saía errada em silêncio,
+ * sem log nem erro). Qualquer `utm_source` fora desta allowlist cai no
+ * triplo `SUBSCRIBE_UTM_BY_SOURCE.apex` acima, igual a não ter mandado
+ * nada — fechar essa allowlist é o que impede um visitante
+ * mal-intencionado de forjar `utm_source=organic-fake` (ou qualquer string
+ * arbitrária) e poluir a atribuição — o resto do enumerável
+ * (SubscribeSource) continua imune a isso por completo, porque só `"apex"`
+ * sequer consulta esta lista.
  */
-export const CLIENT_UTM_SOURCE_ALLOWED_PREFIXES = ["clarice", "ads"] as const;
+export const CLIENT_UTM_SOURCE_ALLOWED_PREFIXES = [
+  "clarice",
+  "google-ads",
+  "microsoft-ads",
+  "meta-ads",
+] as const;
 
 /**
- * Pure (#6427): `true` só quando `rawSource` é uma string não-vazia que é
- * IGUAL a um prefixo da allowlist, ou começa com `"{prefixo}-"`. `"clarice"`
- * bate no primeiro caso (utm_source fixo, sem sufixo); `"clarice-260901-d1"`
- * (hipotético — não é o formato real, que fica no utm_campaign, não no
- * utm_source) e `"ads-google"` bateriam no segundo. Exige o traço como
- * fronteira de palavra pra `"adsense"` NÃO colar em `"ads"` por acidente —
+ * Pure (#6427/#6980): `true` só quando `rawSource` é uma string não-vazia
+ * que é IGUAL a um prefixo da allowlist, ou começa com `"{prefixo}-"`.
+ * `"clarice"`/`"google-ads"`/`"microsoft-ads"`/`"meta-ads"` batem no
+ * primeiro caso (os 4 `utm_source` canônicos, sem sufixo — os 3 canais
+ * pagos nunca têm variante com sufixo hoje, ver `utm-registry.ts`);
+ * `"clarice-260901-d1"` (hipotético — não é o formato real, que fica no
+ * utm_campaign, não no utm_source) e `"google-ads-2609"` (hipotético,
+ * onda futura) bateriam no segundo. Exige o traço como fronteira de
+ * palavra pra `"googleadsxyz"` NÃO colar em `"google-ads"` por acidente —
  * comparação por substring pura (`startsWith` sem o traço) aceitaria
  * qualquer string que começasse com as letras do prefixo, inclusive as não
  * intencionais.

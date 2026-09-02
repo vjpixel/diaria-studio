@@ -168,6 +168,29 @@ describe("evaluatePrReviewAuthenticity — regressão #6732: self-review nunca v
     assert.equal(isPrReviewAuthenticityGreen(result), false);
   });
 
+  // #6956: 'no_review' precisa deixar EXPLÍCITO, no próprio `reason`, que só
+  // significa "sem o marcador que ESTE gate reconhece" — não "sem review em
+  // geral". Medido ao vivo: PRs #6955/#6951/#6950 tiveram review real
+  // (sessão coordenadora via ferramenta Agent, findings postados em prosa) e
+  // saíram 'no_review' porque só `continuo-pr-review.sh` gera o marcador.
+  it("#6956: reason de 'no_review' cita explicitamente o escopo (continuo-pr-review.sh, não 'sem review' em geral)", () => {
+    const result = evaluatePrReviewAuthenticity([]);
+    assert.equal(result.verdict, "no_review");
+    assert.match(result.reason, /continuo-pr-review\.sh/);
+    assert.match(result.reason, /#6956/);
+  });
+
+  it("#6956: review real de sessão interativa (prosa sem marcador) também sai 'no_review' com o mesmo reason explícito", () => {
+    const result = evaluatePrReviewAuthenticity([
+      comment(
+        "c1",
+        "Code review (pr-review-toolkit:code-reviewer, sonnet, diff base..HEAD): P0 reproduzido em X — ver linha 42.",
+      ),
+    ]);
+    assert.equal(result.verdict, "no_review");
+    assert.match(result.reason, /continuo-pr-review\.sh/);
+  });
+
   it("único comentário é self-review => 'self_review', NUNCA 'pass' (o bug central da issue)", () => {
     const result = evaluatePrReviewAuthenticity([
       comment("c1", `${SELF_REVIEW_MARKER}\n\nSelf-review do autor.`),

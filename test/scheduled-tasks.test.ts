@@ -1045,3 +1045,43 @@ describe("#6198 — Diaria-Backlog-Reconcile registrada, diária, systemd-only",
     assert.ok(!others.some((s) => s.script === "scripts/backlog-reconcile.ts"));
   });
 });
+
+describe("#6985 — Diaria-Openrouter-Billing-Leak-Alarm registrada, diária, systemd-only", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária às 21:45", () => {
+    const t = getScheduledTaskByName("Diaria-Openrouter-Billing-Leak-Alarm");
+    assert.ok(t, "Diaria-Openrouter-Billing-Leak-Alarm ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/openrouter-billing-leak-check.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 21, minute: 45 });
+  });
+
+  it("horário de 21:45 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Openrouter-Billing-Leak-Alarm" && t.schedule.hour === 21 && t.schedule.minute === 45,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("declara successExitCodes: [3] (LEAK_FOUND_EXIT_CODE) — 'achou vazamento' não é falha da unit", () => {
+    const t = getScheduledTaskByName("Diaria-Openrouter-Billing-Leak-Alarm");
+    assert.deepEqual(t!.successExitCodes, [3]);
+  });
+
+  it("NÃO declara exit 1 como successExitCode — indeterminado/erro continua reprovando a unit (#6985)", () => {
+    const t = getScheduledTaskByName("Diaria-Openrouter-Billing-Leak-Alarm");
+    assert.ok(!(t!.successExitCodes ?? []).includes(1));
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const others = SCHEDULED_TASKS.filter((t) => t.name !== "Diaria-Openrouter-Billing-Leak-Alarm").flatMap(
+      (t) => t.steps,
+    );
+    assert.ok(!others.some((s) => s.script === "scripts/openrouter-billing-leak-check.ts"));
+  });
+});

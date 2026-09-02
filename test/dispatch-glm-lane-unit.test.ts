@@ -263,6 +263,37 @@ describe("dispatch-glm-lane-unit.sh — snapshot de custo por unidade (condiçã
   });
 });
 
+describe("dispatch-glm-lane-unit.sh — claim-issue instrui --kind interactive, nunca continuo (#6948)", () => {
+  // #6948, achado ao vivo 01/09: o docstring instruía o COORDENADOR a
+  // reivindicar via `--kind continuo`. `kind` no session-registry descreve
+  // QUEM é a sessão registrada, não o prefixo de branch que ela produz — a
+  // sessão que roda este script é uma sessão interativa de coordenação, não
+  // uma sessão `/diaria-continuo`. Registrada como `continuo`, ela passava a
+  // aparecer em `active-of-kind --kind continuo`, e o guard de merge do
+  // #5716 bloqueava merges de todo o repo por uma sessão que não estava
+  // coordenando nada (incidente real: PR #6946 travada).
+  it("nenhuma instrução de claim-issue/unclaim-issue no script usa --kind continuo", () => {
+    const src = readScript();
+    const offendingLines = src
+      .split("\n")
+      .filter((l) => /(claim-issue|unclaim-issue)/.test(l) && /--kind continuo\b/.test(l));
+    assert.deepEqual(
+      offendingLines,
+      [],
+      `encontrou instrução de (un)claim-issue com --kind continuo — deveria ser --kind interactive: ${JSON.stringify(offendingLines)}`,
+    );
+  });
+
+  it("toda instrução de claim-issue/unclaim-issue no script usa --kind interactive", () => {
+    const src = readScript();
+    const claimLines = src.split("\n").filter((l) => /(claim-issue|unclaim-issue)/.test(l) && /--issue/.test(l));
+    assert.ok(claimLines.length > 0, "esperava pelo menos uma linha de claim-issue/unclaim-issue com --issue");
+    for (const line of claimLines) {
+      assert.match(line, /--kind interactive\b/, `linha de (un)claim-issue sem --kind interactive: ${line}`);
+    }
+  });
+});
+
 describe("dispatch-glm-lane-unit.sh — modo --pr N, segunda rodada (#6954)", () => {
   it("aceita --pr como segundo argumento posicional/flag e resolve a branch HEAD via gh pr view", () => {
     const src = readScript();

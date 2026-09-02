@@ -84,3 +84,52 @@ export function applyBrandWordmark(s: string, linkHref?: string): string {
   // a URL contiver `$` (agora que linkHref é parâmetro, não mais só a constante).
   return s.replace(BRAND_WORDMARK_RE, () => html);
 }
+
+/**
+ * Um segmento do wordmark de DISPLAY "diar.ia.br" (nav/hero, tipografia
+ * grande) — `teal` marca se o segmento leva a cor de marca; `decorative`
+ * marca se é só pontuação separadora, candidata a `aria-hidden` (ver
+ * `WORDMARK_DISPLAY_SEGMENTS`).
+ */
+export interface WordmarkDisplaySegment {
+  text: string;
+  teal: boolean;
+  decorative: boolean;
+}
+
+/**
+ * Estrutura canônica do wordmark de DISPLAY (#7010) — nasceu porque
+ * `applyBrandWordmark` acima injeta `<strong>`/`style` inline pensado pra
+ * PROSA CORRIDA (parágrafo de texto, tamanho de fonte normal); o wordmark
+ * de DISPLAY (nav `.logo`, `<h1>` do masthead da home — tipografia grande,
+ * `clamp(48px, 11vw, 140px)`) usa classe CSS própria (`.dot`) definida no
+ * módulo consumidor, não `style` inline. Consumir só a ESTRUTURA (quais
+ * letras são teal) em vez de reescrever "diar" + "." + "ia" + ".br" à mão de
+ * novo é o que resolve a causa raiz do #7010: o markup duplicado da home
+ * tinha só os PONTOS em teal, nunca o ".br" inteiro que o canônico acima
+ * define — porque a home nunca importou esta estrutura, reescreveu do zero.
+ *
+ * 5 segmentos, não 4 (`BRAND_WORDMARK_HTML` acima tem 4: "diar" / "." / "ia"
+ * / ".br" — o 2º "." e "br" formam UM span de prosa): aqui o "." separador e
+ * as letras "br" são segmentos SEPARADOS mesmo os dois sendo teal, porque a
+ * acessibilidade dos dois é diferente — ver `decorative` em cada um. Cor
+ * (`teal`) e decoratividade (`decorative`) são eixos independentes: "br" é
+ * teal E não-decorativo (letra real, precisa ficar legível a um leitor de
+ * tela); "." é teal E decorativo (pontuação, seguro esconder de AT).
+ *
+ * Nota de acessibilidade (#7010): os dois separadores "." são candidatos a
+ * `aria-hidden="true"` — sem isso um leitor de tela pronunciaria "diar ponto
+ * ia ponto br", que soa estranho pro nome da marca falado. Isso já era o
+ * comportamento do markup anterior da home (não documentado até aqui,
+ * registrado agora porque o markup precisou ser tocado de qualquer forma
+ * pra consertar a cor) — nenhum consumidor deve marcar as LETRAS
+ * (`decorative: false`) como `aria-hidden`, ou o leitor de tela pula parte
+ * do nome.
+ */
+export const WORDMARK_DISPLAY_SEGMENTS: readonly WordmarkDisplaySegment[] = [
+  { text: "diar", teal: false, decorative: false },
+  { text: ".", teal: true, decorative: true },
+  { text: "ia", teal: false, decorative: false },
+  { text: ".", teal: true, decorative: true },
+  { text: "br", teal: true, decorative: false },
+];

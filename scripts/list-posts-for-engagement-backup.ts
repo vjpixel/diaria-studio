@@ -55,10 +55,14 @@ export function latestBackupDateDir(entries: string[]): string | null {
   return dated.length > 0 ? dated[dated.length - 1] : null;
 }
 
-/** Lê todos os `.json` de `postsDir` e extrai `{id, title}` — pula arquivos que não têm `id` reconhecível. */
-export function discoverPostsFromDir(postsDir: string, readFile: (p: string) => string = (p) => readFileSync(p, "utf8")): Array<{ id: string; title?: string }> {
+/**
+ * Lê todos os `.json` de `postsDir` e extrai `{id, title, neverSent}` — pula
+ * arquivos que não têm `id` reconhecível. `neverSent` (post em rascunho, sem
+ * `publish_date`) propaga pro manifest como `not_applicable`, #6465.
+ */
+export function discoverPostsFromDir(postsDir: string, readFile: (p: string) => string = (p) => readFileSync(p, "utf8")): Array<{ id: string; title?: string; neverSent?: boolean }> {
   const files = readdirSync(postsDir).filter((f) => f.endsWith(".json"));
-  const out: Array<{ id: string; title?: string }> = [];
+  const out: Array<{ id: string; title?: string; neverSent?: boolean }> = [];
   for (const f of files) {
     try {
       const raw = JSON.parse(readFile(resolve(postsDir, f))) as unknown;
@@ -123,7 +127,8 @@ async function main(): Promise<void> {
   const coverage = coverageSummary(merged);
   process.stderr.write(
     `[list-posts-for-engagement-backup] cobertura: ${coverage.ok}/${coverage.total} ok, ` +
-      `${coverage.partial} partial, ${coverage.error} error, ${coverage.pending} pending` +
+      `${coverage.partial} partial, ${coverage.error} error, ${coverage.pending} pending, ` +
+      `${coverage.not_applicable} n/a (nunca enviados)` +
       `${coverage.closed ? " — gap FECHADO" : ""}\n`,
   );
 
