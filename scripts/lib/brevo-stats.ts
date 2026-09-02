@@ -109,6 +109,99 @@ export function latestEventTime(events: unknown): string | null {
  * único ponto de verdade pra "que campo é timestamp" nas 2 chamadoras
  * (parseBrevoContact aqui, computeMatureCountsFromBrevoStatistics lá).
  */
+/** Converte um timestamp cru (ISO string ou epoch numérico) pra ISO, ou `null`
+ *  se não for parseável — mesma tolerância de `latestEventTime`/`eventTimestampMs`. */
+function toIsoOrNull(raw: string | number): string | null {
+  const ms = typeof raw === "number" ? raw : new Date(raw).getTime();
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+/** As 7 categorias de `contact.statistics` que a Brevo expõe por contato. */
+export const BREVO_STAT_CATEGORIES = [
+  "messagesSent",
+  "opened",
+  "clicked",
+  "hardBounces",
+  "softBounces",
+  "unsubscriptions",
+  "complaints",
+] as const;
+export type BrevoStatCategory = (typeof BREVO_STAT_CATEGORIES)[number];
+
+/**
+ * 1 evento cru decomposto de `contact.statistics` (#6587, fatia 4 do épico
+ * #6464) — o insumo pra `recordEvent` do store unificado
+ * (`diaria-subscribers-db.ts`), ainda sem mapear pro vocabulário de
+ * `EventType` do store (isso é responsabilidade do caller, em
+ * `brevo-subscribers-ingest.ts` — este módulo permanece agnóstico do store,
+ * mesmo papel que já cumpre pra `clarice-db.ts`).
+ *
+ * `campaignId` vem `null` quando a entrada não traz o campo (raro, mas o
+ * shape real já mostrou variação entre endpoints — mesma tolerância de
+ * `asArray`). `ts` vem `null` quando nenhum campo de tempo reconhecido está
+ * presente — o caller decide o que fazer (o store exige `ts` não-nulo pra
+ * gravar um evento, então uma entrada sem timestamp utilizável é descartada
+ * na ingestão, nunca inventada).
+ */
+export interface BrevoContactEvent {
+  category: BrevoStatCategory;
+  campaignId: number | string | null;
+  ts: string | null;
+  /** Só populado pra `category: "clicked"` — o link efetivamente clicado. */
+  url?: string | null;
+}
+
+/**
+ * Decompõe `contact.statistics` em eventos individuais — 1 por entrada de
+ * cada categoria, exceto `clicked`, que expande 1 evento POR LINK (#4429: a
+ * Brevo aninha `links[]` dentro da entrada de campanha, e cada link carrega
+ * seu próprio `eventTime` + `url` — perder essa granularidade colapsaria
+ * "clicou 3 links diferentes da mesma campanha" em 1 evento só, escondendo a
+ * identidade do link clicado que `event.url` do store existe pra guardar).
+ *
+ * Puro — mesma disciplina do resto deste módulo (sem I/O, direto testável).
+ * Tolera os 2 shapes de `statistics.{categoria}` que `asArray` já normaliza
+ * (array ou object keyed-por-campanha). Contato sem `statistics` devolve `[]`.
+ */
+export function extractContactEvents(contact: Record<string, any>): BrevoContactEvent[] {
+  const stats = (contact?.statistics ?? {}) as Record<string, unknown>;
+  const out: BrevoContactEvent[] = [];
+
+  for (const category of BREVO_STAT_CATEGORIES) {
+    const entries = asArray(stats[category]);
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      const e = entry as Record<string, unknown>;
+      const campaignId =
+        typeof e.campaignId === "number" || typeof e.campaignId === "string" ? e.campaignId : null;
+
+      if (category === "clicked") {
+        const links = asArray(e.links);
+        if (links.length === 0) {
+          // Defensivo: shape sem links[] mas com timestamp próprio (nunca
+          // confirmado ao vivo pra "clicked", mas `rawTimeField` cobre o
+          // caso sem custo extra — melhor que descartar em silêncio).
+          const own = rawTimeField(e);
+          if (own !== undefined) out.push({ category, campaignId, ts: toIsoOrNull(own), url: null });
+          continue;
+        }
+        for (const link of links) {
+          if (!link || typeof link !== "object") continue;
+          const l = link as Record<string, unknown>;
+          const raw = rawTimeField(l);
+          const url = typeof l.url === "string" ? l.url : null;
+          out.push({ category, campaignId, ts: raw !== undefined ? toIsoOrNull(raw) : null, url });
+        }
+        continue;
+      }
+
+      const raw = rawTimeField(e);
+      out.push({ category, campaignId, ts: raw !== undefined ? toIsoOrNull(raw) : null });
+    }
+  }
+  return out;
+}
+
 export function eventTimestampMs(entry: unknown): number | null {
   if (!entry || typeof entry !== "object") return null;
   let bestMs = -Infinity;
