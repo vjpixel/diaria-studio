@@ -440,11 +440,11 @@ export function collectUsageInWindow(
     const keep = outcome.sessionFilter === "all_sessions" || file === wanted;
     // #7084: os transcripts de subagente da SESSÃO DONA de `file` (mesmo
     // sessionId, arquivo `{sessionId}.jsonl` → diretório irmão
-    // `{sessionId}/subagents/`) escalam junto com `file` — mesmo `keep`,
-    // mesma sessão pra fins de `excluded` (ver `scanFile === file ? file :
-    // owner` abaixo: a chave de exclusão é sempre o arquivo-pai `file`,
-    // nunca o `.jsonl` do subagente, senão uma sessão excluída com N
-    // subagentes contaria como N sessões excluídas em vez de 1).
+    // `{sessionId}/subagents/`) escalam junto com `file` — mesmo `keep`.
+    // No `excluded.add(file)` abaixo, a chave é sempre o arquivo-pai `file`
+    // do loop externo, NUNCA `scanFile` (que pode ser um `.jsonl` de
+    // subagente) — senão uma sessão excluída com N subagentes contaria como
+    // N sessões excluídas em vez de 1.
     const sessionIdForFile = basename(file, ".jsonl");
     const subagentFiles = listSubagentTranscriptFiles(transcriptsDir, sessionIdForFile);
     for (const scanFile of [file, ...subagentFiles]) {
