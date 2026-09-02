@@ -13,9 +13,9 @@
 #   3. claims não voltaram a vazar (sessão continuo com claims e heartbeat
 #      parado > 45min — tick é de 30min, higiene deveria limpar);
 #   4. vazamento pago (hermes-model-cost-report --json, campo vazamento_pago);
-#   5. adoção do wrapper: se surgiram PRs novos do fluxo autônomo SEM prefixo
-#      continuo/ nem overnight/ nem develop/, a skill não está seguindo a
-#      convenção (#6461) — informational.
+#   (item 5 — adoção de prefixo de branch — CORTADO no #6798, 01/09/2026:
+#    informational, 0 correções, dedup falhava e produziu issue duplicada 3x
+#    antes do fix; sucessor mais preciso é `check-branch-issue-consistency.ts`.)
 #
 # Fail-soft por checagem: uma checagem quebrada reporta e segue pras demais;
 # só o exit final agrega. Sem estado próprio além do GitHub (dedup por título).
@@ -23,8 +23,6 @@ set -uo pipefail
 
 REPO="/home/vjpixel/diaria-studio"
 cd "$REPO" || { echo "ERRO: repo ausente"; exit 1; }
-# shellcheck source=./lib/continuo-branch-prefix.sh
-source "$REPO/hermes/scripts/lib/continuo-branch-prefix.sh"
 FAILS=0
 
 # Dedup: existe issue ABERTA cujo título CONTÉM o marcador?
@@ -176,33 +174,17 @@ else
   echo "[watch] custo ok (sem vazamento pago em 24h)"
 fi
 
-# ── 5. adoção da convenção de branch (informational) ─────────────────────────
-# #6771 (absorve #6709): a checagem original marcava TODA branch das últimas
-# 24h sem prefixo autônomo, incluindo sessão interativa do editor — investigado
-# ao vivo em #6709: as 7 branches acusadas eram TODAS de sessão interativa
-# (#6707, #6675, #6639, #6632, worktree de subagente), nenhuma do contínuo, e
-# o alarme disparava TODO DIA pelo mesmo motivo. Falso positivo recorrente
-# treina quem lê a ignorar o alarme inteiro — o próprio objetivo do check.
-# Fix: aceitar também os prefixos convencionais de sessão interativa/develop
-# manual já em uso neste repo, via o filtro compartilhado
-# `lib/continuo-branch-prefix.sh` (extraído pra arquivo próprio, não inline,
-# porque `continuo-branch-prefix.test.sh` precisa exercitar exatamente o
-# mesmo filtro que roda em produção — mesma disciplina de
-# `scripts/lib/pr-review-authenticity.ts`, #6732). O check continua pegando
-# o caso real que motivou #6461: um PR do contínuo que saiu sem nenhum
-# prefixo reconhecido.
-if ! NOPREFIX=$(gh pr list --state all --limit 30 --json headRefName,createdAt,author \
-     --jq "$CONTINUO_BRANCH_PREFIX_JQ_FILTER" 2>/dev/null); then
-  echo "[watch] convenção de branch: INDETERMINADO (gh pr list falhou)" >&2; FAILS=$((FAILS+1)); NOPREFIX=""
-fi
-if [ -n "$NOPREFIX" ]; then
-  file_issue "[watch-continuo] PRs autônomos" \
-    "[watch-continuo] PRs autônomos das últimas 24h sem prefixo de trilha" \
-    "enhancement,P3" \
-    "Detectado por watch-continuo-health.sh — branches sem nenhum prefixo autônomo/interativo reconhecido criados nas últimas 24h: \`$NOPREFIX\` (lista completa dos prefixos aceitos em \`hermes/scripts/lib/continuo-branch-prefix.sh\`, #6771). Se forem do contínuo, a skill v0.5.0 não está seguindo a convenção do #6461 e os PRs aparecem como \`other\` na Triagem. Se forem PRs manuais do editor, fechar como esperado. P3: cosmético/observabilidade, sem impacto funcional."
-else
-  echo "[watch] convenção de branch ok"
-fi
+# ── item 5 REMOVIDO (#6798, 01/09/2026) ─────────────────────────────────────
+# "adoção da convenção de branch" (`[watch-continuo] PRs sem prefixo de
+# trilha`) cortado pela auditoria da camada de alarmes: informational por
+# desenho, 0 correções, e o dedup falhava — a MESMA condição virou 3 issues
+# distintas (#6468, #6470, #6709) antes do fix de dedup do #6771 já ter
+# saído, e mesmo depois do fix o check nunca gerou uma correção real. O
+# sucessor mais preciso já existe e cobre o caso que importava (branch↔commit
+# desalinhados, não só prefixo ausente): `check-branch-issue-consistency.ts`
+# (#6804, `scripts/lib/branch-issue-consistency.ts`), rodado por PR, não por
+# varredura diária pós-fato. `hermes/scripts/lib/continuo-branch-prefix.sh`
+# (único consumidor deste check) foi removido junto.
 
 # ── 6. composição de modelo por tick (degradação silenciosa, #6912) ─────────
 # Diferente das checagens 1-5 (que só criam issue se degradar), esta SEMPRE

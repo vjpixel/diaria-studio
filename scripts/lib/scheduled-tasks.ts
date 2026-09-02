@@ -156,18 +156,6 @@ export interface ScheduledTaskDefinition {
    * outro significado (abort do semáforo D4, guard hoje removido) — os dois
    * usos nunca coexistiram. Default (campo ausente): só 0 é sucesso. */
   successExitCodes?: number[];
-  /** #5765 — opt-out do alarme de TAXA de sucesso (`Diaria-Systemd-Unit-Rate-Alarm`,
-   * `scripts/systemd-unit-rate-alarm.ts`), que mede falhas nas últimas N
-   * execuções em vez do estado instantâneo. Default (campo ausente): task
-   * é elegível normalmente. `true` só faz sentido pra task cujo exit-code
-   * não-zero varia de forma legitimamente ruidosa demais pra caber num
-   * `successExitCodes` fixo (ex: guard que aborta por condição de negócio
-   * comum, semáforo, "nada a fazer" com múltiplos exit codes distintos
-   * conforme o motivo) — preferir `successExitCodes` sempre que os exit
-   * codes "esperados" forem um conjunto fixo conhecido; este campo é o
-   * escape hatch pra quando não forem. Nenhuma task usa isto hoje — nasce
-   * disponível, não aplicada retroativamente sem investigar caso a caso. */
-  rateAlarmExempt?: boolean;
   /** Issue(s) de origem, só pra rastreabilidade em docs/erros. */
   issue: string;
   /** #5639 — enable/disable da task sem remover do registro.
@@ -1127,24 +1115,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // service morto — só `--state=failed` revela.
     schedule: { kind: "interval", hours: 2 },
     issue: "#5563",
-  },
-  {
-    name: "Diaria-Systemd-Unit-Rate-Alarm",
-    description:
-      "alarme de TAXA de falha das ultimas 5 execucoes de cada unit do registro (complementa o sweep de estado acima, cego pra oneshot que falha cronicamente e limpa o estado a cada execucao, #5765)",
-    steps: [{ key: "alarm", script: "scripts/systemd-unit-rate-alarm.ts" }],
-    logPath: "systemd-unit-rate-alarm/.alarm.log",
-    // A cada 4h — mais espaçado que o sweep de ESTADO (2h) de propósito: o
-    // sinal aqui é uma JANELA de 5 execuções, não um instante, então não
-    // precisa da mesma cadência apertada pra ser útil (a janela já cobre
-    // horas/dias de histórico, dependendo da cadência de cada task). Mesma
-    // ordem de grandeza de `Diaria-OneDrive-Sync-Alarm` (também 4h).
-    // Achado de referência (#5763, via #5765): `Diaria-Clarice-Novos` falhou
-    // 9 de 13 execuções (~69%) numa semana inteira sem o sweep de estado
-    // nunca acusar nada persistente — a oneshot limpa `failed` a cada nova
-    // execução, sucesso ou não.
-    schedule: { kind: "interval", hours: 4 },
-    issue: "#5765",
   },
   {
     name: "Diaria-Studio-Liveness-Alarm",

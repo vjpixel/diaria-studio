@@ -848,7 +848,20 @@ export function commentAlarmIssueResolved(
 }
 
 /** Fecha a issue com um comentário explicando o motivo automático — `true`
- * em sucesso, `false` se `gh` falhar. */
+ * em sucesso, `false` se `gh` falhar.
+ *
+ * `--reason "not planned"` (#6798, pré-requisito da regra de aposentadoria):
+ * este auto-close nunca é uma correção real — é o alarme deixando de VER o
+ * sintoma por N execuções consecutivas (`closeAfterRuns`), o que pode ser um
+ * fix genuíno, mas pode igualmente ser o backup órfão sumindo por GC, o
+ * journal saindo da janela, ou qualquer outra causa que não passou por PR
+ * nenhum. Sem essa distinção o `stateReason` fica sempre `COMPLETED` — a
+ * auditoria do #6798 precisou cruzar 117 issues de alarme com PRs mergeados
+ * à mão porque o estado do GitHub sozinho não separa "corrigido" de "jogado
+ * fora". `gh issue close` aceita `{completed|not planned|duplicate}`; uma
+ * issue fechada de verdade por `Closes #NNNN` num PR mergeado continua
+ * `COMPLETED` (esse caminho não passa por esta função) — só o auto-close
+ * MECÂNICO deste módulo vira `not_planned`. */
 export function closeAlarmIssue(
   issueNumber: number,
   closeAfterRuns: number,
@@ -856,7 +869,7 @@ export function closeAlarmIssue(
   run: GhRunFn = defaultAlarmGhRun,
 ): boolean {
   const comment = `Fechada automaticamente: achado não reproduz há ${closeAfterRuns} execuções consecutivas.`;
-  const res = run(["issue", "close", String(issueNumber), "--comment", comment], cwd);
+  const res = run(["issue", "close", String(issueNumber), "--comment", comment, "--reason", "not planned"], cwd);
   return res.status === 0;
 }
 

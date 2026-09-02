@@ -863,6 +863,19 @@ describe("commentAlarmIssueResolved / closeAlarmIssue (#5112 item 3)", () => {
     const run: GhRunFn = () => fail("boom");
     assert.equal(closeAlarmIssue(42, 2, CWD, run), false);
   });
+
+  it("close: usa --reason \"not planned\" (#6798 — auto-close nunca é correção real, distinguir de fechamento por PR mergeado)", () => {
+    let capturedArgs: string[] | undefined;
+    const run: GhRunFn = (args) => {
+      capturedArgs = args;
+      return ok("");
+    };
+    closeAlarmIssue(42, 2, CWD, run);
+    assert.ok(capturedArgs, "run deveria ter sido chamado");
+    const reasonIdx = capturedArgs!.indexOf("--reason");
+    assert.ok(reasonIdx !== -1, "--reason ausente");
+    assert.equal(capturedArgs![reasonIdx + 1], "not planned");
+  });
 });
 
 // ─── planAlarmReconciliation (puro) ────────────────────────────────────────
