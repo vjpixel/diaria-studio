@@ -84,7 +84,10 @@
  *     é sempre no-op de sucesso, nunca recusa. #6369: sessão sem registro
  *     prévio não vira mais no-op silencioso — o CLI auto-registra uma sessão
  *     mínima e tenta o claim de novo (ver `claimIssueAutoRegistering`),
- *     avisando na própria mensagem de sucesso quando isso acontece.)
+ *     avisando na própria mensagem de sucesso quando isso acontece. #7003:
+ *     quando a âncora sumiu com a sessão VIVA — e cópias de conflito órfãs
+ *     dela ainda estão frescas — o registro é RECONSTRUÍDO a partir delas em
+ *     vez de recriado zerado, com `[ALERTA: ...]` na mensagem.)
  *   npx tsx scripts/lib/session-registry.ts is-claimed --issue N
  *   npx tsx scripts/lib/session-registry.ts list-active
  *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire
@@ -105,7 +108,11 @@
  *     único. Ver `grantMergeWindow`.)
  *   npx tsx scripts/lib/session-registry.ts check-merge-grant
  *     (#6296 — confirma se existe concessão viva pra esta sessão; `exit 1`
- *     quando não há. Ver `findLiveMergeGrant`.)
+ *     quando não há. #6972: o JSON traz `source` ("real"/"backup") e
+ *     `visible_to_merge_gate`, e um grant que só existe em cópia de conflito
+ *     do OneDrive imprime aviso em stderr — o gate de merge NÃO o honra, e
+ *     `granted: true` sozinho já mandou duas sessões investigarem a coisa
+ *     errada. Ver `findLiveMergeGrant`.)
  *   npx tsx scripts/lib/session-registry.ts consume-merge-grant
  *     (#6296 — marca a concessão viva desta sessão como consumida, uso
  *     único; desde #6303 também disparado automaticamente por
@@ -954,6 +961,233 @@ function sessionGroupBackupPaths(repoRoot: string, realPath: string): string[] {
 }
 
 /**
+ * Um grupo de cópias de conflito do OneDrive (`-safeBackup-*`) que NÃO tem
+ * arquivo real correspondente em `data/sessions/` (#7002/#7003).
+ *
+ * A identidade vem do CONTEÚDO (`kind`/`machineTag`/`sessionId`), nunca do
+ * nome do arquivo: o nome do backup é `{stem-real}-{tag}-safeBackup-NNNN.json`
+ * e o `-{tag}` que o cliente OneDrive intercala não é garantia de formato —
+ * o conteúdo é, e é ele que reconstrói o path do arquivo real
+ * (`sessionFilePath`, que é literalmente `{kind}-{tag}-{sessionId}.json`).
+ */
+interface OrphanBackupGroup {
+  /** Stem do arquivo REAL que este grupo representa (o que sumiu do disco). */
+  stem: string;
+  kind: SessionKind;
+  machineTag: string;
+  sessionId: string;
+  /** Paths absolutos das cópias que compõem o grupo. */
+  files: string[];
+  /** União (`mergeSessionRecords`) de todas as cópias legíveis do grupo. */
+  record: SessionRecord;
+  /** `true` se QUALQUER cópia carrega `endedAt` — ver `isOrphanBackupGroupLive`. */
+  anyEnded: boolean;
+}
+
+/**
+ * Nomes das cópias `-safeBackup-` de `names` que estão ÓRFÃS: nenhum arquivo
+ * REAL existente é prefixo delas (#7002). Complemento exato de
+ * `groupBackupsByRealStem` — deriva do mesmo mapa em vez de reimplementar a
+ * regra de desempate ("stem mais longo vence"), pra as duas leituras nunca
+ * discordarem sobre a que grupo um backup pertence.
+ */
+function orphanBackupNames(names: readonly string[]): string[] {
+  const owned = new Set<string>();
+  for (const list of groupBackupsByRealStem(names).values()) {
+    for (const name of list) owned.add(name);
+  }
+  return names.filter((n) => n.includes("-safeBackup-") && !owned.has(n));
+}
+
+/**
+ * Agrupa as cópias ÓRFÃS de `data/sessions/` por identidade de sessão
+ * (`kind`/`machineTag`/`sessionId` lidos do conteúdo) e devolve a união de
+ * cada grupo (#7002).
+ *
+ * Existe porque "backup órfão" tem DUAS causas indistinguíveis pela forma em
+ * disco, e o read-path tratava as duas como a mesma:
+ *   1. sessão encerrada limpo — `endSession` removeu o arquivo real de
+ *      propósito e a cópia de conflito sobrou (o caso do #5427);
+ *   2. **o arquivo real sumiu por lost-update enquanto a sessão seguia VIVA**
+ *      — medido ao vivo no #7002 (a coordenadora perdeu o próprio arquivo com
+ *      10 claims e um `merge_grant` íntegros nos backups, e passou a aparecer
+ *      pras outras sessões com `claimed_issues: []`).
+ *
+ * Grupo ilegível/sem identidade não entra (mesma disciplina de
+ * `readMergedSessionGroups`: nunca inventar sessão a partir de conteúdo que
+ * não se conseguiu interpretar). `kind` fora de `ALL_SESSION_KINDS` também
+ * não entra — um registro que este módulo não classifica nunca vira sessão
+ * ativa por promoção.
+ */
+function readOrphanBackupGroups(repoRoot: string): OrphanBackupGroup[] {
+  const dir = sessionsDir(repoRoot);
+  const names = listSessionJsonFiles(repoRoot);
+  const byIdentity = new Map<string, { files: string[]; records: SessionRecord[] }>();
+  for (const name of orphanBackupNames(names)) {
+    const record = readJsonSafe<SessionRecord>(join(dir, name));
+    if (!record || !record.sessionId || !record.kind || !record.machineTag) continue;
+    if (!(ALL_SESSION_KINDS as readonly string[]).includes(record.kind)) continue;
+    const stem = `${record.kind}-${record.machineTag}-${record.sessionId}`;
+    const entry = byIdentity.get(stem) ?? { files: [], records: [] };
+    entry.files.push(join(dir, name));
+    entry.records.push(record);
+    byIdentity.set(stem, entry);
+  }
+
+  const out: OrphanBackupGroup[] = [];
+  for (const [stem, entry] of byIdentity) {
+    const first = entry.records[0]!;
+    out.push({
+      stem,
+      kind: first.kind,
+      machineTag: first.machineTag,
+      sessionId: first.sessionId,
+      files: entry.files,
+      record: mergeSessionRecords(entry.records),
+      anyEnded: entry.records.some((r) => Boolean(r.endedAt)),
+    });
+  }
+  return out;
+}
+
+/**
+ * `true` quando um grupo órfão ainda representa uma sessão VIVA (#7002) — o
+ * único caso em que ele volta a contar como sessão ativa no read-path.
+ *
+ * Duas condições, as duas necessárias:
+ *   1. **Nenhuma** cópia do grupo carrega `endedAt`. `endSession` carimba esse
+ *      campo em todas as cópias do grupo ANTES de remover o arquivo real
+ *      (#7002), então um encerramento limpo fica marcado no próprio conteúdo
+ *      — é o que separa a causa (1) da causa (2) descritas em
+ *      `readOrphanBackupGroups` sem depender de heurística de tempo.
+ *   2. O heartbeat mais recente do grupo está DENTRO da janela de liveness do
+ *      kind (`softStaleMsForKind` — 90min pra coordenadora, 15min pra
+ *      `interactive`). É exatamente o mesmo critério que `decideSessionGc` já
+ *      usa pra NUNCA remover um backup órfão recente ("heartbeat recente …
+ *      sessão claramente ativa"): o GC já tratava esse grupo como vivo
+ *      enquanto o read-path o descartava, e é essa assimetria que o #7002
+ *      mediu como falso-negativo de claim.
+ *
+ * Heartbeat no futuro além da tolerância de skew nunca conta como vivo —
+ * mesma disciplina de `listActiveSessions`/`isMergeGrantLive`.
+ */
+function isOrphanBackupGroupLive(group: OrphanBackupGroup, now: number): boolean {
+  if (group.anyEnded) return false;
+  const record = group.record;
+  const heartbeatMs = Date.parse(record.lastHeartbeat ?? record.startedAt ?? "");
+  if (!Number.isFinite(heartbeatMs)) return false;
+  const ageMs = now - heartbeatMs;
+  if (ageMs < -CLOCK_SKEW_TOLERANCE_MS) return false;
+  return ageMs <= softStaleMsForKind(record.kind);
+}
+
+/**
+ * Loga (stderr, nunca lança) que uma escrita no registro (`claim-issue`,
+ * `grant-merge`) encontrou o PRÓPRIO arquivo-âncora ausente e o reconstruiu a
+ * partir das cópias de conflito órfãs (#7003).
+ *
+ * O ponto da issue: o auto-registro do #6369 é razoável pra "sessão nunca
+ * registrada", mas quando a âncora some NO MEIO de uma sessão viva ele
+ * converte perda de ARQUIVO em perda SILENCIOSA de ESTADO — recria o registro
+ * zerado e segue. Reproduzido ao vivo: 10 `claim-issue` sequenciais deixaram a
+ * âncora com 3 claims. Aqui a recuperação é ruidosa de propósito: quem lê o
+ * stderr (systemd/Task Scheduler/terminal) vê que houve competição de escrita,
+ * não um registro novo nascendo.
+ */
+function warnAnchorRecoveredFromOrphanBackups(
+  verb: string,
+  sessionId: string,
+  anchorPath: string,
+  group: OrphanBackupGroup,
+): void {
+  try {
+    process.stderr.write(
+      `session-registry: ATENÇÃO — ${verb}: o arquivo-âncora da sessão sessionId="${sessionId}" ` +
+        `("${anchorPath}") NÃO existe, mas ${group.files.length} cópia(s) de conflito do OneDrive dela sobrevivem ` +
+        `com heartbeat recente. Isto NÃO é uma sessão nova: é a âncora sumindo sob escrita concorrente (#7002/#7003). ` +
+        `O registro foi RECONSTRUÍDO a partir das cópias (claims recuperadas: ` +
+        `${(group.record.claimed_issues ?? []).length}), nunca recriado zerado.\n`,
+    );
+  } catch {
+    // Nunca deixar um log de warning derrubar o caminho principal.
+  }
+}
+
+/**
+ * Reconstrói o arquivo-âncora de uma sessão a partir das cópias de conflito
+ * ÓRFÃS dela (#7003), quando (e só quando) o arquivo real sumiu e o grupo
+ * órfão ainda parece vivo. Devolve o grupo usado, ou `null` quando não há o
+ * que recuperar (o caso comum: sessão genuinamente nova).
+ *
+ * **Por que reconstruir em vez de abortar.** A issue pede que um claim que
+ * encontra o próprio record ausente seja RUIDOSO, não silencioso. Abortar o
+ * claim seria ruidoso e deixaria a sessão viva SEM claim nenhuma — o
+ * falso-negativo que a própria #7003 chama de "pior que falso-positivo".
+ * Reconstruir + avisar alto preserva o estado (que é o dano real medido) e
+ * mantém o sinal visível pra quem investiga.
+ *
+ * A escrita é um CAS (`writeJsonSafeWithCas`) como todas as outras deste
+ * módulo, e a base é a UNIÃO do que estiver em disco no momento do lock com o
+ * grupo órfão — nunca um `...record` congelado: se outro escritor recriou a
+ * âncora enquanto esperávamos o lock, o conteúdo dele entra na união em vez de
+ * ser sobrescrito.
+ */
+function recoverAnchorFromOrphanBackups(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  tag: string,
+  now: string,
+  nowMs: number = Date.parse(now),
+): OrphanBackupGroup | null {
+  const path = sessionFilePath(repoRoot, kind, tag, sessionId);
+  if (existsSync(path)) return null;
+  const stem = `${kind}-${tag}-${sessionId}`;
+  const group = readOrphanBackupGroups(repoRoot).find((g) => g.stem === stem);
+  if (!group) return null;
+  if (!isOrphanBackupGroupLive(group, Number.isFinite(nowMs) ? nowMs : Date.now())) return null;
+
+  writeJsonSafeWithCas(
+    path,
+    (current) => {
+      const merged = mergeSessionRecords(current ? [group.record, current] : [group.record]);
+      const record: SessionRecord = {
+        ...merged,
+        kind,
+        machineTag: tag,
+        sessionId,
+        startedAt: merged.startedAt ?? now,
+        lastHeartbeat: now,
+      };
+      // `stale` é campo COMPUTADO (nunca persistido) e `endedAt` nunca chega
+      // aqui (grupo com `endedAt` não é "vivo"), mas remover explicitamente
+      // impede que um deles vaze pro disco caso a origem já viesse sujo.
+      delete record.stale;
+      delete record.endedAt;
+      // **`merge_grant` NÃO é recuperado — assimetria deliberada (#6972).**
+      // Claim se recupera porque a direção segura é "preferir reivindicada";
+      // concessão de merge NÃO, porque a direção segura é a oposta. Promover
+      // pro arquivo real um grant que só existia em cópia de conflito faria o
+      // gate do #5716 passar a honrá-lo — exatamente o que o review da PR
+      // #6969 recusou ("grant é autorização, e autorização não se infere de
+      // detrito"), só que pela porta dos fundos de um `claim-issue`. O
+      // caminho correto continua sendo o que `check-merge-grant` manda fazer:
+      // pedir RECONCESSÃO à coordenadora, que aí escreve o grant no arquivo
+      // real deliberadamente (e `grantMergeWindow`, logo depois de recuperar
+      // a âncora, faz precisamente isso).
+      delete record.merge_grant;
+      // Exceção estreita: se outro escritor recriou a âncora enquanto
+      // esperávamos o lock e ELE gravou um grant no arquivo REAL, esse grant
+      // é deliberado — preservá-lo é o oposto de promover detrito.
+      if (current?.merge_grant) record.merge_grant = current.merge_grant;
+      return record;
+    },
+    (onDisk) => onDisk?.lastHeartbeat === now && onDisk?.sessionId === sessionId,
+  );
+  return group;
+}
+
+/**
  * Loga (stderr, nunca lança) um aviso de que `registerSession` encontrou um
  * registro de OUTRO kind pra `sessionId` mas não conseguiu ler nem o arquivo
  * real nem nenhum backup dele (#6326 fleet review item 1) — cenário
@@ -1449,6 +1683,11 @@ export function endSession(
 ): boolean {
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
   if (!existsSync(path)) return false;
+  // #7002: os paths das cópias de conflito do grupo são resolvidos ENQUANTO o
+  // arquivo real ainda existe — `sessionGroupBackupPaths` casa backup→real por
+  // stem REAL EXISTENTE, então depois do `rmSync` abaixo elas viram órfãs e o
+  // mesmo cálculo devolveria lista vazia.
+  const groupBackupPaths = sessionGroupBackupPaths(repoRoot, path);
   breakStaleLock(`${path}.lock`);
   // #6624 × #6952: a leitura do registro pra instrumentação acontece DENTRO
   // do lock, junto da remoção — lida fora, o `startedAt` poderia vir de um
@@ -1464,6 +1703,40 @@ export function endSession(
     rmSync(path);
     return { removed: true, record };
   }, lockTimeoutMs);
+  if (outcome.removed) {
+    // #7002: carimba `endedAt` em cada cópia de conflito do grupo. É o que
+    // torna "encerrada limpo" DISTINGUÍVEL de "o arquivo real sumiu com a
+    // sessão viva" — as duas produzem a mesma forma em disco (backup sem
+    // real), e `readMergedSessionGroups` promove a segunda de volta a sessão
+    // ativa. Sem este carimbo, toda sessão que encerra com cópia de conflito
+    // no disco ressuscitaria por até `SOFT_STALE_MS` (90min), com as claims
+    // dela bloqueando outras sessões — o falso-POSITIVO simétrico ao bug que
+    // a promoção conserta.
+    //
+    // Reescrita cirúrgica de UM campo por cópia (molde do `unclaimIssue`/
+    // `consumeMergeGrant`), best-effort e isolada por cópia: uma que falhe
+    // nunca impede o carimbo das demais, e o `end` em si já aconteceu.
+    const endedAt = new Date().toISOString();
+    for (const backupPath of groupBackupPaths) {
+      try {
+        if (!existsSync(backupPath)) continue;
+        writeJsonSafeWithCas(
+          backupPath,
+          (current) => {
+            if (!current) throw new Error("endSession: backup sumiu entre a leitura e a escrita");
+            return { ...current, endedAt };
+          },
+          (onDisk) => Boolean(onDisk?.endedAt),
+        );
+      } catch {
+        // Cópia ilegível/exaurida: o GC recolhe depois (`planSessionGc` já
+        // trata backup órfão), e a promoção do #7002 só a ressuscitaria
+        // enquanto o heartbeat dela ainda estivesse dentro da janela de
+        // liveness — janela curta, dano limitado, nunca motivo pra `end`
+        // falhar.
+      }
+    }
+  }
   if (outcome.record) {
     const now = Date.now();
     const startedMs = Date.parse(outcome.record.startedAt ?? "");
@@ -1812,8 +2085,31 @@ export function mergeSessionRecords(records: readonly SessionRecord[]): SessionR
  * real é por PREFIXO DE STRING (nunca assume formato de `sessionId`, que
  * pode ser um UUID em produção ou um id arbitrário em teste) — mais
  * específico (stem mais longo) vence em caso de ambiguidade.
+ *
+ * **#7002 — a exceção que o parágrafo acima não previa: o arquivo real pode
+ * ter sumido com a sessão VIVA.** "Backup órfão" tem duas causas com a MESMA
+ * forma em disco — `endSession` removeu o real de propósito (o caso do #5427,
+ * acima), ou o real se perdeu num lost-update de escrita sobre o junction
+ * OneDrive enquanto a sessão seguia trabalhando. Medido ao vivo em 01/09/2026:
+ * a coordenadora de uma rodada `overnight` perdeu o próprio arquivo, os
+ * backups guardaram as 10 claims e um `merge_grant` íntegros, e este read-path
+ * os descartou — a sessão passou a aparecer pras outras com
+ * `claimed_issues: []`. Falso-negativo de claim (issue reivindicada aparecendo
+ * como livre) é exatamente o dano que `claim-issue` existe pra prevenir.
+ *
+ * Por isso um grupo órfão que ainda parece VIVO (`isOrphanBackupGroupLive`:
+ * nenhuma cópia com `endedAt` + heartbeat dentro da janela de liveness do
+ * kind) é PROMOVIDO de volta a sessão ativa, pela mesma união
+ * (`mergeSessionRecords`) usada nos grupos ancorados. Grupo órfão stale, ou
+ * carimbado por `endSession`, continua descartado exatamente como antes — o
+ * invariante do #5427 não muda para a causa que ele descrevia.
+ *
+ * O critério é o MESMO que `decideSessionGc` já aplica ("heartbeat recente …
+ * sessão claramente ativa" nunca é removido, mesmo órfão): a assimetria entre
+ * um GC que preserva o grupo por considerá-lo vivo e um read-path que o
+ * descarta por considerá-lo morto era o bug, não uma escolha.
  */
-function readMergedSessionGroups(repoRoot: string): SessionRecord[] {
+function readMergedSessionGroups(repoRoot: string, now: number = Date.now()): SessionRecord[] {
   const names = listSessionJsonFiles(repoRoot);
   const realNames = names.filter((n) => !n.includes("-safeBackup-"));
   const backupNames = names.filter((n) => n.includes("-safeBackup-"));
@@ -1838,6 +2134,16 @@ function readMergedSessionGroups(repoRoot: string): SessionRecord[] {
       .filter((r): r is SessionRecord => r !== null && !!r.sessionId && !!r.kind);
     if (records.length === 0) continue;
     merged.push(mergeSessionRecords(records));
+  }
+
+  // #7002: grupos ÓRFÃOS que ainda parecem vivos voltam pra leitura. Um grupo
+  // cuja identidade coincide com um arquivo real existente (nome de backup que
+  // o match por prefixo não alcançou) também entra aqui — `dedupeBySessionId`
+  // funde os dois por `(machineTag, sessionId)` logo depois, unindo as claims
+  // em vez de duplicar a sessão.
+  for (const group of readOrphanBackupGroups(repoRoot)) {
+    if (!isOrphanBackupGroupLive(group, now)) continue;
+    merged.push(group.record);
   }
   return merged;
 }
@@ -1952,7 +2258,7 @@ export function listActiveSessions(
   maxAgeMs: number = MAX_SESSION_AGE_MS,
 ): ActiveSessionRecord[] {
   const out: ActiveSessionRecord[] = [];
-  for (const record of dedupeBySessionId(readMergedSessionGroups(repoRoot))) {
+  for (const record of dedupeBySessionId(readMergedSessionGroups(repoRoot, now))) {
     const heartbeatIso = record.lastHeartbeat ?? record.startedAt;
     const heartbeatMs = Date.parse(heartbeatIso ?? "");
     if (!Number.isFinite(heartbeatMs)) continue;
@@ -2115,6 +2421,24 @@ export interface ClaimIssueAutoRegisterResult extends ClaimIssueResult {
   /** `true` quando não havia registro de sessão pra `kind`/`sessionId` e este
    * helper criou um (via `registerSession`) antes de tentar o claim de novo. */
   autoRegistered: boolean;
+  /**
+   * #7003 — como o registro ausente foi resolvido, quando `autoRegistered`.
+   *
+   * - `"fresh"`: nenhum vestígio da sessão em disco → registro novo do zero
+   *   (o caminho do #6369, sessão que de fato nunca registrou).
+   * - `"recovered-from-orphan-backups"`: a âncora sumiu, mas cópias de
+   *   conflito VIVAS dela sobreviveram → o registro foi RECONSTRUÍDO a partir
+   *   delas (claims, `claimed_issues_at` e `merge_grant` preservados), nunca
+   *   recriado zerado. É o modo 3 medido no #7003, e é ruidoso de propósito.
+   *
+   * Ausente quando `autoRegistered: false`.
+   */
+  autoRegisterMode?: "fresh" | "recovered-from-orphan-backups";
+  /** #7003 — claims que a reconstrução trouxe de volta das cópias órfãs.
+   * Presente só em `autoRegisterMode: "recovered-from-orphan-backups"`. */
+  recoveredClaims?: number[];
+  /** #7003 — quantas cópias de conflito alimentaram a reconstrução. */
+  recoveredFromFiles?: number;
 }
 
 /**
@@ -2143,6 +2467,28 @@ export interface ClaimIssueAutoRegisterResult extends ClaimIssueResult {
  * que os testes existentes de `claimIssueCheckAndSet`/`unclaimIssue`
  * documentam, incluindo o caso "sessão nunca existiu"). Este wrapper é
  * aditivo, usado pelo CLI (`claim-issue`), não substitui a primitiva.
+ *
+ * **#7003 — "registro ausente" tem duas causas, e tratá-las igual é o bug.**
+ * O auto-registro acima assume "sessão nova". A outra causa, medida ao vivo em
+ * 01/09/2026, é a âncora SUMIR no meio de uma sessão VIVA (lost-update de
+ * escrita sobre o junction OneDrive, #7002): ali o auto-registro converte
+ * perda de ARQUIVO em perda SILENCIOSA de ESTADO — recria o registro zerado e
+ * segue. A reprodução: 10 `claim-issue` sequenciais, cada um encontrando (ou
+ * recriando) uma âncora vazia, terminaram com 3 das 10 claims — e as outras 7
+ * sumiram do read-path enquanto a sessão seguia trabalhando nelas.
+ *
+ * Por isso, antes de registrar do zero, este wrapper procura cópias de
+ * conflito ÓRFÃS e VIVAS da própria identidade
+ * (`recoverAnchorFromOrphanBackups`) e RECONSTRÓI a âncora a partir delas —
+ * claims, `claimed_issues_at` e `merge_grant` preservados. O desfecho fica
+ * explícito em `autoRegisterMode` e num aviso alto em stderr: a sessão nunca
+ * volta zerada, e a competição de escrita nunca passa silenciosa.
+ *
+ * **Por que não abortar o claim** (a leitura alternativa de "falhar alto"): um
+ * `claim-issue` que aborta deixa uma sessão VIVA sem claim nenhuma — o
+ * falso-negativo que a própria #7003 chama de pior que o falso-positivo, e o
+ * caminho mais curto pra duas sessões na mesma issue. Ruído + preservação de
+ * estado entrega o sinal sem criar o dano.
  */
 export function claimIssueAutoRegistering(
   repoRoot: string,
@@ -2157,9 +2503,29 @@ export function claimIssueAutoRegistering(
   if (first.reason !== "no-op-session-missing") {
     return { ...first, autoRegistered: false };
   }
+  // #7003: antes de criar um registro NOVO, checar se a âncora sumiu com a
+  // sessão viva — ver `recoverAnchorFromOrphanBackups`. Reconstruir preserva
+  // as claims anteriores; o auto-registro do #6369, sozinho, as apagava.
+  const recovered = recoverAnchorFromOrphanBackups(repoRoot, kind, sessionId, tag, now);
+  if (recovered) {
+    warnAnchorRecoveredFromOrphanBackups(
+      "claim-issue",
+      sessionId,
+      sessionFilePath(repoRoot, kind, tag, sessionId),
+      recovered,
+    );
+    const retriedAfterRecovery = claimIssueCheckAndSet(repoRoot, kind, sessionId, issueNumber, tag, now, options);
+    return {
+      ...retriedAfterRecovery,
+      autoRegistered: true,
+      autoRegisterMode: "recovered-from-orphan-backups",
+      recoveredClaims: [...(recovered.record.claimed_issues ?? [])],
+      recoveredFromFiles: recovered.files.length,
+    };
+  }
   registerSession(repoRoot, kind, sessionId, { tag, startedAt: now });
   const retried = claimIssueCheckAndSet(repoRoot, kind, sessionId, issueNumber, tag, now, options);
-  return { ...retried, autoRegistered: true };
+  return { ...retried, autoRegistered: true, autoRegisterMode: "fresh" };
 }
 
 /**
@@ -2758,11 +3124,20 @@ export const GC_INTERACTIVE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
  * (`GC_CONSERVATIVE_MAX_AGE_MS`): os 7 dias existem pra cobrir a
  * possibilidade de uma sessão estar viva em OUTRA máquina, sem arquivo local
  * pra provar liveness (ver docstring de `GC_CONSERVATIVE_MAX_AGE_MS`). Um
- * backup órfão não tem essa ambiguidade — por construção, uma sessão viva
- * bate heartbeat no arquivo REAL, nunca só no backup (ver `heartbeat` e
- * `readMergedSessionGroups`). Ausência de arquivo real + heartbeat do backup
- * além da janela de liveness do próprio kind significa que a sessão que o
- * gerou não existe mais — em NENHUMA máquina. Não é limiar novo/arbitrário:
+ * backup órfão não tem essa ambiguidade — ausência de arquivo real +
+ * heartbeat do backup além da janela de liveness do próprio kind significa que
+ * a sessão que o gerou não existe mais, em NENHUMA máquina.
+ *
+ * **Ressalva do #7002 (a premissa original desta docstring era mais forte do
+ * que a realidade):** dizia-se aqui que "por construção, uma sessão viva bate
+ * heartbeat no arquivo REAL, nunca só no backup". Isso foi FALSIFICADO ao
+ * vivo em 01/09/2026 — o arquivo real de uma coordenadora ativa desapareceu
+ * num lost-update sobre o junction OneDrive e as únicas cópias com estado
+ * fresco eram os backups. A janela × margem continua correta e o valor não
+ * muda; o que não vale mais é o "nunca". Um backup órfão com heartbeat DENTRO
+ * da janela pode, sim, ser sessão viva — e é justamente por isso que ele nunca
+ * chega a este limiar (branch 1 de `decideSessionGc` o preserva) e que
+ * `readMergedSessionGroups` passou a promovê-lo de volta ao read-path. Não é limiar novo/arbitrário:
  * é a mesma janela que `decideSessionGc` já usa pra "claramente ativa"
  * (branch 1), só deixando de ser sobreposta pela janela conservadora no caso
  * em que o conservadorismo não protege nada real.
@@ -2979,13 +3354,16 @@ function decideSessionGc(
 
   if (ageMs > effectiveMaxAgeMs) {
     if (orphanWindowApplies) {
-      // #6595: `claimed_issues` deste órfão nunca chegam a fazer parte da
-      // união que `isIssueClaimedByOther`/`listActiveSessions`/Triagem leem
-      // (`readMergedSessionGroups` já pula todo backup sem arquivo real
-      // correspondente — ver o comentário "// órfão" lá) — não é isso que a
-      // remoção "libera". O que muda é só a existência EM DISCO destes
-      // números: se algum consumidor futuro passar a ler `data/sessions/`
-      // diretamente (sem passar pela união), essa leitura deixa de os ver.
+      // #6595 + #7002: `claimed_issues` deste órfão não fazem parte da união
+      // que `isIssueClaimedByOther`/`listActiveSessions`/Triagem leem — não
+      // porque órfão nunca entre no read-path (desde o #7002 ele ENTRA, se o
+      // grupo ainda parecer vivo), mas porque este branch só é alcançado
+      // muito DEPOIS disso: aqui o heartbeat já passou de
+      // `GC_ORPHAN_LIVENESS_MARGIN`× a janela de liveness do kind, então
+      // `isOrphanBackupGroupLive` já respondia `false` havia bastante tempo.
+      // Não é isso que a remoção "libera": o que muda é só a existência EM
+      // DISCO destes números, pra qualquer consumidor que leia
+      // `data/sessions/` diretamente, sem passar pela união.
       const claimedIssues = Array.from(new Set(records.flatMap((r) => r.claimed_issues ?? []))).sort((a, b) => a - b);
       const claimsNote =
         claimedIssues.length > 0
@@ -2997,8 +3375,10 @@ function decideSessionGc(
           `#6595: backup ÓRFÃO (sem arquivo real correspondente) — heartbeat stale há ${Math.round(ageMs / 60_000)}min, ` +
           `além de ${GC_ORPHAN_LIVENESS_MARGIN}× a janela de liveness do kind "${groupKind || "desconhecido"}" ` +
           `(${Math.round(softStaleMs / 60_000)}min × ${GC_ORPHAN_LIVENESS_MARGIN} = ${Math.round(effectiveMaxAgeMs / 60_000)}min). ` +
-          "Sem arquivo real, não há sessão viva por trás (uma sessão viva bate heartbeat no arquivo real, nunca só " +
-          `no backup) — removível sem o conservadorismo de 7 dias que só se justifica quando o real pode existir noutra máquina${claimsNote}`,
+          "Sem arquivo real E sem heartbeat dentro da janela de liveness, não há sessão viva por trás (#7002: o " +
+          "backup órfão RECENTE pode ser sessão viva que perdeu a âncora, e por isso é preservado no branch 1 e " +
+          "promovido no read-path — este aqui já passou muito dessa janela) — removível sem o conservadorismo de " +
+          `7 dias, que só se justifica quando o real pode existir noutra máquina${claimsNote}`,
       };
     }
     return {
@@ -4067,9 +4447,21 @@ export function grantMergeWindow(
 
   const tag = meta.tag ?? machineTag();
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
-  if (!readJsonSafe<SessionRecord>(path)) return { ok: false, reason: "no-op-session-missing" };
-
   const now = meta.now ?? new Date().toISOString();
+  if (!readJsonSafe<SessionRecord>(path)) {
+    // #6999 (fix 2): a leitura CRUA do arquivo real não é a pergunta certa —
+    // a concedente pode ter perdido a âncora num lost-update com a sessão
+    // viva (#7002) e ter o estado inteiro só nas cópias de conflito. Recusar
+    // aqui devolvia `no-op (sessão inexistente)` pra uma coordenadora ATIVA,
+    // com o agravante de a mensagem não dizer QUAL das duas sessões em jogo
+    // (concedente × beneficiária) não foi encontrada — ver a mensagem
+    // dedicada no CLI. Reconstrói pelo mesmo caminho do `claim-issue`
+    // (#7003); só recusa quando não há nem âncora nem cópia viva.
+    const recovered = recoverAnchorFromOrphanBackups(repoRoot, kind, sessionId, tag, now);
+    if (!recovered) return { ok: false, reason: "no-op-session-missing" };
+    warnAnchorRecoveredFromOrphanBackups("grant-merge", sessionId, path, recovered);
+  }
+
   const grant: MergeGrant = { grantedTo, grantedBy: sessionId, grantedAt: now };
   if (meta.pr !== undefined) grant.pr = meta.pr;
 
@@ -4112,19 +4504,80 @@ export function isMergeGrantLive(
 }
 
 /**
+ * De ONDE veio a concessão vencedora da união do #6952 (#6972).
+ *
+ * - `"real"` — existe num arquivo REAL de `data/sessions/` (sem sufixo
+ *   `-safeBackup-`). É o único caso que o gate de merge
+ *   (`.claude/hooks/block-gh-pr-merge-subagent.mjs`) enxerga e honra.
+ * - `"backup"` — vive SÓ em cópia(s) de conflito do OneDrive. `check-merge-grant`
+ *   responde `granted: true` (a união do #6952 a encontra) e o gate bloqueia
+ *   assim mesmo — de propósito, ver abaixo.
+ */
+export type MergeGrantSource = "real" | "backup";
+
+/** Duas cópias da MESMA concessão — tripla de identidade do #6952. */
+function isSameMergeGrant(a: MergeGrant | undefined, b: MergeGrant): boolean {
+  return (
+    a !== undefined && a.grantedBy === b.grantedBy && a.grantedTo === b.grantedTo && a.grantedAt === b.grantedAt
+  );
+}
+
+/**
+ * Responde a pergunta do #6972: esta concessão existe em algum arquivo REAL —
+ * isto é, o gate de merge vai enxergá-la?
+ *
+ * Varre `data/sessions/` com a MESMA regra do gate (ignora todo nome que
+ * contenha `-safeBackup-`), em vez de derivar o path do record mesclado: o
+ * gate não sabe de kind nem de identidade fundida, ele lê arquivo por arquivo.
+ * Reproduzir a regra dele é o que faz esta resposta valer alguma coisa.
+ */
+function mergeGrantLivesInRealFile(repoRoot: string, grant: MergeGrant): boolean {
+  const dir = sessionsDir(repoRoot);
+  for (const name of listSessionJsonFiles(repoRoot)) {
+    if (name.includes("-safeBackup-")) continue;
+    const record = readJsonSafe<SessionRecord>(join(dir, name));
+    if (isSameMergeGrant(record?.merge_grant, grant)) return true;
+  }
+  return false;
+}
+
+/**
  * Procura, entre as sessões COORDENADORAS ativas, uma concessão viva emitida
- * pra `sessionId` (#6296). Retorna a concessão + quem concedeu, ou `null`.
+ * pra `sessionId` (#6296). Retorna a concessão + quem concedeu + a PROVENIÊNCIA
+ * dela (#6972), ou `null`.
+ *
+ * **#6972 — por que a proveniência precisa sair daqui.** Desde o #6952,
+ * `mergeSessionRecords` UNE o `merge_grant` entre o arquivo real e as cópias de
+ * conflito do OneDrive, então uma concessão que vive só numa cópia passou a ser
+ * ENCONTRADA — e `check-merge-grant` responde `granted: true`. Mas o gate
+ * (`block-gh-pr-merge-subagent.mjs`) continua cego a `-safeBackup-` por decisão
+ * deliberada do review da PR #6969: *grant é autorização, e autorização não se
+ * infere de detrito* — uma cópia de conflito é artefato de uma corrida de sync,
+ * não algo que alguém escreveu. Resultado: a beneficiária lê `granted: true`,
+ * tenta o merge e é bloqueada, e o diagnóstico natural ("a coordenadora não
+ * concedeu" / "expirou") é falso nas duas leituras. Custou o tempo de duas
+ * sessões em 01/09/2026.
+ *
+ * O conserto alinha o diagnóstico PARA BAIXO — quem afirma a concessão avisa
+ * que ela não será honrada. O gate **não muda**; esta função só passa a dizer
+ * de onde o grant veio, e `check-merge-grant` transforma isso no aviso
+ * acionável ("peça reconcessão à coordenadora").
  */
 export function findLiveMergeGrant(
   repoRoot: string,
   sessionId: string,
   now: number = Date.now(),
-): { grant: MergeGrant; grantedBy: ActiveSessionRecord } | null {
+): { grant: MergeGrant; grantedBy: ActiveSessionRecord; source: MergeGrantSource } | null {
   for (const session of listActiveSessions(repoRoot, now)) {
     if (!isCoordinatorKind(session.kind)) continue;
     if (session.stale) continue;
     if (isMergeGrantLive(session.merge_grant, sessionId, now)) {
-      return { grant: session.merge_grant!, grantedBy: session };
+      const grant = session.merge_grant!;
+      return {
+        grant,
+        grantedBy: session,
+        source: mergeGrantLivesInRealFile(repoRoot, grant) ? "real" : "backup",
+      };
     }
   }
   return null;
@@ -4434,9 +4887,19 @@ function main(): void {
         // vira mais no-op silencioso — `claimIssueAutoRegistering` registra
         // uma sessão mínima e tenta de novo, sinalizando isso na mensagem.
         const result = claimIssueAutoRegistering(repoRoot, kind, sessionId, issue, undefined, undefined, { force });
-        const autoRegisterSuffix = result.autoRegistered
-          ? " [ATENÇÃO: sessão não tinha registro prévio — auto-registrada agora antes do claim, ver #6369]"
-          : "";
+        // #7003: as duas causas de "registro ausente" imprimem mensagens
+        // DIFERENTES. A antiga ("não tinha registro prévio") descrevia a
+        // sessão nova; usá-la também pro caso da âncora sumindo com a sessão
+        // viva foi o que fez a perda de 7 claims passar como rotina.
+        const autoRegisterSuffix = !result.autoRegistered
+          ? ""
+          : result.autoRegisterMode === "recovered-from-orphan-backups"
+            ? ` [ALERTA: a ÂNCORA desta sessão SUMIU do disco com a sessão VIVA — reconstruída de ` +
+              `${result.recoveredFromFiles} cópia(s) de conflito do OneDrive, ` +
+              `${(result.recoveredClaims ?? []).length} claim(s) recuperada(s)` +
+              `${(result.recoveredClaims ?? []).length > 0 ? `: #${(result.recoveredClaims ?? []).join(", #")}` : ""}` +
+              ". Isto é escrita concorrente, não sessão nova — ver #7002/#7003]"
+            : " [ATENÇÃO: sessão não tinha registro prévio — auto-registrada agora antes do claim, ver #6369]";
         switch (result.reason) {
           case "claimed":
             process.stdout.write(
@@ -4646,7 +5109,19 @@ function main(): void {
             process.exitCode = 1;
             break;
           case "no-op-session-missing":
-            process.stdout.write("session-registry: grant-merge no-op (sessão inexistente)\n");
+            // #6999 (fix 2): `grant-merge` é o único subcomando com DOIS
+            // sujeitos de sessão, e "sessão inexistente" mandava o operador
+            // conferir a errada — a leitura natural é a beneficiária, que
+            // acabou de ser digitada, quando a não-encontrada é sempre a
+            // CONCEDENTE (a beneficiária nem precisa estar registrada).
+            process.stdout.write(
+              "session-registry: grant-merge no-op — a sessão CONCEDENTE (a SUA, não a de --granted-to) não foi " +
+                `encontrada em data/sessions/. Procurado: kind="${kind}", sessionId="${sessionId}", arquivo ` +
+                `"${sessionFilePath(repoRoot, kind, machineTag(), sessionId)}". A beneficiária ` +
+                `"${grantedTo}" NÃO é o problema aqui (ela nem precisa estar registrada). Causas típicas: ` +
+                "--session-id de outra sessão, --kind diferente do que foi registrado, ou a âncora sumiu sem " +
+                `nenhuma cópia de conflito viva pra reconstruir (#7002). Registre a concedente ("register --kind ${kind}") antes de conceder.\n`,
+            );
             process.exitCode = 1;
             break;
         }
@@ -4655,10 +5130,37 @@ function main(): void {
       case "check-merge-grant": {
         const sessionId = requireSessionId(values);
         const found = findLiveMergeGrant(repoRoot, sessionId);
+        // #6972: `source` e `visible_to_merge_gate` são ADITIVOS — `granted`/
+        // `grant`/`grantedBy` seguem com a mesma forma pra quem já consome
+        // este JSON.
+        //
+        // O nome é `visible_`, não `honored_`, de propósito: `false` afirma
+        // com certeza que o gate NÃO vai honrar (ele nem enxerga o arquivo),
+        // mas `true` só diz que ESTA causa de bloqueio não se aplica — o gate
+        // ainda checa escopo de PR (#6322), staleness e identidade. Prometer
+        // "será honrado" reintroduziria, invertida, a confusão que a #6972
+        // existe pra remover.
         process.stdout.write(
-          JSON.stringify({ granted: found !== null, grant: found?.grant ?? null, grantedBy: found?.grantedBy ?? null }) +
-            "\n",
+          JSON.stringify({
+            granted: found !== null,
+            grant: found?.grant ?? null,
+            grantedBy: found?.grantedBy ?? null,
+            source: found?.source ?? null,
+            visible_to_merge_gate: found === null ? null : found.source === "real",
+          }) + "\n",
         );
+        if (found && found.source === "backup") {
+          // Aviso em stderr (nunca no stdout, que é JSON consumido por script):
+          // a janela EXISTE na união do #6952 mas o gate do #5716 é cego a
+          // cópia de conflito por decisão deliberada e NÃO vai honrá-la.
+          process.stderr.write(
+            "session-registry: ATENÇÃO — janela encontrada, mas SÓ em cópia de conflito do OneDrive " +
+              "(-safeBackup-): o gate de merge NÃO a honra e o `gh pr merge` será bloqueado assim mesmo. " +
+              "Isto não é 'a coordenadora não concedeu' nem 'expirou' — peça RECONCESSÃO à coordenadora " +
+              `(${found.grantedBy.kind}-${found.grantedBy.sessionId}) pra que o grant volte a existir no ` +
+              "arquivo real (#6972).\n",
+          );
+        }
         if (!found) process.exitCode = 1;
         break;
       }

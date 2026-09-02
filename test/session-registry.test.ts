@@ -42,6 +42,7 @@ import {
   mergeSessionRecords,
   isMergeGrantLive,
   findLiveMergeGrant,
+  grantMergeWindow,
   consumeMergeGrant,
   machineTag,
   planSessionGc,
@@ -910,6 +911,14 @@ describe("listActiveSessions", () => {
     // Simula a cópia de conflito que o OneDrive gera para uma sessão já
     // encerrada (o arquivo real já foi removido por endSession, mas a cópia
     // de conflito continua no disco) — nunca deve contar como sessão ativa.
+    //
+    // #7002: o `endedAt` no fixture não é enfeite — é o que `endSession`
+    // passou a carimbar em cada cópia do grupo ANTES de remover o arquivo
+    // real, e é o único sinal que distingue "encerrada limpo" (este caso, o
+    // do #5427) de "a âncora sumiu com a sessão VIVA" (promovida de volta,
+    // ver o describe do #7002 abaixo). As duas produzem a MESMA forma em
+    // disco — backup sem arquivo real —, então sem o carimbo o read-path não
+    // tem como escolher, e escolher errado é falso-negativo de claim.
     writeFileSync(
       join(sessionsDir(root), "develop-host-a-sess-encerrada-safeBackup-1.json"),
       JSON.stringify({
@@ -918,6 +927,22 @@ describe("listActiveSessions", () => {
         sessionId: "sess-encerrada",
         startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
         lastHeartbeat: new Date(NOW - ONE_HOUR_MS).toISOString(),
+        endedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
+        claimed_issues: [],
+      }),
+      "utf8",
+    );
+    // Órfã SEM carimbo, mas com heartbeat fora da janela de liveness do kind
+    // (90min pra coordenadora): staleness sozinha continua bastando pra
+    // nunca ressuscitar, exatamente como antes do #7002.
+    writeFileSync(
+      join(sessionsDir(root), "develop-host-a-sess-velha-safeBackup-1.json"),
+      JSON.stringify({
+        kind: "develop",
+        machineTag: "host-a",
+        sessionId: "sess-velha",
+        startedAt: new Date(NOW - 5 * ONE_HOUR_MS).toISOString(),
+        lastHeartbeat: new Date(NOW - 5 * ONE_HOUR_MS).toISOString(),
         claimed_issues: [],
       }),
       "utf8",
@@ -2271,19 +2296,39 @@ describe("listActiveSessions / isIssueClaimedByOther — união de claims de bac
     assert.ok(isIssueClaimedByOther(root, 42, "sess-outra", NOW) !== null, "não-stale => claim ainda bloqueia");
   });
 
-  it("backup ÓRFÃO (sem arquivo real correspondente) continua NUNCA ressuscitando claim (#5427 preservado)", () => {
+  it("backup ÓRFÃO de sessão ENCERRADA (carimbo endedAt) continua NUNCA ressuscitando claim (#5427 preservado)", () => {
     const root = freshRoot();
+    // #7002: `endSession` carimba `endedAt` em cada cópia do grupo antes de
+    // remover o arquivo real — é esse carimbo (e não a mera ausência do
+    // real) que autoriza descartar o grupo, agora que "backup órfão vivo"
+    // passou a ser um estado real e distinto.
     writeRawSessionFile(root, "continuo-predator-s-encerrada-predator-safeBackup-0001.json", {
       kind: "continuo",
       machineTag: "predator",
       sessionId: "s-encerrada",
       startedAt: new Date(NOW - 60 * 1000).toISOString(),
       lastHeartbeat: new Date(NOW - 60 * 1000).toISOString(),
+      endedAt: new Date(NOW - 30 * 1000).toISOString(),
       claimed_issues: [999],
     });
 
     assert.deepEqual(listActiveSessions(root, NOW), []);
     assert.equal(isIssueClaimedByOther(root, 999, "sess-outra", NOW), null, "backup órfão não reivindica nada");
+  });
+
+  it("backup ÓRFÃO STALE (sem carimbo, heartbeat fora da janela de liveness) também nunca ressuscita claim", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, "continuo-predator-s-morta-predator-safeBackup-0001.json", {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "s-morta",
+      startedAt: new Date(NOW - 10 * 60 * 60 * 1000).toISOString(),
+      lastHeartbeat: new Date(NOW - SOFT_STALE_MS - 60 * 1000).toISOString(),
+      claimed_issues: [999],
+    });
+
+    assert.deepEqual(listActiveSessions(root, NOW), []);
+    assert.equal(isIssueClaimedByOther(root, 999, "sess-outra", NOW), null, "órfão stale não reivindica nada");
   });
 });
 
@@ -3661,5 +3706,503 @@ describe("#6952 — endSession quebra lock órfão antes de adquirir", () => {
     );
     assert.equal(existsSync(path), true, "o registro não pode sumir enquanto outro escritor tem o lock");
     unlinkSync(lockPath);
+  });
+});
+
+// ─── #7002/#7003/#6999/#6972 — a âncora some, a sessão continua VIVA ───────
+//
+// Os quatro modos deste bloco nasceram da MESMA janela de evidência (rodada
+// `/diaria-overnight` 260901b/c, helios, 01-02/09/2026): o arquivo REAL de uma
+// coordenadora ATIVA desapareceu de `data/sessions/` sob escrita concorrente no
+// junction OneDrive, e sobraram só cópias `-safeBackup-` com as 10 claims e um
+// `merge_grant` íntegros. Todo o read-path as descartou, porque "backup sem
+// arquivo real" era tratado como sinônimo de "sessão encerrada" — e as duas
+// causas produzem a MESMA forma em disco.
+
+const CLI_7002 = fileURLToPath(new URL("../scripts/lib/session-registry.ts", import.meta.url));
+const TSX_LOADER_7002 = pathToFileURL(
+  fileURLToPath(new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url)),
+).href;
+
+/** Raiz isolada (sem `.git`, pra `resolveRepoRoot` cair no cwd) já com `data/sessions/`. */
+function freshCliRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "registry-7002-"));
+  roots.push(root);
+  mkdirSync(join(root, "data", "sessions"), { recursive: true });
+  return root;
+}
+
+function cli7002(root: string, args: string[]) {
+  return spawnSync(process.execPath, ["--import", TSX_LOADER_7002, CLI_7002, ...args], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+}
+
+/** Captura o stderr do processo durante `fn` (os avisos altos deste bloco). */
+function captureStderr(fn: () => void): string {
+  let out = "";
+  const original = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    out += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    fn();
+  } finally {
+    process.stderr.write = original;
+  }
+  return out;
+}
+
+describe("#7002 — grupo de backups ÓRFÃO mas VIVO volta a contar como sessão ativa", () => {
+  const NOW = Date.parse("2026-09-02T12:00:00.000Z");
+  const iso = (ms: number) => new Date(ms).toISOString();
+
+  it("cenário da issue: o real da coordenadora sumiu, as cópias vivas guardam as claims → a sessão volta a aparecer COM elas", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, "overnight-helios-coord-7002-helios-safeBackup-0001.json", {
+      kind: "overnight",
+      machineTag: "helios",
+      sessionId: "coord-7002",
+      startedAt: iso(NOW - 2 * 60 * 60 * 1000),
+      lastHeartbeat: iso(NOW - 60 * 1000),
+      claimed_issues: [6947, 6970],
+    });
+    writeRawSessionFile(root, "overnight-helios-coord-7002-helios-safeBackup-0002.json", {
+      kind: "overnight",
+      machineTag: "helios",
+      sessionId: "coord-7002",
+      startedAt: iso(NOW - 2 * 60 * 60 * 1000),
+      lastHeartbeat: iso(NOW - 2 * 60 * 1000),
+      claimed_issues: [6972],
+    });
+    // Nenhum arquivo real — é literalmente o estado medido em 01/09.
+
+    const sessions = listActiveSessions(root, NOW);
+    assert.equal(sessions.length, 1, "grupo órfão VIVO não pode continuar invisível ao read-path");
+    assert.equal(sessions[0].kind, "overnight");
+    assert.equal(sessions[0].stale, false);
+    assert.deepEqual(
+      sessions[0].claimed_issues,
+      [6947, 6970, 6972],
+      "união de TODAS as cópias, não só a de heartbeat mais novo",
+    );
+    assert.ok(
+      isIssueClaimedByOther(root, 6972, "outra-sessao", NOW),
+      "falso-negativo de claim (issue reivindicada aparecendo livre) é o dano central da #7002",
+    );
+  });
+
+  it("o beacon recriando um interactive VAZIO não apaga as claims dos backups órfãos", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, "overnight-helios-coord-7002b-helios-safeBackup-0001.json", {
+      kind: "overnight",
+      machineTag: "helios",
+      sessionId: "coord-7002b",
+      startedAt: iso(NOW - 2 * 60 * 60 * 1000),
+      lastHeartbeat: iso(NOW - 5 * 60 * 1000),
+      claimed_issues: [6947, 6970, 6972],
+    });
+    // O beacon recria `interactive-{tag}-{sessionId}.json` com heartbeat MAIS
+    // NOVO e sem claim nenhuma — foi ele que "venceu" a leitura na issue.
+    writeRawSessionFile(root, "interactive-helios-coord-7002b.json", {
+      kind: "interactive",
+      machineTag: "helios",
+      sessionId: "coord-7002b",
+      startedAt: iso(NOW - 60 * 1000),
+      lastHeartbeat: iso(NOW - 10 * 1000),
+      claimed_issues: [],
+    });
+
+    const sessions = listActiveSessions(root, NOW);
+    assert.equal(sessions.length, 1, "mesmo sessionId nunca vira duas sessões");
+    assert.equal(sessions[0].kind, "overnight", "coordenadora vence interactive como base (#6481)");
+    assert.deepEqual(sessions[0].claimed_issues, [6947, 6970, 6972]);
+  });
+
+  it("endSession carimba endedAt em TODAS as cópias do grupo — encerrar continua encerrando", () => {
+    const root = freshRoot();
+    const tag = "helios";
+    registerSession(root, "develop", "sess-fim-7002", { tag, startedAt: iso(NOW - 30 * 60 * 1000) });
+    claimIssueCheckAndSet(root, "develop", "sess-fim-7002", 4242, tag, iso(NOW - 20 * 60 * 1000));
+    const backupName = `develop-${tag}-sess-fim-7002-${tag}-safeBackup-0001.json`;
+    writeRawSessionFile(root, backupName, {
+      kind: "develop",
+      machineTag: tag,
+      sessionId: "sess-fim-7002",
+      startedAt: iso(NOW - 30 * 60 * 1000),
+      lastHeartbeat: iso(NOW - 60 * 1000),
+      claimed_issues: [4242],
+    });
+
+    assert.equal(endSession(root, "develop", "sess-fim-7002", tag), true);
+
+    const backup = JSON.parse(readFileSync(join(sessionsDir(root), backupName), "utf8"));
+    assert.ok(backup.endedAt, "sem o carimbo, toda sessão encerrada com cópia de conflito ressuscitaria por 90min");
+    assert.deepEqual(listActiveSessions(root, NOW), [], "sessão encerrada não volta pelo caminho do #7002");
+    assert.equal(isIssueClaimedByOther(root, 4242, "outra-sessao", NOW), null);
+  });
+
+  it("merge_grant que vive só no grupo órfão VIVO volta a ser encontrável — e sai marcado como cópia de conflito (#6972)", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, "overnight-helios-coord-7002c-helios-safeBackup-0001.json", {
+      kind: "overnight",
+      machineTag: "helios",
+      sessionId: "coord-7002c",
+      startedAt: iso(NOW - 60 * 60 * 1000),
+      lastHeartbeat: iso(NOW - 60 * 1000),
+      claimed_issues: [],
+      merge_grant: { grantedTo: "interativa", grantedBy: "coord-7002c", grantedAt: iso(NOW - 60 * 1000), pr: 7002 },
+    });
+
+    const found = findLiveMergeGrant(root, "interativa", NOW);
+    assert.ok(found, "grant vivo num grupo órfão vivo não pode sumir do read-path");
+    assert.equal(found?.source, "backup");
+  });
+});
+
+describe("#7003 — claim-issue nunca recria o registro ZERADO quando a âncora some com a sessão viva", () => {
+  const NOW = Date.parse("2026-09-02T12:00:00.000Z");
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const TAG = "helios";
+  const PREVIAS = [6947, 6952, 6955, 6960, 6962, 6966, 6968, 6970, 6971, 6972];
+
+  function orphanComAsDezClaims(root: string, sessionId: string): void {
+    writeRawSessionFile(root, `overnight-${TAG}-${sessionId}-${TAG}-safeBackup-0001.json`, {
+      kind: "overnight",
+      machineTag: TAG,
+      sessionId,
+      startedAt: iso(NOW - 3 * 60 * 60 * 1000),
+      lastHeartbeat: iso(NOW - 60 * 1000),
+      claimed_issues: PREVIAS,
+      claimed_issues_at: { "6947": iso(NOW - 3 * 60 * 60 * 1000) },
+    });
+  }
+
+  it("reprodução da issue: as 10 claims anteriores SOBREVIVEM ao re-claim, em vez de virar 'as 3 últimas'", () => {
+    const root = freshRoot();
+    orphanComAsDezClaims(root, "coord-7003");
+
+    const result = claimIssueAutoRegistering(root, "overnight", "coord-7003", 7003, TAG, iso(NOW));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.autoRegistered, true);
+    assert.equal(
+      result.autoRegisterMode,
+      "recovered-from-orphan-backups",
+      "'sessão nova' e 'âncora sumiu com a sessão viva' não podem mais sair pelo mesmo caminho",
+    );
+    assert.deepEqual(result.recoveredClaims, PREVIAS);
+    assert.equal(result.recoveredFromFiles, 1);
+
+    const onDisk = JSON.parse(readFileSync(sessionFilePath(root, "overnight", TAG, "coord-7003"), "utf8"));
+    assert.deepEqual(
+      onDisk.claimed_issues,
+      [...PREVIAS, 7003].sort((a, b) => a - b),
+      "a âncora reconstruída carrega as claims antigas + a nova, nunca só a nova",
+    );
+    assert.equal(
+      onDisk.claimed_issues_at["6947"],
+      iso(NOW - 3 * 60 * 60 * 1000),
+      "claimed_issues_at preservado (idade de claim não rejuvenesce na reconstrução)",
+    );
+  });
+
+  it("a reconstrução é RUIDOSA: stderr diz que a âncora sumiu com a sessão viva, não que nasceu uma sessão nova", () => {
+    const root = freshRoot();
+    orphanComAsDezClaims(root, "coord-7003b");
+
+    const stderr = captureStderr(() => {
+      claimIssueAutoRegistering(root, "overnight", "coord-7003b", 7003, TAG, iso(NOW));
+    });
+
+    assert.match(stderr, /ATENÇÃO/);
+    assert.match(stderr, /NÃO é uma sessão nova/i);
+    assert.match(stderr, /#7002\/#7003/);
+  });
+
+  it("sessão genuinamente NOVA (nenhuma cópia em disco) continua no caminho 'fresh' do #6369", () => {
+    const root = freshRoot();
+
+    const result = claimIssueAutoRegistering(root, "continuo", "sess-nova-7003", 6352, TAG, iso(NOW));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.autoRegistered, true);
+    assert.equal(result.autoRegisterMode, "fresh");
+    assert.equal(result.recoveredClaims, undefined);
+  });
+
+  it("grupo órfão CARIMBADO (sessão encerrada limpo) NÃO é recuperado — o re-claim nasce limpo", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, `overnight-${TAG}-coord-7003c-${TAG}-safeBackup-0001.json`, {
+      kind: "overnight",
+      machineTag: TAG,
+      sessionId: "coord-7003c",
+      startedAt: iso(NOW - 3 * 60 * 60 * 1000),
+      lastHeartbeat: iso(NOW - 60 * 1000),
+      endedAt: iso(NOW - 30 * 1000),
+      claimed_issues: PREVIAS,
+    });
+
+    const result = claimIssueAutoRegistering(root, "overnight", "coord-7003c", 7003, TAG, iso(NOW));
+
+    assert.equal(result.autoRegisterMode, "fresh", "sessão encerrada não ressuscita claims por um claim novo");
+    const onDisk = JSON.parse(readFileSync(sessionFilePath(root, "overnight", TAG, "coord-7003c"), "utf8"));
+    assert.deepEqual(onDisk.claimed_issues, [7003]);
+  });
+
+  it("grupo órfão STALE não é recuperado (o sinal de liveness continua sendo o heartbeat)", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, `overnight-${TAG}-coord-7003d-${TAG}-safeBackup-0001.json`, {
+      kind: "overnight",
+      machineTag: TAG,
+      sessionId: "coord-7003d",
+      startedAt: iso(NOW - 10 * 60 * 60 * 1000),
+      lastHeartbeat: iso(NOW - SOFT_STALE_MS - 60 * 1000),
+      claimed_issues: PREVIAS,
+    });
+
+    const result = claimIssueAutoRegistering(root, "overnight", "coord-7003d", 7003, TAG, iso(NOW));
+
+    assert.equal(result.autoRegisterMode, "fresh");
+  });
+
+  it("a reconstrução recupera CLAIM mas nunca merge_grant — promover autorização de cópia de conflito é o que o #6972 recusa", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, `overnight-${TAG}-coord-7003e-${TAG}-safeBackup-0001.json`, {
+      kind: "overnight",
+      machineTag: TAG,
+      sessionId: "coord-7003e",
+      startedAt: iso(NOW - 60 * 60 * 1000),
+      lastHeartbeat: iso(NOW - 60 * 1000),
+      claimed_issues: [6947],
+      merge_grant: { grantedTo: "interativa", grantedBy: "coord-7003e", grantedAt: iso(NOW - 60 * 1000), pr: 6983 },
+    });
+
+    claimIssueAutoRegistering(root, "overnight", "coord-7003e", 7003, TAG, iso(NOW));
+
+    const onDisk = JSON.parse(readFileSync(sessionFilePath(root, "overnight", TAG, "coord-7003e"), "utf8"));
+    assert.deepEqual(onDisk.claimed_issues, [6947, 7003], "claim se recupera — a direção segura é 'preferir reivindicada'");
+    assert.equal(
+      onDisk.merge_grant,
+      undefined,
+      "grant NÃO se recupera: no arquivo real, o gate do #5716 passaria a honrar uma concessão que só existia em detrito de sync",
+    );
+    assert.equal(
+      findLiveMergeGrant(root, "interativa", NOW)?.source,
+      "backup",
+      "a concessão continua encontrável e continua marcada como não-honrada — o caminho é pedir reconcessão",
+    );
+  });
+
+  it("CLI: a mensagem de sucesso grita ALERTA (âncora sumida) em vez do ATENÇÃO rotineiro do #6369", () => {
+    const root = freshCliRoot();
+    const tag = machineTag();
+    const nowMs = Date.now();
+    writeFileSync(
+      join(root, "data", "sessions", `overnight-${tag}-cli-7003-${tag}-safeBackup-0001.json`),
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: tag,
+        sessionId: "cli-7003",
+        startedAt: new Date(nowMs - 60 * 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(nowMs - 60 * 1000).toISOString(),
+        claimed_issues: [6947, 6970],
+      }),
+      "utf8",
+    );
+
+    const res = cli7002(root, ["claim-issue", "--kind", "overnight", "--session-id", "cli-7003", "--issue", "7003"]);
+
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /ALERTA: a ÂNCORA desta sessão SUMIU/);
+    assert.match(res.stdout, /2 claim\(s\) recuperada\(s\)/);
+    assert.doesNotMatch(res.stdout, /não tinha registro prévio/, "a mensagem do #6369 descreve a outra causa");
+  });
+});
+
+describe("#6999 — grant-merge: guard de --session-id e mensagem que nomeia a CONCEDENTE", () => {
+  const NOW = Date.parse("2026-09-02T12:00:00.000Z");
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const TAG = "helios";
+
+  it("fix 1 (implementado em 26/08, travado aqui): sem --session-id o comando falha ALTO, nomeando a flag", () => {
+    const root = freshCliRoot();
+
+    const res = cli7002(root, ["grant-merge", "--kind", "overnight", "--granted-to", "benef-6999", "--pr", "6983"]);
+
+    assert.notEqual(res.status, 0);
+    assert.match(res.stderr + res.stdout, /--session-id ausente/);
+  });
+
+  it("fix 2: concedente cuja âncora sumiu, com cópias órfãs VIVAS, CONCEDE em vez de 'sessão inexistente'", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, `overnight-${TAG}-coord-6999-${TAG}-safeBackup-0001.json`, {
+      kind: "overnight",
+      machineTag: TAG,
+      sessionId: "coord-6999",
+      startedAt: iso(NOW - 60 * 60 * 1000),
+      lastHeartbeat: iso(NOW - 60 * 1000),
+      claimed_issues: [6999],
+    });
+
+    const result = grantMergeWindow(root, "overnight", "coord-6999", "interativa", {
+      pr: 6983,
+      tag: TAG,
+      now: iso(NOW),
+    });
+
+    assert.equal(result.ok, true, `esperava conceder, veio "${result.reason}"`);
+    const onDisk = JSON.parse(readFileSync(sessionFilePath(root, "overnight", TAG, "coord-6999"), "utf8"));
+    assert.equal(onDisk.merge_grant.grantedTo, "interativa");
+    assert.deepEqual(onDisk.claimed_issues, [6999], "a reconstrução preserva o estado, não só cria a casca");
+  });
+
+  it("sem âncora E sem cópia viva continua no-op-session-missing (a recusa honesta não some)", () => {
+    const root = freshRoot();
+
+    const result = grantMergeWindow(root, "overnight", "coord-inexistente", "interativa", {
+      pr: 1,
+      tag: TAG,
+      now: iso(NOW),
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "no-op-session-missing");
+  });
+
+  it("CLI: a mensagem de 'sessão inexistente' nomeia a CONCEDENTE e inocenta --granted-to", () => {
+    const root = freshCliRoot();
+    // A BENEFICIÁRIA existe e está viva — era exatamente o estado que fechava
+    // a porta do diagnóstico correto na issue (o operador conferia o arquivo
+    // dela, achava, e concluía que o mecanismo estava quebrado).
+    const tag = machineTag();
+    writeFileSync(
+      join(root, "data", "sessions", `interactive-${tag}-benef-6999.json`),
+      JSON.stringify({
+        kind: "interactive",
+        machineTag: tag,
+        sessionId: "benef-6999",
+        startedAt: new Date().toISOString(),
+        lastHeartbeat: new Date().toISOString(),
+        claimed_issues: [],
+      }),
+      "utf8",
+    );
+
+    const res = cli7002(root, [
+      "grant-merge",
+      "--kind",
+      "overnight",
+      "--session-id",
+      "coord-inexistente-6999",
+      "--granted-to",
+      "benef-6999",
+      "--pr",
+      "6983",
+    ]);
+
+    assert.equal(res.status, 1);
+    assert.match(res.stdout, /sessão CONCEDENTE/);
+    assert.match(res.stdout, /coord-inexistente-6999/, "imprime o identificador procurado");
+    assert.match(res.stdout, /NÃO é o problema aqui/);
+  });
+});
+
+describe("#6972 — proveniência do grant vencedor (arquivo real × cópia de conflito)", () => {
+  const NOW = Date.parse("2026-09-02T12:00:00.000Z");
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const TAG = "helios";
+
+  function coordenadoraViva(root: string, sessionId: string): void {
+    writeRawSessionFile(root, `overnight-${TAG}-${sessionId}.json`, {
+      kind: "overnight",
+      machineTag: TAG,
+      sessionId,
+      startedAt: iso(NOW - 60 * 60 * 1000),
+      lastHeartbeat: iso(NOW - 30 * 1000),
+      claimed_issues: [],
+    });
+  }
+
+  it("grant no arquivo REAL → source 'real' (o gate enxerga e honra)", () => {
+    const root = freshRoot();
+    coordenadoraViva(root, "coord-6972a");
+    assert.equal(
+      grantMergeWindow(root, "overnight", "coord-6972a", "interativa", { pr: 1, tag: TAG, now: iso(NOW) }).ok,
+      true,
+    );
+
+    const found = findLiveMergeGrant(root, "interativa", NOW);
+    assert.equal(found?.source, "real");
+  });
+
+  it("grant SÓ em -safeBackup- → source 'backup' (o gate é cego a cópia de conflito, por decisão)", () => {
+    const root = freshRoot();
+    coordenadoraViva(root, "coord-6972b");
+    // A cópia de conflito carrega a concessão; o arquivo real, não — é o
+    // estado que fazia `check-merge-grant` dizer `granted: true` pra uma
+    // janela que o `gh pr merge` bloqueava.
+    writeRawSessionFile(root, `overnight-${TAG}-coord-6972b-${TAG}-safeBackup-0001.json`, {
+      kind: "overnight",
+      machineTag: TAG,
+      sessionId: "coord-6972b",
+      startedAt: iso(NOW - 60 * 60 * 1000),
+      lastHeartbeat: iso(NOW - 90 * 1000),
+      claimed_issues: [],
+      merge_grant: { grantedTo: "interativa", grantedBy: "coord-6972b", grantedAt: iso(NOW - 60 * 1000), pr: 6983 },
+    });
+
+    const found = findLiveMergeGrant(root, "interativa", NOW);
+    assert.ok(found);
+    assert.equal(found?.source, "backup");
+  });
+
+  it("CLI check-merge-grant: expõe source/visible_to_merge_gate e AVISA em stderr quando o gate não vai honrar", () => {
+    const root = freshCliRoot();
+    const tag = machineTag();
+    const nowMs = Date.now();
+    writeFileSync(
+      join(root, "data", "sessions", `overnight-${tag}-coord-6972c.json`),
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: tag,
+        sessionId: "coord-6972c",
+        startedAt: new Date(nowMs - 60 * 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(nowMs - 30 * 1000).toISOString(),
+        claimed_issues: [],
+      }),
+      "utf8",
+    );
+    writeFileSync(
+      join(root, "data", "sessions", `overnight-${tag}-coord-6972c-${tag}-safeBackup-0001.json`),
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: tag,
+        sessionId: "coord-6972c",
+        startedAt: new Date(nowMs - 60 * 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(nowMs - 90 * 1000).toISOString(),
+        claimed_issues: [],
+        merge_grant: {
+          grantedTo: "benef-6972",
+          grantedBy: "coord-6972c",
+          grantedAt: new Date(nowMs - 60 * 1000).toISOString(),
+          pr: 6983,
+        },
+      }),
+      "utf8",
+    );
+
+    const res = cli7002(root, ["check-merge-grant", "--session-id", "benef-6972"]);
+
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    const payload = JSON.parse(res.stdout.trim());
+    assert.equal(payload.granted, true);
+    assert.equal(payload.source, "backup");
+    assert.equal(payload.visible_to_merge_gate, false);
+    assert.match(res.stderr, /cópia de conflito do OneDrive/);
+    assert.match(res.stderr, /RECONCESSÃO/i);
   });
 });
