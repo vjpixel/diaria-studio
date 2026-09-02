@@ -117,6 +117,41 @@ dos critérios 2-4, que julgam o MODELO, não a infra.
   autenticar pelo gateway, **não tem** Beehiiv nem Gmail — nada que dependa
   deles vai para ele.
 
+## Por que o harness invoca por unidade (`claude -p`), nunca uma sessão paralela — TESTADO, não escolha arbitrária (#6947)
+
+A forma "sessão paralela que o coordenador conversa com" (`--remote-control`,
+registrada como peer, alcançável por `SendMessage`/`ListAgents`) foi
+**tentada** pro piloto do #6930 e abandonada por medição, não por
+preferência de implementação. Não confundir com decisão de design não
+verificada — o teste aconteceu e os dois lados (sessões autenticadas por
+assinatura claude.ai vs. por gateway) foram comparados lado a lado.
+
+Reprodução (`helios`, 01/09/2026): subiu 1 sessão `claude --model
+z-ai/glm-5.3-flash --remote-control` autenticada via `ANTHROPIC_BASE_URL` +
+`ANTHROPIC_AUTH_TOKEN` (OpenRouter) ao lado de 2 sessões autenticadas pela
+assinatura claude.ai. As 2 sessões claude.ai criaram socket em
+`/run/user/1000/cc-socks/` no MESMO instante em que subiram; a sessão GLM
+ficou viva (`ps` confirmou o processo rodando, prompt na tela) mas **nunca
+criou socket nenhum**, e `ListAgents` nunca a listou — não é lentidão de
+inicialização (40s+ de diferença contra as outras duas, que foram
+instantâneas).
+
+Causa: o registro de peer e `SendMessage`/`ListAgents` são infraestrutura
+ligada à conta claude.ai — a mesma que os conectores nativos (Beehiiv,
+Gmail) usam, e que o `CLAUDE.md` (#5608/#6714) já documenta como
+desabilitada por autenticação via gateway. O que esta medição acrescenta:
+**a mensageria entre sessões cai junto**, não só os conectores. Uma sessão
+autenticada por gateway não tem conta ali pra se registrar.
+
+Consequência de desenho, direta: **um lane em modelo de gateway só pode
+receber trabalho por invocação** (`claude -p`, como este harness faz via
+`hermes/scripts/claude-openrouter.sh` UMA VEZ por unidade) — nunca como
+sessão de vida longa que o coordenador desperta com `SendMessage`. Não há
+conserto deste lado (a malha de peers é do produto, fora deste repo); o
+valor de registrar isto é impedir que uma sessão futura tente a mesma forma
+achando que é questão de flag. Achado completo, com os comandos e a saída
+de `ps`/`ListAgents`: #6947.
+
 ## Custo de referência medido
 
 | dia | modelo | requests | USD | USD/request |
@@ -211,4 +246,6 @@ teto do `CLAUDE.md`), #6922 (o modo de falha "para cedo e relata bem" que
 motiva o critério de morte 2), #6941 (review do harness — achados que
 endureceram `--tools`, `status`/infra-error, e moveram claim-issue pra
 fora do script), #6954 (unidade 2 real expôs o gap "abriu PR" vs. "PR
-mergeou" e o CI-wait dentro da unidade; adiciona `--pr N`).
+mergeou" e o CI-wait dentro da unidade; adiciona `--pr N`), #6947 (sessão
+paralela autenticada por gateway não registra peer — testada e descartada,
+motivo direto de o harness invocar por unidade).
