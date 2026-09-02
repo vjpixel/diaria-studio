@@ -4,12 +4,15 @@
  *
  * Task diária (18:20 BRT — ver `scripts/lib/scheduled-tasks.ts`, ~2h20 após
  * o disparo das 16:00): checa se `diaria-edicao-diaria.timer` produziu
- * `data/editions/{AAMMDD}/` pra edição de amanhã num dia domingo-quinta, e
+ * `data/editions/{YYMM}/{AAMMDD}/` pra edição de amanhã num dia domingo-quinta, e
  * distingue "nunca disparou" de "disparou e falhou" via
  * `data/overnight-schedule.log`. "Disparou e pulou por idempotência"
  * (edição já iniciada à mão pelo editor) é tratado como caso legítimo —
- * `data/editions/{AAMMDD}/` existindo já é suficiente pra não alarmar,
- * independente de como chegou lá.
+ * a edição existindo em disco já é suficiente pra não alarmar, independente
+ * de como chegou lá. Desde o #6898 o alarme também consulta se a unit está
+ * `disabled` (automação desligada de propósito → `timer-disabled`, não
+ * alarma) e checa os DOIS layouts de `data/editions/` — os dois defeitos que
+ * o faziam acusar edição preparada todo dia desde meados de agosto/2026.
  *
  * Lógica pura em `scripts/lib/edicao-diaria-staleness-alarm.ts` — este
  * arquivo é só I/O (leitura do log, `existsSync`, envio de e-mail,
@@ -39,6 +42,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { nextEditionDate } from "./lib/next-edition-date.ts";
+import { queryTaskArmed } from "./lib/scheduled-task-status.ts";
 import {
   findLastEdicaoLogEntry,
   isEdicaoDiariaScheduledWeekday,
@@ -48,8 +52,11 @@ import {
   emptyEdicaoDiariaStalenessAlarmState,
   buildEdicaoDiariaStalenessAlarmEmail,
   isAlarmingVerdict,
+  edicaoDirCandidates,
+  TIMER_DISABLED_CROSS_MACHINE_CAVEAT,
   type EdicaoDiariaStalenessAlarmState,
   type EdicaoDiariaStalenessEvaluation,
+  type EdicaoTimerState,
 } from "./lib/edicao-diaria-staleness-alarm.ts";
 import {
   planAlarmReconciliation,
@@ -67,6 +74,9 @@ const STATE_PATH = join(DATA_DIR, ".edicao-diaria-staleness-alarm-state.json");
 const ALARM_ISSUES_STATE_PATH = join(DATA_DIR, ".edicao-diaria-staleness-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[edicao-diaria-staleness-alarm]";
+/** Task do registro que ARMA a edição diária — não confundir com
+ * `Diaria-Edicao-Diaria-Staleness-Alarm`, que é esta task de alarme. */
+const EDICAO_TASK_NAME = "Diaria-Edicao-Diaria";
 /** Cadência diária — 2 execuções limpas consecutivas = 2 dias úteis sem o
  * achado antes de fechar a issue sozinha (mesmo valor usado por outros
  * alarmes diários do lote #5112, ex: `clarice-opens-catchup-alarm.ts`). */
@@ -83,8 +93,9 @@ export function toAlarmFinding(evaluation: EdicaoDiariaStalenessEvaluation): Ala
       `verdict=${evaluation.verdict} para edição ${evaluation.aammdd}.`,
       "",
       evaluation.verdict === "alarm-never-fired"
-        ? "Nenhuma linha em data/overnight-schedule.log menciona esta edição — o timer " +
-          "diaria-edicao-diaria.timer não disparou hoje (ou nunca foi armado/reiniciado). " +
+        ? "Nenhuma linha em data/overnight-schedule.log menciona esta edição e a unit NÃO está " +
+          "`disabled` (se estivesse, o verdict seria timer-disabled e não haveria alarme, #6898) — " +
+          "o timer diaria-edicao-diaria.timer não disparou hoje. " +
           "Verificar `systemctl --user list-timers diaria-edicao-diaria.timer` e " +
           "`systemctl --user status diaria-edicao-diaria.service`."
         : evaluation.verdict === "alarm-failed"
@@ -148,6 +159,38 @@ function saveAlarmIssuesState(state: AlarmIssuesState): void {
   writeFileAtomic(ALARM_ISSUES_STATE_PATH, JSON.stringify(state, null, 2) + "\n");
 }
 
+/**
+ * #6898 defeito 1 — a edição existe? O layout canônico é
+ * `data/editions/{YYMM}/{AAMMDD}/` (`editionDir`, #2463); o alarme checava
+ * `data/editions/{AAMMDD}/` (flat) e por isso afirmava "não foi preparada"
+ * sobre edições completas em disco. O flat continua sendo consultado como
+ * FALLBACK porque `data/editions/` ainda tem resquícios não migrados
+ * (`260708` etc., a migração do #2463 é gated) — checar os dois é o que
+ * mantém o alarme correto durante e depois da migração.
+ */
+function edicaoExists(aammdd: string): boolean {
+  return edicaoDirCandidates(aammdd).some((rel) => existsSync(resolve(ROOT, rel)));
+}
+
+/**
+ * #6898 defeito 2 — o timer está armado? Sem isso, "desligado de propósito"
+ * e "quebrado em silêncio" são o MESMO estado observável pro alarme, e ele
+ * acusa o editor todo dia por uma automação que o próprio editor desligou.
+ * Traduz o resultado de `queryTaskArmed` (4 estados) pros 3 que a lógica
+ * pura distingue — só `disabled` silencia, ver `EdicaoTimerState`.
+ */
+function queryTimerState(): EdicaoTimerState {
+  try {
+    const armed = queryTaskArmed(EDICAO_TASK_NAME);
+    if (armed.state === "disabled") return "disabled";
+    if (armed.state === "armed") return "armed";
+    return "unknown";
+  } catch (e) {
+    console.warn(`${LOG_PREFIX} falha ao consultar armamento do timer — tratando como unknown: ${(e as Error).message}`);
+    return "unknown";
+  }
+}
+
 async function main(): Promise<void> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
@@ -157,12 +200,21 @@ async function main(): Promise<void> {
   const now = new Date();
   const aammdd = nextEditionDate(now);
   const isScheduledDay = isEdicaoDiariaScheduledWeekday(now);
-  const editionExists = existsSync(join(DATA_DIR, "editions", aammdd));
+  const editionExists = edicaoExists(aammdd);
+  // `skipped` NÃO é um EdicaoTimerState — é só rótulo de log (#6898, finding
+  // 3 do review): quando a edição existe, o evaluator nunca consulta
+  // `timerState`, e imprimir `unknown` faria uma consulta NÃO FEITA parecer
+  // uma consulta inconclusiva pra quem debugga pelo .alarm.log.
+  const timerState: EdicaoTimerState = editionExists ? "unknown" : queryTimerState();
+  const timerStateLabel = editionExists ? "skipped" : timerState;
+  if (timerState === "disabled") {
+    console.warn(`${LOG_PREFIX} ${TIMER_DISABLED_CROSS_MACHINE_CAVEAT}`);
+  }
   const lastEntry = editionExists ? null : findLastEdicaoLogEntry(readScheduleLogLines(), aammdd);
 
-  const evaluation = evaluateEdicaoDiariaStaleness(aammdd, isScheduledDay, editionExists, lastEntry, now);
+  const evaluation = evaluateEdicaoDiariaStaleness(aammdd, isScheduledDay, editionExists, lastEntry, now, timerState);
   console.log(
-    `${LOG_PREFIX} aammdd=${aammdd} scheduledDay=${isScheduledDay} editionExists=${editionExists} verdict=${evaluation.verdict}`,
+    `${LOG_PREFIX} aammdd=${aammdd} scheduledDay=${isScheduledDay} editionExists=${editionExists} timerState=${timerStateLabel} verdict=${evaluation.verdict}`,
   );
 
   const state = loadState();
