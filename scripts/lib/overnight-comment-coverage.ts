@@ -141,7 +141,22 @@ export function deriveCandidateIssues(
       // comentário que diz "outra sessão já está trabalhando" não é
       // evidência de trabalho feito, é barulho.
       const motivo = typeof issue.motivo === "string" ? issue.motivo : null;
-      if (motivo === "deixado-para-o-helios" || motivo === "claimed-por-outra-sessao") continue;
+      // #7069 — a SEGUNDA exceção que a SKILL documenta, irmã das de
+      // coordenação acima: `sem-resposta` é o "decido depois" do briefing
+      // (Fase 0 passo 5). A SKILL é explícita — "a issue não foi prometida,
+      // então não recebe comentário". O comentário do #5777 existe pra
+      // gravar o VEREDITO da rodada de forma durável (a Triagem lê o
+      // GitHub, nunca o plan.json); aqui não há veredito: o editor decidiu
+      // não decidir. Escrever "o editor não respondeu" na issue é ruído,
+      // não sinal — mesmo raciocínio que já isentou `claimed-por-outra-sessao`.
+      // Motivo normal (`bloqueio-externo`, `ambigua`, `requer-sessao-local`…)
+      // segue exigindo comentário: a isenção é nominal, nunca por categoria.
+      if (
+        motivo === "deixado-para-o-helios" ||
+        motivo === "claimed-por-outra-sessao" ||
+        motivo === "sem-resposta"
+      )
+        continue;
       out.push({ number: issue.number, reason: "pulada-sem-comentario" });
       continue;
     }
