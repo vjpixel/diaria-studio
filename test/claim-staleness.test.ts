@@ -43,6 +43,47 @@ describe("flattenClaims", () => {
   it("sessão sem claimed_issues não gera entradas", () => {
     assert.deepEqual(flattenClaims([{ kind: "develop", machineTag: "neo", sessionId: "x" }]), []);
   });
+
+  it("#6623: quando claimed_issues_effective está presente, é a fonte usada — não claimed_issues bruto", () => {
+    // Cenário real do #6623: sessão STALE cujo claimed_issues bruto ainda
+    // lista a issue, mas claimed_issues_effective (calculado por
+    // listActiveSessions) já é vazio porque o claim não vale mais.
+    // flattenClaims deve seguir claimed_issues_effective, não o bruto.
+    const sessions: ClaimBearingSession[] = [
+      {
+        kind: "develop",
+        machineTag: "neo",
+        sessionId: "sess-stale",
+        claimed_issues: [5998],
+        claimed_issues_effective: [], // stale — o claim já não vale
+        claimed_issues_at: { "5998": "2026-08-20T00:00:00Z" },
+      },
+    ];
+    assert.deepEqual(flattenClaims(sessions), []);
+  });
+
+  it("#6623: claimed_issues_effective presente e não-vazio é usado tal qual (sessão viva)", () => {
+    const sessions: ClaimBearingSession[] = [
+      {
+        kind: "overnight",
+        machineTag: "helios",
+        sessionId: "sess-viva",
+        claimed_issues: [6051, 6185],
+        claimed_issues_effective: [6051, 6185],
+        claimed_issues_at: { "6051": "2026-08-20T00:00:00Z", "6185": "2026-08-21T00:00:00Z" },
+      },
+    ];
+    const entries = flattenClaims(sessions);
+    assert.equal(entries.length, 2);
+    assert.deepEqual(entries.map((e) => e.issueNumber), [6051, 6185]);
+  });
+
+  it("#6623: claimed_issues_effective AUSENTE cai no fallback claimed_issues bruto (fixture antiga, comportamento preservado)", () => {
+    const sessions: ClaimBearingSession[] = [
+      { kind: "continuo", machineTag: "helios", sessionId: "x", claimed_issues: [42] },
+    ];
+    assert.deepEqual(flattenClaims(sessions).map((e) => e.issueNumber), [42]);
+  });
 });
 
 describe("findAgedClaims", () => {

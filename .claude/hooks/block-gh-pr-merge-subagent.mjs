@@ -351,8 +351,28 @@ export function sessionsDir(repoRoot) {
  * `degraded: false` quando o diretório está simplesmente AUSENTE (estado
  * CONHECIDO — "nenhuma sessão registrada ainda", não incerteza) ou quando a
  * varredura inteira completou sem nenhuma falha individual.
+ *
+ * `opts.crossMachine` (#6621, default `false` — preserva o comportamento
+ * histórico para quem não passa a opção): quando `true`, a filtragem por
+ * `machineTag` (#5787 Defeito 2) é DESLIGADA e a varredura devolve
+ * coordenadoras de QUALQUER máquina. Existe porque o filtro por máquina tem
+ * dois papéis que o #6621 mostrou que não podem compartilhar o mesmo `Set`:
+ * (a) identificar "sou subagente de uma coordenadora LOCAL" — esse papel
+ * quer o filtro; (b) contar QUANTAS coordenadoras ativas existem pra decidir
+ * a leniência "sou a única, posso mergear sem lock" (`classifyMergeBlockCause`,
+ * branch `holder === null`) — esse papel é cross-máquina por natureza,
+ * porque o merge lock e o registro de sessão são compartilhados via OneDrive
+ * entre TODAS as máquinas do projeto. Com o filtro sempre ligado, uma
+ * coordenadora viva só em OUTRA máquina fazia essa contagem valer 0/1
+ * localmente, e a leniência liberava `gh pr merge` sem lock — o merge duplo
+ * que este guard inteiro existe pra evitar, por um caminho que a filtragem
+ * por máquina abria sem querer. O entrypoint CLI abaixo passa
+ * `crossMachine: true` para alimentar `classifyMergeBlockCause`; o default
+ * `false` é o que os testes deste módulo (e o único outro papel real do
+ * filtro) continuam exercitando.
  */
-export function readActiveCoordinatorScan(repoRoot, now = Date.now()) {
+export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {}) {
+  const crossMachine = opts.crossMachine === true;
   const dir = sessionsDir(repoRoot);
   const ids = new Set();
   let entries;
@@ -382,10 +402,12 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now()) {
       if (!record || typeof record !== "object") continue;
       if (!COORDINATOR_KINDS.has(record.kind)) continue;
       if (typeof record.sessionId !== "string" || record.sessionId === "") continue;
-      // #5787 Defeito 2: ignora sessões de outras máquinas — `data/sessions/`
-      // é compartilhado via OneDrive, e um coordenador em outra máquina não
-      // pode despachar subagente deste checkout.
-      if (typeof record.machineTag !== "string" || record.machineTag !== myTag) continue;
+      // #5787 Defeito 2 / #6621: ignora sessões de outras máquinas — SÓ
+      // quando `crossMachine` não foi pedido. `data/sessions/` é
+      // compartilhado via OneDrive; o chamador que precisa do conjunto
+      // GLOBAL (leniência de merge) passa `crossMachine: true` e este filtro
+      // não se aplica.
+      if (!crossMachine && (typeof record.machineTag !== "string" || record.machineTag !== myTag)) continue;
       const heartbeatIso = record.lastHeartbeat ?? record.startedAt;
       const heartbeatMs = Date.parse(heartbeatIso ?? "");
       if (!Number.isFinite(heartbeatMs)) continue;
@@ -421,8 +443,8 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now()) {
  * malformado, ou entrada sem os campos esperados são simplesmente ignorados —
  * nunca lança.
  */
-export function readActiveCoordinatorSessionIds(repoRoot, now = Date.now()) {
-  return readActiveCoordinatorScan(repoRoot, now).ids;
+export function readActiveCoordinatorSessionIds(repoRoot, now = Date.now(), opts = {}) {
+  return readActiveCoordinatorScan(repoRoot, now, opts).ids;
 }
 
 /** Resolve a tag de máquina atual — mesma função usada em `session-registry.ts`
@@ -885,7 +907,10 @@ if (
       // #6303 Finding B: usa a varredura completa (ids + degraded), não só o
       // Set — `shouldBlockGhPrMerge` precisa do sinal de degradação pra
       // decidir a leniência "solo".
-      const scan = readActiveCoordinatorScan(repoRoot);
+      // #6621: `crossMachine: true` — a decisão de bloqueio precisa do
+      // conjunto GLOBAL de coordenadoras (todas as máquinas), não só desta.
+      // Ver docstring de `readActiveCoordinatorScan` acima.
+      const scan = readActiveCoordinatorScan(repoRoot, Date.now(), { crossMachine: true });
       const grant = readLiveMergeGrantFor(repoRoot, payload.session_id);
       const ctx = {
         // #6296: os dois sinais que o guard passou a compor — a janela
