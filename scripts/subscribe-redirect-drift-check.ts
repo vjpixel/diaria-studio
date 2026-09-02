@@ -45,12 +45,11 @@
  * (confirmado 200 + marcadores presentes em 26/08/2026, ao escrever este
  * script — não repetido em teste automatizado, que usa fetch mockado).
  */
-import { existsSync, readFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { WORKER_DEV_HOST, EXPECTED_ROOT_MARKER, SAMPLE_ARCHIVE_SLUG, BROWSER_USER_AGENT } from "./lib/apex-cutover.ts";
@@ -72,6 +71,9 @@ import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
+  loadAlarmIssuesState,
+  saveAlarmIssuesState,
+  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
@@ -105,31 +107,11 @@ export function loadState(statePath: string = STATE_PATH): SubscribeDriftAlarmSt
   }
 }
 
-export function saveState(state: SubscribeDriftAlarmState, statePath: string = STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
-
-// ─── Estado (dedup/reconciliação de ISSUE por achado) ──────────────────────
-// Arquivo separado de STATE_PATH de propósito — mesmo racional de
-// hub-drift-check.ts/worker-drift-check.ts: idempotência do E-MAIL (acima) e
-// tracking de ISSUE por achado são preocupações independentes.
-
-export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
-  if (!existsSync(statePath)) return emptyAlarmIssuesState();
-  try {
-    const raw = JSON.parse(readFileSync(statePath, "utf8"));
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
-    return emptyAlarmIssuesState();
-  } catch {
-    return emptyAlarmIssuesState();
-  }
-}
-
-export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
+// saveState/loadAlarmIssuesState/saveAlarmIssuesState: consolidados em
+// scripts/lib/alarm-issues.ts (#7124) — importados acima. Arquivo separado
+// de STATE_PATH de propósito: idempotência do E-MAIL (acima) e tracking de
+// ISSUE por achado são preocupações independentes.
+export { saveState };
 
 /** Converte um `DriftCheckResult` quebrado ("broken"/"error") no
  * `AlarmFinding` genérico que `scripts/lib/alarm-issues.ts` consome. `check`
@@ -255,7 +237,7 @@ async function main(): Promise<void> {
   // não-dry-run, independente de um e-mail novo disparar nesta rodada.
   const brokenResults = results.filter((r) => r.status === "broken" || r.status === "error");
   const alarmFindings = brokenResults.map(toAlarmFinding);
-  const alarmState = loadAlarmIssuesState();
+  const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
   let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
 
   if (isDryRun) {
@@ -269,7 +251,7 @@ async function main(): Promise<void> {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
-    saveAlarmIssuesState(nextState);
+    saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
     issueRefs = new Map(
       findingOutcomes.map((o) => [
         o.fingerprint,
@@ -309,7 +291,7 @@ async function main(): Promise<void> {
   }
 
   const nextFingerprint = pending ? computeSubscribeDriftFingerprint(results) : null;
-  saveState(advanceSubscribeDriftState(nextFingerprint, new Date()));
+  saveState(advanceSubscribeDriftState(nextFingerprint, new Date()), STATE_PATH);
 }
 
 if (isMainModule(import.meta.url)) {

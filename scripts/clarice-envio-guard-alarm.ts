@@ -31,12 +31,11 @@
  * alarmaria, ou vice-versa) — 1 alarme por `aammdd`, mesmo que esta task
  * rode mais de 1x no mesmo dia.
  */
-import { existsSync, readFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { datePartsInTz, toAammdd, BRT_TIMEZONE } from "./lib/next-edition-date.ts";
@@ -54,6 +53,9 @@ import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
+  loadAlarmIssuesState,
+  saveAlarmIssuesState,
+  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
@@ -82,31 +84,9 @@ export function loadState(statePath: string = STATE_PATH): EnvioGuardAlarmState 
   }
 }
 
-export function saveState(state: EnvioGuardAlarmState, statePath: string = STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
-
-// ─── Estado (dedup/reconciliação de ISSUE por achado, #5339) ──────────────
-// Arquivo separado de STATE_PATH de propósito — mesmo racional do lote 1/3:
-// idempotência do E-MAIL (acima) e tracking de ISSUE são preocupações
-// independentes.
-
-export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
-  if (!existsSync(statePath)) return emptyAlarmIssuesState();
-  try {
-    const raw = JSON.parse(readFileSync(statePath, "utf8"));
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
-    return emptyAlarmIssuesState();
-  } catch {
-    return emptyAlarmIssuesState();
-  }
-}
-
-export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
+// saveState/loadAlarmIssuesState/saveAlarmIssuesState: consolidados em
+// scripts/lib/alarm-issues.ts (#7124) — importados acima.
+export { saveState };
 
 /** Converte uma avaliação NÃO-ok no `AlarmFinding` genérico que
  * `scripts/lib/alarm-issues.ts` consome (#5339). `check` fixo
@@ -237,7 +217,7 @@ async function main(): Promise<void> {
   // e-mail, mesmo padrão do lote 1/3. Roda toda execução não-dry-run,
   // independente de o e-mail idempotente disparar nesta rodada.
   const alarmFindings: AlarmFinding[] = evaluation.verdict !== "ok" ? [toAlarmFinding(evaluation, aammdd)] : [];
-  const alarmState = loadAlarmIssuesState();
+  const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
   let issueRef: { issueNumber: number | null; url: string | null; action: string; error?: string } | undefined;
 
   if (isDryRun) {
@@ -251,7 +231,7 @@ async function main(): Promise<void> {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
-    saveAlarmIssuesState(nextState);
+    saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
     const outcome = findingOutcomes[0];
     if (outcome) {
       issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
@@ -281,7 +261,7 @@ async function main(): Promise<void> {
     return;
   }
   await sendGmailMessage(to, subject, body);
-  saveState(markGuardAlarmed(state, aammdd));
+  saveState(markGuardAlarmed(state, aammdd), STATE_PATH);
   console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (aammdd=${aammdd}, verdict=${evaluation.verdict}).`);
 }
 

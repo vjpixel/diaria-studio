@@ -63,6 +63,9 @@ import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
+  loadAlarmIssuesState,
+  saveAlarmIssuesState,
+  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
@@ -166,10 +169,9 @@ export function loadState(statePath: string = STATE_PATH): PostmasterStaleAlarmS
   }
 }
 
-export function saveState(state: PostmasterStaleAlarmState, statePath: string = STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
+// saveState: consolidado em scripts/lib/alarm-issues.ts (#7124) — importado
+// acima.
+export { saveState };
 
 // #5446 item 2 — load/save do streak de ausência de campaignSpam, mesmo
 // fail-soft/formato de loadState/saveState acima (arquivo separado).
@@ -200,21 +202,8 @@ export function saveCampaignSpamMissingState(
 // STATE_PATH de propósito, mesmo racional dos alarmes já wired: idempotência
 // do E-MAIL e tracking de ISSUE são preocupações independentes.
 
-export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
-  if (!existsSync(statePath)) return emptyAlarmIssuesState();
-  try {
-    const raw = JSON.parse(readFileSync(statePath, "utf8"));
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
-    return emptyAlarmIssuesState();
-  } catch {
-    return emptyAlarmIssuesState();
-  }
-}
-
-export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
+// loadAlarmIssuesState/saveAlarmIssuesState: consolidados em
+// scripts/lib/alarm-issues.ts (#7124) — importados acima.
 
 async function main(): Promise<void> {
   loadProjectEnv(ROOT);
@@ -259,7 +248,7 @@ async function main(): Promise<void> {
       ? [toCampaignSpamMissingFinding(newCampaignSpamMissingState)]
       : []),
   ];
-  const alarmState = loadAlarmIssuesState();
+  const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
   type IssueRef = { issueNumber: number | null; url: string | null; action: string; error?: string };
   let issueRefs: Map<string, IssueRef> | undefined;
 
@@ -274,7 +263,7 @@ async function main(): Promise<void> {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
-    saveAlarmIssuesState(nextAlarmIssuesState);
+    saveAlarmIssuesState(nextAlarmIssuesState, ALARM_ISSUES_STATE_PATH);
     issueRefs = new Map(
       findingOutcomes.map((o) => [o.check, { issueNumber: o.issueNumber, url: o.url, action: o.action, error: o.error }]),
     );
@@ -330,7 +319,7 @@ async function main(): Promise<void> {
     console.log(`${LOG_PREFIX} --dry-run: estado NÃO avançado.`);
     return;
   }
-  saveState(newState);
+  saveState(newState, STATE_PATH);
   saveCampaignSpamMissingState(newCampaignSpamMissingState);
 }
 

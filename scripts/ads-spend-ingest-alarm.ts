@@ -36,12 +36,11 @@
  * e-mail, 1×/dia) + `data/aquisicao/.ads-spend-ingest-alarm-issues.json`
  * (tracking de issue por achado, `alarm-issues.ts`).
  */
-import { existsSync, readFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import {
@@ -58,6 +57,8 @@ import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
+  saveAlarmIssuesState,
+  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
   type AlarmIssueResult,
@@ -123,11 +124,12 @@ function loadState(statePath: string): AdsSpendIngestAlarmState {
   }
 }
 
-function saveState(state: AdsSpendIngestAlarmState, statePath: string): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
+// saveState/saveAlarmIssuesState: consolidados em scripts/lib/alarm-issues.ts
+// (#7124) — importados acima.
 
+// loadAlarmIssuesState continua LOCAL (#7124) — diverge do padrão comum ao
+// logar o parse error via console.error, não só um catch silencioso; não
+// forçado para o helper genérico pra não perder o diagnóstico.
 function loadAlarmIssuesState(statePath: string): AlarmIssuesState {
   if (!existsSync(statePath)) return emptyAlarmIssuesState();
   try {
@@ -140,11 +142,6 @@ function loadAlarmIssuesState(statePath: string): AlarmIssuesState {
     );
     return emptyAlarmIssuesState();
   }
-}
-
-function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
 }
 
 async function main(): Promise<void> {

@@ -68,6 +68,8 @@ import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
+  saveAlarmIssuesState,
+  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
   type AlarmIssueResult,
@@ -142,12 +144,14 @@ function loadState(): OnedriveSyncAlarmState {
   }
 }
 
-function saveState(state: OnedriveSyncAlarmState): void {
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileAtomic(STATE_PATH, JSON.stringify(state, null, 2) + "\n");
-}
+// saveState/saveAlarmIssuesState: consolidados em scripts/lib/alarm-issues.ts
+// (#7124) — importados acima (DATA_DIR === dirname(STATE_PATH) ===
+// dirname(ALARM_ISSUES_STATE_PATH), então o helper genérico é equivalente).
 
 // ─── Estado (dedup/reconciliação de ISSUE por achado — alarm-issues.ts) ────
+// loadAlarmIssuesState continua LOCAL (#7124) — diverge do padrão comum ao
+// logar o parse error via console.error, não só um catch silencioso; não
+// forçado para o helper genérico pra não perder o diagnóstico.
 
 function loadAlarmIssuesState(): AlarmIssuesState {
   if (!existsSync(ALARM_ISSUES_STATE_PATH)) return emptyAlarmIssuesState();
@@ -161,11 +165,6 @@ function loadAlarmIssuesState(): AlarmIssuesState {
     );
     return emptyAlarmIssuesState();
   }
-}
-
-function saveAlarmIssuesState(state: AlarmIssuesState): void {
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileAtomic(ALARM_ISSUES_STATE_PATH, JSON.stringify(state, null, 2) + "\n");
 }
 
 export function toAlarmFinding(verdict: OnedriveSyncAlarmVerdict, serviceState: OnedriveServiceState): AlarmFinding {
@@ -245,7 +244,7 @@ async function main(): Promise<void> {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
-    saveAlarmIssuesState(nextState);
+    saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
     const outcome = findingOutcomes[0];
     if (outcome) {
       issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
@@ -279,7 +278,7 @@ async function main(): Promise<void> {
     return;
   }
   await sendGmailMessage(to, subject, body);
-  saveState(markOnedriveSyncAlarmed(evaluation.verdict));
+  saveState(markOnedriveSyncAlarmed(evaluation.verdict), STATE_PATH);
   console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (verdict=${evaluation.verdict}).`);
 }
 

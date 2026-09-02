@@ -31,12 +31,11 @@
  *
  * Estado (idempotência): `data/clarice-subscribers/opens-catchup-alarm-state.json`.
  */
-import { existsSync, readFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import type { OpensCatchupStatus } from "./lib/extract-opens-catchup-status.ts";
@@ -53,6 +52,9 @@ import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
+  loadAlarmIssuesState,
+  saveAlarmIssuesState,
+  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
@@ -119,31 +121,9 @@ export function loadState(statePath: string = STATE_PATH): OpensCatchupAlarmStat
   }
 }
 
-export function saveState(state: OpensCatchupAlarmState, statePath: string = STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
-
-// ─── Estado (dedup/reconciliação de ISSUE por achado, #5339) ──────────────
-// Arquivo separado de STATE_PATH de propósito — mesmo racional do lote 1/3:
-// idempotência do E-MAIL (acima) e tracking de ISSUE são preocupações
-// independentes.
-
-export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
-  if (!existsSync(statePath)) return emptyAlarmIssuesState();
-  try {
-    const raw = JSON.parse(readFileSync(statePath, "utf8"));
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
-    return emptyAlarmIssuesState();
-  } catch {
-    return emptyAlarmIssuesState();
-  }
-}
-
-export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
+// saveState/loadAlarmIssuesState/saveAlarmIssuesState: consolidados em
+// scripts/lib/alarm-issues.ts (#7124) — importados acima.
+export { saveState };
 
 function loadStatus(statusPath: string = STATUS_PATH): OpensCatchupStatus {
   if (!existsSync(statusPath)) {
@@ -184,7 +164,7 @@ async function main(): Promise<void> {
   // já idempotente por streak via `lastAlarmedAt`).
   const alarmFindings: AlarmFinding[] =
     newState.consecutiveFailures >= CONSECUTIVE_FAILURE_THRESHOLD ? [toAlarmFinding(newState, latestError)] : [];
-  const alarmState = loadAlarmIssuesState();
+  const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
   let issueRef: { issueNumber: number | null; url: string | null; action: string; error?: string } | undefined;
 
   if (isDryRun) {
@@ -198,7 +178,7 @@ async function main(): Promise<void> {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
-    saveAlarmIssuesState(nextAlarmIssuesState);
+    saveAlarmIssuesState(nextAlarmIssuesState, ALARM_ISSUES_STATE_PATH);
     const outcome = findingOutcomes[0];
     if (outcome) {
       issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
@@ -228,7 +208,7 @@ async function main(): Promise<void> {
     console.log(`${LOG_PREFIX} --dry-run: estado NÃO avançado.`);
     return;
   }
-  saveState(newState);
+  saveState(newState, STATE_PATH);
 }
 
 if (isMainModule(import.meta.url)) {
