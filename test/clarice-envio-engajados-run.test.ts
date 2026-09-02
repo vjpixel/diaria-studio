@@ -48,7 +48,15 @@ const CYCLE = "2608-09";
 const AAMMDD = "260902";
 const LOCKED_SUBJECT = "Assunto travado do dia";
 
-function readiness(over: Partial<ResolveLatestMonthlyCycleResult> = {}): ResolveLatestMonthlyCycleResult {
+// `ResolveLatestMonthlyCycleResult` é união discriminada (ciclo resolvido ×
+// ciclo ausente), e `Partial<A | B>` distribui em `Partial<A> | Partial<B>` —
+// o spread com o ramo ausente produzia `cycle: string | null`, que não casa
+// NENHUM dos dois membros (TS2322). Este helper só monta o ramo RESOLVIDO
+// (os dois call sites passam ciclo real ou nada), então o override é tipado
+// contra esse membro em vez da união inteira — sem cast.
+type ResolvedMonthlyCycle = Extract<ResolveLatestMonthlyCycleResult, { cycle: string }>;
+
+function readiness(over: Partial<ResolvedMonthlyCycle> = {}): ResolveLatestMonthlyCycleResult {
   return { cycle: CYCLE, subject: "x", fallback: false, checked: [], ...over };
 }
 
