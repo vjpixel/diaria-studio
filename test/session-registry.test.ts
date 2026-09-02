@@ -58,6 +58,7 @@ import {
   CLOCK_SKEW_TOLERANCE_MS,
   type MergeLockIo,
   type SessionRecord,
+  type MergeGrant,
   type PromotionRemoveIo,
 } from "../scripts/lib/session-registry.ts";
 
@@ -3017,7 +3018,11 @@ describe("#6952 (2ª metade) — merge_grant sobrevive à união de cópias de c
       grantedAt: "2026-09-01T11:00:00.000Z",
       consumedAt: "2026-09-01T11:05:00.000Z",
     };
-    const novoVivo = { ...GRANT, grantedAt: "2026-09-01T12:30:00.000Z" };
+    // Tipado explicitamente: `assert.deepEqual` é uma assertion function
+    // (`asserts actual is T`), então sem isto ela ESTREITA
+    // `merged.merge_grant` pro tipo do literal — que não tem `consumedAt` — e
+    // a asserção seguinte não compila no `tsconfig.test.json`.
+    const novoVivo: MergeGrant = { ...GRANT, grantedAt: "2026-09-01T12:30:00.000Z" };
     const a: SessionRecord = {
       ...BASE,
       lastHeartbeat: "2026-09-01T12:30:00.000Z",
