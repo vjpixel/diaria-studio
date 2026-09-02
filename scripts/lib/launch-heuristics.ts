@@ -1568,17 +1568,103 @@ export function isNonProductOfficialPost(article: Article): boolean {
   return NON_PRODUCT_OFFICIAL_PATTERNS.some((p) => p.test(title));
 }
 
-export function categorize(article: Article): Category {
+/**
+ * União fechada dos 41 IDs de regra que `categorizeWithRule` pode devolver —
+ * fonte única é `CATEGORIZATION_RULE_IDS` logo abaixo (`as const`), o tipo
+ * literal é derivado dela (`(typeof ...)[number]`) em vez de escrito à mão —
+ * um id novo em `categorizeWithRule` que não entrar aqui quebra o typecheck
+ * (#6647 review: `rule: string` deixava id trocado por copy-paste entre dois
+ * branches passar batido, silenciosamente incorreto pro consumidor de
+ * `analyze-bucket-overrides.ts --rules`).
+ */
+const CATEGORIZATION_RULE_IDS = [
+  "video-url",
+  "course-page",
+  "tutorial-domain",
+  "tutorial-pattern",
+  "use-melhor-specificity",
+  "pesquisa-domain-offtopic",
+  "pesquisa-domain",
+  "pesquisa-pattern-offtopic",
+  "pesquisa-pattern",
+  "tutorial-keyword",
+  "tutorial-domain-extra",
+  "tutorial-title-extra",
+  "lancamento-research-path",
+  "lancamento-research-slug",
+  "lancamento-roundup",
+  "lancamento-non-launch-path",
+  "lancamento-openai-frontiers",
+  "lancamento-first-party-tooling-blog",
+  "lancamento-pre-existence",
+  "lancamento-incremental-third-party",
+  "lancamento-non-product-official",
+  "lancamento-type-hint",
+  "lancamento-how-collective",
+  "lancamento-business-deal",
+  "lancamento-non-product-announcement",
+  "lancamento-customer-story",
+  "lancamento-update",
+  "lancamento-report",
+  "lancamento-explainer-title",
+  "lancamento-likely-news",
+  "lancamento-third-party-blog",
+  "lancamento-research-result",
+  "lancamento-logistics-milestone",
+  "lancamento-customer-slug",
+  "lancamento-research-title",
+  "lancamento-technique-title",
+  "lancamento-type-hint-pesquisa",
+  "lancamento-type-hint-noticia",
+  "lancamento-default",
+  "type-hint-pesquisa-secondary",
+  "noticias-default",
+] as const;
+
+// Guard de unicidade: TypeScript colapsa literais repetidos numa união
+// (`"a" | "a"` vira `"a"`) sem avisar — a única forma de pegar um id
+// duplicado por copy-paste entre 2 branches semanticamente diferentes é
+// checar em runtime, no import do módulo (falha alto e cedo, não só quando
+// o teste dedicado a isso rodar).
+if (new Set(CATEGORIZATION_RULE_IDS).size !== CATEGORIZATION_RULE_IDS.length) {
+  throw new Error(
+    "[launch-heuristics] CATEGORIZATION_RULE_IDS tem id(s) duplicado(s) — dois branches de categorizeWithRule() usam o mesmo rule id.",
+  );
+}
+
+export type CategorizationRule = (typeof CATEGORIZATION_RULE_IDS)[number];
+
+export interface CategorizationResult {
+  category: Category;
+  /**
+   * ID estável (kebab-case) da regra/sinal que decidiu o bucket — ou um dos
+   * dois defaults silenciosos do motor (`lancamento-default`/
+   * `noticias-default`) quando nenhum sinal específico disparou. #6647: só
+   * instrumentação — não influencia `category`, que é sempre o mesmo valor
+   * que `categorize()` já devolvia. Ver `isFallbackCategorizationRule`.
+   */
+  rule: CategorizationRule;
+}
+
+/**
+ * #6647: mesmo motor de decisão de `categorize()` abaixo, mas devolvendo
+ * também QUAL regra disparou — permite medir, por artigo, se o bucket veio
+ * de sinal forte (domínio/pattern dedicado, type_hint do agent, título) ou
+ * de um dos dois defaults silenciosos ao final de cada bloco. `categorize()`
+ * é um wrapper fino sobre esta função (mesmo código, uma única fonte de
+ * verdade) — a categoria devolvida nunca pode divergir entre as duas.
+ */
+export function categorizeWithRule(article: Article): CategorizationResult {
   const { host, full } = hostAndPath(article.url);
 
   // -1. Vídeo — detectado antes de qualquer outra regra (#359).
   //     URLs de YouTube/Vimeo nunca caem em noticias/lancamento nem são
   //     descartadas como redes sociais. Precedência absoluta.
-  if (isVideoUrl(article.url)) return "video";
+  if (isVideoUrl(article.url)) return { category: "video", rule: "video-url" };
 
   // 0a. #1754: página de curso/formação — sinal forte de USE MELHOR. Vence o
   //     type_hint=noticia do agent (Haiku lê landing de formação e rotula mal).
-  if (isCoursePage(article.url)) return "tutorial";
+  if (isCoursePage(article.url)) return { category: "tutorial", rule: "course-page" };
 
   // 0. Tutorial — domínio/pattern DEDICADO (alta confiança).
   //    Ordem: domínio > pattern > pesquisa > keyword > lancamento > default.
@@ -1587,8 +1673,10 @@ export function categorize(article: Article): Category {
   // #1712: o domínio/pattern de tutorial é forte, mas esses blogs também postam
   // notícia/comentário/análise. Desclassificar (cair pro fluxo geral) quando há
   // sinal claro de não-tutorial — senão use_melhor fica poluído.
-  if (TUTORIAL_DOMAINS.has(host) && !isNewsNotTutorial(article)) return "tutorial";
-  if (TUTORIAL_PATTERNS.some((p) => p.test(full)) && !isNewsNotTutorial(article)) return "tutorial";
+  if (TUTORIAL_DOMAINS.has(host) && !isNewsNotTutorial(article)) return { category: "tutorial", rule: "tutorial-domain" };
+  if (TUTORIAL_PATTERNS.some((p) => p.test(full)) && !isNewsNotTutorial(article)) {
+    return { category: "tutorial", rule: "tutorial-pattern" };
+  }
 
   // #1899 (Slice 2) / #2176 (path-mais-específico-vence):
   //
@@ -1611,7 +1699,7 @@ export function categorize(article: Article): Category {
     : (USE_MELHOR_PREFIXES.length > 0 && matchesUseMelhorPrefix(article.url, USE_MELHOR_PREFIXES) ? true : null);
 
   if (_useMelhorBySpecificity === true && !isNewsNotTutorial(article)) {
-    return "tutorial";
+    return { category: "tutorial", rule: "use-melhor-specificity" };
   }
   // _useMelhorBySpecificity === false → URL pertence a uma fonte NOT use_melhor
   // (ex: 'Google' em blog.google) com path mais específico — não rotear pra
@@ -1631,16 +1719,16 @@ export function categorize(article: Article): Category {
     // e eles dificilmente chegam ao gate editorial.
     if (!isArxivRelevant(article)) {
       console.error(`[categorize] arXiv off-topic → noticias: ${article.url}`); // #699
-      return "noticias";
+      return { category: "noticias", rule: "pesquisa-domain-offtopic" };
     }
-    return "pesquisa";
+    return { category: "pesquisa", rule: "pesquisa-domain" };
   }
   if (PESQUISA_PATTERNS.some((p) => p.test(full))) {
     if (!isArxivRelevant(article)) {
       console.error(`[categorize] arXiv off-topic → noticias: ${article.url}`); // #699
-      return "noticias";
+      return { category: "noticias", rule: "pesquisa-pattern-offtopic" };
     }
-    return "pesquisa";
+    return { category: "pesquisa", rule: "pesquisa-pattern" };
   }
 
   // 1b. Tutorial por keyword — só depois da checagem de pesquisa.
@@ -1651,7 +1739,9 @@ export function categorize(article: Article): Category {
   // com keyword how-to no título (ex: "Introducing Gemma 4 — how to get started") não
   // devem virar tutorial. isLaunchSlug dentro de isNewsNotTutorial é o discriminante.
   const _isMarkCase = isMarketingCaseStudy(article.title ?? "", article.summary ?? "");
-  if (isTutorialByKeyword(article) && !_isMarkCase && !isNewsNotTutorial(article)) return "tutorial";
+  if (isTutorialByKeyword(article) && !_isMarkCase && !isNewsNotTutorial(article)) {
+    return { category: "tutorial", rule: "tutorial-keyword" };
+  }
 
   // 1c. Tutorial por domínio extra ou título (domínio oficial mas conteúdo é tutorial).
   //     Aplicado ANTES do check de lançamento para que AWS ML Blog etc. não virem
@@ -1661,8 +1751,12 @@ export function categorize(article: Article): Category {
   // Exemplo real 260616: AWS ML Blog "Introducing Gemma 4 on Amazon Bedrock" — o
   // domínio era tutorial (aws ML blog), mas o slug e o tipo revelam lançamento.
   // Antes: `isTutorialByDomainExtra` retornava "tutorial" sem olhar o conteúdo.
-  if (isTutorialByDomainExtra(article.url) && !isNewsNotTutorial(article)) return "tutorial";
-  if (isTutorialByTitleExtra(article) && !_isMarkCase && !isNewsNotTutorial(article)) return "tutorial";
+  if (isTutorialByDomainExtra(article.url) && !isNewsNotTutorial(article)) {
+    return { category: "tutorial", rule: "tutorial-domain-extra" };
+  }
+  if (isTutorialByTitleExtra(article) && !_isMarkCase && !isNewsNotTutorial(article)) {
+    return { category: "tutorial", rule: "tutorial-title-extra" };
+  }
 
   // 2. Lançamento (domínio oficial) — mas só se o tema for realmente
   //    anúncio de produto/feature. Desclassificar:
@@ -1684,37 +1778,39 @@ export function categorize(article: Article): Category {
     // iniciativa de pesquisa/deployment (Google Research + Earth Fire
     // Alliance), não produto — caiu em LANÇAMENTO indevidamente por domínio
     // oficial + verbo ("join").
-    if (/\/(research|google-research)\//.test(full)) return "pesquisa";
+    if (/\/(research|google-research)\//.test(full)) return { category: "pesquisa", rule: "lancamento-research-path" };
     // #1852: sigla de conferência no slug (cvpr/neurips/...) → pesquisa, mesmo
     // que o agent rotule launch. Caso 260605: blogs.nvidia.com/blog/cvpr-research-…
-    if (isResearchBySlug(article.url)) return "pesquisa";
+    if (isResearchBySlug(article.url)) return { category: "pesquisa", rule: "lancamento-research-slug" };
     // #3638: roundup/newsletter em blog oficial (ex: langchain.com/blog
     // monthly newsletter, caso real 260630) → noticias, não lancamento.
     // Mesmo sinal já usado no gate de tutorial (step 0) — sem este check,
     // adicionar um domínio ao LANCAMENTO_DOMAINS/PATTERNS (ex: LangChain,
     // #3628) faz posts de roundup caírem no default "lancamento" no fim
     // deste bloco em vez de "noticias".
-    if (isRoundupSlug(article.url, article.title ?? "")) return "noticias";
-    if (isNonLaunchPath(article.url)) return "noticias"; // #898
+    if (isRoundupSlug(article.url, article.title ?? "")) return { category: "noticias", rule: "lancamento-roundup" };
+    if (isNonLaunchPath(article.url)) return { category: "noticias", rule: "lancamento-non-launch-path" }; // #898
     // #1852: customer story "Frontiers" da OpenAI → noticias. Caso 260605:
     // openai.com/index/endava-frontiers. Roda antes do short-circuit type_hint.
-    if (isOpenAIFrontiersStory(article.url)) return "noticias";
+    if (isOpenAIFrontiersStory(article.url)) return { category: "noticias", rule: "lancamento-openai-frontiers" };
     // #1852: HF /blog/ sobre CLI/SDK própria = post de design da ferramenta, não
     // a página oficial do produto (#160). Caso 260605: hf-cli-for-agents. Roda
     // ANTES do short-circuit type_hint — o agent às vezes lê o post e o rotula
     // launch, mas o editor (260605) move pra RADAR; o blog não é a página do
     // produto. Escopo conservador (host HF + /blog/ + token cli/sdk) evita pegar
     // model release.
-    if (isFirstPartyToolingBlog(article.url)) return "noticias";
+    if (isFirstPartyToolingBlog(article.url)) return { category: "noticias", rule: "lancamento-first-party-tooling-blog" };
 
     // #1759: re-anúncio de produto pré-existente → noticias. Roda ANTES do
-    // short-circuit type_hint=lancamento: o agent às vezes rotula re-anúncio/
+    // short-circuit type_hint==='lancamento': o agent às vezes rotula re-anúncio/
     // expansão como launch, e o sinal de pré-existência é autoritativo.
     //   (a) texto explícito ("available since", "lançado em {ano}", expansão regional);
     //   (b) versão-ponto (X.Y, Y≥1) em blog de TERCEIRO (huggingface.co) — não é
     //       link oficial (#160) e a versão .1/.5 implica predecessor. Caso Holo3.1.
-    if (hasPreExistenceSignal(article)) return "noticias";
-    if (isIncrementalReleaseOnThirdPartyBlog(article)) return "noticias";
+    if (hasPreExistenceSignal(article)) return { category: "noticias", rule: "lancamento-pre-existence" };
+    if (isIncrementalReleaseOnThirdPartyBlog(article)) {
+      return { category: "noticias", rule: "lancamento-incremental-third-party" };
+    }
 
     // #5995 item 3 (modo de falha 1 — lancamento→radar, 34 casos): domínio
     // oficial é condição NECESSÁRIA, não suficiente (#160 pelo lado que falta).
@@ -1726,59 +1822,67 @@ export function categorize(article: Article): Category {
     // "Start the semester with one year of Gemini, on us". Roda ANTES do
     // short-circuit type_hint (mesma posição de hasPreExistenceSignal): o sinal
     // lexical do título é mais confiável que o hint do Haiku pra essas classes.
-    if (isNonProductOfficialPost(article)) return "noticias";
+    if (isNonProductOfficialPost(article)) return { category: "noticias", rule: "lancamento-non-product-official" };
 
     // #1173/#1453: type_hint=lancamento do source-researcher (Haiku que LEU
     // a página) curto-circuita TODAS as heurísticas defensivas abaixo.
     // Agent leu o conteúdo, é o sinal mais autoritativo. Caso: agent confirma
     // launch mesmo que título tenha "delivers" ou path tenha customer-name.
-    if (article.type_hint === "lancamento") return "lancamento";
+    if (article.type_hint === "lancamento") return { category: "lancamento", rule: "lancamento-type-hint" };
 
     // #5995 (260828): "How {coletivo} ..." — ver isHowCollectiveReportTitle
     // acima pro porquê de rodar aqui (pós-short-circuit type_hint) e não
     // dentro de isNonProductOfficialPost.
-    if (isHowCollectiveReportTitle(article)) return "noticias";
+    if (isHowCollectiveReportTitle(article)) return { category: "noticias", rule: "lancamento-how-collective" };
 
-    if (isBusinessDeal(article)) return "noticias";
-    if (isNonProductAnnouncement(article)) return "noticias";
-    if (isCustomerStory(article)) return "noticias"; // #898
-    if (isUpdate(article)) return "noticias";
-    if (isReport(article)) return "noticias"; // #1096 — relatórios/análises não são lançamentos
+    if (isBusinessDeal(article)) return { category: "noticias", rule: "lancamento-business-deal" };
+    if (isNonProductAnnouncement(article)) return { category: "noticias", rule: "lancamento-non-product-announcement" };
+    if (isCustomerStory(article)) return { category: "noticias", rule: "lancamento-customer-story" }; // #898
+    if (isUpdate(article)) return { category: "noticias", rule: "lancamento-update" };
+    if (isReport(article)) return { category: "noticias", rule: "lancamento-report" }; // #1096 — relatórios/análises não são lançamentos
     // #1698 — "How X helps", "Why...", "Beyond..." em blog oficial = explainer.
     // Roda APÓS o short-circuit type_hint==='lancamento' (acima): isso é
     // intencional. Se o agent LEU a página e confirmou lançamento, ele vence o
     // heurístico de título — reordenar geraria falso-positivo em launch blogs com
     // título explainer ("Why we built X", sem verbo de anúncio). O override de
     // explainer cobre o gap real do #1698: itens de RSS/websearch SEM type_hint.
-    if (isExplainerByTitle(article)) return "noticias";
-    if (isLikelyNewsNotLaunch(article.title ?? "")) return "noticias"; // #1442 — "X for {Country}" / "for Countries" / eventos / conferences / awards
-    if (isThirdPartyBlogAboutOtherCompany(article.url)) return "noticias"; // #1472 — HF blog about NVIDIA etc.
+    if (isExplainerByTitle(article)) return { category: "noticias", rule: "lancamento-explainer-title" };
+    if (isLikelyNewsNotLaunch(article.title ?? "")) {
+      return { category: "noticias", rule: "lancamento-likely-news" }; // #1442 — "X for {Country}" / "for Countries" / eventos / conferences / awards
+    }
+    if (isThirdPartyBlogAboutOtherCompany(article.url)) {
+      return { category: "noticias", rule: "lancamento-third-party-blog" }; // #1472 — HF blog about NVIDIA etc.
+    }
 
     // #1453: resultado científico/prova matemática em domínio que normalmente
     // seria lançamento → pesquisa. Caso real 260522:
     // openai.com/index/model-disproves-discrete-geometry-conjecture.
-    if (isLikelyResearchResult(article)) return "pesquisa";
+    if (isLikelyResearchResult(article)) return { category: "pesquisa", rule: "lancamento-research-result" };
 
     // #1453: milestone de logística/entrega em domínio oficial → noticias.
     // Caso real 260522: blogs.nvidia.com/blog/vera-cpu-delivery/.
-    if (isLogisticsMilestone(article)) return "noticias";
+    if (isLogisticsMilestone(article)) return { category: "noticias", rule: "lancamento-logistics-milestone" };
 
     // #1453: slug single-token com nome de cliente em URL (ex:
     // openai.com/index/adventhealth, /databricks, /kpmg) → noticias.
     // Combinado com !hasLaunchVerb pra cobrir edge case "single-token
     // brand launching" (raro). type_hint=lancamento já curto-circuitou
     // acima — esse path só roda quando agent NÃO confirmou launch.
-    if (isCustomerSlug(article.url) && !hasLaunchVerb(article)) return "noticias";
+    if (isCustomerSlug(article.url) && !hasLaunchVerb(article)) {
+      return { category: "noticias", rule: "lancamento-customer-slug" };
+    }
 
     // #486: títulos de pesquisa em domínio oficial → reclassificar como pesquisa
-    if (RESEARCH_IN_LAUNCH_DOMAIN.test(article.title ?? "")) return "pesquisa";
+    if (RESEARCH_IN_LAUNCH_DOMAIN.test(article.title ?? "")) return { category: "pesquisa", rule: "lancamento-research-title" };
     // #1544: technique/methodology posts in official blogs → pesquisa
-    if (TECHNIQUE_IN_LAUNCH_DOMAIN.test(article.title ?? "")) return "pesquisa";
+    if (TECHNIQUE_IN_LAUNCH_DOMAIN.test(article.title ?? "")) return { category: "pesquisa", rule: "lancamento-technique-title" };
 
     // #1173: outros type_hints (pesquisa/noticia/analise/opiniao) também
     // vencem heurística — agent leu o conteúdo.
-    if (article.type_hint === "pesquisa") return "pesquisa";
-    if (article.type_hint === "noticia" || article.type_hint === "opiniao" || article.type_hint === "analise") return "noticias";
+    if (article.type_hint === "pesquisa") return { category: "pesquisa", rule: "lancamento-type-hint-pesquisa" };
+    if (article.type_hint === "noticia" || article.type_hint === "opiniao" || article.type_hint === "analise") {
+      return { category: "noticias", rule: "lancamento-type-hint-noticia" };
+    }
 
     // #898 / #1453: as overrides acima cobrem os falso-positivos comuns.
     // Default `lancamento` mantido pra títulos product-name-only ("Gemini 2.0",
@@ -1787,13 +1891,57 @@ export function categorize(article: Article): Category {
     // peças canônicas — preferimos os 3 detectores específicos (#1453:
     // research-result, logistics-milestone, customer-slug) pra zerar os
     // falso-positivos da 260522 sem quebrar produtos nome-only.
-    return "lancamento";
+    return { category: "lancamento", rule: "lancamento-default" };
   }
 
   // 3. type_hint "pesquisa" como sinal secundário — ignorado em veículos jornalísticos
   //    que cobrem pesquisas mas não as produzem (#356).
-  if (article.type_hint === "pesquisa" && !NOTICIAS_DOMAINS.has(host)) return "pesquisa";
+  if (article.type_hint === "pesquisa" && !NOTICIAS_DOMAINS.has(host)) {
+    return { category: "pesquisa", rule: "type-hint-pesquisa-secondary" };
+  }
 
   // 4. Default: notícia
-  return "noticias";
+  return { category: "noticias", rule: "noticias-default" };
+}
+
+/**
+ * Assinatura estável pré-#6647 — mantida como wrapper fino sobre
+ * `categorizeWithRule` (mesma fonte de decisão, nunca duplicada) para não
+ * quebrar os ~30 importadores existentes que só precisam do bucket.
+ */
+export function categorize(article: Article): Category {
+  return categorizeWithRule(article).category;
+}
+
+/**
+ * Subunião explícita dos 2 pontos de fallback verdadeiros — fato sobre QUAL
+ * literal foi usado, não sobre como ele foi grafado (#6647 review: checar
+ * `rule.endsWith("-default")` deixava renomear um default sem manter o
+ * sufixo, ou adicionar um 3º que não o use, degradar a medição em
+ * silêncio — a lista abaixo é o único lugar que decide isso agora).
+ */
+const FALLBACK_CATEGORIZATION_RULE_IDS = ["lancamento-default", "noticias-default"] as const;
+
+export type FallbackCategorizationRule = (typeof FALLBACK_CATEGORIZATION_RULE_IDS)[number];
+
+const FALLBACK_CATEGORIZATION_RULE_SET: ReadonlySet<string> = new Set(FALLBACK_CATEGORIZATION_RULE_IDS);
+
+/**
+ * true só para os dois pontos de fallback verdadeiros de `categorizeWithRule`
+ * (`lancamento-default`/`noticias-default`) — nenhum sinal específico
+ * disparou, o motor decidiu por exclusão de todas as regras acima. Todo
+ * outro `rule` id representa um sinal concreto (domínio dedicado, pattern,
+ * type_hint do agent, título) — "regra forte" no vocabulário da #6647.
+ * Único ponto que interpreta isso — consumidores (ex:
+ * `analyze-bucket-overrides.ts`) não devem re-derivar de outra forma.
+ *
+ * Parâmetro é `string`, não `CategorizationRule`: o principal chamador fora
+ * deste módulo (`analyze-bucket-overrides.ts --rules`) lê `category_rule` de
+ * JSON persistido (`01-categorized.json`) — fronteira de `JSON.parse`, sem
+ * garantia estática de que o valor bate a união. Um `CategorizationRule`
+ * (subtipo de `string`) passa aqui sem cast, então chamadas internas não
+ * perdem precisão por isso.
+ */
+export function isFallbackCategorizationRule(rule: string): boolean {
+  return FALLBACK_CATEGORIZATION_RULE_SET.has(rule);
 }
