@@ -5,7 +5,9 @@ import {
   checkRescheduleAllowed,
   isSameInstant,
   applyRescheduleVerifyResults,
+  surfaceScheduleWarning,
   SCHEDULE_AT_MIN_LEAD_MS,
+  SCHEDULE_AT_WARNING_PREFIX,
   type CampaignEntry,
 } from "../scripts/clarice-schedule-group.ts";
 import { scheduledAtForDate } from "../scripts/lib/clarice-wave-plan.ts";
@@ -228,6 +230,87 @@ describe("resolveScheduleAtArg (#7042 — antecedência mínima, incidente 01/09
       if (!("error" in result)) throw new Error("unreachable");
       assert.match(result.error, /deve estar no futuro/);
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // Achado 6a (fleet review): formatLeadTime não é exportado — coberto
+  // indiretamente via a mensagem de erro do guard de antecedência mínima
+  // (mesmo padrão já usado pelos testes "30s"/"5 min" acima). Faltava o
+  // caso "horas com minutos residuais" (ex: 90min → "1h30min").
+  // -------------------------------------------------------------------------
+  it("90 min no futuro → erro cita '1h30min' (formatLeadTime: horas com minutos residuais, nunca testado antes)", () => {
+    const raw = new Date(NOW.getTime() + 90 * 60_000).toISOString();
+    const result = resolveScheduleAtArg(raw, NOW);
+    assert.ok("error" in result);
+    if (!("error" in result)) throw new Error("unreachable");
+    assert.match(result.error, /1h30min/);
+  });
+
+  // -------------------------------------------------------------------------
+  // Achado 6b (fleet review): isCanonicalHour é um AND de 4 termos (hora,
+  // minuto, segundo, milissegundo) — só a HORA diferente (17:00 vs 09:00)
+  // era exercitada. Cobre os 3 termos restantes isoladamente: hora CERTA,
+  // mas minuto/segundo/milissegundo não-zero também deve gerar o warning.
+  // -------------------------------------------------------------------------
+  it("hora canônica (09) mas MINUTO não-zero (09:05:00.000Z) → warning (isCanonicalHour: termo minuto)", () => {
+    const raw = "2026-09-02T09:05:00.000Z";
+    const result = resolveScheduleAtArg(raw, NOW);
+    assert.ok("scheduledAt" in result, `esperava sucesso, recebeu erro: ${"error" in result ? result.error : ""}`);
+    if (!("scheduledAt" in result)) throw new Error("unreachable");
+    assert.ok(result.warning, "esperava warning — 09:05 não é o horário canônico exato");
+    assert.match(result.warning as string, /fora do horário canônico/i);
+  });
+
+  it("hora canônica (09) mas SEGUNDO não-zero (09:00:05.000Z) → warning (isCanonicalHour: termo segundo)", () => {
+    const raw = "2026-09-02T09:00:05.000Z";
+    const result = resolveScheduleAtArg(raw, NOW);
+    assert.ok("scheduledAt" in result, `esperava sucesso, recebeu erro: ${"error" in result ? result.error : ""}`);
+    if (!("scheduledAt" in result)) throw new Error("unreachable");
+    assert.ok(result.warning, "esperava warning — 09:00:05 não é o horário canônico exato");
+    assert.match(result.warning as string, /fora do horário canônico/i);
+  });
+
+  it("hora canônica (09:00:00) mas MILISSEGUNDO não-zero (09:00:00.500Z) → warning (isCanonicalHour: termo milissegundo)", () => {
+    const raw = "2026-09-02T09:00:00.500Z";
+    const result = resolveScheduleAtArg(raw, NOW);
+    assert.ok("scheduledAt" in result, `esperava sucesso, recebeu erro: ${"error" in result ? result.error : ""}`);
+    if (!("scheduledAt" in result)) throw new Error("unreachable");
+    assert.ok(result.warning, "esperava warning — 09:00:00.500 não é o horário canônico exato");
+    assert.match(result.warning as string, /fora do horário canônico/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #7042 (fleet review, achado P2) — surfaceScheduleWarning: os 2 call sites
+// de main() (--create/--reschedule) compartilham este helper mínimo pra
+// surfacear `warning`. main() não é testável direto (padrão pré-existente
+// deste arquivo — nenhum teste chama main()), então o helper que os 2 call
+// sites de fato usam é testado aqui: se um call site parar de chamá-lo (ou
+// um 3º nascer sem chamá-lo), o comportamento de logging correto ainda
+// precisa passar por ESTE ponto único testado.
+// ---------------------------------------------------------------------------
+
+describe("surfaceScheduleWarning (#7042 — ponto único que os 2 call sites de main() compartilham)", () => {
+  it("branch de sucesso COM warning → logFn chamado com o texto exato do warning", () => {
+    const calls: string[] = [];
+    surfaceScheduleWarning({ scheduledAt: "2026-09-02T17:00:00.000Z", warning: `${SCHEDULE_AT_WARNING_PREFIX} fora do canônico` }, (m) => calls.push(m));
+    assert.deepEqual(calls, [`${SCHEDULE_AT_WARNING_PREFIX} fora do canônico`]);
+  });
+
+  it("branch de sucesso SEM warning (horário canônico) → logFn NUNCA chamado", () => {
+    const calls: string[] = [];
+    surfaceScheduleWarning({ scheduledAt: "2026-09-02T09:00:00.000Z" }, (m) => calls.push(m));
+    assert.deepEqual(calls, []);
+  });
+
+  it("branch 'ausente' ({ scheduledAt: undefined }) → logFn NUNCA chamado", () => {
+    const calls: string[] = [];
+    surfaceScheduleWarning({ scheduledAt: undefined }, (m) => calls.push(m));
+    assert.deepEqual(calls, []);
+  });
+
+  it("default logFn é console.error (smoke test — não lança sem 2º argumento)", () => {
+    assert.doesNotThrow(() => surfaceScheduleWarning({ scheduledAt: undefined }));
   });
 });
 
