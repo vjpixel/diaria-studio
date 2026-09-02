@@ -61,9 +61,11 @@ describe("matchingSetGuards — um path por regra", () => {
     assert.ok(report.hits.some((h) => h.ruleId === "hub-page-drift"));
   });
 
-  it("hub-page-drift: workers/arquivo/src/hubs/meta.ts", () => {
-    const report = matchingSetGuards(["workers/arquivo/src/hubs/meta.ts"]);
-    assert.ok(report.hits.some((h) => h.ruleId === "hub-page-drift"));
+  it("hub-page-drift: workers/arquivo/src/hubs/** (meta.ts e os *.generated.ts committed)", () => {
+    const meta = matchingSetGuards(["workers/arquivo/src/hubs/meta.ts"]);
+    assert.ok(meta.hits.some((h) => h.ruleId === "hub-page-drift"));
+    const generated = matchingSetGuards(["workers/arquivo/src/hubs/anthropic-claude.generated.ts"]);
+    assert.ok(generated.hits.some((h) => h.ruleId === "hub-page-drift"));
   });
 
   it("hub-page-drift: scripts/build-hub-page.ts", () => {

@@ -96,7 +96,11 @@ export const SET_GUARDS: readonly SetGuardRule[] = [
     triggerPatterns: ["workers/*/wrangler.toml", "workers/*/src/**"],
     reason:
       "converter um worker de static assets pra scripted (ganhar main=/src/index.ts) muda QUEM entra na " +
-      "varredura — o próprio incidente de origem desta issue (#7030/PR #7038)",
+      "varredura — o próprio incidente de origem desta issue (#7030/PR #7038). ESCOPO HONESTO: não cobre " +
+      "editar um arquivo em scripts/lib/** que já É reachable por um worker EXISTENTE (o incidente original " +
+      "do #4318) — isso exigiria conhecer o grafo de imports pra saber quais scripts/lib/** afetam qual " +
+      "worker, o que este mapa por PADRÃO DE PATH não calcula; cobrir só quando o CONJUNTO de workers muda " +
+      "(entra/converte um worker) é o recorte deliberado desta issue",
   },
   {
     id: "hub-page-drift",
@@ -106,7 +110,7 @@ export const SET_GUARDS: readonly SetGuardRule[] = [
     testFiles: ["test/hub-page-drift.test.ts", "test/hub-index-page-drift.test.ts"],
     triggerPatterns: [
       "scripts/lib/hubs/**",
-      "workers/arquivo/src/hubs/meta.ts",
+      "workers/arquivo/src/hubs/**",
       "scripts/build-hub-page.ts",
       "scripts/lib/shared/hub-page.ts",
       "scripts/lib/shared/hub-index-page.ts",
