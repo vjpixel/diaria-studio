@@ -1469,10 +1469,10 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       "e checkbox aberto em issue fora-de-rodada (padrões 3/4)",
     steps: [{ key: "reconcile", script: "scripts/backlog-reconcile.ts" }],
     logPath: "backlog-reconcile/.reconcile.log",
-    // 10:10 BRT — logo depois do Diaria-Session-Registry-SafeBackup-Alarm
-    // (10:05, acima), fechando o cluster matinal de checks/alarmes
-    // 09:00-10:20 (ver grep de `kind: "daily"` neste arquivo) sem colidir
-    // com nenhuma outra entrada já registrada.
+    // 10:10 BRT — fim do cluster matinal de checks/alarmes 09:00-10:20 (ver
+    // grep de `kind: "daily"` neste arquivo) sem colidir com nenhuma outra
+    // entrada já registrada. O slot 10:05, que precedia este até o corte
+    // de Diaria-Session-Registry-SafeBackup-Alarm (#6798 item 5), está livre.
     schedule: { kind: "daily", hour: 10, minute: 10 },
     // Sem guard — `fetchOpenBacklog` já é fail-soft (falha do `gh` devolve
     // `null`, o CLI aborta com exit 1 sem escrever nada; nunca trata "gh
