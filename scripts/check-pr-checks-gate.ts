@@ -4,9 +4,15 @@
  *
  * CLI pra condição 1 do gate de merge autônomo (overnight/develop/continuo)
  * — ver `scripts/lib/pr-checks-gate.ts` pra lógica pura/docs completas.
- * Este arquivo só chama `gh pr view --json statusCheckRollup`, trata falha
- * de comando/JSON malformado como veredito `"error"` (nunca como "0 checks
- * reprovados") e imprime o resultado.
+ * Este arquivo só chama `gh pr view --json statusCheckRollup,mergeable,commits`,
+ * trata falha de comando/JSON malformado como veredito `"error"` (nunca
+ * como "0 checks reprovados") e imprime o resultado. `commits` alimenta a
+ * heurística de janela de corrida do #7060 (`headCommittedAt` —
+ * `evaluatePrChecksGate`): um veredito fail/pass que se resolveu poucos
+ * segundos após o push do commit HEAD sai como `pending` em vez de ser
+ * aceito — o merge ref pode não ter sido recalculado ainda pelo GitHub, e
+ * o chamador já trata `pending` como "tenta de novo", que é a reconfirmação
+ * de fato (o poll seguinte reflete o estado real).
  *
  * Substitui `gh pr checks {N} --json bucket --jq '...'`, que não roda no
  * `gh` 2.46.0 do `helios` (apt do Ubuntu — `--json` só chegou em `gh pr
@@ -21,7 +27,8 @@
  * pode mergear, só pra decidir a mensagem):
  *   0 = pass                (verdict "pass" — autorizado)
  *   1 = fail                (ao menos 1 check reprovado)
- *   2 = pending             (checks ainda rodando, ou nenhum check registrado ainda)
+ *   2 = pending             (checks ainda rodando, nenhum check registrado ainda, ou dentro da janela
+ *                            de corrida do #7060 — fail/pass que resolveu segundos após o push do HEAD)
  *   3 = error               (gh falhou, PR inexistente, JSON malformado, payload sem statusCheckRollup)
  *   4 = blocked_by_conflict (#6768 — PR CONFLICTING com a base; CI nunca vai rodar pra este SHA,
  *                            nenhuma espera resolve — precisa merge/rebase com a base primeiro)
@@ -39,19 +46,37 @@ interface GhPrViewStatusCheckRollup {
   statusCheckRollup?: unknown;
   /** `"MERGEABLE" | "CONFLICTING" | "UNKNOWN"` — ver #6768/`evaluatePrChecksGate`. */
   mergeable?: unknown;
+  /** #7060: usado só pra extrair `committedDate` do commit HEAD (último
+   * item) — mesma convenção de campo já usada em
+   * `check-branch-issue-consistency.ts`. */
+  commits?: unknown;
 }
 
 /**
- * Busca `statusCheckRollup` (+ `mergeable`, #6768) via `gh pr view`. Fail-hard
- * por design (ao contrário do gate de label #5821, que é hygiene e pode
- * fail-soft): esta é a condição 1 de um gate que AUTORIZA merge — qualquer
- * falha de comando vira `verdict: "error"`, nunca `"pass"`, e o entrypoint
- * sai com código != 0. Nunca lança.
+ * #7060: `committedDate` do ÚLTIMO commit da lista (`gh pr view --json
+ * commits` retorna em ordem cronológica — o mesmo pressuposto já feito por
+ * `check-branch-issue-consistency.ts`), que é o commit HEAD atual. `null`
+ * se o campo faltar/tiver shape inesperado/lista vazia — nunca lança;
+ * chamador trata como "sem dado pra heurística de corrida", que é o
+ * comportamento pré-#7060.
+ */
+function extractHeadCommittedAt(commits: unknown): string | null {
+  if (!Array.isArray(commits) || commits.length === 0) return null;
+  const head = commits[commits.length - 1] as { committedDate?: unknown } | null;
+  return typeof head?.committedDate === "string" ? head.committedDate : null;
+}
+
+/**
+ * Busca `statusCheckRollup` (+ `mergeable`, #6768; + `commits`, #7060) via
+ * `gh pr view`. Fail-hard por design (ao contrário do gate de label #5821,
+ * que é hygiene e pode fail-soft): esta é a condição 1 de um gate que
+ * AUTORIZA merge — qualquer falha de comando vira `verdict: "error"`,
+ * nunca `"pass"`, e o entrypoint sai com código != 0. Nunca lança.
  */
 function fetchPrChecksGate(prNumber: number, cwd: string): PrChecksGateResult {
   const result = spawnSync(
     "gh",
-    ["pr", "view", String(prNumber), "--json", "statusCheckRollup,mergeable"],
+    ["pr", "view", String(prNumber), "--json", "statusCheckRollup,mergeable,commits"],
     { cwd, encoding: "utf8", timeout: 30_000 },
   );
 
@@ -96,7 +121,8 @@ function fetchPrChecksGate(prNumber: number, cwd: string): PrChecksGateResult {
   const payload = parsed as GhPrViewStatusCheckRollup;
   const rollup = payload.statusCheckRollup;
   const mergeable = typeof payload.mergeable === "string" ? payload.mergeable : undefined;
-  return evaluatePrChecksGate(rollup, { mergeable });
+  const headCommittedAt = extractHeadCommittedAt(payload.commits) ?? undefined;
+  return evaluatePrChecksGate(rollup, { mergeable, headCommittedAt });
 }
 
 const EXIT_CODES: Record<PrChecksGateResult["verdict"], number> = {
