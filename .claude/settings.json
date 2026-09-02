@@ -178,9 +178,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/subagent-review-registry-start.mjs\"",
-            "shell": "bash",
-            "timeout": 10
+            "command": "node",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/subagent-review-registry-start.mjs"
+            ]
           }
         ]
       }
@@ -190,9 +192,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/subagent-review-registry-stop.mjs\"",
-            "shell": "bash",
-            "timeout": 10
+            "command": "node",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/subagent-review-registry-stop.mjs"
+            ]
           }
         ]
       }
