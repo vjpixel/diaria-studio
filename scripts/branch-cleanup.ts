@@ -14,6 +14,21 @@
  *   npx tsx scripts/branch-cleanup.ts                # dry-run (default) — relatório, gh NÃO apaga nada
  *   npx tsx scripts/branch-cleanup.ts --push          # apaga as safe-delete/safe-remove de verdade
  *   npx tsx scripts/branch-cleanup.ts --skip-worktrees # só branches, não mexe em worktree nenhum
+ *   npx tsx scripts/branch-cleanup.ts --push --confirm-shared # prossegue mesmo com sessão coordenadora ativa
+ *
+ * ## Guard de sessão compartilhada (#7044, P0 do review da PR #7044)
+ *
+ * Este script roda diariamente e desassistido (task `Diaria-Branch-Cleanup`,
+ * `--push`) num checkout compartilhado por overnight/develop/contínuo
+ * simultâneos — remove o MESMO tipo de recurso (worktree + branch) que
+ * `scripts/cleanup-merged-worktrees.ts`, que já resolvia este problema desde
+ * o #5156 item 9 e nunca era consultado aqui. Passo 0, ANTES de qualquer
+ * outro passo: `shouldSkipForSharedSession` (`scripts/lib/shared-session-guard.ts`)
+ * pula a varredura inteira quando há sessão COORDENADORA ativa não-stale,
+ * salvo `--confirm-shared`. Mesmo com `--confirm-shared`, um worktree cujo
+ * path consta em `worktrees` de QUALQUER sessão ativa (`activeSessionWorktreePaths`)
+ * nunca é `safe-remove` — ver `registeredBySession` em
+ * `classifyWorktreeForCleanup` (`scripts/lib/branch-cleanup.ts`).
  *
  * Passos (nesta ordem):
  *   1. `git worktree prune` — sempre roda, mesmo em dry-run (é uma operação
@@ -77,12 +92,20 @@ import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import {
   classifyBranchForCleanup,
   classifyWorktreeForCleanup,
+  hasRemovalFailure,
   parseWorktreeListPorcelain,
   type CleanupDecision,
   type PorcelainStatus,
   type PrState,
   type WorktreeCleanupDecision,
 } from "./lib/branch-cleanup.ts";
+import { isCoordinatorKind } from "./lib/session-registry.ts";
+import {
+  activeSessionWorktreePaths,
+  listActiveSessionsSafe,
+  normalizeWorktreePath,
+  shouldSkipForSharedSession,
+} from "./lib/shared-session-guard.ts";
 
 const LOG_PREFIX = "[branch-cleanup]";
 /** Generoso o bastante pra cobrir o volume medido na issue (745 branches
@@ -195,7 +218,30 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const push = hasFlag(argv, "push");
   const skipWorktrees = hasFlag(argv, "skip-worktrees");
+  const confirmShared = hasFlag(argv, "confirm-shared");
   const cwd = process.cwd();
+
+  // Passo 0 — guard de sessão compartilhada (#7044, P0 do review da PR
+  // #7044). Pula a varredura INTEIRA (nem prune, nem relatório) quando há
+  // ≥1 sessão coordenadora ativa não-stale, salvo --confirm-shared — mesmo
+  // desenho conservador de scripts/cleanup-merged-worktrees.ts (#5156 item
+  // 9): este script remove o MESMO tipo de recurso no MESMO checkout
+  // compartilhado.
+  const activeSessions = listActiveSessionsSafe(cwd, LOG_PREFIX);
+  if (shouldSkipForSharedSession(activeSessions, confirmShared)) {
+    const live = activeSessions.filter((s) => isCoordinatorKind(s.kind) && !s.stale);
+    const who = live.map((s) => `${s.kind}:${s.sessionId}`).join(", ");
+    console.warn(
+      `${LOG_PREFIX} ${live.length} sessão(ões) coordenadora(s) ativa(s) (não-stale) detectada(s) em ` +
+        `data/sessions/ (${who}) — pulando a varredura inteira (#5156 item 9, portado pro #7044): um worktree ` +
+        "ou branch ainda em uso por outra sessão poderia ser removido no meio do trabalho dela. Rode de novo com " +
+        "--confirm-shared se já confirmou que é seguro prosseguir mesmo assim.",
+    );
+    return;
+  }
+  // Worktrees de QUALQUER sessão ativa (não só coordenadora) — proteção
+  // aplicada mesmo com --confirm-shared, ver docstring do módulo (item 2).
+  const registeredWorktreePaths = activeSessionWorktreePaths(activeSessions);
 
   // Passo 1 — best-effort de verdade (nunca decide segurança de nada).
   const pruneOut = gitBestEffort(["worktree", "prune", "-v"], cwd);
@@ -284,12 +330,14 @@ async function main(): Promise<void> {
       if (wt.prunable) continue; // já coberto pelo passo 1, não deveria sobrar, mas defesa em profundidade
       const porcelainStatus = checkPorcelainStatus(wt.path, cwd);
       const branchDecision = wt.branch ? (branchDecisions.get(wt.branch) ?? null) : null;
+      const registeredBySession = registeredWorktreePaths.has(normalizeWorktreePath(wt.path));
       const decision = classifyWorktreeForCleanup({
         path: wt.path,
         branch: wt.branch,
         porcelainStatus,
         locked: wt.locked,
         branchDecision,
+        registeredBySession,
       });
       worktreeDecisions.push({ path: wt.path, branch: wt.branch, ...decision });
     }
@@ -306,6 +354,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Resultados de TODA remoção tentada (worktree + branch) — alimenta
+  // hasRemovalFailure (#7044 item 3) pro exitCode no fim. "Nada a remover"
+  // e "pulei por sessão ativa" (retorno antecipado acima) nunca empurram
+  // nada aqui, então continuam saindo exitCode 0 sem caso especial.
+  const removalResults: { ok: boolean }[] = [];
+
   // Worktrees primeiro (remover o worktree libera a branch pra --push do
   // passo seguinte, se ela também for safe-delete — ordem importa aqui).
   let removedWt = 0;
@@ -314,8 +368,15 @@ async function main(): Promise<void> {
       if (w.verdict !== "safe-remove") continue;
       // Re-checagem IMEDIATAMENTE antes da remoção — fecha a janela de
       // corrida entre a classificação (acima) e agora: outra sessão pode
-      // ter sujado o worktree nesse meio-tempo (checkout compartilhado é
-      // padrão conhecido deste repo). --force só é seguro com este recheck.
+      // ter sujado o worktree, OU passado a registrá-lo em session-registry.ts
+      // (#7044 item 2), nesse meio-tempo (checkout compartilhado é padrão
+      // conhecido deste repo). --force só é seguro com este recheck.
+      if (registeredWorktreePaths.has(normalizeWorktreePath(w.path))) {
+        console.error(
+          `${LOG_PREFIX} pulando remoção de ${w.path}: passou a constar em session-registry.ts entre classificação e remoção — provável sessão nova concorrente, needs-review nesta rodada.`,
+        );
+        continue;
+      }
       const recheckedStatus = checkPorcelainStatus(w.path, cwd);
       if (recheckedStatus !== "clean") {
         console.error(
@@ -324,6 +385,7 @@ async function main(): Promise<void> {
         continue;
       }
       const removeResult = execFileSyncCaptured(["worktree", "remove", "--force", w.path], cwd);
+      removalResults.push(removeResult);
       if (removeResult.ok) {
         removedWt++;
         console.log(`${LOG_PREFIX} worktree removido: ${w.path}`);
@@ -337,11 +399,21 @@ async function main(): Promise<void> {
   for (const [branch, d] of deletableBranchEntries) {
     if (d.verdict !== "safe-delete") continue;
     const deleteResult = execFileSyncCaptured(["branch", "-D", branch], cwd);
+    removalResults.push(deleteResult);
     if (deleteResult.ok) {
       removedBranches++;
     } else {
       console.error(`${LOG_PREFIX} falha ao apagar branch ${branch}: ${deleteResult.error}`);
     }
+  }
+
+  // #7044 item 3 — falha REAL de remoção agora propaga pro exitCode (antes
+  // só ia pro console.error, e a unit systemd sempre saía 0). "Nada a
+  // remover" e "pulei por sessão ativa" nunca chegam aqui com resultado
+  // algum, então continuam saindo 0 — só remoção que de fato falhou marca
+  // a execução.
+  if (hasRemovalFailure(removalResults)) {
+    process.exitCode = 1;
   }
 
   console.log(`${LOG_PREFIX} --push aplicado: ${removedBranches} branch(es) apagada(s), ${removedWt} worktree(s) removido(s).`);

@@ -3,8 +3,14 @@ import { describe, it } from "node:test";
 import {
   classifyBranchForCleanup,
   classifyWorktreeForCleanup,
+  hasRemovalFailure,
   parseWorktreeListPorcelain,
 } from "../scripts/lib/branch-cleanup.ts";
+import {
+  activeSessionWorktreePaths,
+  shouldSkipForSharedSession,
+} from "../scripts/lib/shared-session-guard.ts";
+import type { SessionRecord } from "../scripts/lib/session-registry.ts";
 
 describe("classifyBranchForCleanup (#6802)", () => {
   it("PR MERGED -> safe-delete, mesmo sem ser ancestral (caso real: squash-merge)", () => {
@@ -134,6 +140,7 @@ describe("classifyWorktreeForCleanup (#6802 item 3)", () => {
       porcelainStatus: "dirty",
       locked: false,
       branchDecision: { verdict: "safe-delete", reason: "PR MERGED" },
+      registeredBySession: false,
     });
     assert.equal(r.verdict, "needs-review");
     assert.match(r.reason, /mudança não commitada/);
@@ -146,6 +153,7 @@ describe("classifyWorktreeForCleanup (#6802 item 3)", () => {
       porcelainStatus: "unknown",
       locked: false,
       branchDecision: { verdict: "safe-delete", reason: "PR MERGED" },
+      registeredBySession: false,
     });
     assert.equal(r.verdict, "needs-review");
     assert.match(r.reason, /não deu pra confirmar/);
@@ -158,13 +166,21 @@ describe("classifyWorktreeForCleanup (#6802 item 3)", () => {
       porcelainStatus: "clean",
       locked: true,
       branchDecision: { verdict: "safe-delete", reason: "PR MERGED" },
+      registeredBySession: false,
     });
     assert.equal(r.verdict, "needs-review");
     assert.match(r.reason, /locked/);
   });
 
   it("detached (sem branch) -> sempre needs-review, mesmo limpo", () => {
-    const r = classifyWorktreeForCleanup({ path: "/x", branch: null, porcelainStatus: "clean", locked: false, branchDecision: null });
+    const r = classifyWorktreeForCleanup({
+      path: "/x",
+      branch: null,
+      porcelainStatus: "clean",
+      locked: false,
+      branchDecision: null,
+      registeredBySession: false,
+    });
     assert.equal(r.verdict, "needs-review");
     assert.match(r.reason, /detached/);
   });
@@ -176,6 +192,7 @@ describe("classifyWorktreeForCleanup (#6802 item 3)", () => {
       porcelainStatus: "clean",
       locked: false,
       branchDecision: { verdict: "safe-delete", reason: "PR MERGED encontrada (gh pr list --state all)" },
+      registeredBySession: false,
     });
     assert.equal(r.verdict, "safe-remove");
     assert.match(r.reason, /overnight\/fix-6413/);
@@ -188,7 +205,137 @@ describe("classifyWorktreeForCleanup (#6802 item 3)", () => {
       porcelainStatus: "clean",
       locked: false,
       branchDecision: { verdict: "needs-review", reason: "sem PR nenhuma" },
+      registeredBySession: false,
     });
     assert.equal(r.verdict, "needs-review");
+  });
+
+  it("#7044 P0: registeredBySession=true -> needs-review SEMPRE, mesmo com árvore limpa E branch safe-delete (worktree de sessão viva não pode ser removido só porque a árvore está limpa nesse instante)", () => {
+    const r = classifyWorktreeForCleanup({
+      path: "/x",
+      branch: "develop/fix-6802-branch-cleanup-task",
+      porcelainStatus: "clean",
+      locked: false,
+      branchDecision: { verdict: "safe-delete", reason: "PR MERGED encontrada (gh pr list --state all)" },
+      registeredBySession: true,
+    });
+    assert.equal(r.verdict, "needs-review");
+    assert.match(r.reason, /session-registry/);
+  });
+
+  it("#7044: registeredBySession é checado ANTES de locked/porcelain — razão reflete a sessão, não os outros sinais", () => {
+    const r = classifyWorktreeForCleanup({
+      path: "/x",
+      branch: "wip-branch",
+      porcelainStatus: "unknown",
+      locked: true,
+      branchDecision: null,
+      registeredBySession: true,
+    });
+    assert.equal(r.verdict, "needs-review");
+    assert.match(r.reason, /session-registry/, "a razão deve refletir o registro de sessão — checado primeiro, não os sinais git");
+  });
+});
+
+describe("hasRemovalFailure (#7044 item 3 do review da PR #7044)", () => {
+  it("lista vazia (nada a remover) -> false, exitCode continua 0", () => {
+    assert.equal(hasRemovalFailure([]), false);
+  });
+
+  it("só sucessos -> false", () => {
+    assert.equal(hasRemovalFailure([{ ok: true }, { ok: true }]), false);
+  });
+
+  it("pelo menos 1 falha real -> true, dispara process.exitCode = 1 no chamador", () => {
+    assert.equal(hasRemovalFailure([{ ok: true }, { ok: false }]), true);
+  });
+
+  it("todas falharam -> true", () => {
+    assert.equal(hasRemovalFailure([{ ok: false }, { ok: false }]), true);
+  });
+});
+
+/** Helper de fixture — nunca lê data/sessions/ real (#7044, ver instrução da tarefa). */
+function fakeSession(overrides: Partial<SessionRecord> = {}): SessionRecord {
+  return {
+    kind: "overnight",
+    machineTag: "test-machine",
+    sessionId: "sess-1",
+    startedAt: new Date().toISOString(),
+    lastHeartbeat: new Date().toISOString(),
+    stale: false,
+    ...overrides,
+  };
+}
+
+describe("shouldSkipForSharedSession portado pro branch-cleanup.ts (#7044, reusa scripts/lib/shared-session-guard.ts)", () => {
+  it("sessão coordenadora ativa NÃO-stale presente -> pula (nenhuma remoção acontece)", () => {
+    const active = [fakeSession({ kind: "develop", stale: false })];
+    assert.equal(shouldSkipForSharedSession(active, false), true);
+  });
+
+  it("sessão coordenadora só STALE presente -> NÃO pula (remoção prossegue)", () => {
+    const active = [fakeSession({ kind: "overnight", stale: true })];
+    assert.equal(shouldSkipForSharedSession(active, false), false);
+  });
+
+  it("sem nenhuma sessão ativa -> não pula (comportamento pré-#5156)", () => {
+    assert.equal(shouldSkipForSharedSession([], false), false);
+  });
+
+  it("--confirm-shared destrava mesmo com sessão coordenadora ativa", () => {
+    const active = [fakeSession({ kind: "continuo", stale: false })];
+    assert.equal(shouldSkipForSharedSession(active, true), false);
+  });
+});
+
+describe("activeSessionWorktreePaths (#7044 item 2)", () => {
+  it("worktree registrado por sessão ATIVA não-stale entra no conjunto", () => {
+    const active = [
+      fakeSession({
+        stale: false,
+        worktrees: [{ path: "/repo/.claude/worktrees/agent-abc" }],
+      }),
+    ];
+    const paths = activeSessionWorktreePaths(active);
+    assert.ok(paths.has("/repo/.claude/worktrees/agent-abc"));
+  });
+
+  it("worktree de sessão STALE não entra no conjunto — coerente com shouldSkipForSharedSession", () => {
+    const active = [
+      fakeSession({
+        stale: true,
+        worktrees: [{ path: "/repo/.claude/worktrees/agent-dead" }],
+      }),
+    ];
+    const paths = activeSessionWorktreePaths(active);
+    assert.equal(paths.size, 0);
+  });
+
+  it("sessão interativa (não-coordenadora) também protege o worktree dela — não filtra por kind", () => {
+    const active = [
+      fakeSession({
+        kind: "interactive",
+        stale: false,
+        worktrees: [{ path: "/repo/.claude/worktrees/agent-interactive" }],
+      }),
+    ];
+    const paths = activeSessionWorktreePaths(active);
+    assert.ok(paths.has("/repo/.claude/worktrees/agent-interactive"));
+  });
+
+  it("normaliza separador Windows e barra final, pra bater com paths do git worktree list local", () => {
+    const active = [
+      fakeSession({
+        stale: false,
+        worktrees: [{ path: "C:\\Users\\vjpix\\diaria-studio\\.claude\\worktrees\\agent-abc\\" }],
+      }),
+    ];
+    const paths = activeSessionWorktreePaths(active);
+    assert.ok(paths.has("C:/Users/vjpix/diaria-studio/.claude/worktrees/agent-abc"));
+  });
+
+  it("nenhuma sessão ativa -> conjunto vazio", () => {
+    assert.equal(activeSessionWorktreePaths([]).size, 0);
   });
 });
