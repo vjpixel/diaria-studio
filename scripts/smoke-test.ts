@@ -310,14 +310,6 @@ async function runWave2LibSmoke(): Promise<{ passed: number; failed: string[] }>
     failed.push(`published-newsletter schema: ${(e as Error).message}`);
   }
 
-  try {
-    const mod = await import("./lib/schemas/published-social.ts");
-    mod.parsePublishedSocial({ posts: [] });
-    passed.push("published-social schema");
-  } catch (e) {
-    failed.push(`published-social schema: ${(e as Error).message}`);
-  }
-
   // Helpers puros — só verifica que importam + executam basics
   try {
     const mod = await import("./lib/line-endings.ts");

@@ -44,9 +44,8 @@
  * cadastros não-atribuídos). UTM montado via `new URL()` + `searchParams`
  * (nunca concatenação) a partir do triplo único em
  * `scripts/lib/shared/utm-registry.ts` (`FACEBOOK_CTA_UTM`). O ponto final
- * da frase continua logo após a URL — preservado de propósito
- * (`.claude/agents/social-facebook.md:37`: o Facebook precisa do `https://`
- * pra auto-linkar e o ponto fecha a frase); o linkifier do Facebook para em
+ * da frase continua logo após a URL — preservado de propósito (o Facebook
+ * precisa do `https://` pra auto-linkar e o ponto fecha a frase); o linkifier do Facebook para em
  * pontuação terminal comum (`.`, `,`, `;`) que não faz parte da query string,
  * mesmo comportamento já confirmado ao vivo pro CTA de company page do
  * LinkedIn (`utm_source=linkedin&utm_medium=organic_social&utm_campaign=company_page_cta`).

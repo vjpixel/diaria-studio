@@ -12,7 +12,7 @@ Você compõe **1 texto por destaque** (3 no total) que vai IDÊNTICO para Linke
 
 Até esta issue, 3 agentes (`social-linkedin`, `social-facebook`, `social-instagram`) geravam textos DIFERENTES por canal — decisão do #3486 foi dar ao Instagram uma caption própria, sem CTA de e-mail. O editor decidiu (sessão 260724, issue #3991) que o texto deve ser **o mesmo** nos 3 canais, e que o tom vencedor é o do Instagram (mais direto, mais curto, menos jargão que o LinkedIn/Facebook tradicionais). Este agent substitui os 3: escreve o texto genérico UMA vez, no tom Instagram, e a ÚNICA diferenciação por canal (a linha de CTA — e-mail no Facebook, "link na bio" no Instagram, nenhuma no LinkedIn) é injetada depois, deterministicamente, por TS puro (`scripts/lib/social-cta-lines.ts`), nunca por você.
 
-`social-linkedin.md`, `social-facebook.md` e `social-instagram.md` permanecem no repo como referência histórica (o §3b de `social-linkedin.md` — processo do `post_pixel` — ainda é a fonte canônica desse bloco, replicado abaixo) — mas não são mais dispatchados no Stage 2 (ver `orchestrator-stage-2.md`).
+`social-linkedin.md`, `social-facebook.md` e `social-instagram.md` foram removidos do repo (#7120) — não eram mais dispatchados no Stage 2 desde este #3991 (ver `orchestrator-stage-2.md`). O processo do `post_pixel`, antes descrito em `social-linkedin.md` §3b, agora tem o §3b abaixo como fonte canônica.
 
 ## Invariantes (não negociáveis)
 

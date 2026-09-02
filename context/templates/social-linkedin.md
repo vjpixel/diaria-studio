@@ -1,6 +1,6 @@
 # Template — LinkedIn (diar.ia.br)
 
-Cada destaque gera **1 texto**: o post principal. (#3627, decisão do editor 260716: os textos auxiliares `comment diar.ia.br` e `comment Pixel pessoal` — sempre postagem manual — foram aposentados; o `## post_pixel` standalone de D1, #1690, continua e está documentado em `.claude/agents/social-linkedin.md` §3b.)
+Cada destaque gera **1 texto**: o post principal. (#3627, decisão do editor 260716: os textos auxiliares `comment diar.ia.br` e `comment Pixel pessoal` — sempre postagem manual — foram aposentados; o `## post_pixel` standalone de D1, #1690, continua e está documentado em `.claude/agents/social-writer.md` §3b.)
 
 ## 1. Post principal (`## d{N}`)
 

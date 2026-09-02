@@ -33,12 +33,19 @@ description: Envia a edição mensal (data/monthly/{ciclo}/draft.md) por e-mail 
 >      um 2º rascunho pro mesmo ciclo sem `--force`; grava o `brevoCampaignId`
 >      de volta no state depois de criar com sucesso.
 >
-> O módulo de render Beehiiv antigo (`scripts/render-monthly-beehiiv.ts` /
-> `scripts/lib/mensal/monthly-beehiiv-render.ts` / `scripts/send-monthly-apoiadores.ts`)
-> **continua no repo, intocado** (decisão do #4593 item 2, opção b — ver
-> rationale completo no docstring de `monthly-apoiadores-brevo-render.ts`) mas
-> **não é mais usado por esta skill** — o envio Beehiiv nunca saiu do estágio
-> de draft órfão criado durante o teste ao vivo do #4572.
+> **#7121 (260902) — cadeia Beehiiv ESVAZIADA, não mais "intocada".** O
+> parágrafo acima descrevia o estado até 260804: módulo de render Beehiiv
+> antigo intocado, mas sem consumidor. Isso mudou — `scripts/render-monthly-beehiiv.ts`
+> foi REMOVIDO (`readPublicImages`/`EXPECTED_IMAGE_KEYS`/`missingImageKeys`
+> migraram, canal-agnósticas, pra `scripts/render-monthly-apoiadores-brevo.ts`);
+> `scripts/lib/mensal/monthly-beehiiv-render.ts` perdeu `draftToEmailBeehiiv`/
+> `BEEHIIV_UTM_PROFILE` (sem consumidor de runtime) mas **continua no repo**
+> — `filterDraftForBeehiiv`/`isClariceOnlySection`/`stripRecomendacaoDiariaBlock`
+> são reusadas SEM modificação pelo render Brevo real (nome do arquivo
+> segue "beehiiv" por decisão de manter o diff pequeno, ver #7121);
+> `scripts/send-monthly-apoiadores.ts` (Passo 1) continua no repo e agora
+> renderiza via `renderMonthlyApoiadoresBrevoEmail` (Brevo) em vez do Beehiiv
+> removido — o Passo 3 (`--mark-sent`) não mudou de comportamento.
 >
 > **Ainda pendente (fora do escopo desta unidade):** o 1º `--push` real de
 > `sync-apoio-nivel-brevo.ts` (populam a lista 8) e a 1ª criação de campanha
@@ -145,15 +152,18 @@ produto, não técnica — registrar como comentário na issue de acompanhamento
 npx tsx scripts/send-monthly-apoiadores.ts --cycle $CYCLE
 ```
 
-Este comando é **reusado do fluxo Beehiiv antigo só pelo lado de estado**
-(`scripts/lib/mensal/monthly-apoiadores-state.ts`, channel-agnostic) — grava
-`data/monthly/$CYCLE/_internal/beehiiv-apoiadores-state.json` com
-`status: "draft_prepared"`, o mesmo dedup real do #4521. O HTML que ele
-escreve (`beehiiv-preview.html`, com UTM `mensal-beehiiv`) **não é o que será
-publicado** — ignore-o; é resíduo do fluxo antigo, mantido só pelo efeito
-colateral de estado. Rodar este passo é opcional (o Passo 2 abaixo funciona
-sem ele) mas recomendado: sem ele, `--force`/`--mark-sent` não têm state
-prévio pra referenciar.
+Este comando é usado **só pelo lado de estado** (`scripts/lib/mensal/monthly-apoiadores-state.ts`,
+channel-agnostic) — grava `data/monthly/$CYCLE/_internal/beehiiv-apoiadores-state.json`
+(nome do arquivo é resíduo histórico do fluxo Beehiiv, sem tocar — ver nota
+mais abaixo) com `status: "draft_prepared"`, o mesmo dedup real do #4521.
+**Desde #7121 (260902), o HTML que ele escreve usa o render Brevo REAL**
+(`apoiadores-brevo-preview.html`, com UTM `mensal-apoiadores-brevo` — o
+MESMO render que o Passo 2 usa), não mais o Beehiiv (removido). Ainda assim
+não é o HTML que efetivamente sai publicado — o Passo 2 renderiza de novo, e
+é a criação da campanha Brevo real, não este preview local, que conta.
+Rodar este passo é opcional (o Passo 2 abaixo funciona sem ele) mas
+recomendado: sem ele, `--force`/`--mark-sent` não têm state prévio pra
+referenciar.
 
 ## Passo 2 — Publicar (cria a campanha Brevo real, sempre rascunho)
 

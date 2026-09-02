@@ -273,7 +273,7 @@ export function applyTextSubstitution(
  * `## post_pixel` (#3274) é seção IRMÃ de `## d1`/`## d2`/`## d3` — fecha um
  * range aberto, como qualquer header de 1-2 hashes, mas também é aberta como
  * range-alvo quando `destaque === 1`: é o post pessoal standalone do Pixel,
- * **sempre e só sobre D1** (`### 3d` de `social-linkedin.md` — "Só pra D1",
+ * **sempre e só sobre D1** (`§3b` de `social-writer.md` — "Só pra D1",
  * `<!-- destaque: d1 -->` no template). Sem isso, uma claim DIVERGENT sobre
  * D1 era corrigida em `## d1` mas persistia intocada em `## post_pixel`.
  */
