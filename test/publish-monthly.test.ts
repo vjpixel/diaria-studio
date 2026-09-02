@@ -631,6 +631,54 @@ describe("parseArgs", () => {
     assert.match(stderr, /não é ISO 8601/);
   });
 
+  // ---------------------------------------------------------------------
+  // #7047 — antecedência mínima (SCHEDULE_AT_MIN_LEAD_MS, extraída do #7042
+  // pra scripts/lib/schedule-guard.ts). Antes desta issue, este script só
+  // recusava passado/presente (teste "--schedule-at aceita ISO futuro" com
+  // 2099-01-01 continua passando, bem acima do limiar) — exatamente o
+  // estado em que clarice-schedule-group.ts estava antes do incidente de
+  // 01/09/2026. `--schedule-at` daqui a 30s/5min passa em "no futuro" mas
+  // deve ser recusado pela antecedência mínima (offset relativo a `Date.now()`
+  // real — sem clock injetável em `parseArgs`, mas determinístico: 30s/5min
+  // nunca cruza o limiar de 2h em wall-clock de teste).
+  // ---------------------------------------------------------------------
+  it("REGRESSÃO #7047: --schedule-at daqui a 30s (antecedência insuficiente) é rejeitado mesmo sendo 'no futuro'", () => {
+    const imminent = new Date(Date.now() + 30_000).toISOString();
+    const { exitCode, stderr } = withMockedExit(() => {
+      parseArgs(["--yymm", "2604", "--schedule-at", imminent]);
+    });
+    assert.equal(exitCode, 1);
+    assert.match(stderr, /antecedência mínima/i);
+    assert.match(stderr, /--allow-imminent/);
+  });
+
+  it("#7047: --schedule-at daqui a 5min também é rejeitado (mesma antecedência mínima de 2h)", () => {
+    const imminent = new Date(Date.now() + 5 * 60_000).toISOString();
+    const { exitCode, stderr } = withMockedExit(() => {
+      parseArgs(["--yymm", "2604", "--schedule-at", imminent]);
+    });
+    assert.equal(exitCode, 1);
+    assert.match(stderr, /antecedência mínima/i);
+  });
+
+  it("#7047: --allow-imminent permite --schedule-at daqui a 30s (escape nomeado)", () => {
+    const imminent = new Date(Date.now() + 30_000).toISOString();
+    const r = parseArgs(["--yymm", "2604", "--schedule-at", imminent, "--allow-imminent"]);
+    assert.equal(r.scheduleAt, new Date(imminent).toISOString());
+  });
+
+  it("#7047: --allow-imminent funciona independente da posição no argv (antes ou depois de --schedule-at)", () => {
+    const imminent = new Date(Date.now() + 30_000).toISOString();
+    const r = parseArgs(["--allow-imminent", "--yymm", "2604", "--schedule-at", imminent]);
+    assert.equal(r.scheduleAt, new Date(imminent).toISOString());
+  });
+
+  it("#7047: --schedule-at com antecedência suficiente (2h+) não precisa de --allow-imminent", () => {
+    const future = new Date(Date.now() + 3 * 3600_000).toISOString();
+    const r = parseArgs(["--yymm", "2604", "--schedule-at", future]);
+    assert.equal(r.scheduleAt, new Date(future).toISOString());
+  });
+
   it("--update-existing aceita inteiro positivo", () => {
     const r = parseArgs(["--yymm", "2604", "--update-existing", "42"]);
     assert.equal(r.updateExisting, 42);
