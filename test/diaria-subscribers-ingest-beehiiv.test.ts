@@ -92,7 +92,10 @@ describe("ingestOnePost", () => {
   it("guard falha: JSONL truncado (menos registros que manifest.count) → status partial, eventos gravados mesmo assim", () => {
     const db = openDiariaSubscribersDb(":memory:");
     const tmp = mkdtempSync(join(tmpdir(), "beehiiv-ingest-src-"));
-    writeFileSync(resolve(tmp, "post_2.jsonl"), JSON.stringify({ subscriber_id: "s1", status: "delivered" }) + "\n");
+    writeFileSync(
+      resolve(tmp, "post_2.jsonl"),
+      JSON.stringify({ subscriber_id: "s1", email: "a@x.com", status: "delivered" }) + "\n",
+    );
     const outcome = ingestOnePost(db, tmp, { post_id: "post_2", status: "ok", count: 5 });
     assert.equal(outcome.entry.status, "partial");
     assert.match(outcome.entry.error!, /5/);
@@ -109,8 +112,8 @@ describe("ingestOnePost", () => {
     writeFileSync(
       resolve(tmp, "post_3.jsonl"),
       [
-        JSON.stringify({ subscriber_id: "s1", status: "delivered" }),
-        JSON.stringify({ subscriber_id: "s2", status: "delivered" }),
+        JSON.stringify({ subscriber_id: "s1", email: "a@x.com", status: "delivered" }),
+        JSON.stringify({ subscriber_id: "s2", email: "b@x.com", status: "delivered" }),
       ].join("\n") + "\n",
     );
     const outcome = ingestOnePost(db, tmp, { post_id: "post_3", status: "ok", count: undefined });
@@ -207,7 +210,10 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
     mkdirSync(sourceDir, { recursive: true });
     const writeSourceManifest = (m: EngagementManifest) =>
       writeFileSync(resolve(sourceDir, "manifest.json"), JSON.stringify(m));
-    writeFileSync(resolve(sourceDir, "post_1.jsonl"), JSON.stringify({ subscriber_id: "s1", status: "delivered" }) + "\n");
+    writeFileSync(
+      resolve(sourceDir, "post_1.jsonl"),
+      JSON.stringify({ subscriber_id: "s1", email: "a@x.com", status: "delivered" }) + "\n",
+    );
 
     writeSourceManifest({ generated_at: "t1", posts: [{ post_id: "post_1", status: "partial", count: 5 }] });
     await main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir]);
