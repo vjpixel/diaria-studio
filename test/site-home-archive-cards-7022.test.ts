@@ -102,7 +102,7 @@ describe("buildIndexHtml — meta do card do arquivo (#7022 item 2)", () => {
     assert.match(html, /7 min de leitura/);
     assert.match(
       html,
-      new RegExp(`Por <a href="${GEO_AUTHOR.url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}" rel="author">Pixel</a>`),
+      new RegExp(`Por <a href="${GEO_AUTHOR.url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}" rel="author">${GEO_AUTHOR.name}</a>`),
     );
   });
 
@@ -177,6 +177,14 @@ describe("headings com quebra de linha — texto extraído nunca gruda palavras 
     const extracted = stripHtmlBasic(match![1]);
     assert.equal(extracted, "Perguntas frequentes.");
     assert.ok(!/Perguntasfrequentes/.test(extracted), "palavras grudadas — regressão do #7022 item 1");
+  });
+
+  it("rodapé ('5 minutos. / Toda manhã.') também mantém o espaço no texto extraído — mesmo bug, achado fora dos 3 exemplos da issue original", () => {
+    const match = html.match(/<div class="footer-headline">([\s\S]*?)<\/div>/);
+    assert.ok(match, "footer-headline não encontrado");
+    const extracted = stripHtmlBasic(match![1]);
+    assert.equal(extracted, "5 minutos. Toda manhã.");
+    assert.ok(!/minutos\.Toda/.test(extracted), "palavras grudadas no rodapé — mesma classe de bug do item 1");
   });
 
   it("'Livros sobre IA.' e 'Cursos gratuitos.' saem numa linha só, sem <br> (decisão do editor, item 5)", () => {
