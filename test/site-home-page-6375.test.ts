@@ -330,6 +330,17 @@ describe("buildIndexHtml", () => {
     });
     assert.ok(!badDate.includes("undefined"), "mês/dia fora de faixa vazou 'undefined' pro HTML");
   });
+
+  it("#6978 itens 2/3 — nav não tem 'Entrar' nem busca (decisão registrada, ver comentário em .nav-cta)", () => {
+    const navSection = html.match(/<div class="nav-cta">[\s\S]*?<\/div>/)?.[0] ?? "";
+    assert.ok(navSection, "bloco .nav-cta não encontrado");
+    assert.ok(!/>Entrar</.test(navSection), "nav ganhou um link 'Entrar' sem a decisão do #6978 ser revista");
+    assert.ok(
+      !/type="search"/.test(navSection) && !/class="nav-search"/.test(navSection),
+      "nav ganhou um campo/ícone de busca sem a decisão do #6978 ser revista",
+    );
+    assert.match(navSection, /#6978 itens 2\/3/, "decisão do #6978 itens 2/3 não está mais documentada em .nav-cta");
+  });
 });
 
 describe("workers/site/public/index.html — committed (#6375)", () => {
@@ -381,6 +392,16 @@ describe("workers/site/public/index.html — committed (#6375)", () => {
       const slug = m[1].replace("https://diar.ia.br/p/", "");
       assert.ok(existsSync(resolve(PUBLIC_DIR, "p", slug)), `slug "${slug}" do arquivo não existe em public/p/`);
     }
+  });
+
+  it("#6978 itens 2/3 — nav não tem 'Entrar' nem busca (decisão registrada)", () => {
+    const navSection = html.match(/<div class="nav-cta">[\s\S]*?<\/div>/)?.[0] ?? "";
+    assert.ok(navSection, "bloco .nav-cta não encontrado");
+    assert.ok(!/>Entrar</.test(navSection), "nav ganhou um link 'Entrar' sem a decisão do #6978 ser revista");
+    assert.ok(
+      !/type="search"/.test(navSection) && !/class="nav-search"/.test(navSection),
+      "nav ganhou um campo/ícone de busca sem a decisão do #6978 ser revista",
+    );
   });
 });
 
