@@ -165,10 +165,39 @@ import { withFileLock } from "./file-lock.ts";
  * coordenadora por relabel furaria o guard do #5716. O caminho legítimo dela
  * pro merge é a concessão de janela (`merge_grant`, #6296), nunca o kind.
  */
-export type SessionKind = "overnight" | "develop" | "continuo" | "interactive";
+/**
+ * #6934: `continuo-review` é o 5º kind — `hermes/scripts/continuo-pr-review.sh`
+ * (cron do Hermes, roda `gh pr merge` direto em bash, fora do harness do
+ * Claude Code). Decisão registrada no comentário durável da issue #6934
+ * (3 pontos, todos decididos lá — não repetir a discussão aqui):
+ *
+ * (a) **Kind NOVO, não reuso de `continuo`.** O tick do `hermes-diaria-
+ * continuo` e este script de review são processos DIFERENTES que podem
+ * estar vivos ao mesmo tempo (cadências distintas — ver `hermes cron list
+ * --all`, nunca esta prosa). Reusar `continuo` tornaria `list-active`
+ * ambíguo sobre "quem está segurando o quê" bem no meio de um incidente de
+ * merge — o cenário em que essa resposta mais importa.
+ *
+ * (b) O `--session-id` estável-durante-o-tick/distinto-entre-ticks é
+ * derivado do `RUN_ID` que o próprio script já gera para seu ciclo (mesmo
+ * padrão `date+PID`, sem esquema novo).
+ *
+ * (c) TTL do merge lock (`MERGE_LOCK_TTL_MS`) não muda — a janela real
+ * (`gh pr merge` → `git pull`) é a mesma do overnight/develop.
+ *
+ * **Não é coordenadora** (`COORDINATOR_SESSION_KINDS` abaixo não a inclui):
+ * o script não despacha subagente implementador — só decide SE mergeia uma
+ * PR já aberta por outro processo (o tick do contínuo), atrás de um portão
+ * determinístico próprio (`scripts/check-continuo-merge-gate.ts`). O merge
+ * lock em si (`acquireMergeLock`/`releaseMergeLock`) não exige `kind`
+ * nenhum — usa só `sessionId` — então este kind existe pela mesma razão que
+ * os demais: manter `data/sessions/*.json` legível sobre qual processo é
+ * qual, não como pré-requisito mecânico do lock.
+ */
+export type SessionKind = "overnight" | "develop" | "continuo" | "interactive" | "continuo-review";
 
-/** Os 4 valores de `SessionKind`, para validação/enumeração em runtime (#6338). */
-export const ALL_SESSION_KINDS: readonly SessionKind[] = ["overnight", "develop", "continuo", "interactive"];
+/** Os 5 valores de `SessionKind`, para validação/enumeração em runtime (#6338, #6934). */
+export const ALL_SESSION_KINDS: readonly SessionKind[] = ["overnight", "develop", "continuo", "interactive", "continuo-review"];
 
 /**
  * Os 3 kinds que rodam uma RODADA coordenada (`/diaria-overnight`,
@@ -823,13 +852,24 @@ function findExistingSessionFileAnyKind(repoRoot: string, sessionId: string): st
  *
  * `null` quando: não termina em `.json`, ou o prefixo não bate com nenhum dos
  * `ALL_SESSION_KINDS`, ou não sobra `tag-sessionId` suficiente depois do kind.
+ *
+ * **#6934 — casamento por prefixo MAIS LONGO, não pela ordem de declaração
+ * de `ALL_SESSION_KINDS`.** Desde que `continuo-review` existe, `continuo` é
+ * um prefixo verdadeiro dele (`"continuo-review-tag-id".startsWith("continuo-")`
+ * também é `true`) — um `.find()` ingênuo na ordem do array casaria sempre
+ * `continuo` primeiro e devolveria `tag: "review", sessionId: "tag-id"`,
+ * errado em silêncio. Mesma técnica de desempate já usada por
+ * `groupBackupsByRealStem` acima (mais longo = mais específico = vence):
+ * ordena os candidatos por comprimento decrescente antes do `.find()`, então
+ * o resultado nunca depende de qual kind foi declarado antes do outro.
  */
 export function parseSessionFileName(
   name: string,
 ): { kind: SessionKind; tag: string; sessionId: string } | null {
   if (!name.endsWith(".json")) return null;
   const stem = name.slice(0, -".json".length);
-  const kind = ALL_SESSION_KINDS.find((k) => stem.startsWith(`${k}-`));
+  const kindsByLengthDesc = [...ALL_SESSION_KINDS].sort((a, b) => b.length - a.length);
+  const kind = kindsByLengthDesc.find((k) => stem.startsWith(`${k}-`));
   if (!kind) return null;
   const rest = stem.slice(kind.length + 1);
   const sepIndex = rest.indexOf("-");
@@ -4198,7 +4238,7 @@ export function consumeMergeGrant(repoRoot: string, sessionId: string, now: numb
 export function requireKind(value: string | undefined): SessionKind {
   if (value === undefined || !(ALL_SESSION_KINDS as readonly string[]).includes(value)) {
     throw new Error(
-      `--kind deve ser "overnight", "develop", "continuo" ou "interactive", recebido "${value}"`,
+      `--kind deve ser "overnight", "develop", "continuo", "interactive" ou "continuo-review", recebido "${value}"`,
     );
   }
   return value as SessionKind;
@@ -4655,7 +4695,7 @@ function main(): void {
         process.stderr.write(
           "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|unclaim-issue|is-claimed|" +
             "list-active|active-of-kind|conflicts|grant-merge|check-merge-grant|consume-merge-grant|merge-lock-acquire|" +
-            "merge-lock-release|merge-lock-renew|gc> [--kind overnight|develop|continuo|interactive] [--session-id X] [--tag MAQUINA] ...\n" +
+            "merge-lock-release|merge-lock-renew|gc> [--kind overnight|develop|continuo|interactive|continuo-review] [--session-id X] [--tag MAQUINA] ...\n" +
             "  unclaim-issue --issue N: inverso de claim-issue (#6317) — remove a issue de claimed_issues da PRÓPRIA " +
             "sessão; nunca mexe na claim de outra. No-op honesto (exit 1) se a issue não estava reivindicada por ela.\n" +
             "  active-of-kind --kind K [--session-id X]: JSON {kind, active, sessions, stale} — há sessão ATIVA " +
