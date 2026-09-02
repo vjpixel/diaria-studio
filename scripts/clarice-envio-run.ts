@@ -112,7 +112,7 @@ import { stepWithTransientRetry as sharedStepWithTransientRetry } from "./lib/tr
 import { writeLastBrakeSnapshot } from "./lib/clarice-envio-last-brake.ts";
 import { proposeNextVolume, brtDayKey, type NextVolumeDecision } from "./lib/clarice-envio-policy.ts";
 import type { RiskSnapshot } from "./clarice-envio-risk.ts";
-import type { InvocationSummary } from "./clarice-schedule-group.ts";
+import { SCHEDULE_AT_WARNING_PREFIX, type InvocationSummary } from "./clarice-schedule-group.ts"; // #7042
 
 // #5048 — mesmo achado do #4983 (script irmão clarice-novos-run.ts): este é o
 // processo ORQUESTRADOR, invocado sob systemd --user (task Diaria-Clarice-Envio,
@@ -357,7 +357,25 @@ function step<T = unknown>(
 ): { result: StepResult; json: T | undefined } {
   report.note(`▶ ${label}`);
   const result = deps.exec(scriptRelPath, args);
-  if (result.stderr.trim()) console.error(result.stderr.trim());
+  if (result.stderr.trim()) {
+    console.error(result.stderr.trim());
+    // #7042 (achado P1 do silent-failure-hunter): esta task roda desassistida
+    // (systemd, 19:00 BRT) — sem isto, um aviso do subprocesso (ex:
+    // `clarice-schedule-group.ts --create` avisando horário fora do
+    // canônico, achado ao vivo no teste A/B de horário) caía SÓ no journal
+    // via `console.error` acima, nunca no relatório em
+    // `data/clarice-subscribers/envio-reports/{reportId}.md` que é o
+    // artefato que o editor de fato revisa
+    // (`docs/clarice-envio-daily-setup.md`). Promove pro relatório só as
+    // linhas de stderr com o prefixo ESTÁVEL e nomeado
+    // `SCHEDULE_AT_WARNING_PREFIX` (exportado de `clarice-schedule-group.ts`
+    // — não duplicado aqui) — não o stderr inteiro, que é majoritariamente
+    // log operacional (plano, progresso), não aviso.
+    for (const line of result.stderr.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith(SCHEDULE_AT_WARNING_PREFIX)) report.note(trimmed);
+    }
+  }
   if (!okCodes.includes(result.code)) {
     const detail = result.stderr.trim().split("\n").slice(-6).join(" | ") || "(sem stderr)";
     throw new EnvioAbort(`❌ ${label} falhou (exit ${result.code}): ${detail}`);

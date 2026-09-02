@@ -563,12 +563,14 @@ function acquireBeaconLock(lockPath, timeoutMs = BEACON_LOCK_TIMEOUT_MS) {
       if (Date.now() >= deadline) {
         throw new Error(`[session-beacon] lock timeout after ${timeoutMs}ms: ${lockPath}`);
       }
-      // Busy-wait de 50ms — mesmo padrão de `acquireLock` em
-      // `scripts/lib/file-lock.ts`. Síncrono de propósito: este hook é um
-      // script síncrono de ponta a ponta, e `await` aqui seria erro de sintaxe
-      // dentro de função não-async.
-      const end = Date.now() + 50;
-      while (Date.now() < end) { /* busy wait */ }
+      // Espera 50ms DORMINDO, não em busy wait — mesmo padrão de
+      // `acquireLock` em `scripts/lib/file-lock.ts` (#6952/#6969): o spin
+      // busy-wait competia por CPU justamente com o dono do lock enquanto ele
+      // precisava de CPU pra soltá-lo. `Atomics.wait` é síncrono (não
+      // precisa de função `async`) e é a espera dormindo real disponível
+      // aqui — reintroduzido por engano neste hook no #7031, corrigido de
+      // volta a esperar dormindo.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
     }
   }
 }
