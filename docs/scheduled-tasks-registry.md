@@ -31,7 +31,9 @@ cada parágrafo.
 
 **Alarme de abort recorrente do `novos` (#5405) — aposentado pelo #5660:** o guard D4 foi removido do caminho `clarice-novos`, então `semaphore-red` deixou de ser produzido. `Diaria-Clarice-Novos-Abort-Alarm` foi removida do registro; o script permanece como no-op dormente para não alarmar sobre status histórico.
 
-**Alarme de erro do worker `cursos` + sync do KV de assinantes (#4320, redesign #4382):** tasks `Diaria-Cursos-Error-Alarm` (a cada 2h) e `Diaria-Cursos-Kv-Sync` (diária, 09:15). Ambas confirmadas ativas em `helios` (260812). Arme e detalhes: `docs/cursos-worker-alarm-setup.md`.
+**Sync do KV de assinantes do worker `cursos` (#4320, #4052):** task `Diaria-Cursos-Kv-Sync` (diária, 09:15). Confirmada ativa em `helios` (260812). Arme e detalhes: `docs/cursos-worker-alarm-setup.md`.
+
+**Alarme de erro do worker `cursos` — CORTADO (#4320 criou, redesign #4382, #6798 removeu, 01/09/2026).** Existiu como task `Diaria-Cursos-Error-Alarm`, a cada 2h — lia 4 contadores cumulativos do KV `CURSOS_SUBSCRIBERS` e alarmava por erro fatal ou taxa alta de `?email=` não confirmado. Removido por decisão do editor na auditoria do #6798: 279 execuções, 0 disparos, 24 dias — maior volume do projeto com o menor sinal medido, e nenhum achado nunca chegou a virar issue. `Diaria-Cursos-Kv-Sync` (item acima) **NÃO faz parte deste corte** — é sync, não alarme, e continua ativo. **Ação manual pendente do editor:** desarmar a task no `helios` — `systemctl --user disable --now diaria-cursos-error-alarm.timer` (remover `.service`/`.timer` de `~/.config/systemd/user/` é opcional).
 
 **Alarme diário de diff pendente do sync de apoio (#4485 item 2):** task `Diaria-Apoios-Diff-Alarm`, diária às 09:45. Confirmado ativo em `helios` (260812). Arme e detalhes: `docs/apoios-diff-alarm-setup.md`.
 

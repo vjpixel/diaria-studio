@@ -122,7 +122,7 @@ client-side (lista pequena, sem backend de busca).
    — já agendado depois disso via systemd diariamente às 09:15 (task
    `Diaria-Cursos-Kv-Sync`, ver `docs/cursos-worker-alarm-setup.md`).
 
-Separadamente, a task `Diaria-Cursos-Error-Alarm` (a cada 2h) monitora os
-logs do worker via Cloudflare GraphQL Analytics API e alarma o editor por
-e-mail em caso de erro fatal ou taxa alta de `?email=` não confirmado
-(runbook completo: `docs/cursos-worker-alarm-setup.md`).
+O alarme de erro que monitorava este worker (`Diaria-Cursos-Error-Alarm`) foi
+removido pela auditoria de alarmes do #6798 (01/09/2026) — 279 execuções, 0
+disparos, sem sinal suficiente pra justificar manutenção. Ver
+`docs/cursos-worker-alarm-setup.md` seção "Alarme de erro — removido".
