@@ -26,6 +26,8 @@ import {
   DEFAULT_WORKER_COUNT,
   BATCH_SIZE,
   DEFAULT_BATCH_TIMEOUT_MS,
+  DEFAULT_RETRY_DELAY_MS,
+  sleepSync,
   computeWorkerTimeoutMs,
   type RunTestBatchesParallelOptions,
 } from "../scripts/run-tests.ts";
@@ -360,6 +362,132 @@ describe("runTestBatches — retry automático (#6495)", () => {
     assert.equal(exit, 0);
     assert.equal(attemptForBatch2, 2, "batch 2 rodou original + retry");
     assert.deepEqual(seen, [1, 2, 2], "batch 1 rodou 1×, batch 2 rodou 2× (original + retry)");
+  });
+});
+
+// --- #6783: pausa antes do único retry de ERR_MODULE_NOT_FOUND -------------
+//
+// Achado ao investigar #6783: as 2 reincidências que a issue registra (PR
+// #6779 e PR #6782) aconteceram ANTES do retry acima existir (ver docstring
+// "#6783" no topo de scripts/run-tests.ts) — não há gap demonstrado na
+// LÓGICA de retry em si. A corrida real (glitch de filesystem em torno de
+// arquivo recém-materializado pelo `actions/checkout`, hipótese líder do
+// #6495) não é reproduzível de forma determinística neste ambiente — por
+// isso esta suíte testa a LÓGICA da pausa adicionada (é chamada com o delay
+// certo, só no caminho de retry, nunca no caminho feliz), não o glitch em
+// si.
+
+describe("sleepSync (#6783)", () => {
+  it("ms <= 0 é no-op — nunca lança, nunca bloqueia", () => {
+    const start = Date.now();
+    sleepSync(0);
+    sleepSync(-10);
+    assert.ok(Date.now() - start < 100, "não deveria bloquear com ms <= 0");
+  });
+
+  it("bloqueia de fato por ~ms (bound generoso pra não ser flaky em CI lento)", () => {
+    const start = Date.now();
+    sleepSync(20);
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed >= 15, `esperava >=15ms de bloqueio real, mediu ${elapsed}ms`);
+  });
+});
+
+describe("DEFAULT_RETRY_DELAY_MS (#6783)", () => {
+  it("é não-negativo e finito", () => {
+    assert.ok(Number.isFinite(DEFAULT_RETRY_DELAY_MS));
+    assert.ok(DEFAULT_RETRY_DELAY_MS >= 0);
+  });
+});
+
+describe("runTestBatches — pausa antes do retry (#6783)", () => {
+  const ERR_OUTPUT = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/test/foo.test.ts'\nℹ fail 0\n";
+
+  it("dispara retry → sleep é chamado 1× com retryDelayMs, ANTES do 2º spawn", () => {
+    const calls: string[] = [];
+    let spawnCount = 0;
+    const exit = runTestBatches({
+      files: ["/a.test.ts"],
+      retryDelayMs: 777,
+      sleep: (ms: number) => calls.push(`sleep:${ms}`),
+      spawn: (() => {
+        spawnCount++;
+        calls.push(`spawn:${spawnCount}`);
+        if (spawnCount === 1) return { status: 1, stdout: ERR_OUTPUT, stderr: "" };
+        return { status: 0, stdout: "ℹ fail 0\n", stderr: "" };
+      }) as unknown as typeof import("node:child_process").spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+    });
+    assert.equal(exit, 0);
+    assert.deepEqual(calls, ["spawn:1", "sleep:777", "spawn:2"], "sleep roda entre a 1ª tentativa e o retry, nunca antes");
+  });
+
+  it("falha comum (sem ERR_MODULE_NOT_FOUND) → sleep NUNCA é chamado", () => {
+    let sleepCalls = 0;
+    runTestBatches({
+      files: ["/a.test.ts"],
+      sleep: () => {
+        sleepCalls++;
+      },
+      spawn: (() => ({ status: 1, stdout: "AssertionError: boom\nℹ fail 1\n", stderr: "" })) as unknown as typeof import(
+        "node:child_process"
+      ).spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+    });
+    assert.equal(sleepCalls, 0, "falha de teste real nunca dispara a pausa de retry");
+  });
+
+  it("batch verde de primeira → sleep NUNCA é chamado (caminho feliz não paga o custo)", () => {
+    let sleepCalls = 0;
+    const exit = runTestBatches({
+      files: ["/a.test.ts"],
+      sleep: () => {
+        sleepCalls++;
+      },
+      spawn: (() => ({ status: 0, stdout: "ℹ fail 0\n", stderr: "" })) as unknown as typeof import(
+        "node:child_process"
+      ).spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+    });
+    assert.equal(exit, 0);
+    assert.equal(sleepCalls, 0);
+  });
+
+  it("retryDelayMs: 0 (via opts) ainda chama sleep(0) — quem decide o no-op é sleepSync, não este caller", () => {
+    const calls: number[] = [];
+    runTestBatches({
+      files: ["/a.test.ts"],
+      retryDelayMs: 0,
+      sleep: (ms: number) => calls.push(ms),
+      spawn: ((..._args: unknown[]) => {
+        return calls.length === 0
+          ? { status: 1, stdout: ERR_OUTPUT, stderr: "" }
+          : { status: 0, stdout: "ℹ fail 0\n", stderr: "" };
+      }) as unknown as typeof import("node:child_process").spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+    });
+    assert.deepEqual(calls, [0]);
+  });
+
+  it("default: sem sleep/retryDelayMs injetados, retry ainda funciona (sleepSync real, delay padrão pequeno) — integração leve", () => {
+    let spawnCount = 0;
+    const exit = runTestBatches({
+      files: ["/a.test.ts"],
+      retryDelayMs: 1, // override pequeno pra não segurar a suíte — só prova que o default do sleepSync real funciona
+      spawn: (() => {
+        spawnCount++;
+        if (spawnCount === 1) return { status: 1, stdout: ERR_OUTPUT, stderr: "" };
+        return { status: 0, stdout: "ℹ fail 0\n", stderr: "" };
+      }) as unknown as typeof import("node:child_process").spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+    });
+    assert.equal(exit, 0);
+    assert.equal(spawnCount, 2);
   });
 });
 

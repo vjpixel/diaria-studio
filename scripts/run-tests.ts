@@ -104,6 +104,38 @@
  * falha definitiva (nunca mascarar um flake persistente/real como
  * "infraestrutura" indefinidamente).
  *
+ * ## #6783 — as 2 reincidências citadas acima antecedem o próprio retry
+ *
+ * Achado ao investigar #6783 (reincidência relatada em PR #6779 e PR #6782,
+ * ambas "rodada overnight 260829b"): checando os timestamps reais, NENHUMA
+ * das duas ocorreu com o retry acima em vigor. PR #6779 foi mergeado às
+ * 2026-08-30T04:41Z; o retry (`shouldRetryBatch`, PR #6807) só foi mergeado
+ * às 2026-08-30T16:10Z — 11h30 DEPOIS. O 3º CI run de PR #6782 (citado em
+ * #6495, comentário 260830) rodou 13:04–13:11 UTC no mesmo dia — também
+ * ANTES das 16:10Z. A frase "no head sha que já tinha `run-tests.ts`" (acima)
+ * é verdadeira mas não implica "com o RETRY em vigor" — `run-tests.ts` já
+ * existia desde 28/08 (mitigação de descoberta síncrona, sem retry); o
+ * retry chegou só em 30/08 à tarde. Ou seja: as 2 reincidências que #6783
+ * registra não são evidência de um buraco no retry — são evidência de que
+ * o retry ainda não existia quando elas aconteceram. Não há, até a data
+ * deste comentário, nenhuma ocorrência CONFIRMADA da assinatura
+ * `ERR_MODULE_NOT_FOUND` depois que o retry alargado (#6857/#6858, sem gate
+ * de fail count) entrou em vigor (31/08, 18:55Z).
+ *
+ * Isso não fecha a causa raiz — a hipótese de glitch de filesystem em torno
+ * de arquivo recém-materializado pelo `actions/checkout` (parágrafo acima)
+ * segue não confirmada, e nunca foi reproduzida localmente. Dado que a
+ * pista mais forte aponta pra uma corrida de MATERIALIZAÇÃO (não de
+ * descoberta — essa hipótese já foi descartada), a mitigação adicional
+ * aplicada aqui é uma pequena pausa síncrona (`retryDelayMs`, default
+ * `DEFAULT_RETRY_DELAY_MS`) ANTES do único retry já existente — dá tempo
+ * pro glitch (se for isso mesmo) se resolver sozinho, sem enfraquecer
+ * nenhum critério de `shouldRetryBatch` nem adicionar uma 2ª tentativa de
+ * retry. Custo desprezível (só paga quando o batch já falhou — o caminho
+ * feliz, a esmagadora maioria das rodadas, nunca chama `sleep`). Injetável
+ * via `sleep` (teste) e `retryDelayMs`/`RUN_TESTS_RETRY_DELAY_MS` (produção)
+ * pelo mesmo padrão dos outros tetos deste arquivo.
+ *
  * Efeito colateral necessário: `stdio` deixou de ser `"inherit"` e passou a
  * ser capturado (`"pipe"`) — só assim dá pra inspecionar o output ANTES de
  * decidir se retry. Pra não perder a visibilidade de progresso do `npm test`
@@ -232,6 +264,12 @@ export interface RunTestsOptions {
    *  `DEFAULT_BISECT_BUDGET_MS`. `0` desliga a bisecção inteiramente
    *  (volta ao comportamento anterior: só a lista crua do batch). */
   bisectBudgetMs?: number;
+  /** #6783: pausa antes do único retry de `ERR_MODULE_NOT_FOUND` — default
+   *  `DEFAULT_RETRY_DELAY_MS`. `0` desliga a pausa. */
+  retryDelayMs?: number;
+  /** #6783: injeção de dependência pra teste — default `sleepSync` (pausa
+   *  real, bloqueante). Nunca chamado fora do caminho de retry. */
+  sleep?: (ms: number) => void;
 }
 
 /** #6822: teto por batch — bem acima da duração normal observada (~40-90s
@@ -244,6 +282,30 @@ export const DEFAULT_BATCH_TIMEOUT_MS = (() => {
   const parsed = raw ? Number(raw) : NaN;
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 5 * 60 * 1000;
 })();
+
+/** #6783: pausa síncrona antes do único retry de `ERR_MODULE_NOT_FOUND`
+ *  (ver docstring "#6783" acima) — só paga quando um batch já falhou com
+ *  essa assinatura, nunca no caminho feliz. Overridável via
+ *  `RUN_TESTS_RETRY_DELAY_MS` (ms); `0` desliga a pausa (comportamento
+ *  idêntico a antes desta mitigação). */
+export const DEFAULT_RETRY_DELAY_MS = (() => {
+  const raw = process.env.RUN_TESTS_RETRY_DELAY_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 1500;
+})();
+
+/** #6783: pausa SÍNCRONA e bloqueante (o resto deste arquivo é síncrono —
+ *  `spawnSync`, sem event loop entre batches — então um `setTimeout`/
+ *  `Promise` não serviria aqui). `Atomics.wait` sobre um `Int32Array`
+ *  compartilhado é a forma padrão do Node de bloquear o thread principal
+ *  por um tempo fixo sem depender de nenhum módulo nativo. `ms <= 0` é
+ *  no-op (nunca lança, nunca bloqueia por engano com um valor inválido). */
+export function sleepSync(ms: number): void {
+  if (!(ms > 0)) return;
+  const sab = new SharedArrayBuffer(4);
+  const view = new Int32Array(sab);
+  Atomics.wait(view, 0, 0, ms);
+}
 
 /** Casa a assinatura de erro do #6495 — nunca uma falha de teste real, é o
  *  `import()` do processo filho do `node --test` falhando pra um arquivo
@@ -431,6 +493,12 @@ export interface ProcessChunkedBatchesOptions {
   batchTimeoutMs?: number;
   bisectTimeoutMs?: number;
   bisectBudgetMs?: number;
+  /** #6783: pausa antes do único retry de `ERR_MODULE_NOT_FOUND` — default
+   *  `DEFAULT_RETRY_DELAY_MS`. `0` desliga a pausa. */
+  retryDelayMs?: number;
+  /** #6783: injeção de dependência pra teste — default `sleepSync` (pausa
+   *  real, bloqueante). Nunca chamado fora do caminho de retry. */
+  sleep?: (ms: number) => void;
   /** #6877: rótulo do batch no log inclui "grupo N" quando rodando dentro
    *  de um worker paralelo (só pra legibilidade do log combinado — não
    *  afeta nenhuma decisão). `undefined` no caminho single-process
@@ -466,6 +534,8 @@ export function processChunkedBatches(
     batchTimeoutMs = DEFAULT_BATCH_TIMEOUT_MS,
     bisectTimeoutMs = DEFAULT_BISECT_TIMEOUT_MS,
     bisectBudgetMs = DEFAULT_BISECT_BUDGET_MS,
+    retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+    sleep = sleepSync,
     labelPrefix,
   } = opts;
   /** #6822 (Defeito B): tenta isolar o(s) arquivo(s) culpado(s) de um batch
@@ -566,8 +636,9 @@ export function processChunkedBatches(
       const combined = `${toText(result.stdout)}\n${toText(result.stderr)}`;
       if (shouldRetryBatch(combined, result.status)) {
         stderr.write(
-          `\nrun-tests: ${label} com ERR_MODULE_NOT_FOUND (#6495/#6857, erro de infra do runner, não de teste) — retentando UMA vez (${batch.length} arquivos)...\n`,
+          `\nrun-tests: ${label} com ERR_MODULE_NOT_FOUND (#6495/#6857, erro de infra do runner, não de teste) — pausa de ${retryDelayMs}ms (#6783) e retentando UMA vez (${batch.length} arquivos)...\n`,
         );
+        sleep(retryDelayMs);
         const retry = runOne(batch);
         if (retry.error) {
           // Review #6833: mesmo fix do branch acima — emitir o parcial antes
@@ -769,6 +840,8 @@ interface WorkerPayload {
   batchTimeoutMs: number;
   bisectTimeoutMs: number;
   bisectBudgetMs: number;
+  /** #6783: pausa antes do único retry de `ERR_MODULE_NOT_FOUND`. */
+  retryDelayMs: number;
   /** Rótulo pro log combinado (ex: "grupo 1/4") — só legibilidade. */
   label: string;
 }
@@ -948,6 +1021,7 @@ export async function runTestBatchesParallel(opts: RunTestBatchesParallelOptions
     batchTimeoutMs = DEFAULT_BATCH_TIMEOUT_MS,
     bisectTimeoutMs = DEFAULT_BISECT_TIMEOUT_MS,
     bisectBudgetMs = DEFAULT_BISECT_BUDGET_MS,
+    retryDelayMs = DEFAULT_RETRY_DELAY_MS,
     workerCount = DEFAULT_WORKER_COUNT,
     scriptPath = fileURLToPath(import.meta.url),
   } = opts;
@@ -975,6 +1049,7 @@ export async function runTestBatchesParallel(opts: RunTestBatchesParallelOptions
       batchTimeoutMs,
       bisectTimeoutMs,
       bisectBudgetMs,
+      retryDelayMs,
       label,
     };
     const payloadPath = join(tmpDir, `worker-${i}.json`);
@@ -1016,6 +1091,7 @@ function runAsWorker(payloadPath: string): void {
     batchTimeoutMs: payload.batchTimeoutMs,
     bisectTimeoutMs: payload.bisectTimeoutMs,
     bisectBudgetMs: payload.bisectBudgetMs,
+    retryDelayMs: payload.retryDelayMs,
     labelPrefix: payload.label,
   });
   const result: WorkerResult = { exitCode, completedFiles };
