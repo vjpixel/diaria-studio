@@ -13,6 +13,13 @@ name: PR Checks (#970)
 #    test/**, diferente do tsconfig.json raiz do ci.yml que só cobre
 #    scripts/**) contra baseline committed (tsc-baseline.json) — só reprova
 #    erro de tipo NOVO, nunca os ~1.062 pré-existentes (#6217).
+# 6. One-off script validity: script NOVO em scripts/ (nível raiz) cujo nome
+#    bate analyze-*/diagnose-*/probe-*/measure-*/compare-* precisa declarar
+#    `@one-off-validity` (expira=AAAA-MM-DD ou permanente) — o padrão que
+#    gerou 17 órfãos em 4 meses (#7114). Só arquivo NOVO, nunca existente.
+# 7. PR removal declaration: PR que adiciona mais que o limiar de linhas
+#    precisa declarar `removal-declaration: <...>` no body — o que remove,
+#    ou por que legitimamente não remove nada (#7115).
 #
 # Não substitui ci.yml — roda em paralelo com escopo focado.
 
@@ -93,6 +100,43 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: npx tsx scripts/check-seed-html-sync.ts
+
+  one-off-script-validity:
+    name: One-off script validity (#7114)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - name: Detect new one-off script without declared validity
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npx tsx scripts/check-one-off-script-validity.ts
+
+  pr-removal-declaration:
+    name: PR removal declaration (#7115)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - name: Detect large-addition PR without removal declaration
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npx tsx scripts/check-pr-removal-declaration.ts
 
   hub-page-drift:
     name: Hub page drift (workers/arquivo/src/hubs, #4897)
