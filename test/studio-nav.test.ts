@@ -143,7 +143,7 @@ describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra ser
   });
 
   it("(#6590): /assinantes agora É um destino de menu — rota real existe em server.ts", () => {
-    const item = NAV_ITEMS.find((i) => i.id === "assinantes");
+    const item = NAV_ITEMS.find((i: { id: string }) => i.id === "assinantes");
     assert.ok(item, "NAV_ITEMS precisa ter o item 'assinantes'");
     assert.equal(item.href, "/assinantes");
     assert.match(SERVER_TS, /urlPath === "\/assinantes"/, "server.ts precisa reconhecer a rota /assinantes");

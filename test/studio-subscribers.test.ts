@@ -232,6 +232,16 @@ describe("buildSubscribersCohortData", () => {
       ).run(naoFicou, "brevo-3", "naoficou@x.com", NOW);
       upsertSubscription(db, naoFicou, "brevo_diaria", { status: "unsubscribed", enteredAt: NOW, exitedAt: NOW, source: null }, NOW);
 
+      // Regressão do self-review: brevo_diaria ativo + SÓ brevo_clarice (sem
+      // beehiiv/kit) não é "reativação da diária" — é assinante de outro
+      // produto, não histórico anterior na diária. platformSet.size > 1
+      // sozinho contaria isto errado (ver commit que corrigiu).
+      const soClarice = ensureSubscriber(db, "brevo_diaria", "brevo-4", "so-clarice@x.com", NOW);
+      db.prepare(
+        "INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, 'brevo_clarice', ?, ?, ?)",
+      ).run(soClarice, "clarice-4", "so-clarice@x.com", NOW);
+      upsertSubscription(db, soClarice, "brevo_diaria", { status: "active", enteredAt: NOW, exitedAt: null, source: null }, NOW);
+
       db.close();
 
       const cohort = buildSubscribersCohortData(root);

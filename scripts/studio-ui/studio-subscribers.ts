@@ -252,7 +252,12 @@ export function buildSubscribersCohortData(
         }
       }
 
-      if (platformSet.has("brevo_diaria") && platformSet.size > 1) {
+      // Self-review: "reativou" precisa de histórico numa OUTRA PLATAFORMA
+      // DA DIÁRIA (beehiiv/kit) especificamente — `platformSet.size > 1`
+      // sozinho contava errado quem tem só brevo_diaria + brevo_clarice
+      // (é assinante de outro produto, não "reativado" na diária).
+      const hasOtherDiariaPlatform = platformSet.has("beehiiv") || platformSet.has("kit");
+      if (platformSet.has("brevo_diaria") && hasOtherDiariaPlatform) {
         const subs = getSubscriptionsForSubscriber(db, subscriberId);
         const brevoSub = subs.find((s) => s.platform === "brevo_diaria");
         if (brevoSub?.status === "active") reactivatedAndStayed++;
