@@ -258,3 +258,84 @@ export function buildTrainMergeCommitBody(batch: TrainBatch, prInfos: readonly T
     .filter((l) => l !== "")
     .join("\n");
 }
+
+/**
+ * Resumo de runs de CI de fato disparados pelo mecanismo do trem, contra o
+ * que teria sido consumido no caminho de hoje (1 PR = 1 CI) — o "antes/
+ * depois" que fecha o último critério de aceite da issue #6300 ("medição
+ * antes/depois: runs de CI por issue mergeada").
+ *
+ * Deriva o número inteiramente do array `outcomes` que `runMergeTrain` já
+ * devolve (`scripts/lib/merge-train-live.ts`) — sem precisar reconstruir
+ * histórico via `gh api actions/runs` (branch de integração é descartada
+ * ao final de cada lote, então não haveria como reconsultar depois). A
+ * leitura mecânica do laço em `runMergeTrain`:
+ *
+ * - `batch.prs.length === 1` → `mergeSoloPr`: o PR já estava verde ANTES de
+ *   entrar no trem (Gate 2) — merge direto, ZERO run de CI novo disparado
+ *   por este mecanismo. Não entra no "antes/depois" (não foi afetado).
+ * - `batch.prs.length >= 2` → exatamente 1 `pollTrainCi` por outcome,
+ *   disparando exatamente 1 run de CI real sobre o PR-trem descartável —
+ *   verdadeiro tanto pro terminal `"merged"` quanto pro `"abandoned"`
+ *   (vermelho, vai bissectar: o run aconteceu, só não passou) e pro
+ *   `"lock-blocked"` (passou no CI, não conseguiu a janela de merge — o
+ *   run de CI já foi consumido de qualquer forma). Cada bissecção gera
+ *   NOVAS entradas na fila, cada uma contribuindo seu próprio run — por
+ *   isso `ciRunsUsed` soma TODAS as entradas ≥2, não só as que terminam
+ *   `"merged"` (o pior caso documentado em `worstCaseCiRuns` acima: um
+ *   lote vermelho custa mais runs que o caminho de hoje, não menos).
+ *
+ * `prsInvolvedInBatches`/`issuesInvolvedInBatches` são a UNIÃO distinta de
+ * PRs/issues que passaram por pelo menos 1 lote ≥2 em algum ponto da
+ * árvore de bissecção — nunca soma duplicada entre a entrada abandonada e
+ * as sub-entradas que a bissecção gera pro mesmo PR. É o denominador do
+ * "sem o trem": no caminho de hoje, cada um desses PRs teria contribuído
+ * exatamente 1 run próprio (o que já usou pra chegar em Gate 2 verde) —
+ * `prsInvolvedInBatches` é literalmente esse número de runs "antes".
+ */
+export interface TrainCiRunsSummary {
+  /** PRs distintos que passaram por ≥1 lote de tamanho ≥2 — o "antes" (1 run de CI cada, caminho de hoje). */
+  readonly prsInvolvedInBatches: number;
+  /** Issues distintas fechadas por esses PRs (via `TrainPrInfo.issueNumbers`) — denominador de "runs de CI por issue". */
+  readonly issuesInvolvedInBatches: number;
+  /** Runs de CI reais disparados pelo mecanismo do trem — o "depois" (1 por outcome com `batch.prs.length >= 2`, INCLUINDO bissecção). */
+  readonly ciRunsUsed: number;
+  /** PRs que nunca entraram em lote (`batch.prs.length === 1`) — não afetados pelo trem, só contexto. */
+  readonly soloPrs: number;
+}
+
+/** Forma mínima de `TrainBatchOutcome` que esta função precisa — evitar
+ * importar `merge-train-live.ts` aqui (que faz I/O) só pelo tipo. */
+export interface TrainCiRunsOutcomeLike {
+  readonly batch: { readonly prs: readonly number[] };
+}
+
+export function summarizeTrainCiRuns(
+  outcomes: readonly TrainCiRunsOutcomeLike[],
+  prInfos: readonly TrainPrInfo[],
+): TrainCiRunsSummary {
+  const byPr = new Map(prInfos.map((p) => [p.pr, p]));
+  const involvedPrs = new Set<number>();
+  const involvedIssues = new Set<number>();
+  let ciRunsUsed = 0;
+  let soloPrs = 0;
+
+  for (const o of outcomes) {
+    if (o.batch.prs.length >= 2) {
+      ciRunsUsed++;
+      for (const pr of o.batch.prs) {
+        involvedPrs.add(pr);
+        for (const issue of byPr.get(pr)?.issueNumbers ?? []) involvedIssues.add(issue);
+      }
+    } else if (o.batch.prs.length === 1) {
+      soloPrs++;
+    }
+  }
+
+  return {
+    prsInvolvedInBatches: involvedPrs.size,
+    issuesInvolvedInBatches: involvedIssues.size,
+    ciRunsUsed,
+    soloPrs,
+  };
+}
