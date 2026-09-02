@@ -2574,17 +2574,31 @@ export async function fetchRecentCampaigns(
           // #6720 Fatia C: `lsFailed` é "tentamos buscar ls nesta rodada E
           // não conseguimos" — distinto de "não tentamos porque
           // `includeLinksStats=false`". Só o primeiro caso precisa do TTL
-          // curto de auto-cura; o segundo cai na faixa por idade normal.
+          // curto de auto-cura; o segundo cai na faixa por idade normal (ou
+          // permanece permanente se imutável — ver `opts` abaixo).
           const lsFailed = lsAttempted && ls === undefined;
-          // Finding #1 (#2323): só grava sem TTL (permanente) quando ls está presente E
-          // não-poison. Poison/ls-fetch-falho → TTL curto (RECENT_STATS_TTL) sempre,
-          // pra auto-curar rápido independente da idade da campanha (#2323/#2337).
-          // Caso contrário (ls ainda não considerado nesta rodada, ou simplesmente
-          // saudável mas não imutável) → TTL por FAIXA DE IDADE (#6720 Fatia C):
+          // Finding #1 (#2323) + achado do review desta unidade (#6720):
+          // permanente (sem TTL) quando IMUTÁVEL e nem poison nem falha —
+          // `ls` pode estar PRESENTE e saudável (caso original do #2323) OU
+          // simplesmente NUNCA TER SIDO TENTADO porque `includeLinksStats=
+          // false` (`/api/campaigns`). Sem este 2º caso, uma campanha
+          // imutável visitada só via `/api/campaigns` (nunca via `/`) jamais
+          // vira permanente — cai sempre na faixa MID_RANGE_STATS_TTL de
+          // `resolveRecentStatsTtl`, refazendo o GET de globalStats a cada
+          // 4h pra sempre, o oposto do que `isImmutableCampaign` promete
+          // ("custo ~0"). Gravar `{}` aqui é seguro mesmo sem `ls`: a MESMA
+          // chave é relida (não expira) por qualquer render futuro que
+          // precise de `ls` — inclusive um com `includeLinksStats=true` —,
+          // que then tenta o fetch de `ls` normalmente (`cachedLs` ausente,
+          // não é tratado como poison/pending) e reescreve a entrada com
+          // `ls` incluído. Poison/ls-fetch-falho seguem SEMPRE com TTL curto
+          // (RECENT_STATS_TTL), pra auto-curar rápido independente da idade
+          // (#2323/#2337) — isso não muda. Não-imutável e saudável (ou
+          // ainda não considerado) → TTL por FAIXA DE IDADE (#6720 Fatia C):
           // <48h segue RECENT_STATS_TTL (frescor importa), 48h-7d usa
           // MID_RANGE_STATS_TTL (quase parada, TTL mais longo é seguro) — ver
           // `resolveRecentStatsTtl`.
-          const opts = (immutable && ls !== undefined && !lsPoison)
+          const opts = (immutable && !lsPoison && !lsFailed)
             ? {}
             : (lsPoison || lsFailed)
               ? { expirationTtl: RECENT_STATS_TTL }

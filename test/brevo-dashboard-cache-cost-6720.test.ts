@@ -360,4 +360,52 @@ describe("fetchRecentCampaigns — TTL por faixa de idade no write de stats:{id}
     const statsPut = putCalls.find((p) => p.key === "stats:205");
     assert.deepStrictEqual(statsPut?.opts, {}, "campanha >7d saudável continua permanente (sem expirationTtl) -- #6720 não move este corte");
   });
+
+  test("campanha IMUTÁVEL (>7d) vista só via includeLinksStats=false → PERMANENTE (não MID_RANGE) -- achado do review desta unidade", async () => {
+    // Regressão: a 1ª versão desta fatia exigia `ls !== undefined` pro ramo
+    // permanente, o que fazia uma campanha imutável NUNCA vista via rota "/"
+    // (só via /api/campaigns, includeLinksStats=false) cair pra sempre em
+    // MID_RANGE_STATS_TTL (refetch de globalStats a cada 4h) em vez de
+    // custo ~0 -- o oposto do que isImmutableCampaign promete. Corrigido:
+    // imutável + nem poison nem falha (ls pode estar simplesmente "nunca
+    // tentado") também é permanente.
+    const { kv, putCalls } = makeKvMock({ "list:9": fakeList });
+    const campaign = makeCampaign(206, 10 * DAY);
+    let lsCalled = false;
+    const mockFetch = async <T>(path: string): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [campaign] } as T;
+      if (/emailCampaigns\/206\?statistics=globalStats/.test(path)) return { ...campaign, statistics: { globalStats: fakeGs } } as T;
+      if (/emailCampaigns\/206\?statistics=linksStats/.test(path)) { lsCalled = true; throw new Error("não deveria ser chamado (includeLinksStats=false)"); }
+      throw new Error("path inesperado: " + path);
+    };
+    const result = await fetchRecentCampaigns(
+      { BREVO_API_KEY: "t", STATS_CACHE: kv } as any,
+      20, false, mockFetch as any, false, /* includeLinksStats */ false,
+    );
+    assert.strictEqual(lsCalled, false, "linksStats não deve ser tentado");
+    assert.strictEqual(result[0].statistics?.globalStats?.sent, 200);
+    const statsPut = putCalls.find((p) => p.key === "stats:206");
+    assert.deepStrictEqual(statsPut?.opts, {},
+      "campanha imutável vista só via includeLinksStats=false deve ser PERMANENTE (custo ~0) -- não MID_RANGE_STATS_TTL");
+
+    // Um render POSTERIOR com includeLinksStats=true (rota "/") ainda consegue
+    // completar a entrada com ls -- a entrada permanente sem ls não bloqueia
+    // o fetch real futuro.
+    let lsCalledLater = false;
+    const mockFetch2 = async <T>(path: string): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [campaign] } as T;
+      if (/emailCampaigns\/206\?statistics=globalStats/.test(path)) return { ...campaign, statistics: { globalStats: fakeGs } } as T;
+      if (/emailCampaigns\/206\?statistics=linksStats/.test(path)) {
+        lsCalledLater = true;
+        return { ...campaign, statistics: { linksStats: { "https://x/y": 3 } } } as T;
+      }
+      throw new Error("path inesperado: " + path);
+    };
+    const result2 = await fetchRecentCampaigns(
+      { BREVO_API_KEY: "t", STATS_CACHE: kv } as any,
+      20, false, mockFetch2 as any, false, true,
+    );
+    assert.strictEqual(lsCalledLater, true, "render com includeLinksStats=true deve conseguir buscar o ls que faltava");
+    assert.deepStrictEqual(result2[0].statistics?.linksStats, { "https://x/y": 3 });
+  });
 });
