@@ -24,33 +24,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # #7118: bloco de steps extraído para .github/workflows/deploy-worker.yml
+  # (workflow_call) — 8 dos 12 deploy-*.yml eram byte-idênticos além do
+  # nome do worker. Ver comentário de topo de deploy-worker.yml para a
+  # justificativa (por que workflow_call aqui e não o padrão de ci.yml).
   deploy:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: 'npm'
-
-      # Necessário pra `[build] command` do wrangler.toml (npx tsx
-      # ../../scripts/generate-worker-tokens.ts), que resolve `tsx` a partir
-      # do node_modules da raiz do repo — mesmo padrão do ci.yml (#3164) e do
-      # deploy-brevo-dashboard.yml (#3268).
-      # #7117: workers/ virou npm workspace — este npm ci na RAIZ já instala
-      # (e hoista) as deps de TODOS os workers, incluindo wrangler; o passo
-      # separado "Install poll worker deps" (npm ci dentro de workers/poll)
-      # foi removido porque não existe mais lockfile por worker pra ele rodar
-      # contra. `npm run deploy` abaixo acha o `wrangler` hoistado via PATH
-      # (node_modules/.bin da raiz, resolução padrão do npm em ancestrais).
-      - run: npm ci
-
-      - name: Deploy to Cloudflare Workers
-        working-directory: workers/poll
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npm run deploy
+    uses: ./.github/workflows/deploy-worker.yml
+    with:
+      worker: poll
+    secrets: inherit
