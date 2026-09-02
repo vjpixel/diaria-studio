@@ -457,9 +457,13 @@ describe("rota /api/campaigns (#3644) — mesma garantia de coalescing (Map em m
       assert.equal(res2.status, 200);
       const [t1, t2] = await Promise.all([res1.text(), res2.text()]);
       assert.equal(t1, t2, "as 2 respostas devem ser idênticas -- mesma execução coalescida");
-      // fetchRecentCampaigns (limit=20 default): listing(1) + stats de 1 campanha
-      // (globalStats + linksStats = 2) = 3. Sem coalescing: 6 (2 por request).
-      assert.equal(gated.callCount(), 3, `esperado 3 chamadas Brevo (1 única sequência) -- callCount=${gated.callCount()} sugere thundering-herd não coalescido`);
+      // fetchRecentCampaigns (limit=20 default): listing(1) + globalStats(1) = 2.
+      // #6720 Fatia C: `/api/campaigns` passa `includeLinksStats=false` -- o
+      // 2º GET por campanha (linksStats) não roda mais nesta rota (nenhum
+      // consumidor confirmado lê esse campo aqui; a seção de links agregados
+      // é exclusiva do HTML de `/`, que continua fazendo os 2 GETs). Sem
+      // coalescing: 4 (2 por request).
+      assert.equal(gated.callCount(), 2, `esperado 2 chamadas Brevo (1 única sequência, sem linksStats -- #6720 Fatia C) -- callCount=${gated.callCount()} sugere thundering-herd não coalescido`);
     } finally {
       globalThis.fetch = origFetch;
     }
