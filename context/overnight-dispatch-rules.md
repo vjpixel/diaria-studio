@@ -92,6 +92,23 @@ antes do push — inclusive quando a mudança nasceu de sincronizar um
 `.claude/skills/*/SKILL.md` com o playbook (não é preciso ter editado o
 arquivo do orchestrator "de propósito" para o guard se aplicar).
 
+**Guard de CONJUNTO (varre workers/hubs/seeds/tasks-agendadas/`scripts/lib`
+inteiros) pode mudar de veredito sem que seu arquivo de teste apareça no
+diff (#7056).** "Só os testes afetados" pressupõe que o diff muda o
+COMPORTAMENTO de um arquivo com teste próprio — não cobre o caso em que o
+diff muda QUEM ENTRA numa varredura (ex: converter um worker de assets
+estáticos pra scripted ganha `main=`/`src/index.ts` e passa a ser membro de
+`workers-observability-guard`/`worker-bundle-node-only-imports`, sem tocar
+nenhum `test/*.ts`). Foi esse gap que deixou `master` vermelho em `c8fcdc9b`
+(PR #7038/#7030) com os 8 checks do PR verdes. Antes do push, rodar `npx tsx
+scripts/which-set-guards.ts` (sem args — usa `git diff` contra
+`origin/master`/`master`; aceita `--files a,b` pra uma lista explícita) e
+incluir o(s) `testFiles` que ele apontar na chamada de `npx tsx --test`
+acima. Registro dos guards de conjunto conhecidos vive em
+`scripts/which-set-guards.ts` (`SET_GUARDS`), não repetido aqui — mesma
+razão do `ORCHESTRATOR_FILES` logo acima: o array pode crescer sem que a
+prosa acompanhe.
+
 ## 5. Teste de regressão em bugfix (#633)
 
 Fix de bug **exige teste novo** demonstrando que o bug não voltaria. Sem teste →
