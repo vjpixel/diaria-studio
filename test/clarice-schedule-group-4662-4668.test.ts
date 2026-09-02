@@ -5,6 +5,9 @@ import {
   checkRescheduleAllowed,
   isSameInstant,
   applyRescheduleVerifyResults,
+  surfaceScheduleWarning,
+  SCHEDULE_AT_MIN_LEAD_MS,
+  SCHEDULE_AT_WARNING_PREFIX,
   type CampaignEntry,
 } from "../scripts/clarice-schedule-group.ts";
 import { scheduledAtForDate } from "../scripts/lib/clarice-wave-plan.ts";
@@ -55,7 +58,9 @@ describe("resolveScheduleAtArg (#4662 — incidente campanha #119, meia-noite UT
   });
 
   it("data-hora explícita (com hora) continua preservada — comportamento pré-existente não regride", () => {
-    const future = new Date(Date.now() + 3600_000).toISOString();
+    // #7042: offset > SCHEDULE_AT_MIN_LEAD_MS (2h) — 1h já não basta mais
+    // desde a antecedência mínima; este teste cobre só a preservação do ISO.
+    const future = new Date(Date.now() + 3 * 3600_000).toISOString();
     const result = resolveScheduleAtArg(future) as { scheduledAt: string };
     assert.equal(result.scheduledAt, new Date(future).toISOString());
   });
@@ -118,6 +123,201 @@ describe("resolveScheduleAtArg (#4662 — incidente campanha #119, meia-noite UT
 
   it("ausente → { scheduledAt: undefined } (rascunho SEM data, comportamento pré-existente #4347 G7/D7)", () => {
     assert.deepEqual(resolveScheduleAtArg(undefined), { scheduledAt: undefined });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #7042 — resolveScheduleAtArg: antecedência mínima (SCHEDULE_AT_MIN_LEAD_MS)
+// + aviso de horário fora do canônico. 3ª ocorrência da mesma classe de bug
+// que o #4662 (#4662, #5939) — "no futuro" sozinho aceitava 30s à frente, e
+// em 01/09/2026 isso fez 3 campanhas Clarice (#208/209/210) destinadas ao
+// dia SEGUINTE saírem no MESMO dia às 14:00 BRT, pra dezenas de milhares de
+// contatos. `now` sempre INJETADO com data fixa — nunca `new Date()` real.
+// ---------------------------------------------------------------------------
+
+describe("resolveScheduleAtArg (#7042 — antecedência mínima, incidente 01/09/2026 campanhas #208/209/210)", () => {
+  const NOW = new Date("2026-09-01T14:00:00.000Z");
+
+  it("REGRESSÃO: 30s no futuro (o caso EXATO do incidente) → erro", () => {
+    const raw = new Date(NOW.getTime() + 30_000).toISOString();
+    const result = resolveScheduleAtArg(raw, NOW);
+    assert.ok("error" in result, "esperava { error }, não { scheduledAt }");
+    if (!("error" in result)) throw new Error("unreachable");
+    // quanto falta de fato, legível
+    assert.match(result.error, /30s/);
+    // antecedência mínima exigida
+    assert.match(result.error, /antecedência mínima/i);
+    assert.match(result.error, /2h/);
+    // sugestão do horário canônico do PRÓXIMO dia, via scheduledAtForDate — nunca montada à mão
+    assert.match(result.error, /2026-09-02T09:00:00\.000Z/);
+    assert.equal(result.error.includes(scheduledAtForDate("2026-09-02")), true);
+    // --send-now é o caminho nomeado pra disparo imediato de propósito
+    assert.match(result.error, /--send-now/);
+    // escape nomeado
+    assert.match(result.error, /--allow-imminent/);
+    // referência ao histórico de incidentes da mesma classe
+    assert.match(result.error, /#4662/);
+    assert.match(result.error, /#5939/);
+  });
+
+  it("5 min no futuro → erro (mesma antecedência mínima)", () => {
+    const raw = new Date(NOW.getTime() + 5 * 60_000).toISOString();
+    const result = resolveScheduleAtArg(raw, NOW);
+    assert.ok("error" in result);
+    if (!("error" in result)) throw new Error("unreachable");
+    assert.match(result.error, /5 min/);
+    assert.match(result.error, /antecedência mínima/i);
+  });
+
+  it("BORDA: exatamente no limite (now + SCHEDULE_AT_MIN_LEAD_MS) → SUCESSO — o limite é inclusivo (comportamento travado aqui)", () => {
+    const raw = new Date(NOW.getTime() + SCHEDULE_AT_MIN_LEAD_MS).toISOString();
+    const result = resolveScheduleAtArg(raw, NOW);
+    assert.ok("scheduledAt" in result, `esperava sucesso, recebeu erro: ${"error" in result ? result.error : ""}`);
+  });
+
+  it("BORDA: 1ms ANTES do limite → erro — confirma que o corte é estrito (< min lead, não <=)", () => {
+    const raw = new Date(NOW.getTime() + SCHEDULE_AT_MIN_LEAD_MS - 1).toISOString();
+    const result = resolveScheduleAtArg(raw, NOW);
+    assert.ok("error" in result, "1ms antes do limite deveria abortar");
+  });
+
+  it("dia seguinte às 09:00 UTC (horário canônico exato) → sucesso, SEM warning", () => {
+    const raw = "2026-09-02T09:00:00.000Z";
+    const result = resolveScheduleAtArg(raw, NOW);
+    assert.ok("scheduledAt" in result, `esperava sucesso, recebeu erro: ${"error" in result ? result.error : ""}`);
+    if (!("scheduledAt" in result)) throw new Error("unreachable");
+    assert.equal(result.scheduledAt, raw);
+    assert.equal(result.warning, undefined, "horário canônico não deveria gerar warning");
+  });
+
+  it("futuro suficiente mas horário NÃO-canônico (dia seguinte 17:00 UTC) → sucesso, COM warning nomeado — não bloqueia (#5140 teste A/B pode reabrir isto)", () => {
+    const raw = "2026-09-02T17:00:00.000Z";
+    const result = resolveScheduleAtArg(raw, NOW);
+    assert.ok("scheduledAt" in result, `esperava sucesso, recebeu erro: ${"error" in result ? result.error : ""}`);
+    if (!("scheduledAt" in result)) throw new Error("unreachable");
+    assert.equal(result.scheduledAt, raw);
+    assert.ok(result.warning, "esperava um warning nomeado pro horário fora do canônico");
+    assert.match(result.warning as string, /fora do horário canônico/i);
+    assert.match(result.warning as string, /09:00 UTC/);
+    assert.match(result.warning as string, /06:00 BRT/);
+  });
+
+  describe("allowImminent=true (escape hatch nomeado)", () => {
+    it("30s no futuro COM allowImminent=true → sucesso — o escape funciona", () => {
+      const raw = new Date(NOW.getTime() + 30_000).toISOString();
+      const result = resolveScheduleAtArg(raw, NOW, true);
+      assert.ok("scheduledAt" in result, `esperava sucesso, recebeu erro: ${"error" in result ? result.error : ""}`);
+    });
+
+    it("allowImminent=true NÃO desliga o guard de data-sem-hora (YYYY-MM-DD)", () => {
+      const result = resolveScheduleAtArg("2026-09-02", NOW, true);
+      assert.ok("error" in result);
+      if (!("error" in result)) throw new Error("unreachable");
+      assert.match(result.error, /não tem hora/);
+    });
+
+    it("allowImminent=true NÃO desliga o guard de calendário inválido (2026-02-31)", () => {
+      const result = resolveScheduleAtArg("2026-02-31T09:00:00Z", NOW, true);
+      assert.ok("error" in result);
+      if (!("error" in result)) throw new Error("unreachable");
+      assert.match(result.error, /inexistente no calendário/);
+    });
+
+    it("allowImminent=true NÃO desliga o guard de data no PASSADO", () => {
+      const raw = new Date(NOW.getTime() - 3600_000).toISOString();
+      const result = resolveScheduleAtArg(raw, NOW, true);
+      assert.ok("error" in result);
+      if (!("error" in result)) throw new Error("unreachable");
+      assert.match(result.error, /deve estar no futuro/);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Achado 6a (fleet review): formatLeadTime não é exportado — coberto
+  // indiretamente via a mensagem de erro do guard de antecedência mínima
+  // (mesmo padrão já usado pelos testes "30s"/"5 min" acima). Faltava o
+  // caso "horas com minutos residuais" (ex: 90min → "1h30min").
+  // -------------------------------------------------------------------------
+  it("90 min no futuro → erro cita '1h30min' (formatLeadTime: horas com minutos residuais, nunca testado antes)", () => {
+    const raw = new Date(NOW.getTime() + 90 * 60_000).toISOString();
+    const result = resolveScheduleAtArg(raw, NOW);
+    assert.ok("error" in result);
+    if (!("error" in result)) throw new Error("unreachable");
+    assert.match(result.error, /1h30min/);
+  });
+
+  // -------------------------------------------------------------------------
+  // Achado 6b (fleet review): isCanonicalHour é um AND de 4 termos (hora,
+  // minuto, segundo, milissegundo) — só a HORA diferente (17:00 vs 09:00)
+  // era exercitada. Cobre os 3 termos restantes isoladamente: hora CERTA,
+  // mas minuto/segundo/milissegundo não-zero também deve gerar o warning.
+  // -------------------------------------------------------------------------
+  it("hora canônica (09) mas MINUTO não-zero (09:05:00.000Z) → warning (isCanonicalHour: termo minuto)", () => {
+    const raw = "2026-09-02T09:05:00.000Z";
+    const result = resolveScheduleAtArg(raw, NOW);
+    assert.ok("scheduledAt" in result, `esperava sucesso, recebeu erro: ${"error" in result ? result.error : ""}`);
+    if (!("scheduledAt" in result)) throw new Error("unreachable");
+    // `assert.equal` (== `strictEqual`, `asserts actual is T`) estreita
+    // `result` pro membro `{ scheduledAt: string; warning?: string }` antes
+    // de acessar `.warning` — sem isto, `result` ainda inclui o membro
+    // `{ scheduledAt: undefined }` (sem `warning`) e TS2339 barra o acesso.
+    assert.equal(result.scheduledAt, raw);
+    assert.ok(result.warning, "esperava warning — 09:05 não é o horário canônico exato");
+    assert.match(result.warning as string, /fora do horário canônico/i);
+  });
+
+  it("hora canônica (09) mas SEGUNDO não-zero (09:00:05.000Z) → warning (isCanonicalHour: termo segundo)", () => {
+    const raw = "2026-09-02T09:00:05.000Z";
+    const result = resolveScheduleAtArg(raw, NOW);
+    assert.ok("scheduledAt" in result, `esperava sucesso, recebeu erro: ${"error" in result ? result.error : ""}`);
+    if (!("scheduledAt" in result)) throw new Error("unreachable");
+    assert.equal(result.scheduledAt, raw);
+    assert.ok(result.warning, "esperava warning — 09:00:05 não é o horário canônico exato");
+    assert.match(result.warning as string, /fora do horário canônico/i);
+  });
+
+  it("hora canônica (09:00:00) mas MILISSEGUNDO não-zero (09:00:00.500Z) → warning (isCanonicalHour: termo milissegundo)", () => {
+    const raw = "2026-09-02T09:00:00.500Z";
+    const result = resolveScheduleAtArg(raw, NOW);
+    assert.ok("scheduledAt" in result, `esperava sucesso, recebeu erro: ${"error" in result ? result.error : ""}`);
+    if (!("scheduledAt" in result)) throw new Error("unreachable");
+    assert.equal(result.scheduledAt, raw);
+    assert.ok(result.warning, "esperava warning — 09:00:00.500 não é o horário canônico exato");
+    assert.match(result.warning as string, /fora do horário canônico/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #7042 (fleet review, achado P2) — surfaceScheduleWarning: os 2 call sites
+// de main() (--create/--reschedule) compartilham este helper mínimo pra
+// surfacear `warning`. main() não é testável direto (padrão pré-existente
+// deste arquivo — nenhum teste chama main()), então o helper que os 2 call
+// sites de fato usam é testado aqui: se um call site parar de chamá-lo (ou
+// um 3º nascer sem chamá-lo), o comportamento de logging correto ainda
+// precisa passar por ESTE ponto único testado.
+// ---------------------------------------------------------------------------
+
+describe("surfaceScheduleWarning (#7042 — ponto único que os 2 call sites de main() compartilham)", () => {
+  it("branch de sucesso COM warning → logFn chamado com o texto exato do warning", () => {
+    const calls: string[] = [];
+    surfaceScheduleWarning({ scheduledAt: "2026-09-02T17:00:00.000Z", warning: `${SCHEDULE_AT_WARNING_PREFIX} fora do canônico` }, (m) => calls.push(m));
+    assert.deepEqual(calls, [`${SCHEDULE_AT_WARNING_PREFIX} fora do canônico`]);
+  });
+
+  it("branch de sucesso SEM warning (horário canônico) → logFn NUNCA chamado", () => {
+    const calls: string[] = [];
+    surfaceScheduleWarning({ scheduledAt: "2026-09-02T09:00:00.000Z" }, (m) => calls.push(m));
+    assert.deepEqual(calls, []);
+  });
+
+  it("branch 'ausente' ({ scheduledAt: undefined }) → logFn NUNCA chamado", () => {
+    const calls: string[] = [];
+    surfaceScheduleWarning({ scheduledAt: undefined }, (m) => calls.push(m));
+    assert.deepEqual(calls, []);
+  });
+
+  it("default logFn é console.error (smoke test — não lança sem 2º argumento)", () => {
+    assert.doesNotThrow(() => surfaceScheduleWarning({ scheduledAt: undefined }));
   });
 });
 

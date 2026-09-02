@@ -16,7 +16,8 @@ import {
   buildTaskNeverArmedAlarmEmail,
   KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES,
 } from "../scripts/lib/task-never-armed-alarm.ts";
-import { toNeverArmedFinding, toOrphanTimerFinding } from "../scripts/task-never-armed-alarm.ts";
+import { toNeverArmedFinding, toOrphanTimerFinding, readArmedTimerUnitBaseNames } from "../scripts/task-never-armed-alarm.ts";
+import type { execFileSync } from "node:child_process";
 
 describe("parseSystemctlListTimersOutput", () => {
   it("linha real de `systemctl --user list-timers --all --plain --no-legend`", () => {
@@ -233,5 +234,57 @@ describe("toNeverArmedFinding / toOrphanTimerFinding", () => {
   it("#6772: toOrphanTimerFinding carrega a label alarm-acao", () => {
     const f = toOrphanTimerFinding("diaria-orphan");
     assert.ok(f.labels?.includes("alarm-acao"), `esperava 'alarm-acao' em ${JSON.stringify(f.labels)}`);
+  });
+});
+
+// #7039: erro transitório do systemctl (D-Bus indisponível, timeout,
+// permissão) precisa virar "não sei" (status: "check-failed"), NUNCA a
+// mesma saída que "esta máquina não tem systemd" (status: "no-systemd").
+// Os dois colapsavam ambos em `null` antes desta issue, e o caller tratava
+// os dois como "conjunto armado vazio, nada a reportar".
+describe("readArmedTimerUnitBaseNames (#7039)", () => {
+  it("ENOENT (systemctl ausente) -> status 'no-systemd', nunca 'check-failed'", () => {
+    const exec = (() => {
+      throw Object.assign(new Error("spawn systemctl ENOENT"), { code: "ENOENT" });
+    }) as unknown as typeof execFileSync;
+    assert.deepEqual(readArmedTimerUnitBaseNames(exec), { status: "no-systemd" });
+  });
+
+  it("erro transitório (sem .code ENOENT, sem stdout) -> status 'check-failed', NÃO 'no-systemd' nem lista vazia", () => {
+    const exec = (() => {
+      // Simula D-Bus indisponível: systemctl existe (não é ENOENT), falha,
+      // sem stdout algum pra extrair.
+      throw Object.assign(new Error("Failed to connect to bus: No such file or directory"), {
+        status: 1,
+      });
+    }) as unknown as typeof execFileSync;
+    const result = readArmedTimerUnitBaseNames(exec);
+    assert.equal(result.status, "check-failed");
+    if (result.status !== "check-failed") return;
+    assert.match(result.message, /Failed to connect to bus/);
+  });
+
+  it("timeout (código ETIMEDOUT, sem stdout) -> status 'check-failed'", () => {
+    const exec = (() => {
+      throw Object.assign(new Error("command timed out"), { code: "ETIMEDOUT" });
+    }) as unknown as typeof execFileSync;
+    const result = readArmedTimerUnitBaseNames(exec);
+    assert.equal(result.status, "check-failed");
+  });
+
+  it("erro não-ENOENT mas com stdout presente (quirk de versão do systemd) -> ainda conta como leitura OK", () => {
+    const exec = (() => {
+      throw Object.assign(new Error("exited with status 1"), {
+        status: 1,
+        stdout: "Mon ... diaria-a.timer diaria-a.service\n",
+      });
+    }) as unknown as typeof execFileSync;
+    const result = readArmedTimerUnitBaseNames(exec);
+    assert.deepEqual(result, { status: "ok", unitBaseNames: ["diaria-a"] });
+  });
+
+  it("execução limpa -> status 'ok' com a lista parseada", () => {
+    const exec = (() => "" ) as unknown as typeof execFileSync;
+    assert.deepEqual(readArmedTimerUnitBaseNames(exec), { status: "ok", unitBaseNames: [] });
   });
 });

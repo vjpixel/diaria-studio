@@ -25,6 +25,7 @@ import {
   type StepResult,
   type ExecFn,
 } from "../scripts/clarice-envio-run.ts";
+import { SCHEDULE_AT_WARNING_PREFIX } from "../scripts/clarice-schedule-group.ts"; // #7042 (achado 7 do silent-failure-hunter)
 import type { WaveProposal, WaveState } from "../scripts/lib/clarice-wave-plan.ts";
 import type { ResolveLatestMonthlyCycleResult } from "../scripts/lib/mensal/monthly-paths.ts";
 import type { ClariceAbcStateRead } from "../scripts/lib/clarice-abc-state.ts";
@@ -1078,6 +1079,42 @@ describe("clarice-envio-run (#5026)", () => {
       assert.equal(schedule.length, 1, "onda com o volume cortado por crédito ainda é agendada");
 
       assert.match(r.reportMarkdown, /cappedBy: credit/, "relatório registra que o crédito foi quem cortou o volume final");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#7042 (achado 7 do silent-failure-hunter): aviso de horário não-canônico do stderr de 'clarice-schedule-group --create' é PROMOVIDO pro relatório persistido, não só pro journal (console.error)", async () => {
+      // Reproduz o cenário desassistido real: teste A/B de horário ativo,
+      // `scheduleAt` com hora ≠ canônica — `clarice-schedule-group.ts
+      // --create` escreve o aviso no PRÓPRIO stderr (mesma mecânica de
+      // produção, não simulada aqui: só o texto que o processo real
+      // produziria). Sem o fix, `step()` só fazia `console.error(stderr)` —
+      // nunca `report.note(...)` — e o aviso nunca chegava ao .md que o
+      // editor revisa.
+      const root = freshRoot();
+      const warningLine = `${SCHEDULE_AT_WARNING_PREFIX} --schedule-at "2026-08-12T17:00:00.000Z" está FORA do horário canônico da Clarice News (09:00 UTC = 06:00 BRT). Isso não bloqueia — pode ser intencional (teste A/B de horário, #5140) — mas confirme antes de prosseguir.`;
+      const scheduleGroupHandler: Handler = (args) => {
+        if (args.includes("--create")) {
+          return {
+            code: 0,
+            stdout: JSON.stringify({ key: "d12-qua12", listId: 500, campaignId: 900, phase: "create", status: "draft" }),
+            stderr: `📋 Campanha grupo — key='d12-qua12'  listId=500\n${warningLine}\n`,
+          };
+        }
+        return jsonResult({ key: "d12-qua12", listId: 500, campaignId: 900, phase: "schedule", status: "scheduled", scheduledAt: `${SEND_DATE}T17:00:00.000Z` });
+      };
+      const { exec } = makeFakeExec({ ...goldenHandlers(), "scripts/clarice-schedule-group.ts": scheduleGroupHandler });
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.ok(
+        r.reportMarkdown.includes(warningLine),
+        `relatório persistido deveria conter o aviso de horário não-canônico (só apareceu no console antes do fix); reportMarkdown=${r.reportMarkdown}`,
+      );
+      // linha de log operacional (não-aviso) do MESMO stderr NÃO deve virar
+      // uma linha de relatório própria — só o prefixo nomeado é promovido.
+      assert.ok(
+        !r.reportMarkdown.split("\n").some((l) => l.trim() === `- 📋 Campanha grupo — key='d12-qua12'  listId=500`),
+        "só a linha com o prefixo de aviso deveria ser promovida, não o stderr inteiro linha a linha",
+      );
       rmSync(root, { recursive: true, force: true });
     });
 

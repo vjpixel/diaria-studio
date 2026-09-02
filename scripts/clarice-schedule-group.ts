@@ -38,6 +38,20 @@
  *                      --update-existing N reusa uma campanha já existente
  *                      (PUT) em vez de criar nova (POST) — mesmo pre-check de
  *                      status terminal que publish-monthly.ts fazia.
+ *                      #7042: `--schedule-at`, quando passada, também exige
+ *                      antecedência mínima de `SCHEDULE_AT_MIN_LEAD_MS` (2h
+ *                      default) a partir de agora — "no futuro" sozinho
+ *                      aceitava 30s à frente, e essa é a 3ª ocorrência da
+ *                      mesma classe de bug (#4662, #5939; incidente
+ *                      01/09/2026: campanhas #208/209/210 destinadas ao dia
+ *                      seguinte saíram no mesmo dia). `--allow-imminent`
+ *                      pula SÓ essa checagem (nunca as de data-sem-hora/
+ *                      calendário inválido/passado) — use pra reagendamento
+ *                      legítimo de curto prazo; disparo imediato de
+ *                      propósito é `--send-now`, não `--schedule-at`
+ *                      minutos à frente. Fora do horário canônico (09:00
+ *                      UTC = 06:00 BRT) sai como AVISO, não bloqueio — teste
+ *                      A/B de horário pode reabrir isso de propósito.
  *   --update-html      re-aplica o HTML atual (cloudflare-preview.html) na
  *                      campanha em draft — propaga fix de render pós-create.
  *   --send-test        manda test email pro `brevo_monthly.test_email` do
@@ -54,7 +68,10 @@
  *   --reschedule       #4668: REAGENDA uma campanha que já está `scheduled`
  *                      (corrige `scheduledAt`, nunca toca recipients/HTML).
  *                      Requer `--schedule-at <ISO com hora>` (o novo alvo) e o
- *                      mesmo gabarito É IA? do --schedule. Guards, nesta ordem:
+ *                      mesmo gabarito É IA? do --schedule. Mesma antecedência
+ *                      mínima (#7042) e mesma `--allow-imminent` do --create,
+ *                      acima — resolvido pelo mesmo `resolveScheduleAtArg`.
+ *                      Guards, nesta ordem:
  *                        1. recusa se o registro LOCAL nunca foi agendado
  *                           (status "draft" — use --schedule) ou já foi
  *                           disparado (status "sent" — terminal).
@@ -172,7 +189,9 @@ import { checkEiaGuard, applyVerifyResults, isScheduledStatus } from "./clarice-
 // #4662: fonte única do horário canônico de envio (09:00 UTC = 06:00 BRT) —
 // usada só pra COMPOR a sugestão no erro de --schedule-at só-data (nunca
 // duplicar "09:00:00Z" aqui) e pra validar calendário (2026-02-31 etc).
-import { scheduledAtForDate } from "./lib/clarice-wave-plan.ts";
+// #7042: `SEND_HOUR_UTC` também usada pro aviso de horário fora do canônico
+// (comparação, nunca string literal "09:00").
+import { scheduledAtForDate, SEND_HOUR_UTC } from "./lib/clarice-wave-plan.ts";
 import { groupListsRegistryPath, type GroupListEntry } from "./clarice-import-waves.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { tagHourCellUtm } from "./lib/shared/utm-registry.ts";
@@ -451,10 +470,54 @@ const ONLY_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
  */
 const FULL_ISO_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
 
+/**
+ * #7042: antecedência mínima entre "agora" e `--schedule-at` pro caminho
+ * automático (sem `--allow-imminent`). "No futuro" sozinho (`d > now`)
+ * aceitava 30s à frente — 3ª ocorrência da mesma classe de bug (#4662,
+ * #5939): em 01/09/2026 isso fez 3 campanhas Clarice (#208/209/210)
+ * destinadas ao dia SEGUINTE saírem no MESMO dia às 14:00 BRT, pra dezenas
+ * de milhares de contatos. 2h é antecedência ampla o bastante pra um
+ * operador perceber e corrigir um erro de digitação antes do disparo real,
+ * sem travar reagendamento legítimo de curto prazo (usar `--allow-imminent`
+ * nesse caso, caminho nomeado, nunca silencioso). Valor default — o editor
+ * pode ajustar aqui numa linha.
+ */
+export const SCHEDULE_AT_MIN_LEAD_MS = 2 * 60 * 60 * 1000; // 2h
+
+/**
+ * Formata uma duração em ms como string curta e legível ("30s", "5 min",
+ * "1h30min") — usada tanto pra "quanto falta" quanto pra "mínimo exigido"
+ * na mensagem de erro do guard de antecedência (#7042). Puro, sem locale
+ * ICU (mesma disciplina de `scheduledAtForDate` — determinístico entre
+ * máquinas).
+ */
+function formatLeadTime(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const totalMinutes = Math.round(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes} min`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes > 0 ? `${hours}h${minutes}min` : `${hours}h`;
+}
+
+/**
+ * Prefixo estável da mensagem de aviso de horário não-canônico (ver o
+ * branch de sucesso com `warning` em `resolveScheduleAtArg`, logo abaixo) —
+ * usado por callers automatizados (ex: `clarice-envio-run.ts`, fluxo
+ * desassistido das 19:00 BRT) pra reconhecer e promover ESSA linha
+ * específica do stderr do subprocesso pro relatório persistido, sem
+ * precisar promover o stderr inteiro (a maior parte é log operacional, não
+ * aviso). Exportado em vez de hardcodado do lado do caller pra não
+ * duplicar a string em dois arquivos.
+ */
+export const SCHEDULE_AT_WARNING_PREFIX = "⚠ AVISO:";
+
 export function resolveScheduleAtArg(
   raw: string | undefined,
   now: Date = new Date(),
-): { scheduledAt: string | undefined } | { error: string } {
+  allowImminent = false,
+): { scheduledAt: undefined } | { scheduledAt: string; warning?: string } | { error: string } {
   if (!raw) return { scheduledAt: undefined };
 
   // #4662 (incidente 260805, campanha #119): "YYYY-MM-DD" sem hora era
@@ -514,7 +577,71 @@ export function resolveScheduleAtArg(
       error: `--schedule-at deve estar no futuro. Recebido: ${d.toISOString()}, agora: ${now.toISOString()}`,
     };
   }
+
+  // #7042: antecedência mínima — só pulada com --allow-imminent explícito
+  // (nunca as checagens acima: data-sem-hora, calendário inválido, passado).
+  const leadMs = d.getTime() - now.getTime();
+  if (!allowImminent && leadMs < SCHEDULE_AT_MIN_LEAD_MS) {
+    // Sugestão: horário canônico do dia SEGUINTE a "agora" (não a `raw`) —
+    // reusa `scheduledAtForDate`, nunca monta a string à mão (mesma
+    // disciplina de #4662 acima).
+    const tomorrowUtc = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1),
+    );
+    const tomorrowIso = tomorrowUtc.toISOString().slice(0, 10);
+    const suggestion = scheduledAtForDate(tomorrowIso);
+    return {
+      error:
+        `--schedule-at "${raw}" está a ${formatLeadTime(leadMs)} de "agora" (${now.toISOString()}) — ` +
+        `antecedência mínima exigida: ${formatLeadTime(SCHEDULE_AT_MIN_LEAD_MS)} (3ª vez que uma campanha ` +
+        `Clarice sai antes do previsto por um gap de validação de agendamento: #4662, #5939, #7042). ` +
+        `Sugestão pro horário canônico do PRÓXIMO dia: "${suggestion}". ` +
+        `Se o disparo IMEDIATO é intencional, use --send-now (caminho nomeado pra isso), não ` +
+        `--schedule-at perto de agora. Pra pular só esta checagem (não recomendado), use --allow-imminent.`,
+    };
+  }
+
+  // #7042: horário fora do canônico (09:00 UTC = 06:00 BRT) NÃO bloqueia —
+  // teste A/B de horário (#5140) pode reabrir isso de propósito — mas sai
+  // como aviso ALTO e NOMEADO, nunca em silêncio. Campo `warning?` opcional
+  // no branch de sucesso, em vez de um helper de checagem separado: o aviso
+  // depende do MESMO `Date` já validado/normalizado aqui dentro — um helper
+  // à parte forçaria os call sites a re-parsear a string ISO já produzida
+  // sem nenhum ganho de pureza (o helper seria igualmente puro), só mais
+  // uma chamada por call site. A função continua pura e testável — os
+  // testes checam a presença/ausência de `warning` no branch de sucesso do
+  // mesmo jeito que já checam `scheduledAt`.
+  const isCanonicalHour =
+    d.getUTCHours() === SEND_HOUR_UTC && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0;
+  if (!isCanonicalHour) {
+    return {
+      scheduledAt: d.toISOString(),
+      warning:
+        `${SCHEDULE_AT_WARNING_PREFIX} --schedule-at "${d.toISOString()}" está FORA do horário canônico da Clarice News ` +
+        `(${String(SEND_HOUR_UTC).padStart(2, "0")}:00 UTC = 06:00 BRT). Isso não bloqueia — pode ser ` +
+        `intencional (teste A/B de horário, #5140) — mas confirme antes de prosseguir.`,
+    };
+  }
   return { scheduledAt: d.toISOString() };
+}
+
+/**
+ * #7042 (fleet review, achado P2): surfaceia o `warning` do branch de
+ * sucesso de `resolveScheduleAtArg` — extraído num helper mínimo pra que os
+ * 2 call sites (`--create`/`--reschedule`, em `main()` abaixo) o
+ * COMPARTILHEM em vez de cada um repetir
+ * `if (x.warning) console.error(x.warning)` inline. `warning?: string` é
+ * campo OPCIONAL — nada no compilador obriga ninguém a lê-lo — então sem
+ * este ponto único, um 3º call site nascendo (ou um dos 2 existentes sendo
+ * refatorado) poderia perder a linha em silêncio, exatamente a classe de
+ * bug que esta PR existe pra prevenir. Testado diretamente em
+ * `test/clarice-schedule-group-4662-4668.test.ts`.
+ */
+export function surfaceScheduleWarning(
+  resolved: { scheduledAt: undefined } | { scheduledAt: string; warning?: string },
+  logFn: (msg: string) => void = (m) => console.error(m),
+): void {
+  if ("warning" in resolved && resolved.warning) logFn(resolved.warning);
 }
 
 /** Shape do JSON impresso ao final de `main()` — ver `buildInvocationSummary` (#4202). */
@@ -857,6 +984,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const doSendNow = hasFlag(argv, "send-now"); // #4347 G7/D7
   const doReschedule = hasFlag(argv, "reschedule"); // #4668
   const skipEiaGuard = hasFlag(argv, "skip-eia-guard");
+  const allowImminent = hasFlag(argv, "allow-imminent"); // #7042
 
   // #4347: --content-cycle é OPCIONAL — o ciclo do CONTEÚDO/edição mensal a
   // redistribuir pode DIVERGIR do --cycle de contatos/segments (ex: a skill
@@ -952,9 +1080,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       // rascunho SEM data (destinado a --send-now, disparo imediato). A
       // validação "no futuro" só se aplica quando a flag É passada — não
       // regride o guard existente pro caminho --schedule (D7 não mexe nele).
-      const scheduleAtResolved = resolveScheduleAtArg(getArg(argv, "schedule-at") || undefined);
+      const scheduleAtResolved = resolveScheduleAtArg(getArg(argv, "schedule-at") || undefined, new Date(), allowImminent);
       if ("error" in scheduleAtResolved) throw new Error(scheduleAtResolved.error);
       const scheduledAt = scheduleAtResolved.scheduledAt;
+      surfaceScheduleWarning(scheduleAtResolved); // #7042
 
       const updateExistingRaw = getArg(argv, "update-existing");
       let campaignId: number;
@@ -1168,9 +1297,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       throw new Error(`--reschedule: ${key} (campanha #${c.campaignId}) ${allowed.reason}`);
     }
 
-    const scheduleAtResolved = resolveScheduleAtArg(getArg(argv, "schedule-at") || undefined);
+    const scheduleAtResolved = resolveScheduleAtArg(getArg(argv, "schedule-at") || undefined, new Date(), allowImminent);
     if ("error" in scheduleAtResolved) throw new Error(scheduleAtResolved.error);
     const newScheduledAt = scheduleAtResolved.scheduledAt;
+    surfaceScheduleWarning(scheduleAtResolved); // #7042
     if (!newScheduledAt) {
       throw new Error(`--reschedule requer --schedule-at com a NOVA data/hora (ex: --schedule-at 2026-08-06T10:00:00Z).`);
     }
