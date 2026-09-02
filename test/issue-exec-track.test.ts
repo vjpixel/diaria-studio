@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import {
   classifyExecTrack,
   classifyExecTrackWithRule,
+  classifyExecTrackFromListItem,
   parseWaitUntil,
   EXEC_TRACK_LABELS,
   EXEC_TRACK_UI,
@@ -862,5 +863,64 @@ describe("ExecTrackMatch — união cobre todo valor que o runtime emite (#6200)
         `matched "${r.matched}" (labels: ${JSON.stringify(caso.labels)}) fora da união ExecTrackMatch`,
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// classifyExecTrackFromListItem (#7018) — regressão do bug real
+// ---------------------------------------------------------------------------
+
+describe("classifyExecTrackFromListItem (#7018)", () => {
+  it("REGRESSÃO: item de gh issue list SEM a chave 'body' lança, nunca degrada pra overnight", () => {
+    // Cenário exato do #7018: issue com aguardando-ate futuro no corpo,
+    // mas a varredura que gerou este item rodou sem 'body' no --json — a
+    // chave nem existe no objeto (diferente de body: undefined/null/"").
+    const itemSemBody: Record<string, unknown> = {
+      number: 6621,
+      labels: [{ name: "bug" }],
+      state: "OPEN",
+      // sem "body" de propósito
+    };
+    assert.throws(
+      () => classifyExecTrackFromListItem(itemSemBody, { now: NOW }),
+      /sem a chave "body"/,
+    );
+  });
+
+  it("item com body: null classifica normalmente (corpo vazio de verdade, não erro)", () => {
+    const track = classifyExecTrackFromListItem(
+      { number: 1, labels: [], body: null, state: "OPEN" },
+      { now: NOW },
+    );
+    assert.equal(track, "overnight");
+  });
+
+  it("item com aguardando-ate futuro no corpo classifica 'agendada' quando body está presente", () => {
+    const track = classifyExecTrackFromListItem(
+      {
+        number: 6621,
+        labels: [{ name: "bug" }],
+        body: "<!-- aguardando-ate: 2026-09-05 -->",
+        state: "OPEN",
+      },
+      { now: NOW },
+    );
+    assert.equal(track, "agendada");
+  });
+
+  it("labels como array de string (não só {name}) também normaliza", () => {
+    const track = classifyExecTrackFromListItem(
+      { number: 2, labels: ["windows"], body: "", state: "OPEN" },
+      { now: NOW },
+    );
+    assert.equal(track, "develop");
+  });
+
+  it("state CLOSED classifica fora-de-rodada mesmo via list item", () => {
+    const track = classifyExecTrackFromListItem(
+      { number: 3, labels: [], body: "", state: "CLOSED" },
+      { now: NOW },
+    );
+    assert.equal(track, "fora-de-rodada");
   });
 });
