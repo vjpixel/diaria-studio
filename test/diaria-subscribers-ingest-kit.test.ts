@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { drainPages, type KitEngagedPage, type BroadcastAudience, type DrainResult } from "../scripts/kit-provider-split.ts";
 import type { KitBroadcastStats, KitBroadcastSummary } from "../scripts/lib/kit-client.ts";
-import { ingestOneBroadcast, main, type KitIngestDeps } from "../scripts/diaria-subscribers-ingest-kit.ts";
+import { ingestOneBroadcast, main, listAllCompletedBroadcasts, type KitIngestDeps } from "../scripts/diaria-subscribers-ingest-kit.ts";
 import { openDiariaSubscribersDb, getStoreCounts } from "../scripts/lib/diaria-subscribers-db.ts";
 
 /** Fixture literal do shape real de `/subscribers/filter` (1 página, sem cursor). */
@@ -229,5 +229,49 @@ describe("main() — ponta a ponta com deps injetadas (fixture de /subscribers/f
     assert.equal(process.exitCode, 1);
     assert.equal(calledFetch, false, "guard de data/ ausente roda ANTES de qualquer chamada de rede");
     process.exitCode = originalExit;
+  });
+});
+
+describe("listAllCompletedBroadcasts — paginação de /broadcasts?status=completed", () => {
+  it("junta as páginas seguindo end_cursor até has_next_page=false", async () => {
+    const orig = globalThis.fetch;
+    const origKey = process.env.KIT_API_KEY;
+    process.env.KIT_API_KEY = "test-key";
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      const body =
+        calls === 1
+          ? { broadcasts: [{ id: 1 }], pagination: { has_next_page: true, end_cursor: "c1" } }
+          : { broadcasts: [{ id: 2 }], pagination: { has_next_page: false, end_cursor: null } };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      const broadcasts = await listAllCompletedBroadcasts();
+      assert.deepEqual(broadcasts.map((b: any) => b.id), [1, 2]);
+      assert.equal(calls, 2);
+    } finally {
+      globalThis.fetch = orig;
+      if (origKey !== undefined) process.env.KIT_API_KEY = origKey;
+      else delete process.env.KIT_API_KEY;
+    }
+  });
+
+  it("has_next_page=true SEM end_cursor é erro — nunca trata como fim de lista silencioso (achado de self-review, #6491)", async () => {
+    const orig = globalThis.fetch;
+    const origKey = process.env.KIT_API_KEY;
+    process.env.KIT_API_KEY = "test-key";
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ broadcasts: [{ id: 1 }], pagination: { has_next_page: true, end_cursor: null } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as typeof fetch;
+    try {
+      await assert.rejects(() => listAllCompletedBroadcasts(), /end_cursor/);
+    } finally {
+      globalThis.fetch = orig;
+      if (origKey !== undefined) process.env.KIT_API_KEY = origKey;
+      else delete process.env.KIT_API_KEY;
+    }
   });
 });
