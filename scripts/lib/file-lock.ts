@@ -39,13 +39,34 @@ export function acquireLock(lockPath: string, timeoutMs = 10_000): void {
       const fd = openSync(lockPath, "wx");
       closeSync(fd);
       return; // Lock adquirido
-    } catch {
+    } catch (e) {
+      // #6952: só `EEXIST` é CONTENÇÃO — o resto propaga imediatamente.
+      //
+      // O catch era vazio e engolia qualquer erro como "alguém tem o lock,
+      // gira mais": `EACCES` (diretório sem permissão de escrita), `ENOENT`
+      // (diretório ausente), `ENOSPC` (disco cheio) giravam o timeout INTEIRO
+      // e depois lançavam "lock timeout", escondendo a causa real.
+      //
+      // Medido ao vivo: um teste que faz `chmod 0555` no diretório de sessões
+      // pra forçar falha de escrita passou a girar 690 vezes em `EACCES`.
+      // Combinado com o retry do `writeJsonSafeWithCas` (que chama isto até 50
+      // vezes), o custo virou ~500s de CPU ocupada por chamada — mais que o
+      // orçamento de 300s do batch do runner paralelo, derrubando o worker
+      // inteiro e levando junto testes que nada tinham a ver.
+      //
+      // `acquireBeaconLock` (`.claude/hooks/session-beacon.mjs`) já fazia essa
+      // distinção; os docstrings diziam que os dois mecanismos eram espelhados
+      // e não eram — este era o lado errado.
+      if ((e as NodeJS.ErrnoException)?.code !== "EEXIST") throw e;
       if (Date.now() >= deadline) {
         throw new Error(`[file-lock] lock timeout after ${timeoutMs}ms: ${lockPath}`);
       }
-      // Spin wait — intervalos de 50ms
-      const end = Date.now() + 50;
-      while (Date.now() < end) { /* busy wait */ }
+      // Espera 50ms DORMINDO, não em busy wait. O spin anterior queimava CPU
+      // justamente enquanto o dono do lock precisava de CPU pra terminar e
+      // soltá-lo — com vários processos concorrendo (o runner paralelo roda
+      // 150 arquivos por batch), a espera competia com a liberação.
+      // `Atomics.wait` é a única espera síncrona real disponível aqui.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
     }
   }
 }

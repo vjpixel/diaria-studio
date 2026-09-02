@@ -16,9 +16,9 @@
  *     contra o registro.
  */
 
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { closeSync, mkdtempSync, mkdirSync, openSync, readdirSync, readFileSync, unlinkSync, utimesSync, writeFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,6 +53,7 @@ import {
 import {
   findLiveMergeGrantFile,
   buildConsumedRecord,
+  consumeGrantUnderLock,
 } from "../.claude/hooks/consume-merge-grant-on-merge.mjs";
 
 const CONSUME_HOOK_PATH = fileURLToPath(
@@ -748,6 +749,114 @@ describe("#6303 P1·b — varredura degradada a ZERO coordenadoras não permite"
     assert.equal(
       shouldBlockGhPrMerge(new Set(["coord-a", "coord-b"]), "coord-a", { mergeLockHolder: undefined }),
       false,
+    );
+  });
+});
+
+// ─── #6952 — o consume hook é o TERCEIRO escritor do registro ───────────────
+//
+// Achado da frota de review da PR #6969: o #6952 serializou
+// `session-registry.ts` e `session-beacon.mjs` sobre `{path}.lock`, mas ESTE
+// hook ficou de fora — e é ele quem grava `merge_grant.consumedAt` no caminho
+// quente (o `consume-merge-grant` do CLI quase nunca roda de fato).
+//
+// Dois escritores serializados e um terceiro solto não é exclusão mútua. Pior:
+// o que este perde é o `consumedAt`, e perdê-lo deixa uma concessão JÁ USADA
+// viva pelo resto do TTL — uso duplo, o dano que o #6952 classifica como pior
+// que a perda.
+describe("#6952 — consume hook escreve sob o lock compartilhado", () => {
+  const roots: string[] = [];
+  after(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });
+
+  function makeRootWithGrant(): { root: string; recordPath: string } {
+    const root = mkdtempSync(join(tmpdir(), "consume-lock-6952-"));
+    roots.push(root);
+    mkdirSync(join(root, "data", "sessions"), { recursive: true });
+    const recordPath = join(root, "data", "sessions", `overnight-${LOCAL_TAG}-coord-6952.json`);
+    writeFileSync(
+      recordPath,
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: LOCAL_TAG,
+        sessionId: "coord-6952",
+        startedAt: new Date().toISOString(),
+        lastHeartbeat: new Date().toISOString(),
+        claimed_issues: [],
+        merge_grant: {
+          grantedTo: "benef-6952",
+          grantedBy: "coord-6952",
+          grantedAt: new Date().toISOString(),
+          pr: 6952,
+        },
+      }),
+      "utf8",
+    );
+    return { root, recordPath };
+  }
+
+  it("consome de verdade quando o lock está livre", () => {
+    const { root, recordPath } = makeRootWithGrant();
+    assert.equal(consumeGrantUnderLock(root, "benef-6952", "2026-09-01T12:00:00.000Z"), true);
+    const after = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.equal(after.merge_grant.consumedAt, "2026-09-01T12:00:00.000Z");
+    // E não deixou lock pra trás.
+    assert.deepEqual(
+      readdirSync(join(root, "data", "sessions")).filter((f) => f.endsWith(".lock")),
+      [],
+    );
+  });
+
+  it("NÃO escreve enquanto outro escritor segura o lock — e desiste fail-open", () => {
+    const { root, recordPath } = makeRootWithGrant();
+    const lockPath = `${recordPath}.lock`;
+    closeSync(openSync(lockPath, "wx")); // outro escritor está na seção crítica
+
+    const before = readFileSync(recordPath, "utf8");
+    // Orçamento curto: prova que espera e desiste, sem gastar os 3×2s de
+    // produção (ver os parâmetros em `consumeGrantUnderLock`).
+    const ok = consumeGrantUnderLock(root, "benef-6952", "2026-09-01T12:00:00.000Z", 2, 150);
+
+    assert.equal(ok, false, "com o lock retido não há como consumir — desiste em vez de atropelar");
+    assert.equal(
+      readFileSync(recordPath, "utf8"),
+      before,
+      "o hook escreveu com o lock retido — é assim que ele apaga a escrita concorrente do beacon",
+    );
+    unlinkSync(lockPath);
+  });
+
+  it("um lock ÓRFÃO (processo morto) não trava o consumo pra sempre", () => {
+    const { root, recordPath } = makeRootWithGrant();
+    const lockPath = `${recordPath}.lock`;
+    closeSync(openSync(lockPath, "wx"));
+    // Envelhece o lock além de STALE_LOCK_MS (60s): é o que sobra de um
+    // processo morto com SIGKILL/OOM, que nunca rodou o `finally`.
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(lockPath, old, old);
+
+    assert.equal(
+      consumeGrantUnderLock(root, "benef-6952", "2026-09-01T12:00:00.000Z"),
+      true,
+      "lock órfão travou o consumo — um processo morto wedgearia o registro pra sempre",
+    );
+    assert.equal(
+      JSON.parse(readFileSync(recordPath, "utf8")).merge_grant.consumedAt,
+      "2026-09-01T12:00:00.000Z",
+    );
+  });
+
+  it("uso único: consumir de novo é no-op (não regrava consumedAt)", () => {
+    const { root, recordPath } = makeRootWithGrant();
+    assert.equal(consumeGrantUnderLock(root, "benef-6952", "2026-09-01T12:00:00.000Z"), true);
+    assert.equal(
+      consumeGrantUnderLock(root, "benef-6952", "2026-09-01T12:30:00.000Z"),
+      false,
+      "a 2ª consumação não pode suceder — a concessão já não está viva",
+    );
+    assert.equal(
+      JSON.parse(readFileSync(recordPath, "utf8")).merge_grant.consumedAt,
+      "2026-09-01T12:00:00.000Z",
+      "o consumedAt original foi sobrescrito pela 2ª chamada",
     );
   });
 });
