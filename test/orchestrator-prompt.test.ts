@@ -251,7 +251,15 @@ describe("orchestrator-prompt (#634)", () => {
       // `orchestrator-stage-5.md` na mesma sessão: fecha a fronteira de
       // contexto pós-gate-4 que sobrava depois do #5744 cobrir Stages 1-4.
       // Arquivo foi a 810 linhas. Teto bumped de 800→820 com headroom pequeno.
-      "orchestrator-stage-4.md": 820,
+      // #7021: +5 linhas líquidas — §4c.8 exibindo no resumo consolidado
+      // (§4d) o que o Stage 0 (passo 0o, #7041) já mediu sobre a rampa
+      // Gmail (`kit-gmail-ramp-proposal.json`): 1 linha com veredito/tamanho
+      // da onda/comando de aplicação, puramente informativa, nunca bloqueia
+      // o gate. Fecha o resíduo declarado pela PR #7041 ("REFS #7021, NÃO
+      // CLOSES"). Arquivo foi a 824 linhas. Teto bumped de 820→830 com
+      // headroom pequeno (arquivo já chegou nesta rodada sem headroom
+      // sobrando do bump anterior).
+      "orchestrator-stage-4.md": 830,
       // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
       // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
       // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser
@@ -1307,5 +1315,77 @@ describe("#6444: gate 4 consome a decisão gravada pelo painel do Studio (/revis
       /fail-soft.*nunca bloquear o gate/.test(stage4),
       "§4d precisa tratar falha do check como fail-soft, sem bloquear o gate humano",
     );
+  });
+});
+
+describe("#7021: resumo consolidado do Stage 4 exibe a proposta de rampa Gmail medida no Stage 0 (§4c.8)", () => {
+  // A PR #7041 implementou a medição/proposta (passo 0o de stage-0-run.ts,
+  // persistida em `_internal/kit-gmail-ramp-proposal.json`) mas declarou
+  // explicitamente "REFS #7021, NÃO CLOSES" porque faltava a exibição no
+  // resumo consolidado do gate — o editor só vê o que já foi medido se abrir
+  // o JSON à mão. Este teste fecha esse resíduo: §4c.8 precisa ler o arquivo
+  // e o template do gate (§4d) precisa exibir a linha, sem virar gate novo.
+  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const section4c8Idx = stage4.indexOf("**4c.8");
+  const section4dIdx = stage4.indexOf("### 4d. Gate humano");
+
+  it("§4c.8 existe, lê kit-gmail-ramp-proposal.json e referencia #7021", () => {
+    assert.ok(section4c8Idx !== -1, "orchestrator-stage-4.md precisa ter uma seção §4c.8");
+    assert.ok(section4c8Idx < section4dIdx, "§4c.8 precisa vir ANTES do gate humano (§4d), como o resto de §4c");
+    const section4c8 = stage4.slice(section4c8Idx, section4dIdx);
+    assert.ok(
+      section4c8.includes("kit-gmail-ramp-proposal.json"),
+      "§4c.8 precisa ler _internal/kit-gmail-ramp-proposal.json — o arquivo persistido pelo passo 0o (#7041)",
+    );
+    assert.ok(/7021/.test(section4c8), "§4c.8 deve referenciar #7021 — rastreabilidade do resíduo fechado");
+  });
+
+  it("§4c.8 nunca aplica a onda — só leitura, e é explícito sobre nunca rodar --push", () => {
+    const section4c8 = stage4.slice(section4c8Idx, section4dIdx);
+    assert.ok(
+      /NUNCA roda `--push`/.test(section4c8),
+      "§4c.8 precisa deixar explícito que este passo NUNCA roda --push — aplicar a onda continua ação manual do editor (guard de publicação)",
+    );
+    assert.ok(
+      /nunca bloqueia o gate/.test(section4c8),
+      "§4c.8 precisa deixar explícito que é puramente informativo, sem criar gate novo (a issue #7021 pede isso literalmente)",
+    );
+  });
+
+  it("§4c.8 cobre tanto o caso 'ausente' (fail-soft) quanto o caso 'proposta presente' (gate segurou vs onda proposta)", () => {
+    const section4c8 = stage4.slice(section4c8Idx, section4dIdx);
+    assert.ok(
+      /Ausente.*não avaliada nesta edição/.test(section4c8),
+      "§4c.8 precisa tratar o arquivo ausente como 'não avaliada', nunca como silêncio ou falso positivo de entrega ok",
+    );
+    assert.ok(
+      /waveSkipped/.test(section4c8) && /gate segurou/.test(section4c8),
+      "§4c.8 precisa cobrir o caso waveSkipped=true (gate de entrega segurou a onda)",
+    );
+    assert.ok(
+      /waveSize/.test(section4c8) && /applyCommand/.test(section4c8),
+      "§4c.8 precisa incluir o tamanho da onda e o comando exato de aplicação — é literalmente o que a issue #7021 pede",
+    );
+  });
+
+  it("o template do gate (§4d) referencia {ramp_gmail_line} na seção RESUMO CONSOLIDADO, fora do menu sim/editar/ajustar/abortar", () => {
+    const resumoIdx = stage4.indexOf("GATE HUMANO — RESUMO CONSOLIDADO");
+    const menuIdx = stage4.indexOf("Aprovar e prosseguir para Publicação");
+    assert.ok(resumoIdx !== -1 && menuIdx !== -1, "§4d precisa ter o header do resumo e o menu de aprovação");
+    const templateBlock = stage4.slice(resumoIdx, menuIdx);
+    assert.ok(
+      templateBlock.includes("{ramp_gmail_line}"),
+      "o template do resumo consolidado precisa exibir {ramp_gmail_line} — é onde o editor lê no gate, sem precisar abrir o JSON à mão",
+    );
+  });
+
+  it("'Regras de apresentação' documenta {ramp_gmail_line} como não-bloqueante", () => {
+    const regrasIdx = stage4.indexOf("Regras de apresentação");
+    assert.ok(regrasIdx !== -1, "§4d precisa ter a seção 'Regras de apresentação'");
+    const regrasText = stage4.slice(regrasIdx, regrasIdx + 4000);
+    const ramLineIdx = regrasText.indexOf("{ramp_gmail_line}");
+    assert.ok(ramLineIdx !== -1, "'Regras de apresentação' precisa documentar {ramp_gmail_line}");
+    const ramLineText = regrasText.slice(ramLineIdx, ramLineIdx + 300);
+    assert.ok(/nunca bloqueia o gate/.test(ramLineText), "a entrada de {ramp_gmail_line} precisa deixar explícito que não bloqueia o gate");
   });
 });

@@ -497,15 +497,34 @@ rascunho de OUTRA sessão — recuperado só por sorte (cópia solta em `/tmp`).
 **Regra prática, dupla:**
 - **Nunca escreva rascunho de sessão (corpo de PR, comentário de review,
   patch temporário) dentro da árvore do checkout principal.** Use `/tmp`
-  (Unix) ou o scratchpad da sessão — mesmo texto que este arquivo já pede
-  pra corpo de issue/PR na regra 19 acima. Isso não impede um `rm`
-  indevido, mas remove o alvo — foi exatamente o que salvou o incidente
-  original.
+  (Unix), `%TEMP%`/`$TEMP` (Windows) ou o scratchpad da sessão — o diretório
+  nomeado na seção "Scratchpad Directory" do próprio system prompt do
+  subagente, quando existir — mesmo texto que este arquivo já pede pra
+  corpo de issue/PR na regra 19 acima. Isso não impede um `rm` indevido,
+  mas remove o alvo — foi exatamente o que salvou o incidente original.
+  Nome de arquivo NUNCA é `_tmp_*`/`*_tmp.*`/`scratch-*`/`.prNNNN-review.md`/
+  `_prbody*`/`_commitmsg*` dentro da árvore do checkout — esses padrões são
+  litter conhecido (achado ao vivo, `git status` da rodada 01-02/09/2026:
+  `_tmp_cover_snippet.js`, `_tmp_gencover.mjs`, `all_issues_tmp.json`,
+  `rest_issues_tmp.json`, `scratch-drift.ts`) e o guard de commit abaixo já
+  os recusa via `gh pr create` — não espere o guard pegar, escreva fora da
+  árvore desde o início.
 - **Nunca rode `rm` em caminho dentro do checkout compartilhado que você
   não criou nesta mesma sessão** — nem para "limpeza" pós-tarefa. Um agente
   de review não tem razão legítima pra apagar nada do disco.
 
-**Guard mecânico PARCIAL desde o #6971:**
+**Guard mecânico de COMMIT desde o #6971 (`block-pr-create-pii-runtime-artifacts.mjs`):**
+`RUNTIME_ARTIFACT_PATH_PATTERNS` (o mesmo guard `PreToolUse` do #6753 que
+recusa `gh pr create` quando a branch carrega artefato de runtime versionado)
+ganhou padrões para os nomes de rascunho de sessão listados acima
+(`*_tmp.ext`, `scratch-*`, `.prNNNN-review.md`, `_prbody*`, `_commitmsg*`) —
+qualquer PR que tente COMMITAR um desses é recusada antes de abrir. **Não
+cobre a ESCRITA em si** (só dispara em `gh pr create`, não impede o arquivo
+de existir untracked no checkout nem protege contra um `rm` nele) — é
+defesa em profundidade complementar às duas regras práticas acima, não um
+substituto pra elas.
+
+**Guard mecânico de `rm` PARCIAL desde o #6971:**
 `.claude/hooks/block-unsafe-shared-checkout-ops.mjs` (`PreToolUse` sobre
 `Bash`) nega `rm` em caminho dentro do checkout PRINCIPAL (nunca no
 worktree do próprio subagente) quando existe uma rodada

@@ -173,6 +173,24 @@ export const RUNTIME_ARTIFACT_PATH_PATTERNS = [
   /(^|\/)[\w.-]*[-_]dumps?\.[^/]+$/i, // arquivo *-dump.ext / *_dumps.ext
   /(^|\/)\.cache(\/|$)/i,
   /\.tmp$/i,
+  // #6971 — rascunho de SESSÃO (corpo de PR, comentário de review, patch
+  // temporário) largado solto na raiz do checkout compartilhado em vez de
+  // /tmp ou do scratchpad da sessão (Direção 3 da issue: "parar de usar o
+  // checkout como área de rascunho entre sessões" — não impede a escrita
+  // untracked em si, mas barra que ela seja COMMITADA via `gh pr create`,
+  // reduzindo o hábito). Padrões vistos ao vivo no `git status` da rodada
+  // 01-02/09/2026: `_tmp_cover_snippet.js`/`_tmp_gencover.mjs` (já cobertos
+  // acima, prefixo `_tmp_`), `all_issues_tmp.json`/`rest_issues_tmp.json`
+  // (sufixo `_tmp.ext`, forma NOVA — não casava nenhum padrão acima) e
+  // `scratch-drift.ts`. `.prNNNN-review.md` é o nome exato do arquivo do
+  // incidente de origem (#6971 — `rm -f .pr6950-review.md`); `_prbody`/
+  // `_commitmsg` são os nomes sugeridos no checklist de dispatch (item 20
+  // de `context/overnight-dispatch-rules.md`) para quem hoje monta corpo de
+  // PR/commit num arquivo solto em vez de heredoc/Write no scratchpad.
+  /(^|\/)[\w.-]*_tmp\.[^/]+$/i, // arquivo bare *_tmp.ext (sufixo — all_issues_tmp.json)
+  /(^|\/)scratch[-_.][\w.-]*$/i, // scratch-*/scratch_*/scratch.* (scratch-drift.ts)
+  /(^|\/)\.pr\d+-review\.[^/]+$/i, // .prNNNN-review.md — nome exato do incidente de origem
+  /(^|\/)_(prbody|commitmsg)[\w.-]*$/i, // _prbody*/_commitmsg* — corpo de PR/commit num arquivo solto
 ];
 
 /** `true` se `path` bate algum padrão de artefato de runtime acima. */
