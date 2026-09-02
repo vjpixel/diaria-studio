@@ -66,6 +66,15 @@
  *     [--units-dir <dir>] [--target-dir <dir>]
  *   npx tsx scripts/arm-systemd-timers.ts --verify
  *
+ * **`--verify` é sempre GLOBAL e recusa combinar com as flags do fluxo de
+ * armar** (`--task`, `--rearm-stopped`, `--units-dir`, `--target-dir`) —
+ * `exit 2` com mensagem explicando o motivo (#7037, achado de self-review
+ * do #7032). Escopar o verify por `--task` não tem leitura semântica clara
+ * (o valor do modo é justamente ver os DOIS conjuntos INTEIROS de uma vez —
+ * um timer órfão, por definição, não tem task declarada pra passar em
+ * `--task`), então aceitar e ignorar a flag silenciosamente seria pior que
+ * recusar alto.
+ *
  * --task:        arma só a task nomeada (default: todas as SCHEDULED_TASKS).
  * --rearm-stopped: religa mesmo os timers já existentes e `inactive`
  *                 (comportamento antigo, restaurado explicitamente).
@@ -442,8 +451,27 @@ export function reportVerifyOutcome(outcome: VerifyOutcome): number {
 // CLI
 // ---------------------------------------------------------------------------
 
+/** Flags do fluxo de ARMAR que `--verify` não aceita combinar (#7037,
+ * achado de self-review do #7032) — `--verify` é sempre global e só-leitura;
+ * misturado com qualquer uma delas pareceria um verify ESCOPADO
+ * (`--verify --task X` lendo como "verifica só a task X") quando na
+ * verdade a flag adicional seria silenciosamente ignorada e o verify
+ * global rodaria do mesmo jeito. Recusar alto é mais honesto que aceitar
+ * e ignorar — mesma disciplina do resto do arquivo (nunca engolir flag
+ * incompatível em silêncio). */
+const VERIFY_INCOMPATIBLE_FLAGS = ["task", "rearm-stopped", "units-dir", "target-dir"] as const;
+
 export function main(argv: string[], repoRootAbs: string): number {
   if (hasFlag(argv, "verify")) {
+    const conflicting = VERIFY_INCOMPATIBLE_FLAGS.filter((f) => argv.some((a) => a === `--${f}` || a.startsWith(`--${f}=`)));
+    if (conflicting.length > 0) {
+      console.error(
+        `--verify não aceita ${conflicting.map((f) => `--${f}`).join(", ")} — o verify é sempre global ` +
+          `(compara o registro declarativo INTEIRO contra os timers armados, nas duas direções). ` +
+          `Rode "--verify" sozinho, sem outras flags.`,
+      );
+      return 2;
+    }
     return reportVerifyOutcome(runVerify());
   }
 

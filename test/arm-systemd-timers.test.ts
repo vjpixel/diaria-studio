@@ -582,4 +582,42 @@ describe("runVerify / reportVerifyOutcome (#7032)", () => {
       console.log = originalLog;
     }
   });
+
+  // #7037: --verify recusa combinar com as flags do fluxo de armar, em vez
+  // de aceitar e ignorá-las em silêncio (achado de self-review do #7032 —
+  // `--verify --task X` antes rodava o verify GLOBAL sem avisar que --task
+  // foi ignorado).
+  for (const combo of [
+    ["--verify", "--task", "Diaria-Apoios-Diff-Alarm"],
+    ["--verify", "--rearm-stopped"],
+    ["--verify", "--units-dir", "/tmp/units"],
+    ["--verify", "--target-dir", "/tmp/target"],
+    ["--task", "Diaria-Apoios-Diff-Alarm", "--verify"],
+  ]) {
+    it(`main(${JSON.stringify(combo)}) -> recusa, exit 2, nunca chama runVerify nem o fluxo de armar`, () => {
+      const originalError = console.error;
+      const errors: string[] = [];
+      console.error = (...a: unknown[]) => {
+        errors.push(a.join(" "));
+      };
+      try {
+        const code = armSystemdTimersMain(combo, "/repo/abs");
+        assert.equal(code, 2);
+        assert.ok(errors.some((line) => line.includes("--verify") && line.includes("não aceita")));
+      } finally {
+        console.error = originalError;
+      }
+    });
+  }
+
+  it("main(['--verify']) sozinho continua funcionando (regressão da recusa acima)", () => {
+    const originalLog = console.log;
+    console.log = () => {};
+    try {
+      const code = armSystemdTimersMain(["--verify"], "/repo/abs");
+      assert.equal(code, 0);
+    } finally {
+      console.log = originalLog;
+    }
+  });
 });
