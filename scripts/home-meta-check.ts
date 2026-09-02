@@ -396,9 +396,9 @@ async function main(): Promise<void> {
   const stateIsEmpty = Object.keys(alarmState).length === 0;
   // #6572 — modo de estreia: vários eixos com drift na 1ª execução (state
   // vazio) agregam numa issue só acima do teto, mesmo mecanismo genérico
-  // usado por `session-registry-safebackup-alarm.ts` (#6562/#6564) e
-  // `systemd-unit-rate-alarm.ts` (#6572). Na prática nunca dispara (só 6
-  // eixos possíveis), mas o check já opta pelo mesmo mecanismo.
+  // usado por outros alarmes do repo (aggregateFindingsOnDebut). Na prática
+  // nunca dispara (só 6 eixos possíveis), mas o check já opta pelo mesmo
+  // mecanismo.
   const alarmFindings = aggregateFindingsOnDebut(findings.map(toAlarmFinding), {
     threshold: HOME_META_ESTREIA_AGGREGATE_THRESHOLD,
     stateIsEmpty,

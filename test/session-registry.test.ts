@@ -38,7 +38,6 @@ import {
   requireCoordinatorKind,
   parseSessionFileName,
   ALL_SESSION_KINDS,
-  listSafeBackupFiles,
   mergeSessionRecords,
   isMergeGrantLive,
   findLiveMergeGrant,
@@ -2226,24 +2225,6 @@ describe("mergeSessionRecords (#6130)", () => {
     };
     const merged = mergeSessionRecords([older, newerSemClaim]);
     assert.deepEqual(merged.claimed_issues, [5657], "fail-safe: claim de QUALQUER registro do grupo sobrevive na união");
-  });
-});
-
-describe("listSafeBackupFiles (#6130)", () => {
-  it("diretório ausente → array vazio", () => {
-    assert.deepEqual(listSafeBackupFiles(freshRoot()), []);
-  });
-
-  it("lista só arquivos com sufixo -safeBackup-, ordenados", () => {
-    const root = freshRoot();
-    registerSession(root, "continuo", "sess-1", { tag: "predator" });
-    writeRawSessionFile(root, "continuo-predator-sess-1-predator-safeBackup-0002.json", { kind: "continuo" });
-    writeRawSessionFile(root, "continuo-predator-sess-1-predator-safeBackup-0001.json", { kind: "continuo" });
-
-    assert.deepEqual(listSafeBackupFiles(root), [
-      "continuo-predator-sess-1-predator-safeBackup-0001.json",
-      "continuo-predator-sess-1-predator-safeBackup-0002.json",
-    ]);
   });
 });
 

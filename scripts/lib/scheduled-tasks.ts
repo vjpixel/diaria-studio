@@ -1462,25 +1462,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#6130",
   },
   {
-    name: "Diaria-Session-Registry-SafeBackup-Alarm",
-    description:
-      "alarme de cópia de conflito do OneDrive (*-safeBackup-*) presente em data/sessions/ — cria/reusa/fecha " +
-      "issue por arquivo via alarm-issues.ts",
-    steps: [{ key: "alarm", script: "scripts/session-registry-safebackup-alarm.ts" }],
-    logPath: "sessions/.safebackup-alarm.log",
-    // 10:05 BRT — logo depois do GC (09:55, acima), pra alarmar sobre
-    // qualquer backup que o GC não pôde limpar ainda (ex: ancorado a uma
-    // sessão ainda ativa) na mesma janela matinal de checks/alarmes.
-    schedule: { kind: "daily", hour: 10, minute: 5 },
-    // Sem guard — listSafeBackupFiles/o wrapper já tratam data/ ausente
-    // como "nada a checar" (ver scripts/session-registry-safebackup-alarm.ts).
-    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
-    // disciplina do #5845/#5908/#5754 acima) — armar via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
-    // é ação POSTERIOR do editor.
-    issue: "#6130",
-  },
-  {
     name: "Diaria-Backlog-Reconcile",
     description:
       "reconciliação diária do backlog aberto — corrige mecanicamente marcador aguardando-ate: em conflito com " +
