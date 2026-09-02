@@ -60,7 +60,13 @@ import {
   type StoreRow,
 } from "./lib/clarice-segment.ts";
 import { loadSentOrQueuedEmails, excludeSentOrQueued } from "./clarice-build-segment.ts";
-import { brevoGet, fetchCommittedCampaignListIds, fetchDraftCampaigns } from "./lib/brevo-client.ts";
+import {
+  brevoGet,
+  fetchCommittedCampaignListIds,
+  fetchDraftCampaigns,
+  warnIfCampaignQuotaLow, // #6458
+  BrevoRateLimitError, // #6831
+} from "./lib/brevo-client.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { requireCycleArg, CLARICE_BASE, REPO_ROOT, clariceSegmentsDir } from "./lib/clarice-paths.ts";
@@ -320,12 +326,24 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   // genérico (260827/260830/260901) exigiram investigação do zero cada vez
   // porque a causa real (429? erro de rede? 401?) nunca chegava no relatório.
   let committedLookupError: string | null = null;
+  // #6831 — `retryAfterSecs` só quando a falha É rate-limit real
+  // (`BrevoRateLimitError`, brevo-client.ts) — ver docstring do campo em
+  // `WaveProposalInput.committedLookupRetryAfterSecs` (clarice-wave-plan.ts)
+  // pro porquê deste valor NUNCA decide nada aqui dentro (`planWave` segue
+  // retornando normalmente, exit 0/2, nunca lança por causa disto).
+  let committedLookupRetryAfterSecs: number | null = null;
   if (apiKey) {
+    // #6458 — aviso BEST-EFFORT, nunca bloqueante, logo antes da tentativa
+    // real: se a cota já estava baixa por causa de OUTRA sessão/task, o
+    // relatório ganha esse contexto mesmo que a chamada abaixo acabe
+    // funcionando (ou falhando) de qualquer jeito.
+    warnIfCampaignQuotaLow();
     try {
       committed = await fetchCommittedCampaignListIds(apiKey);
     } catch (err) {
       committedLookupFailed = true;
       committedLookupError = err instanceof Error ? err.message : String(err);
+      if (err instanceof BrevoRateLimitError) committedLookupRetryAfterSecs = err.retryAfterSecs;
       console.error(`⚠️  Consulta de campanhas comprometidas falhou: ${committedLookupError}`);
     }
   } else {
@@ -426,6 +444,7 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     startingWaveNumber: computeNextWaveNumber(state.waves),
     committedLookupFailed,
     committedLookupError,
+    committedLookupRetryAfterSecs, // #6831
     novosFreshness,
     novosLastAbort,
     novosPending,

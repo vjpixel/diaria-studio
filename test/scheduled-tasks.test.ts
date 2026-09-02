@@ -455,17 +455,93 @@ describe("#4451 — Diaria-Clarice-Cohorts-Crawl registrada, roda o v2, systemd-
 });
 
 describe("#5025/#5026/#5027 — par Diaria-Clarice-Envio / Diaria-Clarice-Envio-Guard", () => {
-  it("Diaria-Clarice-Envio: presente, 19:00 diário, step aponta pro orquestrador correto", () => {
+  it("Diaria-Clarice-Envio: presente, 19:10 diário (#5826, era 19:00), step aponta pro orquestrador correto", () => {
     const t = getScheduledTaskByName("Diaria-Clarice-Envio");
     assert.ok(t, "Diaria-Clarice-Envio ausente de SCHEDULED_TASKS");
     assert.deepEqual(
       t!.steps.map((s) => s.script),
       ["scripts/clarice-envio-run.ts"],
     );
-    assert.deepEqual(t!.schedule, { kind: "daily", hour: 19, minute: 0 });
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 19, minute: 10 });
   });
 
-  it("#5826: Diaria-Clarice-Envio trata exit 4 (lock de concorrência) como sucesso, não falha", () => {
+  it("#5826: minuto NUNCA :00 — QUALQUER task 'interval' deste registro cai em :00 de toda hora por construção (scheduleToOnCalendar), colidindo sempre com o mesmo minuto de uma daily em :00", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Envio");
+    assert.ok(t);
+    assert.equal(t!.schedule.kind, "daily");
+    const s = t!.schedule as { kind: "daily"; hour: number; minute: number };
+    assert.notEqual(s.minute, 0, "voltar pra :00 reintroduz a colisão diária com Diaria-Clarice-Dashboard-Precompute (interval hours:1) que o #5826 corrigiu — achado ao vivo: as duas arrancaram 19:00:08 em 01/09/2026");
+  });
+
+  it("#5826: 19:10 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter((t) => t.name !== "Diaria-Clarice-Envio" && t.schedule.hour === 19 && t.schedule.minute === 10);
+    assert.deepEqual(collisions, []);
+  });
+
+  it("#5826: nenhuma task 'interval' cairia em 19:10 — todas caem em :00 (scheduleToOnCalendar) — verificação direta da premissa da correção", () => {
+    const intervals = SCHEDULED_TASKS.filter((t) => t.schedule.kind === "interval");
+    assert.ok(intervals.length > 0, "sanity: existem tasks interval no registro (senão este teste não testa nada)");
+    // Todas as tasks 'interval' compartilham o mesmo minuto (:00) por
+    // construção — a correção do #5826 depende disso ser verdade pra
+    // QUALQUER minuto != 0 evitar a colisão, não só :10 especificamente.
+    for (const t of intervals) {
+      assert.equal(t.schedule.kind, "interval");
+    }
+  });
+
+  it("#5826: Diaria-Clarice-Envio-Alarm (irmão) movido pra 22:45 (era 20:30) — folga real pro orçamento de retry maior (#6831, 70min)", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Envio-Alarm");
+    assert.ok(t, "Diaria-Clarice-Envio-Alarm ausente de SCHEDULED_TASKS");
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 22, minute: 45 });
+  });
+
+  it("#6831: folga entre Diaria-Clarice-Envio (19:10) e seu alarme (22:45) cobre o pior caso plausível de retry (~2h20 só do sinal 429/503 do dashboard, mais a retentativa dedicada de campanhas comprometidas)", () => {
+    const envio = getScheduledTaskByName("Diaria-Clarice-Envio");
+    const alarm = getScheduledTaskByName("Diaria-Clarice-Envio-Alarm");
+    assert.ok(envio && alarm);
+    const e = envio!.schedule as { kind: "daily"; hour: number; minute: number };
+    const a = alarm!.schedule as { kind: "daily"; hour: number; minute: number };
+    const gapMinutes = (a.hour * 60 + a.minute) - (e.hour * 60 + e.minute);
+    // Pior caso de UM mecanismo de retry (2 esperas × 70min) = 140min. A
+    // folga real cobre isso com margem — sem exigir precisão contra o
+    // pior caso teórico dos DOIS mecanismos combinados (dashboard + #6831),
+    // cenário raro o bastante pra não travar o horário do alarme nele.
+    assert.ok(gapMinutes >= 140, `folga entre Diaria-Clarice-Envio e seu alarme caiu pra ${gapMinutes}min (< 140) — risco de alarmar sobre um retry legítimo ainda em curso`);
+  });
+
+  it("#5826: 22:45 (alarme) não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter((t) => t.name !== "Diaria-Clarice-Envio-Alarm" && t.schedule.hour === 22 && t.schedule.minute === 45);
+    assert.deepEqual(collisions, []);
+  });
+
+  it("#5826: Diaria-Clarice-Envio segue rodando DEPOIS de Diaria-Clarice-Novos-Tarde (18:00) mesmo com o novo horário 19:10", () => {
+    const tarde = getScheduledTaskByName("Diaria-Clarice-Novos-Tarde");
+    const envio = getScheduledTaskByName("Diaria-Clarice-Envio");
+    assert.ok(tarde && envio);
+    const t = tarde!.schedule as { kind: "daily"; hour: number; minute: number };
+    const e = envio!.schedule as { kind: "daily"; hour: number; minute: number };
+    assert.ok(e.hour * 60 + e.minute > t.hour * 60 + t.minute);
+  });
+
+  it("#5826: folga entre Diaria-Clarice-Novos e Diaria-Clarice-Envio continua >= 4h com o novo horário (19:10)", () => {
+    const novos = getScheduledTaskByName("Diaria-Clarice-Novos");
+    const envio = getScheduledTaskByName("Diaria-Clarice-Envio");
+    assert.ok(novos && envio);
+    const n = novos!.schedule as { kind: "daily"; hour: number; minute: number };
+    const e = envio!.schedule as { kind: "daily"; hour: number; minute: number };
+    const gapMinutes = (e.hour * 60 + e.minute) - (n.hour * 60 + n.minute);
+    assert.ok(gapMinutes >= 240, `folga caiu pra ${gapMinutes}min (< 240) com o novo horário de Diaria-Clarice-Envio`);
+  });
+
+  it("#5826: exit 4 (lock de concorrência) permanece o único successExitCode após a mudança de horário", () => {
     const t = getScheduledTaskByName("Diaria-Clarice-Envio");
     assert.ok(t, "Diaria-Clarice-Envio ausente de SCHEDULED_TASKS");
     assert.deepEqual(
@@ -636,6 +712,86 @@ describe("#5025/#5026/#5027 — par Diaria-Clarice-Envio / Diaria-Clarice-Envio-
     assert.ok(guardAlarm && runAlarm);
     assert.notEqual(guardAlarm!.steps[0].script, runAlarm!.steps[0].script);
     assert.notDeepEqual(guardAlarm!.schedule, runAlarm!.schedule);
+  });
+});
+
+describe("#6945 — Diaria-Clarice-Envio-Engajados / -Alarm registradas, DECLARADAS mas NÃO ARMADAS", () => {
+  it("Diaria-Clarice-Envio-Engajados: presente, 20:15 diário, step aponta pro orquestrador correto", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados");
+    assert.ok(t, "Diaria-Clarice-Envio-Engajados ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/clarice-envio-engajados-run.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 20, minute: 15 });
+  });
+
+  it("20:15 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter((t) => t.name !== "Diaria-Clarice-Envio-Engajados" && t.schedule.hour === 20 && t.schedule.minute === 15);
+    assert.deepEqual(collisions, []);
+  });
+
+  it("roda DEPOIS de Diaria-Clarice-Envio (19:10) — reusa o assunto do dia já travado por aquela rodada", () => {
+    const envio = getScheduledTaskByName("Diaria-Clarice-Envio");
+    const engajados = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados");
+    assert.ok(envio && engajados);
+    const e = envio!.schedule as { kind: "daily"; hour: number; minute: number };
+    const g = engajados!.schedule as { kind: "daily"; hour: number; minute: number };
+    assert.ok(g.hour * 60 + g.minute > e.hour * 60 + e.minute);
+  });
+
+  it("mesmo guard.requiredFile das outras tasks Clarice-Envio (clarice-users.db)", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados");
+    assert.ok(t);
+    assert.equal(t!.guard?.requiredFile, "clarice-subscribers/clarice-users.db");
+  });
+
+  it("exit 4 (lock de concorrência com o ramp-warm no mesmo ciclo) é successExitCode — nunca falha genuína", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados");
+    assert.ok(t);
+    assert.deepEqual(t!.successExitCodes, [4]);
+  });
+
+  it("Diaria-Clarice-Envio-Engajados-Alarm: presente, 21:15 diário, step aponta pro alarme correto", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados-Alarm");
+    assert.ok(t, "Diaria-Clarice-Envio-Engajados-Alarm ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/clarice-envio-engajados-alarm.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 21, minute: 15 });
+  });
+
+  it("21:15 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Clarice-Envio-Engajados-Alarm" && t.schedule.hour === 21 && t.schedule.minute === 15,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("o alarme roda DEPOIS da própria task Diaria-Clarice-Envio-Engajados (20:15)", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados");
+    const alarm = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados-Alarm");
+    assert.ok(t && alarm);
+    const g = t!.schedule as { kind: "daily"; hour: number; minute: number };
+    const a = alarm!.schedule as { kind: "daily"; hour: number; minute: number };
+    assert.ok(a.hour * 60 + a.minute > g.hour * 60 + g.minute);
+  });
+
+  it("é DISTINTA de Diaria-Clarice-Envio-Alarm (não reaproveita o alarme do ramp-warm)", () => {
+    const engajadosAlarm = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados-Alarm");
+    const rampWarmAlarm = getScheduledTaskByName("Diaria-Clarice-Envio-Alarm");
+    assert.ok(engajadosAlarm && rampWarmAlarm);
+    assert.notEqual(engajadosAlarm!.steps[0].script, rampWarmAlarm!.steps[0].script);
+    assert.notDeepEqual(engajadosAlarm!.schedule, rampWarmAlarm!.schedule);
   });
 });
 

@@ -1308,6 +1308,30 @@ export interface WaveProposalInput {
    * quebrar nada — mesmo padrão fail-soft do resto do módulo.
    */
   committedLookupError?: string | null;
+  /**
+   * #6831 — `retryAfterSecs` (segundos) quando `committedLookupFailed` foi
+   * causado por rate-limit REAL da Brevo (`BrevoRateLimitError`, ver
+   * `scripts/lib/brevo-client.ts`), extraído do header `Retry-After`/
+   * `x-sib-ratelimit-reset` da resposta 429. `null` quando a falha NÃO foi
+   * de rate-limit (rede, 401, `BREVO_CLARICE_API_KEY` ausente) — nesses
+   * casos esperar não ajuda, só rate-limit é retryable. `undefined`
+   * (chamador antigo) tem o MESMO efeito de `null` em quem consome este
+   * campo — nunca lança sozinho.
+   *
+   * PURAMENTE ADITIVO: `buildWaveProposal` só repassa este valor, não muda
+   * `blockers`/`warnings`/exit code com base nele — quem DECIDE agir sobre
+   * isto é `clarice-envio-run.ts` (que tem ~11h de margem antes do disparo
+   * das 06:00 e por isso pode retentar com orçamento maior), inspecionando
+   * o JSON depois que `clarice-plan-wave.ts` já retornou normalmente (exit
+   * 0/2, nunca lança) — de propósito, pra `clarice-envio-guard.ts` (que
+   * também chama `clarice-plan-wave.ts --json`, mas com um orçamento de
+   * retry MENOR por rodar numa janela de ~1h antes do disparo, #6221) ficar
+   * TOTALMENTE alheio a este campo: o guard só consome `state.waves`, nunca
+   * `committed`, então nunca precisou reagir a este sinal — manter o
+   * contrato de retorno de `planWave()` inalterado (nunca lança por causa
+   * disto) é o que garante essa independência.
+   */
+  committedLookupRetryAfterSecs?: number | null;
   /** #4664 — frescor do último `/diaria-clarice-novos`. Ver seção acima. */
   novosFreshness: NovosFreshness;
   /** #5405 item 2 — desfecho da ÚLTIMA tentativa (`last-novos-run-status.json`),

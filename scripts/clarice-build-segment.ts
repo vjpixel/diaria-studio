@@ -292,7 +292,7 @@ import {
 import { readNovosCutoff } from "./lib/clarice-novos-cutoff.ts";
 import { clariceSegmentsDir, cycleSendMonthStartIso, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { fetchCommittedCampaignListIds, fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
+import { fetchCommittedCampaignListIds, fetchQueuedCampaignListIds, warnIfCampaignQuotaLow } from "./lib/brevo-client.ts"; // #6458
 import { parseHoldArg, applyHolds, type HoldSegmentName } from "./lib/clarice-hold.ts";
 import {
   resolveNotSentCutoff,
@@ -969,6 +969,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // `guardScope` — chamá-lo de "committed" induziria a ler `sent` onde não há.
   let guardListIds: Set<string> = new Set();
   if (apiKey) {
+    // #6458 — aviso BEST-EFFORT, nunca bloqueante, logo antes da tentativa
+    // real (mesmo padrão de `clarice-plan-wave.ts`): se a cota já estava
+    // baixa por causa de outra sessão/task, o log ganha esse contexto ANTES
+    // do 429 acontecer, sem mudar o comportamento fail-hard existente deste
+    // caminho de escrita (que continua NUNCA chamando `assertCampaignQuotaHeadroom`
+    // — ele é o beneficiário da reserva, não quem a respeita, ver
+    // scripts/lib/brevo-rate-state.ts).
+    warnIfCampaignQuotaLow();
     try {
       // `switch` + exhaustividade (em vez de ternário): um escopo novo
       // adicionado a `CommittedGuardScope` quebra o TYPECHECK aqui, em vez de

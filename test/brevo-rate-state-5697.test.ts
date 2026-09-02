@@ -31,6 +31,7 @@ import {
   recordCampaignQuotaRemaining,
   assertQuotaHeadroom,
   assertCampaignQuotaHeadroom,
+  warnIfCampaignQuotaLow,
   BrevoCampaignQuotaLowError,
   type BrevoCampaignQuotaState,
 } from "../scripts/lib/brevo-rate-state.ts";
@@ -143,5 +144,62 @@ describe("assertCampaignQuotaHeadroom (I/O via arquivo) (#5697)", () => {
     assert.throws(() => assertCampaignQuotaHeadroom(undefined, statePath), BrevoCampaignQuotaLowError);
     recordCampaignQuotaRemaining(30, 100, statePath);
     assert.doesNotThrow(() => assertCampaignQuotaHeadroom(undefined, statePath));
+  });
+});
+
+describe("warnIfCampaignQuotaLow (#6458) — best-effort, NUNCA bloqueante, pro caminho de ESCRITA", () => {
+  let originalConsoleError: typeof console.error;
+  let logged: string[];
+
+  beforeEach(() => {
+    logged = [];
+    originalConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    };
+  });
+
+  afterEach(() => {
+    console.error = originalConsoleError;
+  });
+
+  it("sem estado gravado ainda => nunca avisa (não há base pra avisar sobre cota nunca medida)", () => {
+    assert.doesNotThrow(() => warnIfCampaignQuotaLow(30, statePath));
+    assert.equal(logged.length, 0);
+  });
+
+  it("estado ACIMA da reserva => nunca avisa", () => {
+    recordCampaignQuotaRemaining(50, 100, statePath);
+    warnIfCampaignQuotaLow(30, statePath);
+    assert.equal(logged.length, 0);
+  });
+
+  it("estado ABAIXO da reserva => avisa via console.error, NUNCA lança (diferente de assertCampaignQuotaHeadroom)", () => {
+    recordCampaignQuotaRemaining(5, 100, statePath);
+    assert.doesNotThrow(() => warnIfCampaignQuotaLow(30, statePath));
+    assert.equal(logged.length, 1);
+    assert.match(logged[0], /remaining=5/);
+    assert.match(logged[0], /reserva 30/);
+    assert.match(logged[0], /#6458/);
+  });
+
+  it("estado EXATAMENTE na reserva => não avisa (mesma semântica de `<`, não `<=`, do assert)", () => {
+    recordCampaignQuotaRemaining(30, 100, statePath);
+    warnIfCampaignQuotaLow(30, statePath);
+    assert.equal(logged.length, 0);
+  });
+
+  it("default minRemaining é 30 quando omitido (mesmo default de assertCampaignQuotaHeadroom)", () => {
+    recordCampaignQuotaRemaining(10, 100, statePath);
+    warnIfCampaignQuotaLow(undefined, statePath);
+    assert.equal(logged.length, 1);
+  });
+
+  it("cota BEM abaixo da reserva não bloqueia o call site — a chamada real seguiria normalmente", () => {
+    recordCampaignQuotaRemaining(0, 100, statePath);
+    let reachedAfter = false;
+    warnIfCampaignQuotaLow(30, statePath);
+    reachedAfter = true;
+    assert.equal(reachedAfter, true);
   });
 });

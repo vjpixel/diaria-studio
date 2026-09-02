@@ -1,0 +1,268 @@
+/**
+ * test/clarice-envio-engajados-run.test.ts (#6945)
+ *
+ * Cobre `scripts/clarice-envio-engajados-run.ts` — mesmo padrão de harness
+ * de `test/clarice-envio-run.test.ts`/`test/clarice-novos-run.test.ts`:
+ * `exec` fake, sem spawn real, verificando resultado (exit code, report) E
+ * a sequência/args exatos passados a cada sub-script. `rootDir` é um tmpdir
+ * real (não mockado) porque lock/state deste script usam `deps.rootDir`
+ * diretamente (mesma convenção dos irmãos ramp-warm/novos).
+ */
+import { describe, it, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { runEnvioEngajados, type EngajadosRunDeps } from "../scripts/clarice-envio-engajados-run.ts";
+import type { StepResult, ExecFn } from "../scripts/clarice-envio-run.ts";
+import type { ResolveLatestMonthlyCycleResult } from "../scripts/lib/mensal/monthly-paths.ts";
+import type { ClariceAbcStateRead } from "../scripts/lib/clarice-abc-state.ts";
+import { readEngajadosState, writeEngajadosState } from "../scripts/lib/clarice-envio-engajados-state.ts";
+import { ENGAJADOS_BOOTSTRAP_VOLUME } from "../scripts/lib/clarice-envio-engajados-policy.ts";
+
+type Handler = StepResult | ((args: string[], callIndex: number) => StepResult);
+
+function jsonResult(obj: unknown, code = 0): StepResult {
+  return { code, stdout: JSON.stringify(obj), stderr: "" };
+}
+function okResult(): StepResult {
+  return { code: 0, stdout: "", stderr: "" };
+}
+
+function makeFakeExec(handlers: Record<string, Handler>): { exec: ExecFn; calls: Array<{ script: string; args: string[] }> } {
+  const calls: Array<{ script: string; args: string[] }> = [];
+  const counters: Record<string, number> = {};
+  const exec: ExecFn = (script, args) => {
+    calls.push({ script, args });
+    const idx = counters[script] ?? 0;
+    counters[script] = idx + 1;
+    const h = handlers[script];
+    if (h === undefined) throw new Error(`fakeExec: sem handler para "${script}" (chamada #${idx}, args=${args.join(" ")})`);
+    return typeof h === "function" ? h(args, idx) : h;
+  };
+  return { exec, calls };
+}
+
+const NOW = new Date("2026-09-02T22:15:00.000Z"); // 19:15 BRT, 02/09/2026
+const CYCLE = "2608-09";
+const AAMMDD = "260902";
+const LOCKED_SUBJECT = "Assunto travado do dia";
+
+function readiness(over: Partial<ResolveLatestMonthlyCycleResult> = {}): ResolveLatestMonthlyCycleResult {
+  return { cycle: CYCLE, subject: "x", fallback: false, checked: [], ...over };
+}
+
+function abcTravado(): ClariceAbcStateRead {
+  return {
+    status: "encerrado",
+    subject: LOCKED_SUBJECT,
+    winner: "A",
+    decidedAt: "2026-09-01T09:00:00.000Z",
+    decidedBy: "editor",
+    rationale: null,
+    invalidReason: null,
+  };
+}
+
+function abcAberto(): ClariceAbcStateRead {
+  return {
+    status: "aberto",
+    subject: null,
+    winner: null,
+    decidedAt: null,
+    decidedBy: null,
+    rationale: null,
+    invalidReason: null,
+  };
+}
+
+describe("runEnvioEngajados (#6945)", () => {
+  let rootDir: string;
+
+  beforeEach(() => {
+    rootDir = mkdtempSync(join(tmpdir(), "clarice-envio-engajados-run-"));
+  });
+
+  afterEach(() => {
+    rmSync(rootDir, { recursive: true, force: true });
+  });
+
+  function baseDeps(over: Partial<EngajadosRunDeps> = {}): EngajadosRunDeps {
+    return {
+      rootDir,
+      now: () => NOW,
+      exec: () => okResult(),
+      isEnabled: () => true,
+      execMode: () => "local",
+      resolveLatestCycle: () => readiness(),
+      readAbcState: () => abcTravado(),
+      ...over,
+    };
+  }
+
+  it("kill switch desligado -> code 0, reportId -paused, nenhuma chamada exec", async () => {
+    const { exec, calls } = makeFakeExec({});
+    const res = await runEnvioEngajados(baseDeps({ isEnabled: () => false, exec }));
+    assert.equal(res.code, 0);
+    assert.equal(res.reportId, `envio-engajados-${AAMMDD}-paused`);
+    assert.equal(calls.length, 0);
+  });
+
+  it("exec-mode != local -> abort, code 1", async () => {
+    const res = await runEnvioEngajados(baseDeps({ execMode: () => "cloud" }));
+    assert.equal(res.code, 1);
+    assert.equal(res.reportId, `envio-engajados-${AAMMDD}-abort`);
+  });
+
+  it("ciclo esperado diverge do ciclo pronto -> code 0, reportId -sem-ciclo-elegivel, nenhuma chamada exec", async () => {
+    process.env.BREVO_CLARICE_API_KEY = "test-key";
+    try {
+      const { exec, calls } = makeFakeExec({});
+      const res = await runEnvioEngajados(baseDeps({ exec, resolveLatestCycle: () => readiness({ cycle: "2607-08" }) }));
+      assert.equal(res.code, 0);
+      assert.equal(res.reportId, `envio-engajados-${AAMMDD}-sem-ciclo-elegivel`);
+      assert.equal(calls.length, 0);
+    } finally {
+      delete process.env.BREVO_CLARICE_API_KEY;
+    }
+  });
+
+  it("assunto do dia ainda não travado (teste A/B/C em curso) -> code 0, -sem-assunto-travado, nenhuma chamada exec", async () => {
+    process.env.BREVO_CLARICE_API_KEY = "test-key";
+    try {
+      const { exec, calls } = makeFakeExec({});
+      const res = await runEnvioEngajados(baseDeps({ exec, readAbcState: () => abcAberto() }));
+      assert.equal(res.code, 0);
+      assert.equal(res.reportId, `envio-engajados-${AAMMDD}-sem-assunto-travado`);
+      assert.equal(calls.length, 0);
+    } finally {
+      delete process.env.BREVO_CLARICE_API_KEY;
+    }
+  });
+
+  it("--dry-run: calcula tudo, adquire e libera o lock, mas NÃO chama nenhum sub-script", async () => {
+    process.env.BREVO_CLARICE_API_KEY = "test-key";
+    try {
+      const { exec, calls } = makeFakeExec({});
+      const res = await runEnvioEngajados(baseDeps({ exec }), { dryRun: true });
+      assert.equal(res.code, 0);
+      assert.equal(res.reportId, `envio-engajados-${AAMMDD}-dry-run`);
+      assert.equal(calls.length, 0);
+      assert.equal(readEngajadosState(resolve(rootDir, "data", "clarice-subscribers")), null, "dry-run nunca escreve estado");
+    } finally {
+      delete process.env.BREVO_CLARICE_API_KEY;
+    }
+  });
+
+  it("BREVO_CLARICE_API_KEY ausente fora de --dry-run -> abort", async () => {
+    delete process.env.BREVO_CLARICE_API_KEY;
+    const res = await runEnvioEngajados(baseDeps());
+    assert.equal(res.code, 1);
+    assert.equal(res.reportId, `envio-engajados-${AAMMDD}-abort`);
+  });
+
+  it("caminho feliz: monta os args corretos em ordem e escreve o estado só após confirmação", async () => {
+    process.env.BREVO_CLARICE_API_KEY = "test-key";
+    try {
+      const { exec, calls } = makeFakeExec({
+        "scripts/clarice-build-segment.ts": () => jsonResult({ selected: 1500, budget: ENGAJADOS_BOOTSTRAP_VOLUME + 1 }),
+        "scripts/clarice-import-waves.ts": () => okResult(),
+        "scripts/clarice-schedule-group.ts": () => okResult(),
+      });
+      const res = await runEnvioEngajados(baseDeps({ exec }));
+      assert.equal(res.code, 0, res.reportMarkdown);
+      assert.equal(res.reportId, `envio-engajados-${AAMMDD}`);
+
+      const key = `engajados-${AAMMDD}`;
+      const buildSeg = calls.find((c) => c.script === "scripts/clarice-build-segment.ts");
+      assert.ok(buildSeg);
+      assert.deepEqual(buildSeg!.args.slice(0, 4), ["--group", "engajados", "--cycle", CYCLE]);
+      assert.ok(buildSeg!.args.includes("--budget"));
+
+      const importWaves = calls.find((c) => c.script === "scripts/clarice-import-waves.ts");
+      assert.ok(importWaves);
+      assert.ok(importWaves!.args.includes("--key"));
+      assert.equal(importWaves!.args[importWaves!.args.indexOf("--key") + 1], key);
+      assert.ok(importWaves!.args.includes("--reuse-existing"));
+      assert.ok(importWaves!.args.includes("--execute"));
+
+      const scheduleCalls = calls.filter((c) => c.script === "scripts/clarice-schedule-group.ts");
+      assert.equal(scheduleCalls.length, 2, "espera --create seguido de --schedule");
+      assert.ok(scheduleCalls[0].args.includes("--create"));
+      assert.ok(scheduleCalls[0].args.includes("--subject"));
+      assert.equal(scheduleCalls[0].args[scheduleCalls[0].args.indexOf("--subject") + 1], LOCKED_SUBJECT);
+      assert.ok(scheduleCalls[0].args.includes("--schedule-at"));
+      assert.ok(scheduleCalls[1].args.includes("--schedule"));
+      assert.ok(!scheduleCalls[1].args.includes("--create"));
+
+      const state = readEngajadosState(resolve(rootDir, "data", "clarice-subscribers"));
+      assert.ok(state, "estado deveria ter sido gravado após confirmação");
+      assert.equal(state!.lastCycle, CYCLE);
+      assert.equal(state!.lastVolume > 0, true);
+    } finally {
+      delete process.env.BREVO_CLARICE_API_KEY;
+    }
+  });
+
+  it("volume escala a partir do estado do dia anterior (base × 1,10)", async () => {
+    process.env.BREVO_CLARICE_API_KEY = "test-key";
+    try {
+      writeEngajadosState(
+        { lastVolume: 2000, lastSentAtIso: "2026-09-01T22:00:00.000Z", lastCycle: CYCLE },
+        resolve(rootDir, "data", "clarice-subscribers"),
+      );
+      const { exec, calls } = makeFakeExec({
+        "scripts/clarice-build-segment.ts": () => jsonResult({ selected: 2200 }),
+        "scripts/clarice-import-waves.ts": () => okResult(),
+        "scripts/clarice-schedule-group.ts": () => okResult(),
+      });
+      await runEnvioEngajados(baseDeps({ exec }));
+      const buildSeg = calls.find((c) => c.script === "scripts/clarice-build-segment.ts")!;
+      const budgetArg = buildSeg.args[buildSeg.args.indexOf("--budget") + 1];
+      assert.equal(Number(budgetArg), 2200); // 2000 * 1.10
+    } finally {
+      delete process.env.BREVO_CLARICE_API_KEY;
+    }
+  });
+
+  it("--schedule falha -> abort, estado NÃO avança", async () => {
+    process.env.BREVO_CLARICE_API_KEY = "test-key";
+    try {
+      let scheduleCall = 0;
+      const { exec } = makeFakeExec({
+        "scripts/clarice-build-segment.ts": () => jsonResult({ selected: 1500 }),
+        "scripts/clarice-import-waves.ts": () => okResult(),
+        "scripts/clarice-schedule-group.ts": (args) => {
+          scheduleCall++;
+          if (args.includes("--schedule")) return { code: 1, stdout: "", stderr: "falhou de propósito" };
+          return okResult();
+        },
+      });
+      const res = await runEnvioEngajados(baseDeps({ exec }));
+      assert.equal(res.code, 1);
+      assert.equal(res.reportId, `envio-engajados-${AAMMDD}-abort`);
+      assert.equal(readEngajadosState(resolve(rootDir, "data", "clarice-subscribers")), null);
+      assert.ok(scheduleCall >= 2);
+    } finally {
+      delete process.env.BREVO_CLARICE_API_KEY;
+    }
+  });
+
+  it("lock já detido por rodada concorrente (ramp-warm no mesmo ciclo) -> code 4, reportId -lock-held, NUNCA falha genuína", async () => {
+    process.env.BREVO_CLARICE_API_KEY = "test-key";
+    try {
+      // Simula outra sessão segurando o lock do MESMO ciclo antes desta rodada rodar.
+      const { acquireEnvioLock } = await import("../scripts/lib/clarice-envio-lock.ts");
+      acquireEnvioLock(rootDir, CYCLE, "sessao-concorrente", NOW);
+
+      const { exec, calls } = makeFakeExec({});
+      const res = await runEnvioEngajados(baseDeps({ exec }));
+      assert.equal(res.code, 4);
+      assert.equal(res.reportId, `envio-engajados-${AAMMDD}-lock-held`);
+      assert.equal(calls.length, 0, "nenhuma chamada Brevo quando o lock está detido");
+    } finally {
+      delete process.env.BREVO_CLARICE_API_KEY;
+    }
+  });
+});
+

@@ -13,7 +13,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { withBrevo429Retry, throwBrevo429, parseRetryAfterSecs } from "../scripts/lib/brevo-client.ts";
+import { withBrevo429Retry, throwBrevo429, parseRetryAfterSecs, BrevoRateLimitError } from "../scripts/lib/brevo-client.ts";
 
 function fake429(headerValue: string | null): Response {
   return {
@@ -70,6 +70,71 @@ describe("withBrevo429Retry — Retry-After excede o orçamento => desiste JÁ, 
     );
     assert.equal(calls, 3, "esgota as 3 tentativas normais quando não há Retry-After pra avaliar orçamento");
     assert.equal(sleeps.length, 2, "dorme entre as 3 tentativas (2 esperas)");
+  });
+});
+
+describe("withBrevo429Retry lança BrevoRateLimitError TIPADO nos dois caminhos de desistência (#6831)", () => {
+  it("Retry-After excede o orçamento por tentativa => BrevoRateLimitError com retryAfterSecs correto (não Error genérico)", async () => {
+    const neverSleep = async (): Promise<void> => {
+      throw new Error("nunca deveria dormir");
+    };
+    await assert.rejects(
+      () =>
+        withBrevo429Retry(async () => {
+          throwBrevo429(fake429("3402"));
+        }, neverSleep),
+      (err: unknown) => {
+        assert.ok(err instanceof BrevoRateLimitError, `esperava BrevoRateLimitError, veio ${(err as Error)?.constructor?.name}`);
+        assert.ok(err instanceof Error, "continua satisfazendo instanceof Error (subclasse)");
+        assert.equal((err as BrevoRateLimitError).retryAfterSecs, 3402);
+        return true;
+      },
+    );
+  });
+
+  it("tentativas esgotadas (Retry-After ausente) => BrevoRateLimitError com retryAfterSecs null", async () => {
+    const captureSleep = async (): Promise<void> => {};
+    await assert.rejects(
+      () =>
+        withBrevo429Retry(async () => {
+          throwBrevo429(fake429(null));
+        }, captureSleep),
+      (err: unknown) => {
+        assert.ok(err instanceof BrevoRateLimitError);
+        assert.equal((err as BrevoRateLimitError).retryAfterSecs, null);
+        return true;
+      },
+    );
+  });
+
+  it("tentativas esgotadas COM Retry-After presente (dentro do orçamento, mas 429 persiste) => retryAfterSecs da ÚLTIMA resposta", async () => {
+    const captureSleep = async (): Promise<void> => {};
+    await assert.rejects(
+      () =>
+        withBrevo429Retry(async () => {
+          throwBrevo429(fake429("5")); // cabe no orçamento (30s) — dorme e retenta, mas continua 429 até esgotar
+        }, captureSleep),
+      (err: unknown) => {
+        assert.ok(err instanceof BrevoRateLimitError);
+        assert.equal((err as BrevoRateLimitError).retryAfterSecs, 5);
+        return true;
+      },
+    );
+  });
+
+  it("mensagem preservada IDÊNTICA à versão anterior (regex dos testes de #6035/#5942 continuam batendo)", async () => {
+    const neverSleep = async (): Promise<void> => {
+      throw new Error("nunca deveria dormir");
+    };
+    let caught: unknown;
+    try {
+      await withBrevo429Retry(async () => {
+        throwBrevo429(fake429("3402"));
+      }, neverSleep);
+    } catch (e) {
+      caught = e;
+    }
+    assert.match((caught as Error).message, /Retry-After 3402s excede o orçamento de \d+s.*desistindo agora/);
   });
 });
 

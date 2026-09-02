@@ -146,3 +146,44 @@ export function assertCampaignQuotaHeadroom(
 ): void {
   assertQuotaHeadroom(readCampaignQuotaState(path), minRemaining);
 }
+
+/**
+ * #6458 — leitura BEST-EFFORT, NUNCA bloqueante, pro caminho de ESCRITA
+ * (`clarice-build-segment.ts`/`clarice-plan-wave.ts`). Ao contrário de
+ * `assertCampaignQuotaHeadroom` (que LANÇA, e é só pra consumidores de
+ * leitura/diagnóstico — ver docstring do módulo), esta função NUNCA
+ * bloqueia: lê o último estado observado e, se a cota já está abaixo da
+ * reserva, imprime um AVISO em `console.error` — puro sinal pro
+ * operador/log, sem mudar o comportamento fail-hard existente (a tentativa
+ * segue; se a Brevo responder 429 de verdade, o call site trata isso
+ * normalmente, como já fazia). Continua verdade que o caminho de escrita é
+ * o BENEFICIÁRIO da reserva, não quem a respeita — este aviso não é uma
+ * versão fraca do assert, é observabilidade pura.
+ *
+ * Motivação (#6458, achado do #6421/#5697): antes desta função, o caminho
+ * de escrita só descobria o esgotamento da cota AO TOMAR o 429 na cara —
+ * sem nenhum sinal prévio no relatório/log de que a tentativa provavelmente
+ * ia falhar por contenção de OUTRA sessão. Chamar isto logo antes de
+ * `fetchCommittedCampaignListIds`/`fetchQueuedCampaignListIds` dá esse
+ * contexto de graça, sem esperar o guard de #6831 (retry com orçamento
+ * maior) entrar em ação.
+ *
+ * `state === null` (nunca observado, ou arquivo ausente/corrompido) não
+ * avisa — não há base pra avisar sobre uma cota que nunca foi medida (mesmo
+ * racional de `assertQuotaHeadroom`).
+ */
+export function warnIfCampaignQuotaLow(
+  minRemaining = 30,
+  path: string = DEFAULT_RATE_STATE_PATH,
+): void {
+  const state = readCampaignQuotaState(path);
+  if (state == null) return;
+  if (state.remaining < minRemaining) {
+    console.error(
+      `⚠️  cota da família /v3/emailCampaigns* da Brevo pode estar baixa: última leitura remaining=${state.remaining} ` +
+        `(< reserva ${minRemaining}) às ${state.updatedAt} — possivelmente esgotada por outra task/sessão concorrente ` +
+        "(100 req/HORA por CONTA, ver docs/brevo-rate-limits.md). Tentando mesmo assim — o caminho de ESCRITA " +
+        "nunca bloqueia por cota (#5697); isto é só um aviso pra explicar um 429 que pode vir a seguir (#6458).",
+    );
+  }
+}

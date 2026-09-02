@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildTasksData, clearTasksCache, describeSchedule } from "../scripts/studio-ui/studio-tasks.ts";
 import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
-import type { TaskArmedResult, TaskLastRunInfo } from "../scripts/lib/scheduled-task-status.ts";
+import { DEFAULT_OVERDUE_GRACE_MINUTES, type TaskArmedResult, type TaskLastRunInfo } from "../scripts/lib/scheduled-task-status.ts";
 
 function makeRoot(): string {
   return mkdtempSync(join(tmpdir(), "studio-tasks-"));
@@ -118,21 +118,29 @@ describe("buildTasksData (#4799) — orquestração fim-a-fim", () => {
     clearTasksCache();
     const root = makeRoot();
     try {
+      // #4941 (histórico): quando Diaria-Clarice-Novos rodava às 17:00 BRT,
+      // um `now` fixo escolhido "depois da maioria, mas não de todas" as
+      // dailies colidia exatamente com o `mostRecent` dela (grace de 60min
+      // fazia ela sozinha reportar overdue=false). #5140 moveu Clarice-Novos
+      // pra 11:00, dissolvendo aquela colisão específica — mas o MESMO tipo
+      // de colisão reapareceu em #5826 (Diaria-Clarice-Envio 19:00→19:10:
+      // um `now` fixo de 23:00 UTC/20:00 BRT ficava só 50min depois de
+      // 19:10, dentro do grace de 60min) exatamente como o comentário
+      // antigo já previa ("reintroduziria o problema na próxima task
+      // vespertina que alguém registrar"). Correção estrutural: computar
+      // `now` DINAMICAMENTE como grace+1min depois da última daily/weekly
+      // do dia (em vez de um literal ISO hardcoded) — nenhuma task nova
+      // registrada mais tarde no dia pode voltar a quebrar este teste.
+      const latestDailyMinutes = Math.max(
+        0,
+        ...SCHEDULED_TASKS.filter((t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+          t.schedule.kind === "daily",
+        ).map((t) => t.schedule.hour * 60 + t.schedule.minute),
+      );
+      // 2026-08-10T03:00:00.000Z = 00:00 BRT — base do dia, em cima da qual somamos o horário mais tardio + grace.
+      const now = new Date(Date.parse("2026-08-10T03:00:00.000Z") + (latestDailyMinutes + DEFAULT_OVERDUE_GRACE_MINUTES + 1) * 60_000);
       const data = buildTasksData(root, {
-        // #4941: quando Diaria-Clarice-Novos rodava às 17:00 BRT, 20:00 UTC
-        // colidia exatamente com o `mostRecent` dela (grace de 60min fazia
-        // ela sozinha reportar overdue=false enquanto as demais davam true).
-        // 23:00 UTC (20:00 BRT) resolve isso — e NÃO porque fica depois de
-        // toda daily do registro (não fica: Clarice-Envio-Alarm às 20:30 e
-        // Cohorts-Crawl às 21:00 são mais tardias). Fica depois pro caso que
-        // importava, e pras demais `computeMostRecentScheduledOccurrence`
-        // envolve pra ocorrência de ONTEM, que somada ao grace já é <= now —
-        // então elas reportam overdue=true do mesmo jeito.
-        // #5140 moveu Clarice-Novos pra 11:00, o que dissolve a colisão
-        // original; o `now` fica como está de propósito, porque afrouxá-lo
-        // pra "só depois das 11:00" reintroduziria o problema na próxima
-        // task vespertina que alguém registrar.
-        now: () => new Date("2026-08-10T23:00:00.000Z"), // bem depois de qualquer daily/weekly do dia
+        now: () => now,
         queryArmedFn: () => ({ scheduler: "systemd", state: "disabled", note: null }),
         readLastRunFn: () => ({ ...NEVER_RUN }),
       });
