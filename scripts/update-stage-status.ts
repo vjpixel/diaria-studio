@@ -64,8 +64,10 @@ export interface StageRow {
    *
    * `all_sessions` = número possivelmente contaminado (comportamento
    * pré-#5413, ou fallback). `sessions_excluded > 0` sob `current_session` =
-   * quanta contaminação o filtro evitou. `subagent_tokens_in: null` = custo
-   * de subagente NÃO REGISTRADO pelo harness, nunca zero.
+   * quanta contaminação o filtro evitou. `subagent_tokens_in: null` = sem
+   * dispatch de `Agent()` nesta janela, nunca zero (até o #7084 significava
+   * "harness não registra custo de subagente"; desde o #7084 o dado é
+   * capturado quando existe — ver `scripts/lib/session-transcript.ts`).
    */
   session_filter?: "current_session" | "all_sessions";
   /**
