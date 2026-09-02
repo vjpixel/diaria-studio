@@ -101,6 +101,47 @@ export function parseWranglerJsoncName(jsoncContent: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * Pura — extrai os PLACEHOLDERS não resolvidos de um `wrangler.toml`/`.jsonc`
+ * (#7092): valores no formato `CAMPO = "PLACEHOLDER_..."` / `"campo":
+ * "PLACEHOLDER_..."`. Devolve os nomes encontrados, ordenados e sem
+ * repetição (lista vazia = nada bloqueando).
+ *
+ * ─── Por que isto existe (#7092, achado 02/09/2026) ────────────────────────
+ *
+ * `workers/artigos/wrangler.toml` carrega
+ * `id = "PLACEHOLDER_RODAR_WRANGLER_KV_NAMESPACE_CREATE"` desde o #7030: o
+ * KV namespace `ARTIGOS_APOIO_NIVEL` ainda não foi provisionado, e
+ * `.github/workflows/deploy-artigos.yml` PULA o deploy automático (passo
+ * "Guard - KV namespace provisionado?") justamente enquanto esse literal
+ * estiver lá — `wrangler deploy` falharia contra um id de KV inexistente.
+ *
+ * O drift check não sabia disso: via commit > deploy, alarmava, e abria uma
+ * issue (#7092) prescrevendo `cd workers/artigos && npx wrangler deploy` —
+ * o único comando que comprovadamente NÃO funciona nesse estado. Dois
+ * mecanismos do mesmo repo lendo o mesmo arquivo e discordando: o CI sabia
+ * pular, o alarme não.
+ *
+ * Reconhecer o placeholder pelo PREFIXO (e não pelo literal exato que o
+ * workflow grepa) é deliberado: a convenção "valor que o editor precisa
+ * substituir antes do deploy" é do repo, não daquele worker — um worker novo
+ * gated do mesmo jeito passa a ser reconhecido sem tocar neste módulo. Casar
+ * só em posição de VALOR (depois de `=`/`:`, entre aspas) evita que uma
+ * MENÇÃO em comentário — o próprio `wrangler.toml` do artigos explica o
+ * placeholder num comentário logo acima — seja confundida com o placeholder
+ * em si.
+ *
+ * Nunca lança: conteúdo vazio/malformado devolve `[]` (o caller trata como
+ * "nada bloqueando", preservando o comportamento pré-#7092).
+ */
+export function parseDeployBlockingPlaceholders(configContent: string): string[] {
+  const found = new Set<string>();
+  const re = /[=:]\s*["'](PLACEHOLDER_[A-Z0-9_]*)["']/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(configContent)) !== null) found.add(m[1]);
+  return [...found].sort();
+}
+
 // ─── Avaliação de drift por worker (pura) ──────────────────────────────────
 
 export type WorkerDriftStatus =
@@ -110,6 +151,10 @@ export type WorkerDriftStatus =
   | "drift"
   /** Worker tem commit(s) em `workers/{dir}/` mas NUNCA foi deployado (edge case #4723 item 9). */
   | "never_deployed"
+  /** Haveria drift, mas o deploy está DELIBERADAMENTE bloqueado por um
+   * placeholder não resolvido no wrangler config (#7092) — reporta, não
+   * alarma, não abre issue. Ver `parseDeployBlockingPlaceholders`. */
+  | "deploy_blocked"
   /** Consulta da Cloudflare API falhou (credencial ausente/API indisponível) — sem dado pra decidir; não quebra os outros workers. */
   | "error"
   /** Nenhum commit encontrado em `workers/{dir}/` (não deveria acontecer na prática — o diretório existe — mas não há nada pra comparar). */
@@ -126,6 +171,12 @@ export interface WorkerDriftCheckInput {
   lastCommitAt: string | null;
   /** Mensagem de erro da consulta à Cloudflare API, se houve falha (credencial ausente, API indisponível, worker não encontrado, etc). Quando presente, `lastDeployedAt` é ignorado (não confiável). */
   deployError?: string | null;
+  /** Placeholders não resolvidos no wrangler config deste worker (#7092),
+   * de `parseDeployBlockingPlaceholders`. Não-vazio = o deploy está
+   * deliberadamente bloqueado; o que seria `drift`/`never_deployed` vira
+   * `deploy_blocked` (reporta, não alarma). Omitido/vazio preserva o
+   * comportamento pré-#7092. */
+  deployBlockedBy?: readonly string[];
 }
 
 export interface WorkerDriftResult {
@@ -140,6 +191,21 @@ export interface WorkerDriftResult {
   driftMs: number | null;
   /** Mensagem legível — motivo do status (inclui o erro cru quando `status === "error"`). */
   message: string;
+  /** Ecoa `deployBlockedBy` do input (`[]` quando nada bloqueia) — pro
+   * relatório nomear QUAL placeholder precisa ser resolvido. */
+  deployBlockedBy: readonly string[];
+}
+
+/** Pura — mensagem de `deploy_blocked`: o fato de drift observado MAIS o
+ * motivo de o `wrangler deploy` não ser a ação certa agora (#7092). Mantém o
+ * fato visível no relatório — bloquear o alarme nunca deve esconder que o
+ * código publicado está atrás do master. */
+function blockedMessage(workerDir: string, placeholders: readonly string[], driftFact: string): string {
+  return (
+    `${driftFact}, mas o deploy está bloqueado: ${placeholders.join(", ")} ` +
+    `ainda não resolvido(s) em workers/${workerDir}/wrangler.toml — ` +
+    "`wrangler deploy` falharia (mesmo guard de .github/workflows/, ver #7092)"
+  );
 }
 
 /**
@@ -150,6 +216,7 @@ export interface WorkerDriftResult {
  */
 export function evaluateWorkerDrift(input: WorkerDriftCheckInput, now: Date = new Date()): WorkerDriftResult {
   const { workerName, workerDir, lastDeployedAt, lastCommitAt, deployError } = input;
+  const deployBlockedBy = input.deployBlockedBy ?? [];
 
   if (deployError) {
     return {
@@ -160,6 +227,7 @@ export function evaluateWorkerDrift(input: WorkerDriftCheckInput, now: Date = ne
       lastCommitAt,
       driftMs: null,
       message: `erro ao consultar deploy publicado: ${deployError}`,
+      deployBlockedBy,
     };
   }
 
@@ -172,26 +240,57 @@ export function evaluateWorkerDrift(input: WorkerDriftCheckInput, now: Date = ne
       lastCommitAt: null,
       driftMs: null,
       message: `nenhum commit encontrado em workers/${workerDir}/ — nada a comparar`,
+      deployBlockedBy,
     };
   }
 
   const commitMs = Date.parse(lastCommitAt);
 
   if (lastDeployedAt === null) {
+    const driftMs = Math.max(0, now.getTime() - commitMs);
+    if (deployBlockedBy.length > 0) {
+      return {
+        workerName,
+        workerDir,
+        status: "deploy_blocked",
+        lastDeployedAt: null,
+        lastCommitAt,
+        driftMs,
+        message: blockedMessage(workerDir, deployBlockedBy, "worker nunca foi deployado"),
+        deployBlockedBy,
+      };
+    }
     return {
       workerName,
       workerDir,
       status: "never_deployed",
       lastDeployedAt: null,
       lastCommitAt,
-      driftMs: Math.max(0, now.getTime() - commitMs),
+      driftMs,
       message: `worker nunca foi deployado, mas tem commit(s) em workers/${workerDir}/`,
+      deployBlockedBy,
     };
   }
 
   const deployMs = Date.parse(lastDeployedAt);
 
   if (commitMs > deployMs) {
+    if (deployBlockedBy.length > 0) {
+      return {
+        workerName,
+        workerDir,
+        status: "deploy_blocked",
+        lastDeployedAt,
+        lastCommitAt,
+        driftMs: commitMs - deployMs,
+        message: blockedMessage(
+          workerDir,
+          deployBlockedBy,
+          `commit mais recente (${lastCommitAt}) que o último deploy publicado (${lastDeployedAt})`,
+        ),
+        deployBlockedBy,
+      };
+    }
     return {
       workerName,
       workerDir,
@@ -200,6 +299,7 @@ export function evaluateWorkerDrift(input: WorkerDriftCheckInput, now: Date = ne
       lastCommitAt,
       driftMs: commitMs - deployMs,
       message: `commit mais recente (${lastCommitAt}) que o último deploy publicado (${lastDeployedAt})`,
+      deployBlockedBy,
     };
   }
 
@@ -211,6 +311,7 @@ export function evaluateWorkerDrift(input: WorkerDriftCheckInput, now: Date = ne
     lastCommitAt,
     driftMs: null,
     message: "deploy publicado está em dia com o commit mais recente",
+    deployBlockedBy,
   };
 }
 
@@ -411,6 +512,7 @@ export function buildWorkerDriftAlarmEmail(
 ): { subject: string; body: string } {
   const drifted = results.filter((r) => r.status === "drift" || r.status === "never_deployed");
   const errored = results.filter((r) => r.status === "error");
+  const blocked = results.filter((r) => r.status === "deploy_blocked");
 
   const subject = `[diar.ia.br] ${drifted.length} worker(s) com deploy defasado`;
 
@@ -432,6 +534,21 @@ export function buildWorkerDriftAlarmEmail(
     const ref = issueRefs?.get(workerDriftFindingKey(r));
     if (ref) {
       lines.push(ref.action === "failed" ? `    Issue: falha ao criar/reusar (${ref.error})` : `    Issue: #${ref.issueNumber} (${ref.url})`);
+    }
+  }
+
+  if (blocked.length > 0) {
+    // #7092: reportado, nunca alarmado — `deploy_blocked` não entra em
+    // `hasPendingDrift`/`computeDriftFingerprint`, então esta seção só
+    // aparece de carona num e-mail que algum OUTRO worker já justificou.
+    // Some do e-mail quando não há mais drift real; o lugar que sempre
+    // mostra isso é o log/relatório do script, não o alarme.
+    lines.push(
+      "",
+      `Aviso — ${blocked.length} worker(s) com deploy bloqueado por placeholder (NÃO alarmado):`,
+    );
+    for (const r of blocked) {
+      lines.push(`  - ${r.workerName} (workers/${r.workerDir}/): ${r.message}`);
     }
   }
 

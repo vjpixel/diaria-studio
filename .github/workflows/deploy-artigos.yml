@@ -64,7 +64,15 @@ jobs:
         id: kv_guard
         working-directory: workers/artigos
         run: |
-          if grep -q "PLACEHOLDER_RODAR_WRANGLER_KV_NAMESPACE_CREATE" wrangler.toml; then
+          # #7092: casa só em posição de VALOR (`campo = "PLACEHOLDER_..."`),
+          # não em qualquer menção. O `grep -q` literal anterior também casava
+          # um comentário — colar o id real e deixar o nome do placeholder
+          # escrito numa linha `#` acima manteria o deploy pulado para sempre,
+          # em silêncio. Mesma regra de `parseDeployBlockingPlaceholders`
+          # (scripts/lib/worker-drift-check.ts), que o alarme de drift usa;
+          # test/worker-drift-deploy-blocked-7092.test.ts trava a concordância
+          # entre os dois lendo este mesmo wrangler.toml.
+          if grep -qE '^[^#]*[=:][[:space:]]*"PLACEHOLDER_[A-Z0-9_]*"' wrangler.toml; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::warning::ARTIGOS_APOIO_NIVEL ainda tem id PLACEHOLDER em wrangler.toml — pulando deploy (#7030). Rode 'wrangler kv namespace create ARTIGOS_APOIO_NIVEL' e cole o id real pra reativar."
           else
