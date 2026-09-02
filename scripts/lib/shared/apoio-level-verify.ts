@@ -34,11 +34,16 @@
  * teste) e no runtime Cloudflare Workers, sem `nodejs_compat`.
  */
 import { sha256Hex } from "./subscriber-verify.ts";
-// `import type` é apagado na compilação — não puxa em runtime o módulo
-// pesado `sync-apoio-nivel-beehiiv.ts` (que importa `node:fs`/`node:child_process`
-// via `studio-apoios.ts`/`apoia-se.ts`) pro bundle do Worker. Mesmo padrão de
-// `scripts/lib/apoio-segments-canonical-kit.ts`.
-import type { ApoioNivel } from "../../sync-apoio-nivel-beehiiv.ts";
+// #7030 hotfix (master vermelho c8fcdc9b): `import type` de
+// `../../sync-apoio-nivel-beehiiv.ts` É apagado na compilação (runtime nunca
+// puxa o módulo pesado Node-only, `env-loader.ts`/`apoia-se.ts`/etc.), mas o
+// guard estático `test/worker-bundle-node-only-imports.test.ts` (#4318) faz
+// scan de TEXTO — não distingue `import type` de `import` comum, e segue a
+// cadeia de qualquer jeito. `ApoioNivel` mora em `apoio-nivel-types.ts`
+// (módulo puro, zero imports) especificamente pra este arquivo poder
+// importar sem alcançar nada Node-only nem em análise estática nem em
+// runtime.
+import type { ApoioNivel } from "./apoio-nivel-types.ts";
 
 export type { ApoioNivel };
 
