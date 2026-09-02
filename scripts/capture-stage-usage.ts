@@ -54,9 +54,12 @@
  *
  * Requer sessão LOCAL — `~/.claude/projects/` não existe (ou não reflete a
  * sessão corrente) em ambiente cloud/worktree efêmero. Ver
- * `scripts/lib/session-transcript.ts` pro detalhe do que é capturável vs o
- * que fica como gap conhecido (custo de subagente, em qualquer modo de
- * isolamento, não é gravado em transcript nenhum — #5413).
+ * `scripts/lib/session-transcript.ts` pro detalhe do que é capturável — desde
+ * o #7084, custo de subagente (`Agent()`, qualquer modo de isolamento
+ * incluindo worktree) É capturado, lido de `{sessionId}/subagents/*.jsonl`;
+ * `subagent_tokens_in: null` acima passou a significar "sem dispatch de
+ * `Agent()` nesta janela", não mais "harness nunca registra" (era o caso até
+ * o #5413).
  *
  * Output: JSON em stdout — `{ source: "session_transcript", ... }` em
  * sucesso, `{ source: "unavailable", reason, ... }` quando não há dado real

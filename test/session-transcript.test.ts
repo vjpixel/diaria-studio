@@ -9,6 +9,7 @@ import {
   resolveTranscriptsDir,
   parseTranscriptFile,
   listTranscriptFiles,
+  listSubagentTranscriptFiles,
   collectUsageInWindow,
   currentSessionId,
 } from "../scripts/lib/session-transcript.ts";
@@ -428,6 +429,177 @@ describe("collectUsageInWindow — tokens de subagente (#5413)", () => {
       assert.equal(r.subagentTokensOut, 40);
       // continua dentro do total — o campo é decomposição, não exclusão
       assert.equal(r.tokensIn, 130 + 500);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("listSubagentTranscriptFiles (#7084)", () => {
+  it("retorna vazio quando a sessão não despachou nenhum subagente (subdir ausente)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "subagents-list-test-"));
+    try {
+      assert.deepEqual(listSubagentTranscriptFiles(dir, "sessao-sem-subagente"), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lista os .jsonl de {sessionId}/subagents/, ignora o .meta.json companheiro", () => {
+    const dir = mkdtempSync(join(tmpdir(), "subagents-list-test-"));
+    try {
+      const subDir = join(dir, "sessao-1", "subagents");
+      mkdirSync(subDir, { recursive: true });
+      writeFileSync(join(subDir, "agent-a.jsonl"), "", "utf8");
+      writeFileSync(join(subDir, "agent-b.jsonl"), "", "utf8");
+      writeFileSync(join(subDir, "agent-a.meta.json"), "{}", "utf8");
+      const files = listSubagentTranscriptFiles(dir, "sessao-1");
+      assert.equal(files.length, 2);
+      assert.ok(files.every((f) => f.endsWith(".jsonl")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("collectUsageInWindow — subagents/*.jsonl (#7084)", () => {
+  const WIN = ["2026-05-08T08:30:00.000Z", "2026-05-08T08:48:00.000Z"] as const;
+
+  function writeSubagentFile(dir: string, sessionId: string, agentFile: string, lines: string[]): void {
+    const subDir = join(dir, sessionId, "subagents");
+    mkdirSync(subDir, { recursive: true });
+    writeFileSync(join(subDir, agentFile), lines.join("\n"), "utf8");
+  }
+
+  it("soma entradas de {sessionId}/subagents/*.jsonl em subagentTokensIn/Out — sem precisar de isSidechain inline no arquivo-pai (formato real do #7084)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "collect-subagents-test-"));
+    try {
+      writeFileSync(join(dir, "edicao.jsonl"), usageLine({ timestamp: "2026-05-08T08:35:00.000Z" }), "utf8");
+      writeSubagentFile(dir, "edicao", "agent-1.jsonl", [
+        usageLine({
+          isSidechain: true,
+          timestamp: "2026-05-08T08:36:00.000Z",
+          message: { model: "claude-sonnet-5", usage: { input_tokens: 500, output_tokens: 40 } },
+        }),
+      ]);
+      const r = collectUsageInWindow(dir, WIN[0], WIN[1], { sessionId: "edicao" });
+      assert.equal(r.subagentTokensIn, 500);
+      assert.equal(r.subagentTokensOut, 40);
+      // decomposição, não exclusão — entra no total igual a qualquer outro turno
+      assert.equal(r.tokensIn, 130 + 500);
+      assert.equal(r.tokensOut, 50 + 40);
+      assert.equal(r.entries.length, 2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("respeita a janela de tempo também dentro do arquivo do subagente", () => {
+    const dir = mkdtempSync(join(tmpdir(), "collect-subagents-test-"));
+    try {
+      writeFileSync(join(dir, "edicao.jsonl"), usageLine({ timestamp: "2026-05-08T08:35:00.000Z" }), "utf8");
+      writeSubagentFile(dir, "edicao", "agent-1.jsonl", [
+        usageLine({
+          isSidechain: true,
+          timestamp: "2026-05-08T09:30:00.000Z", // fora da janela [08:30, 08:48]
+          message: { model: "claude-sonnet-5", usage: { input_tokens: 500, output_tokens: 40 } },
+        }),
+      ]);
+      const r = collectUsageInWindow(dir, WIN[0], WIN[1], { sessionId: "edicao" });
+      assert.equal(r.subagentTokensIn, null);
+      assert.equal(r.entries.length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("subagentes de uma sessão CONCORRENTE excluída não vazam pro total nem inflam sessionsExcluded (1 sessão, 2 arquivos de subagente)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "collect-subagents-test-"));
+    try {
+      writeFileSync(join(dir, "edicao.jsonl"), usageLine({ timestamp: "2026-05-08T08:35:00.000Z" }), "utf8");
+      writeFileSync(join(dir, "concorrente.jsonl"), usageLine({ timestamp: "2026-05-08T08:36:00.000Z" }), "utf8");
+      writeSubagentFile(dir, "concorrente", "agent-1.jsonl", [
+        usageLine({ isSidechain: true, timestamp: "2026-05-08T08:37:00.000Z" }),
+      ]);
+      writeSubagentFile(dir, "concorrente", "agent-2.jsonl", [
+        usageLine({ isSidechain: true, timestamp: "2026-05-08T08:38:00.000Z" }),
+      ]);
+      const r = collectUsageInWindow(dir, WIN[0], WIN[1], { sessionId: "edicao" });
+      // só a entrada de "edicao" entra — os subagentes de "concorrente" ficam de fora
+      assert.equal(r.entries.length, 1);
+      assert.equal(r.subagentTokensIn, null);
+      // 1 SESSÃO excluída (concorrente), não 3 (concorrente + os 2 arquivos de subagente)
+      assert.equal(r.sessionsExcluded, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("all_sessions soma subagentes de TODAS as sessões do diretório", () => {
+    const dir = mkdtempSync(join(tmpdir(), "collect-subagents-test-"));
+    try {
+      writeFileSync(join(dir, "a.jsonl"), usageLine({ timestamp: "2026-05-08T08:35:00.000Z" }), "utf8");
+      writeFileSync(join(dir, "b.jsonl"), usageLine({ timestamp: "2026-05-08T08:36:00.000Z" }), "utf8");
+      writeSubagentFile(dir, "a", "agent-1.jsonl", [
+        usageLine({
+          isSidechain: true,
+          timestamp: "2026-05-08T08:37:00.000Z",
+          message: { model: "claude-sonnet-5", usage: { input_tokens: 300, output_tokens: 20 } },
+        }),
+      ]);
+      writeSubagentFile(dir, "b", "agent-1.jsonl", [
+        usageLine({
+          isSidechain: true,
+          timestamp: "2026-05-08T08:38:00.000Z",
+          message: { model: "claude-sonnet-5", usage: { input_tokens: 200, output_tokens: 10 } },
+        }),
+      ]);
+      const r = collectUsageInWindow(dir, WIN[0], WIN[1]);
+      assert.equal(r.sessionFilter, "all_sessions");
+      assert.equal(r.subagentTokensIn, 300 + 200);
+      assert.equal(r.subagentTokensOut, 20 + 10);
+      assert.equal(r.entries.length, 4);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sessionsScanned continua contando só transcripts de sessão (top-level) — arquivos de subagente nunca contam como sessão", () => {
+    const dir = mkdtempSync(join(tmpdir(), "collect-subagents-test-"));
+    try {
+      writeFileSync(join(dir, "edicao.jsonl"), usageLine({ timestamp: "2026-05-08T08:35:00.000Z" }), "utf8");
+      writeSubagentFile(dir, "edicao", "agent-1.jsonl", [usageLine({ isSidechain: true })]);
+      writeSubagentFile(dir, "edicao", "agent-2.jsonl", [usageLine({ isSidechain: true })]);
+      const r = collectUsageInWindow(dir, WIN[0], WIN[1], { sessionId: "edicao" });
+      assert.equal(r.sessionsScanned, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#5423 — linha truncada dentro de um arquivo de subagente também conta em parseErrors", () => {
+    const dir = mkdtempSync(join(tmpdir(), "collect-subagents-test-"));
+    try {
+      writeFileSync(join(dir, "edicao.jsonl"), usageLine({ timestamp: "2026-05-08T08:35:00.000Z" }), "utf8");
+      const truncated =
+        '{"type":"assistant","isSidechain":true,"timestamp":"2026-05-08T08:36:00.000Z","message":{"usage":{"input_to';
+      writeSubagentFile(dir, "edicao", "agent-1.jsonl", [truncated]);
+      const r = collectUsageInWindow(dir, WIN[0], WIN[1], { sessionId: "edicao" });
+      assert.equal(r.parseErrors, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sessão sem diretório subagents/ se comporta exatamente como antes do #7084 (nenhuma regressão)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "collect-subagents-test-"));
+    try {
+      writeFileSync(join(dir, "edicao.jsonl"), usageLine({ timestamp: "2026-05-08T08:35:00.000Z" }), "utf8");
+      const r = collectUsageInWindow(dir, WIN[0], WIN[1], { sessionId: "edicao" });
+      assert.equal(r.subagentTokensIn, null);
+      assert.equal(r.subagentTokensOut, null);
+      assert.equal(r.entries.length, 1);
+      assert.equal(r.tokensIn, 130);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
