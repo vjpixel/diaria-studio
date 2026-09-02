@@ -19,6 +19,12 @@
  *   --send-now             Dispara campanha IMEDIATAMENTE pra lista (irreversível)
  *   --schedule-at <ISO>    Agenda dispatch pra timestamp futuro (ISO 8601, com timezone)
  *                          Ex: --schedule-at 2026-05-09T12:00:00-03:00
+ *                          #7047: exige antecedência mínima de 2h a partir de "agora"
+ *                          (SCHEDULE_AT_MIN_LEAD_MS, scripts/lib/schedule-guard.ts) —
+ *                          "no futuro" sozinho aceitava segundos à frente (mesma
+ *                          classe de bug do #7042). --allow-imminent pula só esta
+ *                          checagem (nunca a de "no futuro").
+ *   --allow-imminent       #7047: pula a checagem de antecedência mínima do --schedule-at
  *   --update-existing N    Atualiza campanha existente (id N) em vez de criar nova
  *   --dry-run              Valida inputs e gera HTML preview local sem chamar a API
  *
@@ -52,6 +58,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
+import { checkScheduleLeadTime } from "./lib/schedule-guard.ts"; // #7047
 import {
   parseMonthlyCycleArg,
   isValidMonthlyCycle,
@@ -173,6 +180,7 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
   let sendTestTo: string | null = null;
   let scheduleAt: string | null = null;
   let updateExisting: number | null = null;
+  let allowImminent = false; // #7047
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--yymm" && i + 1 < argv.length) {
@@ -185,6 +193,8 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
       sendNow = true;
     } else if (argv[i] === "--dry-run") {
       dryRun = true;
+    } else if (argv[i] === "--allow-imminent") {
+      allowImminent = true; // #7047
     } else if (argv[i] === "--list-id" && i + 1 < argv.length) {
       const raw = argv[++i];
       const n = parseInt(raw, 10);
@@ -223,6 +233,24 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
         process.exit(1);
       }
       updateExisting = n;
+    }
+  }
+
+  // #7047: antecedência mínima — checado DEPOIS do loop (não inline junto
+  // com --schedule-at acima) porque `--allow-imminent` pode aparecer em
+  // qualquer posição do argv, inclusive depois de --schedule-at. Sem
+  // convenção de horário canônico documentada pra este script legado
+  // (`@deprecated` #2009) — só a antecedência é checada aqui, sem aviso de
+  // horário fora do canônico (ver docstring de scripts/lib/schedule-guard.ts).
+  if (scheduleAt) {
+    const leadCheck = checkScheduleLeadTime(scheduleAt, {
+      allowImminent,
+      contextIssues: "#7042, #7047",
+      immediateDispatchFlagName: "--send-now",
+    });
+    if (!leadCheck.ok) {
+      process.stderr.write(`ERRO: ${leadCheck.error}\n`);
+      process.exit(1);
     }
   }
 

@@ -75,6 +75,13 @@
  * data a partir de weekday tem risco de off-by-one silencioso numa operação
  * de produção pra dezenas de milhares de contatos.
  *
+ * `--allow-imminent` (#7047): pula SÓ a checagem de antecedência mínima (2h
+ * default, `SCHEDULE_AT_MIN_LEAD_MS` em scripts/lib/schedule-guard.ts) —
+ * nunca a de passado/presente (`assertDatesFuture`). Checado tanto em
+ * --create (feedback cedo) quanto em --schedule (momento real do PUT) —
+ * maior blast radius dos 3 scripts corrigidos pelo #7047, dezenas de
+ * milhares de contatos por onda.
+ *
  * SEGURANÇA: nenhuma fase roda sem a flag explícita correspondente — chamar o
  * script sem flags nunca escreve nem envia nada (só imprime o plano). Mesmo
  * assim, --import/--create/--schedule fazem chamadas REAIS à Brevo API em
@@ -120,6 +127,8 @@ import { checkEiaGuard, applyVerifyResults } from "./clarice-schedule-sends.ts";
 import { findExistingConflicts, normalizeImportCsv, countRows, type WaveDef } from "./clarice-import-waves.ts";
 import { ensureEditorCopyRow } from "./lib/editor-copy.ts"; // #3455 / #3643 bug 3
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { SEND_HOUR_UTC } from "./lib/clarice-wave-plan.ts"; // #7047
+import { assertScheduleLeadTime } from "./lib/schedule-guard.ts"; // #7047
 import { extractPlanCredits } from "../workers/brevo-dashboard/src/brevo-api.ts";
 import {
   selectMatureDayCampaigns,
@@ -763,6 +772,43 @@ export function assertDatesFuture(scheduledAts: string[], nowOverride?: Date): v
   }
 }
 
+/**
+ * #7047 — camada NOVA além de `assertDatesFuture` acima (que só recusa
+ * passado/presente — o mesmo estado incompleto em que
+ * `clarice-schedule-group.ts` estava antes do #7042, e o de MAIOR blast
+ * radius dos 3 scripts desta issue: a rampa agenda pra dezenas de milhares
+ * de contatos por onda). Recusa antecedência insuficiente e avisa (sem
+ * bloquear) horário fora do canônico. Reusa `scripts/lib/schedule-guard.ts`
+ * (extraído do #7042) em vez de duplicar a checagem.
+ *
+ * Chamado em DOIS pontos, mesma razão que em clarice-schedule-sends.ts:
+ * `--create` (feedback cedo) e dentro de `runScheduleLoop` (local, abaixo),
+ * imediatamente antes do PUT real — a antecedência precisa ser medida no
+ * momento do PUT, não no momento em que `--dates` foi passado a `--create`.
+ */
+export function assertScheduleLeadTimeForWave(
+  waveLabel: string,
+  scheduledAtIso: string,
+  opts: { allowImminent?: boolean; now?: Date } = {},
+  logFn: (msg: string) => void = (m) => console.error(m),
+): void {
+  try {
+    assertScheduleLeadTime(
+      scheduledAtIso,
+      {
+        now: opts.now,
+        allowImminent: opts.allowImminent,
+        canonicalHourUtc: SEND_HOUR_UTC,
+        canonicalHourLabel: "06:00 BRT",
+        contextIssues: "#7042, #7047",
+      },
+      logFn,
+    );
+  } catch (e) {
+    throw new Error(`${waveLabel}: ${(e as Error).message}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Guard de HTML (#3593 — "unsubscribe (legal)")
 // ---------------------------------------------------------------------------
@@ -1091,6 +1137,8 @@ export interface ScheduleLoopDeps {
   writeFn?: (path: string, content: string) => void;
   logFn?: (msg: string) => void;
   now?: () => Date;
+  /** #7047: pula SÓ a checagem de antecedência mínima (nunca a de passado/presente, abaixo). */
+  allowImminent?: boolean;
 }
 
 /**
@@ -1138,6 +1186,16 @@ export async function runScheduleLoop(
     if (new Date(view.scheduledAt) <= now()) {
       throw new Error(`--schedule: ${view.key} (campanha #${view.campaignId}) tem scheduledAt no passado/presente (${view.scheduledAt}).`);
     }
+    // #7047: antecedência mínima medida AGORA, no momento do PUT real — não
+    // no momento em que `--dates` foi passado a `--create` (que pode ter
+    // sido dias atrás). Maior blast radius dos 3 scripts desta issue —
+    // dezenas de milhares de contatos por onda.
+    assertScheduleLeadTimeForWave(
+      `--schedule: ${view.key} (campanha #${view.campaignId})`,
+      view.scheduledAt,
+      { allowImminent: deps.allowImminent, now: now() },
+      logFn,
+    );
 
     await deps.putFn(view); // brevoPut REAL — agendamento aceito na Brevo a partir daqui (cancelável via API/painel + recriação, #4935, mas não é gratuito)
 
@@ -1189,6 +1247,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const skipEiaGuard = hasFlag(argv, "skip-eia-guard");
   const skipVerify = hasFlag(argv, "skip-verify");
   const force = hasFlag(argv, "force"); // #3643 bug 2: override consciente pra prosseguir com import não-confirmado
+  const allowImminent = hasFlag(argv, "allow-imminent"); // #7047
 
   // #4612: `--data-root` OPCIONAL, uso interno de teste — mesmo padrão de
   // `--data-root` em clarice-build-segment.ts/verify-emails-mv.ts (#4207,
@@ -1489,6 +1548,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       if (!dates) throw new Error(`--create requer --dates D1,D2,D3 (YYYY-MM-DD, ${entries.length} datas crescentes, ex: --dates 2026-07-18,2026-07-21,2026-07-23).`);
       const scheduledAts = dates.map(scheduledAtFromDate);
       assertDatesFuture(scheduledAts);
+      // #7047: antecedência mínima — feedback cedo em --create, reconferida no
+      // momento real do PUT dentro de runScheduleLoop (abaixo).
+      for (let i = 0; i < entries.length; i++) {
+        assertScheduleLeadTimeForWave(entries[i].key, scheduledAts[i], { allowImminent });
+      }
 
       for (let i = 0; i < entries.length; i++) {
         const entry = entries[i];
@@ -1570,6 +1634,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       await runScheduleLoop(campaignsView, rampSummaryPath(rampDir), {
         putFn: async (view) => { await brevoPut(apiKey, `/emailCampaigns/${view.campaignId}`, { scheduledAt: view.scheduledAt }); },
         verifyFn: (view) => brevoGetCampaign(apiKey, view.campaignId),
+        allowImminent, // #7047
       });
     }
   }
