@@ -165,7 +165,7 @@
   "statusLine": {
     "type": "command",
     "command": "node --no-warnings scripts/overnight-statusline.ts",
-    "refreshInterval": 5
+    "refreshInterval": 30
   },
   "enabledPlugins": {
     "pr-review-toolkit@claude-plugins-official": true
