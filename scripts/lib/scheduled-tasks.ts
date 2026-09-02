@@ -562,37 +562,66 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Hub-Staleness-Check",
-    description: "detecta edições publicadas que casam HUB_KEYWORD_PATTERNS mas não estão no dataset commitado do hub (persiste snapshot diário + alarma se >= 3 dias)",
-    steps: [{ key: "check", script: "scripts/hub-staleness-check.ts" }],
+    description: "detecta edições publicadas que casam HUB_KEYWORD_PATTERNS mas não estão no dataset commitado do hub (persiste snapshot + alarma se >= 1 dia)",
+    steps: [{ key: "check", script: "scripts/hub-staleness-check.ts", args: ["--threshold-days", "1"] }],
     logPath: "hubs/.staleness-check.log",
-    // Diária basta (#5123) — o custo é só ler dataset local (sem rede pra
-    // detectar; só o e-mail de alarme, se houver pendência, faz I/O de
-    // rede). Horário: 09:30, entre Diaria-Clarice-Opens-Catchup-Alarm (09:00)
-    // e Diaria-Apoios-Diff-Alarm (09:45) — sem colisão com nenhuma outra
-    // daily do registro.
-    schedule: { kind: "daily", hour: 9, minute: 30 },
+    // #7147 (02/09/2026): mudou de diária pra SEMANAL — o achado muda na
+    // cadência de PUBLICAÇÃO (uma edição/dia pode entrar em `stale`), não na
+    // de checagem, então rodar diário virava e-mail + issue quase todo dia
+    // pro mesmo tipo de pendência (evidência: #7101/#7102/#7103, 3 issues
+    // numa única manhã). `--threshold-days` baixado de 3 pra 1 JUNTO com a
+    // troca de cadência — sem isso "3+ dias" na prática viraria "8-13 dias"
+    // (a 1ª checagem que vê uma entrada só acontece no domingo seguinte ao
+    // dia em que ela ficou stale); com threshold=1, o intervalo semanal já É
+    // o amortecedor, e o assunto do e-mail ("N+ dias") continua correto.
+    // Horário: domingo 09:33, dentro da janela 09:30-10:20 de checks de
+    // drift/hub (#5754) e depois de Diaria-Hub-Pages-Build (domingo 08:05,
+    // hoje `enabled: false`) — sem colisão com nenhuma outra weekly do
+    // registro (checado contra o grep de `kind: "weekly"` neste arquivo).
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 9, minute: 33 },
     // Mesmo caso de Diaria-Home-Meta-Check/Diaria-Clarice-Envio-Alarm
     // (#5005/#5058): 1ª execução registrada depois do cutover systemd (épica #4798).
-    issue: "#5123, #4924",
+    issue: "#5123, #4924, #7147",
   },
   {
     name: "Diaria-Entity-Pages-Regen",
     description:
-      "regenera o HTML das páginas de entidade (workers/artigos/public/entidades/) a partir do EntityContent commitado, e alarma quando uma edição nova casa o padrão de uma entidade publicada mas ainda não está no mentions dela (persiste snapshot diário + alarma se >= 3 dias, mesmo mecanismo de aging de Diaria-Hub-Staleness-Check)",
-    steps: [{ key: "regen", script: "scripts/regenerate-entity-pages.ts" }],
+      "regenera o HTML das páginas de entidade (workers/artigos/public/entidades/) a partir do EntityContent commitado — SÓ a mecânica, sem alarme (ver Diaria-Entity-Pages-Staleness-Alarm pro alarme)",
+    steps: [{ key: "regen", script: "scripts/regenerate-entity-pages.ts", args: ["--skip-alarm"] }],
     logPath: "entities/.regen.log",
-    // Diária basta — mesmo racional de Diaria-Hub-Staleness-Check (custo é
-    // só ler corpus local + regen determinística; só o e-mail de alarme, se
-    // houver pendência vencida, faz I/O de rede). Horário: 09:40, entre
-    // Diaria-Home-Meta-Check (09:35) e Diaria-Apoios-Diff-Alarm
-    // (09:45) — sem colisão com nenhuma outra daily do registro.
+    // Diária continua (#5125: condição inegociável do editor — "a página
+    // nasce com regeneração automática, senão não é publicada"; isso é só a
+    // Parte 1, mecânica/determinística, sem I/O de rede — não pode virar
+    // semanal). `--skip-alarm` (#7147, 02/09/2026) tira a Parte 2 (detecção
+    // + alarme) desta task — ela mudou de cadência pra semanal, ver
+    // Diaria-Entity-Pages-Staleness-Alarm logo abaixo; antes deste split as
+    // 2 partes tinham a mesma cadência só por acidente de viverem no mesmo
+    // `main()`, não por decisão. Horário inalterado: 09:40, entre
+    // Diaria-Home-Meta-Check (09:35) e Diaria-Apoios-Diff-Alarm (09:45).
     schedule: { kind: "daily", hour: 9, minute: 40 },
     // #5125: condição inegociável do editor pra publicar a 1ª página de
     // entidade fora da rodada original de 3 (Apple) — "a página nasce com
     // regeneração automática, senão não é publicada". Armada em 17/08/2026
     // na checkout compartilhada (`helios`) — ver
     // docs/entity-pages-regen-setup.md.
-    issue: "#5125",
+    issue: "#5125, #7147",
+  },
+  {
+    name: "Diaria-Entity-Pages-Staleness-Alarm",
+    description:
+      "alarma quando uma edição nova casa o padrão de uma entidade publicada mas ainda não está no mentions dela (mesmo mecanismo de aging de Diaria-Hub-Staleness-Check, agora sem a regen — essa segue diária em Diaria-Entity-Pages-Regen)",
+    steps: [{ key: "alarm", script: "scripts/regenerate-entity-pages.ts", args: ["--alarm-only", "--threshold-days", "1"] }],
+    logPath: "entities/.regen.log",
+    // #7147 (02/09/2026): metade nova do split de Diaria-Entity-Pages-Regen
+    // — mesmo racional de cadência de Diaria-Hub-Staleness-Check acima
+    // (achado muda na cadência de publicação, não de checagem; threshold
+    // baixado de 3 pra 1 junto com a troca pra semanal, mesmo motivo).
+    // `--alarm-only` pula a regen (já rodou às 09:40 do mesmo dia, na task
+    // irmã) e roda só a detecção+alarme. Horário: domingo 09:43, logo depois
+    // de Diaria-Hub-Staleness-Check (09:33) — sem colisão com nenhuma outra
+    // weekly do registro.
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 9, minute: 43 },
+    issue: "#5125, #7147",
   },
   {
     name: "Diaria-Clarice-Novos",

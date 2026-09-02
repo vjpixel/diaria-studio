@@ -48,6 +48,22 @@
  *   npx tsx scripts/regenerate-entity-pages.ts --dry-run              # avalia + imprime, não escreve/persiste/alarma
  *   npx tsx scripts/regenerate-entity-pages.ts --threshold-days 5     # override do limiar de alarme (default 3)
  *   npx tsx scripts/regenerate-entity-pages.ts --to email@x           # override do destinatário do alarme
+ *   npx tsx scripts/regenerate-entity-pages.ts --skip-alarm            # só Parte 1 (regen mecânica) — usado pela task DIÁRIA
+ *   npx tsx scripts/regenerate-entity-pages.ts --alarm-only            # só Parte 2 (detecção+alarme) — usado pela task SEMANAL
+ *
+ * **`--skip-alarm`/`--alarm-only` (#7147, 02/09/2026).** As 2 partes viraram
+ * cadências DIFERENTES: a regen mecânica (Parte 1) é a condição inegociável
+ * do #5125 ("a página nasce com regeneração automática") e segue DIÁRIA sem
+ * exceção; o alarme (Parte 2) tinha a mesma cadência só por acidente de as
+ * duas viverem no mesmo `main()` — o achado do #7147 é que o ACHADO de
+ * staleness muda na cadência de PUBLICAÇÃO (uma edição por dia), não a de
+ * checagem, então alarmar todo dia é e-mail + issue novos quase todo dia
+ * pro mesmo tipo de pendência. `--skip-alarm` faz a task diária rodar só a
+ * Parte 1 (nunca toca `data/`, nunca alarma); `--alarm-only` faz a task
+ * semanal nova rodar só a Parte 2 (regen já rodou hoje mais cedo, não
+ * precisa rodar de novo). Mutuamente exclusivas — `--alarm-only --skip-alarm`
+ * juntas cairiam num no-op completo; o script recusa essa combinação em vez
+ * de silenciosamente não fazer nada (`process.exit(2)`).
  *
  * **Fail-soft na Parte 2, NUNCA bloqueia (#2643, label `local`, mesmo
  * contrato de `hub-staleness-check.ts`).** O cache Beehiiv só existe com o
@@ -185,13 +201,35 @@ async function main(): Promise<void> {
   const toOverride = getArg(argv, "to");
   const thresholdArg = getArg(argv, "threshold-days");
   const thresholdDays = thresholdArg ? Number.parseInt(thresholdArg, 10) : DEFAULT_THRESHOLD_DAYS;
+  const skipAlarm = hasFlag(argv, "skip-alarm");
+  const alarmOnly = hasFlag(argv, "alarm-only");
+  if (skipAlarm && alarmOnly) {
+    console.error(`${LOG_PREFIX} ERRO: --skip-alarm e --alarm-only são mutuamente exclusivas (juntas seriam um no-op completo).`);
+    process.exit(2);
+  }
 
   // Parte 1: regen mecânica — roda incondicionalmente, nunca depende do
   // corpus (só do que já está commitado em scripts/lib/entities/*.ts).
-  const rewritten = regenerateEntityHtml(isDryRun);
-  console.log(
-    `${LOG_PREFIX} regen mecânica: ${rewritten.length === 0 ? "nada divergiu (no-op)" : `${rewritten.length} entidade(s) regenerada(s) — ${rewritten.join(", ")}`}.`,
-  );
+  // --alarm-only pula esta parte: a task semanal de alarme roda DEPOIS da
+  // task diária de regen no mesmo dia, então regenerar de novo seria
+  // trabalho redundante (#7147).
+  if (!alarmOnly) {
+    const rewritten = regenerateEntityHtml(isDryRun);
+    console.log(
+      `${LOG_PREFIX} regen mecânica: ${rewritten.length === 0 ? "nada divergiu (no-op)" : `${rewritten.length} entidade(s) regenerada(s) — ${rewritten.join(", ")}`}.`,
+    );
+  } else {
+    console.log(`${LOG_PREFIX} --alarm-only: pulando Parte 1 (regen mecânica já rodou na task diária).`);
+  }
+
+  // --skip-alarm pula a Parte 2 inteira (nunca detecta, nunca alarma, nunca
+  // toca data/) — usado pela task diária, que agora só regenera (#7147: o
+  // alarme mudou de cadência diária pra semanal, ver Diaria-Entity-Pages-
+  // Staleness-Alarm em scripts/lib/scheduled-tasks.ts).
+  if (skipAlarm) {
+    console.log(`${LOG_PREFIX} --skip-alarm: pulando Parte 2 (detecção + alarme) — task semanal cuida disso.`);
+    return;
+  }
 
   // Parte 2: detecção de defasagem de conteúdo — precisa do junction data/.
   if (!existsSync(POSTS_DIR)) {

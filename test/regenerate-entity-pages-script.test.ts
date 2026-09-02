@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 
 import { loadState, saveState, regenerateEntityHtml } from "../scripts/regenerate-entity-pages.ts";
 import { emptyEntityStalenessAlarmState, advanceEntityStalenessState } from "../scripts/lib/entity-staleness-check.ts";
@@ -82,5 +83,49 @@ describe("regenerateEntityHtml (#5125, regen mecânica)", () => {
     const slugs = Object.keys(ENTITY_LOADERS);
     assert.ok(slugs.length >= 5, "esperava pelo menos as 5 entidades já publicadas (incluindo apple)");
     assert.ok(slugs.includes("apple"), "apple deveria estar em ENTITY_LOADERS (#5125)");
+  });
+});
+
+describe("--skip-alarm / --alarm-only (#7147, CLI mutuamente exclusivas)", () => {
+  const ROOT = resolve(import.meta.dirname, "..");
+  const SCRIPT = resolve(ROOT, "scripts/regenerate-entity-pages.ts");
+
+  // Mesmo padrão cross-platform de test/append-ci-failure.ts — spawnSync
+  // com `npx`/`tsx` direto falha no Windows (ENOENT sem shell:true).
+  function run(args: string[]) {
+    return spawnSync(process.execPath, ["--import", "tsx", SCRIPT, ...args], {
+      encoding: "utf8",
+      cwd: ROOT,
+      env: { ...process.env },
+    });
+  }
+
+  it("--skip-alarm --dry-run: roda só a Parte 1, nunca menciona detecção/alarme", () => {
+    const r = run(["--dry-run", "--skip-alarm"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /regen mecânica/);
+    assert.match(r.stdout, /pulando Parte 2/);
+    assert.doesNotMatch(r.stdout, /entrada\(s\) stale/);
+  });
+
+  it("--alarm-only --dry-run: pula a Parte 1, roda a detecção", () => {
+    const r = run(["--dry-run", "--alarm-only"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /pulando Parte 1/);
+    assert.doesNotMatch(r.stdout, /regen mecânica:/);
+  });
+
+  it("--skip-alarm + --alarm-only juntas: exit 2, nunca um no-op silencioso", () => {
+    const r = run(["--dry-run", "--skip-alarm", "--alarm-only"]);
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /mutuamente exclusivas/);
+  });
+
+  it("sem nenhuma das duas flags: comportamento pré-#7147 preservado (roda as 2 partes)", () => {
+    const r = run(["--dry-run"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /regen mecânica:/);
+    assert.doesNotMatch(r.stdout, /pulando Parte 1/);
+    assert.doesNotMatch(r.stdout, /pulando Parte 2/);
   });
 });
