@@ -1,41 +1,81 @@
-<!--
+/**
+ * site-assinar-page.ts (#7015)
+ *
+ * Gera `workers/site/public/assinar/index.html` — página de cadastro
+ * PRÓPRIA do apex (#6427, ver o comentário original preservado abaixo).
+ * Extraído pra fechar a 3ª ocorrência do bug de wordmark: #4797 extraiu
+ * `brand-wordmark.ts` porque "nenhuma página aplicava o mesmo tratamento";
+ * #7010 achou a HOME reescrevendo a marca à mão (só os pontos em teal, sem
+ * o ".br" inteiro) e moveu `scripts/lib/site-home-page.ts` pra consumir
+ * `WORDMARK_DISPLAY_SEGMENTS`; `/assinar` tinha o MESMO bug e ficou de fora
+ * do #7010 só porque era HTML estático sem gerador — este módulo fecha essa
+ * lacuna copiando o padrão de `renderWordmark()` de `site-home-page.ts`
+ * (mesma estrutura, `.dot` como nome de classe local pro segmento teal,
+ * `aria-hidden` nos separadores decorativos).
+ *
+ * O resto do arquivo (form, CSS, script inline de UTM/fetch) é conteúdo
+ * inteiramente estático — sem nenhum dado de request/edição envolvido —
+ * então vive aqui como um único template literal, sem parâmetros. Rodar
+ * `scripts/gen-assinar-page.ts` sempre que este módulo mudar (mesma
+ * disciplina "commitado à mão" de `workers/site/README.md`, já seguida por
+ * `gen-home-page.ts`/`gen-archive-pages.ts`).
+ */
+import { escHtml } from "./html-escape.ts";
+import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
+
+/**
+ * Mesmo padrão de `renderWordmark()` em `site-home-page.ts` (#7010): consome
+ * a ESTRUTURA canônica em vez de escrever "diar" + "." + "ia" + ".br" à mão
+ * — é essa reescrita manual que causou o bug original (só os pontos em
+ * teal, nunca o ".br" inteiro).
+ */
+function renderWordmark(): string {
+  return WORDMARK_DISPLAY_SEGMENTS.map((seg) => {
+    const cls = seg.teal ? ' class="dot"' : "";
+    const hidden = seg.decorative ? ' aria-hidden="true"' : "";
+    return `<span${cls}${hidden}>${escHtml(seg.text)}</span>`;
+  }).join("");
+}
+
+export function buildAssinarHtml(): string {
+  return `<!--
   workers/site/public/assinar/index.html (#6427)
 
   Página de cadastro PRÓPRIA do apex — fecha a perda de atribuição UTM
-  descrita na issue #6427: o CTA da home (`workers/site/public/index.html`,
-  gerado por `scripts/lib/site-home-page.ts`) apontava pro `/subscribe`
-  estático (`_redirects`, 302 sem query string pro perfil hospedado da Kit),
+  descrita na issue #6427: o CTA da home (\`workers/site/public/index.html\`,
+  gerado por \`scripts/lib/site-home-page.ts\`) apontava pro \`/subscribe\`
+  estático (\`_redirects\`, 302 sem query string pro perfil hospedado da Kit),
   então TODO cadastro vindo do apex — inclusive o tráfego da Clarice News,
-  que injeta `utm_source=clarice&utm_campaign=clarice-{ciclo}-{posicao}`
-  (`withClariceUtm`, `scripts/lib/mensal/monthly-render.ts`) — entrava sem
+  que injeta \`utm_source=clarice&utm_campaign=clarice-{ciclo}-{posicao}\`
+  (\`withClariceUtm\`, \`scripts/lib/mensal/monthly-render.ts\`) — entrava sem
   nenhuma atribuição.
 
   Mecanismo: form nativo (funciona SEM JS via POST direto — fallback
-  `application/x-www-form-urlencoded`, ver `parseSubscribeBody` em
-  `workers/poll/src/subscribe.ts`) progressivamente aprimorado por um script
-  inline (mesmo padrão de `renderSubscribeCtaScript` em
-  `scripts/build-livros-page.ts` e `inlineSignupScript` em
-  `workers/poll/src/jogar.ts`): intercepta o submit, faz fetch JSON pra
-  `POST https://eia.diar.ia.br/jogar/subscribe` (CROSS-ORIGIN — `diar.ia.br`
-  já está na allowlist `ALLOWED_ORIGINS` do worker `poll`, ver
-  `workers/poll/wrangler.toml`), e mostra status inline sem sair da página.
+  \`application/x-www-form-urlencoded\`, ver \`parseSubscribeBody\` em
+  \`workers/poll/src/subscribe.ts\`) progressivamente aprimorado por um script
+  inline (mesmo padrão de \`renderSubscribeCtaScript\` em
+  \`scripts/build-livros-page.ts\` e \`inlineSignupScript\` em
+  \`workers/poll/src/jogar.ts\`): intercepta o submit, faz fetch JSON pra
+  \`POST https://eia.diar.ia.br/jogar/subscribe\` (CROSS-ORIGIN — \`diar.ia.br\`
+  já está na allowlist \`ALLOWED_ORIGINS\` do worker \`poll\`, ver
+  \`workers/poll/wrangler.toml\`), e mostra status inline sem sair da página.
 
-  `source: "apex"` no payload — o único `SubscribeSource` que aceita
-  `utm_source`/`utm_medium`/`utm_campaign` DINÂMICOS do cliente, validados
-  contra a allowlist de prefixo (`clarice-*`, `ads-*`,
-  `isAllowedClientUtmSource`) antes de o servidor os usar; fora da
-  allowlist, cai no triplo default `SUBSCRIBE_UTM_BY_SOURCE.apex`. Os 3
-  valores são lidos da PRÓPRIA query string desta página (`location.search`)
-  — chegam aqui porque a home (`index.html`) repassa `location.search` no
+  \`source: "apex"\` no payload — o único \`SubscribeSource\` que aceita
+  \`utm_source\`/\`utm_medium\`/\`utm_campaign\` DINÂMICOS do cliente, validados
+  contra a allowlist de prefixo (\`clarice-*\`, \`ads-*\`,
+  \`isAllowedClientUtmSource\`) antes de o servidor os usar; fora da
+  allowlist, cai no triplo default \`SUBSCRIBE_UTM_BY_SOURCE.apex\`. Os 3
+  valores são lidos da PRÓPRIA query string desta página (\`location.search\`)
+  — chegam aqui porque a home (\`index.html\`) repassa \`location.search\` no
   href do CTA antes de navegar (ver comentário no script de
-  `buildIndexHtml`, `scripts/lib/site-home-page.ts`).
+  \`buildIndexHtml\`, \`scripts/lib/site-home-page.ts\`).
 
-  Este arquivo é GERADO por `scripts/gen-assinar-page.ts` a partir de
-  `scripts/lib/site-assinar-page.ts` (#7015) — não editar direto (o próximo
-  `npx tsx scripts/gen-assinar-page.ts` sobrescreve). O único motivo do
-  gerador existir é o tratamento canônico da marca (`renderWordmark()`,
-  ver `WORDMARK_DISPLAY_SEGMENTS` em `scripts/lib/shared/brand-wordmark.ts`)
-  — o resto do conteúdo é estático e vive em `buildAssinarHtml()`.
+  Este arquivo é GERADO por \`scripts/gen-assinar-page.ts\` a partir de
+  \`scripts/lib/site-assinar-page.ts\` (#7015) — não editar direto (o próximo
+  \`npx tsx scripts/gen-assinar-page.ts\` sobrescreve). O único motivo do
+  gerador existir é o tratamento canônico da marca (\`renderWordmark()\`,
+  ver \`WORDMARK_DISPLAY_SEGMENTS\` em \`scripts/lib/shared/brand-wordmark.ts\`)
+  — o resto do conteúdo é estático e vive em \`buildAssinarHtml()\`.
 -->
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -90,7 +130,7 @@ button[type="submit"]:disabled { opacity: 0.6; cursor: default; }
 </head>
 <body>
   <main class="wrap">
-    <h1><span>diar</span><span class="dot" aria-hidden="true">.</span><span>ia</span><span class="dot" aria-hidden="true">.</span><span class="dot">br</span></h1>
+    <h1>${renderWordmark()}</h1>
     <p class="lede">5 minutos diários pra se manter atualizado e usar IA <em>melhor</em>. Seg–Sex, direto no seu e-mail.</p>
 
     <form id="assinar-form" method="POST" action="https://eia.diar.ia.br/jogar/subscribe" novalidate>
@@ -201,3 +241,5 @@ button[type="submit"]:disabled { opacity: 0.6; cursor: default; }
   </script>
 </body>
 </html>
+`;
+}

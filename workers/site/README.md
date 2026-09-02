@@ -53,7 +53,12 @@ apex (404 hoje) e `/sitemap.xml` já era servido certo.
   linha compacta abaixo da pill, sem alterar a geometria da pill em si.
   `/assinar` continua existindo e funcionando como página autônoma
   (link compartilhável, destino de quem chega por fora) — não foi
-  removida nem alterada. V1Specials linka
+  removida nem alterada. Desde o #7015, `public/assinar/index.html` é
+  GERADO por `scripts/gen-assinar-page.ts` (miolo em
+  `scripts/lib/site-assinar-page.ts`) — deixou de ser HTML escrito à mão
+  pra fechar o mesmo bug de wordmark do #7010 (só os pontos separadores em
+  teal, sem o `.br` inteiro); rodar o gerador depois de editar o módulo,
+  nunca editar o HTML direto. V1Specials linka
   direto pros hubs já existentes (`livros.diar.ia.br`, `cursos.diar.ia.br`)
   em vez de fonte de dado dinâmica — não achada nenhuma API própria de
   contagem de livros/cursos no repo, e os hubs já são a fonte de verdade
