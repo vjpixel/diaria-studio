@@ -22,6 +22,8 @@ import {
   defaultSinceAammdd,
   roundDayFromEdition,
   mergeKindDayTotals,
+  discoverRanRounds,
+  markUninstrumentedRounds,
   type KindDayTotals,
 } from "../scripts/aggregate-session-tokens.ts";
 
@@ -422,5 +424,128 @@ describe("formatSessionTokensSummary — marcação de rodadas fundidas (#6638)"
     assert.match(md, /\| 260814 \| Overnight ×3 \|/);
     assert.match(md, /\| 260815 \| Develop \|/);
     assert.doesNotMatch(md, /Develop ×/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #6634 — rodada que rodou sem emitir evento algum não pode sumir da contagem
+// ---------------------------------------------------------------------------
+
+describe("discoverRanRounds (#6634)", () => {
+  it("descobre rodadas por dir com plan.json sob data/{overnight,develop,continuo}/, ignorando sujeira e janela por dia civil", () => {
+    const root = tmpRoot();
+    try {
+      for (const withPlan of [
+        "data/overnight/260901",
+        "data/overnight/260901b",
+        "data/develop/260901",
+        "data/continuo/260826",
+      ]) {
+        mkdirSync(join(root, ...withPlan.split("/")), { recursive: true });
+        writeFileSync(join(root, ...withPlan.split("/"), "plan.json"), "{}", "utf8");
+      }
+      // Sujeira observada ao vivo no kind dir + dir de rodada abortada sem plan.json.
+      writeFileSync(join(root, "data", "overnight", "issues-raw.json"), "{}", "utf8");
+      writeFileSync(join(root, "data", "overnight", "pp.mjs"), "", "utf8");
+      mkdirSync(join(root, "data", "overnight", "260830"), { recursive: true }); // sem plan.json
+
+      const ran = discoverRanRounds(root);
+      assert.deepEqual(ran.overnight, ["260901", "260901b"]);
+      assert.deepEqual(ran.develop, ["260901"]);
+      assert.deepEqual(ran.continuo, ["260826"]);
+
+      // Janela por DIA CIVIL: `260901b` passa o mesmo filtro de `260901` (#6638).
+      assert.deepEqual(discoverRanRounds(root, { since: "260901", until: "260901" }).overnight, ["260901", "260901b"]);
+      assert.equal(discoverRanRounds(root, { until: "260830" }).overnight, undefined);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("kind dir ausente inteiro → vazio, nunca lança (fail-soft: worktree/clone fresco)", () => {
+    const root = tmpRoot();
+    try {
+      assert.deepEqual(discoverRanRounds(root), {});
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("markUninstrumentedRounds (#6634, regressão do sumiço)", () => {
+  it("REGRESSÃO: rodada muda num (kind, dia) SEM linha alguma ganha linha própria com total 0 — antes ela sumia por inteiro", () => {
+    const rows = markUninstrumentedRounds([], { overnight: ["260811"] });
+    const row = rows.find((r) => r.kind === "overnight" && r.day === "260811");
+    assert.ok(row, "rodada sem evento nenhum DEVE ter linha própria");
+    assert.equal(row!.totalTokens, 0);
+    assert.deepEqual(row!.rounds, []);
+    assert.deepEqual(row!.roundsWithoutEvents, ["260811"]);
+  });
+
+  it("rodada que contribuiu com evento NÃO é marcada; rodada muda de dia já agregado entra em roundsWithoutEvents", () => {
+    const rows = markUninstrumentedRounds(
+      [
+        {
+          kind: "overnight",
+          day: "260901",
+          rounds: ["260901"],
+          totalTokens: 100_000,
+          categories: { coordinator: { tokens: 100_000, eventCount: 1, unavailableCount: 0 } },
+        },
+      ],
+      { overnight: ["260901", "260901b"] },
+    );
+    const row = rows.find((r) => r.kind === "overnight")!;
+    assert.deepEqual(row.roundsWithoutEvents, ["260901b"]);
+    assert.equal(row.totalTokens, 100_000, "total da rodada instrumentada intocado");
+  });
+
+  it("não muta as linhas de entrada (cópia defensiva)", () => {
+    const original: KindDayTotals = {
+      kind: "develop",
+      day: "260902",
+      rounds: [],
+      totalTokens: 0,
+      categories: {},
+    };
+    markUninstrumentedRounds([original], { develop: ["260902"] });
+    assert.equal(original.roundsWithoutEvents, undefined);
+  });
+});
+
+describe("integração #6634 — rodada muda aparece no summary e na tabela com (N rodada(s) sem evento)", () => {
+  it("rodada instrumentada + rodada muda no mesmo dia; rodada muda sozinha ganha linha", () => {
+    const root = tmpRoot();
+    try {
+      mkdirSync(join(root, "data"), { recursive: true });
+      // Só 260901 emitiu eventos; 260901b rodou (plan.json) e ficou muda —
+      // caso real 260811 (#5009): coordenador esqueceu os checkpoints.
+      const logLines = [
+        { agent: "overnight", edition: "260901", message: "subagent_metrics", details: { subagent_tokens: 50_000, source: "harness_usage" } },
+      ];
+      writeFileSync(join(root, "data", "run-log.jsonl"), logLines.map((l) => JSON.stringify(l)).join("\n") + "\n", "utf8");
+      for (const round of ["260901", "260901b", "260902"]) {
+        mkdirSync(join(root, "data", "overnight", round), { recursive: true });
+        writeFileSync(join(root, "data", "overnight", round, "plan.json"), "{}", "utf8");
+      }
+
+      const summary = buildSessionTokensSummary({ rootDir: root, alarmPct: 50 });
+
+      const day901 = summary.rows.find((r) => r.kind === "overnight" && r.day === "260901")!;
+      assert.equal(day901.totalTokens, 50_000);
+      assert.deepEqual(day901.roundsWithoutEvents, ["260901b"]);
+
+      // REGRESSÃO: dia sem NENHUM evento continua com linha — não some.
+      const day902 = summary.rows.find((r) => r.kind === "overnight" && r.day === "260902")!;
+      assert.ok(day902, "rodada inteiramente muda precisa de linha própria");
+      assert.equal(day902.totalTokens, 0);
+      assert.deepEqual(day902.roundsWithoutEvents, ["260902"]);
+
+      const md = formatSessionTokensSummary(summary);
+      assert.match(md, /\(1 rodada sem evento\)/);
+      assert.match(md, /não instrumentada/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
