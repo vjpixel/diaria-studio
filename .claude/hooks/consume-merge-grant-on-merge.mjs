@@ -258,8 +258,13 @@ function consumeOneUnderLock(initial, nowIso, attempts = CAS_ATTEMPTS, lockTimeo
         try { closeSync(openSync(lockPath, "wx")); acquired = true; break; } catch (e) {
           if (e?.code !== "EEXIST") throw e;
           if (Date.now() >= deadline) throw new Error(`lock timeout: ${lockPath}`);
-          const end = Date.now() + 50;
-          while (Date.now() < end) { /* busy wait */ }
+          // Espera 50ms DORMINDO, não em busy wait — mesmo padrão de
+          // `acquireLock` em `scripts/lib/file-lock.ts` (#6952/#6969): o spin
+          // busy-wait competia por CPU justamente com o dono do lock enquanto
+          // ele precisava de CPU pra soltá-lo. `Atomics.wait` é síncrono e é
+          // a espera dormindo real disponível aqui — reintroduzido por
+          // engano neste hook no #7031, corrigido de volta.
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
         }
       }
 

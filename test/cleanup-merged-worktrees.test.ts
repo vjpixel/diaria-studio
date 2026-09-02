@@ -14,6 +14,12 @@ import {
   selectMergedForRemoval,
   selectOrphanedForStaleRemoval,
   shouldSkipForSharedSession,
+  shouldSkipEntireScanForUnreadableRegistry,
+  extractWorktreeNamesFromPaths,
+  selectInUseWorktreeNames,
+  worktreeNameFromPath,
+  filterOutInUseWorktrees,
+  filterOutLockedWorktrees,
   ORPHAN_STALE_THRESHOLD_MS,
 } from "../scripts/cleanup-merged-worktrees.ts";
 import type { SessionRecord } from "../scripts/lib/session-registry.ts";
@@ -69,13 +75,38 @@ test("parseWorktreePorcelain — normaliza backslash pra forward slash no path (
   assert.equal(entries[0].path, "C:/Users/vjpix/repo");
 });
 
+test("#7048 — parseWorktreePorcelain marca locked=true quando a linha 'locked ...' aparece", () => {
+  const output = [
+    "worktree /repo/.claude/worktrees/agent-abc",
+    "HEAD 1234567",
+    "branch refs/heads/overnight/fix-1",
+    "locked claude agent agent-abc (pid 4242)",
+    "",
+  ].join("\n");
+  const entries = parseWorktreePorcelain(output);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].locked, true);
+});
+
+test("#7048 — parseWorktreePorcelain marca locked=true mesmo sem razão (linha 'locked' isolada)", () => {
+  const output = ["worktree /repo/.claude/worktrees/agent-abc", "branch refs/heads/x", "locked", ""].join("\n");
+  const entries = parseWorktreePorcelain(output);
+  assert.equal(entries[0].locked, true);
+});
+
+test("parseWorktreePorcelain — locked=false quando a linha 'locked' está ausente", () => {
+  const output = ["worktree /repo/.claude/worktrees/agent-abc", "branch refs/heads/x", ""].join("\n");
+  const entries = parseWorktreePorcelain(output);
+  assert.equal(entries[0].locked, false);
+});
+
 // ── filterUnderWorktreesDir ──
 
 test("filterUnderWorktreesDir — mantém só os sob o diretório, nunca o worktree principal do repo", () => {
   const entries = [
-    { path: "C:/repo", branch: "master" },
-    { path: "C:/repo/.claude/worktrees/agent-a", branch: "overnight/fix-1" },
-    { path: "C:/repo/.claude/worktrees/agent-b", branch: "develop/fix-2" },
+    { path: "C:/repo", branch: "master", locked: false },
+    { path: "C:/repo/.claude/worktrees/agent-a", branch: "overnight/fix-1", locked: false },
+    { path: "C:/repo/.claude/worktrees/agent-b", branch: "develop/fix-2", locked: false },
   ];
   const result = filterUnderWorktreesDir(entries, "C:/repo/.claude/worktrees");
   assert.equal(result.length, 2);
@@ -84,8 +115,8 @@ test("filterUnderWorktreesDir — mantém só os sob o diretório, nunca o workt
 
 test("filterUnderWorktreesDir — não confunde prefixo parcial de path (ex: 'worktrees-old')", () => {
   const entries = [
-    { path: "C:/repo/.claude/worktrees-old/agent-x", branch: "b" },
-    { path: "C:/repo/.claude/worktrees/agent-y", branch: "b2" },
+    { path: "C:/repo/.claude/worktrees-old/agent-x", branch: "b", locked: false },
+    { path: "C:/repo/.claude/worktrees/agent-y", branch: "b2", locked: false },
   ];
   const result = filterUnderWorktreesDir(entries, "C:/repo/.claude/worktrees");
   assert.equal(result.length, 1);
@@ -93,7 +124,7 @@ test("filterUnderWorktreesDir — não confunde prefixo parcial de path (ex: 'wo
 });
 
 test("filterUnderWorktreesDir — tolera barra final no worktreesDir", () => {
-  const entries = [{ path: "C:/repo/.claude/worktrees/agent-a", branch: "b" }];
+  const entries = [{ path: "C:/repo/.claude/worktrees/agent-a", branch: "b", locked: false }];
   const result = filterUnderWorktreesDir(entries, "C:/repo/.claude/worktrees/");
   assert.equal(result.length, 1);
 });
@@ -102,9 +133,9 @@ test("filterUnderWorktreesDir — tolera barra final no worktreesDir", () => {
 
 test("selectMergedForRemoval — só seleciona os que o checker confirma como mergeados", () => {
   const entries = [
-    { path: "/a", branch: "overnight/fix-1" },
-    { path: "/b", branch: "overnight/fix-2" },
-    { path: "/c", branch: "develop/fix-3" },
+    { path: "/a", branch: "overnight/fix-1", locked: false },
+    { path: "/b", branch: "overnight/fix-2", locked: false },
+    { path: "/c", branch: "develop/fix-3", locked: false },
   ];
   const merged = new Set(["overnight/fix-1", "develop/fix-3"]);
   const result = selectMergedForRemoval(entries, (b) => merged.has(b));
@@ -115,15 +146,15 @@ test("selectMergedForRemoval — só seleciona os que o checker confirma como me
 });
 
 test("selectMergedForRemoval — worktree detached (branch null) nunca é selecionado, mesmo com checker sempre-true", () => {
-  const entries = [{ path: "/a", branch: null }];
+  const entries = [{ path: "/a", branch: null, locked: false }];
   const result = selectMergedForRemoval(entries, () => true);
   assert.equal(result.length, 0);
 });
 
 test("selectMergedForRemoval — nenhum mergeado -> array vazio (fail-soft: nunca remove por engano)", () => {
   const entries = [
-    { path: "/a", branch: "overnight/fix-1" },
-    { path: "/b", branch: "overnight/fix-2" },
+    { path: "/a", branch: "overnight/fix-1", locked: false },
+    { path: "/b", branch: "overnight/fix-2", locked: false },
   ];
   const result = selectMergedForRemoval(entries, () => false);
   assert.deepEqual(result, []);
@@ -140,7 +171,7 @@ const EIGHT_DAYS_AGO = NOW - 8 * 24 * 60 * 60 * 1000;
 const ONE_DAY_AGO = NOW - 1 * 24 * 60 * 60 * 1000;
 
 test("selectOrphanedForStaleRemoval — worktree detached HEAD antigo (>7 dias) é removido", () => {
-  const entries = [{ path: "/a", branch: null }];
+  const entries = [{ path: "/a", branch: null, locked: false }];
   const result = selectOrphanedForStaleRemoval(
     entries,
     [],
@@ -152,7 +183,7 @@ test("selectOrphanedForStaleRemoval — worktree detached HEAD antigo (>7 dias) 
 });
 
 test("selectOrphanedForStaleRemoval — worktree detached HEAD recente (<7 dias) é preservado", () => {
-  const entries = [{ path: "/a", branch: null }];
+  const entries = [{ path: "/a", branch: null, locked: false }];
   const result = selectOrphanedForStaleRemoval(
     entries,
     [],
@@ -164,7 +195,7 @@ test("selectOrphanedForStaleRemoval — worktree detached HEAD recente (<7 dias)
 });
 
 test("selectOrphanedForStaleRemoval — branch com ref local deletado e antigo é removido", () => {
-  const entries = [{ path: "/a", branch: "overnight/fix-old" }];
+  const entries = [{ path: "/a", branch: "overnight/fix-old", locked: false }];
   const result = selectOrphanedForStaleRemoval(
     entries,
     [],
@@ -176,7 +207,7 @@ test("selectOrphanedForStaleRemoval — branch com ref local deletado e antigo �
 });
 
 test("selectOrphanedForStaleRemoval — branch local ainda existe, mesmo antigo, NUNCA é removido (decisão de escopo #5418)", () => {
-  const entries = [{ path: "/a", branch: "overnight/fix-still-open" }];
+  const entries = [{ path: "/a", branch: "overnight/fix-still-open", locked: false }];
   const result = selectOrphanedForStaleRemoval(
     entries,
     [],
@@ -188,7 +219,7 @@ test("selectOrphanedForStaleRemoval — branch local ainda existe, mesmo antigo,
 });
 
 test("selectOrphanedForStaleRemoval — mtime desconhecido (stat falhou) nunca conta como stale (fail-soft)", () => {
-  const entries = [{ path: "/a", branch: null }];
+  const entries = [{ path: "/a", branch: null, locked: false }];
   const result = selectOrphanedForStaleRemoval(
     entries,
     [],
@@ -200,8 +231,8 @@ test("selectOrphanedForStaleRemoval — mtime desconhecido (stat falhou) nunca c
 });
 
 test("selectOrphanedForStaleRemoval — worktree já selecionado por merge não é duplicado", () => {
-  const entries = [{ path: "/a", branch: null }];
-  const alreadySelected = [{ path: "/a", branch: null }];
+  const entries = [{ path: "/a", branch: null, locked: false }];
+  const alreadySelected = [{ path: "/a", branch: null, locked: false }];
   const result = selectOrphanedForStaleRemoval(
     entries,
     alreadySelected,
@@ -213,7 +244,7 @@ test("selectOrphanedForStaleRemoval — worktree já selecionado por merge não 
 });
 
 test("selectOrphanedForStaleRemoval — respeita threshold customizado", () => {
-  const entries = [{ path: "/a", branch: null }];
+  const entries = [{ path: "/a", branch: null, locked: false }];
   const twoDaysAgo = NOW - 2 * 24 * 60 * 60 * 1000;
   const oneDayThreshold = 24 * 60 * 60 * 1000;
   const result = selectOrphanedForStaleRemoval(entries, [], () => true, () => twoDaysAgo, NOW, oneDayThreshold);
@@ -224,18 +255,17 @@ test("ORPHAN_STALE_THRESHOLD_MS — 7 dias em ms", () => {
   assert.equal(ORPHAN_STALE_THRESHOLD_MS, 7 * 24 * 60 * 60 * 1000);
 });
 
-// ── Regressão #5418: combinação worktree detached antigo + sessão viva ──
+// ── #7045: exclusão POR WORKTREE em vez de skip global ──
 //
-// A issue pede explicitamente este cenário: worktree detached HEAD antigo é
-// candidato à remoção por `selectOrphanedForStaleRemoval`, MAS se houver
-// qualquer sessão ativa registrada (mock de `listActiveSessions` retornando
-// não-vazio), a varredura inteira (merged + órfã) é pulada por
-// `shouldSkipForSharedSession` ANTES de `selectOrphanedForStaleRemoval` ser
-// sequer chamado em `main()` — o guard de sessão viva é incondicional, não
-// por-worktree, então nenhum worktree (mergeado, órfão, ou vivo) é tocado
-// enquanto houver sessão ativa sem `--confirm-shared`.
-test("regressão #5418 — worktree detached+antigo seria removido isoladamente, mas sessão viva bloqueia a varredura inteira", () => {
-  const entries = [{ path: "/a", branch: null }];
+// Antes do #7045, `main()` pulava a varredura INTEIRA sempre que existia
+// ≥1 sessão coordenadora ativa — com o contínuo rodando quase 24/7, isso
+// virava um no-op quase incondicional (51 worktrees acumulados, 28 com PR
+// já mergeada, achado ao vivo). A partir do #7045, só o worktree cujo
+// caminho aparece em touched_paths/dirty_paths de alguma sessão ATIVA e
+// não-stale fica de fora — os demais seguem avaliados normalmente mesmo com
+// outras sessões ativas.
+test("#7045 — sessão ativa NÃO bloqueia mais a varredura inteira: worktree sem footprint segue elegível", () => {
+  const entries = [{ path: "/a", branch: null, locked: false }];
   const wouldRemoveInIsolation = selectOrphanedForStaleRemoval(
     entries,
     [],
@@ -245,18 +275,150 @@ test("regressão #5418 — worktree detached+antigo seria removido isoladamente,
   );
   assert.deepEqual(wouldRemoveInIsolation.map((e) => e.path), ["/a"], "confirma que o worktree É candidato isoladamente");
 
+  // Sessão ativa cujo footprint NÃO toca o worktree "/a" — não deveria
+  // excluí-lo (comportamento novo: a exclusão é por nome de worktree, não
+  // por "existe alguma sessão viva em algum lugar").
   const activeSession: SessionRecord = {
     kind: "develop",
     machineTag: "host-b",
     sessionId: "sess-live",
     startedAt: "2026-08-16T11:00:00.000Z",
     lastHeartbeat: "2026-08-16T11:59:00.000Z",
+    touched_paths: [".claude/worktrees/agent-outro-qualquer/scripts/foo.ts"],
   };
-  assert.equal(
-    shouldSkipForSharedSession([activeSession], false),
-    true,
-    "com sessão viva detectada, main() pula a varredura inteira antes de chegar em selectOrphanedForStaleRemoval",
+  const inUse = selectInUseWorktreeNames([activeSession]);
+  assert.equal(inUse.has("a"), false, "'/a' não é o nome de nenhum worktree tocado por essa sessão");
+  const filtered = filterOutInUseWorktrees(entries, inUse);
+  assert.deepEqual(filtered.map((e) => e.path), ["/a"], "worktree sem footprint continua elegível mesmo com sessão ativa");
+});
+
+test("#7045 — worktree É excluído quando seu nome aparece em touched_paths/dirty_paths de sessão ativa", () => {
+  const entries = [
+    { path: "C:/repo/.claude/worktrees/agent-em-uso", branch: "develop/fix-1", locked: false },
+    { path: "C:/repo/.claude/worktrees/agent-livre", branch: "overnight/fix-2", locked: false },
+  ];
+  const activeSession: SessionRecord = {
+    kind: "continuo",
+    machineTag: "helios",
+    sessionId: "sess-continuo",
+    startedAt: "2026-09-01T00:00:00.000Z",
+    lastHeartbeat: "2026-09-01T00:05:00.000Z",
+    dirty_paths: [".claude/worktrees/agent-em-uso/scripts/lib/foo.ts"],
+  };
+  const inUse = selectInUseWorktreeNames([activeSession]);
+  const filtered = filterOutInUseWorktrees(entries, inUse);
+  assert.deepEqual(filtered.map((e) => e.path), ["C:/repo/.claude/worktrees/agent-livre"]);
+});
+
+test("#7045 — sessão STALE não exclui worktree nenhum (mesmo com footprint)", () => {
+  const entries = [{ path: "C:/repo/.claude/worktrees/agent-x", branch: "develop/fix-1", locked: false }];
+  const staleSession: SessionRecord = {
+    kind: "overnight",
+    machineTag: "helios",
+    sessionId: "sess-morta",
+    startedAt: "2026-08-30T00:00:00.000Z",
+    lastHeartbeat: "2026-08-30T00:05:00.000Z",
+    touched_paths: [".claude/worktrees/agent-x/scripts/foo.ts"],
+    stale: true,
+  };
+  const inUse = selectInUseWorktreeNames([staleSession]);
+  assert.equal(inUse.size, 0);
+  assert.deepEqual(filterOutInUseWorktrees(entries, inUse), entries);
+});
+
+test("#7045 — extractWorktreeNamesFromPaths aceita '/' e '\\\\' (Windows)", () => {
+  assert.deepEqual(
+    [...extractWorktreeNamesFromPaths([".claude/worktrees/agent-a/scripts/x.ts", ".claude\\worktrees\\agent-b\\scripts\\y.ts"])].sort(),
+    ["agent-a", "agent-b"],
   );
+});
+
+test("#7045 — extractWorktreeNamesFromPaths ignora paths fora de worktrees/", () => {
+  assert.deepEqual([...extractWorktreeNamesFromPaths(["scripts/lib/foo.ts", ".claude/hooks/bar.mjs"])], []);
+});
+
+test("#7048 — extractWorktreeNamesFromPaths casa path sob .claude/worktrees/", () => {
+  assert.deepEqual(
+    [...extractWorktreeNamesFromPaths([".claude/worktrees/agent-a/scripts/foo.ts"])],
+    ["agent-a"],
+  );
+});
+
+test("#7048 — extractWorktreeNamesFromPaths NÃO casa 'worktrees/' fora de .claude/ (regex não-ancorado do PR #7048)", () => {
+  // Antes do fix, /[/\\]worktrees[/\\]([^/\\]+)/ casaria QUALQUER segmento
+  // "worktrees/{nome}" em qualquer lugar do repo — não só .claude/worktrees.
+  // Um path legítimo como "some/other/worktrees/agent-a/x.ts" (repo
+  // secundário, diretório de terceiros, etc.) nunca deveria alimentar o
+  // conjunto de exclusão deste script.
+  assert.deepEqual(
+    [...extractWorktreeNamesFromPaths(["some/other/worktrees/agent-a/x.ts"])],
+    [],
+  );
+});
+
+test("#7045 — worktreeNameFromPath extrai o basename, tolerando barra final e backslash", () => {
+  assert.equal(worktreeNameFromPath("C:/repo/.claude/worktrees/agent-a"), "agent-a");
+  assert.equal(worktreeNameFromPath("C:/repo/.claude/worktrees/agent-a/"), "agent-a");
+  assert.equal(worktreeNameFromPath("C:\\repo\\.claude\\worktrees\\agent-a".replace(/\\/g, "/")), "agent-a");
+});
+
+// ── filterOutLockedWorktrees (#7048) ──
+
+test("#7048 — worktree locked com PR mergeada e SEM touched_paths é preservado, mesmo elegível por merge", () => {
+  const entries = [
+    { path: "C:/repo/.claude/worktrees/agent-locked", branch: "overnight/fix-1", locked: true },
+    { path: "C:/repo/.claude/worktrees/agent-free", branch: "overnight/fix-2", locked: false },
+  ];
+  // Nenhuma sessão registrou touched_paths pra nenhum dos dois — simula um
+  // agent recém-despachado, worktree já pinado (locked) antes do 1º
+  // heartbeat gravar footprint no session-registry.
+  const inUseNames = selectInUseWorktreeNames([]);
+  const afterInUse = filterOutInUseWorktrees(entries, inUseNames);
+  const candidates = filterOutLockedWorktrees(afterInUse);
+
+  // O locked NUNCA chega a candidates, então nunca é avaliado por
+  // selectMergedForRemoval — mesmo com um checker que sempre confirma merge.
+  const toRemove = selectMergedForRemoval(candidates, () => true);
+  assert.deepEqual(
+    toRemove.map((e) => e.path),
+    ["C:/repo/.claude/worktrees/agent-free"],
+  );
+  assert.ok(!toRemove.some((e) => e.path.includes("agent-locked")));
+});
+
+test("#7048 — worktree NÃO-locked, PR mergeada, livre e limpo é removido", () => {
+  const entries = [{ path: "C:/repo/.claude/worktrees/agent-livre", branch: "overnight/fix-3", locked: false }];
+  const inUseNames = selectInUseWorktreeNames([]);
+  const candidates = filterOutLockedWorktrees(filterOutInUseWorktrees(entries, inUseNames));
+  const toRemove = selectMergedForRemoval(candidates, () => true);
+  assert.deepEqual(
+    toRemove.map((e) => e.path),
+    ["C:/repo/.claude/worktrees/agent-livre"],
+  );
+});
+
+test("#7048 — filterOutLockedWorktrees remove só os locked, preserva os demais na mesma ordem", () => {
+  const entries = [
+    { path: "/a", branch: "b1", locked: false },
+    { path: "/b", branch: "b2", locked: true },
+    { path: "/c", branch: "b3", locked: false },
+  ];
+  assert.deepEqual(filterOutLockedWorktrees(entries).map((e) => e.path), ["/a", "/c"]);
+});
+
+// ── shouldSkipEntireScanForUnreadableRegistry (#7045 checklist item 3) ──
+
+test("shouldSkipEntireScanForUnreadableRegistry — registro ilegível sem --confirm-shared → pula tudo", () => {
+  assert.equal(shouldSkipEntireScanForUnreadableRegistry(false, false), true);
+});
+
+test("shouldSkipEntireScanForUnreadableRegistry — registro ilegível COM --confirm-shared → prossegue", () => {
+  assert.equal(shouldSkipEntireScanForUnreadableRegistry(false, true), false);
+});
+
+test("shouldSkipEntireScanForUnreadableRegistry — registro legível (mesmo vazio) NUNCA pula tudo", () => {
+  assert.equal(shouldSkipEntireScanForUnreadableRegistry(true, false), false);
+  assert.equal(shouldSkipEntireScanForUnreadableRegistry(true, true), false);
 });
 
 // ── shouldSkipForSharedSession (#5156 item 9) ──
