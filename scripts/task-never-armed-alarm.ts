@@ -23,6 +23,12 @@
  * como "nada detectável nesta máquina", nunca como alarme (fail-soft
  * honesto, mesmo padrão de `systemd-failed-units-alarm.ts`).
  *
+ * **Erro transitório ≠ "sem systemd" (#7039).** Qualquer falha do
+ * `systemctl` que NÃO seja ENOENT (bus indisponível, timeout, permissão,
+ * `systemctl` presente mas quebrado) é "não sei", não "nada armado" — o
+ * script sai com `exit 1` e loga alto, nunca silenciosamente "nada a
+ * checar". Ver `readArmedTimerUnitBaseNames`/`ReadArmedTimerUnitsResult`.
+ *
  * Uso:
  *   npx tsx scripts/task-never-armed-alarm.ts               # avalia + alarma se necessário
  *   npx tsx scripts/task-never-armed-alarm.ts --dry-run      # avalia + imprime, NÃO envia nem persiste
@@ -77,25 +83,51 @@ const LOG_PREFIX = "[task-never-armed-alarm]";
  * esquece de armar/desarmar), não um evento de alta frequência. */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
-/** `null` = não foi possível consultar (systemctl ausente/erro qualquer) —
- * caller trata como "nada detectável", nunca como alarme. */
-export function readArmedTimerUnitBaseNames(execFn: typeof execFileSync = execFileSync): string[] | null {
+/**
+ * Resultado tri-estado de `readArmedTimerUnitBaseNames` (#7039). Distingue
+ * "não existe systemd nesta máquina" (ENOENT — fail-soft honesto, mesmo
+ * padrão de `systemd-failed-units-alarm.ts`) de "existe, mas a consulta
+ * falhou por motivo transitório" (D-Bus indisponível, timeout, permissão)
+ * — os dois colapsavam no mesmo `null` antes desta issue, e o caller tratava
+ * ambos como "conjunto armado vazio, nada a reportar", o que é a MESMA
+ * saída que "sei que não há nada armado" — exatamente o que o #7039 pede
+ * pra nunca acontecer. `status: "check-failed"` precisa virar erro visível
+ * pro caller, nunca "ok" silencioso.
+ */
+export type ReadArmedTimerUnitsResult =
+  | { status: "ok"; unitBaseNames: string[] }
+  | { status: "no-systemd" }
+  | { status: "check-failed"; message: string };
+
+export function readArmedTimerUnitBaseNames(
+  execFn: typeof execFileSync = execFileSync,
+): ReadArmedTimerUnitsResult {
   try {
     const out = execFn("systemctl", ["--user", "list-timers", "--all", "--plain", "--no-legend"], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
     }) as unknown as string;
-    return parseSystemctlListTimersOutput(String(out ?? ""));
+    return { status: "ok", unitBaseNames: parseSystemctlListTimersOutput(String(out ?? "")) };
   } catch (e: unknown) {
-    const err = e as { status?: number | null; stdout?: string };
+    const err = e as { code?: string; status?: number | null; stdout?: string; message?: string };
+    // ENOENT é o único caso legítimo de "esta máquina não tem systemd --user"
+    // (sessão cloud, clone fresco, container, Windows) — é o `.code` que o
+    // Node atribui quando o binário `systemctl` nem existe no PATH.
+    // Ancorado em `.code`, não em substring de mensagem (locale/versão do
+    // systemd variam a mensagem, nunca o código estruturado do erro de
+    // spawn do Node).
+    if (err.code === "ENOENT") {
+      return { status: "no-systemd" };
+    }
     // Mesmo padrão de systemd-failed-units-alarm.ts: uma lista vazia pode
     // sair com status != 0 em algumas versões do systemd, mas ainda escreve
-    // o (não-)resultado em stdout. Só trata como "não foi possível
-    // consultar" quando nem stdout veio.
+    // o (não-)resultado em stdout. Isso ainda conta como leitura bem-sucedida.
     if (typeof err.stdout === "string") {
-      return parseSystemctlListTimersOutput(err.stdout);
+      return { status: "ok", unitBaseNames: parseSystemctlListTimersOutput(err.stdout) };
     }
-    return null;
+    // Qualquer outra falha (bus indisponível, timeout, permissão, systemctl
+    // presente mas quebrado) é "não sei", nunca "sei que está vazio".
+    return { status: "check-failed", message: err.message ?? String(e) };
   }
 }
 
@@ -210,11 +242,25 @@ async function main(): Promise<void> {
   const isDryRun = hasFlag(argv, "dry-run");
   const toOverride = getArg(argv, "to");
 
-  const armedUnitBaseNames = readArmedTimerUnitBaseNames();
-  if (armedUnitBaseNames === null) {
+  const armedResult = readArmedTimerUnitBaseNames();
+  if (armedResult.status === "no-systemd") {
     console.log(`${LOG_PREFIX} systemctl indisponível nesta máquina (sessão cloud/sem systemd --user) — nada a checar.`);
     return;
   }
+  if (armedResult.status === "check-failed") {
+    // #7039: NUNCA tratar isto como "conjunto armado vazio, nada a
+    // reportar" — é "não sei", e precisa parecer diferente de "sei que
+    // está tudo ok" tanto no log quanto no exit code, pra não repetir o
+    // padrão das 5 instâncias anteriores (ver tabela do PR).
+    console.error(
+      `${LOG_PREFIX} systemctl falhou ao consultar timers (motivo transitório, NÃO "sem systemd"): ` +
+        `${armedResult.message} — não foi possível avaliar drift nesta execução; nenhum alarme de drift ` +
+        "será enviado, mas isto não significa que está tudo armado.",
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const armedUnitBaseNames = armedResult.unitBaseNames;
 
   const registryTaskNames = listScheduledTaskNames();
   const disabledTaskNames = listDisabledScheduledTaskNames();

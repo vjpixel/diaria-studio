@@ -570,6 +570,20 @@ describe("runVerify / reportVerifyOutcome (#7032)", () => {
     assert.equal(reportVerifyOutcome(outcome), 0);
   });
 
+  // #7039: erro transitório (D-Bus indisponível/timeout/permissão) não pode
+  // sair com o mesmo exit code 0 de "unavailable" — colapsar os dois é
+  // exatamente o bug que esta issue corrige, e --verify reusa a mesma
+  // leitura (`readArmedTimerUnitBaseNames`) do alarme.
+  it("systemctl falha por motivo transitório (não-ENOENT, sem stdout) -> kind check-failed, exit 1, NUNCA unavailable", () => {
+    const exec = (() => {
+      throw Object.assign(new Error("Failed to connect to bus: No such file or directory"), { status: 1 });
+    }) as unknown as typeof execFileSync;
+    const outcome = runVerify(exec);
+    assert.equal(outcome.kind, "check-failed");
+    assert.notDeepEqual(outcome, { kind: "unavailable" });
+    assert.equal(reportVerifyOutcome(outcome), 1);
+  });
+
   it("main(['--verify']) com systemctl indisponível (ENOENT injetado) -> nunca lança, sai 0", () => {
     // #7037 (self-review): a versão original desta checagem NÃO injetava
     // `exec` e dependia de `systemctl` não existir de verdade na máquina
