@@ -164,7 +164,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "npx tsx scripts/overnight-statusline.ts",
+    "command": "node --no-warnings scripts/overnight-statusline.ts",
     "refreshInterval": 5
   },
   "enabledPlugins": {

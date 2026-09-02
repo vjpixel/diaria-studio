@@ -19,7 +19,7 @@
 
 import { describe, it, after, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -1243,5 +1243,61 @@ describe("renderOvernightBar — #3071: rótulo 'concluída' substitui fallback 
     const bar = renderOvernightBar(plan);
     assert.ok(bar.includes("100%"), `deve bater 100%: ${bar}`);
     assert.match(bar, /· review 1\.5(?!b|c)/, `review pendente deve preservar 'review 1.5': ${bar}`);
+  });
+});
+
+// ─── #7106: guard de zumbi no caminho de OVERNIGHT ────────────────────────────
+//
+// Regressão do bug relatado ao vivo (02/09/2026): a barra ficou congelada em
+// "57% (4/7) · fila principal" lendo `data/overnight/260901c/plan.json` —
+// rodada do helios da noite anterior que parou no meio (1 issue `elegivel`,
+// 2 `escopo-residual`), logo `isPlanConcluded` nunca vira true e o guard de
+// conclusão do #3590 nunca recolhe a barra. `readTodayDevelopPlan` já aplicava
+// `isStaleDevelopPlan` desde o #2800/#2803; `readTodayPlan` nunca aplicou.
+describe("readTodayPlan — guard de zumbi por idade (#7106)", () => {
+  const PARTIAL_PLAN = {
+    issues: [
+      { number: 1, status: "mergeada" },
+      { number: 2, status: "elegivel" },
+    ],
+  };
+
+  function seedPlan(root: string, dirName: string, mtime: Date): string {
+    const dir = join(root, "data", "overnight", dirName);
+    mkdirSync(dir, { recursive: true });
+    const planPath = join(dir, "plan.json");
+    writeFileSync(planPath, JSON.stringify(PARTIAL_PLAN));
+    utimesSync(planPath, mtime, mtime);
+    return planPath;
+  }
+
+  it("plan.json mais velho que o threshold é IGNORADO (não sequestra a barra)", () => {
+    const root = mkdtempSync(join(tmpdir(), "statusline-stale-"));
+    const now = new Date("2026-09-02T13:00:00Z");
+    seedPlan(root, "260901c", new Date(now.getTime() - 14 * 60 * 60 * 1000));
+
+    assert.equal(readTodayPlan(root, now), null);
+    assert.equal(renderOvernightBar(readTodayPlan(root, now)), "");
+  });
+
+  it("plan.json fresco continua visível mesmo com a rodada em progresso", () => {
+    const root = mkdtempSync(join(tmpdir(), "statusline-fresh-"));
+    const now = new Date("2026-09-02T13:00:00Z");
+    seedPlan(root, "260902", new Date(now.getTime() - 10 * 60 * 1000));
+
+    const plan = readTodayPlan(root, now);
+    assert.ok(plan, "plan fresco não pode ser filtrado pelo guard de idade");
+    assert.match(renderOvernightBar(plan), /50%\s+\(1\/2\)/);
+  });
+
+  it("rodada VIVA de outra máquina (helios) NÃO é filtrada — o guard é de idade, não de identidade", () => {
+    const root = mkdtempSync(join(tmpdir(), "statusline-foreign-"));
+    const now = new Date("2026-09-02T13:00:00Z");
+    const planPath = seedPlan(root, "260902", new Date(now.getTime() - 60 * 1000));
+    writeFileSync(planPath, JSON.stringify({ ...PARTIAL_PLAN, machine_id: "helios" }));
+    utimesSync(planPath, new Date(now.getTime() - 60 * 1000), new Date(now.getTime() - 60 * 1000));
+
+    const plan = readTodayPlan(root, now);
+    assert.ok(plan, "overnight roda no helios — filtrar por máquina esconderia a rodada real");
   });
 });
