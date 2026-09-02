@@ -9,7 +9,6 @@
   <link rel="stylesheet" href="/nav.css" />
   <link rel="stylesheet" href="/triagem.css" />
   <link rel="stylesheet" href="/rodada.css" />
-  <link rel="stylesheet" href="/chat-drawer.css" />
 </head>
 <body>
   <header class="statusbar">
@@ -40,7 +39,7 @@
         tratamento especial (#3841). Não dispara nenhuma rodada nova nem
         varredura — o disparo continua sendo a skill no terminal. Perguntas
         <code>AskUserQuestion</code> pendentes da sessão (briefing, gates de
-        desbloqueio) aparecem como formulário no chat à esquerda, não aqui.
+        desbloqueio) aparecem no terminal da própria sessão, não aqui.
       </p>
 
       <div id="rounds-list-error" class="panel alert-banner" role="alert" hidden></div>
@@ -136,6 +135,5 @@
   <script>window.STUDIO_PAGE = "rodada";</script>
   <script src="/nav.js" type="module"></script>
   <script src="/rodada.js" type="module"></script>
-  <script src="/chat-drawer.js" type="module"></script>
 </body>
 </html>

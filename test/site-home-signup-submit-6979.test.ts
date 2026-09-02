@@ -106,7 +106,7 @@ function setup(
   return { ...bundle, submit };
 }
 
-/** Mesmo idioma de `test/studio-chat.test.ts` — flush de microtasks encadeadas. */
+/** Mesmo idioma de `test/subscribe-form-fetch-timeout-6981.test.ts` — flush de microtasks encadeadas. */
 function flush(): Promise<void> {
   return new Promise((r) => setImmediate(r));
 }

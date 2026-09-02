@@ -8,7 +8,7 @@ Task `Diaria-Clarice-Novos` (`scripts/lib/scheduled-tasks.ts`) → `npx tsx scri
 
 ## Kill switch — `data/clarice-novos-enabled.json` (#4941 E3)
 
-**Default `enabled: false`** quando o arquivo não existe — armar esta task NUNCA liga o disparo automático sozinha. O que está do outro lado do toggle é envio de e-mail real e irreversível sem revisão humana; o lado seguro do fail-soft é o oposto do padrão usado no toggle de chat do Studio (`studio-chat-enabled.ts`, #4078), que é `true` por default.
+**Default `enabled: false`** quando o arquivo não existe — armar esta task NUNCA liga o disparo automático sozinha. O que está do outro lado do toggle é envio de e-mail real e irreversível sem revisão humana; o lado seguro do fail-soft é o oposto do padrão usado no toggle de chat do Studio (`studio-chat-enabled.ts`, #4078, removido no #6942 junto com o chat do Studio inteiro), que era `true` por default.
 
 ```bash
 npx tsx scripts/lib/clarice-novos-enabled.ts --set enabled   # libera o disparo automático diário

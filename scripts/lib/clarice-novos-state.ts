@@ -3,7 +3,7 @@
  *
  * Estado da skill `/diaria-clarice-novos` — persistido em
  * `data/clarice-subscribers/novos-state.json` (arquivo dedicado, mesmo
- * padrão de `data/studio-chat-enabled.json`). Sustenta 3 decisões da issue:
+ * padrão de `data/clarice-envio-enabled.json`). Sustenta 3 decisões da issue:
  *
  *   - D12: pular `--send-test` quando o SHA-256 do HTML (`cloudflare-preview.html`
  *     do ciclo resolvido) for IDÊNTICO ao da última rodada — o digest mensal
@@ -22,7 +22,7 @@
  *     (consulta o status real na Brevo, cliente injetado — nunca chamado ao
  *     vivo pelos testes deste módulo).
  *
- * Fail-soft por design (mesmo padrão de `studio-chat-enabled.ts`/`exec-mode.ts`):
+ * Fail-soft por design (mesmo padrão de `clarice-envio-enabled.ts`/`exec-mode.ts`):
  * leitura tolerante (arquivo ausente/corrompido → estado "1ª rodada", nunca
  * lança) — a skill não pode travar por causa de um estado auxiliar corrompido.
  * Retrocompat (#4670): state antigo, gravado ANTES de `pendingSend` existir,

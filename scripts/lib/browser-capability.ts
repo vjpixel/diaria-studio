@@ -43,7 +43,7 @@
  * GUI: efeito colateral inaceitável só pra sondar disponibilidade).
  *
  * Fail-soft total (padrão dos demais helpers CLI do repo, ex: `exec-mode.ts`,
- * `studio-chat-enabled.ts`): nunca lança, sempre retorna um dos 3 estados.
+ * `clarice-envio-enabled.ts`): nunca lança, sempre retorna um dos 3 estados.
  * `'unknown'` é o resultado de qualquer falha inesperada na própria sondagem
  * (nunca confundir com `'unavailable'`, que é uma resposta determinística —
  * ver #4800 pro mesmo princípio aplicado a `TaskSchedulerKind`).

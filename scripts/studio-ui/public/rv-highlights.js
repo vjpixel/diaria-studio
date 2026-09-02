@@ -196,38 +196,9 @@ function buildCardNode(state, maxTitleLength) {
   saveBtn.disabled = state.saving;
   saveBtn.addEventListener("click", () => { saveCard(state, statusEl, saveBtn); });
   actions.appendChild(saveBtn);
-  actions.appendChild(buildRewriteButton(state));
   card.appendChild(actions);
 
   return card;
-}
-
-/** #6447 Fatia 4 (achado 6) — "Reescrever com IA": abre o chat drawer já
- * PRÉ-PREENCHIDO com um prompt sobre este destaque (título atual + regra do
- * limite de caracteres) e para aí — o editor decide se ajusta o texto antes
- * de enviar, nunca dispara o LLM sozinho (mesma decisão de escopo do corpo
- * da issue). Reusa `window.diariaStudioChat.prefillMessage` (#3629), que já
- * existia sem nenhum caller até agora. Fail-soft: se o chat-drawer ainda não
- * montou (ordem de <script> na página) ou o toggle #4078 está desativado,
- * `prefillMessage` simplesmente não existe — mesmo guard defensivo que
- * `openChatAtPendingCard` (edicao.js) já usa. */
-function buildRewriteButton(state) {
-  const btn = el_("button", { className: "rv-hl-rewrite-btn", text: "Reescrever com IA" });
-  btn.type = "button";
-  btn.addEventListener("click", () => {
-    const currentTitle = state.titleOptions[state.selectedIndex]
-      ? state.titleOptions[state.selectedIndex].text
-      : state.freeformTitle;
-    const prompt =
-      `Reescreva o título do D${state.n} (categoria ${state.category}) pra ficar mais direto, ` +
-      `mantendo até ${currentMaxTitleLength} caracteres. Título atual: "${currentTitle}".`;
-    if (window.diariaStudioChat && typeof window.diariaStudioChat.prefillMessage === "function") {
-      window.diariaStudioChat.prefillMessage(prompt);
-    } else {
-      console.warn("rv-highlights: chat drawer indisponível — não foi possível pré-preencher o prompt.");
-    }
-  });
-  return btn;
 }
 
 async function saveCard(state, statusEl, saveBtn) {

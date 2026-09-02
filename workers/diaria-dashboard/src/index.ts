@@ -553,11 +553,11 @@ export interface RenderDashboardOptions {
    * `dashboard-diaria.ts`).
    *
    * #3853: a mesma flag agora TAMBÉM liga o menu de navegação unificado do
-   * Studio (assets `tokens.generated.css`/`style.css`/`nav.css`/
-   * `chat-drawer.css`, o container `#app-nav`, e `window.STUDIO_PAGE` +
-   * `nav.js`/`chat-drawer.js`) — `/painel/diaria` deixa de ser um documento
-   * autocontido à parte e passa a participar do shell/nav compartilhado do
-   * Studio, exatamente como qualquer outra página (`triagem.html` etc.). Pelo
+   * Studio (assets `tokens.generated.css`/`style.css`/`nav.css`, o container
+   * `#app-nav`, e `window.STUDIO_PAGE` + `nav.js`) — `/painel/diaria` deixa
+   * de ser um documento autocontido à parte e passa a participar do
+   * shell/nav compartilhado do Studio, exatamente como qualquer outra página
+   * (`triagem.html` etc.). Pelo
    * mesmo motivo do botão É IA? acima: produção (Worker sem `studioMode`)
    * nunca carrega esses assets — eles só existem no studio-server.
    */
@@ -575,7 +575,7 @@ function renderEiaRefreshButtonHtml(studioMode: boolean): string {
 
 /**
  * #3853: `<link>` dos assets compartilhados do Studio (tokens de cor/fonte,
- * folha de estilo base, nav, chat drawer) — vazio fora do `studioMode`.
+ * folha de estilo base, nav) — vazio fora do `studioMode`.
  * Produção (Worker) não tem rota equivalente pra nenhum desses arquivos;
  * eles só são servidos pelo studio-server (`scripts/studio-ui/server.ts`,
  * `PUBLIC_DIR`/`handleTokensCss`). Mesma ordem de inclusão de
@@ -586,8 +586,7 @@ function renderStudioNavHeadAssetsHtml(studioMode: boolean): string {
   return `
 <link rel="stylesheet" href="/tokens.generated.css" />
 <link rel="stylesheet" href="/style.css" />
-<link rel="stylesheet" href="/nav.css" />
-<link rel="stylesheet" href="/chat-drawer.css" />`;
+<link rel="stylesheet" href="/nav.css" />`;
 }
 
 /**
@@ -610,8 +609,8 @@ function renderStudioNavContainerHtml(studioMode: boolean): string {
 }
 
 /**
- * #3853: `window.STUDIO_PAGE` + `nav.js` + `chat-drawer.js`, no fim do
- * `<body>` — mesma ordem/padrão de qualquer página Studio (ver
+ * #3853: `window.STUDIO_PAGE` + `nav.js`, no fim do `<body>` — mesma
+ * ordem/padrão de qualquer página Studio (ver
  * `scripts/studio-ui/public/triagem.html`). `nav.js` lê `window.STUDIO_PAGE`
  * pra resolver o item ativo do menu (`resolveActiveNavId`, `nav-core.js`) —
  * o id `"painel-diaria"` precisa existir em `NAV_ITEMS` (movido de
@@ -622,8 +621,7 @@ function renderStudioNavScriptsHtml(studioMode: boolean): string {
   if (!studioMode) return "";
   return `
 <script>window.STUDIO_PAGE = "painel-diaria";</script>
-<script src="/nav.js" type="module"></script>
-<script src="/chat-drawer.js" type="module"></script>`;
+<script src="/nav.js" type="module"></script>`;
 }
 
 export function renderPollEiaSection(data: DashboardData, opts: RenderDashboardOptions = {}): string {
@@ -1001,7 +999,6 @@ ${staleBanner}
     <tr><th>Edição corrente</th><td colspan="2">${snapshot.current_edition ? escHtml(snapshot.current_edition) : "<span style=\"opacity:0.6\">nenhuma</span>"}</td></tr>
     <tr><th>Estágio</th><td colspan="2">${escHtml(snapshot.stage_label)} ${snapshot.current_stage !== "done" && snapshot.current_stage !== "unknown" ? `(stage ${snapshot.current_stage})` : ""}</td></tr>
     <tr><th>Gates de pipeline pendentes</th><td colspan="2">${snapshot.gates_pending_count}</td></tr>
-    <tr><th>Gates de chat pendentes</th><td colspan="2">${snapshot.chat_gates_pending_count}</td></tr>
   </tbody>
 </table>
 <table>

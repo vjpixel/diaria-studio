@@ -92,7 +92,7 @@
  * Brevo (zero custo de API adicional). `fetchAdminOptOutEmails` é FAIL-SOFT:
  * se o store não existir (sessão cloud sem junction `data/`, ou task de sync
  * ainda não rodou), loga aviso e segue sem esse sinal em vez de abortar —
- * mesma postura de `exec-mode.ts`/`studio-chat-enabled.ts`. Escopado a
+ * mesma postura de `exec-mode.ts`/`clarice-envio-enabled.ts`. Escopado a
  * `sends_count > 0` (achado 3 do fleet review #4479, fechado nesta sessão) —
  * ver docstring de `fetchAdminOptOutEmails`.
  *
@@ -563,7 +563,7 @@ export type AdminOptOutsResult =
  * Fecha o gap documentado na issue #4451 (blacklist administrativo sem evento
  * de unsub em NENHUMA campanha específica) sem custo de chamada nova à Brevo.
  *
- * FAIL-SOFT (mesma postura de `exec-mode.ts`/`studio-chat-enabled.ts`): store
+ * FAIL-SOFT (mesma postura de `exec-mode.ts`/`clarice-envio-enabled.ts`): store
  * ausente ou inacessível NUNCA lança — retorna `available: false` e o
  * chamador decide como reagir (logar aviso, seguir sem o sinal). O universo
  * de coortes não deve depender de um recurso `local` pra rodar.

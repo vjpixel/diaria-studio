@@ -13,7 +13,7 @@
  * Uso:
  *   npx tsx scripts/clarice-check-derived-stale.ts [--db path]
  *   # imprime "stale" ou "fresh" em stdout (exit 0 sempre — mesmo padrão de
- *   # exec-mode.ts/studio-chat-enabled.ts: o CALLER decide o que fazer)
+ *   # exec-mode.ts/clarice-envio-enabled.ts: o CALLER decide o que fazer)
  */
 import { getArg, isMainModule } from "./lib/cli-args.ts";
 import { openClariceDb, isDerivedStale, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";

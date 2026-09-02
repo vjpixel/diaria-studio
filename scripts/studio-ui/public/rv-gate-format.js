@@ -88,8 +88,7 @@ export function formatRenderWarningRow(ev) {
  * `approved` = já aprovado — botão mostra "já aprovado" (o caller decide se
  * desabilita ou exige confirmação antes de reenviar com `force`, ver
  * `rv-gate.js`). Pura — sem `Date.now()` embutido, `nowMs` é injetável pra
- * teste determinístico (mesmo padrão de `formatWaitingSince` em
- * `gate-chat-bridge.js`). */
+ * teste determinístico. */
 export function formatGateDecision(decision, nowMs = Date.now()) {
   if (!decision || decision.decision !== "approved") {
     return { approved: false, text: "Ainda não aprovado pelo painel." };

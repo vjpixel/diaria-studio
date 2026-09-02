@@ -58,7 +58,7 @@
  * ## Fail-soft com `data/` ausente
  *
  * `data/` é uma junction/symlink pro OneDrive — não existe num clone fresco
- * nem em sessão cloud (mesmo cenário de `clarice-db.ts`/`studio-chat-enabled.ts`).
+ * nem em sessão cloud (mesmo cenário de `clarice-db.ts`/`clarice-envio-enabled.ts`).
  * `openDiariaSubscribersDb` (uso normal, escrita) pode lançar se o diretório
  * não existir — é o comportamento de `new DatabaseSync(path)` do Node, igual
  * a `openClariceDb`. Para qualquer caminho de LEITURA que precise degradar

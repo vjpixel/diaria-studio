@@ -4,9 +4,9 @@
  * Cobre scripts/studio-snapshot-push.ts:
  *   - buildStudioSnapshot: função PURA que monta o payload compacto a partir
  *     de um StudioState — incluindo o aceite explícito da issue #3565
- *     "Snapshot sem PII (teste)": nenhum email, token, ou texto de pergunta
- *     AskUserQuestion (`firstQuestion`) sobrevive no snapshot, mesmo quando
- *     presente no StudioState de entrada.
+ *     "Snapshot sem PII (teste)": nenhum path local (`rootDir`, pode revelar
+ *     username da máquina) sobrevive no snapshot, mesmo presente no
+ *     StudioState de entrada.
  *   - pushStudioSnapshot: ramos --dry-run e credenciais ausentes (fail-soft,
  *     sem tocar rede — ver cloudflare-kv-upload.test.ts pro mesmo padrão de
  *     não fazer chamada de rede real em teste unitário).
@@ -48,14 +48,6 @@ function fakeState(overrides: Partial<StudioState> = {}): StudioState {
       counts: { merged: 3, draft: 1, pulada: 1 },
     },
     develop: null,
-    chatPermissionsPending: [
-      {
-        toolUseId: "toolu_abc123XYZ",
-        toolName: "AskUserQuestion",
-        askedAt: 1752670800000,
-        firstQuestion: "Qual token secreto vjpixel@gmail.com devo usar pra publicar no LinkedIn?",
-      },
-    ],
     ...overrides,
   };
 }
@@ -68,7 +60,6 @@ describe("buildStudioSnapshot (#3565)", () => {
     assert.equal(snapshot.current_stage, 4);
     assert.equal(snapshot.stage_label, "Revisão");
     assert.equal(snapshot.gates_pending_count, 1);
-    assert.equal(snapshot.chat_gates_pending_count, 1);
     assert.deepEqual(snapshot.overnight, {
       sessionId: "260715",
       totalIssues: 5,
@@ -79,13 +70,12 @@ describe("buildStudioSnapshot (#3565)", () => {
 
   it("edição corrente null → stage 'unknown'/'Desconhecido', contagens zeradas", () => {
     const snapshot = buildStudioSnapshot(
-      fakeState({ currentEdition: null, editions: [], gatesPending: [], chatPermissionsPending: [] }),
+      fakeState({ currentEdition: null, editions: [], gatesPending: [] }),
     );
     assert.equal(snapshot.current_edition, null);
     assert.equal(snapshot.current_stage, "unknown");
     assert.equal(snapshot.stage_label, "Desconhecido");
     assert.equal(snapshot.gates_pending_count, 0);
-    assert.equal(snapshot.chat_gates_pending_count, 0);
   });
 
   it("'done' propaga como current_stage quando a edição corrente já terminou", () => {
@@ -106,23 +96,16 @@ describe("buildStudioSnapshot (#3565)", () => {
     assert.equal(snapshot.stage_label, "Concluída");
   });
 
-  it("#3565 aceite — Snapshot sem PII: nenhum email, token, texto de pergunta, ou path local sobrevive", () => {
+  it("#3565 aceite — Snapshot sem PII: nenhum path local sobrevive", () => {
     const state = fakeState();
     // Confirma que o INPUT de fato carrega o dado sensível (senão o teste
     // não provaria nada — precisa existir na fonte pra provar que foi
     // filtrado, não que nunca existiu).
-    assert.match(state.chatPermissionsPending[0].firstQuestion!, /@/);
     assert.match(state.rootDir, /vjpix/);
 
     const snapshot = buildStudioSnapshot(state);
     const json = JSON.stringify(snapshot);
 
-    // Nenhum email (regex simples, cobre o formato usado no fixture acima).
-    assert.doesNotMatch(json, /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+/, "snapshot não deve conter email");
-    // Nenhum vestígio do texto da pergunta AskUserQuestion.
-    assert.doesNotMatch(json, /token secreto/i, "snapshot não deve conter texto de pergunta AskUserQuestion");
-    assert.doesNotMatch(json, /firstQuestion/, "snapshot não deve ter a chave firstQuestion");
-    assert.doesNotMatch(json, /toolUseId/, "snapshot não deve ter a chave toolUseId (id de gate)");
     // Nenhum path absoluto/local (rootDir) — pode revelar username da máquina.
     assert.doesNotMatch(json, /vjpix/, "snapshot não deve conter fragmento de path local (username)");
     assert.doesNotMatch(json, /rootDir/, "snapshot não deve ter a chave rootDir");
@@ -131,7 +114,6 @@ describe("buildStudioSnapshot (#3565)", () => {
     // Shape final é só o conjunto de campos esperado (nenhum campo extra
     // vazou de StudioState pro payload público).
     assert.deepEqual(Object.keys(snapshot).sort(), [
-      "chat_gates_pending_count",
       "current_edition",
       "current_stage",
       "develop",

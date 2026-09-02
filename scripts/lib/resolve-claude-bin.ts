@@ -21,10 +21,10 @@
  *      fora do padrão, teste, outra versão).
  *   2. Varredura do `PATH` do processo — cobre o shell do editor sem
  *      hardcode. NÃO cobre o CI: `ubuntu-latest` não tem o CLI instalado
- *      (`package.json` traz `@anthropic-ai/claude-agent-sdk`, não o
- *      `claude-code`), então lá esta função lança por construção — daí a
- *      resolução ser injetável em quem a consome, nunca chamada direto de
- *      dentro de código exercitado por teste.
+ *      (nada em `package.json` instala o `claude-code`), então lá esta
+ *      função lança por construção — daí a resolução ser injetável em
+ *      quem a consome, nunca chamada direto de dentro de código
+ *      exercitado por teste.
  *   3. Candidatos conhecidos de instalação por usuário — é o que salva sob
  *      systemd, onde (2) falha por construção.
  *

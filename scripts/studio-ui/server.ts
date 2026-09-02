@@ -27,55 +27,6 @@
  *   - `GET /triagem` — cockpit de triagem de issues/PRs (#3562): mesma
  *     estratégia de rewrite client-side de `/edicao/:aammdd`, servindo
  *     `public/triagem.html`.
- *   - `POST /api/chat` — chat drawer (#3556): sessão Claude Agent SDK
- *     embutida, `cwd` = `rootDir` (mesmas skills/MCPs/CLAUDE.md do terminal).
- *     Streaming via SSE (mesmo `sse.ts` do `/api/events`) — eventos
- *     `chat-init`/`chat-delta`/`chat-tool`/`chat-permission-request`/
- *     `chat-done`/`chat-error`, contrato em `studio-chat.ts`. Fail-soft: erro
- *     do SDK vira `chat-error` no stream, nunca um 500 nem crash do processo.
- *   - `POST /api/chat/answer` — gates da sessão de chat (#3557): resolve um
- *     `chat-permission-request` pendente (a sessão chamou `AskUserQuestion`)
- *     com a resposta do editor. Ver `studio-chat.ts` (`makeInteractiveCanUseTool`,
- *     `resolvePendingPermissionRequest`) pro mecanismo completo — a stream
- *     SSE de `POST /api/chat` que originou a pergunta retoma sozinha assim
- *     que esta rota resolve a Promise pendente, sem coordenação extra aqui.
- *     `GET /api/state`/`GET /api/events` expõem `chatPermissionsPending`
- *     (badge global) via `studio-state.ts`.
- *   - `POST /api/chat/tool-decision` — gate de TOOL (#3804): resolve um
- *     `chat-tool-permission-request` pendente (a sessão chamou uma tool
- *     não-`AskUserQuestion` fora do allowlist, ex: um `Bash` do playbook de
- *     `/diaria-edicao`) com `{decision: allow|always|deny}`. Simétrico a
- *     `/api/chat/answer` — mesmo mecanismo de Promise pendurada em
- *     `studio-chat.ts` (`resolvePendingToolPermission`).
- *   - `GET /api/chat/pending` (#3617) — payload COMPLETO (`questions[]` pros
- *     gates de pergunta, `input` pros gates de tool #3804) dos gates
- *     pendentes, pra `chat-drawer.js` reidratar o card ao montar qualquer
- *     página, sem depender do stream SSE ao vivo que originou a pergunta (fix
- *     do bug "gate pendente inalcançável" — ver `studio-chat.ts`
- *     `listPendingPermissionRequestsFull`).
- *   - `GET /api/chat/history` (#3803) — payload do TRANSCRIPT já acumulado
- *     (mensagens do editor + texto final do assistente + chips de tool call
- *     de turnos ANTERIORES) pro `rootDir` corrente, mesmo princípio do
- *     `/api/chat/pending` acima mas cobrindo o histórico de MENSAGENS em vez
- *     do gate pendente — fecha o TODO(#3561/#3562) órfão citado no topo de
- *     `chat-drawer.js` (navegação entre páginas do Studio esvaziava o
- *     transcript visível mesmo com a sessão do Agent SDK viva no servidor).
- *     `?sessionId=` opcional invalida (resposta vazia) um transcript
- *     atrelado a uma sessão já superada — ver `studio-chat.ts`
- *     `getChatHistory`/`appendChatHistoryEvent`.
- *   - `GET/PUT /api/chat/enabled` (#4078) — toggle "chat ativo/desativado":
- *     GET devolve `{enabled, updatedAt}`; PUT `{enabled: boolean}` liga/
- *     desliga. Estado persistido em `data/studio-chat-enabled.json` (novo,
- *     dedicado — nunca sobrescreve outro arquivo de estado do Studio), lido/
- *     escrito via `scripts/lib/studio-chat-enabled.ts` — o MESMO módulo que
- *     uma sessão de automação (overnight/develop) importa (ou invoca via CLI,
- *     `npx tsx scripts/lib/studio-chat-enabled.ts`) pra checar
- *     `isChatEnabled()` ANTES de reiniciar o `Diaria-Studio-Server`, sem
- *     precisar do server rodando (incidente
- *     260726/27: restart em cima de uma conversa em andamento invalidou o
- *     gate/`toolUseId` do painel e derrubou uma edição não salva).
- *     `POST /api/chat` recusa com 409 quando o toggle está desligado (ver
- *     `handleApiChat`), pra uma aba antiga aberta não burlar o desligamento.
  *   - `GET /revisao/:aammdd` — painel de revisão de conteúdo rica (#3559):
  *     mesma estratégia de rewrite, servindo `public/revisao.html`. Consome
  *     `GET/PUT /api/editions/:aammdd/review/:slug` (`slug` = categorized |
@@ -209,21 +160,15 @@
  *     conteúdo já existente.
  *   - Notificação push por e-mail (#3564, canal Gmail desde #5341, sem rota
  *     HTTP própria): um watcher em background, subido por `startStudioServer`
- *     e fechado em `close()`, observa `gatesPending`/`chatPermissionsPending`
+ *     e fechado em `close()`, observa `gatesPending`
  *     (mesmo `buildStudioState` de `GET /api/state`) e dispara notificação
  *     com deep-link + dedup quando algo passa a esperar o editor — ver
  *     `studio-push-notify.ts`. Fail-soft total: qualquer falha de
  *     auth/rede, o Studio segue normal.
  *
  * **Read-only por construção, com exceções controladas** (#3555 é a fatia
- * fundação da EPIC — as fatias de AÇÃO vêm depois, #3556+): nenhuma rota aqui
- * escreve em disco nem dispara nada, EXCETO `POST /api/chat` (#3556), que
- * conduz uma sessão Claude real (a UI só invoca — a lógica de negócio
- * permanece nas skills/scripts que essa sessão chama, mesmo princípio do epic
- * #3554), `POST /api/chat/answer` (#3557, resolve um gate em memória — não
- * escreve disco, mas é mutação de estado do processo), `PUT /api/chat/enabled`
- * (#4078, escreve `data/studio-chat-enabled.json` — arquivo novo e dedicado ao
- * toggle, ver doc-comment acima), e as rotas de ação de
+ * fundação da EPIC — as fatias de AÇÃO vêm depois): nenhuma rota aqui
+ * escreve em disco nem dispara nada, EXCETO as rotas de ação de
  * revisão de conteúdo (#3559, detalhadas
  * abaixo). Sem autenticação nesta fatia — acesso remoto é escopo da #3560;
  * aqui o único guard de segurança é o bind loopback. #3558 (cockpit de
@@ -342,29 +287,6 @@ import { listReports, getReportById, resolveReportHtml } from "./studio-reports.
 import { buildDiariaDashboardHtml } from "./dashboard-diaria.ts";
 import { buildClariceDashboardHtml } from "./dashboard-clarice.ts";
 import { handlePainelTokens } from "./dashboard-tokens.ts";
-import {
-  parseChatRequestBody,
-  parseChatAnswerRequestBody,
-  parseChatToolDecisionRequestBody,
-  runChatTurn,
-  getSessionId,
-  setSessionId,
-  clearSession,
-  resolvePendingPermissionRequest,
-  resolvePendingToolPermission,
-  watchPendingChatPermissions,
-  listPendingPermissionRequestsFull,
-  appendChatHistoryUserMessage,
-  appendChatHistoryEvent,
-  getChatHistory,
-  createCloseAbortGuard,
-  DEFAULT_CHAT_CLOSE_ABORT_DEBOUNCE_MS,
-  type QueryFn,
-} from "./studio-chat.ts";
-// #4078: toggle "chat ativo/desativado" — estado persistido em
-// data/studio-chat-enabled.json, lido/escrito tanto por este server quanto
-// por sessões de automação externas (ver docstring do módulo).
-import { readChatEnabledState, setChatEnabled, isChatEnabled } from "../lib/studio-chat-enabled.ts";
 import { shutdownWithTimeout } from "../lib/shutdown-with-timeout.ts";
 // #3559: painel de revisão de conteúdo rica — arquivos próprios desta fatia,
 // import isolado (nenhuma outra rota depende deles). Ver studio-review.ts.
@@ -402,15 +324,10 @@ import {
   type ApoiosMutationResult,
 } from "./studio-apoios.ts";
 import type { DrainApoiaSeResult } from "../lib/apoia-se-gmail-drain.ts";
-// #3564/#5341: notificação push por e-mail (gate 4/6 pendente +
-// AskUserQuestion pendente no chat) com dedup — arquivo próprio desta
-// fatia, import isolado (nenhuma outra rota depende dele). Ver
-// studio-push-notify.ts.
-import {
-  startPushNotifyWatcher,
-  maybeNotifyChatDone,
-  type PushNotifyWatchHandle,
-} from "./studio-push-notify.ts";
+// #3564/#5341: notificação push por e-mail (gate 4/6 pendente) com dedup —
+// arquivo próprio desta fatia, import isolado (nenhuma outra rota depende
+// dele). Ver studio-push-notify.ts.
+import { startPushNotifyWatcher, type PushNotifyWatchHandle } from "./studio-push-notify.ts";
 // #3848: status de todas as integrações (APIs + MCPs) — arquivo próprio
 // desta fatia, import isolado (nenhuma outra rota depende dele). Ver
 // studio-integrations.ts.
@@ -484,34 +401,12 @@ export interface StudioServerOptions {
   /** Runner de `gh` injetável pra `/api/issues` (#3562) — testes mockam sem
    * invocar o binário real nem rede; produção usa o default de `studio-issues.ts`. */
   ghRun?: GhRunFn;
-  /** `query()` injetável pra `POST /api/chat` (#3556) — testes mockam o
-   * Claude Agent SDK sem spawnar o CLI real; produção usa o default de
-   * `studio-chat.ts`. */
-  chatQueryFn?: QueryFn;
   /** Intervalo de polling (ms) do watcher de notificação push (#3564,
    * canal e-mail desde #5341) — default 15s (independente de
    * `pollIntervalMs` acima, que é tunado pra SSE de baixa latência; aqui
    * 1 tick/s seria polling desnecessariamente agressivo pra um evento que
    * só interessa notificar 1x). Reduzido em testes. */
   pushPollIntervalMs?: number;
-  /** Tamanho máximo (bytes) do corpo de `POST /api/chat` — default 256KB,
-   * generoso pra uma mensagem de chat digitada à mão, protege contra corpo
-   * absurdo consumindo memória do processo. */
-  chatMaxBodyBytes?: number;
-  /** Notificador injetável do evento `chat-done` (#3822) — default
-   * `maybeNotifyChatDone` (`studio-push-notify.ts`); testes mockam pra
-   * observar chamadas sem bater na rede/Gmail real. */
-  chatDoneNotifyFn?: typeof maybeNotifyChatDone;
-  /** Relógio injetável usado só pra medir a duração de um turno de chat
-   * (#3822 — decide se `chatDoneNotifyFn` dispara, comparando contra o
-   * threshold) — default `Date.now`; testes injetam uma sequência fixa pra
-   * simular um turno "longo" sem esperar segundos de verdade. */
-  chatDoneNowFn?: () => number;
-  /** Debounce (ms) entre o `close` da request de `/api/chat` e o abort de
-   * fato da sessão do Agent SDK (#3887) — default `DEFAULT_CHAT_CLOSE_ABORT_DEBOUNCE_MS`
-   * (2.5s). Testes injetam um valor pequeno pra não esperar segundos de
-   * verdade num close persistente. Ver `createCloseAbortGuard` (`studio-chat.ts`). */
-  chatCloseAbortDebounceMs?: number;
   /** #3565: liga o watcher de push periódico do snapshot pro KV (espelho
    * read-only externo, `workers/diaria-dashboard` rota `/studio`).
    * DESLIGADO por padrão — inclusive em testes, que criam `StudioServer` sem
@@ -563,98 +458,6 @@ function handleApiState(rootDir: string, res: ServerResponse): void {
   sendJson(res, 200, buildStudioState(rootDir));
 }
 
-/** `GET /api/chat/pending` (#3617) — payload COMPLETO dos gates
- * `AskUserQuestion` pendentes pro `rootDir` corrente (`questions[]` inteiro,
- * não só `firstQuestion`) — o que faltava pra `chat-drawer.js` reidratar o
- * card ao montar QUALQUER página do Studio, sem depender do stream SSE ao
- * vivo que originou a pergunta. Reusa `listPendingPermissionRequestsFull`
- * (mesmo Map de `studio-chat.ts` que já alimenta `chatPermissionsPending`
- * em `/api/state`) — não duplica estado. Sempre 200 (lista vazia = nenhum
- * gate pendente); não há "erro" possível numa leitura de Map em memória. */
-function handleApiChatPending(rootDir: string, res: ServerResponse): void {
-  sendJson(res, 200, { pending: listPendingPermissionRequestsFull(rootDir) });
-}
-
-/** `GET /api/chat/history` (#3803) — payload do TRANSCRIPT já acumulado pro
- * `rootDir` corrente (mensagens do editor + texto final do assistente +
- * chips de tool call de turnos ANTERIORES) — o gap órfão citado no TODO de
- * topo de `chat-drawer.js` (#3561/#3562 nunca cobriram isso; só o gate
- * pendente foi reidratado, #3617). Reusa `getChatHistory` (mesmo buffer em
- * memória de `studio-chat.ts` que `appendChatHistoryUserMessage`/
- * `appendChatHistoryEvent` já alimentam dentro de `handleApiChat` — não
- * duplica estado).
- *
- * `?sessionId=` é opcional; quando presente E o servidor já tem uma sessão
- * corrente DIFERENTE pro `rootDir` (`getSessionId`), a resposta vem VAZIA —
- * o `sessionId` que o cliente guarda em localStorage é de uma conversa já
- * superada (reset disparado por outra aba, ou processo reiniciado depois de
- * uma sessão nova), então o transcript antigo não deve reaparecer atrelado a
- * um ponteiro que o servidor não reconhece mais como corrente. Sem
- * `sessionId` na query (cliente ainda sem nenhuma conversa) ou sem sessão
- * corrente no servidor (processo acabou de subir), serve o buffer como está
- * — mesma disciplina "sempre 200, nunca erro" de `handleApiChatPending`. */
-function handleApiChatHistory(rootDir: string, req: IncomingMessage, res: ServerResponse): void {
-  const queriedSessionId = new URL(req.url ?? "/", "http://localhost").searchParams.get("sessionId");
-  const currentSessionId = getSessionId(rootDir);
-  if (queriedSessionId && currentSessionId && queriedSessionId !== currentSessionId) {
-    sendJson(res, 200, { history: [], sessionId: currentSessionId });
-    return;
-  }
-  sendJson(res, 200, { history: getChatHistory(rootDir), sessionId: currentSessionId ?? null });
-}
-
-// ── #4078: toggle "chat ativo/desativado" ───────────────────────────────────
-
-const CHAT_ENABLED_MAX_BODY_BYTES = 2_000; // corpo é só {enabled: boolean} — teto pequeno de propósito.
-
-/** `GET /api/chat/enabled` (#4078) — estado atual do toggle "chat ativo/
- * desativado". Sempre 200: `readChatEnabledState` é fail-soft (arquivo
- * ausente/corrompido -> `{enabled:true, updatedAt:null}`, nunca lança) —
- * mesma disciplina "sempre 200, nunca erro" de `handleApiChatPending`. */
-function handleApiChatEnabledGet(rootDir: string, res: ServerResponse): void {
-  sendJson(res, 200, readChatEnabledState(rootDir));
-}
-
-/** `PUT /api/chat/enabled` (#4078) — liga/desliga o chat do painel. Corpo
- * `{enabled: boolean}`. O editor usa isto pra sinalizar explicitamente "não
- * estou usando o chat agora" (`enabled: false`) antes de uma sessão de
- * automação reiniciar/religar o Studio — ver docstring de
- * `scripts/lib/studio-chat-enabled.ts` pra como uma sessão de automação
- * CHECA esse estado (sem precisar do server rodando). 400 corpo malformado,
- * 500 só se a escrita em disco falhar de verdade (I/O real, não parte do
- * contrato fail-soft de leitura).
- *
- * Decisão consciente (#4141 finding 2): SEM o guard de mtime/conflito 409
- * que `saveBox`/`saveBoxSlots`/`saveReviewFile` têm (#3729). Duas abas
- * clicando o toggle quase ao mesmo tempo dão last-write-wins silencioso —
- * aceito de propósito porque é um boolean de baixo blast radius (nunca perde
- * CONTEÚDO editorial, só o estado do toggle) e "o valor mais recente vence"
- * é a semântica certa pra um interruptor, não um conflito real a resolver.
- * Não portar o guard de mtime aqui sem motivo novo. */
-async function handleApiChatEnabledSave(
-  rootDir: string,
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  let body: unknown;
-  try {
-    body = JSON.parse(await readRequestBody(req, CHAT_ENABLED_MAX_BODY_BYTES));
-  } catch {
-    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
-    return;
-  }
-  const parsed = body as { enabled?: unknown } | null;
-  if (typeof parsed?.enabled !== "boolean") {
-    sendJson(res, 400, { error: "campo 'enabled' (boolean) é obrigatório no corpo" });
-    return;
-  }
-  try {
-    sendJson(res, 200, setChatEnabled(rootDir, parsed.enabled));
-  } catch (e) {
-    sendJson(res, 500, { error: (e as Error).message });
-  }
-}
-
 function handleApiEdition(rootDir: string, aammdd: string, res: ServerResponse): void {
   if (!AAMMDD_RE.test(aammdd)) {
     sendJson(res, 400, { error: "AAMMDD inválido", edition: aammdd });
@@ -702,17 +505,6 @@ function handleApiEvents(
     { pollIntervalMs: opts.pollIntervalMs },
   );
 
-  // #3557: badge global de gates pendentes — re-emite o snapshot completo de
-  // `/api/state` (o browser já sabe renderizar `state.chatPermissionsPending`)
-  // assim que uma AskUserQuestion chega OU é respondida, sem esperar o
-  // próximo evento de run-log/plan.json que disparasse esse refresh por
-  // acaso.
-  const chatPermissionWatch = watchPendingChatPermissions(
-    rootDir,
-    () => res.write(formatSseEvent("state", buildStudioState(rootDir))),
-    { pollIntervalMs: opts.pollIntervalMs },
-  );
-
   const heartbeat = setInterval(() => {
     res.write(formatSseComment("heartbeat"));
   }, 20_000);
@@ -721,7 +513,6 @@ function handleApiEvents(
     clearInterval(heartbeat);
     logWatch.close();
     planWatch.close();
-    chatPermissionWatch.close();
   };
   req.on("close", cleanup);
   res.on("error", cleanup);
@@ -795,247 +586,6 @@ function handleReportContent(rootDir: string, id: string, res: ServerResponse): 
  * não espera o `end` do stream. */
 // readRequestBody + sendJson movidos pra ./http-utils.ts (#5894) — ambos usados
 // por server.ts e pelos handlers em ./routes/*.ts.
-
-/**
-
- * `POST /api/chat` — chat drawer (#3556). Lê o corpo, valida via
- * `parseChatRequestBody` (400 se inválido), abre a resposta como SSE e
- * conduz UM turno via `runChatTurn`, streamando cada evento traduzido pro
- * browser. `chat-init`/`chat-done` atualizam a sessão em memória pro próximo
- * turno resolver `resume` corretamente (1 sessão ad-hoc por `rootDir`, ver
- * `studio-chat.ts`). `parsed.value.context` (#3687 — edição/arquivo/aba
- * abertos no painel, reenviado a cada turno pelo cliente) é repassado direto
- * pra `runChatTurn`, que o prefixa no `prompt` via `buildChatPrompt`.
- *
- * Único handler do server que escreve estado em memória — todo o resto do
- * arquivo permanece read-only (ver doc-comment do módulo).
- *
- * #3822: mede a duração do turno (`opts.nowFn`, default `Date.now`) desde
- * ANTES de `runChatTurn` até o evento `chat-done` chegar no `onEvent` abaixo,
- * e repassa pra `opts.chatDoneNotifyFn` (default `maybeNotifyChatDone`) —
- * disparo direto no fluxo que já emite o evento (não um watcher de polling
- * à parte, ver doc-comment de `studio-push-notify.ts`). Chamada
- * fire-and-forget (`.catch` só loga) — nunca atrasa o `res.write`/`res.end`
- * do turno em si, mesmo espírito fail-soft do resto do módulo.
- */
-async function handleApiChat(
-  rootDir: string,
-  req: IncomingMessage,
-  res: ServerResponse,
-  opts: {
-    queryFn?: QueryFn;
-    maxBodyBytes: number;
-    chatDoneNotifyFn?: typeof maybeNotifyChatDone;
-    nowFn?: () => number;
-    closeAbortDebounceMs?: number;
-  },
-): Promise<void> {
-  let raw: string;
-  try {
-    raw = await readRequestBody(req, opts.maxBodyBytes);
-  } catch (e) {
-    sendJson(res, 413, { error: (e as Error).message });
-    return;
-  }
-
-  const parsed = parseChatRequestBody(raw);
-  if (!parsed.ok) {
-    sendJson(res, 400, { error: parsed.error });
-    return;
-  }
-
-  // #4078: o editor desativou o chat pelo painel (sinal explícito de "não
-  // estou usando agora") — recusa a mensagem em vez de rodar o turno. Cobre
-  // o caso de uma aba ANTIGA ainda aberta tentar enviar depois do toggle ser
-  // desligado em outra aba/sessão (o toggle sozinho não fecha conexões já
-  // abertas, só impede turnos NOVOS).
-  if (!isChatEnabled(rootDir)) {
-    sendJson(res, 409, {
-      error: "chat desativado pelo painel — reative em \"Chat ativo\" no header do drawer antes de enviar mensagens.",
-    });
-    return;
-  }
-
-  if (parsed.value.reset) clearSession(rootDir);
-  const sessionId = parsed.value.sessionId ?? getSessionId(rootDir);
-  // #3803: a mensagem do editor nunca passa por `sdkMessageToChatEvents` (o
-  // SDK só vê o `prompt` final montado por `buildChatPrompt`) — registrada
-  // aqui, direto, pro histórico reidratável cobrir também o lado do editor.
-  appendChatHistoryUserMessage(rootDir, parsed.value.message);
-
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream; charset=utf-8",
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-  });
-  res.write(formatSseComment("connected"));
-
-  const abortController = new AbortController();
-  // #3887: `close` já não aborta a sessão real do Agent SDK no primeiro
-  // evento — o abort de fato fica atrás de um debounce (`closeAbortGuard`,
-  // `createCloseAbortGuard` em studio-chat.ts) pra tolerar uma queda de
-  // rede transitória (celular trocando Wi-Fi→4G em cima do tunnel) sem
-  // matar o turno.
-  //
-  // Escuta tanto `req` quanto `res` (achado deste PR, não coberto pela
-  // redação original da issue): `req` é um Readable cujo 'close' já dispara
-  // perto do fim de `readRequestBody` (corpo inteiro já consumido) — pra
-  // uma request cujo corpo cabe num único chunk (o caso comum de uma
-  // mensagem de chat digitada à mão), esse 'close' já fica pra trás ANTES
-  // do listener abaixo existir, e o Node não reemite. `res` continua vivo
-  // (escrevendo a stream SSE) e É o sinal que sobrevive confiável até o
-  // socket de verdade cair — `createCloseAbortGuard.onClose()` é reentrante
-  // por design (ver doc-comment), então registrar nos dois não duplica
-  // abort nem quebra nada se algum dia os dois dispararem.
-  const closeAbortGuard = createCloseAbortGuard(
-    () => abortController.abort(),
-    opts.closeAbortDebounceMs ?? DEFAULT_CHAT_CLOSE_ABORT_DEBOUNCE_MS,
-  );
-  req.on("close", closeAbortGuard.onClose);
-  res.on("close", closeAbortGuard.onClose);
-
-  const nowFn = opts.nowFn ?? Date.now;
-  const chatDoneNotifyFn = opts.chatDoneNotifyFn ?? maybeNotifyChatDone;
-  const turnStartedAt = nowFn();
-
-  await runChatTurn({
-    message: parsed.value.message,
-    sessionId,
-    cwd: rootDir,
-    context: parsed.value.context,
-    queryFn: opts.queryFn,
-    abortController,
-    onEvent: (wireEvent) => {
-      if (wireEvent.event === "chat-init" && wireEvent.data.sessionId) {
-        setSessionId(rootDir, wireEvent.data.sessionId);
-      }
-      if (wireEvent.event === "chat-done" && wireEvent.data.sessionId) {
-        setSessionId(rootDir, wireEvent.data.sessionId);
-      }
-      // #3822: dispara DIRETO daqui (não de um watcher de polling à parte —
-      // ver doc-comment de `handleApiChat`/`studio-push-notify.ts`) —
-      // fire-and-forget, o `.catch` só loga; nunca atrasa o `res.write`
-      // abaixo nem a resolução deste turno.
-      if (wireEvent.event === "chat-done") {
-        const durationMs = nowFn() - turnStartedAt;
-        chatDoneNotifyFn(wireEvent, durationMs).catch((e) => {
-          console.warn(`[studio-chat] notificação de turno concluído falhou: ${(e as Error).message}`);
-        });
-      }
-      // #3803: acumula no buffer de histórico reidratável — mesmo evento já
-      // traduzido pro SSE do browser, sem I/O extra nem depender do SDK.
-      appendChatHistoryEvent(rootDir, wireEvent);
-      // #3557 (fallback): se o navegador que abriu este turno já se
-      // desconectou no instante em que a AskUserQuestion chega, não há UI
-      // pra renderizar o form agora — logamos um aviso, mas a sessão SEGUE
-      // esperando (mesma semântica do terminal: sem timeout). O gate ainda
-      // aparece pro badge global via `/api/state` pra qualquer outra aba
-      // conectada, e `POST /api/chat/answer` continua funcionando
-      // normalmente quando alguém finalmente responder.
-      if (
-        (wireEvent.event === "chat-permission-request" ||
-          wireEvent.event === "chat-tool-permission-request") &&
-        (res.writableEnded || res.destroyed)
-      ) {
-        const kind =
-          wireEvent.event === "chat-tool-permission-request"
-            ? `gate de tool (${wireEvent.data.toolName})`
-            : "AskUserQuestion";
-        console.warn(
-          `[studio-chat] ${kind} pendente (toolUseId=${wireEvent.data.toolUseId}) sem UI/SSE conectada no momento — a sessão continua esperando a resposta do editor.`,
-        );
-      }
-      try {
-        res.write(formatSseEvent(wireEvent.event, wireEvent.data));
-      } catch {
-        // conexão já fechada — a sessão SDK segue rodando/esperando de
-        // qualquer forma; só não há mais pra onde emitir o evento.
-      }
-    },
-  });
-
-  req.off("close", closeAbortGuard.onClose);
-  res.off("close", closeAbortGuard.onClose);
-  // #3887: limpa o timer de debounce pendente (se `close` chegou a disparar
-  // mas o turno terminou normalmente dentro da janela) — sem isto, um
-  // `close` transitório que se resolveu sozinho ainda dispararia o abort
-  // atrasado sobre um `abortController` de um turno que já terminou (inerte
-  // na prática, mas o timer ficaria pendurado até disparar à toa).
-  closeAbortGuard.cancel();
-  res.end();
-}
-
-/**
- * `POST /api/chat/answer` (#3557) — resolve um gate `AskUserQuestion`
- * pendente. Corpo: `{toolUseId, answers, response?}` (`parseChatAnswerRequestBody`).
- * A resolução em si é `resolvePendingPermissionRequest` (`studio-chat.ts`):
- * localiza a Promise pendente pelo `toolUseId`, resolve com
- * `{behavior:'allow', updatedInput}` e a sessão original (bloqueada no
- * `for await` de `runChatTurn` dessa OUTRA request HTTP, a de `POST /api/chat`)
- * retoma sozinha — os eventos subsequentes (`chat-tool` end, mais deltas,
- * `chat-done`) continuam chegando na stream SSE já aberta daquela request,
- * sem qualquer coordenação extra aqui.
- */
-async function handleApiChatAnswer(
-  rootDir: string,
-  req: IncomingMessage,
-  res: ServerResponse,
-  opts: { maxBodyBytes: number },
-): Promise<void> {
-  let raw: string;
-  try {
-    raw = await readRequestBody(req, opts.maxBodyBytes);
-  } catch (e) {
-    sendJson(res, 413, { error: (e as Error).message });
-    return;
-  }
-
-  const parsed = parseChatAnswerRequestBody(raw);
-  if (!parsed.ok) {
-    sendJson(res, 400, { error: parsed.error });
-    return;
-  }
-
-  const result = resolvePendingPermissionRequest(rootDir, parsed.value.toolUseId, {
-    answers: parsed.value.answers,
-    response: parsed.value.response,
-  });
-  sendJson(res, result.ok ? 200 : 404, result);
-}
-
-/**
- * `POST /api/chat/tool-decision` (#3804) — resolve um gate de TOOL pendente
- * (Bash/Edit/etc., não-`AskUserQuestion`). Corpo: `{toolUseId, decision}`
- * (`parseChatToolDecisionRequestBody`), `decision ∈ {allow, always, deny}`.
- * Simétrico a `handleApiChatAnswer`: a resolução (`resolvePendingToolPermission`)
- * destrava a Promise pendurada no `for await` de `runChatTurn` da OUTRA
- * request (a stream SSE de `POST /api/chat`), que retoma sozinha — a tool roda
- * (allow/always) ou o modelo recebe o deny e segue. `always` também libera a
- * tool pro resto da sessão (allowlist em memória, ver studio-chat.ts).
- */
-async function handleApiChatToolDecision(
-  rootDir: string,
-  req: IncomingMessage,
-  res: ServerResponse,
-  opts: { maxBodyBytes: number },
-): Promise<void> {
-  let raw: string;
-  try {
-    raw = await readRequestBody(req, opts.maxBodyBytes);
-  } catch (e) {
-    sendJson(res, 413, { error: (e as Error).message });
-    return;
-  }
-
-  const parsed = parseChatToolDecisionRequestBody(raw);
-  if (!parsed.ok) {
-    sendJson(res, 400, { error: parsed.error });
-    return;
-  }
-
-  const result = resolvePendingToolPermission(rootDir, parsed.value.toolUseId, parsed.value.decision);
-  sendJson(res, result.ok ? 200 : 404, result);
-}
 
 function handleTokensCss(res: ServerResponse): void {
   const css = buildTokensCss();
@@ -1709,93 +1259,12 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
   const runLogTailSize = opts.runLogTailSize ?? 50;
   const pollIntervalMs = opts.pollIntervalMs ?? 1000;
   const ghRun = opts.ghRun;
-  const chatQueryFn = opts.chatQueryFn;
-  const chatMaxBodyBytes = opts.chatMaxBodyBytes ?? 256_000;
-  const chatDoneNotifyFn = opts.chatDoneNotifyFn;
-  const chatDoneNowFn = opts.chatDoneNowFn;
-  const chatCloseAbortDebounceMs = opts.chatCloseAbortDebounceMs;
   const apoiosGmailDrain = opts.apoiosGmailDrain;
   const integrationsFetchImpl = opts.integrationsFetchImpl;
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     try {
       const urlPath = (req.url ?? "/").split("?")[0];
-
-      // #3556: rota de chat aceita POST — mutação/ação (sessão de chat),
-      // tratada ANTES do guard read-only genérico abaixo.
-      if (urlPath === "/api/chat") {
-        if (req.method !== "POST") {
-          sendJson(res, 405, { error: "POST obrigatório em /api/chat" });
-          return;
-        }
-        handleApiChat(rootDir, req, res, {
-          queryFn: chatQueryFn,
-          maxBodyBytes: chatMaxBodyBytes,
-          chatDoneNotifyFn,
-          nowFn: chatDoneNowFn,
-          closeAbortDebounceMs: chatCloseAbortDebounceMs,
-        }).catch((e) => {
-          // runChatTurn já é fail-soft (erros do SDK viram evento chat-error);
-          // este catch cobre só falhas síncronas anteriores (ex: writeHead
-          // já chamado e o socket morreu no meio) — sem headers ainda
-          // enviados, respondemos 500; senão só fechamos a conexão.
-          if (!res.headersSent) {
-            sendJson(res, 500, { error: (e as Error).message });
-          } else {
-            res.end();
-          }
-        });
-        return;
-      }
-
-      // #3557: resolve um gate AskUserQuestion pendente — mesmo tratamento
-      // "rota de mutação checada antes do guard read-only" de /api/chat acima.
-      if (urlPath === "/api/chat/answer") {
-        if (req.method !== "POST") {
-          sendJson(res, 405, { error: "POST obrigatório em /api/chat/answer" });
-          return;
-        }
-        handleApiChatAnswer(rootDir, req, res, { maxBodyBytes: chatMaxBodyBytes }).catch((e) => {
-          if (!res.headersSent) {
-            sendJson(res, 500, { error: (e as Error).message });
-          } else {
-            res.end();
-          }
-        });
-        return;
-      }
-
-      // #3804: resolve um gate de TOOL pendente (Bash/etc.) — mesmo tratamento
-      // "rota de mutação checada antes do guard read-only" de /api/chat/answer.
-      if (urlPath === "/api/chat/tool-decision") {
-        if (req.method !== "POST") {
-          sendJson(res, 405, { error: "POST obrigatório em /api/chat/tool-decision" });
-          return;
-        }
-        handleApiChatToolDecision(rootDir, req, res, { maxBodyBytes: chatMaxBodyBytes }).catch((e) => {
-          if (!res.headersSent) {
-            sendJson(res, 500, { error: (e as Error).message });
-          } else {
-            res.end();
-          }
-        });
-        return;
-      }
-
-      // #4078: liga/desliga o chat do painel — mesmo tratamento "rota de
-      // mutação checada antes do guard read-only" das rotas de /api/chat/*
-      // acima. GET (leitura do estado atual) é tratado mais abaixo, junto
-      // das outras rotas read-only de /api/chat/*.
-      if (urlPath === "/api/chat/enabled" && req.method === "PUT") {
-        handleApiChatEnabledSave(rootDir, req, res).catch((e) => {
-          if (!res.headersSent) {
-            sendJson(res, 500, { error: (e as Error).message });
-          } else {
-            res.end();
-          }
-        });
-        return;
-      }
 
       // #3559: exceção estreita ao invariante read-only (ver nota no topo do
       // arquivo) — só estas 3 rotas aceitam método de escrita, e só pra
@@ -1950,31 +1419,12 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
 
       if (req.method !== "GET" && req.method !== "HEAD") {
-        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556) e as rotas de ação do #3559/#3602/#3806/#3859/#3861/#3924/#3928/#4078/#6447" });
+        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto as rotas de ação do #3559/#3602/#3806/#3859/#3861/#3924/#3928/#6447" });
         return;
       }
 
       if (urlPath === "/api/state") {
         handleApiState(rootDir, res);
-        return;
-      }
-      // #3617: hidratação do chat drawer — checada antes de /api/events pra
-      // não colidir com o guard genérico de rota de API desconhecida abaixo.
-      if (urlPath === "/api/chat/pending") {
-        handleApiChatPending(rootDir, res);
-        return;
-      }
-      // #3803: reidratação do TRANSCRIPT do chat drawer — mesmo motivo de
-      // checagem antecipada do bloco acima (não colidir com o guard genérico
-      // de rota de API desconhecida mais abaixo).
-      if (urlPath === "/api/chat/history") {
-        handleApiChatHistory(rootDir, req, res);
-        return;
-      }
-      // #4078: estado ATUAL do toggle "chat ativo/desativado" — o PUT (escrita)
-      // já foi tratado acima, na seção de mutação.
-      if (urlPath === "/api/chat/enabled") {
-        handleApiChatEnabledGet(rootDir, res);
         return;
       }
       if (urlPath === "/api/events") {
@@ -1993,7 +1443,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #3841 item 2/3: sequência cronológica de TODAS as rodadas — checada
       // ANTES do regex de `/api/round/:kind` abaixo (não colide, mas mesma
       // disciplina de ordenação das demais rotas de prefixo compartilhado
-      // deste arquivo, ex: `/api/chat/*` antes de `/api/events`).
+      // deste arquivo).
       if (urlPath === "/api/rounds") {
         handleApiRounds(rootDir, res);
         return;
@@ -2339,8 +1789,8 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         server.close((err) => (err ? reject(err) : resolveClose()));
         // #6452: `server.close()` só resolve depois que TODA conexão aberta
         // termina — mas o painel mantém handles de longa duração de
-        // propósito (SSE de `/api/events`, `/api/chat` streaming, keep-
-        // alive), então sem isso `close()` fica pendurado até o timeout de
+        // propósito (SSE de `/api/events`, keep-alive), então sem isso
+        // `close()` fica pendurado até o timeout de
         // `shutdownWithTimeout` (10s) forçar `process.exit`. Derrubar os
         // sockets explicitamente aqui faz `close()` resolver quase na hora
         // — o cliente (EventSource/fetch) trata isso como uma desconexão

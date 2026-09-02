@@ -1,6 +1,6 @@
 // log-dedup.js (#3891, item 6) — dedup de eventos de run-log por
 // (timestamp+agent+message). Pure, sem DOM/fetch — testável isoladamente
-// (mesmo padrão de edicao-stage-age.js/gate-chat-bridge.js).
+// (mesmo padrão de edicao-stage-age.js).
 //
 // Problema: eventos de data/run-log.jsonl não têm seq/id (ver
 // scripts/lib/run-log.ts > PersistedEvent). No reconnect do SSE
