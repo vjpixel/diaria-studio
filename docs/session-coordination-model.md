@@ -76,7 +76,7 @@ merge-train (scripts/lib/merge-train-live.ts)
     │  bissecção + branch de integração + 1 CI + squash único
     │  usa merge-lock-acquire/release por dentro, não substitui
     ▼
-merge grant (#6296, session_grant field)              merge lock (data/sessions/.merge-lock.json)
+merge grant (#6296, merge_grant field)                merge lock (data/sessions/.merge-lock.json)
     │  destrava IDENTIDADE — "quem pode mergear"          │  serializa TEMPO — "quando", TTL 2min
     │  concedida por uma coordenadora a um peer            │  todo mundo passa por aqui, inclusive
     │  (ou a si mesma via kind, nunca self-grant)          │  quem já tem grant
