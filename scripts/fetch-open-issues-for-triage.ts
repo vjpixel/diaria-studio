@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * scripts/fetch-open-issues-for-triage.ts (#7018 item 2)
+ * scripts/fetch-open-issues-for-triage.ts (#7018 itens 2 e 3)
  *
  * CLI fino sobre `scripts/lib/issue-triage-fetch.ts` — ponto de entrada
  * único que a Fase 0 do overnight/develop (e o passo de classificação
@@ -13,6 +13,14 @@
  *   npx tsx scripts/fetch-open-issues-for-triage.ts
  *   npx tsx scripts/fetch-open-issues-for-triage.ts --bugs
  *   npx tsx scripts/fetch-open-issues-for-triage.ts --priority P0,P1
+ *   npx tsx scripts/fetch-open-issues-for-triage.ts --since 2026-08-29T10:00:00Z
+ *
+ * `--since {ISO 8601}` (item 3, exclusivo do `/diaria-continuo` — ver
+ * SKILL.md § Loop invariável passo 2): restringe a varredura ao delta desde
+ * aquele instante (`gh issue list --search "updated:>={since}"`) em vez do
+ * backlog aberto inteiro. A garantia fail-closed (`body` ausente → exit 1)
+ * vale idêntica nos dois modos — `--since` reduz quantas issues voltam,
+ * nunca quais campos cada uma carrega.
  *
  * Saída (stdout, sucesso): array JSON de `TriageIssue` (ver
  * `scripts/lib/issue-triage-fetch.ts`).
@@ -20,7 +28,7 @@
  *
  * @see scripts/lib/issue-triage-fetch.ts
  */
-import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule, getStringArg } from "./lib/cli-args.ts";
 import { fetchOpenIssuesForTriage, type TriageIssue } from "./lib/issue-triage-fetch.ts";
 
 function filterByFlags(issues: TriageIssue[], bugsOnly: boolean, priorityFilter: string[] | null): TriageIssue[] {
@@ -35,10 +43,17 @@ export function main(argv: string[], cwd: string): number {
   const { flags, values } = parseArgs(argv);
   const bugsOnly = flags.has("bugs");
   const priorityFilter = values.priority ? values.priority.split(",").map((s) => s.trim()).filter(Boolean) : null;
+  let since: string | undefined;
+  try {
+    since = getStringArg(argv, "since", { example: "2026-08-29T10:00:00Z" });
+  } catch (e) {
+    console.error(`[fetch-open-issues-for-triage] ${(e as Error).message}`);
+    return 1;
+  }
 
   let result;
   try {
-    result = fetchOpenIssuesForTriage(cwd);
+    result = fetchOpenIssuesForTriage(cwd, { since });
   } catch (e) {
     console.error(`[fetch-open-issues-for-triage] ${(e as Error).message}`);
     return 1;

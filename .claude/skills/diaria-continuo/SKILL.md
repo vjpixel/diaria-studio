@@ -611,19 +611,32 @@ aqui.
    rotaciona `plan.json` pro dia civil corrente se ele mudou desde a última
    chamada; no-op na maioria das vezes).
 
-   **Varredura incremental, não full-rescan (#5344 Parte B6, 15/08/2026).**
-   Em vez de `gh issue list --state open` do zero a cada ciclo (31 issues
-   abertas reclassificadas do zero toda vez, medição de 15/08/2026), usar
-   `gh issue list --state open --json number,title,labels,updatedAt --search
-   "updated:>={last_scan_at}"` — `{last_scan_at}` é o campo novo em
-   `plan.json` (ISO 8601, gravado ao fim de cada varredura bem-sucedida,
-   ausente/vazio na 1ª rodada do dia = tratar como full-scan). Issues que não
-   mudaram desde `last_scan_at` reusam a classificação já cacheada em
-   `plan.json` (o mesmo cache que o `batch_approval`/`batch` do passo 1 já
-   usa) — só o delta retornado pela busca é reclassificado. Issue fechada
-   entre varreduras não aparece no `--search` incremental por não ter
-   `updated:>=`; o passo 2 já lida com isso indiretamente (issue fechada não
-   volta a ser candidata a dispatch, então não precisa de tratamento
+   **Varredura incremental, não full-rescan (#5344 Parte B6, 15/08/2026) —
+   caminho fail-closed próprio desde #7018 item 3, sem forçar o full-scan
+   caro de overnight/develop.** Em vez de `gh issue list --state open` do
+   zero a cada ciclo (31 issues abertas reclassificadas do zero toda vez,
+   medição de 15/08/2026), rodar `npx tsx
+   scripts/fetch-open-issues-for-triage.ts --since {last_scan_at}`
+   (`{last_scan_at}` é o campo novo em `plan.json`, ISO 8601, gravado ao fim
+   de cada varredura bem-sucedida; ausente/vazio na 1ª rodada do dia =
+   **omitir `--since`**, e o script cai sozinho em full-scan — mesmo
+   comportamento de overnight/develop, só nesse caso). **Nunca montar
+   `gh issue list --search "updated:>=..."` à mão** — foi exatamente essa
+   string, sem `body` no `--json`, que causou o #7018 na varredura
+   incremental (o marcador `aguardando-ate:` fica invisível e uma issue
+   `agendada` degrada em silêncio pra `overnight`); `--since` já inclui
+   `body` nos dois modos (full e incremental — `body` nunca foi o campo caro
+   da varredura, é o volume de issues que `--since` reduz) e o script falha
+   alto (`exit 1`, nunca degrada em silêncio) se `gh` responder sem essa
+   chave. A resposta já traz `execTrack` calculado via
+   `classifyExecTrackFromListItem` (fail-closed) — reusar direto no passo 3a
+   abaixo, nunca recalcular `classifyExecTrack` sobre um `body` remontado à
+   mão. Issues que não mudaram desde `last_scan_at` reusam a classificação
+   já cacheada em `plan.json` (o mesmo cache que o `batch_approval`/`batch`
+   do passo 1 já usa) — só o delta retornado pela busca é reclassificado.
+   Issue fechada entre varreduras não aparece no delta incremental por não
+   ter `updated:>=`; o passo 2 já lida com isso indiretamente (issue fechada
+   não volta a ser candidata a dispatch, então não precisa de tratamento
    especial aqui). Gravar `last_scan_at = now()` ao fim da varredura, mesmo
    quando o delta veio vazio (idempotente — evita re-scan do mesmo intervalo
    no próximo ciclo).
@@ -780,7 +793,7 @@ aqui.
    no contexto pra quando o bloqueio for resolvido fora da sessão. Uma
    decisão nova, mais recente que o bloqueio → o bloqueio pode ter
    sido resolvido, reavaliar normalmente antes de assumir que segue preso.
-3a. **Classificar cada issue via `classifyExecTrack` e reportar divergência (#6204, mesmo desenho do passo 4a do overnight/#5708 do develop) — consome o módulo canônico em vez de manter julgamento próprio.** A taxonomia a/b/c acima **não** é o mesmo vocabulário do overnight — é mais enxuta (3 categorias contra os 6-7 status em prosa do overnight), porque `continuo` resolve (b) direto via `AskUserQuestion` no mesmo ciclo em vez de bounce pro develop (é sessão sempre-presente-ou-notificada, não overnight desassistido). A correspondência com `ExecTrack` usa a MESMA tabela do overnight (`scripts/lib/overnight-prose-track-map.ts`) sob este mapeamento: **(a) Acionável agora → `elegivel`** (`expectedTracksForProseStatus("elegivel")` = `overnight`); **(b) Decisão de produto pendente → `precisa-resposta`** (efêmera igual — `tracks: []`, nunca compara enquanto a pergunta está pendente; comparar de novo depois que o passo 5 gravar `decisao-registrada`, quando ela vira `elegivel`); **(c) Bloqueio genuíno não-decisão → `bloqueada-externa`** (`bloqueada`, via `external-blocker`). Pra cada issue já classificada em (a)/(b)/(c), rodar `classifyExecTrack({ labels, body, state })` de `scripts/lib/issue-exec-track.ts` (puro) e comparar contra o `ExecTrack` esperado pela categoria via `isProseTrackConsistent`. Gravar `exec_track_painel`/`exec_track_divergiu` por issue em `issues[]` do `plan.json` (o mesmo campo, mesmo formato do overnight — `continuo` reusa o schema dele). **Gate de cobertura antes de dormir (passo 5, junto do gate de re-triagem):** `npx tsx scripts/check-exec-track-coverage.ts --plan data/continuo/{AAMMDD}/plan.json` — `exit 1` lista issues sem o campo ou com valor fora do enum; backfill mecânico até `exit 0`. **Isto fecha o item 3 do #5376 citado acima como "deliberadamente fora de escopo"** — não porque `plan.json` ganhou um schema NOVO pra a/b/c (continua sem), mas porque `exec_track_painel` já é o enum estruturado que faltava: qualquer divergência entre a categoria a/b/c em prosa e o veredito mecânico de `classifyExecTrack` agora é auditável campo-a-campo, sem depender só da tabela textual do passo 5 abaixo.
+3a. **Classificar cada issue via `classifyExecTrack` e reportar divergência (#6204, mesmo desenho do passo 4a do overnight/#5708 do develop) — consome o módulo canônico em vez de manter julgamento próprio.** A taxonomia a/b/c acima **não** é o mesmo vocabulário do overnight — é mais enxuta (3 categorias contra os 6-7 status em prosa do overnight), porque `continuo` resolve (b) direto via `AskUserQuestion` no mesmo ciclo em vez de bounce pro develop (é sessão sempre-presente-ou-notificada, não overnight desassistido). A correspondência com `ExecTrack` usa a MESMA tabela do overnight (`scripts/lib/overnight-prose-track-map.ts`) sob este mapeamento: **(a) Acionável agora → `elegivel`** (`expectedTracksForProseStatus("elegivel")` = `overnight`); **(b) Decisão de produto pendente → `precisa-resposta`** (efêmera igual — `tracks: []`, nunca compara enquanto a pergunta está pendente; comparar de novo depois que o passo 5 gravar `decisao-registrada`, quando ela vira `elegivel`); **(c) Bloqueio genuíno não-decisão → `bloqueada-externa`** (`bloqueada`, via `external-blocker`). Pra cada issue já classificada em (a)/(b)/(c): se ela veio do fetch do passo 2 (`fetch-open-issues-for-triage.ts`), reusar o `execTrack` já calculado ali (fail-closed via `classifyExecTrackFromListItem`) — nunca rechamar `classifyExecTrack` sobre um `body` remontado à mão (#7018 item 3: foi exatamente essa remontagem, sobre a varredura incremental sem `body`, que classificou uma issue `agendada` como `overnight` em silêncio). Pra issue que só entrou na classificação por fora do passo 2 (ex: já conhecida do backlog bloqueado do passo 3, corpo lido por inteiro ali), rodar `classifyExecTrackFromListItem` — nunca `classifyExecTrack` direto — sobre o item cru (com a chave `body`, mesmo que `null`); comparar o `track` resultante contra o `ExecTrack` esperado pela categoria via `isProseTrackConsistent`. Gravar `exec_track_painel`/`exec_track_divergiu` por issue em `issues[]` do `plan.json` (o mesmo campo, mesmo formato do overnight — `continuo` reusa o schema dele). **Gate de cobertura antes de dormir (passo 5, junto do gate de re-triagem):** `npx tsx scripts/check-exec-track-coverage.ts --plan data/continuo/{AAMMDD}/plan.json` — `exit 1` lista issues sem o campo ou com valor fora do enum; backfill mecânico até `exit 0`. **Isto fecha o item 3 do #5376 citado acima como "deliberadamente fora de escopo"** — não porque `plan.json` ganhou um schema NOVO pra a/b/c (continua sem), mas porque `exec_track_painel` já é o enum estruturado que faltava: qualquer divergência entre a categoria a/b/c em prosa e o veredito mecânico de `classifyExecTrack` agora é auditável campo-a-campo, sem depender só da tabela textual do passo 5 abaixo.
 4. **Perguntar** → heartbeat `--phase aguardando-resposta` **ANTES** de
    chamar `AskUserQuestion` (não depois — o watchdog pode rodar entre os dois
    passos; o heartbeat precisa estar gravado antes que a chamada bloqueie),
