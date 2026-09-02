@@ -383,6 +383,100 @@ describe("registerSession / heartbeat / endSession", () => {
   });
 });
 
+// ─── #6624 — instrumentação do ciclo de vida de sessão coordenadora ────────
+// Investigação: "sessões coordenadoras terminam sem chamar `end` com que
+// frequência?". `endSession`/`garbageCollectSessions` gravam eventos em
+// `data/session-lifecycle.jsonl` — este bloco cobre a ESCRITA (o miolo de
+// leitura/agregação está em test/session-lifecycle-report.test.ts).
+
+describe("instrumentação de ciclo de vida (#6624)", () => {
+  function lifecycleLogPath(root: string): string {
+    return join(root, "data", "session-lifecycle.jsonl");
+  }
+  function readLifecycleEvents(root: string): Array<Record<string, unknown>> {
+    if (!existsSync(lifecycleLogPath(root))) return [];
+    return readFileSync(lifecycleLogPath(root), "utf8")
+      .split("\n")
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l));
+  }
+
+  it("endSession de sessão COORDENADORA grava evento 'ended'", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-6624a", { tag: "host-a", startedAt: "2026-08-28T10:00:00.000Z" });
+    endSession(root, "overnight", "sess-6624a", "host-a");
+
+    const events = readLifecycleEvents(root);
+    assert.equal(events.length, 1);
+    assert.equal(events[0]!.event, "ended");
+    assert.equal(events[0]!.kind, "overnight");
+    assert.equal(events[0]!.sessionId, "sess-6624a");
+    assert.ok(typeof events[0]!.ageMs === "number" && (events[0]!.ageMs as number) > 0);
+  });
+
+  it("endSession de sessão INTERACTIVE não grava nada — só coordenadora é instrumentada", () => {
+    const root = freshRoot();
+    registerSession(root, "interactive", "sess-6624b", { tag: "host-a" });
+    endSession(root, "interactive", "sess-6624b", "host-a");
+    assert.equal(readLifecycleEvents(root).length, 0);
+  });
+
+  it("endSession que não remove nada (sessão já ausente) não grava evento", () => {
+    const root = freshRoot();
+    endSession(root, "develop", "sess-inexistente-6624", "host-a");
+    assert.equal(readLifecycleEvents(root).length, 0);
+  });
+
+  it("garbageCollectSessions removendo um grupo coordenador VIVO-demais (sem end) grava 'gc-removed-without-end'", () => {
+    const root = freshRoot();
+    const veryOld = new Date(Date.parse("2026-08-28T12:00:00.000Z") - GC_CONSERVATIVE_MAX_AGE_MS - 1000).toISOString();
+    registerSession(root, "develop", "sess-6624c", { tag: "outra-maquina", startedAt: veryOld });
+    // heartbeat também precisa estar velho — registerSession já usa startedAt como heartbeat inicial.
+
+    garbageCollectSessions(root, { now: Date.parse("2026-08-28T12:00:00.000Z"), isPidAlive: () => false });
+
+    const events = readLifecycleEvents(root);
+    assert.equal(events.length, 1);
+    assert.equal(events[0]!.event, "gc-removed-without-end");
+    assert.equal(events[0]!.kind, "develop");
+    assert.equal(events[0]!.sessionId, "sess-6624c");
+  });
+
+  it("GC removendo um backup ÓRFÃO (grupo já sem real — sessão que JÁ chamou end) não grava 'gc-removed-without-end'", () => {
+    // Distinção central do #6624: um backup órfão é resíduo de uma sessão
+    // que já terminou LIMPO (endSession removeu o real; o backup sobrou por
+    // conflito do OneDrive) — não é o caso "nunca chamou end".
+    const root = freshRoot();
+    mkdirSync(sessionsDir(root), { recursive: true });
+    const veryOld = new Date(Date.parse("2026-08-28T12:00:00.000Z") - GC_CONSERVATIVE_MAX_AGE_MS - 1000).toISOString();
+    writeFileSync(
+      join(sessionsDir(root), "develop-outra-maquina-sess-orfa-safeBackup-0001.json"),
+      JSON.stringify({ kind: "develop", machineTag: "outra-maquina", sessionId: "sess-orfa", startedAt: veryOld, lastHeartbeat: veryOld }),
+      "utf8",
+    );
+
+    garbageCollectSessions(root, { now: Date.parse("2026-08-28T12:00:00.000Z"), isPidAlive: () => false });
+
+    assert.equal(readLifecycleEvents(root).length, 0, "backup órfão removido não é 'sem end' — já teve um end limpo");
+  });
+
+  it("GC de sessão INTERACTIVE removida por staleness não grava evento — só coordenadora é instrumentada", () => {
+    const root = freshRoot();
+    const veryOld = new Date(Date.parse("2026-08-28T12:00:00.000Z") - GC_CONSERVATIVE_MAX_AGE_MS - 1000).toISOString();
+    registerSession(root, "interactive", "sess-6624d", { tag: "outra-maquina", startedAt: veryOld });
+
+    garbageCollectSessions(root, { now: Date.parse("2026-08-28T12:00:00.000Z"), isPidAlive: () => false });
+
+    assert.equal(readLifecycleEvents(root).length, 0);
+  });
+
+  it("data/ ausente: endSession/garbageCollectSessions nunca lançam por causa do logger (fail-soft)", () => {
+    const root = freshRoot(); // nunca criou data/sessions/ — nada registrado
+    assert.doesNotThrow(() => endSession(root, "overnight", "sess-6624e", "host-a"));
+    assert.doesNotThrow(() => garbageCollectSessions(root, { now: Date.now() }));
+  });
+});
+
 // ─── registerSession — promoção de kind (#6326) ────────────────────────────
 //
 // Reproduz a ordem de eventos real: o beacon (`.claude/hooks/session-beacon.mjs`)
@@ -1379,6 +1473,51 @@ describe("listActiveSessions / isIssueClaimedByOther — stale (#5474)", () => {
     const sessions = listActiveSessions(root, NOW);
     assert.equal(sessions.length, 1);
     assert.equal(sessions[0].stale, false);
+  });
+});
+
+// ─── claimed_issues_effective (#6623) ──────────────────────────────────────
+// list-active expunha claimed_issues de sessão STALE sem marcar que os claims
+// já venceram — leitura ingênua de claimed_issues escondia issues elegíveis.
+
+describe("listActiveSessions — claimed_issues_effective (#6623)", () => {
+  const NOW = Date.parse("2026-08-28T18:00:00.000Z");
+  const ONE_MIN_MS = 60 * 1000;
+
+  it("sessão VIVA (não-stale): claimed_issues_effective == claimed_issues bruto", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "sess-viva", { tag: "host-a", startedAt: new Date(NOW - 30 * ONE_MIN_MS).toISOString() });
+    claimIssue(root, "develop", "sess-viva", 100, "host-a", new Date(NOW - 30 * ONE_MIN_MS).toISOString());
+    claimIssue(root, "develop", "sess-viva", 101, "host-a", new Date(NOW - 30 * ONE_MIN_MS).toISOString());
+
+    const [session] = listActiveSessions(root, NOW);
+    assert.equal(session.stale, false);
+    assert.deepEqual(session.claimed_issues_effective, [100, 101]);
+    assert.deepEqual(session.claimed_issues, [100, 101]);
+  });
+
+  it("sessão STALE (heartbeat > SOFT_STALE_MS): claimed_issues_effective é VAZIO, mas claimed_issues bruto continua no record (#6623 — o bug real: leitura ingênua via claimed_issues escondia/mostrava errado)", () => {
+    const root = freshRoot();
+    const staleHeartbeat = new Date(NOW - 3 * 60 * ONE_MIN_MS - 10 * ONE_MIN_MS).toISOString(); // 3h10, > SOFT_STALE_MS
+    registerSession(root, "develop", "sess-morta", { tag: "host-a", startedAt: staleHeartbeat });
+    claimIssue(root, "develop", "sess-morta", 5998, "host-a", staleHeartbeat);
+
+    const [session] = listActiveSessions(root, NOW);
+    assert.equal(session.stale, true);
+    // O sintoma original do #6623: uma triagem ingênua lendo claimed_issues
+    // (bruto) via 26 issues achava só 16 elegíveis — as 10 escondidas eram
+    // exatamente claims de sessão stale como esta. claimed_issues_effective
+    // resolve isso sem exigir que o chamador consulte `stale` à parte.
+    assert.deepEqual(session.claimed_issues_effective, []);
+    assert.deepEqual(session.claimed_issues, [5998], "o campo bruto continua no record para diagnóstico/histórico");
+  });
+
+  it("sessão sem claims: claimed_issues_effective é [] tanto viva quanto stale", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-sem-claims", { tag: "host-a", startedAt: new Date(NOW - 30 * ONE_MIN_MS).toISOString() });
+
+    const [session] = listActiveSessions(root, NOW);
+    assert.deepEqual(session.claimed_issues_effective, []);
   });
 });
 
