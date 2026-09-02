@@ -55,6 +55,13 @@ export function countUnclosedDivs(html: string): number {
  * ele normalmente vive perto do fim do documento (depois do ponto de
  * corte), e sem isso o teaser perderia `Article`/`author`/`datePublished`
  * pro SEO/GEO (#7030, achado do guard `test/artigos-sitemap-5126.test.ts`).
+ *
+ * Cauda `[\s\S]*?<\/script>` é um regex não-guloso simples — não um parser
+ * (review do #7038, baixa confiança/P3): se o JSON-LD algum dia tiver um
+ * campo contendo a substring literal `</script>`, o corte trunca cedo. Não
+ * é um problema hoje (nenhum dos 2 artigos publicados tem esse caractere
+ * nos campos) — decisão consciente de não trocar por um parser real por
+ * um risco hipotético; revisar se um artigo futuro tiver esse conteúdo.
  */
 export function extractLdJsonScript(html: string): string {
   const match = html.match(/<script type="application\/ld\+json">[\s\S]*?<\/script>/);
