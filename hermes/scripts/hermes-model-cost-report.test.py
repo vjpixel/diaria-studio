@@ -372,6 +372,66 @@ def main() -> int:
         set(mod.PAID_ALLOWLIST) <= coberto,
     )
 
+    # --- achados do review do PR #7085 ---
+
+    # 10. (P2) O caminho "catálogo inacessível" agora é função PURA. Antes era
+    #     dict literal inline no main() — o único ponto onde o shape de
+    #     `findings` era montado à mão, e um typo numa chave quebraria em
+    #     silêncio justamente no fail-closed. Trava as 4 chaves e o exit 1.
+    indisp = mod.build_catalog_unavailable_findings()
+    assert_true(
+        "#7085 P2: catálogo inacessível -> shape completo (4 chaves) e exit 1, nunca 0",
+        set(indisp) == {"increases", "decreases", "out_of_scope", "unverifiable"}
+        and len(indisp["unverifiable"]) == 1
+        and mod.price_check_exit_code(indisp) == 1,
+    )
+
+    # 11. (P3) Tolerância SIMÉTRICA: -0,4% é ruído decimal, não queda real.
+    #     Antes a folga valia só pro aumento e isso imprimia "queda" fantasma.
+    ruido_baixo = mod.extract_catalog_pricing(_catalog(
+        {"id": "z-ai/glm-5.3-flash",
+         "pricing": {"prompt": "0.0000000747", "completion": "0.00000025"}},
+    ))
+    f_rb = mod.detect_price_changes(ruido_baixo, baseline=BASE, not_on_openrouter=set())
+    assert_true(
+        "#7085 P3: -0,4% fica dentro da tolerância — não vira 'queda' fantasma",
+        not f_rb["decreases"] and not f_rb["increases"],
+    )
+    # E queda REAL continua sendo reportada (a folga não pode engolir tudo).
+    f_qr = mod.detect_price_changes(caiu, baseline=BASE, not_on_openrouter=set())
+    assert_true(
+        "#7085 P3: queda real (-33%) continua reportada apesar da tolerância",
+        len(f_qr["decreases"]) == 1,
+    )
+
+    # 12. (robustez) Raiz do JSON como LISTA não pode explodir com
+    #     AttributeError — viraria traceback, e o exit 1 resultante seria
+    #     fail-closed por acidente, não por desenho.
+    assert_true(
+        "#7085: catálogo com raiz não-dict -> {} (indeterminado por desenho), nunca exceção",
+        mod.extract_catalog_pricing([]) == {} and mod.extract_catalog_pricing(None) == {},
+    )
+
+    # 13. `input_cache_read` é 90% do mix do tick (#6712) — é o campo que mais
+    #     pesa no custo real, e nenhum teste variava ele especificamente.
+    cache_subiu = mod.extract_catalog_pricing(_catalog(
+        {"id": "z-ai/glm-5.3-flash", "pricing": {
+            "prompt": "0.000000075", "completion": "0.00000025",
+            "input_cache_read": "0.0000000255"}},
+    ))
+    f_cache = mod.detect_price_changes(
+        cache_subiu,
+        baseline={"z-ai/glm-5.3-flash": dict(BASE["z-ai/glm-5.3-flash"],
+                                             input_cache_read=0.000000015)},
+        not_on_openrouter=set(),
+    )
+    assert_true(
+        "#7085: aumento SÓ no input_cache_read (campo dominante do custo) é detectado e alarma",
+        len(f_cache["increases"]) == 1
+        and f_cache["increases"][0]["campo"] == "input_cache_read"
+        and mod.price_check_exit_code(f_cache) == 3,
+    )
+
     if FAILED:
         print(f"\n{FAILED} asserção(ões) falharam")
         return 1
