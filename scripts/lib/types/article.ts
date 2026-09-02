@@ -32,6 +32,15 @@ export interface Article {
   /** Tipo declarado pela fonte (lançamento/pesquisa/notícia) — pista pra
    *  categorize.ts decidir bucket quando o domínio é ambíguo. */
   type_hint?: string;
+  /**
+   * #6647: ID da regra/sinal que decidiu `category` (ex:
+   * `tutorial-domain`, `lancamento-type-hint`) — ou um dos dois defaults
+   * silenciosos do motor (`lancamento-default`/`noticias-default`), ver
+   * `isFallbackCategorizationRule` em `scripts/lib/launch-heuristics.ts`.
+   * Setado por `categorizeArticles()` (scripts/categorize.ts) a partir de
+   * `categorizeWithRule()`; puramente aditivo — nunca influencia `category`.
+   */
+  category_rule?: string;
 
   // ---- Datas (#496, #649) --------------------------------------------------
   /** Data de publicação no formato ISO 8601. */

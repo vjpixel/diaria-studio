@@ -31,19 +31,35 @@
  * Sem `data/editions/` no ambiente (ex: worktree de subagente, sem a junction
  * local) o script imprime 0 edições processadas e sai limpo (exit 0) — não é
  * um erro de código, é ausência de corpus local (ver CLAUDE.md item 2b).
+ *
+ * `--rules` (#6647): em vez do diff categorizado×aprovado acima, agrega o
+ * campo `category_rule` que `categorizeArticles()` (scripts/categorize.ts)
+ * passou a gravar em cada artigo de `01-categorized.json` — qual regra/sinal
+ * decidiu o bucket, ou um dos dois defaults silenciosos do motor
+ * (`lancamento-default`/`noticias-default`, ver `isFallbackCategorizationRule`
+ * em `scripts/lib/launch-heuristics.ts`). Mede o "resíduo sem-regra-forte"
+ * de verdade (edições geradas ANTES do #6647 não têm o campo — artigos sem
+ * `category_rule` são ignorados nessa contagem, não contam como fallback nem
+ * como erro; não há dado, não como "0 fallback").
+ *   npx tsx scripts/analyze-bucket-overrides.ts --rules [--editions-dir data/editions] [--json]
  */
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { canonicalize } from "./lib/url-utils.ts";
-import type { Bucket } from "./lib/launch-heuristics.ts";
+import { isFallbackCategorizationRule, type Bucket } from "./lib/launch-heuristics.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
 // Os 3 buckets cobertos por esta análise — `video` fica de fora de propósito
 // (não é editorial ambíguo do mesmo jeito; não aparece na medição da #5995).
 const TRACKED_BUCKETS: readonly Bucket[] = ["lancamento", "radar", "use_melhor"];
+
+// #6647: --rules cobre os 4 buckets (inclui `video`) — a pergunta ali é
+// "de onde veio a decisão", não "o editor moveu o bucket" (essa é restrita
+// aos 3 acima, por desenho da #5995).
+const ALL_BUCKETS: readonly Bucket[] = ["lancamento", "radar", "use_melhor", "video"];
 
 /** Janela default da taxa (#5995 item 5): últimas 20 edições. */
 export const DEFAULT_WINDOW = 20;
@@ -212,6 +228,162 @@ export function analyzeEditionsUnderRoot(editionsDir: string): EditionMoves[] {
   return results;
 }
 
+// ---------------------------------------------------------------------------
+// --rules (#6647): agregação de category_rule — resíduo real por regra/fallback
+// ---------------------------------------------------------------------------
+
+export interface RuleUsageArticle {
+  edition: string;
+  bucket: Bucket;
+  rule: string;
+  fallback: boolean;
+}
+
+/**
+ * Varre `editionsDir` (só `01-categorized.json`, `01-approved.json` não é
+ * necessário aqui — a pergunta é "o que o categorizador decidiu", não "o que
+ * o editor corrigiu") e coleta `{edition, bucket, rule, fallback}` para todo
+ * artigo que carrega `category_rule` (#6647). Artigos sem o campo — toda
+ * edição gerada antes desta mudança — são pulados silenciosamente: ausência
+ * de dado, não zero-fallback.
+ */
+export function collectRuleUsage(editionsDir: string): RuleUsageArticle[] {
+  if (!existsSync(editionsDir)) return [];
+
+  const editionPaths = discoverEditionPaths(editionsDir);
+  const editions = [...editionPaths.keys()].sort();
+  const out: RuleUsageArticle[] = [];
+
+  for (const edition of editions) {
+    const editionDir = editionPaths.get(edition)!;
+    const catPath = join(editionDir, "_internal", "01-categorized.json");
+    if (!existsSync(catPath)) continue;
+
+    let categorized: CategorizedBucketsInput;
+    try {
+      categorized = JSON.parse(readFileSync(catPath, "utf8"));
+    } catch (err) {
+      console.error(`[analyze-bucket-overrides] ${edition}: falha ao parsear 01-categorized.json — pulando (${(err as Error).message})`);
+      continue;
+    }
+
+    for (const bucket of ALL_BUCKETS) {
+      const articles = categorized[bucket];
+      if (!Array.isArray(articles)) continue;
+      for (const article of articles) {
+        const rule = article && typeof article.category_rule === "string" ? article.category_rule : undefined;
+        if (!rule) continue; // #6647: edição pré-instrumentação — sem dado, não fallback
+        out.push({ edition, bucket, rule, fallback: isFallbackCategorizationRule(rule) });
+      }
+    }
+  }
+
+  return out;
+}
+
+export interface RuleUsageCount {
+  rule: string;
+  count: number;
+  fallback: boolean;
+}
+
+export interface BucketRuleUsage {
+  bucket: Bucket;
+  total: number;
+  fallback: number;
+  fallbackPct: number;
+}
+
+export interface RuleUsageSummary {
+  /** Edições distintas com ≥1 artigo com `category_rule` presente. */
+  editionsWithRuleData: number;
+  /** Total de artigos com `category_rule` presente (across os 4 buckets). */
+  articlesWithRule: number;
+  /** Subconjunto de `articlesWithRule` cuja regra é um dos 2 defaults do motor. */
+  fallbackArticles: number;
+  /** `fallbackArticles / articlesWithRule` × 100 (0 quando não há dado). */
+  fallbackPct: number;
+  /** Contagem por regra, ordenado desc por `count`. */
+  byRule: RuleUsageCount[];
+  /** Contagem + taxa de fallback por bucket, ordenado desc por `total`. */
+  byBucket: BucketRuleUsage[];
+}
+
+/** Puro e determinístico sobre a lista que `collectRuleUsage` devolve. */
+export function summarizeRuleUsage(entries: RuleUsageArticle[]): RuleUsageSummary {
+  const editionsWithRuleData = new Set(entries.map((e) => e.edition)).size;
+  const articlesWithRule = entries.length;
+  const fallbackArticles = entries.filter((e) => e.fallback).length;
+
+  const ruleCounts = new Map<string, RuleUsageCount>();
+  for (const e of entries) {
+    const cur = ruleCounts.get(e.rule) ?? { rule: e.rule, count: 0, fallback: e.fallback };
+    cur.count += 1;
+    ruleCounts.set(e.rule, cur);
+  }
+  const byRule = [...ruleCounts.values()].sort((a, b) => b.count - a.count);
+
+  const bucketCounts = new Map<Bucket, { total: number; fallback: number }>();
+  for (const e of entries) {
+    const cur = bucketCounts.get(e.bucket) ?? { total: 0, fallback: 0 };
+    cur.total += 1;
+    if (e.fallback) cur.fallback += 1;
+    bucketCounts.set(e.bucket, cur);
+  }
+  const byBucket: BucketRuleUsage[] = [...bucketCounts.entries()]
+    .map(([bucket, v]) => ({
+      bucket,
+      total: v.total,
+      fallback: v.fallback,
+      fallbackPct: v.total > 0 ? (v.fallback / v.total) * 100 : 0,
+    }))
+    .sort((a, b) => b.total - a.total);
+
+  return {
+    editionsWithRuleData,
+    articlesWithRule,
+    fallbackArticles,
+    fallbackPct: articlesWithRule > 0 ? (fallbackArticles / articlesWithRule) * 100 : 0,
+    byRule,
+    byBucket,
+  };
+}
+
+function renderRuleUsageReport(summary: RuleUsageSummary): string {
+  const lines: string[] = [];
+  if (summary.articlesWithRule === 0) {
+    lines.push(
+      "[analyze-bucket-overrides --rules] 0 artigos com category_rule no corpus — nenhuma edição sob " +
+        "data/editions/ foi gerada com o categorizador instrumentado (#6647) ainda.",
+    );
+    return lines.join("\n");
+  }
+
+  lines.push(`edições com dado (≥1 artigo com category_rule): ${summary.editionsWithRuleData}`);
+  lines.push(`artigos com category_rule: ${summary.articlesWithRule}`);
+  lines.push(
+    `resíduo (fallback lancamento-default/noticias-default): ${summary.fallbackArticles} de ` +
+      `${summary.articlesWithRule} (${summary.fallbackPct.toFixed(1)}%)`,
+  );
+  lines.push("");
+
+  lines.push("POR BUCKET:");
+  for (const b of summary.byBucket) {
+    lines.push(
+      `  ${b.bucket.padEnd(12)} total ${String(b.total).padStart(4)}  fallback ${String(b.fallback).padStart(4)} ` +
+        `(${b.fallbackPct.toFixed(1)}%)`,
+    );
+  }
+  lines.push("");
+
+  lines.push("POR REGRA (desc por contagem):");
+  for (const r of summary.byRule) {
+    lines.push(`  ${r.fallback ? "[fallback] " : "           "}${r.rule.padEnd(40)} ${String(r.count).padStart(4)}`);
+  }
+
+  return lines.join("\n");
+}
+
 export interface DirectionSummary {
   direction: string;
   from: Bucket;
@@ -366,10 +538,23 @@ function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const editionsDirArg = args["editions-dir"] ?? "data/editions";
   const editionsDir = editionsDirArg.startsWith("/") ? editionsDirArg : resolve(ROOT, editionsDirArg);
+  const asJson = "json" in args || process.argv.includes("--json");
+  const rulesMode = "rules" in args || process.argv.includes("--rules"); // #6647
+
+  if (rulesMode) {
+    const entries = collectRuleUsage(editionsDir);
+    const ruleSummary = summarizeRuleUsage(entries);
+    if (asJson) {
+      console.log(JSON.stringify(ruleSummary, null, 2));
+      return;
+    }
+    console.log(renderRuleUsageReport(ruleSummary));
+    return;
+  }
+
   const examplesPerDirection = args["examples"] ? Number.parseInt(args["examples"], 10) : 5;
   const windowArg = args["window"] ? Number.parseInt(args["window"], 10) : DEFAULT_WINDOW;
   const window = Number.isFinite(windowArg) && windowArg > 0 ? windowArg : DEFAULT_WINDOW;
-  const asJson = "json" in args || process.argv.includes("--json");
 
   const editionMoves = analyzeEditionsUnderRoot(editionsDir);
   const summary = summarize(editionMoves, Number.isFinite(examplesPerDirection) ? examplesPerDirection : 5, window);

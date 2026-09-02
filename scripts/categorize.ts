@@ -66,13 +66,17 @@ import {
   isVideoUrl,
   isOfficialLancamentoUrl,
   categorize,
+  categorizeWithRule,
+  isFallbackCategorizationRule,
   MIXED_TUTORIAL_ESSAY_HOSTS,
   ESSAY_ANALYSIS_TITLE_RE,
 } from "./lib/launch-heuristics.ts"; // #2833: extraído — movimentação pura
+import type { CategorizationResult } from "./lib/launch-heuristics.ts"; // #6647
 
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export type { Article };
 export type { Category, Bucket };
+export type { CategorizationResult }; // #6647
 export {
   categoryToBucket,
   ARXIV_RELEVANT_TERMS,
@@ -101,6 +105,8 @@ export {
   isVideoUrl,
   isOfficialLancamentoUrl,
   categorize,
+  categorizeWithRule,
+  isFallbackCategorizationRule,
   MIXED_TUTORIAL_ESSAY_HOSTS,
   ESSAY_ANALYSIS_TITLE_RE,
 };
@@ -162,7 +168,10 @@ export function categorizeArticles(articles: Article[]): BucketedArticles {
       console.error(`[categorize] dropping unresolvable inbox article: ${article.url}`);
       continue;
     }
-    const cat = categorize(article);
+    // #6647: categorizeWithRule() é a mesma decisão de categorize() (wrapper
+    // fino sobre ela) — usar a versão instrumentada aqui não muda `cat` em
+    // nenhum artigo, só permite persistir `category_rule` abaixo.
+    const { category: cat, rule: categoryRule } = categorizeWithRule(article);
     // #2986: gate de relevância-IA restrito à categoria `noticias` — o catch-all
     // genérico do categorize() (cobertura de imprensa sem domínio dedicado).
     // Fontes cadastradas ainda trazem, ocasionalmente, conteúdo sem ângulo de IA
@@ -196,7 +205,11 @@ export function categorizeArticles(articles: Article[]): BucketedArticles {
       }
     }
     const bucket = categoryToBucket(cat);
-    result[bucket].push({ ...article, category: cat });
+    // #6647: category_rule é aditivo — não influencia bucket/category acima,
+    // só persiste QUAL regra decidiu (ou o fallback, ver
+    // isFallbackCategorizationRule) pra permitir medir o resíduo real via
+    // scripts/analyze-bucket-overrides.ts --rules.
+    result[bucket].push({ ...article, category: cat, category_rule: categoryRule });
   }
 
   // #1473: detectar summaries em inglês e flaggar para tradução downstream.
