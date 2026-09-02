@@ -29,6 +29,7 @@
  */
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveRunLogPath } from "./lib/run-log.ts";
@@ -50,7 +51,7 @@ import {
 import { formatRatio } from "./lib/diff-line-stats.ts";
 
 const LOG_PREFIX = "[round-diff-stats-report]";
-const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ALARM_STATE_PATH = resolve(ROOT, "data", ".round-diff-stats-alarm-issues.json");
 const ALARM_CHECK = "round-diff-ratio";
 const ALARM_FINGERPRINT = "round-diff-ratio-7d-threshold";

@@ -20,11 +20,12 @@
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { checkOneOffScriptValidity, isExpiredMarker, isOneOffScriptFilename } from "./lib/one-off-script-validity.ts";
 
 const LOG_PREFIX = "[list-expired-one-off-scripts]";
-const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPTS_DIR = resolve(ROOT, "scripts");
 
 export interface ExpiredOneOffScript {
