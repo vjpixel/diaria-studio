@@ -36,7 +36,7 @@ export const BREVO_RATE_LIMIT_GENERAL_RPH = 100; // "todos os outros endpoints" 
 export const BREVO_RATE_LIMIT_CONTACTS_RPH = 36000; // /v3/contacts/*
 
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow, PostmasterSpamEntry, PostmasterCampaignSpamRecord, LinkSectionMap, ClariceHourTestKvState } from "./types.ts"; // #4970: PostmasterCampaignSpamRecord; #5189: ClariceHourTestKvState
-import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, POSTMASTER_SPAM_KV_KEY, HOUR_TEST_KV_KEY, RECENT_STATS_TTL, linkSectionsKvKey, linkTitlesKvKey } from "./types.ts"; // #4198: linkTitlesKvKey; #5189: HOUR_TEST_KV_KEY
+import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, POSTMASTER_SPAM_KV_KEY, HOUR_TEST_KV_KEY, RECENT_STATS_TTL, MID_RANGE_STATS_TTL, linkSectionsKvKey, linkTitlesKvKey } from "./types.ts"; // #4198: linkTitlesKvKey; #5189: HOUR_TEST_KV_KEY; #6720 Fatia C: MID_RANGE_STATS_TTL
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles, calcCumulativeSentInBillingWindow } from "./sections-core.ts"; // #4184: collectMonthlyLinkCycles; #6394: calcCumulativeSentInBillingWindow
 import { normalizeLinkSectionMap, normalizeLinkTitleMap } from "./link-section.ts"; // #4184 / #4198
@@ -286,6 +286,35 @@ export function isImmutableCampaign(sentDate: string | null, nowMs = Date.now())
   if (isNaN(sent)) return false;
   const sevenDaysMs = 7 * 24 * 3600 * 1000;
   return nowMs - sent > sevenDaysMs;
+}
+
+/**
+ * #6720 Fatia C: resolveRecentStatsTtl — TTL (segundos) da entrada `stats:{id}`
+ * quando a campanha NÃO está no ramo "imutável saudável" de `isImmutableCampaign`
+ * (isto é: sempre que o call site em `fetchRecentCampaigns` não grava `opts={}`
+ * permanente). Substitui o binário anterior "recente = sempre RECENT_STATS_TTL"
+ * por duas faixas de idade, cortadas em 48h — a mesma linha que o editor
+ * decidiu como "onde frescor de fato importa" (issue #6720, decisão 01/09/2026):
+ *
+ *   - < 48h: RECENT_STATS_TTL (30min) — campanha ainda "quente", acumulando
+ *     opens/clicks rápido o bastante para stale de 30min importar de verdade.
+ *   - >= 48h (e < 7d, coberto pelo caller via `isImmutableCampaign`):
+ *     MID_RANGE_STATS_TTL (4h) — quase parada, TTL mais longo é seguro.
+ *
+ * NÃO decide imutabilidade (isso é `isImmutableCampaign`, corte em 7d,
+ * deliberadamente NÃO alterado por esta unidade). NÃO decide o caso
+ * poison/ls-fetch-falho — esse continua fixo em RECENT_STATS_TTL no call
+ * site (auto-cura rápida, #2323/#2337) independente da idade da campanha.
+ *
+ * `sentDate` ausente/inválido cai no ramo mais conservador (RECENT_STATS_TTL)
+ * — mesmo default defensivo de `isImmutableCampaign` (`!sentDate → false`).
+ */
+export function resolveRecentStatsTtl(sentDate: string | null, nowMs = Date.now()): number {
+  if (!sentDate) return RECENT_STATS_TTL;
+  const sent = Date.parse(sentDate);
+  if (isNaN(sent)) return RECENT_STATS_TTL;
+  const fortyEightHoursMs = 48 * 3600 * 1000;
+  return (nowMs - sent) < fortyEightHoursMs ? RECENT_STATS_TTL : MID_RANGE_STATS_TTL;
 }
 
 /**
@@ -2287,6 +2316,20 @@ export async function fetchRecentCampaigns(
   // `!env.STATS_CACHE` como "sem cache, buscar sempre ao vivo". `false`
   // (default) preserva o Worker de produção EXATAMENTE como antes.
   skipKvCache = false,
+  // #6720 Fatia C: `false` pula o 2º GET (`?statistics=linksStats`) por
+  // campanha — metade do custo da janela recente (ver #2249 no bloco de
+  // comentário logo acima do fetch de `ls`, mais abaixo, ANTES de mexer
+  // aqui). Default `true` preserva EXATAMENTE o comportamento anterior para
+  // quem não passa o parâmetro (rota `/`, Studio) — a seção de links
+  // agregados é renderizada incondicionalmente nesses dois caminhos (tabs
+  // CSS-only: todo tab-panel já vem no mesmo HTML, não há fetch lazy por
+  // aba). `false` é usado só pela rota `/api/campaigns` (`buildCampaignsResponse`,
+  // index.ts) — nenhum consumidor confirmado dessa rota (scripts/clarice-*.ts:
+  // envio-risk, envio-run, plan-wave, schedule-ramp, check-semaphore) lê o
+  // campo `linksStats`; é justamente essa rota que `Diaria-Clarice-Envio`
+  // bate como "primeira consulta" (#7007) e que mais sofre com o balde de
+  // 100 req/h saturado.
+  includeLinksStats = true,
 ): Promise<Array<BrevoCampaign & { listName?: string; listSize?: number }>> {
   if (skipKvCache) env = { ...env, STATS_CACHE: undefined as unknown as Env["STATS_CACHE"] };
   // #2280: a listagem NÃO era re-tentada — um único 429 aqui derrubava a página
@@ -2461,8 +2504,17 @@ export async function fetchRecentCampaigns(
         // neste render — a entrada já registrou que ls falhou; não tentar de novo até
         // o TTL expirar. Sem isso: ls=undefined → write → ls=null na leitura → re-fetch
         // → re-write em toda render dentro do TTL (churn exato que #2314 tentou evitar).
+        // #6720 Fatia C: `lsAttempted` marca se ESTE render de fato tentou (ou
+        // reusou do cache) o linksStats — usado abaixo tanto pra decidir se
+        // vale a pena escrever no KV (nada mudou → nada a persistir) quanto
+        // pra distinguir "tentamos e falhou" (grava lsPending, auto-cura
+        // #2337) de "nem tentamos, de propósito" (`includeLinksStats=false`
+        // — não grava lsPending, senão mentiria pro próximo render QUE
+        // precisa de fato do dado).
         let ls: BrevoLinksStats | undefined;
-        if (!cachedLsWasPending && (!cachedLs || cachedLsIsPoison)) {
+        let lsAttempted = false;
+        if (includeLinksStats && !cachedLsWasPending && (!cachedLs || cachedLsIsPoison)) {
+          lsAttempted = true;
           try {
             // #2275c: linksStats também retenta em 429 (wrapper próprio — isolado do gs).
             const linksDetail = await withRateLimitRetry(() =>
@@ -2475,8 +2527,11 @@ export async function fetchRecentCampaigns(
           } catch {
             // linksStats indisponível (429/erro após retry) — gs segue válido; seção de links degrada
           }
-        } else if (!cachedLsWasPending) {
-          // cachedLs is present and not poison — reuse it
+        } else if (!cachedLsWasPending && cachedLs && !cachedLsIsPoison) {
+          // cachedLs is present and not poison — reuse it. Não depende de
+          // `includeLinksStats`: é leitura de KV já feita acima (grátis, sem
+          // GET novo), então não há motivo pra esconder o dado só porque
+          // este render específico não PRECISAVA dele (#6720 Fatia C).
           ls = cachedLs as BrevoLinksStats;
         }
         // #2355 fix 3: when cachedLsWasPending=true (ls-fetch failed in prior cycle),
@@ -2504,25 +2559,54 @@ export async function fetchRecentCampaigns(
           linksStatsMap.set(c.id, ls);
         }
 
-        if (gsReal && env.STATS_CACHE) {
+        // #6720 Fatia C: só escreve quando algo de fato mudou nesta rodada —
+        // gs foi buscado agora (`!cachedGs`) OU o ls-fetch foi tentado
+        // (sucesso ou falha, `lsAttempted`). Sem este guard, um render com
+        // `includeLinksStats=false` e gs já cacheado re-escreveria a entrada
+        // sem necessidade nenhuma (e, pior, o payload abaixo teria que
+        // decidir o que fazer com um `ls` que nunca foi sequer considerado
+        // — ver comentário do `payload` mais abaixo).
+        const gsFreshlyFetched = !cachedGs;
+        const somethingChanged = gsFreshlyFetched || lsAttempted;
+        if (gsReal && env.STATS_CACHE && somethingChanged) {
           const gsFetched = globalStatsMap.get(c.id) ?? gs ?? null;
           const lsPoison = ls !== undefined ? isLinksStatsPoisoned(ls, gsFetched) : false;
-          // Poison → TTL curto mesmo em imutável (auto-cura); real → TTL normal.
+          // #6720 Fatia C: `lsFailed` é "tentamos buscar ls nesta rodada E
+          // não conseguimos" — distinto de "não tentamos porque
+          // `includeLinksStats=false`". Só o primeiro caso precisa do TTL
+          // curto de auto-cura; o segundo cai na faixa por idade normal.
+          const lsFailed = lsAttempted && ls === undefined;
           // Finding #1 (#2323): só grava sem TTL (permanente) quando ls está presente E
-          // não-poison. Se ls === undefined (fetch falhou), a entrada TTL'd auto-cura na
-          // próxima cache-miss → re-fetcha ls. Sem esse guard, a entrada permanente ficaria
-          // para sempre sem ls (exigiria `wrangler kv:key delete` para recuperar).
-          const opts = (immutable && !lsPoison && ls !== undefined) ? {} : { expirationTtl: RECENT_STATS_TTL };
+          // não-poison. Poison/ls-fetch-falho → TTL curto (RECENT_STATS_TTL) sempre,
+          // pra auto-curar rápido independente da idade da campanha (#2323/#2337).
+          // Caso contrário (ls ainda não considerado nesta rodada, ou simplesmente
+          // saudável mas não imutável) → TTL por FAIXA DE IDADE (#6720 Fatia C):
+          // <48h segue RECENT_STATS_TTL (frescor importa), 48h-7d usa
+          // MID_RANGE_STATS_TTL (quase parada, TTL mais longo é seguro) — ver
+          // `resolveRecentStatsTtl`.
+          const opts = (immutable && ls !== undefined && !lsPoison)
+            ? {}
+            : (lsPoison || lsFailed)
+              ? { expirationTtl: RECENT_STATS_TTL }
+              : { expirationTtl: resolveRecentStatsTtl(c.sentDate) };
           // #2314: 1 write por campanha (era 2).
-          // #2337 fix 2: quando ls === undefined (fetch falhou), gravar `lsPending: true`
-          // em vez de omitir o campo ls. JSON.stringify({ ls: undefined }) omite o campo →
-          // próxima leitura: unified.ls = undefined → ?? null = null → !cachedLs true →
-          // novo fetch+write em toda render dentro do TTL (churn). Com lsPending:true o
-          // próximo render detecta `unified.lsPending === true`, seta cachedLsWasPending e
-          // pula o fetch — sem novo write até o TTL expirar e uma tentativa fresca ocorrer.
+          // #2337 fix 2: quando ls === undefined POR TER TENTADO E FALHADO, gravar
+          // `lsPending: true` em vez de omitir o campo ls. JSON.stringify({ ls: undefined })
+          // omite o campo → próxima leitura: unified.ls = undefined → ?? null = null →
+          // !cachedLs true → novo fetch+write em toda render dentro do TTL (churn). Com
+          // lsPending:true o próximo render detecta `unified.lsPending === true`, seta
+          // cachedLsWasPending e pula o fetch — sem novo write até o TTL expirar.
+          // #6720 Fatia C: quando ls === undefined porque NEM TENTAMOS
+          // (`!includeLinksStats`), NÃO gravar lsPending:true — isso mentiria pro
+          // próximo render que efetivamente PRECISA de ls (`/`, Studio): ele leria
+          // `cachedLsWasPending=true` e pularia o fetch que precisa fazer de verdade.
+          // O payload nesse caso omite `ls` inteiramente, preservando a entrada como
+          // "ls nunca foi tentado" — exatamente o estado que ela já tinha.
           const payload = ls !== undefined
             ? { gs: gs!, ls }
-            : { gs: gs!, lsPending: true };
+            : includeLinksStats
+              ? { gs: gs!, lsPending: true }
+              : { gs: gs! };
           await env.STATS_CACHE.put(
             kvStatsKey, JSON.stringify(payload),
             opts,

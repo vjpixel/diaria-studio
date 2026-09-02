@@ -266,7 +266,16 @@ async function buildCampaignsResponse(
         // lock ocupado (fail-open — pior caso é igual ao pré-#3644).
       }
     }
-    const campaigns = await fetchRecentCampaigns(env, limit, isFresh);
+    // #6720 Fatia C: `includeLinksStats=false` -- `/api/campaigns` nunca
+    // expôs consumidor confirmado de `statistics.linksStats` (a seção de
+    // links agregados é exclusiva do HTML de `/`, que continua no default
+    // `true`, ver `buildDashboardResponse` abaixo). Os consumidores reais
+    // desta rota (scripts/clarice-envio-risk.ts, clarice-envio-run.ts,
+    // clarice-plan-wave.ts, clarice-schedule-ramp.ts, clarice-check-semaphore.ts
+    // -- inclusive a "primeira consulta" do `Diaria-Clarice-Envio`, #7007)
+    // só leem globalStats/campaignStats. Corta o 2º GET/campanha (metade do
+    // custo da janela <7d) sem perder frescor: ninguém olhava esse dado aqui.
+    const campaigns = await fetchRecentCampaigns(env, limit, isFresh, undefined, false, false);
     // #4786: agendadas são OPT-IN -- fetch separado (mesma função que a rota
     // `/` já usa pra seção "Agendadas") só quando pedido, fail-soft (uma
     // falha aqui nunca derruba a resposta principal de enviadas).

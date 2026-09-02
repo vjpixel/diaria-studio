@@ -133,6 +133,29 @@ export type {
 
 export const RECENT_STATS_TTL = 1800; // segundos (30min) — #2282
 
+/**
+ * #6720 Fatia C: TTL da faixa INTERMEDIÁRIA (48h–7d) do cache `stats:{id}`.
+ * Antes desta unidade, `isImmutableCampaign` (7d) era o único corte —
+ * qualquer campanha <7d caía sempre em `RECENT_STATS_TTL` (30min), e como o
+ * `Diaria-Clarice-Dashboard-Precompute` roda `interval 1h`, o TTL de 30min
+ * expira sempre ANTES do próximo render — na prática "sempre ao vivo" pra
+ * toda a janela de 7 dias inteira (medido em 01/09/2026: ~28 campanhas
+ * nessa janela × 2 GETs/campanha = 57% do orçamento horário da Brevo NUM
+ * ÚNICO render — ver #6720/#7007).
+ *
+ * Campanha de 2-7 dias já quase não muda mais (opens/clicks praticamente
+ * pararam de acumular) — não precisa do mesmo frescor de <48h, que segue em
+ * `RECENT_STATS_TTL`. 4h sobrevive a 3-4 execuções horárias do precompute
+ * antes de re-buscar, cortando a maior parte do custo dessa faixa sem virar
+ * imutável de fato (ainda refresca 6×/dia — decisão do editor foi NÃO tocar
+ * no corte de 7 dias do `isImmutableCampaign`, só adicionar uma faixa nova).
+ *
+ * NÃO se aplica a entradas poison/ls-fetch-falho (essas continuam com
+ * `RECENT_STATS_TTL` para auto-cura rápida — ver `resolveRecentStatsTtl` e o
+ * call site em `fetchRecentCampaigns`, brevo-api.ts).
+ */
+export const MID_RANGE_STATS_TTL = 4 * 3600; // segundos (4h) — #6720 Fatia C
+
 // #2426: chave KV das coortes de engajamento, gravada por
 // scripts/clarice-engagement-cohorts.ts. Mantida em sincronia com COHORTS_KV_KEY
 // daquele script (bundles separados não compartilham constantes).
