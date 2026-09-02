@@ -661,3 +661,32 @@ saudável — reparar o que não está quebrado é o que arrisca corromper
 trabalho de OUTRA sessão que estiver usando o mesmo checkout ao mesmo tempo
 (mesma classe de risco do item 20 acima, só que via comando de reparo em vez
 de `rm`).
+
+## 23. Ausência de arquivo replicado ≠ ausência de execução (#7083)
+
+**Escopo:** qualquer sessão que investigue "esta task/alarme rodou?" lendo
+`data/` (junction/symlink compartilhada por OneDrive entre máquinas —
+`helios`, a máquina do editor, etc.) — não só o overnight.
+
+`data/` só reflete o que uma OUTRA máquina escreveu depois que o OneDrive
+replica — com atraso normal, e ocasionalmente sem replicar (#5548: serviço
+morto; #7083: buraco mais estreito, um arquivo ESPECÍFICO falhando em
+replicar com o sync GERAL saudável, outros dotfiles de alarme chegando
+normalmente na mesma janela). **Duas sessões independentes, no mesmo turno,
+leram a ausência local de `data/.session-registry-safebackup-alarm-issues.json`
+numa máquina que não executa a task e concluíram "o alarme nunca rodou" — a
+task rodava normalmente todo dia em `helios` (timer armado, store escrito no
+minuto da última execução).**
+
+**Regra:** ausência de um arquivo em `data/`, observada numa máquina que NÃO
+é a que executa a task/timer em questão, **nunca** é prova de não-execução —
+só é conclusiva quando checada NA máquina executora (SSH, log, `systemctl
+--user list-timers` lá). A heurística óbvia ("cheque o canário de sync
+antes de concluir ausência", `data/.onedrive-sync-canary.json` de
+`scripts/lib/onedrive-sync-alarm.ts`) **não basta sozinha** — o incidente do
+#7083 tinha o canário geral fresco e mesmo assim um arquivo específico não
+replicou. Usar `npx tsx scripts/check-replicated-absence.ts --file <path>
+[--executing-machine]` (`scripts/lib/replicated-absence.ts`) antes de
+afirmar "nunca rodou"/"alarme morto" a partir de uma ausência em `data/` —
+sem `--executing-machine`, o veredito nunca confirma ausência, só aponta pra
+checar na máquina executora.
