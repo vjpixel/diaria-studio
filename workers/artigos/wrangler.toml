@@ -1,9 +1,9 @@
 # workers/artigos — hosting de artigos especiais avulsos da diar.ia.br.
 #
-# Worker de static assets (sem script). Serve em especial.diar.ia.br (domínio
-# de marca dedicado, custom_domain = true — mesmo mecanismo comprovado de
-# livros.diar.ia.br e cursos.diar.ia.br). A raiz diar.ia.br continua 100%
-# hospedada pelo Beehiiv Website Builder v2, sem interferência.
+# Serve em especial.diar.ia.br (domínio de marca dedicado, custom_domain =
+# true — mesmo mecanismo comprovado de livros.diar.ia.br e
+# cursos.diar.ia.br). A raiz diar.ia.br continua 100% hospedada pelo Beehiiv
+# Website Builder v2, sem interferência.
 #
 # Histórico (#deploy 260723): a 1ª tentativa usou uma Workers Route clássica
 # (pattern + zone_name) escopada a um path da RAIZ diar.ia.br, pra evitar
@@ -18,13 +18,59 @@
 # Cada artigo é um path dentro do subdomínio: adicionar
 # public/{ano}/{slug}/index.html por artigo novo — não precisa de rota nova,
 # o roteador de assets já resolve sub-paths dentro do mesmo custom_domain.
+#
+# #7030: convertido de static-assets-only pra worker com SCRIPT
+# (`main = src/index.ts`) + assets — MESMA conversão que `workers/cursos`
+# fez no #4052, mesmo motivo: os 2 Artigos Especiais publicados
+# (`/2026/engenharia-de-ilusao/`, `/2026/o-agente/`) eram públicos apesar de
+# a recompensa de apoio ≥ R$10/mês já ter sido prometida por e-mail — agora
+# servem TEASER (estático, `env.ASSETS`) por padrão, e conteúdo completo só
+# depois do gate confirmar apoio (`src/apoio-gate.ts`). As PÁGINAS DE
+# ENTIDADE (`public/entidades/*`) e a home continuam 100% estáticas, sem
+# gate — decisão do editor (ver PR body): fechá-las seria ruim pra SEO/GEO.
+#
+# ⚠️ NÃO DEPLOYADO ainda — `wrangler deploy`, criação do KV namespace
+# (`wrangler kv namespace create ARTIGOS_APOIO_NIVEL`, colar o id abaixo) e
+# `wrangler secret put COOKIE_HMAC_SECRET` ficam pro editor (guard de
+# publicação do #7030: subagente de overnight não deploya).
 name = "diaria-artigos"
+main = "src/index.ts"
 compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
 [[routes]]
 pattern = "especial.diar.ia.br"
 custom_domain = true
 
+[observability]
+enabled = true
+
 [assets]
 directory = "./public"
+binding = "ASSETS"
+# INVARIANTE (#7030, mesmo achado do #4052 em `workers/cursos`): Workers com
+# Static Assets servem o ASSET ANTES de invocar o script — sem isto, os
+# paths dos 2 artigos gateados (que TÊM asset correspondente, o teaser)
+# nunca chegariam no script, e o gate inteiro ficaria morto (todo mundo
+# sempre veria o teaser, mesmo com sessão de apoiador válida). Lista
+# EXPLÍCITA (não `true`) porque só os 2 artigos precisam do script — página
+# de entidade, home, robots.txt, sitemap.xml seguem 100% estáticas, sem
+# custo extra de invocação. Precisa casar com `gatedArticlePaths()` em
+# `src/gated-articles.ts` — divergir os dois reabre o mesmo buraco silencioso
+# que o #4305 documentou pro cursos.
+run_worker_first = [
+  "/2026/engenharia-de-ilusao/",
+  "/2026/engenharia-de-ilusao/index.html",
+  "/2026/o-agente/",
+  "/2026/o-agente/index.html",
+]
+
+# #7030: KV do sync de nível de apoio — chave `apoio:{sha256(email)}` → nível
+# (`scripts/sync-artigos-apoio-kv.ts` popula, espelhando o custom field
+# `apoio_nivel` já mantido pela Beehiiv). PLACEHOLDER — rodar `wrangler kv
+# namespace create ARTIGOS_APOIO_NIVEL` e colar o id retornado aqui antes do
+# deploy (mesmo procedimento de `workers/cursos/wrangler.toml`).
+[[kv_namespaces]]
+binding = "ARTIGOS_APOIO_NIVEL"
+id = "PLACEHOLDER_RODAR_WRANGLER_KV_NAMESPACE_CREATE"
