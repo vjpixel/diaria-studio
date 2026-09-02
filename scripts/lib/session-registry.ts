@@ -289,6 +289,20 @@ export interface SessionRecord {
    * disco fora de `listActiveSessions`.
    */
   stale?: boolean;
+  /**
+   * #7028 — ISO timestamp de quando este registro deixou de representar uma
+   * sessão viva. Só escrito por `registerSession` no registro ANTIGO durante
+   * uma promoção de kind (ver seu docblock), como rede de segurança pro caso
+   * de a remoção best-effort do arquivo antigo falhar (`outcome:
+   * "promoted-orphan-left"`) — o conteúdo com claims/`merge_grant` migrados
+   * fica em disco, mas marcado. `dedupeBySessionId` exclui registros com
+   * `endedAt` da consideração de "sessão viva" antes de escolher a base do
+   * grupo, então um órfão carimbado nunca volta a contar como coordenador
+   * ativo pro guard de merge do #5716. Nenhum outro escritor deste módulo
+   * seta este campo — não confundir com a remoção normal via `endSession`
+   * (que APAGA o arquivo, não carimba nada).
+   */
+  endedAt?: string;
   [key: string]: unknown;
 }
 
@@ -1125,6 +1139,28 @@ export function registerSession(
   }
 
   if (promotedFrom) {
+    // #7028: carimba `endedAt` no CONTEÚDO do registro antigo ANTES de
+    // tentar removê-lo — belt-and-suspenders pro caso (best-effort, como o
+    // `rmSync` abaixo) de a remoção falhar e o arquivo permanecer em disco.
+    // Sem isto, um órfão `promoted-orphan-left` ficava indistinguível de uma
+    // sessão genuinamente viva pros leitores (`dedupeBySessionId`,
+    // `listActiveSessions`) até `SOFT_STALE_MS` (90min) expirar — achado ao
+    // vivo #7028: uma sessão `overnight` promovida de volta pra `interactive`
+    // (o `sessionId` sobrevive à mudança, o harness preserva a conversa)
+    // deixou o registro `overnight` antigo congelado no heartbeat da
+    // promoção, e ele continuou contando como COORDENADOR ATIVO — o guard do
+    // #5716 lê exatamente esse sinal pra bloquear merge cross-máquina.
+    // `writeJsonSafe` usa `node:fs` de verdade (não o `removeIo` injetável,
+    // que só existe pra simular falha de `rmSync` em teste) — se a stampagem
+    // em si falhar (I/O), cai no catch e segue pro rmSync normalmente; nunca
+    // lança, nunca aborta a promoção.
+    try {
+      if (removeIo.exists(promotedFrom)) {
+        writeJsonSafe(promotedFrom, { ...previous, endedAt: now });
+      }
+    } catch (e) {
+      warnIoError(promotedFrom, e);
+    }
     // Best-effort: o record novo já foi gravado com sucesso acima.
     // `existsSync` antes do `rmSync` (mesmo padrão de
     // `garbageCollectSessions` abaixo) evita um warning espúrio no caso
@@ -1750,12 +1786,23 @@ function dedupeBySessionId(records: readonly SessionRecord[]): SessionRecord[] {
 
   const out: SessionRecord[] = [];
   for (const group of bySessionId.values()) {
-    if (group.length === 1) {
-      out.push(group[0]!);
+    // #7028: registros com `endedAt` carimbado (promoção de kind cuja
+    // remoção do arquivo antigo falhou — ver docblock do campo em
+    // `SessionRecord`) não contam como sessão viva. Excluídos ANTES de
+    // escolher base/kind — senão o órfão `overnight` (que só tem claims
+    // MIGRADAS, já duplicadas no registro novo) continuaria vencendo sobre
+    // um `interactive` genuinamente vivo só por `isCoordinatorKind`, o
+    // sintoma medido ao vivo na #7028. Grupo inteiro encerrado (raro — só
+    // aconteceria se TODAS as cópias tivessem sido carimbadas) não produz
+    // nenhuma sessão ativa.
+    const liveGroup = group.filter((r) => !r.endedAt);
+    if (liveGroup.length === 0) continue;
+    if (liveGroup.length === 1) {
+      out.push(liveGroup[0]!);
       continue;
     }
-    const claimsUnion = mergeSessionRecords(group);
-    const coordinatorGroup = group.filter((r) => isCoordinatorKind(r.kind));
+    const claimsUnion = mergeSessionRecords(liveGroup);
+    const coordinatorGroup = liveGroup.filter((r) => isCoordinatorKind(r.kind));
     const base = coordinatorGroup.length > 0 ? mergeSessionRecords(coordinatorGroup) : claimsUnion;
     out.push({
       ...base,
