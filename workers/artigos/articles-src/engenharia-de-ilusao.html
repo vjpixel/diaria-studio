@@ -638,10 +638,10 @@
     <span class="toc-tag">Neste artigo</span>
     <div class="toc-links">
       <a href="#s01"><span class="n">01</span>Onde isso já deu errado</a>
-      <a href="#especial-gate-cta"><span class="n">02</span>O modelo lê o texto, não você</a>
-      <a href="#especial-gate-cta"><span class="n">03</span>Ser coerente é o ponto fraco</a>
-      <a href="#especial-gate-cta"><span class="n">04</span>Três mitos que não se sustentam</a>
-      <a href="#especial-gate-cta"><span class="n">05</span>Os progressos recentes</a>
+      <a href="#s02"><span class="n">02</span>O modelo lê o texto, não você</a>
+      <a href="#s03"><span class="n">03</span>Ser coerente é o ponto fraco</a>
+      <a href="#s04"><span class="n">04</span>Três mitos que não se sustentam</a>
+      <a href="#s05"><span class="n">05</span>Os progressos recentes</a>
     </div>
   </nav>
 
@@ -716,17 +716,337 @@
       </div>
     </div>
 
-    
-<div class="especial-gate-cta" id="especial-gate-cta" style="max-width:42rem;margin:2.5rem auto 0;padding:1.75rem 1.5rem;border-top:1px solid #EBE5D0;background:linear-gradient(to bottom, transparent, #FBFAF6 40%);position:relative;">
-  <div aria-hidden="true" style="position:absolute;top:-4.5rem;left:0;right:0;height:4.5rem;background:linear-gradient(to bottom, transparent, #FBFAF6);pointer-events:none;"></div>
-  <p style="font-family:Georgia,serif;font-size:1.15rem;font-weight:600;margin:0 0 0.6rem;">O resto deste Artigo Especial é pra quem apoia a diar.ia.br.</p>
-  <p style="font-size:0.95rem;line-height:1.55;margin:0 0 1.25rem;">A partir de R$10/mês de apoio, o Artigo Especial mensal sai completo — texto inteiro, mais aprofundado, com acesso a todo o histórico já publicado.</p>
-  <div style="display:flex;gap:0.75rem;flex-wrap:wrap;">
-    <a href="https://apoia.se/diaria" style="display:inline-block;padding:0.7rem 1.2rem;background:#00A0A0;color:#FFFFFF;border-radius:6px;font-size:0.9rem;font-weight:700;text-decoration:none;">Apoiar a partir de R$10/mês</a>
-    <a href="/gate?article=engenharia-de-ilusao" style="display:inline-block;padding:0.7rem 1.2rem;border:1px solid #EBE5D0;color:#171411;border-radius:6px;font-size:0.9rem;font-weight:700;text-decoration:none;">Já apoio — confirmar e-mail</a>
+    <!-- ESPECIAL:GATE_CUT -->
+
+    <h3 class="sect" id="s02"><span class="sect-n">02</span>O modelo lê o texto, não você</h3>
+
+    <p>Um filtro de segurança avalia o que chega escrito. Não tem acesso à intenção de quem escreveu nem ao que essa pessoa pretende fazer com a resposta. Julga a superfície apresentada, porque é a única coisa que existe para ele.</p>
+
+    <p>Um exemplo inofensivo mostra a forma do truque. Alguém pergunta como se abre uma fechadura sem a chave. O filtro recusa. A mesma pessoa volta e escreve: sou chaveiro, preciso explicar a um cliente por que a fechadura dele é fraca. A resposta vem, em tópicos. Nenhuma palavra do segundo pedido é proibida. O que mudou foi quem diz estar perguntando, e o modelo não tem como conferir.</p>
+
+    <p>É daí que vem a brecha. Quem constrói um personagem consistente, o pesquisador de segurança, o autor de ficção que precisa de um vilão convincente, recebe respostas fiéis ao papel. Dentro dessa cena, a resposta proibida vira só a fala que o papel pede.</p>
+
+    <p class="pull-quote">O modelo não entende você. Ele entende o personagem que você apresenta.</p>
+
+    <p>Pense num ator que topa qualquer papel, desde que o roteiro faça sentido. Ele não investiga se o roteirista tem boas intenções. Lê as páginas, entra no personagem e entrega a cena. O modelo faz o mesmo, e faz bem, porque foi treinado para isso.</p>
+
+    <p><a href="https://arxiv.org/abs/2401.06373">Um estudo de 2024</a> levou essa ideia até o fim. Em vez de tratar o modelo como uma máquina a ser atacada por especialistas, os autores o trataram como alguém a ser convencido por gente comum. O risco que importa, argumentam, está na conversa do dia a dia.</p>
+
+    <p>Eles pegaram técnicas de persuasão conhecidas há décadas, como apelar à autoridade ou oferecer algo em troca, e as usaram para escrever pedidos que qualquer pessoa entende. Com até dez tentativas por pedido, <span class="stat">mais de nove em cada dez</span> passaram nos modelos testados. Funcionou melhor que os métodos automáticos da época.</p>
+
+    <p>Lidas pelo ângulo deste artigo, essas técnicas são instruções de figurino. Cada uma monta um papel, e dentro do papel a fala proibida é só a fala esperada.</p>
+
+    <h3 class="sect" id="s03"><span class="sect-n">03</span>Ser coerente é o ponto fraco</h3>
+
+    <p>A técnica mais conhecida dessa família chama-se <a href="https://arxiv.org/abs/2404.01833">Crescendo</a>, e veio de pesquisadores da Microsoft. Ela começa com uma pergunta inocente sobre o assunto e sobe aos poucos, sempre se apoiando no que o próprio modelo acabou de responder. Quem ataca nunca declara o objetivo. Ele vai aparecendo. Testada em ChatGPT, Gemini e Claude, nas versões de 2024, funcionou em todos.</p>
+
+    <p>É a demonstração mais limpa da tese. Cada rodada usa a resposta anterior do modelo como prova de quem ele é naquela conversa. Chega um ponto em que recusar seria contradizer o que ele mesmo acabou de dizer. A virtude vira a brecha.</p>
+
+    <p><a href="https://arxiv.org/abs/2508.07646">Um trabalho de 2025</a> desinflou parte da mística. Os autores analisaram ataques em várias mensagens contra GPT-4, Claude e Gemini, e chegaram a uma conclusão desconfortável para quem gosta da imagem do manipulador habilidoso. Quando se leva em conta que o atacante aprende com cada recusa, o ataque longo rende mais ou menos o mesmo que repetir o ataque curto várias vezes. A coreografia da conversa importa menos do que parece.</p>
+
+    <p>Se a escalada engenhosa não decide, o que resta é achar o enquadramento certo e insistir. O personagem é o que vale. A escalada é só um dos caminhos até ele.</p>
+
+    <p>O mesmo trabalho traz dois achados importantes. O primeiro: contra modelos já reforçados contra ataques curtos, o ataque longo ainda passa em <span class="stat">mais de sete de cada dez</span> pedidos. O segundo, mais incômodo: modelos parecidos caem nos mesmos truques. Um modelo recém-lançado herda as brechas do anterior. Trocar de fornecedor não resolve quando todos treinam de forma parecida.</p>
+
+    <p>Há ainda o achado que fecha o argumento do começo. Nos modelos que "pensam" antes de responder, os pesquisadores encontraram algo que chamaram de surpreendente. <strong>Quanto mais o modelo raciocina, mais o ataque tende a funcionar.</strong> Pensar mais não protege. Ajuda a manter o papel de pé.</p>
+
+    <p><a href="https://arxiv.org/abs/2605.01687">Um teste de 2026</a>, feito em escala bem maior, mede a mesma coisa por outro caminho. Pedidos que parecem inofensivos quando vêm sozinhos ficam bem mais eficazes no meio de uma conversa. O mesmo pedido recusado de saída passa quando chega dentro de uma cena montada.</p>
+
+    <div class="ig-inline" id="ig-fase-2">
+      <div class="infographic-card">
+        <div class="ig-eyebrow">O que as pesquisas medem</div>
+        <h3>Quatro números que descrevem o mesmo problema</h3>
+        <div class="ig-timeline">
+          <div class="ig-node" style="--dot-size:0.8rem;--dot-color:var(--dot-impact);--dot-opacity:1;">
+            <span class="ig-date">Jan 2024</span>
+            <span class="ig-label">Persuasão: mais de 9 em cada 10 pedidos</span>
+            <p class="ig-desc">Pedidos escritos com técnicas de convencimento, contra vários modelos, em até 10 tentativas. Funcionaram melhor que os métodos automáticos da época.</p>
+          </div>
+          <div class="ig-node" style="--dot-size:0.9rem;--dot-color:var(--dot-impact);--dot-opacity:1;">
+            <span class="ig-date">Ago 2025</span>
+            <span class="ig-label">Conversa longa: mais de 7 em cada 10</span>
+            <p class="ig-desc">Contra modelos já reforçados contra ataques curtos. O mesmo estudo mostra que quanto mais o modelo raciocina, mais o ataque tende a funcionar.</p>
+          </div>
+          <div class="ig-node" style="--dot-size:1rem;--dot-color:var(--dot-impact);--dot-opacity:1;">
+            <span class="ig-date">Mai 2026</span>
+            <span class="ig-label">A cena importa mais que o pedido</span>
+            <p class="ig-desc">Teste com mais de 10 mil pedidos. Os que parecem inofensivos sozinhos ficam bem mais eficazes no meio de uma conversa.</p>
+          </div>
+          <div class="ig-node" style="--dot-size:1.1rem;--dot-color:var(--accent);--dot-opacity:1;">
+            <span class="ig-date">Jan 2026</span>
+            <span class="ig-label">Defesa: mais de 9 em cada 10 detectados</span>
+            <p class="ig-desc">Comprimir a conversa inteira numa mensagem só antes de treinar o filtro. Lê muito menos texto e acerta bem mais que o método anterior.</p>
+          </div>
+        </div>
+        <div class="ig-legend">
+          <span><span class="sw" style="background:var(--dot-impact);"></span>ataque</span>
+          <span><span class="sw" style="background:var(--accent);"></span>defesa</span>
+          <span style="margin-left:auto;">números medidos em teste de laboratório, não em produto</span>
+        </div>
+      </div>
+    </div>
+
+    <h3 class="sect" id="s04"><span class="sect-n">04</span>Três mitos que não se sustentam</h3>
+
+    <p>Três ideias sobre jailbreak se repetem em conversa e em cobertura de imprensa, e todas encolhem o problema. Pesquisas desmentem as três.</p>
+
+    <div class="myth-list">
+
+      <div class="myth">
+        <div class="myth-claim">
+          <span class="myth-n">Mito 01</span>
+          <q>Isso é coisa de hacker, não de usuário comum.</q>
+        </div>
+        <div class="myth-body">
+          <p><a href="https://arxiv.org/abs/2310.08419">O método mais citado da área</a> nasceu da engenharia social, a arte de convencer pessoas, e de invasão de sistema não tem nada. Ele usa um modelo de IA para atacar outro, sem acesso nenhum ao interior do alvo e sem ninguém acompanhando. Costuma funcionar em menos de vinte tentativas.</p>
+          <p>Fora dos laboratórios, o quadro é o mesmo. <a href="https://arxiv.org/abs/2308.03825">Um levantamento de 2024</a> mapeou 131 comunidades dedicadas a jailbreak em fóruns públicos comuns. Nelas, 28 contas passaram mais de cem dias reescrevendo e testando os mesmos pedidos. Os cinco mais eficazes funcionavam em <span class="stat">95%</span> das vezes, e o mais antigo já durava quase oito meses.</p>
+          <p>O próprio levantamento descreve a categoria mais simples que encontrou como transformar o modelo em outro personagem.</p>
+        </div>
+      </div>
+
+      <div class="myth">
+        <div class="myth-claim">
+          <span class="myth-n">Mito 02</span>
+          <q>A barreira é uma lista de palavras proibidas.</q>
+        </div>
+        <div class="myth-body">
+          <p>Se fosse uma lista, bastaria trocar as palavras. <a href="https://arxiv.org/abs/2310.02446">Uma pesquisa de 2023</a> traduziu pedidos nocivos para línguas com pouco material de treinamento, como o zulu. O GPT-4 respondeu a <span class="stat">quase oito em cada dez</span>, com o mesmo conteúdo que recusaria em inglês.</p>
+          <p>A razão: o treinamento de segurança é desigual entre idiomas, porque o material para treinar também é. O português está bem melhor que o zulu. Ainda assim o princípio vale, e incomoda: a proteção depende da língua em que você fala, e o inglês é sempre o caso mais bem cuidado.</p>
+          <p>O segundo caminho dispensa idioma e palavra. <a href="https://arxiv.org/abs/2307.15043">Um ataque do mesmo ano</a> acha, por busca automática, sequências de letras sem sentido nenhum que fazem o modelo responder assim mesmo. Não dá para pôr aquilo numa lista de banidas, porque aquilo não é palavra. Nos dois casos a barreira cai sem que nada proibido apareça escrito.</p>
+        </div>
+      </div>
+
+      <div class="myth">
+        <div class="myth-claim">
+          <span class="myth-n">Mito 03</span>
+          <q>As empresas vão consertar isso com mais treinamento de segurança.</q>
+        </div>
+        <div class="myth-body">
+          <p>O treinamento de segurança que existe hoje é raso. Ele se concentra quase todo nas primeiras palavras da resposta, em vez de mudar o comportamento do modelo por inteiro. Na prática, quem consegue empurrar o começo da resposta costuma levar o resto junto. <a href="https://arxiv.org/abs/2406.05946">O trabalho que mediu isso</a> foi premiado em 2025, e o título já é o argumento: a segurança precisa ser mais funda do que umas poucas palavras.</p>
+          <p>A demonstração mais direta veio da própria Anthropic. Ela retreinou o modelo para fechar um ataque que tinha descoberto em 2024 e <a href="https://www.anthropic.com/research/many-shot-jailbreaking">relatou o resultado</a>: a correção só adiou o jailbreak. Passou a exigir mais exemplos dentro da conversa, e a resposta nociva aparecia do mesmo jeito.</p>
+          <p>Reduzir o risco funciona. Num dos casos, mudar a instrução fixa que a empresa coloca antes de toda conversa derrubou a taxa de sucesso de <span class="stat">61% para 2%</span>. A evidência derruba a promessa de resolver de vez e deixa em pé a de reduzir.</p>
+        </div>
+      </div>
+
+    </div>
+
+    <h3 class="sect" id="s05"><span class="sect-n">05</span>Os progressos recentes</h3>
+
+    <p>A boa notícia é que a defesa parou de tentar o impossível. Se o ataque não está em nenhuma frase específica, ler frase por frase nunca vai funcionar. Foi essa conclusão que reorganizou a pesquisa em 2026.</p>
+
+    <p>Duas linhas de pesquisa ilustram a virada. <a href="https://arxiv.org/abs/2601.00454">A primeira</a> comprime a conversa inteira numa mensagem só antes de treinar o filtro: achata a cena, para que a manipulação gradual apareça de uma vez em vez de diluída ao longo do diálogo. Na melhor configuração, detecta <span class="stat">mais de nove em cada dez</span> ataques. <a href="https://arxiv.org/abs/2606.03136">A segunda</a>, de junho, abandona de vez o conteúdo. Ela mede o formato do caminho que a conversa percorre e procura o desenho característico de quem está montando um papel.</p>
+
+    <p>Que a defesa tenha precisado parar de ler o que foi dito para medir o formato do caminho é a confirmação do diagnóstico pelo avesso. O ataque nunca esteve nas palavras.</p>
+
+    <p>Você não vai ser invadido por um jailbreak. Quem faz esse ataque quer uma resposta que o modelo não deveria dar, e o alvo é o modelo, não a sua máquina. O ponto em que isso encosta em você é outro, e é o que mais cresce agora: o assistente que trabalha no seu lugar, com os seus arquivos e os seus logins abertos.</p>
+
+    <p>Não existe correção para a distância entre ler um texto de alguém e conhecer uma pessoa. O que mudou foi o lugar onde a defesa procura: a forma da conversa, não o conteúdo de cada fala. É um progresso real, e ainda assim ela chega depois.</p>
+
+    <p>O ataque sobrevive porque o modelo faz exatamente o que se espera dele: acompanha quem fala. Corrigir isso seria corrigir a disposição de entrar na conversa.</p>
+
   </div>
+
+  <aside class="ig-aside">
+    <p class="ig-aside-caption">Os dois quadros abaixo acompanham a leitura: o primeiro mostra o caminho do laboratório até as consequências recentes, ao longo de três anos; o segundo, o que as pesquisas efetivamente mediram.</p>
+
+    <div class="infographic-card">
+      <div class="ig-eyebrow">Três anos, do laboratório às consequências recentes</div>
+      <h3>De curiosidade de laboratório a fato geopolítico</h3>
+      <div class="ig-timeline">
+        <div class="ig-node" style="--dot-size:0.5rem;--dot-color:var(--dot-research);--dot-opacity:1;">
+          <span class="ig-date">2023</span>
+          <span class="ig-label">O ataque ganha método</span>
+          <p class="ig-desc">Num ano só: letras sem sentido que atravessam o filtro, tradução para línguas pouco treinadas, ataque automático em menos de vinte tentativas.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:0.6rem;--dot-color:var(--dot-research);--dot-opacity:1;">
+          <span class="ig-date">2024</span>
+          <span class="ig-label">A conversa vira o vetor</span>
+          <p class="ig-desc">Persuasão de gente comum passa de 9 em cada 10, e dois trabalhos mostram por que consertar é difícil: a segurança é rasa, e retreinar só adia.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:0.7rem;--dot-color:var(--dot-research);--dot-opacity:1;">
+          <span class="ig-date">Ago 2025</span>
+          <span class="ig-label">No laboratório, o problema ganha números</span>
+          <p class="ig-desc">Pesquisa mede ataques de conversa longa e conclui que a escalada elaborada pesa menos do que se imaginava.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:0.8rem;--dot-color:var(--dot-policy);--dot-opacity:1;">
+          <span class="ig-date">jun–jul 2026</span>
+          <span class="ig-label">Jailbreak vira fundamento de controle de exportação</span>
+          <p class="ig-desc">Ordem dos EUA suspende o acesso global ao Fable 5 e ao Mythos. Ele volta duas semanas depois, e a concessão é um novo método de teste contra jailbreak.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:0.9rem;--dot-color:var(--dot-impact);--dot-opacity:1;">
+          <span class="ig-date">14 jul 2026</span>
+          <span class="ig-label">Grupos extremistas industrializam a prática</span>
+          <p class="ig-desc">Levantamento apoiado pela ONU acha canais onde extremistas trocam as conversas que furaram as barreiras.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:1.05rem;--dot-color:var(--dot-impact);--dot-opacity:1;">
+          <span class="ig-date">18 ago 2026</span>
+          <span class="ig-label">O crime já usa a brecha</span>
+          <p class="ig-desc">Ransomware "The Gentlemen" ataca oito organizações com o Claude, explorando de propósito uma versão antiga.</p>
+        </div>
+      </div>
+      <div class="ig-legend">
+        <span><span class="sw" style="background:var(--dot-research);"></span>pesquisa</span>
+        <span><span class="sw" style="background:var(--dot-policy);"></span>política e indústria</span>
+        <span><span class="sw" style="background:var(--dot-impact);"></span>consequências recentes</span>
+      </div>
+    </div>
+
+    <div class="infographic-card">
+      <div class="ig-eyebrow">O que as pesquisas medem</div>
+      <h3>Quatro números que descrevem o mesmo problema</h3>
+      <div class="ig-timeline">
+        <div class="ig-node" style="--dot-size:0.8rem;--dot-color:var(--dot-impact);--dot-opacity:1;">
+          <span class="ig-date">Jan 2024</span>
+          <span class="ig-label">Persuasão: mais de 9 em cada 10 pedidos</span>
+          <p class="ig-desc">Pedidos escritos com técnicas de convencimento, contra vários modelos, em até 10 tentativas. Funcionaram melhor que os métodos automáticos da época.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:0.9rem;--dot-color:var(--dot-impact);--dot-opacity:1;">
+          <span class="ig-date">Ago 2025</span>
+          <span class="ig-label">Conversa longa: mais de 7 em cada 10</span>
+          <p class="ig-desc">Contra modelos já reforçados contra ataques curtos. O mesmo estudo mostra que quanto mais o modelo raciocina, mais o ataque tende a funcionar.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:1rem;--dot-color:var(--dot-impact);--dot-opacity:1;">
+          <span class="ig-date">Mai 2026</span>
+          <span class="ig-label">A cena importa mais que o pedido</span>
+          <p class="ig-desc">Teste com mais de 10 mil pedidos. Os que parecem inofensivos sozinhos ficam bem mais eficazes no meio de uma conversa.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:1.1rem;--dot-color:var(--accent);--dot-opacity:1;">
+          <span class="ig-date">Jan 2026</span>
+          <span class="ig-label">Defesa: mais de 9 em cada 10 detectados</span>
+          <p class="ig-desc">Comprimir a conversa inteira numa mensagem só antes de treinar o filtro. Lê muito menos texto e acerta bem mais que o método anterior.</p>
+        </div>
+      </div>
+      <div class="ig-legend">
+        <span><span class="sw" style="background:var(--dot-impact);"></span>ataque</span>
+        <span><span class="sw" style="background:var(--accent);"></span>defesa</span>
+      </div>
+    </div>
+
+    <section class="sources">
+      <h2>Fontes</h2>
+      <ol class="ledger">
+        <li>
+          <span>
+            <span class="src-title">ONU revela como terroristas burlam filtros de IA para fabricar armas</span>
+            <span class="src-outlet">Canaltech</span>
+            <a class="src-url" href="https://canaltech.com.br/inteligencia-artificial/onu-revela-como-terroristas-burlam-filtros-de-ia-para-fabricar-armas/">canaltech.com.br/inteligencia-artificial/onu-revela-como-terroristas-burlam-filtros-de-ia</a>
+          </span>
+        </li>
+        <li>
+          <span>
+            <span class="src-title">Grupo hacker usou Claude em oito invasões</span>
+            <span class="src-outlet">Cybersecurity News</span>
+            <a class="src-url" href="https://cybersecuritynews.com/claude-code-helps-ransomware-operator/">cybersecuritynews.com/claude-code-helps-ransomware-operator</a>
+          </span>
+        </li>
+        <li>
+          <span>
+            <span class="src-title">Controle de exportação derruba acesso global ao Fable 5</span>
+            <span class="src-outlet">Nextgov</span>
+            <a class="src-url" href="https://www.nextgov.com/artificial-intelligence/2026/06/anthropic-suspends-top-ai-models-after-us-export-control-order/414173/">nextgov.com/artificial-intelligence/2026/06</a>
+          </span>
+        </li>
+        <li>
+          <span>
+            <span class="src-title">How Johnny Can Persuade LLMs to Jailbreak Them (Zeng et al., ACL 2024)</span>
+            <span class="src-outlet">arXiv 2401.06373</span>
+            <a class="src-url" href="https://arxiv.org/abs/2401.06373">arxiv.org/abs/2401.06373</a>
+          </span>
+        </li>
+        <li>
+          <span>
+            <span class="src-title">Great, Now Write an Article About That: The Crescendo Multi-Turn LLM Jailbreak Attack</span>
+            <span class="src-outlet">arXiv 2404.01833 · USENIX Security 2025</span>
+            <a class="src-url" href="https://arxiv.org/abs/2404.01833">arxiv.org/abs/2404.01833</a>
+          </span>
+        </li>
+        <li>
+          <span>
+            <span class="src-title">Multi-Turn Jailbreaks Are Simpler Than They Seem</span>
+            <span class="src-outlet">arXiv 2508.07646</span>
+            <a class="src-url" href="https://arxiv.org/abs/2508.07646">arxiv.org/abs/2508.07646</a>
+          </span>
+        </li>
+        <li>
+          <span>
+            <span class="src-title">MultiBreak: benchmark multiturno de jailbreak</span>
+            <span class="src-outlet">arXiv 2605.01687</span>
+            <a class="src-url" href="https://arxiv.org/abs/2605.01687">arxiv.org/abs/2605.01687</a>
+          </span>
+        </li>
+        <li>
+          <span>
+            <span class="src-title">Defensive M2S: guardrails treinados em conversas comprimidas</span>
+            <span class="src-outlet">arXiv 2601.00454</span>
+            <a class="src-url" href="https://arxiv.org/abs/2601.00454">arxiv.org/abs/2601.00454</a>
+          </span>
+        </li>
+        <li>
+          <span>
+            <span class="src-title">PsychoPass: perfilamento geométrico de conversas adversariais</span>
+            <span class="src-outlet">arXiv 2606.03136</span>
+            <a class="src-url" href="https://arxiv.org/abs/2606.03136">arxiv.org/abs/2606.03136</a>
+          </span>
+        </li>
+        <li>
+          <span>
+            <span class="src-title">Low-Resource Languages Jailbreak GPT-4 (Yong, Menghini e Bach)</span>
+            <span class="src-outlet">arXiv 2310.02446</span>
+            <a class="src-url" href="https://arxiv.org/abs/2310.02446">arxiv.org/abs/2310.02446</a>
+          </span>
+        </li>
+        <li>
+          <span>
+            <span class="src-title">Universal and Transferable Adversarial Attacks on Aligned Language Models (GCG, Zou et al.)</span>
+            <span class="src-outlet">arXiv 2307.15043</span>
+            <a class="src-url" href="https://arxiv.org/abs/2307.15043">arxiv.org/abs/2307.15043</a>
+          </span>
+        </li>
+        <li>
+          <span>
+            <span class="src-title">Safety Alignment Should Be Made More Than Just a Few Tokens Deep (Qi et al., ICLR 2025)</span>
+            <span class="src-outlet">arXiv 2406.05946</span>
+            <a class="src-url" href="https://arxiv.org/abs/2406.05946">arxiv.org/abs/2406.05946</a>
+          </span>
+        </li>
+        <li>
+          <span>
+            <span class="src-title">Many-shot jailbreaking</span>
+            <span class="src-outlet">Anthropic · abril de 2024</span>
+            <a class="src-url" href="https://www.anthropic.com/research/many-shot-jailbreaking">anthropic.com/research/many-shot-jailbreaking</a>
+          </span>
+        </li>
+        <li>
+          <span>
+            <span class="src-title">Jailbreaking Black Box Large Language Models in Twenty Queries (PAIR, Chao et al.)</span>
+            <span class="src-outlet">arXiv 2310.08419</span>
+            <a class="src-url" href="https://arxiv.org/abs/2310.08419">arxiv.org/abs/2310.08419</a>
+          </span>
+        </li>
+        <li>
+          <span>
+            <span class="src-title">"Do Anything Now": jailbreak prompts em comunidades abertas (Shen et al., ACM CCS 2024)</span>
+            <span class="src-outlet">arXiv 2308.03825</span>
+            <a class="src-url" href="https://arxiv.org/abs/2308.03825">arxiv.org/abs/2308.03825</a>
+          </span>
+        </li>
+      </ol>
+    </section>
+
+  </aside>
+  </div>
+
+  <div class="narrow-col">
+
+  <hr class="div">
+
+  <footer>Pixel é editor da <strong>diar<span style="color:var(--accent)">.</span>ia<span style="color:var(--accent)">.br</span></strong>, newsletter diária sobre IA. Tema deste artigo escolhido pelos apoiadores, a partir de sugestão de Murilo Sarno.</footer>
+
+  </div>
+
 </div>
-</div></div></div>
+
 <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Article","@id":"https://especial.diar.ia.br/2026/engenharia-de-ilusao/#article","headline":"Engenharia de ilusão: jailbreak de IA não arromba, encena","description":"O atacante assume um papel, e o modelo responde com fidelidade à cena que a conversa montou. A resposta proibida deixa de parecer transgressão.","url":"https://especial.diar.ia.br/2026/engenharia-de-ilusao/","mainEntityOfPage":"https://especial.diar.ia.br/2026/engenharia-de-ilusao/","datePublished":"2026-08-18","dateModified":"2026-08-22","author":{"@type":"Person","name":"Pixel","url":"https://www.linkedin.com/in/vjpixel/"},"publisher":{"@type":"Organization","name":"diar.ia.br","url":"https://diar.ia.br"},"inLanguage":"pt-BR"}]}</script>
+
 </body>
 </html>

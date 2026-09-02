@@ -25,11 +25,11 @@ do Stage 0" é que o runner abaixo entra em cena.
 A partir daí, os passos **0a, 0b-bis, 0c (só os 3 checks HTTPS/token — locks,
 Cloudflare, Clarice REST; os 3 pings MCP continuam manuais, ver passo 2 abaixo),
 0d, 0d.bis, 0e-0h, 0i, 0j (a detecção; a decisão humana s/n/d continua sendo do
-editor), 0k, 0l e 0z** são executados por `npx tsx scripts/stage-0-run.ts` num
+editor), 0k, 0l, 0o e 0z** são executados por `npx tsx scripts/stage-0-run.ts` num
 único fluxo de 2 chamadas, em vez de serem interpretados turno a turno em Bash
-sequencial. **A prosa detalhada dessas subseções permanece abaixo intacta** —
-é o que o script faz e por quê, além de ser o **fallback** se o script não
-existir ou falhar de forma inesperada (ver passo 4).
+sequencial. **A prosa detalhada dessas subseções permanece abaixo** — é o que
+o script faz e por quê, além de ser o **fallback** se o script não existir ou
+falhar de forma inesperada (ver passo 4).
 
 Design de 2 fases (o script é um processo Node puro — não alcança MCP):
 
@@ -493,6 +493,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator -
 ```
 A flag injeta `informational: true` em `details` — `collect-edition-signals.ts` filtra por essa flag estruturada em vez do tag textual `(informativo)` no message (que era frágil).
 
+### 0o. Rampa Gmail (#7021, sem fallback — docstring de `stage-0-run.ts`) — mede entrega da edição anterior via Kit e propõe onda dry-run; persiste `kit-gmail-ramp-proposal.json` (exibição no resumo do Stage 4 é follow-up, não implementada ainda).
 ### 0n. Detecção de falhas de CI via Gmail (#740)
 
 Fechar o loop de observabilidade: o GitHub envia notificações de CI falhou para o email do owner do repositório. Checar o inbox antes de iniciar a edição evita rodar o pipeline sobre código quebrado.
