@@ -461,7 +461,18 @@ export function reportVerifyOutcome(outcome: VerifyOutcome): number {
  * incompatível em silêncio). */
 const VERIFY_INCOMPATIBLE_FLAGS = ["task", "rearm-stopped", "units-dir", "target-dir"] as const;
 
-export function main(argv: string[], repoRootAbs: string): number {
+export function main(
+  argv: string[],
+  repoRootAbs: string,
+  /** Injetável só pro caminho `--verify` (repassado direto a `runVerify`) —
+   * mesmo padrão de `readArmedTimerUnitBaseNames(exec = execFileSync)`. O
+   * fluxo de ARMAR abaixo não usa este parâmetro; `armSystemdTimers` chama
+   * `systemctl` por conta própria. Existe pra permitir testar `main`
+   * ponta-a-ponta com um `exec` fake, sem depender de `systemctl`
+   * existir/não existir na máquina que roda o teste (#7032, achado do CI
+   * Linux vs. Windows no #7037). */
+  exec: typeof execFileSync = execFileSync,
+): number {
   if (hasFlag(argv, "verify")) {
     const conflicting = VERIFY_INCOMPATIBLE_FLAGS.filter((f) => argv.some((a) => a === `--${f}` || a.startsWith(`--${f}=`)));
     if (conflicting.length > 0) {
@@ -472,7 +483,7 @@ export function main(argv: string[], repoRootAbs: string): number {
       );
       return 2;
     }
-    return reportVerifyOutcome(runVerify());
+    return reportVerifyOutcome(runVerify(exec));
   }
 
   let taskName: string | undefined;

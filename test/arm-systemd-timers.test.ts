@@ -473,10 +473,12 @@ describe("main() — validação de argumentos (nunca chega a chamar systemctl r
 // (#5607/#6773, já cobertas por `test/task-never-armed-alarm.test.ts`) — os
 // testes aqui cobrem a FRONTEIRA nova (`runVerify`/`reportVerifyOutcome`/
 // `main --verify`), não reimplementam a cobertura da comparação em si.
-// `exec` é sempre mockado — nunca spawna `systemctl` de verdade (mesmo
-// padrão do resto do arquivo); a única exceção é o teste explícito da
-// fronteira Windows abaixo, que usa o `execFileSync` real e depende de
-// `systemctl` não existir nesta máquina (ENOENT), nunca de um output real.
+// `exec` é sempre mockado — nunca spawna `systemctl` de verdade, e nenhum
+// teste depende de `systemctl` existir ou não na máquina que roda o teste
+// (achado #7037: uma versão anterior desta suíte tinha um teste que
+// injetava `exec` real e dependia de ENOENT — passava no Windows, falhava
+// no CI Linux; `main` agora aceita `exec` injetável no caminho `--verify`
+// pra sustentar isso).
 // ---------------------------------------------------------------------------
 
 describe("runVerify / reportVerifyOutcome (#7032)", () => {
@@ -568,15 +570,21 @@ describe("runVerify / reportVerifyOutcome (#7032)", () => {
     assert.equal(reportVerifyOutcome(outcome), 0);
   });
 
-  it("main(['--verify']) sem exec injetado, nesta máquina sem systemctl (Windows) -> nunca lança, sai 0", () => {
-    // Única chamada do arquivo que NÃO injeta exec — depende de systemctl
-    // não existir nesta máquina (ENOENT real), não de nenhum output
-    // fabricado. É exatamente a fronteira que o dispatch pediu pra isolar:
-    // o miolo é puro/testável em qualquer SO, só este teste depende do SO.
+  it("main(['--verify']) com systemctl indisponível (ENOENT injetado) -> nunca lança, sai 0", () => {
+    // #7037 (self-review): a versão original desta checagem NÃO injetava
+    // `exec` e dependia de `systemctl` não existir de verdade na máquina
+    // que roda o teste — passava no Windows (onde foi escrito) e falhava no
+    // CI (Ubuntu, `systemctl` existe). `main` agora aceita `exec` injetável
+    // (3º parâmetro, mesmo padrão de `readArmedTimerUnitBaseNames`), então
+    // simulamos o ENOENT em vez de depender do SO — vale igual em qualquer
+    // máquina, com ou sem systemd.
+    const exec = (() => {
+      throw Object.assign(new Error("spawn systemctl ENOENT"), { code: "ENOENT" });
+    }) as unknown as typeof execFileSync;
     const originalLog = console.log;
     console.log = () => {};
     try {
-      const code = armSystemdTimersMain(["--verify"], "/repo/abs");
+      const code = armSystemdTimersMain(["--verify"], "/repo/abs", exec);
       assert.equal(code, 0);
     } finally {
       console.log = originalLog;
@@ -611,10 +619,15 @@ describe("runVerify / reportVerifyOutcome (#7032)", () => {
   }
 
   it("main(['--verify']) sozinho continua funcionando (regressão da recusa acima)", () => {
+    // Mesma disciplina do teste ENOENT acima: injeta `exec` com uma saída de
+    // `list-timers` válida (caso limpo — toda task declarada armada) em vez
+    // de depender de haver ou não `systemctl` real na máquina do teste, e
+    // verifica o exit code determinístico esperado (0).
+    const exec = execListTimers(enabledTaskNames().map(unitBaseName));
     const originalLog = console.log;
     console.log = () => {};
     try {
-      const code = armSystemdTimersMain(["--verify"], "/repo/abs");
+      const code = armSystemdTimersMain(["--verify"], "/repo/abs", exec);
       assert.equal(code, 0);
     } finally {
       console.log = originalLog;
