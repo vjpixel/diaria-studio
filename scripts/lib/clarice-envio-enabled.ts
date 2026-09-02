@@ -12,7 +12,8 @@
  *     ISP na véspera imediata do disparo.
  *
  * Espelho de `scripts/lib/clarice-novos-enabled.ts` (#4941), que por sua vez
- * espelha `scripts/lib/studio-chat-enabled.ts` (#4078): mesmo shape de
+ * espelhava `scripts/lib/studio-chat-enabled.ts` (#4078, removido no #6942
+ * junto com o chat do Studio inteiro): mesmo shape de
  * estado, mesmo arquivo dedicado sob `data/`, mesmo CLI `--set
  * enabled|disabled`. Duas divergências deliberadas, ambas documentadas
  * abaixo — a primeira é decisão explícita do editor, a segunda é
@@ -88,7 +89,9 @@
  *   npx tsx scripts/lib/clarice-envio-enabled.ts --set disabled
  *
  * @see scripts/lib/clarice-novos-enabled.ts (#4941 — molde direto)
- * @see scripts/lib/studio-chat-enabled.ts (#4078 — molde original)
+ * @see scripts/lib/studio-chat-enabled.ts (#4078 — molde original, removido
+ *      no #6942 junto com o chat do Studio; este arquivo e
+ *      clarice-novos-enabled.ts continuam vivos como referência do padrão)
  * @see #5027 (doc de arme, docs/clarice-envio-daily-setup.md — pode ainda
  *      não ter mergeado; confira antes de assumir que o link resolve)
  */

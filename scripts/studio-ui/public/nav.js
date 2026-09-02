@@ -8,15 +8,20 @@
 // faz fetch de `/api/state` e injeta no DOM, sem harness de teste direto
 // (precedente de app.js/#3555 — ver docstring de
 // test/studio-edicao-page.test.ts).
+//
+// #7050: também injeta o badge global de gate de pipeline pendente
+// (`gate-badge.js`, sucessor do `chat-badge.js` removido no #6942) — reusa
+// o mesmo fetch de `/api/state` que este arquivo já fazia, sem requisição
+// extra.
 
 import { resolveActiveNavId, resolveRevisaoHref, buildNavHtml } from "./nav-core.js";
+import { renderGateBadgeHtml } from "./gate-badge.js";
 
-async function fetchCurrentEdition() {
+async function fetchState() {
   try {
     const res = await fetch("/api/state");
     if (!res.ok) return null;
-    const state = await res.json();
-    return state.currentEdition ?? null;
+    return await res.json();
   } catch {
     return null;
   }
@@ -29,10 +34,13 @@ async function mountNav() {
   const activeId = resolveActiveNavId(pageId);
   // Só precisa da edição corrente quando "Revisão" está potencialmente
   // visível/precisa de href — mas buscar sempre é mais simples e barato
-  // (mesmo endpoint que app.js já consulta em toda página com estado).
-  const currentEdition = await fetchCurrentEdition();
+  // (mesmo endpoint que app.js já consulta em toda página com estado). O
+  // badge de gate (#7050) reusa o mesmo `state` — sem 2ª requisição.
+  const state = await fetchState();
+  const currentEdition = state?.currentEdition ?? null;
   const revisaoHref = resolveRevisaoHref(currentEdition);
-  container.innerHTML = buildNavHtml(activeId, revisaoHref);
+  container.innerHTML =
+    buildNavHtml(activeId, revisaoHref) + renderGateBadgeHtml(state?.gatesPending, currentEdition);
 
   const toggle = document.getElementById("app-nav-toggle");
   const list = document.getElementById("app-nav-list");

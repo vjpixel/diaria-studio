@@ -60,8 +60,9 @@
  * script filho spawnado continua rodando órfão até terminar; o próximo GET
  * da galeria não vai mostrar `regenerating: true` pra ele, mas os arquivos
  * finais aparecem quando ele terminar de escrever). Aceitável: mesmo
- * trade-off de todo estado em memória do Studio (`pendingByRoot` em
- * `studio-chat.ts`), e reiniciar o server no meio de uma regeneração de
+ * trade-off de qualquer estado em memória de processo único (o chat do
+ * Studio tinha o mesmo trade-off em `pendingByRoot`, `studio-chat.ts`,
+ * removido no #6942), e reiniciar o server no meio de uma regeneração de
  * imagem é um evento raro o bastante pra não justificar persistência.
  *
  * PROTEÇÃO CONTRA DUPLO-CLIQUE (#6447 guardrail — API cara): 1 job por

@@ -43,7 +43,7 @@
  * pra cobrir o caso legítimo "preciso reenviar uma correção".
  *
  * Fail-soft por design (mesmo padrão de `clarice-novos-state.ts`/
- * `studio-chat-enabled.ts`): leitura tolerante — arquivo ausente/corrompido/
+ * `clarice-envio-enabled.ts`): leitura tolerante — arquivo ausente/corrompido/
  * shape inesperado vira `null` ("nunca preparado"), nunca lança. Desde
  * #4572/#4593 (guard de idempotência do Passo 2 Brevo, ver `brevoCampaignId`
  * abaixo) essa tolerância tem uma consequência nova: um state file que

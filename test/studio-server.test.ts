@@ -69,6 +69,29 @@ describe("studio-server (#3555)", () => {
     assert.match(res.headers.get("content-type") ?? "", /application\/json/);
   });
 
+  // #7050 (finding 2 do review da PR que fechou o #6942): o chat do Studio
+  // foi removido por inteiro — estas rotas não devem existir mais. O teste
+  // acima ("rota-desconhecida") usa um path que nunca existiu, então não
+  // pega reintrodução acidental (ex: merge malfeito trazendo `studio-chat.ts`
+  // de volta sem religar server.ts). Este teste nomeia as rotas REAIS que
+  // existiam antes do #6942, pra uma reintrodução acidental falhar aqui em
+  // vez de passar despercebida.
+  it("#7050: rotas de chat removidas no #6942 continuam 404 (reintrodução acidental deve falhar aqui)", async () => {
+    const chatRoutes = [
+      "/api/chat",
+      "/api/chat/answer",
+      "/api/chat/tool-decision",
+      "/api/chat/pending",
+      "/api/chat/history",
+      "/api/chat/enabled",
+    ];
+    for (const path of chatRoutes) {
+      const res = await fetch(new URL(path, server.url));
+      assert.equal(res.status, 404, `${path} deveria ser 404, veio ${res.status}`);
+      assert.match(res.headers.get("content-type") ?? "", /application\/json/);
+    }
+  });
+
   it("(#3874) GET / — log ao vivo e contadores do statusbar têm aria-live=polite (regiões atualizadas via SSE)", async () => {
     const res = await fetch(new URL("/", server.url));
     const body = await res.text();

@@ -1568,7 +1568,7 @@ export function listDisabledScheduledTaskNames(): string[] {
 
 // ---------------------------------------------------------------------------
 // Enumeração programática (#5408) — mesmo idioma CLI de exec-mode.ts /
-// studio-chat-enabled.ts: função pura testável + guard `isMainModule` fino.
+// clarice-envio-enabled.ts: função pura testável + guard `isMainModule` fino.
 //
 // Motivação: antes desta unidade não existia forma programática de
 // enumerar SCHEDULED_TASKS — só leitura de prosa (docs/scheduled-tasks-registry.md)
@@ -1638,7 +1638,7 @@ export function renderScheduledTasksTable(rows: ScheduledTaskRow[] = listSchedul
 }
 
 // CLI guard: só executa como main module, importável sem efeito colateral
-// (mesmo padrão de exec-mode.ts/studio-chat-enabled.ts).
+// (mesmo padrão de exec-mode.ts/clarice-envio-enabled.ts).
 if (isMainModule(import.meta.url)) {
   const { flags } = parseArgs(process.argv.slice(2));
   const rows = listScheduledTaskRows();

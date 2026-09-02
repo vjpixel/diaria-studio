@@ -24,7 +24,7 @@
  * `ramp-warm`, por mais tempo que o semáforo fique vermelho. O represamento
  * fica visível pelo alarme do #5405, não por um teto de dias aqui.
  *
- * Fail-soft (mesmo padrão de `clarice-novos-state.ts`/`studio-chat-enabled.ts`):
+ * Fail-soft (mesmo padrão de `clarice-novos-state.ts`/`clarice-envio-enabled.ts`):
  * leitura tolerante — arquivo ausente/corrompido → `null` (sem cutoff
  * conhecido ainda, ex: 1ª rodada de `novos` nunca rodou nesta base) —
  * `isRampWarm` degrada pra "não exclui por recência", o comportamento

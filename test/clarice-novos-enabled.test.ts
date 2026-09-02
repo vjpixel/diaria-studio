@@ -3,9 +3,11 @@
  *
  * Cobre `scripts/lib/clarice-novos-enabled.ts` — o kill switch da task
  * diária `Diaria-Clarice-Novos`. Mesmo molde de
- * test/studio-chat-enabled.test.ts, com o default INVERTIDO (ver docstring
- * do módulo): arquivo ausente/corrompido → `enabled: false` (lado seguro —
- * ao contrário do chat toggle, o pior caso aqui é envio de e-mail real).
+ * test/clarice-envio-enabled.test.ts (que por sua vez espelhava
+ * test/studio-chat-enabled.test.ts, removido no #6942 junto com o chat do
+ * Studio), com o default INVERTIDO (ver docstring do módulo): arquivo
+ * ausente/corrompido → `enabled: false` (lado seguro — ao contrário do
+ * chat toggle, o pior caso aqui é envio de e-mail real).
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";

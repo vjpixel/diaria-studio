@@ -8,11 +8,12 @@
  *
  * Design deliberadamente simples (timer periódico, não `fs.watch`): o estado
  * relevante do snapshot mistura fontes em disco (edições, plan.json
- * overnight/develop) com estado EM MEMÓRIA (gates `AskUserQuestion`
- * pendentes do chat, `studio-chat.ts`) — não há um único diretório pra
- * observar. Um push a cada `intervalMs` (default 5min) + 1 push imediato ao
- * iniciar cobre o objetivo ("dados de HH:MM" no Worker) sem a complexidade
- * de múltiplos `fs.watch` + debounce (`plan-watch.ts`/`run-log-tail.ts`
+ * overnight/develop) com estado EM MEMÓRIA — não há um único diretório pra
+ * observar (era mais verdade ainda quando o chat do Studio existia: gates
+ * `AskUserQuestion` pendentes vinham de `studio-chat.ts`, puramente em
+ * memória; removido no #6942). Um push a cada `intervalMs` (default 5min) +
+ * 1 push imediato ao iniciar cobre o objetivo ("dados de HH:MM" no Worker)
+ * sem a complexidade de múltiplos `fs.watch` + debounce (`plan-watch.ts`/`run-log-tail.ts`
  * usam essa estratégia porque alimentam SSE ao vivo; aqui o consumidor é um
  * KV externo, refrescado por push, não uma UI que precisa reagir em <1s).
  *

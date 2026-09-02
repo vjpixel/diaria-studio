@@ -65,6 +65,27 @@
 
 .app-nav-dashboard { opacity: 0.85; }
 
+/* #7050: badge global de gate de pipeline pendente (gate-badge.js),
+   sucessor do `.chat-toggle-badge` removido no #6942. Fica fora de
+   `.app-nav-list` de propósito — precisa ficar visível mesmo com o menu
+   colapsado no breakpoint mobile abaixo. */
+.app-gate-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: 0.6rem;
+  background: var(--status-danger);
+  color: var(--on-status);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.app-gate-badge:hover { opacity: 0.85; }
+
 @media (max-width: 640px) {
   .app-nav-toggle { display: inline-block; }
   .app-nav-list {

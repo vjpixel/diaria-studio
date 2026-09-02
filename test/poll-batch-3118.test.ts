@@ -199,7 +199,7 @@ describe("integração — período fechado usa Cache-Control de 1h, não mais 3
     // mês, e o teste falhava com 404. `node:test` suporta mockar `Date`
     // global de forma escopada por teste (`t.mock.timers`, com reset
     // automático ao final — mesmo padrão de test/clarice-healthcheck.test.ts
-    // e test/studio-chat.test.ts); como este arquivo chama
+    // e test/subscribe-form-fetch-timeout-6981.test.ts); como este arquivo chama
     // `workerDefault.fetch` diretamente via tsx (sem sandbox workerd), o
     // `new Date()` interno do handler roda no mesmo escopo global mockado.
     // Fixamos o relógio dentro da janela de divergência e chamamos a rota de

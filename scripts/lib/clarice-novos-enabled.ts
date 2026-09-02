@@ -3,7 +3,9 @@
  *
  * Toggle explícito "envio automático ativo/pausado" da task diária
  * `Diaria-Clarice-Novos` — mesmo molde de `scripts/lib/studio-chat-enabled.ts`
- * (#4078), com UMA diferença deliberada no default.
+ * (#4078, removido no #6942 junto com o chat do Studio; ver
+ * `scripts/lib/clarice-envio-enabled.ts` como sucessor vivo do mesmo
+ * padrão), com UMA diferença deliberada no default.
  *
  * Contexto: até o #4941, `/diaria-clarice-novos` era invocação MANUAL
  * ~4×/semana, e a própria SKILL.md documentava o kill switch de um alarme
@@ -13,9 +15,10 @@
  * a única forma de pausar seria `systemctl --user stop` na máquina (exige
  * terminal, não dá pra fazer do celular). Este módulo devolve o sinal.
  *
- * **Default INVERTIDO em relação a `studio-chat-enabled.ts` — e de propósito:**
- * lá, `enabled: true` é o default seguro porque o pior caso de um chat
- * "ligado sem querer" é UX incômoda. Aqui, o que está do outro lado do
+ * **Default INVERTIDO em relação a `studio-chat-enabled.ts` (removido no
+ * #6942) — e de propósito:** lá, `enabled: true` era o default seguro
+ * porque o pior caso de um chat "ligado sem querer" era UX incômoda. Aqui,
+ * o que está do outro lado do
  * toggle é ENVIO DE E-MAIL REAL E IRREVERSÍVEL (`--send-now`, #4347 D7) sem
  * gate humano (#4347 D6) — o pior caso de "ligado sem querer" é uma campanha
  * disparada que o editor não pretendia. Por isso `enabled: false` é o
@@ -32,14 +35,16 @@
  * dedicado, nunca reaproveita nenhum estado já existente sob `data/`
  * (mesma disciplina do #4078).
  *
- * Uso CLI (mesmo padrão de `exec-mode.ts`/`studio-chat-enabled.ts`):
+ * Uso CLI (mesmo padrão de `exec-mode.ts`/`clarice-envio-enabled.ts`):
  *   npx tsx scripts/lib/clarice-novos-enabled.ts
  *   # → imprime "enabled" ou "disabled" (exit 0 sempre)
  *   npx tsx scripts/lib/clarice-novos-enabled.ts --set enabled
  *   npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled
  *
  * @see CLAUDE.md § tasks agendadas — Diaria-Clarice-Novos
- * @see scripts/lib/studio-chat-enabled.ts (#4078 — molde original)
+ * @see scripts/lib/studio-chat-enabled.ts (#4078 — molde original, removido
+ *      no #6942 junto com o chat do Studio)
+ * @see scripts/lib/clarice-envio-enabled.ts (#5027 — mesmo padrão, sucessor vivo)
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

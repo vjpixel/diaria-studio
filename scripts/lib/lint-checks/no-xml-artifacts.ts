@@ -4,8 +4,10 @@
  * Detecta tag(s) de tool-call crua(s) (`</content>`, `</invoke>`,
  * `</function_calls>`) grudada(s) no FIM do documento — sintoma de um
  * payload de tool-call vazando no caminho de escrita de um fluxo assistido
- * (ex: chat drawer do Studio, `studio-chat.ts`, que edita
- * `02-reviewed.md`/`03-social.md`/etc. via `Edit`/`Write` de um agente LLM).
+ * (ex: um subagente do orchestrator — `writer-destaque`, `title-picker`,
+ * etc. — que edita `02-reviewed.md`/`03-social.md`/etc. via `Edit`/`Write`
+ * de um agente LLM; o chat drawer do Studio, `studio-chat.ts`, era outro
+ * exemplo até ser removido no #6942).
  *
  * Caso real (#4077, edição 260727): `02-reviewed.md` apareceu com 21 bytes
  * de `</content>\n</invoke>` grudados após o último parágrafo do PARA
