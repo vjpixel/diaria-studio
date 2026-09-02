@@ -334,14 +334,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#2932, #2928, #4047, #4740",
   },
   {
-    name: "Diaria-Cursos-Error-Alarm",
-    description: "alarme de erro do worker cursos",
-    steps: [{ key: "alarm", script: "scripts/cursos-error-alarm.ts" }],
-    logPath: "cursos-subscribers/.error-alarm.log",
-    schedule: { kind: "interval", hours: 2 },
-    issue: "#4320, #4382",
-  },
-  {
     name: "Diaria-Cursos-Kv-Sync",
     description: "sync diario do KV CURSOS_SUBSCRIBERS",
     steps: [{ key: "sync", script: "scripts/sync-cursos-subscribers-kv.ts" }],

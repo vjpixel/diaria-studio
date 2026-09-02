@@ -3,9 +3,12 @@
  *
  * Cobre `scripts/lib/shared/cursos-alarm-counters.ts` — o helper de
  * incremento de contador KV usado pelo worker `cursos` (`index.ts`,
- * `subscribe.ts`) pra alimentar `scripts/cursos-error-alarm.ts`. Garantia
- * central: `incrementKvCounter` NUNCA lança, mesmo com um KV instável —
- * é uma via lateral de alarme, não pode derrubar o request principal.
+ * `subscribe.ts`). Alimentava `scripts/cursos-error-alarm.ts` até esse
+ * alarme ser removido em #6798 (01/09/2026) — os contadores continuam
+ * sendo gravados sem leitor hoje (ver docs/cursos-worker-alarm-setup.md).
+ * Garantia central: `incrementKvCounter` NUNCA lança, mesmo com um KV
+ * instável — é uma via lateral de alarme, não pode derrubar o request
+ * principal.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
