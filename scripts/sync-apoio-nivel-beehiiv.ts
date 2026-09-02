@@ -138,6 +138,7 @@
  */
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { type ApoioNivel, isApoioNivel } from "./lib/shared/apoio-nivel-types.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
@@ -170,20 +171,17 @@ const BLAST_RADIUS_THRESHOLD = 0.3;
  * (ver cabeçalho do módulo). Este script nunca cria o campo, só lê/escreve. */
 export const APOIO_NIVEL_FIELD_NAME = "apoio_nivel";
 
-export type ApoioNivel = "amigo" | "apoiador" | "mantenedor" | "patrono";
-
-const LEVEL_VALUES: readonly ApoioNivel[] = ["amigo", "apoiador", "mantenedor", "patrono"];
+/** `ApoioNivel` + `isApoioNivel` extraídos pra `lib/shared/apoio-nivel-types.ts`
+ * (hotfix #7030, master vermelho c8fcdc9b) — ver docblock daquele módulo.
+ * Reexportados aqui pra manter todo consumidor existente
+ * (`kit-gmail-warmup-ramp.ts`, `sync-artigos-apoio-kv.ts`, etc.) importando
+ * de `./sync-apoio-nivel-beehiiv.ts` sem nenhuma mudança. */
+export type { ApoioNivel };
+export { isApoioNivel };
 
 /** Ordinal de faixa — usado só por `maxLevel` pra decidir a carência (#4436).
  * `null` (sem apoio) é sempre o mínimo. */
 const LEVEL_RANK: Record<ApoioNivel, number> = { amigo: 1, apoiador: 2, mantenedor: 3, patrono: 4 };
-
-/** Exportada desde #6504 (rampa Gmail — validar `fields.apoio_nivel` do Kit,
- *  string livre no envelope da API, contra a union real antes de confiar
- *  nela) — antes só uso interno deste módulo. */
-export function isApoioNivel(v: string): v is ApoioNivel {
-  return (LEVEL_VALUES as readonly string[]).includes(v);
-}
 
 function normalizeEmailList(emails: string[] | undefined | null): string[] {
   if (!Array.isArray(emails)) return [];
