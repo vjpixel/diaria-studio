@@ -28,12 +28,14 @@
  * — mesmo valor, não um número escolhido de novo por superfície (pedido
  * explícito do editor no comentário da #6981).
  *
+ *   - o form standalone de `/assinar` (`buildAssinarHtml()`,
+ *     scripts/lib/site-assinar-page.ts) — extraído do HTML completo (único
+ *     `<script>` da página), id fixo `assinar-form`.
+ *
  * `workers/poll/src/web-gate.ts` (fluxo verify→subscribe→identify encadeado
- * do gate) e `scripts/lib/site-assinar-page.ts` (form standalone de
- * `/assinar`, timeout coberto por asserção de MARKUP em
- * `test/poll-subscribe-apex-utm-6427.test.ts`-adjacentes) ficam de fora
- * desta rodada — não têm o padrão simples de 1 fetch por submit que a
- * técnica abaixo cobre; ver corpo da issue #6981 para o inventário completo.
+ * do gate) fica de fora desta rodada — não segue o padrão simples de 1
+ * fetch por submit que a técnica abaixo cobre; ver corpo da issue #6981
+ * para o inventário completo.
  */
 
 import { describe, it } from "node:test";
@@ -43,6 +45,7 @@ import { inlineSignupScript } from "../workers/poll/src/jogar.ts";
 import { renderCuradoriaCtaSubscribeScript } from "../scripts/lib/shared/curadoria-page.ts";
 import { renderSubscribeCtaScript } from "../scripts/build-livros-page.ts";
 import { SIGNUP_FORM_FETCH_TIMEOUT_MS } from "../scripts/lib/site-home-page.ts";
+import { buildAssinarHtml } from "../scripts/lib/site-assinar-page.ts";
 
 /** Campo mínimo — só o que os scripts tocam (value/checked/disabled/style). */
 function makeField(value = "", checked = false): any {
@@ -100,6 +103,15 @@ function flush(): Promise<void> {
 /** Extrai o corpo JS de dentro de `<script>…</script>`. */
 function scriptBody(raw: string): string {
   return raw.replace(/^\s*<script>/, "").replace(/<\/script>\s*$/, "");
+}
+
+/** Extrai o corpo JS do ÚNICO `<script>…</script>` de um documento HTML
+ * completo (usado por `buildAssinarHtml()`, que não expõe o script como
+ * função separada — a página inteira é um único template literal). */
+function scriptBodyFromFullHtml(html: string): string {
+  const match = html.match(/<script>([\s\S]*?)<\/script>/);
+  if (!match) throw new Error("nenhum <script> encontrado no HTML");
+  return match[1];
 }
 
 describe("inlineSignupScript() — timeout do fetch (#6981)", () => {
@@ -232,5 +244,62 @@ describe("renderSubscribeCtaScript() (livros) — timeout do fetch (#6981)", () 
 
     assert.equal(aborted, false, "o clearTimeout no sucesso deve ter cancelado o abort agendado");
     assert.equal(bundle.status.textContent, "Pronto! Confira seu e-mail pra confirmar a assinatura.");
+  });
+});
+
+
+describe("buildAssinarHtml() (/assinar) — timeout do fetch (#6981)", () => {
+  it(`form standalone (id='assinar-form'): fetch que nunca resolve é abortado após ${SIGNUP_FORM_FETCH_TIMEOUT_MS}ms`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let aborted = false;
+    const bundle = makeForm({ statusClass: ".signup-status" });
+    // buildAssinarHtml usa ".status" (não ".signup-status"/".cta-status") e
+    // seu setStatus() escreve status.style.display (não status.hidden) —
+    // precisa do shape completo de campo (style presente).
+    const statusEl: any = { style: {}, textContent: "", className: "" };
+    (bundle.form.querySelector as any) = (sel: string) => {
+      const selectors: Record<string, any> = {
+        'input[name="email"]': bundle.email,
+        'input[name="optin"]': bundle.optin,
+        'input[name="website"]': bundle.website,
+        'input[name="name"]': makeField(""),
+        'button[type="submit"]': bundle.btn,
+        ".status": statusEl,
+        "#utm_source": null,
+        "#utm_medium": null,
+        "#utm_campaign": null,
+      };
+      return selectors[sel] ?? null;
+    };
+
+    const win: any = {
+      fetch: (_url: string, options: any) =>
+        new Promise((_resolve, reject) => {
+          if (options.signal) {
+            options.signal.addEventListener("abort", () => {
+              aborted = true;
+              reject(new Error("aborted"));
+            });
+          }
+        }),
+      AbortController: typeof AbortController === "function" ? AbortController : undefined,
+      location: { search: "" },
+    };
+    const doc: any = { getElementById: (id: string) => (id === "assinar-form" ? bundle.form : null) };
+    // eslint-disable-next-line no-new-func
+    new Function("window", "document", scriptBodyFromFullHtml(buildAssinarHtml()))(win, doc);
+
+    bundle.submit();
+    assert.equal(bundle.btn.disabled, true);
+    assert.equal(aborted, false, "não deve abortar antes do timeout");
+
+    t.mock.timers.tick(SIGNUP_FORM_FETCH_TIMEOUT_MS);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(aborted, true, "o AbortController deveria abortar após o timeout");
+    assert.equal(statusEl.textContent, "Erro de conexão. Tente de novo.");
+    assert.equal(bundle.btn.disabled, false, "botão precisa reabilitar — senão o form fica morto pra sempre");
   });
 });

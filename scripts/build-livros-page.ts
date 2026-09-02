@@ -286,9 +286,12 @@ function renderSubscribeCta(v: SubscribeCtaVariant, variantClass: "hero" | "end"
  * — hero + fim de lista). `data-source` em cada `<form>` vira o campo `source`
  * do payload; o servidor resolve o UTM certo (nunca o cliente manda utm_* cru).
  * Mesmo padrão de validação leve (opt-in + `@`) + estados de erro de
- * `inlineSignupScript` (workers/poll/src/jogar.ts) — duplicado aqui de
- * propósito: bundles CSS/JS separados (scripts/ vs workers/poll/), sem import
- * cross-repo viável entre eles.
+ * `inlineSignupScript` (workers/poll/src/jogar.ts) — o CORPO do script
+ * continua duplicado de propósito (cada superfície tem seu próprio dialeto
+ * de seletor/endpoint); só a constante `SIGNUP_FORM_FETCH_TIMEOUT_MS` é
+ * IMPORTADA (#6981) — o cross-import scripts/ <-> workers/poll/ é viável
+ * (ver `jogar.ts`, que já importa `renderAnalyticsHead` de `scripts/lib/`),
+ * só não vale a pena pro resto do corpo por ora.
  */
 export function renderSubscribeCtaScript(): string {
   return `<script>
