@@ -39,9 +39,10 @@
  */
 
 import { isMainModule, parseArgs, getIntArg, getStringArg } from "./lib/cli-args.ts";
-import { composeTrainBatches, type TrainCandidate, type TrainPrInfo } from "./lib/merge-train.ts";
+import { composeTrainBatches, summarizeTrainCiRuns, type TrainCandidate, type TrainPrInfo } from "./lib/merge-train.ts";
 import { filesForPr, discoverOpenPrs, parsePrsArg } from "./lib/merge-train-discovery.ts";
 import { createRealTrainRunner, fetchTrainPrInfo, runMergeTrain, type TrainBatchOutcome } from "./lib/merge-train-live.ts";
+import { logEvent } from "./lib/run-log.ts";
 
 const DEFAULT_MAX_BATCH_SIZE = 3; // "K não deve ser grande. Começar em 3." — issue #6300
 const VALID_KINDS = ["overnight", "develop", "continuo"] as const;
@@ -160,6 +161,33 @@ async function main() {
 
   console.log(`run-merge-train: ${allOutcomes.length} resultado(s):`);
   for (const o of allOutcomes) console.log(printOutcome(o));
+
+  // Instrumentação de medição antes/depois (#6300, último critério de
+  // aceite: "runs de CI por issue mergeada"). Derivado dos outcomes já
+  // computados acima, sem I/O extra — ver docstring de `summarizeTrainCiRuns`
+  // em scripts/lib/merge-train.ts pro racional completo de cada campo.
+  // Emitido SEMPRE, mesmo quando nenhum lote ≥2 se formou (ciRunsUsed=0) —
+  // presença do evento é o sinal de "o trem rodou", não o valor.
+  const ciRunsSummary = summarizeTrainCiRuns(allOutcomes, prInfos);
+  console.log(
+    `run-merge-train: CI runs — ${ciRunsSummary.ciRunsUsed} usado(s) pelo trem vs. ${ciRunsSummary.prsInvolvedInBatches}` +
+      ` que seriam gastos sem ele (${ciRunsSummary.issuesInvolvedInBatches} issue(s) cobertas em lote, ${ciRunsSummary.soloPrs} PR(s) solo fora do trem)`,
+  );
+  logEvent({
+    edition: null,
+    stage: null,
+    agent: kind,
+    level: "info",
+    message: "merge_train_ci_runs",
+    details: {
+      ci_runs_used: ciRunsSummary.ciRunsUsed,
+      ci_runs_without_train: ciRunsSummary.prsInvolvedInBatches,
+      prs_involved_in_batches: ciRunsSummary.prsInvolvedInBatches,
+      issues_involved_in_batches: ciRunsSummary.issuesInvolvedInBatches,
+      solo_prs: ciRunsSummary.soloPrs,
+      batches: batches.length,
+    },
+  });
 
   // "abandoned" NUNCA é status final por si só — todo lote abandoned é
   // sempre bissectado e reprocessado até virar um dos status terminais

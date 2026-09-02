@@ -427,6 +427,29 @@ describe("formatSessionTokensSummary — marcação de rodadas fundidas (#6638)"
   });
 });
 
+describe("formatSessionTokensSummary — footnote de cache_read (#6633)", () => {
+  it("afirma que subagent_tokens INCLUI cache_read (confirmado empiricamente) em vez da hipótese antiga de exclusão", () => {
+    const md = formatSessionTokensSummary({
+      generatedAt: "2026-09-02T00:00:00.000Z",
+      since: null,
+      until: null,
+      alarmPct: 50,
+      rows: [],
+      alarms: [],
+    });
+    // Regressão: a nota antiga só dizia "Edição soma cache_read" e deixava
+    // implícito que overnight/develop talvez não somasse — sem confirmar.
+    // Pós-#6633, a nota precisa afirmar a inclusão como fato medido, não
+    // como hipótese em aberto.
+    assert.match(md, /JÁ INCLUI `cache_read`/);
+    assert.match(md, /confirmado empiricamente/);
+    assert.doesNotMatch(md, /NÃO verificada/);
+    // A razão real da incomparabilidade que sobra (turno final vs soma de
+    // todos os turnos) precisa estar nomeada, não só "bases diferentes".
+    assert.match(md, /turno FINAL/);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // #6634 — rodada que rodou sem emitir evento algum não pode sumir da contagem
 // ---------------------------------------------------------------------------
