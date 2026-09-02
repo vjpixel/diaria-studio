@@ -58,9 +58,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start-claude-config-sync.mjs\"",
-            "shell": "bash",
-            "timeout": 10
+            "command": "node",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start-claude-config-sync.mjs"
+            ]
           }
         ]
       }
@@ -71,15 +73,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-askuserquestion-overnight-autonomous.mjs\"",
-            "shell": "bash",
-            "timeout": 10
+            "command": "node",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-askuserquestion-overnight-autonomous.mjs"
+            ]
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/notify-continuo-askuserquestion.mjs\"",
-            "shell": "bash",
-            "timeout": 10
+            "command": "node",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/notify-continuo-askuserquestion.mjs"
+            ]
           }
         ]
       },
@@ -88,33 +94,43 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/inject-session-id.mjs\"",
-            "shell": "bash",
-            "timeout": 10
+            "command": "node",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/inject-session-id.mjs"
+            ]
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-gh-pr-merge-subagent.mjs\"",
-            "shell": "bash",
-            "timeout": 10
+            "command": "node",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-gh-pr-merge-subagent.mjs"
+            ]
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-branch-checkout-main.mjs\"",
-            "shell": "bash",
-            "timeout": 10
+            "command": "node",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-branch-checkout-main.mjs"
+            ]
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs\"",
-            "shell": "bash",
-            "timeout": 30
+            "command": "node",
+            "timeout": 30,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs"
+            ]
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-unsafe-shared-checkout-ops.mjs\"",
-            "shell": "bash",
-            "timeout": 10
+            "command": "node",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-unsafe-shared-checkout-ops.mjs"
+            ]
           }
         ]
       },
@@ -123,9 +139,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/session-beacon.mjs\"",
-            "shell": "bash",
-            "timeout": 10
+            "command": "node",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-beacon.mjs"
+            ]
           }
         ]
       }
@@ -136,15 +154,43 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/pr-create-review.mjs\"",
+            "command": "node",
             "if": "Bash(gh pr create*)",
-            "shell": "bash",
-            "timeout": 15
+            "timeout": 15,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/pr-create-review.mjs"
+            ]
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/consume-merge-grant-on-merge.mjs\"",
+            "command": "node",
             "if": "Bash(gh pr merge*)",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/consume-merge-grant-on-merge.mjs"
+            ]
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/subagent-review-registry-start.mjs\"",
+            "shell": "bash",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/subagent-review-registry-stop.mjs\"",
             "shell": "bash",
             "timeout": 10
           }
@@ -156,8 +202,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/notify-sound.mjs\" notification",
-            "shell": "bash"
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/notify-sound.mjs",
+              "notification"
+            ]
           }
         ]
       }
@@ -167,8 +216,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/notify-sound.mjs\" stop",
-            "shell": "bash"
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/notify-sound.mjs",
+              "stop"
+            ]
           }
         ]
       }
@@ -176,8 +228,8 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "npx tsx scripts/overnight-statusline.ts",
-    "refreshInterval": 5
+    "command": "node --no-warnings scripts/overnight-statusline.ts",
+    "refreshInterval": 30
   },
   "enabledPlugins": {
     "pr-review-toolkit@claude-plugins-official": true

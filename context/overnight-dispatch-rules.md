@@ -610,3 +610,54 @@ desbloqueada", antes de dispatchar cada unidade — ver o `SKILL.md` de cada
 skill pro texto exato). O preflight do subagente (item 14) **continua como
 rede de segurança** — não é substituído por este passo, só deixa de ser a
 primeira linha de defesa.
+
+## 22. `isolation: worktree` recusado alegando metadata git irresolvível — não é corrupção (#7089)
+
+**Sintoma:** dispatch de subagente com `isolation: worktree` falha com uma
+mensagem que soa como corrupção de `.git`:
+
+```
+Refusing to use <path>\.claude\worktrees\agent-<id> as an isolation worktree:
+the protected checkout <path> has git metadata that could not be resolved,
+so its git identity could not be verified. Isolation is refused rather than
+assumed — recreate the worktree (or remove the corrupt .git entry) and retry.
+```
+
+**5 ocorrências numa única rodada (02/09/2026)** — 4 numa sessão executora, 1
+na coordenadora. O texto da mensagem manda quem lê procurar `.git`
+corrompido; na prática o git do checkout estava saudável nas 5 vezes.
+
+**Discriminador — confirme em segundos antes de investigar corrupção:**
+
+```
+git rev-parse --git-dir          # deve resolver limpo (ex: .git)
+git worktree list                # não deve travar/errar
+git worktree prune --dry-run -v  # vazio = nada órfão a podar
+```
+
+Se os três rodam limpo, o `.git` **não** está corrompido — a recusa do
+harness é conservadora por desenho ("Isolation is refused rather than
+assumed") e a causa mais provável é contenção sob concorrência alta (dezenas
+de worktrees registradas + múltiplos subagentes lendo/escrevendo metadata do
+mesmo repositório ao mesmo tempo), não dano real. A causa raiz é do harness,
+fora deste repo — não tentar consertar aqui.
+
+**Contorno:** criar o worktree à mão, fora do caminho que o harness recusou,
+e dispatchar o subagente **sem** `isolation`, com o `cd` explícito nele:
+
+```
+git worktree add -b <branch> .claude/worktrees/<nome> origin/master
+```
+
+seguido de dispatch normal (`Agent`, sem `isolation`) instruindo o subagente
+a rodar todo `git`/build/teste com cwd dentro de
+`.claude/worktrees/<nome>` e **proibindo explicitamente** que ele toque no
+checkout principal compartilhado.
+
+**O que NÃO fazer:** não rodar `git worktree prune` nem qualquer reparo
+agressivo (recriar `.git`, `git worktree remove --force` de entradas
+alheias) no checkout COMPARTILHADO por causa desse erro. O git está
+saudável — reparar o que não está quebrado é o que arrisca corromper
+trabalho de OUTRA sessão que estiver usando o mesmo checkout ao mesmo tempo
+(mesma classe de risco do item 20 acima, só que via comando de reparo em vez
+de `rm`).
