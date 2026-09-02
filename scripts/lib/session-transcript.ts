@@ -17,42 +17,79 @@
  * harness pra nomear o diretório de projeto (confirmado empiricamente:
  * `C:\Users\x\Projects\diaria-studio` → `C--Users-x-Projects-diaria-studio`).
  *
- * ## Duas limitações, medidas no #5413 (16/08/2026) — corrigido o que dava
+ * ## Duas limitações, medidas no #5413 (16/08/2026) — uma delas fechada no #7084
  *
  * A versão original deste módulo afirmava que subagentes despachados via
  * `Agent()` sem `isolation: "worktree"` ERAM capturados por
- * `collectUsageInWindow`. **Isso é falso** no harness 2.1.233: varredura dos
- * 300 `.jsonl` do diretório de projeto não achou UM único turno com
- * `isSidechain: true`. O custo de subagente não está registrado em transcript
- * nenhum — a edição 260814 teve 44 dispatches de `Agent()` cujo custo não
- * aparece em número algum.
+ * `collectUsageInWindow`. **Isso era falso** no harness 2.1.233: varredura
+ * dos 300 `.jsonl` do diretório de projeto não achou UM único turno com
+ * `isSidechain: true` — a edição 260814 teve 44 dispatches de `Agent()` cujo
+ * custo não aparecia em número algum.
  *
- * 1. **Conta a menos (não corrigível aqui):** subagente não é registrado.
- *    Em vez de deixar o buraco somido dentro de um número rotulado como
- *    custo do stage, `collectUsageInWindow` agora devolve
- *    `subagentTokensIn/Out` explicitamente — `null` quando nenhum turno
- *    sidechain foi observado. Se o harness voltar a gravá-los, o campo passa
- *    a somar sozinho (a leitura já está no parser).
+ * 1. **Conta a menos — fechada no #7084 (02/09/2026).** O harness passou a
+ *    gravar o transcript de CADA subagente em arquivo próprio,
+ *    `{transcriptsDir}/{sessionId}/subagents/agent-{agentId}.jsonl`
+ *    (companheiro `.meta.json` com `agentType`/`model`/`spawnDepth` — não lido
+ *    por este módulo), com `isSidechain: true` desde a 1ª linha e
+ *    `message.usage` por turno no MESMO formato do transcript principal —
+ *    confirmado ao vivo inspecionando os subagentes desta própria rodada.
+ *    `collectUsageInWindow` nunca olhava esse subdiretório (só listava os
+ *    `.jsonl` soltos na raiz de `transcriptsDir`), por isso
+ *    `subagentTokensIn/Out` saíam sempre `null` mesmo com o dado já
+ *    existindo em disco — não era um buraco de instrumentação do harness, e
+ *    sim um glob incompleto deste parser. Agora `listSubagentTranscriptFiles`
+ *    varre esse subdiretório pra cada sessão escaneada (a "dona" — a mesma
+ *    decidida por `sessionFilter` — decide se as entradas do subagente
+ *    entram como `keep` ou como excluídas, igual ao arquivo-pai) e as
+ *    entradas somam em `subagentTokensIn/Out` pela MESMA lógica de sempre
+ *    (`entry.isSidechain`, que já vinha `true` nesses arquivos — nenhuma
+ *    mudança no parser). `subagentTokensIn/Out` continuam `null` só quando
+ *    a janela do stage genuinamente não teve nenhum turno de subagente (sem
+ *    dispatch de `Agent()`, ou dispatch fora da janela) — não mais "nunca
+ *    registrado pelo harness".
  *
- * 2. **Conta a mais (corrigida):** varrer TODOS os arquivos do diretório faz
- *    a janela de tempo do stage capturar qualquer sessão Claude Code
- *    concorrente no mesmo repo. Medido na 260814: dos 1.001M tokens
- *    atribuídos, 303M (29%) vieram de 5 sessões humanas paralelas, duas
- *    delas em branches de feature. Agora o default é filtrar pela sessão
- *    corrente (`CLAUDE_CODE_SESSION_ID`, exposto pelo harness no ambiente do
- *    Bash tool); o comportamento antigo continua alcançável via `sessionId:
- *    null` explícito, e o resultado sempre diz qual dos dois valeu
- *    (`sessionFilter`) e quantas sessões foram ignoradas
+ *    **Achado colateral, contradiz a frase de baixo desta seção pré-#7084:**
+ *    subagentes com `isolation: "worktree"` TAMBÉM aparecem em
+ *    `{sessionId}/subagents/` do coordenador — o harness grava o transcript
+ *    do lado do processo que despachou, não do cwd onde o filho roda; os
+ *    `.meta.json` desses arquivos carregam `worktreePath`/
+ *    `spawnedWithWorktree: true` junto com `isSidechain: true` no `.jsonl`
+ *    irmão (confirmado ao vivo, 304 exemplos no diretório de projeto local
+ *    nesta máquina em 02/09/2026). Isolamento de worktree deixou de ser
+ *    motivo de não-captura.
+ *
+ *    **Não confundir com `subagent_tokens` do bloco `<usage>` reportado pelo
+ *    harness ao FIM de um dispatch `Agent()`** (consumido por
+ *    `scripts/aggregate-session-tokens.ts`/`scripts/lib/edition-cost.ts`,
+ *    caminho overnight/develop) — as duas fontes medem coisas parecidas mas
+ *    não idênticas, então não é esperado que batam: `subagent_tokens`
+ *    **inclui `cache_read`** mas é uma APROXIMAÇÃO do turno FINAL do
+ *    subagente, não a soma de todos os turnos internos (confirmado
+ *    empiricamente no #6633/#7082). `subagentTokensIn/Out` deste módulo é a
+ *    SOMA real de `input + cache_creation + cache_read` de TODOS os turnos
+ *    do arquivo do subagente na janela — tende a ficar IGUAL ou MAIOR que o
+ *    `subagent_tokens` do harness pro mesmo dispatch (maior sempre que o
+ *    subagente teve mais de 1 turno), nunca menor por definição. Divergência
+ *    entre os dois nunca é bug de um dos dois — é a mesma distinção de
+ *    "aproximação do turno final" vs. "soma de todos os turnos".
+ *
+ * 2. **Conta a mais (corrigida no #5413, sem relação com o #7084 acima):**
+ *    varrer TODOS os arquivos do diretório faz a janela de tempo do stage
+ *    capturar qualquer sessão Claude Code concorrente no mesmo repo. Medido
+ *    na 260814: dos 1.001M tokens atribuídos, 303M (29%) vieram de 5 sessões
+ *    humanas paralelas, duas delas em branches de feature. O default é
+ *    filtrar pela sessão corrente (`CLAUDE_CODE_SESSION_ID`, exposto pelo
+ *    harness no ambiente do Bash tool); o comportamento antigo continua
+ *    alcançável via `sessionId: null` explícito, e o resultado sempre diz
+ *    qual dos dois valeu (`sessionFilter`) e quantas sessões foram ignoradas
  *    (`sessionsExcluded`).
  *
- * Subagentes com `isolation: "worktree"` escrevem num cwd diferente →
- * diretório de projeto diferente → também não capturados.
- *
- * **Os números acima são de uma amostra datada (300 transcripts, harness
- * 2.1.233, 16/08/2026) — re-derivar antes de citar**, mesma disciplina do
- * #1172. Se uma versão futura do harness passar a gravar `isSidechain`, o
- * código já lida com isso sozinho (`subagentTokensIn` deixa de ser `null`);
- * é este parágrafo que vira prosa desatualizada, não o comportamento.
+ * **O número de amostra do #7084 acima (304 arquivos worktree, harness
+ * 2.1.258, 02/09/2026) é datado — re-derivar antes de citar**, mesma
+ * disciplina do #1172. Se uma versão futura do harness mudar o path
+ * (`subagents/`) ou o formato, é este parágrafo que vira prosa
+ * desatualizada — `listSubagentTranscriptFiles`/`parseTranscriptFile` é
+ * onde ajustar.
  *
  * Requer `~/.claude/projects/` — só existe em sessão LOCAL (não em
  * cloud/worktree efêmero), consistente com o label `local` da issue #3441
@@ -61,7 +98,7 @@
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 export interface UsageEntry {
   timestamp: string;
@@ -72,9 +109,13 @@ export interface UsageEntry {
   cacheReadInputTokens: number;
   sessionFile: string;
   /**
-   * `true` = turno de subagente (`Agent()`) gravado dentro do transcript do
-   * pai. Nunca observado no harness 2.1.233 (ver #5413 no cabeçalho); a
-   * leitura existe para o dia em que voltar a ser gravado.
+   * `true` = turno de subagente (`Agent()`). Desde o #7084, o caso comum é
+   * uma entrada lida de `{sessionId}/subagents/agent-{agentId}.jsonl` (o
+   * harness marca `isSidechain: true` desde a 1ª linha desses arquivos); o
+   * caso de uma entrada `isSidechain: true` gravada INLINE dentro do
+   * transcript principal (hipótese original deste campo, nunca observada no
+   * harness 2.1.233 — ver #5413 no cabeçalho) continua lido do mesmo jeito,
+   * sem tratamento especial — os dois caminhos convergem no mesmo campo.
    */
   isSidechain: boolean;
 }
@@ -244,6 +285,26 @@ export function listTranscriptFiles(transcriptsDir: string): string[] {
 }
 
 /**
+ * Lista os transcripts de subagente (`Agent()`) despachados por UMA sessão —
+ * `{transcriptsDir}/{sessionId}/subagents/*.jsonl` (#7084). Cada subagente
+ * ganha arquivo próprio (`agent-{agentId}.jsonl` + `.meta.json` companheiro,
+ * este último não lido aqui), `isSidechain: true` desde a 1ª linha, no MESMO
+ * formato de linha que `parseTranscriptFile` já sabe ler — não precisou de
+ * nenhuma mudança no parser, só descobrir o arquivo. Cobre subagentes com
+ * `isolation: "worktree"` também — o harness grava esse transcript do lado
+ * do processo que despachou, não do cwd onde o filho roda (achado do #7084,
+ * ver cabeçalho do módulo).
+ *
+ * Diretório ausente é o caso comum (sessão sem nenhum dispatch de `Agent()`,
+ * ou sessão de um harness anterior ao #7084) — `[]` sem logar, delegado a
+ * `listTranscriptFiles` (mesma convenção: só readdirSync falhando num path
+ * que existsSync confirmou existir é anômalo e loga).
+ */
+export function listSubagentTranscriptFiles(transcriptsDir: string, sessionId: string): string[] {
+  return listTranscriptFiles(join(transcriptsDir, sessionId, "subagents"));
+}
+
+/**
  * Qual filtro de sessão valeu — união discriminada de propósito: torna
  * `{ sessionFilter: "current_session", filterReason: ... }` (um estado que
  * não existe) irrepresentável, em vez de depender de o produtor acertar dois
@@ -269,10 +330,15 @@ interface UsageWindowBase {
    */
   sessionsExcluded: number;
   /**
-   * Tokens de subagente (`Agent()`) na janela. `null` = nenhum turno
-   * sidechain observado — o que foi o caso em toda a amostra checada no
-   * #5413 (300 transcripts, harness 2.1.233). `null` significa "não
-   * registrado", NUNCA "custou zero".
+   * Tokens de subagente (`Agent()`) na janela — soma de TODOS os turnos
+   * marcados `isSidechain: true`, tanto os lidos de
+   * `{sessionId}/subagents/*.jsonl` (caso comum desde o #7084) quanto um
+   * eventual turno sidechain gravado inline no transcript principal (nunca
+   * observado até hoje, ver #5413 no cabeçalho — o parser trata os dois
+   * igual). `null` = nenhum turno sidechain observado NESTA JANELA — sem
+   * dispatch de `Agent()` no stage, ou dispatch fora do intervalo `[start,
+   * end]`. `null` significa "sem subagente nesta janela", NUNCA "custou
+   * zero" nem "harness não registra".
    */
   subagentTokensIn: number | null;
   subagentTokensOut: number | null;
@@ -319,13 +385,21 @@ export interface CollectUsageOptions {
  * (`sessionFilter: "all_sessions"` + `filterReason`), que é o comportamento
  * pré-#5413 e pode misturar sessões Claude Code concorrentes no mesmo repo.
  * `sessionsExcluded` diz quantos transcritos tinham turnos nesta janela e
- * ficaram de fora.
+ * ficaram de fora. **Desde o #7084, cada `.jsonl` de sessão escaneado
+ * (pertença ao dono ou a uma sessão excluída) também puxa junto
+ * `{esse sessionId}/subagents/*.jsonl`** (`listSubagentTranscriptFiles`) —
+ * essas entradas herdam o mesmo `keep`/exclusão do arquivo-pai, então um
+ * subagente de uma sessão CONCORRENTE excluída continua excluído, nunca
+ * conta como uma exclusão A MAIS em `sessionsExcluded` (a contagem é por
+ * sessão, não por arquivo escaneado).
  *
  * `tokensIn` = soma de input + cache_creation + cache_read (convenção
  * "billed input tokens" — todos os 3 são cobrados no request, mesmo que a
  * taxas diferentes; ver `scripts/lib/pricing.ts` pra como isso vira custo).
  * `tokensOut` = soma de output. `models` = lista de model strings distintos
- * observados.
+ * observados. `subagentTokensIn/Out` é a fatia desses totais que veio de
+ * turno `isSidechain` (ver doc do campo) — decomposição, não exclusão: já
+ * está dentro de `tokensIn`/`tokensOut`, não soma por fora.
  */
 export function collectUsageInWindow(
   transcriptsDir: string,
@@ -364,18 +438,29 @@ export function collectUsageInWindow(
   const windowValid = Number.isFinite(startMs) && Number.isFinite(endMs);
   for (const file of files) {
     const keep = outcome.sessionFilter === "all_sessions" || file === wanted;
-    const parsed = parseTranscriptFile(file);
-    // Somado incondicionalmente (não só pros arquivos `keep`) — mesma
-    // convenção de `sessionsScanned`, que também conta o diretório inteiro
-    // independente do filtro de sessão.
-    parseErrors += parsed.parseErrors;
-    if (!windowValid) continue;
-    for (const entry of parsed.entries) {
-      const ts = new Date(entry.timestamp).getTime();
-      if (!Number.isFinite(ts)) continue;
-      if (ts < startMs || ts > endMs) continue;
-      if (keep) entries.push(entry);
-      else excluded.add(file);
+    // #7084: os transcripts de subagente da SESSÃO DONA de `file` (mesmo
+    // sessionId, arquivo `{sessionId}.jsonl` → diretório irmão
+    // `{sessionId}/subagents/`) escalam junto com `file` — mesmo `keep`,
+    // mesma sessão pra fins de `excluded` (ver `scanFile === file ? file :
+    // owner` abaixo: a chave de exclusão é sempre o arquivo-pai `file`,
+    // nunca o `.jsonl` do subagente, senão uma sessão excluída com N
+    // subagentes contaria como N sessões excluídas em vez de 1).
+    const sessionIdForFile = basename(file, ".jsonl");
+    const subagentFiles = listSubagentTranscriptFiles(transcriptsDir, sessionIdForFile);
+    for (const scanFile of [file, ...subagentFiles]) {
+      const parsed = parseTranscriptFile(scanFile);
+      // Somado incondicionalmente (não só pros arquivos `keep`) — mesma
+      // convenção de `sessionsScanned`, que também conta o diretório inteiro
+      // independente do filtro de sessão.
+      parseErrors += parsed.parseErrors;
+      if (!windowValid) continue;
+      for (const entry of parsed.entries) {
+        const ts = new Date(entry.timestamp).getTime();
+        if (!Number.isFinite(ts)) continue;
+        if (ts < startMs || ts > endMs) continue;
+        if (keep) entries.push(entry);
+        else excluded.add(file);
+      }
     }
   }
 
