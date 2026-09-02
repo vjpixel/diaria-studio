@@ -104,11 +104,12 @@ export const APOIADORES_BREVO_UTM_PROFILE: MonthlyUtmProfile = {
  * Render completo da variante Brevo apoiadores (#4593): filtra o draft
  * (`filterDraftForBeehiiv`, reusado sem modificação — ver docstring do
  * módulo) e chama o MESMO `draftToEmail` do envio Clarice, só trocando o
- * `utmProfile`. Assinatura espelha `draftToEmailBeehiiv`
- * (`monthly-beehiiv-render.ts`) de propósito — mesmos parâmetros de imagem
- * que `render-monthly-beehiiv.ts`/`publish-monthly.ts` já usam, pra reusar
- * diretamente as URLs de imagem JÁ publicadas pelo pipeline Clarice (mesma
- * edição, mesmas imagens — sem upload duplicado).
+ * `utmProfile`. Assinatura espelhava a antiga `draftToEmailBeehiiv`
+ * (removida por #7121, sem consumidor de runtime) de propósito — mesmos
+ * parâmetros de imagem que `scripts/render-monthly-apoiadores-brevo.ts`/
+ * `publish-monthly.ts` já usam, pra reusar diretamente as URLs de imagem JÁ
+ * publicadas pelo pipeline Clarice (mesma edição, mesmas imagens — sem
+ * upload duplicado).
  */
 export function draftToEmailApoiadoresBrevo(
   draft: string,

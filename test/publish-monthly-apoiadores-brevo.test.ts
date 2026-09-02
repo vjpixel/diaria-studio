@@ -19,7 +19,7 @@
  * injetados (nunca as implementações reais, `renderMonthlyApoiadoresBrevoEmail`/
  * `readApoiadoresState`/`writeApoiadoresState`) porque `monthlyDir()` resolve
  * sempre contra `data/monthly/` REAL, não é fixture-ável — mesma limitação já
- * aceita por `test/send-monthly-apoiadores.test.ts`/`test/render-monthly-beehiiv.test.ts`.
+ * aceita por `test/send-monthly-apoiadores.test.ts`/`test/render-monthly-apoiadores-brevo.test.ts`.
  * Isso também significa que o branch `--dry-run` (que só reporta o
  * `htmlPath` já escrito por `deps.renderEmail` em produção) não é exercitado
  * aqui via `main()` de ponta a ponta — comportamento coberto indiretamente

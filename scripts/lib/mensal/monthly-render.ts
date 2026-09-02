@@ -142,7 +142,7 @@ export interface MonthlyUtmProfile {
   /** `utm_medium` emitido em todo link do host de marca. */
   medium: string;
   /** Compõe o `utm_campaign` a partir do ciclo + posição do link (mesmo
-   * contrato de `buildMensalCampaign`/`buildMensalBeehiivCampaign`,
+   * contrato de `buildMensalCampaign`/`buildMensalApoiadoresBrevoCampaign`,
    * `scripts/lib/shared/utm-registry.ts`). */
   buildCampaign: (ciclo: string, posicao: string) => string;
   /**
@@ -151,9 +151,10 @@ export interface MonthlyUtmProfile {
    * substitui `{{ contact.EMAIL }}`; o Beehiiv substitui `{{email}}` — mesma
    * distinção que `newsletter-render-html.ts` já resolve pra newsletter
    * diária (`platform === "brevo" ? "{{ contact.EMAIL }}" : "{{email}}"`).
-   * `renderEia` hardcodava o formato Brevo mesmo no caminho Beehiiv
-   * (`draftToEmailBeehiiv`), então TODO clique de voto vindo do e-mail
-   * Beehiiv chegava com a string literal `{{ contact.EMAIL }}` — a Beehiiv
+   * `renderEia` hardcodava o formato Brevo mesmo no caminho Beehiiv (a antiga
+   * `draftToEmailBeehiiv`, removida por #7121, sem consumidor de runtime),
+   * então TODO clique de voto vindo do e-mail Beehiiv chegava com a string
+   * literal `{{ contact.EMAIL }}` — a Beehiiv
    * não a substitui, e `isValidVoteEmailFormat` (workers/poll) rejeita esse
    * formato: 100% dos votos quebrados nessa variante.
    */
@@ -164,10 +165,12 @@ export interface MonthlyUtmProfile {
    * `brand=clarice` incondicionalmente — a variante Beehiiv (audiência de
    * apoiadores, não assinantes Clarice/Brevo) misturava votos no MESMO
    * leaderboard da Clarice. Cada perfil aponta pro seu próprio `Brand`
-   * (`CLARICE_UTM_PROFILE` → `"clarice"`; `BEEHIIV_UTM_PROFILE`,
-   * `monthly-beehiiv-render.ts` → `"mensal-beehiiv"`, registrado em
-   * `BRAND_INFO` com `leaderboardPeriod: "year"` — OBRIGATÓRIO pra esse
-   * brand aceitar edição em formato de ciclo, ver comentário lá).
+   * (`CLARICE_UTM_PROFILE` → `"clarice"`; `APOIADORES_BREVO_UTM_PROFILE`,
+   * `monthly-apoiadores-brevo-render.ts` → `"mensal-apoiadores-brevo"`,
+   * registrado em `BRAND_INFO` com `leaderboardPeriod: "year"` — OBRIGATÓRIO
+   * pra esse brand aceitar edição em formato de ciclo, ver comentário lá;
+   * `BEEHIIV_UTM_PROFILE`, o perfil original que motivou este design,
+   * removido por #7121, sem consumidor de runtime).
    */
   pollBrand: string;
 }
@@ -1087,8 +1090,11 @@ export function parseEiaLegend(eiaMd: string): string {
  * comportamento histórico (merge tag `{{ contact.EMAIL }}` da Brevo,
  * `brand=clarice`) pra todo caller que não passa o argumento — inclusive
  * TODOS os testes existentes que chamam `renderEia` direto. A variante
- * Beehiiv (`draftToEmail(..., BEEHIIV_UTM_PROFILE)`) precisa do formato
- * `{{email}}` e de um `brand` isolado — ver docstring de `MonthlyUtmProfile`.
+ * Brevo apoiadores (`draftToEmail(..., APOIADORES_BREVO_UTM_PROFILE)`)
+ * precisa de um `brand` isolado — ver docstring de `MonthlyUtmProfile`. (A
+ * variante Beehiiv original, que motivou este design, usava o formato
+ * `{{email}}`; `draftToEmailBeehiiv`/`BEEHIIV_UTM_PROFILE` foram removidos
+ * por #7121, sem consumidor de runtime.)
  */
 export function renderEia(
   chunk: string,
@@ -1459,7 +1465,8 @@ export function splitByLabels(text: string): string[] {
  *   "Criada com ComfyUI"). Default: "Criada com IA". Lida de platform.config.json pelo caller.
  * @param utmProfile #4482 — perfil de UTM (source/medium/campaign builder) injetado em todo
  *   link do host de marca. Default `CLARICE_UTM_PROFILE` (comportamento histórico, #2975/#4040).
- *   A variante Beehiiv (`scripts/lib/mensal/monthly-beehiiv-render.ts`) passa `BEEHIIV_UTM_PROFILE`.
+ *   A variante Brevo apoiadores (`scripts/lib/mensal/monthly-apoiadores-brevo-render.ts`) passa
+ *   `APOIADORES_BREVO_UTM_PROFILE` (sucessora de `BEEHIIV_UTM_PROFILE`, removida por #7121).
  */
 export function draftToEmail(
   draft: string,

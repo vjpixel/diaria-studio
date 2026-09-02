@@ -5,10 +5,11 @@
  * Renderiza a variante BREVO do envio extra pra apoiadores Mantenedor/
  * Patrono — sucessor de `scripts/render-monthly-beehiiv.ts` (#4482, canal
  * nunca usado ao vivo: a Beehiiv bloqueia "Include and exclude segments" no
- * plano Launch/free, #4572). Reusa o MESMO `draft.md` e as MESMAS imagens já
- * publicadas pro envio Clarice — não faz upload novo, lê os URLs já
- * publicados de `_internal/public-images.json` (mesma fonte que a variante
- * Beehiiv já usava).
+ * plano Launch/free, #4572; arquivo removido por #7121, sem consumidor de
+ * runtime — `readPublicImages`/`EXPECTED_IMAGE_KEYS`/`missingImageKeys`
+ * migraram pra cá, canal-agnósticas, únicas partes ainda vivas). Reusa o
+ * MESMO `draft.md` e as MESMAS imagens já publicadas pro envio Clarice — não
+ * faz upload novo, lê os URLs já publicados de `_internal/public-images.json`.
  *
  * Diferente de `publish-monthly.ts`/`monthly-preview-cloudflare.ts`, este
  * script NUNCA toca a Brevo (nem qualquer API ao vivo) — produz só o HTML
@@ -16,8 +17,9 @@
  * `scripts/publish-monthly-apoiadores-brevo.ts` (motor da skill
  * `/diaria-mensal-apoiadores`, Passo 2), que chama `renderMonthlyApoiadoresBrevoEmail`
  * (exportada abaixo) internamente. Este arquivo continua funcionando
- * standalone (só render, sem publicar) pra debug/preview rápido — mesmo
- * padrão de `render-monthly-beehiiv.ts`.
+ * standalone (só render, sem publicar) pra debug/preview rápido, e agora
+ * também é chamado por `scripts/send-monthly-apoiadores.ts` (Passo 1, #7121)
+ * pra registrar o efeito de estado local.
  *
  * Uso:
  *   npx tsx scripts/render-monthly-apoiadores-brevo.ts --cycle 2607-08
@@ -33,13 +35,61 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { draftToEmailApoiadoresBrevo, APOIADORES_BREVO_UTM_PROFILE } from "./lib/mensal/monthly-apoiadores-brevo-render.ts";
-import { readPublicImages, missingImageKeys } from "./render-monthly-beehiiv.ts"; // reuso — leitura de imagem é canal-agnóstica
 import { parseEiaLegend, captionForGenerator } from "./lib/mensal/monthly-render.ts";
 import { relinkMonthlyEditionHtml } from "./monthly-relink-to-diaria.ts"; // #4048 (mesmo relink do envio Clarice/Beehiiv)
 import { isMainModule } from "./lib/cli-args.ts";
 import { parseMonthlyCycleArg, cycleToYymm, monthlyDir as resolveMonthlyDir } from "./lib/mensal/monthly-paths.ts";
+import type { MonthlyPublicImage } from "./monthly-preview-cloudflare.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+interface PublicImagesManifest {
+  images?: Record<string, MonthlyPublicImage>;
+}
+
+/**
+ * Lê `_internal/public-images.json` (escrito por `monthly-preview-cloudflare.ts`,
+ * #3392) — fonte das URLs de imagem JÁ publicadas pro Cloudflare KV pra este
+ * ciclo. Aborta com instrução clara se ausente: sem ele não há URL pública
+ * pra imagem nenhuma (e este script não faz upload — ver docstring do
+ * módulo).
+ *
+ * Movida de `scripts/render-monthly-beehiiv.ts` (#7121 — canal Beehiiv
+ * esvaziado, esta leitura de imagem é canal-agnóstica e passa a viver aqui,
+ * seu único consumidor de runtime remanescente).
+ */
+export function readPublicImages(monthlyDir: string): Record<string, MonthlyPublicImage> {
+  const path = resolve(monthlyDir, "_internal", "public-images.json");
+  if (!existsSync(path)) {
+    console.error(
+      `[render-monthly-apoiadores-brevo] ERRO: ${path} não encontrado.\n` +
+        "Rode a Etapa 3/4 do /diaria-mensal (monthly-preview-cloudflare.ts) neste ciclo antes " +
+        "de renderizar a variante Brevo — este script reusa as imagens já publicadas, não faz upload novo.",
+    );
+    process.exit(1);
+  }
+  const manifest = JSON.parse(readFileSync(path, "utf8")) as PublicImagesManifest;
+  return manifest.images ?? {};
+}
+
+/**
+ * #4510 (achado silent-failure-hunter, review pré-merge): chaves de imagem
+ * esperadas no manifest — 3 destaques + par A/B do É IA? + capa da
+ * curadoria de livros. Extraídas aqui porque `renderMonthlyApoiadoresBrevoEmail`
+ * consome exatamente estas 6 chaves (`d1`/`d2`/`d3`/`eia_a`/`eia_b`/`livros_promo`)
+ * — ver `missingImageKeys` abaixo.
+ */
+export const EXPECTED_IMAGE_KEYS = ["d1", "d2", "d3", "eia_a", "eia_b", "livros_promo"] as const;
+
+/**
+ * Enumera quais chaves esperadas estão ausentes (sem `url`) no manifest.
+ * Pure. Fail-soft (o script não aborta: a Etapa 3/4 do fluxo Clarice pode
+ * legitimamente ainda não ter gerado alguma imagem) — só emite warning
+ * explícito antes de escrever o HTML, ver call site abaixo.
+ */
+export function missingImageKeys(images: Record<string, MonthlyPublicImage>): string[] {
+  return EXPECTED_IMAGE_KEYS.filter((k) => !images[k]?.url);
+}
 
 export interface RenderedMonthlyApoiadoresBrevoEmail {
   cycle: string;

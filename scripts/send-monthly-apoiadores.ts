@@ -8,15 +8,28 @@
  * pro fluxo completo e `scripts/lib/mensal/monthly-apoiadores-state.ts` pra
  * semântica do dedup.
  *
+ * ## #7121 (260902) — render trocado de Beehiiv pra Brevo
+ *
+ * Este script (Passo 1 — "prepare") historicamente renderizava a variante
+ * BEEHIIV (`renderMonthlyBeehiivEmail`, `render-monthly-beehiiv.ts`) só pelo
+ * lado de EFEITO DE ESTADO (`htmlPath`/`subject` gravados no state local) —
+ * o canal Beehiiv nunca chegou a enviar nada ao vivo (#4572). O Passo 2
+ * (`publish-monthly-apoiadores-brevo.ts`) já é quem de fato cria a campanha
+ * e já grava `status: draft_prepared` sozinho (`decidePublishBrevoAction`
+ * aceita `state: null` — não depende deste Passo 1 ter rodado antes), então
+ * a única função remanescente deste Passo 1 é permitir preparar/registrar o
+ * ciclo ANTES de rodar o Passo 2 (ex: pra inspecionar o HTML localmente
+ * primeiro). Trocado pra renderizar via `renderMonthlyApoiadoresBrevoEmail`
+ * (`render-monthly-apoiadores-brevo.ts`, o MESMO render que o Passo 2 usa)
+ * em vez do Beehiiv, que foi removido por não ter consumidor de runtime.
+ *
  * ## Relação com #4482
  *
  * A issue #4482 ("digest mensal também pra base Beehiiv") já entregou e
- * fechou (merge #4510) a MAIOR parte do que #4521 pede: mesma decisão de
- * plataforma (Beehiiv), mesmo segmento-alvo (só Mantenedor/Patrono), mesmo
- * módulo de render (`render-monthly-beehiiv.ts` /
- * `scripts/lib/mensal/monthly-beehiiv-render.ts`). O que #4482 deixou
- * como follow-up explícito ("só o primeiro envio, semi-manual... automação
- * completa é follow-up") e que #4521 cobra especificamente:
+ * fechou (merge #4510) a MAIOR parte do que #4521 pede: mesmo segmento-alvo
+ * (só Mantenedor/Patrono), mesma origem de conteúdo (`draft.md`). O que
+ * #4482 deixou como follow-up explícito ("só o primeiro envio, semi-manual...
+ * automação completa é follow-up") e que #4521 cobra especificamente:
  *
  *   1. Skill MANUAL SEPARADA (não uma etapa dentro de `/diaria-mensal`) —
  *      este script + `.claude/skills/diaria-mensal-apoiadores/SKILL.md`.
@@ -36,9 +49,9 @@
  * já foi decidida ao vivo pelo editor no #4482 (comentário 260803, decisão
  * 3): "remover DIVULGAÇÃO/TUTORIAL sem substituir por nada — mais simples,
  * espaço reservado fica vazio." Este script mantém essa decisão já tomada
- * (via `renderMonthlyBeehiivEmail`/`filterDraftForBeehiiv`, inalterados) em
- * vez de reabri-la unilateralmente — não há editor presente nesta sessão pra
- * confirmar uma mudança de rumo, e os snippets Patronos são específicos do
+ * (via `renderMonthlyApoiadoresBrevoEmail`/`filterDraftForBeehiiv`,
+ * inalterados) em vez de reabri-la unilateralmente — não há editor presente
+ * nesta sessão pra confirmar uma mudança de rumo, e os snippets Patronos são específicos do
  * nível Patrono (não Mantenedor), então "extRendê-los pro mensal" também
  * arrastaria uma decisão de conteúdo por nível que ninguém tomou ainda. Sinalizado
  * como discrepância pro editor decidir (ver corpo do PR), não resolvido aqui.
@@ -58,7 +71,7 @@
 import { requireMonthlyCycleArg, monthlyDir as resolveMonthlyDir } from "./lib/mensal/monthly-paths.ts";
 import { hasFlag } from "./lib/cli-args.ts";
 import { isMainModule } from "./lib/cli-args.ts";
-import { renderMonthlyBeehiivEmail, printManualPublishInstructions } from "./render-monthly-beehiiv.ts";
+import { renderMonthlyApoiadoresBrevoEmail } from "./render-monthly-apoiadores-brevo.ts";
 import {
   readApoiadoresState,
   writeApoiadoresState,
@@ -112,7 +125,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const rendered = renderMonthlyBeehiivEmail(cycle);
+  const rendered = renderMonthlyApoiadoresBrevoEmail(cycle);
 
   const newState: ApoiadoresState = buildPreparedState(
     cycle,
@@ -121,9 +134,8 @@ async function main(): Promise<void> {
     rendered.subject,
     APOIADORES_TARGET_SEGMENT_NAMES,
     // #4572/#4593: preserva o brevoCampaignId de um Passo 2 já rodado — este
-    // Passo 1 (fluxo Beehiiv legado) não pode apagar o registro de que já
-    // existe uma campanha Brevo criada pro ciclo (ver docstring de
-    // buildPreparedState).
+    // Passo 1 não pode apagar o registro de que já existe uma campanha
+    // Brevo criada pro ciclo (ver docstring de buildPreparedState).
     state?.brevoCampaignId ?? null,
   );
   writeApoiadoresState(monthlyDir, newState);
@@ -143,7 +155,9 @@ async function main(): Promise<void> {
       2,
     ),
   );
-  printManualPublishInstructions();
+  console.log(
+    `\nPróximo passo: npx tsx scripts/publish-monthly-apoiadores-brevo.ts --cycle ${cycle} --dry-run`,
+  );
 }
 
 if (isMainModule(import.meta.url)) {

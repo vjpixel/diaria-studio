@@ -17,7 +17,6 @@ import {
   draftToEmailApoiadoresBrevo,
   APOIADORES_BREVO_UTM_PROFILE,
 } from "../scripts/lib/mensal/monthly-apoiadores-brevo-render.ts";
-import { BEEHIIV_UTM_PROFILE } from "../scripts/lib/mensal/monthly-beehiiv-render.ts";
 import { CLARICE_UTM_PROFILE } from "../scripts/lib/mensal/monthly-render.ts";
 import {
   MENSAL_APOIADORES_BREVO_UTM_SOURCE,
@@ -157,11 +156,10 @@ describe("#4593 — draftToEmailApoiadoresBrevo", () => {
 });
 
 describe("#4593 self-review — decisão do item 2 (opção b) não toca perfis existentes", () => {
-  it("BEEHIIV_UTM_PROFILE continua com os valores originais (Beehiiv, não Brevo)", () => {
-    assert.equal(BEEHIIV_UTM_PROFILE.source, MENSAL_BEEHIIV_UTM_SOURCE);
-    assert.equal(BEEHIIV_UTM_PROFILE.pollMergeTag, "{{email}}");
-    assert.equal(BEEHIIV_UTM_PROFILE.pollBrand, "mensal-beehiiv");
-  });
+  // BEEHIIV_UTM_PROFILE foi removido por #7121 (sem consumidor de runtime —
+  // o canal Beehiiv nunca enviou nada ao vivo). Os testes que comparavam os
+  // "3 perfis" (Clarice/Beehiiv-legado/Brevo-apoiadores) valiam enquanto os
+  // 3 coexistiam no repo; agora só Clarice e Brevo-apoiadores existem.
 
   it("CLARICE_UTM_PROFILE (envio mensal Clarice REAL, em produção) continua com os valores originais", () => {
     assert.equal(CLARICE_UTM_PROFILE.source, MENSAL_UTM_SOURCE);
@@ -169,13 +167,13 @@ describe("#4593 self-review — decisão do item 2 (opção b) não toca perfis 
     assert.equal(CLARICE_UTM_PROFILE.pollBrand, "clarice");
   });
 
-  it("os 3 perfis (Clarice, Beehiiv-legado, Brevo-apoiadores) têm utm_source distintos entre si", () => {
-    const sources = [CLARICE_UTM_PROFILE.source, BEEHIIV_UTM_PROFILE.source, APOIADORES_BREVO_UTM_PROFILE.source];
-    assert.equal(new Set(sources).size, 3, `utm_source deveria ser único por perfil: ${sources.join(", ")}`);
+  it("os 2 perfis (Clarice, Brevo-apoiadores) têm utm_source distintos entre si", () => {
+    const sources = [CLARICE_UTM_PROFILE.source, APOIADORES_BREVO_UTM_PROFILE.source];
+    assert.equal(new Set(sources).size, 2, `utm_source deveria ser único por perfil: ${sources.join(", ")}`);
   });
 
-  it("os 3 perfis têm pollBrand distintos entre si (isolamento do leaderboard É IA?)", () => {
-    const brands = [CLARICE_UTM_PROFILE.pollBrand, BEEHIIV_UTM_PROFILE.pollBrand, APOIADORES_BREVO_UTM_PROFILE.pollBrand];
-    assert.equal(new Set(brands).size, 3, `pollBrand deveria ser único por perfil: ${brands.join(", ")}`);
+  it("os 2 perfis têm pollBrand distintos entre si (isolamento do leaderboard É IA?)", () => {
+    const brands = [CLARICE_UTM_PROFILE.pollBrand, APOIADORES_BREVO_UTM_PROFILE.pollBrand];
+    assert.equal(new Set(brands).size, 2, `pollBrand deveria ser único por perfil: ${brands.join(", ")}`);
   });
 });

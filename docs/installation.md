@@ -235,22 +235,7 @@ Opcional (pode rodar depois da 1ª edição):
 
 ---
 
-## 10. Primeira edição de teste
-
-```bash
-# No Claude Code:
-/diaria-test
-```
-
-Essa skill roda a pipeline completa mas:
-- Agenda social 10 dias no futuro (sem spam real).
-- Usa edição de teste 999999 por default.
-
-Acompanhar cada gate e validar que funciona. Se falhar em algum stage, ver `/diaria-log` + troubleshooting abaixo.
-
----
-
-## 11. Produção — primeira edição real
+## 10. Produção — primeira edição real
 
 ```bash
 /diaria-edicao 260425   # data no formato AAMMDD

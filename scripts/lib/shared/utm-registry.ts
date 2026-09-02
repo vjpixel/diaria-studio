@@ -63,8 +63,12 @@ export const MENSAL_UTM_MEDIUM = "email";
  * mesmo problema que o #2975 original corrigiu (só que na direção oposta —
  * cliques do canal Beehiiv contaminando a medição do canal Clarice).
  * Consumido por `CLARICE_UTM_PROFILE`/`draftToEmail(..., utmProfile)` em
- * `scripts/lib/mensal/monthly-render.ts` e `BEEHIIV_UTM_PROFILE` em
- * `scripts/lib/mensal/monthly-beehiiv-render.ts`.
+ * `scripts/lib/mensal/monthly-render.ts`. `BEEHIIV_UTM_PROFILE`
+ * (`scripts/lib/mensal/monthly-beehiiv-render.ts`), o outro consumidor
+ * histórico, foi removido por #7121 (sem consumidor de runtime) — estas
+ * duas constantes sobrevivem por serem citadas em teste de regressão
+ * (garante que `utm_source=mensal-beehiiv` nunca vaza na variante Brevo
+ * apoiadores).
  */
 export const MENSAL_BEEHIIV_UTM_SOURCE = "mensal-beehiiv";
 export const MENSAL_BEEHIIV_UTM_MEDIUM = "email";
@@ -156,21 +160,11 @@ export function tagHourCellUtm(html: string, hourCell: string): string {
 }
 
 /**
- * Compõe o `utm_campaign` da variante Beehiiv do mensal (#4482):
- * `mensal-beehiiv-{ciclo}-{posicao}` — mesmo padrão de `buildMensalCampaign`,
- * `utm_source` distinto.
- *
- * @pure
- */
-export function buildMensalBeehiivCampaign(ciclo: string, posicao: string): string {
-  const p = slugifySecao(posicao);
-  return `${MENSAL_BEEHIIV_UTM_SOURCE}-${ciclo}-${p}`;
-}
-
-/**
  * Compõe o `utm_campaign` da variante Brevo do envio extra pra apoiadores
  * (#4593): `mensal-apoiadores-brevo-{ciclo}-{posicao}` — mesmo padrão de
- * `buildMensalCampaign`/`buildMensalBeehiivCampaign`, `utm_source` distinto.
+ * `buildMensalCampaign`, `utm_source` distinto. (`buildMensalBeehiivCampaign`,
+ * a versão Beehiiv que motivou este padrão, foi removida por #7121 — sem
+ * consumidor de runtime, já que `BEEHIIV_UTM_PROFILE` também foi removido.)
  *
  * @pure
  */
