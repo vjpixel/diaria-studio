@@ -1327,6 +1327,24 @@ describe("clarice-envio-run (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    it("REGRESSÃO #7007: committedLookupError vaza pro relatório/mensagem de abort", async () => {
+      // Antes desta issue, o relatório de `-abort` só dizia "falhou" sem
+      // motivo — 3 ocorrências (260827/260830/260901) exigiram investigação
+      // do zero cada vez. O motivo real precisa aparecer no reportMarkdown
+      // que `runEnvio` grava (é o que o alarme/editor de fato lê).
+      const root = freshRoot();
+      const { exec } = makeFakeExec({
+        "scripts/clarice-check-derived-stale.ts": textResult("fresh"),
+        "scripts/clarice-plan-wave.ts": jsonResult(
+          goldenProposal({ committedLookupFailed: true, committedLookupError: "Brevo GET /emailCampaigns HTTP 429" }),
+        ),
+      });
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 1);
+      assert.match(r.reportMarkdown, /Motivo: Brevo GET \/emailCampaigns HTTP 429/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
     it("brevoCredits null (não consultado) => aborta (code 1)", async () => {
       const root = freshRoot();
       const { exec } = makeFakeExec({
