@@ -621,7 +621,9 @@ export interface GhIssueListRawItem {
   [key: string]: unknown;
 }
 
-function normalizeGhIssueListLabels(raw: GhIssueListRawItem["labels"]): string[] {
+/** Exportado (#7018) — `scripts/lib/issue-triage-fetch.ts` reusa exatamente
+ * esta normalização em vez de duplicá-la. */
+export function normalizeGhIssueListLabels(raw: GhIssueListRawItem["labels"]): string[] {
   return (raw ?? [])
     .map((l) => (typeof l === "string" ? l : l?.name))
     .filter((n): n is string => typeof n === "string" && n.length > 0);

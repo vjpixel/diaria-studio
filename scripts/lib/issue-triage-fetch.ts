@@ -35,7 +35,12 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { classifyExecTrackFromListItem, type GhIssueListRawItem, type ExecTrack } from "./issue-exec-track.ts";
+import {
+  classifyExecTrackFromListItem,
+  normalizeGhIssueListLabels,
+  type GhIssueListRawItem,
+  type ExecTrack,
+} from "./issue-exec-track.ts";
 
 /** Issue já normalizada + classificada — pronta pro coordenador consumir
  * sem precisar rechamar `classifyExecTrack` por conta própria. */
@@ -113,9 +118,7 @@ export function fetchOpenIssuesForTriage(cwd: string, now?: Date): FetchOpenIssu
   const issues: TriageIssue[] = raw.map((item) => ({
     number: typeof item.number === "number" ? item.number : Number(item.number),
     title: typeof item.title === "string" ? item.title : "",
-    labels: (item.labels ?? [])
-      .map((l) => (typeof l === "string" ? l : l?.name))
-      .filter((n): n is string => typeof n === "string" && n.length > 0),
+    labels: normalizeGhIssueListLabels(item.labels),
     body: (item.body ?? null) as string | null,
     url: typeof item.url === "string" ? item.url : "",
     updatedAt: (item.updatedAt ?? null) as string | null,
