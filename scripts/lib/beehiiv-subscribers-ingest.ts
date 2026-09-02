@@ -103,6 +103,92 @@ export function extractBeehiivIdentity(record: BeehiivEngagementRecord): Beehiiv
   return { externalId, email };
 }
 
+/** Insere o alias `(platform='beehiiv', externalId, email)` se ele ainda não
+ *  existir, apontando pro `subscriberId` JÁ RESOLVIDO (nunca cria um
+ *  subscriber novo) — usado por `resolveOrCreateBeehiivSubscriber` pra
+ *  registrar a combinação exata vista nesta linha, mesmo quando ela funde
+ *  com um alias diferente do mesmo assinante. */
+function insertBeehiivAliasIfMissing(
+  db: DatabaseSync,
+  subscriberId: number,
+  externalId: string | null,
+  email: string | null,
+  now: string,
+): void {
+  const existing = db
+    .prepare(
+      "SELECT id FROM identity_alias WHERE platform = 'beehiiv' AND external_id IS ? AND email IS ?",
+    )
+    .get(externalId, email) as { id: number } | undefined;
+  if (existing) return;
+  db.prepare(
+    `INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at)
+     VALUES (?, 'beehiiv', ?, ?, ?)`,
+  ).run(subscriberId, externalId, email, now);
+}
+
+/**
+ * Find-or-create de subscriber ESPECÍFICO pra Beehiiv (#7104, achado de
+ * review P2 do PR #7135) — `ensureSubscriber` genérico faz find-or-create
+ * pela chave EXATA `(platform, external_id, email)`, o que é certo pro Kit
+ * (só tem e-mail, chave estável por design) mas errado pra Beehiiv: a Beehiiv
+ * costuma ter os DOIS campos, e o MESMO assinante real pode aparecer em
+ * linhas diferentes com combinações diferentes (ex: uma linha com
+ * `subscriber_id+email`, outra com só `subscriber_id` por e-mail nulo ou
+ * malformado numa página da MCP) — a chave exata trataria isso como 2
+ * pessoas, criando 2 `subscriber` DENTRO da própria Beehiiv (nunca fundidos
+ * até `resolveIdentitiesByEmail` rodar, e só quando as DUAS linhas têm
+ * e-mail, o que corrompe `leitor-v1`, o objetivo da issue).
+ *
+ * Resolução em ordem de preferência:
+ *   1. `subscriber_id` nativo da Beehiiv (identidade real) — casa contra
+ *      QUALQUER alias já visto sob esse `external_id`, ignorando se o
+ *      e-mail da linha atual bate ou não.
+ *   2. `email` como chave secundária — só quando a linha não tem
+ *      `subscriber_id` (ou ele nunca foi visto antes), casa contra um alias
+ *      já resolvido pra esse e-mail.
+ *   3. Nenhum dos dois casou — subscriber genuinamente novo
+ *      (`ensureSubscriber` cuida da criação).
+ *
+ * Em qualquer caso que funde com um alias existente, a combinação exata
+ * `(externalId, email)` desta linha é registrada como um alias A MAIS do
+ * MESMO subscriber (`insertBeehiivAliasIfMissing`) — não perde a variação
+ * observada, só evita duplicar a pessoa.
+ */
+export function resolveOrCreateBeehiivSubscriber(
+  db: DatabaseSync,
+  identity: BeehiivIdentity,
+  now: string = new Date().toISOString(),
+): number {
+  const { externalId, email } = identity;
+  if (!externalId && !email) {
+    throw new Error("resolveOrCreateBeehiivSubscriber: identidade vazia (nem externalId nem email)");
+  }
+  const normalizedEmail = email ? email.trim().toLowerCase() : null;
+
+  if (externalId) {
+    const bySubscriberId = db
+      .prepare("SELECT subscriber_id FROM identity_alias WHERE platform = 'beehiiv' AND external_id = ? LIMIT 1")
+      .get(externalId) as { subscriber_id: number } | undefined;
+    if (bySubscriberId) {
+      insertBeehiivAliasIfMissing(db, bySubscriberId.subscriber_id, externalId, normalizedEmail, now);
+      return bySubscriberId.subscriber_id;
+    }
+  }
+
+  if (normalizedEmail) {
+    const byEmail = db
+      .prepare("SELECT subscriber_id FROM identity_alias WHERE platform = 'beehiiv' AND email = ? LIMIT 1")
+      .get(normalizedEmail) as { subscriber_id: number } | undefined;
+    if (byEmail) {
+      insertBeehiivAliasIfMissing(db, byEmail.subscriber_id, externalId, normalizedEmail, now);
+      return byEmail.subscriber_id;
+    }
+  }
+
+  return ensureSubscriber(db, "beehiiv", externalId, normalizedEmail, now);
+}
+
 /**
  * Chave natural determinística do evento — a chave preferida usa o
  * `subscriber_id` nativo da Beehiiv (identidade real, ao contrário do Kit
@@ -155,8 +241,9 @@ export interface BeehiivIngestPostResult {
 
 /**
  * Ingerir todos os registros de 1 post: para cada registro com identidade
- * utilizável, resolve/cria o `subscriber` (`ensureSubscriber`, platform
- * "beehiiv") e grava 1 `event` idempotente por eixo derivado
+ * utilizável, resolve/cria o `subscriber` (`resolveOrCreateBeehiivSubscriber`,
+ * platform "beehiiv" — funde combinações inconsistentes de subscriber_id/email
+ * do mesmo assinante real, #7135 finding 3) e grava 1 `event` idempotente por eixo derivado
  * (`deriveBeehiivEventTypes`). Registro sem `subscriber_id` nem `email` é
  * contado em `recordsSkippedNoIdentity`, nunca vira subscriber fantasma.
  *
@@ -186,7 +273,7 @@ export function ingestPostEngagement(
     recordsProcessed++;
 
     const ts = typeof record.timestamp === "string" && record.timestamp ? record.timestamp : now;
-    const subscriberId = ensureSubscriber(db, "beehiiv", identity.externalId, identity.email, now);
+    const subscriberId = resolveOrCreateBeehiivSubscriber(db, identity, now);
     touchedSubscribers.add(subscriberId);
 
     for (const type of deriveBeehiivEventTypes(record)) {

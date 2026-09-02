@@ -100,6 +100,28 @@ describe("ingestOnePost", () => {
     db.close();
   });
 
+  it("manifest da fatia 1 SEM count → status error explícito, nunca 'ok' por fallback pra records.length (#7135 finding 1)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const tmp = mkdtempSync(join(tmpdir(), "beehiiv-ingest-src-"));
+    // 2 registros no JSONL, count AUSENTE no manifest da fatia 1 — antes do
+    // fix, `sourceEntry.count ?? records.length` comparava 2 contra 2 e
+    // passava trivialmente mesmo que o JSONL estivesse truncado.
+    writeFileSync(
+      resolve(tmp, "post_3.jsonl"),
+      [
+        JSON.stringify({ subscriber_id: "s1", status: "delivered" }),
+        JSON.stringify({ subscriber_id: "s2", status: "delivered" }),
+      ].join("\n") + "\n",
+    );
+    const outcome = ingestOnePost(db, tmp, { post_id: "post_3", status: "ok", count: undefined });
+    assert.equal(outcome.entry.status, "error");
+    assert.match(outcome.entry.error!, /count/i);
+    // Os eventos já lidos são gravados mesmo assim — não descarta trabalho.
+    assert.equal(outcome.eventsNew, 2);
+    assert.equal(getStoreCounts(db).events, 2);
+    db.close();
+  });
+
   it("post not_applicable (nunca enviado) vira ok com 0 registros, sem tentar ler jsonl", () => {
     const db = openDiariaSubscribersDb(":memory:");
     const tmp = mkdtempSync(join(tmpdir(), "beehiiv-ingest-src-"));
@@ -196,6 +218,55 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     assert.equal(manifest.entries.length, 1);
     assert.equal(manifest.entries[0].status, "ok");
+  });
+
+  it("--post filtra pra 1 post específico com 2+ pendentes (#7135 finding 2 — trava a regressão do getArg vs getStringArg)", async () => {
+    // Bug original: `getArg(argv, "post")` devolve `""` (não `undefined`)
+    // quando a flag está ausente — `pending.filter((e) => e.id === "")`
+    // sempre falha, então NENHUM post nunca era filtrado (o filtro virava
+    // no-op silencioso). Pior: com a flag PASSADA, `getArg` também não
+    // distinguia "valor não fornecido" de string vazia do mesmo jeito que
+    // `getStringArg` — este teste exercita o caminho `--post post_1` de
+    // ponta a ponta e falha se `getStringArg` for trocado de volta por
+    // `getArg` (`postFilter` viraria sempre `""`, o filtro pra `e.id === ""`
+    // nunca casaria, e os 2 posts seriam processados em vez de só 1).
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-beehiiv-ingest-postfilter-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/beehiiv-ingest-manifest.json");
+
+    const sourceManifest: EngagementManifest = {
+      generated_at: "2026-01-01T00:00:00Z",
+      posts: [
+        { post_id: "post_1", title: "Edição A", status: "ok", count: 1 },
+        { post_id: "post_2", title: "Edição B", status: "ok", count: 1 },
+      ],
+    };
+    const sourceDir = makeSourceDir(tmp, sourceManifest, {
+      post_1: [{ subscriber_id: "s1", email: "a@x.com", status: "delivered" }],
+      post_2: [{ subscriber_id: "s2", email: "b@x.com", status: "delivered" }],
+    });
+
+    const result: { processed_this_run: number } = await new Promise((resolvePromise) => {
+      const originalLog = console.log;
+      console.log = (msg: string) => {
+        console.log = originalLog;
+        resolvePromise(JSON.parse(msg));
+      };
+      void main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir, "--post", "post_1"]);
+    });
+
+    assert.equal(result.processed_this_run, 1, "só post_1 foi processado, não os 2 pendentes");
+
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const post1Entry = manifest.entries.find((e: { id: string }) => e.id === "post_1");
+    const post2Entry = manifest.entries.find((e: { id: string }) => e.id === "post_2");
+    assert.equal(post1Entry.status, "ok", "post_1 (filtrado) foi de fato processado");
+    assert.equal(post2Entry.status, "pending", "post_2 (fora do filtro) permanece pending, não tocado");
+
+    const db = openDiariaSubscribersDb(dbPath);
+    assert.equal(getStoreCounts(db).subscribers, 1, "só o subscriber do post_1 foi ingerido");
+    db.close();
   });
 
   it("recusa cedo (exitCode 1) quando data/ está ausente, nunca tenta ler o backup", async () => {

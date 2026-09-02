@@ -14,6 +14,7 @@ import {
   buildBeehiivEventExternalId,
   verifyBeehiivIngestion,
   ingestPostEngagement,
+  resolveOrCreateBeehiivSubscriber,
   type BeehiivEngagementRecord,
 } from "../scripts/lib/beehiiv-subscribers-ingest.ts";
 import {
@@ -125,6 +126,55 @@ describe("verifyBeehiivIngestion — guard anti-fabricação (#6496)", () => {
     const r = verifyBeehiivIngestion(0, 553);
     assert.equal(r.ok, false);
     assert.match(r.reason!, /553/);
+  });
+});
+
+describe("resolveOrCreateBeehiivSubscriber — funde combinações inconsistentes do mesmo assinante (#7135 finding 3)", () => {
+  it("2 linhas do MESMO subscriber_id com combinações de e-mail diferentes convergem num único subscriber", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    // Linha 1: subscriber_id + email presentes.
+    const id1 = resolveOrCreateBeehiivSubscriber(db, { externalId: "uuid-1", email: "a@x.com" });
+    // Linha 2: MESMO subscriber_id, mas email ausente/malformado (null) — a
+    // chave exata (platform, external_id, email) do `ensureSubscriber`
+    // genérico trataria isso como uma identidade NOVA, criando um 2º
+    // `subscriber` pro mesmo humano real.
+    const id2 = resolveOrCreateBeehiivSubscriber(db, { externalId: "uuid-1", email: null });
+    assert.equal(id1, id2, "mesmo subscriber_id nativo → mesmo subscriber, mesmo com email divergente");
+    assert.equal(getStoreCounts(db).subscribers, 1);
+    db.close();
+  });
+
+  it("linha SEM subscriber_id (só email) casa com um subscriber já visto sob esse email", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const id1 = resolveOrCreateBeehiivSubscriber(db, { externalId: "uuid-2", email: "b@x.com" });
+    // Linha posterior chega sem subscriber_id (ex: página da MCP que só
+    // devolveu email) — deve fundir com o subscriber já resolvido por email,
+    // não criar um novo.
+    const id2 = resolveOrCreateBeehiivSubscriber(db, { externalId: null, email: "b@x.com" });
+    assert.equal(id1, id2);
+    assert.equal(getStoreCounts(db).subscribers, 1);
+    db.close();
+  });
+
+  it("identidades genuinamente distintas continuam criando subscribers separados", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    resolveOrCreateBeehiivSubscriber(db, { externalId: "uuid-3", email: "c@x.com" });
+    resolveOrCreateBeehiivSubscriber(db, { externalId: "uuid-4", email: "d@x.com" });
+    assert.equal(getStoreCounts(db).subscribers, 2);
+    db.close();
+  });
+
+  it("ingestPostEngagement: 2 registros do mesmo post com subscriber_id igual e email divergente não duplicam subscriber", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const records: BeehiivEngagementRecord[] = [
+      { subscriber_id: "s1", email: "a@x.com", status: "delivered" },
+      { subscriber_id: "s1", email: null, status: "opened" },
+    ];
+    const r = ingestPostEngagement(db, "post_abc", records);
+    assert.equal(r.recordsProcessed, 2);
+    assert.equal(r.subscribersTouched, 1);
+    assert.equal(getStoreCounts(db).subscribers, 1);
+    db.close();
   });
 });
 

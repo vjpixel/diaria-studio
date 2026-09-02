@@ -160,8 +160,37 @@ export function ingestOnePost(
   try {
     const records = readPostRecords(sourceDir, id);
     const result = ingestPostEngagement(db, id, records, now);
-    const manifestCount = sourceEntry.count ?? records.length;
-    const guard = verifyBeehiivIngestion(result.recordsProcessed, manifestCount);
+
+    // Guard anti-fabricação (#6496) exige um `count` EXPLÍCITO do manifest
+    // da fatia 1 — nunca cair pra `records.length` como fallback: isso
+    // compararia a lista lida contra si mesma, e o guard passaria
+    // trivialmente mesmo com um JSONL truncado (achado de review, PR #7135).
+    // Os eventos já lidos são gravados mesmo assim (idempotente, mesmo
+    // espírito do guard normal — nunca descarta trabalho já feito), mas a
+    // entry nunca vira "ok"/"partial": um `count` ausente é tratado como
+    // erro explícito, não como "sem discrepância".
+    if (sourceEntry.count === undefined || sourceEntry.count === null) {
+      return {
+        entry: {
+          id,
+          label: sourceEntry.title,
+          status: "error",
+          counts: {
+            records_lidos: records.length,
+            records_processados: result.recordsProcessed,
+            records_sem_identidade: result.recordsSkippedNoIdentity,
+          },
+          fetched_at: now,
+          error:
+            `manifest da fatia 1 não registrou "count" pra este post — guard anti-fabricação (#6496) ` +
+            `exige count explícito; nunca cair pra records.length (compararia a lista contra si mesma).`,
+        },
+        eventsNew: result.newEvents,
+        eventsAlreadyKnown: result.alreadyKnown,
+      };
+    }
+
+    const guard = verifyBeehiivIngestion(result.recordsProcessed, sourceEntry.count);
 
     return {
       entry: {
@@ -172,7 +201,7 @@ export function ingestOnePost(
           records_lidos: records.length,
           records_processados: result.recordsProcessed,
           records_sem_identidade: result.recordsSkippedNoIdentity,
-          manifest_count: manifestCount,
+          manifest_count: sourceEntry.count,
         },
         fetched_at: now,
         ...(guard.reason ? { error: guard.reason } : {}),
