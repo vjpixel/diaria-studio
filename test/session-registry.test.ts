@@ -653,6 +653,60 @@ describe("registerSession — promoção de kind quando o beacon registrou prime
     // O arquivo antigo continua em disco (a remoção falhou de verdade).
     assert.ok(existsSync(interactivePath), "o rmSync falhou de verdade — o arquivo antigo permanece");
   });
+
+  it("#7028: rmSync falha na promoção — o registro antigo órfão é carimbado com endedAt, e listActiveSessions não conta 2 sessões", () => {
+    const root = freshRoot();
+    const sessionId = "sess-7028-endedat";
+    const tag = "helios";
+
+    writeRawSessionFile(root, `overnight-${tag}-${sessionId}.json`, {
+      kind: "overnight",
+      machineTag: tag,
+      sessionId,
+      startedAt: "2026-09-01T22:16:11.124Z",
+      lastHeartbeat: "2026-09-01T23:28:09.835Z",
+      claimed_issues: [6831, 6842],
+      merge_grant: { grantedBy: sessionId, grantedTo: "outra-sessao", grantedAt: "2026-09-01T23:00:00.000Z" },
+    });
+    const overnightPath = sessionFilePath(root, "overnight", tag, sessionId);
+
+    const fakeRemoveIo: PromotionRemoveIo = {
+      exists: (p) => existsSync(p),
+      remove: (p) => {
+        if (p === overnightPath) {
+          throw Object.assign(new Error("EBUSY: transitório do OneDrive (simulado)"), { code: "EBUSY" });
+        }
+        rmSync(p);
+      },
+    };
+    const result = registerSession(
+      root,
+      "interactive",
+      sessionId,
+      { tag, startedAt: "2026-09-01T23:28:12.447Z" },
+      fakeRemoveIo,
+    );
+
+    // Remoção falhou de verdade — mesmo comportamento best-effort de sempre.
+    assert.equal(result.outcome, "promoted-orphan-left");
+    assert.ok(existsSync(overnightPath), "rmSync falhou — o arquivo antigo permanece em disco");
+
+    // Mas o CONTEÚDO do órfão agora carrega endedAt — a claim/grant continuam
+    // no JSON (não apagados), só marcados como não-vivos.
+    const orphan = JSON.parse(readFileSync(overnightPath, "utf8")) as SessionRecord;
+    assert.equal(typeof orphan.endedAt, "string", "órfão deveria carregar endedAt");
+    assert.deepEqual(orphan.claimed_issues, [6831, 6842], "claims do órfão preservadas no disco, não apagadas");
+
+    // listActiveSessions, ~57min depois (dentro de SOFT_STALE_MS mas fora de
+    // INTERACTIVE_SOFT_STALE_MS), enxerga só 1 sessão — a interactive VIVA —
+    // não o órfão overnight congelado. Antes do #7028, o órfão sem endedAt
+    // venceria como base por isCoordinatorKind, mostrando kind=overnight com
+    // heartbeat morto e nunca stale (SOFT_STALE_MS=90min ainda não bateu).
+    const now = Date.parse("2026-09-02T00:25:00.000Z");
+    const sessions = listActiveSessions(root, now).filter((s) => s.sessionId === sessionId);
+    assert.equal(sessions.length, 1, "o órfão carimbado não conta como uma 2ª sessão ativa");
+    assert.equal(sessions[0]!.kind, "interactive", "a sessão viva de verdade é a interactive, não o órfão overnight");
+  });
 });
 
 // ─── listActiveSessions ─────────────────────────────────────────────────────
