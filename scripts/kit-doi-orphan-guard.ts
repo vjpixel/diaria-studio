@@ -24,6 +24,29 @@
  * terceiros, critério 1 de "Perguntar é exceção" do CLAUDE.md). Este script
  * só DETECTA e ALARMA; o resgate continua manual.
  *
+ * ## Falso positivo sistemático corrigido (#6810, 02/09/2026)
+ *
+ * A 1ª versão (PR #6993) chamava `listAllFormSubscribers` sem `status`, e
+ * `GET /v4/forms/{form_id}/subscribers` sem esse parâmetro devolve, por
+ * default da API do Kit, só quem já CONFIRMOU o double opt-in (`active`) —
+ * documentado em `developers.kit.com/api-reference/forms/list-subscribers-
+ * for-a-form.md`. Um `inactive` vinculado ao form (aguardando clique,
+ * comportamento normal de double opt-in) NUNCA aparece nessa lista por
+ * construção — então "ausente da lista" nunca distinguia "nunca vinculado"
+ * (órfão real) de "vinculado, ainda sem clique" (normal), e o critério
+ * inteiro colapsava para "qualquer `inactive` há mais de 48h", que é a
+ * descrição de um double opt-in comum, não de um bug. Verificado ao vivo
+ * 01/09/2026 (`--dry-run` acusou `maribmgv@uol.com.br`, que o corpo da
+ * issue #6810 documenta como caso saudável/legítimo). Fix: `status: "all"`
+ * na chamada — ver a docstring de `listFormSubscribersPage`
+ * (`scripts/lib/kit-subscribers.ts`) pra citação completa da doc oficial.
+ * Escolhido sobre a alternativa (trocar o critério por janela de tempo do
+ * deploy suspeito, #6565) porque resolve a causa raiz pra QUALQUER janela
+ * futura, não só a de 28/08/2026 — e o sinal (parâmetro documentado da
+ * própria API do Kit) é mais forte que uma heurística de calendário.
+ * Não confirmado ao vivo contra a conta real (sem `KIT_API_KEY` na sessão
+ * que corrigiu isto) — reverificar no próximo `--dry-run` com key.
+ *
  * ## Uso
  *
  *   npx tsx scripts/kit-doi-orphan-guard.ts               # avalia + persiste + alarma se NOVO
@@ -213,7 +236,11 @@ async function main(): Promise<void> {
 
   const [inactiveSubscribers, formSubscribers] = await Promise.all([
     listAllKitSubscribers(kitConfig, { status: "inactive" }),
-    listAllFormSubscribers(doiFormId, kitConfig),
+    // #6810: `status: "all"` é o fix do falso positivo sistemático — sem
+    // isto o endpoint devolve só quem já CONFIRMOU (default da API do
+    // Kit), e um `inactive` vinculado-mas-ainda-não-clicado nunca aparece
+    // aqui por construção. Ver a docstring de `listFormSubscribersPage`.
+    listAllFormSubscribers(doiFormId, kitConfig, { status: "all" }),
   ]);
   const formSubscriberIds = new Set(formSubscribers.map((s) => s.id));
 

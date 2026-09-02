@@ -214,20 +214,34 @@ export async function updateSubscriberFields(
  * recebeu o `POST /v4/forms/{form}/subscribers/{sub}` que dispara o e-mail
  * de confirmação, então nunca vai virar `active` sozinho.
  *
- * **Não confirmado ao vivo** (mesma ressalva de `fields` na leitura, ver
- * docstring do módulo) — o shape é assumido por simetria com
- * `listKitSubscribersPage`/o endpoint irmão de tag (`GET /tags/{id}/
- * subscribers`, citado em `kit-client.ts` com o mesmo envelope
- * `{subscribers, pagination}`). Reverificar contra a conta real antes do 1º
- * `--push`/execução não-dry-run.
+ * **`status` — confirmado via doc oficial (#6810, 02/09/2026), NÃO ao vivo
+ * contra a conta real (sem `KIT_API_KEY` disponível na sessão que corrigiu
+ * isto).** `developers.kit.com/api-reference/forms/list-subscribers-for-a-
+ * form.md`, citação literal: *"By default only `active` subscribers are
+ * returned — use `status` (`active`, `inactive`, `bounced`, `complained`,
+ * `cancelled`, or `all`) to widen the search."* — MESMO enum e MESMO
+ * default-`active` já documentado acima para `listKitSubscribersPage`
+ * (`/v4/subscribers`); os dois endpoints REST puros compartilham a
+ * convenção de filtro. **Este é o bug raiz do falso positivo sistemático
+ * do guard #6810**: sem `status`, esta função só via devolve quem já
+ * CONFIRMOU o double opt-in — um `inactive` vinculado ao form (aguardando
+ * clique, caso legítimo) nunca aparece aqui, então "ausente desta lista"
+ * nunca distinguia "nunca vinculado" (órfão real) de "vinculado, ainda não
+ * clicou" (double opt-in normal) — o segundo caso sempre resultava ausente,
+ * por construção, tornando o critério do guard equivalente a "qualquer
+ * `inactive` há mais de 48h", que é a descrição de um double opt-in comum.
+ * `scripts/kit-doi-orphan-guard.ts` passa `status: "all"` para corrigir.
+ * Reverificar ao vivo assim que houver `KIT_API_KEY` disponível — mesma
+ * ressalva "não confirmado ao vivo" do restante do módulo.
  */
 export async function listFormSubscribersPage(
   formId: number | string,
-  opts: { perPage?: number; after?: string; config?: KitConfig } = {},
+  opts: { perPage?: number; after?: string; status?: KitSubscriberListStatus; config?: KitConfig } = {},
 ): Promise<{ subscribers: KitSubscriberSummary[]; pagination: KitPagination }> {
   const params = new URLSearchParams();
   if (opts.perPage) params.set("per_page", String(opts.perPage));
   if (opts.after) params.set("after", opts.after);
+  if (opts.status) params.set("status", opts.status);
   const qs = params.toString();
   return kitFetch(`/forms/${formId}/subscribers${qs ? `?${qs}` : ""}`, { config: opts.config });
 }
@@ -235,15 +249,23 @@ export async function listFormSubscribersPage(
 /** Pagina `/v4/forms/{form_id}/subscribers` inteiro — mesmo padrão de
  *  `listAllKitSubscribers`. Volume esperado: só quem passou pelo double
  *  opt-in de UM worker (`poll`, #6340) — pequeno, sem checkpoint/resumo
- *  necessário (mesmo racional do irmão). */
+ *  necessário (mesmo racional do irmão). `status` repassado direto pra
+ *  `listFormSubscribersPage` em cada página — ver a ressalva de default
+ *  `active`-only na docstring dela (#6810). */
 export async function listAllFormSubscribers(
   formId: number | string,
   config?: KitConfig,
+  opts: { status?: KitSubscriberListStatus } = {},
 ): Promise<KitSubscriberSummary[]> {
   const all: KitSubscriberSummary[] = [];
   let after: string | undefined;
   for (;;) {
-    const { subscribers, pagination } = await listFormSubscribersPage(formId, { perPage: 500, after, config });
+    const { subscribers, pagination } = await listFormSubscribersPage(formId, {
+      perPage: 500,
+      after,
+      status: opts.status,
+      config,
+    });
     all.push(...subscribers);
     if (!pagination.has_next_page || !pagination.end_cursor) break;
     after = pagination.end_cursor;

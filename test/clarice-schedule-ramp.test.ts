@@ -29,6 +29,7 @@ import {
   fetchPostmasterSpamEntry,
   extractDashboardStaleInfo,
   describeSpamSignalLine,
+  assertScheduleLeadTimeForWave,
   type CampaignEntryLike,
 } from "../scripts/clarice-schedule-ramp.ts";
 import { EDITOR_COPY_EMAIL } from "../scripts/lib/editor-copy.ts";
@@ -221,6 +222,44 @@ describe("assertDatesFuture (#2101 — guard simétrico ao de clarice-schedule-s
   it("lança quando a data é EXATAMENTE agora (<=, não <)", () => {
     const now = new Date("2026-07-18T09:00:00.000Z");
     assert.throws(() => assertDatesFuture(["2026-07-18T09:00:00.000Z"], now), /passado ou presente/);
+  });
+});
+
+describe("assertScheduleLeadTimeForWave (#7047 — camada NOVA além de assertDatesFuture: antecedência mínima)", () => {
+  // #7047: clarice-schedule-ramp.ts é o de MAIOR blast radius dos 3 scripts
+  // corrigidos por esta issue (dezenas de milhares de contatos por onda) —
+  // antes desta issue só recusava passado/presente (assertDatesFuture acima),
+  // exatamente o estado em que clarice-schedule-group.ts estava antes do
+  // incidente de 01/09/2026 (campanhas #208/209/210 destinadas ao dia
+  // seguinte saindo no mesmo dia).
+  const NOW = new Date("2026-09-01T14:00:00.000Z");
+
+  it("REGRESSÃO #7047: antecedência insuficiente (30s) lança, prefixado com a identidade da wave", () => {
+    const raw = new Date(NOW.getTime() + 30_000).toISOString();
+    assert.throws(
+      () => assertScheduleLeadTimeForWave("d1-qua01", raw, { now: NOW }),
+      /d1-qua01: .*antecedência mínima/is,
+    );
+  });
+
+  it("antecedência suficiente (2h) não lança", () => {
+    const raw = new Date(NOW.getTime() + 2 * 3600_000).toISOString();
+    assert.doesNotThrow(() => assertScheduleLeadTimeForWave("d1-qua01", raw, { now: NOW }));
+  });
+
+  it("allowImminent=true permite antecedência insuficiente", () => {
+    const raw = new Date(NOW.getTime() + 30_000).toISOString();
+    assert.doesNotThrow(() => assertScheduleLeadTimeForWave("d1-qua01", raw, { now: NOW, allowImminent: true }));
+  });
+
+  it("horário fora do canônico (09:00 UTC = 06:00 BRT) avisa via logFn sem lançar", () => {
+    const raw = "2026-09-02T17:00:00.000Z";
+    const calls: string[] = [];
+    assertScheduleLeadTimeForWave("d1-qua01", raw, { now: NOW }, (m) => calls.push(m));
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /fora do horário canônico/i);
+    assert.match(calls[0], /09:00 UTC/);
+    assert.match(calls[0], /06:00 BRT/);
   });
 });
 
@@ -982,6 +1021,66 @@ describe("runScheduleLoop (#3652 bug 2 — persistência per-iteração, não em
       assert.equal(shouldSkipImport(w1), true, "shouldSkipImport deveria reconhecer o status escrito por runScheduleLoop");
     },
   );
+
+  // ---------------------------------------------------------------------
+  // #7047 — antecedência mínima (SCHEDULE_AT_MIN_LEAD_MS, extraída do #7042
+  // pra scripts/lib/schedule-guard.ts). clarice-schedule-ramp.ts é o de
+  // MAIOR blast radius dos 3 scripts corrigidos por esta issue — antes,
+  // este loop só recusava passado/presente (teste acima), exatamente o
+  // estado em que clarice-schedule-group.ts estava antes do incidente de
+  // 01/09/2026 (campanhas #208/209/210 destinadas ao dia seguinte saindo
+  // no mesmo dia).
+  // ---------------------------------------------------------------------
+  it("REGRESSÃO #7047: scheduledAt a 30s de 'agora' lança ANTES do putFn", async () => {
+    const NOW = new Date("2026-09-01T14:00:00.000Z");
+    const w1 = wave({ key: "w1", campaignId: 1, scheduledAt: new Date(NOW.getTime() + 30_000).toISOString() });
+    const putCalls: string[] = [];
+
+    await assert.rejects(
+      runScheduleLoop([w1], "/fake/ramp-summary.json", {
+        putFn: async (v) => { putCalls.push(v.key); },
+        verifyFn: async () => ({ status: "scheduled" }),
+        logFn: () => {},
+        now: () => NOW,
+      }),
+      /antecedência mínima/i,
+    );
+    assert.deepEqual(putCalls, [], "guard de antecedência deve barrar ANTES de chamar putFn — não bastava passar em 'no futuro'");
+    assert.equal(w1.status, "draft");
+  });
+
+  it("#7047: allowImminent=true no deps permite o mesmo scheduledAt imminente", async () => {
+    const NOW = new Date("2026-09-01T14:00:00.000Z");
+    const w1 = wave({ key: "w1", campaignId: 1, scheduledAt: new Date(NOW.getTime() + 30_000).toISOString() });
+    const putCalls: string[] = [];
+
+    await runScheduleLoop([w1], "/fake/ramp-summary.json", {
+      putFn: async (v) => { putCalls.push(v.key); },
+      verifyFn: async () => ({ status: "scheduled" }),
+      writeFn: () => {},
+      logFn: () => {},
+      now: () => NOW,
+      allowImminent: true,
+    });
+    assert.deepEqual(putCalls, ["w1"]);
+    assert.equal(w1.status, "scheduled");
+  });
+
+  it("#7047: horário fora do canônico não bloqueia — só avisa via logFn", async () => {
+    const NOW = new Date("2026-09-01T14:00:00.000Z");
+    const w1 = wave({ key: "w1", campaignId: 1, scheduledAt: "2026-09-02T17:00:00.000Z" });
+    const logs: string[] = [];
+
+    await runScheduleLoop([w1], "/fake/ramp-summary.json", {
+      putFn: async () => {},
+      verifyFn: async () => ({ status: "scheduled" }),
+      writeFn: () => {},
+      logFn: (m) => logs.push(m),
+      now: () => NOW,
+    });
+    assert.equal(w1.status, "scheduled", "aviso não bloqueia o agendamento");
+    assert.ok(logs.some((m) => /fora do horário canônico/i.test(m)), "esperava o aviso nomeado no log");
+  });
 });
 
 // -----------------------------------------------------------------------------

@@ -256,10 +256,39 @@ const PASSING_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 const PASSING_STATES = new Set(["SUCCESS"]);
 const PENDING_STATES = new Set(["PENDING", "EXPECTED"]);
 
+/**
+ * #7060: janela (ms) dentro da qual um check que começou logo após o push
+ * do commit HEAD é tratado como suspeito, não como veredito confiável — o
+ * GitHub recalcula o merge ref (`refs/pull/{N}/merge`) de forma
+ * ASSÍNCRONA depois de um push; um run que dispara antes desse recálculo
+ * terminar carrega `head_sha` novo mas árvore VELHA (achado ao vivo:
+ * commit pushado às 02:13:53, run criado às 02:14:00 — 7s de gap — reprovou
+ * uma asserção que o próprio commit já tinha removido). Grosseiro (não
+ * confirma o que o run de fato checou — ver direção 2 da issue), mas
+ * barato e erra pro lado seguro: dentro da janela, o veredito (fail OU
+ * pass) vira `"pending"`, nunca autoriza um merge nem dispara um fixer
+ * pra um bug que não existe. Default generoso (~3x o gap medido) porque o
+ * custo de errar pra "espera mais um pouco" é baixo — o próximo poll do
+ * chamador (que já espera "pending" significar "tenta de novo") resolve
+ * sozinho assim que os checks genuínos aparecerem.
+ */
+export const DEFAULT_RACE_WINDOW_MS = 20_000;
+
 /** Segundo parâmetro opcional de `evaluatePrChecksGate` — ver `"blocked_by_conflict"` acima. */
 export interface EvaluatePrChecksGateOptions {
   /** `gh pr view --json mergeable` → `"MERGEABLE" | "CONFLICTING" | "UNKNOWN"`. */
   mergeable?: string | null;
+  /**
+   * #7060: ISO 8601 de quando o commit HEAD atual foi pushado/commitado
+   * (ex: `committedDate` do último item de `gh pr view --json commits`).
+   * Quando fornecido, habilita a heurística de janela de corrida — ver
+   * `DEFAULT_RACE_WINDOW_MS`/`raceWindowMs`. Omitido (chamadores antigos,
+   * testes existentes, `merge-train-live.ts`): nenhuma mudança de
+   * comportamento, idêntico ao pré-#7060.
+   */
+  headCommittedAt?: string | null;
+  /** Sobrescreve `DEFAULT_RACE_WINDOW_MS` — só tem efeito com `headCommittedAt` presente. */
+  raceWindowMs?: number;
 }
 
 /**
@@ -270,6 +299,8 @@ export interface EvaluatePrChecksGateOptions {
  *
  * `opts.mergeable`, quando fornecido, habilita o veredito
  * `"blocked_by_conflict"` (#6768) — ver docstring do tipo acima.
+ * `opts.headCommittedAt`, quando fornecido, habilita a heurística de janela
+ * de corrida (#7060) — ver docstring de `DEFAULT_RACE_WINDOW_MS`.
  */
 export function evaluatePrChecksGate(
   statusCheckRollup: unknown,
@@ -360,7 +391,33 @@ export function evaluatePrChecksGate(
     }
   }
 
+  // #7060: só relevante pros 2 veredictos DEFINITIVOS (fail/pass) — "pending"
+  // já é conservador por si, "error"/"blocked_by_conflict" já são estados
+  // próprios que não afirmam nada sobre o conteúdo checado.
+  const raceWindowVerdict = (names: string[]): PrChecksGateResult | null => {
+    if (typeof opts.headCommittedAt !== "string") return null;
+    const pushedAtMs = parseStartedAt(opts.headCommittedAt);
+    if (pushedAtMs === null) return null;
+    const startedTimestamps = vigentes.map((n) => parseStartedAt(n?.startedAt)).filter((t): t is number => t !== null);
+    if (startedTimestamps.length === 0) return null; // sem nenhum startedAt utilizável, não há como julgar — nunca fica mais rígido que antes do #7060
+    const earliestStartedAtMs = Math.min(...startedTimestamps);
+    const windowMs = opts.raceWindowMs ?? DEFAULT_RACE_WINDOW_MS;
+    const gapMs = Math.abs(earliestStartedAtMs - pushedAtMs);
+    if (gapMs >= windowMs) return null;
+    return {
+      verdict: "pending",
+      failingChecks: [],
+      pendingChecks: names,
+      reason:
+        `check(s) começaram ${Math.round(gapMs / 1000)}s após o push do commit HEAD, dentro da janela de ` +
+        `corrida de ${Math.round(windowMs / 1000)}s (#7060) — o merge ref pode não ter sido recalculado ainda; ` +
+        "tratando como pendente em vez de aceitar o veredito bruto (nunca aprova, nunca reprova nesta janela).",
+    };
+  };
+
   if (failingChecks.length > 0) {
+    const race = raceWindowVerdict(failingChecks);
+    if (race) return race;
     return {
       verdict: "fail",
       failingChecks,
@@ -400,6 +457,9 @@ export function evaluatePrChecksGate(
       reason: `${pendingChecks.length} check(s) ainda não concluído(s): ${pendingChecks.join(", ")}`,
     };
   }
+
+  const passRace = raceWindowVerdict(vigentes.map((n) => (typeof n?.name === "string" && n.name.length > 0 ? n.name : "(sem nome)")));
+  if (passRace) return passRace;
 
   return {
     verdict: "pass",

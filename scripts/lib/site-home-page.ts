@@ -931,6 +931,30 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <a href="https://eia.diar.ia.br/leaderboard">É IA?</a>
       </div>
       <div class="nav-cta">
+        <!-- #6978 itens 2/3 — "Entrar" e busca não vieram no port da home
+             Beehiiv (item 1, a capa da edição em destaque, já foi
+             implementado — #6995). Decisão registrada aqui, não
+             implementação adiada:
+
+             "Entrar": este projeto não tem login/conta própria (nenhum
+             backend de sessão de assinante existe) e não há destino
+             GENÉRICO possível — a área de assinante da Beehiiv/Brevo é
+             sempre um link com token específico do destinatário (magic
+             link por e-mail), nunca uma URL que sirva qualquer visitante
+             que clique aqui. O caminho equivalente já existe e já funciona:
+             o rodapé de toda edição por e-mail carrega o link de
+             gerenciar/cancelar a assinatura, contextualizado ao
+             destinatário — é ali que o assinante "entra" hoje.
+
+             Busca: redundante com os dois caminhos de descoberta que a
+             home já tem — "Edições anteriores" (link "Ver arquivo
+             completo" pra arquivo.diar.ia.br, #archive) e "Por tema"
+             (#6411, #topics). Nem arquivo.diar.ia.br tem busca full-text
+             hoje — não existe índice de busca em nenhum Worker do repo —
+             então implementar bem exigiria infra nova (índice + manutenção
+             contínua conforme o acervo cresce), desproporcional a uma
+             issue de "port de elemento visual". Revisitar se "Por tema"
+             deixar de bastar conforme o acervo cresce. -->
         <a class="btn btn-ink" href="/assinar">Assinar</a>
       </div>
     </div>

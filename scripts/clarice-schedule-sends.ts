@@ -29,6 +29,10 @@
  *                      npx tsx scripts/close-poll.ts --brand clarice --cycle {cycle} --edition {AAMMDD} [--answer A|B]
  *                    Use --skip-eia-guard para pular esta verificação (não recomendado).
  *   --skip-eia-guard pula a verificação de gabarito É IA? no --schedule (ex: após setado manualmente)
+ *   --allow-imminent #7047: pula SÓ a checagem de antecedência mínima (2h default,
+ *                    `SCHEDULE_AT_MIN_LEAD_MS` em scripts/lib/schedule-guard.ts) em --create
+ *                    e --schedule — nunca a checagem de passado/presente. Checado tanto em
+ *                    --create (feedback cedo) quanto em --schedule (momento real do PUT).
  *
  * Flags de escopo:
  *   --blocks 1,2,3   quais blocos processar (default: [--cell-block], ex: [1])
@@ -66,6 +70,8 @@ import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/month
 import { loadSendsSummary, parseBlocksArg, type SendsSummaryEntry } from "./lib/send-plan.ts";
 import { CELLS } from "./clarice-split-cells.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { SEND_HOUR_UTC } from "./lib/clarice-wave-plan.ts"; // #7047
+import { assertScheduleLeadTime } from "./lib/schedule-guard.ts"; // #7047
 
 loadProjectEnv();
 
@@ -122,6 +128,56 @@ export function assertScheduledAtFuture(sends: SendsSummaryEntry[], n: number, n
       `(now=${now.toISOString()}). ` +
       `send-plan.json do ciclo está desatualizado — atualize scheduledAt ao copiar para o próximo ciclo.`,
     );
+  }
+}
+
+/**
+ * #7047 — camada NOVA de guard, além de `assertScheduledAtFuture` acima
+ * (que só recusa passado/presente, o mesmo estado incompleto em que
+ * `clarice-schedule-group.ts` estava antes do #7042): recusa antecedência
+ * insuficiente (< `SCHEDULE_AT_MIN_LEAD_MS`, 2h default) e avisa (sem
+ * bloquear) horário fora do canônico (09:00 UTC = 06:00 BRT,
+ * `SEND_HOUR_UTC`). Reusa `scripts/lib/schedule-guard.ts` (extraído do
+ * #7042) em vez de duplicar a checagem uma 4ª vez.
+ *
+ * Chamado em DOIS pontos (não só um): `--create` (feedback cedo, ainda que o
+ * plano possa ter sido escrito há dias) e dentro de `runScheduleLoop`,
+ * IMEDIATAMENTE antes do PUT real — porque a antecedência precisa ser
+ * medida no momento do PUT, não no momento em que o plano foi escrito (a
+ * mesma campanha pode ter sido criada com folga de dias e só ser agendada
+ * de fato perto do horário-alvo, quando o plano já ficou "velho" o
+ * suficiente pra antecedência real ter encolhido).
+ *
+ * @param scheduledAtIso ISO já resolvido (via `scheduledAtFor`) — este
+ *                        helper NÃO recalcula, só valida.
+ * @param opts.allowImminent pula SÓ a checagem de antecedência (nunca a de
+ *                        passado/presente, que é `assertScheduledAtFuture`
+ *                        acima) — mesmo escape nomeado do #7042.
+ * @param opts.now        clock injetável pra testes.
+ * @throws com o `error` de `checkScheduleLeadTime`, prefixado com a
+ *         identidade da campanha (mesmo padrão de mensagem que os guards
+ *         pré-existentes deste arquivo já usam).
+ */
+export function assertScheduleLeadTimeForCampaign(
+  campaignLabel: string,
+  scheduledAtIso: string,
+  opts: { allowImminent?: boolean; now?: Date } = {},
+  logFn: (msg: string) => void = (m) => console.error(m),
+): void {
+  try {
+    assertScheduleLeadTime(
+      scheduledAtIso,
+      {
+        now: opts.now,
+        allowImminent: opts.allowImminent,
+        canonicalHourUtc: SEND_HOUR_UTC,
+        canonicalHourLabel: "06:00 BRT",
+        contextIssues: "#7042, #7047",
+      },
+      logFn,
+    );
+  } catch (e) {
+    throw new Error(`${campaignLabel}: ${(e as Error).message}`);
   }
 }
 
@@ -236,6 +292,8 @@ export interface ScheduleLoopDeps {
   writeFn?: (path: string, content: string) => void;
   logFn?: (msg: string) => void;
   now?: () => Date;
+  /** #7047: pula SÓ a checagem de antecedência mínima (nunca a de passado/presente, abaixo). */
+  allowImminent?: boolean;
 }
 
 /**
@@ -289,6 +347,16 @@ export async function runScheduleLoop(
         `antes de agendar.`,
       );
     }
+    // #7047: antecedência mínima medida AGORA, no momento do PUT real — não
+    // no momento em que o plano foi escrito (`--create` já checou isto, mas
+    // a campanha pode ter sido criada dias atrás; reconferir aqui é o que
+    // fecha o gap apontado pelo review do #7042).
+    assertScheduleLeadTimeForCampaign(
+      `--schedule: ${c.key} (campanha #${c.campaignId})`,
+      c.scheduledAt,
+      { allowImminent: deps.allowImminent, now: now() },
+      logFn,
+    );
 
     await deps.putFn(c); // brevoPut REAL — agendamento aceito na Brevo a partir daqui (cancelável via API/painel + recriação, #4935, mas não é gratuito)
 
@@ -381,6 +449,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const doTest = argv.includes("--send-test");
   const doSchedule = argv.includes("--schedule");
   const skipEiaGuard = argv.includes("--skip-eia-guard");
+  const allowImminent = argv.includes("--allow-imminent"); // #7047
 
   const cycleDir = clariceCycleDir(cycle);
   const sendsSummary = loadSendsSummary(cycleDir);
@@ -500,6 +569,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
             continue;
           }
           assertScheduledAtFuture(sendsSummary.sends, s.n); // #2101: data passada = plano desatualizado
+          assertScheduleLeadTimeForCampaign(key, scheduledAtFor(sendsSummary.sends, s.n), { allowImminent }); // #7047
           const entry = listByKey.get(key);
           if (!entry) throw new Error(`lista-célula não encontrada pra ${key}`);
           const resp = (await brevoPost(apiKey, "/emailCampaigns", {
@@ -532,6 +602,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           continue;
         }
         assertScheduledAtFuture(sendsSummary.sends, s.n); // #2101: data passada = plano desatualizado
+        assertScheduleLeadTimeForCampaign(key, scheduledAtFor(sendsSummary.sends, s.n), { allowImminent }); // #7047
         const listId = listByDay.get(s.n);
         if (listId == null) throw new Error(`listId não encontrado pra ${key}`);
         const resp = (await brevoPost(apiKey, "/emailCampaigns", {
@@ -623,6 +694,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     await runScheduleLoop(campaigns, keysInScope, campaignsPath, {
       putFn: async (c) => { await brevoPut(apiKey, `/emailCampaigns/${c.campaignId}`, { scheduledAt: c.scheduledAt }); },
       verifyFn: (c) => brevoGetCampaign(apiKey, c.campaignId),
+      allowImminent, // #7047
     });
   }
 

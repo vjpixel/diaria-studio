@@ -276,13 +276,64 @@ describe("shouldBlockSharedCheckoutRm (#6971)", () => {
     );
   });
 
-  it("fail-open: session_id da chamada ausente/vazio", () => {
+  it("#7055 FAIL-CLOSED: session_id da chamada ausente (undefined) → bloqueia (era fail-open)", () => {
+    // Regressão do #7055: reincidência do MESMO incidente do #6971/#6982 1h
+    // após o guard estar mergeado — um subagente de review apagou os mesmos
+    // 3 arquivos, e a reprodução ao vivo mostrou `session_id` ausente/vazio
+    // saindo pela porta antecipada e liberando o `rm` incondicionalmente.
     assert.equal(
       shouldBlockSharedCheckoutRm({
         targetPaths: [insidePath],
         checkoutRoot: root,
         isWorktree: false,
         activeCoordinatorSessionIds: new Set(["coord-1"]),
+        callerSessionId: undefined,
+      }),
+      true,
+    );
+  });
+
+  it("#7055 FAIL-CLOSED: session_id da chamada vazio ('') → bloqueia (era fail-open)", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutRm({
+        targetPaths: [insidePath],
+        checkoutRoot: root,
+        isWorktree: false,
+        activeCoordinatorSessionIds: new Set(["coord-1"]),
+        callerSessionId: "",
+      }),
+      true,
+    );
+  });
+
+  it("#7055 reprodução exata do payload do incidente: rm em .pr6950-review.md com session_id ausente, rodada develop ativa", () => {
+    // Mesmo payload/cenário citado na issue #7055 (reprodução ao vivo do
+    // hook): `rm -f .../.pr6950-review.md`, coordenadora `develop` ativa,
+    // chamada sem `session_id`.
+    assert.equal(
+      shouldBlockSharedCheckoutRm({
+        targetPaths: [insidePath],
+        checkoutRoot: root,
+        isWorktree: false,
+        activeCoordinatorSessionIds: new Set(["develop-helios-3132ef2c"]),
+        callerSessionId: undefined,
+      }),
+      true,
+    );
+  });
+
+  it("session_id ausente mas SEM coordenadora ativa continua permitindo (cobertura HONESTA — não é o bug do #7055)", () => {
+    // O fail-open que o #7055 fecha é especificamente "coordenadora ativa +
+    // session_id ausente". Sem NENHUMA coordenadora registrada, este guard
+    // segue fora de escopo (mesmo caso já coberto acima, "nenhuma
+    // coordenadora ativa") — session_id ausente não deveria criar um bloqueio
+    // que nem uma sessão interativa comum, sem rodada nenhuma, sofreria.
+    assert.equal(
+      shouldBlockSharedCheckoutRm({
+        targetPaths: [insidePath],
+        checkoutRoot: root,
+        isWorktree: false,
+        activeCoordinatorSessionIds: new Set(),
         callerSessionId: undefined,
       }),
       false,

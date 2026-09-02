@@ -20,9 +20,11 @@ import {
   buildTrainPrBody,
   buildTrainMergeCommitTitle,
   buildTrainMergeCommitBody,
+  summarizeTrainCiRuns,
   type TrainCandidate,
   type TrainPrInfo,
   type TrainBatch,
+  type TrainCiRunsOutcomeLike,
 } from "../scripts/lib/merge-train.ts";
 
 describe("filesCollide", () => {
@@ -315,5 +317,67 @@ describe("buildTrainMergeCommitTitle / buildTrainMergeCommitBody — commit squa
     const semIssue: TrainPrInfo[] = [{ pr: 100, headRefName: "a", title: "a", issueNumbers: [] }];
     const body = buildTrainMergeCommitBody({ prs: [100] }, semIssue);
     assert.doesNotMatch(body, /Closes/);
+  });
+});
+
+describe("summarizeTrainCiRuns — antes/depois de runs de CI (#6300, último critério de aceite)", () => {
+  const prInfos: TrainPrInfo[] = [
+    { pr: 1, headRefName: "a", title: "a", issueNumbers: [10] },
+    { pr: 2, headRefName: "b", title: "b", issueNumbers: [11] },
+    { pr: 3, headRefName: "c", title: "c", issueNumbers: [12] },
+  ];
+
+  it("lote de tamanho 1 (solo): zero CI run novo, conta em soloPrs, não em prsInvolvedInBatches", () => {
+    const outcomes: TrainCiRunsOutcomeLike[] = [{ batch: { prs: [1] } }];
+    const s = summarizeTrainCiRuns(outcomes, prInfos);
+    assert.equal(s.ciRunsUsed, 0);
+    assert.equal(s.soloPrs, 1);
+    assert.equal(s.prsInvolvedInBatches, 0);
+    assert.equal(s.issuesInvolvedInBatches, 0);
+  });
+
+  it("lote de 2 que mergeou direto: 1 CI run usado, 2 PRs/2 issues envolvidos", () => {
+    const outcomes: TrainCiRunsOutcomeLike[] = [{ batch: { prs: [1, 2] } }];
+    const s = summarizeTrainCiRuns(outcomes, prInfos);
+    assert.equal(s.ciRunsUsed, 1);
+    assert.equal(s.prsInvolvedInBatches, 2);
+    assert.equal(s.issuesInvolvedInBatches, 2);
+    assert.equal(s.soloPrs, 0);
+  });
+
+  it("lote de 3 vermelho bissecta em [1,2] (verde) + [3] (solo): 2 CI runs usados (não 3), PRs distintos sem duplicar entre a entrada abandonada e a filha", () => {
+    const outcomes: TrainCiRunsOutcomeLike[] = [
+      { batch: { prs: [1, 2, 3] } }, // abandoned — vermelho, mas AINDA consumiu 1 run real
+      { batch: { prs: [1, 2] } }, // sub-lote — merged, outro run real
+      { batch: { prs: [3] } }, // sub-lote de tamanho 1 — solo, zero run novo
+    ];
+    const s = summarizeTrainCiRuns(outcomes, prInfos);
+    assert.equal(s.ciRunsUsed, 2); // 1 (lote de 3) + 1 (lote de 2) — NUNCA 3, mesmo com 3 entradas no array
+    assert.equal(s.prsInvolvedInBatches, 3); // união {1,2,3} ∪ {1,2} = {1,2,3}, não soma 3+2=5
+    assert.equal(s.issuesInvolvedInBatches, 3);
+    assert.equal(s.soloPrs, 1);
+  });
+
+  it("issue fechada por 2 PRs do mesmo lote conta 1 vez só (união, não soma)", () => {
+    const shared: TrainPrInfo[] = [
+      { pr: 1, headRefName: "a", title: "a", issueNumbers: [10, 99] },
+      { pr: 2, headRefName: "b", title: "b", issueNumbers: [99] },
+    ];
+    const outcomes: TrainCiRunsOutcomeLike[] = [{ batch: { prs: [1, 2] } }];
+    const s = summarizeTrainCiRuns(outcomes, shared);
+    assert.equal(s.issuesInvolvedInBatches, 2); // {10, 99}, não 3
+  });
+
+  it("sem outcomes: tudo zero, nunca lança", () => {
+    const s = summarizeTrainCiRuns([], prInfos);
+    assert.deepEqual(s, { prsInvolvedInBatches: 0, issuesInvolvedInBatches: 0, ciRunsUsed: 0, soloPrs: 0 });
+  });
+
+  it("PR sem TrainPrInfo correspondente (não encontrado no map): não lança, só não soma issue nenhuma pra ele", () => {
+    const outcomes: TrainCiRunsOutcomeLike[] = [{ batch: { prs: [1, 999] } }];
+    const s = summarizeTrainCiRuns(outcomes, prInfos);
+    assert.equal(s.ciRunsUsed, 1);
+    assert.equal(s.prsInvolvedInBatches, 2);
+    assert.equal(s.issuesInvolvedInBatches, 1); // só a issue 10, do PR 1 — PR 999 não tem info
   });
 });

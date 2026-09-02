@@ -34,9 +34,19 @@
  *   2. criado há mais de `ORPHAN_THRESHOLD_HOURS` (48h, mesmo prazo citado
  *      na Ação 1 da issue — tempo mais que suficiente pro e-mail de
  *      confirmação chegar e ser clicado, se ele de fato saiu);
- *   3. AUSENTE de `GET /forms/{KIT_DOI_FORM_ID}/subscribers` — nunca foi
- *      vinculado ao form, então nunca recebeu o e-mail de confirmação por
- *      este mecanismo.
+ *   3. AUSENTE de `GET /forms/{KIT_DOI_FORM_ID}/subscribers?status=all` —
+ *      nunca foi vinculado ao form, então nunca recebeu o e-mail de
+ *      confirmação por este mecanismo. **`status=all` é obrigatório aqui
+ *      (#6810, corrigido 02/09/2026)**: sem ele, este endpoint devolve por
+ *      default só quem já CONFIRMOU (`active`) — um `inactive` vinculado
+ *      nunca aparece, por construção, então a cláusula 3 sozinha nunca
+ *      excluía ninguém e o critério colapsava pra "qualquer `inactive` há
+ *      mais de 48h" (falso positivo sistemático, achado ao vivo na sessão
+ *      que armou o timer pela 1ª vez — ver `scripts/kit-doi-orphan-guard.ts`
+ *      pro relato completo). O CALLER (`scripts/kit-doi-orphan-guard.ts`) é
+ *      quem passa `status: "all"` pra `listAllFormSubscribers`; esta
+ *      função pura só recebe o `Set` já correto e não sabe como ele foi
+ *      montado.
  *
  * Um `inactive` recém-criado (< 48h) não é órfão ainda — pode estar dentro
  * da janela normal de "aguardando o clique no e-mail de confirmação". Um

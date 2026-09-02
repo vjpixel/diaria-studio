@@ -560,7 +560,18 @@ export interface RunMergeTrainOptions {
 
 export interface TrainBatchOutcome {
   batch: TrainBatch;
-  status: "merged" | "solo-merged" | "solo-failed" | "abandoned" | "lock-blocked";
+  /**
+   * `"indeterminate"` (#7064): o 1º veredito do CI do lote foi `fail`, mas a
+   * reconfirmação (2ª execução, mesmo PR-trem/sha) discordou — a assinatura
+   * da corrida do #7060 (merge ref ainda não recalculado), não prova de
+   * defeito. Terminal, como `lock-blocked`: nunca bissecta um lote que só
+   * teve um veredito ambíguo (bissectar aqui reproduziria o dano medido —
+   * cada metade voltaria a rodar sozinha contra `master`, sem a outra que
+   * eventualmente a "consertava", e reprovaria as duas por um problema que
+   * não existe). Não reentra na fila (evita livelock se a corrida persistir
+   * por config real) — exige nova invocação do trem.
+   */
+  status: "merged" | "solo-merged" | "solo-failed" | "abandoned" | "lock-blocked" | "indeterminate";
   detail: string;
 }
 
@@ -575,6 +586,16 @@ const DEFAULT_CI_POLL_INTERVAL_MS = 30_000;
 // fila principal.
 const MAX_LOCK_RETRIES = 3;
 const LOCK_RETRY_DELAY_MS = 20_000;
+// #7064: 1 veredito vermelho isolado do CI do lote não bissecta de cara —
+// a corrida do #7060 (merge ref stale) pode produzir um "fail" que já não
+// reflete a árvore atual, e bissectar em cima disso reprova 2 PRs saudáveis
+// por um problema que não existe (medido ao vivo: lote com 2 hotfixes
+// disjuntos, ambos rotulados solo-failed por um vermelho que a 2ª leitura
+// já não reproduzia). Espera curta antes de reconfirmar — barata frente ao
+// custo de bissectar (`worstCaseCiRuns(N)` runs + o dano de rotular PRs
+// boas) — e não muda em nada o caminho feliz (CI verde na 1ª tentativa
+// nunca passa por aqui).
+const RECONFIRM_DELAY_MS = 15_000;
 
 /**
  * Orquestrador de topo — fila de lotes começando pelo lote inicial
@@ -583,12 +604,17 @@ const LOCK_RETRY_DELAY_MS = 20_000;
  * de hoje). Lote de tamanho ≥2: monta a integração (worktree isolado),
  * abre o PR-trem, espera 1 run de CI; verde → merge de verdade (1 commit
  * squash, `Closes` de todas as issues do lote, com retry bounded se só o
- * lock estiver negado) + fecha as PRs originais; vermelho ou timeout →
- * descarta o PR-trem e o worktree, bissecta, e os dois sub-lotes voltam
- * pra fila (nunca reprocessa o MESMO lote sem bissectar — anti-livelock,
- * cada bissecção estritamente reduz o tamanho até o piso de 1; a única
- * exceção é o retry de lock acima, que é um laço interno bounded, não uma
- * re-entrada na fila).
+ * lock estiver negado) + fecha as PRs originais; vermelho → RECONFIRMA
+ * com uma 2ª execução no mesmo PR-trem antes de aceitar (#7064 — a
+ * corrida do #7060 pode produzir um vermelho que já não reflete a árvore
+ * atual); as 2 concordando em vermelho, ou timeout → descarta o PR-trem e
+ * o worktree, bissecta, e os dois sub-lotes voltam pra fila (nunca
+ * reprocessa o MESMO lote sem bissectar — anti-livelock, cada bissecção
+ * estritamente reduz o tamanho até o piso de 1; a única exceção é o retry
+ * de lock acima, que é um laço interno bounded, não uma re-entrada na
+ * fila); as 2 execuções DISCORDANDO vira `"indeterminate"` — terminal,
+ * também sem reentrar na fila, mas sem bissectar (ver docstring de
+ * `TrainBatchOutcome.status`).
  *
  * Falha de INTEGRAÇÃO (conflito de merge entre branches — diferente de
  * colisão de arquivo, que `composeTrainBatches` já garante que nunca
@@ -700,13 +726,45 @@ export async function runMergeTrain(
       continue;
     }
 
-    // Vermelho ou timeout — descarta o PR-trem (nunca mergear por engano)
-    // e o worktree, bissecta.
+    // #7064: um "fail" isolado não bissecta de cara — reconfirma com uma 2ª
+    // execução no MESMO PR-trem (mesmo sha, nenhum código tocado) antes de
+    // tratar como reprovação real. Timeout NÃO reconfirma (já esgotou o
+    // orçamento de espera — reconfirmar dobraria o custo sem atacar a causa
+    // da corrida, que é sobre os primeiros segundos após o push do PR-trem,
+    // não sobre CI lento).
+    let finalVerdict: TrainCiVerdict = verdict;
+    let reconfirmNote = "";
+    if (verdict === "fail") {
+      await runner.sleep(RECONFIRM_DELAY_MS);
+      const reconfirmVerdict = await pollTrainCi(runner, trainPrNumber, { timeoutMs: ciTimeoutMs, intervalMs: ciPollIntervalMs });
+      if (reconfirmVerdict !== "fail") {
+        // Discordância entre as 2 execuções = a assinatura da corrida do
+        // #7060 (merge ref ainda não recalculado) — nunca reprovação, nunca
+        // bissecta. Estado terminal distinto (ver docstring de
+        // TrainBatchOutcome.status): não reentra na fila, exige nova
+        // invocação do trem.
+        runner.exec("gh", ["pr", "close", String(trainPrNumber)]);
+        cleanupIntegrationBranch(runner, branchName, integ.worktreePath, mainCwd);
+        outcomes.push({
+          batch,
+          status: "indeterminate",
+          detail:
+            `1ª execução do CI do lote: fail; reconfirmação (2ª execução, mesmo sha): ${reconfirmVerdict} — ` +
+            "discordância, assinatura de corrida (#7060/#7064); lote NÃO bissectado, requer nova tentativa",
+        });
+        continue;
+      }
+      finalVerdict = "fail";
+      reconfirmNote = " (reconfirmado — 2ª execução também vermelha)";
+    }
+
+    // Vermelho confirmado nas 2 execuções, ou timeout — descarta o PR-trem
+    // (nunca mergear por engano) e o worktree, bissecta.
     runner.exec("gh", ["pr", "close", String(trainPrNumber)]);
     cleanupIntegrationBranch(runner, branchName, integ.worktreePath, mainCwd);
     const [left, right] = bisectBatch(batch);
     queue.push(left, right);
-    outcomes.push({ batch, status: "abandoned", detail: `CI do lote: ${verdict} — bissectando` });
+    outcomes.push({ batch, status: "abandoned", detail: `CI do lote: ${finalVerdict}${reconfirmNote} — bissectando` });
   }
 
   return outcomes;

@@ -15,7 +15,17 @@
  *    `fleet_review_metrics` (review pós-rodada/pré-merge) em
  *    `data/run-log.jsonl`, `agent: "overnight" | "develop"` (#3453/#4815).
  *    Só total de tokens: o harness reporta um total por invocação de
- *    `Agent()`, sem split in/out.
+ *    `Agent()`, sem split in/out. **Esse total (`subagent_tokens`, bloco
+ *    `<usage>`) JÁ INCLUI `cache_read` — confirmado empiricamente (#6633,
+ *    02/09/2026: 2 dispatches de `Agent()` controlados, comparando o
+ *    `<usage>` retornado contra o transcript real do subagente) — mas não é
+ *    soma através dos turnos internos do dispatch: aproxima o tamanho do
+ *    contexto (`input + cache_creation + cache_read`) só do turno FINAL do
+ *    subagente (erro < 0,05% nos 2 casos medidos), então subestima dispatches
+ *    com muitos turnos internos em vez de excluir cache_read por completo —
+ *    ver a nota "Não compare os percentuais" em `formatSessionTokensSummary`
+ *    para o detalhe e por que isso ainda torna as bases incomparáveis com
+ *    "Edição" (que soma todos os turnos da sessão).
  * 3. **Continuo** — os MESMOS 2 eventos que overnight/develop (coordenador +
  *    implementação; sem review — `/diaria-continuo` não tem Fase 1.5 própria),
  *    `agent: "continuo"`, um dia por rotação (`data/continuo/{AAMMDD}/`).
@@ -629,7 +639,7 @@ _"n/d" ao lado de uma categoria = eventos com \`source: "unavailable"\` (harness
 _"(N rodada(s) sem evento)" ao lado do total = rodada que rodou (tem \`plan.json\` sob \`data/{overnight,develop,continuo}/\`) mas não emitiu NENHUM evento de custo (#6634) — é "não instrumentada", não "barata"; a rodada inteiramente muda ganha linha própria com total \`-\`._
 _"Dia" é dia CIVIL: rodadas do mesmo dia (\`260814\`, \`260814b\`, \`260814c\`) somam numa linha só, e \`×N\` ao lado do kind diz quantas foram (#6638)._
 _"Edição" tem split real \`tokens_in\`/\`tokens_out\` e \`$\` por modelo (via transcript local); overnight/develop/continuo só têm o total por invocação, sem split in/out._
-_**Não compare os percentuais entre kinds:** as duas fontes medem bases diferentes — "Edição" soma \`input + cache_creation + cache_read\` do transcript e NÃO inclui subagentes (#5413), overnight/develop/continuo somam o total por subagente e não incluem o coordenador (#6634). Ver #6633._
+_**Não compare os percentuais entre kinds:** as duas fontes medem bases diferentes, por DOIS motivos (#6633). (1) Cobertura: "Edição" soma \`input + cache_creation + cache_read\` do transcript e NÃO inclui subagentes (#5413); overnight/develop/continuo somam o total por subagente e não incluem o coordenador (#6634). (2) Forma da agregação — **confirmado empiricamente em 02/09/2026, 2 dispatches controlados via \`Agent()\`** (\`subagent_tokens\` do bloco \`<usage>\` comparado contra o transcript real do subagente): \`subagent_tokens\` JÁ INCLUI \`cache_read\` (dominou 65% e 99,8% do total nos 2 dispatches medidos — não é excluído, ao contrário do que uma hipótese anterior desta issue levantava), mas não é uma SOMA através dos turnos do próprio dispatch — aproxima o tamanho do contexto do turno FINAL (\`input + cache_creation + cache_read\` só desse turno, dentro de ~0,05% de erro nos 2 casos medidos). "Edição" soma \`input + cache_creation + cache_read\` de TODOS os turnos da sessão. Um subagente com N turnos internos paga cache_creation/cache_read em CADA turno, mas \`subagent_tokens\` reflete só o turno final — então overnight/develop/continuo subestima o custo real de dispatches com mais turnos, por um fator que cresce com o nº de turnos (não é um fator fixo, então não dá pra corrigir multiplicando por uma constante)._
 `;
 }
 

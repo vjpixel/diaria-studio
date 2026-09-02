@@ -171,6 +171,17 @@ export const TASKKILL_BLOCK_REASON =
 //   o `rm`, mas remove parte do alvo (rascunhos de PR/review passam a viver
 //   fora da árvore por convenção) — foi exatamente o que salvou o incidente
 //   original (cópia em `/tmp`).
+//
+//   #7055 (fail-closed, 02/09/2026): dentro do escopo que o guard JÁ cobre
+//   (rodada coordenadora ativa registrada), havia um 2º gap — `session_id`
+//   ausente/vazio na chamada saía por uma porta antecipada em
+//   `shouldBlockSharedCheckoutRm` e LIBERAVA o `rm` mesmo com coordenadora
+//   ativa e path dentro do checkout. Reincidência medida do MESMO incidente
+//   1h após este guard estar mergeado — mesmos 3 arquivos apagados por um
+//   agente de review dispatchado por uma sessão `/diaria-develop` já
+//   registrada. `session_id` ausente agora é tratado como "não é a
+//   coordenadora" (bloqueia), não mais como um passe livre — ver
+//   `shouldBlockSharedCheckoutRm` abaixo.
 
 export const RM_MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 export const RM_SOFT_STALE_MS = 90 * 60 * 1000;
@@ -306,9 +317,22 @@ export function readActiveCoordinatorSessionIds(repoRoot, now = Date.now()) {
  *
  * Bloqueia quando: (a) `checkoutRoot` é o checkout PRINCIPAL (não um
  * worktree — subagentes implementadores rodam em worktree próprio, nunca
- * bloqueado aqui); (b) ≥1 targetPath resolve para DENTRO do checkout; (c)
- * existe ≥1 coordenadora ativa registrada; (d) o `session_id` da chamada não
- * é o de nenhuma delas.
+ * bloqueado aqui); (b) existe ≥1 coordenadora ativa registrada; (c) ≥1
+ * targetPath resolve para DENTRO do checkout; (d) o `session_id` da chamada
+ * NÃO é o de nenhuma coordenadora — o que inclui `session_id`
+ * ausente/vazio.
+ *
+ * **#7055 (fail-closed, corrige fail-open do #6971/#6982):** antes desta
+ * mudança, `session_id` ausente/vazio saía por uma porta antecipada e
+ * LIBERAVA o `rm` incondicionalmente — mesmo com coordenadora ativa e path
+ * dentro do checkout. Um subagente dispatchado sem esse campo no payload (ou
+ * herdando um valor vazio) caía nessa porta e o guard nunca chegava a
+ * avaliar path/coordenadora. Reincidência medida do MESMO incidente que o
+ * guard foi escrito pra impedir, 1h depois de mergeado (#7055): mesmos 3
+ * arquivos apagados por um agente de review dispatchado por uma sessão
+ * `/diaria-develop` já registrada. A ausência do discriminador agora é
+ * tratada como "não é a coordenadora" — mesmo destino de um `session_id`
+ * genuinamente diferente — em vez de um passe livre.
  */
 export function shouldBlockSharedCheckoutRm({
   targetPaths,
@@ -318,12 +342,18 @@ export function shouldBlockSharedCheckoutRm({
   callerSessionId,
 }) {
   if (isWorktree) return false; // worktree de subagente: rm no próprio worktree é normal
-  if (typeof callerSessionId !== "string" || callerSessionId === "") return false;
   const coordinators = activeCoordinatorSessionIds ?? new Set();
-  if (coordinators.size === 0) return false;
-  if (coordinators.has(callerSessionId)) return false; // a própria coordenadora
+  if (coordinators.size === 0) return false; // sem rodada ativa: fora do escopo deste guard
   const paths = targetPaths ?? [];
-  return paths.some((p) => isPathInsideCheckout(p, checkoutRoot));
+  const targetsInsideCheckout = paths.some((p) => isPathInsideCheckout(p, checkoutRoot));
+  if (!targetsInsideCheckout) return false;
+  const isCoordinatorCall =
+    typeof callerSessionId === "string" && callerSessionId !== "" && coordinators.has(callerSessionId);
+  if (isCoordinatorCall) return false; // a própria coordenadora
+  // session_id ausente/vazio OU diferente de toda coordenadora, com rodada
+  // ativa e path dentro do checkout: bloquear (#7055 — antes era fail-open
+  // no caso ausente/vazio).
+  return true;
 }
 
 export const RM_BLOCK_REASON =
