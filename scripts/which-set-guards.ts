@@ -56,6 +56,7 @@
 import { execFileSync } from "node:child_process";
 import { matchesGlob } from "./lib/sensitive-path-guard.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { ORCHESTRATOR_FILES } from "./lib/orchestrator-files.ts";
 
 /**
  * Um guard de conjunto: o(s) arquivo(s) de teste que cobrem a varredura, os
@@ -151,6 +152,25 @@ export const SET_GUARDS: readonly SetGuardRule[] = [
     reason:
       "qualquer import novo dentro de scripts/lib/** pode cruzar a fronteira proibida — o teste varre TODOS " +
       "os imports do diretório inteiro a cada rodada, não só o arquivo tocado",
+  },
+  {
+    id: "orchestrator-prompt-snapshot",
+    description:
+      "hash agregado de .claude/agents/orchestrator*.md contra o snapshot committed (#634 frente C)",
+    testFiles: ["test/orchestrator-prompt.test.ts"],
+    // Basenames de ORCHESTRATOR_FILES (scripts/lib/orchestrator-files.ts, fonte
+    // única compartilhada com o teste — #7277) viram patterns exatos sob
+    // .claude/agents/. Path exato, não glob "orchestrator*.md": o array é a
+    // lista real que o hash cobre, e um arquivo novo em .claude/agents/ que
+    // comece com "orchestrator" mas NÃO esteja no array ainda não entra no
+    // hash — apontar o guard pra ele seria um falso positivo.
+    triggerPatterns: ORCHESTRATOR_FILES.map((f) => `.claude/agents/${f}`),
+    reason:
+      "which-set-guards --files .claude/agents/orchestrator-stage-4.md respondia 'nenhum guard afetado' " +
+      "(#7277) — o hash agregado do teste muda quando QUALQUER arquivo do conjunto muda, mas nenhum deles " +
+      "isoladamente é 'o' arquivo de teste tocado, então a disciplina de #2959 não pegava. Já derrubou master " +
+      "1x (PR #7271, #6767). Rodar com NODE_TEST_SNAPSHOTS=1 quando a mudança for intencional (ver docstring " +
+      "de test/orchestrator-prompt.test.ts) — formatReport() não passa a env var, só nomeia o teste a rodar.",
   },
 ];
 

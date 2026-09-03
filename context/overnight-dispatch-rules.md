@@ -115,6 +115,21 @@ Fix de bug **exige teste novo** demonstrando que o bug não voltaria. Sem teste 
 não merge. Se não for testável (ex: prompt de agent), justificar explicitamente
 no PR body.
 
+**Se a asserção do teste for de TIPO (ex: `const x: MinhaUniao = {...}` que só
+falha em `tsc`, não em `node --test`), validar reverter+rodar com
+`npx tsc -p tsconfig.test.json --noEmit` — NUNCA só `npx tsc --noEmit`
+(#7232).** O `tsconfig.json` raiz (o que `npx tsc --noEmit` default e
+`npm run typecheck` do `ci.yml` cobrem) só inclui `scripts/**` — `test/`
+nunca entra. Quem type-checka `test/**` é o job "Typecheck ratchet" de
+`pr-checks.yml` (`tsconfig.test.json`, catraca contra `tsc-baseline.json`,
+#6217) — testado e rodando em CI de verdade, não um gap: o achado do #7232
+foi um implementador confirmar corretamente que o teste falhava em master,
+mas usando o comando errado pra concluir isso ("não é pego pelo CI"), sem
+saber que `pr-checks.yml` roda esse 2º tsconfig. Rodar sempre os dois antes
+de declarar "teste de regressão confirmado": `npx tsc --noEmit` (scripts/**)
+e `npx tsc -p tsconfig.test.json --noEmit` (scripts/** + test/**, ou
+`npx tsx scripts/typecheck-ratchet.ts` pra já comparar contra a baseline).
+
 ## 6. Marcador `no-regression-test` proativo para PRs sem código executável (#3327 Rec 7)
 
 Se a unidade é **só docs/comentário/prompt sem código executável**, incluir

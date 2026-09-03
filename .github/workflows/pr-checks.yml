@@ -20,6 +20,12 @@ name: PR Checks (#970)
 # 7. PR removal declaration: PR que adiciona mais que o limiar de linhas
 #    precisa declarar `removal-declaration: <...>` no body — o que remove,
 #    ou por que legitimamente não remove nada (#7115).
+# 8. Validate agents: frontmatter YAML de .claude/agents/*.md e
+#    .claude/skills/*/SKILL.md parseia limpo + nenhum mcp__<server>__<tool>
+#    fora de KNOWN_MCP_PREFIXES (#122, #7279/#7290). Mora aqui e não em
+#    ci.yml de propósito — ci.yml ignora diff só-de-.md (paths-ignore acima),
+#    e agente/skill É markdown; ligar só em ci.yml deixaria todo PR que só
+#    toca frontmatter de agent sem nenhum guard rodando (#7299).
 #
 # Não substitui ci.yml — roda em paralelo com escopo focado.
 
@@ -173,3 +179,23 @@ jobs:
       - run: npm ci
       - name: Run typecheck-ratchet
         run: npx tsx scripts/typecheck-ratchet.ts
+
+  validate-agents:
+    # #7299 — `npm run validate-agents` (scripts/validate-agent-frontmatter.ts,
+    # #122 + guard de MCP tool name do #7290/#7279) existia só em disco: nada
+    # chamava. Roda aqui, não em ci.yml — ci.yml tem paths-ignore pra
+    # `**/*.md`/`**/.claude/skills/**` (mesmo bloco em push: e pull_request:),
+    # e agent/skill SÃO .md — um PR que só edita frontmatter de agent (ex: o
+    # incidente do PR #7301) nunca dispararia ci.yml. pr-checks.yml não tem
+    # paths-ignore, roda em todo PR.
+    name: Validate agents (frontmatter YAML + MCP tool names, #122/#7279)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run validate-agents
+        run: npm run validate-agents
