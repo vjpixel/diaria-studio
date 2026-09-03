@@ -1225,6 +1225,30 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#7174",
   },
   {
+    name: "Diaria-Metrics-Health-Alarm",
+    description:
+      "UM alarme, N sinais sobre o registry de metricas de negocio (F3/F5, #7172) -- frescor (principal), queda, " +
+      "meta nao-atingida, indeterminado alto e registry mudo, #7180",
+    steps: [{ key: "alarm", script: "scripts/check-metrics-health.ts" }],
+    logPath: "metrics-health/.alarm.log",
+    // Diária 04:40 BRT — depois de Diaria-Kit-Roster-Ingest (04:25, acima),
+    // que grava a captura do dia que este alarme lê (data/metrics/captura-
+    // log.jsonl, F2) — o sinal de frescor precisa da captura do dia já
+    // gravada (ou honestamente ausente) antes de avaliar. Slot livre: o
+    // próximo horário matinal já ocupado é 05:00 (Diaria-Clarice-Envio-
+    // Guard, ver grep de `kind: "daily"` neste arquivo).
+    schedule: { kind: "daily", hour: 4, minute: 40 },
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do #5220/#5217/#5311/#5494/#5607/#5704/#5754/#5845/#7174
+    // acima) — armar via `scripts/setup-systemd-timers.ts` na checkout
+    // compartilhada (`helios`) é ação POSTERIOR do editor/coordenador, fora
+    // do alcance de um subagente implementador em worktree isolado. Comando
+    // exato pra armar (deixado no corpo do PR, #7180): `systemctl --user
+    // enable --now diaria-metrics-health-alarm.timer` depois de rodar
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada.
+    issue: "#7180",
+  },
+  {
     name: "Diaria-Worker-Drift-Check",
     description: "alarme de drift entre o codigo publicado e o master de cada Worker",
     steps: [{ key: "check", script: "scripts/worker-drift-check.ts" }],
