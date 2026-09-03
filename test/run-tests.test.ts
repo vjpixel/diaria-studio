@@ -7,7 +7,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1104,5 +1104,37 @@ describe("runTestBatchesParallel (#6877) — integração REAL com fork() (sem s
   it("cleanChildEnv: env sem as chaves NODE_TEST_* não lança, devolve intacto", () => {
     const fakeEnv = { PATH: "/usr/bin" };
     assert.deepEqual(cleanChildEnv(fakeEnv as NodeJS.ProcessEnv), fakeEnv);
+  });
+});
+
+describe("#6783 — marcador contável do flake de módulo", () => {
+  // A issue #6783 registra o 2º data point do flake e pede "mais dados". O
+  // gargalo não era o flake ser raro — era cada ocorrência exigir que alguém
+  // reparasse num log de CI e escrevesse uma issue à mão. Duas em meses.
+  // O marcador torna a contagem um `grep`; estes casos travam o formato,
+  // porque marcador que muda de forma silenciosamente não é contável.
+
+  const MARKER = "RUN_TESTS_MODULE_FLAKE";
+
+  it("o marcador aparece no fonte, em linha própria e antes da mensagem humana", () => {
+    const src = readFileSync(new URL("../scripts/run-tests.ts", import.meta.url), "utf8");
+    // Checagem por substring, não por regex esperto: o teste trava o FORMATO,
+    // e regex frágil falharia por escaping em vez de por regressão real.
+    assert.ok(src.includes(`\\n${MARKER} batch=`), "marcador precisa abrir a própria linha");
+    assert.ok(src.includes("modulo=${culprit}"), "o módulo que falhou separa as hipóteses — não pode sair do marcador");
+  });
+
+  it("o regex de extração acha o módulo nas duas formas que o Node emite", () => {
+    // Node varia entre aspas e sem, conforme a versão/caminho do erro.
+    const comAspas = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/test/novo.test.ts' imported from /repo/";
+    const semAspas = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module /repo/test/novo.test.ts imported from /repo/";
+    const RE = /Cannot find module '?([^'\s]+)'?/;
+    assert.equal(RE.exec(comAspas)?.[1], "/repo/test/novo.test.ts");
+    assert.equal(RE.exec(semAspas)?.[1], "/repo/test/novo.test.ts");
+  });
+
+  it("output sem a mensagem de módulo não quebra a extração (cai no fallback)", () => {
+    const RE = /Cannot find module '?([^'\s]+)'?/;
+    assert.equal(RE.exec("qualquer outra falha")?.[1] ?? "(arquivo não identificado no output)", "(arquivo não identificado no output)");
   });
 });
