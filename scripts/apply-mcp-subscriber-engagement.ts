@@ -176,6 +176,8 @@ export interface ApplyEngagementOpts {
   title?: string;
   pagesFetched?: number;
   totalPages?: number;
+  /** `stats.email.recipients` do post — âncora externa da completude (#7197). */
+  recipients?: number;
   allowEmptyReplace?: boolean;
   outDir?: string;
   /** Mescla com o JSONL existente (dedup por `subscriber_id`) em vez de sobrescrever (#6733). */
@@ -266,6 +268,18 @@ export function applyEngagement(stdinJson: string, opts: ApplyEngagementOpts): A
       "guard #7197: 0 registros sem --confirmed-empty explícito — nunca ok sem confirmação de que a MCP respondeu vazio de verdade nesta invocação";
   }
 
+  // GUARD (#7197, âncora externa): a MCP NÃO devolve `total_pages` — só
+  // `{page, per_page, count}`. O guard de páginas acima, portanto, quase nunca
+  // dispara: sem `--total-pages`, `status` já nasce `ok`, e o par
+  // `pages_fetched == total_pages` que o manifest registra é auto-satisfeito.
+  // Foi assim que 191 de 255 posts fecharam `ok` com uma página só drenada.
+  // `--recipients` é a única âncora que vive FORA da drenagem (`stats.email.recipients`
+  // do próprio post), então é ela que sabe dizer que faltou gente.
+  if (status === "ok" && opts.recipients != null && records.length < opts.recipients) {
+    status = "partial";
+    guardError = `guard #7197: ${records.length} registros pra um post que alcançou ${opts.recipients} — drenagem truncada; continue paginando (a MCP não informa total_pages)`;
+  }
+
   const manifest = loadManifest(manifestPath);
   const entry: EngagementManifestEntry = {
     post_id: opts.postId,
@@ -305,7 +319,7 @@ async function main(): Promise<void> {
   if (postIdIdx === -1 || !argv[postIdIdx + 1]) {
     console.error(
       "uso: apply-mcp-subscriber-engagement.ts --post-id post_<uuid> [--title T] " +
-        "[--pages-fetched N --total-pages M] [--append] [--allow-empty-replace] [--confirmed-empty] [--out-dir DIR]  (JSON via stdin)",
+        "[--pages-fetched N --total-pages M] [--recipients R] [--append] [--allow-empty-replace] [--confirmed-empty] [--out-dir DIR]  (JSON via stdin)",
     );
     process.exit(2);
   }
@@ -317,6 +331,7 @@ async function main(): Promise<void> {
     title: titleIdx !== -1 ? argv[titleIdx + 1] : undefined,
     pagesFetched: parseIntArg(argv, "--pages-fetched"),
     totalPages: parseIntArg(argv, "--total-pages"),
+    recipients: parseIntArg(argv, "--recipients"),
     allowEmptyReplace: argv.includes(ALLOW_EMPTY_REPLACE_FLAG),
     outDir: outDirIdx !== -1 ? resolve(argv[outDirIdx + 1]) : undefined,
     append: argv.includes("--append"),

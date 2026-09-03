@@ -312,3 +312,77 @@ describe("reconcileManifestWithDisk — auditoria contra o disco (#7197)", () =>
     assert.deepEqual(downgraded.map((d) => d.post_id).sort(), ["p2", "p3"]);
   });
 });
+
+describe("reconcileManifestWithDisk — âncora externa `recipients` (#7197)", () => {
+  it("o modo de falha CENTRAL do #7197: manifest e disco concordam, e mesmo assim o post está pela metade", () => {
+    // Este é o caso que as checagens 1 e 2 não pegam por construção: o drenador
+    // é honesto sobre o que gravou (312 = 312), ele só parou na página 1 porque
+    // a resposta da MCP não traz `total_pages`. Sem a âncora externa, este post
+    // passa como `ok` — foi o que aconteceu com 191 dos 255 posts do acervo.
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_truncado", status: "ok", count: 312, pages_fetched: 1, total_pages: 1 }],
+    };
+    const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(
+      manifest,
+      new Map([["post_truncado", 312]]),
+      new Map([["post_truncado", 1284]]),
+    );
+    assert.equal(reconciled.posts[0].status, "partial");
+    assert.match(reconciled.posts[0].error ?? "", /1284/);
+    assert.equal(downgraded.length, 1);
+    assert.equal(downgraded[0].to, "partial");
+  });
+
+  it("drenagem completa (linhas ≥ recipients) continua ok", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "p", status: "ok", count: 1284 }],
+    };
+    const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(
+      manifest,
+      new Map([["p", 1284]]),
+      new Map([["p", 1284]]),
+    );
+    assert.deepEqual(reconciled.posts[0], manifest.posts[0]);
+    assert.deepEqual(downgraded, []);
+  });
+
+  it("linhas ACIMA de recipients não rebaixa — a âncora é piso, não igualdade", () => {
+    // `recipients` é o alcance do envio; o acervo pode ter linhas a mais
+    // (reenvio, assinante que entrou depois). Só o DÉFICIT é sinal de truncagem.
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "p", status: "ok", count: 1300 }],
+    };
+    const { downgraded } = reconcileManifestWithDisk(manifest, new Map([["p", 1300]]), new Map([["p", 1284]]));
+    assert.deepEqual(downgraded, []);
+  });
+
+  it("recipients AUSENTE pro post não rebaixa — falha de infra nunca vira veredito sobre o dado", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "p", status: "ok", count: 312 }],
+    };
+    const { downgraded } = reconcileManifestWithDisk(manifest, new Map([["p", 312]]), new Map());
+    assert.deepEqual(downgraded, [], "post sem `recipients` conhecido fica como está");
+  });
+
+  it("mapa de recipients omitido = comportamento pré-#7197, sem quebrar chamador antigo", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "p", status: "ok", count: 312 }],
+    };
+    const { downgraded } = reconcileManifestWithDisk(manifest, new Map([["p", 312]]));
+    assert.deepEqual(downgraded, []);
+  });
+
+  it("checagem 1 (fabricado) tem precedência sobre a âncora: 0 linhas vira pending, não partial", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "p", status: "ok", count: 0 }],
+    };
+    const { downgraded } = reconcileManifestWithDisk(manifest, new Map([["p", 0]]), new Map([["p", 1284]]));
+    assert.equal(downgraded[0].to, "pending", "arquivo vazio é 'nunca drenado', não 'drenado pela metade'");
+  });
+});

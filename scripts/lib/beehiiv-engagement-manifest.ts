@@ -227,7 +227,7 @@ export const AUDIT_REASON_PREFIX = "auditoria #7197";
  * de trabalho" (`pendingEntries`) ou mecanicamente corretas
  * (`not_applicable`), nada a reconciliar.
  *
- * Duas checagens, primeira que casa vence:
+ * TRÊS checagens, primeira que casa vence:
  *   1. `actual === 0` — nenhum registro real em disco. Um `ok` com 0
  *      registros só é legítimo quando `not_applicable` (post nunca
  *      enviado) — se chegou aqui como `ok` "normal", é o padrão de
@@ -238,10 +238,43 @@ export const AUDIT_REASON_PREFIX = "auditoria #7197";
  *      restaurado de um snapshot antigo). Rebaixa pra `partial` — o disco
  *      tem ALGUM dado real (`actual > 0`), então não precisa redrenar do
  *      zero, só completar; `entry.count` é corrigido pro valor real.
+ *   3. `actual < recipients` — o disco é INTERNAMENTE consistente mas está
+ *      abaixo do alcance real do post. Rebaixa pra `partial`.
+ *
+ * ─── Por que a checagem 3 é a que importa (medido, 03/09/2026) ────────────
+ *
+ * As checagens 1 e 2 sozinhas rebaixam **6 posts** do acervo real. As três
+ * juntas rebaixam **191**. A diferença não é de calibragem: as duas
+ * primeiras comparam o manifest com o disco, e esse par bate em **256 de
+ * 256** (51.620 = 51.620). O drenador é honesto sobre o que gravou — ele só
+ * não sabe que gravou uma fração.
+ *
+ * A causa raiz é que a resposta da MCP não tem `total_pages` (só `{page,
+ * per_page, count}`, onde `count` é o tamanho DAQUELA página), e o agente
+ * foi instruído a paginar enquanto `pagination.total_pages > 1`. Campo
+ * inexistente ⇒ `undefined > 1` ⇒ `false` ⇒ para na 1ª página. O manifest
+ * então grava `total_pages` do mesmo valor ausente, produzindo
+ * `pages_fetched == total_pages`, que é exatamente a condição de `ok`. Sem
+ * uma âncora EXTERNA, `ok` é estruturalmente auto-satisfeito.
+ *
+ * `email.recipients` é essa âncora: é o teto de quantos registros de
+ * engajamento podem existir pra um post, e não vem do mesmo processo que
+ * gravou o arquivo.
+ *
+ * ─── Por que `recipients` ausente NÃO rebaixa ─────────────────────────────
+ *
+ * `recipientsByPost` é opcional, e post sem entrada nele é deixado como
+ * está. É a divisão fail-soft-em-infra / fail-closed-em-dado que o resto do
+ * repo usa: rede indisponível não pode reescrever o manifest inteiro pra
+ * `partial` (o chamador perderia o acervo bom junto com o ruim), mas dado
+ * PRESENTE que contradiz o `ok` sempre rebaixa. Quem quiser o veredito
+ * completo tem que passar o mapa — e a cobertura fica visível no relatório
+ * do chamador, nunca escondida num default.
  */
 export function reconcileManifestWithDisk(
   manifest: EngagementManifest,
   actualCounts: Map<string, number>,
+  recipientsByPost?: Map<string, number>,
 ): ManifestReconcileResult {
   const downgraded: ManifestDowngrade[] = [];
   const posts = manifest.posts.map((entry) => {
@@ -256,6 +289,12 @@ export function reconcileManifestWithDisk(
       const reason = `${AUDIT_REASON_PREFIX}: manifest.count=${entry.count ?? "undefined"} divergia das linhas reais em disco (${actual})`;
       downgraded.push({ post_id: entry.post_id, from: "ok", to: "partial", reason });
       return { ...entry, status: "partial" as const, count: actual, error: reason };
+    }
+    const recipients = recipientsByPost?.get(entry.post_id);
+    if (typeof recipients === "number" && actual < recipients) {
+      const reason = `${AUDIT_REASON_PREFIX}: ${actual} registros pra um post que alcançou ${recipients} — drenagem truncada (a resposta da MCP não tem total_pages; ver docstring)`;
+      downgraded.push({ post_id: entry.post_id, from: "ok", to: "partial", reason });
+      return { ...entry, status: "partial" as const, error: reason };
     }
     return entry;
   });
