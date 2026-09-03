@@ -46,7 +46,7 @@
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import { isFallbackCategorizationRule, type Bucket } from "./lib/launch-heuristics.ts";
 
@@ -644,11 +644,20 @@ function renderReport(summary: AnalysisSummary): string {
 }
 
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
-  const editionsDirArg = args["editions-dir"] ?? "data/editions";
+  // #5995 (achado 260903): `parseArgsSimple` trata TODO `--flag` como
+  // `--flag valor` — um `--rules` (ou `--json`) sem valor engolia o token
+  // seguinte como se fosse o seu valor. `--rules --editions-dir X` fazia
+  // `values["rules"] = "--editions-dir"` e X nunca era lido como
+  // editions-dir (caía no default `data/editions`, inexistente em worktree
+  // de subagente — "diretório não encontrado" mesmo com o path certo
+  // passado). Same para `--json --rules`. `parseArgs` (com `flags`/`values`
+  // separados) trata `--rules`/`--json` como flags booleanas de verdade,
+  // então a ordem dos argumentos deixa de importar.
+  const { values, flags } = parseArgs(process.argv.slice(2));
+  const editionsDirArg = values["editions-dir"] ?? "data/editions";
   const editionsDir = editionsDirArg.startsWith("/") ? editionsDirArg : resolve(ROOT, editionsDirArg);
-  const asJson = "json" in args || process.argv.includes("--json");
-  const rulesMode = "rules" in args || process.argv.includes("--rules"); // #6647
+  const asJson = flags.has("json");
+  const rulesMode = flags.has("rules"); // #6647
 
   if (rulesMode) {
     const collected = collectRuleUsage(editionsDir);
@@ -661,8 +670,8 @@ function main(): void {
     return;
   }
 
-  const examplesPerDirection = args["examples"] ? Number.parseInt(args["examples"], 10) : 5;
-  const windowArg = args["window"] ? Number.parseInt(args["window"], 10) : DEFAULT_WINDOW;
+  const examplesPerDirection = values["examples"] ? Number.parseInt(values["examples"], 10) : 5;
+  const windowArg = values["window"] ? Number.parseInt(values["window"], 10) : DEFAULT_WINDOW;
   const window = Number.isFinite(windowArg) && windowArg > 0 ? windowArg : DEFAULT_WINDOW;
 
   const editionMoves = analyzeEditionsUnderRoot(editionsDir);

@@ -529,6 +529,42 @@ describe("categorize() — non-product announcement override (#77)", () => {
       "noticias",
     );
   });
+
+  // #5995 (achado 260728, decomposição por causa): aliança/coalizão
+  // multi-empresa — o "produto" é a aliança em si (governança/padrão
+  // compartilhado entre organizações), não uma ferramenta vendável da
+  // empresa que publica o post. 2 artigos REAIS da mesma edição, mesmo
+  // tema (Open Secure AI Alliance).
+  it("CASO REAL 260728: 'Industry Leaders Unite in ... Alliance' vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://blogs.nvidia.com/blog/open-secure-ai-alliance/",
+        title: "Industry Leaders Unite in Open Secure AI Alliance for AI Safety and Security",
+      }),
+      "noticias",
+    );
+  });
+
+  it("CASO REAL 260728: verbo forte 'launches' não salva anúncio de aliança (produto é a aliança, não da NVIDIA)", () => {
+    assert.equal(
+      categorize({
+        url: "https://blogs.nvidia.com/blog/open-secure-ai-alliance-launch/",
+        title: "NVIDIA launches 'Open Secure AI Alliance' initiative to improve cyber defense",
+        summary: "NVIDIA has gathered together some of the biggest tech companies in the world to form the Open Secure AI Alliance with the aim to improve cybersecurity.",
+      }),
+      "noticias",
+    );
+  });
+
+  it("'coalition' (sem 'alliance') também vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/coalition",
+        title: "OpenAI forms new coalition to advance AI safety standards",
+      }),
+      "noticias",
+    );
+  });
 });
 
 describe("categorize() — relatório sinalizado no summary, NÃO lançamento (#1765)", () => {
