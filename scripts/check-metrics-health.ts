@@ -21,7 +21,11 @@
  *     (dependência dura declarada em `registry.ts`); `computar()` é chamado
  *     mesmo assim (deps vazio, ela ignora) só pra manter a série presente —
  *     nunca gera achado de queda (sem valor numérico) nem de frescor
- *     (frescor nunca fica não-nulo, ver `evaluateFrescorFromResult`).
+ *     (frescor nunca fica não-nulo, ver `evaluateFrescorFromResult`). Por
+ *     ser SEMPRE "avaliável" independente de qualquer insumo local (nunca
+ *     falha), ela NUNCA conta pro denominador de `registry-mudo` (achado do
+ *     review desta fatia, #7378 — contá-la desarmaria esse sinal pra
+ *     sempre; ver `avaliadasComInsumoReal` em `main()`).
  *   - `base-ativa`/`leitor-v1` — via snapshots locais de
  *     `data/beehiiv-backup/` (`scripts/lib/beehiiv-backup-snapshots.ts`,
  *     leitura pura de arquivo, NUNCA API Beehiiv ao vivo — guard de
@@ -71,7 +75,7 @@ import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { DEFAULT_DB_PATH, openDiariaSubscribersDb } from "./lib/diaria-subscribers-db.ts";
 import { buildAcquisitionDepsFromStore, brtDayKey } from "./lib/metrics/acquisition-store-deps.ts";
-import type { CapturaLogEntry } from "./lib/metrics/captura-log.ts";
+import { hasCaptureOnDay, type CapturaLogEntry } from "./lib/metrics/captura-log.ts";
 import {
   getMetric,
   METRICAS,
@@ -137,6 +141,23 @@ const ACQUISITION_METRIC_IDS = [
  *  de `doi-orfaos` ficar de fora. */
 const WIRED_METRIC_IDS = [...ACQUISITION_METRIC_IDS, "doi-confirmacao-dia", "base-ativa", "leitor-v1"] as const;
 
+/**
+ * Override de `FRESCOR_MAX_DIAS` por métrica (achado do review desta fatia
+ * — #7378) — `base-ativa`/`leitor-v1` são alimentadas por um snapshot
+ * SEMANAL (`Diaria-Beehiiv-Backup`, domingo), então o default de 2 dias
+ * dispararia frescor em 4-5 de cada 7 dias, TODA semana — exatamente o
+ * padrão de baixo retorno que o #6798 mediu, não um achado real (o próprio
+ * `baseAtivaDef.computar` já documenta isso como `qualidade: 'piso'`,
+ * "a base só cai entre snapshots, este número é um PISO"). 9 dias = 1
+ * semana de cadência + 2 dias de folga (mesmo espírito do `FRESCOR_MAX_DIAS`
+ * default, que já embute folga sobre a cadência diária das métricas de
+ * aquisição). Métrica sem entry aqui usa `thresholds.FRESCOR_MAX_DIAS`.
+ */
+const FRESCOR_MAX_DIAS_OVERRIDE: Partial<Record<string, number>> = {
+  "base-ativa": 9,
+  "leitor-v1": 9,
+};
+
 function defaultCapturaLogPath(dbPath: string): string {
   return resolve(dirname(dbPath), "..", "metrics", "captura-log.jsonl");
 }
@@ -161,8 +182,10 @@ function readCapturaLog(path: string): CapturaLogEntry[] {
  *  `dia` — snapshots são semanais (`Diaria-Beehiiv-Backup`, domingo), então
  *  a maioria dos dias da janela carrega o valor pra frente (`qualidade:
  *  'piso'`, ver `baseAtivaDef` em `registry.ts`). `null` se nenhum snapshot
- *  existe ainda ou em ou antes de `dia`. @pure */
-function nearestSnapshotOnOrBefore(dates: readonly string[], dia: string): string | null {
+ *  existe ainda ou em ou antes de `dia`. Exportada (não só interna) —
+ *  achado do review desta fatia (#7378, pr-test-analyzer): o único helper
+ *  de "carry forward" deste script tinha zero teste dedicado. @pure */
+export function nearestSnapshotOnOrBefore(dates: readonly string[], dia: string): string | null {
   let best: string | null = null;
   for (const d of dates) {
     if (d <= dia && (best === null || d > best)) best = d;
@@ -183,8 +206,14 @@ function loadMetaAtingidaState(path: string): MetaAtingidaState {
   try {
     const raw = JSON.parse(readFileSync(path, "utf8"));
     if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as MetaAtingidaState;
+    console.error(`${LOG_PREFIX} ${path} tem formato inesperado (esperava objeto) — resetando pra vazio.`);
     return {};
-  } catch {
+  } catch (e) {
+    // Achado do review desta fatia (#7378): corrupção deste arquivo
+    // silenciosamente "des-terminava" uma meta já `atingida` sem NENHUM
+    // log — quem debugasse "por que atingida_em sumiu" não tinha rastro
+    // nenhum. Mesmo padrão de `loadAlarmIssuesState` (`alarm-issues.ts`).
+    console.error(`${LOG_PREFIX} ${path} corrompido/ilegível — resetando pra vazio: ${(e as Error).message}`);
     return {};
   }
 }
@@ -280,17 +309,23 @@ async function main(): Promise<void> {
   }
 
   const hoje = brtDayKey(new Date().toISOString()) ?? new Date().toISOString().slice(0, 10);
-  const primeiroDia = enumerarDiasInclusive(hoje, hoje)[0];
-  const dias = enumerarDiasInclusive(
-    addDaysYmd(primeiroDia, -(thresholds.MIN_DIAS_SERIE - 1)),
-    hoje,
-  );
+  const dias = enumerarDiasInclusive(addDaysYmd(hoje, -(thresholds.MIN_DIAS_SERIE - 1)), hoje);
 
   const capturaLog = readCapturaLog(defaultCapturaLogPath(dbPath));
+  const diasComColetaCapturaLog = dias.filter((d) => hasCaptureOnDay(capturaLog, d));
 
   const findings: MetricsHealthFinding[] = [];
   const skipMotivos: string[] = [];
   const avaliadasIds = new Set<string>();
+  // #7378 (achado do review): SEPARADO de `avaliadasIds` de propósito.
+  // `doi-confirmacao-dia` é SEMPRE "avaliável" (seu `computar()` nunca
+  // depende de insumo local — ver registry.ts), então contá-la aqui
+  // desarmaria `evaluateRegistryMudo` pra sempre: com `data/` inteiramente
+  // ausente (DB inacessível, zero snapshots), `avaliadasIds` nunca chegaria
+  // a 0 e o sinal mais barato de detectar (a classe de defeito que o #6798
+  // aponta como a mais cara) nunca dispararia. Só entra aqui quando o
+  // insumo LOCAL de fato existiu (DB abriu, ou havia snapshot).
+  const avaliadasComInsumoReal = new Set<string>();
   const seriesById = new Map<string, MedicaoDia[]>();
 
   // ── Aquisição (4 métricas) — via store real ──────────────────────────
@@ -313,6 +348,7 @@ async function main(): Promise<void> {
       }
       seriesById.set(id, medicoes);
       avaliadasIds.add(id);
+      avaliadasComInsumoReal.add(id);
     }
     db.close();
   }
@@ -335,6 +371,12 @@ async function main(): Promise<void> {
 
   // ── base-ativa / leitor-v1 — via snapshots locais de data/beehiiv-backup/ ──
   const snapshotDates = listSnapshotDates(backupRoot);
+  // Cobertura de série pras 2 métricas de snapshot — NUNCA captura-log.jsonl
+  // (achado do review desta fatia, #7378: aquele log é específico da
+  // ingestão Kit, sem relação com o snapshot semanal da Beehiiv). Um dia
+  // "tem insumo disponível" pra queda quando algum snapshot já existia em
+  // ou antes dele.
+  const diasComSnapshot = dias.filter((d) => nearestSnapshotOnOrBefore(snapshotDates, d) !== null);
   if (snapshotDates.length > 0) {
     const baseAtivaDef = getMetric("base-ativa") as MetricDef<BaseAtivaDeps> | undefined;
     const leitorV1Def = getMetric("leitor-v1") as MetricDef<LeitorV1Deps> | undefined;
@@ -359,6 +401,7 @@ async function main(): Promise<void> {
       }
       seriesById.set("base-ativa", medicoes);
       avaliadasIds.add("base-ativa");
+      avaliadasComInsumoReal.add("base-ativa");
     }
 
     if (leitorV1Def) {
@@ -382,13 +425,16 @@ async function main(): Promise<void> {
       }
       seriesById.set("leitor-v1", medicoes);
       avaliadasIds.add("leitor-v1");
+      avaliadasComInsumoReal.add("leitor-v1");
     }
   } else {
     skipMotivos.push(`base-ativa/leitor-v1: nenhum snapshot em ${backupRoot} — não avaliados`);
   }
 
   // ── Sinal 5: registry-mudo ────────────────────────────────────────────
-  const registryMudo = evaluateRegistryMudo(METRICAS.length, avaliadasIds.size);
+  // `avaliadasComInsumoReal`, não `avaliadasIds` — ver comentário na
+  // declaração de `avaliadasComInsumoReal` acima (#7378).
+  const registryMudo = evaluateRegistryMudo(METRICAS.length, avaliadasComInsumoReal.size);
   if (registryMudo) findings.push(registryMudo);
 
   // ── Sinais 1-2 por métrica avaliada ───────────────────────────────────
@@ -398,14 +444,21 @@ async function main(): Promise<void> {
     const def = getMetric(id);
     if (!def) continue;
 
-    const { finding: quedaFinding, skipMotivo } = evaluateQueda(def, medicoes, capturaLog, dias, thresholds);
+    const isAcquisition = (ACQUISITION_METRIC_IDS as readonly string[]).includes(id);
+    // Cobertura de série PRÓPRIA de cada família (#7378) — captura-log.jsonl
+    // só faz sentido pras 4 de aquisição (e, por extensão de fonte,
+    // `doi-confirmacao-dia`, que documenta a MESMA dependência de F2 em
+    // registry.ts); `base-ativa`/`leitor-v1` usam a cobertura de snapshot.
+    const diasComInsumo = id === "base-ativa" || id === "leitor-v1" ? diasComSnapshot : diasComColetaCapturaLog;
+    const { finding: quedaFinding, skipMotivo } = evaluateQueda(def, medicoes, diasComInsumo, thresholds);
     if (quedaFinding) findings.push(quedaFinding);
     if (skipMotivo) skipMotivos.push(skipMotivo);
 
-    const frescorResultFinding = evaluateFrescorFromResult(id, medicoes, hoje, thresholds.FRESCOR_MAX_DIAS);
+    const frescorMaxDias = FRESCOR_MAX_DIAS_OVERRIDE[id] ?? thresholds.FRESCOR_MAX_DIAS;
+    const frescorResultFinding = evaluateFrescorFromResult(id, medicoes, hoje, frescorMaxDias);
     if (frescorResultFinding) findings.push(frescorResultFinding);
 
-    if ((ACQUISITION_METRIC_IDS as readonly string[]).includes(id)) {
+    if (isAcquisition) {
       const frescorCapturaFinding = evaluateFrescorFromCapturaLog(id, dias, capturaLog);
       if (frescorCapturaFinding) findings.push(frescorCapturaFinding);
     }
@@ -499,10 +552,13 @@ async function main(): Promise<void> {
 }
 
 /** `AAAA-MM-DD` + delta dias (pode ser negativo) — mesma implementação de
- *  `addDaysToYmd` em `registry.ts`, não importada de lá (função interna,
- *  não exportada — duplicação de 6 linhas preferível a exportar só pra este
- *  1 uso fora do módulo). @pure */
-function addDaysYmd(ymd: string, delta: number): string {
+ *  `addDaysToYmd` em `registry.ts`, não importada de lá (`addDaysToYmd` não é
+ *  exportada por `registry.ts` — duplicação de 6 linhas preferível a
+ *  exportar só pra este 1 uso fora do módulo). Exportada AQUI (achado do
+ *  review desta fatia, #7378, pr-test-analyzer): a computação da janela
+ *  (`dias`/`MIN_DIAS_SERIE`) que alimenta todo sinal deste alarme dependia
+ *  dela sem nenhum teste direto. @pure */
+export function addDaysYmd(ymd: string, delta: number): string {
   const [y, m, d] = ymd.split("-").map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
   dt.setUTCDate(dt.getUTCDate() + delta);

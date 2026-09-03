@@ -51,7 +51,10 @@
  *   1. `queda`      — métrica com `qualidade` exato/piso/faixa movendo na
  *      direção RUIM (`MetricDef.direcao`) além dos DOIS pisos (relativo E
  *      absoluto por `Unidade`), com série mínima de `MIN_DIAS_SERIE` dias
- *      COM COLETA (não dias corridos).
+ *      COM INSUMO DISPONÍVEL (não dias corridos) — o CHAMADOR decide o que
+ *      conta como "insumo disponível" pra cada métrica (captura-log pras 4
+ *      de aquisição, snapshot Beehiiv pra `base-ativa`/`leitor-v1`), nunca
+ *      um único vocabulário fixo aqui (ver `evaluateQueda`).
  *   2. `frescor`     — o sinal PRINCIPAL desta fatia (ver acima). Duas
  *      fontes independentes, nunca inventadas aqui: `MetricResult.frescor`
  *      envelhecido (`evaluateFrescorFromResult`) e buraco de captura em
@@ -187,28 +190,47 @@ export interface EvaluateQuedaResult {
  * o movimento na direção RUIM (`direcao`) cruza os DOIS pisos — relativo
  * (`QUEDA_MIN_PCT`) E absoluto (`QUEDA_MIN_ABS[unidade]`).
  *
- * `medicoes` e `dias` devem estar na MESMA ordem (mais antigo primeiro, mais
- * recente por último) e cobrir a mesma janela — `dias` é usado só pro gate
- * de `MIN_DIAS_SERIE` via `captura-log.jsonl` (dias COM COLETA, não dias
- * corridos: um feriado sem execução não conta pro mínimo).
+ * `medicoes` precisa estar em ordem cronológica ASCENDENTE (mais antigo
+ * primeiro, mais recente por último — `baseline`/`atual` dependem disso) —
+ * checado por uma guarda em tempo de execução, nunca assumido em silêncio
+ * (achado do review desta fatia: um `medicoes` fora de ordem produziria um
+ * "atual"/"baseline" TROCADOS sem erro nenhum, o oposto do que o "eixo de
+ * veracidade" do #6798 exige).
+ *
+ * `diasComInsumo` é o gate de `MIN_DIAS_SERIE` (dias COM INSUMO DISPONÍVEL,
+ * não dias corridos) — o CHAMADOR decide o que conta como "insumo
+ * disponível" pra ESTA métrica específica (dias com linha em
+ * `captura-log.jsonl` pras 4 métricas de aquisição; dias cobertos por algum
+ * snapshot Beehiiv pra `base-ativa`/`leitor-v1`) e passa a lista já
+ * filtrada — este módulo nunca assume que toda métrica compartilha a MESMA
+ * fonte de cobertura (achado do review: aplicar `captura-log.jsonl`,
+ * específico da ingestão Kit, como gate universal também pras métricas de
+ * snapshot Beehiiv acoplava duas fontes de dado sem relação real).
  */
 export function evaluateQueda(
   def: Pick<MetricDef, "id" | "nome" | "direcao" | "unidade">,
   medicoes: readonly MedicaoDia[],
-  capturaLog: readonly CapturaLogEntry[],
-  dias: readonly string[],
+  diasComInsumo: readonly string[],
   thresholds: MetricsHealthThresholds = METRICS_HEALTH_THRESHOLDS,
 ): EvaluateQuedaResult {
   if (def.direcao === "neutro") {
     return { finding: null, skipMotivo: `"${def.id}": direcao neutro (decomposição pura) — queda nunca avaliada` };
   }
-  const diasComColeta = dias.filter((d) => hasCaptureOnDay(capturaLog, d));
-  if (diasComColeta.length < thresholds.MIN_DIAS_SERIE) {
+  for (let i = 1; i < medicoes.length; i++) {
+    if (medicoes[i].chave < medicoes[i - 1].chave) {
+      throw new Error(
+        `[metrics/health] "${def.id}": medicoes fora de ordem cronológica ascendente ` +
+          `("${medicoes[i - 1].chave}" antes de "${medicoes[i].chave}") — evaluateQueda exige série ordenada, ` +
+          "senão baseline/atual saem trocados silenciosamente",
+      );
+    }
+  }
+  if (diasComInsumo.length < thresholds.MIN_DIAS_SERIE) {
     return {
       finding: null,
       skipMotivo:
-        `"${def.id}": série curta (${diasComColeta.length}/${thresholds.MIN_DIAS_SERIE} dias com coleta em ` +
-        "captura-log.jsonl) — sinal de queda não avaliado, gate mecânico, não recomendação",
+        `"${def.id}": série curta (${diasComInsumo.length}/${thresholds.MIN_DIAS_SERIE} dias com insumo ` +
+        "disponível) — sinal de queda não avaliado, gate mecânico, não recomendação",
     };
   }
   const valores = medicoes.map((m) => m.resultado.valor).filter((v): v is number => v !== null);
@@ -308,9 +330,12 @@ export function evaluateFrescorFromResult(
  * "execução rodou e achou 0" (ver docstring de `hasCaptureOnDay`,
  * `captura-log.ts`). Escopo intencional: só as métricas cujo insumo vem
  * diretamente da ingestão que grava este log (as 4 de aquisição hoje —
- * `ACQUISITION_METRIC_IDS` em `check-metrics-health.ts`) — aplicar isto a
- * `doi-confirmacao-dia` duplicaria, com um vocabulário diferente, o MESMO
- * achado permanente que `evaluateFrescorFromResult` já evita gerar pra ela.
+ * `ACQUISITION_METRIC_IDS` em `check-metrics-health.ts`) — `base-ativa`/
+ * `leitor-v1` (snapshot Beehiiv) e `doi-confirmacao-dia` (Kit form, ainda
+ * sem escritor) não têm relação com `captura-log.jsonl`, então avaliá-los
+ * aqui seria um ERRO DE CATEGORIA (checar a coisa errada), não uma
+ * duplicação — o gate de série curta deles usa uma fonte de cobertura
+ * própria, passada pelo chamador a `evaluateQueda`.
  */
 export function evaluateFrescorFromCapturaLog(
   metricaId: string,
@@ -333,10 +358,13 @@ export function evaluateFrescorFromCapturaLog(
 /**
  * Achado quando `MetaStatus.estado === "nao-atingida"` — só ocorre com
  * `meta.prazo` não-nulo (`evaluateMeta`, `metas.ts`, nunca reavaliado
- * aqui). A única meta da v1 (`ativacao-placar-5-por-dia`) nasce com `prazo:
- * null`, então este sinal fica INERTE até existir meta com prazo —
- * declarado assim de propósito, testado como inércia (nunca como
- * disparo), não como lacuna.
+ * aqui). Na v1 do épico, nenhuma meta cadastrada em `data/metas.json`
+ * declara `prazo` (a única meta existente, `ativacao-placar-5-por-dia`,
+ * nasce com `prazo: null`) — este sinal fica INERTE até isso mudar. Sem
+ * guard mecânico garantindo essa afirmação (`data/metas.json` é
+ * gitignored, fora do alcance de CI — ver `metas-store.ts`): se este
+ * parágrafo parecer desatualizado, reconferir o arquivo real antes de
+ * confiar nele.
  */
 export function evaluateMetaSinal(meta: Pick<Meta, "id" | "metrica_id">, status: MetaStatus): MetricsHealthFinding | null {
   if (status.estado !== "nao-atingida") return null;

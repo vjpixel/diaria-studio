@@ -27,10 +27,10 @@ import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
-  type AlarmFinding,
   type AlarmIssuesState,
 } from "../scripts/lib/alarm-issues.ts";
 import type { CapturaLogEntry } from "../scripts/lib/metrics/captura-log.ts";
+import { toMetricsHealthAlarmFinding } from "../scripts/check-metrics-health.ts";
 
 function janela(dia: string): Janela {
   return { de: dia, ate: dia, granularidade: "dia", fuso: "BRT" };
@@ -100,23 +100,30 @@ describe("assertQuedaMinAbsCobreUnidades", () => {
   });
 });
 
+/** `diasComColeta` a partir de um `capturaLog` sintético — mesma tradução
+ *  que `check-metrics-health.ts` faz via `hasCaptureOnDay` antes de passar
+ *  pra `evaluateQueda` (que, desde #7378, não conhece mais captura-log.jsonl
+ *  diretamente — recebe a cobertura já resolvida pelo chamador). */
+function diasComColetaFrom(dias: readonly string[], capturaLog: readonly CapturaLogEntry[]): string[] {
+  const captured = new Set(capturaLog.map((e) => e.captured_at.slice(0, 10)));
+  return dias.filter((d) => captured.has(d));
+}
+
 describe("evaluateQueda", () => {
   it("direcao neutro nunca alarma, sempre skip", () => {
     const def = { ...CONTAGEM_DEF, direcao: "neutro" as const };
     const dias = dias14("2026-09-01");
     const medicoes = dias.map((d) => exato(d, 10));
-    const capturaLog = dias.map(capturaEntry);
-    const { finding, skipMotivo } = evaluateQueda(def, medicoes, capturaLog, dias);
+    const { finding, skipMotivo } = evaluateQueda(def, medicoes, dias);
     assert.equal(finding, null);
     assert.match(skipMotivo!, /neutro/);
   });
 
-  it("série curta (menos de MIN_DIAS_SERIE dias com coleta) — skip, nunca alarma", () => {
+  it("série curta (menos de MIN_DIAS_SERIE dias com insumo disponível) — skip, nunca alarma", () => {
     const dias = dias14("2026-09-01");
     const medicoes = dias.map((d, i) => exato(d, i < 10 ? 10 : 2));
-    // só os últimos 5 dias têm captura registrada
-    const capturaLog = dias.slice(-5).map(capturaEntry);
-    const { finding, skipMotivo } = evaluateQueda(CONTAGEM_DEF, medicoes, capturaLog, dias);
+    // só os últimos 5 dias têm insumo disponível
+    const { finding, skipMotivo } = evaluateQueda(CONTAGEM_DEF, medicoes, dias.slice(-5));
     assert.equal(finding, null);
     assert.match(skipMotivo!, /série curta/);
   });
@@ -125,8 +132,7 @@ describe("evaluateQueda", () => {
     const dias = dias14("2026-09-01");
     // baseline ~10, último dia 9 — 10% de queda, abaixo de QUEDA_MIN_PCT (15%)
     const medicoes = dias.map((d, i) => exato(d, i === dias.length - 1 ? 9 : 10));
-    const capturaLog = dias.map(capturaEntry);
-    const { finding, skipMotivo } = evaluateQueda(CONTAGEM_DEF, medicoes, capturaLog, dias);
+    const { finding, skipMotivo } = evaluateQueda(CONTAGEM_DEF, medicoes, dias);
     assert.equal(finding, null);
     assert.equal(skipMotivo, null);
   });
@@ -135,8 +141,7 @@ describe("evaluateQueda", () => {
     const dias = dias14("2026-09-01");
     // baseline 10, último dia 2 — 80% de queda, delta absoluto 8 (>= piso 2)
     const medicoes = dias.map((d, i) => exato(d, i === dias.length - 1 ? 2 : 10));
-    const capturaLog = dias.map(capturaEntry);
-    const { finding, skipMotivo } = evaluateQueda(CONTAGEM_DEF, medicoes, capturaLog, dias);
+    const { finding, skipMotivo } = evaluateQueda(CONTAGEM_DEF, medicoes, dias);
     assert.equal(skipMotivo, null);
     assert.ok(finding);
     assert.equal(finding!.sinal, "queda");
@@ -147,13 +152,12 @@ describe("evaluateQueda", () => {
     const dias = dias14("2026-09-01");
     // baseline 0.05, último dia CAI pra 0.01 — bom pra menor-melhor, nunca alarma
     const caindo = dias.map((d, i) => exato(d, i === dias.length - 1 ? 0.01 : 0.05));
-    const capturaLog = dias.map(capturaEntry);
-    const resultCaindo = evaluateQueda(RAZAO_MENOR_MELHOR_DEF, caindo, capturaLog, dias);
+    const resultCaindo = evaluateQueda(RAZAO_MENOR_MELHOR_DEF, caindo, dias);
     assert.equal(resultCaindo.finding, null);
 
     // baseline 0.05, último dia SOBE pra 0.20 — ruim pra menor-melhor, alarma
     const subindo = dias.map((d, i) => exato(d, i === dias.length - 1 ? 0.2 : 0.05));
-    const resultSubindo = evaluateQueda(RAZAO_MENOR_MELHOR_DEF, subindo, capturaLog, dias);
+    const resultSubindo = evaluateQueda(RAZAO_MENOR_MELHOR_DEF, subindo, dias);
     assert.ok(resultSubindo.finding);
     assert.equal(resultSubindo.finding!.sinal, "queda");
   });
@@ -173,8 +177,7 @@ describe("evaluateQueda", () => {
         limites: { min: 5, max: i === dias.length - 1 ? 50 : 8 }, // teto oscila muito, min nunca muda
       },
     }));
-    const capturaLog = dias.map(capturaEntry);
-    const { finding } = evaluateQueda(CONTAGEM_DEF, medicoes, capturaLog, dias);
+    const { finding } = evaluateQueda(CONTAGEM_DEF, medicoes, dias);
     assert.equal(finding, null);
   });
 
@@ -190,8 +193,7 @@ describe("evaluateQueda", () => {
         motivo: "piso subindo — não prova nada",
       },
     }));
-    const capturaLog = dias.map(capturaEntry);
-    assert.equal(evaluateQueda(CONTAGEM_DEF, medicoesSubindo, capturaLog, dias).finding, null);
+    assert.equal(evaluateQueda(CONTAGEM_DEF, medicoesSubindo, dias).finding, null);
 
     const medicoesCaindo: MedicaoDia[] = dias.map((d, i) => ({
       chave: d,
@@ -203,18 +205,32 @@ describe("evaluateQueda", () => {
         motivo: "piso caindo — sinal real",
       },
     }));
-    const resultCaindo = evaluateQueda(CONTAGEM_DEF, medicoesCaindo, capturaLog, dias);
+    const resultCaindo = evaluateQueda(CONTAGEM_DEF, medicoesCaindo, dias);
     assert.ok(resultCaindo.finding);
   });
 
   it("fingerprint estável entre 2 execuções com o mesmo dado (nunca inclui números)", () => {
     const dias = dias14("2026-09-01");
     const medicoes = dias.map((d, i) => exato(d, i === dias.length - 1 ? 2 : 10));
-    const capturaLog = dias.map(capturaEntry);
-    const r1 = evaluateQueda(CONTAGEM_DEF, medicoes, capturaLog, dias).finding!;
-    const r2 = evaluateQueda(CONTAGEM_DEF, medicoes, capturaLog, dias).finding!;
+    const r1 = evaluateQueda(CONTAGEM_DEF, medicoes, dias).finding!;
+    const r2 = evaluateQueda(CONTAGEM_DEF, medicoes, dias).finding!;
     assert.equal(metricsHealthFingerprint(r1), metricsHealthFingerprint(r2));
     assert.equal(metricsHealthFingerprint(r1), "queda:cadastros-dia");
+  });
+
+  it("cobertura via captura-log.jsonl (tradução que check-metrics-health.ts faz) — mesmo resultado do gate por dias diretos", () => {
+    const dias = dias14("2026-09-01");
+    const medicoes = dias.map((d, i) => exato(d, i === dias.length - 1 ? 2 : 10));
+    const capturaLog = dias.map(capturaEntry);
+    const { finding } = evaluateQueda(CONTAGEM_DEF, medicoes, diasComColetaFrom(dias, capturaLog));
+    assert.ok(finding);
+  });
+
+  it("#7378 (type-design-analyzer): medicoes fora de ordem cronológica lança, nunca silenciosamente troca baseline/atual", () => {
+    const dias = dias14("2026-09-01");
+    const medicoes = dias.map((d, i) => exato(d, i === dias.length - 1 ? 2 : 10));
+    const foraDeOrdem = [medicoes[1], medicoes[0], ...medicoes.slice(2)];
+    assert.throws(() => evaluateQueda(CONTAGEM_DEF, foraDeOrdem, dias), /fora de ordem cronológica/);
   });
 });
 
@@ -343,6 +359,18 @@ describe("evaluateIndeterminadoCrescendo", () => {
     };
     assert.equal(evaluateIndeterminadoCrescendo(meta, status, 14, 0.3), null);
   });
+
+  it("diasJanela <= 0 nunca divide por zero — sem achado (guard defensivo)", () => {
+    const status: MetaStatus = {
+      meta_id: meta.id,
+      estado: "indeterminado",
+      progresso: 0,
+      streak_atual: 0,
+      streak_necessario: 1,
+      dias_indeterminados: 5,
+    };
+    assert.equal(evaluateIndeterminadoCrescendo(meta, status, 0, 0.3), null);
+  });
 });
 
 describe("evaluateRegistryMudo (#6798 — a classe de defeito mais cara)", () => {
@@ -363,19 +391,10 @@ describe("evaluateRegistryMudo (#6798 — a classe de defeito mais cara)", () =>
 });
 
 // ─── Ciclo de issue — via alarm-issues.ts (mesmo mecanismo genérico do resto
-// do repo), usando os findings gerados por health.ts ──────────────────────
-
-function toAlarmFinding(f: MetricsHealthFinding): AlarmFinding {
-  return {
-    check: "metrics-health",
-    fingerprint: metricsHealthFingerprint(f),
-    title: `[diar.ia.br] saúde de métrica — ${f.sinal}: ${f.metrica_id}`,
-    body: f.motivo,
-    labels: ["bug"],
-    priority: "P2",
-    family: "estado",
-  };
-}
+// do repo), usando o finding builder REAL de check-metrics-health.ts (#7378,
+// achado do review: a versão anterior deste teste reimplementava um builder
+// LOCAL simplificado — title/body/labels do issue de verdade nunca eram
+// exercitados por nenhum teste). ──────────────────────────────────────────
 
 describe("ciclo de issue (planAlarmReconciliation/applyAlarmReconciliation) sobre findings de metrics-health", () => {
   const FINDING: MetricsHealthFinding = {
@@ -385,7 +404,7 @@ describe("ciclo de issue (planAlarmReconciliation/applyAlarmReconciliation) sobr
   };
 
   it("dois runs com o mesmo finding reusam a issue pelo marcador (mesmo fingerprint) em vez de abrir 2ª issue", () => {
-    const finding = toAlarmFinding(FINDING);
+    const finding = toMetricsHealthAlarmFinding(FINDING);
     const state: AlarmIssuesState = {
       "metrics-health:frescor:cadastros-dia": {
         issueNumber: 100,
@@ -400,7 +419,7 @@ describe("ciclo de issue (planAlarmReconciliation/applyAlarmReconciliation) sobr
   });
 
   it("finding que some por 2 runs consecutivos fecha com 'not planned' (via applyAlarmReconciliation)", () => {
-    const finding = toAlarmFinding(FINDING);
+    const finding = toMetricsHealthAlarmFinding(FINDING);
     const key = `metrics-health:${finding.fingerprint}`;
     let state: AlarmIssuesState = {
       [key]: { issueNumber: 100, url: "https://x/100", missingStreak: 0, closedAt: null, family: "estado" },
@@ -426,7 +445,7 @@ describe("ciclo de issue (planAlarmReconciliation/applyAlarmReconciliation) sobr
   });
 
   it("finding que volta a reproduzir depois de fechado reabre a issue em vez de criar nova (#5978)", () => {
-    const finding = toAlarmFinding(FINDING);
+    const finding = toMetricsHealthAlarmFinding(FINDING);
     const key = `metrics-health:${finding.fingerprint}`;
     const state: AlarmIssuesState = {
       [key]: {
