@@ -28,7 +28,8 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import type { BroadcastAudience } from "../kit-provider-split.ts";
-import { ensureSubscriber, recordEvent, type EventType } from "./diaria-subscribers-db.ts";
+import { ensureSubscriber, recordEvent, upsertSubscription, type EventType } from "./diaria-subscribers-db.ts";
+import type { KitSubscriberSummary } from "./kit-subscribers.ts";
 
 /** Eixo do Kit → tipo de evento do store. `opens`/`clicks` (plural, vocabulário
  *  da API) viram `open`/`click` (singular, vocabulário do store) de propósito
@@ -141,4 +142,128 @@ export function ingestBroadcastAudience(
   }
 
   return { newEvents, alreadyKnown, subscribersTouched };
+}
+
+// ---------------------------------------------------------------------------
+// Ingestão de ROSTER (#7174, F2 do épico #7172) — 1º passo de
+// diaria-subscribers-ingest-kit.ts, ao LADO da ingestão de audiência por
+// broadcast acima (não no lugar dela). Popula a dimensão `subscription`,
+// que a ingestão de audiência nunca tocava — só `ensureSubscriber`/
+// `recordEvent`.
+// ---------------------------------------------------------------------------
+
+export interface KitRosterIngestResult {
+  processed: number;
+  subscriptionsWritten: number;
+  subscribeEvents: { newEvents: number; alreadyKnown: number };
+  unsubEvents: { newEvents: number; alreadyKnown: number };
+}
+
+/**
+ * Estados do Kit que representam "não mais na base" — o CREATE do worker
+ * `reativar`/`poll` nasce `active`, e a transição pra qualquer um destes é
+ * quando `upsertSubscription` grava `exitedAt`. `active`/`inactive` (double
+ * opt-in pendente) permanecem SEM `exitedAt` — `inactive` ainda é membro da
+ * base, só não confirmou o opt-in.
+ */
+const KIT_EXITED_STATES: ReadonlySet<string> = new Set(["cancelled", "bounced", "complained"]);
+
+/**
+ * Ingerir o ROSTER completo do Kit — 1 `subscriber` + 1 `subscription` +
+ * (no mínimo) 1 evento `subscribe` por assinante, gravados via
+ * `upsertSubscription`/`recordEvent`. Não classifica (F1/F4 fazem isso na
+ * leitura); grava a atribuição CRUA como veio do Kit.
+ *
+ * **De onde sai cada campo (contrato explícito, #7174):**
+ * - `external_id` ← `id`; `status` ← `state`; `entered_at` ← `created_at`;
+ *   identidade ← `email_address`.
+ * - `utm_source`/`utm_medium`/`utm_campaign`/`utm_channel`/`referring_site`/
+ *   `origem_cadastro` ← **`fields` (custom fields), NUNCA `attribution`**
+ *   (o bloco `attribution` vem sempre mas com UTM nulo — ver a docstring
+ *   corrigida de `KitSubscriberAttribution` em `kit-subscribers.ts`).
+ *
+ * Idempotente: `upsertSubscription` faz `ON CONFLICT DO UPDATE` (nunca
+ * duplica linha), `recordEvent` faz `INSERT OR IGNORE` sobre a chave
+ * natural `email:subscribe:{created_at}` (nunca duplica evento).
+ *
+ * Não classifica interno/teste — mesma disciplina do resto do épico: quem
+ * agrega filtra (`filterInternalAndTestSubscribers`), a captura grava todo
+ * mundo.
+ */
+export function ingestKitRoster(
+  db: DatabaseSync,
+  subscribers: readonly KitSubscriberSummary[],
+  now: string = new Date().toISOString(),
+): KitRosterIngestResult {
+  let subscriptionsWritten = 0;
+  let subscribeNew = 0;
+  let subscribeKnown = 0;
+  let unsubNew = 0;
+  let unsubKnown = 0;
+
+  for (const sub of subscribers) {
+    const email = sub.email_address.trim().toLowerCase();
+    if (!email) continue;
+
+    const subscriberId = ensureSubscriber(db, "kit", String(sub.id), email, now);
+    const fields = sub.fields ?? {};
+    const status = sub.state ?? null;
+    const exited = status != null && KIT_EXITED_STATES.has(status);
+
+    upsertSubscription(
+      db,
+      subscriberId,
+      "kit",
+      {
+        status,
+        enteredAt: sub.created_at ?? null,
+        exitedAt: exited ? now : null,
+        source: fields.utm_source ?? null,
+        utmMedium: fields.utm_medium ?? null,
+        utmCampaign: fields.utm_campaign ?? null,
+        utmChannel: fields.utm_channel ?? null,
+        referringSite: fields.referring_site ?? null,
+        origemCadastro: fields.origem_cadastro ?? null,
+      },
+      now,
+    );
+    subscriptionsWritten++;
+
+    if (sub.created_at) {
+      const { inserted } = recordEvent(db, {
+        subscriberId,
+        platform: "kit",
+        type: "subscribe",
+        externalEventId: `${email}:subscribe:${sub.created_at}`,
+        ts: sub.created_at,
+      });
+      if (inserted) subscribeNew++;
+      else subscribeKnown++;
+    }
+
+    if (exited) {
+      // O Kit não expõe timestamp de cancelamento — só o ESTADO ATUAL (ver
+      // docstring do módulo/#7174). A chave natural usa o dia da CAPTURA
+      // (não `now` inteiro, que muda a cada milissegundo) pra que rodar a
+      // ingestão 2x no mesmo dia não duplique o evento — mesma transição de
+      // estado observada 2x no mesmo dia é 1 evento, não 2.
+      const captureDay = now.slice(0, 10);
+      const { inserted } = recordEvent(db, {
+        subscriberId,
+        platform: "kit",
+        type: "unsub",
+        externalEventId: `${email}:unsub:${status}:${captureDay}`,
+        ts: now,
+      });
+      if (inserted) unsubNew++;
+      else unsubKnown++;
+    }
+  }
+
+  return {
+    processed: subscribers.length,
+    subscriptionsWritten,
+    subscribeEvents: { newEvents: subscribeNew, alreadyKnown: subscribeKnown },
+    unsubEvents: { newEvents: unsubNew, alreadyKnown: unsubKnown },
+  };
 }

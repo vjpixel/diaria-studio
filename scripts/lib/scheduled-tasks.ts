@@ -1148,6 +1148,39 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5494",
   },
   {
+    name: "Diaria-Kit-Roster-Ingest",
+    description:
+      "captura diaria do roster completo do Kit (status=all) no store unificado do #6464 -- popula a dimensao " +
+      "subscription (fatia F2 do epico #7172), que nenhuma ingestao tocava ate aqui",
+    steps: [{ key: "ingest", script: "scripts/diaria-subscribers-ingest-kit.ts", args: ["--write"] }],
+    logPath: "diaria-subscribers/.kit-roster-ingest.log",
+    // Daily 04:25 BRT — depois da fronteira do dia (00:00 BRT) e antes do
+    // cluster matinal (a 1ª daily é Diaria-Clarice-Envio-Guard, 05:00), fora
+    // do bloco de domingo (Diaria-Beehiiv-Backup 03:00, -Acquisition-Health-
+    // Alarm 03:30, -Beehiiv-Backup-Staleness-Alarm 04:00, -SEO-Weekly 04:10 —
+    // 04:25 evita colidir com essa janela). O horário importa pouco: o Kit
+    // retém `created_at` por assinante, então o que ele minimiza é a janela
+    // em que alguém cadastra e é deletado do Kit antes de ser visto 1 vez.
+    schedule: { kind: "daily", hour: 4, minute: 25 },
+    // `--write` grava de verdade (a task agendada é o ÚNICO caller que passa
+    // essa flag por padrão — execução manual é dry-run, ver docstring de
+    // `diaria-subscribers-ingest-kit.ts`). Guard de escritor único (cópia de
+    // conflito do OneDrive em data/metrics/) roda dentro do próprio script,
+    // não aqui — mesmo padrão de `requiredFile` abaixo cobrindo só a
+    // ausência de `data/`.
+    guard: {
+      requiredFile: "diaria-subscribers/diaria-subscribers.db",
+      abortMessage:
+        "store do #6464 ausente (junction data/ do OneDrive caida?) -- captura do roster Kit abortada em vez de sair 0.",
+    },
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do #5220/#5217/#5311/#5494/#5607/#5704/#5754/#5845 acima) —
+    // armar via `scripts/setup-systemd-timers.ts` na checkout compartilhada
+    // (`helios`) é ação POSTERIOR do editor/coordenador, fora do alcance de
+    // um subagente implementador em worktree isolado.
+    issue: "#7174",
+  },
+  {
     name: "Diaria-Worker-Drift-Check",
     description: "alarme de drift entre o codigo publicado e o master de cada Worker",
     steps: [{ key: "check", script: "scripts/worker-drift-check.ts" }],

@@ -90,6 +90,21 @@
 import "dotenv/config";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import {
+  normalizeKey,
+  resolveGroupKey,
+  filterWindow,
+  parseSinceToEpochSeconds,
+  parseUntilToEpochSecondsExclusive,
+  type CohortWindow,
+} from "./lib/shared/attribution-keys.ts";
+
+// Re-exportadas de `scripts/lib/shared/attribution-keys.ts` (#7173, Passo 1)
+// — movidas pra lá para que `scripts/lib/metrics/acquisition-class.ts` (e
+// qualquer outro consumidor que precise delas SEM o `import "dotenv/config"`
+// deste arquivo na cadeia) possa importar direto do módulo puro. Nenhum
+// consumidor existente deste arquivo muda de import.
+export { normalizeKey, resolveGroupKey, filterWindow, parseSinceToEpochSeconds, parseUntilToEpochSecondsExclusive, type CohortWindow };
 
 const BEEHIIV_API = beehiivApiBase();
 const PER_PAGE = 100;
@@ -198,19 +213,9 @@ export interface EngagementOptions {
   minReceived?: number;
 }
 
-/**
- * Janela FECHADA de cadastro. Campos nomeados em vez de dois `number | null`
- * posicionais de propósito (achado do fleet review da PR #4751): as duas bordas
- * têm semânticas diferentes — uma inclusiva, outra exclusiva — e posicionais
- * adjacentes do mesmo tipo são trocáveis sem o compilador reclamar. Mesmo shape
- * já usado por `AggregateOptions` em `scripts/aggregate-costs.ts`.
- */
-export interface CohortWindow {
-  /** Epoch em segundos do início do dia de `--since`. Inclusivo. `null` = sem borda inferior. */
-  since: number | null;
-  /** Epoch em segundos do início do dia SEGUINTE ao de `--until`. Exclusivo. `null` = sem borda superior. */
-  untilExclusive: number | null;
-}
+// `CohortWindow` movida pra `scripts/lib/shared/attribution-keys.ts` (#7173,
+// Passo 1) — re-exportada no topo deste arquivo, mesmo shape já usado por
+// `AggregateOptions` em `scripts/aggregate-costs.ts`.
 
 export interface EngagementResult {
   groups: Record<string, GroupEngagement>;
@@ -235,89 +240,11 @@ export interface EngagementResult {
 // ---------------------------------------------------------------------------
 // Helpers puros — normalização, agrupamento, estatística
 // ---------------------------------------------------------------------------
-
-/**
- * Normaliza um valor de atribuição (utm_source ou referring_site):
- * null/undefined/"" → "__none__"; qualquer outro valor → lowercase trimmed.
- *
- * @pure
- */
-export function normalizeKey(raw: unknown): string {
-  if (raw == null) return "__none__";
-  const s = String(raw).trim().toLowerCase();
-  return s === "" ? "__none__" : s;
-}
-
-/**
- * Resolve a chave de grupo de um assinante: `utm_source` normalizado; se
- * ausente (__none__), cai para `referring_site` normalizado.
- *
- * @pure
- */
-export function resolveGroupKey(sub: Pick<EngagementSubscriber, "utm_source" | "referring_site">): string {
-  const utm = normalizeKey(sub.utm_source);
-  if (utm !== "__none__") return utm;
-  return normalizeKey(sub.referring_site);
-}
-
-/**
- * Converte "AAAA-MM-DD" no epoch (segundos, UTC) do INÍCIO daquele dia.
- * Lança se o formato for inválido — CLI guard trata a mensagem.
- *
- * @pure
- */
-function parseDayToEpochSeconds(day: string, flag: string): number {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day.trim());
-  if (!m) {
-    throw new Error(`${flag} inválido: "${day}" (esperado AAAA-MM-DD)`);
-  }
-  const [, y, mo, d] = m;
-  const ms = Date.UTC(Number(y), Number(mo) - 1, Number(d), 0, 0, 0, 0);
-  // `Date.UTC` NÃO devolve NaN para mês/dia fora de faixa — ele ROLA
-  // (Date.UTC(2026, 12, 45) = 2027-02-14). O regex aceita qualquer `\d{2}`,
-  // então sem esta verificação de ida-e-volta `--since 2026-13-45` era aceito
-  // em silêncio e media uma janela completamente diferente da pedida — e a
-  // mensagem "data não existe" abaixo era inalcançável. Achado ao estender
-  // este parser para `--until` (#4556).
-  const dt = new Date(ms);
-  if (
-    dt.getUTCFullYear() !== Number(y) ||
-    dt.getUTCMonth() !== Number(mo) - 1 ||
-    dt.getUTCDate() !== Number(d)
-  ) {
-    throw new Error(`${flag} inválido: "${day}" (data não existe)`);
-  }
-  return Math.floor(ms / 1000);
-}
-
-/**
- * Converte "AAAA-MM-DD" no epoch (segundos, UTC) do INÍCIO daquele dia — borda
- * INFERIOR inclusiva da janela. Lança se o formato ou a data for inválida; o
- * CLI guard trata a mensagem. Ver `parseDayToEpochSeconds` para o porquê da
- * verificação de ida-e-volta.
- *
- * @pure
- */
-export function parseSinceToEpochSeconds(since: string): number {
-  return parseDayToEpochSeconds(since, "--since");
-}
-
-/**
- * Converte "AAAA-MM-DD" no epoch (segundos, UTC) que serve de limite
- * superior EXCLUSIVO — o início do dia SEGUINTE.
- *
- * A exclusividade é detalhe interno; a semântica exposta ao usuário é
- * inclusiva: `--until 2026-08-02` inclui o dia 02 inteiro, até 23:59:59 UTC.
- * Somar 86400 a uma meia-noite UTC é seguro por duas razões independentes: UTC
- * não tem horário de verão, e o Unix time em que `Date`/`Date.UTC` operam por
- * definição NUNCA representa segundo bissexto — todo dia do calendário tem
- * exatamente 86400 nesse modelo, aconteça o que acontecer no tempo real.
- *
- * @pure
- */
-export function parseUntilToEpochSecondsExclusive(until: string): number {
-  return parseDayToEpochSeconds(until, "--until") + 86_400;
-}
+//
+// `normalizeKey`, `resolveGroupKey`, `parseSinceToEpochSeconds`,
+// `parseUntilToEpochSecondsExclusive` e `filterWindow` movidas pra
+// `scripts/lib/shared/attribution-keys.ts` (#7173, Passo 1) — importadas e
+// re-exportadas no topo deste arquivo. Nenhum consumidor existente muda.
 
 /**
  * Filtra assinantes com `created` >= sinceEpochSeconds (inclusivo na borda).
@@ -331,34 +258,6 @@ export function filterSince(
   sinceEpochSeconds: number | null,
 ): EngagementSubscriber[] {
   return filterWindow(subs, { since: sinceEpochSeconds, untilExclusive: null });
-}
-
-/**
- * Filtra assinantes por uma janela FECHADA de cadastro: `created` >= `since`
- * (inclusivo) e `created` < `untilExclusive`.
- *
- * Por que a janela fechada existe (#4556): com só `--since`, "a coorte de
- * lançamento 21/07–02/08" não é isolável — o recorte pega tudo de 21/07 pra
- * frente e mistura quem chegou depois, que é justamente o grupo de controle
- * contra o qual a coorte deveria ser comparada.
- *
- * Assinante sem `created` é excluído quando QUALQUER borda é informada — não
- * há como verificar a condição, e assumir presente enviesaria a métrica.
- *
- * @pure
- */
-export function filterWindow(
-  subs: EngagementSubscriber[],
-  window: CohortWindow,
-): EngagementSubscriber[] {
-  const { since, untilExclusive } = window;
-  if (since == null && untilExclusive == null) return subs;
-  return subs.filter((s) => {
-    if (typeof s.created !== "number") return false;
-    if (since != null && s.created < since) return false;
-    if (untilExclusive != null && s.created >= untilExclusive) return false;
-    return true;
-  });
 }
 
 /**

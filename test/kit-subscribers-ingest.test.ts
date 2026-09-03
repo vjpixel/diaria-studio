@@ -12,13 +12,17 @@ import {
   buildKitEventExternalId,
   verifyKitIngestion,
   ingestBroadcastAudience,
+  ingestKitRoster,
 } from "../scripts/lib/kit-subscribers-ingest.ts";
 import {
   openDiariaSubscribersDb,
   getSubscriberTimeline,
   findSubscriberIdsByEmail,
+  findSubscriberIdByAlias,
+  getSubscriptionsForSubscriber,
   getStoreCounts,
 } from "../scripts/lib/diaria-subscribers-db.ts";
+import type { KitSubscriberSummary } from "../scripts/lib/kit-subscribers.ts";
 
 describe("mapAudienceToEventType", () => {
   it("sent/delivered passam direto; opens/clicks viram singular (vocabulário do store)", () => {
@@ -130,6 +134,133 @@ describe("ingestBroadcastAudience", () => {
     ingestBroadcastAudience(db, 9, "clicks", ["a@x.com"], ts);
     assert.equal(getStoreCounts(db).subscribers, 1, "mesmo subscriber, resolvido 4x pelo mesmo alias");
     assert.equal(getStoreCounts(db).events, 4);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ingestKitRoster (#7174, F2 do épico #7172)
+// ---------------------------------------------------------------------------
+
+function makeSub(overrides: Partial<KitSubscriberSummary> = {}): KitSubscriberSummary {
+  return {
+    id: 1,
+    email_address: "leitor@example.com",
+    state: "active",
+    created_at: "2026-08-25T10:00:00.000Z",
+    fields: {},
+    ...overrides,
+  };
+}
+
+describe("ingestKitRoster", () => {
+  it("grava 1 subscriber + 1 subscription + 1 evento subscribe por assinante novo", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const result = ingestKitRoster(db, [makeSub()], "2026-09-02T04:25:00.000Z");
+    assert.equal(result.processed, 1);
+    assert.equal(result.subscriptionsWritten, 1);
+    assert.equal(result.subscribeEvents.newEvents, 1);
+    assert.equal(getStoreCounts(db).subscribers, 1);
+    assert.equal(getStoreCounts(db).subscriptions, 1);
+    db.close();
+  });
+
+  it("lê utm_* de `fields`, NUNCA de `attribution` — attribution nem é aceito no input", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestKitRoster(
+      db,
+      [
+        makeSub({
+          fields: {
+            utm_source: "sparkloop-upscribe",
+            utm_medium: "referral",
+            utm_campaign: "onda-3",
+            utm_channel: "boost",
+            referring_site: "www.alquimiaoperativa.news",
+            origem_cadastro: "poll",
+          },
+        }),
+      ],
+      "2026-09-02T04:25:00.000Z",
+    );
+    const subscriberId = findSubscriberIdByAlias(db, "kit", "1", "leitor@example.com");
+    assert.notEqual(subscriberId, null);
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId!);
+    assert.equal(sub.source, "sparkloop-upscribe");
+    assert.equal(sub.utm_medium, "referral");
+    assert.equal(sub.utm_campaign, "onda-3");
+    assert.equal(sub.utm_channel, "boost");
+    assert.equal(sub.referring_site, "www.alquimiaoperativa.news");
+    assert.equal(sub.origem_cadastro, "poll");
+    db.close();
+  });
+
+  it("entered_at vem de created_at; status vem de state; external_id vem de id", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestKitRoster(db, [makeSub({ id: 42, state: "inactive", created_at: "2025-09-02T00:00:00.000Z" })], "2026-09-02T04:25:00.000Z");
+    const subscriberId = findSubscriberIdByAlias(db, "kit", "42", "leitor@example.com");
+    assert.notEqual(subscriberId, null);
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId!);
+    assert.equal(sub.status, "inactive");
+    assert.equal(sub.entered_at, "2025-09-02T00:00:00.000Z");
+    assert.equal(sub.exited_at, null, "inactive ainda é membro da base — só o double opt-in não confirmou");
+    db.close();
+  });
+
+  it("cancelled/bounced/complained grava exitedAt e emite evento unsub", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const result = ingestKitRoster(db, [makeSub({ state: "cancelled" })], "2026-09-02T04:25:00.000Z");
+    assert.equal(result.unsubEvents.newEvents, 1);
+    const subscriberId = findSubscriberIdByAlias(db, "kit", "1", "leitor@example.com");
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId!);
+    assert.notEqual(sub.exited_at, null);
+    db.close();
+  });
+
+  it("re-execução no MESMO dia não duplica subscription nem event (idempotente)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestKitRoster(db, [makeSub()], "2026-09-02T04:25:00.000Z");
+    ingestKitRoster(db, [makeSub()], "2026-09-02T09:00:00.000Z");
+    assert.equal(getStoreCounts(db).subscribers, 1);
+    assert.equal(getStoreCounts(db).subscriptions, 1);
+    assert.equal(getStoreCounts(db).events, 1, "1 evento subscribe, nunca duplicado por re-execução no mesmo dia");
+    db.close();
+  });
+
+  it("re-execução no MESMO dia com state cancelled também não duplica o evento unsub", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestKitRoster(db, [makeSub({ state: "cancelled" })], "2026-09-02T04:25:00.000Z");
+    ingestKitRoster(db, [makeSub({ state: "cancelled" })], "2026-09-02T09:00:00.000Z");
+    assert.equal(getStoreCounts(db).events, 2, "1 subscribe + 1 unsub, nenhum duplicado");
+    db.close();
+  });
+
+  it("assinante que some da API numa próxima rodada permanece na série (linha antiga não é apagada)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestKitRoster(db, [makeSub({ id: 1 }), makeSub({ id: 2, email_address: "outro@example.com" })], "2026-09-02T04:25:00.000Z");
+    // 2ª execução: só o id=1 volta (id=2 "sumiu" da API — deletado do Kit).
+    ingestKitRoster(db, [makeSub({ id: 1 })], "2026-09-03T04:25:00.000Z");
+    assert.equal(getStoreCounts(db).subscribers, 2, "subscriber do id=2 continua no store — nunca apagado por ausência numa rodada");
+    db.close();
+  });
+
+  it("mudança de state gera evento novo sem apagar o anterior", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestKitRoster(db, [makeSub({ state: "active" })], "2026-09-02T04:25:00.000Z");
+    ingestKitRoster(db, [makeSub({ state: "cancelled" })], "2026-09-03T04:25:00.000Z");
+    const subscriberId = findSubscriberIdByAlias(db, "kit", "1", "leitor@example.com");
+    const timeline = getSubscriberTimeline(db, subscriberId!);
+    // 1 subscribe (idempotente entre as 2 rodadas, mesmo created_at) + 1 unsub novo.
+    assert.equal(timeline.filter((e) => e.type === "subscribe").length, 1);
+    assert.equal(timeline.filter((e) => e.type === "unsub").length, 1);
+    db.close();
+  });
+
+  it("email vazio é ignorado, não vira subscriber fantasma", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const result = ingestKitRoster(db, [makeSub({ email_address: "  " })], "2026-09-02T04:25:00.000Z");
+    assert.equal(result.subscriptionsWritten, 0);
+    assert.equal(getStoreCounts(db).subscribers, 0);
     db.close();
   });
 });

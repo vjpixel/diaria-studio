@@ -27,11 +27,9 @@
  * motivada pelo endpoint de tags que respondia 200 e silenciosamente não
  * fazia nada — ver `sync-apoio-nivel-beehiiv.ts`).
  *
- * `fields` no envelope de LEITURA (`KitSubscriberSummary.fields`) **não foi
- * confirmado ao vivo** — o #6047/#6091 só exercitaram `fields` no corpo de
- * ESCRITA (`POST`/`PATCH`). Assumido presente por simetria com a resposta de
- * escrita (que ecoa `fields`), mas reverificar contra uma listagem real
- * antes do 1º `--push` de `sync-apoio-nivel-kit.ts`.
+ * `fields` no envelope de LEITURA (`KitSubscriberSummary.fields`) —
+ * confirmado ao vivo em 02/09/2026 (#7174): drain de `status: "all"` (649
+ * registros) devolveu `fields` preenchido em 649/649.
  */
 
 import { kitFetch } from "./kit-client.ts";
@@ -48,9 +46,14 @@ export type KitSubscriberListStatus =
   | "all";
 
 /** Bloco `attribution` do subscriber quando pedido via `include[]=attribution`
- *  (#6425 Parte A) — medido ao vivo só pra quem entrou pelo form nativo
- *  hospedado no Kit; quem foi criado via API não carrega este bloco (fica
- *  `undefined`, ver `kit-attribution.ts::montarPlanoNativo`). */
+ *  (#6425 Parte A). **Correção #7174 (medido ao vivo 02/09/2026, 649
+ *  registros com `include[]=attribution`): o bloco VEM SEMPRE, inclusive
+ *  para quem foi criado via API (`source_type: "api_subscription"`,
+ *  `source_mechanism: "direct_api_call"`) — é o CONTEÚDO dele que é nulo
+ *  pra esse caso: `utm_source` 0/649, `utm_medium` 0/649, `utm_campaign`
+ *  0/649, `referrer` 4/649, `source_name` 8/649. Não é a fonte principal de
+ *  UTM (ver `AcquisitionClassInput`/`kit-subscribers-ingest.ts`, que lê de
+ *  `fields`, não deste bloco). */
 export interface KitSubscriberAttribution {
   referrer: string | null;
   utm_source: string | null;
