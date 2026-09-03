@@ -563,6 +563,75 @@ describe("ingestBeehiivRoster", () => {
     db.close();
   });
 
+  it("#7207: custom field origem_original tem precedência sobre os campos de topo (mesma regra de build-origem-map.ts #5842)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBeehiivRoster(
+      db,
+      [
+        makeRosterSub({
+          // Campos de topo já foram SOBRESCRITOS por uma reativação
+          // promocional — cenário que motivou o #5231/#5842.
+          utm_source: "brevo-diaria",
+          utm_medium: "reativacao",
+          utm_campaign: "score-alto",
+          referring_site: "",
+          custom_fields: [
+            {
+              name: "origem_original",
+              value: JSON.stringify({
+                utm_source: "instagram",
+                utm_medium: "bio-link",
+                utm_campaign: "lancamento",
+                referring_site: "www.instagram.com",
+                created: 1700000000,
+              }),
+            },
+          ],
+        }),
+      ],
+      "2026-09-02T04:25:00.000Z",
+    );
+    const subscriberId = findSubscriberIdByAlias(db, "beehiiv", "sub_1", "leitor@example.com");
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId!);
+    assert.equal(sub.utm_source, "instagram", "origem_original vence sobre o utm_source promocional de topo");
+    assert.equal(sub.source, "instagram", "legado `source` acompanha a mesma resolução");
+    assert.equal(sub.utm_medium, "bio-link");
+    assert.equal(sub.utm_campaign, "lancamento");
+    assert.equal(sub.referring_site, "www.instagram.com");
+    db.close();
+  });
+
+  it("#7207: sem origem_original, cai pros campos de topo (comportamento pré-#7207 preservado)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBeehiivRoster(db, [makeRosterSub({ utm_source: "linkedin" })], "2026-09-02T04:25:00.000Z");
+    const subscriberId = findSubscriberIdByAlias(db, "beehiiv", "sub_1", "leitor@example.com");
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId!);
+    assert.equal(sub.utm_source, "linkedin");
+    db.close();
+  });
+
+  it("#7207: sem origem_original NEM utm_source de topo, acquisition_source é o último fallback", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBeehiivRoster(
+      db,
+      [makeRosterSub({ utm_source: "", acquisition_source: "referral-program" })],
+      "2026-09-02T04:25:00.000Z",
+    );
+    const subscriberId = findSubscriberIdByAlias(db, "beehiiv", "sub_1", "leitor@example.com");
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId!);
+    assert.equal(sub.utm_source, "referral-program");
+    db.close();
+  });
+
+  it("#7207: acquisition_channel popula utm_channel (Beehiiv não tem campo utm_channel nativo)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBeehiivRoster(db, [makeRosterSub({ acquisition_channel: "paid-social" })], "2026-09-02T04:25:00.000Z");
+    const subscriberId = findSubscriberIdByAlias(db, "beehiiv", "sub_1", "leitor@example.com");
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId!);
+    assert.equal(sub.utm_channel, "paid-social");
+    db.close();
+  });
+
   it("status inactive grava exitedAt e emite evento unsub", () => {
     const db = openDiariaSubscribersDb(":memory:");
     const result = ingestBeehiivRoster(db, [makeRosterSub({ status: "inactive" })], "2026-09-02T04:25:00.000Z");

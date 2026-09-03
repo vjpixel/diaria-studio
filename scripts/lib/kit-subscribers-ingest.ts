@@ -229,13 +229,18 @@ const KIT_EXITED_STATES: ReadonlySet<string> = new Set(["cancelled", "bounced", 
  * `upsertSubscription`/`recordEvent`. Não classifica (F1/F4 fazem isso na
  * leitura); grava a atribuição CRUA como veio do Kit.
  *
- * **De onde sai cada campo (contrato explícito, #7174):**
+ * **De onde sai cada campo (contrato explícito, #7174; `utm_source`/
+ * `utm_term`/`utm_content` somados em #7207):**
  * - `external_id` ← `id`; `status` ← `state`; `entered_at` ← `created_at`;
  *   identidade ← `email_address`.
- * - `utm_source`/`utm_medium`/`utm_campaign`/`utm_channel`/`referring_site`/
- *   `origem_cadastro` ← **`fields` (custom fields), NUNCA `attribution`**
- *   (o bloco `attribution` vem sempre mas com UTM nulo — ver a docstring
- *   corrigida de `KitSubscriberAttribution` em `kit-subscribers.ts`).
+ * - `utm_source`/`utm_medium`/`utm_campaign`/`utm_channel`/`utm_term`/
+ *   `utm_content`/`referring_site`/`origem_cadastro` ← **`fields` (custom
+ *   fields), NUNCA `attribution`** (o bloco `attribution` vem sempre mas
+ *   com UTM nulo — ver a docstring corrigida de `KitSubscriberAttribution`
+ *   em `kit-subscribers.ts`). `source` (legado, #7174) continua gravando o
+ *   mesmo `fields.utm_source` que `utmSource` (coluna nova, #7207) —
+ *   duplicado de propósito, ver docstring de `SubscriptionFields.utmSource`
+ *   em `diaria-subscribers-db.ts` pra por que as 2 colunas coexistem.
  *
  * Idempotente: `upsertSubscription` faz `ON CONFLICT DO UPDATE` (nunca
  * duplica linha), `recordEvent` faz `INSERT OR IGNORE` sobre a chave
@@ -292,6 +297,9 @@ export function ingestKitRoster(
         utmChannel: fields.utm_channel ?? null,
         referringSite: fields.referring_site ?? null,
         origemCadastro: fields.origem_cadastro ?? null,
+        utmSource: fields.utm_source ?? null,
+        utmTerm: fields.utm_term ?? null,
+        utmContent: fields.utm_content ?? null,
       },
       now,
     );

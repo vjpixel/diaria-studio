@@ -144,6 +144,19 @@ export function isPlatform(value: unknown): value is Platform {
  * bounce por `sent − delivered` na LEITURA em vez de gravar um evento
  * `bounce` sintético que a fonte nunca confirmou individualmente.
  */
+/**
+ * `"contest_reply"`/`"poll_vote"` (#7209, fatia 14 do épico #7163) — os 2
+ * únicos tipos que representam AÇÃO DELIBERADA da pessoa, não telemetria de
+ * plataforma. Entram como tipos NOVOS, não como `subtype` de um tipo
+ * existente (decisão explícita, diferente do bounce hard/soft do #7203):
+ * `subtype` é refinamento de um mesmo FATO (bounce continua sendo bounce, só
+ * varia a dureza); resposta ao concurso e voto do "É IA?" não são
+ * refinamento de nenhum eixo já modelado (`open`/`click`/etc.) — são eixos
+ * próprios, e `computeReceivedForPlatform`/`leitor-store.ts` já leem `type`
+ * literal pra derivar métricas (ver comentário da coluna `subtype` acima) —
+ * um tipo novo nunca colide com esse cálculo, um `subtype` genérico correria
+ * risco de ser mal-interpretado como refinamento de `bounce`.
+ */
 export const EVENT_TYPES = [
   "sent",
   "delivered",
@@ -153,6 +166,8 @@ export const EVENT_TYPES = [
   "unsub",
   "bounce",
   "complaint",
+  "contest_reply",
+  "poll_vote",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -178,6 +193,19 @@ export interface SubscriptionFields {
   utmChannel?: string | null;
   referringSite?: string | null;
   origemCadastro?: string | null;
+  /**
+   * Colunas adicionadas em #7207 (fatia 12 do épico #7163) —
+   * `utmSource` é uma coluna DEDICADA, distinta de `source` acima: `source`
+   * é o campo legado (#7174), com semântica que já varia por plataforma
+   * (Kit grava o próprio `utm_source` ali; Brevo grava `brevo_list:{id}`,
+   * um proxy sem UTM real) — introduzir uma coluna nova em vez de mudar a
+   * semântica de `source` evita quebrar quem já lê `source` esperando o
+   * comportamento de hoje. `utmTerm`/`utmContent` completam os 2 campos do
+   * conjunto UTM padrão de 6 que nenhuma plataforma populava ainda.
+   */
+  utmSource?: string | null;
+  utmTerm?: string | null;
+  utmContent?: string | null;
 }
 
 export interface SubscriberEvent {
@@ -327,6 +355,13 @@ const SUBSCRIPTION_MIGRATION_COLUMNS: ReadonlyArray<{ name: string; ddl: string 
   { name: "utm_channel", ddl: "ALTER TABLE subscription ADD COLUMN utm_channel TEXT" },
   { name: "referring_site", ddl: "ALTER TABLE subscription ADD COLUMN referring_site TEXT" },
   { name: "origem_cadastro", ddl: "ALTER TABLE subscription ADD COLUMN origem_cadastro TEXT" },
+  // #7207: completa o conjunto UTM padrão de 6 campos — `utm_source` é
+  // coluna NOVA e DEDICADA (ver docstring de `SubscriptionFields.utmSource`
+  // acima pra por que não reusa `source`); `utm_term`/`utm_content` fecham
+  // os 2 que faltavam.
+  { name: "utm_source", ddl: "ALTER TABLE subscription ADD COLUMN utm_source TEXT" },
+  { name: "utm_term", ddl: "ALTER TABLE subscription ADD COLUMN utm_term TEXT" },
+  { name: "utm_content", ddl: "ALTER TABLE subscription ADD COLUMN utm_content TEXT" },
 ];
 
 /**
@@ -667,8 +702,9 @@ export function upsertSubscription(
   db.prepare(
     `INSERT INTO subscription
        (subscriber_id, platform, status, entered_at, exited_at, source,
-        utm_medium, utm_campaign, utm_channel, referring_site, origem_cadastro, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        utm_medium, utm_campaign, utm_channel, referring_site, origem_cadastro,
+        utm_source, utm_term, utm_content, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(subscriber_id, platform) DO UPDATE SET
        status          = excluded.status,
        entered_at      = excluded.entered_at,
@@ -679,6 +715,9 @@ export function upsertSubscription(
        utm_channel     = excluded.utm_channel,
        referring_site  = excluded.referring_site,
        origem_cadastro = excluded.origem_cadastro,
+       utm_source      = excluded.utm_source,
+       utm_term        = excluded.utm_term,
+       utm_content     = excluded.utm_content,
        updated_at      = excluded.updated_at`,
   ).run(
     subscriberId,
@@ -692,6 +731,9 @@ export function upsertSubscription(
     fields.utmChannel ?? null,
     fields.referringSite ?? null,
     fields.origemCadastro ?? null,
+    fields.utmSource ?? null,
+    fields.utmTerm ?? null,
+    fields.utmContent ?? null,
     now,
   );
 }
@@ -1067,6 +1109,9 @@ export interface SubscriptionRecord {
   utm_channel: string | null;
   referring_site: string | null;
   origem_cadastro: string | null;
+  utm_source: string | null;
+  utm_term: string | null;
+  utm_content: string | null;
   updated_at: string;
 }
 
@@ -1081,10 +1126,87 @@ export function getSubscriptionsForSubscriber(
   return db
     .prepare(
       `SELECT platform, status, entered_at, exited_at, source,
-              utm_medium, utm_campaign, utm_channel, referring_site, origem_cadastro, updated_at
+              utm_medium, utm_campaign, utm_channel, referring_site, origem_cadastro,
+              utm_source, utm_term, utm_content, updated_at
        FROM subscription WHERE subscriber_id = ?`,
     )
     .all(subscriberId) as unknown as SubscriptionRecord[];
+}
+
+/**
+ * Resolução de atribuição CROSS-plataforma pra 1 subscriber (#7207,
+ * checklist "precedência e proveniência explícitas") — quando a mesma
+ * pessoa tem `subscription` em mais de uma plataforma (ex: entrou pela
+ * Beehiiv, foi migrada pro Kit) e as duas trazem `utm_source` divergente,
+ * decide qual BUNDLE de campos UTM vale, sem misturar campos de
+ * plataformas diferentes na mesma resposta (frankenstein de atribuição).
+ *
+ * **Precedência fixa, documentada aqui — decisão explícita (#5321,
+ * "perguntar é exceção", critério 2 não bate: não há experiência de LEITOR
+ * em jogo, é telemetria interna):** `kit` > `beehiiv` > `brevo_diaria`,
+ * do mais rico pro mais pobre. Kit expõe `include=["attribution"]` +
+ * custom fields de UTM dedicados (`utm_source`/`utm_medium`/... nativos,
+ * `kit-subscribers-ingest.ts`); Beehiiv só tem o campo nativo + o custom
+ * field `origem_original` reconstruído (`beehiiv-subscribers-ingest.ts`);
+ * Brevo não tem UTM real — `source` ali é `brevo_list:{id}`, um PROXY de
+ * lista, nunca atribuição de aquisição de verdade. A 1ª plataforma (nessa
+ * ordem, só entre as presentes em `subscriptions`) com `utm_source`
+ * NÃO-nulo vence — leva TODOS os seus campos UTM juntos, nunca mistura
+ * `utm_medium` de uma plataforma com `utm_source` de outra.
+ *
+ * Pura — não abre `db`, só decide sobre a lista já lida (ex: via
+ * `getSubscriptionsForSubscriber`). `platform: null` quando nenhuma
+ * `subscription` presente tem `utm_source`.
+ */
+export interface ResolvedAttribution {
+  platform: Platform | null;
+  utmSource: string | null;
+  utmMedium: string | null;
+  utmCampaign: string | null;
+  utmChannel: string | null;
+  utmTerm: string | null;
+  utmContent: string | null;
+  referringSite: string | null;
+  /** Explica a escolha — "vazio" (nenhuma subscription com utm_source) ou
+   *  "{platform} (precedência {n}/{total})" pra rastreabilidade. */
+  provenance: string;
+}
+
+const ATTRIBUTION_PRECEDENCE: readonly Platform[] = ["kit", "beehiiv", "brevo_diaria"];
+
+export function resolveSubscriberAttribution(
+  subscriptions: readonly Pick<
+    SubscriptionRecord,
+    "platform" | "utm_source" | "utm_medium" | "utm_campaign" | "utm_channel" | "utm_term" | "utm_content" | "referring_site"
+  >[],
+): ResolvedAttribution {
+  const byPlatform = new Map(subscriptions.map((s) => [s.platform, s]));
+  for (const platform of ATTRIBUTION_PRECEDENCE) {
+    const sub = byPlatform.get(platform);
+    if (!sub || !sub.utm_source) continue;
+    return {
+      platform,
+      utmSource: sub.utm_source,
+      utmMedium: sub.utm_medium ?? null,
+      utmCampaign: sub.utm_campaign ?? null,
+      utmChannel: sub.utm_channel ?? null,
+      utmTerm: sub.utm_term ?? null,
+      utmContent: sub.utm_content ?? null,
+      referringSite: sub.referring_site ?? null,
+      provenance: `${platform} (precedência ${ATTRIBUTION_PRECEDENCE.indexOf(platform) + 1}/${ATTRIBUTION_PRECEDENCE.length})`,
+    };
+  }
+  return {
+    platform: null,
+    utmSource: null,
+    utmMedium: null,
+    utmCampaign: null,
+    utmChannel: null,
+    utmTerm: null,
+    utmContent: null,
+    referringSite: null,
+    provenance: "vazio (nenhuma subscription com utm_source)",
+  };
 }
 
 export interface SubscriberAttributeRecord {
