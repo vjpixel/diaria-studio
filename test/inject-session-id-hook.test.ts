@@ -486,6 +486,87 @@ describe("detectChainedSessionIdRisk (#7212)", () => {
   });
 });
 
+describe("invocação vs menção (#7264/#7281)", () => {
+  // Casos NEGATIVOS — o nome do script aparece como MENÇÃO (prosa, caminho
+  // de arquivo em comando de leitura), nunca como chamada. Devem passar,
+  // mesmo quando o comando "parece" encadeado (pipe pro grep, ou texto
+  // livre com `;`/newline dentro de um argumento entre aspas).
+
+  it("#7281 caso real — git show REVSPEC:path | grep (menção, não invocação) → null", () => {
+    assert.equal(
+      detectChainedSessionIdRisk(
+        'git show "origin/master:scripts/lib/session-registry.ts" | grep -c "chained"',
+      ),
+      null,
+    );
+  });
+
+  it("#7281 variante — grep -rn NOME scripts/ | wc -l (menção em argumento de grep) → null", () => {
+    assert.equal(
+      detectChainedSessionIdRisk('grep -rn "session-registry.ts" scripts/ | wc -l'),
+      null,
+    );
+  });
+
+  it("#7281 variante — cat/git log citando o script em pipeline → null", () => {
+    assert.equal(
+      detectChainedSessionIdRisk('cat docs/notas.md | grep "session-registry.ts"'),
+      null,
+    );
+    assert.equal(
+      detectChainedSessionIdRisk("git log -- scripts/lib/session-registry.ts | head -5"),
+      null,
+    );
+  });
+
+  it(
+    "#7264 caso real — gh issue create --body citando o script em prosa, com ';' e newline " +
+      "dentro do texto entre aspas (o que faz isChainedCommand ver risco) → null",
+    () => {
+      const command =
+        'gh issue create --title "Guard falso positivo" --body "A docstring de ' +
+        "scripts/lib/session-registry.ts proíbe --force no claim-issue;\n" +
+        'documentar isso evita repetir o erro."';
+      assert.equal(detectChainedSessionIdRisk(command), null);
+    },
+  );
+
+  it("needsSessionId (caminho standalone) também não injeta por menção — só citação, não invocação", () => {
+    assert.equal(
+      needsSessionId('git show "origin/master:scripts/lib/session-registry.ts"'),
+      false,
+    );
+  });
+
+  // Casos POSITIVOS — invocação real dentro de comando encadeado. O guard
+  // do #7212 tem que continuar bloqueando estes, sem exceção — é o caso
+  // que motivou o guard (erro engolido por redirect/saída concorrente).
+
+  it("#7212 continua bloqueando — git checkout && npx tsx session-registry.ts claim-issue", () => {
+    const risk = detectChainedSessionIdRisk(
+      "git checkout master && npx tsx scripts/lib/session-registry.ts claim-issue --kind overnight --issue 42",
+    );
+    assert.notEqual(risk, null);
+    assert.match(risk, /encadead/i);
+  });
+
+  it("#7212 continua bloqueando — for loop com unclaim-issue engolido por > /dev/null 2>&1 (caso real da issue original)", () => {
+    const risk = detectChainedSessionIdRisk(
+      'for i in 7175 7176 7177; do npx tsx scripts/lib/session-registry.ts unclaim-issue ' +
+        '--kind overnight --issue $i > /dev/null 2>&1; echo "unclaim $i"; done',
+    );
+    assert.notEqual(risk, null);
+    assert.match(risk, /encadead/i);
+  });
+
+  it("#7212 continua bloqueando — overnight-session-marker.ts --start | tail -3 (invocação real, não menção)", () => {
+    const risk = detectChainedSessionIdRisk(
+      "npx tsx scripts/overnight-session-marker.ts --start 2>&1 | tail -3",
+    );
+    assert.notEqual(risk, null);
+  });
+});
+
 describe("CLI end-to-end — harness real via stdin (#5161 fleet review item 10)", () => {
   it("PreToolUse Bash real (payload via stdin) → injeta --session-id no updatedInput.command emitido", () => {
     const payload = {
@@ -746,6 +827,28 @@ describe("CLI end-to-end — harness real via stdin (#5161 fleet review item 10)
       assert.equal(output.hookSpecificOutput.hookEventName, "PreToolUse");
       assert.equal(output.hookSpecificOutput.permissionDecision, "deny");
       assert.match(output.hookSpecificOutput.permissionDecisionReason, /encadead/i);
+    },
+  );
+
+  it(
+    "#7281 caso real via stdin real — git show REVSPEC:path | grep (menção, não invocação) → " +
+      "segue rodando normalmente, nunca deny (reprodução exata do repro da issue)",
+    () => {
+      const payload = {
+        session_id: "sess-real-abc",
+        tool_name: "Bash",
+        tool_input: {
+          command: 'git show "origin/master:scripts/lib/session-registry.ts" | grep -c "chained"',
+        },
+      };
+      const result = spawnSync(process.execPath, [hookPath], {
+        input: JSON.stringify(payload),
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 0);
+      assert.equal(result.stderr, "");
+      assert.equal(result.stdout.trim(), "");
     },
   );
 

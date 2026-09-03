@@ -50,6 +50,20 @@
 // (#5751 item 18 segue valendo) — só troca "deixar passar sem a flag,
 // torcendo pra alguém notar o exit 1" por "recusar a chamada, na hora".
 //
+// #7264/#7281: o #7212 casava o NOME do script em qualquer posição da
+// string (`command.includes(...)`) — inclusive dentro de prosa (`gh issue
+// create --body "... cita session-registry.ts ..."`, #7264) ou como
+// caminho de arquivo num comando de leitura pura (`git show
+// "rev:scripts/lib/session-registry.ts" | grep ...`, #7281), casos em que
+// não há invocação nenhuma. `isScriptInvoked` (perto de
+// `matchesInjectableTarget` abaixo) restringe o match a "nome do script
+// logo depois de `npx tsx`/`tsx`/`node`" — invocação de verdade, não
+// menção — pra QUALQUER caminho que decida se um alvo foi citado (injeção
+// standalone E bloqueio de comando encadeado, os dois passam por
+// `matchesInjectableTarget`). Continua bloqueando o caso real do #7212
+// (script realmente invocado dentro de um bloco encadeado); só deixou de
+// bloquear citação em texto.
+//
 // #5161 fleet review item 4: `is-claimed` ENTRA em `INJECTABLE_SUBCOMMANDS`
 // (renomeada de `WRITE_SUBCOMMANDS` — deixou de ser só sobre escrita) mesmo
 // sendo leitura, porque ela recebe `--session-id` como `excludeSessionId`
@@ -177,16 +191,48 @@ export function isChainedCommand(command) {
 }
 
 /**
+ * #7264/#7281: heurística "invocação vs menção". `command.includes(nome)`
+ * (comportamento anterior a este fix) casava o nome do script em QUALQUER
+ * posição da string — inclusive dentro de prosa citando o script (corpo de
+ * `gh issue create --body "... a docstring de session-registry.ts proíbe
+ * ..."`, #7264) ou como caminho de arquivo em comando de leitura pura
+ * (`git show "origin/master:scripts/lib/session-registry.ts" | grep ...`,
+ * `grep -rn "session-registry.ts" scripts/`, #7281). Nenhum dos dois
+ * EXECUTA o script — não há chamada nenhuma pra `--session-id` proteger.
+ *
+ * Heurística mínima sugerida em ambas as issues, aplicada aqui: só conta
+ * como invocação quando o nome do arquivo aparece logo depois de um
+ * executor conhecido (`npx tsx`, `tsx` ou `node`) — é assim que TODA
+ * chamada real a estes scripts aparece no repo (ver skills `/diaria-*`).
+ * Não blinda contra todo texto adversarial possível (uma citação em prosa
+ * que reproduzisse literalmente "npx tsx .../session-registry.ts" ainda
+ * casaria) — aceito: o alvo é precisão nos casos reais batidos ao vivo,
+ * não uma blindagem completa contra qualquer string (mesmo trade-off que
+ * as duas issues descrevem — não afrouxar o guard, só o critério de match).
+ */
+function isScriptInvoked(command, targetName) {
+  const escaped = targetName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`(?:^|[\\s;&|])(?:npx\\s+tsx|tsx|node)\\s+\\S*${escaped}`, "i");
+  return pattern.test(command);
+}
+
+/**
  * Casa `command` contra `SESSION_ID_TARGETS` e decide se PRECISARIA de
  * `--session-id` — independente de o comando estar encadeado ou não.
  * Extraído de `needsSessionId` (#7212) porque a checagem de bloqueio
  * (`detectChainedSessionIdRisk` abaixo) precisa da MESMA lógica de
  * casamento de alvo, mas justamente no caso em que `isChainedCommand`
  * é `true` — o oposto do early-return que `needsSessionId` aplica.
+ *
+ * #7264/#7281: o gate de entrada usa `isScriptInvoked` (posição de
+ * execução), não mais `command.includes` (substring em qualquer posição) —
+ * `target.needsSessionId(command)` continua varrendo o comando INTEIRO em
+ * busca do subcomando (isso nunca foi o problema; o problema era casar o
+ * NOME do script fora de posição de chamada).
  */
 function matchesInjectableTarget(command) {
   for (const target of SESSION_ID_TARGETS) {
-    if (command.includes(target.match)) return target.needsSessionId(command);
+    if (isScriptInvoked(command, target.match)) return target.needsSessionId(command);
   }
   return false;
 }
