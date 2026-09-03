@@ -131,6 +131,26 @@ systemctl --user status onedrive     # confirma Restart=always no bloco [Service
 
 `systemctl --user cat onedrive.service` mostra o unit original + o override mesclados, útil para confirmar que o drop-in foi aplicado sem editar o arquivo do pacote.
 
+## Item 5 — Há DOIS detectores de sync degradado, e eles podem discordar (#7300)
+
+Quem investiga "o sync estava fora naquela hora?" precisa olhar duas fontes. Elas nasceram independentes, cobrem a mesma classe de falha por caminhos diferentes, e têm limiares próprios — então **discordar é o comportamento esperado, não sinal de bug em nenhuma das duas**.
+
+| | Alarme deste doc (`onedrive-sync-alarm.ts`) | `assessCrossMachineSyncFreshness` (`session-registry.ts`, #7169) |
+|---|---|---|
+| Quando roda | Agendado, independente de haver sessão | Síncrono, dentro do `merge-lock-acquire` |
+| O que observa | `systemctl is-active` + mtime do canário | `lastHeartbeat` de sessão ativa de OUTRA máquina |
+| Limiar | 6h (`--tolerance-hours`, default) | 10min (`CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS`) |
+| Efeito | E-mail / issue | Aviso no terminal de quem vai mergear |
+
+**As duas formas de discordância, e o que cada uma significa:**
+
+- **Aviso de merge aceso, alarme mudo** — o caso comum. Vem do fator ~36 entre os limiares: uma janela de 20min de sync morto cruza os 10min e não chega perto das 6h. Não é falso positivo do aviso nem falha do alarme.
+- **Alarme aceso, aviso de merge mudo** — acontece quando não há sessão de outra máquina registrada. `assessCrossMachineSyncFreshness` só enxerga sync através de heartbeat alheio; sem peer, ela não tem o que medir e fica em silêncio mesmo com o sync completamente fora.
+
+**Nenhum dos dois é "o certo", e silêncio de qualquer um deles nunca é evidência de que o sync está saudável.** Ao reconstruir uma janela de incidente, cheque as duas — e, se elas divergirem, a divergência em si já localiza o intervalo.
+
+Por que não fundir: um é sensível e local à decisão de merge, o outro é lento e vale mesmo sem ninguém trabalhando. Unificar limiar ou mecanismo pioraria os dois.
+
 ## Relacionadas
 
-#5526 (rodada que sofreu o skip silencioso), #5227 (migração de `data/snippets/` — mesmo junction OneDrive), #5112/#5339 (mecanismo de alarme→issue reusado aqui).
+#5526 (rodada que sofreu o skip silencioso), #5227 (migração de `data/snippets/` — mesmo junction OneDrive), #5112/#5339 (mecanismo de alarme→issue reusado aqui), #7169 (o segundo detector), #7300 (cross-referência entre os dois).

@@ -3040,6 +3040,31 @@ export const CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS = 10 * 60 * 1000;
  * degradado, este registro pode não refletir o estado real daquela
  * máquina agora". Sessões da PRÓPRIA máquina nunca entram (leitura local,
  * sem sync no caminho — não há o que avisar).
+ *
+ * ─── Existe um SEGUNDO detector de sync degradado (#7300) ──────────────
+ *
+ * `scripts/lib/onedrive-sync-alarm.ts` cobre a mesma classe de falha por
+ * outro caminho. Os dois são úteis e NÃO devem ser fundidos — mas quem
+ * investigar "o sync estava fora?" precisa saber que há duas fontes, e por
+ * que elas podem discordar sobre a mesma janela de tempo:
+ *
+ * | | esta função | `onedrive-sync-alarm.ts` |
+ * |---|---|---|
+ * | quando roda | síncrono, no `merge-lock-acquire` | agendado, independente de sessão |
+ * | o que observa | `lastHeartbeat` de sessão de OUTRA máquina | `systemctl is-active` + mtime de um canário |
+ * | limiar | 10min (`CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS`) | 6h (`--tolerance-hours`, default) |
+ * | efeito | aviso no terminal de quem vai mergear | e-mail/issue |
+ *
+ * **A discordância esperada vem do fator ~36 entre os limiares**, e é
+ * assimétrica: uma janela de 20min de sync morto acende ESTE aviso e deixa
+ * o alarme em silêncio (ainda dentro da tolerância de 6h). O inverso —
+ * alarme aceso e este aviso mudo — acontece quando não há sessão de outra
+ * máquina registrada, porque esta função só enxerga sync através de
+ * heartbeat alheio: sem peer, ela não tem o que medir.
+ *
+ * Nenhum dos dois é "o certo": este é sensível e local à decisão de merge;
+ * o outro é lento e independente de haver alguém trabalhando. Um silêncio
+ * aqui NUNCA é evidência de que o sync está saudável.
  */
 export function assessCrossMachineSyncFreshness(
   sessions: readonly ActiveSessionRecord[],

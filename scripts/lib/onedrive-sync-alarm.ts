@@ -12,6 +12,33 @@
  * da #5526 numa rodada overnight que dependia de um arquivo escrito por
  * outra máquina.
  *
+ * ─── Existe um SEGUNDO detector de sync degradado (#7300) ──────────────
+ *
+ * `assessCrossMachineSyncFreshness` (`scripts/lib/session-registry.ts`,
+ * #7169) cobre a mesma classe de falha por outro caminho — nasceu citando
+ * como motivação "onedrive.service morreu em silêncio no helios por 73min,
+ * sem alarme", que é literalmente o domínio deste módulo. Os dois são
+ * úteis e NÃO devem ser fundidos (um é síncrono no momento da decisão de
+ * merge; o outro roda agendado, independente de haver sessão) — mas quem
+ * investigar "o sync estava fora?" precisa saber que há duas fontes, e por
+ * que elas podem discordar sobre a mesma janela de tempo:
+ *
+ * | | este alarme | `assessCrossMachineSyncFreshness` |
+ * |---|---|---|
+ * | quando roda | agendado, independente de sessão | síncrono, no `merge-lock-acquire` |
+ * | o que observa | `systemctl is-active` + mtime do canário | `lastHeartbeat` de sessão de OUTRA máquina |
+ * | limiar | 6h (`--tolerance-hours`, default) | 10min (`CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS`) |
+ * | efeito | e-mail/issue | aviso no terminal de quem vai mergear |
+ *
+ * **A discordância esperada vem do fator ~36 entre os limiares**, e é
+ * assimétrica: uma janela de 20min de sync morto acende o aviso de lá e
+ * deixa ESTE alarme em silêncio (dentro da tolerância). O inverso — este
+ * alarme aceso e o aviso de lá mudo — acontece quando não há sessão de
+ * outra máquina registrada: aquela função só enxerga sync através de
+ * heartbeat alheio, e sem peer não tem o que medir. Nenhum dos dois é "o
+ * certo"; um silêncio de qualquer um dos lados nunca é evidência de sync
+ * saudável.
+ *
  * Dois sinais INDEPENDENTES, mesmo padrão de `clarice-postmaster-alarm.ts`
  * (dois checks numa mesma execução, cada achado com fingerprint próprio):
  *
