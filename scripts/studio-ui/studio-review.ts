@@ -93,6 +93,7 @@ import {
   checkSectionCounts,
   lintNewsletter,
   checkNoXmlArtifacts,
+  checkBannedLexicon,
 } from "../lint-newsletter-md.ts";
 // #4077: guard de tool-call-artifact vazado no fim do arquivo — mesma
 // definição de padrão usada pelo lint acima (`checkNoXmlArtifacts`) E pelo
@@ -114,6 +115,7 @@ import {
   lintCredentialBio,
   lintAntithesisReveal,
   lintTrailingEditorialHook,
+  checkBannedLexicon as checkSocialBannedLexicon,
 } from "../lint-social-md.ts";
 import { validateLancamentos, loadToolAllowlist } from "../validate-lancamentos.ts";
 // #6447 Fatia 1 (achado 4): o Studio não rodava os mesmos 2 lints
@@ -667,6 +669,7 @@ function lintReviewed(md: string, rootDir: string, editionDir: string): LintRepo
       return { ok: placement.ok && orphanGaps.length === 0, placement, orphanGaps };
     }),
     runCheck("no-xml-artifacts", "Sem tag de tool-call grudada no fim do arquivo (#4077)", true, () => checkNoXmlArtifacts(md)),
+    runCheck("banned-lexicon", "Sem vocabulário banido — ex: 'agentivo' em vez de 'agêntico' (#7260)", true, () => checkBannedLexicon(md)),
     // #6447 Fatia 1 (achado 4): faltavam no Studio, apesar de GATE-BLOCKING
     // no gate real (orchestrator-stage-4.md §4c.2).
     runCheck("domain-diversity", "Máx. 2 URLs do mesmo domínio registrável (#5735)", true, () => validateDomainDiversity(md)),
@@ -735,6 +738,9 @@ function lintSocial(md: string): LintReport {
       const r = lintTrailingEditorialHook(md);
       return { ...r, ok: r.matches.length === 0 };
     }),
+    runCheck("banned-lexicon", "Sem vocabulário banido — ex: 'agentivo' em vez de 'agêntico' (#7260)", true, () =>
+      checkSocialBannedLexicon(md),
+    ),
   ];
   return { ok: checks.every((c) => !c.blocking || c.ok), checks, skipped };
 }

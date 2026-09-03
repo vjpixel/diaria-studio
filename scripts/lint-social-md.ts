@@ -103,6 +103,11 @@ import {
   type NoXmlArtifactsError,
   type NoXmlArtifactsReport,
 } from "./lib/lint-checks/no-xml-artifacts.ts"; // #4118 finding 2 (#4077): mesmo backstop do lint-newsletter-md.ts, agora também em 03-social.md
+import {
+  checkBannedLexicon,
+  type BannedLexiconError,
+  type BannedLexiconReport,
+} from "./lib/lint-checks/banned-lexicon.ts"; // #7260: mesmo backstop do lint-newsletter-md.ts, agora também em 03-social.md
 
 export type { LintError };
 export { extractPlatformSection, parseDestaqueHeaders, lintLinkedinCTAs, lintFacebookCTAs };
@@ -139,6 +144,8 @@ export type { ScopedCoverageResult };
 export { checkScopedHumanizerCoverage };
 export { checkNoXmlArtifacts };
 export type { NoXmlArtifactsError, NoXmlArtifactsReport };
+export { checkBannedLexicon };
+export type { BannedLexiconError, BannedLexiconReport };
 
 // ---------------------------------------------------------------------------
 // #5416 — Modo agregador `--stage 4 --json`
@@ -231,6 +238,12 @@ export function runStage4SocialLintReport(editionDir: string): SocialStageLintRe
 
   runSocialCheckSafely(push, "no-xml-artifacts", "#4077", "gate-blocking", () =>
     checkNoXmlArtifacts(md),
+  );
+
+  // #7260: léxico banido ("agentivo" → "agêntico") — GATE-BLOCKING, mesmo
+  // backstop já aplicado a 02-reviewed.md (lint-newsletter-md.ts).
+  runSocialCheckSafely(push, "banned-lexicon", "#7260", "gate-blocking", () =>
+    checkBannedLexicon(md),
   );
 
   // #2526/#4352: `lintAntithesisReveal`/`lintTrailingEditorialHook` sempre
@@ -385,7 +398,8 @@ function main(): void {
         "  ou: lint-social-md.ts --check no-antithesis-reveal --md <path>\n" +
         "  ou: lint-social-md.ts --check no-trailing-editorial-hook --md <path>\n" +
         "  ou: lint-social-md.ts --check platform-headers-unicos --md <path>\n" +
-        "  ou: lint-social-md.ts --check no-xml-artifacts --md <path>",
+        "  ou: lint-social-md.ts --check no-xml-artifacts --md <path>\n" +
+        "  ou: lint-social-md.ts --check banned-lexicon --md <path>",
     );
     process.exit(2);
   }
@@ -672,6 +686,24 @@ function main(): void {
       console.error(
         `\nFix: remova o trecho de tag XML solta do fim de ${args.md} — nunca é markdown editorial legítimo (ver #4077).`,
       );
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check banned-lexicon (#7260) — mesmo backstop GATE-BLOCKING já
+  // aplicado a 02-reviewed.md em lint-newsletter-md.ts: vocabulário PROIBIDO
+  // sem exceção legítima (ex: "agentivo" em vez de "agêntico").
+  if (args.check === "banned-lexicon") {
+    const result = checkBannedLexicon(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(`\n❌ ${result.errors.length} termo(s) de léxico banido em ${args.md}:`);
+      for (const e of result.errors) {
+        console.error(
+          `  linha ${e.line}: "${e.matched}" → use "${e.correct}" (${e.sourceIssue}) — "${e.excerpt}"`,
+        );
+      }
       process.exit(1);
     }
     return;
