@@ -146,7 +146,14 @@ describe("atomicCommitRebuild — fluxo completo do reset (#7187)", () => {
     const dbAfter = openDiariaSubscribersDb(dbPath);
     assert.deepEqual(
       getStoreCounts(dbAfter),
-      { subscribers: 1, identity_aliases: 1, subscriptions: 0, events: 1, subscriptions_coverage_low: true },
+      {
+        subscribers: 1,
+        identity_aliases: 1,
+        subscriptions: 0,
+        events: 1,
+        attributes: 0,
+        subscriptions_coverage_low: true,
+      },
       "store novo instalado",
     );
     assert.deepEqual(findSubscriberIdsByEmail(dbAfter, "novo@x.com").length, 1, "dado do build novo presente");
