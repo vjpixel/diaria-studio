@@ -4254,3 +4254,125 @@ describe("#6972 — proveniência do grant vencedor (arquivo real × cópia de c
     assert.match(res.stderr, /RECONCESSÃO/i);
   });
 });
+
+// ─── #7169/#7171 — glue de CLI dos dois fixes (review independente, PR #7223) ───
+//
+// As funções puras (`assessCrossMachineSyncFreshness`) já tinham teste
+// unitário; nada exercitava a fiação real dentro dos cases `merge-lock-acquire`
+// e `consume-merge-grant` — que ela é chamada com os argumentos certos, que o
+// aviso vai pro STDERR (nunca stdout, que scripts leem como payload) e que o
+// texto do `--help` foi de fato atualizado.
+
+describe("CLI merge-lock-acquire: aviso de frescor cross-máquina (#7169) vai pro stderr, nunca stdout", () => {
+  const OTHER_TAG = "otherhost-7169";
+
+  it("coordenadora de OUTRA máquina com heartbeat > 10min (mas < 90min) dispara aviso em stderr", () => {
+    const root = freshCliRoot();
+    const nowMs = Date.now();
+    writeFileSync(
+      join(root, "data", "sessions", `overnight-${OTHER_TAG}-coord-7169.json`),
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: OTHER_TAG,
+        sessionId: "coord-7169",
+        // 15min: acima de CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS (10min), abaixo
+        // de SOFT_STALE_MS (90min) — a janela exata que o #7169 existe pra
+        // tornar visível.
+        startedAt: new Date(nowMs - 60 * 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(nowMs - 15 * 60 * 1000).toISOString(),
+        claimed_issues: [],
+      }),
+      "utf8",
+    );
+
+    const res = cli7002(root, ["merge-lock-acquire", "--session-id", "acquirer-7169"]);
+
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    // O resultado do lock em si (ok/denied) segue só em stdout — nunca
+    // contaminado pelo aviso de frescor.
+    assert.match(res.stdout, /merge-lock-acquire ok/);
+    assert.doesNotMatch(res.stdout, /ATENÇÃO/);
+    assert.match(res.stderr, /ATENÇÃO \(#7169\)/);
+    assert.match(res.stderr, new RegExp(`overnight-${OTHER_TAG}-coord-7169 \\(heartbeat de `));
+  });
+
+  it("coordenadora de OUTRA máquina com heartbeat recente (<10min) NÃO dispara aviso", () => {
+    const root = freshCliRoot();
+    const nowMs = Date.now();
+    writeFileSync(
+      join(root, "data", "sessions", `overnight-${OTHER_TAG}-coord-7169b.json`),
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: OTHER_TAG,
+        sessionId: "coord-7169b",
+        startedAt: new Date(nowMs - 60 * 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(nowMs - 30 * 1000).toISOString(),
+        claimed_issues: [],
+      }),
+      "utf8",
+    );
+
+    const res = cli7002(root, ["merge-lock-acquire", "--session-id", "acquirer-7169b"]);
+
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /merge-lock-acquire ok/);
+    assert.doesNotMatch(res.stderr, /ATENÇÃO \(#7169\)/);
+  });
+});
+
+describe("CLI consume-merge-grant: aviso de uso indevido (#7171) vai pro stderr, nunca stdout", () => {
+  it("consumir uma janela viva emite o aviso 'não é passo do beneficiário' em stderr", () => {
+    const root = freshCliRoot();
+    const tag = machineTag();
+    const nowMs = Date.now();
+    writeFileSync(
+      join(root, "data", "sessions", `overnight-${tag}-coord-7171.json`),
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: tag,
+        sessionId: "coord-7171",
+        startedAt: new Date(nowMs - 60 * 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(nowMs - 30 * 1000).toISOString(),
+        claimed_issues: [],
+        merge_grant: {
+          grantedTo: "benef-7171",
+          grantedBy: "coord-7171",
+          grantedAt: new Date(nowMs - 5 * 1000).toISOString(),
+          pr: 7171,
+        },
+      }),
+      "utf8",
+    );
+
+    const res = cli7002(root, ["consume-merge-grant", "--session-id", "benef-7171"]);
+
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /consume-merge-grant ok \(janela consumida/);
+    assert.doesNotMatch(res.stdout, /ATENÇÃO/);
+    assert.match(res.stderr, /ATENÇÃO \(#7171\)/);
+    assert.match(res.stderr, /caminho feliz nunca inclui `consume-merge-grant` explícito/);
+  });
+
+  it("no-op (nenhuma janela viva) também emite o aviso em stderr e sai com exit 1", () => {
+    const root = freshCliRoot();
+
+    const res = cli7002(root, ["consume-merge-grant", "--session-id", "sem-janela-7171"]);
+
+    assert.equal(res.status, 1);
+    assert.match(res.stdout, /consume-merge-grant no-op \(nenhuma janela viva\)/);
+    assert.match(res.stderr, /ATENÇÃO \(#7171\)/);
+  });
+
+  it("--help (subcomando desconhecido) documenta que consume-merge-grant não é passo do beneficiário", () => {
+    const root = freshCliRoot();
+
+    const res = cli7002(root, ["subcomando-inexistente-7171"]);
+
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /consume-merge-grant NÃO é um passo do beneficiário \(#7171\)/);
+    assert.match(
+      res.stderr,
+      /chamar consume-merge-grant à mão ANTES do merge queima a janela e o merge seguinte é bloqueado/,
+    );
+  });
+});

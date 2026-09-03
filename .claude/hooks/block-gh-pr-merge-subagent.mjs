@@ -350,6 +350,30 @@ export function readConsumedGrantFor(repoRoot, sessionId, now = Date.now()) {
 }
 
 /**
+ * Resolve `ctx.grantWasConsumed` (#7171, escopo de PR #7223 review) — true
+ * só quando a janela CONSUMIDA encontrada (`consumedGrant`, de
+ * `readConsumedGrantFor`) de fato cobria o PR sendo mergeado AGORA. Mesmo
+ * critério de escopo-por-PR de `grantCoversTarget` dentro de
+ * `classifyMergeBlockCause`: `pr === undefined` (concessão genérica,
+ * retrocompat) ou `pr === targetPr` contam; uma concessão consumida de OUTRO
+ * PR não conta.
+ *
+ * Sem isto, `readConsumedGrantFor` casava só por `grantedTo === sessionId` +
+ * `consumedAt` presente + janela de TTL — nunca comparava `grant.pr` contra
+ * o PR alvo. Cenário real: a mesma sessão recebe concessões pra vários PRs em
+ * sequência (comum no modelo de onda/lote, #6299) — consome legitimamente a
+ * do PR A ao mergeá-lo, e minutos depois tenta mergear o PR B sem concessão
+ * nenhuma. O bloqueio (`not-authorized`) continua correto; sem este fix,
+ * `CONSUMED_GRANT_HINT` mentia "você tinha concessão válida pra ESTE PR e já
+ * a queimou" — nunca houve concessão pra B, só pra A. Não afrouxa o
+ * bloqueio, só corrige o diagnóstico.
+ */
+export function resolveGrantWasConsumed(consumedGrant, targetPr) {
+  if (consumedGrant === null || consumedGrant === undefined) return false;
+  return consumedGrant.pr === undefined || consumedGrant.pr === targetPr;
+}
+
+/**
  * Resolve a raiz do checkout PRINCIPAL do repo — nunca a raiz de um worktree
  * vinculado. Mesmo racional/implementação dos hooks irmãos: `data/sessions/`
  * mora na junction compartilhada, só visível a partir da raiz principal.
@@ -1010,6 +1034,11 @@ if (
       // Ver docstring de `readActiveCoordinatorScan` acima.
       const scan = readActiveCoordinatorScan(repoRoot, Date.now(), { crossMachine: true });
       const grant = readLiveMergeGrantFor(repoRoot, payload.session_id);
+      const targetPr = extractGhPrMergeTargetPr(command);
+      // #7171: só interessa quando NÃO há concessão viva (senão o bloqueio
+      // nem seria "not-authorized") — diagnostica se a ausência é "nunca
+      // teve" ou "teve e consumiu antes de mergear".
+      const consumedGrant = grant === null ? readConsumedGrantFor(repoRoot, payload.session_id) : null;
       const ctx = {
         // #6296: os dois sinais que o guard passou a compor — a janela
         // concedida por uma coordenadora, e quem segura o merge lock agora.
@@ -1017,15 +1046,15 @@ if (
         // real sendo mergeado, em vez de bypassar o guard incondicionalmente.
         hasLiveGrant: grant !== null,
         grantPr: grant?.pr,
-        targetPr: extractGhPrMergeTargetPr(command),
+        targetPr,
         mergeLockHolder: readMergeLockHolder(repoRoot),
         // #6303 Finding B: varredura degradada não pode alimentar a
         // leniência "sou a única coordenadora, posso sem lock".
         scanDegraded: scan.degraded,
-        // #7171: só interessa quando NÃO há concessão viva (senão o bloqueio
-        // nem seria "not-authorized") — diagnostica se a ausência é "nunca
-        // teve" ou "teve e consumiu antes de mergear".
-        grantWasConsumed: grant === null && readConsumedGrantFor(repoRoot, payload.session_id) !== null,
+        // #7223 review (achado #7171 parte 2) — ver docblock de
+        // `resolveGrantWasConsumed`: só conta quando o PR da concessão
+        // consumida bate com o PR sendo mergeado agora.
+        grantWasConsumed: resolveGrantWasConsumed(consumedGrant, targetPr),
       };
       // #6497: classifica a causa UMA vez e reusa — `shouldBlockGhPrMerge`
       // decide SE bloqueia (mesmo cálculo), `buildBlockReason` usa o motivo

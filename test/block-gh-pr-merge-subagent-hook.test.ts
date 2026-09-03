@@ -13,6 +13,7 @@ import {
   readMergeLockHolder,
   readLiveMergeGrantFor,
   readConsumedGrantFor,
+  resolveGrantWasConsumed,
   LOCK_HOLDER_CORRUPTED,
   sessionsDir,
   machineTag,
@@ -1022,5 +1023,40 @@ describe("readConsumedGrantFor — espelho invertido de readLiveMergeGrantFor (#
     const root = freshRoot();
     writeCoordinator(root, "overnight-x-coord-a.json", base({}));
     assert.equal(readConsumedGrantFor(root, "interativa", NOW), null);
+  });
+});
+
+// ─── resolveGrantWasConsumed (#7171 parte 2, achado do review do PR #7223) ──
+//
+// `readConsumedGrantFor` sozinho não compara o PR da concessão consumida
+// contra o PR sendo mergeado agora — quem faz essa comparação é
+// `resolveGrantWasConsumed`, no mesmo critério de escopo que
+// `grantCoversTarget` usa dentro de `classifyMergeBlockCause`.
+
+describe("resolveGrantWasConsumed (#7223) — o hint de janela auto-consumida só vale pro PR CERTO", () => {
+  it("consumedGrant null → false (não há o que diagnosticar)", () => {
+    assert.equal(resolveGrantWasConsumed(null, 100), false);
+  });
+
+  it("concessão consumida GENÉRICA (pr undefined, retrocompat) → true pra qualquer targetPr", () => {
+    assert.equal(resolveGrantWasConsumed({ pr: undefined }, 100), true);
+    assert.equal(resolveGrantWasConsumed({ pr: undefined }, undefined), true);
+  });
+
+  it("concessão consumida ESCOPADA que bate com o PR sendo mergeado agora → true", () => {
+    assert.equal(resolveGrantWasConsumed({ pr: 7171 }, 7171), true);
+  });
+
+  it("cenário #7223 — consumida a janela do PR A, mergeando o PR B agora → false (nunca houve concessão pra B)", () => {
+    // A sessão mergeou legitimamente o PR A (consumindo a concessão dele) e,
+    // minutos depois, tenta mergear o PR B — sem concessão nenhuma pra B. O
+    // bloqueio 'not-authorized' continua correto; o que este teste trava é
+    // que o HINT não minta "você já tinha concessão pra este PR e a
+    // queimou" — nunca houve.
+    assert.equal(resolveGrantWasConsumed({ pr: 7100 }, 7200), false);
+  });
+
+  it("targetPr INDETERMINADO (undefined) contra concessão consumida ESCOPADA → false — a dúvida fecha, não abre", () => {
+    assert.equal(resolveGrantWasConsumed({ pr: 7171 }, undefined), false);
   });
 });

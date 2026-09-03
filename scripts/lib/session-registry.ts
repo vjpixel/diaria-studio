@@ -5205,9 +5205,14 @@ function main(): void {
         // distingue os dois casos — por isso o aviso explícito aqui).
         const sessionId = requireSessionId(values);
         const ok = consumeMergeGrant(repoRoot, sessionId);
+        // #7223 review — o aviso vai pro STDERR, nunca stdout: stdout é lido
+        // como payload por script (mesmo padrão de merge-lock-acquire acima),
+        // e a linha "ok/no-op" sozinha já é o contrato de saída esperado.
         process.stdout.write(
-          `session-registry: consume-merge-grant ${ok ? "ok (janela consumida — uso único)" : "no-op (nenhuma janela viva)"}\n` +
-            "session-registry: ATENÇÃO (#7171) — chamar isto ANTES do `gh pr merge` queima a janela e o merge " +
+          `session-registry: consume-merge-grant ${ok ? "ok (janela consumida — uso único)" : "no-op (nenhuma janela viva)"}\n`,
+        );
+        process.stderr.write(
+          "session-registry: ATENÇÃO (#7171) — chamar isto ANTES do `gh pr merge` queima a janela e o merge " +
             "seguinte será bloqueado. O caminho feliz nunca inclui `consume-merge-grant` explícito: " +
             "grant-merge (coordenadora) → check-merge-grant → merge-lock-acquire → gh pr merge → " +
             "merge-lock-release. `consumedAt` é o carimbo que o MERGE bem-sucedido deixa (automaticamente, " +
