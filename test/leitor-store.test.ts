@@ -18,6 +18,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { mkdtempSync, mkdirSync } from "node:fs";
 import {
   openDiariaSubscribersDb,
   ensureSubscriber,
@@ -31,11 +32,14 @@ import {
   computeReceivedForPlatform,
   computeUniqueClickedForPlatform,
   computeStoreLeitorInput,
+  computeStoreLeitorInputCanonicalDedup,
   computeStoreLeitorResult,
   summarizeStoreLeitores,
+  summarizeStoreLeitoresCanonicalDedup,
   main as leitorStoreMain,
 } from "../scripts/lib/leitor-store.ts";
 import { isLeitorV1 } from "../scripts/lib/leitor.ts";
+import { buildCanonicalEdicaoMapFromEvents } from "../scripts/lib/diaria-subscribers-edicao-canonica.ts";
 
 const NOW = "2026-09-01T12:00:00.000Z";
 
@@ -493,10 +497,178 @@ describe("StoreLeitorResult.missingSubscriptionData (#7198 — propagado pra fic
 });
 
 // ---------------------------------------------------------------------------
+// computeStoreLeitorInputCanonicalDedup / summarizeStoreLeitoresCanonicalDedup
+// (#7204) — o caso central: mesma pessoa, mesma edição do dia, 2 plataformas
+// ---------------------------------------------------------------------------
+
+describe("computeStoreLeitorInputCanonicalDedup — dedup por edição canônica", () => {
+  it("hoje (computeStoreLeitorInput) conta 2 recebidas pra 1 edição enviada por 2 plataformas; com a canônica conta 1", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const id = ensureSubscriber(db, "beehiiv", "bh-1", "leitor@x.com", NOW);
+    db.prepare(
+      "INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, 'kit', NULL, ?, ?)",
+    ).run(id, "leitor@x.com", NOW);
+
+    // A MESMA edição do dia 27/04, disparada pela Beehiiv às 06:00 BRT e
+    // pelo Kit às 06:10 BRT — ids nativos diferentes, mesmo dia editorial.
+    recordEvent(db, {
+      subscriberId: id,
+      platform: "beehiiv",
+      type: "delivered",
+      externalEventId: "bh-d1",
+      edicao: "post_abc",
+      ts: "2026-04-27T09:00:00.000Z", // 06:00 BRT
+    });
+    recordEvent(db, {
+      subscriberId: id,
+      platform: "kit",
+      type: "delivered",
+      externalEventId: "kit-d1",
+      edicao: "bcast_xyz",
+      ts: "2026-04-27T09:10:00.000Z", // 06:10 BRT
+    });
+
+    const caps = detectPlatformCapabilities(db);
+
+    // Hoje: soma por plataforma — 1 + 1 = 2 (dupla contagem).
+    const naive = computeStoreLeitorInput(db, id, caps);
+    assert.equal(naive.totalReceived, 2);
+
+    // Com a canônica: dedup pela mesma edição do dia — 1.
+    const canonicalMap = buildCanonicalEdicaoMapFromEvents(db);
+    const deduped = computeStoreLeitorInputCanonicalDedup(db, id, caps, canonicalMap);
+    assert.equal(deduped.totalReceived, 1);
+    db.close();
+  });
+
+  it("2 edições GENUINAMENTE diferentes (dias diferentes) continuam contando 2 mesmo com a canônica", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const id = ensureSubscriber(db, "kit", null, "leitor@x.com", NOW);
+    recordEvent(db, {
+      subscriberId: id,
+      platform: "kit",
+      type: "delivered",
+      externalEventId: "d1",
+      edicao: "bcast-27",
+      ts: "2026-04-27T09:00:00.000Z",
+    });
+    recordEvent(db, {
+      subscriberId: id,
+      platform: "kit",
+      type: "delivered",
+      externalEventId: "d2",
+      edicao: "bcast-28",
+      ts: "2026-04-28T09:00:00.000Z",
+    });
+
+    const caps = detectPlatformCapabilities(db);
+    const canonicalMap = buildCanonicalEdicaoMapFromEvents(db);
+    const deduped = computeStoreLeitorInputCanonicalDedup(db, id, caps, canonicalMap);
+    assert.equal(deduped.totalReceived, 2);
+    db.close();
+  });
+
+  it("cliques da MESMA edição do dia por 2 plataformas também dedupam pra 1", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const id = ensureSubscriber(db, "beehiiv", "bh-1", "leitor@x.com", NOW);
+    db.prepare(
+      "INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, 'kit', NULL, ?, ?)",
+    ).run(id, "leitor@x.com", NOW);
+
+    for (const [platform, edicao, ts] of [
+      ["beehiiv", "post_abc", "2026-04-27T09:00:00.000Z"],
+      ["kit", "bcast_xyz", "2026-04-27T09:10:00.000Z"],
+    ] as const) {
+      recordEvent(db, {
+        subscriberId: id,
+        platform,
+        type: "delivered",
+        externalEventId: `${platform}-d1`,
+        edicao,
+        ts,
+      });
+      recordEvent(db, {
+        subscriberId: id,
+        platform,
+        type: "click",
+        externalEventId: `${platform}-c1`,
+        edicao,
+        ts,
+      });
+    }
+
+    const caps = detectPlatformCapabilities(db);
+    const canonicalMap = buildCanonicalEdicaoMapFromEvents(db);
+    const naive = computeStoreLeitorInput(db, id, caps);
+    const deduped = computeStoreLeitorInputCanonicalDedup(db, id, caps, canonicalMap);
+    assert.equal(naive.totalUniqueClicked, 2);
+    assert.equal(deduped.totalUniqueClicked, 1);
+    db.close();
+  });
+});
+
+describe("summarizeStoreLeitoresCanonicalDedup", () => {
+  it("mesmo shape de summarizeStoreLeitores, com a nota de PISO, e leitores_v1 <= a versão não-deduplicada", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const id = ensureSubscriber(db, "beehiiv", "bh-1", "leitor@x.com", NOW);
+    db.prepare(
+      "INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, 'kit', NULL, ?, ?)",
+    ).run(id, "leitor@x.com", NOW);
+    upsertSubscription(db, id, "beehiiv", { status: "active", enteredAt: NOW, exitedAt: null, source: null }, NOW);
+
+    // 25 edições REAIS (dias distintos) na Beehiiv — passa no piso de 20
+    // recebidas mesmo depois do dedup canônico (nenhuma delas se repete
+    // entre plataformas).
+    for (let i = 0; i < 25; i++) {
+      recordEvent(db, {
+        subscriberId: id,
+        platform: "beehiiv",
+        type: "delivered",
+        externalEventId: `bh-d${i}`,
+        edicao: `post-${i}`,
+        ts: `2026-0${1 + Math.floor(i / 28)}-${String((i % 28) + 1).padStart(2, "0")}T09:00:00.000Z`,
+      });
+    }
+    recordEvent(db, { subscriberId: id, platform: "beehiiv", type: "click", externalEventId: "bh-c1", edicao: "post-0", ts: NOW });
+
+    const summary = summarizeStoreLeitoresCanonicalDedup(db);
+    assert.equal(summary.total_subscribers, 1);
+    assert.match(summary.note, /PISO/);
+    assert.equal(summary.leitores_v1, 1); // 25 recebidas, CTR 4% >= 2%
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
 describe("main (CLI)", () => {
+  it("--canonical-dedup imprime summary via summarizeStoreLeitoresCanonicalDedup (mesmo shape)", () => {
+    const dataRoot = mkdtempSync(resolve(tmpdir(), "leitor-store-canonical-cli-"));
+    const dbDir = resolve(dataRoot, "diaria-subscribers");
+    mkdirSync(dbDir, { recursive: true });
+    const dbPath = resolve(dbDir, "diaria-subscribers.db");
+    const seed = openDiariaSubscribersDb(dbPath);
+    ensureSubscriber(seed, "kit", null, "leitor@x.com", NOW);
+    seed.close();
+
+    const origLog = console.log;
+    let out = "";
+    console.log = (msg?: unknown) => {
+      out += String(msg);
+    };
+    try {
+      leitorStoreMain(["--db", dbPath, "--canonical-dedup"]);
+    } finally {
+      console.log = origLog;
+    }
+    const payload = JSON.parse(out);
+    assert.match(payload.note, /PISO/);
+    assert.equal(payload.total_subscribers, 1); // 1 alias em kit, mesmo sem evento
+    assert.equal(payload.leitores_v1, 0); // sem evento nenhum, nunca passa no piso
+  });
+
   it("--db apontando pra caminho inexistente: exitCode 1, nunca lança", () => {
     const bogusPath = resolve(
       tmpdir(),
