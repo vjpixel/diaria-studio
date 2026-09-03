@@ -421,6 +421,84 @@ export function invalidateSiblingManifests(dbPath: string): string[] {
 export const MANIFEST_FLUSH_EVERY = 20;
 
 // ---------------------------------------------------------------------------
+// Loop principal de ingestão — extraído pra ser testável em isolamento
+// ---------------------------------------------------------------------------
+
+/**
+ * Roda o loop de ingestão sobre `pending`, persistindo o manifesto em LOTE
+ * (a cada `flushEvery` posts) em vez de por item — #7170. `finally` garante
+ * o flush do que sobrar do lote em TODA saída do loop: sucesso (loop
+ * esgota `pending` normalmente), exceção (algo lança no meio — na prática,
+ * a única fonte real é `saveManifestFn` falhando durante um flush, já que
+ * `ingestOnePost` é fail-soft e nunca lança), ou `--limit` truncando a run
+ * (`pending` já vem cortado pelo caller antes de chegar aqui — o loop só
+ * enxerga um array mais curto, mesmo caminho de "esgotar `pending`
+ * normalmente"). O `.db` (fonte de verdade, chave natural idempotente em
+ * `recordEvent`) já está gravado bem antes do flush do manifesto pra cada
+ * post, então um crash duro no meio de um lote só faz a próxima run
+ * reprocessar até `flushEvery - 1` posts já idempotentes — nunca perde
+ * dado, só refaz trabalho (ver docstring do módulo pro trade-off completo).
+ *
+ * Se `saveManifestFn` lançar durante um flush INTERMEDIÁRIO (dentro do
+ * loop), a exceção propaga pro `finally`, que tenta persistir o progresso
+ * pendente mais uma vez antes de deixar a exceção subir — nunca engole o
+ * erro (quem chama sempre sabe que algo falhou), mas também nunca deixa de
+ * tentar salvar o que já foi processado até ali.
+ *
+ * `saveManifestFn` é injetável só pra teste (regressão do `finally` sob
+ * exceção mid-lote) — produção sempre usa o `saveManifest` real (default).
+ */
+export function runEngagementIngestionLoop(
+  pending: readonly IngestManifestEntry[],
+  byId: ReadonlyMap<string, Pick<EngagementManifestEntry, "post_id" | "title" | "status" | "count">>,
+  db: DatabaseSync,
+  sourceDir: string,
+  initialManifest: IngestManifest,
+  manifestPath: string,
+  flushEvery: number = MANIFEST_FLUSH_EVERY,
+  saveManifestFn: (path: string, manifest: IngestManifest) => void = saveManifest,
+): {
+  manifest: IngestManifest;
+  processed: number;
+  eventsNewTotal: number;
+  eventsAlreadyKnownTotal: number;
+  manifestSaves: number;
+} {
+  let manifest = initialManifest;
+  let eventsNewTotal = 0;
+  let eventsAlreadyKnownTotal = 0;
+  let processed = 0;
+  let manifestSaves = 0;
+  let unflushed = 0;
+  try {
+    for (const entry of pending) {
+      const sourceEntry = byId.get(entry.id)!;
+      const outcome = ingestOnePost(db, sourceDir, sourceEntry);
+      manifest = upsertManifestEntry(manifest, outcome.entry);
+      unflushed++;
+      eventsNewTotal += outcome.eventsNew;
+      eventsAlreadyKnownTotal += outcome.eventsAlreadyKnown;
+      processed++;
+      console.error(
+        `  …[${processed}/${pending.length}] post ${entry.id} (${outcome.entry.status}) — ` +
+          `${outcome.eventsNew} evento(s) novo(s), ${outcome.eventsAlreadyKnown} já conhecido(s)`,
+      );
+      if (unflushed >= flushEvery) {
+        saveManifestFn(manifestPath, manifest);
+        manifestSaves++;
+        unflushed = 0;
+      }
+    }
+  } finally {
+    if (unflushed > 0) {
+      saveManifestFn(manifestPath, manifest);
+      manifestSaves++;
+    }
+  }
+  return { manifest, processed, eventsNewTotal, eventsAlreadyKnownTotal, manifestSaves };
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -510,44 +588,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   console.error(`🔎 ${pending.length} post(s) pendente(s) de ${readySourceEntries.length} pronto(s).`);
 
   const db = openDiariaSubscribersDb(workingDbPath);
-  let eventsNewTotal = 0;
-  let eventsAlreadyKnownTotal = 0;
-  let processed = 0;
 
-  // Manifesto persistido em LOTE (a cada `MANIFEST_FLUSH_EVERY` posts), não
-  // por item — #7170. `finally` garante o flush do que sobrar do lote em
-  // toda saída do loop (sucesso, exceção, `--limit` truncando a run); o
-  // `.db` (fonte de verdade, chave natural idempotente em `recordEvent`) já
-  // está gravado bem antes disso, então um crash duro no meio de um lote só
-  // faz a próxima run reprocessar até `MANIFEST_FLUSH_EVERY - 1` posts já
-  // idempotentes — nunca perde dado, só refaz trabalho (ver docstring do
-  // módulo pro trade-off completo).
-  let unflushed = 0;
-  try {
-    for (const entry of pending) {
-      const sourceEntry = byId.get(entry.id)!;
-      const outcome = ingestOnePost(db, sourceDir, sourceEntry);
-      manifest = upsertManifestEntry(manifest, outcome.entry);
-      unflushed++;
-      eventsNewTotal += outcome.eventsNew;
-      eventsAlreadyKnownTotal += outcome.eventsAlreadyKnown;
-      processed++;
-      console.error(
-        `  …[${processed}/${pending.length}] post ${entry.id} (${outcome.entry.status}) — ` +
-          `${outcome.eventsNew} evento(s) novo(s), ${outcome.eventsAlreadyKnown} já conhecido(s)`,
-      );
-      if (unflushed >= MANIFEST_FLUSH_EVERY) {
-        saveManifest(manifestPath, manifest);
-        manifestSaves++;
-        unflushed = 0;
-      }
-    }
-  } finally {
-    if (unflushed > 0) {
-      saveManifest(manifestPath, manifest);
-      manifestSaves++;
-    }
-  }
+  const loopResult = runEngagementIngestionLoop(pending, byId, db, sourceDir, manifest, manifestPath);
+  manifest = loopResult.manifest;
+  const processed = loopResult.processed;
+  const eventsNewTotal = loopResult.eventsNewTotal;
+  const eventsAlreadyKnownTotal = loopResult.eventsAlreadyKnownTotal;
+  manifestSaves += loopResult.manifestSaves;
   console.error(
     `💾 manifesto persistido ${manifestSaves}× nesta run (lotes de até ${MANIFEST_FLUSH_EVERY} posts, #7170 — ` +
       `antes eram ${processed + 1} escritas pra ${processed} post(s) processado(s)).`,
@@ -609,6 +656,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         source_dir: sourceDir,
         source_posts_ready: readySourceEntries.length,
         processed_this_run: processed,
+        manifest_saves_this_run: manifestSaves,
         events_new: eventsNewTotal,
         events_already_known: eventsAlreadyKnownTotal,
         coverage,

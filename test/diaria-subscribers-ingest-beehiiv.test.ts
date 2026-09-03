@@ -17,6 +17,7 @@ import {
   loadSourceEngagementManifest,
   readPostRecords,
   invalidateSiblingManifests,
+  runEngagementIngestionLoop,
   MANIFEST_FLUSH_EVERY,
 } from "../scripts/diaria-subscribers-ingest-beehiiv.ts";
 import {
@@ -26,6 +27,7 @@ import {
   getStoreCounts,
   recordEvent,
 } from "../scripts/lib/diaria-subscribers-db.ts";
+import { buildInitialManifest, type IngestManifest, type IngestManifestEntry } from "../scripts/lib/diaria-subscribers-ingest-manifest.ts";
 import type { EngagementManifest } from "../scripts/lib/beehiiv-engagement-manifest.ts";
 
 /** Monta um diretório de backup fixture: manifest.json + N .jsonl. */
@@ -529,5 +531,136 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
       "todos os subscribers foram ingeridos no .db mesmo com o manifesto batchado",
     );
     db.close();
+  });
+
+  // #7170 (achado do review): a docstring e o PR afirmam que o `finally`
+  // cobre "sucesso, exceção, --limit" — só o caminho de sucesso tinha
+  // teste. Este cobre `--limit` truncando a run: `pending` já vem cortado
+  // pelo caller ANTES do loop (não é um `break` no meio), mas o contrato
+  // que importa pro editor é o mesmo — só os posts dentro do limite viram
+  // "ok", o resto fica intocado ("pending"), e a contagem de flushes bate
+  // com o tamanho do array truncado, não com o total disponível.
+  it("--limit trunca ANTES do loop — só os posts dentro do limite são processados/flushados, o resto fica pending (#7170 review)", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-beehiiv-ingest-limit-"));
+    mkdirSync(resolve(tmp, "data/diaria-subscribers"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/beehiiv-ingest-manifest.json");
+
+    const totalAvailable = MANIFEST_FLUSH_EVERY + 10;
+    const limit = MANIFEST_FLUSH_EVERY + 3; // cruza 1 fronteira de lote, não múltiplo de MANIFEST_FLUSH_EVERY
+    const posts: EngagementManifest["posts"] = [];
+    const records: Record<string, unknown[]> = {};
+    for (let i = 0; i < totalAvailable; i++) {
+      const id = `post_${i}`;
+      posts.push({ post_id: id, title: `Edição ${i}`, status: "ok", count: 1 });
+      records[id] = [
+        { subscriber_id: `s${i}`, email: `u${i}@x.com`, status: "delivered", timestamp: "2026-01-01T00:00:00Z" },
+      ];
+    }
+    const sourceManifest: EngagementManifest = { generated_at: "2026-01-01T00:00:00Z", posts };
+    const sourceDir = makeSourceDir(tmp, sourceManifest, records);
+
+    const result: { processed_this_run: number; manifest_saves_this_run: number } = await new Promise((resolvePromise) => {
+      const originalLog = console.log;
+      console.log = (msg: string) => {
+        console.log = originalLog;
+        resolvePromise(JSON.parse(msg));
+      };
+      void main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir, "--limit", String(limit)]);
+    });
+
+    assert.equal(result.processed_this_run, limit, "só os posts dentro do --limit foram processados");
+    // 1 (merge inicial) + ceil(limit / MANIFEST_FLUSH_EVERY) — mesma fórmula
+    // do teste de batching acima, mas sobre o array JÁ TRUNCADO pelo --limit,
+    // não sobre totalAvailable.
+    const expectedSaves = 1 + Math.ceil(limit / MANIFEST_FLUSH_EVERY);
+    assert.equal(result.manifest_saves_this_run, expectedSaves, "contagem de flushes reflete o limite, não o total disponível");
+
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const byStatus = new Map<string, string>(manifest.entries.map((e: { id: string; status: string }) => [e.id, e.status]));
+    for (let i = 0; i < limit; i++) {
+      assert.equal(byStatus.get(`post_${i}`), "ok", `post_${i} está dentro do --limit — deveria estar "ok"`);
+    }
+    for (let i = limit; i < totalAvailable; i++) {
+      assert.equal(byStatus.get(`post_${i}`), "pending", `post_${i} está FORA do --limit — nunca deveria ter sido tocado`);
+    }
+  });
+});
+
+describe("runEngagementIngestionLoop — finally sob exceção mid-lote (#7170 review)", () => {
+  // Achado do review: a docstring/PR afirmam que o `finally` cobre o
+  // caminho de EXCEÇÃO, mas nada exercitava isso — `ingestOnePost` é
+  // fail-soft (nunca lança), então a única fonte real de exceção dentro do
+  // loop é `saveManifestFn` falhando durante um flush intermediário. Este
+  // teste injeta exatamente esse cenário via dependency injection (o
+  // parâmetro `saveManifestFn`, adicionado para viabilizar este teste sem
+  // mockar `node:fs` — mock de fs neste repo já foi tentado e descartado,
+  // ver comentário em test/stage4-capture-state.test.ts) e prova as duas
+  // metades da garantia: (1) a exceção NUNCA é engolida — sempre propaga
+  // pra quem chamou, e (2) o `finally` ainda tenta persistir o progresso
+  // pendente até o ponto da falha antes de deixar a exceção subir.
+  it("saveManifestFn lança no flush intermediário: propaga a exceção E o finally tenta persistir de novo o mesmo lote pendente", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-beehiiv-loop-exception-"));
+    const dbPath = resolve(tmp, "diaria-subscribers.db");
+    const db = openDiariaSubscribersDb(dbPath);
+
+    const flushEvery = 5;
+    const total = flushEvery + 3; // 1 fronteira de flush intermediário (no 5º) + 3 que NUNCA chegam a ser processados
+    const pending: IngestManifestEntry[] = Array.from({ length: total }, (_, i) => ({
+      id: `post_${i}`,
+      status: "pending",
+    }));
+    // status "not_applicable" — ingestOnePost retorna cedo sem tocar
+    // sourceDir/db, mantendo o teste focado só na lógica de flush do loop.
+    const byId = new Map(
+      pending.map((p) => [
+        p.id,
+        { post_id: p.id, title: p.id, status: "not_applicable" as const, count: undefined as number | undefined },
+      ]),
+    );
+
+    const calls: IngestManifest[] = [];
+    let callCount = 0;
+    const flaky = (_path: string, manifest: IngestManifest) => {
+      callCount++;
+      calls.push(manifest);
+      if (callCount === 1) throw new Error("falha simulada no flush intermediário (#7170 review)");
+      // 2ª chamada (a do `finally`) "sucede" — não escreve em disco de
+      // fato, só registra, pra manter o teste rápido e sem depender de fs.
+    };
+
+    let thrown: Error | undefined;
+    try {
+      runEngagementIngestionLoop(
+        pending,
+        byId,
+        db,
+        tmp,
+        buildInitialManifest("2026-01-01T00:00:00Z"),
+        resolve(tmp, "manifest.json"),
+        flushEvery,
+        flaky,
+      );
+    } catch (e) {
+      thrown = e as Error;
+    }
+    db.close();
+
+    assert.ok(thrown, "a exceção do flush intermediário precisa propagar — nunca ser engolida em silêncio");
+    assert.equal(thrown!.message, "falha simulada no flush intermediário (#7170 review)");
+    assert.equal(callCount, 2, "o finally tenta persistir de novo mesmo depois do flush intermediário ter falhado");
+
+    // O loop PARA de iterar no momento da exceção (não continua pros 3
+    // posts restantes) — as duas chamadas capturadas (a que falhou + a do
+    // finally) refletem o MESMO estado: só os `flushEvery` primeiros posts,
+    // nunca os 3 que viriam depois da fronteira de flush.
+    for (const manifest of calls) {
+      assert.equal(manifest.entries.length, flushEvery, "cada chamada de flush só tem os posts processados ANTES da exceção");
+      assert.deepEqual(
+        manifest.entries.map((e) => e.id).sort(),
+        pending.slice(0, flushEvery).map((e) => e.id).sort(),
+        "só post_0..post_4 — post_5/6/7 nunca chegaram a ser processados",
+      );
+    }
   });
 });
