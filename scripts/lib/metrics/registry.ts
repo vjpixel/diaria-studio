@@ -41,12 +41,14 @@
  * #7229/#7198), devolve `valor: null` + `qualidade: 'indeterminado'` +
  * `motivo` — NUNCA `0` com `qualidade: 'exato'`.
  *
- * ## As 8 métricas (#7176)
+ * ## As 8 métricas (#7176) + 2 de ativação por coorte (#7183)
  *
  * `cadastros-dia`, `cadastros-nao-pago-nao-reativacao-dia` (o placar da meta
  * de 5/dia), `cadastros-organicos-dia` (orgânico estrito, saúde própria),
  * `cadastros-indeterminados-dia` (barra de erro do placar),
- * `doi-confirmacao-dia`, `doi-orfaos`, `base-ativa`, `leitor-v1`.
+ * `doi-confirmacao-dia`, `doi-orfaos`, `base-ativa`, `leitor-v1`,
+ * `abertura-1a-edicao`, `primeiro-clique-14d` (#7183 — ativação de latência
+ * curta por safra de cadastro, ver `ativacao-coorte.ts`).
  *
  * `doi-confirmacao-dia` devolve SEMPRE `indeterminado` nesta fatia — os 3
  * acréscimos de que ela depende (`EVENT_TYPES` ganhar `"confirm"`, o estado
@@ -68,6 +70,13 @@ import {
   type AcquisitionClass,
   type AcquisitionClassInput,
 } from "./acquisition-class.ts";
+import {
+  computeAberturaPrimeiraEdicao,
+  computePrimeiroClique14d,
+  applyCrossPlatformFloor,
+  type AtivacaoCoorteSubscriberInput,
+  type AtivacaoCoorteResult,
+} from "./ativacao-coorte.ts";
 import { hasCaptureOnDay, type CapturaLogEntry } from "./captura-log.ts";
 import { filterInternalAndTestSubscribers } from "../cac.ts";
 import {
@@ -675,12 +684,105 @@ const leitorV1Def: MetricDef<LeitorV1Deps> = {
 };
 
 // ---------------------------------------------------------------------------
+// abertura-1a-edicao / primeiro-clique-14d — ativação por coorte (#7183)
+// ---------------------------------------------------------------------------
+
+export interface AtivacaoCoorteMetricDeps extends MetricDeps {
+  /** Registros já resolvidos (identidade, `created` mais antigo entre
+   *  snapshots, denominador, abertura/clique) — o chamador resolve a fonte
+   *  (store do #6464). SEM I/O aqui. */
+  registros(janela: Janela): AtivacaoCoorteSubscriberInput[] | Promise<AtivacaoCoorteSubscriberInput[]>;
+  /** Epoch seconds UTC — "agora" injetado (testável), usado só pra maturação
+   *  de `primeiro-clique-14d`. */
+  now: number;
+  /** `true` quando o resultado depende de casamento de identidade
+   *  cross-plataforma do store (#6464) ainda incerto — rebaixa a
+   *  `qualidade` pra `piso` com `CROSS_PLATFORM_FLOOR_NOTE`. */
+  crossPlatformFloor?: boolean;
+}
+
+function toMetricResult(r: AtivacaoCoorteResult, janela: Janela, frescor: string | null): MetricResult {
+  if (r.qualidade === "indeterminado") {
+    return indeterminado(janela, r.motivo ?? "indeterminado", frescor);
+  }
+  const result: MetricResult =
+    r.qualidade === "piso"
+      ? piso(r.valor as number, janela, frescor, r.motivo ?? "piso")
+      : exato(r.valor as number, janela, frescor);
+  return result;
+}
+
+function porClasseSeries(r: AtivacaoCoorteResult): MetricSeriesPoint[] {
+  return (Object.keys(r.porClasse) as AcquisitionClass[]).map((chave) => {
+    const c = r.porClasse[chave];
+    return { chave, valor: c.denom > 0 ? c.numeradorResolvido / c.denom : null };
+  });
+}
+
+const aberturaPrimeiraEdicaoDef: MetricDef<AtivacaoCoorteMetricDeps> = {
+  id: "abertura-1a-edicao",
+  nome: "Abertura da 1ª edição recebida (por coorte)",
+  produto: "diaria",
+  etapa: "ativacao",
+  definicao:
+    "razão: safra de cadastro D que abriu a 1ª edição recebida (status ∈ {opened,clicked} OU total_opened>0, " +
+    "deriveBeehiivEventTypes) ÷ safra de D que recebeu ≥1 edição (denominador = recebeuAoMenosUma, mesmo " +
+    "denominador de primeiro-clique-14d). Membro com 1º post 100% stub (#7181 F9) fica fora do numerador " +
+    "resolvido mas dentro do denominador — qualidade cai pra piso (algum não-resolvido) ou indeterminado " +
+    "(todos não-resolvidos). decomposicao 'classe' devolve a taxa por classe de aquisição de #7173.",
+  unidade: "razao",
+  direcao: "maior-melhor",
+  fonte: "store do #6464 (subscriber/subscription/event, platform=beehiiv) via deriveBeehiivEventTypes",
+  decomposicoes: ["classe"],
+  async computar(args) {
+    validarDecomposicao(aberturaPrimeiraEdicaoDef, args.decomposicao);
+    const registros = await args.deps.registros(args.janela);
+    let r = computeAberturaPrimeiraEdicao(registros);
+    if (args.deps.crossPlatformFloor) r = applyCrossPlatformFloor(r);
+    const result = toMetricResult(r, args.janela, null);
+    if (args.decomposicao === "classe" && result.qualidade !== "indeterminado") {
+      result.series = porClasseSeries(r);
+    }
+    return result;
+  },
+};
+
+const primeiroClique14dDef: MetricDef<AtivacaoCoorteMetricDeps> = {
+  id: "primeiro-clique-14d",
+  nome: "1º clique em até 14 dias (por coorte)",
+  produto: "diaria",
+  etapa: "ativacao",
+  definicao:
+    "razão: safra de cadastro D com ≥1 clique (status='clicked' OU total_clicked>0, deriveBeehiivEventTypes) " +
+    "com ts ≤ created + 14 dias ÷ safra de D que recebeu ≥1 edição (denominador = recebeuAoMenosUma, mesmo " +
+    "denominador de abertura-1a-edicao). Coorte com qualquer membro do denominador ainda a menos de 14 dias " +
+    "de casa devolve indeterminado — nunca uma taxa parcial que sobe sozinha. decomposicao 'classe' devolve " +
+    "a taxa por classe de aquisição de #7173.",
+  unidade: "razao",
+  direcao: "maior-melhor",
+  fonte: "store do #6464 (subscriber/subscription/event, platform=beehiiv) via deriveBeehiivEventTypes",
+  decomposicoes: ["classe"],
+  async computar(args) {
+    validarDecomposicao(primeiroClique14dDef, args.decomposicao);
+    const registros = await args.deps.registros(args.janela);
+    let r = computePrimeiroClique14d(registros, args.deps.now);
+    if (args.deps.crossPlatformFloor) r = applyCrossPlatformFloor(r);
+    const result = toMetricResult(r, args.janela, null);
+    if (args.decomposicao === "classe" && result.qualidade !== "indeterminado") {
+      result.series = porClasseSeries(r);
+    }
+    return result;
+  },
+};
+
+// ---------------------------------------------------------------------------
 // O registry
 // ---------------------------------------------------------------------------
 
 /**
- * Fonte única — nasce com as 8 métricas de #7176. `getMetric`/`METRICAS` são
- * a superfície que F5 (#7177), F6 (#7178) e F8 (#7180) importam.
+ * Fonte única — nasce com as 8 métricas de #7176 + as 2 de ativação por
+ * coorte de #7183. `getMetric`/`METRICAS` são a superfície que F5 (#7177),
+ * F6 (#7178) e F8 (#7180) importam.
  */
 export const METRICAS: readonly MetricDef[] = [
   cadastrosDiaDef as MetricDef,
@@ -691,6 +793,8 @@ export const METRICAS: readonly MetricDef[] = [
   doiOrfaosDef as MetricDef,
   baseAtivaDef as MetricDef,
   leitorV1Def as MetricDef,
+  aberturaPrimeiraEdicaoDef as MetricDef,
+  primeiroClique14dDef as MetricDef,
 ];
 
 assertRegistryValido(METRICAS);

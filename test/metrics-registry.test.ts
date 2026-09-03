@@ -205,9 +205,9 @@ describe("assertRegistryValido (#7175)", () => {
     assert.doesNotThrow(() => assertRegistryValido(ok));
   });
 
-  it("passa sobre METRICAS real (registry vazio de conteúdo real não muda — nasce com as 8 de #7176)", () => {
+  it("passa sobre METRICAS real (registry vazio de conteúdo real não muda — nasce com as 8 de #7176 + 2 de #7183)", () => {
     assert.doesNotThrow(() => assertRegistryValido(METRICAS));
-    assert.equal(METRICAS.length, 8, "8 métricas de #7176");
+    assert.equal(METRICAS.length, 10, "8 métricas de #7176 + 2 de ativação por coorte de #7183");
   });
 });
 
