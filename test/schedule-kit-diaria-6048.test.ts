@@ -247,3 +247,72 @@ describe("#6183 relê subject/preview do broadcast — o estado local não pode 
     assert.equal(written[0].preview_text, draft.preview_text);
   });
 });
+
+describe("#7285 idempotência confirma contra o broadcast VIVO, nunca só o cache local", () => {
+  // Cenário exato do corpo da issue: estado local diz "scheduled", mas um
+  // PATCH de conteúdo no meio do caminho (#6181) derrubou o agendamento no
+  // Kit por baixo — o broadcast VIVO está draft/send_at:null. Sem o fix, o
+  // guard de idempotência respondia "já agendado — no-op" sobre esse estado
+  // (exit 0, scheduledAt preenchido) e o canal nunca saía, em silêncio.
+  function makeDriftingVerify(sequence: Array<{ send_at?: string | null }>) {
+    let calls = 0;
+    return async () => {
+      const r = sequence[Math.min(calls, sequence.length - 1)];
+      calls++;
+      return r;
+    };
+  }
+
+  it("local scheduled + broadcast vivo DRAFT (send_at:null) ⇒ reagenda via PATCH, nunca no-op cego", async () => {
+    const { deps, patched, written } = makeDeps({ state: { ...draft, status: "scheduled", scheduled_at: WHEN } });
+    // 1ª chamada de verify = checagem de idempotência (broadcast caiu pra
+    // draft); 2ª chamada = confirmação pós-PATCH (reagendamento funcionou).
+    deps.verify = makeDriftingVerify([{ send_at: null }, { send_at: WHEN }]);
+    const r = await scheduleKitDiaria(EDITION, WHEN, deps);
+    assert.equal(r.code, 0, "reagenda com sucesso em vez de travar num estado defasado");
+    if (r.code === 0) assert.equal(r.scheduledAt, WHEN);
+    assert.deepEqual(patched, [4242], "PATCH foi de fato disparado — não é mais no-op");
+    assert.equal(written.length, 1);
+    assert.equal(written[0].status, "scheduled");
+  });
+
+  it("local scheduled + broadcast vivo agendado num INSTANTE diferente ⇒ reagenda pro alvo certo", async () => {
+    const { deps, patched, written } = makeDeps({ state: { ...draft, status: "scheduled", scheduled_at: WHEN } });
+    const outro = "2026-08-26T10:00:00Z";
+    deps.verify = makeDriftingVerify([{ send_at: outro }, { send_at: WHEN }]);
+    const r = await scheduleKitDiaria(EDITION, WHEN, deps);
+    assert.equal(r.code, 0);
+    assert.deepEqual(patched, [4242]);
+    assert.equal(written[0].scheduled_at, WHEN, "grava o alvo pedido, não o instante divergente que estava lá");
+  });
+
+  it("local scheduled + GET de checagem de idempotência falha ⇒ code 4, nunca no-op assumindo o cache", async () => {
+    const { deps, patched, written } = makeDeps({ state: { ...draft, status: "scheduled", scheduled_at: WHEN } });
+    deps.verify = async () => {
+      throw new Error("ETIMEDOUT");
+    };
+    const r = await scheduleKitDiaria(EDITION, WHEN, deps);
+    assert.equal(r.code, 4);
+    if (r.code === 4) assert.match(r.reason, /ETIMEDOUT/);
+    assert.deepEqual(patched, [], "sem PATCH quando nem a checagem de idempotência respondeu");
+    assert.equal(written.length, 0);
+  });
+
+  it("local scheduled + broadcast vivo confirma o MESMO instante ⇒ no-op de verdade, sem PATCH", async () => {
+    // Continua existindo um caminho de no-op real — só que agora VERIFICADO,
+    // não assumido. Espelha o teste pré-#7285 acima, mas fixa que o `verify`
+    // é de fato chamado (o teste original não distinguia "não chamou" de
+    // "chamou e bateu").
+    let verifyCalls = 0;
+    const { deps, patched, written } = makeDeps({ state: { ...draft, status: "scheduled", scheduled_at: WHEN } });
+    deps.verify = async () => {
+      verifyCalls++;
+      return { send_at: WHEN };
+    };
+    const r = await scheduleKitDiaria(EDITION, WHEN, deps);
+    assert.equal(r.code, 0);
+    assert.equal(verifyCalls, 1, "idempotência precisa mesmo checar o broadcast vivo, não só o cache");
+    assert.deepEqual(patched, [], "sem re-PATCH quando o vivo já confirma o alvo");
+    assert.equal(written.length, 0);
+  });
+});

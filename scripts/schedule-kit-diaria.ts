@@ -40,7 +40,14 @@
  *   2 — canal desligado (`kit_diaria.enabled !== true`) ou estado ausente:
  *       NÃO é erro, é o caminho normal quando o canal não participou da edição
  *   3 — PATCH falhou (erro de API)
- *   4 — GET pós-PATCH não confirma o agendamento
+ *   4 — GET não confirma o agendamento — cobre DOIS pontos desde #7285: o
+ *       GET pós-PATCH de sempre, E o GET de checagem de idempotência (roda
+ *       ANTES do PATCH, quando o estado local diz "scheduled" — confirma
+ *       contra o broadcast vivo antes de aceitar o cache) falhando por
+ *       rede/API. A `reason` do resultado distingue os dois casos em
+ *       prosa; o código numérico é o mesmo porque o tratamento do chamador
+ *       (warn, não bloqueia, nunca reporta "agendado") já é idêntico nos
+ *       dois.
  *
  * Uso:
  *   npx tsx scripts/schedule-kit-diaria.ts --edition-dir data/editions/AAMMDD/ --scheduled-at 2026-08-26T09:00:00Z
@@ -137,10 +144,35 @@ export async function scheduleKitDiaria(
     return { code: 2, reason: "_internal/kit-diaria-published.json ausente — canal pulou a Etapa 5." };
   }
 
-  // Idempotência em resume: já agendado é caminho feliz, não re-PATCH.
+  // Idempotência em resume: só é caminho feliz se o broadcast VIVO confirma
+  // o agendamento — nunca a partir do cache local sozinho (#7285). Um PATCH
+  // de conteúdo no meio do caminho derruba o agendamento por baixo (#6181)
+  // sem reescrever o estado local; confiar cegamente no "scheduled" daqui
+  // faria o script responder "já agendado" sobre um broadcast que voltou a
+  // draft — nada sai, nada acusa (achado ao vivo, edição 260903, corpo da
+  // issue #7285). Mesma disciplina de nunca descrever estado externo a
+  // partir do gloss de um estado local sem validar.
   if (state.status === "scheduled" && state.scheduled_at) {
-    deps.log(`já agendado para ${state.scheduled_at} — no-op.`);
-    return { code: 0, scheduledAt: state.scheduled_at, broadcastId: state.broadcast_id };
+    let live: { send_at?: string | null };
+    try {
+      live = await deps.verify(state.broadcast_id);
+    } catch (e) {
+      return { code: 4, reason: `GET de verificação (checagem de idempotência) falhou: ${(e as Error).message}` };
+    }
+    const liveMs = live.send_at ? Date.parse(live.send_at) : NaN;
+    const targetMs = Date.parse(scheduledAt);
+    if (live.send_at && Number.isFinite(liveMs) && Number.isFinite(targetMs) && liveMs === targetMs) {
+      deps.log(`já agendado para ${live.send_at} (confirmado ao vivo) — no-op.`);
+      return { code: 0, scheduledAt: live.send_at, broadcastId: state.broadcast_id };
+    }
+    deps.log(
+      `estado local dizia "scheduled" para ${state.scheduled_at}, mas o broadcast vivo está ` +
+        `${live.send_at ? `agendado para ${live.send_at} (alvo diferente)` : "draft/sem send_at"} — ` +
+        `reagendando em vez de confiar no cache (#7285).`,
+    );
+    // Cai pro PATCH abaixo — o alvo (`scheduledAt`) já é conhecido, então
+    // reagendar é a ação certa (não um código de "estado defasado" que só
+    // empurraria o problema pra quem lê o exit code decidir sozinho).
   }
 
   try {
