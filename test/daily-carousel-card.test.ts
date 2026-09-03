@@ -143,12 +143,48 @@ describe("splitParagraphIntoTwoBlocks (pure, #6136 item 2)", () => {
     assert.ok(first.endsWith("."), "1º bloco deveria terminar em fronteira de sentença");
   });
 
-  it("1 frase só, mas longa -> cai pra fronteira de PALAVRA mais próxima do meio", () => {
+  it("1 frase só sem vírgula -> NÃO divide (#7253, era o bug: caía pra fronteira de PALAVRA arbitrária)", () => {
+    const texto = "Uma frase unica mas bem mais longa sem ponto final nenhum no meio dela toda";
+    const result = splitParagraphIntoTwoBlocks(texto);
+    assert.equal(result, texto, "sem fronteira de sentença nem de oração, o bloco deve voltar inalterado");
+    assert.doesNotMatch(result, /\n\n/);
+  });
+
+  it("1 frase só, com vírgula -> quebra na fronteira de ORAÇÃO mais próxima do meio (#7253 nível 2)", () => {
     const texto = "Uma frase única mas bem mais longa, sem ponto final nenhum no meio dela toda";
     const result = splitParagraphIntoTwoBlocks(texto);
     assert.match(result, /\n\n/);
     const [first, second] = result.split("\n\n");
     assert.equal(`${first} ${second}`, texto);
+    assert.ok(first.endsWith(","), "1º bloco deveria terminar na vírgula (fronteira de oração)");
+  });
+
+  it("#7253 (D3 p1 da 260903): frase única com 2 vírgulas — corte não pode cair no meio de \"nível crítico\"", () => {
+    const texto =
+      "A OpenAI diz que o Astra, seu próximo modelo, é o primeiro a cruzar o nível crítico de cibersegurança na régua interna que ela usa desde 2023 para medir risco.";
+    const result = splitParagraphIntoTwoBlocks(texto);
+    assert.match(result, /\n\n/, "tem vírgulas suficientes para uma fronteira de oração viável");
+    assert.doesNotMatch(result, /cruzar o nível\n\ncrítico/, "não pode cortar dentro do sintagma \"nível crítico\"");
+    const [first, second] = result.split("\n\n");
+    assert.equal(`${first} ${second}`.replace(/\s+/g, " "), texto);
+  });
+
+  it("#7253 (D1 p2 da 260903): frase única com 2 vírgulas — corte não pode partir a locução \"sem um humano\"", () => {
+    const texto =
+      "A versão Cyber foi desenhada pra apoiar fluxos agentivos, sistemas que tomam decisões em cadeia sem um humano clicando em cada etapa, o que muda o tipo de risco que times de segurança precisam vigiar.";
+    const result = splitParagraphIntoTwoBlocks(texto);
+    assert.match(result, /\n\n/, "tem vírgulas suficientes para uma fronteira de oração viável");
+    assert.doesNotMatch(result, /cadeia sem\n\num humano/, "não pode cortar entre \"sem\" e seu complemento");
+    const [first, second] = result.split("\n\n");
+    assert.equal(`${first} ${second}`.replace(/\s+/g, " "), texto);
+  });
+
+  it("#7253: hífen simples (palavra composta) NÃO é tratado como fronteira de oração", () => {
+    const texto = "O porta-voz negou o vazamento mas não respondeu quando questionado sobre o prazo final";
+    const result = splitParagraphIntoTwoBlocks(texto);
+    // Sem vírgula/ponto-e-vírgula/dois-pontos/travessão, só o hífen de "porta-voz"
+    // — que não é fronteira de oração — não deve produzir corte.
+    assert.equal(result, texto);
   });
 
   it("nunca corta DENTRO de um trecho **marcado** (#6086 item c) — marcação sai intacta num dos dois blocos", () => {
