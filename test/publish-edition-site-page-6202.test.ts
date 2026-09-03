@@ -562,14 +562,27 @@ describe("#6202 readEditionInputs — implementação REAL contra fixture (regre
 });
 
 describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push direto em master", () => {
-  /** git de teste com defaults sãos (branch master, sem staged alheio, status limpo). */
+  /**
+   * git de teste com defaults sãos (branch master, HEAD == origin/master —
+   * guard do #7287 passa por padrão —, sem staged alheio, status limpo).
+   * `rev-parse` tem 2 formas de chamada desde o #7287: `--abbrev-ref HEAD`
+   * (nome da branch, só usado pro checkout de volta) e `HEAD origin/master`
+   * (1 chamada, 2 revs — o guard em si). Um override para a chave
+   * `"rev-parse"` recebe TODAS as chamadas de rev-parse (a função decide
+   * com base em `args`), pra permitir simular as duas formas com valores
+   * diferentes quando o teste precisar.
+   */
   function makeGit(overrides: Partial<Record<string, (args: string[]) => string>> = {}) {
     const calls: string[][] = [];
     const git: GitRunner = (args) => {
       calls.push(args);
       const cmd = args[0];
       if (overrides[cmd]) return overrides[cmd]!(args);
-      if (cmd === "rev-parse") return "master\n";
+      if (cmd === "rev-parse") {
+        if (args[1] === "--abbrev-ref") return "master\n";
+        // `rev-parse HEAD origin/master`: mesmo commit por padrão — guard passa.
+        return "deadbeef\ndeadbeef\n";
+      }
       if (cmd === "status") return "";
       if (cmd === "diff") return "";
       return "";
@@ -604,11 +617,15 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
     assert.equal(r.prUrl, "https://github.com/vjpixel/diaria-studio/pull/9999");
     assert.deepEqual(
       calls.map((c) => c[0]),
-      ["rev-parse", "checkout", "add", "status", "diff", "commit", "push", "checkout"],
+      // #7287: 2 rev-parse agora — abbrev-ref (nome, pro checkout de volta) +
+      // HEAD/origin-master (o guard em si, por commit).
+      ["rev-parse", "rev-parse", "checkout", "add", "status", "diff", "commit", "push", "checkout"],
     );
     const revParseCall = calls[0];
+    const guardCall = calls[1];
     const checkoutBack = calls[calls.length - 1];
     assert.deepEqual(revParseCall, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert.deepEqual(guardCall, ["rev-parse", "HEAD", "origin/master"]);
     assert.deepEqual(checkoutBack, ["checkout", "master"]);
   });
 
@@ -656,7 +673,10 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
     let statusCallCount = 0;
     const git: GitRunner = (args) => {
       calls.push(args);
-      if (args[0] === "rev-parse") return "master\n";
+      if (args[0] === "rev-parse") {
+        if (args[1] === "--abbrev-ref") return "master\n";
+        return "deadbeef\ndeadbeef\n";
+      }
       if (args[0] === "status") {
         statusCallCount++;
         return statusCallCount === 1 ? " M workers/site/public/p/abc/index.html\n" : "";
@@ -684,7 +704,10 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
     // limpo — mas o push nunca aconteceu. A chamada precisa tentar de novo.
     const pushCalls: string[][] = [];
     const git: GitRunner = (args) => {
-      if (args[0] === "rev-parse") return "master\n";
+      if (args[0] === "rev-parse") {
+        if (args[1] === "--abbrev-ref") return "master\n";
+        return "deadbeef\ndeadbeef\n";
+      }
       if (args[0] === "status") return ""; // limpo: nada novo pra commitar
       if (args[0] === "push") {
         pushCalls.push(args);
@@ -699,11 +722,47 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
     assert.equal(pushCalls.length, 1, "push foi de fato tentado, não pulado por status limpo");
   });
 
-  it("REGRESSÃO P1-C: branch != master ⇒ lança, sem checkout/add/commit/push (#6202 review)", () => {
-    const { git, calls } = makeGit({ "rev-parse": () => "overnight/algo\n" });
+  it("REGRESSÃO P1-C→#7287: HEAD != origin/master (checkout divergente) ⇒ lança, sem checkout/add/commit/push", () => {
+    const { git, calls } = makeGit({
+      "rev-parse": (args) => {
+        if (args[1] === "--abbrev-ref") return "overnight/algo\n";
+        return "commitantigo1\ncommitnovo22\n"; // HEAD diverge de origin/master
+      },
+    });
     const { gh } = makeGh();
-    assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep), /overnight\/algo/);
-    assert.equal(calls.length, 1, "para no rev-parse — nunca chega a tocar working tree/index/branch");
+    assert.throws(
+      () => commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep),
+      /commitantigo1/,
+    );
+    assert.equal(
+      calls.length,
+      2,
+      "para no 2º rev-parse (o guard por commit) — nunca chega a tocar working tree/index/branch",
+    );
+  });
+
+  it("REGRESSÃO #7287: branch local NÃO se chama 'master', mas HEAD == origin/master ⇒ publica normalmente", () => {
+    // O caso medido ao vivo em 03/09/2026: `master` estava tomada por outro
+    // worktree, então o checkout compartilhado (com o CONTEÚDO exato de
+    // origin/master) vivia numa branch de nome diferente — o guard antigo
+    // (por NOME) recusava aqui; o guard novo (por COMMIT) tem que passar.
+    const { git, calls } = makeGit({
+      "rev-parse": (args) => {
+        if (args[1] === "--abbrev-ref") return "site-publish-master-worktree-elsewhere\n";
+        return "mesmocommit1\nmesmocommit1\n"; // HEAD == origin/master
+      },
+      status: () => " M workers/site/public/p/abc/index.html\n",
+      diff: () => "workers/site/public/p/abc/index.html\n",
+    });
+    const { gh } = makeGh();
+    const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
+    assert.equal(r.pushed, true, "publica mesmo com branch local != 'master', desde que o commit bata");
+    const checkoutBack = calls[calls.length - 1];
+    assert.deepEqual(
+      checkoutBack,
+      ["checkout", "site-publish-master-worktree-elsewhere"],
+      "volta pro branch ORIGINAL (nome não-master), nunca força 'master'",
+    );
   });
 
   it("push que lança propaga — chamador decide (vira code 3 em publishEditionSitePage) — e volta pro master mesmo assim", () => {
@@ -841,8 +900,10 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
       assert.ok(!lockCalls.some((c) => c[0] === "merge-lock-release"), "nunca libera um lock que não adquiriu");
       assert.deepEqual(
         gitCalls.map((c) => c[0]),
-        ["rev-parse"],
-        "para no rev-parse — nunca chega a fazer checkout -B/add/commit/push quando o lock esgota",
+        // #7287: 2 rev-parse (abbrev-ref + guard por commit) rodam ANTES do
+        // acquire do lock — inalterado por este achado, só a contagem muda.
+        ["rev-parse", "rev-parse"],
+        "para nos rev-parse — nunca chega a fazer checkout -B/add/commit/push quando o lock esgota",
       );
     });
 
@@ -866,7 +927,7 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
       });
       assert.deepEqual(
         gitCalls.map((c) => c[0]),
-        ["rev-parse"],
+        ["rev-parse", "rev-parse"],
         "nunca chega a tocar checkout/commit/push quando o lock falha por infra",
       );
     });
@@ -944,7 +1005,10 @@ describe("#6202 productionDeps — fiação real (#6202 review P2-G)", () => {
     const calls: string[][] = [];
     const git: GitRunner = (args) => {
       calls.push(args);
-      if (args[0] === "rev-parse") return "master\n";
+      if (args[0] === "rev-parse") {
+        if (args[1] === "--abbrev-ref") return "master\n";
+        return "deadbeef\ndeadbeef\n";
+      }
       if (args[0] === "status") return " M workers/site/public/p/meu-slug/index.html\n";
       if (args[0] === "diff") return "workers/site/public/p/meu-slug/index.html\n";
       return "";
@@ -963,7 +1027,7 @@ describe("#6202 productionDeps — fiação real (#6202 review P2-G)", () => {
     assert.equal(result.prUrl, "https://github.com/vjpixel/diaria-studio/pull/1");
     assert.deepEqual(
       calls.map((c) => c[0]),
-      ["rev-parse", "checkout", "add", "status", "diff", "commit", "push", "checkout"],
+      ["rev-parse", "rev-parse", "checkout", "add", "status", "diff", "commit", "push", "checkout"],
     );
     assert.ok(
       ghCalls.some((c) => c[0] === "pr" && c[1] === "create"),
@@ -971,10 +1035,14 @@ describe("#6202 productionDeps — fiação real (#6202 review P2-G)", () => {
     );
   });
 
-  it("publish() propaga falha do GitRunner injetado (branch errada)", () => {
-    const git: GitRunner = (args) => (args[0] === "rev-parse" ? "outra-branch\n" : "");
+  it("publish() propaga falha do GitRunner injetado (commit divergente de origin/master, #7287)", () => {
+    const git: GitRunner = (args) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return "outra-branch\n";
+      if (args[0] === "rev-parse") return "aaa1111\nbbb2222\n"; // HEAD != origin/master
+      return "";
+    };
     const deps = productionDeps("/repo", git);
-    assert.throws(() => deps.publish("meu-slug"), /outra-branch/);
+    assert.throws(() => deps.publish("meu-slug"), /aaa1111/);
   });
 });
 

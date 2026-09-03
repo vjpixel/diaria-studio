@@ -61,6 +61,80 @@ describe("slug acent-correto (#1989)", () => {
     assert.ok(long.length <= 81, "≤ maxLen + reticências");
     assert.ok(long.endsWith("…"));
   });
+
+  // #7280 (investigação, 03/09/2026): 21 páginas do acervo têm URL com
+  // acento destruído em 2 padrões distintos ("lanc-a" decomposição,
+  // "amea-as" descarte). NENHUM dos dois é produzido por `slugify`/`seoSlug`
+  // — as 21 são resíduo histórico de slug auto-derivado direto pela Beehiiv
+  // (antes do slug SEO passar a ser SETADO explicitamente via `seoSlug` no
+  // Stage 5, #1989, e GATE-BLOCKED no Stage 6 contra divergência, #4570).
+  // Este teste ancora essa conclusão: reconstrói os títulos prováveis por
+  // trás de cada slug corrompido do corpo do #7280 e confirma que o
+  // algoritmo ATIVO hoje nunca reproduziria o padrão quebrado — não há
+  // fix de código pendente aqui, só a decisão editorial (fora de escopo
+  // técnico) sobre renomear/redirecionar as 21 URLs públicas já existentes.
+  it("REGRESSÃO #7280: nenhum dos 2 padrões de corrupção do acervo (decomposição/descarte) sai de seoSlug hoje", () => {
+    // Cada caso: título provável reconstruído a partir do slug corrompido
+    // registrado no corpo do #7280, o slug CORRETO que `seoSlug` produz hoje,
+    // e o slug CORROMPIDO observado no acervo (2 padrões: "lanc-a" decompõe o
+    // caractere acentuado deixando a letra-base + hífen; "amea-as" descarta o
+    // caractere inteiro). Nota de método (#7280, correção do próprio autor):
+    // "-a-"/"-e-"/"-o-" isolados são palavras legítimas em PT-BR (artigo/
+    // conjunção) — por isso a asserção usa IGUALDADE exata contra o slug
+    // correto esperado, nunca um regex genérico que confundiria as duas
+    // coisas (foi exatamente esse erro que inflou a contagem original de
+    // 107 para os 21 casos reais).
+    const casosDoAcervo: Array<[titulo: string, correto: string, corrompido: string]> = [
+      [
+        "90% das pessoas não reconhecem vídeos de IA",
+        "90-das-pessoas-nao-reconhecem-videos-de-ia",
+        "90-das-pessoas-na-o-reconhecem-vi-deos-de-ia",
+      ],
+      [
+        "IA com lança agentes de IA autônomos",
+        "ia-com-lanca-agentes-de-ia-autonomos",
+        "ai-com-lanc-a-agentes-de-ia-auto-nomos",
+      ],
+      [
+        "Alibaba lança três modelos de open source",
+        "alibaba-lanca-tres-modelos-de-open-source",
+        "alibaba-lanc-a-tre-s-modelos-de-open-source",
+      ],
+      [
+        "Anthropic e Gates: 200 mi em saúde e educação",
+        "anthropic-e-gates-200-mi-em-saude-e-educacao",
+        "anthropic-e-gates-200-mi-em-sa-de-e-educa-o",
+      ],
+      [
+        "Altman admite: a IA trará ameaças",
+        "altman-admite-a-ia-trara-ameacas",
+        "altman-admite-a-ia-trar-amea-as",
+      ],
+      [
+        "Anthropic expõe código do Claude Code",
+        "anthropic-expoe-codigo-do-claude-code",
+        "anthropic-expo-e-co-digo-do-claude-code",
+      ],
+      [
+        "Claude Code afunda ações da IBM",
+        "claude-code-afunda-acoes-da-ibm",
+        "claude-code-afunda-ac-o-es-da-ibm",
+      ],
+      [
+        "Brasil: 70% da geração Z usa ChatGPT todo mês",
+        "brasil-70-da-geracao-z-usa-chatgpt-todo-mes",
+        "brasil-70-da-gera-o-z-usa-chatgpt-todo-m-s",
+      ],
+    ];
+    for (const [titulo, correto, corrompido] of casosDoAcervo) {
+      assert.equal(seoSlug(titulo), correto, `seoSlug("${titulo}")`);
+      assert.notEqual(
+        seoSlug(titulo),
+        corrompido,
+        `seoSlug("${titulo}") não pode reproduzir o padrão corrompido observado no acervo`,
+      );
+    }
+  });
 });
 
 describe("formatManualSlugFixInstructions (#3449)", () => {

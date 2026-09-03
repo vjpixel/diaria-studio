@@ -227,6 +227,77 @@ function checkWhatsappSlugGuard(editionDir: string): InvariantViolation[] {
   return [];
 }
 
+/**
+ * `_internal/site-page-published.json` (escrito por
+ * `publish-edition-site-page.ts`, #7283) deve existir e registrar
+ * `published: true` — senão a página `/p/{slug}` do acervo não foi
+ * publicada (branch pushada + PR aberto). `severity: "warning"` de
+ * propósito: o fail-soft do #6202 é intencional (site é acessório ao
+ * envio) — este check não bloqueia Stage 6, só torna a falha VISÍVEL no
+ * relatório de invariantes em vez de depender de um agente LLM lembrar de
+ * logar via `log-event.ts` (prosa em `orchestrator-stage-6.md` §6d-site,
+ * não reforçada em código — foi exatamente essa lacuna que deixou 4
+ * edições consecutivas (31/08–03/09) sem página no acervo em silêncio
+ * absoluto, ver #7283/#7266).
+ *
+ * `code: 2` ("nada a publicar ainda" — insumos ausentes) é tratado como
+ * benigno, não gera violação: não é falha de publish, e não deveria
+ * acontecer no Stage 6 normal (Stage 4/5 já rodaram), mas se acontecer não
+ * é isto que deve acusar.
+ *
+ * Arquivo ausente também vira warning (não error) — cobre tanto "o passo
+ * nunca rodou" quanto "versão antiga do script, sem este mecanismo ainda".
+ */
+function checkSitePagePublished(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "site-page-published.json");
+  if (!existsSync(path)) {
+    return [
+      {
+        rule: "site-page-published",
+        message:
+          `_internal/site-page-published.json ausente — §6d-site (publish-edition-site-page.ts) não ` +
+          `rodou, ou rodou numa versão anterior ao #7283. Acervo do site pode estar sem a página desta ` +
+          `edição (link de hub cairia no fallback do Kit e daria 404, ver #7266). Rodar manualmente: ` +
+          `\`npx tsx scripts/publish-edition-site-page.ts --edition-dir {EDITION_DIR} --slug {slug}\`.`,
+        source_issue: "#7283",
+        severity: "warning",
+        file: path,
+      },
+    ];
+  }
+  let data: { code?: number; slug?: string; published?: boolean; reason?: string; prUrl?: string };
+  try {
+    data = JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    return [
+      {
+        rule: "site-page-published-parseable",
+        message: `site-page-published.json não parseável: ${(e as Error).message}`,
+        source_issue: "#7283",
+        severity: "warning",
+        file: path,
+      },
+    ];
+  }
+  if (data.code === 2) return [];
+  if (data.published !== true) {
+    return [
+      {
+        rule: "site-page-published",
+        message:
+          `site-page-published.json registra published=${String(data.published)} (code=${data.code ?? "?"}) ` +
+          `— a página /p/${data.slug ?? "?"} do acervo do site NÃO foi publicada (branch pushada + PR ` +
+          `aberto/reusado). Motivo: ${data.reason ?? "não registrado"}. Fail-soft intencional (#6202) — não ` +
+          `bloqueia a edição, mas o link fica 404 até alguém publicar manualmente (ver #7266/#7280).`,
+        source_issue: "#7283",
+        severity: "warning",
+        file: path,
+      },
+    ];
+  }
+  return [];
+}
+
 export const STAGE_6_RULES: InvariantRule[] = [
   {
     id: "step-5-sentinel-exists",
@@ -263,6 +334,14 @@ export const STAGE_6_RULES: InvariantRule[] = [
     stage: 6,
     run: checkStep6Sentinel,
   },
+  {
+    id: "site-page-published",
+    description:
+      "_internal/site-page-published.json registra published:true — torna visível o fail-soft do §6d-site (#7283)",
+    source_issue: "#7283",
+    stage: 6,
+    run: checkSitePagePublished,
+  },
 ];
 
 export {
@@ -271,4 +350,5 @@ export {
   checkEditionReport,
   checkWhatsappSlugGuard,
   checkStep6Sentinel,
+  checkSitePagePublished,
 };
