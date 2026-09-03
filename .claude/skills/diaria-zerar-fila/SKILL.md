@@ -1,6 +1,6 @@
 ---
 name: diaria-zerar-fila
-description: Rodada de EXAUSTÃO da fila de issues, com o editor acordado só no começo (#7289). Briefing em 2 rodadas enquanto ele está disponível, depois trabalho autônomo até toda issue aberta ter desfecho — fechada por PR mergeado, ou aberta com bloqueio nomeado e rota corrigida. Topologia de 1 coordenadora + N executoras conversando por SendMessage. Esta skill é o CONTRATO; o motor é o `/goal` embutido, que faz a sessão continuar entre turnos — invocar como `/goal Siga a skill /diaria-zerar-fila. Condição: ...`, em auto mode. Ver seção "Como invocar".
+description: 'Rodada de EXAUSTÃO da fila de issues, com o editor acordado só no começo (#7289). Briefing em 2 rodadas enquanto ele está disponível, depois trabalho autônomo até toda issue aberta ter desfecho — fechada por PR mergeado, ou aberta com bloqueio nomeado e rota corrigida. Topologia de 1 coordenadora + N executoras conversando por SendMessage. Esta skill é o CONTRATO; o motor é o `/goal` embutido, que faz a sessão continuar entre turnos — invocar como `/goal Siga a skill /diaria-zerar-fila. Condição: ...`, em auto mode. Ver seção "Como invocar".'
 disable-model-invocation: true
 model: opus
 effort: high
