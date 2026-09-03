@@ -40,7 +40,14 @@
  *   2 — canal desligado (`kit_diaria.enabled !== true`) ou estado ausente:
  *       NÃO é erro, é o caminho normal quando o canal não participou da edição
  *   3 — PATCH falhou (erro de API)
- *   4 — GET pós-PATCH não confirma o agendamento
+ *   4 — GET não confirma o agendamento — cobre DOIS pontos desde #7285: o
+ *       GET pós-PATCH de sempre, E o GET de checagem de idempotência (roda
+ *       ANTES do PATCH, quando o estado local diz "scheduled" — confirma
+ *       contra o broadcast vivo antes de aceitar o cache) falhando por
+ *       rede/API. A `reason` do resultado distingue os dois casos em
+ *       prosa; o código numérico é o mesmo porque o tratamento do chamador
+ *       (warn, não bloqueia, nunca reporta "agendado") já é idêntico nos
+ *       dois.
  *
  * Uso:
  *   npx tsx scripts/schedule-kit-diaria.ts --edition-dir data/editions/AAMMDD/ --scheduled-at 2026-08-26T09:00:00Z
