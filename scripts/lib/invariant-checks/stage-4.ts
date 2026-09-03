@@ -71,7 +71,11 @@ import {
   narrativeIsCatalogShaped,
   SECTION_HEADER,
 } from "../../render-erro-intencional.ts";
-import { loadIntentionalErrorJson, intentionalErrorJsonPath } from "../intentional-errors.ts";
+import {
+  loadIntentionalErrorJson,
+  intentionalErrorJsonPath,
+  scanWrongValueAdoption, // #7324
+} from "../intentional-errors.ts";
 import { checkHasNegativeImpactHighlight } from "./stage-1.ts"; // #3916, #3918
 
 // #6336: usado só por checkKitFixtureAudit, pra localizar
@@ -915,7 +919,14 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
  * fecharia o gap, mas exigiria parsear `location` de volta pra uma região do
  * MD (formato livre, "DESTAQUE 2, parágrafo 1") — fora de escopo desta PR.
  */
-function checkIntentionalErrorPresentInFinal(editionDir: string): InvariantViolation[] {
+function checkIntentionalErrorPresentInFinal(
+  editionDir: string,
+  // #7324: injetável em teste — produção nunca passa (default = pai de
+  // editionDir, tipicamente `data/editions/`); testes injetam um diretório
+  // isolado pra não contar edições vizinhas de outros testes/processos
+  // rodando concorrentemente no mesmo tmpdir do OS.
+  editionsRootDir?: string,
+): InvariantViolation[] {
   const path = resolve(editionDir, "02-reviewed.md");
   if (!existsSync(path)) return [];
 
@@ -941,6 +952,19 @@ function checkIntentionalErrorPresentInFinal(editionDir: string): InvariantViola
 
   const wrongValue = (record.wrong_value ?? "").trim();
   if (!wrongValue || /^\{PREENCHER/i.test(wrongValue)) {
+    // #7324: conta quantas edições (histórico completo em editionsRootDir)
+    // declaram erro sem `wrong_value` — a decisão de tornar o campo
+    // obrigatório é do editor (fica aberta), mas essa contagem tira o "opcional
+    // vira permanente por inércia" da lista de riscos silenciosos: com o
+    // número exposto aqui, toda vez que o warning dispara, dá pra ler a
+    // adoção sem precisar de auditoria manual.
+    const rootDir = editionsRootDir ?? dirname(resolve(editionDir));
+    const { totalDeclared, missingWrongValue } = scanWrongValueAdoption(rootDir);
+    const adoptionNote =
+      totalDeclared > 0
+        ? ` [instrumentação #7324: ${missingWrongValue}/${totalDeclared} edição(ões) com erro ` +
+          `declarado ainda sem \`wrong_value\` — inclui esta.]`
+        : "";
     return [
       {
         rule: "intentional-error-present-in-final",
@@ -950,7 +974,7 @@ function checkIntentionalErrorPresentInFinal(editionDir: string): InvariantViola
           `presente em 02-reviewed.md (uma poda de RADAR no gate pode removê-lo sem nenhum ` +
           `aviso — incidente real: edição 260902, #7243). Preencha \`wrong_value\` com a ` +
           `grafia/valor efetivamente ERRADO plantado no texto (ex: "Anthropik", não "Anthropic" ` +
-          `— esse é o \`correct_value\`).`,
+          `— esse é o \`correct_value\`).${adoptionNote}`,
         source_issue: "#7243",
         severity: "warning",
         file: jsonPath,

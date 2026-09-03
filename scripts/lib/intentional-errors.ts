@@ -20,7 +20,7 @@
  * ```
  */
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export type ErrorType =
@@ -251,6 +251,56 @@ export function loadIntentionalErrorJson(path: string): IntentionalErrorJson | n
 export function writeIntentionalErrorJson(path: string, record: IntentionalErrorJson): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(record, null, 2) + "\n", "utf8");
+}
+
+/**
+ * (#7324) Instrumenta a adoção do campo `wrong_value` (#7243) — irmão
+ * OPCIONAL de `correct_value`. Sem `wrong_value`,
+ * `checkIntentionalErrorPresentInFinal` (Stage 4, invariant-checks/stage-4.ts)
+ * não consegue verificar mecanicamente se o item que carrega o erro plantado
+ * sobreviveu à revisão do gate — rebaixa pra `warning`. A decisão de tornar
+ * o campo obrigatório é do editor (fica aberta, #7324); esta função só conta,
+ * pra essa decisão deixar de ser aposta e virar leitura.
+ *
+ * Varre `editionsRootDir` (tipicamente `data/editions/`) e, para cada
+ * subdiretório com `_internal/intentional-error.json`, conta como "erro
+ * declarado" toda edição que NÃO seja `no_error: true` e tenha `description`
+ * preenchida e não-placeholder (sinal simples de "o editor de fato usou o
+ * recurso nesta edição" — não precisa ler `02-reviewed.md`, ao contrário de
+ * `checkIntentionalErrorPresentInFinal`, porque aqui o objetivo é estatística
+ * agregada, não decidir se ESTA edição deve bloquear).
+ *
+ * Best-effort: diretório ausente/ilegível → `{ totalDeclared: 0,
+ * missingWrongValue: 0 }`, nunca lança — mesma disciplina fail-soft do resto
+ * deste módulo (`loadIntentionalErrorJson` já tolera arquivo ausente/corrompido).
+ */
+export function scanWrongValueAdoption(editionsRootDir: string): {
+  totalDeclared: number;
+  missingWrongValue: number;
+} {
+  let entries: string[];
+  try {
+    entries = readdirSync(editionsRootDir);
+  } catch {
+    return { totalDeclared: 0, missingWrongValue: 0 };
+  }
+  let totalDeclared = 0;
+  let missingWrongValue = 0;
+  for (const entry of entries) {
+    const jsonPath = join(editionsRootDir, entry, "_internal", "intentional-error.json");
+    const record = loadIntentionalErrorJson(jsonPath);
+    if (!record) continue;
+    if (record.no_error === true) continue;
+    const description = (record.description ?? "").trim();
+    // Placeholder nunca preenchido pelo editor — a edição não "adotou" o
+    // recurso ainda (ex: render-erro-intencional.ts acabou de inserir o
+    // esqueleto e o gate ainda não passou por ela).
+    if (!description || /^\{PREENCHER/i.test(description)) continue;
+    totalDeclared++;
+    const wrongValue = (record.wrong_value ?? "").trim();
+    if (!wrongValue || /^\{PREENCHER/i.test(wrongValue)) missingWrongValue++;
+  }
+  return { totalDeclared, missingWrongValue };
 }
 
 export function frontmatterToEntry(
