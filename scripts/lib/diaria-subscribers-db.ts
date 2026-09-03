@@ -83,8 +83,10 @@
 // dado a mensagem clara.
 import type { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { basename, dirname, resolve } from "node:path";
 import { assertSupportedNodeVersion } from "./check-node-version.ts";
+import { renameWithRetry } from "./atomic-write.ts";
 
 const ROOT = import.meta.dirname
   ? resolve(import.meta.dirname, "..", "..")
@@ -327,6 +329,136 @@ export function migrateSubscriptionColumns(db: DatabaseSync): void {
       if (!message.includes("duplicate column name")) throw err;
       // Processo concorrente já adicionou a coluna entre o PRAGMA acima e
       // este exec — mesmo resultado final, seguir sem lançar.
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reset atômico do store (#7187)
+// ---------------------------------------------------------------------------
+
+/**
+ * Infixo do caminho de trabalho de um rebuild atômico do store. O `.db` em
+ * construção (e os sidecars `-wal`/`-shm` que o SQLite criar pra ele) vive no
+ * MESMO diretório do store definitivo — `rename` entre filesystems distintos
+ * falha (EXDEV) e `data/` pode ser um mount próprio (OneDrive/rclone), então
+ * o tmp NÃO pode ser `os.tmpdir()`.
+ */
+const REBUILD_TMP_INFIX = ".rebuild-tmp-";
+
+/**
+ * Devolve o caminho do `.db` de TRABALHO pra reconstruir o store em `dbPath`
+ * sem tocar no store atual (#7187), e varre lixo de builds mortos anteriores
+ * (best-effort).
+ *
+ * **Motivação (#7187):** o `--reset` do builder
+ * (`diaria-subscribers-ingest-beehiiv.ts`, #7181) apagava o `.db` e recriava
+ * no lugar. Entre máquinas (o store é sincronizado via OneDrive), a DELEÇÃO
+ * se propagava antes da recriação terminar: a outra máquina ficava sem store
+ * nenhum — só os sidecars `-wal`/`-shm` órfãos, estado inválido (um
+ * consumidor local falha, ou pior, tenta abrir banco a partir de sidecars que
+ * não correspondem a arquivo nenhum). O `-wal` observado com mtime anterior à
+ * reingestão era resíduo do banco contaminado, não do novo.
+ *
+ * O padrão correto é construir o store novo INTEIRO num arquivo de trabalho e
+ * só trocar por `rename` atômico no fim — durante todo o rebuild, a outra
+ * máquina vê o store VELHO (dados desatualizados, estado válido) em vez de
+ * nenhum. Ausência → desatualização, degradação muito mais benigna. Este
+ * helper só RESERVA o caminho (e limpa lixo): quem constrói é o caller,
+ * abrindo o `.db` devolvido com `openDiariaSubscribersDb` e preenchendo; quem
+ * instala é `atomicCommitRebuild`.
+ *
+ * O nome é dot-prefixed (`.{stem}.rebuild-tmp-{pid}-{epoch}-{rand}`) — mesmo
+ * esquema de `tmpSuffix` em `atomic-write.ts`: único por processo (testes
+ * paralelos não colidem) e nenhum consumidor lê esse padrão. Lixo de builds
+ * que morreram no meio (`.{stem}.rebuild-tmp-*`, inclusive os sidecars deles
+ * — o prefixo casa ambos) é removido aqui: um rebuild novo nunca convive com
+ * resto de outro. Dois `--reset` concorrentes não são cenário suportado (já
+ * não eram: hoje ambos destroem o mesmo arquivo).
+ *
+ * O diretório do store é criado se faltar (idempotente — o builder já
+ * garante, mas o helper não depende disso).
+ *
+ * @returns caminho absoluto do `.db` de trabalho (AINDA inexistente —
+ *   `openDiariaSubscribersDb` nele cria com o schema completo).
+ */
+export function atomicRebuildTempPath(dbPath: string): string {
+  const absDb = resolve(dbPath);
+  const dir = dirname(absDb);
+  const stem = basename(absDb);
+  mkdirSync(dir, { recursive: true });
+  // Varredura de lixo de builds mortos. Best-effort em toda falha: diretório
+  // ilegível (OneDrive transitório) ou arquivo travado por sync/antivírus não
+  // derruba o rebuild — lixo remanescente é inerte (ninguém lê esse padrão).
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    // Sem varredura — segue pro nome novo.
+  }
+  const litterPrefix = `.${stem}${REBUILD_TMP_INFIX}`;
+  for (const entry of entries) {
+    if (!entry.startsWith(litterPrefix)) continue;
+    try {
+      rmSync(resolve(dir, entry), { force: true });
+    } catch {
+      // Inerte — tenta de novo no próximo rebuild.
+    }
+  }
+  return resolve(
+    dir,
+    `.${stem}${REBUILD_TMP_INFIX}${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
+}
+
+/**
+ * Instala o store reconstruído (`tmpDbPath`) no lugar definitivo (`dbPath`)
+ * por `rename` atômico, e remove os sidecars da geração substituída.
+ *
+ * A troca em si é atômica em POSIX + NTFS: o alvo é ou o store velho ou o
+ * novo completo — nunca parcial nem ausente. É exatamente aqui que a janela
+ * "sem arquivo por N minutos" da #7187 deixa de existir: a deleção do velho e
+ * a aparição do novo são o MESMO evento no filesystem, e o sync propaga um
+ * rename em vez de um buraco. `renameWithRetry` (de `atomic-write.ts`, #1269)
+ * cobre a race EPERM/EBUSY/EACCES do OneDrive no Windows, que segura o alvo
+ * por ~100-500ms durante operações de sync.
+ *
+ * Os sidecars `-wal`/`-shm`/`-journal` junto ao store definitivo pertenciam à
+ * geração SUBSTITUÍDA — deixá-los é recriar exatamente o estado inválido
+ * "sidecar sem `.db` correspondente" que motivou a issue. Removidos logo após
+ * o swap, best-effort: um sidecar travado por sync não derruba o commit (o
+ * SQLite recria os sidecars de que precisa ao abrir o store novo; um sidecar
+ * órfão solto é o estado pré-fix, não um novo).
+ *
+ * `tmpDbPath` deve estar FECHADO e completo — o caller fecha a conexão antes
+ * de chamar (um close limpo do SQLite checkpointa a WAL e remove os sidecars
+ * do tmp; se o close não foi limpo, os sidecars do tmp são removidos aqui
+ * junto). Falha é PROPAGADA: no builder, um commit que falha aborta a run com
+ * o store VELHO intacto no lugar — o direcionamento seguro.
+ *
+ * @param tmpDbPath `.db` de trabalho completo (de `atomicRebuildTempPath`)
+ * @param dbPath    store definitivo — pode não existir (1º reset num clone
+ *   fresco; `rename` cria)
+ */
+export function atomicCommitRebuild(tmpDbPath: string, dbPath: string): void {
+  const absTmp = resolve(tmpDbPath);
+  const absDb = resolve(dbPath);
+  if (!existsSync(absTmp)) {
+    throw new Error(
+      `atomicCommitRebuild: store de trabalho não encontrado: ${absTmp} ` +
+        `(o build foi concluído e a conexão fechada?)`,
+    );
+  }
+  renameWithRetry(absTmp, absDb);
+  // Sidecars da geração antiga (e do tmp, se o close não foi limpo) —
+  // best-effort, ver docstring.
+  for (const candidate of [absDb, absTmp]) {
+    for (const suffix of ["-wal", "-shm", "-journal"]) {
+      try {
+        rmSync(`${candidate}${suffix}`, { force: true });
+      } catch {
+        // Inerte — ninguém lê sidecar sem dono conhecido.
+      }
     }
   }
 }
