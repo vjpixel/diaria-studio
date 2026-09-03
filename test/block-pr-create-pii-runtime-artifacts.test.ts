@@ -11,6 +11,8 @@ import {
   buildDenyMessage,
   EMAIL_RE,
   isAllowlistedEmailLine,
+  resolveRepoRootCandidates,
+  resolveGitRoot,
 } from "../.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs";
 
 // #6753: guard mecânico contra `gh pr create` quando a branch carrega
@@ -431,5 +433,97 @@ describe("isAllowlistedEmailLine — contrabando por substring (#7244, review da
   it("o literal EXATO segue permitido, inclusive com caixa diferente", () => {
     assert.equal(isAllowlistedEmailLine("seu@email.com"), true);
     assert.equal(isAllowlistedEmailLine("SEU@EMAIL.COM"), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #7241 — o guard era CEGO A WORKTREE: resolvia o diretório como
+// `join(hookDir, "..", "..")`, que sempre aponta pro checkout PRINCIPAL, e
+// inspecionava a branch que estivesse LÁ em vez da branch da PR.
+//
+// Duas direções de falha, e a 2ª é a grave:
+//   1. falso positivo — recusa PR limpa por causa da branch alheia;
+//   2. falso NEGATIVO — branch de worktree com PII real PASSA, porque o guard
+//      olhou outra branch. Como overnight/develop abrem toda unidade em
+//      worktree, esse era o caminho NORMAL.
+// ---------------------------------------------------------------------------
+
+describe("resolveRepoRootCandidates (#7241)", () => {
+  const HOOK_DIR = "C:/repo/.claude/hooks";
+  const MAIN = "C:/repo"; // = join(HOOK_DIR, "..", "..")
+  const WORKTREE = "C:/repo/.claude/worktrees/fix-1234-algo";
+
+  it("põe o cwd do payload PRIMEIRO — é de onde o gh pr create de fato saiu", () => {
+    const out = resolveRepoRootCandidates(WORKTREE, HOOK_DIR);
+    assert.equal(out[0], WORKTREE);
+  });
+
+  it("mantém o path derivado do hook como ÚLTIMO recurso, nunca como preferência", () => {
+    const out = resolveRepoRootCandidates(WORKTREE, HOOK_DIR);
+    const hookDerived = out[out.length - 1].replaceAll("\\", "/");
+    assert.equal(hookDerived, MAIN, "o valor antigo vira fallback, não escolha");
+    assert.ok(out.indexOf(WORKTREE) < out.length - 1, "worktree tem que vir antes do fallback");
+  });
+
+  it("ignora payload cwd ausente/vazio/não-string sem quebrar a ordem", () => {
+    for (const vazio of [undefined, null, "", "   ", 42, {}]) {
+      const out = resolveRepoRootCandidates(vazio, HOOK_DIR);
+      assert.ok(out.length >= 1, `${String(vazio)}: ainda tem que sobrar candidato`);
+      assert.equal(out[out.length - 1].replaceAll("\\", "/"), MAIN);
+      assert.ok(!out.includes(vazio));
+    }
+  });
+
+  it("deduplica o mesmo path (inclusive com barra invertida do Windows e barra final)", () => {
+    const out = resolveRepoRootCandidates("C:\repo\\", HOOK_DIR);
+    const norm = out.map((c) => c.replaceAll("\\", "/").replace(/\/+$/, ""));
+    assert.equal(new Set(norm).size, norm.length, "nenhum path repetido");
+  });
+});
+
+describe("resolveGitRoot (#7241)", () => {
+  it("devolve o toplevel do PRIMEIRO candidato que é repo git", () => {
+    const visto: string[] = [];
+    const fakeGit = (_args: string[], cwd: string) => {
+      visto.push(cwd);
+      return cwd === "/wt" ? "/wt\n" : null;
+    };
+    const root = resolveGitRoot(["/wt", "/main"], fakeGit as never);
+    assert.equal(root, "/wt");
+    assert.deepEqual(visto, ["/wt"], "para no primeiro que resolve — nem chega no seguinte");
+  });
+
+  it("pula candidato que não é repo e segue pro próximo", () => {
+    const fakeGit = (_args: string[], cwd: string) => (cwd === "/main" ? "/main\n" : null);
+    assert.equal(resolveGitRoot(["/nao-e-repo", "/main"], fakeGit as never), "/main");
+  });
+
+  it("trata stdout vazio como não-resolvido (não devolve string vazia)", () => {
+    const fakeGit = (_args: string[], cwd: string) => (cwd === "/vazio" ? "   \n" : "/ok\n");
+    assert.equal(resolveGitRoot(["/vazio", "/outro"], fakeGit as never), "/ok");
+  });
+
+  it("devolve null quando nenhum candidato resolve — chamador faz fail-open", () => {
+    assert.equal(resolveGitRoot(["/a", "/b"], (() => null) as never), null);
+  });
+});
+
+describe("#7241 — âncora da regressão: worktree vence o checkout principal", () => {
+  it("PR aberta de um worktree é julgada pelo WORKTREE, nunca pela branch do checkout principal", () => {
+    const HOOK_DIR = "C:/repo/.claude/hooks";
+    const WORKTREE = "C:/repo/.claude/worktrees/fix-7234-clarice-score";
+
+    // Os DOIS são repos git válidos — é exatamente o cenário real: o principal
+    // com a branch de outra sessão, o worktree com a branch da PR.
+    const fakeGit = (_args: string[], cwd: string) => `${cwd.replaceAll("\\", "/")}\n`;
+
+    const escolhido = resolveGitRoot(resolveRepoRootCandidates(WORKTREE, HOOK_DIR), fakeGit as never);
+
+    assert.equal(escolhido, WORKTREE);
+    assert.notEqual(
+      escolhido,
+      "C:/repo",
+      "sem o fix, o guard inspecionava o checkout principal e julgava a branch errada",
+    );
   });
 });

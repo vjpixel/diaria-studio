@@ -402,6 +402,65 @@ function runGit(args, cwd) {
   return result.stdout ?? "";
 }
 
+/**
+ * Candidatos a raiz do repositório, em ordem de preferência (#7241).
+ *
+ * **Por que isto existe.** Até o #7241 o hook usava UM valor só —
+ * `join(hookDir, "..", "..")` — que é justamente o único que NUNCA acompanha
+ * o worktree: `.claude/hooks/` resolve pro checkout PRINCIPAL, não pro
+ * diretório onde o `gh pr create` de fato rodou. Como `/diaria-overnight` e
+ * `/diaria-develop` abrem TODA unidade de trabalho num worktree
+ * (`.claude/worktrees/*`), o caminho normal era o guard inspecionar a branch
+ * ERRADA — a que estivesse no checkout principal naquele momento.
+ *
+ * As duas direções de falha, e a segunda é a grave:
+ *   1. falso positivo — recusa PR limpa porque o checkout principal está com
+ *      outra branch suja (achado ao vivo 03/09/2026: PR de `#7234` recusada
+ *      citando arquivos de `develop/fix-7101-7103-hub-prose-pass`);
+ *   2. falso NEGATIVO — branch de worktree com PII real PASSA, porque o guard
+ *      olhou outra branch. O guard responde "limpo" sobre algo que nunca
+ *      inspecionou. Mesma classe do #6090 ("guard defasado concorda com
+ *      sujeito defasado"): não erra o julgamento, erra o SUJEITO.
+ *
+ * `payloadCwd` (o `cwd` que o PreToolUse entrega junto do comando) é a fonte
+ * mais fiel — é literalmente o diretório de onde o `gh pr create` saiu.
+ * `process.cwd()` cobre runtimes que não mandem esse campo. `hookDir/../..`
+ * fica por último **só** como preservação do comportamento histórico quando
+ * nenhum dos dois resolve um repo — nunca como preferência.
+ *
+ * Pura e exportada pra ser testável sem git: devolve os candidatos na ordem,
+ * já deduplicados (normalizando `\` → `/` pra não repetir o mesmo path no
+ * Windows) e sem entradas vazias.
+ */
+export function resolveRepoRootCandidates(payloadCwd, hookDir) {
+  const seen = new Set();
+  const out = [];
+  for (const candidate of [payloadCwd, process.cwd(), join(hookDir, "..", "..")]) {
+    if (typeof candidate !== "string" || candidate.trim() === "") continue;
+    const norm = candidate.replaceAll("\\", "/").replace(/\/+$/, "");
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    out.push(candidate);
+  }
+  return out;
+}
+
+/**
+ * Primeiro candidato que é de fato um repo git — devolve o toplevel resolvido
+ * por `git rev-parse --show-toplevel` (num worktree isso devolve o path do
+ * WORKTREE, que é exatamente o que se quer). `null` se nenhum resolver, e aí
+ * o chamador faz fail-open como já fazia pros demais erros de git.
+ */
+export function resolveGitRoot(candidates, gitRunner = runGit) {
+  for (const candidate of candidates) {
+    const top = gitRunner(["rev-parse", "--show-toplevel"], candidate);
+    if (top === null) continue;
+    const trimmed = top.trim();
+    if (trimmed !== "") return trimmed;
+  }
+  return null;
+}
+
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
 // entrypoint (nunca ao ser importado por test/block-pr-create-pii-runtime-artifacts.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
@@ -420,7 +479,11 @@ if (
       if (!isGhPrCreateCommand(command)) return;
 
       const hookDir = dirname(fileURLToPath(import.meta.url));
-      const cwd = join(hookDir, "..", "..");
+      // #7241 — o diretório de onde o `gh pr create` SAIU, não o path do hook.
+      // Ver `resolveRepoRootCandidates` pro porquê (o valor antigo era cego a
+      // worktree e fazia o guard julgar a branch errada).
+      const cwd = resolveGitRoot(resolveRepoRootCandidates(payload.cwd, hookDir));
+      if (cwd === null) return; // fail-open: nenhum candidato é repo git
 
       const baseRef = resolveBaseRef(cwd);
       if (!baseRef) return; // fail-open: não deu pra achar master/origin-master
