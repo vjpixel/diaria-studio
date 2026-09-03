@@ -63,6 +63,7 @@ import {
   diffApoioTags,
   fetchCurrentBeehiivState,
   shouldBlockRemovals,
+  isPreviousMonthSnapshotMissing,
   evaluateBlastRadiusGuard,
 } from "./sync-apoio-nivel-beehiiv.ts";
 import {
@@ -312,7 +313,16 @@ async function main(): Promise<void> {
     // `--push` real recusaria — avaliado SEM os escape hatches
     // (`--allow-partial`/`--force-blast-radius`), o pior caso, já que este
     // script nunca sabe se o editor vai usá-los.
-    const partialDataBlocksRemovals = shouldBlockRemovals(data.error, diff, false) && diff.toRemove.length > 0;
+    //
+    // #7195: precisa passar `previousMonthSnapshotMissing` junto, senão a
+    // promessa de "pior caso" acima deixa de valer — o sync real bloqueia
+    // remoções quando o snapshot de M-1 falta, e este alarme reportaria
+    // `partialDataBlocksRemovals: false` exatamente nesse cenário,
+    // SUBESTIMANDO o risco no e-mail que vai pro editor.
+    const partialDataBlocksRemovals =
+      shouldBlockRemovals(data.error, diff, false, {
+        previousMonthSnapshotMissing: isPreviousMonthSnapshotMissing(pastSnapshots, currentMonth),
+      }) && diff.toRemove.length > 0;
     const blastGuard = evaluateBlastRadiusGuard(diff.toRemove.length, current, false);
     const guardWarnings: DiffAlarmGuardWarnings = {
       partialDataBlocksRemovals,

@@ -99,6 +99,11 @@ function contact(
     status,
     openRate: null,
     vinculo: null,
+    // #4437 Entrega 2 acrescentou estes 2 campos a `ContactWithStatus` e
+    // este fixture ficou pra trás (baseline do typecheck-ratchet). `null` =
+    // "não aplicável / nunca consultado" — nada aqui depende deles.
+    rewardLevel: null,
+    segments: null,
   };
 }
 

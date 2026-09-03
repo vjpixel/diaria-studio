@@ -40,8 +40,16 @@
  *   .../by_email/{email}` com `custom_fields` — `updateSubscriberFields`/
  *   `getSubscriberById` em `scripts/lib/kit-subscribers.ts` (#6049). Remoção
  *   de nível usa `fields: {apoio_nivel: ""}` (string vazia) — o Kit não tem
- *   um `delete: true` equivalente ao da Beehiiv; **não confirmado ao vivo**,
- *   ver ressalva em `kit-subscribers.ts`.
+ *   um `delete: true` equivalente ao da Beehiiv. **CONFIRMADO AO VIVO em
+ *   02/09/2026** (#6925, 1º `--push` real deste script): 2 remoções + 1
+ *   adição, 3 aplicadas / 0 falhas, verificadas por leitura independente na
+ *   API do Kit (os 2 removidos ficaram com `apoio_nivel: ""`, o 3º com
+ *   `apoiador`). Até então isto era "não confirmado ao vivo".
+ *   **Gotcha medida na mesma rodada:** o dry-run imediatamente após o
+ *   `--push` ainda mostra o MESMO diff (atraso de propagação do Kit) —
+ *   minutos depois converge. Quem reconferir na hora vai achar que não
+ *   pegou e tende a reaplicar; a leitura autoritativa é a API do Kit, não
+ *   o dry-run imediato.
  * - **Sem `subscriptionId` distinto do subscriber ID** — o Kit não separa
  *   "assinante" de "assinatura" como a Beehiiv; `subscriptionId` no diff
  *   reusado carrega o `id` numérico do subscriber Kit (como string, pra
@@ -57,6 +65,11 @@
  * padrão (só `--push` grava). `sync-apoio-nivel-beehiiv.ts` continua sendo o
  * script que RODA de verdade até o cutover — nenhum caminho automático
  * decide entre os dois.
+ *
+ * **ATUALIZAÇÃO 02/09/2026 (#6925):** o `--push` real JÁ RODOU uma vez, com
+ * autorização explícita do editor numa sessão `/diaria-develop` — 3
+ * mutações aplicadas e verificadas. O parágrafo abaixo descreve o estado da
+ * unidade de ORIGEM (#6049), preservado como registro histórico.
  *
  * IMPORTANTE (escopo desta unidade, #6049): `--push` NUNCA foi executado
  * contra o Kit real nesta sessão (guard de publicação do overnight/develop).
@@ -84,6 +97,8 @@ import {
   computeDesiredApoioLevels,
   diffApoioTags,
   shouldBlockRemovals,
+  isPreviousMonthSnapshotMissing,
+  previousMonthKey,
   evaluateBlastRadiusGuard,
   logDiff,
   logBlastRadiusGuard,
@@ -242,7 +257,16 @@ async function main(): Promise<void> {
 
   const diff = diffApoioTags(desired, current);
   const allowPartial = hasFlag(argv, "allow-partial");
-  const removalsBlockedByPartialData = shouldBlockRemovals(data.error, diff, allowPartial);
+  const previousMonthSnapshotMissing = isPreviousMonthSnapshotMissing(pastSnapshots, currentMonth);
+  if (previousMonthSnapshotMissing) {
+    process.stderr.write(
+      `${LOG_PREFIX} ⚠ snapshot de ${previousMonthKey(currentMonth)} AUSENTE — carência de 1 mês inaplicável ` +
+        `nesta rodada; remoções BLOQUEADAS por segurança (#7195). Use --allow-partial pra forçar.\n`,
+    );
+  }
+  const removalsBlockedByPartialData = shouldBlockRemovals(data.error, diff, allowPartial, {
+    previousMonthSnapshotMissing,
+  });
   const forceBlastRadius = hasFlag(argv, "force-blast-radius");
   const blastGuard = evaluateBlastRadiusGuard(diff.toRemove.length, current, forceBlastRadius);
 
