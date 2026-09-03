@@ -447,14 +447,47 @@ test("renderContactsSummarySection: identificador interno priority_points intoca
 test("renderContactsSummarySection: 'Inelegíveis por razão' e 'MillionVerifier (bucket)' num container .side-by-side (#2908)", () => {
   const html = renderContactsSummarySection(sample);
   assert.match(html, /<div class="side-by-side">/, "container flex presente");
-  const sbsMatch = html.match(/<div class="side-by-side">([\s\S]*?)<\/div>\s*<p class="section-note">Aberturas\/cliques acumulados/);
-  assert.ok(sbsMatch, "container .side-by-side capturável (fecha antes da nota de aberturas/cliques, #4712)");
+  // #7239: a nota imediatamente seguinte ao container passou a ser a de
+  // isentos/backlog do MV (antes era direto a de aberturas/cliques) — o
+  // invariante do #2908 é o container fechar corretamente antes de QUALQUER
+  // nota subsequente, nunca uma âncora de texto específica; o anchor abaixo
+  // só serve pra capturar o miolo do container, atualizado pra acompanhar a
+  // nota nova que passou a ser a vizinha direta.
+  const sbsMatch = html.match(/<div class="side-by-side">([\s\S]*?)<\/div>\s*<p class="section-note">MillionVerifier — "não verificado"/);
+  assert.ok(sbsMatch, "container .side-by-side capturável (fecha antes da nota de MV isento/backlog, #7239)");
   const inner = sbsMatch![1];
   assert.match(inner, /Inelegíveis por razão/, "tabela Inelegíveis dentro do container");
   assert.match(inner, /MillionVerifier \(bucket\)/, "tabela MillionVerifier dentro do container");
   assert.ok(
     inner.indexOf("Inelegíveis por razão") < inner.indexOf("MillionVerifier (bucket)"),
     "Inelegíveis antes de MV dentro do container",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// #7239 — mv_exempt/mv_backlog_acionavel nomeados e distinguíveis na nota que
+// segue o container .side-by-side (a issue era um número que misturava
+// isentos com backlog real — a correção só vale se as duas populações
+// aparecerem separadas na superfície que o editor lê, não só no tipo).
+// ---------------------------------------------------------------------------
+
+test("renderContactsSummarySection: KV sem mv_exempt/mv_backlog_acionavel (pré-#7239) mostra '—' pras duas, não lança (#7239)", () => {
+  const html = renderContactsSummarySection(sample); // sample não tem os 2 campos
+  assert.match(html, /MV isento \(qualquer bucket\): <strong>—<\/strong>/, "isento vira '—' quando dado ausente");
+  assert.match(html, /backlog acionável de verificação: <strong>—<\/strong>/, "backlog vira '—' quando dado ausente");
+});
+
+test("renderContactsSummarySection: mv_exempt e mv_backlog_acionavel aparecem nomeados e com valores distintos (#7239)", () => {
+  const withMv7239: ContactsSummary = { ...sample, mv_exempt: 12345, mv_backlog_acionavel: 678 };
+  const html = renderContactsSummarySection(withMv7239);
+  assert.match(html, /MV isento \(qualquer bucket\): <strong>12[.,]?345<\/strong>/, "isento nomeado com o valor certo");
+  assert.match(html, /backlog acionável de verificação: <strong>678<\/strong>/, "backlog nomeado com o valor certo");
+  // não é só presença — as duas populações precisam ficar distinguíveis (nunca
+  // misturadas num único número, que era exatamente o bug do #7239).
+  assert.notEqual(
+    html.match(/MV isento \(qualquer bucket\): <strong>([\d.,]+)<\/strong>/)?.[1],
+    html.match(/backlog acionável de verificação: <strong>([\d.,]+)<\/strong>/)?.[1],
+    "isento e backlog são contagens distintas, não a mesma cifra reaproveitada",
   );
 });
 

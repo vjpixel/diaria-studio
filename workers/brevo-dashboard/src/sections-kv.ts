@@ -741,6 +741,10 @@ export function renderContactsSummarySection(
   // "0 excluídos" de "dado ausente". `fmtCount` direto (não o alias `n`,
   // declarado mais abaixo nesta função).
   const internalExcludedFmt = pp.internal_excluded != null ? fmtCount(pp.internal_excluded) : "—";
+  // #7239: opcionais (KV pré-#7239 não tem) — "—" distingue "dado ausente" de
+  // "0 isentos"/"0 backlog", mesma convenção de internalExcludedFmt acima.
+  const mvExemptFmt = s.mv_exempt != null ? fmtCount(s.mv_exempt) : "—";
+  const mvBacklogFmt = s.mv_backlog_acionavel != null ? fmtCount(s.mv_backlog_acionavel) : "—";
   const eng = s.engagement ?? { with_opens: 0, with_clicks: 0 };
 
   const n = fmtCount; // #2875: dedup — ver fmtCount module-level
@@ -918,6 +922,7 @@ ${subtotalRows}</tbody></table></div>`;
   ${kvTable("Inelegíveis por razão", elig.by_reason)}
   ${kvTable("MillionVerifier (bucket)", s.mv, "não verificado (sem bucket)")}
   </div>
+  <p class="section-note">MillionVerifier — "não verificado" acima mistura backlog real com cohorts isentos (assinantes-ativos, #3819): MV isento (qualquer bucket): <strong>${mvExemptFmt}</strong> · backlog acionável de verificação: <strong>${mvBacklogFmt}</strong>.</p>
   <p class="section-note">Aberturas/cliques acumulados (store): ${n(eng.with_opens)} com abertura · ${n(eng.with_clicks)} com clique. Não é um card da API Brevo nem um subconjunto do histograma acima — os dois conjuntos se cruzam sem um conter o outro: abrir ao menos uma vez não implica score positivo (o score decai por não-abertura), e opt-in sem abertura nenhuma já entra como positivo.</p>
 </section>`;
 }

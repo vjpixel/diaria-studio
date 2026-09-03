@@ -18,7 +18,7 @@ import type { StepResult, ExecFn } from "../scripts/clarice-envio-run.ts";
 import type { ResolveLatestMonthlyCycleResult } from "../scripts/lib/mensal/monthly-paths.ts";
 import type { ClariceAbcStateRead } from "../scripts/lib/clarice-abc-state.ts";
 import { readEngajadosState, writeEngajadosState } from "../scripts/lib/clarice-envio-engajados-state.ts";
-import { ENGAJADOS_BOOTSTRAP_VOLUME } from "../scripts/lib/clarice-envio-engajados-policy.ts";
+import { ENGAJADOS_BOOTSTRAP_VOLUME, ENGAJADOS_MAX_DAILY_VOLUME } from "../scripts/lib/clarice-envio-engajados-policy.ts";
 
 type Handler = StepResult | ((args: string[], callIndex: number) => StepResult);
 
@@ -104,6 +104,7 @@ describe("runEnvioEngajados (#6945)", () => {
       execMode: () => "local",
       resolveLatestCycle: () => readiness(),
       readAbcState: () => abcTravado(),
+      readQueueRows: () => [],
       ...over,
     };
   }
@@ -167,6 +168,88 @@ describe("runEnvioEngajados (#6945)", () => {
     const res = await runEnvioEngajados(baseDeps());
     assert.equal(res.code, 1);
     assert.equal(res.reportId, `envio-engajados-${AAMMDD}-abort`);
+  });
+
+  describe("--plan-only/--volume (#7235)", () => {
+    function row(email: string, priorityPoints: number, lastSentAt: string | null = null) {
+      return {
+        email,
+        tier: null,
+        cohort: "leads-2024h1",
+        priority_points: priorityPoints,
+        send_eligible: 1,
+        ineligible_reason: null,
+        sends_count: 3,
+        opens_count: 1,
+        last_sent_at: lastSentAt,
+      };
+    }
+
+    it("--plan-only: NÃO exige BREVO_CLARICE_API_KEY, não chama exec, não escreve estado, devolve plan", async () => {
+      delete process.env.BREVO_CLARICE_API_KEY;
+      const { exec, calls } = makeFakeExec({});
+      const rows = [row("a@x.com", 80), row("b@x.com", 60), row("c@x.com", 20)];
+      const res = await runEnvioEngajados(baseDeps({ exec, readQueueRows: () => rows }), { planOnly: true });
+      assert.equal(res.code, 0, res.reportMarkdown);
+      assert.equal(res.reportId, "");
+      assert.equal(calls.length, 0, "plan-only nunca chama sub-script (nunca toca a Brevo)");
+      assert.equal(readEngajadosState(resolve(rootDir, "data", "clarice-subscribers")), null, "plan-only nunca escreve estado");
+      assert.ok(res.plan);
+      assert.equal(res.plan!.cycle, CYCLE);
+      assert.equal(res.plan!.subject, LOCKED_SUBJECT);
+      assert.equal(res.plan!.overrideApplied, false);
+      assert.equal(res.plan!.volume, Math.round(ENGAJADOS_BOOTSTRAP_VOLUME * 1.1));
+      assert.equal(res.plan!.preview.queueEligible, 3);
+      assert.equal(res.plan!.preview.selectedCount, 3, "volume proposto (1650) cobre os 3 elegíveis");
+      assert.deepEqual(res.plan!.preview.scoreRange, { min: 20, max: 80 });
+      assert.equal(res.plan!.preview.remainingAboveCutoff, 0);
+    });
+
+    it("--plan-only exclui quem já recebeu neste mês de envio (excludeSentSince) — mesmo cutoff do #7234", async () => {
+      const rows = [
+        row("recebeu-este-mes@x.com", 90, "2026-09-01T10:00:00.000Z"), // sendDate = 2026-09-03 → mês 09/2026
+        row("elegivel@x.com", 50),
+      ];
+      const res = await runEnvioEngajados(baseDeps({ readQueueRows: () => rows }), { planOnly: true });
+      assert.equal(res.plan!.preview.queueEligible, 2);
+      assert.equal(res.plan!.preview.excludedByRecency, 1);
+      assert.equal(res.plan!.preview.eligibleForRound, 1);
+      assert.equal(res.plan!.preview.selectedCount, 1);
+    });
+
+    it("--plan-only corta pelo VOLUME quando a fila elegível excede — sobra vai pra 'amanhã'", async () => {
+      const rows = [row("a@x.com", 90), row("b@x.com", 50), row("c@x.com", 10)];
+      const res = await runEnvioEngajados(baseDeps({ readQueueRows: () => rows }), { planOnly: true, volume: 2 });
+      assert.equal(res.plan!.overrideApplied, true);
+      assert.equal(res.plan!.volume, 2);
+      assert.equal(res.plan!.preview.selectedCount, 2);
+      assert.deepEqual(res.plan!.preview.scoreRange, { min: 50, max: 90 });
+      assert.equal(res.plan!.preview.remainingAboveCutoff, 1, "c@x.com (score 10) fica pra amanhã");
+    });
+
+    it("--volume acima do teto absoluto ABORTA — nunca corta em silêncio (mesma disciplina do ramp-warm #5985)", async () => {
+      const res = await runEnvioEngajados(baseDeps(), { planOnly: true, volume: ENGAJADOS_MAX_DAILY_VOLUME + 1 });
+      assert.equal(res.code, 1);
+      assert.match(res.reportMarkdown, /acima do teto absoluto/);
+    });
+
+    it("--volume (sem --plan-only) substitui o --budget passado a clarice-build-segment", async () => {
+      process.env.BREVO_CLARICE_API_KEY = "test-key";
+      try {
+        const { exec, calls } = makeFakeExec({
+          "scripts/clarice-build-segment.ts": () => jsonResult({ selected: 500, budget: 500 }),
+          "scripts/clarice-import-waves.ts": () => okResult(),
+          "scripts/clarice-schedule-group.ts": () => okResult(),
+        });
+        const res = await runEnvioEngajados(baseDeps({ exec }), { volume: 500 });
+        assert.equal(res.code, 0, res.reportMarkdown);
+        const buildSeg = calls.find((c) => c.script === "scripts/clarice-build-segment.ts");
+        assert.ok(buildSeg);
+        assert.equal(buildSeg!.args[buildSeg!.args.indexOf("--budget") + 1], "500");
+      } finally {
+        delete process.env.BREVO_CLARICE_API_KEY;
+      }
+    });
   });
 
   it("caminho feliz: monta os args corretos em ordem e escreve o estado só após confirmação", async () => {

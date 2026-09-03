@@ -36,6 +36,9 @@
  * verdade, e a primeira (a escrita real) é quem manda.
  */
 
+import { segmentEngajados, type StoreRow } from "./clarice-segment.ts";
+import { excludeSentSince } from "./clarice-recency.ts";
+
 /**
  * Volume da 1ª rodada — nunca houve baseline PRÓPRIA do grupo `engajados`
  * na era automatizada (o último envio manual foi 06/08/2026, ciclo
@@ -90,4 +93,63 @@ export function proposeEngajadosVolume(lastVolume: number | null | undefined): n
       : ENGAJADOS_BOOTSTRAP_VOLUME;
   const grown = Math.round(base * (1 + ENGAJADOS_DAILY_GROWTH_STEP));
   return Math.min(grown, ENGAJADOS_MAX_DAILY_VOLUME);
+}
+
+/**
+ * #7235 — preview de composição da audiência pra `--plan-only`, a
+ * escotilha ad-hoc do caminho MANUAL (ver docstring de topo de
+ * `clarice-envio-engajados-run.ts`). Reusa `segmentEngajados`
+ * (predicado+ordem canônica, `clarice-segment.ts`) e `excludeSentSince`
+ * (`clarice-recency.ts`) — as MESMAS fontes que `clarice-build-segment.ts`
+ * usa pra escrita real — em vez de reimplementar o filtro.
+ *
+ * DELIBERADAMENTE não replica os 2 guards de ESCRITA de
+ * `clarice-build-segment.ts` (dedup `sent-or-queued.json` por ciclo,
+ * exclusão de campanha comprometida via Brevo) — o 1º exige estado que só
+ * existe depois de outra invocação já ter rodado neste ciclo, o 2º exige
+ * uma chamada de rede à Brevo. Nenhum dos dois muda a composição por
+ * FAIXA DE SCORE de forma material (cortam quem já foi selecionado por
+ * OUTRA rodada/campanha, não redistribuem a ordem) — o número final na
+ * escrita real pode sair ligeiramente menor que este preview; é uma
+ * PROPOSTA pro editor decidir "pra quem", não uma garantia bit-a-bit do
+ * que vai ser escrito (mesmo espírito do plano do ramp-warm, #5985, que
+ * também não reflete TODOS os guards de escrita).
+ */
+export interface EngajadosPlanPreview {
+  /** Fila total elegível pro grupo (predicado `isEngajados`), ANTES da
+   * exclusão de quem já recebeu neste mês de envio. */
+  queueEligible: number;
+  /** Quantos da fila elegível já receberam desde o cutoff (`excludeSentSince`). */
+  excludedByRecency: number;
+  /** `queueEligible - excludedByRecency` — universo real desta rodada. */
+  eligibleForRound: number;
+  /** `min(volume, eligibleForRound)` — quantos este preview propõe enviar. */
+  selectedCount: number;
+  /** Faixa de `priority_points` da fatia selecionada (topo da ordem = `max`,
+   * fim da fatia = `min`). `null` quando `selectedCount === 0`. */
+  scoreRange: { min: number; max: number } | null;
+  /** `eligibleForRound - selectedCount` — o que sobra acima do corte, disponível pra amanhã. */
+  remainingAboveCutoff: number;
+}
+
+export function buildEngajadosPlanPreview(
+  rows: readonly { email: string; send_eligible: number; sends_count: number; priority_points: number; last_sent_at?: string | null }[],
+  volume: number,
+  cutoffIso: string,
+): EngajadosPlanPreview {
+  const ordered = segmentEngajados(rows as StoreRow[]);
+  const eligible = excludeSentSince(ordered, cutoffIso);
+  const selected = eligible.slice(0, Math.max(0, volume));
+  const scoreRange =
+    selected.length > 0
+      ? { min: selected[selected.length - 1].priority_points, max: selected[0].priority_points }
+      : null;
+  return {
+    queueEligible: ordered.length,
+    excludedByRecency: ordered.length - eligible.length,
+    eligibleForRound: eligible.length,
+    selectedCount: selected.length,
+    scoreRange,
+    remainingAboveCutoff: eligible.length - selected.length,
+  };
 }

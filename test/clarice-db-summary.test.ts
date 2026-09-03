@@ -64,6 +64,37 @@ test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () 
   db.close();
 });
 
+test("computeStoreSummary: mv_exempt/mv_backlog_acionavel separam isentos e sem-cohort do backlog real (#7239)", () => {
+  const db = openClariceDb(":memory:");
+  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
+
+  // assinante-ativo isento, nunca verificado → cai em mv.none mas NÃO é backlog
+  ins(
+    `INSERT INTO clarice_users (email, cohort, mv_bucket) VALUES ('assinante@x.com', ?, NULL)`,
+    COHORT_ASSINANTES_ATIVOS,
+  );
+  // assinante-ativo isento, MAS em bucket unknown — ainda conta como mv_exempt,
+  // não entra no backlog (backlog só olha mv.none)
+  ins(
+    `INSERT INTO clarice_users (email, cohort, mv_bucket) VALUES ('assinante2@x.com', ?, 'unknown')`,
+    COHORT_ASSINANTES_ATIVOS,
+  );
+  // lead com cohort, nunca verificado → backlog real
+  ins(`INSERT INTO clarice_users (email, cohort, mv_bucket) VALUES ('lead@x.com', ?, NULL)`, COHORT_EX_ASSINANTES);
+  // sem cohort nenhum, nunca verificado → não entra no backlog (não dá pra
+  // afirmar isenção nem prioridade sem cohort)
+  ins(`INSERT INTO clarice_users (email, mv_bucket) VALUES ('semcohort@x.com', NULL)`);
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db);
+
+  assert.equal(s.mv["none"], 3, "assinante@x.com, lead@x.com e semcohort@x.com — indistinguíveis sem os campos novos");
+  assert.equal(s.mv_exempt, 2, "os 2 assinantes-ativos, em QUALQUER bucket");
+  assert.equal(s.mv_backlog_acionavel, 1, "só o lead com cohort atribuído e não-isento");
+
+  db.close();
+});
+
 test("computeStoreSummary: emails internos fora do bloco priority_points, mas dentro do resto (#2809)", () => {
   // vjpixel@gmail.com abre tudo por ofício (score alto) — NÃO pode aparecer no
   // histograma/faixas de priority_points; mas segue no total/mv (só exibição:

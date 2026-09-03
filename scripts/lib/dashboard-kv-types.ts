@@ -475,6 +475,11 @@ export interface ContactsSummary {
   // da safra real — mesma linha, não uma tabela separada.
   cohort_stats?: Record<string, CohortStatsRow>;
   mv: Record<string, number>;
+  // #7239: opcionais (KV pré-#7239 não tem) — recorte acionável do backlog de
+  // MillionVerifier, separado do `mv` cru acima. Ver StoreSummary
+  // (clarice-db-summary.ts) para a semântica completa.
+  mv_exempt?: number;
+  mv_backlog_acionavel?: number;
   engagement: { with_opens: number; with_clicks: number };
 }
 
