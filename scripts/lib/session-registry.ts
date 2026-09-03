@@ -90,12 +90,17 @@
  *     vez de recriado zerado, com `[ALERTA: ...]` na mensagem.)
  *   npx tsx scripts/lib/session-registry.ts is-claimed --issue N
  *   npx tsx scripts/lib/session-registry.ts list-active
- *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire
+ *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire --pr N
  *     (#6334: deixou de ser reentrante pra mesma sessão — uma 2ª chamada
  *     antes do `merge-lock-release` correspondente falha, mesmo sendo a
  *     mesma sessão. Ver `merge-lock-renew` pra estender o TTL de um hold
- *     que já é seu.)
- *   npx tsx scripts/lib/session-registry.ts merge-lock-release
+ *     que já é seu. **`--pr` não é opcional na prática (#7169/#7223,
+ *     achado ao vivo na rodada helios/#7217):** o próprio `BLOCK_REASON`
+ *     de `.claude/hooks/block-gh-pr-merge-subagent.mjs` já recomenda
+ *     `merge-lock-acquire --pr N`/`merge-lock-release --pr N` — seguir o
+ *     comando SEM `--pr` deixou `gh pr merge` bloqueado repetidamente pelo
+ *     guard #5716 mesmo com lock genuinamente adquirido.)
+ *   npx tsx scripts/lib/session-registry.ts merge-lock-release --pr N
  *   npx tsx scripts/lib/session-registry.ts merge-lock-renew
  *     (#6334 — renova o TTL de um lock que a PRÓPRIA sessão já detém; nunca
  *     concede um hold novo. Ver `renewMergeLock`.)
@@ -5264,8 +5269,9 @@ function main(): void {
             "consume-merge-grant NÃO é um passo do beneficiário (#7171) — quem carimba consumedAt é o " +
             "gh pr merge bem-sucedido, automaticamente via .claude/hooks/consume-merge-grant-on-merge.mjs; " +
             "chamar consume-merge-grant à mão ANTES do merge queima a janela e o merge seguinte é bloqueado. " +
-            "Ordem correta: grant-merge (coordenadora) -> check-merge-grant -> merge-lock-acquire -> " +
-            "gh pr merge -> merge-lock-release.\n" +
+            "Ordem correta: grant-merge (coordenadora) -> check-merge-grant -> merge-lock-acquire --pr N -> " +
+            "gh pr merge N -> merge-lock-release --pr N. --pr nao e opcional na pratica (#7169/#7223) — " +
+            "sem ele, gh pr merge foi bloqueado repetidamente pelo guard #5716 mesmo com lock adquirido.\n" +
             "  gc [--max-age-days N] [--dry-run]: remove registro de sessão ENCERRADA — nunca por staleness de " +
             "heartbeat sozinha, ver docstring de decideSessionGc/planSessionGc (#6130).\n",
         );
