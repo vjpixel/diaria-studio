@@ -333,3 +333,34 @@ describe("buildWorkerDriftAlarmEmail com deploy_blocked (#7092)", () => {
     assert.equal(shouldAlarm(emptyWorkerDriftAlarmState(), [blocked]), false);
   });
 });
+
+/**
+ * #7152: o teste acima cobre `parseDeployBlockingPlaceholders` contra TOML
+ * sintético. Este cobre o ARQUIVO REAL — a invariante que de fato mordeu.
+ *
+ * A #7152 não foi "o placeholder nunca ter sido substituído": foi a linha
+ * real ter ficado DIAS apenas no working tree do checkout compartilhado,
+ * sem nada em master a protegendo. Um `git reset --hard` ou um checkout de
+ * qualquer sessão concorrente a devolveria ao placeholder — e o efeito seria
+ * silencioso: o deploy automático voltaria a ser PULADO (guard do
+ * `deploy-artigos.yml`), com o gate de apoio no ar preso à última versão
+ * publicada à mão, e o alarme de drift reportando `deploy_blocked` em vez de
+ * abrir issue. Ninguém veria.
+ *
+ * Assertar contra o arquivo de verdade é o que trava essa regressão. É
+ * estático, determinístico, e não depende da conta Cloudflare.
+ */
+describe("wrangler.toml real do diaria-artigos (#7152)", () => {
+  it("não contém placeholder de KV pendente — deploy automático destravado", () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+    const tomlPath = join(root, "workers/artigos/wrangler.toml");
+    const toml = readFileSync(tomlPath, "utf8");
+    assert.deepEqual(
+      parseDeployBlockingPlaceholders(toml),
+      [],
+      "workers/artigos/wrangler.toml voltou a ter placeholder de KV — o deploy " +
+        "automático do worker está sendo PULADO em silêncio. Ver #7152: o id real " +
+        "custou uma ação na conta Cloudflare e não se regenera sozinho.",
+    );
+  });
+});
