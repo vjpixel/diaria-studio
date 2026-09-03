@@ -26,6 +26,30 @@
  * Relevante se um dia isto virar task agendada (hoje é invocação manual, não
  * está em `docs/scheduled-tasks-registry.md`): o timeout precisa caber nisso.
  *
+ * ## Janela de propagação da tag pós-`--push` (#7296)
+ *
+ * A escrita (`tagSubscriber`) responde 2xx antes de a tag do Kit refletir o
+ * novo membro em TODAS as leituras — medido ao vivo em 03/09/2026 (onda de
+ * 102 endereços): só 21/102 confirmados aos +30s, 95/102 aos +120s, e
+ * convergência completa só aos +150s. Nenhuma intervenção fez a diferença —
+ * é o próprio `--push` convergindo sozinho, não uma falha a corrigir. Por
+ * isso `--push` NUNCA declara "onda aplicada" a partir só da resposta da
+ * escrita: depois de taguear, relê cada endereço (`confirmWavePropagation`,
+ * reusando `confirmTaggedEmails` — mesma direção CONFIÁVEL, assinante→tags,
+ * ver `listSubscriberTags` em `kit-broadcasts.ts`) em até
+ * `WARMUP_PROPAGATION_MAX_ATTEMPTS` rodadas espaçadas por
+ * `WARMUP_PROPAGATION_POLL_INTERVAL_MS` (180s de orçamento total, folga
+ * sobre o pior caso medido). Só imprime "aplicada" e sai com código 0 quando
+ * a releitura confirma TODOS os membros; enquanto não convergir, a saída diz
+ * "propagando, N/M confirmados" e o processo sai com um código != 0 (a
+ * mutação já foi aceita e persistida — não é uma falha, é um estado ainda
+ * incompleto). Ler a janela como falha e reativar os endereços na Beehiiv
+ * causaria envio em DOBRO assim que a propagação do Kit completar — é
+ * exatamente o risco que motivou o #7296. Um 404 de leitura sobre endereço
+ * desta mesma onda logo após o push é classificado como PENDENTE de
+ * propagação, nunca como endereço inválido (mesma disciplina que
+ * `confirmTaggedEmails` já aplicava antes do push).
+ *
  * ## Partição Beehiiv — o guard que evita duplicar envio
  *
  * `kit_diaria.audience_tag_note` (`platform.config.json`) documenta o risco:
@@ -52,6 +76,15 @@
  *   npx tsx scripts/kit-gmail-warmup-ramp.ts --gate-broadcast <id> --push               # aplica a onda
  *   npx tsx scripts/kit-gmail-warmup-ramp.ts --gate-broadcast <id> --json
  *   npx tsx scripts/kit-gmail-warmup-ramp.ts --reset --reference-broadcast <id> --gate-broadcast <id>
+ *
+ * Exit codes:
+ *   0 = sucesso — nada pushado (dry-run/gate segurou/onda esgotada), ou
+ *       pushado E a releitura confirmou TODOS os membros da onda.
+ *   1 = erro (config inválida, credenciais ausentes, exceção não tratada).
+ *   4 = pushado, mas a releitura NÃO confirmou todos os membros dentro do
+ *       orçamento de `confirmWavePropagation` (#7296) — a mutação foi aceita
+ *       e `state.json` já reflete a onda; não é falha, é propagação ainda em
+ *       curso. Ver "Janela de propagação" acima antes de agir sobre isto.
  */
 import { readFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -238,6 +271,74 @@ async function confirmTaggedEmails(
   return { tagged, unconfirmed };
 }
 
+/**
+ * Intervalo entre rodadas de releitura pós-`--push` (#7296). Combinado com
+ * `WARMUP_PROPAGATION_MAX_ATTEMPTS`, dá 180s de orçamento total — folga
+ * sobre os ~150s de convergência medidos ao vivo em 03/09/2026 (ver docstring
+ * do módulo, "Janela de propagação da tag pós-`--push`").
+ */
+export const WARMUP_PROPAGATION_POLL_INTERVAL_MS = 30_000;
+
+/**
+ * Teto de rodadas de releitura. `confirmWavePropagation` só dorme ENTRE
+ * tentativas (nunca antes da 1ª) — 7 tentativas ⇒ 6 intervalos de 30s = 180s
+ * de espera real, com folga de verdade sobre os ~150s medidos ao vivo
+ * (review da PR #7352: com 6 tentativas seriam só 5 sleeps = 150s, igual ao
+ * pior caso medido, sem folga nenhuma).
+ */
+export const WARMUP_PROPAGATION_MAX_ATTEMPTS = 7;
+
+/**
+ * Confirma, com backoff, que TODOS os endereços de `pendingEmails` (já
+ * tagueados por `tagSubscriber`, mas cuja releitura IMEDIATA não confirmou —
+ * ver `unverifiedEmails` no loop de tagueamento) de fato aparecem na tag,
+ * antes de o caller declarar a onda "aplicada" (#7296).
+ *
+ * A cada rodada, relê só quem ainda está pendente (nunca o lote inteiro de
+ * novo — mais barato e evita re-perguntar por quem já confirmou). Para
+ * quando `pending` esvazia (converge) ou `maxAttempts` esgota — o que vier
+ * primeiro. Nunca lança: erro de rede/API por endereço já é absorvido por
+ * `confirmFn` (default `confirmTaggedEmails`) como "não confirmado ainda",
+ * a mesma classificação de um 404 de propagação — não é fatal, e o endereço
+ * simplesmente continua pendente pra próxima rodada.
+ *
+ * `confirmFn`/`sleepFn` injetáveis só para teste (mock sem rede/tempo real).
+ */
+export async function confirmWavePropagation(
+  pendingEmails: readonly string[],
+  tagId: number,
+  opts: {
+    maxAttempts?: number;
+    intervalMs?: number;
+    sleepFn?: (ms: number) => Promise<void>;
+    confirmFn?: (emails: readonly string[], tagId: number) => Promise<{ tagged: Set<string>; unconfirmed: string[] }>;
+  } = {},
+): Promise<{ confirmed: string[]; pending: string[]; attempts: number }> {
+  const maxAttempts = opts.maxAttempts ?? WARMUP_PROPAGATION_MAX_ATTEMPTS;
+  const intervalMs = opts.intervalMs ?? WARMUP_PROPAGATION_POLL_INTERVAL_MS;
+  const sleepFn = opts.sleepFn ?? sleep;
+  const confirmFn = opts.confirmFn ?? confirmTaggedEmails;
+
+  let pending = [...pendingEmails];
+  const confirmed: string[] = [];
+  let attempts = 0;
+
+  while (pending.length > 0 && attempts < maxAttempts) {
+    attempts += 1;
+    if (attempts > 1) await sleepFn(intervalMs);
+    const { tagged } = await confirmFn(pending, tagId);
+    if (tagged.size === 0) continue;
+    const stillPending: string[] = [];
+    for (const email of pending) {
+      if (tagged.has(email.trim().toLowerCase())) confirmed.push(email);
+      else stillPending.push(email);
+    }
+    pending = stillPending;
+  }
+
+  return { confirmed, pending, attempts };
+}
+
 /** Mede o gate (entrega+abertura Gmail) de um broadcast — mesmo cálculo de `kit-provider-split.ts`. */
 async function measureGate(broadcastId: number): Promise<RampaVeredito> {
   const [sent, delivered, opens, clicks, stats] = await todasOuNenhuma<
@@ -311,6 +412,23 @@ export interface WarmupRampResult {
    *  releitura (erro de rede/API na consulta). Seguem na onda — re-taguear é
    *  idempotente —, mas ficam visíveis em vez de virarem silêncio. */
   unconfirmedTagEmails: string[];
+  /** `true` quando TODOS os endereços tagueados nesta onda (`safeToTag`)
+   *  foram confirmados pela releitura — imediatamente ou depois de
+   *  `confirmWavePropagation` (#7296). `true` trivialmente quando nada foi
+   *  tagueado (`pushed: false`, ou onda vazia). É este campo, não `pushed`,
+   *  que decide se o relatório pode dizer "aplicada". */
+  propagationConfirmed: boolean;
+  /** Quantos de `propagationTotalCount` a releitura confirmou (imediatamente
+   *  ou após retry). */
+  propagationConfirmedCount: number;
+  /** Tamanho da onda de fato tagueada (`actuallyTagged.length` — subconjunto
+   *  de `safeToTag` que não lançou no create/tag; quem falhou está em
+   *  `failedEmails`, não conta aqui) — denominador de
+   *  `propagationConfirmedCount`. */
+  propagationTotalCount: number;
+  /** Quantas rodadas de `confirmWavePropagation` rodaram (0 quando nada
+   *  precisou de retry). */
+  propagationAttempts: number;
   /** `false` quando a lista de ativos da Beehiiv não pôde ser lida. Nesse
    *  caso `outOfBandStillActiveOnBeehiiv` traz TODOS os absorvidos (fail-safe
    *  de `resolveOutOfBandBeehiivViolation`) e o relatório precisa dizer
@@ -436,7 +554,7 @@ export async function runWarmupRamp(opts: {
     // Onda vazia (segurada pelo gate, ou já esgotada) — registrar como
     // proposta não-empurrada é ruído (nenhum e-mail, nenhuma decisão nova) e
     // infla o histórico sem valor; não grava wave.
-    return { state, plan, safeToTag: [], needsBeehiivDeactivation: [], pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails: [], beehiivCheckOk: beehiivCfg.ok, statePersisted };
+    return { state, plan, safeToTag: [], needsBeehiivDeactivation: [], pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails: [], beehiivCheckOk: beehiivCfg.ok, statePersisted, propagationConfirmed: true, propagationConfirmedCount: 0, propagationTotalCount: 0, propagationAttempts: 0 };
   }
 
   // #6964 passo 2 (finding 1 do review da PR #6984) — confere a onda proposta
@@ -466,13 +584,13 @@ export async function runWarmupRamp(opts: {
         };
 
   if (effectivePlan.emails.length === 0) {
-    return { state, plan: effectivePlan, safeToTag: [], needsBeehiivDeactivation: [], pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails, beehiivCheckOk: beehiivCfg.ok, statePersisted };
+    return { state, plan: effectivePlan, safeToTag: [], needsBeehiivDeactivation: [], pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails, beehiivCheckOk: beehiivCfg.ok, statePersisted, propagationConfirmed: true, propagationConfirmedCount: 0, propagationTotalCount: 0, propagationAttempts: 0 };
   }
 
   const { safeToTag, needsBeehiivDeactivation } = resolveWarmupBeehiivPartition(effectivePlan.emails, beehiivCfg.ok, activeBeehiiv);
 
   if (!opts.push) {
-    return { state, plan: effectivePlan, safeToTag, needsBeehiivDeactivation, pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails, beehiivCheckOk: beehiivCfg.ok, statePersisted };
+    return { state, plan: effectivePlan, safeToTag, needsBeehiivDeactivation, pushed: false, unverifiedEmails: [], failedEmails: [], outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails, beehiivCheckOk: beehiivCfg.ok, statePersisted, propagationConfirmed: true, propagationConfirmedCount: 0, propagationTotalCount: 0, propagationAttempts: 0 };
   }
 
   const unverifiedEmails: string[] = [];
@@ -512,11 +630,40 @@ export async function runWarmupRamp(opts: {
     }
   }
 
-  const wave = buildWaveEntry(state, opts.gateBroadcastId, gate, actuallyTagged, needsBeehiivDeactivation, true, new Date(), unverifiedEmails);
+  // #7296 — antes de declarar a onda "aplicada", relê com backoff quem a
+  // checagem imediata acima não confirmou. A escrita já foi aceita
+  // (`actuallyTagged`); o que falta é a tag do Kit convergir nas leituras —
+  // ver "Janela de propagação" na docstring do módulo. `finalUnconfirmed`
+  // substitui `unverifiedEmails` no relatório/estado: reflete quem CONTINUA
+  // sem confirmação depois de todas as tentativas automáticas, não só da 1ª.
+  const propagation =
+    unverifiedEmails.length > 0
+      ? await confirmWavePropagation(unverifiedEmails, tagId)
+      : { confirmed: [], pending: [], attempts: 0 };
+  const finalUnconfirmed = propagation.pending;
+
+  const wave = buildWaveEntry(state, opts.gateBroadcastId, gate, actuallyTagged, needsBeehiivDeactivation, true, new Date(), finalUnconfirmed);
   state = { ...state, waves: [...state.waves, wave] };
   saveState(state, statePath);
 
-  return { state, plan: effectivePlan, safeToTag: actuallyTagged, needsBeehiivDeactivation, pushed: true, unverifiedEmails, failedEmails, outOfBandReturned, outOfBandStillActiveOnBeehiiv, unconfirmedTagEmails, beehiivCheckOk: beehiivCfg.ok, statePersisted: true };
+  return {
+    state,
+    plan: effectivePlan,
+    safeToTag: actuallyTagged,
+    needsBeehiivDeactivation,
+    pushed: true,
+    unverifiedEmails: finalUnconfirmed,
+    failedEmails,
+    outOfBandReturned,
+    outOfBandStillActiveOnBeehiiv,
+    unconfirmedTagEmails,
+    beehiivCheckOk: beehiivCfg.ok,
+    statePersisted: true,
+    propagationConfirmed: finalUnconfirmed.length === 0,
+    propagationConfirmedCount: actuallyTagged.length - finalUnconfirmed.length,
+    propagationTotalCount: actuallyTagged.length,
+    propagationAttempts: propagation.attempts,
+  };
 }
 
 export function formatReport(result: WarmupRampResult): string {
@@ -565,18 +712,37 @@ export function formatReport(result: WarmupRampResult): string {
         result.needsBeehiivDeactivation.map((e) => `    - ${e}`).join("\n"),
     );
   }
-  if (result.unverifiedEmails.length > 0) {
-    lines.push(
-      `  ⚠️ tagueados mas a releitura NÃO confirmou (retry manual recomendado): ${result.unverifiedEmails.join(", ")}`,
-    );
-  }
   if (result.failedEmails.length > 0) {
     lines.push(
       `  ❌ falharam (create/tag/releitura lançou — não confundir com "tagueado mas não confirmado" acima):\n` +
         result.failedEmails.map((f) => `    - ${f.email}: ${f.error}`).join("\n"),
     );
   }
-  lines.push(result.pushed ? "\n--push: onda aplicada e estado persistido." : "\n--dry-run: nada foi escrito. Rode com --push para aplicar.");
+  if (!result.pushed) {
+    lines.push("\n--dry-run: nada foi escrito. Rode com --push para aplicar.");
+  } else if (result.propagationTotalCount === 0 && result.failedEmails.length > 0) {
+    // Todo mundo da onda falhou (create/tag/releitura lançou) — 0/0 é
+    // "confirmado" trivialmente, mas dizer "aplicada" aqui leria como sucesso
+    // ao lado da seção "❌ falharam" logo acima. Nada foi de fato tagueado.
+    lines.push("\n--push: NADA foi tagueado com sucesso — todos os endereços da onda falharam (ver seção acima).");
+  } else if (result.propagationConfirmed) {
+    lines.push(
+      `\n--push: onda aplicada e estado persistido (propagação confirmada: ${result.propagationConfirmedCount}/${result.propagationTotalCount}).`,
+    );
+  } else {
+    // #7296 — NUNCA "aplicada" enquanto a releitura não confirma todo mundo.
+    // A mutação já foi aceita/persistida (não é uma falha), mas ler isto
+    // como falha e reativar estes endereços na Beehiiv causaria envio em
+    // DOBRO assim que a propagação completar — daí o aviso explícito.
+    lines.push(
+      `\n--push: propagando — ${result.propagationConfirmedCount}/${result.propagationTotalCount} confirmados após ` +
+        `${result.propagationAttempts} tentativa(s) de releitura. Estado JÁ foi persistido; isto NÃO é uma falha — a tag ` +
+        `do Kit propaga de forma eventual (até ~180s medidos, #7296) e costuma convergir sozinha. NUNCA reative estes ` +
+        `endereços na Beehiiv por causa desta mensagem — reative só se, releitura em mãos (rode esta rampa de novo, ou ` +
+        `\`kit-ramp-cohort.ts --audit\`), eles continuarem ausentes da tag depois de vários minutos.\n` +
+        `  ainda pendentes: ${result.unverifiedEmails.join(", ")}`,
+    );
+  }
   return lines.join("\n");
 }
 
@@ -602,9 +768,18 @@ async function main(): Promise<void> {
 
   if (json) {
     console.log(JSON.stringify(result, null, 2));
-    return;
+  } else {
+    console.log(formatReport(result));
   }
-  console.log(formatReport(result));
+
+  // #7296 — nunca sair 0 enquanto a onda tagueada não foi confirmada pela
+  // releitura. A mutação já foi aceita/persistida (não é uma falha — daí um
+  // código dedicado, não o 1 de erro fatal); quem consome o exit code
+  // (automação futura, ou o operador via `$?`) precisa distinguir "aplicada
+  // e confirmada" de "aplicada, propagação ainda em curso".
+  if (result.pushed && !result.propagationConfirmed) {
+    process.exitCode = 4;
+  }
 }
 
 if (isMainModule(import.meta.url)) {

@@ -206,6 +206,13 @@ export async function tagSubscriber(tagId: number, subscriberId: number, config?
  * que cada `tagSubscriber` da onda de fato pegou antes de marcar o
  * endereço como "devolvido" no estado local — nunca confia só no 2xx da
  * mutação, mesma disciplina do resto do módulo.
+ *
+ * #7296: mesmo nesta direção, um caller que confirma logo após um `--push`
+ * da MESMA onda pode ver um 404 (assinante ainda não indexado nas leituras)
+ * — classificar como PENDENTE de propagação, nunca como endereço inválido.
+ * `kit-gmail-warmup-ramp.ts` (`confirmTaggedEmails`/`confirmWavePropagation`)
+ * já segue essa disciplina: erro de leitura vira "ainda não confirmado",
+ * nunca aborta nem marca o endereço como inválido.
  */
 export async function listSubscriberTags(subscriberId: number, config?: KitConfig): Promise<KitTag[]> {
   const data = await kitFetch<{ tags: KitTag[] } | undefined>(`/subscribers/${subscriberId}/tags`, { config });

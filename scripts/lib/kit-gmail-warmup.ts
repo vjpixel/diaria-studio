@@ -261,6 +261,13 @@ export interface KitGmailWarmupWave {
    * Continuam contando em `returnedEmails` (a mutação foi tentada e aceita)
    * mas ficam marcados aqui pra auditoria/retry manual. Vazio no caminho
    * normal.
+   *
+   * Desde #7296: já reflete o resultado DEPOIS do retry automático com
+   * backoff (`confirmWavePropagation` em `kit-gmail-warmup-ramp.ts`), não só
+   * da checagem imediata — a tag do Kit propaga de forma eventual (até
+   * ~180s medidos ao vivo), então um endereço que falha a checagem imediata
+   * costuma confirmar sozinho segundos depois. Não-vazio aqui significa que
+   * a propagação NÃO convergiu dentro do orçamento de tentativas.
    */
   unverifiedEmails: string[];
   /**

@@ -82,6 +82,10 @@ function fakeResult(overrides: Partial<WarmupRampResult> = {}): WarmupRampResult
     unconfirmedTagEmails: [],
     beehiivCheckOk: true,
     statePersisted: false,
+    propagationConfirmed: true,
+    propagationConfirmedCount: 0,
+    propagationTotalCount: 0,
+    propagationAttempts: 0,
     ...overrides,
   };
 }
@@ -132,11 +136,6 @@ describe("formatReport", () => {
     assert.match(formatReport(fakeResult({ pushed: true })), /--push: onda aplicada e estado persistido/);
   });
 
-  it("lista endereços tagueados mas não confirmados pela releitura", () => {
-    const out = formatReport(fakeResult({ unverifiedEmails: ["a@gmail.com"] }));
-    assert.match(out, /NÃO confirmou.*a@gmail\.com/s);
-  });
-
   it("lista endereços que FALHARAM (create/tag/releitura lançou) com o motivo — fleet review, mesma classe do #6507", () => {
     const out = formatReport(
       fakeResult({ failedEmails: [{ email: "falhou@gmail.com", error: "ECONNRESET: timeout" }] }),
@@ -147,11 +146,16 @@ describe("formatReport", () => {
   it("não confunde failedEmails com unverifiedEmails — seções distintas quando ambos presentes", () => {
     const out = formatReport(
       fakeResult({
+        pushed: true,
         unverifiedEmails: ["nao-confirmado@gmail.com"],
+        propagationConfirmed: false,
+        propagationConfirmedCount: 0,
+        propagationTotalCount: 1,
+        propagationAttempts: 6,
         failedEmails: [{ email: "erro@gmail.com", error: "5xx" }],
       }),
     );
-    assert.match(out, /NÃO confirmou.*nao-confirmado@gmail\.com/s);
+    assert.match(out, /propagando.*nao-confirmado@gmail\.com/s);
     assert.match(out, /falharam.*erro@gmail\.com/s);
   });
 
@@ -249,5 +253,172 @@ describe("formatReport — persistência e checagem da Beehiiv (#6984 2ª rodada
     );
     assert.match(out, /ENVIO EM DOBRO —/);
     assert.doesNotMatch(out, /NÃO VERIFICADO/);
+  });
+});
+
+describe("formatReport — nunca declara 'aplicada' enquanto a propagação não confirma (#7296)", () => {
+  it("todos os endereços da onda FALHARAM (0/0 trivial): não diz 'aplicada', só que nada foi tagueado — review da PR #7352", () => {
+    const out = formatReport(
+      fakeResult({
+        pushed: true,
+        safeToTag: ["falhou1@gmail.com", "falhou2@gmail.com"],
+        failedEmails: [
+          { email: "falhou1@gmail.com", error: "ECONNRESET" },
+          { email: "falhou2@gmail.com", error: "ECONNRESET" },
+        ],
+        propagationConfirmed: true,
+        propagationConfirmedCount: 0,
+        propagationTotalCount: 0,
+        propagationAttempts: 0,
+      }),
+    );
+    assert.doesNotMatch(out, /onda aplicada e estado persistido/);
+    assert.match(out, /NADA foi tagueado com sucesso/);
+  });
+
+  it("--push com propagationConfirmed:false NUNCA imprime 'onda aplicada e estado persistido'", () => {
+    const out = formatReport(
+      fakeResult({
+        pushed: true,
+        unverifiedEmails: ["a@gmail.com", "b@gmail.com"],
+        propagationConfirmed: false,
+        propagationConfirmedCount: 1,
+        propagationTotalCount: 3,
+        propagationAttempts: 6,
+      }),
+    );
+    assert.doesNotMatch(out, /onda aplicada e estado persistido/);
+    assert.match(out, /propagando.*1\/3 confirmados/s);
+    assert.match(out, /a@gmail\.com/);
+    assert.match(out, /b@gmail\.com/);
+  });
+
+  it("avisa explicitamente contra reativar na Beehiiv enquanto propaga — o risco central do #7296", () => {
+    const out = formatReport(
+      fakeResult({
+        pushed: true,
+        unverifiedEmails: ["a@gmail.com"],
+        propagationConfirmed: false,
+        propagationConfirmedCount: 0,
+        propagationTotalCount: 1,
+        propagationAttempts: 6,
+      }),
+    );
+    assert.match(out, /NUNCA reative estes endereços na Beehiiv/);
+  });
+
+  it("--push com propagationConfirmed:true (convergiu, mesmo que só após retry) imprime 'aplicada' com a contagem", () => {
+    const out = formatReport(
+      fakeResult({
+        pushed: true,
+        unverifiedEmails: [],
+        propagationConfirmed: true,
+        propagationConfirmedCount: 3,
+        propagationTotalCount: 3,
+        propagationAttempts: 3,
+      }),
+    );
+    assert.match(out, /onda aplicada e estado persistido \(propagação confirmada: 3\/3\)/);
+  });
+});
+
+describe("confirmWavePropagation (#7296) — retry-com-releitura antes de declarar convergência", () => {
+  it("converge na 1ª tentativa quando confirmFn já confirma tudo — 1 attempt, sem sleep", async () => {
+    const { confirmWavePropagation } = await import("../scripts/kit-gmail-warmup-ramp.ts");
+    let sleepCalls = 0;
+    const result = await confirmWavePropagation(["a@gmail.com", "b@gmail.com"], 999, {
+      sleepFn: async () => {
+        sleepCalls += 1;
+      },
+      confirmFn: async (emails) => ({ tagged: new Set(emails.map((e) => e.trim().toLowerCase())), unconfirmed: [] }),
+    });
+    assert.deepEqual(result.pending, []);
+    assert.deepEqual(result.confirmed.sort(), ["a@gmail.com", "b@gmail.com"]);
+    assert.equal(result.attempts, 1);
+    assert.equal(sleepCalls, 0);
+  });
+
+  it("simula a API do Kit devolvendo a tag INCOMPLETA nas N primeiras leituras e converge depois — regressão central do #7296", async () => {
+    const { confirmWavePropagation } = await import("../scripts/kit-gmail-warmup-ramp.ts");
+    // Mimetiza a tabela medida ao vivo na issue: só parte da onda confirma a
+    // cada rodada, até convergir de vez na 4ª.
+    const waves = [
+      new Set(["a@gmail.com"]), // rodada 1: só 1/3
+      new Set(["a@gmail.com", "b@gmail.com"]), // rodada 2: 2/3
+      new Set(["a@gmail.com", "b@gmail.com"]), // rodada 3: sem progresso (ainda incompleta)
+      new Set(["a@gmail.com", "b@gmail.com", "c@gmail.com"]), // rodada 4: converge
+    ];
+    let call = 0;
+    const sleeps: number[] = [];
+    const result = await confirmWavePropagation(["a@gmail.com", "b@gmail.com", "c@gmail.com"], 999, {
+      maxAttempts: 6,
+      intervalMs: 30_000,
+      sleepFn: async (ms) => {
+        sleeps.push(ms);
+      },
+      confirmFn: async (emails) => {
+        const snapshot = waves[Math.min(call, waves.length - 1)];
+        call += 1;
+        const tagged = new Set(emails.filter((e) => snapshot.has(e.trim().toLowerCase())).map((e) => e.trim().toLowerCase()));
+        return { tagged, unconfirmed: [] };
+      },
+    });
+    assert.deepEqual(result.pending, []);
+    assert.deepEqual(result.confirmed.sort(), ["a@gmail.com", "b@gmail.com", "c@gmail.com"]);
+    assert.equal(result.attempts, 4);
+    // 3 sleeps entre as 4 tentativas (nenhum antes da 1ª) — nunca espera à
+    // toa depois de convergir.
+    assert.deepEqual(sleeps, [30_000, 30_000, 30_000]);
+  });
+
+  it("estoura o teto de tentativas sem convergir: devolve quem ainda está pendente, nunca lança", async () => {
+    const { confirmWavePropagation } = await import("../scripts/kit-gmail-warmup-ramp.ts");
+    const result = await confirmWavePropagation(["nunca-confirma@gmail.com"], 999, {
+      maxAttempts: 3,
+      sleepFn: async () => {},
+      confirmFn: async () => ({ tagged: new Set<string>(), unconfirmed: [] }),
+    });
+    assert.deepEqual(result.pending, ["nunca-confirma@gmail.com"]);
+    assert.deepEqual(result.confirmed, []);
+    assert.equal(result.attempts, 3);
+  });
+
+  it("404/erro de leitura no confirmFn NÃO é fatal — endereço só segue pendente, releitura continua", async () => {
+    const { confirmWavePropagation } = await import("../scripts/kit-gmail-warmup-ramp.ts");
+    // confirmFn real (confirmTaggedEmails) já absorve erro por endereço em
+    // `unconfirmed` sem lançar (ver docstring) — este teste garante que
+    // confirmWavePropagation não trata isso como falha da onda inteira.
+    let call = 0;
+    const result = await confirmWavePropagation(["pendente-404@gmail.com"], 999, {
+      maxAttempts: 2,
+      sleepFn: async () => {},
+      confirmFn: async (emails) => {
+        call += 1;
+        // 1ª leitura: 404 (assinante ainda não indexado) → classificado como
+        // não-confirmado, não fatal. 2ª leitura: confirma.
+        if (call === 1) return { tagged: new Set<string>(), unconfirmed: [...emails] };
+        return { tagged: new Set(emails.map((e) => e.trim().toLowerCase())), unconfirmed: [] };
+      },
+    });
+    assert.deepEqual(result.pending, []);
+    assert.deepEqual(result.confirmed, ["pendente-404@gmail.com"]);
+    assert.equal(result.attempts, 2);
+  });
+
+  it("só relê quem ainda está pendente em rodadas seguintes, nunca o lote inteiro de novo", async () => {
+    const { confirmWavePropagation } = await import("../scripts/kit-gmail-warmup-ramp.ts");
+    const seenPerCall: string[][] = [];
+    await confirmWavePropagation(["a@gmail.com", "b@gmail.com"], 999, {
+      maxAttempts: 3,
+      sleepFn: async () => {},
+      confirmFn: async (emails) => {
+        seenPerCall.push([...emails]);
+        // só "a" confirma na 1ª rodada
+        const tagged = new Set(emails.includes("a@gmail.com") && seenPerCall.length === 1 ? ["a@gmail.com"] : []);
+        return { tagged, unconfirmed: [] };
+      },
+    });
+    assert.deepEqual(seenPerCall[0].sort(), ["a@gmail.com", "b@gmail.com"]);
+    assert.deepEqual(seenPerCall[1], ["b@gmail.com"]);
   });
 });
