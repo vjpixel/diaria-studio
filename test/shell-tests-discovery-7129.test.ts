@@ -84,10 +84,40 @@ describe("#7129 — descoberta dos *.test.sh", () => {
     // Descoberto testando o próprio guard contra um workflow adulterado: ele
     // não reprovou. Guard que não discrimina é o defeito que este arquivo
     // existe pra impedir, um nível acima.
+    // `[^#\n]*` entre `run:` e o script fecha o gap que o review do #7333
+    // achou: `run: # npx tsx scripts/run-shell-tests.ts` — o `#` DEPOIS do
+    // `run:` torna o valor do step um comentário bash inteiro (step vira
+    // no-op, exit 0, não roda nada) e a versão anterior do regex casava.
+    // Segunda vez que este mesmo guard precisou apertar; por isso os dois
+    // casos viraram teste explícito abaixo, em vez de confiança no regex.
     assert.match(
       workflows,
-      /^\s*run:.*run-shell-tests\.ts/m,
-      "nenhum workflow INVOCA scripts/run-shell-tests.ts num `run:` — sem isso os *.test.sh voltam a não rodar, que é o #7129 inteiro",
+      /^\s*run:[^#\n]*run-shell-tests\.ts/m,
+      "nenhum workflow INVOCA scripts/run-shell-tests.ts num `run:` real — sem isso os *.test.sh voltam a não rodar, que é o #7129 inteiro",
     );
+  });
+});
+
+describe("#7129 — o guard de 'existe step de CI' em si", () => {
+  // Duas formas de desligar o step sem removê-lo. As duas já enganaram uma
+  // versão deste guard: a 1ª (comentar a linha) foi pega ao testar contra um
+  // workflow adulterado; a 2ª veio do review do PR #7333. Ficam travadas
+  // aqui como caso, não como confiança no regex.
+  const RE = /^\s*run:[^#\n]*run-shell-tests\.ts/m;
+
+  it("aceita a invocação real", () => {
+    assert.match("      - name: Roda\n        run: npx tsx scripts/run-shell-tests.ts\n", RE);
+  });
+
+  it("rejeita a linha inteira comentada", () => {
+    assert.doesNotMatch("        # run: npx tsx scripts/run-shell-tests.ts\n", RE);
+  });
+
+  it("rejeita o comando comentado DEPOIS do run: (step vira no-op com exit 0)", () => {
+    assert.doesNotMatch("        run: # npx tsx scripts/run-shell-tests.ts\n", RE);
+  });
+
+  it("rejeita menção só no name: do step", () => {
+    assert.doesNotMatch("      - name: Run scripts/run-shell-tests.ts\n", RE);
   });
 });

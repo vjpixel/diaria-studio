@@ -23,13 +23,23 @@
  * este runner de fato acha os arquivos, para que "0 testes encontrados" nunca
  * passe como sucesso.
  *
+ * **Dependências de ambiente do runner (#7333, review).** Os testes cobertos
+ * assumem `bash`, e alguns invocam `python3` (`test/hermes-continuo-heartbeat-
+ * renewal-6885.test.sh`) e `jq` (`test/continuo-pr-review-infra-error-
+ * visibility-6910.test.sh`). Os três vêm pré-instalados no `ubuntu-latest` do
+ * GitHub Actions, então o step de CI não os instala — mas isso é uma
+ * dependência TRANSITIVA não óbvia: um runner mais enxuto (container
+ * customizado, self-hosted) quebraria com erro de comando não encontrado, que
+ * é bem menos legível que "faltou instalar X". Registrado aqui pra quem for
+ * trocar o runner saber o que checar.
+ *
  * Uso:
  *   npx tsx scripts/run-shell-tests.ts [--list]
  *
  * `--list` imprime os arquivos descobertos e sai 0 sem executar nada.
  */
 import { spawnSync } from "node:child_process";
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, realpathSync, statSync } from "node:fs";
 import { join, relative, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,7 +65,25 @@ export const SHELL_TEST_TIMEOUT_MS = 180_000;
  */
 export function discoverShellTests(root: string): string[] {
   const found: string[] = [];
+  // #7333 (review, P2): guard de CICLO DE SYMLINK. `SKIP_DIRS` defende por
+  // NOME (`.claude`, `data`) — suficiente hoje, mas é coincidência, não
+  // desenho: um symlink novo em qualquer outro lugar apontando pra um
+  // ancestral faria a recursão rodar para sempre. E o modo de falha seria o
+  // pior possível — o timeout de 180s protege a EXECUÇÃO de cada teste, não
+  // a fase de descoberta, então isso viraria job de CI pendurado sem
+  // mensagem nenhuma. `realpathSync` + Set de visitados resolve por
+  // identidade real em vez de por nome.
+  const visited = new Set<string>();
   const walk = (dir: string): void => {
+    let real: string;
+    try {
+      real = realpathSync(dir);
+    } catch {
+      return; // caminho quebrado (symlink órfão) não derruba a varredura
+    }
+    if (visited.has(real)) return; // já estivemos aqui — ciclo ou atalho
+    visited.add(real);
+
     let entries: string[];
     try {
       entries = readdirSync(dir);
