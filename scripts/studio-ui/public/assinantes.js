@@ -94,6 +94,20 @@ function subscriberCardHtml(sub) {
     )
     .join("");
 
+  // #7202 — apoio_nivel, survey, poll_sig, etc. Atributo ausente não aparece
+  // como linha (ver getAttributesForSubscriber) — "sem atributos" é a lista
+  // vazia mesmo, nunca uma linha fabricada.
+  const attrRows = (sub.attributes ?? [])
+    .map(
+      (a) => `
+      <tr>
+        <td>${platformBadge(a.platform)}</td>
+        <td>${escapeHtml(a.key)}</td>
+        <td>${escapeHtml(a.value)}</td>
+      </tr>`,
+    )
+    .join("");
+
   return `
     <div class="assinantes-subscriber-card">
       <div class="assinantes-subscriber-header">
@@ -112,6 +126,13 @@ function subscriberCardHtml(sub) {
         <table class="triage-table">
           <thead><tr><th>Quando</th><th>Plataforma</th><th>Tipo</th><th>Edição</th><th>URL</th></tr></thead>
           <tbody>${timelineRows || `<tr><td colspan="5" class="hint">sem eventos</td></tr>`}</tbody>
+        </table>
+      </div>
+      <h4>Atributos (${(sub.attributes ?? []).length})</h4>
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead><tr><th>Plataforma</th><th>Chave</th><th>Valor</th></tr></thead>
+          <tbody>${attrRows || `<tr><td colspan="3" class="hint">sem atributos declarados</td></tr>`}</tbody>
         </table>
       </div>
     </div>`;

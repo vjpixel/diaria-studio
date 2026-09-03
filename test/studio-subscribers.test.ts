@@ -15,6 +15,7 @@ import {
   ensureSubscriber,
   upsertSubscription,
   recordEvent,
+  upsertAttribute,
 } from "../scripts/lib/diaria-subscribers-db.ts";
 import { CROSS_PLATFORM_FLOOR_NOTE } from "../scripts/lib/diaria-subscribers-identity-resolve.ts";
 import {
@@ -102,6 +103,7 @@ describe("searchSubscribersByEmail", () => {
       upsertSubscription(db, id, "kit", { status: "active", enteredAt: NOW, exitedAt: null, source: null }, NOW);
       recordEvent(db, { subscriberId: id, platform: "kit", type: "subscribe", externalEventId: "sub1", ts: "2026-01-01T00:00:00.000Z" });
       recordEvent(db, { subscriberId: id, platform: "kit", type: "click", externalEventId: "click1", edicao: "ed1", ts: "2026-02-01T00:00:00.000Z" });
+      upsertAttribute(db, id, "kit", "apoio_nivel", "mantenedor", NOW);
       db.close();
 
       const result = searchSubscribersByEmail(root, "LEITOR@X.com"); // case-insensitive, mesma normalização de findSubscriberIdsByEmail
@@ -115,6 +117,10 @@ describe("searchSubscribersByEmail", () => {
       assert.equal(sub.timeline.length, 2);
       // ordenado por ts ascendente (getSubscriberTimeline)
       assert.ok(sub.timeline[0].ts < sub.timeline[1].ts);
+      // #7202 — a ficha de identidade do painel também expõe atributos.
+      assert.equal(sub.attributes.length, 1);
+      assert.equal(sub.attributes[0].key, "apoio_nivel");
+      assert.equal(sub.attributes[0].value, "mantenedor");
       assert.equal(sub.leitor.subscriberId, id);
       assert.equal(typeof sub.leitor.isLeitor, "boolean");
     } finally {

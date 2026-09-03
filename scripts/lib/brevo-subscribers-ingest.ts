@@ -21,10 +21,36 @@ import {
   ensureSubscriber,
   upsertSubscription,
   recordEvent,
+  upsertAttribute,
+  coerceAttributeValue,
   type EventType,
   type Platform,
 } from "./diaria-subscribers-db.ts";
 import { extractContactEvents, type BrevoContactEvent, type BrevoStatCategory } from "./brevo-stats.ts";
+
+/**
+ * Extrai `(key, value)` de `contact.attributes` — o bloco de custom
+ * attributes da Brevo (apoio_nivel, survey, o que estiver configurado na
+ * conta `brevo_diaria`; #7202). A Brevo tipicamente devolve TODO atributo
+ * CONFIGURADO por contato, com `null` pra quem nunca preencheu — é
+ * exatamente o caso que `coerceAttributeValue` trata como "ausente" (entry
+ * omitida, nunca gravada como resposta em branco). `attributes` ausente/não
+ *-objeto devolve `[]` (defensivo — contato malformado).
+ */
+export function extractBrevoContactAttributes(
+  contact: Record<string, any>,
+): Array<{ key: string; value: string }> {
+  const attrs = contact?.attributes;
+  if (!attrs || typeof attrs !== "object" || Array.isArray(attrs)) return [];
+  const out: Array<{ key: string; value: string }> = [];
+  for (const [key, raw] of Object.entries(attrs)) {
+    if (!key) continue;
+    const value = coerceAttributeValue(raw);
+    if (value === null) continue;
+    out.push({ key, value });
+  }
+  return out;
+}
 
 /** Único valor válido pra este builder (#7196: `brevo_clarice` nunca ingere
  *  no store da diária — mantido como alias de `Platform` em vez de literal
@@ -76,14 +102,19 @@ export interface BrevoContactIngestResult {
   /** Entradas descartadas por não terem `ts` parseável — contadas, nunca
    *  inventadas (ver docstring de `BrevoContactEvent.ts` em brevo-stats.ts). */
   skippedNoTimestamp: number;
+  attributesWritten: number;
 }
 
 /**
  * Ingerir 1 contato Brevo cru (corpo de `GET /contacts/{id}`) — resolve/cria
  * o `subscriber` (identidade `platform` + `external_id` = id numérico Brevo
  * como string + `email`), upserta a `subscription` (status derivado de
- * unsub/blacklist, `entered_at`/`source` da própria Brevo) e grava 1 `event`
- * por entrada de `contact.statistics` com timestamp parseável.
+ * unsub/blacklist, `entered_at`/`source` da própria Brevo), grava 1 `event`
+ * `subscribe` a partir de `contact.createdAt` (#7201 — Kit e Beehiiv já
+ * emitiam; a Brevo upsertava `subscription.entered_at` mas nunca gravava o
+ * evento datado, achado de review deste dispatch), grava 1 `event` por
+ * entrada de `contact.statistics` com timestamp parseável, e grava
+ * `subscriber_attribute` a partir de `contact.attributes` (#7202).
  *
  * `contactId` é o `id` numérico da Brevo — passado à parte porque o corpo cru
  * do contato TEM esse campo (`contact.id`), mas o caller já o conhece de
@@ -104,7 +135,7 @@ export function ingestBrevoContact(
     // lança, mas gravar um subscriber sem NENHUM jeito de reidentificar
     // pelo e-mail (o caminho de busca mais comum, `findSubscriberIdsByEmail`)
     // não ajudaria ninguém — melhor pular e contar como 0 eventos.
-    return { newEvents: 0, alreadyKnown: 0, skippedNoTimestamp: 0 };
+    return { newEvents: 0, alreadyKnown: 0, skippedNoTimestamp: 0, attributesWritten: 0 };
   }
 
   const subscriberId = ensureSubscriber(db, platform, String(contactId), email, now);
@@ -127,10 +158,30 @@ export function ingestBrevoContact(
     now,
   );
 
-  const events: BrevoContactEvent[] = extractContactEvents(contact);
   let newEvents = 0;
   let alreadyKnown = 0;
   let skippedNoTimestamp = 0;
+
+  // #7201: emitir `subscribe` com a data de entrada, mesma disciplina do
+  // Kit/Beehiiv (`ingestKitRoster`/`ingestBeehiivRoster`) — `createdAt` é a
+  // data REAL do cadastro na Brevo (não `now` da captura), então a chave
+  // natural nunca precisa de guard de transição (diferente do `unsub` de
+  // roster do Kit/Beehiiv, que usa o dia da captura porque a fonte não
+  // expõe timestamp real): reingerir o mesmo contato sempre produz a MESMA
+  // chave, `INSERT OR IGNORE` já garante idempotência.
+  if (typeof contact?.createdAt === "string" && contact.createdAt) {
+    const { inserted } = recordEvent(db, {
+      subscriberId,
+      platform,
+      type: "subscribe",
+      externalEventId: `${email}:subscribe:${contact.createdAt}`,
+      ts: contact.createdAt,
+    });
+    if (inserted) newEvents++;
+    else alreadyKnown++;
+  }
+
+  const events: BrevoContactEvent[] = extractContactEvents(contact);
 
   for (const ev of events) {
     if (!ev.ts) {
@@ -157,5 +208,11 @@ export function ingestBrevoContact(
     else alreadyKnown++;
   }
 
-  return { newEvents, alreadyKnown, skippedNoTimestamp };
+  let attributesWritten = 0;
+  for (const attr of extractBrevoContactAttributes(contact)) {
+    upsertAttribute(db, subscriberId, platform, attr.key, attr.value, now);
+    attributesWritten++;
+  }
+
+  return { newEvents, alreadyKnown, skippedNoTimestamp, attributesWritten };
 }

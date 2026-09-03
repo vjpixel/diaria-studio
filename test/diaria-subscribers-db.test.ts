@@ -20,6 +20,10 @@ import {
   migrateSubscriptionColumns,
   isPlatform,
   isEventType,
+  coerceAttributeValue,
+  upsertAttribute,
+  getAttributesForSubscriber,
+  getAttributeKeyCoverage,
   type Platform,
 } from "../scripts/lib/diaria-subscribers-db.ts";
 
@@ -642,5 +646,117 @@ describe("isPlatform / isEventType", () => {
       assert.ok(isEventType(t));
     }
     assert.equal(isEventType("unknown-type"), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// subscriber_attribute (#7202)
+// ---------------------------------------------------------------------------
+
+describe("schema — subscriber_attribute", () => {
+  it("cria a tabela e os índices de subscriber_attribute", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const tables = (
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>
+    ).map((r) => r.name);
+    assert.ok(tables.includes("subscriber_attribute"));
+    const indexes = (
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as Array<{ name: string }>
+    ).map((r) => r.name);
+    assert.ok(indexes.includes("idx_subscriber_attribute_subscriber"));
+    assert.ok(indexes.includes("idx_subscriber_attribute_key"));
+    db.close();
+  });
+});
+
+describe("coerceAttributeValue — ausente vs. valor real (#7202)", () => {
+  it("null/undefined viram null (atributo ausente)", () => {
+    assert.equal(coerceAttributeValue(null), null);
+    assert.equal(coerceAttributeValue(undefined), null);
+  });
+
+  it("string vazia (ou só espaço) vira null — nunca grava 'declarado em branco'", () => {
+    assert.equal(coerceAttributeValue(""), null);
+    assert.equal(coerceAttributeValue("   "), null);
+  });
+
+  it("string com conteúdo é preservada (trimmed)", () => {
+    assert.equal(coerceAttributeValue("  mantenedor  "), "mantenedor");
+  });
+
+  it("número e booleano são coeridos pra string", () => {
+    assert.equal(coerceAttributeValue(42), "42");
+    assert.equal(coerceAttributeValue(true), "true");
+    assert.equal(coerceAttributeValue(false), "false");
+  });
+
+  it("array/objeto vira JSON.stringify", () => {
+    assert.equal(coerceAttributeValue(["a", "b"]), JSON.stringify(["a", "b"]));
+  });
+});
+
+describe("upsertAttribute / getAttributesForSubscriber (#7202)", () => {
+  it("grava e relê 1 atributo", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const subscriberId = ensureSubscriber(db, "beehiiv", "ext1", "a@example.com", "2026-01-01T00:00:00Z");
+    upsertAttribute(db, subscriberId, "beehiiv", "apoio_nivel", "mantenedor", "2026-01-01T00:00:00Z");
+    const attrs = getAttributesForSubscriber(db, subscriberId);
+    assert.equal(attrs.length, 1);
+    assert.equal(attrs[0].key, "apoio_nivel");
+    assert.equal(attrs[0].value, "mantenedor");
+    assert.equal(attrs[0].platform, "beehiiv");
+    db.close();
+  });
+
+  it("upsert idempotente — reingerir a mesma chave atualiza, não duplica", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const subscriberId = ensureSubscriber(db, "kit", null, "b@example.com", "2026-01-01T00:00:00Z");
+    upsertAttribute(db, subscriberId, "kit", "setor", "tech", "2026-01-01T00:00:00Z");
+    upsertAttribute(db, subscriberId, "kit", "setor", "saude", "2026-01-02T00:00:00Z");
+    const attrs = getAttributesForSubscriber(db, subscriberId);
+    assert.equal(attrs.length, 1);
+    assert.equal(attrs[0].value, "saude");
+    db.close();
+  });
+
+  it("(subscriber, platform, key) diferentes convivem — mesma chave em 2 plataformas não colide", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const subscriberId = ensureSubscriber(db, "beehiiv", null, "c@example.com", "2026-01-01T00:00:00Z");
+    ensureSubscriber(db, "kit", null, "c@example.com", "2026-01-01T00:00:00Z");
+    upsertAttribute(db, subscriberId, "beehiiv", "apoio_nivel", "amigo", "2026-01-01T00:00:00Z");
+    const attrs = getAttributesForSubscriber(db, subscriberId);
+    assert.equal(attrs.length, 1, "kit é um subscriber DIFERENTE (ensureSubscriber não funde cross-plataforma)");
+    db.close();
+  });
+
+  it("subscriber sem atributo nenhum devolve [] — ausência é a lista vazia, nunca uma linha fabricada", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const subscriberId = ensureSubscriber(db, "beehiiv", null, "d@example.com", "2026-01-01T00:00:00Z");
+    assert.deepEqual(getAttributesForSubscriber(db, subscriberId), []);
+    db.close();
+  });
+});
+
+describe("getAttributeKeyCoverage (#7202)", () => {
+  it("conta subscribers da plataforma vs. quantos têm a chave gravada", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const s1 = ensureSubscriber(db, "beehiiv", null, "e1@example.com", "2026-01-01T00:00:00Z");
+    const s2 = ensureSubscriber(db, "beehiiv", null, "e2@example.com", "2026-01-01T00:00:00Z");
+    ensureSubscriber(db, "beehiiv", null, "e3@example.com", "2026-01-01T00:00:00Z");
+    upsertAttribute(db, s1, "beehiiv", "setor", "tech", "2026-01-01T00:00:00Z");
+    upsertAttribute(db, s2, "beehiiv", "setor", "saude", "2026-01-01T00:00:00Z");
+    const coverage = getAttributeKeyCoverage(db, "beehiiv", "setor");
+    assert.equal(coverage.subscribersOnPlatform, 3);
+    assert.equal(coverage.withAttribute, 2);
+    db.close();
+  });
+
+  it("chave nunca ingerida devolve withAttribute: 0 sem lançar — sinal explícito de 'dado não coletado', não '0 responderam'", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ensureSubscriber(db, "kit", null, "f@example.com", "2026-01-01T00:00:00Z");
+    const coverage = getAttributeKeyCoverage(db, "kit", "nunca-ingerida");
+    assert.equal(coverage.subscribersOnPlatform, 1);
+    assert.equal(coverage.withAttribute, 0);
+    db.close();
   });
 });

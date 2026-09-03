@@ -45,11 +45,13 @@ import {
   getSubscriberTimeline,
   getAliasesForSubscriber,
   getSubscriptionsForSubscriber,
+  getAttributesForSubscriber,
   getAllSubscriberPlatforms,
   type Platform,
   type TimelineEvent,
   type SubscriberAlias,
   type SubscriptionRecord,
+  type SubscriberAttributeRecord,
 } from "../lib/diaria-subscribers-db.ts";
 import {
   detectPlatformCapabilities,
@@ -117,6 +119,9 @@ export interface SubscriberRecord {
    *  a timeline unificada das 3 plataformas numa linha só (caso de uso
    *  motivador do épico, corpo da issue #6590/#6464). */
   timeline: TimelineEvent[];
+  /** apoio_nivel, respostas de survey, poll_sig, etc. (#7202) — nunca
+   *  inclui linha "ausente"; ver docstring de `getAttributesForSubscriber`. */
+  attributes: SubscriberAttributeRecord[];
   leitor: StoreLeitorResult;
 }
 
@@ -153,6 +158,7 @@ export function searchSubscribersByEmail(
       aliases: getAliasesForSubscriber(db, subscriberId),
       subscriptions: getSubscriptionsForSubscriber(db, subscriberId),
       timeline: getSubscriberTimeline(db, subscriberId),
+      attributes: getAttributesForSubscriber(db, subscriberId),
       leitor: computeStoreLeitorResult(db, subscriberId, caps),
     }));
     return { query: email, db: layer, subscribers, note: CROSS_PLATFORM_FLOOR_NOTE };

@@ -28,7 +28,14 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import type { BroadcastAudience } from "../kit-provider-split.ts";
-import { ensureSubscriber, recordEvent, upsertSubscription, type EventType } from "./diaria-subscribers-db.ts";
+import {
+  ensureSubscriber,
+  recordEvent,
+  upsertSubscription,
+  upsertAttribute,
+  coerceAttributeValue,
+  type EventType,
+} from "./diaria-subscribers-db.ts";
 import type { KitSubscriberSummary } from "./kit-subscribers.ts";
 
 /** Eixo do Kit → tipo de evento do store. `opens`/`clicks` (plural, vocabulário
@@ -157,6 +164,31 @@ export interface KitRosterIngestResult {
   subscriptionsWritten: number;
   subscribeEvents: { newEvents: number; alreadyKnown: number };
   unsubEvents: { newEvents: number; alreadyKnown: number };
+  attributesWritten: number;
+}
+
+/**
+ * Extrai `(key, value)` de `sub.fields` — TODO o custom field do assinante,
+ * não só o subconjunto de UTM que `ingestKitRoster` já grava em
+ * `subscription` (#7202). Inclui `apoio_nivel` (linha de receita) e
+ * qualquer outro campo configurado na conta Kit. Chave/valor genérico, não
+ * lista fixa — o conjunto de campos muda sem aviso (mesma decisão de
+ * `extractBeehiivCustomFieldAttributes`). `value` passa por
+ * `coerceAttributeValue` — string vazia/`null`/`undefined` viram "atributo
+ * ausente" (entry omitida), nunca gravados como resposta em branco.
+ */
+export function extractKitFieldAttributes(
+  sub: Pick<KitSubscriberSummary, "fields">,
+): Array<{ key: string; value: string }> {
+  const fields = sub.fields ?? {};
+  const out: Array<{ key: string; value: string }> = [];
+  for (const [key, raw] of Object.entries(fields)) {
+    if (!key) continue;
+    const value = coerceAttributeValue(raw);
+    if (value === null) continue;
+    out.push({ key, value });
+  }
+  return out;
 }
 
 /**
@@ -200,6 +232,7 @@ export function ingestKitRoster(
   let subscribeKnown = 0;
   let unsubNew = 0;
   let unsubKnown = 0;
+  let attributesWritten = 0;
 
   for (const sub of subscribers) {
     const email = sub.email_address.trim().toLowerCase();
@@ -278,6 +311,11 @@ export function ingestKitRoster(
     } else if (exited) {
       unsubKnown++;
     }
+
+    for (const attr of extractKitFieldAttributes(sub)) {
+      upsertAttribute(db, subscriberId, "kit", attr.key, attr.value, now);
+      attributesWritten++;
+    }
   }
 
   return {
@@ -285,5 +323,6 @@ export function ingestKitRoster(
     subscriptionsWritten,
     subscribeEvents: { newEvents: subscribeNew, alreadyKnown: subscribeKnown },
     unsubEvents: { newEvents: unsubNew, alreadyKnown: unsubKnown },
+    attributesWritten,
   };
 }
