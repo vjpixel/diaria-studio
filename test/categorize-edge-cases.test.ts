@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 import {
   categorize,
+  categoryToBucket,
   isVideoUrl,
   isArxivRelevant,
   categorizeArticles,
@@ -356,6 +357,35 @@ describe("isCustomerStory (#898) — patterns de customer story / parceria", () 
       isCustomerStory({ url: "x", title: "Singular Bank helps bankers move fast with ChatGPT" }),
       true,
     );
+  });
+
+  // #5995 (achado 260610, decomposição por causa): "helps developers build/
+  // ship/create" é boilerplate de autodescrição de QUALQUER framework/SDK
+  // (todo dev tool "ajuda desenvolvedores a construir X") — não indica
+  // narrativa de CLIENTE específico como "Singular Bank helps bankers".
+  // Objeto genérico "developers" não identifica um customer story real;
+  // outros públicos ("bankers", "drivers") continuam batendo (teste acima).
+  it("NÃO dispara em 'helps developers build' (boilerplate de produto, não customer story)", () => {
+    assert.equal(
+      isCustomerStory({
+        url: "x",
+        title: "Announcing Genkit Middleware: Intercept, extend, and harden your agentic apps",
+        summary:
+          "Genkit is an open-source framework designed to help developers build production-ready, agentic AI applications using TypeScript, Go, Dart, and Python.",
+      }),
+      false,
+    );
+  });
+
+  it("CASO REAL 260610: Announcing Genkit Middleware → lancamento (não noticias via customer-story)", () => {
+    const article = {
+      url: "https://developers.googleblog.com/announcing-genkit-middleware-intercept-extend-and-harden-your-agentic-apps",
+      title: "Announcing Genkit Middleware: Intercept, extend, and harden your agentic apps",
+      summary:
+        "Genkit is an open-source framework designed to help developers build production-ready, agentic AI applications using TypeScript, Go, Dart, and Python. The framework utilizes a powerful middleware system that intercepts generation calls to inject custom behaviors like retries, model fallbacks, and human-in-the-loop tool approvals.",
+    } as Article;
+    assert.equal(categorize(article), "lancamento");
+    assert.equal(categoryToBucket(categorize(article)), "lancamento");
   });
 
   it("detecta 'Class of YYYY' (programa)", () => {
