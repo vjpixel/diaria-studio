@@ -200,4 +200,27 @@ describe("#5248 — buildSyncRequests (ga4-sync.ts)", () => {
     const { overview } = buildSyncRequests("999", 30);
     assert.deepEqual(overview.dateRanges, [{ startDate: "30daysAgo", endDate: "yesterday" }]);
   });
+
+  it("#7184 — monta channel (fino, topo de funil) com date/sessionSource/sessionMedium/sessionCampaignName/hostName + limit", () => {
+    const { channel } = buildSyncRequests("999", 7);
+    assert.equal(channel.propertyId, "999");
+    assert.deepEqual(channel.dimensions, ["date", "sessionSource", "sessionMedium", "sessionCampaignName", "hostName"]);
+    assert.deepEqual(channel.metrics, ["sessions"]);
+    assert.deepEqual(channel.dateRanges, [{ startDate: "7daysAgo", endDate: "yesterday" }]);
+    assert.ok(typeof channel.limit === "number" && channel.limit > 0);
+  });
+
+  it("#7184 — monta channelGroup (conferência) com date/sessionDefaultChannelGroup + limit", () => {
+    const { channelGroup } = buildSyncRequests("999", 7);
+    assert.deepEqual(channelGroup.dimensions, ["date", "sessionDefaultChannelGroup"]);
+    assert.deepEqual(channelGroup.metrics, ["sessions"]);
+    assert.ok(typeof channelGroup.limit === "number" && channelGroup.limit > 0);
+  });
+
+  it("#7184 — os 4 relatórios (overview, topPages, channel, channelGroup) respeitam a mesma janela --days", () => {
+    const requests = buildSyncRequests("999", 30);
+    for (const key of ["overview", "topPages", "channel", "channelGroup"] as const) {
+      assert.deepEqual(requests[key].dateRanges, [{ startDate: "30daysAgo", endDate: "yesterday" }]);
+    }
+  });
 });

@@ -74,7 +74,10 @@ export async function main(): Promise<number> {
 
   const configResult = authConfigFromEnv();
   if ("missing" in configResult) {
-    fallback(`variável(is) de ambiente ausente(s): ${configResult.missing.join(", ")}`);
+    fallback(
+      `variável(is) de ambiente ausente(s): ${configResult.missing.join(", ")}; ` +
+        "para ingerir agora use scripts/ga4-sync.ts (autentica por data/.credentials.json)",
+    );
     return 0;
   }
 
