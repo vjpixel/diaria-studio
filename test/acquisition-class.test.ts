@@ -71,6 +71,23 @@ describe("assertNoDuplicateClassKeys", () => {
   it("não lança sobre as listas reais do módulo (chamado no load)", () => {
     assert.doesNotThrow(() => assertNoDuplicateClassKeys());
   });
+
+  it("lança quando a MESMA chave normalizada aparece em duas classes diferentes (critério (c) da issue #7173)", () => {
+    assert.throws(
+      () =>
+        assertNoDuplicateClassKeys([
+          { keys: ["clarice"], cls: "iniciativa" },
+          { keys: ["Clarice"], cls: "reativacao" }, // mesma chave, normalização diferente
+        ]),
+      /declarada em duas classes/,
+    );
+  });
+
+  it("não lança quando a mesma chave repete na MESMA classe (não é conflito, é redundância inofensiva)", () => {
+    assert.doesNotThrow(() =>
+      assertNoDuplicateClassKeys([{ keys: ["clarice", "clarice"], cls: "iniciativa" }]),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

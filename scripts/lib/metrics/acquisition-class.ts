@@ -152,24 +152,45 @@ const PAID_UTM_MEDIA: readonly string[] = [...new Set(PREFLIGHT_UTM_ARMS.map((ar
 /**
  * Lança se a mesma chave normalizada aparecer em duas classes diferentes —
  * chave declarada em duas classes é erro de configuração em tempo de carga,
- * nunca classificação silenciosa. Roda no load do módulo. @pure
+ * nunca classificação silenciosa.
+ *
+ * Aceita `groups` opcional (default = as listas reais do módulo, chamada
+ * sem argumento no load) exatamente pelo mesmo motivo de
+ * `assertValidChannelKeySpecs(specs)` em `shared/channel-key-specs.ts`
+ * aceitar `specs` como parâmetro em vez de ler `CHANNEL_KEY_SPECS` direto:
+ * testável com fixture inválida sem precisar quebrar o import do módulo
+ * real (molde de `test/cac.test.ts`). Cobre as 3 listas de `utm_source`
+ * (`REATIVACAO_UTM_SOURCES`/`INICIATIVA_UTM_SOURCE_CATALOG`/
+ * `NAO_AQUISICAO_UTM_SOURCES`) — as 2 listas de `utm_channel`
+ * (`INICIATIVA_UTM_CHANNELS`/`NAO_AQUISICAO_UTM_CHANNELS`) não colidem hoje
+ * e não têm nenhum valor em comum com as listas de source por construção
+ * (namespaces disjuntos: um é `utm_channel`, outro é `utm_source`), então
+ * ficam fora deste guard — se um dia um valor precisar aparecer nas duas
+ * dimensões, é aí que este guard precisa crescer.
+ *
+ * @pure
  */
-export function assertNoDuplicateClassKeys(): void {
+export function assertNoDuplicateClassKeys(
+  groups: ReadonlyArray<{ keys: readonly string[]; cls: string }> = [
+    { keys: REATIVACAO_UTM_SOURCES, cls: "reativacao" },
+    { keys: INICIATIVA_UTM_SOURCE_CATALOG, cls: "iniciativa" },
+    { keys: NAO_AQUISICAO_UTM_SOURCES, cls: "indeterminado" },
+  ],
+): void {
   const seen = new Map<string, string>();
-  const register = (raw: string, cls: string) => {
-    const key = normalizeKey(raw);
-    const prev = seen.get(key);
-    if (prev && prev !== cls) {
-      throw new Error(
-        `[acquisition-class] chave "${key}" declarada em duas classes: "${prev}" e "${cls}" — ` +
-          `classificação silenciosa não é aceitável, corrigir uma das listas.`,
-      );
+  for (const group of groups) {
+    for (const raw of group.keys) {
+      const key = normalizeKey(raw);
+      const prev = seen.get(key);
+      if (prev && prev !== group.cls) {
+        throw new Error(
+          `[acquisition-class] chave "${key}" declarada em duas classes: "${prev}" e "${group.cls}" — ` +
+            `classificação silenciosa não é aceitável, corrigir uma das listas.`,
+        );
+      }
+      seen.set(key, group.cls);
     }
-    seen.set(key, cls);
-  };
-  for (const s of REATIVACAO_UTM_SOURCES) register(s, "reativacao");
-  for (const s of INICIATIVA_UTM_SOURCE_CATALOG) register(s, "iniciativa");
-  for (const s of NAO_AQUISICAO_UTM_SOURCES) register(s, "indeterminado");
+  }
 }
 assertNoDuplicateClassKeys();
 
