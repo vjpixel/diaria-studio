@@ -75,6 +75,15 @@ describe("classifyCodexCredential (#7250)", () => {
     assert.equal(v.state, "esgotada");
   });
 
+  it('429 como STRING conta igual — o tipo permite, então o teste cobra', () => {
+    // `last_error_code` é `number | string | null` porque o Hermes já
+    // serializou código HTTP das duas formas. Se só o número fosse coberto,
+    // uma conta esgotada passaria por `indeterminada` no dia em que o formato
+    // mudasse — e `indeterminada` não alarma sozinha.
+    const v = classifyCodexCredential({ label: "x", last_status: "error", last_error_code: "429" });
+    assert.equal(v.state, "esgotada");
+  });
+
   it("falha de razão DESCONHECIDA é indeterminada, nunca esgotada", () => {
     // OAuth expirado e erro de rede caem aqui. Chamar isso de "esgotada"
     // esconderia o problema real atrás do alarme errado.
@@ -146,10 +155,30 @@ describe("evaluateCodexPool (#7250)", () => {
     assert.equal(v.shouldAlarm, true, "2 indeterminadas não podem passar por 'tudo bem'");
   });
 
-  it("pool vazio não alarma — ausência de dado não é ausência de conta", () => {
+  it("pool VAZIO alarma — perder de vista as contas não é 'está tudo bem'", () => {
+    // Este teste inverteu durante o review do #7250. A versão original
+    // afirmava `shouldAlarm: false`, tratando zero entradas como silêncio
+    // legítimo — o que dava fail-OPEN justamente no sinal mais grave: o
+    // rastreamento das contas sumiu. Note que isto NÃO é "não consegui ler"
+    // (esse caso é `readCodexPool` → `null` → exit 1); é ler com sucesso um
+    // pool que ficou sem nenhuma conta.
     const v = evaluateCodexPool([]);
-    assert.equal(v.shouldAlarm, false);
-    assert.equal(v.allExhausted, false);
+    assert.equal(v.poolVazio, true);
+    assert.equal(v.shouldAlarm, true);
+    assert.equal(v.allExhausted, false, "vazio não é o mesmo que todas esgotadas");
+  });
+
+  it("pool vazio tem mensagem própria, que não fala em conta esgotada", () => {
+    const msg = buildCodexAlarmMessage(evaluateCodexPool([]), "2026-09-03T08:00:00Z");
+    assert.match(msg, /VAZIO/);
+    assert.match(msg, /nenhuma conta rastreada/);
+    assert.doesNotMatch(msg, /Resta \d+ conta/, "não pode reusar o texto de contagem");
+  });
+
+  it("o fingerprint do pool vazio é estável e distinto de qualquer pool com contas", () => {
+    const vazio = computeCodexPoolFingerprint(evaluateCodexPool([]));
+    assert.equal(vazio, computeCodexPoolFingerprint(evaluateCodexPool([])));
+    assert.notEqual(vazio, computeCodexPoolFingerprint(evaluateCodexPool(POOL_REAL)));
   });
 
   it("o limiar é configurável e o default avisa na penúltima", () => {

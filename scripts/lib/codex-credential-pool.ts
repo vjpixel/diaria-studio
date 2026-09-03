@@ -74,8 +74,13 @@ export const CODEX_ALARM_LIVE_THRESHOLD = 1;
 
 /** Uma entrada do `credential_pool` como o Hermes a persiste. Campos extras
  *  (tokens, fingerprints) são deliberadamente omitidos: este módulo nunca
- *  precisa deles, e não tê-los no tipo impede que vazem por acidente num log
- *  ou numa mensagem de alarme — o canal de entrega do contínuo é o Telegram. */
+ *  precisa deles, e não tê-los no tipo impede que vazem por acidente.
+ *
+ *  A precaução não é sobre um canal específico. O alarme deste script sai por
+ *  e-mail, mas o mesmo veredito pode ser repassado num relatório do contínuo
+ *  (que reporta por Telegram), num comentário de issue ou num log — todos
+ *  lugares a um encaminhamento de distância de terceiros. Segredo que nunca
+ *  entra no tipo não vaza por nenhum deles. */
 export interface CodexCredentialEntry {
   readonly label?: string;
   readonly id?: string;
@@ -163,6 +168,9 @@ export interface CodexPoolVerdict {
   readonly shouldAlarm: boolean;
   /** `true` quando NENHUMA conta está viva — delegação parada agora. */
   readonly allExhausted: boolean;
+  /** `true` quando o pool existe mas está VAZIO — nenhuma conta rastreada.
+   *  Não é o mesmo que "tudo bem": ver `evaluateCodexPool`. */
+  readonly poolVazio: boolean;
 }
 
 /**
@@ -171,6 +179,15 @@ export interface CodexPoolVerdict {
  * Conta `indeterminada` **não** é contada como viva. Fail-closed de propósito:
  * o custo de alarmar à toa é uma mensagem; o de não alarmar é o editor
  * descobrir semanas depois, pela ausência de trabalho entregue.
+ *
+ * **Pool VAZIO alarma, pela mesma razão.** `credential_pool["openai-codex"]`
+ * presente e com zero entradas significa que o rastreamento das contas sumiu —
+ * o Hermes zerou o pool, ou alguém removeu as três. Sob a leitura ingênua isso
+ * dá "0 esgotadas, nada a reportar", que é o pior desfecho possível: o alarme
+ * declararia saúde justamente quando perdeu de vista o que devia vigiar.
+ * Note a assimetria com `readCodexPool`, que devolve `null` (e sai com erro)
+ * quando não CONSEGUE ler: aqui a leitura funcionou e o conteúdo é que está
+ * vazio — são falhas diferentes e o alarme distingue as duas.
  */
 export function evaluateCodexPool(
   entries: readonly CodexCredentialEntry[],
@@ -180,13 +197,15 @@ export function evaluateCodexPool(
   const vivas = verdicts.filter((v) => v.state === "viva").length;
   const esgotadas = verdicts.filter((v) => v.state === "esgotada").length;
   const indeterminadas = verdicts.filter((v) => v.state === "indeterminada").length;
+  const poolVazio = verdicts.length === 0;
   return {
     verdicts,
     vivas,
     esgotadas,
     indeterminadas,
-    shouldAlarm: verdicts.length > 0 && vivas <= liveThreshold,
-    allExhausted: verdicts.length > 0 && vivas === 0,
+    poolVazio,
+    shouldAlarm: poolVazio || vivas <= liveThreshold,
+    allExhausted: !poolVazio && vivas === 0,
   };
 }
 
@@ -194,6 +213,7 @@ export function evaluateCodexPool(
  *  estados muda, não a cada leitura. Assim o alarme não repete enquanto a
  *  situação for a mesma, e volta a disparar quando piora ou melhora. */
 export function computeCodexPoolFingerprint(v: CodexPoolVerdict): string {
+  if (v.poolVazio) return "(pool-vazio)";
   return v.verdicts
     .map((c) => `${c.label}:${c.state}`)
     .sort()
@@ -203,6 +223,18 @@ export function computeCodexPoolFingerprint(v: CodexPoolVerdict): string {
 /** Corpo do alarme, em texto. Nunca inclui token, refresh_token nem
  *  fingerprint de segredo — só rótulo, estado e data de retorno. */
 export function buildCodexAlarmMessage(v: CodexPoolVerdict, nowIso: string): string {
+  if (v.poolVazio) {
+    return [
+      'O pool `credential_pool["openai-codex"]` existe, mas está VAZIO — nenhuma conta rastreada.',
+      "",
+      "Isto não é o mesmo que estar tudo bem: é o alarme perdendo de vista o que deveria vigiar.",
+      "Ou o Hermes zerou o pool, ou as contas foram removidas. Enquanto estiver assim, nada aqui",
+      "consegue detectar esgotamento de cota — não há sobre o que decidir.",
+      "",
+      `Fonte: ~/.hermes/auth.json, lido em ${nowIso}.`,
+    ].join("\n");
+  }
+
   const linhas = v.verdicts.map((c) => {
     const volta = c.resetsAtIso ? ` — volta ${c.resetsAtIso.slice(0, 16).replace("T", " ")} UTC` : "";
     return `  ${c.label.padEnd(16)} ${c.state.toUpperCase().padEnd(14)} ${c.reason}${volta}`;

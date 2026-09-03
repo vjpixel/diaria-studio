@@ -52,16 +52,17 @@
  *   npx tsx scripts/codex-credential-alarm.ts --auth-json /caminho/auth.json
  *   npx tsx scripts/codex-credential-alarm.ts --to editor@exemplo   # override do destinatário
  *
- * Exit codes: 0 sempre que a avaliação rodou (com ou sem alarme). 1 só em uso
- * inválido de CLI ou arquivo ilegível — falha de leitura NUNCA vira "está tudo
- * bem" em silêncio.
+ * Exit codes: 0 sempre que a avaliação rodou e, se havia alarme, ele saiu. 1 em
+ * uso inválido de CLI, em arquivo ilegível, e também quando o ENVIO falha — nem
+ * falha de leitura nem falha de entrega pode virar "está tudo bem" em silêncio.
  */
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 import {
   evaluateCodexPool,
   computeCodexPoolFingerprint,
@@ -71,7 +72,7 @@ import {
 } from "./lib/codex-credential-pool.ts";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const STATE_PATH = join(REPO_ROOT, "data", "codex-credential-alarm", "state.json");
+export const STATE_PATH = join(REPO_ROOT, "data", "codex-credential-alarm", "state.json");
 const DEFAULT_AUTH_JSON = join(homedir(), ".hermes", "auth.json");
 const POOL_KEY = "openai-codex";
 
@@ -84,7 +85,12 @@ function emptyState(): AlarmState {
   return { last_fingerprint: null, last_alarmed_at: null };
 }
 
-function readState(path: string): AlarmState {
+/**
+ * Exportada, e com o path por parâmetro, pelo mesmo motivo que `loadState` em
+ * `scripts/lib/alarm-issues.ts`: permitir o roundtrip em tmpdir sem tocar no
+ * estado real sob `data/` — que é junction do OneDrive, não pasta descartável.
+ */
+export function readState(path: string): AlarmState {
   if (!existsSync(path)) return emptyState();
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
@@ -99,9 +105,18 @@ function readState(path: string): AlarmState {
   }
 }
 
-function writeState(path: string, state: AlarmState): void {
+export function writeState(path: string, state: AlarmState): void {
+  // `writeFileAtomic` NÃO cria o diretório-pai — ele escreve o temporário ao
+  // lado do alvo, e sem a pasta a escrita estoura com ENOENT. Numa máquina
+  // onde `data/codex-credential-alarm/` ainda não existe (toda primeira
+  // execução), isso significaria estado nunca persistido e alarme repetindo
+  // para sempre. O mkdir vem antes, de propósito.
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  // Atômico como nos scripts irmãos (`alarm-issues.ts` → `writeFileAtomic`):
+  // um kill no meio da escrita deixaria JSON truncado. `readState` já degrada
+  // ilegível para ausente, então o pior caso seria um alarme repetido — mas
+  // não há razão para aceitar nem esse.
+  writeFileAtomic(path, `${JSON.stringify(state, null, 2)}\n`);
 }
 
 /**
@@ -156,21 +171,30 @@ async function main(argv: string[]): Promise<number> {
   const isNew = fingerprint !== state.last_fingerprint;
   const willAlarm = verdict.shouldAlarm && isNew && !dryRun;
 
-  if (asJson) {
+  // O JSON só sai DEPOIS da tentativa de envio. A primeira versão imprimia
+  // `alarmed: willAlarm` antes de chamar o Gmail — e `willAlarm` é intenção,
+  // não entrega: um consumidor que lesse só o stdout concluiria que o editor
+  // foi avisado enquanto o envio tinha estourado.
+  const emitJson = (alarmSent: boolean, alarmError: string | null): void => {
     process.stdout.write(
       `${JSON.stringify({
-        ok: true,
+        ok: alarmError === null,
         vivas: verdict.vivas,
         esgotadas: verdict.esgotadas,
         indeterminadas: verdict.indeterminadas,
+        pool_vazio: verdict.poolVazio,
         should_alarm: verdict.shouldAlarm,
         all_exhausted: verdict.allExhausted,
         fingerprint_changed: isNew,
-        alarmed: willAlarm,
+        alarm_attempted: willAlarm,
+        alarm_sent: alarmSent,
+        alarm_error: alarmError,
         contas: verdict.verdicts.map((v) => ({ label: v.label, state: v.state, resets_at: v.resetsAtIso })),
       })}\n`,
     );
-  } else {
+  };
+
+  if (!asJson) {
     process.stdout.write(`${render(verdict, nowIso)}\n`);
     if (!verdict.shouldAlarm) {
       process.stdout.write(`\n[codex-credential-alarm] acima do limiar — nada a alarmar.\n`);
@@ -183,20 +207,51 @@ async function main(argv: string[]): Promise<number> {
     }
   }
 
-  if (willAlarm) {
-    // O envio reusa a mesma infraestrutura dos demais alarmes do projeto.
-    // Import dinâmico para que --dry-run e --json não exijam credencial de
-    // e-mail: medir nunca deve depender de poder enviar.
-    const { sendGmailMessage } = await import("./lib/gmail-send.ts");
-    const { resolveEditorEmail } = await import("./lib/inbox-stats.ts");
-    const to = getArg(argv, "to") || resolveEditorEmail(join(REPO_ROOT, "platform.config.json"));
-    const assunto = verdict.allExhausted
+  if (!willAlarm) {
+    if (asJson) emitJson(false, null);
+    return 0;
+  }
+
+  // O envio reusa a mesma infraestrutura dos demais alarmes do projeto.
+  // Import dinâmico para que --dry-run e --json não exijam credencial de
+  // e-mail: medir nunca deve depender de poder enviar.
+  const { sendGmailMessage } = await import("./lib/gmail-send.ts");
+  const { resolveEditorEmail } = await import("./lib/inbox-stats.ts");
+  const to = getArg(argv, "to") || resolveEditorEmail(join(REPO_ROOT, "platform.config.json"));
+  const assunto = verdict.poolVazio
+    ? "[diar.ia.br] pool de contas Codex VAZIO — nada mais está sendo vigiado"
+    : verdict.allExhausted
       ? "[diar.ia.br] TODAS as contas Codex esgotadas — delegação parada"
       : `[diar.ia.br] resta ${verdict.vivas} conta Codex viva de ${verdict.verdicts.length}`;
+
+  try {
     await sendGmailMessage(to, assunto, render(verdict, nowIso));
-    writeState(STATE_PATH, { last_fingerprint: fingerprint, last_alarmed_at: nowIso });
-    if (!asJson) process.stdout.write(`\n[codex-credential-alarm] alarme enviado para ${to}.\n`);
+  } catch (err) {
+    const motivo = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    if (asJson) emitJson(false, motivo);
+    else process.stderr.write(`\n[codex-credential-alarm] FALHA ao enviar para ${to}: ${motivo}\n`);
+    // Estado NÃO é persistido: a próxima execução tenta de novo, em vez de
+    // tratar um envio que estourou como "já avisado".
+    return 1;
   }
+
+  // Daqui em diante o editor JÁ foi avisado. Uma falha ao gravar o estado
+  // custa um alarme duplicado na próxima rodada — nunca um alarme perdido —,
+  // então ela não pode derrubar o exit code e fazer parecer que o aviso não
+  // saiu. Este é o único ponto do script onde falhar em silêncio seria pior
+  // do que a falha em si.
+  try {
+    writeState(STATE_PATH, { last_fingerprint: fingerprint, last_alarmed_at: nowIso });
+  } catch (err) {
+    const motivo = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    process.stderr.write(
+      `[codex-credential-alarm] alarme ENVIADO, mas o estado não foi gravado (${motivo}). ` +
+        `A próxima execução vai repetir o alarme.\n`,
+    );
+  }
+
+  if (asJson) emitJson(true, null);
+  else process.stdout.write(`\n[codex-credential-alarm] alarme enviado para ${to}.\n`);
 
   return 0;
 }
@@ -207,7 +262,11 @@ if (isMainModule(import.meta.url)) {
     .catch((err) => {
       // Erro não-tratado nunca pode sair como sucesso silencioso: este alarme
       // existe exatamente para tornar visível um estado que ninguém observa.
-      process.stderr.write(`[codex-credential-alarm] erro não-tratado: ${err instanceof Error ? err.message : String(err)}\n`);
+      // Stack, não só `message`: este catch existe justamente para o erro que
+      // ninguém previu, e é a stack que localiza a linha meses depois.
+      process.stderr.write(
+        `[codex-credential-alarm] erro não-tratado: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
+      );
       process.exit(1);
     });
 }
