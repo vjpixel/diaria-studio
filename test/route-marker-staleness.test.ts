@@ -11,8 +11,10 @@ import { formatExecutionBlockMarker, type ExecutionBlock } from "../scripts/lib/
 import { formatRouteIssueMarker } from "../scripts/lib/issue-route.ts";
 import {
   findRouteMarkerStaleness,
+  describeConsultorCoverage,
   STALE_EXTERNAL_DAYS,
   AGENDADA_RENEWAL_THRESHOLD,
+  UNKNOWN_FRACTION_WARN_THRESHOLD,
   type RouteMarkerStalenessConsultor,
   type RouteMarkerStalenessIssueInput,
   type IssueLookupState,
@@ -251,5 +253,43 @@ describe("findRouteMarkerStaleness — ordenação e agregação", () => {
       NOW,
     );
     assert.deepEqual(findings.map((f) => f.number), [5, 42, 99]);
+  });
+});
+
+// ─── describeConsultorCoverage (#7316 review — silent-failure-hunter) ──────
+
+describe("describeConsultorCoverage", () => {
+  it("nenhuma UNKNOWN -> null (cobertura completa, nada a dizer)", () => {
+    assert.equal(describeConsultorCoverage({ queried: 10, unknown: 0 }), null);
+  });
+
+  it("0 issues consultadas -> null (nenhuma categoria dependente do consultor foi avaliada)", () => {
+    assert.equal(describeConsultorCoverage({ queried: 0, unknown: 0 }), null);
+  });
+
+  it("fração de UNKNOWN abaixo do limiar -> severe: false", () => {
+    const result = describeConsultorCoverage({ queried: 100, unknown: 5 }, UNKNOWN_FRACTION_WARN_THRESHOLD);
+    assert.ok(result);
+    assert.equal(result?.severe, false);
+    assert.match(result?.message ?? "", /5\/100/);
+  });
+
+  it("fração de UNKNOWN NO limiar (exatamente) -> severe: true (>= , não >)", () => {
+    const result = describeConsultorCoverage({ queried: 10, unknown: 1 }, 0.1);
+    assert.ok(result);
+    assert.equal(result?.severe, true);
+  });
+
+  it("fração de UNKNOWN acima do limiar -> severe: true, mensagem diz PARCIAL", () => {
+    const result = describeConsultorCoverage({ queried: 10, unknown: 6 }, UNKNOWN_FRACTION_WARN_THRESHOLD);
+    assert.ok(result);
+    assert.equal(result?.severe, true);
+    assert.match(result?.message ?? "", /PARCIAL/);
+  });
+
+  it("queried: 0 mas unknown > 0 (caso degenerado, não deveria ocorrer na prática) trata como 100% -> severe: true", () => {
+    const result = describeConsultorCoverage({ queried: 0, unknown: 1 });
+    assert.ok(result);
+    assert.equal(result?.severe, true);
   });
 });

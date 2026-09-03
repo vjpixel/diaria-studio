@@ -91,12 +91,17 @@ export interface RouteMarkerFinding {
   detail: string;
 }
 
-/** #7270 — issue "externo" sem nenhuma atualização (comentário `route-issue`
- * OU o próprio `recorded_at` do marcador) há mais desse número de dias
- * vira achado. 30 dias — mesma ordem de grandeza do ciclo de revisão que a
- * issue original propôs ("semanalmente"), com folga: o alarme roda semanal
- * mas só ACUSA quando o bloqueio já está velho o bastante pra valer a pena
- * interromper o editor, não a cada rodada. */
+/** #7270 — issue "externo" sem nenhuma atualização há mais desse número de
+ * dias vira achado. O sinal de "atualização" é só `recorded_at` do
+ * marcador `bloqueio-execucao` — desde que `route-issue.ts` passou a
+ * embutir o marcador automaticamente no MESMO comentário do roteamento
+ * (#7270), `recorded_at` É o timestamp desse comentário, não um sinal
+ * separado (um marcador escrito antes dessa mudança, à mão, também usava
+ * o `recorded_at` da própria escrita — nunca houve um 2º relógio
+ * independente aqui). 30 dias — mesma ordem de grandeza do ciclo de
+ * revisão que a issue original propôs ("semanalmente"), com folga: o
+ * alarme roda semanal mas só ACUSA quando o bloqueio já está velho o
+ * bastante pra valer a pena interromper o editor, não a cada rodada. */
 export const STALE_EXTERNAL_DAYS = 30;
 
 /** #7288 — número de comentários `route-issue --track agendada` na MESMA
@@ -136,6 +141,59 @@ function extractIssueRefs(text: string): number[] {
   const nums = new Set<number>();
   for (const m of text.matchAll(/#(\d+)/g)) nums.add(Number(m[1]));
   return [...nums];
+}
+
+/**
+ * #7316 review (silent-failure-hunter) — cobertura do CONSULTOR: quantas
+ * issues distintas foram consultadas via `consultor.getIssueState` (só as
+ * 2 categorias `-depends-on-fechada`/`-motivo-cita-issue-fechada`
+ * dependem disso — as outras 3 nunca chamam o consultor) e quantas
+ * devolveram `"UNKNOWN"` (o `gh` falhou naquela consulta). Achado real: o
+ * CLI (`scripts/route-marker-staleness-alarm.ts`) engolia toda falha de
+ * `gh issue view` como `"UNKNOWN"` sem NENHUM contador — se o `gh`
+ * degradar no meio da rodada (token expirado, rate limit), o alarme roda
+ * até o fim e reporta "0 achados" exatamente como reportaria um estado
+ * genuinamente limpo. É o mesmo defeito que o #7270/#7288 existem pra
+ * atacar (estado importante some, nada distingue "não achei" de "não
+ * consegui olhar"), reproduzido dentro do próprio alarme que os fecha.
+ *
+ * `queried`/`unknown` contam issues DISTINTAS (não chamadas — memoização
+ * do consultor real já colapsa consultas repetidas da mesma issue).
+ */
+export interface ConsultorCoverage {
+  queried: number;
+  unknown: number;
+}
+
+/** Fração de `coverage.unknown` acima da qual a varredura é considerada
+ * degradada o bastante pra precisar dizer isso alto (log + e-mail), não só
+ * registrar um número. 10% — qualquer falha isolada (1-2 issues num `gh`
+ * soluçando) não vira alarme por si só; uma fração de dois dígitos já é
+ * sinal de degradação real (token expirando, rate limit em curso), não
+ * ruído de rede pontual. */
+export const UNKNOWN_FRACTION_WARN_THRESHOLD = 0.1;
+
+/** Pure: descreve a cobertura do consultor em texto — `null` quando não há
+ * NENHUMA consulta `"UNKNOWN"` (cobertura completa, nada a dizer). Quando
+ * há, sempre devolve uma mensagem; `severe` distingue "poucas falhas
+ * isoladas" (log apenas) de "fração alta o bastante pra precisar dizer no
+ * e-mail que a varredura foi PARCIAL, não limpa" — ver
+ * `UNKNOWN_FRACTION_WARN_THRESHOLD`. */
+export function describeConsultorCoverage(
+  coverage: ConsultorCoverage,
+  threshold: number = UNKNOWN_FRACTION_WARN_THRESHOLD,
+): { severe: boolean; message: string } | null {
+  if (coverage.unknown === 0) return null;
+  const fraction = coverage.queried > 0 ? coverage.unknown / coverage.queried : 1;
+  const pct = Math.round(fraction * 100);
+  const severe = fraction >= threshold;
+  const message = severe
+    ? `varredura PARCIAL — ${coverage.unknown}/${coverage.queried} consultas ao GitHub falharam (${pct}%). ` +
+      `0 achados nas categorias que dependem dessas consultas (bloqueada-depends-on-fechada, ` +
+      `agendada-motivo-cita-issue-fechada) NÃO é garantia de estado limpo — pode ser cobertura incompleta.`
+    : `${coverage.unknown}/${coverage.queried} consultas ao GitHub falharam (${pct}%) — cobertura reduzida, ` +
+      `abaixo do limiar de alarme (${Math.round(threshold * 100)}%).`;
+  return { severe, message };
 }
 
 /**

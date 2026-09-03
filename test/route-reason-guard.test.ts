@@ -5,14 +5,19 @@
  * corpus principal é o item explícito do "Escopo" da #7288: "os 11 motivos
  * reais desta auditoria como corpus de regressão... o último item é o que
  * fecha o loop do #633 — os casos existem, medidos, e não precisam ser
- * inventados." Cada caso abaixo é uma paráfrase fiel do motivo real citado
- * na issue (mesma família/vocabulário), mapeado à issue original.
+ * inventados." A auditoria original mediu 11 casos no total; só 10 têm
+ * número de issue citado explicitamente na tabela de motivos da #7288 (ver
+ * docstring de `route-reason-guard.ts`) — esses 10, incluindo `#7201`
+ * (marcado como menos certo na tabela original, mas MANTIDO aqui — ver
+ * abaixo), são o corpus verificável usado neste arquivo. Cada caso abaixo é
+ * uma paráfrase fiel do motivo real citado na issue (mesma
+ * família/vocabulário), mapeado à issue original.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { detectNonDateReason } from "../scripts/lib/route-reason-guard.ts";
 
-describe("detectNonDateReason — corpus de regressão da auditoria #7288 (11 motivos reais)", () => {
+describe("detectNonDateReason — corpus de regressão da auditoria #7288 (10 motivos reais nomeados, de 11 totais medidos)", () => {
   const dependencyCases: Array<[string, string]> = [
     ["#6771", "segurar até o #6716 fechar antes de reavaliar"],
     ["#7043", "mesma cautela que já adia #6621/#6623 — segurar até o cluster fechar"],
@@ -55,12 +60,15 @@ describe("detectNonDateReason — corpus de regressão da auditoria #7288 (11 mo
     });
   }
 
-  // O 11º motivo real (#6674) era EM BRANCO — não tem padrão de texto pra
-  // detectar (é ausência, não conteúdo). `detectNonDateReason` não cobre
-  // esse caso de propósito: `routeIssue` (scripts/route-issue.ts) recusa
-  // reason vazio ANTES de chamar esta função, incondicionalmente (sem
-  // --force possível) — ver describe("routeIssue — reason obrigatório...")
-  // em test/issue-route.test.ts.
+  // O 10º (e último) motivo NOMEADO real (#6674) era EM BRANCO — não tem
+  // padrão de texto pra detectar (é ausência, não conteúdo). A auditoria
+  // original mediu 11 casos no total; #6674 fecha os 10 que têm número de
+  // issue citado explicitamente na tabela de origem (ver docstring do
+  // describe acima e de route-reason-guard.ts). `detectNonDateReason` não
+  // cobre este caso de propósito: `routeIssue` (scripts/route-issue.ts)
+  // recusa reason vazio ANTES de chamar esta função, incondicionalmente
+  // (sem --force possível) — ver describe("routeIssue — reason
+  // obrigatório...") em test/issue-route.test.ts.
   it("motivo em branco não é responsabilidade desta função (null, nunca lança)", () => {
     assert.equal(detectNonDateReason(""), null);
   });
@@ -77,5 +85,37 @@ describe("detectNonDateReason — ordem de checagem quando mais de 1 padrão bat
   it('"mesma cautela que #6621" bate dependencia (mais especifica) e nao gatilho-condicional', () => {
     const finding = detectNonDateReason("mesma cautela que #6621, segurar até fechar");
     assert.equal(finding?.category, "dependencia");
+  });
+});
+
+// ─── Limitações conhecidas — documentadas, NÃO consertadas (#7316 review) ──
+//
+// Achado do review do #7316 (comment-analyzer/code-reviewer): o detector é
+// regex sobre vocabulário observado, não entendimento semântico — ele
+// erra dos dois lados, de forma medida e aceita (ver docstring de
+// route-reason-guard.ts, seção "Falsos positivos/negativos conhecidos").
+// Registrado aqui como comportamento ATUAL documentado, não como bug a
+// corrigir sem antes medir a taxa real em produção.
+
+describe("detectNonDateReason — limitações conhecidas (falso positivo/negativo aceitos)", () => {
+  it("FALSO POSITIVO: razão com data real mas vocabulário parecido com gatilho condicional é recusada mesmo assim", () => {
+    // A razão TEM uma data real (2026-09-10) mas também usa "só ... se",
+    // que CONDITIONAL_RE não distingue de um gatilho vago sem data. O
+    // escape hatch (--force, em routeIssue) existe exatamente pra este
+    // caso — não é um bug do regex, é o limite conhecido da abordagem.
+    const finding = detectNonDateReason("só volto a olhar isso se a Beehiiv não responder até 2026-09-10");
+    assert.equal(finding?.category, "gatilho-condicional");
+  });
+
+  it("FALSO POSITIVO: razão com data real mas vocabulário parecido com escopo é recusada mesmo assim", () => {
+    const finding = detectNonDateReason("ficou grande demais até fecharmos a fatia em 2026-09-09");
+    assert.equal(finding?.category, "escopo");
+  });
+
+  it("FALSO NEGATIVO: razão vaga sem #N e sem os 2 gatilhos de texto passa batida", () => {
+    // Nenhum dos 3 padrões medidos na auditoria original cobre "vaguidão"
+    // em geral — só o vocabulário específico observado nos 10 casos reais.
+    // Uma razão vaga que não usa esse vocabulário nunca é pega.
+    assert.equal(detectNonDateReason("ainda não sei bem quando isso vai fazer sentido"), null);
   });
 });

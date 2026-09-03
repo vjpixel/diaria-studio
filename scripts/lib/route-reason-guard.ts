@@ -9,13 +9,19 @@
  * ─── A medição que motivou (#7288, 03/09/2026) ─────────────────────────────
  *
  * Auditoria de 20 issues `agendada`: 11 (55%) tinham o marcador
- * `aguardando-ate:` sem nenhum evento de calendário por trás — o `--reason`
- * registrado (via comentário `route-issue`) descrevia, na prática, uma das
- * 3 famílias abaixo, nunca uma data real:
+ * `aguardando-ate:` sem nenhum evento de calendário por trás. Só 10 dessas
+ * 11 têm número de issue citado explicitamente na tabela de motivos da
+ * #7288 (a 11ª entra na contagem "11 das 20" do corpo da issue, mas não é
+ * nomeada na tabela) — os 10 nomeados são o corpus VERIFICÁVEL usado aqui
+ * e em `test/route-reason-guard.test.ts`. `#7201` aparece entre parênteses
+ * na tabela original da issue (sinal de caso menos certo que os outros 3
+ * de escopo) — MANTIDO no corpus mesmo assim: incerteza no julgamento
+ * original não é motivo pra apagar o caso da contagem, só pra marcá-lo (o
+ * teste correspondente documenta isso explicitamente).
  *
  *   | padrão do motivo                                    | issues        | mecanismo certo         |
  *   |------------------------------------------------------|---------------|--------------------------|
- *   | "fatia própria" / "grande demais pra uma unidade"    | #7206, #7204, #7137 | fatiar em issue própria |
+ *   | "fatia própria" / "grande demais pra uma unidade"    | #7206, #7204, #7137, #7201 (menos certo) | fatiar em issue própria |
  *   | "segurar até o #N fechar" / "mesma cautela que #A/#B"| #6771, #7043, #6624  | `depends-on:` (#7137)  |
  *   | "só morde quando X voltar" / "reavaliar se..."       | #7036, #6783         | `--track bloqueada`    |
  *   | motivo em branco                                      | #6674                | (nenhum — recusa incondicional, ver `routeIssue`) |
@@ -31,13 +37,40 @@
  * Os 4 padrões são citados literalmente no corpo da issue de origem —
  * vocabulário observado em texto real escrito por sessões diferentes ao
  * longo de ~3 semanas, não inventado. `test/route-reason-guard.test.ts`
- * usa os 11 motivos reais da auditoria como corpus de regressão (#633) —
- * qualquer relaxamento de regex que deixe de pegar um deles quebra o teste.
+ * usa os 10 motivos reais NOMEADOS da auditoria (dos 11 totais medidos —
+ * ver tabela acima) como corpus de regressão (#633) — qualquer
+ * relaxamento de regex que deixe de pegar um deles quebra o teste.
  *
  * Falso positivo é esperado e aceitável (a issue já previa isso: "escape
  * hatch explícito... recusar sem saída vira contorno criativo, não
  * disciplina") — por isso o `--force` existe, não por isso a detecção deve
  * ser mais frouxa.
+ *
+ * ─── Falsos positivos/negativos conhecidos, aceitos, NÃO consertados ───────
+ * (achado do review do #7316 — registrado aqui em vez de "descoberto de
+ * novo" pela próxima pessoa que ler o código; cobertos por teste dedicado,
+ * `test/route-reason-guard.test.ts`, describe "limitações conhecidas"):
+ *
+ *   1. `CONDITIONAL_RE`/`SCOPE_RE` colidem com razão que TEM uma data real
+ *      mas também usa vocabulário parecido (ex: "só volto a olhar isso se
+ *      a Beehiiv responder até 2026-09-10" casa `CONDITIONAL_RE` via "só
+ *      ... se"; "ficou grande demais até fecharmos a fatia em 09/09" casa
+ *      `SCOPE_RE` via "grande demais") — FALSO POSITIVO, recusa uma razão
+ *      legítima. `--force` é o escape hatch — é exatamente pra este caso
+ *      que ele existe.
+ *   2. Razão vaga sem `#N` e sem nenhum dos 2 gatilhos de texto passa
+ *      batida (`null`, aceita) mesmo quando não é uma data de verdade —
+ *      FALSO NEGATIVO, o guard não pega toda vaguidão, só os 3 padrões de
+ *      texto medidos na auditoria original.
+ *
+ * Os dois são consequência direta de detectar por REGEX sobre vocabulário
+ * observado, não por entendimento semântico — trade-off deliberado (ver
+ * seção acima), não uma lacuna a fechar sem antes medir a taxa real de
+ * falsos positivos/negativos em produção que justificaria trocar de
+ * abordagem. **É também a razão direta pela qual `scripts/backlog-reconcile.ts`
+ * precisou de `force: true` incondicional** (não foi escolha de desenho
+ * daquele módulo — o texto que ele gera sempre cita `#6198` por
+ * atribuição própria, batendo o falso positivo (1) acima toda vez).
  *
  * @see scripts/route-issue.ts (routeIssue — chama isto pra `--track agendada`)
  * @see scripts/lib/issue-depends-on.ts (mecanismo certo pra dependência)

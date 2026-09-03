@@ -77,7 +77,7 @@
  * ordenado — a ORDEM não é garantida estável entre chamadas).
  */
 
-import { EXEC_TRACK_UI, type ExecTrack } from "./issue-exec-track.ts";
+import { EXEC_TRACK_UI, DEPENDS_ON_BLOCK_LABEL, type ExecTrack } from "./issue-exec-track.ts";
 
 /** Veredito que uma invocação de `route-issue.ts` pode pedir — mesmo union de
  * `ExecTrack` (`issue-exec-track.ts`), re-exportado com o nome que o CLI usa
@@ -117,6 +117,18 @@ export const ROUTABLE_LABELS: readonly string[] = [
   "kit-migration",
   "beehiiv",
   "bloqueio-execucao",
+  // #7316 review (P1) — DEPENDS_ON_BLOCK_LABEL ("dependencia-aberta", #7137)
+  // faltava aqui apesar de já estar em BLOCKED_LABELS (issue-exec-track.ts)
+  // desde a #7270 passar a poder aplicá-la via `--depends-on`. Sem entrar em
+  // ROUTABLE_LABELS, `planRouteLabels` nunca a inclui no conjunto `remove`
+  // (que é inteiramente derivado desta lista) — uma issue que ganhasse
+  // `dependencia-aberta` ficaria PRESA em `bloqueada` pra sempre, mesmo
+  // roteada depois pra `develop`/`overnight`/qualquer outro track, porque
+  // `classifyExecTrack` checa BLOCKED_LABELS antes de qualquer outro
+  // veredito — o EXATO defeito que esta PR existe pra corrigir, reproduzido
+  // dentro da própria correção. Ver test "round-trip — dependencia-aberta
+  // é removida ao rotear pra outro track" em test/issue-route.test.ts.
+  DEPENDS_ON_BLOCK_LABEL,
   "credencial-escopo",
   "not-this-week",
   "next-month",
@@ -235,11 +247,15 @@ export const VAGUE_DEFERRAL_AUTO_DEFER_DAYS: Readonly<Record<string, number>> = 
  *
  * NÃO inclui `credencial-escopo` (não é `BLOCKED_LABELS`, classifica
  * `overnight` sozinha) nem `bloqueio-execucao` (é a genérica — se já
- * existe, não precisa adicionar nada). */
+ * existe, não precisa adicionar nada). `DEPENDS_ON_BLOCK_LABEL`
+ * (`dependencia-aberta`, #7137) entrou no #7316 review — mesmo motivo das
+ * outras 3: preservar o sinal específico em vez de substituí-lo pela
+ * genérica ao re-rotear sem `--motivo` explícito. */
 const BLOCKED_SPECIFIC_LABELS = new Set([
   "external-blocker",
   "kit-migration",
   "beehiiv",
+  DEPENDS_ON_BLOCK_LABEL,
 ]);
 
 /**

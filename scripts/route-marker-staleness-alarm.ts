@@ -35,10 +35,12 @@ import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
 import {
   findRouteMarkerStaleness,
+  describeConsultorCoverage,
   type RouteMarkerFinding,
   type RouteMarkerStalenessConsultor,
   type RouteMarkerStalenessIssueInput,
   type IssueLookupState,
+  type ConsultorCoverage,
 } from "./lib/route-marker-staleness.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -88,13 +90,21 @@ export function listOpenIssuesForStaleness(cwd: string = ROOT): FetchedIssue[] |
 /** Consultor real — memoiza `gh issue view --json state` por issue (várias
  * categorias podem consultar a MESMA issue citada — ex: 2 issues `agendada`
  * citando a mesma dependência já fechada). Fail-soft: qualquer falha vira
- * `"UNKNOWN"`, nunca lança. */
-function buildRealConsultor(cwd: string): RouteMarkerStalenessConsultor {
+ * `"UNKNOWN"`, nunca lança.
+ *
+ * #7316 review — instrumenta cobertura (`ConsultorCoverage`, contadores de
+ * issues DISTINTAS consultadas/`"UNKNOWN"`) em vez de engolir a falha em
+ * silêncio: o `caller` (`main()`) usa isso pra logar sempre e, quando a
+ * fração de `"UNKNOWN"` é alta, tratar o resultado como varredura PARCIAL
+ * — ver `describeConsultorCoverage`. */
+function buildRealConsultor(cwd: string): { consultor: RouteMarkerStalenessConsultor; coverage: ConsultorCoverage } {
   const cache = new Map<number, IssueLookupState>();
-  return {
+  const coverage: ConsultorCoverage = { queried: 0, unknown: 0 };
+  const consultor: RouteMarkerStalenessConsultor = {
     getIssueState(issueNumber: number): IssueLookupState {
       const cached = cache.get(issueNumber);
       if (cached) return cached;
+      coverage.queried++;
       const res = spawnGhSync(["issue", "view", String(issueNumber), "--json", "state"], cwd);
       let value: IssueLookupState = "UNKNOWN";
       if (res.status === 0 && res.stdout) {
@@ -106,10 +116,12 @@ function buildRealConsultor(cwd: string): RouteMarkerStalenessConsultor {
           value = "UNKNOWN";
         }
       }
+      if (value === "UNKNOWN") coverage.unknown++;
       cache.set(issueNumber, value);
       return value;
     },
   };
+  return { consultor, coverage };
 }
 
 const CATEGORY_LABEL: Record<RouteMarkerFinding["category"], string> = {
@@ -120,23 +132,35 @@ const CATEGORY_LABEL: Record<RouteMarkerFinding["category"], string> = {
   "agendada-renovada-multiplas-vezes": "agendada renovada múltiplas vezes — provável estacionamento (#7288)",
 };
 
-/** Pure: monta assunto + corpo do e-mail-digest. Exportado pra teste. */
+/** Pure: monta assunto + corpo do e-mail-digest. Exportado pra teste.
+ * `coverageNote` (#7316 review) — quando não-nula, vira um bloco de aviso
+ * NO TOPO do e-mail e no assunto (prefixo "[PARCIAL]") — a varredura não
+ * pôde confirmar cobertura completa nas 2 categorias que dependem de
+ * `consultor.getIssueState` (ver `describeConsultorCoverage`). */
 export function buildRouteMarkerStalenessEmail(
   findings: readonly RouteMarkerFinding[],
   issuesByNumber: ReadonlyMap<number, { url: string; title: string }>,
+  coverageNote?: string | null,
 ): { subject: string; body: string } {
-  const subject = `⚠️ ${findings.length} issue(ns) com marcador de roteamento desatualizado`;
+  const partialPrefix = coverageNote ? "[PARCIAL] " : "";
+  const subject = `⚠️ ${partialPrefix}${findings.length} issue(ns) com marcador de roteamento desatualizado`;
   const lines: string[] = [
     "As issues abaixo têm um marcador de bloqueio/agendamento (route-issue.ts)",
     "que precisa de revisão — o alarme só REPORTA, nunca remove label nem",
     "reroteia sozinho (#7270/#7288). Decidir o que fazer é sempre do editor.",
     "",
   ];
+  if (coverageNote) {
+    lines.push(`⚠️ COBERTURA: ${coverageNote}`, "");
+  }
   for (const f of findings) {
     const meta = issuesByNumber.get(f.number);
     lines.push(`#${f.number}${meta?.title ? ` — ${meta.title}` : ""} (${CATEGORY_LABEL[f.category]})`);
     lines.push(`  ${f.detail}`);
     if (meta?.url) lines.push(`  ${meta.url}`);
+  }
+  if (findings.length === 0) {
+    lines.push("(nenhum achado nas categorias que não dependem do consultor degradado — ver aviso de cobertura acima.)");
   }
   return { subject, body: lines.join("\n") };
 }
@@ -153,18 +177,39 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const consultor = buildRealConsultor(ROOT);
+  const { consultor, coverage } = buildRealConsultor(ROOT);
   const now = new Date();
   const findings = findRouteMarkerStaleness(issues, consultor, now);
   console.log(`${LOG_PREFIX} issues abertas: ${issues.length}, achados: ${findings.length}`);
+  // #7316 review — SEMPRE loga a cobertura do consultor (0 falhas inclusive
+  // — "consultas: N, UNKNOWN: 0" é o estado feliz, não silêncio) em vez de
+  // só saber disso quando algo dá errado o bastante pra chamar atenção.
+  console.log(`${LOG_PREFIX} consultas de estado ao GitHub (depends_on/#N citado): ${coverage.queried}, UNKNOWN (gh falhou): ${coverage.unknown}`);
 
-  if (findings.length === 0) {
+  const coverageInfo = describeConsultorCoverage(coverage);
+  if (coverageInfo) {
+    console.warn(`${LOG_PREFIX} ${coverageInfo.message}`);
+  }
+
+  // #7316 review — o defeito original: 0 achados com consultor degradado
+  // reportava "tudo limpo" indistinguível de um estado genuinamente limpo.
+  // Agora só sai em silêncio quando a cobertura não tem NENHUM problema —
+  // achado normal (>0) sempre email; achado zero + cobertura degradada
+  // (severa) TAMBÉM email, com o aviso de varredura parcial; achado zero +
+  // sem degradação (ou degradação leve, abaixo do limiar) segue silencioso
+  // — sinal isolado de rede não deveria virar e-mail toda semana.
+  const mustReport = findings.length > 0 || coverageInfo?.severe === true;
+  if (!mustReport) {
     console.log(`${LOG_PREFIX} nenhum achado — todos os marcadores de roteamento estão em dia.`);
     return;
   }
 
   const issuesByNumber = new Map(issues.map((i) => [i.number, { url: i.url, title: i.title }]));
-  const { subject, body } = buildRouteMarkerStalenessEmail(findings, issuesByNumber);
+  const { subject, body } = buildRouteMarkerStalenessEmail(
+    findings,
+    issuesByNumber,
+    coverageInfo?.severe ? coverageInfo.message : null,
+  );
   const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
   if (isDryRun) {
     console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);

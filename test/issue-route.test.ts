@@ -1043,6 +1043,37 @@ describe("routeIssue — #7288: --track agendada exige --reason e recusa padrao 
     assert.equal(gh.calls.length, 0);
   });
 
+  it("#7316 review (pr-test-analyzer) — --force NAO dispensa --reason vazio: continua falhando com a mesma mensagem", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 72881,
+      track: "agendada",
+      until: "2026-09-10",
+      force: true,
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /exige --reason/);
+    assert.equal(gh.calls.length, 0, "reason vazio deve falhar ANTES de qualquer I/O, mesmo com --force");
+  });
+
+  it("#7316 review — --force NAO dispensa --reason so espaco em branco", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 72882,
+      track: "agendada",
+      until: "2026-09-10",
+      reason: "   ",
+      force: true,
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /exige --reason/);
+    assert.equal(gh.calls.length, 0);
+  });
+
   it("razao que cita outra issue (#N) e recusada nomeando depends-on", () => {
     const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
     const result = routeIssue({
@@ -1100,5 +1131,54 @@ describe("routeIssue — #7288: --track agendada exige --reason e recusa padrao 
       now: new Date("2026-09-03T00:00:00Z"),
     });
     assert.equal(result.ok, true);
+  });
+});
+
+// ─── #7316 review (P1) — dependencia-aberta precisa sair do ROUTABLE_LABELS
+// como qualquer outra label de bloqueio, senão fica presa em bloqueada pra
+// sempre depois de aplicada (o EXATO defeito que esta PR corrige,
+// reproduzido dentro da própria correção — achado do code-reviewer). ────
+
+describe("routeIssue — #7316 P1: dependencia-aberta sai do conjunto ROUTABLE_LABELS igual às outras labels de bloqueio", () => {
+  it("issue com dependencia-aberta roteada pra develop perde a label (nao fica presa em bloqueada)", () => {
+    const gh = fakeGh({
+      labels: ["dependencia-aberta"],
+      body: "<!-- depends-on: #99 -->",
+      state: "OPEN",
+      comments: [],
+    });
+    const result = routeIssue({
+      issue: 7300,
+      track: "develop",
+      reason: "editor destravou ao vivo, nao depende mais de #99",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.resolvedTrack, "develop");
+    assert.ok(!gh.state.labels.includes("dependencia-aberta"), "dependencia-aberta deveria ter sido removida");
+    assert.ok(gh.state.labels.includes("develop-track"));
+  });
+
+  it("issue com dependencia-aberta roteada pra overnight perde a label", () => {
+    const gh = fakeGh({ labels: ["dependencia-aberta"], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({ issue: 7301, track: "overnight", cwd: "/tmp", ghRun: gh.run });
+    assert.equal(result.ok, true);
+    assert.equal(result.resolvedTrack, "overnight");
+    assert.ok(!gh.state.labels.includes("dependencia-aberta"));
+  });
+
+  it("roteando pra bloqueada sem --motivo preserva dependencia-aberta (3b), nao substitui por bloqueio-execucao", () => {
+    const gh = fakeGh({ labels: ["dependencia-aberta"], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 7302,
+      track: "bloqueada",
+      reason: "ainda depende de outra issue",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, true);
+    assert.ok(gh.state.labels.includes("dependencia-aberta"));
+    assert.ok(!gh.state.labels.includes("bloqueio-execucao"));
   });
 });
