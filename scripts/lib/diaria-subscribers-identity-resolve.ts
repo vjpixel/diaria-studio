@@ -68,6 +68,7 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
+import { copyFileSync, existsSync } from "node:fs";
 import { canonicalizeGmail } from "./canonicalize-gmail.ts";
 import { PLATFORMS, type Platform } from "./diaria-subscribers-db.ts";
 
@@ -191,10 +192,13 @@ function mergeSubscribers(
  * menor id. Idempotente: seguro rodar depois de toda ingestão (Kit, Brevo, e
  * futuramente Beehiiv), em qualquer ordem, quantas vezes for preciso.
  */
-export function resolveIdentitiesByEmail(
-  db: DatabaseSync,
-  now: string = new Date().toISOString(),
-): IdentityResolutionSummary {
+/**
+ * Agrupa `identity_alias.email` (ignorando aliases sem e-mail) por
+ * `canonicalizeGmail` — miolo READ-ONLY compartilhado por
+ * `resolveIdentitiesByEmail` (que funde de verdade) e `planIdentityMerges`
+ * (que só relata o que fundiria, #7205). Nenhuma escrita acontece aqui.
+ */
+function groupAliasesByCanonicalEmail(db: DatabaseSync): Map<string, Set<number>> {
   const rows = db
     .prepare("SELECT subscriber_id, email FROM identity_alias WHERE email IS NOT NULL AND email != ''")
     .all() as Array<{ subscriber_id: number; email: string }>;
@@ -217,6 +221,14 @@ export function resolveIdentitiesByEmail(
     }
     set.add(r.subscriber_id);
   }
+  return groups;
+}
+
+export function resolveIdentitiesByEmail(
+  db: DatabaseSync,
+  now: string = new Date().toISOString(),
+): IdentityResolutionSummary {
+  const groups = groupAliasesByCanonicalEmail(db);
 
   const merges: IdentityMergeResult[] = [];
   let emailGroupsMerged = 0;
@@ -238,6 +250,131 @@ export function resolveIdentitiesByEmail(
     subscribers_merged: merges.length,
     merges,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Plano DRY-RUN — o que fundiria, sem escrever nada (#7205)
+// ---------------------------------------------------------------------------
+
+export interface IdentityMergePlanItem {
+  canonical_subscriber_id: number;
+  loser_subscriber_ids: number[];
+  canonical_email: string;
+}
+
+export interface IdentityMergePlan {
+  generated_at: string;
+  email_groups_examined: number;
+  email_groups_would_merge: number;
+  subscribers_would_merge: number;
+  merges: IdentityMergePlanItem[];
+}
+
+/**
+ * Mesma regra de casamento de `resolveIdentitiesByEmail` (mesmo helper de
+ * agrupamento, `groupAliasesByCanonicalEmail`), mas NUNCA escreve — é o
+ * relatório "o que fundiria" que o CLI (#7205) imprime por padrão, antes de
+ * qualquer `--apply`. Os dois nunca podem divergir na REGRA de casamento
+ * porque compartilham o mesmo agrupamento; só a AÇÃO (relatar vs. fundir)
+ * difere.
+ */
+export function planIdentityMerges(
+  db: DatabaseSync,
+  now: string = new Date().toISOString(),
+): IdentityMergePlan {
+  const groups = groupAliasesByCanonicalEmail(db);
+
+  const merges: IdentityMergePlanItem[] = [];
+  let emailGroupsWouldMerge = 0;
+  let subscribersWouldMerge = 0;
+
+  for (const [canonEmail, ids] of groups) {
+    if (ids.size < 2) continue;
+    emailGroupsWouldMerge++;
+    const sorted = [...ids].sort((a, b) => a - b);
+    const loserIds = sorted.slice(1);
+    subscribersWouldMerge += loserIds.length;
+    merges.push({
+      canonical_subscriber_id: sorted[0],
+      loser_subscriber_ids: loserIds,
+      canonical_email: canonEmail,
+    });
+  }
+
+  return {
+    generated_at: now,
+    email_groups_examined: groups.size,
+    email_groups_would_merge: emailGroupsWouldMerge,
+    subscribers_would_merge: subscribersWouldMerge,
+    merges,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Guard de conservação (#7205) — fusão move linhas, nunca perde
+// ---------------------------------------------------------------------------
+
+export interface ConservationCheck {
+  ok: boolean;
+  identity_aliases_before: number;
+  identity_aliases_after: number;
+  events_before: number;
+  events_after: number;
+}
+
+/**
+ * `identity_alias` e `event` são só REATRIBUÍDOS pro subscriber canônico
+ * durante um merge (`UPDATE ... SET subscriber_id`), nunca apagados — a
+ * soma de cada um tem que bater exatamente antes e depois. `subscription`
+ * fica de fora de propósito: um conflito `UNIQUE(subscriber_id, platform)`
+ * pode legitimamente DESCARTAR uma linha (mantém a mais recente,
+ * `subscriptions_dropped` em `IdentityMergeResult`) — isso é uma decisão
+ * documentada sobre qual registro sobrevive, não perda de dado silenciosa.
+ */
+export function checkMergeConservation(
+  before: { identity_aliases: number; events: number },
+  after: { identity_aliases: number; events: number },
+): ConservationCheck {
+  return {
+    ok: before.identity_aliases === after.identity_aliases && before.events === after.events,
+    identity_aliases_before: before.identity_aliases,
+    identity_aliases_after: after.identity_aliases,
+    events_before: before.events,
+    events_after: after.events,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Backup consistente antes de qualquer escrita real (#7205)
+// ---------------------------------------------------------------------------
+
+/** Timestamp seguro pra nome de arquivo — `:`/`.` não são válidos em nome
+ *  de arquivo no Windows, que é onde este store realmente roda em produção. */
+function backupFileSuffix(now: string): string {
+  return now.replace(/[:.]/g, "-");
+}
+
+/**
+ * Copia o `.db` pra um arquivo `{dbPath}.backup-{timestamp}` ao lado do
+ * original, ANTES de qualquer merge real. Cópia simples (`copyFileSync`) —
+ * o original nunca é tocado por este helper, só lido; diferente do reset
+ * atômico (#7187, `atomicRebuildTempPath`/`atomicCommitRebuild`), que troca
+ * o arquivo definitivo inteiro por um novo — aqui o objetivo é um SNAPSHOT
+ * adicional, preservando o original no lugar de origem, pra restaurar à mão
+ * se a resolução ao vivo (#7205) precisar ser desfeita (a operação em si
+ * não tem undo — ver docstring do módulo).
+ *
+ * Não copia sidecars `-wal`/`-shm`: o caller do CLI fecha a conexão de
+ * leitura antes de chamar isto, então o `.db` principal já reflete o estado
+ * consistente sem WAL pendente no momento do backup.
+ */
+export function backupStoreFile(dbPath: string, now: string = new Date().toISOString()): string {
+  if (!existsSync(dbPath)) {
+    throw new Error(`backupStoreFile: store não encontrado em ${dbPath} — nada para copiar.`);
+  }
+  const backupPath = `${dbPath}.backup-${backupFileSuffix(now)}`;
+  copyFileSync(dbPath, backupPath);
+  return backupPath;
 }
 
 // ---------------------------------------------------------------------------

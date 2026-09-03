@@ -97,7 +97,11 @@
  *
  * ## CLI
  *
- *   npx tsx scripts/lib/leitor-store.ts [--db <path>] [--ctr-min 2] [--received-min 20]
+ *   npx tsx scripts/lib/leitor-store.ts [--db <path>] [--ctr-min 2] [--received-min 20] [--canonical-dedup]
+ *
+ * `--canonical-dedup` (#7204): usa `summarizeStoreLeitoresCanonicalDedup` em
+ * vez do default — dedup por edição canônica (AAMMDD) em vez de somar
+ * recebidas/cliques por plataforma. Ver docstring dessa função.
  *
  * Só leitura local (mesma disciplina de `leitor.ts`) — nunca chama API
  * nenhuma ao vivo. Sem `data/diaria-subscribers/diaria-subscribers.db`
@@ -106,7 +110,7 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import { isMainModule, getStringArg } from "./cli-args.ts";
+import { isMainModule, getStringArg, hasFlag } from "./cli-args.ts";
 import {
   DEFAULT_DB_PATH,
   openDiariaSubscribersDbSafe,
@@ -118,6 +122,11 @@ import {
 } from "./diaria-subscribers-db.ts";
 import { isLeitorV1, LEITOR_V1_THRESHOLDS, type LeitorInput, type LeitorThresholds } from "./leitor.ts";
 import { CROSS_PLATFORM_FLOOR_NOTE } from "./diaria-subscribers-identity-resolve.ts";
+import {
+  buildCanonicalEdicaoMapFromEvents,
+  nativeEdicaoKey,
+  type EdicaoEventEntry,
+} from "./diaria-subscribers-edicao-canonica.ts";
 
 /** As plataformas da DIÁRIA — desde #7196, `PLATFORMS` do store já é
  *  exclusivamente diária (`brevo_clarice` nunca entra), então isto é hoje
@@ -206,6 +215,104 @@ export function computeUniqueClickedForPlatform(
   platform: Platform,
 ): number {
   return countDistinctEditions(db, subscriberId, platform, "click");
+}
+
+// ---------------------------------------------------------------------------
+// Deduplicação CROSS-PLATAFORMA pela edição canônica (#7204)
+// ---------------------------------------------------------------------------
+
+function fetchEditionEntries(
+  db: DatabaseSync,
+  subscriberId: number,
+  platform: Platform,
+  type: string,
+): EdicaoEventEntry[] {
+  const rows = db
+    .prepare(
+      `SELECT edicao, external_event_id FROM event
+       WHERE subscriber_id = ? AND platform = ? AND type = ?`,
+    )
+    .all(subscriberId, platform, type) as Array<{ edicao: string | null; external_event_id: string }>;
+  return rows.map((r) => ({ platform, edicao: r.edicao, externalEventId: r.external_event_id }));
+}
+
+/** Chave canônica de 1 entrada de evento — mesma regra de
+ *  `countDistinctCanonicalEditions` (`diaria-subscribers-edicao-canonica.ts`),
+ *  repetida aqui em vez de importada porque opera sobre 1 entrada por vez
+ *  (o caller precisa das CHAVES pra unir Sets entre plataformas, não só a
+ *  contagem final que `countDistinctCanonicalEditions` devolve). */
+function canonicalKeyOf(entry: EdicaoEventEntry, canonicalMap: Map<string, string>): string {
+  const native = entry.edicao ?? entry.externalEventId;
+  const canonical = entry.edicao ? canonicalMap.get(nativeEdicaoKey(entry.platform, entry.edicao)) : undefined;
+  return canonical ?? nativeEdicaoKey(entry.platform, native);
+}
+
+/** Chaves canônicas de edições RECEBIDAS numa plataforma — mesma regra de
+ *  `computeReceivedForPlatform` (`delivered` explícito quando a plataforma o
+ *  expõe, senão `sent` menos `bounce`), mas devolvendo as CHAVES (não a
+ *  contagem) pra permitir união entre plataformas antes de contar. */
+function receivedEditionKeysForPlatform(
+  db: DatabaseSync,
+  subscriberId: number,
+  platform: Platform,
+  caps: PlatformCapabilities,
+  canonicalMap: Map<string, string>,
+): Set<string> {
+  if (caps.platformsWithDelivered.has(platform)) {
+    return new Set(
+      fetchEditionEntries(db, subscriberId, platform, "delivered").map((e) => canonicalKeyOf(e, canonicalMap)),
+    );
+  }
+  const sentKeys = new Set(
+    fetchEditionEntries(db, subscriberId, platform, "sent").map((e) => canonicalKeyOf(e, canonicalMap)),
+  );
+  const bounceKeys = new Set(
+    fetchEditionEntries(db, subscriberId, platform, "bounce").map((e) => canonicalKeyOf(e, canonicalMap)),
+  );
+  for (const k of bounceKeys) sentKeys.delete(k);
+  return sentKeys;
+}
+
+function clickedEditionKeysForPlatform(
+  db: DatabaseSync,
+  subscriberId: number,
+  platform: Platform,
+  canonicalMap: Map<string, string>,
+): Set<string> {
+  return new Set(
+    fetchEditionEntries(db, subscriberId, platform, "click").map((e) => canonicalKeyOf(e, canonicalMap)),
+  );
+}
+
+/**
+ * Mesmo `LeitorInput` que `computeStoreLeitorInput`, mas deduplicando
+ * "recebidas"/"únicas clicadas" pela EDIÇÃO CANÔNICA (#7204) em vez de somar
+ * por plataforma — a mesma pessoa recebendo a MESMA edição do dia por 2
+ * plataformas conta 1, não 2. `canonicalMap` vem de
+ * `buildCanonicalEdicaoMapFromEvents` (construído 1x por chamada de
+ * `summarizeStoreLeitoresCanonicalDedup`, não por subscriber).
+ */
+export function computeStoreLeitorInputCanonicalDedup(
+  db: DatabaseSync,
+  subscriberId: number,
+  caps: PlatformCapabilities,
+  canonicalMap: Map<string, string>,
+  platforms: readonly Platform[] = LEITOR_DIARIA_PLATFORMS,
+): LeitorInput {
+  const present = new Set(getAliasesForSubscriber(db, subscriberId).map((a) => a.platform));
+  const receivedSet = new Set<string>();
+  const clickedSet = new Set<string>();
+  for (const platform of platforms) {
+    if (!present.has(platform)) continue;
+    for (const k of receivedEditionKeysForPlatform(db, subscriberId, platform, caps, canonicalMap)) {
+      receivedSet.add(k);
+    }
+    for (const k of clickedEditionKeysForPlatform(db, subscriberId, platform, canonicalMap)) {
+      clickedSet.add(k);
+    }
+  }
+  const status = present.size > 0 ? resolveCrossPlatformStatus(db, subscriberId, platforms) : "inactive";
+  return { status, totalReceived: receivedSet.size, totalUniqueClicked: clickedSet.size };
 }
 
 /** Status cross-plataforma: "active" se QUALQUER `subscription` coberta
@@ -336,6 +443,16 @@ export function summarizeStoreLeitores(
   db: DatabaseSync,
   thresholds: LeitorThresholds = LEITOR_V1_THRESHOLDS,
   platforms: readonly Platform[] = LEITOR_DIARIA_PLATFORMS,
+  /** Injetável — default é a soma por-plataforma de sempre
+   *  (`computeStoreLeitorInput`). `summarizeStoreLeitoresCanonicalDedup`
+   *  (#7204) passa `computeStoreLeitorInputCanonicalDedup` aqui em vez de
+   *  duplicar todo este loop só pra trocar a fonte de `LeitorInput`. */
+  computeInput: (
+    db: DatabaseSync,
+    subscriberId: number,
+    caps: PlatformCapabilities,
+    platforms: readonly Platform[],
+  ) => LeitorInput = computeStoreLeitorInput,
 ): StoreLeitorSummary {
   const caps = detectPlatformCapabilities(db, platforms);
   const allPlatforms = getAllSubscriberPlatforms(db);
@@ -349,7 +466,7 @@ export function summarizeStoreLeitores(
     const coversAny = platforms.some((p) => platformSet.has(p));
     if (!coversAny) continue; // subscriber sem alias em nenhuma plataforma coberta
     totalSubscribers++;
-    const input = computeStoreLeitorInput(db, subscriberId, caps, platforms);
+    const input = computeInput(db, subscriberId, caps, platforms);
     if (input.status === "active") totalActive++;
     if (isLeitorV1(input, thresholds)) leitores++;
     const subs = getSubscriptionsForSubscriber(db, subscriberId);
@@ -379,6 +496,35 @@ export function summarizeStoreLeitores(
     subscription_data_coverage_low,
     note: CROSS_PLATFORM_FLOOR_NOTE,
   };
+}
+
+/**
+ * `summarizeStoreLeitores`, mas deduplicando "recebidas"/"únicas clicadas"
+ * pela EDIÇÃO CANÔNICA (#7204) — a mesma pessoa recebendo a MESMA edição do
+ * dia por 2+ plataformas conta 1, não 2 (ver `diaria-subscribers-edicao-
+ * canonica.ts` pro porquê da chave `AAMMDD` e a heurística de derivação).
+ * Constrói `canonicalMap` 1x (1 scan de `event`, não 1 por subscriber) e
+ * delega o resto pra `summarizeStoreLeitores` via `computeInput` injetável —
+ * mesmo shape de retorno (`StoreLeitorSummary`), só a fonte do `LeitorInput`
+ * muda.
+ *
+ * **Não é o caminho default** — `summarizeStoreLeitores`/`main()` (CLI)
+ * continuam usando a soma por-plataforma de sempre; esta função é aditiva,
+ * disponível via `--canonical-dedup` no CLI (ver `main`) e pra qualquer
+ * consumidor que já queira o número deduplicado. Ligar isto ao caminho
+ * DEFAULT do painel/CLI é decisão de produto adiada — ver docstring de
+ * `diaria-subscribers-edicao-canonica.ts`, seção "O que NÃO está feito
+ * aqui".
+ */
+export function summarizeStoreLeitoresCanonicalDedup(
+  db: DatabaseSync,
+  thresholds: LeitorThresholds = LEITOR_V1_THRESHOLDS,
+  platforms: readonly Platform[] = LEITOR_DIARIA_PLATFORMS,
+): StoreLeitorSummary {
+  const canonicalMap = buildCanonicalEdicaoMapFromEvents(db);
+  return summarizeStoreLeitores(db, thresholds, platforms, (d, subscriberId, caps, plats) =>
+    computeStoreLeitorInputCanonicalDedup(d, subscriberId, caps, canonicalMap, plats),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -415,7 +561,12 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     return;
   }
   try {
-    const summary = summarizeStoreLeitores(db, thresholds);
+    // --canonical-dedup (#7204): dedup por edição canônica em vez de somar
+    // por plataforma — ver docstring de `summarizeStoreLeitoresCanonicalDedup`
+    // pro porquê de não ser o default ainda.
+    const summary = hasFlag(argv, "canonical-dedup")
+      ? summarizeStoreLeitoresCanonicalDedup(db, thresholds)
+      : summarizeStoreLeitores(db, thresholds);
     console.log(JSON.stringify(summary, null, 2));
   } finally {
     db.close();

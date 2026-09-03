@@ -1,5 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, existsSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import {
   openDiariaSubscribersDb,
   ensureSubscriber,
@@ -12,6 +15,9 @@ import {
 import {
   resolveIdentitiesByEmail,
   buildUnmatchedReport,
+  planIdentityMerges,
+  checkMergeConservation,
+  backupStoreFile,
   CROSS_PLATFORM_FLOOR_NOTE,
 } from "../scripts/lib/diaria-subscribers-identity-resolve.ts";
 
@@ -386,5 +392,170 @@ describe("buildUnmatchedReport — sinal fraco (informativo, NUNCA funde)", () =
 
     assert.equal(report.weak_signals.length, 0);
     db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// planIdentityMerges — dry-run: mesma REGRA de casamento, NUNCA escreve (#7205)
+// ---------------------------------------------------------------------------
+
+describe("planIdentityMerges — plano read-only, mesma regra de resolveIdentitiesByEmail", () => {
+  it("relata o mesmo grupo que resolveIdentitiesByEmail fundiria, sem tocar o store", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const beehiivId = ensureSubscriber(db, "beehiiv", "bh-1", "leitor@example.com", NOW);
+    const kitId = ensureSubscriber(db, "kit", null, "leitor@example.com", NOW);
+
+    const plan = planIdentityMerges(db, NOW);
+
+    assert.equal(plan.email_groups_would_merge, 1);
+    assert.equal(plan.subscribers_would_merge, 1);
+    assert.equal(plan.merges.length, 1);
+    assert.equal(plan.merges[0].canonical_subscriber_id, Math.min(beehiivId, kitId));
+    assert.deepEqual(plan.merges[0].loser_subscriber_ids, [Math.max(beehiivId, kitId)]);
+    assert.equal(plan.merges[0].canonical_email, "leitor@example.com");
+
+    // Nada foi escrito — os 2 subscribers continuam separados.
+    assert.equal(getStoreCounts(db).subscribers, 2);
+    db.close();
+  });
+
+  it("chamar 2x seguidas dá o MESMO plano — puro, sem efeito colateral", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ensureSubscriber(db, "beehiiv", "bh-1", "leitor@example.com", NOW);
+    ensureSubscriber(db, "kit", null, "leitor@example.com", NOW);
+
+    const first = planIdentityMerges(db, NOW);
+    const second = planIdentityMerges(db, NOW);
+
+    assert.deepEqual(first, second);
+    assert.equal(getStoreCounts(db).subscribers, 2); // ainda não fundiu
+    db.close();
+  });
+
+  it("plano vazio quando não há e-mail casando em 2+ plataformas", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ensureSubscriber(db, "beehiiv", "bh-1", "a@example.com", NOW);
+    ensureSubscriber(db, "kit", null, "b@example.com", NOW);
+
+    const plan = planIdentityMerges(db, NOW);
+
+    assert.equal(plan.email_groups_would_merge, 0);
+    assert.equal(plan.subscribers_would_merge, 0);
+    assert.deepEqual(plan.merges, []);
+    db.close();
+  });
+
+  it("resolveIdentitiesByEmail depois de planIdentityMerges funde exatamente o que o plano previu", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ensureSubscriber(db, "beehiiv", "bh-1", "jornada@example.com", NOW);
+    ensureSubscriber(db, "brevo_diaria", "brevo-1", "jornada@example.com", NOW);
+    ensureSubscriber(db, "kit", null, "jornada@example.com", NOW);
+
+    const plan = planIdentityMerges(db, NOW);
+    assert.equal(plan.subscribers_would_merge, 2); // 3 -> 1 = 2 merges previstos
+
+    const resolution = resolveIdentitiesByEmail(db, NOW);
+    assert.equal(resolution.subscribers_merged, plan.subscribers_would_merge);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkMergeConservation — fusão move linhas, nunca perde (#7205)
+// ---------------------------------------------------------------------------
+
+describe("checkMergeConservation", () => {
+  it("ok=true quando aliases e eventos batem antes/depois", () => {
+    const result = checkMergeConservation(
+      { identity_aliases: 991, events: 77945 },
+      { identity_aliases: 991, events: 77945 },
+    );
+    assert.equal(result.ok, true);
+  });
+
+  it("ok=false quando aliases divergem (perda ou duplicação)", () => {
+    const result = checkMergeConservation(
+      { identity_aliases: 991, events: 77945 },
+      { identity_aliases: 990, events: 77945 },
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.identity_aliases_before, 991);
+    assert.equal(result.identity_aliases_after, 990);
+  });
+
+  it("ok=false quando eventos divergem, mesmo com aliases batendo", () => {
+    const result = checkMergeConservation(
+      { identity_aliases: 991, events: 77945 },
+      { identity_aliases: 991, events: 77944 },
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.events_before, 77945);
+    assert.equal(result.events_after, 77944);
+  });
+
+  it("um merge real no store passa no guard de conservação (aliases/eventos preservados)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const beehiivId = ensureSubscriber(db, "beehiiv", "bh-1", "jornada@example.com", NOW);
+    const kitId = ensureSubscriber(db, "kit", null, "jornada@example.com", NOW);
+    recordEvent(db, {
+      subscriberId: beehiivId,
+      platform: "beehiiv",
+      type: "subscribe",
+      externalEventId: "beehiiv-sub:bh-1",
+      ts: "2025-01-01T00:00:00.000Z",
+    });
+    recordEvent(db, {
+      subscriberId: kitId,
+      platform: "kit",
+      type: "click",
+      externalEventId: "kit-broadcast-1:jornada@example.com",
+      ts: "2026-08-15T00:00:00.000Z",
+    });
+
+    const before = getStoreCounts(db);
+    resolveIdentitiesByEmail(db, NOW);
+    const after = getStoreCounts(db);
+
+    const check = checkMergeConservation(
+      { identity_aliases: before.identity_aliases, events: before.events },
+      { identity_aliases: after.identity_aliases, events: after.events },
+    );
+    assert.equal(check.ok, true);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// backupStoreFile — snapshot em disco antes de qualquer escrita real (#7205)
+// ---------------------------------------------------------------------------
+
+describe("backupStoreFile", () => {
+  function tmpDataRoot(prefix: string): string {
+    return mkdtempSync(resolve(tmpdir(), prefix));
+  }
+
+  it("copia o .db real pra {dbPath}.backup-{timestamp}, preservando o original", () => {
+    const dataRoot = tmpDataRoot("dsri-backup-");
+    const dbPath = resolve(dataRoot, "store.db");
+    const db = openDiariaSubscribersDb(dbPath);
+    ensureSubscriber(db, "beehiiv", "bh-1", "a@example.com", NOW);
+    db.close();
+
+    const backupPath = backupStoreFile(dbPath, "2026-09-03T01:02:03.456Z");
+
+    assert.equal(existsSync(dbPath), true); // original intacto
+    assert.equal(existsSync(backupPath), true);
+    assert.equal(backupPath, `${dbPath}.backup-2026-09-03T01-02-03-456Z`);
+
+    // O conteúdo copiado é IGUAL ao original no momento do backup.
+    const originalBytes = readFileSync(dbPath);
+    const backupBytes = readFileSync(backupPath);
+    assert.deepEqual(backupBytes, originalBytes);
+  });
+
+  it("lança erro claro quando o store não existe — nunca cria um backup vazio", () => {
+    const dataRoot = tmpDataRoot("dsri-backup-missing-");
+    const dbPath = resolve(dataRoot, "nao-existe.db");
+    assert.throws(() => backupStoreFile(dbPath, NOW), /não encontrado/);
   });
 });
