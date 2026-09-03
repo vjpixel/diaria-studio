@@ -112,10 +112,30 @@
  * existir, nunca uma asserção quebrada; e (b) **só UM retry por batch** —
  * se o 2º run falhar de novo, o batch conta como falha definitiva. Uma
  * falha de teste REAL e determinística no mesmo batch reprova nas duas
- * corridas e passa. O resíduo honesto é o caso estreito de uma falha real
+ * corridas — e a falha PASSA ADIANTE, não é escondida. O resíduo honesto é o caso estreito de uma falha real
  * que seja ELA MESMA intermitente e caia justo no batch que teve o crash de
  * módulo — aí o retry pode escondê-la. Risco aceito e agora escrito, em vez
  * de negado por um critério que não existe mais.
+ *
+ * **Marcador contável (#6783).** Quando o retry dispara, sai no stderr uma
+ * linha própria antes da mensagem humana:
+ *
+ *     RUN_TESTS_MODULE_FLAKE batch={label} arquivos={N} modulo={caminho}
+ *
+ * A #6783 registrou o 2º data point do flake e pediu mais dados. O gargalo
+ * nunca foi o flake ser raro — era cada ocorrência exigir que alguém
+ * reparasse num log de CI e escrevesse uma issue à mão; foi assim que se
+ * chegou a 2 em meses. Com o marcador, contar vira:
+ *
+ *     gh run list --workflow=ci.yml --limit 50 --json databaseId -q '.[].databaseId' \
+ *       | while read -r id; do gh run view "$id" --log 2>/dev/null \
+ *           | grep -c RUN_TESTS_MODULE_FLAKE; done
+ *
+ * O MÓDULO que falhou sai junto porque é o dado que separa as hipóteses: as
+ * ocorrências conhecidas foram sempre em arquivo NOVO do próprio PR, e é
+ * isso que sustenta a hipótese líder (glitch do `actions/checkout` em torno
+ * de arquivo recém-materializado). Frequência medida vale mais que a 3ª
+ * anedota.
  *
  * Efeito colateral necessário: `stdio` deixou de ser `"inherit"` e passou a
  * ser capturado (`"pipe"`) — só assim dá pra inspecionar o output ANTES de
@@ -578,21 +598,8 @@ export function processChunkedBatches(
     if ((result.status ?? 1) !== 0) {
       const combined = `${toText(result.stdout)}\n${toText(result.stderr)}`;
       if (shouldRetryBatch(combined, result.status)) {
-        // #6783: marcador ESTÁVEL e greppável, numa linha própria. A issue
-        // pede "mais data points" — mas a cada ocorrência alguém precisava
-        // reparar num log e escrever uma issue nova à mão, o que produziu 2
-        // relatos em meses. Com o marcador, contar vira uma linha:
-        //
-        //   gh run list --workflow=ci.yml --limit 50 --json databaseId \
-        //     -q '.[].databaseId' | while read -r id; do
-        //       gh run view "$id" --log 2>/dev/null | grep -c RUN_TESTS_MODULE_FLAKE
-        //     done
-        //
-        // O arquivo que falhou sai junto porque é o dado que separa as
-        // hipóteses: as 2 ocorrências conhecidas foram sempre em arquivo
-        // NOVO do próprio PR, e é isso que sustenta a hipótese líder (glitch
-        // do `actions/checkout` materializando arquivo recém-criado).
-        // Frequência medida vale mais que a 3ª anedota.
+        // #6783: marcador estável e greppável — rationale e comando de
+        // contagem no docblock de topo, seção "Retry de ERR_MODULE_NOT_FOUND".
         const culprit = /Cannot find module '?([^'\s]+)'?/.exec(combined)?.[1] ?? "(arquivo não identificado no output)";
         stderr.write(
           `\nRUN_TESTS_MODULE_FLAKE batch=${label} arquivos=${batch.length} modulo=${culprit}\n` +
