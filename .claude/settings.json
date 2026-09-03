@@ -135,7 +135,7 @@
         ]
       },
       {
-        "matcher": "Bash|Edit|Write|NotebookEdit",
+        "matcher": "Bash|Edit|Write|NotebookEdit|AskUserQuestion|mcp__.*",
         "hooks": [
           {
             "type": "command",

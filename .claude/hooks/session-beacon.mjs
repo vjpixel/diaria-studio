@@ -3,7 +3,12 @@
 // (#6168 Parte B).
 //
 // Wired em .claude/settings.json sob hooks.PreToolUse, matcher
-// "Bash|Edit|Write|NotebookEdit".
+// "Bash|Edit|Write|NotebookEdit|AskUserQuestion|mcp__.*" (#7194: ampliado de
+// "Bash|Edit|Write|NotebookEdit" — o matcher original não cobria `mcp__*` nem
+// `AskUserQuestion`, então uma sessão presa numa chamada MCP longa ou num
+// gate esperando o editor não emitia heartbeat nenhum e ficava indistinguível
+// de morta; `test/claude-settings-hooks-exec-form.test.ts` já trava a FORMA
+// dos hooks, `test/session-beacon-matcher.test.ts` trava este MATCHER).
 //
 // ─────────────────────────────────────────────────────────────────────────
 // POR QUE ISTO É UM HOOK, E NÃO UM PASSO DE SKILL
