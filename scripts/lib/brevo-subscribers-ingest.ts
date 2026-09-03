@@ -2,27 +2,18 @@
  * brevo-subscribers-ingest.ts (#6464 fatia 4 — #6587)
  *
  * Miolo PURO da ingestão Brevo → store unificado `diaria-subscribers-db.ts`,
- * pras DUAS contas (`brevo_diaria`/`brevo_clarice` — tenants distintos, ver
- * docstring de `PLATFORMS` em `diaria-subscribers-db.ts`). Copia o PADRÃO já
- * provado por `clarice-sync-brevo.ts`/`brevo-stats.ts` (parsing puro de um
- * contato Brevo v3 → colunas) — não o destino: aqui o alvo é o `event`
- * genérico do épico #6464, não `clarice_users`.
+ * pra conta `brevo_diaria` (canal de reativação da diária — ver docstring de
+ * `PLATFORMS` em `diaria-subscribers-db.ts`; `brevo_clarice` NUNCA entra
+ * aqui, #7196). Copia o PADRÃO já provado por
+ * `clarice-sync-brevo.ts`/`brevo-stats.ts` (parsing puro de um contato Brevo
+ * v3 → colunas) — não o destino: aqui o alvo é o `event` genérico do épico
+ * #6464, não `clarice_users`.
  *
  * `extractContactEvents` (`brevo-stats.ts`) decompõe `contact.statistics` em
  * eventos crus por categoria; este módulo mapeia pro vocabulário `EventType`
  * do store e grava via `ensureSubscriber`/`upsertSubscription`/`recordEvent`
  * — tudo testável sem rede (o fetch real, `GET /contacts/{id}` via
  * `brevoGet`, fica no CLI `diaria-subscribers-ingest-brevo.ts`).
- *
- * ## Identidade: 1 subscriber, 1 subscription POR CONTA (#6587)
- *
- * O mesmo e-mail pode legitimamente existir nas duas contas Brevo com
- * histórico diferente (diária vs reativação). `platform` já distingue
- * `brevo_diaria` de `brevo_clarice` na chave natural de `subscription`
- * (UNIQUE(subscriber_id, platform)) — então basta chamar `ensureSubscriber`
- * com o `platform` certo pra cada conta; a fatia 5 (fora de escopo) decide
- * depois se e quando dois `subscriber` de contas diferentes são a MESMA
- * pessoa (nunca fundido por heurística aqui).
  */
 
 import type { DatabaseSync } from "node:sqlite";
@@ -35,8 +26,11 @@ import {
 } from "./diaria-subscribers-db.ts";
 import { extractContactEvents, type BrevoContactEvent, type BrevoStatCategory } from "./brevo-stats.ts";
 
-/** As 2 contas Brevo reais do projeto — únicos 2 valores válidos pra este builder. */
-export type BrevoAccountPlatform = Extract<Platform, "brevo_diaria" | "brevo_clarice">;
+/** Único valor válido pra este builder (#7196: `brevo_clarice` nunca ingere
+ *  no store da diária — mantido como alias de `Platform` em vez de literal
+ *  solto pra deixar explícito que é um SUBCONJUNTO de `PLATFORMS`, não um
+ *  tipo desconectado). */
+export type BrevoAccountPlatform = Extract<Platform, "brevo_diaria">;
 
 /** Categoria de `contact.statistics` → tipo de evento do store. `hardBounces`/
  *  `softBounces` colapsam em `"bounce"` — o store não distingue dureza do

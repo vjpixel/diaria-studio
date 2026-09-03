@@ -100,23 +100,30 @@ export const DEFAULT_DB_PATH = resolve(
 // ---------------------------------------------------------------------------
 
 /**
- * As plataformas cobertas pelo épico #6464. `brevo_diaria`/`brevo_clarice`
- * (#6587, fatia 4) substituem o que teria sido um `"brevo"` genérico — a
- * Brevo tem DUAS contas reais (tenants distintos, quota independente, ver
- * `docs/brevo-rate-limits.md`), e o mesmo e-mail pode legitimamente ter
- * histórico nas duas ao mesmo tempo. Colapsar as duas num só valor
- * `"brevo"` teria feito exatamente a fusão indevida que a fatia 5
- * (reconciliação cross-plataforma, fora de escopo aqui) precisa decidir
- * deliberadamente, não herdar por acidente de modelagem — `subscription`
- * tem UNIQUE(subscriber_id, platform), então duas contas com o mesmo valor
- * de `platform` colidiriam numa linha só em vez de preservar as duas
- * `subscription` que a issue #6587 pede explicitamente ("são duas
- * `subscription`, um `subscriber`").
+ * As plataformas cobertas pelo épico #6464 — só dado da **diária**.
+ * `brevo_diaria` (#6587, fatia 4) é a conta Brevo do canal de reativação da
+ * diária; `"brevo"` genérico nunca existiu de propósito, porque a Brevo
+ * tem DUAS contas reais no projeto (tenants distintos, quota independente,
+ * ver `docs/brevo-rate-limits.md`) e colapsar as duas teria forçado uma
+ * fusão indevida (`subscription` tem UNIQUE(subscriber_id, platform)).
+ *
+ * `brevo_clarice` NUNCA entra aqui (#7196, fatia 1 do épico #7163) — a base
+ * de reativação da Clarice News (~435k contatos) tem produto/audiência
+ * diferente e pipeline PRÓPRIO (`scripts/lib/clarice-db.ts`, tabela
+ * `clarice_users`). Antes do #7196, `brevo_clarice` chegou a fazer parte
+ * deste `PLATFORMS` pelo valor teórico de resolução de identidade
+ * cross-produto — mas `resolveIdentitiesByEmail` funde por e-mail de forma
+ * NÃO reversível (UPDATE + DELETE), e misturar as duas bases custaria caro
+ * pra desfazer se a decisão de cruzar precisasse ser revertida depois. Os
+ * dois bancos são IRMÃOS que nunca se importam um ao outro — nenhum módulo
+ * sob este caminho (`diaria-subscribers-*`, `leitor-store.ts`) importa
+ * `clarice-db.ts`, e `test/store-excludes-clarice.test.ts` é o guard
+ * mecânico que falha se isso mudar ou se `brevo_clarice` reaparecer em
+ * qualquer um destes arquivos.
  */
 export const PLATFORMS = [
   "beehiiv",
   "brevo_diaria",
-  "brevo_clarice",
   "kit",
 ] as const;
 export type Platform = (typeof PLATFORMS)[number];

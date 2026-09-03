@@ -2,11 +2,17 @@
  * leitor-store.test.ts (#6464 fatia 7 — #6591)
  *
  * Cobre `scripts/lib/leitor-store.ts` contra um SQLite `:memory:` real:
- * exclusão de `brevo_clarice`, detecção de capacidade `delivered` a partir
- * do dado, derivação `sent − bounce` quando `delivered` não existe,
- * deduplicação de clique por edição (o caso Brevo multi-link), status
- * cross-plataforma "ativo em qualquer uma", e o summary batch com a nota de
- * piso (#6589).
+ * detecção de capacidade `delivered` a partir do dado, derivação
+ * `sent − bounce` quando `delivered` não existe, deduplicação de clique por
+ * edição (o caso Brevo multi-link), status cross-plataforma "ativo em
+ * qualquer uma", o summary batch com a nota de piso (#6589), e o guard de
+ * cobertura de `subscription` (#7198 — "0 leitores" não é fato quando a
+ * dimensão `subscription` está pouco populada). `brevo_clarice` nunca é
+ * um valor de `Platform` válido desde #7196 — a exclusão virou estrutural
+ * (guard mecânico em `test/store-excludes-clarice.test.ts`), então os
+ * cenários que este arquivo testava com `brevo_clarice` como plataforma
+ * real foram substituídos por cenários com `platforms` restrito
+ * explicitamente pelo caller.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -38,12 +44,11 @@ const NOW = "2026-09-01T12:00:00.000Z";
 // ---------------------------------------------------------------------------
 
 describe("LEITOR_DIARIA_PLATFORMS", () => {
-  it("exclui brevo_clarice; inclui as 3 plataformas da diária", () => {
+  it("as 3 plataformas da diária (brevo_clarice nunca existiu como valor de Platform desde #7196)", () => {
     assert.deepEqual([...LEITOR_DIARIA_PLATFORMS].sort(), ["beehiiv", "brevo_diaria", "kit"].sort());
-    assert.ok(!LEITOR_DIARIA_PLATFORMS.includes("brevo_clarice"));
   });
 
-  it("é um subconjunto estrito de PLATFORMS (nunca inventa plataforma nova)", () => {
+  it("é (hoje) idêntico a PLATFORMS (nunca inventa plataforma nova)", () => {
     for (const p of LEITOR_DIARIA_PLATFORMS) {
       assert.ok((PLATFORMS as readonly string[]).includes(p));
     }
@@ -221,24 +226,32 @@ describe("computeStoreLeitorInput", () => {
     db.close();
   });
 
-  it("brevo_clarice do MESMO subscriber é ignorado no cômputo (nunca soma engajamento de outro produto)", () => {
+  it("plataforma fora de `platforms` (restrito pelo caller) é ignorada no cômputo, mesmo com evento gravado", () => {
+    // Não existe mais um valor de Platform "fora da diária" por default
+    // (#7196) — este cenário só acontece quando o CALLER restringe
+    // `platforms` explicitamente (ex: análise ad-hoc só do Kit). Mesmo
+    // comportamento que a exclusão de brevo_clarice tinha antes do #7196,
+    // agora exercitado via restrição explícita em vez de uma plataforma
+    // "de outro produto" fixa.
     const db = openDiariaSubscribersDb(":memory:");
     const id = ensureSubscriber(db, "kit", null, "leitor@x.com", NOW);
     db.prepare(
-      "INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, 'brevo_clarice', ?, ?, ?)",
-    ).run(id, "clarice-999", "leitor@x.com", NOW);
+      "INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, 'brevo_diaria', ?, ?, ?)",
+    ).run(id, "brevo-999", "leitor@x.com", NOW);
 
     for (let i = 0; i < 5; i++) {
       recordEvent(db, { subscriberId: id, platform: "kit", type: "delivered", externalEventId: `kit-d${i}`, edicao: `kit-ed${i}`, ts: NOW });
     }
-    // Muito engajamento na Clarice — não deve contar pra leitor-v1 da diária.
+    // Muito engajamento na Brevo — não deve contar quando o caller pediu
+    // só Kit.
     for (let i = 0; i < 100; i++) {
-      recordEvent(db, { subscriberId: id, platform: "brevo_clarice", type: "delivered", externalEventId: `cl-d${i}`, edicao: `cl-ed${i}`, ts: NOW });
-      recordEvent(db, { subscriberId: id, platform: "brevo_clarice", type: "click", externalEventId: `cl-c${i}`, edicao: `cl-ed${i}`, ts: NOW });
+      recordEvent(db, { subscriberId: id, platform: "brevo_diaria", type: "delivered", externalEventId: `br-d${i}`, edicao: `br-ed${i}`, ts: NOW });
+      recordEvent(db, { subscriberId: id, platform: "brevo_diaria", type: "click", externalEventId: `br-c${i}`, edicao: `br-ed${i}`, ts: NOW });
     }
 
-    const caps = detectPlatformCapabilities(db);
-    const input = computeStoreLeitorInput(db, id, caps);
+    const onlyKit = ["kit"] as const;
+    const caps = detectPlatformCapabilities(db, onlyKit);
+    const input = computeStoreLeitorInput(db, id, caps, onlyKit);
     assert.equal(input.totalReceived, 5);
     assert.equal(input.totalUniqueClicked, 0);
     db.close();
@@ -268,12 +281,13 @@ describe("computeStoreLeitorInput", () => {
     db.close();
   });
 
-  it("subscriber sem alias em nenhuma plataforma coberta (só clarice): zeros, status inactive", () => {
+  it("subscriber sem alias em nenhuma plataforma coberta (platforms restrito pelo caller): zeros, status inactive", () => {
     const db = openDiariaSubscribersDb(":memory:");
-    const id = ensureSubscriber(db, "brevo_clarice", "cl-1", "leitor@x.com", NOW);
-    upsertSubscription(db, id, "brevo_clarice", { status: "active", enteredAt: NOW, exitedAt: null, source: null }, NOW);
-    const caps = detectPlatformCapabilities(db);
-    const input = computeStoreLeitorInput(db, id, caps);
+    const id = ensureSubscriber(db, "beehiiv", "bh-1", "leitor@x.com", NOW);
+    upsertSubscription(db, id, "beehiiv", { status: "active", enteredAt: NOW, exitedAt: null, source: null }, NOW);
+    const onlyKit = ["kit"] as const;
+    const caps = detectPlatformCapabilities(db, onlyKit);
+    const input = computeStoreLeitorInput(db, id, caps, onlyKit);
     assert.deepEqual(input, { status: "inactive", totalReceived: 0, totalUniqueClicked: 0 });
     db.close();
   });
@@ -319,7 +333,7 @@ describe("summarizeStoreLeitores", () => {
     db.close();
   });
 
-  it("conta leitores-v1 cross-plataforma, ignora quem só existe em brevo_clarice, e sempre inclui a nota de piso", () => {
+  it("conta leitores-v1 cross-plataforma (platforms restrito exclui quem está fora), e sempre inclui a nota de piso", () => {
     const db = openDiariaSubscribersDb(":memory:");
 
     // Subscriber A: leitor de verdade no Kit (ativo, 25 recebidas, CTR alto).
@@ -337,19 +351,22 @@ describe("summarizeStoreLeitores", () => {
       recordEvent(db, { subscriberId: b, platform: "kit", type: "delivered", externalEventId: `b-d${i}`, edicao: `b-ed${i}`, ts: NOW });
     }
 
-    // Subscriber C: só existe na Clarice — fora do universo desta métrica.
-    const c = ensureSubscriber(db, "brevo_clarice", "cl-1", "clarice-only@x.com", NOW);
-    upsertSubscription(db, c, "brevo_clarice", { status: "active", enteredAt: NOW, exitedAt: null, source: null }, NOW);
+    // Subscriber C: só existe na Brevo — quando o caller restringe
+    // `platforms` a só Kit, fica fora do universo desta métrica (mesmo
+    // efeito que a exclusão de brevo_clarice tinha antes do #7196).
+    const c = ensureSubscriber(db, "brevo_diaria", "br-1", "brevo-only@x.com", NOW);
+    upsertSubscription(db, c, "brevo_diaria", { status: "active", enteredAt: NOW, exitedAt: null, source: null }, NOW);
     for (let i = 0; i < 50; i++) {
-      recordEvent(db, { subscriberId: c, platform: "brevo_clarice", type: "delivered", externalEventId: `c-d${i}`, edicao: `c-ed${i}`, ts: NOW });
-      recordEvent(db, { subscriberId: c, platform: "brevo_clarice", type: "click", externalEventId: `c-c${i}`, edicao: `c-ed${i}`, ts: NOW });
+      recordEvent(db, { subscriberId: c, platform: "brevo_diaria", type: "delivered", externalEventId: `c-d${i}`, edicao: `c-ed${i}`, ts: NOW });
+      recordEvent(db, { subscriberId: c, platform: "brevo_diaria", type: "click", externalEventId: `c-c${i}`, edicao: `c-ed${i}`, ts: NOW });
     }
 
-    const summary = summarizeStoreLeitores(db);
-    assert.equal(summary.total_subscribers, 2); // A e B — C fica de fora
+    const onlyKit = ["kit"] as const;
+    const summary = summarizeStoreLeitores(db, undefined, onlyKit);
+    assert.equal(summary.total_subscribers, 2); // A e B — C fica de fora (só Brevo, fora de `platforms`)
     assert.equal(summary.total_active, 2);
     assert.equal(summary.leitores_v1, 1); // só A
-    assert.deepEqual(summary.platforms_counted.sort(), ["beehiiv", "brevo_diaria", "kit"].sort());
+    assert.deepEqual(summary.platforms_counted, ["kit"]);
     assert.match(summary.note, /piso/i);
     db.close();
   });
@@ -368,6 +385,109 @@ describe("summarizeStoreLeitores", () => {
 
     const relaxed = summarizeStoreLeitores(db, { ctrMinPct: 2, receivedMin: 3 });
     assert.equal(relaxed.leitores_v1, 1);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Guard de cobertura de subscription (#7198) — "0 leitores" não é fato
+// quando a dimensão `subscription` está pouco populada. Regressão do bug:
+// antes deste guard, o cenário abaixo (eventos presentes, `subscription`
+// vazia — o estado REAL medido no store em 02/09/2026) devolvia
+// `leitores_v1: 0`/`total_active: 0` sem NENHUM sinal de que o número não
+// era confiável.
+// ---------------------------------------------------------------------------
+
+describe("subscription_data_coverage_low (#7198)", () => {
+  it("subscription inteiramente vazia (estado de produção medido) + eventos presentes: coverage_low true, avisa", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    // 229 pessoas "passariam nos cortes de recebidas/CTR" segundo a issue —
+    // aqui simulado em escala menor: 3 subscribers com engajamento real,
+    // NENHUM com upsertSubscription chamado (subscription fica vazia).
+    for (let n = 0; n < 3; n++) {
+      const id = ensureSubscriber(db, "kit", null, `leitor-${n}@x.com`, NOW);
+      for (let i = 0; i < 25; i++) {
+        recordEvent(db, { subscriberId: id, platform: "kit", type: "delivered", externalEventId: `${n}-d${i}`, edicao: `${n}-ed${i}`, ts: NOW });
+      }
+      recordEvent(db, { subscriberId: id, platform: "kit", type: "click", externalEventId: `${n}-c1`, edicao: `${n}-ed1`, ts: NOW });
+    }
+
+    const originalWarn = console.warn;
+    let warned = false;
+    console.warn = () => {
+      warned = true;
+    };
+    let summary;
+    try {
+      summary = summarizeStoreLeitores(db);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    // Sem subscription, status cross-plataforma cai em "inactive" pra todo
+    // mundo (resolveCrossPlatformStatus não acha nenhuma linha "active") —
+    // leitores_v1/total_active saem 0, exatamente o "0 sem aviso" do bug.
+    assert.equal(summary.total_active, 0);
+    assert.equal(summary.leitores_v1, 0);
+    // O que muda com o fix: o resultado agora carrega o sinal explícito de
+    // que esse "0" não é fato.
+    assert.equal(summary.subscription_data_coverage_low, true);
+    assert.ok(warned, "console.warn deve disparar quando a cobertura está baixa");
+    db.close();
+  });
+
+  it("subscription bem populada (cobertura alta): coverage_low false, sem warn", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    for (let n = 0; n < 3; n++) {
+      const id = ensureSubscriber(db, "kit", null, `leitor-${n}@x.com`, NOW);
+      upsertSubscription(db, id, "kit", { status: "active", enteredAt: NOW, exitedAt: null, source: null }, NOW);
+      recordEvent(db, { subscriberId: id, platform: "kit", type: "delivered", externalEventId: `${n}-d1`, edicao: `${n}-ed1`, ts: NOW });
+    }
+    const originalWarn = console.warn;
+    let warned = false;
+    console.warn = () => {
+      warned = true;
+    };
+    let summary;
+    try {
+      summary = summarizeStoreLeitores(db);
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(summary.subscription_data_coverage_low, false);
+    assert.equal(warned, false);
+    db.close();
+  });
+
+  it("store vazio (sem subscriber nenhum): coverage_low false — nada pra avaliar cobertura", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const summary = summarizeStoreLeitores(db);
+    assert.equal(summary.subscription_data_coverage_low, false);
+    db.close();
+  });
+});
+
+describe("StoreLeitorResult.missingSubscriptionData (#7198 — propagado pra ficha do painel)", () => {
+  it("subscriber sem NENHUMA subscription nas plataformas cobertas: missingSubscriptionData true, mesmo com isLeitor false por falta de dado", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const id = ensureSubscriber(db, "kit", null, "leitor@x.com", NOW);
+    for (let i = 0; i < 25; i++) {
+      recordEvent(db, { subscriberId: id, platform: "kit", type: "delivered", externalEventId: `d${i}`, edicao: `ed${i}`, ts: NOW });
+    }
+    const caps = detectPlatformCapabilities(db);
+    const result = computeStoreLeitorResult(db, id, caps);
+    assert.equal(result.missingSubscriptionData, true);
+    assert.equal(result.isLeitor, false); // status "inactive" por falta de subscription — não é "não é leitor", é "não sei"
+    db.close();
+  });
+
+  it("subscriber COM subscription gravada: missingSubscriptionData false", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const id = ensureSubscriber(db, "kit", null, "leitor@x.com", NOW);
+    upsertSubscription(db, id, "kit", { status: "active", enteredAt: NOW, exitedAt: null, source: null }, NOW);
+    const caps = detectPlatformCapabilities(db);
+    const result = computeStoreLeitorResult(db, id, caps);
+    assert.equal(result.missingSubscriptionData, false);
     db.close();
   });
 });

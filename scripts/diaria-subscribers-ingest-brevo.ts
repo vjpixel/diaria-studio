@@ -3,10 +3,16 @@
  * diaria-subscribers-ingest-brevo.ts (#6464 fatia 4 — #6587)
  *
  * Ingere no store unificado (`scripts/lib/diaria-subscribers-db.ts`) os
- * eventos por contato das DUAS contas Brevo — tenants distintos, quota
- * independente (ver `docs/brevo-rate-limits.md`):
- *   - `brevo_diaria`  — canal diária do editor (`BREVO_DIARIA_API_KEY`).
- *   - `brevo_clarice` — base de reativação da Clarice (`BREVO_CLARICE_API_KEY`).
+ * eventos por contato da conta Brevo `brevo_diaria` — canal de reativação
+ * da diária (`BREVO_DIARIA_API_KEY`). **Nunca** toca a conta `brevo_clarice`
+ * (#7196, fatia 1 do épico #7163) — essa base (~435k contatos, produto
+ * diferente) tem pipeline PRÓPRIO em `clarice-sync-brevo.ts` →
+ * `clarice_users`, banco IRMÃO que nunca cruza com este store (ver
+ * docstring de `PLATFORMS` em `diaria-subscribers-db.ts`). Até o #7196,
+ * este script ingeria as duas contas — `BREVO_ACCOUNTS` abaixo hoje só
+ * lista `brevo_diaria`; a estrutura de array/loop foi mantida (em vez de
+ * colapsar pra uma chamada única) porque é o formato mais barato de
+ * reintroduzir uma 3ª conta Brevo legítima no futuro, se surgir.
  *
  * Copia o PADRÃO de `clarice-sync-brevo.ts` (enumerar contatos paginado,
  * `GET /contacts/{id}` por contato, checkpoint resumível) — não o destino:
@@ -40,17 +46,14 @@
  * FULL enumeration — decisão explícita pra caber no orçamento desta issue
  * (#6587 não pede incremental). O checkpoint já torna o full resumível
  * entre execuções; adicionar `--incremental` fica pra uma issue futura, se
- * o volume da conta `brevo_clarice` (~435k contatos) tornar o full
- * recorrente caro demais.
+ * o volume da conta `brevo_diaria` tornar o full recorrente caro demais.
  *
  * Uso:
  *   npx tsx scripts/diaria-subscribers-ingest-brevo.ts [--db <p>]
- *     [--account brevo_diaria|brevo_clarice] [--limit N] [--concurrency N]
+ *     [--account brevo_diaria] [--limit N] [--concurrency N]
  *
- * Sem `--account`, roda as DUAS contas em sequência (nunca em paralelo —
- * evita competir consigo mesma por I/O local, e mantém o log legível).
- * Conta cuja API key não está no env é PULADA com warning (fail-soft — a
- * outra conta segue normalmente).
+ * `--account` só aceita `brevo_diaria` (único valor de `BREVO_ACCOUNTS`) —
+ * omitido, roda essa única conta; qualquer outro valor recusa cedo.
  */
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
@@ -72,10 +75,10 @@ import {
 
 export const DEFAULT_MANIFEST_PATH = resolve(dirname(DEFAULT_DB_PATH), "brevo-ingest-manifest.json");
 
-/** As 2 contas Brevo reais — env var da key + platform de destino no store. */
+/** A única conta Brevo que ingere no store da diária — env var da key +
+ *  platform de destino (#7196: `brevo_clarice` nunca entra aqui). */
 export const BREVO_ACCOUNTS: Array<{ platform: BrevoAccountPlatform; apiKeyEnv: string }> = [
   { platform: "brevo_diaria", apiKeyEnv: "BREVO_DIARIA_API_KEY" },
-  { platform: "brevo_clarice", apiKeyEnv: "BREVO_CLARICE_API_KEY" },
 ];
 
 /** Pacing entre páginas do listing — mesmo valor de `clarice-sync-brevo.ts`
@@ -278,7 +281,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const concurrency = getIntArg(argv, "concurrency", { min: 1 }) ?? 4;
 
   if (accountFilter && !BREVO_ACCOUNTS.some((a) => a.platform === accountFilter)) {
-    console.error(`❌ --account inválido: "${accountFilter}" (esperado: brevo_diaria | brevo_clarice)`);
+    console.error(`❌ --account inválido: "${accountFilter}" (esperado: brevo_diaria)`);
     process.exitCode = 1;
     return;
   }
