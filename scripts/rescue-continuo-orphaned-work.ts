@@ -39,10 +39,28 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { rescueOrphanedWork, pushRescueBranch, defaultSpawn } from "./lib/continuo-tick-closure.ts";
+import { rescueOrphanedWork, pushRescueBranch, defaultSpawn, type RescueOutcome } from "./lib/continuo-tick-closure.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 function parseArgs(argv: string[]): { push: boolean } {
   return { push: argv.includes("--push") };
+}
+
+/** Decide o exit code para `outcome === "rescued"` — extraída de `main()` para
+ * ser testável sem spawnar `git`/`gh` (#7340: bug era `checkoutBackFailed`
+ * nunca ser lido por nenhum consumidor, então todo "rescued" saía 0). */
+export function resolveRescuedExitCode(
+  result: Extract<RescueOutcome, { outcome: "rescued" }>,
+): { exitCode: 0 | 1; stderr?: string } {
+  if (result.checkoutBackFailed) {
+    return {
+      exitCode: 1,
+      stderr:
+        `\n⚠ CHECKOUT DE VOLTA PRA MASTER FALHOU — o checkout compartilhado ainda está na branch de rescue ` +
+        `(${result.branch}). Trocar manualmente antes de qualquer outra sessão continuar (#7340).\n`,
+    };
+  }
+  return { exitCode: 0 };
 }
 
 /** Best-effort `gh pr create` — nunca aborta o script se `gh` estiver
@@ -98,6 +116,13 @@ function main(): void {
   process.stderr.write(`\n✔ Trabalho órfão recuperado: branch ${result.branch}\n`);
   process.stderr.write(result.message + "\n");
 
+  const rescuedExit = resolveRescuedExitCode(result);
+  if (rescuedExit.exitCode === 1) {
+    if (rescuedExit.stderr) process.stderr.write(rescuedExit.stderr);
+    process.exitCode = 1;
+    return;
+  }
+
   if (!push) {
     process.exitCode = 0;
     return;
@@ -118,4 +143,11 @@ function main(): void {
   process.exitCode = 0;
 }
 
-main();
+// Guard (#7340, achado ao vivo durante a implementação desta própria issue):
+// sem isto, qualquer `import` deste módulo — inclusive de um teste que só
+// quer `resolveRescuedExitCode` — executava `main()` de verdade contra o
+// checkout compartilhado (git real via `defaultSpawn`), podendo commitar/
+// mover a branch corrente sem que o importador tivesse pedido isso.
+if (isMainModule(import.meta.url)) {
+  main();
+}

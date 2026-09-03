@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # continuo-pr-review.sh (#6865, autoridade de merge desde #6926)
 #
-# Review Sonnet (assinatura claude.ai) de UMA PR `continuo/*` aberta por vez
-# — não o diff acumulado do dia (esse é `opus-daily-diff-review.sh`, irmão
-# deste script). Roda em cron próprio (job `3330b108a5b2`) — a cadência
+# Review Sonnet (assinatura claude.ai) de TODAS as PRs `continuo/*` abertas
+# por execução, uma por iteração do loop (ver `for PR in $PR_NUMBERS`,
+# ~linha 446) — não o diff acumulado do dia (esse é `opus-daily-diff-review.sh`,
+# irmão deste script). Roda em cron próprio (job `3330b108a5b2`) — a cadência
 # NÃO vive nesta prosa: derivar com `hermes cron list --all` (#6928;
 # já registrou valor errado duas vezes).
 #
@@ -21,8 +22,13 @@
 # revisor externo precisa existir separado do tick (#6865). Este
 # script fecha esse gap SEM trocar o modelo do review profundo diário por
 # um mais barato — dois papéis distintos (decisão do editor): revisão
-# rápida e superficial de UMA PR (Sonnet) vs. varredura
+# rápida e superficial, PR por PR (Sonnet) vs. varredura
 # funda do dia inteiro com visão de interação-entre-PRs (Opus, 1x/dia).
+# O contraste entre os dois scripts é ESCOPO (uma PR isolada por iteração,
+# mas todas as PRs abertas por execução vs. diff acumulado do dia inteiro)
+# e MODELO (Sonnet vs. Opus) — nunca quantidade de PRs revisadas por execução
+# (#7242: a prosa já afirmou "UMA PR por execução" duas vezes, o que é falso
+# desde sempre — o loop em `for PR in $PR_NUMBERS` sempre iterou todas).
 #
 # ## Ação manual (fora do repo, feita em 31/08/2026)
 #
