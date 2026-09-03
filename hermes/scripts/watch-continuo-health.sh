@@ -13,8 +13,13 @@
 #   3. claims não voltaram a vazar (sessão continuo com claims e heartbeat
 #      parado > 45min — tick é de 30min, higiene deveria limpar);
 #   4. vazamento pago (hermes-model-cost-report --json, campo vazamento_pago);
+<<<<<<< Updated upstream
 #   8. gasto diario estimado (#6771) - REPORTA, nao alarma: a checagem 4 cobre
 #      LEAK (modelo pago fora da allowlist), nunca VOLUME dentro dela;
+=======
+#   8. gasto diário estimado (#6771) — REPORTA, não alarma: a checagem 4 cobre
+#      leak (modelo pago fora da allowlist), não VOLUME dentro dela;
+>>>>>>> Stashed changes
 #   (item 5 — adoção de prefixo de branch — CORTADO no #6798, 01/09/2026:
 #    informational, 0 correções, dedup falhava e produziu issue duplicada 3x
 #    antes do fix; sucessor mais preciso é `check-branch-issue-consistency.ts`.)
@@ -327,13 +332,19 @@ fi
 # ── 8. gasto diário estimado (#6771 ação 4) ─────────────────────────────────
 # A morte do job `95f1990895ab` (monitor de preços/gastos OpenRouter, morto
 # desde 24/08 e sem sucessor) deixou GASTO sem nenhuma vigilância. A checagem
+<<<<<<< Updated upstream
 # 4 acima NÃO cobre isso: ela lê `vazamento_pago`, um booleano de LEAK (modelo
 # pago fora da allowlist) — um dia inteiramente dentro da allowlist e 10x mais
+=======
+# 4 acima NÃO cobre isso: ela lê `vazamento_pago`, um booleano de leak (modelo
+# pago FORA da allowlist) — um dia inteiramente dentro da allowlist e 10× mais
+>>>>>>> Stashed changes
 # caro que o normal passa por ela como saudável.
 #
 # **Sem limiar, de propósito (instrução explícita do #6771).** Esta checagem
 # REPORTA o número e nunca alarma; a issue pede baseline medida antes de
 # calibrar, mesma disciplina do #6755. Baseline coletada em 03/09/2026 (7 dias,
+<<<<<<< Updated upstream
 # custo estimado/dia, Hermes inteiro): 27/08 $0,00 - 28/08 $1,55 - 29/08 $0,32
 # - 30/08 a 03/09 $0,00. O pico de 28/08 e o pior caso conhecido (pago como
 # primario + ticks de 30min, ambos ja revertidos); os zeros recentes sao
@@ -349,10 +360,25 @@ fi
 # NAO usa `file_issue` justamente por nao ter limiar: sem criterio de alarme
 # calibrado, abrir issue seria ruido diario. Vira linha de log, que e o que a
 # issue pede pra coletar a serie.
+=======
+# custo estimado/dia, Hermes inteiro): 27/08 $0,00 · 28/08 $1,55 · 29/08 $0,32 ·
+# 30/08–03/09 $0,00. O pico de 28/08 é o pior caso conhecido (pago como
+# primário + ticks de 30min, ambos já revertidos).
+#
+# Duas ressalvas medidas, ambas refletidas no texto impresso:
+#   - `custo_real` vem 0 em TODAS as linhas do relatório (confirmado nos 7 dias
+#     acima) — o que existe é `custo_estimado`. Nunca afirmar faturamento.
+#   - O relatório agrega o **Hermes inteiro**, não só o contínuo: sessão
+#     interativa do editor entra no mesmo número. Declarado em vez de filtrado
+#     (filtrar exigiria distinguir sessão de cron, que o relatório não expõe).
+#
+# Reusa a MESMA invocação da checagem 4 (`--days 1 --json`), sem chamada nova.
+>>>>>>> Stashed changes
 GASTO=$(python3 /home/vjpixel/.hermes/scripts/hermes-model-cost-report.py --days 1 --json 2>/dev/null | python3 -c "
 import sys, json
 try:
     rows = json.load(sys.stdin)
+<<<<<<< Updated upstream
     print(f\"{sum(float(r.get('custo_estimado') or 0) for r in rows if isinstance(r, dict)):.4f}\")
 except Exception:
     print('__ERR__')" 2>/dev/null || echo "__ERR__")
@@ -368,6 +394,19 @@ if [ "$GASTO" = "__ERR__" ] || [ -z "$GASTO" ]; then
   FAILS=$((FAILS + 1))
 else
   echo "[watch] gasto diario estimado (Hermes inteiro, 24h): \$$GASTO - sem limiar calibrado (#6771), so registro"
+=======
+    total = sum(float(r.get('custo_estimado') or 0) for r in rows if isinstance(r, dict))
+    print(f'{total:.4f}')
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+if [ "$GASTO" = "__ERR__" ] || [ -z "$GASTO" ]; then
+  # Mesma disciplina das checagens 1-7: indeterminado incrementa FAILS em vez
+  # de reportar "$0,00", que seria indistinguível de um dia genuinamente barato.
+  echo "[watch] gasto diário: INDETERMINADO (cost-report falhou)" >&2
+  FAILS=$((FAILS + 1))
+else
+  echo "[watch] gasto diário estimado (Hermes inteiro, 24h): \$$GASTO — sem limiar calibrado (#6771), só registro"
+>>>>>>> Stashed changes
 fi
 
 echo "[watch] varredura concluída (checagens indeterminadas/falhas de infra: $FAILS)"
