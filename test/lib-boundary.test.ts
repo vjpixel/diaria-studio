@@ -35,7 +35,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LIB = join(ROOT, "scripts", "lib");
 
-const DOMAINS = ["shared", "diaria", "mensal"] as const;
+const DOMAINS = ["shared", "diaria", "mensal", "metrics"] as const;
 type Domain = (typeof DOMAINS)[number];
 
 /** Lista .ts recursivamente sob um diretório (retorna [] se não existe). */
@@ -94,6 +94,14 @@ describe("fronteira scripts/lib shared/diaria/mensal (#2747)", () => {
   it("mensal/ não importa de diaria/", () => {
     const v = violations("mensal", ["diaria"]);
     assert.deepEqual(v, [], `cruzamento mensal->diaria (passe por shared/):\n  ${v.join("\n  ")}`);
+  });
+
+  it("metrics/ não importa de diaria/ nem mensal/ (#7175 F3)", () => {
+    // scripts/lib/metrics/ é domínio novo desde #7175 — mesma regra de
+    // shared/: cruzamento só via shared/, nunca import direto de
+    // diaria/mensal.
+    const v = violations("metrics", ["diaria", "mensal"]);
+    assert.deepEqual(v, [], `metrics/ importando domínio específico (passe por shared/):\n  ${v.join("\n  ")}`);
   });
 
   it("sanity: a estrutura existe e o scan enxerga os módulos movidos", () => {
