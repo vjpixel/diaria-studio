@@ -572,6 +572,44 @@ export interface DetectLabelDriftInput {
    * Import é só de TIPO — este módulo continua sem acoplamento de runtime com
    * `issue-exec-track.ts`, que segue sendo a fonte de verdade sobre labels
    * (ver "O que este módulo NÃO é", no topo).
+   *
+   * ## Avaliado e NÃO estendido: label que tira a issue DA rodada (#7137 item 5)
+   *
+   * O incidente que originou a #7137 (#7117, 02/09/2026) foi o INVERSO do que
+   * este filtro cobre: uma triagem autônoma aplicou `decisao-registrada` — a
+   * `UNIVERSAL_SATISFYING_LABEL` acima — numa issue cuja decisão ainda estava
+   * PENDENTE, e o achado nunca disparou porque `decisao-registrada` já
+   * satisfaz qualquer padrão por desenho (ver a constante, mais acima). O
+   * filtro de `currentTrack` não é a causa — ele nem chega a ser avaliado
+   * quando `UNIVERSAL_SATISFYING_LABEL` já zera o achado antes.
+   *
+   * Estender o gate pra esse sentido (label estrutural aplicada, mas a
+   * prosa mais recente ainda soa "pendente"/"aguardando resposta") exigiria
+   * um catálogo de padrões NOVO — não um ajuste no filtro de `currentTrack` —
+   * porque o sinal a detectar é o oposto do catálogo atual: hoje `DRIFT_PATTERNS`
+   * procura prosa de deferimento SEM a label correspondente; o caso do #7117
+   * é prosa de pendência COM uma label que já a fecha. Regex de "isto ainda
+   * não foi decidido" tem risco de falso positivo alto — franqueado pela
+   * mesma tensão que motivou os guards de negação (`SIMPLE_NEGATION_LOOKBEHIND`)
+   * já existentes: "sem dúvida, isto está decidido" e "não está mais pendente"
+   * casam a palavra errada sem cuidado equivalente.
+   *
+   * Avaliado nesta unidade (#7137 item 5) e a decisão foi NÃO implementar
+   * agora: (a) o catálogo de detecção reversa não tem nenhum caso real medido
+   * além do #7117 — o mesmo padrão de "sem caso real, não entra" que já rejeitou
+   * candidatos no catálogo atual (ver `EXECUTION_IMPEDIMENT_WEAK`); (b) o gate
+   * BLOQUEIA a compilação do relatório da rodada, então um catálogo novo e
+   * mal calibrado custa caro (trava rodada por falso positivo) — diferente do
+   * CLI de auditoria, que tolera ruído; (c) `decisao-registrada` já é, por
+   * desenho, a label que HUMANOS aplicam para fechar um assunto — o defeito
+   * real do #7117 foi uma triagem AUTÔNOMA aplicando essa label sem uma
+   * decisão de fato tomada, o que é mais bem endereçado restringindo QUEM/
+   * QUANDO `decisao-registrada` pode ser aplicada (fora do escopo deste
+   * módulo, que é só detecção de drift textual) do que ensinando este gate a
+   * duvidar de uma label que, por contrato, já significa "resolvido".
+   * Registrado aqui, não fechado como não-issue: se um 2º caso real do mesmo
+   * padrão aparecer, é o gatilho pra reabrir com um catálogo mínimo calibrado
+   * nos dois casos.
    */
   currentTrack?: ExecTrack;
 }
