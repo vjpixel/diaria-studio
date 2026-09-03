@@ -58,6 +58,14 @@ export interface BeehiivBackupSubscriber {
   utm_medium: string;
   utm_campaign: string;
   referring_site: string;
+  /** Rastreamento de aquisição da Beehiiv — citado no corpo da #7207 como
+   *  fallback quando `utm_source`/`utm_campaign` de topo vêm vazios.
+   *  `unknown` (não `string`) porque nunca foi confirmado ao vivo neste
+   *  repo (guard de rede do overnight/develop, ver
+   *  `beehiiv-subscribers-ingest.ts`) — todo consumidor checa o tipo antes
+   *  de usar, mesma disciplina tolerante do resto da interface. */
+  acquisition_source?: unknown;
+  acquisition_channel?: unknown;
   custom_fields?: BeehiivBackupCustomField[];
   stats?: {
     total_received?: number;

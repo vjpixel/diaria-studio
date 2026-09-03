@@ -16,6 +16,7 @@ import {
   extractSubscriptionOrigin,
   formatOrigemOriginalValue,
   buildOrigemOriginalCustomFields,
+  extractOrigemOriginalFromCustomFields,
 } from "../scripts/lib/shared/beehiiv-origem-original.ts";
 
 describe("extractSubscriptionOrigin", () => {
@@ -140,5 +141,74 @@ describe("buildOrigemOriginalCustomFields — gate (#5231 fixer, achado do revie
     const body = { data: { utm_source: "google" } };
     const fields = buildOrigemOriginalCustomFields(body, "campo_customizado");
     assert.deepEqual(fields, [{ name: "campo_customizado", value: JSON.stringify({ utm_source: "google" }) }]);
+  });
+});
+
+describe("extractOrigemOriginalFromCustomFields (#7207) — companheiro de extractSubscriptionOrigin, mas lendo um array custom_fields já expandido (roster/snapshot)", () => {
+  it("extrai os 5 campos quando o custom field está presente e bem formado", () => {
+    const customFields = [
+      {
+        name: ORIGEM_ORIGINAL_FIELD_NAME,
+        value: JSON.stringify({
+          utm_source: "instagram",
+          utm_medium: "bio-link",
+          utm_campaign: "lancamento",
+          referring_site: "www.instagram.com",
+          created: 1700000000,
+        }),
+      },
+    ];
+    assert.deepEqual(extractOrigemOriginalFromCustomFields(customFields), {
+      utm_source: "instagram",
+      utm_medium: "bio-link",
+      utm_campaign: "lancamento",
+      referring_site: "www.instagram.com",
+      created: 1700000000,
+    });
+  });
+
+  it("extração parcial — só utm_source presente, resto omitido do resultado", () => {
+    const customFields = [{ name: ORIGEM_ORIGINAL_FIELD_NAME, value: JSON.stringify({ utm_source: "google" }) }];
+    assert.deepEqual(extractOrigemOriginalFromCustomFields(customFields), { utm_source: "google" });
+  });
+
+  it("customFields ausente/undefined → null", () => {
+    assert.equal(extractOrigemOriginalFromCustomFields(undefined), null);
+  });
+
+  it("customFields sem o campo origem_original → null", () => {
+    assert.equal(
+      extractOrigemOriginalFromCustomFields([{ name: "outro_campo", value: "x" }]),
+      null,
+    );
+  });
+
+  it("value não é string → null", () => {
+    assert.equal(
+      extractOrigemOriginalFromCustomFields([{ name: ORIGEM_ORIGINAL_FIELD_NAME, value: 123 }]),
+      null,
+    );
+  });
+
+  it("value é JSON malformado → null, nunca lança", () => {
+    assert.doesNotThrow(() => {
+      const result = extractOrigemOriginalFromCustomFields([
+        { name: ORIGEM_ORIGINAL_FIELD_NAME, value: "{not valid json" },
+      ]);
+      assert.equal(result, null);
+    });
+  });
+
+  it("value decodificado sem utm_source → null (mínimo de utilidade exigido)", () => {
+    assert.equal(
+      extractOrigemOriginalFromCustomFields([
+        { name: ORIGEM_ORIGINAL_FIELD_NAME, value: JSON.stringify({ utm_medium: "cpc" }) },
+      ]),
+      null,
+    );
+  });
+
+  it("customFields não é array → null", () => {
+    assert.equal(extractOrigemOriginalFromCustomFields("not-an-array" as unknown as undefined), null);
   });
 });

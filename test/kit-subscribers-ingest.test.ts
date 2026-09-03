@@ -197,6 +197,31 @@ describe("ingestKitRoster", () => {
     db.close();
   });
 
+  it("popula utm_source/utm_term/utm_content (coluna dedicada, #7207) além do legado `source`", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestKitRoster(
+      db,
+      [
+        makeSub({
+          fields: {
+            utm_source: "google",
+            utm_term: "ia-newsletter",
+            utm_content: "anuncio-b",
+          },
+        }),
+      ],
+      "2026-09-02T04:25:00.000Z",
+    );
+    const subscriberId = findSubscriberIdByAlias(db, "kit", "1", "leitor@example.com");
+    assert.notEqual(subscriberId, null);
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId!);
+    assert.equal(sub.source, "google", "legado continua populado do mesmo valor");
+    assert.equal(sub.utm_source, "google", "coluna dedicada nova");
+    assert.equal(sub.utm_term, "ia-newsletter");
+    assert.equal(sub.utm_content, "anuncio-b");
+    db.close();
+  });
+
   it("entered_at vem de created_at; status vem de state; external_id vem de id", () => {
     const db = openDiariaSubscribersDb(":memory:");
     ingestKitRoster(db, [makeSub({ id: 42, state: "inactive", created_at: "2025-09-02T00:00:00.000Z" })], "2026-09-02T04:25:00.000Z");

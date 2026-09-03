@@ -91,6 +91,7 @@ import {
   type EventType,
 } from "./diaria-subscribers-db.ts";
 import type { BeehiivBackupSubscriber, BeehiivBackupCustomField } from "./beehiiv-backup-snapshots.ts";
+import { extractOrigemOriginalFromCustomFields } from "./shared/beehiiv-origem-original.ts";
 
 /** Shape tolerante de 1 linha do JSONL — campos podem faltar (registro
  *  malformado, ou resposta parcial da MCP já gravada por uma corrida antiga
@@ -587,15 +588,30 @@ export interface BeehiivRosterIngestResult {
  * `upsertSubscription`/`recordEvent`. Não classifica (F1/F4 do épico #7172
  * fazem isso na leitura); grava a atribuição CRUA como veio da Beehiiv.
  *
- * **De onde sai cada campo:**
+ * **De onde sai cada campo (`utm_source` dedicado + precedência do custom
+ * field somados em #7207, fatia 12 do épico #7163):**
  * - `external_id` ← `id`; `status` ← `status`; `entered_at` ← `created`
  *   (Unix segundos → ISO); identidade ← `email`.
- * - `source`/`utm_medium`/`utm_campaign`/`referring_site` ← campos de topo
- *   do objeto (a Beehiiv, ao contrário do Kit, não esconde UTM atrás de
- *   `attribution` — ver `BeehiivBackupSubscriber`). `utm_channel`/
- *   `origem_cadastro` não têm campo correspondente na Beehiiv — gravados
- *   `null`, mesma disciplina de "plataforma que não traz o campo" já
- *   documentada em `SubscriptionFields`.
+ * - `utm_source`/`utm_medium`/`utm_campaign`/`referring_site`: o custom
+ *   field `origem_original` (#5231, JSON in-band gravado no momento de uma
+ *   promoção Pending→ativo — ver `beehiiv-origem-original.ts`) tem
+ *   PRECEDÊNCIA sobre os campos de TOPO do objeto quando presente — mesma
+ *   regra que `build-origem-map.ts` já aplica na reconstrução histórica
+ *   (#5842): é a origem verdadeira, os campos de topo podem já ter sido
+ *   sobrescritos pelo evento de reativação. Sem o custom field, cai pros
+ *   campos de topo (a Beehiiv, ao contrário do Kit, não esconde UTM atrás
+ *   de `attribution` — ver `BeehiivBackupSubscriber`); sem os dois,
+ *   `acquisition_source` (rastreamento de aquisição da própria Beehiiv,
+ *   nunca confirmado ao vivo neste repo — ver docstring do campo em
+ *   `BeehiivBackupSubscriber`) é o ÚLTIMO fallback só pra `utm_source`.
+ *   `source` (coluna legada, #7174) grava o MESMO valor resolvido de
+ *   `utm_source` — duplicado de propósito (ver docstring de
+ *   `SubscriptionFields.utmSource`).
+ * - `utm_channel` ← `acquisition_channel` (Beehiiv não tem campo `utm_channel`
+ *   nativo nem no custom field `origem_original`). `origem_cadastro` não
+ *   tem campo correspondente na Beehiiv — gravado `null`, mesma disciplina
+ *   de "plataforma que não traz o campo" já documentada em
+ *   `SubscriptionFields`.
  *
  * **Sem timestamp de saída** — a Beehiiv não expõe quando `status` virou
  * `inactive` (mesma limitação nomeada no docstring do módulo pra `sent`/
@@ -672,6 +688,26 @@ export function ingestBeehiivRoster(
       .get(subscriberId) as { exited_at: string | null } | undefined;
     const wasExitedBefore = previousSubscription != null && previousSubscription.exited_at != null;
 
+    // #7207: `origem_original` (custom field in-band) tem precedência sobre
+    // os campos de TOPO — mesma regra de `build-origem-map.ts` (#5842).
+    // `acquisition_source` é o último fallback, só pra `utm_source`.
+    const fromOrigemField = extractOrigemOriginalFromCustomFields(sub.custom_fields);
+    const topLevelUtmSource = typeof sub.utm_source === "string" && sub.utm_source ? sub.utm_source : null;
+    const acquisitionSource =
+      typeof sub.acquisition_source === "string" && sub.acquisition_source ? sub.acquisition_source : null;
+    const resolvedUtmSource = fromOrigemField?.utm_source ?? topLevelUtmSource ?? acquisitionSource;
+    const resolvedUtmMedium =
+      fromOrigemField?.utm_medium ??
+      (typeof sub.utm_medium === "string" && sub.utm_medium ? sub.utm_medium : null);
+    const resolvedUtmCampaign =
+      fromOrigemField?.utm_campaign ??
+      (typeof sub.utm_campaign === "string" && sub.utm_campaign ? sub.utm_campaign : null);
+    const resolvedReferringSite =
+      fromOrigemField?.referring_site ??
+      (typeof sub.referring_site === "string" && sub.referring_site ? sub.referring_site : null);
+    const utmChannel =
+      typeof sub.acquisition_channel === "string" && sub.acquisition_channel ? sub.acquisition_channel : null;
+
     upsertSubscription(
       db,
       subscriberId,
@@ -680,10 +716,12 @@ export function ingestBeehiivRoster(
         status,
         enteredAt,
         exitedAt: exited ? now : null,
-        source: typeof sub.utm_source === "string" && sub.utm_source ? sub.utm_source : null,
-        utmMedium: typeof sub.utm_medium === "string" && sub.utm_medium ? sub.utm_medium : null,
-        utmCampaign: typeof sub.utm_campaign === "string" && sub.utm_campaign ? sub.utm_campaign : null,
-        referringSite: typeof sub.referring_site === "string" && sub.referring_site ? sub.referring_site : null,
+        source: resolvedUtmSource,
+        utmMedium: resolvedUtmMedium,
+        utmCampaign: resolvedUtmCampaign,
+        utmChannel,
+        referringSite: resolvedReferringSite,
+        utmSource: resolvedUtmSource,
       },
       now,
     );
