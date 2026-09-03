@@ -86,6 +86,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `has-negative-impact-highlight` | ≥1 destaque tagueado negative_impact:true — repetido no gate consolidado (#3916, #3918, warning-only) | #3916 |
 | `image-content-fresh` | imagem de destaque bate com highlight D{N} atual (#1730) | #1730 |
 | `image-crop-warn` | revisor de crop 2:1→1:1 (Stage 3) sinaliza sujeito cortado/composição sem sentido (#3951, warning-only) | #3951 |
+| `intentional-error-present-in-final` | item que carrega o erro intencional (wrong_value) ainda está em 02-reviewed.md — detecta poda silenciosa no gate (#7243) | #7243 |
 | `intro-count-consistent` | intro line Z = contagem real de items visíveis (#1578) | #1578 |
 | `kit-fixture-audit` | assinante de fixture de teste (ex: ana@example.com) ATIVO na base Kit de produção (#6336) | #6336 |
 | `kit-html-too-large` | _internal/newsletter-final-kit.html acima de 104448 bytes (102 KB) — limite de clipping do Gmail, pixel de abertura do Kit ficaria abaixo do corte (#6506, error só quando backend ativo é "kit"; warning até lá) | #6506 |

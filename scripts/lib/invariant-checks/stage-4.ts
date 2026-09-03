@@ -860,6 +860,112 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
 }
 
 /**
+ * #7243: detecta o item PORTADOR do erro intencional sumindo do texto final —
+ * incidente real: edição 260902, item de RADAR com "Anthropik" (erro declarado
+ * em `_internal/intentional-error.json`) foi removido pelo editor numa poda
+ * NORMAL do RADAR (7 → 3 itens) dentro do gate do Stage 4. Nada acusou —
+ * `checkNarrativeNotGenericPlaceholder` acima valida só a PROSA do reveal
+ * (`Nessa edição, …`/`reveal`), nunca cruza contra o texto publicado. O reveal
+ * da edição SEGUINTE ia afirmar pros assinantes que um erro existia quando não
+ * existia mais — desinformação publicada, concurso "ache o erro" quebrado em
+ * silêncio, alocação de número de sorteio contaminada (ver corpo da #7243).
+ *
+ * O que TORNA isso verificável mecanicamente: `wrong_value` (#7243, irmão de
+ * `correct_value`) — a grafia/valor ERRADO efetivamente plantado, não o valor
+ * corrigido. Buscar por `correct_value` não serve: é justamente o texto que o
+ * item CORRIGIDO teria (guard ingênuo que procurasse `correct_value` no MD
+ * passaria sempre, como o corpo da issue observa).
+ *
+ * Duas saídas quando o guard acusa (mensagem de erro nomeia as duas, #7243
+ * item 3 — "mensagem acionável"): (a) replantar o erro em outro item do texto
+ * atual, ou (b) declarar a edição sem erro (`{"no_error": true}`, suporte já
+ * existente desde #2016/#2037 — ver `loadIntentionalErrorJson`).
+ *
+ * Roda DEPOIS de qualquer edição do editor no gate — é o único ponto onde a
+ * verificação vale (a janela entre "erro plantado no Stage 2" e "editor podou
+ * o RADAR no Stage 4" não tinha guarda nenhuma). O call site que fecha essa
+ * janela de fato — reinvocar só esta regra imediatamente antes de escrever o
+ * sentinel de Stage 4, cobrindo o fast-path do painel Studio (#6444) que pula
+ * o loop `sim/ajustar` inteiro — vive em `orchestrator-stage-4.md` §4e, não
+ * aqui (esta função é só o pure check; o card mecânico completo, incluindo
+ * QUANDO ele roda, é responsabilidade do playbook).
+ *
+ * Severidade dupla, por design:
+ *   - `error` (GATE-BLOCKING) quando `wrong_value` está declarado e NÃO
+ *     aparece mais em `02-reviewed.md` — o caso real do incidente.
+ *   - `warning` quando há erro declarado (não `no_error`) mas `wrong_value`
+ *     está ausente/placeholder — não dá pra verificar mecanicamente, mas
+ *     bloquear TODA edição anterior ao #7243 (campo novo, opcional por
+ *     decisão de escopo — ver PR #7243) seria travar o pipeline por uma
+ *     mudança de schema que o editor ainda não adotou o hábito de preencher.
+ *
+ * Match verbatim (substring simples, case-sensitive, sem trim de acentuação):
+ * a essência de um erro ortográfico/factual É a grafia exata plantada —
+ * normalizar case ou acentos esconderia justamente o tipo de erro mais comum
+ * (ortográfico) que o incidente real envolveu ("Anthropik" ⊄ "anthropik").
+ */
+function checkIntentionalErrorPresentInFinal(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+
+  const jsonPath = intentionalErrorJsonPath(editionDir);
+  const record = loadIntentionalErrorJson(jsonPath);
+  if (!record) return []; // nada declarado ainda — check-stage2-invariants.ts é dono desse gap
+
+  // #2016/#2037: edição sem erro intencional é um estado legítimo — nada a verificar.
+  if (record.no_error === true) return [];
+
+  const md = readFileSync(path, "utf8");
+  // Só relevante quando a edição de fato declara um erro no corpo publicado —
+  // mesma heurística de "declarado" que checkNarrativeNotGenericPlaceholder usa
+  // no seu último branch (linha ~843 acima).
+  const hasDeclaredError = md.includes(SECTION_HEADER) || extractCurrentDeclarationFromMd(md) !== null;
+  if (!hasDeclaredError) return [];
+
+  const wrongValue = (record.wrong_value ?? "").trim();
+  if (!wrongValue || /^\{PREENCHER/i.test(wrongValue)) {
+    return [
+      {
+        rule: "intentional-error-present-in-final",
+        message:
+          `ERRO INTENCIONAL: campo \`wrong_value\` ausente/placeholder em ${jsonPath} — não é ` +
+          `possível verificar mecanicamente se o item que carrega o erro plantado ainda está ` +
+          `presente em 02-reviewed.md (uma poda de RADAR no gate pode removê-lo sem nenhum ` +
+          `aviso — incidente real: edição 260902, #7243). Preencha \`wrong_value\` com a ` +
+          `grafia/valor efetivamente ERRADO plantado no texto (ex: "Anthropik", não "Anthropic" ` +
+          `— esse é o \`correct_value\`).`,
+        source_issue: "#7243",
+        severity: "warning",
+        file: jsonPath,
+      },
+    ];
+  }
+
+  if (!md.includes(wrongValue)) {
+    return [
+      {
+        rule: "intentional-error-present-in-final",
+        message:
+          `ERRO INTENCIONAL: o valor plantado "${wrongValue}" (declarado em ${jsonPath}) NÃO ` +
+          `aparece mais em 02-reviewed.md — o item que carregava o erro foi removido ou reescrito ` +
+          `após a declaração, provavelmente numa poda do gate (incidente real: edição 260902, ` +
+          `RADAR podado de 7 pra 3 itens levou junto o item com "Anthropik" — #7243). Publicar ` +
+          `assim faz o reveal da PRÓXIMA edição afirmar um erro que não existe mais — desinformação ` +
+          `publicada, concurso "ache o erro" quebrado em silêncio. Fix: (a) replantar o erro em ` +
+          `outro item do texto atual e atualizar \`wrong_value\`/\`correct_value\`/\`location\` ` +
+          `de acordo, OU (b) declarar a edição sem erro — gravar {"no_error": true} em ${jsonPath} ` +
+          `(sobrescreve os demais campos). Repetir esta checagem até exit 0 antes de aprovar o gate.`,
+        source_issue: "#7243",
+        severity: "error",
+        file: path,
+      },
+    ];
+  }
+
+  return [];
+}
+
+/**
  * #2596: detecta itens de seção secundária (LANÇAMENTOS/RADAR/USE MELHOR)
  * cuja descrição vem truncada de `og:description` — terminando em reticências
  * (…/...) com palavra pendente (conjunção/preposição/artigo) antes delas.
@@ -2242,6 +2348,14 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkNarrativeNotGenericPlaceholder,
   },
   {
+    id: "intentional-error-present-in-final",
+    description:
+      "item que carrega o erro intencional (wrong_value) ainda está em 02-reviewed.md — detecta poda silenciosa no gate (#7243)",
+    source_issue: "#7243",
+    stage: 4,
+    run: checkIntentionalErrorPresentInFinal,
+  },
+  {
     id: "truncated-secondary-item-summary",
     description: "descrição de item secundário não termina em reticências de truncamento (#2596)",
     source_issue: "#2596",
@@ -2400,6 +2514,7 @@ export {
   checkEiaCreditSynced,
   checkIntroCountConsistent,
   checkNarrativeNotGenericPlaceholder,
+  checkIntentionalErrorPresentInFinal,
   checkTruncatedSecondaryItemSummary,
   checkTitlePublisherSuffixInvariant,
   checkTitleTrailingPeriodInvariant,

@@ -858,10 +858,16 @@ export function currentHasIntentionalErrorFlag(
  * precisa fornecer o erro na correria — como ocorreu em 260615 (frontmatter).
  *
  * Caso o JSON já exista → no-op idempotente (não sobrescreve valores já
- * preenchidos). Caso ausente → escreve os 5 campos como placeholders
+ * preenchidos). Caso ausente → escreve os 6 campos como placeholders
  * `{PREENCHER}`. O lint do Stage 5 rejeita valores que ainda contêm
  * `{PREENCHER}` (guard em `checkIntentionalError`,
- * `scripts/lib/lint-checks/intentional-error.ts`).
+ * `scripts/lib/lint-checks/intentional-error.ts`) — **exceto `wrong_value`
+ * (#7243), que fica de fora de `REQUIRED_INTENTIONAL_ERROR_FIELDS` de propósito:
+ * tornar preenchimento obrigatório é decisão editorial não tomada ainda (ver PR
+ * #7243). Sem preencher, `checkIntentionalErrorPresentInFinal`
+ * (`scripts/lib/invariant-checks/stage-4.ts`) degrada pra warning em vez de
+ * bloquear — não há regressão de comportamento pras edições que não adotarem
+ * o campo.
  */
 export function ensureIntentionalErrorJson(
   jsonPath: string,
@@ -876,6 +882,10 @@ export function ensureIntentionalErrorJson(
     category:
       "{PREENCHER — factual|ortografico|numeric|attribution|data|version_inconsistency|factual_synthetic}",
     correct_value: "{PREENCHER — valor correto}",
+    // (#7243) Irmão de correct_value — a grafia/valor ERRADO efetivamente
+    // plantado no texto (ex: "Anthropik"). Sem ele, checkIntentionalErrorPresentInFinal
+    // não consegue verificar mecanicamente se o item com o erro sumiu do texto final.
+    wrong_value: "{PREENCHER — grafia/valor ERRADO plantado no texto, ex: Anthropik}",
     reveal:
       "{PREENCHER — prosa 1ª pessoa para o reveal da próxima edição, ex: Na última edição, escrevi X onde o correto é Y.}",
   };

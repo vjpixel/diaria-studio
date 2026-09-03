@@ -252,7 +252,18 @@ describe("orchestrator-prompt (#634)", () => {
       // CLOSES"). Arquivo foi a 824 linhas. Teto bumped de 820→830 com
       // headroom pequeno (arquivo já chegou nesta rodada sem headroom
       // sobrando do bump anterior).
-      "orchestrator-stage-4.md": 830,
+      // #7243: +6 linhas líquidas — revalidação final GATE-BLOCKING do erro
+      // intencional em §4e, logo antes do sentinel: re-roda só a regra
+      // `intentional-error-present-in-final` (registrada em STAGE_4_RULES)
+      // contra o `02-reviewed.md` como ele está DEPOIS de qualquer edição do
+      // editor (loop `ajustar`, fast-path do painel Studio #6444) — a
+      // checagem de §4b step 5 roda ANTES do editor ver o gate e não cobre
+      // esses caminhos (incidente real: edição 260902, poda de RADAR levou
+      // junto o item com o erro, nada acusou). Arquivo já estava a 829
+      // linhas (comentário do #7021 acima ficou defasado — outra PR somou
+      // linhas sem atualizar este bloco). Teto bumped de 830→840 com
+      // headroom pequeno.
+      "orchestrator-stage-4.md": 840,
       // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
       // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
       // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser
