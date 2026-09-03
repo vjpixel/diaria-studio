@@ -99,6 +99,27 @@ Logar `window_days` efetiva com `source: "arg" | "default"` pra rastreabilidade 
 
    Interpretar: vazia / "ok" / "sim" → default 4; inteiro N ≥ 1 → `window_days = N`; outra coisa → repetir.
 
+## Passo 1b — Rascunhar respostas a assinantes (§0-replies, #7166/#7168)
+
+**Roda AQUI, no top-level desta sessão — nunca dentro do subprocesso spawnado no Passo 2.** Desde o #5744 os Stages 1-3 rodam num processo `claude -p` próprio (`scripts/run-edition-stages.ts`), que **não tem os conectores nativos claude.ai** (Gmail/Beehiiv/Chrome MCP só existem numa sessão interativa). §0-replies é 100% MCP — tentá-lo lá dentro (mesmo com `pre_gate=true` via `--session-supervised`) sempre falhou por falta de MCP, e é por isso que a seção parou de rodar desde o #5744 sem que ninguém notasse por ~2 semanas (#7166). A partir daqui, `--session-supervised` deixa de ter esse papel — não repassar a intenção de rodar §0-replies pro Passo 2; ela é decidida e executada aqui mesmo.
+
+**Condição pra rodar:** roda **sempre que `--no-gates` NÃO foi passado** à invocação original de `/diaria-edicao` (editor presente) — equivalente a `shouldRunRepliesAtTopLevel(noGatesPassado)` (`scripts/lib/replies-top-level-gate.ts`, travado em teste). Com `--no-gates`: pular a seção inteira — **mesmo pulo, sempre logado**, ver parágrafo de skip abaixo (não existe caso "pular sem log" nesta seção: qualquer skip, por qualquer motivo, loga).
+
+**Quando a condição bate**, seguir os passos 1-5 de `.claude/agents/orchestrator-stage-0-preflight.md` § "0-replies. Rascunhar respostas a assinantes" **exatamente como descritos ali**, com 2 ajustes:
+
+1. **`{EDITION_DIR}`** ainda pode não existir em disco neste ponto (a criação acontece dentro do Stage 1, que só é spawnado no Passo 2 seguinte) — resolver o path via `npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD}` (funciona mesmo pra edição nova, sem exigir que o diretório já exista) e `mkdir -p {EDITION_DIR}/_internal` antes de escrever `captured-replies.json`.
+2. **Query de busca (passo 1 da seção referenciada, #7168):** usar `npx tsx -e "import { buildRepliesSearchQuery } from './scripts/lib/newsletter-reply-addresses.ts'; console.log(buildRepliesSearchQuery())"` em vez da string fixa `to:vjpixel@gmail.com subject:(Re OR Res) newer_than:7d` — a lista de endereços cobre agora `vjpixel@gmail.com`, `oi@news.diar.ia.br` (Kit) e `oi@reativa.diar.ia.br` (Brevo diária), com janela default de 14d. Backend de envio novo → adicionar 1 linha em `KNOWN_NEWSLETTER_REPLY_ADDRESSES` (mesmo arquivo).
+
+**Skip (Gmail MCP indisponível, OU `--no-gates` foi passado): sempre logar antes de pular, nunca em silêncio** (#7166 item B — a causa da regressão de 2 semanas foi justamente um skip que não logou). Rodar diretamente (sem round-trip por `-e`/`join`, que quebraria o quoting do shell na mensagem/JSON de `--details`):
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level info \
+  --message "0-replies skipped: Gmail MCP unavailable" \
+  --details '{"section":"0-replies","reason":"gmail_mcp_unavailable"}'
+```
+(trocar por `"0-replies skipped: headless --no-gates"` / `"no_editor_supervision"` quando o motivo for `--no-gates`). Os textos exatos vêm de `buildRepliesSkipLogArgs()` (`scripts/lib/replies-skip-log.ts`) e estão travados em `test/replies-7166-7168.test.ts` — usar essas strings, não reformular.
+
+**Primeiro efeito real em produção (declarar sempre no PR/anúncio que religa esta seção):** a seção não roda desde 260820 — a 1ª execução em produção processa até 14 dias de replies represadas de uma vez (backlog de assinantes que responderam nesse intervalo, incluindo os já creditados manualmente pro ciclo 2608 conforme `data/raffle-numbers.json`). Isso é seguro por desenho: (a) a seção só cria **rascunhos** no Gmail (`create_draft`, nunca `send`) — o editor revisa/edita/descarta cada um antes de qualquer envio; (b) a alocação de número de sorteio é idempotente por `(ciclo, email, edição)` — replies já creditadas manualmente não recebem número duplicado; (c) replies fora do prazo do concurso continuam sem número, guard já existente. Risco residual: um lote de vários rascunhos aparecendo de uma vez na caixa do editor no 1º run — cosmético, não funcional.
+
 ## Passo 2 — Stages 1-3 em sessões próprias, Stage 4+ no top-level (#5744)
 
 **Rodar PRIMEIRO, antes de ler `orchestrator.md`:**
@@ -111,7 +132,7 @@ npx tsx scripts/run-edition-stages.ts --edition $1 --through 3{ --session-superv
 
 Este comando roda os Stages 1, 2 e 3 **cada um num processo `claude` próprio**. Sessão nova nasce com contexto limpo, o que é o efeito de um `/clear` entre stages — algo que esta sessão não consegue fazer em si mesma (`/clear` é comando de usuário).
 
-**`--session-supervised` (#6719) — sempre que o EDITOR está presente nesta sessão.** Todo spawn deste comando passa `--no-gates` a cada stage (é o que permite o subprocesso terminar sem ninguém ali para responder ao gate INTERNO dele) — mas isso não significa que a sessão é desassistida. Quando a invocação original de `/diaria-edicao` (esta conversa) **não** trazia `--no-gates`, o editor está presente e supervisionando, mesmo que os Stages 1-3 rodem headless por isolamento de contexto (#5744). Passar `--session-supervised` é o que permite `orchestrator-stage-0-preflight.md` § 0-replies (rascunhos do concurso "ache o erro") rodar no Stage 1 spawnado — sem isso a seção fica permanentemente pulada, mesmo com o editor do lado. Omitir esta flag quando `--no-gates` FOI passado a `/diaria-edicao` — aí a sessão é de fato desassistida.
+**`--session-supervised` (#6719) — sempre que o EDITOR está presente nesta sessão.** Todo spawn deste comando passa `--no-gates` a cada stage (é o que permite o subprocesso terminar sem ninguém ali para responder ao gate INTERNO dele) — mas isso não significa que a sessão é desassistida. Quando a invocação original de `/diaria-edicao` (esta conversa) **não** trazia `--no-gates`, o editor está presente e supervisionando, mesmo que os Stages 1-3 rodem headless por isolamento de contexto (#5744). **`--session-supervised` NÃO controla mais `orchestrator-stage-0-preflight.md` § 0-replies (#7166)** — essa seção já rodou no Passo 1b acima, no top-level, antes de qualquer spawn; o Stage 1 spawnado NUNCA tenta § 0-replies, independente desta flag (MCP não existe ali) — `pre_gate` fica sem consumidor dentro do Stage 1 spawnado a partir daqui (§ 0-replies era o único ponto que o lia). Continuar passando a flag é inofensivo (nenhum outro trecho do Stage 1 lê `pre_gate`) e preserva o sinal pra um futuro segundo consumidor; não vale a pena remover a plumbing por um campo vestigial. Omitir esta flag quando `--no-gates` FOI passado a `/diaria-edicao` — aí a sessão é de fato desassistida (comportamento inalterado).
 
 **Por que background e não `timeout:`.** Os três stages somam tipicamente ~40min (na edição 260814: 13min + 34min + 3min). O teto do tool Bash é 600000ms — **10 minutos**, e não há valor maior a passar. Uma chamada síncrona seria cortada no meio em praticamente toda invocação, e o pior não é a demora: cortada, a sessão não recebe nem o resumo nem o exit code, e fica sem saber se o stage em andamento terminou, morreu ou continua rodando órfão. Em background o comando roda até o fim e a sessão é reinvocada quando ele sai.
 
