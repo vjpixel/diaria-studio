@@ -7,7 +7,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1104,5 +1104,75 @@ describe("runTestBatchesParallel (#6877) — integração REAL com fork() (sem s
   it("cleanChildEnv: env sem as chaves NODE_TEST_* não lança, devolve intacto", () => {
     const fakeEnv = { PATH: "/usr/bin" };
     assert.deepEqual(cleanChildEnv(fakeEnv as NodeJS.ProcessEnv), fakeEnv);
+  });
+});
+
+describe("#6783 — marcador contável do flake de módulo", () => {
+  // A issue #6783 registra o 2º data point do flake e pede "mais dados". O
+  // gargalo não era o flake ser raro — era cada ocorrência exigir que alguém
+  // reparasse num log de CI e escrevesse uma issue à mão. Duas em meses.
+  // O marcador torna a contagem um `grep`; estes casos travam o formato,
+  // porque marcador que muda de forma silenciosamente não é contável.
+
+  const MARKER = "RUN_TESTS_MODULE_FLAKE";
+  it("o marcador SAI no stderr quando o retry dispara, com batch, contagem e módulo", () => {
+    // Review do PR #7335 (P2): a 1ª versão deste teste lia o ARQUIVO-FONTE por
+    // substring e conferia que os literais estavam lá. Isso trava a forma do
+    // texto, não o comportamento — interpolação na ordem errada, `culprit`
+    // calculado sobre a variável errada, ou o marcador emitido fora do branch
+    // de retry passariam. E o requisito da #6783 é sobre o que SAI em runtime:
+    // se o grep não achar a linha certa no log do CI, o marcador não serve.
+    // Reescrito no molde do `runTestBatches — retry automático (#6495)` acima,
+    // que já injeta spawn fake e captura o stderr.
+    const escrito: string[] = [];
+    let calls = 0;
+    const exit = runTestBatches({
+      files: ["/a.test.ts"],
+      spawn: (() => {
+        calls++;
+        if (calls === 1) {
+          return {
+            status: 1,
+            stdout: "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/test/novo.test.ts'\nℹ fail 0\n",
+            stderr: "",
+          };
+        }
+        return { status: 0, stdout: "ℹ fail 0\n", stderr: "" };
+      }) as unknown as typeof import("node:child_process").spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: (s: string) => void escrito.push(s) },
+    });
+
+    assert.equal(exit, 0, "retry passou — o cenário é o do flake, não o de falha real");
+    const marcador = escrito.join("").split("\n").find((l) => l.startsWith("RUN_TESTS_MODULE_FLAKE"));
+    assert.ok(marcador, `nenhuma linha começando com ${MARKER} no stderr capturado`);
+    assert.match(marcador, /batch=/);
+    assert.match(marcador, /arquivos=1\b/, "a contagem tem de ser a do batch que falhou");
+    assert.match(marcador, /modulo=\/repo\/test\/novo\.test\.ts/, "o módulo extraído tem de vir do output real");
+  });
+
+  it("sem retry (batch verde), o marcador NÃO aparece — senão a contagem infla", () => {
+    const escrito: string[] = [];
+    runTestBatches({
+      files: ["/a.test.ts"],
+      spawn: (() => ({ status: 0, stdout: "ℹ fail 0\n", stderr: "" })) as unknown as typeof import("node:child_process").spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: (s: string) => void escrito.push(s) },
+    });
+    assert.ok(!escrito.join("").includes(MARKER), "marcador só pode sair quando o retry de fato dispara");
+  });
+
+  it("o regex de extração acha o módulo nas duas formas que o Node emite", () => {
+    // Node varia entre aspas e sem, conforme a versão/caminho do erro.
+    const comAspas = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/test/novo.test.ts' imported from /repo/";
+    const semAspas = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module /repo/test/novo.test.ts imported from /repo/";
+    const RE = /Cannot find module '?([^'\s]+)'?/;
+    assert.equal(RE.exec(comAspas)?.[1], "/repo/test/novo.test.ts");
+    assert.equal(RE.exec(semAspas)?.[1], "/repo/test/novo.test.ts");
+  });
+
+  it("output sem a mensagem de módulo não quebra a extração (cai no fallback)", () => {
+    const RE = /Cannot find module '?([^'\s]+)'?/;
+    assert.equal(RE.exec("qualquer outra falha")?.[1] ?? "(arquivo não identificado no output)", "(arquivo não identificado no output)");
   });
 });

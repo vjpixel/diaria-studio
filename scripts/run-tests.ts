@@ -93,16 +93,49 @@
  * INFRAESTRUTURA do runner, não um teste real falhando (o sumário do
  * `node:test` mostra `fail 0` — nenhuma asserção quebrou, só o `import()`
  * de um arquivo que existe) — então um retry automático do batch específico
- * é seguro (não mascara falha de teste real, porque só dispara quando o
- * `node:test` confirma zero falhas E a assinatura do erro bate). Critério
- * de `shouldRetryBatch` — os TRÊS precisam ser verdadeiros:
+ * é seguro. Critério de `shouldRetryBatch` — os DOIS precisam ser
+ * verdadeiros:
  *   1. o batch falhou (`status !== 0`);
- *   2. o stdout/stderr combinado contém `ERR_MODULE_NOT_FOUND`;
- *   3. o sumário final do `node:test` (reporter `spec`, prefixo `ℹ` — local/
- *      TTY; ou `tap`, prefixo `#` — CI/sem TTY) reporta `fail 0`.
- * Só UM retry por batch — se o 2º run falhar de novo, o batch conta como
- * falha definitiva (nunca mascarar um flake persistente/real como
- * "infraestrutura" indefinidamente).
+ *   2. o stdout/stderr combinado contém `ERR_MODULE_NOT_FOUND`.
+ *
+ * **Havia um 3º critério (`fail 0` no sumário do `node:test`) e ele foi
+ * REMOVIDO no #6857 — ver o docblock de `shouldRetryBatch` para a medição
+ * que o derrubou.** Este parágrafo o descrevia como vigente até o #6783
+ * (03/09/2026), afirmando que o retry "não mascara falha de teste real
+ * porque só dispara quando o `node:test` confirma zero falhas". Essa
+ * garantia deixou de valer no #6857 e o texto continuou aqui — quem lesse
+ * este bloco (o primeiro do arquivo a explicar o retry) sairia com uma
+ * garantia de segurança que o código não dá mais.
+ *
+ * O que de fato protege hoje, sem o `fail 0`: (a) `ERR_MODULE_NOT_FOUND` é
+ * sempre o filho falhando ao resolver um import que o PAI já confirmou
+ * existir, nunca uma asserção quebrada; e (b) **só UM retry por batch** —
+ * se o 2º run falhar de novo, o batch conta como falha definitiva. Uma
+ * falha de teste REAL e determinística no mesmo batch reprova nas duas
+ * corridas — e a falha PASSA ADIANTE, não é escondida. O resíduo honesto é o caso estreito de uma falha real
+ * que seja ELA MESMA intermitente e caia justo no batch que teve o crash de
+ * módulo — aí o retry pode escondê-la. Risco aceito e agora escrito, em vez
+ * de negado por um critério que não existe mais.
+ *
+ * **Marcador contável (#6783).** Quando o retry dispara, sai no stderr uma
+ * linha própria antes da mensagem humana:
+ *
+ *     RUN_TESTS_MODULE_FLAKE batch={label} arquivos={N} modulo={caminho}
+ *
+ * A #6783 registrou o 2º data point do flake e pediu mais dados. O gargalo
+ * nunca foi o flake ser raro — era cada ocorrência exigir que alguém
+ * reparasse num log de CI e escrevesse uma issue à mão; foi assim que se
+ * chegou a 2 em meses. Com o marcador, contar vira:
+ *
+ *     gh run list --workflow=ci.yml --limit 50 --json databaseId -q '.[].databaseId' \
+ *       | while read -r id; do gh run view "$id" --log 2>/dev/null \
+ *           | grep -c RUN_TESTS_MODULE_FLAKE; done
+ *
+ * O MÓDULO que falhou sai junto porque é o dado que separa as hipóteses: as
+ * ocorrências conhecidas foram sempre em arquivo NOVO do próprio PR, e é
+ * isso que sustenta a hipótese líder (glitch do `actions/checkout` em torno
+ * de arquivo recém-materializado). Frequência medida vale mais que a 3ª
+ * anedota.
  *
  * Efeito colateral necessário: `stdio` deixou de ser `"inherit"` e passou a
  * ser capturado (`"pipe"`) — só assim dá pra inspecionar o output ANTES de
@@ -565,8 +598,12 @@ export function processChunkedBatches(
     if ((result.status ?? 1) !== 0) {
       const combined = `${toText(result.stdout)}\n${toText(result.stderr)}`;
       if (shouldRetryBatch(combined, result.status)) {
+        // #6783: marcador estável e greppável — rationale e comando de
+        // contagem no docblock de topo, seção "Retry de ERR_MODULE_NOT_FOUND".
+        const culprit = /Cannot find module '?([^'\s]+)'?/.exec(combined)?.[1] ?? "(arquivo não identificado no output)";
         stderr.write(
-          `\nrun-tests: ${label} com ERR_MODULE_NOT_FOUND (#6495/#6857, erro de infra do runner, não de teste) — retentando UMA vez (${batch.length} arquivos)...\n`,
+          `\nRUN_TESTS_MODULE_FLAKE batch=${label} arquivos=${batch.length} modulo=${culprit}\n` +
+            `run-tests: ${label} com ERR_MODULE_NOT_FOUND (#6495/#6857, erro de infra do runner, não de teste) — retentando UMA vez (${batch.length} arquivos)...\n`,
         );
         const retry = runOne(batch);
         if (retry.error) {
