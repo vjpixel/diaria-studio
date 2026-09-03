@@ -18,26 +18,19 @@ import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { ORCHESTRATOR_FILES } from "../scripts/lib/orchestrator-files.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const AGENTS_DIR = resolve(ROOT, ".claude/agents");
 const SNAPSHOT_PATH = resolve(ROOT, "test/__snapshots__/orchestrator-prompt.snap.json");
 
-const ORCHESTRATOR_FILES = [
-  "orchestrator.md",
-  "orchestrator-stage-0-preflight.md",
-  "orchestrator-stage-1-research.md",
-  "orchestrator-stage-2.md",
-  "orchestrator-stage-3.md",
-  "orchestrator-stage-4.md",
-  "orchestrator-stage-5.md",
-  // #4574: orchestrator-stage-6.md nunca tinha sido incluído aqui (gap
-  // pré-existente, não introduzido pela PR que fechou o gap — ver stage-6.ts
-  // e o achado do review consolidado #4574) — o Stage 6 tem o mecanismo mais
-  // crítico do pipeline (guard GATE-BLOCKING de slug do bloco WhatsApp,
-  // #4570) e não tinha NENHUMA cobertura de snapshot/invariante-de-conteúdo.
-  "orchestrator-stage-6.md",
-];
+// ORCHESTRATOR_FILES agora vive em scripts/lib/orchestrator-files.ts (#7277)
+// — fonte única compartilhada com scripts/which-set-guards.ts (SET_GUARDS),
+// que precisa da MESMA lista pra apontar este teste quando um subagente
+// edita qualquer orchestrator-stage-*.md sem tocar este arquivo. Histórico
+// de por que "orchestrator-stage-6.md" está aqui: #4574 (era um gap
+// pré-existente — Stage 6 tem o guard GATE-BLOCKING de slug do WhatsApp,
+// #4570, e não tinha cobertura de snapshot nenhuma antes daquela PR).
 
 /** Invariants that must be present in the combined orchestrator content. */
 const REQUIRED_INVARIANTS = [

@@ -19,6 +19,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SET_GUARDS, matchingSetGuards, formatReport } from "../scripts/which-set-guards.ts";
 import { matchesGlob } from "../scripts/lib/sensitive-path-guard.ts";
+import { ORCHESTRATOR_FILES } from "../scripts/lib/orchestrator-files.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -92,6 +93,40 @@ describe("matchingSetGuards — um path por regra", () => {
     assert.ok(lib.hits.some((h) => h.ruleId === "lib-boundary"));
     const studioUi = matchingSetGuards(["scripts/studio-ui/dashboard-diaria.ts"]);
     assert.ok(studioUi.hits.some((h) => h.ruleId === "lib-boundary"));
+  });
+
+  it("orchestrator-prompt-snapshot: .claude/agents/orchestrator-stage-*.md (#7277)", () => {
+    const report = matchingSetGuards(["scripts/lib/orchestrator-files.ts"]);
+    // scripts/lib/orchestrator-files.ts em si não é um orchestrator-stage-*.md
+    // (é o módulo que LISTA eles) — não deve casar com este guard.
+    assert.equal(report.hits.some((h) => h.ruleId === "orchestrator-prompt-snapshot"), false);
+  });
+});
+
+describe("regressão do #7277 — orchestrator-stage-*.md dispara o guard de snapshot (#634)", () => {
+  it("orchestrator-stage-4.md sozinho aponta test/orchestrator-prompt.test.ts (repro literal da issue)", () => {
+    const report = matchingSetGuards([".claude/agents/orchestrator-stage-4.md"]);
+    assert.equal(report.triggered, true, "which-set-guards não pode dizer 'nenhum guard afetado' aqui");
+    assert.ok(report.hits.some((h) => h.ruleId === "orchestrator-prompt-snapshot"));
+    assert.ok(
+      report.testFilesToRun.includes("test/orchestrator-prompt.test.ts"),
+      "precisa apontar o teste de snapshot do orchestrator a rodar",
+    );
+  });
+
+  it("cobre orchestrator.md (raiz, sem hífen) e todos os orchestrator-stage-{0..6}", () => {
+    for (const file of ORCHESTRATOR_FILES) {
+      const report = matchingSetGuards([`.claude/agents/${file}`]);
+      assert.ok(
+        report.hits.some((h) => h.ruleId === "orchestrator-prompt-snapshot"),
+        `.claude/agents/${file} devia disparar orchestrator-prompt-snapshot`,
+      );
+    }
+  });
+
+  it("arquivo de agent que NÃO é orchestrator não dispara o guard (pattern não vira catch-all)", () => {
+    const report = matchingSetGuards([".claude/agents/writer-destaque.md"]);
+    assert.equal(report.hits.some((h) => h.ruleId === "orchestrator-prompt-snapshot"), false);
   });
 });
 
