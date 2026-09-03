@@ -31,25 +31,25 @@ Gere o plano (URLs + e-mails de teste dos 3 braços — o gerador é
 backend-agnóstico, não mudou no #7359):
 
 ```
-npx tsx scripts/print-preflight-plan.ts --campaign preflight-2609
+npx tsx scripts/print-preflight-plan.ts --campaign preflight-2608
 ```
 
-Saída (exemplo, campanha `preflight-2609`):
+Saída (exemplo, campanha `preflight-2608`):
 
 ```
-Plano de preflight — campanha "preflight-2609"
+Plano de preflight — campanha "preflight-2608"
 
 [google-ads]
-  URL:   https://diar.ia.br/?utm_source=google-ads&utm_medium=cpc&utm_campaign=preflight-2609
-  email: vjpixel+test-preflight-google-ads-preflight-2609@gmail.com
+  URL:   https://diar.ia.br/?utm_source=google-ads&utm_medium=cpc&utm_campaign=preflight-2608
+  email: vjpixel+test-preflight-google-ads-preflight-2608@gmail.com
 
 [microsoft-ads]
-  URL:   https://diar.ia.br/?utm_source=microsoft-ads&utm_medium=cpc&utm_campaign=preflight-2609
-  email: vjpixel+test-preflight-microsoft-ads-preflight-2609@gmail.com
+  URL:   https://diar.ia.br/?utm_source=microsoft-ads&utm_medium=cpc&utm_campaign=preflight-2608
+  email: vjpixel+test-preflight-microsoft-ads-preflight-2608@gmail.com
 
 [meta-ads]
-  URL:   https://diar.ia.br/?utm_source=meta-ads&utm_medium=paid_social&utm_campaign=preflight-2609
-  email: vjpixel+test-preflight-meta-ads-preflight-2609@gmail.com
+  URL:   https://diar.ia.br/?utm_source=meta-ads&utm_medium=paid_social&utm_campaign=preflight-2608
+  email: vjpixel+test-preflight-meta-ads-preflight-2608@gmail.com
 ```
 
 Guarde essa saída à mão — os 3 pares URL/e-mail são usados nos passos 1-6
@@ -143,7 +143,7 @@ avaliar todos de uma vez.
    avaliado de forma binária, sem ler JSON à mão — lê o Kit desde o #7359):
 
    ```
-   npx tsx scripts/verify-utm-attribution.ts --campaign preflight-2609
+   npx tsx scripts/verify-utm-attribution.ts --campaign preflight-2608
    ```
 
    Exit code `0` = os 3 braços PASSARAM (`fields.utm_source` exato +
@@ -157,7 +157,7 @@ avaliar todos de uma vez.
    — sem isso eles contaminam `leitor-v1`/custo-por-leitor):
 
    ```
-   npx tsx scripts/cleanup-preflight-subscribers.ts --campaign preflight-2609 --push
+   npx tsx scripts/cleanup-preflight-subscribers.ts --campaign preflight-2608 --push
    ```
 
    Idempotente — rodar de novo (com ou sem `--push`) depois de já ter

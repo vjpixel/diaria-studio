@@ -32,9 +32,9 @@
  * #7359) — `GET /v4/subscribers?email_address=...&status=all`.
  *
  * Uso:
- *   npx tsx scripts/verify-utm-attribution.ts --campaign preflight-2609
- *   npx tsx scripts/verify-utm-attribution.ts --campaign preflight-2609 --json
- *   npx tsx scripts/verify-utm-attribution.ts --campaign preflight-2609 --base-email outro@ex.com
+ *   npx tsx scripts/verify-utm-attribution.ts --campaign preflight-2608
+ *   npx tsx scripts/verify-utm-attribution.ts --campaign preflight-2608 --json
+ *   npx tsx scripts/verify-utm-attribution.ts --campaign preflight-2608 --base-email outro@ex.com
  *
  * Exit codes: 0 = todos os 3 braços PASSARAM; 1 = ao menos 1 FALHOU;
  * 2 = config/argumento inválido.
@@ -138,10 +138,10 @@ export function formatVerdictTable(verdicts: ArmVerdict[]): string {
 
 if (isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2);
-  const campaign = getStringArg(argv, "campaign", { example: "preflight-2609" });
+  const campaign = getStringArg(argv, "campaign", { example: "preflight-2608" });
   if (!campaign) {
     process.stderr.write(
-      `[verify-utm-attribution] --campaign é obrigatório (ex: --campaign preflight-2609)\n`,
+      `[verify-utm-attribution] --campaign é obrigatório (ex: --campaign preflight-2608)\n`,
     );
     process.exit(2);
   }

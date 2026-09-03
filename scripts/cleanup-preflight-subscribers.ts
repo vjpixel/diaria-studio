@@ -31,8 +31,8 @@
  * escrita); `--push` executa de verdade.
  *
  * Uso:
- *   npx tsx scripts/cleanup-preflight-subscribers.ts --campaign preflight-2609          # dry-run
- *   npx tsx scripts/cleanup-preflight-subscribers.ts --campaign preflight-2609 --push    # executa
+ *   npx tsx scripts/cleanup-preflight-subscribers.ts --campaign preflight-2608          # dry-run
+ *   npx tsx scripts/cleanup-preflight-subscribers.ts --campaign preflight-2608 --push    # executa
  *
  * `--email` (herdado do #5736, endurecimento): limpa UM endereço avulso
  * passado literalmente, sem exigir `--campaign` nem que o e-mail bata o
@@ -123,7 +123,7 @@ export function formatResultsTable(results: CleanupResult[], push: boolean): str
 
 if (isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2);
-  const campaign = getStringArg(argv, "campaign", { example: "preflight-2609" });
+  const campaign = getStringArg(argv, "campaign", { example: "preflight-2608" });
   const adhocEmail = getStringArg(argv, "email", { example: "vjpixel+preflightgoogle@gmail.com" });
 
   if (campaign && adhocEmail) {
@@ -132,7 +132,7 @@ if (isMainModule(import.meta.url)) {
   }
   if (!campaign && !adhocEmail) {
     process.stderr.write(
-      `[cleanup-preflight-subscribers] passe --campaign preflight-2609 (os 3 e-mails do plano) OU --email um@endereco.avulso (#5736, e-mail fora do padrão)\n`,
+      `[cleanup-preflight-subscribers] passe --campaign preflight-2608 (os 3 e-mails do plano) OU --email um@endereco.avulso (#5736, e-mail fora do padrão)\n`,
     );
     process.exit(2);
   }
