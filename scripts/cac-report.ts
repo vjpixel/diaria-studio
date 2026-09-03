@@ -53,8 +53,9 @@
  * Serve pra confirmar QUE o cadastro pago aparece — não pra ranquear custo
  * por leitor lado a lado com a tabela Beehiiv (paridade de funil fica pra
  * quando/se `subscriber_backend` migrar de verdade). Fail-soft: sem
- * `KIT_API_KEY` ou com a API do Kit fora do ar, a seção é omitida com um
- * aviso — nunca derruba o relatório Beehiiv.
+ * `KIT_API_KEY` ou com a API do Kit fora do ar, a seção continua aparecendo
+ * com um aviso explicando o motivo (nunca desaparece em silêncio) — nunca
+ * derruba o relatório Beehiiv. Só `--no-kit` omite a seção por completo.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

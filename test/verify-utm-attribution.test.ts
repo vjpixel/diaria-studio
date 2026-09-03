@@ -52,7 +52,7 @@ describe("evaluateArm (#5545, Kit desde #7359)", () => {
     assert.equal(v.found_utm_source, null);
   });
 
-  it("FALHOU quando fields ausente por completo (sem attribution.utm_source como fallback — Kit nunca populariza isso via API)", () => {
+  it("FALHOU quando fields ausente por completo (evaluateArm só lê fields, nunca attribution — Kit nunca popula attribution.utm_source via API)", () => {
     const sub = kitSub();
     const v = evaluateArm(googleAdsPlan, CAMPAIGN, sub);
     assert.equal(v.passed, false);
