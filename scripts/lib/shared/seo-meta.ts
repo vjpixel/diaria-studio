@@ -60,6 +60,47 @@ export function renderAnalyticsHead(): string {
   return `<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','${GTM_CONTAINER_ID}');</script>`;
 }
 
+/**
+ * Nome do evento de `dataLayer` que sinaliza cadastro concluído (#7358).
+ * Não é um nome novo/inventado — é o contrato JÁ documentado em
+ * `docs/gtm-signup-tracking-setup.md` (#5546): o trigger GTM "CE - Cadastro
+ * Concluido (signedUp)" (Custom Event, filtro `{{_event}} equals 'signedUp'`)
+ * já existe no material de importação daquela issue, espelhando o contrato
+ * que a Beehiiv (Website Builder legado) documentava (`signedUp` +
+ * `eventProps.email`). Reusar o mesmo nome aqui deixa esse trigger já
+ * desenhado funcionar pros nossos próprios forms sem precisar de um 2º
+ * trigger/reimportação de container — só falta repontar a tag de conversão
+ * do Google Ads pra ele (ação do editor, fora do escopo desta issue).
+ */
+export const SIGNUP_CONVERSION_EVENT_NAME = "signedUp";
+
+/**
+ * Snippet JS que empurra o evento de conversão pro `dataLayer` no SUCESSO
+ * (200 + `ok`) de um cadastro (#7358) — o gatilho vivo das tags de conversão
+ * (Google Ads/Meta/Microsoft) era Form Submission por RegEx dos Form IDs do
+ * Website Builder da Beehiiv, mortos desde o cutover do apex (26/08); nenhum
+ * form deste repo emitia `dataLayer.push` nenhum. `emailExpr` é uma
+ * expressão JS (não uma string estática) que resolve pro e-mail já validado
+ * no escopo de onde o snippet é inlined (ex: a variável local `email` de
+ * cada form) — nunca chamar isto no sucesso de uma VERIFICAÇÃO (ex:
+ * `/gate/verify` em `workers/cursos/src/gate-page.ts`), só no sucesso de um
+ * CADASTRO novo (`/gate/subscribe`, `/jogar/subscribe` etc.) — ver decisão
+ * do editor na #7358 item 2 (verificação de assinante já ativo não é
+ * conversão nova). `window.dataLayer = window.dataLayer || []` reproduz o
+ * mesmo guard do próprio snippet do GTM (`renderAnalyticsHead`) — necessário
+ * porque nem toda página que chama isto carrega o GTM ANTES deste script
+ * (ordem de carregamento não é garantida, e a `/assinar` do apex não tinha
+ * GTM nenhum até esta issue). O `try/catch` envolvendo o `push` (achado do
+ * fleet review pré-merge da #7358/#7361) garante que uma falha na tracking
+ * (ex: extensão de privacidade que congela `window.dataLayer`, script de
+ * terceiro hostil) nunca vaze pro `.catch()` genérico do form — que foi
+ * escrito só pra erro de rede — e faça o usuário ver "Erro de conexão" com o
+ * cadastro já tendo sido feito com sucesso no servidor.
+ */
+export function pushSignupConversionEventJs(emailExpr: string): string {
+  return `try { window.dataLayer = window.dataLayer || []; window.dataLayer.push({ event: ${JSON.stringify(SIGNUP_CONVERSION_EVENT_NAME)}, eventProps: { email: ${emailExpr} } }); } catch (e) {}`;
+}
+
 export interface SeoMetaOptions {
   /** Título da página — reusado em og:title / twitter:title. */
   title: string;

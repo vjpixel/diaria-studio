@@ -105,13 +105,17 @@ function scriptBody(raw: string): string {
   return raw.replace(/^\s*<script>/, "").replace(/<\/script>\s*$/, "");
 }
 
-/** Extrai o corpo JS do ÚNICO `<script>…</script>` de um documento HTML
- * completo (usado por `buildAssinarHtml()`, que não expõe o script como
- * função separada — a página inteira é um único template literal). */
+/** Extrai o corpo JS do `<script>…</script>` que faz o wiring do form, de
+ * dentro de um documento HTML completo (usado por `buildAssinarHtml()`, que
+ * não expõe o script como função separada — a página inteira é um único
+ * template literal). #7358 acrescentou o container GTM (`renderAnalyticsHead()`)
+ * no `<head>` — é o 1º `<script>` do documento agora, então localizar pelo
+ * conteúdo (`getElementById('assinar-form')`) em vez de pegar o 1º match. */
 function scriptBodyFromFullHtml(html: string): string {
-  const match = html.match(/<script>([\s\S]*?)<\/script>/);
-  if (!match) throw new Error("nenhum <script> encontrado no HTML");
-  return match[1];
+  const scripts = html.match(/<script>[\s\S]*?<\/script>/g) ?? [];
+  const target = scripts.find((s) => s.includes("assinar-form"));
+  if (!target) throw new Error("nenhum <script> com o wiring de #assinar-form encontrado no HTML");
+  return target.replace(/^<script>/, "").replace(/<\/script>$/, "");
 }
 
 describe("inlineSignupScript() — timeout do fetch (#6981)", () => {

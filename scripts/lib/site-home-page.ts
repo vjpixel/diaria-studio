@@ -32,7 +32,7 @@ import { HUB_META } from "../../workers/arquivo/src/hubs/meta.ts";
 import { COLORS } from "./shared/design-tokens.ts";
 import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
 import { GEO_AUTHOR } from "./shared/geo-faq.ts";
-import { renderAnalyticsHead } from "./shared/seo-meta.ts"; // #6977: container GTM/GA4 — apex era o único host servido por Worker nosso sem instrumentação
+import { renderAnalyticsHead, pushSignupConversionEventJs } from "./shared/seo-meta.ts"; // #6977: container GTM/GA4 — apex era o único host servido por Worker nosso sem instrumentação; #7358: evento de conversão no sucesso do cadastro
 
 /**
  * Converte um hex `#RRGGBB` do DS pra `rgba(r,g,b,alpha)` — usado só pra
@@ -430,7 +430,7 @@ function renderSignupForm(opts: { id: string; onDark?: boolean }): string {
     </span>
     <label class="signup-optin">
       <input type="checkbox" name="optin" value="on" required>
-      <span>Aceito receber a diar.ia.br por e-mail.</span>
+      <span>Aceito receber a diar.ia.br por e-mail. Veja a <a href="https://arquivo.diar.ia.br/privacidade">política de privacidade</a>.</span>
     </label>
     <p class="signup-status" role="status" aria-live="polite"></p>
   </form>`;
@@ -618,6 +618,9 @@ export function signupFormScript(): string {
           })
           .then(function (r) {
             if (r.status === 200 && r.body && r.body.ok) {
+              // #7358: evento de conversão pro GTM — só no sucesso REAL do
+              // cadastro, com o e-mail já validado acima.
+              ${pushSignupConversionEventJs("email")}
               form.reset();
               setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
               // #6979 achado 4: mesmo tratamento de sucesso de /assinar —
@@ -822,6 +825,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
 .signup-optin { display: flex; gap: 6px; align-items: flex-start; margin-top: 8px; font-size: 11px; line-height: 1.35; color: var(--ink-faint); }
 .signup-optin input { margin-top: 2px; flex-shrink: 0; }
+.signup-optin a { text-decoration: underline; text-underline-offset: 2px; }
 .signup--dark .signup-optin { color: rgba(244,239,226,0.55); }
 .signup-status { margin-top: 8px; font-size: 12px; display: none; }
 .signup-status.ok { color: var(--teal-deep); display: block; }
@@ -1092,7 +1096,7 @@ ${faqItems}
       <hr class="rule">
       <div class="footer-bottom">
         <span>&copy; ${new Date().getUTCFullYear()} diar.ia.br · São Paulo, Brasil</span>
-        <span><a href="https://eia.diar.ia.br/leaderboard">É IA?</a><a href="https://arquivo.diar.ia.br/">Arquivo</a><a href="https://especial.diar.ia.br/">Especial</a></span>
+        <span><a href="https://eia.diar.ia.br/leaderboard">É IA?</a><a href="https://arquivo.diar.ia.br/">Arquivo</a><a href="https://especial.diar.ia.br/">Especial</a><a href="https://arquivo.diar.ia.br/privacidade">Privacidade</a></span>
       </div>
     </div>
   </footer>

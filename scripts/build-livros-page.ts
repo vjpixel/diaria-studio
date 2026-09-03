@@ -66,7 +66,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { slugify } from "./lib/slug.ts"; // #3118 item 6: alinha data-themes/option value ao padrão de build-cursos-page.ts
 import { escHtml as esc } from "./lib/html-escape.ts"; // #3118 item 13: era uma 3ª cópia idêntica local
-import { renderSeoMeta, renderAnalyticsHead } from "./lib/shared/seo-meta.ts"; // #3106: meta description/OG/Twitter/canonical/favicon; #5498: container GTM
+import { renderSeoMeta, renderAnalyticsHead, pushSignupConversionEventJs } from "./lib/shared/seo-meta.ts"; // #3106: meta description/OG/Twitter/canonical/favicon; #5498: container GTM; #7358: evento de conversão no sucesso do cadastro
 import {
   renderCuradoriaRootStyles,
   renderCuradoriaHeaderStyles,
@@ -274,7 +274,7 @@ function renderSubscribeCta(v: SubscribeCtaVariant, variantClass: "hero" | "end"
           <p class="cta-text">${esc(v.heading)}</p>
           <label class="cta-field"><input type="email" name="email" placeholder="seu@email.com" aria-label="E-mail" autocomplete="email" maxlength="254" required></label>
           <div class="cta-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
-          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail.</label>
+          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail. Veja a <a href="https://arquivo.diar.ia.br/privacidade">política de privacidade</a>.</label>
           <button type="submit" class="cta-submit">Assinar a diar.ia.br (grátis)</button>
           <p class="cta-status" role="status" aria-live="polite" hidden></p>
         </form>
@@ -346,6 +346,9 @@ export function renderSubscribeCtaScript(): string {
           return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
         }).then(function (r) {
           if (r.status === 200 && r.body && r.body.ok) {
+            // #7358: evento de conversão pro GTM — só no sucesso REAL do
+            // cadastro, com o e-mail já validado acima.
+            ${pushSignupConversionEventJs("email")}
             form.reset();
             setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
             var fields = form.querySelectorAll("input, button");

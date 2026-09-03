@@ -10,7 +10,7 @@
  * (esta é uma única página curta, não vale o import cruzado scripts/→worker
  * só por CSS).
  */
-import { renderAnalyticsHead } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM
+import { renderAnalyticsHead, pushSignupConversionEventJs } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM; #7358: evento de conversão no sucesso do CADASTRO (nunca da verificação)
 
 export function renderGatePage(): string {
   return `<!DOCTYPE html>
@@ -53,7 +53,7 @@ ${renderAnalyticsHead()}
       <input type="text" name="website" class="website" tabindex="-1" autocomplete="off">
       <div class="optin" id="optin-row" style="display:none">
         <input type="checkbox" id="optin" name="optin">
-        <label for="optin" style="font-weight:400">Quero receber a diar.ia.br (5 minutos diários sobre IA) por e-mail.</label>
+        <label for="optin" style="font-weight:400">Quero receber a diar.ia.br (5 minutos diários sobre IA) por e-mail. Veja a <a href="https://arquivo.diar.ia.br/privacidade">política de privacidade</a>.</label>
       </div>
       <button type="submit" id="submit-btn">Desbloquear</button>
       <p class="msg" id="msg" role="status"></p>
@@ -119,7 +119,13 @@ ${renderAnalyticsHead()}
     }).then(function (res) { return res.json().then(function (data) { return { status: res.status, data: data }; }); })
       .then(function (r) {
         btn.disabled = false;
-        if (r.data && r.data.ok) { setMsg('Assinatura confirmada! Redirecionando…', 'ok'); window.location.href = '/'; return; }
+        if (r.data && r.data.ok) {
+          // #7358: evento de conversão pro GTM — só aqui, no sucesso do
+          // CADASTRO (/gate/subscribe), nunca no ramo 'verify' acima
+          // (assinante já ativo confirmando e-mail não é conversão nova).
+          ${pushSignupConversionEventJs("email")}
+          setMsg('Assinatura confirmada! Redirecionando…', 'ok'); window.location.href = '/'; return;
+        }
         if (r.status === 429) { setMsg('Muitas tentativas. Tente novamente em alguns minutos.', 'error'); return; }
         if (r.data && r.data.error === 'subscribe_unavailable') { setMsg('Cadastro indisponível no momento — assine em diar.ia.br.', 'error'); return; }
         setMsg('Não foi possível concluir. Tente novamente.', 'error');

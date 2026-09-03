@@ -34,6 +34,7 @@ import { escHtml } from "../html-escape.ts"; // reusa o escaper canônico (tamb�
 import { DIARIA_EIA_URL, DIARIA_ARQUIVO_URL, DIARIA_ESPECIAL_URL } from "../canonical-urls.ts"; // #3904/#5121/#5126 — fonte única dos domínios de marca de "É IA?"/Arquivo/Especial
 import { applyBrandWordmark } from "./brand-wordmark.ts"; // #4797 — wordmark da marca na linha de crédito do rodapé (compartilhada por hub/livros/cursos/arquivo)
 import { SIGNUP_FORM_FETCH_TIMEOUT_MS } from "../site-home-page.ts"; // #6981: mesmo timeout do form da home (#6979) — reusa a constante em vez de escolher outro número
+import { pushSignupConversionEventJs } from "./seo-meta.ts"; // #7358: evento de conversão no sucesso do cadastro — todo consumidor deste script (arquivo, hub, entity; livros/cursos têm cópia local própria, ver build-livros-page.ts/gate-page.ts) já carrega o container GTM via renderAnalyticsHead
 
 const TEAL = COLORS.brand;
 const INK = COLORS.ink;
@@ -144,6 +145,7 @@ export function renderCuradoriaCtaSubscribeStyles(): string {
   .cta-subscribe .cta-field input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 2px; font-size: 15px; font-family: ${SANS}; color: var(--ink); background: var(--paper); }
   .cta-subscribe .cta-optin { display: block; margin: 4px 0 14px; font-size: 13px; font-family: ${SANS}; line-height: 1.4; }
   .cta-subscribe .cta-optin input { margin-right: 8px; }
+  .cta-subscribe .cta-optin a { text-decoration: underline; text-underline-offset: 2px; }
   .cta-subscribe .cta-hp { position: absolute !important; left: -9999px !important; width: 1px; height: 1px; overflow: hidden; }
   .cta-subscribe .cta-submit { display: inline-block; padding: 11px 22px; background: var(--teal); color: #fff; border: none; border-radius: 2px; font-weight: 700; cursor: pointer; font-size: 15px; font-family: ${SANS}; }
   .cta-subscribe .cta-submit:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -192,7 +194,7 @@ export function renderCuradoriaCtaSubscribeForm(
           <p class="cta-text">${escHtml(v.heading)}</p>
           <label class="cta-field"><input type="email" name="email" placeholder="seu@email.com" aria-label="E-mail" autocomplete="email" maxlength="254" required></label>
           <div class="cta-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
-          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail.</label>
+          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail. Veja a <a href="${DIARIA_ARQUIVO_URL}/privacidade">política de privacidade</a>.</label>
           <button type="submit" class="cta-submit">Assinar a diar.ia.br (grátis)</button>
           <p class="cta-status" role="status" aria-live="polite" hidden></p>
         </form>
@@ -260,6 +262,9 @@ export function renderCuradoriaCtaSubscribeScript(): string {
           return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
         }).then(function (r) {
           if (r.status === 200 && r.body && r.body.ok) {
+            // #7358: evento de conversão pro GTM — só no sucesso REAL do
+            // cadastro, com o e-mail já validado acima.
+            ${pushSignupConversionEventJs("email")}
             form.reset();
             setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
             var fields = form.querySelectorAll("input, button");
@@ -322,6 +327,7 @@ export const CURADORIA_NAV_LINKS: readonly CuradoriaNavLink[] = [
   { label: "É IA?", url: `${DIARIA_EIA_URL}/leaderboard` }, // #3904: domínio de marca (era poll.diaria.workers.dev)
   { label: "Arquivo", url: `${DIARIA_ARQUIVO_URL}/` }, // #5121: acervo de edições + hubs temáticos
   { label: "Especial", url: `${DIARIA_ESPECIAL_URL}/` }, // #5126: artigos especiais avulsos (raiz = índice)
+  { label: "Privacidade", url: `${DIARIA_ARQUIVO_URL}/privacidade` }, // #7361: nenhuma das superfícies que coletam e-mail linkava a política
 ];
 
 /**

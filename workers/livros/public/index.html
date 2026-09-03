@@ -83,6 +83,7 @@
   .cta-subscribe .cta-field input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 2px; font-size: 15px; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; color: var(--ink); background: var(--paper); }
   .cta-subscribe .cta-optin { display: block; margin: 4px 0 14px; font-size: 13px; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; line-height: 1.4; }
   .cta-subscribe .cta-optin input { margin-right: 8px; }
+  .cta-subscribe .cta-optin a { text-decoration: underline; text-underline-offset: 2px; }
   .cta-subscribe .cta-hp { position: absolute !important; left: -9999px !important; width: 1px; height: 1px; overflow: hidden; }
   .cta-subscribe .cta-submit { display: inline-block; padding: 11px 22px; background: var(--teal); color: #fff; border: none; border-radius: 2px; font-weight: 700; cursor: pointer; font-size: 15px; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
   .cta-subscribe .cta-submit:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -134,7 +135,7 @@
           <p class="cta-text">Gostou da curadoria? Assine a diar.ia.br e receba tutoriais e notícias de IA todo dia, sem enrolação.</p>
           <label class="cta-field"><input type="email" name="email" placeholder="seu@email.com" aria-label="E-mail" autocomplete="email" maxlength="254" required></label>
           <div class="cta-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
-          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail.</label>
+          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail. Veja a <a href="https://arquivo.diar.ia.br/privacidade">política de privacidade</a>.</label>
           <button type="submit" class="cta-submit">Assinar a diar.ia.br (grátis)</button>
           <p class="cta-status" role="status" aria-live="polite" hidden></p>
         </form>
@@ -455,7 +456,7 @@
           <p class="cta-text">Chegou até aqui? Assine a diar.ia.br — 5 minutos por dia com o que importa em IA.</p>
           <label class="cta-field"><input type="email" name="email" placeholder="seu@email.com" aria-label="E-mail" autocomplete="email" maxlength="254" required></label>
           <div class="cta-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
-          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail.</label>
+          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail. Veja a <a href="https://arquivo.diar.ia.br/privacidade">política de privacidade</a>.</label>
           <button type="submit" class="cta-submit">Assinar a diar.ia.br (grátis)</button>
           <p class="cta-status" role="status" aria-live="polite" hidden></p>
         </form>
@@ -497,7 +498,7 @@
   </section>
     </div>
   </main>
-  <footer><div class="wrap"><p class="foot-nav"><a href="https://diar.ia.br?utm_source=livros&amp;utm_medium=footer-nav">diar.ia.br</a> · <a href="https://cursos.diar.ia.br/">Cursos</a> · <a href="https://livros.diar.ia.br/">Livros</a> · <a href="https://eia.diar.ia.br/leaderboard">É IA?</a> · <a href="https://arquivo.diar.ia.br/">Arquivo</a> · <a href="https://especial.diar.ia.br/">Especial</a></p><p class="foot-credit"><strong>diar<span style="color:#00A0A0">.</span>ia<span style="color:#00A0A0">.br</span></strong> — curadoria de livros sobre IA</p></div></footer>
+  <footer><div class="wrap"><p class="foot-nav"><a href="https://diar.ia.br?utm_source=livros&amp;utm_medium=footer-nav">diar.ia.br</a> · <a href="https://cursos.diar.ia.br/">Cursos</a> · <a href="https://livros.diar.ia.br/">Livros</a> · <a href="https://eia.diar.ia.br/leaderboard">É IA?</a> · <a href="https://arquivo.diar.ia.br/">Arquivo</a> · <a href="https://especial.diar.ia.br/">Especial</a> · <a href="https://arquivo.diar.ia.br/privacidade">Privacidade</a></p><p class="foot-credit"><strong>diar<span style="color:#00A0A0">.</span>ia<span style="color:#00A0A0">.br</span></strong> — curadoria de livros sobre IA</p></div></footer>
 <script>
   (function () {
     // #3118 item 6: mapa slug→label completo — data-themes/option value agora
@@ -599,6 +600,9 @@
           return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
         }).then(function (r) {
           if (r.status === 200 && r.body && r.body.ok) {
+            // #7358: evento de conversão pro GTM — só no sucesso REAL do
+            // cadastro, com o e-mail já validado acima.
+            try { window.dataLayer = window.dataLayer || []; window.dataLayer.push({ event: "signedUp", eventProps: { email: email } }); } catch (e) {}
             form.reset();
             setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
             var fields = form.querySelectorAll("input, button");

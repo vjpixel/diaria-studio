@@ -47,8 +47,11 @@ describe("#5262 — GET /privacidade no Worker arquivo", () => {
 
   it("nomeia os terceiros que de fato processam dado de leitor", () => {
     const html = renderPrivacyPage();
-    for (const vendor of ["Beehiiv", "Brevo", "MillionVerifier", "Cloudflare", "Google"]) {
-      assert.match(html, new RegExp(vendor), `política não cita ${vendor}`);
+    // #7361: Kit é o processador real de 100% dos cadastros novos hoje, e
+    // Meta/Microsoft são plataformas de anúncio que recebem confirmação de
+    // cadastro (evento de conversão) — nenhum dos 3 era citado.
+    for (const vendor of ["Beehiiv", "Kit", "Brevo", "MillionVerifier", "Cloudflare", "Google", "Meta", "Microsoft"]) {
+      assert.match(html, new RegExp(`\\b${vendor}\\b`), `política não cita ${vendor}`);
     }
   });
 });
