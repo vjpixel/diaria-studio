@@ -48,8 +48,10 @@ import {
   productionDeps,
   createExecFileSyncLockRunner,
   needsShellForNpx,
+  writeSitePageState,
   EditionInputsInvalid,
   type PublishPageDeps,
+  type PublishPageResult,
   type GitRunner,
   type GhRunner,
   type LockRunner,
@@ -562,14 +564,27 @@ describe("#6202 readEditionInputs — implementação REAL contra fixture (regre
 });
 
 describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push direto em master", () => {
-  /** git de teste com defaults sãos (branch master, sem staged alheio, status limpo). */
+  /**
+   * git de teste com defaults sãos (branch master, HEAD == origin/master —
+   * guard do #7287 passa por padrão —, sem staged alheio, status limpo).
+   * `rev-parse` tem 2 formas de chamada desde o #7287: `--abbrev-ref HEAD`
+   * (nome da branch, só usado pro checkout de volta) e `HEAD origin/master`
+   * (1 chamada, 2 revs — o guard em si). Um override para a chave
+   * `"rev-parse"` recebe TODAS as chamadas de rev-parse (a função decide
+   * com base em `args`), pra permitir simular as duas formas com valores
+   * diferentes quando o teste precisar.
+   */
   function makeGit(overrides: Partial<Record<string, (args: string[]) => string>> = {}) {
     const calls: string[][] = [];
     const git: GitRunner = (args) => {
       calls.push(args);
       const cmd = args[0];
       if (overrides[cmd]) return overrides[cmd]!(args);
-      if (cmd === "rev-parse") return "master\n";
+      if (cmd === "rev-parse") {
+        if (args[1] === "--abbrev-ref") return "master\n";
+        // `rev-parse HEAD origin/master`: mesmo commit por padrão — guard passa.
+        return "deadbeef\ndeadbeef\n";
+      }
       if (cmd === "status") return "";
       if (cmd === "diff") return "";
       return "";
@@ -604,11 +619,15 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
     assert.equal(r.prUrl, "https://github.com/vjpixel/diaria-studio/pull/9999");
     assert.deepEqual(
       calls.map((c) => c[0]),
-      ["rev-parse", "checkout", "add", "status", "diff", "commit", "push", "checkout"],
+      // #7287: 2 rev-parse agora — abbrev-ref (nome, pro checkout de volta) +
+      // HEAD/origin-master (o guard em si, por commit).
+      ["rev-parse", "rev-parse", "checkout", "add", "status", "diff", "commit", "push", "checkout"],
     );
     const revParseCall = calls[0];
+    const guardCall = calls[1];
     const checkoutBack = calls[calls.length - 1];
     assert.deepEqual(revParseCall, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert.deepEqual(guardCall, ["rev-parse", "HEAD", "origin/master"]);
     assert.deepEqual(checkoutBack, ["checkout", "master"]);
   });
 
@@ -656,7 +675,10 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
     let statusCallCount = 0;
     const git: GitRunner = (args) => {
       calls.push(args);
-      if (args[0] === "rev-parse") return "master\n";
+      if (args[0] === "rev-parse") {
+        if (args[1] === "--abbrev-ref") return "master\n";
+        return "deadbeef\ndeadbeef\n";
+      }
       if (args[0] === "status") {
         statusCallCount++;
         return statusCallCount === 1 ? " M workers/site/public/p/abc/index.html\n" : "";
@@ -684,7 +706,10 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
     // limpo — mas o push nunca aconteceu. A chamada precisa tentar de novo.
     const pushCalls: string[][] = [];
     const git: GitRunner = (args) => {
-      if (args[0] === "rev-parse") return "master\n";
+      if (args[0] === "rev-parse") {
+        if (args[1] === "--abbrev-ref") return "master\n";
+        return "deadbeef\ndeadbeef\n";
+      }
       if (args[0] === "status") return ""; // limpo: nada novo pra commitar
       if (args[0] === "push") {
         pushCalls.push(args);
@@ -699,11 +724,93 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
     assert.equal(pushCalls.length, 1, "push foi de fato tentado, não pulado por status limpo");
   });
 
-  it("REGRESSÃO P1-C: branch != master ⇒ lança, sem checkout/add/commit/push (#6202 review)", () => {
-    const { git, calls } = makeGit({ "rev-parse": () => "overnight/algo\n" });
+  it("REGRESSÃO P1-C→#7287: HEAD != origin/master (checkout divergente) ⇒ lança, sem checkout/add/commit/push", () => {
+    const { git, calls } = makeGit({
+      "rev-parse": (args) => {
+        if (args[1] === "--abbrev-ref") return "overnight/algo\n";
+        return "commitantigo1\ncommitnovo22\n"; // HEAD diverge de origin/master
+      },
+    });
     const { gh } = makeGh();
-    assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep), /overnight\/algo/);
-    assert.equal(calls.length, 1, "para no rev-parse — nunca chega a tocar working tree/index/branch");
+    assert.throws(
+      () => commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep),
+      /commitantigo1/,
+    );
+    assert.equal(
+      calls.length,
+      2,
+      "para no 2º rev-parse (o guard por commit) — nunca chega a tocar working tree/index/branch",
+    );
+  });
+
+  it("REGRESSÃO #7287: branch local NÃO se chama 'master', mas HEAD == origin/master ⇒ publica normalmente", () => {
+    // O caso medido ao vivo em 03/09/2026: `master` estava tomada por outro
+    // worktree, então o checkout compartilhado (com o CONTEÚDO exato de
+    // origin/master) vivia numa branch de nome diferente — o guard antigo
+    // (por NOME) recusava aqui; o guard novo (por COMMIT) tem que passar.
+    const { git, calls } = makeGit({
+      "rev-parse": (args) => {
+        if (args[1] === "--abbrev-ref") return "site-publish-master-worktree-elsewhere\n";
+        return "mesmocommit1\nmesmocommit1\n"; // HEAD == origin/master
+      },
+      status: () => " M workers/site/public/p/abc/index.html\n",
+      diff: () => "workers/site/public/p/abc/index.html\n",
+    });
+    const { gh } = makeGh();
+    const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
+    assert.equal(r.pushed, true, "publica mesmo com branch local != 'master', desde que o commit bata");
+    const checkoutBack = calls[calls.length - 1];
+    assert.deepEqual(
+      checkoutBack,
+      ["checkout", "site-publish-master-worktree-elsewhere"],
+      "volta pro branch ORIGINAL (nome não-master), nunca força 'master'",
+    );
+  });
+
+  it("REGRESSÃO #7287 (defensivo): saída malformada de 'git rev-parse HEAD origin/master' (menos de 2 linhas) ⇒ lança com mensagem clara, nunca 'undefined' cru", () => {
+    // Cobre o ramo `!headCommit || !originMasterCommit` do guard — nunca
+    // exercitado pelos testes acima, que sempre fornecem 2 linhas bem
+    // formadas. Simula uma saída de `git` vazia/truncada (ex: `origin/master`
+    // não existe localmente e alguma versão de git imprime menos linhas em
+    // vez de lançar) — o guard precisa recusar, não seguir com
+    // headCommit/originMasterCommit undefined.
+    const { git, calls } = makeGit({
+      "rev-parse": (args) => {
+        if (args[1] === "--abbrev-ref") return "master\n";
+        return ""; // saída vazia — split("\n") após trim produz [""], só 1 elemento
+      },
+    });
+    const { gh } = makeGh();
+    assert.throws(
+      () => commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep),
+      (err: unknown) => {
+        const msg = (err as Error).message;
+        assert.match(msg, /não está sincronizado com origin\/master/);
+        assert.doesNotMatch(msg, /\bundefined\b/, "nunca imprime 'undefined' cru — usa o fallback '?'");
+        return true;
+      },
+    );
+    assert.equal(calls.length, 2, "para no guard, antes de checkout/add/commit/push");
+  });
+
+  it("REGRESSÃO #7287 (defensivo): 2ª linha (origin/master) vem vazia em saída de 3 linhas ⇒ lança (guard não confia em string vazia como commit válido)", () => {
+    // `.trim()` só afeta as bordas da string inteira — uma linha vazia no
+    // MEIO da saída sobrevive ao split. Aqui a saída tem 3 linhas
+    // ("abc123", "", "def456"); a destructuring `[headCommit,
+    // originMasterCommit]` só pega as 2 primeiras, então
+    // originMasterCommit === "" (falsy) — cenário diferente do teste
+    // anterior (saída truncada pra 1 linha só).
+    const { git } = makeGit({
+      "rev-parse": (args) => {
+        if (args[1] === "--abbrev-ref") return "master\n";
+        return "abc123\n\ndef456\n";
+      },
+    });
+    const { gh } = makeGh();
+    assert.throws(
+      () => commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep),
+      /não está sincronizado com origin\/master/,
+    );
   });
 
   it("push que lança propaga — chamador decide (vira code 3 em publishEditionSitePage) — e volta pro master mesmo assim", () => {
@@ -841,8 +948,10 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
       assert.ok(!lockCalls.some((c) => c[0] === "merge-lock-release"), "nunca libera um lock que não adquiriu");
       assert.deepEqual(
         gitCalls.map((c) => c[0]),
-        ["rev-parse"],
-        "para no rev-parse — nunca chega a fazer checkout -B/add/commit/push quando o lock esgota",
+        // #7287: 2 rev-parse (abbrev-ref + guard por commit) rodam ANTES do
+        // acquire do lock — inalterado por este achado, só a contagem muda.
+        ["rev-parse", "rev-parse"],
+        "para nos rev-parse — nunca chega a fazer checkout -B/add/commit/push quando o lock esgota",
       );
     });
 
@@ -866,7 +975,7 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
       });
       assert.deepEqual(
         gitCalls.map((c) => c[0]),
-        ["rev-parse"],
+        ["rev-parse", "rev-parse"],
         "nunca chega a tocar checkout/commit/push quando o lock falha por infra",
       );
     });
@@ -944,7 +1053,10 @@ describe("#6202 productionDeps — fiação real (#6202 review P2-G)", () => {
     const calls: string[][] = [];
     const git: GitRunner = (args) => {
       calls.push(args);
-      if (args[0] === "rev-parse") return "master\n";
+      if (args[0] === "rev-parse") {
+        if (args[1] === "--abbrev-ref") return "master\n";
+        return "deadbeef\ndeadbeef\n";
+      }
       if (args[0] === "status") return " M workers/site/public/p/meu-slug/index.html\n";
       if (args[0] === "diff") return "workers/site/public/p/meu-slug/index.html\n";
       return "";
@@ -963,7 +1075,7 @@ describe("#6202 productionDeps — fiação real (#6202 review P2-G)", () => {
     assert.equal(result.prUrl, "https://github.com/vjpixel/diaria-studio/pull/1");
     assert.deepEqual(
       calls.map((c) => c[0]),
-      ["rev-parse", "checkout", "add", "status", "diff", "commit", "push", "checkout"],
+      ["rev-parse", "rev-parse", "checkout", "add", "status", "diff", "commit", "push", "checkout"],
     );
     assert.ok(
       ghCalls.some((c) => c[0] === "pr" && c[1] === "create"),
@@ -971,10 +1083,138 @@ describe("#6202 productionDeps — fiação real (#6202 review P2-G)", () => {
     );
   });
 
-  it("publish() propaga falha do GitRunner injetado (branch errada)", () => {
-    const git: GitRunner = (args) => (args[0] === "rev-parse" ? "outra-branch\n" : "");
+  it("publish() propaga falha do GitRunner injetado (commit divergente de origin/master, #7287)", () => {
+    const git: GitRunner = (args) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return "outra-branch\n";
+      if (args[0] === "rev-parse") return "aaa1111\nbbb2222\n"; // HEAD != origin/master
+      return "";
+    };
     const deps = productionDeps("/repo", git);
-    assert.throws(() => deps.publish("meu-slug"), /outra-branch/);
+    assert.throws(() => deps.publish("meu-slug"), /aaa1111/);
+  });
+});
+
+describe("#7283 writeSitePageState — teste DIRETO (achado do review do #7311: cobertura anterior era só indireta via checkSitePagePublished fabricando o JSON à mão)", () => {
+  let dir: string;
+
+  function readState(d: string): Record<string, unknown> {
+    return JSON.parse(readFileSync(join(d, "_internal", "site-page-published.json"), "utf8"));
+  }
+
+  it("code:0 published:true com prUrl — grava o shape completo, checked_at é ISO parseável", () => {
+    dir = mkdtempSync(join(tmpdir(), "diaria-site-page-state-"));
+    try {
+      const result: PublishPageResult = {
+        code: 0,
+        slug: "titulo-da-edicao",
+        bytes: 1234,
+        published: true,
+        prUrl: "https://github.com/vjpixel/diaria-studio/pull/1",
+      };
+      writeSitePageState(dir, result);
+      const state = readState(dir);
+      assert.equal(state.code, 0);
+      assert.equal(state.slug, "titulo-da-edicao");
+      assert.equal(state.published, true);
+      assert.equal(state.prUrl, "https://github.com/vjpixel/diaria-studio/pull/1");
+      assert.ok(!("reason" in state), "reason ausente do result não vira chave no JSON (undefined é dropado)");
+      assert.ok(
+        typeof state.checked_at === "string" && !Number.isNaN(Date.parse(state.checked_at as string)),
+        "checked_at precisa ser ISO parseável",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("code:0 published:false (--skip-publish) — published fica false, sem prUrl", () => {
+    dir = mkdtempSync(join(tmpdir(), "diaria-site-page-state-"));
+    try {
+      const result: PublishPageResult = { code: 0, slug: "abc", bytes: 10, published: false };
+      writeSitePageState(dir, result);
+      const state = readState(dir);
+      assert.equal(state.code, 0);
+      assert.equal(state.published, false);
+      assert.ok(!("prUrl" in state));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("code:2/3/4 (reason, sem slug) — published cai no default false, reason preservado, slug ausente", () => {
+    for (const code of [2, 3, 4] as const) {
+      dir = mkdtempSync(join(tmpdir(), "diaria-site-page-state-"));
+      try {
+        const result = { code, reason: `motivo do code ${code}` } as PublishPageResult;
+        writeSitePageState(dir, result);
+        const state = readState(dir);
+        assert.equal(state.code, code);
+        assert.equal(state.reason, `motivo do code ${code}`);
+        assert.equal(
+          state.published,
+          false,
+          "'published' não está no result ⇒ default false, nunca undefined/true por engano",
+        );
+        assert.ok(!("slug" in state));
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("code:5 (guard de merge tag) — reason preservado, published:false (tags do result não vazam pro state — fora do schema)", () => {
+    dir = mkdtempSync(join(tmpdir(), "diaria-site-page-state-"));
+    try {
+      const result: PublishPageResult = { code: 5, reason: "merge tag não resolvida: {{foo}}", tags: ["foo"] };
+      writeSitePageState(dir, result);
+      const state = readState(dir);
+      assert.equal(state.code, 5);
+      assert.equal(state.published, false);
+      assert.match(state.reason as string, /merge tag não resolvida/);
+      assert.ok(!("tags" in state), "campo 'tags' não faz parte do schema de site-page-published.json");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("2ª chamada SOBRESCREVE — reflete só a ÚLTIMA tentativa (mesma convenção de 05-published.json)", () => {
+    dir = mkdtempSync(join(tmpdir(), "diaria-site-page-state-"));
+    try {
+      writeSitePageState(dir, { code: 3, reason: "falhou na 1ª tentativa" });
+      writeSitePageState(dir, { code: 0, slug: "abc", bytes: 5, published: true });
+      const state = readState(dir);
+      assert.equal(state.code, 0, "reflete a 2ª chamada, não acumula/mescla com a 1ª");
+      assert.equal(state.published, true);
+      assert.ok(!("reason" in state), "reason da 1ª tentativa não vaza pra 2ª chamada");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("cria _internal/ se ainda não existir (mkdirSync recursive)", () => {
+    dir = mkdtempSync(join(tmpdir(), "diaria-site-page-state-"));
+    try {
+      // Sem criar _internal/ antes — writeSitePageState precisa criar sozinho.
+      writeSitePageState(dir, { code: 2, reason: "nada a publicar ainda" });
+      const state = readState(dir);
+      assert.equal(state.code, 2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("REGRESSÃO fail-soft: falha ao escrever (ex: '_internal' já existe como ARQUIVO, não diretório) nunca lança", () => {
+    dir = mkdtempSync(join(tmpdir(), "diaria-site-page-state-"));
+    try {
+      // `_internal` já existe como arquivo comum — mkdirSync(..., {recursive:true})
+      // lança ENOTDIR/EEXIST nesse caso. writeSitePageState precisa engolir isso
+      // (loga aviso em stderr) e NUNCA propagar — mascarar o `result` real que
+      // já foi computado e impresso seria pior que perder só o estado auxiliar.
+      writeFileSync(join(dir, "_internal"), "não sou um diretório");
+      assert.doesNotThrow(() => writeSitePageState(dir, { code: 0, slug: "abc", bytes: 1, published: true }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -55,10 +55,11 @@
  * no GitHub e o push direto passou a ser rejeitado — toda edição doravante
  * falharia esse passo (fail-soft, não bloqueia o pipeline, mas o acervo do
  * site para de crescer). Migrado para: `git checkout -B
- * site-publish/{slug}` a partir do `master` local (precondição inalterada:
- * o checkout precisa estar em `master` antes de começar — garante que a
- * branch nasça de um ponto conhecido, não de uma branch alheia que por
- * acaso esteja em uso no checkout compartilhado), commit escopado ao
+ * site-publish/{slug}` a partir do checkout local (precondição revisada pelo
+ * #7287: o checkout precisa estar SINCRONIZADO com `origin/master` — HEAD no
+ * mesmo commit — antes de começar; não precisa se CHAMAR `master`. Garante
+ * que a branch nasça de um ponto conhecido, não de um checkout divergente
+ * de outra sessão), commit escopado ao
  * pathspec da página (mesma disciplina P1-A/P1-B de sempre), `git push
  * --force-with-lease -u origin site-publish/{slug}` (force-with-lease é
  * seguro aqui porque a branch é de propriedade exclusiva deste script —
@@ -557,11 +558,28 @@ function buildSitePagePrBody(slug: string): string {
  * original em `finally` — o checkout compartilhado nunca fica preso numa
  * branch de publicação de página, mesmo se algo no meio lançar.
  *
- * #6202 review, problema P1-C (mantido): recusa rodar fora de `master`. A
- * branch nova precisa nascer de um ponto conhecido — commitar a partir de
- * uma branch errada (checkout compartilhado com sessões overnight/develop
- * concorrentes, #5156) produziria uma página divergente do `master` real.
- * Lança — o chamador (`publishEditionSitePage`) converte em `code: 3`.
+ * #6202 review, problema P1-C — REVISADO pelo #7287: recusa rodar fora de um
+ * checkout SINCRONIZADO com `origin/master`. A branch nova precisa nascer de
+ * um ponto conhecido — commitar a partir de um checkout divergente (checkout
+ * compartilhado com sessões overnight/develop concorrentes, #5156) produziria
+ * uma página divergente do `master` real. Lança — o chamador
+ * (`publishEditionSitePage`) converte em `code: 3`.
+ *
+ * **O guard compara COMMIT, não NOME de branch (#7287).** A versão original
+ * comparava `git rev-parse --abbrev-ref HEAD` contra a string `"master"` —
+ * mas o invariante que a docstring do módulo sempre descreveu é sobre o
+ * CONTEÚDO do checkout ("a branch de publicação de página precisa nascer de
+ * um master conhecido"), não sobre como a branch local se chama. Medido ao
+ * vivo em 03/09/2026: com 5+ sessões concorrentes, o nome `master` fica
+ * tomado por um worktree boa parte do tempo (`git worktree` não permite a
+ * mesma branch em dois lugares) — um checkout com o conteúdo EXATO de
+ * `origin/master` falhava aqui só porque a branch local se chamava diferente
+ * (ex: outra sessão criou `site-publish-master` pra contornar exatamente
+ * este defeito). Quatro edições consecutivas (31/08–03/09) perderam a
+ * página do acervo por isso. Comparar `HEAD` contra `origin/master` (via
+ * `git rev-parse HEAD origin/master`, 1 chamada, 2 revs) preserva o
+ * invariante real e para de recusar um checkout que já está no ponto certo,
+ * só porque o nome local não é `"master"`.
  *
  * #6202 review, problema P1-A (mantido): `commit` é escopado ao MESMO
  * pathspec do `add`/`status` (nunca commita o índice inteiro) — e antes de
@@ -594,12 +612,22 @@ export function commitAndPushSitePage(
   sleep: SleepFn = defaultSleep,
 ): { committed: boolean; pushed: boolean; prUrl?: string; prNumber?: number; prCreated: boolean } {
   const originalBranch = git(["rev-parse", "--abbrev-ref", "HEAD"], rootDir).trim();
-  if (originalBranch !== "master") {
+  // #7287: 1 chamada, 2 revs — `git rev-parse` imprime um SHA por linha, na
+  // ordem dos argumentos. Guard compara COMMIT (o invariante real — "nasce
+  // de um master conhecido"), não o NOME da branch local (ver docblock).
+  const [headCommit, originMasterCommit] = git(["rev-parse", "HEAD", "origin/master"], rootDir)
+    .trim()
+    .split("\n")
+    .map((l) => l.trim());
+  if (!headCommit || !originMasterCommit || headCommit !== originMasterCommit) {
     throw new Error(
-      `checkout não está em master (branch atual: '${originalBranch}') — commit/push abortado antes de ` +
+      `checkout não está sincronizado com origin/master (HEAD ${headCommit || "?"}, origin/master ` +
+        `${originMasterCommit || "?"}, branch local '${originalBranch}') — commit/push abortado antes de ` +
         `tocar qualquer arquivo. A branch de publicação de página precisa nascer de um master conhecido; ` +
-        `commitar a partir de outra branch produziria uma página divergente do master real. Provável ` +
-        `sessão concorrente trocou de branch neste checkout compartilhado (#5156, #6202/#6598).`,
+        `commitar a partir de um checkout divergente produziria uma página divergente do master real. ` +
+        `Provável sessão concorrente com o checkout desatualizado ou em branch de trabalho — ` +
+        `\`git fetch origin && git pull\` (ou usar um worktree em ${originMasterCommit || "origin/master"}) ` +
+        `resolve (#5156, #6202/#6598, #7287).`,
     );
   }
 
@@ -876,6 +904,46 @@ export function publishEditionSitePage(
   return { code: 0, slug: built.post.slug, bytes: html.length, published: false };
 }
 
+/**
+ * Grava o resultado desta chamada em `_internal/site-page-published.json`
+ * (#7283) — estado determinístico, escrito pelo PRÓPRIO script, sem depender
+ * de o orchestrator lembrar de chamar `log-event.ts` com o nível certo
+ * (prosa, não reforçado por código — mesma classe de falha do #4574: sem
+ * isto, nada em CÓDIGO verifica que o passo rodou nem qual foi o resultado,
+ * só a prosa de `orchestrator-stage-6.md` §6d-site instrui um agente LLM a
+ * logar; se ele pular/errar isso, a falha vira silêncio absoluto — foi
+ * exatamente o que aconteceu nas 4 edições do #7283/#7266). O invariant
+ * `site-page-published` (`scripts/lib/invariant-checks/stage-6.ts`) lê este
+ * arquivo pra acusar em `check-invariants.ts --stage 6` (severity: warning —
+ * nunca bloqueia, o fail-soft do #6202 continua intocado) quando a página do
+ * acervo não foi de fato publicada.
+ *
+ * Sempre sobrescreve (1 arquivo por edição, reflete a ÚLTIMA tentativa) —
+ * mesma convenção de `05-published.json`/`brevo-diaria-published.json`.
+ * Fail-soft: uma falha ao ESCREVER este arquivo de estado nunca pode mascarar
+ * o `result` real já computado — loga em stderr e segue, nunca lança.
+ */
+export function writeSitePageState(editionDirAbs: string, result: PublishPageResult): void {
+  const path = join(editionDirAbs, "_internal", "site-page-published.json");
+  const state = {
+    code: result.code,
+    slug: "slug" in result ? result.slug : undefined,
+    published: "published" in result ? result.published : false,
+    reason: "reason" in result ? result.reason : undefined,
+    prUrl: "prUrl" in result ? result.prUrl : undefined,
+    checked_at: new Date().toISOString(),
+  };
+  try {
+    mkdirSync(join(editionDirAbs, "_internal"), { recursive: true });
+    writeFileSync(path, JSON.stringify(state, null, 2), "utf8");
+  } catch (e) {
+    process.stderr.write(
+      `[site-page] aviso: falha ao gravar _internal/site-page-published.json (${(e as Error).message}) — ` +
+        "o invariant do #7283 pode não detectar este resultado.\n",
+    );
+  }
+}
+
 export async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const editionDir = getArg(argv, "edition-dir");
@@ -901,9 +969,10 @@ export async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  const editionDirAbs = resolve(ROOT, editionDir);
   let result: PublishPageResult;
   try {
-    result = publishEditionSitePage(resolve(ROOT, editionDir), productionDeps(), {
+    result = publishEditionSitePage(editionDirAbs, productionDeps(), {
       skipPublish: hasFlag(argv, "skip-publish"),
       slug,
       sitemap: getArg(argv, "sitemap"),
@@ -911,6 +980,12 @@ export async function main(): Promise<void> {
   } catch (e) {
     result = { code: 3, reason: `erro inesperado: ${(e as Error).message}` };
   }
+  // #7283: grava sempre que chegou até aqui com um `editionDirAbs` resolvido
+  // (ou seja, depois dos 2 early-return de erro de USO acima — `--edition-dir`
+  // ausente não tem onde escrever, `--slug` malformado é erro de invocação,
+  // não resultado de publish desta edição) — nunca depende de o orchestrator
+  // lembrar de logar certo. Ver docblock de writeSitePageState.
+  writeSitePageState(editionDirAbs, result);
   console.log(JSON.stringify(result, null, 2));
   process.exitCode = result.code;
 }

@@ -23,6 +23,7 @@ import {
   checkEditionReport,
   checkWhatsappSlugGuard,
   checkStep6Sentinel,
+  checkSitePagePublished,
 } from "../scripts/lib/invariant-checks/stage-6.ts";
 import { getRulesForStage } from "../scripts/lib/invariant-checks/index.ts";
 
@@ -40,7 +41,7 @@ describe("STAGE_6_RULES registry (#4574)", () => {
     assert.equal(entry!.source_issue, "#4574");
   });
 
-  it("getRulesForStage(6) inclui whatsapp-slug-guard-ok junto das demais 4 regras pré-existentes", () => {
+  it("getRulesForStage(6) inclui whatsapp-slug-guard-ok junto das demais 5 regras pré-existentes", () => {
     const rules = getRulesForStage(6);
     const ids = rules.map((r) => r.id);
     assert.ok(ids.includes("step-5-sentinel-exists"));
@@ -48,7 +49,15 @@ describe("STAGE_6_RULES registry (#4574)", () => {
     assert.ok(ids.includes("edition-report-exists"));
     assert.ok(ids.includes("whatsapp-slug-guard-ok"));
     assert.ok(ids.includes("step-6-sentinel-exists"));
-    assert.equal(ids.length, 5, `esperava 5 regras no Stage 6, achei: ${JSON.stringify(ids)}`);
+    assert.ok(ids.includes("site-page-published"));
+    assert.equal(ids.length, 6, `esperava 6 regras no Stage 6, achei: ${JSON.stringify(ids)}`);
+  });
+
+  it("contém a entry site-page-published, stage 6, source_issue #7283, severity warning (fail-soft não bloqueia)", () => {
+    const entry = STAGE_6_RULES.find((r) => r.id === "site-page-published");
+    assert.ok(entry !== undefined, "STAGE_6_RULES deve conter 'site-page-published'");
+    assert.equal(entry!.stage, 6);
+    assert.equal(entry!.source_issue, "#7283");
   });
 });
 
@@ -243,6 +252,79 @@ describe("demais regras do Stage 6 — cobertura básica (nenhum teste direto ex
     const v = checkStep6Sentinel(fixture);
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "step-6-sentinel-exists");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+});
+
+describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site precisa ficar VISÍVEL", () => {
+  let fixture: string;
+
+  beforeEach(() => {
+    fixture = makeFixtureEdition();
+  });
+
+  it("REGRESSÃO: warning (não error) quando site-page-published.json ausente — o passo nunca rodou/versão antiga do script, e ninguém percebeu por 4 edições (#7283/#7266)", () => {
+    const v = checkSitePagePublished(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "site-page-published");
+    assert.equal(v[0].severity, "warning", "fail-soft intencional (#6202) — nunca pode virar error/bloqueio");
+    assert.equal(v[0].source_issue, "#7283");
+    assert.match(v[0].message, /não rodou/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("REGRESSÃO: warning quando published:false (commit/push/gh pr create falhou) — o caso real do incidente", () => {
+    writeFileSync(
+      join(fixture, "_internal", "site-page-published.json"),
+      JSON.stringify({
+        code: 3,
+        slug: "gates-propoe-empregos-so-para-humanos",
+        published: false,
+        reason: "checkout não está sincronizado com origin/master",
+        checked_at: new Date().toISOString(),
+      }),
+    );
+    const v = checkSitePagePublished(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "site-page-published");
+    assert.equal(v[0].severity, "warning");
+    assert.match(v[0].message, /gates-propoe-empregos-so-para-humanos/);
+    assert.match(v[0].message, /checkout não está sincronizado/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("passa (0 violations) quando published:true — página escrita, branch pushada, PR aberto/reusado", () => {
+    writeFileSync(
+      join(fixture, "_internal", "site-page-published.json"),
+      JSON.stringify({
+        code: 0,
+        slug: "titulo-da-edicao",
+        published: true,
+        prUrl: "https://github.com/vjpixel/diaria-studio/pull/1",
+        checked_at: new Date().toISOString(),
+      }),
+    );
+    const v = checkSitePagePublished(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("passa (0 violations) quando code:2 — nada a publicar ainda, não é falha de publish", () => {
+    writeFileSync(
+      join(fixture, "_internal", "site-page-published.json"),
+      JSON.stringify({ code: 2, published: false, reason: "nada a publicar ainda", checked_at: new Date().toISOString() }),
+    );
+    const v = checkSitePagePublished(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("warning quando o arquivo existe mas não é JSON parseável", () => {
+    writeFileSync(join(fixture, "_internal", "site-page-published.json"), "{ not valid json");
+    const v = checkSitePagePublished(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "site-page-published-parseable");
+    assert.equal(v[0].severity, "warning");
     rmSync(fixture, { recursive: true, force: true });
   });
 });
