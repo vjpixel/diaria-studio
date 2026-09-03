@@ -199,10 +199,13 @@ async function main(): Promise<void> {
 // corrigiram em `overnight-watchdog.ts`) — qualquer teste que importasse
 // `notifyHaltViaPush` daqui rodava `main()` contra o `argv` real do test
 // runner (sem --stage/--reason/--action) e o `process.exit(2)` do usage
-// matava o processo de teste inteiro. (#7215 tirou esse `exit` de dentro do
-// parser — `parseHaltBannerArgs` devolve `null` e é `main()` que sai —, mas
-// o guard segue necessário: é `main()` que não pode rodar na importação.) Antes deste arquivo ganhar exports
+// matava o processo de teste inteiro. Antes deste arquivo ganhar exports
 // testáveis (#3564), nada importava este módulo, então o bug ficou latente.
+//
+// O guard continua necessário depois do #7215: aquela issue só tirou o
+// `exit` de DENTRO do parser (`parseHaltBannerArgs` devolve `null`, quem sai
+// é `main()`). O que não pode rodar na importação é `main()` — e é ela que
+// o guard protege.
 if (isMainModule(import.meta.url)) {
   main();
 }
