@@ -1,0 +1,80 @@
+/* metricas.css (#7178) — painel de métricas de negócio (baseline, queda,
+   metas, decomposição). Reusa .table-scroll/.triage-table/.panel-header-row
+   de triagem.css e .ads-tile/.ads-summary-grid de ads.css (ambos já
+   linkados em metricas.html) — só os estados de qualidade/estado de meta
+   são específicos desta página. Nenhum hex cru — só var(--token) já
+   gerado por tokens-css.ts, ver test/studio-css-no-raw-hex.test.ts e
+   test/studio-css-var-defined.test.ts. */
+
+.metricas-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+/* Badge de qualidade (exato/piso/faixa/indeterminado). "indeterminado" usa
+   traço tracejado — nunca cor de alarme, é estado neutro de honestidade de
+   dado, não um problema a resolver. */
+.metricas-qualidade {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  background: var(--paper-alt);
+  color: var(--ink);
+}
+.metricas-qualidade-piso,
+.metricas-qualidade-faixa {
+  border: 1px solid var(--status-warn);
+  color: var(--status-warn-ink);
+}
+.metricas-qualidade-indeterminado {
+  border: 1px dashed var(--rule-strong);
+  opacity: 0.75;
+}
+
+/* Badge de estado de meta — "indeterminado" NUNCA colapsa em
+   vermelho/verde (regra de honestidade da issue #7178): usa o mesmo
+   tracejado neutro da qualidade acima, nunca --status-danger/--status-ok. */
+.metricas-estado {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  background: var(--paper-alt);
+}
+.metricas-estado-atingida {
+  color: var(--on-status);
+  background: var(--status-ok);
+}
+.metricas-estado-em-curso {
+  color: var(--ink);
+  border: 1px solid var(--rule);
+}
+.metricas-estado-nao-atingida {
+  color: var(--on-status);
+  background: var(--status-danger);
+}
+.metricas-estado-indeterminado {
+  color: var(--ink);
+  border: 1px dashed var(--rule-strong);
+  opacity: 0.75;
+}
+
+.metricas-definicao {
+  font-size: 0.78rem;
+  opacity: 0.75;
+  max-width: 28rem;
+}
+
+.metricas-motivo {
+  font-size: 0.75rem;
+  opacity: 0.75;
+  display: block;
+  margin-top: 0.15rem;
+}

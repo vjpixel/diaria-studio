@@ -68,6 +68,10 @@ export const NAV_ITEMS = [
   // sobre o store unificado do épico #6464. Vizinha de Ads/Apoios — mesma
   // natureza "negócio": entender o assinante, não conteúdo editorial.
   { id: "assinantes", label: "Assinantes", href: "/assinantes", pageIds: ["assinantes"], group: "negocio" },
+  // #7178: baseline, queda, metas e decomposição das métricas de negócio do
+  // épico #7172 (F3-F5), read-only. Vizinha de Assinantes — mesma natureza
+  // "negócio": entender o número, não conteúdo editorial nem infra.
+  { id: "metricas", label: "Métricas", href: "/metricas", pageIds: ["metricas"], group: "negocio" },
   // 🔌 Sistema.
   { id: "integracoes", label: "Integrações", href: "/integracoes", pageIds: ["integracoes"], group: "sistema" },
   // #4041: inventário de UTMs (o que o código emite) × conversão real no

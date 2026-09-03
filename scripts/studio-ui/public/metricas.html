@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>diar.ia.br Studio — Métricas</title>
+  <link rel="stylesheet" href="/tokens.generated.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/nav.css" />
+  <link rel="stylesheet" href="/triagem.css" />
+  <link rel="stylesheet" href="/integracoes.css" />
+  <link rel="stylesheet" href="/ads.css" />
+  <link rel="stylesheet" href="/metricas.css" />
+</head>
+<body>
+  <header class="statusbar">
+    <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
+    <div class="statusbar-item">
+      <span class="label">Métricas</span>
+      <span class="value" id="exec-mode-value">—</span>
+    </div>
+    <div class="statusbar-item conn" id="fetch-status">
+      <span class="dot" id="fetch-dot"></span>
+      <span id="fetch-label">carregando…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h1>Métricas de negócio</h1>
+      <p class="hint">
+        Baseline, queda, metas e decomposição — a superfície do epic
+        <code>#7172</code>. Read-only: nenhuma fórmula é recalculada aqui, a
+        tela só exibe o que <code>scripts/lib/metrics/registry.ts</code> (F3/F4)
+        e <code>metas.ts</code> (F5) já computaram. Fuso de todos os dias:
+        <strong>BRT</strong>.
+      </p>
+      <div id="metricas-error" class="panel alert-banner" role="alert" hidden></div>
+      <div id="metricas-nodata" class="hint" hidden>
+        Sem dados nesta sessão (<code>data/</code> ausente — sessão cloud).
+        Rode esta página numa sessão local com a junction OneDrive montada.
+      </div>
+      <div class="panel-header-row">
+        <button id="refresh-btn" type="button">Atualizar</button>
+        <span id="last-updated" class="hint"></span>
+      </div>
+    </section>
+
+    <section class="panel" id="baseline-panel" hidden>
+      <h2>Baseline</h2>
+      <p class="hint">Valor atual de cada métrica, com definição e frescor da coleta ao lado — número sem data não é exibido.</p>
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead>
+            <tr>
+              <th>Métrica</th>
+              <th>Valor</th>
+              <th>Qualidade</th>
+              <th>Frescor</th>
+              <th>Definição</th>
+            </tr>
+          </thead>
+          <tbody id="baseline-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" id="queda-panel" hidden>
+      <h2>Queda (base ativa)</h2>
+      <p class="hint">
+        Exibição, não alarme (o alarme é <code>#7180</code>). Beehiiv e Kit
+        lado a lado, <strong>sem célula de total cruzado</strong> — somar as
+        colunas conta a mesma pessoa duas vezes (a maioria do Kit é o import
+        em massa da base Beehiiv).
+      </p>
+      <div class="metricas-summary-grid" id="queda-grid"></div>
+    </section>
+
+    <section class="panel" id="placar-panel" hidden>
+      <h2>Metas — placar da meta de ativação</h2>
+      <p class="hint">
+        Dois números, sempre juntos (decisão do editor, 02/09/2026): o placar
+        da meta (organico + iniciativa) e o orgânico estrito ao lado, como
+        saúde de descoberta pura — nunca colapsados num só.
+      </p>
+      <div class="metricas-summary-grid" id="placar-grid"></div>
+    </section>
+
+    <section class="panel" id="metas-panel" hidden>
+      <h2>Metas — placar por meta</h2>
+      <div id="metas-empty" class="hint" hidden>Nenhuma meta cadastrada em <code>data/metas.json</code>.</div>
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead>
+            <tr>
+              <th>Meta</th>
+              <th>Estado</th>
+              <th>Streak</th>
+              <th>Progresso</th>
+              <th>Indeterminados</th>
+              <th>Limite superior (faixa)</th>
+              <th>Prazo</th>
+            </tr>
+          </thead>
+          <tbody id="metas-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" id="decomposicao-panel" hidden>
+      <h2>Decomposição — cadastros por classe</h2>
+      <p class="hint">
+        <code>cadastros-dia</code> com <code>decomposicao: 'classe'</code> —
+        as 5 classes canônicas de aquisição (<code>#7173</code>). Nunca
+        recalculada nesta tela.
+      </p>
+      <div class="metricas-summary-grid" id="decomposicao-grid"></div>
+    </section>
+  </main>
+
+  <script>window.STUDIO_PAGE = "metricas";</script>
+  <script src="/nav.js" type="module"></script>
+  <script src="/metricas.js" type="module"></script>
+</body>
+</html>

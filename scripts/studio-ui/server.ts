@@ -366,6 +366,10 @@ import { buildAdsData } from "./studio-ads.ts";
 // sobre o store diaria-subscribers-db.ts (épico #6464). Read-only por
 // construção — ver studio-subscribers.ts.
 import { searchSubscribersByEmail, buildSubscribersCohortData } from "./studio-subscribers.ts";
+// #7178: painel de métricas de negócio — baseline, queda, metas e
+// decomposição em 4 zonas, sobre o registry do épico #7172 (F3-F5). Ver
+// studio-metrics.ts.
+import { buildMetricsData } from "./studio-metrics.ts";
 import { watchStudioSource, type StudioSourceChange, type StudioSourceWatchHandle } from "./studio-source-watch.ts";
 // #5894: sendJson + readRequestBody extraídos pra http-utils.ts; handlers de
 // Caixas extraídos pra routes/boxes.ts — server.ts encolheu de 2389 → ~1700 linhas.
@@ -1250,6 +1254,21 @@ function handleApiAds(rootDir: string, req: IncomingMessage, res: ServerResponse
   }
 }
 
+// ── #7178: painel de métricas de negócio (baseline/queda/metas/decomposição) ──
+
+/** `GET /api/metrics` — as 4 zonas do painel `/metricas` (#7178): baseline
+ * das 8 métricas de F4, base-ativa decomposta por plataforma vs. snapshot
+ * anterior, placar das metas de F5, e cadastros-dia decomposto por classe.
+ * Sempre 200: `buildMetricsData` é fail-soft por camada (captura-log/store
+ * diaria-subscribers/snapshot Beehiiv/metas.json — nunca lança, mesmo em
+ * sessão cloud sem `data/`). `?refresh=1` bypassa o cache de 10min. */
+function handleApiMetrics(rootDir: string, req: IncomingMessage, res: ServerResponse): void {
+  const forceRefresh = new URL(req.url ?? "/", "http://localhost").searchParams.get("refresh") === "1";
+  buildMetricsData(rootDir, { forceRefresh })
+    .then((data) => sendJson(res, 200, data))
+    .catch((e) => sendJson(res, 500, { error: (e as Error).message }));
+}
+
 // ── #6590: busca por e-mail + coorte por migração (store diaria-subscribers) ──
 
 /** `GET /api/subscribers/search?email=...` — timeline unificada das 3
@@ -1544,6 +1563,11 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleApiAds(rootDir, req, res);
         return;
       }
+      // #7178: painel de métricas de negócio.
+      if (urlPath === "/api/metrics") {
+        handleApiMetrics(rootDir, req, res);
+        return;
+      }
       // #6590: busca por e-mail -> timeline unificada + coorte por migração.
       if (urlPath === "/api/subscribers/search") {
         handleApiSubscribersSearch(rootDir, req, res);
@@ -1769,6 +1793,15 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // /api/subscribers/search + /api/subscribers/cohort.
       if (urlPath === "/assinantes" || urlPath === "/assinantes/") {
         const served = serveStaticFile(PUBLIC_DIR, "/assinantes.html", res, req);
+        if (!served) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found");
+        }
+        return;
+      }
+      // #7178: mesma estratégia de rewrite — a página busca /api/metrics.
+      if (urlPath === "/metricas" || urlPath === "/metricas/") {
+        const served = serveStaticFile(PUBLIC_DIR, "/metricas.html", res, req);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");
