@@ -220,6 +220,57 @@ export function isFixturePath(path) {
 export const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
 
 /**
+ * Endereços que casam `EMAIL_RE` mas comprovadamente NÃO são PII de ninguém
+ * (#7217) — placeholder de formulário e domínios reservados pra documentação.
+ *
+ * **Por que existe.** `seu@email.com` é o `placeholder=` do campo de e-mail
+ * do formulário de inscrição, embutido no HTML de TODA página de hub gerada
+ * (`workers/arquivo/src/hubs/*.generated.ts`, 1 ocorrência por hub). Como
+ * esses arquivos são gerados, qualquer `generate-hub-sources.ts` +
+ * `build-hub-page.ts` desloca linhas e faz o placeholder contar como "linha
+ * adicionada" — o guard barrava a PR inteira por uma string que já está em
+ * master há meses. Não era um falso positivo pontual: era um bloqueio
+ * PERMANENTE de toda PR de regen de hub (achado ao vivo em #7101/#7102/#7103).
+ *
+ * **Por que isto NÃO enfraquece o guard.** A allowlist é de LITERAIS exatos,
+ * não de padrão nem de path: um e-mail real continua sendo pego mesmo na
+ * mesma linha, mesmo no mesmo arquivo (a linha só é dispensada quando NENHUM
+ * e-mail sobra depois de remover os literais permitidos).
+ *
+ * **Por que NÃO é uma regra de domínio reservado (RFC 2606).** A 1ª versão
+ * desta allowlist dispensava qualquer endereço em `example.com`/`.invalid`/
+ * `.test`, e o teste de reconstituição do incidente original (#6753) reprovou
+ * na hora: a fixture daquele teste usa `sintetico.fixture@exemplo-teste
+ * .invalid` justamente pra não versionar PII real, e o guard PRECISA
+ * continuar acusando ali — no incidente verdadeiro aqueles endereços eram
+ * reais. Uma regra por domínio cegaria o guard pro formato que o incidente
+ * tinha (arquivo de dump cheio de endereços), que é exatamente o que ele
+ * existe pra pegar. Literal exato não tem esse efeito colateral.
+ *
+ * Acrescentar aqui exige a mesma prova: uma string FIXA de UI/documentação,
+ * idêntica em toda ocorrência. Endereço "de teste" que varia, ou que usa
+ * domínio real (`gmail.com`, `@diar.ia.br`), NÃO entra — pra isso existe o
+ * path de fixture, que `isFixturePath` já isenta.
+ */
+export const ALLOWLISTED_EMAILS = [
+  "seu@email.com",
+  "your@email.com",
+];
+
+/**
+ * Pura: `true` se a linha não tem NENHUM e-mail além dos literais permitidos.
+ * Remove os permitidos e só então reaplica `EMAIL_RE` — assim uma linha que
+ * misture placeholder e e-mail real continua barrada pelo e-mail real.
+ */
+export function isAllowlistedEmailLine(line) {
+  if (typeof line !== "string") return false;
+  const stripped = line.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, (m) =>
+    ALLOWLISTED_EMAILS.includes(m.toLowerCase()) ? "" : m,
+  );
+  return !EMAIL_RE.test(stripped);
+}
+
+/**
  * Parse de `git diff --name-status <base> <head>` — devolve
  * `{ status, path }[]`. Renomeações (`R100\told\tnew`) resolvem `path` pro
  * destino (`new`) — é o path que vai existir em `master` se a PR mergear.
@@ -292,7 +343,10 @@ export function findDangerousDiffContent(nameStatusEntries, addedLinesByFile) {
 
   for (const [path, lines] of addedLinesByFile.entries()) {
     if (isFixturePath(path)) continue;
-    const emailLines = lines.filter((l) => EMAIL_RE.test(l));
+    // #7217: `isAllowlistedEmailLine` dispensa só a linha cujos ÚNICOS
+    // e-mails são placeholder de UI ou domínio reservado por RFC 2606 — um
+    // e-mail real na mesma linha continua barrando.
+    const emailLines = lines.filter((l) => EMAIL_RE.test(l) && !isAllowlistedEmailLine(l));
     if (emailLines.length > 0) {
       findings.push({
         path,
