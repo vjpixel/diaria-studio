@@ -252,7 +252,25 @@ describe("orchestrator-prompt (#634)", () => {
       // CLOSES"). Arquivo foi a 824 linhas. Teto bumped de 820→830 com
       // headroom pequeno (arquivo já chegou nesta rodada sem headroom
       // sobrando do bump anterior).
-      "orchestrator-stage-4.md": 830,
+      // #7243: +6 linhas líquidas — revalidação final GATE-BLOCKING do erro
+      // intencional em §4e, logo antes do sentinel: re-roda só a regra
+      // `intentional-error-present-in-final` (registrada em STAGE_4_RULES)
+      // contra o `02-reviewed.md` como ele está DEPOIS de qualquer edição do
+      // editor (loop `ajustar`, fast-path do painel Studio #6444) — a
+      // checagem de §4b step 5 roda ANTES do editor ver o gate e não cobre
+      // esses caminhos (incidente real: edição 260902, poda de RADAR levou
+      // junto o item com o erro, nada acusou). Arquivo já estava a 829
+      // linhas (comentário do #7021 acima ficou defasado — outra PR somou
+      // linhas sem atualizar este bloco). Teto bumped de 830→840 com
+      // headroom pequeno.
+      // #7243 (review): +6 linhas líquidas — o bloco acima só sabia
+      // "apresentar a violação ao editor", sem cobrir `auto_approve = true`
+      // (rodada agendada/headless, sem editor no gate). Passou a distinguir
+      // os dois modos, seguindo o padrão já estabelecido pelo exit 2 do
+      // fact-check `NOT_FOUND_IN_SOURCE` em §4c.6 (render-halt-banner.ts,
+      // #738) em vez de inventar outro mecanismo. Arquivo foi a 846 linhas.
+      // Teto bumped de 840→850 com headroom pequeno.
+      "orchestrator-stage-4.md": 850,
       // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
       // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
       // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser
@@ -1380,5 +1398,70 @@ describe("#7021: resumo consolidado do Stage 4 exibe a proposta de rampa Gmail m
     assert.ok(ramLineIdx !== -1, "'Regras de apresentação' precisa documentar {ramp_gmail_line}");
     const ramLineText = regrasText.slice(ramLineIdx, ramLineIdx + 300);
     assert.ok(/nunca bloqueia o gate/.test(ramLineText), "a entrada de {ramp_gmail_line} precisa deixar explícito que não bloqueia o gate");
+  });
+});
+
+describe("#7243: revalidação final do erro intencional em §4e cobre auto_approve=true com halt banner", () => {
+  // Achado do review da PR #7243: a 1ª versão deste bloco só sabia "apresentar
+  // a violação ao editor" — mas §4e roda IGUAL em auto_approve=true (rodada
+  // agendada/headless, sem editor no gate). O padrão já estabelecido pro
+  // mesmo problema (checagem GATE-BLOCKING que precisa de decisão editorial,
+  // mas pode rodar sem editor presente) é o exit 2 do fact-check NOT_FOUND_IN_SOURCE
+  // em §4c.6 — render-halt-banner.ts, mesmo padrão do #738. Estas assertions
+  // pinam que §4e segue esse padrão em vez de inventar um novo, e que o modo
+  // headless nunca segue pra Etapa 5 sozinho quando a checagem falha — senão
+  // o buraco do incidente 260902 (algo desaparece, ninguém é avisado) reaparece
+  // justamente no caminho desassistido que esta PR existe pra fechar.
+  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const section4eIdx = stage4.indexOf("### 4e. Escrever sentinel de conclusão");
+  const revalidacaoIdx = stage4.indexOf("Revalidação final do erro intencional, GATE-BLOCKING (#7243)");
+  const sentinelWriteIdx = stage4.indexOf("scripts/pipeline-sentinel.ts write");
+
+  it("§4e re-roda a regra intentional-error-present-in-final antes do sentinel, em qualquer modo", () => {
+    assert.ok(section4eIdx !== -1, "orchestrator-stage-4.md precisa ter a seção §4e");
+    assert.ok(revalidacaoIdx !== -1, "§4e precisa ter o bloco de revalidação final do erro intencional (#7243)");
+    assert.ok(section4eIdx < revalidacaoIdx, "a revalidação precisa estar dentro de §4e");
+    assert.ok(revalidacaoIdx < sentinelWriteIdx, "a revalidação precisa vir ANTES do pipeline-sentinel.ts write --step 4");
+    const bloco = stage4.slice(revalidacaoIdx, sentinelWriteIdx);
+    assert.ok(
+      bloco.includes("check-invariants.ts --stage 4 --rule intentional-error-present-in-final"),
+      "§4e precisa re-rodar SÓ a regra intentional-error-present-in-final (mais barata que o conjunto inteiro)",
+    );
+    assert.ok(
+      /inclusive em `auto_approve = true`/.test(bloco),
+      "§4e precisa deixar explícito que este passo roda igual em auto_approve=true, sem esperar gate",
+    );
+  });
+
+  it("distingue gate interativo (apresenta ao editor) de auto_approve=true (halt banner, #738)", () => {
+    const bloco = stage4.slice(revalidacaoIdx, sentinelWriteIdx);
+    assert.ok(
+      /auto_approve = false.*apresentar a violação ao editor/s.test(bloco),
+      "§4e precisa manter o caminho interativo original: apresentar a violação ao editor com as duas saídas",
+    );
+    assert.ok(
+      /auto_approve = true.*não há editor no gate/s.test(bloco),
+      "§4e precisa reconhecer explicitamente que não há editor pra decidir em auto_approve=true",
+    );
+    assert.ok(
+      bloco.includes("scripts/render-halt-banner.ts"),
+      "auto_approve=true precisa renderizar halt banner (mesmo padrão do exit 2 do fact-check em §4c.6, #738) — não inventar outro mecanismo",
+    );
+  });
+
+  it("proíbe explicitamente prosseguir pra Etapa 5 sozinho quando headless e a checagem falhou", () => {
+    const bloco = stage4.slice(revalidacaoIdx, sentinelWriteIdx);
+    assert.ok(
+      /Nunca prosseguir pra Etapa 5 sozinho/.test(bloco),
+      "§4e precisa proibir explicitamente seguir pra publicação sem resolução, mesmo sem editor presente — é o caminho onde o incidente 260902 reapareceria em modo headless",
+    );
+  });
+
+  it("exit 0 (incluindo wrong_value ausente = warning) segue normalmente em qualquer modo", () => {
+    const bloco = stage4.slice(revalidacaoIdx, sentinelWriteIdx);
+    assert.ok(
+      /Exit 0.*seguir normalmente, em qualquer modo/s.test(bloco),
+      "§4e precisa deixar claro que exit 0 (inclui wrong_value ausente, que é warning) segue sem distinção entre modos",
+    );
   });
 });

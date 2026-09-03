@@ -55,6 +55,17 @@ export interface IntentionalError {
    * (#3222 — antes frontmatter YAML) e é usado pelo render-erro-intencional pra
    * garantir que o reveal da edição seguinte inclui "o correto é Y". */
   correct_value?: string;
+  /** (#7243) A grafia/valor ERRADO efetivamente plantado no texto (ex: "Anthropik"),
+   * irmão de `correct_value` (que guarda o valor CORRETO). Sem este campo não dá para
+   * verificar mecanicamente se o erro plantado no Stage 2 ainda está presente em
+   * `02-reviewed.md` no momento em que o gate do Stage 4 fecha — checar por
+   * `correct_value` não serve (é justamente o texto que o item CORRIGIDO teria).
+   * Consumido por `checkIntentionalErrorPresentInFinal`
+   * (`scripts/lib/invariant-checks/stage-4.ts`), o backstop que detecta o item
+   * portador do erro sendo removido numa poda de RADAR (ou qualquer edição do gate)
+   * sem nenhum aviso — incidente real: edição 260902, o reveal da 260903 ia publicar
+   * uma afirmação falsa (#7243). Fonte: `_internal/intentional-error.json.wrong_value`. */
+  wrong_value?: string;
   source?: string;
   detected_by?: string;
   resolution?: string;
@@ -182,6 +193,11 @@ export interface IntentionalErrorFrontmatter {
   location?: string;
   category?: string;
   correct_value?: string;
+  /** (#7243) Irmão de `correct_value` — a grafia/valor ERRADO efetivamente plantado
+   * no texto (ex: "Anthropik"). Ver docstring completa em `IntentionalError.wrong_value`
+   * acima (mesmo campo, mesma semântica — o JSON em `_internal/intentional-error.json`
+   * É este shape). */
+  wrong_value?: string;
   /** (#2419) Campo de primeira pessoa, gramatical, público — fonte canônica do reveal.
    * Separado de `description` (catálogo 3ª pessoa, alimenta /diaria-mes-erros + lint).
    * Quando presente, o reveal usa este campo verbatim.
@@ -249,6 +265,11 @@ export function frontmatterToEntry(
     is_feature: true,
     detail: fm.description ?? "",
     correct_value: fm.correct_value,
+    // (#7243) Propagado para o JSONL pelo mesmo motivo do reveal abaixo —
+    // checkIntentionalErrorPresentInFinal lê o record vivo em
+    // _internal/intentional-error.json, mas manter o JSONL espelhado evita
+    // um segundo lugar de verdade divergente.
+    ...(fm.wrong_value ? { wrong_value: fm.wrong_value } : {}),
     // (#2419) Campo reveal: quando presente no frontmatter, propagado para o JSONL
     // para que composeRevealText use verbatim em vez de sintetizar a partir de catálogo.
     ...(fm.reveal ? { reveal: fm.reveal } : {}),
@@ -273,6 +294,8 @@ export function entryDiffersFromFrontmatter(
     String(existing.destaque ?? "") !== String(candidate.destaque ?? "") ||
     (existing.detail ?? "") !== (candidate.detail ?? "") ||
     (existing.correct_value ?? "") !== (candidate.correct_value ?? "") ||
+    // (#7243) Campo wrong_value — mesmo tratamento de drift do correct_value acima.
+    (existing.wrong_value ?? "") !== (candidate.wrong_value ?? "") ||
     // (#2419) Campo reveal — detectar drift quando editor edita o reveal no frontmatter
     (existing.reveal ?? "") !== (candidate.reveal ?? "")
   );
