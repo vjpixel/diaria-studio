@@ -408,3 +408,53 @@ export async function getBroadcastStats(id: number, config?: KitConfig): Promise
 export function kitBroadcastCtrPct(stats: Pick<KitBroadcastStats, "click_rate">): number {
   return stats.click_rate;
 }
+
+// ---------------------------------------------------------------------------
+// Conta (#7362) — teto de assinantes do plano, invisível até aqui
+// ---------------------------------------------------------------------------
+
+/**
+ * `GET /v4/account` (#7362) — 1ª leitura deste endpoint no repo. Confirmado
+ * ao vivo via MCP em 03/09/2026 (`get_current_account`): `plan_type
+ * "creator"`, `subscriber_limit 1000`, `renews_at` ISO. Este módulo é REST
+ * puro (sem MCP) — a issue #7362 pede um alarme que rode via task agendada
+ * (`scripts/kit-subscriber-limit-alarm.ts`), fora de uma sessão Claude Code
+ * viva, então precisa do caminho REST, mesmo padrão de todo o resto deste
+ * arquivo.
+ *
+ * **Shape do envelope não confirmado ao vivo via REST direto** (só via MCP,
+ * que pode normalizar a resposta) — aceita tanto `{ account: {...} }`
+ * (padrão dos outros endpoints deste módulo, `getBroadcast`/
+ * `getBroadcastStats`) quanto o objeto FLAT direto na raiz, sem lançar por
+ * causa da forma do envelope. O que É fail-fast: `subscriber_limit` ausente
+ * ou não-numérico — sem ele o alarme do #7362 não tem o que comparar, e
+ * fabricar um default (`?? 0` ou similar) esconderia justamente o problema
+ * que a issue existe pra resolver ("o teto é invisível pra maquinaria").
+ */
+export interface KitAccount {
+  name: string;
+  plan_type: string;
+  subscriber_limit: number;
+  /** ISO — próxima renovação do ciclo de cobrança do plano. */
+  renews_at: string | null;
+}
+
+export async function getKitAccount(config?: KitConfig): Promise<KitAccount> {
+  const data = await kitFetch<Record<string, unknown> | undefined>("/account", { config });
+  const raw = (data && typeof data.account === "object" && data.account !== null
+    ? (data.account as Record<string, unknown>)
+    : data) as Record<string, unknown> | undefined;
+  const limit = raw?.subscriber_limit;
+  if (typeof limit !== "number" || !Number.isFinite(limit)) {
+    throw new Error(
+      `[kit-client] getKitAccount(): resposta sem "subscriber_limit" numérico (recebido: ${JSON.stringify(data)}) — ` +
+        "não é seguro assumir um teto pra comparação (#7362).",
+    );
+  }
+  return {
+    name: typeof raw?.name === "string" ? raw.name : "",
+    plan_type: typeof raw?.plan_type === "string" ? raw.plan_type : "",
+    subscriber_limit: limit,
+    renews_at: typeof raw?.renews_at === "string" ? raw.renews_at : null,
+  };
+}
