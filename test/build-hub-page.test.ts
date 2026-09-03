@@ -823,12 +823,13 @@ describe('nav "Outros temas" no rodapé do hub (#4913 itens 1/3/4)', () => {
     // fora dela, ex: <link rel="canonical">/og:url — checar o HTML inteiro
     // daria falso positivo, por isso o escopo é só `navHtml`).
     assert.doesNotMatch(navHtml, /href="https:\/\/arquivo\.diar\.ia\.br\/temas\/propria-pagina"/);
-    // item 4: cross-link de volta pro índice do arquivo, reusando o MESMO
-    // footerNavUtm já usado pelo link "diar.ia.br" (nenhuma entrada nova no
-    // registry de UTM).
+    // item 4: cross-link de volta pro ÍNDICE de temas (/temas/, #7347 — não
+    // mais a raiz do arquivo, que lista edições, não temas), reusando o
+    // MESMO footerNavUtm já usado pelo link "diar.ia.br" (nenhuma entrada
+    // nova no registry de UTM).
     assert.match(
       navHtml,
-      /href="https:\/\/arquivo\.diar\.ia\.br\/\?utm_source=hub-propria-pagina&amp;utm_medium=footer-nav"/,
+      /href="https:\/\/arquivo\.diar\.ia\.br\/temas\/\?utm_source=hub-propria-pagina&amp;utm_medium=footer-nav"/,
     );
   });
 
