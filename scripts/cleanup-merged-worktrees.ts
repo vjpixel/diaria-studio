@@ -114,7 +114,7 @@
  *     descartável", e a remoção é `--force`.
  */
 import { spawnSync } from "node:child_process";
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -513,9 +513,28 @@ export function filterOutDirtyWorktrees(
  * `git status --porcelain` no worktree — `true` se há qualquer modificação
  * rastreada ou arquivo untracked, `false` se limpo, `null` se o comando
  * falhou (tratado como sujo por `filterOutDirtyWorktrees`).
+ *
+ * **Diretório INEXISTENTE devolve `false`, não `null` (review do PR #7317).**
+ * Worktree cujo diretório sumiu (apagado à mão, criação que abortou no meio)
+ * mas cujos metadados o git ainda lista é um caso real — e é justamente o
+ * que `selectOrphanedForStaleRemoval` existe pra limpar. Sem esta distinção,
+ * o `spawnSync` falharia por `cwd` inválido, o `null` seria lido como "sujo"
+ * e a entrada ficaria **impossível de limpar pra sempre** — o guard de
+ * sujeira teria criado um vazamento novo justamente no caminho que ele não
+ * precisa proteger: não há trabalho a preservar num diretório que não
+ * existe. `null` fica reservado ao caso genuinamente ambíguo: o diretório
+ * está lá e mesmo assim o git não conseguiu responder (repo corrompido,
+ * permissão, timeout) — aí preservar é o certo.
+ *
+ * **Limite conhecido:** `git status --porcelain` no modo default não lista
+ * arquivo ignorado por `.gitignore`. Trabalho real que viva só num caminho
+ * ignorado não é detectado como sujo. Aceito: conteúdo ignorado não é
+ * produto versionável, e incluir `--ignored` marcaria como sujo todo
+ * worktree com `node_modules/`, o que na prática desligaria o cleanup.
  */
 export function isWorktreeDirtySafe(path: string): boolean | null {
   try {
+    if (!existsSync(path)) return false;
     const result = spawnSync("git", ["status", "--porcelain"], {
       cwd: path,
       encoding: "utf8",

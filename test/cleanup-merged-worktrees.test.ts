@@ -21,6 +21,7 @@ import {
   filterOutInUseWorktrees,
   filterOutLockedWorktrees,
   filterOutDirtyWorktrees,
+  isWorktreeDirtySafe,
   ORPHAN_STALE_THRESHOLD_MS,
 } from "../scripts/cleanup-merged-worktrees.ts";
 import type { SessionRecord } from "../scripts/lib/session-registry.ts";
@@ -587,4 +588,18 @@ test("#7304 — o guard de sujeira também cobre o caminho órfão+stale, não s
   const { kept, skipped } = filterOutDirtyWorktrees(orfaos, () => true);
   assert.deepEqual(kept, []);
   assert.deepEqual(skipped.map((e) => e.path), ["/repo/.claude/worktrees/orfao-sujo"]);
+});
+
+test("#7317 review — worktree cujo diretório sumiu não fica preso no guard de sujeira", () => {
+  // Regressão do finding P3 do review: `null` (git falhou) preserva, mas
+  // diretório INEXISTENTE não é ambiguidade — não há trabalho a preservar,
+  // e é exatamente o caso que selectOrphanedForStaleRemoval limpa. Tratá-lo
+  // como sujo tornaria a entrada impossível de remover pra sempre.
+  const inexistente = "/repo/.claude/worktrees/sumiu-do-disco-7317";
+  assert.equal(isWorktreeDirtySafe(inexistente), false, "diretório ausente → false (limpo), nunca null");
+
+  const entries = [{ path: inexistente, branch: null, locked: false }];
+  const { kept, skipped } = filterOutDirtyWorktrees(entries, isWorktreeDirtySafe);
+  assert.deepEqual(kept.map((e) => e.path), [inexistente], "continua removível");
+  assert.deepEqual(skipped, []);
 });
