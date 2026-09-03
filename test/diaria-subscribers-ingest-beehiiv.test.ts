@@ -8,7 +8,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import {
@@ -16,6 +16,7 @@ import {
   ingestOnePost,
   loadSourceEngagementManifest,
   readPostRecords,
+  invalidateSiblingManifests,
 } from "../scripts/diaria-subscribers-ingest-beehiiv.ts";
 import {
   ensureSubscriber,
@@ -345,5 +346,112 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
       e.includes(".rebuild-tmp-"),
     );
     assert.deepEqual(litter, [], "nenhum `.db` de trabalho sobrou após o swap");
+  });
+
+  // #7298: --reset apaga o .db compartilhado (Kit/Brevo inclusos) mas, sem
+  // este fix, os manifests PRÓPRIOS de Kit/Brevo continuavam dizendo "ok" —
+  // a próxima rodada de kit-subscribers-ingest.ts relataria "0 pendentes /
+  // cobertura 100%" sobre um store que acabou de perder os eventos do Kit.
+  // Este teste reproduz o cenário completo do corpo da issue: popular o
+  // store com dado do Kit (manifest "ok" + evento no .db) → --reset da
+  // Beehiiv → assertar que o manifest do Kit foi invalidado, então a
+  // próxima carga do manifest (`pendingManifestEntries`) volta a marcar o
+  // broadcast como pendente em vez de "100% ok" sobre dado destruído.
+  it("--reset invalida o manifest do Kit (e do Brevo) irmãos no mesmo diretório do .db (#7298)", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-beehiiv-ingest-reset-sibling-"));
+    const dataDir = resolve(tmp, "data/diaria-subscribers");
+    mkdirSync(dataDir, { recursive: true });
+    const dbPath = resolve(dataDir, "diaria-subscribers.db");
+    const manifestPath = resolve(dataDir, "beehiiv-ingest-manifest.json");
+    const kitManifestPath = resolve(dataDir, "kit-ingest-manifest.json");
+    const brevoManifestPath = resolve(dataDir, "brevo-ingest-manifest.json");
+
+    // Store populado com dado do Kit (broadcast já ingerido com sucesso) —
+    // o manifest do Kit reflete esse "ok".
+    const pre = openDiariaSubscribersDb(dbPath);
+    const kitSub = ensureSubscriber(pre, "kit", "kit-ext-1", "kit@x.com", "2026-01-01T00:00:00Z");
+    recordEvent(pre, {
+      subscriberId: kitSub,
+      platform: "kit",
+      type: "sent",
+      externalEventId: "kit-broadcast-1-sent",
+      ts: "2026-01-01T00:00:00Z",
+    });
+    pre.close();
+    writeFileSync(
+      kitManifestPath,
+      JSON.stringify({
+        generated_at: "2026-01-01T00:00:00Z",
+        entries: [{ id: "1", label: "Broadcast 1", status: "ok", counts: { sent: 1 } }],
+      }),
+    );
+    writeFileSync(
+      brevoManifestPath,
+      JSON.stringify({ generated_at: "2026-01-01T00:00:00Z", entries: [{ id: "brevo_diaria", status: "ok" }] }),
+    );
+
+    const sourceManifest: EngagementManifest = {
+      generated_at: "2026-01-02T00:00:00Z",
+      posts: [{ post_id: "post_1", title: "Edição A", status: "ok", count: 1 }],
+    };
+    const sourceDir = makeSourceDir(tmp, sourceManifest, {
+      post_1: [{ subscriber_id: "s1", email: "a@x.com", status: "delivered", timestamp: "2026-01-02T00:00:00Z" }],
+    });
+
+    await main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir, "--reset"]);
+
+    assert.equal(existsSync(kitManifestPath), false, "manifest do Kit foi invalidado pelo reset");
+    assert.equal(existsSync(brevoManifestPath), false, "manifest do Brevo foi invalidado pelo reset (defensivo)");
+
+    // Dado do Kit de fato sumiu do store novo — é exatamente por isso que o
+    // manifest do Kit não pode continuar afirmando "ok".
+    const db = openDiariaSubscribersDb(dbPath);
+    assert.equal(findSubscriberIdsByEmail(db, "kit@x.com").length, 0, "evento do Kit não sobrevive ao reset");
+    db.close();
+  });
+
+  it("invalidateSiblingManifests: no-op (retorna []) quando nenhum manifest irmão existe", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-beehiiv-invalidate-siblings-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const removed = invalidateSiblingManifests(resolve(tmp, "data/diaria-subscribers.db"));
+    assert.deepEqual(removed, []);
+  });
+
+  // Achado do review (#7298): a garantia central do design é "invalidar só
+  // DEPOIS do swap atômico ter sucesso" — sem isso, um `--reset` que aborta
+  // no meio (fonte da fatia 1 ausente, aqui) não pode ter tocado nada. O
+  // teste acima ("--reset reconstrói...") só cobre o caminho de SUCESSO;
+  // este cobre o caminho de ABORTO, que é a metade da garantia que faltava.
+  it("--reset que ABORTA antes do swap (fonte da fatia 1 ausente) NÃO invalida os manifests irmãos", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-beehiiv-ingest-reset-abort-"));
+    const dataDir = resolve(tmp, "data/diaria-subscribers");
+    mkdirSync(dataDir, { recursive: true });
+    const dbPath = resolve(dataDir, "diaria-subscribers.db");
+    const manifestPath = resolve(dataDir, "beehiiv-ingest-manifest.json");
+    const kitManifestPath = resolve(dataDir, "kit-ingest-manifest.json");
+    const brevoManifestPath = resolve(dataDir, "brevo-ingest-manifest.json");
+    const kitManifestContent = JSON.stringify({
+      generated_at: "2026-01-01T00:00:00Z",
+      entries: [{ id: "1", status: "ok" }],
+    });
+    writeFileSync(kitManifestPath, kitManifestContent);
+    writeFileSync(brevoManifestPath, kitManifestContent);
+
+    // Fonte da fatia 1 propositalmente AUSENTE — main() precisa abortar
+    // (exitCode 1) ANTES de sequer construir o store novo, e portanto muito
+    // antes de qualquer invalidação de manifest irmão.
+    const missingSourceDir = resolve(tmp, "no-such-source-dir");
+    const originalExit = process.exitCode;
+    await main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", missingSourceDir, "--reset"]);
+    assert.equal(process.exitCode, 1, "aborta cedo — fonte da fatia 1 ausente");
+    process.exitCode = originalExit;
+
+    assert.equal(existsSync(kitManifestPath), true, "manifest do Kit sobrevive a um reset abortado");
+    assert.equal(existsSync(brevoManifestPath), true, "manifest do Brevo sobrevive a um reset abortado");
+    assert.equal(
+      readFileSync(kitManifestPath, "utf8"),
+      kitManifestContent,
+      "conteúdo intocado, não só o arquivo presente",
+    );
   });
 });

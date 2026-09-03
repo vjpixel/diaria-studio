@@ -73,14 +73,35 @@
  * `.db` sem apagar o manifest PRÓPRIO não reingere nada — o manifest desta
  * ingestão marca os posts como `ok` e `pendingManifestEntries` os pula.
  *
- * `--reset` apaga só os dois arquivos que ESTA ingestão possui (`--db` +
+ * `--reset` apaga os dois arquivos que ESTA ingestão possui (`--db` +
  * `--manifest`) — nunca o manifest da fatia 1
  * (`data/beehiiv-backup/subscriber-engagement/manifest.json`, fonte
- * READ-ONLY desta ingestão). Se o `--db` compartilhar o store unificado com
+ * READ-ONLY desta ingestão). O `--db` compartilha o store unificado com
  * outras plataformas (Kit, Brevo — `scripts/diaria-subscribers-ingest-
- * {kit,brevo}.ts`) já ingeridas, `--reset` apaga os dados delas também
- * (é o MESMO arquivo `.db`); reingerir as outras plataformas depois é
- * responsabilidade de quem roda o comando, não deste script.
+ * {kit,brevo}.ts`) já ingeridas, então `--reset` apaga os dados delas
+ * também (é o MESMO arquivo `.db`, reconstruído do zero só com Beehiiv).
+ *
+ * ## `--reset` invalida os manifests IRMÃOS (#7298)
+ *
+ * Kit e Brevo mantêm manifest PRÓPRIO (`kit-ingest-manifest.json`,
+ * `brevo-ingest-manifest.json`, mesmo diretório do `.db`) que decide
+ * idempotência olhando só pra si mesmo — nenhum dos dois sabia que o `.db`
+ * tinha sido trocado por baixo. Sem isso, depois de um `--reset` da
+ * Beehiiv o manifest do Kit continuava dizendo `ok` para broadcasts cujo
+ * `event` acabou de ser destruído junto com o `.db` velho, e
+ * `kit-subscribers-ingest.ts` relatava "0 pendentes / cobertura 100%" —
+ * perda silenciosa com o sistema afirmando saúde total (achado ao vivo,
+ * corpo da issue #7298). Por isso, depois da instalação atômica do store
+ * novo (nunca antes — um `--reset` que aborta no meio não deve invalidar
+ * nada, o `.db` velho continua valendo), este script também apaga
+ * `kit-ingest-manifest.json` e `brevo-ingest-manifest.json` se existirem
+ * ao lado do `.db`. Brevo já se autocura sozinho (full re-sync sempre,
+ * nunca lê pendência do próprio manifest — ver docstring de
+ * `diaria-subscribers-ingest-brevo.ts`), então invalidar o dele aqui é só
+ * defensivo; o Kit é quem de fato depende disto para não mentir cobertura.
+ * Reingerir as outras plataformas continua sendo passo manual de quem roda
+ * o comando — o que muda é que elas agora SABEM que precisam rodar, em vez
+ * de acharem (erradamente) que já estão em dia.
  *
  * ## `--reset` é atômico entre máquinas (#7187)
  *
@@ -311,6 +332,53 @@ function saveManifest(path: string, manifest: IngestManifest): void {
   writeFileAtomic(path, JSON.stringify(manifest, null, 2) + "\n");
 }
 
+/** Manifests de ingestões IRMÃS que vivem no mesmo diretório do `.db`
+ *  compartilhado — nomes hardcoded (em vez de importados de
+ *  `diaria-subscribers-ingest-{kit,brevo}.ts`) porque a invalidação segue a
+ *  dir do `.db` que ESTE reset de fato instalou, não o `DEFAULT_DB_PATH` que
+ *  o script irmão calcularia por conta própria com um `--db` customizado
+ *  diferente (ver #7298). */
+const SIBLING_MANIFEST_FILENAMES = ["kit-ingest-manifest.json", "brevo-ingest-manifest.json"];
+
+/**
+ * Apaga (se existirem) os manifests das ingestões irmãs no mesmo diretório
+ * do `.db` recém-instalado — chamado só DEPOIS do swap atômico ter
+ * sucedido (#7298; ver docstring do módulo "`--reset` invalida os
+ * manifests IRMÃOS"). Devolve os paths de fato removidos, pra log/summary.
+ *
+ * Best-effort por arquivo (achado do review, #7298) — mesmo padrão dos
+ * outros `rmSync` deste módulo que vivem na mesma janela pós-swap
+ * (`atomicCommitRebuild`, sidecars `-wal`/`-shm`/`-journal`): o `.db` e os
+ * manifests irmãos moram em `data/diaria-subscribers/`, junctioned pro
+ * OneDrive, que segura arquivos por ~100-500ms durante sync no Windows. Se
+ * `rmSync` lançasse sem `try/catch`, uma corrida de lock (a) faria a run
+ * terminar com `exitCode: 1` mesmo com o reset do `.db` já tendo tido
+ * sucesso, e (b) uma falha no 1º arquivo do loop faria o 2º nunca ser
+ * tentado — os dois sintomas piores do que o problema que esta função
+ * existe pra resolver. Falha vira warning no stderr; a invalidação
+ * pendente é inerte (o pior caso é o manifest ficar `ok` por mais um
+ * ciclo, exatamente o estado PRÉ-fix, não um estado novo).
+ */
+export function invalidateSiblingManifests(dbPath: string): string[] {
+  const dir = dirname(dbPath);
+  const removed: string[] = [];
+  for (const filename of SIBLING_MANIFEST_FILENAMES) {
+    const p = resolve(dir, filename);
+    if (existsSync(p)) {
+      try {
+        rmSync(p, { force: true });
+        removed.push(p);
+      } catch (e) {
+        console.error(
+          `⚠️  --reset: falha ao invalidar manifest irmão ${p} (${(e as Error).message}) — ` +
+            `best-effort, seguindo (#7298).`,
+        );
+      }
+    }
+  }
+  return removed;
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -445,9 +513,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // completo e a conexão fechada. A partir daqui, o `dbPath` definitivo é ou
   // o store velho (se o rename falhar — exceção propagada, run aborta) ou o
   // novo completo; nunca partial nem ausente.
+  let invalidatedSiblingManifests: string[] = [];
   if (rebuildTmpPath) {
     atomicCommitRebuild(rebuildTmpPath, dbPath);
     console.error(`✅ --reset: store novo instalado atomicamente em ${dbPath} (#7187)`);
+
+    // #7298: só invalida os manifests irmãos DEPOIS do swap ter sucesso —
+    // se a run tivesse abortado antes, o `.db` velho (com dado do Kit/Brevo
+    // intacto) continuaria valendo, e apagar o manifest deles seria
+    // invalidação sem motivo.
+    invalidatedSiblingManifests = invalidateSiblingManifests(dbPath);
+    for (const p of invalidatedSiblingManifests) {
+      console.error(`🗑️  --reset: manifest irmão invalidado ${p} (#7298 — força reingestão na próxima rodada)`);
+    }
   }
 
   const coverage = manifestCoverageSummary(manifest);
@@ -469,6 +547,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           result: rosterResult,
         },
         store_counts: storeCounts,
+        reset_invalidated_sibling_manifests: invalidatedSiblingManifests,
       },
       null,
       2,
