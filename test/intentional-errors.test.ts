@@ -4,7 +4,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,8 +16,10 @@ import {
   destaqueFromLocation,
   frontmatterToEntry,
   syncFrontmatterToEntries,
+  scanWrongValueAdoption,
   type IntentionalError,
   type IntentionalErrorFrontmatter,
+  type IntentionalErrorJson,
 } from "../scripts/lib/intentional-errors.ts";
 
 const SAMPLE_LINE_1 = JSON.stringify({
@@ -341,5 +343,81 @@ describe("syncFrontmatterToEntries — idempotência (#754)", () => {
     const second = syncFrontmatterToEntries(fm, "260510", first.entries);
     assert.equal(second.added, false);
     assert.equal(second.updated, false);
+  });
+});
+
+describe("scanWrongValueAdoption (#7324)", () => {
+  function writeEdition(root: string, edition: string, record: IntentionalErrorJson | null): void {
+    const internalDir = join(root, edition, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    if (record !== null) {
+      writeFileSync(join(internalDir, "intentional-error.json"), JSON.stringify(record, null, 2));
+    }
+  }
+
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "wrong-value-adoption-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("retorna zeros quando o diretório não existe (fail-soft)", () => {
+    const r = scanWrongValueAdoption(join(root, "nao-existe"));
+    assert.deepEqual(r, { totalDeclared: 0, missingWrongValue: 0 });
+  });
+
+  it("conta só edições com erro de fato declarado — não-declarado/placeholder/no_error ficam fora", () => {
+    // Sem intentional-error.json — edição pré-#3222 ou stage 2 não rodou ainda.
+    writeEdition(root, "260901", null);
+    // no_error: true — estado legítimo, não conta como "declarado".
+    writeEdition(root, "260902", { no_error: true });
+    // description placeholder — render-erro-intencional.ts inseriu o esqueleto,
+    // editor ainda não preencheu — não conta.
+    writeEdition(root, "260903", {
+      description: "{PREENCHER}",
+      wrong_value: "{PREENCHER}",
+    });
+    const r = scanWrongValueAdoption(root);
+    assert.deepEqual(r, { totalDeclared: 0, missingWrongValue: 0 });
+  });
+
+  it("conta wrong_value ausente e placeholder como missing; valor real não conta", () => {
+    writeEdition(root, "260904", {
+      description: "erro real declarado",
+      location: "RADAR",
+      category: "ortografico",
+      correct_value: "Anthropic",
+      // wrong_value ausente
+    });
+    writeEdition(root, "260905", {
+      description: "outro erro real",
+      location: "DESTAQUE 1",
+      category: "factual",
+      correct_value: "Y",
+      wrong_value: "{PREENCHER — valor errado plantado}",
+    });
+    writeEdition(root, "260906", {
+      description: "erro com wrong_value preenchido",
+      location: "DESTAQUE 2",
+      category: "ortografico",
+      correct_value: "Anthropic",
+      wrong_value: "Anthropik",
+    });
+    const r = scanWrongValueAdoption(root);
+    assert.deepEqual(r, { totalDeclared: 3, missingWrongValue: 2 });
+  });
+
+  it("tolera entries que não são diretórios de edição (sem _internal/intentional-error.json)", () => {
+    writeFileSync(join(root, "README.md"), "não é edição");
+    writeEdition(root, "260907", {
+      description: "erro real",
+      wrong_value: "X",
+    });
+    const r = scanWrongValueAdoption(root);
+    assert.deepEqual(r, { totalDeclared: 1, missingWrongValue: 0 });
   });
 });
