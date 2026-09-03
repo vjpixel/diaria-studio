@@ -64,7 +64,12 @@ describe("classifyCodexCredential (#7250)", () => {
   });
 
   it("usage_limit_reached é esgotada, com a data de retorno preservada", () => {
-    const v = classifyCodexCredential(POOL_REAL[0]);
+    // #7320: relógio PINADO. Desde que a classificação passou a comparar
+    // `resets_at` com o agora, este teste (que afirma `esgotada` sobre uma
+    // fixture cuja data de retorno é 2026-09-29) quebraria sozinho naquela
+    // data se continuasse usando o relógio real — falha de calendário, não
+    // de código. `03/09` é o dia da medição que gerou a fixture.
+    const v = classifyCodexCredential(POOL_REAL[0], "2026-09-03T09:00:00Z");
     assert.equal(v.state, "esgotada");
     assert.equal(v.label, "vjpixel");
     assert.match(v.resetsAtIso ?? "", /^2026-09-29T/);
@@ -121,7 +126,11 @@ describe("parseResetAt (#7250)", () => {
 
 describe("evaluateCodexPool (#7250)", () => {
   it("o estado real de 03/09 dispara alarme — resta 1 viva de 3", () => {
-    const v = evaluateCodexPool(POOL_REAL);
+    // #7320: relógio pinado pelo mesmo motivo do teste acima — `esgotadas: 2`
+    // vira `1` a partir de 2026-09-29, quando a data de retorno de `vjpixel`
+    // vence. O nome do teste já diz "o estado real de 03/09"; agora o código
+    // diz também.
+    const v = evaluateCodexPool(POOL_REAL, undefined, "2026-09-03T09:00:00Z");
     assert.equal(v.vivas, 1);
     assert.equal(v.esgotadas, 2);
     assert.equal(v.shouldAlarm, true, "com 1 viva o alarme tem de disparar");
@@ -250,12 +259,12 @@ describe("buildCodexAlarmMessage (#7250)", () => {
 });
 
 const ESGOTADA_VOLTA_29_09 = {
-  label: "vjpixel",
-  last_status: "exhausted",
-  last_error_reason: "usage_limit_reached",
-  last_error_code: 429,
-  last_error_reset_at: Date.parse("2026-09-29T17:45:00Z") / 1000,
-};
+    label: "vjpixel",
+    last_status: "exhausted",
+    last_error_reason: "usage_limit_reached",
+    last_error_code: 429,
+    last_error_reset_at: Date.parse("2026-09-29T17:45:00Z") / 1000,
+  };
 
 describe("#7320 — resets_at no passado", () => {
   // ─── #7320 ───

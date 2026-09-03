@@ -147,7 +147,19 @@ export function parseResetAt(raw: number | string | null | undefined): string | 
  *
  * `nowIso` é injetado (nunca `Date.now()` por dentro) pra que o teste não
  * fique refém do calendário — mesmo relógio que `buildCodexAlarmMessage` já
- * recebe. Omitido, usa o agora real.
+ * recebe. Omitido, usa o agora real. **Teste que afirma `esgotada` sobre
+ * fixture com `resets_at` PRECISA pinar o relógio**, senão passa a falhar
+ * sozinho na data de retorno da fixture (aconteceu com 2 testes deste
+ * módulo, corrigidos junto — review do PR #7322).
+ *
+ * **Efeito colateral declarado: a dedupe do alarme deixa de suprimir no dia
+ * do vencimento.** `computeCodexPoolFingerprint` deriva do conjunto de
+ * ESTADOS, não do conteúdo de `auth.json` — quando a data vence, o estado
+ * muda (`esgotada` → `indeterminada`) mesmo com o arquivo byte a byte
+ * idêntico, o fingerprint muda junto, e sai um e-mail. Isso é o alarme
+ * funcionando, não repetindo: o que se sabe sobre aquelas contas de fato
+ * mudou. Vale UM e-mail por conta por data de retorno; depois o fingerprint
+ * estabiliza de novo e o alarme volta a calar.
  */
 export function classifyCodexCredential(
   entry: CodexCredentialEntry,
@@ -169,7 +181,13 @@ export function classifyCodexCredential(
     const base = `${entry.last_error_reason ?? "?"} (HTTP ${code ?? "?"})`;
     // #7320: a data de retorno já passou e nada usou a conta desde então —
     // não dá pra afirmar nem esgotamento nem recuperação.
-    if (resetsAtIso !== null && Date.parse(resetsAtIso) < Date.parse(nowIso)) {
+    // `nowIso` ilegível não pode virar comparação silenciosamente falsa
+    // (`x < NaN` é `false`, o que devolveria `esgotada` sem dizer por quê).
+    // Nenhum caller de produção passa lixo hoje — o guard existe pro dia em
+    // que passar. Ver review do PR #7322.
+    const nowMs = Date.parse(nowIso);
+    const resetMs = resetsAtIso === null ? Number.NaN : Date.parse(resetsAtIso);
+    if (Number.isFinite(nowMs) && Number.isFinite(resetMs) && resetMs < nowMs) {
       return {
         label,
         state: "indeterminada",
