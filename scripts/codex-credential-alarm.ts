@@ -21,10 +21,14 @@
  * ─── Por que a urgência é maior do que parece ───────────────────────────────
  *
  * Medição de 03/09/2026 (a que motivou este script): 2 das 3 contas
- * `exhausted`, com reset em **29/09 e 02/10** — ~26 e ~29 dias. O limite é
- * MENSAL, não diário. Se a última esgotar, a delegação Codex fica fora por
- * semanas, e hoje nada avisa: o editor descobriria pela ausência de trabalho
- * entregue.
+ * `exhausted`, com retorno em 29/09 e 02/10 — datas que a PRÓPRIA OpenAI
+ * devolve no corpo do 429 (`resets_at`), não estimativa nossa. Nas 6 amostras
+ * registradas em `~/.hermes/sessions/`, o `resets_in_seconds` que acompanha
+ * essas respostas ficou entre 21,9 e 29,2 dias.
+ *
+ * A volta, portanto, é medida em SEMANAS. Se a última conta esgotar, a
+ * delegação Codex não fica fora por algumas horas — e hoje nada avisa: o
+ * editor descobriria pela ausência de trabalho entregue.
  *
  * ─── Onde roda ──────────────────────────────────────────────────────────────
  *

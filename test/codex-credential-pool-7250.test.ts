@@ -197,7 +197,7 @@ describe("buildCodexAlarmMessage (#7250)", () => {
     assert.match(msg, /Resta 1 conta Codex viva de 3/);
     assert.match(msg, /vjpixel/);
     assert.match(msg, /2026-09-29/);
-    assert.match(msg, /MENSAL/, "o reset mensal é o que muda a urgência — tem de estar na mensagem");
+    assert.match(msg, /SEMANAS/, "o horizonte em semanas é o que muda a urgência — tem de estar na mensagem");
   });
 
   it("quando todas esgotam, a mensagem diz que a delegação PAROU", () => {

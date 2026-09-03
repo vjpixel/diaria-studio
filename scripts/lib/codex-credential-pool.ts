@@ -25,10 +25,20 @@
  *   diaria.editor  exhausted  usage_limit_reached  429  volta 2026-10-02
  *   memelab        ok
  *
- * **O reset é mensal, não diário.** As duas contas esgotadas voltam em ~26 e
- * ~29 DIAS. Isso reenquadra o risco: se a última conta esgotar, a delegação
- * Codex não fica fora por algumas horas — fica fora por semanas, e nada avisa.
- * O editor descobriria pela ausência de trabalho entregue.
+ * **A data não é inferida: vem da própria OpenAI.** O corpo do 429 traz
+ * `resets_at` (epoch) e `resets_in_seconds`, e o Hermes copia o primeiro para
+ * `last_error_reset_at`. Nas 6 amostras registradas em `~/.hermes/sessions/`,
+ * `resets_in_seconds` variou entre **21,9 e 29,2 dias** — todas em `plan_type:
+ * "go"`.
+ *
+ * Isso é o que muda o risco: o horizonte de recuperação é de SEMANAS, não de
+ * horas. Se a última conta esgotar, a delegação Codex fica fora por semanas e
+ * nada avisa — o editor descobriria pela ausência de trabalho entregue.
+ *
+ * O que essas amostras NÃO provam é o formato do ciclo. Uma janela de 30 dias
+ * explicaria os números; uma janela semanal com acúmulo também. Este módulo
+ * não afirma nem depende de nenhuma das duas: ele só repassa a data que a
+ * OpenAI devolveu.
  *
  * ─── A distinção que decide se o alarme presta ──────────────────────────────
  *
@@ -204,7 +214,7 @@ export function buildCodexAlarmMessage(v: CodexPoolVerdict, nowIso: string): str
 
   const nota = v.allExhausted
     ? "Nenhum trabalho delegado ao Codex vai rodar até uma conta voltar ou ser recarregada."
-    : "Quando a última esgotar, a delegação para — e o reset é MENSAL, não diário.";
+    : "Quando a última esgotar, a delegação para — e a volta é medida em SEMANAS, não em horas.";
 
   const indet = v.indeterminadas > 0
     ? `\n${v.indeterminadas} conta(s) em estado INDETERMINADO — o Hermes registrou falha sem razão de cota reconhecível. Pode ser OAuth expirado ou rede, não necessariamente cota. Não são contadas como vivas (fail-closed).\n`
@@ -219,5 +229,6 @@ export function buildCodexAlarmMessage(v: CodexPoolVerdict, nowIso: string): str
     indet,
     `Fonte: ~/.hermes/auth.json → credential_pool["openai-codex"], lido em ${nowIso}.`,
     "Não há endpoint de saldo — estas contas são OAuth, então o único sinal é o resultado da última tentativa de uso.",
+    "A data de retorno é a que a OpenAI devolve no 429 (`resets_at`), não uma estimativa nossa.",
   ].join("\n");
 }
