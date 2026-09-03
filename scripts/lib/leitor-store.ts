@@ -118,6 +118,7 @@ import {
   getAliasesForSubscriber,
   getSubscriptionsForSubscriber,
   getAllSubscriberPlatforms,
+  computeSubscriptionCoverage,
   type Platform,
 } from "./diaria-subscribers-db.ts";
 import { isLeitorV1, LEITOR_V1_THRESHOLDS, type LeitorInput, type LeitorThresholds } from "./leitor.ts";
@@ -473,7 +474,10 @@ export function summarizeStoreLeitores(
     if (!subs.some((s) => platforms.includes(s.platform))) missingSubscription++;
   }
 
-  const coverage = totalSubscribers > 0 ? (totalSubscribers - missingSubscription) / totalSubscribers : 1;
+  // Fórmula extraída pra `computeSubscriptionCoverage` (#7294) — mesma
+  // divisão de sempre (presença por assinante), agora fonte única
+  // compartilhada com `getStoreCounts` em vez de reimplementada aqui.
+  const coverage = computeSubscriptionCoverage(totalSubscribers, totalSubscribers - missingSubscription);
   const subscription_data_coverage_low =
     totalSubscribers > 0 && coverage < LEITOR_SUBSCRIPTION_COVERAGE_WARN_FRACTION;
   if (subscription_data_coverage_low) {
