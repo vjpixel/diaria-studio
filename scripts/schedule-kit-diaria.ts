@@ -137,10 +137,35 @@ export async function scheduleKitDiaria(
     return { code: 2, reason: "_internal/kit-diaria-published.json ausente — canal pulou a Etapa 5." };
   }
 
-  // Idempotência em resume: já agendado é caminho feliz, não re-PATCH.
+  // Idempotência em resume: só é caminho feliz se o broadcast VIVO confirma
+  // o agendamento — nunca a partir do cache local sozinho (#7285). Um PATCH
+  // de conteúdo no meio do caminho derruba o agendamento por baixo (#6181)
+  // sem reescrever o estado local; confiar cegamente no "scheduled" daqui
+  // faria o script responder "já agendado" sobre um broadcast que voltou a
+  // draft — nada sai, nada acusa (achado ao vivo, edição 260903, corpo da
+  // issue #7285). Mesma disciplina de nunca descrever estado externo a
+  // partir do gloss de um estado local sem validar.
   if (state.status === "scheduled" && state.scheduled_at) {
-    deps.log(`já agendado para ${state.scheduled_at} — no-op.`);
-    return { code: 0, scheduledAt: state.scheduled_at, broadcastId: state.broadcast_id };
+    let live: { send_at?: string | null };
+    try {
+      live = await deps.verify(state.broadcast_id);
+    } catch (e) {
+      return { code: 4, reason: `GET de verificação (checagem de idempotência) falhou: ${(e as Error).message}` };
+    }
+    const liveMs = live.send_at ? Date.parse(live.send_at) : NaN;
+    const targetMs = Date.parse(scheduledAt);
+    if (live.send_at && Number.isFinite(liveMs) && Number.isFinite(targetMs) && liveMs === targetMs) {
+      deps.log(`já agendado para ${live.send_at} (confirmado ao vivo) — no-op.`);
+      return { code: 0, scheduledAt: live.send_at, broadcastId: state.broadcast_id };
+    }
+    deps.log(
+      `estado local dizia "scheduled" para ${state.scheduled_at}, mas o broadcast vivo está ` +
+        `${live.send_at ? `agendado para ${live.send_at} (alvo diferente)` : "draft/sem send_at"} — ` +
+        `reagendando em vez de confiar no cache (#7285).`,
+    );
+    // Cai pro PATCH abaixo — o alvo (`scheduledAt`) já é conhecido, então
+    // reagendar é a ação certa (não um código de "estado defasado" que só
+    // empurraria o problema pra quem lê o exit code decidir sozinho).
   }
 
   try {
