@@ -100,9 +100,9 @@ passo 7, que não é sinal real sobre o teste de produção.
 4. **Confirmar o double opt-in** — o worker cria o subscriber `inactive` e
    vincula ao form DOI do Kit (`KIT_DOI_FORM_ID`, dashboard Kit → form
    "Newsletter site"), que dispara o e-mail de confirmação (copy em
-   `docs/kit-doi-confirmation-copy.md`). Abra o e-mail (chega na caixa de
-   `vjpixel@gmail.com`, já que os e-mails de teste são plus-addressing sobre
-   ela) e clique no link de confirmação.
+   `docs/kit-doi-confirmation-copy.md`). Abra o e-mail de confirmação (chega na
+   caixa de `vjpixel@gmail.com`, já que os e-mails de teste são
+   plus-addressing sobre ela) e clique no link de confirmação.
 
 5. **Na página de destino pós-confirmação**, inspecionar `document.cookie`
    de novo, mesmo processo do passo 2. **Anotar qual URL o link de

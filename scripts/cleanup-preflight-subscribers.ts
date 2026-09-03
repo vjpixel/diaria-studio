@@ -34,10 +34,11 @@
  *   npx tsx scripts/cleanup-preflight-subscribers.ts --campaign preflight-2608          # dry-run
  *   npx tsx scripts/cleanup-preflight-subscribers.ts --campaign preflight-2608 --push    # executa
  *
- * `--email` (herdado do #5736, endurecimento): limpa UM endereço avulso
- * passado literalmente, sem exigir `--campaign` nem que o e-mail bata o
- * padrão `vjpixel+test-preflight-{arm}-{campaign}@gmail.com` de
- * `preflight-utm-arms.ts`. Mutuamente exclusivo com `--campaign`.
+ * `--email` (#5736, endurecimento): limpa UM endereço avulso passado
+ * literalmente, sem exigir `--campaign` nem que o e-mail bata o padrão
+ * `vjpixel+test-preflight-{arm}-{campaign}@gmail.com` de
+ * `preflight-utm-arms.ts`. Mutuamente exclusivo com `--campaign` (migrado
+ * pro Kit no #7359, resto do critério de match inalterado desde a #5736).
  *   npx tsx scripts/cleanup-preflight-subscribers.ts --email vjpixel+preflightgoogle@gmail.com          # dry-run
  *   npx tsx scripts/cleanup-preflight-subscribers.ts --email vjpixel+preflightgoogle@gmail.com --push    # executa
  *
