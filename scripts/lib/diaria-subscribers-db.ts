@@ -192,6 +192,10 @@ export interface SubscriberEvent {
   /** Edição/broadcast associado ao evento, quando aplicável. */
   edicao?: string | null;
   url?: string | null;
+  /** Refinamento opcional de `type` — hoje só "hard"/"soft" para
+   *  type="bounce" (Brevo, #7203). Ver comentário da coluna `subtype` em
+   *  `SCHEMA`. */
+  subtype?: string | null;
   /** ISO 8601. */
   ts: string;
 }
@@ -204,6 +208,7 @@ export interface TimelineEvent {
   external_event_id: string;
   edicao: string | null;
   url: string | null;
+  subtype: string | null;
   ts: string;
 }
 
@@ -253,6 +258,16 @@ CREATE INDEX IF NOT EXISTS idx_subscription_platform ON subscription(platform);
 -- docstring do módulo) -- só precisa apontar pra um subscriber já resolvido
 -- via ensureSubscriber. Chave natural (platform, type, external_event_id)
 -- garante idempotência do builder.
+--
+-- subtype (#7203): refinamento OPCIONAL de "type", nunca um eixo próprio.
+-- Hoje só a Brevo grava, "hard"/"soft" para type="bounce" (a chave natural
+-- já distingue hardBounces de softBounces via "category" na external_event_id
+-- -- subtype não entra em nenhuma UNIQUE, é metadado de leitura). Deliberado:
+-- computeReceivedForPlatform (leitor-store.ts) deriva recebidas como
+-- "sent - bounce" lendo literalmente type = 'bounce' -- criar tipos novos
+-- (bounce_hard/bounce_soft) quebraria esse cálculo em silêncio; subtype
+-- nullable preserva o eixo existente e só adiciona detalhe pra quem
+-- precisar da dureza do bounce.
 CREATE TABLE IF NOT EXISTS event (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   subscriber_id       INTEGER,
@@ -261,6 +276,7 @@ CREATE TABLE IF NOT EXISTS event (
   external_event_id   TEXT NOT NULL,
   edicao              TEXT,
   url                 TEXT,
+  subtype             TEXT,
   ts                  TEXT NOT NULL,
   UNIQUE(platform, type, external_event_id)
 );
@@ -342,6 +358,47 @@ export function migrateSubscriptionColumns(db: DatabaseSync): void {
     ).map((c) => c.name),
   );
   for (const col of SUBSCRIPTION_MIGRATION_COLUMNS) {
+    if (existing.has(col.name)) continue;
+    try {
+      db.exec(col.ddl);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.includes("duplicate column name")) throw err;
+      // Processo concorrente já adicionou a coluna entre o PRAGMA acima e
+      // este exec — mesmo resultado final, seguir sem lançar.
+    }
+  }
+}
+
+/**
+ * Colunas de `event` adicionadas DEPOIS de `CREATE TABLE IF NOT EXISTS` já
+ * ter povoado o store em produção (#7203 — mesma razão de
+ * `SUBSCRIPTION_MIGRATION_COLUMNS`/`migrateSubscriptionColumns` acima: `event`
+ * já tem 77.945 linhas medidas em produção quando `subtype` foi acrescentado,
+ * então `CREATE TABLE IF NOT EXISTS` sozinho não basta — precisa de `ALTER
+ * TABLE` idempotente contra um `.db` que já existe sem a coluna.
+ */
+const EVENT_MIGRATION_COLUMNS: ReadonlyArray<{ name: string; ddl: string }> = [
+  { name: "subtype", ddl: "ALTER TABLE event ADD COLUMN subtype TEXT" },
+];
+
+/**
+ * Aplica as colunas de `EVENT_MIGRATION_COLUMNS` que ainda não existem em
+ * `event` — mesmo padrão de `migrateSubscriptionColumns` (checa via `PRAGMA
+ * table_info`, engole `duplicate column name` de um processo concorrente que
+ * já adicionou a coluna, relança qualquer outro erro). Chamada
+ * automaticamente por `openDiariaSubscribersDb` — nenhum consumidor precisa
+ * lembrar de rodá-la manualmente.
+ */
+export function migrateEventColumns(db: DatabaseSync): void {
+  const existing = new Set(
+    (
+      db.prepare("PRAGMA table_info(event)").all() as unknown as Array<{
+        name: string;
+      }>
+    ).map((c) => c.name),
+  );
+  for (const col of EVENT_MIGRATION_COLUMNS) {
     if (existing.has(col.name)) continue;
     try {
       db.exec(col.ddl);
@@ -508,6 +565,7 @@ export function openDiariaSubscribersDb(
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
   migrateSubscriptionColumns(db);
+  migrateEventColumns(db);
   return db;
 }
 
@@ -652,8 +710,8 @@ export function recordEvent(
   const result = db
     .prepare(
       `INSERT OR IGNORE INTO event
-         (subscriber_id, platform, type, external_event_id, edicao, url, ts)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (subscriber_id, platform, type, external_event_id, edicao, url, subtype, ts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       event.subscriberId,
@@ -662,6 +720,7 @@ export function recordEvent(
       event.externalEventId,
       event.edicao ?? null,
       event.url ?? null,
+      event.subtype ?? null,
       event.ts,
     );
   return { inserted: result.changes > 0 };
@@ -766,7 +825,7 @@ export function getSubscriberTimeline(
 ): TimelineEvent[] {
   return db
     .prepare(
-      `SELECT id, subscriber_id, platform, type, external_event_id, edicao, url, ts
+      `SELECT id, subscriber_id, platform, type, external_event_id, edicao, url, subtype, ts
        FROM event WHERE subscriber_id = ? ORDER BY ts ASC`,
     )
     .all(subscriberId) as unknown as TimelineEvent[];

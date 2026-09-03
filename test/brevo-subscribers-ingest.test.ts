@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { extractContactEvents } from "../scripts/lib/brevo-stats.ts";
 import {
   mapStatCategoryToEventType,
+  mapStatCategoryToBounceSubtype,
   buildBrevoEventExternalId,
   ingestBrevoContact,
   extractBrevoContactAttributes,
@@ -113,6 +114,25 @@ describe("mapStatCategoryToEventType", () => {
     assert.equal(mapStatCategoryToEventType("softBounces"), "bounce");
     assert.equal(mapStatCategoryToEventType("unsubscriptions"), "unsub");
     assert.equal(mapStatCategoryToEventType("complaints"), "complaint");
+  });
+});
+
+describe("mapStatCategoryToBounceSubtype (#7203)", () => {
+  it("hardBounces -> 'hard', softBounces -> 'soft'", () => {
+    assert.equal(mapStatCategoryToBounceSubtype("hardBounces"), "hard");
+    assert.equal(mapStatCategoryToBounceSubtype("softBounces"), "soft");
+  });
+
+  it("as demais 5 categorias -> null (dureza não se aplica)", () => {
+    for (const category of [
+      "messagesSent",
+      "opened",
+      "clicked",
+      "unsubscriptions",
+      "complaints",
+    ] as const) {
+      assert.equal(mapStatCategoryToBounceSubtype(category), null, `esperava null para ${category}`);
+    }
   });
 });
 
@@ -289,6 +309,96 @@ describe("ingestBrevoContact", () => {
     const db = openDiariaSubscribersDb(":memory:");
     const result = ingestBrevoContact(db, "brevo_diaria", 1, { id: 1, email: "a@x.com" });
     assert.equal(result.attributesWritten, 0);
+    db.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // subtype hard/soft do bounce (#7203)
+  // -------------------------------------------------------------------------
+
+  it("hardBounces grava event.subtype = 'hard'", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBrevoContact(db, "brevo_diaria", 1, {
+      id: 1,
+      email: "a@x.com",
+      statistics: { hardBounces: [{ campaignId: 1, eventTime: "2026-01-01T00:00:00Z" }] },
+    });
+    const [subId] = findSubscriberIdsByEmail(db, "a@x.com");
+    const timeline = getSubscriberTimeline(db, subId);
+    assert.equal(timeline.length, 1);
+    assert.equal(timeline[0].type, "bounce");
+    assert.equal(timeline[0].subtype, "hard");
+    db.close();
+  });
+
+  it("softBounces grava event.subtype = 'soft'", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBrevoContact(db, "brevo_diaria", 1, {
+      id: 1,
+      email: "a@x.com",
+      statistics: { softBounces: [{ campaignId: 1, eventTime: "2026-01-01T00:00:00Z" }] },
+    });
+    const [subId] = findSubscriberIdsByEmail(db, "a@x.com");
+    const timeline = getSubscriberTimeline(db, subId);
+    assert.equal(timeline[0].type, "bounce");
+    assert.equal(timeline[0].subtype, "soft");
+    db.close();
+  });
+
+  it("categorias sem dureza (ex: opened) gravam subtype null", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBrevoContact(db, "brevo_diaria", 1, {
+      id: 1,
+      email: "a@x.com",
+      statistics: { opened: [{ campaignId: 1, eventTime: "2026-01-01T00:00:00Z" }] },
+    });
+    const [subId] = findSubscriberIdsByEmail(db, "a@x.com");
+    assert.equal(getSubscriberTimeline(db, subId)[0].subtype, null);
+    db.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // listIds[] inteiro, não só o 1º (#7203 — antes descartado em silêncio)
+  // -------------------------------------------------------------------------
+
+  it("listIds com múltiplas listas: subscription.source continua só a 1ª, mas TODAS sobrevivem em subscriber_attribute", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const result = ingestBrevoContact(db, "brevo_diaria", 1, {
+      id: 1,
+      email: "a@x.com",
+      createdAt: "2026-01-01T00:00:00Z",
+      listIds: [3, 7, 12],
+    });
+    assert.equal(result.attributesWritten, 1);
+    const [subId] = findSubscriberIdsByEmail(db, "a@x.com");
+    const sub = db
+      .prepare("SELECT source FROM subscription WHERE subscriber_id = ? AND platform = ?")
+      .get(subId, "brevo_diaria") as { source: string };
+    assert.equal(sub.source, "brevo_list:3", "contrato existente de source não muda");
+    const attrs = getAttributesForSubscriber(db, subId);
+    const listIdsAttr = attrs.find((a) => a.key === "brevo_list_ids");
+    assert.ok(listIdsAttr, "esperava atributo brevo_list_ids");
+    assert.deepEqual(JSON.parse(listIdsAttr!.value), [3, 7, 12]);
+    db.close();
+  });
+
+  it("listIds vazio/ausente não grava atributo brevo_list_ids (nunca [] fingindo dado)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const result = ingestBrevoContact(db, "brevo_diaria", 1, { id: 1, email: "a@x.com" });
+    assert.equal(result.attributesWritten, 0);
+    const [subId] = findSubscriberIdsByEmail(db, "a@x.com");
+    const attrs = getAttributesForSubscriber(db, subId);
+    assert.equal(attrs.find((a) => a.key === "brevo_list_ids"), undefined);
+    db.close();
+  });
+
+  it("re-ingerir o mesmo contato não duplica o atributo brevo_list_ids (upsert, chave (subscriber, platform, key))", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const contact = { id: 1, email: "a@x.com", listIds: [3, 7] };
+    ingestBrevoContact(db, "brevo_diaria", 1, contact);
+    ingestBrevoContact(db, "brevo_diaria", 1, contact);
+    const [subId] = findSubscriberIdsByEmail(db, "a@x.com");
+    assert.equal(getAttributesForSubscriber(db, subId).filter((a) => a.key === "brevo_list_ids").length, 1);
     db.close();
   });
 });

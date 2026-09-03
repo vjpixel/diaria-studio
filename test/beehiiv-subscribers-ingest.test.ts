@@ -17,6 +17,9 @@ import {
   resolveOrCreateBeehiivSubscriber,
   ingestBeehiivRoster,
   extractBeehiivCustomFieldAttributes,
+  extractBeehiivClickEntries,
+  isBeehiivClickIdentityRecord,
+  buildBeehiivClickExternalId,
   type BeehiivEngagementRecord,
 } from "../scripts/lib/beehiiv-subscribers-ingest.ts";
 import {
@@ -102,6 +105,93 @@ describe("extractBeehiivIdentity", () => {
   it("classe C: `email` presente vence — subscriber_id-como-email não sobrescreve", () => {
     const id = extractBeehiivIdentity({ subscriber_id: "outro@x.com", email: "real@y.com" });
     assert.deepEqual(id, { externalId: "outro@x.com", email: "real@y.com" });
+  });
+
+  it("#7206: subscription_id (click-identity record) é aceito como externalId quando subscriber_id ausente", () => {
+    const id = extractBeehiivIdentity({ subscription_id: "uuid-click-1", email: "a@x.com" });
+    assert.deepEqual(id, { externalId: "uuid-click-1", email: "a@x.com" });
+  });
+
+  it("#7206: subscriber_id vence sobre subscription_id quando os dois presentes (nunca deveria acontecer, mas determinístico)", () => {
+    const id = extractBeehiivIdentity({ subscriber_id: "uuid-a", subscription_id: "uuid-b", email: "a@x.com" });
+    assert.equal(id!.externalId, "uuid-a");
+  });
+});
+
+describe("extractBeehiivClickEntries / isBeehiivClickIdentityRecord (#7206)", () => {
+  it("shape FLAT (url/clicked_at no nível do registro) → 1 clique", () => {
+    const record: BeehiivEngagementRecord = {
+      subscription_id: "s1",
+      email: "a@x.com",
+      url: "https://diar.ia.br/x",
+      url_hash: "abc123",
+      clicked_at: "2026-08-01T10:00:00Z",
+    };
+    assert.deepEqual(extractBeehiivClickEntries(record), [{ url: "https://diar.ia.br/x", ts: "2026-08-01T10:00:00Z" }]);
+    assert.equal(isBeehiivClickIdentityRecord(record), true);
+  });
+
+  it("shape NESTED (clicks[]) → 1 clique por entrada", () => {
+    const record: BeehiivEngagementRecord = {
+      subscriber_id: "s1",
+      email: "a@x.com",
+      clicks: [
+        { url: "https://a", clicked_at: "2026-08-01T10:00:00Z" },
+        { url: "https://b", clicked_at: "2026-08-01T11:00:00Z" },
+      ],
+    };
+    assert.deepEqual(extractBeehiivClickEntries(record), [
+      { url: "https://a", ts: "2026-08-01T10:00:00Z" },
+      { url: "https://b", ts: "2026-08-01T11:00:00Z" },
+    ]);
+    assert.equal(isBeehiivClickIdentityRecord(record), true);
+  });
+
+  it("clicked_at ausente/malformado numa entrada → ts null, entrada não descartada", () => {
+    const record: BeehiivEngagementRecord = { subscriber_id: "s1", clicks: [{ url: "https://a" }] };
+    assert.deepEqual(extractBeehiivClickEntries(record), [{ url: "https://a", ts: null }]);
+  });
+
+  it("entrada de clicks[] sem url utilizável é descartada, não vira clique fantasma", () => {
+    const record: BeehiivEngagementRecord = { subscriber_id: "s1", clicks: [{ clicked_at: "2026-08-01T10:00:00Z" }, null, "x"] };
+    assert.deepEqual(extractBeehiivClickEntries(record), []);
+  });
+
+  it("registro de engagement genérico (com status, sem url/clicks) → [] e isBeehiivClickIdentityRecord false", () => {
+    const record: BeehiivEngagementRecord = { subscriber_id: "s1", status: "delivered" };
+    assert.deepEqual(extractBeehiivClickEntries(record), []);
+    assert.equal(isBeehiivClickIdentityRecord(record), false);
+  });
+
+  it("registro com status E url (nunca deveria acontecer, mas não é o discriminador por design) → isBeehiivClickIdentityRecord false", () => {
+    // O discriminador é a AUSÊNCIA de status — um registro real de engagement
+    // nunca deveria ter url/clicks (são fontes MCP diferentes), mas se algum
+    // dia acontecer, a presença de `status` já basta pra tratar como
+    // engagement normal (evita reclassificar um registro válido por engano).
+    const record: BeehiivEngagementRecord = { subscriber_id: "s1", status: "clicked", url: "https://a" };
+    assert.equal(isBeehiivClickIdentityRecord(record), false);
+  });
+});
+
+describe("buildBeehiivClickExternalId (#7206)", () => {
+  it("inclui a url — 2 links do mesmo post/identidade não colidem", () => {
+    const identity = { externalId: "uuid-1", email: null };
+    assert.notEqual(
+      buildBeehiivClickExternalId(identity, "post_1", "https://a"),
+      buildBeehiivClickExternalId(identity, "post_1", "https://b"),
+    );
+  });
+
+  it("é DIFERENTE da chave do 'click' derivado de engagement genérico (nunca colide, mesmo post/identidade)", () => {
+    const identity = { externalId: "uuid-1", email: null };
+    assert.notEqual(
+      buildBeehiivClickExternalId(identity, "post_1", "https://a"),
+      buildBeehiivEventExternalId(identity, "post_1", "click"),
+    );
+  });
+
+  it("identidade vazia lança", () => {
+    assert.throws(() => buildBeehiivClickExternalId({ externalId: null, email: null }, "post_1", "https://a"));
   });
 });
 
@@ -334,6 +424,82 @@ describe("ingestPostEngagement", () => {
     );
     const row = db.prepare("SELECT ts FROM event LIMIT 1").get() as { ts: string };
     assert.equal(row.ts, "2026-01-01T00:00:00.000Z");
+    db.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // click-identity records (#7206) — list_post_click_subscribers mesclado no
+  // MESMO jsonl. Antes deste fix: virava "delivered" fabricado, url perdida.
+  // -------------------------------------------------------------------------
+
+  it("click-identity FLAT: grava 'click' com url, NUNCA 'delivered' fabricado", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const records: BeehiivEngagementRecord[] = [
+      { subscription_id: "s1", email: "a@x.com", url: "https://diar.ia.br/x", url_hash: "h1", clicked_at: "2026-08-01T10:00:00Z" },
+    ];
+    const r = ingestPostEngagement(db, "post_abc", records);
+    assert.equal(r.recordsProcessed, 1);
+    assert.equal(r.newEvents, 1, "só 1 evento — nunca 'delivered' + 'click'");
+
+    const [subId] = findSubscriberIdsByEmail(db, "a@x.com");
+    const timeline = getSubscriberTimeline(db, subId);
+    assert.equal(timeline.length, 1);
+    assert.equal(timeline[0].type, "click");
+    assert.equal(timeline[0].url, "https://diar.ia.br/x");
+    assert.equal(timeline[0].ts, "2026-08-01T10:00:00Z");
+    assert.ok(!timeline.some((e) => e.type === "delivered"), "delivered nunca fabricado a partir de click-identity");
+    db.close();
+  });
+
+  it("click-identity NESTED (clicks[]): grava 1 'click' POR LINK", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const records: BeehiivEngagementRecord[] = [
+      {
+        subscriber_id: "s1",
+        email: "a@x.com",
+        clicks: [
+          { url: "https://a", clicked_at: "2026-08-01T10:00:00Z" },
+          { url: "https://b", clicked_at: "2026-08-01T11:00:00Z" },
+        ],
+      },
+    ];
+    const r = ingestPostEngagement(db, "post_abc", records);
+    assert.equal(r.newEvents, 2);
+    const [subId] = findSubscriberIdsByEmail(db, "a@x.com");
+    const timeline = getSubscriberTimeline(db, subId);
+    assert.equal(timeline.length, 2);
+    assert.deepEqual(timeline.map((e) => e.url).sort(), ["https://a", "https://b"]);
+    assert.ok(timeline.every((e) => e.type === "click"));
+    db.close();
+  });
+
+  it("post com AMBOS engagement genérico (com status) e click-identity (sem status) do mesmo assinante: cada linha tratada pelo seu caminho", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const records: BeehiivEngagementRecord[] = [
+      { subscriber_id: "s1", email: "a@x.com", status: "opened", timestamp: "2026-08-01T09:00:00Z" },
+      { subscriber_id: "s1", email: "a@x.com", url: "https://a", clicked_at: "2026-08-01T10:00:00Z" },
+    ];
+    const r = ingestPostEngagement(db, "post_abc", records);
+    // delivered + open (engagement) + click com url (click-identity) = 3
+    assert.equal(r.newEvents, 3);
+    const [subId] = findSubscriberIdsByEmail(db, "a@x.com");
+    const timeline = getSubscriberTimeline(db, subId);
+    assert.deepEqual(timeline.map((e) => e.type).sort(), ["click", "delivered", "open"]);
+    const click = timeline.find((e) => e.type === "click")!;
+    assert.equal(click.url, "https://a");
+    db.close();
+  });
+
+  it("re-ingerir o mesmo click-identity record não duplica (idempotente)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const records: BeehiivEngagementRecord[] = [
+      { subscription_id: "s1", email: "a@x.com", url: "https://a", clicked_at: "2026-08-01T10:00:00Z" },
+    ];
+    ingestPostEngagement(db, "post_abc", records);
+    const r2 = ingestPostEngagement(db, "post_abc", records);
+    assert.equal(r2.newEvents, 0);
+    assert.equal(r2.alreadyKnown, 1);
+    assert.equal(getStoreCounts(db).events, 1);
     db.close();
   });
 });
