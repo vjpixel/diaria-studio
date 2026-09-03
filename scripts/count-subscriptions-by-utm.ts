@@ -285,23 +285,38 @@ export async function fetchAndAggregate(
 /**
  * Equivalente Kit de `fetchAndAggregate` — pagina `/v4/subscribers` inteiro
  * (`listAllKitSubscribers`, `includeAttribution: true`) e agrega por
- * `attribution.utm_source`/`attribution.utm_campaign`, reusando as mesmas
- * funções puras de normalização/agregação (`aggregateByUtmSource`/
- * `aggregateByUtmCampaign` já leem `utm_source`/`utm_campaign` de um
- * `Record<string, unknown>` — o achatamento abaixo projeta o bloco
- * `attribution`, quando presente, pros mesmos 2 campos no nível raiz).
+ * `utm_source`/`utm_campaign`, reusando as mesmas funções puras de
+ * normalização/agregação (`aggregateByUtmSource`/`aggregateByUtmCampaign` já
+ * leem `utm_source`/`utm_campaign` de um `Record<string, unknown>` — o
+ * achatamento abaixo projeta a fonte certa pros mesmos 2 campos no nível
+ * raiz).
  *
- * **Limitação conhecida, não bug**: `attribution` só vem populado pra
- * assinante cadastrado pelo formulário nativo do Kit — ver docstring de
- * `newsletter-subscriber-source.ts`. Ausência normaliza pra `"__none__"`,
- * igual ao caminho Beehiiv sem UTM.
+ * **Fonte primária: `fields` (custom fields), não `attribution` (#7359).**
+ * Corrigido depois do achado do #7174: o bloco `attribution` nativo do Kit
+ * vem SEMPRE presente mas com UTM nulo pra quem se cadastrou via
+ * `POST /v4/subscribers` (os workers de assinatura, #6339/#6048 — a origem
+ * real de praticamente todo cadastro hoje, incluindo o form da home que
+ * chama `POST /jogar/subscribe`). A atribuição real desses cadastros vive
+ * nos custom fields `utm_source`/`utm_campaign`
+ * (`workers/poll/wrangler.toml` → `KIT_UTM_SOURCE_FIELD`/
+ * `KIT_UTM_CAMPAIGN_FIELD`, escritos por `subscribeToKit`,
+ * `workers/poll/src/subscribe.ts`) — mesmo contrato documentado em
+ * `ingestKitRoster` (`scripts/lib/kit-subscribers-ingest.ts`): "`utm_source`/
+ * ... ← `fields` (custom fields), NUNCA `attribution`". `attribution`
+ * continua como FALLBACK — cobre o caso legítimo (mas hoje minoritário) de
+ * quem se cadastrou pelo formulário nativo hospedado no Kit (ver docstring
+ * de `newsletter-subscriber-source.ts`). Ausência dos dois normaliza pra
+ * `"__none__"`, igual ao caminho Beehiiv sem UTM.
  */
 export async function fetchAndAggregateKit(config?: KitConfig): Promise<UtmCountResult> {
   const subscribers = await listAllKitSubscribers(config, { includeAttribution: true });
-  const flattened: Array<Record<string, unknown>> = subscribers.map((s) => ({
-    utm_source: s.attribution?.utm_source ?? null,
-    utm_campaign: s.attribution?.utm_campaign ?? null,
-  }));
+  const flattened: Array<Record<string, unknown>> = subscribers.map((s) => {
+    const fields = s.fields ?? {};
+    return {
+      utm_source: fields.utm_source ?? s.attribution?.utm_source ?? null,
+      utm_campaign: fields.utm_campaign ?? s.attribution?.utm_campaign ?? null,
+    };
+  });
   return {
     counts: aggregateByUtmSource(flattened),
     campaignCounts: aggregateByUtmCampaign(flattened),

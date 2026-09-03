@@ -1,74 +1,58 @@
 #!/usr/bin/env node
 /**
- * cleanup-preflight-subscribers.ts (#5545)
+ * cleanup-preflight-subscribers.ts (#5545, migrado pro Kit no #7359)
  *
  * Remove os 3 cadastros de teste do preflight de atribuição (#5522) da base
- * Beehiiv — último item do critério de aprovação da #5522 ("limpar os 3
+ * Kit — último item do critério de aprovação da #5522 ("limpar os 3
  * assinantes de teste da base ao final") e o mais fácil de esquecer: sem
  * isso, os 3 endereços de preflight ficam contaminando `leitor-v1` e o
  * custo por leitor do próprio teste que eles validam.
  *
- * Nunca `DELETE` — mesma convenção já documentada em
- * `unsubscribeInBeehiiv`/`promoteBeehiivSubscription`
- * (`scripts/evaluate-brevo-diaria.ts`): a doc da Beehiiv desaconselha DELETE
- * (remove o histórico do registro). Usa `PUT .../subscriptions/by_email/{email}`
- * com `{unsubscribe: true}` — o único campo documentado como gravável nesse
- * endpoint (`status` não é, ver o módulo irmão pro histórico da
- * investigação). Isso tira os 3 endereços de `status: active`, que já basta
- * pra excluí-los de `leitor-v1` (`status=active` é condição NECESSÁRIA,
- * `scripts/lib/leitor.ts`) sem apagar o registro/histórico.
+ * ## Migração Beehiiv → Kit (#7359)
  *
- * Idempotente: e-mail já `inactive`, ou sem registro (404) → NOOP, reportado
- * como já-limpo, nunca erro — rodar de novo depois de já ter limpado é
- * seguro. Dry-run por padrão (só imprime o plano, nenhuma escrita); `--push`
- * executa de verdade.
+ * O cadastro real de teste nasce hoje no Kit (ver docstring de
+ * `verify-utm-attribution.ts` pro porquê — a home faz `POST` direto pra
+ * `POST /jogar/subscribe`, `SUBSCRIBE_BACKEND = "kit"`). A versão anterior
+ * deste script era Beehiiv-only e, rodada hoje, deixaria os 3 e-mails de
+ * teste vivos na conta Kit de PRODUÇÃO em silêncio (a Beehiiv sempre
+ * responderia 404/not_found pra eles — tratado como "já limpo", nunca como
+ * erro, então o operador nunca veria um sinal de que o cadastro real ficou
+ * intocado).
+ *
+ * `POST /v4/subscribers/{id}/unsubscribe` (`unsubscribeKitSubscriber`,
+ * `scripts/lib/kit-subscribers.ts`) muda o estado pra `cancelled` — mesma
+ * disciplina de nunca usar DELETE (o Kit nem expõe DELETE de subscriber na
+ * v4; `cancelled` já basta pra excluir o e-mail de `leitor-v1`, que exige
+ * `status=active`).
+ *
+ * Idempotente: e-mail já `cancelled`/`bounced`/`complained`, ou sem registro
+ * → NOOP, reportado como já-limpo, nunca erro — rodar de novo depois de já
+ * ter limpado é seguro. Dry-run por padrão (só imprime o plano, nenhuma
+ * escrita); `--push` executa de verdade.
  *
  * Uso:
- *   npx tsx scripts/cleanup-preflight-subscribers.ts --campaign preflight-2608          # dry-run
- *   npx tsx scripts/cleanup-preflight-subscribers.ts --campaign preflight-2608 --push    # executa
+ *   npx tsx scripts/cleanup-preflight-subscribers.ts --campaign preflight-2609          # dry-run
+ *   npx tsx scripts/cleanup-preflight-subscribers.ts --campaign preflight-2609 --push    # executa
  *
- * `--email` (#5736, endurecimento): limpa UM endereço avulso passado
- * literalmente, sem exigir `--campaign` nem que o e-mail bata o padrão
- * `vjpixel+test-preflight-{arm}-{campaign}@gmail.com` de
- * `preflight-utm-arms.ts`. Existe pra cobrir o caso já visto ao vivo
- * (#5736): uma rodada de preflight cadastrou e-mails fora do padrão
- * combinado (`vjpixel+preflightgoogle@gmail.com` em vez do formato do
- * plano), e o cleanup normal — que só conhece os 3 e-mails derivados de
- * `--campaign` — não os enxerga, deixando a limpeza como trabalho manual
- * na UI da Beehiiv. Mutuamente exclusivo com `--campaign`.
+ * `--email` (herdado do #5736, endurecimento): limpa UM endereço avulso
+ * passado literalmente, sem exigir `--campaign` nem que o e-mail bata o
+ * padrão `vjpixel+test-preflight-{arm}-{campaign}@gmail.com` de
+ * `preflight-utm-arms.ts`. Mutuamente exclusivo com `--campaign`.
  *   npx tsx scripts/cleanup-preflight-subscribers.ts --email vjpixel+preflightgoogle@gmail.com          # dry-run
  *   npx tsx scripts/cleanup-preflight-subscribers.ts --email vjpixel+preflightgoogle@gmail.com --push    # executa
  *
- * Guard de publicação: em `--push` faz um `PUT` real na Beehiiv — não é
- * "publicação" no sentido do guard de dispatch (não cria/agenda/envia
+ * Guard de publicação: em `--push` faz um `POST /unsubscribe` real no Kit —
+ * não é "publicação" no sentido do guard de dispatch (não cria/agenda/envia
  * campanha; é remoção de 3 cadastros de teste que o próprio fluxo de teste
  * criou), mas nenhuma sessão overnight/develop roda `--push` sozinha —
  * roteiro (`docs/preflight-utm-cookie-roteiro.md`) instrui o editor a rodar
  * isso manualmente como último passo da passada.
- *
- * ## Backend: sempre Beehiiv, sem checar `platform.config.json` (#6051)
- *
- * Este script nunca lê `publishing.newsletter.backend`/`read_backend` — o
- * `PUT .../subscriptions/by_email` é hardcoded pra Beehiiv
- * (`beehiivApiBase()`). Isso é correto hoje: o cadastro de teste do
- * preflight (`preflight-utm-arms.ts`) ainda entra pela Beehiiv, e os 3
- * workers de assinatura (#6339, `SUBSCRIBE_BACKEND=kit`) migraram só o
- * cadastro real de assinante, não o fluxo de preflight/atribuição. **Se o
- * preflight um dia migrar para o Kit**, este script silenciosamente para
- * de limpar os cadastros de teste certos (Beehiiv 404/not_found nunca vira
- * erro — é tratado como já-limpo, ver `CleanupOutcome`) sem avisar que o
- * cadastro real está em outro lugar — reavaliar quando isso acontecer, não
- * antes (issue #6051 pede só documentar o risco, não mudar comportamento
- * de escrita sem entender o lado que ainda não migrou).
  */
 import "dotenv/config";
 import { getStringArg, isMainModule } from "./lib/cli-args.ts";
-import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
-import {
-  buildPreflightPlan,
-  DEFAULT_PREFLIGHT_BASE_EMAIL,
-  type PreflightArmPlan,
-} from "./lib/preflight-utm-arms.ts";
+import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
+import { getKitSubscriberByEmail, unsubscribeKitSubscriber } from "./lib/kit-subscribers.ts";
+import { buildPreflightPlan, DEFAULT_PREFLIGHT_BASE_EMAIL } from "./lib/preflight-utm-arms.ts";
 
 export type CleanupOutcome = "unsubscribed" | "already_inactive" | "not_found" | "skipped_dry_run";
 
@@ -79,63 +63,16 @@ export interface CleanupResult {
   outcome: CleanupOutcome;
 }
 
-/**
- * Status atual (`data.status`) do registro — `null` se 404 (nunca
- * cadastrado ou já removido). Mesma leitura de `fetchBeehiivSubscriptionStatus`
- * (`scripts/evaluate-brevo-diaria.ts`), reimplementada aqui (não importada)
- * pra não puxar um módulo com concerns de Brevo pra este script, que é
- * Beehiiv-only.
- */
-export async function fetchStatus(
-  publicationId: string,
-  apiKey: string,
-  email: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<string | null> {
-  const res = await fetchImpl(
-    `${beehiivApiBase()}/publications/${publicationId}/subscriptions/by_email/${encodeURIComponent(email)}`,
-    { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } },
-  );
-  if (res.status === 404) return null;
-  if (!res.ok) {
-    throw new Error(`Beehiiv API ${res.status} em subscriptions/by_email/${email}`);
-  }
-  const body = (await res.json()) as { data?: { status?: string } };
-  return body.data?.status ?? null;
-}
-
-/** `PUT .../subscriptions/by_email/{email}` com `{unsubscribe: true}` — ver
- *  docstring do módulo pro porquê de nunca ser DELETE. */
-export async function unsubscribe(
-  publicationId: string,
-  apiKey: string,
-  email: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<void> {
-  const res = await fetchImpl(
-    `${beehiivApiBase()}/publications/${publicationId}/subscriptions/by_email/${encodeURIComponent(email)}`,
-    {
-      method: "PUT",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ unsubscribe: true }),
-    },
-  );
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(
-      `Beehiiv API PUT subscriptions/by_email/${email} (unsubscribe:true) falhou (HTTP ${res.status}): ${text}`,
-    );
-  }
-}
+/** Estados do Kit que já contam como "fora da base" pra fins de limpeza —
+ *  mesma semântica de `KIT_EXITED_STATES` (`kit-subscribers-ingest.ts`),
+ *  reimplementada aqui pra não puxar o módulo de ingestão SQLite (concern
+ *  bem diferente) só por esta constante. */
+const KIT_ALREADY_CLEAN_STATES: ReadonlySet<string> = new Set(["cancelled", "bounced", "complained"]);
 
 /** Pura — decide a ação a partir do status atual, sem tocar rede. */
 export function decideOutcome(statusBefore: string | null, push: boolean): CleanupOutcome {
   if (statusBefore === null) return "not_found";
-  if (statusBefore === "inactive") return "already_inactive";
+  if (KIT_ALREADY_CLEAN_STATES.has(statusBefore)) return "already_inactive";
   return push ? "unsubscribed" : "skipped_dry_run";
 }
 
@@ -158,16 +95,15 @@ export function buildAdhocPlan(email: string): CleanupPlanLike {
 }
 
 export async function cleanupOneArm(
-  publicationId: string,
-  apiKey: string,
   plan: CleanupPlanLike,
   push: boolean,
-  fetchImpl: typeof fetch = fetch,
+  config: KitConfig,
 ): Promise<CleanupResult> {
-  const statusBefore = await fetchStatus(publicationId, apiKey, plan.email, fetchImpl);
+  const subscriber = await getKitSubscriberByEmail(plan.email, config);
+  const statusBefore = subscriber?.state ?? null;
   const outcome = decideOutcome(statusBefore, push);
-  if (outcome === "unsubscribed") {
-    await unsubscribe(publicationId, apiKey, plan.email, fetchImpl);
+  if (outcome === "unsubscribed" && subscriber) {
+    await unsubscribeKitSubscriber(subscriber.id, config);
   }
   return { arm: plan.arm.key, email: plan.email, status_before: statusBefore, outcome };
 }
@@ -187,7 +123,7 @@ export function formatResultsTable(results: CleanupResult[], push: boolean): str
 
 if (isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2);
-  const campaign = getStringArg(argv, "campaign", { example: "preflight-2608" });
+  const campaign = getStringArg(argv, "campaign", { example: "preflight-2609" });
   const adhocEmail = getStringArg(argv, "email", { example: "vjpixel+preflightgoogle@gmail.com" });
 
   if (campaign && adhocEmail) {
@@ -196,17 +132,21 @@ if (isMainModule(import.meta.url)) {
   }
   if (!campaign && !adhocEmail) {
     process.stderr.write(
-      `[cleanup-preflight-subscribers] passe --campaign preflight-2608 (os 3 e-mails do plano) OU --email um@endereco.avulso (#5736, e-mail fora do padrão)\n`,
+      `[cleanup-preflight-subscribers] passe --campaign preflight-2609 (os 3 e-mails do plano) OU --email um@endereco.avulso (#5736, e-mail fora do padrão)\n`,
     );
     process.exit(2);
   }
   const baseEmail = getStringArg(argv, "base-email") ?? DEFAULT_PREFLIGHT_BASE_EMAIL;
   const push = argv.includes("--push");
 
-  const cfg = loadBeehiivConfig("[cleanup-preflight-subscribers]");
+  const cfgResult = resolveKitConfig();
+  if (!cfgResult.ok) {
+    process.stderr.write(`[cleanup-preflight-subscribers] ${cfgResult.reason}\n`);
+    process.exit(2);
+  }
   const plans: CleanupPlanLike[] = adhocEmail ? [buildAdhocPlan(adhocEmail)] : buildPreflightPlan(campaign!, baseEmail);
 
-  Promise.all(plans.map((plan) => cleanupOneArm(cfg.publicationId, cfg.apiKey, plan, push)))
+  Promise.all(plans.map((plan) => cleanupOneArm(plan, push, cfgResult.config)))
     .then((results) => {
       process.stdout.write(formatResultsTable(results, push) + "\n");
     })

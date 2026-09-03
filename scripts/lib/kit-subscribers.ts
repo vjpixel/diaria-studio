@@ -83,6 +83,11 @@ export async function listKitSubscribersPage(
     after?: string;
     status?: KitSubscriberListStatus;
     includeAttribution?: boolean;
+    /** `GET /v4/subscribers?email_address=...` — lookup direto por e-mail
+     *  (comma-separated pra até 100 no lado da API; este módulo só usa 1 por
+     *  chamada, ver `getKitSubscriberByEmail` abaixo). Mais preciso/rápido
+     *  que paginar tudo e filtrar em memória (#7359). */
+    emailAddress?: string;
     config?: KitConfig;
   } = {},
 ): Promise<{ subscribers: KitSubscriberSummary[]; pagination: KitPagination }> {
@@ -96,8 +101,42 @@ export async function listKitSubscribersPage(
   // vivo) — é o que destrava recuperar a atribuição nativa de quem entrou
   // pelo form hospedado no Kit sem passar por `subscribeToKit`.
   if (opts.includeAttribution) params.set("include[]", "attribution");
+  if (opts.emailAddress) params.set("email_address", opts.emailAddress);
   const qs = params.toString();
   return kitFetch(`/subscribers${qs ? `?${qs}` : ""}`, { config: opts.config });
+}
+
+/**
+ * Lookup direto de 1 assinante por e-mail (#7359) — `GET /v4/subscribers
+ * ?email_address={email}&status=all` (o mesmo endpoint que a MCP `list_subscribers`
+ * usa pra `email_address`). `status: "all"` é necessário aqui: sem ele a API
+ * só busca entre `active`, e os cadastros de preflight que este helper existe
+ * pra verificar podem estar `inactive` (double opt-in pendente) — omitir o
+ * status faria um cadastro real de teste parecer "não encontrado".
+ * `null` quando não há match (nunca lança por ausência).
+ */
+export async function getKitSubscriberByEmail(
+  email: string,
+  config?: KitConfig,
+): Promise<KitSubscriberSummary | null> {
+  const { subscribers } = await listKitSubscribersPage({
+    emailAddress: email,
+    status: "all",
+    includeAttribution: true,
+    config,
+  });
+  return subscribers.find((s) => s.email_address.toLowerCase() === email.toLowerCase()) ?? subscribers[0] ?? null;
+}
+
+/**
+ * `POST /v4/subscribers/{id}/unsubscribe` — muda o estado pra `cancelled`
+ * (confirmado pela doc oficial/MCP `unsubscribe`, #7359). Equivalente Kit do
+ * `PUT .../subscriptions/by_email {unsubscribe:true}` da Beehiiv usado por
+ * `cleanup-preflight-subscribers.ts` — mesma disciplina de nunca fazer
+ * `DELETE` (o Kit nem expõe DELETE de subscriber na v4).
+ */
+export async function unsubscribeKitSubscriber(id: number, config?: KitConfig): Promise<void> {
+  await kitFetch<void>(`/subscribers/${id}/unsubscribe`, { method: "POST", config });
 }
 
 /**

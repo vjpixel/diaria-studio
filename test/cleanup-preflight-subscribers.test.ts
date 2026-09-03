@@ -1,8 +1,9 @@
 /**
- * cleanup-preflight-subscribers.test.ts (#5545)
+ * cleanup-preflight-subscribers.test.ts (#5545, migrado pro Kit no #7359)
  *
- * Cobre decideOutcome (puro) e o fluxo fetchStatus/unsubscribe com fetch
- * mockado — nenhuma chamada de rede real (regra de dispatch overnight/#738).
+ * Cobre decideOutcome (puro) e o fluxo end-to-end (cleanupOneArm) com fetch
+ * mockado contra os endpoints Kit — nenhuma chamada de rede real (regra de
+ * dispatch overnight/#738).
  */
 
 import { describe, it } from "node:test";
@@ -10,24 +11,27 @@ import assert from "node:assert/strict";
 
 import {
   decideOutcome,
-  fetchStatus,
-  unsubscribe,
   cleanupOneArm,
   formatResultsTable,
   buildAdhocPlan,
   type CleanupResult,
 } from "../scripts/cleanup-preflight-subscribers.ts";
 import { buildPreflightPlan } from "../scripts/lib/preflight-utm-arms.ts";
+import type { KitConfig } from "../scripts/lib/kit-config.ts";
+
+const FAKE_CONFIG: KitConfig = { apiKey: "kit_test_key" };
 
 describe("decideOutcome (#5545) — pura", () => {
-  it("not_found quando status é null (404)", () => {
+  it("not_found quando status é null (sem registro)", () => {
     assert.equal(decideOutcome(null, true), "not_found");
     assert.equal(decideOutcome(null, false), "not_found");
   });
 
-  it("already_inactive quando já está inactive", () => {
-    assert.equal(decideOutcome("inactive", true), "already_inactive");
-    assert.equal(decideOutcome("inactive", false), "already_inactive");
+  it("already_inactive quando já cancelled/bounced/complained", () => {
+    for (const s of ["cancelled", "bounced", "complained"]) {
+      assert.equal(decideOutcome(s, true), "already_inactive");
+      assert.equal(decideOutcome(s, false), "already_inactive");
+    }
   });
 
   it("unsubscribed quando active e push=true", () => {
@@ -38,129 +42,90 @@ describe("decideOutcome (#5545) — pura", () => {
     assert.equal(decideOutcome("active", false), "skipped_dry_run");
   });
 
-  it("trata qualquer status não-inactive/null como candidato à ação (ex: validating)", () => {
-    assert.equal(decideOutcome("validating", true), "unsubscribed");
-    assert.equal(decideOutcome("validating", false), "skipped_dry_run");
+  it("trata inactive (double opt-in pendente) como candidato à ação, não como já-limpo", () => {
+    // Diferente da Beehiiv (onde "inactive" já significava fora da base),
+    // no Kit "inactive" é double opt-in pendente — ainda membro da base
+    // (ver KIT_EXITED_STATES em kit-subscribers-ingest.ts).
+    assert.equal(decideOutcome("inactive", true), "unsubscribed");
+    assert.equal(decideOutcome("inactive", false), "skipped_dry_run");
   });
 });
 
-describe("fetchStatus (#5545) — fetch mockado", () => {
-  it("retorna null em 404", async () => {
-    const fetchImpl = (async () => new Response(null, { status: 404 })) as unknown as typeof fetch;
-    const status = await fetchStatus("pub_1", "key", "a@x.com", fetchImpl);
-    assert.equal(status, null);
+// Mock de `kitFetch` via `globalThis.fetch` — GET /subscribers?email_address=...
+// devolve o subscriber (ou lista vazia pra "não encontrado"); POST
+// /subscribers/{id}/unsubscribe é a mutação sob teste.
+function mockKitFetch(opts: {
+  state: string | null; // null = não encontrado
+  onUnsubscribe?: () => void;
+}) {
+  const orig = globalThis.fetch;
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    const u = String(url);
+    if (init?.method === "POST" && u.includes("/unsubscribe")) {
+      opts.onUnsubscribe?.();
+      return new Response(null, { status: 204 });
+    }
+    if (opts.state === null) {
+      return new Response(
+        JSON.stringify({ subscribers: [], pagination: { has_next_page: false, end_cursor: null } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        subscribers: [{ id: 42, email_address: "a@x.com", state: opts.state, created_at: "x", fields: {} }],
+        pagination: { has_next_page: false, end_cursor: null },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as unknown as typeof fetch;
+  return { restore: () => { globalThis.fetch = orig; } };
+}
+
+describe("cleanupOneArm (#5545, Kit desde #7359) — fluxo end-to-end com fetch mockado", () => {
+  it("dry-run: não chama unsubscribe quando active, reporta skipped_dry_run", async () => {
+    const [plan] = buildPreflightPlan("preflight-2609");
+    let unsubCalled = false;
+    const m = mockKitFetch({ state: "active", onUnsubscribe: () => { unsubCalled = true; } });
+    try {
+      const result = await cleanupOneArm(plan, false, FAKE_CONFIG);
+      assert.equal(unsubCalled, false);
+      assert.equal(result.outcome, "skipped_dry_run");
+      assert.equal(result.status_before, "active");
+    } finally { m.restore(); }
   });
 
-  it("retorna o status do corpo em 200", async () => {
-    const fetchImpl = (async () =>
-      new Response(JSON.stringify({ data: { status: "active" } }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      })) as unknown as typeof fetch;
-    const status = await fetchStatus("pub_1", "key", "a@x.com", fetchImpl);
-    assert.equal(status, "active");
+  it("--push: chama unsubscribe quando active, reporta unsubscribed", async () => {
+    const [plan] = buildPreflightPlan("preflight-2609");
+    let unsubCalled = false;
+    const m = mockKitFetch({ state: "active", onUnsubscribe: () => { unsubCalled = true; } });
+    try {
+      const result = await cleanupOneArm(plan, true, FAKE_CONFIG);
+      assert.equal(unsubCalled, true);
+      assert.equal(result.outcome, "unsubscribed");
+    } finally { m.restore(); }
   });
 
-  it("lança em erro HTTP diferente de 404", async () => {
-    const fetchImpl = (async () => new Response("erro", { status: 500 })) as unknown as typeof fetch;
-    await assert.rejects(() => fetchStatus("pub_1", "key", "a@x.com", fetchImpl));
-  });
-});
-
-describe("unsubscribe (#5545) — fetch mockado", () => {
-  it("faz PUT com unsubscribe:true e não lança em 200", async () => {
-    let capturedBody: string | undefined;
-    let capturedMethod: string | undefined;
-    const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
-      capturedBody = init?.body as string;
-      capturedMethod = init?.method;
-      return new Response(null, { status: 200 });
-    }) as unknown as typeof fetch;
-
-    await unsubscribe("pub_1", "key", "a@x.com", fetchImpl);
-    assert.equal(capturedMethod, "PUT");
-    assert.deepEqual(JSON.parse(capturedBody ?? "{}"), { unsubscribe: true });
+  it("idempotente: já cancelled não chama unsubscribe mesmo com --push", async () => {
+    const [plan] = buildPreflightPlan("preflight-2609");
+    let unsubCalled = false;
+    const m = mockKitFetch({ state: "cancelled", onUnsubscribe: () => { unsubCalled = true; } });
+    try {
+      const result = await cleanupOneArm(plan, true, FAKE_CONFIG);
+      assert.equal(unsubCalled, false);
+      assert.equal(result.outcome, "already_inactive");
+    } finally { m.restore(); }
   });
 
-  it("lança em erro HTTP", async () => {
-    const fetchImpl = (async () => new Response("erro", { status: 500 })) as unknown as typeof fetch;
-    await assert.rejects(() => unsubscribe("pub_1", "key", "a@x.com", fetchImpl));
-  });
-});
-
-describe("cleanupOneArm (#5545) — fluxo end-to-end com fetch mockado", () => {
-  it("dry-run: não chama PUT quando active, reporta skipped_dry_run", async () => {
-    const [plan] = buildPreflightPlan("preflight-2608");
-    let putCalled = false;
-    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
-      if (init?.method === "PUT") {
-        putCalled = true;
-        return new Response(null, { status: 200 });
-      }
-      return new Response(JSON.stringify({ data: { status: "active" } }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }) as unknown as typeof fetch;
-
-    const result = await cleanupOneArm("pub_1", "key", plan, false, fetchImpl);
-    assert.equal(putCalled, false);
-    assert.equal(result.outcome, "skipped_dry_run");
-    assert.equal(result.status_before, "active");
-  });
-
-  it("--push: chama PUT quando active, reporta unsubscribed", async () => {
-    const [plan] = buildPreflightPlan("preflight-2608");
-    let putCalled = false;
-    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
-      if (init?.method === "PUT") {
-        putCalled = true;
-        return new Response(null, { status: 200 });
-      }
-      return new Response(JSON.stringify({ data: { status: "active" } }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }) as unknown as typeof fetch;
-
-    const result = await cleanupOneArm("pub_1", "key", plan, true, fetchImpl);
-    assert.equal(putCalled, true);
-    assert.equal(result.outcome, "unsubscribed");
-  });
-
-  it("idempotente: já inactive não chama PUT mesmo com --push", async () => {
-    const [plan] = buildPreflightPlan("preflight-2608");
-    let putCalled = false;
-    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
-      if (init?.method === "PUT") {
-        putCalled = true;
-        return new Response(null, { status: 200 });
-      }
-      return new Response(JSON.stringify({ data: { status: "inactive" } }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }) as unknown as typeof fetch;
-
-    const result = await cleanupOneArm("pub_1", "key", plan, true, fetchImpl);
-    assert.equal(putCalled, false);
-    assert.equal(result.outcome, "already_inactive");
-  });
-
-  it("sem registro (404): NOOP, nunca chama PUT", async () => {
-    const [plan] = buildPreflightPlan("preflight-2608");
-    let putCalled = false;
-    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
-      if (init?.method === "PUT") {
-        putCalled = true;
-        return new Response(null, { status: 200 });
-      }
-      return new Response(null, { status: 404 });
-    }) as unknown as typeof fetch;
-
-    const result = await cleanupOneArm("pub_1", "key", plan, true, fetchImpl);
-    assert.equal(putCalled, false);
-    assert.equal(result.outcome, "not_found");
+  it("sem registro: NOOP, nunca chama unsubscribe", async () => {
+    const [plan] = buildPreflightPlan("preflight-2609");
+    let unsubCalled = false;
+    const m = mockKitFetch({ state: null, onUnsubscribe: () => { unsubCalled = true; } });
+    try {
+      const result = await cleanupOneArm(plan, true, FAKE_CONFIG);
+      assert.equal(unsubCalled, false);
+      assert.equal(result.outcome, "not_found");
+    } finally { m.restore(); }
   });
 });
 
@@ -172,51 +137,33 @@ describe("buildAdhocPlan (#5736) — pura", () => {
   });
 
   it("reconhece e-mail fora do padrão de nomeação do plano scriptado (achado #5736)", () => {
-    // O caso real da issue: e-mails cadastrados numa rodada de preflight mal
-    // executada, sem o prefixo test-preflight- exigido por preflight-utm-arms.ts.
     const plan = buildAdhocPlan("vjpixel+preflightmicrosoft@gmail.com");
     assert.equal(plan.email, "vjpixel+preflightmicrosoft@gmail.com");
   });
 });
 
 describe("cleanupOneArm com plano avulso (#5736) — fluxo end-to-end com fetch mockado", () => {
-  it("--push num e-mail avulso: chama PUT quando active, reporta unsubscribed", async () => {
+  it("--push num e-mail avulso: chama unsubscribe quando active, reporta unsubscribed", async () => {
     const plan = buildAdhocPlan("vjpixel+preflightgoogle@gmail.com");
-    let putCalled = false;
-    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
-      if (init?.method === "PUT") {
-        putCalled = true;
-        return new Response(null, { status: 200 });
-      }
-      return new Response(JSON.stringify({ data: { status: "active" } }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }) as unknown as typeof fetch;
-
-    const result = await cleanupOneArm("pub_1", "key", plan, true, fetchImpl);
-    assert.equal(putCalled, true);
-    assert.equal(result.outcome, "unsubscribed");
-    assert.equal(result.email, "vjpixel+preflightgoogle@gmail.com");
+    let unsubCalled = false;
+    const m = mockKitFetch({ state: "active", onUnsubscribe: () => { unsubCalled = true; } });
+    try {
+      const result = await cleanupOneArm(plan, true, FAKE_CONFIG);
+      assert.equal(unsubCalled, true);
+      assert.equal(result.outcome, "unsubscribed");
+      assert.equal(result.email, "vjpixel+preflightgoogle@gmail.com");
+    } finally { m.restore(); }
   });
 
-  it("dry-run num e-mail avulso: não chama PUT", async () => {
+  it("dry-run num e-mail avulso: não chama unsubscribe", async () => {
     const plan = buildAdhocPlan("vjpixel+preflightmicrosoft@gmail.com");
-    let putCalled = false;
-    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
-      if (init?.method === "PUT") {
-        putCalled = true;
-        return new Response(null, { status: 200 });
-      }
-      return new Response(JSON.stringify({ data: { status: "active" } }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }) as unknown as typeof fetch;
-
-    const result = await cleanupOneArm("pub_1", "key", plan, false, fetchImpl);
-    assert.equal(putCalled, false);
-    assert.equal(result.outcome, "skipped_dry_run");
+    let unsubCalled = false;
+    const m = mockKitFetch({ state: "active", onUnsubscribe: () => { unsubCalled = true; } });
+    try {
+      const result = await cleanupOneArm(plan, false, FAKE_CONFIG);
+      assert.equal(unsubCalled, false);
+      assert.equal(result.outcome, "skipped_dry_run");
+    } finally { m.restore(); }
   });
 });
 
