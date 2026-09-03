@@ -33,8 +33,10 @@ import {
   hasHealthyIdleSession,
   runAllWatchedKinds,
   WATCHED_KINDS,
+  buildHaltBannerArgs,
   type StallEvent,
 } from "../scripts/overnight-watchdog.ts";
+import { parseHaltBannerArgs } from "../scripts/render-halt-banner.ts";
 import { registerSession, heartbeat } from "../scripts/lib/session-registry.ts";
 import type { PlanFileReaders } from "../scripts/overnight-statusline.ts";
 
@@ -1245,5 +1247,34 @@ describe("resolveRunActivity: piso started_at (#5520, achado do review)", () => 
     ]);
 
     assert.equal(resolveRunActivity(tmpRoot, "overnight", "260817", planPath).ts, 0);
+  });
+});
+
+/**
+ * #7215 — um stall gerava DOIS e-mails ao editor: o alerta do watchdog
+ * ("[diar.ia.br overnight] STALL detectado", passo (d) de runWatchdogForKind)
+ * e o do halt banner que o watchdog invoca logo antes ("[diar.ia.br] Pipeline
+ * parou — overnight — rodada {AAMMDD}"), descrevendo o mesmo stall com a mesma
+ * ação. O alerta do watchdog é o que fica; o banner passa a receber
+ * `--no-push`.
+ *
+ * O teste alimenta o PARSER REAL do banner com a saída de
+ * `buildHaltBannerArgs` — não basta afirmar que a string "--no-push" está no
+ * array: `parseCliArgs` só a lê como flag booleana se ela não estiver na
+ * posição de valor de outra flag, então um reposicionamento silencioso
+ * ressuscitaria o segundo e-mail com o array ainda "contendo" a flag.
+ */
+describe("buildHaltBannerArgs — halt banner do watchdog não manda 2º e-mail (#7215)", () => {
+  it("o banner invocado pelo watchdog tem a notificação suprimida", () => {
+    const parsed = parseHaltBannerArgs(buildHaltBannerArgs("overnight", "260902", 83, 45));
+    assert.notEqual(parsed, null, "os 3 argumentos obrigatórios têm que continuar chegando");
+    assert.equal(parsed!.push, false, "sem isto, o mesmo stall gera 2 e-mails");
+  });
+
+  it("os argumentos do banner continuam íntegros — a flag não vira valor de nenhum deles", () => {
+    const parsed = parseHaltBannerArgs(buildHaltBannerArgs("overnight", "260902", 83, 45))!;
+    assert.equal(parsed.stage, "overnight — rodada 260902");
+    assert.match(parsed.reason, /83 min sem atividade \(limiar 45 min\)/);
+    assert.match(parsed.action, /^verifique a sessão overnight no terminal/);
   });
 });

@@ -14,8 +14,8 @@ O watchdog detecta stall em rodadas overnight de forma independente do coordenad
 4. Se inatividade > 45 min (limiar configurável — `OVERNIGHT_STALL_THRESHOLD_MIN`):
    - Registra entrada em `stall_events` no `plan.json` (com dedup: não repete na mesma janela de 30 min).
    - Emite evento `stall_detected` no `data/run-log.jsonl`.
-   - Exibe halt banner no terminal/log da task.
-   - Envia alerta push por e-mail via Gmail (#5341 — mesma credencial OAuth do Drive/inbox-drain, sem env var própria; ver `scripts/lib/push-notify.ts`).
+   - Exibe halt banner no terminal/log da task (via `scripts/render-halt-banner.ts --no-push`, #7215 — sem a flag, esse script mandaria um SEGUNDO e-mail sobre o mesmo stall).
+   - Envia alerta push por e-mail via Gmail (#5341 — mesma credencial OAuth do Drive/inbox-drain, sem env var própria; ver `scripts/lib/push-notify.ts`). **Um stall = um e-mail.**
 
 ---
 
@@ -160,6 +160,8 @@ npx tsx scripts/overnight-watchdog.ts --threshold 2 --dry-run
 O watchdog envia o alerta de stall por e-mail via Gmail (`scripts/lib/push-notify.ts`), reusando a MESMA credencial OAuth já usada por Drive sync/inbox-drain/imagens sociais (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`, setup: `npx tsx scripts/oauth-setup.ts`) — sem env var própria. O destinatário é `platform.config.json` → `inbox.editor_personal_email` (default `vjpixel@gmail.com`).
 
 Sem credenciais OAuth configuradas, o watchdog funciona normalmente mas não envia o e-mail — só exibe o halt banner no log da task (fail-soft TOTAL).
+
+**Um stall gera exatamente UM e-mail (#7215).** Até 02/09/2026 gerava dois, com o mesmo motivo e a mesma ação: o alerta daqui (`[diar.ia.br overnight] STALL detectado — rodada {AAMMDD}`) e o do halt banner que o passo anterior invoca (`[diar.ia.br] Pipeline parou — {stage}`), que também notifica desde o #3564. Fica o daqui — traz o `kind` no assunto e a fonte da última atividade medida, e é aguardado no processo do watchdog, enquanto o outro rodava dentro de um `execFileSync` com teto de 10s, o mesmo teto do envio em si. O watchdog passa `--no-push` ao banner; **nenhum outro caller passa** — pro orchestrator, `mcp-guard` e stages 0/1/3, `render-halt-banner.ts` segue sendo o único canal de notificação de halt.
 
 ---
 
