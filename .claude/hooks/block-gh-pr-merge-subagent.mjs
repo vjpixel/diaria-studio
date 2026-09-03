@@ -299,6 +299,57 @@ export function readLiveMergeGrantFor(repoRoot, sessionId, now = Date.now()) {
 }
 
 /**
+ * Companheira de `readLiveMergeGrantFor` (#7171) — em vez de "existe uma
+ * janela VIVA?", responde "existia uma janela pra mim que já foi CONSUMIDA
+ * (`consumedAt` presente)?". Mesmo critério de identidade/janela temporal de
+ * `readLiveMergeGrantFor` (coordenadora não-stale, `grantedTo === sessionId`,
+ * `grantedAt` dentro do TTL + tolerância de skew), só que a checagem de
+ * `consumedAt` é INVERTIDA: aqui ela precisa estar PRESENTE.
+ *
+ * Existe só para diagnosticar a causa do bloqueio com precisão (#7171): a
+ * ordem correta nunca inclui um `consume-merge-grant` manual antes do `gh pr
+ * merge` — quem carimba `consumedAt` é o próprio merge bem-sucedido, via o
+ * hook automático `.claude/hooks/consume-merge-grant-on-merge.mjs` (#6303).
+ * Uma sessão que consumiu a própria janela ANTES de mergear cai no mesmo
+ * `"not-authorized"` de quem nunca teve concessão nenhuma — sem este sinal,
+ * `buildBlockReason` não tem como distinguir os dois casos e a sessão
+ * bloqueada recebe a mesma orientação genérica ("peça uma concessão"), que
+ * não é o problema dela (ela TINHA uma; queimou sozinha).
+ */
+export function readConsumedGrantFor(repoRoot, sessionId, now = Date.now()) {
+  if (typeof sessionId !== "string" || sessionId === "") return null;
+  const dir = sessionsDir(repoRoot);
+  let entries;
+  try {
+    if (!existsSync(dir)) return null;
+    entries = readdirSync(dir);
+  } catch {
+    return null;
+  }
+  for (const name of entries) {
+    if (!name.endsWith(".json") || name.startsWith(".") || name.includes("-safeBackup-")) continue;
+    try {
+      const record = JSON.parse(readFileSync(join(dir, name), "utf8"));
+      if (!record || !COORDINATOR_KINDS.has(record.kind)) continue;
+      const grantorHeartbeatMs = Date.parse(record.lastHeartbeat ?? record.startedAt ?? "");
+      if (Number.isFinite(grantorHeartbeatMs) && now - grantorHeartbeatMs > SOFT_STALE_MS) continue;
+      const grant = record.merge_grant;
+      if (!grant || grant.grantedTo !== sessionId) continue;
+      if (!grant.consumedAt) continue; // aqui é o OPOSTO de readLiveMergeGrantFor
+      if (grant.grantedTo === grant.grantedBy) continue;
+      const grantedMs = Date.parse(grant.grantedAt);
+      if (!Number.isFinite(grantedMs)) continue;
+      const ageMs = now - grantedMs;
+      if (ageMs < -CLOCK_SKEW_TOLERANCE_MS || ageMs > MERGE_GRANT_TTL_MS) continue;
+      return grant;
+    } catch {
+      // Entrada corrompida — ignora só ela, segue as demais.
+    }
+  }
+  return null;
+}
+
+/**
  * Resolve a raiz do checkout PRINCIPAL do repo — nunca a raiz de um worktree
  * vinculado. Mesmo racional/implementação dos hooks irmãos: `data/sessions/`
  * mora na junction compartilhada, só visível a partir da raiz principal.
@@ -863,7 +914,40 @@ export const LOCK_CONTENTION_HINT =
   "desistência). Reconfirmar a concessão de novo sem adquirir o lock só repete este mesmo bloqueio.";
 
 /**
- * Monta a mensagem de bloqueio final. Dois hints aditivos, independentes:
+ * Complemento ao `BLOCK_REASON` quando a causa REAL do bloqueio é uma
+ * concessão que a PRÓPRIA sessão bloqueada consumiu antes de mergear (#7171).
+ *
+ * Cenário que motivou (reproduzido ao vivo, PR #7157): `check-merge-grant`
+ * confirmou `granted: true`, e a sessão rodou `consume-merge-grant` **antes**
+ * do `gh pr merge`, seguindo a leitura natural do nome do subcomando
+ * ("confira que existe, depois consuma para usar" — modelo mental de
+ * qualquer token de uso único). `consumedAt` é o carimbo que o MERGE deixa,
+ * nunca um passo que o beneficiário roda antes — quem carimba de verdade,
+ * automaticamente, é o hook `.claude/hooks/consume-merge-grant-on-merge.mjs`
+ * (#6303) DEPOIS que `gh pr merge` sucede. Chamar `consume-merge-grant` à mão
+ * antes do merge destrói exatamente a autorização que este guard ia
+ * consultar — e o comando responde `ok`, sem indicar que acabou de queimar a
+ * própria janela.
+ *
+ * Sem este hint, quem caiu nessa armadilha via o mesmo `BLOCK_REASON`
+ * genérico de "peça uma concessão à coordenadora" — verdade, mas sem nomear
+ * que ela JÁ TINHA uma e a destruiu sozinha, o que muda o diagnóstico (não é
+ * "faltou pedir", é "não chame consume-merge-grant de novo antes de
+ * mergear").
+ */
+export const CONSUMED_GRANT_HINT =
+  "Você TINHA uma concessão de merge válida para este PR, mas ela já está CONSUMIDA (`consumedAt` " +
+  "presente) — muito provavelmente porque `consume-merge-grant` foi chamado ANTES do `gh pr merge`, não " +
+  "depois. `consumedAt` é o carimbo que o MERGE bem-sucedido deixa (automaticamente, via " +
+  "`.claude/hooks/consume-merge-grant-on-merge.mjs`, #6303) — nunca um passo que quem recebe a janela " +
+  "roda antes de mergear. Chamar `consume-merge-grant` manualmente antes do merge queima a janela e " +
+  "produz exatamente este bloqueio, mesmo com `check-merge-grant` tendo confirmado `granted: true` " +
+  "segundos antes. A janela é de uso único e não pode ser 'reativada' — a única saída é pedir uma NOVA " +
+  "concessão à coordenadora (`grant-merge --granted-to {seu session_id} --pr N`) e, desta vez, NÃO " +
+  "chamar `consume-merge-grant` — deixe o hook automático cuidar disso depois que `gh pr merge` suceder.";
+
+/**
+ * Monta a mensagem de bloqueio final. Três hints aditivos, independentes:
  *   - `SCOPED_GRANT_HINT` quando existe concessão ESCOPADA para quem está
  *     chamando (`ctx.hasLiveGrant && ctx.grantPr !== undefined`) mas ela não
  *     cobriu esta chamada (`ctx.grantPr !== ctx.targetPr` — inclusive
@@ -872,6 +956,12 @@ export const LOCK_CONTENTION_HINT =
  *     `classifyMergeBlockCause`) indica que a causa real é o merge lock, não
  *     a identidade — nomeia a exigência real em vez de deixar a sessão
  *     bloqueada reconfirmar um grant que já é válido.
+ *   - `CONSUMED_GRANT_HINT` (#7171) quando `ctx.blockCause === "not-authorized"`
+ *     E `ctx.grantWasConsumed === true` (ver `readConsumedGrantFor`) — a
+ *     sessão bloqueada TINHA uma concessão válida e a consumiu ela mesma
+ *     antes de mergear (ordem errada: `consumedAt` é o carimbo que o merge
+ *     bem-sucedido deixa, nunca um passo prévio), em vez de nunca ter
+ *     recebido concessão nenhuma.
  */
 export function buildBlockReason(ctx = {}) {
   const hasScopedGrant = ctx.hasLiveGrant === true && ctx.grantPr !== undefined;
@@ -883,6 +973,14 @@ export function buildBlockReason(ctx = {}) {
     ctx.blockCause === "contention-grantee"
   ) {
     reason = `${reason} ${LOCK_CONTENTION_HINT}`;
+  }
+  // #7171: "not-authorized" cobre dois cenários bem diferentes — nunca teve
+  // concessão nenhuma, ou TINHA uma e a consumiu (à mão) antes de mergear.
+  // `ctx.grantWasConsumed` distingue os dois; sem o hint, o segundo caso via
+  // a mesma orientação genérica de "peça uma concessão", que não nomeia o
+  // erro real (chamou consume-merge-grant na ordem errada).
+  if (ctx.blockCause === "not-authorized" && ctx.grantWasConsumed === true) {
+    reason = `${reason} ${CONSUMED_GRANT_HINT}`;
   }
   return reason;
 }
@@ -924,6 +1022,10 @@ if (
         // #6303 Finding B: varredura degradada não pode alimentar a
         // leniência "sou a única coordenadora, posso sem lock".
         scanDegraded: scan.degraded,
+        // #7171: só interessa quando NÃO há concessão viva (senão o bloqueio
+        // nem seria "not-authorized") — diagnostica se a ausência é "nunca
+        // teve" ou "teve e consumiu antes de mergear".
+        grantWasConsumed: grant === null && readConsumedGrantFor(repoRoot, payload.session_id) !== null,
       };
       // #6497: classifica a causa UMA vez e reusa — `shouldBlockGhPrMerge`
       // decide SE bloqueia (mesmo cálculo), `buildBlockReason` usa o motivo

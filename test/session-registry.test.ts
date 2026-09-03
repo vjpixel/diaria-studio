@@ -56,10 +56,13 @@ import {
   INTERACTIVE_SOFT_STALE_MS,
   MERGE_LOCK_TTL_MS,
   CLOCK_SKEW_TOLERANCE_MS,
+  assessCrossMachineSyncFreshness,
+  CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS,
   type MergeLockIo,
   type SessionRecord,
   type MergeGrant,
   type PromotionRemoveIo,
+  type ActiveSessionRecord,
 } from "../scripts/lib/session-registry.ts";
 
 /** Struct local — `MergeLockRecord` não é exportado, só o formato JSON no disco. */
@@ -1723,6 +1726,70 @@ describe("registro de sessão end-to-end com kind \"continuo\" (#5293)", () => {
 
     endSession(root, "continuo", "sess-continuo-1", "host-a");
     assert.equal(existsSync(path), false);
+  });
+});
+
+// ─── assessCrossMachineSyncFreshness (#7169 — guard de frescor) ────────────
+
+describe("assessCrossMachineSyncFreshness (#7169) — sinaliza registro de OUTRA máquina desatualizado", () => {
+  const NOW = Date.parse("2026-09-02T21:37:45.000Z"); // hora do heartbeat "fresco" citado na issue
+  const record = (overrides: Partial<ActiveSessionRecord>): ActiveSessionRecord => ({
+    kind: "overnight",
+    machineTag: "helios",
+    sessionId: "b73bdec9",
+    startedAt: new Date(NOW - 60 * 60 * 1000).toISOString(),
+    lastHeartbeat: new Date(NOW).toISOString(),
+    stale: false,
+    claimed_issues_effective: [],
+    ...overrides,
+  });
+
+  it("reprodução do incidente: registro de OUTRA máquina com heartbeat de 73min (< 90min de SOFT_STALE_MS, > 10min do limiar de sync) → sinaliza", () => {
+    const stale73min = record({ lastHeartbeat: new Date(NOW - 73 * 60 * 1000).toISOString() });
+    const result = assessCrossMachineSyncFreshness([stale73min], NOW, "neo");
+    assert.equal(result.stale, true);
+    assert.equal(result.staleSessions.length, 1);
+    assert.equal(result.staleSessions[0].sessionId, "b73bdec9");
+  });
+
+  it("mesma sessão, mas lida da PRÓPRIA máquina (machineTag bate) → nunca sinaliza — leitura local não tem sync no caminho", () => {
+    const stale73min = record({ lastHeartbeat: new Date(NOW - 73 * 60 * 1000).toISOString() });
+    const result = assessCrossMachineSyncFreshness([stale73min], NOW, "helios");
+    assert.equal(result.stale, false);
+    assert.deepEqual(result.staleSessions, []);
+  });
+
+  it("heartbeat fresco (dentro do limiar de 10min) de outra máquina → não sinaliza", () => {
+    const fresh = record({ lastHeartbeat: new Date(NOW - 2 * 60 * 1000).toISOString() });
+    const result = assessCrossMachineSyncFreshness([fresh], NOW, "neo");
+    assert.equal(result.stale, false);
+  });
+
+  it("registro já marcado stale (>90min, GC-eligible) → não duplica o sinal — é outro caminho quem já cobre isso", () => {
+    const alreadyStale = record({ lastHeartbeat: new Date(NOW - 91 * 60 * 1000).toISOString(), stale: true });
+    const result = assessCrossMachineSyncFreshness([alreadyStale], NOW, "neo");
+    assert.equal(result.stale, false);
+  });
+
+  it("kind não-coordenador (interactive) de outra máquina desatualizado → não sinaliza (só coordenadora concede/detém lock)", () => {
+    const interactiveStale = record({ kind: "interactive", lastHeartbeat: new Date(NOW - 73 * 60 * 1000).toISOString() });
+    const result = assessCrossMachineSyncFreshness([interactiveStale], NOW, "neo");
+    assert.equal(result.stale, false);
+  });
+
+  it("heartbeat 'no futuro' (clock skew, não sync degradado) → não sinaliza por esta função", () => {
+    const future = record({ lastHeartbeat: new Date(NOW + 5 * 60 * 1000).toISOString() });
+    const result = assessCrossMachineSyncFreshness([future], NOW, "neo");
+    assert.equal(result.stale, false);
+  });
+
+  it("exatamente no limiar (CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS) → ainda NÃO sinaliza (estrito >, não >=)", () => {
+    const atThreshold = record({ lastHeartbeat: new Date(NOW - CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS).toISOString() });
+    assert.equal(assessCrossMachineSyncFreshness([atThreshold], NOW, "neo").stale, false);
+  });
+
+  it("nenhuma sessão → não sinaliza", () => {
+    assert.equal(assessCrossMachineSyncFreshness([], NOW, "neo").stale, false);
   });
 });
 

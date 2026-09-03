@@ -12,12 +12,14 @@ import {
   readActiveCoordinatorScan,
   readMergeLockHolder,
   readLiveMergeGrantFor,
+  readConsumedGrantFor,
   LOCK_HOLDER_CORRUPTED,
   sessionsDir,
   machineTag,
   BLOCK_REASON,
   SCOPED_GRANT_HINT,
   LOCK_CONTENTION_HINT,
+  CONSUMED_GRANT_HINT,
   buildBlockReason,
 } from "../.claude/hooks/block-gh-pr-merge-subagent.mjs";
 
@@ -447,6 +449,40 @@ describe("buildBlockReason — LOCK_CONTENTION_HINT (#6497, cenário do incident
       blockCause: "contention-grantee",
     });
     assert.equal(reason, `${BLOCK_REASON} ${SCOPED_GRANT_HINT} ${LOCK_CONTENTION_HINT}`);
+  });
+});
+
+describe("buildBlockReason — CONSUMED_GRANT_HINT (#7171, reprodução ao vivo do PR #7157)", () => {
+  it("blockCause 'not-authorized' + grantWasConsumed:true → acrescenta o hint de janela auto-consumida", () => {
+    const reason = buildBlockReason({ blockCause: "not-authorized", grantWasConsumed: true });
+    assert.match(reason, /já está CONSUMIDA/);
+    assert.match(reason, /consume-merge-grant.*ANTES do.*gh pr merge/s);
+    assert.equal(reason, `${BLOCK_REASON} ${CONSUMED_GRANT_HINT}`);
+  });
+
+  it("blockCause 'not-authorized' + grantWasConsumed:false (nunca teve concessão) → SEM o hint — não inventa um diagnóstico que não é o caso", () => {
+    assert.equal(buildBlockReason({ blockCause: "not-authorized", grantWasConsumed: false }), BLOCK_REASON);
+  });
+
+  it("grantWasConsumed:true mas blockCause NÃO é 'not-authorized' (ex: contenção de lock) → não acrescenta o hint de consumo (a causa real é outra)", () => {
+    const reason = buildBlockReason({ blockCause: "contention-grantee", grantWasConsumed: true });
+    assert.equal(reason, `${BLOCK_REASON} ${LOCK_CONTENTION_HINT}`);
+    assert.doesNotMatch(reason, /já está CONSUMIDA/);
+  });
+
+  it("concessão ESCOPADA que não bate + not-authorized nunca coexistem (not-authorized é 'sem concessão' por construção) — mas se grantWasConsumed:true e hasLiveGrant:true (dado inconsistente), o hint de consumo ainda entra sem quebrar o de escopo", () => {
+    // Cenário só de robustez de composição: os dois hints são aditivos e
+    // independentes por desenho (mesmo que este ctx específico nunca ocorra
+    // em produção — `grantWasConsumed` só é computado quando `hasLiveGrant`
+    // é false, ver o entrypoint CLI).
+    const reason = buildBlockReason({
+      blockCause: "not-authorized",
+      grantWasConsumed: true,
+      hasLiveGrant: true,
+      grantPr: 100,
+      targetPr: 200,
+    });
+    assert.equal(reason, `${BLOCK_REASON} ${SCOPED_GRANT_HINT} ${CONSUMED_GRANT_HINT}`);
   });
 });
 
@@ -904,5 +940,87 @@ describe("readLiveMergeGrantFor — arquivos reais (#6303 Finding G, clock skew 
       merge_grant: { grantedTo: "interativa", grantedBy: "coord-a", grantedAt: new Date(NOW).toISOString() },
     }));
     assert.equal(readLiveMergeGrantFor(root, "interativa", NOW), null);
+  });
+});
+
+// ─── readConsumedGrantFor (#7171) ───────────────────────────────────────────
+
+describe("readConsumedGrantFor — espelho invertido de readLiveMergeGrantFor (#7171)", () => {
+  const roots: string[] = [];
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+  function freshRoot() {
+    const root = join(tmpdir(), `consumed-grant-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    roots.push(root);
+    mkdirSync(sessionsDir(root), { recursive: true });
+    return root;
+  }
+  function writeCoordinator(root: string, filename: string, record: Record<string, unknown>) {
+    writeFileSync(join(sessionsDir(root), filename), JSON.stringify(record), "utf8");
+  }
+  const NOW = Date.parse("2026-09-02T23:00:00.000Z");
+  const base = (overrides: Record<string, unknown>) => ({
+    kind: "overnight",
+    sessionId: "coord-a",
+    lastHeartbeat: new Date(NOW).toISOString(),
+    machineTag: machineTag(),
+    ...overrides,
+  });
+
+  it("grant VIVO (não consumido) → null — é o caso que readLiveMergeGrantFor cobre, não este", () => {
+    const root = freshRoot();
+    writeCoordinator(root, "overnight-x-coord-a.json", base({
+      merge_grant: { grantedTo: "interativa", grantedBy: "coord-a", grantedAt: new Date(NOW).toISOString() },
+    }));
+    assert.equal(readConsumedGrantFor(root, "interativa", NOW), null);
+  });
+
+  it("grant CONSUMIDO → retorna o grant (é exatamente o cenário do #7171: consume-merge-grant chamado antes do merge)", () => {
+    const root = freshRoot();
+    writeCoordinator(root, "overnight-x-coord-a.json", base({
+      merge_grant: {
+        grantedTo: "interativa",
+        grantedBy: "coord-a",
+        grantedAt: new Date(NOW).toISOString(),
+        consumedAt: new Date(NOW).toISOString(),
+      },
+    }));
+    const found = readConsumedGrantFor(root, "interativa", NOW);
+    assert.ok(found);
+    assert.equal(found.grantedTo, "interativa");
+    assert.ok(found.consumedAt);
+  });
+
+  it("grant consumido de OUTRA sessão → null pra quem pergunta", () => {
+    const root = freshRoot();
+    writeCoordinator(root, "overnight-x-coord-a.json", base({
+      merge_grant: {
+        grantedTo: "outra-sessao",
+        grantedBy: "coord-a",
+        grantedAt: new Date(NOW).toISOString(),
+        consumedAt: new Date(NOW).toISOString(),
+      },
+    }));
+    assert.equal(readConsumedGrantFor(root, "interativa", NOW), null);
+  });
+
+  it("grant consumido, mas grantedAt expirado pelo TTL → null (não fica sinalizando pra sempre)", () => {
+    const root = freshRoot();
+    writeCoordinator(root, "overnight-x-coord-a.json", base({
+      merge_grant: {
+        grantedTo: "interativa",
+        grantedBy: "coord-a",
+        grantedAt: new Date(NOW - 11 * 60 * 1000).toISOString(),
+        consumedAt: new Date(NOW - 10 * 60 * 1000).toISOString(),
+      },
+    }));
+    assert.equal(readConsumedGrantFor(root, "interativa", NOW), null);
+  });
+
+  it("nenhum grant registrado → null", () => {
+    const root = freshRoot();
+    writeCoordinator(root, "overnight-x-coord-a.json", base({}));
+    assert.equal(readConsumedGrantFor(root, "interativa", NOW), null);
   });
 });
