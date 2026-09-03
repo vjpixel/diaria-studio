@@ -131,4 +131,70 @@ describe("assertHumanized (#1385)", () => {
     assert.equal(DEFAULT_SNAPSHOT_PAIRS[0].final, "02-reviewed.md");
     assert.equal(DEFAULT_SNAPSHOT_PAIRS[1].final, "03-social.md");
   });
+
+  it("#7230: gate humano do erro intencional >1h em 02-reviewed.md NÃO é falso positivo quando há anchor (02-pre-clarice.md)", () => {
+    const dir = makeFixture();
+    // Humanizador rodou, Clarice rodou (pre-clarice snapshot gravado logo depois) —
+    // ambos próximos no tempo. O editor então demora >1h no gate do erro
+    // intencional, tocando 02-reviewed.md de novo bem depois.
+    writeFileSync(join(dir, "_internal", "02-humanized.md"), "humanized");
+    setMtime(join(dir, "_internal", "02-humanized.md"), 3 * 60 * 60 * 1000); // 3h ago
+
+    writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "pre-clarice input");
+    setMtime(join(dir, "_internal", "02-pre-clarice.md"), 2 * 60 * 60 * 1000 + 55 * 60 * 1000); // ~2h55 ago — minutos depois do humanizador
+
+    writeFileSync(join(dir, "02-reviewed.md"), "reviewed, com erro intencional preenchido pelo editor");
+    setMtime(join(dir, "02-reviewed.md"), 0); // editor terminou agora — >2h depois do humanizador/anchor
+
+    writeFileSync(join(dir, "03-social.md"), "content");
+    writeFileSync(join(dir, "_internal", "03-social-pre-humanizador.md"), "snapshot");
+
+    const r = assertHumanized(dir);
+    assert.equal(r.ok, true, JSON.stringify(r.missing));
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("#7230: sem 02-pre-clarice.md (edição antiga), comportamento legado é preservado (final vira o anchor)", () => {
+    const dir = makeFixture();
+    // Mesmo cenário de atraso, mas SEM o anchor no disco — antes do #7230
+    // isso já dava falso positivo, e continua dando (fallback legado
+    // documentado: sem anchor, compara contra `final`).
+    writeFileSync(join(dir, "_internal", "02-humanized.md"), "humanized");
+    setMtime(join(dir, "_internal", "02-humanized.md"), 3 * 60 * 60 * 1000); // 3h ago
+
+    writeFileSync(join(dir, "02-reviewed.md"), "reviewed depois de 3h no gate");
+    setMtime(join(dir, "02-reviewed.md"), 0);
+
+    writeFileSync(join(dir, "03-social.md"), "content");
+    writeFileSync(join(dir, "_internal", "03-social-pre-humanizador.md"), "snapshot");
+
+    const r = assertHumanized(dir);
+    assert.equal(r.ok, false);
+    assert.equal(r.missing[0].final, "02-reviewed.md");
+    assert.equal(r.missing[0].reason, "snapshot_stale");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("#7230: anchor genuinamente stale (resume sem re-rodar humanizer) ainda é detectado", () => {
+    const dir = makeFixture();
+    // Snapshot é de uma run MUITO anterior; o pre-clarice atual (desta run
+    // resumida) é recente — humanizer não rodou nesta run.
+    writeFileSync(join(dir, "_internal", "02-humanized.md"), "old snapshot");
+    setMtime(join(dir, "_internal", "02-humanized.md"), 5 * 60 * 60 * 1000); // 5h ago
+
+    writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "fresh pre-clarice input");
+    setMtime(join(dir, "_internal", "02-pre-clarice.md"), 0); // agora — muito depois do snapshot
+
+    writeFileSync(join(dir, "02-reviewed.md"), "reviewed");
+    setMtime(join(dir, "02-reviewed.md"), 0);
+
+    writeFileSync(join(dir, "03-social.md"), "content");
+    writeFileSync(join(dir, "_internal", "03-social-pre-humanizador.md"), "snapshot");
+
+    const r = assertHumanized(dir);
+    assert.equal(r.ok, false);
+    assert.equal(r.missing[0].final, "02-reviewed.md");
+    assert.equal(r.missing[0].reason, "snapshot_stale");
+    rmSync(dir, { recursive: true, force: true });
+  });
 });

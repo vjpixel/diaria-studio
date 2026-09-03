@@ -300,8 +300,14 @@ function checkPorQueIssoImportaSeparate(editionDir: string): InvariantViolation[
 /**
  * #1385: assert humanizador rodou em 02-reviewed.md + 03-social.md.
  * Critério mecânico: snapshot pre-humanizer (_internal/02-humanized.md +
- * _internal/03-social-pre-humanizador.md) presente com mtime >= final
- * (com tolerance 1h pra edições leves manuais).
+ * _internal/03-social-pre-humanizador.md) presente com mtime >= anchor
+ * (com tolerance 1h pra edições leves manuais). Para o par newsletter, o
+ * anchor é `_internal/02-pre-clarice.md` (não `02-reviewed.md`) desde o
+ * #7230 — decorrelaciona a checagem de quanto tempo o editor leva no gate
+ * humano do erro intencional, que continua tocando `02-reviewed.md` bem
+ * depois do humanizador ter rodado (ver `SnapshotPair.anchor` em
+ * assert-humanized.ts). Sem essa decorrelação, um gate de >1h produzia
+ * falso positivo mesmo com o humanizador tendo rodado normalmente.
  *
  * Caso real 260519: editor pulou humanizer no social por timeout Clarice.
  * Sem este gate, padrões IA no copy ficam invisíveis ao orchestrator.
@@ -312,9 +318,16 @@ function checkHumanizerRan(editionDir: string): InvariantViolation[] {
   return result.missing.map((m) => ({
     rule: "humanizer-ran",
     message:
-      `${m.final}: snapshot ${m.snapshot} ${m.reason === "snapshot_missing" ? "ausente" : "stale (mtime < final)"} — ` +
-      `humanizer foi pulado. Rodar Skill("humanizador", "Leia ${m.final}, humanize..., salve em ${m.final}.") ` +
-      `e re-commitar snapshot.`,
+      m.reason === "snapshot_missing"
+        ? `${m.final}: snapshot ${m.snapshot} ausente — humanizer foi pulado. ` +
+          `Rodar Skill("humanizador", "Leia ${m.final}, humanize..., salve em ${m.final}.") e re-commitar snapshot.`
+        : `${m.final}: snapshot ${m.snapshot} stale (anchor mais recente que o snapshot + 1h) — ` +
+          `sinal de que o humanizer NÃO rodou na run atual (snapshot é de uma run anterior). ` +
+          `Antes de re-rodar o humanizador, confira se ${m.final} já tem o erro intencional plantado ` +
+          `(_internal/intentional-error.json) — re-rodar o humanizador PODE desfazer o erro plantado ` +
+          `silenciosamente (#7230). Se o erro já estiver plantado, NÃO re-rode o humanizador: alinhe o ` +
+          `mtime do snapshot ao momento em que ele de fato rodou, ou investigue por que o anchor não reflete ` +
+          `a run atual antes de qualquer ação.`,
     source_issue: "#1385",
     severity: "error" as const,
     file: m.final,
