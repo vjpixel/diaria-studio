@@ -42,6 +42,7 @@ import { spawnSync } from "node:child_process";
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { join, relative, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -157,6 +158,10 @@ function main(): number {
   return failed === 0 ? 0 : 1;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// #6191: `isMainModule`, nunca o template `file://${process.argv[1]}` à mão —
+// há guard em CI (`test/main-module-guard.test.ts`) e ele pegou esta linha na
+// 1ª versão deste arquivo. O template quebra com path que precisa de encode
+// (espaço, acento) e em Windows.
+if (isMainModule(import.meta.url)) {
   process.exit(main());
 }
