@@ -130,6 +130,28 @@ describe("computeReceivedForPlatform", () => {
     assert.equal(computeReceivedForPlatform(db, id, "kit", caps), 0);
     db.close();
   });
+
+  it("event.subtype (#7203, hard/soft do bounce da Brevo) não muda o cálculo — a leitura ainda casa por type='bounce', ignorando subtype", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const id = ensureSubscriber(db, "brevo_diaria", "c1", "a@x.com", NOW);
+    recordEvent(db, { subscriberId: id, platform: "brevo_diaria", type: "sent", externalEventId: "s1", edicao: "camp1", ts: NOW });
+    recordEvent(db, { subscriberId: id, platform: "brevo_diaria", type: "sent", externalEventId: "s2", edicao: "camp2", ts: NOW });
+    recordEvent(db, { subscriberId: id, platform: "brevo_diaria", type: "sent", externalEventId: "s3", edicao: "camp3", ts: NOW });
+    recordEvent(db, {
+      subscriberId: id,
+      platform: "brevo_diaria",
+      type: "bounce",
+      externalEventId: "b1",
+      edicao: "camp2",
+      subtype: "hard",
+      ts: NOW,
+    });
+    const caps = detectPlatformCapabilities(db);
+    // Idêntico ao teste "Brevo (sem delivered): deriva sent − bounce" acima —
+    // o único delta é subtype: "hard" no bounce, resultado tem que ser igual.
+    assert.equal(computeReceivedForPlatform(db, id, "brevo_diaria", caps), 2);
+    db.close();
+  });
 });
 
 // ---------------------------------------------------------------------------

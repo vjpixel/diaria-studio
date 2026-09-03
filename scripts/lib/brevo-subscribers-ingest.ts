@@ -60,8 +60,10 @@ export type BrevoAccountPlatform = Extract<Platform, "brevo_diaria">;
 
 /** Categoria de `contact.statistics` → tipo de evento do store. `hardBounces`/
  *  `softBounces` colapsam em `"bounce"` — o store não distingue dureza do
- *  bounce (`EventType` não tem esse eixo; quem precisar da distinção volta a
- *  `clarice_users.mv_result`/similar, fora de escopo aqui). */
+ *  bounce no EIXO (`EventType` não tem `bounce_hard`/`bounce_soft`, ver
+ *  docstring de `SCHEMA` em `diaria-subscribers-db.ts`); a dureza sobrevive
+ *  como `event.subtype` (#7203, ver `mapStatCategoryToBounceSubtype`
+ *  abaixo), não como tipo próprio. */
 export function mapStatCategoryToEventType(category: BrevoStatCategory): EventType {
   const map: Record<BrevoStatCategory, EventType> = {
     messagesSent: "sent",
@@ -73,6 +75,18 @@ export function mapStatCategoryToEventType(category: BrevoStatCategory): EventTy
     complaints: "complaint",
   };
   return map[category];
+}
+
+/**
+ * Dureza do bounce (#7203) — `"hard"`/`"soft"` para `hardBounces`/
+ * `softBounces`, `null` para as demais 5 categorias (não se aplica). Gravado
+ * em `event.subtype`, nunca no `type` (ver docstring de
+ * `mapStatCategoryToEventType`).
+ */
+export function mapStatCategoryToBounceSubtype(category: BrevoStatCategory): string | null {
+  if (category === "hardBounces") return "hard";
+  if (category === "softBounces") return "soft";
+  return null;
 }
 
 /**
@@ -153,6 +167,10 @@ export function ingestBrevoContact(
       status: unsubscribed ? "unsubscribed" : "active",
       enteredAt: typeof contact?.createdAt === "string" ? contact.createdAt : null,
       exitedAt: unsubscribed && typeof contact?.modifiedAt === "string" ? contact.modifiedAt : null,
+      // `source` continua só a 1ª lista — mudar esse contrato afetaria
+      // consumidores existentes de `subscription.source`. O RESTO de
+      // `listIds[]` (#7203 — antes descartado em silêncio) é gravado
+      // inteiro como atributo abaixo.
       source: listIds.length > 0 ? `brevo_list:${listIds[0]}` : null,
     },
     now,
@@ -161,6 +179,20 @@ export function ingestBrevoContact(
   let newEvents = 0;
   let alreadyKnown = 0;
   let skippedNoTimestamp = 0;
+  let attributesWritten = 0;
+
+  // #7203: `listIds[]` inteiro — antes só `listIds[0]` sobrevivia (em
+  // `subscription.source`, ver acima) e o resto era descartado em silêncio.
+  // Grava como `subscriber_attribute` (superfície já existente do #7202) em
+  // vez de coluna nova — reusa `coerceAttributeValue` pra serializar o array
+  // como JSON, mesmo tratamento de qualquer atributo não-string.
+  if (listIds.length > 0) {
+    const listIdsAttrValue = coerceAttributeValue(listIds);
+    if (listIdsAttrValue !== null) {
+      upsertAttribute(db, subscriberId, platform, "brevo_list_ids", listIdsAttrValue, now);
+      attributesWritten++;
+    }
+  }
 
   // #7201: emitir `subscribe` com a data de entrada, mesma disciplina do
   // Kit/Beehiiv (`ingestKitRoster`/`ingestBeehiivRoster`) — `createdAt` é a
@@ -194,6 +226,7 @@ export function ingestBrevoContact(
       type: mapStatCategoryToEventType(ev.category),
       externalEventId: buildBrevoEventExternalId(email, ev.category, ev.campaignId, ev.ts, ev.url ?? null),
       url: ev.category === "clicked" ? ev.url ?? null : null,
+      subtype: mapStatCategoryToBounceSubtype(ev.category),
       // #6591: `edicao` = a campanha Brevo. Diferente do Kit, a chave
       // natural de "clicked" aqui INCLUI `url` — um assinante clicando 2
       // links da MESMA campanha grava 2 eventos "click" distintos. Sem
@@ -208,7 +241,6 @@ export function ingestBrevoContact(
     else alreadyKnown++;
   }
 
-  let attributesWritten = 0;
   for (const attr of extractBrevoContactAttributes(contact)) {
     upsertAttribute(db, subscriberId, platform, attr.key, attr.value, now);
     attributesWritten++;

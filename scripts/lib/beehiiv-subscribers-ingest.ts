@@ -44,6 +44,23 @@
  *     de `ingestBeehiivRoster` abaixo, que é a transição de roster
  *     (#7233 finding 2, ver docstring de `ingestBeehiivRoster`).
  *
+ * ## Click-identity records (`list_post_click_subscribers`) — NUNCA fabricam `delivered` (#7206)
+ *
+ * O mesmo JSONL pode conter registros de uma 2ª fonte: `list_post_click_subscribers`
+ * (docstring de `apply-mcp-subscriber-engagement.ts`, mesclada por
+ * `subscriber_id` no MESMO arquivo). Medição ao vivo de 02/09/2026: 261
+ * linhas com `url_hash`, em 2 shapes — 199 FLAT (`{subscription_id, email,
+ * url, url_hash, clicked_at}`, 1 clique por linha) e 62 NESTED (um array de
+ * cliques dentro do registro). Nenhum dos dois shapes carrega `status` — o
+ * bug corrigido aqui era `deriveBeehiivEventTypes` receber essas linhas como
+ * se fossem engagement genérico e SEMPRE prefixar `"delivered"` (a lógica
+ * `types: EventType[] = ["delivered"]` acima não checa a origem do
+ * registro), fabricando uma entrega que a fonte nunca confirmou, e
+ * descartando a URL do clique (nunca lida). `isBeehiivClickIdentityRecord`/
+ * `extractBeehiivClickEntries` abaixo detectam e tratam os dois shapes à
+ * parte, ANTES de `deriveBeehiivEventTypes` rodar — grava só `"click"` (1
+ * por link, com `url`), nunca `"delivered"`.
+ *
  * ## Sem `sent`, sem `bounce` (mesma limitação nomeada na issue #7104)
  *
  * O backup não tem eixo `sent` — só `delivered` em diante (a MCP
@@ -52,6 +69,16 @@
  * desta fonte — decisão explícita de não buscar `sent` na API pra fechar
  * esse eixo: `leitor-v1` não usa bounce, e o custo de rede não se paga por
  * um eixo que ninguém consome hoje (mesmo raciocínio do corpo da issue).
+ *
+ * **Bounce (hard/soft) nunca vira `event.subtype` aqui, de propósito
+ * (#7203).** A Beehiiv expõe `total_soft_bounced`/`total_hard_bounced` só
+ * AGREGADO **por post** (endpoint de stats do post) — nunca por assinante.
+ * Diferente da Brevo (`brevo-subscribers-ingest.ts`, que grava `hard`/`soft`
+ * em `event.subtype` a partir de `contact.statistics`, um eixo genuinamente
+ * por-contato), fabricar um bounce individual aqui exigiria adivinhar QUAL
+ * assinante do post bateu o agregado — informação que a fonte não confirma
+ * por pessoa. Registrado aqui explicitamente (não implementado) pra não
+ * reabrir a pergunta a cada nova leitura do módulo.
  */
 
 import type { DatabaseSync } from "node:sqlite";
@@ -70,11 +97,23 @@ import type { BeehiivBackupSubscriber, BeehiivBackupCustomField } from "./beehii
  *  da fatia 1). Nenhum campo é assumido presente sem checagem. */
 export interface BeehiivEngagementRecord {
   subscriber_id?: unknown;
+  /** #7206: alguns click-identity records de `list_post_click_subscribers`
+   *  usam este nome no lugar de `subscriber_id` (medido ao vivo, 02/09/2026)
+   *  — mesmo UUID de assinante, campo diferente. `extractBeehiivIdentity`
+   *  tenta os dois. */
+  subscription_id?: unknown;
   email?: unknown;
   status?: unknown;
   timestamp?: unknown;
   total_clicked?: unknown;
   total_opened?: unknown;
+  /** #7206: shape FLAT de click-identity record — 1 clique por linha. */
+  url?: unknown;
+  url_hash?: unknown;
+  clicked_at?: unknown;
+  /** #7206: shape NESTED de click-identity record — vários cliques por
+   *  linha, cada entrada com o mesmo formato de `url`/`url_hash`/`clicked_at`. */
+  clicks?: unknown;
 }
 
 /**
@@ -94,6 +133,78 @@ export function deriveBeehiivEventTypes(record: BeehiivEngagementRecord): EventT
   return types;
 }
 
+/** 1 clique extraído de um click-identity record (#7206) — `ts` é `null`
+ *  quando `clicked_at` está ausente/malformado (o chamador cai pro `ts` do
+ *  registro pai, mesma disciplina do resto do módulo: nunca inventa data). */
+export interface BeehiivClickEntry {
+  url: string;
+  ts: string | null;
+}
+
+function parseClickLike(raw: unknown): BeehiivClickEntry | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const url = typeof obj.url === "string" && obj.url ? obj.url : null;
+  if (!url) return null;
+  const ts = typeof obj.clicked_at === "string" && obj.clicked_at ? obj.clicked_at : null;
+  return { url, ts };
+}
+
+/**
+ * Extrai os cliques (url + ts) de 1 registro de `list_post_click_subscribers`
+ * (#7206) — tolera os 2 shapes medidos ao vivo: FLAT (`url`/`clicked_at` no
+ * nível do próprio registro) e NESTED (`clicks: [...]`, cada entrada no mesmo
+ * formato). Os dois podem coexistir em teoria (registro flat com `clicks[]`
+ * também presente) — soma os dois sem duplicar lógica. `[]` quando o
+ * registro não é um click-identity record (nem `url` nem `clicks[]`
+ * utilizável) — nunca lança.
+ */
+export function extractBeehiivClickEntries(record: BeehiivEngagementRecord): BeehiivClickEntry[] {
+  const out: BeehiivClickEntry[] = [];
+  const own = parseClickLike(record);
+  if (own) out.push(own);
+  if (Array.isArray(record.clicks)) {
+    for (const raw of record.clicks) {
+      const entry = parseClickLike(raw);
+      if (entry) out.push(entry);
+    }
+  }
+  return out;
+}
+
+/**
+ * `true` quando o registro é um click-identity record (`list_post_click_subscribers`)
+ * em vez de um engagement record (`list_post_subscriber_engagement`) — nunca
+ * carrega `status`, mas carrega ao menos 1 clique utilizável (#7206).
+ * Discriminador usado pra NUNCA fabricar `"delivered"` a partir de um
+ * registro de clique: a presença numa lista de cliques prova o clique, não a
+ * entrega (quem prova entrega é o registro de engagement, se existir —
+ * ingerido separadamente, nunca inferido daqui).
+ */
+export function isBeehiivClickIdentityRecord(record: BeehiivEngagementRecord): boolean {
+  return typeof record.status !== "string" && extractBeehiivClickEntries(record).length > 0;
+}
+
+/**
+ * Chave natural de 1 clique de click-identity record — inclui `url` (2
+ * links diferentes do mesmo post não podem colidir na mesma chave, mesmo
+ * padrão de `buildBrevoEventExternalId` pra `clicked`). Deliberadamente
+ * DIFERENTE de `buildBeehiivEventExternalId(identity, postId, "click")`
+ * (sem sufixo de url, usado pelo `"click"` derivado de engagement genérico)
+ * — as duas chaves nunca colidem (strings distintas), então um post que tem
+ * TANTO um registro de engagement com `total_clicked > 0` QUANTO um
+ * click-identity record grava 2 eventos "click" (1 sem url, 1 com) em vez de
+ * um sobrescrever o outro — aceito: a leitura por `COUNT(DISTINCT edicao)`
+ * em `leitor-store.ts` já colapsa isso pra "1 edição clicada".
+ */
+export function buildBeehiivClickExternalId(identity: BeehiivIdentity, postId: string, url: string): string {
+  const key = identity.externalId ?? identity.email;
+  if (!key) {
+    throw new Error("buildBeehiivClickExternalId: identidade vazia (nem externalId nem email)");
+  }
+  return `${key}:${postId}:click:${url}`;
+}
+
 /**
  * Identidade utilizável do registro: `subscriber_id` (UUID nativo da
  * Beehiiv — preferido, é o `external_id` real) e/ou `email`. `null` quando
@@ -107,7 +218,13 @@ export interface BeehiivIdentity {
 
 export function extractBeehiivIdentity(record: BeehiivEngagementRecord): BeehiivIdentity | null {
   const externalId =
-    typeof record.subscriber_id === "string" && record.subscriber_id.trim() ? record.subscriber_id.trim() : null;
+    typeof record.subscriber_id === "string" && record.subscriber_id.trim()
+      ? record.subscriber_id.trim()
+      // #7206: click-identity records de list_post_click_subscribers usam
+      // `subscription_id` no lugar de `subscriber_id` (medido ao vivo).
+      : typeof record.subscription_id === "string" && record.subscription_id.trim()
+        ? record.subscription_id.trim()
+        : null;
   let email =
     typeof record.email === "string" && record.email.trim() ? record.email.trim().toLowerCase() : null;
 
@@ -330,6 +447,27 @@ export function ingestPostEngagement(
 
     const ts = typeof record.timestamp === "string" && record.timestamp ? record.timestamp : now;
     touchedSubscribers.add(subscriberId);
+
+    if (isBeehiivClickIdentityRecord(record)) {
+      // #7206: click-identity record (`list_post_click_subscribers`) —
+      // NUNCA passa por `deriveBeehiivEventTypes` (que sempre prefixaria
+      // "delivered", fabricando uma entrega que este registro não prova).
+      // Grava 1 "click" POR LINK, com a URL — antes descartada.
+      for (const entry of extractBeehiivClickEntries(record)) {
+        const { inserted } = recordEvent(db, {
+          subscriberId,
+          platform: "beehiiv",
+          type: "click",
+          externalEventId: buildBeehiivClickExternalId(identity, postId, entry.url),
+          edicao: postId,
+          url: entry.url,
+          ts: entry.ts ?? ts,
+        });
+        if (inserted) newEvents++;
+        else alreadyKnown++;
+      }
+      continue;
+    }
 
     for (const type of deriveBeehiivEventTypes(record)) {
       const { inserted } = recordEvent(db, {

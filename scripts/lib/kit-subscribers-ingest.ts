@@ -24,6 +24,20 @@
  * está em `sent` prova bounce, e essa é uma pergunta de LEITURA sobre a
  * timeline (`sent` sem `delivered` correspondente pro mesmo broadcast),
  * nunca um evento `bounce` que a fonte nunca confirmou individualmente.
+ *
+ * ## `event.url` no eixo "clicks" — AINDA NÃO POPULADO (#7206, gap conhecido)
+ *
+ * `ingestBroadcastAudience` grava o eixo "clicks" sem `url` — o Kit devolve
+ * a LISTA de quem clicou (`POST /subscribers/filter`, `type: "clicks"`),
+ * nunca QUAL link. O corpo da issue #7206 cita `filter_subscribers type:
+ * "clicks"` com um filtro `urls` adicional (escopar por URL devolveria um
+ * subconjunto diferente do broadcast inteiro) como o caminho pra popular
+ * este eixo — mas essa chamada nunca foi confirmada ao vivo NESTE dispatch
+ * (guard do repo proíbe ingestão/rede ao vivo em sessão automatizada), e
+ * "quais URLs perguntar" (os links da própria edição) não tem resolução
+ * pronta nesta camada. Registrado aqui, não implementado — Beehiiv
+ * (`beehiiv-subscribers-ingest.ts`) e Brevo (`brevo-subscribers-ingest.ts`)
+ * já populam `event.url`; o Kit é o eixo que falta fechar.
  */
 
 import type { DatabaseSync } from "node:sqlite";
@@ -197,6 +211,15 @@ export function extractKitFieldAttributes(
  * quando `upsertSubscription` grava `exitedAt`. `active`/`inactive` (double
  * opt-in pendente) permanecem SEM `exitedAt` — `inactive` ainda é membro da
  * base, só não confirmou o opt-in.
+ *
+ * `"bounced"` (#7203 checklist — já coberto, nenhuma mudança nova aqui):
+ * diferente da Brevo (`hardBounces`/`softBounces` por-contato, com dureza)
+ * e da Beehiiv (bounce só agregado por-post, nunca por-assinante — ver
+ * `beehiiv-subscribers-ingest.ts`), o Kit expõe bounce como ESTADO do
+ * assinante em `sub.state` — já persistido cru em `subscription.status`
+ * (`upsertSubscription` abaixo) e já classificado como saída aqui. Não há
+ * eixo `hard`/`soft` no Kit pra distinguir (a fonte não expõe essa dureza),
+ * então não há `event.subtype` a gravar pra esta plataforma.
  */
 const KIT_EXITED_STATES: ReadonlySet<string> = new Set(["cancelled", "bounced", "complained"]);
 

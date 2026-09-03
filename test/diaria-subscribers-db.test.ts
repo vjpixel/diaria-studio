@@ -18,6 +18,7 @@ import {
   SUBSCRIPTION_COVERAGE_WARN_FRACTION,
   getSubscriptionsForSubscriber,
   migrateSubscriptionColumns,
+  migrateEventColumns,
   isPlatform,
   isEventType,
   coerceAttributeValue,
@@ -168,6 +169,153 @@ describe("migrateSubscriptionColumns — ALTER TABLE idempotente sobre .db povoa
     const row = db.prepare("SELECT * FROM subscription WHERE subscriber_id = 1").get() as Record<string, unknown>;
     assert.equal(row.source, "sparkloop-upscribe");
     assert.equal(row.utm_channel, null);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #7203 — migração da coluna event.subtype sobre um .db JÁ POVOADO (mesmo
+// padrão de migrateSubscriptionColumns acima)
+// ---------------------------------------------------------------------------
+
+describe("migrateEventColumns — ALTER TABLE idempotente sobre event (#7203)", () => {
+  it("adiciona 'subtype' quando o schema é criado do zero (via openDiariaSubscribersDb)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const cols = new Set(
+      (db.prepare("PRAGMA table_info(event)").all() as Array<{ name: string }>).map((c) => c.name),
+    );
+    assert.ok(cols.has("subtype"));
+    db.close();
+  });
+
+  it("rodar a migração 2x não lança nem duplica coluna (idempotente)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    assert.doesNotThrow(() => migrateEventColumns(db));
+    assert.doesNotThrow(() => migrateEventColumns(db));
+    const cols = (db.prepare("PRAGMA table_info(event)").all() as Array<{ name: string }>).map((c) => c.name);
+    assert.equal(cols.filter((c) => c === "subtype").length, 1);
+    db.close();
+  });
+
+  it("engole 'duplicate column name' — processo concorrente já commitou a coluna (#7222 finding 2, mesmo padrão)", () => {
+    let alterCalls = 0;
+    const fakeDb = {
+      prepare: (sql: string) => {
+        if (sql.startsWith("PRAGMA table_info")) return { all: () => [{ name: "id" }] };
+        throw new Error(`prepare inesperado no fake: ${sql}`);
+      },
+      exec: (ddl: string) => {
+        alterCalls++;
+        if (ddl.includes("subtype")) throw new Error("SQLITE_ERROR: duplicate column name: subtype");
+      },
+    } as unknown as DatabaseSync;
+    assert.doesNotThrow(() => migrateEventColumns(fakeDb));
+    assert.equal(alterCalls, 1);
+  });
+
+  it("relança qualquer erro que NÃO seja 'duplicate column name'", () => {
+    const fakeDb = {
+      prepare: (sql: string) => {
+        if (sql.startsWith("PRAGMA table_info")) return { all: () => [] };
+        throw new Error(`prepare inesperado no fake: ${sql}`);
+      },
+      exec: () => {
+        throw new Error("disk I/O error");
+      },
+    } as unknown as DatabaseSync;
+    assert.throws(() => migrateEventColumns(fakeDb), /disk I\/O error/);
+  });
+
+  it("migra um .db criado com o schema ANTIGO (event sem subtype), simulando um store já populado em produção", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec(`
+      CREATE TABLE subscriber (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE event (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        subscriber_id       INTEGER,
+        platform            TEXT NOT NULL,
+        type                TEXT NOT NULL,
+        external_event_id   TEXT NOT NULL,
+        edicao              TEXT,
+        url                 TEXT,
+        ts                  TEXT NOT NULL,
+        UNIQUE(platform, type, external_event_id)
+      );
+    `);
+    db.prepare("INSERT INTO subscriber (created_at, updated_at) VALUES (?, ?)").run("2026-08-01T00:00:00Z", "2026-08-01T00:00:00Z");
+    db.prepare(
+      "INSERT INTO event (subscriber_id, platform, type, external_event_id, ts) VALUES (1, 'brevo_diaria', 'bounce', 'x', '2026-08-01T00:00:00Z')",
+    ).run();
+
+    const before = (db.prepare("PRAGMA table_info(event)").all() as Array<{ name: string }>).map((c) => c.name);
+    assert.ok(!before.includes("subtype"));
+
+    migrateEventColumns(db);
+
+    const after = (db.prepare("PRAGMA table_info(event)").all() as Array<{ name: string }>).map((c) => c.name);
+    assert.ok(after.includes("subtype"));
+    const row = db.prepare("SELECT * FROM event WHERE id = 1").get() as Record<string, unknown>;
+    assert.equal(row.type, "bounce");
+    assert.equal(row.subtype, null, "linha pré-existente sobrevive, coluna nova NULL, sem backfill");
+    db.close();
+  });
+});
+
+describe("recordEvent / getSubscriberTimeline — subtype (#7203)", () => {
+  it("grava e relê subtype quando informado", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const subscriberId = ensureSubscriber(db, "brevo_diaria", "brevo-hard-1", "hard@example.com");
+    recordEvent(db, {
+      subscriberId,
+      platform: "brevo_diaria",
+      type: "bounce",
+      externalEventId: "campanha-1:hard@example.com",
+      subtype: "hard",
+      ts: "2026-08-01T00:00:00.000Z",
+    });
+    const timeline = getSubscriberTimeline(db, subscriberId);
+    assert.equal(timeline.length, 1);
+    assert.equal(timeline[0].type, "bounce");
+    assert.equal(timeline[0].subtype, "hard");
+    db.close();
+  });
+
+  it("subtype omitido vira NULL, nunca string vazia (evento sem dureza aplicável)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const subscriberId = ensureSubscriber(db, "kit", "kit-1", "sem-subtype@example.com");
+    recordEvent(db, {
+      subscriberId,
+      platform: "kit",
+      type: "open",
+      externalEventId: "broadcast-1:kit-1",
+      ts: "2026-08-01T00:00:00.000Z",
+    });
+    const timeline = getSubscriberTimeline(db, subscriberId);
+    assert.equal(timeline[0].subtype, null);
+    db.close();
+  });
+
+  it("subtype não entra na chave natural — dois bounces com subtype diferente colidem se o resto da chave for igual", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const subscriberId = ensureSubscriber(db, "brevo_diaria", "brevo-2", "colide@example.com");
+    const first = recordEvent(db, {
+      subscriberId,
+      platform: "brevo_diaria",
+      type: "bounce",
+      externalEventId: "mesma-chave",
+      subtype: "hard",
+      ts: "2026-08-01T00:00:00.000Z",
+    });
+    const second = recordEvent(db, {
+      subscriberId,
+      platform: "brevo_diaria",
+      type: "bounce",
+      externalEventId: "mesma-chave",
+      subtype: "soft",
+      ts: "2026-08-01T00:00:00.000Z",
+    });
+    assert.equal(first.inserted, true);
+    assert.equal(second.inserted, false, "UNIQUE(platform, type, external_event_id) não inclui subtype");
     db.close();
   });
 });
