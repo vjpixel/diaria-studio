@@ -585,5 +585,29 @@
       "https://canaltech.com.br/inteligencia-artificial/empresas-recontratam-funcionarios-substituidos-por-ia-mas-pagando-menos-por-que/"
     ],
     "editionTitle": "Empresas recontratam quem demitiu por IA"
+  },
+  {
+    "date": "2026-08-28",
+    "editionSlug": "tem-22-a-25-anos-a-ia-ja-pode-afetar-seu-emprego",
+    "url": "https://diar.ia.br/p/tem-22-a-25-anos-a-ia-ja-pode-afetar-seu-emprego",
+    "matchedHeadlines": [
+      "Tem 22 a 25 anos? A IA já pode afetar seu emprego"
+    ],
+    "primarySourceUrls": [
+      "https://www.cnnbrasil.com.br/economia/money/inteligencia-artificial/ia-pode-estar-afetando-empregos-de-jovens-aponta-estudo/"
+    ],
+    "editionTitle": "Tem 22 a 25 anos? A IA já pode afetar seu emprego"
+  },
+  {
+    "date": "2026-09-01",
+    "editionSlug": "gates-propoe-empregos-so-para-humanos",
+    "url": "https://diar.ia.br/p/gates-propoe-empregos-so-para-humanos",
+    "matchedHeadlines": [
+      "Gates propõe empregos só para humanos"
+    ],
+    "primarySourceUrls": [
+      "https://www.gatesnotes.com/a-turbulent-ai-era-and-critical-choices-to-make"
+    ],
+    "editionTitle": "Gates propõe empregos só para humanos"
   }
 ]

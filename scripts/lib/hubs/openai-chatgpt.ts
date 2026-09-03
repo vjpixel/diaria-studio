@@ -118,7 +118,23 @@ const PUBLISHED_DATE = "2026-08-09";
 //    evento financeiro do arco já narrado em `sections[2]` (`FINANCEIRO_PATTERN`
 //    já casa "capta").
 // Bump por fonte nova + revisão de estrutura, não por reescrita de corpo.
-const UPDATED_DATE = "2026-08-27";
+//
+// 2026-09-02 (#7103): 1 edição nova (28/08/2026), "OpenAI amplia presença
+// oficial no Brasil". Decisão: **manter fechado, mas isto agora é o SEGUNDO
+// dado do mesmo tema** — a nota de 27/08 logo acima recusou abrir seção pra
+// "OpenAI chega ao Brasil com foco em empresas" (20/08) chamando-o de "1
+// dado isolado, sem meses de cobertura acumulada atrás dele". Com o de
+// 28/08 são 2 manchetes de expansão no Brasil em 8 dias, o que ainda não é
+// arco (2 anúncios do mesmo movimento, sem investimento, prazo ou formato
+// divulgados — a própria edição diz que "funciona mais como sinal de
+// prioridade do que plano concreto"), mas deixa de ser fato isolado.
+//
+// **Gatilho explícito pra quem revisar depois:** uma 3ª manchete de operação
+// da OpenAI no Brasil — sobretudo se trouxer número (investimento,
+// contratação, escritório) — já justifica abrir seção própria, e este
+// comentário existe pra que essa decisão não precise ser re-derivada do
+// zero. Até lá, nenhum número derivado muda e a prosa segue válida.
+const UPDATED_DATE = "2026-09-02";
 
 /** `matchedHeadlines` vem em NFD (mesmo achado de `anthropic-claude.ts`) —
  * ver a nota completa em `countMatching`, agora em

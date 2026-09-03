@@ -131,7 +131,31 @@ const PUBLISHED_DATE = "2026-08-04";
 // derivados (`countMatching`) continuam corretos para os padrões que essas
 // 5 edições realmente casam; bump por fonte nova + revisão de estrutura,
 // não por reescrita de corpo.
-const UPDATED_DATE = "2026-08-27";
+//
+// 2026-09-02 (#7101): `generate-hub-sources.ts --hub anthropic-claude`
+// trouxe 2 edições novas (28 e 31/08/2026). Revisão de prosa, nenhuma abriu
+// seção nova — mesmo critério conservador das notas acima:
+//  - 28/08 "GLM-5.3-Flash: modelo aberto chega perto do Opus": o Claude
+//    aparece só como RÉGUA de comparação (84,3 do GLM contra 85,0 do Opus
+//    4.8) — a notícia é sobre um concorrente aberto, não sobre a Anthropic.
+//    Menção incidental, mais fraca ainda que os "fatos isolados" que as
+//    notas anteriores já decidiram não abrigar em seção.
+//  - 31/08 "Claude e Codex instalaram código sem dono": mais um episódio do
+//    arco de segurança de `sections[4]`, que a própria prosa fecha como
+//    "sequência ... em aberto, não uma conclusão". O texto não bate
+//    `SEGURANCA_PATTERN` (nada de `hacke`/`espiona`/etc.) — decisão IGUAL à
+//    tomada em 27/08 pra "Marca d'água do Claude cai em horas": não estender
+//    o regex por 1 evento isolado. Consequência aceita e conhecida: o
+//    `seguranca` (countMatching) não conta este episódio.
+//  - 31/08 "Extensão do Claude chega a todo plano pago" (mesma edição):
+//    disponibilidade ampliada de um produto já existente, não lançamento —
+//    não bate `LAUNCH_PATTERN` (`anthropic lanç`/`lançado o claude`) e não é
+//    integração em produto de terceiro (`sections[3]` é sobre Microsoft,
+//    Slack, Adobe e afins; o Claude in Chrome é extensão da própria
+//    Anthropic). Sem seção que o abrigue, sem volume pra abrir uma.
+// Nenhum número derivado muda com estas 2 edições (conferido contra os 6
+// padrões do arquivo); bump por fonte nova + revisão, não por reescrita.
+const UPDATED_DATE = "2026-09-02";
 
 /** `matchedHeadlines` vem em NFD (achado original ao vivo: `/anthropic
  * lanç/i` batia 0 das 12 manchetes reais antes da normalização NFC) — ver a

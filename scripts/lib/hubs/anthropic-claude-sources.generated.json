@@ -930,5 +930,31 @@
       "https://canaltech.com.br/inteligencia-artificial/devs-conseguem-burlar-marca-dagua-do-claude-para-textos-em-poucas-horas/"
     ],
     "editionTitle": "Marca d'água do Claude cai em horas"
+  },
+  {
+    "date": "2026-08-28",
+    "editionSlug": "tem-22-a-25-anos-a-ia-ja-pode-afetar-seu-emprego",
+    "url": "https://diar.ia.br/p/tem-22-a-25-anos-a-ia-ja-pode-afetar-seu-emprego",
+    "matchedHeadlines": [
+      "GLM-5.3-Flash: modelo aberto chega perto do Opus"
+    ],
+    "primarySourceUrls": [
+      "https://z.ai/blog/glm-5.3-flash"
+    ],
+    "editionTitle": "Tem 22 a 25 anos? A IA já pode afetar seu emprego"
+  },
+  {
+    "date": "2026-08-31",
+    "editionSlug": "claude-e-codex-instalaram-codigo-sem-dono",
+    "url": "https://diar.ia.br/p/claude-e-codex-instalaram-codigo-sem-dono",
+    "matchedHeadlines": [
+      "Claude e Codex instalaram código sem dono",
+      "Extensão do Claude chega a todo plano pago"
+    ],
+    "primarySourceUrls": [
+      "https://arstechnica.com/security/2026/08/claude-codex-and-hermes-installed-unowned-code-inside-corporate-networks/",
+      "https://claude.com/blog/claude-in-chrome-generally-available"
+    ],
+    "editionTitle": "Claude e Codex instalaram código sem dono"
   }
 ]
