@@ -160,11 +160,9 @@ Cada PR extra custa uma rodada de CI e uma vaga na fila serial de merge.
 
 Worktrees concorrentes acima de 6 até a máquina engasgar. **Só o merge é serial.**
 
-```bash
-npx tsx scripts/lib/session-registry.ts claim-issue --kind develop --issue N
-```
+Antes de abrir worktree: `npx tsx scripts/lib/session-registry.ts claim-issue --kind develop --issue N` — e como comando **STANDALONE**. Encadeado com `&&`/pipe/multi-linha, o hook não injeta `--session-id` e a chamada falha (#7212).
 
-Antes de abrir worktree, e como comando **STANDALONE** — encadeado com `&&`/pipe/multi-linha, o hook não injeta `--session-id` e a chamada falha (#7212).
+O comando acima vai em span inline, e não em bloco cercado, de propósito: o `inject-session-id.mjs` trata bloco cercado como comando multi-linha e não injeta nada — foi o bug de origem do #6232, e o guard `test/skill-md-session-id.test.ts` existe para impedir a reincidência. Escrever esta instrução dentro de ```` ```bash ```` a quebraria de novo.
 
 **`--kind` é obrigatório e não é auto-injetado.** Só o `--session-id` vem do hook; `requireKind` roda antes de o handler sequer ler `--issue`, então a forma sem `--kind` sai com `exit 1` na hora.
 
