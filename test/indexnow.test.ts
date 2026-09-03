@@ -92,6 +92,33 @@ describe("buildIndexNowUrls (#4909)", () => {
       ["https://staging.example.com/temas/meta-ai"],
     );
   });
+
+  it("#7347: index-page.generated.ts NÃO vira /temas/index-page (404) — vira /temas/", () => {
+    assert.deepEqual(
+      buildIndexNowUrls(["workers/arquivo/src/hubs/index-page.generated.ts"]),
+      [`https://${ARQUIVO_HOST}/temas/`],
+    );
+  });
+
+  it("#7347: hub real + index-page no mesmo push -> 2 URLs distintas, sem 404", () => {
+    assert.deepEqual(
+      buildIndexNowUrls([
+        "workers/arquivo/src/hubs/anthropic-claude.generated.ts",
+        "workers/arquivo/src/hubs/index-page.generated.ts",
+      ]),
+      [`https://${ARQUIVO_HOST}/temas/anthropic-claude`, `https://${ARQUIVO_HOST}/temas/`],
+    );
+  });
+
+  it("#7347: qualquer .generated.ts fora de HUB_REGISTRY (não só index-page) mapeia pra /temas/, nunca 404", () => {
+    // Fecha a classe inteira, não só o caso hardcoded "index-page" — um
+    // artefato futuro no mesmo diretório que não seja um hub registrado
+    // nunca deve produzir uma URL /temas/{slug} inexistente.
+    assert.deepEqual(
+      buildIndexNowUrls(["workers/arquivo/src/hubs/algum-artefato-novo.generated.ts"]),
+      [`https://${ARQUIVO_HOST}/temas/`],
+    );
+  });
 });
 
 describe("buildIndexNowPayload (#4909)", () => {
