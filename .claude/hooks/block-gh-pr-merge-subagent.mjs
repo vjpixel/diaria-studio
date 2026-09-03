@@ -1130,8 +1130,23 @@ if (
       // foi gravada), a composição de coordenadoras ativas ainda for só
       // `continuo` — defesa em profundidade contra uma `overnight`/`develop`
       // ter entrado no ar depois da auto-autorização e antes deste merge.
+      // `!scan.degraded` é exigido explicitamente aqui (achado do fleet
+      // review da PR #7353): sem isto, uma varredura DEGRADADA (uma entrada
+      // `overnight`/`develop` que falhou ao ler/parsear, ver `readActiveCoordinatorScan`)
+      // podia deixar `scan.kinds` só com `continuo` por SUBCONTAGEM, e
+      // `onlyContinuoCoordinatorsActive` concluía "só continuo" por engano.
+      // Downstream, `classifyMergeBlockCause` já bloqueia de qualquer forma
+      // via `ctx.scanDegraded` (linha "if (ctx.scanDegraded === true) return
+      // 'scan-degraded';", que roda incondicionalmente e não depende deste
+      // ctx.hasSelfAuthorization) — então isto nunca foi um bypass real de
+      // merge. Mas `hasSelfAuthorization` ficar `true` num estado que a
+      // varredura não confirma é uma inconsistência interna que um refactor
+      // futuro (ex: reordenar os checks de `classifyMergeBlockCause`)
+      // poderia transformar em bypass de verdade — fechado aqui na origem,
+      // não só confiando no check posterior.
       const selfAuth = readLiveSelfAuthorizationFor(repoRoot, payload.session_id);
-      const selfAuthStillValid = selfAuth !== null && onlyContinuoCoordinatorsActive(scan.kinds);
+      const selfAuthStillValid =
+        selfAuth !== null && !scan.degraded && onlyContinuoCoordinatorsActive(scan.kinds);
       const ctx = {
         // #6296: os dois sinais que o guard passou a compor — a janela
         // concedida por uma coordenadora, e quem segura o merge lock agora.

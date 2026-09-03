@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   isGhPrMergeCommand,
   extractGhPrMergeTargetPr,
@@ -1288,5 +1290,183 @@ describe("classifyMergeBlockCause — auto-autorização (#7303)", () => {
       }),
       "contention-multi-coordinator",
     );
+  });
+});
+
+// #7353 fleet review Finding 1: `selfAuthStillValid` no entrypoint CLI
+// (`scripts/lib/block-gh-pr-merge-subagent.mjs`, não exportado — só
+// testável via stdin real) precisa exigir `!scan.degraded`, não só
+// `onlyContinuoCoordinatorsActive(scan.kinds)`. Sem isso, uma varredura
+// DEGRADADA (uma entrada `overnight`/`develop` que falhou ao ler/parsear)
+// podia deixar `scan.kinds` só com `continuo` por SUBCONTAGEM — a auto-
+// autorização "confirmava" um estado que a varredura não confirmou de
+// verdade. `classifyMergeBlockCause` já bloqueava de qualquer forma via
+// `ctx.scanDegraded` (não dependia de `hasSelfAuthorization`), então nunca
+// foi um bypass real — mas o teste end-to-end abaixo prova o COMPORTAMENTO
+// final do hook (nunca permite `gh pr merge` com varredura degradada),
+// não só a composição interna de `ctx`.
+describe("#7353 Finding 1 — entrypoint CLI: varredura degradada NUNCA permite gh pr merge, mesmo com auto-autorização viva", () => {
+  const HOOK_PATH = fileURLToPath(new URL("../.claude/hooks/block-gh-pr-merge-subagent.mjs", import.meta.url));
+  const roots: string[] = [];
+
+  after(() => {
+    for (const r of roots) rmSync(r, { recursive: true, force: true });
+  });
+
+  function makeRoot(): string {
+    const root = join(
+      tmpdir(),
+      `block-gh-pr-merge-hook-e2e-degraded-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    roots.push(root);
+    mkdirSync(sessionsDir(root), { recursive: true });
+    // `resolveMainRepoRoot` (dentro do hook) roda `git rev-parse
+    // --git-common-dir` no cwd — sem `.git`, o comando falha e o hook cai no
+    // fallback de path relativo ao PRÓPRIO arquivo do hook (não a este
+    // root), então os arquivos de sessão escritos abaixo nunca seriam lidos.
+    // Mesmo padrão de `makeGitRepo()` em test/session-conflicts-and-merge-grant.test.ts.
+    spawnSync("git", ["init", "-q"], { cwd: root });
+    return root;
+  }
+
+  function runHook(root: string, payload: Record<string, unknown>) {
+    const r = spawnSync(process.execPath, [HOOK_PATH], {
+      cwd: root,
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  }
+
+  it("continuo ativo (JSON válido) + overnight CORROMPIDO (varredura degradada) + auto-autorização viva pra este session_id → BLOQUEIA, nunca permite", () => {
+    const root = makeRoot();
+    const dir = sessionsDir(root);
+    const tag = machineTag();
+    const now = new Date().toISOString();
+
+    // Coordenadora continuo, saudável.
+    writeFileSync(
+      join(dir, `continuo-${tag}-cron-1.json`),
+      JSON.stringify({ kind: "continuo", sessionId: "cron-1", machineTag: tag, lastHeartbeat: now }),
+      "utf8",
+    );
+    // Coordenadora overnight, mas o ARQUIVO está corrompido — simula a
+    // falha de leitura/parse que degrada a varredura (`readActiveCoordinatorScan`
+    // marca `degraded: true` quando uma entrada não parseia como JSON).
+    writeFileSync(join(dir, `overnight-${tag}-coord-real.json`), "{isto não é json válido", "utf8");
+    // A sessão bloqueada tem uma auto-autorização viva (dentro do TTL).
+    writeFileSync(
+      join(dir, `interactive-${tag}-sess-bloqueada.json`),
+      JSON.stringify({
+        kind: "interactive",
+        sessionId: "sess-bloqueada",
+        machineTag: tag,
+        lastHeartbeat: now,
+        self_authorized_merge: { reason: "teste #7353", authorizedAt: now },
+      }),
+      "utf8",
+    );
+
+    const payload = {
+      session_id: "sess-bloqueada",
+      tool_name: "Bash",
+      tool_input: { command: "gh pr merge 7353 --squash" },
+    };
+    const res = runHook(root, payload);
+    assert.equal(res.status, 0);
+    assert.equal(res.stderr, "");
+    assert.ok(res.stdout.trim() !== "", "esperava um bloqueio (hookSpecificOutput) — varredura degradada nunca permite");
+    const parsed = JSON.parse(res.stdout);
+    assert.equal(parsed.hookSpecificOutput.permissionDecision, "deny");
+  });
+
+  it("mesmo cenário SEM o arquivo overnight corrompido + merge lock JÁ adquirido pela própria chamadora → PERMITE via auto-autorização", () => {
+    // #7303 é explícito: a auto-autorização destrava IDENTIDADE, nunca
+    // TEMPO — sem o merge lock adquirido pela PRÓPRIA chamadora, o cenário
+    // "1 coordenadora ativa (continuo), chamador NÃO é ela" ainda bloqueia
+    // como 'contention-grantee' (mesmo comportamento de `merge_grant`,
+    // testado em `classifyMergeBlockCause — auto-autorização`). Este teste
+    // reproduz o fluxo COMPLETO documentado no BLOCK_REASON/self-authorize-merge:
+    // self-authorize-merge → merge-lock-acquire --pr N → gh pr merge.
+    const root = makeRoot();
+    const dir = sessionsDir(root);
+    const tag = machineTag();
+    const now = new Date().toISOString();
+
+    writeFileSync(
+      join(dir, `continuo-${tag}-cron-1.json`),
+      JSON.stringify({ kind: "continuo", sessionId: "cron-1", machineTag: tag, lastHeartbeat: now }),
+      "utf8",
+    );
+    writeFileSync(
+      join(dir, `interactive-${tag}-sess-bloqueada.json`),
+      JSON.stringify({
+        kind: "interactive",
+        sessionId: "sess-bloqueada",
+        machineTag: tag,
+        lastHeartbeat: now,
+        self_authorized_merge: { reason: "teste #7353", authorizedAt: now },
+      }),
+      "utf8",
+    );
+    // merge-lock-acquire --pr 7353, já feito pela própria "sess-bloqueada".
+    writeFileSync(
+      join(dir, ".merge-lock.json"),
+      JSON.stringify({ heldBy: "sess-bloqueada", acquiredAt: now, pr: 7353 }),
+      "utf8",
+    );
+
+    const payload = {
+      session_id: "sess-bloqueada",
+      tool_name: "Bash",
+      tool_input: { command: "gh pr merge 7353 --squash" },
+    };
+    const res = runHook(root, payload);
+    assert.equal(res.status, 0);
+    assert.equal(res.stderr, "");
+    assert.equal(
+      res.stdout.trim(),
+      "",
+      "sem varredura degradada, com o lock em mãos da própria chamadora, a auto-autorização deveria destravar identidade — sem bloqueio",
+    );
+  });
+
+  it("MESMO cenário, mas SEM adquirir o merge lock antes → continua bloqueando ('contention-grantee') — identidade não destrava tempo", () => {
+    const root = makeRoot();
+    const dir = sessionsDir(root);
+    const tag = machineTag();
+    const now = new Date().toISOString();
+
+    writeFileSync(
+      join(dir, `continuo-${tag}-cron-1.json`),
+      JSON.stringify({ kind: "continuo", sessionId: "cron-1", machineTag: tag, lastHeartbeat: now }),
+      "utf8",
+    );
+    writeFileSync(
+      join(dir, `interactive-${tag}-sess-bloqueada.json`),
+      JSON.stringify({
+        kind: "interactive",
+        sessionId: "sess-bloqueada",
+        machineTag: tag,
+        lastHeartbeat: now,
+        self_authorized_merge: { reason: "teste #7353", authorizedAt: now },
+      }),
+      "utf8",
+    );
+    // Nenhum .merge-lock.json — a chamadora nunca adquiriu o lock.
+
+    const payload = {
+      session_id: "sess-bloqueada",
+      tool_name: "Bash",
+      tool_input: { command: "gh pr merge 7353 --squash" },
+    };
+    const res = runHook(root, payload);
+    assert.equal(res.status, 0);
+    assert.equal(res.stderr, "");
+    assert.ok(res.stdout.trim() !== "", "auto-autorização sem o lock adquirido ainda deveria bloquear");
+    const parsed = JSON.parse(res.stdout);
+    assert.equal(parsed.hookSpecificOutput.permissionDecision, "deny");
+    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /MERGE LOCK/);
   });
 });
