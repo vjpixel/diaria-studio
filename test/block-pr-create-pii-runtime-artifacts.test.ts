@@ -10,6 +10,7 @@ import {
   findDangerousDiffContent,
   buildDenyMessage,
   EMAIL_RE,
+  isAllowlistedEmailLine,
 } from "../.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs";
 
 // #6753: guard mecânico contra `gh pr create` quando a branch carrega
@@ -318,5 +319,117 @@ describe("buildDenyMessage (#6753)", () => {
     ]);
     assert.ok(msg.includes("a.json"));
     assert.ok(msg.includes("b.json"));
+  });
+});
+
+// ─── #7217: allowlist de placeholder / domínio reservado ───────────────────
+//
+// Achado ao vivo (#7101/#7102/#7103, 02/09/2026): `seu@email.com` é o
+// `placeholder=` do campo de e-mail do formulário de inscrição, embutido no
+// HTML de TODA página de hub gerada. Como esses arquivos são gerados,
+// qualquer regen desloca linhas e faz o placeholder contar como "linha
+// adicionada" — o guard barrava a PR inteira por uma string que já estava em
+// master. Não era falso positivo pontual: era bloqueio PERMANENTE de toda PR
+// de regen de hub.
+//
+// A allowlist é de LITERAIS (mais domínios reservados por RFC 2606), nunca de
+// path nem de padrão — os testes abaixo travam justamente que um e-mail real
+// continua sendo pego, inclusive na mesma linha de um permitido.
+
+describe("isAllowlistedEmailLine (#7217)", () => {
+  it("linha só com o placeholder do formulário -> permitida", () => {
+    const line = '  <input type="email" name="email" placeholder="seu@email.com" aria-label="E-mail">';
+    assert.equal(isAllowlistedEmailLine(line), true);
+  });
+
+  it("REGRESSÃO: e-mail REAL na MESMA linha do placeholder -> continua barrada", () => {
+    // O caso que decide se a allowlist enfraquece o guard ou não.
+    const line = '<input placeholder="seu@email.com"> <!-- contato: fulano.real@gmail.com -->';
+    assert.equal(isAllowlistedEmailLine(line), false);
+  });
+
+  it("REGRESSÃO: domínio reservado (.invalid/.test/example.com) NÃO é dispensado", () => {
+    // A 1ª versão desta allowlist dispensava domínio reservado por RFC 2606
+    // e derrubou o teste de reconstituição do incidente (#6753), cuja
+    // fixture usa `@exemplo-teste.invalid` pra não versionar PII real: o
+    // guard PRECISA continuar acusando ali, porque no incidente verdadeiro
+    // aqueles endereços eram reais. Regra por domínio cegaria o guard pro
+    // próprio formato que ele existe pra pegar.
+    assert.equal(isAllowlistedEmailLine("sintetico.fixture@exemplo-teste.invalid"), false);
+    assert.equal(isAllowlistedEmailLine("const exemplo = 'qualquer.coisa@example.com';"), false);
+    assert.equal(isAllowlistedEmailLine("y@bar.test"), false);
+  });
+
+  it("e-mail em domínio REAL não entra, mesmo parecendo de teste", () => {
+    // Endereço "de teste" em domínio real é PII em potencial — o caminho
+    // certo pra isso é path de fixture (`isFixturePath`), não a allowlist.
+    assert.equal(isAllowlistedEmailLine("teste123@gmail.com"), false);
+    assert.equal(isAllowlistedEmailLine("qa@diar.ia.br"), false);
+  });
+
+  it("linha sem e-mail nenhum -> permitida (não é o caso de uso, mas não pode lançar)", () => {
+    assert.equal(isAllowlistedEmailLine("const x = 1;"), true);
+    assert.equal(isAllowlistedEmailLine(""), true);
+  });
+
+  it("entrada não-string nunca lança", () => {
+    assert.equal(isAllowlistedEmailLine(undefined), false);
+    assert.equal(isAllowlistedEmailLine(null), false);
+  });
+});
+
+describe("findDangerousDiffContent com allowlist (#7217)", () => {
+  it("REGRESSÃO do caso real: hub gerado com só o placeholder NÃO gera finding", () => {
+    const nameStatus = [{ status: "M", path: "workers/arquivo/src/hubs/anthropic-claude.generated.ts" }];
+    const addedLines = new Map([
+      [
+        "workers/arquivo/src/hubs/anthropic-claude.generated.ts",
+        ['  <label class=\\"cta-field\\"><input type=\\"email\\" placeholder=\\"seu@email.com\\" ...>'],
+      ],
+    ]);
+    assert.deepEqual(findDangerousDiffContent(nameStatus, addedLines), []);
+  });
+
+  it("o mesmo arquivo com e-mail REAL continua gerando finding pii-email", () => {
+    const nameStatus = [{ status: "M", path: "workers/arquivo/src/hubs/anthropic-claude.generated.ts" }];
+    const addedLines = new Map([
+      [
+        "workers/arquivo/src/hubs/anthropic-claude.generated.ts",
+        ['placeholder=\\"seu@email.com\\"', 'const assinante = "pessoa.real@gmail.com";'],
+      ],
+    ]);
+    const findings = findDangerousDiffContent(nameStatus, addedLines);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].kind, "pii-email");
+    // Conta 1 linha, não 2 — a do placeholder foi dispensada.
+    assert.match(findings[0].detail, /^1 linha/);
+  });
+});
+
+describe("isAllowlistedEmailLine — contrabando por substring (#7244, review da PR #7245)", () => {
+  // O review perguntou se dá pra esconder e-mail real ao redor do literal
+  // permitido. Dá NÃO, porque o match de `EMAIL_RE` é do TOKEN INTEIRO e
+  // guloso: `notseu@email.com` casa inteiro e não bate nenhum literal, então
+  // nada é removido e a linha segue barrada. Isso funciona hoje por
+  // propriedade do `EMAIL_RE`, não por código desta allowlist — e é
+  // exatamente por isso que precisa de teste: afrouxar o local-part de
+  // `EMAIL_RE` no futuro reabriria o bypass sem nada acusar.
+  it("prefixo colado no literal permitido -> continua barrado", () => {
+    assert.equal(isAllowlistedEmailLine("notseu@email.com"), false);
+    assert.equal(isAllowlistedEmailLine("jose.seu@email.com"), false);
+  });
+
+  it("sufixo de domínio colado no literal permitido -> continua barrado", () => {
+    assert.equal(isAllowlistedEmailLine("seu@email.com.br"), false);
+    assert.equal(isAllowlistedEmailLine("seu@email.computador.org"), false);
+  });
+
+  it("sub-endereçamento (+tag) no literal permitido -> continua barrado", () => {
+    assert.equal(isAllowlistedEmailLine("x+seu@email.com"), false);
+  });
+
+  it("o literal EXATO segue permitido, inclusive com caixa diferente", () => {
+    assert.equal(isAllowlistedEmailLine("seu@email.com"), true);
+    assert.equal(isAllowlistedEmailLine("SEU@EMAIL.COM"), true);
   });
 });
