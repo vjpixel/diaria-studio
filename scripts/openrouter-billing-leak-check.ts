@@ -58,6 +58,7 @@ import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import {
   evaluateBillingLeak,
   shouldAlarmBillingLeak,
+  newBillingLeakKeys,
   advanceBillingLeakAlarmState,
   emptyBillingLeakAlarmState,
   buildBillingLeakAlarmEmail,
@@ -76,16 +77,30 @@ const ACTIVITY_TIMEOUT_MS = 30_000;
 /** Exit code dedicado pra "achou vazamento" — nunca confundir com erro. */
 export const LEAK_FOUND_EXIT_CODE = 3;
 
+/** #7211: forma anterior do estado, salva em disco antes desta issue — só
+ * pra migração tolerante em `loadState`, nunca escrita de novo. */
+interface LegacyBillingLeakAlarmState {
+  lastAlarmedFingerprint: string | null;
+  lastCheckedAt: string | null;
+}
+
 export function loadState(statePath: string = STATE_PATH): BillingLeakAlarmState {
   if (!existsSync(statePath)) return emptyBillingLeakAlarmState();
   try {
-    const raw = JSON.parse(readFileSync(statePath, "utf8")) as Partial<BillingLeakAlarmState>;
-    const fp =
-      typeof raw.lastAlarmedFingerprint === "string" || raw.lastAlarmedFingerprint === null
-        ? raw.lastAlarmedFingerprint
-        : null;
+    const raw = JSON.parse(readFileSync(statePath, "utf8")) as Partial<BillingLeakAlarmState> &
+      Partial<LegacyBillingLeakAlarmState>;
     const at = typeof raw.lastCheckedAt === "string" || raw.lastCheckedAt === null ? raw.lastCheckedAt : null;
-    return { lastAlarmedFingerprint: fp ?? null, lastCheckedAt: at ?? null };
+    if (Array.isArray(raw.alarmedKeys)) {
+      return { alarmedKeys: raw.alarmedKeys.filter((k): k is string => typeof k === "string"), lastCheckedAt: at ?? null };
+    }
+    // #7211: estado no formato ANTERIOR (`lastAlarmedFingerprint` — um
+    // fingerprint de CONJUNTO, `date:model` join por vírgula) — migração
+    // tolerante, sem re-alarmar o que já foi avisado: semeia `alarmedKeys`
+    // com o split do fingerprint em vez de descartar o histórico.
+    if (typeof raw.lastAlarmedFingerprint === "string" && raw.lastAlarmedFingerprint.length > 0) {
+      return { alarmedKeys: raw.lastAlarmedFingerprint.split(",").filter((k) => k.length > 0), lastCheckedAt: at ?? null };
+    }
+    return { alarmedKeys: [], lastCheckedAt: at ?? null };
   } catch (e) {
     // #6983 (review): antes era `catch {}` mudo. A direção é segura (estado
     // vazio re-alarma, nunca silencia), mas um problema PERSISTENTE de I/O
@@ -335,8 +350,12 @@ async function main(): Promise<void> {
   });
 
   const state = loadState();
+  // #7211: idempotência por CHAVE acumulada, não mais por fingerprint de
+  // conjunto — ver o docblock de `shouldAlarmBillingLeak`/`newBillingLeakKeys`
+  // em scripts/lib/openrouter-billing-leak.ts.
+  const newKeys = newBillingLeakKeys(evaluation, state);
   if (shouldAlarmBillingLeak(state, evaluation)) {
-    const { subject, body } = buildBillingLeakAlarmEmail(evaluation, new Date());
+    const { subject, body } = buildBillingLeakAlarmEmail(evaluation, new Date(), newKeys);
     const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
       console.log(`${LOG_PREFIX} --dry-run: enviaria pra ${to}:\n--- ${subject} ---\n${body}`);
@@ -345,13 +364,13 @@ async function main(): Promise<void> {
       // próxima execução tenta de novo, em vez de marcar como "já avisado"
       // sem o editor ter recebido nada (molde dos demais alarmes).
       await sendGmailMessage(to, subject, body);
-      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
+      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (${newKeys.length} achado(s) novo(s)).`);
     }
   } else if (evaluation.leaks.length > 0) {
-    console.log(`${LOG_PREFIX} vazamento já alarmado antes (mesmo conjunto) — sem e-mail novo.`);
+    console.log(`${LOG_PREFIX} vazamento(s) já alarmado(s) antes (nenhuma chave nova) — sem e-mail novo.`);
   }
 
-  if (!isDryRun) saveState(advanceBillingLeakAlarmState(evaluation, new Date()));
+  if (!isDryRun) saveState(advanceBillingLeakAlarmState(evaluation, new Date(), state));
 }
 
 if (isMainModule(import.meta.url)) {
