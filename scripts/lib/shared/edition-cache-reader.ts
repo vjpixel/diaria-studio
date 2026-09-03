@@ -4,12 +4,17 @@
  * ## O problema que este módulo resolve
  *
  * O cache local de edições publicadas é **híbrido permanente**, não
- * transitório (achado central do #6187): `data/beehiiv-cache/` tem 259
- * posts publicados na Beehiiv até o cutover, congelado e read-only a
- * partir daí; um cache Kit paralelo (`data/kit-cache/broadcasts/`) cresce a
- * partir do cutover. "Reconstruir o cache Beehiiv a partir do Kit" é
- * impossível por construção — a conta Kit foi criada em 2026 e não tem (nem
- * vai ter) as 259 edições antigas.
+ * transitório (achado central do #6187): `data/beehiiv-cache/` tem os
+ * posts publicados na Beehiiv até o cutover (264 arquivos medidos em
+ * 02/09/2026 — 258 `confirmed` + 6 `draft`, último `publish_date`
+ * 2026-09-02; `#7182` corrige a contagem "259" e a moldura "congelado" que
+ * este cabeçalho carregava antes — o arquivo continua CRESCENDO: cada
+ * edição publicada via Beehiiv grava um novo arquivo aqui, mesmo depois do
+ * cutover, não é um snapshot fixo do momento do corte), read-only só no
+ * sentido de "este módulo não escreve nele"; um cache Kit paralelo
+ * (`data/kit-cache/broadcasts/`) cresce a partir do cutover. "Reconstruir
+ * o cache Beehiiv a partir do Kit" é impossível por construção — a conta
+ * Kit foi criada em 2026 e não tem (nem vai ter) as edições antigas.
  *
  * Em vez de fazer os ~38 consumidores que varrem "todas as edições" (dedup,
  * arquivo, hubs, entidades, cobertura de corpus) saberem sobre as DUAS
@@ -195,18 +200,34 @@ export interface NormalizedLinkClick {
  *  do lado Kit (#6344 — ver `normalizeKitBroadcast`). `enrichment_state` é
  *  passthrough de `scripts/lib/shared/enrichment-state.ts`.
  *
- *  `recipients`, `ctr_pct` e `unsubscribes` (#6186) só saem populados do
- *  lado Kit hoje — `RawBeehiivPostFile`/o cache real de
- *  `data/beehiiv-cache/posts/*.json` não tem esses 3 campos no nível
- *  `stats.email` (o post cache Beehiiv nunca guardou stats agregados de
- *  entrega/CTR/descadastro, só abertura+cliques — ver
- *  `click-cache-completeness.ts`), então o lado Beehiiv sempre deixa os 3
- *  como `undefined` via passthrough (nunca inventa um valor). `ctr_pct` usa
- *  `kitBroadcastCtrPct` (`unique_clicked / delivered`, semântica confirmada
- *  #6186) — **nunca** o equivalente à armadilha `click_rate` da Beehiiv
- *  (`scripts/lib/leitor.ts`), que é click-to-open. */
+ *  `recipients`, `unsubscribes` e `spam_reports` (#6186, #7182) saem
+ *  populados dos DOIS lados — corrigido depois de medir (02/09/2026) que
+ *  os 264 arquivos de `data/beehiiv-cache/posts/*.json` têm os três em
+ *  `stats.email` (soma 93 `unsubscribes`, 1 `spam_reports` no acervo),
+ *  contrariando uma afirmação anterior desta docstring de que só o lado
+ *  Kit os populava — `normalizeBeehiivPost` já fazia passthrough do objeto
+ *  `stats` inteiro (nunca fez picking de campos), então o dado sempre
+ *  chegou ao consumidor; a interface é que não nomeava `spam_reports`, e
+ *  ninguém tinha lido nenhum dos três. Só `ctr_pct` é mesmo exclusivo do
+ *  Kit — o post cache Beehiiv não guarda uma taxa agregada pronta (mas é
+ *  derivável de `delivered` + `unique_clicks`, ambos presentes; **nunca**
+ *  de `click_rate`, que é click-to-open, a mesma armadilha que
+ *  `scripts/lib/leitor.ts` evita pro CTR de leitor). `ctr_pct` do lado Kit
+ *  usa `kitBroadcastCtrPct` (`unique_clicked / delivered`, semântica
+ *  confirmada #6186) — **nunca** `click_rate` cru. */
 export interface UnifiedClickStats {
-  email?: { unique_opens?: number; recipients?: number; ctr_pct?: number; unsubscribes?: number };
+  email?: {
+    unique_opens?: number;
+    recipients?: number;
+    ctr_pct?: number;
+    unsubscribes?: number;
+    /** Passthrough do Beehiiv (`stats.email.spam_reports`, presente em
+     *  264/264 arquivos medidos em 02/09/2026, soma 1 no acervo) — sinal
+     *  de reputação por edição (#7182, insumo da onda 2 do #7172). Nunca
+     *  populado do lado Kit hoje (`KitBroadcastStats` não tem campo
+     *  equivalente); fica `undefined` nesse caso, nunca `0` inventado. */
+    spam_reports?: number;
+  };
   clicks?: NormalizedLinkClick[];
   enrichment_state?: string;
 }

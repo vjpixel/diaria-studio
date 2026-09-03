@@ -9,7 +9,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -21,7 +21,9 @@ import {
   loadKitCache,
   loadUnifiedEditionCache,
   KIT_STATUS_TO_BEEHIIV_STATUS,
+  DEFAULT_BEEHIIV_POSTS_DIR,
   type UnifiedCachedPost,
+  type UnifiedClickStats,
 } from "../scripts/lib/shared/edition-cache-reader.ts";
 
 describe("normalizeBeehiivPost", () => {
@@ -580,5 +582,47 @@ describe("loadBeehiivCache / loadKitCache / loadUnifiedEditionCache (I/O real, d
     } finally {
       rmSync(beehiivDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("UnifiedClickStats.email.spam_reports (#7182)", () => {
+  it("fixture Beehiiv com stats.email.spam_reports sai TIPADA — antes do fix, este literal não compilava (excess property em UnifiedClickStats)", () => {
+    const stats: UnifiedClickStats = {
+      email: { unique_opens: 500, recipients: 1000, unsubscribes: 3, spam_reports: 1 },
+    };
+    const got = normalizeBeehiivPost({ slug: "post-x", stats });
+    // passthrough — o campo novo não é descartado nem transformado.
+    assert.deepEqual(got.stats, stats);
+    assert.equal(got.stats?.email?.spam_reports, 1);
+  });
+
+  it("documentação: um arquivo real de data/beehiiv-cache/posts/ tem recipients/unsubscribes/spam_reports em stats.email (#7182 — a docstring anterior negava recipients e unsubscribes)", () => {
+    // `data/` é a junction OneDrive (ver CLAUDE.md) — ausente em CI/clone
+    // fresco. Guard igual ao resto da suíte (ex: test/lib-boundary.test.ts) —
+    // sem o diretório, este teste não afirma nada (não é o que ele cobre).
+    if (!existsSync(DEFAULT_BEEHIIV_POSTS_DIR)) return;
+    const files = readdirSync(DEFAULT_BEEHIIV_POSTS_DIR).filter((f) => f.endsWith(".json") && f !== "index.json");
+    if (files.length === 0) return;
+
+    let sawRecipients = false;
+    let sawUnsubscribes = false;
+    let sawSpamReports = false;
+    for (const f of files) {
+      let raw: { stats?: { email?: Record<string, unknown> } };
+      try {
+        raw = JSON.parse(readFileSync(join(DEFAULT_BEEHIIV_POSTS_DIR, f), "utf8"));
+      } catch {
+        continue;
+      }
+      const email = raw.stats?.email;
+      if (!email) continue;
+      if ("recipients" in email) sawRecipients = true;
+      if ("unsubscribes" in email) sawUnsubscribes = true;
+      if ("spam_reports" in email) sawSpamReports = true;
+      if (sawRecipients && sawUnsubscribes && sawSpamReports) break;
+    }
+    assert.ok(sawRecipients, "recipients precisa aparecer em algum stats.email do cache Beehiiv real");
+    assert.ok(sawUnsubscribes, "unsubscribes precisa aparecer em algum stats.email do cache Beehiiv real");
+    assert.ok(sawSpamReports, "spam_reports precisa aparecer em algum stats.email do cache Beehiiv real");
   });
 });

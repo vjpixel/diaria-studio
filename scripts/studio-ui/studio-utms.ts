@@ -71,7 +71,11 @@ import {
 } from "../lib/shared/utm-registry.ts";
 import { fetchAndAggregate, fetchAndAggregateKit } from "../count-subscriptions-by-utm.ts";
 import { resolveBeehiivConfig } from "../lib/beehiiv-config.ts";
-import { resolveNewsletterSubscriberConfig } from "../lib/shared/newsletter-subscriber-source.ts";
+import {
+  resolveNewsletterSubscriberConfig,
+  resolveNewsletterSubscriberBackend,
+  type NewsletterSubscriberBackend,
+} from "../lib/shared/newsletter-subscriber-source.ts";
 import { brevoGet } from "../lib/brevo-client.ts";
 
 // Mesmo racional de `studio-integrations.ts`/`dashboard-clarice.ts`: garante
@@ -427,6 +431,28 @@ export interface UtmsSnapshot {
   externalSurfaces: ExternalSurfaceRow[];
   drift: DriftFinding[];
   totals: { subscribers: number | null; campaignsRead: number };
+  /** Backend resolvido pra leitura de ASSINANTE (#7182 — `publishing.newsletter.
+   *  subscriber_backend`, `resolveNewsletterSubscriberBackend`). A tela não
+   *  expunha isso antes: `buildUtmsData` já resolvia o backend (é o que decide
+   *  Beehiiv vs Kit acima), mas `UtmsSnapshot` não carregava o resultado —
+   *  quem olhava `/utms` não tinha como saber qual plataforma estava sendo
+   *  contada. Ecoado SEMPRE, mesmo em erro de credencial (é resolução de
+   *  CONFIG, não de rede — nunca falha, ver `resolveNewsletterSubscriberBackend`). */
+  subscriberBackend: NewsletterSubscriberBackend;
+  /** Ressalva de divergência entre `subscriberBackend` (o que esta tela LÊ) e
+   *  o backend real de CADASTRO dos 3 workers de assinatura — que é Kit desde
+   *  #6048 (rollout worker-a-worker, Gate B 25/08/2026), independente do
+   *  valor de `subscriberBackend` (eixos deliberadamente independentes, ver
+   *  `docs/kit-creator-network.md` e a docstring de
+   *  `newsletter-subscriber-source.ts`). `null` quando `subscriberBackend`
+   *  já é `"kit"` (nada a avisar — leitura e cadastro convergem). Quando
+   *  `"beehiiv"` (default, #7182): os cadastros feitos via `POST
+   *  /v4/subscribers` pelos workers não carregam `KitSubscriberAttribution`
+   *  (#6339/#6425 Parte A), então mesmo se este painel lesse o Kit hoje a
+   *  agregação por UTM subcontaria — é por isso que a chave NÃO virou
+   *  `"kit"` ainda (decisão registrada, não descuido — `platform.config.json`
+   *  → `subscriber_backend_note`). */
+  subscriberBackendNotice: string | null;
   beehiivError?: string;
   brevoError?: string;
   /** Fronteira de edição, ecoada pra UI não ter que hardcodar. */
@@ -480,6 +506,20 @@ export async function buildUtmsData(
   }
 
   const env = opts.env ?? (process.env as Record<string, string | undefined>);
+  // #7182: resolução PURA (config, não rede) — nunca falha, ecoa sempre no
+  // snapshot mesmo quando a resolução COM credencial (`resolved` abaixo)
+  // falhar. `opts.subscriberBackend` (override de teste) tem precedência,
+  // mesmo campo que já decide o backend efetivo mais abaixo.
+  const subscriberBackend: NewsletterSubscriberBackend =
+    opts.subscriberBackend ?? resolveNewsletterSubscriberBackend();
+  const subscriberBackendNotice: string | null =
+    subscriberBackend === "beehiiv"
+      ? "Mas os 3 workers de assinatura (poll, cursos, reativar) cadastram no Kit " +
+        "desde #6048 (rollout worker-a-worker, Gate B 25/08/2026), via POST /v4/subscribers (#6339). " +
+        "Esse caminho não popula KitSubscriberAttribution, então os cadastros novos feitos pelos " +
+        "workers não aparecem aqui — decisão registrada (platform.config.json → subscriber_backend_note), " +
+        "não um bug desta tela."
+      : null;
   const meta = loadUtmMetadata(rootDir);
   const emittersBase = UTM_EMITTERS.map((e) => applyMetadata(e, meta[e.id]));
 
@@ -572,6 +612,8 @@ export async function buildUtmsData(
           campaignCounts,
         }),
     totals: { subscribers: totalSubscribers, campaignsRead: clicks.campaignsRead },
+    subscriberBackend,
+    subscriberBackendNotice,
     beehiivError,
     brevoError: clicks.error,
     editableFields: EDITABLE_METADATA_FIELDS,

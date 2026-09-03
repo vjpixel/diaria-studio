@@ -446,6 +446,62 @@ describe("#4041 — buildUtmsData (orquestração fail-soft)", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("#7182: UtmsSnapshot carrega subscriberBackend resolvido + aviso de divergência com os workers, com subscriberBackend:'beehiiv'", async () => {
+    const root = tempRoot("studio-utms-7182-backend-notice-");
+    clearUtmsCache();
+    try {
+      const data = await buildUtmsData(root, {
+        env: {},
+        subscriberBackend: "beehiiv",
+        fetchSubscriptions: fakeSubscriptions({ clarice: 1 }, {}),
+        fetchClicks: fakeClicks({}),
+      });
+      assert.equal(data.subscriberBackend, "beehiiv");
+      assert.ok(data.subscriberBackendNotice, "backend beehiiv precisa carregar a ressalva de divergência");
+      assert.match(data.subscriberBackendNotice ?? "", /Kit/);
+      assert.match(data.subscriberBackendNotice ?? "", /#6048|#6339/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#7182: subscriberBackend:'kit' NÃO carrega a ressalva (leitura e cadastro convergem — nada a avisar)", async () => {
+    const root = tempRoot("studio-utms-7182-backend-kit-no-notice-");
+    clearUtmsCache();
+    try {
+      const data = await buildUtmsData(root, {
+        env: { KIT_API_KEY: "kit_test_key" },
+        subscriberBackend: "kit",
+        fetchSubscriptionsKit: fakeSubscriptionsKit({}, {}),
+        fetchClicks: fakeClicks({}),
+      });
+      assert.equal(data.subscriberBackend, "kit");
+      assert.equal(data.subscriberBackendNotice, null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#7182: subscriberBackend continua resolvido mesmo quando a credencial falha (é resolução de CONFIG, não de rede — nunca ausente)", async () => {
+    // Mesmo cenário do teste #4296 acima (BEEHIIV_API_KEY ausente → beehiivError) —
+    // o campo novo precisa sobreviver ao caminho de erro, senão a tela cai de
+    // volta no silêncio que #7182 corrige justo quando mais importa saber o
+    // backend (config quebrada/ausente).
+    const root = tempRoot("studio-utms-7182-backend-survives-error-");
+    clearUtmsCache();
+    try {
+      const data = await buildUtmsData(root, {
+        env: {}, // sem fetchSubscriptions injetado — força o caminho real de resolução
+        fetchClicks: fakeClicks({}),
+      });
+      assert.match(data.beehiivError ?? "", /BEEHIIV_API_KEY/);
+      assert.equal(data.subscriberBackend, "beehiiv", "default de platform.config.json — não deve virar undefined em erro");
+      assert.ok(data.subscriberBackendNotice);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("#4041 — contrato HTTP (/utms e /api/utms)", () => {

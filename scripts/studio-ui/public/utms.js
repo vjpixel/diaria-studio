@@ -19,6 +19,7 @@ const el = {
   fetchDot: document.getElementById("fetch-dot"),
   fetchLabel: document.getElementById("fetch-label"),
   execModeValue: document.getElementById("exec-mode-value"),
+  subscriberBackendBanner: document.getElementById("subscriber-backend-banner"),
   error: document.getElementById("utms-error"),
   count: document.getElementById("utms-count"),
   filterStatus: document.getElementById("filter-status"),
@@ -239,6 +240,17 @@ async function refresh(forceRefresh) {
       el.error.hidden = true;
     }
     el.execModeValue.textContent = data.execMode ? `ambiente: ${data.execMode}` : "—";
+    // #7182: qual plataforma este painel está lendo pra "assinantes por UTM"
+    // — sem isso, quem cruza UTM aqui não tinha como saber que os workers de
+    // assinatura cadastram no Kit desde #6048, independente do valor lido.
+    if (data.subscriberBackend) {
+      const platform = data.subscriberBackend === "kit" ? "Kit" : "Beehiiv";
+      el.subscriberBackendBanner.textContent = data.subscriberBackendNotice
+        ? `Lendo assinantes via ${platform}. ${data.subscriberBackendNotice}`
+        : `Lendo assinantes via ${platform}.`;
+    } else {
+      el.subscriberBackendBanner.textContent = "";
+    }
     renderDrift();
     renderEmitters();
     renderExternalSurfaces();
