@@ -68,14 +68,33 @@ describe("findEditionsInProgress", () => {
     }
   });
 
-  it("Stage 2: skips edition when output already exists", () => {
+  it("Stage 2: skips edition when output sentinel already exists", () => {
     const { root, cleanup } = setupSandbox();
     try {
       makeEdition(root, "260505", [
         "_internal/01-approved.json",
-        "02-reviewed.md",
+        "_internal/.step-2-done.json",
       ]);
       assert.deepEqual(findEditionsInProgress(2, root), []);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#7186: Stage 2 — 02-reviewed.md sozinho (sem sentinela) NÃO conta como concluído (crash no meio do stage, antes da Clarice)", () => {
+    const { root, cleanup } = setupSandbox();
+    try {
+      // Reproduz o achado ao vivo da edição 260903: 02-reviewed.md escrito
+      // (conteúdo pré-Clarice), processo morre antes de gravar a sentinela.
+      makeEdition(root, "260505", [
+        "_internal/01-approved.json",
+        "02-reviewed.md",
+      ]);
+      assert.deepEqual(
+        findEditionsInProgress(2, root),
+        ["260505"],
+        "sem a sentinela, o stage continua 'em progresso' — nunca 'concluído' só por 02-reviewed.md existir",
+      );
     } finally {
       cleanup();
     }
@@ -144,14 +163,32 @@ describe("findEditionsInProgress", () => {
     }
   });
 
-  it("Stage 3: prereq is _internal/01-approved.json, output is 04-d1-1x1.jpg", () => {
+  it("Stage 3: prereq is _internal/01-approved.json, output is the .step-3-done.json sentinel", () => {
     const { root, cleanup } = setupSandbox();
     try {
       makeEdition(root, "260505", ["_internal/01-approved.json"]);
       assert.deepEqual(findEditionsInProgress(3, root), ["260505"]);
-      // Now add the output → no longer in progress
-      makeEdition(root, "260505", ["04-d1-1x1.jpg"]);
+      // Now add the output sentinel → no longer in progress
+      makeEdition(root, "260505", ["_internal/.step-3-done.json"]);
       assert.deepEqual(findEditionsInProgress(3, root), []);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#7186: Stage 3 — 04-d1-1x1.jpg sozinho (sem sentinela) NÃO conta como concluído (crash entre d1 e d2/d3)", () => {
+    const { root, cleanup } = setupSandbox();
+    try {
+      // Só a 1ª das 4 imagens de destaque foi gerada antes do crash.
+      makeEdition(root, "260505", [
+        "_internal/01-approved.json",
+        "04-d1-1x1.jpg",
+      ]);
+      assert.deepEqual(
+        findEditionsInProgress(3, root),
+        ["260505"],
+        "sem a sentinela, o stage continua 'em progresso' — nunca 'concluído' só pela 1ª imagem existir",
+      );
     } finally {
       cleanup();
     }
@@ -313,10 +350,10 @@ describe("findEditionsInProgress", () => {
       try {
         // Flat: only prereq present (in-progress if it were the source of truth)
         makeEdition(root, "260706", ["_internal/01-approved.json"]);
-        // Nested: prereq + output already present (done) — nested should win, so NOT a candidate
+        // Nested: prereq + output sentinel already present (done) — nested should win, so NOT a candidate
         makeNestedEdition(root, "260706", [
           "_internal/01-approved.json",
-          "02-reviewed.md",
+          "_internal/.step-2-done.json",
         ]);
         assert.deepEqual(findEditionsInProgress(2, root), []);
       } finally {

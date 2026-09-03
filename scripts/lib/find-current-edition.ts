@@ -7,8 +7,14 @@
  * atual faltando, a skill assume essa edição em vez de perguntar.
  *
  * Critérios por stage (relativos a `data/editions/{AAMMDD}/`):
- *   - Stage 2: prereq `_internal/01-approved.json`; output esperado `02-reviewed.md`.
- *   - Stage 3: prereq `_internal/01-approved.json`; output esperado `04-d1-1x1.jpg`.
+ *   - Stage 2: prereq `_internal/01-approved.json`; output esperado
+ *       `_internal/.step-2-done.json` (sentinela — #7186: `02-reviewed.md` é
+ *       escrito no MEIO do stage, não no fim; um crash entre a escrita dele e
+ *       a passada da Clarice deixaria o arquivo de output final no disco com
+ *       conteúdo incompleto, e o detector concluiria "stage concluído").
+ *   - Stage 3: prereq `_internal/01-approved.json`; output esperado
+ *       `_internal/.step-3-done.json` (sentinela — mesmo motivo do Stage 2,
+ *       #7186: `04-d1-1x1.jpg` é só a 1ª das quatro imagens de destaque).
  *   - Stage 4 (Revisão, #1694): prereqs `02-reviewed.md` e `03-social.md`;
  *       output esperado `_internal/.step-4-done.json`.
  *   - Stage 5 (Publicação, #1694): prereq `_internal/.step-4-done.json`;
@@ -40,11 +46,15 @@ interface StageRequirements {
 const STAGE_REQUIREMENTS: Record<Stage, StageRequirements> = {
   2: {
     prereq: ["_internal/01-approved.json"],
-    output: ["02-reviewed.md"],
+    // #7186: sentinela, não `02-reviewed.md` (conteúdo escrito no MEIO do
+    // stage, antes da passada da Clarice — ver docstring do módulo).
+    output: ["_internal/.step-2-done.json"],
   },
   3: {
     prereq: ["_internal/01-approved.json"],
-    output: ["04-d1-1x1.jpg"],
+    // #7186: sentinela, não `04-d1-1x1.jpg` (só a 1ª de quatro imagens —
+    // ver docstring do módulo).
+    output: ["_internal/.step-3-done.json"],
   },
   4: {
     // Stage 4 = Revisão editorial assistida (#1694)
