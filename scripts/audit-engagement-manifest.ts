@@ -95,13 +95,23 @@ export function readActualCounts(manifest: EngagementManifest, outDir: string): 
  * o acervo inteiro por indisponibilidade de rede. A contagem de ausentes é
  * devolvida pro chamador reportar, nunca engolida.
  */
+/** As entradas cuja completude a âncora externa consegue julgar — só `ok` (#7197). */
+export function postsNeedingAnchor(manifest: EngagementManifest): EngagementManifest["posts"] {
+  return manifest.posts.filter((e) => e.status === "ok");
+}
+
 export async function fetchRecipientsByPost(
   manifest: EngagementManifest,
   cfg: { apiKey: string; publicationId: string },
 ): Promise<{ recipients: Map<string, number>; unavailable: string[] }> {
   const recipients = new Map<string, number>();
   const unavailable: string[] = [];
-  for (const entry of manifest.posts) {
+  // Só entrada `ok` é candidata a rebaixamento — `reconcileManifestWithDisk`
+  // nem consulta o mapa pras outras. Buscar `recipients` pra elas gastaria
+  // quota à toa e, pior, um 404 numa entrada já sabidamente `pending` cairia
+  // em `unavailable` e degradaria o VEREDITO da auditoria por um post que não
+  // muda nenhum resultado.
+  for (const entry of postsNeedingAnchor(manifest)) {
     const url = `${beehiivApiBase()}/publications/${cfg.publicationId}/posts/${entry.post_id}?expand[]=stats`;
     try {
       const res = await fetch(url, { headers: { Authorization: `Bearer ${cfg.apiKey}` } });
