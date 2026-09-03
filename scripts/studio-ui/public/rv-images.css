@@ -58,11 +58,22 @@
   scroll-snap-align: start;
 }
 .rv-img-entry-label { margin: 0; opacity: 0.85; }
+/* #7261: as imagens são 2:1 (destaque), 1:1 (feed legado) e 4:5 (card de
+   feed com título / carrossel do Instagram) — proporções bem diferentes.
+   `height: 110px` fixo + `object-fit: cover` escalava tudo pela largura e
+   RECORTAVA o que não coubesse: um card 4:5 (texto do carrossel) perdia
+   ~45% da altura, cortado igualmente de topo e rodapé — exatamente onde
+   ficam o fim do parágrafo e o rodapé de marca. O painel é onde o editor
+   aprova o gate 4 (inclusive no celular); um card cortado é conteúdo não
+   revisado. `height: auto` + `object-fit: contain` preserva a proporção
+   real do arquivo — nada é cortado; a faixa já rola horizontalmente
+   (#6745) e cada `.rv-img-entry` já usa `align-items: flex-start`, então
+   altura variável por item não quebra o layout. */
 .rv-img-thumb {
   display: block;
   width: 160px;
-  height: 110px;
-  object-fit: cover;
+  height: auto;
+  object-fit: contain;
   border: 1px solid var(--rule);
   border-radius: 6px;
   background: var(--paper-alt);

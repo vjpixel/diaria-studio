@@ -221,6 +221,54 @@ function resolveHubLinkTitles(hub: HubContent): Record<string, string> {
   return out;
 }
 
+/** Caminho local onde a página de acervo `/p/{slug}` deveria existir —
+ * `scripts/gen-archive-pages.ts`/`scripts/publish-edition-site-page.ts`
+ * escrevem aqui (#467/#6202). */
+function archivePagePath(slug: string): string {
+  return resolve(ROOT, "workers", "site", "public", "p", slug, "index.html");
+}
+
+/** `true` quando `workers/site/public/p/{slug}/index.html` existe no
+ * checkout. Default de produção de `findMissingArchivePages` — injetável pra
+ * teste (#7266) sem depender do disco real. */
+function archivePageExistsOnDisk(slug: string): boolean {
+  return existsSync(archivePagePath(slug));
+}
+
+/**
+ * Slugs de edição (`diar.ia.br/p/{slug}`) citados por um hub — em PROSA
+ * (`collectHubBodyLinkUrls`) OU como `sourceEditions[].url` (também vira
+ * link, ver `sourceEditionLabel`/tabela em `hub-page.ts`) — que NÃO têm
+ * página de acervo local (#7266).
+ *
+ * **Por que existe.** Sem isto, um hub podia linkar a edição mais recente
+ * (o caso comum — a passada editorial de um hub tende a citar o que
+ * acabou de sair) e o link só quebrava depois, em produção: `/p/{slug}`
+ * 404 no Worker `diaria-site` porque a página nunca foi commitada (§6d-site,
+ * #6202, PODE falhar fail-soft e nunca alarmar — ver docstring do módulo
+ * daquele script), caindo no fallback pro Kit (#6429) que também 404 se a
+ * edição nunca foi publicada por lá. Achado ao vivo: PR #7258 nasceu com 2
+ * links quebrados desse jeito, sem que a prosa do hub tivesse nada de
+ * errado — o defeito estava no estado do repo, invisível no diff.
+ *
+ * Puro — `pageExists` é injetável (teste passa um fake; produção usa
+ * `archivePageExistsOnDisk`, que lê o disco real). Dedup por `Set` — a
+ * mesma edição pode aparecer em prosa E em `sourceEditions` ao mesmo tempo.
+ */
+export function findMissingArchivePages(
+  editionUrls: readonly string[],
+  pageExists: (slug: string) => boolean = archivePageExistsOnDisk,
+): string[] {
+  const missing = new Set<string>();
+  for (const url of editionUrls) {
+    if (!url.startsWith("https://diar.ia.br/p/")) continue;
+    const slug = slugFromEditionUrl(url);
+    if (!slug) continue;
+    if (!pageExists(slug)) missing.add(slug);
+  }
+  return [...missing].sort();
+}
+
 /** Carrega o `HubContent` completo de um slug — loader do hub (`get{Hub}Hub()`)
  * MAIS o pós-processamento que só o builder pode fazer (#4913 itens 1/3: nav
  * "Outros temas" com os hubs irmãos, própria página excluída; #5131:
@@ -254,6 +302,20 @@ function buildOne(slug: string, check: boolean): void {
   // checkUpdatedDateCeiling) — imprime aviso, segue o build normalmente.
   for (const warning of checkUpdatedDateCeiling(hub)) {
     process.stderr.write(`[build-hub-page] ⚠ ${slug}: ${warning}\n`);
+  }
+  // #7266: mesma disciplina — nunca bloqueia o build (a página de acervo
+  // pode chegar depois, via §6d-site ou publicação manual), mas ACUSA em
+  // vez de degradar calado. Sem isto, um link pra edição sem página local
+  // só quebra em produção (404 no domínio próprio, ou no fallback Kit),
+  // sem sinal nenhum no PR que introduziu o link.
+  const editionUrls = [...collectHubBodyLinkUrls(hub), ...hub.sourceEditions.map((e) => e.url)];
+  for (const missingSlug of findMissingArchivePages(editionUrls)) {
+    process.stderr.write(
+      `[build-hub-page] ⚠ ${slug}: edição /p/${missingSlug} linkada sem página de acervo local — ` +
+        `o link vai cair no fallback do Kit (#6429), que 404 se a edição não foi publicada por lá. ` +
+        `Rode 'npx tsx scripts/publish-edition-site-page.ts' pra essa edição (se ainda não passou pelo ` +
+        `Stage 6), ou 'npx tsx scripts/gen-archive-pages.ts' se o cache já tiver o post.\n`,
+    );
   }
   const outPath = outPathFor(slug);
   if (check) {
