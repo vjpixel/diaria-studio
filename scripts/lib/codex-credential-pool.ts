@@ -274,12 +274,26 @@ export function buildCodexAlarmMessage(v: CodexPoolVerdict, nowIso: string): str
     return `  ${c.label.padEnd(16)} ${c.state.toUpperCase().padEnd(14)} ${c.reason}${volta}`;
   });
 
+  // #7320: `allExhausted` é `vivas === 0`, e desde que `indeterminada` passou
+  // a alcançar contas cuja data de retorno venceu, "zero vivas" deixou de
+  // significar "todas esgotadas". Sem esta distinção o alarme afirmaria
+  // "TODAS esgotadas — a delegação está parada" sobre um pool que pode estar
+  // inteiro utilizável (3 contas vencidas e nunca retestadas, com o contínuo
+  // pausado). Overclaim exatamente do tipo que esta issue existe pra remover.
+  const nenhumaConfirmadaEsgotada = v.allExhausted && v.esgotadas === 0;
+
   const titulo = v.allExhausted
-    ? "TODAS as contas Codex estão esgotadas — a delegação está parada."
+    ? nenhumaConfirmadaEsgotada
+      ? "NENHUMA conta Codex confirmada viva — e nenhuma confirmada esgotada: o estado das " +
+        `${v.verdicts.length} é desconhecido.`
+      : "TODAS as contas Codex estão esgotadas — a delegação está parada."
     : `Resta ${v.vivas} conta Codex viva de ${v.verdicts.length}.`;
 
   const nota = v.allExhausted
-    ? "Nenhum trabalho delegado ao Codex vai rodar até uma conta voltar ou ser recarregada."
+    ? nenhumaConfirmadaEsgotada
+      ? "A data de retorno passou para todas e nada tentou usá-las desde então — podem estar todas " +
+        "utilizáveis, ou nenhuma. Rodar qualquer trabalho delegado ao Codex resolve a dúvida."
+      : "Nenhum trabalho delegado ao Codex vai rodar até uma conta voltar ou ser recarregada."
     : "Quando a última esgotar, a delegação para — e a volta é medida em SEMANAS, não em horas.";
 
   // #7320: `indeterminada` passou a ter DUAS origens, e a nota agregada não

@@ -249,10 +249,6 @@ describe("buildCodexAlarmMessage (#7250)", () => {
   });
 });
 
-describe("#7320 — resets_at no passado", () => {
-  // ─── #7320 ───
-// `resets_at` no passado não é `esgotada` nem `viva` — é `indeterminada`.
-
 const ESGOTADA_VOLTA_29_09 = {
   label: "vjpixel",
   last_status: "exhausted",
@@ -260,6 +256,11 @@ const ESGOTADA_VOLTA_29_09 = {
   last_error_code: 429,
   last_error_reset_at: Date.parse("2026-09-29T17:45:00Z") / 1000,
 };
+
+describe("#7320 — resets_at no passado", () => {
+  // ─── #7320 ───
+// `resets_at` no passado não é `esgotada` nem `viva` — é `indeterminada`.
+
 
   it("#7320 — antes da data de retorno, segue ESGOTADA", () => {
   const v = classifyCodexCredential(ESGOTADA_VOLTA_29_09, "2026-09-03T09:00:00Z");
@@ -315,4 +316,44 @@ const ESGOTADA_VOLTA_29_09 = {
   );
   assert.equal(v.state, "esgotada", "sem data prometida não há como dizer que ela passou");
 });
+});
+
+describe("#7320 — zero vivas não implica todas esgotadas", () => {
+  it('#7320 — 3 contas com data vencida: nunca afirma "TODAS esgotadas / delegação parada"', () => {
+    // Sem esta distinção o alarme diria que a delegação está parada sobre um
+    // pool que pode estar inteiro utilizável — ninguém retestou.
+    const v = evaluateCodexPool(
+      [
+        ESGOTADA_VOLTA_29_09,
+        { ...ESGOTADA_VOLTA_29_09, label: "diaria.editor" },
+        { ...ESGOTADA_VOLTA_29_09, label: "memelab" },
+      ],
+      undefined,
+      "2026-10-05T09:00:00Z",
+    );
+    assert.equal(v.vivas, 0);
+    assert.equal(v.esgotadas, 0, "nenhuma CONFIRMADA esgotada");
+    assert.equal(v.allExhausted, true, "o campo segue sendo vivas===0 — não é ele que muda");
+
+    const msg = buildCodexAlarmMessage(v, "2026-10-05T09:00:00Z");
+    assert.doesNotMatch(msg, /TODAS as contas Codex estão esgotadas/);
+    assert.doesNotMatch(msg, /delegação está parada/);
+    assert.match(msg, /estado das 3 é desconhecido/);
+    assert.match(msg, /podem estar todas utilizáveis, ou nenhuma/);
+  });
+
+  it("#7320 — esgotamento REAL de todas continua dizendo que a delegação parou", () => {
+    const v = evaluateCodexPool(
+      [
+        { ...ESGOTADA_VOLTA_29_09, label: "a" },
+        { ...ESGOTADA_VOLTA_29_09, label: "b" },
+      ],
+      undefined,
+      "2026-09-03T09:00:00Z", // antes da data de retorno: esgotamento confirmado
+    );
+    assert.equal(v.esgotadas, 2);
+    const msg = buildCodexAlarmMessage(v, "2026-09-03T09:00:00Z");
+    assert.match(msg, /TODAS as contas Codex estão esgotadas/, "o caso real não foi enfraquecido");
+    assert.match(msg, /delegação está parada/);
+  });
 });
