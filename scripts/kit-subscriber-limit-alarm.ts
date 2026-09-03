@@ -5,9 +5,12 @@
  * Alarme agendado: lê o teto de assinantes do plano Kit (`subscriber_limit`,
  * `GET /v4/account` via `getKitAccount`) × a contagem de assinantes ATIVOS
  * (`listAllKitSubscribers(config, {status: "active"})`), e alarma quando a
- * contagem cruza `DEFAULT_KIT_SUBSCRIBER_ALARM_THRESHOLD` (900, decisão do
- * editor #7362, 03/09/2026 — ver docstring de
- * `scripts/lib/kit-subscriber-limit-alarm.ts`).
+ * OCUPAÇÃO (`ativos / subscriber_limit`) cruza
+ * `DEFAULT_KIT_SUBSCRIBER_ALARM_THRESHOLD_PCT` (85%, decisão do editor #7362,
+ * comentário de 03/09/2026 18:55Z — ver docstring de
+ * `scripts/lib/kit-subscriber-limit-alarm.ts`). Limiar PERCENTUAL, não
+ * contagem absoluta — atravessa qualquer virada de plano (o gatilho original
+ * desta issue) sem precisar recalibrar código.
  *
  * Antes desta unidade, NENHUM script do repo lia `subscriber_limit` — o teto
  * do plano era invisível pra toda a maquinaria de guard/alarme, achado na
@@ -114,24 +117,28 @@ export { saveState };
  *  execuções limpas consecutivas). */
 export function toAlarmFindings(evaluation: KitSubscriberLimitEvaluation): AlarmFinding[] {
   if (!evaluation.triggered) return [];
+  const thresholdDisplay = `${Math.round(evaluation.thresholdPct * 100)}%`;
+  const occupancyDisplay = `${Math.round(evaluation.occupancyPct * 100)}%`;
   return [
     {
       check: KIT_SUBSCRIBER_LIMIT_FINDING_KEY,
       fingerprint: KIT_SUBSCRIBER_LIMIT_FINDING_KEY,
       family: "estado",
-      title: `[diar.ia.br] Kit: ${evaluation.activeCount} assinantes ativos cruzou o alarme de ${evaluation.threshold} (teto do plano: ${evaluation.subscriberLimit})`,
+      title: `[diar.ia.br] Kit: ${evaluation.activeCount} assinantes ativos (${occupancyDisplay}) cruzou o alarme de ${thresholdDisplay} do teto do plano (${evaluation.subscriberLimit})`,
       body: [
         "Achado automático do alarme `Diaria-Kit-Subscriber-Limit-Alarm`",
         "(`scripts/kit-subscriber-limit-alarm.ts`).",
         "",
-        `Assinantes ativos: ${evaluation.activeCount} | threshold de alarme: ${evaluation.threshold} | ` +
-          `teto do plano (subscriber_limit): ${evaluation.subscriberLimit} | margem restante: ${evaluation.remainingToLimit}.`,
+        `Assinantes ativos: ${evaluation.activeCount} | ocupação: ${occupancyDisplay} | ` +
+          `threshold de alarme: ${thresholdDisplay} | teto do plano (subscriber_limit): ` +
+          `${evaluation.subscriberLimit} | margem restante: ${evaluation.remainingToLimit}.`,
         "",
-        "Decisão do editor (#7362, 03/09/2026): armar alarme em 900 e decidir na",
-        "hora — não subir de degrau preventivamente nem capar o teste.",
+        "Decisão do editor (#7362, comentário de 03/09/2026 18:55Z): limiar",
+        "PERCENTUAL sobre o subscriber_limit lido da API — não subir de degrau",
+        "preventivamente nem capar o teste.",
         "",
         "Esta issue é criada automaticamente pelo alarme e será",
-        "comentada/fechada sozinha quando a contagem cair de volta abaixo do",
+        "comentada/fechada sozinha quando a ocupação cair de volta abaixo do",
         `threshold por ${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
       ].join("\n"),
       labels: ["bug"],
@@ -162,7 +169,8 @@ async function main(): Promise<void> {
 
   const evaluation = evaluateKitSubscriberLimitAlarm(activeSubscribers.length, account.subscriber_limit);
   console.log(
-    `${LOG_PREFIX} ativos=${evaluation.activeCount} threshold=${evaluation.threshold} ` +
+    `${LOG_PREFIX} ativos=${evaluation.activeCount} ocupacao=${Math.round(evaluation.occupancyPct * 100)}% ` +
+      `threshold=${Math.round(evaluation.thresholdPct * 100)}% ` +
       `subscriber_limit=${evaluation.subscriberLimit} (plano ${account.plan_type || "?"}) ` +
       `triggered=${evaluation.triggered} margem=${evaluation.remainingToLimit}`,
   );
