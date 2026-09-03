@@ -855,6 +855,17 @@ describe("computeSubscriptionCoverage — função pura (#7294)", () => {
   it("cobertura total ⇒ 1, nunca mais que isso mesmo com numerador de linhas brutas por engano", () => {
     assert.equal(computeSubscriptionCoverage(10, 10), 1);
   });
+
+  // Achado do review do #7294: `subscription` não tem FK rígida contra
+  // `subscriber` — um `subscriber_id` órfão (dado corrompido, fora do
+  // caminho normal de escrita) poderia inflar o numerador acima do
+  // denominador e reabrir, por outra via, o "passa de 100% e mascara o
+  // guard" que esta função existe pra fechar. `Math.min(1, …)` é o clamp
+  // defensivo — a função nunca devolve mais que 1, mesmo com um numerador
+  // maior que o denominador por engano/corrupção.
+  it("numerador MAIOR que o denominador (dado órfão/corrompido) é clampado em 1, nunca reabre o mascaramento", () => {
+    assert.equal(computeSubscriptionCoverage(10, 15), 1);
+  });
 });
 
 describe("isPlatform / isEventType", () => {

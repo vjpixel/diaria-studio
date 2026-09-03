@@ -951,12 +951,21 @@ export const SUBSCRIPTION_COVERAGE_WARN_FRACTION = 0.5;
  * (`leitor-store.ts`) já calculava certo — presença por assinante — desde
  * o #7198; esta função é a mesma fórmula extraída pra fonte única, chamada
  * pelos dois guards da família em vez de cada um reimplementar a divisão.
+ *
+ * `Math.min(1, …)` é defensivo (achado do review do #7294): `subscription`
+ * não tem FK rígida contra `subscriber` (mesmo desenho do resto do store —
+ * ver docstring de `event` sobre chave natural sem FK bloqueante), então um
+ * `subscriber_id` órfão em `subscription` (dado corrompido, nunca produzido
+ * pelo caminho de escrita normal deste módulo hoje) poderia inflar
+ * `subscribersWithSubscription` acima de `subscribersTotal` e reabrir — por
+ * uma via diferente — exatamente o "passa de 100% e mascara o guard" que
+ * esta função existe para fechar.
  */
 export function computeSubscriptionCoverage(
   subscribersTotal: number,
   subscribersWithSubscription: number,
 ): number {
-  return subscribersTotal > 0 ? subscribersWithSubscription / subscribersTotal : 1;
+  return subscribersTotal > 0 ? Math.min(1, subscribersWithSubscription / subscribersTotal) : 1;
 }
 
 /** Contagem simples de linhas por tabela — usado pelo builder/CLI pra
@@ -996,8 +1005,13 @@ export function getStoreCounts(db: DatabaseSync): {
   const subscriptions_coverage_low = subscribers > 0 && coverage < SUBSCRIPTION_COVERAGE_WARN_FRACTION;
   if (subscriptions_coverage_low) {
     console.warn(
-      `[diaria-subscribers-db] aviso: subscription (${subscriptions}) cobre só ` +
-        `${(coverage * 100).toFixed(1)}% de subscriber (${subscribers}) — abaixo de ` +
+      // #7294 review: a % vem de PRESENÇA (subscribersWithSubscription),
+      // nunca da contagem bruta de linhas (subscriptions) — as duas divergem
+      // justo no caso multi-plataforma que este guard existe pra pegar, e
+      // citar a bruta ao lado da % calculada por presença confundiria quem
+      // fizer a conta de cabeça.
+      `[diaria-subscribers-db] aviso: ${subscribersWithSubscription} de ${subscribers} subscriber(s) têm PRESENÇA ` +
+        `em subscription (${(coverage * 100).toFixed(1)}%, ${subscriptions} linha(s) brutas ao todo) — abaixo de ` +
         `${(SUBSCRIPTION_COVERAGE_WARN_FRACTION * 100).toFixed(0)}%. "subscriptions: ${subscriptions}" NÃO significa ` +
         `"sem assinatura real" — significa "dimensão pouco populada" (nenhum ingest de subscription rodou ainda, ` +
         `ou só parte das plataformas do store chama upsertSubscription, #7229). Não usar este número como fato ` +
