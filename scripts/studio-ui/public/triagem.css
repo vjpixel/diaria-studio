@@ -254,6 +254,15 @@
 .claim-kind-develop { border-color: var(--status-info); }
 .claim-kind-overnight { border-color: var(--brand); }
 
+/* #7263 — claim retido por sessão STALE (parece ociosa, mas o claim ainda
+   vale — janela 90min-24h, #7227): visual deliberadamente diferente do
+   "em andamento" default, mesmo padrão do `.dispatch-bloqueada` acima
+   (--status-danger, já validado WCAG AA no texto pra badge nesse mesmo
+   painel). Sobrepõe `.claim-kind-*` por ORDEM NO ARQUIVO (mesma
+   especificidade, esta regra vem depois — vence independente da ordem das
+   classes no atributo `class=` do HTML). */
+.claim-stale { border-color: var(--status-danger); color: var(--status-danger); opacity: 1; border-style: solid; }
+
 /* #6200: sufixo " ·sem sinal" já entrega a distinção em TEXTO (não depende
    de cor pra ser lido — mesmo padrão-guarda do resto da página, R7 de
    docs/studio-ui-ux-guidelines.md, tooltip não é suficiente sozinho); esta

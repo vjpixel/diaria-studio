@@ -34,10 +34,25 @@ describe("flattenClaims", () => {
     ];
     const entries = flattenClaims(sessions);
     assert.deepEqual(entries, [
-      { issueNumber: 6051, kind: "continuo", machineTag: "helios", sessionId: "abc123", claimedAt: "2026-08-20T00:00:00Z" },
-      { issueNumber: 6185, kind: "continuo", machineTag: "helios", sessionId: "abc123", claimedAt: "2026-08-21T00:00:00Z" },
-      { issueNumber: 6300, kind: "overnight", machineTag: "neo", sessionId: "def456", claimedAt: null },
+      { issueNumber: 6051, kind: "continuo", machineTag: "helios", sessionId: "abc123", claimedAt: "2026-08-20T00:00:00Z", stale: false },
+      { issueNumber: 6185, kind: "continuo", machineTag: "helios", sessionId: "abc123", claimedAt: "2026-08-21T00:00:00Z", stale: false },
+      { issueNumber: 6300, kind: "overnight", machineTag: "neo", sessionId: "def456", claimedAt: null, stale: false },
     ]);
+  });
+
+  it("#7263: session.stale === true é repassado pra ClaimEntry.stale", () => {
+    const sessions: ClaimBearingSession[] = [
+      {
+        kind: "develop",
+        machineTag: "helios",
+        sessionId: "sess-ociosa",
+        claimed_issues: [7263],
+        claimed_issues_at: { "7263": "2026-09-01T00:00:00Z" },
+        stale: true,
+      },
+    ];
+    const [entry] = flattenClaims(sessions);
+    assert.equal(entry?.stale, true);
   });
 
   it("sessão sem claimed_issues não gera entradas", () => {
