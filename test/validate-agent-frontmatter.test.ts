@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   extractFrontmatter,
   findFrontmatterIssues,
+  findUnknownMcpToolNames,
   validateFile,
 } from "../scripts/validate-agent-frontmatter.ts";
 import { mkdtempSync, writeFileSync, rmSync, readdirSync, existsSync, statSync } from "node:fs";
@@ -95,6 +96,39 @@ description: simple`;
   });
 });
 
+describe("findUnknownMcpToolNames — guard de nome de conector (#7279)", () => {
+  it("aceita prefixos conhecidos (Beehiiv, Gmail, clarice, kit, chrome)", () => {
+    const content = `tools: Read, Write, mcp__claude_ai_Beehiiv__list_posts, mcp__claude_ai_Gmail__search_threads, mcp__clarice__correct_text, mcp__kit__get_broadcast, mcp__claude-in-chrome__navigate`;
+    assert.deepEqual(findUnknownMcpToolNames(content), []);
+  });
+
+  it("flag um id de conector cru (UUID) — o achado real do #7279", () => {
+    const content = `1. \`mcp__ed929847-ab29-43d9-a6ba-60b687b65702__list_posts\` — publication_id`;
+    const issues = findUnknownMcpToolNames(content);
+    assert.equal(issues.length, 1);
+    assert.match(issues[0].tool, /^mcp__ed929847-/);
+    assert.match(issues[0].reason, /UUID/);
+  });
+
+  it("flag prefixo desconhecido que não é UUID (typo/rename não documentado)", () => {
+    const content = `tools: mcp__claude_ai_BeehiivOld__list_posts`;
+    const issues = findUnknownMcpToolNames(content);
+    assert.equal(issues.length, 1);
+    assert.match(issues[0].reason, /KNOWN_MCP_PREFIXES/);
+  });
+
+  it("reporta a linha correta em conteúdo multi-linha", () => {
+    const content = `linha 1\nlinha 2\nmcp__deadbeef-0000-0000-0000-000000000000__tool aqui\nlinha 4`;
+    const issues = findUnknownMcpToolNames(content);
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].line, 3);
+  });
+
+  it("não flag texto sem nenhum token mcp__", () => {
+    assert.deepEqual(findUnknownMcpToolNames("nada de mcp aqui, só prosa normal"), []);
+  });
+});
+
 describe("validateFile — integração com fs", () => {
   function mkFile(content: string): { dir: string; path: string } {
     const dir = mkdtempSync(join(tmpdir(), "diaria-validate-"));
@@ -129,6 +163,23 @@ body`);
       assert.equal(r.ok, false);
       assert.equal(r.issues.length, 1);
       assert.equal(r.issues[0].key, "description");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("body cita id de conector cru: ok=false + mcpIssues (#7279)", () => {
+    const { dir, path } = mkFile(`---
+name: foo
+description: simple
+---
+1. \`mcp__ed929847-ab29-43d9-a6ba-60b687b65702__list_posts\``);
+    try {
+      const r = validateFile(path);
+      assert.equal(r.ok, false);
+      assert.equal(r.issues.length, 0);
+      assert.equal(r.mcpIssues.length, 1);
+      assert.match(r.mcpIssues[0].tool, /^mcp__ed929847-/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
