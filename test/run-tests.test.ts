@@ -16,6 +16,8 @@ import {
   runTestBatches,
   shouldRetryBatch,
   parseFailCount,
+  parsePassCount,
+  formatAggregateSummary,
   hasTestSummary,
   bisectHangingBatch,
   formatBisectResult,
@@ -213,6 +215,98 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
       typeof maxBuffer === "number" && maxBuffer > 1024 * 1024,
       `maxBuffer precisa ser bem acima do default de 1 MB do Node, veio: ${maxBuffer}`,
     );
+  });
+});
+
+// --- sumário agregado (#7337) ----------------------------------------------
+
+describe("parsePassCount (#7337)", () => {
+  it("reconhece o sumário do reporter spec (prefixo ℹ, local/TTY)", () => {
+    const output = "ℹ tests 5\nℹ pass 5\nℹ fail 0\nℹ duration_ms 12\n";
+    assert.equal(parsePassCount(output), 5);
+  });
+
+  it("reconhece o sumário do reporter tap (prefixo #, CI/sem TTY)", () => {
+    const output = "# tests 5\n# pass 4\n# fail 1\n";
+    assert.equal(parsePassCount(output), 4);
+  });
+
+  it("nenhum sumário reconhecível → null", () => {
+    assert.equal(parsePassCount("output qualquer sem sumário do node:test"), null);
+  });
+});
+
+describe("formatAggregateSummary (#7337) — pura, distinta do sumário nativo do node:test", () => {
+  it("nenhum batch falhou → linha nomeia 'nenhum batch falhou', soma pass/fail de todos", () => {
+    const line = formatAggregateSummary({ totalPass: 10, totalFail: 0, failedBatches: [] }, 3);
+    assert.match(line, /RESUMO AGREGADO/);
+    assert.match(line, /todos os 3 batch\(es\)/);
+    assert.match(line, /pass 10, fail 0/);
+    assert.match(line, /nenhum batch falhou/);
+  });
+
+  it("1 dos N batches falhou → nomeia o batch, não só o total", () => {
+    const line = formatAggregateSummary(
+      { totalPass: 9, totalFail: 1, failedBatches: ["batch 2/3"] },
+      3,
+    );
+    assert.match(line, /pass 9, fail 1/);
+    assert.match(line, /1\/3 batch\(es\) FALHARAM: batch 2\/3/);
+  });
+
+  it("vários batches falharam → todos os rótulos aparecem, na ordem", () => {
+    const line = formatAggregateSummary(
+      { totalPass: 5, totalFail: 3, failedBatches: ["batch 1/4", "batch 3/4"] },
+      4,
+    );
+    assert.match(line, /2\/4 batch\(es\) FALHARAM: batch 1\/4, batch 3\/4/);
+  });
+});
+
+describe("runTestBatches — sumário agregado reflete TODOS os batches, não só o último (#7337)", () => {
+  // Regressão direta do achado da PR #7333: um batch ANTERIOR falha (fail 1),
+  // o ÚLTIMO batch passa (fail 0) — o sumário nativo do node:test que
+  // aparece no rodapé do log é só o do último, "fail 0", mesmo com exit 1.
+  // O sumário AGREGADO precisa refletir a falha real, sempre.
+  it("1º batch falha (fail 1), 2º batch (último) passa (fail 0) → agregado soma fail 1 e nomeia o batch 1", () => {
+    const written: string[] = [];
+    const exit = runTestBatches({
+      files: ["/a.test.ts", "/b.test.ts"],
+      batchSize: 1,
+      bisectBudgetMs: 0,
+      spawn: ((_cmd, args) => {
+        const batch = (args as string[]).slice(3);
+        const isFirstBatch = batch[0] === "/a.test.ts";
+        return isFirstBatch
+          ? { status: 1, stdout: "# tests 1\n# pass 0\n# fail 1\n", stderr: "" }
+          : { status: 0, stdout: "# tests 1\n# pass 1\n# fail 0\n", stderr: "" };
+      }) as typeof import("node:child_process").spawnSync,
+      stderr: { write: (c: string) => written.push(c) },
+    });
+    assert.equal(exit, 1, "exit code precisa refletir a falha do 1º batch");
+    const out = written.join("");
+    // A ÚLTIMA linha de sumário nativo do node:test no log seria a do 2º
+    // batch ("fail 0") — é exatamente essa a leitura enganosa que motivou a
+    // issue. O agregado precisa aparecer DEPOIS, com o total real.
+    assert.match(out, /RESUMO AGREGADO \(todos os 2 batch\(es\)\) — pass 1, fail 1/);
+    assert.match(out, /1\/2 batch\(es\) FALHARAM: batch 1\/2/);
+  });
+
+  it("todos os batches passam → agregado soma pass corretamente, nenhum batch nomeado como falho", () => {
+    const written: string[] = [];
+    const exit = runTestBatches({
+      files: ["/a.test.ts", "/b.test.ts", "/c.test.ts"],
+      batchSize: 1,
+      spawn: (() => ({
+        status: 0,
+        stdout: "# tests 2\n# pass 2\n# fail 0\n",
+        stderr: "",
+      })) as unknown as typeof import("node:child_process").spawnSync,
+      stderr: { write: (c: string) => written.push(c) },
+    });
+    assert.equal(exit, 0);
+    const out = written.join("");
+    assert.match(out, /RESUMO AGREGADO \(todos os 3 batch\(es\)\) — pass 6, fail 0 — nenhum batch falhou/);
   });
 });
 

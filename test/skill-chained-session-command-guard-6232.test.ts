@@ -81,6 +81,44 @@ export function loadInjectableSubcommandsFromHook(hookPath: string): RegExp {
 }
 
 const INJECTABLE_SUBCOMMANDS = loadInjectableSubcommandsFromHook(INJECT_SESSION_ID_HOOK);
+
+/**
+ * Extrai os alvos INCONDICIONAIS (`needsSessionId: () => true` — o script
+ * inteiro exige `--session-id`, sem noção de subcomando, como
+ * `resolve-develop-plan-path.ts`/`resolve-overnight-plan-path.ts`/
+ * `cleanup-merged-worktrees.ts` em `SESSION_ID_TARGETS`) DIRETO do
+ * texto-fonte do hook — mesma disciplina de `loadInjectableSubcommandsFromHook`
+ * acima (#6351: fonte única, nunca uma cópia estática que diverge em
+ * silêncio). Origem: #7315 — o guard cobria só `TARGET_MARKER`/
+ * `TARGET_REGISTRY` (os 2 alvos que existiam quando este teste nasceu no
+ * #6232), enquanto o hook real já tinha 5 (`SESSION_ID_TARGETS`, #6259/
+ * #6265/#6328/#7304) — os 3 incondicionais nunca eram varridos nas SKILLs.
+ * Derivar do hook (em vez de listar os 3 nomes à mão de novo) é a correção
+ * que a própria issue pede: se um 6º alvo incondicional entrar no hook no
+ * mesmo formato, este teste passa a cobri-lo sem precisar de edição aqui.
+ */
+export function loadUnconditionalTargetsFromHook(hookPath: string): string[] {
+  const source = readFileSync(hookPath, "utf8");
+  const constDecls = new Map<string, string>();
+  for (const m of source.matchAll(/const\s+(TARGET_\w+)\s*=\s*"([^"]+)"/g)) {
+    constDecls.set(m[1], m[2]);
+  }
+  const targets: string[] = [];
+  for (const m of source.matchAll(/match:\s*(TARGET_\w+),\s*\n\s*needsSessionId:\s*\(\)\s*=>\s*true/g)) {
+    const value = constDecls.get(m[1]);
+    if (value) targets.push(value);
+  }
+  if (targets.length === 0) {
+    throw new Error(
+      `Não foi possível extrair nenhum alvo incondicional (needsSessionId: () => true) de ${hookPath} — ` +
+        "o formato de SESSION_ID_TARGETS no hook mudou; atualize o regex de extração " +
+        "em loadUnconditionalTargetsFromHook (test/skill-chained-session-command-guard-6232.test.ts).",
+    );
+  }
+  return targets;
+}
+
+const UNCONDITIONAL_TARGETS = loadUnconditionalTargetsFromHook(INJECT_SESSION_ID_HOOK);
 // Mesma heurística de encadeamento de .claude/hooks/inject-session-id.mjs
 // (isChainedCommand) — inclusive o `\r?\n`: um bloco cercado multi-linha
 // conta como "encadeado" porque a injeção automática do hook real também o
@@ -95,7 +133,11 @@ export interface FlaggedSpan {
   snippet: string;
 }
 
-/** `true` se `text` invoca um subcomando injetável de um dos dois scripts-alvo. */
+/** `true` se `text` invoca um subcomando injetável de um dos scripts-alvo —
+ *  os 2 com regra por subcomando (`TARGET_MARKER`/`TARGET_REGISTRY`) mais
+ *  todo alvo INCONDICIONAL derivado do hook (#7315, `UNCONDITIONAL_TARGETS`
+ *  acima — hoje `resolve-develop-plan-path.ts`, `resolve-overnight-plan-
+ *  path.ts` e `cleanup-merged-worktrees.ts`, mas nunca hardcoded aqui). */
 export function referencesInjectableCommand(text: string): boolean {
   if (text.includes(TARGET_MARKER)) {
     return /--start\b/.test(text) || /--phase\b/.test(text);
@@ -103,7 +145,7 @@ export function referencesInjectableCommand(text: string): boolean {
   if (text.includes(TARGET_REGISTRY)) {
     return INJECTABLE_SUBCOMMANDS.test(text);
   }
-  return false;
+  return UNCONDITIONAL_TARGETS.some((target) => text.includes(target));
 }
 
 /**
@@ -182,6 +224,53 @@ describe("findChainedSessionCommandsInSkills — unidades isoladas", () => {
   it("bloco cercado MULTI-LINHA com o alvo → flagra (mesma definição conservadora do hook real)", () => {
     const span = "npx tsx scripts/overnight-session-marker.ts --start\nnpx tsx scripts/lib/session-registry.ts register --kind overnight";
     assert.ok(referencesInjectableCommand(span) && CHAIN_RE.test(span));
+  });
+
+  // #7315: os 2 alvos que o guard não cobria — `.claude/hooks/
+  // inject-session-id.mjs` já injeta incondicionalmente nos dois (sem
+  // noção de subcomando), mas `referencesInjectableCommand` só conhecia
+  // `TARGET_MARKER`/`TARGET_REGISTRY` até este fix.
+  it("#7315: resolve-develop-plan-path.ts standalone → flagra como injetável (incondicional)", () => {
+    const span = "npx tsx scripts/lib/resolve-develop-plan-path.ts --stage 2";
+    assert.equal(referencesInjectableCommand(span), true);
+    assert.equal(CHAIN_RE.test(span), false);
+  });
+
+  it("#7315: resolve-develop-plan-path.ts encadeado com '&&' → flagra", () => {
+    const span = "npx tsx scripts/lib/resolve-develop-plan-path.ts --stage 2 && echo ok";
+    assert.ok(referencesInjectableCommand(span) && CHAIN_RE.test(span));
+  });
+
+  it("#7315: resolve-overnight-plan-path.ts pipado com '|' → flagra", () => {
+    const span = "npx tsx scripts/lib/resolve-overnight-plan-path.ts --stage 2 | tail -1";
+    assert.ok(referencesInjectableCommand(span) && CHAIN_RE.test(span));
+  });
+
+  it("#7315: resolve-overnight-plan-path.ts standalone → flagra como injetável (incondicional)", () => {
+    const span = "npx tsx scripts/lib/resolve-overnight-plan-path.ts --stage 4";
+    assert.equal(referencesInjectableCommand(span), true);
+    assert.equal(CHAIN_RE.test(span), false);
+  });
+
+  // Não pedido explicitamente pela #7315, mas coberto de graça pela mesma
+  // extração dinâmica (`UNCONDITIONAL_TARGETS`) — cleanup-merged-worktrees.ts
+  // é o 5º alvo do hook (#7304), mesma regra incondicional dos 2 acima.
+  it("cleanup-merged-worktrees.ts encadeado com ';' → também flagra (5º alvo do hook, coberto pela extração dinâmica)", () => {
+    const span = "npx tsx scripts/cleanup-merged-worktrees.ts ; echo ok";
+    assert.ok(referencesInjectableCommand(span) && CHAIN_RE.test(span));
+  });
+});
+
+describe("loadUnconditionalTargetsFromHook — extração a partir do hook real (#7315)", () => {
+  it("extrai os 3 alvos incondicionais conhecidos, incluindo os 2 que a #7315 reportou como faltantes", () => {
+    assert.ok(UNCONDITIONAL_TARGETS.includes("resolve-develop-plan-path.ts"));
+    assert.ok(UNCONDITIONAL_TARGETS.includes("resolve-overnight-plan-path.ts"));
+    assert.ok(UNCONDITIONAL_TARGETS.includes("cleanup-merged-worktrees.ts"));
+  });
+
+  it("nunca inclui TARGET_MARKER/TARGET_REGISTRY (esses têm regra por subcomando, não incondicional)", () => {
+    assert.ok(!UNCONDITIONAL_TARGETS.includes(TARGET_MARKER));
+    assert.ok(!UNCONDITIONAL_TARGETS.includes(TARGET_REGISTRY));
   });
 });
 
