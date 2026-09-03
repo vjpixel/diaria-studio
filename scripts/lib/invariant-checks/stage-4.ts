@@ -903,6 +903,17 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
  * a essência de um erro ortográfico/factual É a grafia exata plantada —
  * normalizar case ou acentos esconderia justamente o tipo de erro mais comum
  * (ortográfico) que o incidente real envolveu ("Anthropik" ⊄ "anthropik").
+ *
+ * Falso-negativo conhecido, registrado e não corrigido aqui (#7243 review):
+ * `md.includes(wrongValue)` sem escopo pode achar `wrongValue` em outro lugar
+ * do texto que não o item declarado — plausível quando `wrong_value` é CURTO
+ * ou GENÉRICO o bastante pra ocorrer por acaso (categorias `numeric`,
+ * `version_inconsistency`, `data`: ex. `wrong_value: "5"` batendo num número
+ * qualquer de outro destaque). O caso concreto do incidente (`"Anthropik"`,
+ * categoria `ortografico`) não sofre disso — é específico o bastante pra só
+ * bater no item certo. Escopar o match ao item/seção declarada em `location`
+ * fecharia o gap, mas exigiria parsear `location` de volta pra uma região do
+ * MD (formato livre, "DESTAQUE 2, parágrafo 1") — fora de escopo desta PR.
  */
 function checkIntentionalErrorPresentInFinal(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "02-reviewed.md");
@@ -916,9 +927,15 @@ function checkIntentionalErrorPresentInFinal(editionDir: string): InvariantViola
   if (record.no_error === true) return [];
 
   const md = readFileSync(path, "utf8");
-  // Só relevante quando a edição de fato declara um erro no corpo publicado —
-  // mesma heurística de "declarado" que checkNarrativeNotGenericPlaceholder usa
-  // no seu último branch (linha ~843 acima).
+  // Só relevante quando a edição de fato declara um erro no corpo publicado.
+  // NÃO é a mesma condição do último branch de checkNarrativeNotGenericPlaceholder
+  // (linha ~843 acima, que é `!extracted && !reveal && md.includes(SECTION_HEADER)`
+  // — um AND de 3 termos usado pra detectar "sem NENHUMA fonte válida de reveal").
+  // Aqui o objetivo é mais amplo — "existe declaração de erro pra verificar,
+  // seja qual for a forma" —, então é um OR de 2: presença do header da seção
+  // (cobre a edição que zerou a narrativa mas manteve o bloco) OU uma
+  // declaração válida extraída do corpo (`extractCurrentDeclarationFromMd`
+  // já filtra placeholder/catalog-shaped, então != null implica declaração real).
   const hasDeclaredError = md.includes(SECTION_HEADER) || extractCurrentDeclarationFromMd(md) !== null;
   if (!hasDeclaredError) return [];
 

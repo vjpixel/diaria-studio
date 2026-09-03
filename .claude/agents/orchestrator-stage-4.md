@@ -775,11 +775,22 @@ SOCIAL_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{ED
 [ -n "$SOCIAL_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$SOCIAL_PID"
 ```
 
-**Revalidação final do erro intencional, GATE-BLOCKING (#7243).** `check-invariants.ts --stage 4` (§4b step 5) rodou ANTES do editor ver o gate — qualquer edição feita depois (loop `ajustar` de §4d.1, edição via Studio seguida do fast-path do painel #6444 em §4d, que pula o resumo/loop inteiro) fica fora daquela checagem. Incidente real: edição 260902, o editor podou o RADAR (7→3 itens) dentro do gate e levou junto o item que carregava o erro intencional — nada acusou, e o reveal da 260903 ia publicar uma afirmação falsa. Re-rodar SÓ esta regra (mais barata que o conjunto inteiro) contra o `02-reviewed.md` como ele está agora, independente de qual caminho levou até aqui:
+**Revalidação final do erro intencional, GATE-BLOCKING (#7243).** `check-invariants.ts --stage 4` (§4b step 5) rodou ANTES do editor ver o gate — qualquer edição feita depois (loop `ajustar` de §4d.1, edição via Studio seguida do fast-path do painel #6444 em §4d, que pula o resumo/loop inteiro) fica fora daquela checagem. Incidente real: edição 260902, o editor podou o RADAR (7→3 itens) dentro do gate e levou junto o item que carregava o erro intencional — nada acusou, e o reveal da 260903 ia publicar uma afirmação falsa. Re-rodar SÓ esta regra (mais barata que o conjunto inteiro) contra o `02-reviewed.md` como ele está agora, independente de qual caminho levou até aqui — **inclusive em `auto_approve = true`**, onde este passo roda do mesmo jeito, imediatamente após §4b, sem esperar gate nenhum:
 ```bash
 npx tsx scripts/check-invariants.ts --stage 4 --rule intentional-error-present-in-final --edition-dir {EDITION_DIR}/
 ```
-Exit 1 (violação `error` — o item com `wrong_value` sumiu do texto) = **NÃO escrever o sentinel abaixo.** Apresentar a violação ao editor com as duas saídas já descritas na mensagem (#7243): (a) replantar o erro em outro item do `02-reviewed.md` atual e atualizar `wrong_value`/`correct_value`/`location` em `_internal/intentional-error.json` de acordo, ou (b) declarar a edição sem erro (`{"no_error": true}` em `_internal/intentional-error.json`) — depois repetir esta checagem até exit 0 antes de prosseguir. Exit 0 (inclui o caso `wrong_value` ausente/placeholder — vira só warning, não bloqueia; ver docstring de `checkIntentionalErrorPresentInFinal`) = seguir normalmente.
+Exit 1 (violação `error` — o item com `wrong_value` sumiu do texto): **NÃO escrever o sentinel abaixo.** Dois caminhos, pelo mesmo motivo que o fact-check `NOT_FOUND_IN_SOURCE` (exit 2, §4c.6 acima) já distingue:
+- **Gate interativo (`auto_approve = false`):** apresentar a violação ao editor com as duas saídas já descritas na mensagem (#7243): (a) replantar o erro em outro item do `02-reviewed.md` atual e atualizar `wrong_value`/`correct_value`/`location` em `_internal/intentional-error.json` de acordo, ou (b) declarar a edição sem erro (`{"no_error": true}` em `_internal/intentional-error.json`) — depois repetir esta checagem até exit 0 antes de prosseguir.
+- **`auto_approve = true` (`--no-gates`, rodada agendada/headless):** não há editor no gate pra apresentar a violação (mesma lacuna que o exit 2 do fact-check já cobre — não inventar um padrão novo). Parar e renderizar halt banner (#738):
+  ```bash
+  npx tsx scripts/render-halt-banner.ts \
+    --stage "4 — Revisão" \
+    --reason "intentional-error-present-in-final: item com wrong_value sumiu de 02-reviewed.md (provável poda editorial)" \
+    --action "replante o erro em outro item OU declare {\"no_error\": true} em _internal/intentional-error.json, depois re-rode /diaria-4-revisao"
+  ```
+  **Nunca prosseguir pra Etapa 5 sozinho neste caso** — publicar um reveal falso na edição seguinte é exatamente o dano que este invariante existe pra prevenir (#7243); "sem editor pra perguntar, então segue" reproduziria em modo headless o mesmo buraco que o incidente 260902 já expôs em modo interativo.
+
+Exit 0 (inclui o caso `wrong_value` ausente/placeholder — vira só warning, não bloqueia; ver docstring de `checkIntentionalErrorPresentInFinal`) = seguir normalmente, em qualquer modo.
 
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write \
