@@ -4496,7 +4496,9 @@ export type GrantMergeReason =
   | "self-grant-refused"
   | "not-a-coordinator"
   | "grantee-is-coordinator-refused"
-  | "no-op-session-missing";
+  | "no-op-session-missing"
+  | "live-grant-would-be-overwritten"
+  | "pr-already-granted-elsewhere";
 
 export interface GrantMergeResult {
   ok: boolean;
@@ -4530,7 +4532,7 @@ export function grantMergeWindow(
   kind: SessionKind,
   sessionId: string,
   grantedTo: string,
-  meta: { pr?: number; tag?: string; now?: string } = {},
+  meta: { pr?: number; tag?: string; now?: string; force?: boolean } = {},
 ): GrantMergeResult {
   if (!isCoordinatorKind(kind)) return { ok: false, reason: "not-a-coordinator" };
   if (grantedTo === sessionId || grantedTo.trim() === "") return { ok: false, reason: "self-grant-refused" };
@@ -4561,7 +4563,8 @@ export function grantMergeWindow(
   const tag = meta.tag ?? machineTag();
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
   const now = meta.now ?? new Date().toISOString();
-  if (!readJsonSafe<SessionRecord>(path)) {
+  let existingRecord = readJsonSafe<SessionRecord>(path);
+  if (!existingRecord) {
     // #6999 (fix 2): a leitura CRUA do arquivo real não é a pergunta certa —
     // a concedente pode ter perdido a âncora num lost-update com a sessão
     // viva (#7002) e ter o estado inteiro só nas cópias de conflito. Recusar
@@ -4573,10 +4576,54 @@ export function grantMergeWindow(
     const recovered = recoverAnchorFromOrphanBackups(repoRoot, kind, sessionId, tag, now);
     if (!recovered) return { ok: false, reason: "no-op-session-missing" };
     warnAnchorRecoveredFromOrphanBackups("grant-merge", sessionId, path, recovered);
+    existingRecord = readJsonSafe<SessionRecord>(path);
   }
 
   const grant: MergeGrant = { grantedTo, grantedBy: sessionId, grantedAt: now };
   if (meta.pr !== undefined) grant.pr = meta.pr;
+
+  // #7043 achado 1 (1º caminho) — `merge_grant` é campo ÚNICO no record da
+  // concedente: uma 2ª chamada de `grant-merge` (outro beneficiário e/ou
+  // outro PR) SOBRESCREVE a concessão anterior em silêncio. Medido ao vivo:
+  // concedi janela pra PR #6955 e, em seguida, pra #6959, à mesma sessão — o
+  // registro ficou só com a 2ª, e `grant-merge` devolveu `ok` NAS DUAS vezes.
+  // A beneficiária original nunca soube que perdeu a janela. Recusa (a menos
+  // que `meta.force`) quando a concessão que SERIA sobrescrita ainda está
+  // viva e tem IDENTIDADE DIFERENTE da nova (outro `grantedTo` e/ou outro
+  // `pr`) — reconceder a MESMA identidade (só renovar `grantedAt`) não perde
+  // informação nenhuma e continua permitido sem `--force`.
+  const priorGrant = existingRecord?.merge_grant;
+  const nowMs = Date.parse(now);
+  if (
+    !meta.force &&
+    priorGrant &&
+    isMergeGrantLive(priorGrant, priorGrant.grantedTo, nowMs) &&
+    (priorGrant.grantedTo !== grantedTo || priorGrant.pr !== grant.pr)
+  ) {
+    return { ok: false, reason: "live-grant-would-be-overwritten", grant: priorGrant };
+  }
+
+  // #7043 achado 1 (2º caminho) — duas coordenadoras concedendo janela pra a
+  // MESMA PR não se enxergam: cada concessão mora no record de QUEM concede,
+  // nunca num lugar comparável entre coordenadoras. Medido ao vivo: duas
+  // coordenadoras concederam janela pra a mesma PR (#6988) com 20s de
+  // diferença — nenhuma soube da outra, e `grant-merge` respondeu `ok` nas
+  // duas. Recusa (a menos que `meta.force`) quando OUTRA coordenadora ativa
+  // já tem concessão viva pra este mesmo PR — só se aplica quando `meta.pr`
+  // foi informado (concessão genérica, sem PR, não tem identidade de PR pra
+  // colidir).
+  if (!meta.force && meta.pr !== undefined) {
+    const clashing = listActiveSessions(repoRoot).find(
+      (s) =>
+        s.sessionId !== sessionId &&
+        isCoordinatorKind(s.kind) &&
+        s.merge_grant?.pr === meta.pr &&
+        isMergeGrantLive(s.merge_grant, s.merge_grant?.grantedTo ?? "", nowMs),
+    );
+    if (clashing) {
+      return { ok: false, reason: "pr-already-granted-elsewhere", grant: clashing.merge_grant };
+    }
+  }
 
   // #6952: CAS em vez de read-modify-write solto. O concedente é uma sessão
   // ATIVA e o beacon reescreve este registro a cada chamada de ferramenta —
@@ -5135,6 +5182,7 @@ function main(): void {
         process.stdout.write(
           `session-registry: merge-lock-acquire ${ok ? "ok" : "denied (held by another session)"} [repoRoot=${repoRoot}]\n`,
         );
+        const activeSessions = listActiveSessions(repoRoot);
         // #7169 direção (c) — "guard de frescor": nunca muda o resultado do
         // `ok` acima (o lock continua advisory entre máquinas, #6182), só
         // torna VISÍVEL um sinal hoje mudo. Aviso em stderr (nunca stdout,
@@ -5143,7 +5191,7 @@ function main(): void {
         // pode não significar "de fato livre", só "livre segundo dados que
         // podem estar até 1h+ velhos" (incidente de origem: onedrive.service
         // morto por 1h13 sem alarme).
-        const freshness = assessCrossMachineSyncFreshness(listActiveSessions(repoRoot), Date.now());
+        const freshness = assessCrossMachineSyncFreshness(activeSessions, Date.now());
         if (freshness.stale) {
           const names = freshness.staleSessions
             .map((s) => `${s.kind}-${s.machineTag}-${s.sessionId} (heartbeat de ${s.lastHeartbeat})`)
@@ -5157,14 +5205,72 @@ function main(): void {
               "conferir se o head mudou antes de confiar no merge lock/grant cross-máquina.\n",
           );
         }
+        // #7043 achado 2 — o lock É advisory entre máquinas (#6182: cada
+        // máquina vê um inode distinto no mesmo junction OneDrive, `O_EXCL`
+        // não é exclusão mútua real ali), mas até aqui `acquire` respondia
+        // `ok` IDÊNTICO esteja ou não em cenário cross-máquina — quem lê não
+        // tinha como saber que a garantia era fraca. Diferente do aviso de
+        // frescor acima (que só dispara com heartbeat DESATUALIZADO), este
+        // aviso é sobre a garantia em si: dispara sempre que `ok` e existe
+        // QUALQUER coordenadora ativa (mesmo fresca) numa máquina diferente
+        // — porque mesmo com dado fresco, a exclusão entre máquinas não é
+        // atômica.
+        const myTag = machineTag();
+        if (ok) {
+          const peers = activeSessions.filter(
+            (s) => !s.stale && isCoordinatorKind(s.kind) && s.machineTag !== myTag,
+          );
+          if (peers.length > 0) {
+            const names = [...new Set(peers.map((s) => s.machineTag))].join(", ");
+            process.stderr.write(
+              `session-registry: AVISO (#7043) — lock adquirido, mas há coordenadora ativa em outra(s) máquina(s) ` +
+                `(${names}): a exclusão entre máquinas é ADVISORY, não garantida (#6182) — ambas podem ter recebido ` +
+                '"ok" pro mesmo lock. Confie no lock sozinho só na mesma máquina; entre máquinas, combine por ' +
+                "outro canal (mensagem direta) antes de mergear.\n",
+            );
+          }
+        }
         if (!ok) process.exitCode = 1;
         break;
       }
       case "merge-lock-release": {
         const sessionId = requireSessionId(values);
+        // #7043 achado 2 — lê QUEM detém o lock ANTES de tentar liberar, pra
+        // poder distinguir (depois de `releaseMergeLock` recusar) "esperado,
+        // advisory" de erro de verdade. `releaseMergeLock` já recusa liberar
+        // lock alheio (nunca lança) — a leitura aqui é só pra mensagem, sem
+        // mudar essa decisão.
+        const heldByBefore = readJsonSafe<MergeLockRecord>(mergeLockPath(repoRoot))?.heldBy;
         const ok = releaseMergeLock(repoRoot, sessionId);
-        process.stdout.write(`session-registry: merge-lock-release ${ok ? "ok" : "denied (held by another session)"}\n`);
-        if (!ok) process.exitCode = 1;
+        if (ok) {
+          process.stdout.write("session-registry: merge-lock-release ok\n");
+          break;
+        }
+        // Achou o dono atual entre as sessões ativas pra saber se é uma
+        // corrida cross-máquina (esperada, advisory — #6182) ou algo que não
+        // deveria acontecer (mesma máquina, onde `O_EXCL` é exclusão real).
+        const holder = heldByBefore ? listActiveSessions(repoRoot).find((s) => s.sessionId === heldByBefore) : undefined;
+        const crossMachine = holder !== undefined && holder.machineTag !== machineTag();
+        if (crossMachine) {
+          // Erro é o sinal ERRADO pra comportamento documentado e esperado
+          // (#6182 já prevê isto) — treina quem opera a ignorar a saída do
+          // comando. `exit 0`: não é uma falha desta chamada, é o desfecho
+          // correto de uma corrida cross-máquina que o próprio desenho
+          // admite como possível.
+          process.stdout.write(
+            `session-registry: merge-lock-release no-op — lock já pertence a outra sessão de OUTRA máquina ` +
+              `(${holder.kind}-${holder.machineTag}-${holder.sessionId}), corrida cross-máquina ESPERADA (advisory, ` +
+              "#6182/#7043) — não é erro. Se o merge que este release protegia já saiu, confira `git log` antes de " +
+              "reagir.\n",
+          );
+        } else {
+          process.stdout.write(
+            "session-registry: merge-lock-release denied (held by another session)" +
+              (holder ? ` — ${holder.kind}-${holder.machineTag}-${holder.sessionId}` : "") +
+              "\n",
+          );
+          process.exitCode = 1;
+        }
         break;
       }
       case "merge-lock-renew": {
@@ -5206,7 +5312,7 @@ function main(): void {
           throw new Error(
             '--kind ausente — é o kind da sessão CONCEDENTE (a SUA, a coordenadora que está chamando grant-merge), ' +
               'nunca da beneficiária em --granted-to. Deve ser "overnight", "develop" ou "continuo". ' +
-              "Ex: grant-merge --kind develop --granted-to <sessionId-do-beneficiario> [--pr N].",
+              "Ex: grant-merge --kind develop --granted-to <sessionId-do-beneficiario> [--pr N] [--force].",
           );
         }
         const kind = requireCoordinatorKind(values.kind);
@@ -5214,7 +5320,11 @@ function main(): void {
         const grantedTo = values["granted-to"];
         if (!grantedTo) throw new Error("--granted-to (sessionId de quem recebe a janela) é obrigatório");
         const pr = values.pr ? Number(values.pr) : undefined;
-        const result = grantMergeWindow(repoRoot, kind, sessionId, grantedTo, pr !== undefined ? { pr } : {});
+        const force = flags.has("force");
+        const result = grantMergeWindow(repoRoot, kind, sessionId, grantedTo, {
+          ...(pr !== undefined ? { pr } : {}),
+          ...(force ? { force } : {}),
+        });
         switch (result.reason) {
           case "granted":
             process.stdout.write(
@@ -5256,6 +5366,27 @@ function main(): void {
                 `"${grantedTo}" NÃO é o problema aqui (ela nem precisa estar registrada). Causas típicas: ` +
                 "--session-id de outra sessão, --kind diferente do que foi registrado, ou a âncora sumiu sem " +
                 `nenhuma cópia de conflito viva pra reconstruir (#7002). Registre a concedente ("register --kind ${kind}") antes de conceder.\n`,
+            );
+            process.exitCode = 1;
+            break;
+          case "live-grant-would-be-overwritten":
+            // #7043 achado 1 (1º caminho).
+            process.stdout.write(
+              "session-registry: grant-merge RECUSADO — você já tem uma concessão VIVA e NÃO-CONSUMIDA pra outra " +
+                `identidade (grantedTo="${result.grant?.grantedTo}"${result.grant?.pr !== undefined ? `, PR #${result.grant.pr}` : ""}). ` +
+                "`merge_grant` é campo único: conceder esta agora apagaria aquela em silêncio, sem a beneficiária " +
+                "original nunca saber que perdeu a janela (#7043). Se a concessão anterior de fato não é mais " +
+                "necessária, repita com --force pra sobrescrever deliberadamente.\n",
+            );
+            process.exitCode = 1;
+            break;
+          case "pr-already-granted-elsewhere":
+            // #7043 achado 1 (2º caminho).
+            process.stdout.write(
+              `session-registry: grant-merge RECUSADO — o PR #${pr} já tem concessão viva emitida por OUTRA ` +
+                `coordenadora (grantedTo="${result.grant?.grantedTo}"). Duas concessões pro mesmo PR não se ` +
+                "enxergam entre records — a 2ª sobrescreveria a 1ª em silêncio (#7043). Confirme com a outra " +
+                "coordenadora antes de reconceder, ou repita com --force se for deliberado.\n",
             );
             process.exitCode = 1;
             break;
@@ -5361,9 +5492,11 @@ function main(): void {
             "concorrente no mesmo checkout prossegue com aviso, nunca exit 1.\n" +
             "  conflicts [--paths a,b] [--branch X]: CONSULTA (#6168) — quem mais está mexendo nisto agora. " +
             "exit 1 = sobreposição com peer VIVO; exit 0 = livre. Nunca cria arquivo nem adquire nada.\n" +
-            "  grant-merge --kind {overnight|develop|continuo} --granted-to X [--pr N]: concede janela de merge a " +
-            "OUTRA sessão (#6296) — --kind é da sessão CONCEDENTE (a sua, obrigatório, #6331), nunca da " +
+            "  grant-merge --kind {overnight|develop|continuo} --granted-to X [--pr N] [--force]: concede janela de " +
+            "merge a OUTRA sessão (#6296) — --kind é da sessão CONCEDENTE (a sua, obrigatório, #6331), nunca da " +
             "beneficiária em --granted-to; só coordenadora concede, nunca a si mesma; TTL curto, uso único. " +
+            "Recusa (#7043) sobrescrever uma concessão VIVA de OUTRA identidade (sua própria ou de outra " +
+            "coordenadora pro mesmo PR) — --force força a sobrescrita deliberada. " +
             "check-merge-grant é o lado de quem recebeu, pra CONFIRMAR a concessão antes de mergear. " +
             "consume-merge-grant NÃO é um passo do beneficiário (#7171) — quem carimba consumedAt é o " +
             "gh pr merge bem-sucedido, automaticamente via .claude/hooks/consume-merge-grant-on-merge.mjs; " +

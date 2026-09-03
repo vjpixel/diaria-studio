@@ -4395,6 +4395,121 @@ describe("CLI merge-lock-acquire: aviso de frescor cross-máquina (#7169) vai pr
   });
 });
 
+// ─── #7043 achado 2 — o lock É advisory entre máquinas, e agora isso aparece
+// na superfície do comando em vez de ficar mudo. ─────────────────────────
+
+describe("CLI merge-lock-acquire: aviso de exclusão ADVISORY entre máquinas (#7043) vai pro stderr", () => {
+  const OTHER_TAG = "otherhost-7043";
+
+  it("coordenadora ATIVA (heartbeat fresco) em outra máquina dispara o aviso mesmo sem degradação de sync", () => {
+    const root = freshCliRoot();
+    const nowMs = Date.now();
+    writeFileSync(
+      join(root, "data", "sessions", `overnight-${OTHER_TAG}-coord-7043.json`),
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: OTHER_TAG,
+        sessionId: "coord-7043",
+        startedAt: new Date(nowMs - 60 * 1000).toISOString(),
+        // Heartbeat BEM recente — de propósito: o aviso do #7169 (frescor)
+        // não dispararia aqui. O que o #7043 acrescenta é um aviso
+        // INDEPENDENTE de frescor: mesmo com dado fresco, a exclusão entre
+        // máquinas não é atômica (#6182).
+        lastHeartbeat: new Date(nowMs - 5 * 1000).toISOString(),
+        claimed_issues: [],
+      }),
+      "utf8",
+    );
+
+    const res = cli7002(root, ["merge-lock-acquire", "--session-id", "acquirer-7043"]);
+
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /merge-lock-acquire ok/);
+    assert.doesNotMatch(res.stdout, /AVISO/);
+    assert.doesNotMatch(res.stderr, /ATENÇÃO \(#7169\)/, "heartbeat fresco não deveria disparar o aviso de FRESCOR");
+    assert.match(res.stderr, /AVISO \(#7043\)/);
+    assert.match(res.stderr, new RegExp(OTHER_TAG));
+    assert.match(res.stderr, /ADVISORY, não garantida/);
+  });
+
+  it("sem nenhuma coordenadora em outra máquina, nenhum aviso do #7043 dispara", () => {
+    const root = freshCliRoot();
+    const res = cli7002(root, ["merge-lock-acquire", "--session-id", "acquirer-7043b"]);
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /merge-lock-acquire ok/);
+    assert.doesNotMatch(res.stderr, /AVISO \(#7043\)/);
+  });
+});
+
+describe("CLI merge-lock-release: corrida cross-máquina é ADVISORY (#7043) — mensagem, não exit 1", () => {
+  const OTHER_TAG = "otherhost-7043-release";
+
+  it("lock detido por sessão de OUTRA máquina → no-op explicado, exit 0 (nunca erro)", () => {
+    const root = freshCliRoot();
+    const nowMs = Date.now();
+    writeFileSync(
+      join(root, "data", "sessions", `overnight-${OTHER_TAG}-holder.json`),
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: OTHER_TAG,
+        sessionId: "holder-7043",
+        startedAt: new Date(nowMs - 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(nowMs - 5 * 1000).toISOString(),
+        claimed_issues: [],
+      }),
+      "utf8",
+    );
+    writeFileSync(
+      join(root, "data", "sessions", ".merge-lock.json"),
+      JSON.stringify({ heldBy: "holder-7043", acquiredAt: new Date(nowMs - 1_000).toISOString() }),
+      "utf8",
+    );
+
+    const res = cli7002(root, ["merge-lock-release", "--session-id", "releaser-7043"]);
+
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /no-op/);
+    assert.match(res.stdout, /corrida cross-máquina ESPERADA/);
+    assert.match(res.stdout, /#7043/);
+  });
+
+  it("lock detido por OUTRA sessão da MESMA máquina → continua erro real, exit 1", () => {
+    const root = freshCliRoot();
+    const nowMs = Date.now();
+    const tag = machineTag();
+    writeFileSync(
+      join(root, "data", "sessions", `overnight-${tag}-holder-local.json`),
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: tag,
+        sessionId: "holder-7043-local",
+        startedAt: new Date(nowMs - 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(nowMs - 5 * 1000).toISOString(),
+        claimed_issues: [],
+      }),
+      "utf8",
+    );
+    writeFileSync(
+      join(root, "data", "sessions", ".merge-lock.json"),
+      JSON.stringify({ heldBy: "holder-7043-local", acquiredAt: new Date(nowMs - 1_000).toISOString() }),
+      "utf8",
+    );
+
+    const res = cli7002(root, ["merge-lock-release", "--session-id", "releaser-7043-local"]);
+
+    assert.equal(res.status, 1, res.stdout + res.stderr);
+    assert.match(res.stdout, /denied \(held by another session\)/);
+    assert.doesNotMatch(res.stdout, /corrida cross-máquina ESPERADA/);
+  });
+
+  it("lock livre → ok normal, sem nenhuma mensagem nova", () => {
+    const root = freshCliRoot();
+    const res = cli7002(root, ["merge-lock-release", "--session-id", "releaser-7043-free"]);
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /merge-lock-release ok/);
+  });
+});
+
 describe("CLI consume-merge-grant: aviso de uso indevido (#7171) vai pro stderr, nunca stdout", () => {
   it("consumir uma janela viva emite o aviso 'não é passo do beneficiário' em stderr", () => {
     const root = freshCliRoot();
