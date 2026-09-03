@@ -2,7 +2,7 @@
  * scripts/lib/mensal/monthly-apoiadores-brevo-render.ts (#4593)
  *
  * Variante BREVO do envio extra pra apoiadores Mantenedor/Patrono —
- * sucessora de `scripts/lib/mensal/monthly-beehiiv-render.ts` (#4482), que
+ * sucessora de `scripts/lib/mensal/monthly-draft-filter.ts` (#4482), que
  * nunca chegou a enviar ao vivo: a Beehiiv bloqueia "Include and exclude
  * segments" atrás do plano Scale (workspace é Launch/free, confirmado ao
  * vivo 260804, #4572). Decisão do editor: trocar o CANAL pra Brevo (mesma
@@ -12,7 +12,7 @@
  * ## Decisão do #4593 item 2 — perfil UTM NOVO, não rename (opção b)
  *
  * A issue #4593 propôs 2 rotas: (a) renomear `BEEHIIV_UTM_PROFILE`/
- * `draftToEmailBeehiiv` (monthly-beehiiv-render.ts) pra refletir o canal real,
+ * `draftToEmailBeehiiv` (monthly-draft-filter.ts) pra refletir o canal real,
  * ou (b) introduzir um perfil Brevo-específico NOVO, dedicado, sem tocar nos
  * exports existentes. Esta unidade escolhe (b), por 3 motivos concretos
  * (não só "menor risco" em abstrato):
@@ -34,7 +34,7 @@
  *      "BEEHIIV_UTM_PROFILE\|draftToEmailBeehiiv\|CLARICE_UTM_PROFILE"`
  *      mostra que os únicos consumidores de `BEEHIIV_UTM_PROFILE`/
  *      `draftToEmailBeehiiv` são `scripts/render-monthly-beehiiv.ts` e os
- *      próprios testes do #4482/#4510 (`monthly-beehiiv-render.test.ts`,
+ *      próprios testes do #4482/#4510 (`monthly-draft-filter.test.ts`,
  *      `render-monthly-beehiiv.test.ts`) — nenhum caminho de ENVIO REAL EM
  *      PRODUÇÃO os usa (o envio Beehiiv nunca saiu do estágio de draft órfão
  *      criado manualmente durante o teste ao vivo do #4572). `CLARICE_UTM_PROFILE`
@@ -59,7 +59,7 @@
  *      brand (`mensal-apoiadores-brevo` abaixo) independente de qual dos 2
  *      exports antigos sobrevive com qual nome.
  *
- * Reusa `filterDraftForBeehiiv` de `monthly-beehiiv-render.ts` SEM
+ * Reusa `filterDraftForApoiadores` de `monthly-draft-filter.ts` SEM
  * modificação: apesar do nome do módulo de origem, a função é puramente
  * sobre CONTEÚDO (remove seções `APRESENTAÇÃO`/`CLARICE — *` e o box de
  * recomendação da diária do texto) — não tem nenhuma dependência de ESP/
@@ -67,7 +67,7 @@
  * import seria puro custo sem ganho (mesmo racional do item 2 acima).
  */
 import { draftToEmail, type MonthlyUtmProfile } from "./monthly-render.ts";
-import { filterDraftForBeehiiv } from "./monthly-beehiiv-render.ts";
+import { filterDraftForApoiadores } from "./monthly-draft-filter.ts";
 import {
   MENSAL_APOIADORES_BREVO_UTM_SOURCE,
   MENSAL_APOIADORES_BREVO_UTM_MEDIUM,
@@ -102,7 +102,7 @@ export const APOIADORES_BREVO_UTM_PROFILE: MonthlyUtmProfile = {
 
 /**
  * Render completo da variante Brevo apoiadores (#4593): filtra o draft
- * (`filterDraftForBeehiiv`, reusado sem modificação — ver docstring do
+ * (`filterDraftForApoiadores`, reusado sem modificação — ver docstring do
  * módulo) e chama o MESMO `draftToEmail` do envio Clarice, só trocando o
  * `utmProfile`. Assinatura espelhava a antiga `draftToEmailBeehiiv`
  * (removida por #7121, sem consumidor de runtime) de propósito — mesmos
@@ -123,7 +123,7 @@ export function draftToEmailApoiadoresBrevo(
   livrosImageUrl?: string,
   eiaPrevResultLine?: string | null,
 ): { subject: string; previewText: string; html: string } {
-  const filtered = filterDraftForBeehiiv(draft);
+  const filtered = filterDraftForApoiadores(draft);
   return draftToEmail(
     filtered,
     chosenSubject,

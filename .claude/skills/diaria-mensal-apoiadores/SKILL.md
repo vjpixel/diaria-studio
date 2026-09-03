@@ -38,9 +38,9 @@ description: Envia a edição mensal (data/monthly/{ciclo}/draft.md) por e-mail 
 > antigo intocado, mas sem consumidor. Isso mudou — `scripts/render-monthly-beehiiv.ts`
 > foi REMOVIDO (`readPublicImages`/`EXPECTED_IMAGE_KEYS`/`missingImageKeys`
 > migraram, canal-agnósticas, pra `scripts/render-monthly-apoiadores-brevo.ts`);
-> `scripts/lib/mensal/monthly-beehiiv-render.ts` perdeu `draftToEmailBeehiiv`/
+> `scripts/lib/mensal/monthly-draft-filter.ts` perdeu `draftToEmailBeehiiv`/
 > `BEEHIIV_UTM_PROFILE` (sem consumidor de runtime) mas **continua no repo**
-> — `filterDraftForBeehiiv`/`isClariceOnlySection`/`stripRecomendacaoDiariaBlock`
+> — `filterDraftForApoiadores`/`isClariceOnlySection`/`stripRecomendacaoDiariaBlock`
 > são reusadas SEM modificação pelo render Brevo real (nome do arquivo
 > segue "beehiiv" por decisão de manter o diff pequeno, ver #7121);
 > `scripts/send-monthly-apoiadores.ts` (Passo 1) continua no repo e agora

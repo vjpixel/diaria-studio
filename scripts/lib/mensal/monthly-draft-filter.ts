@@ -1,11 +1,28 @@
 /**
- * scripts/lib/mensal/monthly-beehiiv-render.ts (#4482)
+ * scripts/lib/mensal/monthly-draft-filter.ts (#4482)
  *
- * Variante BEEHIIV do digest mensal: MESMO `draft.md` do envio Clarice/Brevo
- * (destaques temáticos + Use Melhor + Radar + É IA?, #2795) — só a AUDIÊNCIA
- * muda. Segue o precedente arquitetural de `scripts/lib/newsletter-patronos.ts`
- * (#4275, box-swapping por audiência na DIÁRIA): mesmo conteúdo editorial,
- * seleção de blocos + UTM diferentes por quem recebe — não um pipeline novo.
+ * Filtro do `draft.md` mensal para o envio a APOIADORES: MESMO draft do envio
+ * Clarice/Brevo (destaques temáticos + Use Melhor + Radar + É IA?, #2795) —
+ * só a AUDIÊNCIA muda. Segue o precedente arquitetural de
+ * `scripts/lib/newsletter-patronos.ts` (#4275, box-swapping por audiência na
+ * DIÁRIA): mesmo conteúdo editorial, seleção de blocos diferente por quem
+ * recebe — não um pipeline novo.
+ *
+ * ## Nome (#7121, 03/09/2026)
+ *
+ * Este módulo se chamou `monthly-beehiiv-render.ts` até aqui, e exportava
+ * `filterDraftForBeehiiv`. Os dois nomes mentiam desde 04/08/2026: o canal
+ * Beehiiv nunca enviou nada ao vivo (gateado atrás do plano Scale, #4572) e
+ * migrou pra Brevo no dia seguinte. O que sobrou depois do #7121 esvaziar a
+ * cadeia Beehiiv não é render nem é Beehiiv — é um filtro de markdown,
+ * canal-agnóstico, no caminho de envio Brevo REAL. O renomeio ficou de fora
+ * daquela unidade de propósito, pra manter o diff revisável; é este commit.
+ *
+ * As decisões abaixo estão preservadas como escritas em #4482 porque
+ * documentam POR QUE o canal existe e o que ele corta do draft — isso não
+ * mudou com a troca de plataforma. Só a decisão 4 ("Plataforma: Beehiiv")
+ * está morta: o envio real é Brevo, via
+ * `scripts/publish-monthly-apoiadores-brevo.ts` (#4593).
  *
  * ## As 5 decisões (issue #4482, sessão develop 260802b/260803) — 4 do
  * editor + 1 default sem objeção (#4510: a decisão 5 abaixo nunca foi
@@ -37,7 +54,7 @@
  * `draftToEmail` (monthly-render.ts) é o dispatch por label inteiro — várias
  * centenas de linhas cobrindo TODOS os formatos de seção. Duplicá-lo pra uma
  * 2ª variante criaria drift garantido a cada mudança de seção futura. Em vez
- * disso, `filterDraftForBeehiiv` remove as seções/blocos indesejados NO
+ * disso, `filterDraftForApoiadores` remove as seções/blocos indesejados NO
  * MARKDOWN antes de chamar o `draftToEmail` real (inalterado) — a variante
  * Beehiiv sempre acompanha qualquer mudança de render feita pra Clarice
  * automaticamente, sem duplicação de lógica de render.
@@ -49,13 +66,13 @@
  * plano Scale, #4572) — o canal migrou pra Brevo (#4572/#4593). `draftToEmailBeehiiv`
  * e `BEEHIIV_UTM_PROFILE` (o dispatch + UTM ESPECÍFICOS da variante Beehiiv)
  * foram removidos por não terem consumidor de runtime. O que sobra aqui
- * (`filterDraftForBeehiiv`/`isClariceOnlySection`/`stripRecomendacaoDiariaBlock`)
+ * (`filterDraftForApoiadores`/`isClariceOnlySection`/`stripRecomendacaoDiariaBlock`)
  * é canal-AGNÓSTICO — filtra o markdown, não decide UTM/perfil — e é
  * IMPORTADO POR VALOR pelo caminho Brevo REAL
  * (`scripts/lib/mensal/monthly-apoiadores-brevo-render.ts` importa
- * `filterDraftForBeehiiv` daqui sem modificação). O nome do arquivo/módulo
+ * `filterDraftForApoiadores` daqui sem modificação). O nome do arquivo/módulo
  * ficou historicamente "beehiiv" — não renomeado nesta unidade pra manter o
- * diff pequeno e revisável (ver PR #7121); `filterDraftForBeehiiv`/
+ * diff pequeno e revisável (ver PR #7121); `filterDraftForApoiadores`/
  * `isClariceOnlySection` continuam corretos em comportamento, só
  * enganosos em nome.
  *
@@ -98,14 +115,14 @@ const RECOMENDACAO_DIARIA_TITLE = "Recomendação da equipe da Clarice";
  * absorvido como corpo da seção ANTERIOR, e esta função nunca chega a ser
  * chamada com esse label (`firstLine` de um chunk nunca é essa linha).
  * Um branch aqui aceitando hífen ASCII seria código morto (nunca dispara via
- * `filterDraftForBeehiiv`) — a versão antiga deste comentário chegou a
+ * `filterDraftForApoiadores`) — a versão antiga deste comentário chegou a
  * alegar "nenhum risco de discordância" entre este helper e o parser real,
  * o que SUBESTIMAVA o risco de verdade: a garantia desta função é limitada à
  * forma canônica; um `CLARICE - DIVULGAÇÃO` em hífen ASCII vaza inteiro
  * (conteúdo Clarice-only, incluindo "você se cadastrou na Clarice") no email
  * Beehiiv, sem passar por aqui — ver teste de integração em
- * `test/monthly-beehiiv-render.test.ts` que prova esse comportamento real
- * ponta a ponta via `filterDraftForBeehiiv`. Alinhar `isSectionLabel` pra
+ * `test/monthly-draft-filter.test.ts` que prova esse comportamento real
+ * ponta a ponta via `filterDraftForApoiadores`. Alinhar `isSectionLabel` pra
  * aceitar as duas formas de traço (opção B, não escolhida aqui) exigiria
  * mexer em código compartilhado com o caminho Clarice — risco maior que o
  * ganho pra um caso que o template/editor não produz hoje (o vocabulário
@@ -193,7 +210,7 @@ export function stripRecomendacaoDiariaBlock(sectionBody: string): string {
  * essencialmente intocado (só normaliza `\r\n` e rejunta com `\n\n---\n\n`,
  * que `splitByLabels` já trata como separador opcional no lado do render).
  */
-export function filterDraftForBeehiiv(draft: string): string {
+export function filterDraftForApoiadores(draft: string): string {
   const text = draft.replace(/\r\n/g, "\n");
   const sections = splitByLabels(text);
   const kept: string[] = [];

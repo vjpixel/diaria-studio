@@ -1,8 +1,8 @@
 /**
- * test/monthly-beehiiv-render.test.ts (#4482)
+ * test/monthly-draft-filter.test.ts (#4482)
  *
- * Cobre a variante Beehiiv do digest mensal (`scripts/lib/mensal/monthly-beehiiv-render.ts`):
- *   - `isClariceOnlySection`/`filterDraftForBeehiiv` removem APRESENTAÇÃO e
+ * Cobre a variante Beehiiv do digest mensal (`scripts/lib/mensal/monthly-draft-filter.ts`):
+ *   - `isClariceOnlySection`/`filterDraftForApoiadores` removem APRESENTAÇÃO e
  *     CLARICE — * por inteiro, sem tocar as demais seções.
  *   - `stripRecomendacaoDiariaBlock` remove o box colado manualmente sem
  *     label própria, sem afetar o resto do corpo da seção.
@@ -14,7 +14,7 @@
  * nada ao vivo). O describe que os testava foi removido daqui; a mesma
  * cobertura (dispatch + UTM) hoje vive em `test/monthly-apoiadores-brevo-render.test.ts`
  * contra `draftToEmailApoiadoresBrevo`/`APOIADORES_BREVO_UTM_PROFILE`, o
- * caminho REALMENTE usado (Brevo). `isClariceOnlySection`/`filterDraftForBeehiiv`/
+ * caminho REALMENTE usado (Brevo). `isClariceOnlySection`/`filterDraftForApoiadores`/
  * `stripRecomendacaoDiariaBlock` continuam testados abaixo — são
  * canal-agnósticas e reusadas sem modificação pelo render Brevo.
  */
@@ -23,8 +23,8 @@ import assert from "node:assert/strict";
 import {
   isClariceOnlySection,
   stripRecomendacaoDiariaBlock,
-  filterDraftForBeehiiv,
-} from "../scripts/lib/mensal/monthly-beehiiv-render.ts";
+  filterDraftForApoiadores,
+} from "../scripts/lib/mensal/monthly-draft-filter.ts";
 import { draftToEmail, splitByLabels, normalizeLabel } from "../scripts/lib/mensal/monthly-render.ts";
 
 const RECOMENDACAO_BLOCK = [
@@ -49,8 +49,8 @@ describe("#4482 — isClariceOnlySection", () => {
   // #4510: hífen ASCII NÃO é reconhecido (era código morto até este PR — o
   // parser real, `isSectionLabel`/`splitByLabels` em monthly-render.ts, só
   // reconhece em-dash "—", então esta função nunca era chamada com essa
-  // forma via `filterDraftForBeehiiv`). Ver teste de integração abaixo
-  // (`filterDraftForBeehiiv`) que prova o comportamento real ponta a ponta.
+  // forma via `filterDraftForApoiadores`). Ver teste de integração abaixo
+  // (`filterDraftForApoiadores`) que prova o comportamento real ponta a ponta.
   it("CLARICE - com hífen ASCII NÃO é reconhecida (só a forma canônica em-dash é suportada)", () => {
     assert.equal(isClariceOnlySection("CLARICE - DIVULGAÇÃO"), false);
   });
@@ -172,9 +172,9 @@ const FULL_DRAFT = [
   "cadastre-se gratuitamente [aqui](https://diar.ia.br).",
 ].join("\n");
 
-describe("#4482 — filterDraftForBeehiiv", () => {
+describe("#4482 — filterDraftForApoiadores", () => {
   it("remove APRESENTAÇÃO e as 2 seções CLARICE — * por inteiro", () => {
-    const filtered = filterDraftForBeehiiv(FULL_DRAFT);
+    const filtered = filterDraftForApoiadores(FULL_DRAFT);
     const labels = splitByLabels(filtered).map((c) => normalizeLabel(c.split("\n")[0]));
     assert.ok(!labels.includes("APRESENTAÇÃO"), labels.join(","));
     assert.ok(!labels.some((l) => l.startsWith("CLARICE —")), labels.join(","));
@@ -187,20 +187,20 @@ describe("#4482 — filterDraftForBeehiiv", () => {
   });
 
   it("remove o box de recomendação da diária colado dentro do DESTAQUE 1", () => {
-    const filtered = filterDraftForBeehiiv(FULL_DRAFT);
+    const filtered = filterDraftForApoiadores(FULL_DRAFT);
     assert.doesNotMatch(filtered, /Recomendação da equipe da Clarice/);
   });
 
   it("preserva o conteúdo real dos destaques (título, parágrafo, fio condutor)", () => {
-    const filtered = filterDraftForBeehiiv(FULL_DRAFT);
+    const filtered = filterDraftForApoiadores(FULL_DRAFT);
     assert.match(filtered, /Título do destaque/);
     assert.match(filtered, /Síntese do tema\./);
     assert.match(filtered, /Outro título/);
   });
 
   it("é idempotente (2ª passada não muda nada)", () => {
-    const once = filterDraftForBeehiiv(FULL_DRAFT);
-    const twice = filterDraftForBeehiiv(once);
+    const once = filterDraftForApoiadores(FULL_DRAFT);
+    const twice = filterDraftForApoiadores(once);
     assert.equal(once, twice);
   });
 
@@ -210,7 +210,7 @@ describe("#4482 — filterDraftForBeehiiv", () => {
   // pro parser real (`splitByLabels`/`isSectionLabel`, que só reconhece
   // em-dash), então o conteúdo Clarice-only é absorvido como corpo da seção
   // ANTERIOR e vaza inteiro no email Beehiiv. Ponta a ponta via
-  // `filterDraftForBeehiiv`, não a função pura isolada.
+  // `filterDraftForApoiadores`, não a função pura isolada.
   it("header CLARICE — DIVULGAÇÃO com hífen ASCII vaza (limite documentado, não é boundary pro parser real)", () => {
     const draftComHifenAscii = [
       "**DESTAQUE 1 | BRASIL**",
@@ -232,7 +232,7 @@ describe("#4482 — filterDraftForBeehiiv", () => {
       "Descrição do item do radar.",
     ].join("\n");
 
-    const filtered = filterDraftForBeehiiv(draftComHifenAscii);
+    const filtered = filterDraftForApoiadores(draftComHifenAscii);
     // Continua presente — a garantia de `isClariceOnlySection` é limitada à
     // forma canônica (em-dash); este é o comportamento real, não o desejável.
     assert.match(filtered, /Você se cadastrou na Clarice/);

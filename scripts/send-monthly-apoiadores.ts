@@ -49,7 +49,7 @@
  * já foi decidida ao vivo pelo editor no #4482 (comentário 260803, decisão
  * 3): "remover DIVULGAÇÃO/TUTORIAL sem substituir por nada — mais simples,
  * espaço reservado fica vazio." Este script mantém essa decisão já tomada
- * (via `renderMonthlyApoiadoresBrevoEmail`/`filterDraftForBeehiiv`,
+ * (via `renderMonthlyApoiadoresBrevoEmail`/`filterDraftForApoiadores`,
  * inalterados) em vez de reabri-la unilateralmente — não há editor presente
  * nesta sessão pra confirmar uma mudança de rumo, e os snippets Patronos são específicos do
  * nível Patrono (não Mantenedor), então "extRendê-los pro mensal" também

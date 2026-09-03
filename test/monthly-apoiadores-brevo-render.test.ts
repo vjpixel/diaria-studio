@@ -3,10 +3,10 @@
  *
  * Cobre a variante Brevo do envio extra pra apoiadores
  * (`scripts/lib/mensal/monthly-apoiadores-brevo-render.ts`), sucessora de
- * `monthly-beehiiv-render.ts` (#4482, nunca enviado ao vivo). Não re-testa
- * `filterDraftForBeehiiv`/`isClariceOnlySection`/`stripRecomendacaoDiariaBlock`
+ * `monthly-draft-filter.ts` (#4482, nunca enviado ao vivo). Não re-testa
+ * `filterDraftForApoiadores`/`isClariceOnlySection`/`stripRecomendacaoDiariaBlock`
  * aqui — são reusadas SEM modificação do módulo Beehiiv e já cobertas por
- * `test/monthly-beehiiv-render.test.ts`. O foco deste arquivo é o que é NOVO
+ * `test/monthly-draft-filter.test.ts`. O foco deste arquivo é o que é NOVO
  * nesta unidade: `draftToEmailApoiadoresBrevo` + `APOIADORES_BREVO_UTM_PROFILE`
  * (decisão do #4593 item 2, opção b — perfil UTM dedicado, sem tocar
  * `BEEHIIV_UTM_PROFILE`/`CLARICE_UTM_PROFILE`).
@@ -87,7 +87,7 @@ const FULL_DRAFT = [
 ].join("\n");
 
 describe("#4593 — draftToEmailApoiadoresBrevo", () => {
-  it("HTML final não contém boilerplate/conteúdo Clarice-only (reusa filterDraftForBeehiiv)", () => {
+  it("HTML final não contém boilerplate/conteúdo Clarice-only (reusa filterDraftForApoiadores)", () => {
     const { html } = draftToEmailApoiadoresBrevo(FULL_DRAFT, "Assunto", "2607");
     assert.doesNotMatch(html, /se cadastrou na Clarice/);
     assert.doesNotMatch(html, /Recomendação da equipe da Clarice/);
@@ -113,7 +113,7 @@ describe("#4593 — draftToEmailApoiadoresBrevo", () => {
     assert.ok(!plain.includes(`utm_source=${MENSAL_BEEHIIV_UTM_SOURCE}`), "vazou utm_source=mensal-beehiiv");
   });
 
-  // #4510 lesson (documentada em monthly-beehiiv-render.ts): o link de voto
+  // #4510 lesson (documentada em monthly-draft-filter.ts): o link de voto
   // do É IA? só é embutido no HTML quando há imagem (`imageCell`,
   // monthly-render.ts) — por isso passamos eiaImageUrlA/B aqui.
   it("link de voto do É IA? usa merge tag {{ contact.EMAIL }} (Brevo), nunca {{email}} (Beehiiv)", () => {

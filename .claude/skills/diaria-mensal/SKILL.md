@@ -785,9 +785,9 @@ segments") ficou bloqueado atrás do plano Scale (workspace é Launch/free,
 confirmado ao vivo no #4572/260804). **#7121 (260902): `scripts/render-monthly-beehiiv.ts`
 foi removido** (sem consumidor de runtime — `readPublicImages`/`EXPECTED_IMAGE_KEYS`/
 `missingImageKeys`, canal-agnósticas, migraram pra `scripts/render-monthly-apoiadores-brevo.ts`);
-`scripts/lib/mensal/monthly-beehiiv-render.ts` continua no repo, mas perdeu
+`scripts/lib/mensal/monthly-draft-filter.ts` continua no repo, mas perdeu
 `draftToEmailBeehiiv`/`BEEHIIV_UTM_PROFILE` (idem, sem consumidor) — o que
-sobra (`filterDraftForBeehiiv`/`isClariceOnlySection`/`stripRecomendacaoDiariaBlock`)
+sobra (`filterDraftForApoiadores`/`isClariceOnlySection`/`stripRecomendacaoDiariaBlock`)
 NÃO é órfão: é reusado sem modificação pelo render Brevo real acima.
 
 Resumo das decisões de produto (issue #4482, sessão develop 260802b/260803,
