@@ -25,6 +25,7 @@ import {
   findSubscriberIdByAlias,
   getSubscriptionsForSubscriber,
   getStoreCounts,
+  hasSubscriberEventOfType,
 } from "../scripts/lib/diaria-subscribers-db.ts";
 import type { BeehiivBackupSubscriber } from "../scripts/lib/beehiiv-backup-snapshots.ts";
 
@@ -454,6 +455,35 @@ describe("ingestBeehiivRoster", () => {
     db.close();
   });
 
+  describe("classificação dos 5 estados observados no snapshot real (#7233 finding 1)", () => {
+    // `data/beehiiv-backup/2026-08-30/subscribers.jsonl` (1495 linhas) tem
+    // active/pending/inactive/invalid/paused — não só active/inactive como
+    // o comentário antigo de `BEEHIIV_EXITED_STATES` afirmava.
+    const cases: Array<{ status: string; exited: boolean; why: string }> = [
+      { status: "active", exited: false, why: "assinante normal" },
+      { status: "inactive", exited: true, why: "sinal original (#7229) — descadastro/promoção fora da Beehiiv" },
+      { status: "invalid", exited: true, why: "e-mail inválido/bounce não recebe mais a newsletter" },
+      { status: "paused", exited: false, why: "reversível por desenho — não é saída" },
+      { status: "pending", exited: false, why: "nunca chegou a entrar — cadastro travado sem confirmação" },
+    ];
+
+    for (const { status, exited, why } of cases) {
+      it(`status "${status}" → exitedAt ${exited ? "gravado" : "null"} (${why})`, () => {
+        const db = openDiariaSubscribersDb(":memory:");
+        ingestBeehiivRoster(db, [makeRosterSub({ status })], "2026-09-02T04:25:00.000Z");
+        const subscriberId = findSubscriberIdByAlias(db, "beehiiv", "sub_1", "leitor@example.com");
+        const [sub] = getSubscriptionsForSubscriber(db, subscriberId!);
+        assert.equal(sub.status, status);
+        if (exited) {
+          assert.notEqual(sub.exited_at, null);
+        } else {
+          assert.equal(sub.exited_at, null);
+        }
+        db.close();
+      });
+    }
+  });
+
   it("mudança de status gera evento novo sem apagar o anterior", () => {
     const db = openDiariaSubscribersDb(":memory:");
     ingestBeehiivRoster(db, [makeRosterSub({ status: "active" })], "2026-09-02T04:25:00.000Z");
@@ -463,5 +493,51 @@ describe("ingestBeehiivRoster", () => {
     assert.equal(timeline.filter((e) => e.type === "subscribe").length, 1);
     assert.equal(timeline.filter((e) => e.type === "unsub").length, 1);
     db.close();
+  });
+
+  describe("unsub de post-engagement + unsub de roster para o MESMO fato (#7233 finding 2)", () => {
+    it("as 2 fontes gravam linhas SEPARADAS (chaves naturais diferentes de propósito — não é bug)", () => {
+      const db = openDiariaSubscribersDb(":memory:");
+      // Fonte 1: engajamento por post — subscriber já aparece "unsubscribed"
+      // num post específico.
+      ingestPostEngagement(db, "post_1", [
+        { subscriber_id: "sub_1", email: "leitor@example.com", status: "unsubscribed" },
+      ]);
+      // Fonte 2: roster — o MESMO assinante, mesmo descadastro real,
+      // capturado pela transição active→inactive do snapshot semanal.
+      ingestBeehiivRoster(db, [makeRosterSub({ status: "inactive" })], "2026-09-02T04:25:00.000Z");
+
+      const subscriberId = findSubscriberIdByAlias(db, "beehiiv", "sub_1", "leitor@example.com");
+      const timeline = getSubscriberTimeline(db, subscriberId!);
+      const unsubEvents = timeline.filter((e) => e.type === "unsub");
+      assert.equal(
+        unsubEvents.length,
+        2,
+        "2 linhas type='unsub' — granularidades diferentes (por post vs. por transição de roster), esperado",
+      );
+      assert.notEqual(
+        unsubEvents[0].external_event_id,
+        unsubEvents[1].external_event_id,
+        "chaves naturais diferentes de propósito — não deduplicam entre si",
+      );
+      db.close();
+    });
+
+    it("hasSubscriberEventOfType não duplica — responde 'já se descadastrou' 1x, independente de quantas fontes gravaram", () => {
+      const db = openDiariaSubscribersDb(":memory:");
+      ingestPostEngagement(db, "post_1", [
+        { subscriber_id: "sub_1", email: "leitor@example.com", status: "unsubscribed" },
+      ]);
+      ingestBeehiivRoster(db, [makeRosterSub({ status: "inactive" })], "2026-09-02T04:25:00.000Z");
+      const subscriberId = findSubscriberIdByAlias(db, "beehiiv", "sub_1", "leitor@example.com");
+
+      assert.equal(hasSubscriberEventOfType(db, subscriberId!, "unsub"), true);
+      // Um assinante que NUNCA aparece com status unsubscribed/inactive em
+      // nenhuma fonte não deve reportar unsub nenhum.
+      ingestBeehiivRoster(db, [makeRosterSub({ id: "sub_2", email: "outro@example.com", status: "active" })], "2026-09-02T04:25:00.000Z");
+      const otherSubscriberId = findSubscriberIdByAlias(db, "beehiiv", "sub_2", "outro@example.com");
+      assert.equal(hasSubscriberEventOfType(db, otherSubscriberId!, "unsub"), false);
+      db.close();
+    });
   });
 });

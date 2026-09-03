@@ -39,7 +39,10 @@
  *   - `"delivered"` — sempre.
  *   - `"open"`      — se `status` for `"opened"`/`"clicked"` OU `total_opened > 0`.
  *   - `"click"`     — se `status` for `"clicked"` OU `total_clicked > 0`.
- *   - `"unsub"`     — se `status === "unsubscribed"`.
+ *   - `"unsub"`     — se `status === "unsubscribed"`. Grava 1 por POST (a
+ *     chave natural inclui o `postId`) — NÃO deduplica contra o `unsub`
+ *     de `ingestBeehiivRoster` abaixo, que é a transição de roster
+ *     (#7233 finding 2, ver docstring de `ingestBeehiivRoster`).
  *
  * ## Sem `sent`, sem `bounce` (mesma limitação nomeada na issue #7104)
  *
@@ -358,13 +361,37 @@ export function ingestPostEngagement(
 // assinatura cru da API) — `ingestBeehiivRoster` é o par desta fonte,
 // molde exato de `ingestKitRoster` (`kit-subscribers-ingest.ts`).
 
-/** Estado da Beehiiv que representa "saiu da base" — `evaluate-brevo-
- *  diaria.ts` já trata `status === "inactive"` como o sinal explícito de
- *  descadastro/promoção fora da Beehiiv. A API não expõe um 3º estado
- *  intermediário tipo "pending"/double-opt-in aqui (ao contrário do Kit,
- *  que tem `inactive` como pendente E `cancelled` como saída — dois
- *  estados distintos); a Beehiiv só tem `active`/`inactive`. */
-const BEEHIIV_EXITED_STATES: ReadonlySet<string> = new Set(["inactive"]);
+/**
+ * Estado da Beehiiv que representa "saiu da base".
+ *
+ * **A afirmação anterior aqui era falsa** — dizia que "a Beehiiv só tem
+ * `active`/`inactive`". Medição real do snapshot desta máquina
+ * (`data/beehiiv-backup/2026-08-30/subscribers.jsonl`, 1495 linhas) mostra
+ * **5** estados distintos:
+ *
+ *   active 500 · pending 579 · inactive 343 · invalid 72 · paused 1
+ *
+ * `pending` já era reconhecido em outro ponto do repo (`evaluate-brevo-
+ * diaria.ts`, releitura pós-promoção, que também trata `invalid` e
+ * `validating`) — a afirmação nem era nova para o codebase, só estava
+ * errada aqui. Classificação explícita, decidida no review deste módulo
+ * (não deixar por omissão, #7233 finding 1):
+ *
+ *   - `invalid`  → CONTA como saída. E-mail inválido/bounce não recebe
+ *     mais a newsletter — pra efeito de assinatura ativa é indistinguível
+ *     de ter saído, e deixar de fora infla a base ativa.
+ *   - `inactive` → CONTA como saída (sinal original, #7229 — descadastro/
+ *     promoção fora da Beehiiv, já usado por `evaluate-brevo-diaria.ts`).
+ *   - `paused`   → NÃO conta. Pausa é reversível por desenho — o
+ *     assinante não saiu, só está temporariamente sem receber.
+ *   - `pending`  → NÃO conta. Nunca chegou a ENTRAR — é cadastro travado
+ *     sem confirmação (double opt-in). Tratar como saída contaria como
+ *     churn quem nunca foi assinante; são 579 registros no snapshot acima
+ *     (39% do roster), então classificar isto errado distorceria qualquer
+ *     métrica de retenção derivada daqui.
+ *   - `active`   → NÃO conta (óbvio, mantido por completude da lista).
+ */
+const BEEHIIV_EXITED_STATES: ReadonlySet<string> = new Set(["inactive", "invalid"]);
 
 export interface BeehiivRosterIngestResult {
   processed: number;
@@ -406,6 +433,15 @@ export interface BeehiivRosterIngestResult {
  * Idempotente: `upsertSubscription` faz `ON CONFLICT DO UPDATE` (nunca
  * duplica linha), `recordEvent` faz `INSERT OR IGNORE` sobre a chave
  * natural (nunca duplica evento).
+ *
+ * **`unsub` gravado aqui NÃO deduplica contra o `unsub` de
+ * `ingestPostEngagement` (#7233 finding 2)** — chaves naturais diferentes
+ * de propósito (`identity:unsub:status:capturaDay` aqui vs.
+ * `identity:postId:unsub` lá), porque representam granularidades
+ * diferentes do mesmo fato (transição de roster vs. status por post) sem
+ * campo comum pra colidir sem perder informação. Ver docstring de
+ * `getSubscriberTimeline` em `diaria-subscribers-db.ts` pra como ler
+ * "assinante já se descadastrou" sem contar 2x.
  *
  * Registro sem `email` utilizável é contado em `recordsSkippedNoEmail` e
  * nunca vira subscriber — `parseSubscribersJsonl` já filtra por
