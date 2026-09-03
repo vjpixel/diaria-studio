@@ -29,12 +29,26 @@
 // — o mesmo mecanismo documentado pra `PreToolUse` (`updatedInput` modifica o
 // `tool_input` antes do tool rodar, sem exigir `permissionDecision`).
 //
-// Escopo deliberadamente estreito: só dispara pra uma chamada STANDALONE (sem
+// Escopo deliberadamente estreito: só INJETA pra uma chamada STANDALONE (sem
 // `&&`/`;`/`|`/newline embutido — mesmo espírito do "START-ANCHORED prefix" de
 // `pr-create-review.mjs` pro `gh pr create*`) contendo um dos dois scripts-alvo
 // com um subcomando reconhecido em `INJECTABLE_SUBCOMMANDS`. Nunca mexe em
 // `list-active` (leitura pura, sem noção de "sessão atual" nenhuma) nem em
 // qualquer outro comando.
+//
+// #7212: uma chamada ENCADEADA que casaria com o mesmo alvo/subcomando NÃO
+// é ignorada em silêncio — é BLOQUEADA (`permissionDecision: "deny"`, ver
+// `detectChainedSessionIdRisk`). Antes do #7212, o hook só se recusava a
+// injetar (`needsSessionId` já tinha o early-return de `isChainedCommand`) e
+// deixava a chamada seguir sem a flag; o subcomando falhava alto do lado de
+// dentro (`requireSessionId`, exit 1), mas esse erro competia por atenção
+// com a saída de outros comandos do mesmo bloco — ou era engolido por
+// completo quando o bloco redirecionava (`> /dev/null 2>&1`). Um `deny` de
+// `PreToolUse` não tem como ser engolido: a chamada nem chega a rodar, e o
+// motivo aparece pro chamador ali mesmo, não no meio de outra saída. Isto
+// NÃO afrouxa `isChainedCommand` nem permite injeção em comando encadeado
+// (#5751 item 18 segue valendo) — só troca "deixar passar sem a flag,
+// torcendo pra alguém notar o exit 1" por "recusar a chamada, na hora".
 //
 // #5161 fleet review item 4: `is-claimed` ENTRA em `INJECTABLE_SUBCOMMANDS`
 // (renomeada de `WRITE_SUBCOMMANDS` — deixou de ser só sobre escrita) mesmo
@@ -162,19 +176,73 @@ export function isChainedCommand(command) {
   return /&&|\|\||;|\|(?!\|)|\r?\n/.test(command);
 }
 
-/** Decide se `command` é candidato a injeção — script-alvo + subcomando reconhecido. */
-export function needsSessionId(command) {
-  if (typeof command !== "string" || command.trim() === "") return false;
-  if (isChainedCommand(command)) return false;
+/**
+ * Casa `command` contra `SESSION_ID_TARGETS` e decide se PRECISARIA de
+ * `--session-id` — independente de o comando estar encadeado ou não.
+ * Extraído de `needsSessionId` (#7212) porque a checagem de bloqueio
+ * (`detectChainedSessionIdRisk` abaixo) precisa da MESMA lógica de
+ * casamento de alvo, mas justamente no caso em que `isChainedCommand`
+ * é `true` — o oposto do early-return que `needsSessionId` aplica.
+ */
+function matchesInjectableTarget(command) {
   for (const target of SESSION_ID_TARGETS) {
     if (command.includes(target.match)) return target.needsSessionId(command);
   }
   return false;
 }
 
+/** Decide se `command` é candidato a injeção — script-alvo + subcomando reconhecido. */
+export function needsSessionId(command) {
+  if (typeof command !== "string" || command.trim() === "") return false;
+  if (isChainedCommand(command)) return false;
+  return matchesInjectableTarget(command);
+}
+
 /** `true` se o comando já traz `--session-id` explicitamente — nunca sobrescrever. */
 export function alreadyHasSessionId(command) {
   return typeof command === "string" && /--session-id\b/.test(command);
+}
+
+/**
+ * #7212: detecta o caso em que um comando ENCADEADO (`&&`/`;`/`|`/multi-linha)
+ * invoca um dos scripts-alvo com um subcomando/flag que exige `--session-id`,
+ * sem já trazer a flag explícita. Diferente de `needsSessionId` (que decide
+ * SE injeta em comando standalone — nunca em encadeado, de propósito, #5751
+ * item 18: não há como saber a qual comando do bloco a flag pertence), esta
+ * função decide se a chamada deve ser BLOQUEADA em vez de deixada passar.
+ *
+ * Motivação (incidente ao vivo #7212, 02/09/2026): sem este guard, o
+ * subcomando roda sem `--session-id`, falha alto (`requireSessionId`, exit
+ * 1) — mas esse erro pode se perder no meio da saída de outros comandos do
+ * mesmo bloco (`git checkout … | git pull … ; npx tsx …`), ou ser engolido
+ * por completo quando o bloco redireciona (`> /dev/null 2>&1`, caso real:
+ * `for i in …; do npx tsx scripts/lib/session-registry.ts unclaim-issue … >
+ * /dev/null 2>&1; echo "unclaim $i"; done` — as três chamadas falharam em
+ * silêncio, e a única saída visível foi a do `echo`, indistinguível de
+ * sucesso). Um `PreToolUse` `deny` aqui é impossível de engolir com
+ * redirect — vira o "grito" que a issue pede, em vez de deixar o script
+ * gritar sozinho e torcer pra alguém ouvir.
+ *
+ * Retorna a mensagem de bloqueio (`permissionDecisionReason`) ou `null`
+ * quando não há risco — inclui o caso em que o comando encadeado já traz
+ * `--session-id` explícito (não depende da injeção automática, roda igual
+ * a uma chamada standalone que já tem a flag).
+ */
+export function detectChainedSessionIdRisk(command) {
+  if (typeof command !== "string" || command.trim() === "") return null;
+  if (!isChainedCommand(command)) return null;
+  if (alreadyHasSessionId(command)) return null;
+  if (!matchesInjectableTarget(command)) return null;
+  return (
+    "Comando encadeado (&&, ;, |, ||, ou múltiplas linhas) contém uma chamada a " +
+    "session-registry.ts / overnight-session-marker.ts / resolve-*-plan-path.ts " +
+    "que exige --session-id. O hook de injeção automática (#5156) só atua em " +
+    "comando STANDALONE — encadeado, a chamada sairia com '--session-id ausente' " +
+    "(exit 1), erro que pode se perder no meio da saída do bloco ou ser engolido " +
+    "por um redirect (> /dev/null, 2>&1) sem sinal nenhum de falha (#7212). " +
+    "Rode essa chamada isolada, numa invocação de Bash separada — ou, se genuinamente " +
+    "precisar encadear, passe --session-id explícito você mesmo."
+  );
 }
 
 /**
@@ -238,6 +306,24 @@ if (
       const payload = JSON.parse(data || "{}");
       if (payload.tool_name && payload.tool_name !== "Bash") return;
       const command = payload.tool_input?.command;
+      // #7212: bloqueia ANTES de sequer tentar injetar — comando encadeado
+      // que precisaria de --session-id nunca recebe a flag (isChainedCommand
+      // segue rejeitando #5751 item 18), e deixá-lo passar sem a flag
+      // reproduz o incidente (erro real perdido no meio de outra saída, ou
+      // engolido por um redirect). Deny é impossível de engolir.
+      const chainedRisk = detectChainedSessionIdRisk(command);
+      if (chainedRisk) {
+        process.stdout.write(
+          JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "deny",
+              permissionDecisionReason: chainedRisk,
+            },
+          }),
+        );
+        return;
+      }
       // #6160: process.ppid é o PID do processo pai deste hook — o processo
       // da própria sessão Claude Code corrente, que o spawna a cada
       // PreToolUse (ver docblock acima). Sempre definido (Node garante

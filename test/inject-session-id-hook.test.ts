@@ -29,6 +29,7 @@ import {
   alreadyHasPid,
   shellSingleQuote,
   buildUpdatedCommand,
+  detectChainedSessionIdRisk,
 } from "../.claude/hooks/inject-session-id.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -418,6 +419,73 @@ describe("buildUpdatedCommand (#5156)", () => {
   });
 });
 
+describe("detectChainedSessionIdRisk (#7212)", () => {
+  it(
+    "caso real 1 — overnight-session-marker.ts --start | tail -3 → bloqueia " +
+      "(ocorrência 1 da rodada 260902b: aqui o script falha ALTO, mas o hook " +
+      "de qualquer forma detecta o risco ANTES de deixar a chamada rodar)",
+    () => {
+      const risk = detectChainedSessionIdRisk(
+        "npx tsx scripts/overnight-session-marker.ts --start 2>&1 | tail -3",
+      );
+      assert.notEqual(risk, null);
+      assert.match(risk, /encadead/i);
+    },
+  );
+
+  it(
+    "caso real 2 — for loop com unclaim-issue redirecionado pra /dev/null 2>&1 → bloqueia " +
+      "(ocorrência 2: exatamente o comando que engoliu o erro em silêncio na rodada 260902b)",
+    () => {
+      const risk = detectChainedSessionIdRisk(
+        'for i in 7175 7176 7177; do npx tsx scripts/lib/session-registry.ts unclaim-issue ' +
+          '--kind overnight --issue $i > /dev/null 2>&1; echo "unclaim $i"; done',
+      );
+      assert.notEqual(risk, null);
+      assert.match(risk, /encadead/i);
+    },
+  );
+
+  it("comando standalone (não encadeado) → null, mesmo citando um alvo que precisa de --session-id", () => {
+    assert.equal(
+      detectChainedSessionIdRisk("npx tsx scripts/overnight-session-marker.ts --start"),
+      null,
+    );
+  });
+
+  it("comando encadeado que JÁ traz --session-id explícito → null (não depende da injeção automática)", () => {
+    assert.equal(
+      detectChainedSessionIdRisk(
+        "npx tsx scripts/lib/session-registry.ts unclaim-issue --kind overnight --issue 1 --session-id abc; echo done",
+      ),
+      null,
+    );
+  });
+
+  it("comando encadeado que não cita nenhum alvo injetável → null", () => {
+    assert.equal(detectChainedSessionIdRisk("git pull && npm test"), null);
+  });
+
+  it("comando encadeado citando session-registry.ts list-active (leitura pura) → null", () => {
+    assert.equal(
+      detectChainedSessionIdRisk("npx tsx scripts/lib/session-registry.ts list-active | tail -5"),
+      null,
+    );
+  });
+
+  it("comando encadeado citando resolve-develop-plan-path.ts (incondicional) → bloqueia", () => {
+    const risk = detectChainedSessionIdRisk(
+      "git pull && npx tsx scripts/resolve-develop-plan-path.ts --aammdd 260826",
+    );
+    assert.notEqual(risk, null);
+  });
+
+  it("comando vazio/undefined → null", () => {
+    assert.equal(detectChainedSessionIdRisk(""), null);
+    assert.equal(detectChainedSessionIdRisk(undefined), null);
+  });
+});
+
 describe("CLI end-to-end — harness real via stdin (#5161 fleet review item 10)", () => {
   it("PreToolUse Bash real (payload via stdin) → injeta --session-id no updatedInput.command emitido", () => {
     const payload = {
@@ -513,7 +581,9 @@ describe("CLI end-to-end — harness real via stdin (#5161 fleet review item 10)
   );
 
   it(
-    "PreToolUse Bash real com resolve-develop-plan-path.ts encadeado → nenhum stdout emitido (#6259/#6265)",
+    "PreToolUse Bash real com resolve-develop-plan-path.ts encadeado → deny (#7212: antes só " +
+      "não injetava e deixava a chamada seguir sem a flag, silenciosamente; desde o #7212 " +
+      "bloqueia em vez de deixar o script falhar sem ninguém notar)",
     () => {
       const payload = {
         session_id: "sess-real-abc",
@@ -528,7 +598,10 @@ describe("CLI end-to-end — harness real via stdin (#5161 fleet review item 10)
         timeout: 10_000,
       });
       assert.equal(result.status, 0);
-      assert.equal(result.stdout.trim(), "");
+      assert.equal(result.stderr, "");
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.hookSpecificOutput.permissionDecision, "deny");
+      assert.equal(output.hookSpecificOutput.updatedInput, undefined);
     },
   );
 
@@ -558,7 +631,7 @@ describe("CLI end-to-end — harness real via stdin (#5161 fleet review item 10)
   );
 
   it(
-    "PreToolUse Bash real com resolve-overnight-plan-path.ts encadeado → nenhum stdout emitido (#6328)",
+    "PreToolUse Bash real com resolve-overnight-plan-path.ts encadeado → deny (#7212, mesmo racional do irmão develop acima)",
     () => {
       const payload = {
         session_id: "sess-real-abc",
@@ -573,7 +646,10 @@ describe("CLI end-to-end — harness real via stdin (#5161 fleet review item 10)
         timeout: 10_000,
       });
       assert.equal(result.status, 0);
-      assert.equal(result.stdout.trim(), "");
+      assert.equal(result.stderr, "");
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.hookSpecificOutput.permissionDecision, "deny");
+      assert.equal(output.hookSpecificOutput.updatedInput, undefined);
     },
   );
 
@@ -619,5 +695,78 @@ describe("CLI end-to-end — harness real via stdin (#5161 fleet review item 10)
     });
     assert.equal(result.status, 0);
     assert.equal(result.stdout.trim(), "");
+  });
+
+  it(
+    "#7212 caso real 1 via stdin real — overnight-session-marker.ts --start | tail -3 → deny, " +
+      "nunca updatedInput (reprodução exata da ocorrência 1 da rodada 260902b)",
+    () => {
+      const payload = {
+        session_id: "sess-real-abc",
+        tool_name: "Bash",
+        tool_input: { command: "npx tsx scripts/overnight-session-marker.ts --start 2>&1 | tail -3" },
+      };
+      const result = spawnSync(process.execPath, [hookPath], {
+        input: JSON.stringify(payload),
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 0);
+      assert.equal(result.stderr, "");
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.hookSpecificOutput.hookEventName, "PreToolUse");
+      assert.equal(output.hookSpecificOutput.permissionDecision, "deny");
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /encadead/i);
+      assert.equal(output.hookSpecificOutput.updatedInput, undefined);
+    },
+  );
+
+  it(
+    "#7212 caso real 2 via stdin real — for loop com unclaim-issue engolido por > /dev/null 2>&1 → deny " +
+      "(reprodução exata da ocorrência 2 da rodada 260902b, a que motivou a issue: sem este guard, " +
+      "as 3 chamadas do loop falhariam em silêncio total)",
+    () => {
+      const payload = {
+        session_id: "sess-real-abc",
+        tool_name: "Bash",
+        tool_input: {
+          command:
+            'for i in 7175 7176 7177; do npx tsx scripts/lib/session-registry.ts unclaim-issue ' +
+            '--kind overnight --issue $i > /dev/null 2>&1; echo "unclaim $i"; done',
+        },
+      };
+      const result = spawnSync(process.execPath, [hookPath], {
+        input: JSON.stringify(payload),
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 0);
+      assert.equal(result.stderr, "");
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.hookSpecificOutput.hookEventName, "PreToolUse");
+      assert.equal(output.hookSpecificOutput.permissionDecision, "deny");
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /encadead/i);
+    },
+  );
+
+  it("#7212 comando standalone (sem risco) via stdin real → segue injetando normalmente, nunca deny", () => {
+    const payload = {
+      session_id: "sess-real-abc",
+      tool_name: "Bash",
+      tool_input: { command: "npx tsx scripts/lib/session-registry.ts unclaim-issue --kind overnight --issue 1" },
+    };
+    const result = spawnSync(process.execPath, [hookPath], {
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 0);
+    assert.equal(result.stderr, "");
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.hookSpecificOutput.permissionDecision, undefined);
+    assert.equal(
+      output.hookSpecificOutput.updatedInput.command,
+      "npx tsx scripts/lib/session-registry.ts unclaim-issue --kind overnight --issue 1 --session-id 'sess-real-abc'",
+    );
   });
 });
