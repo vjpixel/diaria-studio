@@ -4727,14 +4727,63 @@ export function requireCoordinatorKind(value: string | undefined): SessionKind {
   return kind;
 }
 
+/**
+ * Erro distinguível do `requireSessionId` — ver `main()` abaixo. O `throw`
+ * de `requireSessionId` é capturado pelo `catch` de `main()` e mapeado para
+ * um exit code distinto (#7212): o caso "comando encadeado sob o harness"
+ * (corrigível na hora, reescrevendo como comando isolado) sai com `2`, enquanto
+ * o caso "chamado fora do harness" continua com `1`. Sem essa distinção, quem
+ * checa `$?` não consegue separar os dois, e o erro do caso corrigível
+ * compete por atenção com a saída de outros comandos do mesmo bloco (ex: o
+ * `git checkout master … | tail -3` do incidente de #7212, onde o
+ * `unclaim-issue` falhou no meio de saída alheia e foi lido como ruído).
+ */
+class MissingSessionIdError extends Error {
+  readonly _tag = "missing-session-id";
+  /** `true` quando o processo está sob o harness do Claude Code e o hook
+   * simplesmente não injetou a flag (comando encadeado) — caso corrigível.
+   * `false` quando o script foi chamado de fora do harness — o chamador
+   * precisa passar `--session-id` explicitamente. */
+  readonly chained: boolean;
+  constructor(chained: boolean) {
+    super(
+      chained
+        ? "--session-id ausente — o comando foi encadeado (&&/;/pipe/multi-linha) e " +
+          ".claude/hooks/inject-session-id.mjs recusa injetar no meio de um bloco. " +
+          "Rode-o como comando isolado (sem `&&`, `;`, `|` ou newline) para que o hook " +
+          "anexe a flag automaticamente, ou passe --session-id explicitamente."
+        : "--session-id ausente — normalmente injetado automaticamente por " +
+          ".claude/hooks/inject-session-id.mjs a partir do payload do hook PreToolUse. " +
+          "Se você está chamando este script fora do harness do Claude Code, passe --session-id explicitamente.",
+    );
+    this.chained = chained;
+  }
+}
+
+/**
+ * Sinaliza de presença do harness do Claude Code (#7212). O hook
+ * `inject-session-id.mjs` é o mecanismo que injeta `--session-id` em
+ * chamadas standalone — ele só roda quando o Bash é executado por um
+ * processo de Claude Code. A variável de ambiente
+ * `CLAUDE_CODE_SESSION_ID` é a mesma sinalização que
+ * `scripts/lib/session-transcript.ts::currentSessionId` usa pra dizer
+ * "estou dentro de uma sessão Claude Code" (confirmada no #5413): quando
+ * está definida, o hook deveria ter injetado a flag e, se ela não chegou,
+ * a causa é o encadeamento, não o fato de rodar fora do harness.
+ *
+ * Fail-safe: se a variável estiver definida mas vazia (sessão não-Claude,
+ * teste, harness antigo), tratar como "não sob o harness" — o caso
+ * genérico de `requireSessionId` sem a flag, exit 1.
+ */
+function runningUnderClaudeHarness(): boolean {
+  const raw = process.env.CLAUDE_CODE_SESSION_ID;
+  return typeof raw === "string" && raw.trim() !== "";
+}
+
 function requireSessionId(values: Record<string, string>): string {
   const sessionId = values["session-id"];
   if (!sessionId) {
-    throw new Error(
-      "--session-id ausente — normalmente injetado automaticamente por " +
-        ".claude/hooks/inject-session-id.mjs a partir do payload do hook PreToolUse. " +
-        "Se você está chamando este script fora do harness do Claude Code, passe --session-id explicitamente.",
-    );
+    throw new MissingSessionIdError(runningUnderClaudeHarness());
   }
   return sessionId;
 }
@@ -5278,8 +5327,18 @@ function main(): void {
         process.exitCode = 1;
     }
   } catch (e) {
-    process.stderr.write(`session-registry: erro — ${(e as Error).message}\n`);
-    process.exitCode = 1;
+    // #7212: erro distinguível do `--session-id` ausente. Sob o harness, a
+    // falta da flag é por encadeamento (caso corrigível na hora) — sai com
+    // exit 2 pra quem checar `$?` reagir programaticamente. Fora do harness,
+    // o chamador precisa passar a flag explicitamente — continua exit 1,
+    // o mesmo código que o caso anterior (#6999 fix 1, "falha alto e cedo").
+    if (e instanceof MissingSessionIdError) {
+      process.stderr.write(`session-registry: erro — ${(e as Error).message}\n`);
+      process.exitCode = e.chained ? 2 : 1;
+    } else {
+      process.stderr.write(`session-registry: erro — ${(e as Error).message}\n`);
+      process.exitCode = 1;
+    }
   }
 }
 

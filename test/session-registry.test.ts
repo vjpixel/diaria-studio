@@ -3780,11 +3780,12 @@ function freshCliRoot(): string {
   return root;
 }
 
-function cli7002(root: string, args: string[]) {
+function cli7002(root: string, args: string[], opts: { env?: NodeJS.ProcessEnv } = {}) {
   return spawnSync(process.execPath, ["--import", TSX_LOADER_7002, CLI_7002, ...args], {
     cwd: root,
     encoding: "utf8",
     timeout: 60_000,
+    env: opts.env,
   });
 }
 
@@ -4374,5 +4375,94 @@ describe("CLI consume-merge-grant: aviso de uso indevido (#7171) vai pro stderr,
       res.stderr,
       /chamar consume-merge-grant à mão ANTES do merge queima a janela e o merge seguinte é bloqueado/,
     );
+  });
+});
+
+// ─── #7212 — exit code distinto pra "comando encadeado sob o harness" ────────
+//
+// `requireSessionId` lançava a MESMA mensagem e o MESMO exit code (1) para dois
+// casos distintos: "faltou --session-id porque o comando foi encadeado" (corrigível
+// na hora, reescrevendo como isolado) e "faltou porque o script foi chamado fora
+// do harness" (o chamador passa --session-id explicitamente). Quem checa `$?`
+// não consegue separar os dois, e no incidente de #7212 o erro do caso
+// corrigível saiu no meio de `git checkout master … | tail -3` e foi lido como
+// ruído do bloco. A distinção é barata: o hook sinaliza presença do harness por
+// `CLAUDE_CODE_SESSION_ID`, então "estou sob o harness E não recebi a flag"
+// implica encadeamento, enquanto "não estou sob o harness" é o caso legítimo.
+describe("#7212 — --session-id ausente: exit 2 sob o harness, exit 1 fora dele", () => {
+  // Só os subcomandos que chamam `requireSessionId(values)` — `is-claimed` e
+  // `list-active` usam `values["session-id"] ?? ""` (leitura pura, sem falha
+  // alta), então não entram nessa distinção (#5161 item 4).
+  const CLAIM_SUBCOMMANDS = [
+    "register",
+    "heartbeat",
+    "end",
+    "claim-issue",
+    "unclaim-issue",
+    "conflicts",
+    "grant-merge",
+    "check-merge-grant",
+    "consume-merge-grant",
+    "merge-lock-acquire",
+    "merge-lock-release",
+    "merge-lock-renew",
+  ];
+
+  /** Chamada do CLI sem `--session-id`, com o ambiente do processo de teste (que
+   * NÃO tem `CLAUDE_CODE_SESSION_ID` definido) — simula "fora do harness". */
+  function runOutsideHarness(root: string, sub: string) {
+    return cli7002(root, [sub, "--kind", "overnight", "--issue", "7212"], {
+      env: { ...process.env, CLAUDE_CODE_SESSION_ID: "" },
+    });
+  }
+
+  /** Chamada do CLI sem `--session-id`, com `CLAUDE_CODE_SESSION_ID` DEFINIDO —
+   * simula "sob o harness, mas o hook não injetou a flag (comando encadeado)". */
+  function runChainedUnderHarness(root: string, sub: string) {
+    return cli7002(root, [sub, "--kind", "overnight", "--issue", "7212"], {
+      env: { ...process.env, CLAUDE_CODE_SESSION_ID: "sess-7212-coordenadora" },
+    });
+  }
+
+  it("fora do harness: exit 1 e a mensagem genérica (passar --session-id explicitamente)", () => {
+    const root = freshCliRoot();
+    const res = runOutsideHarness(root, "grant-merge");
+
+    assert.equal(res.status, 1, res.stderr + res.stdout);
+    assert.match(res.stderr + res.stdout, /--session-id ausente/);
+    // Mensagem do caso legítimo: não fala de encadeamento.
+    assert.doesNotMatch(res.stderr + res.stdout, /encadeado/);
+  });
+
+  it("sob o harness (comando encadeado): exit 2 e a mensagem específica de encadeamento", () => {
+    const root = freshCliRoot();
+    const res = runChainedUnderHarness(root, "grant-merge");
+
+    assert.equal(res.status, 2, res.stderr + res.stdout);
+    assert.match(res.stderr + res.stdout, /--session-id ausente/);
+    assert.match(res.stderr + res.stdout, /encadeado/);
+    assert.match(res.stderr + res.stdout, /comando isolado/);
+  });
+
+  it("a distinção vale pra qualquer subcomando que exige --session-id (não só grant-merge)", () => {
+    const root = freshCliRoot();
+    for (const sub of CLAIM_SUBCOMMANDS) {
+      const outside = runOutsideHarness(root, sub);
+      assert.equal(outside.status, 1, `${sub} fora do harness: esperado exit 1, recebi ${outside.status}`);
+      const chained = runChainedUnderHarness(root, sub);
+      assert.equal(chained.status, 2, `${sub} sob o harness encadeado: esperado exit 2, recebi ${chained.status}`);
+    }
+  });
+
+  it("--session-id explícito funciona em ambos os ambientes (nunca é confundido com encadeamento)", () => {
+    const root = freshCliRoot();
+    const res = cli7002(root, ["grant-merge", "--kind", "overnight", "--granted-to", "x", "--pr", "1", "--session-id", "sess-explicita"], {
+      env: { ...process.env, CLAUDE_CODE_SESSION_ID: "sess-7212-coordenadora" },
+    });
+
+    // Sem --granted-to sessions matching, o grant-merge recusa por outra razão
+    // (âncora inexistente) — o que interessa é que o exit code NÃO é 2
+    // (o erro de --session-id não aconteceu).
+    assert.notEqual(res.status, 2);
   });
 });
