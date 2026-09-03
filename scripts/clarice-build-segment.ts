@@ -164,6 +164,12 @@
  *                grupo escolhido" sem precisar de SQL ad-hoc fora do pipeline
  *                versionado. Sem a flag, roda sobre a base inteira
  *                (comportamento pré-#4622, sem mudança).
+ *   --send-date YYYY-MM-DD   OPCIONAL (#7234) — data em que a onda de fato
+ *                SAI (BRT). Só afeta o default automático do filtro de
+ *                recência abaixo: com ela, a janela "já recebeu neste mês" é
+ *                o mês-calendário do ENVIO; sem ela, o mês de envio do CICLO.
+ *                Os orquestradores diários passam sempre; invocação manual
+ *                avulsa pode omitir (mantém o comportamento histórico).
  *   --not-sent-within Nd / --not-sent-since YYYY-MM-DD   OPCIONAIS e
  *                mutuamente exclusivos (#4719) — excluem do universo quem tem
  *                `last_sent_at` dentro da janela pedida, ANTES do corte por
@@ -187,7 +193,9 @@
  *                omissão da flag — mesmo padrão dos outros guards automáticos
  *                deste arquivo (sent-or-queued.json abaixo, committed/queued).
  *                Sem `--not-sent-within`/`--not-sent-since`, o default é o
- *                início do mês de ENVIO do ciclo (`cycleSendMonthStartIso`,
+ *                início do mês da DATA DE ENVIO quando `--send-date` é
+ *                passado (`sendMonthStartIso`, #7234) e, só na ausência dela,
+ *                o início do mês de ENVIO do ciclo (`cycleSendMonthStartIso`,
  *                clarice-paths.ts) — cobre exatamente a MESMA janela que
  *                `sent-or-queued.json` tenta cobrir, mas contra o dado real
  *                do store (`last_sent_at`), então pega quem escapou do dedup
@@ -290,7 +298,13 @@ import {
   type RecencyMonotonicityViolation,
 } from "./lib/clarice-segment.ts";
 import { readNovosCutoff } from "./lib/clarice-novos-cutoff.ts";
-import { clariceSegmentsDir, cycleSendMonthStartIso, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
+import {
+  clariceSegmentsDir,
+  cycleSendMonthStartIso,
+  ensureDir,
+  requireCycleArg,
+  sendMonthStartIso,
+} from "./lib/clarice-paths.ts";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { fetchCommittedCampaignListIds, fetchQueuedCampaignListIds, warnIfCampaignQuotaLow } from "./lib/brevo-client.ts"; // #6458
 import { parseHoldArg, applyHolds, type HoldSegmentName } from "./lib/clarice-hold.ts";
@@ -850,7 +864,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       getStringArg(argv, "not-sent-since", { example: "2026-08-01" }),
       new Date(),
     );
-    const resolved = resolveRecencyCutoffWithDefault(explicitCutoff, cycleSendMonthStartIso(cycle));
+    // #7234: o default automático deriva da DATA DE ENVIO quando ela é
+    // conhecida (`--send-date`, passado pelos orquestradores diários), não do
+    // ciclo. O ciclo é resolvido pela data de EXECUÇÃO e o envio é agendado
+    // pro dia seguinte, então na virada do mês os dois discordam por um dia —
+    // justamente o do 1º envio do mês, o único que deveria RESETAR a fila.
+    // Sem `--send-date` (invocação manual avulsa), mantém o default histórico
+    // pelo ciclo. Flag explícita (`--not-sent-since`/`--not-sent-within`)
+    // continua vencendo os dois.
+    const sendDateArg = getStringArg(argv, "send-date", { example: "2026-09-01" });
+    const autoCutoff = sendDateArg ? sendMonthStartIso(sendDateArg) : cycleSendMonthStartIso(cycle);
+    const resolved = resolveRecencyCutoffWithDefault(explicitCutoff, autoCutoff);
     notSentCutoff = resolved.cutoffIso;
     recencyCutoffSource = resolved.source;
   } catch (e) {

@@ -573,7 +573,20 @@ describe("clarice-envio-run (#5026)", () => {
       // (sem cap de fila/crédito nesta fixture, ambos bem acima).
       const segment = calls.find((c) => c.script === "scripts/clarice-build-segment.ts");
       assert.ok(segment);
-      assert.deepEqual(segment!.args, ["--group", "ramp-warm", "--cycle", CYCLE, "--budget", "3456"]);
+      // #7234: `--send-date` entra aqui porque o cutoff "já recebeu neste mês"
+      // tem que derivar da data em que a onda SAI (SEND_DATE = NOW+1), não do
+      // ciclo (resolvido pela data de EXECUÇÃO) — senão o 1º envio do mês herda
+      // a janela do mês anterior e não reseta a fila.
+      assert.deepEqual(segment!.args, [
+        "--group",
+        "ramp-warm",
+        "--cycle",
+        CYCLE,
+        "--budget",
+        "3456",
+        "--send-date",
+        SEND_DATE,
+      ]);
 
       const split = calls.find((c) => c.script === "scripts/clarice-split-group-cells.ts");
       assert.ok(split);
@@ -1073,7 +1086,18 @@ describe("clarice-envio-run (#5026)", () => {
       // caminho "fila insuficiente").
       const segment = calls.find((c) => c.script === "scripts/clarice-build-segment.ts");
       assert.ok(segment, "corte por crédito não deveria parar a rodada — deveria segmentar com o volume reduzido");
-      assert.deepEqual(segment!.args, ["--group", "ramp-warm", "--cycle", CYCLE, "--budget", "2000"]);
+      // `--send-date` (#7234) acompanha o build-segment em TODO caminho, não só
+      // no feliz — inclusive quando o volume veio de `--volume N` do editor.
+      assert.deepEqual(segment!.args, [
+        "--group",
+        "ramp-warm",
+        "--cycle",
+        CYCLE,
+        "--budget",
+        "2000",
+        "--send-date",
+        SEND_DATE,
+      ]);
 
       const schedule = calls.filter((c) => c.script === "scripts/clarice-schedule-group.ts" && c.args.includes("--schedule") && !c.args.includes("--create"));
       assert.equal(schedule.length, 1, "onda com o volume cortado por crédito ainda é agendada");
@@ -1591,7 +1615,11 @@ describe("clarice-envio-run (#5026)", () => {
         assert.ok(create, `${label}: deveria ter chamado --create`);
         assert.equal(create!.args[create!.args.indexOf("--subject") + 1], "Assunto travado", label);
         const segment = calls.find((c) => c.script === "scripts/clarice-build-segment.ts");
-        assert.deepEqual(segment!.args, ["--group", "ramp-warm", "--cycle", CYCLE, "--budget", "3456"], label);
+        assert.deepEqual(
+          segment!.args,
+          ["--group", "ramp-warm", "--cycle", CYCLE, "--budget", "3456", "--send-date", SEND_DATE],
+          label,
+        );
       }
       rmSync(rootOmitted, { recursive: true, force: true });
       rmSync(rootEmpty, { recursive: true, force: true });
@@ -1685,7 +1713,18 @@ describe("clarice-envio-run (#5026)", () => {
 
       const segment = calls.find((c) => c.script === "scripts/clarice-build-segment.ts");
       assert.ok(segment, "deveria ter seguido até montar a onda");
-      assert.deepEqual(segment!.args, ["--group", "ramp-warm", "--cycle", CYCLE, "--budget", "2000"]);
+      // `--send-date` (#7234) acompanha o build-segment em TODO caminho, não só
+      // no feliz — inclusive quando o volume veio de `--volume N` do editor.
+      assert.deepEqual(segment!.args, [
+        "--group",
+        "ramp-warm",
+        "--cycle",
+        CYCLE,
+        "--budget",
+        "2000",
+        "--send-date",
+        SEND_DATE,
+      ]);
       rmSync(root, { recursive: true, force: true });
     });
 

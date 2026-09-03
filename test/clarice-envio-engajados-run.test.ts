@@ -186,6 +186,18 @@ describe("runEnvioEngajados (#6945)", () => {
       assert.ok(buildSeg);
       assert.deepEqual(buildSeg!.args.slice(0, 4), ["--group", "engajados", "--cycle", CYCLE]);
       assert.ok(buildSeg!.args.includes("--budget"));
+      // #7234 — sem `--send-date`, o build-segment cai no cutoff derivado do
+      // CICLO e o 1º envio do mês deixa de resetar a fila por score. O fix é
+      // inerte se o orquestrador não passar a data; é aqui que isso trava.
+      assert.ok(
+        buildSeg!.args.includes("--send-date"),
+        "orquestrador precisa passar --send-date pro build-segment (#7234)",
+      );
+      assert.equal(
+        buildSeg!.args[buildSeg!.args.indexOf("--send-date") + 1],
+        "2026-09-03",
+        "--send-date é a data em que a onda SAI (NOW+1 BRT), não a de execução",
+      );
 
       const importWaves = calls.find((c) => c.script === "scripts/clarice-import-waves.ts");
       assert.ok(importWaves);

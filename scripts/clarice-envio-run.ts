@@ -1337,7 +1337,20 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       report,
       "clarice-build-segment",
       "scripts/clarice-build-segment.ts",
-      ["--group", "ramp-warm", "--cycle", cycle, "--budget", String(decision.volume)],
+      [
+        "--group",
+        "ramp-warm",
+        "--cycle",
+        cycle,
+        "--budget",
+        String(decision.volume),
+        // #7234 — o cutoff "já recebeu neste mês" deriva da data em que a onda
+        // SAI, não do ciclo (resolvido pela data de execução). Sem isto, a onda
+        // montada em 31/ago e entregue em 1º/set herda o cutoff de agosto e o
+        // 1º envio do mês não reseta a fila.
+        "--send-date",
+        sendDate,
+      ],
     );
     // #5395 — reconciliação: `--group ramp-warm` sem `--exact-budget` (não
     // suportado nesse modo) corta silenciosamente pra `ordered.slice(0,

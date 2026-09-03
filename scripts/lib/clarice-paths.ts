@@ -89,6 +89,49 @@ export function cycleSendMonthStartIso(cycle: string): string {
   return new Date(Date.UTC(2000 + sendYear2, sendMonth - 1, 1)).toISOString();
 }
 
+/** Formato aceito por `sendMonthStartIso` (data de envio BRT, `YYYY-MM-DD`). */
+const SEND_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * Primeiro instante (00:00 UTC) do mês-calendário da DATA DE ENVIO (#7234).
+ *
+ * Existe porque `cycleSendMonthStartIso` acima deriva o cutoff do CICLO, e o
+ * ciclo é resolvido pela data de EXECUÇÃO (`computeExpectedEnvioCycle`),
+ * enquanto o envio é sempre agendado pro dia SEGUINTE (`sendDateBrt`). Na
+ * virada do mês os dois discordam por exatamente um dia — e é justamente o dia
+ * que importa:
+ *
+ * ```
+ * roda 31/ago 19h | ciclo=2607-08 | envia_em=01/set | cycleSendMonthStartIso=2026-08-01  <-- 1º envio do mês
+ * roda 01/set 19h | ciclo=2608-09 | envia_em=02/set | cycleSendMonthStartIso=2026-09-01
+ * ```
+ *
+ * Sob o enquadramento de CICLO a 1ª linha é coerente (o envio de 1º/set é a
+ * última onda do ciclo de agosto, entregue um dia depois). Decisão do editor
+ * (03/09/2026, #7234) troca esse enquadramento pelo de MÊS-CALENDÁRIO: *"todos
+ * os meses, no dia 1, deveria pegar o score mais alto (...) a fila deveria ser
+ * sempre calculada por mês"*. Com o cutoff derivando da data de ENVIO, o envio
+ * que CAI no dia 1º reseta, mesmo tendo sido montado no dia 31.
+ *
+ * `sendDate` já vem em BRT (`sendDateBrt`), então o mês aqui é o mês-calendário
+ * BRT — o `Date.UTC` abaixo só constrói o instante, não reinterpreta o fuso
+ * (mesma convenção de `cycleSendMonthStartIso`, pra que os dois cutoffs sejam
+ * comparáveis; envio real às 06:00 BRT = 09:00 UTC, folgado dentro do dia).
+ */
+export function sendMonthStartIso(sendDate: string): string {
+  const m = SEND_DATE_RE.exec(sendDate);
+  if (!m) {
+    throw new Error(`data de envio inválida: "${sendDate}" (esperado YYYY-MM-DD, ex: 2026-09-01)`);
+  }
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    throw new Error(`data de envio inválida: "${sendDate}" (mês/dia fora de faixa)`);
+  }
+  return new Date(Date.UTC(year, month - 1, 1)).toISOString();
+}
+
 /**
  * Diretório do ciclo (`…/clarice-subscribers/{conteúdo}-{envio}`). Pure (path join).
  *
