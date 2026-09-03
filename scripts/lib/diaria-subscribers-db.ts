@@ -1017,11 +1017,18 @@ export function getAttributesForSubscriber(
  * conjunto de chaves varia por plataforma e por pessoa, ver comentário da
  * tabela em `SCHEMA`).
  */
+export interface AttributeKeyCoverage {
+  platform: Platform;
+  key: string;
+  subscribersOnPlatform: number;
+  withAttribute: number;
+}
+
 export function getAttributeKeyCoverage(
   db: DatabaseSync,
   platform: Platform,
   key: string,
-): { platform: Platform; key: string; subscribersOnPlatform: number; withAttribute: number } {
+): AttributeKeyCoverage {
   const subscribersOnPlatform = (
     db
       .prepare("SELECT COUNT(DISTINCT subscriber_id) AS n FROM identity_alias WHERE platform = ?")
@@ -1033,6 +1040,26 @@ export function getAttributeKeyCoverage(
       .get(platform, key) as { n: number }
   ).n;
   return { platform, key, subscribersOnPlatform, withAttribute };
+}
+
+/**
+ * Cobertura de TODAS as chaves já vistas em `subscriber_attribute`, uma
+ * linha por `(platform, key)` distinto — consumidor: painel do Studio,
+ * seção "Cobertura de atributos" de `assinantes.html` (#7202 finding do
+ * review, a função nasceu sem consumidor de produção e este é o plugue).
+ * Ordenado por `withAttribute` decrescente (chave mais respondida primeiro)
+ * — resposta útil sem o caller precisar reordenar. Lista vazia (store sem
+ * nenhum atributo gravado ainda) é resultado válido, não erro.
+ */
+export function getAllAttributeKeyCoverage(db: DatabaseSync): AttributeKeyCoverage[] {
+  const pairs = db
+    .prepare(
+      "SELECT DISTINCT platform, key FROM subscriber_attribute ORDER BY platform, key",
+    )
+    .all() as unknown as Array<{ platform: Platform; key: string }>;
+  return pairs
+    .map(({ platform, key }) => getAttributeKeyCoverage(db, platform, key))
+    .sort((a, b) => b.withAttribute - a.withAttribute);
 }
 
 /** Mapa `subscriber_id -> conjunto de plataformas em que tem alias` pro

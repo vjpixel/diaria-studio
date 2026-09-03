@@ -24,6 +24,7 @@ import {
   upsertAttribute,
   getAttributesForSubscriber,
   getAttributeKeyCoverage,
+  getAllAttributeKeyCoverage,
   type Platform,
 } from "../scripts/lib/diaria-subscribers-db.ts";
 
@@ -757,6 +758,42 @@ describe("getAttributeKeyCoverage (#7202)", () => {
     const coverage = getAttributeKeyCoverage(db, "kit", "nunca-ingerida");
     assert.equal(coverage.subscribersOnPlatform, 1);
     assert.equal(coverage.withAttribute, 0);
+    db.close();
+  });
+});
+
+describe("getAllAttributeKeyCoverage (#7202 finding do review — consumidor de produção)", () => {
+  it("devolve 1 linha por (platform, key) distinto já gravado, ordenado por withAttribute desc", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const s1 = ensureSubscriber(db, "beehiiv", null, "e1@example.com", "2026-01-01T00:00:00Z");
+    const s2 = ensureSubscriber(db, "beehiiv", null, "e2@example.com", "2026-01-01T00:00:00Z");
+    ensureSubscriber(db, "beehiiv", null, "e3@example.com", "2026-01-01T00:00:00Z");
+    const k1 = ensureSubscriber(db, "kit", "k1", null, "2026-01-01T00:00:00Z");
+    upsertAttribute(db, s1, "beehiiv", "setor", "tech", "2026-01-01T00:00:00Z");
+    upsertAttribute(db, s2, "beehiiv", "setor", "saude", "2026-01-01T00:00:00Z");
+    upsertAttribute(db, s1, "beehiiv", "apoio_nivel", "mantenedor", "2026-01-01T00:00:00Z");
+    upsertAttribute(db, k1, "kit", "apoio_nivel", "patrono", "2026-01-01T00:00:00Z");
+
+    const all = getAllAttributeKeyCoverage(db);
+    assert.equal(all.length, 3);
+    // setor (2 com valor) vem antes de apoio_nivel/beehiiv e apoio_nivel/kit
+    // (1 com valor cada) — ordenado por withAttribute desc.
+    assert.equal(all[0].key, "setor");
+    assert.equal(all[0].withAttribute, 2);
+    assert.equal(all[0].subscribersOnPlatform, 3);
+    const apoioRows = all.filter((r) => r.key === "apoio_nivel");
+    assert.equal(apoioRows.length, 2);
+    assert.deepEqual(
+      apoioRows.map((r) => r.platform).sort(),
+      ["beehiiv", "kit"],
+    );
+    db.close();
+  });
+
+  it("store sem nenhum atributo gravado devolve lista vazia, não lança", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ensureSubscriber(db, "kit", null, "f@example.com", "2026-01-01T00:00:00Z");
+    assert.deepEqual(getAllAttributeKeyCoverage(db), []);
     db.close();
   });
 });

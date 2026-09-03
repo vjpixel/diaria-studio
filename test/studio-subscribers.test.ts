@@ -55,6 +55,7 @@ describe("fail-soft — sem data/ ou sem store", () => {
       assert.equal(cohort.db.available, false);
       assert.equal(cohort.totalSubscribers, 0);
       assert.equal(cohort.unmatched, null);
+      assert.deepEqual(cohort.attributeCoverage, []);
       assert.equal(cohort.note, CROSS_PLATFORM_FLOOR_NOTE);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -164,6 +165,28 @@ describe("buildSubscribersCohortData", () => {
       assert.deepEqual(cohort.migrations, []);
       assert.equal(cohort.reactivation.count, 0);
       assert.ok(cohort.unmatched);
+      assert.deepEqual(cohort.attributeCoverage, []);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("attributeCoverage (#7202 finding do review) expõe cobertura por (platform, key)", () => {
+    const root = makeRoot();
+    try {
+      const dbPath = dbPathFor(root);
+      const db = openDiariaSubscribersDb(dbPath);
+      const s1 = ensureSubscriber(db, "beehiiv", "bh-1", "um@x.com", NOW);
+      ensureSubscriber(db, "beehiiv", "bh-2", "dois@x.com", NOW);
+      upsertAttribute(db, s1, "beehiiv", "apoio_nivel", "mantenedor", NOW);
+      db.close();
+
+      const cohort = buildSubscribersCohortData(root);
+      assert.equal(cohort.attributeCoverage.length, 1);
+      assert.equal(cohort.attributeCoverage[0].platform, "beehiiv");
+      assert.equal(cohort.attributeCoverage[0].key, "apoio_nivel");
+      assert.equal(cohort.attributeCoverage[0].withAttribute, 1);
+      assert.equal(cohort.attributeCoverage[0].subscribersOnPlatform, 2);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -21,6 +21,8 @@ const el = {
   migrationsEmpty: document.getElementById("migrations-empty"),
   reactivationStat: document.getElementById("reactivation-stat"),
   unmatchedSummary: document.getElementById("unmatched-summary"),
+  attributeCoverageTbody: document.getElementById("attribute-coverage-tbody"),
+  attributeCoverageEmpty: document.getElementById("attribute-coverage-empty"),
 };
 
 function escapeHtml(s) {
@@ -216,6 +218,21 @@ function renderUnmatched(unmatched) {
     </div>`;
 }
 
+function renderAttributeCoverage(attributeCoverage) {
+  el.attributeCoverageTbody.innerHTML = "";
+  if (!attributeCoverage || attributeCoverage.length === 0) {
+    el.attributeCoverageEmpty.hidden = false;
+    return;
+  }
+  el.attributeCoverageEmpty.hidden = true;
+  el.attributeCoverageTbody.innerHTML = attributeCoverage
+    .map((c) => {
+      const pct = c.subscribersOnPlatform > 0 ? (100 * c.withAttribute) / c.subscribersOnPlatform : 0;
+      return `<tr><td>${platformBadge(c.platform)}</td><td>${escapeHtml(c.key)}</td><td class="mono">${c.withAttribute}</td><td class="mono">${c.subscribersOnPlatform}</td><td class="mono">${pct.toFixed(1)}%</td></tr>`;
+    })
+    .join("");
+}
+
 async function refreshCohort() {
   setFetchStatus("", "carregando…");
   try {
@@ -242,6 +259,7 @@ async function refreshCohort() {
     renderMigrations(data.migrations);
     el.reactivationStat.textContent = `${data.reactivation.count} assinante(s) — ${data.reactivation.note}`;
     renderUnmatched(data.unmatched);
+    renderAttributeCoverage(data.attributeCoverage);
 
     setFetchStatus("ok", `${data.totalSubscribers} subscriber(s) no store`);
   } catch (e) {
