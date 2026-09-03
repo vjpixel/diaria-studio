@@ -23,6 +23,18 @@
  * este arquivo). Ver `scripts/lib/worker-drift-check.ts` pros parsers puros
  * (`parseWranglerTomlName`/`parseWranglerJsoncName`).
  *
+ * **Deploy deliberadamente bloqueado não alarma (#7092).** Se o
+ * `wrangler.toml`/`.jsonc` do worker ainda tiver um valor
+ * `PLACEHOLDER_...` não resolvido, o drift vira status `deploy_blocked`:
+ * aparece no log e no relatório, mas NÃO conta como pendência, não dispara
+ * e-mail e não abre issue. Motivo: nesse estado `wrangler deploy` falha, e
+ * `.github/workflows/deploy-*.yml` já pula o deploy automático pelo mesmo
+ * sinal — o alarme estava mandando o editor rodar o único comando que não
+ * funciona (issue #7092, worker `diaria-artigos`). Ver
+ * `parseDeployBlockingPlaceholders` em `scripts/lib/worker-drift-check.ts`.
+ * O trabalho REAL de destravar (provisionar KV/secret) é rastreado na issue
+ * do worker, não por este alarme.
+ *
  * ─── Por que Cloudflare REST API em vez de `wrangler deployments list` ─────
  *
  * Ver o header de `scripts/lib/worker-drift-check.ts` — mesmo racional já
@@ -69,18 +81,18 @@
  * `CLOUDFLARE_WORKERS_TOKEN` nem Gmail credentials ao vivo) — validado só via
  * testes com a lógica pura + parsing determinístico (sem fetch/git real).
  */
-import { existsSync, readFileSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import {
   parseWranglerTomlName,
   parseWranglerJsoncName,
+  parseDeployBlockingPlaceholders,
   evaluateAllWorkerDrift,
   hasPendingDrift,
   computeDriftFingerprint,
@@ -101,6 +113,9 @@ import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
+  loadAlarmIssuesState,
+  saveAlarmIssuesState,
+  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
@@ -146,31 +161,11 @@ export function loadState(statePath: string = STATE_PATH): WorkerDriftAlarmState
   }
 }
 
-export function saveState(state: WorkerDriftAlarmState, statePath: string = STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
-
-// ─── Estado (dedup/reconciliação de ISSUE por achado, #5339) ──────────────
-// Arquivo separado de STATE_PATH de propósito — mesmo racional de
-// home-meta-check.ts: idempotência do E-MAIL (acima) e tracking de
+// saveState/loadAlarmIssuesState/saveAlarmIssuesState: consolidados em
+// scripts/lib/alarm-issues.ts (#7124) — importados acima. Arquivo separado
+// de STATE_PATH de propósito: idempotência do E-MAIL (acima) e tracking de
 // ISSUE por achado são preocupações independentes.
-
-export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
-  if (!existsSync(statePath)) return emptyAlarmIssuesState();
-  try {
-    const raw = JSON.parse(readFileSync(statePath, "utf8"));
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
-    return emptyAlarmIssuesState();
-  } catch {
-    return emptyAlarmIssuesState();
-  }
-}
-
-export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
+export { saveState, loadAlarmIssuesState, saveAlarmIssuesState };
 
 /** Converte um `WorkerDriftResult` defasado (status "drift"/"never_deployed")
  * no `AlarmFinding` genérico que `scripts/lib/alarm-issues.ts` consome
@@ -214,6 +209,10 @@ export interface DiscoveredWorker {
   workerDir: string;
   /** `name` extraído do wrangler.toml/.jsonc — pode diferir de `workerDir` (ex: "artigos" -> "diaria-artigos"). */
   workerName: string;
+  /** Placeholders não resolvidos no config deste worker (#7092) — `[]` no
+   * caso normal. Lido aqui porque o config JÁ foi aberto pra extrair o
+   * `name`: nenhum I/O extra. */
+  deployBlockedBy: string[];
 }
 
 /**
@@ -232,14 +231,21 @@ export function discoverWorkers(workersDir: string = WORKERS_DIR): DiscoveredWor
     const jsoncPath = join(workersDir, dir, "wrangler.jsonc");
 
     let name: string | null = null;
+    let configContent = "";
     if (existsSync(tomlPath)) {
-      name = parseWranglerTomlName(readFileSync(tomlPath, "utf8"));
+      configContent = readFileSync(tomlPath, "utf8");
+      name = parseWranglerTomlName(configContent);
     } else if (existsSync(jsoncPath)) {
-      name = parseWranglerJsoncName(readFileSync(jsoncPath, "utf8"));
+      configContent = readFileSync(jsoncPath, "utf8");
+      name = parseWranglerJsoncName(configContent);
     }
 
     if (name) {
-      discovered.push({ workerDir: dir, workerName: name });
+      discovered.push({
+        workerDir: dir,
+        workerName: name,
+        deployBlockedBy: parseDeployBlockingPlaceholders(configContent),
+      });
     } else {
       console.error(`${LOG_PREFIX} aviso: ${dir}/ não tem wrangler.toml/.jsonc com um "name" reconhecível — pulado.`);
     }
@@ -416,6 +422,7 @@ async function main(): Promise<void> {
     lastDeployedAt: metadata ? resolveLastDeployedAt(w.workerName, metadata) : null,
     lastCommitAt: getLastCommitAt(w.workerDir, ROOT, productionRef),
     deployError: metadataError,
+    deployBlockedBy: w.deployBlockedBy,
   }));
 
   const now = new Date();
@@ -466,7 +473,7 @@ async function main(): Promise<void> {
   // de um e-mail novo disparar nesta rodada.
   const driftedResults = results.filter((r) => r.status === "drift" || r.status === "never_deployed");
   const alarmFindings = driftedResults.map(toAlarmFinding);
-  const alarmState = loadAlarmIssuesState();
+  const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
   let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
 
   if (isDryRun) {
@@ -480,7 +487,7 @@ async function main(): Promise<void> {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
-    saveAlarmIssuesState(nextState);
+    saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
     issueRefs = new Map(
       findingOutcomes.map((o) => [
         o.fingerprint,
@@ -541,13 +548,13 @@ async function main(): Promise<void> {
       `${LOG_PREFIX} consulta à Cloudflare Workers API falhou nesta execução (${metadataError}) — nenhum ` +
         "worker teve dado confiável. Cursor de drift NÃO avançado (preserva o estado anterior).",
     );
-    saveState({ ...state, ...nextApiErrorState });
+    saveState({ ...state, ...nextApiErrorState }, STATE_PATH);
     process.exitCode = 1;
     return;
   }
 
   const nextFingerprint = pending ? computeDriftFingerprint(results) : null;
-  saveState(advanceState(nextFingerprint, now, nextApiErrorState));
+  saveState(advanceState(nextFingerprint, now, nextApiErrorState), STATE_PATH);
 }
 
 if (isMainModule(import.meta.url)) {

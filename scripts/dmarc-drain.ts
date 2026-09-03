@@ -77,6 +77,7 @@ import {
 import {
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
+  saveAlarmIssuesState,
   type AlarmFinding,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
@@ -273,6 +274,11 @@ export function alarmFindingsFor(summaries: DmarcDomainSummary[]): AlarmFinding[
 }
 
 // ─── Estado (alarm-issues) ───────────────────────────────────────────────────
+// saveAlarmIssuesState: consolidado em scripts/lib/alarm-issues.ts (#7124) —
+// importado acima. loadAlarmIssuesState continua LOCAL: diverge do padrão
+// comum ao logar o parse error via console.error, não só um catch
+// silencioso; não forçado para o helper genérico pra não perder o
+// diagnóstico.
 
 function loadAlarmIssuesState(): AlarmIssuesState {
   if (!existsSync(ALARM_ISSUES_STATE_PATH)) return emptyAlarmIssuesState();
@@ -284,11 +290,6 @@ function loadAlarmIssuesState(): AlarmIssuesState {
     console.error(`${LOG_PREFIX} estado de alarm-issues corrompido/ilegível — resetando pra vazio: ${(e as Error).message}`);
     return emptyAlarmIssuesState();
   }
-}
-
-function saveAlarmIssuesState(state: AlarmIssuesState): void {
-  mkdirSync(dirname(ALARM_ISSUES_STATE_PATH), { recursive: true });
-  writeFileAtomic(ALARM_ISSUES_STATE_PATH, JSON.stringify(state, null, 2) + "\n");
 }
 
 // ─── main ────────────────────────────────────────────────────────────────────
@@ -336,7 +337,7 @@ async function main(): Promise<void> {
     cwd: ROOT,
     closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
   });
-  saveAlarmIssuesState(nextState);
+  saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
 
   for (const outcome of findingOutcomes) {
     if (outcome.action === "failed") {

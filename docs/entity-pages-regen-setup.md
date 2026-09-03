@@ -2,6 +2,8 @@
 
 Issue: [#5125](https://github.com/vjpixel/diaria-studio/issues/5125) — condição inegociável do editor pra publicar a 1ª página de entidade fora da rodada original de 3 (Apple, 15/08/2026): "a página nasce com regeneração automática — senão vira mais um artefato que degrada sozinho, é literalmente o que já acontece com os hubs" (ver #5123, #5124).
 
+**Atualização #7147 (02/09/2026):** as 2 metades abaixo passaram a rodar em CADENCES diferentes — a task diária armada em 17/08 (ver "Setup" no fim deste doc) hoje roda só a Parte 1, com `--skip-alarm`. A Parte 2 (detecção + alarme) virou a task semanal `Diaria-Entity-Pages-Staleness-Alarm` (domingos 09:43, `--alarm-only --threshold-days 1`), rastreada em `scripts/lib/scheduled-tasks.ts` — o resto deste doc descreve o mecanismo das 2 partes (ainda correto) e o histórico de armamento da task original (agora só cobre a Parte 1); a task nova ainda não foi armada em produção (mesma disciplina de worktree isolado das demais).
+
 `scripts/regenerate-entity-pages.ts` faz as **duas metades** dessa condição para toda entidade em `ENTITY_LOADERS` (`scripts/build-entity-page.ts`):
 
 ## Parte 1 — regen mecânica do HTML (sempre roda, sem depender do corpus)
@@ -28,6 +30,8 @@ npx tsx scripts/regenerate-entity-pages.ts               # roda as 2 partes, ala
 npx tsx scripts/regenerate-entity-pages.ts --dry-run       # avalia + imprime, não escreve/persiste/alarma
 npx tsx scripts/regenerate-entity-pages.ts --threshold-days 5
 npx tsx scripts/regenerate-entity-pages.ts --to email@x
+npx tsx scripts/regenerate-entity-pages.ts --skip-alarm     # #7147: só Parte 1 — usado pela task DIÁRIA
+npx tsx scripts/regenerate-entity-pages.ts --alarm-only     # #7147: só Parte 2 — usado pela task SEMANAL
 ```
 
 ## Fail-soft (#2643, label `local`)

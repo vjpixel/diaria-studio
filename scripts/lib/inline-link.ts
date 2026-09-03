@@ -9,6 +9,8 @@
  * recebe `null`, deve usar o fallback legacy (linha solo de URL).
  */
 
+import { isUnpairedBoldMarker } from "./shared/markdown-primitives.ts"; // #7126 — antes duplicado aqui; `inline-link.ts` é camada de PARSE de baixo nível e não deveria depender da camada de RENDER (`newsletter-render-html.ts`), mas `shared/` é justamente a camada abaixo de ambas — ver docstring do módulo
+
 export interface InlineLink {
   title: string;
   url: string;
@@ -16,35 +18,6 @@ export interface InlineLink {
 
 export interface InlineLinkWithTrailing extends InlineLink {
   trailing: string;
-}
-
-/**
- * Conta ocorrências NÃO sobrepostas de `**` numa string (avança 2 posições a
- * cada match). Espelha `countDoubleAsterisk` de `newsletter-render-html.ts`
- * (#3300) — duplicado aqui (não importado) porque `inline-link.ts` é a
- * camada de PARSE de baixo nível, consumida por `newsletter-parse.ts`/
- * `normalize-newsletter.ts`/`extract-destaques.ts`/lint-checks, e não deveria
- * ganhar uma dependência da camada de RENDER (`newsletter-render-html.ts`).
- */
-function countDoubleAsterisk(str: string): number {
-  let count = 0;
-  let idx = str.indexOf("**");
-  while (idx !== -1) {
-    count++;
-    idx = str.indexOf("**", idx + 2);
-  }
-  return count;
-}
-
-/**
- * O `**` candidato é um marcador genuinamente desemparelhado em `adjacentText`
- * — livre pra fechar o bold-wrap — ou já auto-pareado ali (não deve fechar
- * nada)? Contagem PAR = tudo já pareado, candidato livre; ÍMPAR = sobra um
- * marcador anterior sem par que consome o candidato. Mesma heurística de
- * `isUnpairedBoldMarker` em `newsletter-render-html.ts` (#3280/#3300).
- */
-function isUnpairedBoldMarker(adjacentText: string): boolean {
-  return countDoubleAsterisk(adjacentText) % 2 === 0;
 }
 
 /**

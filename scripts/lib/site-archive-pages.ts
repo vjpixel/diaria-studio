@@ -145,6 +145,38 @@ export function archiveUrlForSlug(slug: string): string {
 }
 
 /**
+ * Tier 1 do #7116: remove blocos `<style>` BYTE-IDÊNTICOS repetidos dentro
+ * da MESMA página, mantendo só a 1ª ocorrência de cada um — a Beehiiv
+ * carimba o mesmo CSS (global do tema + por bloco de conteúdo) várias vezes
+ * no `content.free.web` de uma edição só. Medido no acervo real (255
+ * páginas, #7112 fatia 4): 6.809 blocos `<style>` no total, mas só 13
+ * conteúdos distintos por MD5 — a maior parte da redundância (5.792/6.809
+ * ocorrências do bloco `p span[style*="font-size"]{line-height:1.6;}`,
+ * ~23x por página) é intra-página, não cross-page.
+ *
+ * Escopo deliberadamente estreito — só remove o que é PROVADAMENTE inócuo:
+ * um `<style>` cujo conteúdo (tag + atributos + corpo, byte a byte) já
+ * apareceu antes na mesma página não pode mudar o resultado da cascata CSS
+ * — as regras são idênticas às já aplicadas, então repeti-las ou não é
+ * indiferente pro navegador. Não deduplica CROSS-page (isso é Tier 2 do
+ * #7116 — extrair como CSS externo com `<link>`, escopo separado porque
+ * exige servir um asset novo e checar cache do Worker/IndexNow) nem tenta
+ * normalizar/minificar CSS (mudaria bytes dentro de um bloco mantido, que
+ * não é o que foi medido/decidido aqui).
+ *
+ * Não mexe em nada fora de tags `<style>...</style>` — corpo, atributos de
+ * outros elementos, `<link>`, `<script>` etc. passam intocados.
+ */
+export function dedupeStyleBlocksInPage(html: string): string {
+  const seen = new Set<string>();
+  return html.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, (block) => {
+    if (seen.has(block)) return "";
+    seen.add(block);
+    return block;
+  });
+}
+
+/**
  * Adapta 1 broadcast Kit já normalizado (`UnifiedCachedPost`,
  * `scripts/lib/shared/edition-cache-reader.ts`) pro shape `ArchivePost`
  * deste módulo — fecha o resíduo do #6184 (única peça da migração
@@ -219,6 +251,12 @@ export function buildArchivePageHtml(post: ArchivePost): string {
   const canonical = archiveUrlForSlug(post.slug);
 
   let html = rawHtml;
+
+  // Tier 1 do #7116 — dedup dos <style> byte-idênticos repetidos dentro da
+  // MESMA página, ANTES de qualquer outra transformação. Ordem não importa
+  // pro resultado (as demais transformações abaixo não tocam `<style>`),
+  // mas rodar cedo mantém `html` menor pelo resto da função.
+  html = dedupeStyleBlocksInPage(html);
 
   // Precisa haver <html ...> pra injetar lang + (no fallback abaixo) head —
   // sem essa tag, um .replace() vira no-op silencioso e a página sai sem

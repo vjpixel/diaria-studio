@@ -56,17 +56,37 @@
  *
  * Uso:
  *   npx tsx scripts/diaria-subscribers-ingest-beehiiv.ts [--db <p>]
- *     [--manifest <p>] [--source-dir <p>] [--limit N] [--post <post_id>]
+ *     [--manifest <p>] [--source-dir <p>] [--limit N] [--post <post_id>] [--reset]
  *
  * Sem rede nenhuma — não requer nenhuma API key. Stdout: JSON summary.
  * Stderr: progresso.
+ *
+ * ## `--reset` — reingestão do zero (#7181)
+ *
+ * Apaga o `.db` (`--db`, default `DEFAULT_DB_PATH`) e o manifest PRÓPRIO
+ * desta ingestão (`--manifest`, default `DEFAULT_MANIFEST_PATH`) antes de
+ * rodar — nunca limpa in-place: `event` tem chave natural `(platform, type,
+ * external_event_id)` e um alias fantasma pode ter resolvido eventos reais
+ * para o `subscriber` errado, então desfazer seletivamente é mais arriscado
+ * que reconstruir (decisão do editor, corpo da issue #7181). Só apagar o
+ * `.db` sem apagar o manifest PRÓPRIO não reingere nada — o manifest desta
+ * ingestão marca os posts como `ok` e `pendingManifestEntries` os pula.
+ *
+ * `--reset` apaga só os dois arquivos que ESTA ingestão possui (`--db` +
+ * `--manifest`) — nunca o manifest da fatia 1
+ * (`data/beehiiv-backup/subscriber-engagement/manifest.json`, fonte
+ * READ-ONLY desta ingestão). Se o `--db` compartilhar o store unificado com
+ * outras plataformas (Kit, Brevo — `scripts/diaria-subscribers-ingest-
+ * {kit,brevo}.ts`) já ingeridas, `--reset` apaga os dados delas também
+ * (é o MESMO arquivo `.db`); reingerir as outras plataformas depois é
+ * responsabilidade de quem roda o comando, não deste script.
  */
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
-import { getArg, getIntArg, getStringArg, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { DEFAULT_DB_PATH, openDiariaSubscribersDb } from "./lib/diaria-subscribers-db.ts";
 import { ingestPostEngagement, verifyBeehiivIngestion, type BeehiivEngagementRecord } from "./lib/beehiiv-subscribers-ingest.ts";
@@ -246,6 +266,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const sourceDir = getArg(argv, "source-dir") || DEFAULT_SOURCE_DIR;
   const limit = getIntArg(argv, "limit", { min: 1 });
   const postFilter = getStringArg(argv, "post");
+  const reset = hasFlag(argv, "reset");
 
   const dbDir = dirname(dbPath);
   const dataRoot = dirname(dbDir);
@@ -255,6 +276,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     return;
   }
   if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
+
+  // Reingestão do zero (#7181) — nunca limpar in-place, ver docstring do
+  // módulo. Apaga só o `.db` e o manifest PRÓPRIO desta ingestão; o
+  // manifest da fatia 1 (fonte, read-only) nunca é tocado.
+  if (reset) {
+    for (const p of [dbPath, manifestPath]) {
+      if (existsSync(p)) {
+        rmSync(p);
+        console.error(`🗑️  --reset: removido ${p}`);
+      }
+    }
+  }
 
   const sourceManifest = loadSourceEngagementManifest(sourceDir);
   if (!sourceManifest) {

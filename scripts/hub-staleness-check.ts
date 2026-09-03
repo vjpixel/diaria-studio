@@ -8,14 +8,16 @@
  * contra os 6 datasets de hub commitados (`scripts/lib/hubs/*-sources.generated.json`).
  * Continua chamado pelo playbook do Stage 6 (`.claude/agents/orchestrator-stage-6.md`,
  * informacional, nunca bloqueia) E agora também roda como task agendada
- * diária (`Diaria-Hub-Staleness-Check`, `scripts/lib/scheduled-tasks.ts`) —
- * antes disso, só existia a checagem embutida no Stage 6, que só corre
- * quando uma edição publica; sem edição num dia (ou pipeline pausado), a
- * defasagem crescia sem ninguém perceber.
+ * (`Diaria-Hub-Staleness-Check`, `scripts/lib/scheduled-tasks.ts` — SEMANAL
+ * desde #7147, era diária) — antes disso, só existia a checagem embutida no
+ * Stage 6, que só corre quando uma edição publica; sem edição num dia (ou
+ * pipeline pausado), a defasagem crescia sem ninguém perceber.
  *
  * **Persistência (#5123 item 2).** Cada execução escreve um snapshot em
- * `data/hubs/staleness-{YYYY-MM-DD}.json` (histórico, 1 arquivo por dia) e
- * atualiza `data/hubs/staleness-state.json` (idempotência: mapa de
+ * `data/hubs/staleness-{YYYY-MM-DD}.json` (histórico, 1 arquivo por execução
+ * — na cadência semanal atual da task agendada, 1 arquivo por semana; o
+ * Stage 6 continua rodando à parte, toda edição) e atualiza
+ * `data/hubs/staleness-state.json` (idempotência: mapa de
  * 1ª-detecção por entrada + fingerprint do último alarme — ver
  * `scripts/lib/hub-staleness-check.ts`, `computeFirstSeenMap`/
  * `StalenessAlarmState`). O snapshot é sempre escrito, mesmo sem drift
@@ -103,6 +105,9 @@ import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
+  loadAlarmIssuesState,
+  saveAlarmIssuesState,
+  saveState,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
 
@@ -115,9 +120,14 @@ const ALARM_ISSUES_STATE_PATH = join(HUBS_DATA_DIR, "alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[hub-staleness-check]";
 const DEFAULT_THRESHOLD_DAYS = 3;
-/** #6151: task roda diária (09:30) — 2 execuções limpas consecutivas = 48h
- * sem o achado antes de fechar a issue automaticamente, mesmo valor de
- * `hub-drift-check.ts`/`home-meta-check.ts` pra cadência diária. */
+/** #6151: mesmo valor de `hub-drift-check.ts`/`home-meta-check.ts` — 2
+ * execuções limpas consecutivas sem o achado antes de fechar a issue
+ * automaticamente. Na cadência ORIGINAL (diária), isso era "48h sem o
+ * achado"; na cadência atual da task agendada (semanal desde #7147), é
+ * "2 semanas sem o achado" — mais conservador, nunca reduzido de propósito
+ * pra não fechar issue cedo demais com menos observações. Não recalibrado
+ * junto com #7147 — se o auto-close ficar lento demais na prática, ajustar
+ * aqui é decisão separada. */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
 /** Lê os `{slug}-sources.generated.json` commitados dos hubs registrados em
@@ -177,31 +187,14 @@ export function loadState(statePath: string = STATE_PATH): PersistedState {
   }
 }
 
-export function saveState(state: PersistedState, statePath: string = STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
+// saveState/loadAlarmIssuesState/saveAlarmIssuesState: consolidados em
+// scripts/lib/alarm-issues.ts (#7124) — importados acima.
+export { saveState, loadAlarmIssuesState, saveAlarmIssuesState };
 
 // ─── Estado (dedup/reconciliação de ISSUE por achado, #6151) ──────────────
 // Arquivo separado de STATE_PATH de propósito — mesmo racional de
 // hub-drift-check.ts/home-meta-check.ts: idempotência do E-MAIL
 // (acima) e tracking de ISSUE por achado são preocupações independentes.
-
-export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
-  if (!existsSync(statePath)) return emptyAlarmIssuesState();
-  try {
-    const raw = JSON.parse(readFileSync(statePath, "utf8"));
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
-    return emptyAlarmIssuesState();
-  } catch {
-    return emptyAlarmIssuesState();
-  }
-}
-
-export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
-}
 
 /** `YYYY-MM-DD` em UTC — mesma resolução de `HubSourceEntry.date`/
  * `StaleHubEdition.date`. Determinístico via param injetável pra teste. */
@@ -256,7 +249,7 @@ async function main(): Promise<void> {
   // #6254 — 1 finding POR HUB (agrupado via groupOverdueByHub), não 1 por
   // entrada — a versão anterior gerava 1 issue por (hub × edição).
   const alarmFindings = groupOverdueByHub(overdue).map(({ hubSlug, entries }) => toAlarmFinding(hubSlug, entries));
-  const alarmIssuesState = loadAlarmIssuesState();
+  const alarmIssuesState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
   let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
 
   if (isDryRun) {
@@ -277,7 +270,7 @@ async function main(): Promise<void> {
     cwd: ROOT,
     closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
   });
-  saveAlarmIssuesState(nextAlarmIssuesState);
+  saveAlarmIssuesState(nextAlarmIssuesState, ALARM_ISSUES_STATE_PATH);
   // #6254 — chave agora é `o.check` (= hubSlug), não mais `o.fingerprint`
   // (que virou uma constante, `STALE_HUB_FINDING_FINGERPRINT` — a
   // granularidade da issue é por hub). `buildStalenessAlarmEmail` faz o
@@ -322,7 +315,7 @@ async function main(): Promise<void> {
     nextAlarmState = advanceStalenessState(null, now);
   }
 
-  saveState({ alarm: nextAlarmState, firstSeen });
+  saveState({ alarm: nextAlarmState, firstSeen }, STATE_PATH);
 }
 
 if (isMainModule(import.meta.url)) {

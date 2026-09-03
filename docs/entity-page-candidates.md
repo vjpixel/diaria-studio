@@ -200,7 +200,10 @@ para as 2 entidades novas nesta unidade:** `npx tsx scripts/regenerate-entity-pa
 roda no-op limpo (0 divergência mecânica, 0 stale) já incluindo Oracle e
 Alibaba em `ENTITY_LOADERS` — nenhuma intervenção manual adicional
 necessária além do que a task diária `Diaria-Entity-Pages-Regen` já cobre
-(09:40, ver `docs/entity-pages-regen-setup.md`).
+(09:40, ver `docs/entity-pages-regen-setup.md`). *(Nota #7147, 02/09/2026:
+desde então a task diária cobre só a regen mecânica — a detecção de
+staleness citada acima virou a task semanal `Diaria-Entity-Pages-Staleness-
+Alarm`, mesmo doc.)*
 
 Candidatas prontas pra próxima rodada, sem precisar re-rodar o
 levantamento inteiro: nenhuma — a lista de "contagem 0-2, não verificadas"

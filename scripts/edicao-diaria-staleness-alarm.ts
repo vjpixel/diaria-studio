@@ -33,12 +33,11 @@
  * e-mail, 1x por edição) + `data/.edicao-diaria-staleness-alarm-issues.json`
  * (tracking de issue por achado, `alarm-issues.ts`).
  */
-import { existsSync, readFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { nextEditionDate } from "./lib/next-edition-date.ts";
@@ -62,6 +61,8 @@ import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
+  saveAlarmIssuesState,
+  saveState,
   type AlarmFinding,
   type AlarmIssuesState,
   type AlarmIssueResult,
@@ -135,11 +136,13 @@ function loadState(): EdicaoDiariaStalenessAlarmState {
   }
 }
 
-function saveState(state: EdicaoDiariaStalenessAlarmState): void {
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileAtomic(STATE_PATH, JSON.stringify(state, null, 2) + "\n");
-}
+// saveState/saveAlarmIssuesState: consolidados em scripts/lib/alarm-issues.ts
+// (#7124) — importados acima (DATA_DIR === dirname(STATE_PATH) ===
+// dirname(ALARM_ISSUES_STATE_PATH), então o helper genérico é equivalente).
 
+// loadAlarmIssuesState continua LOCAL (#7124) — diverge do padrão comum ao
+// logar o parse error via console.error, não só um catch silencioso; não
+// forçado para o helper genérico pra não perder o diagnóstico.
 function loadAlarmIssuesState(): AlarmIssuesState {
   if (!existsSync(ALARM_ISSUES_STATE_PATH)) return emptyAlarmIssuesState();
   try {
@@ -152,11 +155,6 @@ function loadAlarmIssuesState(): AlarmIssuesState {
     );
     return emptyAlarmIssuesState();
   }
-}
-
-function saveAlarmIssuesState(state: AlarmIssuesState): void {
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileAtomic(ALARM_ISSUES_STATE_PATH, JSON.stringify(state, null, 2) + "\n");
 }
 
 /**
@@ -233,7 +231,7 @@ async function main(): Promise<void> {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
-    saveAlarmIssuesState(nextState);
+    saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
     const outcome = findingOutcomes[0];
     if (outcome) {
       issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
@@ -262,7 +260,7 @@ async function main(): Promise<void> {
     return;
   }
   await sendGmailMessage(to, subject, body);
-  saveState(markEdicaoDiariaStalenessAlarmed(evaluation.aammdd));
+  saveState(markEdicaoDiariaStalenessAlarmed(evaluation.aammdd), STATE_PATH);
   console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (edição ${evaluation.aammdd}).`);
 }
 

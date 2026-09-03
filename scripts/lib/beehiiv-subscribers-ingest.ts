@@ -97,8 +97,20 @@ export interface BeehiivIdentity {
 export function extractBeehiivIdentity(record: BeehiivEngagementRecord): BeehiivIdentity | null {
   const externalId =
     typeof record.subscriber_id === "string" && record.subscriber_id.trim() ? record.subscriber_id.trim() : null;
-  const email =
+  let email =
     typeof record.email === "string" && record.email.trim() ? record.email.trim().toLowerCase() : null;
+
+  // Classe C (#7181): 100 dos 1.198 aliases reais do backup local têm o
+  // e-mail gravado no campo `subscriber_id` em vez de `email` (achado ao
+  // vivo — arquivo `post_048a8526…`, "Post 11/20" no manifest: 100/100
+  // linhas contêm "@" em `subscriber_id`, nenhuma tem a chave `email`).
+  // Sem este remap essas 100 linhas cairiam no mesmo guard que bloqueia
+  // stub sintético (classe A) — mas aqui o e-mail EXISTE, só está no campo
+  // errado; recuperar em vez de descartar.
+  if (!email && externalId && externalId.includes("@")) {
+    email = externalId.toLowerCase();
+  }
+
   if (!externalId && !email) return null;
   return { externalId, email };
 }
@@ -147,19 +159,36 @@ function insertBeehiivAliasIfMissing(
  *   2. `email` como chave secundária — só quando a linha não tem
  *      `subscriber_id` (ou ele nunca foi visto antes), casa contra um alias
  *      já resolvido pra esse e-mail.
- *   3. Nenhum dos dois casou — subscriber genuinamente novo
- *      (`ensureSubscriber` cuida da criação).
+ *   3. Nenhum dos dois casou — subscriber genuinamente novo, MAS só se
+ *      houver e-mail válido (`ensureSubscriber` cuida da criação).
  *
  * Em qualquer caso que funde com um alias existente, a combinação exata
  * `(externalId, email)` desta linha é registrada como um alias A MAIS do
  * MESMO subscriber (`insertBeehiivAliasIfMissing`) — não perde a variação
  * observada, só evita duplicar a pessoa.
+ *
+ * ## Guard anti-fantasma (#7181)
+ *
+ * O passo 3 (criar um `subscriber` NOVO) **exige e-mail válido**. Um
+ * registro cujo único dado é um `subscriber_id` opaco (stub sintético —
+ * classe A do backup local de engajamento, ex: `{"subscriber_id":"s1"}`)
+ * não prova identidade real; sem este guard ele criava um `subscriber`
+ * fantasma (307 dos 1.131 no store real, medição de 02/09/2026 — 27% da
+ * base). A checagem NÃO pode viver em `extractBeehiivIdentity` (função
+ * pura, sem acesso ao DB): um registro com só `subscriber_id`, já visto
+ * antes com e-mail noutra linha (passo 1 acima), precisa continuar se
+ * FUNDINDO ao alias existente — é exatamente o cenário do teste de
+ * regressão do #7135 (`resolveOrCreateBeehiivSubscriber — funde
+ * combinações inconsistentes`). Só a CRIAÇÃO de um subscriber novo sem
+ * nenhum match prévio é bloqueada; retorna `null` nesse caso — o chamador
+ * (`ingestPostEngagement`) conta o registro em `recordsSkippedNoIdentity`
+ * e não grava nenhum evento pra ele.
  */
 export function resolveOrCreateBeehiivSubscriber(
   db: DatabaseSync,
   identity: BeehiivIdentity,
   now: string = new Date().toISOString(),
-): number {
+): number | null {
   const { externalId, email } = identity;
   if (!externalId && !email) {
     throw new Error("resolveOrCreateBeehiivSubscriber: identidade vazia (nem externalId nem email)");
@@ -185,6 +214,10 @@ export function resolveOrCreateBeehiivSubscriber(
       return byEmail.subscriber_id;
     }
   }
+
+  // Guard anti-fantasma (#7181): nenhum alias prévio casou — criar um
+  // `subscriber` novo exige e-mail válido.
+  if (!normalizedEmail) return null;
 
   return ensureSubscriber(db, "beehiiv", externalId, normalizedEmail, now);
 }
@@ -245,7 +278,11 @@ export interface BeehiivIngestPostResult {
  * platform "beehiiv" — funde combinações inconsistentes de subscriber_id/email
  * do mesmo assinante real, #7135 finding 3) e grava 1 `event` idempotente por eixo derivado
  * (`deriveBeehiivEventTypes`). Registro sem `subscriber_id` nem `email` é
- * contado em `recordsSkippedNoIdentity`, nunca vira subscriber fantasma.
+ * contado em `recordsSkippedNoIdentity`, nunca vira subscriber fantasma —
+ * mesmo destino (contado, sem evento gravado) pra um registro que TEM
+ * `subscriber_id` mas nenhum e-mail válido em lugar nenhum e nenhum alias
+ * prévio pra fundir (`resolveOrCreateBeehiivSubscriber` devolve `null`
+ * nesse caso — guard anti-fantasma, #7181).
  *
  * `ts` de cada evento é o `timestamp` do PRÓPRIO registro quando presente
  * (mais preciso que o Kit, que só tem o timestamp do broadcast — a Beehiiv
@@ -270,10 +307,17 @@ export function ingestPostEngagement(
       recordsSkippedNoIdentity++;
       continue;
     }
+
+    const subscriberId = resolveOrCreateBeehiivSubscriber(db, identity, now);
+    if (subscriberId === null) {
+      // Guard anti-fantasma (#7181): `subscriber_id` opaco sem e-mail
+      // válido e sem alias prévio pra fundir — não é assinante real.
+      recordsSkippedNoIdentity++;
+      continue;
+    }
     recordsProcessed++;
 
     const ts = typeof record.timestamp === "string" && record.timestamp ? record.timestamp : now;
-    const subscriberId = resolveOrCreateBeehiivSubscriber(db, identity, now);
     touchedSubscribers.add(subscriberId);
 
     for (const type of deriveBeehiivEventTypes(record)) {

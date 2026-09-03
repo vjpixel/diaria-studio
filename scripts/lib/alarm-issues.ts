@@ -108,7 +108,10 @@
  * usa a label companheira `ALARM_EVENT_LABEL` pra rotear esses achados pro
  * `overnight` (revisão humana) em vez de `fora-de-rodada`.
  */
+import { existsSync, readFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { spawnGhSync, type GhSpawnResult } from "./shared/gh-run.ts";
+import { writeFileAtomic } from "./atomic-write.ts";
 
 /** Label que este módulo aplica a toda issue de alarme (#5338: precisa
  * existir no repo — nunca existiu antes desta unidade, então `gh issue
@@ -469,6 +472,46 @@ export function emptyAlarmIssuesState(): AlarmIssuesState {
 
 export function alarmIssueStateKey(check: string, fingerprint: string): string {
   return `${check}:${fingerprint}`;
+}
+
+// ─── Boilerplate de estado (#7124 — consolidado de 22 arquivos idênticos) ──
+//
+// As 3 funções abaixo eram redefinidas byte-a-byte em cada alarme deste
+// repo (`loadAlarmIssuesState`/`saveAlarmIssuesState` — estado de tracking
+// de ISSUE; `saveState` — estado próprio de idempotência de cada check,
+// genérico sobre o tipo `T` de cada alarme). O `statePath` é OBRIGATÓRIO e
+// SEM DEFAULT de propósito: os ~26 paths de estado são genuinamente
+// distintos (1 por alarme), e um default aqui seria a porta de entrada
+// para um alarme acidentalmente ler/escrever o estado de outro.
+//
+// Nem todo alarme do repo migrou pra estas 3 funções — alguns divergem
+// (log de diagnóstico extra no catch de parse, ausência do `mkdirSync`)
+// e ficaram de fora de propósito, documentado no PR #7124 que introduziu
+// este bloco: uniformizar uma divergência intencional introduz bug em lote.
+
+export function loadAlarmIssuesState(statePath: string): AlarmIssuesState {
+  if (!existsSync(statePath)) return emptyAlarmIssuesState();
+  try {
+    const raw = JSON.parse(readFileSync(statePath, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
+    return emptyAlarmIssuesState();
+  } catch {
+    return emptyAlarmIssuesState();
+  }
+}
+
+export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string): void {
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
+}
+
+/** Estado PRÓPRIO de idempotência de cada alarme (não o de tracking de
+ * issue acima) — genérico sobre `T` porque cada alarme tem seu shape de
+ * estado (`EnvioAlarmState`, `HubDriftAlarmState`, etc.), mas a mecânica de
+ * persistência (mkdir + write atômico) é idêntica em todos. */
+export function saveState<T>(state: T, statePath: string): void {
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
 }
 
 // ─── `gh` CLI (I/O, injetável — reusa scripts/lib/shared/gh-run.ts) ─────

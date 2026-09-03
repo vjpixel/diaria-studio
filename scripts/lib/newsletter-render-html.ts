@@ -13,6 +13,7 @@ import { COLORS, FONTS, LAYOUT } from "./shared/design-tokens.ts"; // #1936; LAY
 import { applyBrandWordmark } from "./shared/brand-wordmark.ts"; // #4797 — extraído daqui, re-exportado abaixo (back-compat)
 import { buildDiariaStyleBlock, buildDarkCanvasStyleBlock } from "./shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado; #3104 — dark mode (fullDocument-only)
 import { tealDot } from "./shared/email-components.ts"; // #3269 — 1º componente extraído pra shared/; re-exportado abaixo (back-compat: monthly-render.ts e outros importavam daqui)
+import { isUnpairedBoldMarker, scanBalancedParenClose } from "./shared/markdown-primitives.ts"; // #7126 — item 6 do plano do #3269, extraído daqui
 import { applyWordJoiner } from "./word-joiner.ts"; // #2018 — shared helper
 import {
   displaySectionName,
@@ -1077,16 +1078,7 @@ export function findMarkdownLinks(
   while ((m = linkStart.exec(s)) !== null) {
     const label = m[1];
     const destStart = m.index + m[0].length;
-    let depth = 0;
-    let j = destStart;
-    for (; j < s.length; j++) {
-      const ch = s[j];
-      if (ch === "(") depth++;
-      else if (ch === ")") {
-        if (depth === 0) break;
-        depth--;
-      }
-    }
+    const j = scanBalancedParenClose(s, destStart);
     if (j >= s.length) continue; // sem `)` de fechamento — não é link válido
     out.push({ url: s.slice(destStart, j).trim(), label, start: m.index, end: j + 1 });
     linkStart.lastIndex = j + 1;
@@ -3013,37 +3005,11 @@ function applyInlineBold(html: string): string {
   return html.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");
 }
 
-/**
- * Conta ocorrências NÃO sobrepostas de `**` numa string (avança 2 posições a
- * cada match — "****" conta como 2, não 3). Usado por `tokenizeInline` pra
- * checar paridade (par = tudo já pareado; ímpar = sobra um `**` desemparelhado).
- */
-function countDoubleAsterisk(str: string): number {
-  let count = 0;
-  let idx = str.indexOf("**");
-  while (idx !== -1) {
-    count++;
-    idx = str.indexOf("**", idx + 2);
-  }
-  return count;
-}
-
-/**
- * O `**` candidato (adjacente a um link) é um marcador genuinamente
- * desemparelhado dentro de `adjacentText` — abertura/fechamento legítimo pro
- * bold-wrap do link — ou já está auto-pareado ali (não deve fundir com o
- * link)? Contagem ÍMPAR de `**` em `adjacentText` = há um marcador anterior
- * sem par, e o candidato (NÃO participa dessa contagem — já foi removido
- * pelo caller) pareia com ele — logo o candidato já está auto-pareado, não
- * deve fundir com o link. Contagem PAR (0, 2, 4...) = todos os marcadores
- * anteriores já se pareiam entre si, sobrando nada pro candidato pairear —
- * ele está de fato desemparelhado, livre pra fundir com o link. Compartilhado
- * entre os dois lados (`hasOpenBold` e `hasCloseBold`) — mesma fórmula, evita
- * os dois lados divergirem (#3280 code-review).
- */
-function isUnpairedBoldMarker(adjacentText: string): boolean {
-  return countDoubleAsterisk(adjacentText) % 2 === 0;
-}
+// `countDoubleAsterisk`/`isUnpairedBoldMarker` (usados por `tokenizeInline`
+// pra checar paridade de `**` colado a um link) moraram aqui até #7126 —
+// extraídos pra `./shared/markdown-primitives.ts` (item 6 do plano do
+// #3269) porque eram cópia byte-idêntica das versões em `inline-link.ts`,
+// `lint-checks/callout-placement.ts` e `mensal/monthly-render.ts`.
 
 /**
  * #3302: o LABEL de um link (`m[1]` cru, antes de esc/applyInlineBold) é
@@ -3100,16 +3066,7 @@ function tokenizeInline(
   while ((m = linkStart.exec(input)) !== null) {
     const destStart = m.index + m[0].length;
     // Varre o destino balanceando parênteses: `(` aprofunda, `)` em depth 0 fecha.
-    let depth = 0;
-    let j = destStart;
-    for (; j < input.length; j++) {
-      const ch = input[j];
-      if (ch === "(") depth++;
-      else if (ch === ")") {
-        if (depth === 0) break;
-        depth--;
-      }
-    }
+    const j = scanBalancedParenClose(input, destStart);
     if (j >= input.length) continue; // sem `)` de fechamento → não é link válido
     const url = input.substring(destStart, j);
     // URL vazia (`[texto]()`) não é link — preserva o comportamento da regex

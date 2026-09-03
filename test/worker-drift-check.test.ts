@@ -224,6 +224,7 @@ function driftResult(overrides: Partial<WorkerDriftResult>): WorkerDriftResult {
     lastCommitAt: "2026-08-05T10:00:00Z",
     driftMs: 1000,
     message: "",
+    deployBlockedBy: [],
     ...overrides,
   };
 }
