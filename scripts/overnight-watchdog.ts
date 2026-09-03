@@ -20,9 +20,20 @@
  *       15 min)` — 22,5 min com o limiar atual de 45; era 30 min quando o
  *       limiar era 60, #5568)
  *   (b) Emite evento no run-log via scripts/log-event.ts
- *   (c) Renderiza halt banner via scripts/render-halt-banner.ts
+ *   (c) Renderiza halt banner via scripts/render-halt-banner.ts, com
+ *       `--no-push` (#7215): esse script também notifica por e-mail, e sem a
+ *       flag o mesmo stall gerava DOIS e-mails ao editor — "[diar.ia.br
+ *       overnight] STALL detectado" (passo (d) aqui) e "[diar.ia.br]
+ *       Pipeline parou — overnight — rodada {AAMMDD}" (de lá), com o mesmo
+ *       motivo e a mesma ação. Fica o daqui, por ser mais específico (kind
+ *       no assunto, `Fonte:` da última atividade) e por ser `await`-ado
+ *       neste processo — o de lá roda dentro do `execFileSync` abaixo, com
+ *       `WATCHDOG_IO_TIMEOUT_MS` (10s) de teto, o mesmo teto do envio em si,
+ *       então podia ser morto no meio do envio. `render-halt-banner.ts`
+ *       segue notificando normalmente pros demais callers (orchestrator,
+ *       mcp-guard, stages 0/1/3), que não passam a flag.
  *   (d) Push por e-mail (#5341 — via `scripts/lib/push-notify.ts`, reusa a
- *       credencial OAuth do Gmail).
+ *       credencial OAuth do Gmail). É o único e-mail do stall.
  *
  * #2958: a task Task Scheduler roda com `ExecutionTimeLimit` de 5 min
  * (`setup-watchdog-schedule.ps1`) — se estourado, o Task Scheduler força o
@@ -570,6 +581,36 @@ async function sendPushAlert(subject: string, body: string): Promise<void> {
   }
 }
 
+/**
+ * Argumentos passados a `scripts/render-halt-banner.ts` no stall. Pure e
+ * exportada pra `test/overnight-watchdog.test.ts` conseguir alimentar o
+ * parser real do banner com esta saída e provar que `--no-push` chega lá
+ * como flag (#7215) — sem isso, o teste só conseguiria afirmar que a string
+ * está no array, e um reposicionamento que a transformasse no VALOR da flag
+ * anterior passaria despercebido, ressuscitando o segundo e-mail.
+ *
+ * `--no-push` (#7215): o watchdog já manda o próprio e-mail de stall no
+ * passo (d); sem esta flag, o banner mandava um segundo e-mail sobre o mesmo
+ * evento. Vai por último de propósito — no fim do argv, `parseCliArgs` a lê
+ * como flag booleana. Ver o doc-comment de `render-halt-banner.ts`.
+ */
+export function buildHaltBannerArgs(
+  kind: WatchableKind,
+  aammdd: string,
+  elapsedMin: number,
+  thresholdMin: number,
+): string[] {
+  return [
+    "--stage",
+    `${kind} — rodada ${aammdd}`,
+    "--reason",
+    `stall detectado pelo watchdog externo: ${elapsedMin} min sem atividade (limiar ${thresholdMin} min)`,
+    "--action",
+    `verifique a sessão ${kind} no terminal; responda 'retry' pra retomar ou 'abort' pra encerrar`,
+    "--no-push",
+  ];
+}
+
 function renderHaltBanner(
   rootDir: string,
   kind: WatchableKind,
@@ -591,16 +632,7 @@ function renderHaltBanner(
   try {
     const out = execFileSync(
       "npx",
-      [
-        "tsx",
-        haltScript,
-        "--stage",
-        `${kind} — rodada ${aammdd}`,
-        "--reason",
-        `stall detectado pelo watchdog externo: ${elapsedMin} min sem atividade (limiar ${thresholdMin} min)`,
-        "--action",
-        `verifique a sessão ${kind} no terminal; responda 'retry' pra retomar ou 'abort' pra encerrar`,
-      ],
+      ["tsx", haltScript, ...buildHaltBannerArgs(kind, aammdd, elapsedMin, thresholdMin)],
       {
         cwd: rootDir,
         encoding: "utf-8",

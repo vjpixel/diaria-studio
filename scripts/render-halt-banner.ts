@@ -30,6 +30,19 @@
  * não existir (clone fresco sem a junction, sessão cloud) ou a escrita
  * falhar, o dedup degrada pra "sempre notifica" — nunca impede o banner de
  * imprimir.
+ *
+ * #7215: `--no-push` suprime SÓ a notificação (o banner continua saindo no
+ * stdout). Serve ao caller que já notificou o editor pelo próprio canal e,
+ * ao invocar este script, geraria um SEGUNDO e-mail sobre o mesmo evento —
+ * hoje só `scripts/overnight-watchdog.ts`, que manda o alerta de stall
+ * (assunto "[diar.ia.br overnight] STALL detectado") e logo em seguida
+ * chamava este script, que mandava outro ("[diar.ia.br] Pipeline parou").
+ * Os dois e-mails descreviam o mesmo stall, com a mesma ação. O alerta do
+ * watchdog é o que fica: é mais específico (kind no assunto, fonte da última
+ * atividade) e é `await`-ado no processo do watchdog, enquanto o daqui
+ * corria dentro de um `execFileSync` com timeout de 10s — podia ser morto no
+ * meio do envio. Nenhum outro caller passa a flag: pra eles este script
+ * segue sendo o ÚNICO canal de notificação de halt.
  */
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -53,15 +66,33 @@ const RESET = "\x1b[0m";
  * silenciar um halt genuinamente novo (ex: reconectou, quebrou nod novo). */
 const HALT_DEDUP_WINDOW_MS = 15 * 60_000;
 
-function parseArgs(argv: string[]): { stage: string; reason: string; action: string } {
-  const { values } = parseCliArgs(argv);
-  if (!values.stage || !values.reason || !values.action) {
-    process.stderr.write(
-      "Usage: render-halt-banner.ts --stage <stage> --reason <reason> --action <action>\n",
-    );
-    process.exit(2);
-  }
-  return { stage: values.stage, reason: values.reason, action: values.action };
+export interface HaltBannerArgs {
+  stage: string;
+  reason: string;
+  action: string;
+  /** `false` quando `--no-push` foi passado — o banner sai no stdout, mas a
+   * notificação por e-mail é suprimida. Existe pro caller que JÁ notificou o
+   * editor por conta própria e só quer o banner (hoje: `overnight-watchdog.ts`
+   * — ver #7215 e o doc-comment do módulo). Default `true`: nenhum caller
+   * existente muda de comportamento. */
+  push: boolean;
+}
+
+/**
+ * Parseia o argv do CLI. Retorna `null` quando falta algum dos 3 argumentos
+ * obrigatórios — quem imprime o usage e sai é `main()`, não esta função, pra
+ * ela ser testável sem derrubar o processo de teste (mesmo cuidado que o
+ * guard `isMainModule` no fim do arquivo documenta).
+ */
+export function parseHaltBannerArgs(argv: string[]): HaltBannerArgs | null {
+  const { values, flags } = parseCliArgs(argv);
+  if (!values.stage || !values.reason || !values.action) return null;
+  return {
+    stage: values.stage,
+    reason: values.reason,
+    action: values.action,
+    push: !flags.has("no-push"),
+  };
 }
 
 function shouldUseColor(): boolean {
@@ -143,7 +174,13 @@ export async function notifyHaltViaPush(
 }
 
 async function main(): Promise<void> {
-  const opts = parseArgs(process.argv.slice(2));
+  const opts = parseHaltBannerArgs(process.argv.slice(2));
+  if (opts === null) {
+    process.stderr.write(
+      "Usage: render-halt-banner.ts --stage <stage> --reason <reason> --action <action> [--no-push]\n",
+    );
+    process.exit(2);
+  }
   const banner = renderHaltBanner(opts);
 
   const colored = shouldUseColor() ? `${RED_BG_WHITE_FG}${banner}${RESET}` : banner;
@@ -154,16 +191,21 @@ async function main(): Promise<void> {
     process.stderr.write("\x07");
   }
 
-  await notifyHaltViaPush(opts);
+  if (opts.push) await notifyHaltViaPush(opts);
 }
 
 // #3564 (regressão exposta pelo teste novo): sem este guard, `main()` rodava
 // incondicionalmente ao IMPORTAR o módulo (mesmo bug que #2834/#2958 já
 // corrigiram em `overnight-watchdog.ts`) — qualquer teste que importasse
-// `notifyHaltViaPush` daqui disparava `parseArgs` contra o `argv` real
-// do test runner (sem --stage/--reason/--action) e o `process.exit(2)`
+// `notifyHaltViaPush` daqui rodava `main()` contra o `argv` real do test
+// runner (sem --stage/--reason/--action) e o `process.exit(2)` do usage
 // matava o processo de teste inteiro. Antes deste arquivo ganhar exports
 // testáveis (#3564), nada importava este módulo, então o bug ficou latente.
+//
+// O guard continua necessário depois do #7215: aquela issue só tirou o
+// `exit` de DENTRO do parser (`parseHaltBannerArgs` devolve `null`, quem sai
+// é `main()`). O que não pode rodar na importação é `main()` — e é ela que
+// o guard protege.
 if (isMainModule(import.meta.url)) {
   main();
 }

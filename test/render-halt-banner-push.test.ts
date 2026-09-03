@@ -25,7 +25,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { notifyHaltViaPush } from "../scripts/render-halt-banner.ts";
+import { notifyHaltViaPush, parseHaltBannerArgs } from "../scripts/render-halt-banner.ts";
 
 const HALT_OPTS = {
   stage: "2b — Clarice review",
@@ -145,5 +145,35 @@ describe("notifyHaltViaPush (#3564)", () => {
       notifyHaltViaPush(HALT_OPTS, { rootDir: emptyRoot, nowMs: 1_000_000, notifyFn }),
     );
     assert.equal(calls.length, 1, "sem data/ o dedup falha soft, mas ainda notifica");
+  });
+});
+
+describe("parseHaltBannerArgs — --no-push (#7215)", () => {
+  const REQUIRED = [
+    "--stage",
+    "overnight — rodada 260902",
+    "--reason",
+    "stall detectado pelo watchdog externo: 83 min sem atividade (limiar 45 min)",
+    "--action",
+    "verifique a sessão overnight no terminal",
+  ];
+
+  it("sem a flag, push fica true — nenhum caller existente muda de comportamento", () => {
+    const parsed = parseHaltBannerArgs(REQUIRED);
+    assert.notEqual(parsed, null);
+    assert.equal(parsed!.push, true);
+    assert.equal(parsed!.stage, "overnight — rodada 260902");
+  });
+
+  it("com --no-push no fim do argv, push fica false (é lida como flag, não como valor)", () => {
+    const parsed = parseHaltBannerArgs([...REQUIRED, "--no-push"]);
+    assert.notEqual(parsed, null);
+    assert.equal(parsed!.push, false);
+    // A flag não pode ter engolido nem virado valor de nenhum dos 3 obrigatórios.
+    assert.equal(parsed!.action, "verifique a sessão overnight no terminal");
+  });
+
+  it("retorna null (em vez de matar o processo) quando falta argumento obrigatório", () => {
+    assert.equal(parseHaltBannerArgs(["--stage", "overnight"]), null);
   });
 });
