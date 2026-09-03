@@ -55,6 +55,8 @@ import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
 import { countExistingLines } from "./apply-mcp-subscriber-engagement.ts";
 import { reconcileManifestWithDisk, coverageSummary, type EngagementManifest } from "./lib/beehiiv-engagement-manifest.ts";
+import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_OUT_DIR = resolve(ROOT, "data/beehiiv-backup/subscriber-engagement");
@@ -79,6 +81,70 @@ export function readActualCounts(manifest: EngagementManifest, outDir: string): 
   return counts;
 }
 
+/**
+ * I/O: `email.recipients` por post, via REST (`GET /posts/{id}?expand[]=stats`)
+ * — a ÂNCORA EXTERNA da reconciliação (#7197).
+ *
+ * Sem ela, a auditoria compara o manifest só com o disco, e esse par bate em
+ * 256 de 256 posts do acervo real: o drenador é honesto sobre o que gravou,
+ * ele só não sabe que gravou uma fração. Medido em 03/09/2026, as checagens
+ * locais sozinhas rebaixam 6 posts; com `recipients`, 191.
+ *
+ * Post que falhar (404, stats ausente, rede) simplesmente NÃO entra no mapa
+ * — `reconcileManifestWithDisk` deixa esses como estão, em vez de rebaixar
+ * o acervo inteiro por indisponibilidade de rede. A contagem de ausentes é
+ * devolvida pro chamador reportar, nunca engolida.
+ */
+/** As entradas cuja completude a âncora externa consegue julgar — só `ok` (#7197). */
+export function postsNeedingAnchor(manifest: EngagementManifest): EngagementManifest["posts"] {
+  return manifest.posts.filter((e) => e.status === "ok");
+}
+
+export async function fetchRecipientsByPost(
+  manifest: EngagementManifest,
+  cfg: { apiKey: string; publicationId: string },
+): Promise<{ recipients: Map<string, number>; unavailable: string[] }> {
+  const recipients = new Map<string, number>();
+  const unavailable: string[] = [];
+  // Só entrada `ok` é candidata a rebaixamento — `reconcileManifestWithDisk`
+  // nem consulta o mapa pras outras. Buscar `recipients` pra elas gastaria
+  // quota à toa e, pior, um 404 numa entrada já sabidamente `pending` cairia
+  // em `unavailable` e degradaria o VEREDITO da auditoria por um post que não
+  // muda nenhum resultado.
+  for (const entry of postsNeedingAnchor(manifest)) {
+    const url = `${beehiivApiBase()}/publications/${cfg.publicationId}/posts/${entry.post_id}?expand[]=stats`;
+    try {
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${cfg.apiKey}` } });
+      if (!res.ok) {
+        unavailable.push(entry.post_id);
+        continue;
+      }
+      const j = (await res.json()) as { data?: { stats?: { email?: { recipients?: number } } } };
+      const r = j?.data?.stats?.email?.recipients;
+      if (typeof r === "number") recipients.set(entry.post_id, r);
+      else unavailable.push(entry.post_id);
+    } catch {
+      unavailable.push(entry.post_id);
+    }
+  }
+  return { recipients, unavailable };
+}
+
+export type AuditVerdict = "completo" | "parcial-sem-ancora" | "parcial-ancora-incompleta";
+
+/**
+ * Puro: o veredito NUNCA é "completo" quando a âncora externa não cobriu todos
+ * os posts (#7197). Sem `recipients`, esta auditoria compara só manifest × disco
+ * — par que bate em 256/256 posts do acervo real, inclusive nos 191 drenados
+ * pela metade. Chamar isso de "acervo íntegro" foi exatamente o erro que a
+ * issue documenta, então o modo degradado se anuncia em vez de se calar.
+ */
+export function auditVerdict(skipRecipients: boolean, unavailableCount: number): AuditVerdict {
+  if (skipRecipients) return "parcial-sem-ancora";
+  if (unavailableCount > 0) return "parcial-ancora-incompleta";
+  return "completo";
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const outDirIdx = argv.indexOf("--out-dir");
@@ -95,7 +161,24 @@ async function main(): Promise<void> {
 
   const coverageBefore = coverageSummary(manifest);
   const actualCounts = readActualCounts(manifest, outDir);
-  const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(manifest, actualCounts);
+
+  // #7197: sem a âncora externa (`recipients`), esta auditoria só compara o
+  // manifest com o disco — par que bate em 256/256 no acervo real, porque o
+  // drenador é honesto sobre o que gravou. `--skip-recipients` existe pra
+  // rodar offline/em teste, e o relatório diz alto quando foi usado: nesse
+  // modo o veredito é PARCIAL, não "acervo íntegro".
+  const skipRecipients = argv.includes("--skip-recipients");
+  let recipients: Map<string, number> | undefined;
+  let unavailable: string[] = [];
+  if (!skipRecipients) {
+    loadProjectEnv(ROOT);
+    const cfg = loadBeehiivConfig("[audit-engagement-manifest]");
+    const fetched = await fetchRecipientsByPost(manifest, cfg);
+    recipients = fetched.recipients;
+    unavailable = fetched.unavailable;
+  }
+
+  const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(manifest, actualCounts, recipients);
   const coverageAfter = coverageSummary(reconciled);
 
   if (!dryRun && downgraded.length > 0) {
@@ -103,8 +186,34 @@ async function main(): Promise<void> {
   }
 
   if (asJson) {
-    console.log(JSON.stringify({ downgraded, coverage_before: coverageBefore, coverage_after: coverageAfter, dry_run: dryRun }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          downgraded,
+          coverage_before: coverageBefore,
+          coverage_after: coverageAfter,
+          dry_run: dryRun,
+          recipients_checked: recipients ? recipients.size : 0,
+          recipients_unavailable: unavailable,
+          verdict: auditVerdict(skipRecipients, unavailable.length),
+        },
+        null,
+        2,
+      ),
+    );
     return;
+  }
+
+  if (skipRecipients) {
+    process.stderr.write(
+      "[audit-engagement-manifest] VEREDITO PARCIAL: --skip-recipients — sem a âncora externa (email.recipients),\n" +
+        "  esta auditoria só compara manifest × disco, par que bate mesmo em post drenado pela metade (#7197).\n",
+    );
+  } else if (unavailable.length > 0) {
+    process.stderr.write(
+      `[audit-engagement-manifest] VEREDITO PARCIAL: ${unavailable.length} post(s) sem recipients — ` +
+        `não checados contra a âncora: ${unavailable.join(", ")}\n`,
+    );
   }
 
   process.stderr.write(

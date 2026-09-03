@@ -275,3 +275,62 @@ describe("countExistingLines", () => {
     assert.equal(countExistingLines(path), 2);
   });
 });
+
+describe("applyEngagement — guard de completude via --recipients (#7197)", () => {
+  function page(n: number, offset = 0): string {
+    return JSON.stringify({
+      engagement: Array.from({ length: n }, (_, i) => ({ subscriber_id: `sub_${offset + i}` })),
+    });
+  }
+
+  it("o modo de falha do #7197: 1 página só, sem --total-pages, fecha ok em silêncio", () => {
+    // Baseline do bug — a MCP não devolve `total_pages`, então o agent nunca
+    // passa `--total-pages` e o guard de paginação não tem o que comparar.
+    const { outDir } = setup();
+    const result = applyEngagement(page(100), { postId: "post_1", pagesFetched: 1, outDir });
+    assert.equal(result.status, "ok", "sem âncora, uma drenagem truncada é indistinguível de uma completa");
+  });
+
+  it("com --recipients, a MESMA drenagem truncada fecha partial e nomeia o déficit", () => {
+    const { outDir } = setup();
+    const result = applyEngagement(page(100), { postId: "post_1", pagesFetched: 1, recipients: 1284, outDir });
+    assert.equal(result.status, "partial");
+    const entry = readManifest(outDir).posts[0];
+    assert.equal(entry.status, "partial");
+    assert.match(entry.error ?? "", /1284/);
+    assert.match(entry.error ?? "", /total_pages/, "o erro aponta a causa raiz, não só o sintoma");
+  });
+
+  it("drenagem que alcança recipients fecha ok", () => {
+    const { outDir } = setup();
+    const result = applyEngagement(page(5), { postId: "post_1", recipients: 5, outDir });
+    assert.equal(result.status, "ok");
+  });
+
+  it("registros ACIMA de recipients fecham ok — a âncora é piso, não igualdade", () => {
+    const { outDir } = setup();
+    const result = applyEngagement(page(7), { postId: "post_1", recipients: 5, outDir });
+    assert.equal(result.status, "ok");
+  });
+
+  it("o guard mede o acumulado pós-merge, não a página isolada (--append)", () => {
+    const { outDir } = setup();
+    const p1 = applyEngagement(page(3), { postId: "post_1", recipients: 5, outDir });
+    assert.equal(p1.status, "partial", "3 de 5 ainda é truncado");
+    const p2 = applyEngagement(page(2, 3), { postId: "post_1", recipients: 5, append: true, outDir });
+    assert.equal(p2.after_count, 5);
+    assert.equal(p2.status, "ok", "fecha quando o acumulado alcança a âncora");
+  });
+
+  it("sem --recipients o comportamento é o de antes — chamador antigo não quebra", () => {
+    const { outDir } = setup();
+    assert.equal(applyEngagement(page(1), { postId: "post_1", outDir }).status, "ok");
+  });
+
+  it("--recipients não resgata 0 registros: o guard de vazio tem precedência", () => {
+    const { outDir } = setup();
+    const result = applyEngagement(JSON.stringify({ engagement: [] }), { postId: "post_1", recipients: 0, outDir });
+    assert.equal(result.status, "partial");
+    assert.match(readManifest(outDir).posts[0].error ?? "", /--confirmed-empty/);
+  });
+});
