@@ -75,8 +75,8 @@ RAW_DESTAQUES=$(test -f data/monthly/$CYCLE/_internal/raw-destaques.json && echo
 - `RAW_POSTS = 0` → executar 1a e 1b (mesmo que `_internal/raw-destaques.json` exista — pode ser de run anterior via fallback local, #400).
 
 **Coleta (inline — não via subagente, #403):** Chamar os MCPs Beehiiv **diretamente** neste contexto:
-1. `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__list_posts` — `publication_id`, `status="confirmed"`, `per_page=50`. Paginar e filtrar client-side pela janela do mês `[${CYCLE:0:4}]` (mês do conteúdo = YYMM).
-2. Para cada post: derivar `AAMMDD` do `published_at`, `id_prefix` (8 chars sem `post_`). Path: `data/monthly/$CYCLE/raw-posts/post_{id_prefix}_{AAMMDD}.txt`. Pular se já existe (resume). Caso contrário: `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__get_post_content` → gravar `markdown` (preferido) ou `html` (fallback).
+1. `mcp__claude_ai_Beehiiv__list_posts` — `publication_id`, `status="confirmed"`, `per_page=50`. Paginar e filtrar client-side pela janela do mês `[${CYCLE:0:4}]` (mês do conteúdo = YYMM).
+2. Para cada post: derivar `AAMMDD` do `published_at`, `id_prefix` (8 chars sem `post_`). Path: `data/monthly/$CYCLE/raw-posts/post_{id_prefix}_{AAMMDD}.txt`. Pular se já existe (resume). Caso contrário: `mcp__claude_ai_Beehiiv__get_post_content` → gravar `markdown` (preferido) ou `html` (fallback).
 
 Se `posts_found = 0`, abortar.
 

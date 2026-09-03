@@ -105,6 +105,77 @@ export function findFrontmatterIssues(frontmatter: string): ValidationIssue[] {
 }
 
 // ---------------------------------------------------------------------------
+// MCP tool-name guard (#7279)
+// ---------------------------------------------------------------------------
+
+/**
+ * Known-good `mcp__<server>__` prefixes, as of this writing. `tools:` is an
+ * allowlist BY NAME — a name that doesn't match anything registered doesn't
+ * error, it silently grants nothing (#7279: 5 agents nearly lost Beehiiv/
+ * Gmail access this way, and `.claude/skills/diaria-mensal/SKILL.md` was
+ * caught here with a literal connector UUID baked into prose).
+ *
+ * Update this list by hand when a connector is genuinely renamed/added —
+ * that's a deliberate decision, not something to infer. A prefix missing
+ * here fails loud in CI instead of failing silent at dispatch time.
+ */
+export const KNOWN_MCP_PREFIXES = [
+  "mcp__clarice__",
+  "mcp__kit__",
+  "mcp__claude-in-chrome__",
+  "mcp__claude_ai_Beehiiv__",
+  "mcp__claude_ai_Gmail__",
+  "mcp__claude_ai_Buffer__",
+] as const;
+
+// A claude.ai connector id looks like a raw UUID segment
+// (mcp__ed929847-ab29-43d9-a6ba-60b687b65702__tool). That id is per-account/
+// per-machine — never a stable name to hardcode in versioned prose or
+// frontmatter (#7279).
+const UUID_MCP_SEGMENT = /^mcp__[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}__/i;
+
+export interface McpToolIssue {
+  line: number;
+  tool: string;
+  reason: string;
+}
+
+/**
+ * Scans full file content (not just frontmatter — the #7279 offender lived
+ * in skill body prose) for `mcp__<server>__<tool>` references and flags any
+ * whose `<server>` segment isn't a known-good prefix.
+ */
+export function findUnknownMcpToolNames(content: string): McpToolIssue[] {
+  const issues: McpToolIssue[] = [];
+  const lines = content.split("\n");
+  const toolPattern = /mcp__[A-Za-z0-9_-]+__[A-Za-z0-9_]+/g;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const matches = line.match(toolPattern);
+    if (!matches) continue;
+    for (const tool of matches) {
+      if (UUID_MCP_SEGMENT.test(tool)) {
+        issues.push({
+          line: i + 1,
+          tool,
+          reason: "raw connector UUID baked into versioned text — use the stable mcp__claude_ai_<Nome>__ form",
+        });
+        continue;
+      }
+      const known = KNOWN_MCP_PREFIXES.some((prefix) => tool.startsWith(prefix));
+      if (!known) {
+        issues.push({
+          line: i + 1,
+          tool,
+          reason: "prefix not in KNOWN_MCP_PREFIXES — new connector name, typo, or stale rename?",
+        });
+      }
+    }
+  }
+  return issues;
+}
+
+// ---------------------------------------------------------------------------
 // File walking
 // ---------------------------------------------------------------------------
 
@@ -112,6 +183,7 @@ interface FileResult {
   path: string;
   ok: boolean;
   issues: ValidationIssue[];
+  mcpIssues: McpToolIssue[];
   error?: string;
 }
 
@@ -124,15 +196,23 @@ export function validateFile(path: string): FileResult {
       path,
       ok: false,
       issues: [],
+      mcpIssues: [],
       error: `read_failed: ${e instanceof Error ? e.message : String(e)}`,
     };
   }
   const fm = extractFrontmatter(content);
   if (fm === null) {
-    return { path, ok: false, issues: [], error: "missing or malformed frontmatter delimiters" };
+    return {
+      path,
+      ok: false,
+      issues: [],
+      mcpIssues: [],
+      error: "missing or malformed frontmatter delimiters",
+    };
   }
   const issues = findFrontmatterIssues(fm);
-  return { path, ok: issues.length === 0, issues };
+  const mcpIssues = findUnknownMcpToolNames(content);
+  return { path, ok: issues.length === 0 && mcpIssues.length === 0, issues, mcpIssues };
 }
 
 function listAgentFiles(root: string): string[] {
@@ -186,6 +266,11 @@ function main(): void {
         `    line ${issue.line} · key '${issue.key}' · ${issue.reason}`,
       );
       console.error(`      ${issue.excerpt}`);
+    }
+    for (const mcpIssue of r.mcpIssues) {
+      console.error(
+        `    line ${mcpIssue.line} · mcp tool '${mcpIssue.tool}' · ${mcpIssue.reason}`,
+      );
     }
   }
   process.exit(1);
