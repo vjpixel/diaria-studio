@@ -76,7 +76,7 @@
 // bloquear; nenhuma saída para permitir (equivalente a "defer").
 
 import { spawnSync } from "node:child_process";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -402,6 +402,115 @@ function runGit(args, cwd) {
   return result.stdout ?? "";
 }
 
+/**
+ * Diretório de um `cd` explícito no PRÓPRIO comando interceptado (#7241).
+ *
+ * `cd <dir> && gh pr create …` é a forma como uma sessão que trabalha em
+ * worktree tipicamente abre a PR — e `gh` age sobre o repositório do
+ * diretório em que roda, ou seja, sobre `<dir>`. Esse é o sinal SEMÂNTICO
+ * exato de qual repo o guard precisa inspecionar, e o único que não depende
+ * de o harness ter atualizado o cwd da sessão antes do `PreToolUse` disparar
+ * (a doc é explícita que `cwd` "follows Claude ... after Claude runs `cd`",
+ * mas o `PreToolUse` corre ANTES da execução do comando, então um `cd` inline
+ * no mesmo comando ainda não se refletiu no `cwd` do payload).
+ *
+ * Pega o ÚLTIMO `cd` que aparece antes do `gh pr create` (cobre
+ * `cd a && cd b && gh pr create`); `cd` depois do `gh` é ignorado. Path
+ * relativo é resolvido contra `base`. Devolve `null` quando não há `cd`, o
+ * que é o caso comum e não tem nada de errado.
+ */
+export function cdTargetFromCommand(command, base) {
+  if (typeof command !== "string" || command === "") return null;
+  const ghAt = command.search(/\bgh\s+pr\s+create\b/i);
+  const scope = ghAt >= 0 ? command.slice(0, ghAt) : command;
+  const re = /(?:^|&&|\|\||;|\n)\s*cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g;
+  let alvo = null;
+  for (let m = re.exec(scope); m !== null; m = re.exec(scope)) {
+    alvo = m[1] ?? m[2] ?? m[3] ?? null;
+  }
+  if (alvo === null || alvo === "" || alvo === "-") return null;
+  try {
+    return resolvePath(typeof base === "string" && base !== "" ? base : process.cwd(), alvo);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Candidatos a raiz do repositório, em ordem de preferência (#7241).
+ *
+ * **O bug.** Até o #7241 o hook usava UM valor só — `join(hookDir, "..", "..")`.
+ * Como `.claude/settings.json` registra todo hook por
+ * `${CLAUDE_PROJECT_DIR}/.claude/hooks/*.mjs`, e a doc do Claude Code é
+ * explícita que **`${CLAUDE_PROJECT_DIR}` "stays put" — segue apontando pra
+ * raiz onde a SESSÃO começou, mesmo depois de entrar num worktree** —, esse
+ * valor resolve pro checkout de origem, não pro diretório em que o
+ * `gh pr create` de fato roda. Quem acompanha o worktree, pela mesma doc, é o
+ * campo `cwd` do payload ("`cwd` follows Claude").
+ *
+ * As duas direções de falha, e a segunda é a grave:
+ *   1. falso positivo — recusa PR limpa porque o checkout de origem está com
+ *      outra branch suja (achado ao vivo 03/09/2026: PR de `#7234` recusada
+ *      citando arquivos de `develop/fix-7101-7103-hub-prose-pass`, de outra
+ *      sessão);
+ *   2. falso NEGATIVO — branch de worktree com PII real PASSA, porque o guard
+ *      olhou outra branch. O guard responde "limpo" sobre algo que nunca
+ *      inspecionou. Mesma classe do #6090 ("guard defasado concorda com
+ *      sujeito defasado"): não erra o julgamento, erra o SUJEITO.
+ *
+ * **Correção a uma versão anterior desta docstring (review da PR #7256).**
+ * Ela afirmava que `hookDir` "NUNCA acompanha o worktree", como se valesse
+ * para todo cenário. O reviewer apontou, com razão, que
+ * `pr-create-review.mjs` documenta o oposto para subagente com
+ * `isolation: "worktree"` ("derivar de `import.meta.url` … resolveria pra
+ * dentro do worktree"). A doc oficial resolve a contradição a favor do
+ * comportamento descrito acima para o caso DOCUMENTADO (sessão que entra em
+ * worktree / roda `cd`), e deixa o caso de subagente isolado explicitamente
+ * **não documentado**. Por isso `hookDir` não foi REMOVIDO: continua como
+ * último candidato, cobrindo justamente o cenário em que ele é o certo.
+ *
+ * Ordem, do mais específico ao mais genérico:
+ *   1. `cd` explícito do próprio comando — onde o `gh` vai de fato rodar;
+ *   2. `payloadCwd` — o `cwd` do `PreToolUse`, que a doc garante acompanhar
+ *      o worktree e os `cd` já executados;
+ *   3. `process.cwd()` — o hook é spawnado no cwd corrente da sessão;
+ *   4. `hookDir/../..` — comportamento histórico, e o caminho certo no caso
+ *      de subagente isolado que a doc não cobre.
+ *
+ * Pura e exportada pra ser testável sem git: devolve os candidatos na ordem,
+ * já deduplicados (normalizando `\` → `/` pra não repetir o mesmo path no
+ * Windows) e sem entradas vazias.
+ */
+export function resolveRepoRootCandidates(payloadCwd, hookDir, command) {
+  const seen = new Set();
+  const out = [];
+  const cdAlvo = cdTargetFromCommand(command, payloadCwd);
+  for (const candidate of [cdAlvo, payloadCwd, process.cwd(), join(hookDir, "..", "..")]) {
+    if (typeof candidate !== "string" || candidate.trim() === "") continue;
+    const norm = candidate.replaceAll("\\", "/").replace(/\/+$/, "");
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    out.push(candidate);
+  }
+  return out;
+}
+
+/**
+ * Primeiro candidato que é de fato um repo git — devolve o toplevel resolvido
+ * por `git rev-parse --show-toplevel` (num worktree isso devolve o path do
+ * WORKTREE, que é exatamente o que se quer). `null` se nenhum resolver, e aí
+ * o chamador faz fail-open como já fazia pros demais erros de git.
+ */
+export function resolveGitRoot(candidates, gitRunner = runGit) {
+  for (const candidate of candidates) {
+    const top = gitRunner(["rev-parse", "--show-toplevel"], candidate);
+    if (top === null) continue;
+    const trimmed = top.trim();
+    if (trimmed !== "") return trimmed;
+  }
+  return null;
+}
+
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
 // entrypoint (nunca ao ser importado por test/block-pr-create-pii-runtime-artifacts.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
@@ -420,7 +529,11 @@ if (
       if (!isGhPrCreateCommand(command)) return;
 
       const hookDir = dirname(fileURLToPath(import.meta.url));
-      const cwd = join(hookDir, "..", "..");
+      // #7241 — o diretório de onde o `gh pr create` SAIU, não o path do hook.
+      // Ver `resolveRepoRootCandidates` pro porquê (o valor antigo era cego a
+      // worktree e fazia o guard julgar a branch errada).
+      const cwd = resolveGitRoot(resolveRepoRootCandidates(payload.cwd, hookDir, command));
+      if (cwd === null) return; // fail-open: nenhum candidato é repo git
 
       const baseRef = resolveBaseRef(cwd);
       if (!baseRef) return; // fail-open: não deu pra achar master/origin-master
