@@ -848,13 +848,20 @@ async function main(): Promise<void> {
   const now = new Date();
   const currentMonth = competenceMonth(now);
   let pastSnapshots: MonthSnapshot[] = [];
+  // #7195: quando a leitura INTEIRA lança, este catch já explica a causa —
+  // o aviso de `previousMonthSnapshotMissing` mais abaixo seria redundante
+  // pro mesmo evento (os dois disparariam juntos). A flag suprime só a
+  // MENSAGEM duplicada; o bloqueio de remoções continua acontecendo nos
+  // dois caminhos, que é o que importa.
+  let snapshotReadFailed = false;
   try {
     const env = readApoiaSeEnv();
     pastSnapshots = readPastMonthSnapshots(defaultCacheDir(env.campaign), currentMonth);
   } catch (e) {
+    snapshotReadFailed = true;
     process.stderr.write(
       `${LOG_PREFIX} aviso: não foi possível ler snapshots de meses anteriores (carência de 1 mês ` +
-        `desativada nesta rodada, comportamento cai pro mês corrente só): ${(e as Error).message}\n`,
+        `desativada nesta rodada; remoções BLOQUEADAS por segurança, #7195): ${(e as Error).message}\n`,
     );
   }
 
@@ -867,7 +874,7 @@ async function main(): Promise<void> {
   const diff = diffApoioTags(desired, current);
   const allowPartial = hasFlag(argv, "allow-partial");
   const previousMonthSnapshotMissing = isPreviousMonthSnapshotMissing(pastSnapshots, currentMonth);
-  if (previousMonthSnapshotMissing) {
+  if (previousMonthSnapshotMissing && !snapshotReadFailed) {
     process.stderr.write(
       `${LOG_PREFIX} ⚠ snapshot de ${previousMonthKey(currentMonth)} AUSENTE — a carência de 1 mês não tem como ` +
         `ser aplicada nesta rodada (todo mundo fica com previousLevel null). Remoções BLOQUEADAS por segurança ` +

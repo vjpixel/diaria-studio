@@ -96,6 +96,7 @@ import {
   computeDesiredApoioLevels,
   shouldBlockRemovals,
   isPreviousMonthSnapshotMissing,
+  previousMonthKey,
   type DesiredApoioLevel,
   type ApoioNivel,
 } from "./sync-apoio-nivel-beehiiv.ts";
@@ -649,8 +650,8 @@ async function main(): Promise<void> {
   const previousMonthSnapshotMissing = isPreviousMonthSnapshotMissing(pastSnapshots, currentMonth);
   if (previousMonthSnapshotMissing) {
     log(
-      "aviso: snapshot do mês anterior AUSENTE — carência de 1 mês inaplicável nesta rodada; " +
-        "remoções BLOQUEADAS por segurança (#7195). Use --allow-partial pra forçar.",
+      `aviso: snapshot de ${previousMonthKey(currentMonth)} AUSENTE — carência de 1 mês inaplicável nesta ` +
+        "rodada; remoções BLOQUEADAS por segurança (#7195). Use --allow-partial pra forçar.",
     );
   }
   const removalsBlockedByPartialData = shouldBlockRemovals(

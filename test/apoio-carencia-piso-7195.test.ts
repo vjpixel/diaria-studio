@@ -5,16 +5,24 @@
  * declarados nem testados em lugar nenhum — descobertos ao aplicar as
  * remoções da #6925 ao vivo (02/09/2026).
  *
- * ─── 1. O piso de ~30 dias é efeito colateral, não invariante escrito ─────
+ * ─── 1. A janela de carência não estava travada em lugar nenhum ──────────
  *
  * O editor pediu "esperar 30 dias após o último pagamento antes de remover
  * `apoio_nivel`". A carência de 1 mês do #4436 (`computeDesiredApoioLevels`
  * = `max(mês corrente, mês anterior)`) **já** satisfaz isso, mas por
  * aritmética de mês, não por decisão explícita: o pior caso é pagar no
  * ÚLTIMO dia de M, não pagar em M+1, e só ser removido no dia 1º de M+2 —
- * 31 dias. Ninguém escreveu "garantimos ≥30 dias" em lugar nenhum, e nada
- * impedia uma mudança futura em `computeDesiredApoioLevels`/`competenceMonth`
- * de encurtar isso em silêncio. Este arquivo trava o piso.
+ * 31 dias corridos. Ninguém escreveu "garantimos ≥30 dias" em lugar nenhum,
+ * e nada impedia uma mudança futura em `computeDesiredApoioLevels`/
+ * `competenceMonth` de encurtar isso em silêncio.
+ *
+ * **O que este arquivo trava, e o que NÃO trava** (precisão pedida no
+ * review da PR #7216): trava a JANELA — 1 mês de competência, nível mantido
+ * em M+1 e derrubado em M+2. Não trava a contagem em DIAS, porque
+ * `MonthSnapshot` não tem granularidade de dia: "pagou em 31/08" e "pagou
+ * em 01/08" são o mesmo estado no dado. A conversão janela→dias (31 no pior
+ * caso, ~61 no melhor) é raciocínio sobre o calendário, não uma asserção
+ * falsificável aqui.
  *
  * ─── 2. Snapshot do mês anterior ausente zerava a carência em silêncio ────
  *
@@ -63,9 +71,16 @@ function monthSnapshot(month: string, paid: Record<string, number>): MonthSnapsh
   return { month, statuses };
 }
 
-describe("piso de carência ≥30 dias (#7195) — pior caso da aritmética de mês", () => {
-  // Cenário do pior caso, o que decide se a regra do editor é cumprida:
-  // pagamento no ÚLTIMO dia de agosto, nada em setembro.
+describe("janela de carência = 1 mês de competência (#7195)", () => {
+  // O QUE ESTES TESTES TRAVAM, com precisão: a janela é de 1 MÊS DE
+  // COMPETÊNCIA — nível mantido em M+1, derrubado em M+2. É disso que o
+  // piso de ~30 dias DECORRE, mas o piso em si não é testável aqui:
+  // `MonthSnapshot` não tem granularidade de DIA (só `isPaidThisMonth` por
+  // mês), então "pagou em 31/08 vs 01/08" não existe como estado no dado.
+  // A conversão janela→dias (31 no pior caso, ~61 no melhor) é raciocínio
+  // sobre o calendário, não algo que uma asserção pudesse falsificar.
+  // Chamar isto de "teste do piso de 30 dias" seria prometer mais do que
+  // trava — corrigido no review da PR #7216.
   const AGOSTO = monthSnapshot("2026-08", { "quase@x.com": 25 });
 
   it("em SETEMBRO (M+1) o nível é MANTIDO — a carência está ativa", () => {
@@ -81,7 +96,7 @@ describe("piso de carência ≥30 dias (#7195) — pior caso da aritmética de m
     );
   });
 
-  it("em OUTUBRO (M+2) o nível cai — 31 dias no pior caso (pagamento em 31/08)", () => {
+  it("em OUTUBRO (M+2) o nível cai — fim da janela (≥31 dias corridos, por calendário)", () => {
     // Em outubro o snapshot relevante passa a ser o de setembro (vazio);
     // agosto sai da janela. É aqui que a remoção fica legítima.
     const result = computeDesiredApoioLevels(
@@ -92,10 +107,11 @@ describe("piso de carência ≥30 dias (#7195) — pior caso da aritmética de m
     assert.equal(result[0]!.level, null, "dois meses sem pagar: a carência esgotou, remoção legítima");
   });
 
-  it("o piso vale para o MELHOR caso também (pagamento em 01/08 ⇒ ~61 dias)", () => {
-    // Mesma aritmética — a distinção dia-1 vs dia-31 não existe no cálculo,
-    // que é por mês de competência. Documenta que a janela real varia entre
-    // ~31 e ~61 dias, e que 31 é o piso.
+  it("a janela não depende do DIA do pagamento — só do mês de competência", () => {
+    // Este é o teste que de fato mostra por que o dia não é testável: o
+    // mesmo fixture serve para "pagou em 01/08" e "pagou em 31/08", porque
+    // o dado não distingue os dois. É daí que sai a faixa de ~31 a ~61 dias
+    // corridos — consequência do calendário, não do código.
     const result = computeDesiredApoioLevels(
       [contact("c1", ["quase@x.com"], { label: "nao_apoia" })],
       [AGOSTO],

@@ -98,6 +98,7 @@ import {
   diffApoioTags,
   shouldBlockRemovals,
   isPreviousMonthSnapshotMissing,
+  previousMonthKey,
   evaluateBlastRadiusGuard,
   logDiff,
   logBlastRadiusGuard,
@@ -259,8 +260,8 @@ async function main(): Promise<void> {
   const previousMonthSnapshotMissing = isPreviousMonthSnapshotMissing(pastSnapshots, currentMonth);
   if (previousMonthSnapshotMissing) {
     process.stderr.write(
-      `${LOG_PREFIX} ⚠ snapshot do mês anterior AUSENTE — carência de 1 mês inaplicável nesta rodada; ` +
-        `remoções BLOQUEADAS por segurança (#7195). Use --allow-partial pra forçar.\n`,
+      `${LOG_PREFIX} ⚠ snapshot de ${previousMonthKey(currentMonth)} AUSENTE — carência de 1 mês inaplicável ` +
+        `nesta rodada; remoções BLOQUEADAS por segurança (#7195). Use --allow-partial pra forçar.\n`,
     );
   }
   const removalsBlockedByPartialData = shouldBlockRemovals(data.error, diff, allowPartial, {
