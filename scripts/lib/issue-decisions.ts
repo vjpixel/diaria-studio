@@ -144,6 +144,44 @@ export function latestDecisionFor(commentsBodies: readonly string[]): IssueDecis
 // base64-em-vez-de-JSON-cru do marcador de decisão acima (mesma razão:
 // `motivo` pode citar um trecho contendo `-->` — evita a mesma classe de bug
 // truncado que motivou o fix pós-review do #5375).
+//
+// ─── `condicao` (#7270) — condição de desbloqueio, agora OBRIGATÓRIA ───────
+//
+// Medição ao vivo (#7270, 03/09/2026): de 12 issues abertas classificadas
+// `bloqueada`, 9 não carregavam NENHUM marcador — o campo `motivo` acima
+// registra POR QUE a issue está bloqueada, mas nada registrava QUANDO/COMO
+// ela deveria deixar de estar. Resultado: bloqueio que nunca se reavalia
+// sozinho, e 4 dos 7 casos corrigidos na auditoria já tinham a correção
+// escrita em PROSA num comentário anterior sem que o marcador (nem a label)
+// fossem atualizados — "prosa corrige, mecanismo não".
+//
+// `condicao` é um union de 2 variantes (não 3 — ver nota abaixo sobre
+// `aguardando_ate`):
+//
+//   - `depends_on`: a issue só desbloqueia quando OUTRA issue fechar.
+//     Reusa o marcador `depends-on:` já existente (#7137,
+//     `scripts/lib/issue-depends-on.ts`) — quem grava esta condição via
+//     `route-issue.ts --track bloqueada --depends-on N` precisa já ter o
+//     marcador `<!-- depends-on: #N -->` no corpo da issue (não é escrito
+//     por este módulo); `scripts/reconcile-issue-dependencies.ts` é quem
+//     desarma sozinho quando `#N` fecha.
+//   - `externo`: bloqueio que só um evento fora do repo resolve (conta de
+//     terceiro, feature gated por plano, credencial). SEM auto-desarme —
+//     é o único caso que a revisão periódica (`scripts/lib/
+//     route-marker-staleness.ts`) de fato precisa cobrar de um humano.
+//
+// Por que NÃO existe uma 3ª variante `aguardando_ate` (proposta original da
+// issue): uma condição "esta issue desbloqueia numa DATA específica" é,
+// por definição, o critério exato que separa `agendada` de `bloqueada` no
+// #7288/CLAUDE.md ("Agendada = data específica, nada mais"). Adicionar uma
+// 3ª via de data DENTRO do bloqueio reabriria a mesma ambiguidade que o
+// #7288 mediu (55% das `agendada` sendo estacionamento disfarçado) — só que
+// no sentido inverso. Uma issue genuinamente bloqueada por evento externo
+// COM data conhecida é `--track agendada`, não `bloqueada` com uma data
+// embutida no motivo.
+export type BlockUnblockCondition =
+  | { tipo: "depends_on"; issue: number }
+  | { tipo: "externo"; descricao: string };
 
 /** Payload estruturado de um bloqueio de execução registrado num comentário. */
 export interface ExecutionBlock {
@@ -153,6 +191,15 @@ export interface ExecutionBlock {
   motivo: string;
   /** Qual sessão gravou o bloqueio. */
   sessao: SessionKind;
+  /** Condição de desbloqueio, legível por máquina — obrigatória desde #7270
+   * (ver seção acima). Marcadores antigos gravados antes do #7270 nunca
+   * tiveram este campo — `isValidExecutionBlock` os trata como inválidos
+   * (silenciosamente ignorados, mesma postura fail-soft do resto do
+   * parser), o que é o comportamento CORRETO: uma issue com um marcador
+   * pré-#7270 é, na prática, uma issue "sem condição de desbloqueio
+   * declarada" — exatamente o estado que a auditoria original mediu como
+   * defeito. */
+  condicao: BlockUnblockCondition;
 }
 
 const EXECUTION_BLOCK_MARKER_PREFIX = "<!-- bloqueio-execucao: ";
@@ -166,9 +213,22 @@ export function formatExecutionBlockMarker(opts: ExecutionBlock): string {
     recorded_at: opts.recorded_at,
     motivo: opts.motivo,
     sessao: opts.sessao,
+    condicao: opts.condicao,
   };
   const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
   return `${EXECUTION_BLOCK_MARKER_PREFIX}${encoded}${EXECUTION_BLOCK_MARKER_SUFFIX}`;
+}
+
+function isValidBlockUnblockCondition(value: unknown): value is BlockUnblockCondition {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  if (v.tipo === "depends_on") {
+    return typeof v.issue === "number" && Number.isInteger(v.issue) && v.issue > 0;
+  }
+  if (v.tipo === "externo") {
+    return typeof v.descricao === "string" && v.descricao.length > 0;
+  }
+  return false;
 }
 
 function isValidExecutionBlock(value: unknown): value is ExecutionBlock {
@@ -179,7 +239,8 @@ function isValidExecutionBlock(value: unknown): value is ExecutionBlock {
     v.recorded_at.length > 0 &&
     typeof v.motivo === "string" &&
     v.motivo.length > 0 &&
-    (v.sessao === "continuo" || v.sessao === "overnight" || v.sessao === "develop")
+    (v.sessao === "continuo" || v.sessao === "overnight" || v.sessao === "develop") &&
+    isValidBlockUnblockCondition(v.condicao)
   );
 }
 

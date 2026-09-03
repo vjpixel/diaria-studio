@@ -53,6 +53,7 @@ function executionBlock(overrides: Partial<ExecutionBlock> = {}): ExecutionBlock
     recorded_at: "2026-08-15T16:00:00Z",
     motivo: "falta acesso a painel GA4/GTM",
     sessao: "continuo",
+    condicao: { tipo: "externo", descricao: "falta acesso a painel GA4/GTM" },
     ...overrides,
   };
 }
@@ -195,6 +196,73 @@ describe("parseExecutionBlockMarkers", () => {
     const bodies = [formatDecisionMarker(d)];
     assert.deepEqual(parseExecutionBlockMarkers(bodies), []);
     assert.deepEqual(parseDecisionMarkers(bodies), [d]);
+  });
+});
+
+// ─── condicao de desbloqueio — #7270 ─────────────────────────────────────
+//
+// Torna `condicao` obrigatória: marcador sem ela (a forma pré-#7270,
+// medida em 9 de 12 issues bloqueadas) é tratado como inválido — mesma
+// postura fail-soft do resto do parser, e é exatamente o estado que a
+// auditoria original mediu como defeito (issue "sem condição declarada").
+
+describe("condicao de desbloqueio (#7270) — obrigatória, 2 variantes", () => {
+  it("marcador com condicao depends_on é reconhecido", () => {
+    const b = executionBlock({ condicao: { tipo: "depends_on", issue: 6798 } });
+    const marker = formatExecutionBlockMarker(b);
+    assert.deepEqual(parseExecutionBlockMarkers([marker]), [b]);
+  });
+
+  it("marcador com condicao externo é reconhecido", () => {
+    const b = executionBlock({ condicao: { tipo: "externo", descricao: "conta Beehiiv Scale" } });
+    const marker = formatExecutionBlockMarker(b);
+    assert.deepEqual(parseExecutionBlockMarkers([marker]), [b]);
+  });
+
+  it("marcador SEM condicao (formato pré-#7270) é ignorado, não lança", () => {
+    // Simula um marcador antigo — sem o campo condicao — que uma sessão
+    // anterior ao #7270 poderia ter gravado. Trata como inválido: o mesmo
+    // estado que a auditoria mediu como "sem condição de desbloqueio".
+    const legacyPayload = { recorded_at: "2026-08-15T16:00:00Z", motivo: "falta acesso a painel", sessao: "continuo" };
+    const encoded = Buffer.from(JSON.stringify(legacyPayload), "utf8").toString("base64");
+    const legacyMarker = `<!-- bloqueio-execucao: ${encoded} -->`;
+    assert.doesNotThrow(() => parseExecutionBlockMarkers([legacyMarker]));
+    assert.deepEqual(parseExecutionBlockMarkers([legacyMarker]), []);
+  });
+
+  it("condicao depends_on com issue não-inteiro/negativo é inválida", () => {
+    for (const bad of [0, -1, 1.5, "6798"]) {
+      const payload = {
+        recorded_at: "2026-08-15T16:00:00Z",
+        motivo: "x",
+        sessao: "continuo",
+        condicao: { tipo: "depends_on", issue: bad },
+      };
+      const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+      assert.deepEqual(parseExecutionBlockMarkers([`<!-- bloqueio-execucao: ${encoded} -->`]), []);
+    }
+  });
+
+  it("condicao externo com descricao vazia é inválida", () => {
+    const payload = {
+      recorded_at: "2026-08-15T16:00:00Z",
+      motivo: "x",
+      sessao: "continuo",
+      condicao: { tipo: "externo", descricao: "" },
+    };
+    const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+    assert.deepEqual(parseExecutionBlockMarkers([`<!-- bloqueio-execucao: ${encoded} -->`]), []);
+  });
+
+  it("condicao com tipo desconhecido é inválida", () => {
+    const payload = {
+      recorded_at: "2026-08-15T16:00:00Z",
+      motivo: "x",
+      sessao: "continuo",
+      condicao: { tipo: "aguardando_ate", date: "2026-09-01" },
+    };
+    const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+    assert.deepEqual(parseExecutionBlockMarkers([`<!-- bloqueio-execucao: ${encoded} -->`]), []);
   });
 });
 
