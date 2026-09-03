@@ -34,6 +34,7 @@ import {
   renderCuradoriaGridCardStyles,
   renderCuradoriaFiltersBaseStyles,
   renderCuradoriaFooter,
+  renderCuradoriaCtaSubscribeScript,
   CURADORIA_NAV_LINKS,
 } from "../scripts/lib/shared/curadoria-page.ts";
 import { renderCursosPage, PAGE_URL as CURSOS_PAGE_URL } from "../scripts/build-cursos-page.ts";
@@ -208,5 +209,100 @@ describe("build-livros-page.ts adota o módulo compartilhado (#3113)", () => {
     // #4797: crédito do rodapé ganhou o wordmark da marca (negrito + `.`/`.br`
     // teal) — "diar.ia.br" não sobrevive mais como texto plano no foot-credit.
     assert.match(html, /foot-credit"><strong>diar<span[^>]*>\.<\/span>ia<span[^>]*>\.br<\/span><\/strong> — curadoria de livros sobre IA/);
+  });
+});
+
+/**
+ * Conversão de cadastro (#7358/#7361, achado 2 do fleet review pré-merge da
+ * PR #7372): `renderCuradoriaCtaSubscribeScript()` é usado pelo arquivo +
+ * TODOS os hubs + páginas de entidade (8+ superfícies) — nenhum teste
+ * comportamental confirmava o `dataLayer.push` até aqui, só o timeout do
+ * fetch (`test/subscribe-form-fetch-timeout-6981.test.ts`). Mesma técnica de
+ * extração de `<script>`/`new Function` usada lá.
+ */
+function makeCtaField(value = "", checked = false): any {
+  return { value, checked, disabled: false, style: {} };
+}
+
+function wireCtaForm(fetchImpl: (url: string, options: any) => Promise<any>, emailValue: string) {
+  const form: any = new EventTarget();
+  const email = makeCtaField(emailValue);
+  const optin = makeCtaField("on", true);
+  const website = makeCtaField("");
+  const btn = makeCtaField();
+  const status: any = { hidden: true, textContent: "", className: "" };
+  const selectors: Record<string, any> = {
+    'input[name="email"]': email,
+    'input[name="optin"]': optin,
+    'input[name="website"]': website,
+    'button[type="submit"]': btn,
+    ".cta-status": status,
+  };
+  form.querySelector = (sel: string) => selectors[sel] ?? null;
+  form.querySelectorAll = (sel: string) => (sel === "input, button" ? [email, optin, website, btn] : []);
+  form.getAttribute = (attr: string) => (attr === "data-source" ? "hub-google-gemini" : null);
+  form.reset = () => {};
+
+  const win: any = {
+    fetch: fetchImpl,
+    AbortController: typeof AbortController === "function" ? AbortController : undefined,
+  };
+  const doc: any = { querySelectorAll: (sel: string) => (sel === ".cta-subscribe-form" ? [form] : []) };
+  const body = renderCuradoriaCtaSubscribeScript()
+    .replace(/^<script>/, "")
+    .replace(/<\/script>$/, "");
+  // eslint-disable-next-line no-new-func
+  new Function("window", "document", body)(win, doc);
+
+  const submit = () => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  return { win, status, btn, submit };
+}
+
+function flushCtaMicrotasks(): Promise<void> {
+  return new Promise((r) => setImmediate(r));
+}
+
+describe("renderCuradoriaCtaSubscribeScript() — evento de conversão pro dataLayer (#7358/#7361)", () => {
+  it("200 + ok: empurra signedUp com o e-mail cadastrado", async () => {
+    const { win, submit } = wireCtaForm(
+      () => Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true }) }),
+      "leitor@example.com",
+    );
+    submit();
+    await flushCtaMicrotasks();
+    assert.ok(Array.isArray(win.dataLayer));
+    assert.deepEqual(win.dataLayer, [{ event: "signedUp", eventProps: { email: "leitor@example.com" } }]);
+  });
+
+  it("200 mas body.ok !== true: NÃO empurra o evento de conversão", async () => {
+    const { win, submit } = wireCtaForm(
+      () => Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: false }) }),
+      "leitor@example.com",
+    );
+    submit();
+    await flushCtaMicrotasks();
+    assert.equal(win.dataLayer, undefined);
+  });
+
+  it("dataLayer.push que lança não quebra o setStatus/reset do form (achado 1 do fleet review — try/catch em pushSignupConversionEventJs)", async () => {
+    const { win, status, btn, submit } = wireCtaForm(
+      () => Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true }) }),
+      "leitor@example.com",
+    );
+    Object.defineProperty(win, "dataLayer", {
+      get() {
+        throw new Error("extensão de privacidade congelou dataLayer");
+      },
+      configurable: true,
+    });
+    submit();
+    await flushCtaMicrotasks();
+    assert.equal(
+      status.textContent,
+      "Pronto! Confira seu e-mail pra confirmar a assinatura.",
+      "sucesso do cadastro precisa aparecer pro usuário mesmo com dataLayer.push falhando",
+    );
+    assert.equal(status.className, "cta-status ok");
+    assert.equal(btn.disabled, true, "campos ficam desabilitados no sucesso, não reabilitados como em erro");
   });
 });

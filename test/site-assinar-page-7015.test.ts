@@ -81,3 +81,106 @@ describe("regressão do bug original (#7015) — HTML anterior sem o gerador fal
     assert.throws(() => assertWordmarkDisplayCorrect(buggyH1));
   });
 });
+
+/**
+ * Conversão de cadastro (#7358/#7361, achado 2 do fleet review pré-merge da
+ * PR #7372): `/assinar` é a superfície mais importante do fix — era a ÚNICA
+ * página do apex sem o container GTM nenhum. Mesma técnica de
+ * `test/subscribe-form-fetch-timeout-6981.test.ts`
+ * (`scriptBodyFromFullHtml`) — extrai o `<script>` que contém o wiring de
+ * `#assinar-form` de dentro do documento completo e roda via `new Function`.
+ */
+function makeAssinarField(value = "", checked = false): any {
+  return { value, checked, disabled: false, style: {} };
+}
+
+function wireAssinarForm(fetchImpl: (url: string, options: any) => Promise<any>, emailValue: string) {
+  const form: any = new EventTarget();
+  const email = makeAssinarField(emailValue);
+  const optin = makeAssinarField("on", true);
+  const website = makeAssinarField("");
+  const name = makeAssinarField("");
+  const btn = makeAssinarField();
+  const status: any = { style: {}, textContent: "", className: "" };
+  const selectors: Record<string, any> = {
+    'input[name="email"]': email,
+    'input[name="optin"]': optin,
+    'input[name="website"]': website,
+    'input[name="name"]': name,
+    'button[type="submit"]': btn,
+    ".status": status,
+    "#utm_source": null,
+    "#utm_medium": null,
+    "#utm_campaign": null,
+  };
+  form.querySelector = (sel: string) => selectors[sel] ?? null;
+  form.querySelectorAll = (sel: string) => (sel === "input, button" ? [email, optin, website, name, btn] : []);
+  form.getAttribute = (attr: string) => (attr === "action" ? "https://eia.diar.ia.br/jogar/subscribe" : null);
+  form.reset = () => {};
+
+  const win: any = {
+    location: { search: "" },
+    fetch: fetchImpl,
+    AbortController: typeof AbortController === "function" ? AbortController : undefined,
+  };
+  const doc: any = { getElementById: (id: string) => (id === "assinar-form" ? form : null) };
+  const html = buildAssinarHtml();
+  const scripts = html.match(/<script>[\s\S]*?<\/script>/g) ?? [];
+  const target = scripts.find((s) => s.includes("assinar-form"));
+  assert.ok(target, "buildAssinarHtml() deveria conter um <script> com o wiring de #assinar-form");
+  const body = target!.replace(/^<script>/, "").replace(/<\/script>$/, "");
+  // eslint-disable-next-line no-new-func
+  new Function("window", "document", body)(win, doc);
+
+  const submit = () => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  return { win, status, btn, submit };
+}
+
+function flushMicrotasks(): Promise<void> {
+  return new Promise((r) => setImmediate(r));
+}
+
+describe("buildAssinarHtml() — evento de conversão pro dataLayer (#7358/#7361)", () => {
+  it("200 + ok: empurra signedUp com o e-mail cadastrado", async () => {
+    const { win, submit } = wireAssinarForm(
+      () => Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true }) }),
+      "leitor@example.com",
+    );
+    submit();
+    await flushMicrotasks();
+    assert.ok(Array.isArray(win.dataLayer));
+    assert.deepEqual(win.dataLayer, [{ event: "signedUp", eventProps: { email: "leitor@example.com" } }]);
+  });
+
+  it("200 mas body.ok !== true: NÃO empurra o evento de conversão", async () => {
+    const { win, submit } = wireAssinarForm(
+      () => Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: false }) }),
+      "leitor@example.com",
+    );
+    submit();
+    await flushMicrotasks();
+    assert.equal(win.dataLayer, undefined);
+  });
+
+  it("dataLayer.push que lança não quebra o setStatus/reset do form (achado 1 do fleet review — try/catch em pushSignupConversionEventJs)", async () => {
+    const { win, status, btn, submit } = wireAssinarForm(
+      () => Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true }) }),
+      "leitor@example.com",
+    );
+    Object.defineProperty(win, "dataLayer", {
+      get() {
+        throw new Error("extensão de privacidade congelou dataLayer");
+      },
+      configurable: true,
+    });
+    submit();
+    await flushMicrotasks();
+    assert.equal(
+      status.textContent,
+      "Pronto! Confira seu e-mail pra confirmar a assinatura.",
+      "sucesso do cadastro precisa aparecer pro usuário mesmo com dataLayer.push falhando",
+    );
+    assert.equal(status.className, "status ok");
+    assert.equal(btn.disabled, true, "campos ficam desabilitados no sucesso (achado 4 do #6979), não reabilitados como em erro");
+  });
+});

@@ -77,23 +77,28 @@ export const SIGNUP_CONVERSION_EVENT_NAME = "signedUp";
 /**
  * Snippet JS que empurra o evento de conversão pro `dataLayer` no SUCESSO
  * (200 + `ok`) de um cadastro (#7358) — o gatilho vivo das tags de conversão
- * (Google Ads/Meta/Microsoft) até 20/08/2026 era Form Submission por RegEx
- * dos Form IDs do Website Builder da Beehiiv, mortos desde o cutover do apex
- * (26/08); nenhum form deste repo emitia `dataLayer.push` nenhum. `emailExpr`
- * é uma expressão JS (não uma string estática) que resolve pro e-mail já
- * validado no escopo de onde o snippet é inlined (ex: a variável local
- * `email` de cada form) — nunca chamar isto no sucesso de uma VERIFICAÇÃO
- * (ex: `/gate/verify` em `workers/cursos/src/gate-page.ts`), só no sucesso
- * de um CADASTRO novo (`/gate/subscribe`, `/jogar/subscribe` etc.) — ver
- * decisão do editor na #7358 item 2 (verificação de assinante já ativo não é
+ * (Google Ads/Meta/Microsoft) era Form Submission por RegEx dos Form IDs do
+ * Website Builder da Beehiiv, mortos desde o cutover do apex (26/08); nenhum
+ * form deste repo emitia `dataLayer.push` nenhum. `emailExpr` é uma
+ * expressão JS (não uma string estática) que resolve pro e-mail já validado
+ * no escopo de onde o snippet é inlined (ex: a variável local `email` de
+ * cada form) — nunca chamar isto no sucesso de uma VERIFICAÇÃO (ex:
+ * `/gate/verify` em `workers/cursos/src/gate-page.ts`), só no sucesso de um
+ * CADASTRO novo (`/gate/subscribe`, `/jogar/subscribe` etc.) — ver decisão
+ * do editor na #7358 item 2 (verificação de assinante já ativo não é
  * conversão nova). `window.dataLayer = window.dataLayer || []` reproduz o
  * mesmo guard do próprio snippet do GTM (`renderAnalyticsHead`) — necessário
  * porque nem toda página que chama isto carrega o GTM ANTES deste script
  * (ordem de carregamento não é garantida, e a `/assinar` do apex não tinha
- * GTM nenhum até esta issue).
+ * GTM nenhum até esta issue). O `try/catch` envolvendo o `push` (achado do
+ * fleet review pré-merge da #7358/#7361) garante que uma falha na tracking
+ * (ex: extensão de privacidade que congela `window.dataLayer`, script de
+ * terceiro hostil) nunca vaze pro `.catch()` genérico do form — que foi
+ * escrito só pra erro de rede — e faça o usuário ver "Erro de conexão" com o
+ * cadastro já tendo sido feito com sucesso no servidor.
  */
 export function pushSignupConversionEventJs(emailExpr: string): string {
-  return `window.dataLayer = window.dataLayer || []; window.dataLayer.push({ event: ${JSON.stringify(SIGNUP_CONVERSION_EVENT_NAME)}, eventProps: { email: ${emailExpr} } });`;
+  return `try { window.dataLayer = window.dataLayer || []; window.dataLayer.push({ event: ${JSON.stringify(SIGNUP_CONVERSION_EVENT_NAME)}, eventProps: { email: ${emailExpr} } }); } catch (e) {}`;
 }
 
 export interface SeoMetaOptions {
