@@ -117,6 +117,7 @@ export type ExecTrack = "overnight" | "develop" | "agendada" | "bloqueada" | "ep
  * - `label:kit-migration`   — idem
  * - `label:beehiiv`         — idem
  * - `label:bloqueio-execucao` — idem
+ * - `label:dependencia-aberta` — idem (#7137 — marcador `depends-on:` com dependência ainda não fechada)
  * - `marker:aguardando-ate` — marcador futuro → `agendada`
  * - `label:not-this-week`   — 2ª checagem `bloqueada` (deferimento vago)
  * - `label:next-month`      — idem
@@ -144,6 +145,7 @@ export type ExecTrackMatch =
   | "label:kit-migration"
   | "label:beehiiv"
   | "label:bloqueio-execucao"
+  | "label:dependencia-aberta"
   | "marker:aguardando-ate"
   | "label:not-this-week"
   | "label:next-month"
@@ -181,6 +183,7 @@ export const EXEC_TRACK_MATCH_CATALOG: readonly ExecTrackMatch[] = [
   "label:kit-migration",
   "label:beehiiv",
   "label:bloqueio-execucao",
+  "label:dependencia-aberta",
   "marker:aguardando-ate",
   "label:not-this-week",
   "label:next-month",
@@ -326,14 +329,33 @@ const ALARM_EVENT_LABEL = "alarm-evento";
  */
 const ALARM_ACTION_LABEL = "alarm-acao";
 
+/**
+ * #7137 — dependência declarada de OUTRA issue ainda não fechada
+ * (`<!-- depends-on: #N -->` no corpo, ver `scripts/lib/issue-depends-on.ts`).
+ * Diferente das demais labels de `BLOCKED_LABELS`: esta é gerida por SCRIPT
+ * (`scripts/reconcile-issue-dependencies.ts`), não por ação manual do
+ * editor — auto-desarma quando a dependência fecha, mesma família do
+ * marcador `aguardando-ate:` (que desarma pela data). `classifyExecTrack`
+ * continua puro: só aprende a label, nunca consulta o GitHub pra saber se a
+ * dependência já fechou — quem consulta e aplica/remove é o reconciliador.
+ *
+ * Label DEDICADA, não reuso de `bloqueio-execucao` — decisão documentada em
+ * `issue-depends-on.ts` (`bloqueio-execucao` é aplicada manualmente por
+ * motivos variados, sem campo que diga qual; reusá-la deixaria o
+ * reconciliador removendo um bloqueio que pode não ter nada a ver com a
+ * dependência declarada).
+ */
+export const DEPENDS_ON_BLOCK_LABEL = "dependencia-aberta";
+
 /** Bloqueio que nenhuma sessão destrava sozinha — conta de terceiro,
- * credencial, allowlist, plataforma plan-gated, ou bloqueio de execução já
- * registrado (#5373). */
+ * credencial, allowlist, plataforma plan-gated, bloqueio de execução já
+ * registrado (#5373), ou dependência de outra issue ainda aberta (#7137). */
 const BLOCKED_LABELS = new Set([
   "external-blocker",
   "kit-migration",
   "beehiiv",
   "bloqueio-execucao",
+  DEPENDS_ON_BLOCK_LABEL,
 ]);
 
 /** Export somente-leitura de `BLOCKED_LABELS` (#6754) — fonte única de "quais
@@ -507,7 +529,9 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
  *                         `credencial-escopo` NÃO conta aqui — vira `develop`
  *                         no passo 6. Qualquer outra label de
  *                         `BLOCKED_LABELS` (`kit-migration`, `beehiiv`,
- *                         `bloqueio-execucao`) continua vencendo normalmente.
+ *                         `bloqueio-execucao`, `dependencia-aberta` — #7137,
+ *                         dependência de outra issue ainda aberta) continua
+ *                         vencendo normalmente.
  *   4. `agendada`       — (#5682) marcador `aguardando-ate:` com data futura,
  *                         e nenhum bloqueio real acima já decidiu por ela.
  *                         Bloqueio real vence sobre data: a issue é
@@ -708,7 +732,7 @@ export const EXEC_TRACK_EXPLAIN: Record<ExecTrack, string> = {
   agendada:
     "Agendada — tem data específica pra ser resolvida, registrada no marcador `aguardando-ate: AAAA-MM-DD`. Não está bloqueada por nada: é trabalho fazível que volta sozinho ao fluxo normal na data, sem ninguém precisar remover label. Adiamento sem data (`not-this-week`, `next-month`, `on-hold`) não é Agendada.",
   bloqueada:
-    "Bloqueada — nenhuma sessão destrava sozinha: conta de terceiro, credencial, plataforma plan-gated, ou deferimento vago sem data (`not-this-week`, `next-month`). Marcador `aguardando-ate:` com data futura é Agendada, não Bloqueada — a menos que um bloqueio real coexista. Exceção (#5694): `external-blocker` + `credencial-escopo` (credencial já existe, só falta escopo) não é Bloqueada — vira Develop.",
+    "Bloqueada — nenhuma sessão destrava sozinha: conta de terceiro, credencial, plataforma plan-gated, deferimento vago sem data (`not-this-week`, `next-month`), ou dependência de outra issue ainda aberta (label `dependencia-aberta`, #7137 — aplicada/removida por script a partir do marcador `depends-on: #N`, desarma sozinha quando a dependência fecha). Marcador `aguardando-ate:` com data futura é Agendada, não Bloqueada — a menos que um bloqueio real coexista. Exceção (#5694): `external-blocker` + `credencial-escopo` (credencial já existe, só falta escopo) não é Bloqueada — vira Develop.",
   epica:
     "Épica — issue `[ÉPICA]` guarda-chuva (label `epic-guarda-chuva`, #5968), nunca implementada direto: fecha só quando as issues-filhas mergearem. Vence sobre bloqueio/deferimento real (#6201) — uma épica com `kit-migration`/`beehiiv`/etc. coexistindo continua Épica, não Bloqueada, exceto se o editor já tirou a issue de circulação (`on-hold`/`wontfix`, que vence até Épica).",
   "fora-de-rodada":

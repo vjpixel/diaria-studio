@@ -690,3 +690,34 @@ replicou. Usar `npx tsx scripts/check-replicated-absence.ts --file <path>
 afirmar "nunca rodou"/"alarme morto" a partir de uma ausência em `data/` —
 sem `--executing-machine`, o veredito nunca confirma ausência, só aponta pra
 checar na máquina executora.
+
+## 24. Reconciliar `depends-on:` antes de classificar (#7137)
+
+**Escopo diferente da maioria dos itens acima**: como os itens 15/21, este é
+critério do **coordenador** (overnight, develop, continuo) — roda ANTES da
+classificação via `classifyExecTrack` (mesmo ponto de invocação do item 21,
+Fase 0 passo 4/4a do overnight, Fase 1 passo 4 do develop, passo 1 do "Loop
+invariável" do continuo).
+
+Origem: a #7124 declarava em PROSA que sua liberação dependia da #6798
+fechar. `classifyExecTrack` só lê labels/marcadores, nunca prosa — a label
+`bloqueio-execucao` ficou posta mesmo depois da #6798 fechar, porque
+"remover a label" era um passo manual que ninguém lembrou de fazer. O
+marcador `<!-- depends-on: #N -->` (`scripts/lib/issue-depends-on.ts`)
+resolve a declaração; a label `dependencia-aberta`
+(`DEPENDS_ON_BLOCK_LABEL`, `scripts/lib/issue-exec-track.ts`) resolve a
+classificação — mas as duas só ficam sincronizadas se algo RODAR a
+reconciliação antes de qualquer sessão classificar o backlog.
+
+**Mecanismo:** `npx tsx scripts/reconcile-issue-dependencies.ts --apply`
+(dry-run sem `--apply` — nunca rodar sem a flag numa rodada automatizada,
+senão nenhuma label muda). Varre o backlog aberto, lê `depends-on:` de cada
+issue, consulta o estado real de cada dependência via `gh`, e
+aplica/remove `dependencia-aberta` — nunca remove por falha de consulta
+(dependência com estado indeterminado é tratada como ainda aberta,
+`scripts/lib/issue-depends-on.ts`).
+
+Custa uma varredura de `gh issue list` + 1 `gh issue view` por dependência
+única referenciada — não um subagente. Rodar 1× por rodada, no início da
+classificação, é suficiente (o mecanismo é idempotente — reconciliar de novo
+sem nada ter mudado não produz nenhum `gh issue edit`).
