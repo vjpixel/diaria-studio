@@ -51,10 +51,44 @@ describe("#6771 — dedup do watch-continuo-health", () => {
   const source = readFileSync(SCRIPT, "utf8");
   const callSites = extractFileIssueCallSites(source);
 
-  it("o parser acha as chamadas (senão o teste passaria vazio, sem checar nada)", () => {
-    // Guard contra o próprio teste virar no-op se a assinatura de
-    // `file_issue` mudar de forma: 0 call sites seria "tudo ok" silencioso.
+  it("o parser enxerga TODA chamada a file_issue que existe no script", () => {
+    // Guard contra o ponto cego do parser (review do PR #7330): o regex exige
+    // a formatação `file_issue "m" \` + newline + `"t"`. Uma chamada futura
+    // escrita de outro jeito válido em bash (tudo na mesma linha, aspas
+    // escapadas, variável indireta) não seria capturada — e com uma asserção
+    // de PISO (`>= 6`) os 6 sites atuais já satisfariam o mínimo, deixando o
+    // guard CEGO para o site novo sem falhar nada. Falso-negativo silencioso
+    // é o pior modo de falha possível pra um guard.
+    //
+    // A contagem independente (ocorrências literais de `file_issue "` fora da
+    // definição da própria função) cruza com o que o regex extraiu: divergir
+    // força revisão humana do parser em vez de passar em silêncio.
+    const literalCalls = (source.match(/^\s+file_issue "/gm) ?? []).length;
+    assert.equal(
+      callSites.length,
+      literalCalls,
+      `o regex extraiu ${callSites.length} call sites mas o script tem ${literalCalls} — ` +
+        "alguma chamada está num formato que o parser não enxerga; ajuste o regex antes de confiar neste guard",
+    );
     assert.ok(callSites.length >= 6, `esperava >=6 call sites, achei ${callSites.length}`);
+  });
+
+  it("tratamento de __ERR__ nunca usa igualdade exata (review do PR #7330)", () => {
+    // Com `pipefail` e sem `-e`, `A | B` reporta o rc de A mesmo quando B
+    // capturou a exceção e imprimiu `__ERR__` — então o `|| echo "__ERR__"`
+    // externo dispara também e a variável vira "__ERR__\n__ERR__". Isso
+    // escapa de `[ "$X" = "__ERR__" ]`, e na checagem 4 caía no ramo que ABRE
+    // ISSUE P1 de cobrança com corpo lixo: alarme falso sobre dinheiro a
+    // partir de uma falha de infra. Reproduzido ao vivo em 03/09/2026.
+    //
+    // O guard exige que toda variável comparada com `__ERR__` passe antes por
+    // um `case ... *__ERR__*` normalizador.
+    const equalityChecks = [...source.matchAll(/\[ "\$(\w+)" = "__ERR__" \]/g)].map((m) => m[1]);
+    assert.ok(equalityChecks.length > 0, "esperava encontrar as comparações — o teste não pode virar no-op");
+    const semNormalizador = equalityChecks.filter(
+      (v) => !new RegExp(`case "\\$${v}" in \\*__ERR__\\*\\)`).test(source),
+    );
+    assert.deepEqual(semNormalizador, [], "variável comparada por igualdade sem o `case *__ERR__*` que normaliza antes");
   });
 
   it("TODO marcador é substring do título que a mesma chamada cria", () => {

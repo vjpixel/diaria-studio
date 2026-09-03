@@ -101,6 +101,7 @@ try:
         if x['id']=='5d791ef6fc2c': found=x.get('failure_streak',0); break
     print(found)
 except Exception: print('__ERR__')" 2>/dev/null || echo "__ERR__")
+case "$STREAK" in *__ERR__*) STREAK="__ERR__" ;; esac
 if [ "$STREAK" = "__ERR__" ] || [ -z "$STREAK" ]; then
   echo "[watch] streak: INDETERMINADO (jobs.json ilegível ou job ausente)" >&2; FAILS=$((FAILS+1))
 elif [ "$STREAK" -ge 2 ] 2>/dev/null; then
@@ -127,6 +128,7 @@ try:
             print(f\"{s['sessionId']}: claims={claims} heartbeat parado há {age_min:.0f}min\")
 except Exception:
     print('__ERR__')" 2>/dev/null || echo "__ERR__")
+case "$LEAK" in *__ERR__*) LEAK="__ERR__" ;; esac
 if [ "$LEAK" = "__ERR__" ]; then
   echo "[watch] claims: INDETERMINADO (registry/parse falhou)" >&2; FAILS=$((FAILS+1)); LEAK=""
 fi
@@ -158,6 +160,15 @@ try:
             print(f\"{r['dia']} {r['modelo']} est=\${r['custo_estimado']}\")
 except Exception:
     print('__ERR__')" 2>/dev/null || echo "__ERR__")
+# #6771 (review do PR #7330): comparação por IGUALDADE não bastava. Com
+# `pipefail` e sem `-e`, um `A | B` onde A falha (cost-report ausente)
+# reporta o rc de A mesmo com B tendo capturado a exceção e impresso
+# `__ERR__` sozinho — então o `|| echo "__ERR__"` externo dispara TAMBÉM e
+# `$VAZ` vira "__ERR__\n__ERR__". Isso não casava com a igualdade, caía no
+# ramo `-n` e abria uma issue P1 de "cobrança em modelo pago" com corpo
+# lixo — alarme FALSO sobre dinheiro, a partir de uma falha de infra.
+# Reproduzido ao vivo. `case` com glob cobre as duas formas.
+case "$VAZ" in *__ERR__*) VAZ="__ERR__" ;; esac
 if [ "$VAZ" = "__ERR__" ]; then
   echo "[watch] custo: INDETERMINADO (cost-report falhou)" >&2; FAILS=$((FAILS+1)); VAZ=""
 fi
@@ -240,6 +251,8 @@ try:
     print(len(json.load(sys.stdin)))
 except Exception:
     print('__ERR__')" 2>/dev/null || echo "__ERR__")
+
+  case "$DEGRADED" in *__ERR__*) DEGRADED="__ERR__" ;; esac
 
   if [ "$DEGRADED" = "__ERR__" ]; then
     echo "[watch] composição de tick: parse do resultado falhou" >&2; FAILS=$((FAILS + 1))
@@ -343,6 +356,11 @@ try:
     print(f\"{sum(float(r.get('custo_estimado') or 0) for r in rows if isinstance(r, dict)):.4f}\")
 except Exception:
     print('__ERR__')" 2>/dev/null || echo "__ERR__")
+# Mesmo normalizador da checagem 4 (ver o porquê lá): sem ele, falha do
+# cost-report produzia "__ERR__\n__ERR__", que escapava das duas comparações
+# e imprimia uma linha de log com lixo SEM incrementar FAILS — exatamente o
+# contrário do que o comentário acima promete.
+case "$GASTO" in *__ERR__*) GASTO="__ERR__" ;; esac
 if [ "$GASTO" = "__ERR__" ] || [ -z "$GASTO" ]; then
   # Mesma disciplina das checagens 1-7: indeterminado incrementa FAILS em vez
   # de reportar "$0,00", que seria indistinguivel de um dia genuinamente barato.
