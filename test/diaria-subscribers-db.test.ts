@@ -15,6 +15,7 @@ import {
   findSubscriberIdsByEmail,
   getCohortEventCounts,
   getStoreCounts,
+  SUBSCRIPTION_COVERAGE_WARN_FRACTION,
   getSubscriptionsForSubscriber,
   migrateSubscriptionColumns,
   isPlatform,
@@ -563,6 +564,59 @@ describe("findSubscriberIdByAlias / findSubscriberIdsByEmail", () => {
     assert.equal(findSubscriberIdByAlias(db, "brevo_diaria", "outro-ext", "busca@example.com"), null);
     assert.deepEqual(findSubscriberIdsByEmail(db, "busca@example.com"), [id]);
     assert.deepEqual(findSubscriberIdsByEmail(db, "BUSCA@example.com"), [id]);
+    db.close();
+  });
+});
+
+describe("getStoreCounts — guard de cobertura de subscription (#7229)", () => {
+  it("subscription totalmente vazia (0 de N subscriber) marca subscriptions_coverage_low: true — o estado real produzido pelo ingest Beehiiv antes deste fix", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    // Reproduz o estado medido em master antes da #7229: subscriber/event
+    // populados (via o passo de engajamento, que nunca chamava
+    // upsertSubscription), subscription com ZERO linhas.
+    ensureSubscriber(db, "beehiiv", "sub-1", "a@x.com");
+    ensureSubscriber(db, "beehiiv", "sub-2", "b@x.com");
+    const counts = getStoreCounts(db);
+    assert.equal(counts.subscribers, 2);
+    assert.equal(counts.subscriptions, 0);
+    assert.equal(
+      counts.subscriptions_coverage_low,
+      true,
+      "0 de 2 subscribers com subscription não pode sair indistinguível de \"zero assinatura real\"",
+    );
+    db.close();
+  });
+
+  it("cobertura ACIMA do limiar não marca — não é falso-positivo em store saudável", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    for (let i = 0; i < 10; i++) {
+      const id = ensureSubscriber(db, "kit", `ext-${i}`, `leitor${i}@example.com`);
+      upsertSubscription(db, id, "kit", { status: "active", enteredAt: "2026-08-01", exitedAt: null, source: "organico" });
+    }
+    const counts = getStoreCounts(db);
+    assert.equal(counts.subscriptions, 10);
+    assert.equal(counts.subscriptions_coverage_low, false);
+    db.close();
+  });
+
+  it("cobertura exatamente no limiar (50%) NÃO marca — só ABAIXO marca (fronteira estrita)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const idWith = ensureSubscriber(db, "kit", "ext-with", "com-sub@example.com");
+    upsertSubscription(db, idWith, "kit", { status: "active", enteredAt: "2026-08-01", exitedAt: null, source: "organico" });
+    ensureSubscriber(db, "kit", "ext-without", "sem-sub@example.com");
+    const counts = getStoreCounts(db);
+    assert.equal(counts.subscribers, 2);
+    assert.equal(counts.subscriptions, 1);
+    assert.equal(counts.subscriptions / counts.subscribers, SUBSCRIPTION_COVERAGE_WARN_FRACTION);
+    assert.equal(counts.subscriptions_coverage_low, false, "exatamente no limiar ainda conta como cobertura ok");
+    db.close();
+  });
+
+  it("store sem nenhum subscriber (fresh) não marca — não há cobertura a avaliar", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const counts = getStoreCounts(db);
+    assert.equal(counts.subscribers, 0);
+    assert.equal(counts.subscriptions_coverage_low, false);
     db.close();
   });
 });

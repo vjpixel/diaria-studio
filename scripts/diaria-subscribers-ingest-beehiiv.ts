@@ -57,6 +57,7 @@
  * Uso:
  *   npx tsx scripts/diaria-subscribers-ingest-beehiiv.ts [--db <p>]
  *     [--manifest <p>] [--source-dir <p>] [--limit N] [--post <post_id>] [--reset]
+ *     [--roster-root <p>] [--skip-roster]
  *
  * Sem rede nenhuma — não requer nenhuma API key. Stdout: JSON summary.
  * Stderr: progresso.
@@ -80,6 +81,24 @@
  * {kit,brevo}.ts`) já ingeridas, `--reset` apaga os dados delas também
  * (é o MESMO arquivo `.db`); reingerir as outras plataformas depois é
  * responsabilidade de quem roda o comando, não deste script.
+ *
+ * ## Passo do ROSTER — popula `subscription` (#7229)
+ *
+ * O passo de engajamento acima (posts × assinante) nunca teve `status`/
+ * `created`/UTM — por isso nenhum ingest Beehiiv chamava `upsertSubscription`
+ * e a dimensão `subscription` seguia com ZERO linhas mesmo com o store
+ * cheio de `subscriber`/`event` (#7229, medido em master). Essa informação
+ * vem do snapshot semanal `data/beehiiv-backup/{YYYY-MM-DD}/
+ * subscribers.jsonl` (`backup-beehiiv.ts`) — depois do passo de engajamento
+ * acima, `main` lê o snapshot MAIS RECENTE sob `--roster-root` (default
+ * `data/beehiiv-backup`) e chama `ingestBeehiivRoster`
+ * (`beehiiv-subscribers-ingest.ts`) uma vez por execução. Sem manifest
+ * próprio — `upsertSubscription`/`recordEvent` já são idempotentes, e
+ * reprocessar o snapshot inteiro a cada rodada é barato (é 1 upsert por
+ * assinante, sem I/O de rede). `--skip-roster` pula este passo (útil pra
+ * testar só o passo de engajamento, ou numa máquina sem snapshot ainda).
+ * Nenhum snapshot encontrado é `warn`, não erro fatal — o passo de
+ * engajamento continua valendo mesmo sem `subscribers.jsonl`.
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
@@ -88,8 +107,14 @@ import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 import { getArg, getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { DEFAULT_DB_PATH, openDiariaSubscribersDb } from "./lib/diaria-subscribers-db.ts";
-import { ingestPostEngagement, verifyBeehiivIngestion, type BeehiivEngagementRecord } from "./lib/beehiiv-subscribers-ingest.ts";
+import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getStoreCounts } from "./lib/diaria-subscribers-db.ts";
+import {
+  ingestPostEngagement,
+  verifyBeehiivIngestion,
+  ingestBeehiivRoster,
+  type BeehiivEngagementRecord,
+} from "./lib/beehiiv-subscribers-ingest.ts";
+import { latestSnapshotDate, readSnapshotSubscribers } from "./lib/beehiiv-backup-snapshots.ts";
 import {
   type EngagementManifest,
   type EngagementManifestEntry,
@@ -108,6 +133,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const DEFAULT_SOURCE_DIR = resolve(ROOT, "data/beehiiv-backup/subscriber-engagement");
 export const DEFAULT_MANIFEST_PATH = resolve(dirname(DEFAULT_DB_PATH), "beehiiv-ingest-manifest.json");
+/** Raiz dos snapshots semanais (`{YYYY-MM-DD}/subscribers.jsonl`) — passo
+ *  do roster (#7229), fonte diferente do passo de engajamento acima. */
+export const DEFAULT_ROSTER_ROOT = resolve(ROOT, "data/beehiiv-backup");
 
 // ---------------------------------------------------------------------------
 // Leitura do backup da fatia 1 (manifest.json + {post_id}.jsonl)
@@ -264,9 +292,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
   const manifestPath = getArg(argv, "manifest") || DEFAULT_MANIFEST_PATH;
   const sourceDir = getArg(argv, "source-dir") || DEFAULT_SOURCE_DIR;
+  const rosterRoot = getArg(argv, "roster-root") || DEFAULT_ROSTER_ROOT;
   const limit = getIntArg(argv, "limit", { min: 1 });
   const postFilter = getStringArg(argv, "post");
   const reset = hasFlag(argv, "reset");
+  const skipRoster = hasFlag(argv, "skip-roster");
 
   const dbDir = dirname(dbPath);
   const dataRoot = dirname(dbDir);
@@ -341,6 +371,32 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     );
   }
 
+  // Passo do roster (#7229) — popula `subscription`, fonte diferente do
+  // loop de engajamento acima (ver docstring do módulo). Roda uma vez por
+  // execução, depois do passo de engajamento; idempotente, sem manifest
+  // próprio (upsertSubscription/recordEvent já dedupe).
+  let rosterResult: ReturnType<typeof ingestBeehiivRoster> | null = null;
+  let rosterSnapshotDate: string | null = null;
+  if (!skipRoster) {
+    rosterSnapshotDate = latestSnapshotDate(rosterRoot);
+    if (rosterSnapshotDate) {
+      const rosterSubscribers = readSnapshotSubscribers(rosterRoot, rosterSnapshotDate);
+      console.error(
+        `📇 roster: snapshot ${rosterSnapshotDate} (${rosterSubscribers.length} assinante(s)) sob ${rosterRoot}.`,
+      );
+      rosterResult = ingestBeehiivRoster(db, rosterSubscribers);
+      console.error(
+        `  …roster: ${rosterResult.subscriptionsWritten} subscription(s) escrita(s), ` +
+          `${rosterResult.subscribeEvents.newEvents} subscribe novo(s), ` +
+          `${rosterResult.unsubEvents.newEvents} unsub novo(s), ` +
+          `${rosterResult.recordsSkippedNoEmail} sem e-mail pulado(s)`,
+      );
+    } else {
+      console.error(`⚠️  roster: nenhum snapshot encontrado sob ${rosterRoot} — subscription não populada nesta rodada.`);
+    }
+  }
+
+  const storeCounts = getStoreCounts(db);
   db.close();
 
   const coverage = manifestCoverageSummary(manifest);
@@ -355,6 +411,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         events_new: eventsNewTotal,
         events_already_known: eventsAlreadyKnownTotal,
         coverage,
+        roster: {
+          skipped: skipRoster,
+          root: rosterRoot,
+          snapshot_date: rosterSnapshotDate,
+          result: rosterResult,
+        },
+        store_counts: storeCounts,
       },
       null,
       2,

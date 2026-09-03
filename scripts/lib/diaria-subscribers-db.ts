@@ -511,7 +511,33 @@ export function recordEvent(
 // Leitura — as duas consultas que importam (critério de pronto da #6585)
 // ---------------------------------------------------------------------------
 
-/** Timeline de 1 assinante — todos os eventos, ordenados por ts. */
+/**
+ * Timeline de 1 assinante — todos os eventos, ordenados por ts.
+ *
+ * **`COUNT`/`.filter(...).length` sobre `type === "unsub"` não é confiável
+ * (#7233 finding 2).** Para a Beehiiv, 2 caminhos gravam `unsub` sobre o
+ * MESMO fato real com chaves naturais diferentes de propósito (nenhuma
+ * duplicação de bug — cada uma é o registro correto da sua própria fonte):
+ *
+ *   - `ingestPostEngagement` (`beehiiv-subscribers-ingest.ts`) grava 1
+ *     `unsub` por POST cujo `status` do registro de engajamento veio
+ *     `"unsubscribed"` — chave `identity:postId:unsub`. Multiplica
+ *     naturalmente: todo post novo ingerido enquanto o assinante seguir
+ *     descadastrado grava outro `unsub` (postId diferente = chave
+ *     diferente, `INSERT OR IGNORE` não colide).
+ *   - `ingestBeehiivRoster` (`ingestBeehiivRoster`, #7229) grava no máximo
+ *     1 `unsub` por TRANSIÇÃO active→exited do roster — chave
+ *     `identity:unsub:status:capturaDay`.
+ *
+ * As duas granularidades são genuinamente diferentes (per-post vs.
+ * per-transição) e não têm um campo comum pra colidir sem perder
+ * informação de uma das duas — por isso não foram unificadas numa chave
+ * única. Quem só precisa saber "este assinante já se descadastrou alguma
+ * vez" usa `hasSubscriberEventOfType(db, subscriberId, "unsub")` (EXISTS,
+ * nunca duplica); quem precisa CONTAR ocorrências de `unsub` por período
+ * (`getCohortEventCounts`) deve ter isso em mente — o número é um TETO de
+ * eventos gravados, não uma contagem de descadastros distintos.
+ */
 export function getSubscriberTimeline(
   db: DatabaseSync,
   subscriberId: number,
@@ -522,6 +548,28 @@ export function getSubscriberTimeline(
        FROM event WHERE subscriber_id = ? ORDER BY ts ASC`,
     )
     .all(subscriberId) as unknown as TimelineEvent[];
+}
+
+/**
+ * `true` se o assinante tem ao menos 1 evento do tipo dado — leitura
+ * EXISTS, nunca conta ocorrências. É o jeito correto de checar "este
+ * assinante já se descadastrou alguma vez" sem cair na armadilha de somar
+ * linhas de `type = 'unsub'` (ver docstring de `getSubscriberTimeline`
+ * acima, #7233 finding 2) ou de qualquer outro eixo que, no futuro, ganhe
+ * mais de 1 fonte gravando o mesmo fato com chaves naturais diferentes.
+ */
+export function hasSubscriberEventOfType(
+  db: DatabaseSync,
+  subscriberId: number,
+  type: EventType,
+  platform?: Platform,
+): boolean {
+  const row = platform
+    ? db
+        .prepare("SELECT 1 FROM event WHERE subscriber_id = ? AND type = ? AND platform = ? LIMIT 1")
+        .get(subscriberId, type, platform)
+    : db.prepare("SELECT 1 FROM event WHERE subscriber_id = ? AND type = ? LIMIT 1").get(subscriberId, type);
+  return row !== undefined;
 }
 
 /** Resolve o subscriber_id de um alias já conhecido — usado pra ir de
@@ -596,22 +644,58 @@ export function getCohortEventCounts(
   return rows;
 }
 
+/**
+ * Fração mínima de `subscriber` com linha correspondente em `subscription`
+ * abaixo da qual `getStoreCounts` marca a cobertura como BAIXA em vez de
+ * deixar `subscriptions: 0` (ou quase) passar como zero legítimo (#7229).
+ * Mesmo padrão de `MISSING_STATS_WARN_FRACTION` (`scripts/lib/leitor.ts`) —
+ * este guard cobre a contagem BRUTA do store (`getStoreCounts`); o guard
+ * companheiro em `leitor-store.ts` (#7198) cobre a LEITURA cross-plataforma
+ * de `leitor-v1`, escopo diferente, não duplicado aqui.
+ */
+export const SUBSCRIPTION_COVERAGE_WARN_FRACTION = 0.5;
+
 /** Contagem simples de linhas por tabela — usado pelo builder/CLI pra
- * imprimir um summary sem precisar reimplementar SELECT COUNT(*) 4x. */
+ * imprimir um summary sem precisar reimplementar SELECT COUNT(*) 4x.
+ *
+ * `subscriptions_coverage_low` (#7229): `true` quando `subscriptions /
+ * subscribers` está abaixo de `SUBSCRIPTION_COVERAGE_WARN_FRACTION` — sinal
+ * explícito de que a dimensão `subscription` está pouco populada (nenhum
+ * ingest rodou ainda, ou só uma fração das plataformas do store chama
+ * `upsertSubscription`), nunca confundível com "zero assinatura real". Sem
+ * `subscriber` nenhum (`subscribers === 0`) não há cobertura pra avaliar —
+ * fica `false`, não é o caso que este guard existe pra pegar. Emite
+ * `console.warn` na mesma passada, mesmo padrão de `summarizeLeitores`. */
 export function getStoreCounts(db: DatabaseSync): {
   subscribers: number;
   identity_aliases: number;
   subscriptions: number;
   events: number;
+  subscriptions_coverage_low: boolean;
 } {
   const count = (table: string): number =>
     (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number })
       .n;
+  const subscribers = count("subscriber");
+  const subscriptions = count("subscription");
+  const coverage = subscribers > 0 ? subscriptions / subscribers : 1;
+  const subscriptions_coverage_low = subscribers > 0 && coverage < SUBSCRIPTION_COVERAGE_WARN_FRACTION;
+  if (subscriptions_coverage_low) {
+    console.warn(
+      `[diaria-subscribers-db] aviso: subscription (${subscriptions}) cobre só ` +
+        `${(coverage * 100).toFixed(1)}% de subscriber (${subscribers}) — abaixo de ` +
+        `${(SUBSCRIPTION_COVERAGE_WARN_FRACTION * 100).toFixed(0)}%. "subscriptions: ${subscriptions}" NÃO significa ` +
+        `"sem assinatura real" — significa "dimensão pouco populada" (nenhum ingest de subscription rodou ainda, ` +
+        `ou só parte das plataformas do store chama upsertSubscription, #7229). Não usar este número como fato ` +
+        `sem checar a cobertura.`,
+    );
+  }
   return {
-    subscribers: count("subscriber"),
+    subscribers,
     identity_aliases: count("identity_alias"),
-    subscriptions: count("subscription"),
+    subscriptions,
     events: count("event"),
+    subscriptions_coverage_low,
   };
 }
 

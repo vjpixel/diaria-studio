@@ -41,8 +41,16 @@ export interface BeehiivBackupCustomField {
  *  `custom_fields` TIPADO desde #5842 — `build-origem-map.ts` lê o campo
  *  `origem_original` (#5231) de dentro dele; o array já sobrevivia ao
  *  parse sem tipagem (JSON.parse preserva toda chave presente na linha),
- *  aqui só formaliza o shape pro TS. */
+ *  aqui só formaliza o shape pro TS. `id` TIPADO desde #7229 — a identidade
+ *  nativa da Beehiiv (`sub.id`, mesmo espaço de id que
+ *  `beehiiv-subscribers-ingest.ts` já usa como `subscriber_id` na ingestão
+ *  de engajamento por post), consumida por `ingestBeehiivRoster` pra popular
+ *  a dimensão `subscription` do store unificado. Opcional/`unknown` (não
+ *  `string` reto) porque este tipo é o shape TOLERANTE do que sobrevive ao
+ *  `JSON.parse` — mesma disciplina de `BeehiivEngagementRecord` no módulo
+ *  irmão: nenhum campo é assumido presente sem checagem no consumidor. */
 export interface BeehiivBackupSubscriber {
+  id?: unknown;
   email: string;
   status: string;
   created: number;
