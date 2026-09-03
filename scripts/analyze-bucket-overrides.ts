@@ -643,21 +643,50 @@ function renderReport(summary: AnalysisSummary): string {
   return lines.join("\n");
 }
 
-function main(): void {
-  // #5995 (achado 260903): `parseArgsSimple` trata TODO `--flag` como
-  // `--flag valor` — um `--rules` (ou `--json`) sem valor engolia o token
-  // seguinte como se fosse o seu valor. `--rules --editions-dir X` fazia
-  // `values["rules"] = "--editions-dir"` e X nunca era lido como
-  // editions-dir (caía no default `data/editions`, inexistente em worktree
-  // de subagente — "diretório não encontrado" mesmo com o path certo
-  // passado). Same para `--json --rules`. `parseArgs` (com `flags`/`values`
-  // separados) trata `--rules`/`--json` como flags booleanas de verdade,
-  // então a ordem dos argumentos deixa de importar.
-  const { values, flags } = parseArgs(process.argv.slice(2));
+export interface CliOptions {
+  editionsDir: string;
+  asJson: boolean;
+  rulesMode: boolean;
+  examplesPerDirection: number;
+  window: number;
+}
+
+/**
+ * #5995 (achado 260903, review PR #7331): `parseArgsSimple` trata TODO
+ * `--flag` como `--flag valor` — um `--rules` (ou `--json`) sem valor
+ * engolia o token SEGUINTE como se fosse o seu valor. `--rules
+ * --editions-dir X` fazia `values["rules"] = "--editions-dir"` e X nunca
+ * era lido como editions-dir (caía no default `data/editions`, inexistente
+ * em worktree de subagente — "diretório não encontrado" mesmo com o path
+ * certo passado). Mesmo problema com `--json --rules`. `parseArgs` (com
+ * `flags`/`values` separados) trata `--rules`/`--json` como flags booleanas
+ * de verdade, então a ordem dos argumentos deixa de importar.
+ *
+ * Extraído de `main()` como função pura pra ser testável sem subprocess —
+ * `test/analyze-bucket-overrides-cli-args.test.ts` cobre as duas ordens
+ * (`--rules --editions-dir X` e `--editions-dir X --rules`) e trava que
+ * ambas resolvem o mesmo `editionsDir`.
+ */
+export function resolveCliOptions(argv: string[], root: string): CliOptions {
+  const { values, flags } = parseArgs(argv);
   const editionsDirArg = values["editions-dir"] ?? "data/editions";
-  const editionsDir = editionsDirArg.startsWith("/") ? editionsDirArg : resolve(ROOT, editionsDirArg);
+  const editionsDir = editionsDirArg.startsWith("/") ? editionsDirArg : resolve(root, editionsDirArg);
   const asJson = flags.has("json");
   const rulesMode = flags.has("rules"); // #6647
+  const examplesPerDirection = values["examples"] ? Number.parseInt(values["examples"], 10) : 5;
+  const windowArg = values["window"] ? Number.parseInt(values["window"], 10) : DEFAULT_WINDOW;
+  const window = Number.isFinite(windowArg) && windowArg > 0 ? windowArg : DEFAULT_WINDOW;
+  return {
+    editionsDir,
+    asJson,
+    rulesMode,
+    examplesPerDirection: Number.isFinite(examplesPerDirection) ? examplesPerDirection : 5,
+    window,
+  };
+}
+
+function main(): void {
+  const { editionsDir, asJson, rulesMode, examplesPerDirection, window } = resolveCliOptions(process.argv.slice(2), ROOT);
 
   if (rulesMode) {
     const collected = collectRuleUsage(editionsDir);
@@ -670,12 +699,8 @@ function main(): void {
     return;
   }
 
-  const examplesPerDirection = values["examples"] ? Number.parseInt(values["examples"], 10) : 5;
-  const windowArg = values["window"] ? Number.parseInt(values["window"], 10) : DEFAULT_WINDOW;
-  const window = Number.isFinite(windowArg) && windowArg > 0 ? windowArg : DEFAULT_WINDOW;
-
   const editionMoves = analyzeEditionsUnderRoot(editionsDir);
-  const summary = summarize(editionMoves, Number.isFinite(examplesPerDirection) ? examplesPerDirection : 5, window);
+  const summary = summarize(editionMoves, examplesPerDirection, window);
 
   if (asJson) {
     console.log(JSON.stringify(summary, null, 2));

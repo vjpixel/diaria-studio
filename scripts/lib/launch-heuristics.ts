@@ -277,7 +277,14 @@ const CUSTOMER_STORY_PATTERNS: RegExp[] = [
   // real do pattern (empresa cliente). Object genérico de audiência não
   // identifica um cliente — exclui só "developers"; "bankers"/"drivers"/
   // outros públicos específicos de um customer story real continuam batendo.
-  /\b\w+\s+helps?\s+(?!developers\b)\w+(\s+\w+){0,3}\s+(move|grow|scale|work|earn|build|automate|deliver)\b/i,
+  //
+  // #5995 (review PR #7331, achado 03/09): a 1ª versão só olhava a palavra
+  // IMEDIATAMENTE após "helps" — "helps enterprise developers build" (ou
+  // "helps developer productivity", singular) passava reto porque o token
+  // logo depois de "helps" era "enterprise"/"developer", não "developers".
+  // O lookahead agora varre até 3 palavras à frente por "developer(s)" em
+  // QUALQUER posição do objeto (não só a primeira), e cobre singular/plural.
+  /\b\w+\s+helps?\s+(?!(?:\w+\s+){0,3}developers?\b)\w+(\s+\w+){0,3}\s+(move|grow|scale|work|earn|build|automate|deliver)\b/i,
   // Programa de bolsa / aceleradora — "Class of YYYY"
   /\bclass\s+of\s+\d{4}\b/i,
   // "X uses Y/Z to Z" (Uber uses OpenAI to help people earn)
@@ -464,10 +471,22 @@ const NON_PRODUCT_ANNOUNCEMENT_PATTERNS: RegExp[] = [
   // "NVIDIA launches 'Open Secure AI Alliance' initiative to improve cyber
   // defense" (tem "launches", verbo de lançamento forte, e mesmo assim não é
   // lançamento de produto) e "Industry Leaders Unite in Open Secure AI
-  // Alliance for AI Safety and Security". Corpus não tem nenhum caso onde
-  // "alliance"/"coalition" nomeia um produto vendável — sempre iniciativa/
-  // consórcio.
-  /\b(alliance|coalition)\b/i,
+  // Alliance for AI Safety and Security".
+  //
+  // #5995 (review PR #7331, achado 03/09): a 1ª versão era
+  // `/\b(alliance|coalition)\b/i` — casava a palavra solta em QUALQUER
+  // posição, inclusive dentro de frase comum ("built in alliance with
+  // enterprise partners"). O review reproduziu a regressão: "Introducing
+  // GPT-6" com esse texto no summary virava `noticias`. Os 2 casos reais só
+  // têm "Alliance" como NOME PRÓPRIO capitalizado ("Open Secure AI
+  // Alliance") — nunca solto. Fix: exige uma palavra capitalizada
+  // imediatamente antes de "Alliance"/"Coalition" (sinal de nome composto de
+  // organização). Regex SEM `/i` de propósito — sob `/i` o JS trata `[A-Z]`
+  // como case-insensitive também, o que anularia a checagem de maiúscula
+  // (mesma armadilha documentada em `TUTORIAL_TITLE_EXTRA_RE` acima).
+  // "alliance"/"coalition" minúsculos (uso comum, não nome próprio) não
+  // disparam mais.
+  /\b[A-Z]\w*\s+(Alliance|Coalition)\b/,
 ];
 
 function isNonProductAnnouncement(article: Article): boolean {
