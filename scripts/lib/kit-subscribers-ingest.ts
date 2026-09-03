@@ -300,6 +300,9 @@ export function ingestKitRoster(
         utmSource: fields.utm_source ?? null,
         utmTerm: fields.utm_term ?? null,
         utmContent: fields.utm_content ?? null,
+        // #7179 (F7): série viva do Kit — distingue de "backfill-beehiiv"/
+        // "seed-kit" nas linhas reconstruídas pelo backfill histórico.
+        origemSerie: "kit-vivo",
       },
       now,
     );

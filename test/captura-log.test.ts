@@ -61,4 +61,40 @@ describe("hasCaptureOnDay", () => {
     assert.equal(hasCaptureOnDay(entries, "2026-09-02"), true);
     assert.equal(entries[0].novos_gravados, 0);
   });
+
+  it("#7179: usa `dia` (já BRT) quando presente, ignorando o dia UTC de captured_at", () => {
+    // captured_at cai num dia UTC diferente de `dia` (execução do backfill
+    // rodando de madrugada) — `dia` precisa vencer, nunca o captured_at.
+    const entries = [
+      buildCapturaLogEntry({
+        platform: "beehiiv",
+        capturedAt: "2026-09-03T02:00:00.000Z", // 2026-09-02 23:00 BRT
+        totalRetornadoApi: 3,
+        novosGravados: 3,
+        eventosEstado: 3,
+        exit: 0,
+        origemSerie: "backfill-beehiiv",
+        dia: "2026-06-01",
+      }),
+    ];
+    assert.equal(hasCaptureOnDay(entries, "2026-06-01"), true);
+    assert.equal(hasCaptureOnDay(entries, "2026-09-02"), false);
+    assert.equal(entries[0].origem_serie, "backfill-beehiiv");
+  });
+
+  it("#7179: sem `dia` (linha kit-vivo pré-existente), cai para captured_at convertido pra BRT", () => {
+    // 2026-09-02T02:00:00Z = 2026-09-01 23:00 BRT (UTC-3) — dia BRT é o
+    // anterior ao dia UTC.
+    const entries = [
+      buildCapturaLogEntry({ platform: "kit", capturedAt: "2026-09-02T02:00:00.000Z", totalRetornadoApi: 1, novosGravados: 0, eventosEstado: 0, exit: 0 }),
+    ];
+    assert.equal(hasCaptureOnDay(entries, "2026-09-01"), true);
+    assert.equal(hasCaptureOnDay(entries, "2026-09-02"), false);
+  });
+
+  it("#7179: origem_serie/dia ausentes por padrão (compatibilidade com linhas pré-#7179)", () => {
+    const entry = buildCapturaLogEntry({ platform: "kit", capturedAt: "2026-09-02T04:25:00.000Z", totalRetornadoApi: 1, novosGravados: 0, eventosEstado: 0, exit: 0 });
+    assert.equal(entry.origem_serie, undefined);
+    assert.equal(entry.dia, undefined);
+  });
 });
