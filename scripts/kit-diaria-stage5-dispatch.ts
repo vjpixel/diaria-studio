@@ -360,7 +360,12 @@ export async function runStage5KitDispatch(
   // isolado não aborta o dispatch, só fica pra próxima rodada resgatar.
   let backfillTaggedCount: number | undefined;
   let backfillErrors: string[] | undefined;
-  if (!opts.sendTest) {
+  // #7370 (achado do fleet review pré-merge, P1): `--dry-run` promete não
+  // tocar em nada, mas o backfill abaixo é escrita real (`tagSubscriber`) na
+  // API do Kit — sem o guard `!opts.dryRun`, rodar em preview ainda assim
+  // taggeava assinantes reais com a tag de produção. `countTagMembers` (mais
+  // abaixo) continua rodando incondicionalmente pois é só leitura.
+  if (!opts.sendTest && !opts.dryRun) {
     const cutoff = resolveCreatedAfterCutoff(deps.readPlatformConfig().kit_diaria);
     if (cutoff) {
       let candidates: { id: number; tagIds: number[] }[];

@@ -650,4 +650,22 @@ describe("#7357 runStage5KitDispatch — resgate por data (subscriber_filter_cre
     }
     assert.equal(spy.tagSubscriberCalls.length, 2, "tentou os dois — 1 falhou, não abortou o resto");
   });
+
+  it("#7370 (achado do fleet review) — --dry-run NUNCA aciona o resgate: candidatos elegíveis, tagSubscriber 0 chamadas", async () => {
+    const { deps, spy } = makeDeps({
+      config: { enabled: true, subscriber_filter_created_after: "2026-08-25" },
+      listCreatedAfterCandidates: async () => [
+        { id: 101, tagIds: [] }, // precisaria de tag em produção
+        { id: 103, tagIds: [999] }, // idem
+      ],
+    });
+    const r = await runStage5KitDispatch(EDITION, deps, { dryRun: true });
+    assert.equal(r.status, "skipped");
+    assert.equal(
+      spy.tagSubscriberCalls.length,
+      0,
+      "dry-run promete não tocar em nada — escrita real de tag não pode vazar sob a flag de preview",
+    );
+    assert.equal(spy.createCalls.length, 0);
+  });
 });
