@@ -15,7 +15,7 @@ import {
   METRICAS,
   enumerarDiasInclusive,
   KIT_IMPORT_DAY,
-  CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR,
+  KIT_SERIES_FLOOR as CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR,
   type MetricDef,
   type MetricDeps,
   type Janela,

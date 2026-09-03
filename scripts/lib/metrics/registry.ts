@@ -795,7 +795,8 @@ const primeiroClique14dDef: MetricDef<AtivacaoCoorteMetricDeps> = {
  *  precisa converter a partir da dimensão `date` do GA4 (UTC ou o fuso
  *  configurado) antes de agregar — este módulo não faz I/O nem sabe ler
  *  Admin da propriedade, só documenta a exigência para o CHAMADOR. */
-export const GA4_REPORT_TIMEZONE_ASSUMED = "America/Sao_Paulo";
+const GA4_REPORT_TIMEZONE_ASSUMED = "America/Sao_Paulo";
+void GA4_REPORT_TIMEZONE_ASSUMED; // documentação p/ o chamador (ga4-sync.ts) — ainda não consumida (#7184)
 
 export interface Ga4SessionInput {
   /** Dia BRT (`AAAA-MM-DD`) já resolvido pelo chamador — mesma disciplina
@@ -908,7 +909,7 @@ const sessoesPorClasseDiaDef: MetricDef<Ga4TrafficMetricDeps> = {
  *  subestimado enquanto o DENOMINADOR GA4 (`sessionMedium=cpc`) não é —
  *  `conversao-visita-cadastro` da classe `pago` anterior a essa data sai
  *  artificialmente baixa e não deve ser lida como sinal. */
-export const CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR = KIT_SERIES_FLOOR;
+const CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR = KIT_SERIES_FLOOR;
 
 export interface ConversaoVisitaCadastroDeps extends Ga4TrafficMetricDeps, AcquisitionMetricDeps {}
 
