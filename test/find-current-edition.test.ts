@@ -121,7 +121,7 @@ describe("findEditionsInProgress", () => {
     const scenarios: Array<{ stage: 2 | 3 | 4 | 5 | 6; prereq: string[] }> = [
       { stage: 2, prereq: ["_internal/01-approved.json"] },
       { stage: 3, prereq: ["_internal/01-approved.json"] },
-      { stage: 4, prereq: ["02-reviewed.md", "03-social.md", "04-d1-1x1.jpg"] },
+      { stage: 4, prereq: ["02-reviewed.md", "03-social.md", "_internal/.step-3-done.json"] },
       { stage: 5, prereq: ["_internal/.step-4-done.json"] },
       { stage: 6, prereq: ["_internal/.step-5-done.json"] },
     ];
@@ -194,17 +194,17 @@ describe("findEditionsInProgress", () => {
     }
   });
 
-  it("Stage 4 (Revisão #1694): requires 02-reviewed.md, 03-social.md AND 04-d1-1x1.jpg (Stage 3 output) as prereq, output is .step-4-done.json", () => {
+  it("Stage 4 (Revisão #1694): requires 02-reviewed.md, 03-social.md AND _internal/.step-3-done.json (Stage 3 sentinel) as prereq, output is .step-4-done.json", () => {
     const { root, cleanup } = setupSandbox();
     try {
       // Only 02-reviewed.md → not enough
       makeEdition(root, "260505", ["02-reviewed.md"]);
       assert.deepEqual(findEditionsInProgress(4, root), []);
-      // Add 03-social.md → still not enough, Stage 3 (imagens) output missing
+      // Add 03-social.md → still not enough, Stage 3 (imagens) sentinel missing
       makeEdition(root, "260505", ["03-social.md"]);
       assert.deepEqual(findEditionsInProgress(4, root), []);
-      // Add 04-d1-1x1.jpg (Stage 3 done) → now in progress
-      makeEdition(root, "260505", ["04-d1-1x1.jpg"]);
+      // Add _internal/.step-3-done.json (Stage 3 genuinely done) → now in progress
+      makeEdition(root, "260505", ["_internal/.step-3-done.json"]);
       assert.deepEqual(findEditionsInProgress(4, root), ["260505"]);
       // Add output sentinel → done
       makeEdition(root, "260505", ["_internal/.step-4-done.json"]);
@@ -219,9 +219,36 @@ describe("findEditionsInProgress", () => {
     try {
       // Cenário real (edição 260830): Stage 2 acabou de escrever
       // 02-reviewed.md/03-social.md, mas run-edition-stages.ts ainda não
-      // disparou o Stage 3 — sem 04-d1-1x1.jpg, não é candidato de Stage 4.
+      // disparou o Stage 3 — sem a sentinela do Stage 3, não é candidato de Stage 4.
       makeEdition(root, "260505", ["02-reviewed.md", "03-social.md"]);
       assert.deepEqual(findEditionsInProgress(4, root), []);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#7220: Stage 4 — só 04-d1-1x1.jpg presente (sem a sentinela .step-3-done.json) NÃO deve listar como candidata", () => {
+    const { root, cleanup } = setupSandbox();
+    try {
+      // Cenário do #7220: Stage 3 morre logo após gerar a 1ª de 4 imagens de
+      // destaque (d1), antes de d2/d3 — Stage 3 está genuinamente incompleto.
+      // Antes do fix, "04-d1-1x1.jpg" era o próprio prereq de Stage 4, então
+      // esse cenário listava a edição como "Stage 4 em progresso" — o mesmo
+      // falso-positivo de conteúdo-como-sentinela que o #7186 já corrigiu
+      // para os prereqs de Stage 2/3.
+      makeEdition(root, "260505", [
+        "02-reviewed.md",
+        "03-social.md",
+        "04-d1-1x1.jpg",
+      ]);
+      assert.deepEqual(
+        findEditionsInProgress(4, root),
+        [],
+        "sem _internal/.step-3-done.json, Stage 3 não terminou — Stage 4 não pode assumir esta edição",
+      );
+      // Confirma que a sentinela correta destrava o candidato (mesmo teste do bloco acima, isolado)
+      makeEdition(root, "260505", ["_internal/.step-3-done.json"]);
+      assert.deepEqual(findEditionsInProgress(4, root), ["260505"]);
     } finally {
       cleanup();
     }
