@@ -257,6 +257,25 @@ describe("formatReport — persistência e checagem da Beehiiv (#6984 2ª rodada
 });
 
 describe("formatReport — nunca declara 'aplicada' enquanto a propagação não confirma (#7296)", () => {
+  it("todos os endereços da onda FALHARAM (0/0 trivial): não diz 'aplicada', só que nada foi tagueado — review da PR #7352", () => {
+    const out = formatReport(
+      fakeResult({
+        pushed: true,
+        safeToTag: ["falhou1@gmail.com", "falhou2@gmail.com"],
+        failedEmails: [
+          { email: "falhou1@gmail.com", error: "ECONNRESET" },
+          { email: "falhou2@gmail.com", error: "ECONNRESET" },
+        ],
+        propagationConfirmed: true,
+        propagationConfirmedCount: 0,
+        propagationTotalCount: 0,
+        propagationAttempts: 0,
+      }),
+    );
+    assert.doesNotMatch(out, /onda aplicada e estado persistido/);
+    assert.match(out, /NADA foi tagueado com sucesso/);
+  });
+
   it("--push com propagationConfirmed:false NUNCA imprime 'onda aplicada e estado persistido'", () => {
     const out = formatReport(
       fakeResult({

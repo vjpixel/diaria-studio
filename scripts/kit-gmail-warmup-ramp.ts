@@ -279,8 +279,14 @@ async function confirmTaggedEmails(
  */
 export const WARMUP_PROPAGATION_POLL_INTERVAL_MS = 30_000;
 
-/** Teto de rodadas de releitura — 6 × 30s = 180s. */
-export const WARMUP_PROPAGATION_MAX_ATTEMPTS = 6;
+/**
+ * Teto de rodadas de releitura. `confirmWavePropagation` só dorme ENTRE
+ * tentativas (nunca antes da 1ª) — 7 tentativas ⇒ 6 intervalos de 30s = 180s
+ * de espera real, com folga de verdade sobre os ~150s medidos ao vivo
+ * (review da PR #7352: com 6 tentativas seriam só 5 sleeps = 150s, igual ao
+ * pior caso medido, sem folga nenhuma).
+ */
+export const WARMUP_PROPAGATION_MAX_ATTEMPTS = 7;
 
 /**
  * Confirma, com backoff, que TODOS os endereços de `pendingEmails` (já
@@ -415,8 +421,10 @@ export interface WarmupRampResult {
   /** Quantos de `propagationTotalCount` a releitura confirmou (imediatamente
    *  ou após retry). */
   propagationConfirmedCount: number;
-  /** Tamanho da onda de fato tagueada (`safeToTag.length` no caminho de
-   *  push) — denominador de `propagationConfirmedCount`. */
+  /** Tamanho da onda de fato tagueada (`actuallyTagged.length` — subconjunto
+   *  de `safeToTag` que não lançou no create/tag; quem falhou está em
+   *  `failedEmails`, não conta aqui) — denominador de
+   *  `propagationConfirmedCount`. */
   propagationTotalCount: number;
   /** Quantas rodadas de `confirmWavePropagation` rodaram (0 quando nada
    *  precisou de retry). */
@@ -712,6 +720,11 @@ export function formatReport(result: WarmupRampResult): string {
   }
   if (!result.pushed) {
     lines.push("\n--dry-run: nada foi escrito. Rode com --push para aplicar.");
+  } else if (result.propagationTotalCount === 0 && result.failedEmails.length > 0) {
+    // Todo mundo da onda falhou (create/tag/releitura lançou) — 0/0 é
+    // "confirmado" trivialmente, mas dizer "aplicada" aqui leria como sucesso
+    // ao lado da seção "❌ falharam" logo acima. Nada foi de fato tagueado.
+    lines.push("\n--push: NADA foi tagueado com sucesso — todos os endereços da onda falharam (ver seção acima).");
   } else if (result.propagationConfirmed) {
     lines.push(
       `\n--push: onda aplicada e estado persistido (propagação confirmada: ${result.propagationConfirmedCount}/${result.propagationTotalCount}).`,
