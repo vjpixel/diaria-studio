@@ -12,6 +12,18 @@
  * saldo**. Não há como perguntar "quanto resta"; só é possível observar o que
  * a última tentativa de uso registrou.
  *
+ * **Consequência, e ela mudou de natureza no #7320: SILÊNCIO PROLONGADO DESTE
+ * ALARME NÃO É ATESTADO DE SAÚDE.** Sem uso não há sinal novo, e o alarme
+ * deduplica por fingerprint do conjunto de estados — então "não chegou
+ * e-mail" pode significar tanto "as contas estão bem" quanto "ninguém delegou
+ * nada há semanas e nada foi retestado". Antes do #7320 o fingerprint só
+ * mudava por evento EXTERNO (o Hermes reescrevendo `auth.json`); agora ele
+ * também muda por DATA, quando um `resets_at` vence. Isso é correto, mas
+ * significa que "avisei uma vez e calei" virou um estado em que o sistema
+ * entra sozinho, sem que nada tenha acontecido. Quem for auditar o alarme
+ * deve checar o `--dry-run` (que sempre imprime o estado atual), nunca inferir
+ * saúde da ausência de e-mail.
+ *
  * O que torna o alarme viável é o Hermes já persistir esse resultado, por
  * conta, em `~/.hermes/auth.json` → `credential_pool["openai-codex"]`. Cada
  * entrada carrega `last_status`, `last_error_reason`, `last_error_code` e
