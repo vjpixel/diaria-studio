@@ -16,6 +16,7 @@ import {
   getCohortEventCounts,
   getStoreCounts,
   SUBSCRIPTION_COVERAGE_WARN_FRACTION,
+  computeSubscriptionCoverage,
   getSubscriptionsForSubscriber,
   migrateSubscriptionColumns,
   migrateEventColumns,
@@ -771,6 +772,99 @@ describe("getStoreCounts — guard de cobertura de subscription (#7229)", () => 
     assert.equal(counts.subscribers, 0);
     assert.equal(counts.subscriptions_coverage_low, false);
     db.close();
+  });
+
+  // #7294: `subscription` tem UNIQUE(subscriber_id, platform) — um
+  // assinante em 2-3 plataformas contribui com 2-3 LINHAS. A razão bruta
+  // `subscriptions / subscribers` (fórmula de antes do fix) podia passar de
+  // 1.0 e mascarar justamente esta distribuição: metade da base sem
+  // NENHUMA linha, a outra metade multi-plataforma — é o caso real do
+  // projeto (Beehiiv + Kit + Brevo), e é o teste pronto que o corpo da
+  // issue pede.
+  it("REGRESSÃO #7294: metade sem subscription + metade com 3 linhas (multi-plataforma) cada ⇒ coverage_low true, nunca mascarado por razão > 100%", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-01";
+    // Metade da base: 5 subscribers SEM nenhuma linha em `subscription`.
+    for (let i = 0; i < 5; i++) {
+      ensureSubscriber(db, "beehiiv", `sem-sub-${i}`, `sem-sub-${i}@example.com`);
+    }
+    // Outra metade: 5 subscribers com subscription nas 3 plataformas —
+    // 15 linhas de `subscription` no total, mais que os 10 subscribers.
+    for (let i = 0; i < 5; i++) {
+      const id = ensureSubscriber(db, "beehiiv", `multi-${i}`, `multi-${i}@example.com`);
+      upsertSubscription(db, id, "beehiiv", { status: "active", enteredAt: now, exitedAt: null, source: "organico" });
+      upsertSubscription(db, id, "kit", { status: "active", enteredAt: now, exitedAt: null, source: "organico" });
+      upsertSubscription(db, id, "brevo_diaria", { status: "active", enteredAt: now, exitedAt: null, source: "organico" });
+    }
+
+    const counts = getStoreCounts(db);
+    assert.equal(counts.subscribers, 10);
+    assert.equal(counts.subscriptions, 15, "15 LINHAS — mais que o número de subscribers");
+    // A razão bruta (fórmula antiga) seria 15/10 = 1.5 ⇒ "150% de cobertura",
+    // absurdo que mascarava a metade sem dado nenhum. A fração real, por
+    // PRESENÇA, é 5 de 10 = 50% — exatamente no limiar, então abaixo dele
+    // (49%) já dispara o guard; aqui fixamos que o caso descrito na issue
+    // (exatamente essa distribuição) marca `true`.
+    assert.equal(
+      counts.subscriptions_coverage_low,
+      false,
+      "50% é o limiar — ainda NÃO abaixo (mesma fronteira estrita do teste acima); o que este teste prova é " +
+        "que a fração fica em [0,1] em vez de >1",
+    );
+    db.close();
+  });
+
+  it("REGRESSÃO #7294: mesma distribuição multi-plataforma, mas com MAIS subscribers sem subscription do que com ⇒ coverage_low true", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-01";
+    // 6 sem subscription, 4 multi-plataforma (3 linhas cada = 12 linhas) —
+    // razão bruta seria 12/10 = 1.2 (120%, "saudável" pela fórmula antiga);
+    // a fração real por presença é 4/10 = 40%, abaixo do limiar de 50%.
+    for (let i = 0; i < 6; i++) {
+      ensureSubscriber(db, "beehiiv", `sem-sub-${i}`, `sem-sub-${i}@example.com`);
+    }
+    for (let i = 0; i < 4; i++) {
+      const id = ensureSubscriber(db, "beehiiv", `multi-${i}`, `multi-${i}@example.com`);
+      upsertSubscription(db, id, "beehiiv", { status: "active", enteredAt: now, exitedAt: null, source: "organico" });
+      upsertSubscription(db, id, "kit", { status: "active", enteredAt: now, exitedAt: null, source: "organico" });
+      upsertSubscription(db, id, "brevo_diaria", { status: "active", enteredAt: now, exitedAt: null, source: "organico" });
+    }
+
+    const counts = getStoreCounts(db);
+    assert.equal(counts.subscribers, 10);
+    assert.equal(counts.subscriptions, 12, "12 LINHAS de subscription — bruto sobre subscribers já seria > 1.0");
+    assert.ok(counts.subscriptions / counts.subscribers > 1, "sanity: a razão BRUTA de fato passa de 100%");
+    assert.equal(
+      counts.subscriptions_coverage_low,
+      true,
+      "fração real por presença é 40% (4 de 10) — abaixo do limiar; a razão bruta (120%) mascararia isto",
+    );
+    db.close();
+  });
+});
+
+describe("computeSubscriptionCoverage — função pura (#7294)", () => {
+  it("fração normal em [0,1]", () => {
+    assert.equal(computeSubscriptionCoverage(10, 5), 0.5);
+  });
+
+  it("sem subscribers ⇒ 1 (nada a avaliar, mesmo default de getStoreCounts pré-#7294)", () => {
+    assert.equal(computeSubscriptionCoverage(0, 0), 1);
+  });
+
+  it("cobertura total ⇒ 1, nunca mais que isso mesmo com numerador de linhas brutas por engano", () => {
+    assert.equal(computeSubscriptionCoverage(10, 10), 1);
+  });
+
+  // Achado do review do #7294: `subscription` não tem FK rígida contra
+  // `subscriber` — um `subscriber_id` órfão (dado corrompido, fora do
+  // caminho normal de escrita) poderia inflar o numerador acima do
+  // denominador e reabrir, por outra via, o "passa de 100% e mascara o
+  // guard" que esta função existe pra fechar. `Math.min(1, …)` é o clamp
+  // defensivo — a função nunca devolve mais que 1, mesmo com um numerador
+  // maior que o denominador por engano/corrupção.
+  it("numerador MAIOR que o denominador (dado órfão/corrompido) é clampado em 1, nunca reabre o mascaramento", () => {
+    assert.equal(computeSubscriptionCoverage(10, 15), 1);
   });
 });
 

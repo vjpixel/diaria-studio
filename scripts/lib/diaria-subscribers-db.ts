@@ -936,17 +936,52 @@ export function getCohortEventCounts(
  */
 export const SUBSCRIPTION_COVERAGE_WARN_FRACTION = 0.5;
 
+/**
+ * Fração de `subscribers` (denominador) que tem PRESENÇA em `subscription`
+ * — 1 ou mais linhas, contadas por assinante distinto, nunca a contagem
+ * bruta de linhas — sempre em [0, 1]. Extraída como função só-cálculo
+ * (#7294) porque `subscription` tem `UNIQUE(subscriber_id, platform)`: um
+ * assinante presente em 2-3 plataformas contribui com 2-3 LINHAS, então a
+ * razão bruta `subscriptions / subscribers` (a fórmula que `getStoreCounts`
+ * usava antes) pode passar de 1.0 — e um store onde metade da base não tem
+ * NENHUMA linha e a outra metade tem 2-3 cada (multi-plataforma, o caso
+ * real do projeto: Beehiiv + Kit + Brevo) reportava `coverage ≈ 1.0`,
+ * "saudável", mascarando exatamente o caso que `subscriptions_coverage_low`
+ * existe pra pegar (achado ao vivo #7294). `summarizeStoreLeitores`
+ * (`leitor-store.ts`) já calculava certo — presença por assinante — desde
+ * o #7198; esta função é a mesma fórmula extraída pra fonte única, chamada
+ * pelos dois guards da família em vez de cada um reimplementar a divisão.
+ *
+ * `Math.min(1, …)` é defensivo (achado do review do #7294): `subscription`
+ * não tem FK rígida contra `subscriber` (mesmo desenho do resto do store —
+ * ver docstring de `event` sobre chave natural sem FK bloqueante), então um
+ * `subscriber_id` órfão em `subscription` (dado corrompido, nunca produzido
+ * pelo caminho de escrita normal deste módulo hoje) poderia inflar
+ * `subscribersWithSubscription` acima de `subscribersTotal` e reabrir — por
+ * uma via diferente — exatamente o "passa de 100% e mascara o guard" que
+ * esta função existe para fechar.
+ */
+export function computeSubscriptionCoverage(
+  subscribersTotal: number,
+  subscribersWithSubscription: number,
+): number {
+  return subscribersTotal > 0 ? Math.min(1, subscribersWithSubscription / subscribersTotal) : 1;
+}
+
 /** Contagem simples de linhas por tabela — usado pelo builder/CLI pra
  * imprimir um summary sem precisar reimplementar SELECT COUNT(*) 4x.
  *
- * `subscriptions_coverage_low` (#7229): `true` quando `subscriptions /
- * subscribers` está abaixo de `SUBSCRIPTION_COVERAGE_WARN_FRACTION` — sinal
- * explícito de que a dimensão `subscription` está pouco populada (nenhum
- * ingest rodou ainda, ou só uma fração das plataformas do store chama
- * `upsertSubscription`), nunca confundível com "zero assinatura real". Sem
- * `subscriber` nenhum (`subscribers === 0`) não há cobertura pra avaliar —
- * fica `false`, não é o caso que este guard existe pra pegar. Emite
- * `console.warn` na mesma passada, mesmo padrão de `summarizeLeitores`. */
+ * `subscriptions_coverage_low` (#7229, fórmula corrigida no #7294): `true`
+ * quando a fração de `subscriber` com PRESENÇA em `subscription`
+ * (`computeSubscriptionCoverage`, nunca a razão bruta de linhas — ver
+ * docstring dela) está abaixo de `SUBSCRIPTION_COVERAGE_WARN_FRACTION` —
+ * sinal explícito de que a dimensão `subscription` está pouco populada
+ * (nenhum ingest rodou ainda, ou só uma fração das plataformas do store
+ * chama `upsertSubscription`), nunca confundível com "zero assinatura
+ * real". Sem `subscriber` nenhum (`subscribers === 0`) não há cobertura pra
+ * avaliar — fica `false`, não é o caso que este guard existe pra pegar.
+ * Emite `console.warn` na mesma passada, mesmo padrão de
+ * `summarizeLeitores`. */
 export function getStoreCounts(db: DatabaseSync): {
   subscribers: number;
   identity_aliases: number;
@@ -960,12 +995,23 @@ export function getStoreCounts(db: DatabaseSync): {
       .n;
   const subscribers = count("subscriber");
   const subscriptions = count("subscription");
-  const coverage = subscribers > 0 ? subscriptions / subscribers : 1;
+  // Presença por assinante (COUNT DISTINCT subscriber_id), não a contagem
+  // bruta de linhas — um assinante multi-plataforma tem 2-3 linhas em
+  // `subscription` e não pode contar 2-3x no numerador (#7294).
+  const subscribersWithSubscription = (
+    db.prepare(`SELECT COUNT(DISTINCT subscriber_id) AS n FROM subscription`).get() as { n: number }
+  ).n;
+  const coverage = computeSubscriptionCoverage(subscribers, subscribersWithSubscription);
   const subscriptions_coverage_low = subscribers > 0 && coverage < SUBSCRIPTION_COVERAGE_WARN_FRACTION;
   if (subscriptions_coverage_low) {
     console.warn(
-      `[diaria-subscribers-db] aviso: subscription (${subscriptions}) cobre só ` +
-        `${(coverage * 100).toFixed(1)}% de subscriber (${subscribers}) — abaixo de ` +
+      // #7294 review: a % vem de PRESENÇA (subscribersWithSubscription),
+      // nunca da contagem bruta de linhas (subscriptions) — as duas divergem
+      // justo no caso multi-plataforma que este guard existe pra pegar, e
+      // citar a bruta ao lado da % calculada por presença confundiria quem
+      // fizer a conta de cabeça.
+      `[diaria-subscribers-db] aviso: ${subscribersWithSubscription} de ${subscribers} subscriber(s) têm PRESENÇA ` +
+        `em subscription (${(coverage * 100).toFixed(1)}%, ${subscriptions} linha(s) brutas ao todo) — abaixo de ` +
         `${(SUBSCRIPTION_COVERAGE_WARN_FRACTION * 100).toFixed(0)}%. "subscriptions: ${subscriptions}" NÃO significa ` +
         `"sem assinatura real" — significa "dimensão pouco populada" (nenhum ingest de subscription rodou ainda, ` +
         `ou só parte das plataformas do store chama upsertSubscription, #7229). Não usar este número como fato ` +
