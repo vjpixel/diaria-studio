@@ -97,7 +97,10 @@ export function loadState(statePath: string = STATE_PATH): KitSubscriberLimitAla
       alarmed: raw.alarmed === true,
       lastCheckedAt: typeof raw.lastCheckedAt === "string" ? raw.lastCheckedAt : null,
     };
-  } catch {
+  } catch (e) {
+    console.error(
+      `${LOG_PREFIX} state corrompido/ilegível em ${statePath}: ${(e as Error).message} — resetando latch.`,
+    );
     return emptyKitSubscriberLimitAlarmState();
   }
 }

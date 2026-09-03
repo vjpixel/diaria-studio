@@ -6,8 +6,11 @@
  * no latch de idempotência (arma na transição, re-arma quando volta a cair
  * abaixo do threshold).
  */
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   DEFAULT_KIT_SUBSCRIBER_ALARM_THRESHOLD,
   evaluateKitSubscriberLimitAlarm,
@@ -17,7 +20,7 @@ import {
   buildKitSubscriberLimitAlarmEmail,
   KIT_SUBSCRIBER_LIMIT_FINDING_KEY,
 } from "../scripts/lib/kit-subscriber-limit-alarm.ts";
-import { toAlarmFindings } from "../scripts/kit-subscriber-limit-alarm.ts";
+import { toAlarmFindings, loadState } from "../scripts/kit-subscriber-limit-alarm.ts";
 
 const NOW = new Date("2026-09-03T12:00:00.000Z");
 
@@ -135,6 +138,51 @@ describe("buildKitSubscriberLimitAlarmEmail", () => {
     });
     assert.match(body, /falha ao criar\/reusar/);
     assert.match(body, /gh não autenticado/);
+  });
+});
+
+describe("loadState — camada de I/O (scripts/kit-subscriber-limit-alarm.ts, #7368)", () => {
+  // Mesma receita de tmpdir de test/codex-credential-alarm-script-7250.test.ts
+  // — precedente exato pra este padrão (readState/writeState do alarme
+  // Codex), citado no fleet review desta PR (pr-test-analyzer, P2).
+  let dir: string;
+  before(() => {
+    dir = mkdtempSync(join(tmpdir(), "kit-subscriber-limit-alarm-"));
+  });
+  after(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("arquivo ausente devolve estado vazio, nunca lança", () => {
+    assert.deepEqual(loadState(join(dir, "nao-existe.json")), emptyKitSubscriberLimitAlarmState());
+  });
+
+  it("JSON corrompido degrada para estado vazio, nunca lança", () => {
+    const p = join(dir, "corrompido.json");
+    writeFileSync(p, "{isto não é json", "utf8");
+    assert.deepEqual(loadState(p), emptyKitSubscriberLimitAlarmState());
+  });
+
+  it("`alarmed` não-booleano degrada para false (nunca herda um valor truthy solto)", () => {
+    const p = join(dir, "alarmed-nao-booleano.json");
+    writeFileSync(p, JSON.stringify({ alarmed: "sim", lastCheckedAt: "2026-09-03T12:00:00.000Z" }), "utf8");
+    const state = loadState(p);
+    assert.equal(state.alarmed, false);
+    assert.equal(state.lastCheckedAt, "2026-09-03T12:00:00.000Z");
+  });
+
+  it("`lastCheckedAt` não-string degrada para null", () => {
+    const p = join(dir, "lastcheckedat-nao-string.json");
+    writeFileSync(p, JSON.stringify({ alarmed: true, lastCheckedAt: 1756900800000 }), "utf8");
+    const state = loadState(p);
+    assert.equal(state.alarmed, true);
+    assert.equal(state.lastCheckedAt, null);
+  });
+
+  it("caso feliz repassa os campos sem alterar", () => {
+    const p = join(dir, "ok.json");
+    writeFileSync(p, JSON.stringify({ alarmed: true, lastCheckedAt: "2026-09-03T12:00:00.000Z" }), "utf8");
+    assert.deepEqual(loadState(p), { alarmed: true, lastCheckedAt: "2026-09-03T12:00:00.000Z" });
   });
 });
 
