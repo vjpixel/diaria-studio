@@ -51,6 +51,8 @@ export interface IntentionalErrorCheckResult {
     location?: string;
     category?: string;
     correct_value?: string;
+    /** (#7243) Grafia errada plantada — deve aparecer no texto final da edição */
+    wrong_value?: string;
     reveal?: string;
   };
 }
@@ -60,6 +62,7 @@ const REQUIRED_INTENTIONAL_ERROR_FIELDS = [
   "location",
   "category",
   "correct_value",
+  "wrong_value", // #7243: grafia errada plantada — verificado pelo invariant Stage 4
 ] as const;
 
 /**
@@ -106,6 +109,7 @@ export function checkIntentionalError(
     location: record.location,
     category: record.category,
     correct_value: record.correct_value,
+    wrong_value: record.wrong_value, // #7243
     reveal: record.reveal,
   };
 

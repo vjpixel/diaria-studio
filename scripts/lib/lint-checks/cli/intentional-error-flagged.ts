@@ -33,9 +33,11 @@ export function runCli(args: Record<string, string>, root: string): void {
 "location": "DESTAQUE 2, parágrafo 2, primeira frase",
 "category": "factual",
 "correct_value": "valor correto",
+"wrong_value": "grafia ERRADA plantada (ex: Anthropik)",
 "reveal": "Na última edição, escrevi X onde o correto é Y."
 }
-// category: factual | ortografico | numeric | attribution | data | version_inconsistency | factual_synthetic`);
+// category: factual | ortografico | numeric | attribution | data | version_inconsistency | factual_synthetic
+// #7243: wrong_value é a grafia errada que DEVE aparecer em 02-reviewed.md (verificado pelo invariant Stage 4)`);
     process.exit(1);
   }
   // F1/#2149: wire safety check — warn (não bloqueia) para categorias de risco de desinformação

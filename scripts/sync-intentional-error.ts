@@ -254,6 +254,8 @@ function runSyncIntentionalErrorInner(flags: Flags): SyncIntentionalErrorResult 
         // do #1443 ("o correto é Y") no reveal seguinte, em vez do detail cru.
         narrative: prose.narrative,
         ...(prose.correct_value ? { correct_value: prose.correct_value } : {}),
+        // (#7243) Propaga wrong_value quando disponível no record
+        ...(prose.wrong_value ? { wrong_value: prose.wrong_value } : {}),
         // (#2419) Propaga campo `reveal` quando disponível no MD
         ...(prose.reveal ? { reveal: prose.reveal } : {}),
         source: "prose_block",

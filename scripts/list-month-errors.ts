@@ -47,6 +47,7 @@ export interface MonthError {
   location?: string;
   description?: string;
   correct_value?: string;
+  wrong_value?: string; // #7243: grafia errada plantada
   reason?: string; // when declared=false
 }
 
@@ -98,6 +99,7 @@ function fallbackFromJsonl(
     location,
     description: entry.detail,
     correct_value: entry.correct_value,
+    wrong_value: entry.wrong_value, // #7243
   };
 }
 
@@ -132,6 +134,7 @@ export function extractError(
     location: p.location,
     description: p.description,
     correct_value: p.correct_value,
+    wrong_value: p.wrong_value, // #7243
   };
 }
 

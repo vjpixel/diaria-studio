@@ -2184,6 +2184,61 @@ function checkKitFixtureAudit(
   ];
 }
 
+/**
+ * (#7243) Verifica que o erro intencional declarado em
+ * `_internal/intentional-error.json` ainda está PRESENTE no texto final de
+ * `02-reviewed.md`. O `wrong_value` (grafia errada plantada) DEVE existir no
+ * MD final — se foi removido durante a gate de revisão do Stage 4 (o editor
+ * fez pruning de item do RADAR e cortou o erro sem querer), o registro continua
+ * dizendo que um erro existe quando na verdade não existe mais.
+ *
+ * Este invariante faila NESTE caso: garante que a promessa de "há um erro aqui
+ * pra achar" é verdade pro leitor antes que a newsletter saia.
+ *
+ * Exit paths:
+ *  - `no_error: true` → sem violação (edição sem erro é estado legítimo, #2016).
+ *  - record ausente/incompleto → sem violação (outros invariants já cobrem isso;
+ *    este check foca só na presença do `wrong_value` no texto final).
+ *  - `wrong_value` presente no MD → sem violação.
+ *  - `wrong_value` AUSENTE no MD → violação com mensagem acionável.
+ */
+export function checkIntentionalErrorPresentInFinal(editionDir: string): InvariantViolation[] {
+  const jsonPath = intentionalErrorJsonPath(editionDir);
+  const record = loadIntentionalErrorJson(jsonPath);
+  if (!record) return [];
+  if (record.no_error === true) return [];
+
+  const wrongValue = record.wrong_value;
+  if (!wrongValue || /^\{PREENCHER/i.test(wrongValue)) return [];
+
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(reviewedPath)) return [];
+  const md = readFileSync(reviewedPath, "utf8");
+
+  if (!md.includes(wrongValue)) {
+    return [
+      {
+        rule: "intentional-error-present-in-final",
+        message:
+          `Erro intencional declarado foi REMOVIDO do texto final: \`wrong_value` +
+          `="${wrongValue}"\` não aparece em 02-reviewed.md (mas está em ` +
+          `_internal/intentional-error.json). Provavelmente cortado durante a ` +
+          `gate de revisão Stage 4 (ex: pruning de RADAR).\n\n` +
+          `SAÍDAS:\n` +
+          `(a) Replantar o wrong_value em outro destaque/item da edição — o ` +
+          `erro precisa existir PROXY no texto final pro leitor achar.\n` +
+          `(b) Declarar edição sem erro intencional: \`"no_error": true\` no ` +
+          `_internal/intentional-error.json (resposta válida do leitor: "não ` +
+          `há erro", #2016).`,
+        source_issue: "#7243",
+        severity: "error",
+        file: "02-reviewed.md",
+      },
+    ];
+  }
+  return [];
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "public-images-populated",
@@ -2381,6 +2436,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkKitFixtureAudit,
   },
+  {
+    id: "intentional-error-present-in-final",
+    description: "wrong_value (grafia errada plantada) está presente em 02-reviewed.md (#7243)",
+    source_issue: "#7243",
+    stage: 4,
+    run: checkIntentionalErrorPresentInFinal,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -2417,4 +2479,5 @@ export {
   checkBoxDivulgacaoRuntimeExcluded,
   checkRenderWarnings,
   checkKitFixtureAudit,
+  checkIntentionalErrorPresentInFinal, // #7243
 };

@@ -55,6 +55,14 @@ export interface IntentionalError {
    * (#3222 — antes frontmatter YAML) e é usado pelo render-erro-intencional pra
    * garantir que o reveal da edição seguinte inclui "o correto é Y". */
   correct_value?: string;
+  /** (#7243) Grafia ERRADA plantada no texto — valor que DEVE aparecer em
+   * `02-reviewed.md` até o Stage 4. Diferente de `correct_value` (que é a
+   * correção), `wrong_value` é o texto com erro propriamente dito. Usado pelo
+   * invariant `intentional-error-present-in-final` pra detectar quando o erro
+   * foi silenciosamente removido durante a gate de revisão do Stage 4.
+   * Ex: correct_value="Anthropic", wrong_value="Anthropik".
+   * Ausente apenas quando `no_error: true`. */
+  wrong_value?: string;
   source?: string;
   detected_by?: string;
   resolution?: string;
@@ -182,6 +190,10 @@ export interface IntentionalErrorFrontmatter {
   location?: string;
   category?: string;
   correct_value?: string;
+  /** (#7243) Grafia ERRADA plantada no texto — o texto com o erro que DEVE existir
+   * em `02-reviewed.md`. Separado de `correct_value` (correção). O invariant
+   * Stage 4 `intentional-error-present-in-final` busca este texto no MD final. */
+  wrong_value?: string;
   /** (#2419) Campo de primeira pessoa, gramatical, público — fonte canônica do reveal.
    * Separado de `description` (catálogo 3ª pessoa, alimenta /diaria-mes-erros + lint).
    * Quando presente, o reveal usa este campo verbatim.
@@ -249,6 +261,8 @@ export function frontmatterToEntry(
     is_feature: true,
     detail: fm.description ?? "",
     correct_value: fm.correct_value,
+    // (#7243) Propaga wrong_value (grafia errada plantada) pro JSONL
+    ...(fm.wrong_value ? { wrong_value: fm.wrong_value } : {}),
     // (#2419) Campo reveal: quando presente no frontmatter, propagado para o JSONL
     // para que composeRevealText use verbatim em vez de sintetizar a partir de catálogo.
     ...(fm.reveal ? { reveal: fm.reveal } : {}),
@@ -273,6 +287,8 @@ export function entryDiffersFromFrontmatter(
     String(existing.destaque ?? "") !== String(candidate.destaque ?? "") ||
     (existing.detail ?? "") !== (candidate.detail ?? "") ||
     (existing.correct_value ?? "") !== (candidate.correct_value ?? "") ||
+    // (#7243) wrong_value — detectar drift quando o wrong_value é adicionado/editado
+    (existing.wrong_value ?? "") !== (candidate.wrong_value ?? "") ||
     // (#2419) Campo reveal — detectar drift quando editor edita o reveal no frontmatter
     (existing.reveal ?? "") !== (candidate.reveal ?? "")
   );

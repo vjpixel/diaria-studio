@@ -116,7 +116,7 @@ const LEGACY_DETAIL_RE =
  */
 function jsonField(
   record: IntentionalErrorJson | null | undefined,
-  field: "description" | "location" | "category" | "correct_value" | "reveal",
+  field: "description" | "location" | "category" | "correct_value" | "wrong_value" | "reveal",
 ): string | null {
   if (!record) return null;
   const val = record[field];
@@ -282,8 +282,10 @@ export function extractCurrentDeclarationFromMd(
 export function extractPreviousRevealFromRecord(
   md: string,
   record?: IntentionalErrorJson | null,
-): { narrative: string; detail?: string; gabarito?: string; correct_value?: string; reveal?: string } | null {
+): { narrative: string; detail?: string; gabarito?: string; correct_value?: string; wrong_value?: string; reveal?: string } | null {
   const correctValue = extractCorrectValueFromFrontmatter(record);
+  // (#7243) Extrair wrong_value (grafia errada plantada) pro fallback de prosa.
+  const wrongValue = extractWrongValueFromFrontmatter(record);
   // (#2419) Extrair o campo `reveal` dedicado para propagação — fonte canônica.
   const revealFromFm = extractRevealFromFrontmatter(record);
 
@@ -295,6 +297,7 @@ export function extractPreviousRevealFromRecord(
     return {
       ...bodyDeclaration,
       ...(correctValue ? { correct_value: correctValue } : {}),
+      ...(wrongValue ? { wrong_value: wrongValue } : {}),
       ...(revealFromFm ? { reveal: revealFromFm } : {}),
     };
   }
@@ -313,12 +316,14 @@ export function extractPreviousRevealFromRecord(
         detail: lm[2],
         gabarito: lm[4],
         ...(correctValue ? { correct_value: correctValue } : {}),
+        ...(wrongValue ? { wrong_value: wrongValue } : {}),
         ...(revealFromFm ? { reveal: revealFromFm } : {}),
       };
     }
     return {
       narrative: fmNarrative,
       ...(correctValue ? { correct_value: correctValue } : {}),
+      ...(wrongValue ? { wrong_value: wrongValue } : {}),
       ...(revealFromFm ? { reveal: revealFromFm } : {}),
     };
   }
@@ -335,6 +340,17 @@ export function extractCorrectValueFromFrontmatter(
   record: IntentionalErrorJson | null | undefined,
 ): string | null {
   return jsonField(record, "correct_value");
+}
+
+/**
+ * (#7243) Extrai `wrong_value` (grafia errada plantada) do record
+ * `_internal/intentional-error.json`. Retorna `null` se record ausente, sem
+ * `wrong_value`, ou valor é placeholder `{PREENCHER}`.
+ */
+export function extractWrongValueFromFrontmatter(
+  record: IntentionalErrorJson | null | undefined,
+): string | null {
+  return jsonField(record, "wrong_value");
 }
 
 /**
@@ -381,6 +397,7 @@ export function findPreviousIntentionalErrorFromMd(
         gabarito: extracted.gabarito ?? "",
         narrative: extracted.narrative,
         ...(extracted.correct_value ? { correct_value: extracted.correct_value } : {}),
+        ...(extracted.wrong_value ? { wrong_value: extracted.wrong_value } : {}), // #7243
         // (#2419) Propaga campo `reveal` quando disponível
         ...(extracted.reveal ? { reveal: extracted.reveal } : {}),
       };
@@ -876,6 +893,7 @@ export function ensureIntentionalErrorJson(
     category:
       "{PREENCHER — factual|ortografico|numeric|attribution|data|version_inconsistency|factual_synthetic}",
     correct_value: "{PREENCHER — valor correto}",
+    wrong_value: "{PREENCHER — grafia ERRADA plantada no texto (ex: Anthropik, onde o correto é Anthropic)}",
     reveal:
       "{PREENCHER — prosa 1ª pessoa para o reveal da próxima edição, ex: Na última edição, escrevi X onde o correto é Y.}",
   };
@@ -896,6 +914,7 @@ type MdPrevError = {
   gabarito: string;
   narrative: string;
   correct_value?: string;
+  wrong_value?: string; // #7243
   /** (#2419) Campo reveal dedicado quando disponível no _internal/intentional-error.json do MD anterior. */
   reveal?: string;
 };
@@ -932,6 +951,7 @@ export function resolvePreviousError(
     gabarito: md.gabarito,
     narrative: md.narrative,
     ...(md.correct_value ? { correct_value: md.correct_value } : {}),
+    ...(md.wrong_value ? { wrong_value: md.wrong_value } : {}), // #7243
     // (#2419) Propaga campo `reveal` do MD quando disponível
     ...(md.reveal ? { reveal: md.reveal } : {}),
   });
@@ -952,6 +972,7 @@ export function resolvePreviousError(
         gabarito: fromMd.gabarito,
         ...(fromMd.detail ? { detail: fromMd.detail } : {}),
         ...(fromMd.correct_value ? { correct_value: fromMd.correct_value } : {}),
+        ...(fromMd.wrong_value ? { wrong_value: fromMd.wrong_value } : {}), // #7243
         ...(fromMd.reveal ? { reveal: fromMd.reveal } : {}),
       };
       return { prev: enriched, source: "jsonl+md", gap: false };
