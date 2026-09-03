@@ -12,6 +12,18 @@
  * saldo**. Não há como perguntar "quanto resta"; só é possível observar o que
  * a última tentativa de uso registrou.
  *
+ * **Consequência, e ela mudou de natureza no #7320: SILÊNCIO PROLONGADO DESTE
+ * ALARME NÃO É ATESTADO DE SAÚDE.** Sem uso não há sinal novo, e o alarme
+ * deduplica por fingerprint do conjunto de estados — então "não chegou
+ * e-mail" pode significar tanto "as contas estão bem" quanto "ninguém delegou
+ * nada há semanas e nada foi retestado". Antes do #7320 o fingerprint só
+ * mudava por evento EXTERNO (o Hermes reescrevendo `auth.json`); agora ele
+ * também muda por DATA, quando um `resets_at` vence. Isso é correto, mas
+ * significa que "avisei uma vez e calei" virou um estado em que o sistema
+ * entra sozinho, sem que nada tenha acontecido. Quem for auditar o alarme
+ * deve checar o `--dry-run` (que sempre imprime o estado atual), nunca inferir
+ * saúde da ausência de e-mail.
+ *
  * O que torna o alarme viável é o Hermes já persistir esse resultado, por
  * conta, em `~/.hermes/auth.json` → `credential_pool["openai-codex"]`. Cada
  * entrada carrega `last_status`, `last_error_reason`, `last_error_code` e
@@ -124,8 +136,47 @@ export function parseResetAt(raw: number | string | null | undefined): string | 
  * sozinho. Uma conta com `last_status: "error"` e razão desconhecida é
  * `indeterminada`, não esgotada: o alarme prefere dizer "não sei" a afirmar
  * um esgotamento que pode ser OAuth expirado ou rede.
+ *
+ * **`resets_at` no passado também é `indeterminada` (#7320).** A versão
+ * original lia `last_error_reset_at` só pra EXIBIR a data de retorno e
+ * nunca a comparava com o agora — uma conta seguia `esgotada` para sempre
+ * depois da data prometida, até que algo a usasse e o Hermes reescrevesse
+ * `last_status`. Como o gerador de uso é o tick do contínuo (que pode estar
+ * pausado), "algo a usar de novo" não é garantido: a partir da data de
+ * retorno o alarme afirmava esgotamento sobre conta que provavelmente já
+ * tinha voltado.
+ *
+ * A saída **não** é contá-la como viva: `resets_at` é uma promessa da
+ * OpenAI, não confirmação de que a cota voltou, e transformar promessa de
+ * terceiro em fato nosso trocaria um falso negativo por um falso positivo.
+ * É `indeterminada` — o estado que este módulo já reserva pro "não sei", e
+ * que `evaluateCodexPool` já NÃO conta como viva (fail-closed). Nenhuma
+ * política nova: é a política existente aplicada a um estado que a 1ª
+ * versão deixou de fora por não considerar o tempo passando. O docstring
+ * deste módulo já dizia que "não sei" e "está tudo bem" nunca podem
+ * colapsar; faltava impedir que "não sei" colapsasse em `esgotada`, que é o
+ * outro lado do mesmo erro.
+ *
+ * `nowIso` é injetado (nunca `Date.now()` por dentro) pra que o teste não
+ * fique refém do calendário — mesmo relógio que `buildCodexAlarmMessage` já
+ * recebe. Omitido, usa o agora real. **Teste que afirma `esgotada` sobre
+ * fixture com `resets_at` PRECISA pinar o relógio**, senão passa a falhar
+ * sozinho na data de retorno da fixture (aconteceu com 2 testes deste
+ * módulo, corrigidos junto — review do PR #7322).
+ *
+ * **Efeito colateral declarado: a dedupe do alarme deixa de suprimir no dia
+ * do vencimento.** `computeCodexPoolFingerprint` deriva do conjunto de
+ * ESTADOS, não do conteúdo de `auth.json` — quando a data vence, o estado
+ * muda (`esgotada` → `indeterminada`) mesmo com o arquivo byte a byte
+ * idêntico, o fingerprint muda junto, e sai um e-mail. Isso é o alarme
+ * funcionando, não repetindo: o que se sabe sobre aquelas contas de fato
+ * mudou. Vale UM e-mail por conta por data de retorno; depois o fingerprint
+ * estabiliza de novo e o alarme volta a calar.
  */
-export function classifyCodexCredential(entry: CodexCredentialEntry): CodexCredentialVerdict {
+export function classifyCodexCredential(
+  entry: CodexCredentialEntry,
+  nowIso: string = new Date().toISOString(),
+): CodexCredentialVerdict {
   const label = entry.label ?? entry.id ?? "(sem rótulo)";
   const resetsAtIso = parseResetAt(entry.last_error_reset_at);
   const status = (entry.last_status ?? "").toLowerCase();
@@ -139,12 +190,24 @@ export function classifyCodexCredential(entry: CodexCredentialEntry): CodexCrede
   }
 
   if (reason === CODEX_EXHAUSTION_REASON || code === CODEX_EXHAUSTION_CODE) {
-    return {
-      label,
-      state: "esgotada",
-      resetsAtIso,
-      reason: `${entry.last_error_reason ?? "?"} (HTTP ${code ?? "?"})`,
-    };
+    const base = `${entry.last_error_reason ?? "?"} (HTTP ${code ?? "?"})`;
+    // #7320: a data de retorno já passou e nada usou a conta desde então —
+    // não dá pra afirmar nem esgotamento nem recuperação.
+    // `nowIso` ilegível não pode virar comparação silenciosamente falsa
+    // (`x < NaN` é `false`, o que devolveria `esgotada` sem dizer por quê).
+    // Nenhum caller de produção passa lixo hoje — o guard existe pro dia em
+    // que passar. Ver review do PR #7322.
+    const nowMs = Date.parse(nowIso);
+    const resetMs = resetsAtIso === null ? Number.NaN : Date.parse(resetsAtIso);
+    if (Number.isFinite(nowMs) && Number.isFinite(resetMs) && resetMs < nowMs) {
+      return {
+        label,
+        state: "indeterminada",
+        resetsAtIso,
+        reason: `${base}, mas a data de retorno já passou e nada tentou usar a conta desde então`,
+      };
+    }
+    return { label, state: "esgotada", resetsAtIso, reason: base };
   }
 
   if (!status) {
@@ -192,8 +255,9 @@ export interface CodexPoolVerdict {
 export function evaluateCodexPool(
   entries: readonly CodexCredentialEntry[],
   liveThreshold: number = CODEX_ALARM_LIVE_THRESHOLD,
+  nowIso: string = new Date().toISOString(),
 ): CodexPoolVerdict {
-  const verdicts = entries.map(classifyCodexCredential);
+  const verdicts = entries.map((e) => classifyCodexCredential(e, nowIso));
   const vivas = verdicts.filter((v) => v.state === "viva").length;
   const esgotadas = verdicts.filter((v) => v.state === "esgotada").length;
   const indeterminadas = verdicts.filter((v) => v.state === "indeterminada").length;
@@ -240,16 +304,33 @@ export function buildCodexAlarmMessage(v: CodexPoolVerdict, nowIso: string): str
     return `  ${c.label.padEnd(16)} ${c.state.toUpperCase().padEnd(14)} ${c.reason}${volta}`;
   });
 
+  // #7320: `allExhausted` é `vivas === 0`, e desde que `indeterminada` passou
+  // a alcançar contas cuja data de retorno venceu, "zero vivas" deixou de
+  // significar "todas esgotadas". Sem esta distinção o alarme afirmaria
+  // "TODAS esgotadas — a delegação está parada" sobre um pool que pode estar
+  // inteiro utilizável (3 contas vencidas e nunca retestadas, com o contínuo
+  // pausado). Overclaim exatamente do tipo que esta issue existe pra remover.
+  const nenhumaConfirmadaEsgotada = v.allExhausted && v.esgotadas === 0;
+
   const titulo = v.allExhausted
-    ? "TODAS as contas Codex estão esgotadas — a delegação está parada."
+    ? nenhumaConfirmadaEsgotada
+      ? "NENHUMA conta Codex confirmada viva — e nenhuma confirmada esgotada: o estado das " +
+        `${v.verdicts.length} é desconhecido.`
+      : "TODAS as contas Codex estão esgotadas — a delegação está parada."
     : `Resta ${v.vivas} conta Codex viva de ${v.verdicts.length}.`;
 
   const nota = v.allExhausted
-    ? "Nenhum trabalho delegado ao Codex vai rodar até uma conta voltar ou ser recarregada."
+    ? nenhumaConfirmadaEsgotada
+      ? "A data de retorno passou para todas e nada tentou usá-las desde então — podem estar todas " +
+        "utilizáveis, ou nenhuma. Rodar qualquer trabalho delegado ao Codex resolve a dúvida."
+      : "Nenhum trabalho delegado ao Codex vai rodar até uma conta voltar ou ser recarregada."
     : "Quando a última esgotar, a delegação para — e a volta é medida em SEMANAS, não em horas.";
 
+  // #7320: `indeterminada` passou a ter DUAS origens, e a nota agregada não
+  // pode afirmar a errada. A razão específica de cada conta já sai na linha
+  // dela acima; aqui fica só o que vale para as duas.
   const indet = v.indeterminadas > 0
-    ? `\n${v.indeterminadas} conta(s) em estado INDETERMINADO — o Hermes registrou falha sem razão de cota reconhecível. Pode ser OAuth expirado ou rede, não necessariamente cota. Não são contadas como vivas (fail-closed).\n`
+    ? `\n${v.indeterminadas} conta(s) em estado INDETERMINADO — ou o Hermes registrou falha sem razão de cota reconhecível (pode ser OAuth expirado ou rede), ou a data de retorno já passou e nada tentou usar a conta desde então. Ver a razão de cada uma acima. Não são contadas como vivas (fail-closed): "não sei" nunca vira "está tudo bem", e também nunca vira "está esgotada".\n`
     : "";
 
   return [

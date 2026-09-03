@@ -64,7 +64,12 @@ describe("classifyCodexCredential (#7250)", () => {
   });
 
   it("usage_limit_reached é esgotada, com a data de retorno preservada", () => {
-    const v = classifyCodexCredential(POOL_REAL[0]);
+    // #7320: relógio PINADO. Desde que a classificação passou a comparar
+    // `resets_at` com o agora, este teste (que afirma `esgotada` sobre uma
+    // fixture cuja data de retorno é 2026-09-29) quebraria sozinho naquela
+    // data se continuasse usando o relógio real — falha de calendário, não
+    // de código. `03/09` é o dia da medição que gerou a fixture.
+    const v = classifyCodexCredential(POOL_REAL[0], "2026-09-03T09:00:00Z");
     assert.equal(v.state, "esgotada");
     assert.equal(v.label, "vjpixel");
     assert.match(v.resetsAtIso ?? "", /^2026-09-29T/);
@@ -121,7 +126,11 @@ describe("parseResetAt (#7250)", () => {
 
 describe("evaluateCodexPool (#7250)", () => {
   it("o estado real de 03/09 dispara alarme — resta 1 viva de 3", () => {
-    const v = evaluateCodexPool(POOL_REAL);
+    // #7320: relógio pinado pelo mesmo motivo do teste acima — `esgotadas: 2`
+    // vira `1` a partir de 2026-09-29, quando a data de retorno de `vjpixel`
+    // vence. O nome do teste já diz "o estado real de 03/09"; agora o código
+    // diz também.
+    const v = evaluateCodexPool(POOL_REAL, undefined, "2026-09-03T09:00:00Z");
     assert.equal(v.vivas, 1);
     assert.equal(v.esgotadas, 2);
     assert.equal(v.shouldAlarm, true, "com 1 viva o alarme tem de disparar");
@@ -246,5 +255,114 @@ describe("buildCodexAlarmMessage (#7250)", () => {
     );
     assert.match(msg, /INDETERMINADO/);
     assert.match(msg, /não são contadas como vivas/i);
+  });
+});
+
+const ESGOTADA_VOLTA_29_09 = {
+    label: "vjpixel",
+    last_status: "exhausted",
+    last_error_reason: "usage_limit_reached",
+    last_error_code: 429,
+    last_error_reset_at: Date.parse("2026-09-29T17:45:00Z") / 1000,
+  };
+
+describe("#7320 — resets_at no passado", () => {
+  // ─── #7320 ───
+// `resets_at` no passado não é `esgotada` nem `viva` — é `indeterminada`.
+
+
+  it("#7320 — antes da data de retorno, segue ESGOTADA", () => {
+  const v = classifyCodexCredential(ESGOTADA_VOLTA_29_09, "2026-09-03T09:00:00Z");
+  assert.equal(v.state, "esgotada");
+  assert.equal(v.resetsAtIso?.slice(0, 10), "2026-09-29");
+});
+
+  it("#7320 — DEPOIS da data de retorno vira INDETERMINADA, não viva nem esgotada", () => {
+  const v = classifyCodexCredential(ESGOTADA_VOLTA_29_09, "2026-09-30T09:00:00Z");
+  assert.equal(v.state, "indeterminada", "promessa da OpenAI não vira fato nosso — mas afirmar esgotamento também não");
+  assert.match(v.reason, /data de retorno já passou/);
+  assert.equal(v.resetsAtIso?.slice(0, 10), "2026-09-29", "a data continua visível na mensagem");
+});
+
+  it("#7320 — o relógio é INJETADO: a mesma entrada muda de estado só pelo tempo passar", () => {
+  const antes = classifyCodexCredential(ESGOTADA_VOLTA_29_09, "2026-09-29T17:44:00Z");
+  const depois = classifyCodexCredential(ESGOTADA_VOLTA_29_09, "2026-09-29T17:46:00Z");
+  assert.equal(antes.state, "esgotada");
+  assert.equal(depois.state, "indeterminada");
+});
+
+  it("#7320 — conta indeterminada por data vencida NÃO conta como viva (fail-closed)", () => {
+  // Cenário exato de 30/09/2026 no helios: 2 esgotadas com data já vencida,
+  // 1 viva. O alarme tem de continuar disparando — ninguém confirmou que as
+  // duas voltaram.
+  const v = evaluateCodexPool(
+    [
+      ESGOTADA_VOLTA_29_09,
+      { ...ESGOTADA_VOLTA_29_09, label: "diaria.editor" },
+      { label: "memelab", last_status: "ok" },
+    ],
+    undefined,
+    "2026-09-30T09:00:00Z",
+  );
+  assert.equal(v.vivas, 1, "só a que reportou ok conta como viva");
+  assert.equal(v.indeterminadas, 2);
+  assert.equal(v.esgotadas, 0);
+  assert.equal(v.shouldAlarm, true, "segue alarmando — o estado das duas é desconhecido, não saudável");
+  assert.equal(v.allExhausted, false);
+});
+
+  it("#7320 — a mensagem não afirma a origem errada do estado indeterminado", () => {
+  const v = evaluateCodexPool([ESGOTADA_VOLTA_29_09, { label: "memelab", last_status: "ok" }], undefined, "2026-09-30T09:00:00Z");
+  const msg = buildCodexAlarmMessage(v, "2026-09-30T09:00:00Z");
+  assert.match(msg, /data de retorno já passou/, "a razão específica aparece");
+  assert.match(msg, /nunca vira "está esgotada"/, "a nota agregada cobre as duas origens");
+});
+
+  it("#7320 — entrada sem resets_at continua ESGOTADA (nada a comparar)", () => {
+  const v = classifyCodexCredential(
+    { label: "x", last_status: "exhausted", last_error_reason: "usage_limit_reached", last_error_code: 429 },
+    "2030-01-01T00:00:00Z",
+  );
+  assert.equal(v.state, "esgotada", "sem data prometida não há como dizer que ela passou");
+});
+});
+
+describe("#7320 — zero vivas não implica todas esgotadas", () => {
+  it('#7320 — 3 contas com data vencida: nunca afirma "TODAS esgotadas / delegação parada"', () => {
+    // Sem esta distinção o alarme diria que a delegação está parada sobre um
+    // pool que pode estar inteiro utilizável — ninguém retestou.
+    const v = evaluateCodexPool(
+      [
+        ESGOTADA_VOLTA_29_09,
+        { ...ESGOTADA_VOLTA_29_09, label: "diaria.editor" },
+        { ...ESGOTADA_VOLTA_29_09, label: "memelab" },
+      ],
+      undefined,
+      "2026-10-05T09:00:00Z",
+    );
+    assert.equal(v.vivas, 0);
+    assert.equal(v.esgotadas, 0, "nenhuma CONFIRMADA esgotada");
+    assert.equal(v.allExhausted, true, "o campo segue sendo vivas===0 — não é ele que muda");
+
+    const msg = buildCodexAlarmMessage(v, "2026-10-05T09:00:00Z");
+    assert.doesNotMatch(msg, /TODAS as contas Codex estão esgotadas/);
+    assert.doesNotMatch(msg, /delegação está parada/);
+    assert.match(msg, /estado das 3 é desconhecido/);
+    assert.match(msg, /podem estar todas utilizáveis, ou nenhuma/);
+  });
+
+  it("#7320 — esgotamento REAL de todas continua dizendo que a delegação parou", () => {
+    const v = evaluateCodexPool(
+      [
+        { ...ESGOTADA_VOLTA_29_09, label: "a" },
+        { ...ESGOTADA_VOLTA_29_09, label: "b" },
+      ],
+      undefined,
+      "2026-09-03T09:00:00Z", // antes da data de retorno: esgotamento confirmado
+    );
+    assert.equal(v.esgotadas, 2);
+    const msg = buildCodexAlarmMessage(v, "2026-09-03T09:00:00Z");
+    assert.match(msg, /TODAS as contas Codex estão esgotadas/, "o caso real não foi enfraquecido");
+    assert.match(msg, /delegação está parada/);
   });
 });
