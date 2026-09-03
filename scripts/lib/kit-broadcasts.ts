@@ -76,7 +76,7 @@
  *    suporte do Kit, se algum dia importar.
  */
 
-import { kitFetch } from "./kit-client.ts";
+import { kitFetch, listSubscribers } from "./kit-client.ts";
 import type { KitConfig } from "./kit-config.ts";
 import type { KitBroadcastDetail, KitPagination } from "./kit-client.ts";
 
@@ -393,4 +393,62 @@ export async function countKitTagMembers(tagId: number, config?: KitConfig): Pro
     after = page.pagination.end_cursor;
   }
   return count;
+}
+
+/**
+ * Lista assinantes ATIVOS criados on/after `createdAfterDate` (`yyyy-mm-dd`),
+ * com a tag membership já embutida (#7357).
+ *
+ * ## Por que este helper existe — a parede de plataforma do #7357
+ *
+ * A decisão do editor foi "trocar o `subscriber_filter` do dispatch do Kit
+ * para tag `rampa-kit` OU criado após `<data>`" — mas o `POST /v4/broadcasts`
+ * real só aceita `subscriber_filter` do tipo `tag` ou `segment` (confirmado
+ * contra a doc oficial, developers.kit.com/api-reference/broadcasts/
+ * create-a-broadcast: "Only `segment` or `tag` filters allowed", achado ao
+ * vivo já registrado em `kit-broadcasts.ts` linha ~96 pro caso `all_subscribers`
+ * — e nenhuma variante `date`/`created_at` existe no schema). Não há endpoint
+ * de CRIAÇÃO de segment na API pública (confirmado: `POST /segments` não
+ * documentado, 404), então materializar o "OU data" como segment exigiria um
+ * passo manual do editor no painel do Kit — o que a decisão explicitamente
+ * queria evitar ("resgatados automaticamente, sem passo separado").
+ *
+ * A única composição que a API realmente aceita é **tag**. Por isso
+ * `kit-diaria-stage5-dispatch.ts` materializa o "OU criado após `<data>`"
+ * aplicando a MESMA tag de audiência (nunca uma nova) a quem foi criado
+ * on/after o corte e ainda não a tem — feito no PRÓPRIO dispatch, não em
+ * `subscribeToKit` (a alternativa que a issue rejeitou, porque contaminaria a
+ * coorte-gate da rampa Gmail #6504 em TODO cadastro futuro, sem corte). Aqui
+ * o corte é uma data de config, e só resgata quem ficou preso — depois disso
+ * o `subscriber_filter` do broadcast segue sendo `type: "tag"`, sem mudança.
+ *
+ * `include: ["tags"]` embute a tag membership na mesma chamada — evita 1
+ * `GET /subscribers/{id}/tags` por candidato (que seria a leitura "sem atraso"
+ * documentada em `kit-client.ts`, mas N chamadas a mais por dispatch diário
+ * não compensa aqui: o volume esperado é pequeno, dezenas no pior caso, e o
+ * campo `tags` do próprio `GET /subscribers` já veio confirmado no schema
+ * oficial).
+ */
+export async function listActiveSubscribersCreatedAfter(
+  createdAfterDate: string,
+  config?: KitConfig,
+): Promise<{ id: number; tagIds: number[] }[]> {
+  const out: { id: number; tagIds: number[] }[] = [];
+  let after: string | undefined;
+  for (;;) {
+    const page = await listSubscribers({
+      createdAfter: createdAfterDate,
+      status: "active",
+      include: ["tags"],
+      perPage: 500,
+      after,
+      config,
+    });
+    for (const s of page.subscribers) {
+      out.push({ id: s.id, tagIds: (s.tags ?? []).map((t) => t.id) });
+    }
+    if (!page.pagination.has_next_page || !page.pagination.end_cursor) break;
+    after = page.pagination.end_cursor;
+  }
+  return out;
 }

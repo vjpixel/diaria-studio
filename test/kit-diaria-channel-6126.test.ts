@@ -15,6 +15,8 @@ import {
   decideKitChannelDispatch,
   resolveAudienceTagId,
   checkAudienceTagHasMembers,
+  resolveCreatedAfterCutoff,
+  subscribersNeedingBackfillTag,
   type KitDiariaPublished,
 } from "../scripts/lib/kit-diaria-channel.ts";
 import { buildTagFilter, buildTestSendFilter, buildAllSubscribersFilter } from "../scripts/lib/kit-broadcasts.ts";
@@ -178,5 +180,51 @@ describe("#6126 buildTagFilter", () => {
     // público dele não pode ter mudado.
     assert.deepEqual(buildTestSendFilter(123), buildTagFilter(123));
     assert.deepEqual(buildTestSendFilter(123), [{ all: [{ type: "tag", ids: [123] }] }]);
+  });
+});
+
+describe("#7357 resolveCreatedAfterCutoff", () => {
+  it("config ausente ⇒ undefined (resgate desligado)", () => {
+    assert.equal(resolveCreatedAfterCutoff(undefined), undefined);
+    assert.equal(resolveCreatedAfterCutoff(null), undefined);
+  });
+
+  it("campo ausente ⇒ undefined", () => {
+    assert.equal(resolveCreatedAfterCutoff({ enabled: true }), undefined);
+  });
+
+  it("string vazia/só espaço ⇒ undefined, nunca uma data vazia", () => {
+    assert.equal(resolveCreatedAfterCutoff({ subscriber_filter_created_after: "" }), undefined);
+    assert.equal(resolveCreatedAfterCutoff({ subscriber_filter_created_after: "   " }), undefined);
+  });
+
+  it("data válida é devolvida (trimmed)", () => {
+    assert.equal(resolveCreatedAfterCutoff({ subscriber_filter_created_after: "2026-08-25" }), "2026-08-25");
+    assert.equal(resolveCreatedAfterCutoff({ subscriber_filter_created_after: "  2026-08-25  " }), "2026-08-25");
+  });
+});
+
+describe("#7357 subscribersNeedingBackfillTag", () => {
+  const TAG = 4242;
+
+  it("filtra só quem NÃO tem a tag de audiência", () => {
+    const candidates = [
+      { id: 1, tagIds: [TAG] }, // já tem — não precisa
+      { id: 2, tagIds: [] }, // precisa
+      { id: 3, tagIds: [999] }, // tem outra tag, não esta — precisa
+    ];
+    assert.deepEqual(subscribersNeedingBackfillTag(candidates, TAG), [2, 3]);
+  });
+
+  it("lista vazia ⇒ vazio", () => {
+    assert.deepEqual(subscribersNeedingBackfillTag([], TAG), []);
+  });
+
+  it("todos já tagueados ⇒ vazio — o caminho comum no dia a dia", () => {
+    const candidates = [
+      { id: 1, tagIds: [TAG] },
+      { id: 2, tagIds: [TAG, 7] },
+    ];
+    assert.deepEqual(subscribersNeedingBackfillTag(candidates, TAG), []);
   });
 });
