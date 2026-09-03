@@ -43,7 +43,7 @@
  * fora do escopo até uma fatia futura decidir gravar snapshot próprio.
  *
  * Uso:
- *   npx tsx scripts/check-metrics-health.ts [--dry-run] [--to email@x.com]
+ *   npx tsx scripts/check-metrics-health.ts [--dry-run] [--to editor@exemplo]
  *     [--db path] [--root data/beehiiv-backup] [--metas data/metas.json]
  *     [--queda-min-pct N] [--frescor-max-dias N] [--min-dias-serie N]
  *     [--indeterminado-max-fracao N]
