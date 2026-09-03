@@ -769,3 +769,37 @@ resolvidos. Sem `gh`/rede, o comando degrada sozinho pra warning + `exit 0`
   fase.
 - **Develop**: `{plan_path}` = `data/develop/{AAMMDD}/plan.json`; próximo
   passo = compilação do relatório.
+
+## 26. Lint de prosa de dependência sem marcador (#7137 item 4) — AUDITORIA, nunca gate
+
+Roda logo depois do item 25 (gate de drift de label), mesma fase, mas com
+uma diferença deliberada: **nunca bloqueia** — sempre `exit 0`, mesmo com
+achados. `npx tsx scripts/check-dependency-prose-lint.ts` (sem `--plan`;
+varre o backlog aberto inteiro via `gh issue list`, não o `plan.json` da
+rodada) reporta issues que citam prosa de dependência ("pré-requisito",
+"depende do #N", "depois que #N", "só depois") sem carregar o marcador
+`<!-- depends-on: #N -->` (item 24 acima, `reconcile-issue-dependencies.ts`).
+
+Origem: a #7137 nasceu de um incidente cometido pela MESMA sessão que a
+escrevia — 17 issues-filhas do #7112 declararam dependência só em prosa
+("depende do #7113", "só depois do #6798"), sem o marcador estruturado, e
+nasceram `overnight` (elegíveis) em vez de `bloqueada`. Revisão manual não
+bastou porque foi cometido no mesmo instante em que se documentava o
+problema — só um lint que roda em toda rodada pega isso de forma confiável.
+
+**Por que não bloqueia, ao contrário do item 25:** a correção de um achado
+do gate de drift (item 25) é mecânica — aplicar a label estrutural que o
+próprio padrão já nomeia. Aqui a correção exige JULGAMENTO: decidir se a
+prosa casada é dependência genuína (e, se for, qual `#N` vai no marcador)
+ou frase comum sem relação nenhuma ("antes de publicar", que não referencia
+issue alguma mas ainda pode casar um padrão frouxo). Forçar bloqueio sobre
+uma heurística de baixa precisão trocaria "issue presa sem marcador" pelo
+problema pior de "rodada presa por causa de uma frase comum". Os achados
+entram como linha informativa no relatório da rodada — nunca travam nada,
+nunca voltam a Fase 1. Racional completo: `scripts/lib/dependency-prose-lint.ts`.
+
+**Onde plugar:** passo 0.95 da Fase 2 do overnight (logo após o item 25);
+mesma posição, sem numeração formal, no develop (`.claude/skills/diaria-develop/SKILL.md`,
+logo após a linha do gate de drift de label). `continuo` não chama isto,
+mesmo critério do item 25 acima (a skill não tem a Fase 2 de relatório
+onde os outros gates rodam).
