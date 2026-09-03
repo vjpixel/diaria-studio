@@ -93,10 +93,28 @@ function evaluateSeries(
   let streak = 0;
   let diasIndeterminados = 0;
   let failEncountered = false;
+  // Uma vez que a varredura (mais recente → mais antigo) cruza um buraco
+  // de coleta, o streak PARA de crescer — dias de sucesso antes e depois
+  // do buraco NÃO são calendaricamente consecutivos, então não podem se
+  // somar (achado do reviewer overnight: sem este freeze, um buraco no
+  // meio da janela era absorvido pelo streak e produzia `atingida`
+  // falso-positivo, que é TERMINAL e nunca reverte). A varredura continua
+  // depois do buraco só para contar mais buracos e detectar um FAIL real
+  // mais antigo (que ainda vence e vira `em-curso`, nunca `indeterminado`)
+  // — nunca para voltar a incrementar o streak já congelado.
+  let holeEncountered = false;
   for (let i = valores.length - 1; i >= 0; i--) {
     const v = valores[i];
     if (v === null) {
       diasIndeterminados++;
+      holeEncountered = true;
+      continue;
+    }
+    if (holeEncountered) {
+      if (!comparaOperador(v, meta.operador, meta.alvo)) {
+        failEncountered = true;
+        break;
+      }
       continue;
     }
     if (comparaOperador(v, meta.operador, meta.alvo)) {

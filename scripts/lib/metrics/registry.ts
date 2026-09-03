@@ -175,7 +175,11 @@ export interface MetricDef<D extends MetricDeps = MetricDeps> {
 const RAZAO_UNIDADES: readonly Unidade[] = ["razao", "percentual"];
 
 function definitionNamesDenominator(definicao: string): boolean {
-  return /denominador/i.test(definicao);
+  // Exige que ALGO seja nomeado como denominador (`denominador = ...`),
+  // não só a substring "denominador" em qualquer lugar do texto — um texto
+  // que literalmente NEGA ter denominador claro ("sem denominador
+  // definido") continha a substring e passava no guard sem nomear nada.
+  return /denominador\s*=/i.test(definicao);
 }
 
 /**
@@ -401,7 +405,11 @@ const cadastrosDiaDef: MetricDef<AcquisitionMetricDeps> = {
     "COUNT(DISTINCT assinante) com created_at no dia D em BRT, excluindo conta interna/teste " +
     "(filterInternalAndTestSubscribers) e excluindo created_at no dia " +
     KIT_IMPORT_DAY +
-    " BRT (import em massa vindo da Beehiiv). decomposicao 'classe' devolve as 5 classes de #7173.",
+    " BRT (import em massa vindo da Beehiiv). Série instrumentada do Kit começa em " +
+    KIT_SERIES_FLOOR +
+    " — dias anteriores vêm do snapshot Beehiiv (F7, fora desta fatia); o CHAMADOR decide quais " +
+    "registros passa para registros(), este texto só documenta o piso, nunca filtra sozinho. " +
+    "decomposicao 'classe' devolve as 5 classes de #7173.",
   unidade: "contagem",
   direcao: "maior-melhor",
   fonte: "store do #6464 (data/diaria-subscribers/diaria-subscribers.db, subscriber/subscription) + data/metrics/captura-log.jsonl (F2)",

@@ -96,6 +96,41 @@ describe("evaluateMeta — máquina de estados (#7177)", () => {
     assert.equal(status.streak_atual, 4); // 09-02..08-30, para no fail de 08-28
   });
 
+  it("buraco no MEIO de uma janela maior que consecutivos não soma os dois lados do streak (#7175 reviewer finding 1)", () => {
+    const metaAlvo5: Meta = { ...metaPlacar, alvo: 5, operador: ">=", consecutivos: 5 };
+
+    // [5,5,null,5,5] — janela do tamanho exato de `consecutivos`: o buraco
+    // já quebra o streak mesmo sem reset (2 dias de cada lado, nenhum
+    // chega a 5) → indeterminado, comportamento preexistente preservado.
+    const janelaExata: MedicaoDia[] = [
+      exato("2026-08-27", 5),
+      exato("2026-08-28", 5),
+      indeterminado("2026-08-29"),
+      exato("2026-08-30", 5),
+      exato("2026-08-31", 5),
+    ];
+    const statusExata = evaluateMeta(metaAlvo5, janelaExata, "2026-08-31");
+    assert.equal(statusExata.estado, "indeterminado");
+
+    // [5,5,5,null,5,5] — 1 dia de contexto A MAIS (docstring: "cobrir mais
+    // não muda o resultado"). Sem o reset do streak no buraco, os 3 dias
+    // depois + os 2 antes se somavam a 5 e o resultado virava `atingida`
+    // (TERMINAL, nunca reverte) — falso positivo. Com o reset, nenhum dos
+    // dois lados do buraco sozinho chega a 5 → precisa continuar
+    // `indeterminado`, nunca `atingida`.
+    const janelaMaior: MedicaoDia[] = [
+      exato("2026-08-26", 5),
+      exato("2026-08-27", 5),
+      exato("2026-08-28", 5),
+      indeterminado("2026-08-29"),
+      exato("2026-08-30", 5),
+      exato("2026-08-31", 5),
+    ];
+    const statusMaior = evaluateMeta(metaAlvo5, janelaMaior, "2026-08-31");
+    assert.equal(statusMaior.estado, "indeterminado");
+    assert.notEqual(statusMaior.estado, "atingida");
+  });
+
   it("meta com prazo: null NUNCA devolve nao-atingida", () => {
     const medicoes = [exato("2026-01-01", 1)]; // bem abaixo do alvo, sem streak
     const status = evaluateMeta(metaPlacar, medicoes, "2099-01-01"); // "hoje" bem no futuro

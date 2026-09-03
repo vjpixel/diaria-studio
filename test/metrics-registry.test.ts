@@ -145,6 +145,46 @@ describe("assertRegistryValido (#7175)", () => {
     assert.throws(() => assertRegistryValido(bad), /denominador/);
   });
 
+  it("lança quando definicao só contém a SUBSTRING 'denominador' sem nomear nada (#7175 reviewer finding 2)", () => {
+    // O guard antigo era /denominador/i — satisfeito por QUALQUER texto que
+    // contivesse a palavra, inclusive um que NEGA ter denominador claro.
+    const negaExplicitamente: MetricDef[] = [
+      {
+        id: "ctr-nega-denominador",
+        nome: "CTR",
+        produto: "diaria",
+        etapa: "saude",
+        definicao: "cliques dividido por alguma coisa, sem denominador claro definido em lugar nenhum",
+        unidade: "razao",
+        direcao: "maior-melhor",
+        fonte: "x",
+        decomposicoes: [],
+        async computar() {
+          return { valor: 0, janela: janelaDia("2026-01-01"), frescor: null, qualidade: "exato", motivo: null };
+        },
+      },
+    ];
+    assert.throws(() => assertRegistryValido(negaExplicitamente), /denominador/);
+
+    const todoSemNomear: MetricDef[] = [
+      {
+        id: "ctr-todo-denominador",
+        nome: "CTR",
+        produto: "diaria",
+        etapa: "saude",
+        definicao: "ratio TODO denominador",
+        unidade: "razao",
+        direcao: "maior-melhor",
+        fonte: "x",
+        decomposicoes: [],
+        async computar() {
+          return { valor: 0, janela: janelaDia("2026-01-01"), frescor: null, qualidade: "exato", motivo: null };
+        },
+      },
+    ];
+    assert.throws(() => assertRegistryValido(todoSemNomear), /denominador/);
+  });
+
   it("aceita métrica de razão cuja definicao nomeia o denominador", () => {
     const ok: MetricDef[] = [
       {
