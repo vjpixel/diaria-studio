@@ -296,11 +296,19 @@ export function detectChainedSessionIdRisk(command) {
  * `register` de `session-registry.ts` (#6160). Mesma restrição de comando
  * encadeado que `needsSessionId` já aplica: nunca injeta no meio de um
  * `&&`/`;`/`|`/script multi-linha.
+ *
+ * #7264/#7281 fleet review: usa `isScriptInvoked` (invocação de verdade,
+ * não `command.includes` bruto) pelo MESMO motivo que `matchesInjectableTarget`
+ * mudou — sem isso, um comando que apenas MENCIONA "session-registry.ts" e
+ * a palavra "register" em prosa (ex: `gh issue create --title "Fix
+ * session-registry.ts register bug" --body "..."`) ainda anexaria `--pid`
+ * ao comando, corrompendo-o — a mesma classe de falso positivo que este
+ * fix resolveu pro `--session-id`, só que no caminho irmão.
  */
 export function needsPid(command) {
   if (typeof command !== "string" || command.trim() === "") return false;
   if (isChainedCommand(command)) return false;
-  return command.includes(TARGET_REGISTRY) && REGISTER_SUBCOMMAND.test(command);
+  return isScriptInvoked(command, TARGET_REGISTRY) && REGISTER_SUBCOMMAND.test(command);
 }
 
 /** `true` se o comando já traz `--pid` explicitamente — nunca sobrescrever. */

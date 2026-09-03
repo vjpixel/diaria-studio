@@ -204,6 +204,18 @@ describe("needsPid (#6160)", () => {
     assert.equal(needsPid(""), false);
     assert.equal(needsPid(undefined), false);
   });
+
+  it(
+    "#7264/#7281 fleet review — menção em prosa (título/corpo citando 'session-registry.ts' e " +
+      "'register') → false, nunca invocação (mesmo bug de command.includes bruto que o PR corrigiu " +
+      "pro --session-id, agora fechado também no --pid)",
+    () => {
+      assert.equal(
+        needsPid('gh issue create --title "Fix session-registry.ts register bug" --body "..."'),
+        false,
+      );
+    },
+  );
 });
 
 describe("alreadyHasPid", () => {
