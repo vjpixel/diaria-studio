@@ -175,6 +175,44 @@ describe("registrosFromStore — filtro de janela BRT (#7295)", () => {
     assert.equal(registros[0].email, "a@example.com");
     assert.equal(registros[0].dia, "2026-08-26");
   });
+
+  it("subscriber com múltiplos identity_alias (pós-fusão cross-plataforma, #7295 finding 1) devolve 1 único registro, nunca duplicado", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    // Simula o estado PÓS resolveIdentitiesByEmail (fatia 5, #6589): 1
+    // subscriber com 3 linhas em identity_alias (Beehiiv/Kit/Brevo), e-mails
+    // distintos entre plataformas — o caso real que o LEFT JOIN solto do
+    // finding 1 duplicava.
+    const subscriberId = ensureSubscriber(db, "beehiiv", "ext-1", "a@example.com");
+    db.prepare(
+      `INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at)
+       VALUES (?, 'kit', 'kit-ext-1', 'a.kit@example.com', ?)`,
+    ).run(subscriberId, "2026-08-26T12:00:00Z");
+    db.prepare(
+      `INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at)
+       VALUES (?, 'brevo_diaria', 'brevo-ext-1', 'a.brevo@example.com', ?)`,
+    ).run(subscriberId, "2026-08-26T12:00:00Z");
+
+    upsertSubscription(db, subscriberId, "beehiiv", {
+      status: "active",
+      enteredAt: "2026-08-26T12:00:00Z",
+      exitedAt: null,
+      source: "seo",
+    });
+
+    const registros = registrosFromStore(db, janelaDia("2026-08-26"));
+    assert.equal(registros.length, 1, "1 subscription com 3 aliases de e-mail não pode virar 3 registros");
+    assert.equal(registros[0].email, "a@example.com"); // e-mail de menor id — escolha estável
+
+    // A ligação fim-a-fim também não pode contar 3x: cadastros-dia precisa
+    // devolver 1, não 3, mesmo com o multi-alias no store.
+    const deps = buildAcquisitionDepsFromStore(db, [capturaEm("2026-08-26")]);
+    return getMetric("cadastros-dia")!
+      .computar({ janela: janelaDia("2026-08-26"), deps })
+      .then((resultado) => {
+        assert.equal(resultado.qualidade, "exato");
+        assert.equal(resultado.valor, 1);
+      });
+  });
 });
 
 describe("brtDayKey (#7295) — sanity da conversão local", () => {

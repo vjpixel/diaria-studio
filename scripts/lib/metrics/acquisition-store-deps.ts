@@ -86,11 +86,21 @@ interface SubscriptionAttributionRow {
 export function registrosFromStore(db: DatabaseSync, janela: Janela): AcquisitionRecordInput[] {
   const rows = db
     .prepare(
-      `SELECT ia.email AS email, s.entered_at AS entered_at, s.source AS utm_source,
-              s.utm_medium AS utm_medium, s.utm_channel AS utm_channel, s.referring_site AS referring_site
+      // Subquery correlacionada em vez de LEFT JOIN solto (#7295 self-review
+      // finding 1): `identity_alias` não tem UNIQUE(subscriber_id) — depois
+      // que resolveIdentitiesByEmail (fatia 5, #6589) funde aliases de
+      // plataformas diferentes no mesmo subscriber_id, 1 subscriber pode ter
+      // 2-3 linhas em identity_alias com e-mails distintos. Um JOIN solto
+      // produziria 1 linha de `subscription` × N linhas de alias casadas,
+      // duplicando o cadastro no resultado. Aqui cada `subscription` traz NO
+      // MÁXIMO 1 e-mail (o de menor `id`, escolha estável e determinística).
+      `SELECT
+         (SELECT ia.email FROM identity_alias ia
+          WHERE ia.subscriber_id = s.subscriber_id AND ia.email IS NOT NULL
+          ORDER BY ia.id LIMIT 1) AS email,
+         s.entered_at AS entered_at, s.source AS utm_source,
+         s.utm_medium AS utm_medium, s.utm_channel AS utm_channel, s.referring_site AS referring_site
        FROM subscription s
-       LEFT JOIN identity_alias ia
-         ON ia.subscriber_id = s.subscriber_id AND ia.email IS NOT NULL
        WHERE s.entered_at IS NOT NULL`,
     )
     .all() as unknown as SubscriptionAttributionRow[];
