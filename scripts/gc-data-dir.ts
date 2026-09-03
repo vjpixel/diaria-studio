@@ -6,8 +6,14 @@
  * redundante sob `data/` — a pasta do editor, sincronizada por OneDrive,
  * com conteúdo de negócio. Política pura em `scripts/lib/data-dir-gc-policy.ts`
  * (buckets, guard de exclusão, retenção); este script é só a camada fina de
- * I/O (walk do filesystem + dry-run/apply), seguindo a convenção de
- * `prune-audience-history.ts` (#7129).
+ * I/O (walk do filesystem + dry-run/apply), seguindo a convenção
+ * ESTRUTURAL de `prune-audience-history.ts` (#7129) — lib pura + script
+ * fino + idempotente. **O DEFAULT do dry-run diverge de propósito**:
+ * `prune-audience-history.ts` aplica por padrão (`--dry-run` precisa ser
+ * passado pra SÓ listar) porque seu blast radius é baixo (snapshot de
+ * audiência, regenerável). Aqui o dado é `data/` inteiro — conteúdo de
+ * negócio do editor — então o default é invertido: `--dry-run` é
+ * IMPLÍCITO, `--apply` precisa ser passado pra agir.
  *
  * **`--dry-run` é o DEFAULT — `main()` só lista candidatos e por quê, nunca
  * apaga nada, a menos que `--apply` seja passado explicitamente.** O
@@ -32,7 +38,15 @@
  * `dataRoot` é injetável (default `<repo>/data`) — mesmo padrão de
  * `resolveRunLogPath(rootDir)` (`run-log.ts`) — pra testes rodarem contra
  * um tmpdir fixture em vez do `data/` real (junction pro OneDrive do
- * editor, nunca tocado por teste).
+ * editor, nunca tocado por teste). **Premissa assumida, registrada e não
+ * validada (achado de review):** `--data-root` não é sanitizado além do
+ * `existsSync` em `main()` — sem checagem de path traversal, symlink fora
+ * da árvore esperada, ou formato. Aceitável pro modelo de confiança atual
+ * (CLI operado por humano digitando o valor, mesma classe de `--db`/
+ * `--manifest` nos scripts de ingestão) — revisitar SE este script for
+ * chamado por algo que não seja um humano digitando o path (ex: agendado
+ * via `scheduled-tasks.ts`, item 4 do follow-up desta issue, recebendo o
+ * valor de config em vez de argv).
  *
  * Uso:
  *   npx tsx scripts/gc-data-dir.ts [--apply] [--json] [--data-root <path>]
@@ -42,7 +56,18 @@
  * (mesmo padrão de `invalidateSiblingManifests`/`atomicCommitRebuild` —
  * `data/` é junctioned pro OneDrive, que segura arquivo por ~100-500ms
  * durante sync; falha em 1 arquivo não aborta a run inteira nem impede os
- * demais).
+ * demais) — e sai com `process.exitCode = 1` se QUALQUER remoção falhar
+ * (achado de review: antes disso, um chamador que só olhasse o exit code
+ * via `--apply` sem supervisão nunca saberia que remoções falharam).
+ *
+ * **Varredura é fail-soft por entrada, não por run inteira (achado de
+ * review):** `readdirSync`/`statSync` podem lançar por causa do MESMO
+ * comportamento do OneDrive documentado em `data-dir-gc-policy.ts`
+ * (arquivo "sumindo" durante sync, ~100-500ms) — inclusive durante
+ * `--dry-run`, que este script apresenta como "sempre seguro". Cada
+ * entrada ilegível é pulada e contada em `scanErrors` (reportado em texto
+ * e no `--json`) em vez de derrubar o inventário inteiro por um `ENOENT`
+ * de meio de sync.
  */
 
 import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
@@ -78,27 +103,58 @@ function ageDaysOf(mtimeMs: number, nowMs: number): number {
   return Math.floor((nowMs - mtimeMs) / 86_400_000);
 }
 
+/** `readdirSync` fail-soft (achado de review) — o mesmo comportamento do
+ *  cliente OneDrive documentado em `data-dir-gc-policy.ts` (arquivo
+ *  "sumindo" durante sync) pode fazer QUALQUER `readdirSync`/`statSync`
+ *  lançar no meio da varredura, inclusive em `--dry-run`. Uma falha aqui
+ *  não pode derrubar o inventário inteiro — só pula a entrada e anota o
+ *  motivo em `scanErrors` (reportado no summary, texto e `--json`). */
+function tryReaddir(absDir: string, scanErrors: string[]): import("node:fs").Dirent[] {
+  try {
+    return readdirSync(absDir, { withFileTypes: true });
+  } catch (e) {
+    scanErrors.push(`readdir ${absDir}: ${e instanceof Error ? e.message : String(e)}`);
+    return [];
+  }
+}
+
+/** `statSync` fail-soft — mesma razão de `tryReaddir`. `null` = entrada pulada. */
+function tryStat(absPath: string, scanErrors: string[]): import("node:fs").Stats | null {
+  try {
+    return statSync(absPath);
+  } catch (e) {
+    scanErrors.push(`stat ${absPath}: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+}
+
 /** Soma recursiva de tamanho — usado só pro bucket `_forensic/` (removido
- *  como árvore inteira, não arquivo a arquivo). */
-function dirSizeBytes(absDir: string): number {
+ *  como árvore inteira, não arquivo a arquivo). Entrada ilegível é pulada,
+ *  não aborta a soma do resto da árvore. */
+function dirSizeBytes(absDir: string, scanErrors: string[]): number {
   let total = 0;
-  for (const entry of readdirSync(absDir, { withFileTypes: true })) {
+  for (const entry of tryReaddir(absDir, scanErrors)) {
     const p = resolve(absDir, entry.name);
-    if (entry.isDirectory()) total += dirSizeBytes(p);
-    else if (entry.isFile()) total += statSync(p).size;
+    if (entry.isDirectory()) {
+      total += dirSizeBytes(p, scanErrors);
+    } else if (entry.isFile()) {
+      const st = tryStat(p, scanErrors);
+      if (st) total += st.size;
+    }
   }
   return total;
 }
 
 /** Lista arquivos (não-recursiva) diretamente sob `absDir`, com tamanho e idade. */
-function listFilesShallow(dataRoot: string, absDir: string, nowMs: number): AgedFile[] {
+function listFilesShallow(dataRoot: string, absDir: string, nowMs: number, scanErrors: string[]): AgedFile[] {
   if (!existsSync(absDir)) return [];
   const out: AgedFile[] = [];
-  for (const entry of readdirSync(absDir, { withFileTypes: true })) {
+  for (const entry of tryReaddir(absDir, scanErrors)) {
     if (!entry.isFile()) continue;
     const p = resolve(absDir, entry.name);
-    const st = statSync(p);
-    out.push({ relPath: toRelPath(dataRoot, p), sizeBytes: st.size, ageDays: ageDaysOf(st.mtimeMs, nowMs) });
+    const st = tryStat(p, scanErrors);
+    if (!st) continue;
+    out.push({ relPath: toRelPath(dataRoot, p), sizeBytes: st.size, ageDays: ageDaysOf(st.mtimeMs, nowMs), mtimeMs: st.mtimeMs });
   }
   return out;
 }
@@ -113,21 +169,23 @@ function walkForSiblingsAndCache(
   nowMs: number,
   siblings: AgedFile[],
   mvCache: AgedFile[],
+  scanErrors: string[],
 ): void {
   if (!existsSync(absDir)) return;
-  for (const entry of readdirSync(absDir, { withFileTypes: true })) {
+  for (const entry of tryReaddir(absDir, scanErrors)) {
     const p = resolve(absDir, entry.name);
     const rel = toRelPath(dataRoot, p);
     if (entry.isDirectory()) {
       if (rel === "beehiiv-backup" || rel.startsWith("beehiiv-backup/")) continue;
       if (rel === "snippets" || rel.startsWith("snippets/")) continue;
       if (isForensicCacheDir(rel)) continue; // contado à parte, pelo passo de edições
-      walkForSiblingsAndCache(dataRoot, p, nowMs, siblings, mvCache);
+      walkForSiblingsAndCache(dataRoot, p, nowMs, siblings, mvCache, scanErrors);
       continue;
     }
     if (!entry.isFile()) continue;
-    const st = statSync(p);
-    const aged: AgedFile = { relPath: rel, sizeBytes: st.size, ageDays: ageDaysOf(st.mtimeMs, nowMs) };
+    const st = tryStat(p, scanErrors);
+    if (!st) continue;
+    const aged: AgedFile = { relPath: rel, sizeBytes: st.size, ageDays: ageDaysOf(st.mtimeMs, nowMs), mtimeMs: st.mtimeMs };
     if (isBackupSiblingFilename(entry.name)) siblings.push(aged);
     if (isMvCacheFilename(entry.name)) mvCache.push(aged);
   }
@@ -138,10 +196,10 @@ function walkForSiblingsAndCache(
  *  diretórios medidos em julho/2026). Normalizar pro layout único é
  *  follow-up separado — este script só precisa ENXERGAR os dois pra não
  *  errar silenciosamente. */
-function listEditionDirs(editionsRoot: string): string[] {
+function listEditionDirs(editionsRoot: string, scanErrors: string[]): string[] {
   if (!existsSync(editionsRoot)) return [];
   const out: string[] = [];
-  for (const entry of readdirSync(editionsRoot, { withFileTypes: true })) {
+  for (const entry of tryReaddir(editionsRoot, scanErrors)) {
     if (!entry.isDirectory()) continue;
     if (/^\d{6}$/.test(entry.name)) {
       out.push(resolve(editionsRoot, entry.name)); // layout flat residual
@@ -149,7 +207,7 @@ function listEditionDirs(editionsRoot: string): string[] {
     }
     if (/^\d{4}$/.test(entry.name)) {
       const monthDir = resolve(editionsRoot, entry.name);
-      for (const sub of readdirSync(monthDir, { withFileTypes: true })) {
+      for (const sub of tryReaddir(monthDir, scanErrors)) {
         if (sub.isDirectory() && /^\d{6}$/.test(sub.name)) out.push(resolve(monthDir, sub.name));
       }
     }
@@ -161,13 +219,22 @@ function listEditionDirs(editionsRoot: string): string[] {
 // Coleta de candidatos
 // ---------------------------------------------------------------------------
 
-export function collectCandidates(dataRoot: string = DEFAULT_DATA_ROOT, nowMs: number = Date.now()): GcCandidate[] {
-  if (!existsSync(dataRoot)) return [];
+export interface CollectResult {
+  candidates: GcCandidate[];
+  /** Entradas que não puderam ser lidas durante a varredura (best-effort,
+   *  ver docstring do módulo) — "readdir/stat <path>: <motivo>". Nunca
+   *  aborta o inventário; só sinaliza que ele pode estar incompleto ali. */
+  scanErrors: string[];
+}
+
+export function collectCandidates(dataRoot: string = DEFAULT_DATA_ROOT, nowMs: number = Date.now()): CollectResult {
+  if (!existsSync(dataRoot)) return { candidates: [], scanErrors: [] };
   const candidates: GcCandidate[] = [];
+  const scanErrors: string[] = [];
   const editionsRoot = resolve(dataRoot, "editions");
 
   // Buckets 1-3: dentro de `_internal/` de edições FECHADAS.
-  for (const editionDir of listEditionDirs(editionsRoot)) {
+  for (const editionDir of listEditionDirs(editionsRoot, scanErrors)) {
     if (!sentinelExists(editionDir, 6)) continue; // não fechada — nunca tocar
     const internalDir = resolve(editionDir, "_internal");
     if (!existsSync(internalDir)) continue;
@@ -177,12 +244,12 @@ export function collectCandidates(dataRoot: string = DEFAULT_DATA_ROOT, nowMs: n
       candidates.push({
         relPath: toRelPath(dataRoot, forensicDir),
         bucket: "forensic-cache",
-        sizeBytes: dirSizeBytes(forensicDir),
+        sizeBytes: dirSizeBytes(forensicDir, scanErrors),
         reason: "cache intra-edição de HTML bruto (url-body-cache.ts) — edição fechada, #959 já proíbe expor a agentes",
       });
     }
 
-    for (const f of listFilesShallow(dataRoot, internalDir, nowMs)) {
+    for (const f of listFilesShallow(dataRoot, internalDir, nowMs, scanErrors)) {
       const basename = f.relPath.split("/").pop()!;
       if (isTmpIntermediateFilename(basename)) {
         candidates.push({
@@ -203,11 +270,11 @@ export function collectCandidates(dataRoot: string = DEFAULT_DATA_ROOT, nowMs: n
   // Buckets 4-5: qualquer lugar sob `data/`.
   const siblings: AgedFile[] = [];
   const mvCache: AgedFile[] = [];
-  walkForSiblingsAndCache(dataRoot, dataRoot, nowMs, siblings, mvCache);
+  walkForSiblingsAndCache(dataRoot, dataRoot, nowMs, siblings, mvCache, scanErrors);
   candidates.push(...classifyBackupSiblings(siblings));
   candidates.push(...classifyMvCache(mvCache));
 
-  return guardCandidates(candidates);
+  return { candidates: guardCandidates(candidates), scanErrors };
 }
 
 // ---------------------------------------------------------------------------
@@ -220,7 +287,16 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function main(argv: string[] = process.argv.slice(2)): void {
+/** Assinatura de `rmSync` — injetável em `main()` só pra teste (regressão
+ *  portável do exit code sob falha de remoção, achado de review; mockar
+ *  `node:fs` não funciona sob tsx+Node24 neste repo, ver comentário em
+ *  test/stage4-capture-state.test.ts). Produção sempre usa o `rmSync` real. */
+export type RmFn = (path: string, opts: { recursive: boolean; force: boolean }) => void;
+
+export function main(
+  argv: string[] = process.argv.slice(2),
+  rmFn: RmFn = rmSync,
+): void {
   const apply = hasFlag(argv, "apply");
   const asJson = hasFlag(argv, "json");
   const dataRoot = getArg(argv, "data-root") || DEFAULT_DATA_ROOT;
@@ -230,11 +306,49 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     return;
   }
 
-  const candidates = collectCandidates(dataRoot);
+  const { candidates, scanErrors } = collectCandidates(dataRoot);
   const totalBytes = candidates.reduce((sum, c) => sum + c.sizeBytes, 0);
 
+  // Remoção acontece ANTES de qualquer output — achado de review: o
+  // `--json` saía ANTES do loop de `--apply` e nunca refletia o que de
+  // fato foi removido (nem sucesso nem falha por arquivo). Agora TODO
+  // output (texto ou `--json`) é emitido depois do efeito já ter
+  // acontecido — nunca afirma resultado antes dele existir.
+  let removed = 0;
+  let failed = 0;
+  const removals: Array<{ rel_path: string; removed: boolean; error?: string }> = [];
+  if (apply) {
+    for (const c of candidates) {
+      const abs = resolve(dataRoot, c.relPath);
+      try {
+        rmFn(abs, { recursive: true, force: true });
+        removed++;
+        removals.push({ rel_path: c.relPath, removed: true });
+      } catch (e) {
+        failed++;
+        const message = e instanceof Error ? e.message : String(e);
+        removals.push({ rel_path: c.relPath, removed: false, error: message });
+        console.error(
+          `⚠️  [gc-data-dir] falha ao remover ${c.relPath}: ${message} — seguindo (best-effort).`,
+        );
+      }
+    }
+  }
+
   if (asJson) {
-    console.log(JSON.stringify({ apply, total_bytes: totalBytes, candidates }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          apply,
+          total_bytes: totalBytes,
+          candidates,
+          scan_errors: scanErrors,
+          ...(apply ? { removed, failed, removals } : {}),
+        },
+        null,
+        2,
+      ),
+    );
   } else {
     for (const c of candidates) {
       console.log(`[${c.bucket}] ${formatBytes(c.sizeBytes).padStart(9)}  ${c.relPath}  — ${c.reason}`);
@@ -250,29 +364,27 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     for (const [bucket, { count, bytes }] of byBucket) {
       console.log(`  ${bucket}: ${count} item(ns), ${formatBytes(bytes)}`);
     }
+    if (scanErrors.length > 0) {
+      console.log(
+        `\n⚠️  ${scanErrors.length} entrada(s) não puderam ser lidas durante a varredura (puladas — ` +
+          `inventário acima é PARCIAL nesses pontos, não um erro fatal):`,
+      );
+      for (const err of scanErrors) console.log(`    ${err}`);
+    }
     console.log(
       `\n[gc-data-dir] total: ${candidates.length} item(ns), ${formatBytes(totalBytes)}` +
-        (apply ? "" : " [dry-run — nada removido; rode com --apply pra remover de fato]"),
+        (apply
+          ? ` — --apply: ${removed} removido(s), ${failed} falha(s).`
+          : " [dry-run — nada removido; rode com --apply pra remover de fato]"),
     );
   }
 
-  if (!apply) return;
-
-  let removed = 0;
-  let failed = 0;
-  for (const c of candidates) {
-    const abs = resolve(dataRoot, c.relPath);
-    try {
-      rmSync(abs, { recursive: true, force: true });
-      removed++;
-    } catch (e) {
-      failed++;
-      console.error(
-        `⚠️  [gc-data-dir] falha ao remover ${c.relPath}: ${e instanceof Error ? e.message : String(e)} — seguindo (best-effort).`,
-      );
-    }
+  // Achado de review: sem isto, um chamador que só olhasse o exit code de
+  // `--apply` (ex: agendado sem supervisão — o follow-up da issue) veria
+  // sucesso mesmo com TODAS as remoções tendo falhado.
+  if (apply && failed > 0) {
+    process.exitCode = 1;
   }
-  console.log(`[gc-data-dir] --apply: ${removed} removido(s), ${failed} falha(s).`);
 }
 
 if (isMainModule(import.meta.url)) {

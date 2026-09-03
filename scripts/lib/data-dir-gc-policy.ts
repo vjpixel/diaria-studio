@@ -100,14 +100,16 @@ export function isEmbeddedHtmlFilename(name: string): boolean {
 // ---------------------------------------------------------------------------
 
 /** Sufixos de nome de máquina realmente usados no projeto (ver CLAUDE.md /
- *  memory: helios, neo, predator, Zenbook) + o padrão `-safeBackup-NNNN`
- *  que o cliente OneDrive gera em conflito de eTag (#7170) + `.bak[-data]`
- *  de backup manual. Casa `-Neo`, `-Neo-2` … `-Neo-10` (OneDrive numera
- *  conflitos repetidos), `-predator-safeBackup-0001`,
- *  `-fromWindows-260817-0146`, `.db.bak`, `.db.bak-260728-pre-build`. */
+ *  memory: helios — servidor Linux 24/7, também participa de conflito
+ *  OneDrive, ver #7170 —, neo, predator, Zenbook) + o padrão
+ *  `-safeBackup-NNNN` que o cliente OneDrive gera em conflito de eTag
+ *  (#7170) + `.bak[-data]` de backup manual. Casa `-Neo`, `-Neo-2` …
+ *  `-Neo-10` (OneDrive numera conflitos repetidos), `-helios`,
+ *  `-predator-safeBackup-0001`, `-fromWindows-260817-0146`, `.db.bak`,
+ *  `.db.bak-260728-pre-build`. */
 const BACKUP_SIBLING_PATTERNS: readonly RegExp[] = [
   /-safeBackup-\d+(?=\.[^./]+$|$)/i,
-  /-(predator|neo|zenbook)(-\d+)?(?=\.[^./]+$)/i,
+  /-(predator|neo|zenbook|helios)(-\d+)?(?=\.[^./]+$)/i,
   /-fromWindows-\d{6}-\d{4}(?=\.[^./]+$)/i,
   /\.bak(-\d{6}[-\w]*)?$/i,
 ];
@@ -125,6 +127,12 @@ export interface AgedFile {
   sizeBytes: number;
   /** idade em dias (mtime), calculada pelo caller — mantém esta função pura/testável sem `Date.now()` embutido. */
   ageDays: number;
+  /** mtime bruto em ms (epoch) — usado só pra DESEMPATAR ordem dentro do
+   *  mesmo dia (`classifyBackupSiblings`). `ageDays` sozinho (arredondado
+   *  pra baixo) empataria cópias-irmãs nascidas no mesmo dia — o caso
+   *  COMUM pra conflito do OneDrive, já que as cópias nascem no mesmo
+   *  evento de sync, não em dias diferentes. */
+  mtimeMs: number;
 }
 
 /** Retenção default pra cópias-irmãs — folgada o bastante pra sobreviver a
@@ -135,15 +143,30 @@ export const BACKUP_SIBLING_RETENTION_DAYS = 14;
 
 /**
  * Classifica cópias-irmãs candidatas a remoção — agrupadas por DIRETÓRIO
- * (não por "família" de nome, mais simples e seguro: um diretório
- * raramente mistura backups de mais de um arquivo canônico). Dentro de
- * cada diretório, a cópia MAIS RECENTE nunca é candidata — mesmo se velha
- * (issue: "sempre preservando o mais recente de cada família") — as demais
- * só entram se `ageDays > retentionDays`.
+ * (não por "família" de nome canônico, ver nota de desenho abaixo). Dentro
+ * de cada diretório, a cópia MAIS RECENTE (por `mtimeMs` real, não
+ * `ageDays` arredondado — ver docstring de `AgedFile`) nunca é candidata —
+ * mesmo se velha (issue: "sempre preservando o mais recente de cada
+ * família") — as demais só entram se `ageDays > retentionDays`.
  *
  * `files` deve conter só arquivos já filtrados por `isBackupSiblingFilename`
  * (esta função não filtra de novo — separação de responsabilidade: achar
  * vs. decidir retenção).
+ *
+ * **Premissa assumida, registrada e não resolvida (achado de review,
+ * confiança média):** agrupar por DIRETÓRIO em vez de por família de nome
+ * canônico (ex: extrair o stem antes do 1º sufixo de conflito) assume que
+ * um diretório nunca mistura backups de mais de 1 arquivo canônico
+ * distinto — verdadeiro em todo caso medido no projeto (`clarice-users.db`
+ * sozinho em `clarice-subscribers/`, `run-log.jsonl` sozinho na raiz),
+ * mas não é garantido em geral: um diretório com 2 arquivos canônicos
+ * diferentes, cada um com suas próprias cópias-irmãs, faria esta função
+ * tratá-las como 1 família só — "a mais recente do diretório" preservaria
+ * só 1 cópia (de 1 dos 2 canônicos), quando deveria preservar 1 de CADA.
+ * Critério pra revisitar: se uma varredura real (`--dry-run --json`)
+ * mostrar um diretório com 3+ cópias-irmãs cujos nomes, ao remover o
+ * sufixo de conflito, não convergem pro MESMO stem — sinal de mistura —
+ * trocar pra agrupamento por família (stem canônico) em vez de diretório.
  */
 export function classifyBackupSiblings(
   files: readonly AgedFile[],
@@ -160,7 +183,12 @@ export function classifyBackupSiblings(
 
   const out: GcCandidate[] = [];
   for (const list of byDir.values()) {
-    const sorted = [...list].sort((a, b) => a.ageDays - b.ageDays); // mais nova primeiro
+    // mtimeMs REAL, não ageDays arredondado (achado de review) — cópias-
+    // irmãs do OneDrive nascem no mesmo evento de conflito, então empatar
+    // no mesmo DIA é o caso comum, não a exceção; ageDays (Math.floor)
+    // faria a ordem depender de readdirSync (arbitrária), não de quem é
+    // de fato mais recente.
+    const sorted = [...list].sort((a, b) => b.mtimeMs - a.mtimeMs); // mais nova primeiro
     sorted.forEach((f, idx) => {
       if (idx === 0) return; // mais recente do diretório — nunca candidata
       if (f.ageDays <= retentionDays) return;
