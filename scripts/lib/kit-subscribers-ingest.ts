@@ -210,6 +210,18 @@ export function ingestKitRoster(
     const status = sub.state ?? null;
     const exited = status != null && KIT_EXITED_STATES.has(status);
 
+    // #7222 finding 1: precisa ser lido ANTES do upsertSubscription abaixo
+    // (que sobrescreve `exited_at`) — é o único jeito de distinguir
+    // "já estava exited numa rodada anterior" de "está transicionando para
+    // exited agora". Sem isso, todo dia em que o roster reporta o MESMO
+    // `state` (Kit não expõe timestamp de cancelamento — ver docstring do
+    // módulo) gera um `externalEventId` novo (chave inclui o dia da
+    // captura) e o evento `unsub` seria reinserido para sempre.
+    const previousSubscription = db
+      .prepare("SELECT exited_at FROM subscription WHERE subscriber_id = ? AND platform = 'kit'")
+      .get(subscriberId) as { exited_at: string | null } | undefined;
+    const wasExitedBefore = previousSubscription != null && previousSubscription.exited_at != null;
+
     upsertSubscription(
       db,
       subscriberId,
@@ -241,12 +253,18 @@ export function ingestKitRoster(
       else subscribeKnown++;
     }
 
-    if (exited) {
+    if (exited && !wasExitedBefore) {
       // O Kit não expõe timestamp de cancelamento — só o ESTADO ATUAL (ver
-      // docstring do módulo/#7174). A chave natural usa o dia da CAPTURA
-      // (não `now` inteiro, que muda a cada milissegundo) pra que rodar a
-      // ingestão 2x no mesmo dia não duplique o evento — mesma transição de
-      // estado observada 2x no mesmo dia é 1 evento, não 2.
+      // docstring do módulo/#7174), e o roster reporta o MESMO `state` em
+      // TODA rodada enquanto o assinante seguir cancelado. Gravar só na
+      // TRANSIÇÃO (`wasExitedBefore` checado acima, antes do upsert acima
+      // sobrescrever `exited_at`) é o que impede reinserção sem limite
+      // (#7222 finding 1) — o guard `INSERT OR IGNORE` de `recordEvent` só
+      // dedupe pela CHAVE, e uma chave por dia de captura seria sempre nova.
+      // A chave natural ainda usa o dia da captura (não `now` inteiro) por
+      // segurança — se este `if` algum dia rodar 2x no mesmo dia pro mesmo
+      // assinante antes do estado ter sido persistido em outra rodada, o
+      // `INSERT OR IGNORE` segue sendo a rede de segurança, não a regra.
       const captureDay = now.slice(0, 10);
       const { inserted } = recordEvent(db, {
         subscriberId,
@@ -257,6 +275,8 @@ export function ingestKitRoster(
       });
       if (inserted) unsubNew++;
       else unsubKnown++;
+    } else if (exited) {
+      unsubKnown++;
     }
   }
 

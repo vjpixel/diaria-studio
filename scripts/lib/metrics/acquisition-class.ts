@@ -315,7 +315,7 @@ export function classifyAcquisition(input: AcquisitionClassInput): AcquisitionCl
     }
     return "pago";
   }
-  if (medium !== "__none__" && PAID_UTM_MEDIA.includes(input.utm_medium ?? "")) return "pago";
+  if (medium !== "__none__" && PAID_UTM_MEDIA.includes(medium)) return "pago";
 
   // 2. reativacao — utm_source ∈ {brevo-diaria, sendinblue}.
   if (REATIVACAO_UTM_SOURCES.includes(source)) return "reativacao";

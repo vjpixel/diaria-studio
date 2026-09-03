@@ -87,6 +87,44 @@ describe("migrateSubscriptionColumns — ALTER TABLE idempotente sobre .db povoa
     db.close();
   });
 
+  it("engole 'duplicate column name' — processo concorrente já commitou a coluna entre o PRAGMA e o ALTER (#7222 finding 2)", () => {
+    let alterCalls = 0;
+    const fakeDb = {
+      prepare: (sql: string) => {
+        if (sql.startsWith("PRAGMA table_info")) {
+          // Nenhuma das 5 colunas novas existe pelo snapshot do PRAGMA — mas
+          // o ALTER de uma delas vai simular ter sido gravado por outro
+          // processo NO INTERVALO entre este PRAGMA e o exec abaixo.
+          return { all: () => [{ name: "id" }, { name: "subscriber_id" }] };
+        }
+        throw new Error(`prepare inesperado no fake: ${sql}`);
+      },
+      exec: (ddl: string) => {
+        alterCalls++;
+        if (ddl.includes("utm_campaign")) {
+          throw new Error("SQLITE_ERROR: duplicate column name: utm_campaign");
+        }
+      },
+    } as unknown as DatabaseSync;
+
+    assert.doesNotThrow(() => migrateSubscriptionColumns(fakeDb));
+    assert.equal(alterCalls, 5, "tentou as 5 colunas — a que colidiu não travou as demais");
+  });
+
+  it("relança qualquer erro que NÃO seja 'duplicate column name' (disco cheio, .db corrompido, etc.)", () => {
+    const fakeDb = {
+      prepare: (sql: string) => {
+        if (sql.startsWith("PRAGMA table_info")) return { all: () => [] };
+        throw new Error(`prepare inesperado no fake: ${sql}`);
+      },
+      exec: () => {
+        throw new Error("disk I/O error");
+      },
+    } as unknown as DatabaseSync;
+
+    assert.throws(() => migrateSubscriptionColumns(fakeDb), /disk I\/O error/);
+  });
+
   it("migra um .db criado com o schema ANTIGO (subscription sem as 5 colunas), simulando um store já populado em produção", () => {
     // Simula o cenário real do #7174: `subscription` já existia (0+ linhas)
     // ANTES desta fatia acrescentar as colunas — recriamos esse estado

@@ -123,6 +123,19 @@ describe("classifyAcquisition — armadilha 2: utm_medium=referral não é indic
   });
 });
 
+describe("classifyAcquisition — utm_medium pago casa independente de capitalização (#7222 finding 3)", () => {
+  it("utm_medium=CPC (maiúsculo, sem spec de CHANNEL_KEY_SPECS casando) → pago, nunca organico/indeterminado", () => {
+    const result = classifyAcquisition({
+      utm_source: "utm-source-sem-spec-cadastrada",
+      utm_medium: "CPC",
+      utm_channel: null,
+      referring_site: null,
+      created: 1_785_542_400,
+    });
+    assert.equal(result, "pago");
+  });
+});
+
 describe("classifyAcquisition — armadilha 3: brevo-diaria/sendinblue é reativação", () => {
   it("brevo-diaria → reativacao, mesmo com sinal de origem ausente", () => {
     assert.equal(

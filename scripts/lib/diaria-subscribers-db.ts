@@ -290,6 +290,18 @@ const SUBSCRIPTION_MIGRATION_COLUMNS: ReadonlyArray<{ name: string; ddl: string 
  * só suportada a partir do SQLite 3.35). Idempotente: rodar 2x não lança
  * nem duplica coluna. Chamada automaticamente por `openDiariaSubscribersDb`
  * — nenhum consumidor precisa lembrar de rodá-la manualmente.
+ *
+ * **Concorrência entre processos (#7222 finding 2).** `openDiariaSubscribersDb`
+ * roda isto incondicionalmente a CADA abertura do `.db` — dois processos
+ * (a task de captura do roster, o dashboard do Studio, `brevo-subscribers-
+ * ingest.ts`, uma sessão manual) podem abrir o mesmo `.db` quase juntos,
+ * antes de qualquer um commitar a coluna: os dois leem `PRAGMA table_info`
+ * SEM a coluna, e os dois tentam `ALTER TABLE ADD COLUMN` — o 2º lançaria
+ * `duplicate column name`, derrubando um processo que só queria LER. Cada
+ * `db.exec(col.ddl)` engole especificamente esse erro (a coluna já existe,
+ * gravada pelo processo concorrente — resultado idêntico ao que este
+ * processo tentava alcançar) e relança qualquer outro erro (disco cheio,
+ * `.db` corrompido, etc. — nunca mascarados).
  */
 export function migrateSubscriptionColumns(db: DatabaseSync): void {
   const existing = new Set(
@@ -301,7 +313,14 @@ export function migrateSubscriptionColumns(db: DatabaseSync): void {
   );
   for (const col of SUBSCRIPTION_MIGRATION_COLUMNS) {
     if (existing.has(col.name)) continue;
-    db.exec(col.ddl);
+    try {
+      db.exec(col.ddl);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.includes("duplicate column name")) throw err;
+      // Processo concorrente já adicionou a coluna entre o PRAGMA acima e
+      // este exec — mesmo resultado final, seguir sem lançar.
+    }
   }
 }
 

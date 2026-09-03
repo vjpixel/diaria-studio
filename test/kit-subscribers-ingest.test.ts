@@ -235,6 +235,24 @@ describe("ingestKitRoster", () => {
     db.close();
   });
 
+  it("3+ execuções consecutivas com o MESMO state exited só gravam 1 evento unsub (#7222 finding 1 — regressão)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const day1 = ingestKitRoster(db, [makeSub({ state: "cancelled" })], "2026-09-02T04:25:00.000Z");
+    const day2 = ingestKitRoster(db, [makeSub({ state: "cancelled" })], "2026-09-03T04:25:00.000Z");
+    const day3 = ingestKitRoster(db, [makeSub({ state: "cancelled" })], "2026-09-04T04:25:00.000Z");
+    assert.equal(day1.unsubEvents.newEvents, 1, "1ª rodada: transição active→cancelled, evento novo");
+    assert.equal(day2.unsubEvents.newEvents, 0, "2ª rodada: já estava exited, sem transição, sem evento novo");
+    assert.equal(day3.unsubEvents.newEvents, 0, "3ª rodada: mesma coisa — nunca reinsere por dia de captura");
+    const subscriberId = findSubscriberIdByAlias(db, "kit", "1", "leitor@example.com");
+    const timeline = getSubscriberTimeline(db, subscriberId!);
+    assert.equal(
+      timeline.filter((e) => e.type === "unsub").length,
+      1,
+      "30 dias cancelado não pode virar 30 eventos unsub — só 1, na transição",
+    );
+    db.close();
+  });
+
   it("assinante que some da API numa próxima rodada permanece na série (linha antiga não é apagada)", () => {
     const db = openDiariaSubscribersDb(":memory:");
     ingestKitRoster(db, [makeSub({ id: 1 }), makeSub({ id: 2, email_address: "outro@example.com" })], "2026-09-02T04:25:00.000Z");
