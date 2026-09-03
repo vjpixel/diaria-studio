@@ -427,10 +427,14 @@ export const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
  * NÃO remove a sessão da lista, só marca o campo computado `stale: true` em
  * cada registro retornado, para visibilidade sem quebrar consumidores que
  * dependem da lista completa (`overnight-watchdog.ts`,
- * `cleanup-merged-worktrees.ts`). `isIssueClaimedByOther` (consumida pelo CLI
- * `is-claimed`) é o único lugar que trata `stale: true` como sinal
- * NÃO-bloqueante — uma claim de sessão com heartbeat morto há mais de
- * `SOFT_STALE_MS` não impede outra sessão de reivindicar a mesma issue.
+ * `cleanup-merged-worktrees.ts`). **#7227: `isIssueClaimedByOther` (consumida
+ * pelo CLI `is-claimed`) NÃO trata mais `stale: true` sozinho como sinal
+ * não-bloqueante** — lê `claimed_issues_effective`, que só esvazia na janela
+ * de `claimReleaseMsForKind` (24h pros 3 kinds coordenadores; ver sua
+ * docstring pro porquê de ser mais longa que `SOFT_STALE_MS`). Uma claim de
+ * sessão com heartbeat morto há mais de `SOFT_STALE_MS` mas menos que
+ * `claimReleaseMsForKind` CONTINUA impedindo outra sessão de reivindicar a
+ * mesma issue.
  *
  * **`SOFT_STALE_MS` é rede de segurança, não o sinal primário de liveness na
  * prática (#6327).** Desde o beacon (`.claude/hooks/session-beacon.mjs`,
@@ -2371,12 +2375,15 @@ export interface ClaimIssueResult {
 
 export interface ClaimIssueOptions {
   /**
-   * Escape hatch (#6236) — assume a issue mesmo que outra sessão ATIVA (não
-   * stale) já a segure. Existe pro caso legítimo de retomar issue de sessão
-   * que morreu sem liberar o registro (heartbeat parou, mas ainda dentro da
-   * janela `SOFT_STALE_MS`/`MAX_SESSION_AGE_MS`) — staleness sozinha já
-   * destrava isso sem `force` (ver `reason: "claimed"` quando o dono
-   * anterior está stale), então `force` só entra em jogo contra dono ATIVO.
+   * Escape hatch (#6236) — assume a issue mesmo que outra sessão ainda
+   * segure o claim segundo `isIssueClaimedByOther` (#7227: isto NÃO é mais
+   * o mesmo limiar que `stale`/`SOFT_STALE_MS` — ver `claimReleaseMsForKind`).
+   * Existe pro caso legítimo de retomar issue de sessão que morreu sem
+   * liberar o registro, mas AINDA dentro da janela de retenção do claim
+   * (`claimReleaseMsForKind`, 24h pros 3 kinds coordenadores) — passada essa
+   * janela, o claim já destrava sozinho sem `force` (ver `reason: "claimed"`
+   * quando o dono anterior já não segura mais), então `force` só entra em
+   * jogo contra dono cujo claim ainda vale.
    */
   force?: boolean;
 }
@@ -2395,15 +2402,17 @@ export interface ClaimIssueOptions {
  *   encerrada, corrompida) → `{ ok: false, reason: "no-op-session-missing" }`.
  * - A PRÓPRIA sessão já segura a issue → no-op idempotente,
  *   `{ ok: true, reason: "already-own" }` (nunca recusa — usado em retomada).
- * - Outra sessão ATIVA (não-stale) já segura a issue e `force` não foi
- *   passado → recusa, `{ ok: false, reason: "blocked-by-other", blockedBy }`.
- * - Outra sessão ATIVA já segura a issue e `force: true` → toma o claim
+ * - Outra sessão ainda segura o claim segundo `isIssueClaimedByOther`
+ *   (#7227: dentro de `claimReleaseMsForKind`, não mais só "não-stale") e
+ *   `force` não foi passado → recusa, `{ ok: false, reason: "blocked-by-other", blockedBy }`.
+ * - Outra sessão ainda segura o claim e `force: true` → toma o claim
  *   mesmo assim, `{ ok: true, reason: "forced-override" }` (chamador deve
  *   avisar alto quem estava segurando, via `blockedBy` do retorno — este
  *   helper não loga por si, é puro).
- * - Ninguém segura (ou só uma sessão STALE segura — `isIssueClaimedByOther`
- *   já ignora sessão stale, #5474) → claim normal,
- *   `{ ok: true, reason: "claimed" }`, sem precisar de `force`.
+ * - Ninguém segura (ou só uma sessão cujo claim já passou de
+ *   `claimReleaseMsForKind` — `isIssueClaimedByOther` já ignora esse caso,
+ *   #5474/#7227) → claim normal, `{ ok: true, reason: "claimed" }`, sem
+ *   precisar de `force`.
  *
  * **Não fecha a janela TOCTOU entre MÁQUINAS diferentes** (mesma ressalva do
  * merge lock, #6182): a leitura de `isIssueClaimedByOther` e a escrita deste
@@ -2891,8 +2900,14 @@ export function isIssueClaimedByOther(
  * o tick do contínuo consulta antes de reivindicar issue nova e se limita a
  * processar a própria fila de PRs enquanto houver overnight ativo.
  *
- * Semântica de staleness idêntica à de `isIssueClaimedByOther` (#5474):
- * sessão com heartbeat morto há mais de `SOFT_STALE_MS` NÃO conta como ativa —
+ * Usa `session.stale` (`SOFT_STALE_MS`) diretamente — **não** a janela mais
+ * longa de `claimReleaseMsForKind` que `isIssueClaimedByOther` passou a usar
+ * desde o #7227 (as duas divergem agora, de propósito: a pergunta aqui é
+ * "há uma RODADA deste kind acontecendo?", não "esta issue específica ainda
+ * está reivindicada?" — um overnight silencioso há 3h já não conta como
+ * "rodada ativa" pro contínuo decidir se pode processar issue nova, mesmo que
+ * as claims dele ainda protejam trabalho específico por mais tempo). Sessão
+ * com heartbeat morto há mais de `SOFT_STALE_MS` NÃO conta como ativa aqui —
  * um overnight que morreu sem chamar `end` não pode bloquear o contínuo para
  * sempre. Sessões stale saem do retorno principal, mas continuam visíveis via
  * `findStaleSessionsOfKind` para o chamador poder reportá-las.
@@ -4404,9 +4419,14 @@ export interface FindSessionConflictsOptions {
  *   `dirty_paths` de um peer vivo. `dirty_paths` (não-commitado) é reportado
  *   à parte porque é o sinal mais forte: trabalho em voo, sem branch ainda.
  *
- * **Sessão `stale` nunca conflita** — mesma semântica que
- * `isIssueClaimedByOther` já aplica (#5474), agora com a janela por kind
- * (#6168), então uma sessão interativa morta há 15 min já não bloqueia.
+ * **Sessão `stale` nunca conflita** — usa `session.stale` (janela por kind,
+ * #6168 — uma sessão interativa morta há 15 min já não bloqueia), a mesma
+ * janela CURTA que `isIssueClaimedByOther` usava até o #7227. As duas
+ * divergem desde então: conflito de PATH é sobre edição concorrente de
+ * arquivo (silêncio curto já é sinal suficiente pra não bloquear alguém de
+ * editar o mesmo arquivo), enquanto liberar uma CLAIM autoriza terceiro a
+ * assumir o trabalho inteiro de outra sessão — blast radius maior, exige a
+ * janela mais longa de `claimReleaseMsForKind` (ver sua docstring).
  */
 export function findSessionConflicts(
   sessions: readonly ActiveSessionRecord[],
