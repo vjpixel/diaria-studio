@@ -430,6 +430,26 @@ describe("main() — Passo 1, ingestão de roster (#7174)", () => {
     assert.equal(calledRoster, false, "guard de conflito roda ANTES de listar o roster");
     process.exitCode = originalExit;
   });
+
+  it("--skip-roster pula o Passo 1 inteiro — nem lista o roster (útil pra testar só o Passo 2 sem pagar a chamada de rede)", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-roster-skip-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+
+    let calledRoster = false;
+    await main(["--db", dbPath, "--manifest", manifestPath, "--skip-roster"], {
+      listAllBroadcasts: async () => [],
+      fetchAudience: async () => ({ emails: [], descartadas: 0 }),
+      getBroadcastStats: async () => makeStats(0),
+      sleep: async () => {},
+      listAllRosterSubscribers: async () => {
+        calledRoster = true;
+        return [makeKitSub()];
+      },
+    });
+    assert.equal(calledRoster, false);
+  });
 });
 
 function existsSyncSafe(path: string): boolean {

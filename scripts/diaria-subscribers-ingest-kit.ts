@@ -31,9 +31,23 @@
  * `partial` (os eventos já coletados são gravados mesmo assim, idempotente;
  * a re-rodada seguinte tenta de novo).
  *
+ * ## Passo 1 (#7174) — ingestão de ROSTER, popula `subscription`
+ *
+ * Antes da ingestão de audiência por broadcast (acima), este CLI agora lista
+ * o roster COMPLETO do Kit (`status: "all"`) e grava 1 `subscriber` + 1
+ * `subscription` + eventos `subscribe`/`unsub` por assinante
+ * (`ingestKitRoster`, `kit-subscribers-ingest.ts`) — fecha o buraco de
+ * `subscription` nunca ser populada pelo lado Kit. **Dry-run por padrão**:
+ * SEMPRE lista o roster (custa a chamada de rede), mas só GRAVA no store com
+ * `--write` explícito — escritor único (a task agendada `Diaria-Kit-Roster-
+ * Ingest`, `scripts/lib/scheduled-tasks.ts`, é quem passa `--write` por
+ * padrão; execução manual sem a flag é só um preview). `--skip-roster` pula
+ * o Passo 1 inteiro (nem lista) — útil pra isolar teste do Passo 2
+ * (broadcast) sem pagar a chamada de roster a cada invocação manual.
+ *
  * Uso:
  *   npx tsx scripts/diaria-subscribers-ingest-kit.ts [--db <p>] [--manifest <p>]
- *     [--limit N] [--broadcast <id>]
+ *     [--limit N] [--broadcast <id>] [--write] [--skip-roster] [--captura-log <p>]
  *
  * Requer `KIT_API_KEY` no env (`resolveKitConfig`, lança se ausente — mesmo
  * fail-fast do resto da camada Kit). Stdout: JSON summary. Stderr: progresso.
