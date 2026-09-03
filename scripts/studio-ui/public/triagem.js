@@ -170,15 +170,29 @@ export function dispatchBadge(track, matched, execTrackUiOverride) {
 export function claimBadge(claim) {
   if (!claim) return "";
   const who = `${claim.kind}-${claim.machineTag}`;
-  const title = claim.claimedAt
-    ? `Reivindicada por ${who} (sessão ${claim.sessionId}) desde ${claim.claimedAt}`
-    : `Reivindicada por ${who} (sessão ${claim.sessionId})`;
   // Classe por kind (28/08, pedido do editor): o trabalho do CONTINUO era
   // invisível — a issue classifica `overnight` (taxonomia certa: continuo
   // drena a fila overnight) e o kind real só existia neste badge, neutro
   // demais pra ser notado. `claim-kind-*` dá cor própria por kind; kind
   // desconhecido cai na classe base (nunca quebra).
   const kindCls = /^[a-z-]+$/.test(claim.kind) ? ` claim-kind-${claim.kind}` : "";
+  // #7263 — `claim.stale` distingue "em andamento" (sessão fresca) de
+  // "reivindicada por sessão provavelmente ociosa" (heartbeat morto há
+  // >90min, mas o claim ainda vale por até 24h — #7227). Antes desta
+  // distinção, essa combinação nem chegava aqui: `fetchTriageData`
+  // excluía TODA sessão stale, e a issue aparecia sem claim nenhum — o
+  // mesmo visual de "livre", quando o claim real seguia bloqueando outra
+  // sessão. Badge separado (nunca "em andamento") pra deixar claro que vale
+  // conferir antes de usar `--force`.
+  if (claim.stale) {
+    const title = claim.claimedAt
+      ? `Reivindicada por ${who} (sessão ${claim.sessionId}) desde ${claim.claimedAt} — sessão parece OCIOSA (sem heartbeat há mais de 90min), mas o claim ainda vale. Confira antes de usar --force.`
+      : `Reivindicada por ${who} (sessão ${claim.sessionId}) — sessão parece OCIOSA (sem heartbeat há mais de 90min), mas o claim ainda vale. Confira antes de usar --force.`;
+    return `<span class="claim-badge claim-stale${kindCls}" title="${escapeHtml(title)}">reivindicada — sessão possivelmente ociosa (${escapeHtml(who)})</span>`;
+  }
+  const title = claim.claimedAt
+    ? `Reivindicada por ${who} (sessão ${claim.sessionId}) desde ${claim.claimedAt}`
+    : `Reivindicada por ${who} (sessão ${claim.sessionId})`;
   return `<span class="claim-badge${kindCls}" title="${escapeHtml(title)}">em andamento — ${escapeHtml(who)}</span>`;
 }
 

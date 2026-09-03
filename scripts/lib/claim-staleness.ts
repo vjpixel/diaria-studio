@@ -60,6 +60,13 @@ export interface ClaimEntry {
    * sessão é anterior ao #6436 e nunca gravou o campo (idade desconhecida,
    * nunca tratada como "acabou de reivindicar"). */
   claimedAt: string | null;
+  /** #7263 — repasse de `session.stale` (`SOFT_STALE_MS`, 90min). Permite ao
+   * consumidor (`attachClaims`, `scripts/studio-ui/studio-issues.ts`)
+   * distinguir "em andamento" (sessão fresca) de "reivindicada por sessão
+   * provavelmente ociosa" (stale, mas ainda dentro da janela de retenção de
+   * 24h — `claimed_issues_effective` não teria esvaziado). `false` quando a
+   * sessão de origem não carrega o campo `stale` (fixture antiga). */
+  stale: boolean;
 }
 
 /** Subconjunto mínimo de `ActiveSessionRecord` que este módulo consome —
@@ -71,8 +78,18 @@ export interface ClaimBearingSession {
   sessionId: string;
   claimed_issues?: number[];
   claimed_issues_at?: Record<string, string>;
-  /** #6623: quando presente, é a fonte preferida — já resolve staleness
-   * (vazio quando a sessão está `stale`). Ausente (fixture antiga, ou
+  /** #7263 — computado por `listActiveSessions` (`SOFT_STALE_MS`, 90min).
+   * Opcional só para não quebrar fixture antiga que não passa por
+   * `listActiveSessions`; ausência é tratada como `false` (nunca-stale). */
+  stale?: boolean;
+  /** #6623: quando presente, é a fonte preferida — já resolve staleness.
+   * **Semântica atualizada pelo #7227 (#7297 corrige esta docstring, que
+   * ainda descrevia o comportamento pré-#7227):** vazio quando
+   * `ageMs > claimReleaseMsForKind(kind)` (24h pros 3 kinds coordenadores),
+   * NÃO mais quando a sessão fica `stale` (90min, `SOFT_STALE_MS`) — as duas
+   * janelas coincidiam antes do #7227, mas não coincidem mais (ver a
+   * docstring de `CLAIM_RELEASE_MS`/`isIssueClaimedByOther` em
+   * `scripts/lib/session-registry.ts`). Ausente (fixture antiga, ou
    * chamador que não passou por `listActiveSessions`) cai no fallback
    * `claimed_issues` bruto, comportamento anterior preservado. */
   claimed_issues_effective?: number[];
@@ -81,15 +98,18 @@ export interface ClaimBearingSession {
 /** Pure: achata as claims EFETIVAS de cada sessão numa lista de `ClaimEntry`.
  *
  * #6623: lê `claimed_issues_effective` quando presente (já resolve
- * staleness — vazio pra sessão `stale`) em vez de `claimed_issues` bruto.
- * Antes deste fix, uma sessão `continuo` que nunca fica `stale` (heartbeat
- * perpétuo, ver docstring do módulo) continuava correta — mas qualquer
- * OUTRA sessão `stale` cujo claim já não vale mais (`is-claimed` já o trata
- * como livre) ainda entrava na lista de "claims envelhecidas" deste módulo,
- * reportando staleness sobre uma reivindicação que já não existe de fato.
- * Fallback pra `claimed_issues` bruto quando `claimed_issues_effective` não
- * foi passado (fixtures antigas / chamador fora de `listActiveSessions`) —
- * nunca uma mudança de comportamento pra quem já não tinha o campo. */
+ * staleness — ver a ressalva do #7227/#7297 na docstring do campo acima:
+ * "resolve staleness" hoje significa a janela de 24h de retenção de claim,
+ * não mais os 90min de `stale`) em vez de `claimed_issues` bruto. Antes
+ * deste fix (#6623), uma sessão `continuo` que nunca fica `stale`
+ * (heartbeat perpétuo, ver docstring do módulo) continuava correta — mas
+ * qualquer OUTRA sessão cujo claim já não valia mais (`is-claimed` já o
+ * tratava como livre) ainda entrava na lista de "claims envelhecidas" deste
+ * módulo, reportando staleness sobre uma reivindicação que já não existia
+ * de fato. Fallback pra `claimed_issues` bruto quando
+ * `claimed_issues_effective` não foi passado (fixtures antigas / chamador
+ * fora de `listActiveSessions`) — nunca uma mudança de comportamento pra
+ * quem já não tinha o campo. */
 export function flattenClaims(sessions: readonly ClaimBearingSession[]): ClaimEntry[] {
   const out: ClaimEntry[] = [];
   for (const session of sessions) {
@@ -102,6 +122,7 @@ export function flattenClaims(sessions: readonly ClaimBearingSession[]): ClaimEn
         machineTag: session.machineTag,
         sessionId: session.sessionId,
         claimedAt,
+        stale: session.stale ?? false,
       });
     }
   }

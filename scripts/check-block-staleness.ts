@@ -31,6 +31,21 @@
  * issue indefinidamente sem nunca soltar, deixando-a `claimed-por-outra-
  * sessao` pra sempre mesmo sem nenhum trabalho visível em andamento.
  *
+ * **#7297 — `isIssueClaimedActive` (via `buildRealConsultor` abaixo) usa
+ * `isIssueClaimedByActiveSession`, NÃO `isIssueClaimedByOther`.** As duas
+ * funções de `session-registry.ts` divergiram desde o #7227 (que alargou a
+ * janela de RETENÇÃO de claim, `claimed_issues_effective`, pra 24h nos 3
+ * kinds coordenadores) sem que nenhum commit tocasse este arquivo — a
+ * reabertura de bloqueio que era em 90min (a razão de existir deste CLI
+ * desde o #6259: não deixar a rodada ociosa esperando sessão morta) virou
+ * silenciosamente 24h por herança. Decisão tomada no #7297: manter a janela
+ * curta AQUI (constante própria, `session.stale`/`SOFT_STALE_MS`), distinta
+ * da janela de 24h que `isIssueClaimedByOther` usa pra decidir se uma
+ * sessão NOVA pode reivindicar — ver a docstring de
+ * `isIssueClaimedByActiveSession` pro raciocínio completo (os dois
+ * consumidores fazem perguntas opostas, com custo de erro em direções
+ * opostas).
+ *
  * @see scripts/lib/block-staleness.ts
  * @see scripts/lib/claim-staleness.ts (#6436, checagem de claim envelhecida)
  * @see scripts/check-state-changed-pending.ts (padrão de estilo + gate irmão)
@@ -49,15 +64,16 @@ import {
   type IssueState,
   type PrState,
 } from "./lib/block-staleness.ts";
-import { isIssueClaimedByOther, listActiveSessions } from "./lib/session-registry.ts";
+import { isIssueClaimedByActiveSession, listActiveSessions } from "./lib/session-registry.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
 import { flattenClaims, findAgedClaims, CLAIM_STALE_AGE_MS } from "./lib/claim-staleness.ts";
 
 /** Monta um consultor real, apoiado em `gh` (PR state + labels) e
- * `isIssueClaimedByOther` (leitura direta de `data/sessions/*.json`, sem
- * rede). Cada método é fail-soft na própria chamada: falha de `gh`
- * (offline, sem auth, rate limit) vira `UNKNOWN`/`null`, nunca lança —
- * `findStaleBlocks` já trata esses valores como "não verificável".
+ * `isIssueClaimedByActiveSession` (leitura direta de `data/sessions/*.json`,
+ * sem rede — janela CURTA de 90min, #7297, não a de retenção de 24h que
+ * `isIssueClaimedByOther` usa). Cada método é fail-soft na própria chamada:
+ * falha de `gh` (offline, sem auth, rate limit) vira `UNKNOWN`/`null`, nunca
+ * lança — `findStaleBlocks` já trata esses valores como "não verificável".
  */
 function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
   // #6754 fleet review — a categoria `bloqueio-execucao` agora checa TODAS
@@ -122,7 +138,9 @@ function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
     },
     isIssueClaimedActive(issueNumber: number): boolean {
       try {
-        return isIssueClaimedByOther(repoRoot, issueNumber, "") !== null;
+        // #7297 — janela CURTA (90min, `session.stale`), não a de retenção
+        // de 24h — ver docstring do arquivo/da função importada.
+        return isIssueClaimedByActiveSession(repoRoot, issueNumber, "") !== null;
       } catch {
         // Falha de leitura de data/sessions/ (junction ausente, JSON
         // corrompido por conflito de sync) — fail-soft pro lado "ainda

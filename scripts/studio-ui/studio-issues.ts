@@ -130,6 +130,17 @@ export interface TriageClaimInfo {
   /** ISO da 1ª reivindicação (`claimed_issues_at`, #6436) — `null` pra
    * sessão anterior ao campo existir (idade desconhecida). */
   claimedAt: string | null;
+  /**
+   * #7263 — `true` quando a sessão dona parece ociosa (`session.stale`,
+   * `SOFT_STALE_MS`/90min) mas ainda retém o claim (dentro da janela de 24h
+   * de `claimReleaseMsForKind`, #7227). Antes deste campo, essa combinação
+   * era invisível: `fetchTriageData` excluía TODA sessão `stale` da lista
+   * passada a `attachClaims`, então a issue aparecia sem claim nenhum — o
+   * mesmo que "livre" pra quem olhasse o painel, mesmo com o claim real
+   * ainda bloqueando outra sessão por até ~22h. `false` = claim de sessão
+   * genuinamente ativa ("em andamento").
+   */
+  stale: boolean;
 }
 
 export interface TriagePr {
@@ -344,7 +355,12 @@ export function isPanelDisplayStale(
  * que chama `listActiveSessions` e passa o resultado aqui). Issue reivindicada
  * por MAIS DE UMA sessão simultaneamente não deveria acontecer
  * (`claimIssueCheckAndSet` recusa colisão, #6236) — se acontecer mesmo assim
- * (dado stale/corrompido), a 1ª sessão da lista vence, sem lançar.
+ * (dado stale/corrompido), a 1ª sessão da lista vence, sem lançar. **#7263:**
+ * quando `sessions` mistura entradas frescas e stale-com-claim-retida (ver
+ * `fetchTriageData`), a ORDEM da lista de entrada decide quem vence — o
+ * chamador é responsável por colocar as frescas primeiro, pra uma claim
+ * genuinamente ativa nunca perder pra uma stale no mesmo caso raro citado
+ * acima.
  */
 export function attachClaims(
   issues: readonly TriageIssue[],
@@ -358,6 +374,7 @@ export function attachClaims(
       machineTag: entry.machineTag,
       sessionId: entry.sessionId,
       claimedAt: entry.claimedAt,
+      stale: entry.stale,
     });
   }
   return issues.map((issue) => ({ ...issue, claim: byIssue.get(issue.number) ?? null }));
@@ -566,9 +583,23 @@ export function fetchTriageData(rootDir: string, opts: FetchTriageDataOptions = 
     // (`PANEL_DISPLAY_STALE_MS`, 20min): `!s.stale` sozinho ainda deixava
     // passar até 90min (`SOFT_STALE_MS`) de heartbeat morto, que é o valor
     // certo pro write-path de claim mas exagerado pro badge do painel.
-    const sessions = listActiveSessions(rootDir).filter(
-      (s) => !s.stale && !isPanelDisplayStale(s, nowMs),
+    const allSessions = listActiveSessions(rootDir);
+    const freshSessions = allSessions.filter((s) => !s.stale && !isPanelDisplayStale(s, nowMs));
+    // #7263 — 2ª fatia, DELIBERADAMENTE separada do filtro acima: sessão
+    // `stale: true` (>90min sem heartbeat, "provavelmente ociosa") que AINDA
+    // retém claim (`claimed_issues_effective` não-vazio — dentro da janela
+    // de retenção de 24h, `claimReleaseMsForKind`/#7227) era simplesmente
+    // excluída daqui antes, então a issue aparecia como livre no painel
+    // mesmo com o claim real ainda bloqueando outra sessão por até ~22h
+    // (janela 90min-24h, achado da issue: "invisível em qualquer lugar").
+    // Passada em SEGUIDO de `freshSessions` pra `attachClaims` — que já
+    // documenta a ordem como o desempate — pra uma claim genuinamente ativa
+    // nunca perder pra uma stale (não deveria colidir de qualquer forma,
+    // `claimIssueCheckAndSet` recusa 2 sessões na mesma issue, #6236).
+    const staleRetainedSessions = allSessions.filter(
+      (s) => s.stale && s.claimed_issues_effective.length > 0,
     );
+    const sessions = [...freshSessions, ...staleRetainedSessions];
     const data: TriageData = {
       generatedAt: new Date(nowMs).toISOString(),
       issues: attachClaims(parseIssues(issuesRaw), sessions),

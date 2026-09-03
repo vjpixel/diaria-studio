@@ -2931,6 +2931,54 @@ export function isIssueClaimedByOther(
 }
 
 /**
+ * #7297 — variante de `isIssueClaimedByOther` acima, mas gateada pela janela
+ * CURTA de staleness (`session.stale`/`SOFT_STALE_MS`, 90min), não pela janela
+ * de RETENÇÃO de claim (`claimed_issues_effective`/`claimReleaseMsForKind`,
+ * 24h pros 3 kinds coordenadores desde o #7227).
+ *
+ * Existe porque as duas perguntas são genuinamente diferentes, com custos de
+ * erro em direções opostas:
+ * - `isIssueClaimedByOther` — "alguém ainda pode reivindicar este trabalho
+ *   sem roubar de uma sessão viva?" (usada por `claim-issue`/`is-claimed`
+ *   antes de uma sessão NOVA pegar uma issue). Errar cedo demais rouba
+ *   trabalho de uma sessão viva presa numa chamada lenta (#7194) — por isso
+ *   #7227 alargou a janela pra 24h.
+ * - Esta função — "esta issue parece estar sendo trabalhada AGORA, ou o
+ *   bloqueio (`pulada`/`claimed-por-outra-sessao`) já caducou e merece
+ *   reavaliação?" (consumida só por `check-block-staleness.ts`, #6259, cujo
+ *   propósito desde a origem é reabrir RÁPIDO — não deixar a rodada ociosa
+ *   esperando uma sessão que já não dá sinal de vida). Errar tarde demais
+ *   (esperar 24h) desperdiça a fila inteira por até um dia — o oposto do
+ *   erro que #7227 existe para evitar.
+ *
+ * O #7227 desacoplou as duas sem querer: antes dele `isIssueClaimedByOther`
+ * já usava `session.stale` diretamente, então `check-block-staleness.ts`
+ * herdava a janela de 90min por tabela. Esta função restaura esse
+ * comportamento de propósito, como consumidor dedicado — em vez de
+ * reacoplar o gate de 24h a esta pergunta, ou (a alternativa descartada)
+ * afrouxar `isIssueClaimedByOther` de volta e reabrir o incidente do #7194.
+ *
+ * Usa `claimed_issues_effective` (não `claimed_issues` bruto) só porque é o
+ * campo já computado — quando `!session.stale`, os dois são idênticos por
+ * construção (`SOFT_STALE_MS`, 90min, é sempre menor que
+ * `claimReleaseMsForKind`, 24h/15min, então uma sessão não-stale nunca teve
+ * o claim liberado).
+ */
+export function isIssueClaimedByActiveSession(
+  repoRoot: string,
+  issueNumber: number,
+  excludeSessionId: string,
+  now: number = Date.now(),
+): ActiveSessionRecord | null {
+  for (const session of listActiveSessions(repoRoot, now)) {
+    if (session.sessionId === excludeSessionId) continue;
+    if (session.stale) continue;
+    if (session.claimed_issues_effective.includes(issueNumber)) return session;
+  }
+  return null;
+}
+
+/**
  * Sessões ATIVAS (não-stale) de um `kind` específico — a pergunta "há uma
  * rodada `/diaria-overnight` acontecendo agora?" respondida de forma
  * determinística, sem o consumidor precisar reimplementar o filtro de
