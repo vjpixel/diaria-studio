@@ -338,6 +338,152 @@ describe("#6296 — concessão de janela: só coordenadora, nunca a si mesma", (
   });
 });
 
+// ─── #7043 — merge_grant é campo único: não sobrescrever uma concessão viva
+// em silêncio (achado 1, dois caminhos medidos ao vivo) ────────────────────
+
+describe("#7043 achado 1 (1º caminho) — grant-merge não sobrescreve a PRÓPRIA concessão viva em silêncio", () => {
+  it("cenário medido ao vivo: conceder PR#6955 e depois PR#6959 à mesma sessão — a 2ª é RECUSADA", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "develop", "coord", { tag: LOCAL_TAG });
+      const r1 = grantMergeWindow(root, "develop", "coord", "beneficiaria", { pr: 6955 });
+      assert.equal(r1.ok, true);
+
+      const r2 = grantMergeWindow(root, "develop", "coord", "beneficiaria", { pr: 6959 });
+      assert.equal(r2.ok, false, "sem --force, a 2ª concessão de identidade diferente deve ser RECUSADA");
+      assert.equal(r2.reason, "live-grant-would-be-overwritten");
+
+      // A 1ª concessão continua viva e utilizável — é exatamente o que o
+      // #7043 media como perdido em silêncio (grant-merge respondia "ok" nas
+      // duas chamadas, e a beneficiária original nunca sabia que a janela
+      // dela tinha sumido).
+      const found = findLiveMergeGrant(root, "beneficiaria");
+      assert.ok(found, "a concessão original (PR#6955) deveria continuar viva");
+      assert.equal(found?.grant.pr, 6955);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reconceder a MESMA identidade (renovar grantedAt) não precisa de --force", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "develop", "coord", { tag: LOCAL_TAG });
+      assert.equal(grantMergeWindow(root, "develop", "coord", "beneficiaria", { pr: 1 }).ok, true);
+      // Mesmo grantedTo + mesmo pr: não é a classe de sobrescrita perigosa
+      // que o #7043 mede — é renovação da mesma janela.
+      const r2 = grantMergeWindow(root, "develop", "coord", "beneficiaria", { pr: 1 });
+      assert.equal(r2.ok, true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--force sobrescreve deliberadamente uma concessão viva de outra identidade", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "develop", "coord", { tag: LOCAL_TAG });
+      assert.equal(grantMergeWindow(root, "develop", "coord", "b1", { pr: 1 }).ok, true);
+      const r2 = grantMergeWindow(root, "develop", "coord", "b2", { pr: 2, force: true });
+      assert.equal(r2.ok, true, "--force deve permitir a sobrescrita deliberada");
+      assert.equal(findLiveMergeGrant(root, "b1"), null, "a concessão antiga foi legitimamente substituída");
+      assert.ok(findLiveMergeGrant(root, "b2"), "a nova concessão deve estar viva");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("concessão anterior já EXPIRADA (fora do TTL) não bloqueia a próxima", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "develop", "coord", { tag: LOCAL_TAG });
+      const r1 = grantMergeWindow(root, "develop", "coord", "b1", {
+        pr: 1,
+        now: isoAgo(MERGE_GRANT_TTL_MS + 5_000),
+      });
+      assert.equal(r1.ok, true);
+      const r2 = grantMergeWindow(root, "develop", "coord", "b2", { pr: 2, now: new Date(NOW).toISOString() });
+      assert.equal(r2.ok, true, "concessão expirada não é 'viva' — não bloqueia a próxima");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("concessão anterior já CONSUMIDA não bloqueia a próxima", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "develop", "coord", { tag: LOCAL_TAG });
+      assert.equal(grantMergeWindow(root, "develop", "coord", "b1", { pr: 1 }).ok, true);
+      assert.equal(consumeMergeGrant(root, "b1"), true);
+      const r2 = grantMergeWindow(root, "develop", "coord", "b2", { pr: 2 });
+      assert.equal(r2.ok, true, "concessão já consumida não é 'viva' — não bloqueia a próxima");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#7043 achado 1 (2º caminho) — duas coordenadoras não concedem o MESMO PR sem se enxergar", () => {
+  it("cenário medido ao vivo: duas coordenadoras concedem o mesmo PR, 20s de diferença — a 2ª é RECUSADA", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "overnight", "coord-a", { tag: LOCAL_TAG, startedAt: isoAgo(60_000) });
+      registerSession(root, "develop", "coord-b", { tag: LOCAL_TAG, startedAt: isoAgo(60_000) });
+
+      const r1 = grantMergeWindow(root, "overnight", "coord-a", "beneficiaria-a", { pr: 6988 });
+      assert.equal(r1.ok, true);
+
+      const r2 = grantMergeWindow(root, "develop", "coord-b", "beneficiaria-b", { pr: 6988 });
+      assert.equal(r2.ok, false, "sem --force, uma 2ª coordenadora não pode conceder o mesmo PR já concedido");
+      assert.equal(r2.reason, "pr-already-granted-elsewhere");
+
+      // A concessão da coord-a continua viva — nenhuma das duas foi apagada
+      // em silêncio pela outra.
+      const found = findLiveMergeGrant(root, "beneficiaria-a");
+      assert.ok(found, "a concessão da coord-a deveria continuar viva");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--force permite conceder o mesmo PR mesmo com outra concessão viva", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "overnight", "coord-a", { tag: LOCAL_TAG, startedAt: isoAgo(60_000) });
+      registerSession(root, "develop", "coord-b", { tag: LOCAL_TAG, startedAt: isoAgo(60_000) });
+      assert.equal(grantMergeWindow(root, "overnight", "coord-a", "beneficiaria-a", { pr: 1 }).ok, true);
+      const r2 = grantMergeWindow(root, "develop", "coord-b", "beneficiaria-b", { pr: 1, force: true });
+      assert.equal(r2.ok, true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("concessões pra PRs DIFERENTES nunca colidem entre coordenadoras", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "overnight", "coord-a", { tag: LOCAL_TAG, startedAt: isoAgo(60_000) });
+      registerSession(root, "develop", "coord-b", { tag: LOCAL_TAG, startedAt: isoAgo(60_000) });
+      assert.equal(grantMergeWindow(root, "overnight", "coord-a", "beneficiaria-a", { pr: 1 }).ok, true);
+      assert.equal(grantMergeWindow(root, "develop", "coord-b", "beneficiaria-b", { pr: 2 }).ok, true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("concessão SEM --pr (genérica) nunca colide por PR — não tem identidade de PR pra comparar", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "overnight", "coord-a", { tag: LOCAL_TAG, startedAt: isoAgo(60_000) });
+      registerSession(root, "develop", "coord-b", { tag: LOCAL_TAG, startedAt: isoAgo(60_000) });
+      assert.equal(grantMergeWindow(root, "overnight", "coord-a", "beneficiaria-a").ok, true);
+      assert.equal(grantMergeWindow(root, "develop", "coord-b", "beneficiaria-b").ok, true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── #6296: o guard passa a compor com lock e concessão ────────────────────
 
 describe("#6296 — o guard de merge compõe com o lock e com a concessão", () => {
