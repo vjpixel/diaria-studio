@@ -95,6 +95,7 @@ import { brevoGet, brevoPost, brevoPut, ensureBrevoContactAttribute } from "./li
 import {
   computeDesiredApoioLevels,
   shouldBlockRemovals,
+  isPreviousMonthSnapshotMissing,
   type DesiredApoioLevel,
   type ApoioNivel,
 } from "./sync-apoio-nivel-beehiiv.ts";
@@ -645,7 +646,19 @@ async function main(): Promise<void> {
 
   const diff = diffApoioBrevo(desired, current);
   const allowPartial = hasFlag(argv, "allow-partial");
-  const removalsBlockedByPartialData = shouldBlockRemovals(data.error, { skippedUnresolved: diff.skippedUnresolved }, allowPartial);
+  const previousMonthSnapshotMissing = isPreviousMonthSnapshotMissing(pastSnapshots, currentMonth);
+  if (previousMonthSnapshotMissing) {
+    log(
+      "aviso: snapshot do mês anterior AUSENTE — carência de 1 mês inaplicável nesta rodada; " +
+        "remoções BLOQUEADAS por segurança (#7195). Use --allow-partial pra forçar.",
+    );
+  }
+  const removalsBlockedByPartialData = shouldBlockRemovals(
+    data.error,
+    { skippedUnresolved: diff.skippedUnresolved },
+    allowPartial,
+    { previousMonthSnapshotMissing },
+  );
   // #6793 "Faixa A" item 8 (30/08/2026): evaluateBrevoBlastRadiusGuard nunca
   // bloqueia mais (blocked sempre false) — `--force-blast-radius` ficou sem
   // efeito e foi removido da CLI (era o escape hatch de um guard que não

@@ -545,18 +545,51 @@ export function diffApoioTags(
 }
 
 /**
+ * Pure: `true` se o snapshot do mês ANTERIOR está ausente do conjunto lido
+ * (#7195). É a pré-condição da carência de 1 mês: `computeDesiredApoioLevels`
+ * calcula `max(mês corrente, mês anterior)`, então sem o snapshot de M-1 o
+ * `previousLevel` de TODO mundo vira `null` e a carência some — quem pagou
+ * no mês passado e não pagou neste é removido na hora, sem nenhuma margem.
+ *
+ * `readPastMonthSnapshots` é fail-soft por desenho (diretório inexistente →
+ * `[]`; arquivo de um mês corrompido → aquele mês é pulado, os outros
+ * seguem), e o `catch` do caller só avisa quando a leitura INTEIRA lança.
+ * Um único mês faltando passa em silêncio — e é justamente o mês que a
+ * carência usa. Daí este guard ser separado: a ausência é indistinguível,
+ * pelo resultado, de "ninguém pagou no mês passado".
+ */
+export function isPreviousMonthSnapshotMissing(
+  pastSnapshots: readonly MonthSnapshot[],
+  currentMonth: string,
+): boolean {
+  return !pastSnapshots.some((s) => s.month === previousMonthKey(currentMonth));
+}
+
+/**
  * Pure: decide se remoções devem ser bloqueadas (fail-closed) — `true` se
- * `buildApoiosData` reportou erro de nível topo OU há qualquer contato
- * "sem_dados" nesta rodada, a menos que `allowPartial` (escape hatch
- * `--allow-partial`) esteja explicitamente ligado.
+ * `buildApoiosData` reportou erro de nível topo, OU há qualquer contato
+ * "sem_dados" nesta rodada, OU o snapshot do mês anterior está ausente
+ * (#7195 — sem ele não há carência, ver `isPreviousMonthSnapshotMissing`),
+ * a menos que `allowPartial` (escape hatch `--allow-partial`) esteja
+ * explicitamente ligado.
+ *
+ * Os três motivos compartilham a mesma forma: o dado de entrada está
+ * incompleto de um jeito que empurra o cálculo pro lado da REMOÇÃO — nunca
+ * pro lado de conceder nível a mais. Por isso fail-closed, e por isso o
+ * escape hatch é o mesmo.
  */
 export function shouldBlockRemovals(
   dataError: string | null,
   diff: Pick<ApoioTagDiffResult, "skippedUnresolved">,
   allowPartial: boolean,
+  opts: { previousMonthSnapshotMissing?: boolean } = {},
 ): boolean {
   if (allowPartial) return false;
-  return dataError !== null || diff.skippedUnresolved.length > 0;
+  return (
+    dataError !== null ||
+    diff.skippedUnresolved.length > 0 ||
+    opts.previousMonthSnapshotMissing === true
+  );
 }
 
 // ── guard de blast radius (#4436) — puro ────────────────────────────────
@@ -833,7 +866,17 @@ async function main(): Promise<void> {
 
   const diff = diffApoioTags(desired, current);
   const allowPartial = hasFlag(argv, "allow-partial");
-  const removalsBlockedByPartialData = shouldBlockRemovals(data.error, diff, allowPartial);
+  const previousMonthSnapshotMissing = isPreviousMonthSnapshotMissing(pastSnapshots, currentMonth);
+  if (previousMonthSnapshotMissing) {
+    process.stderr.write(
+      `${LOG_PREFIX} ⚠ snapshot de ${previousMonthKey(currentMonth)} AUSENTE — a carência de 1 mês não tem como ` +
+        `ser aplicada nesta rodada (todo mundo fica com previousLevel null). Remoções BLOQUEADAS por segurança ` +
+        `(#7195); adições/trocas seguem normalmente. Use --allow-partial pra forçar.\n`,
+    );
+  }
+  const removalsBlockedByPartialData = shouldBlockRemovals(data.error, diff, allowPartial, {
+    previousMonthSnapshotMissing,
+  });
   const forceBlastRadius = hasFlag(argv, "force-blast-radius");
   const blastGuard = evaluateBlastRadiusGuard(diff.toRemove.length, current, forceBlastRadius);
 
