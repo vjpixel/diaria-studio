@@ -450,12 +450,18 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {})
   const crossMachine = opts.crossMachine === true;
   const dir = sessionsDir(repoRoot);
   const ids = new Set();
+  // #7303: `kind` por `sessionId` das coordenadoras ativas — aditivo (o
+  // shape antigo `{ids, degraded}` continua valendo pra todo consumidor
+  // existente). Alimenta a checagem de auto-autorização: "a ÚNICA
+  // coordenadora ativa é continuo?" precisa saber o kind de cada uma, não só
+  // contar quantas existem.
+  const kinds = new Map();
   let entries;
   try {
-    if (!existsSync(dir)) return { ids, degraded: false };
+    if (!existsSync(dir)) return { ids, kinds, degraded: false };
     entries = readdirSync(dir);
   } catch {
-    return { ids, degraded: true }; // não deu nem pra listar — contagem não confiável
+    return { ids, kinds, degraded: true }; // não deu nem pra listar — contagem não confiável
   }
   const myTag = machineTag();
   let degraded = false;
@@ -493,6 +499,7 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {})
       // deste guard — não tem subagente ativo pra proteger.
       if (ageMs > SOFT_STALE_MS) continue;
       ids.add(record.sessionId);
+      kinds.set(record.sessionId, record.kind);
     } catch {
       // JSON malformado (pode ser outra sessão escrevendo agora, ou
       // corrupção genuína — não dá pra distinguir com segurança) OU qualquer
@@ -502,7 +509,7 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {})
       degraded = true;
     }
   }
-  return { ids, degraded };
+  return { ids, kinds, degraded };
 }
 
 /**
@@ -520,6 +527,68 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {})
  */
 export function readActiveCoordinatorSessionIds(repoRoot, now = Date.now(), opts = {}) {
   return readActiveCoordinatorScan(repoRoot, now, opts).ids;
+}
+
+/**
+ * `true` quando existe PELO MENOS 1 coordenadora ativa E TODAS as
+ * coordenadoras ativas são `continuo` (#7303) — o único estado em que a
+ * auto-autorização (`SelfAuthorizedMerge`) pode valer. `false` tanto quando
+ * não há coordenadora nenhuma (nada bloqueado, nada a contornar) quanto
+ * quando há pelo menos uma `overnight`/`develop` (kind que CONVERSA — o
+ * caminho normal de `grant-merge` continua sendo o único).
+ *
+ * Pura — opera sobre o `kinds` já lido por `readActiveCoordinatorScan`.
+ */
+export function onlyContinuoCoordinatorsActive(kinds) {
+  if (!(kinds instanceof Map) || kinds.size === 0) return false;
+  for (const kind of kinds.values()) {
+    if (kind !== "continuo") return false;
+  }
+  return true;
+}
+
+/**
+ * Procura, no PRÓPRIO record de `sessionId` (qualquer kind — ao contrário de
+ * `readLiveMergeGrantFor`, que só varre coordenadoras), uma auto-autorização
+ * de merge viva (#7303, `SelfAuthorizedMerge`).
+ *
+ * Diferente de `readLiveMergeGrantFor`: a auto-autorização não é emitida por
+ * OUTRA sessão pra esta — é a própria sessão bloqueada se autorizando (ver
+ * `selfAuthorizeMerge` em `scripts/lib/session-registry.ts`), então a busca é
+ * por SUFIXO `-{sessionId}.json` (qualquer kind), não por `grantedTo` dentro
+ * de coordenadoras. Duplicado (não importado) pela mesma razão self-contained
+ * do resto deste arquivo.
+ *
+ * Mesma disciplina de TTL/clock-skew de `readLiveMergeGrantFor`. `null` em
+ * qualquer estado onde não dá pra confirmar — nunca lança.
+ */
+export function readLiveSelfAuthorizationFor(repoRoot, sessionId, now = Date.now()) {
+  if (typeof sessionId !== "string" || sessionId === "") return null;
+  const dir = sessionsDir(repoRoot);
+  const suffix = `-${sessionId}.json`;
+  let entries;
+  try {
+    if (!existsSync(dir)) return null;
+    entries = readdirSync(dir);
+  } catch {
+    return null;
+  }
+  for (const name of entries) {
+    if (!name.endsWith(suffix) || name.startsWith(".") || name.includes("-safeBackup-")) continue;
+    try {
+      const record = JSON.parse(readFileSync(join(dir, name), "utf8"));
+      const auth = record?.self_authorized_merge;
+      if (!auth || typeof auth.authorizedAt !== "string") continue;
+      const authorizedMs = Date.parse(auth.authorizedAt);
+      if (!Number.isFinite(authorizedMs)) continue;
+      const ageMs = now - authorizedMs;
+      if (ageMs < -CLOCK_SKEW_TOLERANCE_MS || ageMs > MERGE_GRANT_TTL_MS) continue;
+      return auth;
+    } catch {
+      // Entrada corrompida — ignora só ela, segue as demais.
+    }
+  }
+  return null;
 }
 
 /** Resolve a tag de máquina atual — mesma função usada em `session-registry.ts`
@@ -766,8 +835,22 @@ export function classifyMergeBlockCause(activeCoordinatorSessionIds, callerSessi
   // `undefined`) não bypassa — cai pro resto da lógica normal abaixo. A
   // dúvida fecha aqui, não abre: nunca honra uma concessão escopada sobre um
   // alvo que não deu pra determinar.
+  // #7303: auto-autorização (`SelfAuthorizedMerge`) entra na MESMA porta de
+  // identidade que a concessão de coordenadora — mesmo critério de escopo
+  // por PR (genérica bypassa qualquer PR; escopada só bate com o alvo).
+  // `ctx.hasSelfAuthorization` já vem calculado com a re-checagem ao vivo
+  // (não confia só no snapshot gravado por `selfAuthorizeMerge` — ver
+  // entrypoint CLI abaixo): mesmo que a auto-autorização ainda esteja dentro
+  // do TTL, ela só conta se, NESTE INSTANTE, a composição de coordenadoras
+  // ativas continuar sendo só `continuo` (defesa em profundidade: se uma
+  // coordenadora `overnight`/`develop` entrou no ar entre a auto-autorização
+  // e esta tentativa de merge, a auto-autorização é revogada — o caminho
+  // normal de `grant-merge` volta a ser o único).
+  const selfAuthCoversTarget =
+    ctx.hasSelfAuthorization === true && (ctx.selfAuthPr === undefined || ctx.selfAuthPr === ctx.targetPr);
   const grantCoversTarget =
-    ctx.hasLiveGrant === true && (ctx.grantPr === undefined || ctx.grantPr === ctx.targetPr);
+    (ctx.hasLiveGrant === true && (ctx.grantPr === undefined || ctx.grantPr === ctx.targetPr)) ||
+    selfAuthCoversTarget;
 
   const isCoordinator = coordinators.has(callerSessionId);
   // Duas portas de identidade, e só duas. Note que isto NÃO é mais um
@@ -898,7 +981,11 @@ export const BLOCK_REASON =
   "ENTÃO — antes de tentar `gh pr merge` de novo — adquirir o merge lock com `session-registry.ts " +
   "merge-lock-acquire --pr N` (a concessão destrava IDENTIDADE, nunca TEMPO: havendo outra coordenadora " +
   "ativa, é o lock que ainda serializa quem mergeia agora), liberando com `merge-lock-release --pr N` " +
-  "depois do merge (ou se desistir). Reconfirmar a concessão sem adquirir o lock repete o mesmo bloqueio.";
+  "depois do merge (ou se desistir). Reconfirmar a concessão sem adquirir o lock repete o mesmo bloqueio. " +
+  "Se a ÚNICA coordenadora ativa for `continuo` (cron, não lê SendMessage nem concede grant-merge — #7303): " +
+  "`session-registry.ts self-authorize-merge --reason \"...\" [--pr N]` é o escape hatch — recusa sozinho se " +
+  "houver alguma coordenadora overnight/develop ativa (nesse caso, peça a janela dela normalmente); depois " +
+  "dele, o passo de merge-lock-acquire acima continua obrigatório do mesmo jeito.";
 
 /**
  * Complemento ao `BLOCK_REASON` explicando POR QUE uma concessão de merge
@@ -1039,6 +1126,27 @@ if (
       // nem seria "not-authorized") — diagnostica se a ausência é "nunca
       // teve" ou "teve e consumiu antes de mergear".
       const consumedGrant = grant === null ? readConsumedGrantFor(repoRoot, payload.session_id) : null;
+      // #7303: auto-autorização só conta se, AGORA (não no instante em que
+      // foi gravada), a composição de coordenadoras ativas ainda for só
+      // `continuo` — defesa em profundidade contra uma `overnight`/`develop`
+      // ter entrado no ar depois da auto-autorização e antes deste merge.
+      // `!scan.degraded` é exigido explicitamente aqui (achado do fleet
+      // review da PR #7353): sem isto, uma varredura DEGRADADA (uma entrada
+      // `overnight`/`develop` que falhou ao ler/parsear, ver `readActiveCoordinatorScan`)
+      // podia deixar `scan.kinds` só com `continuo` por SUBCONTAGEM, e
+      // `onlyContinuoCoordinatorsActive` concluía "só continuo" por engano.
+      // Downstream, `classifyMergeBlockCause` já bloqueia de qualquer forma
+      // via `ctx.scanDegraded` (linha "if (ctx.scanDegraded === true) return
+      // 'scan-degraded';", que roda incondicionalmente e não depende deste
+      // ctx.hasSelfAuthorization) — então isto nunca foi um bypass real de
+      // merge. Mas `hasSelfAuthorization` ficar `true` num estado que a
+      // varredura não confirma é uma inconsistência interna que um refactor
+      // futuro (ex: reordenar os checks de `classifyMergeBlockCause`)
+      // poderia transformar em bypass de verdade — fechado aqui na origem,
+      // não só confiando no check posterior.
+      const selfAuth = readLiveSelfAuthorizationFor(repoRoot, payload.session_id);
+      const selfAuthStillValid =
+        selfAuth !== null && !scan.degraded && onlyContinuoCoordinatorsActive(scan.kinds);
       const ctx = {
         // #6296: os dois sinais que o guard passou a compor — a janela
         // concedida por uma coordenadora, e quem segura o merge lock agora.
@@ -1046,6 +1154,10 @@ if (
         // real sendo mergeado, em vez de bypassar o guard incondicionalmente.
         hasLiveGrant: grant !== null,
         grantPr: grant?.pr,
+        // #7303: mesmo tratamento aditivo — auto-autorização é uma 3ª porta
+        // de identidade, sujeita à MESMA composição com o merge lock.
+        hasSelfAuthorization: selfAuthStillValid,
+        selfAuthPr: selfAuthStillValid ? selfAuth?.pr : undefined,
         targetPr,
         mergeLockHolder: readMergeLockHolder(repoRoot),
         // #6303 Finding B: varredura degradada não pode alimentar a
