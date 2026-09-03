@@ -13,6 +13,8 @@
 #   3. claims não voltaram a vazar (sessão continuo com claims e heartbeat
 #      parado > 45min — tick é de 30min, higiene deveria limpar);
 #   4. vazamento pago (hermes-model-cost-report --json, campo vazamento_pago);
+#   8. gasto diario estimado (#6771) - REPORTA, nao alarma: a checagem 4 cobre
+#      LEAK (modelo pago fora da allowlist), nunca VOLUME dentro dela;
 #   (item 5 — adoção de prefixo de branch — CORTADO no #6798, 01/09/2026:
 #    informational, 0 correções, dedup falhava e produziu issue duplicada 3x
 #    antes do fix; sucessor mais preciso é `check-branch-issue-consistency.ts`.)
@@ -99,6 +101,7 @@ try:
         if x['id']=='5d791ef6fc2c': found=x.get('failure_streak',0); break
     print(found)
 except Exception: print('__ERR__')" 2>/dev/null || echo "__ERR__")
+case "$STREAK" in *__ERR__*) STREAK="__ERR__" ;; esac
 if [ "$STREAK" = "__ERR__" ] || [ -z "$STREAK" ]; then
   echo "[watch] streak: INDETERMINADO (jobs.json ilegível ou job ausente)" >&2; FAILS=$((FAILS+1))
 elif [ "$STREAK" -ge 2 ] 2>/dev/null; then
@@ -125,6 +128,7 @@ try:
             print(f\"{s['sessionId']}: claims={claims} heartbeat parado há {age_min:.0f}min\")
 except Exception:
     print('__ERR__')" 2>/dev/null || echo "__ERR__")
+case "$LEAK" in *__ERR__*) LEAK="__ERR__" ;; esac
 if [ "$LEAK" = "__ERR__" ]; then
   echo "[watch] claims: INDETERMINADO (registry/parse falhou)" >&2; FAILS=$((FAILS+1)); LEAK=""
 fi
@@ -156,6 +160,15 @@ try:
             print(f\"{r['dia']} {r['modelo']} est=\${r['custo_estimado']}\")
 except Exception:
     print('__ERR__')" 2>/dev/null || echo "__ERR__")
+# #6771 (review do PR #7330): comparação por IGUALDADE não bastava. Com
+# `pipefail` e sem `-e`, um `A | B` onde A falha (cost-report ausente)
+# reporta o rc de A mesmo com B tendo capturado a exceção e impresso
+# `__ERR__` sozinho — então o `|| echo "__ERR__"` externo dispara TAMBÉM e
+# `$VAZ` vira "__ERR__\n__ERR__". Isso não casava com a igualdade, caía no
+# ramo `-n` e abria uma issue P1 de "cobrança em modelo pago" com corpo
+# lixo — alarme FALSO sobre dinheiro, a partir de uma falha de infra.
+# Reproduzido ao vivo. `case` com glob cobre as duas formas.
+case "$VAZ" in *__ERR__*) VAZ="__ERR__" ;; esac
 if [ "$VAZ" = "__ERR__" ]; then
   echo "[watch] custo: INDETERMINADO (cost-report falhou)" >&2; FAILS=$((FAILS+1)); VAZ=""
 fi
@@ -239,6 +252,8 @@ try:
 except Exception:
     print('__ERR__')" 2>/dev/null || echo "__ERR__")
 
+  case "$DEGRADED" in *__ERR__*) DEGRADED="__ERR__" ;; esac
+
   if [ "$DEGRADED" = "__ERR__" ]; then
     echo "[watch] composição de tick: parse do resultado falhou" >&2; FAILS=$((FAILS + 1))
   elif [ "$TICKCOUNT" = "0" ]; then
@@ -246,7 +261,7 @@ except Exception:
     FAILS=$((FAILS + 1))
   elif [ -n "$DEGRADED" ]; then
     file_issue "[watch-continuo] degradação de modelo por tick" \
-      "[watch-continuo] tick(s) do contínuo caíram no fallback local nas últimas 24h" \
+      "[watch-continuo] degradação de modelo por tick — caiu no fallback local nas últimas 24h" \
       "bug,P2" \
       "Detectado por watch-continuo-health.sh via hermes-model-cost-report.py --tick-composition — tick(s) com chamadas no fallback local (qwen), sinal de que o modelo primário (CONTINUO_PRIMARY_MODEL_IDS, hardcoded em hermes-model-cost-report.py) falhou naquele tick:
 
@@ -296,7 +311,7 @@ if [ -n "$ORPHANS" ]; then
 fi
 if [ -n "$OLD_ORPHANS" ]; then
   file_issue "[watch-continuo] laço de espera de CI órfão" \
-    "[watch-continuo] laço(s) de espera de CI rodando há mais de 1h — possível órfão" \
+    "[watch-continuo] laço de espera de CI órfão — rodando há mais de 1h" \
     "bug,P2" \
     "Detectado por watch-continuo-health.sh via \`pgrep -af 'gh pr checks'\` + idade (\`ps -o etimes=\`) — processo(s) com mais de 1h vigiando checks de PR:
 
@@ -307,6 +322,52 @@ $OLD_ORPHANS
 Confirmar se a(s) PR(s) já foram mergeadas/fechadas (nesse caso, seguro matar o PID) antes de agir — este watchdog NUNCA mata sozinho, só observa e reporta (#6771). Fix estrutural: usar \`scripts/lib/wait-pr-checks.sh\` (teto de vida embutido, #6921) em vez de um laço escrito à mão."
 else
   echo "[watch] laços de espera de CI: nenhum com mais de 1h"
+fi
+
+# ── 8. gasto diário estimado (#6771 ação 4) ─────────────────────────────────
+# A morte do job `95f1990895ab` (monitor de preços/gastos OpenRouter, morto
+# desde 24/08 e sem sucessor) deixou GASTO sem nenhuma vigilância. A checagem
+# 4 acima NÃO cobre isso: ela lê `vazamento_pago`, um booleano de LEAK (modelo
+# pago fora da allowlist) — um dia inteiramente dentro da allowlist e 10x mais
+# caro que o normal passa por ela como saudável.
+#
+# **Sem limiar, de propósito (instrução explícita do #6771).** Esta checagem
+# REPORTA o número e nunca alarma; a issue pede baseline medida antes de
+# calibrar, mesma disciplina do #6755. Baseline coletada em 03/09/2026 (7 dias,
+# custo estimado/dia, Hermes inteiro): 27/08 $0,00 - 28/08 $1,55 - 29/08 $0,32
+# - 30/08 a 03/09 $0,00. O pico de 28/08 e o pior caso conhecido (pago como
+# primario + ticks de 30min, ambos ja revertidos); os zeros recentes sao
+# coerentes com o job do continuo pausado desde 03/09 04:33 BRT.
+#
+# Duas ressalvas medidas, ambas refletidas no texto impresso:
+#   - `custo_real` vem 0 em TODAS as linhas do relatorio (confirmado nos 7 dias
+#     acima) - o que existe e `custo_estimado`. Nunca afirmar faturamento.
+#   - O relatorio agrega o **Hermes inteiro**, nao so o continuo: sessao
+#     interativa do editor entra no mesmo numero. Declarado em vez de filtrado
+#     (filtrar exigiria distinguir sessao de cron, que o relatorio nao expoe).
+#
+# NAO usa `file_issue` justamente por nao ter limiar: sem criterio de alarme
+# calibrado, abrir issue seria ruido diario. Vira linha de log, que e o que a
+# issue pede pra coletar a serie.
+GASTO=$(python3 /home/vjpixel/.hermes/scripts/hermes-model-cost-report.py --days 1 --json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    rows = json.load(sys.stdin)
+    print(f\"{sum(float(r.get('custo_estimado') or 0) for r in rows if isinstance(r, dict)):.4f}\")
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+# Mesmo normalizador da checagem 4 (ver o porquê lá): sem ele, falha do
+# cost-report produzia "__ERR__\n__ERR__", que escapava das duas comparações
+# e imprimia uma linha de log com lixo SEM incrementar FAILS — exatamente o
+# contrário do que o comentário acima promete.
+case "$GASTO" in *__ERR__*) GASTO="__ERR__" ;; esac
+if [ "$GASTO" = "__ERR__" ] || [ -z "$GASTO" ]; then
+  # Mesma disciplina das checagens 1-7: indeterminado incrementa FAILS em vez
+  # de reportar "$0,00", que seria indistinguivel de um dia genuinamente barato.
+  echo "[watch] gasto diario: INDETERMINADO (cost-report falhou)" >&2
+  FAILS=$((FAILS + 1))
+else
+  echo "[watch] gasto diario estimado (Hermes inteiro, 24h): \$$GASTO - sem limiar calibrado (#6771), so registro"
 fi
 
 echo "[watch] varredura concluída (checagens indeterminadas/falhas de infra: $FAILS)"
