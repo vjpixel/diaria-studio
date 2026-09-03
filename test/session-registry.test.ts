@@ -54,6 +54,8 @@ import {
   MAX_SESSION_AGE_MS,
   SOFT_STALE_MS,
   INTERACTIVE_SOFT_STALE_MS,
+  CLAIM_RELEASE_MS,
+  claimReleaseMsForKind,
   MERGE_LOCK_TTL_MS,
   CLOCK_SKEW_TOLERANCE_MS,
   assessCrossMachineSyncFreshness,
@@ -1305,17 +1307,35 @@ describe("claimIssueCheckAndSet — recusa colisão entre sessões ativas (#6236
     assert.deepEqual(content.claimed_issues, [42]);
   });
 
-  it("sessão STALE segurando a issue NÃO bloqueia — claim procede sem precisar de --force", () => {
+  it("#7227: sessão STALE (mas dentro de CLAIM_RELEASE_MS) segurando a issue AINDA bloqueia — não é mais sinal suficiente para claim livre", () => {
     const root = freshRoot();
-    const staleHeartbeat = new Date(NOW - 3 * 60 * 60 * 1000).toISOString(); // 3h stale > SOFT_STALE_MS (90min)
-    registerSession(root, "overnight", "sess-morta", { tag: "host-a", startedAt: staleHeartbeat });
-    claimIssueCheckAndSet(root, "overnight", "sess-morta", 7, "host-a", staleHeartbeat);
+    const staleHeartbeat = new Date(NOW - 3 * 60 * 60 * 1000).toISOString(); // 3h stale > SOFT_STALE_MS (90min), << CLAIM_RELEASE_MS (24h)
+    registerSession(root, "overnight", "sess-viva-silenciosa", { tag: "host-a", startedAt: staleHeartbeat });
+    claimIssueCheckAndSet(root, "overnight", "sess-viva-silenciosa", 7, "host-a", staleHeartbeat);
+
+    registerSession(root, "develop", "sess-outra", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+    const result = claimIssueCheckAndSet(root, "develop", "sess-outra", 7, "host-a", new Date(NOW).toISOString());
+
+    // Antes do #7227 este teste esperava `ok: true, reason: "claimed"` aqui —
+    // era o mesmo defeito do incidente #7194: 3h de silêncio de heartbeat não
+    // é sinal POSITIVO de morte, e liberar a claim sem --force autorizaria
+    // esta 2ª sessão a assumir trabalho de uma sessão possivelmente viva.
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "blocked-by-other");
+    assert.equal(result.blockedBy?.sessionId, "sess-viva-silenciosa");
+  });
+
+  it("sessão além de CLAIM_RELEASE_MS (24h) segurando a issue NÃO bloqueia — claim procede sem precisar de --force", () => {
+    const root = freshRoot();
+    const veryStaleHeartbeat = new Date(NOW - CLAIM_RELEASE_MS - 60_000).toISOString();
+    registerSession(root, "overnight", "sess-morta", { tag: "host-a", startedAt: veryStaleHeartbeat });
+    claimIssueCheckAndSet(root, "overnight", "sess-morta", 7, "host-a", veryStaleHeartbeat);
 
     registerSession(root, "develop", "sess-viva", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
     const result = claimIssueCheckAndSet(root, "develop", "sess-viva", 7, "host-a", new Date(NOW).toISOString());
 
     assert.equal(result.ok, true);
-    assert.equal(result.reason, "claimed", "claim de sessão stale não exige --force — segue o fluxo normal");
+    assert.equal(result.reason, "claimed", "claim de sessão além de CLAIM_RELEASE_MS não exige --force — segue o fluxo normal");
 
     const content = JSON.parse(readFileSync(sessionFilePath(root, "develop", "host-a", "sess-viva"), "utf8"));
     assert.deepEqual(content.claimed_issues, [7]);
@@ -1467,20 +1487,59 @@ describe("listActiveSessions / isIssueClaimedByOther — stale (#5474)", () => {
     assert.equal(owner.sessionId, "sess-fresh");
   });
 
-  it("heartbeat > SOFT_STALE_MS mas < MAX_SESSION_AGE_MS → aparece em list-active com stale:true, mas NÃO bloqueia claim", () => {
+  it("#7227: heartbeat > SOFT_STALE_MS mas < CLAIM_RELEASE_MS → aparece em list-active com stale:true, mas AINDA bloqueia claim (sessão viva não perde o trabalho por silêncio)", () => {
     const root = freshRoot();
-    // 3h10 stale — mesmo cenário concreto da issue (#5474, sessão develop-Neo).
+    // 3h10 stale — mesmo cenário concreto do incidente #7194/#7227 (sessão
+    // `develop` presa numa sequência MCP + AskUserQuestion, sem emitir
+    // heartbeat, mas genuinamente viva). Antes do #7227 este teste esperava
+    // `owner === null` aqui — era exatamente o defeito: silêncio de heartbeat
+    // sozinho liberava o claim e autorizava outra sessão a tomar o trabalho.
     const staleHeartbeat = new Date(NOW - 3 * 60 * ONE_MIN_MS - 10 * ONE_MIN_MS).toISOString();
-    registerSession(root, "develop", "sess-morta", { tag: "host-a", startedAt: staleHeartbeat });
-    claimIssue(root, "develop", "sess-morta", 5416, "host-a", staleHeartbeat);
+    registerSession(root, "develop", "sess-viva-silenciosa", { tag: "host-a", startedAt: staleHeartbeat });
+    claimIssue(root, "develop", "sess-viva-silenciosa", 5416, "host-a", staleHeartbeat);
 
     const sessions = listActiveSessions(root, NOW);
     assert.equal(sessions.length, 1, "sessão stale continua VISÍVEL em list-active, só marcada");
-    assert.equal(sessions[0].stale, true);
-    assert.equal(sessions[0].sessionId, "sess-morta");
+    assert.equal(sessions[0].stale, true, "observável como 'provavelmente ociosa'");
+    assert.deepEqual(sessions[0].claimed_issues_effective, [5416], "mas o claim continua valendo — não é sinal POSITIVO de morte");
+    assert.equal(sessions[0].sessionId, "sess-viva-silenciosa");
 
     const owner = isIssueClaimedByOther(root, 5416, "sess-outra", NOW);
-    assert.equal(owner, null, "claim de sessão stale não bloqueia outra sessão de reivindicar a issue");
+    assert.ok(owner !== null, "claim de sessão só stale (dentro de CLAIM_RELEASE_MS) continua bloqueando outra sessão");
+    assert.equal(owner?.sessionId, "sess-viva-silenciosa");
+  });
+
+  it("#7227: heartbeat > CLAIM_RELEASE_MS (24h) → claim finalmente libera, mesma janela que já tira a sessão de list-active", () => {
+    const root = freshRoot();
+    const veryStaleHeartbeat = new Date(NOW - CLAIM_RELEASE_MS - 60_000).toISOString();
+    registerSession(root, "develop", "sess-abandonada-24h", { tag: "host-a", startedAt: veryStaleHeartbeat });
+    claimIssue(root, "develop", "sess-abandonada-24h", 5417, "host-a", veryStaleHeartbeat);
+
+    // > MAX_SESSION_AGE_MS (24h) também — some da lista inteiramente, então
+    // nem chega a expor claimed_issues_effective vazio; isIssueClaimedByOther
+    // já não a vê de qualquer forma. Cobre a mesma janela por dois caminhos.
+    assert.deepEqual(listActiveSessions(root, NOW), []);
+    assert.equal(isIssueClaimedByOther(root, 5417, "sess-outra", NOW), null);
+  });
+
+  it("#7227: kind `interactive` mantém a janela CURTA de sempre (15min) — não herda a retenção de 24h dos coordenadores", () => {
+    const root = freshRoot();
+    const staleHeartbeat = new Date(NOW - INTERACTIVE_SOFT_STALE_MS - 60_000).toISOString();
+    registerSession(root, "interactive", "sess-interativa-encerrada", { tag: "host-a", startedAt: staleHeartbeat });
+    claimIssue(root, "interactive", "sess-interativa-encerrada", 5418, "host-a", staleHeartbeat);
+
+    const [session] = listActiveSessions(root, NOW);
+    assert.equal(session.stale, true);
+    assert.deepEqual(session.claimed_issues_effective, [], "interactive libera em 15min, não em 24h — evita claim órfã de conversa encerrada");
+    assert.equal(isIssueClaimedByOther(root, 5418, "sess-outra", NOW), null);
+  });
+
+  it("#7227: claimReleaseMsForKind — interactive usa a janela curta, coordenadores usam CLAIM_RELEASE_MS (24h)", () => {
+    assert.equal(claimReleaseMsForKind("interactive"), INTERACTIVE_SOFT_STALE_MS);
+    for (const kind of ["overnight", "develop", "continuo"]) {
+      assert.equal(claimReleaseMsForKind(kind), CLAIM_RELEASE_MS);
+    }
+    assert.equal(CLAIM_RELEASE_MS, MAX_SESSION_AGE_MS, "reusa o teto absoluto existente — nenhum número mágico novo");
   });
 
   it("heartbeat > MAX_SESSION_AGE_MS (24h) → comportamento antigo: nem aparece em list-active", () => {
@@ -1523,20 +1582,36 @@ describe("listActiveSessions — claimed_issues_effective (#6623)", () => {
     assert.deepEqual(session.claimed_issues, [100, 101]);
   });
 
-  it("sessão STALE (heartbeat > SOFT_STALE_MS): claimed_issues_effective é VAZIO, mas claimed_issues bruto continua no record (#6623 — o bug real: leitura ingênua via claimed_issues escondia/mostrava errado)", () => {
+  it("#7227: sessão STALE (heartbeat > SOFT_STALE_MS, mas < CLAIM_RELEASE_MS): claimed_issues_effective CONTINUA com a claim — stale não é mais o gate de liberação", () => {
     const root = freshRoot();
-    const staleHeartbeat = new Date(NOW - 3 * 60 * ONE_MIN_MS - 10 * ONE_MIN_MS).toISOString(); // 3h10, > SOFT_STALE_MS
-    registerSession(root, "develop", "sess-morta", { tag: "host-a", startedAt: staleHeartbeat });
-    claimIssue(root, "develop", "sess-morta", 5998, "host-a", staleHeartbeat);
+    const staleHeartbeat = new Date(NOW - 3 * 60 * ONE_MIN_MS - 10 * ONE_MIN_MS).toISOString(); // 3h10, > SOFT_STALE_MS mas << CLAIM_RELEASE_MS (24h)
+    registerSession(root, "develop", "sess-viva-silenciosa", { tag: "host-a", startedAt: staleHeartbeat });
+    claimIssue(root, "develop", "sess-viva-silenciosa", 5998, "host-a", staleHeartbeat);
+
+    const [session] = listActiveSessions(root, NOW);
+    assert.equal(session.stale, true, "observável como 'provavelmente ociosa'");
+    // Antes do #7227 este teste esperava `[]` aqui — era o próprio defeito
+    // que a #7227 corrige: `stale` sozinho (heartbeat silencioso) liberava o
+    // claim sem nenhum sinal POSITIVO de morte, autorizando terceiro a tomar
+    // trabalho de sessão viva (incidente #7194).
+    assert.deepEqual(session.claimed_issues_effective, [5998]);
+    assert.deepEqual(session.claimed_issues, [5998]);
+  });
+
+  it("#7227: interactive além da janela curta (15min): claimed_issues_effective é VAZIO enquanto ainda VISÍVEL em list-active, claimed_issues bruto preservado (#6623 — diagnóstico/histórico)", () => {
+    const root = freshRoot();
+    // interactive é o único kind onde CLAIM_RELEASE_MS != MAX_SESSION_AGE_MS —
+    // por isso é o único caso que demonstra `claimed_issues_effective: []`
+    // com a sessão AINDA visível na lista (coordenadores só esvaziam quando
+    // já saíram da lista de qualquer forma, ver teste acima).
+    const staleHeartbeat = new Date(NOW - INTERACTIVE_SOFT_STALE_MS - 60_000).toISOString();
+    registerSession(root, "interactive", "sess-interativa-6623", { tag: "host-a", startedAt: staleHeartbeat });
+    claimIssue(root, "interactive", "sess-interativa-6623", 5999, "host-a", staleHeartbeat);
 
     const [session] = listActiveSessions(root, NOW);
     assert.equal(session.stale, true);
-    // O sintoma original do #6623: uma triagem ingênua lendo claimed_issues
-    // (bruto) via 26 issues achava só 16 elegíveis — as 10 escondidas eram
-    // exatamente claims de sessão stale como esta. claimed_issues_effective
-    // resolve isso sem exigir que o chamador consulte `stale` à parte.
     assert.deepEqual(session.claimed_issues_effective, []);
-    assert.deepEqual(session.claimed_issues, [5998], "o campo bruto continua no record para diagnóstico/histórico");
+    assert.deepEqual(session.claimed_issues, [5999], "o campo bruto continua no record para diagnóstico/histórico");
   });
 
   it("sessão sem claims: claimed_issues_effective é [] tanto viva quanto stale", () => {

@@ -377,12 +377,17 @@ export interface SessionRecord {
  * sessão segura DE VERDADE agora" lê este campo em vez de re-derivar —
  * mesmo princípio de `issue-decisions.ts`/`classifyExecTrack`, julgamento
  * feito uma vez aqui, nunca re-heurística por call site. Vazio quando
- * `stale === true` (a mesma regra que `is-claimed` já aplica via
- * `SOFT_STALE_MS`/`isIssueClaimedByOther` — passados `SOFT_STALE_MS`
- * (90min; 15min pra `interactive`), o claim para de valer, mas o `list-active`
- * cru continuava expondo `claimed_issues` como se ainda valesse, escondendo
- * issues elegíveis de quem lia ingenuamente — 10 de 26 numa triagem real,
- * ver #6623). Igual a `claimed_issues` quando a sessão está viva.
+ * `ageMs > claimReleaseMsForKind(kind)` (a mesma regra que `is-claimed` já
+ * aplica via `isIssueClaimedByOther` — ver docstring de `CLAIM_RELEASE_MS`).
+ * **Desde o #7227, isto NÃO é mais o mesmo limiar que `stale`** (que continua
+ * marcado a partir de `softStaleMsForKind`, 90min/15min): uma sessão pode
+ * estar `stale: true` ("provavelmente ociosa", observável) e ainda assim ter
+ * `claimed_issues_effective` populado, porque liberar o claim (autoriza
+ * terceiro a tomar o trabalho) exige uma janela de silêncio bem mais
+ * conservadora do que só marcar a sessão como não-obviamente-ativa (achado do
+ * #7194/#7227: sessão viva presa num `AskUserQuestion`/sequência MCP longa
+ * teve o claim liberado e o trabalho tomado por outra sessão). Igual a
+ * `claimed_issues` quando dentro da janela de retenção.
  */
 export type ActiveSessionRecord = SessionRecord & { stale: boolean; claimed_issues_effective: number[] };
 
@@ -466,6 +471,69 @@ export const INTERACTIVE_SOFT_STALE_MS = 15 * 60 * 1000;
  */
 export function softStaleMsForKind(kind: string): number {
   return kind === "interactive" ? INTERACTIVE_SOFT_STALE_MS : SOFT_STALE_MS;
+}
+
+/**
+ * #7227 — janela que decide quando `claimed_issues_effective` de fato esvazia
+ * (libera a issue pra outra sessão reivindicar/tomar). **Decoupled de
+ * `softStaleMsForKind`** de propósito: `stale`/`SOFT_STALE_MS` continuam
+ * exatamente como eram (sinal OBSERVACIONAL — "não vejo heartbeat há X min",
+ * visível em `session.stale` pra quem monitora), mas deixaram de ser,
+ * sozinhos, o critério que autoriza um terceiro a assumir trabalho reivindicado.
+ *
+ * ## Por que não usar `pid` (a sugestão original da issue)
+ *
+ * A #7227 propõe checar `pid` (`register --pid`, #6160) como sinal POSITIVO de
+ * morte antes de esvaziar o claim. **Este módulo já mediu essa premissa como
+ * falsa (#6294/#6706, ver a docstring do campo `pid` em `SessionRecord`):** o
+ * valor gravado é o PID de um subprocesso EFÊMERO do hook (`process.ppid` no
+ * momento da chamada), não o processo persistente da sessão — na prática o
+ * campo raramente confirma "vivo" de verdade, e um `pid` "morto" não indica
+ * sessão morta, só que a fonte do dado é ruim. Por isso o #6294 já revogou
+ * "pid morto → remove" em `decideSessionGc`, e a docstring do campo é
+ * explícita: "nunca tratar como sinal de liveness em NENHUM consumidor novo".
+ * Repetir o padrão aqui reintroduziria exatamente o risco que o #6294 fechou —
+ * só que na decisão de MAIOR blast radius deste módulo (autorizar terceiro a
+ * mexer em trabalho alheio), não na de menor (apagar um arquivo de registro).
+ *
+ * ## A resposta conservadora sem sinal positivo confiável disponível
+ *
+ * Sem um sinal de morte em que dá pra confiar, a via seguindo o princípio
+ * "errar pro lado de não liberar é preferível" (#7227) é alongar a janela de
+ * SILÊNCIO exigida antes de liberar — nunca encurtar. Reusa o valor de
+ * `MAX_SESSION_AGE_MS` (24h) — não um número novo: é o único ponto onde este
+ * módulo já tratava uma sessão como certamente ausente (ela some da lista
+ * inteira em `listActiveSessions`, então `isIssueClaimedByOther` já não a
+ * enxergaria de qualquer forma). Entre `SOFT_STALE_MS`/`softStaleMsForKind`
+ * (90min, ou 15min pra `interactive`) e esta janela, a sessão aparece com
+ * `stale: true` — "provavelmente ociosa", visível pra quem observa — mas
+ * `claimed_issues_effective` continua com a issue: ninguém pode assumir o
+ * trabalho antes disso. Cobre o incidente concreto do #7194/#7227 (sessão
+ * `develop` presa ~2-3h num `AskUserQuestion`/sequência MCP) com folga.
+ *
+ * `interactive` é a ÚNICA exceção — mantém a janela CURTA (`INTERACTIVE_SOFT_STALE_MS`,
+ * 15min) mesmo pra claim, sem mudança de comportamento (ver
+ * `claimReleaseMsForKind`). Uma conversa interativa que terminou não emite
+ * heartbeat nunca mais e não chama `end` — alongar a retenção de claim dela
+ * pra 24h reabriria exatamente a "claim órfã" que o #6168 (que introduziu
+ * `INTERACTIVE_SOFT_STALE_MS`) foi desenhado pra evitar: overnight/develop
+ * pulando issue livre por até 1 dia inteiro por causa de uma sessão que já
+ * terminou. Sessões coordenadoras (`overnight`/`develop`/`continuo`) SEMPRE
+ * chamam `end` ao encerrar de propósito (ou ficam órfãs só por crash — o caso
+ * que esta janela protege) — a assimetria de risco entre os dois grupos é
+ * real, não um descuido.
+ */
+export const CLAIM_RELEASE_MS = MAX_SESSION_AGE_MS;
+
+/**
+ * Janela de retenção de claim aplicável a `kind` (#7227) — `interactive`
+ * mantém a janela curta de sempre (`INTERACTIVE_SOFT_STALE_MS`, idêntica à de
+ * `softStaleMsForKind`, comportamento inalterado); os 3 kinds coordenadores
+ * usam `CLAIM_RELEASE_MS` (24h), bem mais longa que `SOFT_STALE_MS` (90min) —
+ * ver a docstring de `CLAIM_RELEASE_MS` pro porquê da divergência.
+ */
+export function claimReleaseMsForKind(kind: string): number {
+  return kind === "interactive" ? INTERACTIVE_SOFT_STALE_MS : CLAIM_RELEASE_MS;
 }
 
 /** TTL do merge lock (item 4) — merge + pull não deveria levar mais que isso. */
@@ -2266,10 +2334,17 @@ export function listActiveSessions(
     // não emite heartbeat depois que a conversa acaba (ver
     // `INTERACTIVE_SOFT_STALE_MS`). Os 3 kinds coordenadores não mudam.
     const stale = ageMs > softStaleMsForKind(record.kind);
-    // #6623: `claimed_issues_effective` — vazio quando `stale`, mesmo campo
-    // bruto quando viva. Mesma regra de validade que `isIssueClaimedByOther`
-    // já aplica (abaixo), carregada aqui pra quem só lê `list-active`.
-    out.push({ ...record, stale, claimed_issues_effective: stale ? [] : (record.claimed_issues ?? []) });
+    // #7227: `claimed_issues_effective` não segue mais `stale` diretamente —
+    // usa a janela dedicada e mais conservadora de `claimReleaseMsForKind`
+    // (ver sua docstring pro porquê: `stale` sozinho mede só silêncio de
+    // heartbeat, que não é sinal POSITIVO de morte, e liberar um claim
+    // autoriza terceiro a mexer em trabalho de sessão possivelmente viva).
+    // Entre as duas janelas, a sessão aparece `stale: true` (observável) mas
+    // com `claimed_issues_effective` ainda populado — "provavelmente ociosa",
+    // não "livre". Mesma regra de validade que `isIssueClaimedByOther`
+    // aplica (abaixo), carregada aqui pra quem só lê `list-active`.
+    const claimsReleased = ageMs > claimReleaseMsForKind(record.kind);
+    out.push({ ...record, stale, claimed_issues_effective: claimsReleased ? [] : (record.claimed_issues ?? []) });
   }
   return out;
 }
@@ -2784,11 +2859,15 @@ export function isIssueClaimedByOther(
 ): ActiveSessionRecord | null {
   for (const session of listActiveSessions(repoRoot, now)) {
     if (session.sessionId === excludeSessionId) continue;
-    // #5474: claim de sessão STALE (heartbeat morto ha mais de SOFT_STALE_MS,
-    // ainda dentro do teto absoluto MAX_SESSION_AGE_MS) nao bloqueia outra
-    // sessao de reivindicar a mesma issue.
-    if (session.stale) continue;
-    if ((session.claimed_issues ?? []).includes(issueNumber)) return session;
+    // #7227: lê `claimed_issues_effective` (já resolve a janela de retenção
+    // de `claimReleaseMsForKind`) em vez de gatear por `session.stale` +
+    // `claimed_issues` bruto. Antes do #7227 as duas coisas coincidiam
+    // (`claimed_issues_effective` esvaziava exatamente quando `stale` virava
+    // `true`) — desde o #7227 uma sessão `stale: true` pode continuar
+    // segurando a issue (ainda dentro de `claimReleaseMsForKind`, "provavelmente
+    // ociosa" mas não livre), e gatear por `stale` sozinho voltaria a liberar
+    // cedo demais o que este helper existe pra proteger (#5751).
+    if (session.claimed_issues_effective.includes(issueNumber)) return session;
   }
   return null;
 }
