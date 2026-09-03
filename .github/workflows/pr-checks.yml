@@ -199,3 +199,26 @@ jobs:
       - run: npm ci
       - name: Run validate-agents
         run: npm run validate-agents
+
+  shell-tests:
+    # #7129 item (c) — os `*.test.sh` do repo não rodavam em lugar nenhum:
+    # `scripts/run-tests.ts` varre só `*.test.ts` e nenhum step os invocava.
+    # Eram 12 arquivos (a issue contava 5, olhando só `test/`), todos passando
+    # — cobertura real que existia e não valia nada, justamente sobre
+    # `hermes/` e o fluxo do contínuo, que é o consumidor externo no helios e
+    # a área onde este repo já reverteu uma remoção (#6059/#6060).
+    #
+    # Aqui e não em ci.yml pelo mesmo motivo do `validate-agents` acima:
+    # ci.yml tem `paths-ignore` e um PR que só mexa em shell/markdown poderia
+    # não disparar. pr-checks.yml roda em todo PR.
+    name: Shell tests (*.test.sh, #7129)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run scripts/run-shell-tests.ts
+        run: npx tsx scripts/run-shell-tests.ts
