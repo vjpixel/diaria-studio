@@ -19,7 +19,7 @@
 
 import { renderAnalyticsHead } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM
 
-const UPDATED_AT = "14 de agosto de 2026";
+const UPDATED_AT = "3 de setembro de 2026";
 
 const CONTACT_EMAIL = "diariaeditor@gmail.com";
 
@@ -82,10 +82,11 @@ ${renderAnalyticsHead()}
 <p>Usamos serviços de terceiros para operar o projeto. Cada um recebe apenas o necessário para a função que exerce:</p>
 <ul>
   <li><strong>Beehiiv</strong> — hospeda a newsletter, o cadastro e o envio das edições.</li>
+  <li><strong>Kit</strong> — hospeda o cadastro e o envio das edições para quem assina pelas páginas mais recentes do projeto.</li>
   <li><strong>Brevo</strong> — envio de campanhas de e-mail específicas, incluindo a edição mensal.</li>
   <li><strong>MillionVerifier</strong> — verifica se um endereço de e-mail existe, antes do envio.</li>
   <li><strong>Cloudflare</strong> — hospeda as páginas do projeto (arquivo, hubs temáticos, enquetes) e registra dados de acesso.</li>
-  <li><strong>Google</strong> — anúncios de divulgação da newsletter e medição de sua eficácia.</li>
+  <li><strong>Google, Meta e Microsoft</strong> — anúncios de divulgação da newsletter e medição de sua eficácia (incluindo confirmar que um cadastro feito depois de um anúncio realmente aconteceu).</li>
   <li><strong>apoia.se</strong> e <strong>Stripe</strong> — processam contribuições de quem apoia o projeto financeiramente. Não temos acesso aos dados do seu cartão.</li>
 </ul>
 

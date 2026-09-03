@@ -19,10 +19,20 @@
  * `scripts/gen-assinar-page.ts` sempre que este módulo mudar (mesma
  * disciplina "commitado à mão" de `workers/site/README.md`, já seguida por
  * `gen-home-page.ts`/`gen-archive-pages.ts`).
+ *
+ * #7358: até esta issue, `/assinar` era a ÚNICA superfície do apex sem o
+ * container GTM (`renderAnalyticsHead`) — cadastro concluído aqui nunca
+ * disparava PageView nem qualquer evento de conversão, mesmo o form
+ * funcionando perfeitamente (o gatilho vivo das tags de conversão nem
+ * chegava a existir nesta página, não só estar desatualizado). Agora carrega
+ * o mesmo container de `index.html`/`livros`/`cursos` e empurra o evento
+ * `signedUp` pro `dataLayer` no sucesso do fetch — ver
+ * `pushSignupConversionEventJs` em `scripts/lib/shared/seo-meta.ts`.
  */
 import { escHtml } from "./html-escape.ts";
 import { WORDMARK_DISPLAY_SEGMENTS } from "./shared/brand-wordmark.ts";
 import { SIGNUP_FORM_FETCH_TIMEOUT_MS } from "./site-home-page.ts"; // #6981: reusa o mesmo timeout do form da home (#6979) — dois números diferentes sem motivo seria dívida
+import { renderAnalyticsHead, pushSignupConversionEventJs } from "./shared/seo-meta.ts"; // #7358: /assinar não tinha GTM nenhum — cadastro feito aqui nunca disparava qualquer conversão
 
 /**
  * Mesmo padrão de `renderWordmark()` em `site-home-page.ts` (#7010): consome
@@ -129,6 +139,7 @@ button[type="submit"]:disabled { opacity: 0.6; cursor: default; }
 .status.err { color: #b3261e; }
 .back { display: inline-block; margin-top: 32px; font-size: 13px; color: var(--ink-faint); text-decoration: underline; text-underline-offset: 3px; }
 </style>
+${renderAnalyticsHead()}
 </head>
 <body>
   <main class="wrap">
@@ -154,13 +165,13 @@ button[type="submit"]:disabled { opacity: 0.6; cursor: default; }
       </div>
       <label class="optin">
         <input type="checkbox" name="optin" value="on" required>
-        <span>Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail.</span>
+        <span>Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail. Veja a <a href="https://arquivo.diar.ia.br/privacidade">política de privacidade</a>.</span>
       </label>
       <button type="submit">Assinar grátis</button>
       <p class="status" role="status" aria-live="polite"></p>
     </form>
 
-    <a class="back" href="/">← Voltar pra diar.ia.br</a>
+    <a class="back" href="/">← Voltar pra diar.ia.br</a> · <a class="back" href="https://arquivo.diar.ia.br/privacidade">Privacidade</a>
   </main>
 
   <script>
@@ -234,6 +245,9 @@ button[type="submit"]:disabled { opacity: 0.6; cursor: default; }
         return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
       }).then(function (r) {
         if (r.status === 200 && r.body && r.body.ok) {
+          // #7358: evento de conversão pro GTM — só no sucesso REAL do
+          // cadastro, com o e-mail já validado acima.
+          ${pushSignupConversionEventJs("email")}
           form.reset();
           setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
           var fields = form.querySelectorAll("input, button");

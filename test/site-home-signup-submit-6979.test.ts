@@ -137,6 +137,40 @@ describe("signupFormScript — transições de status/disabled por status HTTP (
     }
   });
 
+  // #7358: o gatilho vivo das tags de conversão (Google Ads/Meta/Microsoft)
+  // dependia de Form Submission por RegEx dos Form IDs do Website Builder da
+  // Beehiiv — mortos desde o cutover do apex (26/08). Sem dataLayer.push
+  // nenhum, a conversão reporta zero e o lance automático otimiza por um
+  // sinal que nunca chega.
+  it("200 ok: empurra o evento signedUp pro dataLayer com o e-mail cadastrado", async () => {
+    const win: any = {
+      location: { search: "" },
+      fetch: () => Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true }) }),
+      AbortController: typeof AbortController === "function" ? AbortController : undefined,
+    };
+    const bundle = makeForm({ email: "leitor@example.com" });
+    const doc: any = { querySelectorAll: (sel: string) => (sel === "form.signup" ? [bundle.form] : []) };
+    wire(win, doc);
+    bundle.form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flush();
+    assert.ok(Array.isArray(win.dataLayer), "dataLayer deveria existir após o sucesso");
+    assert.deepEqual(win.dataLayer, [{ event: "signedUp", eventProps: { email: "leitor@example.com" } }]);
+  });
+
+  it("200 mas body.ok !== true: NÃO empurra o evento de conversão (não foi sucesso de verdade)", async () => {
+    const win: any = {
+      location: { search: "" },
+      fetch: () => Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: false }) }),
+      AbortController: typeof AbortController === "function" ? AbortController : undefined,
+    };
+    const bundle = makeForm({ email: "leitor@example.com" });
+    const doc: any = { querySelectorAll: (sel: string) => (sel === "form.signup" ? [bundle.form] : []) };
+    wire(win, doc);
+    bundle.form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flush();
+    assert.equal(win.dataLayer, undefined, "sem sucesso real, dataLayer nunca é tocado");
+  });
+
   it("429: rate limit — mensagem específica, botão reabilita, campos continuam visíveis", async () => {
     const { submit, status, btn, email } = setup(() =>
       Promise.resolve({ status: 429, json: () => Promise.resolve({ ok: false }) }),

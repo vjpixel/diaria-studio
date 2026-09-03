@@ -84,13 +84,22 @@ describe("curadoria-page.ts — módulo compartilhado (#3113)", () => {
     assert.match(css, /\.summary \{[^}]*margin: 14px 0 18px;/);
   });
 
-  it("nav cruzada tem as 6 superfícies, diar.ia.br primeiro e apontando pro diar.ia.br", () => {
-    assert.equal(CURADORIA_NAV_LINKS.length, 6);
+  it("nav cruzada tem as 7 superfícies, diar.ia.br primeiro e apontando pro diar.ia.br", () => {
+    assert.equal(CURADORIA_NAV_LINKS.length, 7);
     assert.deepEqual(
       CURADORIA_NAV_LINKS.map((l) => l.label),
-      ["diar.ia.br", "Cursos", "Livros", "É IA?", "Arquivo", "Especial"],
+      ["diar.ia.br", "Cursos", "Livros", "É IA?", "Arquivo", "Especial", "Privacidade"],
     );
     assert.equal(CURADORIA_NAV_LINKS[0].url, "https://diar.ia.br");
+  });
+
+  // #7361: nenhuma das superfícies que coletam e-mail linkava a política de
+  // privacidade — a nav cruzada compartilhada é a fonte mais barata pra
+  // fechar isso em livros/cursos/arquivo/hub/entity de uma vez.
+  it("nav cruzada inclui Privacidade apontando pro DIARIA_ARQUIVO_URL/privacidade", () => {
+    const privacidadeLink = CURADORIA_NAV_LINKS.find((l) => l.label === "Privacidade");
+    assert.ok(privacidadeLink, "CURADORIA_NAV_LINKS deveria ter uma entrada 'Privacidade'");
+    assert.equal(privacidadeLink!.url, `${DIARIA_ARQUIVO_URL}/privacidade`);
   });
 
   // #5121: arquivo.diar.ia.br pendia de um único referringUrl conhecido —
@@ -111,7 +120,7 @@ describe("curadoria-page.ts — módulo compartilhado (#3113)", () => {
     assert.equal(especialLink!.url, `${DIARIA_ESPECIAL_URL}/`);
   });
 
-  it("renderCuradoriaFooter monta os 6 links + texto de crédito, escapando HTML", () => {
+  it("renderCuradoriaFooter monta os 7 links + texto de crédito, escapando HTML", () => {
     const html = renderCuradoriaFooter('diar.ia.br — curadoria de <script>');
     assert.match(html, /<a href="https:\/\/diar\.ia\.br">diar\.ia\.br<\/a>/);
     // #3698: domínio de marca (era cursos/livros.diaria.workers.dev).
@@ -123,6 +132,8 @@ describe("curadoria-page.ts — módulo compartilhado (#3113)", () => {
     assert.match(html, /<a href="https:\/\/arquivo\.diar\.ia\.br\/">Arquivo<\/a>/);
     // #5126: artigos especiais avulsos.
     assert.match(html, /<a href="https:\/\/especial\.diar\.ia\.br\/">Especial<\/a>/);
+    // #7361: política de privacidade.
+    assert.match(html, /<a href="https:\/\/arquivo\.diar\.ia\.br\/privacidade">Privacidade<\/a>/);
     assert.doesNotMatch(html, /<script>/, "texto de crédito deve ser escapado");
     assert.match(html, /&lt;script&gt;/);
   });
@@ -139,7 +150,7 @@ describe("curadoria-page.ts — módulo compartilhado (#3113)", () => {
     assert.match(html, /<a href="https:\/\/diar\.ia\.br">diar\.ia\.br<\/a>/);
   });
 
-  it("com diariaUtm — apensa SÓ no link diar.ia.br; Cursos/Livros/É IA?/Arquivo/Especial continuam sem UTM", () => {
+  it("com diariaUtm — apensa SÓ no link diar.ia.br; Cursos/Livros/É IA?/Arquivo/Especial/Privacidade continuam sem UTM", () => {
     const html = renderCuradoriaFooter("crédito", "utm_source=livros&utm_medium=footer-nav");
     assert.match(html, /<a href="https:\/\/diar\.ia\.br\?utm_source=livros&amp;utm_medium=footer-nav">diar\.ia\.br<\/a>/);
     assert.match(html, /<a href="https:\/\/cursos\.diar\.ia\.br\/">Cursos<\/a>/);
@@ -147,6 +158,7 @@ describe("curadoria-page.ts — módulo compartilhado (#3113)", () => {
     assert.match(html, /<a href="https:\/\/eia\.diar\.ia\.br\/leaderboard">É IA\?<\/a>/);
     assert.match(html, /<a href="https:\/\/arquivo\.diar\.ia\.br\/">Arquivo<\/a>/);
     assert.match(html, /<a href="https:\/\/especial\.diar\.ia\.br\/">Especial<\/a>/);
+    assert.match(html, /<a href="https:\/\/arquivo\.diar\.ia\.br\/privacidade">Privacidade<\/a>/);
   });
 
   it("URLs de Cursos/Livros na nav batem com o PAGE_URL exportado de cada builder — sem isso, mudar o domínio num builder e esquecer aqui reintroduz o drift silencioso que o #3113 elimina", () => {
