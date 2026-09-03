@@ -113,7 +113,9 @@ export async function listKitSubscribersPage(
  * só busca entre `active`, e os cadastros de preflight que este helper existe
  * pra verificar podem estar `inactive` (double opt-in pendente) — omitir o
  * status faria um cadastro real de teste parecer "não encontrado".
- * `null` quando não há match (nunca lança por ausência).
+ * `null` quando a API não devolve NENHUM assinante (ausência real). Se a API
+ * devolver assinante(s) mas nenhum bater o e-mail exato, lança — nunca cai
+ * silenciosamente pro 1º resultado da lista (#7373 review).
  */
 export async function getKitSubscriberByEmail(
   email: string,
@@ -125,7 +127,24 @@ export async function getKitSubscriberByEmail(
     includeAttribution: true,
     config,
   });
-  return subscribers.find((s) => s.email_address.toLowerCase() === email.toLowerCase()) ?? subscribers[0] ?? null;
+  // #7373 review: NUNCA cair pro 1º resultado da lista quando nenhum bate o
+  // e-mail exato (era `?? subscribers[0] ?? null`) — este helper alimenta
+  // `unsubscribeKitSubscriber` em `cleanup-preflight-subscribers.ts`, uma
+  // mutação real; devolver um subscriber ERRADO silenciosamente cancelaria
+  // um assinante alheio.
+  const exactMatch = subscribers.find((s) => s.email_address.toLowerCase() === email.toLowerCase());
+  if (exactMatch) return exactMatch;
+  // Lista vazia é o "não encontrado" documentado (comportamento preservado).
+  if (subscribers.length === 0) return null;
+  // Lista NÃO vazia mas SEM match exato é um estado ambíguo — a API devolveu
+  // assinante(s), só que nenhum bate o e-mail buscado. Nunca operar sobre um
+  // registro possivelmente errado: lançar em vez de silenciosamente cair
+  // pro primeiro resultado.
+  const [first] = subscribers;
+  throw new Error(
+    `getKitSubscriberByEmail(${email}): API devolveu ${subscribers.length} assinante(s) mas nenhum bate o e-mail exato ` +
+      `(ex: id=${first.id}, email_address="${first.email_address}") — abortando.`,
+  );
 }
 
 /**

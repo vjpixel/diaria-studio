@@ -88,6 +88,25 @@ describe("getKitSubscriberByEmail (#7359)", () => {
     );
     assert.equal(sub, null);
   });
+
+  it("lança (nunca cai pro 1º resultado) quando a API devolve subscriber(s) mas nenhum bate o e-mail exato (#7373 review)", async () => {
+    await assert.rejects(
+      () =>
+        withMockFetch(
+          (async () =>
+            jsonResponse(200, {
+              // Simula a API devolvendo um resultado de correspondência ampla
+              // (ex: busca parcial/fuzzy) que NÃO bate o e-mail exato buscado —
+              // era este o caso que antes caía silenciosamente pro
+              // `subscribers[0]`, arriscando cancelar um assinante alheio.
+              subscribers: [{ id: 99, email_address: "outro-email@b.com", state: "active", created_at: "x" }],
+              pagination: emptyPagination,
+            })) as typeof fetch,
+          () => getKitSubscriberByEmail("nao-bate@b.com", TEST_CONFIG),
+        ),
+      /nao-bate@b\.com.*nenhum bate o e-mail exato.*id=99.*outro-email@b\.com/s,
+    );
+  });
 });
 
 describe("unsubscribeKitSubscriber (#7359)", () => {

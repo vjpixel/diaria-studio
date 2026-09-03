@@ -71,9 +71,13 @@ function mockKitFetch(opts: {
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     }
+    // #7373 review: `getKitSubscriberByEmail` agora exige match EXATO de
+    // e-mail (senão lança) — o mock precisa devolver o mesmo e-mail que foi
+    // buscado, não um hardcoded "a@x.com" alheio a toda query.
+    const queriedEmail = new URL(u, "https://api.kit.com").searchParams.get("email_address") ?? "a@x.com";
     return new Response(
       JSON.stringify({
-        subscribers: [{ id: 42, email_address: "a@x.com", state: opts.state, created_at: "x", fields: {} }],
+        subscribers: [{ id: 42, email_address: queriedEmail, state: opts.state, created_at: "x", fields: {} }],
         pagination: { has_next_page: false, end_cursor: null },
       }),
       { status: 200, headers: { "Content-Type": "application/json" } },
