@@ -111,6 +111,21 @@ import {
 import { unitBaseName } from "./lib/systemd-units.ts";
 import { evaluateTaskNeverArmed, isAlarmingVerdict, type TaskNeverArmedEvaluation } from "./lib/task-never-armed-alarm.ts";
 import { readArmedTimerUnitBaseNames } from "./task-never-armed-alarm.ts";
+import {
+  parseUnitStateOutput,
+  queryUnitState,
+  type SystemdUnitState,
+  type QueryUnitStateResult,
+} from "./lib/systemd-unit-state.ts";
+
+// #7210: `parseUnitStateOutput`/`queryUnitState`/`SystemdUnitState` foram
+// extraídos pra `./lib/systemd-unit-state.ts` (consumido também por
+// `scripts/task-never-armed-alarm.ts`, que precisa do mesmo sinal pra
+// distinguir "nunca armada" de "parada deliberadamente" — ver o achado na
+// issue). Re-exportados aqui com os MESMOS nomes pra não quebrar
+// `test/arm-systemd-timers.test.ts`, que importa esses símbolos direto
+// deste arquivo.
+export { parseUnitStateOutput, queryUnitState, type SystemdUnitState, type QueryUnitStateResult };
 
 const DEFAULT_UNITS_DIR = ".systemd-units";
 
@@ -120,79 +135,6 @@ const DEFAULT_UNITS_DIR = ".systemd-units";
  * mockar `homedir()` implicitamente via override de `--target-dir` em teste. */
 export function defaultSystemdUserDir(): string {
   return join(homedir(), ".config", "systemd", "user");
-}
-
-// ---------------------------------------------------------------------------
-// Estado do unit (LoadState + ActiveState) — parse puro + I/O injetável
-// ---------------------------------------------------------------------------
-
-export interface SystemdUnitState {
-  loadState: string;
-  activeState: string;
-}
-
-/**
- * Parseia a saída de `systemctl --user show <unit> --property=LoadState,ActiveState`
- * — 2 linhas `Chave=Valor` (ordem não garantida). Chave ausente/output
- * malformado vira string vazia, nunca lança. @pure
- */
-export function parseUnitStateOutput(output: string): SystemdUnitState {
-  const lines = output.split(/\r?\n/);
-  let loadState = "";
-  let activeState = "";
-  for (const line of lines) {
-    const m = /^([A-Za-z]+)=(.*)$/.exec(line);
-    if (!m) continue;
-    if (m[1] === "LoadState") loadState = m[2].trim();
-    if (m[1] === "ActiveState") activeState = m[2].trim();
-  }
-  return { loadState, activeState };
-}
-
-export interface QueryUnitStateResult {
-  state: SystemdUnitState | null;
-  /** Motivo de `state === null` — `null` no caminho de sucesso. `systemctl
-   * show` NÃO lança pra unit ausente (devolve `LoadState=not-found`,
-   * `ActiveState=inactive`, exit 0) — só chega aqui em falha real de
-   * infraestrutura (systemctl ausente, bus indisponível, erro inesperado). */
-  error: string | null;
-}
-
-/**
- * Consulta `systemctl --user show <unit> --property=LoadState,ActiveState`.
- * Ao contrário de `is-enabled`/`is-active` (usados em
- * `check-watchdog-armed.ts`/`scheduled-task-status.ts`, que exigem tratar
- * "exceção com stdout 'not-found'" como caminho de sucesso disfarçado),
- * `show` sempre sai com exit 0 e reporta o estado via as duas propriedades —
- * dá, numa única chamada, tanto "existe?" (`loadState`) quanto "está rodando
- * agora?" (`activeState`). É essa distinção que o guard do #4828 precisa:
- * só `is-active` sozinho não diferencia "nunca existiu" de "parada
- * deliberadamente" (as duas retornam `inactive`).
- *
- * `exec` injetável (default = `execFileSync` real) — nunca spawna
- * `systemctl` de verdade em teste (ver `test/arm-systemd-timers.test.ts`).
- */
-export function queryUnitState(unit: string, exec: typeof execFileSync = execFileSync): QueryUnitStateResult {
-  try {
-    const out = exec("systemctl", ["--user", "show", unit, "--property=LoadState,ActiveState"], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }) as unknown as string;
-    return { state: parseUnitStateOutput(String(out ?? "")), error: null };
-  } catch (e: unknown) {
-    const err = e as { code?: string; stderr?: string };
-    if (err.code === "ENOENT") {
-      return { state: null, error: "systemctl indisponível (ENOENT) nesta consulta." };
-    }
-    const stderrText = String(err.stderr ?? "").trim();
-    return {
-      state: null,
-      error:
-        `systemctl show falhou ao consultar '${unit}' — não foi possível confirmar o estado atual` +
-        (stderrText ? ` (stderr: ${stderrText.slice(0, 200)})` : "") +
-        ".",
-    };
-  }
 }
 
 // ---------------------------------------------------------------------------

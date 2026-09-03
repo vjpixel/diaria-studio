@@ -82,11 +82,57 @@ export function parseSystemctlListTimersOutput(stdout: string): string[] {
 
 export type TaskNeverArmedVerdict = "ok" | "alarm-never-armed" | "alarm-orphan-timers" | "alarm-both";
 
+/**
+ * (#7210) Distingue as duas leituras de "task no registro sem timer
+ * armado": `task-never-setup` (unit nunca existiu nesta máquina —
+ * `LoadState=not-found`, setup nunca rodou, prescrição mecânica é armar) e
+ * `task-stopped-deliberately` (unit EXISTE mas está `ActiveState=inactive`
+ * — sinal de `systemctl --user stop` manual, mesmo par LoadState/ActiveState
+ * que `arm-systemd-timers.ts` já consulta pro guard `--rearm-stopped`
+ * (#4828); prescrição é uma DECISÃO humana — religar ou remover a task de
+ * `scheduled-tasks.ts` — nunca sobrescrita em silêncio).
+ */
+export type NeverArmedStatus = "task-never-setup" | "task-stopped-deliberately";
+
+/** Par mínimo LoadState/ActiveState — mesmo shape de
+ * `scripts/lib/systemd-unit-state.ts` (`SystemdUnitState`), redeclarado aqui
+ * (sem import) pra manter este módulo livre de I/O e sem depender do módulo
+ * que efetivamente chama `systemctl`. */
+export interface UnitLoadActiveState {
+  loadState: string;
+  activeState: string;
+}
+
+/**
+ * Pure — classifica um TaskName sem timer armado usando o par
+ * LoadState/ActiveState (consultado pelo caller via
+ * `scripts/lib/systemd-unit-state.ts#queryUnitState`, mesma leitura que
+ * `arm-systemd-timers.ts` já faz pro guard `--rearm-stopped`, #4828).
+ *
+ * `unitState === null` (consulta não feita, ou falhou) cai no lado mais
+ * conservador — `task-never-setup` — que é o comportamento anterior ao
+ * #7210 (nenhum breaking change pro caller que não passa `unitStates`).
+ */
+export function classifyNeverArmedStatus(unitState: UnitLoadActiveState | null): NeverArmedStatus {
+  if (unitState === null) return "task-never-setup";
+  if (unitState.loadState === "not-found") return "task-never-setup";
+  return "task-stopped-deliberately";
+}
+
 export interface TaskNeverArmedEvaluation {
   verdict: TaskNeverArmedVerdict;
   /** Nomes de `ScheduledTaskDefinition.name` (TaskName original, não
-   * unit base) no registro sem timer armado. Sempre ordenado. */
+   * unit base) no registro sem timer armado. Sempre ordenado. Superconjunto
+   * de `stoppedDeliberately` — mantido assim de propósito (#7210) pra não
+   * quebrar o veredito/idempotência existentes, que já rodam sobre o
+   * conjunto INTEIRO de "sem timer armado". */
   neverArmed: string[];
+  /** Subconjunto de `neverArmed` (#7210): unit EXISTE (`LoadState` !=
+   * `not-found`) mas está `ActiveState=inactive` — parado deliberadamente,
+   * não "nunca configurado". Sempre ordenado. Vazio quando o caller não
+   * fornece `unitStates` (4º arg de `evaluateTaskNeverArmed`) — todo item
+   * cai no lado `task-never-setup` por padrão. */
+  stoppedDeliberately: string[];
   /** Nomes-base de unit `diaria-*` armados sem task correspondente no
    * registro, excluindo `KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES`. Sempre
    * ordenado. */
@@ -121,12 +167,22 @@ export function evaluateTaskNeverArmed(
   registryTaskNames: string[],
   armedUnitBaseNames: string[],
   disabledTaskNames: string[] = [],
+  /** (#7210) `LoadState`/`ActiveState` por nome-base de unit, consultado
+   * pelo caller via `systemd-unit-state.ts#queryUnitState` SÓ pras tasks que
+   * já se sabe não estarem em `armedUnitBaseNames` — não precisa (nem deve)
+   * cobrir o registro inteiro. Chave ausente/omitida ⇒ `classifyNeverArmedStatus`
+   * trata como `task-never-setup` (comportamento anterior, sem regressão). */
+  unitStates: ReadonlyMap<string, UnitLoadActiveState | null> = new Map(),
 ): TaskNeverArmedEvaluation {
   const armedSet = new Set(armedUnitBaseNames);
   const disabledSet = new Set(disabledTaskNames);
   const neverArmed = registryTaskNames
     .filter((name) => !disabledSet.has(name))
     .filter((name) => !armedSet.has(unitBaseName(name)))
+    .sort();
+
+  const stoppedDeliberately = neverArmed
+    .filter((name) => classifyNeverArmedStatus(unitStates.get(unitBaseName(name)) ?? null) === "task-stopped-deliberately")
     .sort();
 
   const registryUnitSet = new Set(registryTaskNames.map(unitBaseName));
@@ -136,7 +192,7 @@ export function evaluateTaskNeverArmed(
     .filter((u) => !registryUnitSet.has(u) && !exceptionSet.has(u))
     .sort();
 
-  return { verdict: verdictFor(neverArmed, orphanTimers), neverArmed, orphanTimers };
+  return { verdict: verdictFor(neverArmed, orphanTimers), neverArmed, stoppedDeliberately, orphanTimers };
 }
 
 export function isAlarmingVerdict(verdict: TaskNeverArmedVerdict): boolean {
@@ -189,12 +245,29 @@ export function buildTaskNeverArmedAlarmEmail(
   const parts: string[] = [];
   const subjectParts: string[] = [];
 
-  if (evaluation.neverArmed.length > 0) {
-    subjectParts.push(`${evaluation.neverArmed.length} task(s) nunca armada(s)`);
+  // #7210: neverArmed é superconjunto de stoppedDeliberately — o e-mail
+  // separa os dois porque a prescrição é OPOSTA (armar via script vs.
+  // decisão humana: religar ou remover do registro).
+  const stoppedSet = new Set(evaluation.stoppedDeliberately);
+  const neverSetup = evaluation.neverArmed.filter((n) => !stoppedSet.has(n));
+
+  if (neverSetup.length > 0) {
+    subjectParts.push(`${neverSetup.length} task(s) nunca armada(s)`);
     parts.push(
-      `${evaluation.neverArmed.length} task(s) do registro (\`scripts/lib/scheduled-tasks.ts\`) sem timer ` +
-        `armado no systemd --user desta máquina:\n\n` +
-        evaluation.neverArmed.map((n) => `  - ${n}`).join("\n"),
+      `${neverSetup.length} task(s) do registro (\`scripts/lib/scheduled-tasks.ts\`) sem timer ` +
+        `armado no systemd --user desta máquina (setup nunca rodou):\n\n` +
+        neverSetup.map((n) => `  - ${n}`).join("\n"),
+    );
+  }
+  if (evaluation.stoppedDeliberately.length > 0) {
+    subjectParts.push(`${evaluation.stoppedDeliberately.length} task(s) parada(s) deliberadamente`);
+    parts.push(
+      `${evaluation.stoppedDeliberately.length} task(s) do registro têm timer que EXISTE nesta máquina mas está ` +
+        `\`ActiveState=inactive\` — sinal de \`systemctl --user stop\` manual, não "nunca configurada":\n\n` +
+        evaluation.stoppedDeliberately.map((n) => `  - ${n}`).join("\n") +
+        "\n\nDecisão pendente do editor: religar (`systemctl --user enable --now <unit>.timer`, ou " +
+        "`arm-systemd-timers.ts --rearm-stopped`) ou remover a task de `scheduled-tasks.ts` se ela não faz mais " +
+        "sentido. Este alarme NUNCA reverte a decisão de parar sozinho.",
     );
   }
   if (evaluation.orphanTimers.length > 0) {

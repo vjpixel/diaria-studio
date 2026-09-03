@@ -14,9 +14,15 @@ import {
   markTaskNeverArmedAlarmed,
   emptyTaskNeverArmedAlarmState,
   buildTaskNeverArmedAlarmEmail,
+  classifyNeverArmedStatus,
   KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES,
 } from "../scripts/lib/task-never-armed-alarm.ts";
-import { toNeverArmedFinding, toOrphanTimerFinding, readArmedTimerUnitBaseNames } from "../scripts/task-never-armed-alarm.ts";
+import {
+  toNeverArmedFinding,
+  toOrphanTimerFinding,
+  toStoppedDeliberatelyFinding,
+  readArmedTimerUnitBaseNames,
+} from "../scripts/task-never-armed-alarm.ts";
 import type { execFileSync } from "node:child_process";
 
 describe("parseSystemctlListTimersOutput", () => {
@@ -55,7 +61,7 @@ describe("parseSystemctlListTimersOutput", () => {
 describe("evaluateTaskNeverArmed", () => {
   it("registro vazio, sem timers armados → ok", () => {
     const ev = evaluateTaskNeverArmed([], []);
-    assert.deepEqual(ev, { verdict: "ok", neverArmed: [], orphanTimers: [] });
+    assert.deepEqual(ev, { verdict: "ok", neverArmed: [], stoppedDeliberately: [], orphanTimers: [] });
   });
 
   it("toda task do registro tem timer armado correspondente → ok", () => {
@@ -146,6 +152,61 @@ describe("evaluateTaskNeverArmed", () => {
     const ev = evaluateTaskNeverArmed(["Diaria-Z", "Diaria-A"], []);
     assert.deepEqual(ev.neverArmed, ["Diaria-A", "Diaria-Z"]);
   });
+
+  // #7210 — cenário real da issue: `Diaria-Kit-Doi-Orphan-Guard` tinha timer
+  // que EXISTIU nesta máquina (LoadState=loaded) mas está inativo
+  // (ActiveState=inactive) porque alguém rodou `systemctl --user stop` de
+  // propósito. Antes desta issue, `evaluateTaskNeverArmed` não tinha como
+  // saber disso e classificava como "nunca armada" (mesmo achado/prescrição
+  // de uma task cujo setup de fato nunca rodou).
+  it("#7210: task com timer LOADED+inactive (parada deliberadamente) entra em stoppedDeliberately, subconjunto de neverArmed", () => {
+    const unitStates = new Map([["diaria-kit-doi-orphan-guard", { loadState: "loaded", activeState: "inactive" }]]);
+    const ev = evaluateTaskNeverArmed(["Diaria-Kit-Doi-Orphan-Guard"], [], [], unitStates);
+    assert.equal(ev.verdict, "alarm-never-armed");
+    assert.deepEqual(ev.neverArmed, ["Diaria-Kit-Doi-Orphan-Guard"]);
+    assert.deepEqual(ev.stoppedDeliberately, ["Diaria-Kit-Doi-Orphan-Guard"]);
+  });
+
+  it("#7210: task com timer not-found (setup nunca rodou) NÃO entra em stoppedDeliberately", () => {
+    const unitStates = new Map([["diaria-foo", { loadState: "not-found", activeState: "inactive" }]]);
+    const ev = evaluateTaskNeverArmed(["Diaria-Foo"], [], [], unitStates);
+    assert.deepEqual(ev.neverArmed, ["Diaria-Foo"]);
+    assert.deepEqual(ev.stoppedDeliberately, []);
+  });
+
+  it("#7210: unitStates omitido (comportamento anterior) → toda task neverArmed cai como stoppedDeliberately vazio", () => {
+    const ev = evaluateTaskNeverArmed(["Diaria-Foo"], []);
+    assert.deepEqual(ev.neverArmed, ["Diaria-Foo"]);
+    assert.deepEqual(ev.stoppedDeliberately, []);
+  });
+
+  it("#7210: mistura — uma task nunca configurada + uma parada deliberadamente, cada uma no grupo certo", () => {
+    const unitStates = new Map([
+      ["diaria-parada", { loadState: "loaded", activeState: "inactive" }],
+      ["diaria-nunca-configurada", { loadState: "not-found", activeState: "inactive" }],
+    ]);
+    const ev = evaluateTaskNeverArmed(["Diaria-Parada", "Diaria-Nunca-Configurada"], [], [], unitStates);
+    assert.deepEqual(ev.neverArmed, ["Diaria-Nunca-Configurada", "Diaria-Parada"]);
+    assert.deepEqual(ev.stoppedDeliberately, ["Diaria-Parada"]);
+  });
+});
+
+describe("classifyNeverArmedStatus (#7210)", () => {
+  it("null (consulta não feita/falhou) → task-never-setup, lado conservador", () => {
+    assert.equal(classifyNeverArmedStatus(null), "task-never-setup");
+  });
+
+  it("loadState=not-found → task-never-setup (unit nunca existiu nesta máquina)", () => {
+    assert.equal(classifyNeverArmedStatus({ loadState: "not-found", activeState: "inactive" }), "task-never-setup");
+  });
+
+  it("loadState=loaded + activeState=inactive → task-stopped-deliberately (o caso #7210)", () => {
+    assert.equal(classifyNeverArmedStatus({ loadState: "loaded", activeState: "inactive" }), "task-stopped-deliberately");
+  });
+
+  it("loadState=loaded + activeState=active (edge case, não deveria acontecer pra um 'never armed') → ainda task-stopped-deliberately, nunca never-setup", () => {
+    assert.equal(classifyNeverArmedStatus({ loadState: "loaded", activeState: "active" }), "task-stopped-deliberately");
+  });
 });
 
 describe("isAlarmingVerdict", () => {
@@ -207,6 +268,26 @@ describe("buildTaskNeverArmedAlarmEmail", () => {
     const { body } = buildTaskNeverArmedAlarmEmail(ev, "\n\nIssues:\n  - #999 (https://x)");
     assert.match(body, /#999/);
   });
+
+  it("#7210: task parada deliberadamente sai numa seção separada, com prescrição de decisão (não 'arme via script')", () => {
+    const unitStates = new Map([["diaria-kit-doi-orphan-guard", { loadState: "loaded", activeState: "inactive" }]]);
+    const ev = evaluateTaskNeverArmed(["Diaria-Kit-Doi-Orphan-Guard"], [], [], unitStates);
+    const { subject, body } = buildTaskNeverArmedAlarmEmail(ev, "");
+    assert.match(subject, /1 task\(s\) parada\(s\) deliberadamente/);
+    assert.doesNotMatch(subject, /nunca armada/);
+    assert.match(body, /Diaria-Kit-Doi-Orphan-Guard/);
+    assert.match(body, /Decisão pendente do editor/);
+  });
+
+  it("#7210: mistura de neverSetup + stoppedDeliberately gera as DUAS seções no mesmo e-mail", () => {
+    const unitStates = new Map([["diaria-parada", { loadState: "loaded", activeState: "inactive" }]]);
+    const ev = evaluateTaskNeverArmed(["Diaria-Parada", "Diaria-Nunca-Configurada"], [], [], unitStates);
+    const { subject, body } = buildTaskNeverArmedAlarmEmail(ev, "");
+    assert.match(subject, /1 task\(s\) nunca armada\(s\)/);
+    assert.match(subject, /1 task\(s\) parada\(s\) deliberadamente/);
+    assert.match(body, /Diaria-Nunca-Configurada/);
+    assert.match(body, /Diaria-Parada/);
+  });
 });
 
 describe("toNeverArmedFinding / toOrphanTimerFinding", () => {
@@ -234,6 +315,17 @@ describe("toNeverArmedFinding / toOrphanTimerFinding", () => {
   it("#6772: toOrphanTimerFinding carrega a label alarm-acao", () => {
     const f = toOrphanTimerFinding("diaria-orphan");
     assert.ok(f.labels?.includes("alarm-acao"), `esperava 'alarm-acao' em ${JSON.stringify(f.labels)}`);
+  });
+
+  it("#7210: toStoppedDeliberatelyFinding: check próprio, priority P3 (decisão pendente, não bug mecânico), fingerprint = TaskName exato", () => {
+    const f = toStoppedDeliberatelyFinding("Diaria-Kit-Doi-Orphan-Guard");
+    assert.equal(f.check, "task-stopped-deliberately");
+    assert.equal(f.family, "estado");
+    assert.equal(f.priority, "P3");
+    assert.equal(f.fingerprint, "Diaria-Kit-Doi-Orphan-Guard");
+    assert.ok(f.labels?.includes("alarm-acao"));
+    assert.match(f.body, /Decisão pendente do editor/);
+    assert.doesNotMatch(f.body, /Armar: rodar `scripts\/setup-systemd-timers\.ts`/);
   });
 });
 

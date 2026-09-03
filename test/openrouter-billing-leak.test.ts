@@ -17,6 +17,10 @@ import {
   evaluateBillingLeak,
   isBillingLeak,
   billingLeakFindingKey,
+  billingLeakKey,
+  newBillingLeakKeys,
+  pruneOldAlarmedKeys,
+  MAX_ALARMED_KEY_AGE_DAYS,
   shouldAlarmBillingLeak,
   advanceBillingLeakAlarmState,
   emptyBillingLeakAlarmState,
@@ -122,16 +126,94 @@ describe("idempotência do alarme (#6716)", () => {
     assert.equal(shouldAlarmBillingLeak(st, ev2), true, "dia novo é achado novo, não repetição");
   });
 
-  it("sem vazamento → nunca alarma e re-arma o cursor", () => {
+  it("sem vazamento → nunca alarma e re-arma o cursor (alarmedKeys continua vazio)", () => {
     const clean = evaluateBillingLeak([{ date: "2026-09-01", model: "z-ai/glm-5.3-flash", requests: 10, usageUsd: 0.05 }]);
     assert.equal(shouldAlarmBillingLeak(emptyBillingLeakAlarmState(), clean), false);
-    assert.equal(advanceBillingLeakAlarmState(clean, new Date()).lastAlarmedFingerprint, null);
+    assert.deepEqual(advanceBillingLeakAlarmState(clean, new Date()).alarmedKeys, []);
   });
 
   it("fingerprint é estável independente da ordem das linhas", () => {
     const a = billingLeakFindingKey(evaluateBillingLeak(REAL_ROWS));
     const b = billingLeakFindingKey(evaluateBillingLeak([...REAL_ROWS].reverse()));
     assert.equal(a, b);
+  });
+});
+
+// #7211 — reproduz o defeito relatado: janela deslizante de --days 3, o
+// mesmo incidente (29-31/08) processado em cutoffs sucessivos (simulando
+// dias passando e o timer rodando de novo). Ao contrário do fingerprint de
+// CONJUNTO antigo (que reenviava a cada cutoff, mesmo sem achado novo), a
+// idempotência por CHAVE ACUMULADA deve produzir EXATAMENTE 1 envio pra
+// este incidente inteiro.
+describe("#7211 — dedup por chave acumulada (não mais por fingerprint de CONJUNTO)", () => {
+  const LEAK_29 = { date: "2026-08-29", model: "anthropic/claude-sonnet-5", requests: 21, usageUsd: 1.2064 };
+  const LEAK_30 = { date: "2026-08-30", model: "anthropic/claude-sonnet-5", requests: 10, usageUsd: 0.3868 };
+  const LEAK_31 = { date: "2026-08-31", model: "anthropic/claude-sonnet-5", requests: 32, usageUsd: 0.9599 };
+
+  it("janela deslizante de 4 cutoffs sucessivos sobre o MESMO incidente → 1 e-mail, não 3", () => {
+    // Simula o timer rodando dia após dia — a cada rodada, `evaluateBillingLeak`
+    // já teria filtrado a janela (--days 3) pelo caller; aqui simulamos
+    // diretamente o RESULTADO de cada corte, como no repro da issue.
+    const windows = [
+      evaluateBillingLeak([LEAK_29, LEAK_30, LEAK_31]), // cutoff 08-29: leaks=3
+      evaluateBillingLeak([LEAK_30, LEAK_31]), //             cutoff 08-30: leaks=2
+      evaluateBillingLeak([LEAK_31]), //                      cutoff 08-31: leaks=1 (o único que a issue recebeu)
+      evaluateBillingLeak([]), //                             cutoff 09-01: leaks=0
+    ];
+
+    let state = emptyBillingLeakAlarmState();
+    let emailsSent = 0;
+    for (const ev of windows) {
+      if (shouldAlarmBillingLeak(state, ev)) emailsSent++;
+      state = advanceBillingLeakAlarmState(ev, new Date("2026-09-02T00:00:00Z"), state);
+    }
+
+    assert.equal(emailsSent, 1, "as 4 janelas do MESMO incidente devem produzir exatamente 1 envio");
+    assert.deepEqual(state.alarmedKeys.sort(), [
+      "2026-08-29:anthropic/claude-sonnet-5",
+      "2026-08-30:anthropic/claude-sonnet-5",
+      "2026-08-31:anthropic/claude-sonnet-5",
+    ]);
+  });
+
+  it("newBillingLeakKeys: 2ª leitura da MESMA janela não traz nada novo", () => {
+    const ev = evaluateBillingLeak([LEAK_29, LEAK_30, LEAK_31]);
+    const state = advanceBillingLeakAlarmState(ev, new Date());
+    assert.deepEqual(newBillingLeakKeys(ev, state), []);
+  });
+
+  it("newBillingLeakKeys: um vazamento genuinamente NOVO num dia novo aparece isolado, mesmo com o resto já avisado", () => {
+    const ev1 = evaluateBillingLeak([LEAK_29, LEAK_30]);
+    const state = advanceBillingLeakAlarmState(ev1, new Date());
+    const ev2 = evaluateBillingLeak([LEAK_30, LEAK_31]); // 30 já avisado, 31 é novo
+    assert.deepEqual(newBillingLeakKeys(ev2, state), ["2026-08-31:anthropic/claude-sonnet-5"]);
+  });
+
+  it("billingLeakKey: par estável date:model", () => {
+    assert.equal(billingLeakKey(LEAK_31), "2026-08-31:anthropic/claude-sonnet-5");
+  });
+
+  it("pruneOldAlarmedKeys: chave mais velha que MAX_ALARMED_KEY_AGE_DAYS é removida", () => {
+    const now = new Date("2026-09-30T00:00:00Z");
+    const old = "2026-08-01:anthropic/claude-sonnet-5"; // bem mais velho que o teto
+    const recent = "2026-09-29:anthropic/claude-sonnet-5";
+    assert.deepEqual(pruneOldAlarmedKeys([old, recent], now), [recent]);
+  });
+
+  it("pruneOldAlarmedKeys: chave dentro do teto é preservada", () => {
+    const now = new Date("2026-09-02T00:00:00Z");
+    const withinWindow = "2026-08-29:anthropic/claude-sonnet-5"; // 4 dias, bem dentro de 30
+    assert.ok(MAX_ALARMED_KEY_AGE_DAYS >= 30, "teto documentado como >= 30 dias");
+    assert.deepEqual(pruneOldAlarmedKeys([withinWindow], now), [withinWindow]);
+  });
+
+  it("migração tolerante do estado antigo (lastAlarmedFingerprint → alarmedKeys) não re-alarma o que já foi avisado", () => {
+    // Mesmo formato que loadState() em scripts/openrouter-billing-leak-check.ts
+    // migra: fingerprint "date:model,date:model" → array via split(",").
+    const legacyFingerprint = "2026-08-30:anthropic/claude-sonnet-5,2026-08-31:anthropic/claude-sonnet-5";
+    const migratedState = { alarmedKeys: legacyFingerprint.split(","), lastCheckedAt: null };
+    const ev = evaluateBillingLeak([LEAK_30, LEAK_31]);
+    assert.equal(shouldAlarmBillingLeak(migratedState, ev), false, "as 2 chaves migradas já cobrem o achado atual");
   });
 });
 
@@ -142,6 +224,34 @@ describe("buildBillingLeakAlarmEmail (#6716)", () => {
     assert.match(body, /anthropic\/claude-sonnet-5/);
     assert.match(body, /session_model_usage/, "o corpo tem que dizer por que a tabela local não serve");
     assert.match(body, /EXPECTED_PAID_MODELS/, "tem que dizer como legitimar um modelo, pra ninguém silenciar de outro jeito");
+  });
+
+  it("#7211: sem newKeys explícito, todo leak é tratado como NOVO (compat com chamada anterior)", () => {
+    const { body } = buildBillingLeakAlarmEmail(evaluateBillingLeak(REAL_ROWS), new Date("2026-09-01T21:00:00Z"));
+    assert.match(body, /Achado\(s\) NOVO\(s\) desde o último aviso/);
+    assert.doesNotMatch(body, /Já avisado\(s\) antes/);
+  });
+
+  it("#7211: newKeys explícito separa achado NOVO de achado já avisado (contexto, sem duplicar prescrição)", () => {
+    const ev = evaluateBillingLeak(REAL_ROWS); // 3 leaks: 08-29, 08-30, 08-31
+    const { body } = buildBillingLeakAlarmEmail(ev, new Date("2026-09-01T21:00:00Z"), [
+      "2026-08-31:anthropic/claude-sonnet-5",
+    ]);
+    assert.match(body, /Achado\(s\) NOVO\(s\) desde o último aviso/);
+    assert.match(body, /Já avisado\(s\) antes — seguem faturado\(s\) na janela atual/);
+    // 08-31 aparece na seção NOVO; 08-29/08-30 na seção de contexto — ambas
+    // as datas continuam presentes no corpo (nenhuma informação se perde),
+    // só a ÊNFASE muda.
+    assert.match(body, /2026-08-31/);
+    assert.match(body, /2026-08-29/);
+    assert.match(body, /2026-08-30/);
+  });
+
+  it("#7211: newKeys vazio (nenhum achado novo) → corpo não tem seção NOVO, só contexto", () => {
+    const ev = evaluateBillingLeak(REAL_ROWS);
+    const { body } = buildBillingLeakAlarmEmail(ev, new Date("2026-09-01T21:00:00Z"), []);
+    assert.doesNotMatch(body, /Achado\(s\) NOVO\(s\)/);
+    assert.match(body, /Já avisado\(s\) antes/);
   });
 });
 
@@ -478,13 +588,53 @@ describe("loadState/saveState (#6716) — I/O", () => {
       const p = join(dir, "state.json");
       assert.deepEqual(loadState(p), emptyBillingLeakAlarmState());
 
-      const st = { lastAlarmedFingerprint: "2026-08-31:anthropic/claude-sonnet-5", lastCheckedAt: "2026-09-01T00:00:00.000Z" };
+      const st = {
+        alarmedKeys: ["2026-08-31:anthropic/claude-sonnet-5"],
+        lastCheckedAt: "2026-09-01T00:00:00.000Z",
+      };
       saveState(st, p);
       assert.ok(existsSync(p));
       assert.deepEqual(loadState(p), st);
 
       writeFileSync(p, "não é json{{{");
       assert.doesNotThrow(() => loadState(p));
+      assert.deepEqual(loadState(p), emptyBillingLeakAlarmState());
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #7211: estado gravado em disco ANTES desta issue tinha o shape
+  // `{ lastAlarmedFingerprint, lastCheckedAt }` — loadState precisa migrar
+  // sem perder o histórico (senão a 1ª leitura pós-deploy re-alarmaria tudo
+  // que já tinha sido avisado sob o formato antigo).
+  it("#7211: migração tolerante — estado no formato ANTERIOR (lastAlarmedFingerprint) vira alarmedKeys, sem perder histórico", () => {
+    const dir = mkdtempSync(join(tmpdir(), "billing-leak-legacy-"));
+    try {
+      const p = join(dir, "state.json");
+      writeFileSync(
+        p,
+        JSON.stringify({
+          lastAlarmedFingerprint: "2026-08-30:anthropic/claude-sonnet-5,2026-08-31:anthropic/claude-sonnet-5",
+          lastCheckedAt: "2026-09-01T00:00:00.000Z",
+        }),
+      );
+      const loaded = loadState(p);
+      assert.deepEqual(loaded.alarmedKeys.sort(), [
+        "2026-08-30:anthropic/claude-sonnet-5",
+        "2026-08-31:anthropic/claude-sonnet-5",
+      ]);
+      assert.equal(loaded.lastCheckedAt, "2026-09-01T00:00:00.000Z");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#7211: formato ANTERIOR com lastAlarmedFingerprint null → alarmedKeys vazio, nunca lança", () => {
+    const dir = mkdtempSync(join(tmpdir(), "billing-leak-legacy-null-"));
+    try {
+      const p = join(dir, "state.json");
+      writeFileSync(p, JSON.stringify({ lastAlarmedFingerprint: null, lastCheckedAt: null }));
       assert.deepEqual(loadState(p), emptyBillingLeakAlarmState());
     } finally {
       rmSync(dir, { recursive: true, force: true });

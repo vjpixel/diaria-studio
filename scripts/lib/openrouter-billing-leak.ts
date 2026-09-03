@@ -177,22 +177,48 @@ export function evaluateBillingLeak(
 }
 
 // ─── Idempotência do alarme (mesmo molde dos demais alarmes "estado") ──────
+//
+// #7211: o fingerprint original deduplicava por CONJUNTO inteiro (dia+modelo
+// de TODOS os leaks da janela, ordenado e concatenado). Como a janela é
+// deslizante (`--days N`), um incidente de N dias produz N conjuntos
+// DIFERENTES conforme dias mais velhos saem da janela — e cada conjunto
+// novo (mesmo sendo um SUBCONJUNTO do já avisado, nunca achado novo) batia
+// `!== lastAlarmedFingerprint` e re-enviava o e-mail. Reproduzido ao vivo:
+// incidente de 3 dias (29-31/08) produziu 3 e-mails, um por dia que saía da
+// janela — o 2º e 3º sem NENHUM dado novo, só o total encolhendo.
+//
+// A correção troca "dedup por CONJUNTO" por "dedup por ITEM, acumulado":
+// `alarmedKeys` guarda toda chave `date:model` já avisada, através de
+// janelas sucessivas — `shouldAlarmBillingLeak`/`newBillingLeakKeys` só
+// consideram achado novo o que NUNCA apareceu em `alarmedKeys`, nunca "saiu
+// e voltou a aparecer no conjunto atual".
 
 export interface BillingLeakAlarmState {
-  lastAlarmedFingerprint: string | null;
+  /** Chaves `date:model` (ver `billingLeakKey`) de todo vazamento já
+   * avisado, acumuladas através de janelas sucessivas — não o conjunto da
+   * ÚLTIMA leitura (#7211). Podadas por `advanceBillingLeakAlarmState`
+   * (`MAX_ALARMED_KEY_AGE_DAYS`) pra não crescer sem limite. */
+  alarmedKeys: string[];
   lastCheckedAt: string | null;
 }
 
 export function emptyBillingLeakAlarmState(): BillingLeakAlarmState {
-  return { lastAlarmedFingerprint: null, lastCheckedAt: null };
+  return { alarmedKeys: [], lastCheckedAt: null };
+}
+
+/** Pura — chave estável de UM achado (dia+modelo). Inclui o dia: o mesmo
+ *  modelo vazando num dia NOVO é achado novo, não repetição do já avisado. */
+export function billingLeakKey(leak: Pick<BillingLeak, "date" | "model">): string {
+  return `${leak.date}:${leak.model}`;
 }
 
 /** Pura — fingerprint do CONJUNTO de vazamentos (dia+modelo, ordenado).
- *  Inclui o dia: o mesmo modelo vazando num dia NOVO é achado novo, não
- *  repetição do já avisado. */
+ *  Mantida por compat de nome/uso (estabilidade sob reordenação das linhas
+ *  de entrada) — não é mais a base da decisão de alarmar (#7211, ver
+ *  `newBillingLeakKeys`/`shouldAlarmBillingLeak` abaixo). */
 export function billingLeakFindingKey(evaluation: Pick<BillingLeakEvaluation, "leaks">): string {
   return evaluation.leaks
-    .map((l) => `${l.date}:${l.model}`)
+    .map((l) => billingLeakKey(l))
     .sort()
     .join(",");
 }
@@ -201,12 +227,41 @@ export function isBillingLeakPending(evaluation: Pick<BillingLeakEvaluation, "le
   return evaluation.leaks.length > 0;
 }
 
+/** Pura (#7211) — chaves do achado atual que ainda NÃO estão em
+ * `state.alarmedKeys`. Vazio = nada de novo a avisar (mesmo achado
+ * reaparecendo numa janela menor não conta como novo). Sempre ordenado e
+ * sem duplicatas. */
+export function newBillingLeakKeys(
+  evaluation: Pick<BillingLeakEvaluation, "leaks">,
+  state: Pick<BillingLeakAlarmState, "alarmedKeys">,
+): string[] {
+  const alreadyAlarmed = new Set(state.alarmedKeys);
+  const currentKeys = new Set(evaluation.leaks.map((l) => billingLeakKey(l)));
+  return [...currentKeys].filter((k) => !alreadyAlarmed.has(k)).sort();
+}
+
+/** Teto de retenção de `alarmedKeys` — generoso o bastante pra cobrir
+ * qualquer `--days` plausível deste guard (default 3, nunca visto acima de
+ * ~7 em uso real) sem deixar o array crescer pra sempre. Chaves com `date`
+ * mais velho que `now - MAX_ALARMED_KEY_AGE_DAYS` são podadas. */
+export const MAX_ALARMED_KEY_AGE_DAYS = 30;
+
+/** Pura — remove de `keys` as chaves cujo prefixo `YYYY-MM-DD` (os 10
+ * primeiros caracteres de `date:model`, formato fixo de `billingLeakKey`) é
+ * mais velho que o teto de retenção. */
+export function pruneOldAlarmedKeys(keys: readonly string[], now: Date): string[] {
+  const cutoff = new Date(now.getTime() - MAX_ALARMED_KEY_AGE_DAYS * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  return [...new Set(keys)].filter((k) => k.slice(0, 10) >= cutoff).sort();
+}
+
 export function advanceBillingLeakAlarmState(
   evaluation: BillingLeakEvaluation,
   now: Date,
+  priorState: Pick<BillingLeakAlarmState, "alarmedKeys"> = emptyBillingLeakAlarmState(),
 ): BillingLeakAlarmState {
+  const merged = [...priorState.alarmedKeys, ...evaluation.leaks.map((l) => billingLeakKey(l))];
   return {
-    lastAlarmedFingerprint: isBillingLeakPending(evaluation) ? billingLeakFindingKey(evaluation) : null,
+    alarmedKeys: pruneOldAlarmedKeys(merged, now),
     lastCheckedAt: now.toISOString(),
   };
 }
@@ -216,15 +271,29 @@ export function shouldAlarmBillingLeak(
   evaluation: BillingLeakEvaluation,
 ): boolean {
   if (!isBillingLeakPending(evaluation)) return false;
-  return billingLeakFindingKey(evaluation) !== state.lastAlarmedFingerprint;
+  return newBillingLeakKeys(evaluation, state).length > 0;
 }
 
-/** Pura — assunto + corpo do e-mail (texto puro, molde dos demais alarmes). */
+/**
+ * Pura — assunto + corpo do e-mail (texto puro, molde dos demais alarmes).
+ *
+ * `newKeys` (#7211, opcional — default = todo `evaluation.leaks`, mesmo
+ * comportamento de antes desta issue): as chaves (`billingLeakKey`) que são
+ * achado NOVO desde o último aviso (ver `newBillingLeakKeys`). O corpo
+ * separa achado NOVO (destaque) de achado já avisado que ainda aparece na
+ * janela atual (contexto, sem prescrição nova) — em vez de listar tudo como
+ * se fosse igualmente urgente.
+ */
 export function buildBillingLeakAlarmEmail(
   evaluation: BillingLeakEvaluation,
   now: Date = new Date(),
+  newKeys?: readonly string[],
 ): { subject: string; body: string } {
   const subject = `[diar.ia.br] modelo pago não pedido faturado no OpenRouter (US$ ${evaluation.leakedUsd.toFixed(4)})`;
+
+  const newKeySet = new Set(newKeys ?? evaluation.leaks.map((l) => billingLeakKey(l)));
+  const newLeaks = evaluation.leaks.filter((l) => newKeySet.has(billingLeakKey(l)));
+  const alreadyKnownLeaks = evaluation.leaks.filter((l) => !newKeySet.has(billingLeakKey(l)));
 
   const lines: string[] = [
     "O guard `openrouter-billing-leak-check.ts` (#6716 escopo 3) encontrou",
@@ -235,8 +304,22 @@ export function buildBillingLeakAlarmEmail(
     "",
   ];
 
-  for (const l of evaluation.leaks) {
-    lines.push(`  ${l.date}  ${l.model}  —  ${l.requests} req  US$ ${l.usageUsd.toFixed(4)}`);
+  if (newLeaks.length > 0) {
+    lines.push("Achado(s) NOVO(s) desde o último aviso:");
+    for (const l of newLeaks) {
+      lines.push(`  ${l.date}  ${l.model}  —  ${l.requests} req  US$ ${l.usageUsd.toFixed(4)}`);
+    }
+    lines.push("");
+  }
+  if (alreadyKnownLeaks.length > 0) {
+    // #7211: contexto, não repetição do aviso — este alarme já foi enviado
+    // pra estas chaves numa execução anterior; seguem faturadas na janela
+    // atual só porque a janela é deslizante, não porque é achado novo.
+    lines.push("Já avisado(s) antes — seguem faturado(s) na janela atual, sem ação nova:");
+    for (const l of alreadyKnownLeaks) {
+      lines.push(`  ${l.date}  ${l.model}  —  ${l.requests} req  US$ ${l.usageUsd.toFixed(4)}`);
+    }
+    lines.push("");
   }
 
   lines.push(

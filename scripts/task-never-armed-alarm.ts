@@ -50,6 +50,8 @@ import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { listScheduledTaskNames, listDisabledScheduledTaskNames } from "./lib/scheduled-tasks.ts";
+import { unitBaseName } from "./lib/systemd-units.ts";
+import { queryUnitState, type SystemdUnitState } from "./lib/systemd-unit-state.ts";
 import {
   parseSystemctlListTimersOutput,
   evaluateTaskNeverArmed,
@@ -165,6 +167,42 @@ export function toNeverArmedFinding(taskName: string): AlarmFinding {
   };
 }
 
+/** (#7210) Achado pra task cujo timer EXISTE nesta máquina mas está
+ * `ActiveState=inactive` — parada deliberadamente (`systemctl --user stop`
+ * manual), não "nunca configurada". Prescrição é DECISÃO humana (religar ou
+ * remover do registro), nunca a mesma ação mecânica de `toNeverArmedFinding`
+ * — por isso é um `check`/finding separado, com prioridade mais baixa (mesmo
+ * padrão de `toOrphanTimerFinding`: sinal de drift que precisa de leitura
+ * humana, não de correção mecânica). */
+export function toStoppedDeliberatelyFinding(taskName: string): AlarmFinding {
+  return {
+    check: "task-stopped-deliberately",
+    fingerprint: taskName,
+    title: `[diar.ia.br] task parada deliberadamente: ${taskName}`,
+    body: [
+      "Achado automático do alarme `Diaria-Task-Never-Armed-Alarm`",
+      "(`scripts/task-never-armed-alarm.ts`, #7210).",
+      "",
+      `A task \`${taskName}\` está no registro declarativo (\`scripts/lib/scheduled-tasks.ts\`)`,
+      "e o timer systemd --user JÁ EXISTIU nesta máquina, mas está `ActiveState=inactive` —",
+      "sinal de `systemctl --user stop` manual, não de setup que nunca rodou.",
+      "",
+      "Decisão pendente do editor: religar (`systemctl --user enable --now <unit>.timer`, ou " +
+        "`arm-systemd-timers.ts --rearm-stopped`) ou remover a task de `scheduled-tasks.ts` se ela não faz " +
+        "mais sentido. Este alarme nunca religa/remove sozinho.",
+      "",
+      "Esta issue é criada automaticamente pelo alarme e será",
+      "comentada/fechada sozinha quando o achado deixar de reproduzir por",
+      `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
+    ].join("\n"),
+    // Mesmo racional do `alarm-acao` dos demais findings deste alarme: só
+    // some com ação humana/de código, nunca sozinha.
+    labels: ["enhancement", "alarm-acao"],
+    priority: "P3",
+    family: "estado",
+  };
+}
+
 export function toOrphanTimerFinding(unitBaseName: string): AlarmFinding {
   return {
     check: "task-never-armed-orphan-timer",
@@ -265,19 +303,56 @@ async function main(): Promise<void> {
 
   const registryTaskNames = listScheduledTaskNames();
   const disabledTaskNames = listDisabledScheduledTaskNames();
+
+  // #7210: pra cada task do registro (habilitada) sem timer em
+  // `armedUnitBaseNames`, consulta `systemctl --user show` — a MESMA
+  // distinção LoadState/ActiveState que `arm-systemd-timers.ts` já usa pro
+  // guard `--rearm-stopped` (#4828) — pra separar "nunca configurada"
+  // (`LoadState=not-found`) de "parada deliberadamente" (unit existe,
+  // `ActiveState=inactive`). Só consulta os candidatos (não o registro
+  // inteiro) — o mesmo filtro que `evaluateTaskNeverArmed` aplicaria
+  // internamente, replicado aqui só pra decidir QUEM consultar.
+  const armedSet = new Set(armedUnitBaseNames);
+  const disabledSet = new Set(disabledTaskNames);
+  const neverArmedCandidates = registryTaskNames.filter(
+    (name) => !disabledSet.has(name) && !armedSet.has(unitBaseName(name)),
+  );
+  const unitStates = new Map<string, SystemdUnitState | null>();
+  for (const taskName of neverArmedCandidates) {
+    const base = unitBaseName(taskName);
+    const { state, error } = queryUnitState(`${base}.timer`);
+    if (error) {
+      console.error(`${LOG_PREFIX} não foi possível consultar o estado de '${base}.timer' (${error}) — tratando como nunca armada.`);
+    }
+    unitStates.set(base, state);
+  }
+
   const evaluation: TaskNeverArmedEvaluation = evaluateTaskNeverArmed(
     registryTaskNames,
     armedUnitBaseNames,
     disabledTaskNames,
+    unitStates,
   );
   console.log(
     `${LOG_PREFIX} verdict=${evaluation.verdict} neverArmed=[${evaluation.neverArmed.join(", ")}] ` +
+      `stoppedDeliberately=[${evaluation.stoppedDeliberately.join(", ")}] ` +
       `orphanTimers=[${evaluation.orphanTimers.join(", ")}]`,
   );
 
+  // #7210: neverArmed é superconjunto de stoppedDeliberately — as tasks
+  // "nunca configuradas" (o resto) recebem o finding mecânico de sempre;
+  // as "paradas deliberadamente" recebem o finding novo, com prescrição de
+  // decisão humana em vez de "arme via script".
+  const stoppedDeliberatelySet = new Set(evaluation.stoppedDeliberately);
+  const neverSetupTaskNames = evaluation.neverArmed.filter((n) => !stoppedDeliberatelySet.has(n));
+
   const state = loadState();
   const alarmFindings: AlarmFinding[] = isAlarmingVerdict(evaluation.verdict)
-    ? [...evaluation.neverArmed.map(toNeverArmedFinding), ...evaluation.orphanTimers.map(toOrphanTimerFinding)]
+    ? [
+        ...neverSetupTaskNames.map(toNeverArmedFinding),
+        ...evaluation.stoppedDeliberately.map(toStoppedDeliberatelyFinding),
+        ...evaluation.orphanTimers.map(toOrphanTimerFinding),
+      ]
     : [];
   const alarmState = loadAlarmIssuesState();
   const issueRefs: AlarmIssueResult[] = [];
