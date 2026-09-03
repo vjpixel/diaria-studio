@@ -56,10 +56,13 @@ import {
   INTERACTIVE_SOFT_STALE_MS,
   MERGE_LOCK_TTL_MS,
   CLOCK_SKEW_TOLERANCE_MS,
+  assessCrossMachineSyncFreshness,
+  CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS,
   type MergeLockIo,
   type SessionRecord,
   type MergeGrant,
   type PromotionRemoveIo,
+  type ActiveSessionRecord,
 } from "../scripts/lib/session-registry.ts";
 
 /** Struct local — `MergeLockRecord` não é exportado, só o formato JSON no disco. */
@@ -1723,6 +1726,70 @@ describe("registro de sessão end-to-end com kind \"continuo\" (#5293)", () => {
 
     endSession(root, "continuo", "sess-continuo-1", "host-a");
     assert.equal(existsSync(path), false);
+  });
+});
+
+// ─── assessCrossMachineSyncFreshness (#7169 — guard de frescor) ────────────
+
+describe("assessCrossMachineSyncFreshness (#7169) — sinaliza registro de OUTRA máquina desatualizado", () => {
+  const NOW = Date.parse("2026-09-02T21:37:45.000Z"); // hora do heartbeat "fresco" citado na issue
+  const record = (overrides: Partial<ActiveSessionRecord>): ActiveSessionRecord => ({
+    kind: "overnight",
+    machineTag: "helios",
+    sessionId: "b73bdec9",
+    startedAt: new Date(NOW - 60 * 60 * 1000).toISOString(),
+    lastHeartbeat: new Date(NOW).toISOString(),
+    stale: false,
+    claimed_issues_effective: [],
+    ...overrides,
+  });
+
+  it("reprodução do incidente: registro de OUTRA máquina com heartbeat de 73min (< 90min de SOFT_STALE_MS, > 10min do limiar de sync) → sinaliza", () => {
+    const stale73min = record({ lastHeartbeat: new Date(NOW - 73 * 60 * 1000).toISOString() });
+    const result = assessCrossMachineSyncFreshness([stale73min], NOW, "neo");
+    assert.equal(result.stale, true);
+    assert.equal(result.staleSessions.length, 1);
+    assert.equal(result.staleSessions[0].sessionId, "b73bdec9");
+  });
+
+  it("mesma sessão, mas lida da PRÓPRIA máquina (machineTag bate) → nunca sinaliza — leitura local não tem sync no caminho", () => {
+    const stale73min = record({ lastHeartbeat: new Date(NOW - 73 * 60 * 1000).toISOString() });
+    const result = assessCrossMachineSyncFreshness([stale73min], NOW, "helios");
+    assert.equal(result.stale, false);
+    assert.deepEqual(result.staleSessions, []);
+  });
+
+  it("heartbeat fresco (dentro do limiar de 10min) de outra máquina → não sinaliza", () => {
+    const fresh = record({ lastHeartbeat: new Date(NOW - 2 * 60 * 1000).toISOString() });
+    const result = assessCrossMachineSyncFreshness([fresh], NOW, "neo");
+    assert.equal(result.stale, false);
+  });
+
+  it("registro já marcado stale (>90min, GC-eligible) → não duplica o sinal — é outro caminho quem já cobre isso", () => {
+    const alreadyStale = record({ lastHeartbeat: new Date(NOW - 91 * 60 * 1000).toISOString(), stale: true });
+    const result = assessCrossMachineSyncFreshness([alreadyStale], NOW, "neo");
+    assert.equal(result.stale, false);
+  });
+
+  it("kind não-coordenador (interactive) de outra máquina desatualizado → não sinaliza (só coordenadora concede/detém lock)", () => {
+    const interactiveStale = record({ kind: "interactive", lastHeartbeat: new Date(NOW - 73 * 60 * 1000).toISOString() });
+    const result = assessCrossMachineSyncFreshness([interactiveStale], NOW, "neo");
+    assert.equal(result.stale, false);
+  });
+
+  it("heartbeat 'no futuro' (clock skew, não sync degradado) → não sinaliza por esta função", () => {
+    const future = record({ lastHeartbeat: new Date(NOW + 5 * 60 * 1000).toISOString() });
+    const result = assessCrossMachineSyncFreshness([future], NOW, "neo");
+    assert.equal(result.stale, false);
+  });
+
+  it("exatamente no limiar (CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS) → ainda NÃO sinaliza (estrito >, não >=)", () => {
+    const atThreshold = record({ lastHeartbeat: new Date(NOW - CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS).toISOString() });
+    assert.equal(assessCrossMachineSyncFreshness([atThreshold], NOW, "neo").stale, false);
+  });
+
+  it("nenhuma sessão → não sinaliza", () => {
+    assert.equal(assessCrossMachineSyncFreshness([], NOW, "neo").stale, false);
   });
 });
 
@@ -4185,5 +4252,127 @@ describe("#6972 — proveniência do grant vencedor (arquivo real × cópia de c
     assert.equal(payload.visible_to_merge_gate, false);
     assert.match(res.stderr, /cópia de conflito do OneDrive/);
     assert.match(res.stderr, /RECONCESSÃO/i);
+  });
+});
+
+// ─── #7169/#7171 — glue de CLI dos dois fixes (review independente, PR #7223) ───
+//
+// As funções puras (`assessCrossMachineSyncFreshness`) já tinham teste
+// unitário; nada exercitava a fiação real dentro dos cases `merge-lock-acquire`
+// e `consume-merge-grant` — que ela é chamada com os argumentos certos, que o
+// aviso vai pro STDERR (nunca stdout, que scripts leem como payload) e que o
+// texto do `--help` foi de fato atualizado.
+
+describe("CLI merge-lock-acquire: aviso de frescor cross-máquina (#7169) vai pro stderr, nunca stdout", () => {
+  const OTHER_TAG = "otherhost-7169";
+
+  it("coordenadora de OUTRA máquina com heartbeat > 10min (mas < 90min) dispara aviso em stderr", () => {
+    const root = freshCliRoot();
+    const nowMs = Date.now();
+    writeFileSync(
+      join(root, "data", "sessions", `overnight-${OTHER_TAG}-coord-7169.json`),
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: OTHER_TAG,
+        sessionId: "coord-7169",
+        // 15min: acima de CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS (10min), abaixo
+        // de SOFT_STALE_MS (90min) — a janela exata que o #7169 existe pra
+        // tornar visível.
+        startedAt: new Date(nowMs - 60 * 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(nowMs - 15 * 60 * 1000).toISOString(),
+        claimed_issues: [],
+      }),
+      "utf8",
+    );
+
+    const res = cli7002(root, ["merge-lock-acquire", "--session-id", "acquirer-7169"]);
+
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    // O resultado do lock em si (ok/denied) segue só em stdout — nunca
+    // contaminado pelo aviso de frescor.
+    assert.match(res.stdout, /merge-lock-acquire ok/);
+    assert.doesNotMatch(res.stdout, /ATENÇÃO/);
+    assert.match(res.stderr, /ATENÇÃO \(#7169\)/);
+    assert.match(res.stderr, new RegExp(`overnight-${OTHER_TAG}-coord-7169 \\(heartbeat de `));
+  });
+
+  it("coordenadora de OUTRA máquina com heartbeat recente (<10min) NÃO dispara aviso", () => {
+    const root = freshCliRoot();
+    const nowMs = Date.now();
+    writeFileSync(
+      join(root, "data", "sessions", `overnight-${OTHER_TAG}-coord-7169b.json`),
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: OTHER_TAG,
+        sessionId: "coord-7169b",
+        startedAt: new Date(nowMs - 60 * 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(nowMs - 30 * 1000).toISOString(),
+        claimed_issues: [],
+      }),
+      "utf8",
+    );
+
+    const res = cli7002(root, ["merge-lock-acquire", "--session-id", "acquirer-7169b"]);
+
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /merge-lock-acquire ok/);
+    assert.doesNotMatch(res.stderr, /ATENÇÃO \(#7169\)/);
+  });
+});
+
+describe("CLI consume-merge-grant: aviso de uso indevido (#7171) vai pro stderr, nunca stdout", () => {
+  it("consumir uma janela viva emite o aviso 'não é passo do beneficiário' em stderr", () => {
+    const root = freshCliRoot();
+    const tag = machineTag();
+    const nowMs = Date.now();
+    writeFileSync(
+      join(root, "data", "sessions", `overnight-${tag}-coord-7171.json`),
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: tag,
+        sessionId: "coord-7171",
+        startedAt: new Date(nowMs - 60 * 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(nowMs - 30 * 1000).toISOString(),
+        claimed_issues: [],
+        merge_grant: {
+          grantedTo: "benef-7171",
+          grantedBy: "coord-7171",
+          grantedAt: new Date(nowMs - 5 * 1000).toISOString(),
+          pr: 7171,
+        },
+      }),
+      "utf8",
+    );
+
+    const res = cli7002(root, ["consume-merge-grant", "--session-id", "benef-7171"]);
+
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /consume-merge-grant ok \(janela consumida/);
+    assert.doesNotMatch(res.stdout, /ATENÇÃO/);
+    assert.match(res.stderr, /ATENÇÃO \(#7171\)/);
+    assert.match(res.stderr, /caminho feliz nunca inclui `consume-merge-grant` explícito/);
+  });
+
+  it("no-op (nenhuma janela viva) também emite o aviso em stderr e sai com exit 1", () => {
+    const root = freshCliRoot();
+
+    const res = cli7002(root, ["consume-merge-grant", "--session-id", "sem-janela-7171"]);
+
+    assert.equal(res.status, 1);
+    assert.match(res.stdout, /consume-merge-grant no-op \(nenhuma janela viva\)/);
+    assert.match(res.stderr, /ATENÇÃO \(#7171\)/);
+  });
+
+  it("--help (subcomando desconhecido) documenta que consume-merge-grant não é passo do beneficiário", () => {
+    const root = freshCliRoot();
+
+    const res = cli7002(root, ["subcomando-inexistente-7171"]);
+
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /consume-merge-grant NÃO é um passo do beneficiário \(#7171\)/);
+    assert.match(
+      res.stderr,
+      /chamar consume-merge-grant à mão ANTES do merge queima a janela e o merge seguinte é bloqueado/,
+    );
   });
 });

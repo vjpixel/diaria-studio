@@ -90,12 +90,17 @@
  *     vez de recriado zerado, com `[ALERTA: ...]` na mensagem.)
  *   npx tsx scripts/lib/session-registry.ts is-claimed --issue N
  *   npx tsx scripts/lib/session-registry.ts list-active
- *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire
+ *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire --pr N
  *     (#6334: deixou de ser reentrante pra mesma sessão — uma 2ª chamada
  *     antes do `merge-lock-release` correspondente falha, mesmo sendo a
  *     mesma sessão. Ver `merge-lock-renew` pra estender o TTL de um hold
- *     que já é seu.)
- *   npx tsx scripts/lib/session-registry.ts merge-lock-release
+ *     que já é seu. **`--pr` não é opcional na prática (#7169/#7223,
+ *     achado ao vivo na rodada helios/#7217):** o próprio `BLOCK_REASON`
+ *     de `.claude/hooks/block-gh-pr-merge-subagent.mjs` já recomenda
+ *     `merge-lock-acquire --pr N`/`merge-lock-release --pr N` — seguir o
+ *     comando SEM `--pr` deixou `gh pr merge` bloqueado repetidamente pelo
+ *     guard #5716 mesmo com lock genuinamente adquirido.)
+ *   npx tsx scripts/lib/session-registry.ts merge-lock-release --pr N
  *   npx tsx scripts/lib/session-registry.ts merge-lock-renew
  *     (#6334 — renova o TTL de um lock que a PRÓPRIA sessão já detém; nunca
  *     concede um hold novo. Ver `renewMergeLock`.)
@@ -118,7 +123,17 @@
  *     único; desde #6303 também disparado automaticamente por
  *     `.claude/hooks/consume-merge-grant-on-merge.mjs` após um `gh pr merge`
  *     bem-sucedido, sem depender de a sessão beneficiada lembrar de chamar
- *     isto à mão. Ver `consumeMergeGrant`.)
+ *     isto à mão. Ver `consumeMergeGrant`. **#7171 — NUNCA rodar isto à mão
+ *     ANTES do `gh pr merge`:** `consumedAt` é o carimbo que o MERGE deixa,
+ *     não um passo que quem recebe a janela executa antes de usá-la —
+ *     chamar isto antes do merge DESTRÓI a autorização que `gh pr merge` ia
+ *     consultar (o comando responde `ok` mesmo assim, sem indicar que acabou
+ *     de queimar a própria janela) e o merge seguinte é bloqueado pelo guard
+ *     do #5716 mesmo com `check-merge-grant` tendo confirmado `granted:
+ *     true` segundos antes. O caminho feliz não tem `consume-merge-grant`
+ *     nele: `grant-merge` (coordenadora) → `check-merge-grant` →
+ *     `merge-lock-acquire` → `gh pr merge` → `merge-lock-release`; o hook
+ *     automático cuida do carimbo depois.)
  *   npx tsx scripts/lib/session-registry.ts gc [--max-age-days N] [--dry-run]
  * (`--session-id X` funciona também se passado explicitamente — o hook só
  * injeta quando a flag está AUSENTE, nunca sobrescreve um valor já presente.)
@@ -2890,6 +2905,67 @@ const REAL_MERGE_LOCK_IO: MergeLockIo = {
 };
 
 /**
+ * Limiar de "cadência de heartbeat esperada" pra sinalizar sync cross-máquina
+ * potencialmente degradado (#7169) — deliberadamente bem menor que
+ * `SOFT_STALE_MS` (90min, sinal de "sessão morta"). O incidente de origem
+ * (02/09/2026): `data/sessions/` do `helios` ficou congelado por 1h13
+ * (`onedrive.service` morto às 18:37, sem alarme) enquanto uma coordenadora
+ * seguia genuinamente ativa lá — 73min < 90min, então o registro dela nunca
+ * cruzou `SOFT_STALE_MS` e continuou contando como "ativa" em
+ * `listActiveSessions`/`readActiveCoordinatorScan`. O merge lock e o
+ * `merge_grant` moram no MESMO diretório sincronizado — se o registro leva
+ * 1h+ pra atravessar, os dois levam também, e nada no caminho quente avisava
+ * disso.
+ *
+ * Este limiar não tenta ser preciso sobre a cadência real de heartbeat (não é
+ * documentada como constante em lugar nenhum) — só precisa ser um múltiplo
+ * generoso dela pra nunca disparar em sync saudável, e ainda assim MUITO
+ * menor que `SOFT_STALE_MS` pra dar sinal bem antes da janela de 1h13
+ * observada. 10min: heartbeat normal é de minuto a minuto: 10min sem
+ * atualização de uma coordenadora que a varredura ainda considera "ativa" (
+ * não cruzou `SOFT_STALE_MS`) já é anômalo o bastante pra merecer aviso.
+ */
+export const CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS = 10 * 60 * 1000;
+
+/**
+ * Direção (c) da #7169 — "guard de frescor": não impede nada (o lock
+ * continua sendo advisory entre máquinas, #6182, e esta função não muda
+ * isso — só torna VISÍVEL um sinal que hoje é mudo), mas transforma o modo
+ * de falha SILENCIOSO em RUIDOSO, que é a fatia mais barata recomendada no
+ * corpo da issue: "(c) Guard de frescor... degrada para 'não mergeie agora'
+ * em vez de mergear cego" — aqui implementado como aviso explícito no
+ * caminho de `merge-lock-acquire` (ver o CLI abaixo), não como bloqueio
+ * mecânico: um bloqueio duro sobre esta heurística arriscaria false
+ * positive em sync genuinamente lento mas vivo, e a decisão de arquitetura
+ * mais funda (mover o lock pra um substrato com semântica real — direção
+ * (b) da issue) segue em aberto, não decidida.
+ *
+ * Devolve as sessões COORDENADORAS ativas (`!session.stale`) de OUTRA
+ * máquina cujo `lastHeartbeat` está mais velho que
+ * `CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS` — candidatas a "sync pode estar
+ * degradado, este registro pode não refletir o estado real daquela
+ * máquina agora". Sessões da PRÓPRIA máquina nunca entram (leitura local,
+ * sem sync no caminho — não há o que avisar).
+ */
+export function assessCrossMachineSyncFreshness(
+  sessions: readonly ActiveSessionRecord[],
+  now: number = Date.now(),
+  myMachineTag: string = machineTag(),
+): { stale: boolean; staleSessions: ActiveSessionRecord[] } {
+  const staleSessions = sessions.filter((session) => {
+    if (session.machineTag === myMachineTag) return false;
+    if (!isCoordinatorKind(session.kind)) return false;
+    if (session.stale) return false; // já é sinalizada por outro caminho (GC-eligible)
+    const heartbeatMs = Date.parse(session.lastHeartbeat);
+    if (!Number.isFinite(heartbeatMs)) return false; // ilegível — não inventa idade
+    const ageMs = now - heartbeatMs;
+    if (ageMs < 0) return false; // "no futuro" é clock skew, não sync degradado — não é o sinal que esta função procura
+    return ageMs > CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS;
+  });
+  return { stale: staleSessions.length > 0, staleSessions };
+}
+
+/**
  * Adquire o lock global de merge (item 4 do #5156) — serializa `gh pr merge` +
  * `git pull` entre sessões concorrentes (mesma máquina é atômico via
  * `O_EXCL`; entre máquinas via OneDrive o lock é **advisory** — ver o
@@ -4960,6 +5036,28 @@ function main(): void {
         process.stdout.write(
           `session-registry: merge-lock-acquire ${ok ? "ok" : "denied (held by another session)"} [repoRoot=${repoRoot}]\n`,
         );
+        // #7169 direção (c) — "guard de frescor": nunca muda o resultado do
+        // `ok` acima (o lock continua advisory entre máquinas, #6182), só
+        // torna VISÍVEL um sinal hoje mudo. Aviso em stderr (nunca stdout,
+        // que é lido por script) quando alguma coordenadora de OUTRA máquina
+        // parece com o registro sincronizado desatualizado — `ok: true` aqui
+        // pode não significar "de fato livre", só "livre segundo dados que
+        // podem estar até 1h+ velhos" (incidente de origem: onedrive.service
+        // morto por 1h13 sem alarme).
+        const freshness = assessCrossMachineSyncFreshness(listActiveSessions(repoRoot), Date.now());
+        if (freshness.stale) {
+          const names = freshness.staleSessions
+            .map((s) => `${s.kind}-${s.machineTag}-${s.sessionId} (heartbeat de ${s.lastHeartbeat})`)
+            .join(", ");
+          process.stderr.write(
+            `session-registry: ATENÇÃO (#7169) — registro de coordenadora de OUTRA máquina parece DESATUALIZADO ` +
+              `(mais de ${Math.round(CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS / 60000)}min sem heartbeat, mas ainda dentro ` +
+              `do limiar de 90min que a marcaria stale): ${names}. Isto pode significar sync cross-máquina ` +
+              `degradado (data/sessions/ mora em junction OneDrive) — o resultado acima (${ok ? "ok" : "denied"}) ` +
+              "pode não refletir o estado real daquela máquina agora. Mitigação: `git fetch origin master` e " +
+              "conferir se o head mudou antes de confiar no merge lock/grant cross-máquina.\n",
+          );
+        }
         if (!ok) process.exitCode = 1;
         break;
       }
@@ -5103,10 +5201,27 @@ function main(): void {
         break;
       }
       case "consume-merge-grant": {
+        // #7171: este subcomando SÓ deveria ser chamado pelo hook automático
+        // `.claude/hooks/consume-merge-grant-on-merge.mjs`, DEPOIS que
+        // `gh pr merge` sucede — nunca à mão, e nunca antes. Rodar isto antes
+        // do merge queima a própria janela e o `gh pr merge` seguinte é
+        // bloqueado pelo guard do #5716, mesmo com `check-merge-grant` tendo
+        // confirmado `granted: true` segundos antes (o "ok" abaixo não
+        // distingue os dois casos — por isso o aviso explícito aqui).
         const sessionId = requireSessionId(values);
         const ok = consumeMergeGrant(repoRoot, sessionId);
+        // #7223 review — o aviso vai pro STDERR, nunca stdout: stdout é lido
+        // como payload por script (mesmo padrão de merge-lock-acquire acima),
+        // e a linha "ok/no-op" sozinha já é o contrato de saída esperado.
         process.stdout.write(
           `session-registry: consume-merge-grant ${ok ? "ok (janela consumida — uso único)" : "no-op (nenhuma janela viva)"}\n`,
+        );
+        process.stderr.write(
+          "session-registry: ATENÇÃO (#7171) — chamar isto ANTES do `gh pr merge` queima a janela e o merge " +
+            "seguinte será bloqueado. O caminho feliz nunca inclui `consume-merge-grant` explícito: " +
+            "grant-merge (coordenadora) → check-merge-grant → merge-lock-acquire → gh pr merge → " +
+            "merge-lock-release. `consumedAt` é o carimbo que o MERGE bem-sucedido deixa (automaticamente, " +
+            "via .claude/hooks/consume-merge-grant-on-merge.mjs) — não um passo prévio.\n",
         );
         if (!ok) process.exitCode = 1;
         break;
@@ -5150,7 +5265,13 @@ function main(): void {
             "  grant-merge --kind {overnight|develop|continuo} --granted-to X [--pr N]: concede janela de merge a " +
             "OUTRA sessão (#6296) — --kind é da sessão CONCEDENTE (a sua, obrigatório, #6331), nunca da " +
             "beneficiária em --granted-to; só coordenadora concede, nunca a si mesma; TTL curto, uso único. " +
-            "check-merge-grant/consume-merge-grant são o lado de quem recebeu.\n" +
+            "check-merge-grant é o lado de quem recebeu, pra CONFIRMAR a concessão antes de mergear. " +
+            "consume-merge-grant NÃO é um passo do beneficiário (#7171) — quem carimba consumedAt é o " +
+            "gh pr merge bem-sucedido, automaticamente via .claude/hooks/consume-merge-grant-on-merge.mjs; " +
+            "chamar consume-merge-grant à mão ANTES do merge queima a janela e o merge seguinte é bloqueado. " +
+            "Ordem correta: grant-merge (coordenadora) -> check-merge-grant -> merge-lock-acquire --pr N -> " +
+            "gh pr merge N -> merge-lock-release --pr N. --pr nao e opcional na pratica (#7169/#7223) — " +
+            "sem ele, gh pr merge foi bloqueado repetidamente pelo guard #5716 mesmo com lock adquirido.\n" +
             "  gc [--max-age-days N] [--dry-run]: remove registro de sessão ENCERRADA — nunca por staleness de " +
             "heartbeat sozinha, ver docstring de decideSessionGc/planSessionGc (#6130).\n",
         );
