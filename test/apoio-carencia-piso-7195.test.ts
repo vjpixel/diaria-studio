@@ -60,6 +60,11 @@ function contact(id: string, emails: string[], status: ContactWithStatus["status
     status,
     openRate: null,
     vinculo: null,
+    // #4437 Entrega 2 acrescentou os 2 campos abaixo a `ContactWithStatus`;
+    // `null` = "não aplicável / nunca consultado", que é o estado correto
+    // pra um fixture puro — nada aqui depende de badge nem de segmento.
+    rewardLevel: null,
+    segments: null,
   };
 }
 
