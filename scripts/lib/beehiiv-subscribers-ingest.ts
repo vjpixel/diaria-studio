@@ -52,7 +52,8 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import { ensureSubscriber, recordEvent, type EventType } from "./diaria-subscribers-db.ts";
+import { ensureSubscriber, recordEvent, upsertSubscription, type EventType } from "./diaria-subscribers-db.ts";
+import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
 
 /** Shape tolerante de 1 linha do JSONL — campos podem faltar (registro
  *  malformado, ou resposta parcial da MCP já gravada por uma corrida antiga
@@ -340,5 +341,180 @@ export function ingestPostEngagement(
     newEvents,
     alreadyKnown,
     subscribersTouched: touchedSubscribers.size,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// ingestBeehiivRoster (#7229) — popula a dimensão `subscription`
+// ---------------------------------------------------------------------------
+//
+// `ingestPostEngagement` acima só vê `data/beehiiv-backup/subscriber-
+// engagement/{post_id}.jsonl` (fato: recebeu/abriu/clicou 1 post) — esse
+// registro nunca teve `status`/`created`/UTM de assinatura, então nenhum
+// ingest Beehiiv chamava `upsertSubscription` (#7229, medido em master:
+// 825 `subscriber`, 991 `identity_alias`, ZERO `subscription`). Quem tem
+// esse dado é o snapshot semanal `data/beehiiv-backup/{data}/
+// subscribers.jsonl` (`backup-beehiiv.ts`, 1 linha = 1 objeto de
+// assinatura cru da API) — `ingestBeehiivRoster` é o par desta fonte,
+// molde exato de `ingestKitRoster` (`kit-subscribers-ingest.ts`).
+
+/** Estado da Beehiiv que representa "saiu da base" — `evaluate-brevo-
+ *  diaria.ts` já trata `status === "inactive"` como o sinal explícito de
+ *  descadastro/promoção fora da Beehiiv. A API não expõe um 3º estado
+ *  intermediário tipo "pending"/double-opt-in aqui (ao contrário do Kit,
+ *  que tem `inactive` como pendente E `cancelled` como saída — dois
+ *  estados distintos); a Beehiiv só tem `active`/`inactive`. */
+const BEEHIIV_EXITED_STATES: ReadonlySet<string> = new Set(["inactive"]);
+
+export interface BeehiivRosterIngestResult {
+  processed: number;
+  subscriptionsWritten: number;
+  subscribeEvents: { newEvents: number; alreadyKnown: number };
+  unsubEvents: { newEvents: number; alreadyKnown: number };
+  recordsSkippedNoEmail: number;
+}
+
+/**
+ * Ingerir o ROSTER completo da Beehiiv (`subscribers.jsonl` de 1 snapshot)
+ * — 1 `subscriber` + 1 `subscription` + (no mínimo) 1 evento `subscribe`
+ * por assinante, gravados via `resolveOrCreateBeehiivSubscriber` (mesma
+ * resolução de identidade da ingestão de engajamento — funde com um
+ * subscriber já criado por post engagement, nunca duplica) +
+ * `upsertSubscription`/`recordEvent`. Não classifica (F1/F4 do épico #7172
+ * fazem isso na leitura); grava a atribuição CRUA como veio da Beehiiv.
+ *
+ * **De onde sai cada campo:**
+ * - `external_id` ← `id`; `status` ← `status`; `entered_at` ← `created`
+ *   (Unix segundos → ISO); identidade ← `email`.
+ * - `source`/`utm_medium`/`utm_campaign`/`referring_site` ← campos de topo
+ *   do objeto (a Beehiiv, ao contrário do Kit, não esconde UTM atrás de
+ *   `attribution` — ver `BeehiivBackupSubscriber`). `utm_channel`/
+ *   `origem_cadastro` não têm campo correspondente na Beehiiv — gravados
+ *   `null`, mesma disciplina de "plataforma que não traz o campo" já
+ *   documentada em `SubscriptionFields`.
+ *
+ * **Sem timestamp de saída** — a Beehiiv não expõe quando `status` virou
+ * `inactive` (mesma limitação nomeada no docstring do módulo pra `sent`/
+ * `bounce`), então `exitedAt` só pode ser o `now` da captura, gravado
+ * **apenas na TRANSIÇÃO** (`wasExitedBefore`, lido ANTES do
+ * `upsertSubscription` sobrescrever `exited_at` — mesmo padrão do #7222
+ * finding 1 em `kit-subscribers-ingest.ts`, que corrigiu exatamente esta
+ * classe de bug: sem o guard de transição, todo dia em que o snapshot
+ * repete `status: "inactive"` reinseriria o evento `unsub` pra sempre,
+ * porque a chave natural inclui o dia da captura).
+ *
+ * Idempotente: `upsertSubscription` faz `ON CONFLICT DO UPDATE` (nunca
+ * duplica linha), `recordEvent` faz `INSERT OR IGNORE` sobre a chave
+ * natural (nunca duplica evento).
+ *
+ * Registro sem `email` utilizável é contado em `recordsSkippedNoEmail` e
+ * nunca vira subscriber — `parseSubscribersJsonl` já filtra por
+ * `typeof email === "string"` na leitura, então isto é defesa em
+ * profundidade, não o caminho esperado.
+ */
+export function ingestBeehiivRoster(
+  db: DatabaseSync,
+  subscribers: readonly BeehiivBackupSubscriber[],
+  now: string = new Date().toISOString(),
+): BeehiivRosterIngestResult {
+  let processed = 0;
+  let subscriptionsWritten = 0;
+  let subscribeNew = 0;
+  let subscribeKnown = 0;
+  let unsubNew = 0;
+  let unsubKnown = 0;
+  let recordsSkippedNoEmail = 0;
+
+  for (const sub of subscribers) {
+    const email = typeof sub.email === "string" ? sub.email.trim().toLowerCase() : "";
+    if (!email) {
+      recordsSkippedNoEmail++;
+      continue;
+    }
+    const externalId = typeof sub.id === "string" && sub.id.trim() ? sub.id.trim() : null;
+
+    const subscriberId = resolveOrCreateBeehiivSubscriber(db, { externalId, email }, now);
+    if (subscriberId === null) {
+      // Não deveria acontecer (email presente sempre permite criar via
+      // `ensureSubscriber` dentro de `resolveOrCreateBeehiivSubscriber`) —
+      // guard defensivo, mesmo destino de qualquer registro sem identidade
+      // utilizável.
+      recordsSkippedNoEmail++;
+      continue;
+    }
+    processed++;
+
+    const status = typeof sub.status === "string" && sub.status ? sub.status : null;
+    const exited = status != null && BEEHIIV_EXITED_STATES.has(status);
+    const enteredAt = typeof sub.created === "number" && Number.isFinite(sub.created)
+      ? new Date(sub.created * 1000).toISOString()
+      : null;
+
+    // #7222 finding 1: ler ANTES do upsertSubscription abaixo sobrescrever
+    // `exited_at` — só assim dá pra distinguir "já estava exited numa
+    // rodada anterior" de "está transicionando para exited agora".
+    const previousSubscription = db
+      .prepare("SELECT exited_at FROM subscription WHERE subscriber_id = ? AND platform = 'beehiiv'")
+      .get(subscriberId) as { exited_at: string | null } | undefined;
+    const wasExitedBefore = previousSubscription != null && previousSubscription.exited_at != null;
+
+    upsertSubscription(
+      db,
+      subscriberId,
+      "beehiiv",
+      {
+        status,
+        enteredAt,
+        exitedAt: exited ? now : null,
+        source: typeof sub.utm_source === "string" && sub.utm_source ? sub.utm_source : null,
+        utmMedium: typeof sub.utm_medium === "string" && sub.utm_medium ? sub.utm_medium : null,
+        utmCampaign: typeof sub.utm_campaign === "string" && sub.utm_campaign ? sub.utm_campaign : null,
+        referringSite: typeof sub.referring_site === "string" && sub.referring_site ? sub.referring_site : null,
+      },
+      now,
+    );
+    subscriptionsWritten++;
+
+    const identityKey = externalId ?? email;
+
+    if (enteredAt) {
+      const { inserted } = recordEvent(db, {
+        subscriberId,
+        platform: "beehiiv",
+        type: "subscribe",
+        externalEventId: `${identityKey}:subscribe:${enteredAt}`,
+        ts: enteredAt,
+      });
+      if (inserted) subscribeNew++;
+      else subscribeKnown++;
+    }
+
+    if (exited && !wasExitedBefore) {
+      // A Beehiiv não expõe timestamp de saída (ver docstring da função) —
+      // só o ESTADO ATUAL, repetido em TODO snapshot enquanto o assinante
+      // seguir `inactive`. Gravar só na TRANSIÇÃO é o que impede
+      // reinserção sem limite (#7222 finding 1); chave natural usa o dia
+      // da captura como camada extra de segurança, não como a regra.
+      const captureDay = now.slice(0, 10);
+      const { inserted } = recordEvent(db, {
+        subscriberId,
+        platform: "beehiiv",
+        type: "unsub",
+        externalEventId: `${identityKey}:unsub:${status}:${captureDay}`,
+        ts: now,
+      });
+      if (inserted) unsubNew++;
+      else unsubKnown++;
+    } else if (exited) {
+      unsubKnown++;
+    }
+  }
+
+  return {
+    processed,
+    subscriptionsWritten,
+    subscribeEvents: { newEvents: subscribeNew, alreadyKnown: subscribeKnown },
+    unsubEvents: { newEvents: unsubNew, alreadyKnown: unsubKnown },
+    recordsSkippedNoEmail,
   };
 }

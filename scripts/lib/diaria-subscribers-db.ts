@@ -596,22 +596,58 @@ export function getCohortEventCounts(
   return rows;
 }
 
+/**
+ * Fração mínima de `subscriber` com linha correspondente em `subscription`
+ * abaixo da qual `getStoreCounts` marca a cobertura como BAIXA em vez de
+ * deixar `subscriptions: 0` (ou quase) passar como zero legítimo (#7229).
+ * Mesmo padrão de `MISSING_STATS_WARN_FRACTION` (`scripts/lib/leitor.ts`) —
+ * este guard cobre a contagem BRUTA do store (`getStoreCounts`); o guard
+ * companheiro em `leitor-store.ts` (#7198) cobre a LEITURA cross-plataforma
+ * de `leitor-v1`, escopo diferente, não duplicado aqui.
+ */
+export const SUBSCRIPTION_COVERAGE_WARN_FRACTION = 0.5;
+
 /** Contagem simples de linhas por tabela — usado pelo builder/CLI pra
- * imprimir um summary sem precisar reimplementar SELECT COUNT(*) 4x. */
+ * imprimir um summary sem precisar reimplementar SELECT COUNT(*) 4x.
+ *
+ * `subscriptions_coverage_low` (#7229): `true` quando `subscriptions /
+ * subscribers` está abaixo de `SUBSCRIPTION_COVERAGE_WARN_FRACTION` — sinal
+ * explícito de que a dimensão `subscription` está pouco populada (nenhum
+ * ingest rodou ainda, ou só uma fração das plataformas do store chama
+ * `upsertSubscription`), nunca confundível com "zero assinatura real". Sem
+ * `subscriber` nenhum (`subscribers === 0`) não há cobertura pra avaliar —
+ * fica `false`, não é o caso que este guard existe pra pegar. Emite
+ * `console.warn` na mesma passada, mesmo padrão de `summarizeLeitores`. */
 export function getStoreCounts(db: DatabaseSync): {
   subscribers: number;
   identity_aliases: number;
   subscriptions: number;
   events: number;
+  subscriptions_coverage_low: boolean;
 } {
   const count = (table: string): number =>
     (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number })
       .n;
+  const subscribers = count("subscriber");
+  const subscriptions = count("subscription");
+  const coverage = subscribers > 0 ? subscriptions / subscribers : 1;
+  const subscriptions_coverage_low = subscribers > 0 && coverage < SUBSCRIPTION_COVERAGE_WARN_FRACTION;
+  if (subscriptions_coverage_low) {
+    console.warn(
+      `[diaria-subscribers-db] aviso: subscription (${subscriptions}) cobre só ` +
+        `${(coverage * 100).toFixed(1)}% de subscriber (${subscribers}) — abaixo de ` +
+        `${(SUBSCRIPTION_COVERAGE_WARN_FRACTION * 100).toFixed(0)}%. "subscriptions: ${subscriptions}" NÃO significa ` +
+        `"sem assinatura real" — significa "dimensão pouco populada" (nenhum ingest de subscription rodou ainda, ` +
+        `ou só parte das plataformas do store chama upsertSubscription, #7229). Não usar este número como fato ` +
+        `sem checar a cobertura.`,
+    );
+  }
   return {
-    subscribers: count("subscriber"),
+    subscribers,
     identity_aliases: count("identity_alias"),
-    subscriptions: count("subscription"),
+    subscriptions,
     events: count("event"),
+    subscriptions_coverage_low,
   };
 }
 
