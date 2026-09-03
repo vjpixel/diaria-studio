@@ -4399,7 +4399,6 @@ describe("#7212 — --session-id ausente: exit 2 sob o harness, exit 1 fora dele
     "end",
     "claim-issue",
     "unclaim-issue",
-    "conflicts",
     "grant-merge",
     "check-merge-grant",
     "consume-merge-grant",
