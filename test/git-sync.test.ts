@@ -1123,6 +1123,35 @@ describe("git-sync — #3423: TOCTOU race no stash-recovery, serializada via loc
     );
   });
 
+  it("#7336: SEM lock explícito (produção real, sync-code.ts chama syncCode() com 0-1 args) → ainda ZERO spawns git dentro de worktree", () => {
+    // Regressão-alvo específica: um parâmetro default `lock: SyncLock =
+    // createFileLock(undefined, spawn)` é avaliado pelo motor JS ANTES do
+    // corpo da função rodar — mesmo quando nenhum lock é passado. Isso faria
+    // `createFileLock` (que spawna `git rev-parse --git-common-dir` pra
+    // resolver o path do lock) rodar MESMO quando o guard de worktree abaixo
+    // deveria abortar sem tocar em nenhum comando git — contradizendo tanto a
+    // mensagem ("Nenhum comando git foi executado") quanto o teste anterior,
+    // que só passa porque injeta um lock EXPLÍCITO (não exercita o caminho
+    // de produção real, onde sync-code.ts chama `syncCode()` sem 2º/3º args).
+    // Este teste NÃO passa nenhum lock — exercita o `lock ?? createFileLock(...)`
+    // resolvido DENTRO do corpo, depois do guard.
+    const gitCommandsRun: string[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      gitCommandsRun.push([cmd, ...args].join(" "));
+      return ok("/fake/.git");
+    };
+
+    const r = syncCode(spawn, undefined, "/home/editor/diaria-studio/.claude/worktrees/agent-a31a396e25a7341f7");
+
+    assert.equal(r.outcome, "worktree_refused");
+    assert.equal(
+      gitCommandsRun.length,
+      0,
+      `nenhum comando git deveria rodar — inclusive a resolução do lock default (createFileLock) — ` +
+        `quando o guard de worktree dispara SEM lock explícito injetado. Rodou: ${JSON.stringify(gitCommandsRun)}`,
+    );
+  });
+
   it("#7336: cwd no checkout principal (sem .claude/worktrees no path) → NÃO recusa, segue o fluxo normal", () => {
     const spawn = makeSpawn({
       "git rev-parse --abbrev-ref HEAD": ok("master"),

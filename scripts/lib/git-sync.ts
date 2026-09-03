@@ -821,9 +821,21 @@ function isAlreadyUpToDate(stdout: string): boolean {
  * Sincroniza o checkout local com origin/master.
  *
  * @param spawn   Spawner injetável para testes (default: spawnSync real).
- * @param lock    Lock injetável para testes (default: `createFileLock()` real,
- *                resolvido via o MESMO `spawn` recebido — #3430 — pra que o
- *                path do lock use o mesmo spawner injetado em testes).
+ * @param lock    Lock injetável para testes. `undefined` (default: nenhum
+ *                argumento passado, ou explicitamente `undefined`) resolve
+ *                para `createFileLock(undefined, spawn)` real — mas essa
+ *                resolução acontece DENTRO do corpo da função, depois do
+ *                guard de worktree (#7336) abaixo, não como valor default do
+ *                parâmetro. Motivo: um valor default (`lock: SyncLock =
+ *                createFileLock(undefined, spawn)`) é avaliado pelo motor JS
+ *                ANTES do corpo da função rodar, mesmo quando nenhum lock é
+ *                passado explicitamente — o que faria `createFileLock` (que
+ *                spawna `git rev-parse --git-common-dir` para resolver o path
+ *                do lock, ver `resolveSharedLockPathCached`) rodar mesmo nos
+ *                casos em que o guard de worktree deveria abortar sem tocar
+ *                em nenhum comando git. Resolvido explicitamente como
+ *                `lock ?? createFileLock(undefined, spawn)` logo após o
+ *                guard, garantindo "zero spawn git" de fato quando recusado.
  *                #3423: serializa toda a chamada — se outro `syncCode()` já
  *                estiver rodando contra este checkout, retorna imediatamente
  *                sem tocar em stash/merge (evita a race TOCTOU no stash-recovery).
@@ -833,7 +845,7 @@ function isAlreadyUpToDate(stdout: string): boolean {
  */
 export function syncCode(
   spawn: SpawnFn = defaultSpawn,
-  lock: SyncLock = createFileLock(undefined, spawn),
+  lock?: SyncLock,
   repoRoot: string = REPO_ROOT,
 ): GitSyncResult {
   // #7336: recusa ANTES de qualquer spawn git ou tentativa de lock — sync de
@@ -862,10 +874,16 @@ export function syncCode(
     };
   }
 
-  if (!lock.acquire()) {
+  // Resolvido DEPOIS do guard acima (#7336) — ver docstring de `lock` no
+  // parâmetro. `lock ?? ...` (não `lock ||`) trata explicitamente só
+  // `undefined`/`null` como "não passado", preservando qualquer double de
+  // teste truthy/falsy que os chamadores possam injetar.
+  const effectiveLock: SyncLock = lock ?? createFileLock(undefined, spawn);
+
+  if (!effectiveLock.acquire()) {
     const msg =
       `[git-sync] WARN: outro processo já parece estar sincronizando este checkout ` +
-      `(lock '${lock.path}' presente e ainda válido — #3423). Sync ignorado nesta ` +
+      `(lock '${effectiveLock.path}' presente e ainda válido — #3423). Sync ignorado nesta ` +
       `rodada para evitar popar/aplicar o stash de um processo concorrente. ` +
       `Edição continua com o código local atual (pode estar levemente desatualizado ` +
       `se o outro sync ainda não terminou).`;
@@ -885,7 +903,7 @@ export function syncCode(
     const out: GitSyncResult = { ...result, ...measureSyncState(spawn) };
     return out;
   } finally {
-    lock.release();
+    effectiveLock.release();
   }
 }
 
