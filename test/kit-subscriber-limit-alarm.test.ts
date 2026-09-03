@@ -2,9 +2,17 @@
  * test/kit-subscriber-limit-alarm.test.ts (#7362)
  *
  * Cobre o miolo puro (`scripts/lib/kit-subscriber-limit-alarm.ts`) — nenhuma
- * chamada de rede. Foco no limiar de 900 (decisão do editor, 03/09/2026) e
- * no latch de idempotência (arma na transição, re-arma quando volta a cair
- * abaixo do threshold).
+ * chamada de rede. Foco no limiar PERCENTUAL de 85% (decisão do editor,
+ * comentário de 03/09/2026 18:55Z — reabriu a issue porque a 1ª
+ * implementação, #7368, tinha entrado com um limiar ABSOLUTO de 900, que
+ * quebra na virada de plano creator→free de 07/09/2026) e no latch de
+ * idempotência (arma na transição, re-arma quando volta a cair abaixo do
+ * threshold).
+ *
+ * Cenário exato que motivou a reabertura, coberto explicitamente abaixo:
+ * `total_count=900` alarma contra `subscriber_limit=1000` (90% ≥ 85%) mas
+ * NÃO alarma contra `subscriber_limit=10000` (9% < 85%) — a mesma contagem
+ * absoluta, dois vereditos diferentes, dependendo só do teto real do plano.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -12,7 +20,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  DEFAULT_KIT_SUBSCRIBER_ALARM_THRESHOLD,
+  DEFAULT_KIT_SUBSCRIBER_ALARM_THRESHOLD_PCT,
   evaluateKitSubscriberLimitAlarm,
   emptyKitSubscriberLimitAlarmState,
   shouldAlarmKitSubscriberLimit,
@@ -24,29 +32,41 @@ import { toAlarmFindings, loadState } from "../scripts/kit-subscriber-limit-alar
 
 const NOW = new Date("2026-09-03T12:00:00.000Z");
 
-describe("DEFAULT_KIT_SUBSCRIBER_ALARM_THRESHOLD (#7362)", () => {
-  it("é 900 — decisão explícita do editor, 03/09/2026", () => {
-    assert.equal(DEFAULT_KIT_SUBSCRIBER_ALARM_THRESHOLD, 900);
+describe("DEFAULT_KIT_SUBSCRIBER_ALARM_THRESHOLD_PCT (#7362)", () => {
+  it("é 0.85 (85%) — decisão explícita do editor, comentário de 03/09/2026 18:55Z", () => {
+    assert.equal(DEFAULT_KIT_SUBSCRIBER_ALARM_THRESHOLD_PCT, 0.85);
   });
 });
 
-describe("evaluateKitSubscriberLimitAlarm — limiar de 900", () => {
-  it("899 ativos → NÃO triggered", () => {
-    const ev = evaluateKitSubscriberLimitAlarm(899, 1000);
+describe("evaluateKitSubscriberLimitAlarm — limiar PERCENTUAL de 85% (#7362, reabertura)", () => {
+  it("mesma contagem absoluta (900), teto 1000 (plano creator) → 90% ≥ 85% → triggered", () => {
+    const ev = evaluateKitSubscriberLimitAlarm(900, 1000);
+    assert.equal(ev.occupancyPct, 0.9);
+    assert.equal(ev.triggered, true);
+  });
+
+  it("mesma contagem absoluta (900), teto 10000 (plano free pós-virada 07/09) → 9% < 85% → NÃO triggered", () => {
+    const ev = evaluateKitSubscriberLimitAlarm(900, 10000);
+    assert.equal(ev.occupancyPct, 0.09);
     assert.equal(ev.triggered, false);
   });
 
-  it("exatamente 900 → triggered (inclusivo)", () => {
-    const ev = evaluateKitSubscriberLimitAlarm(900, 1000);
+  it("849/1000 = 84,9% → NÃO triggered (abaixo do limiar)", () => {
+    const ev = evaluateKitSubscriberLimitAlarm(849, 1000);
+    assert.equal(ev.triggered, false);
+  });
+
+  it("exatamente 850/1000 = 85% → triggered (inclusivo)", () => {
+    const ev = evaluateKitSubscriberLimitAlarm(850, 1000);
     assert.equal(ev.triggered, true);
   });
 
-  it("901 → triggered", () => {
-    const ev = evaluateKitSubscriberLimitAlarm(901, 1000);
+  it("851/1000 → triggered", () => {
+    const ev = evaluateKitSubscriberLimitAlarm(851, 1000);
     assert.equal(ev.triggered, true);
   });
 
-  it("estado real medido em 03/09/2026 (629 ativos, teto 1000) → NÃO triggered", () => {
+  it("estado real medido em 03/09/2026 (629 ativos, teto 1000, 62,9%) → NÃO triggered", () => {
     const ev = evaluateKitSubscriberLimitAlarm(629, 1000);
     assert.equal(ev.triggered, false);
     assert.equal(ev.remainingToLimit, 371);
@@ -58,22 +78,29 @@ describe("evaluateKitSubscriberLimitAlarm — limiar de 900", () => {
     assert.equal(ev.remainingToLimit, -10);
   });
 
-  it("threshold é override-ável (não fixo em 900, plano pode mudar de degrau)", () => {
-    const ev = evaluateKitSubscriberLimitAlarm(1800, 2000, 1900);
+  it("thresholdPct é override-ável (não fixo em 85%, plano/editor pode recalibrar)", () => {
+    const ev = evaluateKitSubscriberLimitAlarm(1800, 2000, 0.95); // 90% < 95%
     assert.equal(ev.triggered, false);
-    const ev2 = evaluateKitSubscriberLimitAlarm(1900, 2000, 1900);
+    const ev2 = evaluateKitSubscriberLimitAlarm(1900, 2000, 0.95); // 95% >= 95%
     assert.equal(ev2.triggered, true);
+  });
+
+  it("subscriberLimit <= 0 (teto desconhecido) → occupancyPct 0, nunca triggered (sem NaN/Infinity)", () => {
+    const ev = evaluateKitSubscriberLimitAlarm(500, 0);
+    assert.equal(ev.occupancyPct, 0);
+    assert.equal(ev.triggered, false);
+    assert.ok(Number.isFinite(ev.occupancyPct));
   });
 });
 
 describe("shouldAlarmKitSubscriberLimit / advanceKitSubscriberLimitAlarmState — latch", () => {
   it("estado vazio, abaixo do threshold → não alarma", () => {
-    const ev = evaluateKitSubscriberLimitAlarm(500, 1000);
+    const ev = evaluateKitSubscriberLimitAlarm(500, 1000); // 50%
     assert.equal(shouldAlarmKitSubscriberLimit(emptyKitSubscriberLimitAlarmState(), ev), false);
   });
 
   it("estado vazio, cruzou o threshold → alarma (1ª vez)", () => {
-    const ev = evaluateKitSubscriberLimitAlarm(950, 1000);
+    const ev = evaluateKitSubscriberLimitAlarm(950, 1000); // 95%
     assert.equal(shouldAlarmKitSubscriberLimit(emptyKitSubscriberLimitAlarmState(), ev), true);
   });
 
@@ -90,7 +117,7 @@ describe("shouldAlarmKitSubscriberLimit / advanceKitSubscriberLimitAlarmState �
     const ev1 = evaluateKitSubscriberLimitAlarm(950, 1000);
     const alarmedState = advanceKitSubscriberLimitAlarmState(emptyKitSubscriberLimitAlarmState(), ev1, NOW);
 
-    const ev2 = evaluateKitSubscriberLimitAlarm(880, 1000); // caiu abaixo
+    const ev2 = evaluateKitSubscriberLimitAlarm(800, 1000); // caiu abaixo (80% < 85%)
     assert.equal(shouldAlarmKitSubscriberLimit(alarmedState, ev2), false);
     const rearmedState = advanceKitSubscriberLimitAlarmState(alarmedState, ev2, NOW);
     assert.equal(rearmedState.alarmed, false);
@@ -99,23 +126,36 @@ describe("shouldAlarmKitSubscriberLimit / advanceKitSubscriberLimitAlarmState �
   it("re-armado, cruza o threshold de novo → alarma de novo", () => {
     const ev1 = evaluateKitSubscriberLimitAlarm(950, 1000);
     const alarmedState = advanceKitSubscriberLimitAlarmState(emptyKitSubscriberLimitAlarmState(), ev1, NOW);
-    const ev2 = evaluateKitSubscriberLimitAlarm(880, 1000);
+    const ev2 = evaluateKitSubscriberLimitAlarm(800, 1000);
     const rearmedState = advanceKitSubscriberLimitAlarmState(alarmedState, ev2, NOW);
 
-    const ev3 = evaluateKitSubscriberLimitAlarm(905, 1000);
+    const ev3 = evaluateKitSubscriberLimitAlarm(900, 1000); // 90%
     assert.equal(shouldAlarmKitSubscriberLimit(rearmedState, ev3), true);
+  });
+
+  it("virada de plano em produção: alarmado a 90%/1000, teto muda pra 10000 na leitura seguinte → re-arma", () => {
+    const ev1 = evaluateKitSubscriberLimitAlarm(900, 1000); // 90%, triggered
+    const alarmedState = advanceKitSubscriberLimitAlarmState(emptyKitSubscriberLimitAlarmState(), ev1, NOW);
+    assert.equal(alarmedState.alarmed, true);
+
+    const ev2 = evaluateKitSubscriberLimitAlarm(900, 10000); // mesma contagem, teto novo: 9%
+    assert.equal(ev2.triggered, false);
+    assert.equal(shouldAlarmKitSubscriberLimit(alarmedState, ev2), false);
+    const rearmedState = advanceKitSubscriberLimitAlarmState(alarmedState, ev2, NOW);
+    assert.equal(rearmedState.alarmed, false);
   });
 });
 
 describe("buildKitSubscriberLimitAlarmEmail", () => {
-  it("assunto/corpo citam contagem, threshold e teto", () => {
-    const ev = evaluateKitSubscriberLimitAlarm(905, 1000);
+  it("assunto/corpo citam contagem, ocupação percentual, threshold percentual e teto", () => {
+    const ev = evaluateKitSubscriberLimitAlarm(905, 1000); // 90,5%
     const { subject, body } = buildKitSubscriberLimitAlarmEmail(ev, NOW);
     assert.match(subject, /905/);
-    assert.match(subject, /900/);
+    assert.match(subject, /90%|91%/); // Math.round(90.5) === 91, mas tolerante a arredondamento
+    assert.match(subject, /85%/);
     assert.match(subject, /1000/);
     assert.match(body, /#7362/);
-    assert.match(body, /900/);
+    assert.match(body, /85%/);
   });
 
   it("issueRef presente → corpo cita o número da issue", () => {
@@ -206,5 +246,12 @@ describe("toAlarmFindings (scripts/kit-subscriber-limit-alarm.ts)", () => {
     const findingsA = toAlarmFindings(evaluateKitSubscriberLimitAlarm(905, 1000));
     const findingsB = toAlarmFindings(evaluateKitSubscriberLimitAlarm(950, 1000));
     assert.equal(findingsA[0].fingerprint, findingsB[0].fingerprint);
+  });
+
+  it("mesma contagem absoluta (900), teto diferente (10000) → nenhum finding — o cenário da reabertura", () => {
+    const findings1000 = toAlarmFindings(evaluateKitSubscriberLimitAlarm(900, 1000));
+    const findings10000 = toAlarmFindings(evaluateKitSubscriberLimitAlarm(900, 10000));
+    assert.equal(findings1000.length, 1);
+    assert.equal(findings10000.length, 0);
   });
 });
