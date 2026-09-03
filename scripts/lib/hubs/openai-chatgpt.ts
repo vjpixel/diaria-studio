@@ -122,11 +122,11 @@ const PUBLISHED_DATE = "2026-08-09";
 // 2026-09-02 (#7103): 1 edição nova (28/08/2026), "OpenAI amplia presença
 // oficial no Brasil". Decisão: **manter fechado, mas isto agora é o SEGUNDO
 // dado do mesmo tema** — a nota de 27/08 logo acima recusou abrir seção pra
-// "OpenAI chega ao Brasil com foco em empresas" chamando-o de "1 dado
-// isolado, sem meses de cobertura acumulada atrás dele". Com o de 28/08 são
-// 2 manchetes de expansão no Brasil em 2 dias, o que ainda não é arco (2
-// anúncios quase simultâneos do mesmo movimento, sem investimento, prazo ou
-// formato divulgados — a própria edição diz que "funciona mais como sinal de
+// "OpenAI chega ao Brasil com foco em empresas" (20/08) chamando-o de "1
+// dado isolado, sem meses de cobertura acumulada atrás dele". Com o de
+// 28/08 são 2 manchetes de expansão no Brasil em 8 dias, o que ainda não é
+// arco (2 anúncios do mesmo movimento, sem investimento, prazo ou formato
+// divulgados — a própria edição diz que "funciona mais como sinal de
 // prioridade do que plano concreto"), mas deixa de ser fato isolado.
 //
 // **Gatilho explícito pra quem revisar depois:** uma 3ª manchete de operação
