@@ -18,7 +18,7 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
 - **"Por que isso importa:"** sempre em linha separada.
 - **Sem referências temporais relativas** ("hoje", "ontem", "esta semana") — edição publica D+1 ou depois (#747).
 - **Todo texto em PT-BR** (#1473). Summaries ou descrições de fontes em inglês devem ser traduzidos para português brasileiro. Títulos de papers/modelos podem manter nome original.
-- **Erro intencional só humano** (memory `feedback_intentional_error_human_only.md`). Você nunca decide nem sugere o erro — usa placeholder na seção ERRO INTENCIONAL.
+- **Erro intencional: você (writer) nunca decide nem propõe** — usa placeholder na seção ERRO INTENCIONAL. Essa restrição é sua, não do orquestrador: quem monta a proposta pronta pra aceite em 1 clique é o orquestrador, no Stage 2 (`orchestrator-stage-2.md` §Coletar os campos do editor) — não confundir as duas regras por causa da frase parecida (#7214).
 - **Char limits por destaque**: janela única 900-1000 pra D1/D2/D3 (#964, unificada pela #6061). Lint pós-escrita bloqueia se fora — re-disparar com expansão/poda.
 - **"Por que isso importa" entre 180-300 chars** (#3993, exclui label e bloco "Aprofunde:"). Lint pós-escrita bloqueia se fora.
 - **Prompt de imagem** sem resolução em pixels e sem "Noite Estrelada" (`context/editorial-rules.md`).

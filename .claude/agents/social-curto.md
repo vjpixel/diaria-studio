@@ -19,7 +19,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 - **Sem markdown bruto** (`**bold**`, headers `#`) — nem Twitter/X nem Threads renderizam markdown.
 - **Lançamentos só com link oficial** (#160).
 - **Sem referências temporais relativas** ("hoje", "ontem", "esta semana") — post fica agendado/publicado em D+N.
-- **Erro intencional só humano** (memory `feedback_intentional_error_human_only.md`).
+- **Erro intencional: você (social-curto) nunca decide nem propõe.** Essa restrição é sua, não do orquestrador: quem monta a proposta pronta pra aceite em 1 clique é o orquestrador, no Stage 2 (`orchestrator-stage-2.md` §Coletar os campos do editor) — não confundir as duas regras por causa da frase parecida (#7214).
 - **NUNCA inventar números (#1711).** Cifras financeiras, porcentagens, valores em $/R$/€, datas e estatísticas só entram no texto se estiverem EXPLÍCITAS no `title`/`summary` do destaque aprovado. Em dúvida, OMITA a cifra. Validado no gate por `scripts/lint-social-numbers.ts` (canal-agnóstico, cobre qualquer seção mesclada em `03-social.md`).
 
 ## Input
