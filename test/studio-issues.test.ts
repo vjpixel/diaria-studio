@@ -403,15 +403,34 @@ describe("fetchTriageData (#3562)", () => {
       assert.equal(data.issues[0]?.claim?.sessionId, "5d791ef6");
     });
 
-    it("claim de sessão STALE NÃO aparece — não deveria ler 'em andamento' pra uma sessão morta", () => {
+    it("#7263 (era '#6436 claim STALE NÃO aparece' — comportamento invertido de propósito): claim de sessão stale-mas-com-claim-retida aparece com `stale: true`, não mais como null", () => {
       root = mkdtempSync(join(tmpdir(), "studio-issues-claims-stale-"));
-      const staleStart = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(); // 3h > SOFT_STALE_MS (90min)
-      registerSession(root, "continuo", "sess-morta", { tag: "helios", startedAt: staleStart });
-      claimIssueCheckAndSet(root, "continuo", "sess-morta", 6051, "helios", staleStart);
+      // 3h > SOFT_STALE_MS (90min), mas << CLAIM_RELEASE_MS (24h, #7227) —
+      // exatamente a janela que a #7263 pede pra parar de ser invisível: a
+      // sessão parece ociosa, mas o claim ainda bloqueia outra sessão de
+      // verdade (via `isIssueClaimedByOther`/`claimed_issues_effective`).
+      // Antes deste fix o painel mostrava `claim: null` aqui — indistinguível
+      // de "issue livre", quando na prática o claim seguia valendo por até
+      // ~22h a mais.
+      const staleStart = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+      registerSession(root, "continuo", "sess-ociosa", { tag: "helios", startedAt: staleStart });
+      claimIssueCheckAndSet(root, "continuo", "sess-ociosa", 6051, "helios", staleStart);
 
       const run = mockRun([{ number: 6051, title: "x", url: "u", state: "OPEN", labels: [] }], []);
       const data = fetchTriageData(root, { run, now: () => Date.now() });
-      assert.equal(data.issues[0]?.claim, null);
+      assert.equal(data.issues[0]?.claim?.sessionId, "sess-ociosa");
+      assert.equal(data.issues[0]?.claim?.stale, true, "distingue 'em andamento' de 'reivindicada por sessão provavelmente ociosa'");
+    });
+
+    it("#7263: claim de sessão morta há mais de CLAIM_RELEASE_MS (24h) continua NÃO aparecendo — o claim já foi de fato liberado", () => {
+      root = mkdtempSync(join(tmpdir(), "studio-issues-claims-released-"));
+      const veryStaleStart = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(); // 25h > CLAIM_RELEASE_MS (24h)
+      registerSession(root, "continuo", "sess-abandonada", { tag: "helios", startedAt: veryStaleStart });
+      claimIssueCheckAndSet(root, "continuo", "sess-abandonada", 6052, "helios", veryStaleStart);
+
+      const run = mockRun([{ number: 6052, title: "x", url: "u", state: "OPEN", labels: [] }], []);
+      const data = fetchTriageData(root, { run, now: () => Date.now() });
+      assert.equal(data.issues[0]?.claim, null, "claim já liberado (>24h) — nada a mostrar, não é mais 'retido'");
     });
 
     it("#6592 — claim com heartbeat > PANEL_DISPLAY_STALE_MS (20min) NÃO aparece no painel, mesmo dentro de SOFT_STALE_MS (90min)", () => {
@@ -576,6 +595,7 @@ describe("attachClaims (#6436)", () => {
       machineTag: "helios",
       sessionId: "5d791ef6",
       claimedAt: "2026-08-20T00:00:00Z",
+      stale: false,
     });
   });
 
@@ -598,5 +618,25 @@ describe("attachClaims (#6436)", () => {
       { kind: "develop", machineTag: "neo", sessionId: "second", claimed_issues: [9] },
     ]);
     assert.equal(claimed!.claim?.sessionId, "first");
+  });
+
+  it("#7263: sessão `stale: true` repassa `TriageClaimInfo.stale: true` — a combinação que a issue pede pra deixar de ser invisível", () => {
+    const [claimed] = attachClaims([issue(7263)], [
+      {
+        kind: "develop",
+        machineTag: "helios",
+        sessionId: "sess-ociosa",
+        claimed_issues: [7263],
+        claimed_issues_at: { "7263": "2026-09-01T00:00:00Z" },
+        stale: true,
+      },
+    ]);
+    assert.deepEqual(claimed!.claim, {
+      kind: "develop",
+      machineTag: "helios",
+      sessionId: "sess-ociosa",
+      claimedAt: "2026-09-01T00:00:00Z",
+      stale: true,
+    });
   });
 });

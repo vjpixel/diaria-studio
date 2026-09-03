@@ -111,6 +111,61 @@ export function extractSubscriptionOrigin(
   return Object.keys(origin).length > 0 ? origin : null;
 }
 
+/** Item de `custom_fields` já expandido de um snapshot/roster (name/value
+ *  crus) — mesmo shape estrutural de `BeehiivBackupCustomField`
+ *  (`scripts/lib/beehiiv-backup-snapshots.ts`), tipado aqui como estrutural
+ *  em vez de importado pra não puxar uma dependência de `lib/shared/` pra
+ *  fora da raiz de `lib/` (fronteira `test/lib-boundary.test.ts`, #2747). */
+export interface BeehiivCustomFieldLike {
+  name?: unknown;
+  value?: unknown;
+}
+
+/**
+ * Extrai a origem gravada no custom field `origem_original` (#5231) de uma
+ * LISTA de `custom_fields` já expandida — companheiro de
+ * `extractSubscriptionOrigin` acima, que lê o mesmo dado de um corpo de GET
+ * em vez de um array de custom fields. Usado por
+ * `scripts/lib/beehiiv-subscribers-ingest.ts` (#7207) pra dar precedência à
+ * origem IN-BAND sobre os campos `utm_*` de topo do roster/snapshot, que
+ * podem já ter sido sobrescritos por uma promoção Pending→ativo (mesma
+ * razão documentada no topo do módulo, e a mesma regra de precedência que
+ * `scripts/build-origem-map.ts` já aplica pra reconstrução histórica
+ * multi-snapshot — #5842). Implementação própria (não reusa
+ * `extractOrigemOriginalField` de `build-origem-map.ts`) pra não criar uma
+ * dependência de `lib/shared/` (usada por Worker Cloudflare) sobre um script
+ * CLI de I/O — duplicação pequena e deliberada, mesma decisão já registrada
+ * na fronteira `lib/shared/` acima.
+ *
+ * Fail-soft: `customFields` ausente, campo não encontrado, valor não-string,
+ * JSON malformado, ou sem `utm_source` no payload decodificado → `null` — o
+ * caller cai pro fallback dos campos de topo.
+ */
+export function extractOrigemOriginalFromCustomFields(
+  customFields: readonly BeehiivCustomFieldLike[] | undefined,
+): Partial<BeehiivSubscriptionOrigin> | null {
+  if (!Array.isArray(customFields)) return null;
+  const entry = customFields.find((f) => f && f.name === ORIGEM_ORIGINAL_FIELD_NAME);
+  if (!entry || typeof entry.value !== "string" || !entry.value) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(entry.value);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const p = parsed as Record<string, unknown>;
+  if (typeof p.utm_source !== "string" || !p.utm_source) return null;
+
+  const origin: Partial<BeehiivSubscriptionOrigin> = { utm_source: p.utm_source };
+  if (typeof p.utm_medium === "string" && p.utm_medium) origin.utm_medium = p.utm_medium;
+  if (typeof p.utm_campaign === "string" && p.utm_campaign) origin.utm_campaign = p.utm_campaign;
+  if (typeof p.referring_site === "string" && p.referring_site) origin.referring_site = p.referring_site;
+  if (typeof p.created === "number" && Number.isFinite(p.created)) origin.created = p.created;
+  return origin;
+}
+
 /**
  * Serializa a origem extraída num único valor de custom field — JSON
  * compacto com chaves em ordem estável (facilita diff/leitura manual no

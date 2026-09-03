@@ -27,6 +27,7 @@ import {
   getAttributesForSubscriber,
   getAttributeKeyCoverage,
   getAllAttributeKeyCoverage,
+  resolveSubscriberAttribution,
   type Platform,
 } from "../scripts/lib/diaria-subscribers-db.ts";
 
@@ -85,6 +86,17 @@ describe("migrateSubscriptionColumns — ALTER TABLE idempotente sobre .db povoa
     db.close();
   });
 
+  it("adiciona utm_source/utm_term/utm_content (#7207)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const cols = new Set(
+      (db.prepare("PRAGMA table_info(subscription)").all() as Array<{ name: string }>).map((c) => c.name),
+    );
+    for (const c of ["utm_source", "utm_term", "utm_content"]) {
+      assert.ok(cols.has(c), `esperava coluna ${c} em subscription`);
+    }
+    db.close();
+  });
+
   it("rodar a migração 2x não lança nem duplica coluna (idempotente)", () => {
     const db = openDiariaSubscribersDb(":memory:");
     assert.doesNotThrow(() => migrateSubscriptionColumns(db));
@@ -116,7 +128,13 @@ describe("migrateSubscriptionColumns — ALTER TABLE idempotente sobre .db povoa
     } as unknown as DatabaseSync;
 
     assert.doesNotThrow(() => migrateSubscriptionColumns(fakeDb));
-    assert.equal(alterCalls, 5, "tentou as 5 colunas — a que colidiu não travou as demais");
+    // 11 = 5 colunas do #7174 (utm_medium/utm_campaign/utm_channel/
+    // referring_site/origem_cadastro) + 3 do #7207 (utm_source/utm_term/
+    // utm_content) + 3 do #7179 (atribuicao_fonte/reativado/origem_serie) —
+    // `SUBSCRIPTION_MIGRATION_COLUMNS` não é exportado, então este número
+    // precisa acompanhar manualmente a próxima coluna que a migração ganhar
+    // (mesmo padrão de manutenção do resto deste teste).
+    assert.equal(alterCalls, 11, "tentou todas as colunas — a que colidiu não travou as demais");
   });
 
   it("relança qualquer erro que NÃO seja 'duplicate column name' (disco cheio, .db corrompido, etc.)", () => {
@@ -357,6 +375,45 @@ describe("upsertSubscription — colunas de atribuição novas (#7174)", () => {
     db.close();
   });
 
+  it("#7179: grava e relê atribuicao_fonte/reativado/origem_serie", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-03T12:00:00.000Z";
+    const subscriberId = ensureSubscriber(db, "beehiiv", "beehiiv-ext-1", "backfill@example.com", now);
+    upsertSubscription(
+      db,
+      subscriberId,
+      "beehiiv",
+      {
+        status: "active",
+        enteredAt: "2025-09-13T12:00:00.000Z",
+        exitedAt: null,
+        source: "linkedin",
+        utmSource: "linkedin",
+        atribuicaoFonte: "beehiiv-import",
+        reativado: true,
+        origemSerie: "backfill-beehiiv",
+      },
+      now,
+    );
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId);
+    assert.equal(sub.atribuicao_fonte, "beehiiv-import");
+    assert.equal(sub.reativado, 1);
+    assert.equal(sub.origem_serie, "backfill-beehiiv");
+    db.close();
+  });
+
+  it("#7179: reativado false grava 0, reativado ausente grava NULL (nunca confundido)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-03T12:00:00.000Z";
+    const idFalse = ensureSubscriber(db, "beehiiv", "beehiiv-ext-2", "nao-reativado@example.com", now);
+    upsertSubscription(db, idFalse, "beehiiv", { status: "active", enteredAt: now, exitedAt: null, source: "x", reativado: false }, now);
+    const idAusente = ensureSubscriber(db, "beehiiv", "beehiiv-ext-3", "sem-campo@example.com", now);
+    upsertSubscription(db, idAusente, "beehiiv", { status: "active", enteredAt: now, exitedAt: null, source: "x" }, now);
+    assert.equal(getSubscriptionsForSubscriber(db, idFalse)[0].reativado, 0);
+    assert.equal(getSubscriptionsForSubscriber(db, idAusente)[0].reativado, null);
+    db.close();
+  });
+
   it("omitir os campos novos grava NULL (compatibilidade retroativa — chamadores existentes não mudam)", () => {
     const db = openDiariaSubscribersDb(":memory:");
     const now = "2026-09-02T12:00:00.000Z";
@@ -377,6 +434,135 @@ describe("upsertSubscription — colunas de atribuição novas (#7174)", () => {
     const [sub] = getSubscriptionsForSubscriber(db, subscriberId);
     assert.equal(sub.utm_channel, "recommendation");
     db.close();
+  });
+
+  it("grava e relê utm_source/utm_term/utm_content (#7207)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-03T12:00:00.000Z";
+    const subscriberId = ensureSubscriber(db, "kit", "kit-ext-101", "utm-source@example.com", now);
+    upsertSubscription(
+      db,
+      subscriberId,
+      "kit",
+      {
+        status: "active",
+        enteredAt: "2026-09-01",
+        exitedAt: null,
+        source: "google",
+        utmSource: "google",
+        utmTerm: "ia-newsletter",
+        utmContent: "anuncio-a",
+      },
+      now,
+    );
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId);
+    assert.equal(sub.utm_source, "google");
+    assert.equal(sub.utm_term, "ia-newsletter");
+    assert.equal(sub.utm_content, "anuncio-a");
+    db.close();
+  });
+
+  it("omitir utmSource/utmTerm/utmContent grava NULL (compatibilidade retroativa)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-03T12:00:00.000Z";
+    const subscriberId = ensureSubscriber(db, "brevo_diaria", "brevo-ext-101", "sem-utm-source@example.com", now);
+    upsertSubscription(db, subscriberId, "brevo_diaria", { status: "pending", enteredAt: "2026-06-01", exitedAt: null, source: "reativacao" }, now);
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId);
+    assert.equal(sub.utm_source, null);
+    assert.equal(sub.utm_term, null);
+    assert.equal(sub.utm_content, null);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #7207 — resolveSubscriberAttribution: precedência cross-plataforma
+// ---------------------------------------------------------------------------
+
+describe("resolveSubscriberAttribution — precedência kit > beehiiv > brevo_diaria (#7207)", () => {
+  it("só 1 plataforma com utm_source → ela vence", () => {
+    const result = resolveSubscriberAttribution([
+      {
+        platform: "beehiiv",
+        utm_source: "newsletter-x",
+        utm_medium: "guest-post",
+        utm_campaign: null,
+        utm_channel: null,
+        utm_term: null,
+        utm_content: null,
+        referring_site: "newsletterx.com",
+      },
+    ]);
+    assert.equal(result.platform, "beehiiv");
+    assert.equal(result.utmSource, "newsletter-x");
+    assert.equal(result.referringSite, "newsletterx.com");
+    assert.match(result.provenance, /beehiiv/);
+  });
+
+  it("Kit e Beehiiv discordam → Kit vence (precedência mais rica) e leva o BUNDLE inteiro dele, nunca mistura campos", () => {
+    const result = resolveSubscriberAttribution([
+      {
+        platform: "beehiiv",
+        utm_source: "beehiiv-organic",
+        utm_medium: "email",
+        utm_campaign: "beehiiv-camp",
+        utm_channel: null,
+        utm_term: null,
+        utm_content: null,
+        referring_site: "beehiiv.com",
+      },
+      {
+        platform: "kit",
+        utm_source: "kit-paid",
+        utm_medium: "cpc",
+        utm_campaign: "kit-camp",
+        utm_channel: "ads",
+        utm_term: "ia",
+        utm_content: "v2",
+        referring_site: "kit.com",
+      },
+    ]);
+    assert.equal(result.platform, "kit");
+    assert.equal(result.utmSource, "kit-paid");
+    assert.equal(result.utmMedium, "cpc");
+    assert.equal(result.utmCampaign, "kit-camp");
+    assert.equal(result.utmChannel, "ads");
+    assert.equal(result.utmTerm, "ia");
+    assert.equal(result.utmContent, "v2");
+    assert.equal(result.referringSite, "kit.com");
+    assert.match(result.provenance, /kit \(precedência 1\/3\)/);
+  });
+
+  it("Kit presente mas SEM utm_source → cai pra Beehiiv (não trava na 1ª plataforma da lista de precedência)", () => {
+    const result = resolveSubscriberAttribution([
+      { platform: "kit", utm_source: null, utm_medium: null, utm_campaign: null, utm_channel: null, utm_term: null, utm_content: null, referring_site: null },
+      {
+        platform: "beehiiv",
+        utm_source: "google",
+        utm_medium: "cpc",
+        utm_campaign: null,
+        utm_channel: null,
+        utm_term: null,
+        utm_content: null,
+        referring_site: null,
+      },
+    ]);
+    assert.equal(result.platform, "beehiiv");
+    assert.equal(result.utmSource, "google");
+  });
+
+  it("nenhuma subscription com utm_source → platform null, provenance explica o vazio", () => {
+    const result = resolveSubscriberAttribution([
+      { platform: "brevo_diaria", utm_source: null, utm_medium: null, utm_campaign: null, utm_channel: null, utm_term: null, utm_content: null, referring_site: null },
+    ]);
+    assert.equal(result.platform, null);
+    assert.equal(result.utmSource, null);
+    assert.match(result.provenance, /vazio/);
+  });
+
+  it("lista vazia → platform null, sem lançar", () => {
+    const result = resolveSubscriberAttribution([]);
+    assert.equal(result.platform, null);
   });
 });
 
@@ -869,7 +1055,7 @@ describe("computeSubscriptionCoverage — função pura (#7294)", () => {
 });
 
 describe("isPlatform / isEventType", () => {
-  it("valida os 3 valores de plataforma e os 8 tipos de evento do épico", () => {
+  it("valida os 3 valores de plataforma e os 10 tipos de evento do épico", () => {
     for (const p of ["beehiiv", "brevo_diaria", "kit"] as Platform[]) {
       assert.ok(isPlatform(p));
     }
@@ -885,6 +1071,8 @@ describe("isPlatform / isEventType", () => {
       "unsub",
       "bounce",
       "complaint",
+      "contest_reply", // #7209: ação deliberada (resposta ao concurso)
+      "poll_vote", // #7209: ação deliberada (voto do "É IA?")
     ]) {
       assert.ok(isEventType(t));
     }

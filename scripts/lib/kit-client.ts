@@ -264,6 +264,61 @@ export async function getBroadcast(id: number, config?: KitConfig): Promise<KitB
 }
 
 // ---------------------------------------------------------------------------
+// Subscribers — leitura (#7357: `created_after` alimenta o resgate por data
+// do canal `kit_diaria`, ver docstring de `kit-diaria-channel.ts`)
+// ---------------------------------------------------------------------------
+
+/** Shape de `GET /v4/subscribers` com `include=tags` — só os campos que
+ *  `listActiveSubscribersCreatedAfter` (`kit-broadcasts.ts`) usa. A API devolve
+ *  mais campos (nome, custom fields etc.); não declarados aqui de propósito —
+ *  este módulo é REST fino, não um espelho completo do schema (mesma
+ *  convenção de `KitBroadcastSummary` acima). */
+export interface KitSubscriberSummary {
+  id: number;
+  email_address: string;
+  state: "active" | "inactive" | "bounced" | "complained" | "cancelled";
+  created_at: string;
+  /** Presente só quando `include=tags` é passado. */
+  tags?: { id: number; name: string }[];
+}
+
+export interface ListSubscribersOptions {
+  /** `yyyy-mm-dd` — doc oficial: "subscribers who have been created after
+   *  this date". */
+  createdAfter?: string;
+  status?: KitSubscriberSummary["state"] | "all";
+  /** `["tags"]` embute a tag membership na mesma chamada — evita 1 request
+   *  extra por assinante pra decidir quem já tem a tag de audiência. */
+  include?: ("attribution" | "tags" | "location" | "canceled_at")[];
+  perPage?: number;
+  after?: string;
+  config?: KitConfig;
+}
+
+export async function listSubscribers(
+  opts: ListSubscribersOptions = {},
+): Promise<{ subscribers: KitSubscriberSummary[]; pagination: KitPagination }> {
+  const params = new URLSearchParams();
+  if (opts.createdAfter) params.set("created_after", opts.createdAfter);
+  if (opts.status) params.set("status", opts.status);
+  if (opts.include && opts.include.length > 0) params.set("include", opts.include.join(","));
+  if (opts.perPage) params.set("per_page", String(opts.perPage));
+  if (opts.after) params.set("after", opts.after);
+  const qs = params.toString();
+  const data = await kitFetch<{ subscribers: KitSubscriberSummary[]; pagination: KitPagination } | undefined>(
+    `/subscribers${qs ? `?${qs}` : ""}`,
+    { config: opts.config },
+  );
+  return { subscribers: data?.subscribers ?? [], pagination: data?.pagination ?? {
+    has_previous_page: false,
+    has_next_page: false,
+    start_cursor: null,
+    end_cursor: null,
+    per_page: opts.perPage ?? 500,
+  } };
+}
+
+// ---------------------------------------------------------------------------
 // Cliques por link — o achado que destrava o #463 (ver docstring do módulo)
 // ---------------------------------------------------------------------------
 
@@ -407,4 +462,54 @@ export async function getBroadcastStats(id: number, config?: KitConfig): Promise
  */
 export function kitBroadcastCtrPct(stats: Pick<KitBroadcastStats, "click_rate">): number {
   return stats.click_rate;
+}
+
+// ---------------------------------------------------------------------------
+// Conta (#7362) — teto de assinantes do plano, invisível até aqui
+// ---------------------------------------------------------------------------
+
+/**
+ * `GET /v4/account` (#7362) — 1ª leitura deste endpoint no repo. Confirmado
+ * ao vivo via MCP em 03/09/2026 (`get_current_account`): `plan_type
+ * "creator"`, `subscriber_limit 1000`, `renews_at` ISO. Este módulo é REST
+ * puro (sem MCP) — a issue #7362 pede um alarme que rode via task agendada
+ * (`scripts/kit-subscriber-limit-alarm.ts`), fora de uma sessão Claude Code
+ * viva, então precisa do caminho REST, mesmo padrão de todo o resto deste
+ * arquivo.
+ *
+ * **Shape do envelope não confirmado ao vivo via REST direto** (só via MCP,
+ * que pode normalizar a resposta) — aceita tanto `{ account: {...} }`
+ * (padrão dos outros endpoints deste módulo, `getBroadcast`/
+ * `getBroadcastStats`) quanto o objeto FLAT direto na raiz, sem lançar por
+ * causa da forma do envelope. O que É fail-fast: `subscriber_limit` ausente
+ * ou não-numérico — sem ele o alarme do #7362 não tem o que comparar, e
+ * fabricar um default (`?? 0` ou similar) esconderia justamente o problema
+ * que a issue existe pra resolver ("o teto é invisível pra maquinaria").
+ */
+export interface KitAccount {
+  name: string;
+  plan_type: string;
+  subscriber_limit: number;
+  /** ISO — próxima renovação do ciclo de cobrança do plano. */
+  renews_at: string | null;
+}
+
+export async function getKitAccount(config?: KitConfig): Promise<KitAccount> {
+  const data = await kitFetch<Record<string, unknown> | undefined>("/account", { config });
+  const raw = (data && typeof data.account === "object" && data.account !== null
+    ? (data.account as Record<string, unknown>)
+    : data) as Record<string, unknown> | undefined;
+  const limit = raw?.subscriber_limit;
+  if (typeof limit !== "number" || !Number.isFinite(limit)) {
+    throw new Error(
+      `[kit-client] getKitAccount(): resposta sem "subscriber_limit" numérico (recebido: ${JSON.stringify(data)}) — ` +
+        "não é seguro assumir um teto pra comparação (#7362).",
+    );
+  }
+  return {
+    name: typeof raw?.name === "string" ? raw.name : "",
+    plan_type: typeof raw?.plan_type === "string" ? raw.plan_type : "",
+    subscriber_limit: limit,
+    renews_at: typeof raw?.renews_at === "string" ? raw.renews_at : null,
+  };
 }

@@ -38,6 +38,7 @@ interface Spy {
   createCalls: Parameters<Stage5KitDeps["createBroadcast"]>[0][];
   writeCalls: KitDiariaPublished[];
   logs: string[];
+  tagSubscriberCalls: { tagId: number; subscriberId: number }[];
 }
 
 function makeDeps(over: {
@@ -47,11 +48,13 @@ function makeDeps(over: {
   writeState?: Stage5KitDeps["writeState"];
   findTagId?: Stage5KitDeps["findTagId"];
   countTagMembers?: Stage5KitDeps["countTagMembers"];
+  listCreatedAfterCandidates?: Stage5KitDeps["listCreatedAfterCandidates"];
+  tagSubscriber?: Stage5KitDeps["tagSubscriber"];
   getBroadcast?: Stage5KitDeps["getBroadcast"];
   buildPayload?: Stage5KitDeps["buildPayload"];
   createBroadcast?: Stage5KitDeps["createBroadcast"];
 } = {}): { deps: Stage5KitDeps; spy: Spy } {
-  const spy: Spy = { createCalls: [], writeCalls: [], logs: [] };
+  const spy: Spy = { createCalls: [], writeCalls: [], logs: [], tagSubscriberCalls: [] };
   const deps: Stage5KitDeps = {
     readPlatformConfig: () => ({
       kit_diaria: over.config === undefined ? { enabled: true } : over.config,
@@ -64,6 +67,14 @@ function makeDeps(over: {
     // #6582 — default não-vazio: só os testes que exercitam o guard novo
     // (tag vazia) sobrescrevem isto pra 0.
     countTagMembers: over.countTagMembers ?? (async () => 1),
+    // #7357 — default sem candidatos: só os testes do resgate por data
+    // configuram `subscriber_filter_created_after` e sobrescrevem isto.
+    listCreatedAfterCandidates: over.listCreatedAfterCandidates ?? (async () => []),
+    tagSubscriber:
+      over.tagSubscriber ??
+      (async (tagId, subscriberId) => {
+        spy.tagSubscriberCalls.push({ tagId, subscriberId });
+      }),
     // #6582 — default sem `subscriber_filter`: verificação pós-dispatch cai
     // no ramo "não confirmável" (warning, não failure) pros testes que não
     // exercitam a verificação especificamente.
@@ -80,6 +91,14 @@ function makeDeps(over: {
     log: (l) => void spy.logs.push(l),
     now: () => 1_700_000_000_000,
   };
+  // Envolve o tagSubscriber customizado pra também espionar, se fornecido.
+  if (over.tagSubscriber) {
+    const inner = over.tagSubscriber;
+    deps.tagSubscriber = async (tagId, subscriberId) => {
+      spy.tagSubscriberCalls.push({ tagId, subscriberId });
+      return inner(tagId, subscriberId);
+    };
+  }
   // Envolve o createBroadcast customizado pra também espionar.
   if (over.createBroadcast) {
     const inner = over.createBroadcast;
@@ -534,5 +553,119 @@ describe("#6181 --send-test — testar o HTML antes de agendar", () => {
         assert.match(r.reason, /6582/);
       }
     });
+  });
+});
+
+describe("#7357 runStage5KitDispatch — resgate por data (subscriber_filter_created_after)", () => {
+  it("corte AUSENTE ⇒ nunca lista candidatos nem tagueia ninguém (comportamento pré-#7357)", async () => {
+    const { deps, spy } = makeDeps({
+      listCreatedAfterCandidates: async () => {
+        throw new Error("não deveria ser chamado sem corte configurado");
+      },
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "ok");
+    if (r.status === "ok") assert.equal(r.backfillTaggedCount, undefined);
+    assert.equal(spy.tagSubscriberCalls.length, 0);
+  });
+
+  it("corte configurado: tagueia só quem ainda não tem a tag, com o id de tag da audiência de produção", async () => {
+    const { deps, spy } = makeDeps({
+      config: { enabled: true, subscriber_filter_created_after: "2026-08-25" },
+      listCreatedAfterCandidates: async (cutoff) => {
+        assert.equal(cutoff, "2026-08-25");
+        return [
+          { id: 101, tagIds: [] }, // precisa
+          { id: 102, tagIds: [TAG_ID] }, // já tem — pula
+          { id: 103, tagIds: [999] }, // precisa
+        ];
+      },
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "ok");
+    if (r.status === "ok") assert.equal(r.backfillTaggedCount, 2);
+    assert.deepEqual(
+      spy.tagSubscriberCalls.map((c) => c.subscriberId).sort(),
+      [101, 103],
+    );
+    for (const call of spy.tagSubscriberCalls) assert.equal(call.tagId, TAG_ID);
+  });
+
+  it("nenhum candidato precisa de tag ⇒ backfillTaggedCount: 0 (dia normal, ninguém preso)", async () => {
+    const { deps, spy } = makeDeps({
+      config: { enabled: true, subscriber_filter_created_after: "2026-08-25" },
+      listCreatedAfterCandidates: async () => [{ id: 1, tagIds: [TAG_ID] }],
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "ok");
+    if (r.status === "ok") assert.equal(r.backfillTaggedCount, 0);
+    assert.equal(spy.tagSubscriberCalls.length, 0);
+  });
+
+  it("--send-test NUNCA aciona o resgate — a tag ali é de teste, sem relação com o corte de produção", async () => {
+    const { deps, spy } = makeDeps({
+      config: { enabled: true, subscriber_filter_created_after: "2026-08-25" },
+      listCreatedAfterCandidates: async () => {
+        throw new Error("resgate não deve rodar em --send-test");
+      },
+    });
+    const r = await runStage5KitDispatch(EDITION, deps, { sendTest: true });
+    assert.equal(r.status, "ok");
+    if (r.status === "ok") assert.equal(r.backfillTaggedCount, undefined);
+    assert.equal(spy.tagSubscriberCalls.length, 0);
+  });
+
+  it("listCreatedAfterCandidates falha ⇒ fail-soft: dispatch segue OK, erro registrado no resultado", async () => {
+    const { deps, spy } = makeDeps({
+      config: { enabled: true, subscriber_filter_created_after: "2026-08-25" },
+      listCreatedAfterCandidates: async () => {
+        throw new Error("ETIMEDOUT");
+      },
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "ok", "falha do resgate não pode derrubar o envio pra quem já está na tag");
+    if (r.status === "ok") {
+      assert.equal(r.backfillTaggedCount, 0);
+      assert.ok(r.backfillErrors?.some((e) => e.includes("ETIMEDOUT")));
+    }
+    assert.equal(spy.createCalls.length, 1, "o dispatch principal precisa continuar mesmo com o resgate falho");
+  });
+
+  it("tagSubscriber falha pra 1 candidato ⇒ fail-soft: os demais são tagueados, erro isolado registrado", async () => {
+    const { deps, spy } = makeDeps({
+      config: { enabled: true, subscriber_filter_created_after: "2026-08-25" },
+      listCreatedAfterCandidates: async () => [
+        { id: 1, tagIds: [] },
+        { id: 2, tagIds: [] },
+      ],
+      tagSubscriber: async (_tagId, subscriberId) => {
+        if (subscriberId === 1) throw new Error("429 rate limited");
+      },
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "ok");
+    if (r.status === "ok") {
+      assert.equal(r.backfillTaggedCount, 1, "só o candidato 2 foi tagueado com sucesso");
+      assert.ok(r.backfillErrors?.some((e) => e.includes("429 rate limited")));
+    }
+    assert.equal(spy.tagSubscriberCalls.length, 2, "tentou os dois — 1 falhou, não abortou o resto");
+  });
+
+  it("#7370 (achado do fleet review) — --dry-run NUNCA aciona o resgate: candidatos elegíveis, tagSubscriber 0 chamadas", async () => {
+    const { deps, spy } = makeDeps({
+      config: { enabled: true, subscriber_filter_created_after: "2026-08-25" },
+      listCreatedAfterCandidates: async () => [
+        { id: 101, tagIds: [] }, // precisaria de tag em produção
+        { id: 103, tagIds: [999] }, // idem
+      ],
+    });
+    const r = await runStage5KitDispatch(EDITION, deps, { dryRun: true });
+    assert.equal(r.status, "skipped");
+    assert.equal(
+      spy.tagSubscriberCalls.length,
+      0,
+      "dry-run promete não tocar em nada — escrita real de tag não pode vazar sob a flag de preview",
+    );
+    assert.equal(spy.createCalls.length, 0);
   });
 });

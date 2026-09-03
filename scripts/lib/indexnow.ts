@@ -25,6 +25,8 @@
  * não pinga".
  */
 
+import { HUB_REGISTRY } from "../../workers/arquivo/src/hubs/registry.ts"; // #7347: lista autoritativa de slugs de HUB — separa hub real de artefato não-hub (ex: index-page.generated.ts) que mora no mesmo diretório
+
 /** Host canônico do Worker `arquivo` — único host com hubs temáticos hoje. */
 export const ARQUIVO_HOST = "arquivo.diar.ia.br";
 
@@ -64,12 +66,28 @@ export function extractChangedHubSlugs(changedFiles: readonly string[]): string[
  * Pura — URLs de hub a pingar, derivadas dos arquivos alterados (gate
  * "mudou desde o último deploy" embutido: lista sem `.generated.ts` →
  * `[]`). `baseUrl` sem barra final (default `https://arquivo.diar.ia.br`).
+ *
+ * **Slug validado contra `HUB_REGISTRY` (#7347)** — nem todo
+ * `workers/arquivo/src/hubs/*.generated.ts` é um hub: `index-page.generated.ts`
+ * mora no mesmo diretório e é o HTML da página-índice `/temas/`, não de um
+ * hub individual (`scripts/build-hub-page.ts` reescreve os dois juntos a
+ * cada deploy de hub). Um slug extraído por `extractChangedHubSlugs` que
+ * não é uma chave de `HUB_REGISTRY` (hoje só `index-page`, mas fecha a
+ * classe inteira — qualquer `.generated.ts` futuro que não seja hub cai no
+ * mesmo caminho) mapeia pra `/temas/` — a URL real que mudou — em vez de
+ * `/temas/{slug}`, que resultaria numa URL inexistente (404 confirmado ao
+ * vivo pra `/temas/index-page`). Resultado deduplicado preservando ordem —
+ * 2 arquivos não-hub no mesmo push (não deveria acontecer hoje, mas não é
+ * garantido) colapsariam na mesma URL `/temas/`.
  */
 export function buildIndexNowUrls(
   changedFiles: readonly string[],
   baseUrl: string = `https://${ARQUIVO_HOST}`,
 ): string[] {
-  return extractChangedHubSlugs(changedFiles).map((slug) => `${baseUrl}/temas/${slug}`);
+  const urls = extractChangedHubSlugs(changedFiles).map((slug) =>
+    Object.hasOwn(HUB_REGISTRY, slug) ? `${baseUrl}/temas/${slug}` : `${baseUrl}/temas/`,
+  );
+  return Array.from(new Set(urls));
 }
 
 /** Corpo do POST IndexNow — ver https://www.indexnow.org/documentation. */

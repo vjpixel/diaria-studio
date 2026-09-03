@@ -27,6 +27,7 @@ import {
   claimIssueAutoRegistering,
   unclaimIssue,
   isIssueClaimedByOther,
+  isIssueClaimedByActiveSession,
   findActiveSessionsOfKind,
   findStaleSessionsOfKind,
   hasActiveSessionOfKind,
@@ -1540,6 +1541,50 @@ describe("listActiveSessions / isIssueClaimedByOther — stale (#5474)", () => {
       assert.equal(claimReleaseMsForKind(kind), CLAIM_RELEASE_MS);
     }
     assert.equal(CLAIM_RELEASE_MS, MAX_SESSION_AGE_MS, "reusa o teto absoluto existente — nenhum número mágico novo");
+  });
+
+  it("#7297: isIssueClaimedByActiveSession — heartbeat < SOFT_STALE_MS (90min) → BLOQUEIA, mesma resposta que isIssueClaimedByOther", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "sess-fresh-7297", { tag: "host-a", startedAt: new Date(NOW - 30 * ONE_MIN_MS).toISOString() });
+    claimIssue(root, "develop", "sess-fresh-7297", 7297, "host-a", new Date(NOW - 30 * ONE_MIN_MS).toISOString());
+
+    const owner = isIssueClaimedByActiveSession(root, 7297, "sess-outra", NOW);
+    assert.ok(owner !== null, "sessão fresca deve bloquear tanto por isIssueClaimedByOther quanto por isIssueClaimedByActiveSession");
+    assert.equal(owner.sessionId, "sess-fresh-7297");
+  });
+
+  it("#7297: isIssueClaimedByActiveSession — heartbeat > SOFT_STALE_MS (90min) mas < CLAIM_RELEASE_MS (24h) → LIBERA (diverge de isIssueClaimedByOther, de propósito)", () => {
+    const root = freshRoot();
+    // 3h10 stale — mesmo cenário concreto usado no teste #7227 acima, mas
+    // aqui é exatamente o caso que #7297 restaura: check-block-staleness.ts
+    // (via isIssueClaimedByActiveSession) deve reabrir o bloqueio 'pulada'/
+    // 'claimed-por-outra-sessao' assim que a sessão dona aparenta ociosa
+    // (90min), sem esperar os 24h de retenção que isIssueClaimedByOther usa
+    // para decidir se uma sessão NOVA pode reivindicar.
+    const staleHeartbeat = new Date(NOW - 3 * 60 * ONE_MIN_MS - 10 * ONE_MIN_MS).toISOString();
+    registerSession(root, "develop", "sess-stale-7297", { tag: "host-a", startedAt: staleHeartbeat });
+    claimIssue(root, "develop", "sess-stale-7297", 7298, "host-a", staleHeartbeat);
+
+    // Confirma a divergência lado a lado: isIssueClaimedByOther CONTINUA
+    // bloqueando (janela de 24h, #7227) — isIssueClaimedByActiveSession
+    // já libera (janela de 90min, #7297).
+    assert.ok(
+      isIssueClaimedByOther(root, 7298, "sess-outra", NOW) !== null,
+      "isIssueClaimedByOther não muda de comportamento — continua na janela de 24h",
+    );
+    assert.equal(
+      isIssueClaimedByActiveSession(root, 7298, "sess-outra", NOW),
+      null,
+      "isIssueClaimedByActiveSession libera em 90min — é o consumidor dedicado de check-block-staleness.ts",
+    );
+  });
+
+  it("#7297: isIssueClaimedByActiveSession — excludeSessionId continua excluindo a própria sessão", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "sess-propria-7297", { tag: "host-a", startedAt: new Date(NOW - 5 * ONE_MIN_MS).toISOString() });
+    claimIssue(root, "develop", "sess-propria-7297", 7299, "host-a", new Date(NOW - 5 * ONE_MIN_MS).toISOString());
+
+    assert.equal(isIssueClaimedByActiveSession(root, 7299, "sess-propria-7297", NOW), null);
   });
 
   it("heartbeat > MAX_SESSION_AGE_MS (24h) → comportamento antigo: nem aparece em list-active", () => {

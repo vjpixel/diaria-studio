@@ -232,3 +232,111 @@ describe("STAGE_4_RULES registry (#7243)", () => {
     assert.equal(entry!.source_issue, "#7243");
   });
 });
+
+/**
+ * #7324: `wrong_value` opcional deixa o buraco do #7243 aberto pra quem não
+ * adotar o campo — o mínimo mecânico que não depende da decisão do editor
+ * (tornar obrigatório ou não) é CONTAR. Estes testes confirmam que a
+ * instrumentação de `scanWrongValueAdoption` dispara e aparece na mensagem
+ * do warning toda vez que `wrong_value` está ausente/placeholder — não que
+ * o veredito ok/error mudou (esse continua warning, de propósito, #7324
+ * "não altere o comportamento de warning→block").
+ *
+ * `editionsRootDir` é passado explicitamente (2º argumento, injetável só em
+ * teste) pra isolar a contagem do `os.tmpdir()` real — sem isso o default de
+ * produção (`dirname(editionDir)`) escanearia QUALQUER diretório vizinho no
+ * tmpdir do processo, incluindo fixtures de outros testes rodando em
+ * paralelo (`node:test` roda arquivos concorrentemente por padrão).
+ */
+describe("checkIntentionalErrorPresentInFinal — instrumentação #7324 (contagem de adoção de wrong_value)", () => {
+  function writeSiblingEdition(root: string, edition: string, record: Record<string, unknown>): void {
+    const internalDir = join(root, edition, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(join(internalDir, "intentional-error.json"), JSON.stringify(record, null, 2));
+  }
+
+  it("mensagem do warning inclui a contagem quando wrong_value está ausente", () => {
+    const root = mkdtempSync(join(tmpdir(), "stage4-wrong-value-adoption-"));
+    const editionDir = join(root, "260907");
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), MD_WITH_ERROR_ITEM);
+    writeFileSync(
+      join(editionDir, "_internal", "intentional-error.json"),
+      JSON.stringify({
+        description: "algo",
+        location: "RADAR",
+        category: "ortografico",
+        correct_value: "Anthropic",
+        // wrong_value ausente de propósito — é o caso que a #7324 instrumenta.
+      }),
+    );
+    // Edição irmã com wrong_value já preenchido — confirma que a contagem
+    // distingue "declarado" de "declarado E com wrong_value".
+    writeSiblingEdition(root, "260906", {
+      description: "outro erro real",
+      correct_value: "Y",
+      wrong_value: "X",
+    });
+    try {
+      const v = checkIntentionalErrorPresentInFinal(editionDir, root);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].severity, "warning", "instrumentação não altera warning→block (#7324 fora de escopo)");
+      // 2 edições declaradas (260906 + 260907), 1 sem wrong_value (260907, esta mesma).
+      assert.match(v[0].message, /instrumenta[çc][ãa]o #7324/i);
+      assert.match(v[0].message, /1\/2 edi[çc][ãa]o\(?ões?\)? com erro/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("mensagem do warning inclui a contagem quando wrong_value é placeholder", () => {
+    const root = mkdtempSync(join(tmpdir(), "stage4-wrong-value-adoption-"));
+    const editionDir = join(root, "260908");
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), MD_WITH_ERROR_ITEM);
+    writeFileSync(
+      join(editionDir, "_internal", "intentional-error.json"),
+      JSON.stringify({
+        ...RECORD_WITH_WRONG_VALUE,
+        wrong_value: "{PREENCHER — grafia/valor ERRADO plantado no texto}",
+      }),
+    );
+    try {
+      const v = checkIntentionalErrorPresentInFinal(editionDir, root);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].severity, "warning");
+      // Única edição declarada nesta rodada (root isolado), sem wrong_value real.
+      assert.match(v[0].message, /1\/1 edi[çc][ãa]o\(?ões?\)? com erro/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("NÃO acrescenta a nota de instrumentação quando não há nenhuma edição declarada no root (totalDeclared=0)", () => {
+    const root = mkdtempSync(join(tmpdir(), "stage4-wrong-value-adoption-empty-"));
+    const editionDir = join(root, "260909");
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), MD_WITH_ERROR_ITEM);
+    // #7324 review: o próprio record desta edição É "declarado" — mas
+    // scanWrongValueAdoption exige description preenchida/não-placeholder pra
+    // contar. Aqui usamos o mesmo record sem wrong_value, então totalDeclared
+    // será >=1 (esta edição conta). Pra exercitar o caso totalDeclared=0
+    // de fato, o record precisa ter description ausente/placeholder também —
+    // o que faria o guard nem chegar a esta branch (record.description vazio
+    // não impede o guard de rodar, só scanWrongValueAdoption não contaria a
+    // edição atual). Fixture: description placeholder, ainda assim
+    // hasDeclaredError vem do MD (SECTION_HEADER), não do JSON.
+    writeFileSync(
+      join(editionDir, "_internal", "intentional-error.json"),
+      JSON.stringify({ description: "{PREENCHER}" }),
+    );
+    try {
+      const v = checkIntentionalErrorPresentInFinal(editionDir, root);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].severity, "warning");
+      assert.doesNotMatch(v[0].message, /instrumenta[çc][ãa]o #7324/i, "totalDeclared=0 não deve anexar nota vazia/enganosa");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

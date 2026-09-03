@@ -22,6 +22,7 @@ import {
   getBroadcastClicks,
   getBroadcastStats,
   kitBroadcastCtrPct,
+  getKitAccount,
   type KitBroadcastStats,
 } from "../scripts/lib/kit-client.ts";
 
@@ -420,5 +421,59 @@ describe("kitBroadcastCtrPct (#6186 — semântica confirmada contra envio real 
   it("bate com unique_clicked/delivered (2 clicadores distintos / 5 destinatários)", () => {
     const uniqueClickedOverDelivered = (2 / MEASURED_STATS_25609304.recipients) * 100;
     assert.equal(kitBroadcastCtrPct(MEASURED_STATS_25609304), uniqueClickedOverDelivered);
+  });
+});
+
+describe("getKitAccount (#7362)", () => {
+  it("envelope { account: {...} } — extrai subscriber_limit/plan_type/renews_at", async () => {
+    const account = await withMockFetch(
+      (async () =>
+        jsonResponse(200, {
+          account: {
+            name: "diar.ia.br",
+            plan_type: "creator",
+            subscriber_limit: 1000,
+            renews_at: "2026-09-07T17:30:58Z",
+          },
+        })) as typeof fetch,
+      () => getKitAccount(TEST_CONFIG),
+    );
+    assert.equal(account.subscriber_limit, 1000);
+    assert.equal(account.plan_type, "creator");
+    assert.equal(account.renews_at, "2026-09-07T17:30:58Z");
+  });
+
+  it("envelope FLAT (sem chave account) — mesmo resultado, shape REST não confirmado ao vivo", async () => {
+    const account = await withMockFetch(
+      (async () =>
+        jsonResponse(200, { name: "diar.ia.br", plan_type: "creator", subscriber_limit: 1000, renews_at: null })) as typeof fetch,
+      () => getKitAccount(TEST_CONFIG),
+    );
+    assert.equal(account.subscriber_limit, 1000);
+    assert.equal(account.renews_at, null);
+  });
+
+  it("subscriber_limit ausente/não-numérico → lança (nunca fabrica um teto)", async () => {
+    await assert.rejects(
+      () =>
+        withMockFetch(
+          (async () => jsonResponse(200, { account: { plan_type: "creator" } })) as typeof fetch,
+          () => getKitAccount(TEST_CONFIG),
+        ),
+      /subscriber_limit/,
+    );
+  });
+
+  it("chama GET /account com a mesma auth de kitFetch", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    await withMockFetch(
+      (async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        return jsonResponse(200, { account: { subscriber_limit: 1000 } });
+      }) as typeof fetch,
+      () => getKitAccount(TEST_CONFIG),
+    );
+    assert.equal(calls[0].url, "https://api.kit.com/v4/account");
+    assert.equal((calls[0].init?.headers as Record<string, string>)["X-Kit-Api-Key"], "kit_test_key");
   });
 });

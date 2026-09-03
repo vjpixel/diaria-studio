@@ -133,4 +133,24 @@ describe("triagem.js claimBadge — #6436 visibilidade de claim ativo", () => {
     assert.match(html, />em andamento — overnight-neo</);
     assert.doesNotMatch(html, /desde/);
   });
+
+  it("#7263: claim.stale === true → badge distinto ('sessão possivelmente ociosa'), nunca 'em andamento'", () => {
+    const html = claimBadge({
+      kind: "develop",
+      machineTag: "helios",
+      sessionId: "sess-ociosa",
+      claimedAt: "2026-09-01T00:00:00Z",
+      stale: true,
+    });
+    assert.match(html, /class="claim-badge claim-stale claim-kind-develop"/);
+    assert.match(html, />reivindicada — sessão possivelmente ociosa \(develop-helios\)</);
+    assert.doesNotMatch(html, />em andamento/);
+    assert.match(html, /OCIOSA/, "tooltip explica o motivo do badge diferente");
+  });
+
+  it("claim.stale === false (padrão) segue idêntico ao badge 'em andamento' de sempre", () => {
+    const html = claimBadge({ kind: "overnight", machineTag: "neo", sessionId: "x", claimedAt: null, stale: false });
+    assert.match(html, />em andamento — overnight-neo</);
+    assert.ok(!html.includes("claim-stale"));
+  });
 });

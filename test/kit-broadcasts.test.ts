@@ -21,6 +21,7 @@ import {
   buildAllSubscribersFilter,
   listTagSubscribersPage,
   countKitTagMembers,
+  listActiveSubscribersCreatedAfter,
   KIT_TEST_SEND_TAG_NAME,
 } from "../scripts/lib/kit-broadcasts.ts";
 import { KitApiError } from "../scripts/lib/kit-client.ts";
@@ -308,5 +309,75 @@ describe("#6582 listTagSubscribersPage / countKitTagMembers", () => {
     );
     assert.equal(count, 3);
     assert.equal(call, 2, "não pode contar só a 1ª página");
+  });
+});
+
+describe("#7357 listActiveSubscribersCreatedAfter", () => {
+  it("chama GET /subscribers com created_after, status=active e include=tags", async () => {
+    let captured: { url: string } | undefined;
+    await withMockFetch(
+      (async (url: string) => {
+        captured = { url };
+        return jsonResponse(200, { subscribers: [], pagination: emptyPagination });
+      }) as typeof fetch,
+      () => listActiveSubscribersCreatedAfter("2026-08-25", TEST_CONFIG),
+    );
+    assert.match(captured!.url, /\/subscribers\?/);
+    const url = new URL(captured!.url);
+    assert.equal(url.searchParams.get("created_after"), "2026-08-25");
+    assert.equal(url.searchParams.get("status"), "active");
+    assert.equal(url.searchParams.get("include"), "tags");
+  });
+
+  it("mapeia a tag membership pra tagIds", async () => {
+    const result = await withMockFetch(
+      (async () =>
+        jsonResponse(200, {
+          subscribers: [
+            { id: 1, email_address: "a@x.com", state: "active", created_at: "2026-08-26T00:00:00Z", tags: [{ id: 7, name: "rampa-kit" }] },
+            { id: 2, email_address: "b@x.com", state: "active", created_at: "2026-08-27T00:00:00Z", tags: [] },
+          ],
+          pagination: emptyPagination,
+        })) as typeof fetch,
+      () => listActiveSubscribersCreatedAfter("2026-08-25", TEST_CONFIG),
+    );
+    assert.deepEqual(result, [
+      { id: 1, tagIds: [7] },
+      { id: 2, tagIds: [] },
+    ]);
+  });
+
+  it("assinante sem campo `tags` (include omitido em algum ponto do pipeline) ⇒ tagIds vazio, nunca lança", async () => {
+    const result = await withMockFetch(
+      (async () =>
+        jsonResponse(200, {
+          subscribers: [{ id: 1, email_address: "a@x.com", state: "active", created_at: "2026-08-26T00:00:00Z" }],
+          pagination: emptyPagination,
+        })) as typeof fetch,
+      () => listActiveSubscribersCreatedAfter("2026-08-25", TEST_CONFIG),
+    );
+    assert.deepEqual(result, [{ id: 1, tagIds: [] }]);
+  });
+
+  it("pagina até o fim antes de devolver", async () => {
+    let call = 0;
+    const result = await withMockFetch(
+      (async () => {
+        call++;
+        if (call === 1) {
+          return jsonResponse(200, {
+            subscribers: [{ id: 1, email_address: "a@x.com", state: "active", created_at: "x", tags: [] }],
+            pagination: { ...emptyPagination, has_next_page: true, end_cursor: "cursor2" },
+          });
+        }
+        return jsonResponse(200, {
+          subscribers: [{ id: 2, email_address: "b@x.com", state: "active", created_at: "x", tags: [] }],
+          pagination: emptyPagination,
+        });
+      }) as typeof fetch,
+      () => listActiveSubscribersCreatedAfter("2026-08-25", TEST_CONFIG),
+    );
+    assert.equal(result.length, 2);
+    assert.equal(call, 2, "não pode parar na 1ª página");
   });
 });

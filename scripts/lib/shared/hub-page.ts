@@ -1448,7 +1448,7 @@ ${hub.sourceEditions
       <h2 id="outros-temas-heading">Outros temas</h2>
       <ul>
 ${hub.relatedHubs.map((r) => `        <li><a href="${esc(pageUrl(r.slug))}">${esc(r.label)}</a></li>`).join("\n")}
-        <li><a href="${esc(`${DIARIA_ARQUIVO_URL}/?utm_source=${hub.footerNavUtm.source}&utm_medium=${hub.footerNavUtm.medium}`)}">Ver todos os temas no arquivo</a></li>
+        <li><a href="${esc(`${DIARIA_ARQUIVO_URL}/temas/?utm_source=${hub.footerNavUtm.source}&utm_medium=${hub.footerNavUtm.medium}`)}">Ver todos os temas no arquivo</a></li>
       </ul>
     </nav>`
       : "";

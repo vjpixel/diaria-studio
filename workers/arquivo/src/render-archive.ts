@@ -373,7 +373,12 @@ export function buildTemaNav(hubs: readonly HubMeta[]): string {
   const links = hubs
     .map((h) => `<a href="/temas/${esc(h.slug)}">${esc(h.label)}</a>`)
     .join(" · ");
-  return `    <nav class="tema-index" aria-label="Navegação por tema">\n      <span class="tema-index-label">Por tema</span>${links}\n    </nav>`;
+  // #7347: link pra `/temas/` (o ÍNDICE em si) além dos 7 hubs individuais —
+  // achado ao vivo: a página-índice nunca foi rastreada pelo Google em 3
+  // semanas de ar porque nada no site linkava pra ELA (só pros hubs-filho).
+  // Único caminho de crawl que chega em `/temas/` hoje era o sitemap sozinho,
+  // que não bastou.
+  return `    <nav class="tema-index" aria-label="Navegação por tema">\n      <span class="tema-index-label">Por tema</span>${links} · <a href="/temas/">Todos os temas</a>\n    </nav>`;
 }
 
 /**

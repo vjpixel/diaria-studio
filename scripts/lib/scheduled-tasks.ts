@@ -561,6 +561,23 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#6810",
   },
   {
+    name: "Diaria-Kit-Subscriber-Limit-Alarm",
+    description:
+      "alarma quando a contagem de assinantes ATIVOS do Kit cruza 900 (subscriber_limit do plano hoje: 1000) — teto do plano era invisível pra toda a maquinaria de guard/alarme até esta task (#7362)",
+    steps: [{ key: "check", script: "scripts/kit-subscriber-limit-alarm.ts" }],
+    logPath: "kit-subscriber-limit-alarm/.alarm-check.log",
+    // Interval 4h — mesma cadência de Diaria-Clarice-Guardrail-Alarm/
+    // Diaria-Brevo-Diaria-Guardrail (linhas acima), não uma daily de horário
+    // fixo como os vizinhos Kit deste cluster (10:30-10:50): a issue #7362
+    // mede o risco em HORAS, não em dias — um teste de mídia paga em curso
+    // pode cruzar o threshold no meio da tarde, e uma daily matinal só
+    // descobriria isso no dia seguinte. Decisão do editor (#7362,
+    // 03/09/2026): "armar alarme em 900 e decidir na hora" — a cadência
+    // precisa acompanhar essa janela.
+    schedule: { kind: "interval", hours: 4 },
+    issue: "#7362",
+  },
+  {
     name: "Diaria-Codex-Credential-Alarm",
     description:
       "avisa quando resta UMA conta OpenAI Codex viva no pool do Hermes — contas são OAuth (não há endpoint de saldo), então o único sinal é o resultado da última tentativa de uso, que o Hermes persiste em ~/.hermes/auth.json",

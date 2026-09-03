@@ -341,6 +341,9 @@ export async function main(
         novosGravados: result.subscribeEvents.newEvents,
         eventosEstado,
         exit: 0,
+        // #7179 (F7): distingue esta linha (série viva, por-EXECUÇÃO) das
+        // linhas por-DIA que o backfill histórico escreve.
+        origemSerie: "kit-vivo",
       });
       appendFileSync(capturaLogPath, serializeCapturaLogEntry(logEntry));
       rosterSummary = { total: roster.length, written: true, novosGravados: result.subscribeEvents.newEvents, eventosEstado };
