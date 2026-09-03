@@ -373,3 +373,102 @@ test("main --not-sent-since EXPLÍCITO sobrescreve o default automático (#4765)
   assert.equal(out.excluded_by_recency, 1, "só quem recebeu em julho (dentro da janela explícita) é excluído");
   assert.equal(out.selected, 1);
 });
+
+// ---------------------------------------------------------------------------
+// #7234 — --send-date: o cutoff automático passa a derivar da DATA DE ENVIO.
+// É o RESET do 1º dia do mês: a onda montada em 31/ago e entregue em 1º/set
+// tem que voltar ao topo da fila por score, não herdar a janela de agosto.
+// ---------------------------------------------------------------------------
+
+test("REGRESSÃO (#7234): --send-date no mês SEGUINTE reseta a janela — quem recebeu em agosto volta a ser elegível no envio de 1º/set", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "recency-senddate-"));
+  const dbPath = storeComCohortsELastSent(dir, [
+    { email: "recebeu-em-agosto@x.com", cohort: "leads-2024h2", lastSentAt: "2026-08-06T09:00:00.000Z" },
+    { email: "recebeu-em-julho@x.com", cohort: "leads-2024h2", lastSentAt: "2026-07-15T09:00:00.000Z" },
+    { email: "nunca-recebeu@x.com", cohort: "leads-2024h2", lastSentAt: null },
+  ]);
+
+  // Mesmo CICLO do teste do #4765 acima (2607-08, mês de envio = agosto), mas
+  // a onda SAI em 1º/set — o caso real da rodada das 19:00 de 31/ago.
+  const logs = await semBrevoKey(() =>
+    captureLogs(() =>
+      main([
+        "--cycle", "2607-08", "--db", dbPath, "--group", "engajados", "--dry-run",
+        "--data-root", dir, "--send-date", "2026-09-01",
+      ]),
+    ),
+  );
+  const out = JSON.parse(logs.join("\n"));
+
+  assert.equal(
+    out.not_sent_cutoff,
+    "2026-09-01T00:00:00.000Z",
+    "cutoff vem do mês da DATA DE ENVIO (setembro), não do mês de envio do ciclo (agosto)",
+  );
+  assert.equal(out.recency_cutoff_source, "auto", "continua sendo o default automático, não uma flag explícita");
+  // O summary omite o campo quando é 0 (padrão `valor || undefined` deste
+  // arquivo) — `?? 0` normaliza pra asserção ler o que ela quer dizer.
+  assert.equal(
+    out.excluded_by_recency ?? 0,
+    0,
+    "ninguém excluído: a virada do mês devolve TODOS à fila — é exatamente o reset do dia 1º",
+  );
+  assert.equal(out.selected, 3);
+});
+
+test("REGRESSÃO (#7234): sem --send-date, o default histórico pelo CICLO segue valendo (invocação manual avulsa não muda)", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "recency-senddate-off-"));
+  const dbPath = storeComCohortsELastSent(dir, [
+    { email: "recebeu-em-agosto@x.com", cohort: "leads-2024h2", lastSentAt: "2026-08-06T09:00:00.000Z" },
+    { email: "nunca-recebeu@x.com", cohort: "leads-2024h2", lastSentAt: null },
+  ]);
+
+  const logs = await semBrevoKey(() =>
+    captureLogs(() =>
+      main(["--cycle", "2607-08", "--db", dbPath, "--group", "engajados", "--dry-run", "--data-root", dir]),
+    ),
+  );
+  const out = JSON.parse(logs.join("\n"));
+
+  assert.equal(out.not_sent_cutoff, "2026-08-01T00:00:00.000Z");
+  assert.equal(out.excluded_by_recency, 1);
+});
+
+test("REGRESSÃO (#7234): --not-sent-since EXPLÍCITO continua vencendo --send-date", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "recency-senddate-explicit-"));
+  const dbPath = storeComCohortsELastSent(dir, [
+    { email: "recebeu-em-agosto@x.com", cohort: "leads-2024h2", lastSentAt: "2026-08-06T09:00:00.000Z" },
+    { email: "nunca-recebeu@x.com", cohort: "leads-2024h2", lastSentAt: null },
+  ]);
+
+  const logs = await semBrevoKey(() =>
+    captureLogs(() =>
+      main([
+        "--cycle", "2607-08", "--db", dbPath, "--group", "engajados", "--dry-run",
+        "--data-root", dir, "--send-date", "2026-09-01", "--not-sent-since", "2026-07-01",
+      ]),
+    ),
+  );
+  const out = JSON.parse(logs.join("\n"));
+
+  assert.equal(out.not_sent_cutoff, "2026-07-01T00:00:00.000Z", "a flag explícita manda");
+  assert.equal(out.recency_cutoff_source, "explicit");
+  assert.equal(out.excluded_by_recency, 1);
+});
+
+test("REGRESSÃO (#7234): --send-date malformado ABORTA em vez de cair em cutoff silencioso", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "recency-senddate-bad-"));
+  const dbPath = storeComCohortsELastSent(dir, [
+    { email: "a@x.com", cohort: "leads-2024h2", lastSentAt: null },
+  ]);
+
+  const code = await semBrevoKey(() =>
+    captureExit(() =>
+      main([
+        "--cycle", "2607-08", "--db", dbPath, "--group", "engajados", "--dry-run",
+        "--data-root", dir, "--send-date", "01/09/2026",
+      ]),
+    ),
+  );
+  assert.equal(code, 1);
+});

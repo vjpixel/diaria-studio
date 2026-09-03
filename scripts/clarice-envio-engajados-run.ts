@@ -7,11 +7,18 @@
  * priority_points>0`, ordenado por `priority_points DESC`) — estende ao
  * `engajados` a mesma orquestração automática que `Diaria-Clarice-Envio`
  * (`clarice-envio-run.ts`) já dá ao `ramp-warm`. A SELEÇÃO em si (quem
- * entra, exclusão de quem já recebeu neste MÊS de envio — `excludeSentSince`
- * + `cycleSendMonthStartIso`) já está implementada e correta em
- * `clarice-build-segment.ts --group engajados`; esta rodada só fecha o
- * GATILHO que faltava (achado da investigação: nenhuma task automatizada
- * chamava esse grupo — o último envio foi manual, 06/08/2026).
+ * entra, exclusão de quem já recebeu neste MÊS de envio — `excludeSentSince`)
+ * já está implementada em `clarice-build-segment.ts --group engajados`; esta
+ * rodada só fecha o GATILHO que faltava (achado da investigação: nenhuma task
+ * automatizada chamava esse grupo — o último envio foi manual, 06/08/2026).
+ *
+ * **#7234 corrige o "e correta" que esta docstring afirmava.** A janela do mês
+ * derivava do CICLO (`cycleSendMonthStartIso`), e o ciclo é resolvido pela data
+ * de EXECUÇÃO enquanto o envio sai no dia SEGUINTE — então a rodada de 31/ago
+ * montava o envio de 1º/set com o cutoff de agosto, e o 1º envio do mês (o
+ * único que deveria devolver a fila ao topo do score) saía raspando o fim da
+ * fila do mês anterior. Este orquestrador agora passa `--send-date` e o cutoff
+ * vira o mês-calendário do ENVIO (`sendMonthStartIso`, clarice-paths.ts).
  *
  * DELIBERADAMENTE MAIS SIMPLES que `clarice-envio-run.ts` (o irmão do
  * `ramp-warm`, #5025-#6288 e adjacentes): sem freio de risco de ISP
@@ -257,13 +264,21 @@ export async function runEnvioEngajados(
 
     const key = `engajados-${aammdd}`;
 
+    // #7234 — resolvido ANTES do Passo 1 (era só no Passo 2) porque o
+    // `clarice-build-segment.ts` precisa dele pra derivar o cutoff "já recebeu
+    // neste mês" da data em que a onda SAI. É neste grupo que o defeito morde:
+    // `engajados` é ordenado por score e a virada do mês é o que devolve a fila
+    // ao topo — montar em 31/ago com o cutoff de agosto faz o 1º envio de
+    // setembro sair raspando o fim da fila do mês anterior.
+    const sendDate = sendDateBrt(now);
+
     report.section("Passo 1 — Selecionar + importar pro Brevo");
     const buildSegmentStep = step<{ selected?: number; budget?: number }>(
       deps.exec,
       report,
       "clarice-build-segment",
       "scripts/clarice-build-segment.ts",
-      ["--group", "engajados", "--cycle", cycle, "--budget", String(volume)],
+      ["--group", "engajados", "--cycle", cycle, "--budget", String(volume), "--send-date", sendDate],
     );
     const segmentSelected = buildSegmentStep.json?.selected;
     if (typeof segmentSelected === "number") {
@@ -290,7 +305,7 @@ export async function runEnvioEngajados(
     report.section("Passo 2 — Criar + agendar a campanha");
     // Mesma data/horário do envio do ramp-warm — reforço da MESMA edição
     // pro público de retenção, não um envio em horário próprio.
-    const sendDate = sendDateBrt(now);
+    // (`sendDate` resolvido lá no Passo 1, ver #7234.)
     const scheduleAt = scheduledAtForDate(sendDate);
     report.note(`data de envio: ${sendDate} (06:00 BRT / 09:00 UTC amanhã) — mesmo horário canônico do ramp-warm.`);
 
