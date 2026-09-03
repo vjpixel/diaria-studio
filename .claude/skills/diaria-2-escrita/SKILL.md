@@ -444,7 +444,7 @@ node -e "
 Snapshot pré-Humanize antes de dispatchar — usado para rollback se o agent falhar OU se a seção `# Social` / `## d1`-`d3` desaparecerem:
 
 ```bash
-cp {EDIR}/03-social.md {EDIR}/_internal/03-social.pre-humanize.md
+cp {EDIR}/03-social.md {EDIR}/_internal/03-social-pre-humanizador.md
 ```
 
 ```
@@ -478,7 +478,7 @@ Regras de preservação: preservar hashtags, emojis, estrutura de seções (# So
 Se o Agent retornar erro OU se a integridade dos cabeçalhos quebrar, restaurar o snapshot:
 
 ```bash
-cp {EDIR}/_internal/03-social.pre-humanize.md {EDIR}/03-social.md
+cp {EDIR}/_internal/03-social-pre-humanizador.md {EDIR}/03-social.md
 ```
 
 Falha **não bloqueia**.
@@ -490,7 +490,7 @@ Limpar os snapshots intermediários (não precisam mais — rollback foi conclu�
 ```bash
 for f in \
   {EDIR}/_internal/02-draft.pre-humanize.md \
-  {EDIR}/_internal/03-social.pre-humanize.md; do
+  {EDIR}/_internal/03-social-pre-humanizador.md; do
   [ -f "$f" ] && rm "$f"
 done
 ```
