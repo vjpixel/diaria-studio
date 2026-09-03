@@ -35,6 +35,41 @@
  * 1 entry por post_id, status `ok`/`partial`/`error`. Re-rodar só refaz o
  * que ainda não está `ok` — nunca reprocessa um post já confirmado.
  *
+ * ## Escrita do manifesto é em LOTE, não por item (#7170)
+ *
+ * Até o #7170, `saveManifest` rodava a cada post do loop principal — numa
+ * reingestão de 256 posts (`--reset`, #7181) isso significou 256 reescritas
+ * de `beehiiv-ingest-manifest.json` em ~4 minutos (~1 a cada 940ms). Medido
+ * ao vivo: essa cadência bastou pra o cliente OneDrive (`data/` é
+ * junctioned pra lá, ver CLAUDE.md §2b) perder a corrida contra o próprio
+ * rename atômico do `writeFileAtomic` — o arquivo "sumia" no meio da
+ * leitura do hash (`ENOENT`), o cliente respondia com 409/`resourceModified`
+ * em loop, gerava cópias `-safeBackup-000N.json` (6 nesta rodada) e morreu
+ * (`onedrive.service` saiu com `status=0/SUCCESS`, silenciosamente — ver
+ * corpo/comentários da issue).
+ *
+ * Fix: o loop principal agora só chama `saveManifest` a cada
+ * `MANIFEST_FLUSH_EVERY` posts processados (hoje 20 — reduz ~256 escritas
+ * pra ~13 na mesma reingestão, de ~1/940ms pra ~1/19s), mais um flush final
+ * garantido em `finally` (sucesso, exceção, ou `--limit` truncando a run —
+ * qualquer saída do loop persiste o progresso pendente).
+ *
+ * **Trade-off explícito sobre retomada:** um crash duro (SIGKILL, queda de
+ * energia) no MEIO de um lote de até `MANIFEST_FLUSH_EVERY - 1` posts perde
+ * o progresso desse lote no manifesto — a próxima run reprocessa esses
+ * posts. Isso é seguro, não uma regressão de correção: `ingestOnePost`
+ * grava eventos no `.db` com chave natural `(platform, type,
+ * external_event_id)` (idempotente, `recordEvent`) ANTES do manifesto ser
+ * atualizado em memória, então reprocessar um post já gravado não duplica
+ * nada — só refaz trabalho já feito. O que o `--reset` (#7181) documenta
+ * como garantia ("retomável em qualquer ponto") continua valendo: a
+ * granularidade da retomada passou de "por post" para "por lote de até
+ * `MANIFEST_FLUSH_EVERY` posts", nunca para "só no fim" (que perderia a
+ * retomada inteira num crash tardio) nem para fora de `data/` (fonte de
+ * verdade do progresso continua sendo o manifesto sincronizado, só a
+ * FREQUÊNCIA de escrita mudou — ver #7170 pelas duas outras opções
+ * consideradas e descartadas).
+ *
  * ## Guard anti-fabricação (#6496)
  *
  * Um post só vira `ok` no manifest desta ingestão se a contagem de
@@ -379,6 +414,90 @@ export function invalidateSiblingManifests(dbPath: string): string[] {
   return removed;
 }
 
+/** A cada quantos posts processados o loop principal persiste o manifesto
+ *  em disco (#7170 — ver docstring do módulo "Escrita do manifesto é em
+ *  LOTE, não por item"). Exportado só pra o teste de regressão contar
+ *  chamadas de escrita sem hardcodar o número duas vezes. */
+export const MANIFEST_FLUSH_EVERY = 20;
+
+// ---------------------------------------------------------------------------
+// Loop principal de ingestão — extraído pra ser testável em isolamento
+// ---------------------------------------------------------------------------
+
+/**
+ * Roda o loop de ingestão sobre `pending`, persistindo o manifesto em LOTE
+ * (a cada `flushEvery` posts) em vez de por item — #7170. `finally` garante
+ * o flush do que sobrar do lote em TODA saída do loop: sucesso (loop
+ * esgota `pending` normalmente), exceção (algo lança no meio — na prática,
+ * a única fonte real é `saveManifestFn` falhando durante um flush, já que
+ * `ingestOnePost` é fail-soft e nunca lança), ou `--limit` truncando a run
+ * (`pending` já vem cortado pelo caller antes de chegar aqui — o loop só
+ * enxerga um array mais curto, mesmo caminho de "esgotar `pending`
+ * normalmente"). O `.db` (fonte de verdade, chave natural idempotente em
+ * `recordEvent`) já está gravado bem antes do flush do manifesto pra cada
+ * post, então um crash duro no meio de um lote só faz a próxima run
+ * reprocessar até `flushEvery - 1` posts já idempotentes — nunca perde
+ * dado, só refaz trabalho (ver docstring do módulo pro trade-off completo).
+ *
+ * Se `saveManifestFn` lançar durante um flush INTERMEDIÁRIO (dentro do
+ * loop), a exceção propaga pro `finally`, que tenta persistir o progresso
+ * pendente mais uma vez antes de deixar a exceção subir — nunca engole o
+ * erro (quem chama sempre sabe que algo falhou), mas também nunca deixa de
+ * tentar salvar o que já foi processado até ali.
+ *
+ * `saveManifestFn` é injetável só pra teste (regressão do `finally` sob
+ * exceção mid-lote) — produção sempre usa o `saveManifest` real (default).
+ */
+export function runEngagementIngestionLoop(
+  pending: readonly IngestManifestEntry[],
+  byId: ReadonlyMap<string, Pick<EngagementManifestEntry, "post_id" | "title" | "status" | "count">>,
+  db: DatabaseSync,
+  sourceDir: string,
+  initialManifest: IngestManifest,
+  manifestPath: string,
+  flushEvery: number = MANIFEST_FLUSH_EVERY,
+  saveManifestFn: (path: string, manifest: IngestManifest) => void = saveManifest,
+): {
+  manifest: IngestManifest;
+  processed: number;
+  eventsNewTotal: number;
+  eventsAlreadyKnownTotal: number;
+  manifestSaves: number;
+} {
+  let manifest = initialManifest;
+  let eventsNewTotal = 0;
+  let eventsAlreadyKnownTotal = 0;
+  let processed = 0;
+  let manifestSaves = 0;
+  let unflushed = 0;
+  try {
+    for (const entry of pending) {
+      const sourceEntry = byId.get(entry.id)!;
+      const outcome = ingestOnePost(db, sourceDir, sourceEntry);
+      manifest = upsertManifestEntry(manifest, outcome.entry);
+      unflushed++;
+      eventsNewTotal += outcome.eventsNew;
+      eventsAlreadyKnownTotal += outcome.eventsAlreadyKnown;
+      processed++;
+      console.error(
+        `  …[${processed}/${pending.length}] post ${entry.id} (${outcome.entry.status}) — ` +
+          `${outcome.eventsNew} evento(s) novo(s), ${outcome.eventsAlreadyKnown} já conhecido(s)`,
+      );
+      if (unflushed >= flushEvery) {
+        saveManifestFn(manifestPath, manifest);
+        manifestSaves++;
+        unflushed = 0;
+      }
+    }
+  } finally {
+    if (unflushed > 0) {
+      saveManifestFn(manifestPath, manifest);
+      manifestSaves++;
+    }
+  }
+  return { manifest, processed, eventsNewTotal, eventsAlreadyKnownTotal, manifestSaves };
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -453,7 +572,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     readySourceEntries.map((p) => ({ id: p.post_id, label: p.title })),
     new Date().toISOString(),
   );
+  // Contador de escritas do manifesto nesta run — reportado no summary
+  // (`manifest_saves_this_run`) pra tornar o efeito do batching do #7170
+  // observável em produção, e travado por teste de regressão contra reverter
+  // pra escrita por item sem ninguém notar.
+  let manifestSaves = 0;
   saveManifest(manifestPath, manifest);
+  manifestSaves++;
 
   const byId = new Map(readySourceEntries.map((p) => [p.post_id, p]));
   let pending = pendingManifestEntries(manifest).filter((e) => byId.has(e.id));
@@ -463,23 +588,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   console.error(`🔎 ${pending.length} post(s) pendente(s) de ${readySourceEntries.length} pronto(s).`);
 
   const db = openDiariaSubscribersDb(workingDbPath);
-  let eventsNewTotal = 0;
-  let eventsAlreadyKnownTotal = 0;
-  let processed = 0;
 
-  for (const entry of pending) {
-    const sourceEntry = byId.get(entry.id)!;
-    const outcome = ingestOnePost(db, sourceDir, sourceEntry);
-    manifest = upsertManifestEntry(manifest, outcome.entry);
-    saveManifest(manifestPath, manifest); // durável a cada post — retomável em qualquer ponto
-    eventsNewTotal += outcome.eventsNew;
-    eventsAlreadyKnownTotal += outcome.eventsAlreadyKnown;
-    processed++;
-    console.error(
-      `  …[${processed}/${pending.length}] post ${entry.id} (${outcome.entry.status}) — ` +
-        `${outcome.eventsNew} evento(s) novo(s), ${outcome.eventsAlreadyKnown} já conhecido(s)`,
-    );
-  }
+  const loopResult = runEngagementIngestionLoop(pending, byId, db, sourceDir, manifest, manifestPath);
+  manifest = loopResult.manifest;
+  const processed = loopResult.processed;
+  const eventsNewTotal = loopResult.eventsNewTotal;
+  const eventsAlreadyKnownTotal = loopResult.eventsAlreadyKnownTotal;
+  manifestSaves += loopResult.manifestSaves;
+  console.error(
+    `💾 manifesto persistido ${manifestSaves}× nesta run (lotes de até ${MANIFEST_FLUSH_EVERY} posts, #7170 — ` +
+      `antes eram ${processed + 1} escritas pra ${processed} post(s) processado(s)).`,
+  );
 
   // Passo do roster (#7229) — popula `subscription`, fonte diferente do
   // loop de engajamento acima (ver docstring do módulo). Roda uma vez por
@@ -537,6 +656,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         source_dir: sourceDir,
         source_posts_ready: readySourceEntries.length,
         processed_this_run: processed,
+        manifest_saves_this_run: manifestSaves,
         events_new: eventsNewTotal,
         events_already_known: eventsAlreadyKnownTotal,
         coverage,
