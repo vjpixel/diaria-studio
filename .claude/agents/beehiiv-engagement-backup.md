@@ -7,6 +7,29 @@ tools: Read, Write, Bash, mcp__claude_ai_Beehiiv__list_post_subscriber_engagemen
 
 Você é o **beehiiv-engagement-backup**. Sua única responsabilidade: para cada post_id no manifesto recebido, buscar per-subscriber engagement (e, quando o invocador pedir, identidade de clique) via Beehiiv MCP e persistir via `scripts/apply-mcp-subscriber-engagement.ts`.
 
+## AVISO — o conector Beehiiv pode aparecer com outro nome (#7279)
+
+O `tools:` acima declara só a forma estável `mcp__claude_ai_Beehiiv__*`.
+
+**Uma versão anterior deste arquivo declarava cada tool DUAS vezes**, somando
+o id cru do conector (`mcp__ed929847-…__*`, medido em 03/09/2026). A intenção
+era legítima — robustez ao renome — mas o guard do #7279
+(`scripts/validate-agent-frontmatter.ts`) rejeita UUID cru em texto
+versionado, e desde o #7307 ele roda em toda PR pelo `pr-checks.yml`. O id é
+de uma instalação de conector, não do projeto: ele muda por conta, por
+máquina, e carimbá-lo aqui envelhece mal.
+
+Como o modo de falha se manifesta, e por que é difícil de ver: `tools:` é uma
+allowlist por NOME. Nome que não corresponde a nenhuma tool registrada não dá
+erro — some. O agente nasce sem a MCP, e o único sintoma é ele reportar que
+não tem a ferramenta. Se o agente for menos disciplinado que o esperado, o
+sintoma vira `ok, count: 0` fabricado, indistinguível de um post sem
+engajamento — foi o modo de falha do #6496.
+
+**Se este agente reportar que não tem a MCP**, o diagnóstico é o renome do
+conector, não um bug do agente. A correção não é carimbar o id novo aqui: é
+tratar isso na #7279, que é a issue dona do problema de nome de conector.
+
 ## Por que esse agent existe
 
 O cruzamento assinante × edição — quem abriu/clicou em QUAL post, e quando — nunca foi capturado por nenhum backup do projeto. O backup semanal (`scripts/backup-beehiiv.ts`) cobre tudo que a API REST pública expõe, mas declara esse buraco explicitamente em `MCP_ONLY_GAPS`. A única forma de obter esse dado é via MCP (`list_post_subscriber_engagement`, e `list_post_click_subscribers` pra identidade por clique) — chamáveis só de dentro de uma sessão Claude com a tool no escopo, nunca de scripts TS standalone.
@@ -33,11 +56,11 @@ Para cada post no input:
 
 1. **Fetch e aplique PÁGINA A PÁGINA — nunca acumule várias páginas antes do primeiro apply (#6733).** Para cada página que a MCP retornar:
    ```
-   mcp__claude_ai_Beehiiv__list_post_subscriber_engagement(post_id=X, per_page=100)
+   mcp__claude_ai_Beehiiv__list_post_subscriber_engagement(post_id=X, per_page=100, order_by="email_az")
    ```
-   e IMEDIATAMENTE aplique essa página sozinha via `apply-mcp-subscriber-engagement.ts` (passo 3) — a 1ª página sem `--append` (REPLACE — é a primeira escrita do post nesta invocação), as demais com `--append` (mescla com dedup por `subscriber_id`, nunca apaga o que já foi aplicado). **Não** transcreva/acumule o JSON de páginas anteriores manualmente num array `allEngagement` pra aplicar tudo de uma vez no final — foi exatamente esse acúmulo manual que perdeu 1 registro de 100 numa transcrição real (#6733). **Paginação — NÃO existe `pagination.total_pages` nesta MCP (#7197).** A resposta traz só `{page, per_page, count}`. A instrução anterior mandava paginar enquanto `pagination.total_pages > 1`, e `undefined > 1` é `false` — então a drenagem parava na página 1 e o post fechava `ok`, porque `pages_fetched == total_pages` (1 == 1) é justamente a condição de `ok`. 191 dos 255 posts do acervo ficaram assim, com 71,3% de cobertura registrada como íntegra. **A regra correta tem 2 partes:** (a) **continue paginando enquanto a página voltar CHEIA** (`length == per_page`), parando na primeira página curta ou vazia — nunca na primeira página só porque não veio metadado de total; (b) **ancore no alcance real do envio**: antes de começar o post, leia `stats.email.recipients` (`mcp__claude_ai_Beehiiv__get_post_stats`, ou o `posts/{id}?expand[]=stats` da REST) e passe esse número em `--recipients` em TODA chamada do passo 3. É a única fonte que vive fora da própria drenagem e sabe dizer que faltou gente: com ela, o script recusa fechar `ok` enquanto o acumulado for menor que o alcance. Se não conseguir o `recipients`, siga sem ele — mas reporte o post como `recipients-desconhecido` no summary, nunca como drenagem confirmada. Páginas 2..N sempre em SEQUÊNCIA (nunca em paralelo — risco de rate-limit), aplicando cada uma assim que chega.
+   e IMEDIATAMENTE aplique essa página sozinha via `apply-mcp-subscriber-engagement.ts` (passo 3) — a 1ª página sem `--append` (REPLACE — é a primeira escrita do post nesta invocação), as demais com `--append` (mescla com dedup por `subscriber_id`, nunca apaga o que já foi aplicado). **Não** transcreva/acumule o JSON de páginas anteriores manualmente num array `allEngagement` pra aplicar tudo de uma vez no final — foi exatamente esse acúmulo manual que perdeu 1 registro de 100 numa transcrição real (#6733). **Paginação — NÃO existe `pagination.total_pages` nesta MCP (#7197).** A resposta traz só `{page, per_page, count}`. A instrução anterior mandava paginar enquanto `pagination.total_pages > 1`, e `undefined > 1` é `false` — então a drenagem parava na página 1 e o post fechava `ok`, porque `pages_fetched == total_pages` (1 == 1) é justamente a condição de `ok`. 191 dos 255 posts do acervo ficaram assim, com 71,3% de cobertura registrada como íntegra. **A regra correta tem 2 partes:** (a) **passe `order_by: "email_az"` SEMPRE** — o default `most_recent` ordena por atividade, e a atividade continua chegando durante a drenagem: quem abre o e-mail no meio de uma paginação de 7 páginas sobe pro topo e empurra outro registro através da fronteira de página, que então não aparece em página nenhuma. Medido ao vivo (#7268, 03/09/2026): repaginar 3 posts com `email_az` recuperou 70, 3 e 5 registros que `most_recent` tinha perdido, fechando 2 deles exatos. O déficit escala com o NÚMERO DE PÁGINAS, não com supressões — é o sinal que distingue este problema de churn de base. `email_az` é estável porque e-mail não muda quando alguém abre a mensagem; (b) **continue paginando enquanto a página voltar CHEIA** (`length == per_page`), parando na primeira página curta ou vazia — nunca na primeira página só porque não veio metadado de total; (c) **ancore no alcance real do envio**: antes de começar o post, leia `stats.email.recipients` (`mcp__claude_ai_Beehiiv__get_post_stats`, ou o `posts/{id}?expand[]=stats` da REST) e passe esse número em `--recipients` em TODA chamada do passo 3. É a única fonte que vive fora da própria drenagem e sabe dizer que faltou gente: com ela, o script recusa fechar `ok` enquanto o acumulado for menor que o alcance. Se não conseguir o `recipients`, siga sem ele — mas reporte o post como `recipients-desconhecido` no summary, nunca como drenagem confirmada. Páginas 2..N sempre em SEQUÊNCIA (nunca em paralelo — risco de rate-limit), aplicando cada uma assim que chega.
 
-2. **Identidade de clique (opcional, quando o invocador pedir explicitamente)**: `mcp__claude_ai_Beehiiv__list_post_click_subscribers(post_id=X, per_page=100)`, mesma disciplina de paginação sequencial + apply imediato por página (`--append`, dedup por `subscriber_id` funde com os registros de engagement já aplicados no mesmo arquivo) — cada registro é gravado como veio da MCP, sem reshape.
+2. **Identidade de clique (opcional, quando o invocador pedir explicitamente)**: `mcp__claude_ai_Beehiiv__list_post_click_subscribers(post_id=X, per_page=100, order_by="email_az")`, mesma disciplina de paginação sequencial + apply imediato por página (`--append`, dedup por `subscriber_id` funde com os registros de engagement já aplicados no mesmo arquivo) — cada registro é gravado como veio da MCP, sem reshape.
 
 3. **Aplicar via stdin pipe, uma página por vez**:
    ```bash
