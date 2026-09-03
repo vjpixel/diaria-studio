@@ -561,6 +561,50 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#6810",
   },
   {
+    name: "Diaria-Codex-Credential-Alarm",
+    description:
+      "avisa quando resta UMA conta OpenAI Codex viva no pool do Hermes — contas são OAuth (não há endpoint de saldo), então o único sinal é o resultado da última tentativa de uso, que o Hermes persiste em ~/.hermes/auth.json",
+    steps: [{ key: "check", script: "scripts/codex-credential-alarm.ts" }],
+    logPath: "codex-credential-alarm/.alarm.log",
+    // Diária 10:50 — fecha o cluster matinal de alarmes, depois de
+    // Diaria-Branch-Cleanup (10:45). 10:40 foi a 1ª escolha e está OCUPADO
+    // por Diaria-Npm-Version-Drift-Alarm (#6960) — conferido com
+    // `scheduled-tasks.ts --list`, não por leitura deste arquivo, justamente
+    // porque a lista ordenada é o que revela colisão.
+    //
+    // **Por que DIÁRIA e não mais frequente (#7250, registro no #7316).** A
+    // cadência aqui não é escolha de gosto — é limitada pelo desenho do
+    // sinal, em duas pontas:
+    //
+    //   1. **A montante, o sinal só existe se houver USO.** Não há endpoint
+    //      de saldo; `last_status`/`last_error_reason` só mudam quando algo
+    //      de fato TENTA usar a conta e leva 429. Rodar de hora em hora não
+    //      produz informação nova — relê o mesmo `auth.json` congelado. O
+    //      gerador de uso é o tick do contínuo (`hermes cron list --all`,
+    //      job `5d791ef6fc2c`), então a frequência ÚTIL está atrelada a ele,
+    //      nunca a um horário bonito. Medido em 03/09/2026: esse job estava
+    //      `[paused]` — com ele parado, o pool não muda e nenhuma cadência
+    //      de checagem descobre nada.
+    //
+    //   2. **A jusante, o horizonte de resposta é de SEMANAS.** As duas
+    //      contas esgotadas voltam em 29/09 e 02/10 (`resets_at` devolvido
+    //      pela própria OpenAI no 429). Latência de detecção abaixo da
+    //      latência de resposta é desperdiçada — mesmo raciocínio dos
+    //      vizinhos deste cluster, e aqui a margem é de ordens de grandeza:
+    //      um dia contra semanas.
+    //
+    // Não é MENOS que diária (semanal, p.ex.) porque o evento que importa —
+    // a última conta esgotar, parando a delegação — é abrupto e silencioso;
+    // uma semana de latência aí é grande fração da janela em que dá pra
+    // reagir antes que o trabalho pare.
+    //
+    // Repetição não é preocupação: o script deduplica por fingerprint do
+    // estado do pool (`computeCodexPoolFingerprint`) e só envia quando o
+    // estado MUDA — diária não vira e-mail diário.
+    schedule: { kind: "daily", hour: 10, minute: 50 },
+    issue: "#7250",
+  },
+  {
     name: "Diaria-Hub-Staleness-Check",
     description: "detecta edições publicadas que casam HUB_KEYWORD_PATTERNS mas não estão no dataset commitado do hub (persiste snapshot + alarma se >= 1 dia)",
     steps: [{ key: "check", script: "scripts/hub-staleness-check.ts", args: ["--threshold-days", "1"] }],
