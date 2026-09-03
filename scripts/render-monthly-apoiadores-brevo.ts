@@ -156,7 +156,7 @@ export function renderMonthlyApoiadoresBrevoEmail(cycle: string): RenderedMonthl
     destaqueImageUrls,
     destaqueImageCaption,
     livrosImageUrl,
-    null, // eiaPrevResultLine: opt-in, não plugado nesta variante (mesmo estado de monthly-beehiiv-render.ts)
+    null, // eiaPrevResultLine: opt-in, não plugado nesta variante (mesmo estado de monthly-draft-filter.ts)
   );
 
   // #4048/#4510: mesmo pós-processo do envio Clarice/Beehiiv — reescreve

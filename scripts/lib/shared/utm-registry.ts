@@ -64,7 +64,7 @@ export const MENSAL_UTM_MEDIUM = "email";
  * cliques do canal Beehiiv contaminando a medição do canal Clarice).
  * Consumido por `CLARICE_UTM_PROFILE`/`draftToEmail(..., utmProfile)` em
  * `scripts/lib/mensal/monthly-render.ts`. `BEEHIIV_UTM_PROFILE`
- * (`scripts/lib/mensal/monthly-beehiiv-render.ts`), o outro consumidor
+ * (`scripts/lib/mensal/monthly-draft-filter.ts`), o outro consumidor
  * histórico, foi removido por #7121 (sem consumidor de runtime) — estas
  * duas constantes sobrevivem por serem citadas em teste de regressão
  * (garante que `utm_source=mensal-beehiiv` nunca vaza na variante Brevo
@@ -808,7 +808,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     source: MENSAL_BEEHIIV_UTM_SOURCE,
     medium: MENSAL_BEEHIIV_UTM_MEDIUM,
     campaignPattern: `${MENSAL_BEEHIIV_UTM_SOURCE}-{ciclo}-{posicao}`,
-    originFile: "scripts/lib/mensal/monthly-beehiiv-render.ts",
+    originFile: "scripts/lib/mensal/monthly-draft-filter.ts",
     description:
       "Envio EXTRA do digest mensal pra apoiadores Mantenedor/Patrono via Beehiiv (#4482) — " +
       "mesmo conteúdo/posições da entrada 'mensal-clarice' acima, `utm_source` distinto pra " +
