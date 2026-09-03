@@ -95,9 +95,9 @@ describe("applyEngagement — grava JSONL cru + manifest de cobertura", () => {
     assert.equal(entry.total_pages, 3);
   });
 
-  it("pages_fetched === total_pages → status ok mesmo passando ambos explicitamente", () => {
+  it("pages_fetched === total_pages → status ok mesmo passando ambos explicitamente (com registros reais)", () => {
     const { outDir } = setup();
-    const result = applyEngagement(JSON.stringify({ engagement: [] }), {
+    const result = applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1" }] }), {
       postId: "post_1",
       pagesFetched: 2,
       totalPages: 2,
@@ -138,12 +138,36 @@ describe("applyEngagement — guard REPLACE-vazio (mesmo padrão de #4836)", () 
     assert.equal(countExistingLines(resolve(outDir, "post_1.jsonl")), 0);
   });
 
-  it("replace vazio sobre JSONL já vazio (post novo) não aciona o guard", () => {
+  it("replace vazio sobre JSONL já vazio (post novo) não aciona o guard de replace-vazio, mas fecha partial sem --confirmed-empty (#7197)", () => {
     const { outDir } = setup();
     const result = applyEngagement(JSON.stringify({ engagement: [] }), { postId: "post_novo", outDir });
     assert.equal(result.before_count, 0);
     assert.equal(result.after_count, 0);
+    assert.equal(result.status, "partial", "0 registros nunca fecha ok sem --confirmed-empty explícito");
+
+    const entry = readManifest(outDir).posts[0];
+    assert.equal(entry.status, "partial");
+    assert.match(entry.error ?? "", /#7197/, "manifest registra o motivo do rebaixamento");
+  });
+
+  it("pages_fetched === total_pages COM 0 registros também fecha partial sem --confirmed-empty (reproduz o padrão de fabricação do #6496/#7197)", () => {
+    const { outDir } = setup();
+    const result = applyEngagement(JSON.stringify({ engagement: [] }), {
+      postId: "post_fabricado",
+      pagesFetched: 1,
+      totalPages: 1,
+      outDir,
+    });
+    assert.equal(result.status, "partial", "pagesFetched===totalPages não basta — 0 registros exige --confirmed-empty");
+  });
+
+  it("--confirmed-empty explícito permite 0 registros fechar ok (#7197)", () => {
+    const { outDir } = setup();
+    const result = applyEngagement(JSON.stringify({ engagement: [] }), { postId: "post_novo", outDir, confirmedEmpty: true });
     assert.equal(result.status, "ok");
+    const entry = readManifest(outDir).posts[0];
+    assert.equal(entry.status, "ok");
+    assert.equal(entry.count, 0);
   });
 
   it("guard dispara ANTES de atualizar o manifest — post continua com o status anterior, não vira ok/error espúrio", () => {

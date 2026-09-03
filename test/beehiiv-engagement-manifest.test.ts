@@ -17,6 +17,7 @@ import {
   extractPostRefFromBackupFile,
   isNeverSentPost,
   NEVER_SENT_REASON,
+  reconcileManifestWithDisk,
   type EngagementManifest,
 } from "../scripts/lib/beehiiv-engagement-manifest.ts";
 
@@ -229,5 +230,85 @@ describe("not_applicable — post nunca enviado (#6465)", () => {
       ],
     });
     assert.equal(s.closed, false);
+  });
+});
+
+describe("reconcileManifestWithDisk — auditoria contra o disco (#7197)", () => {
+  it("ok com 0 linhas reais em disco → rebaixa pra pending (reproduz os 7 posts count:0 do #7197)", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_fabricado", status: "ok", count: 0 }],
+    };
+    const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(manifest, new Map([["post_fabricado", 0]]));
+    const entry = reconciled.posts[0];
+    assert.equal(entry.status, "pending");
+    assert.equal(entry.count, 0);
+    assert.match(entry.error ?? "", /#7197/);
+    assert.deepEqual(downgraded, [{ post_id: "post_fabricado", from: "ok", to: "pending", reason: entry.error }]);
+  });
+
+  it("ok com manifest.count divergindo das linhas reais → rebaixa pra partial e corrige count (reproduz os 16 posts do #7197 — '7 páginas, 10 registros')", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_incompleto", status: "ok", count: 700, pages_fetched: 7, total_pages: 7 }],
+    };
+    const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(manifest, new Map([["post_incompleto", 10]]));
+    const entry = reconciled.posts[0];
+    assert.equal(entry.status, "partial");
+    assert.equal(entry.count, 10, "count é corrigido pro valor real do disco");
+    assert.equal(entry.pages_fetched, 7, "pagination metadata preservada — só status/count mudam");
+    assert.equal(downgraded.length, 1);
+    assert.equal(downgraded[0].to, "partial");
+  });
+
+  it("ok com manifest.count batendo com o disco → intocado, nenhum rebaixamento", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_integro", status: "ok", count: 312 }],
+    };
+    const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(manifest, new Map([["post_integro", 312]]));
+    assert.deepEqual(reconciled.posts[0], manifest.posts[0]);
+    assert.deepEqual(downgraded, []);
+  });
+
+  it("post_id ausente do mapa de contagens reais é tratado como 0 (arquivo nunca existiu) → pending", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_sem_arquivo", status: "ok", count: 5 }],
+    };
+    const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(manifest, new Map());
+    assert.equal(reconciled.posts[0].status, "pending");
+    assert.equal(downgraded.length, 1);
+  });
+
+  it("nunca mexe em pending/partial/error/not_applicable — só ok é candidato", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [
+        { post_id: "a", status: "pending" },
+        { post_id: "b", status: "partial", count: 3 },
+        { post_id: "c", status: "error" },
+        { post_id: "d", status: "not_applicable" },
+      ],
+    };
+    // Contagens reais deliberadamente diferentes — não deveria importar, pois nenhuma é `ok`.
+    const actual = new Map([["a", 0], ["b", 999], ["c", 1], ["d", 1]]);
+    const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(manifest, actual);
+    assert.deepEqual(reconciled.posts, manifest.posts);
+    assert.deepEqual(downgraded, []);
+  });
+
+  it("mistura: alguns ok batem, alguns não — só os divergentes aparecem em downgraded", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [
+        { post_id: "p1", status: "ok", count: 10 },
+        { post_id: "p2", status: "ok", count: 0 },
+        { post_id: "p3", status: "ok", count: 50 },
+      ],
+    };
+    const actual = new Map([["p1", 10], ["p2", 0], ["p3", 12]]);
+    const { downgraded } = reconcileManifestWithDisk(manifest, actual);
+    assert.deepEqual(downgraded.map((d) => d.post_id).sort(), ["p2", "p3"]);
   });
 });

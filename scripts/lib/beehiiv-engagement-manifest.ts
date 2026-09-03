@@ -195,6 +195,73 @@ export function extractPostRefFromBackupFile(raw: unknown): { id: string; title?
   return isNeverSentPost(raw) ? { id, title, neverSent: true } : { id, title };
 }
 
+/**
+ * 1 entrada por post `ok` que a reconciliação rebaixou — usada pro relatório
+ * de `scripts/audit-engagement-manifest.ts` (#7197).
+ */
+export interface ManifestDowngrade {
+  post_id: string;
+  from: "ok";
+  to: EngagementEntryStatus;
+  reason: string;
+}
+
+export interface ManifestReconcileResult {
+  manifest: EngagementManifest;
+  downgraded: ManifestDowngrade[];
+}
+
+/** Prefixo estável dos motivos de rebaixamento — usado em teste e no `error` gravado na entry. */
+export const AUDIT_REASON_PREFIX = "auditoria #7197";
+
+/**
+ * Reconcilia o manifest contra a única fonte que não pode mentir sobre si
+ * mesma: as linhas de fato gravadas em disco (#7197 — "255 de 256 posts
+ * marcados ok, sendo que 7 têm count: 0 e 16 têm contagem menor do que as
+ * páginas drenadas comportam"). Puro — `actualCounts` é o resultado de
+ * `countExistingLines` por post_id, calculado pelo script chamador (I/O
+ * fica fora daqui, mesmo padrão do resto deste módulo).
+ *
+ * Só entries `status: "ok"` são candidatas a rebaixamento — `partial`,
+ * `error`, `pending` e `not_applicable` já são tratadas como "ainda precisa
+ * de trabalho" (`pendingEntries`) ou mecanicamente corretas
+ * (`not_applicable`), nada a reconciliar.
+ *
+ * Duas checagens, primeira que casa vence:
+ *   1. `actual === 0` — nenhum registro real em disco. Um `ok` com 0
+ *      registros só é legítimo quando `not_applicable` (post nunca
+ *      enviado) — se chegou aqui como `ok` "normal", é o padrão de
+ *      fabricação do #6496 (agent preencheu o schema sem ter chamado a
+ *      MCP). Rebaixa pra `pending` — precisa ser redrenado do zero.
+ *   2. `entry.count !== actual` — o manifest e o disco divergem (paginação
+ *      truncada que nunca foi corrigida, escrita concorrente, manifest
+ *      restaurado de um snapshot antigo). Rebaixa pra `partial` — o disco
+ *      tem ALGUM dado real (`actual > 0`), então não precisa redrenar do
+ *      zero, só completar; `entry.count` é corrigido pro valor real.
+ */
+export function reconcileManifestWithDisk(
+  manifest: EngagementManifest,
+  actualCounts: Map<string, number>,
+): ManifestReconcileResult {
+  const downgraded: ManifestDowngrade[] = [];
+  const posts = manifest.posts.map((entry) => {
+    if (entry.status !== "ok") return entry;
+    const actual = actualCounts.get(entry.post_id) ?? 0;
+    if (actual === 0) {
+      const reason = `${AUDIT_REASON_PREFIX}: 0 registros reais em disco (manifest dizia count=${entry.count ?? 0}) — nunca "ok" sem dado, redrenar do zero`;
+      downgraded.push({ post_id: entry.post_id, from: "ok", to: "pending", reason });
+      return { ...entry, status: "pending" as const, count: 0, error: reason };
+    }
+    if (entry.count !== actual) {
+      const reason = `${AUDIT_REASON_PREFIX}: manifest.count=${entry.count ?? "undefined"} divergia das linhas reais em disco (${actual})`;
+      downgraded.push({ post_id: entry.post_id, from: "ok", to: "partial", reason });
+      return { ...entry, status: "partial" as const, count: actual, error: reason };
+    }
+    return entry;
+  });
+  return { manifest: { ...manifest, posts }, downgraded };
+}
+
 /** Motivo gravado em `error` das entries `not_applicable` — texto estável, usado em teste. */
 export const NEVER_SENT_REASON = "post nunca enviado (rascunho) — sem engajamento a drenar";
 

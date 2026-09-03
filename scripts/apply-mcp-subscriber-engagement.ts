@@ -24,7 +24,7 @@
  * Uso (do agent `beehiiv-engagement-backup`):
  *   echo '{"engagement":[...]}' | npx tsx scripts/apply-mcp-subscriber-engagement.ts \
  *     --post-id post_<uuid> [--title "..."] \
- *     [--pages-fetched 3 --total-pages 3] [--allow-empty-replace] \
+ *     [--pages-fetched 3 --total-pages 3] [--allow-empty-replace] [--confirmed-empty] \
  *     [--out-dir data/beehiiv-backup/subscriber-engagement]
  *
  *   # Append vs replace: default é REPLACE (reescreve o `.jsonl` inteiro a
@@ -35,6 +35,16 @@
  *   echo '{"engagement":[page1]}' | npx tsx scripts/apply-mcp-subscriber-engagement.ts --post-id X --pages-fetched 1 --total-pages 3
  *   echo '{"engagement":[page2]}' | npx tsx scripts/apply-mcp-subscriber-engagement.ts --post-id X --pages-fetched 2 --total-pages 3 --append
  *   echo '{"engagement":[page3]}' | npx tsx scripts/apply-mcp-subscriber-engagement.ts --post-id X --pages-fetched 3 --total-pages 3 --append
+ *
+ * GUARD `ok` + 0 registros (#7197 — auditoria do acervo achou 7 posts assim,
+ * herdados do padrão de fabricação que o #6496 já corrigiu no AGENT, mas
+ * nunca ganhou um guard MECÂNICO neste script): por padrão, um resultado com
+ * 0 registros nunca fecha como `ok` — fecha como `partial` (`error` explica
+ * o motivo), forçando o post de volta pra `pendingEntries()` até alguém
+ * confirmar de propósito que o 0 é real. Passe `--confirmed-empty` só quando
+ * você (o agent) *literalmente acabou de receber*, nesta invocação, uma
+ * resposta vazia da MCP pra ESTE post_id — nunca porque "provavelmente é
+ * isso" (mesma disciplina de anti-fabricação do agent `beehiiv-engagement-backup`).
  *
  * Stdin JSON (tolerante — mesmo padrão de `apply-mcp-clicks.ts`):
  *   { "engagement": [...] }   — wrapper shape (resposta direta da MCP)
@@ -65,11 +75,13 @@
  *
  * Efeito colateral (sempre, mesmo em erro): grava/atualiza
  * `{out-dir}/manifest.json` via `scripts/lib/beehiiv-engagement-manifest.ts`
- * — status `ok` (todas as páginas confirmadas), `partial` (paginação
- * truncada — `pages_fetched < total_pages`), ou `error` (falha antes de
- * escrever). Isso é o que torna a extração retomável entre invocações do
- * agent: `list-posts-for-engagement-backup.ts` só reoferece posts que não
- * estão `ok`.
+ * — status `ok` (todas as páginas confirmadas E ≥1 registro, ou 0 registros
+ * com `--confirmed-empty`, ver guard #7197 acima), `partial` (paginação
+ * truncada — `pages_fetched < total_pages` — OU 0 registros sem
+ * `--confirmed-empty`), ou `error` (falha antes de escrever). Isso é o que
+ * torna a extração retomável entre invocações do agent:
+ * `list-posts-for-engagement-backup.ts` só reoferece posts que não estão
+ * `ok`.
  *
  * Output (stdout): JSON `{ post_id, before_count, after_count, status }`.
  * Stderr: warnings.
@@ -168,6 +180,13 @@ export interface ApplyEngagementOpts {
   outDir?: string;
   /** Mescla com o JSONL existente (dedup por `subscriber_id`) em vez de sobrescrever (#6733). */
   append?: boolean;
+  /**
+   * Confirma explicitamente que 0 registros é o resultado REAL de uma
+   * resposta MCP recebida nesta invocação (#7197) — sem isso, um resultado
+   * final com 0 registros nunca fecha como `ok` (vira `partial`, ver guard
+   * no topo do arquivo).
+   */
+  confirmedEmpty?: boolean;
 }
 
 export interface ApplyEngagementResult {
@@ -233,8 +252,19 @@ export function applyEngagement(stdinJson: string, opts: ApplyEngagementOpts): A
 
   const pagesFetched = opts.pagesFetched;
   const totalPages = opts.totalPages;
-  const status: "ok" | "partial" =
+  let status: "ok" | "partial" =
     pagesFetched != null && totalPages != null && pagesFetched < totalPages ? "partial" : "ok";
+
+  // GUARD (#7197): 0 registros nunca fecha `ok` sem confirmação explícita —
+  // ver docstring do arquivo. `records.length` aqui já é o resultado FINAL
+  // (pós-merge se `--append`), então cobre tanto REPLACE quanto o caso em
+  // que todas as páginas acumuladas via `--append` somaram zero.
+  let guardError: string | undefined;
+  if (status === "ok" && records.length === 0 && !opts.confirmedEmpty) {
+    status = "partial";
+    guardError =
+      "guard #7197: 0 registros sem --confirmed-empty explícito — nunca ok sem confirmação de que a MCP respondeu vazio de verdade nesta invocação";
+  }
 
   const manifest = loadManifest(manifestPath);
   const entry: EngagementManifestEntry = {
@@ -245,6 +275,7 @@ export function applyEngagement(stdinJson: string, opts: ApplyEngagementOpts): A
     pages_fetched: pagesFetched,
     total_pages: totalPages,
     fetched_at: new Date().toISOString(),
+    ...(guardError ? { error: guardError } : {}),
   };
   saveManifestAtomic(manifestPath, upsertEntry(manifest, entry));
 
@@ -274,7 +305,7 @@ async function main(): Promise<void> {
   if (postIdIdx === -1 || !argv[postIdIdx + 1]) {
     console.error(
       "uso: apply-mcp-subscriber-engagement.ts --post-id post_<uuid> [--title T] " +
-        "[--pages-fetched N --total-pages M] [--append] [--allow-empty-replace] [--out-dir DIR]  (JSON via stdin)",
+        "[--pages-fetched N --total-pages M] [--append] [--allow-empty-replace] [--confirmed-empty] [--out-dir DIR]  (JSON via stdin)",
     );
     process.exit(2);
   }
@@ -289,6 +320,7 @@ async function main(): Promise<void> {
     allowEmptyReplace: argv.includes(ALLOW_EMPTY_REPLACE_FLAG),
     outDir: outDirIdx !== -1 ? resolve(argv[outDirIdx + 1]) : undefined,
     append: argv.includes("--append"),
+    confirmedEmpty: argv.includes("--confirmed-empty"),
   };
 
   const stdinJson = await readStdin();
