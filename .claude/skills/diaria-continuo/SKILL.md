@@ -885,12 +885,15 @@ aqui.
    controla (acesso a painel de terceiro, guard de publicação da `continuo`
    proibindo envio real, feature gated por plano de plataforma), gravar
    isso como estado durável em vez de deixar a issue voltar pra fila com
-   cara de "decisão pendente": comentário começando com o marcador de
-   `formatExecutionBlockMarker` (`scripts/lib/issue-decisions.ts`,
-   `{recorded_at, motivo, sessao: "continuo"}`) seguido de prosa explicando
-   o que falta; **usar `route-issue`** (`npx tsx scripts/route-issue.ts --issue N --track bloqueada --reason "bloqueio-execucao"` — #6196: substitui `gh issue edit N --add-label bloqueio-execucao` que nunca tinha chamador no write-path das SKILLs; até #6196 mergear, `gh issue edit` ainda aceitável); classificar
-   como (c) bloqueio de execução na tabela do passo 5 abaixo, nunca reabrir
-   a pergunta da decisão em si.
+   cara de "decisão pendente": `npx tsx scripts/route-issue.ts --issue N --track bloqueada --reason "{motivo}" --sessao continuo` —
+   **desde #7270, embute automaticamente o marcador `bloqueio-execucao`
+   (`{recorded_at, motivo, condicao}`, `scripts/lib/issue-decisions.ts`) no
+   mesmo comentário do roteamento; não construir `formatExecutionBlockMarker`
+   à mão nem postar comentário separado.** Dependência de outra issue →
+   `--depends-on N` (marcador `depends-on:` #7137 já precisa estar no
+   corpo); qualquer outro impedimento → condição `externo` (default);
+   classificar como (c) bloqueio de execução na tabela do passo 5 abaixo,
+   nunca reabrir a pergunta da decisão em si.
    **Tabela obrigatória antes de dormir (#5376 fleet review — forcing
    function análoga ao passo 4.5 do overnight).** Um checklist em prosa,
    sozinho, é exatamente o tipo de instrução sem rastro auditável que causou

@@ -178,6 +178,11 @@ export const MOTIVO_LABEL: Readonly<Record<string, string>> = {
   "plataforma": "beehiiv",
   "kit": "kit-migration",
   "execucao": "bloqueio-execucao",
+  // #7270 — bloqueio por DEPENDÊNCIA de outra issue usa a label dedicada
+  // `dependencia-aberta` (#7137), não a genérica `bloqueio-execucao`. Auto-
+  // derivado por `routeIssue` (`scripts/route-issue.ts`) quando `--depends-on`
+  // é passado sem `--motivo` explícito — ver docstring de `routeIssue`.
+  "dependencia": "dependencia-aberta",
   "not-this-week": "not-this-week",
   "next-month": "next-month",
   // epica — #6201: `epic-guarda-chuva` ganhou track próprio (era motivo de

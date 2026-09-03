@@ -39,9 +39,35 @@
  *   npx tsx scripts/route-issue.ts --issue 1234 --track agendada \
  *     --until 2026-09-01 --reason "aguardando resposta da Beehiiv"
  *
- * `--reason` é opcional mas fortemente recomendado — vira o corpo legível
- * do comentário; sem ele, o comentário só carrega o marcador + o veredito.
- * `--until` só é aceito (e exigido) com `--track agendada`.
+ * `--reason` é **obrigatório** pra `--track bloqueada` e `--track agendada`
+ * (#7270/#7288 — bloqueio/agendamento sem motivo registrado é o padrão que
+ * as duas issues corrigiram); opcional pros demais tracks. `--until` só é
+ * aceito (e exigido) com `--track agendada`.
+ *
+ * ## `--track bloqueada` grava o marcador `bloqueio-execucao` (#7270)
+ *
+ * Toda vez que `--track bloqueada` roteia com sucesso, o comentário
+ * embute automaticamente `formatExecutionBlockMarker` (`scripts/lib/
+ * issue-decisions.ts`) — motivo (`--reason`) + condição de desbloqueio.
+ * Duas formas de condição:
+ *
+ *   - `--depends-on N` — a issue só desbloqueia quando #N fechar. Exige que
+ *     o marcador `<!-- depends-on: #N -->` (#7137) já esteja no CORPO da
+ *     issue; aplica a label `dependencia-aberta` (não a genérica
+ *     `bloqueio-execucao`) a menos que `--motivo` diga outra coisa.
+ *   - sem `--depends-on` — condição `externo` (texto de `--reason`), o
+ *     único caso que exige revisão humana periódica (ver
+ *     `scripts/route-marker-staleness-alarm.ts`).
+ *
+ * `--sessao {continuo|overnight|develop}` grava em `ExecutionBlock.sessao`
+ * (metadado informativo; default `"overnight"` quando omitido).
+ *
+ * ## `--track agendada` recusa razão que não é data (#7288 Parte A)
+ *
+ * `--reason` é validado contra 3 padrões de "isto não é uma data" (citação
+ * de dependência, gatilho condicional, tamanho de escopo — ver
+ * `scripts/lib/route-reason-guard.ts`); recusa nomeando o mecanismo certo.
+ * `--force` bypassa só essa checagem de padrão (nunca o motivo em branco).
  *
  * ## `--motivo` (#6197 item 2 — label específica vs genérica)
  *
@@ -110,12 +136,18 @@ import {
   syncWaitUntilMarkerOnIssue,
   upsertWaitUntilMarker,
 } from "./lib/wait-until-sync.ts";
+import { formatExecutionBlockMarker, type SessionKind } from "./lib/issue-decisions.ts";
+import { parseDependsOn } from "./lib/issue-depends-on.ts";
+import { detectNonDateReason, type NonDateReasonFinding } from "./lib/route-reason-guard.ts";
 
 export type GhRunFn = (args: string[], cwd: string) => GhSpawnResult;
 
 export interface RouteIssueOptions {
   issue: number;
   track: RouteTrack;
+  /** Obrigatório para `track === "bloqueada"` e `track === "agendada"` desde
+   * #7270/#7288 — ver docstring de `routeIssue`. Continua opcional pros
+   * demais tracks (comportamento pré-existente). */
   reason?: string;
   /** `--motivo` estruturado (#6197 item 2) — seleciona a label específica
    * do veredito em vez da genérica. Opcional; quando ausente, `routeIssue`
@@ -125,6 +157,26 @@ export interface RouteIssueOptions {
   /** ISO date/datetime (`AAAA-MM-DD` ou `AAAA-MM-DDTHH:mm:ssZ`) — só válido
    * (e obrigatório) com `track === "agendada"`. */
   until?: string;
+  /** #7270 — só válido com `track === "bloqueada"`. Número da issue da qual
+   * ESTA depende — declara `condicao: {tipo: "depends_on"}` no marcador
+   * `bloqueio-execucao` embutido no comentário. Exige que o marcador
+   * `<!-- depends-on: #N -->` (#7137) já exista no CORPO da issue — este
+   * verbo não o escreve, só valida a presença (o marcador é a fonte que
+   * `scripts/reconcile-issue-dependencies.ts` consulta pra desarmar
+   * sozinho; duplicar essa escrita aqui criaria 2 pontos de verdade). Sem
+   * `--depends-on`, a condição gravada é `externo` (ver docstring abaixo). */
+  dependsOn?: number;
+  /** Qual sessão está roteando — grava em `ExecutionBlock.sessao` quando
+   * `track === "bloqueada"`. Opcional; default `"overnight"` quando ausente
+   * (metadado informativo pro alarme de revisão periódica — nunca afeta
+   * classificação, só atribuição em relatório). */
+  sessao?: SessionKind;
+  /** #7288 Parte A — escape hatch pro falso positivo do detector de padrão
+   * não-data em `--track agendada --reason`. NÃO dispensa `--reason`
+   * (motivo vazio continua recusado incondicionalmente) — só bypassa a
+   * recusa por PADRÃO de texto (fatia de escopo, dependência, gatilho
+   * condicional). */
+  force?: boolean;
   cwd: string;
   ghRun?: GhRunFn;
   /** Injetável pra teste; default `new Date()`. Usado só na validação final
@@ -185,7 +237,12 @@ function fetchIssueState(
   };
 }
 
-function buildCommentBody(track: RouteTrack, reason: string | undefined, autoDeferUntilYmd?: string): string {
+function buildCommentBody(
+  track: RouteTrack,
+  reason: string | undefined,
+  autoDeferUntilYmd?: string,
+  executionBlockMarker?: string,
+): string {
   const marker = formatRouteIssueMarker(track);
   const lines = [marker, "", `Roteado para **${track}**${reason ? ` — ${reason}` : "."}`];
   // #6272 — deferimento vago (not-this-week/next-month) pareado com marcador
@@ -197,6 +254,15 @@ function buildCommentBody(track: RouteTrack, reason: string | undefined, autoDef
       "",
       `Marcador \`aguardando-ate: ${autoDeferUntilYmd}\` gravado automaticamente — a issue reaparece na fila nessa data sem ação manual (#6272).`,
     );
+  }
+  // #7270 — `track === "bloqueada"` embute o marcador `bloqueio-execucao`
+  // NO MESMO comentário, em vez de depender de uma sessão lembrar de
+  // postá-lo como passo SEPARADO (era exatamente esse 2º passo manual que
+  // 9 de 12 bloqueadas nunca receberam). Uma única chamada a `routeIssue`
+  // agora produz os dois marcadores — não há mais um caminho de escrita que
+  // aplique a label sem o motivo/condição de desbloqueio.
+  if (executionBlockMarker) {
+    lines.push("", executionBlockMarker);
   }
   return lines.join("\n");
 }
@@ -222,14 +288,65 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   if (track !== "agendada" && until) {
     return failResult(`--until só é aceito com --track agendada (recebido --track ${track}).`);
   }
+  if (options.dependsOn !== undefined && track !== "bloqueada") {
+    return failResult(`--depends-on só é aceito com --track bloqueada (recebido --track ${track}).`);
+  }
+
+  // #7270/#7288 — `--reason` passa a ser OBRIGATÓRIO pros dois vereditos que
+  // ficam invisíveis pra sempre sem ele: `bloqueada` sem motivo registrado é
+  // exatamente o que a auditoria do #7270 mediu (9 de 12 issues bloqueadas
+  // sem NENHUM marcador); `agendada` sem razão é o que permitiu o #7288
+  // acontecer sem nem precisar de um padrão de texto ruim — motivo em
+  // branco já era 1 dos 11 casos medidos (#6674). Os demais tracks
+  // continuam com `--reason` opcional (comportamento pré-existente).
+  const reasonTrimmed = (reason ?? "").trim();
+  if ((track === "bloqueada" || track === "agendada") && reasonTrimmed.length === 0) {
+    return failResult(
+      `--track ${track} exige --reason não-vazio — bloqueio/agendamento sem motivo registrado é o padrão que #7270/#7288 corrigiram.`,
+    );
+  }
+
+  // #7288 Parte A — `--track agendada` recusa razão que na verdade descreve
+  // dependência de outra issue, gatilho condicional sem data, ou tamanho de
+  // escopo (os 3 padrões que a auditoria do #7288 mediu em 10 dos 11 casos
+  // de "agendada" que eram estacionamento disfarçado). `--force` (escape
+  // hatch) bypassa só esta checagem de PADRÃO — nunca o motivo em branco
+  // acima, que não tem override possível (não há texto pra "forçar").
+  if (track === "agendada" && !options.force) {
+    const finding: NonDateReasonFinding | null = detectNonDateReason(reasonTrimmed);
+    if (finding) {
+      return failResult(
+        `--track agendada recusado: ${finding.message} (categoria "${finding.category}"; use --force pra sobrepor se isto for falso positivo).`,
+      );
+    }
+  }
 
   const fetchedBefore = fetchIssueState(issue, cwd, ghRun);
   if (!fetchedBefore.ok) {
     return failResult(`falha ao ler estado da issue #${issue}: ${fetchedBefore.error}`);
   }
 
-  // Resolve `--motivo`: explícito > auto-derivado (#6197 3b) > undefined (genérico).
-  const motivo = options.motivo ?? autoMotivoForTrack(track, fetchedBefore.data.labels);
+  // #7270 — `--depends-on N` exige que o marcador `<!-- depends-on: #N -->`
+  // (#7137) já esteja no CORPO da issue: este verbo não o escreve (evitaria
+  // 2 pontos de verdade com `scripts/reconcile-issue-dependencies.ts`, que é
+  // quem de fato consulta o marcador pra desarmar o bloqueio sozinho quando
+  // #N fecha) — só valida que a condição declarada é real antes de gravar
+  // o marcador `bloqueio-execucao` com `condicao: {tipo: "depends_on"}`.
+  if (options.dependsOn !== undefined) {
+    const declared = parseDependsOn(fetchedBefore.data.body, issue);
+    if (!declared.includes(options.dependsOn)) {
+      return failResult(
+        `--depends-on ${options.dependsOn} exige o marcador "<!-- depends-on: #${options.dependsOn} -->" já presente no corpo da issue #${issue} (#7137) — adicione-o antes de rotear.`,
+      );
+    }
+  }
+
+  // Resolve `--motivo`: explícito > dependência (#7270, se --depends-on foi
+  // passado) > auto-derivado (#6197 3b) > undefined (genérico).
+  const motivo =
+    options.motivo ??
+    (options.dependsOn !== undefined ? ("dependencia" as RouteMotivo) : undefined) ??
+    autoMotivoForTrack(track, fetchedBefore.data.labels);
 
   // #6272 — deferimento vago (`not-this-week`/`next-month`) é pareado com um
   // marcador `aguardando-ate:` auto-computado (`now + N dias`, ver
@@ -285,7 +402,33 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
 
   // Passo 3 — comentário com dedup.
   const autoDeferUntilYmd = vagueDeferralUntilIso ? vagueDeferralUntilIso.slice(0, 10) : undefined;
-  const commentBody = buildCommentBody(track, reason, autoDeferUntilYmd);
+  // #7270 — `track === "bloqueada"` sempre embute o marcador
+  // `bloqueio-execucao` (motivo + condição de desbloqueio) no MESMO
+  // comentário do roteamento — ver docstring de `buildCommentBody`.
+  // `reasonTrimmed` está garantido não-vazio pela validação acima (só chega
+  // aqui quando `track === "bloqueada"`). `recorded_at` trunca pra
+  // granularidade de DIA (`AAAA-MM-DD`, não o timestamp completo) — um
+  // timestamp com segundos tornaria CADA chamada de `routeIssue` (mesmo com
+  // veredito+razão idênticos, ex: retry dentro da mesma sessão) produzir um
+  // comentário levemente diferente, quebrando o dedup do Passo 3 abaixo
+  // (`alreadyPosted` compara o corpo inteiro) — regressão pega ao vivo pelo
+  // teste "dedup: rodar o mesmo veredito+razão duas vezes" já existente.
+  // Granularidade de dia ainda é suficiente pro alarme de revisão periódica
+  // (#7270 Parte 2, `scripts/lib/route-marker-staleness.ts`), que mede
+  // "sem atualização há N DIAS", nunca horas.
+  const executionBlockMarker =
+    track === "bloqueada"
+      ? formatExecutionBlockMarker({
+          recorded_at: now.toISOString().slice(0, 10),
+          motivo: reasonTrimmed,
+          sessao: options.sessao ?? "overnight",
+          condicao:
+            options.dependsOn !== undefined
+              ? { tipo: "depends_on", issue: options.dependsOn }
+              : { tipo: "externo", descricao: reasonTrimmed },
+        })
+      : undefined;
+  const commentBody = buildCommentBody(track, reason, autoDeferUntilYmd, executionBlockMarker);
   let commentAction: CommentAction;
   const alreadyPosted = fetchedBefore.data.comments.some((c) => c.trim() === commentBody.trim());
   if (alreadyPosted) {
@@ -447,6 +590,13 @@ interface ParsedArgs {
   motivo?: string;
   until?: string;
   body?: string;
+  /** #7270 — `--depends-on N` pra `--track bloqueada` (condição de
+   * desbloqueio `depends_on`). */
+  dependsOn?: string;
+  /** #7270 — sessão que está roteando, grava em `ExecutionBlock.sessao`. */
+  sessao?: string;
+  /** #7288 Parte A — escape hatch pro detector de padrão não-data. */
+  force?: boolean;
 }
 
 function parseRawArgs(argv: string[]): ParsedArgs | { error: string } {
@@ -460,6 +610,9 @@ function parseRawArgs(argv: string[]): ParsedArgs | { error: string } {
     else if (a === "--motivo") out.motivo = argv[++i];
     else if (a === "--until") out.until = argv[++i];
     else if (a === "--body") out.body = argv[++i];
+    else if (a === "--depends-on") out.dependsOn = argv[++i];
+    else if (a === "--sessao") out.sessao = argv[++i];
+    else if (a === "--force") out.force = true;
     else return { error: `argumento desconhecido: ${a}` };
   }
   return out;
@@ -478,7 +631,27 @@ function parseArgs(argv: string[]): RouteIssueOptions | { error: string } {
   if (motivo && !(motivo in MOTIVO_LABEL)) {
     return { error: `--motivo desconhecido: "${motivo}". Válidos: ${Object.keys(MOTIVO_LABEL).join(", ")}` };
   }
-  return { issue, track: track as RouteTrack, reason, motivo: motivo as RouteMotivo | undefined, until: raw.until, cwd: process.cwd() };
+  let dependsOn: number | undefined;
+  if (raw.dependsOn !== undefined) {
+    dependsOn = Number(raw.dependsOn.replace(/^#/, ""));
+    if (!Number.isInteger(dependsOn) || dependsOn <= 0) {
+      return { error: `--depends-on inválido: "${raw.dependsOn}" (esperado um número de issue positivo)` };
+    }
+  }
+  if (raw.sessao && raw.sessao !== "continuo" && raw.sessao !== "overnight" && raw.sessao !== "develop") {
+    return { error: `--sessao inválido: "${raw.sessao}". Válidos: continuo, overnight, develop` };
+  }
+  return {
+    issue,
+    track: track as RouteTrack,
+    reason,
+    motivo: motivo as RouteMotivo | undefined,
+    until: raw.until,
+    dependsOn,
+    sessao: raw.sessao as SessionKind | undefined,
+    force: raw.force,
+    cwd: process.cwd(),
+  };
 }
 
 function parseForCreateArgs(argv: string[]): ForCreateOptions | { error: string } {

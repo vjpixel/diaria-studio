@@ -307,7 +307,7 @@ Categoria inferida na Fase 0 por **labels reais** (`external-blocker`→A/B/E co
 
 **Bloqueio de execução já registrado (#5373 item 5) — não reabrir cat. C nem reclassificar como o mesmo bloqueio de sempre.** O mesmo comando acima também devolve `execution_block` (via `latestExecutionBlockFor`). Issue com label `bloqueio-execucao` (ou sem ela, rede de segurança) cujo `execution_block.recorded_at` é **posterior ou igual** a um eventual `decided_at` (#6961: os dois marcadores comparados entre si, nunca contra `updatedAt`) → a decisão já existe E o bloqueio de execução restante já está documentado: classificar direto na categoria A/B/E correspondente ao `motivo` registrado (sem nova pergunta, sem nova checagem de cat. C), usando `execution_block.motivo` como o "o-que-falta-destravar" da tabela do passo 7. Uma decisão nova, mais recente que o bloqueio → o bloqueio pode ter sido resolvido nesse meio-tempo, reavaliar normalmente (probe real antes de assumir que segue bloqueado).
 
-**Registro do bloqueio de execução, quando distinto da decisão em si.** Ao tentar destravar uma issue no Gate 1 e a execução esbarrar num impedimento novo (acesso que esta sessão não tem, guard de publicação, feature gated por plano) — mesmo já com a decisão cat. C resolvida — gravar como comentário começando com o marcador de `formatExecutionBlockMarker` (`scripts/lib/issue-decisions.ts`, `{recorded_at, motivo, sessao: "develop"}`) seguido de prosa; **usar `route-issue`** (`npx tsx scripts/route-issue.ts --issue N --track bloqueada --reason "bloqueio-execucao"` — #6196: substitui `gh issue edit N --add-label bloqueio-execucao` que nunca tinha chamador no write-path; até #6196 mergear, `gh issue edit N --add-label bloqueio-execucao` ainda aceitável como fallback); manter/gravar `unblock_status` refletindo o bloqueio real (não "decisão pendente"). Nunca re-perguntar a decisão já tomada.
+**Registro do bloqueio de execução, quando distinto da decisão em si.** Ao tentar destravar uma issue no Gate 1 e a execução esbarrar num impedimento novo (acesso que esta sessão não tem, guard de publicação, feature gated por plano) — mesmo já com a decisão cat. C resolvida — `npx tsx scripts/route-issue.ts --issue N --track bloqueada --reason "{motivo}" --sessao develop` — **desde #7270, embute automaticamente o marcador `bloqueio-execucao` (`{recorded_at, motivo, condicao}`) no mesmo comentário do roteamento; não construir `formatExecutionBlockMarker` à mão nem postar comentário separado**. Dependência de outra issue → `--depends-on N` (marcador `depends-on:` #7137 já precisa estar no corpo); qualquer outro impedimento → condição `externo` (default); manter/gravar `unblock_status` refletindo o bloqueio real (não "decisão pendente"). Nunca re-perguntar a decisão já tomada.
 
 **Nenhuma issue remanescente sem cat. A-E explícita (#5376, 15/08/2026 —
 mesma classe de bug do `/diaria-continuo` e do overnight abaixo).** Toda
@@ -475,7 +475,9 @@ tratamento diferente:
    presente também não resolve na hora: aguardar terceiro, feature gated por
    plano, acesso/conta que não existe. Sinal: resolver exigiria dias, uma
    ação de outra pessoa, ou uma decisão que nem o editor tem pronta agora.
-   → documentar (marcador `formatExecutionBlockMarker`, `bloqueio-execucao`)
+   → documentar via `route-issue.ts --track bloqueada --reason "..."` (embute
+   o marcador `formatExecutionBlockMarker`/`bloqueio-execucao` sozinho desde
+   #7270 — não construir o marcador à mão)
    e `pulada` motivo `nao-destravavel-na-sessao`, sem perguntar — pular
    direto é correto aqui, perguntar seria a mesma fricção que o #5321 já
    eliminou.

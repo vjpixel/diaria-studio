@@ -1669,6 +1669,29 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     schedule: { kind: "daily", hour: 10, minute: 45 },
     issue: "#6802",
   },
+  {
+    name: "Diaria-Route-Marker-Staleness-Alarm",
+    description:
+      "alarme semanal de marcador de roteamento desatualizado -- bloqueada sem marcador bloqueio-execucao, " +
+      "depends_on ja fechada, condicao externa sem atualizacao ha 30+ dias, agendada cuja razao cita issue " +
+      "ja fechada, agendada renovada 3+ vezes (#7270 Parte 2, #7288 Parte B)",
+    steps: [{ key: "alarm", script: "scripts/route-marker-staleness-alarm.ts" }],
+    logPath: "route-marker-staleness/.alarm.log",
+    // Domingo 11:15 BRT -- logo apos Diaria-On-Hold-Vencimento-Alarm (11:00),
+    // mesma familia de alarme "revisao semanal de rotulo que ninguem
+    // reavalia" (#5317), sem colisao com nenhum outro Sunday ja registrado
+    // (3:00, 3:30, 4:00, 4:10, 7:00, 8:05, 9:20, 9:33, 9:43, 10:30, 11:00,
+    // 22:00 -- checado via `--list` antes de escolher, #5408).
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 11, minute: 15 },
+    // Sem guard -- `listOpenIssuesForStaleness` ja e fail-soft (falha do
+    // `gh` devolve `null`, o script aborta com exit 1 sem alarmar; nunca
+    // trata "gh falhou" como "nenhum achado").
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro acima) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada
+    // (`helios`) e acao POSTERIOR do editor.
+    issue: "#7270, #7288",
+  },
 ];
 
 /**

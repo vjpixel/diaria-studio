@@ -108,6 +108,7 @@ describe("classifyDesbloqueioCandidate", () => {
       recorded_at: "2026-08-20T00:00:00Z",
       motivo: "falta acesso à conta X",
       sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "falta acesso à conta X" },
     });
     const input = baseInput({
       updatedAt: "2026-08-01T00:00:00Z",
@@ -182,6 +183,7 @@ describe("classifyDesbloqueioCandidate", () => {
       recorded_at: "2026-08-01T00:00:00Z",
       motivo: "falta token",
       sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "falta token" },
     });
     const input = baseInput({ updatedAt: "2026-08-01T00:00:00Z", comments: [marker] });
     const result = classifyDesbloqueioCandidate(input);
@@ -193,6 +195,7 @@ describe("classifyDesbloqueioCandidate", () => {
       recorded_at: "2026-08-10T00:00:00Z",
       motivo: "faltava token",
       sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "faltava token" },
     });
     const newDecision = formatDecisionMarker({
       decided_at: "2026-08-20T00:00:00Z",
@@ -219,6 +222,7 @@ describe("classifyDesbloqueioCandidate", () => {
       recorded_at: "2026-08-20T00:00:00Z",
       motivo: "voltou a faltar token depois da decisão",
       sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "voltou a faltar token depois da decisão" },
     });
     const input = baseInput({
       updatedAt: "2026-08-01T00:00:00Z",
@@ -240,6 +244,7 @@ describe("classifyDesbloqueioCandidate", () => {
       recorded_at: tie,
       motivo: "bloqueio registrado no mesmo instante",
       sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "bloqueio registrado no mesmo instante" },
     });
     const input = baseInput({
       updatedAt: "2026-08-01T00:00:00Z",
@@ -287,6 +292,7 @@ describe("scanDesbloqueioCandidates", () => {
       recorded_at: "2026-08-20T00:00:00Z",
       motivo: "falta token",
       sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "falta token" },
     });
     const report = scanDesbloqueioCandidates([
       baseInput({ number: 1, updatedAt: "2026-08-01T00:00:00Z", comments: [decided] }),

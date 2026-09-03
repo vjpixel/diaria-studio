@@ -123,15 +123,19 @@ da política, aplicar o default e rotear, sem gastar turno de pergunta.
   `SessionKind` dedicado pra esta skill e criar um só pra isso quebraria
   todo consumidor existente do enum sem ganho real).
 - **Bloqueio de execução novo, descoberto durante esta sessão** (ex:
-  editor confirma que a conta NÃO existe): marcador de
-  `formatExecutionBlockMarker`.
+  editor confirma que a conta NÃO existe): rotear direto pra `--track
+  bloqueada` (ver abaixo) — desde #7270, o marcador `formatExecutionBlockMarker`
+  é embutido automaticamente pelo `route-issue.ts`, não precisa (nem deve)
+  ser postado à mão como comentário separado.
 - **Token colado**: nunca vai pro comentário. Só confirmar via probe
   determinístico (ex: a var existe em `.env`, um script de dry-run passa)
   e comentar o RESULTADO do probe, nunca o valor.
-- Em todos os casos, depois de comentar: `npx tsx scripts/route-issue.ts
-  --issue N --track {track} --reason "..."` — nunca `gh issue edit
-  --add-label` cru (mesma disciplina do #5969, ver docstring de
-  `route-issue.ts`).
+- Em todos os casos, depois de comentar a decisão (ou como único passo,
+  pro caso de bloqueio de execução): `npx tsx scripts/route-issue.ts
+  --issue N --track {track} --reason "..."` (`--track bloqueada` exige
+  `--reason` não-vazio desde #7270; `--sessao develop` opcional) — nunca
+  `gh issue edit --add-label` cru (mesma disciplina do #5969, ver
+  docstring de `route-issue.ts`).
 
 ## Passo 5 — relatório final
 

@@ -156,6 +156,15 @@ export function applyFix(fix: MarkerDeferralConflictFix, cwd: string, ghRun: GhR
     track: fix.routeTrack,
     until: fix.routeTrack === "agendada" ? fix.markerDate : undefined,
     reason,
+    // #7288 Parte A — `reason` aqui é gerado MECANICAMENTE por este
+    // reconciliador (nunca texto livre de sessão) e sempre cita o próprio
+    // #6198 por atribuição ("reconciliação diária (#6198): ..."), o que
+    // dispara falso positivo na categoria "dependencia" do detector de
+    // padrão não-data (`scripts/lib/route-reason-guard.ts` — qualquer
+    // `#N` no texto é sinal). `force: true` bypassa só essa checagem de
+    // padrão; a validação de motivo NÃO-vazio continua valendo (`reason`
+    // aqui nunca é vazio, então nunca seria recusada de qualquer forma).
+    force: true,
     cwd,
     ghRun,
     now,
