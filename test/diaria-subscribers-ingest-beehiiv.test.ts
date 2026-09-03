@@ -8,7 +8,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import {
@@ -17,7 +17,13 @@ import {
   loadSourceEngagementManifest,
   readPostRecords,
 } from "../scripts/diaria-subscribers-ingest-beehiiv.ts";
-import { openDiariaSubscribersDb, getStoreCounts } from "../scripts/lib/diaria-subscribers-db.ts";
+import {
+  ensureSubscriber,
+  findSubscriberIdsByEmail,
+  openDiariaSubscribersDb,
+  getStoreCounts,
+  recordEvent,
+} from "../scripts/lib/diaria-subscribers-db.ts";
 import type { EngagementManifest } from "../scripts/lib/beehiiv-engagement-manifest.ts";
 
 /** Monta um diretório de backup fixture: manifest.json + N .jsonl. */
@@ -293,5 +299,51 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
     await main(["--db", dbPath, "--source-dir", sourceDir]);
     assert.equal(process.exitCode, 1);
     process.exitCode = originalExit;
+  });
+
+  // #7187: com --reset, o store novo é construído num `.db` de TRABALHO e
+  // instalado por rename atômico SÓ NO FIM. Este teste pina o contrato
+  // ponta-a-ponta: dado velho é SUBSTITUÍDO (não mesclado), nenhum arquivo
+  // de trabalho sobra, e a instalação de fato acontece (um commit esquecido
+  // deixaria o store vazio → falha).
+  it("--reset reconstrói o store via build em tmp + swap atômico, sem lixo de trabalho", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-beehiiv-ingest-reset-"));
+    mkdirSync(resolve(tmp, "data/diaria-subscribers"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/beehiiv-ingest-manifest.json");
+
+    // Store "velho" com dado que NÃO existe na fonte — um reset que não
+    // instala o store novo (ou que mescla em vez de substituir) deixa rastro.
+    const pre = openDiariaSubscribersDb(dbPath);
+    const oldSub = ensureSubscriber(pre, "beehiiv", "ext-fantasma", "fantasma@x.com", "2025-12-31T00:00:00Z");
+    recordEvent(pre, {
+      subscriberId: oldSub,
+      platform: "beehiiv",
+      type: "sent",
+      externalEventId: "e-fantasma",
+      ts: "2025-12-31T00:00:00Z",
+    });
+    pre.close();
+
+    const sourceManifest: EngagementManifest = {
+      generated_at: "2026-01-01T00:00:00Z",
+      posts: [{ post_id: "post_1", title: "Edição A", status: "ok", count: 1 }],
+    };
+    const sourceDir = makeSourceDir(tmp, sourceManifest, {
+      post_1: [{ subscriber_id: "s1", email: "a@x.com", status: "delivered", timestamp: "2026-01-01T00:00:00Z" }],
+    });
+
+    await main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir, "--reset"]);
+
+    const db = openDiariaSubscribersDb(dbPath);
+    assert.deepEqual(findSubscriberIdsByEmail(db, "fantasma@x.com"), [], "dado VELHO substituído, não mesclado");
+    assert.equal(findSubscriberIdsByEmail(db, "a@x.com").length, 1, "dado da reingestão presente");
+    assert.equal(getStoreCounts(db).subscribers, 1);
+    db.close();
+
+    const litter = readdirSync(resolve(tmp, "data/diaria-subscribers")).filter((e) =>
+      e.includes(".rebuild-tmp-"),
+    );
+    assert.deepEqual(litter, [], "nenhum `.db` de trabalho sobrou após o swap");
   });
 });

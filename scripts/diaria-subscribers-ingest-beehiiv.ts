@@ -82,6 +82,27 @@
  * (é o MESMO arquivo `.db`); reingerir as outras plataformas depois é
  * responsabilidade de quem roda o comando, não deste script.
  *
+ * ## `--reset` é atômico entre máquinas (#7187)
+ *
+ * O store novo NÃO é escrito por cima do atual: com `--reset`, toda a
+ * reingestão roda num `.db` de TRABALHO no mesmo diretório
+ * (`atomicRebuildTempPath`) e só no fim, com o store completo e a conexão
+ * fechada, `atomicCommitRebuild` o instala por `rename` atômico. Motivação:
+ * o `.db` é sincronizado via OneDrive entre as máquinas do projeto — o
+ * padrão antigo (apagar e recriar no lugar) propagava a DELEÇÃO antes da
+ * recriação terminar, deixando a outra máquina sem store nenhum, só com os
+ * sidecars `-wal`/`-shm` órfãos (estado inválido). Agora ela vê o store
+ * VELHO (dados desatualizados, estado válido) durante toda a janela —
+ * ausência → desatualização. Duas consequências de borda:
+ *
+ * - Se a run morre no meio (crash, `--limit` interrompido), o store VELHO
+ *   segue intacto no lugar e o lixo do build é varrido na próxima run com
+ *   `--reset`. Antes, morrer entre apagar e recriar deixava o store
+ *   destruído.
+ * - Se o manifest da fatia 1 (fonte) não estiver disponível, a run aborta
+ *   ANTES de qualquer troca — o store atual permanece (antes, o `--reset`
+ *   apagava primeiro e só então descobria que não tinha fonte).
+ *
  * ## Passo do ROSTER — popula `subscription` (#7229)
  *
  * O passo de engajamento acima (posts × assinante) nunca teve `status`/
@@ -107,7 +128,13 @@ import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 import { getArg, getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getStoreCounts } from "./lib/diaria-subscribers-db.ts";
+import {
+  DEFAULT_DB_PATH,
+  atomicCommitRebuild,
+  atomicRebuildTempPath,
+  openDiariaSubscribersDb,
+  getStoreCounts,
+} from "./lib/diaria-subscribers-db.ts";
 import {
   ingestPostEngagement,
   verifyBeehiivIngestion,
@@ -308,14 +335,29 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
 
   // Reingestão do zero (#7181) — nunca limpar in-place, ver docstring do
-  // módulo. Apaga só o `.db` e o manifest PRÓPRIO desta ingestão; o
-  // manifest da fatia 1 (fonte, read-only) nunca é tocado.
+  // módulo. Apaga só o manifest PRÓPRIO desta ingestão; o manifest da fatia
+  // 1 (fonte, read-only) nunca é tocado.
+  //
+  // O `.db` NÃO é apagado aqui (#7187): com `--reset`, toda a reingestão
+  // abaixo roda num `.db` de TRABALHO no mesmo diretório
+  // (`atomicRebuildTempPath`) e só no fim, com o store completo e fechado,
+  // `atomicCommitRebuild` o instala por `rename` atômico. O consumidor da
+  // outra máquina (o `.db` é sincronizado via OneDrive) vê o store VELHO
+  // (dados desatualizados, estado válido) durante toda a janela — nunca o
+  // estado inválido "só sidecars `-wal`/`-shm` sem `.db`" que o apagar-e-
+  // recriar produzia. Se esta run abortar no meio (fonte ausente, crash),
+  // o store velho segue intacto e o lixo do build é varrido na próxima.
+  let workingDbPath = dbPath;
+  let rebuildTmpPath: string | null = null;
   if (reset) {
-    for (const p of [dbPath, manifestPath]) {
-      if (existsSync(p)) {
-        rmSync(p);
-        console.error(`🗑️  --reset: removido ${p}`);
-      }
+    rebuildTmpPath = atomicRebuildTempPath(dbPath);
+    workingDbPath = rebuildTmpPath;
+    console.error(
+      `🧱 --reset: store novo será construído em ${rebuildTmpPath} (swap atômico no fim, #7187)`,
+    );
+    if (existsSync(manifestPath)) {
+      rmSync(manifestPath);
+      console.error(`🗑️  --reset: removido ${manifestPath}`);
     }
   }
 
@@ -352,7 +394,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   console.error(`🔎 ${pending.length} post(s) pendente(s) de ${readySourceEntries.length} pronto(s).`);
 
-  const db = openDiariaSubscribersDb(dbPath);
+  const db = openDiariaSubscribersDb(workingDbPath);
   let eventsNewTotal = 0;
   let eventsAlreadyKnownTotal = 0;
   let processed = 0;
@@ -398,6 +440,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   const storeCounts = getStoreCounts(db);
   db.close();
+
+  // Instalação atômica do store novo (#7187) — só depois de TODO o build
+  // completo e a conexão fechada. A partir daqui, o `dbPath` definitivo é ou
+  // o store velho (se o rename falhar — exceção propagada, run aborta) ou o
+  // novo completo; nunca partial nem ausente.
+  if (rebuildTmpPath) {
+    atomicCommitRebuild(rebuildTmpPath, dbPath);
+    console.error(`✅ --reset: store novo instalado atomicamente em ${dbPath} (#7187)`);
+  }
 
   const coverage = manifestCoverageSummary(manifest);
   console.log(
