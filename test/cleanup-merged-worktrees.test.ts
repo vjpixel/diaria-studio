@@ -20,6 +20,7 @@ import {
   worktreeNameFromPath,
   filterOutInUseWorktrees,
   filterOutLockedWorktrees,
+  filterOutDirtyWorktrees,
   ORPHAN_STALE_THRESHOLD_MS,
 } from "../scripts/cleanup-merged-worktrees.ts";
 import type { SessionRecord } from "../scripts/lib/session-registry.ts";
@@ -488,4 +489,102 @@ test("shouldSkipForSharedSession — TODAS stale → nunca pula, mesmo em grande
     false,
     "15 registros coordenadores stale não devem bloquear a varredura — nenhum está genuinamente vivo",
   );
+});
+
+// ─── #7304 ────────────────────────────────────────────────────────────────
+// Dois defeitos distintos, um teste cada:
+//   (a) a sessão que chama o cleanup se conta como "outra sessão ativa" e
+//       preserva os próprios worktrees — cada rodada limpa só a anterior;
+//   (b) "branch mergeada" não implica "worktree descartável": a remoção é
+//       `--force` e nada olhava a working tree.
+
+test("#7304 — cleanup rodado pela PRÓPRIA sessão remove o próprio worktree, e preserva o de outra sessão ativa", () => {
+  const entries = [
+    { path: "/repo/.claude/worktrees/agent-meu", branch: "overnight/fix-1", locked: false },
+    { path: "/repo/.claude/worktrees/agent-do-peer", branch: "overnight/fix-2", locked: false },
+  ];
+
+  const propria: SessionRecord = {
+    kind: "overnight",
+    machineTag: "helios",
+    sessionId: "sess-propria",
+    startedAt: "2026-09-03T00:00:00.000Z",
+    lastHeartbeat: "2026-09-03T00:05:00.000Z",
+    touched_paths: [".claude/worktrees/agent-meu/scripts/foo.ts"],
+  };
+  const peer: SessionRecord = {
+    kind: "continuo",
+    machineTag: "helios",
+    sessionId: "sess-peer",
+    startedAt: "2026-09-03T00:00:00.000Z",
+    lastHeartbeat: "2026-09-03T00:05:00.000Z",
+    dirty_paths: [".claude/worktrees/agent-do-peer/scripts/bar.ts"],
+  };
+
+  // Sem exclusão (comportamento pré-#7304): a própria sessão se protege e os
+  // DOIS ficam preservados — é o bug medido na rodada 260902b.
+  const semExclusao = selectInUseWorktreeNames([propria, peer]);
+  assert.deepEqual(
+    filterOutInUseWorktrees(entries, semExclusao).map((e) => e.path),
+    [],
+    "sem excludeSessionId, a rodada preserva o próprio worktree (o defeito)",
+  );
+
+  // Com exclusão: o próprio vira elegível, o do peer continua protegido.
+  const comExclusao = selectInUseWorktreeNames([propria, peer], "sess-propria");
+  assert.deepEqual(
+    filterOutInUseWorktrees(entries, comExclusao).map((e) => e.path),
+    ["/repo/.claude/worktrees/agent-meu"],
+    "com excludeSessionId, o próprio worktree é removível e o do peer segue protegido",
+  );
+});
+
+test("#7304 — excludeSessionId ausente preserva o comportamento anterior byte a byte", () => {
+  const s: SessionRecord = {
+    kind: "develop",
+    machineTag: "neo",
+    sessionId: "sess-x",
+    startedAt: "2026-09-03T00:00:00.000Z",
+    lastHeartbeat: "2026-09-03T00:05:00.000Z",
+    touched_paths: [".claude/worktrees/agent-x/foo.ts"],
+  };
+  assert.deepEqual([...selectInUseWorktreeNames([s])], [...selectInUseWorktreeNames([s], undefined)]);
+  assert.equal(selectInUseWorktreeNames([s]).has("agent-x"), true);
+});
+
+test("#7304 — worktree de branch MERGEADA com trabalho não-commitado nunca é removido", () => {
+  const entries = [
+    { path: "/repo/.claude/worktrees/limpo", branch: "overnight/fix-1", locked: false },
+    { path: "/repo/.claude/worktrees/sujo", branch: "overnight/fix-2", locked: false },
+  ];
+  // Ambos passam pela elegibilidade por histórico: branch mergeada.
+  const elegiveis = selectMergedForRemoval(entries, () => true);
+  assert.equal(elegiveis.length, 2, "os dois são elegíveis olhando só o histórico");
+
+  const { kept, skipped } = filterOutDirtyWorktrees(elegiveis, (p) => p.endsWith("/sujo"));
+  assert.deepEqual(kept.map((e) => e.path), ["/repo/.claude/worktrees/limpo"]);
+  assert.deepEqual(skipped.map((e) => e.path), ["/repo/.claude/worktrees/sujo"]);
+});
+
+test("#7304 — falha ao inspecionar a working tree conta como SUJO (preserva, nunca apaga)", () => {
+  const entries = [{ path: "/repo/.claude/worktrees/indeterminado", branch: "overnight/fix", locked: false }];
+  const { kept, skipped } = filterOutDirtyWorktrees(entries, () => null);
+  assert.deepEqual(kept, [], "git falhou → não remove");
+  assert.deepEqual(skipped.map((e) => e.path), ["/repo/.claude/worktrees/indeterminado"]);
+});
+
+test("#7304 — o guard de sujeira também cobre o caminho órfão+stale, não só o de branch mergeada", () => {
+  const NOW_7304 = Date.parse("2026-09-03T00:00:00.000Z");
+  const entries = [{ path: "/repo/.claude/worktrees/orfao-sujo", branch: null, locked: false }];
+  const orfaos = selectOrphanedForStaleRemoval(
+    entries,
+    [],
+    () => false,
+    () => NOW_7304 - 8 * 24 * 60 * 60 * 1000,
+    NOW_7304,
+  );
+  assert.equal(orfaos.length, 1, "órfão velho é elegível por staleness");
+  const { kept, skipped } = filterOutDirtyWorktrees(orfaos, () => true);
+  assert.deepEqual(kept, []);
+  assert.deepEqual(skipped.map((e) => e.path), ["/repo/.claude/worktrees/orfao-sujo"]);
 });
