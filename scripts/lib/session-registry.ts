@@ -329,6 +329,15 @@ export interface SessionRecord {
    * além de `.merge-lock.json` aparece ali, e a #6296 já admitia "arquivo
    * dedicado OU campo no próprio record". Ver `grantMergeWindow`. */
   merge_grant?: MergeGrant;
+  /** Auto-autorização de merge REGISTRADA pela PRÓPRIA sessão bloqueada
+   * (#7303) — escape hatch pro caso em que a(s) única(s) coordenadora(s)
+   * ativa(s) é/são `continuo` (cron, não conversa) e por isso não há
+   * ninguém pra pedir `grant-merge`. Vive no record da PRÓPRIA sessão
+   * bloqueada (nunca no de uma coordenadora — ao contrário de `merge_grant`,
+   * que é sempre emitido por quem concede), mesmo racional de "campo no
+   * próprio record, não arquivo novo" do `merge_grant` acima. Ver
+   * `selfAuthorizeMerge`. */
+  self_authorized_merge?: SelfAuthorizedMerge;
   /**
    * Campo COMPUTADO por `listActiveSessions` (#5474) — nunca persistido em
    * disco. `true` quando `now - lastHeartbeat > SOFT_STALE_MS`, sinalizando
@@ -583,6 +592,46 @@ export interface MergeGrant {
   grantedAt: string;
   /** Preenchido quando a janela é consumida; concessão consumida não vale mais. */
   consumedAt?: string;
+}
+
+/**
+ * Registro de auto-autorização de merge (#7303) — a saída de escape quando o
+ * guard do #5716 bloqueia `gh pr merge` e a(s) única(s) coordenadora(s) ativa(s)
+ * é/são `continuo`: um cron não lê `SendMessage` nem concede `grant-merge`, e a
+ * saída documentada (pedir a janela à coordenadora ativa) fica inalcançável.
+ *
+ * Diferente de `MergeGrant` — que é emitido por UMA sessão (a coordenadora)
+ * PARA OUTRA (a beneficiária) — este registro é a PRÓPRIA sessão bloqueada
+ * se autorizando, de forma explícita e auditável ("registro explícito de que
+ * agiu sem concessão", conforme a Direção 2 da issue). `reason` é obrigatório
+ * — nunca uma auto-autorização silenciosa. Uso único de fato via TTL curto
+ * (mesmo `MERGE_GRANT_TTL_MS` de `MergeGrant`) — não há campo `consumedAt`
+ * porque o consumo de uma auto-autorização não precisa de contabilidade: ela
+ * expira sozinha e uma nova auto-autorização sempre pode ser emitida (ao
+ * contrário de `MergeGrant`, cujo uso único protege contra um TERCEIRO
+ * consumir a concessão de outra sessão — aqui não há terceiro, é a própria
+ * sessão se autorizando).
+ *
+ * Ver `selfAuthorizeMerge` — só emite quando NENHUMA coordenadora ativa tem
+ * kind diferente de `continuo` (havendo uma `overnight`/`develop` ativa, o
+ * caminho normal de `grant-merge` continua sendo o único, porque ali SIM há
+ * um interlocutor). O guard mecânico
+ * (`.claude/hooks/block-gh-pr-merge-subagent.mjs`) trata uma auto-autorização
+ * viva exatamente como uma concessão — ela destrava IDENTIDADE, nunca TEMPO
+ * (mesmo princípio do #6303 P1·a): quem tem uma auto-autorização ainda passa
+ * pela composição com o merge lock antes de poder mergear de fato, então a
+ * serialização com um `gh pr merge` que a coordenadora `continuo` esteja
+ * rodando naquele instante continua garantida pelo lock, não pela
+ * auto-autorização.
+ */
+export interface SelfAuthorizedMerge {
+  /** Motivo declarado pela sessão — obrigatório, nunca vazio (#7303: nunca
+   * uma auto-autorização silenciosa). */
+  reason: string;
+  /** PR que a auto-autorização cobre — informativo/auditoria, e escopo
+   * (mesma semântica de `MergeGrant.pr`: ausente = cobre qualquer PR). */
+  pr?: number;
+  authorizedAt: string;
 }
 
 /**
@@ -4516,6 +4565,98 @@ export function findSessionConflicts(
 
 // ─── Concessão de janela de merge (#6296) ──────────────────────────────────
 
+export type SelfAuthorizeMergeReason =
+  | "authorized"
+  | "reason-required"
+  | "no-active-coordinator"
+  | "responsive-coordinator-active"
+  | "caller-is-coordinator"
+  | "session-not-registered";
+
+export interface SelfAuthorizeMergeResult {
+  ok: boolean;
+  reason: SelfAuthorizeMergeReason;
+  record?: SelfAuthorizedMerge;
+  /** Populado só em `responsive-coordinator-active` — os kinds das
+   * coordenadoras que NÃO são `continuo` e por isso continuam alcançáveis
+   * via `grant-merge` normal. */
+  coordinatorKinds?: SessionKind[];
+}
+
+/**
+ * Auto-autoriza UM merge quando a sessão chamadora está bloqueada pelo guard
+ * do #5716 e não há NENHUMA coordenadora ativa capaz de conceder `grant-merge`
+ * (#7303) — só `continuo` (cron, não conversa) está ativa.
+ *
+ * Escopo deliberadamente ESTREITO — as 4 recusas existem pra nunca abrir mão
+ * de nenhuma proteção que já vale pra uma rodada supervisionada normal:
+ *
+ * - **`no-active-coordinator`** — sem coordenadora nenhuma ativa, `gh pr
+ *   merge` nem seria bloqueado pelo guard (#5716 só bloqueia havendo rodada
+ *   ativa) — não há nada pra contornar.
+ * - **`caller-is-coordinator`** — quem chama já É uma coordenadora
+ *   registrada, já tem direito de mergear por si (via `isCoordinator` no
+ *   guard); auto-autorizar seria decorativo.
+ * - **`responsive-coordinator-active`** — existe pelo menos UMA coordenadora
+ *   `overnight`/`develop` ativa (kind que CONVERSA). O caminho normal
+ *   (`grant-merge` dela) continua sendo o único — este mecanismo não é um
+ *   atalho pra evitar pedir, é a saída só quando pedir é estruturalmente
+ *   impossível. Isto também é o que impede uma sessão bloqueada por uma
+ *   rodada `develop` normal (o caso que o #5716 protege) de se
+ *   auto-autorizar só porque, entre várias coordenadoras ativas, uma delas
+ *   por acaso é `continuo`.
+ * - **`session-not-registered`** — a auto-autorização é gravada no PRÓPRIO
+ *   record da sessão chamadora (nunca no de uma coordenadora — inverso de
+ *   `grantMergeWindow`), e ela precisa já ter um arquivo em
+ *   `data/sessions/` (escrito pelo beacon na 1ª chamada de ferramenta desta
+ *   sessão). Praticamente sempre verdade no momento em que `gh pr merge` já
+ *   foi tentado (o próprio comando bloqueado já passou pelo beacon antes) —
+ *   registrado como recusa explícita, não suposto.
+ *
+ * `reason` é OBRIGATÓRIO (não-vazio) — nunca uma auto-autorização silenciosa,
+ * conforme a Direção 2 da issue ("registro explícito de que agiu sem
+ * concessão"). O guard mecânico (`.claude/hooks/block-gh-pr-merge-subagent.mjs`)
+ * trata a auto-autorização viva exatamente como `merge_grant`: destrava
+ * IDENTIDADE, nunca TEMPO — quem a usa ainda precisa adquirir o merge lock
+ * antes de `gh pr merge` de fato suceder (`merge-lock-acquire`), então a
+ * serialização com um merge que a própria `continuo` esteja fazendo naquele
+ * instante continua garantida pelo lock.
+ */
+export function selfAuthorizeMerge(
+  repoRoot: string,
+  sessionId: string,
+  opts: { reason: string; pr?: number; now?: string },
+): SelfAuthorizeMergeResult {
+  const reason = (opts.reason ?? "").trim();
+  if (reason === "") return { ok: false, reason: "reason-required" };
+
+  const now = opts.now ?? new Date().toISOString();
+  const nowMs = Date.parse(now);
+  const coordinators = listActiveSessions(repoRoot, Number.isFinite(nowMs) ? nowMs : Date.now()).filter(
+    (s) => isCoordinatorKind(s.kind) && !s.stale,
+  );
+  if (coordinators.length === 0) return { ok: false, reason: "no-active-coordinator" };
+  if (coordinators.some((s) => s.sessionId === sessionId)) return { ok: false, reason: "caller-is-coordinator" };
+  const responsiveKinds = [...new Set(coordinators.filter((s) => s.kind !== "continuo").map((s) => s.kind))];
+  if (responsiveKinds.length > 0) {
+    return { ok: false, reason: "responsive-coordinator-active", coordinatorKinds: responsiveKinds };
+  }
+
+  const path = findExistingSessionFileAnyKind(repoRoot, sessionId);
+  if (!path) return { ok: false, reason: "session-not-registered" };
+
+  const record: SelfAuthorizedMerge = { reason, authorizedAt: now, ...(opts.pr !== undefined ? { pr: opts.pr } : {}) };
+  writeJsonSafeWithCas(
+    path,
+    (current) => {
+      if (!current) throw new Error("selfAuthorizeMerge: sessão sumiu entre a leitura e a escrita");
+      return { ...current, self_authorized_merge: record, lastHeartbeat: now };
+    },
+    (onDisk) => onDisk?.self_authorized_merge?.authorizedAt === record.authorizedAt,
+  );
+  return { ok: true, reason: "authorized", record };
+}
+
 export type GrantMergeReason =
   | "granted"
   | "self-grant-refused"
@@ -4684,6 +4825,26 @@ export function isMergeGrantLive(
   const ageMs = now - grantedMs;
   // Idade negativa além da tolerância de skew: não trata como válida por
   // tempo indefinido, mas também não rouba — mesma disciplina do merge lock.
+  if (ageMs < -CLOCK_SKEW_TOLERANCE_MS) return false;
+  return ageMs <= ttlMs;
+}
+
+/**
+ * Espelha `isMergeGrantLive` para `SelfAuthorizedMerge` (#7303) — dentro do
+ * TTL (mesmo `MERGE_GRANT_TTL_MS`, com a mesma tolerância de clock skew).
+ * Sem checagem de `consumedAt`/identidade cruzada porque não existem aqui
+ * (ver docblock de `SelfAuthorizedMerge`: não há terceiro a proteger contra).
+ * Pura.
+ */
+export function isSelfAuthorizedMergeLive(
+  record: SelfAuthorizedMerge | undefined,
+  now: number = Date.now(),
+  ttlMs: number = MERGE_GRANT_TTL_MS,
+): boolean {
+  if (!record) return false;
+  const authorizedMs = Date.parse(record.authorizedAt);
+  if (!Number.isFinite(authorizedMs)) return false;
+  const ageMs = now - authorizedMs;
   if (ageMs < -CLOCK_SKEW_TOLERANCE_MS) return false;
   return ageMs <= ttlMs;
 }
@@ -5481,6 +5642,72 @@ function main(): void {
         if (!ok) process.exitCode = 1;
         break;
       }
+      case "self-authorize-merge": {
+        // #7303: escape hatch pro caso em que `gh pr merge` está bloqueado
+        // pelo guard do #5716 e a ÚNICA coordenadora ativa é `continuo`
+        // (cron, não conversa) — pedir `grant-merge` a ela é estruturalmente
+        // impossível. Ver docstring de `selfAuthorizeMerge` pro escopo
+        // completo (as 4 recusas existem pra nunca abrir mão de proteção
+        // nenhuma que já vale pra uma rodada supervisionada normal).
+        const sessionId = requireSessionId(values);
+        const reasonArg = values.reason;
+        if (!reasonArg || reasonArg.trim() === "") {
+          throw new Error(
+            "--reason (não-vazio) é obrigatório — nunca uma auto-autorização silenciosa (#7303). " +
+              'Ex: self-authorize-merge --reason "única coordenadora ativa é continuo, sem interlocutor" [--pr N].',
+          );
+        }
+        const pr = values.pr ? Number(values.pr) : undefined;
+        const result = selfAuthorizeMerge(repoRoot, sessionId, { reason: reasonArg, ...(pr !== undefined ? { pr } : {}) });
+        switch (result.reason) {
+          case "authorized":
+            process.stdout.write(
+              `session-registry: self-authorize-merge ok — auto-autorizado${pr !== undefined ? ` (PR #${pr})` : ""}, ` +
+                `TTL ${Math.round(MERGE_GRANT_TTL_MS / 60000)}min. Isto NÃO dispensa o merge lock: rode ` +
+                "merge-lock-acquire --pr N ANTES do gh pr merge — a auto-autorização destrava identidade, " +
+                "nunca tempo, mesmo princípio de grant-merge (#6303 P1·a).\n",
+            );
+            break;
+          case "reason-required":
+            process.stdout.write("session-registry: self-authorize-merge RECUSADO — --reason vazio\n");
+            process.exitCode = 1;
+            break;
+          case "no-active-coordinator":
+            process.stdout.write(
+              "session-registry: self-authorize-merge no-op — nenhuma coordenadora ativa registrada. gh pr merge " +
+                "provavelmente já não está bloqueado pelo guard do #5716 (ele só bloqueia havendo rodada ativa) — " +
+                "não há nada pra contornar aqui.\n",
+            );
+            process.exitCode = 1;
+            break;
+          case "responsive-coordinator-active":
+            process.stdout.write(
+              `session-registry: self-authorize-merge RECUSADO — há coordenadora(s) ativa(s) que CONVERSA(M): ` +
+                `${result.coordinatorKinds?.join(", ")}. O caminho normal continua sendo o único: peça a janela via ` +
+                "grant-merge dela. Este comando só existe pro caso em que NENHUMA coordenadora ativa consegue " +
+                "responder (só continuo).\n",
+            );
+            process.exitCode = 1;
+            break;
+          case "caller-is-coordinator":
+            process.stdout.write(
+              "session-registry: self-authorize-merge no-op — você já é uma coordenadora REGISTRADA e ativa; já " +
+                "tem direito de mergear por si (o guard te reconhece via isCoordinator), sem precisar deste " +
+                "comando.\n",
+            );
+            process.exitCode = 1;
+            break;
+          case "session-not-registered":
+            process.stdout.write(
+              "session-registry: self-authorize-merge RECUSADO — esta sessão ainda não tem registro em " +
+                "data/sessions/ (o beacon cria um na 1ª chamada de ferramenta). Rode qualquer outro comando " +
+                "(ex: git status) e tente de novo.\n",
+            );
+            process.exitCode = 1;
+            break;
+        }
+        break;
+      }
       case "gc": {
         const maxAgeDaysRaw = values["max-age-days"];
         const conservativeMaxAgeMs =
@@ -5504,8 +5731,8 @@ function main(): void {
       default:
         process.stderr.write(
           "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|unclaim-issue|is-claimed|" +
-            "list-active|active-of-kind|conflicts|grant-merge|check-merge-grant|consume-merge-grant|merge-lock-acquire|" +
-            "merge-lock-release|merge-lock-renew|gc> [--kind overnight|develop|continuo|interactive|continuo-review] [--session-id X] [--tag MAQUINA] ...\n" +
+            "list-active|active-of-kind|conflicts|grant-merge|check-merge-grant|consume-merge-grant|self-authorize-merge|" +
+            "merge-lock-acquire|merge-lock-release|merge-lock-renew|gc> [--kind overnight|develop|continuo|interactive|continuo-review] [--session-id X] [--tag MAQUINA] ...\n" +
             "  unclaim-issue --issue N: inverso de claim-issue (#6317) — remove a issue de claimed_issues da PRÓPRIA " +
             "sessão; nunca mexe na claim de outra. No-op honesto (exit 1) se a issue não estava reivindicada por ela.\n" +
             "  active-of-kind --kind K [--session-id X]: JSON {kind, active, sessions, stale} — há sessão ATIVA " +
@@ -5529,6 +5756,11 @@ function main(): void {
             "Ordem correta: grant-merge (coordenadora) -> check-merge-grant -> merge-lock-acquire --pr N -> " +
             "gh pr merge N -> merge-lock-release --pr N. --pr nao e opcional na pratica (#7169/#7223) — " +
             "sem ele, gh pr merge foi bloqueado repetidamente pelo guard #5716 mesmo com lock adquirido.\n" +
+            "  self-authorize-merge --reason \"...\" [--pr N] (#7303): escape hatch pra quando gh pr merge está " +
+            "bloqueado e a ÚNICA coordenadora ativa é continuo (cron, não conversa — grant-merge normal é " +
+            "estruturalmente inalcançável). Recusa se houver coordenadora overnight/develop ativa (peça " +
+            "grant-merge dela) ou se você já for coordenadora. --reason é obrigatório. Mesma composição com o " +
+            "merge lock de grant-merge — ainda precisa de merge-lock-acquire --pr N antes do gh pr merge.\n" +
             "  gc [--max-age-days N] [--dry-run]: remove registro de sessão ENCERRADA — nunca por staleness de " +
             "heartbeat sozinha, ver docstring de decideSessionGc/planSessionGc (#6130).\n",
         );

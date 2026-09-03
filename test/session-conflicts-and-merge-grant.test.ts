@@ -37,9 +37,11 @@ import {
   grantMergeWindow,
   machineTag,
   isMergeGrantLive,
+  isSelfAuthorizedMergeLive,
   listActiveSessions,
   normalizeBeaconPath,
   registerSession,
+  selfAuthorizeMerge,
   type ActiveSessionRecord,
 } from "../scripts/lib/session-registry.ts";
 import {
@@ -335,6 +337,135 @@ describe("#6296 — concessão de janela: só coordenadora, nunca a si mesma", (
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// ─── #7303 — auto-autorização quando a única coordenadora ativa é `continuo`
+// (cron, não conversa — grant-merge normal é inalcançável) ─────────────────
+
+describe("#7303 — selfAuthorizeMerge: escopo estreito, nunca abre mão de proteção existente", () => {
+  it("recusa sem --reason (não-vazio) — nunca uma auto-autorização silenciosa", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "continuo", "cron-1", { tag: LOCAL_TAG });
+      registerSession(root, "interactive", "eu", { tag: LOCAL_TAG });
+      assert.equal(selfAuthorizeMerge(root, "eu", { reason: "" }).reason, "reason-required");
+      assert.equal(selfAuthorizeMerge(root, "eu", { reason: "   " }).reason, "reason-required");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recusa quando não há coordenadora nenhuma ativa — nada pra contornar", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "interactive", "eu", { tag: LOCAL_TAG });
+      const r = selfAuthorizeMerge(root, "eu", { reason: "teste" });
+      assert.equal(r.ok, false);
+      assert.equal(r.reason, "no-active-coordinator");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recusa quando quem chama já É coordenadora registrada — já tem direito próprio", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "continuo", "cron-1", { tag: LOCAL_TAG });
+      registerSession(root, "develop", "eu-coord", { tag: LOCAL_TAG });
+      const r = selfAuthorizeMerge(root, "eu-coord", { reason: "teste" });
+      assert.equal(r.ok, false);
+      assert.equal(r.reason, "caller-is-coordinator");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recusa quando há coordenadora QUE CONVERSA ativa (overnight/develop) — o caminho normal grant-merge continua sendo o único", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "continuo", "cron-1", { tag: LOCAL_TAG });
+      registerSession(root, "overnight", "coord-responsivo", { tag: LOCAL_TAG });
+      registerSession(root, "interactive", "eu", { tag: LOCAL_TAG });
+      const r = selfAuthorizeMerge(root, "eu", { reason: "teste" });
+      assert.equal(r.ok, false);
+      assert.equal(r.reason, "responsive-coordinator-active");
+      assert.deepEqual(r.coordinatorKinds, ["overnight"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recusa (session-not-registered) quando quem chama não tem NENHUM registro em data/sessions/", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "continuo", "cron-1", { tag: LOCAL_TAG });
+      // "eu" nunca chamou register/beacon — não existe arquivo pra ela.
+      const r = selfAuthorizeMerge(root, "eu-nao-registrada", { reason: "teste" });
+      assert.equal(r.ok, false);
+      assert.equal(r.reason, "session-not-registered");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("caso feliz: única coordenadora é continuo → autoriza e grava self_authorized_merge no PRÓPRIO record", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "continuo", "cron-1", { tag: LOCAL_TAG });
+      registerSession(root, "interactive", "eu", { tag: LOCAL_TAG });
+      const r = selfAuthorizeMerge(root, "eu", {
+        reason: "única coordenadora ativa é continuo, sem interlocutor",
+        pr: 7273,
+      });
+      assert.equal(r.ok, true);
+      assert.equal(r.reason, "authorized");
+      assert.equal(r.record?.pr, 7273);
+
+      // Gravado no PRÓPRIO record de "eu" — nunca no de "cron-1".
+      const sessions = listActiveSessions(root);
+      const mine = sessions.find((s) => s.sessionId === "eu");
+      assert.ok(mine?.self_authorized_merge);
+      assert.equal(mine!.self_authorized_merge!.pr, 7273);
+      assert.equal(mine!.self_authorized_merge!.reason, "única coordenadora ativa é continuo, sem interlocutor");
+
+      const cron = sessions.find((s) => s.sessionId === "cron-1");
+      assert.equal(cron?.self_authorized_merge, undefined, "nunca no record da coordenadora");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("2 coordenadoras continuo, nenhuma overnight/develop → ainda autoriza", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "continuo", "cron-1", { tag: LOCAL_TAG });
+      registerSession(root, "continuo", "cron-2", { tag: LOCAL_TAG });
+      registerSession(root, "interactive", "eu", { tag: LOCAL_TAG });
+      assert.equal(selfAuthorizeMerge(root, "eu", { reason: "teste" }).ok, true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#7303 — isSelfAuthorizedMergeLive (pura)", () => {
+  it("dentro do TTL → true", () => {
+    const record = { reason: "x", authorizedAt: new Date(NOW).toISOString() };
+    assert.equal(isSelfAuthorizedMergeLive(record, NOW), true);
+  });
+
+  it("além do TTL → false", () => {
+    const record = { reason: "x", authorizedAt: new Date(NOW).toISOString() };
+    assert.equal(isSelfAuthorizedMergeLive(record, NOW + MERGE_GRANT_TTL_MS + 1), false);
+  });
+
+  it("undefined → false", () => {
+    assert.equal(isSelfAuthorizedMergeLive(undefined, NOW), false);
+  });
+
+  it("timestamp ilegível → false", () => {
+    assert.equal(isSelfAuthorizedMergeLive({ reason: "x", authorizedAt: "não é data" }, NOW), false);
   });
 });
 
@@ -704,6 +835,98 @@ describe("#6303 Finding T — CLI end-to-end via stdin real (mesmo padrão do #5
       assert.equal(result.status, 0);
       assert.equal(result.stderr, "");
       assert.deepEqual(readdirSync(join(root, "data", "sessions")), []);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── #7286 — concessão consumida por sessão que NÃO é a beneficiária ──────
+//
+// Achado ao vivo na rodada 260902b: `merge_grant` concedido pela coordenadora
+// overnight para a sessão INTERATIVA da edição (`grantedTo`), mas quem
+// mergeou os PRs foi uma OUTRA sessão — `develop-Neo-...` — e `consumedAt`
+// apareceu carimbado na concessão da interativa mesmo assim, que nunca
+// chegou a mergear nada. A hipótese registrada na issue era que o hook de
+// consumo não filtrava por `grantedTo`. Investigação (PR #7312): os 3
+// caminhos de consumo (`consumeGrantUnderLock` aqui, `consumeMergeGrant` em
+// session-registry.ts, e a leitura em `findLiveMergeGrantFor` do guard) já
+// filtravam por identidade ANTES desse PR — a hipótese específica não bate
+// com o código lido. Este bloco trava exatamente o cenário sugerido pela
+// issue como teste de regressão: concessão viva pra A, sessão B (coordenadora
+// registrada, SEM concessão) mergeia — a concessão de A continua viva e
+// utilizável.
+describe("#7286 — concessão consumida por TERCEIRO (sessão diferente da beneficiária)", () => {
+  it("concessão viva pra sessão A; sessão B (coordenadora registrada) roda gh pr merge; a concessão de A NÃO é consumida", () => {
+    const root = mkdtempSync(join(tmpdir(), "7286-third-party-consume-"));
+    try {
+      mkdirSync(join(root, "data", "sessions"), { recursive: true });
+      spawnSync("git", ["init", "-q"], { cwd: root });
+
+      // Coordenadora "coord-A" concede a janela do PR #7273 pra sessão
+      // interativa "sess-A" — cenário idêntico ao medido ao vivo.
+      const grantedAt = new Date().toISOString();
+      const coordAPath = join(root, "data", "sessions", `overnight-${LOCAL_TAG}-coord-A.json`);
+      writeFileSync(
+        coordAPath,
+        JSON.stringify({
+          kind: "overnight",
+          machineTag: LOCAL_TAG,
+          sessionId: "coord-A",
+          startedAt: new Date(Date.now() - 60_000).toISOString(),
+          lastHeartbeat: new Date(Date.now() - 1_000).toISOString(),
+          merge_grant: { grantedTo: "sess-A", grantedBy: "coord-A", grantedAt, pr: 7273 },
+        }),
+        "utf8",
+      );
+
+      // Sessão B é uma coordenadora REGISTRADA e ativa por direito PRÓPRIO
+      // (kind=develop) — nunca recebeu concessão nenhuma, mergeia por conta
+      // do próprio `isCoordinator`, não por causa da concessão de A.
+      const sessBPath = join(root, "data", "sessions", `develop-${LOCAL_TAG}-sess-B.json`);
+      writeFileSync(
+        sessBPath,
+        JSON.stringify({
+          kind: "develop",
+          machineTag: LOCAL_TAG,
+          sessionId: "sess-B",
+          startedAt: new Date(Date.now() - 60_000).toISOString(),
+          lastHeartbeat: new Date(Date.now() - 1_000).toISOString(),
+        }),
+        "utf8",
+      );
+
+      // Sessão B roda `gh pr merge` — dispara o PostToolUse com
+      // session_id="sess-B", nunca "sess-A".
+      const payload = {
+        session_id: "sess-B",
+        tool_name: "Bash",
+        tool_input: { command: "gh pr merge 7276 --squash" },
+      };
+      const result = spawnSync(process.execPath, [CONSUME_HOOK_PATH], {
+        cwd: root,
+        input: JSON.stringify(payload),
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 0);
+      assert.equal(result.stderr, "");
+
+      // A concessão de A permanece VIVA e UTILIZÁVEL — o terceiro (B) não a
+      // consumiu, porque a busca do hook é por `grantedTo === payload.session_id`.
+      const afterA = JSON.parse(readFileSync(coordAPath, "utf8"));
+      assert.equal(afterA.merge_grant.consumedAt, undefined, "a concessão de A não deveria ter sido tocada por B");
+      assert.equal(findLiveMergeGrant(root, "sess-A")?.grant.pr, 7273, "ainda viva e encontrável por sess-A");
+
+      // E direto no nível mais baixo (consumeGrantUnderLock): chamar com o
+      // sessionId de B nunca acha/consome a concessão de A.
+      assert.equal(
+        consumeGrantUnderLock(root, "sess-B"),
+        false,
+        "consumeGrantUnderLock(root, 'sess-B') não deveria achar nada pra consumir — a concessão é de A, não de B",
+      );
+      const afterDirect = JSON.parse(readFileSync(coordAPath, "utf8"));
+      assert.equal(afterDirect.merge_grant.consumedAt, undefined);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

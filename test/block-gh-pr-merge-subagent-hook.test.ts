@@ -14,6 +14,8 @@ import {
   readLiveMergeGrantFor,
   readConsumedGrantFor,
   resolveGrantWasConsumed,
+  onlyContinuoCoordinatorsActive,
+  readLiveSelfAuthorizationFor,
   LOCK_HOLDER_CORRUPTED,
   sessionsDir,
   machineTag,
@@ -1058,5 +1060,233 @@ describe("resolveGrantWasConsumed (#7223) — o hint de janela auto-consumida s�
 
   it("targetPr INDETERMINADO (undefined) contra concessão consumida ESCOPADA → false — a dúvida fecha, não abre", () => {
     assert.equal(resolveGrantWasConsumed({ pr: 7171 }, undefined), false);
+  });
+});
+
+// #7303: guard #5716 bloqueava `gh pr merge` de uma sessão sem escape hatch
+// quando a ÚNICA coordenadora ativa é `continuo` (cron, não conversa —
+// `grant-merge` normal é estruturalmente inalcançável). `onlyContinuoCoordinatorsActive`
+// é o discriminador puro; `readLiveSelfAuthorizationFor` lê o registro que
+// `selfAuthorizeMerge` (scripts/lib/session-registry.ts) grava no PRÓPRIO
+// arquivo da sessão bloqueada; `classifyMergeBlockCause` compõe os dois com
+// o merge lock exatamente como já compõe `merge_grant` (a auto-autorização
+// destrava IDENTIDADE, nunca TEMPO — o lock continua obrigatório).
+
+describe("onlyContinuoCoordinatorsActive (#7303)", () => {
+  it("nenhuma coordenadora (Map vazio) → false", () => {
+    assert.equal(onlyContinuoCoordinatorsActive(new Map()), false);
+  });
+
+  it("uma única coordenadora continuo → true", () => {
+    assert.equal(onlyContinuoCoordinatorsActive(new Map([["sess-continuo", "continuo"]])), true);
+  });
+
+  it("duas coordenadoras, ambas continuo → true", () => {
+    assert.equal(
+      onlyContinuoCoordinatorsActive(
+        new Map([
+          ["sess-c1", "continuo"],
+          ["sess-c2", "continuo"],
+        ]),
+      ),
+      true,
+    );
+  });
+
+  it("uma coordenadora continuo + uma overnight → false (há interlocutor)", () => {
+    assert.equal(
+      onlyContinuoCoordinatorsActive(
+        new Map([
+          ["sess-continuo", "continuo"],
+          ["sess-overnight", "overnight"],
+        ]),
+      ),
+      false,
+    );
+  });
+
+  it("uma coordenadora develop sozinha → false", () => {
+    assert.equal(onlyContinuoCoordinatorsActive(new Map([["sess-develop", "develop"]])), false);
+  });
+
+  it("não é um Map → false (fail-safe)", () => {
+    assert.equal(onlyContinuoCoordinatorsActive(undefined), false);
+    assert.equal(onlyContinuoCoordinatorsActive(null), false);
+  });
+});
+
+describe("readLiveSelfAuthorizationFor (#7303)", () => {
+  const roots: string[] = [];
+
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+
+  function freshRoot() {
+    const root = join(
+      tmpdir(),
+      `block-gh-pr-merge-hook-selfauth-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    roots.push(root);
+    return root;
+  }
+
+  function writeSession(root: string, filename: string, record: Record<string, unknown>) {
+    const dir = sessionsDir(root);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, filename), JSON.stringify(record), "utf8");
+  }
+
+  const NOW = Date.parse("2026-09-03T12:00:00.000Z");
+  const ONE_MIN_MS = 60 * 1000;
+
+  it("sem registro nenhum → null", () => {
+    assert.equal(readLiveSelfAuthorizationFor(freshRoot(), "sess-bloqueada", NOW), null);
+  });
+
+  it("registro com self_authorized_merge VIVO (dentro do TTL) → devolve o record", () => {
+    const root = freshRoot();
+    writeSession(root, "interactive-helios-sess-bloqueada.json", {
+      kind: "interactive",
+      sessionId: "sess-bloqueada",
+      machineTag: machineTag(),
+      startedAt: new Date(NOW - ONE_MIN_MS).toISOString(),
+      lastHeartbeat: new Date(NOW - ONE_MIN_MS).toISOString(),
+      self_authorized_merge: {
+        reason: "única coordenadora ativa é continuo",
+        pr: 7273,
+        authorizedAt: new Date(NOW - ONE_MIN_MS).toISOString(),
+      },
+    });
+    const found = readLiveSelfAuthorizationFor(root, "sess-bloqueada", NOW);
+    assert.ok(found);
+    assert.equal(found.pr, 7273);
+    assert.equal(found.reason, "única coordenadora ativa é continuo");
+  });
+
+  it("registro EXPIRADO (além do TTL de 10min) → null", () => {
+    const root = freshRoot();
+    writeSession(root, "interactive-helios-sess-velha.json", {
+      kind: "interactive",
+      sessionId: "sess-velha",
+      machineTag: machineTag(),
+      self_authorized_merge: {
+        reason: "expirado",
+        authorizedAt: new Date(NOW - 11 * ONE_MIN_MS).toISOString(),
+      },
+    });
+    assert.equal(readLiveSelfAuthorizationFor(root, "sess-velha", NOW), null);
+  });
+
+  it("registro de OUTRA sessão não é encontrado — casa por sufixo -{sessionId}.json", () => {
+    const root = freshRoot();
+    writeSession(root, "interactive-helios-sess-outra.json", {
+      kind: "interactive",
+      sessionId: "sess-outra",
+      machineTag: machineTag(),
+      self_authorized_merge: { reason: "x", authorizedAt: new Date(NOW - ONE_MIN_MS).toISOString() },
+    });
+    assert.equal(readLiveSelfAuthorizationFor(root, "sess-bloqueada", NOW), null);
+  });
+
+  it("cópia de conflito do OneDrive (-safeBackup-) é ignorada", () => {
+    const root = freshRoot();
+    writeSession(root, "interactive-helios-sess-bkp-safeBackup-0001.json", {
+      kind: "interactive",
+      sessionId: "sess-bkp",
+      machineTag: machineTag(),
+      self_authorized_merge: { reason: "x", authorizedAt: new Date(NOW - ONE_MIN_MS).toISOString() },
+    });
+    assert.equal(readLiveSelfAuthorizationFor(root, "sess-bkp", NOW), null);
+  });
+
+  it("JSON malformado numa entrada não derruba a busca — segue pras demais", () => {
+    const root = freshRoot();
+    mkdirSync(sessionsDir(root), { recursive: true });
+    writeFileSync(join(sessionsDir(root), "interactive-helios-sess-bloqueada.json"), "{not valid json", "utf8");
+    assert.equal(readLiveSelfAuthorizationFor(root, "sess-bloqueada", NOW), null);
+  });
+});
+
+describe("classifyMergeBlockCause — auto-autorização (#7303)", () => {
+  it("hasSelfAuthorization=true, sem grant, não-coordenadora, lock livre, 1 coordenadora → 'contention-grantee' (não 'not-authorized': identidade destravada, lock ainda exigido)", () => {
+    const coords = new Set(["sess-continuo"]);
+    assert.equal(
+      classifyMergeBlockCause(coords, "sess-bloqueada", {
+        hasSelfAuthorization: true,
+        mergeLockHolder: null,
+      }),
+      "contention-grantee",
+    );
+  });
+
+  it("sem auto-autorização, mesmo cenário → 'not-authorized' (comportamento inalterado pro caso comum)", () => {
+    const coords = new Set(["sess-continuo"]);
+    assert.equal(
+      classifyMergeBlockCause(coords, "sess-bloqueada", { mergeLockHolder: null }),
+      "not-authorized",
+    );
+  });
+
+  it("auto-autorização ESCOPADA que bate com o PR sendo mergeado → destrava identidade", () => {
+    const coords = new Set(["sess-continuo"]);
+    assert.equal(
+      classifyMergeBlockCause(coords, "sess-bloqueada", {
+        hasSelfAuthorization: true,
+        selfAuthPr: 7273,
+        targetPr: 7273,
+        mergeLockHolder: null,
+      }),
+      "contention-grantee",
+    );
+  });
+
+  it("auto-autorização ESCOPADA que NÃO bate com o PR sendo mergeado → continua 'not-authorized'", () => {
+    const coords = new Set(["sess-continuo"]);
+    assert.equal(
+      classifyMergeBlockCause(coords, "sess-bloqueada", {
+        hasSelfAuthorization: true,
+        selfAuthPr: 7273,
+        targetPr: 9999,
+        mergeLockHolder: null,
+      }),
+      "not-authorized",
+    );
+  });
+
+  it("lock preso por OUTRA sessão → 'lock-held-other' MESMO com auto-autorização viva (identidade não destrava tempo)", () => {
+    const coords = new Set(["sess-continuo"]);
+    assert.equal(
+      classifyMergeBlockCause(coords, "sess-bloqueada", {
+        hasSelfAuthorization: true,
+        mergeLockHolder: "sess-continuo",
+      }),
+      "lock-held-other",
+    );
+  });
+
+  it("auto-autorização não afeta o caso NORMAL (coordenadora chamando por si, sem auto-autorização) — continua null", () => {
+    const coords = new Set(["coord-a"]);
+    assert.equal(classifyMergeBlockCause(coords, "coord-a", { mergeLockHolder: null }), null);
+  });
+
+  it("auto-autorização não afeta o caso de MÚLTIPLAS coordenadoras não-continuo — continua bloqueando normalmente sem ela", () => {
+    // Regressão de segurança: uma sessão bloqueada por uma rodada
+    // overnight/develop normal não pode se auto-autorizar só porque o ctx
+    // teria o campo — é responsabilidade do CHAMADOR (entrypoint CLI/
+    // selfAuthorizeMerge) nunca setar hasSelfAuthorization=true nesse caso;
+    // este teste documenta que, se REALMENTE setado, o guard ainda assim só
+    // destrava identidade (comportamento idêntico a merge_grant) — a
+    // proteção real de "nunca deveria estar true aqui" vive em
+    // `selfAuthorizeMerge`/`onlyContinuoCoordinatorsActive` no entrypoint,
+    // não neste classificador puro.
+    const coords = new Set(["coord-overnight", "coord-develop"]);
+    assert.equal(
+      classifyMergeBlockCause(coords, "sess-bloqueada", {
+        hasSelfAuthorization: true,
+        mergeLockHolder: null,
+      }),
+      "contention-multi-coordinator",
+    );
   });
 });

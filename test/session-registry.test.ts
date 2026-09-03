@@ -3055,6 +3055,66 @@ describe("CLI grant-merge: --kind ausente dá erro nomeando o referente (#6331)"
   });
 });
 
+// ─── CLI self-authorize-merge (#7303) — escape hatch quando a ÚNICA
+// coordenadora ativa é continuo (cron, não conversa — grant-merge normal é
+// inalcançável). Cobertura funcional pura já vive em
+// test/session-conflicts-and-merge-grant.test.ts ("#7303 — selfAuthorizeMerge");
+// aqui só a fiação do CLI (parsing de --reason/--session-id, formatação de
+// saída) — isolado em raiz temporária, nunca a raiz REAL deste checkout
+// (`data/sessions/` compartilhado via OneDrive teria estado imprevisível).
+describe("CLI self-authorize-merge (#7303)", () => {
+  const CLI_SAM = fileURLToPath(new URL("../scripts/lib/session-registry.ts", import.meta.url));
+  const TSX_LOADER_SAM = pathToFileURL(
+    fileURLToPath(new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url)),
+  ).href;
+  const roots: string[] = [];
+
+  after(() => {
+    for (const r of roots) rmSync(r, { recursive: true, force: true });
+  });
+
+  function makeRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), "self-authorize-merge-cli-"));
+    roots.push(root);
+    mkdirSync(join(root, "data", "sessions"), { recursive: true });
+    return root;
+  }
+
+  function cli(root: string, args: string[]) {
+    const r = spawnSync(process.execPath, ["--import", TSX_LOADER_SAM, CLI_SAM, "self-authorize-merge", ...args], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  }
+
+  it("--reason ausente → erro explícito, nunca uma auto-autorização silenciosa", () => {
+    const root = makeRoot();
+    const res = cli(root, ["--session-id", "eu"]);
+    assert.notEqual(res.status, 0);
+    assert.match(res.stderr, /--reason.*obrigatório/);
+  });
+
+  it("sem coordenadora nenhuma ativa → no-op informativo (nada pra contornar)", () => {
+    const root = makeRoot();
+    const res = cli(root, ["--session-id", "eu", "--reason", "teste"]);
+    assert.notEqual(res.status, 0);
+    assert.match(res.stdout, /no-op/);
+    assert.match(res.stdout, /não há nada pra contornar/);
+  });
+
+  it("--help (subcomando desconhecido) documenta self-authorize-merge", () => {
+    const helpRes = spawnSync(
+      process.execPath,
+      ["--import", TSX_LOADER_SAM, CLI_SAM, "--this-command-does-not-exist"],
+      { cwd: makeRoot(), encoding: "utf8", timeout: 30_000 },
+    );
+    assert.match(helpRes.stderr, /self-authorize-merge --reason/);
+    assert.match(helpRes.stderr, /#7303/);
+  });
+});
+
 // ─── #6952 — lost update no registro de sessão ──────────────────────────────
 //
 // Medido ao vivo (01/09): uma coordenadora concedeu `merge_grant`, a
