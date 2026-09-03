@@ -84,9 +84,22 @@ O critério que substitui a pergunta é **reversibilidade**:
 
 **Exceção explícita ao #738 e ao #3938:** MCP offline, CI ou GitHub falhando **não param a rodada**. Registram (b) e seguem, sem halt banner. Esta é uma exceção consciente para rodada desassistida — não vale fora dela.
 
-### CLASSIFICAÇÃO NÃO É VEREDITO
+### CLASSIFICAÇÃO NÃO É VEREDITO — e é o passo de maior alavancagem da rodada
 
-Há issue mal classificada. Antes de aceitar "não dá agora", ler a issue **inteira** (`gh issue view N --comments` — corpo + TODOS os comentários) e julgar pelo conteúdo.
+**Reclassificar vem ANTES de despachar, e rende mais que qualquer outra coisa.** Numa rodada cujo objetivo é esgotar a fila, o maior ganho não é implementar mais rápido — é descobrir que metade do que parecia inexecutável era executável o tempo todo.
+
+**Taxas medidas, não estimadas** (rodada de 02–03/09/2026):
+
+| track | quantos eram | quantos sobreviveram à releitura | erro |
+|---|---|---|---|
+| `agendada` | 19 | 9 | **~53%** |
+| `bloqueada` | 12 | 5 | **~58%** |
+
+**Mais da metade, nos dois.** Isso não é ruído de borda — é viés sistemático do categorizador para o lado errado: ele produz falso "não dá" com muito mais frequência que falso "dá". Toda rodada que aceitar as tracks como veredito deixa metade do alvo na mesa.
+
+**Portanto: trate todo track que não seja `overnight` como SUSPEITO por padrão.** O ônus da prova é de quem afirma que não dá, não de quem quer executar. Ler a issue **inteira** (`gh issue view N --comments` — corpo + TODOS os comentários) e julgar pelo conteúdo antes de aceitar qualquer "não dá agora".
+
+**O categorizador também é alvo.** Se uma track erra sistematicamente, isso é bug, não fato da vida — e entra no alvo vivo como qualquer outro. A #7270 já cobre o caso de `bloqueada` (label sem razão durável nem reavaliação); se a releitura desta rodada revelar padrão equivalente em `agendada` ou `fora-de-rodada`, abra a issue correspondente em vez de só corrigir caso a caso.
 
 Suspeitas por construção:
 - **`fora-de-rodada`** — muitas caem ali só pela label `alarm`, sob a premissa "alarme de estado normaliza sozinho". Condição que persiste há dias e tem remediação de código é bug real.
@@ -248,9 +261,10 @@ merge-lock-acquire --pr N   →   gh pr merge N --squash   →   merge-lock-rele
 
 1. `npx tsx scripts/sync-code.ts` — a rodada não pode começar com código defasado.
 2. **Registrar posse da janela** — `register --kind develop`, e anunciar às sessões vivas (ver "Posse da janela"). Sem isso você não mergeia, e o contrato desta skill não se cumpre.
-3. `npx tsx scripts/fetch-open-issues-for-triage.ts` — o snapshot de partida. **Nunca fixar números de issue nesta skill**: eles envelhecem em horas e viram desinformação (mesmo erro que o #6928 corrigiu na cadência do contínuo, registrada errada duas vezes).
+3. `npx tsx scripts/fetch-open-issues-for-triage.ts` — o snapshot de partida, já com `execTrack` por issue. **Nunca fixar números de issue nesta skill**: eles envelhecem em horas e viram desinformação (mesmo erro que o #6928 corrigiu na cadência do contínuo, registrada errada duas vezes).
 4. `npx tsx scripts/lib/session-registry.ts list-active` — quem mais está trabalhando, e o que já reivindicou. Se `is-claimed` disser que o `helios` pegou, pular e seguir.
 5. **Verificar se master está vermelho.** Com o merge quebrado, nada anda — é P0 de fato, independente da label.
+6. **Passe de reclassificação, antes de despachar qualquer coisa.** Ler por inteiro toda issue fora de `overnight` — em subagentes paralelos, é 100% paralelizável — e reclassificar o que a leitura destravar (remover label + `route-issue.ts`). Historicamente **mais da metade** de `agendada` e de `bloqueada` volta a ser executável; ver "CLASSIFICAÇÃO NÃO É VEREDITO". Despachar antes deste passe é despachar metade do alvo.
 
 ---
 
