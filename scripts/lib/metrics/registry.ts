@@ -92,6 +92,12 @@ import {
 } from "../kit-doi-orphan-guard.ts";
 import type { KitSubscriberSummary } from "../kit-subscribers.ts";
 import { isMainModule } from "../cli-args.ts";
+import {
+  GA4_HOSTNAME_ALLOWLIST,
+  filterByHostAllowlist,
+  aggregateGa4SessionsByClasse,
+  computeConversaoPorClasse,
+} from "./ga4-channel.ts";
 
 // ---------------------------------------------------------------------------
 // O contrato (#7175)
@@ -776,6 +782,187 @@ const primeiroClique14dDef: MetricDef<AtivacaoCoorteMetricDeps> = {
 };
 
 // ---------------------------------------------------------------------------
+// Topo de funil GA4 — sessoes-dia, sessoes-por-classe-dia,
+// conversao-visita-cadastro (#7184, fatia 12 do épico #7172)
+// ---------------------------------------------------------------------------
+
+/** Fuso de relatório da propriedade GA4 516813959 — confirmar em Admin >
+ *  Property Settings > Reporting time zone. Documentado aqui, não só em
+ *  prosa solta, porque a fronteira de dia BRT do épico (#7172) vale tanto
+ *  para o numerador (cadastros) quanto para o denominador (sessões) — uma
+ *  razão entre agregados só é válida com janelas iguais. Se a propriedade
+ *  não estiver em `America/Sao_Paulo`, quem monta `Ga4SessionInput.dia`
+ *  precisa converter a partir da dimensão `date` do GA4 (UTC ou o fuso
+ *  configurado) antes de agregar — este módulo não faz I/O nem sabe ler
+ *  Admin da propriedade, só documenta a exigência para o CHAMADOR. */
+export const GA4_REPORT_TIMEZONE_ASSUMED = "America/Sao_Paulo";
+
+export interface Ga4SessionInput {
+  /** Dia BRT (`AAAA-MM-DD`) já resolvido pelo chamador — mesma disciplina
+   *  de `AcquisitionRecordInput.dia`. */
+  dia: string;
+  sessionSource?: string | null;
+  sessionMedium?: string | null;
+  hostName?: string | null;
+  /** Sessões da linha (a API devolve como string). */
+  sessions: number;
+}
+
+export interface Ga4TrafficMetricDeps extends MetricDeps {
+  /** Linhas do relatório fino (`channel`, `ga4-sync.ts`) do(s) dia(s)
+   *  pedidos — o CHAMADOR resolve a fonte (`data/ga4-cache/*.json`). SEM
+   *  I/O aqui, mesmo padrão de `AcquisitionMetricDeps.registros`. */
+  sessoes(janela: Janela): Ga4SessionInput[] | Promise<Ga4SessionInput[]>;
+  /** `data/metrics/captura-log.jsonl` (F2) — mesmo uso de
+   *  `AcquisitionMetricDeps.capturaLog`: decide INDETERMINADO por dia sem
+   *  coleta GA4, nunca conta sessão. Fonte separada de `AcquisitionMetricDeps`
+   *  porque a coleta GA4 (`Diaria-GA4-Sync`) e a de cadastro têm cadências e
+   *  falhas independentes. */
+  capturaLogGa4: readonly CapturaLogEntry[];
+}
+
+/** Núcleo compartilhado por `sessoes-dia`/`sessoes-por-classe-dia`: aplica a
+ *  allowlist de `hostName` e classifica cada linha nas 5 classes de F1.
+ *  Nunca soma host fora da allowlist — linhas descartadas ficam em
+ *  `unclassifiedHosts`, disponíveis para quem quiser expor a conferência
+ *  (não incluído no `MetricResult` desta fatia, ver "Fora de escopo" da
+ *  issue). */
+async function aggregateGa4Sessions(
+  janela: Janela,
+  deps: Ga4TrafficMetricDeps,
+): Promise<{ aggregate: { total: number; porClasse: Record<AcquisitionClass, number>; frescor: string | null } } | { indeterminado: MetricResult }> {
+  const dias = enumerarDiasInclusive(janela.de, janela.ate);
+  const diasFaltando = dias.filter((d) => !hasCaptureOnDay(deps.capturaLogGa4, d));
+  if (diasFaltando.length > 0) {
+    return { indeterminado: indeterminado(janela, `sem coleta GA4 em ${diasFaltando.join(", ")}`) };
+  }
+  const raw = await deps.sessoes(janela);
+  const { included } = filterByHostAllowlist(
+    raw.map((r) => ({ sessionSource: r.sessionSource ?? undefined, sessionMedium: r.sessionMedium ?? undefined, hostName: r.hostName ?? undefined, sessions: String(r.sessions ?? 0) })),
+  );
+  const porClasse = aggregateGa4SessionsByClasse(included);
+  const total = (Object.values(porClasse) as number[]).reduce((a, b) => a + b, 0);
+  return {
+    aggregate: { total, porClasse, frescor: latestCapturedAtForDays(deps.capturaLogGa4, dias) },
+  };
+}
+
+const sessoesDiaDef: MetricDef<Ga4TrafficMetricDeps> = {
+  id: "sessoes-dia",
+  nome: "Sessões por dia (topo de funil)",
+  produto: "diaria",
+  etapa: "aquisicao",
+  definicao:
+    "SUM(sessions) do relatório fino GA4 (date,sessionSource,sessionMedium,sessionCampaignName,hostName) " +
+    `restrito à allowlist de hostName [${GA4_HOSTNAME_ALLOWLIST.join(", ")}] (host fora da allowlist nunca ` +
+    "entra, mesmo que a propriedade GA4 516813959 cubra o Vigil.ia.br inteiro). decomposicao 'classe' " +
+    "devolve as 5 classes de #7173, classificadas por GA4_SOURCE_MEDIUM_CLASSE_TABLE (ga4-channel.ts) — " +
+    "NUNCA sessionDefaultChannelGroup, que é só coluna de conferência.",
+  unidade: "contagem",
+  direcao: "maior-melhor",
+  fonte: "data/ga4-cache/*.json (relatório 'channel') + data/metrics/captura-log.jsonl (F2)",
+  decomposicoes: ["classe"],
+  async computar(args) {
+    validarDecomposicao(sessoesDiaDef, args.decomposicao);
+    const result = await aggregateGa4Sessions(args.janela, args.deps);
+    if ("indeterminado" in result) return result.indeterminado;
+    const { total, porClasse, frescor } = result.aggregate;
+    if (args.decomposicao === "classe") {
+      return exato(total, args.janela, frescor, classeSeries(porClasse));
+    }
+    return exato(total, args.janela, frescor);
+  },
+};
+
+const sessoesPorClasseDiaDef: MetricDef<Ga4TrafficMetricDeps> = {
+  id: "sessoes-por-classe-dia",
+  nome: "Sessões por classe de aquisição, por dia",
+  produto: "diaria",
+  etapa: "aquisicao",
+  definicao:
+    "sessoes-dia SEMPRE decomposto por classe (série obrigatória) — mesma agregação, apresentação " +
+    "dedicada para o painel de topo de funil não depender de pedir decomposicao='classe' explicitamente.",
+  unidade: "contagem",
+  direcao: "maior-melhor",
+  fonte: "mesma fonte de sessoes-dia",
+  decomposicoes: ["classe"],
+  async computar(args) {
+    validarDecomposicao(sessoesPorClasseDiaDef, args.decomposicao);
+    const result = await aggregateGa4Sessions(args.janela, args.deps);
+    if ("indeterminado" in result) return result.indeterminado;
+    const { total, porClasse, frescor } = result.aggregate;
+    return exato(total, args.janela, frescor, classeSeries(porClasse));
+  },
+};
+
+/** Piso da janela de `conversao-visita-cadastro` — herdado do numerador
+ *  (KIT_SERIES_FLOOR, a série instrumentada do Kit começa em 25/08/2026).
+ *  Uma razão entre agregados só é válida com janelas iguais; o numerador
+ *  não existe antes disso, então a razão também não.
+ *
+ *  **Aviso do #6980 (PR #7035, mergeado 01/09/2026):** até essa data,
+ *  `CLIENT_UTM_SOURCE_ALLOWED_PREFIXES` aceitava o prefixo `ads-*`, que os 3
+ *  `utm_source` reais (`google-ads`/`microsoft-ads`/`meta-ads`) nunca
+ *  batiam — todo cadastro de campanha paga caía no default em silêncio. O
+ *  NUMERADOR da classe `pago` (cadastros-dia) antes de 01/09/2026 é
+ *  subestimado enquanto o DENOMINADOR GA4 (`sessionMedium=cpc`) não é —
+ *  `conversao-visita-cadastro` da classe `pago` anterior a essa data sai
+ *  artificialmente baixa e não deve ser lida como sinal. */
+export const CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR = KIT_SERIES_FLOOR;
+
+export interface ConversaoVisitaCadastroDeps extends Ga4TrafficMetricDeps, AcquisitionMetricDeps {}
+
+const conversaoVisitaCadastroDef: MetricDef<ConversaoVisitaCadastroDeps> = {
+  id: "conversao-visita-cadastro",
+  nome: "Conversão visita → cadastro, por classe",
+  produto: "diaria",
+  etapa: "aquisicao",
+  definicao:
+    "razão POR CLASSE: cadastros-dia (F4, decomposicao 'classe') ÷ sessoes-por-classe-dia (denominador = " +
+    "sessões GA4 da classe, allowlist de hostName aplicada). NÃO é funil rastreado — não existe join por " +
+    "pessoa entre visita e cadastro (o worker de cadastro não captura client_id/_ga/gclid); é razão entre " +
+    "dois agregados independentes. Classe com só um dos dois lados sai como sem-par (nunca 0% nem Infinity). " +
+    `Janela mínima = ${KIT_SERIES_FLOOR} (piso do numerador, série do Kit).`,
+  unidade: "razao",
+  direcao: "maior-melhor",
+  fonte: "sessoes-por-classe-dia (GA4) + cadastros-dia decomposicao 'classe' (F4) — nunca recomputado aqui",
+  decomposicoes: ["classe"],
+  async computar(args) {
+    validarDecomposicao(conversaoVisitaCadastroDef, args.decomposicao);
+    if (args.janela.de < CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR) {
+      return indeterminado(
+        args.janela,
+        `janela começa antes de ${CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR} — numerador (cadastros-dia) não ` +
+          "existe antes do piso da série instrumentada do Kit",
+      );
+    }
+    const sessoesResult = await aggregateGa4Sessions(args.janela, args.deps);
+    if ("indeterminado" in sessoesResult) return sessoesResult.indeterminado;
+    const cadastrosResult = await aggregateAcquisition(args.janela, args.deps);
+    if ("indeterminado" in cadastrosResult) return cadastrosResult.indeterminado;
+
+    const rows = computeConversaoPorClasse(sessoesResult.aggregate.porClasse, cadastrosResult.aggregate.porClasse);
+    const frescor = [sessoesResult.aggregate.frescor, cadastrosResult.aggregate.frescor].sort().pop() ?? null;
+    const okRows = rows.filter((r) => r.status === "ok");
+    const totalSessoes = sessoesResult.aggregate.total;
+    const totalCadastros = cadastrosResult.aggregate.total;
+    const valorAgregado = totalSessoes > 0 ? totalCadastros / totalSessoes : null;
+    const series: MetricSeriesPoint[] = rows.map((r) => ({ chave: r.classe, valor: r.conversao }));
+    const semParClasses = rows.filter((r) => r.status !== "ok").map((r) => r.classe);
+    const motivo =
+      "razão entre agregados sem join por pessoa (nenhum client_id/_ga/gclid capturado no cadastro)" +
+      (semParClasses.length > 0 ? ` — classes sem par: ${semParClasses.join(", ")}` : "") +
+      (okRows.length === 0 ? " — nenhuma classe com os dois lados presentes nesta janela" : "");
+    if (okRows.length === 0 || valorAgregado === null) {
+      return { valor: null, janela: args.janela, frescor, qualidade: "indeterminado", motivo, series };
+    }
+    const result = faixa(valorAgregado, valorAgregado, args.janela, frescor, motivo);
+    result.series = series;
+    return result;
+  },
+};
+
+// ---------------------------------------------------------------------------
 // O registry
 // ---------------------------------------------------------------------------
 
@@ -795,6 +982,9 @@ export const METRICAS: readonly MetricDef[] = [
   leitorV1Def as MetricDef,
   aberturaPrimeiraEdicaoDef as MetricDef,
   primeiroClique14dDef as MetricDef,
+  sessoesDiaDef as MetricDef,
+  sessoesPorClasseDiaDef as MetricDef,
+  conversaoVisitaCadastroDef as MetricDef,
 ];
 
 assertRegistryValido(METRICAS);

@@ -1731,6 +1731,33 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#6802",
   },
   {
+    name: "Diaria-GA4-Sync",
+    description: "ingestao diaria GA4 (overview, top pages, canal, source/medium/campanha/host)",
+    steps: [{ key: "sync", script: "scripts/ga4-sync.ts", args: ["--days", "30"] }],
+    logPath: "ga4-cache/.sync.log",
+    // 10:50 BRT: livre entre Diaria-Npm-Version-Drift-Alarm (10:40) e
+    // Diaria-Branch-Cleanup (10:45) de um lado, e o proximo ocupado
+    // (Diaria-Postmaster-Spam-Sync, 12:30) do outro -- checado via
+    // `--list` antes de escolher (#5408).
+    schedule: { kind: "daily", hour: 10, minute: 50 },
+    // Sem guard -- ga4-sync.ts escreve snapshot NOVO
+    // (`{AAAA-MM-DD}.json` + `latest.json`), nunca sobrescreve store
+    // acumulado; um dia sem coleta so deixa o snapshot do dia anterior
+    // mais velho, nao corrompe nada.
+    // Nao declara successExitCodes de proposito -- ga4-sync.ts sai 2
+    // quando falta GA4_PROPERTY_ID (Ga4ConfigError) ou a auth falha
+    // (GoogleAuthError), e 1 em falha de ingestao. Queremos a unit em
+    // `systemctl --user list-units --state=failed` para
+    // Diaria-Systemd-Failed-Units-Alarm avisar -- credencial faltando e
+    // falha, nao resultado ambiguo normal.
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada
+    // (`helios`) e confirmar em `systemctl --user list-timers` e em
+    // `docs/scheduled-tasks-registry.md` sao acao POSTERIOR do editor.
+    issue: "#7184",
+  },
+  {
     name: "Diaria-Route-Marker-Staleness-Alarm",
     description:
       "alarme semanal de marcador de roteamento desatualizado -- bloqueada sem marcador bloqueio-execucao, " +

@@ -15,6 +15,7 @@ import {
   METRICAS,
   enumerarDiasInclusive,
   KIT_IMPORT_DAY,
+  CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR,
   type MetricDef,
   type MetricDeps,
   type Janela,
@@ -23,6 +24,9 @@ import {
   type DoiOrfaosDeps,
   type BaseAtivaDeps,
   type LeitorV1Deps,
+  type Ga4TrafficMetricDeps,
+  type Ga4SessionInput,
+  type ConversaoVisitaCadastroDeps,
 } from "../scripts/lib/metrics/registry.ts";
 import type { CapturaLogEntry } from "../scripts/lib/metrics/captura-log.ts";
 
@@ -207,7 +211,11 @@ describe("assertRegistryValido (#7175)", () => {
 
   it("passa sobre METRICAS real (registry vazio de conteúdo real não muda — nasce com as 8 de #7176 + 2 de #7183)", () => {
     assert.doesNotThrow(() => assertRegistryValido(METRICAS));
-    assert.equal(METRICAS.length, 10, "8 métricas de #7176 + 2 de ativação por coorte de #7183");
+    assert.equal(
+      METRICAS.length,
+      13,
+      "8 métricas de #7176 + 2 de ativação por coorte de #7183 + 3 de topo de funil GA4 de #7184",
+    );
   });
 });
 
@@ -493,5 +501,143 @@ describe("leitor-v1 — só Beehiiv (#7176)", () => {
     };
     const r = await def.computar({ janela: janelaDia("2026-08-30"), deps });
     assert.equal(r.qualidade, "indeterminado");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #7184 (fatia 12 do épico #7172) — topo de funil GA4
+// ---------------------------------------------------------------------------
+
+function ga4Session(over: Partial<Ga4SessionInput> = {}): Ga4SessionInput {
+  return {
+    dia: over.dia ?? "2026-08-26",
+    sessionSource: over.sessionSource ?? "(direct)",
+    sessionMedium: over.sessionMedium ?? "(none)",
+    hostName: over.hostName ?? "diar.ia.br",
+    sessions: over.sessions ?? 1,
+  };
+}
+
+function baseGa4Deps(over: Partial<Ga4TrafficMetricDeps> = {}): Ga4TrafficMetricDeps {
+  return {
+    sessoes: over.sessoes ?? (() => []),
+    capturaLogGa4: over.capturaLogGa4 ?? [capturaEm("2026-08-26")],
+  };
+}
+
+describe("sessoes-dia (#7184) — nunca 0 por dado ausente", () => {
+  const def = getMetric("sessoes-dia")!;
+
+  it("dia sem coleta GA4 devolve indeterminado, NUNCA 0", async () => {
+    const deps = baseGa4Deps({ capturaLogGa4: [], sessoes: () => [] });
+    const r = await def.computar({ janela: janelaDia("2026-08-26"), deps });
+    assert.equal(r.valor, null);
+    assert.equal(r.qualidade, "indeterminado");
+    assert.match(r.motivo ?? "", /sem coleta GA4/);
+  });
+
+  it("host fora da allowlist é excluído do total (probe da issue: 425 → 206)", async () => {
+    const deps = baseGa4Deps({
+      sessoes: () =>
+        Promise.resolve([
+          ga4Session({ hostName: "diar.ia.br", sessions: 195 }),
+          ga4Session({ hostName: "diaria.beehiiv.com", sessions: 11 }),
+          ga4Session({ hostName: "eia.diar.ia.br", sessions: 98 }),
+          ga4Session({ hostName: "umapenca.com", sessions: 1 }),
+        ]),
+    });
+    const r = await def.computar({ janela: janelaDia("2026-08-26"), deps });
+    assert.equal(r.valor, 206);
+    assert.equal(r.qualidade, "exato");
+  });
+
+  it("decomposicao 'classe' devolve as 5 classes somando o total", async () => {
+    const deps = baseGa4Deps({
+      sessoes: () => [
+        ga4Session({ sessionSource: "google", sessionMedium: "cpc", sessions: 5 }), // pago
+        ga4Session({ sessionSource: "linkedin", sessionMedium: "referral", sessions: 3 }), // organico
+      ],
+    });
+    const r = await def.computar({ janela: janelaDia("2026-08-26"), decomposicao: "classe", deps });
+    assert.equal(r.valor, 8);
+    assert.ok(r.series);
+    const total = r.series!.reduce((s, p) => s + (p.valor ?? 0), 0);
+    assert.equal(total, 8);
+  });
+
+  it("decomposicao fora de decomposicoes lança", async () => {
+    const deps = baseGa4Deps();
+    await assert.rejects(() => def.computar({ janela: janelaDia("2026-08-26"), decomposicao: "produto", deps }));
+  });
+});
+
+describe("sessoes-por-classe-dia (#7184) — série obrigatória", () => {
+  const def = getMetric("sessoes-por-classe-dia")!;
+
+  it("sempre devolve series, mesmo sem pedir decomposicao explicitamente", async () => {
+    const deps = baseGa4Deps({
+      sessoes: () => [ga4Session({ sessionSource: "google", sessionMedium: "cpc", sessions: 4 })],
+    });
+    const r = await def.computar({ janela: janelaDia("2026-08-26"), deps });
+    assert.ok(r.series);
+    assert.ok(r.series!.some((p) => p.chave === "pago" && p.valor === 4));
+  });
+});
+
+describe("conversao-visita-cadastro (#7184) — razão sem join por pessoa", () => {
+  const def = getMetric("conversao-visita-cadastro")!;
+
+  function deps(over: Partial<ConversaoVisitaCadastroDeps> = {}): ConversaoVisitaCadastroDeps {
+    return {
+      ...baseGa4Deps(over),
+      ...baseAcquisitionDeps(over),
+      ...over,
+    } as ConversaoVisitaCadastroDeps;
+  }
+
+  it("janela anterior ao piso da série do Kit devolve indeterminado", async () => {
+    const r = await def.computar({ janela: janelaDia("2026-08-01"), deps: deps() });
+    assert.equal(r.valor, null);
+    assert.equal(r.qualidade, "indeterminado");
+    assert.match(r.motivo ?? "", new RegExp(CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR));
+  });
+
+  it("qualidade é SEMPRE 'faixa' quando há ao menos 1 classe ok — nunca 'exato' (razão sem join por pessoa)", async () => {
+    const r = await def.computar({
+      janela: janelaDia(CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR),
+      deps: deps({
+        sessoes: () => [ga4Session({ sessionSource: "google", sessionMedium: "cpc", sessions: 100 })],
+        registros: () => [record({ dia: CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR, utm_source: "google-ads" })],
+        capturaLog: [capturaEm(CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR)],
+        capturaLogGa4: [capturaEm(CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR)],
+      }),
+    });
+    assert.equal(r.qualidade, "faixa");
+    assert.ok(r.motivo && r.motivo.length > 0);
+  });
+
+  it("classe com sessão e sem cadastro correspondente sai como série com valor null, nunca 0/Infinity", async () => {
+    const r = await def.computar({
+      janela: janelaDia(CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR),
+      deps: deps({
+        sessoes: () => [ga4Session({ sessionSource: "(direct)", sessionMedium: "(none)", sessions: 50 })],
+        registros: () => [],
+        capturaLog: [capturaEm(CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR)],
+        capturaLogGa4: [capturaEm(CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR)],
+      }),
+    });
+    assert.ok(r.series);
+    const indeterminadoPoint = r.series!.find((p) => p.chave === "indeterminado");
+    assert.ok(indeterminadoPoint);
+    assert.equal(indeterminadoPoint!.valor, null);
+  });
+
+  it("sem coleta GA4 no dia devolve indeterminado (denominador ausente)", async () => {
+    const r = await def.computar({
+      janela: janelaDia(CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR),
+      deps: deps({ capturaLogGa4: [], capturaLog: [capturaEm(CONVERSAO_VISITA_CADASTRO_WINDOW_FLOOR)] }),
+    });
+    assert.equal(r.qualidade, "indeterminado");
+    assert.equal(r.valor, null);
   });
 });

@@ -9,12 +9,25 @@
  * alcança a home). Decisão do editor (14/08/2026, #5248): consertar e
  * ingerir, não aposentar.
  *
- * Puxa 2 relatórios da propriedade configurada em `GA4_PROPERTY_ID`:
+ * Puxa 4 relatórios da propriedade configurada em `GA4_PROPERTY_ID`:
  *   - `overview`: sessions, screenPageViews, engagedSessions, averageSessionDuration
  *     por dia (dimension `date`), sobre a janela `--days`.
  *   - `top-pages`: screenPageViews por `pagePath` (top N por pageviews) na
  *     mesma janela — é o relatório que dá comportamento pós-clique de fato
  *     (o que o visitante lê depois de chegar).
+ *   - `channel` (#7184, fatia 12 do épico #7172): sessions por
+ *     `date`/`sessionSource`/`sessionMedium`/`sessionCampaignName`/`hostName`
+ *     — o TOPO de funil (visita) que estava sendo descartado na coleta.
+ *     `hostName` é obrigatório: a propriedade cobre o Vigil.ia.br inteiro
+ *     (eia./livros./cursos./arquivo./especial./poll.diaria.workers.dev), e
+ *     sem ele a `/` do apex funde com a `/` dos outros Workers. A allowlist
+ *     de host que serve o cadastro da diária é aplicada NA LEITURA, por
+ *     `scripts/lib/metrics/ga4-channel.ts` — este script só coleta.
+ *   - `channel-group`: sessions por `date`/`sessionDefaultChannelGroup` — o
+ *     agrupamento heurístico do próprio Google, coluna de CONFERÊNCIA ao
+ *     lado da classificação de `channel` (nunca a fonte da classificação —
+ *     ver docstring de `ga4-channel.ts` pro porquê ele diverge da taxonomia
+ *     de 5 classes do projeto).
  *
  * Salva snapshot em `data/ga4-cache/{YYYY-MM-DD}.json` (timestamp da
  * execução) + `data/ga4-cache/latest.json` (sempre sobrescrito — ponteiro
@@ -64,16 +77,46 @@ const CACHE_DIR = resolve(ROOT, "data/ga4-cache");
 const DEFAULT_WINDOW_DAYS = 7;
 const TOP_PAGES_LIMIT = 25;
 
+/**
+ * Teto de linhas do relatório FINO (`channel` — #7184, fatia 12 do épico
+ * #7172): 5 dimensões (`date`,`sessionSource`,`sessionMedium`,
+ * `sessionCampaignName`,`hostName`), cardinalidade bem mais alta que
+ * `topPages` (1 dimensão). 10k cobre folgado a combinatória real da
+ * propriedade — efeito de cota: cada `runReport` conta 1 contra o teto
+ * diário de `properties.runReport` da Data API (cota gratuita generosa,
+ * ver `describeGa4Failure` 429); o custo por chamada não escala com
+ * `limit`, só o tamanho da resposta.
+ */
+const CHANNEL_REPORT_LIMIT = 10_000;
+
+/**
+ * Teto de linhas do relatório de CONFERÊNCIA (`channelGroup` —
+ * `sessionDefaultChannelGroup`, ~10 grupos possíveis × dias da janela).
+ * Bem menor que `CHANNEL_REPORT_LIMIT` porque a cardinalidade é baixa por
+ * desenho (é o agrupamento heurístico do próprio Google).
+ */
+const CHANNEL_GROUP_REPORT_LIMIT = 1_000;
+
 export interface Ga4Snapshot {
   fetched_at: string;
   property_id: string;
   window_days: number;
   overview: Ga4FlatRow[];
   top_pages: Ga4FlatRow[];
+  /** Relatório FINO — o que classifica sessões nas 5 classes de F1 via
+   *  `scripts/lib/metrics/ga4-channel.ts` (#7184). */
+  channel: Ga4FlatRow[];
+  /** Relatório de CONFERÊNCIA (`sessionDefaultChannelGroup`, agrupamento
+   *  heurístico do Google) — exibido ao lado, NUNCA usado para classificar
+   *  (#7184, ver docstring de `ga4-channel.ts` pro porquê ele diverge). */
+  channel_group: Ga4FlatRow[];
 }
 
-/** Monta os 2 requests desta ingestão (puro — testável sem rede). */
-export function buildSyncRequests(propertyId: string, windowDays: number): Record<"overview" | "topPages", Ga4RunReportRequest> {
+/** Monta os 4 requests desta ingestão (puro — testável sem rede). */
+export function buildSyncRequests(
+  propertyId: string,
+  windowDays: number,
+): Record<"overview" | "topPages" | "channel" | "channelGroup", Ga4RunReportRequest> {
   const dateRanges = [{ startDate: `${windowDays}daysAgo`, endDate: "yesterday" }];
   return {
     overview: {
@@ -89,14 +132,36 @@ export function buildSyncRequests(propertyId: string, windowDays: number): Recor
       dateRanges,
       limit: TOP_PAGES_LIMIT,
     },
+    // #7184 — relatório fino: o que classifica sessões nas 5 classes de F1
+    // (scripts/lib/metrics/ga4-channel.ts). hostName é obrigatório aqui —
+    // sem ele a `/` do apex funde com a `/` de todos os outros Workers da
+    // mesma propriedade GA4 (516813959 cobre o Vigil.ia.br inteiro).
+    channel: {
+      propertyId,
+      dimensions: ["date", "sessionSource", "sessionMedium", "sessionCampaignName", "hostName"],
+      metrics: ["sessions"],
+      dateRanges,
+      limit: CHANNEL_REPORT_LIMIT,
+    },
+    // #7184 — relatório de conferência, exibido ao lado (nunca usado para
+    // classificar — ver docstring de ga4-channel.ts).
+    channelGroup: {
+      propertyId,
+      dimensions: ["date", "sessionDefaultChannelGroup"],
+      metrics: ["sessions"],
+      dateRanges,
+      limit: CHANNEL_GROUP_REPORT_LIMIT,
+    },
   };
 }
 
 async function fetchSnapshot(propertyId: string, windowDays: number, fetchImpl: Ga4FetchImpl): Promise<Ga4Snapshot> {
   const requests = buildSyncRequests(propertyId, windowDays);
-  const [overviewRes, topPagesRes] = await Promise.all([
+  const [overviewRes, topPagesRes, channelRes, channelGroupRes] = await Promise.all([
     runGa4Report(requests.overview, fetchImpl),
     runGa4Report(requests.topPages, fetchImpl),
+    runGa4Report(requests.channel, fetchImpl),
+    runGa4Report(requests.channelGroup, fetchImpl),
   ]);
   return {
     fetched_at: new Date().toISOString(),
@@ -104,6 +169,8 @@ async function fetchSnapshot(propertyId: string, windowDays: number, fetchImpl: 
     window_days: windowDays,
     overview: extractReportRows(overviewRes),
     top_pages: extractReportRows(topPagesRes),
+    channel: extractReportRows(channelRes),
+    channel_group: extractReportRows(channelGroupRes),
   };
 }
 
@@ -167,6 +234,8 @@ async function main(): Promise<void> {
         window_days: days,
         overview_rows: snapshot.overview.length,
         top_pages_rows: snapshot.top_pages.length,
+        channel_rows: snapshot.channel.length,
+        channel_group_rows: snapshot.channel_group.length,
         saved_to: [datedPath, latestPath],
       },
       null,
