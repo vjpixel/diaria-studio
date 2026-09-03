@@ -405,3 +405,31 @@ describe("findDangerousDiffContent com allowlist (#7217)", () => {
     assert.match(findings[0].detail, /^1 linha/);
   });
 });
+
+describe("isAllowlistedEmailLine — contrabando por substring (#7244, review da PR #7245)", () => {
+  // O review perguntou se dá pra esconder e-mail real ao redor do literal
+  // permitido. Dá NÃO, porque o match de `EMAIL_RE` é do TOKEN INTEIRO e
+  // guloso: `notseu@email.com` casa inteiro e não bate nenhum literal, então
+  // nada é removido e a linha segue barrada. Isso funciona hoje por
+  // propriedade do `EMAIL_RE`, não por código desta allowlist — e é
+  // exatamente por isso que precisa de teste: afrouxar o local-part de
+  // `EMAIL_RE` no futuro reabriria o bypass sem nada acusar.
+  it("prefixo colado no literal permitido -> continua barrado", () => {
+    assert.equal(isAllowlistedEmailLine("notseu@email.com"), false);
+    assert.equal(isAllowlistedEmailLine("jose.seu@email.com"), false);
+  });
+
+  it("sufixo de domínio colado no literal permitido -> continua barrado", () => {
+    assert.equal(isAllowlistedEmailLine("seu@email.com.br"), false);
+    assert.equal(isAllowlistedEmailLine("seu@email.computador.org"), false);
+  });
+
+  it("sub-endereçamento (+tag) no literal permitido -> continua barrado", () => {
+    assert.equal(isAllowlistedEmailLine("x+seu@email.com"), false);
+  });
+
+  it("o literal EXATO segue permitido, inclusive com caixa diferente", () => {
+    assert.equal(isAllowlistedEmailLine("seu@email.com"), true);
+    assert.equal(isAllowlistedEmailLine("SEU@EMAIL.COM"), true);
+  });
+});

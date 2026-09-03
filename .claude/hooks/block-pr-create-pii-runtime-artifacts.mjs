@@ -221,7 +221,7 @@ export const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
 
 /**
  * Endereços que casam `EMAIL_RE` mas comprovadamente NÃO são PII de ninguém
- * (#7217) — placeholder de formulário e domínios reservados pra documentação.
+ * (#7244) — SÓ placeholder de formulário, literal por literal.
  *
  * **Por que existe.** `seu@email.com` é o `placeholder=` do campo de e-mail
  * do formulário de inscrição, embutido no HTML de TODA página de hub gerada
@@ -264,7 +264,12 @@ export const ALLOWLISTED_EMAILS = [
  */
 export function isAllowlistedEmailLine(line) {
   if (typeof line !== "string") return false;
-  const stripped = line.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, (m) =>
+  // Deriva de `EMAIL_RE` em vez de copiar o padrão (review da PR #7245):
+  // duplicar convidava as duas cópias a divergirem numa edição futura.
+  // O match é do TOKEN INTEIRO e guloso, e é isso que impede o
+  // contrabando por substring — `notseu@email.com` casa inteiro, não bate
+  // nenhum literal da allowlist, e a linha segue barrada.
+  const stripped = line.replace(new RegExp(EMAIL_RE.source, "g"), (m) =>
     ALLOWLISTED_EMAILS.includes(m.toLowerCase()) ? "" : m,
   );
   return !EMAIL_RE.test(stripped);
@@ -343,9 +348,10 @@ export function findDangerousDiffContent(nameStatusEntries, addedLinesByFile) {
 
   for (const [path, lines] of addedLinesByFile.entries()) {
     if (isFixturePath(path)) continue;
-    // #7217: `isAllowlistedEmailLine` dispensa só a linha cujos ÚNICOS
-    // e-mails são placeholder de UI ou domínio reservado por RFC 2606 — um
-    // e-mail real na mesma linha continua barrando.
+    // #7244: `isAllowlistedEmailLine` dispensa só a linha cujos ÚNICOS
+    // e-mails são os literais de placeholder de UI — um e-mail real na mesma
+    // linha continua barrando. NÃO há isenção por domínio (nem RFC 2606):
+    // ver o porquê na docstring de `ALLOWLISTED_EMAILS`.
     const emailLines = lines.filter((l) => EMAIL_RE.test(l) && !isAllowlistedEmailLine(l));
     if (emailLines.length > 0) {
       findings.push({
