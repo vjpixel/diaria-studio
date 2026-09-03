@@ -35,7 +35,9 @@ Três coisas que a mecânica do `/goal` impõe ao contrato desta skill:
 2. **`/goal` não muda o modo de permissão.** Em modo manual ele continua pedindo aprovação a cada tool call, o que inviabiliza a noite desassistida. Rodar em **auto mode**.
 3. **Incluir cláusula de parada** (`ou parar após N turnos`) — o avaliador a julga pela conversa, e ela é o freio quando a condição se revela inalcançável.
 
-**Quatro falhas limpam o goal** e exigem `/goal` de novo: falha de autenticação, **crédito esgotado**, estouro de contexto que a auto-compactação não resolveu, e modelo indisponível. Rate limit e servidor sobrecarregado **não** limpam. A de crédito importa aqui: se as contas do provedor de codificação acabarem de madrugada (#7250), a rodada para — e é por isso que aquele alarme existe.
+**Quatro falhas limpam o goal** e exigem `/goal` de novo: falha de autenticação, **crédito esgotado**, estouro de contexto que a auto-compactação não resolveu, e modelo indisponível. Rate limit e servidor sobrecarregado **não** limpam — a rodada sobrevive a eles.
+
+"Crédito esgotado" aqui é a **cota da própria sessão Claude Code**, que por invariante do projeto (#5608) autentica sempre pela assinatura claude.ai. **Não confundir com as contas Codex OAuth do Hermes (#7250)** — sistema de delegação separado, consumido por cron externo, sem relação mecânica com o `/goal` desta sessão. São dois subsistemas distintos e o mecanismo de um não explica o outro.
 
 **Trabalho em background adia a avaliação:** enquanto subagente ou shell em background estiver rodando, o turno não é avaliado. Há check-in automático após 30min parado, depois 1h, depois a cada 2h. Isso é a favor da rodada — foi o que a sustentou em 02–03/09 —, mas significa que **subagente travado prolonga a rodada em vez de encerrá-la**. Daí a regra de cobrar silêncio prolongado (ver "Protocolo de marcos").
 
@@ -82,7 +84,9 @@ O critério que substitui a pergunta é **reversibilidade**:
 | **Reversível** — código, config versionada, rascunho, label, agendamento 24h+ | decidir, declarar a premissa, seguir |
 | **Irreversível pra terceiros** — envio de e-mail/campanha, post publicado, dado apagado sem backup, edição em curso em `data/editions/` | nunca sozinho; vira (b) |
 
-**Exceção explícita ao #738 e ao #3938:** MCP offline, CI ou GitHub falhando **não param a rodada**. Registram (b) e seguem, sem halt banner. Esta é uma exceção consciente para rodada desassistida — não vale fora dela.
+**Exceção explícita ao #738, e SÓ a ele:** MCP offline, CI ou GitHub falhando **não param a rodada**. Registram (b) e seguem, sem halt banner. Exceção consciente para rodada desassistida — não vale fora dela.
+
+**O #3938 continua valendo integralmente, sem exceção.** Ele cobre falha do `AskUserQuestion` — e essa falha só pode acontecer **durante o briefing**, que é justamente a janela em que o editor está presente. Halt banner ali faz mais sentido, não menos: se a pergunta não chegou a ele, seguir com o default significa decidir por ele sem que ele soubesse que havia decisão. CLAUDE.md trata #738 e #3938 como gates de segurança que a política "Perguntar é exceção" não afeta; só o #738 tem exceção sancionada aqui (#7289).
 
 ### CLASSIFICAÇÃO NÃO É VEREDITO — e é o passo de maior alavancagem da rodada
 
@@ -90,16 +94,16 @@ O critério que substitui a pergunta é **reversibilidade**:
 
 **Taxas medidas, não estimadas** (rodada de 02–03/09/2026):
 
-| track | quantos eram | quantos sobreviveram à releitura | erro |
-|---|---|---|---|
-| `agendada` | 19 | 9 | **~53%** |
-| `bloqueada` | 12 | 5 | **~58%** |
+| track | revisadas | sobreviveram à releitura | erro | auditoria |
+|---|---|---|---|---|
+| `agendada` | 20 | 9 | **55%** | #7288 |
+| `bloqueada` | 12 | 5 | **58%** | #7270 |
 
 **Mais da metade, nos dois.** Isso não é ruído de borda — é viés sistemático do categorizador para o lado errado: ele produz falso "não dá" com muito mais frequência que falso "dá". Toda rodada que aceitar as tracks como veredito deixa metade do alvo na mesa.
 
 **Portanto: trate todo track que não seja `overnight` como SUSPEITO por padrão.** O ônus da prova é de quem afirma que não dá, não de quem quer executar. Ler a issue **inteira** (`gh issue view N --comments` — corpo + TODOS os comentários) e julgar pelo conteúdo antes de aceitar qualquer "não dá agora".
 
-**O categorizador também é alvo.** Se uma track erra sistematicamente, isso é bug, não fato da vida — e entra no alvo vivo como qualquer outro. A #7270 já cobre o caso de `bloqueada` (label sem razão durável nem reavaliação); se a releitura desta rodada revelar padrão equivalente em `agendada` ou `fora-de-rodada`, abra a issue correspondente em vez de só corrigir caso a caso.
+**O categorizador também é alvo.** Se uma track erra sistematicamente, isso é bug, não fato da vida — e entra no alvo vivo como qualquer outro. **#7270** cobre `bloqueada` (label sem razão durável nem reavaliação) e **#7288** cobre `agendada` (marcador `aguardando-ate` usado como estacionamento). Se a releitura desta rodada revelar padrão equivalente em `fora-de-rodada` ou `epica`, abra a issue correspondente em vez de só corrigir caso a caso.
 
 Suspeitas por construção:
 - **`fora-de-rodada`** — muitas caem ali só pela label `alarm`, sob a premissa "alarme de estado normaliza sozinho". Condição que persiste há dias e tem remediação de código é bug real.
@@ -156,7 +160,13 @@ Cada PR extra custa uma rodada de CI e uma vaga na fila serial de merge.
 
 Worktrees concorrentes acima de 6 até a máquina engasgar. **Só o merge é serial.**
 
-`npx tsx scripts/lib/session-registry.ts claim-issue --issue N` como comando **STANDALONE** antes de abrir worktree — encadeado com `&&`/pipe/multi-linha, o hook não injeta `--session-id` e a chamada falha (#7212).
+```bash
+npx tsx scripts/lib/session-registry.ts claim-issue --kind develop --issue N
+```
+
+Antes de abrir worktree, e como comando **STANDALONE** — encadeado com `&&`/pipe/multi-linha, o hook não injeta `--session-id` e a chamada falha (#7212).
+
+**`--kind` é obrigatório e não é auto-injetado.** Só o `--session-id` vem do hook; `requireKind` roda antes de o handler sequer ler `--issue`, então a forma sem `--kind` sai com `exit 1` na hora.
 
 ### LIVRO-CAIXA — grave na hora, nunca reconstrua no fim
 
@@ -232,8 +242,10 @@ Então a skill não elimina as outras — ela **declara posse enquanto roda**.
 ### Passo de abertura: anunciar
 
 1. **Registrar-se com kind coordenador**: `npx tsx scripts/lib/session-registry.ts register --kind develop` (comando STANDALONE). Isso é o que torna o merge possível — sem ele, o guard do #5716 recusa `gh pr merge`, corretamente.
-2. **Anunciar às sessões vivas** por `SendMessage`, uma mensagem curta a cada uma: *"estou coordenando a rodada de exaustão; me reporte marcos pelo protocolo, e não abra worktree sem `claim-issue`."*
-3. **Ler `list-active`** e respeitar o que já está reivindicado.
+2. **Descobrir quem está vivo**: `list-active` (o registro, com claims) e `ListAgents` (as sessões endereçáveis). Um não substitui o outro — o registro diz quem reivindicou o quê, o `ListAgents` diz para quem dá pra mandar mensagem.
+3. **Anunciar** por `SendMessage`, uma mensagem curta a cada sessão viva: *"estou coordenando a rodada de exaustão; me reporte marcos pelo protocolo, e não abra worktree sem `claim-issue`."*
+
+> **Nota sobre o kind:** `develop` é reusado porque o guard do #5716 só reconhece `overnight`/`develop`/`continuo` — não há kind próprio para esta rodada. Funciona, mas significa que nada distingue esta sessão de uma `/diaria-develop` genuína rodando em paralelo na mesma máquina: dashboards, atribuição de `claimed_issues` e mensagens de erro vão tratar as duas como iguais. Se isso virar problema, é kind novo, não relabel.
 
 ### Durante a janela
 
