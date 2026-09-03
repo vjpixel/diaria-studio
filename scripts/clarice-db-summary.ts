@@ -23,7 +23,12 @@ import { DatabaseSync } from "node:sqlite";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { openClariceDb, DEFAULT_DB_PATH, INTERNAL_EMAILS } from "./lib/clarice-db.ts";
+import {
+  openClariceDb,
+  DEFAULT_DB_PATH,
+  INTERNAL_EMAILS,
+  MV_NEVER_VERIFIED_SQL,
+} from "./lib/clarice-db.ts";
 // #3081: importa direto de lib/dashboard-kv.ts (módulo sem side-effect) — antes
 // vinha indireto via clarice-mv-status.ts (que só re-exporta a MESMA constante
 // de lib/dashboard-kv.ts pra compat; sem motivo pra passar por esse hop extra).
@@ -33,7 +38,7 @@ import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 // workers/brevo-dashboard/src/types.ts.
 import { isJuridicoEmail } from "./lib/clarice-sector.ts";
 import { isFirstSend, isSendEligible } from "./lib/clarice-segment.ts";
-import { COHORT_JURIDICO } from "./lib/cohorts.ts";
+import { COHORT_JURIDICO, COHORT_ASSINANTES_ATIVOS } from "./lib/cohorts.ts";
 import type { CohortStatsRow } from "./lib/dashboard-kv-types.ts";
 export type { CohortStatsRow };
 
@@ -107,7 +112,23 @@ export interface StoreSummary {
   // nunca nas duas (cada contato pertence a exatamente 1 chave, mesmo
   // invariante de partição de sempre).
   cohort_stats: Record<string, WrittenCohortStatsRow>;
+  // #7239: distribuição CRUA por bucket (não muda) — quem quer "quanto falta
+  // verificar de verdade" precisa dos dois campos irmãos abaixo, porque `none`
+  // mistura backlog genuíno com cohorts MV-isentos (assinantes-ativos, #3819).
   mv: Record<string, number>;
+  // #7239: quantos contatos são MV-isentos (`isMvExemptCohort`, hoje só
+  // `assinantes-ativos`), somados sobre TODOS os buckets de `mv` acima — não
+  // só `none`. Achado ao vivo (03/09/2026): 151 caem em `mv.none`, mas mais 49
+  // (`unknown`/`rejected`) também são isentos e ficam igualmente
+  // indistinguíveis de descarte real nesses dois buckets.
+  mv_exempt: number;
+  // #7239: backlog ACIONÁVEL de verificação — contatos em `mv.none`
+  // (nunca submetidos ao MV) que NÃO são isentos e TÊM cohort atribuído
+  // (`cohort IS NOT NULL`, mesmo predicado usado pra excluir os "sem cohort"
+  // do cálculo manual da issue — sem cohort não dá pra afirmar isenção nem
+  // backlog). É este número, não `mv.none`, que decide se falta rodar
+  // `verify-emails-mv.ts` em algum cohort.
+  mv_backlog_acionavel: number;
   engagement: { with_opens: number; with_clicks: number };
 }
 
@@ -290,6 +311,20 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
     mv: groupCounts(
       db,
       "SELECT COALESCE(mv_bucket,'none') AS k, COUNT(*) n FROM clarice_users GROUP BY COALESCE(mv_bucket,'none')",
+    ),
+    // #7239: mesma constante usada pelo predicado canônico `isMvExemptCohort`
+    // (cohorts.ts) — mesmo padrão já usado por clarice-mv-status.ts (SQL direto
+    // com COHORT_ASSINANTES_ATIVOS em vez de chamar a função por linha).
+    mv_exempt: count(
+      db,
+      "SELECT COUNT(*) n FROM clarice_users WHERE cohort = ?",
+      [COHORT_ASSINANTES_ATIVOS],
+    ),
+    mv_backlog_acionavel: count(
+      db,
+      `SELECT COUNT(*) n FROM clarice_users
+        WHERE ${MV_NEVER_VERIFIED_SQL} AND cohort IS NOT NULL AND cohort != ?`,
+      [COHORT_ASSINANTES_ATIVOS],
     ),
     // #4712: excluído internos (NOT_INTERNAL_SQL) — mesmo universo do
     // histograma de priority_points acima (`priority_points_histogram`),

@@ -604,6 +604,67 @@ de verdade pela 1ª vez.
 
 ---
 
+## Caminho manual do grupo `engajados` (retenção, #7235)
+
+Tudo acima documenta o grupo `ramp-warm` (1º envio). O grupo `engajados`
+(retenção — quem já recebeu e está engajado, `priority_points DESC`, #6945)
+roda num orquestrador **separado**, `scripts/clarice-envio-engajados-run.ts`
+— DELIBERADAMENTE mais simples (sem freio de risco de ISP próprio, sem teste
+A/B/C próprio, reusa o assunto já travado do dia — ver docstring de topo do
+script). Os dois orquestradores rodam como **tasks agendadas independentes**
+(`Diaria-Clarice-Envio` 19:00, `Diaria-Clarice-Envio-Engajados` 20:15) —
+**não existe uma flag `--group` que escolha entre eles**: cada um é o
+script certo pro seu horário/grupo, sempre. Compartilham o LOCK por ciclo
+(`{cycle}/.envio-run.lock`, chaveado por CICLO, não por grupo — as duas
+automações escrevem no mesmo `sent-or-queued.json` cycle-wide, #4765) e por
+isso **nunca rodam concorrentes sobre o mesmo ciclo**, mesmo manualmente.
+
+**Decisão do editor (03/09/2026, comentários da #7235): a escolha de
+AUDIÊNCIA é automática no caminho agendado (a regra — ordem de score, reset
+no dia 1º do mês, #7234 — nunca muda mês a mês) e só é PERGUNTADA no
+caminho MANUAL.** Mesma assimetria que o #5985 já estabeleceu pro VOLUME do
+ramp-warm, estendida aqui pra uma 2ª dimensão (audiência):
+
+```bash
+# 1. Proposta — local-only, não toca a Brevo, não exige BREVO_CLARICE_API_KEY.
+npx tsx scripts/clarice-envio-engajados-run.ts --plan-only
+```
+
+Isso imprime um JSON (`cycle`, `sendDate`, `subject`, `baseVolume`, `volume`,
+`overrideApplied`, `preview: {queueEligible, excludedByRecency,
+eligibleForRound, selectedCount, scoreRange, remainingAboveCutoff}`) — a
+composição da audiência proposta: quantos elegíveis, quantos já receberam
+neste mês de envio (excluídos), a faixa de `priority_points` que o corte do
+dia alcança (`scoreRange.max` até `scoreRange.min`), e quantos ficam acima
+do corte pra amanhã (`remainingAboveCutoff`). **Apresentar isso ao editor
+via `AskUserQuestion`**: confirmar o volume proposto, pedir outro número
+(`--volume N`), ou abortar. Igual ao ramp-warm, o caminho AGENDADO nunca vê
+`--plan-only`/`--volume` — corre sempre com a proposta pura da política.
+
+```bash
+# 2. Editor confirmou (ou pediu outro número) — roda de ponta a ponta:
+npx tsx scripts/clarice-envio-engajados-run.ts --volume {N}
+```
+
+`--volume N` nunca corta em silêncio: acima de `ENGAJADOS_MAX_DAILY_VOLUME`
+(`scripts/lib/clarice-envio-engajados-policy.ts`) a rodada **aborta**
+explicando o teto violado — mesma disciplina do `--volume` do ramp-warm.
+Abaixo do teto, o corte real por fila disponível continua acontecendo por
+`--budget` na escrita (`clarice-build-segment.ts`) — o preview de
+`--plan-only` é uma PROPOSTA (não replica os guards de escrita — dedup por
+ciclo, exclusão de campanha comprometida via Brevo — que só existem no
+momento real da escrita), não uma garantia bit-a-bit do número final.
+
+**`--group` como MECANISMO de troca de audiência (a leitura original desta
+issue) foi descartado** — a #7235 nasceu recomendando isso, o editor
+corrigiu ao vivo ("é uma coisa que é a regra que deveria funcionar"): não há
+uma decisão diária de "qual grupo hoje", os dois já rodam sempre, uma flag
+de escolha não teria o que escolher. Fica pendente de reavaliação quando o
+#7236 (unificar os dois orquestradores num waterfall de budget único) — aí
+sim pode nascer um `--group`/audiência única a restringir manualmente.
+
+---
+
 ## Verificação final
 
 ```bash

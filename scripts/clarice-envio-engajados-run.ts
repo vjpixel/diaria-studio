@@ -70,7 +70,15 @@ import { registerReport } from "./studio-ui/studio-reports.ts";
 import { scheduledAtForDate } from "./lib/clarice-wave-plan.ts";
 import { isClariceEngajadosEnabled } from "./lib/clarice-envio-engajados-enabled.ts";
 import { readEngajadosState, writeEngajadosState } from "./lib/clarice-envio-engajados-state.ts";
-import { proposeEngajadosVolume } from "./lib/clarice-envio-engajados-policy.ts";
+import {
+  proposeEngajadosVolume,
+  buildEngajadosPlanPreview,
+  ENGAJADOS_MAX_DAILY_VOLUME,
+  type EngajadosPlanPreview,
+} from "./lib/clarice-envio-engajados-policy.ts";
+import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
+import { sendMonthStartIso } from "./lib/clarice-paths.ts";
+import type { StoreRow } from "./lib/clarice-segment.ts";
 import {
   parseStepJson,
   realExec,
@@ -152,6 +160,10 @@ export interface EngajadosRunDeps {
   execMode: () => "local" | "cloud";
   resolveLatestCycle: () => ResolveLatestMonthlyCycleResult;
   readAbcState: () => ClariceAbcStateRead;
+  /** #7235 — universo bruto do store (SÓ LEITURA local, sem Brevo) usado pelo
+   * preview de `--plan-only`. Injetado (mesmo padrão de `readAbcState`) pra
+   * testes não dependerem do SQLite real da máquina. */
+  readQueueRows: () => StoreRow[];
 }
 
 export function productionDeps(rootDir: string = ROOT): EngajadosRunDeps {
@@ -163,11 +175,54 @@ export function productionDeps(rootDir: string = ROOT): EngajadosRunDeps {
     execMode: () => detectExecMode({ projectRoot: rootDir }),
     resolveLatestCycle: () => resolveLatestMonthlyCycleFromDisk(),
     readAbcState: () => readClariceAbcState(rootDir),
+    readQueueRows: () => {
+      const db = openClariceDb(DEFAULT_DB_PATH);
+      try {
+        return db
+          .prepare(
+            `SELECT email, tier, cohort, priority_points, send_eligible, ineligible_reason,
+                    sends_count, opens_count, last_sent_at, mv_bucket, brevo_list_ids, created, brevo_modified_at
+               FROM clarice_users`,
+          )
+          .all() as unknown as StoreRow[];
+      } finally {
+        db.close();
+      }
+    },
   };
+}
+
+/**
+ * #7235 — proposta calculada por `--plan-only`, devolvida em
+ * `EngajadosRunResult.plan` e impressa como JSON pelo entrypoint CLI. Mesmo
+ * papel do `EnvioPlanProposal` do ramp-warm (#5985) — reúne o contexto que
+ * torna o volume auditável ANTES de qualquer escrita/chamada Brevo.
+ */
+export interface EngajadosPlanProposal {
+  cycle: string;
+  sendDate: string;
+  subject: string;
+  /** Volume que a política proporia sozinha (`proposeEngajadosVolume`), ANTES de `--volume`. */
+  baseVolume: number;
+  /** Volume EFETIVO desta proposta — `baseVolume`, ou `--volume N` quando passado. */
+  volume: number;
+  overrideApplied: boolean;
+  preview: EngajadosPlanPreview;
 }
 
 export interface EngajadosRunOptions {
   dryRun?: boolean;
+  /** `--plan-only` — para logo após montar a proposta (ANTES de adquirir o
+   * lock por escrita/chamar qualquer sub-script), imprime a composição da
+   * audiência proposta, libera qualquer estado, não escreve nada. */
+  planOnly?: boolean;
+  /** `--volume N` — substitui o volume que a política teria escolhido
+   * sozinha. Nunca corta em silêncio: acima de `ENGAJADOS_MAX_DAILY_VOLUME`
+   * a rodada ABORTA explicando o teto violado (mesma disciplina do #5985
+   * no ramp-warm) — o corte por fila disponível continua sendo aplicado
+   * como TETO na escrita real (`--budget`), nunca como erro aqui.
+   */
+  volume?: number;
 }
 
 export interface EngajadosRunResult {
@@ -175,6 +230,10 @@ export interface EngajadosRunResult {
   code: 0 | 1 | 4;
   reportId: string;
   reportMarkdown: string;
+  /** #7235 — presente só quando a rodada foi `--plan-only`. Sem escrita,
+   * sem relatório registrado (`reportId`/`reportMarkdown` ficam vazios
+   * nesse caso, mesmo contrato do ramp-warm/#5985). */
+  plan?: EngajadosPlanProposal;
 }
 
 export async function runEnvioEngajados(
@@ -201,8 +260,17 @@ export async function runEnvioEngajados(
     if (deps.execMode() !== "local") {
       throw new EnvioEngajadosAbort("❌ exec-mode != local — esta rotina precisa do junction data/ (Brevo real). Não roda em sessão cloud.");
     }
-    if (!opts.dryRun && !process.env.BREVO_CLARICE_API_KEY) {
+    // #7235 — `--plan-only`, como `--dry-run`, é local-only (lê o store,
+    // nunca a Brevo) — a key só é exigida no caminho que de fato escreve.
+    if (!opts.dryRun && !opts.planOnly && !process.env.BREVO_CLARICE_API_KEY) {
       throw new EnvioEngajadosAbort("❌ BREVO_CLARICE_API_KEY não definida.");
+    }
+    if (opts.volume !== undefined && opts.volume > ENGAJADOS_MAX_DAILY_VOLUME) {
+      throw new EnvioEngajadosAbort(
+        `❌ --volume ${opts.volume} acima do teto absoluto (${ENGAJADOS_MAX_DAILY_VOLUME}, ver ` +
+          "ENGAJADOS_MAX_DAILY_VOLUME em clarice-envio-engajados-policy.ts) — nunca corta em silêncio " +
+          "pra caber num número que o editor não confirmou.",
+      );
     }
 
     // --- Ciclo: mesmo guard do ramp-warm — nunca distribuir ciclo velho. ---
@@ -248,12 +316,57 @@ export async function runEnvioEngajados(
 
     lockPath = acquireEnvioLock(deps.rootDir, cycle, "clarice-envio-engajados-run", now);
 
+    // #7234 — resolvido cedo (antes até do volume, #7235) porque tanto o
+    // `--plan-only` (cutoff do preview) quanto o Passo 1 real precisam dele
+    // pra derivar o cutoff "já recebeu neste mês" da data em que a onda SAI.
+    // É neste grupo que o defeito mordia: `engajados` é ordenado por score e
+    // a virada do mês é o que devolve a fila ao topo — montar em 31/ago com
+    // o cutoff de agosto fazia o 1º envio de setembro sair raspando o fim da
+    // fila do mês anterior.
+    const sendDate = sendDateBrt(now);
+
     const state = readEngajadosState(resolve(deps.rootDir, "data", "clarice-subscribers"));
-    const volume = proposeEngajadosVolume(state?.lastVolume ?? null);
+    const baseVolume = proposeEngajadosVolume(state?.lastVolume ?? null);
+    // #7235 — `--volume N` substitui o volume que a política teria escolhido
+    // sozinha (mesmo par `--plan-only`/`--volume` do ramp-warm, #5985). O teto
+    // absoluto já foi checado no Preflight acima (abort antes de chegar aqui).
+    const overrideApplied = opts.volume !== undefined;
+    const volume = overrideApplied ? (opts.volume as number) : baseVolume;
     report.note(
-      `volume proposto: ${volume} (base ${state?.lastVolume ?? "bootstrap"} × 1,10, teto absoluto de segurança aplicado — ` +
-        "ver clarice-envio-engajados-policy.ts). Corte real por fila disponível é feito por --budget na escrita abaixo.",
+      overrideApplied
+        ? `volume: ${volume} (--volume explícito, substituindo a proposta da política de ${baseVolume}). ` +
+            "Corte real por fila disponível é feito por --budget na escrita abaixo."
+        : `volume proposto: ${volume} (base ${state?.lastVolume ?? "bootstrap"} × 1,10, teto absoluto de segurança aplicado — ` +
+            "ver clarice-envio-engajados-policy.ts). Corte real por fila disponível é feito por --budget na escrita abaixo.",
     );
+
+    // #7235 — `--plan-only` PARA aqui: composição da audiência (faixa de
+    // score que o corte alcança, quantos sobram pra amanhã), sem lock detido,
+    // sem nenhuma chamada Brevo. O JSON devolvido em `plan` é o que a skill
+    // apresenta ao editor via AskUserQuestion (caminho manual — ver
+    // SKILL.md); a task agendada nunca passa `--plan-only`.
+    if (opts.planOnly) {
+      const cutoffIso = sendMonthStartIso(sendDate);
+      const preview = buildEngajadosPlanPreview(deps.readQueueRows(), volume, cutoffIso);
+      report.note(
+        `--plan-only: fila elegível ${preview.queueEligible}, ${preview.excludedByRecency} já recebido(s) desde ${cutoffIso} ` +
+          `→ ${preview.eligibleForRound} elegível(is) pra esta rodada. Selecionaria ${preview.selectedCount}` +
+          (preview.scoreRange ? ` (score ${preview.scoreRange.max} até ${preview.scoreRange.min})` : "") +
+          `, deixando ${preview.remainingAboveCutoff} acima do corte pra amanhã.`,
+      );
+      lockPath && releaseEnvioLock(lockPath);
+      lockPath = null;
+      const plan: EngajadosPlanProposal = {
+        cycle,
+        sendDate,
+        subject: lockedSubject,
+        baseVolume,
+        volume,
+        overrideApplied,
+        preview,
+      };
+      return { code: 0, reportId: "", reportMarkdown: "", plan };
+    }
 
     if (opts.dryRun) {
       report.note("ℹ️  --dry-run: parando aqui — nenhuma lista/campanha criada, nada agendado.");
@@ -263,14 +376,6 @@ export async function runEnvioEngajados(
     }
 
     const key = `engajados-${aammdd}`;
-
-    // #7234 — resolvido ANTES do Passo 1 (era só no Passo 2) porque o
-    // `clarice-build-segment.ts` precisa dele pra derivar o cutoff "já recebeu
-    // neste mês" da data em que a onda SAI. É neste grupo que o defeito morde:
-    // `engajados` é ordenado por score e a virada do mês é o que devolve a fila
-    // ao topo — montar em 31/ago com o cutoff de agosto faz o 1º envio de
-    // setembro sair raspando o fim da fila do mês anterior.
-    const sendDate = sendDateBrt(now);
 
     report.section("Passo 1 — Selecionar + importar pro Brevo");
     const buildSegmentStep = step<{ selected?: number; budget?: number }>(
@@ -376,15 +481,39 @@ export async function runEnvioEngajados(
 }
 
 if (isMainModule(import.meta.url)) {
+  // #7235 — `--plan-only`/`--volume N` são o caminho MANUAL (mesmo par do
+  // ramp-warm, #5985 — ver .claude/skills/diaria-clarice-envio/SKILL.md). A
+  // task agendada `Diaria-Clarice-Envio-Engajados` continua rodando SEM
+  // nenhuma flag — nenhum override de produção é injetado automaticamente.
   const parsed = parseArgs(process.argv.slice(2));
   const dryRun = parsed.flags.has("dry-run");
-  const deps = productionDeps(ROOT);
-  runEnvioEngajados(deps, { dryRun })
-    .then((r) => {
-      process.exitCode = r.code;
-    })
-    .catch((e) => {
-      console.error(String((e as Error)?.stack || e));
+  const planOnly = parsed.flags.has("plan-only");
+  const volumeArg = parsed.values["volume"];
+  let volume: number | undefined;
+  if (volumeArg !== undefined) {
+    const n = Number(volumeArg);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+      console.error(`❌ --volume precisa ser um inteiro positivo (recebido: "${volumeArg}").`);
       process.exitCode = 1;
-    });
+    } else {
+      volume = n;
+    }
+  }
+  if (process.exitCode !== 1) {
+    const deps = productionDeps(ROOT);
+    runEnvioEngajados(deps, { dryRun, planOnly, volume })
+      .then((r) => {
+        // `--plan-only` imprime a proposta em stdout (JSON) — mesmo contrato
+        // do ramp-warm (#5985): é o que o caminho manual lê pra apresentar
+        // via AskUserQuestion.
+        if (planOnly && r.plan) {
+          console.log(JSON.stringify(r.plan, null, 2));
+        }
+        process.exitCode = r.code;
+      })
+      .catch((e) => {
+        console.error(String((e as Error)?.stack || e));
+        process.exitCode = 1;
+      });
+  }
 }
