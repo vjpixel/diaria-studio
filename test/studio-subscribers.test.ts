@@ -15,6 +15,7 @@ import {
   ensureSubscriber,
   upsertSubscription,
   recordEvent,
+  upsertAttribute,
 } from "../scripts/lib/diaria-subscribers-db.ts";
 import { CROSS_PLATFORM_FLOOR_NOTE } from "../scripts/lib/diaria-subscribers-identity-resolve.ts";
 import {
@@ -54,6 +55,7 @@ describe("fail-soft — sem data/ ou sem store", () => {
       assert.equal(cohort.db.available, false);
       assert.equal(cohort.totalSubscribers, 0);
       assert.equal(cohort.unmatched, null);
+      assert.deepEqual(cohort.attributeCoverage, []);
       assert.equal(cohort.note, CROSS_PLATFORM_FLOOR_NOTE);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -102,6 +104,7 @@ describe("searchSubscribersByEmail", () => {
       upsertSubscription(db, id, "kit", { status: "active", enteredAt: NOW, exitedAt: null, source: null }, NOW);
       recordEvent(db, { subscriberId: id, platform: "kit", type: "subscribe", externalEventId: "sub1", ts: "2026-01-01T00:00:00.000Z" });
       recordEvent(db, { subscriberId: id, platform: "kit", type: "click", externalEventId: "click1", edicao: "ed1", ts: "2026-02-01T00:00:00.000Z" });
+      upsertAttribute(db, id, "kit", "apoio_nivel", "mantenedor", NOW);
       db.close();
 
       const result = searchSubscribersByEmail(root, "LEITOR@X.com"); // case-insensitive, mesma normalização de findSubscriberIdsByEmail
@@ -115,6 +118,10 @@ describe("searchSubscribersByEmail", () => {
       assert.equal(sub.timeline.length, 2);
       // ordenado por ts ascendente (getSubscriberTimeline)
       assert.ok(sub.timeline[0].ts < sub.timeline[1].ts);
+      // #7202 — a ficha de identidade do painel também expõe atributos.
+      assert.equal(sub.attributes.length, 1);
+      assert.equal(sub.attributes[0].key, "apoio_nivel");
+      assert.equal(sub.attributes[0].value, "mantenedor");
       assert.equal(sub.leitor.subscriberId, id);
       assert.equal(typeof sub.leitor.isLeitor, "boolean");
     } finally {
@@ -158,6 +165,28 @@ describe("buildSubscribersCohortData", () => {
       assert.deepEqual(cohort.migrations, []);
       assert.equal(cohort.reactivation.count, 0);
       assert.ok(cohort.unmatched);
+      assert.deepEqual(cohort.attributeCoverage, []);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("attributeCoverage (#7202 finding do review) expõe cobertura por (platform, key)", () => {
+    const root = makeRoot();
+    try {
+      const dbPath = dbPathFor(root);
+      const db = openDiariaSubscribersDb(dbPath);
+      const s1 = ensureSubscriber(db, "beehiiv", "bh-1", "um@x.com", NOW);
+      ensureSubscriber(db, "beehiiv", "bh-2", "dois@x.com", NOW);
+      upsertAttribute(db, s1, "beehiiv", "apoio_nivel", "mantenedor", NOW);
+      db.close();
+
+      const cohort = buildSubscribersCohortData(root);
+      assert.equal(cohort.attributeCoverage.length, 1);
+      assert.equal(cohort.attributeCoverage[0].platform, "beehiiv");
+      assert.equal(cohort.attributeCoverage[0].key, "apoio_nivel");
+      assert.equal(cohort.attributeCoverage[0].withAttribute, 1);
+      assert.equal(cohort.attributeCoverage[0].subscribersOnPlatform, 2);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

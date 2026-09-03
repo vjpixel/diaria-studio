@@ -15,11 +15,13 @@ import {
   mapStatCategoryToEventType,
   buildBrevoEventExternalId,
   ingestBrevoContact,
+  extractBrevoContactAttributes,
 } from "../scripts/lib/brevo-subscribers-ingest.ts";
 import {
   openDiariaSubscribersDb,
   getSubscriberTimeline,
   findSubscriberIdsByEmail,
+  getAttributesForSubscriber,
   getStoreCounts,
 } from "../scripts/lib/diaria-subscribers-db.ts";
 
@@ -151,13 +153,17 @@ describe("ingestBrevoContact", () => {
         opened: [{ campaignId: 1, eventTime: "2026-01-05T01:00:00Z" }],
       },
     });
-    assert.equal(result.newEvents, 2);
+    // #7201: 2 eventos de statistics (sent+opened) + 1 "subscribe" a partir
+    // de createdAt (nova cobertura desta issue — antes ingestBrevoContact
+    // upsertava subscription.entered_at mas nunca emitia o evento datado).
+    assert.equal(result.newEvents, 3);
     assert.equal(result.skippedNoTimestamp, 0);
 
     const [subId] = findSubscriberIdsByEmail(db, "leitor@example.com");
     const timeline = getSubscriberTimeline(db, subId);
-    assert.equal(timeline.length, 2);
+    assert.equal(timeline.length, 3);
     assert.ok(timeline.every((e) => e.platform === "brevo_diaria"));
+    assert.equal(timeline.filter((e) => e.type === "subscribe").length, 1);
 
     const sub = db
       .prepare("SELECT status, source FROM subscription WHERE subscriber_id = ? AND platform = ?")
@@ -219,5 +225,84 @@ describe("ingestBrevoContact", () => {
     assert.equal(result.newEvents, 0);
     assert.equal(getStoreCounts(db).subscribers, 0);
     db.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // subscribe a partir de createdAt (#7201 — residual do checklist: Kit e
+  // Beehiiv já emitiam, a Brevo upsertava subscription.entered_at mas nunca
+  // gravava o evento datado).
+  // -------------------------------------------------------------------------
+
+  it("emite subscribe com ts = createdAt", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBrevoContact(db, "brevo_diaria", 1, {
+      id: 1,
+      email: "a@x.com",
+      createdAt: "2026-03-01T10:00:00Z",
+    });
+    const [subId] = findSubscriberIdsByEmail(db, "a@x.com");
+    const timeline = getSubscriberTimeline(db, subId);
+    assert.equal(timeline.length, 1);
+    assert.equal(timeline[0].type, "subscribe");
+    assert.equal(timeline[0].ts, "2026-03-01T10:00:00Z");
+    db.close();
+  });
+
+  it("sem createdAt não emite subscribe (nunca inventa data)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBrevoContact(db, "brevo_diaria", 1, { id: 1, email: "a@x.com" });
+    const [subId] = findSubscriberIdsByEmail(db, "a@x.com");
+    assert.equal(getSubscriberTimeline(db, subId).length, 0);
+    db.close();
+  });
+
+  it("re-ingerir o mesmo contato não duplica o subscribe (chave natural = email:subscribe:createdAt)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const contact = { id: 1, email: "a@x.com", createdAt: "2026-03-01T10:00:00Z" };
+    ingestBrevoContact(db, "brevo_diaria", 1, contact);
+    const r2 = ingestBrevoContact(db, "brevo_diaria", 1, contact);
+    assert.equal(r2.newEvents, 0);
+    assert.equal(r2.alreadyKnown, 1);
+    db.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // atributos (#7202)
+  // -------------------------------------------------------------------------
+
+  it("grava subscriber_attribute a partir de contact.attributes", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const result = ingestBrevoContact(db, "brevo_diaria", 1, {
+      id: 1,
+      email: "a@x.com",
+      attributes: { NIVEL: "Iniciante", SETOR: "Tecnologia", VAZIO: null },
+    });
+    assert.equal(result.attributesWritten, 2, "VAZIO (null) é ausência, não gravado");
+    const [subId] = findSubscriberIdsByEmail(db, "a@x.com");
+    const attrs = getAttributesForSubscriber(db, subId);
+    assert.equal(attrs.length, 2);
+    assert.ok(attrs.some((a) => a.key === "NIVEL" && a.value === "Iniciante"));
+    db.close();
+  });
+
+  it("sem attributes (ou attributes: {}) não grava nada", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const result = ingestBrevoContact(db, "brevo_diaria", 1, { id: 1, email: "a@x.com" });
+    assert.equal(result.attributesWritten, 0);
+    db.close();
+  });
+});
+
+describe("extractBrevoContactAttributes", () => {
+  it("ignora null (a Brevo devolve TODO atributo configurado, null pra quem nunca preencheu)", () => {
+    assert.deepEqual(extractBrevoContactAttributes({ attributes: { A: "x", B: null } }), [
+      { key: "A", value: "x" },
+    ]);
+  });
+
+  it("attributes ausente/não-objeto/array devolve []", () => {
+    assert.deepEqual(extractBrevoContactAttributes({}), []);
+    assert.deepEqual(extractBrevoContactAttributes({ attributes: null }), []);
+    assert.deepEqual(extractBrevoContactAttributes({ attributes: ["x"] }), []);
   });
 });

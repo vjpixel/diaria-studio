@@ -89,7 +89,9 @@ describe("ingestAccount", () => {
     assert.equal(result.contactsListed, 2);
     assert.equal(result.contactsProcessed, 2);
     assert.equal(result.contactsFailed, 0);
-    assert.equal(result.eventsNew, 3); // 1 sent + (1 sent + 1 open)
+    // #7201: cada contato com createdAt também emite 1 "subscribe" —
+    // 1 sent + (1 sent + 1 open) + 2 subscribe (1 por contato).
+    assert.equal(result.eventsNew, 5);
     assert.equal(getStoreCounts(db).subscribers, 2);
 
     // checkpoint limpo ao terminar (enumeração + processamento completos)

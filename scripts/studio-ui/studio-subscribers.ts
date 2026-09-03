@@ -45,11 +45,15 @@ import {
   getSubscriberTimeline,
   getAliasesForSubscriber,
   getSubscriptionsForSubscriber,
+  getAttributesForSubscriber,
   getAllSubscriberPlatforms,
+  getAllAttributeKeyCoverage,
   type Platform,
   type TimelineEvent,
   type SubscriberAlias,
   type SubscriptionRecord,
+  type SubscriberAttributeRecord,
+  type AttributeKeyCoverage,
 } from "../lib/diaria-subscribers-db.ts";
 import {
   detectPlatformCapabilities,
@@ -117,6 +121,9 @@ export interface SubscriberRecord {
    *  a timeline unificada das 3 plataformas numa linha só (caso de uso
    *  motivador do épico, corpo da issue #6590/#6464). */
   timeline: TimelineEvent[];
+  /** apoio_nivel, respostas de survey, poll_sig, etc. (#7202) — nunca
+   *  inclui linha "ausente"; ver docstring de `getAttributesForSubscriber`. */
+  attributes: SubscriberAttributeRecord[];
   leitor: StoreLeitorResult;
 }
 
@@ -153,6 +160,7 @@ export function searchSubscribersByEmail(
       aliases: getAliasesForSubscriber(db, subscriberId),
       subscriptions: getSubscriptionsForSubscriber(db, subscriberId),
       timeline: getSubscriberTimeline(db, subscriberId),
+      attributes: getAttributesForSubscriber(db, subscriberId),
       leitor: computeStoreLeitorResult(db, subscriberId, caps),
     }));
     return { query: email, db: layer, subscribers, note: CROSS_PLATFORM_FLOOR_NOTE };
@@ -204,6 +212,11 @@ export interface SubscribersCohortData {
   reactivation: ReactivationStat;
   /** `null` quando o DB não abriu (mesmo caso de `db.available === false`). */
   unmatched: UnmatchedReport | null;
+  /** Cobertura por `(platform, key)` de todo atributo já ingerido (#7202)
+   *  — quantos assinantes da plataforma têm valor gravado pra cada chave,
+   *  contra o total de assinantes daquela plataforma. `[]` quando nenhum
+   *  atributo foi gravado ainda (não é erro). */
+  attributeCoverage: AttributeKeyCoverage[];
   note: string;
 }
 
@@ -227,6 +240,7 @@ export function buildSubscribersCohortData(
       migrations: [],
       reactivation: { count: 0, note: REACTIVATION_NOTE },
       unmatched: null,
+      attributeCoverage: [],
       note: CROSS_PLATFORM_FLOOR_NOTE,
     };
   }
@@ -281,6 +295,7 @@ export function buildSubscribersCohortData(
       migrations,
       reactivation: { count: reactivatedAndStayed, note: REACTIVATION_NOTE },
       unmatched: buildUnmatchedReport(db, generatedAt),
+      attributeCoverage: getAllAttributeKeyCoverage(db),
       note: CROSS_PLATFORM_FLOOR_NOTE,
     };
   } finally {

@@ -16,6 +16,7 @@ import {
   ingestPostEngagement,
   resolveOrCreateBeehiivSubscriber,
   ingestBeehiivRoster,
+  extractBeehiivCustomFieldAttributes,
   type BeehiivEngagementRecord,
 } from "../scripts/lib/beehiiv-subscribers-ingest.ts";
 import {
@@ -24,6 +25,7 @@ import {
   findSubscriberIdsByEmail,
   findSubscriberIdByAlias,
   getSubscriptionsForSubscriber,
+  getAttributesForSubscriber,
   getStoreCounts,
   hasSubscriberEventOfType,
 } from "../scripts/lib/diaria-subscribers-db.ts";
@@ -539,5 +541,75 @@ describe("ingestBeehiivRoster", () => {
       assert.equal(hasSubscriberEventOfType(db, otherSubscriberId!, "unsub"), false);
       db.close();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractBeehiivCustomFieldAttributes / atributos no roster (#7202)
+// ---------------------------------------------------------------------------
+
+describe("extractBeehiivCustomFieldAttributes", () => {
+  it("extrai name/value de custom_fields, incluindo apoio_nivel e resposta de survey", () => {
+    const out = extractBeehiivCustomFieldAttributes({
+      custom_fields: [
+        { name: "apoio_nivel", value: "mantenedor" },
+        { name: "Setor 1", value: "Tecnologia" },
+      ],
+    });
+    assert.deepEqual(out, [
+      { key: "apoio_nivel", value: "mantenedor" },
+      { key: "Setor 1", value: "Tecnologia" },
+    ]);
+  });
+
+  it("entry sem name utilizável é ignorada", () => {
+    assert.deepEqual(extractBeehiivCustomFieldAttributes({ custom_fields: [{ value: "x" }] }), []);
+  });
+
+  it("entry com value null/vazio é ausência, não gravada (#7202 — dimensão ausente ≠ zero silencioso)", () => {
+    assert.deepEqual(
+      extractBeehiivCustomFieldAttributes({
+        custom_fields: [
+          { name: "poll_sig", value: null },
+          { name: "RH_parceiro", value: "" },
+        ],
+      }),
+      [],
+    );
+  });
+
+  it("custom_fields ausente/não-array devolve []", () => {
+    assert.deepEqual(extractBeehiivCustomFieldAttributes({}), []);
+  });
+});
+
+describe("ingestBeehiivRoster — atributos (#7202)", () => {
+  it("grava subscriber_attribute a partir de custom_fields e reporta attributesWritten", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const result = ingestBeehiivRoster(
+      db,
+      [
+        makeRosterSub({
+          custom_fields: [
+            { name: "apoio_nivel", value: "amigo" },
+            { name: "Setor 1", value: "Educação" },
+          ],
+        }),
+      ],
+      "2026-09-02T04:25:00.000Z",
+    );
+    assert.equal(result.attributesWritten, 2);
+    const subscriberId = findSubscriberIdByAlias(db, "beehiiv", "sub_1", "leitor@example.com");
+    const attrs = getAttributesForSubscriber(db, subscriberId!);
+    assert.equal(attrs.length, 2);
+    assert.ok(attrs.some((a) => a.key === "apoio_nivel" && a.value === "amigo"));
+    db.close();
+  });
+
+  it("sem custom_fields não grava atributo nenhum — attributesWritten: 0", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const result = ingestBeehiivRoster(db, [makeRosterSub()], "2026-09-02T04:25:00.000Z");
+    assert.equal(result.attributesWritten, 0);
+    db.close();
   });
 });

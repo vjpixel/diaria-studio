@@ -78,6 +78,22 @@
 
       <h3>Não-casados (identidade não resolvida)</h3>
       <div id="unmatched-summary"></div>
+
+      <h3>Cobertura de atributos</h3>
+      <p class="hint">
+        Quantos assinantes de cada plataforma têm cada atributo preenchido
+        (apoio_nivel, respostas de survey, poll_sig, etc. — #7202). Responde
+        "esse atributo vale alguma coisa ou está vazio pra quase todo mundo?".
+      </p>
+      <div class="table-scroll">
+        <table class="triage-table" id="attribute-coverage-table">
+          <thead>
+            <tr><th>Plataforma</th><th>Chave</th><th>Com valor</th><th>Assinantes na plataforma</th><th>Cobertura</th></tr>
+          </thead>
+          <tbody id="attribute-coverage-tbody"></tbody>
+        </table>
+      </div>
+      <p class="hint" id="attribute-coverage-empty" hidden>Nenhum atributo gravado no store ainda.</p>
     </section>
   </main>
 

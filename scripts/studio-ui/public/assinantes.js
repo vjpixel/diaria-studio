@@ -21,6 +21,8 @@ const el = {
   migrationsEmpty: document.getElementById("migrations-empty"),
   reactivationStat: document.getElementById("reactivation-stat"),
   unmatchedSummary: document.getElementById("unmatched-summary"),
+  attributeCoverageTbody: document.getElementById("attribute-coverage-tbody"),
+  attributeCoverageEmpty: document.getElementById("attribute-coverage-empty"),
 };
 
 function escapeHtml(s) {
@@ -94,6 +96,20 @@ function subscriberCardHtml(sub) {
     )
     .join("");
 
+  // #7202 — apoio_nivel, survey, poll_sig, etc. Atributo ausente não aparece
+  // como linha (ver getAttributesForSubscriber) — "sem atributos" é a lista
+  // vazia mesmo, nunca uma linha fabricada.
+  const attrRows = (sub.attributes ?? [])
+    .map(
+      (a) => `
+      <tr>
+        <td>${platformBadge(a.platform)}</td>
+        <td>${escapeHtml(a.key)}</td>
+        <td>${escapeHtml(a.value)}</td>
+      </tr>`,
+    )
+    .join("");
+
   return `
     <div class="assinantes-subscriber-card">
       <div class="assinantes-subscriber-header">
@@ -112,6 +128,13 @@ function subscriberCardHtml(sub) {
         <table class="triage-table">
           <thead><tr><th>Quando</th><th>Plataforma</th><th>Tipo</th><th>Edição</th><th>URL</th></tr></thead>
           <tbody>${timelineRows || `<tr><td colspan="5" class="hint">sem eventos</td></tr>`}</tbody>
+        </table>
+      </div>
+      <h4>Atributos (${(sub.attributes ?? []).length})</h4>
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead><tr><th>Plataforma</th><th>Chave</th><th>Valor</th></tr></thead>
+          <tbody>${attrRows || `<tr><td colspan="3" class="hint">sem atributos declarados</td></tr>`}</tbody>
         </table>
       </div>
     </div>`;
@@ -195,6 +218,21 @@ function renderUnmatched(unmatched) {
     </div>`;
 }
 
+function renderAttributeCoverage(attributeCoverage) {
+  el.attributeCoverageTbody.innerHTML = "";
+  if (!attributeCoverage || attributeCoverage.length === 0) {
+    el.attributeCoverageEmpty.hidden = false;
+    return;
+  }
+  el.attributeCoverageEmpty.hidden = true;
+  el.attributeCoverageTbody.innerHTML = attributeCoverage
+    .map((c) => {
+      const pct = c.subscribersOnPlatform > 0 ? (100 * c.withAttribute) / c.subscribersOnPlatform : 0;
+      return `<tr><td>${platformBadge(c.platform)}</td><td>${escapeHtml(c.key)}</td><td class="mono">${c.withAttribute}</td><td class="mono">${c.subscribersOnPlatform}</td><td class="mono">${pct.toFixed(1)}%</td></tr>`;
+    })
+    .join("");
+}
+
 async function refreshCohort() {
   setFetchStatus("", "carregando…");
   try {
@@ -221,6 +259,7 @@ async function refreshCohort() {
     renderMigrations(data.migrations);
     el.reactivationStat.textContent = `${data.reactivation.count} assinante(s) — ${data.reactivation.note}`;
     renderUnmatched(data.unmatched);
+    renderAttributeCoverage(data.attributeCoverage);
 
     setFetchStatus("ok", `${data.totalSubscribers} subscriber(s) no store`);
   } catch (e) {

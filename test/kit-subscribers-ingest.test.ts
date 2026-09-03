@@ -13,6 +13,7 @@ import {
   verifyKitIngestion,
   ingestBroadcastAudience,
   ingestKitRoster,
+  extractKitFieldAttributes,
 } from "../scripts/lib/kit-subscribers-ingest.ts";
 import {
   openDiariaSubscribersDb,
@@ -20,6 +21,7 @@ import {
   findSubscriberIdsByEmail,
   findSubscriberIdByAlias,
   getSubscriptionsForSubscriber,
+  getAttributesForSubscriber,
   getStoreCounts,
 } from "../scripts/lib/diaria-subscribers-db.ts";
 import type { KitSubscriberSummary } from "../scripts/lib/kit-subscribers.ts";
@@ -279,6 +281,53 @@ describe("ingestKitRoster", () => {
     const result = ingestKitRoster(db, [makeSub({ email_address: "  " })], "2026-09-02T04:25:00.000Z");
     assert.equal(result.subscriptionsWritten, 0);
     assert.equal(getStoreCounts(db).subscribers, 0);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractKitFieldAttributes / atributos no roster (#7202)
+// ---------------------------------------------------------------------------
+
+describe("extractKitFieldAttributes", () => {
+  it("extrai TODO field, incluindo apoio_nivel (não só o subconjunto de UTM)", () => {
+    const out = extractKitFieldAttributes({ fields: { apoio_nivel: "mantenedor", utm_source: "linkedin" } });
+    assert.deepEqual(out.sort((a, b) => a.key.localeCompare(b.key)), [
+      { key: "apoio_nivel", value: "mantenedor" },
+      { key: "utm_source", value: "linkedin" },
+    ]);
+  });
+
+  it("valor vazio/só espaço é ausência, não gravado", () => {
+    assert.deepEqual(extractKitFieldAttributes({ fields: { apoio_nivel: "", setor: "   " } }), []);
+  });
+
+  it("fields ausente devolve []", () => {
+    assert.deepEqual(extractKitFieldAttributes({}), []);
+  });
+});
+
+describe("ingestKitRoster — atributos (#7202)", () => {
+  it("grava subscriber_attribute a partir de fields e reporta attributesWritten", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const result = ingestKitRoster(
+      db,
+      [makeSub({ fields: { apoio_nivel: "amigo" } })],
+      "2026-09-02T04:25:00.000Z",
+    );
+    assert.equal(result.attributesWritten, 1);
+    const subscriberId = findSubscriberIdByAlias(db, "kit", "1", "leitor@example.com");
+    const attrs = getAttributesForSubscriber(db, subscriberId!);
+    assert.deepEqual(attrs.map((a) => ({ key: a.key, value: a.value })), [
+      { key: "apoio_nivel", value: "amigo" },
+    ]);
+    db.close();
+  });
+
+  it("sem fields não grava atributo nenhum", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const result = ingestKitRoster(db, [makeSub()], "2026-09-02T04:25:00.000Z");
+    assert.equal(result.attributesWritten, 0);
     db.close();
   });
 });

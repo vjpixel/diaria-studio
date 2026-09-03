@@ -271,6 +271,27 @@ CREATE INDEX IF NOT EXISTS idx_event_subscriber_ts ON event(subscriber_id, ts);
 -- plataforma entre duas datas).
 CREATE INDEX IF NOT EXISTS idx_event_platform_ts ON event(platform, ts);
 CREATE INDEX IF NOT EXISTS idx_event_type ON event(type);
+
+-- Atributo de pessoa (#7202 — fatia 7 do épico #7163): chave/valor por
+-- (subscriber x platform), NÃO coluna por atributo — o conjunto varia por
+-- plataforma e muda sem aviso (custom field novo na Beehiiv, atributo novo
+-- na Brevo). Cobre apoio_nivel, respostas de survey, poll_sig, tags, tiers,
+-- referrals, RH_* — tudo que os 3 ingestores já recebem no payload e
+-- descartavam. CREATE TABLE IF NOT EXISTS é a mesma migração idempotente
+-- das outras 4 tabelas acima — tabela NOVA não precisa do ALTER TABLE
+-- guardado de migrateSubscriptionColumns (esse padrão é só pra coluna nova
+-- numa tabela JÁ existente em produção).
+CREATE TABLE IF NOT EXISTS subscriber_attribute (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  subscriber_id  INTEGER NOT NULL,
+  platform       TEXT NOT NULL,
+  key            TEXT NOT NULL,
+  value          TEXT,
+  updated_at     TEXT NOT NULL,
+  UNIQUE(subscriber_id, platform, key)
+);
+CREATE INDEX IF NOT EXISTS idx_subscriber_attribute_subscriber ON subscriber_attribute(subscriber_id);
+CREATE INDEX IF NOT EXISTS idx_subscriber_attribute_key ON subscriber_attribute(platform, key);
 `;
 
 /**
@@ -646,6 +667,68 @@ export function recordEvent(
   return { inserted: result.changes > 0 };
 }
 
+/**
+ * Normaliza um valor cru de atributo (custom field Beehiiv, `fields` do Kit,
+ * `attributes` da Brevo) pra `string | null` — `null` significa "não
+ * escrever linha nenhuma" (#7202, achado do dispatch: dimensão ausente tem
+ * que devolver sinal explícito, nunca zero silencioso — aqui o sinal
+ * explícito É a ausência da linha em `subscriber_attribute`, nunca uma linha
+ * com valor vazio fingindo que o atributo foi respondido).
+ *
+ * Decisão explícita (as 3 plataformas devolvem "não respondido" de formas
+ * diferentes — a Brevo tipicamente devolve TODO atributo configurado por
+ * contato, com `null` pra quem nunca preencheu; a Beehiiv/Kit podem devolver
+ * string vazia pro mesmo caso; nenhuma das 3 documenta a distinção "declarado
+ * em branco" vs. "nunca perguntado" de forma confiável o bastante pra
+ * apostar nela): `null`/`undefined` E string vazia (após trim) os DOIS viram
+ * "atributo ausente" (retorna `null`, chamador pula a linha) — só um valor
+ * com conteúdo real vira atributo GRAVADO. Números/booleanos são
+ * coeridos pra string (`subscriber_attribute.value` é sempre TEXT); um
+ * array/objeto (ex: lista de tags da Brevo) vira `JSON.stringify` — mais
+ * robusto que descartar silenciosamente um shape não-string.
+ */
+export function coerceAttributeValue(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+  let str: string;
+  if (typeof raw === "string") {
+    str = raw;
+  } else if (typeof raw === "number" || typeof raw === "boolean") {
+    str = String(raw);
+  } else {
+    try {
+      str = JSON.stringify(raw);
+    } catch {
+      return null;
+    }
+  }
+  const trimmed = str.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Upsert de 1 atributo `(subscriber_id, platform, key)` — chave/valor, não
+ * coluna por atributo (ver comentário da tabela em `SCHEMA`). Idempotente
+ * via `ON CONFLICT DO UPDATE`, mesmo padrão de `upsertSubscription`.
+ * Chamador decide se escreve (nunca escrever `value: null` — usar
+ * `coerceAttributeValue` pra decidir ausência ANTES de chamar isto).
+ */
+export function upsertAttribute(
+  db: DatabaseSync,
+  subscriberId: number,
+  platform: Platform,
+  key: string,
+  value: string,
+  now: string = new Date().toISOString(),
+): void {
+  db.prepare(
+    `INSERT INTO subscriber_attribute (subscriber_id, platform, key, value, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(subscriber_id, platform, key) DO UPDATE SET
+       value      = excluded.value,
+       updated_at = excluded.updated_at`,
+  ).run(subscriberId, platform, key, value, now);
+}
+
 // ---------------------------------------------------------------------------
 // Leitura — as duas consultas que importam (critério de pronto da #6585)
 // ---------------------------------------------------------------------------
@@ -810,6 +893,7 @@ export function getStoreCounts(db: DatabaseSync): {
   identity_aliases: number;
   subscriptions: number;
   events: number;
+  attributes: number;
   subscriptions_coverage_low: boolean;
 } {
   const count = (table: string): number =>
@@ -834,6 +918,7 @@ export function getStoreCounts(db: DatabaseSync): {
     identity_aliases: count("identity_alias"),
     subscriptions,
     events: count("event"),
+    attributes: count("subscriber_attribute"),
     subscriptions_coverage_low,
   };
 }
@@ -895,6 +980,86 @@ export function getSubscriptionsForSubscriber(
        FROM subscription WHERE subscriber_id = ?`,
     )
     .all(subscriberId) as unknown as SubscriptionRecord[];
+}
+
+export interface SubscriberAttributeRecord {
+  platform: Platform;
+  key: string;
+  value: string;
+  updated_at: string;
+}
+
+/** Todos os `subscriber_attribute` de 1 subscriber — apoio_nivel, respostas
+ *  de survey, poll_sig, tags, etc., por plataforma (#7202). Mesmo uso da
+ *  ficha de identidade do painel que `getAliasesForSubscriber`/
+ *  `getSubscriptionsForSubscriber` já servem — nunca inclui linha "ausente":
+ *  se um atributo não aparece aqui, a fonte não trouxe valor utilizável pra
+ *  ele (ver `coerceAttributeValue`), não "respondeu vazio". */
+export function getAttributesForSubscriber(
+  db: DatabaseSync,
+  subscriberId: number,
+): SubscriberAttributeRecord[] {
+  return db
+    .prepare(
+      "SELECT platform, key, value, updated_at FROM subscriber_attribute WHERE subscriber_id = ?",
+    )
+    .all(subscriberId) as unknown as SubscriberAttributeRecord[];
+}
+
+/**
+ * Cobertura de 1 atributo específico `(platform, key)` — quantos dos
+ * subscribers COM ALIAS nesta plataforma têm valor gravado pra esta chave,
+ * contra o total de subscribers da plataforma. Denominador certo pra
+ * perguntas do tipo "quantos % da base Beehiiv declararam Setor X" sem
+ * confundir "0 declararam" com "a chave nunca foi ingerida" — mesmo
+ * espírito do guard de `subscriptions_coverage_low`, só que por atributo em
+ * vez de por dimensão inteira (não faz sentido uma fração global aqui: o
+ * conjunto de chaves varia por plataforma e por pessoa, ver comentário da
+ * tabela em `SCHEMA`).
+ */
+export interface AttributeKeyCoverage {
+  platform: Platform;
+  key: string;
+  subscribersOnPlatform: number;
+  withAttribute: number;
+}
+
+export function getAttributeKeyCoverage(
+  db: DatabaseSync,
+  platform: Platform,
+  key: string,
+): AttributeKeyCoverage {
+  const subscribersOnPlatform = (
+    db
+      .prepare("SELECT COUNT(DISTINCT subscriber_id) AS n FROM identity_alias WHERE platform = ?")
+      .get(platform) as { n: number }
+  ).n;
+  const withAttribute = (
+    db
+      .prepare("SELECT COUNT(*) AS n FROM subscriber_attribute WHERE platform = ? AND key = ?")
+      .get(platform, key) as { n: number }
+  ).n;
+  return { platform, key, subscribersOnPlatform, withAttribute };
+}
+
+/**
+ * Cobertura de TODAS as chaves já vistas em `subscriber_attribute`, uma
+ * linha por `(platform, key)` distinto — consumidor: painel do Studio,
+ * seção "Cobertura de atributos" de `assinantes.html` (#7202 finding do
+ * review, a função nasceu sem consumidor de produção e este é o plugue).
+ * Ordenado por `withAttribute` decrescente (chave mais respondida primeiro)
+ * — resposta útil sem o caller precisar reordenar. Lista vazia (store sem
+ * nenhum atributo gravado ainda) é resultado válido, não erro.
+ */
+export function getAllAttributeKeyCoverage(db: DatabaseSync): AttributeKeyCoverage[] {
+  const pairs = db
+    .prepare(
+      "SELECT DISTINCT platform, key FROM subscriber_attribute ORDER BY platform, key",
+    )
+    .all() as unknown as Array<{ platform: Platform; key: string }>;
+  return pairs
+    .map(({ platform, key }) => getAttributeKeyCoverage(db, platform, key))
+    .sort((a, b) => b.withAttribute - a.withAttribute);
 }
 
 /** Mapa `subscriber_id -> conjunto de plataformas em que tem alias` pro

@@ -55,8 +55,15 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import { ensureSubscriber, recordEvent, upsertSubscription, type EventType } from "./diaria-subscribers-db.ts";
-import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
+import {
+  ensureSubscriber,
+  recordEvent,
+  upsertSubscription,
+  upsertAttribute,
+  coerceAttributeValue,
+  type EventType,
+} from "./diaria-subscribers-db.ts";
+import type { BeehiivBackupSubscriber, BeehiivBackupCustomField } from "./beehiiv-backup-snapshots.ts";
 
 /** Shape tolerante de 1 linha do JSONL — campos podem faltar (registro
  *  malformado, ou resposta parcial da MCP já gravada por uma corrida antiga
@@ -393,12 +400,44 @@ export function ingestPostEngagement(
  */
 const BEEHIIV_EXITED_STATES: ReadonlySet<string> = new Set(["inactive", "invalid"]);
 
+/**
+ * Extrai `(key, value)` de `sub.custom_fields` — apoio_nivel, respostas de
+ * survey (`Nível`, `Interesses 1`, `Setor 1`, `Área`), `poll_sig`, `RH_*`
+ * (#7202, corpo da issue). `name` ausente/vazio é ignorado (entry
+ * inutilizável — nunca vira chave `"undefined"`); `value` passa por
+ * `coerceAttributeValue` — `null`/`undefined`/string vazia viram "atributo
+ * ausente" (entry omitida, nunca gravada com valor vazio fingindo resposta).
+ *
+ * `tags`/`tiers`/`referrals` (também citados na tabela da issue) FICAM DE
+ * FORA desta 1ª passada — `BeehiivBackupSubscriber` não os tipa hoje (ver
+ * docstring do módulo em `beehiiv-backup-snapshots.ts`: "nenhum consumidor
+ * atual precisa deles") e tipá-los exigiria confirmar o shape real ao vivo;
+ * decisão explícita de escopo, não descuido — `custom_fields` sozinho já
+ * cobre a maior fatia de valor citada no corpo da issue (apoio_nivel +
+ * survey + poll_sig + RH_*).
+ */
+export function extractBeehiivCustomFieldAttributes(
+  sub: Pick<BeehiivBackupSubscriber, "custom_fields">,
+): Array<{ key: string; value: string }> {
+  const fields: BeehiivBackupCustomField[] = Array.isArray(sub.custom_fields) ? sub.custom_fields : [];
+  const out: Array<{ key: string; value: string }> = [];
+  for (const f of fields) {
+    const key = typeof f.name === "string" ? f.name.trim() : "";
+    if (!key) continue;
+    const value = coerceAttributeValue(f.value);
+    if (value === null) continue;
+    out.push({ key, value });
+  }
+  return out;
+}
+
 export interface BeehiivRosterIngestResult {
   processed: number;
   subscriptionsWritten: number;
   subscribeEvents: { newEvents: number; alreadyKnown: number };
   unsubEvents: { newEvents: number; alreadyKnown: number };
   recordsSkippedNoEmail: number;
+  attributesWritten: number;
 }
 
 /**
@@ -460,6 +499,7 @@ export function ingestBeehiivRoster(
   let unsubNew = 0;
   let unsubKnown = 0;
   let recordsSkippedNoEmail = 0;
+  let attributesWritten = 0;
 
   for (const sub of subscribers) {
     const email = typeof sub.email === "string" ? sub.email.trim().toLowerCase() : "";
@@ -544,6 +584,11 @@ export function ingestBeehiivRoster(
     } else if (exited) {
       unsubKnown++;
     }
+
+    for (const attr of extractBeehiivCustomFieldAttributes(sub)) {
+      upsertAttribute(db, subscriberId, "beehiiv", attr.key, attr.value, now);
+      attributesWritten++;
+    }
   }
 
   return {
@@ -551,6 +596,7 @@ export function ingestBeehiivRoster(
     subscriptionsWritten,
     subscribeEvents: { newEvents: subscribeNew, alreadyKnown: subscribeKnown },
     unsubEvents: { newEvents: unsubNew, alreadyKnown: unsubKnown },
+    attributesWritten,
     recordsSkippedNoEmail,
   };
 }
