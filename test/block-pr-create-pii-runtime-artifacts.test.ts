@@ -475,8 +475,10 @@ describe("resolveRepoRootCandidates (#7241)", () => {
   });
 
   it("deduplica o mesmo path (inclusive com barra invertida do Windows e barra final)", () => {
-    const out = resolveRepoRootCandidates("C:\repo\\", HOOK_DIR);
-    const norm = out.map((c) => c.replaceAll("\\", "/").replace(/\/+$/, ""));
+    // `C:\\repo\\` = o MESMO diretório que `join(HOOK_DIR, "..", "..")` resolve,
+    // escrito com separador do Windows e barra final — tem que deduplicar.
+    const out: string[] = resolveRepoRootCandidates("C:\\repo\\", HOOK_DIR);
+    const norm = out.map((c: string) => c.replaceAll("\\", "/").replace(/\/+$/, ""));
     assert.equal(new Set(norm).size, norm.length, "nenhum path repetido");
   });
 });
