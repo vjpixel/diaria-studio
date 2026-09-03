@@ -111,7 +111,28 @@ const PUBLISHED_DATE = "2026-08-12";
 //    de automação?", caso Ford) — recontratação após demissão por IA já é
 //    o tema dessa pergunta, casa `CONTRATACAO_PATTERN` ("recontrat").
 // Bump por fonte nova, não por reescrita de corpo.
-const UPDATED_DATE = "2026-08-27";
+//
+// 2026-09-02 (#7102): 2 edições novas (28/08 e 01/09/2026), e este é o
+// primeiro bump deste hub em que a prosa MUDOU de fato — as duas notas
+// acima foram "fonte nova sem reescrita", esta não é:
+//  - 28/08 "Tem 22 a 25 anos? A IA já pode afetar seu emprego" (estudo de
+//    Stanford): entrou em `sections[3]` com parágrafo próprio. Não é "mais
+//    cobertura do mesmo arco" — é a evidência QUANTIFICADA da tese que a
+//    seção vinha sustentando por relato e projeção ("a IA esvaziando o
+//    primeiro degrau da carreira"), e é posterior ao que a seção tratava
+//    como fechamento do arco. Deixar de fora seria manter a seção fechada
+//    justo no dado que a confirma.
+//  - 01/09 "Gates propõe empregos só para humanos": entrou em `sections[4]`
+//    como parágrafo de fechamento. NÃO abriu seção própria, apesar de
+//    mudar a pergunta (de "quantos empregos a IA tira" pra "quais a
+//    sociedade decide proteger") — é 1 ensaio de 1 pessoa, sem meses de
+//    cobertura atrás, mesmo critério conservador das notas acima. Foi pra
+//    `sections[4]` porque lá já mora a família de RESPOSTA DE POLÍTICA ao
+//    deslocamento (Amodei defendendo redistribuição de renda); taxar token
+//    e reservar ocupação é o mesmo registro, não um tema novo.
+// Nenhum número derivado muda: nenhuma das 2 bate `DEMISSOES_PATTERN` nem
+// `CONTRATACAO_PATTERN`.
+const UPDATED_DATE = "2026-09-02";
 
 /** `matchedHeadlines` vem em NFD — ver a nota completa em `countMatching`,
  * em `scripts/lib/shared/hub-page.ts` (motor único reusado pelos 6 hubs). */
@@ -270,6 +291,8 @@ export function getMercadoTrabalhoHub(): HubContent {
           'Em 3 de junho de 2026, [a OpenAI ampliou o escopo do Codex de acelerador de código para copiloto de trabalho analítico e de conhecimento em geral](https://diar.ia.br/p/github-copilot-cre-ditos-mensais-acabam-em-horas), mirando analista e consultor como público-alvo direto. A disputa por ocupar o centro do trabalho intelectual nas empresas foi além da engenharia.',
           'Cinco dias depois, em 8 de junho, [uma reportagem descreveu o dano ainda por vir aos empregos de entrada](https://diar.ia.br/p/a-ia-se-reescreve-e-a-anthropic-pede-um-freio). Oito dias depois, em 16 de junho, [uma pesquisa da Glean com profissionais do Reino Unido mediu 6,3 horas por semana gastas supervisionando e corrigindo erro de ferramenta de IA](https://diar.ia.br/p/sp-vai-mapear-surtos-de-dengue-por-bairro) [fonte primária](https://canaltech.com.br/inteligencia-artificial/funcionarios-perdem-mais-de-6-horas-por-semana-corrigindo-erros-de-ia/), tempo suficiente pra deixar o ganho líquido de produtividade perto de zero em função sem verificação integrada ao fluxo, e 77% dos respondentes disseram que erro de IA já prejudicou a própria reputação profissional.',
           'Oito dias depois, [a Tigre revelou que a EducaTigre, sua plataforma de capacitação, já emitiu 200 mil certificados pra driblar o que a empresa chama de "apagão de competências"](https://diar.ia.br/p/a-anthropic-coloca-claude-dentro-do-slack) [fonte primária](https://exame.com/carreira/tigre-aposta-em-capacitacao-e-ia-para-driblar-o-apagao-de-competencias-e-transformar-carreiras/), mão de obra qualificada faltando num ambiente cada vez mais automatizado. Em 8 de julho, [um podcast da MIT Technology Review Brasil questionou chamar agente autônomo de "colega de trabalho"](https://diar.ia.br/p/claude-cowork-chega-ao-celular-e-a-web): a metáfora carrega expectativa de julgamento e responsabilidade que nenhum sistema atual sustenta. Um dia depois, [a mesma publicação descreveu a IA esvaziando o primeiro degrau da carreira](https://diar.ia.br/p/openai-lanca-gpt-live-para-voz-natural), fechando o arco aberto pelo estudo de Harvard dez meses antes.',
+          'Sete semanas depois desse fechamento, em 28 de agosto de 2026, veio o dado que faltava: [um estudo de Stanford identificou queda de emprego entre jovens americanos de 22 a 25 anos concentrada justamente nas ocupações mais expostas à automação por IA](https://diar.ia.br/p/tem-22-a-25-anos-a-ia-ja-pode-afetar-seu-emprego). O desenho do levantamento é o que dá peso: cruza emprego por faixa etária com o grau de exposição de cada ocupação a tarefas que modelos de linguagem já executam, e a queda aparece nas funções suscetíveis, não no mercado como um todo — o que separa este resultado de uma piora econômica geral.',
+          'Até 28 de agosto de 2026, a tese do primeiro degrau da carreira se apoiava em relato e projeção: a análise de oito meses da Harvard Business Review, a reportagem da MIT Technology Review Brasil, o levantamento da Glean. O estudo de Stanford é a primeira medição a mostrá-la numa população inteira, e chega sete semanas depois do que a cobertura tratava como desfecho do arco.',
         ],
       },
       {
@@ -281,6 +304,7 @@ export function getMercadoTrabalhoHub(): HubContent {
           'Em 1º de julho de 2026 veio o caso mais concreto de recuo: [a Ford recontratou cerca de 350 inspetores de qualidade veteranos depois que a automação não deu conta do padrão de inspeção humana](https://diar.ia.br/p/anthropic-lan-a-sonnet-5). No dia seguinte, [um levantamento do TechCrunch mediu crescimento de 10,2% na força de trabalho de empresas que adotam IA de forma intensa](https://diar.ia.br/p/claude-fable-5-volta-apos-bloqueio-nos-eua) [fonte primária](https://techcrunch.com/2026/06/29/the-ai-jobs-debate-just-got-messier/), contrariando a narrativa de extinção em massa — com a ressalva de que o ganho se concentra em quem já tinha caixa pra investir. Em 13 de julho, [o Guardian mapeou os empregos mais blindados contra a IA em seis setores](https://diar.ia.br/p/os-empregos-mais-blindados-contra-a-ia): tarefa administrativa repetitiva concentra o risco, julgamento clínico, jurídico e financeiro segue resistente.',
           'Em 24 de julho, [uma edição registrou empresa cortando vaga porque cliente já prefere IA no atendimento](https://diar.ia.br/p/reddit-e-jornais-cogitam-banir-o-google). Em 5 de agosto, [câmeras com visão computacional assumiram a gestão e o faturamento de tarifa operacional em dois aeroportos brasileiros](https://diar.ia.br/p/ia-por-tras-de-50-dos-cibercrimes-africanos), tarefa administrativa de retaguarda que raramente entra na discussão sobre IA e emprego, mais focada no atendimento ao público.',
           'Em 13 de agosto, [uma reportagem checou a previsão mais dura do próprio Amodei — a de maio de 2025, de que "metade" das vagas de nível de entrada em escritórios desapareceria, e a de Sam Altman, um mês depois, sobre o fim de "certas categorias" inteiras de profissão — e concluiu que a devastação não apareceu na escala prometida](https://diar.ia.br/p/amodei-previu-colapso-do-emprego-nao-veio) [fonte primária](https://www.theguardian.com/technology/2026/aug/12/ai-job-destruction), pouco mais de dois meses depois de repetir, aqui neste arco, que a perda seria permanente. O mercado muda, mas mais devagar do que os CEOs anteciparam, e economistas ainda esperam mais transformação adiante, só que sem prazo definido — a manchete mais recente do arco, e a que mais diretamente testa a previsão que o abriu.',
+          'Em 1º de setembro de 2026, [Bill Gates propôs o conceito de "Human Reserved": atividades que a sociedade escolhe manter só para humanos, mesmo quando uma máquina daria conta](https://diar.ia.br/p/gates-propoe-empregos-so-para-humanos). O exemplo que ele usa é o cuidado com o próprio pai, com Alzheimer até morrer em 2020, e a proposta vem acompanhada de taxar tokens de IA e robôs — hoje sai mais barato demitir e comprar máquina. É a mesma família de resposta que Amodei já defendia neste arco ao falar em redistribuição de renda, mas com a pergunta deslocada: em vez de discutir quantos empregos a IA consegue tirar, discute quais a sociedade decide não deixar que ela tire. Uma é previsão sobre capacidade técnica; a outra é escolha política, e depende de decisão setor por setor, não do ritmo do modelo.',
         ],
       },
     ],
