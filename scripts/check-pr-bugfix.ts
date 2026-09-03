@@ -20,7 +20,14 @@
  *
  * Env vars (passados pelo GH Action):
  *   GH_TOKEN     — auth pra gh CLI
- *   PR_BODY      — body do PR
+ *   PR_BODY      — body do PR — FALLBACK DECLARADO (#7140): o gate busca o
+ *                 body ATUAL pela API (`gh pr view --json body`) com o mesmo
+ *                 retry/backoff de `getPrLabels`; `PR_BODY` só é usado se a
+ *                 API falhar após as tentativas. `PR_BODY` vem do payload do
+ *                 evento (`github.event.pull_request.body`), que fica
+ *                 CONGELADO no estado do PR quando o evento foi emitido —
+ *                 então um body editado após não é visto até um push novo
+ *                 (ver `scripts/lib/pr-body-fetch.ts`).
  *   PR_TITLE     — título do PR
  *   PR_NUMBER    — número do PR
  *   BASE_SHA     — sha do base (master) na hora do PR
@@ -35,6 +42,7 @@
 import { spawnSync } from "node:child_process";
 import type { PrCheckSpawnFn } from "./lib/spawn-types.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { fetchPrBody, resolvePrBody, type PrBodyResolution } from "./lib/pr-body-fetch.ts";
 
 export function isBugfixPr(title: string, body: string, labels: string[]): boolean {
   // Heurísticas pra detectar bug fix:
@@ -219,16 +227,42 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  if (!isBugfixPr(prTitle, prBody, labels)) {
+  // #7140: buscar o body ATUAL do PR pela API (mesmo retry/backoff de
+  // getPrLabels) em vez de usar `PR_BODY` do payload, que fica congelado no
+  // estado do PR quando o evento foi emitido — um body editado após não é
+  // visto até um push novo, e `gh run rerun` replaya o mesmo payload.
+  // `PR_BODY` do payload é fallback DECLARADO só quando a API falhar.
+  const { body: prBodyActual, source: bodySource } = await resolvePrBody(
+    prNumber,
+    prBody,
+    (n) => fetchPrBody(n),
+  );
+  if (bodySource === "env-fallback") {
+    console.warn(
+      `[#970] body do PR #${prNumber} vem do PAYLOAD do evento (possivelmente ` +
+        `desatualizado, #7140) — a API não pôde ser consultada.`,
+    );
+  }
+
+  if (!isBugfixPr(prTitle, prBodyActual, labels)) {
     console.log(`[#970] PR não é bugfix (título='${prTitle.slice(0, 60)}', labels=${labels.join(",")}). Skip.`);
     process.exit(0);
   }
 
   if (hasExceptionLabel(labels)) {
-    if (!justificationInBody(prBody)) {
+    // #7140: validar contra o body ATUAL (da API), não o `PR_BODY` do payload —
+    // era exatamente esta checagem que reprovava 2× seguidas no incidente: a
+    // justificativa editada via gh-pr-safe-edit existia na API, mas o payload
+    // do rerun ainda carregava o body antigo.
+    if (!justificationInBody(prBodyActual)) {
       console.error(
         `[#970] PR tem label 'no-regression-test' mas falta justificativa no body.\n` +
-          `       Adicione "no-regression-test: <razão clara em 30+ chars>" ao body.`,
+          `       Adicione "no-regression-test: <razão clara em 30+ chars>" ao body ` +
+          `(via gh pr edit / gh-pr-safe-edit.ts). #7140: um gh run rerun NÃO ` +
+          `relê o body — ele replaya o mesmo payload do evento, então se a ` +
+          `reprovação persistir após uma edição que o gh pr view confirma ter ` +
+          `gravado, faça um push de commit (vazio) pra reemitir o evento ` +
+          `synchronize; não é preciso investigar a escrita, que está correta.`,
       );
       process.exit(1);
     }
@@ -245,6 +279,7 @@ async function main(): Promise<void> {
       `o fix não pode ser testado (ex: "agent prompt", "config-only change").`,
       ``,
       `Title: ${prTitle}`,
+      `Body source: ${bodySource}`,
       `Files changed: ${changedFiles.length}`,
       `Test files added/modified: 0`,
     ].join("\n"),
