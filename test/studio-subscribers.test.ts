@@ -144,7 +144,7 @@ describe("searchSubscribersByEmail", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildSubscribersCohortData", () => {
-  it("store vazio: zeros em tudo, byPlatform lista as 4 plataformas com total 0", () => {
+  it("store vazio: zeros em tudo, byPlatform lista as 3 plataformas da diária com total 0", () => {
     const root = makeRoot();
     try {
       const dbPath = dbPathFor(root);
@@ -153,7 +153,7 @@ describe("buildSubscribersCohortData", () => {
 
       const cohort = buildSubscribersCohortData(root);
       assert.equal(cohort.totalSubscribers, 0);
-      assert.equal(cohort.byPlatform.length, 4);
+      assert.equal(cohort.byPlatform.length, 3);
       for (const p of cohort.byPlatform) assert.equal(p.total, 0);
       assert.deepEqual(cohort.migrations, []);
       assert.equal(cohort.reactivation.count, 0);

@@ -254,8 +254,10 @@ export function buildSubscribersCohortData(
 
       // Self-review: "reativou" precisa de histórico numa OUTRA PLATAFORMA
       // DA DIÁRIA (beehiiv/kit) especificamente — `platformSet.size > 1`
-      // sozinho contava errado quem tem só brevo_diaria + brevo_clarice
-      // (é assinante de outro produto, não "reativado" na diária).
+      // sozinho contava errado quem tem só brevo_diaria + uma plataforma
+      // de outro produto (achado original: brevo_clarice, removida do
+      // store desde #7196 — o cuidado abaixo continua válido em geral,
+      // pra qualquer plataforma futura fora do conjunto da diária).
       const hasOtherDiariaPlatform = platformSet.has("beehiiv") || platformSet.has("kit");
       if (platformSet.has("brevo_diaria") && hasOtherDiariaPlatform) {
         const subs = getSubscriptionsForSubscriber(db, subscriberId);

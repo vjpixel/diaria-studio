@@ -19,18 +19,39 @@
  *
  * ## Por que `brevo_clarice` fica de fora
  *
- * `PLATFORMS` (diaria-subscribers-db.ts) inclui `brevo_clarice` — a base de
- * reativação da Clarice News (~435k contatos, `scripts/lib/clarice-db.ts`),
- * ingerida no MESMO store só pelo valor de resolução de identidade
- * cross-produto (#6587). `leitor-v1` é a unidade de qualidade da DIÁRIA
- * (CLAUDE.md, "a unidade é LEITOR" — contexto de CAC/ads da diária, não da
- * Clarice). Somar recebidas/cliques da Clarice ao leitor-v1 da diária
- * inflaria as duas pontas da fração com engajamento de um produto/audiência
- * DIFERENTE — alguém pode ler a Clarice todo santo dia e nunca ter recebido
- * uma edição da diária. `LEITOR_DIARIA_PLATFORMS` exclui `brevo_clarice` de
- * propósito; a métrica equivalente pro lado Clarice (se um dia fizer
- * sentido) usa `clarice-db.ts`/`clarice_users` diretamente — fora de escopo
- * aqui.
+ * `PLATFORMS` (diaria-subscribers-db.ts) **nunca** inclui `brevo_clarice`
+ * desde #7196 (fatia 1 do épico #7163) — a base de reativação da Clarice
+ * News (~435k contatos, `scripts/lib/clarice-db.ts`) tem pipeline PRÓPRIO
+ * e nunca ingere neste store. `leitor-v1` é a unidade de qualidade da
+ * DIÁRIA (CLAUDE.md, "a unidade é LEITOR" — contexto de CAC/ads da diária,
+ * não da Clarice) — somar recebidas/cliques da Clarice ao leitor-v1 da
+ * diária inflaria as duas pontas da fração com engajamento de um
+ * produto/audiência DIFERENTE, então a exclusão é estrutural (não existe
+ * `brevo_clarice` pra excluir) e não mais uma FILTRAGEM em cima de um
+ * `PLATFORMS` que a incluísse. `LEITOR_DIARIA_PLATFORMS` continua existindo
+ * como alias explícito de `PLATFORMS` — mantido por compatibilidade e
+ * clareza de leitura (documenta a intenção "estas são as plataformas da
+ * diária" no ponto de uso, mesmo sendo hoje uma identidade); a métrica
+ * equivalente pro lado Clarice (se um dia fizer sentido) usa
+ * `clarice-db.ts`/`clarice_users` diretamente — fora de escopo aqui.
+ *
+ * ## Guard de cobertura de `subscription` (#7198)
+ *
+ * `summarizeStoreLeitores` pode devolver `leitores_v1: 0`/`total_active: 0`
+ * de forma legítima (base sem leitor real) OU porque a dimensão
+ * `subscription` está pouco populada (nenhuma ingestão de assinatura
+ * rodou ainda pra boa parte da base — indistinguível de "zero leitores"
+ * olhando só o número). `subscription_data_coverage_low` no summary (e
+ * `missingSubscriptionData` por subscriber em `StoreLeitorResult`) sinaliza
+ * esse segundo caso explicitamente — mesmo padrão de
+ * `MISSING_STATS_WARN_FRACTION` (`leitor.ts`). Guard **companheiro**, não
+ * duplicado: o de `diaria-subscribers-db.ts`
+ * (`SUBSCRIPTION_COVERAGE_WARN_FRACTION`, #7229) mede a tabela `subscription`
+ * BRUTA do store inteiro; este mede só os subscribers que
+ * `summarizeStoreLeitores` de fato considera (com alias em alguma
+ * plataforma coberta) — denominadores diferentes, por isso um limiar
+ * PRÓPRIO (`LEITOR_SUBSCRIPTION_COVERAGE_WARN_FRACTION`) em vez de
+ * importado de lá.
  *
  * ## Recebidas: `delivered` explícito, ou `sent − bounce` quando a
  * plataforma não expõe `delivered`
@@ -98,12 +119,12 @@ import {
 import { isLeitorV1, LEITOR_V1_THRESHOLDS, type LeitorInput, type LeitorThresholds } from "./leitor.ts";
 import { CROSS_PLATFORM_FLOOR_NOTE } from "./diaria-subscribers-identity-resolve.ts";
 
-/** As plataformas da DIÁRIA — todas as `PLATFORMS` do store MENOS
- *  `brevo_clarice` (ver docstring do módulo, "Por que brevo_clarice fica de
- *  fora"). */
-export const LEITOR_DIARIA_PLATFORMS: readonly Platform[] = PLATFORMS.filter(
-  (p): p is Exclude<Platform, "brevo_clarice"> => p !== "brevo_clarice",
-);
+/** As plataformas da DIÁRIA — desde #7196, `PLATFORMS` do store já é
+ *  exclusivamente diária (`brevo_clarice` nunca entra), então isto é hoje
+ *  um alias por identidade — mantido como nome próprio, não removido, pra
+ *  documentar a intenção no ponto de uso (ver docstring do módulo, "Por que
+ *  brevo_clarice fica de fora"). */
+export const LEITOR_DIARIA_PLATFORMS: readonly Platform[] = PLATFORMS;
 
 // ---------------------------------------------------------------------------
 // Capacidade por plataforma — detectada do dado, nunca hardcoded
@@ -213,9 +234,11 @@ function resolveCrossPlatformStatus(
  *  ao longo de TODAS as `platforms` cobertas em que este subscriber tem
  *  alias — pronto pra passar direto pra `isLeitorV1` de `leitor.ts` (a
  *  definição não muda, só a fonte do dado). Subscriber sem alias em
- *  nenhuma plataforma coberta (ex: só existe em `brevo_clarice`) devolve
- *  `{status: "inactive", totalReceived: 0, totalUniqueClicked: 0}` — nunca
- *  passa em `isLeitorV1` de qualquer forma (piso `receivedMin` reprova). */
+ *  nenhuma plataforma coberta (só relevante quando o caller RESTRINGE
+ *  `platforms` explicitamente — por default toda `PLATFORMS` do store é
+ *  coberta desde #7196) devolve `{status: "inactive", totalReceived: 0,
+ *  totalUniqueClicked: 0}` — nunca passa em `isLeitorV1` de qualquer forma
+ *  (piso `receivedMin` reprova). */
 export function computeStoreLeitorInput(
   db: DatabaseSync,
   subscriberId: number,
@@ -238,6 +261,12 @@ export interface StoreLeitorResult {
   subscriberId: number;
   input: LeitorInput;
   isLeitor: boolean;
+  /** `true` quando este subscriber não tem NENHUMA `subscription` gravada
+   *  em nenhuma das `platforms` cobertas (#7198). `isLeitor: false` junto
+   *  com isto é "não sei" (dado de assinatura faltando), não "não é
+   *  leitor" — o consumidor (ficha do painel, #6590) deve distinguir os
+   *  dois casos, nunca tratar como o mesmo `false`. */
+  missingSubscriptionData: boolean;
 }
 
 /** Conveniência: `computeStoreLeitorInput` + `isLeitorV1` num só resultado
@@ -252,12 +281,29 @@ export function computeStoreLeitorResult(
   platforms: readonly Platform[] = LEITOR_DIARIA_PLATFORMS,
 ): StoreLeitorResult {
   const input = computeStoreLeitorInput(db, subscriberId, caps, platforms);
-  return { subscriberId, input, isLeitor: isLeitorV1(input, thresholds) };
+  const subs = getSubscriptionsForSubscriber(db, subscriberId);
+  const missingSubscriptionData = !subs.some((s) => platforms.includes(s.platform));
+  return { subscriberId, input, isLeitor: isLeitorV1(input, thresholds), missingSubscriptionData };
 }
 
 // ---------------------------------------------------------------------------
 // Summary batch — store inteiro
 // ---------------------------------------------------------------------------
+
+/**
+ * Fração mínima de subscribers contados (dentre os que `summarizeStoreLeitores`
+ * de fato considera — alias em alguma plataforma coberta) com QUALQUER
+ * `subscription` gravada nessas plataformas, abaixo da qual o resultado sai
+ * marcado como cobertura BAIXA (#7198) — nunca deixar `leitores_v1: 0`/
+ * `total_active: 0` passar como "a base não tem leitor" quando na verdade é
+ * "a dimensão `subscription` está pouco populada". Mesmo padrão de
+ * `MISSING_STATS_WARN_FRACTION` (`leitor.ts`); limiar PRÓPRIO, não
+ * importado de `SUBSCRIPTION_COVERAGE_WARN_FRACTION`
+ * (`diaria-subscribers-db.ts`, #7229) — ver "Guard de cobertura de
+ * `subscription`" na docstring do módulo pro porquê dos denominadores
+ * diferentes.
+ */
+export const LEITOR_SUBSCRIPTION_COVERAGE_WARN_FRACTION = 0.5;
 
 export interface StoreLeitorSummary {
   generated_at: string;
@@ -265,12 +311,17 @@ export interface StoreLeitorSummary {
   /** Plataformas cobertas por este cálculo — sempre `LEITOR_DIARIA_PLATFORMS`
    *  a menos que o caller restrinja explicitamente. */
   platforms_counted: Platform[];
-  /** Subscribers com alias em ao menos 1 plataforma coberta (exclui quem só
-   *  existe em `brevo_clarice`, se essa for a única plataforma fora do
-   *  conjunto coberto). */
+  /** Subscribers com alias em ao menos 1 plataforma coberta. */
   total_subscribers: number;
   total_active: number;
   leitores_v1: number;
+  /** `true` quando a fração de `total_subscribers` SEM nenhuma `subscription`
+   *  nas plataformas cobertas está abaixo de
+   *  `LEITOR_SUBSCRIPTION_COVERAGE_WARN_FRACTION` (#7198) — `leitores_v1`/
+   *  `total_active` NÃO são fato confiável quando isto é `true`; emite
+   *  `console.warn` na mesma passada (mesmo padrão de `summarizeLeitores`
+   *  em `leitor.ts`). */
+  subscription_data_coverage_low: boolean;
   /** Sempre `CROSS_PLATFORM_FLOOR_NOTE` — este número é PISO, nunca exato
    *  (ver docstring do módulo). */
   note: string;
@@ -292,14 +343,30 @@ export function summarizeStoreLeitores(
   let totalSubscribers = 0;
   let totalActive = 0;
   let leitores = 0;
+  let missingSubscription = 0;
 
   for (const [subscriberId, platformSet] of allPlatforms) {
     const coversAny = platforms.some((p) => platformSet.has(p));
-    if (!coversAny) continue; // ex: subscriber só existe em brevo_clarice
+    if (!coversAny) continue; // subscriber sem alias em nenhuma plataforma coberta
     totalSubscribers++;
     const input = computeStoreLeitorInput(db, subscriberId, caps, platforms);
     if (input.status === "active") totalActive++;
     if (isLeitorV1(input, thresholds)) leitores++;
+    const subs = getSubscriptionsForSubscriber(db, subscriberId);
+    if (!subs.some((s) => platforms.includes(s.platform))) missingSubscription++;
+  }
+
+  const coverage = totalSubscribers > 0 ? (totalSubscribers - missingSubscription) / totalSubscribers : 1;
+  const subscription_data_coverage_low =
+    totalSubscribers > 0 && coverage < LEITOR_SUBSCRIPTION_COVERAGE_WARN_FRACTION;
+  if (subscription_data_coverage_low) {
+    console.warn(
+      `[leitor-store] aviso: ${missingSubscription}/${totalSubscribers} subscribers sem nenhuma "subscription" ` +
+        `gravada nas plataformas cobertas (${(coverage * 100).toFixed(1)}% de cobertura, abaixo de ` +
+        `${(LEITOR_SUBSCRIPTION_COVERAGE_WARN_FRACTION * 100).toFixed(0)}%). "leitores_v1: ${leitores}" e ` +
+        `"total_active: ${totalActive}" NÃO significam "zero leitores reais" — significam "dado de assinatura ` +
+        `pouco populado" (#7198). Não usar estes números como fato sem checar subscription_data_coverage_low.`,
+    );
   }
 
   return {
@@ -309,6 +376,7 @@ export function summarizeStoreLeitores(
     total_subscribers: totalSubscribers,
     total_active: totalActive,
     leitores_v1: leitores,
+    subscription_data_coverage_low,
     note: CROSS_PLATFORM_FLOOR_NOTE,
   };
 }

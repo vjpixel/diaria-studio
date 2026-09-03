@@ -335,19 +335,18 @@ describe("buildUnmatchedReport — contagem de não-casados por plataforma", () 
     assert.equal(byPlatform.beehiiv.unmatched_subscribers, 1);
     assert.equal(byPlatform.kit.unmatched_subscribers, 1);
     assert.equal(byPlatform.brevo_diaria.unmatched_subscribers, 1);
-    assert.equal(byPlatform.brevo_clarice.unmatched_subscribers, 0);
     // beehiiv total inclui o casado (que tem alias em beehiiv) + o não-casado.
     assert.equal(byPlatform.beehiiv.total_subscribers, 2);
     db.close();
   });
 
-  it("relatório inclui as 4 plataformas mesmo quando alguma tem zero subscribers", () => {
+  it("relatório inclui as 3 plataformas mesmo quando alguma tem zero subscribers", () => {
     const db = openDiariaSubscribersDb(":memory:");
     ensureSubscriber(db, "kit", null, "unico@example.com", NOW);
 
     const report = buildUnmatchedReport(db, NOW);
     const platforms = report.by_platform.map((p) => p.platform).sort();
-    assert.deepEqual(platforms, ["beehiiv", "brevo_clarice", "brevo_diaria", "kit"].sort());
+    assert.deepEqual(platforms, ["beehiiv", "brevo_diaria", "kit"].sort());
     db.close();
   });
 

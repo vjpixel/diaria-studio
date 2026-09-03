@@ -3,7 +3,8 @@
  *
  * Cobre a camada de I/O do builder Brevo: enumeração de contatos (mock de
  * `fetch` global — mesmo padrão de `test/brevo-committed-campaigns-3682.test.ts`),
- * checkpoint resumível por CONTA, e `main()` orquestrando as DUAS contas com
+ * checkpoint resumível por CONTA, e `main()` orquestrando a única conta
+ * (`brevo_diaria` — `brevo_clarice` nunca entra aqui desde #7196) com
  * fixtures — sem rede real.
  */
 import { describe, it } from "node:test";
@@ -45,10 +46,8 @@ async function withMockedListing<T>(contacts: Array<{ id: number; email: string 
 }
 
 describe("checkpointPathForAccount", () => {
-  it("1 arquivo de checkpoint por conta, ao lado do .db", () => {
+  it("checkpoint nomeado pela conta, ao lado do .db", () => {
     const p1 = checkpointPathForAccount("/x/data/diaria-subscribers/diaria-subscribers.db", "brevo_diaria");
-    const p2 = checkpointPathForAccount("/x/data/diaria-subscribers/diaria-subscribers.db", "brevo_clarice");
-    assert.notEqual(p1, p2);
     assert.match(p1, /brevo-ingest-checkpoint-brevo_diaria\.json$/);
   });
 });
@@ -129,23 +128,20 @@ describe("ingestAccount", () => {
   });
 });
 
-describe("main() — as DUAS contas, fail-soft por key ausente", () => {
-  it("conta sem API key no env é pulada com entry 'error' no manifest — a outra segue normal", async () => {
+describe("main() — a única conta (brevo_diaria), fail-soft por key ausente", () => {
+  it("conta sem API key no env é pulada com entry 'error' no manifest", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-ingest-main-"));
     mkdirSync(resolve(tmp, "data"), { recursive: true });
     const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
     const manifestPath = resolve(tmp, "data/diaria-subscribers/brevo-ingest-manifest.json");
 
     const origDiaria = process.env.BREVO_DIARIA_API_KEY;
-    const origClarice = process.env.BREVO_CLARICE_API_KEY;
     delete process.env.BREVO_DIARIA_API_KEY;
-    delete process.env.BREVO_CLARICE_API_KEY;
 
     try {
       await main(["--db", dbPath, "--manifest", manifestPath, "--account", "brevo_diaria"]);
     } finally {
       if (origDiaria !== undefined) process.env.BREVO_DIARIA_API_KEY = origDiaria;
-      if (origClarice !== undefined) process.env.BREVO_CLARICE_API_KEY = origClarice;
     }
 
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
@@ -154,61 +150,46 @@ describe("main() — as DUAS contas, fail-soft por key ausente", () => {
     assert.match(entry.error, /BREVO_DIARIA_API_KEY/);
   });
 
-  it("--account inválido recusa cedo (exitCode 1)", async () => {
+  it("--account inválido recusa cedo (exitCode 1) — inclusive 'brevo_clarice' (#7196)", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-ingest-badacct-"));
     mkdirSync(resolve(tmp, "data"), { recursive: true });
     const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
     const originalExit = process.exitCode;
-    await main(["--db", dbPath, "--account", "mailchimp"]);
+    await main(["--db", dbPath, "--account", "brevo_clarice"]);
     assert.equal(process.exitCode, 1);
     process.exitCode = originalExit;
   });
 
-  it("BREVO_ACCOUNTS expõe as 2 contas reais do projeto", () => {
+  it("BREVO_ACCOUNTS expõe só brevo_diaria (#7196 — brevo_clarice nunca ingere no store da diária)", () => {
     assert.deepEqual(
-      BREVO_ACCOUNTS.map((a) => a.platform).sort(),
-      ["brevo_clarice", "brevo_diaria"],
+      BREVO_ACCOUNTS.map((a) => a.platform),
+      ["brevo_diaria"],
     );
   });
 });
 
-describe("main() — ponta a ponta com fixtures das DUAS contas (#6587 critério de pronto)", () => {
-  it("ingere brevo_diaria E brevo_clarice na mesma rodada, sem cruzar identidade entre contas", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-ingest-2contas-"));
+describe("main() — ponta a ponta com fixture da conta brevo_diaria (#6587 critério de pronto)", () => {
+  it("ingere brevo_diaria a partir da listagem + fetch de cada contato (mock de fetch)", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-ingest-e2e-"));
     mkdirSync(resolve(tmp, "data"), { recursive: true });
     const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
     const manifestPath = resolve(tmp, "data/diaria-subscribers/brevo-ingest-manifest.json");
 
-    // 2 contas, 2 keys, 2 listagens de contato DIFERENTES — o mesmo e-mail
-    // (compartilhado@x.com) aparece nas duas, propositalmente, pra provar
-    // que vira 2 subscriber distintos (1 por conta), nunca fundido.
-    const listingByKey: Record<string, Array<{ id: number; email: string }>> = {
-      "key-diaria": [{ id: 1, email: "compartilhado@x.com" }],
-      "key-clarice": [{ id: 101, email: "compartilhado@x.com" }],
-    };
-    const contactByKeyAndId: Record<string, Record<number, Record<string, any>>> = {
-      "key-diaria": {
-        1: { id: 1, email: "compartilhado@x.com", statistics: { messagesSent: [{ campaignId: 5, eventTime: "2026-08-01T00:00:00Z" }] } },
-      },
-      "key-clarice": {
-        101: { id: 101, email: "compartilhado@x.com", statistics: { opened: [{ campaignId: 7, eventTime: "2026-08-02T00:00:00Z" }] } },
-      },
+    const listing = [{ id: 1, email: "leitor@x.com" }];
+    const contactById: Record<number, Record<string, any>> = {
+      1: { id: 1, email: "leitor@x.com", statistics: { messagesSent: [{ campaignId: 5, eventTime: "2026-08-01T00:00:00Z" }] } },
     };
 
     const orig = globalThis.fetch;
-    globalThis.fetch = (async (url: string, init?: RequestInit) => {
-      const headers = init?.headers as Record<string, string> | undefined;
-      const apiKey = headers?.["api-key"] ?? "";
-      if (String(url).includes("/contacts?")) return jsonResponse({ contacts: listingByKey[apiKey] ?? [] });
+    globalThis.fetch = (async (url: string) => {
+      if (String(url).includes("/contacts?")) return jsonResponse({ contacts: listing });
       const match = String(url).match(/\/contacts\/(\d+)$/);
-      if (match) return jsonResponse(contactByKeyAndId[apiKey]?.[Number(match[1])] ?? {});
+      if (match) return jsonResponse(contactById[Number(match[1])] ?? {});
       throw new Error(`fetch inesperado no teste: ${url}`);
     }) as typeof fetch;
 
     const origDiaria = process.env.BREVO_DIARIA_API_KEY;
-    const origClarice = process.env.BREVO_CLARICE_API_KEY;
     process.env.BREVO_DIARIA_API_KEY = "key-diaria";
-    process.env.BREVO_CLARICE_API_KEY = "key-clarice";
 
     try {
       await main(["--db", dbPath, "--manifest", manifestPath]);
@@ -216,25 +197,22 @@ describe("main() — ponta a ponta com fixtures das DUAS contas (#6587 critério
       globalThis.fetch = orig;
       if (origDiaria !== undefined) process.env.BREVO_DIARIA_API_KEY = origDiaria;
       else delete process.env.BREVO_DIARIA_API_KEY;
-      if (origClarice !== undefined) process.env.BREVO_CLARICE_API_KEY = origClarice;
-      else delete process.env.BREVO_CLARICE_API_KEY;
     }
 
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    const ids = manifest.entries.map((e: { id: string }) => e.id).sort();
-    assert.deepEqual(ids, ["brevo_clarice", "brevo_diaria"]);
+    const ids = manifest.entries.map((e: { id: string }) => e.id);
+    assert.deepEqual(ids, ["brevo_diaria"]);
     assert.ok(manifest.entries.every((e: { status: string }) => e.status === "ok"));
 
     const db = openDiariaSubscribersDb(dbPath);
-    const subs = findSubscriberIdsByEmail(db, "compartilhado@x.com");
-    assert.equal(subs.length, 2, "mesmo e-mail nas 2 contas → 2 subscriber distintos, nunca fundidos");
+    const subs = findSubscriberIdsByEmail(db, "leitor@x.com");
+    assert.equal(subs.length, 1);
     const platforms = db
-      .prepare("SELECT DISTINCT platform FROM subscription WHERE subscriber_id IN (?, ?)")
-      .all(subs[0], subs[1])
-      .map((r: any) => r.platform)
-      .sort();
-    assert.deepEqual(platforms, ["brevo_clarice", "brevo_diaria"]);
-    assert.equal(getStoreCounts(db).events, 2); // 1 sent (diária) + 1 open (clarice)
+      .prepare("SELECT DISTINCT platform FROM subscription WHERE subscriber_id = ?")
+      .all(subs[0])
+      .map((r: any) => r.platform);
+    assert.deepEqual(platforms, ["brevo_diaria"]);
+    assert.equal(getStoreCounts(db).events, 1);
     db.close();
   });
 });

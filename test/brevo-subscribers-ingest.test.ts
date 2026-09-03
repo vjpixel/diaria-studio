@@ -2,9 +2,11 @@
  * brevo-subscribers-ingest.test.ts (#6464 fatia 4 — #6587)
  *
  * Cobre `extractContactEvents` (brevo-stats.ts) e o miolo puro da ingestão
- * Brevo → store unificado: mapeamento categoria→evento, chave natural,
- * identidade por CONTA (`brevo_diaria` × `brevo_clarice` nunca colidem), e
- * a escrita idempotente contra um SQLite `:memory:` real.
+ * Brevo → store unificado: mapeamento categoria→evento, chave natural, e a
+ * escrita idempotente contra um SQLite `:memory:` real. `brevo_clarice`
+ * nunca entra aqui desde #7196 — a identidade "1 subscriber por CONTA" que
+ * este arquivo cobria (2 contas nunca fundidas) virou identidade "1 conta
+ * só", coberta pelo guard mecânico de `test/store-excludes-clarice.test.ts`.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -167,7 +169,7 @@ describe("ingestBrevoContact", () => {
 
   it("unsubscribed via emailBlacklisted → subscription status unsubscribed", () => {
     const db = openDiariaSubscribersDb(":memory:");
-    ingestBrevoContact(db, "brevo_clarice", 1, {
+    ingestBrevoContact(db, "brevo_diaria", 1, {
       id: 1,
       email: "a@x.com",
       emailBlacklisted: true,
@@ -176,7 +178,7 @@ describe("ingestBrevoContact", () => {
     const [subId] = findSubscriberIdsByEmail(db, "a@x.com");
     const sub = db
       .prepare("SELECT status, exited_at FROM subscription WHERE subscriber_id = ? AND platform = ?")
-      .get(subId, "brevo_clarice") as { status: string; exited_at: string };
+      .get(subId, "brevo_diaria") as { status: string; exited_at: string };
     assert.equal(sub.status, "unsubscribed");
     assert.equal(sub.exited_at, "2026-06-01T00:00:00Z");
     db.close();
@@ -195,15 +197,6 @@ describe("ingestBrevoContact", () => {
     assert.equal(r2.alreadyKnown, 1);
     assert.equal(getStoreCounts(db).subscribers, 1);
     assert.equal(getStoreCounts(db).events, 1);
-    db.close();
-  });
-
-  it("mesmo e-mail nas DUAS contas Brevo vira 2 subscriber distintos, nunca funde (fatia 5 fora de escopo)", () => {
-    const db = openDiariaSubscribersDb(":memory:");
-    ingestBrevoContact(db, "brevo_diaria", 1, { id: 1, email: "dupla@x.com" });
-    ingestBrevoContact(db, "brevo_clarice", 999, { id: 999, email: "dupla@x.com" });
-    const ids = findSubscriberIdsByEmail(db, "dupla@x.com");
-    assert.equal(ids.length, 2, "1 subscriber por conta — subscription independente, mesma fatia 5 decide fusão depois");
     db.close();
   });
 

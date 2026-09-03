@@ -622,11 +622,12 @@ describe("getStoreCounts — guard de cobertura de subscription (#7229)", () => 
 });
 
 describe("isPlatform / isEventType", () => {
-  it("valida os 4 valores de plataforma e os 8 tipos de evento do épico", () => {
-    for (const p of ["beehiiv", "brevo_diaria", "brevo_clarice", "kit"] as Platform[]) {
+  it("valida os 3 valores de plataforma e os 8 tipos de evento do épico", () => {
+    for (const p of ["beehiiv", "brevo_diaria", "kit"] as Platform[]) {
       assert.ok(isPlatform(p));
     }
-    assert.equal(isPlatform("brevo"), false); // #6587: "brevo" genérico foi substituído pelas 2 contas
+    assert.equal(isPlatform("brevo"), false); // #6587: "brevo" genérico foi substituído pelas contas reais
+    assert.equal(isPlatform("brevo_clarice"), false); // #7196: excluída do store da diária
     assert.equal(isPlatform("mailchimp"), false);
     for (const t of [
       "sent",

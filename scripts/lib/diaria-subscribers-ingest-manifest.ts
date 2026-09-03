@@ -5,8 +5,9 @@
  * plataforma que escrevem no store `diaria-subscribers-db.ts`:
  *   - `diaria-subscribers-ingest-kit.ts` (#6586) — 1 entry por broadcast.
  *   - `diaria-subscribers-ingest-brevo.ts` (#6587) — 1 entry por CONTA
- *     (`brevo_diaria`/`brevo_clarice`; o progresso DENTRO de uma conta usa
- *     um checkpoint próprio, mais granular — ver docstring do builder).
+ *     (só `brevo_diaria` desde #7196 — `brevo_clarice` nunca ingere no
+ *     store da diária; o progresso DENTRO de uma conta usa um checkpoint
+ *     próprio, mais granular — ver docstring do builder).
  *
  * Mesmo padrão de `beehiiv-engagement-manifest.ts` (#6465): puro (sem I/O),
  * `status` decide retomada (`ok` nunca reprocessa; `pending`/`partial`/
