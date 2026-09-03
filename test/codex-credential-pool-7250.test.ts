@@ -248,3 +248,71 @@ describe("buildCodexAlarmMessage (#7250)", () => {
     assert.match(msg, /não são contadas como vivas/i);
   });
 });
+
+describe("#7320 — resets_at no passado", () => {
+  // ─── #7320 ───
+// `resets_at` no passado não é `esgotada` nem `viva` — é `indeterminada`.
+
+const ESGOTADA_VOLTA_29_09 = {
+  label: "vjpixel",
+  last_status: "exhausted",
+  last_error_reason: "usage_limit_reached",
+  last_error_code: 429,
+  last_error_reset_at: Date.parse("2026-09-29T17:45:00Z") / 1000,
+};
+
+  it("#7320 — antes da data de retorno, segue ESGOTADA", () => {
+  const v = classifyCodexCredential(ESGOTADA_VOLTA_29_09, "2026-09-03T09:00:00Z");
+  assert.equal(v.state, "esgotada");
+  assert.equal(v.resetsAtIso?.slice(0, 10), "2026-09-29");
+});
+
+  it("#7320 — DEPOIS da data de retorno vira INDETERMINADA, não viva nem esgotada", () => {
+  const v = classifyCodexCredential(ESGOTADA_VOLTA_29_09, "2026-09-30T09:00:00Z");
+  assert.equal(v.state, "indeterminada", "promessa da OpenAI não vira fato nosso — mas afirmar esgotamento também não");
+  assert.match(v.reason, /data de retorno já passou/);
+  assert.equal(v.resetsAtIso?.slice(0, 10), "2026-09-29", "a data continua visível na mensagem");
+});
+
+  it("#7320 — o relógio é INJETADO: a mesma entrada muda de estado só pelo tempo passar", () => {
+  const antes = classifyCodexCredential(ESGOTADA_VOLTA_29_09, "2026-09-29T17:44:00Z");
+  const depois = classifyCodexCredential(ESGOTADA_VOLTA_29_09, "2026-09-29T17:46:00Z");
+  assert.equal(antes.state, "esgotada");
+  assert.equal(depois.state, "indeterminada");
+});
+
+  it("#7320 — conta indeterminada por data vencida NÃO conta como viva (fail-closed)", () => {
+  // Cenário exato de 30/09/2026 no helios: 2 esgotadas com data já vencida,
+  // 1 viva. O alarme tem de continuar disparando — ninguém confirmou que as
+  // duas voltaram.
+  const v = evaluateCodexPool(
+    [
+      ESGOTADA_VOLTA_29_09,
+      { ...ESGOTADA_VOLTA_29_09, label: "diaria.editor" },
+      { label: "memelab", last_status: "ok" },
+    ],
+    undefined,
+    "2026-09-30T09:00:00Z",
+  );
+  assert.equal(v.vivas, 1, "só a que reportou ok conta como viva");
+  assert.equal(v.indeterminadas, 2);
+  assert.equal(v.esgotadas, 0);
+  assert.equal(v.shouldAlarm, true, "segue alarmando — o estado das duas é desconhecido, não saudável");
+  assert.equal(v.allExhausted, false);
+});
+
+  it("#7320 — a mensagem não afirma a origem errada do estado indeterminado", () => {
+  const v = evaluateCodexPool([ESGOTADA_VOLTA_29_09, { label: "memelab", last_status: "ok" }], undefined, "2026-09-30T09:00:00Z");
+  const msg = buildCodexAlarmMessage(v, "2026-09-30T09:00:00Z");
+  assert.match(msg, /data de retorno já passou/, "a razão específica aparece");
+  assert.match(msg, /nunca vira "está esgotada"/, "a nota agregada cobre as duas origens");
+});
+
+  it("#7320 — entrada sem resets_at continua ESGOTADA (nada a comparar)", () => {
+  const v = classifyCodexCredential(
+    { label: "x", last_status: "exhausted", last_error_reason: "usage_limit_reached", last_error_code: 429 },
+    "2030-01-01T00:00:00Z",
+  );
+  assert.equal(v.state, "esgotada", "sem data prometida não há como dizer que ela passou");
+});
+});

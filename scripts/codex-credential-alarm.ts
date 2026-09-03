@@ -165,7 +165,10 @@ async function main(argv: string[]): Promise<number> {
     return 1;
   }
 
-  const verdict = evaluateCodexPool(pool);
+  // #7320: mesmo relógio que `buildCodexAlarmMessage` recebe abaixo — a
+  // classificação depende de `resets_at` vs. agora, e as duas leituras têm
+  // de concordar sobre que hora é.
+  const verdict = evaluateCodexPool(pool, undefined, nowIso);
   const fingerprint = computeCodexPoolFingerprint(verdict);
   const state = readState(STATE_PATH);
   const isNew = fingerprint !== state.last_fingerprint;

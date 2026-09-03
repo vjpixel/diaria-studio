@@ -124,8 +124,35 @@ export function parseResetAt(raw: number | string | null | undefined): string | 
  * sozinho. Uma conta com `last_status: "error"` e razão desconhecida é
  * `indeterminada`, não esgotada: o alarme prefere dizer "não sei" a afirmar
  * um esgotamento que pode ser OAuth expirado ou rede.
+ *
+ * **`resets_at` no passado também é `indeterminada` (#7320).** A versão
+ * original lia `last_error_reset_at` só pra EXIBIR a data de retorno e
+ * nunca a comparava com o agora — uma conta seguia `esgotada` para sempre
+ * depois da data prometida, até que algo a usasse e o Hermes reescrevesse
+ * `last_status`. Como o gerador de uso é o tick do contínuo (que pode estar
+ * pausado), "algo a usar de novo" não é garantido: a partir da data de
+ * retorno o alarme afirmava esgotamento sobre conta que provavelmente já
+ * tinha voltado.
+ *
+ * A saída **não** é contá-la como viva: `resets_at` é uma promessa da
+ * OpenAI, não confirmação de que a cota voltou, e transformar promessa de
+ * terceiro em fato nosso trocaria um falso negativo por um falso positivo.
+ * É `indeterminada` — o estado que este módulo já reserva pro "não sei", e
+ * que `evaluateCodexPool` já NÃO conta como viva (fail-closed). Nenhuma
+ * política nova: é a política existente aplicada a um estado que a 1ª
+ * versão deixou de fora por não considerar o tempo passando. O docstring
+ * deste módulo já dizia que "não sei" e "está tudo bem" nunca podem
+ * colapsar; faltava impedir que "não sei" colapsasse em `esgotada`, que é o
+ * outro lado do mesmo erro.
+ *
+ * `nowIso` é injetado (nunca `Date.now()` por dentro) pra que o teste não
+ * fique refém do calendário — mesmo relógio que `buildCodexAlarmMessage` já
+ * recebe. Omitido, usa o agora real.
  */
-export function classifyCodexCredential(entry: CodexCredentialEntry): CodexCredentialVerdict {
+export function classifyCodexCredential(
+  entry: CodexCredentialEntry,
+  nowIso: string = new Date().toISOString(),
+): CodexCredentialVerdict {
   const label = entry.label ?? entry.id ?? "(sem rótulo)";
   const resetsAtIso = parseResetAt(entry.last_error_reset_at);
   const status = (entry.last_status ?? "").toLowerCase();
@@ -139,12 +166,18 @@ export function classifyCodexCredential(entry: CodexCredentialEntry): CodexCrede
   }
 
   if (reason === CODEX_EXHAUSTION_REASON || code === CODEX_EXHAUSTION_CODE) {
-    return {
-      label,
-      state: "esgotada",
-      resetsAtIso,
-      reason: `${entry.last_error_reason ?? "?"} (HTTP ${code ?? "?"})`,
-    };
+    const base = `${entry.last_error_reason ?? "?"} (HTTP ${code ?? "?"})`;
+    // #7320: a data de retorno já passou e nada usou a conta desde então —
+    // não dá pra afirmar nem esgotamento nem recuperação.
+    if (resetsAtIso !== null && Date.parse(resetsAtIso) < Date.parse(nowIso)) {
+      return {
+        label,
+        state: "indeterminada",
+        resetsAtIso,
+        reason: `${base}, mas a data de retorno já passou e nada tentou usar a conta desde então`,
+      };
+    }
+    return { label, state: "esgotada", resetsAtIso, reason: base };
   }
 
   if (!status) {
@@ -192,8 +225,9 @@ export interface CodexPoolVerdict {
 export function evaluateCodexPool(
   entries: readonly CodexCredentialEntry[],
   liveThreshold: number = CODEX_ALARM_LIVE_THRESHOLD,
+  nowIso: string = new Date().toISOString(),
 ): CodexPoolVerdict {
-  const verdicts = entries.map(classifyCodexCredential);
+  const verdicts = entries.map((e) => classifyCodexCredential(e, nowIso));
   const vivas = verdicts.filter((v) => v.state === "viva").length;
   const esgotadas = verdicts.filter((v) => v.state === "esgotada").length;
   const indeterminadas = verdicts.filter((v) => v.state === "indeterminada").length;
@@ -248,8 +282,11 @@ export function buildCodexAlarmMessage(v: CodexPoolVerdict, nowIso: string): str
     ? "Nenhum trabalho delegado ao Codex vai rodar até uma conta voltar ou ser recarregada."
     : "Quando a última esgotar, a delegação para — e a volta é medida em SEMANAS, não em horas.";
 
+  // #7320: `indeterminada` passou a ter DUAS origens, e a nota agregada não
+  // pode afirmar a errada. A razão específica de cada conta já sai na linha
+  // dela acima; aqui fica só o que vale para as duas.
   const indet = v.indeterminadas > 0
-    ? `\n${v.indeterminadas} conta(s) em estado INDETERMINADO — o Hermes registrou falha sem razão de cota reconhecível. Pode ser OAuth expirado ou rede, não necessariamente cota. Não são contadas como vivas (fail-closed).\n`
+    ? `\n${v.indeterminadas} conta(s) em estado INDETERMINADO — ou o Hermes registrou falha sem razão de cota reconhecível (pode ser OAuth expirado ou rede), ou a data de retorno já passou e nada tentou usar a conta desde então. Ver a razão de cada uma acima. Não são contadas como vivas (fail-closed): "não sei" nunca vira "está tudo bem", e também nunca vira "está esgotada".\n`
     : "";
 
   return [
