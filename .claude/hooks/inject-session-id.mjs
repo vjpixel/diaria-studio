@@ -118,6 +118,12 @@ const TARGET_RESOLVE_PLAN_PATH = "resolve-develop-plan-path.ts";
 // suficiente (`overnight` vs `develop`) pra `command.includes(...)` nunca
 // confundir os dois.
 const TARGET_RESOLVE_OVERNIGHT_PLAN_PATH = "resolve-overnight-plan-path.ts";
+// #7304: `cleanup-merged-worktrees.ts` é o 5º alvo. Diferente dos anteriores,
+// a flag aqui é OPCIONAL pro script (ele roda sem ela, com o comportamento
+// pré-#7304) — mas sem a injeção a sessão chamadora se conta como "outra
+// sessão ativa" e preserva os próprios worktrees, que é justamente o bug.
+// Incondicional: o script não tem subcomando.
+const TARGET_CLEANUP_WORKTREES = "cleanup-merged-worktrees.ts";
 // #5161 item 4: renomeada de WRITE_SUBCOMMANDS — is-claimed é leitura, mas
 // ainda precisa da flag injetada (ver comentário acima). "Escrita" deixou de
 // descrever o conjunto inteiro.
@@ -173,6 +179,10 @@ const SESSION_ID_TARGETS = [
   },
   {
     match: TARGET_RESOLVE_OVERNIGHT_PLAN_PATH,
+    needsSessionId: () => true,
+  },
+  {
+    match: TARGET_CLEANUP_WORKTREES,
     needsSessionId: () => true,
   },
 ];

@@ -95,7 +95,13 @@
  * `test/cleanup-merged-worktrees.test.ts`.
  *
  * Uso:
- *   npx tsx scripts/cleanup-merged-worktrees.ts [--dry-run] [--root <repoRoot>] [--confirm-shared]
+ *   npx tsx scripts/cleanup-merged-worktrees.ts [--dry-run] [--root <repoRoot>]
+ *       [--confirm-shared] [--session-id <id>]
+ *
+ * `--session-id` (#7304) é injetado por `.claude/hooks/inject-session-id.mjs`
+ * e faz a sessão chamadora não se contar como "outra sessão ativa" ao decidir
+ * quais worktrees estão em uso — sem ele, cada rodada preserva os próprios
+ * worktrees e só limpa os da rodada anterior.
  *
  * Lógica pura (testável sem git/gh reais):
  *   - parseWorktreePorcelain(output) — parseia `git worktree list --porcelain`.
@@ -103,9 +109,12 @@
  *     `.claude/worktrees/` (nunca o worktree principal do repo).
  *   - selectMergedForRemoval(entries, isMerged) — dado um checker injetável
  *     `(branch) => boolean`, retorna só os confirmados como mergeados.
+ *   - filterOutDirtyWorktrees(entries, isDirty) — #7304: tira os que têm
+ *     trabalho não-commitado. "Branch mergeada" não implica "worktree
+ *     descartável", e a remoção é `--force`.
  */
 import { spawnSync } from "node:child_process";
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -362,14 +371,17 @@ export { shouldSkipForSharedSession } from "./lib/shared-session-guard.ts";
  * sessão ATIVA (qualquer kind — não só coordenadora, um worktree aberto à
  * mão por uma sessão interativa também está "em uso") fica de fora da
  * remoção; todos os outros (mergeados, órfãos-stale) são avaliados
- * normalmente mesmo com o contínuo ativo. Isso também fecha o item "ignorar
- * a própria sessão" sem precisar que o chamador saiba o próprio
- * `session_id` (que — confirmado contra a doc oficial no docblock do topo
- * de `session-registry.ts` — não existe como env var acessível à sessão
- * rodando): o worktree que a PRÓPRIA rodada dispatchou e já terminou de
- * revisar não aparece mais nos `touched_paths` recentes de ninguém "em uso"
- * de verdade no sentido que importa aqui — trabalho ainda em progresso,
- * não histórico de leitura.
+ * normalmente mesmo com o contínuo ativo.
+ *
+ * **O #7045 achou que isso também fechava o item "ignorar a própria sessão".
+ * Não fechava (#7304).** O raciocínio era que o worktree já revisado pela
+ * própria rodada "não aparece mais nos `touched_paths` recentes de ninguém"
+ * — mas `touched_paths` é cumulativo pela vida do registro, não uma janela
+ * recente, então tudo que a coordenadora tocou continua lá até ela encerrar.
+ * Resultado medido: cada rodada preservava os próprios worktrees e limpava
+ * só os da anterior. A exclusão explícita por `session_id` (parâmetro
+ * `excludeSessionId`, alimentado pelo `--session-id` que o hook injeta)
+ * é o que de fato fecha o item.
  *
  * `shouldSkipForSharedSession`/`isCoordinatorKind` continuam exportados e
  * usados apenas pelo fallback de registro ILEGÍVEL abaixo
@@ -412,11 +424,33 @@ export function extractWorktreeNamesFromPaths(paths: string[]): Set<string> {
  * `kind`, não só coordenadora: um worktree aberto à mão por uma sessão
  * interativa via `EnterWorktree` também está em uso). Pura, testável sem
  * tocar `data/sessions/` real.
+ *
+ * **`excludeSessionId` — a própria sessão nunca se protege de si mesma
+ * (#7304).** O beacon (`.claude/hooks/session-beacon.mjs`) não emite de
+ * dentro de worktree vinculado, então quem grava `.claude/worktrees/{nome}/…`
+ * em `touched_paths` é a COORDENADORA rodando no checkout principal: cada
+ * Edit/Write dela nos worktrees que ela mesma dispatchou entra no próprio
+ * registro. Sem esta exclusão, a rodada que chama o cleanup no fim de si
+ * mesma preserva exatamente os worktrees que acabou de terminar de usar —
+ * e quem limpa é a rodada SEGUINTE. Medido ao vivo na rodada 260902b: 23
+ * removidos no passo 6 (todos de rodadas anteriores), 15 a mais 10min
+ * depois, já com o registro encerrado (todos da própria rodada).
+ *
+ * O docblock de `shouldSkipForSharedSession` afirmava que dava pra dispensar
+ * o `session_id` porque a sessão não sabe o próprio — isso vale pro processo,
+ * mas não pro comando: `.claude/hooks/inject-session-id.mjs` injeta
+ * `--session-id` nos alvos de `SESSION_ID_TARGETS`, e este script passou a
+ * ser um deles. Quando a flag não vem (invocação manual fora do hook), o
+ * parâmetro fica `undefined` e o comportamento é o anterior, byte a byte.
  */
-export function selectInUseWorktreeNames(activeSessions: SessionRecord[]): Set<string> {
+export function selectInUseWorktreeNames(
+  activeSessions: SessionRecord[],
+  excludeSessionId?: string,
+): Set<string> {
   const names = new Set<string>();
   for (const s of activeSessions) {
     if (s.stale) continue;
+    if (excludeSessionId !== undefined && s.sessionId === excludeSessionId) continue;
     const paths = [...(s.touched_paths ?? []), ...(s.dirty_paths ?? [])];
     for (const name of extractWorktreeNamesFromPaths(paths)) names.add(name);
   }
@@ -433,6 +467,84 @@ export function worktreeNameFromPath(path: string): string {
 /** Remove de `entries` os worktrees cujo nome está em `inUseNames` — pura. */
 export function filterOutInUseWorktrees(entries: WorktreeEntry[], inUseNames: Set<string>): WorktreeEntry[] {
   return entries.filter((e) => !inUseNames.has(worktreeNameFromPath(e.path)));
+}
+
+/**
+ * Remove de `entries` os worktrees com trabalho NÃO-COMMITADO (#7304) —
+ * modificação rastreada ou arquivo untracked. Puro: `isDirty` é injetável.
+ *
+ * **Por que "branch mergeada" não implica "worktree descartável".** Até aqui
+ * a elegibilidade olhava só o histórico (`selectMergedForRemoval` = branch
+ * com PR mergeada; `selectOrphanedForStaleRemoval` = órfão + velho) e nunca
+ * a working tree — e `removeWorktreeSafe` roda `git worktree remove
+ * --force`, que descarta modificação e untracked sem perguntar. Um worktree
+ * cuja branch já mergeou mas que ganhou trabalho novo por cima (o padrão de
+ * quem continua editando depois do merge) era destruído em silêncio.
+ *
+ * Não é hipotético: no inventário do #7304, 2 dos 3 worktrees de branch
+ * mergeada estavam sujos — um deles com 481 inserções não-commitadas e 3
+ * arquivos untracked. Nenhum foi selecionado naquele momento só porque o
+ * `gh` não achou PR mergeada pras branches; a proteção era acidental.
+ *
+ * Este guard é pré-requisito da self-exclusion de `selectInUseWorktreeNames`,
+ * não um extra: ao parar de preservar os próprios worktrees, a rodada passa
+ * a alcançar exatamente os worktrees recém-usados — os mais prováveis de
+ * ter trabalho não-commitado em cima. Sem o guard, o fix do #7304 aumentaria
+ * a chance de perda em vez de reduzir.
+ *
+ * Fail-soft na direção segura: `isDirty` retornando `null` (git falhou,
+ * diretório sumiu) conta como SUJO e preserva — o custo de errar aqui é
+ * assimétrico (não limpar agora é recuperável; apagar trabalho não é).
+ */
+export function filterOutDirtyWorktrees(
+  entries: WorktreeEntry[],
+  isDirty: (path: string) => boolean | null,
+): { kept: WorktreeEntry[]; skipped: WorktreeEntry[] } {
+  const kept: WorktreeEntry[] = [];
+  const skipped: WorktreeEntry[] = [];
+  for (const e of entries) {
+    if (isDirty(e.path) === false) kept.push(e);
+    else skipped.push(e);
+  }
+  return { kept, skipped };
+}
+
+/**
+ * `git status --porcelain` no worktree — `true` se há qualquer modificação
+ * rastreada ou arquivo untracked, `false` se limpo, `null` se o comando
+ * falhou (tratado como sujo por `filterOutDirtyWorktrees`).
+ *
+ * **Diretório INEXISTENTE devolve `false`, não `null` (review do PR #7317).**
+ * Worktree cujo diretório sumiu (apagado à mão, criação que abortou no meio)
+ * mas cujos metadados o git ainda lista é um caso real — e é justamente o
+ * que `selectOrphanedForStaleRemoval` existe pra limpar. Sem esta distinção,
+ * o `spawnSync` falharia por `cwd` inválido, o `null` seria lido como "sujo"
+ * e a entrada ficaria **impossível de limpar pra sempre** — o guard de
+ * sujeira teria criado um vazamento novo justamente no caminho que ele não
+ * precisa proteger: não há trabalho a preservar num diretório que não
+ * existe. `null` fica reservado ao caso genuinamente ambíguo: o diretório
+ * está lá e mesmo assim o git não conseguiu responder (repo corrompido,
+ * permissão, timeout) — aí preservar é o certo.
+ *
+ * **Limite conhecido:** `git status --porcelain` no modo default não lista
+ * arquivo ignorado por `.gitignore`. Trabalho real que viva só num caminho
+ * ignorado não é detectado como sujo. Aceito: conteúdo ignorado não é
+ * produto versionável, e incluir `--ignored` marcaria como sujo todo
+ * worktree com `node_modules/`, o que na prática desligaria o cleanup.
+ */
+export function isWorktreeDirtySafe(path: string): boolean | null {
+  try {
+    if (!existsSync(path)) return false;
+    const result = spawnSync("git", ["status", "--porcelain"], {
+      cwd: path,
+      encoding: "utf8",
+      timeout: GH_TIMEOUT_MS,
+    });
+    if (result.status !== 0) return null;
+    return (result.stdout ?? "").trim().length > 0;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -485,6 +597,9 @@ function main(): void {
   const repoRoot = args.root ? resolve(String(args.root)) : ROOT;
   const dryRun = args["dry-run"] === "true";
   const confirmShared = args["confirm-shared"] === "true";
+  // #7304: injetado por `.claude/hooks/inject-session-id.mjs`; ausente numa
+  // invocação manual, e aí o comportamento é o de antes (nada é excluído).
+  const ownSessionId = args["session-id"] ? String(args["session-id"]) : undefined;
   const worktreesDir = resolve(repoRoot, ".claude", "worktrees").replace(/\\/g, "/");
 
   // Fail-soft de topo: qualquer exceção não prevista aqui é logada como
@@ -507,7 +622,9 @@ function main(): void {
     // ATIVA e não-stale (qualquer kind) fica de fora da remoção. Ver docblock
     // de `shouldSkipForSharedSession` acima pro porquê do skip global
     // anterior ter virado um no-op quase incondicional com o contínuo ativo.
-    const inUseNames = selectInUseWorktreeNames(probe.sessions);
+    // #7304: a própria sessão não se protege de si mesma — ver docblock de
+    // `selectInUseWorktreeNames`.
+    const inUseNames = selectInUseWorktreeNames(probe.sessions, ownSessionId);
 
     const all = listWorktreesSafe(repoRoot);
     const candidatesAll = filterUnderWorktreesDir(all, worktreesDir);
@@ -545,13 +662,27 @@ function main(): void {
       getWorktreeMtimeMsSafe,
       Date.now(),
     );
-    const toRemove = [...mergedRemoval, ...orphanedStaleRemoval];
+    // #7304: último filtro, depois de toda a elegibilidade por histórico —
+    // worktree com trabalho não-commitado nunca é removido, mesmo com branch
+    // mergeada e mesmo órfão+stale. Ver docblock de `filterOutDirtyWorktrees`.
+    const { kept: toRemove, skipped: dirtySkipped } = filterOutDirtyWorktrees(
+      [...mergedRemoval, ...orphanedStaleRemoval],
+      isWorktreeDirtySafe,
+    );
 
     console.log(
       `[cleanup-merged-worktrees] ${candidates.length} worktree(s) encontrados, ` +
         `${mergedRemoval.length} com PR mergeada confirmada, ` +
         `${orphanedStaleRemoval.length} órfão(s) parado(s) há mais de 7 dias (#5418).`,
     );
+
+    if (dirtySkipped.length > 0) {
+      console.log(
+        `[cleanup-merged-worktrees] ${dirtySkipped.length} worktree(s) elegível(is) PRESERVADO(s) por ter trabalho ` +
+          `não-commitado (#7304) — commite ou descarte à mão antes de limpar: ` +
+          `${dirtySkipped.map((e) => worktreeNameFromPath(e.path)).join(", ")}.`,
+      );
+    }
 
     let removed = 0;
     let failed = 0;
