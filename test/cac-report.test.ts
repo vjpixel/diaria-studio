@@ -14,14 +14,17 @@ import {
   parseCacReportArgs,
   resolveCacReportWindow,
   formatCacReportMarkdown,
+  loadKitUtmSection,
   main,
   DEFAULT_BACKUP_ROOT,
   DEFAULT_SPEND_CSV_PATH,
   DEFAULT_ORIGEM_MAP_PATH,
+  type CacReportKitSection,
 } from "../scripts/cac-report.ts";
 import { buildCacReport, computeMonthBudgetUsage } from "../scripts/lib/cac.ts";
 import { parseSinceToEpochSeconds, parseUntilToEpochSecondsExclusive } from "../scripts/cohort-engagement.ts";
 import type { SpendRow } from "../scripts/lib/aquisicao-spend.ts";
+import type { UtmCountResult } from "../scripts/count-subscriptions-by-utm.ts";
 
 describe("parseCacReportArgs", () => {
   it("defaults", () => {
@@ -41,6 +44,11 @@ describe("parseCacReportArgs", () => {
   it("--strict default false, --strict liga (#5860)", () => {
     assert.equal(parseCacReportArgs([]).strict, false);
     assert.equal(parseCacReportArgs(["--strict"]).strict, true);
+  });
+
+  it("kit default true (liga), --no-kit desliga (#7359)", () => {
+    assert.equal(parseCacReportArgs([]).kit, true);
+    assert.equal(parseCacReportArgs(["--no-kit"]).kit, false);
   });
 
   it("--json/--snapshot/--root/--spend/--origem", () => {
@@ -215,6 +223,89 @@ describe("formatCacReportMarkdown", () => {
 });
 
 // ---------------------------------------------------------------------------
+// loadKitUtmSection / seção Kit em formatCacReportMarkdown (#7359)
+// ---------------------------------------------------------------------------
+
+describe("loadKitUtmSection (#7359)", () => {
+  it("KIT_API_KEY ausente do env -> fail-soft, applied:false, nunca lança", async () => {
+    const section = await loadKitUtmSection(
+      async () => {
+        throw new Error("não deveria ser chamado sem config");
+      },
+      {},
+    );
+    assert.equal(section.applied, false);
+    if (!section.applied) {
+      assert.match(section.reason, /KIT_API_KEY/);
+    }
+  });
+
+  it("fetcher lança (API fora do ar) -> fail-soft, applied:false com a mensagem", async () => {
+    const section = await loadKitUtmSection(
+      async () => {
+        throw new Error("Kit API 500");
+      },
+      { KIT_API_KEY: "kit_test_key" },
+    );
+    assert.equal(section.applied, false);
+    if (!section.applied) {
+      assert.match(section.reason, /Kit API 500/);
+    }
+  });
+
+  it("fetcher OK -> applied:true com o resultado agregado", async () => {
+    const fake: UtmCountResult = {
+      counts: { "google-ads": 2 },
+      campaignCounts: { "google-ads-2609": 2 },
+      total: 2,
+      fetched_at: "2026-09-03T00:00:00.000Z",
+    };
+    const section = await loadKitUtmSection(async () => fake, { KIT_API_KEY: "kit_test_key" });
+    assert.equal(section.applied, true);
+    if (section.applied) {
+      assert.equal(section.result.total, 2);
+      assert.equal(section.result.counts["google-ads"], 2);
+    }
+  });
+});
+
+describe("formatCacReportMarkdown — seção Kit (#7359)", () => {
+  const baseReportAndBudget = () => {
+    const spendRows: SpendRow[] = [
+      { canal: "Google Ads", mes: "2026-02", moeda: "BRL", valor: 956.21, fonte: "teste" },
+    ];
+    const report = buildCacReport(spendRows, []);
+    const budget = computeMonthBudgetUsage(spendRows, "2026-08");
+    return { report, budget };
+  };
+
+  it("sem kitSection -> nenhuma menção à seção Kit (comportamento default preservado)", () => {
+    const { report, budget } = baseReportAndBudget();
+    const md = formatCacReportMarkdown(report, budget);
+    assert.doesNotMatch(md, /Cadastros no Kit por UTM/);
+  });
+
+  it("kitSection applied:false -> seção aparece com o aviso, nunca some em silêncio", () => {
+    const { report, budget } = baseReportAndBudget();
+    const kitSection: CacReportKitSection = { applied: false, reason: "KIT_API_KEY não definida." };
+    const md = formatCacReportMarkdown(report, budget, {}, kitSection);
+    assert.match(md, /Cadastros no Kit por UTM/);
+    assert.match(md, /seção Kit não aplicada: KIT_API_KEY não definida\./);
+  });
+
+  it("kitSection applied:true -> tabela de contagens por UTM aparece", () => {
+    const { report, budget } = baseReportAndBudget();
+    const kitSection: CacReportKitSection = {
+      applied: true,
+      result: { counts: { "google-ads": 3 }, campaignCounts: { "google-ads-2609": 3 }, total: 3, fetched_at: "x" },
+    };
+    const md = formatCacReportMarkdown(report, budget, {}, kitSection);
+    assert.match(md, /Cadastros no Kit por UTM/);
+    assert.match(md, /google-ads/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // End-to-end com tmpdir — fixtures reais em disco
 // ---------------------------------------------------------------------------
 
@@ -233,7 +324,7 @@ function subscriberLine(overrides: Record<string, unknown> = {}): string {
 }
 
 describe("main — end-to-end com fixtures em tmpdir", () => {
-  it("gera report.md, registra em data/reports/index.jsonl, exit 0", () => {
+  it("gera report.md, registra em data/reports/index.jsonl, exit 0", async () => {
     const root = mkdtempSync(join(tmpdir(), "cac-report-e2e-"));
     try {
       const backupRoot = join(root, "beehiiv-backup");
@@ -256,7 +347,7 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
 
       const exitBefore = process.exitCode;
       process.exitCode = undefined;
-      main(["--root", backupRoot, "--spend", spendPath, "--origem", origemPath], root);
+      await main(["--root", backupRoot, "--spend", spendPath, "--origem", origemPath, "--no-kit"], root);
       const exit = process.exitCode;
       process.exitCode = exitBefore;
 
@@ -279,7 +370,7 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
     }
   });
 
-  it("--strict com canal não atribuído -> exit 1; sem --strict, mesmo cenário -> exit 0 (#5860)", () => {
+  it("--strict com canal não atribuído -> exit 1; sem --strict, mesmo cenário -> exit 0 (#5860)", async () => {
     const root = mkdtempSync(join(tmpdir(), "cac-report-strict-"));
     try {
       const backupRoot = join(root, "beehiiv-backup");
@@ -296,11 +387,11 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
       const exitBefore = process.exitCode;
 
       process.exitCode = undefined;
-      main(["--root", backupRoot, "--spend", spendPath, "--origem", origemPath, "--no-register"], root);
+      await main(["--root", backupRoot, "--spend", spendPath, "--origem", origemPath, "--no-register", "--no-kit"], root);
       const exitLenient = process.exitCode;
 
       process.exitCode = undefined;
-      main(["--root", backupRoot, "--spend", spendPath, "--origem", origemPath, "--no-register", "--strict"], root);
+      await main(["--root", backupRoot, "--spend", spendPath, "--origem", origemPath, "--no-register", "--strict", "--no-kit"], root);
       const exitStrict = process.exitCode;
 
       process.exitCode = exitBefore;
@@ -312,7 +403,7 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
     }
   });
 
-  it("--no-register não escreve em data/reports/index.jsonl", () => {
+  it("--no-register não escreve em data/reports/index.jsonl", async () => {
     const root = mkdtempSync(join(tmpdir(), "cac-report-noreg-"));
     try {
       const backupRoot = join(root, "beehiiv-backup");
@@ -323,7 +414,7 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
       const spendPath = join(root, "spend.csv");
       writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads,2026-02,BRL,956.21,teste\n", "utf8");
 
-      main(["--root", backupRoot, "--spend", spendPath, "--origem", join(root, "sem-origem.json"), "--no-register"], root);
+      await main(["--root", backupRoot, "--spend", spendPath, "--origem", join(root, "sem-origem.json"), "--no-register", "--no-kit"], root);
 
       assert.equal(existsSync(join(root, "data", "reports", "index.jsonl")), false);
     } finally {
@@ -331,7 +422,7 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
     }
   });
 
-  it("spend.csv ausente -> exit 1, nenhum report escrito", () => {
+  it("spend.csv ausente -> exit 1, nenhum report escrito", async () => {
     const root = mkdtempSync(join(tmpdir(), "cac-report-nospend-"));
     try {
       const backupRoot = join(root, "beehiiv-backup");
@@ -340,7 +431,7 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
 
       const exitBefore = process.exitCode;
       process.exitCode = undefined;
-      main(["--root", backupRoot, "--spend", join(root, "nao-existe.csv")], root);
+      await main(["--root", backupRoot, "--spend", join(root, "nao-existe.csv"), "--no-kit"], root);
       const exit = process.exitCode;
       process.exitCode = exitBefore;
 
@@ -351,7 +442,7 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
     }
   });
 
-  it("nenhum snapshot encontrado -> exit 1", () => {
+  it("nenhum snapshot encontrado -> exit 1", async () => {
     const root = mkdtempSync(join(tmpdir(), "cac-report-nosnap-"));
     try {
       const spendPath = join(root, "spend.csv");
@@ -359,7 +450,7 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
 
       const exitBefore = process.exitCode;
       process.exitCode = undefined;
-      main(["--root", join(root, "beehiiv-backup-vazio"), "--spend", spendPath], root);
+      await main(["--root", join(root, "beehiiv-backup-vazio"), "--spend", spendPath, "--no-kit"], root);
       const exit = process.exitCode;
       process.exitCode = exitBefore;
 
@@ -369,7 +460,7 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
     }
   });
 
-  it("--desde/--ate: exclui cadastro fora da janela, id do relatório carrega sufixo de janela (#5495)", () => {
+  it("--desde/--ate: exclui cadastro fora da janela, id do relatório carrega sufixo de janela (#5495)", async () => {
     const root = mkdtempSync(join(tmpdir(), "cac-report-window-"));
     try {
       const backupRoot = join(root, "beehiiv-backup");
@@ -387,8 +478,8 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
       const spendPath = join(root, "spend.csv");
       writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads,2026-02,BRL,956.21,teste\n", "utf8");
 
-      main(
-        ["--root", backupRoot, "--spend", spendPath, "--origem", join(root, "sem-origem.json"), "--desde", "2026-08-01", "--ate", "2026-08-16"],
+      await main(
+        ["--root", backupRoot, "--spend", spendPath, "--origem", join(root, "sem-origem.json"), "--desde", "2026-08-01", "--ate", "2026-08-16", "--no-kit"],
         root,
       );
 
@@ -405,7 +496,7 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
     }
   });
 
-  it("--desde inválido (formato errado) -> exit 1, nenhum report escrito", () => {
+  it("--desde inválido (formato errado) -> exit 1, nenhum report escrito", async () => {
     const root = mkdtempSync(join(tmpdir(), "cac-report-badwindow-"));
     try {
       const backupRoot = join(root, "beehiiv-backup");
@@ -416,7 +507,7 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
 
       const exitBefore = process.exitCode;
       process.exitCode = undefined;
-      main(["--root", backupRoot, "--spend", spendPath, "--desde", "not-a-date"], root);
+      await main(["--root", backupRoot, "--spend", spendPath, "--desde", "not-a-date", "--no-kit"], root);
       const exit = process.exitCode;
       process.exitCode = exitBefore;
 

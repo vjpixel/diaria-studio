@@ -424,12 +424,12 @@ export function applyQueueCapGate(
 // Aplicação (I/O) — unsubscribe Beehiiv + funil de reativação Brevo
 // ---------------------------------------------------------------------------
 
-/** `PUT .../subscriptions/by_email/{email}` com `{unsubscribe:true}` — mesmo
- *  endpoint/disciplina de `cleanup-preflight-subscribers.ts::unsubscribe`
- *  (nunca DELETE, preserva histórico do registro). Reimplementado aqui (não
- *  importado) pelo mesmo motivo documentado lá: este script é
- *  Beehiiv+Brevo, não deveria puxar um módulo pensado só pra limpeza de
- *  teste de preflight. */
+/** `PUT .../subscriptions/by_email/{email}` com `{unsubscribe:true}` — nunca
+ *  DELETE, preserva histórico do registro (mesma disciplina de
+ *  `evaluate-brevo-diaria.ts::unsubscribeInBeehiiv`). `cleanup-preflight-
+ *  subscribers.ts` migrou pro Kit no #7359 — não é mais o par Beehiiv desta
+ *  função. Reimplementado aqui (não importado) porque este script é
+ *  Beehiiv+Brevo, não deveria puxar um módulo pensado pra outro concern. */
 export async function unsubscribeFromBeehiiv(
   publicationId: string,
   apiKey: string,

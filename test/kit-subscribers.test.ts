@@ -14,6 +14,8 @@ import {
   updateSubscriberFields,
   listFormSubscribersPage,
   listAllFormSubscribers,
+  getKitSubscriberByEmail,
+  unsubscribeKitSubscriber,
 } from "../scripts/lib/kit-subscribers.ts";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -48,6 +50,79 @@ describe("listKitSubscribersPage", () => {
     );
     assert.match(capturedUrl, /per_page=50/);
     assert.equal(result.subscribers.length, 1);
+  });
+
+  it("emailAddress vira query param email_address (#7359)", async () => {
+    let capturedUrl = "";
+    await withMockFetch(
+      (async (url: string) => {
+        capturedUrl = url;
+        return jsonResponse(200, { subscribers: [], pagination: emptyPagination });
+      }) as typeof fetch,
+      () => listKitSubscribersPage({ emailAddress: "a@b.com", status: "all", config: TEST_CONFIG }),
+    );
+    assert.match(capturedUrl, /email_address=a%40b\.com/);
+    assert.match(capturedUrl, /status=all/);
+  });
+});
+
+describe("getKitSubscriberByEmail (#7359)", () => {
+  it("devolve o subscriber quando encontrado", async () => {
+    const sub = await withMockFetch(
+      (async () =>
+        jsonResponse(200, {
+          subscribers: [{ id: 7, email_address: "a@b.com", state: "active", created_at: "x", fields: { utm_source: "google-ads" } }],
+          pagination: emptyPagination,
+        })) as typeof fetch,
+      () => getKitSubscriberByEmail("a@b.com", TEST_CONFIG),
+    );
+    assert.ok(sub);
+    assert.equal(sub?.id, 7);
+    assert.equal(sub?.fields?.utm_source, "google-ads");
+  });
+
+  it("devolve null quando a lista vem vazia (não encontrado), nunca lança", async () => {
+    const sub = await withMockFetch(
+      (async () => jsonResponse(200, { subscribers: [], pagination: emptyPagination })) as typeof fetch,
+      () => getKitSubscriberByEmail("nao-existe@b.com", TEST_CONFIG),
+    );
+    assert.equal(sub, null);
+  });
+
+  it("lança (nunca cai pro 1º resultado) quando a API devolve subscriber(s) mas nenhum bate o e-mail exato (#7373 review)", async () => {
+    await assert.rejects(
+      () =>
+        withMockFetch(
+          (async () =>
+            jsonResponse(200, {
+              // Simula a API devolvendo um resultado de correspondência ampla
+              // (ex: busca parcial/fuzzy) que NÃO bate o e-mail exato buscado —
+              // era este o caso que antes caía silenciosamente pro
+              // `subscribers[0]`, arriscando cancelar um assinante alheio.
+              subscribers: [{ id: 99, email_address: "outro-email@b.com", state: "active", created_at: "x" }],
+              pagination: emptyPagination,
+            })) as typeof fetch,
+          () => getKitSubscriberByEmail("nao-bate@b.com", TEST_CONFIG),
+        ),
+      /nao-bate@b\.com.*nenhum bate o e-mail exato.*id=99.*outro-email@b\.com/s,
+    );
+  });
+});
+
+describe("unsubscribeKitSubscriber (#7359)", () => {
+  it("faz POST /subscribers/{id}/unsubscribe", async () => {
+    let capturedUrl = "";
+    let capturedMethod = "";
+    await withMockFetch(
+      (async (url: string, init?: RequestInit) => {
+        capturedUrl = url;
+        capturedMethod = init?.method ?? "";
+        return new Response(null, { status: 204 });
+      }) as typeof fetch,
+      () => unsubscribeKitSubscriber(42, TEST_CONFIG),
+    );
+    assert.match(capturedUrl, /\/subscribers\/42\/unsubscribe$/);
+    assert.equal(capturedMethod, "POST");
   });
 });
 

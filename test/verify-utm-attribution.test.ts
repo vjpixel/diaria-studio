@@ -1,76 +1,69 @@
 /**
- * verify-utm-attribution.test.ts (#5545)
+ * verify-utm-attribution.test.ts (#5545, migrado pro Kit no #7359)
  *
- * Cobre o núcleo puro (evaluateArm/formatVerdictTable) com fixtures, e
- * fetchSubscriptionBody com fetch mockado (nenhuma chamada de rede real —
- * regra de dispatch overnight/#738).
+ * Cobre o núcleo puro (evaluateArm/formatVerdictTable) com fixtures — o
+ * lookup de rede real (`getKitSubscriberByEmail`) já tem cobertura própria
+ * em `kit-subscribers.test.ts`/testes de `count-subscriptions-by-utm.ts`,
+ * não duplicado aqui.
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  evaluateArm,
-  formatVerdictTable,
-  fetchSubscriptionBody,
-  type ArmVerdict,
-} from "../scripts/verify-utm-attribution.ts";
+import { evaluateArm, formatVerdictTable, type ArmVerdict } from "../scripts/verify-utm-attribution.ts";
 import { buildPreflightPlan } from "../scripts/lib/preflight-utm-arms.ts";
-import type { OrigemEntryFields } from "../scripts/lib/cac.ts";
+import type { KitSubscriberSummary } from "../scripts/lib/kit-subscribers.ts";
 
-const CAMPAIGN = "preflight-2608";
+const CAMPAIGN = "preflight-2609";
 const [googleAdsPlan] = buildPreflightPlan(CAMPAIGN);
-const EMPTY_ORIGEM_INDEX = new Map<string, OrigemEntryFields>();
 
-describe("evaluateArm (#5545)", () => {
-  it("PASSOU quando utm_source e utm_campaign batem exato", () => {
-    const body = {
-      data: { utm_source: "google-ads", utm_medium: "cpc", utm_campaign: CAMPAIGN },
-    };
-    const v = evaluateArm(googleAdsPlan, CAMPAIGN, body, EMPTY_ORIGEM_INDEX);
+function kitSub(fields: Record<string, string> = {}): KitSubscriberSummary {
+  return { id: 1, email_address: googleAdsPlan.email, state: "active", created_at: "x", fields };
+}
+
+describe("evaluateArm (#5545, Kit desde #7359)", () => {
+  it("PASSOU quando fields.utm_source/utm_campaign batem exato", () => {
+    const sub = kitSub({ utm_source: "google-ads", utm_medium: "cpc", utm_campaign: CAMPAIGN });
+    const v = evaluateArm(googleAdsPlan, CAMPAIGN, sub);
     assert.equal(v.passed, true);
     assert.equal(v.subscription_found, true);
     assert.equal(v.found_utm_source, "google-ads");
     assert.equal(v.found_utm_campaign, CAMPAIGN);
   });
 
-  it("FALHOU quando não há registro na Beehiiv (body null — 404)", () => {
-    const v = evaluateArm(googleAdsPlan, CAMPAIGN, null, EMPTY_ORIGEM_INDEX);
+  it("FALHOU quando não há registro no Kit (subscriber null)", () => {
+    const v = evaluateArm(googleAdsPlan, CAMPAIGN, null);
     assert.equal(v.passed, false);
     assert.equal(v.subscription_found, false);
-    assert.match(v.reason ?? "", /sem registro/);
+    assert.match(v.reason ?? "", /sem registro no Kit/);
   });
 
-  it('FALHOU quando utm_source vem "direct" em vez do braço', () => {
-    const body = { data: { utm_source: "direct", utm_campaign: CAMPAIGN } };
-    const v = evaluateArm(googleAdsPlan, CAMPAIGN, body, EMPTY_ORIGEM_INDEX);
+  it('FALHOU quando fields.utm_source vem "direct" em vez do braço', () => {
+    const sub = kitSub({ utm_source: "direct", utm_campaign: CAMPAIGN });
+    const v = evaluateArm(googleAdsPlan, CAMPAIGN, sub);
     assert.equal(v.passed, false);
     assert.match(v.reason ?? "", /utm_source obtido/);
   });
 
-  it("FALHOU quando utm_source vem vazio/ausente", () => {
-    const body = { data: { utm_campaign: CAMPAIGN } };
-    const v = evaluateArm(googleAdsPlan, CAMPAIGN, body, EMPTY_ORIGEM_INDEX);
+  it("FALHOU quando fields.utm_source vem vazio/ausente", () => {
+    const sub = kitSub({ utm_campaign: CAMPAIGN });
+    const v = evaluateArm(googleAdsPlan, CAMPAIGN, sub);
+    assert.equal(v.passed, false);
+    assert.equal(v.found_utm_source, null);
+  });
+
+  it("FALHOU quando fields ausente por completo (evaluateArm só lê fields, nunca attribution — Kit nunca popula attribution.utm_source via API)", () => {
+    const sub = kitSub();
+    const v = evaluateArm(googleAdsPlan, CAMPAIGN, sub);
     assert.equal(v.passed, false);
     assert.equal(v.found_utm_source, null);
   });
 
   it("FALHOU quando utm_campaign não sobrevive (ex: veio de outro teste)", () => {
-    const body = { data: { utm_source: "google-ads", utm_campaign: "outra-campanha" } };
-    const v = evaluateArm(googleAdsPlan, CAMPAIGN, body, EMPTY_ORIGEM_INDEX);
+    const sub = kitSub({ utm_source: "google-ads", utm_campaign: "outra-campanha" });
+    const v = evaluateArm(googleAdsPlan, CAMPAIGN, sub);
     assert.equal(v.passed, false);
     assert.match(v.reason ?? "", /utm_campaign obtido/);
-  });
-
-  it("usa a origem do mapa origem-original.json quando presente (mesma derivação do cac-report)", () => {
-    const body = { data: { utm_source: "brevo-diaria", utm_campaign: CAMPAIGN } };
-    const idx = new Map<string, OrigemEntryFields>([
-      [googleAdsPlan.email.toLowerCase(), { utm_source: "google-ads", referring_site: "" }],
-    ]);
-    const v = evaluateArm(googleAdsPlan, CAMPAIGN, body, idx);
-    assert.equal(v.found_via_origem_override, true);
-    assert.equal(v.found_utm_source, "google-ads");
-    assert.equal(v.passed, true);
   });
 });
 
@@ -84,7 +77,6 @@ describe("formatVerdictTable (#5545)", () => {
         expected_utm_campaign: CAMPAIGN,
         found_utm_source: "google-ads",
         found_utm_campaign: CAMPAIGN,
-        found_via_origem_override: false,
         subscription_found: true,
         passed: true,
       },
@@ -102,7 +94,6 @@ describe("formatVerdictTable (#5545)", () => {
         expected_utm_campaign: CAMPAIGN,
         found_utm_source: "direct",
         found_utm_campaign: CAMPAIGN,
-        found_via_origem_override: false,
         subscription_found: true,
         passed: false,
         reason: 'utm_source obtido ("direct") difere do esperado ("meta-ads")',
@@ -111,28 +102,5 @@ describe("formatVerdictTable (#5545)", () => {
     const out = formatVerdictTable(verdicts);
     assert.match(out, /RESULTADO GERAL: FALHOU \(0\/1 braços\)/);
     assert.match(out, /FALHOU — utm_source obtido/);
-  });
-});
-
-describe("fetchSubscriptionBody (#5545) — fetch mockado, sem rede real", () => {
-  it("retorna null em 404", async () => {
-    const fetchImpl = (async () => new Response(null, { status: 404 })) as unknown as typeof fetch;
-    const body = await fetchSubscriptionBody("pub_1", "key", "a@x.com", fetchImpl);
-    assert.equal(body, null);
-  });
-
-  it("retorna o corpo parseado em 200", async () => {
-    const fetchImpl = (async () =>
-      new Response(JSON.stringify({ data: { utm_source: "google-ads" } }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      })) as unknown as typeof fetch;
-    const body = await fetchSubscriptionBody("pub_1", "key", "a@x.com", fetchImpl);
-    assert.deepEqual(body, { data: { utm_source: "google-ads" } });
-  });
-
-  it("lança em erro HTTP diferente de 404", async () => {
-    const fetchImpl = (async () => new Response("erro", { status: 500 })) as unknown as typeof fetch;
-    await assert.rejects(() => fetchSubscriptionBody("pub_1", "key", "a@x.com", fetchImpl));
   });
 });

@@ -31,6 +31,31 @@
  *
  * Exit codes: 0 = sucesso; 1 = insumo obrigatório ausente/ilegível (spend.csv
  * ou snapshot).
+ *
+ * ## Seção Kit (#7359) — informativa, não substitui o relatório Beehiiv acima
+ *
+ * O cadastro real hoje nasce majoritariamente no Kit (workers de assinatura,
+ * `POST /v4/subscribers`/`POST /jogar/subscribe` — ver
+ * `workers/poll/src/subscribe.ts`), mas `subscriber_backend` continua
+ * `"beehiiv"` (ver nota em `platform.config.json`) — o snapshot local
+ * (`data/beehiiv-backup/`) que este relatório lê NUNCA viu esses cadastros.
+ * Sem uma seção própria, "custo por leitor" simplesmente não enxergava
+ * conversão paga nenhuma, mesmo com o encanamento de UTM funcionando.
+ *
+ * Este relatório NÃO reimplementa o funil completo (`buildCacReport`) pro
+ * lado Kit — a base Kit é ingerida via um mecanismo bem diferente (SQLite
+ * incremental, `scripts/lib/kit-subscribers-ingest.ts`/#7202, sem os campos
+ * de engajamento por-post que `computeMeasuredRow` usa). A seção abaixo é
+ * deliberadamente mais simples: cadastros por `utm_source`/`utm_campaign`
+ * via `fetchAndAggregateKit` (`count-subscriptions-by-utm.ts`, corrigida no
+ * mesmo #7359 pra ler `fields` — a fonte real — em vez do bloco
+ * `attribution` nativo, que vem sempre nulo pra cadastro via API/worker).
+ * Serve pra confirmar QUE o cadastro pago aparece — não pra ranquear custo
+ * por leitor lado a lado com a tabela Beehiiv (paridade de funil fica pra
+ * quando/se `subscriber_backend` migrar de verdade). Fail-soft: sem
+ * `KIT_API_KEY` ou com a API do Kit fora do ar, a seção continua aparecendo
+ * com um aviso explicando o motivo (nunca desaparece em silêncio) — nunca
+ * derruba o relatório Beehiiv. Só `--no-kit` omite a seção por completo.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -63,6 +88,8 @@ import {
   type CohortWindow,
 } from "./cohort-engagement.ts";
 import { registerReport, reportId } from "./studio-ui/studio-reports.ts";
+import { fetchAndAggregateKit, formatCountsTable, type UtmCountResult } from "./count-subscriptions-by-utm.ts";
+import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_BACKUP_ROOT = resolve(ROOT, "data", "beehiiv-backup");
@@ -92,6 +119,33 @@ export function loadOrigemIndex(path: string): { index: Map<string, OrigemEntryF
   } catch (e) {
     console.error(`[cac-report] aviso: falha ao ler mapa de origem (${path}): ${(e as Error).message} — usando utm_source cru.`);
     return { index: new Map(), applied: false };
+  }
+}
+
+/** Resultado da seção Kit (#7359) — sempre um dos dois shapes, nunca lança. */
+export type CacReportKitSection =
+  | { applied: true; result: UtmCountResult }
+  | { applied: false; reason: string };
+
+/**
+ * Busca cadastros Kit agregados por UTM (#7359) — fail-soft: config ausente
+ * ou falha de rede vira `{applied:false, reason}`, nunca lança. `fetcher`
+ * injetável pra teste (default `fetchAndAggregateKit`); `env` injetável pelo
+ * mesmo motivo (`resolveKitConfig` já é puro/injetável).
+ */
+export async function loadKitUtmSection(
+  fetcher: (config?: KitConfig) => Promise<UtmCountResult> = fetchAndAggregateKit,
+  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
+): Promise<CacReportKitSection> {
+  const cfgResult = resolveKitConfig(env);
+  if (!cfgResult.ok) {
+    return { applied: false, reason: cfgResult.reason };
+  }
+  try {
+    const result = await fetcher(cfgResult.config);
+    return { applied: true, result };
+  } catch (e) {
+    return { applied: false, reason: `Kit API falhou: ${(e as Error).message}` };
   }
 }
 
@@ -129,6 +183,11 @@ export interface CacReportCliArgs {
    *  não atribuído como aviso — opt-in deliberado (a issue permite as duas
    *  formas: exit code sempre diferente de 0, OU uma flag que force isso). */
   strict: boolean;
+  /** `--no-kit` (#7359): desliga a seção informativa "Cadastros no Kit por
+   *  UTM" (`loadKitUtmSection`) — default `true` (liga). Existe pra CLI/testes
+   *  que preferem pular a resolução de `KIT_API_KEY`/chamada de rede por
+   *  completo, em vez de confiar no fail-soft de `loadKitUtmSection`. */
+  kit: boolean;
 }
 
 export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
@@ -142,6 +201,7 @@ export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
     desde: getStringArg(argv, "desde") ?? null,
     ate: getStringArg(argv, "ate") ?? null,
     strict: hasFlag(argv, "strict"),
+    kit: !hasFlag(argv, "no-kit"),
   };
 }
 
@@ -193,6 +253,7 @@ export function formatCacReportMarkdown(
   report: CacReport,
   budget: ReturnType<typeof computeMonthBudgetUsage>,
   provenance: CacReportProvenance = {},
+  kitSection?: CacReportKitSection,
 ): string {
   const lines: string[] = [];
   lines.push(`# Custo por leitor por canal`, "");
@@ -329,6 +390,25 @@ export function formatCacReportMarkdown(
   const boostRow = report.rows.find((r): r is Extract<CacRow, { kind: "boost-estimate" }> => r.kind === "boost-estimate");
   if (boostRow) lines.push(`${boostRow.canal}: ${boostRow.note}`);
 
+  if (kitSection) {
+    lines.push("");
+    lines.push("## Cadastros no Kit por UTM (informativo, #7359)");
+    lines.push("");
+    if (!kitSection.applied) {
+      lines.push(`⚠ seção Kit não aplicada: ${kitSection.reason}`);
+    } else {
+      lines.push(
+        "O cadastro real nasce hoje majoritariamente no Kit (workers de assinatura), fora do snapshot Beehiiv " +
+          "usado no relatório acima — esta tabela só confirma QUE o cadastro pago aparece, não ranqueia custo por " +
+          "leitor (sem paridade de funil com a tabela principal; ver docstring do módulo).",
+      );
+      lines.push("");
+      lines.push("```");
+      lines.push(formatCountsTable(kitSection.result.counts, kitSection.result.total));
+      lines.push("```");
+    }
+  }
+
   return lines.join("\n") + "\n";
 }
 
@@ -344,7 +424,7 @@ function reportSpendErrorsToLines(errors: SpendRowError[]): string[] {
  * tmpdir aqui pra nunca escrever/registrar contra `data/reports/index.jsonl`
  * de verdade.
  */
-export function main(argv: string[] = process.argv.slice(2), rootDir: string = ROOT, now: () => Date = () => new Date()): void {
+export async function main(argv: string[] = process.argv.slice(2), rootDir: string = ROOT, now: () => Date = () => new Date()): Promise<void> {
   const args = parseCacReportArgs(argv);
 
   let window: CohortWindow | null;
@@ -408,14 +488,20 @@ export function main(argv: string[] = process.argv.slice(2), rootDir: string = R
   const apuradoEm = now().toISOString();
   const provenance = { apuradoEm, snapshotDate };
 
+  // #7359: seção informativa "Cadastros no Kit por UTM" — opt-out via
+  // --no-kit; fail-soft por conta própria (loadKitUtmSection nunca lança).
+  const kitSection: CacReportKitSection | undefined = args.kit
+    ? await loadKitUtmSection()
+    : undefined;
+
   if (args.json) {
-    console.log(JSON.stringify({ snapshotDate, previousDate, report, budget, apuradoEm }, null, 2));
+    console.log(JSON.stringify({ snapshotDate, previousDate, report, budget, apuradoEm, kitSection }, null, 2));
   } else {
-    console.log(formatCacReportMarkdown(report, budget, provenance));
+    console.log(formatCacReportMarkdown(report, budget, provenance, kitSection));
   }
 
   if (args.register) {
-    const markdown = formatCacReportMarkdown(report, budget, provenance);
+    const markdown = formatCacReportMarkdown(report, budget, provenance, kitSection);
     const dir = resolve(rootDir, "data", "aquisicao", "cac-reports");
     mkdirSync(dir, { recursive: true });
     // Id inclui a janela quando --desde/--ate foi passado (#5495 — "duas
@@ -457,5 +543,8 @@ export function main(argv: string[] = process.argv.slice(2), rootDir: string = R
 }
 
 if (isMainModule(import.meta.url)) {
-  main();
+  main().catch((e) => {
+    console.error(`[cac-report] ERRO inesperado: ${(e as Error).message}`);
+    process.exitCode = 1;
+  });
 }

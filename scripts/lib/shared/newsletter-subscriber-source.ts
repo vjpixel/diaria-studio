@@ -25,20 +25,23 @@
  * `"beehiiv"` — migrar aqui não depende de, nem afeta, `backend`/
  * `read_backend`.
  *
- * ## Limitação conhecida do lado Kit (não é bug deste módulo)
+ * ## Limitação do lado Kit — CORRIGIDA no consumidor (#7359, não muda esta chave)
  *
- * `KitSubscriberSummary.attribution` só vem populado pra assinantes que se
- * cadastraram pelo formulário NATIVO do Kit (`include[]=attribution` na
- * listagem) — confirmado em `kit-subscribers.ts`/#6425 Parte A. Assinante
- * criado via `POST /v4/subscribers` (os 3 workers de assinatura, #6339)
- * não carrega esse bloco automaticamente; `attribution` ausente é
- * normalizado como `"__none__"` pela mesma função de normalização que já
- * trata ausência de UTM no lado Beehiiv (`normalizeUtmSource`) — sem
- * inventar heurística nova aqui. Consequência prática: enquanto o cadastro
- * real acontecer majoritariamente via API (estado atual, #6048), a
- * agregação por UTM do lado Kit vai subcontar atribuição real até que
- * `kit-attribution.ts`/os backfills (#6425) populem os campos custom
- * correspondentes — registrado aqui, não escondido.
+ * `KitSubscriberSummary.attribution` (bloco nativo, `include[]=attribution`)
+ * só vem com UTM preenchido pra assinantes que se cadastraram pelo
+ * formulário NATIVO do Kit — confirmado em `kit-subscribers.ts`/#6425 Parte
+ * A. Assinante criado via `POST /v4/subscribers` (os workers de assinatura,
+ * #6339/#6048 — hoje a maioria real do cadastro, incluindo o form da home
+ * que chama `POST /jogar/subscribe`) carrega o bloco mas com UTM nulo
+ * (medido ao vivo no #7174). Isso NÃO é subcontagem inevitável: a
+ * atribuição real desses cadastros vive nos custom fields
+ * `utm_source`/`utm_campaign` (gravados por `subscribeToKit`,
+ * `workers/poll/src/subscribe.ts`) — `fetchAndAggregateKit`
+ * (`count-subscriptions-by-utm.ts`) lê `fields` primeiro, com `attribution`
+ * só como fallback pro caso nativo (#7359). O que este comentário registra
+ * é só que a leitura de assinante por este módulo continua defaultando pra
+ * `"beehiiv"` (ver nota abaixo) — migrar essa chave é uma decisão separada
+ * de já ter corrigido a fonte certa do lado Kit.
  */
 
 import { existsSync, readFileSync } from "node:fs";

@@ -406,7 +406,10 @@ export async function unsubscribeFromBeehiiv(
 }
 
 /** `GET .../subscriptions/by_email/{email}` — `null` = 404 (nunca
- *  cadastrado/já removido). Mesma leitura de `cleanup-preflight-subscribers.ts::fetchStatus`. */
+ *  cadastrado/já removido). Mesmo padrão de leitura Beehiiv usado em outros
+ *  scripts deste repo (`evaluate-brevo-diaria.ts`) — `cleanup-preflight-
+ *  subscribers.ts` migrou pro Kit no #7359, não é mais a referência Beehiiv
+ *  pra este tipo de leitura. */
 export async function fetchBeehiivStatus(
   publicationId: string,
   apiKey: string,

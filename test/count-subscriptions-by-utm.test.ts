@@ -326,7 +326,7 @@ describe("fetchAndAggregate — paginação (#2457 fix)", () => {
 // fetchAndAggregateKit (#6051)
 // ---------------------------------------------------------------------------
 
-describe("fetchAndAggregateKit — leitura condicional via Kit (#6051)", () => {
+describe("fetchAndAggregateKit — leitura condicional via Kit (#6051, campos corrigidos no #7359)", () => {
   const mockKitFetch = (subscribers: unknown[]) => {
     const orig = globalThis.fetch;
     globalThis.fetch = (async () =>
@@ -340,7 +340,35 @@ describe("fetchAndAggregateKit — leitura condicional via Kit (#6051)", () => {
     return { restore: () => { globalThis.fetch = orig; } };
   };
 
-  it("agrega por attribution.utm_source/utm_campaign", async () => {
+  it("agrega por fields.utm_source/utm_campaign (fonte primária — cadastro via worker/API, #7359)", async () => {
+    // Cadastro real (POST /v4/subscribers via subscribeToKit) — attribution nativo
+    // vem presente mas com UTM nulo (#7174); a atribuição real está em `fields`.
+    const m = mockKitFetch([
+      {
+        id: 1,
+        email_address: "a@b.com",
+        state: "active",
+        created_at: "x",
+        fields: { utm_source: "google-ads", utm_campaign: "google-ads-2609" },
+        attribution: { utm_source: null, utm_medium: null, utm_campaign: null, referrer: null, source_type: "api_subscription", source_name: null, source_mechanism: "direct_api_call" },
+      },
+      {
+        id: 2,
+        email_address: "c@d.com",
+        state: "active",
+        created_at: "x",
+        fields: { utm_source: "google-ads", utm_campaign: "google-ads-2609" },
+      },
+    ]);
+    try {
+      const r = await fetchAndAggregateKit({ apiKey: "kit_test_key" });
+      assert.equal(r.total, 2);
+      assert.equal(r.counts["google-ads"], 2);
+      assert.equal(r.campaignCounts["google-ads-2609"], 2);
+    } finally { m.restore(); }
+  });
+
+  it("fields ausente/sem UTM cai no fallback attribution.utm_source/utm_campaign (cadastro via form nativo do Kit)", async () => {
     const m = mockKitFetch([
       {
         id: 1,
@@ -349,23 +377,16 @@ describe("fetchAndAggregateKit — leitura condicional via Kit (#6051)", () => {
         created_at: "x",
         attribution: { utm_source: "clarice", utm_campaign: "clarice-2606-07-cta", utm_medium: null, referrer: null, source_type: null, source_name: null, source_mechanism: null },
       },
-      {
-        id: 2,
-        email_address: "c@d.com",
-        state: "active",
-        created_at: "x",
-        attribution: { utm_source: "clarice", utm_campaign: "clarice-2606-07-cta", utm_medium: null, referrer: null, source_type: null, source_name: null, source_mechanism: null },
-      },
     ]);
     try {
       const r = await fetchAndAggregateKit({ apiKey: "kit_test_key" });
-      assert.equal(r.total, 2);
-      assert.equal(r.counts["clarice"], 2);
-      assert.equal(r.campaignCounts["clarice-2606-07-cta"], 2);
+      assert.equal(r.total, 1);
+      assert.equal(r.counts["clarice"], 1);
+      assert.equal(r.campaignCounts["clarice-2606-07-cta"], 1);
     } finally { m.restore(); }
   });
 
-  it("attribution AUSENTE (assinante criado via API/worker) cai em __none__, nunca lança", async () => {
+  it("fields E attribution ausentes cai em __none__, nunca lança", async () => {
     const m = mockKitFetch([{ id: 3, email_address: "e@f.com", state: "active", created_at: "x" }]);
     try {
       const r = await fetchAndAggregateKit({ apiKey: "kit_test_key" });
