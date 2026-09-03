@@ -17,6 +17,7 @@ import {
   loadSourceEngagementManifest,
   readPostRecords,
   invalidateSiblingManifests,
+  MANIFEST_FLUSH_EVERY,
 } from "../scripts/diaria-subscribers-ingest-beehiiv.ts";
 import {
   ensureSubscriber,
@@ -453,5 +454,80 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
       kitManifestContent,
       "conteúdo intocado, não só o arquivo presente",
     );
+  });
+
+  // #7170: até este fix, `saveManifest` rodava 1× por post processado — numa
+  // reingestão de 256 posts em ~4min isso bastou pra derrubar o cliente
+  // OneDrive (409/resourceModified em loop, `onedrive.service` morrendo em
+  // silêncio, `status=0/SUCCESS`). O fix batcheia a escrita a cada
+  // `MANIFEST_FLUSH_EVERY` posts + 1 flush garantido no fim (`finally`).
+  // Este teste trava as DUAS metades da garantia: (1) a contagem de escritas
+  // cai bem abaixo de 1-por-post — se alguém reverter a condição do flush
+  // pra incondicional, o assert de `saves < postCount` falha; (2) mesmo
+  // batchado, o resultado final não perde NENHUM post — se alguém remover o
+  // `finally`/esquecer de flushar o resto do lote, os últimos posts
+  // ficariam "pending" no manifesto (embora já ingeridos no `.db`) e os
+  // asserts de `manifest.entries` abaixo falham.
+  it(`manifesto é persistido em LOTES de ${MANIFEST_FLUSH_EVERY} posts (não 1 por post) e ainda assim termina com TODOS os entries corretos (#7170)`, async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-beehiiv-ingest-batch-"));
+    mkdirSync(resolve(tmp, "data/diaria-subscribers"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/beehiiv-ingest-manifest.json");
+
+    // Cruza a fronteira de pelo menos 1 lote completo, com sobra pro
+    // `finally` flushar (postCount % MANIFEST_FLUSH_EVERY !== 0, de propósito).
+    const postCount = MANIFEST_FLUSH_EVERY + 7;
+    const posts: EngagementManifest["posts"] = [];
+    const records: Record<string, unknown[]> = {};
+    for (let i = 0; i < postCount; i++) {
+      const id = `post_${i}`;
+      posts.push({ post_id: id, title: `Edição ${i}`, status: "ok", count: 1 });
+      records[id] = [
+        { subscriber_id: `s${i}`, email: `u${i}@x.com`, status: "delivered", timestamp: "2026-01-01T00:00:00Z" },
+      ];
+    }
+    const sourceManifest: EngagementManifest = { generated_at: "2026-01-01T00:00:00Z", posts };
+    const sourceDir = makeSourceDir(tmp, sourceManifest, records);
+
+    const errLines: string[] = [];
+    const originalError = console.error;
+    console.error = (msg: unknown) => {
+      errLines.push(String(msg));
+    };
+    try {
+      await main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", sourceDir]);
+    } finally {
+      console.error = originalError;
+    }
+
+    const saveLine = errLines.find((l) => l.includes("manifesto persistido"));
+    assert.ok(saveLine, "esperava o log de contagem de escritas do manifesto (#7170)");
+    const savesMatch = saveLine!.match(/persistido (\d+)×/);
+    assert.ok(savesMatch, `formato inesperado do log: ${saveLine}`);
+    const saves = Number(savesMatch![1]);
+
+    assert.ok(
+      saves < postCount,
+      `esperava bem menos de ${postCount} escritas do manifesto (lotes de ${MANIFEST_FLUSH_EVERY}); saiu ${saves} — ` +
+        `regressão pra escrita por item?`,
+    );
+    // 1 (merge inicial, antes do loop) + ceil(postCount / MANIFEST_FLUSH_EVERY)
+    // (flushes do loop, incluindo o flush final do `finally`).
+    const expectedSaves = 1 + Math.ceil(postCount / MANIFEST_FLUSH_EVERY);
+    assert.equal(saves, expectedSaves, "contagem exata de escritas do manifesto nesta run");
+
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    assert.equal(manifest.entries.length, postCount, "nenhum post ficou de fora do manifesto final");
+    for (const e of manifest.entries as Array<{ id: string; status: string }>) {
+      assert.equal(e.status, "ok", `entry ${e.id} deveria estar "ok" no manifesto final, saiu "${e.status}"`);
+    }
+
+    const db = openDiariaSubscribersDb(dbPath);
+    assert.equal(
+      getStoreCounts(db).subscribers,
+      postCount,
+      "todos os subscribers foram ingeridos no .db mesmo com o manifesto batchado",
+    );
+    db.close();
   });
 });
