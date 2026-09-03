@@ -416,4 +416,42 @@ describe("main() — ponta a ponta com fixture de disco (sem MCP)", () => {
     const removed = invalidateSiblingManifests(resolve(tmp, "data/diaria-subscribers.db"));
     assert.deepEqual(removed, []);
   });
+
+  // Achado do review (#7298): a garantia central do design é "invalidar só
+  // DEPOIS do swap atômico ter sucesso" — sem isso, um `--reset` que aborta
+  // no meio (fonte da fatia 1 ausente, aqui) não pode ter tocado nada. O
+  // teste acima ("--reset reconstrói...") só cobre o caminho de SUCESSO;
+  // este cobre o caminho de ABORTO, que é a metade da garantia que faltava.
+  it("--reset que ABORTA antes do swap (fonte da fatia 1 ausente) NÃO invalida os manifests irmãos", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-beehiiv-ingest-reset-abort-"));
+    const dataDir = resolve(tmp, "data/diaria-subscribers");
+    mkdirSync(dataDir, { recursive: true });
+    const dbPath = resolve(dataDir, "diaria-subscribers.db");
+    const manifestPath = resolve(dataDir, "beehiiv-ingest-manifest.json");
+    const kitManifestPath = resolve(dataDir, "kit-ingest-manifest.json");
+    const brevoManifestPath = resolve(dataDir, "brevo-ingest-manifest.json");
+    const kitManifestContent = JSON.stringify({
+      generated_at: "2026-01-01T00:00:00Z",
+      entries: [{ id: "1", status: "ok" }],
+    });
+    writeFileSync(kitManifestPath, kitManifestContent);
+    writeFileSync(brevoManifestPath, kitManifestContent);
+
+    // Fonte da fatia 1 propositalmente AUSENTE — main() precisa abortar
+    // (exitCode 1) ANTES de sequer construir o store novo, e portanto muito
+    // antes de qualquer invalidação de manifest irmão.
+    const missingSourceDir = resolve(tmp, "no-such-source-dir");
+    const originalExit = process.exitCode;
+    await main(["--db", dbPath, "--manifest", manifestPath, "--source-dir", missingSourceDir, "--reset"]);
+    assert.equal(process.exitCode, 1, "aborta cedo — fonte da fatia 1 ausente");
+    process.exitCode = originalExit;
+
+    assert.equal(existsSync(kitManifestPath), true, "manifest do Kit sobrevive a um reset abortado");
+    assert.equal(existsSync(brevoManifestPath), true, "manifest do Brevo sobrevive a um reset abortado");
+    assert.equal(
+      readFileSync(kitManifestPath, "utf8"),
+      kitManifestContent,
+      "conteúdo intocado, não só o arquivo presente",
+    );
+  });
 });

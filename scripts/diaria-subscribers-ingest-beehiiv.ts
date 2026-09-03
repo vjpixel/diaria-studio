@@ -345,6 +345,19 @@ const SIBLING_MANIFEST_FILENAMES = ["kit-ingest-manifest.json", "brevo-ingest-ma
  * do `.db` recém-instalado — chamado só DEPOIS do swap atômico ter
  * sucedido (#7298; ver docstring do módulo "`--reset` invalida os
  * manifests IRMÃOS"). Devolve os paths de fato removidos, pra log/summary.
+ *
+ * Best-effort por arquivo (achado do review, #7298) — mesmo padrão dos
+ * outros `rmSync` deste módulo que vivem na mesma janela pós-swap
+ * (`atomicCommitRebuild`, sidecars `-wal`/`-shm`/`-journal`): o `.db` e os
+ * manifests irmãos moram em `data/diaria-subscribers/`, junctioned pro
+ * OneDrive, que segura arquivos por ~100-500ms durante sync no Windows. Se
+ * `rmSync` lançasse sem `try/catch`, uma corrida de lock (a) faria a run
+ * terminar com `exitCode: 1` mesmo com o reset do `.db` já tendo tido
+ * sucesso, e (b) uma falha no 1º arquivo do loop faria o 2º nunca ser
+ * tentado — os dois sintomas piores do que o problema que esta função
+ * existe pra resolver. Falha vira warning no stderr; a invalidação
+ * pendente é inerte (o pior caso é o manifest ficar `ok` por mais um
+ * ciclo, exatamente o estado PRÉ-fix, não um estado novo).
  */
 export function invalidateSiblingManifests(dbPath: string): string[] {
   const dir = dirname(dbPath);
@@ -352,8 +365,15 @@ export function invalidateSiblingManifests(dbPath: string): string[] {
   for (const filename of SIBLING_MANIFEST_FILENAMES) {
     const p = resolve(dir, filename);
     if (existsSync(p)) {
-      rmSync(p);
-      removed.push(p);
+      try {
+        rmSync(p, { force: true });
+        removed.push(p);
+      } catch (e) {
+        console.error(
+          `⚠️  --reset: falha ao invalidar manifest irmão ${p} (${(e as Error).message}) — ` +
+            `best-effort, seguindo (#7298).`,
+        );
+      }
     }
   }
   return removed;
