@@ -156,6 +156,19 @@ export interface SubscriptionFields {
   enteredAt: string | null;
   exitedAt: string | null;
   source: string | null;
+  /**
+   * Colunas adicionadas em #7174 (F2 do épico #7172) — o roster do Kit e
+   * (potencialmente) outras plataformas trazem mais atribuição do que só
+   * `source`, e `applyOrigemOverride`/a taxonomia de classe de aquisição
+   * (#7173) precisam de `referring_site` além de `utm_source`. Todas
+   * opcionais e `null` por default: plataformas que não trazem o campo (ex:
+   * Brevo, que só grava `source`) continuam funcionando sem alteração.
+   */
+  utmMedium?: string | null;
+  utmCampaign?: string | null;
+  utmChannel?: string | null;
+  referringSite?: string | null;
+  origemCadastro?: string | null;
 }
 
 export interface SubscriberEvent {
@@ -251,6 +264,66 @@ CREATE INDEX IF NOT EXISTS idx_event_platform_ts ON event(platform, ts);
 CREATE INDEX IF NOT EXISTS idx_event_type ON event(type);
 `;
 
+/**
+ * Colunas de `subscription` adicionadas DEPOIS de `CREATE TABLE IF NOT
+ * EXISTS` já ter povoado o store em produção (#7174) — `SCHEMA` acima é
+ * `CREATE TABLE IF NOT EXISTS` puro, sem mecanismo de migração, então
+ * acrescentar coluna a uma tabela já existente exige `ALTER TABLE` manual.
+ * `subscription` tinha ZERO linhas quando este migration foi escrito
+ * (medido em 02/09/2026), então a coluna nasce sem backfill — mas o
+ * caminho precisa ser idempotente porque `openDiariaSubscribersDb` roda a
+ * cada chamada, contra um `.db` que pode já ter as colunas (2ª execução em
+ * diante) ou não (1ª execução pós-deploy).
+ */
+const SUBSCRIPTION_MIGRATION_COLUMNS: ReadonlyArray<{ name: string; ddl: string }> = [
+  { name: "utm_medium", ddl: "ALTER TABLE subscription ADD COLUMN utm_medium TEXT" },
+  { name: "utm_campaign", ddl: "ALTER TABLE subscription ADD COLUMN utm_campaign TEXT" },
+  { name: "utm_channel", ddl: "ALTER TABLE subscription ADD COLUMN utm_channel TEXT" },
+  { name: "referring_site", ddl: "ALTER TABLE subscription ADD COLUMN referring_site TEXT" },
+  { name: "origem_cadastro", ddl: "ALTER TABLE subscription ADD COLUMN origem_cadastro TEXT" },
+];
+
+/**
+ * Aplica as colunas de `SUBSCRIPTION_MIGRATION_COLUMNS` que ainda não
+ * existem em `subscription` — checa via `PRAGMA table_info` (portável entre
+ * versões do SQLite, ao contrário de `ADD COLUMN IF NOT EXISTS`, sintaxe
+ * só suportada a partir do SQLite 3.35). Idempotente: rodar 2x não lança
+ * nem duplica coluna. Chamada automaticamente por `openDiariaSubscribersDb`
+ * — nenhum consumidor precisa lembrar de rodá-la manualmente.
+ *
+ * **Concorrência entre processos (#7222 finding 2).** `openDiariaSubscribersDb`
+ * roda isto incondicionalmente a CADA abertura do `.db` — dois processos
+ * (a task de captura do roster, o dashboard do Studio, `brevo-subscribers-
+ * ingest.ts`, uma sessão manual) podem abrir o mesmo `.db` quase juntos,
+ * antes de qualquer um commitar a coluna: os dois leem `PRAGMA table_info`
+ * SEM a coluna, e os dois tentam `ALTER TABLE ADD COLUMN` — o 2º lançaria
+ * `duplicate column name`, derrubando um processo que só queria LER. Cada
+ * `db.exec(col.ddl)` engole especificamente esse erro (a coluna já existe,
+ * gravada pelo processo concorrente — resultado idêntico ao que este
+ * processo tentava alcançar) e relança qualquer outro erro (disco cheio,
+ * `.db` corrompido, etc. — nunca mascarados).
+ */
+export function migrateSubscriptionColumns(db: DatabaseSync): void {
+  const existing = new Set(
+    (
+      db.prepare("PRAGMA table_info(subscription)").all() as unknown as Array<{
+        name: string;
+      }>
+    ).map((c) => c.name),
+  );
+  for (const col of SUBSCRIPTION_MIGRATION_COLUMNS) {
+    if (existing.has(col.name)) continue;
+    try {
+      db.exec(col.ddl);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.includes("duplicate column name")) throw err;
+      // Processo concorrente já adicionou a coluna entre o PRAGMA acima e
+      // este exec — mesmo resultado final, seguir sem lançar.
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Abertura do DB
 // ---------------------------------------------------------------------------
@@ -274,6 +347,7 @@ export function openDiariaSubscribersDb(
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
+  migrateSubscriptionColumns(db);
   return db;
 }
 
@@ -373,14 +447,21 @@ export function upsertSubscription(
   now: string = new Date().toISOString(),
 ): void {
   db.prepare(
-    `INSERT INTO subscription (subscriber_id, platform, status, entered_at, exited_at, source, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO subscription
+       (subscriber_id, platform, status, entered_at, exited_at, source,
+        utm_medium, utm_campaign, utm_channel, referring_site, origem_cadastro, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(subscriber_id, platform) DO UPDATE SET
-       status     = excluded.status,
-       entered_at = excluded.entered_at,
-       exited_at  = excluded.exited_at,
-       source     = excluded.source,
-       updated_at = excluded.updated_at`,
+       status          = excluded.status,
+       entered_at      = excluded.entered_at,
+       exited_at       = excluded.exited_at,
+       source          = excluded.source,
+       utm_medium      = excluded.utm_medium,
+       utm_campaign    = excluded.utm_campaign,
+       utm_channel     = excluded.utm_channel,
+       referring_site  = excluded.referring_site,
+       origem_cadastro = excluded.origem_cadastro,
+       updated_at      = excluded.updated_at`,
   ).run(
     subscriberId,
     platform,
@@ -388,6 +469,11 @@ export function upsertSubscription(
     fields.enteredAt,
     fields.exitedAt,
     fields.source,
+    fields.utmMedium ?? null,
+    fields.utmCampaign ?? null,
+    fields.utmChannel ?? null,
+    fields.referringSite ?? null,
+    fields.origemCadastro ?? null,
     now,
   );
 }
@@ -563,6 +649,11 @@ export interface SubscriptionRecord {
   entered_at: string | null;
   exited_at: string | null;
   source: string | null;
+  utm_medium: string | null;
+  utm_campaign: string | null;
+  utm_channel: string | null;
+  referring_site: string | null;
+  origem_cadastro: string | null;
   updated_at: string;
 }
 
@@ -576,7 +667,9 @@ export function getSubscriptionsForSubscriber(
 ): SubscriptionRecord[] {
   return db
     .prepare(
-      "SELECT platform, status, entered_at, exited_at, source, updated_at FROM subscription WHERE subscriber_id = ?",
+      `SELECT platform, status, entered_at, exited_at, source,
+              utm_medium, utm_campaign, utm_channel, referring_site, origem_cadastro, updated_at
+       FROM subscription WHERE subscriber_id = ?`,
     )
     .all(subscriberId) as unknown as SubscriptionRecord[];
 }

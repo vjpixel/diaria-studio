@@ -53,8 +53,6 @@ import {
   computeGroupEngagement,
   filterWindow,
   countMissingCreated,
-  parseSinceToEpochSeconds,
-  parseUntilToEpochSecondsExclusive,
   type EngagementSubscriber,
   type CohortWindow,
 } from "../cohort-engagement.ts";
@@ -62,6 +60,17 @@ import { isLeitorV1, LEITOR_V1_THRESHOLDS, type LeitorInput, type LeitorThreshol
 import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
 import { INTERNAL_EMAILS, isTestAccount } from "./cohorts.ts";
 import type { SpendRow } from "./aquisicao-spend.ts";
+import {
+  type ChannelKeySpec,
+  CHANNEL_KEY_SPECS,
+  RESERVED_CHANNEL_NAMES,
+  assertValidChannelKeySpecs,
+} from "./shared/channel-key-specs.ts";
+
+// `ChannelKeySpec`/`CHANNEL_KEY_SPECS`/`RESERVED_CHANNEL_NAMES`/
+// `assertValidChannelKeySpecs` movidas pra `scripts/lib/shared/channel-key-specs.ts`
+// (#7173, Passo 1) — re-exportadas aqui, nenhum consumidor existente muda de import.
+export { type ChannelKeySpec, CHANNEL_KEY_SPECS, RESERVED_CHANNEL_NAMES, assertValidChannelKeySpecs };
 
 // ---------------------------------------------------------------------------
 // Normalização de email + filtro interno/teste (endereça o achado do
@@ -214,147 +223,9 @@ function countSubsMissingCreated(subs: BeehiivBackupSubscriber[], window: Cohort
   return countMissingCreated(subs as unknown as EngagementSubscriber[], window);
 }
 
-/**
- * Um recorte dentro de um canal (#5496) — `utm_source`/`referring_site`
- * (normalizados por `normalizeKey`) que identificam um PAGO MEDIDO no
- * snapshot, opcionalmente restrito a um SUB-canal (`subcanal` casa com
- * `SpendRow.subcanal`; ausente = "o canal inteiro").
- *
- * `ambigua: true` marca uma chave que TAMBÉM é usada por tráfego orgânico
- * (ex: `google.com` — pode ser busca orgânica ou clique de anúncio que
- * perdeu a query string) — nesse caso `janela` é OBRIGATÓRIA
- * (`assertValidChannelKeySpecs` lança se faltar) e só cadastros DENTRO dela
- * contam como pagos. Fora da janela, esses cadastros nunca entram nesta
- * spec (ficam de fora do canal, subestimando por construção — decisão
- * documentada da issue #5493: "conservador, aceitando subestimar cadastros
- * pagos" é preferível a contaminar com orgânico sem aviso).
- */
-export interface ChannelKeySpec {
-  canal: string;
-  subcanal?: string;
-  keys: readonly string[];
-  /** Obrigatória quando `ambigua: true`; ignorada (mas aceita) em spec não-ambígua. */
-  janela?: CohortWindow;
-  ambigua?: boolean;
-}
-
-/**
- * Specs por (canal, sub-canal) — fonte única de verdade; `CHANNEL_GROUP_KEYS`
- * abaixo é DERIVADO daqui (união por canal, sem specs ambíguas) só para
- * manter compatibilidade com consumidores existentes.
- *
- * Google Ads: `android.googlequicksearchbox`/`googlesyndication`/
- * `googleadservices` (sub-canal "PMax") confirmados em #4466/#5254 (227
- * cadastros da campanha dez/2025-fev/2026 vieram por esses referrers —
- * majoritariamente o app do Google no Android). `google.com` (sub-canal
- * "Search") é AMBÍGUA — pode ser busca orgânica — e só conta dentro da
- * janela da campanha (dez/2025 a fev/2026, pausada ~06/fev/2026, mesma
- * fonte #4466/#5254; achado #5496 mediu 34 dos 41 cadastros `google.com`
- * dentro dessa janela e 7 fora, confirmando que fora da janela é orgânico).
- *
- * LinkedIn: nenhuma campanha rodou até 260814 (spend R$0, linha
- * placeholder) — as chaves abaixo são a convenção já usada pelo próprio
- * projeto pra tráfego de LinkedIn (`LINKEDIN_POST_PIXEL_UTM.source` em
- * `scripts/lib/shared/utm-registry.ts` usa `"linkedin"`) mais os domínios
- * de referrer prováveis se o Ads Manager algum dia rodar. Sem sub-canal —
- * nenhuma segmentação conhecida ainda.
- *
- * **Meta e Microsoft Advertising deliberadamente NÃO têm spec de REFERRER
- * aqui (#5493).** Nomes canônicos já fixados (`"Meta"`, `"Microsoft
- * Advertising"` — usar exatamente essas strings em `spend.csv`/scripts de
- * ingestão), mas as CHAVES DE REFERRER são bloqueadas por observação real:
- * o navegador embutido da Meta corta a query string com frequência (chega
- * como `l.facebook.com`/`lm.facebook.com`/`l.instagram.com` no
- * `referring_site`, formas nunca vistas no snapshot até agora), e
- * `instagram.com`/`instagram-diaria`/`instagram-pessoal` já são tráfego
- * ORGÂNICO hoje — mapear ingenuamente contaminaria o CAC da Meta com
- * orgânico grátis, exatamente o oposto de medir. Rodar
- * `scripts/observe-channel-keys.ts` contra ≥1 dia de campanha real e colar
- * a saída literal no PR que adicionar essas specs de referrer — nunca
- * adivinhar.
- *
- * **Teste de 3 canais (260816, §8.2 do protocolo) — as 3 specs abaixo NÃO
- * violam o #5493, porque são chaves de `utm_source`, não de referrer.**
- * `resolveGroupKey` (`scripts/cohort-engagement.ts`) dá precedência ao
- * `utm_source` sobre `referring_site`, e só cai no referrer quando o UTM
- * vem vazio (`__none__`) — ver a função acima. O #5493 proíbe ADIVINHAR
- * chave de REFERRER (ex: `l.facebook.com`) porque essa forma só se descobre
- * observando tráfego real batendo no snapshot; `utm_source` é o oposto —
- * é um valor que NÓS escrevemos na URL final de cada anúncio, então não há
- * nada para observar antes de existir: a chave já é conhecida no momento em
- * que o anúncio é criado. O gate #5522 confirmou ao vivo que o `utm_source`
- * sobrevive intacto da home até a linha do assinante no snapshot (não é
- * cortado como o referrer da Meta é). Por isso as 3 chaves abaixo casam
- * SÓ pelo valor exato de `utm_source` que os anúncios do teste usam —
- * nunca um domínio de plataforma (`facebook.com`, `instagram.com`,
- * `bing.com`, `google.com`), que também carrega tráfego ORGÂNICO e
- * reproduziria o mesmo bug que hoje colocaria LinkedIn em 1º lugar com
- * R$0 de custo caso fosse usado como referrer sem janela.
- */
-export const CHANNEL_KEY_SPECS: readonly ChannelKeySpec[] = [
-  {
-    canal: "Google Ads",
-    subcanal: "PMax",
-    keys: ["android.googlequicksearchbox", "googlesyndication", "googlesyndication.com", "googleadservices", "googleadservices.com"],
-  },
-  {
-    canal: "Google Ads",
-    subcanal: "Search",
-    keys: ["google.com"],
-    ambigua: true,
-    janela: {
-      since: parseSinceToEpochSeconds("2025-12-01"),
-      untilExclusive: parseUntilToEpochSecondsExclusive("2026-02-28"),
-    },
-  },
-  {
-    canal: "LinkedIn",
-    keys: ["linkedin", "linkedin.com", "l.linkedin.com", "www.linkedin.com"],
-  },
-  // Teste de 3 canais (260816, §8.2) — chaves de utm_source que NÓS
-  // escrevemos nas URLs finais dos anúncios, não adivinhação de referrer
-  // (ver docstring acima). Nomes de canal EXATOS: são as strings gravadas
-  // na coluna `canal` de `data/aquisicao/spend.csv` por este teste.
-  {
-    canal: "Google Ads (teste 2608)",
-    keys: ["google-ads"],
-  },
-  {
-    canal: "Microsoft Ads (teste 2608)",
-    keys: ["microsoft-ads"],
-  },
-  {
-    canal: "Meta Ads (teste 2608)",
-    keys: ["meta-ads"],
-  },
-];
-
-/** Nomes canônicos reservados para Meta/Microsoft Advertising (#5493) —
- *  usar exatamente estas strings na coluna `canal` de `spend.csv`/scripts de
- *  ingestão assim que existir gasto real, MESMO sem spec ainda em
- *  `CHANNEL_KEY_SPECS` (a linha aparece como "canal desconhecido" avisado
- *  até a spec entrar — nunca como `measured` silenciosamente errado). */
-export const RESERVED_CHANNEL_NAMES = ["Meta", "Microsoft Advertising"] as const;
-
-/** Lança se alguma spec `ambigua: true` não tiver `janela` — chave ambígua
- *  sem janela é pior que canal desconhecido (produziria um número plausível
- *  e falso, silenciosamente). Chamada no load do módulo: `CHANNEL_KEY_SPECS`
- *  é estático, então um erro de configuração quebra IMEDIATAMENTE (import
- *  falha), nunca em runtime só quando aquele canal específico for
- *  relatado. Exportada pra ser testável com fixtures inválidas sem precisar
- *  quebrar o import do módulo real. @pure */
-export function assertValidChannelKeySpecs(specs: readonly ChannelKeySpec[]): void {
-  for (const spec of specs) {
-    if (spec.ambigua && !spec.janela) {
-      throw new Error(
-        `[cac] CHANNEL_KEY_SPECS: spec ambígua sem janela obrigatória — canal="${spec.canal}"` +
-          `${spec.subcanal ? ` subcanal="${spec.subcanal}"` : ""}. Chave ambígua (colide com tráfego ` +
-          `orgânico) só pode contar como paga dentro de uma janela declarada.`,
-      );
-    }
-  }
-}
-assertValidChannelKeySpecs(CHANNEL_KEY_SPECS);
+// `ChannelKeySpec`/`CHANNEL_KEY_SPECS`/`RESERVED_CHANNEL_NAMES`/
+// `assertValidChannelKeySpecs` movidas pra `scripts/lib/shared/channel-key-specs.ts`
+// (#7173, Passo 1) — importadas e re-exportadas no topo deste arquivo.
 
 /** Deriva o mapa legado canal→chaves a partir de `CHANNEL_KEY_SPECS`, EXCLUINDO
  *  specs ambíguas — o caminho sem sub-canal (`spend.subcanal` ausente) precisa

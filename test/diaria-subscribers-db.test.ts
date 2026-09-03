@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import {
   openDiariaSubscribersDb,
   openDiariaSubscribersDbSafe,
@@ -14,6 +15,8 @@ import {
   findSubscriberIdsByEmail,
   getCohortEventCounts,
   getStoreCounts,
+  getSubscriptionsForSubscriber,
+  migrateSubscriptionColumns,
   isPlatform,
   isEventType,
   type Platform,
@@ -53,6 +56,171 @@ describe("openDiariaSubscribersDb — schema", () => {
     const db = openDiariaSubscribersDb(":memory:");
     const row = db.prepare("PRAGMA busy_timeout").get() as { timeout: number };
     assert.equal(row.timeout, 5000);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #7174 — migração de colunas de subscription (utm_medium/utm_campaign/
+// utm_channel/referring_site/origem_cadastro) sobre um .db JÁ POVOADO
+// ---------------------------------------------------------------------------
+
+describe("migrateSubscriptionColumns — ALTER TABLE idempotente sobre .db povoado (#7174)", () => {
+  it("adiciona as 5 colunas novas quando o schema é criado do zero (via openDiariaSubscribersDb)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const cols = new Set(
+      (db.prepare("PRAGMA table_info(subscription)").all() as Array<{ name: string }>).map((c) => c.name),
+    );
+    for (const c of ["utm_medium", "utm_campaign", "utm_channel", "referring_site", "origem_cadastro"]) {
+      assert.ok(cols.has(c), `esperava coluna ${c} em subscription`);
+    }
+    db.close();
+  });
+
+  it("rodar a migração 2x não lança nem duplica coluna (idempotente)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    assert.doesNotThrow(() => migrateSubscriptionColumns(db));
+    assert.doesNotThrow(() => migrateSubscriptionColumns(db));
+    const cols = (db.prepare("PRAGMA table_info(subscription)").all() as Array<{ name: string }>).map((c) => c.name);
+    const utmMediumCount = cols.filter((c) => c === "utm_medium").length;
+    assert.equal(utmMediumCount, 1);
+    db.close();
+  });
+
+  it("engole 'duplicate column name' — processo concorrente já commitou a coluna entre o PRAGMA e o ALTER (#7222 finding 2)", () => {
+    let alterCalls = 0;
+    const fakeDb = {
+      prepare: (sql: string) => {
+        if (sql.startsWith("PRAGMA table_info")) {
+          // Nenhuma das 5 colunas novas existe pelo snapshot do PRAGMA — mas
+          // o ALTER de uma delas vai simular ter sido gravado por outro
+          // processo NO INTERVALO entre este PRAGMA e o exec abaixo.
+          return { all: () => [{ name: "id" }, { name: "subscriber_id" }] };
+        }
+        throw new Error(`prepare inesperado no fake: ${sql}`);
+      },
+      exec: (ddl: string) => {
+        alterCalls++;
+        if (ddl.includes("utm_campaign")) {
+          throw new Error("SQLITE_ERROR: duplicate column name: utm_campaign");
+        }
+      },
+    } as unknown as DatabaseSync;
+
+    assert.doesNotThrow(() => migrateSubscriptionColumns(fakeDb));
+    assert.equal(alterCalls, 5, "tentou as 5 colunas — a que colidiu não travou as demais");
+  });
+
+  it("relança qualquer erro que NÃO seja 'duplicate column name' (disco cheio, .db corrompido, etc.)", () => {
+    const fakeDb = {
+      prepare: (sql: string) => {
+        if (sql.startsWith("PRAGMA table_info")) return { all: () => [] };
+        throw new Error(`prepare inesperado no fake: ${sql}`);
+      },
+      exec: () => {
+        throw new Error("disk I/O error");
+      },
+    } as unknown as DatabaseSync;
+
+    assert.throws(() => migrateSubscriptionColumns(fakeDb), /disk I\/O error/);
+  });
+
+  it("migra um .db criado com o schema ANTIGO (subscription sem as 5 colunas), simulando um store já populado em produção", () => {
+    // Simula o cenário real do #7174: `subscription` já existia (0+ linhas)
+    // ANTES desta fatia acrescentar as colunas — recriamos esse estado
+    // manualmente, criando a tabela sem as colunas novas, inserindo 1 linha,
+    // e só então rodando a migração.
+    const db = new DatabaseSync(":memory:");
+    db.exec(`
+      CREATE TABLE subscriber (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE subscription (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        subscriber_id INTEGER NOT NULL,
+        platform TEXT NOT NULL,
+        status TEXT,
+        entered_at TEXT,
+        exited_at TEXT,
+        source TEXT,
+        updated_at TEXT NOT NULL,
+        UNIQUE(subscriber_id, platform)
+      );
+    `);
+    db.prepare("INSERT INTO subscriber (created_at, updated_at) VALUES (?, ?)").run("2026-08-01T00:00:00Z", "2026-08-01T00:00:00Z");
+    db.prepare(
+      "INSERT INTO subscription (subscriber_id, platform, status, entered_at, exited_at, source, updated_at) VALUES (1, 'kit', 'active', '2026-08-01', NULL, 'sparkloop-upscribe', '2026-08-01T00:00:00Z')",
+    ).run();
+
+    // Pré-condição: a coluna nova NÃO existe ainda.
+    const before = (db.prepare("PRAGMA table_info(subscription)").all() as Array<{ name: string }>).map((c) => c.name);
+    assert.ok(!before.includes("utm_channel"));
+
+    migrateSubscriptionColumns(db);
+
+    const after = (db.prepare("PRAGMA table_info(subscription)").all() as Array<{ name: string }>).map((c) => c.name);
+    assert.ok(after.includes("utm_channel"));
+    // A linha pré-existente sobrevive, com a coluna nova NULL (sem backfill).
+    const row = db.prepare("SELECT * FROM subscription WHERE subscriber_id = 1").get() as Record<string, unknown>;
+    assert.equal(row.source, "sparkloop-upscribe");
+    assert.equal(row.utm_channel, null);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #7174 — upsertSubscription grava as colunas novas, e getSubscriptionsForSubscriber as lê
+// ---------------------------------------------------------------------------
+
+describe("upsertSubscription — colunas de atribuição novas (#7174)", () => {
+  it("grava e relê utm_medium/utm_campaign/utm_channel/referring_site/origem_cadastro", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-02T12:00:00.000Z";
+    const subscriberId = ensureSubscriber(db, "kit", "kit-ext-99", "atribuicao@example.com", now);
+    upsertSubscription(
+      db,
+      subscriberId,
+      "kit",
+      {
+        status: "active",
+        enteredAt: "2026-08-25",
+        exitedAt: null,
+        source: "sparkloop-upscribe",
+        utmMedium: "referral",
+        utmCampaign: "onda-2",
+        utmChannel: "boost",
+        referringSite: "www.alquimiaoperativa.news",
+        origemCadastro: "poll",
+      },
+      now,
+    );
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId);
+    assert.equal(sub.source, "sparkloop-upscribe");
+    assert.equal(sub.utm_medium, "referral");
+    assert.equal(sub.utm_campaign, "onda-2");
+    assert.equal(sub.utm_channel, "boost");
+    assert.equal(sub.referring_site, "www.alquimiaoperativa.news");
+    assert.equal(sub.origem_cadastro, "poll");
+    db.close();
+  });
+
+  it("omitir os campos novos grava NULL (compatibilidade retroativa — chamadores existentes não mudam)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-02T12:00:00.000Z";
+    const subscriberId = ensureSubscriber(db, "brevo_diaria", "brevo-ext-99", "sem-atribuicao@example.com", now);
+    upsertSubscription(db, subscriberId, "brevo_diaria", { status: "pending", enteredAt: "2026-06-01", exitedAt: null, source: "reativacao" }, now);
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId);
+    assert.equal(sub.utm_medium, null);
+    assert.equal(sub.utm_channel, null);
+    db.close();
+  });
+
+  it("re-upsert atualiza as colunas novas (ON CONFLICT DO UPDATE cobre os 5 campos)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-02T12:00:00.000Z";
+    const subscriberId = ensureSubscriber(db, "kit", "kit-ext-100", "reupsert@example.com", now);
+    upsertSubscription(db, subscriberId, "kit", { status: "active", enteredAt: "2026-08-01", exitedAt: null, source: "a", utmChannel: "boost" }, now);
+    upsertSubscription(db, subscriberId, "kit", { status: "active", enteredAt: "2026-08-01", exitedAt: null, source: "a", utmChannel: "recommendation" }, now);
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId);
+    assert.equal(sub.utm_channel, "recommendation");
     db.close();
   });
 });

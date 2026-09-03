@@ -31,24 +31,40 @@
  * `partial` (os eventos já coletados são gravados mesmo assim, idempotente;
  * a re-rodada seguinte tenta de novo).
  *
+ * ## Passo 1 (#7174) — ingestão de ROSTER, popula `subscription`
+ *
+ * Antes da ingestão de audiência por broadcast (acima), este CLI agora lista
+ * o roster COMPLETO do Kit (`status: "all"`) e grava 1 `subscriber` + 1
+ * `subscription` + eventos `subscribe`/`unsub` por assinante
+ * (`ingestKitRoster`, `kit-subscribers-ingest.ts`) — fecha o buraco de
+ * `subscription` nunca ser populada pelo lado Kit. **Dry-run por padrão**:
+ * SEMPRE lista o roster (custa a chamada de rede), mas só GRAVA no store com
+ * `--write` explícito — escritor único (a task agendada `Diaria-Kit-Roster-
+ * Ingest`, `scripts/lib/scheduled-tasks.ts`, é quem passa `--write` por
+ * padrão; execução manual sem a flag é só um preview). `--skip-roster` pula
+ * o Passo 1 inteiro (nem lista) — útil pra isolar teste do Passo 2
+ * (broadcast) sem pagar a chamada de roster a cada invocação manual.
+ *
  * Uso:
  *   npx tsx scripts/diaria-subscribers-ingest-kit.ts [--db <p>] [--manifest <p>]
- *     [--limit N] [--broadcast <id>]
+ *     [--limit N] [--broadcast <id>] [--write] [--skip-roster] [--captura-log <p>]
  *
  * Requer `KIT_API_KEY` no env (`resolveKitConfig`, lança se ausente — mesmo
  * fail-fast do resto da camada Kit). Stdout: JSON summary. Stderr: progresso.
  */
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, appendFileSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { listBroadcasts, getBroadcastStats, type KitBroadcastSummary, type KitBroadcastStats } from "./lib/kit-client.ts";
 import { fetchAudience, todasOuNenhuma, type BroadcastAudience, type DrainResult } from "./kit-provider-split.ts";
-import { DEFAULT_DB_PATH, openDiariaSubscribersDb } from "./lib/diaria-subscribers-db.ts";
-import { ingestBroadcastAudience, verifyKitIngestion } from "./lib/kit-subscribers-ingest.ts";
+import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getStoreCounts } from "./lib/diaria-subscribers-db.ts";
+import { ingestBroadcastAudience, verifyKitIngestion, ingestKitRoster } from "./lib/kit-subscribers-ingest.ts";
+import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
+import { buildCapturaLogEntry, serializeCapturaLogEntry } from "./lib/metrics/captura-log.ts";
 import {
   buildInitialManifest,
   mergeManifestEntries,
@@ -60,6 +76,12 @@ import {
 } from "./lib/diaria-subscribers-ingest-manifest.ts";
 
 export const DEFAULT_MANIFEST_PATH = resolve(dirname(DEFAULT_DB_PATH), "kit-ingest-manifest.json");
+
+/** `data/metrics/captura-log.jsonl` (#7174) — o único arquivo fora do store
+ *  que este CLI escreve. Fica sob `data/metrics/`, irmão de
+ *  `data/diaria-subscribers/` (não dentro dela), porque não é parte do
+ *  schema do #6464 — ver `scripts/lib/metrics/captura-log.ts`. */
+export const DEFAULT_CAPTURA_LOG_PATH = resolve(dirname(DEFAULT_DB_PATH), "..", "metrics", "captura-log.jsonl");
 
 /** Pacing entre broadcasts — mesma ordem de grandeza medida no #6047
  *  (endpoints singulares do Kit toleram só dezenas de chamadas sequenciais
@@ -76,6 +98,27 @@ export interface KitIngestDeps {
   fetchAudience: (broadcastId: number, axis: BroadcastAudience) => Promise<DrainResult>;
   getBroadcastStats: (id: number) => Promise<KitBroadcastStats>;
   sleep: (ms: number) => Promise<void>;
+  /** Roster COMPLETO — `status: "all"` sempre (#7174: omitir devolve só
+   *  `active` em silêncio, ver `scripts/lib/kit-subscribers.ts`). */
+  listAllRosterSubscribers: () => ReturnType<typeof listAllKitSubscribers>;
+}
+
+/**
+ * Detecta cópias de conflito do OneDrive pro arquivo alvo — mesmo padrão
+ * medido em `data/run-log.jsonl` (23 cópias: `run-log-Neo{,-2..-10}.jsonl`,
+ * `run-log-Zenbook{,-2..-6}.jsonl`, `run-log-predator{,-safeBackup-*}.jsonl`).
+ * Com um `.db` SQLite no meio, a bifurcação é pior que ruído — ver docstring
+ * de `scripts/lib/kit-subscribers-ingest.ts::ingestKitRoster`. Retorna os
+ * nomes de arquivo encontrados (vazio = nenhum conflito). @pure sobre a
+ * lista de arquivos já lida (a leitura do diretório é do chamador). */
+export function detectSiblingConflictFiles(filesInDir: readonly string[], expectedBasename: string): string[] {
+  const dot = expectedBasename.lastIndexOf(".");
+  const stem = dot === -1 ? expectedBasename : expectedBasename.slice(0, dot);
+  const ext = dot === -1 ? "" : expectedBasename.slice(dot);
+  // Casa "{stem}-QUALQUERCOISA{ext}" (ex: "diaria-subscribers-Neo.db",
+  // "captura-log-safeBackup-0001.jsonl") mas nunca o arquivo esperado em si.
+  const re = new RegExp(`^${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-.+${ext.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+  return filesInDir.filter((f) => f !== expectedBasename && re.test(f));
 }
 
 /**
@@ -111,6 +154,9 @@ export function makeRealKitIngestDeps(): KitIngestDeps {
     fetchAudience,
     getBroadcastStats,
     sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
+    // status: "all" SEMPRE (#7174) — nunca omitir a opção, senão a API
+    // devolve só `active` em silêncio (ver docstring de kit-subscribers.ts).
+    listAllRosterSubscribers: () => listAllKitSubscribers(undefined, { status: "all" }),
   };
 }
 
@@ -247,6 +293,65 @@ export async function main(
   }
   if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
 
+  const db = openDiariaSubscribersDb(dbPath);
+
+  // -------------------------------------------------------------------------
+  // Passo 1 (#7174): ingestão de ROSTER — popula `subscription`, que a
+  // ingestão de audiência por broadcast abaixo nunca tocava. Escritor único
+  // (mesma disciplina de `data/run-log.jsonl` fork por máquina): execução
+  // MANUAL é dry-run por padrão; `--write` explícito grava de verdade. A
+  // task agendada no `helios` (Diaria-Kit-Roster-Ingest,
+  // scripts/lib/scheduled-tasks.ts) sempre passa `--write`.
+  // -------------------------------------------------------------------------
+  const capturaLogPath = getArg(argv, "captura-log") || DEFAULT_CAPTURA_LOG_PATH;
+  const shouldWriteRoster = hasFlag(argv, "write");
+  const skipRoster = hasFlag(argv, "skip-roster"); // #6586-only regression fixtures não têm listAllRosterSubscribers
+  let rosterSummary: { total: number; written: boolean; novosGravados: number; eventosEstado: number } | null = null;
+
+  if (!skipRoster) {
+    const capturaLogDir = dirname(capturaLogPath);
+    if (shouldWriteRoster) {
+      if (existsSync(capturaLogDir)) {
+        const siblingConflicts = detectSiblingConflictFiles(readdirSync(capturaLogDir), "captura-log.jsonl");
+        if (siblingConflicts.length > 0) {
+          console.error(
+            `❌ cópias de conflito do OneDrive detectadas em ${capturaLogDir}: ${siblingConflicts.join(", ")} — ` +
+              `abortando a escrita do roster (escritor único, ver docstring de detectSiblingConflictFiles).`,
+          );
+          process.exitCode = 1;
+          db.close();
+          return;
+        }
+      }
+    }
+
+    console.error(`📇 listando roster completo do Kit (status: "all")${shouldWriteRoster ? "" : " [dry-run — passe --write pra gravar]"}…`);
+    const roster = await deps.listAllRosterSubscribers();
+    console.error(`  …${roster.length} assinante(s) no roster.`);
+
+    if (shouldWriteRoster) {
+      const capturedAt = new Date().toISOString();
+      const result = ingestKitRoster(db, roster, capturedAt);
+      mkdirSync(capturaLogDir, { recursive: true });
+      const eventosEstado = result.subscribeEvents.newEvents + result.unsubEvents.newEvents;
+      const logEntry = buildCapturaLogEntry({
+        platform: "kit",
+        capturedAt,
+        totalRetornadoApi: roster.length,
+        novosGravados: result.subscribeEvents.newEvents,
+        eventosEstado,
+        exit: 0,
+      });
+      appendFileSync(capturaLogPath, serializeCapturaLogEntry(logEntry));
+      rosterSummary = { total: roster.length, written: true, novosGravados: result.subscribeEvents.newEvents, eventosEstado };
+      console.error(
+        `  …roster gravado: ${result.subscriptionsWritten} subscription(s), ${result.subscribeEvents.newEvents} novo(s) cadastro(s), ${eventosEstado} evento(s) de estado.`,
+      );
+    } else {
+      rosterSummary = { total: roster.length, written: false, novosGravados: 0, eventosEstado: 0 };
+    }
+  }
+
   console.error("📇 listando broadcasts completados do Kit…");
   const broadcasts = await deps.listAllBroadcasts();
   console.error(`  …${broadcasts.length} broadcast(s) completados.`);
@@ -266,7 +371,6 @@ export async function main(
 
   console.error(`🔎 ${pending.length} broadcast(s) pendente(s) de ${broadcasts.length} total.`);
 
-  const db = openDiariaSubscribersDb(dbPath);
   let eventsNewTotal = 0;
   let eventsAlreadyKnownTotal = 0;
   let processed = 0;
@@ -294,6 +398,7 @@ export async function main(
       {
         db: dbPath,
         manifest: manifestPath,
+        roster: rosterSummary,
         broadcasts_total: broadcasts.length,
         processed_this_run: processed,
         events_new: eventsNewTotal,

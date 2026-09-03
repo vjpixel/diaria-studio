@@ -1,0 +1,16 @@
+{
+  "_nota": "Corpus derivado da distribuição REAL medida na janela 25/07-28/08/2026 (178 cadastros, snapshot Beehiiv data/beehiiv-backup/2026-08-30/subscribers.jsonl) e documentada literalmente no corpo da issue #7173 — reativacao 67, iniciativa 62 (sparkloop-upscribe 37, clarice 23, clarice-email 2), indeterminado 30 (direct) + interno 5, organico 14 (linkedin 8, linkedin.com 3, beehiiv.com 1, google.com 1, instagram 1), pago 0. NÃO foi extraído por script deste JSONL: `data/` (junction OneDrive) não está montado neste worktree/sandbox (mesma ausência que a issue já documenta para clone fresco/CI). Os números batem com os citados no corpo da issue, mas o gerador `scripts/build-acquisition-corpus-fixture.ts` (que lê o snapshot real quando `data/` está disponível) fica como follow-up para substituir este arquivo por extração direta — ver nota no PR.",
+  "entries": [
+    { "utm_source": "brevo-diaria", "utm_medium": null, "utm_channel": null, "referring_site": null, "created": 1785542400, "n": 67 },
+    { "utm_source": "sparkloop-upscribe", "utm_medium": null, "utm_channel": null, "referring_site": null, "created": 1786320000, "n": 37 },
+    { "utm_source": "clarice", "utm_medium": null, "utm_channel": null, "referring_site": null, "created": 1785024000, "n": 23 },
+    { "utm_source": "clarice-email", "utm_medium": null, "utm_channel": null, "referring_site": null, "created": 1785024000, "n": 2 },
+    { "utm_source": "linkedin", "utm_medium": "organic_social", "utm_channel": null, "referring_site": null, "created": 1787184000, "n": 8 },
+    { "utm_source": "linkedin.com", "utm_medium": "referral", "utm_channel": null, "referring_site": "linkedin.com", "created": 1787184000, "n": 3 },
+    { "utm_source": null, "utm_medium": null, "utm_channel": null, "referring_site": "beehiiv.com", "created": 1785542400, "n": 1 },
+    { "utm_source": "google.com", "utm_medium": null, "utm_channel": null, "referring_site": null, "created": 1786320000, "n": 1 },
+    { "utm_source": "instagram", "utm_medium": "social", "utm_channel": null, "referring_site": null, "created": 1785024000, "n": 1 },
+    { "utm_source": null, "utm_medium": null, "utm_channel": null, "referring_site": null, "created": 1785542400, "n": 30 },
+    { "utm_source": "internal", "utm_medium": null, "utm_channel": null, "referring_site": null, "created": 1785024000, "n": 5 }
+  ]
+}

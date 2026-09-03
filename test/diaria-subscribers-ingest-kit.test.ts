@@ -12,13 +12,20 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { drainPages, type KitEngagedPage, type BroadcastAudience, type DrainResult } from "../scripts/kit-provider-split.ts";
 import type { KitBroadcastStats, KitBroadcastSummary } from "../scripts/lib/kit-client.ts";
-import { ingestOneBroadcast, main, listAllCompletedBroadcasts, type KitIngestDeps } from "../scripts/diaria-subscribers-ingest-kit.ts";
-import { openDiariaSubscribersDb, getStoreCounts } from "../scripts/lib/diaria-subscribers-db.ts";
+import {
+  ingestOneBroadcast,
+  main,
+  listAllCompletedBroadcasts,
+  detectSiblingConflictFiles,
+  type KitIngestDeps,
+} from "../scripts/diaria-subscribers-ingest-kit.ts";
+import { openDiariaSubscribersDb, getStoreCounts, findSubscriberIdByAlias, getSubscriptionsForSubscriber } from "../scripts/lib/diaria-subscribers-db.ts";
+import type { KitSubscriberSummary } from "../scripts/lib/kit-subscribers.ts";
 
 /** Fixture literal do shape real de `/subscribers/filter` (1 página, sem cursor). */
 function filterPage(emails: string[]): KitEngagedPage {
@@ -173,6 +180,10 @@ function fakeDeps(): KitIngestDeps {
     fetchAudience: (id, axis) => drainPages(async () => filterPage(byAxisByBroadcast[id][axis]), axis),
     getBroadcastStats: async (id) => makeStats(statsByBroadcast[id]),
     sleep: async () => {}, // nunca espera de verdade em teste
+    // Testes deste describe cobrem só a ingestão de audiência por broadcast
+    // (pré-existente) — roster fica em `kit-subscribers-ingest.test.ts`.
+    // dry-run por padrão (sem --write), então uma lista vazia é inerte aqui.
+    listAllRosterSubscribers: async () => [],
   };
 }
 
@@ -225,6 +236,7 @@ describe("main() — ponta a ponta com deps injetadas (fixture de /subscribers/f
       fetchAudience: async () => ({ emails: [], descartadas: 0 }),
       getBroadcastStats: async () => makeStats(0),
       sleep: async () => {},
+      listAllRosterSubscribers: async () => [],
     });
     assert.equal(process.exitCode, 1);
     assert.equal(calledFetch, false, "guard de data/ ausente roda ANTES de qualquer chamada de rede");
@@ -275,3 +287,176 @@ describe("listAllCompletedBroadcasts — paginação de /broadcasts?status=compl
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// detectSiblingConflictFiles (#7174)
+// ---------------------------------------------------------------------------
+
+describe("detectSiblingConflictFiles", () => {
+  it("detecta cópias de conflito no padrão medido em data/run-log.jsonl", () => {
+    const files = ["captura-log.jsonl", "captura-log-Neo.jsonl", "captura-log-Zenbook-2.jsonl", "outro-arquivo.json"];
+    const conflicts = detectSiblingConflictFiles(files, "captura-log.jsonl");
+    assert.deepEqual(conflicts.sort(), ["captura-log-Neo.jsonl", "captura-log-Zenbook-2.jsonl"]);
+  });
+
+  it("nenhum conflito quando só o arquivo esperado existe", () => {
+    assert.deepEqual(detectSiblingConflictFiles(["captura-log.jsonl", "outro.json"], "captura-log.jsonl"), []);
+  });
+
+  it("funciona pro .db (diaria-subscribers-safeBackup-0001.db)", () => {
+    const files = ["diaria-subscribers.db", "diaria-subscribers-safeBackup-0001.db"];
+    assert.deepEqual(detectSiblingConflictFiles(files, "diaria-subscribers.db"), ["diaria-subscribers-safeBackup-0001.db"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// main() — Passo 1, ingestão de ROSTER (#7174)
+// ---------------------------------------------------------------------------
+
+function makeKitSub(overrides: Partial<KitSubscriberSummary> = {}): KitSubscriberSummary {
+  return {
+    id: 1,
+    email_address: "roster@example.com",
+    state: "active",
+    created_at: "2026-08-25T10:00:00.000Z",
+    fields: { utm_source: "sparkloop-upscribe" },
+    ...overrides,
+  };
+}
+
+describe("main() — Passo 1, ingestão de roster (#7174)", () => {
+  it("sem --write: dry-run — lista o roster mas NÃO grava subscription nem captura-log", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-roster-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+    const capturaLogPath = resolve(tmp, "data/metrics/captura-log.jsonl");
+
+    await main(["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath], {
+      listAllBroadcasts: async () => [],
+      fetchAudience: async () => ({ emails: [], descartadas: 0 }),
+      getBroadcastStats: async () => makeStats(0),
+      sleep: async () => {},
+      listAllRosterSubscribers: async () => [makeKitSub()],
+    });
+
+    const db = openDiariaSubscribersDb(dbPath);
+    assert.equal(getStoreCounts(db).subscriptions, 0, "dry-run nunca grava subscription");
+    db.close();
+    assert.equal(existsSyncSafe(capturaLogPath), false, "dry-run nunca escreve captura-log.jsonl");
+  });
+
+  it("com --write: grava subscription + evento subscribe + 1 linha em captura-log.jsonl", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-roster-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+    const capturaLogPath = resolve(tmp, "data/metrics/captura-log.jsonl");
+
+    await main(["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--write"], {
+      listAllBroadcasts: async () => [],
+      fetchAudience: async () => ({ emails: [], descartadas: 0 }),
+      getBroadcastStats: async () => makeStats(0),
+      sleep: async () => {},
+      listAllRosterSubscribers: async () => [makeKitSub()],
+    });
+
+    const db = openDiariaSubscribersDb(dbPath);
+    assert.equal(getStoreCounts(db).subscriptions, 1);
+    const subscriberId = findSubscriberIdByAlias(db, "kit", "1", "roster@example.com");
+    assert.notEqual(subscriberId, null);
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId!);
+    assert.equal(sub.source, "sparkloop-upscribe");
+    db.close();
+
+    const lines = readFileSync(capturaLogPath, "utf8").trim().split("\n");
+    assert.equal(lines.length, 1);
+    const entry = JSON.parse(lines[0]);
+    assert.equal(entry.total_retornado_api, 1);
+    assert.equal(entry.novos_gravados, 1);
+    assert.equal(entry.exit, 0);
+  });
+
+  it("re-execução com --write no mesmo processo APPEND uma 2ª linha em captura-log.jsonl (idempotente nos dados, não no log)", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-roster-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+    const capturaLogPath = resolve(tmp, "data/metrics/captura-log.jsonl");
+    const deps: KitIngestDeps = {
+      listAllBroadcasts: async () => [],
+      fetchAudience: async () => ({ emails: [], descartadas: 0 }),
+      getBroadcastStats: async () => makeStats(0),
+      sleep: async () => {},
+      listAllRosterSubscribers: async () => [makeKitSub()],
+    };
+
+    await main(["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--write"], deps);
+    await main(["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--write"], deps);
+
+    const db = openDiariaSubscribersDb(dbPath);
+    assert.equal(getStoreCounts(db).subscriptions, 1, "subscription não duplica na 2ª rodada");
+    db.close();
+
+    const lines = readFileSync(capturaLogPath, "utf8").trim().split("\n");
+    assert.equal(lines.length, 2, "captura-log ganha 1 linha POR EXECUÇÃO, mesmo sem nada novo pra gravar");
+    const secondEntry = JSON.parse(lines[1]);
+    assert.equal(secondEntry.novos_gravados, 0, "2ª rodada: o cadastro já era conhecido, 0 eventos NOVOS");
+  });
+
+  it("abortar (exit 1) quando detecta cópia de conflito do OneDrive no diretório do captura-log", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-roster-conflict-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+    const metricsDir = resolve(tmp, "data/metrics");
+    mkdirSync(metricsDir, { recursive: true });
+    const capturaLogPath = resolve(metricsDir, "captura-log.jsonl");
+    writeFileSync(resolve(metricsDir, "captura-log-Neo.jsonl"), "");
+
+    let calledRoster = false;
+    const originalExit = process.exitCode;
+    await main(["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--write"], {
+      listAllBroadcasts: async () => [],
+      fetchAudience: async () => ({ emails: [], descartadas: 0 }),
+      getBroadcastStats: async () => makeStats(0),
+      sleep: async () => {},
+      listAllRosterSubscribers: async () => {
+        calledRoster = true;
+        return [makeKitSub()];
+      },
+    });
+    assert.equal(process.exitCode, 1);
+    assert.equal(calledRoster, false, "guard de conflito roda ANTES de listar o roster");
+    process.exitCode = originalExit;
+  });
+
+  it("--skip-roster pula o Passo 1 inteiro — nem lista o roster (útil pra testar só o Passo 2 sem pagar a chamada de rede)", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-roster-skip-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+
+    let calledRoster = false;
+    await main(["--db", dbPath, "--manifest", manifestPath, "--skip-roster"], {
+      listAllBroadcasts: async () => [],
+      fetchAudience: async () => ({ emails: [], descartadas: 0 }),
+      getBroadcastStats: async () => makeStats(0),
+      sleep: async () => {},
+      listAllRosterSubscribers: async () => {
+        calledRoster = true;
+        return [makeKitSub()];
+      },
+    });
+    assert.equal(calledRoster, false);
+  });
+});
+
+function existsSyncSafe(path: string): boolean {
+  try {
+    readFileSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
