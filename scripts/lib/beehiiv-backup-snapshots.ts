@@ -58,6 +58,14 @@ export interface BeehiivBackupSubscriber {
   utm_medium: string;
   utm_campaign: string;
   referring_site: string;
+  /** Presente em parte do corpus HISTÓRICO (boost/boost_send/
+   *  boost_direct_link/recommendation, ver `INICIATIVA_UTM_CHANNELS` em
+   *  `scripts/lib/metrics/acquisition-class.ts`) — a série viva não escreve
+   *  este campo (nenhum worker o emite). `unknown` (não `string`), mesma
+   *  disciplina tolerante do resto da interface: TIPADO desde #7179 (F7)
+   *  porque o backfill histórico é o 1º consumidor real; até então o campo
+   *  sobrevivia ao `JSON.parse` sem tipagem, mas nenhum código o lia. */
+  utm_channel?: unknown;
   /** Rastreamento de aquisição da Beehiiv — citado no corpo da #7207 como
    *  fallback quando `utm_source`/`utm_campaign` de topo vêm vazios.
    *  `unknown` (não `string`) porque nunca foi confirmado ao vivo neste

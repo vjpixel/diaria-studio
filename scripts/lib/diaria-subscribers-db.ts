@@ -206,6 +206,34 @@ export interface SubscriptionFields {
   utmSource?: string | null;
   utmTerm?: string | null;
   utmContent?: string | null;
+  /**
+   * Colunas adicionadas em #7179 (F7 do épico #7172) — o backfill histórico
+   * da Beehiiv (`scripts/metrics-backfill-cadastros.ts`) reconstrói cadastros
+   * a partir de snapshots antigos, e essas 3 colunas carregam a proveniência
+   * e a ressalva que a leitura (F1/F4/F5) precisa pra não confundir dado
+   * reconstruído com dado nativo:
+   *
+   * - `atribuicaoFonte`: procedência da atribuição desta linha
+   *   (`ATRIBUICAO_FONTE_BEEHIIV` = `"beehiiv-import"`, mesmo valor que
+   *   `scripts/lib/kit-attribution.ts` já usa pro backfill de custom field
+   *   no Kit — os dois lados precisam ser comparáveis sem tradução).
+   * - `reativado`: `true` quando o e-mail mudou de `id` nativo entre
+   *   snapshots (DELETE+CREATE da reativação, `promoteBeehiivSubscription`)
+   *   — a linha grava o `entered_at` da aparição MAIS ANTIGA (o cadastro
+   *   real), mas o cadastro não deve contar pra métricas de aquisição do
+   *   dia da reativação (decisão 9 do #7172). Distinto de `classifyAcquisition`
+   *   retornar `"reativacao"` por `utm_source`: depois do override de origem
+   *   recuperada, `utm_source` volta a ser o ORIGINAL, então só este campo
+   *   sinaliza a ressalva.
+   * - `origemSerie`: qual série escreveu esta linha (`"kit-vivo"` — F2,
+   *   `"backfill-beehiiv"`/`"seed-kit"` — F7) — nunca ausente numa linha
+   *   nova, pra nenhum leitor confundir "campo nunca populado" com "série
+   *   viva". Ver `scripts/lib/metrics/captura-log.ts` pro mesmo eixo no log
+   *   de execução (arquivo irmão, não esta tabela).
+   */
+  atribuicaoFonte?: string | null;
+  reativado?: boolean | null;
+  origemSerie?: string | null;
 }
 
 export interface SubscriberEvent {
@@ -362,6 +390,13 @@ const SUBSCRIPTION_MIGRATION_COLUMNS: ReadonlyArray<{ name: string; ddl: string 
   { name: "utm_source", ddl: "ALTER TABLE subscription ADD COLUMN utm_source TEXT" },
   { name: "utm_term", ddl: "ALTER TABLE subscription ADD COLUMN utm_term TEXT" },
   { name: "utm_content", ddl: "ALTER TABLE subscription ADD COLUMN utm_content TEXT" },
+  // #7179 (F7 do épico #7172): proveniência do backfill histórico da
+  // Beehiiv — ver docstring de `SubscriptionFields.atribuicaoFonte` acima.
+  // `reativado` é INTEGER (0/1) — SQLite não tem tipo BOOLEAN nativo; grava
+  // 1/0 explícito (nunca `true`/`false` cru), lido de volta como número.
+  { name: "atribuicao_fonte", ddl: "ALTER TABLE subscription ADD COLUMN atribuicao_fonte TEXT" },
+  { name: "reativado", ddl: "ALTER TABLE subscription ADD COLUMN reativado INTEGER" },
+  { name: "origem_serie", ddl: "ALTER TABLE subscription ADD COLUMN origem_serie TEXT" },
 ];
 
 /**
@@ -703,22 +738,26 @@ export function upsertSubscription(
     `INSERT INTO subscription
        (subscriber_id, platform, status, entered_at, exited_at, source,
         utm_medium, utm_campaign, utm_channel, referring_site, origem_cadastro,
-        utm_source, utm_term, utm_content, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        utm_source, utm_term, utm_content, atribuicao_fonte, reativado,
+        origem_serie, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(subscriber_id, platform) DO UPDATE SET
-       status          = excluded.status,
-       entered_at      = excluded.entered_at,
-       exited_at       = excluded.exited_at,
-       source          = excluded.source,
-       utm_medium      = excluded.utm_medium,
-       utm_campaign    = excluded.utm_campaign,
-       utm_channel     = excluded.utm_channel,
-       referring_site  = excluded.referring_site,
-       origem_cadastro = excluded.origem_cadastro,
-       utm_source      = excluded.utm_source,
-       utm_term        = excluded.utm_term,
-       utm_content     = excluded.utm_content,
-       updated_at      = excluded.updated_at`,
+       status           = excluded.status,
+       entered_at       = excluded.entered_at,
+       exited_at        = excluded.exited_at,
+       source           = excluded.source,
+       utm_medium       = excluded.utm_medium,
+       utm_campaign     = excluded.utm_campaign,
+       utm_channel      = excluded.utm_channel,
+       referring_site   = excluded.referring_site,
+       origem_cadastro  = excluded.origem_cadastro,
+       utm_source       = excluded.utm_source,
+       utm_term         = excluded.utm_term,
+       utm_content      = excluded.utm_content,
+       atribuicao_fonte = excluded.atribuicao_fonte,
+       reativado        = excluded.reativado,
+       origem_serie     = excluded.origem_serie,
+       updated_at       = excluded.updated_at`,
   ).run(
     subscriberId,
     platform,
@@ -734,6 +773,9 @@ export function upsertSubscription(
     fields.utmSource ?? null,
     fields.utmTerm ?? null,
     fields.utmContent ?? null,
+    fields.atribuicaoFonte ?? null,
+    fields.reativado == null ? null : fields.reativado ? 1 : 0,
+    fields.origemSerie ?? null,
     now,
   );
 }
@@ -1112,6 +1154,13 @@ export interface SubscriptionRecord {
   utm_source: string | null;
   utm_term: string | null;
   utm_content: string | null;
+  /** #7179 — ver docstring de `SubscriptionFields.atribuicaoFonte`/
+   *  `.reativado`/`.origemSerie` acima. `reativado` vem do SQLite como
+   *  `0`/`1`/`null` (sem tipo BOOLEAN nativo) — lido de volta cru, não
+   *  convertido aqui (o consumidor decide `=== 1` vs. truthy). */
+  atribuicao_fonte: string | null;
+  reativado: number | null;
+  origem_serie: string | null;
   updated_at: string;
 }
 
@@ -1127,7 +1176,8 @@ export function getSubscriptionsForSubscriber(
     .prepare(
       `SELECT platform, status, entered_at, exited_at, source,
               utm_medium, utm_campaign, utm_channel, referring_site, origem_cadastro,
-              utm_source, utm_term, utm_content, updated_at
+              utm_source, utm_term, utm_content, atribuicao_fonte, reativado,
+              origem_serie, updated_at
        FROM subscription WHERE subscriber_id = ?`,
     )
     .all(subscriberId) as unknown as SubscriptionRecord[];

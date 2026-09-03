@@ -128,12 +128,13 @@ describe("migrateSubscriptionColumns — ALTER TABLE idempotente sobre .db povoa
     } as unknown as DatabaseSync;
 
     assert.doesNotThrow(() => migrateSubscriptionColumns(fakeDb));
-    // 8 = 5 colunas do #7174 (utm_medium/utm_campaign/utm_channel/
+    // 11 = 5 colunas do #7174 (utm_medium/utm_campaign/utm_channel/
     // referring_site/origem_cadastro) + 3 do #7207 (utm_source/utm_term/
-    // utm_content) — `SUBSCRIPTION_MIGRATION_COLUMNS` não é exportado, então
-    // este número precisa acompanhar manualmente a próxima coluna que a
-    // migração ganhar (mesmo padrão de manutenção do resto deste teste).
-    assert.equal(alterCalls, 8, "tentou todas as colunas — a que colidiu não travou as demais");
+    // utm_content) + 3 do #7179 (atribuicao_fonte/reativado/origem_serie) —
+    // `SUBSCRIPTION_MIGRATION_COLUMNS` não é exportado, então este número
+    // precisa acompanhar manualmente a próxima coluna que a migração ganhar
+    // (mesmo padrão de manutenção do resto deste teste).
+    assert.equal(alterCalls, 11, "tentou todas as colunas — a que colidiu não travou as demais");
   });
 
   it("relança qualquer erro que NÃO seja 'duplicate column name' (disco cheio, .db corrompido, etc.)", () => {
@@ -371,6 +372,45 @@ describe("upsertSubscription — colunas de atribuição novas (#7174)", () => {
     assert.equal(sub.utm_channel, "boost");
     assert.equal(sub.referring_site, "www.alquimiaoperativa.news");
     assert.equal(sub.origem_cadastro, "poll");
+    db.close();
+  });
+
+  it("#7179: grava e relê atribuicao_fonte/reativado/origem_serie", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-03T12:00:00.000Z";
+    const subscriberId = ensureSubscriber(db, "beehiiv", "beehiiv-ext-1", "backfill@example.com", now);
+    upsertSubscription(
+      db,
+      subscriberId,
+      "beehiiv",
+      {
+        status: "active",
+        enteredAt: "2025-09-13T12:00:00.000Z",
+        exitedAt: null,
+        source: "linkedin",
+        utmSource: "linkedin",
+        atribuicaoFonte: "beehiiv-import",
+        reativado: true,
+        origemSerie: "backfill-beehiiv",
+      },
+      now,
+    );
+    const [sub] = getSubscriptionsForSubscriber(db, subscriberId);
+    assert.equal(sub.atribuicao_fonte, "beehiiv-import");
+    assert.equal(sub.reativado, 1);
+    assert.equal(sub.origem_serie, "backfill-beehiiv");
+    db.close();
+  });
+
+  it("#7179: reativado false grava 0, reativado ausente grava NULL (nunca confundido)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-03T12:00:00.000Z";
+    const idFalse = ensureSubscriber(db, "beehiiv", "beehiiv-ext-2", "nao-reativado@example.com", now);
+    upsertSubscription(db, idFalse, "beehiiv", { status: "active", enteredAt: now, exitedAt: null, source: "x", reativado: false }, now);
+    const idAusente = ensureSubscriber(db, "beehiiv", "beehiiv-ext-3", "sem-campo@example.com", now);
+    upsertSubscription(db, idAusente, "beehiiv", { status: "active", enteredAt: now, exitedAt: null, source: "x" }, now);
+    assert.equal(getSubscriptionsForSubscriber(db, idFalse)[0].reativado, 0);
+    assert.equal(getSubscriptionsForSubscriber(db, idAusente)[0].reativado, null);
     db.close();
   });
 
