@@ -127,6 +127,11 @@ import {
   type NoXmlArtifactsReport,
 } from "./lib/lint-checks/no-xml-artifacts.ts"; // #4077
 import {
+  checkBannedLexicon,
+  type BannedLexiconError,
+  type BannedLexiconReport,
+} from "./lib/lint-checks/banned-lexicon.ts"; // #7260
+import {
   runSnippetStalenessCheck,
   type SnippetStalenessReport,
   type SnippetStalenessWarning,
@@ -273,6 +278,13 @@ export {
   type NoXmlArtifactsError,
   type NoXmlArtifactsReport,
 } from "./lib/lint-checks/no-xml-artifacts.ts"; // #4077
+export {
+  checkBannedLexicon,
+  BANNED_LEXICON,
+  type BannedLexiconEntry,
+  type BannedLexiconError,
+  type BannedLexiconReport,
+} from "./lib/lint-checks/banned-lexicon.ts"; // #7260
 export {
   runSnippetStalenessCheck,
   resolveUsedSnippets,
@@ -587,6 +599,12 @@ export function runStage4LintReport(editionDir: string, root: string): StageLint
       checkNoXmlArtifacts(md),
     );
 
+    // #7260: léxico banido ("agentivo" → "agêntico") — GATE-BLOCKING, sem
+    // exceção legítima conhecida (ver docstring de banned-lexicon.ts).
+    runCheckSafely(push, "banned-lexicon", "#7260", "gate-blocking", () =>
+      checkBannedLexicon(md),
+    );
+
     runCheckSafely(push, "snippet-staleness", "#4076", "warn-only", () =>
       runSnippetStalenessCheck(mdPath, root),
     );
@@ -739,6 +757,7 @@ import { runCli as run_calloutPlacement } from "./lib/lint-checks/cli/callout-pl
 import { runCli as run_stackedIntroCallouts } from "./lib/lint-checks/cli/stacked-intro-callouts.ts";
 import { runCli as run_orphanBoxInGap } from "./lib/lint-checks/cli/orphan-box-in-gap.ts";
 import { runCli as run_noXmlArtifacts } from "./lib/lint-checks/cli/no-xml-artifacts.ts";
+import { runCli as run_bannedLexicon } from "./lib/lint-checks/cli/banned-lexicon.ts";
 import { runCli as run_snippetStaleness } from "./lib/lint-checks/cli/snippet-staleness.ts";
 import { runCli as run_agradecimentoHardcoded } from "./lib/lint-checks/cli/agradecimento-hardcoded.ts";
 
@@ -781,6 +800,7 @@ const CHECK_HANDLERS: Record<string, (args: Record<string, string>, root: string
   "stacked-intro-callouts": run_stackedIntroCallouts,
   "orphan-box-in-gap": run_orphanBoxInGap,
   "no-xml-artifacts": run_noXmlArtifacts,
+  "banned-lexicon": run_bannedLexicon,
   "snippet-staleness": run_snippetStaleness,
   "agradecimento-hardcoded": run_agradecimentoHardcoded,
 };
@@ -854,6 +874,7 @@ function main(): void {
         "  ou: lint-newsletter-md.ts --check orphan-box-in-gap --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check aprofunde-format --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check no-xml-artifacts --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check banned-lexicon --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check snippet-staleness --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check agradecimento-hardcoded [--snippet <path>]",
     );

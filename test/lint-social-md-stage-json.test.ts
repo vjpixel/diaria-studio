@@ -2,10 +2,10 @@
  * test/lint-social-md-stage-json.test.ts (#5416)
  *
  * Cobre o modo agregador `--stage 4 --json` de `lint-social-md.ts` — mesmo
- * tratamento dado a `lint-newsletter-md.ts` (#5416): agrega os 4 checks que
+ * tratamento dado a `lint-newsletter-md.ts` (#5416): agrega os checks que
  * `.claude/agents/orchestrator-stage-4.md` §4c.2b dispara em invocações
- * separadas (`post_pixel-matches-d1`, `no-xml-artifacts`,
- * `no-antithesis-reveal`, `no-trailing-editorial-hook` — todos
+ * separadas (`post_pixel-matches-d1`, `no-xml-artifacts`, `banned-lexicon`
+ * — #7260 — `no-antithesis-reveal`, `no-trailing-editorial-hook` — todos
  * GATE-BLOCKING) numa única chamada de processo.
  *
  * Mesma estratégia de oráculo do teste irmão
@@ -24,6 +24,7 @@ import {
   runStage2SocialLintReport,
   lintPostPixelMatchesD1,
   checkNoXmlArtifacts,
+  checkBannedLexicon,
   lintAntithesisReveal,
   lintTrailingEditorialHook,
   lintRelativeTime,
@@ -46,9 +47,9 @@ function runCli(args: string[]) {
  * `post_pixel` deliberadamente reusa o vocabulário de `d3` (robótica
  * industrial) e nenhum de `d1` (Claude/IA generativa) — dispara
  * `post_pixel-matches-d1` (caso real #1861: reorder pós-Stage-2 sem
- * re-sincronizar o post pessoal). Os outros 3 checks (no-xml-artifacts,
- * no-antithesis-reveal, no-trailing-editorial-hook) passam limpos neste
- * fixture — cobertos pelo teste de "oráculo" mesmo passando.
+ * re-sincronizar o post pessoal). Os outros 4 checks (no-xml-artifacts,
+ * banned-lexicon, no-antithesis-reveal, no-trailing-editorial-hook) passam
+ * limpos neste fixture — cobertos pelo teste de "oráculo" mesmo passando.
  */
 function buildSocialMd(): string {
   return [
@@ -94,11 +95,12 @@ describe("runStage4SocialLintReport (#5416)", () => {
     return dir;
   }
 
-  it("4 checks presentes, todos gate-blocking", () => {
+  it("5 checks presentes, todos gate-blocking", () => {
     const editionDir = makeEditionDir();
     const report = runStage4SocialLintReport(editionDir);
     const ids = report.checks.map((c) => c.id).sort();
     assert.deepEqual(ids, [
+      "banned-lexicon",
       "no-antithesis-reveal",
       "no-trailing-editorial-hook",
       "no-xml-artifacts",
@@ -116,6 +118,7 @@ describe("runStage4SocialLintReport (#5416)", () => {
 
     assert.deepEqual(byId.get("post_pixel-matches-d1")?.result, lintPostPixelMatchesD1(md));
     assert.deepEqual(byId.get("no-xml-artifacts")?.result, checkNoXmlArtifacts(md));
+    assert.deepEqual(byId.get("banned-lexicon")?.result, checkBannedLexicon(md));
     assert.deepEqual(byId.get("no-antithesis-reveal")?.result, lintAntithesisReveal(md));
     assert.deepEqual(byId.get("no-trailing-editorial-hook")?.result, lintTrailingEditorialHook(md));
     rmSync(editionDir, { recursive: true, force: true });
