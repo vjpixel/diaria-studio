@@ -196,6 +196,30 @@
  * `process.exit(code)` por `process.exitCode = code` (deixa o processo
  * sair naturalmente depois do event loop drenar as escritas pendentes, sem
  * segurar a saída se não houver mais nenhum handle ativo).
+ *
+ * ## #7337 — sumário AGREGADO, distinto do sumário nativo por batch
+ *
+ * Achado ao vivo na PR #7333 (03/09/2026, mesma rodada dos #7250/#7294/
+ * #7285/#7320 — "resumo que afirma saúde sem ter medido o conjunto todo"):
+ * cada batch imprime o próprio sumário `node:test` (`ℹ fail N`/`# fail N`),
+ * e só o do ÚLTIMO batch fica visível no rodapé do log. Quando um batch
+ * ANTERIOR falha e o último passa, o rodapé mostra `fail 0` seguido de
+ * `exit code 1` — o exit code está certo, mas o número que qualquer leitor
+ * vê primeiro mente por ESCOPO (é verdade só pro último batch), não por
+ * bug. Enganou 2 sessões independentes que leram esse rodapé e concluíram
+ * "a falha está fora do node:test" — as duas hipóteses derivadas dessa
+ * premissa estavam erradas.
+ *
+ * `processChunkedBatches` agora soma `pass`/`fail` de TODOS os batches
+ * (`totalPass`/`totalFail`) e mantém `failedBatches` — o rótulo de cada
+ * batch que terminou como falha, com ou sem sumário reconhecível
+ * (`formatAggregateSummary` formata a linha final). `runTestBatches`
+ * imprime essa linha sempre, no caminho feliz e no de falha — é a única
+ * linha do log garantida a refletir a rodada inteira, nunca só o último
+ * batch impresso. O caminho paralelo (`runTestBatchesParallel`) soma o
+ * mesmo agregado de TODOS os workers antes de imprimir — sem isso, o
+ * problema de origem continuaria, só que multiplicado por worker em vez de
+ * por batch sequencial.
  */
 import { spawnSync, fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -310,6 +334,26 @@ export function parseFailCount(output: string): number | null {
  *  mesmo que `status` volte 0 — ver "Defeito A" na docstring do módulo. */
 export function hasTestSummary(output: string): boolean {
   return parseFailCount(output) !== null;
+}
+
+/** Casa a linha `pass N` do sumário final do `node:test` — mesma forma de
+ *  `FAIL_SUMMARY_RE` (reporter `spec` usa `ℹ`, `tap` usa `#`). #7337: usada
+ *  junto com `parseFailCount` para compor o sumário AGREGADO de todos os
+ *  batches — sem isto, só dava pra somar falhas, não o total de testes que
+ *  de fato passaram. */
+const PASS_SUMMARY_RE = /^(?:ℹ|#)\s*pass\s+(\d+)\s*$/gim;
+
+/** Pure: extrai a contagem `pass N` do sumário final do `node:test`, mesma
+ *  regra/limitações de `parseFailCount` (última ocorrência ancorada em
+ *  início/fim de linha; `null` quando não reconhecido). */
+export function parsePassCount(output: string): number | null {
+  PASS_SUMMARY_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let last: number | null = null;
+  while ((match = PASS_SUMMARY_RE.exec(output)) !== null) {
+    last = Number(match[1]);
+  }
+  return last;
 }
 
 /** Pure: decide se um batch que falhou merece 1 retry — critérios do #6495,
@@ -478,6 +522,19 @@ export interface ProcessChunkedBatchesResult {
    *  pelo CALLER contra o total esperado — este função não conhece o total
    *  geral quando roda só a fatia de um worker. */
   completedFiles: number;
+  /** #7337: soma de `pass N` de todo batch que produziu um sumário válido
+   *  do node:test (batches sem sumário — timeout, sinal, spawn error — não
+   *  contribuem, porque não há contagem confiável pra somar). */
+  totalPass: number;
+  /** #7337: soma de `fail N` de todo batch que produziu um sumário válido. */
+  totalFail: number;
+  /** #7337: rótulo (mesmo texto usado no log, ex: "batch 3/10") de cada
+   *  batch que terminou como falha — inclusive quando não há sumário
+   *  (timeout/sinal/spawn error/cobertura ausente). É esta lista, agregada
+   *  ao final da rodada, que resolve o problema de origem: o sumário nativo
+   *  do node:test só reflete o ÚLTIMO batch impresso, então um batch
+   *  anterior que falhou fica invisível se o último passar. */
+  failedBatches: string[];
 }
 
 /** Processa uma lista JÁ CHUNKADA de batches, sequencialmente — mesma lógica
@@ -519,6 +576,14 @@ export function processChunkedBatches(
   };
   let exitCode = 0;
   let completedFiles = 0;
+  // #7337: agregação distinta do sumário nativo do node:test — este arquivo
+  // já rodava vários batches, mas nada somava pass/fail entre eles nem
+  // nomeava quais falharam ao final; quem lesse só o rodapé do log via o
+  // sumário do ÚLTIMO batch, que mente por escopo (não por bug) quando um
+  // batch anterior falhou e o último passou.
+  let totalPass = 0;
+  let totalFail = 0;
+  const failedBatches: string[] = [];
 
   const runOne = (batch: string[]) =>
     spawn(process.execPath, ["--import", "tsx", "--test", ...extraArgs, ...batch], {
@@ -591,6 +656,7 @@ export function processChunkedBatches(
         `run-tests: falha ao spawnar ${label} (${batch.length} arquivos): ${result.error.message}${suffix}`,
       );
       exitCode = 1;
+      failedBatches.push(`${label} (falha ao spawnar)`);
       return;
     }
     emit(result);
@@ -612,6 +678,7 @@ export function processChunkedBatches(
           emit(retry);
           console.error(`run-tests: falha ao spawnar retry do ${label}: ${retry.error.message}`);
           exitCode = 1;
+          failedBatches.push(`${label} (falha ao spawnar retry)`);
           return;
         }
         emit(retry);
@@ -629,6 +696,7 @@ export function processChunkedBatches(
       );
       stderr.write(`run-tests: ${label} bisecção: ${tryBisect(batch)}\n`);
       exitCode = 1;
+      failedBatches.push(`${label} (morto por sinal)`);
       return;
     }
 
@@ -645,12 +713,19 @@ export function processChunkedBatches(
       );
       stderr.write(`run-tests: ${label} bisecção: ${tryBisect(batch)}\n`);
       exitCode = 1;
+      failedBatches.push(`${label} (sem sumário)`);
       return;
     }
 
     // Sumário genuíno presente: o batch de fato terminou de rodar (passou
     // ou falhou de verdade — os dois casos contam como "completou").
     completedFiles += batch.length;
+    // #7337: soma pass/fail deste batch no agregado da rodada inteira —
+    // acontece aqui, incondicional a `status`, porque um batch que falha
+    // ainda tem uma contagem `pass`/`fail` válida (é justamente o caso que
+    // engana quando só o sumário do ÚLTIMO batch é visível).
+    totalPass += parsePassCount(combinedFinal) ?? 0;
+    totalFail += parseFailCount(combinedFinal) ?? 0;
     const status = result.status ?? 1;
     if (status !== 0) {
       // #7094 — o exit code aqui SEMPRE esteve certo (filho saiu não-zero =>
@@ -676,10 +751,31 @@ export function processChunkedBatches(
           (tail ? `run-tests: ${label} últimas linhas do stderr:\n${tail}\n` : ""),
       );
       exitCode = 1;
+      failedBatches.push(label);
     }
   });
 
-  return { exitCode, completedFiles };
+  return { exitCode, completedFiles, totalPass, totalFail, failedBatches };
+}
+
+/** #7337: sumário AGREGADO da rodada inteira — deliberadamente distinto da
+ *  linha `ℹ fail N`/`# fail N` que o `node:test` imprime POR BATCH. Quando
+ *  um batch anterior falha e o último batch passa, o rodapé do log só
+ *  mostra o sumário do último — `fail 0` seguido de `exit code 1`, que
+ *  enganou 2 sessões independentes na PR #7333. Esta linha soma pass/fail de
+ *  TODOS os batches e nomeia explicitamente quais falharam, pra nunca mais
+ *  depender de qual sumário calhou de ser o último impresso. Pura — só
+ *  formata, não decide `exitCode` (isso continua sendo `finalizeExitCode`). */
+export function formatAggregateSummary(
+  result: Pick<ProcessChunkedBatchesResult, "totalPass" | "totalFail" | "failedBatches">,
+  batchCount: number,
+): string {
+  const { totalPass, totalFail, failedBatches } = result;
+  const header = `run-tests: RESUMO AGREGADO (todos os ${batchCount} batch(es)) — pass ${totalPass}, fail ${totalFail}`;
+  if (failedBatches.length === 0) {
+    return `${header} — nenhum batch falhou.`;
+  }
+  return `${header} — ${failedBatches.length}/${batchCount} batch(es) FALHARAM: ${failedBatches.join(", ")}`;
 }
 
 /** Roda `node --import tsx --test <batch...>` em batches sequenciais, num
@@ -695,8 +791,11 @@ export function runTestBatches(opts: RunTestsOptions): number {
     return 0;
   }
   const batches = chunk(files, batchSize);
-  const { exitCode, completedFiles } = processChunkedBatches(batches, opts);
-  return finalizeExitCode(exitCode, completedFiles, files.length, stderr);
+  const result = processChunkedBatches(batches, opts);
+  // #7337: sempre imprime o agregado, mesmo no caminho feliz — é a única
+  // linha do log que garante refletir TODOS os batches, não só o último.
+  stderr.write(`\n${formatAggregateSummary(result, batches.length)}\n`);
+  return finalizeExitCode(result.exitCode, result.completedFiles, files.length, stderr);
 }
 
 /** #6822: confronta o que de fato completou contra o que deveria ter rodado
@@ -810,10 +909,16 @@ interface WorkerPayload {
   label: string;
 }
 
-/** Resultado que o WORKER manda de volta ao pai via IPC (`process.send`). */
+/** Resultado que o WORKER manda de volta ao pai via IPC (`process.send`).
+ *  #7337: carrega `totalPass`/`totalFail`/`failedBatches` também — o
+ *  sumário agregado do caminho paralelo precisa somar esses campos de
+ *  TODOS os workers, igual ao caminho sequencial faz por batch. */
 interface WorkerResult {
   exitCode: number;
   completedFiles: number;
+  totalPass: number;
+  totalFail: number;
+  failedBatches: string[];
 }
 
 /** Default de workers concorrentes — min(4, CPUs disponíveis), nunca mais
@@ -915,7 +1020,7 @@ function runWorker(payload: WorkerPayload, scriptPath: string, payloadPath: stri
         `run-tests: worker (${payload.label}) excedeu o teto de ${workerTimeoutMs}ms sem completar — matando (SIGKILL) e tratando como falha dura.`,
       );
       child.kill("SIGKILL");
-      settle({ exitCode: 1, completedFiles: 0 });
+      settle({ exitCode: 1, completedFiles: 0, totalPass: 0, totalFail: 0, failedBatches: [`${payload.label} (timeout do worker)`] });
     }, workerTimeoutMs);
     timer.unref?.();
 
@@ -923,7 +1028,13 @@ function runWorker(payload: WorkerPayload, scriptPath: string, payloadPath: stri
       const m = msg as Partial<WorkerResult> | null;
       if (m && typeof m.exitCode === "number" && typeof m.completedFiles === "number") {
         clearTimeout(timer);
-        settle({ exitCode: m.exitCode, completedFiles: m.completedFiles });
+        settle({
+          exitCode: m.exitCode,
+          completedFiles: m.completedFiles,
+          totalPass: typeof m.totalPass === "number" ? m.totalPass : 0,
+          totalFail: typeof m.totalFail === "number" ? m.totalFail : 0,
+          failedBatches: Array.isArray(m.failedBatches) ? m.failedBatches : [],
+        });
       }
     });
     child.on("exit", () => {
@@ -933,12 +1044,12 @@ function runWorker(payload: WorkerPayload, scriptPath: string, payloadPath: stri
         );
       }
       clearTimeout(timer);
-      settle({ exitCode: 1, completedFiles: 0 });
+      settle({ exitCode: 1, completedFiles: 0, totalPass: 0, totalFail: 0, failedBatches: [`${payload.label} (worker terminou sem enviar resultado)`] });
     });
     child.on("error", (err) => {
       console.error(`run-tests: falha ao iniciar worker (${payload.label}): ${err.message}`);
       clearTimeout(timer);
-      settle({ exitCode: 1, completedFiles: 0 });
+      settle({ exitCode: 1, completedFiles: 0, totalPass: 0, totalFail: 0, failedBatches: [`${payload.label} (falha ao iniciar worker)`] });
     });
   });
 }
@@ -1024,6 +1135,15 @@ export async function runTestBatchesParallel(opts: RunTestBatchesParallelOptions
     );
     const exitCode = results.some((r) => r.exitCode !== 0) ? 1 : 0;
     const completedFiles = results.reduce((sum, r) => sum + r.completedFiles, 0);
+    // #7337: agregado do caminho PARALELO — soma pass/fail e junta os
+    // rótulos de batch falho de TODOS os workers, mesmo tratamento do
+    // caminho sequencial em `runTestBatches`. Sem isto, o caminho paralelo
+    // (produção — `RUN_TESTS_WORKERS` > 1) continuaria com o mesmo problema
+    // de origem, só que multiplicado por worker em vez de por batch.
+    const totalPass = results.reduce((sum, r) => sum + r.totalPass, 0);
+    const totalFail = results.reduce((sum, r) => sum + r.totalFail, 0);
+    const failedBatches = results.flatMap((r) => r.failedBatches);
+    process.stderr.write(`\n${formatAggregateSummary({ totalPass, totalFail, failedBatches }, batches.length)}\n`);
     return finalizeExitCode(exitCode, completedFiles, files.length, process.stderr);
   } finally {
     // Review #6909 (P2, confiança alta): sem o try/catch PRÓPRIO aqui, uma
@@ -1048,14 +1168,14 @@ export async function runTestBatchesParallel(opts: RunTestBatchesParallelOptions
  *  `process.send`. */
 function runAsWorker(payloadPath: string): void {
   const payload = JSON.parse(readFileSync(payloadPath, "utf8")) as WorkerPayload;
-  const { exitCode, completedFiles } = processChunkedBatches(payload.batches, {
+  const { exitCode, completedFiles, totalPass, totalFail, failedBatches } = processChunkedBatches(payload.batches, {
     extraArgs: payload.extraArgs,
     batchTimeoutMs: payload.batchTimeoutMs,
     bisectTimeoutMs: payload.bisectTimeoutMs,
     bisectBudgetMs: payload.bisectBudgetMs,
     labelPrefix: payload.label,
   });
-  const result: WorkerResult = { exitCode, completedFiles };
+  const result: WorkerResult = { exitCode, completedFiles, totalPass, totalFail, failedBatches };
   if (process.send) {
     process.send(result);
   } else {
