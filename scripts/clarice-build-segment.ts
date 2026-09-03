@@ -858,6 +858,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // arquivo e `resolveRecencyCutoffWithDefault` (clarice-recency.ts).
   let notSentCutoff = "";
   let recencyCutoffSource: RecencyCutoffSource = "auto";
+  // #7234 — içado pra fora do try porque o log do filtro (bem abaixo) precisa
+  // dizer QUAL das duas origens produziu o cutoff automático.
+  let sendDateArg: string | undefined;
   try {
     const explicitCutoff = resolveNotSentCutoff(
       getStringArg(argv, "not-sent-within", { example: "30d" }),
@@ -872,7 +875,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // Sem `--send-date` (invocação manual avulsa), mantém o default histórico
     // pelo ciclo. Flag explícita (`--not-sent-since`/`--not-sent-within`)
     // continua vencendo os dois.
-    const sendDateArg = getStringArg(argv, "send-date", { example: "2026-09-01" });
+    sendDateArg = getStringArg(argv, "send-date", { example: "2026-09-01" }) ?? undefined;
     const autoCutoff = sendDateArg ? sendMonthStartIso(sendDateArg) : cycleSendMonthStartIso(cycle);
     const resolved = resolveRecencyCutoffWithDefault(explicitCutoff, autoCutoff);
     notSentCutoff = resolved.cutoffIso;
@@ -957,10 +960,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // menor que o pedido).
   const afterRecency = excludeSentSince(afterSentOrQueued, notSentCutoff);
   const excludedByRecency = afterSentOrQueued.length - afterRecency.length;
+  // #7234: o default automático tem DUAS origens possíveis agora, e o log
+  // precisa dizer qual delas produziu o cutoff — um log que afirma "mês do
+  // ciclo" enquanto o valor veio da data de envio é exatamente o tipo de
+  // pista falsa que fez este bug sobreviver tanto tempo.
+  const autoCutoffOrigem = sendDateArg
+    ? `#7234 — início do mês da data de envio ${sendDateArg}`
+    : "#4765 — início do mês de envio do ciclo";
   console.error(
     recencyCutoffSource === "explicit"
       ? `🔒 filtro de recência (#4719): ${excludedByRecency} contato(s) com last_sent_at >= ${notSentCutoff} excluído(s) do universo.`
-      : `🔒 filtro de recência automático (#4765 — início do mês de envio do ciclo): ${excludedByRecency} contato(s) com last_sent_at >= ${notSentCutoff} excluído(s) do universo.`,
+      : `🔒 filtro de recência automático (${autoCutoffOrigem}): ${excludedByRecency} contato(s) com last_sent_at >= ${notSentCutoff} excluído(s) do universo.`,
   );
 
   // #4347: guard de campanha comprometida (excludeCommittedToQueuedCampaigns, a
