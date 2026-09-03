@@ -81,4 +81,4 @@ run_worker_first = [
 # serve o artigo completo). Colar o id real reativa os dois sozinho.
 [[kv_namespaces]]
 binding = "ARTIGOS_APOIO_NIVEL"
-id = "PLACEHOLDER_RODAR_WRANGLER_KV_NAMESPACE_CREATE"
+id = "5c23c8b443e94c95bfcc3ae7d42a880a"
