@@ -8,14 +8,16 @@
  * contra os 6 datasets de hub commitados (`scripts/lib/hubs/*-sources.generated.json`).
  * Continua chamado pelo playbook do Stage 6 (`.claude/agents/orchestrator-stage-6.md`,
  * informacional, nunca bloqueia) E agora também roda como task agendada
- * diária (`Diaria-Hub-Staleness-Check`, `scripts/lib/scheduled-tasks.ts`) —
- * antes disso, só existia a checagem embutida no Stage 6, que só corre
- * quando uma edição publica; sem edição num dia (ou pipeline pausado), a
- * defasagem crescia sem ninguém perceber.
+ * (`Diaria-Hub-Staleness-Check`, `scripts/lib/scheduled-tasks.ts` — SEMANAL
+ * desde #7147, era diária) — antes disso, só existia a checagem embutida no
+ * Stage 6, que só corre quando uma edição publica; sem edição num dia (ou
+ * pipeline pausado), a defasagem crescia sem ninguém perceber.
  *
  * **Persistência (#5123 item 2).** Cada execução escreve um snapshot em
- * `data/hubs/staleness-{YYYY-MM-DD}.json` (histórico, 1 arquivo por dia) e
- * atualiza `data/hubs/staleness-state.json` (idempotência: mapa de
+ * `data/hubs/staleness-{YYYY-MM-DD}.json` (histórico, 1 arquivo por execução
+ * — na cadência semanal atual da task agendada, 1 arquivo por semana; o
+ * Stage 6 continua rodando à parte, toda edição) e atualiza
+ * `data/hubs/staleness-state.json` (idempotência: mapa de
  * 1ª-detecção por entrada + fingerprint do último alarme — ver
  * `scripts/lib/hub-staleness-check.ts`, `computeFirstSeenMap`/
  * `StalenessAlarmState`). O snapshot é sempre escrito, mesmo sem drift
@@ -118,9 +120,14 @@ const ALARM_ISSUES_STATE_PATH = join(HUBS_DATA_DIR, "alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[hub-staleness-check]";
 const DEFAULT_THRESHOLD_DAYS = 3;
-/** #6151: task roda diária (09:30) — 2 execuções limpas consecutivas = 48h
- * sem o achado antes de fechar a issue automaticamente, mesmo valor de
- * `hub-drift-check.ts`/`home-meta-check.ts` pra cadência diária. */
+/** #6151: mesmo valor de `hub-drift-check.ts`/`home-meta-check.ts` — 2
+ * execuções limpas consecutivas sem o achado antes de fechar a issue
+ * automaticamente. Na cadência ORIGINAL (diária), isso era "48h sem o
+ * achado"; na cadência atual da task agendada (semanal desde #7147), é
+ * "2 semanas sem o achado" — mais conservador, nunca reduzido de propósito
+ * pra não fechar issue cedo demais com menos observações. Não recalibrado
+ * junto com #7147 — se o auto-close ficar lento demais na prática, ajustar
+ * aqui é decisão separada. */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
 /** Lê os `{slug}-sources.generated.json` commitados dos hubs registrados em

@@ -380,37 +380,52 @@ describe("#5229 — Diaria-Beehiiv-Backup registrada, semanal, systemd-only", ()
   });
 });
 
-describe("#5123 — Diaria-Hub-Staleness-Check registrada, diária, systemd-only", () => {
-  it("está presente no registro, com o step apontando pro script correto, diária às 09:30", () => {
+describe("#5123, #7147 — Diaria-Hub-Staleness-Check registrada, semanal, systemd-only", () => {
+  it("está presente no registro, com o step apontando pro script correto + --threshold-days 1, domingo 09:33", () => {
     const t = getScheduledTaskByName("Diaria-Hub-Staleness-Check");
     assert.ok(t, "Diaria-Hub-Staleness-Check ausente de SCHEDULED_TASKS");
     assert.deepEqual(
       t!.steps.map((s) => s.script),
       ["scripts/hub-staleness-check.ts"],
     );
-    assert.deepEqual(t!.schedule, { kind: "daily", hour: 9, minute: 30 });
+    assert.deepEqual(t!.steps[0]!.args, ["--threshold-days", "1"]);
+    assert.deepEqual(t!.schedule, { kind: "weekly", dayOfWeek: "Sunday", hour: 9, minute: 33 });
   });
 
-  it("horário de 09:30 não colide com nenhuma outra daily do registro", () => {
+  it("domingo 09:33 não colide com nenhuma outra weekly do registro", () => {
+    const weeklies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "weekly"; dayOfWeek: string; hour: number; minute: number } } =>
+        t.schedule.kind === "weekly",
+    );
+    const collisions = weeklies.filter(
+      (t) =>
+        t.name !== "Diaria-Hub-Staleness-Check" &&
+        t.schedule.dayOfWeek === "Sunday" &&
+        t.schedule.hour === 9 &&
+        t.schedule.minute === 33,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("não colide com nenhuma daily às 09:33 (dailies também rodam domingo)", () => {
     const dailies = SCHEDULED_TASKS.filter(
       (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
         t.schedule.kind === "daily",
     );
-    const collisions = dailies.filter(
-      (t) => t.name !== "Diaria-Hub-Staleness-Check" && t.schedule.hour === 9 && t.schedule.minute === 30,
-    );
+    const collisions = dailies.filter((t) => t.schedule.hour === 9 && t.schedule.minute === 33);
     assert.deepEqual(collisions, []);
   });
 });
 
-describe("#5125 — Diaria-Entity-Pages-Regen registrada, diária, systemd-only", () => {
-  it("está presente no registro, com o step apontando pro script correto, diária às 09:40", () => {
+describe("#5125, #7147 — Diaria-Entity-Pages-Regen registrada, diária (só regen, sem alarme), systemd-only", () => {
+  it("está presente no registro, com o step apontando pro script correto + --skip-alarm, diária às 09:40", () => {
     const t = getScheduledTaskByName("Diaria-Entity-Pages-Regen");
     assert.ok(t, "Diaria-Entity-Pages-Regen ausente de SCHEDULED_TASKS");
     assert.deepEqual(
       t!.steps.map((s) => s.script),
       ["scripts/regenerate-entity-pages.ts"],
     );
+    assert.deepEqual(t!.steps[0]!.args, ["--skip-alarm"]);
     assert.deepEqual(t!.schedule, { kind: "daily", hour: 9, minute: 40 });
   });
 
@@ -423,6 +438,57 @@ describe("#5125 — Diaria-Entity-Pages-Regen registrada, diária, systemd-only"
       (t) => t.name !== "Diaria-Entity-Pages-Regen" && t.schedule.hour === 9 && t.schedule.minute === 40,
     );
     assert.deepEqual(collisions, []);
+  });
+});
+
+describe("#7147 — Diaria-Entity-Pages-Staleness-Alarm registrada, semanal, systemd-only", () => {
+  it("está presente no registro, com o step apontando pro script correto + --alarm-only --threshold-days 1, domingo 09:43", () => {
+    const t = getScheduledTaskByName("Diaria-Entity-Pages-Staleness-Alarm");
+    assert.ok(t, "Diaria-Entity-Pages-Staleness-Alarm ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/regenerate-entity-pages.ts"],
+    );
+    assert.deepEqual(t!.steps[0]!.args, ["--alarm-only", "--threshold-days", "1"]);
+    assert.deepEqual(t!.schedule, { kind: "weekly", dayOfWeek: "Sunday", hour: 9, minute: 43 });
+  });
+
+  it("domingo 09:43 não colide com nenhuma outra weekly do registro", () => {
+    const weeklies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "weekly"; dayOfWeek: string; hour: number; minute: number } } =>
+        t.schedule.kind === "weekly",
+    );
+    const collisions = weeklies.filter(
+      (t) =>
+        t.name !== "Diaria-Entity-Pages-Staleness-Alarm" &&
+        t.schedule.dayOfWeek === "Sunday" &&
+        t.schedule.hour === 9 &&
+        t.schedule.minute === 43,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("não colide com nenhuma daily às 09:43 (dailies também rodam domingo)", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter((t) => t.schedule.hour === 9 && t.schedule.minute === 43);
+    assert.deepEqual(collisions, []);
+  });
+
+  it("logPath próprio, distinto de Diaria-Entity-Pages-Regen (review #7164 — mesma convenção do par Clarice-Novos)", () => {
+    const alarm = getScheduledTaskByName("Diaria-Entity-Pages-Staleness-Alarm")!;
+    const regen = getScheduledTaskByName("Diaria-Entity-Pages-Regen")!;
+    assert.notEqual(alarm.logPath, regen.logPath, "logs separados — não misturar regen diária e alarme semanal no mesmo arquivo");
+  });
+
+  it("roda depois de Diaria-Hub-Staleness-Check no mesmo domingo (ordem editorial, não crítica mecanicamente)", () => {
+    const alarm = getScheduledTaskByName("Diaria-Entity-Pages-Staleness-Alarm")!;
+    const hub = getScheduledTaskByName("Diaria-Hub-Staleness-Check")!;
+    const alarmSchedule = alarm.schedule as { hour: number; minute: number };
+    const hubSchedule = hub.schedule as { hour: number; minute: number };
+    assert.ok(hubSchedule.hour * 60 + hubSchedule.minute < alarmSchedule.hour * 60 + alarmSchedule.minute);
   });
 });
 
