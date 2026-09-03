@@ -264,6 +264,61 @@ export async function getBroadcast(id: number, config?: KitConfig): Promise<KitB
 }
 
 // ---------------------------------------------------------------------------
+// Subscribers — leitura (#7357: `created_after` alimenta o resgate por data
+// do canal `kit_diaria`, ver docstring de `kit-diaria-channel.ts`)
+// ---------------------------------------------------------------------------
+
+/** Shape de `GET /v4/subscribers` com `include=tags` — só os campos que
+ *  `listActiveSubscribersCreatedAfter` (`kit-broadcasts.ts`) usa. A API devolve
+ *  mais campos (nome, custom fields etc.); não declarados aqui de propósito —
+ *  este módulo é REST fino, não um espelho completo do schema (mesma
+ *  convenção de `KitBroadcastSummary` acima). */
+export interface KitSubscriberSummary {
+  id: number;
+  email_address: string;
+  state: "active" | "inactive" | "bounced" | "complained" | "cancelled";
+  created_at: string;
+  /** Presente só quando `include=tags` é passado. */
+  tags?: { id: number; name: string }[];
+}
+
+export interface ListSubscribersOptions {
+  /** `yyyy-mm-dd` — doc oficial: "subscribers who have been created after
+   *  this date". */
+  createdAfter?: string;
+  status?: KitSubscriberSummary["state"] | "all";
+  /** `["tags"]` embute a tag membership na mesma chamada — evita 1 request
+   *  extra por assinante pra decidir quem já tem a tag de audiência. */
+  include?: ("attribution" | "tags" | "location" | "canceled_at")[];
+  perPage?: number;
+  after?: string;
+  config?: KitConfig;
+}
+
+export async function listSubscribers(
+  opts: ListSubscribersOptions = {},
+): Promise<{ subscribers: KitSubscriberSummary[]; pagination: KitPagination }> {
+  const params = new URLSearchParams();
+  if (opts.createdAfter) params.set("created_after", opts.createdAfter);
+  if (opts.status) params.set("status", opts.status);
+  if (opts.include && opts.include.length > 0) params.set("include", opts.include.join(","));
+  if (opts.perPage) params.set("per_page", String(opts.perPage));
+  if (opts.after) params.set("after", opts.after);
+  const qs = params.toString();
+  const data = await kitFetch<{ subscribers: KitSubscriberSummary[]; pagination: KitPagination } | undefined>(
+    `/subscribers${qs ? `?${qs}` : ""}`,
+    { config: opts.config },
+  );
+  return { subscribers: data?.subscribers ?? [], pagination: data?.pagination ?? {
+    has_previous_page: false,
+    has_next_page: false,
+    start_cursor: null,
+    end_cursor: null,
+    per_page: opts.perPage ?? 500,
+  } };
+}
+
+// ---------------------------------------------------------------------------
 // Cliques por link — o achado que destrava o #463 (ver docstring do módulo)
 // ---------------------------------------------------------------------------
 

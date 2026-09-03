@@ -58,6 +58,28 @@ export interface KitDiariaChannelConfig {
    * segmento de apoio) antes de abrir para os cadastros nativos.
    */
   audience_tag?: string;
+  /**
+   * #7357 — data de corte (`yyyy-mm-dd`) para RESGATAR cadastros nativos do
+   * Kit que ficaram presos sem receber a edição: nenhum código taggeia no
+   * cadastro (`subscribeToKit` grava custom fields e inscreve na sequence de
+   * boas-vindas, mas nunca taggeia — achado da issue), então quem se cadastra
+   * depois do switchover `SUBSCRIBE_BACKEND = "kit"` nos 3 workers e antes de
+   * uma rodada manual de tagueamento (ondas 0/1, #6504) não está em `rampa-kit`
+   * e não recebe a edição diária por canal nenhum.
+   *
+   * Decisão do editor (#7357): "filtro por data, sem tag nenhuma" — mas o
+   * `POST /v4/broadcasts` real só aceita `subscriber_filter` do tipo `tag` ou
+   * `segment` (confirmado contra a doc oficial; não existe tipo `date`, e não
+   * há endpoint de CRIAÇÃO de segment na API pública). Por isso este campo não
+   * vira um operador de data no `subscriber_filter` em si — ele governa QUEM
+   * `kit-diaria-stage5-dispatch.ts` tagueia com `audience_tag` (a MESMA tag,
+   * nunca uma nova) antes de montar o filtro, resgatando automaticamente quem
+   * foi criado on/after esta data e ainda não tem a tag. Ver a docstring de
+   * `listActiveSubscribersCreatedAfter` (`kit-broadcasts.ts`) para o porquê
+   * completo. Ausente/vazio ⇒ resgate por data desligado (só a tag conta,
+   * comportamento anterior ao #7357).
+   */
+  subscriber_filter_created_after?: string;
 }
 
 /** Estado persistido por edição — espelho de `brevo-diaria-published.json`. */
@@ -227,4 +249,34 @@ export function checkAudienceTagHasMembers(tagName: string, memberCount: number)
     };
   }
   return { ok: true };
+}
+
+/**
+ * Resolve a data de corte do resgate por data (#7357) a partir da config,
+ * ou `undefined` se ausente/vazia — o mesmo padrão de trim-and-check-empty já
+ * usado para `audience_tag` em `decideKitChannelDispatch` acima. `undefined`
+ * é o desligado: o caller pula o passo de resgate inteiro, comportamento
+ * idêntico ao pré-#7357 (só a tag conta).
+ */
+export function resolveCreatedAfterCutoff(config: KitDiariaChannelConfig | undefined | null): string | undefined {
+  const raw = config?.subscriber_filter_created_after;
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  return trimmed === "" ? undefined : trimmed;
+}
+
+/**
+ * Filtra, dos candidatos "criados on/after o corte", só quem AINDA NÃO tem a
+ * tag de audiência — pura, sem I/O, pra ser testável sem tocar a API do Kit.
+ *
+ * Não reaplicar a tag em quem já a tem não é só uma otimização: `tagSubscriber`
+ * é uma chamada de rede por assinante (`kit-diaria-stage5-dispatch.ts` chama
+ * isto todo dia), e os membros das ondas 0/1 (#6504) — já tagueados
+ * manualmente — não precisam de mais nada.
+ */
+export function subscribersNeedingBackfillTag(
+  candidates: { id: number; tagIds: number[] }[],
+  audienceTagId: number,
+): number[] {
+  return candidates.filter((c) => !c.tagIds.includes(audienceTagId)).map((c) => c.id);
 }

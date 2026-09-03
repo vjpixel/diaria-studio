@@ -55,6 +55,8 @@ import {
   findTagIdByName,
   buildTagFilter,
   countKitTagMembers,
+  listActiveSubscribersCreatedAfter,
+  tagSubscriber,
   KIT_TEST_SEND_TAG_NAME,
 } from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
@@ -63,6 +65,8 @@ import {
   decideKitChannelDispatch,
   resolveAudienceTagId,
   checkAudienceTagHasMembers,
+  resolveCreatedAfterCutoff,
+  subscribersNeedingBackfillTag,
   type KitDiariaChannelConfig,
   type KitDiariaPublished,
 } from "./lib/kit-diaria-channel.ts";
@@ -96,6 +100,18 @@ export type Stage5KitResult =
        * deve saber que esta camada de verificação não pôde confirmar.
        */
       audienceFilterVerified?: boolean;
+      /**
+       * #7357 — quantos candidatos "criados on/after o corte de
+       * `subscriber_filter_created_after`, ainda sem a tag" foram tagueados
+       * NESTE dispatch antes de montar o `subscriber_filter`. `undefined`
+       * quando o corte não está configurado (resgate por data desligado);
+       * `0` é um resultado normal (ninguém preso desde o último dispatch).
+       */
+      backfillTaggedCount?: number;
+      /** #7357 — falhas por assinante ao tagueá-lo (fail-soft: cada uma vira
+       *  1 entrada aqui, nunca aborta o dispatch — a próxima rodada tenta de
+       *  novo, mesmo assinante ainda aparecerá como candidato). */
+      backfillErrors?: string[];
     };
 
 export function resolveKitDiariaStatePath(editionDir: string): string {
@@ -170,6 +186,20 @@ export interface Stage5KitDeps {
    */
   countTagMembers(tagId: number): Promise<number>;
   /**
+   * #7357 — lista candidatos ao resgate por data: ativos, criados on/after o
+   * corte configurado, com a tag membership já embutida (pra
+   * `subscribersNeedingBackfillTag` decidir quem precisa ser tagueado sem
+   * mais 1 chamada por assinante). Só é chamada quando `resolveCreatedAfterCutoff`
+   * devolve uma data — ver a docstring de `listActiveSubscribersCreatedAfter`
+   * (`kit-broadcasts.ts`) para a parede de plataforma que motiva este desenho.
+   */
+  listCreatedAfterCandidates(createdAfterDate: string): Promise<{ id: number; tagIds: number[] }[]>;
+  /** #7357 — aplica `audience_tag` (a MESMA tag, resolvida em `tagCheck.tagId`)
+   *  a UM assinante que ficou preso pelo corte de data. Idempotente do lado
+   *  do Kit (reaplicar uma tag já presente é um no-op seguro), mas o caller
+   *  só chama para quem `subscribersNeedingBackfillTag` já filtrou. */
+  tagSubscriber(tagId: number, subscriberId: number): Promise<void>;
+  /**
    * #6582 — releitura pós-`createBroadcast` (mesma disciplina do #573: 2xx
    * não implica efeito). Verifica que o `subscriber_filter` de fato pegou —
    * ver a ressalva de "não confirmado ao vivo" em
@@ -226,6 +256,8 @@ export function productionDeps(rootDir: string = ROOT): Stage5KitDeps {
     writeState: writeKitDiariaState,
     findTagId: (name) => findTagIdByName(name),
     countTagMembers: (tagId) => countKitTagMembers(tagId),
+    listCreatedAfterCandidates: (createdAfterDate) => listActiveSubscribersCreatedAfter(createdAfterDate),
+    tagSubscriber: (tagId, subscriberId) => tagSubscriber(tagId, subscriberId),
     getBroadcast: (id) => getBroadcast(id),
     buildPayload: (editionDir) => {
       const content = extractContent(editionDir);
@@ -319,6 +351,52 @@ export async function runStage5KitDispatch(
   if (!tagCheck.ok) {
     deps.log(`pulado: ${tagCheck.reason}`);
     return { status: "skipped", reason: tagCheck.reason };
+  }
+
+  // #7357 — resgate por data: quem foi criado on/after o corte configurado
+  // e ainda não tem a tag de audiência é tagueado AGORA, antes de contar
+  // membros/montar o filtro — nunca em `--send-test` (a tag ali é a de teste,
+  // sem relação com o resgate de produção). Fail-soft por assinante: um erro
+  // isolado não aborta o dispatch, só fica pra próxima rodada resgatar.
+  let backfillTaggedCount: number | undefined;
+  let backfillErrors: string[] | undefined;
+  // #7370 (achado do fleet review pré-merge, P1): `--dry-run` promete não
+  // tocar em nada, mas o backfill abaixo é escrita real (`tagSubscriber`) na
+  // API do Kit — sem o guard `!opts.dryRun`, rodar em preview ainda assim
+  // taggeava assinantes reais com a tag de produção. `countTagMembers` (mais
+  // abaixo) continua rodando incondicionalmente pois é só leitura.
+  if (!opts.sendTest && !opts.dryRun) {
+    const cutoff = resolveCreatedAfterCutoff(deps.readPlatformConfig().kit_diaria);
+    if (cutoff) {
+      let candidates: { id: number; tagIds: number[] }[];
+      try {
+        candidates = await deps.listCreatedAfterCandidates(cutoff);
+      } catch (e) {
+        // Fail-soft (mesma disciplina da releitura pós-dispatch abaixo): o
+        // resgate por data é um passo ADICIONAL sobre o caminho tag-only já
+        // funcional — falha dele não deve impedir o envio de hoje pra quem já
+        // está na tag. Reporta como erro no resultado, segue o dispatch.
+        backfillErrors = [`listCreatedAfterCandidates: ${(e as Error).message}`];
+        deps.log(`aviso: resgate por data (corte ${cutoff}) falhou ao listar candidatos: ${(e as Error).message}`);
+        candidates = [];
+      }
+      const toTag = subscribersNeedingBackfillTag(candidates, tagCheck.tagId);
+      const errors: string[] = backfillErrors ?? [];
+      let tagged = 0;
+      for (const subscriberId of toTag) {
+        try {
+          await deps.tagSubscriber(tagCheck.tagId, subscriberId);
+          tagged += 1;
+        } catch (e) {
+          errors.push(`tagSubscriber(${subscriberId}): ${(e as Error).message}`);
+        }
+      }
+      backfillTaggedCount = tagged;
+      if (errors.length > 0) backfillErrors = errors;
+      if (tagged > 0) {
+        deps.log(`resgate por data (corte ${cutoff}): ${tagged}/${toTag.length} assinante(s) tagueado(s).`);
+      }
+    }
   }
 
   // #6582 — guard de invariante: tag RESOLVIDA (id válido) mas VAZIA (0
@@ -534,6 +612,8 @@ export async function runStage5KitDispatch(
     creditoSubstituido,
     residuoBeehiiv,
     audienceFilterVerified,
+    backfillTaggedCount,
+    backfillErrors,
   };
 }
 
