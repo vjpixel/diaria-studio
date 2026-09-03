@@ -8,8 +8,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { MetricDef, Janela, Meta, MetaStatus } from "../scripts/lib/metrics/registry.ts";
+import type { MetricDef, Janela } from "../scripts/lib/metrics/registry.ts";
 import { METRICAS } from "../scripts/lib/metrics/registry.ts";
+import type { Meta, MetaStatus } from "../scripts/lib/metrics/metas.ts";
 import {
   METRICS_HEALTH_THRESHOLDS,
   assertQuedaMinAbsCobreUnidades,
