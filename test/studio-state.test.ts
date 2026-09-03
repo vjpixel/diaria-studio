@@ -216,11 +216,29 @@ describe("listEditionSummaries (#3555)", () => {
   it("marca gatesPending [4] quando stage 4 tem prereqs prontos e output ausente", () => {
     const { root, cleanup } = setupRoot();
     try {
-      // #6731: Stage 4 também exige o output do Stage 3 (04-d1-1x1.jpg) no prereq —
-      // sem ele, gate 4 não deve ser marcado ainda (Stage 3 pendente).
-      makeEditionFiles(root, "260716", ["02-reviewed.md", "03-social.md", "04-d1-1x1.jpg"]);
+      // #7220: o prereq do Stage 3 é a sentinela `.step-3-done.json`, não mais
+      // `04-d1-1x1.jpg` (1ª de quatro imagens, escrita no MEIO do Stage 3 —
+      // ver docstring de find-current-edition.ts).
+      makeEditionFiles(root, "260716", [
+        "02-reviewed.md",
+        "03-social.md",
+        "_internal/.step-3-done.json",
+      ]);
       const summaries = listEditionSummaries(root);
       assert.deepEqual(summaries[0].gatesPending, [4]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#7220/#7254: Stage 3 incompleto (só 04-d1-1x1.jpg, sem sentinela) NÃO marca gate 4 pendente — mudança deliberada, não afirma prontidão que não existe. A edição continua listada (não desaparece do Studio).", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      makeEditionFiles(root, "260716", ["02-reviewed.md", "03-social.md", "04-d1-1x1.jpg"]);
+      const summaries = listEditionSummaries(root);
+      assert.equal(summaries.length, 1);
+      assert.equal(summaries[0].edition, "260716");
+      assert.deepEqual(summaries[0].gatesPending, []);
     } finally {
       cleanup();
     }
@@ -574,7 +592,12 @@ describe("buildStudioState (#3555)", () => {
   it("agrega gatesPending de múltiplas edições", () => {
     const { root, cleanup } = setupRoot();
     try {
-      makeEditionFiles(root, "260710", ["02-reviewed.md", "03-social.md", "04-d1-1x1.jpg"]); // gate 4 (#6731: exige tb output do Stage 3)
+      // #7220: sentinela `.step-3-done.json`, não mais `04-d1-1x1.jpg` (#6731 exigia tb output do Stage 3)
+      makeEditionFiles(root, "260710", [
+        "02-reviewed.md",
+        "03-social.md",
+        "_internal/.step-3-done.json",
+      ]); // gate 4
       makeEditionFiles(root, "260711", [
         "_internal/.step-5-done.json", // gate 6 prereq
       ]);

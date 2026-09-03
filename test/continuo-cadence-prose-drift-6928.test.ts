@@ -29,7 +29,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 
@@ -108,6 +108,22 @@ export function violatesCadenceProse(line: string): boolean {
   return AMBIGUOUS_PATTERNS.some((p) => p.test(bare));
 }
 
+/**
+ * Normaliza separador de path (`\` no Windows) para `/` antes de comparar
+ * contra sufixos hardcoded com `/` — sem isso, `endsWith("a/b.md")` nunca
+ * casa um caminho montado por `path.join()` no Windows (#7132). `readFileSync`/
+ * `readdirSync` continuam recebendo o path original (nativo do SO); esta
+ * função serve só para comparação textual.
+ *
+ * `platformSep` é injetável (default `path.sep`, o real do SO rodando o
+ * teste) só para permitir o teste unitário abaixo simular o separador do
+ * Windows a partir de qualquer plataforma — em produção, chamar sempre com 1
+ * argumento.
+ */
+export function toPosixPath(f: string, platformSep: string = sep): string {
+  return platformSep === "/" ? f : f.split(platformSep).join("/");
+}
+
 function listFiles(dir: string, exts: string[]): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir)) {
@@ -129,11 +145,11 @@ describe("continuo-cadence-prose-drift-6928 (#6928)", () => {
 
   it("varre arquivos de prosa do hermes/ (sanidade da própria varredura)", () => {
     assert.ok(
-      proseFiles.some((f) => f.endsWith("hermes-diaria-continuo/SKILL.md")),
+      proseFiles.some((f) => toPosixPath(f).endsWith("hermes-diaria-continuo/SKILL.md")),
       "SKILL.md tem que estar no escopo da varredura",
     );
     assert.ok(
-      proseFiles.some((f) => f.endsWith("scripts/continuo-pr-review.sh")),
+      proseFiles.some((f) => toPosixPath(f).endsWith("scripts/continuo-pr-review.sh")),
       "continuo-pr-review.sh tem que estar no escopo da varredura",
     );
   });
@@ -233,5 +249,31 @@ describe("continuo-cadence-prose-drift-6928 — matching por CLASSE (#6950 findi
     assert.equal(violatesCadenceProse("a reunião é às 12:15 de terça"), false, "horário não é razão de cadência");
     assert.equal(violatesCadenceProse("foram 98 requisições no tick"), false, "contagem sem unidade de tempo não é cadência");
     assert.equal(violatesCadenceProse("o teto é de 10 unidades"), false, "número solto não é cadência");
+  });
+});
+
+describe("continuo-cadence-prose-drift-6928 — toPosixPath (#7132)", () => {
+  it("reproduz o bug original: endsWith('a/b') nunca casa um path com separador Windows", () => {
+    const windowsPath = "C:\\repo\\hermes\\skills\\hermes-diaria-continuo\\SKILL.md";
+    // Sem normalizar — exatamente o que a asserção fazia antes do #7132.
+    assert.equal(
+      windowsPath.endsWith("hermes-diaria-continuo/SKILL.md"),
+      false,
+      "sanidade: reproduz o bug — comparação crua falha no path estilo Windows",
+    );
+  });
+
+  it("normaliza separador Windows (`\\\\`) para `/` antes de comparar", () => {
+    const windowsPath = "C:\\repo\\hermes\\skills\\hermes-diaria-continuo\\SKILL.md";
+    assert.equal(
+      toPosixPath(windowsPath, "\\").endsWith("hermes-diaria-continuo/SKILL.md"),
+      true,
+      "path normalizado tem que casar o sufixo com '/'",
+    );
+  });
+
+  it("é no-op em separador POSIX (`/`) — não quebra o caminho Linux/CI já correto", () => {
+    const posixPath = "/repo/hermes/skills/hermes-diaria-continuo/SKILL.md";
+    assert.equal(toPosixPath(posixPath, "/"), posixPath);
   });
 });

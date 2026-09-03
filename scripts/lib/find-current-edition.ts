@@ -15,8 +15,11 @@
  *   - Stage 3: prereq `_internal/01-approved.json`; output esperado
  *       `_internal/.step-3-done.json` (sentinela — mesmo motivo do Stage 2,
  *       #7186: `04-d1-1x1.jpg` é só a 1ª das quatro imagens de destaque).
- *   - Stage 4 (Revisão, #1694): prereqs `02-reviewed.md` e `03-social.md`;
- *       output esperado `_internal/.step-4-done.json`.
+ *   - Stage 4 (Revisão, #1694): prereqs `02-reviewed.md`, `03-social.md` e
+ *       `_internal/.step-3-done.json` (sentinela do Stage 3 — #7220: era
+ *       `04-d1-1x1.jpg`, arquivo de conteúdo escrito no MEIO do Stage 3,
+ *       mesma classe de falso-positivo do #7186); output esperado
+ *       `_internal/.step-4-done.json`.
  *   - Stage 5 (Publicação, #1694): prereq `_internal/.step-4-done.json`;
  *       output esperado `_internal/06-social-published.json` (escrito após social
  *       dispatch; 05-published.json é escrito mid-stage e causaria falso-done se
@@ -58,12 +61,17 @@ const STAGE_REQUIREMENTS: Record<Stage, StageRequirements> = {
   },
   4: {
     // Stage 4 = Revisão editorial assistida (#1694)
-    // #6731: 02-reviewed.md/03-social.md são artefatos do STAGE 2 — sem o
-    // output do Stage 3 (imagens) no prereq, o detector marca "gate 4 em
-    // progresso" (e dispara notificação de "Gate pendente") assim que o
-    // Stage 2 termina, edições inteiras antes do Stage 3 sequer rodar.
-    // "04-d1-1x1.jpg" é o mesmo sentinel já usado como output de Stage 3.
-    prereq: ["02-reviewed.md", "03-social.md", "04-d1-1x1.jpg"],
+    // #6731: 02-reviewed.md/03-social.md são artefatos do STAGE 2 — sem um
+    // sinal do Stage 3 (imagens) no prereq, o detector marcava "gate 4 em
+    // progresso" (e disparava notificação de "Gate pendente") assim que o
+    // Stage 2 terminava, edições inteiras antes do Stage 3 sequer rodar.
+    // #7220: o sinal do Stage 3 usado aqui era "04-d1-1x1.jpg" — a 1ª de
+    // quatro imagens de destaque, escrita no MEIO do Stage 3. Se o Stage 3
+    // morre logo após gerá-la (antes de d2/d3), o prereq batia igual, com o
+    // Stage 3 genuinamente incompleto. Trocado pela sentinela
+    // `.step-3-done.json` (#7186), a mesma usada como output do Stage 3 —
+    // só existe quando o Stage 3 de fato terminou.
+    prereq: ["02-reviewed.md", "03-social.md", "_internal/.step-3-done.json"],
     output: ["_internal/.step-4-done.json"],
   },
   5: {
