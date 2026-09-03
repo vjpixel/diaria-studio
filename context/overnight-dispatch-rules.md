@@ -721,3 +721,51 @@ Custa uma varredura de `gh issue list` + 1 `gh issue view` por dependência
 única referenciada — não um subagente. Rodar 1× por rodada, no início da
 classificação, é suficiente (o mecanismo é idempotente — reconciliar de novo
 sem nada ter mudado não produz nenhum `gh issue edit`).
+
+## 25. Gate de drift de label de decisão (#5892) — consolidado overnight/develop (#7128)
+
+Antes de compilar o relatório (mesma filosofia dos demais gates acima),
+rodar `npx tsx scripts/check-decision-label-drift-gate.ts --plan
+{plan_path}` — ver "Onde plugar" no fim deste item pro `{plan_path}` de
+cada skill.
+
+Usa a lógica de `scripts/lib/decision-label-drift.ts` (#5589) pra detectar
+drift entre a prosa da rodada/sessão e as labels estruturais atuais (ex:
+comentário diz "aguardando pré-requisito" mas `not-this-week` ausente;
+"trade-off-real" em prosa mas label `trade-off-real` ausente; "bloqueio
+externo" mas `external-blocker` ausente; **prosa de guard de execução —
+"guard de publicação", "fora do escopo do overnight", "envio real" — mas
+nem `develop-track` nem `bloqueio-execucao` aplicada, #5955**).
+
+**Duas fontes de prosa, com alcances diferentes (#5955):** comentários das
+issues `in_round: true`, como sempre; e os campos `motivo`/`scope_note` do
+`plan.json` de **todas** as issues do plano, **inclusive `in_round:
+false`** — que são justamente as excluídas antes do despacho
+(`bloqueada-externa`, `fora-do-escopo`, `ambígua/trade-off-real`), ou
+seja, as mais propensas a carregar um veredito que nunca virou label. A
+coluna `fonte` no output diz de qual das duas veio cada achado.
+
+**Só bloqueia por issue que AINDA classifica como `overnight`** (#5955):
+se a issue já está roteada pra outro track — `on-hold`,
+`external-blocker`, marcador `aguardando-ate:` — a label que falta não
+muda o roteamento, então não trava a compilação (o CLI de auditoria
+`check-decision-label-drift.ts` continua reportando esses casos).
+
+`exit 0` (nenhum drift) → seguir para o próximo passo normal da skill.
+`exit 1` (drift detectado) → listar achados com issue, padrão, labels
+esperadas e trecho do comentário; **aplicar as labels estruturais
+faltantes** (`gh issue edit N --add-label ...` — reconciliação de
+auditoria sobre labels arbitrárias apontadas pelo script, não roteamento
+de track desta sessão) nas issues reportadas antes de continuar — o gate
+é auditoria (heurística por regex, não NLP), então a decisão final de
+aplicar é humana, mas o relatório NÃO compila enquanto houver achados não
+resolvidos. Sem `gh`/rede, o comando degrada sozinho pra warning + `exit 0`
+(fail-soft #738); `--skip-gh-checks` faz o mesmo proativamente.
+
+**Onde plugar:** mesmo script, mesmo comportamento nas duas skills — só o
+`{plan_path}` e o "próximo passo normal" mudam:
+- **Overnight** (passo 0.8 da Fase 2): `{plan_path}` =
+  `data/overnight/{AAMMDD}/plan.json`; próximo passo = passo 1 da mesma
+  fase.
+- **Develop**: `{plan_path}` = `data/develop/{AAMMDD}/plan.json`; próximo
+  passo = compilação do relatório.

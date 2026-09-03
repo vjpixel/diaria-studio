@@ -8,10 +8,18 @@ Não é lido pelo top-level durante a pipeline; existe só como referência
 para quem quiser entender a origem de uma regra operacional que ficou nos
 playbooks.
 
+**Desde #7128, também recebe narrativa extraída de
+`.claude/skills/diaria-overnight/SKILL.md`** — mesmo precedente, mesmo
+formato de âncora, arquivo diferente do orchestrator mas mesma família de
+"prompt lido por sessão/subagente que não deveria carregar a história do
+incidente que originou cada regra". Ver a seção dedicada no fim deste
+arquivo.
+
 **O que NÃO está aqui:** instrução operacional (o que fazer, GATE-BLOCKING
 vs WARN-ONLY, seletor de Chrome, exit codes, ordem de passos) — isso
-permanece integralmente nos playbooks. Cada seção abaixo é referenciada de
-volta pelo playbook de origem via um link `#stage-N-slug`.
+permanece integralmente nos playbooks/skills de origem. Cada seção abaixo
+é referenciada de volta pela fonte via um link `#stage-N-slug` (playbooks)
+ou `#overnight-slug` (skill overnight).
 
 ---
 
@@ -307,3 +315,43 @@ fora de ordem de divulgação.
 
 (Sem narrativa de incidente extraída nesta rodada — ver diff do PR #4816
 para o que foi avaliado.)
+
+---
+
+## `.claude/skills/diaria-overnight/SKILL.md` (#7128)
+
+### overnight-3037-ctr-anomaly-260706
+
+Incidente de referência: 260706/07 (#3037/#3038) — um `AskUserQuestion`
+sobre "criar uma issue pra essa anomalia de CTR?" travou a rodada por ~8h
+porque o editor estava dormindo; o watchdog externo registrou 9 stall
+events falsos-positivos até ele acordar e responder.
+
+### overnight-5831-pr-terminal-260820
+
+Achado ao vivo que motivou o gate 0.7 (rodada `/diaria-develop` 260820):
+PR #5823 (issue #5815) ficou ~4h aberto, CI verde, 0 reviews, nunca
+mergeado — sem sinal de erro, sem timeout, sem ninguém notar até o editor
+perguntar.
+
+### overnight-6259-bloqueio-caducado-260826
+
+Achado ao vivo que motivou o gate 0.9 (rodada 260826): 4 de 5 issues
+`pulada` motivo `pr-em-voo` já tinham o PR citado MERGED havia horas
+quando a rodada declarou convergência.
+
+### overnight-observability-eventos-260811
+
+Achado que motivou a checagem de instrumentação do relatório (rodada
+260811): 0 eventos `subagent_metrics`/`coordinator_tokens_estimate` e só
+1 `review_metrics`, sem nenhum sinal disso no relatório final até uma
+auditoria manual.
+
+### overnight-5521-titulo-divergente-260816e
+
+Achado que originou o guard de contagem do título do relatório (#5521): a
+rodada 260816e anunciou "10 unidades, 13 issues fechadas" para uma tabela
+de 13 linhas cobrindo 17 issues — e `plan.json` trazia uma TERCEIRA
+contagem (11 mergeadas/8 PRs), por ter parado de ser atualizado no meio
+da rodada; a tabela do relatório é a fonte que bate com o git, então é
+contra ela que o título é conferido.
