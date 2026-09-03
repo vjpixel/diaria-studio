@@ -95,6 +95,26 @@ Suspeitas por construção:
 
 > **Medido em 03/09/2026:** das 12 issues bloqueadas, **7 não estavam bloqueadas** — e em 4 casos a correção já estava escrita em comentário, sem a label ter sido removida. Uma delas teve o bloqueio errado **reafirmado por duas rodadas consecutivas**, cada uma lendo a label em vez do histórico. Ver #7270.
 
+#### A classificação envelhece DURANTE a rodada — reavalie, não só na triagem
+
+Triar uma vez no início não basta: a rodada **muda o próprio estado que a classificação descreve**. Toda issue fechada pode destravar outra, e toda descoberta pode travar uma.
+
+**Gatilhos de reavaliação — sempre que um destes acontecer, revise quem ele afeta:**
+
+| gatilho | o que revisar |
+|---|---|
+| **issue fechada nesta rodada** | quem a citava como dependência ou pré-requisito |
+| **PR mergeado** | issues cujo bloqueio era "o código não existe" |
+| **resposta do editor no briefing** | issues em `bloqueada` por decisão pendente |
+| **credencial/conta destravada** | issues em `external-blocker` que dependiam dela |
+| **descoberta de bloqueio novo** | a issue em execução passa a (b), com o bloqueio nomeado |
+
+**Ao reavaliar, corrigir o MECANISMO, não só a prosa.** Comentário explicando que o bloqueio caiu **não desbloqueia nada** — `classifyExecTrack` lê a label. Remover a label e rodar `npx tsx scripts/route-issue.ts` é o que muda o estado.
+
+> **É a falha mais cara da rodada anterior.** A #7124 teve a dependência (#6798) fechada às 22:14 **no meio da rodada**, e a label ficou — a issue virou mecanicamente invisível enquanto uma sessão já a implementava. Em quatro outros casos a correção estava escrita em comentário e a label continuou posta. **Prosa corrige, mecanismo não** — ver #7270, que pede marcador obrigatório e revisão periódica justamente por isso.
+
+Na varredura final, antes de declarar o fim: **reconferir as bloqueadas uma última vez.** Uma rodada que fecha 100 issues quase certamente destravou alguma que ficou marcada como (b) por um bloqueio que já não existe.
+
 ### VERIFICAÇÃO — meça na origem
 
 > **Antes de afirmar um fato que vai gerar issue, decisão ou mensagem a outra sessão: meça na fonte — e prefira a fonte que o SUJEITO ESCREVE, não a que você lê. Ausência de sinal numa fonte não é ausência de sinal.**
