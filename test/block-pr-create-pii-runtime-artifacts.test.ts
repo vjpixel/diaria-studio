@@ -13,6 +13,7 @@ import {
   isAllowlistedEmailLine,
   resolveRepoRootCandidates,
   resolveGitRoot,
+  cdTargetFromCommand,
 } from "../.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs";
 
 // #6753: guard mecânico contra `gh pr create` quando a branch carrega
@@ -527,5 +528,95 @@ describe("#7241 — âncora da regressão: worktree vence o checkout principal",
       "C:/repo",
       "sem o fix, o guard inspecionava o checkout principal e julgava a branch errada",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #7241 (revisão da PR #7256) — `cd` explícito do próprio comando.
+//
+// A doc do Claude Code garante que `cwd` do payload "follows Claude ... after
+// Claude runs `cd`", mas o PreToolUse dispara ANTES da execução: num
+// `cd <worktree> && gh pr create` (a forma como uma sessão em worktree abre a
+// PR) o cwd do payload ainda é o ANTERIOR. Sem este candidato, o fix não
+// cobriria nem o caso real que originou a issue.
+//
+// As asserções comparam por SUFIXO normalizado, nunca por path absoluto
+// literal: `path.resolve` tem semântica diferente no Windows e no Linux (um
+// "/b" vira "C:\b" no Windows), e este teste roda nos dois.
+// ---------------------------------------------------------------------------
+
+/** Normaliza separador pra asserção de sufixo funcionar em Windows e Linux. */
+function norm(p: string | null): string {
+  return (p ?? "").replaceAll("\\", "/");
+}
+
+describe("cdTargetFromCommand (#7241)", () => {
+  const BASE = "/base/repo";
+
+  it("extrai o alvo de 'cd <dir> && gh pr create' — o caso real da issue", () => {
+    const alvo = cdTargetFromCommand(
+      'cd ".claude/worktrees/fix-7234" && gh pr create --title x',
+      BASE,
+    );
+    assert.ok(
+      norm(alvo).endsWith("/.claude/worktrees/fix-7234"),
+      `esperava terminar no worktree, veio: ${norm(alvo)}`,
+    );
+  });
+
+  it("aceita aspas simples e path sem aspas", () => {
+    assert.ok(norm(cdTargetFromCommand("cd 'wt-a' && gh pr create", BASE)).endsWith("/wt-a"));
+    assert.ok(norm(cdTargetFromCommand("cd wt-b && gh pr create", BASE)).endsWith("/wt-b"));
+  });
+
+  it("resolve path relativo contra a base", () => {
+    const alvo = cdTargetFromCommand("cd sub/dir && gh pr create", BASE);
+    assert.ok(norm(alvo).endsWith("/base/repo/sub/dir"), norm(alvo));
+  });
+
+  it("com vários cd, vale o ÚLTIMO antes do gh", () => {
+    const alvo = cdTargetFromCommand("cd primeiro && cd segundo && gh pr create", BASE);
+    assert.ok(norm(alvo).endsWith("/segundo"), norm(alvo));
+    assert.ok(!norm(alvo).endsWith("/primeiro"));
+  });
+
+  it("IGNORA cd que aparece depois do gh pr create", () => {
+    assert.equal(cdTargetFromCommand("gh pr create --title x && cd depois", BASE), null);
+  });
+
+  it("sem cd, devolve null (caso comum, não é erro)", () => {
+    assert.equal(cdTargetFromCommand("gh pr create --title x", BASE), null);
+    assert.equal(cdTargetFromCommand("", BASE), null);
+    assert.equal(cdTargetFromCommand(undefined, BASE), null);
+  });
+
+  it("'cd -' não vira candidato (destino não determinável estaticamente)", () => {
+    assert.equal(cdTargetFromCommand("cd - && gh pr create", BASE), null);
+  });
+});
+
+describe("#7241 — o cd do comando tem precedência sobre o cwd do payload", () => {
+  it("payload.cwd no checkout de origem + cd pro worktree => vence o WORKTREE", () => {
+    const HOOK_DIR = "/base/repo/.claude/hooks";
+    const PAYLOAD_CWD = "/base/repo"; // ainda o cwd anterior: o cd é inline
+    const cands = resolveRepoRootCandidates(
+      PAYLOAD_CWD,
+      HOOK_DIR,
+      "cd .claude/worktrees/fix-7234 && gh pr create --title x",
+    );
+
+    assert.ok(
+      norm(cands[0]).endsWith("/.claude/worktrees/fix-7234"),
+      `o diretório onde o gh vai rodar tem que ser o 1º candidato, veio: ${norm(cands[0])}`,
+    );
+
+    // Com os dois sendo repos git válidos, é o worktree que é escolhido.
+    const fakeGit = (_args: string[], cwd: string) => `${norm(cwd)}\n`;
+    assert.ok(norm(resolveGitRoot(cands, fakeGit as never)).endsWith("/.claude/worktrees/fix-7234"));
+  });
+
+  it("sem cd no comando, a ordem anterior continua valendo (payload.cwd primeiro)", () => {
+    const cands = resolveRepoRootCandidates("/wt", "/base/repo/.claude/hooks", "gh pr create -t x");
+    assert.equal(cands[0], "/wt");
   });
 });
