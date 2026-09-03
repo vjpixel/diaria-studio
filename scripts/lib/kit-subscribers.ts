@@ -120,6 +120,17 @@ export async function listKitSubscribersPage(
  * que trata "a gravar > 0" como falha), reler via `getSubscriberById` antes
  * de contar como divergência real, em vez de confiar cegamente nesta lista
  * logo após uma escrita.
+ *
+ * **Guard anti-fabricação (#7200, mesma classe do #6491):** `has_next_page:
+ * true` sem `end_cursor` é envelope malformado, NUNCA fim de lista
+ * silencioso — antes deste guard, esta função tratava exatamente esse caso
+ * como "acabou", que é o mesmo furo que `listAllCompletedBroadcasts`
+ * (`diaria-subscribers-ingest-kit.ts`) e `drainPages`
+ * (`kit-provider-split.ts`) já fecham. Este é o caminho que o roster do
+ * Kit (`ingestKitRoster`, #7174) consome — uma resposta truncada aqui
+ * silenciosamente subcontaria a base sem nenhum sinal de erro, o mesmo
+ * risco que o guard anti-fabricação (#6496) existe pra prevenir nos outros
+ * ingestores.
  */
 export async function listAllKitSubscribers(
   config?: KitConfig,
@@ -127,7 +138,9 @@ export async function listAllKitSubscribers(
 ): Promise<KitSubscriberSummary[]> {
   const all: KitSubscriberSummary[] = [];
   let after: string | undefined;
+  let page = 0;
   for (;;) {
+    page++;
     const { subscribers, pagination } = await listKitSubscribersPage({
       perPage: 500,
       after,
@@ -136,10 +149,15 @@ export async function listAllKitSubscribers(
       config,
     });
     all.push(...subscribers);
-    if (!pagination.has_next_page || !pagination.end_cursor) break;
+    if (!pagination.has_next_page) return all;
+    if (!pagination.end_cursor) {
+      throw new Error(
+        `[kit-subscribers] listAllKitSubscribers: página ${page} diz has_next_page=true mas não trouxe ` +
+          `end_cursor — lista truncada, abortando em vez de tratar como fim de lista (#7200/#6491).`,
+      );
+    }
     after = pagination.end_cursor;
   }
-  return all;
 }
 
 export interface CreateOrUpdateSubscriberInput {
@@ -262,7 +280,9 @@ export async function listAllFormSubscribers(
 ): Promise<KitSubscriberSummary[]> {
   const all: KitSubscriberSummary[] = [];
   let after: string | undefined;
+  let page = 0;
   for (;;) {
+    page++;
     const { subscribers, pagination } = await listFormSubscribersPage(formId, {
       perPage: 500,
       after,
@@ -270,8 +290,14 @@ export async function listAllFormSubscribers(
       config,
     });
     all.push(...subscribers);
-    if (!pagination.has_next_page || !pagination.end_cursor) break;
+    if (!pagination.has_next_page) return all;
+    if (!pagination.end_cursor) {
+      // Mesmo guard anti-fabricação de listAllKitSubscribers acima (#7200/#6491).
+      throw new Error(
+        `[kit-subscribers] listAllFormSubscribers: página ${page} diz has_next_page=true mas não trouxe ` +
+          `end_cursor — lista truncada, abortando em vez de tratar como fim de lista (#7200/#6491).`,
+      );
+    }
     after = pagination.end_cursor;
   }
-  return all;
 }

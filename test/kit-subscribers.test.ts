@@ -86,6 +86,21 @@ describe("listAllKitSubscribers", () => {
     );
     assert.equal(calls, 1);
   });
+
+  it("#7200/#6491: has_next_page=true sem end_cursor lança, nunca trata como fim de lista", async () => {
+    await assert.rejects(
+      () =>
+        withMockFetch(
+          (async () =>
+            jsonResponse(200, {
+              subscribers: [{ id: 1, email_address: "a@b.com", state: "active", created_at: "x" }],
+              pagination: { ...emptyPagination, has_next_page: true, end_cursor: null },
+            })) as typeof fetch,
+          () => listAllKitSubscribers(TEST_CONFIG),
+        ),
+      /has_next_page=true mas não trouxe end_cursor/,
+    );
+  });
 });
 
 describe("createOrUpdateSubscriber", () => {
@@ -285,5 +300,20 @@ describe("listAllFormSubscribers (#6810)", () => {
     );
     assert.equal(capturedUrls.length, 2);
     for (const url of capturedUrls) assert.match(url, /status=all/);
+  });
+
+  it("#7200/#6491: has_next_page=true sem end_cursor lança, nunca trata como fim de lista", async () => {
+    await assert.rejects(
+      () =>
+        withMockFetch(
+          (async () =>
+            jsonResponse(200, {
+              subscribers: [{ id: 1, email_address: "a@b.com", state: "inactive", created_at: "x" }],
+              pagination: { ...emptyPagination, has_next_page: true, end_cursor: null },
+            })) as typeof fetch,
+          () => listAllFormSubscribers(9839463, TEST_CONFIG),
+        ),
+      /has_next_page=true mas não trouxe end_cursor/,
+    );
   });
 });
