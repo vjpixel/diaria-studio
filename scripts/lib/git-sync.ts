@@ -171,6 +171,14 @@ export type GitSyncOutcome =
                            // mas AINDA fail-soft (proceed: true) — warn ERROR, segue
   | "checkout_failed"     // não estava em master e checkout master falhou — warn, segue
   | "sync_in_progress"    // #3423: outro syncCode() já está rodando neste checkout — warn, segue sem tocar git
+  | "worktree_refused"    // #7336: REPO_ROOT resolve dentro de um worktree de agente
+                           // (`.claude/worktrees/**`) — sync recusado ANTES de qualquer spawn git.
+                           // Sync de código só faz sentido no checkout principal; rodar `checkout
+                           // master`/merge dentro do worktree isolado de outra sessão pode mover o
+                           // HEAD dela por baixo enquanto ela trabalha (incidente #7336: commit
+                           // legítimo de uma sessão aterrissou em master local por causa disso).
+                           // Ainda fail-soft (proceed: true) — nunca bloqueia quem chamou, só não
+                           // toca o git deste worktree.
   | "preexisting_unmerged_state"; // #6800: caminho(s) UU/AA/etc JÁ presentes no índice ANTES de
                            // qualquer tentativa de stash desta chamada — sobra de um "stash pop"
                            // conflitante de uma rodada ANTERIOR (não desta). ESTADO ABSORVENTE:
@@ -778,6 +786,31 @@ function findUnmergedPaths(spawn: SpawnFn, warnings?: string[]): string[] {
   return parseUnmergedPaths(res.stdout);
 }
 
+/**
+ * Detecta se `repoRoot` resolve para dentro de um worktree de agente (#7336).
+ *
+ * `REPO_ROOT` é derivado da localização FÍSICA de `scripts/lib/git-sync.ts`
+ * (ver comentário de `REPO_ROOT` acima) — para um `git worktree` criado sob
+ * `.claude/worktrees/<nome>` (convenção usada por overnight/develop/continuo,
+ * ver `context/overnight-dispatch-rules.md` item 22 e
+ * `docs/claude-md-historical-incidents.md`), esse arquivo é uma cópia física
+ * separada dentro do worktree — então `REPO_ROOT` resolve pro próprio
+ * worktree, não pro checkout principal. Isso é justamente o sinal que
+ * distingue "estou rodando dentro do worktree isolado de uma sessão" de
+ * "estou rodando no checkout compartilhado" sem depender de `process.cwd()`
+ * (que um chamador poderia manipular ou herdar de outro processo).
+ *
+ * Padrão testado contra `/` E `\` como separador (Windows) — casa qualquer
+ * segmento de path `.claude/worktrees/` ou `.claude\worktrees\`, em qualquer
+ * posição do path (não só como sufixo), cobrindo tanto
+ * `.claude/worktrees/agent-<id>` (dispatch via `isolation: "worktree"`)
+ * quanto `.claude/worktrees/<nome>` (worktree criado manualmente, ver item 22
+ * de `context/overnight-dispatch-rules.md`).
+ */
+export function isAgentWorktreeCheckout(repoRoot: string = REPO_ROOT): boolean {
+  return /[\\/]\.claude[\\/]worktrees[\\/]/.test(repoRoot);
+}
+
 function isAlreadyUpToDate(stdout: string): boolean {
   // git merge/pull imprime "Already up to date." (EN) ou "Já está atualizado." (PT).
   // Espaços literais (não wildcards) — evita falso-positivo em strings inesperadas.
@@ -788,21 +821,69 @@ function isAlreadyUpToDate(stdout: string): boolean {
  * Sincroniza o checkout local com origin/master.
  *
  * @param spawn   Spawner injetável para testes (default: spawnSync real).
- * @param lock    Lock injetável para testes (default: `createFileLock()` real,
- *                resolvido via o MESMO `spawn` recebido — #3430 — pra que o
- *                path do lock use o mesmo spawner injetado em testes).
+ * @param lock    Lock injetável para testes. `undefined` (default: nenhum
+ *                argumento passado, ou explicitamente `undefined`) resolve
+ *                para `createFileLock(undefined, spawn)` real — mas essa
+ *                resolução acontece DENTRO do corpo da função, depois do
+ *                guard de worktree (#7336) abaixo, não como valor default do
+ *                parâmetro. Motivo: um valor default (`lock: SyncLock =
+ *                createFileLock(undefined, spawn)`) é avaliado pelo motor JS
+ *                ANTES do corpo da função rodar, mesmo quando nenhum lock é
+ *                passado explicitamente — o que faria `createFileLock` (que
+ *                spawna `git rev-parse --git-common-dir` para resolver o path
+ *                do lock, ver `resolveSharedLockPathCached`) rodar mesmo nos
+ *                casos em que o guard de worktree deveria abortar sem tocar
+ *                em nenhum comando git. Resolvido explicitamente como
+ *                `lock ?? createFileLock(undefined, spawn)` logo após o
+ *                guard, garantindo "zero spawn git" de fato quando recusado.
  *                #3423: serializa toda a chamada — se outro `syncCode()` já
  *                estiver rodando contra este checkout, retorna imediatamente
  *                sem tocar em stash/merge (evita a race TOCTOU no stash-recovery).
+ * @param repoRoot Path usado pra checagem de worktree (#7336) — injetável só
+ *                para testes; produção sempre usa `REPO_ROOT` (localização
+ *                física real deste módulo). Ver `isAgentWorktreeCheckout()`.
  */
 export function syncCode(
   spawn: SpawnFn = defaultSpawn,
-  lock: SyncLock = createFileLock(undefined, spawn),
+  lock?: SyncLock,
+  repoRoot: string = REPO_ROOT,
 ): GitSyncResult {
-  if (!lock.acquire()) {
+  // #7336: recusa ANTES de qualquer spawn git ou tentativa de lock — sync de
+  // código só faz sentido no checkout principal. Rodar dentro do worktree
+  // isolado de uma sessão de agente (`.claude/worktrees/**`) pode mover o
+  // HEAD dela por baixo enquanto ela ainda trabalha ali (incidente #7336:
+  // outra sessão rodou sync-code.ts/git-sync.ts usando o worktree isolado do
+  // agente como cwd, e um commit legítimo da sessão aterrissou em master
+  // local por estar no meio da troca de HEAD concorrente).
+  if (isAgentWorktreeCheckout(repoRoot)) {
+    const msg =
+      `[git-sync] ABORT: recusando sync — '${repoRoot}' é um worktree de agente ` +
+      `(.claude/worktrees/**), não o checkout principal (#7336). Sync de código só faz ` +
+      `sentido no checkout compartilhado — rodar checkout/stash/merge dentro do worktree ` +
+      `isolado de OUTRA sessão pode mover o HEAD dela por baixo enquanto ela trabalha. ` +
+      `Nenhum comando git foi executado. Se você pretendia sincronizar o checkout ` +
+      `principal, rode este script de lá (cwd fora de .claude/worktrees/).`;
+    return {
+      outcome: "worktree_refused",
+      message: msg,
+      branch_before: "unknown",
+      warnings: [msg],
+      proceed: true,
+      up_to_date: false,
+      commits_behind: -1,
+    };
+  }
+
+  // Resolvido DEPOIS do guard acima (#7336) — ver docstring de `lock` no
+  // parâmetro. `lock ?? ...` (não `lock ||`) trata explicitamente só
+  // `undefined`/`null` como "não passado", preservando qualquer double de
+  // teste truthy/falsy que os chamadores possam injetar.
+  const effectiveLock: SyncLock = lock ?? createFileLock(undefined, spawn);
+
+  if (!effectiveLock.acquire()) {
     const msg =
       `[git-sync] WARN: outro processo já parece estar sincronizando este checkout ` +
-      `(lock '${lock.path}' presente e ainda válido — #3423). Sync ignorado nesta ` +
+      `(lock '${effectiveLock.path}' presente e ainda válido — #3423). Sync ignorado nesta ` +
       `rodada para evitar popar/aplicar o stash de um processo concorrente. ` +
       `Edição continua com o código local atual (pode estar levemente desatualizado ` +
       `se o outro sync ainda não terminou).`;
@@ -822,7 +903,7 @@ export function syncCode(
     const out: GitSyncResult = { ...result, ...measureSyncState(spawn) };
     return out;
   } finally {
-    lock.release();
+    effectiveLock.release();
   }
 }
 

@@ -40,6 +40,7 @@ import {
   resolveSharedLockPath,
   resolveSharedLockPathCached,
   parseUnmergedPaths,
+  isAgentWorktreeCheckout,
   REPO_ROOT,
   GIT_TIMEOUT_MS,
   GIT_FETCH_TIMEOUT_MS,
@@ -71,6 +72,20 @@ const NOOP_LOCK: SyncLock = {
   acquire: () => true,
   release: () => {},
 };
+
+/**
+ * #7336: `repoRoot` fake usado por praticamente todo call site de `syncCode()`
+ * nesta suíte que NÃO está testando a detecção de worktree em si — necessário
+ * porque o default (`REPO_ROOT`, a localização física real deste módulo)
+ * resolve pra DENTRO de `.claude/worktrees/**` sempre que a suíte roda a
+ * partir do worktree isolado de um agente (o caso comum: overnight/develop/
+ * continuo despacham subagentes implementadores exatamente nesse layout —
+ * ver `context/overnight-dispatch-rules.md` item 22). Sem este override
+ * explícito, `isAgentWorktreeCheckout()` dispararia `worktree_refused` pra
+ * TODA chamada de `syncCode()` da suíte quando rodada de um worktree,
+ * mascarando os cenários que cada teste de fato quer exercitar.
+ */
+const MAIN_CHECKOUT = "/home/editor/diaria-studio";
 
 /**
  * Constrói um SpawnFn a partir de um mapa de "git <args[0]> <args[1]>" → resultado.
@@ -174,7 +189,7 @@ describe("git-sync — cenários de sucesso", () => {
       "git merge --ff-only origin/master": ok("2 files changed, 10 insertions(+)"),
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "synced");
     assert.equal(r.branch_before, "master");
     assert.equal(r.proceed, true);
@@ -189,7 +204,7 @@ describe("git-sync — cenários de sucesso", () => {
       "git merge --ff-only origin/master": ok("Already up to date."),
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "already_up_to_date");
     assert.equal(r.proceed, true);
   });
@@ -204,7 +219,7 @@ describe("git-sync — cenários de sucesso", () => {
       "git stash pop": ok("On branch master..."),
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "synced_stashed");
     assert.equal(r.proceed, true);
     assert.match(r.message, /stash/);
@@ -220,7 +235,7 @@ describe("git-sync — cenários de sucesso", () => {
       "git stash pop": ok(""),
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "already_up_to_date");
     assert.equal(r.proceed, true);
   });
@@ -237,7 +252,7 @@ describe("git-sync — dirty tree edge cases", () => {
       "git stash pop": fail("CONFLICT (content): Merge conflict in .claude/settings.json"),
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "stash_pop_failed");
     assert.equal(r.proceed, true);
     assert.ok(r.warnings.some((w) => /stash pop/i.test(w)));
@@ -251,7 +266,7 @@ describe("git-sync — dirty tree edge cases", () => {
       "git stash --include-untracked": fail("error: cannot stash"),
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "stash_failed");
     assert.equal(r.proceed, true);
     assert.ok(r.warnings.some((w) => /stash/i.test(w)));
@@ -272,7 +287,7 @@ describe("git-sync — dirty tree edge cases", () => {
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     // nada foi stashado → pop não deve ter sido chamado
     assert.equal(popCalled.length, 0, "stash pop não deve ser chamado quando nada foi stashado");
     assert.equal(r.outcome, "already_up_to_date");
@@ -297,7 +312,7 @@ describe("git-sync — dirty tree edge cases", () => {
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(popCalled.length, 0, "stash pop não deve ser chamado quando nada foi stashado");
     assert.equal(r.outcome, "synced", "outcome deve ser 'synced' (não 'synced_stashed') quando nada foi de fato stashado");
     assert.equal(r.proceed, true);
@@ -337,7 +352,7 @@ describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "stash_pop_conflict");
     assert.equal(r.proceed, true, "ainda fail-soft — nunca bloqueia a edição");
     assert.match(r.message, /ERROR/, "mensagem deve ser ERROR, mais forte que o WARN genérico");
@@ -365,7 +380,7 @@ describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "stash_pop_conflict");
     assert.equal(r.proceed, true);
     // #6668 review consolidado: no ramo defensivo (pop exit 0), NÃO afirmar
@@ -394,7 +409,7 @@ describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "stash_pop_conflict");
     assert.match(r.message, /ff.*falhou|divergência/i);
   });
@@ -421,7 +436,7 @@ describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     // Sem conseguir confirmar unmerged, cai de volta pro outcome derivado do
     // exit code do pop (comportamento pré-#6668, preservado como fallback).
     assert.equal(r.outcome, "stash_pop_failed");
@@ -445,7 +460,7 @@ describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco
       "git stash pop": ok("On branch master..."),
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "synced_stashed");
     assert.equal(r.proceed, true);
   });
@@ -488,7 +503,7 @@ describe("git-sync — #6800: estado ABSORVENTE (caminho(s) já unmerged ANTES d
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "preexisting_unmerged_state");
     assert.equal(r.proceed, true, "ainda fail-soft — nunca bloqueia a edição");
     assert.match(r.message, /ERROR/);
@@ -504,7 +519,7 @@ describe("git-sync — #6800: estado ABSORVENTE (caminho(s) já unmerged ANTES d
       "git status --porcelain": ok("AA conflito-de-add.txt"),
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "preexisting_unmerged_state");
   });
 
@@ -517,7 +532,7 @@ describe("git-sync — #6800: estado ABSORVENTE (caminho(s) já unmerged ANTES d
       "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
       "git stash pop": ok("On branch master..."),
     });
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.notEqual(r.outcome, "preexisting_unmerged_state");
     assert.equal(r.outcome, "synced_stashed");
   });
@@ -531,7 +546,7 @@ describe("git-sync — #6800: estado ABSORVENTE (caminho(s) já unmerged ANTES d
       "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
       "git stash pop": ok("On branch master..."),
     });
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.notEqual(r.outcome, "preexisting_unmerged_state");
   });
 
@@ -550,7 +565,7 @@ describe("git-sync — #6800: estado ABSORVENTE (caminho(s) já unmerged ANTES d
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "preexisting_unmerged_state");
     assert.equal(checkoutCalled, false, "não deve tentar git checkout master quando o índice já está unmerged — o comando recusaria de qualquer forma");
   });
@@ -565,7 +580,7 @@ describe("git-sync — #6800: estado ABSORVENTE (caminho(s) já unmerged ANTES d
       "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
       "git stash pop": ok("On branch master..."),
     });
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.notEqual(r.outcome, "preexisting_unmerged_state");
     assert.equal(r.outcome, "synced_stashed");
   });
@@ -618,7 +633,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "stash_partial_failure");
     assert.equal(r.proceed, true);
     assert.equal(popCalled.length, 1, "pop deve ser tentado automaticamente quando um stash foi detectado");
@@ -653,7 +668,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "stash_partial_failure_unrecovered");
     assert.equal(r.proceed, true);
     assert.equal(dropCalled.length, 0, "stash NUNCA deve ser descartado (git stash drop) quando o pop falha");
@@ -681,7 +696,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "stash_failed");
     assert.equal(r.proceed, true);
     assert.equal(popCalled.length, 0, "pop não deve ser chamado quando nenhum stash foi criado");
@@ -707,7 +722,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "stash_failed");
     assert.equal(r.proceed, true);
     assert.equal(popCalled.length, 0, "pop não deve ser chamado — nenhum stash NOVO foi criado");
@@ -721,7 +736,7 @@ describe("git-sync — cenários de falha fail-soft", () => {
       "git fetch origin": fail("fatal: unable to connect to origin"),
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "fetch_failed");
     assert.equal(r.proceed, true);
     assert.ok(r.warnings.some((w) => /fetch/i.test(w)));
@@ -737,7 +752,7 @@ describe("git-sync — cenários de falha fail-soft", () => {
       "git fetch origin": { status: null, stdout: "", stderr: "" },
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "fetch_timeout", "kill por timeout deve produzir outcome DISTINTO de fetch_failed");
     assert.equal(r.proceed, true, "fail-soft — nunca bloqueia a edição");
     assert.ok(
@@ -764,7 +779,7 @@ describe("git-sync — cenários de falha fail-soft", () => {
       })(cmd, args);
     };
 
-    syncCode(spawn, NOOP_LOCK);
+    syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(observedTimeouts.length, 1, "fetch deve ter sido chamado exatamente 1x");
     assert.equal(
       observedTimeouts[0],
@@ -786,7 +801,7 @@ describe("git-sync — cenários de falha fail-soft", () => {
       "git merge --ff-only origin/master": fail("fatal: Not possible to fast-forward, aborting."),
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "ff_failed");
     assert.equal(r.proceed, true);
     assert.ok(r.warnings.length > 0);
@@ -802,7 +817,7 @@ describe("git-sync — cenários de falha fail-soft", () => {
       "git stash pop": ok(""), // pop deve ser chamado mesmo com ff falho
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "ff_failed");
     assert.equal(r.proceed, true);
   });
@@ -819,7 +834,7 @@ describe("git-sync — cenários de falha fail-soft", () => {
       "git stash pop": fail("CONFLICT (content): Merge conflict in .claude/settings.json"),
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "ff_failed");
     assert.equal(r.proceed, true);
     // a mensagem deve mencionar AMBOS: a divergência do ff e o conflito do pop
@@ -846,7 +861,7 @@ describe("git-sync — robustez de detecção (locale + status)", () => {
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(stashCalled.length, 1, "status-fail deve forçar o caminho com stash");
     assert.equal(r.proceed, true);
     assert.ok(r.warnings.some((w) => /status falhou/i.test(w)));
@@ -867,7 +882,7 @@ describe("git-sync — robustez de detecção (locale + status)", () => {
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(popCalled.length, 0, "stash pop não deve ser chamado em PT-BR 'nada guardado'");
     assert.equal(r.outcome, "already_up_to_date");
   });
@@ -888,7 +903,7 @@ describe("git-sync — branch != master", () => {
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.branch_before, "overnight/fix-2686");
     assert.equal(checkoutCalled.length, 1, "checkout master deve ser chamado");
     assert.equal(r.outcome, "already_up_to_date");
@@ -902,7 +917,7 @@ describe("git-sync — branch != master", () => {
       "git checkout master": fail("error: Your local changes would be overwritten by checkout"),
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "checkout_failed");
     assert.equal(r.branch_before, "feat/some-feature");
     assert.equal(r.proceed, true);
@@ -963,7 +978,7 @@ describe("git-sync — #2699 item 3: diagnóstico quando rev-parse falha", () =>
       "git rev-parse --abbrev-ref HEAD": fail("fatal: not a git repository (or any of the parent directories): .git", 128),
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
 
     // rev-parse falhou → stdout vazio → branchBefore cai em "unknown" → tenta
     // checkout master (fail-soft) → mockSpawn não mapeado pra "git checkout
@@ -986,7 +1001,7 @@ describe("git-sync — #2699 item 3: diagnóstico quando rev-parse falha", () =>
       "git checkout master": fail("fatal: not a git repository", 128),
     });
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
 
     assert.equal(r.outcome, "checkout_failed");
     assert.equal(r.branch_before, "unknown");
@@ -1044,7 +1059,7 @@ describe("git-sync — #3423: TOCTOU race no stash-recovery, serializada via loc
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, alreadyHeldLock);
+    const r = syncCode(spawn, alreadyHeldLock, MAIN_CHECKOUT);
 
     assert.equal(r.outcome, "sync_in_progress");
     assert.equal(r.proceed, true);
@@ -1054,6 +1069,102 @@ describe("git-sync — #3423: TOCTOU race no stash-recovery, serializada via loc
       0,
       `nenhum comando git deveria rodar quando o lock já está adquirido — rodou: ${JSON.stringify(gitCommandsRun)}`,
     );
+  });
+
+  /**
+   * #7336: `cwd`/`REPO_ROOT` dentro de um worktree de agente
+   * (`.claude/worktrees/agent-x`) → syncCode() recusa ANTES de qualquer
+   * spawn git ou tentativa de lock. Reproduz o incidente: outra sessão
+   * rodou sync-code.ts/git-sync.ts usando o worktree isolado de um agente
+   * como cwd, movendo o HEAD dele para master por baixo enquanto a sessão
+   * dona do worktree ainda trabalhava ali.
+   */
+  it("#7336: isAgentWorktreeCheckout() detecta path com .claude/worktrees/ (posix e Windows)", () => {
+    assert.equal(
+      isAgentWorktreeCheckout("/home/editor/diaria-studio/.claude/worktrees/agent-a31a396e25a7341f7"),
+      true,
+    );
+    assert.equal(isAgentWorktreeCheckout("/home/editor/diaria-studio/.claude/worktrees/overnight-fix-7336"), true);
+    assert.equal(
+      isAgentWorktreeCheckout("C:\\Users\\editor\\diaria-studio\\.claude\\worktrees\\agent-x"),
+      true,
+    );
+    assert.equal(isAgentWorktreeCheckout("/home/editor/diaria-studio"), false);
+    assert.equal(isAgentWorktreeCheckout("/home/helios/diaria-studio"), false);
+    // Não deve casar falso-positivo por substring solta sem os separadores certos
+    assert.equal(isAgentWorktreeCheckout("/home/editor/not-claude-worktrees-dir"), false);
+  });
+
+  it("#7336: cwd dentro de .claude/worktrees/agent-x → 'worktree_refused', ZERO comandos git, lock nunca tentado", () => {
+    const gitCommandsRun: string[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      gitCommandsRun.push([cmd, ...args].join(" "));
+      return ok("");
+    };
+    const lockNeverTried: SyncLock = {
+      path: "/fake/.diaria-sync.lock",
+      acquire: () => {
+        throw new Error("lock.acquire() nunca deveria ser chamado dentro de um worktree de agente (#7336)");
+      },
+      release: () => {
+        throw new Error("lock.release() nunca deveria ser chamado dentro de um worktree de agente (#7336)");
+      },
+    };
+
+    const r = syncCode(spawn, lockNeverTried, "/home/editor/diaria-studio/.claude/worktrees/agent-a31a396e25a7341f7");
+
+    assert.equal(r.outcome, "worktree_refused");
+    assert.equal(r.proceed, true);
+    assert.match(r.message, /worktree/i);
+    assert.equal(
+      gitCommandsRun.length,
+      0,
+      `nenhum comando git deveria rodar dentro de um worktree de agente — rodou: ${JSON.stringify(gitCommandsRun)}`,
+    );
+  });
+
+  it("#7336: SEM lock explícito (produção real, sync-code.ts chama syncCode() com 0-1 args) → ainda ZERO spawns git dentro de worktree", () => {
+    // Regressão-alvo específica: um parâmetro default `lock: SyncLock =
+    // createFileLock(undefined, spawn)` é avaliado pelo motor JS ANTES do
+    // corpo da função rodar — mesmo quando nenhum lock é passado. Isso faria
+    // `createFileLock` (que spawna `git rev-parse --git-common-dir` pra
+    // resolver o path do lock) rodar MESMO quando o guard de worktree abaixo
+    // deveria abortar sem tocar em nenhum comando git — contradizendo tanto a
+    // mensagem ("Nenhum comando git foi executado") quanto o teste anterior,
+    // que só passa porque injeta um lock EXPLÍCITO (não exercita o caminho
+    // de produção real, onde sync-code.ts chama `syncCode()` sem 2º/3º args).
+    // Este teste NÃO passa nenhum lock — exercita o `lock ?? createFileLock(...)`
+    // resolvido DENTRO do corpo, depois do guard.
+    const gitCommandsRun: string[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      gitCommandsRun.push([cmd, ...args].join(" "));
+      return ok("/fake/.git");
+    };
+
+    const r = syncCode(spawn, undefined, "/home/editor/diaria-studio/.claude/worktrees/agent-a31a396e25a7341f7");
+
+    assert.equal(r.outcome, "worktree_refused");
+    assert.equal(
+      gitCommandsRun.length,
+      0,
+      `nenhum comando git deveria rodar — inclusive a resolução do lock default (createFileLock) — ` +
+        `quando o guard de worktree dispara SEM lock explícito injetado. Rodou: ${JSON.stringify(gitCommandsRun)}`,
+    );
+  });
+
+  it("#7336: cwd no checkout principal (sem .claude/worktrees no path) → NÃO recusa, segue o fluxo normal", () => {
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("master"),
+      "git fetch origin": ok(""),
+      "git status --porcelain": ok(""),
+      "git merge --ff-only origin/master": ok("Updating abc123..def456\nFast-forward"),
+      "git rev-list --count HEAD..origin/master": ok("0"),
+    });
+
+    const r = syncCode(spawn, NOOP_LOCK, "/home/editor/diaria-studio");
+
+    assert.notEqual(r.outcome, "worktree_refused");
+    assert.equal(r.outcome, "synced");
   });
 
   it("lock livre → syncCode adquire, roda normalmente, e libera ao final (sucesso)", () => {
@@ -1077,7 +1188,7 @@ describe("git-sync — #3423: TOCTOU race no stash-recovery, serializada via loc
       "git merge --ff-only origin/master": ok("Already up to date."),
     });
 
-    const r = syncCode(spawn, lock);
+    const r = syncCode(spawn, lock, MAIN_CHECKOUT);
 
     assert.equal(r.outcome, "already_up_to_date");
     assert.equal(acquireCalls.length, 1, "lock deve ser adquirido exatamente 1x");
@@ -1099,7 +1210,7 @@ describe("git-sync — #3423: TOCTOU race no stash-recovery, serializada via loc
       "git checkout master": fail("error: Your local changes would be overwritten by checkout"),
     });
 
-    const r = syncCode(spawn, lock);
+    const r = syncCode(spawn, lock, MAIN_CHECKOUT);
 
     assert.equal(r.outcome, "checkout_failed");
     assert.equal(releaseCalls.length, 1, "lock deve ser liberado mesmo em caminho de erro (early return)");
@@ -1611,7 +1722,15 @@ describe("git-sync — #3435 finding 2: wiring do lock default de syncCode() nun
     };
 
     try {
-      const r = syncCode(spawn);
+      // #7336: repoRoot passado explicitamente (3º arg) — `undefined` no 2º
+      // arg preserva o teste original (lock default de fato criado via
+      // `createFileLock(undefined, spawn)`, JS trata argumento `undefined`
+      // explícito igual a omitido pra fins de default parameter); sem
+      // MAIN_CHECKOUT aqui, o REPO_ROOT real (que resolve para dentro DESTE
+      // worktree ao rodar a suíte a partir de um worktree de agente)
+      // dispararia 'worktree_refused' e o teste pararia de exercitar a
+      // wiring do lock que ele existe pra provar.
+      const r = syncCode(spawn, undefined, MAIN_CHECKOUT);
 
       assert.equal(r.outcome, "already_up_to_date");
       assert.ok(
@@ -1658,7 +1777,7 @@ describe("git-sync — #3435 finding 6: MAX_SEQUENTIAL_GIT_SPAWNS reflete a cont
       })(cmd, args);
     };
 
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
 
     assert.equal(
       r.outcome,
@@ -1700,7 +1819,7 @@ describe("git-sync — #6090: up_to_date/commits_behind medidos via rev-list, nu
     "git merge --ff-only origin/master",
   ]) {
     it(`outcome de falha (${key}) carrega up_to_date:false / commits_behind:2 e proceed:true`, () => {
-      const r = syncCode(makeFailureSpawn(key), NOOP_LOCK);
+      const r = syncCode(makeFailureSpawn(key), NOOP_LOCK, MAIN_CHECKOUT);
       assert.equal(r.proceed, true, "fail-soft preservado — #6090 NÃO reverte a política de nunca bloquear");
       assert.equal(r.up_to_date, false);
       assert.equal(r.commits_behind, 2);
@@ -1715,7 +1834,7 @@ describe("git-sync — #6090: up_to_date/commits_behind medidos via rev-list, nu
       "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
       "git rev-list --count HEAD..origin/master": ok("0\n"),
     });
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.outcome, "synced");
     assert.equal(r.up_to_date, true);
     assert.equal(r.commits_behind, 0);
@@ -1730,7 +1849,7 @@ describe("git-sync — #6090: up_to_date/commits_behind medidos via rev-list, nu
       "git merge --ff-only origin/master": ok("Already up to date."),
       "git rev-list --count HEAD..origin/master": fail("fatal: not a git repository"),
     });
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.up_to_date, false);
     assert.equal(r.commits_behind, -1);
     assert.equal(r.proceed, true);
@@ -1745,7 +1864,7 @@ describe("git-sync — #6090: up_to_date/commits_behind medidos via rev-list, nu
       "git merge --ff-only origin/master": ok("Already up to date."),
       "git rev-list --count HEAD..origin/master": ok("3\n"),
     });
-    const r = syncCode(spawn, NOOP_LOCK);
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
     assert.equal(r.up_to_date, false);
     assert.equal(r.commits_behind, 3);
   });

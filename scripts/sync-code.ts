@@ -94,5 +94,19 @@ if (result.outcome === "preexisting_unmerged_state") {
   );
 }
 
+// #7336: banner — sync foi recusado por rodar dentro de um worktree de
+// agente. Ainda fail-soft (exit 0 abaixo, inalterado) — o chamador que
+// invocou este script de dentro de um worktree provavelmente tem um bug de
+// cwd (ex: outra sessão usando o worktree isolado de um agente como cwd),
+// não este script.
+if (result.outcome === "worktree_refused") {
+  process.stderr.write(
+    `\n🚧 SYNC RECUSADO — rodando dentro de um worktree de agente (.claude/worktrees/**), não o\n` +
+      `   checkout principal. Nenhum comando git foi executado (#7336) — sync de código só faz\n` +
+      `   sentido no checkout compartilhado. Se isto rodou por engano a partir do worktree de\n` +
+      `   OUTRA sessão, é um bug de cwd em quem chamou este script, não deste.\n\n`,
+  );
+}
+
 // Sempre exit 0 — fail-soft (#2686: falha de sync nunca bloqueia a edição)
 process.exit(0);
