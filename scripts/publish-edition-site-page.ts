@@ -980,8 +980,11 @@ export async function main(): Promise<void> {
   } catch (e) {
     result = { code: 3, reason: `erro inesperado: ${(e as Error).message}` };
   }
-  // #7283: grava SEMPRE, independente do orchestrator lembrar de logar —
-  // ver docblock de writeSitePageState.
+  // #7283: grava sempre que chegou até aqui com um `editionDirAbs` resolvido
+  // (ou seja, depois dos 2 early-return de erro de USO acima — `--edition-dir`
+  // ausente não tem onde escrever, `--slug` malformado é erro de invocação,
+  // não resultado de publish desta edição) — nunca depende de o orchestrator
+  // lembrar de logar certo. Ver docblock de writeSitePageState.
   writeSitePageState(editionDirAbs, result);
   console.log(JSON.stringify(result, null, 2));
   process.exitCode = result.code;

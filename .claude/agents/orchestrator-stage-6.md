@@ -489,20 +489,7 @@ de fato. O `--status done` correto fica no passo **6b-7**, apos o report ser esc
 npx tsx scripts/check-invariants.ts --stage 6 --edition-dir {EDITION_DIR}/
 ```
 
-Exit 1 = logar warn (nao bloquear auto-reporter). Inclui a regra
-`whatsapp-slug-guard-ok` (#4574) — backstop determinístico que confirma que
-`_internal/whatsapp-slug-check.json` existe com `ok:true`; se §6d de fato
-loopou até sair `0` antes de prosseguir, esta regra já passa por
-construção. Ela existe pra pegar o caso em que o agente pulou/ignorou a
-prosa de §6d — aqui é só confirmação pós-hoc (warn), o bloqueio real já
-aconteceu em §6d.
-
-Inclui também `site-page-published` (#7283) — lê `_internal/site-page-published.json`
-(escrito por §6d-site acima) e acusa `severity: warning` (nunca `error`, nunca bloqueia)
-quando a página do acervo não foi publicada. Diferente de `whatsapp-slug-guard-ok`, esta
-regra é o mecanismo PRIMÁRIO de detecção, não um backstop — o fail-soft de §6d-site é
-intencional, então nada aqui é "bloqueio que já aconteceu antes"; é a única checagem em
-código de que o passo rodou e teve sucesso.
+Exit 1 = logar warn (nao bloquear auto-reporter). Duas regras aqui: `whatsapp-slug-guard-ok` (#4574) é um backstop pós-hoc — confirma que `_internal/whatsapp-slug-check.json` existe com `ok:true`; se §6d já loopou até `0`, passa por construção, e só existe pra pegar o agente que pulou a prosa de §6d (o bloqueio real já aconteceu lá). `site-page-published` (#7283) é diferente — mecanismo PRIMÁRIO de detecção do fail-soft intencional de §6d-site: lê `_internal/site-page-published.json` e acusa `severity: warning` (nunca bloqueia) quando `published !== true`; sem ela, nada em código confirmava que aquele passo rodou com sucesso.
 
 ### 6h. Purga automatica de votos do editor no leaderboard (#3032)
 
