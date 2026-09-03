@@ -48,12 +48,77 @@ const OUT_CSV = path.join(process.cwd(), 'data/link-ctr-table.csv');
 
 // ─── Noise filters ────────────────────────────────────────────────────────────
 
+// #7182: chaves de querystring que DISCRIMINAM o emissor de um link — quem
+// mandou o clique, não quem clicou. Allowlist de propósito (nunca denylist de
+// ruído): `matchClick` (abaixo) depende de `baseUrl()` colapsar os parâmetros
+// POR ASSINANTE (`bhcl_id`, `sid`, `_bhlid`, variantes de split link — #1567
+// finding C) pra SOMAR as linhas de clique de um mesmo link — um allowlist
+// mantém esse colapso intacto pra tudo que não está nesta lista.
+const DISCRIMINANT_UTM_KEYS = ['utm_medium', 'utm_campaign', 'utm_content'] as const;
+
+/** Extrai `utm_medium`/`utm_campaign`/`utm_content` de uma querystring, na
+ * ordem fixa de `DISCRIMINANT_UTM_KEYS` (determinístico — a mesma combinação
+ * de UTMs sempre produz a mesma chave, independente da ordem original dos
+ * parâmetros na URL). `''` quando nenhuma das 3 está presente. */
+function discriminantParams(params: URLSearchParams): string {
+  const parts: string[] = [];
+  for (const key of DISCRIMINANT_UTM_KEYS) {
+    const v = params.get(key);
+    if (v) parts.push(`${key}=${v}`);
+  }
+  return parts.join('&');
+}
+
+/**
+ * Chave de agrupamento de link — nomeada `baseUrl()` desde o #1844, mas
+ * desde #7182 discrimina EMISSOR, não só host+path. Sem isso, dois blocos
+ * distintos que apontam pro MESMO domínio "envelope" (ex: `wa.me/?text=`,
+ * ambos os blocos de WhatsApp da newsletter) colapsavam na mesma chave
+ * `https://wa.me` e o 2º anchor era descartado pelo `seen` de `extractLinks`
+ * — o clique real do bloco de convite acabava atribuído (`matchClick`) à
+ * linha de compartilhar, silenciosamente (achado #7182, medido 02/09/2026:
+ * 1 dos 5 cliques `wa.me` do acervo era do bloco de convite e caía na linha
+ * errada do CSV).
+ *
+ * Dois casos:
+ * - **URL comum**: os 3 UTMs discriminantes (`DISCRIMINANT_UTM_KEYS`), se
+ *   presentes, vêm da PRÓPRIA querystring da URL.
+ * - **URL-envelope com `text=`** (caso `wa.me/?text=...`, #5794): o emissor
+ *   não está na querystring do envelope (`wa.me` não tem UTM próprio) — está
+ *   DENTRO do texto url-encoded, que embute a URL final (com UTM) que o
+ *   assinante vai abrir se clicar no link dentro da mensagem. `URL.search`
+ *   já decodifica `text=` (`URLSearchParams.get` decodifica automaticamente),
+ *   então basta achar a 1ª URL `http(s)://` dentro do texto decodificado e
+ *   ler os UTMs DELA. Sem URL nenhuma dentro do texto (não deveria acontecer
+ *   pros dois blocos hoje, mas é defensivo): cai pro caso comum, que não acha
+ *   nada na querystring de `wa.me` e produz `''` — mesmo comportamento de
+ *   antes do #7182 pra esse caso hipotético.
+ *
+ * O resto do algoritmo é o de sempre: zera querystring/hash da URL visível
+ * e, se achou discriminante, anexa como `?utm_medium=...&utm_campaign=...`
+ * — os parâmetros por assinante continuam fora da chave, então split links
+ * do MESMO emissor continuam colapsando (e somando em `matchClick`) como
+ * antes.
+ */
 function baseUrl(raw: string): string {
   try {
     const u = new URL(raw);
+    let discriminant = discriminantParams(u.searchParams);
+    if (!discriminant) {
+      const text = u.searchParams.get('text');
+      const innerUrlMatch = text?.match(/https?:\/\/\S+/);
+      if (innerUrlMatch) {
+        try {
+          discriminant = discriminantParams(new URL(innerUrlMatch[0]).searchParams);
+        } catch {
+          // texto continha algo que parece URL mas não parseia — sem discriminante.
+        }
+      }
+    }
     u.search = '';
     u.hash = '';
-    return u.toString().replace(/\/$/, '');
+    const base = u.toString().replace(/\/$/, '');
+    return discriminant ? `${base}?${discriminant}` : base;
   } catch {
     return raw;
   }

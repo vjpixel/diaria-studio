@@ -303,6 +303,71 @@ describe("extractLinks — <b> que embrulha <a href> não é heading (#4834)", (
   });
 });
 
+describe("extractLinks + matchClick — os dois blocos wa.me/?text= não colapsam mais (#7182)", () => {
+  // Hrefs reais (sem `data/`, decodificados aqui só pra legibilidade — o HTML
+  // usa a forma url-encoded, igual ao template real de
+  // newsletter-render-html.ts::buildWhatsappShareLink/buildConviteAmigoShareLink):
+  // - compartilhar: envelope wa.me/?text= com a URL da EDIÇÃO embutida,
+  //   utm_medium=share, utm_campaign=AAMMDD (WHATSAPP_SHARE_UTM).
+  // - convite: envelope wa.me/?text= com a URL da HOME embutida,
+  //   utm_medium=referral, utm_campaign=convite-leitor (CONVITE_AMIGO_UTM) —
+  //   fixo, não varia por edição.
+  const shareHref =
+    "https://wa.me/?text=" +
+    encodeURIComponent(
+      "Medicina teme formar médicos sem raciocínio\n\nhttps://diar.ia.br/p/medicina-teme-formar-medicos-sem-raciocinio?utm_source=whatsapp&utm_medium=share&utm_campaign=260811",
+    );
+  const conviteHref =
+    "https://wa.me/?text=" +
+    encodeURIComponent(
+      "Eu leio a diar.ia.br — resumo diário de IA em português, grátis. Assina aqui: https://diar.ia.br/?utm_source=whatsapp&utm_medium=referral&utm_campaign=convite-leitor",
+    );
+
+  it("extractLinks devolve DUAS entradas (antes: a 2ª era descartada pelo `seen`, colapsada em https://wa.me)", () => {
+    const html = `
+      <a href="${shareHref}">Compartilhar no WhatsApp →</a>
+      <a href="${conviteHref}">Convide um amigo a assinar →</a>
+    `;
+    const links = extractLinks(html);
+    assert.equal(links.length, 2, "as duas âncoras wa.me precisam sobreviver ao dedup de extractLinks");
+    assert.notEqual(links[0].baseUrl, links[1].baseUrl, "emissores diferentes não podem colapsar na mesma chave");
+  });
+
+  it("matchClick atribui o clique de convite (utm_medium=referral) à chave certa, não à de compartilhar (utm_medium=share)", () => {
+    const html = `
+      <a href="${shareHref}">Compartilhar no WhatsApp →</a>
+      <a href="${conviteHref}">Convide um amigo a assinar →</a>
+    `;
+    const [shareLink, conviteLink] = extractLinks(html);
+
+    // Clique real medido (#7182, edição 260821): 1 unique_click no bloco de
+    // CONVITE — a URL de clique reportada pela Beehiiv é a URL wa.me/?text=
+    // completa (mesma forma do href), não uma forma resumida.
+    const clicks = [{ url: conviteHref, email: { verified_clicks: 0, unique_verified_clicks: 0, unique_clicks: 1 } }];
+
+    const shareStat = matchClick(shareLink.baseUrl, clicks);
+    const conviteStat = matchClick(conviteLink.baseUrl, clicks);
+
+    assert.equal(shareStat.unique_clicks, 0, "o bloco de compartilhar não pode herdar o clique do convite");
+    assert.equal(conviteStat.unique_clicks, 1, "o clique de convite precisa cair na linha do convite");
+  });
+
+  it("split links por assinante do MESMO emissor continuam colapsando e somando (#1567 finding C intacto)", () => {
+    const [shareLink] = extractLinks(`<a href="${shareHref}">Compartilhar no WhatsApp →</a>`);
+    // 2 variantes per-subscriber do MESMO clique de compartilhar (bhcl_id
+    // diferente, resto idêntico) — têm que continuar somando, não virar 2
+    // buckets discriminados por acidente.
+    const variantA = shareHref + "&bhcl_id=aaa";
+    const variantB = shareHref + "&bhcl_id=bbb";
+    const clicks = [
+      { url: variantA, email: { verified_clicks: 1, unique_verified_clicks: 1, unique_clicks: 1 } },
+      { url: variantB, email: { verified_clicks: 1, unique_verified_clicks: 1, unique_clicks: 1 } },
+    ];
+    const stat = matchClick(shareLink.baseUrl, clicks);
+    assert.equal(stat.unique_clicks, 2, "variantes por assinante do mesmo emissor somam, não discriminam");
+  });
+});
+
 describe("build-link-ctr CLI — ctr_pct fica vazio quando unique_opens=0 (#4834 item 2)", () => {
   let tmpRoot: string;
 
