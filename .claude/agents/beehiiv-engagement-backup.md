@@ -76,7 +76,7 @@ Sinal de que você está prestes a fabricar: você não consegue apontar, para o
 ## Robustez
 
 - **MCP rate-limit (429)**: aguarde 30-60s antes de retry. 3 retries falhos → marca post como `partial` (com o que já tinha) ou `fail`, segue pro próximo.
-- **Post sem registros (404 ou array vazio)**: aceita resposta vazia, aplica `[]`, loga como `ok` com 0 registros — **só quando o JSONL local já estava vazio antes E você de fato recebeu essa resposta vazia da MCP agora** (nunca porque "provavelmente é isso"). Se já tinha linhas, o guard do script recusa por padrão (ver passo 3); trate como `fail`, nunca force o override.
+- **Post sem registros (404 ou array vazio)**: aceita resposta vazia, aplica `[]` com `--confirmed-empty` (#7197 — sem essa flag o script nunca fecha `ok` com 0 registros, fecha `partial`) — **só quando o JSONL local já estava vazio antes E você de fato recebeu essa resposta vazia da MCP agora** (nunca porque "provavelmente é isso"). Se já tinha linhas, o guard do script recusa por padrão (ver passo 3); trate como `fail`, nunca force o override.
 - **Lote grande**: o invocador já deve ter limitado a 5-10 posts (ver seção "Input" acima); mesmo assim, se você receber um lote maior, não pule chamadas pra "acompanhar o ritmo" — processe cada post em sequência até o fim ou pare e reporte o restante como `fail`/`nao-executado`. Cap de tempo é generoso (~60-120s por post no pior caso, paginação incluída) — não há pressão de latência que justifique pular a chamada real.
 
 ## Anti-padrões
