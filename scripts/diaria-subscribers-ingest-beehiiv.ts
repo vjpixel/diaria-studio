@@ -687,7 +687,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       console.error(
         `  …exit-history: ${exitHistoryResult.updated} exited_at atualizado(s) (aproximação → real), ` +
           `${exitHistoryResult.unchanged} já corretos, ${exitHistoryResult.skippedNoSubscription} sem subscription pra refinar, ` +
-          `${exitHistoryResult.skippedStatusMismatch} com status divergente.`,
+          `${exitHistoryResult.skippedStatusMismatch} com status divergente, ` +
+          `${exitHistoryResult.skippedNoIdentity} sem identidade utilizável.`,
       );
     } else {
       console.error(

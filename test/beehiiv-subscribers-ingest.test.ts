@@ -871,11 +871,19 @@ describe("findExistingBeehiivSubscriberId", () => {
     db.close();
   });
 
-  it("acha por email quando externalId não casa", () => {
+  it("acha por email quando externalId AUSENTE (null)", () => {
     const db = openDiariaSubscribersDb(":memory:");
     ingestBeehiivRoster(db, [makeRosterSub()], "2026-09-02T04:25:00.000Z");
     const id = findExistingBeehiivSubscriberId(db, { externalId: null, email: "leitor@example.com" });
     assert.notEqual(id, null);
+    db.close();
+  });
+
+  it("acha por email quando externalId PRESENTE mas não casa nenhum alias (#7426 review finding 3 — o caso acima só testava externalId ausente, não um valor que genuinamente não bate)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBeehiivRoster(db, [makeRosterSub()], "2026-09-02T04:25:00.000Z");
+    const id = findExistingBeehiivSubscriberId(db, { externalId: "sub_nao_existe", email: "leitor@example.com" });
+    assert.notEqual(id, null, "cai pro fallback de email mesmo com externalId presente, desde que não casou nada");
     db.close();
   });
 });
@@ -975,6 +983,46 @@ describe("applyBeehiivExitHistory", () => {
 
     const after = getSubscriptionsForSubscriber(db, subscriberId!)[0];
     assert.equal(after.exited_at, before.exited_at, "aproximação do roster permanece intocada pra invalid");
+    db.close();
+  });
+
+  it("registro de exit-history de um ciclo ANTERIOR (unsubscribedOn < entered_at corrente) é rejeitado, nunca sobrescreve a aproximação do ciclo atual (#7426 review finding 1)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    // Ciclo 1: assinante saiu em 01/09 (real, drenado por exit-history).
+    ingestBeehiivRoster(db, [makeRosterSub({ status: "inactive" })], "2026-09-01T12:00:00.000Z");
+    applyBeehiivExitHistory(
+      db,
+      [{ externalId: "sub_1", email: "leitor@example.com", unsubscribedOn: "2026-09-01T09:00:00.000Z" }],
+      "2026-09-01T12:30:00.000Z",
+    );
+    const subscriberId = findSubscriberIdByAlias(db, "beehiiv", "sub_1", "leitor@example.com");
+    assert.equal(getSubscriptionsForSubscriber(db, subscriberId!)[0].exited_at, "2026-09-01T09:00:00.000Z");
+
+    // Ciclo 2: reativa (entered_at avança), depois sai de novo — só a
+    // APROXIMAÇÃO do roster está disponível pro ciclo novo (o backup de
+    // exit-history ainda não foi redrenado desde a reativação).
+    ingestBeehiivRoster(db, [makeRosterSub({ status: "active", created: 1788998400 })], "2026-09-10T00:00:00.000Z"); // 2026-09-10T00:00:00Z — DEPOIS do unsub do ciclo 1
+    ingestBeehiivRoster(db, [makeRosterSub({ status: "inactive", created: 1788998400 })], "2026-09-12T00:00:00.000Z");
+    const afterCycle2Roster = getSubscriptionsForSubscriber(db, subscriberId!)[0];
+    assert.equal(afterCycle2Roster.exited_at, "2026-09-12T00:00:00.000Z", "aproximação do ciclo 2");
+
+    // O backup de exit-history AINDA tem só o registro velho do ciclo 1 —
+    // reaplicar ingenuamente sobrescreveria exited_at do ciclo 2 com a data
+    // do ciclo 1 (mais antiga que entered_at do ciclo 2). O guard rejeita.
+    const result = applyBeehiivExitHistory(
+      db,
+      [{ externalId: "sub_1", email: "leitor@example.com", unsubscribedOn: "2026-09-01T09:00:00.000Z" }],
+      "2026-09-12T00:05:00.000Z",
+    );
+    assert.equal(result.skippedStatusMismatch, 1, "rejeitado como registro de ciclo antigo, não aplicado");
+    assert.equal(result.updated, 0);
+
+    const afterStaleApply = getSubscriptionsForSubscriber(db, subscriberId!)[0];
+    assert.equal(
+      afterStaleApply.exited_at,
+      "2026-09-12T00:00:00.000Z",
+      "a aproximação fresca do ciclo 2 permanece intocada — nunca regride pro timestamp do ciclo 1",
+    );
     db.close();
   });
 

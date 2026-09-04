@@ -63,6 +63,17 @@ describe("parseExitHistoryRecord", () => {
     assert.equal(parseExitHistoryRecord({ status: "inactive", unsubscribed_on: "2026-09-04T01:19:07Z" }), null);
   });
 
+  it("linha null/undefined/não-objeto → null, nunca lança (#7426 review finding 1, reproduzido ao vivo antes do fix)", () => {
+    // @ts-expect-error — testando robustez contra shape inválido vindo de uma resposta MCP malformada/truncada.
+    assert.equal(parseExitHistoryRecord(null), null);
+    // @ts-expect-error
+    assert.equal(parseExitHistoryRecord(undefined), null);
+    // @ts-expect-error
+    assert.equal(parseExitHistoryRecord("garbage"), null);
+    // @ts-expect-error
+    assert.equal(parseExitHistoryRecord(42), null);
+  });
+
   it("só id (sem email) → usável", () => {
     const parsed = parseExitHistoryRecord({ id: "sub_1", status: "inactive", unsubscribed_on: "2026-09-04T01:19:07Z" });
     assert.deepEqual(parsed, { externalId: "sub_1", email: null, unsubscribedOn: "2026-09-04T01:19:07Z" });
@@ -106,6 +117,17 @@ describe("parseExitHistoryPage", () => {
 
   it("página vazia → []", () => {
     assert.deepEqual(parseExitHistoryPage([]), []);
+  });
+
+  it("página com uma linha null/malformada no meio não derruba a página inteira (#7426 review finding 1)", () => {
+    const page = [
+      { id: "sub_1", status: "inactive", unsubscribed_on: "2026-09-04T01:19:07Z" },
+      null,
+      { id: "sub_2", status: "inactive", unsubscribed_on: "2026-09-03T07:03:07Z" },
+      // @ts-expect-error
+    ] as BeehiivExitHistoryRawRecord[];
+    const parsed = parseExitHistoryPage(page);
+    assert.equal(parsed.length, 2, "a linha null é descartada, as 2 linhas válidas sobrevivem");
   });
 });
 
@@ -167,11 +189,46 @@ describe("checkpoint de paginação (manifest)", () => {
     assert.equal(m.complete, true);
   });
 
-  it("pages_fetched nunca regride — reaplicar uma página antiga não desfaz progresso", () => {
+  it("aplicar páginas fora de ordem soma páginas DISTINTAS aplicadas (não regride, mas também não infla)", () => {
     let m = buildInitialExitHistoryManifest("2026-09-04T00:00:00Z");
     m = applyExitHistoryPageToManifest(m, { page: 5, total_pages: 9 }, "t1");
     m = applyExitHistoryPageToManifest(m, { page: 2, total_pages: 9 }, "t2");
-    assert.equal(m.pages_fetched, 5, "página 2 reaplicada depois da 5 não regride o checkpoint");
+    assert.equal(m.pages_fetched, 2, "2 páginas distintas aplicadas (5 e 2), não a maior página vista");
+    assert.deepEqual(m.applied_pages, [2, 5]);
+  });
+
+  it("reaplicar a MESMA página não a conta 2x em applied_pages/pages_fetched", () => {
+    let m = buildInitialExitHistoryManifest("2026-09-04T00:00:00Z");
+    m = applyExitHistoryPageToManifest(m, { page: 3, total_pages: 9 }, "t1");
+    m = applyExitHistoryPageToManifest(m, { page: 3, total_pages: 9 }, "t2");
+    assert.equal(m.pages_fetched, 1);
+    assert.deepEqual(m.applied_pages, [3]);
+  });
+
+  it("#7426 review finding 2 (bug reproduzido, agora corrigido): aplicar SÓ a última página de um total NUNCA fecha complete — as páginas anteriores continuam faltando", () => {
+    let m = buildInitialExitHistoryManifest("2026-09-04T00:00:00Z");
+    // Só a página 5 de um total de 5 foi aplicada — 1,2,3,4 nunca vieram.
+    m = applyExitHistoryPageToManifest(m, { page: 5, total_pages: 5 }, "t1");
+    assert.equal(m.pages_fetched, 1, "só 1 página distinta aplicada, mesmo com número de página alto");
+    assert.equal(m.complete, false, "gap real (páginas 1-4 faltando) — antes da correção isto fechava complete:true");
+    assert.equal(nextExitHistoryPage(m), 1, "retoma da menor página faltando, não de pages_fetched+1");
+  });
+
+  it("nextExitHistoryPage retoma no primeiro GAP, não em pages_fetched+1, quando páginas foram aplicadas fora de ordem", () => {
+    let m = buildInitialExitHistoryManifest("2026-09-04T00:00:00Z");
+    m = applyExitHistoryPageToManifest(m, { page: 1, total_pages: 9 }, "t1");
+    m = applyExitHistoryPageToManifest(m, { page: 2, total_pages: 9 }, "t2");
+    m = applyExitHistoryPageToManifest(m, { page: 4, total_pages: 9 }, "t3"); // pula a 3
+    assert.equal(nextExitHistoryPage(m), 3, "retoma no gap (página 3), não em pages_fetched+1 (que seria 4)");
+  });
+
+  it("complete: true só quando TODA página 1..total_pages foi aplicada — completar em qualquer ordem funciona", () => {
+    let m = buildInitialExitHistoryManifest("2026-09-04T00:00:00Z");
+    for (const page of [3, 1, 2]) {
+      m = applyExitHistoryPageToManifest(m, { page, total_pages: 3 }, "t");
+    }
+    assert.equal(m.complete, true);
+    assert.equal(m.pages_fetched, 3);
   });
 
   it("total_pages ausente na página preserva o valor anterior do manifest", () => {

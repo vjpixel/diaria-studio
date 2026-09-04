@@ -101,6 +101,11 @@ export interface BeehiivExitHistoryRecord {
  * nesta fonte (ver docstring do módulo).
  */
 export function parseExitHistoryRecord(raw: BeehiivExitHistoryRawRecord): BeehiivExitHistoryRecord | null {
+  // #7426 review finding 1 (pr-test-analyzer, alta confiança): uma linha
+  // `null`/não-objeto no array da MCP (resposta malformada/truncada) lançava
+  // TypeError aqui em vez de ser tratada como "registro inútil" — igual a
+  // qualquer outro campo ausente. Reproduzido ao vivo antes do fix.
+  if (!raw || typeof raw !== "object") return null;
   const status = typeof raw.status === "string" ? raw.status : null;
   if (status !== "inactive") return null;
 
@@ -163,15 +168,28 @@ export interface ExitHistoryManifest {
    *  confiável nesta MCP (ver docstring do módulo). */
   status_filter: "inactive";
   per_page: number;
-  /** Maior número de página já aplicado com sucesso — não "quantas páginas
-   *  existem no total", isso é `total_pages`. */
+  /** Nº de páginas DISTINTAS já aplicadas com sucesso — não "maior número de
+   *  página visto" (ver `appliedPages` abaixo pro porquê da distinção) nem
+   *  "quantas páginas existem no total", isso é `total_pages`. */
   pages_fetched: number;
+  /** Números de página já aplicados, individualmente — a fonte de verdade
+   *  por trás de `pages_fetched`/`complete` (#7426 review finding 2,
+   *  pr-test-analyzer, alta confiança). Antes desta correção, `pages_fetched`
+   *  era `Math.max(...)` do número de página, então aplicar só a página 5
+   *  de um total de 5 fechava `complete: true` mesmo com as páginas 1-4
+   *  nunca aplicadas — o contrato de fetch sequencial do agent nunca
+   *  deveria permitir isso na prática, mas o TIPO não impedia, e nada
+   *  detectava o buraco. Rastrear as páginas individualmente torna
+   *  `complete` verdadeiro só quando TODAS as páginas 1..total_pages foram
+   *  de fato aplicadas — robusto mesmo a um retry fora de ordem. */
+  applied_pages: number[];
   total_pages: number | null;
   total: number | null;
-  /** `true` só quando `pages_fetched >= total_pages` (e `total_pages`
-   *  conhecido) — nunca inferido de ausência de campo (ao contrário do
-   *  manifest de engagement, #7197, esta MCP confirmadamente devolve
-   *  `total_pages`). */
+  /** `true` só quando `total_pages` é conhecido E toda página de 1 a
+   *  `total_pages` está em `applied_pages` — nunca inferido de
+   *  `pages_fetched >= total_pages` sozinho (isso é o que permitia o gap do
+   *  finding 2 acima), nem de ausência de campo (ao contrário do manifest
+   *  de engagement, #7197, esta MCP confirmadamente devolve `total_pages`). */
   complete: boolean;
   last_updated_at: string;
 }
@@ -187,6 +205,7 @@ export function buildInitialExitHistoryManifest(
     status_filter: "inactive",
     per_page: perPage,
     pages_fetched: 0,
+    applied_pages: [],
     total_pages: null,
     total: null,
     complete: false,
@@ -207,24 +226,40 @@ export interface ExitHistoryPageMeta {
 
 /**
  * Avança o checkpoint do manifest com o resultado de 1 página aplicada.
- * `pages_fetched` nunca REGRIDE (usa `Math.max` — reaplicar uma página
- * antiga não desfaz progresso); `total_pages`/`total` são atualizados só
- * quando a página informa um valor (preserva o anterior quando ausente).
+ * `applied_pages` nunca perde uma página já registrada (união, não
+ * substituição) — reaplicar uma página antiga (retry) é idempotente;
+ * `total_pages`/`total` são atualizados só quando a página informa um valor
+ * (preserva o anterior quando ausente).
+ *
+ * `complete` exige que TODA página de 1 a `total_pages` esteja em
+ * `applied_pages` — não só que `pages_fetched` (a contagem de páginas
+ * distintas) tenha alcançado `total_pages` (#7426 review finding 2,
+ * pr-test-analyzer, alta confiança, reproduzido ao vivo: a versão anterior
+ * usava `Math.max(pages_fetched, page.page) >= total_pages`, então aplicar
+ * SÓ a página 5 de um total de 5 já fechava `complete: true` com as páginas
+ * 1-4 nunca aplicadas — o contrato de fetch sequencial do agent nunca
+ * deveria produzir esse gap na prática, mas nada detectava se produzisse).
  */
 export function applyExitHistoryPageToManifest(
   manifest: ExitHistoryManifest,
   page: ExitHistoryPageMeta,
   now: string,
 ): ExitHistoryManifest {
-  const pagesFetched = Math.max(manifest.pages_fetched, page.page);
+  const appliedPages = manifest.applied_pages.includes(page.page)
+    ? manifest.applied_pages
+    : [...manifest.applied_pages, page.page].sort((a, b) => a - b);
   const totalPages = typeof page.total_pages === "number" ? page.total_pages : manifest.total_pages;
   const total = typeof page.total === "number" ? page.total : manifest.total;
   const perPage = typeof page.per_page === "number" && page.per_page > 0 ? page.per_page : manifest.per_page;
-  const complete = totalPages != null && pagesFetched >= totalPages;
+  const complete =
+    totalPages != null &&
+    appliedPages.length >= totalPages &&
+    Array.from({ length: totalPages }, (_, i) => i + 1).every((p) => appliedPages.includes(p));
   return {
     ...manifest,
     per_page: perPage,
-    pages_fetched: pagesFetched,
+    pages_fetched: appliedPages.length,
+    applied_pages: appliedPages,
     total_pages: totalPages,
     total,
     complete,
@@ -232,7 +267,15 @@ export function applyExitHistoryPageToManifest(
   };
 }
 
-/** Próxima página a buscar — `1` num manifest novo, senão `pages_fetched + 1`. */
+/**
+ * Próxima página a buscar — a MENOR página ainda não aplicada (não
+ * `pages_fetched + 1`, que assumia páginas sempre aplicadas em sequência
+ * sem gap — #7426 review finding 2, mesma correção do `complete` acima).
+ * `1` num manifest novo.
+ */
 export function nextExitHistoryPage(manifest: ExitHistoryManifest): number {
-  return manifest.pages_fetched + 1;
+  const applied = new Set(manifest.applied_pages);
+  let page = 1;
+  while (applied.has(page)) page++;
+  return page;
 }

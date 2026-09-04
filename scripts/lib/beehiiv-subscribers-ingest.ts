@@ -270,6 +270,51 @@ function insertBeehiivAliasIfMissing(
 }
 
 /**
+ * Busca (SEM criar) o `subscriber` já resolvido pra esta identidade Beehiiv
+ * — mesma ordem de preferência de `resolveOrCreateBeehiivSubscriber` logo
+ * abaixo (passos 1-2 dela: `external_id` nativo primeiro, `email` como
+ * chave secundária), extraída em #7248 pra quem só quer REFINAR uma linha
+ * `subscription` já existente e nunca deve criar um `subscriber`/
+ * `subscription` novo a partir desta fonte (`applyBeehiivExitHistory` mais
+ * abaixo — exit-history não carrega `entered_at`/UTM/etc., então não é
+ * fonte primária de cadastro). `null` quando nenhum alias prévio casa — o
+ * chamador decide o que fazer (nunca cria aqui, ao contrário da função
+ * irmã, que segue imediatamente depois desta com seu próprio docstring).
+ *
+ * Duplica (não reusa) as duas queries de `resolveOrCreateBeehiivSubscriber`
+ * em vez de extrair um helper compartilhado — são ~10 linhas estáveis, e a
+ * função irmã já é coberta por teste de regressão pesado (#7135/#7181); um
+ * refactor de extração arriscaria essa cobertura por uma duplicação pequena
+ * e de baixo custo de manutenção.
+ *
+ * (#7426 review finding: esta função foi movida pra ANTES do docstring de
+ * `resolveOrCreateBeehiivSubscriber` de propósito, pra não deixar aquele
+ * docstring "órfão" — apontando pra uma função que não é mais a próxima do
+ * arquivo. Cada docstring abaixo continua imediatamente acima da função
+ * que descreve.)
+ */
+export function findExistingBeehiivSubscriberId(db: DatabaseSync, identity: BeehiivIdentity): number | null {
+  const { externalId, email } = identity;
+  const normalizedEmail = email ? email.trim().toLowerCase() : null;
+
+  if (externalId) {
+    const bySubscriberId = db
+      .prepare("SELECT subscriber_id FROM identity_alias WHERE platform = 'beehiiv' AND external_id = ? LIMIT 1")
+      .get(externalId) as { subscriber_id: number } | undefined;
+    if (bySubscriberId) return bySubscriberId.subscriber_id;
+  }
+
+  if (normalizedEmail) {
+    const byEmail = db
+      .prepare("SELECT subscriber_id FROM identity_alias WHERE platform = 'beehiiv' AND email = ? LIMIT 1")
+      .get(normalizedEmail) as { subscriber_id: number } | undefined;
+    if (byEmail) return byEmail.subscriber_id;
+  }
+
+  return null;
+}
+
+/**
  * Find-or-create de subscriber ESPECÍFICO pra Beehiiv (#7104, achado de
  * review P2 do PR #7135) — `ensureSubscriber` genérico faz find-or-create
  * pela chave EXATA `(platform, external_id, email)`, o que é certo pro Kit
@@ -314,44 +359,6 @@ function insertBeehiivAliasIfMissing(
  * (`ingestPostEngagement`) conta o registro em `recordsSkippedNoIdentity`
  * e não grava nenhum evento pra ele.
  */
-/**
- * Busca (SEM criar) o `subscriber` já resolvido pra esta identidade Beehiiv
- * — mesma ordem de preferência de `resolveOrCreateBeehiivSubscriber` (passos
- * 1-2 dela: `external_id` nativo primeiro, `email` como chave secundária),
- * extraída em #7248 pra quem só quer REFINAR uma linha `subscription` já
- * existente e nunca deve criar um `subscriber`/`subscription` novo a partir
- * desta fonte (`applyBeehiivExitHistory` abaixo — exit-history não carrega
- * `entered_at`/UTM/etc., então não é fonte primária de cadastro). `null`
- * quando nenhum alias prévio casa — o chamador decide o que fazer (nunca
- * cria aqui, ao contrário da função irmã).
- *
- * Duplica (não reusa) as duas queries de `resolveOrCreateBeehiivSubscriber`
- * em vez de extrair um helper compartilhado — são ~10 linhas estáveis, e a
- * função irmã já é coberta por teste de regressão pesado (#7135/#7181); um
- * refactor de extração arriscaria essa cobertura por uma duplicação pequena
- * e de baixo custo de manutenção.
- */
-export function findExistingBeehiivSubscriberId(db: DatabaseSync, identity: BeehiivIdentity): number | null {
-  const { externalId, email } = identity;
-  const normalizedEmail = email ? email.trim().toLowerCase() : null;
-
-  if (externalId) {
-    const bySubscriberId = db
-      .prepare("SELECT subscriber_id FROM identity_alias WHERE platform = 'beehiiv' AND external_id = ? LIMIT 1")
-      .get(externalId) as { subscriber_id: number } | undefined;
-    if (bySubscriberId) return bySubscriberId.subscriber_id;
-  }
-
-  if (normalizedEmail) {
-    const byEmail = db
-      .prepare("SELECT subscriber_id FROM identity_alias WHERE platform = 'beehiiv' AND email = ? LIMIT 1")
-      .get(normalizedEmail) as { subscriber_id: number } | undefined;
-    if (byEmail) return byEmail.subscriber_id;
-  }
-
-  return null;
-}
-
 export function resolveOrCreateBeehiivSubscriber(
   db: DatabaseSync,
   identity: BeehiivIdentity,
@@ -861,7 +868,11 @@ export interface BeehiivExitHistoryApplyResult {
   /** `subscription.status` gravado não é `"inactive"` no momento desta
    *  rodada — o registro de exit-history é de uma captura mais antiga (ou
    *  mais nova) que já não bate com o estado atual; nunca grava `exited_at`
-   *  sobre um estado que discorda dele. */
+   *  sobre um estado que discorda dele. Também conta aqui (#7426 review
+   *  finding 1) um registro cujo `unsubscribedOn` é ANTERIOR ao
+   *  `entered_at` corrente — sinal de que o registro é de um ciclo
+   *  active→inactive antigo que o backup não redrenou desde a última
+   *  reativação, nunca do ciclo atual. */
   skippedStatusMismatch: number;
   skippedNoIdentity: number;
 }
@@ -876,9 +887,12 @@ export interface BeehiivExitHistoryApplyResult {
  * total da linha, não PATCH — ver docstring da função).
  *
  * **Idempotente e nunca regressivo**: reaplicar o mesmo registro não muda
- * nada (`unchanged`); um `exited_at` já real nunca é substituído por outro
- * valor sem ser literalmente o mesmo registro reaplicado (a única fonte que
- * escreve aqui é este módulo, com a mesma chave natural de identidade).
+ * nada (`unchanged`). Um registro de um ciclo active→inactive ANTERIOR ao
+ * atual (assinante saiu, voltou, saiu de novo, e o backup de exit-history
+ * não foi redrenado nesse meio-tempo) nunca sobrescreve a aproximação fresca
+ * do ciclo corrente — guardado comparando `unsubscribedOn` contra
+ * `entered_at` corrente (#7426, achado do review automatizado: `status ===
+ * "inactive"` sozinho não bastava pra distinguir os dois ciclos).
  *
  * **Nunca toca a coorte `invalid`** — não por um filtro explícito, mas por
  * CONSTRUÇÃO: nenhum registro de `invalid` chega a este array (a MCP não
@@ -932,6 +946,22 @@ export function applyBeehiivExitHistory(
     }
     if (existing.exited_at === record.unsubscribedOn) {
       unchanged++;
+      continue;
+    }
+    // #7426 review finding 1: um registro de exit-history pode ser de um
+    // ciclo active→inactive ANTERIOR ao atual (assinante saiu, voltou,
+    // saiu de novo — o backup só é atualizado quando o agent redrena) — sem
+    // este guard, um `unsubscribedOn` mais velho que a entrada da assinatura
+    // CORRENTE sobrescreveria a aproximação fresca do roster com um
+    // timestamp real, porém ERRADO (de um ciclo diferente). `status ===
+    // "inactive"` sozinho não distingue os dois ciclos porque
+    // `ingestBeehiivRoster` zera `exited_at` na reativação mas não muda
+    // `entered_at` retroativamente pra um ciclo novo de forma que este guard
+    // já não cubra — comparar contra `entered_at` é a âncora correta: um
+    // `unsubscribedOn` real só é válido pro ciclo corrente se aconteceu
+    // DEPOIS dele começar.
+    if (existing.entered_at != null && record.unsubscribedOn < existing.entered_at) {
+      skippedStatusMismatch++;
       continue;
     }
 

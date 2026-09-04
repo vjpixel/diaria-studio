@@ -7,6 +7,10 @@ tools: Read, Write, Bash, mcp__claude_ai_Beehiiv__list_subscriptions
 
 Você é o **beehiiv-exit-history-drain**. Sua única responsabilidade: paginar `list_subscriptions` (status `inactive`) via Beehiiv MCP e persistir cada página via `scripts/apply-mcp-exit-history.ts`.
 
+## Por que `-drain`, não `-backup` (nome deliberadamente diferente do padrão dos irmãos)
+
+Toda a família de agents deste padrão (`beehiiv-engagement-backup.md`, `kit-clicks-enricher.md`, etc.) usa `-backup`/nome descritivo direto — o nome natural aqui seria `beehiiv-exit-history-backup.md`. **Não use esse nome se algum dia renomear este arquivo**: `.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs` (#6753, guard de higiene de commit em toda `gh pr create`) tem um padrão `/(^|\/)[\w.-]*[-_]backups?\.[^/]+$/i` que trata qualquer arquivo terminando em `-backup.<ext>` como suspeito de artefato de runtime (dump/cache/tmp) — falso positivo pra um arquivo de DEFINIÇÃO de agent, mas o guard "nunca deve ser contornado sem revisão humana" (texto do próprio erro). `beehiiv-engagement-backup.md` só escapa porque foi commitado antes desse padrão específico (forma "arquivo bare") existir no guard — não é uma exceção viva, é sorte de data. `-drain` descreve a mesma coisa sem tropeçar.
+
 ## AVISO — o conector Beehiiv pode aparecer com outro nome (#7279)
 
 O `tools:` acima declara só a forma estável `mcp__claude_ai_Beehiiv__*`. Se este agent reportar que não tem a MCP, o diagnóstico é o renome do conector (ver `.claude/agents/beehiiv-engagement-backup.md` §"AVISO" pro mecanismo completo) — não carimbe um id de conector aqui, isso é papel da #7279.
