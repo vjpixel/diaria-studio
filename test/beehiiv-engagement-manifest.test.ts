@@ -313,80 +313,6 @@ describe("reconcileManifestWithDisk — auditoria contra o disco (#7197)", () =>
   });
 });
 
-describe("reconcileManifestWithDisk — flag `confirmed_empty` (#7418)", () => {
-  it("ok com 0 linhas em disco + confirmed_empty: true → NÃO rebaixa (o vazio foi confirmado de propósito, #7197)", () => {
-    // Reproduz os 6 posts confirmados vazios do #7268 (post_0dbd15c0, etc.):
-    // sem o flag, a checagem 1 rebaixa pra pending e eles piscam ok→pending a
-    // cada auditoria, forçando reprocessamento (~90-160k tokens por lote de 8).
-    const manifest: EngagementManifest = {
-      generated_at: "t",
-      posts: [{ post_id: "post_0dbd15c0", status: "ok", count: 0, confirmed_empty: true }],
-    };
-    const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(
-      manifest,
-      new Map([["post_0dbd15c0", 0]]),
-    );
-    assert.equal(downgraded.length, 0, "não rebaixa um post confirmado vazio de propósito");
-    assert.equal(reconciled.posts[0].status, "ok");
-    assert.equal(reconciled.posts[0].confirmed_empty, true, "flag preservada");
-  });
-
-  it("ok com 0 linhas em disco SEM confirmed_empty → rebaixa pra pending (comportamento de #7197 intacto)", () => {
-    const manifest: EngagementManifest = {
-      generated_at: "t",
-      posts: [{ post_id: "post_fabricado", status: "ok", count: 0 }],
-    };
-    const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(
-      manifest,
-      new Map([["post_fabricado", 0]]),
-    );
-    assert.equal(downgraded.length, 1);
-    assert.equal(downgraded[0].to, "pending");
-    assert.equal(reconciled.posts[0].status, "pending");
-  });
-
-  it("confirmed_empty não salva um post que TEM dados reais em disco (o flag só vale quando a checagem 1 encontraria 0 linhas)", () => {
-    // O post foi re-drenado depois de confirmado vazio: o JSONL não está mais
-    // vazio, então o flag não deve impedir a checagem 2 (count divergente).
-    const manifest: EngagementManifest = {
-      generated_at: "t",
-      posts: [{ post_id: "post_redrenado", status: "ok", count: 100, confirmed_empty: true }],
-    };
-    const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(
-      manifest,
-      new Map([["post_redrenado", 5]]),
-    );
-    assert.equal(downgraded.length, 1);
-    assert.equal(downgraded[0].to, "partial");
-    assert.equal(reconciled.posts[0].status, "partial");
-    assert.equal(reconciled.posts[0].count, 5, "count corrigido pro valor real do disco");
-  });
-
-  it("confirmed_empty em post sem arquivo em disco (contagem ausente = 0) também é respeitado", () => {
-    const manifest: EngagementManifest = {
-      generated_at: "t",
-      posts: [{ post_id: "post_ghost", status: "ok", count: 0, confirmed_empty: true }],
-    };
-    const { downgraded } = reconcileManifestWithDisk(manifest, new Map());
-    assert.deepEqual(downgraded, []);
-  });
-
-  it("nunca rebaixa pending/partial/error/not_applicable — só ok é candidato (o flag não muda isso)", () => {
-    const manifest: EngagementManifest = {
-      generated_at: "t",
-      posts: [
-        { post_id: "p", status: "pending" },
-        { post_id: "pa", status: "partial", count: 1, confirmed_empty: true },
-        { post_id: "e", status: "error", confirmed_empty: true },
-        { post_id: "na", status: "not_applicable", confirmed_empty: true },
-      ],
-    };
-    const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(manifest, new Map());
-    assert.deepEqual(reconciled.posts, manifest.posts);
-    assert.deepEqual(downgraded, []);
-  });
-});
-
 describe("reconcileManifestWithDisk — âncora externa `recipients` (#7197)", () => {
   it("o modo de falha CENTRAL do #7197: manifest e disco concordam, e mesmo assim o post está pela metade", () => {
     // Este é o caso que as checagens 1 e 2 não pegam por construção: o drenador
@@ -517,5 +443,79 @@ describe("reconcileManifestWithDisk — âncora `delivered` tem precedência sob
     };
     const { downgraded } = reconcileManifestWithDisk(manifest, new Map([["p", 641]]), new Map([["p", 643]]));
     assert.equal(downgraded.length, 1, "sem deliveredByPost, recipients=643 ainda rebaixa 641");
+  });
+});
+
+describe("reconcileManifestWithDisk — flag `confirmed_empty` (#7418)", () => {
+  it("ok com 0 linhas em disco + confirmed_empty: true → NÃO rebaixa (o vazio foi confirmado de propósito, #7197)", () => {
+    // Reproduz os 6 posts confirmados vazios do #7268 (post_0dbd15c0, etc.):
+    // sem o flag, a checagem 1 rebaixa pra pending e eles piscam ok→pending a
+    // cada auditoria, forçando reprocessamento (~90-160k tokens por lote de 8).
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_0dbd15c0", status: "ok", count: 0, confirmed_empty: true }],
+    };
+    const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(
+      manifest,
+      new Map([["post_0dbd15c0", 0]]),
+    );
+    assert.equal(downgraded.length, 0, "não rebaixa um post confirmado vazio de propósito");
+    assert.equal(reconciled.posts[0].status, "ok");
+    assert.equal(reconciled.posts[0].confirmed_empty, true, "flag preservada");
+  });
+
+  it("ok com 0 linhas em disco SEM confirmed_empty → rebaixa pra pending (comportamento de #7197 intacto)", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_fabricado", status: "ok", count: 0 }],
+    };
+    const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(
+      manifest,
+      new Map([["post_fabricado", 0]]),
+    );
+    assert.equal(downgraded.length, 1);
+    assert.equal(downgraded[0].to, "pending");
+    assert.equal(reconciled.posts[0].status, "pending");
+  });
+
+  it("confirmed_empty não salva um post que TEM dados reais em disco (o flag só vale quando a checagem 1 encontraria 0 linhas)", () => {
+    // O post foi re-drenado depois de confirmado vazio: o JSONL não está mais
+    // vazio, então o flag não deve impedir a checagem 2 (count divergente).
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_redrenado", status: "ok", count: 100, confirmed_empty: true }],
+    };
+    const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(
+      manifest,
+      new Map([["post_redrenado", 5]]),
+    );
+    assert.equal(downgraded.length, 1);
+    assert.equal(downgraded[0].to, "partial");
+    assert.equal(reconciled.posts[0].status, "partial");
+    assert.equal(reconciled.posts[0].count, 5, "count corrigido pro valor real do disco");
+  });
+
+  it("confirmed_empty em post sem arquivo em disco (contagem ausente = 0) também é respeitado", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_ghost", status: "ok", count: 0, confirmed_empty: true }],
+    };
+    const { downgraded } = reconcileManifestWithDisk(manifest, new Map());
+    assert.deepEqual(downgraded, []);
+  });
+
+  it("nunca rebaixa pending/partial/error/not_applicable — só ok é candidato (o flag não muda isso)", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [
+        { post_id: "p", status: "pending" },
+        { post_id: "pa", status: "partial", count: 1, confirmed_empty: true },
+        { post_id: "e", status: "error", confirmed_empty: true },
+        { post_id: "na", status: "not_applicable", confirmed_empty: true },
+      ],
+    };
+    const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(manifest, new Map());
+    assert.deepEqual(reconciled.posts, manifest.posts);
+    assert.deepEqual(downgraded, []);
   });
 });
