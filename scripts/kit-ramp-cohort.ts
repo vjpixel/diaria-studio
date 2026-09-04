@@ -102,6 +102,21 @@ import { toNormalizedEmailSet, maskEmail } from "./lib/beehiiv-kit-reconcile.ts"
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[kit-ramp-cohort]";
 
+/**
+ * Espaçamento entre chamadas SINGULARES ao Kit na Fase A de `applyCohortWave`
+ * (buscar/criar → tag → releitura, até 3 chamadas por endereço). Mesma
+ * constante/racional de `kit-gmail-warmup-ramp.ts` (`KIT_CALL_SPACING_MS`,
+ * ver a docstring lá — armadilha #6047: endpoints singulares do Kit toleram
+ * só dezenas de chamadas sequenciais antes de 429). Portado aqui pelo #7392
+ * depois de uma medição ao vivo (03-04/09/2026, migração #7386): 318
+ * operações sem espaçamento tomaram 31 falhas 429 (até 16,7% num lote de
+ * 36) — o `try/catch` por e-mail evitou corrupção, mas cada 429 virou
+ * resíduo exigindo uma varredura extra pra limpar.
+ */
+const KIT_CALL_SPACING_MS = 350;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** Mesmo limiar/semântica de `sync-apoio-nivel-brevo.ts` (#4572/#4436) — ver
  *  docstring do módulo. "Passar de" é estrito: exatamente no limiar não
  *  bloqueia. */
@@ -467,6 +482,8 @@ export interface ApplyCohortWaveInput {
   beehiivConfig: BeehiivConfig;
   fetchImpl?: typeof fetch;
   log?: (msg: string) => void;
+  /** Injetável só para teste (mock sem tempo real) — default é `sleep` real. */
+  sleepFn?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -479,6 +496,7 @@ export async function applyCohortWave(input: ApplyCohortWaveInput): Promise<Coho
   const { emails, push, kitConfig, tagId, activeBeehiivEmails, beehiivConfig } = input;
   const fetchImpl = input.fetchImpl ?? fetch;
   const log = input.log ?? (() => {});
+  const sleepFn = input.sleepFn ?? sleep;
 
   interface KitOutcome {
     email: string;
@@ -491,11 +509,29 @@ export async function applyCohortWave(input: ApplyCohortWaveInput): Promise<Coho
   const kitOutcomes: KitOutcome[] = [];
 
   // Fase A — Kit: resolve + tagueia (ou planeja) TODA a coorte primeiro.
+  // Espaçado por `KIT_CALL_SPACING_MS` antes de CADA chamada singular ao Kit
+  // (exceto a 1ª de toda a rodada) — mesma granularidade de
+  // `confirmTaggedEmails` em kit-gmail-warmup-ramp.ts, não só entre e-mails:
+  // um único e-mail em `--push` já soma até 5 chamadas (find → fetchTags →
+  // create/tag → confirm), e deixá-las em rajada dentro do e-mail reintroduz
+  // o mesmo estouro de 429 que a espera entre e-mails sozinha não evita
+  // (#7392, medido: 31/318 operações falharam sem nenhum espaçamento).
+  let kitCallMade = false;
+  const spaceBeforeKitCall = async (): Promise<void> => {
+    if (kitCallMade) await sleepFn(KIT_CALL_SPACING_MS);
+    kitCallMade = true;
+  };
+
   for (const email of emails) {
     try {
+      await spaceBeforeKitCall();
       const existing = await findKitSubscriberByEmail(email, kitConfig);
       const existedInKit = existing !== null;
-      const currentTagIds = existing ? await fetchSubscriberTagIds(existing.id, kitConfig) : new Set<number>();
+      let currentTagIds = new Set<number>();
+      if (existing) {
+        await spaceBeforeKitCall();
+        currentTagIds = await fetchSubscriberTagIds(existing.id, kitConfig);
+      }
       const alreadyTagged = currentTagIds.has(tagId);
       const step = decideKitTagStep({ existedInKit, alreadyTagged });
 
@@ -504,8 +540,16 @@ export async function applyCohortWave(input: ApplyCohortWaveInput): Promise<Coho
         continue;
       }
 
-      const subscriberId = existing?.id ?? (await createOrUpdateSubscriber({ email_address: email }, kitConfig)).id;
+      let subscriberId: number;
+      if (existing) {
+        subscriberId = existing.id;
+      } else {
+        await spaceBeforeKitCall();
+        subscriberId = (await createOrUpdateSubscriber({ email_address: email }, kitConfig)).id;
+      }
+      await spaceBeforeKitCall();
       await tagSubscriber(tagId, subscriberId, kitConfig);
+      await spaceBeforeKitCall();
       const after = await fetchSubscriberTagIds(subscriberId, kitConfig);
       const confirmed = after.has(tagId);
       kitOutcomes.push({

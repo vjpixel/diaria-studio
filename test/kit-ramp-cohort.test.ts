@@ -314,6 +314,7 @@ describe("applyCohortWave", () => {
           activeBeehiivEmails: new Set(["a@x.com"]),
           beehiivConfig: BEEHIIV_CONFIG,
           fetchImpl: beehiivFetchImpl,
+          sleepFn: async () => {}, // #7392: espaçamento real não é o foco deste teste
         }),
     );
 
@@ -355,6 +356,7 @@ describe("applyCohortWave", () => {
           activeBeehiivEmails: new Set(["falha@x.com"]), // ativo na Beehiiv — seria elegível a desativar SE a tag confirmasse
           beehiivConfig: BEEHIIV_CONFIG,
           fetchImpl: beehiivFetchImpl,
+          sleepFn: async () => {}, // #7392: espaçamento real não é o foco deste teste
         }),
     );
 
@@ -391,6 +393,7 @@ describe("applyCohortWave", () => {
           activeBeehiivEmails: new Set(), // já não ativo
           beehiivConfig: BEEHIIV_CONFIG,
           fetchImpl: beehiivFetchImpl,
+          sleepFn: async () => {}, // #7392: espaçamento real não é o foco deste teste
         }),
     );
 
@@ -429,6 +432,7 @@ describe("applyCohortWave", () => {
           activeBeehiivEmails: new Set(["a@x.com"]),
           beehiivConfig: BEEHIIV_CONFIG,
           fetchImpl: beehiivFetchImpl,
+          sleepFn: async () => {}, // #7392: espaçamento real não é o foco deste teste
         }),
     );
 
@@ -486,5 +490,121 @@ describe("applyCohortWave", () => {
     const report = formatCohortReport(results, summary, false);
     assert.match(report, /seria desativado/);
     assert.doesNotMatch(report, /FALHOU/);
+  });
+
+  // ── espaçamento entre chamadas (#7392) ──────────────────────────────
+
+  it("#7392: espaça CADA chamada singular ao Kit na Fase A (buscar/criar → tag → releitura), nunca antes da 1ª de toda a rodada", async () => {
+    const sleeps: number[] = [];
+    const sleepFn = async (ms: number) => {
+      sleeps.push(ms);
+    };
+
+    const beehiivFetchImpl = (async () => jsonResponse(200, { data: { status: "active" } })) as typeof fetch;
+
+    await withMockFetch(
+      (async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        // e-mail nunca visto pelo Kit → percorre a cadeia inteira:
+        // find (vazio) → create → tag → releitura de confirmação.
+        if (url.includes("/subscribers?email_address=") && method === "GET") {
+          return jsonResponse(200, { subscribers: [] });
+        }
+        if (url.endsWith("/subscribers") && method === "POST") {
+          return jsonResponse(201, { subscriber: { id: 1, email_address: "novo@x.com", state: "active" } });
+        }
+        if (url.includes(`/tags/${TAG_ID}/subscribers/1`) && method === "POST") {
+          return new Response(null, { status: 204 });
+        }
+        if (url.endsWith("/subscribers/1/tags") && method === "GET") {
+          return jsonResponse(200, { tags: [{ id: TAG_ID, name: "rampa-kit", created_at: "x" }] });
+        }
+        throw new Error(`chamada Kit inesperada: ${method} ${url}`);
+      }) as typeof fetch,
+      () =>
+        applyCohortWave({
+          emails: ["novo@x.com"],
+          push: true,
+          kitConfig: KIT_CONFIG,
+          tagId: TAG_ID,
+          activeBeehiivEmails: new Set(), // já não ativo — Fase B não chama nada
+          beehiivConfig: BEEHIIV_CONFIG,
+          fetchImpl: beehiivFetchImpl,
+          sleepFn,
+        }),
+    );
+
+    // 4 chamadas Kit (find, create, tag, releitura) → 3 esperas, nunca antes da 1ª.
+    assert.deepEqual(sleeps, [350, 350, 350]);
+  });
+
+  it("#7392: espaçamento também atravessa a fronteira entre e-mails (não só dentro de um e-mail)", async () => {
+    const sleeps: number[] = [];
+    const sleepFn = async (ms: number) => {
+      sleeps.push(ms);
+    };
+    const beehiivFetchImpl = (async () => jsonResponse(200, { data: { status: "active" } })) as typeof fetch;
+
+    await withMockFetch(
+      (async (url: string) => {
+        // ambos já tagueados — 2 chamadas Kit por e-mail (find + fetchTags), sem POST.
+        if (url.includes("/subscribers?email_address=")) {
+          const email = decodeURIComponent(url.split("email_address=")[1] ?? "");
+          const id = email.startsWith("a@") ? 1 : 2;
+          return jsonResponse(200, { subscribers: [{ id, email_address: email, state: "active" }] });
+        }
+        if (url.endsWith("/subscribers/1/tags") || url.endsWith("/subscribers/2/tags")) {
+          return jsonResponse(200, { tags: [{ id: TAG_ID, name: "rampa-kit", created_at: "x" }] });
+        }
+        throw new Error(`chamada Kit inesperada: ${url}`);
+      }) as typeof fetch,
+      () =>
+        applyCohortWave({
+          emails: ["a@x.com", "b@x.com"],
+          push: true,
+          kitConfig: KIT_CONFIG,
+          tagId: TAG_ID,
+          activeBeehiivEmails: new Set(),
+          beehiivConfig: BEEHIIV_CONFIG,
+          fetchImpl: beehiivFetchImpl,
+          sleepFn,
+        }),
+    );
+
+    // 4 chamadas Kit (find+fetchTags × 2 e-mails) → 3 esperas, incluindo a
+    // que cruza de um e-mail pro outro.
+    assert.deepEqual(sleeps, [350, 350, 350]);
+  });
+
+  it("#7392: exatamente 1 chamada Kit no total nunca espera — prova que a 1ª chamada de toda a rodada é sempre imediata", async () => {
+    let sleepCalls = 0;
+    const sleepFn = async () => {
+      sleepCalls += 1;
+    };
+    const beehiivFetchImpl = (async () => jsonResponse(200, { data: { status: "active" } })) as typeof fetch;
+
+    await withMockFetch(
+      (async (url: string) => {
+        // e-mail nunca visto + dry-run: o caller para depois do 1º `find`,
+        // sem sequer checar tags (ver `!push` na Fase A) — só 1 chamada Kit.
+        if (url.includes("/subscribers?email_address=")) {
+          return jsonResponse(200, { subscribers: [] });
+        }
+        throw new Error(`chamada Kit inesperada em dry-run: ${url}`);
+      }) as typeof fetch,
+      () =>
+        applyCohortWave({
+          emails: ["novo@x.com"],
+          push: false, // dry-run
+          kitConfig: KIT_CONFIG,
+          tagId: TAG_ID,
+          activeBeehiivEmails: new Set(),
+          beehiivConfig: BEEHIIV_CONFIG,
+          fetchImpl: beehiivFetchImpl,
+          sleepFn,
+        }),
+    );
+
+    assert.equal(sleepCalls, 0);
   });
 });
