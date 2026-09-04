@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.14
+version: 0.5.15
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -32,18 +32,32 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
   do próprio tick, rodar `npx tsx scripts/check-continuo-workdir.ts --path
   {caminho} --intent read|write`. `exit 0` (allowed) → prossegue. `exit 1`
   (denied) → não tocar esse path, registrar no relatório do tick e seguir.
-  3 raízes definidas (`scripts/lib/continuo-workdir-allowlist.ts`):
-  `diaria-studio` (`enabled: true`, como sempre foi), `hermes-agent` e
-  `dot-hermes` (`~/.hermes`) — **as duas últimas nascem `enabled: false`**,
-  decisão do editor: habilitá-las é 1 campo (`enabled: true` no módulo),
-  mas enquanto qualquer sessão estiver trabalhando ativamente nessas raízes
-  (fork `vjpixel/hermes`, config `~/.hermes` sob medição), ligar o contínuo
-  nelas reproduz a mesma colisão que a #6802 já sofreu neste dia — blast
-  radius maior (config de produção do próprio orquestrador, checkout com
-  trabalho não commitado). **`~/.hermes/auth.json` é negado permanentemente,
-  em QUALQUER cenário** — tokens OAuth/chaves em claro, leitura livre por
-  um agente cujo log vai pro Telegram é vazamento a 1 `echo` de distância;
-  o hard-deny vence mesmo se `dot-hermes` for ativada no futuro.
+  3 raízes definidas (`scripts/lib/continuo-workdir-allowlist.ts`), **todas
+  `enabled: true` desde 04/09/2026** (decisão do editor: "implementar como
+  especificado. Sem redução de escopo"): `diaria-studio`, `hermes-agent`
+  (fork `vjpixel/hermes`) e `dot-hermes` (`~/.hermes`). **`~/.hermes/
+  auth.json` é negado permanentemente, em QUALQUER cenário** — tokens
+  OAuth/chaves em claro, leitura livre por um agente cujo log vai pro
+  Telegram é vazamento a 1 `echo` de distância; o hard-deny vence mesmo com
+  `dot-hermes` ativada.
+- **Leitura de `~/.hermes/sessions/sessions.json` (#6817 item 2, decisão do
+  editor 03/09/2026): SÓ via `npx tsx scripts/read-hermes-session-status.ts
+  --path {caminho}`.** Nunca ler o arquivo direto, nem por conveniência de
+  debug. O script devolve APENAS os campos declarados em `DEFAULT_ALLOWED_
+  SESSION_FIELDS` (`scripts/lib/hermes-session-status.ts`) — desenho
+  deliberado de **allowlist de saída** (campo novo não sai até ser
+  adicionado de propósito), não blacklist de segredo reconhecido (que falha
+  aberto pra um formato de token não previsto — ver docstring do módulo).
+- **Escrita de config de runtime (#6817 item 3): SÓ via `npx tsx
+  scripts/write-hermes-config.ts --path {caminho} --content-file {novo}
+  --reason {motivo} [--validate-cmd ...] [--smoke-cmd ...] [--echo-to
+  ~/hermes-agent/config/hermes-home/{arquivo}]`.** Nunca `Edit`/`Write`
+  direto em `~/.hermes/config.yaml`, `cron/jobs.json` ou `profiles/*` —
+  antes de escrever, confirmar com `npx tsx scripts/check-continuo-workdir.ts
+  --check-runtime-sensitive --path {caminho}` (exit 1 = exige o verbo). O
+  verbo faz backup automático, roda validação/smoke opcionais com revert
+  automático em falha, e ecoa um snapshot REDIGIDO pro fork quando
+  `--echo-to` é passado. Detalhes: `scripts/lib/hermes-config-writer.ts`.
 - **Guard de auto-modificação (#6817 item 4).** Antes de aplicar qualquer
   mudança, rodar `npx tsx scripts/check-continuo-workdir.ts --check-self-mod
   --path {caminho da mudança} --active {lista separada por vírgula dos
@@ -61,17 +75,22 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
   Fail-closed é requisito aqui, não preferência — o contínuo rodando
   DENTRO do que ele modifica é a receita de um estado que ninguém desfaz
   sozinho.
-- **Escopo deliberadamente NÃO implementado nesta 1ª fatia** (#6817 tem 7
-  sub-propostas; itens 2, 3, 5, 6 e 7 exigem operar de fato dentro de
-  `hermes-agent`/`~/.hermes` pra fazer sentido, e essas raízes nascem
-  desligadas — implementá-los contra raiz desligada seria código morto):
-  redação de `auth.json` pra leitura segura, verbo único de escrita de
-  config de runtime (backup + validação + probe + revert), extensão do
-  `sensitive-path-guard.ts` pra `~/.hermes/config.yaml`/`cron/jobs.json`,
-  gate de review pro fork (o `.claude/hooks/pr-create-review.mjs` é deste
-  checkout, não roda em `~/hermes-agent`), e leitura do tracker do fork
-  como 2ª fila (`vjpixel/hermes#N` sempre prefixado). Ficam para quando o
-  editor decidir ativar as raízes.
+- **Config de runtime é caminho SENSÍVEL** (#6817 item 5) — checar
+  `--check-runtime-sensitive` (acima) ANTES de Edit/Write em
+  `.hermes/config.yaml`/`cron/jobs.json`/`profiles/**`. Não entrou em
+  `sensitive-path-guard.ts` (quebraria o hygiene test de lá — regra precisa
+  casar arquivo RASTREADO deste repo); vive em `scripts/lib/hermes-runtime-
+  sensitive-paths.ts`, módulo irmão.
+- **PR no fork `vjpixel/hermes` (#6817 item 6): abrir SIM, auto-merge NÃO
+  — decisão do editor 03/09/2026.** `continuo-pr-review.sh` (única
+  autoridade de merge) tem `REPO=/home/vjpixel/diaria-studio` fixo — nunca
+  mergeia PR de outro repo, por construção. Sem maquinaria de review
+  equivalente no fork (`pr-create-review.mjs` é deste checkout), PR do
+  fork fica sempre aberta aguardando review humano/externo.
+- **Item 7 (2 trackers) RESIDUAL** — issues do fork `vjpixel/hermes#6/#8/#9`
+  como 2ª fila não implementado: exige decisão de design (ordem de
+  prioridade entre filas) que a issue não especifica. `classifyExecTrack`
+  segue única fonte pras issues deste repo.
 - Nunca tocar `data/editions/` de edição em curso, credenciais, ou disparar
   publicação. Fila TÉCNICA (issues/PRs), nunca fluxo editorial.
 - Env vars `ANTHROPIC_*` NUNCA no ambiente global — só dentro do wrapper
@@ -84,7 +103,7 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
 | `~/.hermes/scripts/claude-openrouter.sh` | roda `claude -p` com OpenRouter (stdin=prompt; `--tools`, `--budget`, `--timeout`) | `dots-studio/dots-3-note-preview:free` → `poolside/laguna-s-2.1:free` → `z-ai/glm-5.3-flash` |
 | `npx tsx --eval` (direto, sem LLM) | classificação determinística | nenhum |
 | `~/.hermes/scripts/opus-daily-diff-review.sh` | review Opus do diff ACUMULADO do dia (cron separado, 1x/dia; #6865, ex-`daily-consolidated-review.sh`) | Anthropic (assinatura) |
-| `~/.hermes/scripts/continuo-pr-review.sh` | review Sonnet de 1 PR `continuo/*` aberta por vez (cron separado; cadência: derivar com `hermes cron list --all` — nunca esta prosa, #6928; #6865) — NUNCA mergeia, só comenta | Anthropic (assinatura) |
+| `~/.hermes/scripts/continuo-pr-review.sh` | review Sonnet de 1 PR `continuo/*` aberta por vez (cron separado; cadência: derivar com `hermes cron list --all` — nunca esta prosa, #6928; #6865) — o MODELO nunca mergeia (`gh pr merge` fora do `--allowedTools`); o SCRIPT BASH mergeia depois, atrás de 8 portões fail-closed (#6926) — `REPO` fixo em `diaria-studio`, nunca toca PR do fork (#6817 item 6) | Anthropic (assinatura) |
 
 ## Cada ciclo (tick do cron)
 

@@ -13,6 +13,24 @@ corrente no frontmatter (`version:`) e o comportamento ATUAL/operacional;
 este arquivo é o "porquê" de cada mudança — para quem investiga uma decisão
 passada, não para quem está rodando um tick.
 
+- 0.5.15 (04/09/2026): #6817 residual — as 2 raízes novas da allowlist
+  (`hermes-agent`, `dot-hermes`) ativadas (`enabled: true`, decisão do
+  editor 04/09: "implementar como especificado. Sem redução de escopo"),
+  guards no lugar antes da ativação: item 2 (`scripts/read-hermes-session-
+  status.ts`, leitor allowlist-de-saída de `sessions.json` — decisão do
+  editor 03/09, distinta de blacklist-de-segredo por design, não só por
+  cobertura), item 3 (`scripts/write-hermes-config.ts`, verbo único de
+  escrita de config com backup/validate/smoke/revert e eco redigido pro
+  fork), item 5 (`scripts/lib/hermes-runtime-sensitive-paths.ts`, irmão de
+  `sensitive-path-guard.ts` — não entrou lá porque o hygiene test de lá
+  exige regra casando com arquivo RASTREADO deste repo, e paths de
+  `~/.hermes` nascem mortos por esse critério). Item 6 (PR autônoma no fork
+  `vjpixel/hermes`) confirmado JÁ coberto mecanicamente: `continuo-pr-
+  review.sh` tem `REPO=/home/vjpixel/diaria-studio` fixo, nunca mergeia PR
+  de outro repo — decisão do editor (03/09: abrir SIM, auto-merge NÃO) só
+  precisou de documentação, não de código novo. Item 7 (2 trackers) segue
+  residual — exige decisão de design (ordem de prioridade entre filas) que
+  a issue não especifica.
 - 0.5.14 (01/09/2026): #6928 — cadências dos 2 crons do contínuo estavam
   erradas em prosa, ambas registrando o dobro do valor real, e o
   descompasso/espera máxima que o #6865 citava era derivado desses números
