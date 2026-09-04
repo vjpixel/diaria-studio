@@ -562,6 +562,16 @@ export interface RenderDashboardOptions {
    * nunca carrega esses assets — eles só existem no studio-server.
    */
   studioMode?: boolean;
+  /**
+   * #7433: timestamp injetável pro teste determinístico. O `now` real é
+   * `new Date()` (HH:mm:ss em BRT) e é o único campo não-determinístico do
+   * HTML — sem isso, duas chamadas consecutivas podem cruzar a virada do
+   * segundo e quebrar asserts byte-a-byte. Default `new Date()` preserva o
+   * comportamento de produção (Worker sem 2º argumento); o caller do Studio
+   * (`dashboard-diaria.ts`) nunca passa `now`, então o header continua
+   * atualizado por request.
+   */
+  now?: Date;
 }
 
 /** #3861: HTML do botão "Atualizar É IA?" — vazio (sem custo) quando
@@ -1018,7 +1028,7 @@ ${staleBanner}
 // ─── Render completo ──────────────────────────────────────────────────────────
 
 export function renderDashboardHtml(data: DashboardData, opts: RenderDashboardOptions = {}): string {
-  const now = new Date().toLocaleString("pt-BR", {
+  const now = (opts.now ?? new Date()).toLocaleString("pt-BR", {
     timeZone: "America/Sao_Paulo",
     day: "2-digit",
     month: "2-digit",
