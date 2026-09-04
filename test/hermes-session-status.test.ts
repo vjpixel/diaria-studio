@@ -115,4 +115,56 @@ describe("CLI read-hermes-session-status.ts", () => {
     assert.equal(r.status, 2);
     assert.match(r.stderr, /não existe/);
   });
+
+  it("CAMINHO DE SUCESSO E2E: path permitido + sessions.json válido -> exit 0, stdout é o JSON redigido esperado", () => {
+    const dir = mkdtempSync(join(repoRoot, "data", "tmp-hermes-session-status-test-"));
+    try {
+      const file = join(dir, "sessions.json");
+      writeFileSync(file, JSON.stringify({
+        "sess-1": { last_status: "ok", model_override: "sonnet", exhausted: false, auth_token: "should-never-leak" },
+      }));
+      const r = runCli(["--path", file]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stderr.trim(), "");
+      const parsed = JSON.parse(r.stdout);
+      assert.deepEqual(parsed, {
+        "sess-1": { last_status: "ok", model_override: "sonnet", exhausted: false },
+      });
+      assert.equal(r.stdout.includes("should-never-leak"), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("JSON malformado -> exit 2, mensagem clara, nada no stdout", () => {
+    const dir = mkdtempSync(join(repoRoot, "data", "tmp-hermes-session-status-test-"));
+    try {
+      const file = join(dir, "sessions.json");
+      writeFileSync(file, "{ isto não é json válido ,,,");
+      const r = runCli(["--path", file]);
+      assert.equal(r.status, 2);
+      assert.equal(r.stdout.trim(), "");
+      assert.match(r.stderr, /falha ao ler\/parsear/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--fields customizado no CLI restringe/expande a saída conforme pedido, inclusive incluindo identidade explicitamente", () => {
+    const dir = mkdtempSync(join(repoRoot, "data", "tmp-hermes-session-status-test-"));
+    try {
+      const file = join(dir, "sessions.json");
+      writeFileSync(file, JSON.stringify({
+        "sess-1": { session_id: "sess-1", last_status: "ok", model_override: "sonnet", exhausted: false, token: "secret" },
+      }));
+      const r = runCli(["--path", file, "--fields", "session_id,last_status"]);
+      assert.equal(r.status, 0, r.stderr);
+      const parsed = JSON.parse(r.stdout);
+      assert.deepEqual(parsed, { "sess-1": { session_id: "sess-1", last_status: "ok" } });
+      assert.equal(r.stdout.includes("model_override"), false, "campo fora de --fields não deveria sair");
+      assert.equal(r.stdout.includes("secret"), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

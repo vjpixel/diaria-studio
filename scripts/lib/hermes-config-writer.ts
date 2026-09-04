@@ -83,7 +83,8 @@ export function buildBackupFileName(basename: string, motivo: string, dateStr: s
 }
 
 /** Formata um `Date` pro timestamp usado em `buildBackupFileName` — dígitos
- * só, ordena lexicograficamente igual a cronologicamente. Pura (recebe o
+ * + `T`/`Z` literais (separadores ISO removidos, ex: `20260904T040832Z`),
+ * ordena lexicograficamente igual a cronologicamente. Pura (recebe o
  * `Date`, não lê o relógio). */
 export function formatBackupTimestamp(date: Date): string {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
@@ -122,30 +123,115 @@ export interface RedactionResult {
 }
 
 /**
+ * Lançado por `redactConfigText` quando uma chave sensível carrega um valor
+ * MULTI-LINHA (block scalar `|`/`>`, ou uma continuação indentada sem
+ * marcador que não é mapeamento/sequência aninhados) — casos em que a
+ * redação line-based só reescreveria a linha da CHAVE, deixando o segredo
+ * de verdade intacto nas linhas seguintes enquanto `matchedKeys` reportaria
+ * sucesso. Fail loud é a única opção segura: um parser YAML de verdade
+ * resolveria isso, mas este módulo não carrega um como dependência (ver
+ * docstring do módulo) — então o CLI aborta o eco em vez de produzir um
+ * documento que AFIRMA falsamente estar seguro.
+ */
+export class UnsafeMultilineSecretError extends Error {
+  constructor(
+    readonly key: string,
+    readonly lineNumber: number,
+  ) {
+    super(`não é seguro redigir valor multi-linha da chave "${key}" (linha ${lineNumber}) — recusando eco`);
+    this.name = "UnsafeMultilineSecretError";
+  }
+}
+
+/** Indicador de block/folded scalar YAML na posição de valor: `|`, `>`,
+ * com modificadores opcionais de chomping (`+`/`-`) e/ou indentação
+ * explícita (1 dígito) — ex: `|`, `|-`, `|2`, `>+`. */
+const BLOCK_SCALAR_INDICATOR = /^[|>][+-]?\d*$/;
+
+/** `true` sse a linha (já sem `\n`) tem conteúdo não-vazio depois do
+ * trim — usado pra pular linhas em branco ao procurar a próxima linha
+ * "real" abaixo de uma chave sem valor na própria linha. */
+function isBlankLine(line: string): boolean {
+  return line.trim().length === 0;
+}
+
+function leadingWhitespace(line: string): string {
+  return /^(\s*)/.exec(line)?.[1] ?? "";
+}
+
+/** Primeira linha não-branca em `lines` estritamente depois do índice
+ * `fromIndex` — `undefined` se não houver nenhuma (chave sensível vazia é
+ * a última coisa do arquivo, nada a inspecionar). */
+function findNextNonBlankLine(lines: readonly string[], fromIndex: number): string | undefined {
+  for (let i = fromIndex + 1; i < lines.length; i++) {
+    if (!isBlankLine(lines[i])) return lines[i];
+  }
+  return undefined;
+}
+
+/**
  * Redige valores de chaves sensíveis num texto YAML — line-based (não
  * parseia o YAML de verdade, o repo não tem parser YAML como dependência
  * hoje — ver docstring do CLI). Casa `<indentação>chave:<resto da linha>`
  * contra `sensitiveKeys` (nome da chave = trecho entre a indentação e o
  * primeiro `:`, comparado case-insensitive); substitui o resto da linha
- * por ` <redacted>`. Linhas que não têm esse formato (comentários, listas,
- * blocos multi-linha) passam intactas — `redactConfigText` é
- * deliberadamente conservador: prefere deixar uma linha ambígua como está
- * a arriscar corromper YAML válido tentando reescrevê-lo estruturalmente.
+ * por ` <redacted>`. Linhas que não têm esse formato (comentários, listas)
+ * passam intactas — `redactConfigText` é deliberadamente conservador:
+ * prefere deixar uma linha ambígua como está a arriscar corromper YAML
+ * válido tentando reescrevê-lo estruturalmente.
+ *
+ * Duas formas de valor MULTI-LINHA são detectadas e fazem a função LANÇAR
+ * `UnsafeMultilineSecretError` em vez de fingir que redigiu (#6817,
+ * achado de review de segurança 260904 — ver docstring da exceção):
+ *
+ *   1. block/folded scalar explícito (`chave: |`, `chave: >-`, etc);
+ *   2. `chave:` sem valor na própria linha, seguida de uma linha mais
+ *      indentada que NÃO tem cara de mapeamento (`sub-chave:`) nem de
+ *      item de sequência (`- `) — essa forma só é válida YAML como
+ *      continuação de escalar plano, que não tem marcador nenhum pra
+ *      distinguir "segredo continuando" de "mapeamento aninhado".
+ *
+ * Sub-chave sob uma chave sensível SEM valor na linha (`token:` seguido de
+ * `  value: abc`) continua passando intacta — ela só é redigida se o NOME
+ * da sub-chave (`value`) também estiver em `sensitiveKeys`; `token: abc`
+ * não redige `value` por associação com o pai.
  */
 export function redactConfigText(text: string, sensitiveKeys: readonly string[] = DEFAULT_SENSITIVE_CONFIG_KEYS): RedactionResult {
   const keysLower = new Set(sensitiveKeys.map((k) => k.toLowerCase()));
   const matched = new Set<string>();
-  const lines = text.split("\n").map((line) => {
+  const rawLines = text.split("\n");
+  const outLines = rawLines.map((line, idx) => {
     const m = /^(\s*)([A-Za-z0-9_.-]+)\s*:(.*)$/.exec(line);
     if (!m) return line;
     const [, indent, key, rest] = m;
     if (!keysLower.has(key.toLowerCase())) return line;
-    // Valor vazio (bloco YAML aninhado abaixo, ex: `token:` seguido de
-    // sub-chaves) não tem nada a redigir nesta linha — deixa como está,
-    // as sub-chaves (se também sensíveis por nome) são redigidas por si.
-    if (rest.trim().length === 0) return line;
-    matched.add(sensitiveKeys.find((k) => k.toLowerCase() === key.toLowerCase()) ?? key);
+    const canonicalKey = sensitiveKeys.find((k) => k.toLowerCase() === key.toLowerCase()) ?? key;
+    const trimmedRest = rest.trim();
+
+    if (trimmedRest.length === 0) {
+      // Sem valor na própria linha: bloco aninhado abaixo (seguro, sub-
+      // chaves se redigem por si) OU continuação de escalar plano
+      // multi-linha (inseguro — segredo real ficaria intacto). A forma da
+      // PRÓXIMA linha não-branca decide: mais indentada e SEM cara de
+      // mapeamento/sequência = continuação ambígua, aborta.
+      const nextLine = findNextNonBlankLine(rawLines, idx);
+      if (nextLine !== undefined) {
+        const nextIndent = leadingWhitespace(nextLine);
+        const isDeeper = nextIndent.length > indent.length;
+        const looksLikeMappingOrSequence = /^\s*(?:[A-Za-z0-9_.-]+\s*:|-\s)/.test(nextLine);
+        if (isDeeper && !looksLikeMappingOrSequence) {
+          throw new UnsafeMultilineSecretError(canonicalKey, idx + 1);
+        }
+      }
+      return line;
+    }
+
+    if (BLOCK_SCALAR_INDICATOR.test(trimmedRest)) {
+      throw new UnsafeMultilineSecretError(canonicalKey, idx + 1);
+    }
+
+    matched.add(canonicalKey);
     return `${indent}${key}: <redacted>`;
   });
-  return { redacted: lines.join("\n"), matchedKeys: [...matched] };
+  return { redacted: outLines.join("\n"), matchedKeys: [...matched] };
 }

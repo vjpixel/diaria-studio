@@ -13,11 +13,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
   DEFAULT_SENSITIVE_CONFIG_KEYS,
+  UnsafeMultilineSecretError,
   buildBackupFileName,
   findMostRecentBackup,
   formatBackupTimestamp,
@@ -109,6 +110,57 @@ describe("redactConfigText", () => {
     assert.equal(redacted, text);
     assert.deepEqual(matchedKeys, []);
   });
+
+  it("SEGURANÇA: block scalar (`token: |`) lança UnsafeMultilineSecretError em vez de fingir que redigiu", () => {
+    const text = ["token: |", "  linha-1-do-segredo-de-verdade", "  linha-2-do-segredo"].join("\n");
+    assert.throws(
+      () => redactConfigText(text, ["token"]),
+      (err: unknown) => {
+        assert.ok(err instanceof UnsafeMultilineSecretError);
+        assert.equal(err.key, "token");
+        assert.match(err.message, /não é seguro redigir valor multi-linha/);
+        return true;
+      },
+    );
+  });
+
+  it("SEGURANÇA: folded scalar (`token: >-`) também lança", () => {
+    const text = ["token: >-", "  segredo continua aqui"].join("\n");
+    assert.throws(() => redactConfigText(text, ["token"]), UnsafeMultilineSecretError);
+  });
+
+  it("SEGURANÇA: chave sem valor seguida de continuação indentada SEM cara de mapeamento/sequência lança (ambíguo — pode ser escalar plano multi-linha)", () => {
+    const text = ["token:", "  este-texto-não-tem-cara-de-sub-chave-yaml-valida"].join("\n");
+    assert.throws(() => redactConfigText(text, ["token"]), UnsafeMultilineSecretError);
+  });
+
+  it("chave sem valor seguida de SUB-CHAVES legítimas continua passando intacta (regressão — não deve virar falso positivo)", () => {
+    const text = ["token:", "  value: abc", "  expires: 2026-01-01"].join("\n");
+    const { redacted, matchedKeys } = redactConfigText(text, ["token"]);
+    assert.equal(redacted, text);
+    assert.deepEqual(matchedKeys, []);
+  });
+
+  it("chave sem valor seguida de ITEM DE SEQUÊNCIA (`- `) continua passando intacta", () => {
+    const text = ["token:", "  - a", "  - b"].join("\n");
+    const { redacted } = redactConfigText(text, ["token"]);
+    assert.equal(redacted, text);
+  });
+
+  it("GAP CONHECIDO (achado BAIXO, não corrigido de propósito): `- api_key: valor` dentro de item de sequência não é redigido, nem falsamente reportado como redigido", () => {
+    const text = "keys:\n  - api_key: sk-live-abc\n    label: prod";
+    const { redacted, matchedKeys } = redactConfigText(text, ["api_key"]);
+    // Passa intacto — nem redige nem levanta erro. Documentado como gap
+    // conhecido no achado BAIXO 5 do fleet review (#6817): a regex de
+    // topo (`^(\s*)([A-Za-z0-9_.-]+)\s*:`) não casa com `- api_key: ...`
+    // porque a linha começa com `- `, não com a chave. Diferente do
+    // achado CRÍTICO 2 (block scalar), aqui não há falsa alegação de
+    // sucesso — matchedKeys fica vazio, então quem ler o resumo do CLI vê
+    // "nenhuma casou" e sabe que nada foi tocado.
+    assert.equal(redacted, text);
+    assert.deepEqual(matchedKeys, []);
+    assert.ok(redacted.includes("sk-live-abc"), "gap conhecido: valor sensível em item de sequência passa intacto");
+  });
 });
 
 describe("CLI write-hermes-config.ts", () => {
@@ -164,7 +216,7 @@ describe("CLI write-hermes-config.ts", () => {
       const r = runCli(["--path", target, "--content-file", contentFile, "--reason", "trocar modelo"]);
       assert.equal(r.status, 0, r.stderr);
       assert.equal(readFileSync(target, "utf8"), "model: sonnet\n");
-      const backupMatch = /backup criado: (\S+)/.exec(r.stdout);
+      const backupMatch = /backup criado e conferido: (\S+)/.exec(r.stdout);
       assert.ok(backupMatch, "stdout deveria citar o path do backup");
       assert.equal(readFileSync(backupMatch![1], "utf8"), "model: haiku\n");
     });
@@ -301,6 +353,85 @@ describe("CLI write-hermes-config.ts", () => {
       const r = runCli(["--path", target, "--revert"]);
       assert.equal(r.status, 2);
       assert.match(r.stderr, /nenhum backup encontrado/);
+    });
+  });
+
+  it("modo --revert com --backup EXPLÍCITO restaura o backup nomeado (não o mais recente)", () => {
+    withTmpDataDir((dir) => {
+      const target = join(dir, "config.yaml");
+      writeFileSync(target, "model: original\n");
+      const contentFile1 = join(dir, "v1.yaml");
+      writeFileSync(contentFile1, "model: v1\n");
+      const w1 = runCli(["--path", target, "--content-file", contentFile1, "--reason", "primeira troca"]);
+      assert.equal(w1.status, 0, w1.stderr);
+      const backup1 = /backup criado e conferido: (\S+)/.exec(w1.stdout)![1];
+
+      const contentFile2 = join(dir, "v2.yaml");
+      writeFileSync(contentFile2, "model: v2\n");
+      const w2 = runCli(["--path", target, "--content-file", contentFile2, "--reason", "segunda troca"]);
+      assert.equal(w2.status, 0, w2.stderr);
+      assert.equal(readFileSync(target, "utf8"), "model: v2\n");
+
+      // Sem --backup, o revert pegaria o backup MAIS RECENTE (o da 2ª
+      // troca, conteúdo "v1"). Passando --backup explícito com o nome do
+      // 1º backup (conteúdo "original"), o revert deve honrar o nome
+      // pedido, não o mais recente.
+      const revert = runCli(["--path", target, "--revert", "--backup", basename(backup1)]);
+      assert.equal(revert.status, 0, revert.stderr);
+      assert.equal(readFileSync(target, "utf8"), "model: original\n");
+    });
+  });
+
+  it("SEGURANÇA: --content-file apontando pra fora da allowlist (simulando ~/.hermes/auth.json) é negado, mesmo com --path permitido", () => {
+    withTmpDataDir((dir) => {
+      const target = join(dir, "config.yaml");
+      const secretsDir = mkdtempSync(join(tmpdir(), "hermes-secrets-"));
+      try {
+        const contentFile = join(secretsDir, "auth.json");
+        writeFileSync(contentFile, '{"oauth_token":"segredo-real"}');
+        const r = runCli(["--path", target, "--content-file", contentFile, "--reason", "tentativa de exfiltrar via content-file"]);
+        assert.equal(r.status, 1);
+        assert.match(r.stderr, /denied.*leitura/);
+        assert.equal(existsSync(target), false, "nada deveria ter sido escrito — a leitura da fonte foi negada antes de qualquer I/O de destino");
+      } finally {
+        rmSync(secretsDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it("SEGURANÇA: --revert --backup com path ABSOLUTO escapando pra fora da allowlist é negado (não copia o conteúdo do arquivo apontado)", () => {
+    withTmpDataDir((dir) => {
+      const target = join(dir, "config.yaml");
+      writeFileSync(target, "model: estado-atual\n");
+      const secretsDir = mkdtempSync(join(tmpdir(), "hermes-secrets-"));
+      try {
+        const outsideFile = join(secretsDir, "auth.json");
+        writeFileSync(outsideFile, '{"oauth_token":"segredo-real"}');
+        // `resolve(dir, backup)` descarta `dir` quando `backup` é
+        // absoluto — é exatamente essa propriedade que o gate precisa
+        // fechar.
+        const r = runCli(["--path", target, "--revert", "--backup", outsideFile]);
+        assert.equal(r.status, 1);
+        assert.match(r.stderr, /denied.*leitura/);
+        assert.equal(readFileSync(target, "utf8"), "model: estado-atual\n", "target não deveria ter sido tocado");
+      } finally {
+        rmSync(secretsDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it("SEGURANÇA: --echo-to com conteúdo contendo block scalar sensível pula o eco (não escreve segredo em claro), mas mantém a escrita principal", () => {
+    withTmpDataDir((dir) => {
+      const target = join(dir, "config.yaml");
+      const contentFile = join(dir, "novo.yaml");
+      writeFileSync(contentFile, ["token: |", "  segredo-multi-linha-de-verdade"].join("\n"));
+      const echoAllowed = join(dir, "echo-destino", "config.yaml");
+      const r = runCli(["--path", target, "--content-file", contentFile, "--reason", "eco com block scalar", "--echo-to", echoAllowed]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stderr, /eco pra .* PULADO/);
+      assert.match(r.stderr, /não é seguro redigir valor multi-linha/);
+      assert.equal(existsSync(echoAllowed), false, "eco não deveria ter sido escrito — teria vazado o segredo multi-linha em claro");
+      assert.equal(readFileSync(target, "utf8"), "token: |\n  segredo-multi-linha-de-verdade", "escrita principal segue de pé — só o eco foi pulado");
     });
   });
 

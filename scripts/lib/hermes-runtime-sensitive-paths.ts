@@ -50,7 +50,7 @@ export const HERMES_RUNTIME_SENSITIVE_RULES: readonly HermesRuntimeSensitiveRule
   {
     id: "hermes-runtime-cron",
     pattern: ".hermes/cron/jobs.json",
-    reason: "define os próprios crons que executam o contínuo — editar direto arrisca a mesma classe de auto-modificação do item 4 (#6059/#6060)",
+    reason: "define os próprios crons que executam o contínuo — editar direto arrisca a mesma classe de auto-modificação que o guard do item 4 (isSelfModification) existe pra prevenir (#6817 item 4; #6059/#6060 foi infra DELETADA por engano, código presumido morto — não é o mesmo tipo de risco desta regra, não citar como precedente aqui)",
   },
   {
     id: "hermes-runtime-profiles",

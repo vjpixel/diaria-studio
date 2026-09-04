@@ -70,7 +70,7 @@ import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { hasFlag, isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { defaultWorkdirRoots, isPathAllowed } from "./lib/continuo-workdir-allowlist.ts";
-import { buildBackupFileName, findMostRecentBackup, formatBackupTimestamp, redactConfigText } from "./lib/hermes-config-writer.ts";
+import { buildBackupFileName, findMostRecentBackup, formatBackupTimestamp, redactConfigText, UnsafeMultilineSecretError } from "./lib/hermes-config-writer.ts";
 
 const LOG_PREFIX = "[write-hermes-config]";
 const DIARIA_STUDIO_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
@@ -82,6 +82,55 @@ function resolveInputPath(raw: string): string {
 
 function roots() {
   return defaultWorkdirRoots(homedir(), DIARIA_STUDIO_ROOT);
+}
+
+/** Gate de LEITURA que qualquer path cujo CONTEÚDO vai ser lido pra dentro
+ * deste processo precisa passar — não só o `path` de destino da escrita.
+ * Sem isto, `--content-file`/`--backup` podiam apontar pra fora da
+ * allowlist (ex: `~/.hermes/auth.json`) e o conteúdo lido escaparia via
+ * `path`/`--echo-to`, que É validado, mas só como DESTINO — a fonte nunca
+ * passava por `isPathAllowed` (achado de review de segurança 260904).
+ * Sai com exit 1 (mesma classe de "allowlist negou" do gate de escrita). */
+function assertReadAllowed(path: string): void {
+  const decision = isPathAllowed(path, "read", roots());
+  if (!decision.allowed) {
+    console.error(`${LOG_PREFIX} denied — leitura de ${path} negada: ${decision.reason}`);
+    process.exit(1);
+  }
+}
+
+/** `writeFileSync` com try/catch estruturado — falha real de I/O (disco
+ * cheio, permissão, EISDIR) sai pelo formato `${LOG_PREFIX}` do resto do
+ * arquivo em vez de stack trace crua do Node, com exit code 2 (taxonomia
+ * do módulo: uso inválido / I/O). */
+function safeWriteFileSync(path: string, content: string, label: string): void {
+  try {
+    writeFileSync(path, content, "utf8");
+  } catch (e) {
+    console.error(`${LOG_PREFIX} falha de I/O ao escrever ${label} (${path}): ${(e as Error).message}`);
+    process.exit(2);
+  }
+}
+
+/** `readFileSync` com try/catch estruturado — mesmo racional de
+ * `safeWriteFileSync`, lado da leitura. */
+function safeReadFileSync(path: string, label: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (e) {
+    console.error(`${LOG_PREFIX} falha de I/O ao ler ${label} (${path}): ${(e as Error).message}`);
+    process.exit(2);
+  }
+}
+
+/** `mkdirSync` com try/catch estruturado — mesmo racional. */
+function safeMkdirSync(path: string, label: string): void {
+  try {
+    mkdirSync(path, { recursive: true });
+  } catch (e) {
+    console.error(`${LOG_PREFIX} falha de I/O ao criar diretório de ${label} (${path}): ${(e as Error).message}`);
+    process.exit(2);
+  }
 }
 
 function runCmd(cmd: string): { ok: boolean; output: string } {
@@ -107,13 +156,20 @@ function doRevert(path: string, backupName: string | undefined): void {
     }
   }
   const backupPath = resolve(dir, backup);
+  // `resolve(dir, backup)` descarta segmentos anteriores quando `backup` é
+  // absoluto (ou escapa via `../..`) — sem este gate, `--backup
+  // /home/x/.hermes/auth.json` (ou um `--backup` relativo escapando pra
+  // lá) copiaria o CONTEÚDO do arquivo real pra `path` sem nunca passar
+  // pela allowlist (achado de review de segurança 260904, mesma classe do
+  // gate em `--content-file` no modo escrita).
+  assertReadAllowed(backupPath);
   if (!existsSync(backupPath)) {
     console.error(`${LOG_PREFIX} backup não existe: ${backupPath}`);
     process.exit(2);
   }
-  const backupContent = readFileSync(backupPath, "utf8");
-  writeFileSync(path, backupContent, "utf8");
-  const confirm = readFileSync(path, "utf8");
+  const backupContent = safeReadFileSync(backupPath, "backup");
+  safeWriteFileSync(path, backupContent, "conteúdo restaurado");
+  const confirm = safeReadFileSync(path, "conferência pós-revert");
   if (confirm !== backupContent) {
     console.error(`${LOG_PREFIX} revert aplicado mas a releitura NÃO bate byte-a-byte com o backup — investigar antes de confiar no estado de ${path}`);
     process.exit(2);
@@ -152,34 +208,57 @@ function main(): void {
     console.error(`${LOG_PREFIX} --content-file não existe: ${contentFile}`);
     process.exit(2);
   }
-  const newContent = readFileSync(contentFile, "utf8");
+  // O CONTEÚDO lido de `--content-file` acaba escrito em `path` (que já
+  // passou pela allowlist acima) — mas a FONTE nunca tinha passado por
+  // nada. `--content-file ~/.hermes/auth.json` lia o token em claro sem
+  // nenhum gate (achado de review de segurança 260904) — mesma classe do
+  // gate em `--backup` no modo revert.
+  assertReadAllowed(contentFile);
+  const newContent = safeReadFileSync(contentFile, "content-file");
 
   const dir = dirname(path);
   const base = basename(path);
-  mkdirSync(dir, { recursive: true });
+  safeMkdirSync(dir, "destino");
 
   let backupPath: string | undefined;
   let originalContent: string | undefined;
   if (existsSync(path)) {
-    originalContent = readFileSync(path, "utf8");
+    originalContent = safeReadFileSync(path, "conteúdo atual (pré-backup)");
     const backupName = buildBackupFileName(base, reason, formatBackupTimestamp(new Date()));
     backupPath = resolve(dir, backupName);
-    writeFileSync(backupPath, originalContent, "utf8");
-    console.log(`${LOG_PREFIX} backup criado: ${backupPath}`);
+    safeWriteFileSync(backupPath, originalContent, "backup");
+    // Mesma disciplina de `doRevert` (nunca assume sucesso só porque
+    // `writeFileSync` não lançou): confere que o backup gravado bate
+    // byte-a-byte com o conteúdo original ANTES de prosseguir pra
+    // sobrescrever `path`. Sem isto, um backup corrompido/truncado só
+    // seria descoberto no dia em que um revert automático restaurasse
+    // silenciosamente um config quebrado, reportando "REVERTIDO" como se
+    // tivesse voltado ao estado bom.
+    const backupConfirm = safeReadFileSync(backupPath, "conferência pós-backup");
+    if (backupConfirm !== originalContent) {
+      console.error(`${LOG_PREFIX} backup em ${backupPath} não bate byte-a-byte com o conteúdo original — abortando ANTES de tocar em ${path} (nada foi sobrescrito)`);
+      process.exit(2);
+    }
+    console.log(`${LOG_PREFIX} backup criado e conferido: ${backupPath}`);
   } else {
     console.log(`${LOG_PREFIX} ${path} não existia — sem backup a fazer (1ª escrita)`);
   }
 
-  writeFileSync(path, newContent, "utf8");
+  safeWriteFileSync(path, newContent, "conteúdo novo");
   console.log(`${LOG_PREFIX} escrito: ${path}`);
 
   function revertAndExit(reasonMsg: string, cmdOutput: string): never {
     if (originalContent !== undefined) {
-      writeFileSync(path, originalContent, "utf8");
+      safeWriteFileSync(path, originalContent, "conteúdo revertido");
       console.error(`${LOG_PREFIX} REVERTIDO — ${path} restaurado ao conteúdo anterior (${backupPath})`);
     } else {
-      rmSync(path, { force: true });
-      console.error(`${LOG_PREFIX} REVERTIDO — ${path} removido (não existia antes desta escrita)`);
+      try {
+        rmSync(path, { force: true });
+        console.error(`${LOG_PREFIX} REVERTIDO — ${path} removido (não existia antes desta escrita)`);
+      } catch (e) {
+        console.error(`${LOG_PREFIX} falha de I/O ao remover ${path} durante revert: ${(e as Error).message}`);
+        process.exit(2);
+      }
     }
     console.error(`${LOG_PREFIX} motivo do revert: ${reasonMsg}\n${cmdOutput}`);
     process.exit(1);
@@ -212,10 +291,25 @@ function main(): void {
     } else {
       const sensitiveKeysValue = values["sensitive-keys"];
       const sensitiveKeys = sensitiveKeysValue ? sensitiveKeysValue.split(",").map((k) => k.trim()).filter(Boolean) : undefined;
-      const { redacted, matchedKeys } = redactConfigText(newContent, sensitiveKeys);
-      mkdirSync(dirname(echoPath), { recursive: true });
-      writeFileSync(echoPath, redacted, "utf8");
-      console.log(`${LOG_PREFIX} eco redigido escrito em ${echoPath} (chaves redigidas: ${matchedKeys.length > 0 ? matchedKeys.join(", ") : "nenhuma casou"})`);
+      let redaction: { redacted: string; matchedKeys: readonly string[] } | undefined;
+      try {
+        redaction = redactConfigText(newContent, sensitiveKeys);
+      } catch (e) {
+        if (!(e instanceof UnsafeMultilineSecretError)) throw e;
+        // FAIL LOUD, nunca produzir um eco que MENTE sobre estar seguro
+        // (o achado que motivou isto: a versão anterior redigia só a
+        // linha da chave de um block scalar YAML, deixando o segredo
+        // real intacto nas linhas de continuação enquanto reportava
+        // sucesso). Escrita principal em `path` já está aplicada e
+        // validada — isto não reverte, só pula o eco.
+        console.warn(`${LOG_PREFIX} eco pra ${echoPath} PULADO — ${e.message} (escrita principal em ${path} já está aplicada e validada, isto não reverte)`);
+      }
+      if (redaction) {
+        const { redacted, matchedKeys } = redaction;
+        safeMkdirSync(dirname(echoPath), "eco");
+        safeWriteFileSync(echoPath, redacted, "eco redigido");
+        console.log(`${LOG_PREFIX} eco redigido escrito em ${echoPath} (chaves redigidas: ${matchedKeys.length > 0 ? matchedKeys.join(", ") : "nenhuma casou"})`);
+      }
     }
   }
 
