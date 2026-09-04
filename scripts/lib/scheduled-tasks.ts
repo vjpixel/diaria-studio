@@ -1266,6 +1266,31 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#7180",
   },
   {
+    name: "Diaria-Reconcile-Send-Audiences",
+    description:
+      "guard 'quem recebe x quem recebe' nas 3 plataformas de envio da diaria (Kit tag rampa-kit, Beehiiv " +
+      "ativos, Brevo lista da campanha) -- orfaos e sobreposicao de audiencia de envio, nao base de ativos, #7385",
+    steps: [{ key: "reconcile", script: "scripts/reconcile-send-audiences.ts" }],
+    logPath: "reconcile-send-audiences/.guard.log",
+    // Diária 04:45 BRT — depois de Diaria-Metrics-Health-Alarm (04:40, acima)
+    // e antes de Diaria-Clarice-Envio-Guard (05:00, ver grep de `kind:
+    // "daily"` neste arquivo) — mede a audiência de envio ANTES da rampa do
+    // dia disparar, pra um órfão/sobreposição achado hoje já entrar no
+    // briefing da rodada seguinte em vez de só aparecer numa auditoria
+    // manual (o achado que motivou a issue: 7 dias sem detecção, #7357).
+    schedule: { kind: "daily", hour: 4, minute: 45 },
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do #5220/#5217/#5311/#5494/#5607/#5704/#5754/#5845/#7174/
+    // #7180 acima) — armar via `scripts/setup-systemd-timers.ts` na
+    // checkout compartilhada (`helios`) é ação POSTERIOR do
+    // editor/coordenador, fora do alcance de um subagente implementador em
+    // worktree isolado. Comando exato pra armar (deixado no corpo do PR,
+    // #7385): `systemctl --user enable --now diaria-reconcile-send-
+    // audiences.timer` depois de rodar `scripts/setup-systemd-timers.ts`
+    // na checkout compartilhada.
+    issue: "#7385",
+  },
+  {
     name: "Diaria-Worker-Drift-Check",
     description: "alarme de drift entre o codigo publicado e o master de cada Worker",
     steps: [{ key: "check", script: "scripts/worker-drift-check.ts" }],

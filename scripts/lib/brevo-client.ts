@@ -452,6 +452,86 @@ export async function brevoGetList(
 }
 
 /**
+ * `GET /v3/contacts/lists/{listId}/contacts`, paginado — e-mails dos
+ * contatos de uma lista (#7385, guard "quem recebe × quem recebe" nas 3
+ * plataformas). Usado pra materializar a audiência de ENVIO do canal Brevo
+ * diária como um CONJUNTO de e-mails (não só a contagem que `brevoGetList`
+ * já dava) — `scripts/lib/beehiiv-kit-reconcile.ts` precisa do conjunto pra
+ * comparar contra Kit/Beehiiv por interseção, não por número.
+ *
+ * `modifiedSince`/filtro por status não é aplicado aqui de propósito: a
+ * lista `brevo_diaria` já É o recorte de audiência (quem está na lista =
+ * quem é candidato a receber a campanha diária), então "todo mundo na
+ * lista" é a pergunta certa — filtrar blacklisted ficaria a cargo do
+ * caller, que já sabe se quer incluir supressos na comparação.
+ */
+export async function brevoListContacts(
+  apiKey: string,
+  listId: number,
+  _sleep = _defaultSleep,
+): Promise<string[]> {
+  const out: string[] = [];
+  const limit = 500;
+  let offset = 0;
+  for (;;) {
+    const page = await withBrevo429Retry(async () => {
+      const res = await brevoRawFetch(
+        `https://api.brevo.com/v3/contacts/lists/${listId}/contacts?limit=${limit}&offset=${offset}`,
+        { method: "GET", headers: { "api-key": apiKey, Accept: "application/json" } },
+      );
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(formatBrevoApiError("GET", `/contacts/lists/${listId}/contacts`, res.status, text));
+      }
+      return (await res.json()) as { contacts?: { email?: string }[]; count?: number };
+    }, _sleep);
+    const contacts = page.contacts ?? [];
+    for (const c of contacts) {
+      if (typeof c.email === "string" && c.email) out.push(c.email);
+    }
+    if (contacts.length < limit) break;
+    offset += limit;
+  }
+  return out;
+}
+
+/**
+ * `GET /v3/emailCampaigns/{id}?statistics=globalStats` — SEMPRE com o
+ * parâmetro hardcoded na URL (#7385, armadilha de medição #1: sem ele a
+ * API devolve `statistics.globalStats` zerado/ausente, indistinguível de
+ * "campanha não enviou nada" — já documentado em
+ * `workers/brevo-dashboard/src/brevo-api.ts:2298-2302`). Ao contrário de
+ * `brevoGetCampaign` acima (usado só pra checar `status` antes de um
+ * update, nunca precisou de stats), esta função existe especificamente
+ * pra ler `sent` — o parâmetro nunca pode ficar de fora por engano do
+ * caller, por isso não é uma opção, é fixo na própria implementação.
+ * Consumida por `resolveBrevoCampaignRecipients`
+ * (`scripts/lib/beehiiv-kit-reconcile.ts`), que trata o bloco ausente
+ * como "não medido", nunca como zero real.
+ */
+export async function brevoGetCampaignGlobalStats(
+  apiKey: string,
+  campaignId: number,
+  _sleep = _defaultSleep,
+): Promise<{ id: number; status: string; statistics?: { globalStats?: Record<string, unknown> } | null }> {
+  return withBrevo429Retry(async () => {
+    const res = await brevoRawFetch(
+      `https://api.brevo.com/v3/emailCampaigns/${campaignId}?statistics=globalStats`,
+      { method: "GET", headers: { "api-key": apiKey, Accept: "application/json" } },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(formatBrevoApiError("GET", `/emailCampaigns/${campaignId}?statistics=globalStats`, res.status, text));
+    }
+    return (await res.json()) as {
+      id: number;
+      status: string;
+      statistics?: { globalStats?: Record<string, unknown> } | null;
+    };
+  }, _sleep);
+}
+
+/**
  * PUT genérico pra Brevo. Usado em #1015 pra:
  *   - --schedule-at:    PUT /emailCampaigns/{id} body { scheduledAt }
  *   - --update-existing: PUT /emailCampaigns/{id} body { subject, htmlContent, ... }
