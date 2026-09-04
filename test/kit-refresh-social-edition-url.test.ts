@@ -171,6 +171,33 @@ describe("kitRefreshSocialEditionUrl (#7405)", () => {
     assert.match(writtenSocial!, new RegExp(`Mais em ${RESOLVED_URL.replace(/\//g, "\\/")} #IA`));
   });
 
+  it("caso de borda COMPOSTO (#7410, 2ª rodada de review): placeholder {edition_url} LITERAL + previousEditionUrl é PREFIXO da nova URL (caso real do stub Kit) → não duplica o slug", async () => {
+    // Reproduz o achado do code-reviewer: se o replace do stub antigo
+    // rodasse DEPOIS da substituição de {edition_url}, o texto recém-inserido
+    // (que contém o stub como prefixo próprio) seria re-escaneado e
+    // corrompido: ".../posts/titulo-da-edicaotitulo-da-edicao". A ordem
+    // correta (stub antigo primeiro, {edition_url} por último) evita isso.
+    let writtenSocial: string | null = null;
+    const deps = makeDeps({
+      readEditionUrlFile: () => STUB_URL, // previousEditionUrl é PREFIXO de RESOLVED_URL
+      readSocialMd: () => "## d1\n\nTexto do post. Mais em {edition_url} #IA\n", // placeholder ainda literal
+      writeSocialMd: (_dir, content) => {
+        writtenSocial = content;
+      },
+    });
+    const result = await kitRefreshSocialEditionUrl(EDITION_DIR, deps);
+    assert.equal(result.ok, true);
+    if (result.ok && result.resolved) {
+      assert.deepEqual(result.unresolvedPlaceholders, []);
+    }
+    assert.match(writtenSocial!, new RegExp(`Mais em ${RESOLVED_URL.replace(/\//g, "\\/")} #IA`));
+    assert.doesNotMatch(
+      writtenSocial!,
+      /titulo-da-edicaotitulo-da-edicao/,
+      "slug não pode duplicar — regressão do fix da 1ª rodada de review",
+    );
+  });
+
   it("já resolvida pra MESMA URL numa invocação anterior → idempotente, resolved: false, reason already_resolved, não reescreve nada", async () => {
     let writeUrlCalls = 0;
     let writeSocialCalls = 0;

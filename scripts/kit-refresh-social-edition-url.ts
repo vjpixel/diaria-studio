@@ -199,15 +199,27 @@ export async function kitRefreshSocialEditionUrl(
     // momento, que pro backend Kit é o stub sem slug (`.../posts/`).
     // `substituteEditionUrl` sozinho (busca só o placeholder `{edition_url}`)
     // é um no-op nesse caso — o texto errado ficaria gravado pra sempre sem
-    // este 2º passo. Corrigir os DOIS casos: (a) placeholder `{edition_url}`
-    // ainda literal (edição nunca passou pelo guard da Etapa 5, ou resume
-    // incomum) via `substituteEditionUrl`; (b) o stub ANTIGO já embutido no
-    // texto (caso real) via replace direto da string — `previousEditionUrl`
-    // é exatamente o valor que o guard usou pra substituir da última vez.
-    let updated = substituteEditionUrl(socialMd, publicUrl);
+    // este 2º passo. Corrigir os DOIS casos: (a) o stub ANTIGO já embutido
+    // no texto (caso real) via replace direto da string —
+    // `previousEditionUrl` é exatamente o valor que o guard usou pra
+    // substituir da última vez; (b) placeholder `{edition_url}` ainda
+    // literal (edição nunca passou pelo guard da Etapa 5, ou resume
+    // incomum) via `substituteEditionUrl`.
+    //
+    // ORDEM importa (achado do code-reviewer, 2ª rodada): (a) precisa rodar
+    // ANTES de (b). Como o stub Kit é sempre PREFIXO da URL resolvida
+    // (`.../posts/` → `.../posts/{slug}`), se (b) rodasse primeiro ela
+    // insere `publicUrl` no texto — que contém `previousEditionUrl` como
+    // substring própria — e (a) rodando DEPOIS re-escanearia esse trecho
+    // recém-inserido, duplicando o slug
+    // (`.../posts/{slug}{slug}`). Rodar (a) primeiro elimina toda ocorrência
+    // do stub ANTES de `publicUrl` entrar no texto, então (b) nunca tem
+    // conteúdo novo pra re-corromper.
+    let updated = socialMd;
     if (previousEditionUrl && previousEditionUrl !== publicUrl) {
       updated = updated.split(previousEditionUrl).join(publicUrl);
     }
+    updated = substituteEditionUrl(updated, publicUrl);
     if (updated !== socialMd) {
       deps.writeSocialMd(editionDir, updated);
     }
