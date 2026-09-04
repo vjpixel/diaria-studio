@@ -332,6 +332,7 @@ import {
   applySelfConfirmed,
   applyNativeUnsubscribe,
   applyBrevoDiariaBounced,
+  applyConvertedToKit, // #7382 — contato já ativo no Kit no momento da promoção pra Beehiiv
   normalizeEmail,
   DEFAULT_STORE_PATH,
   type BrevoDiariaContact,
@@ -342,7 +343,7 @@ import { ORIGIN_PREFIX } from "./lib/shared/brevo-diaria-origin.ts"; // #6699 �
 import { KIT_ORIGEM_CADASTRO_FIELD_NAME, KIT_SCORE_PROMOTION_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts"; // #6425 Parte B
 import { buildOrigemOriginalCustomFields } from "./lib/shared/beehiiv-origem-original.ts"; // #5231
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
-import { createOrUpdateSubscriber, getSubscriberById } from "./lib/kit-subscribers.ts"; // #6339, #6340 item 4
+import { createOrUpdateSubscriber, getSubscriberById, getKitSubscriberByEmail } from "./lib/kit-subscribers.ts"; // #6339, #6340 item 4, #7382
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -903,6 +904,39 @@ export async function verifyPromotedToKit(id: number, apiKey: string): Promise<b
   return subscriber.state === "active";
 }
 
+/**
+ * decidePromoteToBeehiivAction (#7382)
+ *
+ * Achado ao vivo (03/09/2026): a promoção por score pra Beehiiv escolhia o
+ * destino só por `newsletterBackend`, sem NUNCA checar se a pessoa já
+ * estava `active` no Kit — 4 casos confirmados de contato recebendo a
+ * edição em dobro (Kit + Beehiiv), com janelas de até 14 dias entre a
+ * promoção e a limpeza manual. Mesma disciplina de duas metades de
+ * `decideBeehiivDeactivateAction` em `kit-ramp-cohort.ts` (tagueia de um
+ * lado, decide o outro por resultado REAL, não planejado) — aqui invertida:
+ * antes de ESCREVER na Beehiiv, checar se a pessoa já recebe pelo Kit.
+ *
+ * Pura — recebe o resultado JÁ RESOLVIDO da checagem Kit (nunca faz I/O),
+ * mesmo padrão do par citado acima. Só se aplica quando `newsletterBackend
+ * !== "kit"` (o caminho que ESCREVE na Beehiiv) — quando o backend é o
+ * próprio Kit, a promoção já vai pro Kit, e o par oposto (Beehiiv×Kit
+ * timing) é escopo do #6705/#7357, não deste guard.
+ *
+ * Fail-safe pro lado do NUNCA duplicar: `kitCheckAvailable: false` (sem
+ * `KIT_API_KEY`, ou falha transitória de API) decide `skip_kit_check_unavailable`
+ * — o caller mantém o contato `in_brevo` pra reavaliar na próxima rodada,
+ * em vez de arriscar promover sem saber se já está ativo no Kit. Mesmo
+ * espírito de "verificação não confirmada → mantém in_brevo" já usado no
+ * restante deste módulo (`verifyPromotedToBeehiiv`/`verifySuppressedInBrevo`).
+ */
+export type PromoteToBeehiivAction = "promote" | "skip_active_on_kit" | "skip_kit_check_unavailable";
+
+export function decidePromoteToBeehiivAction(input: { kitCheckAvailable: boolean; kitActive: boolean }): PromoteToBeehiivAction {
+  if (!input.kitCheckAvailable) return "skip_kit_check_unavailable";
+  if (input.kitActive) return "skip_active_on_kit";
+  return "promote";
+}
+
 /** Prefixo sintético de `beehiiv_subscription_id` pra contato ingerido a
  *  partir do cohort `inactive` do Kit — convenção de
  *  `sync-kit-inactive-to-brevo.ts` (#6340 item 3), mesmo padrão de
@@ -1308,6 +1342,14 @@ export interface RunEvaluationResult {
    * precisa aparecer em cron, não só "algo falhou".
    */
   kitAutoConfirmSkipped: number;
+  /**
+   * #7382 — quantos contatos seriam promovidos pra Beehiiv (threshold de
+   * score) mas já estavam `active` no Kit no momento da checagem: a
+   * promoção pra Beehiiv foi PULADA (nunca duplicada) e o contato saiu da
+   * fila Brevo marcado `converted_to_kit` (mesmo status/semântica do guard
+   * pré-dispatch #6485 — "o Kit já assumiu o envio pra esse e-mail").
+   */
+  skippedActiveOnKit: number;
 }
 
 /**
@@ -1342,6 +1384,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   let kept = 0;
   let failed = 0;
   let kitAutoConfirmSkipped = 0;
+  let skippedActiveOnKit = 0; // #7382
 
   for (const contact of contacts) {
     try {
@@ -1767,6 +1810,43 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           const { id } = await promoteKitSubscription(contact.email, kitApiKey);
           confirmed = await verifyPromotedToKit(id, kitApiKey);
         } else {
+          // #7382 — antes de escrever na Beehiiv, checar se a pessoa já está
+          // `active` no Kit: promover sem essa checagem é exatamente o que
+          // produziu envio duplicado ao vivo (4 casos confirmados,
+          // 03/09/2026). Mesma disciplina de duas metades de
+          // `decideBeehiivDeactivateAction` (kit-ramp-cohort.ts) — ver
+          // docstring de `decidePromoteToBeehiivAction` acima.
+          let kitActive = false;
+          let kitCheckAvailable = true;
+          if (!kitApiKey) {
+            kitCheckAvailable = false;
+          } else {
+            try {
+              const kitSubscriber = await getKitSubscriberByEmail(contact.email, { apiKey: kitApiKey });
+              kitActive = kitSubscriber?.state === "active";
+            } catch (e) {
+              log(`warn: falha ao checar status Kit de ${contact.email} antes de promover pra Beehiiv (#7382): ${(e as Error).message}`);
+              kitCheckAvailable = false;
+            }
+          }
+          const crossPlatformDecision = decidePromoteToBeehiivAction({ kitCheckAvailable, kitActive });
+          if (crossPlatformDecision === "skip_active_on_kit") {
+            log(`${contact.email}: já ativo no Kit — pulando promoção pra Beehiiv (evita envio duplicado, #7382); desvinculando da fila Brevo.`);
+            skippedActiveOnKit++;
+            await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
+            store = applyConvertedToKit(store, contact.email);
+            continue;
+          }
+          if (crossPlatformDecision === "skip_kit_check_unavailable") {
+            log(
+              `warn: ${contact.email} — checagem Kit indisponível antes de promover pra Beehiiv (#7382${
+                kitApiKey ? "" : ", KIT_API_KEY ausente"
+              }) — mantendo in_brevo (fail-safe, nunca promove sem saber se já está ativo no Kit).`,
+            );
+            failed++;
+            store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
+            continue;
+          }
           await promoteBeehiivSubscription(publicationId, beehiivApiKey, contact.email);
           confirmed = await verifyPromotedToBeehiiv(publicationId, beehiivApiKey, contact.email);
         }
@@ -1819,6 +1899,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     kept,
     failed,
     kitAutoConfirmSkipped,
+    skippedActiveOnKit,
   };
 }
 
@@ -1880,6 +1961,17 @@ async function main(): Promise<void> {
   // guard `newsletterBackend === "kit"` original é mantido explicitamente
   // (a promoção por score em si SEMPRE precisa da key nesse backend, mesmo
   // sem nenhum contato Kit ainda no store).
+  //
+  // #7382: este guard NÃO foi estendido pra exigir `KIT_API_KEY` sempre que
+  // há CANDIDATO a promoção pra Beehiiv (impossível saber antecipadamente
+  // aqui — a decisão de score só acontece dentro de `runEvaluation`, por
+  // contato). Em vez disso, `decidePromoteToBeehiivAction` degrada
+  // fail-safe por contato quando `kitApiKey` está ausente no momento da
+  // promoção (`skip_kit_check_unavailable` → conta em `failed`, mantém
+  // `in_brevo`, nunca promove sem checar o Kit primeiro) — ver docstring da
+  // função. `KIT_API_KEY` é uma env var sempre presente em produção (ver
+  // `.env.example`/Doppler), então este caminho fail-safe é o caso raro
+  // (dev local sem a env), não o esperado.
   const hasKitOriginContacts = inBrevo.some((c) => c.beehiiv_subscription_id.startsWith(KIT_ORIGIN_ID_PREFIX));
   if (push && (newsletterBackend === "kit" || hasKitOriginContacts) && !kitApiKey) {
     const why = newsletterBackend === "kit" ? "newsletterBackend=kit" : `${inBrevo.filter((c) => c.beehiiv_subscription_id.startsWith(KIT_ORIGIN_ID_PREFIX)).length} contato(s) de origem Kit no store`;
@@ -1928,7 +2020,8 @@ async function main(): Promise<void> {
       `${result.selfConfirmed} auto-confirmado(s), ` +
       `${result.promoted} promovido(s) por taxa de abertura, ${result.suppressed} suprimido(s), ` +
       `${result.kept} mantido(s), ${result.failed} falha(s), ` +
-      `${result.kitAutoConfirmSkipped} pulado(s) por KIT_API_KEY ausente (#6340 item 4 fix A).`,
+      `${result.kitAutoConfirmSkipped} pulado(s) por KIT_API_KEY ausente (#6340 item 4 fix A), ` +
+      `${result.skippedActiveOnKit} promoção(ões) pra Beehiiv pulada(s) por já ativo no Kit (#7382).`,
   );
 
   // Windows fix (#4651, mesma classe do #4638/#1401): tanto o branch

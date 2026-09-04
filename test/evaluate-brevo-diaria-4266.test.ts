@@ -1486,6 +1486,11 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
     const deleteUrls: string[] = [];
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
+      if (u.includes("api.kit.com")) {
+        // #7382 — checagem cross-plataforma antes de promover pra Beehiiv:
+        // contato NÃO existe no Kit (nunca migrou), promoção segue normal.
+        return jsonRes(200, { subscribers: [], pagination: {} });
+      }
       if (u.includes("subscriptions/by_email/")) {
         byEmailCalls++;
         // 1ª chamada: auto-confirmação (passo 1, ainda "pending", cai no
@@ -1530,9 +1535,11 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
         brevoApiKey: "brkey",
         listId: 7,
         log: () => {},
+        kitApiKey: "kkey", // #7382 — necessário pra checagem cross-plataforma antes de promover
       });
       assert.equal(result.failed, 0);
       assert.equal(result.promoted, 1);
+      assert.equal(result.skippedActiveOnKit, 0, "#7382 — contato não está no Kit, promoção segue normal");
       assert.equal(findContact(result.store, "promo@b.com")!.status, "promoted_beehiiv");
       assert.deepEqual(deleteUrls, ["https://api.beehiiv.com/v2/publications/pub_1/subscriptions/sub_promo_atual"], "DELETE mira o id vindo do GET interno, nunca um id armazenado");
     } finally {
