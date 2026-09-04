@@ -10,12 +10,13 @@
  */
 import { describe, it, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   kitRefreshSocialEditionUrl,
   hasKitSlug,
+  warnUnresolvedPlaceholders,
   main,
   type KitRefreshSocialEditionUrlDeps,
 } from "../scripts/kit-refresh-social-edition-url.ts";
@@ -23,17 +24,27 @@ import { writePublishedState } from "../scripts/publish-newsletter-kit.ts";
 
 const EDITION_DIR = "/fake/root/data/editions/2609/260904";
 
+// #7405 achado do code-reviewer: o fixture default precisa refletir o
+// estado REAL de `03-social.md` no Stage 6, não o estado ingênuo
+// "placeholder ainda literal". A Etapa 5 (§5c-2 de `orchestrator-stage-5.md`)
+// já roda `resolve-edition-url.ts --validate-social` ANTES do Stage 6 —
+// `{edition_url}` já foi substituído pelo valor que `05-edition-url.txt`
+// tinha naquele momento, que pro backend Kit é o STUB sem slug. Por isso o
+// fixture default simula exatamente isso: `readEditionUrlFile` default
+// devolve o stub (não `null`), e `readSocialMd` default já tem o stub
+// embutido no texto (não o placeholder `{edition_url}` literal).
+const STUB_URL = "https://diariabr.kit.com/posts/";
+const RESOLVED_URL = "https://diariabr.kit.com/posts/titulo-da-edicao";
+
 function makeDeps(overrides: Partial<KitRefreshSocialEditionUrlDeps> = {}): KitRefreshSocialEditionUrlDeps {
   const files = new Map<string, string>();
   return {
     readPublished: overrides.readPublished ?? (() => ({ broadcast_id: 42 })),
-    getBroadcastPublicUrl:
-      overrides.getBroadcastPublicUrl ?? (async () => "https://diariabr.kit.com/posts/titulo-da-edicao"),
-    readEditionUrlFile: overrides.readEditionUrlFile ?? ((dir) => files.get(`${dir}:url`) ?? null),
+    getBroadcastPublicUrl: overrides.getBroadcastPublicUrl ?? (async () => RESOLVED_URL),
+    readEditionUrlFile: overrides.readEditionUrlFile ?? ((dir) => files.get(`${dir}:url`) ?? STUB_URL),
     writeEditionUrlFile: overrides.writeEditionUrlFile ?? ((dir, url) => files.set(`${dir}:url`, url)),
     readSocialMd:
-      overrides.readSocialMd ??
-      ((dir) => files.get(`${dir}:social`) ?? "## d1\n\nTexto do post. Mais em {edition_url} #IA\n"),
+      overrides.readSocialMd ?? ((dir) => files.get(`${dir}:social`) ?? `## d1\n\nTexto do post. Mais em ${STUB_URL} #IA\n`),
     writeSocialMd: overrides.writeSocialMd ?? ((dir, content) => files.set(`${dir}:social`, content)),
   };
 }
@@ -76,6 +87,20 @@ describe("kitRefreshSocialEditionUrl (#7405)", () => {
     assert.equal(getCalled, false);
   });
 
+  it("readPublished lança (JSON corrompido/parcialmente escrito) → code 3 com o motivo, nunca propaga como exceção", async () => {
+    const deps = makeDeps({
+      readPublished: () => {
+        throw new SyntaxError("Unexpected end of JSON input");
+      },
+    });
+    const result = await kitRefreshSocialEditionUrl(EDITION_DIR, deps);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.code, 3);
+      assert.match(result.reason, /Unexpected end of JSON input/);
+    }
+  });
+
   it("GET falha → code 4 com o motivo", async () => {
     const deps = makeDeps({
       getBroadcastPublicUrl: async () => {
@@ -112,30 +137,45 @@ describe("kitRefreshSocialEditionUrl (#7405)", () => {
     assert.equal(wroteSocial, false);
   });
 
-  it("slug resolvido pela 1ª vez → escreve 05-edition-url.txt + reescreve 03-social.md, resolved: true", async () => {
-    const deps = makeDeps({
-      getBroadcastPublicUrl: async () => "https://diariabr.kit.com/posts/titulo-da-edicao",
-    });
+  it("caso REAL (#7405, achado do code-reviewer): 03-social.md já tem o STUB embutido (não o placeholder {edition_url} — a Etapa 5 já substituiu por ele antes do Stage 6) → substitui o stub ANTIGO pelo novo, resolved: true", async () => {
+    const deps = makeDeps();
     const result = await kitRefreshSocialEditionUrl(EDITION_DIR, deps);
     assert.equal(result.ok, true);
     if (result.ok) {
       assert.equal(result.resolved, true);
       if (result.resolved) {
-        assert.equal(result.editionUrl, "https://diariabr.kit.com/posts/titulo-da-edicao");
+        assert.equal(result.editionUrl, RESOLVED_URL);
         assert.deepEqual(result.unresolvedPlaceholders, []);
       }
     }
     const writtenSocial = deps.readSocialMd(EDITION_DIR);
-    assert.match(writtenSocial!, /Mais em https:\/\/diariabr\.kit\.com\/posts\/titulo-da-edicao #IA/);
+    assert.match(writtenSocial!, new RegExp(`Mais em ${RESOLVED_URL.replace(/\//g, "\\/")} #IA`));
     assert.doesNotMatch(writtenSocial!, /\{edition_url\}/);
+    assert.doesNotMatch(writtenSocial!, /posts\/\s/, "o stub sem slug não pode sobrar no texto");
+  });
+
+  it("caso de borda: placeholder {edition_url} ainda LITERAL (sem stub prévio — Etapa 5 não rodou o guard ainda) → substituteEditionUrl cobre, resolved: true", async () => {
+    let writtenSocial: string | null = null;
+    const deps = makeDeps({
+      readEditionUrlFile: () => null,
+      readSocialMd: () => "## d1\n\nTexto do post. Mais em {edition_url} #IA\n",
+      writeSocialMd: (_dir, content) => {
+        writtenSocial = content;
+      },
+    });
+    const result = await kitRefreshSocialEditionUrl(EDITION_DIR, deps);
+    assert.equal(result.ok, true);
+    if (result.ok && result.resolved) {
+      assert.deepEqual(result.unresolvedPlaceholders, []);
+    }
+    assert.match(writtenSocial!, new RegExp(`Mais em ${RESOLVED_URL.replace(/\//g, "\\/")} #IA`));
   });
 
   it("já resolvida pra MESMA URL numa invocação anterior → idempotente, resolved: false, reason already_resolved, não reescreve nada", async () => {
     let writeUrlCalls = 0;
     let writeSocialCalls = 0;
     const deps = makeDeps({
-      getBroadcastPublicUrl: async () => "https://diariabr.kit.com/posts/titulo-da-edicao",
-      readEditionUrlFile: () => "https://diariabr.kit.com/posts/titulo-da-edicao",
+      readEditionUrlFile: () => RESOLVED_URL,
       writeEditionUrlFile: () => {
         writeUrlCalls += 1;
       },
@@ -149,18 +189,40 @@ describe("kitRefreshSocialEditionUrl (#7405)", () => {
       assert.equal(result.resolved, false);
       if (!result.resolved) {
         assert.equal(result.reason, "already_resolved");
-        assert.equal(result.editionUrl, "https://diariabr.kit.com/posts/titulo-da-edicao");
+        assert.equal(result.editionUrl, RESOLVED_URL);
       }
     }
     assert.equal(writeUrlCalls, 0);
     assert.equal(writeSocialCalls, 0);
   });
 
-  it("03-social.md ausente (edição sem social ainda) → escreve a URL mesmo assim, sem tentar reescrever social", async () => {
+  it("existe URL PRÉVIA DIFERENTE em 05-edition-url.txt (não null, não igual à nova, não é o stub genérico) → regrava tanto o .txt quanto o texto antigo embutido em 03-social.md", async () => {
+    const OLD_RESOLVED_URL = "https://diariabr.kit.com/posts/titulo-antigo";
+    let writtenUrl: string | null = null;
+    let writtenSocial: string | null = null;
     const deps = makeDeps({
-      getBroadcastPublicUrl: async () => "https://diariabr.kit.com/posts/titulo-da-edicao",
-      readSocialMd: () => null,
+      readEditionUrlFile: () => OLD_RESOLVED_URL,
+      readSocialMd: () => `## d1\n\nTexto do post. Mais em ${OLD_RESOLVED_URL} #IA\n`,
+      writeEditionUrlFile: (_dir, url) => {
+        writtenUrl = url;
+      },
+      writeSocialMd: (_dir, content) => {
+        writtenSocial = content;
+      },
     });
+    const result = await kitRefreshSocialEditionUrl(EDITION_DIR, deps);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.resolved, true);
+      if (result.resolved) assert.equal(result.editionUrl, RESOLVED_URL);
+    }
+    assert.equal(writtenUrl, RESOLVED_URL);
+    assert.match(writtenSocial!, new RegExp(`Mais em ${RESOLVED_URL.replace(/\//g, "\\/")} #IA`));
+    assert.doesNotMatch(writtenSocial!, /titulo-antigo/);
+  });
+
+  it("03-social.md ausente (edição sem social ainda) → escreve a URL mesmo assim, sem tentar reescrever social", async () => {
+    const deps = makeDeps({ readSocialMd: () => null });
     const result = await kitRefreshSocialEditionUrl(EDITION_DIR, deps);
     assert.equal(result.ok, true);
     if (result.ok) {
@@ -169,15 +231,40 @@ describe("kitRefreshSocialEditionUrl (#7405)", () => {
     }
   });
 
-  it("placeholder remanescente após substituir {edition_url} → não-fatal, resolved: true com unresolvedPlaceholders preenchido", async () => {
+  it("placeholder remanescente diferente de {edition_url}/stub → não-fatal, resolved: true com unresolvedPlaceholders preenchido", async () => {
     const deps = makeDeps({
-      getBroadcastPublicUrl: async () => "https://diariabr.kit.com/posts/titulo-da-edicao",
-      readSocialMd: () => "## d1\n\nMais em {edition_url}, veja também {outro_placeholder}\n",
+      readSocialMd: () => `## d1\n\nMais em ${STUB_URL}, veja também {outro_placeholder}\n`,
     });
     const result = await kitRefreshSocialEditionUrl(EDITION_DIR, deps);
     assert.equal(result.ok, true);
     if (result.ok && result.resolved) {
       assert.deepEqual(result.unresolvedPlaceholders, ["{outro_placeholder}"]);
+    }
+  });
+});
+
+describe("warnUnresolvedPlaceholders (#7405, achado do silent-failure-hunter)", () => {
+  it("grava um evento warn em data/run-log.jsonl com o prefixo do guard #3277 e não lança", () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-refresh-social-warn-"));
+    try {
+      warnUnresolvedPlaceholders(
+        ["{outro_placeholder}"],
+        "260904",
+        "https://diariabr.kit.com/posts/titulo",
+        join(root, "data", "editions", "2609", "260904", "03-social.md"),
+        root,
+      );
+      const logPath = join(root, "data", "run-log.jsonl");
+      assert.ok(existsSync(logPath), "data/run-log.jsonl deveria ter sido gravado");
+      const lines = readFileSync(logPath, "utf8").trim().split("\n");
+      const event = JSON.parse(lines[lines.length - 1]);
+      assert.equal(event.level, "warn");
+      assert.equal(event.stage, 6);
+      assert.equal(event.agent, "kit-refresh-social-edition-url");
+      assert.match(event.message, /guard anti-placeholder \(#3277\)/);
+      assert.deepEqual(event.details.unresolved, ["{outro_placeholder}"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
@@ -270,7 +357,14 @@ describe("main() — integração (guard de CLI)", () => {
         status: "scheduled",
         test_broadcast_ids: [],
       });
-      writeFileSync(join(root, "03-social.md"), "## d1\n\nMais em {edition_url} #IA\n", "utf8");
+      // #7405 achado do code-reviewer: simula o estado REAL do Stage 6 — a
+      // Etapa 5 já rodou `resolve-edition-url.ts --validate-social` e
+      // substituiu `{edition_url}` pelo stub Kit (sem slug) em AMBOS
+      // `05-edition-url.txt` e `03-social.md`, não deixando o placeholder
+      // literal.
+      mkdirSync(join(root, "_internal"), { recursive: true });
+      writeFileSync(join(root, "_internal", "05-edition-url.txt"), "https://diariabr.kit.com/posts/", "utf8");
+      writeFileSync(join(root, "03-social.md"), "## d1\n\nMais em https://diariabr.kit.com/posts/ #IA\n", "utf8");
       globalThis.fetch = (async (url: string) => {
         const u = new URL(url);
         if (u.pathname === "/v4/broadcasts/555") {
@@ -290,9 +384,10 @@ describe("main() — integração (guard de CLI)", () => {
       process.exitCode = undefined;
       await main(root);
       assert.equal(process.exitCode, 0);
-      const { readFileSync } = await import("node:fs");
       assert.equal(readFileSync(join(root, "_internal", "05-edition-url.txt"), "utf8"), "https://diariabr.kit.com/posts/assunto");
-      assert.match(readFileSync(join(root, "03-social.md"), "utf8"), /https:\/\/diariabr\.kit\.com\/posts\/assunto/);
+      const finalSocial = readFileSync(join(root, "03-social.md"), "utf8");
+      assert.match(finalSocial, /https:\/\/diariabr\.kit\.com\/posts\/assunto/);
+      assert.doesNotMatch(finalSocial, /posts\/\s/, "o stub sem slug (Mais em https://.../posts/ #IA) não pode sobrar");
     } finally {
       process.exitCode = undefined;
       rmSync(root, { recursive: true, force: true });
