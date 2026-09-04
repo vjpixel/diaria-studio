@@ -89,77 +89,121 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
 
   const db = openDiariaSubscribersDb(dbPath);
-  const now = new Date().toISOString();
+  try {
+    const now = new Date().toISOString();
 
-  // -------------------------------------------------------------------------
-  // Fonte VIVA: data/raffle-numbers.json
-  // -------------------------------------------------------------------------
-  let raffleEntriesRead = 0;
-  let raffleEntriesMalformed = 0;
-  let raffleResult = ZERO_RESULT;
-  if (existsSync(rafflePath)) {
-    const raffleEntries = loadRaffleRegistry(rafflePath);
-    raffleEntriesRead = raffleEntries.length;
-    // Guard (#7419 self-review): raffle-numbers.json corrompido à mão fora do
-    // caminho normal (allocateRaffleNumber, sempre completo) poderia faltar
-    // edition/issued_at — filtrar ANTES do mapeamento em vez de deixar
-    // recordEvent lançar contra a coluna ts NOT NULL a meio do loop.
-    const wellFormed = raffleEntries.filter(isWellFormedRaffleEntryForContestMap);
-    raffleEntriesMalformed = raffleEntries.length - wellFormed.length;
-    const mapped = wellFormed.map(mapRaffleEntryToContestEntry);
-    raffleResult = ingestContestReplies(db, mapped, now);
-    console.error(
-      `📇 ${raffleEntriesRead} entrada(s) em ${rafflePath} — ${raffleResult.newEvents} evento(s) novo(s), ` +
-        `${raffleResult.alreadyKnown} já conhecido(s)` +
-        (raffleEntriesMalformed > 0 ? `, ${raffleEntriesMalformed} malformada(s) ignorada(s)` : "") +
-        ".",
+    // -------------------------------------------------------------------------
+    // Fonte VIVA: data/raffle-numbers.json
+    // -------------------------------------------------------------------------
+    let raffleEntriesRead = 0;
+    let raffleEntriesMalformed = 0;
+    let raffleResult = ZERO_RESULT;
+    if (existsSync(rafflePath)) {
+      // Guard (#7419 fleet review, achado 1): `loadRaffleRegistry` engole
+      // QUALQUER falha de JSON.parse e retorna [] — indistinguível de
+      // "arquivo existe, genuinamente vazio". `data/` é um junction OneDrive
+      // com histórico documentado de conflito de sync (ver
+      // onedrive-conflict-backup-durante-edit.md); um JSON corrompido nesse
+      // arquivo faria este CLI reportar silenciosamente "0 entradas, 0
+      // eventos novos" com exit 0 — perda de dado silenciosa, exatamente a
+      // classe de falha que os guards #573/#738 deste repo existem pra
+      // prevenir. Lê e valida o parse AQUI, antes de chamar
+      // `loadRaffleRegistry`, pra poder distinguir "vazio" de "corrompido".
+      const rawRaffle = readFileSync(rafflePath, "utf8");
+      if (rawRaffle.trim() !== "") {
+        try {
+          JSON.parse(rawRaffle);
+        } catch (err) {
+          console.error(
+            `❌ ${rafflePath} existe mas não é JSON válido (${(err as Error).message}) — abortando em vez de ` +
+              `tratar como "0 entradas" (conflito de sync do OneDrive é a causa mais provável; ver ` +
+              `docs/claude-md-historical-incidents.md ou o registro em memory/onedrive-conflict-backup-durante-edit.md).`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+      }
+
+      const raffleEntries = loadRaffleRegistry(rafflePath);
+      raffleEntriesRead = raffleEntries.length;
+      // Guard (#7419 self-review): raffle-numbers.json corrompido à mão fora do
+      // caminho normal (allocateRaffleNumber, sempre completo) poderia faltar
+      // edition/issued_at — filtrar ANTES do mapeamento em vez de deixar
+      // recordEvent lançar contra a coluna ts NOT NULL a meio do loop.
+      const wellFormed = raffleEntries.filter(isWellFormedRaffleEntryForContestMap);
+      raffleEntriesMalformed = raffleEntries.length - wellFormed.length;
+      const mapped = wellFormed.map(mapRaffleEntryToContestEntry);
+      raffleResult = ingestContestReplies(db, mapped, now);
+      console.error(
+        `📇 ${raffleEntriesRead} entrada(s) em ${rafflePath} — ${raffleResult.newEvents} evento(s) novo(s), ` +
+          `${raffleResult.alreadyKnown} já conhecido(s)` +
+          (raffleEntriesMalformed > 0 ? `, ${raffleEntriesMalformed} malformada(s) ignorada(s)` : "") +
+          ".",
+      );
+    } else {
+      console.error(`ℹ️  ${rafflePath} não existe ainda — nenhum acerto de sorteio registrado até agora.`);
+    }
+
+    // -------------------------------------------------------------------------
+    // Fonte histórica opcional: data/contest-entries.jsonl (legado, #1778)
+    // -------------------------------------------------------------------------
+    let legacyEntriesRead = 0;
+    let legacyEntriesMalformed = 0;
+    let legacyResult = ZERO_RESULT;
+    const legacyPresent = existsSync(legacyJsonlPath);
+    if (legacyPresent) {
+      const raw = readFileSync(legacyJsonlPath, "utf8");
+      const legacyEntries = parseContestEntriesJsonl(raw);
+      legacyEntriesRead = legacyEntries.length;
+      // Simetria com `raffle_entries_malformed` acima (#7419 fleet review,
+      // achado 3): `parseContestEntriesJsonl` também descarta linha
+      // malformada silenciosamente — sem contagem visível isso ficava
+      // invisível pro summary. Não é um erro (mesma tolerância documentada
+      // na docstring do módulo), só observabilidade.
+      const nonEmptyLines = raw.split("\n").filter((line) => line.trim() !== "").length;
+      legacyEntriesMalformed = Math.max(0, nonEmptyLines - legacyEntriesRead);
+      legacyResult = ingestContestReplies(db, legacyEntries, now);
+      console.error(
+        `📇 ${legacyEntriesRead} entrada(s) em ${legacyJsonlPath} (legado) — ${legacyResult.newEvents} evento(s) novo(s), ` +
+          `${legacyResult.alreadyKnown} já conhecido(s)` +
+          (legacyEntriesMalformed > 0 ? `, ${legacyEntriesMalformed} malformada(s) ignorada(s)` : "") +
+          ".",
+      );
+    }
+    // Ausência do legado NÃO é logada — é o caminho comum pós-#1778 (arquivo
+    // pode nunca ter existido nesta máquina), não uma condição a sinalizar.
+
+    const combined = mergeResults(raffleResult, legacyResult);
+    const counts = getStoreCounts(db);
+
+    console.log(
+      JSON.stringify(
+        {
+          db: dbPath,
+          raffle_source: rafflePath,
+          raffle_entries_read: raffleEntriesRead,
+          raffle_entries_malformed: raffleEntriesMalformed,
+          legacy_source: legacyPresent ? legacyJsonlPath : null,
+          legacy_entries_read: legacyEntriesRead,
+          legacy_entries_malformed: legacyEntriesMalformed,
+          events_new: combined.newEvents,
+          events_already_known: combined.alreadyKnown,
+          subscribers_touched: combined.subscribersTouched,
+          skipped_no_email: combined.skippedNoEmail,
+          store_counts: counts,
+        },
+        null,
+        2,
+      ),
     );
-  } else {
-    console.error(`ℹ️  ${rafflePath} não existe ainda — nenhum acerto de sorteio registrado até agora.`);
+  } finally {
+    // Achado 2 (#7419 fleet review): sem try/finally, uma exceção no meio
+    // do corpo (readFileSync/ingestContestReplies/etc) deixava o handle
+    // SQLite/WAL aberto e o summary JSON nunca saía — `db.close()` agora
+    // roda sempre, sucesso ou erro (inclusive no early-return do guard de
+    // JSON corrompido acima).
+    db.close();
   }
-
-  // -------------------------------------------------------------------------
-  // Fonte histórica opcional: data/contest-entries.jsonl (legado, #1778)
-  // -------------------------------------------------------------------------
-  let legacyEntriesRead = 0;
-  let legacyResult = ZERO_RESULT;
-  const legacyPresent = existsSync(legacyJsonlPath);
-  if (legacyPresent) {
-    const raw = readFileSync(legacyJsonlPath, "utf8");
-    const legacyEntries = parseContestEntriesJsonl(raw);
-    legacyEntriesRead = legacyEntries.length;
-    legacyResult = ingestContestReplies(db, legacyEntries, now);
-    console.error(
-      `📇 ${legacyEntriesRead} entrada(s) em ${legacyJsonlPath} (legado) — ${legacyResult.newEvents} evento(s) novo(s), ` +
-        `${legacyResult.alreadyKnown} já conhecido(s).`,
-    );
-  }
-  // Ausência do legado NÃO é logada — é o caminho comum pós-#1778 (arquivo
-  // pode nunca ter existido nesta máquina), não uma condição a sinalizar.
-
-  const combined = mergeResults(raffleResult, legacyResult);
-  const counts = getStoreCounts(db);
-  db.close();
-
-  console.log(
-    JSON.stringify(
-      {
-        db: dbPath,
-        raffle_source: rafflePath,
-        raffle_entries_read: raffleEntriesRead,
-        raffle_entries_malformed: raffleEntriesMalformed,
-        legacy_source: legacyPresent ? legacyJsonlPath : null,
-        legacy_entries_read: legacyEntriesRead,
-        events_new: combined.newEvents,
-        events_already_known: combined.alreadyKnown,
-        subscribers_touched: combined.subscribersTouched,
-        skipped_no_email: combined.skippedNoEmail,
-        store_counts: counts,
-      },
-      null,
-      2,
-    ),
-  );
 }
 
 if (isMainModule(import.meta.url)) {
