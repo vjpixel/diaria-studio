@@ -765,6 +765,120 @@ export function isNamedGroupKey(key: string): key is NamedGroupKey {
 }
 
 // ---------------------------------------------------------------------------
+// Fila única do envio diário (#7406) — substitui a escolha de grupo
+// `engajados`/`ramp-warm` por UMA fila ordenada por `priority_points DESC`.
+// Decisão do editor (04/09/2026): "não faz mais sentido ter grupos
+// diferentes... a gente pode trabalhar tudo só a partir do score." O
+// agendamento das 20:15 (`Diaria-Clarice-Envio-Engajados`, #6945) nunca
+// deveria ter existido como automação separada — era engano, não decisão de
+// produto (ver corpo da #7406).
+//
+// Não é um `SELECT * ORDER BY priority_points DESC` cru: o `guardScope`
+// diferente por eixo (medido em #7236, ver `CommittedGuardScope` acima)
+// continua necessário — usar o guard errado ZERA quem já recebeu (todo
+// contato com `sends_count>0` está em alguma lista `sent`) ou perde a
+// proteção contra o lag de sync do Brevo pra quem nunca recebeu. A diferença
+// vira um detalhe de implementação POR CONTATO (não por grupo escolhido pelo
+// editor): `sends_count>0` → guard `queued`; `sends_count=0` → guard
+// `committed` (`queued ∪ sent`). Editor nunca escolhe/vê isso — só a fila
+// única, ordenada por score.
+// ---------------------------------------------------------------------------
+
+/**
+ * Elegível pra fila única do envio diário? Une os dois predicados que hoje
+ * são `isEngajados`/`isRampWarm` (`clarice-segment.ts`):
+ *
+ *   - `sends_count > 0` (já recebeu): mesma condição de `isEngajados` —
+ *     `priority_points > 0`. Quem já recebeu e decaiu pra score ≤ 0 fica de
+ *     fora (mesmo comportamento de hoje — território de `reativacao`, fora
+ *     de escopo desta unificação).
+ *   - `sends_count = 0` (nunca recebeu): mesma condição de `isRampWarm` —
+ *     `mv_bucket='verified'` OU cohort MV-isento, excluindo quem está dentro
+ *     da janela `novos` (`cutoffNovosIso`, #5410 — esse público continua
+ *     servido pelo pipeline `/diaria-clarice-novos` separado, não pela fila
+ *     diária).
+ *
+ * `isSendEligible` + exclusão de conta de teste do editor valem pros dois
+ * ramos (mesmo guard de defesa em profundidade dos predicados originais).
+ */
+export function isDailyQueueEligible(
+  r: Pick<
+    StoreRow,
+    "email" | "send_eligible" | "sends_count" | "priority_points" | "mv_bucket" | "cohort" | "created"
+  >,
+  cutoffNovosIso?: string | null,
+): boolean {
+  if (!isSendEligible(r) || isTestAccount(r.email)) return false;
+  if ((r.sends_count ?? 0) > 0) return (r.priority_points ?? 0) > 0;
+  return isRampWarm(r, cutoffNovosIso);
+}
+
+/**
+ * Ordem da fila única: `priority_points DESC` — a decisão do editor
+ * registrada na #7236 ("engajados tem prioridade TOTAL sobre ramp-warm até
+ * esgotar a fila ou o budget do dia") é uma consequência DIRETA desta ordem,
+ * não uma regra separada: quem nunca recebeu tem `priority_points` sempre
+ * exatamente 0 (nunca acumulou pontos — medido no store real, comentário da
+ * #7236), então cai naturalmente atrás de todo score positivo sem precisar
+ * de lógica de corte por tier.
+ *
+ * Desempate PRESERVA o comportamento de cada grupo original (não introduz
+ * ordenação nova): `priority_points > 0` (ex-engajados) desempata por email
+ * ASC, igual `segmentEngajados`; `priority_points = 0` (ex-ramp-warm)
+ * desempata por `compareContactRecency` (cadastro mais recente primeiro),
+ * igual `segmentRampWarm`.
+ */
+export function compareDailyQueueOrder(
+  a: Pick<StoreRow, "email" | "priority_points" | "created" | "cohort">,
+  b: Pick<StoreRow, "email" | "priority_points" | "created" | "cohort">,
+): number {
+  const pa = a.priority_points ?? 0;
+  const pb = b.priority_points ?? 0;
+  if (pa !== pb) return pb - pa;
+  if (pa > 0) return a.email.localeCompare(b.email);
+  return compareContactRecency(a, b);
+}
+
+/**
+ * Fila única do envio diário (#7406): filtra por `isDailyQueueEligible` e
+ * ordena por `compareDailyQueueOrder`. Substitui a escolha entre
+ * `segmentEngajados`/`segmentRampWarm` — quem chama não escolhe grupo, só
+ * fornece as duas listas de guard (uma por eixo, ver cabeçalho da seção
+ * acima) e recebe UMA fila pronta.
+ *
+ * Puro, testável sem rede — os Sets de guard vêm de `fetchQueuedCampaignListIds`/
+ * `fetchCommittedCampaignListIds` (brevo-client.ts) no call site.
+ */
+export function buildDailySendQueue<
+  T extends Pick<
+    StoreRow,
+    | "email"
+    | "send_eligible"
+    | "sends_count"
+    | "priority_points"
+    | "mv_bucket"
+    | "cohort"
+    | "created"
+    | "brevo_list_ids"
+  >,
+>(
+  rows: T[],
+  guards: { queuedListIds: ReadonlySet<string>; committedListIds: ReadonlySet<string> },
+  cutoffNovosIso?: string | null,
+): T[] {
+  return rows
+    .filter((r) => isDailyQueueEligible(r, cutoffNovosIso))
+    .filter((r) => {
+      const scope = (r.sends_count ?? 0) > 0 ? guards.queuedListIds : guards.committedListIds;
+      if (scope.size === 0) return true;
+      const lists = parseBrevoListIds(r.brevo_list_ids);
+      return !lists.some((id) => scope.has(id));
+    })
+    .slice()
+    .sort(compareDailyQueueOrder);
+}
+
+// ---------------------------------------------------------------------------
 // cohort (#2817) — safra mensal derivada de `created` (Stripe), dimensão
 // independente do `tier` numérico (que continua governando SÓ a ordenação de
 // 1º envio). Pedido do editor 260702: "coloque todos os contatos de junho no
