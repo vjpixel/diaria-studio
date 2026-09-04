@@ -265,3 +265,282 @@ export function formatGuardReport(result: ReconcileEmailSetsResult, decision: Gu
   );
   return lines.join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// #7385 — guard "quem recebe × quem recebe" nas 3 plataformas
+//
+// O que existia até aqui (`reconcileEmailSets`/`decideGuardExitCode`/
+// `formatGuardReport`) compara duas bases de ATIVOS ponto a ponto — o
+// precondition do switchover #6114, que continua correto pro que se propõe
+// a medir. O achado do #7385 é um problema DIFERENTE: comparar "ativos" em
+// vez de "quem de fato recebe a edição" engana (medição de 03/09/2026: Kit
+// tinha 629 ativos mas só 280 na tag `rampa-kit`, que é quem recebe; Beehiiv
+// tinha 317 ativos e 314 destinatários reais do último post — os 349 que
+// existem no Kit e fora da tag ficaram sem receber nada por 7 dias, #7357,
+// sem nenhum guard acusando). As funções abaixo generalizam a comparação
+// pra N fontes nomeadas (não só Beehiiv×Kit) e trocam "presença na base" por
+// "presença na audiência de ENVIO" — o script `reconcile-send-audiences.ts`
+// é quem alimenta com Kit=membros da tag `rampa-kit`, Beehiiv=ativos (ainda
+// é audiência de envio real — todo ativo recebe o post principal, salvo o
+// gap constante medido abaixo) e Brevo=contatos ativos da lista da campanha
+// diária.
+// ---------------------------------------------------------------------------
+
+/** Uma fonte nomeada de e-mails — audiência de envio OU base de ativos,
+ *  dependendo do que o caller está comparando (`reconcileSendAudiences` pra
+ *  audiência, `findOrphans` recebe as duas separadamente). */
+export interface EmailSource {
+  name: string;
+  emails: readonly string[];
+}
+
+export interface ReconcileSendAudiencesSourceSummary {
+  name: string;
+  total: number;
+  hash: string;
+}
+
+/** 1 e-mail presente em ≥2 fontes de audiência de ENVIO simultaneamente —
+ *  o invariante #4 da issue #7385 ("sobreposição"): hoje deveria ser
+ *  sempre 0 (as 3 audiências são disjuntas por construção — Kit e Brevo
+ *  cobrem quem a Beehiiv não alcança), e #7357/#7382 são precisamente os
+ *  dois casos que ameaçam essa disjunção. */
+export interface SendAudienceOverlapEntry {
+  email: string;
+  sources: string[];
+}
+
+export interface ReconcileSendAudiencesResult {
+  sources: ReconcileSendAudiencesSourceSummary[];
+  /** Total de e-mails distintos somando todas as fontes (união, não soma —
+   *  um e-mail presente em 2 fontes conta 1×). */
+  distinctTotal: number;
+  /** Sorted por e-mail — determinístico entre rodadas com o mesmo conjunto. */
+  overlaps: SendAudienceOverlapEntry[];
+  overlapCount: number;
+}
+
+/**
+ * Pure: reconcilia N fontes nomeadas de audiência de ENVIO — generaliza
+ * `reconcileEmailSets` (que é Beehiiv×Kit, sempre 2 fontes, critério de
+ * saída assimétrico) pro caso de 3+ plataformas com um critério simétrico:
+ * qualquer sobreposição é reportada (o normal esperado é ZERO, não uma
+ * direção que se tolera e outra que não — diferente do par histórico
+ * Beehiiv×Kit, que tinha uma direção aditiva por design).
+ */
+export function reconcileSendAudiences(sources: readonly EmailSource[]): ReconcileSendAudiencesResult {
+  const perSource = sources.map((s) => ({ name: s.name, set: toNormalizedEmailSet(s.emails) }));
+
+  const membership = new Map<string, string[]>();
+  for (const { name, set } of perSource) {
+    for (const email of set) {
+      const arr = membership.get(email);
+      if (arr) arr.push(name);
+      else membership.set(email, [name]);
+    }
+  }
+
+  const overlaps: SendAudienceOverlapEntry[] = [];
+  for (const [email, names] of membership) {
+    if (names.length > 1) overlaps.push({ email, sources: [...names].sort() });
+  }
+  overlaps.sort((a, b) => a.email.localeCompare(b.email));
+
+  return {
+    sources: perSource.map(({ name, set }) => ({ name, total: set.size, hash: sha256OfSortedEmailSet(set) })),
+    distinctTotal: membership.size,
+    overlaps,
+    overlapCount: overlaps.length,
+  };
+}
+
+/** Mascara os e-mails de `overlaps` pra saída `--json` — mesma disciplina de
+ *  `maskResultForJson` acima (sem PII crua no caminho de maior alcance). */
+export function maskSendAudiencesResultForJson(
+  result: ReconcileSendAudiencesResult,
+): Omit<ReconcileSendAudiencesResult, "overlaps"> & { overlaps: SendAudienceOverlapEntry[] } {
+  return {
+    ...result,
+    overlaps: result.overlaps.map((o) => ({ email: maskEmail(o.email), sources: o.sources })),
+  };
+}
+
+export interface OrphanEntry {
+  email: string;
+  /** Em quais fontes de ATIVOS este e-mail aparece — nunca vazio (senão não
+   *  seria órfão: um e-mail que não está ativo em plataforma nenhuma não é
+   *  "ativo sem audiência", é simplesmente ausente). */
+  activeIn: string[];
+}
+
+/**
+ * Pure: e-mails ATIVOS em pelo menos 1 plataforma e AUSENTES de toda
+ * audiência de envio — o invariante #3 da issue #7385 ("órfãos"). Hoje
+ * seriam os 349 do achado (Kit ativos fora da tag `rampa-kit`, sem estar na
+ * base ativa da Beehiiv nem na lista da campanha Brevo).
+ *
+ * `activeSources` e `sendAudienceSources` são propositalmente 2 listas
+ * separadas — um e-mail pode estar ativo numa plataforma e a audiência de
+ * envio ser a MESMA plataforma sob outro recorte (Kit ativo × Kit
+ * `rampa-kit` é exatamente esse caso), então não dá pra assumir "a fonte de
+ * ativos JÁ É a fonte de envio" — o caller decide o pareamento.
+ */
+export function findOrphans(
+  activeSources: readonly EmailSource[],
+  sendAudienceSources: readonly EmailSource[],
+): OrphanEntry[] {
+  const activeMembership = new Map<string, string[]>();
+  for (const source of activeSources) {
+    for (const email of toNormalizedEmailSet(source.emails)) {
+      const arr = activeMembership.get(email);
+      if (arr) arr.push(source.name);
+      else activeMembership.set(email, [source.name]);
+    }
+  }
+
+  const sendUnion = new Set<string>();
+  for (const source of sendAudienceSources) {
+    for (const email of toNormalizedEmailSet(source.emails)) sendUnion.add(email);
+  }
+
+  const orphans: OrphanEntry[] = [];
+  for (const [email, activeIn] of activeMembership) {
+    if (!sendUnion.has(email)) orphans.push({ email, activeIn: [...activeIn].sort() });
+  }
+  orphans.sort((a, b) => a.email.localeCompare(b.email));
+  return orphans;
+}
+
+/** Mascara `email` de cada `OrphanEntry` — mesma disciplina de sempre. */
+export function maskOrphansForJson(orphans: readonly OrphanEntry[]): OrphanEntry[] {
+  return orphans.map((o) => ({ email: maskEmail(o.email), activeIn: o.activeIn }));
+}
+
+// ---------------------------------------------------------------------------
+// Armadilha de medição #1 (#7385): a Beehiiv entrega uma quantidade
+// CONSTANTE a menos do que tem de ativos — medido nos últimos 4 envios:
+// 485/488, 463/466, 415/418, 314/317 (sempre ~3 a menos). Não é erro: são
+// endereços `active` que a Beehiiv não entrega por razão própria (ver corpo
+// da issue). Um guard que comparasse `recipients === activeCount` cru
+// alarmaria TODO dia por causa deste gap normal — as duas constantes abaixo
+// dão a tolerância.
+// ---------------------------------------------------------------------------
+
+/** Piso absoluto de tolerância — folga sobre o gap medido (~3) pra não
+ *  alarmar por flutuação de 1-2 e-mails de edição pra edição. */
+export const BEEHIIV_DELIVERY_GAP_TOLERANCE_ABS = 6;
+
+/** Piso percentual de tolerância (1% dos ativos) — cresce com a base, pra
+ *  quando a base for grande o bastante que 6 de folga absoluta fique
+ *  apertado demais. O maior dos dois pisos vence (ver `checkBeehiivDeliveryGap`). */
+export const BEEHIIV_DELIVERY_GAP_TOLERANCE_PCT = 0.01;
+
+export interface DeliveryGapCheck {
+  ok: boolean;
+  /** `activeCount - recipientsCount`. `NaN` só quando a entrada é inválida
+   *  (`ok: false` nesse caso, `reason` explica). */
+  gap: number;
+  tolerated: number;
+  reason?: string;
+}
+
+/**
+ * Pure: `true` (via `ok`) quando o gap entre ativos e destinatários reais da
+ * Beehiiv está dentro da folga normal documentada acima — `false` quando o
+ * gap é maior que o tolerado (investigar: entrega degradando de verdade) OU
+ * quando `recipientsCount > activeCount` (inesperado — destinatário que não
+ * está entre os ativos contados não devia existir).
+ */
+export function checkBeehiivDeliveryGap(activeCount: number, recipientsCount: number): DeliveryGapCheck {
+  if (!Number.isInteger(activeCount) || activeCount < 0) {
+    return { ok: false, gap: NaN, tolerated: NaN, reason: `activeCount inválido: ${String(activeCount)}.` };
+  }
+  if (!Number.isInteger(recipientsCount) || recipientsCount < 0) {
+    return { ok: false, gap: NaN, tolerated: NaN, reason: `recipientsCount inválido: ${String(recipientsCount)}.` };
+  }
+  const tolerated = Math.max(BEEHIIV_DELIVERY_GAP_TOLERANCE_ABS, Math.ceil(activeCount * BEEHIIV_DELIVERY_GAP_TOLERANCE_PCT));
+  const gap = activeCount - recipientsCount;
+  if (gap < 0) {
+    return {
+      ok: false,
+      gap,
+      tolerated,
+      reason: `destinatários reais (${recipientsCount}) > ativos contados (${activeCount}) — inesperado, investigar.`,
+    };
+  }
+  if (gap > tolerated) {
+    return {
+      ok: false,
+      gap,
+      tolerated,
+      reason: `gap de entrega (${gap}) excede a tolerância (${tolerated}) sobre ${activeCount} ativos — pode ser degradação real de entrega, não o gap normal (~3).`,
+    };
+  }
+  return { ok: true, gap, tolerated };
+}
+
+// ---------------------------------------------------------------------------
+// Armadilha de medição #2 (#7385): `GET /v3/emailCampaigns/{id}` da Brevo
+// devolve `statistics.globalStats` ZERADO quando a chamada não pede
+// `?statistics=globalStats` explicitamente — já documentado em
+// `workers/brevo-dashboard/src/brevo-api.ts:2298-2302`. Sem o parâmetro, uma
+// campanha `sent` de verdade parece "0 enviados", indistinguível de uma
+// falha real de envio. As funções abaixo tornam esse estado DETECTÁVEL em
+// vez de silenciosamente lido como zero — `brevoGetCampaignGlobalStats`
+// (`scripts/lib/brevo-client.ts`) fecha o outro lado do problema (o
+// parâmetro nunca fica de fora, é hardcoded na URL).
+// ---------------------------------------------------------------------------
+
+/** Subconjunto de `GET /v3/emailCampaigns/{id}?statistics=globalStats` que
+ *  este guard consome — `statistics`/`statistics.globalStats` ausentes por
+ *  completo (não `{}`, ausentes) é o sinal do #2298-2302: a API só omite o
+ *  bloco inteiro quando o parâmetro não foi pedido, nunca devolve `{}` só
+ *  porque uma campanha `sent` teve 0 envios de verdade. */
+export interface BrevoCampaignStatsResponse {
+  id: number;
+  status: string;
+  statistics?: { globalStats?: { sent?: number; delivered?: number; [k: string]: unknown } } | null;
+}
+
+/**
+ * Pure: `true` quando a resposta indica que a chamada ESQUECEU
+ * `?statistics=globalStats` — campanha com `status: "sent"` mas sem o bloco
+ * `statistics.globalStats` nenhum. Uma campanha `sent` sempre carrega ALGUM
+ * bloco de estatística quando o parâmetro é pedido (mesmo que os contadores
+ * internos sejam 0) — bloco INTEIRO ausente é assinatura do parâmetro
+ * faltando, não de "zero enviado real" (achado do corpo da issue, replicado
+ * do docstring de `fetchRecentCampaigns` no Worker).
+ */
+export function looksLikeMissingGlobalStatsParam(response: BrevoCampaignStatsResponse): boolean {
+  return response.status === "sent" && (response.statistics == null || response.statistics.globalStats == null);
+}
+
+export type BrevoRecipientsResolution =
+  | { ok: true; sent: number }
+  | { ok: false; reason: string };
+
+/**
+ * Pure: extrai `statistics.globalStats.sent` com o guard da armadilha #1
+ * embutido — nunca devolve `0` quando o `0` é na verdade "não pedi
+ * `?statistics=globalStats`". Caller trata `ok: false` como "não foi
+ * possível medir", nunca como "zero destinatários reais".
+ */
+export function resolveBrevoCampaignRecipients(response: BrevoCampaignStatsResponse): BrevoRecipientsResolution {
+  if (looksLikeMissingGlobalStatsParam(response)) {
+    return {
+      ok: false,
+      reason:
+        `campanha ${response.id} (status=sent) veio sem 'statistics.globalStats' — a chamada provavelmente ` +
+        `esqueceu '?statistics=globalStats' (ver workers/brevo-dashboard/src/brevo-api.ts:2298-2302). ` +
+        `Refetch com o parâmetro antes de ler 'sent'.`,
+    };
+  }
+  const sent = response.statistics?.globalStats?.sent;
+  if (typeof sent !== "number" || !Number.isFinite(sent)) {
+    return {
+      ok: false,
+      reason: `campanha ${response.id}: 'statistics.globalStats.sent' ausente ou não-numérico (${String(sent)}).`,
+    };
+  }
+  return { ok: true, sent };
+}

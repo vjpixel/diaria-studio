@@ -396,6 +396,27 @@ export async function countKitTagMembers(tagId: number, config?: KitConfig): Pro
 }
 
 /**
+ * Lista os E-MAILS (não só a contagem) de quem tem uma tag, paginando até o
+ * fim — irmã de `countKitTagMembers`, escrita pro guard #7385 ("quem recebe
+ * × quem recebe" nas 3 plataformas), que precisa comparar o CONJUNTO da
+ * audiência de envio do Kit (tag `rampa-kit`) contra as demais plataformas
+ * por interseção, não por número. Mesma ressalva de atraso de propagação
+ * documentada em `listTagSubscribersPage` acima — não usar logo após um
+ * `tagSubscriber` da mesma sessão.
+ */
+export async function listAllTagSubscriberEmails(tagId: number, config?: KitConfig): Promise<string[]> {
+  const out: string[] = [];
+  let after: string | undefined;
+  for (;;) {
+    const page = await listTagSubscribersPage(tagId, { perPage: 500, after, config });
+    for (const s of page.subscribers) out.push(s.email_address);
+    if (!page.pagination.has_next_page || !page.pagination.end_cursor) break;
+    after = page.pagination.end_cursor;
+  }
+  return out;
+}
+
+/**
  * Lista assinantes ATIVOS criados on/after `createdAfterDate` (`yyyy-mm-dd`),
  * com a tag membership já embutida (#7357).
  *
