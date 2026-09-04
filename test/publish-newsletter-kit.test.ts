@@ -280,8 +280,10 @@ describe("main() — integração", () => {
       );
       assert.equal(
         readFileSync(join(editionDir, "_internal", "05-edition-url.txt"), "utf8"),
-        "https://news.diar.ia.br/p/555",
-        "05-edition-url.txt gravado a partir do public_url do broadcast (mesmo artefato que o playbook Beehiiv produz)",
+        "https://diar.ia.br/p/modelos-se-replicam-sozinhos",
+        "#7420: 05-edition-url.txt usa a URL PRÓPRIA derivada do título do D1 " +
+          "(mesma que o bloco WhatsApp já crava no e-mail), nunca o public_url do Kit " +
+          "— diar.ia.br é nosso desde o cutover do apex (#467), não domínio de terceiro.",
       );
     } finally {
       process.exitCode = undefined;
@@ -400,7 +402,7 @@ describe("main() — integração", () => {
     }
   });
 
-  it("broadcast sem public_url: não grava 05-edition-url.txt, mas o publish inteiro não falha (fail-soft)", async () => {
+  it("#7420: broadcast SEM public_url ainda grava 05-edition-url.txt (URL própria não depende do Kit)", async () => {
     const root = mkdtempSync(join(tmpdir(), "kit-main-"));
     try {
       writePlatformConfig(root, "kit");
@@ -409,6 +411,8 @@ describe("main() — integração", () => {
         if (call.method === "POST" && call.pathname === "/v4/broadcasts") {
           // public_url ausente da resposta — nunca confirmado ao vivo que o
           // Kit sempre popula este campo (ver docstring do #464 na main()).
+          // Desde #7420 isso não importa mais pra 05-edition-url.txt: a URL
+          // vem só do título do D1, sem depender de nenhum campo do Kit.
           return jsonRes(201, { broadcast: { id: 555, status: "draft" } });
         }
         throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
@@ -420,9 +424,9 @@ describe("main() — integração", () => {
       const state = readPublishedState(editionDir);
       assert.equal(state?.broadcast_id, 555, "draft real ainda é criado e rastreado normalmente");
       assert.equal(
-        existsSync(join(editionDir, "_internal", "05-edition-url.txt")),
-        false,
-        "sem public_url, o artefato secundário simplesmente não é gravado",
+        readFileSync(join(editionDir, "_internal", "05-edition-url.txt"), "utf8"),
+        "https://diar.ia.br/p/modelos-se-replicam-sozinhos",
+        "05-edition-url.txt gravado normalmente — deriva do título do D1, não do public_url",
       );
     } finally {
       process.exitCode = undefined;

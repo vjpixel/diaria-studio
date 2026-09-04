@@ -236,22 +236,53 @@ export function readEditionInputs(
   const htmlExists = existsSync(htmlPath);
   const publishedExists = existsSync(publishedPath);
 
-  if (!htmlExists || !publishedExists) {
+  if (!htmlExists) return null;
+
+  // #7420 (achado ao vivo, edição 260904): `slugOverride` DETERMINA o slug e
+  // não deveria depender de `05-published.json` existir — mas até aqui, com
+  // backend Kit (que nunca escreve esse arquivo), passar `--slug` ainda caía
+  // no `code: 2` benigno logo abaixo, porque o guard exigia os DOIS
+  // (`htmlExists && publishedExists`) antes mesmo de olhar `slugOverride`. Na
+  // prática isso significava que o workaround documentado em §6d-site
+  // ("passe --slug explicitamente") nunca funcionava de verdade pra Kit —
+  // apenas trocava um `code: 4` silencioso por um `code: 2` igualmente mudo.
+  // Com `slugOverride`, ignoramos `05-published.json` por completo (nem
+  // tentamos lê-lo) — a URL vem só do slug, e `publishedAtIso` fica `null`
+  // (nenhum consumidor downstream trata isso como erro, é só metadado).
+  if (slugOverride) {
+    const reviewedPath = join(editionDir, "02-reviewed.md");
+    let title = "";
+    let subtitle: string | null = null;
+    if (existsSync(reviewedPath)) {
+      const md = readFileSync(reviewedPath, "utf8");
+      title = extractBloco(md, "TÍTULO") ?? "";
+      subtitle = extractBloco(md, "SUBTÍTULO");
+    }
+    return {
+      html: readFileSync(htmlPath, "utf8"),
+      // URL sintética — só serve pra extractSlugFromPostUrl/web_url; a
+      // convenção de domínio é a mesma usada em todo o resto do módulo
+      // (ver EditionPageInputs em edition-site-page.ts).
+      postUrl: `https://diar.ia.br/p/${slugOverride}`,
+      title,
+      subtitle,
+      publishedAtIso: null,
+    };
+  }
+
+  if (!publishedExists) {
     // #6202 review, problema P2-F: o caminho Kit nunca escreve
     // `05-published.json` (escreve `newsletter-kit-published.json`) —
     // pré-render (Stage 4) É backend-agnóstico, então `newsletter-final.html`
     // existe mesmo em edição Kit. Sem esta checagem, backend Kit caía pra
     // sempre no `code: 2` benigno ("nada a publicar ainda"), indistinguível
     // do caso normal "edição ainda não chegou no Stage 4/6" — a mesma doença
-    // do P0 original, só que no outro backend (#464 ainda não liga o
-    // dispatch, mas quando ligar isto teria voltado a ser um no-op mudo).
-    if (htmlExists && !publishedExists && !slugOverride && readNewsletterBackend(rootDirForBackend) === "kit") {
+    // do P0 original, só que no outro backend.
+    if (readNewsletterBackend(rootDirForBackend) === "kit") {
       throw new EditionInputsInvalid(
         "backend Kit selecionado (publishing.newsletter.backend) — newsletter-final.html existe, mas " +
           "05-published.json (única fonte de slug do caminho Beehiiv) nunca é escrito por edições Kit, " +
-          "e §6d-site ainda não tem uma fonte de slug própria pro Kit. Não é um bug de estado, é lacuna " +
-          "de wiring: passe --slug explicitamente (ver §6d-site em orchestrator-stage-6.md) até o #464 " +
-          "ligar o dispatch Kit com uma fonte dedicada.",
+          "e nenhum --slug foi passado. Passe --slug explicitamente (ver §6d-site em orchestrator-stage-6.md).",
       );
     }
     return null;
@@ -263,15 +294,7 @@ export function readEditionInputs(
     published_at?: string;
   };
 
-  let postUrl: string;
-  if (slugOverride) {
-    // URL sintética — só serve pra extractSlugFromPostUrl/web_url; a
-    // convenção de domínio é a mesma usada em todo o resto do módulo
-    // (ver EditionPageInputs em edition-site-page.ts).
-    postUrl = `https://diar.ia.br/p/${slugOverride}`;
-  } else if (published.post_url) {
-    postUrl = published.post_url;
-  } else {
+  if (!published.post_url) {
     throw new EditionInputsInvalid(
       "05-published.json existe mas não tem post_url, e nenhum --slug foi passado — " +
         "no Stage 6 normal, §6d-site deve receber --slug com o valor confirmado via " +
@@ -292,7 +315,7 @@ export function readEditionInputs(
 
   return {
     html: readFileSync(htmlPath, "utf8"),
-    postUrl,
+    postUrl: published.post_url,
     title,
     subtitle,
     publishedAtIso: published.published_at ?? published.scheduled_at ?? null,

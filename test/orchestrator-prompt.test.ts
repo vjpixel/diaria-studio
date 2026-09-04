@@ -320,7 +320,13 @@ describe("orchestrator-prompt (#634)", () => {
       // (comando + tabela de decisão do JSON + os 2 sub-passos de retry),
       // não referência — virar link externo o tornaria invisível pra quem
       // precisa segui-lo. Teto 700→725.
-      "orchestrator-stage-6.md": 725,
+      // #7420 (04/09, mesma edição): §6d-kit-social-retry e §6d-site
+      // ganharam a correção de raiz (edition_url própria, não mais
+      // dependente do Kit) — a narrativa histórica mais longa (mecanismo
+      // de branch+PR do #6598) migrou pra `docs/site-page-publish-mechanism.md`,
+      // mas o resto (o QUE mudou e por quê, necessário pra quem executa o
+      // passo) fica no prompt. Teto 725→735.
+      "orchestrator-stage-6.md": 735,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       const budget = PER_FILE_LINE_BUDGET[file];
