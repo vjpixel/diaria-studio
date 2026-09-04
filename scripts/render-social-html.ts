@@ -156,13 +156,15 @@ function getImageUrl(destaque: string, imageUrls: ImageMap, postPixelImageNum = 
   // (quando o post pessoal cobre outro destaque, ex: D2) via marker.
   const dNum = isPostPixel(destaque) ? postPixelImageNum : destaque.replace(/\D/g, "");
   // Card 4:5 (1080x1350, com o título na própria imagem) tem precedência sobre
-  // o 1:1 quando a edição o gerou — é o que de fato vai pro feed. Ausente →
-  // 1:1 de sempre, comportamento inalterado pras edições que não têm card.
+  // o hero 2:1 quando a edição o gerou — é o que de fato vai pro feed. Ausente
+  // → hero 2:1 (`cover` pra d1, `d{N}_2x1` pra d2/d3 — #7399: a chave base 1:1
+  // deixou de ser uploadada, sem consumidor real).
   // #1635: resolução delegada ao helper puro — prefere cloudflare_url, senão a
   // url real (Drive serve inline), nunca chuta uma key Cloudflare sem md5.
   const card = imageUrls[`d${dNum}_4x5`];
   if (card) return resolveSocialImageUrl(card, (m) => console.error(m));
-  return resolveSocialImageUrl(imageUrls[`d${dNum}`], (m) => console.error(m));
+  const heroKey = dNum === "1" ? "cover" : `d${dNum}_2x1`;
+  return resolveSocialImageUrl(imageUrls[heroKey], (m) => console.error(m));
 }
 
 /**
