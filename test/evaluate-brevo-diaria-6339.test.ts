@@ -221,6 +221,11 @@ describe("runEvaluation — newsletterBackend ramifica a promoção (#6339)", ()
     let byEmailCalls = 0;
     globalThis.fetch = (async (u: string | URL, init?: RequestInit) => {
       const url = String(u);
+      if (url.includes("api.kit.com")) {
+        // #7382 — checagem cross-plataforma antes de promover pra Beehiiv:
+        // contato NÃO existe no Kit, promoção pra Beehiiv segue normal.
+        return jsonRes(200, { subscribers: [], pagination: {} });
+      }
       if (url.includes("subscriptions/by_email/")) {
         byEmailCalls++;
         if (byEmailCalls === 1) return jsonRes(200, { data: { status: "pending" } });
@@ -249,10 +254,12 @@ describe("runEvaluation — newsletterBackend ramifica a promoção (#6339)", ()
         brevoApiKey: "brkey",
         listId: 7,
         log: () => {},
+        kitApiKey: "kkey", // #7382 — necessário pra checagem cross-plataforma antes de promover
         // newsletterBackend omitido de propósito
       });
       assert.equal(result.failed, 0);
       assert.equal(result.promoted, 1);
+      assert.equal(result.skippedActiveOnKit, 0, "#7382 — contato não está no Kit, promoção segue normal");
       const stored = findContact(result.store, "default-backend@b.com");
       assert.equal(stored!.resolution_reason, "score_threshold");
     } finally {
