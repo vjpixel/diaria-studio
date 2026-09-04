@@ -217,8 +217,12 @@ const NOTICIAS_DOMAINS = new Set([
 const DEAL_PATTERNS: RegExp[] = [
   // Parceria/colaboração expandida
   /\b(expand(s|ed)?|expande[mr]?)\s+(the\s+)?(collaboration|partnership|deal|agreement|parceria|acordo|colabora[çc][ãa]o)/i,
-  // Aquisições e fusões
-  /\b(acquir(es|ed|ing)?|acquisition of|adquir[ei]|aquisi[çc][ãa]o|merger|fus[ãa]o)\b/i,
+  // Aquisições e fusões. `acquir(e|es|ed|ing)?` inclui o infinitivo solto
+  // ("NVIDIA to Acquire Hugging Face", #7415) que o `acquir(es|ed|ing)?`
+  // antigo deixava passar (o `\b` interno falha quando o sufixo não casa);
+  // `adquir\w*` cobre a morfologia PT (adquire, adquiriu, adquirir, adquirida)
+  // que o `adquir[ei]` antigo também deixava passar.
+  /\b(acquir(e|es|ed|ing)?|acquisition of|adquir\w*|aquisi[çc][ãa]o|merger|fus[ãa]o)\b/i,
   // Investimento explícito com número (bilhões)
   /\b(\$|US\$|USD\s?)?\d+(\.\d+)?\s*(bilh[ãõ]es|billion|bn)\b[^.]{0,40}\b(deal|invest(ment)?|commit(ment|s)?|compromet|funding|rodada)/i,
   /\b(deal|invest(ment|s)?|commit(ment|s)?|rodada|funding)\b[^.]{0,40}\b(\$|US\$|USD\s?)?\d+(\.\d+)?\s*(bilh[ãõ]es|billion|bn)\b/i,
