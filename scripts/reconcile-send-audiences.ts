@@ -64,6 +64,7 @@ import { resolveBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { findTagIdByName, listAllTagSubscriberEmails } from "./lib/kit-broadcasts.ts";
 import { listBroadcasts, getBroadcastStats } from "./lib/kit-client.ts";
+import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import { brevoListContacts, brevoGetCampaignGlobalStats, fetchCampaignsByStatus } from "./lib/brevo-client.ts";
 import { fetchActiveBeehiivEmails } from "./reconcile-beehiiv-kit.ts";
 import {
@@ -259,10 +260,23 @@ async function main(): Promise<void> {
 
   let beehiivActiveEmails: string[];
   let kitAudienceEmails: string[];
+  let kitActiveEmails: string[];
   let brevoAudienceEmails: string[];
   try {
     process.stderr.write(`${LOG_PREFIX} buscando ativos na Beehiiv…\n`);
     beehiivActiveEmails = await fetchActiveBeehiivEmails(beehiivConfig.config.apiKey, beehiivConfig.config.publicationId);
+
+    // #7385 review: a base de ATIVOS do Kit (todo `state: "active"`, não só
+    // a tag) é buscada À PARTE da audiência de envio (a tag) — é essa
+    // DIFERENÇA entre as duas que `findOrphans` precisa pra achar o
+    // cenário exato da issue (629 ativos, 280 na tag, 349 órfãos). Usar a
+    // MESMA lista pras duas coisas (erro do 1º rascunho deste PR, achado no
+    // self-review) faz `findOrphans` nunca encontrar órfão nenhum do lado
+    // Kit — por construção, todo elemento de `activeIn` já estaria em
+    // `sendUnion`, porque as duas listas seriam idênticas.
+    process.stderr.write(`${LOG_PREFIX} buscando ativos no Kit…\n`);
+    const kitActiveSubscribers = await listAllKitSubscribers(undefined, { status: "active" });
+    kitActiveEmails = kitActiveSubscribers.map((s) => s.email_address);
 
     process.stderr.write(`${LOG_PREFIX} resolvendo tag "${kitAudienceTag}" no Kit…\n`);
     const tagId = await findTagIdByName(kitAudienceTag);
@@ -290,10 +304,17 @@ async function main(): Promise<void> {
     { name: "brevo", emails: brevoAudienceEmails },
   ];
   const audience = reconcileSendAudiences(sources);
-  // Órfãos: ativo em alguma plataforma (aqui, mesmas 3 bases — a Beehiiv já
-  // É audiência de envio, então active===sendAudience pra ela) e ausente de
-  // toda audiência de envio.
-  const orphans = findOrphans(sources, sources);
+  // Órfãos: ativo em alguma plataforma × audiência de ENVIO de cada
+  // plataforma — as duas listas do lado Kit são DIFERENTES de propósito
+  // (`kitActiveEmails` = todo `state: active`; `kitAudienceEmails` = só a
+  // tag). Beehiiv usa a MESMA lista dos dois lados porque ali "ativo" JÁ É
+  // "audiência de envio" por design (todo `active` recebe o post
+  // principal, ver docstring do módulo) — não há um recorte menor.
+  const activeSources: EmailSource[] = [
+    { name: "kit", emails: kitActiveEmails },
+    { name: "beehiiv", emails: beehiivActiveEmails },
+  ];
+  const orphans = findOrphans(activeSources, sources);
 
   process.stderr.write(`${LOG_PREFIX} medindo destinatários reais do último envio por plataforma…\n`);
   const recentDelivery = await Promise.all([
