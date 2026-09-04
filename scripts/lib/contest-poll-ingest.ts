@@ -38,18 +38,32 @@
  * `skippedAnonymous`, nunca vira `subscriber`/`event`. Só quem se
  * identificou (e-mail real, `poll_sig`/magic link) entra no store.
  *
- * ## `data/contest-entries.jsonl` — fonte, não escrita por este repo
+ * ## `data/contest-entries.jsonl` — mecanismo LEGADO, removido em #1778
  *
- * O corpo da issue #7209 descreve o schema (`reader_email`, `reader_name`,
- * `edition`, `reply_thread_id`, `confirmed_at`) como já existente em disco;
- * nenhum script deste checkout grava esse arquivo hoje (não localizado —
- * grep no repo inteiro não acha nenhum consumidor/produtor) — pode ser
- * mantido manualmente pelo editor ou por um processo fora deste repo.
- * `parseContestEntriesJsonl` é TOLERANTE ao formato descrito na issue
- * (mesma disciplina de `parseIntentionalErrorsJsonl`,
- * `scripts/lib/intentional-errors.ts`: linha que não parseia ou sem
- * `reader_email` é ignorada, nunca aborta o resto do arquivo) — se o schema
- * real divergir, ajustar aqui é uma mudança pequena e isolada.
+ * Correção de premissa (achada ao completar o wiring desta issue — não
+ * assumida às cegas): `data/contest-entries.jsonl` era o storage da
+ * automação de sorteio (`scripts/sorteio-process.ts` e a skill
+ * `diaria-sorteio`, ambos removidos) — **removida no commit `2836f302`
+ * (#1741/#1778, 02/06/2026)**: "o editor conduz o sorteio 'ache o erro,
+ * ganhe um número' externamente; a automação de processamento de
+ * inscrições + draw virou redundante". O código que lia/escrevia esse
+ * arquivo não existe mais neste checkout — daí o achado do PR #7364
+ * ("nenhum produtor/consumidor localizado") estar correto quanto ao ESTADO
+ * do repo, mas a premissa por trás (de que o arquivo/mecanismo ainda é o
+ * vivo) estava desatualizada.
+ *
+ * `parseContestEntriesJsonl` continua aqui — o arquivo pode existir como
+ * histórico gitignored em `data/` (a decisão de arquivar/apagar ficou
+ * explicitamente com o editor no #1778) e serve de backfill opcional de
+ * uma-vez — mas **não é mais a fonte viva**. O mecanismo VIVO pós-#2724 é
+ * `data/raffle-numbers.json` (`scripts/lib/raffle-numbers.ts`), escrito
+ * pelo playbook §0-replies do Stage 0
+ * (`.claude/agents/orchestrator-stage-0-preflight.md`) toda vez que um
+ * leitor acerta o erro intencional e ganha um número novo pro sorteio —
+ * exatamente o fato "resposta confirmada por pessoa e por edição" que esta
+ * issue pede. `mapRaffleEntryToContestEntry` (abaixo) adapta `RaffleEntry`
+ * pro mesmo shape `ContestEntryRecord` que `ingestContestReplies` já
+ * consome, sem duplicar a lógica de ingestão.
  *
  * ## Score do voto — FORA de escopo desta 1ª passada
  *
@@ -63,17 +77,23 @@
  * persistir o valor do voto fica pra quando houver um consumidor real que
  * precise dele (nenhum citado no corpo da issue).
  *
- * ## Wiring de rede — FORA de escopo (mesma razão do Kit em #7206)
+ * ## Wiring — contest_reply resolvido (CLI `diaria-subscribers-ingest-
+ * contest.ts`, sessão develop #7209 residual); poll_vote AINDA fora
  *
- * O fetch real de `data/contest-entries.jsonl` (arquivo local, sem rede) é
- * trivial e poderia ser wireado num CLI — não feito aqui só por não haver
- * consumidor/produtor localizado pra confirmar o schema ao vivo. O fetch do
- * voto do "É IA?" (Beehiiv custom field `poll_sig` — já coberto
- * GENERICAMENTE por `extractBeehiivCustomFieldAttributes`, nenhuma mudança
- * necessária — e o Worker `poll`, que exige `wrangler`/KV ao vivo) fica de
- * fora desta unidade pelo guard de publicação do overnight/develop (nunca
- * rede real numa sessão automatizada) — mesma decisão já registrada em
- * `kit-subscribers-ingest.ts` pro Kit event.url (#7206).
+ * O fetch/leitura de `data/raffle-numbers.json` (arquivo local, sem rede)
+ * está wireado no CLI acima — nenhum bloqueio real pra isso (não é chamada
+ * de rede, e o arquivo já é escrito pelo playbook §0-replies). O fetch do
+ * voto do "É IA?" continua de fora: custom field `poll_sig` da Beehiiv já é
+ * coberto GENERICAMENTE por `extractBeehiivCustomFieldAttributes` (nenhuma
+ * mudança necessária ali), mas o Worker `poll` exige `wrangler`/KV
+ * AUTENTICADO ao vivo — confirmado indisponível na sessão que fechou este
+ * residual (`wrangler whoami` → "You are not authenticated"). Diferente do
+ * guard de publicação do overnight (que proíbe rede real por política), aqui
+ * o bloqueio é puramente de CREDENCIAL — sessão develop (supervisionada) tem
+ * permissão pra rede, só falta o login. Fica pra quem tiver `wrangler`
+ * autenticado — mesma decisão já registrada em `kit-subscribers-ingest.ts`
+ * pro Kit event.url (#7206), mas por razão diferente (lá é design pendente,
+ * aqui é credencial ausente).
  */
 
 import type { DatabaseSync } from "node:sqlite";
@@ -180,6 +200,39 @@ export function ingestContestReplies(
   }
 
   return { newEvents, alreadyKnown, subscribersTouched, skippedNoEmail };
+}
+
+/**
+ * Subconjunto de `RaffleEntry` (`scripts/lib/raffle-numbers.ts`) relevante
+ * pro mapeamento — evita import de tipo cruzado desnecessário (só os 4
+ * campos usados). `RaffleEntry` tem o shape completo; qualquer valor que
+ * satisfaça este subconjunto serve.
+ */
+export interface RaffleEntryForContestMap {
+  email: string;
+  nickname?: string;
+  edition: string;
+  issued_at: string;
+}
+
+/**
+ * Adapta 1 `RaffleEntry` (o registro VIVO do sorteio, `data/raffle-
+ * numbers.json` — ver docstring do módulo) pro shape `ContestEntryRecord`
+ * que `ingestContestReplies` já consome. Pura, 1:1, sem I/O.
+ *
+ * `reply_thread_id` fica sempre `undefined` — o registro de sorteio não
+ * carrega o thread do Gmail (só e-mail/edição/número/timestamp), e
+ * `buildContestReplyExternalId` já dedup por (e-mail, edição) quando ausente
+ * — suficiente, já que `allocateRaffleNumber` garante no máximo 1 entry por
+ * (cycle, email, edition) na origem.
+ */
+export function mapRaffleEntryToContestEntry(entry: RaffleEntryForContestMap): ContestEntryRecord {
+  return {
+    reader_email: entry.email,
+    reader_name: entry.nickname,
+    edition: entry.edition,
+    confirmed_at: entry.issued_at,
+  };
 }
 
 // ---------------------------------------------------------------------------
