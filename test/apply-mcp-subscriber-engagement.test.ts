@@ -170,6 +170,34 @@ describe("applyEngagement — guard REPLACE-vazio (mesmo padrão de #4836)", () 
     assert.equal(entry.count, 0);
   });
 
+  it("--confirmed-empty grava o flag `confirmed_empty: true` no manifest (#7418) — sem ele, reconcileManifestWithDisk rebaixa o mesmo post ok→pending a cada auditoria", () => {
+    const { outDir } = setup();
+    applyEngagement(JSON.stringify({ engagement: [] }), { postId: "post_0dbd15c0", outDir, confirmedEmpty: true });
+    const entry = readManifest(outDir).posts[0];
+    assert.equal(entry.status, "ok");
+    assert.equal(entry.confirmed_empty, true, "o flag é gravado no manifest pro reconcile respeitar");
+  });
+
+  it("sem --confirmed-empty, o manifest NÃO grava `confirmed_empty` (ausente, não false) — um ok com 0 registros continua candidato a rebaixamento", () => {
+    const { outDir } = setup();
+    applyEngagement(JSON.stringify({ engagement: [] }), { postId: "post_novo", outDir });
+    const entry = readManifest(outDir).posts[0];
+    assert.equal(entry.status, "partial");
+    assert.equal(entry.confirmed_empty, undefined, "flag só nasce quando o agent confirma de propósito");
+  });
+
+  it("o flag `confirmed_empty` NÃO é gravado quando o resultado tem dados reais (independente de --confirmed-empty)", () => {
+    const { outDir } = setup();
+    applyEngagement(
+      JSON.stringify({ engagement: [{ subscriber_id: "sub_1", status: "delivered", timestamp: "2026-03-18T07:14:36Z" }] }),
+      { postId: "post_com_dado", outDir, confirmedEmpty: true },
+    );
+    const entry = readManifest(outDir).posts[0];
+    assert.equal(entry.status, "ok");
+    assert.equal(entry.count, 1);
+    assert.equal(entry.confirmed_empty, undefined, "flag é só pra 0 registros confirmados");
+  });
+
   it("guard dispara ANTES de atualizar o manifest — post continua com o status anterior, não vira ok/error espúrio", () => {
     const { outDir } = setup();
     applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1" }] }), { postId: "post_1", outDir });
