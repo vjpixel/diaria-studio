@@ -386,3 +386,62 @@ describe("reconcileManifestWithDisk — âncora externa `recipients` (#7197)", (
     assert.equal(downgraded[0].to, "pending", "arquivo vazio é 'nunca drenado', não 'drenado pela metade'");
   });
 });
+
+describe("reconcileManifestWithDisk — âncora `delivered` tem precedência sobre `recipients` (#7268)", () => {
+  it("linhas == delivered (< recipients por bounce) NÃO rebaixa — bounce nunca gera evento de engagement", () => {
+    // Medido ao vivo (#7268, post_d66366ed): recipients=643, delivered=641.
+    // A MCP só devolve eventos de mensagem ENTREGUE — usar `recipients` como
+    // âncora tornava esta checagem inatingível pra todo post com bounce.
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "p", status: "ok", count: 641 }],
+    };
+    const { downgraded } = reconcileManifestWithDisk(
+      manifest,
+      new Map([["p", 641]]),
+      new Map([["p", 643]]),
+      new Map([["p", 641]]),
+    );
+    assert.deepEqual(downgraded, [], "delivered é o teto real e alcançável, não recipients");
+  });
+
+  it("linhas < delivered ainda rebaixa — delivered não é um passe livre, só corrige o teto", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "p", status: "ok", count: 500 }],
+    };
+    const { downgraded } = reconcileManifestWithDisk(
+      manifest,
+      new Map([["p", 500]]),
+      new Map([["p", 643]]),
+      new Map([["p", 641]]),
+    );
+    assert.equal(downgraded.length, 1);
+    assert.equal(downgraded[0].to, "partial");
+    assert.match(downgraded[0].reason, /delivered/);
+  });
+
+  it("delivered AUSENTE cai pra recipients — comportamento pré-#7268 preservado", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "p", status: "ok", count: 500 }],
+    };
+    const { downgraded } = reconcileManifestWithDisk(
+      manifest,
+      new Map([["p", 500]]),
+      new Map([["p", 643]]),
+      new Map(),
+    );
+    assert.equal(downgraded.length, 1);
+    assert.match(downgraded[0].reason, /recipients/);
+  });
+
+  it("deliveredByPost omitido = comportamento pré-#7268, sem quebrar chamador antigo (3 args)", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "p", status: "ok", count: 641 }],
+    };
+    const { downgraded } = reconcileManifestWithDisk(manifest, new Map([["p", 641]]), new Map([["p", 643]]));
+    assert.equal(downgraded.length, 1, "sem deliveredByPost, recipients=643 ainda rebaixa 641");
+  });
+});

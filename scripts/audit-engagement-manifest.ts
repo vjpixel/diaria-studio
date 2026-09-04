@@ -103,14 +103,15 @@ export function postsNeedingAnchor(manifest: EngagementManifest): EngagementMani
 export async function fetchRecipientsByPost(
   manifest: EngagementManifest,
   cfg: { apiKey: string; publicationId: string },
-): Promise<{ recipients: Map<string, number>; unavailable: string[] }> {
+): Promise<{ recipients: Map<string, number>; delivered: Map<string, number>; unavailable: string[] }> {
   const recipients = new Map<string, number>();
+  const delivered = new Map<string, number>();
   const unavailable: string[] = [];
   // Só entrada `ok` é candidata a rebaixamento — `reconcileManifestWithDisk`
-  // nem consulta o mapa pras outras. Buscar `recipients` pra elas gastaria
-  // quota à toa e, pior, um 404 numa entrada já sabidamente `pending` cairia
-  // em `unavailable` e degradaria o VEREDITO da auditoria por um post que não
-  // muda nenhum resultado.
+  // nem consulta o mapa pras outras. Buscar `recipients`/`delivered` pra
+  // elas gastaria quota à toa e, pior, um 404 numa entrada já sabidamente
+  // `pending` cairia em `unavailable` e degradaria o VEREDITO da auditoria
+  // por um post que não muda nenhum resultado.
   for (const entry of postsNeedingAnchor(manifest)) {
     const url = `${beehiivApiBase()}/publications/${cfg.publicationId}/posts/${entry.post_id}?expand[]=stats`;
     try {
@@ -119,15 +120,23 @@ export async function fetchRecipientsByPost(
         unavailable.push(entry.post_id);
         continue;
       }
-      const j = (await res.json()) as { data?: { stats?: { email?: { recipients?: number } } } };
+      const j = (await res.json()) as {
+        data?: { stats?: { email?: { recipients?: number; delivered?: number } } };
+      };
       const r = j?.data?.stats?.email?.recipients;
+      const d = j?.data?.stats?.email?.delivered;
+      // `delivered` é a âncora preferida (#7268 — ver docstring de
+      // `reconcileManifestWithDisk`): um post sem ela ainda entra em
+      // `unavailable` se `recipients` também faltar, mas nunca se só
+      // `delivered` faltar (fallback puro pra `recipients`).
       if (typeof r === "number") recipients.set(entry.post_id, r);
-      else unavailable.push(entry.post_id);
+      if (typeof d === "number") delivered.set(entry.post_id, d);
+      if (typeof r !== "number" && typeof d !== "number") unavailable.push(entry.post_id);
     } catch {
       unavailable.push(entry.post_id);
     }
   }
-  return { recipients, unavailable };
+  return { recipients, delivered, unavailable };
 }
 
 export type AuditVerdict = "completo" | "parcial-sem-ancora" | "parcial-ancora-incompleta";
@@ -169,16 +178,18 @@ async function main(): Promise<void> {
   // modo o veredito é PARCIAL, não "acervo íntegro".
   const skipRecipients = argv.includes("--skip-recipients");
   let recipients: Map<string, number> | undefined;
+  let delivered: Map<string, number> | undefined;
   let unavailable: string[] = [];
   if (!skipRecipients) {
     loadProjectEnv(ROOT);
     const cfg = loadBeehiivConfig("[audit-engagement-manifest]");
     const fetched = await fetchRecipientsByPost(manifest, cfg);
     recipients = fetched.recipients;
+    delivered = fetched.delivered;
     unavailable = fetched.unavailable;
   }
 
-  const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(manifest, actualCounts, recipients);
+  const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(manifest, actualCounts, recipients, delivered);
   const coverageAfter = coverageSummary(reconciled);
 
   if (!dryRun && downgraded.length > 0) {

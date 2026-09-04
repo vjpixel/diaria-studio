@@ -176,7 +176,13 @@ export interface ApplyEngagementOpts {
   title?: string;
   pagesFetched?: number;
   totalPages?: number;
-  /** `stats.email.recipients` do post — âncora externa da completude (#7197). */
+  /**
+   * Âncora externa da completude (#7197) — apesar do nome do flag, o valor
+   * certo pra passar é `stats.email.delivered`, não `stats.email.recipients`
+   * (achado #7268/#7394): a MCP só devolve eventos de mensagem ENTREGUE, e
+   * `recipients` inclui bounces que nunca geram registro nenhum, tornando o
+   * guard abaixo inatingível pra todo post com ≥1 bounce se ancorado nele.
+   */
   recipients?: number;
   allowEmptyReplace?: boolean;
   outDir?: string;

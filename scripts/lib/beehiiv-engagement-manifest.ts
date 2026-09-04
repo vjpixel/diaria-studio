@@ -238,8 +238,10 @@ export const AUDIT_REASON_PREFIX = "auditoria #7197";
  *      restaurado de um snapshot antigo). Rebaixa pra `partial` — o disco
  *      tem ALGUM dado real (`actual > 0`), então não precisa redrenar do
  *      zero, só completar; `entry.count` é corrigido pro valor real.
- *   3. `actual < recipients` — o disco é INTERNAMENTE consistente mas está
- *      abaixo do alcance real do post. Rebaixa pra `partial`.
+ *   3. `actual < ancora` — o disco é INTERNAMENTE consistente mas está
+ *      abaixo do alcance real do post. Rebaixa pra `partial`. A âncora é
+ *      `delivered` quando disponível, senão `recipients` (ver seção
+ *      "delivered vs. recipients" abaixo).
  *
  * ─── Por que a checagem 3 é a que importa (medido, 03/09/2026) ────────────
  *
@@ -257,24 +259,42 @@ export const AUDIT_REASON_PREFIX = "auditoria #7197";
  * `pages_fetched == total_pages`, que é exatamente a condição de `ok`. Sem
  * uma âncora EXTERNA, `ok` é estruturalmente auto-satisfeito.
  *
- * `email.recipients` é essa âncora: é o teto de quantos registros de
- * engajamento podem existir pra um post, e não vem do mesmo processo que
- * gravou o arquivo.
+ * ─── `delivered` vs. `recipients` — por que a checagem 3 usava o campo
+ * errado (achado #7268, 03/09/2026) ─────────────────────────────────────
  *
- * ─── Por que `recipients` ausente NÃO rebaixa ─────────────────────────────
+ * `email.recipients` é o alcance PRETENDIDO do envio (quem foi endereçado);
+ * `email.delivered` é quem de fato recebeu (`recipients` menos bounces —
+ * medido ao vivo: `post_d66366ed`, `recipients: 643`, `delivered: 641`).
+ * `list_post_subscriber_engagement` só devolve eventos de mensagens
+ * ENTREGUES — um destinatário que sofreu bounce nunca aparece em página
+ * nenhuma, por nenhuma ordenação, porque nunca houve entrega pra gerar um
+ * evento. Usar `recipients` como âncora torna a checagem 3 estruturalmente
+ * inatingível pra todo post com ≥1 bounce: medido em produção, dezenas de
+ * posts fechavam `ok` com paginação genuinamente exaurida (última página
+ * curta) e ainda assim eram rebaixados a cada auditoria, num ciclo sem
+ * fim — o "resíduo" nunca diminuía porque a meta em si era inalcançável.
+ * `deliveredByPost` corrige isso: quando presente pro post, substitui
+ * `recipientsByPost` como âncora (é o teto real e ALCANÇÁVEL); na ausência
+ * (post antigo sem esse campo na resposta da API, ou chamador que só tem
+ * `recipients`), cai pra `recipientsByPost` — comportamento pré-#7268
+ * preservado, nunca mais estrito que antes.
  *
- * `recipientsByPost` é opcional, e post sem entrada nele é deixado como
- * está. É a divisão fail-soft-em-infra / fail-closed-em-dado que o resto do
- * repo usa: rede indisponível não pode reescrever o manifest inteiro pra
- * `partial` (o chamador perderia o acervo bom junto com o ruim), mas dado
- * PRESENTE que contradiz o `ok` sempre rebaixa. Quem quiser o veredito
- * completo tem que passar o mapa — e a cobertura fica visível no relatório
- * do chamador, nunca escondida num default.
+ * ─── Por que âncora ausente NÃO rebaixa ───────────────────────────────────
+ *
+ * Tanto `recipientsByPost` quanto `deliveredByPost` são opcionais, e post
+ * sem entrada em NENHUM dos dois é deixado como está. É a divisão
+ * fail-soft-em-infra / fail-closed-em-dado que o resto do repo usa: rede
+ * indisponível não pode reescrever o manifest inteiro pra `partial` (o
+ * chamador perderia o acervo bom junto com o ruim), mas dado PRESENTE que
+ * contradiz o `ok` sempre rebaixa. Quem quiser o veredito completo tem que
+ * passar o(s) mapa(s) — e a cobertura fica visível no relatório do
+ * chamador, nunca escondida num default.
  */
 export function reconcileManifestWithDisk(
   manifest: EngagementManifest,
   actualCounts: Map<string, number>,
   recipientsByPost?: Map<string, number>,
+  deliveredByPost?: Map<string, number>,
 ): ManifestReconcileResult {
   const downgraded: ManifestDowngrade[] = [];
   const posts = manifest.posts.map((entry) => {
@@ -290,9 +310,12 @@ export function reconcileManifestWithDisk(
       downgraded.push({ post_id: entry.post_id, from: "ok", to: "partial", reason });
       return { ...entry, status: "partial" as const, count: actual, error: reason };
     }
-    const recipients = recipientsByPost?.get(entry.post_id);
-    if (typeof recipients === "number" && actual < recipients) {
-      const reason = `${AUDIT_REASON_PREFIX}: ${actual} registros pra um post que alcançou ${recipients} — drenagem truncada (a resposta da MCP não tem total_pages; ver docstring)`;
+    const delivered = deliveredByPost?.get(entry.post_id);
+    const usingDelivered = typeof delivered === "number";
+    const anchor = usingDelivered ? delivered : recipientsByPost?.get(entry.post_id);
+    if (typeof anchor === "number" && actual < anchor) {
+      const anchorLabel = usingDelivered ? "delivered" : "recipients";
+      const reason = `${AUDIT_REASON_PREFIX}: ${actual} registros pra um post que alcançou ${anchor} (${anchorLabel}) — drenagem truncada (a resposta da MCP não tem total_pages; ver docstring)`;
       downgraded.push({ post_id: entry.post_id, from: "ok", to: "partial", reason });
       return { ...entry, status: "partial" as const, error: reason };
     }
