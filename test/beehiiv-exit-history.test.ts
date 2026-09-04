@@ -124,7 +124,6 @@ describe("parseExitHistoryPage", () => {
       { id: "sub_1", status: "inactive", unsubscribed_on: "2026-09-04T01:19:07Z" },
       null,
       { id: "sub_2", status: "inactive", unsubscribed_on: "2026-09-03T07:03:07Z" },
-      // @ts-expect-error
     ] as BeehiivExitHistoryRawRecord[];
     const parsed = parseExitHistoryPage(page);
     assert.equal(parsed.length, 2, "a linha null é descartada, as 2 linhas válidas sobrevivem");
