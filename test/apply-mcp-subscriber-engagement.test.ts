@@ -178,7 +178,7 @@ describe("applyEngagement — guard REPLACE-vazio (mesmo padrão de #4836)", () 
     assert.equal(entry.confirmed_empty, true, "o flag é gravado no manifest pro reconcile respeitar");
   });
 
-  it("sem --confirmed-empty, o manifest NÃO grava `confirmed_empty` (ausente, não false) — um ok com 0 registros continua candidato a rebaixamento", () => {
+  it("sem --confirmed-empty, o manifest NÃO grava `confirmed_empty` (ausente, não false) — o guard #7197 fecha o resultado como `partial`, nunca `ok` com flag implícito", () => {
     const { outDir } = setup();
     applyEngagement(JSON.stringify({ engagement: [] }), { postId: "post_novo", outDir });
     const entry = readManifest(outDir).posts[0];

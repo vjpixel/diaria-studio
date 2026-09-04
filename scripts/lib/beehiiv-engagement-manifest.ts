@@ -240,7 +240,7 @@ export const AUDIT_REASON_PREFIX = "auditoria #7197";
  * de trabalho" (`pendingEntries`) ou mecanicamente corretas
  * (`not_applicable`), nada a reconciliar.
  *
- * TRÊS checagens, primeira que casa vence:
+ * QUATRO checagens, primeira que casa vence:
  *   0. `confirmed_empty` — 0 registros EM DISCO mas a entry já foi
  *      confirmada vazia de propósito (#7418, #7197): o agent literalmente
  *      acabou de receber uma resposta vazia da MCP pra este post_id e
@@ -249,6 +249,9 @@ export const AUDIT_REASON_PREFIX = "auditoria #7197";
  *      zero, só o *status* pisca — e rebaixar forçaria reprocessamento
  *      desnecessário (~90-160k tokens por lote de 8, medido no #7268).
  *      Só entra em jogo quando a checagem 1 também encontraria 0 linhas.
+ *      Não há caminho mecânico de revogação do flag — levantá-lo exige um
+ *      re-drain que produza registros (a entry inteira é substituída via
+ *      `upsertEntry`) ou edição manual do manifest (#7418).
  *   1. `actual === 0` — nenhum registro real em disco. Um `ok` com 0
  *      registros só é legítimo quando `not_applicable` (post nunca
  *      enviado) — se chegou aqui como `ok` "normal", é o padrão de

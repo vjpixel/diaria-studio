@@ -22,7 +22,9 @@
  * Regra de reconciliação (pura, `reconcileManifestWithDisk` em
  * `scripts/lib/beehiiv-engagement-manifest.ts` — só entries `status: "ok"`
  * são candidatas):
- *   1. 0 linhas reais em disco → rebaixa pra `pending` (redrenar do zero).
+ *   1. 0 linhas reais em disco → rebaixa pra `pending` (redrenar do zero) —
+ *      exceto entry com `confirmed_empty: true` (checagem 0, #7418: vazio
+ *      confirmado de propósito via `--confirmed-empty` fica `ok`).
  *   2. `manifest.count` != linhas reais → rebaixa pra `partial` e corrige
  *      `count` pro valor real (disco tem ALGUM dado, só precisa completar).
  *   3. Bate → mantém `ok`, intocado.
