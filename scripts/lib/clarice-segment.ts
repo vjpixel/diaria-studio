@@ -801,6 +801,13 @@ export function isNamedGroupKey(key: string): key is NamedGroupKey {
  * `isSendEligible` + exclusão de conta de teste do editor valem pros dois
  * ramos (mesmo guard de defesa em profundidade dos predicados originais).
  */
+/** Já recebeu envio antes? Eixo único que decide qual metade de
+ *  `isDailyQueueEligible`/`buildDailySendQueue` se aplica a uma linha —
+ *  extraído pra não deixar as duas checagens divergirem por edição futura. */
+function hasSendHistory(r: Pick<StoreRow, "sends_count">): boolean {
+  return (r.sends_count ?? 0) > 0;
+}
+
 export function isDailyQueueEligible(
   r: Pick<
     StoreRow,
@@ -809,18 +816,29 @@ export function isDailyQueueEligible(
   cutoffNovosIso?: string | null,
 ): boolean {
   if (!isSendEligible(r) || isTestAccount(r.email)) return false;
-  if ((r.sends_count ?? 0) > 0) return (r.priority_points ?? 0) > 0;
+  if (hasSendHistory(r)) return (r.priority_points ?? 0) > 0;
   return isRampWarm(r, cutoffNovosIso);
 }
 
 /**
- * Ordem da fila única: `priority_points DESC` — a decisão do editor
- * registrada na #7236 ("engajados tem prioridade TOTAL sobre ramp-warm até
- * esgotar a fila ou o budget do dia") é uma consequência DIRETA desta ordem,
- * não uma regra separada: quem nunca recebeu tem `priority_points` sempre
- * exatamente 0 (nunca acumulou pontos — medido no store real, comentário da
- * #7236), então cai naturalmente atrás de todo score positivo sem precisar
- * de lógica de corte por tier.
+ * Ordem da fila única: `priority_points DESC`, sem nenhuma lógica de corte
+ * por tier — a decisão do editor registrada na #7236 ("engajados tem
+ * prioridade TOTAL sobre ramp-warm até esgotar a fila ou o budget do dia")
+ * fica sendo consequência do SORT, não uma regra à parte.
+ *
+ * **Não é garantido que `priority_points` de quem nunca recebeu seja sempre
+ * 0** (achado do review da PR #7408): a flag manual `priority_optin`
+ * (`clarice-optin.ts`, `computePriorityPoints` em `clarice-db.ts`) soma +40
+ * independente de `sends_count` — um contato nunca-enviado mas opt-in entra
+ * na fila ACIMA de engajados com score < 40. Isso é **esperado, não bug**:
+ * é exatamente o propósito do opt-in ("pediu pra entrar na lista de
+ * prioridade") e é consistente com "trabalha tudo só a partir do score"
+ * (decisão do editor, #7406) — o opt-in não distingue 1º envio de re-envio
+ * de propósito, então esta fila também não deveria. No design ANTERIOR isso
+ * era inofensivo (`segmentRampWarm` ignora `priority_points`, ordena só por
+ * recência); aqui vira visível porque a fila única de fato lê o campo pros
+ * dois lados — documentado, não corrigido, porque o comportamento em si
+ * está certo (`test/clarice-segment.test.ts` cobre o caso).
  *
  * Desempate PRESERVA o comportamento de cada grupo original (não introduz
  * ordenação nova): `priority_points > 0` (ex-engajados) desempata por email
@@ -869,12 +887,11 @@ export function buildDailySendQueue<
   return rows
     .filter((r) => isDailyQueueEligible(r, cutoffNovosIso))
     .filter((r) => {
-      const scope = (r.sends_count ?? 0) > 0 ? guards.queuedListIds : guards.committedListIds;
+      const scope = hasSendHistory(r) ? guards.queuedListIds : guards.committedListIds;
       if (scope.size === 0) return true;
       const lists = parseBrevoListIds(r.brevo_list_ids);
       return !lists.some((id) => scope.has(id));
     })
-    .slice()
     .sort(compareDailyQueueOrder);
 }
 

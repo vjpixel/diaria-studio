@@ -1558,3 +1558,47 @@ test("buildDailySendQueue: respeita cutoffNovosIso (repassa pro ramo de 1º envi
   assert.deepEqual(buildDailySendQueue([dentroDaJanela], noGuard, "2026-08-15T00:00:00Z"), []);
   assert.deepEqual(buildDailySendQueue([dentroDaJanela], noGuard, null).map((r) => r.email), [dentroDaJanela.email]);
 });
+
+// #7408 review — 3 gaps de cobertura apontados: priority_optin quebra a
+// premissa "1º envio sempre score 0" (documentado, comportamento correto,
+// não um bug); sends_count negativo/NaN; e uma linha cujo brevo_list_ids
+// aparece nos DOIS guard Sets ao mesmo tempo (garante que só o guard do
+// EIXO CERTO da linha é consultado, o outro nunca entra em jogo).
+
+test("compareDailyQueueOrder/buildDailySendQueue: priority_optin (+40) num contato NUNCA enviado fura a fila acima de engajados com score menor — esperado, não bug (#7408 review)", () => {
+  const optinNuncaEnviado = row({ email: "optin@x.com", sends_count: 0, mv_bucket: "verified", priority_points: 40 });
+  const engajadoFraco = row({ email: "fraco@x.com", sends_count: 2, priority_points: 15 });
+  const noGuard = { queuedListIds: new Set<string>(), committedListIds: new Set<string>() };
+  const queue = buildDailySendQueue([engajadoFraco, optinNuncaEnviado], noGuard);
+  assert.deepEqual(
+    queue.map((r) => r.email),
+    [optinNuncaEnviado.email, engajadoFraco.email],
+    "score decide sozinho, sem distinguir 1º envio de re-envio — é o pedido do editor (#7406)",
+  );
+});
+
+test("isDailyQueueEligible: sends_count negativo/NaN é tratado como 1º envio (mesmo fail-safe de isFirstSend/isRampWarm)", () => {
+  const negativo = row({ email: "neg@x.com", sends_count: -1 as unknown as number, mv_bucket: "verified" });
+  const nanValue = row({ email: "nan@x.com", sends_count: NaN, mv_bucket: "verified" });
+  assert.equal(isDailyQueueEligible(negativo), true);
+  assert.equal(isDailyQueueEligible(nanValue), true);
+});
+
+test("buildDailySendQueue: brevo_list_ids presente nos DOIS guard Sets — só o Set do eixo da linha (por sends_count) é consultado", () => {
+  const listaAmbigua = JSON.stringify(["list-ambigua"]);
+  const engajado = row({ email: "engajado@x.com", sends_count: 3, priority_points: 50, brevo_list_ids: listaAmbigua });
+  const rampWarm = row({ email: "ramp@x.com", sends_count: 0, mv_bucket: "verified", brevo_list_ids: listaAmbigua });
+  // A mesma lista está em AMBOS os Sets — se buildDailySendQueue consultasse o Set errado (ou os dois),
+  // um dos dois contatos sairia excluído por engano.
+  const guards = { queuedListIds: new Set(["list-ambigua"]), committedListIds: new Set(["list-ambigua"]) };
+  // engajado (sends_count>0) usa SÓ queuedListIds → excluído (está lá).
+  // rampWarm (sends_count=0) usa SÓ committedListIds → também excluído (está lá também, mas pelo Set certo).
+  assert.deepEqual(buildDailySendQueue([engajado, rampWarm], guards), []);
+
+  // Prova que é o EIXO, não "está em qualquer Set", que decide: tirando "list-ambigua" só de
+  // queuedListIds, o engajado (que consulta queuedListIds) volta; o rampWarm (que consulta
+  // committedListIds, ainda com a lista) continua fora.
+  const guardsSoCommitted = { queuedListIds: new Set<string>(), committedListIds: new Set(["list-ambigua"]) };
+  const queue = buildDailySendQueue([engajado, rampWarm], guardsSoCommitted);
+  assert.deepEqual(queue.map((r) => r.email), [engajado.email]);
+});
