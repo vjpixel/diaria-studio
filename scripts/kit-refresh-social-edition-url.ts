@@ -95,7 +95,12 @@ interface PlatformConfig {
 
 export type KitRefreshSocialEditionUrlResult =
   | { ok: true; resolved: true; editionUrl: string; unresolvedPlaceholders: string[] }
-  | { ok: true; resolved: false; reason: "backend_not_kit" | "no_slug_yet" | "already_resolved"; editionUrl?: string }
+  | {
+      ok: true;
+      resolved: false;
+      reason: "backend_not_kit" | "no_slug_yet" | "already_resolved" | "already_own_domain";
+      editionUrl?: string;
+    }
   | { ok: false; code: 3 | 4; reason: string };
 
 /**
@@ -123,10 +128,28 @@ export function hasKitSlug(publicUrl: string | undefined): publicUrl is string {
   return !!match && match[1].length > 0;
 }
 
+/**
+ * #7420 (achado ao vivo, edição 260904): desde que `publish-newsletter-kit.ts`
+ * passou a gravar `05-edition-url.txt` com a URL PRÓPRIA (`https://diar.ia.br/p/{slug}`,
+ * derivada do título do D1 — mesma que o bloco WhatsApp já crava no e-mail,
+ * `deriveEditionUrl`) em vez do `public_url` do broadcast Kit, este script
+ * inteiro deixou de ter propósito no caminho feliz: a URL já sai correta na
+ * Etapa 5, sem depender do Kit atribuir slug. Ainda assim, NUNCA sobrescrever
+ * uma URL própria já resolvida com o `public_url` do Kit — seria regredir de
+ * volta pro domínio de terceiro que o #7420 corrigiu, e um caller esquecido
+ * (retry manual, cron antigo) não deveria conseguir fazer isso por engano.
+ */
+function isOwnDomainEditionUrl(url: string | null): boolean {
+  return url !== null && url.startsWith("https://diar.ia.br/");
+}
+
 export async function kitRefreshSocialEditionUrl(
   editionDir: string,
   deps: KitRefreshSocialEditionUrlDeps,
 ): Promise<KitRefreshSocialEditionUrlResult> {
+  if (isOwnDomainEditionUrl(deps.readEditionUrlFile(editionDir))) {
+    return { ok: true, resolved: false, reason: "already_own_domain" };
+  }
   let published: { broadcast_id: number } | null;
   try {
     published = deps.readPublished(editionDir);

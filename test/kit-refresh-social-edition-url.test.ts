@@ -223,6 +223,29 @@ describe("kitRefreshSocialEditionUrl (#7405)", () => {
     assert.equal(writeSocialCalls, 0);
   });
 
+  it("#7420: 05-edition-url.txt já é URL própria (diar.ia.br) → nunca sobrescreve com public_url do Kit, nem chama a API", async () => {
+    let getCalled = false;
+    let writeUrlCalls = 0;
+    const deps = makeDeps({
+      getBroadcastPublicUrl: async () => {
+        getCalled = true;
+        return RESOLVED_URL;
+      },
+      readEditionUrlFile: () => "https://diar.ia.br/p/titulo-da-edicao",
+      writeEditionUrlFile: () => {
+        writeUrlCalls += 1;
+      },
+    });
+    const result = await kitRefreshSocialEditionUrl(EDITION_DIR, deps);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.resolved, false);
+      if (!result.resolved) assert.equal(result.reason, "already_own_domain");
+    }
+    assert.equal(getCalled, false, "URL própria já resolvida — nem a API do Kit precisa ser consultada");
+    assert.equal(writeUrlCalls, 0);
+  });
+
   it("existe URL PRÉVIA DIFERENTE em 05-edition-url.txt (não null, não igual à nova, não é o stub genérico) → regrava tanto o .txt quanto o texto antigo embutido em 03-social.md", async () => {
     const OLD_RESOLVED_URL = "https://diariabr.kit.com/posts/titulo-antigo";
     let writtenUrl: string | null = null;

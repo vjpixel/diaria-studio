@@ -534,16 +534,23 @@ describe("#6202 readEditionInputs — implementação REAL contra fixture (regre
       }
     });
 
-    it("backend kit, COM --slug ⇒ ainda cai no null benigno (slug não resolve o arquivo faltante de qualquer forma)", () => {
+    it("#7420: backend kit, COM --slug ⇒ resolve normalmente, SEM depender de 05-published.json", () => {
       const dir = makeKitLikeEditionDir();
       const rootDir = makeRootWithBackend("kit");
       try {
-        // Com slugOverride, o guard do P2-F não entra em ação — mas o
-        // arquivo 05-published.json continua ausente, então o caminho antigo
-        // (`!htmlExists || !publishedExists`) devolve null (code 2) mesmo
-        // assim. Documentado aqui pra não regredir: o guard é só pra
-        // DIAGNÓSTICO do caso mudo, não uma segunda fonte de slug pro Kit.
-        assert.equal(readEditionInputs(dir, "um-slug-qualquer", rootDir), null);
+        // Achado ao vivo na edição 260904: antes do #7420, `slugOverride`
+        // não bastava — o guard `!htmlExists || !publishedExists` devolvia
+        // null (code 2) mesmo com --slug passado, contradizendo a própria
+        // instrução de §6d-site ("passe --slug explicitamente"). Agora
+        // `slugOverride` ignora `05-published.json` por completo.
+        const result = readEditionInputs(dir, "um-slug-qualquer", rootDir);
+        assert.deepEqual(result, {
+          html: "<p>corpo Kit</p>",
+          postUrl: "https://diar.ia.br/p/um-slug-qualquer",
+          title: "",
+          subtitle: null,
+          publishedAtIso: null,
+        });
       } finally {
         rmSync(dir, { recursive: true, force: true });
         rmSync(rootDir, { recursive: true, force: true });
@@ -555,6 +562,24 @@ describe("#6202 readEditionInputs — implementação REAL contra fixture (regre
       const rootDir = makeRootWithBackend("beehiiv");
       try {
         assert.equal(readEditionInputs(dir, undefined, rootDir), null);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        rmSync(rootDir, { recursive: true, force: true });
+      }
+    });
+
+    it("#7420: --slug bypassa 05-published.json ausente independente do backend (beehiiv também)", () => {
+      const dir = makeKitLikeEditionDir();
+      const rootDir = makeRootWithBackend("beehiiv");
+      try {
+        const result = readEditionInputs(dir, "outro-slug", rootDir);
+        assert.deepEqual(result, {
+          html: "<p>corpo Kit</p>",
+          postUrl: "https://diar.ia.br/p/outro-slug",
+          title: "",
+          subtitle: null,
+          publishedAtIso: null,
+        });
       } finally {
         rmSync(dir, { recursive: true, force: true });
         rmSync(rootDir, { recursive: true, force: true });

@@ -69,7 +69,7 @@ describe("checkWhatsappSlugGuard (#4574)", () => {
   });
 
   it("falha quando whatsapp-slug-check.json ausente — guard não rodou (silêncio ≠ passou)", () => {
-    const v = checkWhatsappSlugGuard(fixture);
+    const v = checkWhatsappSlugGuard(fixture, "beehiiv");
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "whatsapp-slug-guard-ok");
     assert.equal(v[0].severity, "error");
@@ -88,7 +88,7 @@ describe("checkWhatsappSlugGuard (#4574)", () => {
         checkedAt: new Date().toISOString(),
       }),
     );
-    const v = checkWhatsappSlugGuard(fixture);
+    const v = checkWhatsappSlugGuard(fixture, "beehiiv");
     assert.equal(v.length, 0);
     rmSync(fixture, { recursive: true, force: true });
   });
@@ -103,7 +103,7 @@ describe("checkWhatsappSlugGuard (#4574)", () => {
         checkedAt: new Date().toISOString(),
       }),
     );
-    const v = checkWhatsappSlugGuard(fixture);
+    const v = checkWhatsappSlugGuard(fixture, "beehiiv");
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "whatsapp-slug-guard-ok");
     assert.equal(v[0].severity, "error");
@@ -114,7 +114,7 @@ describe("checkWhatsappSlugGuard (#4574)", () => {
 
   it("falha quando o arquivo existe mas não é JSON parseável", () => {
     writeFileSync(join(fixture, "_internal", "whatsapp-slug-check.json"), "{ not valid json");
-    const v = checkWhatsappSlugGuard(fixture);
+    const v = checkWhatsappSlugGuard(fixture, "beehiiv");
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "whatsapp-slug-guard-parseable");
     assert.equal(v[0].severity, "error");
@@ -126,9 +126,20 @@ describe("checkWhatsappSlugGuard (#4574)", () => {
       join(fixture, "_internal", "whatsapp-slug-check.json"),
       JSON.stringify({ expectedSlug: "foo" }),
     );
-    const v = checkWhatsappSlugGuard(fixture);
+    const v = checkWhatsappSlugGuard(fixture, "beehiiv");
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "whatsapp-slug-guard-ok");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  // #7388 (achado ao vivo, edição 260904): backend "kit" pula esta checagem
+  // inteira — §6d do orchestrator-stage-6.md documenta que o problema de
+  // slug da UI da Beehiiv não tem equivalente no Kit. Sem este skip, o
+  // check bloqueava o Stage 6 de TODA edição desde a migração de backend em
+  // #7388, mesmo com o arquivo nunca devendo existir nesse caminho.
+  it("backend kit: passa mesmo com whatsapp-slug-check.json ausente (checagem não se aplica)", () => {
+    const v = checkWhatsappSlugGuard(fixture, "kit");
+    assert.equal(v.length, 0);
     rmSync(fixture, { recursive: true, force: true });
   });
 });
