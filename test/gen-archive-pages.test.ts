@@ -38,6 +38,8 @@ import {
   kitUnifiedPostToArchivePost,
   dedupeStyleBlocksInPage,
   UnresolvedMergeTagError,
+  LEGACY_SLUG_CORRECTIONS,
+  applyLegacySlugCorrections,
 } from "../scripts/lib/site-archive-pages.ts";
 import { generateArchivePages, loadPosts, loadKitArchivePosts } from "../scripts/gen-archive-pages.ts";
 import type { UnifiedCachedPost } from "../scripts/lib/shared/edition-cache-reader.ts";
@@ -939,6 +941,132 @@ describe("loadKitArchivePosts (#6184 — gating por read_backend + filtro public
       );
     } finally {
       rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// #7280 — 21 slugs históricos com acento corrompido (dois padrões:
+// decomposição NFD sobrando hífen, e descarte do caractere acentuado).
+// Regressão #633: sem isto, um re-sync do cache Beehiiv (que sobrescreve
+// data/beehiiv-cache/posts/*.json inteiro) reintroduziria as páginas
+// quebradas em silêncio — a correção precisa viver em CÓDIGO, não editada
+// no JSON cacheado.
+describe("LEGACY_SLUG_CORRECTIONS / applyLegacySlugCorrections (#7280)", () => {
+  it("tem exatamente as 21 entradas medidas na issue, nenhuma repetida", () => {
+    const keys = Object.keys(LEGACY_SLUG_CORRECTIONS);
+    assert.equal(keys.length, 21);
+    assert.equal(new Set(keys).size, 21, "chaves (slugs antigos) devem ser únicas");
+  });
+
+  it("todo slug corrigido difere do original — nenhuma entrada é no-op", () => {
+    for (const [oldSlug, newSlug] of Object.entries(LEGACY_SLUG_CORRECTIONS)) {
+      assert.notEqual(oldSlug, newSlug, `entrada no-op: ${oldSlug}`);
+    }
+  });
+
+  it("nenhum slug corrigido colide com outro — cada valor é único", () => {
+    const values = Object.values(LEGACY_SLUG_CORRECTIONS);
+    assert.equal(new Set(values).size, values.length, "valores (slugs novos) devem ser únicos entre si");
+  });
+
+  it("todo slug corrigido tem shape válido — só [a-z0-9-], sem hífen duplo/pendente (a própria corrupção que está sendo corrigida)", () => {
+    for (const newSlug of Object.values(LEGACY_SLUG_CORRECTIONS)) {
+      assert.match(newSlug, /^[a-z0-9]+(-[a-z0-9]+)*$/, `shape inválido: ${newSlug}`);
+    }
+  });
+
+  it("aplica a correção quando o slug do post está no mapa", () => {
+    const post = makePost({ slug: "openai-lanc-a-sora-2" });
+    const [corrected] = applyLegacySlugCorrections([post]);
+    assert.equal(corrected.slug, "openai-lanca-sora-2");
+  });
+
+  it("não mexe em post cujo slug não está no mapa", () => {
+    const post = makePost({ slug: "edicao-normal-sem-corrupcao" });
+    const [result] = applyLegacySlugCorrections([post]);
+    assert.equal(result.slug, "edicao-normal-sem-corrupcao");
+    assert.strictEqual(result, post, "post não-afetado deve ser a MESMA referência (pure, sem alocação desnecessária)");
+  });
+
+  it("é pura — não muta o array/objeto de entrada", () => {
+    const original = makePost({ slug: "claude-code-afunda-ac-o-es-da-ibm" });
+    const posts = [original];
+    applyLegacySlugCorrections(posts);
+    assert.equal(posts[0].slug, "claude-code-afunda-ac-o-es-da-ibm", "input original não deve mudar");
+    assert.equal(original.slug, "claude-code-afunda-ac-o-es-da-ibm");
+  });
+
+  it("o resto do post (title, content, etc.) passa intacto — só slug muda", () => {
+    const post = makePost({ slug: "openai-lanc-a-sora-2", title: "OpenAI lança Sora 2" });
+    const [corrected] = applyLegacySlugCorrections([post]);
+    assert.equal(corrected.title, "OpenAI lança Sora 2");
+    assert.deepEqual(corrected.content, post.content);
+  });
+
+  it("integração: generateArchivePages escreve a página no slug CORRIGIDO, não no antigo", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "archive-pages-legacy-slug-"));
+    try {
+      const outDir = join(tmp, "p");
+      const sitemapPath = join(tmp, "sitemap.xml");
+      const posts = applyLegacySlugCorrections([
+        makePost({ slug: "openai-lanc-a-sora-2", title: "OpenAI lança Sora 2" }),
+      ]);
+
+      const result = generateArchivePages(posts, outDir, sitemapPath);
+
+      assert.equal(result.written, 1);
+      const dirs = readdirSync(outDir);
+      assert.deepEqual(dirs, ["openai-lanca-sora-2"]);
+
+      const html = readFileSync(join(outDir, "openai-lanca-sora-2", "index.html"), "utf8");
+      assert.match(html, /<link rel="canonical" href="https:\/\/diar\.ia\.br\/p\/openai-lanca-sora-2">/);
+
+      const sitemap = readFileSync(sitemapPath, "utf8");
+      assert.match(sitemap, /\/p\/openai-lanca-sora-2</);
+      assert.doesNotMatch(sitemap, /\/p\/openai-lanc-a-sora-2</);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // Sincronia entre o mapa de correção (o que este código gera) e
+  // `_redirects` (o que o Worker redireciona pra quem bate no link antigo)
+  // — as duas listas divergirem em silêncio deixaria uma URL antiga sem
+  // redirect (link compartilhado quebra) ou um redirect apontando pra um
+  // slug que o gerador não produz mais (redirect morto).
+  it("workers/site/public/_redirects tem 1 linha 301 old→new por entrada do mapa, e nenhuma a mais", () => {
+    const redirectsPath = resolve(ROOT, "workers", "site", "public", "_redirects");
+    const redirects = readFileSync(redirectsPath, "utf8");
+
+    const found: Record<string, string> = {};
+    for (const line of redirects.split("\n")) {
+      const match = line.match(/^\/p\/([a-z0-9-]+)\s+\/p\/([a-z0-9-]+)\s+301\s*$/);
+      if (match) found[match[1]] = match[2];
+    }
+
+    assert.deepEqual(found, LEGACY_SLUG_CORRECTIONS);
+  });
+
+  // Achado do fleet review (#7280): `workers/site/public/sitemap.xml` é
+  // regenerado À MÃO (não via `gen-archive-pages.ts` completo — ver
+  // docstring do módulo), então nada garantia que as 21 entradas antigas
+  // saíram e as 21 novas entraram. De fato faltavam 2 (bug separado em
+  // `addSitemapEntry`, corrigido junto — falso positivo de substring
+  // quando o slug novo é prefixo de outra URL já presente). Este guard
+  // lê o arquivo REAL e trava as duas pontas.
+  it("workers/site/public/sitemap.xml: todo slug NOVO aparece exatamente 1x, nenhum slug ANTIGO sobra", () => {
+    const sitemapPath = resolve(ROOT, "workers", "site", "public", "sitemap.xml");
+    const sitemap = readFileSync(sitemapPath, "utf8");
+
+    for (const [oldSlug, newSlug] of Object.entries(LEGACY_SLUG_CORRECTIONS)) {
+      const newLoc = `<loc>https://diar.ia.br/p/${newSlug}</loc>`;
+      const oldLoc = `<loc>https://diar.ia.br/p/${oldSlug}</loc>`;
+      assert.equal(
+        (sitemap.match(new RegExp(newLoc.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? []).length,
+        1,
+        `slug corrigido ausente/duplicado no sitemap: ${newSlug}`,
+      );
+      assert.ok(!sitemap.includes(oldLoc), `slug antigo não deveria sobrar no sitemap: ${oldSlug}`);
     }
   });
 });

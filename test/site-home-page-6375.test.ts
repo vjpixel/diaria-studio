@@ -447,4 +447,34 @@ describe("#6454 addSitemapEntry — atualiza sitemap sem regenerar o inteiro", (
     assert.equal(entry.loc, "https://diar.ia.br/p/meu-slug");
     assert.equal(entry.lastmod, "2026-08-27");
   });
+
+  // #7280 (achado do fleet review): a checagem de "já presente" era
+  // `existingXml.includes(entry.loc)` — substring, não match exato de
+  // `<loc>`. Quando o slug NOVO é PREFIXO da URL de outra página já no
+  // sitemap (ex: adicionar `.../p/foo` quando já existe
+  // `.../p/foo-bar`), o `.includes` dava falso positivo e a entrada nova
+  // era silenciosamente descartada — sem erro, sem log. Bug real: 2 dos 21
+  // slugs corrigidos do #7280 caíram nesse buraco (`90-das-pessoas-nao-
+  // reconhecem-videos-de-ia`, prefixo de um post não-relacionado com
+  // sufixo hash da Beehiiv; `governo-lanca-modelo-de-linguagem-100-
+  // nacional`, mesma classe — outro post com sufixo hash).
+  it("#7280: slug que é PREFIXO de outra URL já presente não é tratado como duplicata — falso positivo do substring check antigo", () => {
+    const existing = buildSitemapXml([
+      { loc: "https://diar.ia.br/p/foo-bar-outro-post-nao-relacionado", lastmod: "2026-01-01" },
+    ]);
+    const result = addSitemapEntry(existing, { loc: "https://diar.ia.br/p/foo", lastmod: "2026-01-02" });
+    assert.match(result, /<loc>https:\/\/diar\.ia\.br\/p\/foo<\/loc>/, "a URL prefixo deve ser inserida");
+    assert.match(
+      result,
+      /<loc>https:\/\/diar\.ia\.br\/p\/foo-bar-outro-post-nao-relacionado<\/loc>/,
+      "a URL original (mais longa) permanece intacta",
+    );
+    assert.equal((result.match(/<loc>/g) ?? []).length, 2, "as duas URLs devem coexistir, nenhuma descartada");
+  });
+
+  it("#7280: continua idempotente quando a URL é EXATAMENTE igual (não confundir com o caso de prefixo acima)", () => {
+    const existing = buildSitemapXml([{ loc: "https://diar.ia.br/p/foo", lastmod: "2026-01-01" }]);
+    const result = addSitemapEntry(existing, { loc: "https://diar.ia.br/p/foo", lastmod: "2026-01-02" });
+    assert.equal((result.match(/<loc>https:\/\/diar\.ia\.br\/p\/foo<\/loc>/g) ?? []).length, 1);
+  });
 });
