@@ -10,7 +10,11 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { applyExitHistoryPage, extractExitHistoryPayload } from "../scripts/apply-mcp-exit-history.ts";
+import {
+  applyExitHistoryPage,
+  extractExitHistoryPayload,
+  UnrecognizedExitHistoryPayloadError,
+} from "../scripts/apply-mcp-exit-history.ts";
 import type { ExitHistoryManifest } from "../scripts/lib/beehiiv-exit-history.ts";
 
 function setup() {
@@ -51,10 +55,37 @@ describe("extractExitHistoryPayload — tolerância de input", () => {
     assert.equal(rows.length, 1);
   });
 
-  it("input não reconhecido → rows vazio, pagination vazio", () => {
-    const { rows, pagination } = extractExitHistoryPayload("garbage");
+  it("aceita { pagination: {...} } sem subscriptions/data — página genuinamente vazia (pagination reconhecível é o sinal de forma válida)", () => {
+    const { rows, pagination } = extractExitHistoryPayload({
+      pagination: { page: 3, per_page: 100, total: 200, total_pages: 3 },
+    });
     assert.deepEqual(rows, []);
-    assert.deepEqual(pagination, {});
+    assert.deepEqual(pagination, { page: 3, per_page: 100, total: 200, total_pages: 3 });
+  });
+
+  // #7426 fleet review finding 1 (silent-failure-hunter, alta confiança): payload
+  // sem subscriptions[]/data[]/pagination reconhecível é uma falha DURA, não
+  // mais um colapso silencioso pra {rows: [], pagination: {}} — senão um corpo
+  // de erro/rate-limit da MCP encaminhado por engano vira "0 linhas, exit 0",
+  // indistinguível de uma página genuinamente vazia (viola #738/#573).
+  it("input string não reconhecido → falha dura (UnrecognizedExitHistoryPayloadError), nunca tolerante-vazio", () => {
+    assert.throws(() => extractExitHistoryPayload("garbage"), UnrecognizedExitHistoryPayloadError);
+  });
+
+  it("payload de erro típico da MCP ({error: {code, message}}) → falha dura, não sucesso silencioso", () => {
+    assert.throws(
+      () => extractExitHistoryPayload({ error: { code: 429, message: "rate limited" } }),
+      UnrecognizedExitHistoryPayloadError,
+    );
+  });
+
+  it("objeto vazio ({}) → falha dura (não bate nenhuma forma esperada)", () => {
+    assert.throws(() => extractExitHistoryPayload({}), UnrecognizedExitHistoryPayloadError);
+  });
+
+  it("null/undefined → falha dura", () => {
+    assert.throws(() => extractExitHistoryPayload(null), UnrecognizedExitHistoryPayloadError);
+    assert.throws(() => extractExitHistoryPayload(undefined), UnrecognizedExitHistoryPayloadError);
   });
 });
 
@@ -154,5 +185,50 @@ describe("applyExitHistoryPage — write JSONL + manifest", () => {
     assert.equal(existsSync(outDir), false);
     applyExitHistoryPage(JSON.stringify({ subscriptions: [] }), outDir);
     assert.equal(existsSync(outDir), true);
+  });
+
+  it("página aplicada com pagination.page → pagination_outcome = page-recorded", () => {
+    const { outDir } = setup();
+    const result = applyExitHistoryPage(
+      JSON.stringify({
+        pagination: { page: 1, per_page: 100, total: 1, total_pages: 1 },
+        subscriptions: [{ id: "sub_1", status: "inactive", unsubscribed_on: "2026-09-01T00:00:00Z" }],
+      }),
+      outDir,
+    );
+    assert.equal(result.pagination_outcome, "page-recorded");
+  });
+
+  it("payload sem pagination.page → pagination_outcome = missing-pagination-quirk (#7197)", () => {
+    const { outDir } = setup();
+    const result = applyExitHistoryPage(
+      JSON.stringify({ subscriptions: [{ id: "sub_1", status: "inactive", unsubscribed_on: "2026-09-01T00:00:00Z" }] }),
+      outDir,
+    );
+    assert.equal(result.pagination_outcome, "missing-pagination-quirk");
+  });
+
+  // #7426 fleet review finding 1: reproduz o cenário concreto do achado —
+  // `echo '{"error":{"code":429,"message":"rate limited"}}' | apply-mcp-exit-history.ts`
+  // hoje deve lançar (exit 1 via main()), NUNCA aplicar 0 registros com exit 0.
+  it("payload de erro (rate-limit 429) → applyExitHistoryPage lança, nunca aplica silenciosamente 0 registros", () => {
+    const { outDir } = setup();
+    assert.throws(
+      () => applyExitHistoryPage(JSON.stringify({ error: { code: 429, message: "rate limited" } }), outDir),
+      UnrecognizedExitHistoryPayloadError,
+    );
+    // nada foi escrito em disco — a falha é anterior a qualquer write.
+    assert.equal(existsSync(resolve(outDir, "subscribers.jsonl")), false);
+  });
+
+  it("página legitimamente vazia ({subscriptions: [], pagination: {...}}) continua funcionando normalmente", () => {
+    const { outDir } = setup();
+    const result = applyExitHistoryPage(
+      JSON.stringify({ subscriptions: [], pagination: { page: 1, per_page: 100, total: 0, total_pages: 1 } }),
+      outDir,
+    );
+    assert.equal(result.after_count, 0);
+    assert.equal(result.complete, true);
+    assert.equal(result.pagination_outcome, "page-recorded");
   });
 });

@@ -56,8 +56,43 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_OUT_DIR = resolve(ROOT, "data/beehiiv-backup/exit-history");
 
+/**
+ * #7426 fleet review finding 1 (silent-failure-hunter, alta confiança):
+ * antes desta classe, QUALQUER objeto sem `subscriptions`/`data` como array
+ * colapsava silenciosamente pra `{rows: [], pagination: {}}` — incluindo um
+ * corpo de erro da MCP (rate-limit 429, etc) encaminhado por engano pelo
+ * agent via stdin. Isso mergiava 0 registros e saía com exit 0,
+ * indistinguível de uma página genuinamente vazia — viola #738 (MCP
+ * indisponível é fail-fast, nunca stall/esconder) e #573 (validar
+ * deterministicamente, nunca confiar na narração do agente).
+ */
+export class UnrecognizedExitHistoryPayloadError extends Error {
+  constructor(raw: unknown) {
+    super(
+      `payload não reconhecível como página de list_subscriptions — sem "subscriptions"/"data" como array nem "pagination" reconhecível ` +
+        `(pode ser um corpo de erro da MCP, ex: rate-limit, encaminhado por engano). Shape recebido: ${previewPayloadShape(raw)}`,
+    );
+    this.name = "UnrecognizedExitHistoryPayloadError";
+  }
+}
+
+/** Preview truncado (sem vazar dado sensível em excesso) do payload pro stderr. */
+function previewPayloadShape(raw: unknown): string {
+  try {
+    const json = JSON.stringify(raw);
+    if (json === undefined) return String(raw);
+    return json.length > 500 ? `${json.slice(0, 500)}…` : json;
+  } catch {
+    return String(raw);
+  }
+}
+
 /** Extrai `{subscriptions[], pagination}` de qualquer shape de input
- *  suportado. Tolerante: campos ausentes viram `[]`/`{}`. */
+ *  suportado (`{subscriptions: [...]}`, `{data: [...]}`, array nu, ou
+ *  `{pagination: {...}}` sem linhas — página genuinamente vazia). Payloads
+ *  que não batem NENHUMA dessas formas (ex: corpo de erro da MCP) lançam
+ *  `UnrecognizedExitHistoryPayloadError` — falha DURA, nunca "0 linhas,
+ *  exit 0" silencioso (#7426 finding 1). */
 export function extractExitHistoryPayload(raw: unknown): {
   rows: BeehiivExitHistoryRawRecord[];
   pagination: Partial<ExitHistoryPageMeta>;
@@ -65,12 +100,18 @@ export function extractExitHistoryPayload(raw: unknown): {
   if (Array.isArray(raw)) return { rows: raw as BeehiivExitHistoryRawRecord[], pagination: {} };
   if (raw && typeof raw === "object") {
     const obj = raw as Record<string, unknown>;
-    const rows = Array.isArray(obj.subscriptions)
+    const hasSubscriptions = Array.isArray(obj.subscriptions);
+    const hasData = Array.isArray(obj.data);
+    const hasPaginationObj = obj.pagination !== undefined && obj.pagination !== null && typeof obj.pagination === "object";
+    if (!hasSubscriptions && !hasData && !hasPaginationObj) {
+      throw new UnrecognizedExitHistoryPayloadError(raw);
+    }
+    const rows = hasSubscriptions
       ? (obj.subscriptions as BeehiivExitHistoryRawRecord[])
-      : Array.isArray(obj.data)
+      : hasData
         ? (obj.data as BeehiivExitHistoryRawRecord[])
         : [];
-    const paginationRaw = obj.pagination && typeof obj.pagination === "object" ? (obj.pagination as Record<string, unknown>) : {};
+    const paginationRaw = hasPaginationObj ? (obj.pagination as Record<string, unknown>) : {};
     const pagination: Partial<ExitHistoryPageMeta> = {
       page: typeof paginationRaw.page === "number" ? paginationRaw.page : undefined,
       per_page: typeof paginationRaw.per_page === "number" ? paginationRaw.per_page : undefined,
@@ -79,7 +120,7 @@ export function extractExitHistoryPayload(raw: unknown): {
     };
     return { rows, pagination };
   }
-  return { rows: [], pagination: {} };
+  throw new UnrecognizedExitHistoryPayloadError(raw);
 }
 
 function readExistingRecords(path: string): BeehiivExitHistoryRecord[] {
@@ -119,6 +160,21 @@ function saveManifestAtomic(path: string, manifest: ExitHistoryManifest): void {
   renameSync(tmp, path);
 }
 
+/**
+ * #7426 fleet review finding 2 (silent-failure-hunter, média confiança): o
+ * warning genérico de "checkpoint não avançou" conflacionava dois casos
+ * diferentes — a MCP genuinamente omitiu `pagination` numa página válida
+ * (quirk documentado, #7197) vs. o payload não tinha nada a ver com uma
+ * página (hoje bloqueado ANTES de chegar aqui pelo finding 1, mas o campo
+ * fica estruturado pra quem debugar depois não precisar reler prosa).
+ * `"page-recorded"` é o caminho feliz — `pagination.page` presente, o
+ * manifest avançou. `"missing-pagination-quirk"` é o único jeito de chegar
+ * aqui sem avançar o checkpoint (payload passou pela validação de shape do
+ * finding 1, então TEM subscriptions[]/data[]/pagination reconhecível —
+ * só faltou `pagination.page` especificamente).
+ */
+export type ExitHistoryPaginationOutcome = "page-recorded" | "missing-pagination-quirk";
+
 export interface ApplyExitHistoryResult {
   before_count: number;
   after_count: number;
@@ -129,6 +185,7 @@ export interface ApplyExitHistoryResult {
   total: number | null;
   complete: boolean;
   next_page: number;
+  pagination_outcome: ExitHistoryPaginationOutcome;
 }
 
 export function applyExitHistoryPage(stdinJson: string, outDir: string = DEFAULT_OUT_DIR): ApplyExitHistoryResult {
@@ -147,14 +204,21 @@ export function applyExitHistoryPage(stdinJson: string, outDir: string = DEFAULT
   writeJsonlAtomic(jsonlPath, merged);
 
   let manifest = loadManifest(manifestPath, now);
+  let paginationOutcome: ExitHistoryPaginationOutcome;
   if (typeof pagination.page === "number") {
     manifest = applyExitHistoryPageToManifest(manifest, { page: pagination.page, ...pagination }, now);
+    paginationOutcome = "page-recorded";
   } else {
     // Sem `pagination.page` no payload — não dá pra avançar o checkpoint
     // com segurança (não sabemos QUAL página isto era). O JSONL já foi
     // mesclado (dado nunca é perdido), só o manifest fica como estava.
+    // Chega até aqui SÓ quando o payload já passou pela validação de shape
+    // (finding 1) — ou seja, é o quirk documentado #7197 (MCP omite
+    // `pagination` numa página real), não um payload de erro disfarçado.
+    paginationOutcome = "missing-pagination-quirk";
     console.error(
-      "⚠️  payload sem pagination.page — dado aplicado ao JSONL, mas o checkpoint de paginação não avançou.",
+      "⚠️  pagination_outcome=missing-pagination-quirk — payload sem pagination.page (quirk #7197), " +
+        "dado aplicado ao JSONL, mas o checkpoint de paginação não avançou.",
     );
   }
   saveManifestAtomic(manifestPath, manifest);
@@ -169,6 +233,7 @@ export function applyExitHistoryPage(stdinJson: string, outDir: string = DEFAULT
     total: manifest.total,
     complete: manifest.complete,
     next_page: nextExitHistoryPage(manifest),
+    pagination_outcome: paginationOutcome,
   };
 }
 
@@ -199,14 +264,15 @@ async function main(): Promise<void> {
     const result = applyExitHistoryPage(stdinJson, outDir);
     console.log(JSON.stringify(result));
   } catch (e) {
-    console.error(e instanceof Error ? e.message : String(e));
+    // #7426 finding 5: stack trace (não só a mensagem) — barato, ajuda debug futuro.
+    console.error(e instanceof Error ? (e.stack ?? e.message) : String(e));
     process.exit(1);
   }
 }
 
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {
-    console.error(e instanceof Error ? e.message : String(e));
+    console.error(e instanceof Error ? (e.stack ?? e.message) : String(e));
     process.exit(1);
   });
 }
