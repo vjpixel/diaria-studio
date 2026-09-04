@@ -1,10 +1,11 @@
 # Alarme de defasagem de versão do Claude Code (disco × npm upstream)
 
-Issue: [#6960](https://github.com/vjpixel/diaria-studio/issues/6960) — item 2 do comentário do editor na [#6927](https://github.com/vjpixel/diaria-studio/issues/6927) (decisão do editor em 03/09 via `/diaria-desbloqueia`: **N = 7 dias**).
+Issue: [#6960](https://github.com/vjpixel/diaria-studio/issues/6960) — item 2 do comentário do editor na [#6927](https://github.com/vjpixel/diaria-studio/issues/6927) (decisão do editor em 03/09 via `/diaria-desbloqueia`, confirmada no próprio comentário: **N = 7 dias**).
 
 ## O que ele faz — e o que ele NÃO faz
 
-**Isto é um alarme SEM POLÍTICA (mesma decisão do #6927 pro alarme irmão).** Ele
+**Isto é um alarme SEM POLÍTICA (opção 3 do #6927, decisão do editor — mesmo
+registers que o alarme irmão).** Ele
 não atualiza o binário, não reinicia sessão nenhuma, e não escolhe entre as opções
 de fundo que o #6927 deixou em aberto. O único objetivo é **nomear o estado exato**
 que sobrou quando o auto-updater foi desligado: "desligamos o updater" virando
@@ -73,7 +74,9 @@ Só e-mail via Gmail.
 
 ## Log
 
-`data/npm-version-drift-alarm/.alarm.log` (append-only).
+`data/npm-version-drift-alarm/.alarm.log` (append-only) — **só existe quando o
+script roda via `run-task.ts`** (o caminho de task agendada). Rodar o script
+direto no terminal (abaixo) escreve só no stdout, nunca no `.alarm.log`.
 
 ## Uso manual
 
