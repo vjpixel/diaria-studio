@@ -600,7 +600,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
             if (r.status === 200 && r.body && r.body.ok) {
               // #7358: evento de conversão pro GTM — só no sucesso REAL do
               // cadastro, com o e-mail já validado acima.
-              window.dataLayer = window.dataLayer || []; window.dataLayer.push({ event: "signedUp", eventProps: { email: email } });
+              try { window.dataLayer = window.dataLayer || []; window.dataLayer.push({ event: "signedUp", eventProps: { email: email } }); } catch (e) {}
               form.reset();
               setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
               // #6979 achado 4: mesmo tratamento de sucesso de /assinar —

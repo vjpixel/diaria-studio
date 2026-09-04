@@ -196,7 +196,7 @@ button[type="submit"]:disabled { opacity: 0.6; cursor: default; }
         if (r.status === 200 && r.body && r.body.ok) {
           // #7358: evento de conversão pro GTM — só no sucesso REAL do
           // cadastro, com o e-mail já validado acima.
-          window.dataLayer = window.dataLayer || []; window.dataLayer.push({ event: "signedUp", eventProps: { email: email } });
+          try { window.dataLayer = window.dataLayer || []; window.dataLayer.push({ event: "signedUp", eventProps: { email: email } }); } catch (e) {}
           form.reset();
           setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
           var fields = form.querySelectorAll("input, button");
