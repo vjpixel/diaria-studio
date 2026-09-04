@@ -18,7 +18,22 @@
  * deliberada (comentário da #7415: só na reincidência, com o precedente das
  * heurísticas pré-short-circuit).
  *
- * Fixtures vêm do CORPUS REAL (runtime-fixes.jsonl da edição 260904).
+ * Fixtures são os títulos reais da edição 260904 (NVIDIA-Hugging Face,
+ * openai.com/jalapeno) — o `runtime-fixes.jsonl` de 260904 não é
+ * git-tracked (data/ é gitignored), então os títulos são inline aqui.
+ *
+ * Decisão sobre `adquir\w*` (review #7439 F4): o reviewer tem razão que o
+ * `\w*` expande a cobertura de PT ~5× (adquiremos/adquiriam/etc.). Não é
+ * falso-positivo real porque `isBusinessDeal()` só roda DENTRO do bloco
+ * `LANCAMENTO_DOMAINS.has(host)` em categorizeWithRule() — títulos em
+ * domínio não-oficial (ex: "Como adquirir bons hábitos") caem em
+ * `noticias-default` sem nunca tocar DEAL_PATTERNS. Probe em
+ * ./probe-7415.ts confirmou: 13 títulos não-oficiais → todos
+ * `noticias-default`; em domínios oficiais, os 2 deal reais caem em
+ * `lancamento-business-deal` e os lançamentos genuínos seguem
+ * `lancamento-default` (não demovidos). Teste anti-falso-positivo acima
+ * trava isso. Se um dia isBusinessDeal subir para antes do gate de
+ * domínio oficial, reavaliar — mas não é o caso agora.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
