@@ -88,15 +88,26 @@ describe("CLI check-continuo-workdir.ts --check-runtime-sensitive", () => {
     return spawnSync(process.execPath, ["--import", "tsx", script, ...args], { cwd: repoRoot, encoding: "utf8" });
   }
 
-  it("--check-runtime-sensitive --path ~/.hermes/config.yaml -> exit 1", () => {
-    const r = runCli(["--check-runtime-sensitive", "--path", "~/.hermes/config.yaml"]);
+  it("--check-runtime-sensitive --path ~/.hermes/config.yaml --intent write -> exit 1", () => {
+    const r = runCli(["--check-runtime-sensitive", "--path", "~/.hermes/config.yaml", "--intent", "write"]);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /runtime-sensitive/);
     assert.match(r.stderr, /write-hermes-config\.ts/);
   });
 
-  it("--check-runtime-sensitive --path ~/hermes-agent/foo.py -> exit 0 (não é config de runtime)", () => {
-    const r = runCli(["--check-runtime-sensitive", "--path", "~/hermes-agent/foo.py"]);
+  it("--check-runtime-sensitive sem --intent (default write) --path ~/.hermes/config.yaml -> exit 1", () => {
+    const r = runCli(["--check-runtime-sensitive", "--path", "~/.hermes/config.yaml"]);
+    assert.equal(r.status, 1, "omitir --intent deve cair no lado seguro (write), não liberar por padrão");
+  });
+
+  it("--check-runtime-sensitive --path ~/.hermes/config.yaml --intent read -> exit 0 (sensibilidade só gate escrita)", () => {
+    const r = runCli(["--check-runtime-sensitive", "--path", "~/.hermes/config.yaml", "--intent", "read"]);
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /intent=read/);
+  });
+
+  it("--check-runtime-sensitive --path ~/hermes-agent/foo.py --intent write -> exit 0 (não é config de runtime)", () => {
+    const r = runCli(["--check-runtime-sensitive", "--path", "~/hermes-agent/foo.py", "--intent", "write"]);
     assert.equal(r.status, 0);
     assert.match(r.stdout, /não é runtime-sensitive/);
   });

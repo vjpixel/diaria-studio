@@ -54,7 +54,8 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
   ~/hermes-agent/config/hermes-home/{arquivo}]`.** Nunca `Edit`/`Write`
   direto em `~/.hermes/config.yaml`, `cron/jobs.json` ou `profiles/*` —
   antes de escrever, confirmar com `npx tsx scripts/check-continuo-workdir.ts
-  --check-runtime-sensitive --path {caminho}` (exit 1 = exige o verbo). O
+  --check-runtime-sensitive --path {caminho} --intent write` (exit 1 =
+  exige o verbo; `--intent read` sempre libera). O
   verbo faz backup automático, roda validação/smoke opcionais com revert
   automático em falha, e ecoa um snapshot REDIGIDO pro fork quando
   `--echo-to` é passado. Detalhes: `scripts/lib/hermes-config-writer.ts`.

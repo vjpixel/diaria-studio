@@ -31,9 +31,11 @@
  *     --active hermes/skills/hermes-diaria-continuo/SKILL.md,~/.hermes/scripts/claude-openrouter.sh
  *
  * Um 3º modo (#6817 item 5) responde "este path exige o verbo `write-
- * hermes-config.ts` em vez de escrita direta?":
+ * hermes-config.ts` em vez de escrita direta?" — só gate pra ESCRITA;
+ * `--intent read` sempre libera (ler `~/.hermes/config.yaml` é legítimo e
+ * não passa pelo verbo, que só existe pra escrever):
  *
- *   npx tsx scripts/check-continuo-workdir.ts --check-runtime-sensitive --path X
+ *   npx tsx scripts/check-continuo-workdir.ts --check-runtime-sensitive --path X --intent write
  *
  * Exit codes:
  *   --path/--intent (modo padrão):
@@ -44,10 +46,12 @@
  *     0 = NÃO é auto-modificação — seguro aplicar neste tick
  *     1 = É auto-modificação — não aplicar agora, abrir PR pro próximo tick
  *   --check-runtime-sensitive:
- *     0 = path NÃO é runtime-sensível — Edit/Write direto OK (sujeito ainda
- *         ao gate padrão de allowlist acima)
- *     1 = path É runtime-sensível — usar `scripts/write-hermes-config.ts`,
- *         nunca Edit/Write direto (#6817 item 5)
+ *     0 = `--intent read` (sensibilidade não se aplica a leitura), OU
+ *         `--intent write` sobre path NÃO runtime-sensível — Edit/Write
+ *         direto OK (sujeito ainda ao gate padrão de allowlist acima)
+ *     1 = `--intent write` (default se omitido) sobre path runtime-sensível
+ *         — usar `scripts/write-hermes-config.ts`, nunca Edit/Write direto
+ *         (#6817 item 5)
  *   Uso inválido (qualquer modo): 2
  *
  * A resposta (motivo) sempre vai pro stdout/stderr — exit code sozinho não
@@ -111,6 +115,15 @@ if (isMainModule(import.meta.url)) {
   }
 
   if (hasFlag(argv, "check-runtime-sensitive")) {
+    // `--intent` default = "write": a maioria das chamadas deste modo é
+    // "posso ESCREVER aqui direto?" e um caller que esquecer de passar
+    // `--intent` deve cair no lado mais seguro (checa), não no lado que
+    // libera tudo silenciosamente.
+    const sensitiveIntent = values.intent === "read" ? "read" : "write";
+    if (sensitiveIntent === "read") {
+      console.log(`${LOG_PREFIX} intent=read — sensibilidade de runtime não se aplica (só gate pra escrita); leitura OK (ainda sujeita ao gate de allowlist padrão).`);
+      process.exit(0);
+    }
     const sensitive = isHermesRuntimeSensitivePath(resolvedPath, homedir());
     if (sensitive) {
       console.error(`${LOG_PREFIX} runtime-sensitive — ${resolvedPath} exige o verbo scripts/write-hermes-config.ts (backup+validate+revert), nunca Edit/Write direto (#6817 item 5).`);
