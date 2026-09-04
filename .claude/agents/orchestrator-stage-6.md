@@ -353,7 +353,35 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
 
 **Guard refresh-dedup apos schedule confirmado** — mesmo passo do §6d: rodar `/diaria-refresh-dedup`.
 
-Ao concluir §6d-kit com sucesso, seguir para §6d-brevo (se aplicável) e §6e normalmente — o resto do Stage 6 (auto-reporter, sentinel, invariants) não depende de qual backend de newsletter rodou.
+#### §6d-kit-social-retry — retry automático de Threads/X (#7405)
+
+**Só quando §6d-kit terminou com exit `0`.** Backend Kit: `public_url` só ganha
+slug após o broadcast sair de `"draft"` (`public:true` sozinho na Etapa 5 não
+basta) — Threads/X (únicos 2 canais com link INLINE no texto) sempre falharam
+na Etapa 5. Agora o slug deve existir.
+
+```bash
+npx tsx scripts/kit-refresh-social-edition-url.ts --edition-dir {EDITION_DIR}/
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se ok:true, error se ok:false} --message "kit-refresh-social-edition-url stage6: {resolved/reason}" --details '{json}'
+```
+
+`resolved:false` (`backend_not_kit`/`no_slug_yet`/`already_resolved`) → nada a
+fazer, seguir (sem retry adicional — evita loop). `ok:false` (code 3/4) →
+logar erro, não bloqueia. **Só `resolved:true`** (arquivos regravados) →
+re-dispatchar os 2 canais:
+
+1. **Threads** (idempotente, `--skip-existing` default só pula
+   `draft`/`scheduled`/`published`): `npx tsx scripts/publish-threads.ts
+   --edition-dir {EDITION_DIR}/ --schedule`
+2. **Twitter/X via Buffer MCP** — mesmo mecanismo do §5c-3b em
+   `orchestrator-stage-5.md` (só a sessão do agente alcança): rodar
+   `prep-twitter-posts.ts` de novo e, pra cada `posts` ainda sem entrada
+   `scheduled`/`published`/`draft` pra `platform:"twitter"` + `destaque`,
+   chamar `create_post` como em §5c-3b passo 2 **e gravar via
+   `append-twitter-published.ts` (passo 3) logo em seguida** — sem isso o
+   dedup não tem o que ler numa 2ª invocação, risco de duplicar post no X.
+
+Fail-soft nos 2 — nunca bloqueia o resto do Stage 6. Seguir pra §6d-brevo/§6e.
 
 ### 6d-brevo. Agendar campanha Brevo diária (#5772)
 
