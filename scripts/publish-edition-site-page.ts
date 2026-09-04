@@ -132,12 +132,22 @@
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir ... --slug ... --skip-publish
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir ... --slug ... --sitemap workers/site/public/sitemap.xml
  *
- * #6454: `--sitemap` atualiza o `sitemap.xml` alongside da página (mesmo
- * commit+push). O sitemap é lido e reescrito no mesmo diretório público
- * (`workers/site/public/sitemap.xml`), então o mesmo deploy que publica a
- * página também serve a entrada nova. Sem isso, o sitemap continua com a
- * lista de edições do `gen-archive-pages.ts` (que lê do cache Beehiiv, e
- * edições publicadas pelo Kit nunca entram nele — ver #6454).
+ * #6454 (achado 04/09/2026: a flag existia desde a 1ª versão, mas só
+ * STAGEAVA o arquivo pro commit — nada escrevia conteúdo nele, então o
+ * sitemap nunca mudava de verdade e a home ficava congelada mesmo com
+ * `--sitemap` passado): `--sitemap <path>` agora ATUALIZA `sitemap.xml` com
+ * a entrada desta edição (`sitemapEntryFromPost`/`addSitemapEntry`,
+ * idempotente — não duplica) e REGENERA `index.html` (a home) a partir do
+ * feed resultante (`buildHomeFeed`/`buildIndexHtml`, mesmo miolo puro que
+ * `gen-home-page.ts` usa) — ambos escritos localmente ANTES do
+ * commit+push, no mesmo diretório público
+ * (`workers/site/public/{sitemap.xml,index.html}`), então o mesmo deploy
+ * que publica a página também serve o feed atualizado da home. A home
+ * passa a se manter sozinha a cada edição publicada por este script — sem
+ * depender de alguém rodar `gen-archive-pages.ts`/`gen-home-page.ts` à
+ * mão, ou do cache Beehiiv (que edições publicadas pelo Kit nunca
+ * alimentam — ver #6454 original). Falha nesta etapa é fail-soft: a
+ * publicação da página em si nunca é bloqueada por um problema aqui.
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
@@ -145,8 +155,16 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { buildArchivePageHtml, UnresolvedMergeTagError } from "./lib/site-archive-pages.ts";
+import {
+  buildArchivePageHtml,
+  UnresolvedMergeTagError,
+  sitemapEntryFromPost,
+  addSitemapEntry,
+  buildSitemapXml,
+  type ArchivePost,
+} from "./lib/site-archive-pages.ts";
 import { buildEditionArchivePost, type EditionPageInputs } from "./lib/edition-site-page.ts";
+import { buildHomeFeed, buildIndexHtml, ARCHIVE_CARD_LIMIT } from "./lib/site-home-page.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SITE_PAGES_DIR = resolve(ROOT, "workers", "site", "public", "p");
@@ -196,6 +214,15 @@ export interface PublishResult {
 export interface PublishPageDeps {
   readEditionInputs(editionDir: string, slugOverride?: string): EditionPageInputs | null;
   writePage(slug: string, html: string): void;
+  /**
+   * #6454: atualiza `sitemap.xml` (idempotente — só adiciona a entrada se
+   * ainda não estiver lá) e regenera `index.html` a partir do feed
+   * resultante, ambos alongside da página (mesmo diretório público que o
+   * commit/push de `publish()` abaixo empurra). Só chamado quando
+   * `--sitemap` é passado — opcional pra não quebrar deps de teste que não
+   * exercitam esse caminho.
+   */
+  updateSitemapAndHome?(post: ArchivePost, sitemapRelPath: string): { sitemapChanged: boolean };
   /** Commit + push. Nunca é `wrangler deploy` — ver docstring do módulo. */
   publish(slug: string, sitemapRelPath?: string): PublishResult;
   log(line: string): void;
@@ -349,6 +376,19 @@ const defaultGhRunner: GhRunner = (args, cwd) =>
 /** Nome da branch dedicada de publicação de página, sempre determinístico a partir do slug. */
 function sitePublishBranch(slug: string): string {
   return `site-publish/${slug}`;
+}
+
+/**
+ * #6454: `index.html` da home mora sempre no MESMO diretório de
+ * `sitemap.xml` (ambos em `workers/site/public/`) — deriva o path relativo
+ * um do outro em vez de aceitar um 2º parâmetro de CLI/flag redundante.
+ * Puro, forward-slash sempre (mesma convenção do resto do módulo — ver
+ * comentário de `pathsToStage` em `commitAndPushSitePage`).
+ */
+export function homePageRelPathFromSitemap(sitemapRelPath: string): string {
+  const lastSlash = sitemapRelPath.lastIndexOf("/");
+  const dir = lastSlash === -1 ? "" : sitemapRelPath.slice(0, lastSlash + 1);
+  return `${dir}index.html`;
 }
 
 /**
@@ -661,7 +701,19 @@ export function commitAndPushSitePage(
   // devolvem paths (necessário pra comparação exata abaixo).
   const relPageDir = ["workers", "site", "public", "p", slug].join("/");
   const pathsToStage = [relPageDir];
-  if (sitemapRelPath) pathsToStage.push(sitemapRelPath);
+  // #6454: sitemap.xml E index.html (a home regenerada a partir dele) são
+  // escritos juntos por `updateSitemapAndHome` ANTES desta função rodar —
+  // aqui só precisam entrar no mesmo commit/push da página. Rastreados à
+  // parte (`optionalPaths`) porque, ao contrário de `relPageDir`, podem não
+  // existir em disco se `updateSitemapAndHome` tiver falhado antes de
+  // escrevê-los (ver guard de `existsSync` no loop de `git add` abaixo).
+  const optionalPaths = new Set<string>();
+  if (sitemapRelPath) {
+    const homeRelPath = homePageRelPathFromSitemap(sitemapRelPath);
+    pathsToStage.push(sitemapRelPath, homeRelPath);
+    optionalPaths.add(sitemapRelPath);
+    optionalPaths.add(homeRelPath);
+  }
 
   let committed = false;
   let pushed = false;
@@ -680,6 +732,16 @@ export function commitAndPushSitePage(
     git(["checkout", "-B", branchName], rootDir);
 
     for (const p of pathsToStage) {
+      // #6454 self-review: sitemap.xml/index.html (`optionalPaths`) podem
+      // não existir em disco se `updateSitemapAndHome` tiver falhado antes
+      // de escrevê-los (fail-soft, ver caller) — sem este guard, `git add`
+      // de um pathspec inexistente lança e a página em si, já escrita com
+      // sucesso, é reportada como falha de publicação. `relPageDir` nunca
+      // passa por este guard — é sempre staged incondicionalmente, como
+      // antes (é a própria página, `writePage` já rodou por definição).
+      if (optionalPaths.has(p) && !existsSync(resolve(rootDir, p))) {
+        continue;
+      }
       git(["add", "--", p], rootDir);
     }
 
@@ -812,6 +874,52 @@ export function productionDeps(
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "index.html"), html, "utf8");
     },
+    updateSitemapAndHome: (post, sitemapRelPath) => {
+      const sitemapAbsPath = resolve(rootDir, sitemapRelPath);
+      const homeAbsPath = resolve(rootDir, homePageRelPathFromSitemap(sitemapRelPath));
+      const pagesDir = resolve(rootDir, "workers", "site", "public", "p");
+
+      let existingXml: string;
+      try {
+        existingXml = readFileSync(sitemapAbsPath, "utf8");
+      } catch (e) {
+        // Sitemap ainda não existe (1ª edição publicada por este caminho,
+        // ou diretório recém-criado) — nasce vazio, mesmo formato que
+        // `buildSitemapXml` já produz pro gerador em lote. Mas ENOENT é o
+        // ÚNICO erro que essa leitura tolera silenciosamente — qualquer
+        // outro (permissão negada, etc.) é um erro genuíno de leitura, não
+        // "sitemap ausente", e recriar vazio nesse caso apagaria entradas
+        // que na verdade existem em disco (#6454 self-review).
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+          process.stderr.write(
+            `[site-page] aviso: leitura de ${sitemapAbsPath} falhou com erro diferente de ENOENT ` +
+              `(${(e as Error).message}) — seguindo com sitemap vazio mesmo assim.\n`,
+          );
+        }
+        existingXml = buildSitemapXml([]);
+      }
+      const newXml = addSitemapEntry(existingXml, sitemapEntryFromPost(post));
+      const sitemapChanged = newXml !== existingXml;
+      if (sitemapChanged) {
+        mkdirSync(dirname(sitemapAbsPath), { recursive: true });
+        writeFileSync(sitemapAbsPath, newXml, "utf8");
+      }
+
+      // Regenera a home sempre que este passo roda — idempotente e barato
+      // (lê arquivos já em disco), e cobre o caso em que a entrada já
+      // estava no sitemap mas `index.html` ficou pra trás por uma falha
+      // anterior no meio do commit/push.
+      const readPageHtml = (s: string): string | null => {
+        const p = join(pagesDir, s, "index.html");
+        return existsSync(p) ? readFileSync(p, "utf8") : null;
+      };
+      const feed = buildHomeFeed(newXml, readPageHtml, ARCHIVE_CARD_LIMIT + 1);
+      const homeHtml = buildIndexHtml({ feature: feed[0] ?? null, archive: feed.slice(1) });
+      mkdirSync(dirname(homeAbsPath), { recursive: true });
+      writeFileSync(homeAbsPath, homeHtml, "utf8");
+
+      return { sitemapChanged };
+    },
     publish: (slug, sitemapPath?: string) => {
       const { pushed, prUrl, prNumber, prCreated } = commitAndPushSitePage(
         rootDir,
@@ -889,15 +997,34 @@ export function publishEditionSitePage(
   }
   deps.log(`página escrita: /p/${built.post.slug} (${html.length} bytes)`);
 
+  // #6454: sitemapRelPath é o caminho relativo do sitemap.xml a ser
+  // atualizado alongside da página. O caller (main) passa --sitemap; em
+  // testes é undefined. Roda ANTES do check de --skip-publish — escrever
+  // localmente (sitemap + home) é parte de "escrita", não de "publicar"
+  // (commit/push), mesma distinção que `writePage` já faz acima.
+  const sitemapRelPath = opts.sitemap;
+  if (sitemapRelPath && deps.updateSitemapAndHome) {
+    try {
+      const { sitemapChanged } = deps.updateSitemapAndHome(built.post, sitemapRelPath);
+      deps.log(
+        sitemapChanged
+          ? `sitemap.xml atualizado com /p/${built.post.slug} (${sitemapRelPath}); home regenerada (${homePageRelPathFromSitemap(sitemapRelPath)})`
+          : `sitemap.xml já continha /p/${built.post.slug} — home regenerada mesmo assim (idempotente)`,
+      );
+    } catch (e) {
+      // Fail-soft, mesma disciplina do módulo inteiro: a página em si já
+      // foi escrita e segue sendo publicada normalmente — o feed da home
+      // ficar desatualizado nesta rodada não pode derrubar a edição.
+      deps.log(
+        `aviso: atualização de sitemap.xml/home falhou (${(e as Error).message}) — página do acervo segue publicada normalmente.`,
+      );
+    }
+  }
+
   if (opts.skipPublish) {
     deps.log("publicação pulada (--skip-publish) — a página só existe localmente.");
     return { code: 0, slug: built.post.slug, bytes: html.length, published: false };
   }
-
-  // #6454: sitemapRelPath é o caminho relativo do sitemap.xml a ser
-  // atualizado alongside da página. O caller (main) passa --sitemap;
-  // em testes é undefined.
-  const sitemapRelPath = opts.sitemap;
 
   let publishResult: PublishResult;
   try {

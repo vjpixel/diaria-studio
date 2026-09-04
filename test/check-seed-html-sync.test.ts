@@ -49,6 +49,18 @@ describe("findDriftedPairs (#3105)", () => {
     assert.equal(drifted[0]?.name, "livros");
   });
 
+  it("#6454: sitemap.xml do site mudou SEM index.html (home) — drift detectado", () => {
+    const changed = ["workers/site/public/sitemap.xml"];
+    const drifted = findDriftedPairs(changed);
+    assert.equal(drifted.length, 1);
+    assert.equal(drifted[0]?.name, "home-do-site");
+  });
+
+  it("#6454: sitemap.xml e index.html mudaram juntos — sem drift", () => {
+    const changed = ["workers/site/public/sitemap.xml", "workers/site/public/index.html"];
+    assert.deepEqual(findDriftedPairs(changed), []);
+  });
+
   it("nenhum seed mudou — sem drift mesmo se o HTML mudar sozinho", () => {
     const changed = ["workers/cursos/public/index.html", "scripts/build-cursos-page.ts"];
     assert.deepEqual(findDriftedPairs(changed), []);

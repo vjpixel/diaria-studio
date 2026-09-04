@@ -326,7 +326,10 @@ describe("orchestrator-prompt (#634)", () => {
       // de branch+PR do #6598) migrou pra `docs/site-page-publish-mechanism.md`,
       // mas o resto (o QUE mudou e por quê, necessário pra quem executa o
       // passo) fica no prompt. Teto 725→735.
-      "orchestrator-stage-6.md": 735,
+      // #6454 (04/09, mesma edição): +5 linhas líquidas — §6d-site ganhou
+      // `--sitemap` como flag obrigatória (não só `--slug`), com o motivo
+      // em 1 parágrafo curto. Teto 735→745 com headroom mínimo.
+      "orchestrator-stage-6.md": 745,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       const budget = PER_FILE_LINE_BUDGET[file];

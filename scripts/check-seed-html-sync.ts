@@ -61,6 +61,20 @@ export const SEED_HTML_PAIRS: SeedHtmlPair[] = [
     htmlPath: "workers/cursos/public/index.html",
     buildCommand: "npx tsx scripts/build-cursos-page.ts --out workers/cursos/public/index.html",
   },
+  // #6454: `workers/site/public/index.html` (a home) é derivado de
+  // `sitemap.xml` (`gen-home-page.ts`/`publish-edition-site-page.ts
+  // --sitemap` já regeneram os dois juntos no caminho automático — este
+  // par pega o caminho MANUAL: alguém rodando `gen-archive-pages.ts` (que
+  // reescreve o sitemap inteiro) sem rodar `gen-home-page.ts` na sequência,
+  // exatamente o esquecimento que deixou a home congelada ~10 dias antes
+  // do fix). `seedPrefix` aqui é o PRÓPRIO sitemap, não um diretório — o
+  // matcher (`startsWith`) casa com igualdade exata do mesmo jeito.
+  {
+    name: "home-do-site",
+    seedPrefix: "workers/site/public/sitemap.xml",
+    htmlPath: "workers/site/public/index.html",
+    buildCommand: "npx tsx scripts/gen-home-page.ts",
+  },
   {
     name: "livros",
     seedPrefix: "seed/books/",
