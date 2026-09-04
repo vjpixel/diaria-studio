@@ -254,6 +254,30 @@ describe("classifyDesbloqueioCandidate", () => {
     assert.equal(result?.status, "ja-destravada");
   });
 
+  it("#7343: decisão registrada ANTES do bloqueio NÃO desbloqueia um bloqueio-confirmado (bloqueio mais recente vence)", () => {
+    // A garantia central de #7343: a comparação é entre os DOIS marcadores
+    // ("o marcador não expira por tempo, só por evento"). Uma decisão
+    // antiga não desbloqueia um bloqueio gravado depois — o bloqueio é o
+    // sinal mais recente e vence, mesmo sem um `updatedAt` envolvido.
+    const oldDecision = formatDecisionMarker({
+      decided_at: "2026-08-01T00:00:00Z",
+      pergunta: "Resolvido?",
+      resposta: "sim, resolvido",
+      sessao: "develop",
+    });
+    const newBlock = formatExecutionBlockMarker({
+      recorded_at: "2026-09-01T20:16:42.541Z",
+      motivo: "mesmo assim, Postmaster Tools ainda recusa o dominio",
+      sessao: "develop",
+      condicao: { tipo: "externo",descricao: "aguardar mais semanas de envio" },
+    });
+    const result = classifyDesbloqueioCandidate(
+      baseInput({ updatedAt: "2026-09-01T20:20:00Z", comments: [oldDecision, newBlock] }),
+    );
+    assert.equal(result?.status, "bloqueio-confirmado");
+    assert.equal(result?.executionBlock?.motivo, "mesmo assim, Postmaster Tools ainda recusa o dominio");
+  });
+
   it("commentsFetchError força erro-leitura, NUNCA precisa-pergunta, mesmo com comments vazio (#6632)", () => {
     const input = baseInput({ comments: [], commentsFetchError: "gh issue view #1234 falhou (status 1)" });
     const result = classifyDesbloqueioCandidate(input);
@@ -261,6 +285,73 @@ describe("classifyDesbloqueioCandidate", () => {
     assert.equal(result?.commentsFetchError, "gh issue view #1234 falhou (status 1)");
     assert.equal(result?.decision, null);
     assert.equal(result?.executionBlock, null);
+  });
+
+  it("#7343: comentário de revisão do Passo 2 (sem marcador, só bumpa o updatedAt) NUNCA desbloqueia um bloqueio-confirmado", () => {
+    // Cenário exato da issue #7343: a skill /diaria-desbloqueia Passo 2
+    // comenta "Revisado por ... — bloqueio segue valendo, nenhuma mudança".
+    // Comentar move o `updatedAt` da issue, mas o comentário NÃO carrega
+    // nenhum marcador — então não há novo `bloqueio-execucao` nem nova
+    // `decisao-editor` na thread. O bloqueio segue confirmado.
+    //
+    // Antes de #6961 isto caía em `precisa-perunta` porque a comparação
+    // era `recorded_at >= updatedAt` — insatisfazível por construção (o
+    // próprio POST do marcador bumpa `updatedAt` pra depois do
+    // `recorded_at`). Hoje a comparação é entre os dois marcadores, e um
+    // comentário de revisão sem marcador não é um evento pra ela.
+    const block = formatExecutionBlockMarker({
+      recorded_at: "2026-09-01T20:16:42.541Z",
+      motivo: "Postmaster Tools recusou news.diar.ia.br por volume acumulado insuficiente",
+      sessao: "develop",
+      condicao: { tipo: "externo", descricao: "aguardar mais semanas de envio" },
+    });
+    const reviewComment =
+      "Revisado por /diaria-desbloqueia (01/09/2026) — bloqueio de execução de 2026-09-01T20:16:42Z " +
+      '("Postmaster Tools recusou news.diar.ia.br por volume acumulado insuficiente") segue valendo, nenhuma mudança.';
+
+    const antes = classifyDesbloqueioCandidate(
+      baseInput({ updatedAt: "2026-09-01T20:20:00Z", comments: [block] }),
+    );
+    assert.equal(antes?.status, "bloqueio-confirmado");
+
+    const depois = classifyDesbloqueioCandidate(
+      baseInput({ updatedAt: "2026-09-03T16:00:00Z", comments: [block, reviewComment] }),
+    );
+    assert.equal(depois?.status, "bloqueio-confirmado");
+    assert.equal(depois?.executionBlock?.motivo, "Postmaster Tools recusou news.diar.ia.br por volume acumulado insuficiente");
+    // Prova de que o classificador NAO caiu no "nenhum marcador" — a thread
+    // tem 2 comentários e o bloqueio original ainda é o mais recente válido.
+    assert.equal(depois?.commentsRead, 2);
+  });
+
+  it("#7343: um bloqueio de execução REALMENTE renovado (novo marcador posterior) ainda vence o comentário de revisão", () => {
+    // Mesma família do #7343, no sentido certo: um comentário de revisão
+    // NÃO renova o bloqueio, mas um NOVO marcador `bloqueio-execucao`
+    // gravado depois de fato muda o estado — e o classificador deve
+    // reconhecê-lo (o mecanismo que corrige o bug não deve quebrar o
+    // caso legítimo de renovação).
+    const oldBlock = formatExecutionBlockMarker({
+      recorded_at: "2026-09-01T20:16:42.541Z",
+      motivo: "volume acumulado insuficiente",
+      sessao: "develop",
+      condicao: { tipo: "externo",descricao: "aguardar mais semanas de envio" },
+    });
+    const reviewComment =
+      "Revisado por /diaria-desbloqueia — bloqueio de 2026-09-01 segue valendo, nenhuma mudança.";
+    const newBlock = formatExecutionBlockMarker({
+      recorded_at: "2026-09-04T00:00:00Z",
+      motivo: "editor confirmou que o dominio foi aceito no Postmaster Tools",
+      sessao: "develop",
+      condicao: { tipo: "externo",descricao: "dominio aceito" },
+    });
+    const result = classifyDesbloqueioCandidate(
+      baseInput({
+        updatedAt: "2026-09-04T00:01:00Z",
+        comments: [oldBlock, reviewComment, newBlock],
+      }),
+    );
+    assert.equal(result?.status, "bloqueio-confirmado");
+    assert.equal(result?.executionBlock?.motivo, "editor confirmou que o dominio foi aceito no Postmaster Tools");
   });
 
   it("commentsFetchError vence mesmo se, por algum motivo, comments tiver conteúdo parcial (#6632)", () => {
