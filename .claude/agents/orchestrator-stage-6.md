@@ -449,12 +449,19 @@ no dia seguinte). Backend `"beehiiv"`: passar `{slug_atual_do_get_post}` já obt
 (o valor que o guard do bloco WhatsApp confirmou bater). Backend `"kit"` (#7420, fecha a
 lacuna do #464/#6202): passar `seoSlug(d1.title)` — mesmo algoritmo de `deriveEditionUrl`,
 já usado por `publish-newsletter-kit.ts` pra gravar `05-edition-url.txt` na Etapa 5, sem
-chamada de rede:
+chamada de rede. Sem `--slug` o passo sempre cai em "nada a publicar" (`code: 4`, ver
+tabela abaixo).
+
+**`--sitemap` é obrigatório também (#6454)** — sem ela, `sitemap.xml`/`index.html`
+(a home) ficam congelados mesmo com `/p/{slug}` publicado certo (foi essa lacuna
+que travou `https://diar.ia.br/` ~10 dias numa edição antiga, 04/09/2026). Com a
+flag o script atualiza o sitemap e regenera a home no mesmo commit/push da página:
 
 ```bash
 npx tsx scripts/publish-edition-site-page.ts \
   --edition-dir {EDITION_DIR} \
-  --slug {slug_atual_do_get_post ou seoSlug(d1.title) pro Kit}
+  --slug {slug_atual_do_get_post ou seoSlug(d1.title) pro Kit} \
+  --sitemap workers/site/public/sitemap.xml
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se 0/2, warn se 3/4/5} --message "site-page stage6 publish: exit {code}"
 ```
 
