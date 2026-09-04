@@ -1339,12 +1339,16 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       "scripts/clarice-build-segment.ts",
       [
         // #7406 — fila única por score (`--daily`), substitui `--group
-        // ramp-warm`: era o único caminho automatizado (a task das 20:15 do
-        // `engajados`, #6945, nunca deveria ter existido — a esta altura já
-        // aposentada, #7406). Decisão do editor: "trabalha tudo só a partir
-        // do score", sem grupo escolhido — engajados (score>0) tem
-        // prioridade total sobre quem nunca recebeu (score=0) até esgotar a
-        // fila ou o budget do dia.
+        // ramp-warm`: a task das 20:15 do `engajados` (#6945) nunca deveria
+        // ter existido como automação separada — decisão do editor:
+        // "trabalha tudo só a partir do score", sem grupo escolhido.
+        // Engajados (score>0) tem prioridade total sobre quem nunca recebeu
+        // (score=0) até esgotar a fila ou o budget do dia. A task das 20:15
+        // AINDA está ARMADA e RODANDO (verificado ao vivo por SSH, #7416) —
+        // fica coexistindo com segurança graças ao dedup cycle-wide de
+        // `sent-or-queued.json` (quem esta rodada das 19:00 já selecionar
+        // sai do universo da rodada das 20:15, ver `excludeSentOrQueued` em
+        // clarice-build-segment.ts) até ser aposentada numa fatia futura.
         "--daily",
         "--cycle",
         cycle,

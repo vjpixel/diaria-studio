@@ -20,7 +20,7 @@
  *
  * Uso:
  *   npx tsx scripts/clarice-split-group-cells.ts --cycle 2607-08 --wave 6 \
- *     --date 2026-08-06 --from segments/ramp-warm.csv [--no-cells] [--dry-run]
+ *     --date 2026-08-06 --from segments/daily.csv [--no-cells] [--dry-run]
  *
  *   --cycle X   OBRIGATÓRIO — {conteúdo}-{envio}.
  *   --wave N    OBRIGATÓRIO — número da onda (vem de `startingWaveNumber` da
