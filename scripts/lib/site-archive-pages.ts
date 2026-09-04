@@ -145,6 +145,85 @@ export function archiveUrlForSlug(slug: string): string {
 }
 
 /**
+ * #7280: mapa de correção pra 21 slugs históricos com acento corrompido.
+ *
+ * Achado (issue #7280, recontagem no comentário de correção — o número
+ * original no título da issue, "107 de 259", estava inflado ~5×; um regex
+ * ruim contava `-a-`/`-e-`/`-o-` — artigo/conjunção legítimos em português —
+ * como acento destruído): 2 padrões de corrupção distintos no acervo
+ * histórico — decomposição NFD sobrando hífen (`lanc-a`, `na-o`, `co-digo`)
+ * e descarte do caractere acentuado (`amea-as`, `educa-o`, `m-s`). A causa
+ * já não existe: `seoSlug`/`slugify` (`lib/slug.ts`) normaliza PT-BR
+ * corretamente desde #1989, e o Stage 6 é gate-blocking contra qualquer
+ * slug Beehiiv que divirja de `seoSlug(título)` desde #4570 — nenhuma
+ * edição NOVA reproduz isto. Este mapa cobre só o RESÍDUO histórico: as 21
+ * páginas publicadas antes dos dois mecanismos existirem.
+ *
+ * Decisão do editor (#7280, comentário `decisao-editor` de 04/09/2026):
+ * "criar corretas e redirecionar as antigas — preserva link compartilhado,
+ * corrige a URL pública". Cada valor abaixo é `seoSlug(título real do
+ * post)`, conferido manualmente contra o cache real
+ * (`data/beehiiv-cache/posts/*.json`) — ver PR que fecha #7280.
+ *
+ * Aplicado em `applyLegacySlugCorrections`, chamado por
+ * `gen-archive-pages.ts` ANTES de gerar o acervo — a correção vive AQUI, não
+ * editada dentro do JSON cacheado, então sobrevive a qualquer re-sync
+ * (`beehiiv-sync.ts` sobrescreveria um `post.slug` editado à mão no cache
+ * silenciosamente; este mapa não é tocado por esse fluxo).
+ * `workers/site/public/_redirects` tem as 21 linhas old→new
+ * correspondentes (redirect 301 pra preservar o link já compartilhado) —
+ * os dois precisam ficar em sincronia; `test/gen-archive-pages.test.ts`
+ * trava isso.
+ */
+export const LEGACY_SLUG_CORRECTIONS: Readonly<Record<string, string>> = Object.freeze({
+  "90-das-pessoas-na-o-reconhecem-vi-deos-de-ia": "90-das-pessoas-nao-reconhecem-videos-de-ia",
+  "90-dos-desenvolvedores-usam-ia-mas-na-o-confiam-totalmente":
+    "90-dos-desenvolvedores-usam-ia-mas-nao-confiam-totalmente",
+  "a-diar-ia-br-normalmente-te-conta-o-dia-hoje-ela-conta-o-m-s":
+    "a-diar-ia-br-normalmente-te-conta-o-dia-hoje-ela-conta-o-mes",
+  "ai-com-lanc-a-agentes-de-ia-auto-nomos": "ai-com-lanca-agentes-de-ia-autonomos",
+  "alibaba-lanc-a-tre-s-modelos-de-open-source-e-quebra-32-recordes":
+    "alibaba-lanca-tres-modelos-de-open-source-e-quebra-32",
+  "altman-admite-a-ia-trar-amea-as": "altman-admite-a-ia-trara-ameacas",
+  "anthropic-e-gates-200-mi-em-sa-de-e-educa-o": "anthropic-e-gates-200-mi-em-saude-e-educacao",
+  "anthropic-expo-e-co-digo-do-claude-code-por-acidente":
+    "anthropic-expoe-codigo-do-claude-code-por-acidente",
+  "anthropic-lanc-a-plataforma-de-pesquisa-sociolo-gica":
+    "anthropic-lanca-plataforma-de-pesquisa-sociologica",
+  "brasil-70-da-gera-o-z-usa-chatgpt-todo-m-s": "brasil-70-da-geracao-z-usa-chatgpt-todo-mes",
+  "brasil-fortalece-parceria-com-a-mala-sia-em-semicondutores-e-ia":
+    "brasil-fortalece-parceria-com-a-malasia-em-semicondutores-e",
+  "claude-code-afunda-ac-o-es-da-ibm": "claude-code-afunda-acoes-da-ibm",
+  "governo-lanc-a-modelo-de-linguagem-100-nacional": "governo-lanca-modelo-de-linguagem-100-nacional",
+  "ia-na-o-reduz-trabalho-ela-acelera-o-burnout": "ia-nao-reduz-trabalho-ela-acelera-o-burnout",
+  "ia-nas-eleic-o-es-prepare-se-para-os-deepfakes": "ia-nas-eleicoes-prepare-se-para-os-deepfakes",
+  "inscric-o-es-abertas-programa-da-openai-para-empreendedores":
+    "inscricoes-abertas-programa-da-openai-para-empreendedores",
+  "lanc-ado-o-comet-o-produto-de-ia-mais-desejado-do-ano": "lancado-o-comet-o-produto-de-ia-mais-desejado-do-ano",
+  "modelos-se-replicam-sozinhos-diz-estudo-in-dito": "modelos-se-replicam-sozinhos-diz-estudo-inedito",
+  "openai-lanc-a-gpt-5-5-com-foco-em-agentes": "openai-lanca-gpt-5-5-com-foco-em-agentes",
+  "openai-lanc-a-instant-checkout-no-chatgpt": "openai-lanca-instant-checkout-no-chatgpt",
+  "openai-lanc-a-sora-2": "openai-lanca-sora-2",
+});
+
+/**
+ * Reescreve `post.slug` pra corrigido quando o slug bate com uma entrada de
+ * `LEGACY_SLUG_CORRECTIONS` — pura, não muta os posts originais. Chamada
+ * ANTES de `generateArchivePages` (ver `gen-archive-pages.ts`) — como
+ * `buildArchivePageHtml`/`archiveUrlForSlug` derivam o diretório e o
+ * `<link rel="canonical">` SEMPRE de `post.slug`, corrigir aqui é o único
+ * ponto necessário: a página nasce direto no slug certo, sem passo extra.
+ * Posts cujo slug não está no mapa passam intocados (mesma referência de
+ * objeto, sem alocação nova).
+ */
+export function applyLegacySlugCorrections(posts: ArchivePost[]): ArchivePost[] {
+  return posts.map((post) => {
+    const corrected = post.slug ? LEGACY_SLUG_CORRECTIONS[post.slug] : undefined;
+    return corrected ? { ...post, slug: corrected } : post;
+  });
+}
+
+/**
  * Tier 1 do #7116: remove blocos `<style>` BYTE-IDÊNTICOS repetidos dentro
  * da MESMA página, mantendo só a 1ª ocorrência de cada um — a Beehiiv
  * carimba o mesmo CSS (global do tema + por bloco de conteúdo) várias vezes
