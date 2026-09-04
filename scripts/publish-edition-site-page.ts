@@ -703,10 +703,16 @@ export function commitAndPushSitePage(
   const pathsToStage = [relPageDir];
   // #6454: sitemap.xml E index.html (a home regenerada a partir dele) são
   // escritos juntos por `updateSitemapAndHome` ANTES desta função rodar —
-  // aqui só precisam entrar no mesmo commit/push da página.
+  // aqui só precisam entrar no mesmo commit/push da página. Rastreados à
+  // parte (`optionalPaths`) porque, ao contrário de `relPageDir`, podem não
+  // existir em disco se `updateSitemapAndHome` tiver falhado antes de
+  // escrevê-los (ver guard de `existsSync` no loop de `git add` abaixo).
+  const optionalPaths = new Set<string>();
   if (sitemapRelPath) {
-    pathsToStage.push(sitemapRelPath);
-    pathsToStage.push(homePageRelPathFromSitemap(sitemapRelPath));
+    const homeRelPath = homePageRelPathFromSitemap(sitemapRelPath);
+    pathsToStage.push(sitemapRelPath, homeRelPath);
+    optionalPaths.add(sitemapRelPath);
+    optionalPaths.add(homeRelPath);
   }
 
   let committed = false;
@@ -726,6 +732,16 @@ export function commitAndPushSitePage(
     git(["checkout", "-B", branchName], rootDir);
 
     for (const p of pathsToStage) {
+      // #6454 self-review: sitemap.xml/index.html (`optionalPaths`) podem
+      // não existir em disco se `updateSitemapAndHome` tiver falhado antes
+      // de escrevê-los (fail-soft, ver caller) — sem este guard, `git add`
+      // de um pathspec inexistente lança e a página em si, já escrita com
+      // sucesso, é reportada como falha de publicação. `relPageDir` nunca
+      // passa por este guard — é sempre staged incondicionalmente, como
+      // antes (é a própria página, `writePage` já rodou por definição).
+      if (optionalPaths.has(p) && !existsSync(resolve(rootDir, p))) {
+        continue;
+      }
       git(["add", "--", p], rootDir);
     }
 
@@ -866,10 +882,20 @@ export function productionDeps(
       let existingXml: string;
       try {
         existingXml = readFileSync(sitemapAbsPath, "utf8");
-      } catch {
+      } catch (e) {
         // Sitemap ainda não existe (1ª edição publicada por este caminho,
         // ou diretório recém-criado) — nasce vazio, mesmo formato que
-        // `buildSitemapXml` já produz pro gerador em lote.
+        // `buildSitemapXml` já produz pro gerador em lote. Mas ENOENT é o
+        // ÚNICO erro que essa leitura tolera silenciosamente — qualquer
+        // outro (permissão negada, etc.) é um erro genuíno de leitura, não
+        // "sitemap ausente", e recriar vazio nesse caso apagaria entradas
+        // que na verdade existem em disco (#6454 self-review).
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+          process.stderr.write(
+            `[site-page] aviso: leitura de ${sitemapAbsPath} falhou com erro diferente de ENOENT ` +
+              `(${(e as Error).message}) — seguindo com sitemap vazio mesmo assim.\n`,
+          );
+        }
         existingXml = buildSitemapXml([]);
       }
       const newXml = addSitemapEntry(existingXml, sitemapEntryFromPost(post));

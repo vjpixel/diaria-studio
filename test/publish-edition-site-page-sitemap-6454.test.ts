@@ -197,6 +197,64 @@ describe("#6454 publishEditionSitePage --sitemap — atualiza sitemap.xml e rege
   });
 });
 
+describe("#6454 self-review — write do sitemap/home falha, publish da página não pode lançar por causa disso", () => {
+  it("updateSitemapAndHome lança ANTES de escrever sitemap.xml/index.html — publish da página segue reportando sucesso", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-site-sitemap-6454-write-fail-"));
+    try {
+      const sitemapAbsPath = join(dir, ...SITEMAP_REL.split("/"));
+      const homeAbsPath = join(dir, ...homePageRelPathFromSitemap(SITEMAP_REL).split("/"));
+
+      const stagedPaths: string[][] = [];
+      const { git, gh, lock, sleep } = makeGitFakes(stagedPaths);
+      const deps: PublishPageDeps = {
+        ...productionDeps(dir, git, gh, lock, sleep),
+        readEditionInputs: () => makeInputs(),
+        // Simula updateSitemapAndHome falhando antes de qualquer write —
+        // sitemap.xml/index.html nunca chegam a existir em disco, mas a
+        // página em si (writePage) já rodou com sucesso antes deste passo.
+        updateSitemapAndHome: () => {
+          throw new Error("disco cheio (simulado)");
+        },
+      };
+
+      const result = publishEditionSitePage(dir, deps, { sitemap: SITEMAP_REL });
+
+      // Pré-condição do cenário: sitemap/home realmente não existem —
+      // updateSitemapAndHome nunca chegou a escrevê-los.
+      assert.equal(existsSync(sitemapAbsPath), false);
+      assert.equal(existsSync(homeAbsPath), false);
+
+      // REGRESSÃO (finding 2, #7420): sem o guard de existsSync antes do
+      // `git add` de sitemap.xml/index.html, este `git add` lançaria por
+      // pathspec inexistente, e publishEditionSitePage relataria
+      // "commit/push falhou" (code 3) mesmo a página tendo sido publicada
+      // com sucesso — o fail-soft do sitemap (que já loga um aviso e segue)
+      // ficaria mascarado por uma falha reportada de publicação da página.
+      assert.equal(
+        result.code,
+        0,
+        `esperava code 0 (página publicada apesar do sitemap ter falhado), teve: ${JSON.stringify(result)}`,
+      );
+      assert.equal((result as { published?: boolean }).published, true);
+
+      // Só a página entrou no pathspec staged — sitemap.xml/index.html
+      // (ausentes) não podem ter sido passados pro `git add`.
+      const staged = stagedPaths.flat();
+      assert.ok(!staged.includes(SITEMAP_REL), "sitemap.xml ausente não devia ter sido staged");
+      assert.ok(
+        !staged.includes(homePageRelPathFromSitemap(SITEMAP_REL)),
+        "index.html ausente não devia ter sido staged",
+      );
+      assert.ok(
+        staged.some((p) => p.includes("edicao-nova-do-dia")),
+        "página em si precisa continuar sendo staged normalmente",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("#6454 homePageRelPathFromSitemap — deriva o path da home a partir do sitemap", () => {
   it("mesmo diretório do sitemap, index.html", () => {
     assert.equal(
