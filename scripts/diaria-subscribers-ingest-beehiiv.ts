@@ -93,6 +93,7 @@
  *   npx tsx scripts/diaria-subscribers-ingest-beehiiv.ts [--db <p>]
  *     [--manifest <p>] [--source-dir <p>] [--limit N] [--post <post_id>] [--reset]
  *     [--roster-root <p>] [--skip-roster]
+ *     [--exit-history-root <p>] [--skip-exit-history]
  *
  * Sem rede nenhuma — não requer nenhuma API key. Stdout: JSON summary.
  * Stderr: progresso.
@@ -176,6 +177,23 @@
  * testar só o passo de engajamento, ou numa máquina sem snapshot ainda).
  * Nenhum snapshot encontrado é `warn`, não erro fatal — o passo de
  * engajamento continua valendo mesmo sem `subscribers.jsonl`.
+ *
+ * ## Passo de EXIT-HISTORY — refina `exited_at` de aproximação pra real (#7248)
+ *
+ * O passo do ROSTER acima só sabe gravar em `exited_at` a data em que a
+ * transição foi DETECTADA no snapshot semanal — aproximação, nunca o
+ * timestamp real (a Beehiiv nunca devolveu isso pra REST). Depois do
+ * roster, `main` lê `data/beehiiv-backup/exit-history/subscribers.jsonl`
+ * (drenado via MCP `list_subscriptions` pelo agent
+ * `beehiiv-exit-history-drain`, ver `scripts/lib/beehiiv-exit-history.ts`)
+ * e chama `applyBeehiivExitHistory` — substitui a aproximação pelo
+ * `unsubscribed_on` REAL sempre que a MCP tiver confirmado esse assinante.
+ * Sem manifest próprio (mesmo motivo do roster: idempotente, upsert
+ * barato); `--skip-exit-history` pula o passo. Backup ausente/vazio é
+ * `warn`, nunca erro fatal — o roster já populou uma aproximação válida.
+ * **Nunca cobre a coorte `invalid`** — a MCP não expõe timestamp de saída
+ * pra ela (medido ao vivo, ver docstring do módulo da fonte); ela permanece
+ * na aproximação do roster indefinidamente, e isso é esperado, não um bug.
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
@@ -195,8 +213,10 @@ import {
   ingestPostEngagement,
   verifyBeehiivIngestion,
   ingestBeehiivRoster,
+  applyBeehiivExitHistory,
   type BeehiivEngagementRecord,
 } from "./lib/beehiiv-subscribers-ingest.ts";
+import type { BeehiivExitHistoryRecord } from "./lib/beehiiv-exit-history.ts";
 import { latestSnapshotDate, readSnapshotSubscribers } from "./lib/beehiiv-backup-snapshots.ts";
 import {
   type EngagementManifest,
@@ -219,6 +239,30 @@ export const DEFAULT_MANIFEST_PATH = resolve(dirname(DEFAULT_DB_PATH), "beehiiv-
 /** Raiz dos snapshots semanais (`{YYYY-MM-DD}/subscribers.jsonl`) — passo
  *  do roster (#7229), fonte diferente do passo de engajamento acima. */
 export const DEFAULT_ROSTER_ROOT = resolve(ROOT, "data/beehiiv-backup");
+/** Raiz do backup de exit-history (#7248) — `subscribers.jsonl` drenado via
+ *  MCP `list_subscriptions` pelo agent `beehiiv-exit-history-drain`, ver
+ *  `scripts/lib/beehiiv-exit-history.ts`. Passo OPCIONAL, roda depois do
+ *  roster (refina `exited_at` de aproximação pra real, nunca cria linha). */
+export const DEFAULT_EXIT_HISTORY_ROOT = resolve(ROOT, "data/beehiiv-backup/exit-history");
+
+/** Lê `subscribers.jsonl` do backup de exit-history — `[]` se o diretório/
+ *  arquivo não existe (agent ainda não rodou, ou `data/` ausente); linha
+ *  corrompida é ignorada, nunca aborta a leitura inteira. */
+export function readExitHistoryRecords(root: string): BeehiivExitHistoryRecord[] {
+  const path = resolve(root, "subscribers.jsonl");
+  if (!existsSync(path)) return [];
+  const content = readFileSync(path, "utf8");
+  const out: BeehiivExitHistoryRecord[] = [];
+  for (const line of content.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line) as BeehiivExitHistoryRecord);
+    } catch {
+      // linha corrompida — ignorada.
+    }
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Leitura do backup da fatia 1 (manifest.json + {post_id}.jsonl)
@@ -507,10 +551,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const manifestPath = getArg(argv, "manifest") || DEFAULT_MANIFEST_PATH;
   const sourceDir = getArg(argv, "source-dir") || DEFAULT_SOURCE_DIR;
   const rosterRoot = getArg(argv, "roster-root") || DEFAULT_ROSTER_ROOT;
+  const exitHistoryRoot = getArg(argv, "exit-history-root") || DEFAULT_EXIT_HISTORY_ROOT;
   const limit = getIntArg(argv, "limit", { min: 1 });
   const postFilter = getStringArg(argv, "post");
   const reset = hasFlag(argv, "reset");
   const skipRoster = hasFlag(argv, "skip-roster");
+  const skipExitHistory = hasFlag(argv, "skip-exit-history");
 
   const dbDir = dirname(dbPath);
   const dataRoot = dirname(dbDir);
@@ -625,6 +671,32 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
   }
 
+  // Passo de exit-history (#7248) — refina `exited_at` de aproximação pra
+  // real, a partir do backup drenado via MCP `list_subscriptions` pelo agent
+  // `beehiiv-exit-history-drain`. Roda DEPOIS do roster (precisa da
+  // `subscription` já existir pra refinar — nunca cria). Fail-soft: backup
+  // ausente é só um warning, nunca aborta a ingestão.
+  let exitHistoryResult: ReturnType<typeof applyBeehiivExitHistory> | null = null;
+  if (!skipExitHistory) {
+    const exitHistoryRecords = readExitHistoryRecords(exitHistoryRoot);
+    if (exitHistoryRecords.length > 0) {
+      console.error(
+        `📇 exit-history: ${exitHistoryRecords.length} registro(s) sob ${exitHistoryRoot}.`,
+      );
+      exitHistoryResult = applyBeehiivExitHistory(db, exitHistoryRecords);
+      console.error(
+        `  …exit-history: ${exitHistoryResult.updated} exited_at atualizado(s) (aproximação → real), ` +
+          `${exitHistoryResult.unchanged} já corretos, ${exitHistoryResult.skippedNoSubscription} sem subscription pra refinar, ` +
+          `${exitHistoryResult.skippedStatusMismatch} com status divergente.`,
+      );
+    } else {
+      console.error(
+        `⚠️  exit-history: nenhum registro sob ${exitHistoryRoot} — exited_at segue só na aproximação do roster ` +
+          `(rode o agent beehiiv-exit-history-drain pra popular).`,
+      );
+    }
+  }
+
   const storeCounts = getStoreCounts(db);
   db.close();
 
@@ -665,6 +737,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           root: rosterRoot,
           snapshot_date: rosterSnapshotDate,
           result: rosterResult,
+        },
+        exit_history: {
+          skipped: skipExitHistory,
+          root: exitHistoryRoot,
+          result: exitHistoryResult,
         },
         store_counts: storeCounts,
         reset_invalidated_sibling_manifests: invalidatedSiblingManifests,

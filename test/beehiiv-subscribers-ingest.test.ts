@@ -15,7 +15,9 @@ import {
   verifyBeehiivIngestion,
   ingestPostEngagement,
   resolveOrCreateBeehiivSubscriber,
+  findExistingBeehiivSubscriberId,
   ingestBeehiivRoster,
+  applyBeehiivExitHistory,
   extractBeehiivCustomFieldAttributes,
   extractBeehiivClickEntries,
   isBeehiivClickIdentityRecord,
@@ -845,6 +847,148 @@ describe("ingestBeehiivRoster — atributos (#7202)", () => {
     const db = openDiariaSubscribersDb(":memory:");
     const result = ingestBeehiivRoster(db, [makeRosterSub()], "2026-09-02T04:25:00.000Z");
     assert.equal(result.attributesWritten, 0);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findExistingBeehiivSubscriberId / applyBeehiivExitHistory (#7248)
+// ---------------------------------------------------------------------------
+
+describe("findExistingBeehiivSubscriberId", () => {
+  it("null quando nenhum alias existe pra essa identidade", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    assert.equal(findExistingBeehiivSubscriberId(db, { externalId: "sub_1", email: null }), null);
+    db.close();
+  });
+
+  it("acha por externalId — nunca cria (diferente de resolveOrCreateBeehiivSubscriber)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBeehiivRoster(db, [makeRosterSub()], "2026-09-02T04:25:00.000Z");
+    const id = findExistingBeehiivSubscriberId(db, { externalId: "sub_1", email: null });
+    assert.notEqual(id, null);
+    assert.equal(getStoreCounts(db).subscribers, 1, "busca não cria subscriber a mais");
+    db.close();
+  });
+
+  it("acha por email quando externalId não casa", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBeehiivRoster(db, [makeRosterSub()], "2026-09-02T04:25:00.000Z");
+    const id = findExistingBeehiivSubscriberId(db, { externalId: null, email: "leitor@example.com" });
+    assert.notEqual(id, null);
+    db.close();
+  });
+});
+
+describe("applyBeehiivExitHistory", () => {
+  it("substitui a aproximação por um exited_at REAL, mais preciso — o bug central da #7248", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    // Roster detecta a transição no dia da CAPTURA (aproximação) — bem
+    // depois da saída real, que só a MCP list_subscriptions confirma.
+    ingestBeehiivRoster(db, [makeRosterSub({ status: "inactive" })], "2026-09-07T00:00:00.000Z");
+    const subscriberId = findSubscriberIdByAlias(db, "beehiiv", "sub_1", "leitor@example.com");
+    const before = getSubscriptionsForSubscriber(db, subscriberId!)[0];
+    assert.equal(before.exited_at, "2026-09-07T00:00:00.000Z", "aproximação = data da captura, não a real");
+
+    const result = applyBeehiivExitHistory(
+      db,
+      [{ externalId: "sub_1", email: "leitor@example.com", unsubscribedOn: "2026-09-04T01:19:07Z" }],
+      "2026-09-08T00:00:00.000Z",
+    );
+    assert.equal(result.updated, 1);
+    assert.equal(result.processed, 1);
+
+    const after = getSubscriptionsForSubscriber(db, subscriberId!)[0];
+    assert.equal(after.exited_at, "2026-09-04T01:19:07Z", "exited_at agora é o timestamp REAL da MCP, não a aproximação");
+    // Nenhum outro campo da subscription se move — só exited_at.
+    assert.equal(after.status, before.status);
+    assert.equal(after.entered_at, before.entered_at);
+    assert.equal(after.source, before.source);
+    assert.equal(after.utm_campaign, before.utm_campaign);
+    db.close();
+  });
+
+  it("reaplicar o MESMO registro é idempotente — unchanged, nunca reescreve", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBeehiivRoster(db, [makeRosterSub({ status: "inactive" })], "2026-09-07T00:00:00.000Z");
+    const record = { externalId: "sub_1", email: "leitor@example.com", unsubscribedOn: "2026-09-04T01:19:07Z" };
+    applyBeehiivExitHistory(db, [record], "2026-09-08T00:00:00.000Z");
+    const result2 = applyBeehiivExitHistory(db, [record], "2026-09-09T00:00:00.000Z");
+    assert.equal(result2.updated, 0);
+    assert.equal(result2.unchanged, 1);
+    db.close();
+  });
+
+  it("subscriber sem subscription(beehiiv) alguma → skippedNoSubscription, nunca cria uma", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const result = applyBeehiivExitHistory(db, [
+      { externalId: "sub_999", email: "nunca-visto@example.com", unsubscribedOn: "2026-09-04T01:19:07Z" },
+    ]);
+    assert.equal(result.processed, 1);
+    assert.equal(result.skippedNoSubscription, 1);
+    assert.equal(result.updated, 0);
+    assert.equal(getStoreCounts(db).subscribers, 0, "exit-history nunca cria subscriber novo");
+    assert.equal(getStoreCounts(db).subscriptions, 0);
+    db.close();
+  });
+
+  it("subscription com status ATUAL diferente de inactive → skippedStatusMismatch, nunca sobrescreve", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    // Assinante voltou a active DEPOIS da captura que gerou o registro de
+    // exit-history (race entre fontes capturadas em momentos diferentes).
+    ingestBeehiivRoster(db, [makeRosterSub({ status: "active" })], "2026-09-08T00:00:00.000Z");
+    const subscriberId = findSubscriberIdByAlias(db, "beehiiv", "sub_1", "leitor@example.com");
+
+    const result = applyBeehiivExitHistory(db, [
+      { externalId: "sub_1", email: "leitor@example.com", unsubscribedOn: "2026-09-04T01:19:07Z" },
+    ]);
+    assert.equal(result.skippedStatusMismatch, 1);
+    assert.equal(result.updated, 0);
+
+    const sub = getSubscriptionsForSubscriber(db, subscriberId!)[0];
+    assert.equal(sub.exited_at, null, "status active não é tocado por um registro de exit-history desatualizado");
+    db.close();
+  });
+
+  it("registro sem externalId nem email → skippedNoIdentity", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const result = applyBeehiivExitHistory(db, [{ externalId: null, email: null, unsubscribedOn: "2026-09-04T01:19:07Z" }]);
+    assert.equal(result.skippedNoIdentity, 1);
+    db.close();
+  });
+
+  it("a coorte invalid nunca é tocada — status gravado 'invalid' nunca bate o guard 'inactive' (#7248, MCP não cobre essa coorte)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBeehiivRoster(db, [makeRosterSub({ status: "invalid" })], "2026-09-07T00:00:00.000Z");
+    const subscriberId = findSubscriberIdByAlias(db, "beehiiv", "sub_1", "leitor@example.com");
+    const before = getSubscriptionsForSubscriber(db, subscriberId!)[0];
+    assert.notEqual(before.exited_at, null, "invalid já é aproximado como saída pelo roster (#7233 finding 1)");
+
+    // Mesmo que um registro chegasse por engano pra essa identidade (não
+    // deveria — a MCP não expõe invalid, ver beehiiv-exit-history.ts), o
+    // guard de status rejeita: subscription gravada é status="invalid",
+    // nunca "inactive".
+    const result = applyBeehiivExitHistory(db, [
+      { externalId: "sub_1", email: "leitor@example.com", unsubscribedOn: "2026-09-04T01:19:07Z" },
+    ]);
+    assert.equal(result.skippedStatusMismatch, 1);
+
+    const after = getSubscriptionsForSubscriber(db, subscriberId!)[0];
+    assert.equal(after.exited_at, before.exited_at, "aproximação do roster permanece intocada pra invalid");
+    db.close();
+  });
+
+  it("funde por email quando o registro de exit-history só tem email (sem externalId)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBeehiivRoster(db, [makeRosterSub({ status: "inactive" })], "2026-09-07T00:00:00.000Z");
+    const subscriberId = findSubscriberIdByAlias(db, "beehiiv", "sub_1", "leitor@example.com");
+
+    const result = applyBeehiivExitHistory(db, [
+      { externalId: null, email: "leitor@example.com", unsubscribedOn: "2026-09-04T01:19:07Z" },
+    ]);
+    assert.equal(result.updated, 1);
+    const after = getSubscriptionsForSubscriber(db, subscriberId!)[0];
+    assert.equal(after.exited_at, "2026-09-04T01:19:07Z");
     db.close();
   });
 });
