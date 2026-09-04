@@ -355,71 +355,33 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
 
 #### §6d-kit-social-retry — retry automático de Threads/X (#7405)
 
-**Só quando §6d-kit terminou com exit `0`.** Achado ao vivo na edição 260904:
-com backend Kit, `public_url` só ganha slug real depois do broadcast sair de
-`"draft"` — `public: true` sozinho na Etapa 5 não basta. Isso faz
-`{edition_url}` nunca resolver a tempo do dispatch social da Etapa 5, e
-Threads/X (únicos 2 canais que levam o link INLINE no texto do post — Facebook/
-LinkedIn/Instagram levam na imagem/legenda) sempre falham quando o backend é
-Kit. Agora que o broadcast acabou de ser agendado, o slug deve existir.
+**Só quando §6d-kit terminou com exit `0`.** Backend Kit: `public_url` só ganha
+slug após o broadcast sair de `"draft"` (`public:true` sozinho na Etapa 5 não
+basta) — Threads/X (únicos 2 canais com link INLINE no texto) sempre falharam
+na Etapa 5. Agora o slug deve existir.
 
 ```bash
 npx tsx scripts/kit-refresh-social-edition-url.ts --edition-dir {EDITION_DIR}/
-npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
-  --level {info se ok:true, error se ok:false} \
-  --message "kit-refresh-social-edition-url stage6: {resolved/reason do JSON}" \
-  --details '{json de saída do script}'
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se ok:true, error se ok:false} --message "kit-refresh-social-edition-url stage6: {resolved/reason}" --details '{json}'
 ```
 
-JSON de saída, campo `resolved` decide o resto deste passo:
+`resolved:false` (`backend_not_kit`/`no_slug_yet`/`already_resolved`) → nada a
+fazer, seguir (sem retry adicional — evita loop). `ok:false` (code 3/4) →
+logar erro, não bloqueia. **Só `resolved:true`** (arquivos regravados) →
+re-dispatchar os 2 canais:
 
-| Resultado | Ação |
-|---|---|
-| `{ok:true, resolved:false, reason:"backend_not_kit"}` | Backend não é Kit — nada a fazer, este passo não se aplica (caminho Beehiiv já resolveu `{edition_url}` na Etapa 5). Seguir. |
-| `{ok:true, resolved:false, reason:"no_slug_yet"}` | Kit ainda não atribuiu slug ao `public_url` neste ponto (não medido com que frequência isso acontece pós-agendamento — não assumir raro nem comum sem dado). **Não bloqueia** — Threads/X seguem sem dispatch nesta edição; logar info e seguir. Não há retry automático além desta chamada (evita loop). |
-| `{ok:true, resolved:false, reason:"already_resolved"}` | Já resolvido em invocação anterior (resume) — Threads/X já foram tentados com a URL certa. Seguir sem novo dispatch. |
-| `{ok:true, resolved:true, ...}` | **Slug resolvido agora** — `05-edition-url.txt` e `03-social.md` foram (re)gravados. Prosseguir para o retry dos 2 canais abaixo. |
-| `{ok:false, code:3, ...}` | `newsletter-kit-published.json` ausente/sem `broadcast_id` — não deveria acontecer aqui (§6d-kit já confirmou exit 0 antes). Logar erro, não bloqueia o resto do Stage 6. |
-| `{ok:false, code:4, ...}` | GET do broadcast falhou (rede/API). Logar erro, **não bloqueia** — Threads/X ficam sem retry nesta rodada, o editor pode rodar o comando acima manualmente depois. |
-
-**Só quando `resolved:true`**, re-dispatchar os 2 canais que dependem de
-`{edition_url}` inline:
-
-1. **Threads** — idempotente por design (`--skip-existing` é o default do
-   script: só pula entradas já `draft`/`scheduled`/`published` em
-   `06-social-published.json`; uma entrada `"failed"` da Etapa 5 não bloqueia
-   o retry, então rodar de novo é seguro mesmo se algum destaque já tiver
-   ido):
-   ```bash
-   npx tsx scripts/publish-threads.ts --edition-dir {EDITION_DIR}/ --schedule
-   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level info --message "threads stage6 retry: ver stdout"
-   ```
-   Falha aqui é fail-soft — mesma disciplina do dispatch social da Etapa 5,
-   nunca bloqueia o resto do Stage 6.
-
+1. **Threads** (idempotente, `--skip-existing` default só pula
+   `draft`/`scheduled`/`published`): `npx tsx scripts/publish-threads.ts
+   --edition-dir {EDITION_DIR}/ --schedule`
 2. **Twitter/X via Buffer MCP** — mesmo mecanismo do §5c-3b em
-   `orchestrator-stage-5.md` (alcançável só de dentro da sessão do agente, não
-   de um script Bash puro), incluindo o passo 3 de lá que este retry NÃO pode
-   pular: rodar `scripts/prep-twitter-posts.ts --edition-dir {EDITION_DIR}/`
-   de novo (agora com `{edition_url}` já resolvido em `03-social.md`) e, para
-   cada item de `posts` que ainda não tenha entrada
-   `scheduled`/`published`/`draft` em `06-social-published.json` pra
-   `platform: "twitter"` + o mesmo `destaque`, chamar
-   `mcp__claude_ai_Buffer__create_post` exatamente como descrito em §5c-3b
-   passo 2 (mesmo `channelId`, `mode: "customScheduled"`, `dueAt`, `assets`
-   quando `imageUrl` não é `null`) **E, imediatamente após cada
-   `create_post`, gravar o resultado com `scripts/append-twitter-published.ts`
-   exatamente como o passo 3 de §5c-3b descreve** — sem isso, o dedup deste
-   próprio retry ("ainda não tenha entrada... em `06-social-published.json`")
-   não tem o que ler numa 2ª invocação (Stage 6 resumido, ou reexecução do
-   §6d-kit-social-retry), e um Stage 6 resumido pode postar o MESMO destaque
-   2× no X. Pular silenciosamente os que já foram — não duplicar post.
+   `orchestrator-stage-5.md` (só a sessão do agente alcança): rodar
+   `prep-twitter-posts.ts` de novo e, pra cada `posts` ainda sem entrada
+   `scheduled`/`published`/`draft` pra `platform:"twitter"` + `destaque`,
+   chamar `create_post` como em §5c-3b passo 2 **e gravar via
+   `append-twitter-published.ts` (passo 3) logo em seguida** — sem isso o
+   dedup não tem o que ler numa 2ª invocação, risco de duplicar post no X.
 
-**Falha em qualquer um dos 2 retries acima NUNCA bloqueia o resto do Stage 6**
-(auto-reporter, sentinel, invariants) — mesma disciplina fail-soft do dispatch
-social original.
-
-Ao concluir §6d-kit (+ §6d-kit-social-retry, se aplicável) com sucesso, seguir para §6d-brevo (se aplicável) e §6e normalmente — o resto do Stage 6 (auto-reporter, sentinel, invariants) não depende de qual backend de newsletter rodou.
+Fail-soft nos 2 — nunca bloqueia o resto do Stage 6. Seguir pra §6d-brevo/§6e.
 
 ### 6d-brevo. Agendar campanha Brevo diária (#5772)
 
