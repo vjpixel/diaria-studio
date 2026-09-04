@@ -46,15 +46,14 @@
  *       (find-last-edition-with-fb.ts + verify-facebook-posts.ts +
  *       verify-social-worker-dispatch.ts) — 100% script, sem MCP.
  *   0l. check-prev-social-status.ts (`--json`) — 100% script.
- *   0o. Rampa Gmail (#7021) — find-last-edition-with-kit.ts resolve a edição
- *       anterior com canal Kit despachado; kit-provider-split.ts --edition
- *       mede entrega por provedor (persiste como já fazia); kit-gmail-
- *       warmup-ramp.ts --gate-broadcast propõe a onda em DRY-RUN (nunca
- *       `--push` — aplicar é ação manual do editor). Proposta persistida em
- *       `_internal/kit-gmail-ramp-proposal.json` da edição CORRENTE, com o
- *       comando exato pra aplicar. Fail-soft em cada ponto (sem edição
- *       anterior com Kit, broadcast sem métrica, cohort da rampa ainda não
- *       capturado) — nunca bloqueia, nunca lê ausência de dado como "ok".
+ *   0o. Entrega por provedor (#7021, reduzido em #7402) —
+ *       find-last-edition-with-kit.ts resolve a edição anterior com canal Kit
+ *       despachado; kit-provider-split.ts --edition mede entrega/abertura por
+ *       provedor e persiste em data/kit-delivery/history.jsonl. A proposta de
+ *       onda do aquecimento Gmail (antiga 0o.2) saiu em 04/09/2026 — a coorte
+ *       dos 311 recusados pelo Gmail (#6504) esgotou na migração do #7386.
+ *       Fail-soft em cada ponto (sem edição anterior com Kit, broadcast sem
+ *       métrica) — nunca bloqueia, nunca lê ausência de dado como "ok".
  *   0z. check-invariants.ts --stage 0 (abort duro se exit 1) + mark stage 0
  *       done + capture-stage-usage.ts.
  *
@@ -839,71 +838,46 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     report.note(`⚠️  edição anterior: ${prevStatusJson.total} finding(s) de status social — ver detalhes no run-log.`);
   }
 
-  // --- 0o: rampa Gmail — medição de entrega + proposta dry-run (#7021) ---
+  // --- 0o: entrega por provedor da edição anterior (#7021, reduzido em #7402) ---
   // Nome "0o" (não "0m") — "0m" já está tomado no playbook em prosa
-  // (auto-reporter final, nota de preparação, ver docstring do módulo
-  // acima) e "0n" também (detecção de falhas de CI via Gmail MCP).
-  // Fail-soft em CADA ponto: ausência de dado (sem edição anterior com canal
-  // Kit, broadcast sem broadcastId, estado da rampa ainda não iniciado) vira
-  // nota de "não avaliado" — NUNCA vira silêncio nem "ok" (#633, mesma
-  // disciplina dos 4 bugs "ausência de dado lida como resultado bom" desta
-  // mesma rodada). Nunca passa `--push` a nenhum dos dois scripts — aplicar
-  // a onda é ação manual do editor (guard de publicação, item 1 deste
-  // checklist).
+  // (auto-reporter final, nota de preparação) e "0n" também (detecção de
+  // falhas de CI via Gmail MCP).
+  //
+  // O passo nasceu com DUAS partes: `0o.1` medição de entrega por provedor e
+  // `0o.2` proposta de onda do aquecimento Gmail. A `0o.2` foi REMOVIDA em
+  // 04/09/2026: a coorte do aquecimento — os 311 endereços que o Gmail
+  // recusou no 1º envio em massa pelo Kit (#6504) — esgotou. 195 foram
+  // admitidos nas 6 ondas e os 116 restantes entraram na migração em bloco
+  // do #7386, que zerou a Beehiiv (317 → 0 ativos). Sem coorte,
+  // `kit-gmail-warmup-ramp` só propõe onda de tamanho zero, todo dia, para
+  // sempre — e relatório que sempre diz "0" é ruído que se aprende a
+  // ignorar, não sinal.
+  //
+  // A `0o.1` FICA, e não é detalhe: `kit-provider-split` mede entrega e
+  // abertura POR PROVEDOR e grava em `data/kit-delivery/history.jsonl`. É a
+  // fonte que responde "o Gmail continua aceitando?" — pergunta que
+  // sobrevive ao fim da rampa, e o critério de fechamento do #6504. Ela
+  // nunca dependeu da rampa; era a rampa que dependia dela para o gate.
+  //
+  // Fail-soft em CADA ponto: ausência de dado vira nota de "não medido" —
+  // NUNCA silêncio nem "ok" (#633, mesma disciplina do bloco original).
   const kitPrevResult = deps.exec("scripts/find-last-edition-with-kit.ts", ["--current", opts.edition]);
   const kitPrevDir = kitPrevResult.code === 0 ? kitPrevResult.stdout.trim() : "";
   if (!kitPrevDir) {
-    report.note("↷ 0o — rampa Gmail: nenhuma edição anterior com canal Kit despachado — nada a medir (fail-soft).");
+    report.note("↷ 0o — entrega por provedor: nenhuma edição anterior com canal Kit despachado — nada a medir (fail-soft).");
   } else {
-    const kitPrevEdition = kitPrevDir.split(/[\\/]/).pop() ?? "";
-    const splitStep = softStep(deps, report, "kit-provider-split (0o.1 — medição de entrega)", "scripts/kit-provider-split.ts", ["--edition", kitPrevEdition, "--json"]);
+    const kitPrevEdition = kitPrevDir.split(/[\/]/).pop() ?? "";
+    const splitStep = softStep(deps, report, "kit-provider-split (0o — entrega por provedor)", "scripts/kit-provider-split.ts", ["--edition", kitPrevEdition, "--json"]);
     const splitJson = parseStepJson<{ broadcastId?: number }>(splitStep.result.stdout);
     if (splitStep.result.code !== 0 || typeof splitJson?.broadcastId !== "number") {
-      report.note(`⚠️  0o — kit-provider-split não mediu entrega da edição ${kitPrevEdition} (fail-soft) — rampa não avaliada nesta edição.`);
+      report.note(`⚠️  0o — kit-provider-split não mediu entrega da edição ${kitPrevEdition} (fail-soft).`);
     } else {
-      const gateBroadcastId = splitJson.broadcastId;
-      const rampStep = softStep(deps, report, "kit-gmail-warmup-ramp (0o.2 — proposta dry-run)", "scripts/kit-gmail-warmup-ramp.ts", ["--gate-broadcast", String(gateBroadcastId), "--json"]);
-      const rampJson = parseStepJson<{
-        plan?: { size?: number; skipped?: boolean; reason?: string };
-        safeToTag?: unknown[];
-        needsBeehiivDeactivation?: unknown[];
-      }>(rampStep.result.stdout);
-      if (rampStep.result.code !== 0 || !rampJson?.plan) {
-        report.note(
-          `⚠️  0o — kit-gmail-warmup-ramp não devolveu proposta válida (broadcast ${gateBroadcastId}) — ` +
-            `rampa não avaliada nesta edição (fail-soft; comum na 1ª rodada, antes do cohort ser capturado com --reference-broadcast).`,
-        );
-      } else {
-        const proposal = {
-          measuredAt: deps.now().toISOString(),
-          sourceEdition: kitPrevEdition,
-          gateBroadcastId,
-          waveSkipped: rampJson.plan.skipped ?? true,
-          waveSize: rampJson.plan.size ?? 0,
-          waveReason: rampJson.plan.reason ?? "",
-          safeToTagCount: rampJson.safeToTag?.length ?? 0,
-          needsBeehiivDeactivationCount: rampJson.needsBeehiivDeactivation?.length ?? 0,
-          applyCommand: `npx tsx scripts/kit-gmail-warmup-ramp.ts --gate-broadcast ${gateBroadcastId} --push`,
-        };
-        try {
-          deps.writeFile(
-            resolve(deps.rootDir, editionDir, "_internal", "kit-gmail-ramp-proposal.json"),
-            JSON.stringify(proposal, null, 2) + "\n",
-          );
-          report.note(
-            `0o — rampa Gmail (broadcast ${gateBroadcastId}, edição ${kitPrevEdition}): ` +
-              (proposal.waveSkipped
-                ? `gate segurou — ${proposal.waveReason}`
-                : `onda de ${proposal.waveSize} endereço(s) proposta (${proposal.safeToTagCount} seguro(s) taguear já, ${proposal.needsBeehiivDeactivationCount} precisa(m) desativação manual na Beehiiv antes) — para aplicar: ${proposal.applyCommand}`),
-          );
-        } catch (err) {
-          report.note(
-            `⚠️  0o — falha ao persistir kit-gmail-ramp-proposal.json: ${err instanceof Error ? err.message : String(err)} (fail-soft, não bloqueia Stage 0).`,
-          );
-        }
-      }
+      report.note(
+        `0o — entrega por provedor medida (edição ${kitPrevEdition}, broadcast ${splitJson.broadcastId}) — registro em data/kit-delivery/history.jsonl.`,
+      );
     }
   }
+
 
   // --- 0z: invariantes globais + fechar Stage 0 ---
   const invariantsResult = deps.exec("scripts/check-invariants.ts", ["--stage", "0"]);
