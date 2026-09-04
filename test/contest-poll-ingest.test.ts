@@ -13,6 +13,7 @@ import {
   buildContestReplyExternalId,
   ingestContestReplies,
   mapRaffleEntryToContestEntry,
+  isWellFormedRaffleEntryForContestMap,
   isAnonymousPollIdentity,
   buildPollVoteExternalId,
   ingestPollVotes,
@@ -148,6 +149,46 @@ describe("ingestContestReplies", () => {
     assert.equal(result.skippedNoEmail, 1);
     assert.equal(getStoreCounts(db).subscribers, 0);
     db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isWellFormedRaffleEntryForContestMap (#7419 self-review — guard pré-mapeamento)
+// ---------------------------------------------------------------------------
+
+describe("isWellFormedRaffleEntryForContestMap", () => {
+  it("entry completa passa", () => {
+    assert.equal(
+      isWellFormedRaffleEntryForContestMap({
+        email: "leitor@example.com",
+        edition: "260901",
+        issued_at: "2026-09-01T10:00:00Z",
+      }),
+      true,
+    );
+  });
+
+  it("edition ausente/vazia reprova", () => {
+    assert.equal(isWellFormedRaffleEntryForContestMap({ email: "a@x.com", issued_at: "2026-09-01T10:00:00Z" }), false);
+    assert.equal(
+      isWellFormedRaffleEntryForContestMap({ email: "a@x.com", edition: "  ", issued_at: "2026-09-01T10:00:00Z" }),
+      false,
+    );
+  });
+
+  it("issued_at ausente/vazia reprova", () => {
+    assert.equal(isWellFormedRaffleEntryForContestMap({ email: "a@x.com", edition: "260901" }), false);
+    assert.equal(
+      isWellFormedRaffleEntryForContestMap({ email: "a@x.com", edition: "260901", issued_at: "" }),
+      false,
+    );
+  });
+
+  it("email ausente reprova (mesmo com edition/issued_at presentes)", () => {
+    assert.equal(
+      isWellFormedRaffleEntryForContestMap({ edition: "260901", issued_at: "2026-09-01T10:00:00Z" }),
+      false,
+    );
   });
 });
 

@@ -47,6 +47,7 @@ import {
   parseContestEntriesJsonl,
   ingestContestReplies,
   mapRaffleEntryToContestEntry,
+  isWellFormedRaffleEntryForContestMap,
   type ContestReplyIngestResult,
 } from "./lib/contest-poll-ingest.ts";
 import { loadRaffleRegistry } from "./lib/raffle-numbers.ts";
@@ -94,15 +95,24 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   // Fonte VIVA: data/raffle-numbers.json
   // -------------------------------------------------------------------------
   let raffleEntriesRead = 0;
+  let raffleEntriesMalformed = 0;
   let raffleResult = ZERO_RESULT;
   if (existsSync(rafflePath)) {
     const raffleEntries = loadRaffleRegistry(rafflePath);
     raffleEntriesRead = raffleEntries.length;
-    const mapped = raffleEntries.map(mapRaffleEntryToContestEntry);
+    // Guard (#7419 self-review): raffle-numbers.json corrompido à mão fora do
+    // caminho normal (allocateRaffleNumber, sempre completo) poderia faltar
+    // edition/issued_at — filtrar ANTES do mapeamento em vez de deixar
+    // recordEvent lançar contra a coluna ts NOT NULL a meio do loop.
+    const wellFormed = raffleEntries.filter(isWellFormedRaffleEntryForContestMap);
+    raffleEntriesMalformed = raffleEntries.length - wellFormed.length;
+    const mapped = wellFormed.map(mapRaffleEntryToContestEntry);
     raffleResult = ingestContestReplies(db, mapped, now);
     console.error(
       `📇 ${raffleEntriesRead} entrada(s) em ${rafflePath} — ${raffleResult.newEvents} evento(s) novo(s), ` +
-        `${raffleResult.alreadyKnown} já conhecido(s).`,
+        `${raffleResult.alreadyKnown} já conhecido(s)` +
+        (raffleEntriesMalformed > 0 ? `, ${raffleEntriesMalformed} malformada(s) ignorada(s)` : "") +
+        ".",
     );
   } else {
     console.error(`ℹ️  ${rafflePath} não existe ainda — nenhum acerto de sorteio registrado até agora.`);
@@ -113,7 +123,8 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   // -------------------------------------------------------------------------
   let legacyEntriesRead = 0;
   let legacyResult = ZERO_RESULT;
-  if (existsSync(legacyJsonlPath)) {
+  const legacyPresent = existsSync(legacyJsonlPath);
+  if (legacyPresent) {
     const raw = readFileSync(legacyJsonlPath, "utf8");
     const legacyEntries = parseContestEntriesJsonl(raw);
     legacyEntriesRead = legacyEntries.length;
@@ -136,7 +147,8 @@ export function main(argv: string[] = process.argv.slice(2)): void {
         db: dbPath,
         raffle_source: rafflePath,
         raffle_entries_read: raffleEntriesRead,
-        legacy_source: existsSync(legacyJsonlPath) ? legacyJsonlPath : null,
+        raffle_entries_malformed: raffleEntriesMalformed,
+        legacy_source: legacyPresent ? legacyJsonlPath : null,
         legacy_entries_read: legacyEntriesRead,
         events_new: combined.newEvents,
         events_already_known: combined.alreadyKnown,

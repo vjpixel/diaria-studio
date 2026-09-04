@@ -216,6 +216,35 @@ export interface RaffleEntryForContestMap {
 }
 
 /**
+ * `true` quando `entry` tem os 3 campos que `mapRaffleEntryToContestEntry` +
+ * `recordEvent` exigem de fato (`email` além dos 2 abaixo — `email` vazio já
+ * é tratado por `skippedNoEmail` dentro de `ingestContestReplies`, não
+ * precisa ser checado aqui de novo). `parseRaffleRegistry`
+ * (`raffle-numbers.ts`) só valida `cycle`/`email`/`number` no parse — não
+ * `edition`/`issued_at` — então um `raffle-numbers.json` corrompido à mão
+ * (fora do caminho normal, que é só `allocateRaffleNumber`, sempre completo)
+ * poderia produzir uma entry sem `edition`/`issued_at` utilizável. Sem este
+ * guard, isso cairia direto em `recordEvent(db, { ts: undefined, ... })`
+ * contra a coluna `ts TEXT NOT NULL` — exceção não tratada no meio do loop,
+ * quebrando o processamento das entries seguintes. Filtrar ANTES do mapeamento
+ * (chamador filtra a lista antes de `.map(mapRaffleEntryToContestEntry)`)
+ * mantém a mesma disciplina tolerante do resto do módulo (nunca abortar por
+ * 1 linha ruim).
+ */
+export function isWellFormedRaffleEntryForContestMap(
+  entry: Partial<RaffleEntryForContestMap>,
+): entry is RaffleEntryForContestMap {
+  return (
+    typeof entry.email === "string" &&
+    entry.email.trim() !== "" &&
+    typeof entry.edition === "string" &&
+    entry.edition.trim() !== "" &&
+    typeof entry.issued_at === "string" &&
+    entry.issued_at.trim() !== ""
+  );
+}
+
+/**
  * Adapta 1 `RaffleEntry` (o registro VIVO do sorteio, `data/raffle-
  * numbers.json` — ver docstring do módulo) pro shape `ContestEntryRecord`
  * que `ingestContestReplies` já consome. Pura, 1:1, sem I/O.

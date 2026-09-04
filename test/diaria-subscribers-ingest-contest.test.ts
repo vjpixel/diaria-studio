@@ -66,6 +66,25 @@ describe("diaria-subscribers-ingest-contest main()", () => {
     db.close();
   });
 
+  it("entry malformada (raffle-numbers.json corrompido à mão, sem edition) é pulada, não derruba o loop (#7419 self-review)", () => {
+    const { dbPath, rafflePath, legacyPath } = makeTmpDataDir("diaria-contest-ingest-malformed-");
+    const malformed = [
+      { cycle: "2609", email: "quebrado@example.com", number: 1, edition: "", issued_at: "2026-09-01T10:00:00Z" },
+      ...RAFFLE_FIXTURE,
+    ];
+    writeFileSync(rafflePath, JSON.stringify(malformed, null, 2));
+
+    main(["--db", dbPath, "--raffle", rafflePath, "--legacy-jsonl", legacyPath]);
+
+    const db = openDiariaSubscribersDb(dbPath);
+    // Só as 2 entries bem-formadas do fixture entram — a malformada não
+    // derruba o processamento das seguintes nem vira subscriber.
+    assert.equal(getStoreCounts(db).subscribers, 2);
+    assert.equal(getStoreCounts(db).events, 2);
+    assert.equal(findSubscriberIdByAlias(db, "beehiiv", null, "quebrado@example.com"), null);
+    db.close();
+  });
+
   it("2ª rodada é idempotente — mesma entry no raffle não duplica evento", () => {
     const { dbPath, rafflePath, legacyPath } = makeTmpDataDir("diaria-contest-ingest-idem-");
     writeFileSync(rafflePath, JSON.stringify(RAFFLE_FIXTURE, null, 2));
