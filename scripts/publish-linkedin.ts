@@ -308,8 +308,10 @@ export interface ImageCacheState {
  * O marcador `no_image` (#3385) NÃO é lido aqui — quem chama esta função
  * continua consultando `imgCache.images?.[destaque]?.no_image` na chave BASE,
  * nunca na `_4x5` (a variante 4:5 sendo opcional, sua ausência não é sinal de
- * "sem imagem"). `classifyImageCache` abaixo também classifica pela chave
- * base, então o fail-fast #999/#1275 não muda de semântica.
+ * "sem imagem"). `classifyImageCache` abaixo usa esta mesma função pra
+ * classificar `destaques_with_url` (#7427 — antes lia só a chave base,
+ * divergindo desta precedência e arriscando fail-fast #999/#1275 falso-positivo
+ * se o 1:1 legado deixar de ser gerado/subido).
  */
 export function resolvePublicCardImageUrl(
   imgCache: ImageCacheFile | null,
@@ -333,7 +335,7 @@ export function classifyImageCache(
   imgCache: ImageCacheFile | null,
 ): ImageCacheState {
   const destaques_with_url = destaques.filter((d) => {
-    const url = imgCache?.images?.[d]?.url ?? null;
+    const url = resolvePublicCardImageUrl(imgCache, d);
     return typeof url === "string" && url.length > 0;
   });
   const destaques_no_image = destaques.filter(
