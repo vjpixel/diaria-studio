@@ -1046,4 +1046,27 @@ describe("LEGACY_SLUG_CORRECTIONS / applyLegacySlugCorrections (#7280)", () => {
 
     assert.deepEqual(found, LEGACY_SLUG_CORRECTIONS);
   });
+
+  // Achado do fleet review (#7280): `workers/site/public/sitemap.xml` é
+  // regenerado À MÃO (não via `gen-archive-pages.ts` completo — ver
+  // docstring do módulo), então nada garantia que as 21 entradas antigas
+  // saíram e as 21 novas entraram. De fato faltavam 2 (bug separado em
+  // `addSitemapEntry`, corrigido junto — falso positivo de substring
+  // quando o slug novo é prefixo de outra URL já presente). Este guard
+  // lê o arquivo REAL e trava as duas pontas.
+  it("workers/site/public/sitemap.xml: todo slug NOVO aparece exatamente 1x, nenhum slug ANTIGO sobra", () => {
+    const sitemapPath = resolve(ROOT, "workers", "site", "public", "sitemap.xml");
+    const sitemap = readFileSync(sitemapPath, "utf8");
+
+    for (const [oldSlug, newSlug] of Object.entries(LEGACY_SLUG_CORRECTIONS)) {
+      const newLoc = `<loc>https://diar.ia.br/p/${newSlug}</loc>`;
+      const oldLoc = `<loc>https://diar.ia.br/p/${oldSlug}</loc>`;
+      assert.equal(
+        (sitemap.match(new RegExp(newLoc.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? []).length,
+        1,
+        `slug corrigido ausente/duplicado no sitemap: ${newSlug}`,
+      );
+      assert.ok(!sitemap.includes(oldLoc), `slug antigo não deveria sobrar no sitemap: ${oldSlug}`);
+    }
+  });
 });

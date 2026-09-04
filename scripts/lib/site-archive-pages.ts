@@ -503,7 +503,17 @@ export function sitemapEntryFromPost(post: ArchivePost): SitemapEntry {
  * a inclusão ainda funciona — é só uma string dentro de `</urlset>`.
  */
 export function addSitemapEntry(existingXml: string, entry: SitemapEntry): string {
-  if (existingXml.includes(entry.loc)) return existingXml;
+  // #7280 (achado do fleet review): `existingXml.includes(entry.loc)` era um
+  // substring check — falso positivo sempre que `entry.loc` é PREFIXO da URL
+  // de outra página já presente (ex: adicionar
+  // `.../p/90-das-pessoas-nao-reconhecem-videos-de-ia` quando o sitemap já
+  // tem `.../p/90-das-pessoas-nao-reconhecem-videos-de-ia-ec15971b8c4f589e`
+  // — página DIFERENTE, slug só coincidentemente prefixado). O check achava
+  // "já presente" e pulava a inserção em silêncio — a entrada nova nunca
+  // entrava no sitemap, sem erro nem log. Comparação agora é contra a tag
+  // `<loc>...</loc>` INTEIRA (mesmo formato que a inserção grava), que só
+  // casa a URL exata.
+  if (existingXml.includes(`<loc>${escXml(entry.loc)}</loc>`)) return existingXml;
   const lastmodLine = entry.lastmod ? `\n    <lastmod>${escXml(entry.lastmod)}</lastmod>` : '';
   const insertion = `  <url>\n    <loc>${escXml(entry.loc)}</loc>${lastmodLine}\n  </url>\n`;
   return existingXml.replace('</urlset>', insertion + '</urlset>');
