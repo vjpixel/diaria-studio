@@ -324,6 +324,7 @@ describe("#4041 — buildUtmsData (orquestração fail-soft)", () => {
     try {
       const data = await buildUtmsData(root, {
         env: { BEEHIIV_API_KEY: "test-key-not-real" }, // BEEHIIV_PUBLICATION_ID de propósito ausente
+        subscriberBackend: "beehiiv", // testa o caminho Beehiiv especificamente (#7388/#7395 tiraram "beehiiv" do default ambiente)
         fetchSubscriptions: (async (publicationId: string, apiKey: string) => {
           receivedArgs = [publicationId, apiKey];
           return { counts: { clarice: 5 }, campaignCounts: {}, total: 5, fetched_at: "x" };
@@ -349,6 +350,7 @@ describe("#4041 — buildUtmsData (orquestração fail-soft)", () => {
     try {
       const data = await buildUtmsData(root, {
         env: {}, // sem fetchSubscriptions injetado — força o caminho real de resolução
+        subscriberBackend: "beehiiv", // testa o caminho Beehiiv especificamente (#7388/#7395 tiraram "beehiiv" do default ambiente)
         fetchClicks: fakeClicks({}),
       });
       assert.match(data.beehiivError ?? "", /BEEHIIV_API_KEY/);
@@ -493,10 +495,11 @@ describe("#4041 — buildUtmsData (orquestração fail-soft)", () => {
     try {
       const data = await buildUtmsData(root, {
         env: {}, // sem fetchSubscriptions injetado — força o caminho real de resolução
+        subscriberBackend: "beehiiv", // pinado — o default AMBIENTE virou "kit" (#7388/#7395), este teste cobre especificamente o caminho beehiiv
         fetchClicks: fakeClicks({}),
       });
       assert.match(data.beehiivError ?? "", /BEEHIIV_API_KEY/);
-      assert.equal(data.subscriberBackend, "beehiiv", "default de platform.config.json — não deve virar undefined em erro");
+      assert.equal(data.subscriberBackend, "beehiiv", "opts.subscriberBackend pinado — não deve virar undefined em erro");
       assert.ok(data.subscriberBackendNotice);
     } finally {
       rmSync(root, { recursive: true, force: true });

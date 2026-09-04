@@ -53,6 +53,7 @@ import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import type { KitConfig } from "./lib/kit-config.ts";
+import { resolveNewsletterSubscriberBackend } from "./lib/shared/newsletter-subscriber-source.ts";
 
 const BEEHIIV_API = beehiivApiBase(); // #2834/#2850: base URL centralizada em lib/beehiiv-config.ts
 const PER_PAGE = 100;
@@ -325,6 +326,32 @@ export async function fetchAndAggregateKit(config?: KitConfig): Promise<UtmCount
   };
 }
 
+/**
+ * Dispatch por `publishing.newsletter.subscriber_backend` (#7395) — usado
+ * pelo CLI guard abaixo. `studio-utms.ts` já fazia essa ramificação por
+ * conta própria; este helper existe pra o CLI standalone (usado direto pelo
+ * editor/agentes pra medir cadastro por UTM) parar de sempre bater na
+ * Beehiiv independente da config. Fetchers injetáveis (default os reais)
+ * pra ser testável sem rede — mesmo padrão de `studio-utms.ts`
+ * (`fetchSubscriptions`/`fetchSubscriptionsKit`).
+ */
+export function fetchByBackend(
+  backend: "beehiiv" | "kit",
+  fetchers: {
+    fetchBeehiiv?: () => Promise<UtmCountResult>;
+    fetchKit?: () => Promise<UtmCountResult>;
+  } = {},
+): Promise<UtmCountResult> {
+  if (backend === "kit") return (fetchers.fetchKit ?? fetchAndAggregateKit)();
+  const fetchBeehiiv =
+    fetchers.fetchBeehiiv ??
+    (() => {
+      const cfg = loadBeehiivConfig("[count-subscriptions-by-utm]");
+      return fetchAndAggregate(cfg.publicationId, cfg.apiKey);
+    });
+  return fetchBeehiiv();
+}
+
 // ---------------------------------------------------------------------------
 // CLI guard
 // ---------------------------------------------------------------------------
@@ -335,9 +362,15 @@ if (isMainModule(import.meta.url)) {
   const sourceIdx = args.indexOf("--source");
   const filterSource = sourceIdx >= 0 ? args[sourceIdx + 1] : null;
 
-  const cfg = loadBeehiivConfig("[count-subscriptions-by-utm]");
+  // #7395 — este CLI ficava hardcoded no Beehiiv, sem checar
+  // publishing.newsletter.subscriber_backend: com a Beehiiv zerada (#7386),
+  // sempre reportava a base errada mesmo depois do switchover pro Kit.
+  // studio-utms.ts já ramifica corretamente por resolveNewsletterSubscriberBackend
+  // — este bloco passa a seguir o mesmo padrão.
+  const backend = resolveNewsletterSubscriberBackend();
+  const resultPromise: Promise<UtmCountResult> = fetchByBackend(backend);
 
-  fetchAndAggregate(cfg.publicationId, cfg.apiKey)
+  resultPromise
     .then((result) => {
       if (jsonMode) {
         process.stdout.write(JSON.stringify(result, null, 2) + "\n");

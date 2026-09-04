@@ -4,11 +4,12 @@
  * Guard determinístico contra o e-mail do canal Kit passar de 102 KB (limite
  * de clipping do Gmail). Severity é CONDICIONAL ao backend ativo em
  * `platform.config.json` (achado do self-review, #6506): `error` (bloqueia
- * o gate) só quando `publishing.newsletter.backend === "kit"` — enquanto o
- * backend real é Beehiiv (hoje) ou qualquer outro, é `warning`
- * (não-bloqueante, mesma disciplina de `checkNewsletterHtmlSize`). Sem essa
- * condicional, este check travaria a pipeline ATUAL (Beehiiv, em produção)
- * por causa de um limite de um canal que ainda nem envia.
+ * o gate) só quando `publishing.newsletter.backend === "kit"` — pra
+ * qualquer outro backend, é `warning` (não-bloqueante, mesma disciplina de
+ * `checkNewsletterHtmlSize`). O backend real deste repo virou "kit" em
+ * 04/09/2026 (#7388) — o teste abaixo, que roda sem override de rootDir,
+ * reflete isso desde então: bloqueia de verdade, porque Kit é o canal de
+ * envio em produção.
  *
  * Espelha o padrão de test/stage-4-newsletter-html-size-invariant.test.ts.
  */
@@ -149,9 +150,9 @@ describe("STAGE_4_RULES registry (#6506)", () => {
       writeHtmlOfSize(resolve(dir, "_internal", "newsletter-final-kit.html"), 110_000);
       const violations = rule!.run(dir);
       assert.equal(violations.length, 1);
-      // backend real deste repo hoje é "beehiiv" (platform.config.json) —
-      // Kit não é o canal de envio ainda, então não deveria bloquear.
-      assert.equal(violations[0].severity, "warning");
+      // backend real deste repo hoje é "kit" (platform.config.json, #7388) —
+      // Kit é o canal de envio, então o excesso de tamanho bloqueia o gate.
+      assert.equal(violations[0].severity, "error");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

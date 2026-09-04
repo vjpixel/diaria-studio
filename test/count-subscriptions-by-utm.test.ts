@@ -20,6 +20,7 @@ import {
   formatCountsTable,
   fetchAndAggregate,
   fetchAndAggregateKit,
+  fetchByBackend,
 } from "../scripts/count-subscriptions-by-utm.ts";
 
 // ---------------------------------------------------------------------------
@@ -394,5 +395,47 @@ describe("fetchAndAggregateKit — leitura condicional via Kit (#6051, campos co
       assert.equal(r.counts["__none__"], 1);
       assert.equal(r.campaignCounts["__none__"], 1);
     } finally { m.restore(); }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchByBackend (#7395)
+// ---------------------------------------------------------------------------
+
+describe("fetchByBackend (#7395 — CLI parava de checar subscriber_backend)", () => {
+  it("backend kit → chama o fetcher do Kit, nunca o do Beehiiv", async () => {
+    let kitCalled = false;
+    let beehiivCalled = false;
+    const fakeResult = { counts: {}, campaignCounts: {}, total: 42, fetched_at: "x" };
+    await fetchByBackend("kit", {
+      fetchKit: async () => {
+        kitCalled = true;
+        return fakeResult;
+      },
+      fetchBeehiiv: async () => {
+        beehiivCalled = true;
+        return fakeResult;
+      },
+    });
+    assert.equal(kitCalled, true);
+    assert.equal(beehiivCalled, false);
+  });
+
+  it("backend beehiiv → chama o fetcher do Beehiiv, nunca o do Kit", async () => {
+    let kitCalled = false;
+    let beehiivCalled = false;
+    const fakeResult = { counts: {}, campaignCounts: {}, total: 7, fetched_at: "x" };
+    await fetchByBackend("beehiiv", {
+      fetchKit: async () => {
+        kitCalled = true;
+        return fakeResult;
+      },
+      fetchBeehiiv: async () => {
+        beehiivCalled = true;
+        return fakeResult;
+      },
+    });
+    assert.equal(beehiivCalled, true);
+    assert.equal(kitCalled, false);
   });
 });
