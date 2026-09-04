@@ -1084,11 +1084,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           );
         }
       } else {
+        // #7413 review: `guardScope` só é `null` no ramo `dailyArg` acima —
+        // este `if` explícito devolve a garantia de compile-time do switch
+        // abaixo (sem ele, o `as CommittedGuardScope` cast escondia um
+        // `guardScope === null` indevido até o runtime, caindo no `default`
+        // — dano limitado, mas o comentário do switch promete mais do que
+        // o cast garantia).
+        if (guardScope === null) {
+          throw new Error("guardScope nulo fora do modo --daily — bug de programação, nunca deveria acontecer.");
+        }
         // `switch` + exhaustividade (em vez de ternário): um escopo novo
         // adicionado a `CommittedGuardScope` quebra o TYPECHECK aqui, em vez de
         // cair silenciosamente no ramo `committed` — que é a forma exata do bug
         // que esta função corrige.
-        switch (guardScope as CommittedGuardScope) {
+        switch (guardScope) {
           case "queued":
             guardListIds = await fetchQueuedCampaignListIds(apiKey);
             break;
@@ -1096,7 +1105,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
             guardListIds = await fetchCommittedCampaignListIds(apiKey);
             break;
           default: {
-            const jamais: never = guardScope as never;
+            const jamais: never = guardScope;
             throw new Error(`guardScope não tratado: ${String(jamais)}`);
           }
         }
