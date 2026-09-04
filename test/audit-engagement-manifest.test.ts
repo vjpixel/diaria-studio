@@ -13,8 +13,8 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { readActualCounts, auditVerdict, postsNeedingAnchor } from "../scripts/audit-engagement-manifest.ts";
-import type { EngagementManifest } from "../scripts/lib/beehiiv-engagement-manifest.ts";
+import { readActualCounts, readLineShapeReports, auditVerdict, postsNeedingAnchor } from "../scripts/audit-engagement-manifest.ts";
+import type { EngagementManifest, LineShapeReport } from "../scripts/lib/beehiiv-engagement-manifest.ts";
 
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "audit-engagement-"));
@@ -75,6 +75,73 @@ describe("auditVerdict — o modo degradado nunca se declara completo (#7197)", 
 
   it("--skip-recipients tem precedencia sobre a contagem de indisponiveis", () => {
     assert.equal(auditVerdict(true, 3), "parcial-sem-ancora");
+  });
+});
+
+describe("readLineShapeReports — guard de shape por linha (#7417)", () => {
+  const good = '{"subscriber_id":"0987bafd-e2db-49dd-b63d-3bbd5d8f6f6b","email":"orobobraga@gmail.com","status":"delivered","timestamp":"2026-03-18T07:14:36Z"}\n';
+  const placeholder = '{"subscriber_id":"sub1"}\n';
+
+  it("post com todas as linhas válidas: 0 violações", () => {
+    const outDir = setup();
+    writeFileSync(resolve(outDir, "post_ok.jsonl"), good.repeat(3));
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_ok", status: "ok", count: 3 }],
+    };
+    const report = readLineShapeReports(manifest, outDir).get("post_ok") as LineShapeReport;
+    assert.equal(report.total, 3);
+    assert.equal(report.violations.length, 0);
+  });
+
+  it("reproduz o #7417: 100 linhas placeholder → 100 violações", () => {
+    const outDir = setup();
+    writeFileSync(resolve(outDir, "post_077f565f.jsonl"), Array.from({ length: 100 }, (_, i) => `{"subscriber_id":"sub${i + 1}"}\n`).join(""));
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_077f565f", status: "ok", count: 100 }],
+    };
+    const report = readLineShapeReports(manifest, outDir).get("post_077f565f") as LineShapeReport;
+    assert.equal(report.total, 100);
+    assert.equal(report.violations.length, 100);
+    assert.ok(report.violations[0].error.includes("subscriber_id"));
+  });
+
+  it("post sem .jsonl em disco: não entra no mapa (já pending pela contagem)", () => {
+    const outDir = setup();
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_ghost", status: "ok", count: 40 }],
+    };
+    assert.equal(readLineShapeReports(manifest, outDir).has("post_ghost"), false);
+  });
+
+  it("mistura: 2 boas + 1 inválida → 1 violação na linha 3", () => {
+    const outDir = setup();
+    writeFileSync(
+      resolve(outDir, "post_mixed.jsonl"),
+      good + good + placeholder,
+    );
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_mixed", status: "ok", count: 3 }],
+    };
+    const report = readLineShapeReports(manifest, outDir).get("post_mixed") as LineShapeReport;
+    assert.equal(report.total, 3);
+    assert.equal(report.violations.length, 1);
+    assert.equal(report.violations[0].line, 3);
+  });
+
+  it("ignora linhas em branco no final do jsonl (mesma tolerância de countExistingLines)", () => {
+    const outDir = setup();
+    writeFileSync(resolve(outDir, "post_ok.jsonl"), good + "\n\n");
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_ok", status: "ok", count: 1 }],
+    };
+    const report = readLineShapeReports(manifest, outDir).get("post_ok") as LineShapeReport;
+    assert.equal(report.total, 1);
+    assert.equal(report.violations.length, 0);
   });
 });
 
