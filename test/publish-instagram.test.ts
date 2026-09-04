@@ -427,12 +427,20 @@ describe("Erro claro quando imagem ausente", () => {
     assert.ok(failEntry.reason.includes("public URL para d1"));
   });
 
-  it("chave de imagem pública é images.{destaque} (ex: images.d1) — mesmo shape de publish-linkedin.ts (#3634)", () => {
+  it("chave de imagem pública é images.{destaque}_4x5 com fallback pro hero — mesmo shape de publish-linkedin.ts (#3634, #7399)", () => {
     // #3634: bug anterior lia publicImages[`${d}_1x1`] direto no objeto raiz
     // (JSON real é { images: { d1: { url }, ... } }, sem sufixo _1x1) — 100%
     // miss em runtime. Fix alinha com o ImageCacheFile shape de publish-linkedin.ts.
-    assert.match(SRC, /images\?\.\[d\]\?\.url/, "deve ler via images?.[d]?.url (shape aninhado, sem sufixo _1x1)");
+    // #7399: a chave BASE (sem sufixo) deixou de ser uploadada — o fallback
+    // do 4:5 agora vai direto pro hero 2:1 (`heroKey` = cover/d{N}_2x1), nunca
+    // mais pra `images?.[d]?.url` sozinho.
+    assert.match(SRC, /images\?\.\[heroKey\]\?\.url/, "deve ler via images?.[heroKey]?.url (fallback hero 2:1, #7399)");
     assert.doesNotMatch(SRC, /\$\{d\}_1x1/, "não deve mais montar chave com sufixo _1x1");
+    assert.doesNotMatch(
+      SRC,
+      /images\?\.\[`\$\{d\}_4x5`\]\?\.url \?\? images\?\.\[d\]\?\.url/,
+      "#7399: fallback não deve mais ser a chave base sem sufixo (images?.[d]?.url)",
+    );
   });
 });
 

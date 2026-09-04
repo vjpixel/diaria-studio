@@ -93,13 +93,14 @@ describe("#923 publish-linkedin.ts fail-fast em --schedule sem Worker", () => {
       "# Facebook\n\n## d1\nFB d1.\n\n## d2\nFB d2.\n\n## d3\nFB d3.\n\n# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
     );
     // #999: Image cache populado pra evitar abort do fail-fast novo.
+    // #7399: hero 2:1 (cover/d2_2x1/d3_2x1) — chave base 1x1 não é mais uploadada.
     writeFileSync(
       resolve(editionDir, "06-public-images.json"),
       JSON.stringify({
         images: {
-          d1: { url: "https://example.com/d1.jpg" },
-          d2: { url: "https://example.com/d2.jpg" },
-          d3: { url: "https://example.com/d3.jpg" },
+          cover: { url: "https://example.com/d1.jpg" },
+          d2_2x1: { url: "https://example.com/d2.jpg" },
+          d3_2x1: { url: "https://example.com/d3.jpg" },
         },
       }),
     );
@@ -175,12 +176,13 @@ describe("#999 publish-linkedin.ts fail-fast quando 06-public-images.json ausent
       resolve(editionDir, "03-social.md"),
       "# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
     );
+    // #7399: hero 2:1 (cover/d3_2x1) — d2_2x1 ausente de propósito.
     writeFileSync(
       resolve(editionDir, "06-public-images.json"),
       JSON.stringify({
         images: {
-          d1: { url: "https://example.com/d1.jpg" },
-          d3: { url: "https://example.com/d3.jpg" },
+          cover: { url: "https://example.com/d1.jpg" },
+          d3_2x1: { url: "https://example.com/d3.jpg" },
         },
       }),
     );
@@ -212,7 +214,11 @@ describe("#999 publish-linkedin.ts fail-fast quando 06-public-images.json ausent
 
   // #1275: cenário do incidente real — cache só com keys de newsletter mode (cover/eia)
   // sem keys de social mode (d1/d2/d3). Fail-fast deve disparar mesmo cache existindo.
-  it("ABORTA com cache só de newsletter mode (cover/eia, sem d1/d2/d3) — repro #1275", () => {
+  //
+  // #7399: `cover` agora É o hero 2:1 fallback do d1 (não uma key "genuinamente
+  // sem imagem pra d1") — d1 resolve OK com só `cover` presente. O que ainda
+  // dispara o fail-fast neste cenário é d2/d3 (sem card 4:5 nem hero 2x1).
+  it("ABORTA com cache só de cover/eia (sem d2_2x1/d3_2x1/4x5) — d1 resolve via hero, d2/d3 não", () => {
     const tmp = mkdtempSync(resolve(tmpdir(), "newsletter-only-cache-"));
     const editionDir = resolve(tmp, "260999");
     mkdirSync(editionDir, { recursive: true });
@@ -220,7 +226,8 @@ describe("#999 publish-linkedin.ts fail-fast quando 06-public-images.json ausent
       resolve(editionDir, "03-social.md"),
       "# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
     );
-    // Cache estado real do bug — só keys de newsletter mode
+    // Cache com hero do d1 (cover) mas SEM d2_2x1/d3_2x1 (nem 4x5) — reproduz
+    // o cenário onde os arquivos locais de d2/d3 nunca existiram no disco.
     writeFileSync(
       resolve(editionDir, "06-public-images.json"),
       JSON.stringify({
@@ -235,7 +242,8 @@ describe("#999 publish-linkedin.ts fail-fast quando 06-public-images.json ausent
     const result = runCli(["--edition-dir", editionDir, "--schedule"]);
     rmSync(tmp, { recursive: true, force: true });
     assert.equal(result.exitCode, 2);
-    assert.match(result.stderr, /d1|d2|d3/);
+    assert.match(result.stderr, /destaque\(s\): d2, d3/, "#7399: só d2/d3 devem faltar — d1 resolve via cover (hero)");
+    assert.doesNotMatch(result.stderr, /destaque\(s\): d1/, "#7399: d1 não deve mais ser reportado como missing (cover cobre)");
     // Mensagem deve mencionar as keys presentes (audit visível)
     assert.match(result.stderr, /Keys presentes.*cover.*eia/);
   });
@@ -267,13 +275,14 @@ describe("#999 publish-linkedin.ts fail-fast quando 06-public-images.json ausent
       resolve(editionDir, "03-social.md"),
       "# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
     );
+    // #7399: hero 2:1 (cover/d3_2x1) — chave base 1x1 não é mais uploadada.
     writeFileSync(
       resolve(editionDir, "06-public-images.json"),
       JSON.stringify({
         images: {
-          d1: { url: "https://example.com/d1.jpg" },
+          cover: { url: "https://example.com/d1.jpg" },
           d2: { no_image: true }, // #3385: genuinamente sem imagem, não falha
-          d3: { url: "https://example.com/d3.jpg" },
+          d3_2x1: { url: "https://example.com/d3.jpg" },
         },
       }),
     );
@@ -306,13 +315,14 @@ describe("#999 publish-linkedin.ts fail-fast quando 06-public-images.json ausent
       resolve(editionDir, "03-social.md"),
       "# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
     );
+    // #7399: hero 2:1 (cover) — chave base 1x1 não é mais uploadada.
     writeFileSync(
       resolve(editionDir, "06-public-images.json"),
       JSON.stringify({
         images: {
-          d1: { url: "https://example.com/d1.jpg" },
+          cover: { url: "https://example.com/d1.jpg" },
           d2: { no_image: true }, // OK — genuinamente sem imagem
-          // d3 ausente — falha real (upload nunca rodou/falhou)
+          // d3 ausente (nem 4x5 nem d3_2x1) — falha real (upload nunca rodou/falhou)
         },
       }),
     );
@@ -360,13 +370,14 @@ describe("#1310 publish-linkedin.ts — comments skipped por default", () => {
       resolve(editionDir, "03-social.md"),
       "# LinkedIn\n\n## d1\nLI d1.\n\n### comment_diaria\nCD d1.\n\n### comment_pixel\nCP d1.\n\n## d2\nLI d2.\n\n### comment_diaria\nCD d2.\n\n### comment_pixel\nCP d2.\n\n## d3\nLI d3.\n\n### comment_diaria\nCD d3.\n\n### comment_pixel\nCP d3.\n",
     );
+    // #7399: hero 2:1 (cover/d2_2x1/d3_2x1) — chave base 1x1 não é mais uploadada.
     writeFileSync(
       resolve(editionDir, "06-public-images.json"),
       JSON.stringify({
         images: {
-          d1: { url: "https://example.com/d1.jpg" },
-          d2: { url: "https://example.com/d2.jpg" },
-          d3: { url: "https://example.com/d3.jpg" },
+          cover: { url: "https://example.com/d1.jpg" },
+          d2_2x1: { url: "https://example.com/d2.jpg" },
+          d3_2x1: { url: "https://example.com/d3.jpg" },
         },
       }),
     );

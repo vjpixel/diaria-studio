@@ -64,10 +64,10 @@ describe("mergeBaseFromCache — merge cross-mode preservado com --no-cache (#18
     assert.deepEqual(mergeBaseFromCache(join(tmpdir(), "nao-existe-06.json")), {});
   });
 
-  it("e2e: run() social --no-cache preserva cover/eia do newsletter + cloudflare_url do d1 (#1865)", async () => {
+  it("e2e: run() social --no-cache preserva cover/eia do newsletter + cloudflare_url do cover (#1865)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "260605"));
     try {
-      // newsletter mode já gravou cover/eia_a/eia_b + d1 (com cloudflare_url).
+      // newsletter mode já gravou cover/eia_a/eia_b (com cloudflare_url).
       writeFileSync(
         join(dir, "06-public-images.json"),
         JSON.stringify({
@@ -75,13 +75,13 @@ describe("mergeBaseFromCache — merge cross-mode preservado com --no-cache (#18
             cover: { file_id: "c", url: "u-cover", target: "cloudflare", cloudflare_url: "u-cover", md5: "m1" },
             eia_a: { file_id: "a", url: "u-a", target: "cloudflare", md5: "m2" },
             eia_b: { file_id: "b", url: "u-b", target: "cloudflare", md5: "m3" },
-            d1: { file_id: "d1cf", url: "u-d1-cf", target: "cloudflare", cloudflare_url: "u-d1-cf", md5: "m4" },
           },
         }),
         "utf8",
       );
-      // imagens do social mode presentes no disco (forçam re-upload sob --no-cache).
-      for (const f of ["04-d1-1x1.jpg", "04-d2-1x1.jpg", "04-d3-1x1.jpg"]) {
+      // #7399: social mode não sobe mais a chave base 1x1 — só o card 4:5
+      // (optional). Imagens presentes no disco forçam re-upload sob --no-cache.
+      for (const f of ["04-d1-4x5.jpg", "04-d2-4x5.jpg", "04-d3-4x5.jpg"]) {
         writeFileSync(join(dir, f), `fake-jpg-bytes-${f}`, "utf8");
       }
 
@@ -105,11 +105,10 @@ describe("mergeBaseFromCache — merge cross-mode preservado com --no-cache (#18
       assert.ok(out.cover, "cover preservada");
       assert.ok(out.eia_a && out.eia_b, "eia_a/eia_b preservados");
       assert.equal(out.cover.cloudflare_url, "u-cover");
-      // Social keys re-uploadadas (target drive).
-      assert.ok(out.d1 && out.d2 && out.d3, "d1/d2/d3 presentes");
-      assert.equal(out.d1.target, "drive");
-      // d1 preservou o cloudflare_url do entry newsletter (#1584, agora sob --no-cache).
-      assert.equal(out.d1.cloudflare_url, "u-d1-cf");
+      // Social keys (4:5) re-uploadadas (target drive). #7399: sem chave base.
+      assert.ok(out.d1_4x5 && out.d2_4x5 && out.d3_4x5, "d1_4x5/d2_4x5/d3_4x5 presentes");
+      assert.ok(!out.d1 && !out.d2 && !out.d3, "#7399: chave base 1x1 não deve mais ser uploadada");
+      assert.equal(out.d1_4x5.target, "drive");
       // --no-cache forçou re-upload dos 3 (não reusou).
       assert.equal(driveUploads.length, 3);
     } finally {
@@ -129,8 +128,8 @@ describe("#2147 regression: social mode default → cloudflare KV, sem Drive uc?
   it("e2e: run() social default (cloudflare) → 06-public-images.json SEM drive.google.com/uc (#2147)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "260613-2147-"));
     try {
-      // Imagens 1x1 de todos os destaques presentes no disco.
-      for (const f of ["04-d1-1x1.jpg", "04-d2-1x1.jpg", "04-d3-1x1.jpg"]) {
+      // #7399: social mode só sobe os cards 4:5 (a chave base 1x1 foi removida).
+      for (const f of ["04-d1-4x5.jpg", "04-d2-4x5.jpg", "04-d3-4x5.jpg"]) {
         writeFileSync(join(dir, f), `fake-bytes-${f}`, "utf8");
       }
 
@@ -152,8 +151,8 @@ describe("#2147 regression: social mode default → cloudflare KV, sem Drive uc?
 
       const out = JSON.parse(readFileSync(join(dir, "06-public-images.json"), "utf8")).images;
 
-      // Todos os 3 destaques presentes e via Cloudflare KV.
-      for (const key of ["d1", "d2", "d3"]) {
+      // Todos os 3 destaques (via card 4:5) presentes e via Cloudflare KV.
+      for (const key of ["d1_4x5", "d2_4x5", "d3_4x5"]) {
         assert.ok(out[key], `${key} deve estar no cache`);
         // URLs de consumo NÃO contêm drive.google.com/uc (era o bug #2147).
         assert.ok(
@@ -172,8 +171,10 @@ describe("#2147 regression: social mode default → cloudflare KV, sem Drive uc?
         );
         assert.equal(out[key].target, "cloudflare");
       }
+      // #7399: chave base 1x1 não deve mais existir.
+      assert.ok(!out.d1 && !out.d2 && !out.d3, "#7399: chave base 1x1 não deve mais ser uploadada");
       // 3 uploads Cloudflare realizados.
-      assert.equal(cfUploads.length, 3, "3 uploads CF realizados (d1/d2/d3)");
+      assert.equal(cfUploads.length, 3, "3 uploads CF realizados (d1_4x5/d2_4x5/d3_4x5)");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -194,7 +195,7 @@ describe("#2147 regression: social mode default → cloudflare KV, sem Drive uc?
         }),
         "utf8",
       );
-      for (const f of ["04-d1-1x1.jpg", "04-d2-1x1.jpg", "04-d3-1x1.jpg"]) {
+      for (const f of ["04-d1-4x5.jpg", "04-d2-4x5.jpg", "04-d3-4x5.jpg"]) {
         writeFileSync(join(dir, f), `fresh-${f}`, "utf8");
       }
 
@@ -212,8 +213,8 @@ describe("#2147 regression: social mode default → cloudflare KV, sem Drive uc?
       // Cross-mode keys do newsletter preservadas.
       assert.ok(out.cover, "cover preservada");
       assert.ok(out.eia_a && out.eia_b, "eia_a/eia_b preservadas");
-      // Social keys adicionadas via KV — nenhuma URL de Drive.
-      for (const key of ["d1", "d2", "d3"]) {
+      // Social keys (4:5) adicionadas via KV — nenhuma URL de Drive.
+      for (const key of ["d1_4x5", "d2_4x5", "d3_4x5"]) {
         assert.ok(!out[key]?.url?.includes("drive.google.com"), `${key} não deve ter Drive URL`);
         assert.ok(out[key]?.url?.startsWith(WORKER), `${key} deve ser Worker KV URL`);
       }
@@ -324,15 +325,16 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     assert.ok(!keys.includes("eia_real"));
   });
 
-  it("#1701/#2133/#2141: newsletter mode inclui d1/d2/d3 1x1 + d2/d3 2x1 (hero inline + social preview)", () => {
-    // #1701: social preview resolve d1/d2/d3 via cloudflare_url — newsletter mode
-    // (CF) os sobe antes do social/drive. #2133/#2141: d2/d3 também precisam do
-    // 2x1 no email como hero inline ({{IMG:04-d2-2x1.jpg}}, {{IMG:04-d3-2x1.jpg}}).
+  it("#7399: newsletter mode NÃO inclui mais a chave base 1x1 (d1/d2/d3) — sem consumidor real", () => {
+    // #1701 originalmente subia d1/d2/d3 1x1 pro CF só pro social preview.
+    // #7399: removido — publishers caem no hero 2:1 (cover/d2_2x1/d3_2x1)
+    // quando o card 4:5 falta, o 1:1 nunca era de fato consultado quando o
+    // 4:5 existia (sempre existe, gen-social-card-4x5.ts é bloqueante).
     const specs = imageSpecsFor("newsletter");
     const keys = specs.map((s) => s.key);
-    assert.ok(keys.includes("d1"), "d1 em newsletter mode");
-    assert.ok(keys.includes("d2"), "d2 1x1 em newsletter mode (#1701)");
-    assert.ok(keys.includes("d3"), "d3 1x1 em newsletter mode (#1701)");
+    assert.ok(!keys.includes("d1"), "d1 (base 1x1) não deve mais estar em newsletter mode");
+    assert.ok(!keys.includes("d2"), "d2 (base 1x1) não deve mais estar em newsletter mode");
+    assert.ok(!keys.includes("d3"), "d3 (base 1x1) não deve mais estar em newsletter mode");
     assert.ok(keys.includes("d2_2x1"), "d2 2x1 em newsletter mode (#2133/#2141)");
     assert.ok(keys.includes("d3_2x1"), "d3 2x1 em newsletter mode (#2133/#2141)");
     // #4114: cada slot de box de divulgação ganhou imagem arbitrária opcional
@@ -342,11 +344,11 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     assert.deepEqual(
       keys.sort(),
       [
-        "cover", "d1", "d2", "d2_2x1", "d3", "d3_2x1",
+        "cover", "d2_2x1", "d3_2x1",
         "box_slot0_image", "box_slot1_image", "box_slot2_image", "box_slot3_image", // #4274: slot0 (introdução)
         "eia_a", "eia_b", "livros_promo",
       ].sort(),
-      "newsletter = cover + d1/d2/d3 (1x1 + 2x1) + 4 box slots (#4274) + eia_a/eia_b + livros_promo",
+      "newsletter = cover + d2/d3 2x1 (#7399: sem 1x1 base) + 4 box slots (#4274) + eia_a/eia_b + livros_promo",
     );
     assert.ok(
       specs.filter((s) => s.key.startsWith("box_slot")).every((s) => s.optional),
@@ -354,19 +356,14 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     );
     // O card 4:5 é asset de FEED, não entra no e-mail (evita upload inútil).
     assert.ok(!keys.some((k) => k.endsWith("_4x5")), "4x5 é social-only, fora do newsletter mode");
-    // filenames: 1x1 (square) para social; 2x1 (wide) para hero inline.
-    assert.equal(specs.find((s) => s.key === "d2")!.filename, "04-d2-1x1.jpg");
-    assert.equal(specs.find((s) => s.key === "d3")!.filename, "04-d3-1x1.jpg");
+    // filenames: 2x1 (wide) para hero inline.
     assert.equal(specs.find((s) => s.key === "d2_2x1")!.filename, "04-d2-2x1.jpg");
     assert.equal(specs.find((s) => s.key === "d3_2x1")!.filename, "04-d3-2x1.jpg");
     // Todos são best-effort (optional) — não bloqueiam newsletter-mode standalone
-    // se ausentes; cover/d1/eia (usados pelo email) NÃO são optional.
-    assert.equal(specs.find((s) => s.key === "d2")!.optional, true);
-    assert.equal(specs.find((s) => s.key === "d3")!.optional, true);
+    // se ausentes; cover/eia (usados pelo email) NÃO são optional.
     assert.equal(specs.find((s) => s.key === "d2_2x1")!.optional, true, "d2_2x1 optional");
     assert.equal(specs.find((s) => s.key === "d3_2x1")!.optional, true, "d3_2x1 optional");
     assert.ok(!specs.find((s) => s.key === "cover")!.optional);
-    assert.ok(!specs.find((s) => s.key === "d1")!.optional);
   });
 
   it("#1808: newsletter mode inclui o slot livros_promo (optional, com md5 cache-bust)", () => {
@@ -381,11 +378,12 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     assert.ok(!lp!.noCacheBust, "livros_promo NÃO deve ter noCacheBust (mantém md5)");
   });
 
-  it("#1583: newsletter mode inclui d1-1x1 → social preview funciona", () => {
+  it("#7399: newsletter mode não inclui mais d1 (base 1x1) — social preview usa cover (2x1)", () => {
     const specs = imageSpecsFor("newsletter");
-    const d1Spec = specs.find((s) => s.key === "d1");
-    assert.ok(d1Spec, "d1 spec deve estar em newsletter mode");
-    assert.equal(d1Spec!.filename, "04-d1-1x1.jpg");
+    assert.ok(!specs.find((s) => s.key === "d1"), "d1 (base 1x1) não deve mais estar em newsletter mode");
+    const coverSpec = specs.find((s) => s.key === "cover");
+    assert.ok(coverSpec, "cover spec deve estar em newsletter mode (fallback do social preview pra d1)");
+    assert.equal(coverSpec!.filename, "04-d1-2x1.jpg");
   });
 
   it("newsletter mode com editionDir + 01-eia-A.jpg + 01-eia-B.jpg → eia_a/eia_b", () => {
@@ -448,12 +446,10 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     const eiaB = specs.find((s) => s.key === "eia_b");
     assert.equal(eiaA?.noCacheBust, true, "eia_a deve ter noCacheBust=true");
     assert.equal(eiaB?.noCacheBust, true, "eia_b deve ter noCacheBust=true");
-    // cover + d1 (newsletter/social, vão pro email → cache agressivo do Gmail
-    // proxy) continuam com cache-bust (noCacheBust ausente/falsy).
+    // cover (newsletter/social, vai pro email → cache agressivo do Gmail
+    // proxy) continua com cache-bust (noCacheBust ausente/falsy).
     const cover = specs.find((s) => s.key === "cover");
-    const d1 = specs.find((s) => s.key === "d1");
     assert.ok(!cover?.noCacheBust, "cover deve manter cache-bust");
-    assert.ok(!d1?.noCacheBust, "d1 deve manter cache-bust");
   });
 
   it("#1704: specs eia legacy (real/ia) também têm noCacheBust=true", () => {
@@ -481,11 +477,12 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
       assert.ok(!keys.includes("eia_a"));
       assert.ok(!keys.includes("eia_real"));
       // #4114: os 3 cards 4:5 entram no social como specs OPCIONAIS — a edição
-      // que não os gerou sobe só as 1:1 e os publishers caem no fallback.
+      // que não os gerou cai pro hero 2:1 (fallback nos publishers, #7399).
       // #6005 Parte B: 4 slides sem foto do carrossel (p1/p2/p3/cta) por
       // destaque, também opcionais (mesma razão dos cards 4:5).
+      // #7399: chave base 1x1 (d1/d2/d3) removida — sem consumidor real.
       assert.deepEqual(keys, [
-        "d1", "d2", "d3", "d1_4x5", "d2_4x5", "d3_4x5",
+        "d1_4x5", "d2_4x5", "d3_4x5",
         "d1_carousel_p1", "d1_carousel_p2", "d1_carousel_p3", "d1_carousel_cta",
         "d2_carousel_p1", "d2_carousel_p2", "d2_carousel_p3", "d2_carousel_cta",
         "d3_carousel_p1", "d3_carousel_p2", "d3_carousel_p3", "d3_carousel_cta",
@@ -506,17 +503,19 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
       touch(join(dir, "01-eia-B.jpg"));
       const specs = imageSpecsFor("all", dir);
       const keys = specs.map((s) => s.key);
-      // social: d1, d2, d3
-      assert.ok(keys.includes("d1"));
-      assert.ok(keys.includes("d2"));
-      assert.ok(keys.includes("d3"));
-      // newsletter: cover, eia_a, eia_b (#1121: d2/d3 não vão mais aqui)
+      // social: d{N}_4x5 (#7399: sem chave base 1x1)
+      assert.ok(keys.includes("d1_4x5"));
+      assert.ok(keys.includes("d2_4x5"));
+      assert.ok(keys.includes("d3_4x5"));
+      // newsletter: cover, d2_2x1, d3_2x1, eia_a, eia_b
       assert.ok(keys.includes("cover"));
+      assert.ok(keys.includes("d2_2x1"));
+      assert.ok(keys.includes("d3_2x1"));
       assert.ok(keys.includes("eia_a"));
       assert.ok(keys.includes("eia_b"));
-      // sem dups (d2/d3 só vêm de social agora — sem chance de dup)
-      assert.equal(keys.filter((k) => k === "d2").length, 1);
-      assert.equal(keys.filter((k) => k === "d3").length, 1);
+      // sem dups
+      assert.equal(keys.filter((k) => k === "d2_4x5").length, 1);
+      assert.equal(keys.filter((k) => k === "d3_4x5").length, 1);
       assert.equal(keys.length, new Set(keys).size, "sem keys duplicadas");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -642,8 +641,8 @@ describe("uploadPublicImages — warnings (#5085): spec optional ausente com cac
   it("arquivo local ausente + entry cacheada pré-existente → warning explícito (não silencioso)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "260812-5085-warn-"));
     try {
-      // Cache pré-existente pra d2 (upload de uma rodada anterior) — simula o
-      // cenário real: 04-d2-1x1.jpg sumiu do disco DEPOIS desse upload
+      // Cache pré-existente pra d2_2x1 (upload de uma rodada anterior) — simula
+      // o cenário real: 04-d2-2x1.jpg sumiu do disco DEPOIS desse upload
       // (rename malsucedido sob junction OneDrive), mas 06-public-images.json
       // ainda guarda a URL antiga.
       writeFileSync(
@@ -651,17 +650,16 @@ describe("uploadPublicImages — warnings (#5085): spec optional ausente com cac
         JSON.stringify({
           images: {
             cover: { file_id: "c", url: "u-cover", target: "cloudflare", md5: "m0" },
-            d1: { file_id: "d1", url: "u-d1", target: "cloudflare", md5: "m1" },
             eia_a: { file_id: "a", url: "u-a", target: "cloudflare", md5: "m2" },
             eia_b: { file_id: "b", url: "u-b", target: "cloudflare", md5: "m3" },
-            d2: { file_id: "d2-old", url: "u-d2-old", target: "cloudflare", md5: "m4" },
+            d2_2x1: { file_id: "d2-2x1-old", url: "u-d2-2x1-old", target: "cloudflare", md5: "m4" },
           },
         }),
         "utf8",
       );
-      // cover/d1/eia presentes no disco (não bloqueiam); d2 (optional em
-      // mode=newsletter) e d2_2x1 (também optional) estão AUSENTES do disco.
-      for (const f of ["04-d1-2x1.jpg", "04-d1-1x1.jpg", "01-eia-A.jpg", "01-eia-B.jpg"]) {
+      // cover/eia presentes no disco (não bloqueiam); d2_2x1 (optional em
+      // mode=newsletter) está AUSENTE do disco.
+      for (const f of ["04-d1-2x1.jpg", "01-eia-A.jpg", "01-eia-B.jpg"]) {
         writeFileSync(join(dir, f), `bytes-${f}`, "utf8");
       }
       mkdirSync(join(dir, "_internal"), { recursive: true });
@@ -680,12 +678,12 @@ describe("uploadPublicImages — warnings (#5085): spec optional ausente com cac
       });
 
       assert.ok(
-        result.warnings.some((w) => w.includes("d2") && w.includes("ausente")),
-        `esperava warning sobre d2 ausente com cache stale. warnings: ${JSON.stringify(result.warnings)}`,
+        result.warnings.some((w) => w.includes("d2_2x1") && w.includes("ausente")),
+        `esperava warning sobre d2_2x1 ausente com cache stale. warnings: ${JSON.stringify(result.warnings)}`,
       );
-      // Cache antigo de d2 continua servido (comportamento preservado —
+      // Cache antigo de d2_2x1 continua servido (comportamento preservado —
       // só ficou auditável, não silencioso).
-      assert.equal(result.images.d2?.url, "u-d2-old");
+      assert.equal(result.images.d2_2x1?.url, "u-d2-2x1-old");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -696,7 +694,7 @@ describe("uploadPublicImages — warnings (#5085): spec optional ausente com cac
     try {
       // Nenhum 06-public-images.json prévio — box_slot0_image nunca foi
       // uploadado (caso comum: a maioria das edições não tem esse box).
-      for (const f of ["04-d1-2x1.jpg", "04-d1-1x1.jpg", "01-eia-A.jpg", "01-eia-B.jpg"]) {
+      for (const f of ["04-d1-2x1.jpg", "01-eia-A.jpg", "01-eia-B.jpg"]) {
         writeFileSync(join(dir, f), `bytes-${f}`, "utf8");
       }
       mkdirSync(join(dir, "_internal"), { recursive: true });

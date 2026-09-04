@@ -420,12 +420,12 @@ describe("Stage-4 checkPublicImagesPopulated 2-destaque (#2352)", () => {
 // ---------------------------------------------------------------------------
 
 describe("assertCacheCompleteness 2-destaque (#2352)", () => {
-  it("social 2-destaque: PASSA com d1/d2 (sem d3)", () => {
+  it("social 2-destaque: PASSA com d1/d2 (sem d3) via card 4:5 (#7399)", () => {
     assert.doesNotThrow(() =>
       assertCacheCompleteness(
         {
-          d1: makeImg("https://x/d1"),
-          d2: makeImg("https://x/d2"),
+          d1_4x5: makeImg("https://x/d1_4x5"),
+          d2_4x5: makeImg("https://x/d2_4x5"),
         },
         "social",
         2,
@@ -433,13 +433,13 @@ describe("assertCacheCompleteness 2-destaque (#2352)", () => {
     );
   });
 
-  it("social 2-destaque: FALHA quando d2 ausente", () => {
+  it("social 2-destaque: FALHA quando d2 ausente (nem 4:5 nem hero 2:1)", () => {
     assert.throws(
       () =>
         assertCacheCompleteness(
           {
-            d1: makeImg("https://x/d1"),
-            // d2 ausente
+            d1_4x5: makeImg("https://x/d1_4x5"),
+            // d2 ausente (nem d2_4x5 nem d2_2x1)
           },
           "social",
           2,
@@ -452,8 +452,8 @@ describe("assertCacheCompleteness 2-destaque (#2352)", () => {
     assert.doesNotThrow(() =>
       assertCacheCompleteness(
         {
-          d1: makeImg("https://x/d1"),
-          d2: makeImg("https://x/d2"),
+          d1_4x5: makeImg("https://x/d1_4x5"),
+          d2_4x5: makeImg("https://x/d2_4x5"),
           // d3 ausente — OK para 2-destaque
         },
         "social",
@@ -502,8 +502,8 @@ describe("assertCacheCompleteness 2-destaque (#2352)", () => {
       () =>
         assertCacheCompleteness(
           {
-            d1: makeImg("https://x/d1"),
-            d2: makeImg("https://x/d2"),
+            d1_4x5: makeImg("https://x/d1_4x5"),
+            d2_4x5: makeImg("https://x/d2_4x5"),
             // d3 ausente — DEVE falhar em 3-destaque
           },
           "social",
@@ -537,8 +537,8 @@ describe("assertCacheCompleteness 2-destaque (#2352)", () => {
       () =>
         assertCacheCompleteness(
           {
-            d1: makeImg("https://x/d1"),
-            d2: makeImg("https://x/d2"),
+            d1_4x5: makeImg("https://x/d1_4x5"),
+            d2_4x5: makeImg("https://x/d2_4x5"),
           },
           "social",
           // sem destaqueCount → default 3 → exige d3
@@ -553,24 +553,27 @@ describe("assertCacheCompleteness 2-destaque (#2352)", () => {
 // ---------------------------------------------------------------------------
 
 describe("imageSpecsFor 2-destaque (#2352)", () => {
-  it("social mode sem editionDir: retorna d1/d2/d3 (default 3D)", () => {
+  it("social mode sem editionDir: retorna d1_4x5/d2_4x5/d3_4x5 (default 3D, #7399)", () => {
     const specs = imageSpecsFor("social");
-    assert.ok(specs.some((s) => s.key === "d3"), "sem editionDir deve incluir d3 (default 3D)");
+    assert.ok(
+      specs.some((s) => s.key === "d3_4x5"),
+      "sem editionDir deve incluir d3_4x5 (default 3D)",
+    );
   });
 
-  it("social mode com editionDir 2D: retorna apenas d1/d2 (sem d3)", () => {
+  it("social mode com editionDir 2D: retorna apenas d1_4x5/d2_4x5 (sem d3_4x5, #7399)", () => {
     const { dir, cleanup } = makeEdition(2);
     try {
       const specs = imageSpecsFor("social", dir);
-      assert.ok(!specs.some((s) => s.key === "d3"), "2D edition não deve ter d3 em specs social");
-      assert.ok(specs.some((s) => s.key === "d1"), "deve ter d1");
-      assert.ok(specs.some((s) => s.key === "d2"), "deve ter d2");
+      assert.ok(!specs.some((s) => s.key === "d3_4x5"), "2D edition não deve ter d3_4x5 em specs social");
+      assert.ok(specs.some((s) => s.key === "d1_4x5"), "deve ter d1_4x5");
+      assert.ok(specs.some((s) => s.key === "d2_4x5"), "deve ter d2_4x5");
     } finally {
       cleanup();
     }
   });
 
-  it("newsletter mode com editionDir 2D: não inclui d3_2x1 nem d3", () => {
+  it("newsletter mode com editionDir 2D: não inclui d3_2x1 nem d3_4x5", () => {
     const { dir, cleanup } = makeEdition(2);
     try {
       // Precisa de 01-eia-A.jpg presente para o path de EIA specs
@@ -578,17 +581,17 @@ describe("imageSpecsFor 2-destaque (#2352)", () => {
       writeFileSync(join(dir, "01-eia-B.jpg"), Buffer.alloc(1024, 0xff));
       const specs = imageSpecsFor("newsletter", dir);
       assert.ok(!specs.some((s) => s.key === "d3_2x1"), "2D não deve ter d3_2x1");
-      assert.ok(!specs.some((s) => s.key === "d3"), "2D não deve ter d3");
+      assert.ok(!specs.some((s) => s.key === "d3_4x5"), "2D não deve ter d3_4x5");
     } finally {
       cleanup();
     }
   });
 
-  it("REGRESSÃO 3-destaque social: d3 presente com editionDir 3D", () => {
+  it("REGRESSÃO 3-destaque social: d3_4x5 presente com editionDir 3D", () => {
     const { dir, cleanup } = makeEdition(3);
     try {
       const specs = imageSpecsFor("social", dir);
-      assert.ok(specs.some((s) => s.key === "d3"), "3D deve ter d3 em social specs");
+      assert.ok(specs.some((s) => s.key === "d3_4x5"), "3D deve ter d3_4x5 em social specs");
     } finally {
       cleanup();
     }
