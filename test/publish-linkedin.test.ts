@@ -575,16 +575,20 @@ describe("resolvePublicCardImageUrl (#4293 — LinkedIn card 4:5 > 1:1 legado)",
     assert.equal(resolvePublicCardImageUrl(null, "d1"), null);
   });
 
-  it("classifyImageCache continua classificando pela chave BASE mesmo quando só o 4:5 existe (fail-fast #999/#1275 intacto)", () => {
-    // Regressão de proteção: se o produtor emitir só a variante _4x5 sem a
-    // base (nunca deveria acontecer — base é sempre gerada primeiro), o
-    // destaque deve continuar contando como `missing` (fail-fast), não como
-    // "tem imagem" — classifyImageCache não conhece resolvePublicCardImageUrl,
-    // então isso é garantido por construção; o teste trava esse invariante.
+  it("#7427: classifyImageCache usa a mesma precedência de resolvePublicCardImageUrl — cache só com _4x5 (sem chave base) classifica como destaques_with_url, não missing", () => {
+    // Antes do #7427, classifyImageCache lia só imgCache.images[d].url (a
+    // chave BASE) pra decidir destaques_with_url, divergindo da precedência
+    // 4:5→1:1 que resolvePublicCardImageUrl (usada de fato pra montar
+    // imageUrlByDestaque) já implementa desde o #4293. Isso não quebrava hoje
+    // porque o 1:1 é sempre gerado/subido — mas bloqueava o #7399 (parar de
+    // subir o 1:1): sem a chave base, TODO destaque cairia em `missing` e
+    // dispararia o fail-fast #999/#1275 mesmo com o card 4:5 presente e
+    // correto. Este teste cobre exatamente esse cenário.
     const cache: ImageCacheFile = { images: { d1_4x5: { url: "https://cdn.test/04-d1-4x5.jpg" } } };
     const r = classifyImageCache(["d1"], cache);
-    assert.deepEqual(r.missing, ["d1"]);
-    assert.deepEqual(r.destaques_with_url, []);
+    assert.deepEqual(r.destaques_with_url, ["d1"]);
+    assert.deepEqual(r.missing, []);
+    assert.deepEqual(r.destaques_no_image, []);
   });
 });
 
