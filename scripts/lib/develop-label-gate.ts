@@ -14,6 +14,11 @@
  * ninguém tirou a label. As 2 legítimas eram justamente as que a sessão nunca
  * tentou.
  *
+ * (Contagem congelada em 260826: `trade-off-real` era, à época, uma das 3
+ * labels simples de develop. Hoje são 2 — o #7493 tirou `trade-off-real` do
+ * conjunto; ver `developTriggeringLabels` abaixo. O incidente e a medição
+ * seguem válidos, a aritmética "1 de 3" é histórica.)
+ *
  * A causa é estrutural: **todos os call sites de roteamento do develop são de
  * ENTRADA.** Medido em `origin/master`, ANTES deste gate existir (a própria
  * correção acrescenta call sites de saída àquele arquivo, então re-rodar o
@@ -185,7 +190,12 @@ export function isWorkFinished(issue: Readonly<DevelopGatePlanIssue>): boolean {
 }
 
 /**
- * As 3 labels SIMPLES que fazem `classifyExecTrack` rotear pra `develop`.
+ * As labels SIMPLES que fazem `classifyExecTrack` rotear pra `develop` —
+ * `windows` e `develop-track` desde o #7493, que tirou `trade-off-real` do
+ * conjunto (ambiguidade de trade-off real voltou a ser pergunta do briefing
+ * do overnight, então deixou de produzir `develop`). Como o conjunto é
+ * derivado por PROBE contra o classificador, essa mudança não exigiu editar
+ * nada aqui — só esta frase.
  *
  * **Não é a enumeração completa dos caminhos pro track**: existe um 4º,
  * COMPOSTO — `external-blocker` + `credencial-escopo` (cat. A, #5694) —, e

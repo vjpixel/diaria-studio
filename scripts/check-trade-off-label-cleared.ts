@@ -8,8 +8,11 @@
  * o veredito, mesmo padrão de `scripts/check-state-changed-pending.ts` /
  * `scripts/check-overnight-comment-coverage.ts`.
  *
- * Roda na Fase 0.5 do `/diaria-develop`, logo depois de postar o comentário
- * de decisão de uma cat. C (`decisao-editor`, #5373) — bloqueia (`exit 1`)
+ * Roda em DOIS pontos, logo depois de postar o comentário de decisão
+ * (`decisao-editor`, #5373): no briefing da Fase 0 do `/diaria-overnight`
+ * (passo 5 — desde o #7493, é lá que a ambiguidade de trade-off real é
+ * decidida) e na Fase 0.5 do `/diaria-develop` (cat. C, quando uma sessão
+ * supervisionada pega a issue antes). Em ambos, bloqueia (`exit 1`)
  * se a decisão já foi registrada mas a label `trade-off-real` ainda está
  * presente na issue. `gh` indisponível → fail-soft (#738): vira warning em
  * stderr, `exit 0` (não trava a rodada por causa de rede/CLI ausente — o
@@ -21,6 +24,7 @@
  * @see scripts/lib/trade-off-label-gate.ts
  * @see scripts/lib/issue-decisions.ts (fetchCommentBodies, latestDecisionFor, reusados aqui)
  * @see scripts/check-state-changed-pending.ts (padrão de estilo/gate irmão)
+ * @see .claude/skills/diaria-overnight/SKILL.md (Fase 0 passo 5 — briefing)
  * @see .claude/skills/diaria-develop/SKILL.md (Fase 0.5)
  */
 

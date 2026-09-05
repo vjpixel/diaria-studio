@@ -52,8 +52,9 @@ import type { ExecTrack } from "./issue-exec-track.ts";
  * Os 7 desfechos de classificação em prosa do passo 4 do overnight (e do
  * checklist a/b/c do continuo, que os reusa). Literal, não derivado — é a
  * mesma lista citada pela issue #6204 mais `sem-direcao-acionavel`
- * (#5968) e `ambigua-trade-off-real` (cat. C, #2640), que a issue original
- * omitiu mas que já são status vivos na SKILL hoje.
+ * (#5968) e `ambigua-trade-off-real` (que foi cat. C do develop no #2640 e
+ * voltou a ser pergunta do briefing do overnight no #7493), que a issue
+ * original omitiu mas que já são status vivos na SKILL hoje.
  */
 export type OvernightProseStatus =
   | "elegivel"
@@ -119,8 +120,8 @@ export const OVERNIGHT_PROSE_TRACK_MAP: readonly ProseTrackMapping[] = [
   },
   {
     status: "ambigua-trade-off-real",
-    tracks: ["develop"],
-    note: "label trade-off-real — cat. C do develop (#2640), TRADE_OFF_LABEL classifica develop.",
+    tracks: ["overnight"],
+    note: "label trade-off-real — desde #7493 a ambiguidade de trade-off real volta ao briefing da Fase 0 (TRADE_OFF_LABEL classifica overnight, não mais develop cat. C do #2640). Como `precisa-resposta`, o status é efêmero: ou o editor responde no briefing (vira elegivel, label removida) ou responde \'decido depois\' (segue overnight COM a label, e a pergunta reaparece no briefing seguinte).",
   },
   {
     status: "mesmo-tema-sessao-ativa",
@@ -140,7 +141,7 @@ export const OVERNIGHT_PROSE_TRACK_MAP: readonly ProseTrackMapping[] = [
   {
     status: "escopo-residual",
     tracks: ["agendada", "develop", "fora-de-rodada", "overnight"],
-    note: "#6437 — PR REFS-not-Closes mergeado deixa escopo pendente; o track correto depende do que resta (agendada = depende de tempo/evento; develop = depende de decisão do editor, via label develop-track/trade-off-real; fora-de-rodada = sem-direcao-acionavel; overnight = residual dispatchável nesta mesma rodada, então nunca chega a virar `pulada`).",
+    note: "#6437 — PR REFS-not-Closes mergeado deixa escopo pendente; o track correto depende do que resta (agendada = depende de tempo/evento; develop = depende de ação do editor numa sessão supervisionada, via label develop-track/windows — trade-off-real saiu daqui no #7493, agora é pergunta de briefing e portanto overnight; fora-de-rodada = sem-direcao-acionavel; overnight = residual dispatchável nesta mesma rodada, então nunca chega a virar `pulada`).",
   },
 ];
 

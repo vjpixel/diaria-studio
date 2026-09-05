@@ -242,9 +242,12 @@ export function extractFilePaths(text: string | null | undefined): string[] {
 // A classificação de issue vive em `scripts/lib/issue-exec-track.ts` desde o
 // #5462 — não é mais uma heurística própria da Triagem. O `classifyDispatchTrack`
 // que morava aqui classificava por regex de prosa (`AMBIGUITY_RE`) e por isso
-// não conseguia separar as duas ambiguidades que o overnight trata de forma
-// oposta (trivial → briefing; trade-off-real → develop). Ver a docstring do
-// módulo novo pro raciocínio completo.
+// não conseguia separar as duas ambiguidades que o overnight, na época,
+// tratava de forma oposta (trivial → briefing; trade-off-real → develop).
+// Desde o #7493 as duas convergem pro mesmo destino — o briefing da Fase 0 —,
+// o que torna aquela confusão menos custosa sem torná-la correta: o corpo da
+// issue continua sem sinal que separe as famílias, e adivinhar aqui seguiria
+// errado. Ver a docstring do módulo novo pro raciocínio completo.
 
 // ─── funções puras (testáveis sem invocar `gh`) ────────────────────────
 

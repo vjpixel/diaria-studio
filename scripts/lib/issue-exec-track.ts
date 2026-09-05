@@ -15,16 +15,18 @@
  *
  * ## Por que ambiguidade NÃO entra aqui
  *
- * A tentação óbvia é classificar "issue ambígua" como `develop` — cat. C é
+ * A tentação óbvia é classificar "issue ambígua" como `develop` — cat. C era
  * escopo exclusivo do develop (#2640). Mas o overnight tem **duas**
  * ambiguidades DE TRIAGEM (não uma), e a linha entre elas é julgamento puro
- * (overnight/SKILL.md:69):
+ * (overnight/SKILL.md, Fase 0 passo 4):
  *
  *   - trivial-mas-não-documentada ("formato A ou B de log", "opção técnica
  *     equivalente") → `precisa-resposta` → o editor destrava no **briefing**
  *     da Fase 0, antes de sair. É trabalho de overnight.
  *   - trade-off-real de produto/editorial ("design system vs documentar") →
- *     bounce imediato + comentário direcionando ao develop cat. C.
+ *     **desde #7493, também `precisa-resposta`**: vai ao MESMO briefing, em
+ *     vez do bounce pro develop cat. C que valia até 05/09/2026. Ver a
+ *     docstring de `TRADE_OFF_LABEL` pro racional da reversão.
  *
  * Existe um 3º desfecho, mas ele não é uma ambiguidade de TRIAGEM — é o que
  * sobra depois que a rodada já investigou e concluiu "sem próximo passo de
@@ -42,17 +44,23 @@
  * casava com os dois indiscriminadamente.
  *
  * Então ambiguidade não é sinal de entrada aqui. Uma issue ambígua nasce
- * `overnight` — o que é a verdade: o overnight ainda vai olhar pra ela. Ela
- * só vira `develop` depois que o overnight fizer o julgamento e gravá-lo na
- * label `trade-off-real`. Mesmo padrão de `issue-decisions.ts` (#5373): o
- * julgamento é feito UMA vez por quem tem contexto pra fazê-lo, gravado de
- * forma durável, e lido depois — nunca re-derivado por heurística.
+ * `overnight` — o que é a verdade: o overnight ainda vai olhar pra ela. E,
+ * desde #7493, ela **continua** `overnight` mesmo depois de julgada como
+ * trade-off real: a label `trade-off-real` deixou de rotear pro develop e
+ * virou o sinal POSITIVO de "já triada, entra na fila de perguntas do
+ * briefing" (`matched: "label:trade-off-real"` com `track: "overnight"`, em
+ * vez do `default` de quem ninguém olhou). Mesmo padrão de
+ * `issue-decisions.ts` (#5373): o julgamento é feito UMA vez por quem tem
+ * contexto pra fazê-lo, gravado de forma durável, e lido depois — nunca
+ * re-derivado por heurística.
  *
- * Corolário: quando o develop resolve a cat. C, ele "posta a decisão como
- * comentário durável na issue, remove a ambiguidade (→ elegível)"
- * (develop/SKILL.md:70). Remover a label `trade-off-real` faz parte disso —
- * é o que devolve a issue pro overnight. Sem essa remoção ela ficaria presa
- * em `develop` para sempre depois de já decidida.
+ * Corolário: quem resolve a ambiguidade (o briefing do overnight, ou uma
+ * sessão `/diaria-develop`/`/diaria-desbloqueia` que a pegue antes) posta a
+ * decisão como comentário durável e **remove a label** — é o que fecha o
+ * ciclo. Sem essa remoção a issue volta ao briefing seguinte com uma
+ * pergunta já respondida, e o gate de `trade-off-label-gate.ts` (#5821)
+ * existe exatamente pra pegar esse esquecimento. O que MUDOU no #7493 é
+ * onde a pergunta é feita, não a disciplina de apagar o rótulo depois.
  *
  * ## Máquina
  *
@@ -122,7 +130,7 @@ export type ExecTrack = "overnight" | "develop" | "agendada" | "bloqueada" | "ep
  * - `label:not-this-week`   — 2ª checagem `bloqueada` (deferimento vago)
  * - `label:next-month`      — idem
  * - `label:windows`         — → `develop`
- * - `label:trade-off-real`  — → `develop`
+ * - `label:trade-off-real`  — → `overnight` (#7493 — era `develop` até 05/09/2026)
  * - `label:credencial-escopo` — `external-blocker` + `credencial-escopo` → `develop` (cat. A)
  * - `label:develop-track`  — bloqueio humano/dependência sem data → `develop` (#5948)
  * - `label:alarm-evento`    — → `overnight` (alarme de EVENTO PASSADO)
@@ -397,8 +405,36 @@ const DEFERRED_LABELS = new Set(["not-this-week", "next-month"]);
  * roda no servidor Linux, então não alcança. */
 const MACHINE_DEVELOP_LABELS = new Set(["windows"]);
 
-/** Julgamento já gravado pelo overnight: trade-off-real de produto/editorial,
- * cat. C, escopo exclusivo do develop (#2640). */
+/**
+ * Julgamento já gravado pelo overnight: a ambiguidade desta issue é
+ * trade-off real de produto/editorial, não escolha técnica trivial.
+ *
+ * **Rotea pra `overnight`, não pra `develop` (#7493, decisão do editor
+ * 05/09/2026 — reverte #2640/#5462).** Até aqui a label mandava a issue pro
+ * develop cat. C, e o overnight a bounceava sem perguntar nada. Medido nas 20
+ * rodadas de 260828→260905: **zero** issues classificadas `precisa-resposta`
+ * em todas elas — como a aprovação de agrupamento e o opt-in de loop estendido
+ * pegam carona na mesma `AskUserQuestion` das `precisa-resposta`, o briefing
+ * inteiro parou de perguntar (a rodada 260905 gravou `batch_approval:
+ * "default_proposed"`, o caminho de fallback). A ambiguidade não virava
+ * pergunta, virava roteamento — e o roteamento custa uma sessão inteira com o
+ * editor presente, contra 1 pergunta numa janela em que ele já está presente
+ * por definição.
+ *
+ * A label continua existindo e sendo aplicada: virou o sinal POSITIVO de "já
+ * triada como trade-off real, entra na fila de perguntas do briefing" — é o
+ * que distingue um `overnight` verificado de um `overnight` por omissão
+ * (`matched: "default"`, ninguém olhou). Ela é REMOVIDA quando a decisão é
+ * registrada, por quem quer que a registre (briefing do overnight,
+ * `/diaria-develop`, `/diaria-desbloqueia`) — ver `trade-off-label-gate.ts`.
+ *
+ * Precedência: perde pra bloqueio real, data futura, deferimento vago,
+ * `windows` e `develop-track` (todos checados antes) — uma issue que também
+ * exige a máquina do editor ou tem bloqueio humano continua `develop`. Vence
+ * `RESOLVED_BY_PROSE_LABELS`, preservando o caso real #4555
+ * (`decisao-registrada` + `trade-off-real`: a decisão fechou só parte da
+ * issue, ainda há pergunta a fazer).
+ */
 const TRADE_OFF_LABEL = "trade-off-real";
 
 /**
@@ -541,15 +577,21 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
  *                         propósito: quem escreveu uma data disse algo mais
  *                         específico que "not-this-week", então a data vence
  *                         sobre o deferimento vago quando as duas coexistem.
- *   6. `develop`        — precisa da máquina Windows, trade-off-real já
- *                         julgado pelo overnight, (#5694) `external-blocker`
- *                         + `credencial-escopo` (credencial já existe, só
- *                         falta escopo — cat. A do develop), ou (#5948)
- *                         `develop-track` (bloqueio humano/dependência SEM
- *                         data específica — se tivesse data, seria o
- *                         marcador `aguardando-ate:` do passo 4, não esta
- *                         label).
- *   7. `overnight`      — (#5553) alarme de EVENTO PASSADO (`alarm-evento`),
+ *   6. `develop`        — precisa da máquina Windows, (#5694)
+ *                         `external-blocker` + `credencial-escopo`
+ *                         (credencial já existe, só falta escopo — cat. A do
+ *                         develop), ou (#5948) `develop-track` (bloqueio
+ *                         humano/dependência SEM data específica — se tivesse
+ *                         data, seria o marcador `aguardando-ate:` do passo
+ *                         4, não esta label). **`trade-off-real` SAIU deste
+ *                         passo no #7493** — desceu pro passo 7, ver lá.
+ *   7. `overnight`      — (#7493) `trade-off-real` — ambiguidade já julgada
+ *                         como trade-off real de produto/editorial, que volta
+ *                         a ser pergunta do briefing da Fase 0 em vez de
+ *                         bounce pro develop; checado depois do passo 6
+ *                         (máquina/credencial/bloqueio humano vencem) e antes
+ *                         do passo 8 (preserva #4555). Também (#5553) alarme
+ *                         de EVENTO PASSADO (`alarm-evento`),
  *                         ou (#6772) alarme de ESTADO cuja condição só
  *                         normaliza por AÇÃO (`alarm-acao`): checado ANTES do
  *                         passo 8 pra vencer a label `alarm` companheira, que
@@ -606,13 +648,19 @@ export function classifyExecTrackWithRule(input: ExecTrackInput): ExecTrackResul
   const deferredLabel = labels.find((l) => DEFERRED_LABELS.has(l));
   if (deferredLabel) return { track: "bloqueada", matched: `label:${deferredLabel}`  };
 
-  // Passo 5 — develop (máquina, trade-off, credencial-escopo, humano).
+  // Passo 5 — develop (máquina, credencial-escopo, humano). `trade-off` saiu
+  // deste bloco no #7493 — ver o branch logo abaixo.
   const machineLabel = labels.find((l) => MACHINE_DEVELOP_LABELS.has(l));
   if (machineLabel) return { track: "develop", matched: `label:${machineLabel}`  };
-  if (has(TRADE_OFF_LABEL)) return { track: "develop", matched: "label:trade-off-real" };
   if (isCredentialScopeUnblock) return { track: "develop", matched: "label:credencial-escopo" };
   if (has(DEVELOP_HUMAN_BLOCK_LABEL)) return { track: "develop", matched: "label:develop-track" };
 
+  // #7493 — trade-off real volta a ser pergunta de briefing do overnight (era
+  // `develop` até 05/09/2026). Checado DEPOIS das 3 regras de develop acima
+  // (máquina/credencial/bloqueio humano continuam vencendo: nenhuma pergunta
+  // de briefing destrava um Chrome logado) e ANTES de
+  // `RESOLVED_BY_PROSE_LABELS`, preservando o caso #4555.
+  if (has(TRADE_OFF_LABEL)) return { track: "overnight", matched: "label:trade-off-real" };
   if (has(ALARM_EVENT_LABEL)) return { track: "overnight", matched: "label:alarm-evento" };
   if (has(ALARM_ACTION_LABEL)) return { track: "overnight", matched: "label:alarm-acao" };
 

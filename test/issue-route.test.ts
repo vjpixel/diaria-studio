@@ -92,6 +92,9 @@ describe("planRouteLabels — round-trip dos 5 motivos #6197 (3a)", () => {
     ["fora-de-rodada", "alarme-estado"],
     // overnight
     ["overnight", "alarme-evento"],
+    // #7493 — trade-off real voltou a ser pergunta de briefing: a label
+    // aplica um sinal POSITIVO sem tirar a issue do track overnight.
+    ["overnight", "trade-off"],
   ];
 
   for (const [track, motivo] of cases) {
@@ -108,6 +111,19 @@ describe("planRouteLabels — round-trip dos 5 motivos #6197 (3a)", () => {
       );
     });
   }
+
+  it("trade-off round-trip: --track overnight --motivo trade-off (#7493)", () => {
+    // Regressão do #7493: enquanto `trade-off-real` roteava pra `develop`,
+    // este round-trip era impossível — aplicar a label tirava a issue do
+    // track pedido. Se alguém devolver a label pro grupo develop de
+    // `classifyExecTrack`, este teste falha antes de a rodada perder o
+    // briefing de novo.
+    const plan = planRouteLabels("overnight", "trade-off");
+    assert.deepEqual(plan.add, ["trade-off-real"]);
+    const nextLabels = applyRouteLabelPlan([], plan);
+    const resolved = classifyExecTrack({ labels: nextLabels, body: "", state: "OPEN" });
+    assert.equal(resolved, "overnight");
+  });
 
   it("alarm-evento round-trip: --track overnight --motivo alarme-evento", () => {
     const plan = planRouteLabels("overnight", "alarme-evento");

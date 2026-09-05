@@ -1,9 +1,9 @@
 /**
  * trade-off-label-gate.ts (#5821)
  *
- * Lógica PURA/testável para o gate mecânico de "o `/diaria-develop` decidiu
- * uma cat. C (trade-off editorial) e esqueceu de remover a label
- * `trade-off-real` depois de postar o comentário de decisão".
+ * Lógica PURA/testável para o gate mecânico de "alguém decidiu a ambiguidade
+ * de trade-off editorial e esqueceu de remover a label `trade-off-real`
+ * depois de postar o comentário de decisão".
  *
  * A regra existia só em prosa (`.claude/skills/diaria-develop/SKILL.md`,
  * Fase 0.5: "o develop remove essa label ao fechar a cat. C") — dependia do
@@ -11,11 +11,18 @@
  * como um passo mecânico SEPARADO, logo depois de postar o comentário de
  * decisão (`formatDecisionMarker`/`latestDecisionFor`, ver
  * `scripts/lib/issue-decisions.ts`). Incidente de referência (#5415, achado
- * na #5821): a decisão foi postada, a label ficou. `classifyExecTrack`
- * (`scripts/lib/issue-exec-track.ts`) usa a presença de `trade-off-real`
- * pra rotear pro Develop — uma issue já decidida mas com a label esquecida
- * fica presa nessa fila pra sempre, é reavaliada de novo por uma sessão
- * futura, e o mesmo "esqueci de tirar a label" pode se repetir.
+ * na #5821): a decisão foi postada, a label ficou.
+ *
+ * **Quem decide mudou no #7493; o gate, não.** Até 05/09/2026 a decisão
+ * vinha só do `/diaria-develop` (cat. C), porque `classifyExecTrack` roteava
+ * a label pra Develop e uma issue com a label esquecida ficava presa NAQUELA
+ * fila. Desde o #7493 a label classifica `overnight` e a decisão típica é
+ * tomada no BRIEFING da Fase 0 — o esquecimento agora prende a issue na fila
+ * de PERGUNTAS do briefing, fazendo o editor responder de novo, em cada
+ * rodada, algo que ele já respondeu. Dano diferente, mesmo defeito, mesmo
+ * gate: por isso ele roda nos dois fluxos (briefing do overnight, Fase 0.5
+ * do develop) sem nenhuma mudança de lógica — a checagem sempre foi
+ * "decisão registrada × label ainda presente", nunca "qual sessão decidiu".
  *
  * O I/O (buscar labels + comentários via `gh`) fica no entrypoint CLI
  * (`scripts/check-trade-off-label-cleared.ts`) — este módulo só decide, a
