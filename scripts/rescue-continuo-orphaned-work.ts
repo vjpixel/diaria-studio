@@ -41,6 +41,25 @@
 import { execFileSync } from "node:child_process";
 import { rescueOrphanedWork, pushRescueBranch, defaultSpawn, type RescueOutcome } from "./lib/continuo-tick-closure.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import type { GitSpawnFn as SpawnFn, SpawnResult } from "./lib/spawn-types.ts";
+
+/** Adapta `execFileSync` (usado só aqui, `gh pr create`) pro formato
+ * `SpawnResult` injetável — mesmo padrão de `defaultSpawn` (git) em
+ * `scripts/lib/continuo-tick-closure.ts`/`git-sync.ts`, permite testar
+ * `tryOpenPr` sem spawnar `gh` de verdade (#7484). */
+function execFileSpawn(cmd: string, args: string[], timeoutMs = 60_000): SpawnResult {
+  try {
+    const stdout = execFileSync(cmd, args, { encoding: "utf8", timeout: timeoutMs });
+    return { status: 0, stdout, stderr: "" };
+  } catch (err) {
+    const asNodeError = err as { status?: number; stdout?: unknown; message?: string };
+    return {
+      status: typeof asNodeError?.status === "number" ? asNodeError.status : 1,
+      stdout: typeof asNodeError?.stdout === "string" ? asNodeError.stdout : "",
+      stderr: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
 
 function parseArgs(argv: string[]): { push: boolean } {
   return { push: argv.includes("--push") };
@@ -107,35 +126,110 @@ function listOpenRescuePrs(): OpenPrSummary[] | null {
   }
 }
 
-/** Best-effort `gh pr create` — nunca aborta o script se `gh` estiver
- * ausente/sem auth: a branch já publicada (ou local) é o que importa
- * preservar; o PR é conveniência de triagem, não a garantia de dados. */
-function tryOpenPr(branch: string): { ok: boolean; message: string } {
-  try {
-    const out = execFileSync(
-      "gh",
-      [
-        "pr",
-        "create",
-        "--head",
-        branch,
-        "--base",
-        "master",
-        "--title",
-        `chore(#7130): trabalho órfão recuperado de tick do contínuo — ${branch}`,
-        "--body",
-        "REFS #7130, NÃO CLOSES (achado de recuperação automática, não implementação da issue)\n\n" +
-          "Commit automático de `rescue-continuo-orphaned-work.ts`. A origem exata (qual issue, qual tick) " +
-          "é desconhecida por construção — triagem manual necessária antes de mergear ou descartar.\n\n" +
-          "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
-      ],
-      { encoding: "utf8", timeout: 60_000 },
-    );
-    return { ok: true, message: out.trim() };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, message: `gh pr create falhou (não bloqueia — branch já preservada): ${message}` };
+/** Label aplicada à PR de rescue para bloquear o auto-merge da regra "review
+ * limpo + CI verde mergeia sozinho" (#5251/#6299) — `bloqueio-execucao` já é
+ * lida por `classifyExecTrack` (roteia pra Bloqueada), então reusar em vez de
+ * inventar uma label dedicada (#7484: confirmado via `gh label list` antes de
+ * escolher — nenhuma label "não mergear" existia no repo). */
+export const RESCUE_PR_BLOCK_LABEL = "bloqueio-execucao";
+
+/** Pura (#7484): monta o argv de `gh pr create` para a PR de rescue.
+ * `withLabel=false` (usado só pelo retry de `tryOpenPr` abaixo, quando o
+ * primeiro `gh pr create --label ...` falha) omite `--label`/`--body` de
+ * bloqueio — usado quando a label não pôde ser aplicada (sumiu/renomeada) e
+ * pelo menos o `--draft` precisa sair. Extraída de `tryOpenPr` para ser
+ * testável sem spawnar `gh` de verdade. A PR sai SEMPRE como `--draft`
+ * (draft não é auto-mergeável por construção) — sem isso, o corpo dizendo
+ * "triagem manual necessária" era só prosa: nada impedia a regra de
+ * auto-merge (#5251/#6299) de mergear a PR sozinha assim que review+CI
+ * saíssem limpos (foi o que aconteceu com a #7438, que levou
+ * `.review-i1.md` pra `master`). */
+export function buildRescuePrArgs(branch: string, withLabel = true): string[] {
+  const labelNote = withLabel
+    ? `PR aberta como draft + label \`${RESCUE_PR_BLOCK_LABEL}\` (#7484) para não ser auto-mergeada ` +
+      "pela regra de review limpo + CI verde antes dessa triagem acontecer."
+    : "PR aberta como draft (SEM a label de bloqueio — `gh pr create --label` falhou, ver mensagem de retry) " +
+      "para não ser auto-mergeada pela regra de review limpo + CI verde antes da triagem acontecer.";
+  const args = [
+    "pr",
+    "create",
+    "--head",
+    branch,
+    "--base",
+    "master",
+    "--draft",
+    ...(withLabel ? ["--label", RESCUE_PR_BLOCK_LABEL] : []),
+    "--title",
+    `chore(#7130): trabalho órfão recuperado de tick do contínuo — ${branch}`,
+    "--body",
+    "REFS #7130, NÃO CLOSES (achado de recuperação automática, não implementação da issue)\n\n" +
+      "Commit automático de `rescue-continuo-orphaned-work.ts`. A origem exata (qual issue, qual tick) " +
+      "é desconhecida por construção — triagem manual necessária antes de mergear ou descartar. " +
+      labelNote +
+      "\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+  ];
+
+  // Assert leve (#7484, type-design-analyzer): a garantia "toda PR de rescue
+  // sai draft, e com a label quando pedida" não fica só implícita no array
+  // literal acima nem só nos testes — falha alto AQUI, na construção, se
+  // algum refactor futuro remover `--draft` ou o par `--label`/valor por
+  // engano, em vez de deixar a PR sair silenciosamente sem a proteção.
+  if (!args.includes("--draft")) {
+    throw new Error("buildRescuePrArgs: invariante quebrado — PR de rescue sem --draft");
   }
+  if (withLabel) {
+    const labelIdx = args.indexOf("--label");
+    if (labelIdx === -1 || args[labelIdx + 1] !== RESCUE_PR_BLOCK_LABEL) {
+      throw new Error("buildRescuePrArgs: invariante quebrado — --label ausente ou com valor errado");
+    }
+  }
+
+  return args;
+}
+
+/** Best-effort `gh pr create` — mas com retry (#7484): `--label
+ * bloqueio-execucao` faz o comando INTEIRO falhar se a label não existir
+ * (deletada/renomeada/typo), e essa falha cairia no mesmo catch genérico que
+ * trata "gh ausente/sem auth" como benigno — exatamente a classe de
+ * regressão que esta issue existe pra fechar, uma camada acima: a PR de
+ * rescue simplesmente não seria criada, sem PR/draft/label/proteção nenhuma,
+ * soando como um caso trivial de "gh indisponível" no log. Se o 1º `gh pr
+ * create` (com label) falhar, tenta de novo SEM `--label` — o `--draft`
+ * sozinho já é bloqueio mecânico real (GitHub recusa merge de PR draft), e o
+ * retry bem-sucedido sinaliza CLARAMENTE (via `labelApplied: false` +
+ * mensagem) que a label não pôde ser aplicada, para investigação — nunca
+ * silenciosamente "não bloqueia, branch preservada" como uma falha real de
+ * `gh` faria. Só depois que os DOIS falharem é que cai na falha benigna
+ * (gh não instalado/não autenticado).
+ *
+ * `spawn` injetável (default `execFileSpawn`, wrapper de `execFileSync`) —
+ * mesmo padrão de `defaultSpawn` em `continuo-tick-closure.ts`/`git-sync.ts`
+ * — permite testar as duas tentativas sem spawnar `gh` de verdade. */
+export function tryOpenPr(
+  branch: string,
+  spawn: SpawnFn = execFileSpawn,
+): { ok: boolean; message: string; labelApplied?: boolean } {
+  const withLabel = spawn("gh", buildRescuePrArgs(branch, true));
+  if (withLabel.status === 0) {
+    return { ok: true, message: withLabel.stdout.trim(), labelApplied: true };
+  }
+
+  const withoutLabel = spawn("gh", buildRescuePrArgs(branch, false));
+  if (withoutLabel.status === 0) {
+    return {
+      ok: true,
+      labelApplied: false,
+      message:
+        `PR criada em draft MAS SEM a label \`${RESCUE_PR_BLOCK_LABEL}\` de bloqueio — investigar se a label ` +
+        `ainda existe no repo (\`gh label list\`). \`gh pr create --label\` falhou com: ${withLabel.stderr}\n` +
+        `PR (sem label): ${withoutLabel.stdout.trim()}`,
+    };
+  }
+
+  return {
+    ok: false,
+    message: `gh pr create falhou (não bloqueia — branch já preservada): ${withoutLabel.stderr}`,
+  };
 }
 
 function main(): void {
