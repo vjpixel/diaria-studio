@@ -59,10 +59,22 @@ import type { DatabaseSync } from "node:sqlite";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { listBroadcasts, getBroadcastStats, type KitBroadcastSummary, type KitBroadcastStats } from "./lib/kit-client.ts";
-import { fetchAudience, todasOuNenhuma, type BroadcastAudience, type DrainResult } from "./kit-provider-split.ts";
+import {
+  listBroadcasts,
+  getBroadcastStats,
+  getBroadcastClicks,
+  type KitBroadcastSummary,
+  type KitBroadcastStats,
+  type KitBroadcastClick,
+} from "./lib/kit-client.ts";
+import { fetchAudience, fetchUrlClicks, todasOuNenhuma, type BroadcastAudience, type DrainResult } from "./kit-provider-split.ts";
 import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getStoreCounts } from "./lib/diaria-subscribers-db.ts";
-import { ingestBroadcastAudience, verifyKitIngestion, ingestKitRoster } from "./lib/kit-subscribers-ingest.ts";
+import {
+  ingestBroadcastAudience,
+  ingestBroadcastUrlClicks,
+  verifyKitIngestion,
+  ingestKitRoster,
+} from "./lib/kit-subscribers-ingest.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import { buildCapturaLogEntry, serializeCapturaLogEntry } from "./lib/metrics/captura-log.ts";
 import {
@@ -101,6 +113,26 @@ export interface KitIngestDeps {
   /** Roster COMPLETO — `status: "all"` sempre (#7174: omitir devolve só
    *  `active` em silêncio, ver `scripts/lib/kit-subscribers.ts`). */
   listAllRosterSubscribers: () => ReturnType<typeof listAllKitSubscribers>;
+  /**
+   * #7206, ambos OPCIONAIS: refinamento por-link do eixo "clicks", que
+   * popula `event.url` (Beehiiv e Brevo já populam; o Kit era o que faltava
+   * fechar). `getBroadcastLinkClicks` lista TODOS os links do broadcast,
+   * paginado até o fim (REST `/broadcasts/{id}/clicks`, endpoint confirmado
+   * ao vivo em #6185 — responde "quais URLs perguntar"; produção usa
+   * `getAllBroadcastLinkClicks`, #7454 review — a versão anterior só lia a
+   * 1ª página, silenciando links além dela); `fetchUrlClicks` devolve quem
+   * clicou em CADA um (`/subscribers/filter` escopado por URL — shape
+   * best-effort, ainda não confirmado ao vivo, ver docstring de
+   * `kit-provider-split.ts::buildUrlClickFilterBody`).
+   *
+   * Opcionais de propósito: `makeRealKitIngestDeps` sempre os fornece;
+   * fixtures/testes que antecedem o #7206 simplesmente não os populam, e
+   * `ingestOneBroadcast` trata a ausência como "pular o refinamento" —
+   * fail-soft, nunca afeta os 4 eixos principais nem o guard anti-fabricação
+   * (#6496), que seguem ancorados só em `sent`/`stats.recipients`.
+   */
+  getBroadcastLinkClicks?: (id: number) => Promise<{ clicks: KitBroadcastClick[] }>;
+  fetchUrlClicks?: (broadcastId: number, url: string) => Promise<DrainResult>;
 }
 
 /**
@@ -148,6 +180,36 @@ export async function listAllCompletedBroadcasts(): Promise<KitBroadcastSummary[
   return out;
 }
 
+/**
+ * Pagina `GET /broadcasts/{id}/clicks` até o fim (#7454 review, correctness +
+ * silent-failure-hunter, alta confiança) — a chamada anterior (`getBroadcastClicks(id)`,
+ * sem `perPage` nem loop) descartava `pagination` e só via a 1ª página. Um
+ * broadcast com mais links do que cabem numa página (default do Kit não
+ * confirmado; `kit-verify-click-fields.ts` já usa `perPage: 100` pro mesmo
+ * endpoint) teria os links das páginas seguintes silenciosamente fora do
+ * refinamento #7206 — sem erro, sem warning, indistinguível de "só tinha
+ * esses links". Mesma disciplina de `listAllCompletedBroadcasts` acima:
+ * `has_next_page=true` sem `end_cursor` é envelope malformado, nunca fim de
+ * lista silencioso.
+ */
+export async function getAllBroadcastLinkClicks(id: number): Promise<{ clicks: KitBroadcastClick[] }> {
+  const out: KitBroadcastClick[] = [];
+  let after: string | undefined;
+  for (;;) {
+    const { clicks, pagination } = await getBroadcastClicks(id, { perPage: 100, after });
+    out.push(...clicks);
+    if (!pagination.has_next_page) break;
+    if (!pagination.end_cursor) {
+      throw new Error(
+        `[diaria-subscribers-ingest-kit] getAllBroadcastLinkClicks(${id}): has_next_page=true mas ` +
+          "end_cursor ausente — lista de links truncada, abortando em vez de tratar como fim de lista.",
+      );
+    }
+    after = pagination.end_cursor;
+  }
+  return { clicks: out };
+}
+
 export function makeRealKitIngestDeps(): KitIngestDeps {
   return {
     listAllBroadcasts: listAllCompletedBroadcasts,
@@ -157,6 +219,9 @@ export function makeRealKitIngestDeps(): KitIngestDeps {
     // status: "all" SEMPRE (#7174) — nunca omitir a opção, senão a API
     // devolve só `active` em silêncio (ver docstring de kit-subscribers.ts).
     listAllRosterSubscribers: () => listAllKitSubscribers(undefined, { status: "all" }),
+    // #7206: produção sempre fornece o refinamento por-link.
+    getBroadcastLinkClicks: getAllBroadcastLinkClicks,
+    fetchUrlClicks,
   };
 }
 
@@ -184,7 +249,7 @@ export interface BroadcastIngestOutcome {
 export async function ingestOneBroadcast(
   db: DatabaseSync,
   broadcast: Pick<KitBroadcastSummary, "id" | "subject" | "published_at" | "send_at">,
-  deps: Pick<KitIngestDeps, "fetchAudience" | "getBroadcastStats">,
+  deps: Pick<KitIngestDeps, "fetchAudience" | "getBroadcastStats" | "getBroadcastLinkClicks" | "fetchUrlClicks">,
   now: string = new Date().toISOString(),
 ): Promise<BroadcastIngestOutcome> {
   const id = String(broadcast.id);
@@ -234,15 +299,70 @@ export async function ingestOneBroadcast(
   }
   counts.recipients_reportados = stats.recipients;
 
+  // #7206: refinamento OPCIONAL por-link do eixo "clicks" — popula
+  // `event.url`. Fail-soft de propósito: uma falha aqui (rede, shape ainda
+  // não confirmado ao vivo — ver docstring de `buildUrlClickFilterBody`)
+  // NUNCA derruba os 4 eixos principais já gravados acima, nem muda o guard
+  // anti-fabricação abaixo (ancorado só em "sent"/`stats.recipients`).
+  let urlClicksError: string | undefined;
+  if (deps.getBroadcastLinkClicks && deps.fetchUrlClicks) {
+    // #7454 review (silent-failure-hunter, correctness — alta confiança):
+    // `counts.clicks_com_url` só era atribuído DEPOIS do loop inteiro — se um
+    // link no meio lançasse, os links anteriores já tinham sido gravados no
+    // banco (efeito colateral real e correto), mas o manifest reportava
+    // `clicks_com_url: undefined`, como se nada tivesse sido processado.
+    // Inicializar antes do loop e incrementar dentro dele preserva o
+    // progresso parcial no manifest mesmo quando o loop aborta no meio.
+    counts.clicks_com_url = 0;
+    try {
+      const { clicks: linkClicks } = await deps.getBroadcastLinkClicks(broadcast.id);
+      // Sequencial de propósito (nunca Promise.all) — #6047 já mediu que
+      // endpoints singulares do Kit toleram só dezenas de chamadas seguidas
+      // sem espaçamento antes de 429; este broadcast já soma 5 chamadas
+      // concorrentes acima (4 eixos + stats) mais 1+N aqui (1 listagem de
+      // links + até N `fetchUrlClicks`). Paralelizar este loop reintroduziria
+      // a rajada que o desenho do arquivo evita entre broadcasts.
+      for (const linkClick of linkClicks) {
+        if (!linkClick.url || linkClick.unique_clicks <= 0) continue;
+        const urlResult = await deps.fetchUrlClicks(broadcast.id, linkClick.url);
+        const r = ingestBroadcastUrlClicks(db, broadcast.id, linkClick.url, urlResult.emails, ts, now);
+        eventsNew += r.newEvents;
+        eventsAlreadyKnown += r.alreadyKnown;
+        counts.clicks_com_url += r.newEvents + r.alreadyKnown;
+      }
+    } catch (e) {
+      urlClicksError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   const guard = verifyKitIngestion(sent.emails.length, stats.recipients);
+  const combinedError = [guard.reason, urlClicksError ? `refinamento por-link (#7206): ${urlClicksError}` : undefined]
+    .filter((x): x is string => Boolean(x))
+    .join(" | ");
+  // #7454 review (silent-failure-hunter + type-design-analyzer, achado
+  // convergente, alta confiança): antes, `status` vinha SÓ de `guard.ok` —
+  // uma falha real do refinamento por-link (rede, ou o shape ainda não
+  // confirmado ao vivo do filtro por URL, ver `buildUrlClickFilterBody`)
+  // saía como `status: "ok"` com o erro perdido dentro de `error`.
+  // `pendingManifestEntries` só reoferece entries com `status !== "ok"` —
+  // uma falha assim nunca seria retentada, e `manifestCoverageSummary`
+  // contaria "100% ok" com o refinamento inteiro quebrado desde o 1º
+  // broadcast. `urlClicksError` agora também força `status: "partial"`
+  // (mesmo status já usado por "guard não bateu" — os 4 eixos principais
+  // e o guard anti-fabricação continuam intocados por essa mudança,
+  // `guard.ok` nunca é derivado de `urlClicksError`).
+  const status = guard.ok && !urlClicksError ? "ok" : "partial";
+  if (urlClicksError) {
+    console.error(`  ⚠️  broadcast ${id}: ${combinedError}`);
+  }
   return {
     entry: {
       id,
       label: broadcast.subject,
-      status: guard.ok ? "ok" : "partial",
+      status,
       counts,
       fetched_at: now,
-      ...(guard.reason ? { error: guard.reason } : {}),
+      ...(combinedError ? { error: combinedError } : {}),
     },
     eventsNew,
     eventsAlreadyKnown,
