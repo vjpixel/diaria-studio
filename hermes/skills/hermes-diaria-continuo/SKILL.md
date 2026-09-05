@@ -354,13 +354,21 @@ nulo = PR `continuo/*` aberta com CI reprovado de verdade (`fail` — nunca
 `pending`/`error`/`blocked_by_conflict`) sem label `continuo-ci-fix-tentado`
 ainda. Se houver candidata:
 
-1. Consertar o CI dessa PR (harness delegado do passo 4, sobre a branch já
-   existente — nunca abrir PR novo pra isto).
-2. Sucesso OU falha, rodar `npx tsx scripts/mark-continuo-ci-fix-attempted.ts
-   --pr N` — aplica `continuo-ci-fix-tentado`, fechando o cap de 1 tentativa
-   por PR (`selectCiFixCandidate`,
-   `scripts/lib/continuo-ci-fixer-eligibility.ts`). **Sem isso o próximo tick
-   tentaria de novo** — o livelock que este mecanismo existe pra evitar.
+1. **Antes de tocar em qualquer código**, rodar
+   `npx tsx scripts/mark-continuo-ci-fix-attempted.ts --pr N` — aplica
+   `continuo-ci-fix-tentado`, fechando o cap de 1 tentativa por PR
+   (`selectCiFixCandidate`, `scripts/lib/continuo-ci-fixer-eligibility.ts`)
+   ANTES de gastar tempo consertando (review da PR #7450: marcar só DEPOIS
+   deixaria uma janela de corrida do tamanho do conserto inteiro entre 2
+   ticks escolhendo a MESMA PR; marcar antes reduz a janela pro intervalo
+   entre "escolher" e "marcar"). Exit ≠ 0 = o label NÃO pegou de verdade —
+   tratar como falha real (não seguir como se tivesse fechado o cap; a PR
+   segue candidata no próximo tick, o que é aceitável — a alternativa,
+   assumir sucesso silenciosamente, É o livelock que este mecanismo existe
+   pra evitar).
+2. Consertar o CI dessa PR (harness delegado do passo 4, sobre a branch já
+   existente — nunca abrir PR novo pra isto). Sucesso ou falha do conserto
+   não muda nada aqui — o label já está aplicado, o cap já fechou.
 3. Seguir o tick normalmente (reivindicar issue nova se sobrar budget).
 
 `checked: -1` (`gh pr list` falhou) = "nenhuma candidata", fail-soft. PR que

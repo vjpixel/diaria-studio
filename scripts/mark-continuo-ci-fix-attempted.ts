@@ -11,14 +11,25 @@
  * durável, o próximo tick veria a mesma PR com CI ainda vermelho e tentaria
  * de novo — o livelock que este mecanismo existe pra evitar.
  *
- * Uso (chamado pelo tick do contínuo LOGO APÓS a tentativa de conserto,
- * `hermes/skills/hermes-diaria-continuo/SKILL.md` §3 — nunca antes):
+ * Uso (chamado pelo tick do contínuo LOGO DEPOIS de escolher a candidata —
+ * `hermes/skills/hermes-diaria-continuo/SKILL.md` §3b — ANTES de tentar o
+ * conserto, não depois: review da PR #7450 (P2, confiança média) apontou
+ * que marcar só APÓS a tentativa deixa uma janela de corrida do tamanho do
+ * conserto inteiro entre 2 ticks concorrentes escolhendo a MESMA PR;
+ * marcar antes reduz a janela pro intervalo entre "escolher" e "marcar",
+ * bem menor):
  *   npx tsx scripts/mark-continuo-ci-fix-attempted.ts --pr 7429
  *
- * Exit code: 0 sempre que a chamada foi tentada (best-effort — falha de
- * `gh` não é fail-hard aqui; o pior caso é o label não pegar e a próxima
- * escalada/checagem de fila ainda cobrir a PR). 2 = uso inválido (`--pr`
- * ausente/não-numérico).
+ * Exit code (review da PR #7450, achado #2: exit 0 incondicional escondia
+ * falha real de `gh pr edit` atrás de um campo de JSON que só um humano
+ * leria — o consumidor real é um harness LLM que pode não notar):
+ *   0 = label aplicado com sucesso (`labelApplied: true`).
+ *   1 = `gh pr edit --add-label` falhou de verdade (rede, auth, PR sumiu) —
+ *       o cap de 1 tentativa NÃO foi fechado; o chamador deve tratar como
+ *       falha real (retry manual ou escalar), nunca assumir que "tentou e
+ *       seguiu" é suficiente — é exatamente o livelock que este script
+ *       existe pra evitar.
+ *   2 = uso inválido (`--pr` ausente/não-numérico).
  *
  * @see scripts/lib/continuo-ci-fixer-eligibility.ts
  * @see scripts/check-continuo-ci-fixer-candidate.ts
@@ -74,6 +85,7 @@ function main(): void {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.log(JSON.stringify({ pr: Number(args.pr), labelApplied: false, error: message }));
+    process.exitCode = 1;
   }
 }
 
