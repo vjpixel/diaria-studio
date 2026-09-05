@@ -47,6 +47,77 @@ function assetIdOf(imgTag: string): string | null {
   return imgTag.match(ASSET_ID_RE)?.[1] ?? null;
 }
 
+/** Extrai o `src` de uma tag `<img>`. */
+export function srcOf(imgTag: string): string | null {
+  return imgTag.match(/src="([^"]+)"/)?.[1] ?? null;
+}
+
+/** O hero (imagem antes do marcador) e as imagens do corpo, sem decidir nada. */
+export interface HeroLayout {
+  heroTag: string;
+  heroStart: number;
+  heroEnd: number;
+  /** `src` de cada `<img>` com asset depois do marcador. */
+  bodySrcs: string[];
+}
+
+/**
+ * Localiza o hero e as imagens do corpo — puro, sem julgar se há duplicata.
+ *
+ * Existe separado de `stripDuplicateHeroImage` porque decidir "é a mesma
+ * imagem?" às vezes exige **baixar e comparar o conteúdo**: o mesmo arquivo
+ * reenviado ao Beehiiv ganha um asset id novo, e nomes de arquivo tanto
+ * coincidem entre imagens distintas quanto divergem entre cópias idênticas
+ * (ambos os casos medidos no acervo em 05/09/2026). Essa parte é I/O e fica
+ * com o chamador; aqui só se faz o recorte do HTML.
+ */
+export function findHeroLayout(html: string): HeroLayout | null {
+  const markerAt = html.indexOf(CONTENT_BLOCKS_MARKER);
+  if (markerAt < 0) return null;
+
+  const head = html.slice(0, markerAt);
+  const imgsBefore = [...head.matchAll(/<img\b[^>]*>/g)].filter((m) => assetIdOf(m[0]));
+  if (imgsBefore.length !== 1) return null;
+
+  const bodySrcs = [...html.slice(markerAt).matchAll(/<img\b[^>]*>/g)]
+    .filter((m) => assetIdOf(m[0]))
+    .map((m) => srcOf(m[0]))
+    .filter((s): s is string => s !== null);
+
+  const heroTag = imgsBefore[0][0];
+  return {
+    heroTag,
+    heroStart: imgsBefore[0].index!,
+    heroEnd: imgsBefore[0].index! + heroTag.length,
+    bodySrcs,
+  };
+}
+
+/**
+ * Remove o hero localizado, levando o wrapper junto quando ele existe e
+ * contém só a imagem. Puro: quem chama já decidiu que deve remover.
+ */
+export function removeHero(
+  html: string,
+  hero: HeroLayout,
+): { html: string; removedWrapper: boolean } {
+  const wrapperStart = hero.heroStart - HERO_WRAPPER_OPEN.length;
+  const wrapperIsExact =
+    wrapperStart >= 0 && html.slice(wrapperStart, hero.heroStart) === HERO_WRAPPER_OPEN;
+  const closesRightAfter = html.slice(hero.heroEnd, hero.heroEnd + 6) === "</div>";
+
+  if (wrapperIsExact && closesRightAfter) {
+    return {
+      html: html.slice(0, wrapperStart) + html.slice(hero.heroEnd + 6),
+      removedWrapper: true,
+    };
+  }
+  return {
+    html: html.slice(0, hero.heroStart) + html.slice(hero.heroEnd),
+    removedWrapper: false,
+  };
+}
+
 export function stripDuplicateHeroImage(html: string): StripHeroResult {
   const markerAt = html.indexOf(CONTENT_BLOCKS_MARKER);
   if (markerAt < 0) {

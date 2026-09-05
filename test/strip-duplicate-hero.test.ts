@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import * as assert from "node:assert";
-import { stripDuplicateHeroImage } from "../scripts/lib/strip-duplicate-hero.ts";
+import {
+  stripDuplicateHeroImage,
+  findHeroLayout,
+  removeHero,
+  srcOf,
+} from "../scripts/lib/strip-duplicate-hero.ts";
 
 const ID_A = "6d1c1f0e-e9a7-4421-ab47-8ea1001a2ccf";
 const ID_B = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -106,4 +111,70 @@ test("logo/ícones sem asset id não confundem a detecção", () => {
   assert.equal(r.changed, true, "<img> sem asset id deve ser ignorada na contagem");
   if (!r.changed) return;
   assert.ok(r.html.includes("/static/logo.svg"), "a logo não pode ser removida");
+});
+
+// ------------------------------------------------- detecção por conteúdo
+//
+// A comparação por asset id não basta: o mesmo arquivo reenviado ao Beehiiv
+// ganha id novo. `findHeroLayout` + `removeHero` existem para que o chamador
+// possa decidir por HASH do conteúdo (I/O fica fora da função pura).
+
+test("findHeroLayout: devolve o hero e os srcs do corpo", () => {
+  const l = findHeroLayout(page({ heroId: ID_A, bodyId: ID_B }));
+  assert.ok(l);
+  assert.match(l!.heroTag, new RegExp(ID_A));
+  assert.equal(l!.bodySrcs.length, 1);
+  assert.match(l!.bodySrcs[0], new RegExp(ID_B), "src do corpo, não o do hero");
+});
+
+test("findHeroLayout: null sem marcador, ou com nº de imagens inesperado", () => {
+  assert.equal(findHeroLayout(`<html>${img(ID_A)}</html>`), null, "sem marcador");
+  assert.equal(
+    findHeroLayout(`<div>${img(ID_A)}${img(ID_B)}</div><div id='content-blocks'></div>`),
+    null,
+    "2 imagens antes do marcador",
+  );
+  assert.equal(
+    findHeroLayout(`<div id='content-blocks'>${img(ID_A)}</div>`),
+    null,
+    "nenhuma imagem antes do marcador",
+  );
+});
+
+test("findHeroLayout: enxerga TODAS as imagens do corpo, não só a primeira", () => {
+  const html =
+    `<div style='padding-bottom:2rem;'>${img(ID_A)}</div><div id='content-blocks'>` +
+    `${img(ID_B)}<p>x</p>${img(ID_A)}</div>`;
+  const l = findHeroLayout(html);
+  assert.equal(l!.bodySrcs.length, 2, "a cópia pode estar numa imagem posterior");
+});
+
+test("removeHero: leva o wrapper quando ele envolve só a imagem", () => {
+  const html = page({ heroId: ID_A, bodyId: ID_B });
+  const l = findHeroLayout(html)!;
+  const out = removeHero(html, l);
+  assert.equal(out.removedWrapper, true);
+  assert.ok(!out.html.includes("padding-bottom:2rem"));
+  assert.ok(!out.html.includes(ID_A), "hero saiu");
+  assert.ok(out.html.includes(ID_B), "corpo intacto");
+});
+
+test("removeHero: com wrapper atípico, remove só a tag e sinaliza", () => {
+  const html = page({ heroId: ID_A, bodyId: ID_B, wrapper: false });
+  const out = removeHero(html, findHeroLayout(html)!);
+  assert.equal(out.removedWrapper, false);
+  assert.ok(out.html.includes("<section></section>"), "container alheio fica");
+  assert.ok(out.html.includes(ID_B));
+});
+
+test("removeHero não decide nada — remove mesmo se o corpo tiver outra imagem", () => {
+  // É o chamador que decide (por hash). Esta função só executa o recorte.
+  const html = page({ heroId: ID_A, bodyId: ID_B });
+  const out = removeHero(html, findHeroLayout(html)!);
+  assert.ok(!out.html.includes(ID_A));
+});
+
+test("srcOf extrai o src da tag", () => {
+  assert.match(srcOf(img(ID_A))!, /^https:\/\/media\.beehiiv\.com\//);
+  assert.equal(srcOf("<img>"), null);
 });
