@@ -1051,11 +1051,29 @@ function readMergedRecordForRealFile(repoRoot: string, realPath: string): Sessio
   const realName = basename(realPath);
   const stem = realName.slice(0, -".json".length);
   const backupNames = groupBackupsByRealStem(listSessionJsonFiles(repoRoot)).get(stem) ?? [];
-  const records = [realName, ...backupNames]
+  // Fleet review (#7467, achado CRÍTICO): a leitura do REAL é checada
+  // EXPLICITAMENTE, separada do `.filter()` que descarta backups
+  // ilegíveis — nunca misturadas no mesmo filtro. Se o real falhar (race
+  // ENOENT do #7002, ou JSON malformado — `readJsonSafe` devolve `null`
+  // silenciosamente pros dois), o `.filter()` sozinho reindexaria o
+  // primeiro BACKUP sobrevivente pra posição 0, e `mergeSessionRecords`
+  // com `realIndex` default (0) o trataria como testemunha autoritativa de
+  // `consumedAt` — exatamente a classe de bug que o #7462 existe pra
+  // fechar, reintroduzida aqui por um invariante implícito nunca validado.
+  const realRecord = readJsonSafe<SessionRecord>(join(dir, realName));
+  const backupRecords = backupNames
     .map((n) => readJsonSafe<SessionRecord>(join(dir, n)))
     .filter((r): r is SessionRecord => r !== null);
-  if (records.length === 0) return null;
-  return mergeSessionRecords(records);
+  if (realRecord === null && backupRecords.length === 0) return null;
+  if (realRecord === null) {
+    process.stderr.write(
+      `session-registry: ATENÇÃO — readMergedRecordForRealFile: o arquivo real "${realName}" está ilegível/ausente ` +
+        `mas ${backupRecords.length} cópia(s) -safeBackup- sobrevivem — tratando como grupo ÓRFÃO (realIndex=-1, #6972): ` +
+        "consumedAt de nenhuma delas é confiado como testemunha.\n",
+    );
+    return mergeSessionRecords(backupRecords, -1);
+  }
+  return mergeSessionRecords([realRecord, ...backupRecords]);
 }
 
 /**
@@ -2165,6 +2183,18 @@ export function mergeSessionRecords(
   if (records.length === 0) {
     throw new Error("mergeSessionRecords: records não pode ser vazio");
   }
+  // Fleet review (#7467, achado MÉDIO): `records[realIndex]!` mais abaixo é
+  // non-null assertion — fora do range, um `TypeError` opaco ("Cannot read
+  // properties of undefined") em vez de um erro nomeado que aponta pra causa.
+  // Mesma disciplina do guard "records não vazio" acima (#6130): `-1` (órfão,
+  // #6972) é o único valor negativo válido — qualquer outro fora de
+  // `[0, records.length)` é um bug do caller, não um caso a tolerar.
+  if (realIndex !== -1 && (realIndex < 0 || realIndex >= records.length)) {
+    throw new Error(
+      `mergeSessionRecords: realIndex (${realIndex}) fora do range válido — records tem ${records.length} elemento(s); ` +
+        "só -1 (grupo órfão, #6972) ou um índice dentro de [0, records.length) são aceitos",
+    );
+  }
   let primary = records[0]!;
   let primaryHb = Date.parse(primary.lastHeartbeat ?? primary.startedAt ?? "");
   for (const r of records.slice(1)) {
@@ -2330,12 +2360,30 @@ function readMergedSessionGroups(repoRoot: string, now: number = Date.now()): Se
   const merged: SessionRecord[] = [];
   for (const realName of realNames) {
     const stem = realName.slice(0, -".json".length);
-    const groupNames = [realName, ...(backupsByRealStem.get(stem) ?? [])];
-    const records = groupNames
+    const backupNames = backupsByRealStem.get(stem) ?? [];
+    // Fleet review (#7467, achado CRÍTICO): checagem do real SEPARADA do
+    // `.filter()` dos backups — ver o comentário gêmeo em
+    // `readMergedRecordForRealFile` acima. Sem isto, um real ilegível
+    // (race ENOENT do #7002, JSON malformado, ou sem `sessionId`/`kind`)
+    // some do `.filter()` em silêncio, o primeiro BACKUP sobrevivente
+    // reindexa pra posição 0, e `mergeSessionRecords` com `realIndex`
+    // default (0) o trata como testemunha REAL de `consumedAt`.
+    const rawReal = readJsonSafe<SessionRecord>(join(dir, realName));
+    const realRecord = rawReal && rawReal.sessionId && rawReal.kind ? rawReal : null;
+    const backupRecords = backupNames
       .map((n) => readJsonSafe<SessionRecord>(join(dir, n)))
       .filter((r): r is SessionRecord => r !== null && !!r.sessionId && !!r.kind);
-    if (records.length === 0) continue;
-    merged.push(mergeSessionRecords(records));
+    if (realRecord === null && backupRecords.length === 0) continue;
+    if (realRecord === null) {
+      process.stderr.write(
+        `session-registry: ATENÇÃO — readMergedSessionGroups: o arquivo real "${realName}" está ilegível/ausente/sem ` +
+          `sessionId+kind, mas ${backupRecords.length} cópia(s) -safeBackup- sobrevivem — tratando como grupo ÓRFÃO ` +
+          "(realIndex=-1, #6972): consumedAt de nenhuma delas é confiado como testemunha.\n",
+      );
+      merged.push(mergeSessionRecords(backupRecords, -1));
+      continue;
+    }
+    merged.push(mergeSessionRecords([realRecord, ...backupRecords]));
   }
 
   // #7002: grupos ÓRFÃOS que ainda parecem vivos voltam pra leitura. Um grupo
@@ -4303,7 +4351,7 @@ export interface SafeBackupCleanupResult {
  *
  *   **#7462 corrigiu o que conta como "já está consumida".** Antes, o
  *   `consumedAt` vinha de QUALQUER cópia do grupo (`mergeSessionRecords`
- *   propagueava de backups), então o caso 2 se disparava com o carimbo no
+ *   propagava de backups), então o caso 2 se disparava com o carimbo no
  *   backup mesmo com o real vivo — exatamente o cenário que a issue relata:
  *   o backup carregava um `consumedAt` que nunca foi escrito por um merge.
  *   Agora o carimbo conta só quando está no real, e o caso 2 só dispara de

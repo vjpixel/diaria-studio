@@ -91,7 +91,7 @@ describe("planSafeBackupCleanup (#6970)", () => {
   // #7462: o `consumedAt` é um carimbo de FATO, não um voto de maioria — só
   // testemunha quando está no arquivo REAL (o único que o merge de fato
   // escreve). Cópias `-safeBackup-` são detrito de sync do OneDrive: um
-  // `consumAt` nelas é um RESÍDUO, não uma prova. Antes de #7462, o caso
+  // `consumedAt` nelas é um RESÍDUO, não uma prova. Antes de #7462, o caso
   // abaixo saía `removable` porque a união propagava o `consumedAt` do
   // backup pro winner e `isMergeGrantLive` via falsa-loja via morta. Agora
   // o winner NÃO tem `consumedAt` (nem o real tem grant), então a união
