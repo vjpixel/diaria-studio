@@ -14,6 +14,11 @@
  * ninguém tirou a label. As 2 legítimas eram justamente as que a sessão nunca
  * tentou.
  *
+ * (Contagem congelada em 260826: `trade-off-real` era, à época, uma das 3
+ * labels simples de develop. Hoje são 2 — o #7493 tirou `trade-off-real` do
+ * conjunto; ver `developTriggeringLabels` abaixo. O incidente e a medição
+ * seguem válidos, a aritmética "1 de 3" é histórica.)
+ *
  * A causa é estrutural: **todos os call sites de roteamento do develop são de
  * ENTRADA.** Medido em `origin/master`, ANTES deste gate existir (a própria
  * correção acrescenta call sites de saída àquele arquivo, então re-rodar o

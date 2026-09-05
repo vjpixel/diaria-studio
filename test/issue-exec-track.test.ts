@@ -580,6 +580,20 @@ describe("classifyExecTrack — precedência", () => {
     assert.equal(track(["trade-off-real", "develop-track"]), "develop");
   });
 
+  it("epic-guarda-chuva vence trade-off-real (precedência inalterada pelo #7493)", () => {
+    // Épica nunca é despachada direto, e isso não muda por a ambiguidade dela
+    // ter virado pergunta de briefing. O cruzamento não tinha teste enquanto
+    // as duas labels produziam tracks distintos por outro caminho.
+    assert.equal(track(["trade-off-real", "epic-guarda-chuva"]), "epica");
+  });
+
+  it("external-blocker + credencial-escopo vence trade-off-real (cat. A do develop)", () => {
+    // O destravamento por escopo de credencial é checado ANTES do branch novo
+    // do #7493 — a issue segue develop, porque colar permission num painel
+    // não é coisa que uma resposta de briefing faça.
+    assert.equal(track(["trade-off-real", "external-blocker", "credencial-escopo"]), "develop");
+  });
+
   // As 4 acima cruzam label×label. O marcador de data é um branch
   // estruturalmente diferente (valor parseado, não `Set.has`), então precisa
   // do seu próprio cruzamento com os tiers vizinhos.

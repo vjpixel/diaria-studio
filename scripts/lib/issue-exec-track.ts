@@ -648,7 +648,8 @@ export function classifyExecTrackWithRule(input: ExecTrackInput): ExecTrackResul
   const deferredLabel = labels.find((l) => DEFERRED_LABELS.has(l));
   if (deferredLabel) return { track: "bloqueada", matched: `label:${deferredLabel}`  };
 
-  // Passo 5 — develop (máquina, trade-off, credencial-escopo, humano).
+  // Passo 5 — develop (máquina, credencial-escopo, humano). `trade-off` saiu
+  // deste bloco no #7493 — ver o branch logo abaixo.
   const machineLabel = labels.find((l) => MACHINE_DEVELOP_LABELS.has(l));
   if (machineLabel) return { track: "develop", matched: `label:${machineLabel}`  };
   if (isCredentialScopeUnblock) return { track: "develop", matched: "label:credencial-escopo" };
