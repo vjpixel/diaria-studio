@@ -10,8 +10,10 @@ import assert from "node:assert/strict";
 import {
   mapAudienceToEventType,
   buildKitEventExternalId,
+  buildKitUrlClickExternalId,
   verifyKitIngestion,
   ingestBroadcastAudience,
+  ingestBroadcastUrlClicks,
   ingestKitRoster,
   extractKitFieldAttributes,
 } from "../scripts/lib/kit-subscribers-ingest.ts";
@@ -136,6 +138,107 @@ describe("ingestBroadcastAudience", () => {
     ingestBroadcastAudience(db, 9, "clicks", ["a@x.com"], ts);
     assert.equal(getStoreCounts(db).subscribers, 1, "mesmo subscriber, resolvido 4x pelo mesmo alias");
     assert.equal(getStoreCounts(db).events, 4);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ingestBroadcastUrlClicks / buildKitUrlClickExternalId (#7206)
+// ---------------------------------------------------------------------------
+
+describe("buildKitUrlClickExternalId", () => {
+  it("normaliza e-mail e escopa por broadcast + url", () => {
+    assert.equal(
+      buildKitUrlClickExternalId("  Leitor@Example.com ", 9, "https://diar.ia.br/x"),
+      "leitor@example.com:9:click:https://diar.ia.br/x",
+    );
+  });
+
+  it("2 links diferentes do MESMO broadcast/e-mail nunca colidem", () => {
+    const a = buildKitUrlClickExternalId("a@x.com", 9, "https://diar.ia.br/1");
+    const b = buildKitUrlClickExternalId("a@x.com", 9, "https://diar.ia.br/2");
+    assert.notEqual(a, b);
+  });
+
+  it("é DIFERENTE da chave do eixo genérico 'clicks' — os dois nunca colidem (#7206)", () => {
+    const generic = buildKitEventExternalId("a@x.com", 9, "clicks");
+    const perLink = buildKitUrlClickExternalId("a@x.com", 9, "https://diar.ia.br/1");
+    assert.notEqual(generic, perLink);
+  });
+});
+
+describe("ingestBroadcastUrlClicks (#7206) — regressão do gap 'event.url nunca populado do lado Kit'", () => {
+  it("grava 1 evento 'click' por e-mail COM a url populada", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const r = ingestBroadcastUrlClicks(
+      db,
+      9,
+      "https://diar.ia.br/materia-x",
+      ["a@x.com", "b@x.com"],
+      "2026-09-01T10:00:00.000Z",
+    );
+    assert.equal(r.newEvents, 2);
+    assert.equal(r.subscribersTouched, 2);
+
+    const [subId] = findSubscriberIdsByEmail(db, "a@x.com");
+    const timeline = getSubscriberTimeline(db, subId);
+    assert.equal(timeline.length, 1);
+    assert.equal(timeline[0].type, "click");
+    assert.equal(timeline[0].url, "https://diar.ia.br/materia-x");
+    db.close();
+  });
+
+  it("convive com o eixo 'clicks' genérico do MESMO broadcast/e-mail sem sobrescrever — 2 eventos click distintos", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const ts = "2026-09-01T10:00:00.000Z";
+    ingestBroadcastAudience(db, 9, "clicks", ["a@x.com"], ts); // genérico, sem url
+    ingestBroadcastUrlClicks(db, 9, "https://diar.ia.br/materia-x", ["a@x.com"], ts); // refinado, com url
+
+    assert.equal(getStoreCounts(db).subscribers, 1, "mesmo subscriber, resolvido pelo mesmo alias");
+    assert.equal(getStoreCounts(db).events, 2, "2 eventos 'click' — chaves naturais diferentes, nenhum sobrescreve o outro");
+
+    const [subId] = findSubscriberIdsByEmail(db, "a@x.com");
+    const timeline = getSubscriberTimeline(db, subId);
+    const withUrl = timeline.filter((e) => e.url != null);
+    const withoutUrl = timeline.filter((e) => e.url == null);
+    assert.equal(withUrl.length, 1);
+    assert.equal(withoutUrl.length, 1);
+    db.close();
+  });
+
+  it("idempotente — re-rodar o MESMO link/broadcast não duplica evento", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    ingestBroadcastUrlClicks(db, 9, "https://diar.ia.br/x", ["a@x.com"], "2026-09-01T10:00:00.000Z");
+    const r2 = ingestBroadcastUrlClicks(db, 9, "https://diar.ia.br/x", ["a@x.com"], "2026-09-01T10:00:00.000Z");
+    assert.equal(r2.newEvents, 0);
+    assert.equal(r2.alreadyKnown, 1);
+    assert.equal(getStoreCounts(db).events, 1);
+    db.close();
+  });
+
+  it("2 links diferentes do mesmo broadcast/e-mail gravam 2 eventos com urls distintas", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const ts = "2026-09-01T10:00:00.000Z";
+    ingestBroadcastUrlClicks(db, 9, "https://diar.ia.br/1", ["a@x.com"], ts);
+    ingestBroadcastUrlClicks(db, 9, "https://diar.ia.br/2", ["a@x.com"], ts);
+    assert.equal(getStoreCounts(db).events, 2);
+    assert.equal(getStoreCounts(db).subscribers, 1);
+    db.close();
+  });
+
+  it("dedup de e-mails repetidos na MESMA chamada", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const r = ingestBroadcastUrlClicks(db, 9, "https://diar.ia.br/x", ["a@x.com", "A@X.COM"], "2026-09-01T10:00:00.000Z");
+    assert.equal(r.subscribersTouched, 1);
+    assert.equal(r.newEvents, 1);
+    db.close();
+  });
+
+  it("email vazio/whitespace é ignorado, não vira subscriber fantasma", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const r = ingestBroadcastUrlClicks(db, 9, "https://diar.ia.br/x", ["  ", "", "a@x.com"], "2026-09-01T10:00:00.000Z");
+    assert.equal(r.subscribersTouched, 1);
+    assert.equal(getStoreCounts(db).subscribers, 1);
     db.close();
   });
 });
