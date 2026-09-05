@@ -79,10 +79,37 @@ describe("#5995 acompanhamento — anúncio de curso/capacitação → tutorial 
     assert.equal(categoryToBucket(categorize(article)), "use_melhor");
   });
 
+  // #5995 (PR #7331): fixture original desta suíte não fixava `type_hint`,
+  // deixando passar mesmo antes do fix de precedência — o achado real
+  // (medido no PR #7331) era justamente com `type_hint: "noticia"` do agent
+  // pesquisador, que curto-circuitava `isNewsNotTutorial` ANTES de alcançar
+  // `isTutorialByTitleExtra` (chamada só no site de uso, gated por
+  // `!isNewsNotTutorial`). Sem `type_hint` fixado aqui, este teste nunca
+  // teria pego a regressão de precedência.
+  it("CASO REAL 260827: New OpenAI Academy courses — type_hint=noticia do agent não vence mais o sinal de curso", () => {
+    const article = {
+      url: "https://openai.com/index/academy-courses-applying-ai-at-work",
+      title: "New OpenAI Academy courses for the next era of work",
+      type_hint: "noticia",
+    } as Article;
+    assert.equal(categorize(article), "tutorial");
+    assert.equal(categoryToBucket(categorize(article)), "use_melhor");
+  });
+
   it("CASO REAL 260827: cobertura de capacitação gratuita (veículo de notícia, não domínio oficial) → tutorial", () => {
     const article = {
       url: "https://www.seudinheiro.com/2026/seu-negocio/inteligencia-artificial-nos-pequenos-negocios-google-sebrae-itau-e-tera-oferecem-capacitacao-gratuita-para-empreendedores-giov",
       title: "Inteligência artificial nos pequenos negócios: Google, Sebrae, Itaú e Tera oferecem capacitação gratuita para empreendedores",
+    } as Article;
+    assert.equal(categorize(article), "tutorial");
+    assert.equal(categoryToBucket(categorize(article)), "use_melhor");
+  });
+
+  it("CASO REAL 260827: capacitação gratuita — type_hint=noticia do agent pesquisador (veículo de notícia leu o programa como cobertura) não vence mais o sinal de curso (#5995, resolução da pergunta editorial da PR #7331)", () => {
+    const article = {
+      url: "https://www.seudinheiro.com/2026/seu-negocio/inteligencia-artificial-nos-pequenos-negocios-google-sebrae-itau-e-tera-oferecem-capacitacao-gratuita-para-empreendedores-giov",
+      title: "Inteligência artificial nos pequenos negócios: Google, Sebrae, Itaú e Tera oferecem capacitação gratuita para empreendedores",
+      type_hint: "noticia",
     } as Article;
     assert.equal(categorize(article), "tutorial");
     assert.equal(categoryToBucket(categorize(article)), "use_melhor");

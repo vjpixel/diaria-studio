@@ -433,6 +433,28 @@ function isTutorialByTitleExtra(article: Article): boolean {
 }
 
 /**
+ * #5995 (PR #7331, pergunta editorial resolvida — ver `isNewsNotTutorial`):
+ * subconjunto de `TUTORIAL_TITLE_EXTRA_RE` restrito aos 2 sinais de
+ * curso/capacitação ("academy courses", "capacitação gratuita") — os únicos
+ * casos reais medidos em que o `type_hint` do agent pesquisador ("noticia")
+ * discordou do editor, que corrigiu pra tutorial. Deliberadamente NÃO inclui
+ * "case study"/"how X used Y"/"build and deploy"/"step-by-step": esses
+ * padrões colidem com `isMarketingCaseStudy` (customer story real deve
+ * continuar `noticias`, mesmo com type_hint ausente) e não têm caso real
+ * medido de `type_hint=noticia` divergindo — promovê-los sem 2º caso
+ * confirmando arriscaria overfit (mesma disciplina anti-overfit do #6556/
+ * #7331). "guia prático/completo/passo" não precisa entrar aqui: já vive em
+ * `TUTORIAL_KEYWORDS_RE` (isTutorialByKeyword), que já tem essa precedência
+ * sobre type_hint desde antes desta issue.
+ */
+const EDUCATIONAL_COURSE_TITLE_RE = /\b(academy\s+courses?|capacita[çc][ãa]o\s+gratuita)\b/i;
+
+function isEducationalCourseByTitle(article: Article): boolean {
+  const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
+  return EDUCATIONAL_COURSE_TITLE_RE.test(hay);
+}
+
+/**
  * #1754: página de curso/formação/treinamento — sinal de ALTA confiança de que o
  * link É a página do curso (matrícula/conteúdo), não cobertura jornalística sobre
  * um curso. Vence o `type_hint` do agent: o Haiku às vezes lê uma landing de
@@ -846,6 +868,15 @@ export function isNewsNotTutorial(article: Article): boolean {
   // sinal de tutorial explícito no título.
   if (hasReleaseVersionSignalOnMixedHost(article) && !isTutorialByKeyword(article)) return true;
   if (isTutorialByKeyword(article)) return false; // sinal de how-to vence (exceto launch slug, roundup, lançamento, visual-guide-explainer e family-member)
+  // #5995 (PR #7331, resolução da pergunta editorial sobre peso do type_hint):
+  // anúncio de curso/capacitação ("academy courses", "capacitação gratuita")
+  // vence type_hint=noticia/opiniao, mesma precedência de isTutorialByKeyword
+  // acima. 3 casos reais medidos onde o agent pesquisador rotulou "noticia" e
+  // o editor corrigiu pra tutorial (USE MELHOR) mesmo assim — resposta
+  // consistente o bastante (mesma direção nas 3 vezes) pra virar default
+  // sem perguntar de novo (CLAUDE.md "Perguntar é exceção", corolário
+  // "pergunta com resposta sempre igual vira default automático").
+  if (isEducationalCourseByTitle(article)) return false;
   if (article.type_hint === "noticia" || article.type_hint === "opiniao") {
     return true;
   }
