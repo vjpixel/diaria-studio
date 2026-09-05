@@ -81,7 +81,11 @@ const VERDICT_BY_EXIT_CODE: Record<number, CiVerdict> = {
 };
 
 function fetchCiVerdict(prNumber: number): CiVerdict {
-  const result = spawnSync("npx", ["tsx", "scripts/check-pr-checks-gate.ts", "--pr", String(prNumber)], {
+  // `process.execPath --import tsx`, NUNCA `npx tsx` sem `shell` — guard
+  // #4343/test/spawn-npx-windows-guard.test.ts: `spawnSync("npx", ...)` sem
+  // `shell: true` lança ENOENT no Windows (resolução de `.cmd`/PATH que o
+  // spawn sem shell não faz), mesmo passando limpo no CI Linux.
+  const result = spawnSync(process.execPath, ["--import", "tsx", "scripts/check-pr-checks-gate.ts", "--pr", String(prNumber)], {
     encoding: "utf8",
     timeout: 60_000,
   });
