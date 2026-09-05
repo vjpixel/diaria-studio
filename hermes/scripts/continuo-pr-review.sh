@@ -437,15 +437,24 @@ try_merge_gate() {
       # a este — qualquer motivo NOVO (CI mudou, veredito mudou) ainda posta
       # normalmente. `source=error` (gh falhou ao ler comentários) nunca
       # pula — fail-open em direção a comunicar, não a esconder.
+      # #6932/#7446 (review da PR #7449, mesma classe reincidente num ramo
+      # diferente): `2>&1` misturaria a linha `npm notice run ...` que `npx`
+      # sempre emite em stderr dentro do JSON que o `jq` abaixo tenta
+      # parsear — todo tick quebraria o parse e cairia sempre no fallback
+      # `|| echo`. stdout/stderr SEPARADOS (arquivo temporário pro stderr,
+      # mesmo padrão de `try_merge_gate()` acima) fecham isso.
+      DEDUPE_STDERR_TMP="$(mktemp)"
       set +e
-      DEDUPE_JSON=$(npx tsx scripts/check-continuo-reject-comment-dedupe.ts --pr "$pr" --candidate "$REJECT_BODY" 2>&1)
+      DEDUPE_JSON=$(npx tsx scripts/check-continuo-reject-comment-dedupe.ts --pr "$pr" --candidate "$REJECT_BODY" 2>"$DEDUPE_STDERR_TMP")
       DEDUPE_RC=$?
       set -e
+      DEDUPE_STDERR=$(cat "$DEDUPE_STDERR_TMP" 2>/dev/null || true)
+      rm -f "$DEDUPE_STDERR_TMP"
       SKIP_COMMENT="false"
       if [ "$DEDUPE_RC" -eq 0 ]; then
         SKIP_COMMENT=$(printf '%s' "$DEDUPE_JSON" | jq -r '.skip // false' 2>/dev/null || echo "false")
       else
-        echo "[continuo-pr-review] PR #$pr: check-continuo-reject-comment-dedupe.ts falhou (rc=$DEDUPE_RC) — postando mesmo assim (fail-open): $DEDUPE_JSON" >&2
+        echo "[continuo-pr-review] PR #$pr: check-continuo-reject-comment-dedupe.ts falhou (rc=$DEDUPE_RC) — postando mesmo assim (fail-open): $DEDUPE_STDERR" >&2
       fi
 
       if [ "$SKIP_COMMENT" = "true" ]; then
