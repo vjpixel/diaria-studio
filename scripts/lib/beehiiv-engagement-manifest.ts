@@ -214,6 +214,9 @@ export interface ManifestReconcileResult {
 /** Prefixo estável dos motivos de rebaixamento — usado em teste e no `error` gravado na entry. */
 export const AUDIT_REASON_PREFIX = "auditoria #7197";
 
+/** Prefixo para motivos de rebaixamento de shape (#7417) — distinto de #7197 para direcionar debug. */
+export const SHAPE_AUDIT_REASON_PREFIX = "auditoria #7417";
+
 /**
  * Reconcilia o manifest contra a única fonte que não pode mentir sobre si
  * mesma: as linhas de fato gravadas em disco (#7197 — "255 de 256 posts
@@ -399,10 +402,10 @@ export function validateEngagementLine(record: unknown): { ok: true } | { ok: fa
 /** Valida cada linha de uma lista de registros já parseados. */
 export function validateEngagementLines(records: unknown[]): LineShapeViolation[] {
   const violations: LineShapeViolation[] = [];
-  records.forEach((r, i) => {
-    const v = validateEngagementLine(r);
+  for (let i = 0; i < records.length; i++) {
+    const v = validateEngagementLine(records[i]);
     if (!v.ok) violations.push({ line: i + 1, error: v.error });
-  });
+  }
   return violations;
 }
 
@@ -431,11 +434,11 @@ export function reconcileShapeViolations(
     const report = lineShapeReports.get(entry.post_id);
     if (!report || report.violations.length === 0) return entry;
     if (report.total > 0 && report.violations.length === report.total) {
-      const reason = `${AUDIT_REASON_PREFIX}: todas as ${report.total} linhas do JSONL são malformadas (shape inválido) — nenhum dado real, redrenar do zero`;
+      const reason = `${SHAPE_AUDIT_REASON_PREFIX}: todas as ${report.total} linhas do JSONL são malformadas (shape inválido) — nenhum dado real, redrenar do zero`;
       downgraded.push({ post_id: entry.post_id, from: "ok", to: "pending", reason });
       return { ...entry, status: "pending" as const, count: 0, error: reason };
     }
-    const reason = `${AUDIT_REASON_PREFIX}: ${report.violations.length} de ${report.total} linhas com shape inválido — contaminação, re-drenar pra limpar`;
+    const reason = `${SHAPE_AUDIT_REASON_PREFIX}: ${report.violations.length} de ${report.total} linhas com shape inválido — contaminação, re-drenar pra limpar`;
     downgraded.push({ post_id: entry.post_id, from: "ok", to: "partial", reason });
     return { ...entry, status: "partial" as const, error: reason };
   });

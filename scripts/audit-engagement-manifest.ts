@@ -70,6 +70,7 @@ import {
   coverageSummary,
   type EngagementManifest,
   type LineShapeReport,
+  type LineShapeViolation,
 } from "./lib/beehiiv-engagement-manifest.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -99,10 +100,14 @@ export function readActualCounts(manifest: EngagementManifest, outDir: string): 
 
 /**
  * Lê, pro `outDir` dado, o shape de cada linha de cada post_id do manifest —
- * a fonte da checagem de #7417. Post sem `.jsonl` em disco entra vazio
- * (`total: 0`, sem violações): o `reconcileShapeViolations` ignora entradas
- * sem relatório, e o post já foi rebaixado a `pending` pela checagem 1 de
+ * a fonte da checagem de #7417. Post sem `.jsonl` em disco é pulado (não
+ * entra no mapa): o `reconcileShapeViolations` ignora entradas sem relatório,
+ * e o post já foi rebaixado a `pending` pela checagem 1 de
  * `reconcileManifestWithDisk` (0 linhas reais).
+ *
+ * Linhas com JSON.parse falhando são registradas como violações de shape
+ * (mensagem "JSON parse falhou"), não propagadas como exceção — um arquivo
+ * truncado por escrita interrompida não deve derrubar a auditoria inteira.
  */
 export function readLineShapeReports(manifest: EngagementManifest, outDir: string): Map<string, LineShapeReport> {
   const reports = new Map<string, LineShapeReport>();
@@ -110,11 +115,18 @@ export function readLineShapeReports(manifest: EngagementManifest, outDir: strin
     const path = resolve(outDir, `${entry.post_id}.jsonl`);
     if (!existsSync(path)) continue;
     const content = readFileSync(path, "utf8");
-    const records = content
-      .split("\n")
-      .filter((line) => line.trim().length > 0)
-      .map((line) => JSON.parse(line) as unknown);
-    reports.set(entry.post_id, { total: records.length, violations: validateEngagementLines(records) });
+    const lines = content.split("\n").filter((line) => line.trim().length > 0);
+    const records: unknown[] = [];
+    const violations: LineShapeViolation[] = [];
+    lines.forEach((line, i) => {
+      try {
+        records.push(JSON.parse(line) as unknown);
+      } catch {
+        violations.push({ line: i + 1, error: "JSON parse falhou (linha não é JSON válido)" });
+      }
+    });
+    const lineViolations = validateEngagementLines(records);
+    reports.set(entry.post_id, { total: lines.length, violations: [...violations, ...lineViolations] });
   }
   return reports;
 }

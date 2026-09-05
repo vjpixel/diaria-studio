@@ -143,6 +143,23 @@ describe("readLineShapeReports — guard de shape por linha (#7417)", () => {
     assert.equal(report.total, 1);
     assert.equal(report.violations.length, 0);
   });
+
+  it("linha JSON malformada não faz o parse -- registrada como violação, não throw", () => {
+    const outDir = setup();
+    writeFileSync(resolve(outDir, "post_bad.jsonl"), good + placeholder + "not-json\n");
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_bad", status: "ok", count: 3 }],
+    };
+    const report = readLineShapeReports(manifest, outDir).get("post_bad") as LineShapeReport;
+    assert.equal(report.total, 3);
+    assert.equal(report.violations.length, 2, "1 placeholder + 1 JSON inválido");
+    const parseViolation = report.violations.find((v) => v.error.includes("JSON parse falhou"));
+    assert.ok(parseViolation, "deve existir violação de parse falho");
+    assert.equal(parseViolation!.line, 3);
+    const placeholderViolation = report.violations.find((v) => v.error.includes("subscriber_id"));
+    assert.equal(placeholderViolation!.line, 2);
+  });
 });
 
 describe("postsNeedingAnchor — a ancora so julga o que pode julgar (#7197)", () => {
