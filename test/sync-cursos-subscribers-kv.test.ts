@@ -22,6 +22,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, delimiter, dirname } from "node:path";
 
 import {
   diffStaleSubscriberKeys,
@@ -29,6 +32,10 @@ import {
   buildKvKeyListCommand,
   buildKvBulkDeleteCommand,
   syncKvKeys,
+  wranglerSpawnEnv,
+  readKvSyncState,
+  writeKvSyncState,
+  evaluateKvEmptyGuard,
   type KvBulkEntry,
   type KvSyncOps,
 } from "../scripts/sync-cursos-subscribers-kv.ts";
@@ -321,5 +328,95 @@ describe("syncKvKeys: ordem list→put→delete + write-amplification (#4442, er
     // assinatura com default continua válida e não exige `ops` no call site
     // de `main()`.
     assert.equal(syncKvKeys.length, 3, "namespaceId/accountId/entries são obrigatórios; ops é opcional (default param, não conta em .length)");
+  });
+});
+
+describe("wranglerSpawnEnv (#7338 — reprodução ao vivo em helios 05/09/2026)", () => {
+  it("prepende dirname(process.execPath) ao PATH herdado — npx/wrangler resolvem o Node deste processo, não o do PATH do caller", () => {
+    const env = wranglerSpawnEnv("conta-123");
+    const nodeBinDir = env.PATH?.split(delimiter)[0];
+    assert.equal(nodeBinDir, dirname(process.execPath));
+  });
+
+  it("preserva o resto do PATH herdado atrás do prefixo", () => {
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = "/usr/bin:/bin";
+      const env = wranglerSpawnEnv("conta-123");
+      assert.ok(env.PATH?.includes("/usr/bin"), `PATH devia conter o valor herdado: ${env.PATH}`);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it("propaga CLOUDFLARE_ACCOUNT_ID pro env retornado", () => {
+    const env = wranglerSpawnEnv("conta-xyz");
+    assert.equal(env.CLOUDFLARE_ACCOUNT_ID, "conta-xyz");
+  });
+
+  it("PATH nunca fica vazio mesmo se process.env.PATH estiver ausente", () => {
+    const originalPath = process.env.PATH;
+    try {
+      delete process.env.PATH;
+      const env = wranglerSpawnEnv("conta-123");
+      assert.ok(env.PATH && env.PATH.length > 0);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+});
+
+describe("readKvSyncState / writeKvSyncState (#7338, mesmo shape de sync-beehiiv-subscribers-kit.ts #6092)", () => {
+  it("round-trip: escreve e lê de volta", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cursos-kv-sync-state-"));
+    try {
+      const state = { last_run_at: "2026-09-05T00:00:00Z", active_subscriber_count: 551 };
+      writeKvSyncState(dir, state);
+      assert.deepEqual(readKvSyncState(dir), state);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem arquivo — devolve null (sem baseline, 1ª rodada)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cursos-kv-sync-state-"));
+    try {
+      assert.equal(readKvSyncState(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("evaluateKvEmptyGuard (#7338)", () => {
+  it("sem baseline anterior — sempre passa", () => {
+    assert.deepEqual(evaluateKvEmptyGuard(0, null), { ok: true });
+    assert.deepEqual(evaluateKvEmptyGuard(551, null), { ok: true });
+  });
+
+  it("baseline anterior era 0 — sempre passa (nada pra comparar)", () => {
+    const prev = { last_run_at: "2026-09-04T00:00:00Z", active_subscriber_count: 0 };
+    assert.deepEqual(evaluateKvEmptyGuard(551, prev), { ok: true });
+  });
+
+  it("queda dentro da tolerância (≥50% do baseline) — passa", () => {
+    const prev = { last_run_at: "2026-09-04T00:00:00Z", active_subscriber_count: 500 };
+    assert.deepEqual(evaluateKvEmptyGuard(300, prev), { ok: true }); // 60%
+  });
+
+  it("caso real #7338: baseline 551, atual 0 (Beehiiv zerada pela migração #7388/#7395) — RECUSA", () => {
+    const prev = { last_run_at: "2026-09-03T09:15:00Z", active_subscriber_count: 551 };
+    const result = evaluateKvEmptyGuard(0, prev);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.reason, /0%/);
+      assert.match(result.reason, /551/);
+    }
+  });
+
+  it("queda abrupta abaixo do limiar (menos de 50% do baseline) — recusa", () => {
+    const prev = { last_run_at: "2026-09-04T00:00:00Z", active_subscriber_count: 500 };
+    const result = evaluateKvEmptyGuard(100, prev); // 20%
+    assert.equal(result.ok, false);
   });
 });
