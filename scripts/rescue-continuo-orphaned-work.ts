@@ -107,30 +107,49 @@ function listOpenRescuePrs(): OpenPrSummary[] | null {
   }
 }
 
+/** Label aplicada à PR de rescue para bloquear o auto-merge da regra "review
+ * limpo + CI verde mergeia sozinho" (#5251/#6299) — `bloqueio-execucao` já é
+ * lida por `classifyExecTrack` (roteia pra Bloqueada), então reusar em vez de
+ * inventar uma label dedicada (#7484: confirmado via `gh label list` antes de
+ * escolher — nenhuma label "não mergear" existia no repo). */
+export const RESCUE_PR_BLOCK_LABEL = "bloqueio-execucao";
+
+/** Pura (#7484): monta o argv de `gh pr create` para a PR de rescue. Extraída
+ * de `tryOpenPr` para ser testável sem spawnar `gh` de verdade. A PR sai
+ * SEMPRE como `--draft` (draft não é auto-mergeável por construção) e com
+ * `--label` de bloqueio — sem isso, o corpo dizendo "triagem manual
+ * necessária" era só prosa: nada impedia a regra de auto-merge (#5251/#6299)
+ * de mergear a PR sozinha assim que review+CI saíssem limpos (foi o que
+ * aconteceu com a #7438, que levou `.review-i1.md` pra `master`). */
+export function buildRescuePrArgs(branch: string): string[] {
+  return [
+    "pr",
+    "create",
+    "--head",
+    branch,
+    "--base",
+    "master",
+    "--draft",
+    "--label",
+    RESCUE_PR_BLOCK_LABEL,
+    "--title",
+    `chore(#7130): trabalho órfão recuperado de tick do contínuo — ${branch}`,
+    "--body",
+    "REFS #7130, NÃO CLOSES (achado de recuperação automática, não implementação da issue)\n\n" +
+      "Commit automático de `rescue-continuo-orphaned-work.ts`. A origem exata (qual issue, qual tick) " +
+      "é desconhecida por construção — triagem manual necessária antes de mergear ou descartar. " +
+      `PR aberta como draft + label \`${RESCUE_PR_BLOCK_LABEL}\` (#7484) para não ser auto-mergeada ` +
+      "pela regra de review limpo + CI verde antes dessa triagem acontecer.\n\n" +
+      "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+  ];
+}
+
 /** Best-effort `gh pr create` — nunca aborta o script se `gh` estiver
  * ausente/sem auth: a branch já publicada (ou local) é o que importa
  * preservar; o PR é conveniência de triagem, não a garantia de dados. */
 function tryOpenPr(branch: string): { ok: boolean; message: string } {
   try {
-    const out = execFileSync(
-      "gh",
-      [
-        "pr",
-        "create",
-        "--head",
-        branch,
-        "--base",
-        "master",
-        "--title",
-        `chore(#7130): trabalho órfão recuperado de tick do contínuo — ${branch}`,
-        "--body",
-        "REFS #7130, NÃO CLOSES (achado de recuperação automática, não implementação da issue)\n\n" +
-          "Commit automático de `rescue-continuo-orphaned-work.ts`. A origem exata (qual issue, qual tick) " +
-          "é desconhecida por construção — triagem manual necessária antes de mergear ou descartar.\n\n" +
-          "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
-      ],
-      { encoding: "utf8", timeout: 60_000 },
-    );
+    const out = execFileSync("gh", buildRescuePrArgs(branch), { encoding: "utf8", timeout: 60_000 });
     return { ok: true, message: out.trim() };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
