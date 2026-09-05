@@ -826,9 +826,25 @@ describe("renderDashboardHtml — assets do menu unificado do Studio (#3853)", (
   test("studioMode:false explícito produz HTML idêntico a omitir o 2º argumento (byte a byte)", async () => {
     const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
     const data = makeMinimalData();
-    const htmlDefault = renderDashboardHtml(data);
-    const htmlExplicitFalse = renderDashboardHtml(data, { studioMode: false });
+    // #7433: `now` injetável — sem ele, duas chamadas podiam cruzar a virada do
+    // segundo (57 vs 58) e o assert byte-a-byte falhava em silêncio no CI.
+    // Mesmo timestamp nas duas formas de chamada preserva o espírito do teste.
+    const fixedNow = new Date("2026-09-04T10:10:57Z");
+    const htmlDefault = renderDashboardHtml(data, { now: fixedNow });
+    const htmlExplicitFalse = renderDashboardHtml(data, { studioMode: false, now: fixedNow });
     assert.equal(htmlDefault, htmlExplicitFalse);
+  });
+
+  test("#7433: `now` injetável é o único campo não-determinístico do HTML", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const data = makeMinimalData();
+    const htmlA = renderDashboardHtml(data, { now: new Date("2026-09-04T10:10:57Z") });
+    const htmlB = renderDashboardHtml(data, { now: new Date("2026-09-04T10:10:58Z") });
+    assert.notEqual(htmlA, htmlB, "timestamp de segundo diferente deve mudar o HTML");
+    // e só a linha do header — o resto do documento é idêntico
+    const stripTs = (h: string) =>
+      h.replace(/Carregado às \d{2}\/\d{2}\/\d{4}, \d{2}:\d{2}:\d{2} BRT\./, "Carregado às <ts>.");
+    assert.equal(stripTs(htmlA), stripTs(htmlB), "diferença é apenas a linha 'Carregado às'");
   });
 
   test("SEM studioMode: continua definindo :root com os tokens DS_COLORS locais (fallback — produção não tem tokens.generated.css)", async () => {

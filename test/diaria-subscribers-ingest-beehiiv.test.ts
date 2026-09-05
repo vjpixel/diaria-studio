@@ -16,6 +16,7 @@ import {
   ingestOnePost,
   loadSourceEngagementManifest,
   readPostRecords,
+  readExitHistoryRecords,
   invalidateSiblingManifests,
   runEngagementIngestionLoop,
   MANIFEST_FLUSH_EVERY,
@@ -77,6 +78,25 @@ describe("readPostRecords", () => {
     writeFileSync(resolve(tmp, "post_x.jsonl"), '{"subscriber_id":"a"}\nNOT JSON\n{"subscriber_id":"b"}\n');
     const records = readPostRecords(tmp, "post_x");
     assert.equal(records.length, 2);
+  });
+});
+
+describe("readExitHistoryRecords (#7248)", () => {
+  it("[] quando o diretório/arquivo não existe (agent ainda não rodou)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "beehiiv-exit-history-src-"));
+    assert.deepEqual(readExitHistoryRecords(resolve(tmp, "exit-history")), []);
+  });
+
+  it("lê subscribers.jsonl e ignora linha corrompida sem lançar", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "beehiiv-exit-history-src-"));
+    writeFileSync(
+      resolve(tmp, "subscribers.jsonl"),
+      '{"externalId":"sub_1","email":"a@b.com","unsubscribedOn":"2026-09-04T01:19:07Z"}\nNOT JSON\n' +
+        '{"externalId":"sub_2","email":null,"unsubscribedOn":"2026-09-03T00:00:00Z"}\n',
+    );
+    const records = readExitHistoryRecords(tmp);
+    assert.equal(records.length, 2);
+    assert.equal(records[0].externalId, "sub_1");
   });
 });
 

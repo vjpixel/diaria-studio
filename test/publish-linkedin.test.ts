@@ -527,22 +527,29 @@ describe("image_url via cache 06-public-images.json (#725 bug #9)", () => {
   });
 });
 
-describe("resolvePublicCardImageUrl (#4293 — LinkedIn card 4:5 > 1:1 legado)", () => {
-  it("cache com _4x5 → escolhe o card 4:5, não o 1:1", () => {
+describe("resolvePublicCardImageUrl (#4293 — LinkedIn card 4:5 > hero 2:1, #7399 remove o 1:1 legado)", () => {
+  it("cache com _4x5 → escolhe o card 4:5, não o hero 2:1", () => {
     const cache: ImageCacheFile = {
       images: {
-        d1: { url: "https://cdn.test/04-d1-1x1.jpg" },
+        cover: { url: "https://cdn.test/04-d1-2x1.jpg" },
         d1_4x5: { url: "https://cdn.test/04-d1-4x5.jpg" },
       },
     };
     assert.equal(resolvePublicCardImageUrl(cache, "d1"), "https://cdn.test/04-d1-4x5.jpg");
   });
 
-  it("cache só com a chave base (sem _4x5) → cai no 1:1 (edição legada / geração pulada)", () => {
+  it("cache só com o hero 2:1 (sem _4x5) → cai no hero (edição legada / geração pulada)", () => {
     const cache: ImageCacheFile = {
-      images: { d2: { url: "https://cdn.test/04-d2-1x1.jpg" } },
+      images: { d2_2x1: { url: "https://cdn.test/04-d2-2x1.jpg" } },
     };
-    assert.equal(resolvePublicCardImageUrl(cache, "d2"), "https://cdn.test/04-d2-1x1.jpg");
+    assert.equal(resolvePublicCardImageUrl(cache, "d2"), "https://cdn.test/04-d2-2x1.jpg");
+  });
+
+  it("d1 usa 'cover' como chave do hero (nomenclatura especial, #7399)", () => {
+    const cache: ImageCacheFile = {
+      images: { cover: { url: "https://cdn.test/04-d1-2x1.jpg" } },
+    };
+    assert.equal(resolvePublicCardImageUrl(cache, "d1"), "https://cdn.test/04-d1-2x1.jpg");
   });
 
   it("no_image:true na chave base → resolvePublicCardImageUrl retorna null (comportamento #3385 preservado pelo caller)", () => {
@@ -556,35 +563,53 @@ describe("resolvePublicCardImageUrl (#4293 — LinkedIn card 4:5 > 1:1 legado)",
     assert.equal(cache.images?.d3?.no_image, true);
   });
 
-  it("_4x5 presente mas SEM url (marcador incompleto) → cai no 1:1 da chave base", () => {
+  it("_4x5 presente mas SEM url (marcador incompleto) → cai no hero 2:1", () => {
     const cache: ImageCacheFile = {
       images: {
-        d1: { url: "https://cdn.test/04-d1-1x1.jpg" },
+        cover: { url: "https://cdn.test/04-d1-2x1.jpg" },
         d1_4x5: {},
       },
     };
-    assert.equal(resolvePublicCardImageUrl(cache, "d1"), "https://cdn.test/04-d1-1x1.jpg");
+    assert.equal(resolvePublicCardImageUrl(cache, "d1"), "https://cdn.test/04-d1-2x1.jpg");
   });
 
-  it("nem _4x5 nem base → null", () => {
+  it("nem _4x5 nem hero → null", () => {
     const cache: ImageCacheFile = { images: {} };
     assert.equal(resolvePublicCardImageUrl(cache, "d1"), null);
+  });
+
+  it("#7399: chave base 1x1 legada presente sozinha (sem 4:5, sem hero) NÃO é mais lida como fallback → null", () => {
+    const cache: ImageCacheFile = {
+      images: { d2: { url: "https://cdn.test/04-d2-1x1.jpg" } },
+    };
+    assert.equal(resolvePublicCardImageUrl(cache, "d2"), null);
   });
 
   it("cache null → null sem throw", () => {
     assert.equal(resolvePublicCardImageUrl(null, "d1"), null);
   });
 
-  it("classifyImageCache continua classificando pela chave BASE mesmo quando só o 4:5 existe (fail-fast #999/#1275 intacto)", () => {
-    // Regressão de proteção: se o produtor emitir só a variante _4x5 sem a
-    // base (nunca deveria acontecer — base é sempre gerada primeiro), o
-    // destaque deve continuar contando como `missing` (fail-fast), não como
-    // "tem imagem" — classifyImageCache não conhece resolvePublicCardImageUrl,
-    // então isso é garantido por construção; o teste trava esse invariante.
+  it("#7427: classifyImageCache usa a mesma precedência de resolvePublicCardImageUrl — cache só com _4x5 (sem chave base) classifica como destaques_with_url, não missing", () => {
+    // Antes do #7427, classifyImageCache lia só imgCache.images[d].url (a
+    // chave BASE) pra decidir destaques_with_url, divergindo da precedência
+    // 4:5→hero que resolvePublicCardImageUrl (usada de fato pra montar
+    // imageUrlByDestaque) já implementa desde o #4293. Isso não quebrava
+    // enquanto o 1:1 era sempre gerado/subido — mas bloqueava o #7399 (parar
+    // de subir o 1:1): sem a chave base, TODO destaque cairia em `missing` e
+    // dispararia o fail-fast #999/#1275 mesmo com o card 4:5 presente e
+    // correto. Este teste cobre exatamente esse cenário.
     const cache: ImageCacheFile = { images: { d1_4x5: { url: "https://cdn.test/04-d1-4x5.jpg" } } };
     const r = classifyImageCache(["d1"], cache);
-    assert.deepEqual(r.missing, ["d1"]);
-    assert.deepEqual(r.destaques_with_url, []);
+    assert.deepEqual(r.destaques_with_url, ["d1"]);
+    assert.deepEqual(r.missing, []);
+    assert.deepEqual(r.destaques_no_image, []);
+  });
+
+  it("#7399: classifyImageCache classifica destaque como with_url via hero 2:1 quando NEM 4:5 nem base 1x1 existem", () => {
+    const cache: ImageCacheFile = { images: { cover: { url: "https://cdn.test/04-d1-2x1.jpg" } } };
+    const r = classifyImageCache(["d1"], cache);
+    assert.deepEqual(r.destaques_with_url, ["d1"]);
+    assert.deepEqual(r.missing, []);
   });
 });
 
@@ -1180,7 +1205,7 @@ describe("#2331/F1: JSON corrompido no capped → fallback para uncapped (não a
         "# Facebook", "", "## d1", "FB d1.",
       ].join("\n"), "utf8");
       writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({
-        images: { d1: { url: "https://img.test/d1.jpg" }, d2: { url: "https://img.test/d2.jpg" }, d3: { url: "https://img.test/d3.jpg" } }
+        images: { cover: { url: "https://img.test/d1.jpg" }, d2_2x1: { url: "https://img.test/d2.jpg" }, d3_2x1: { url: "https://img.test/d3.jpg" } }
       }), "utf8");
 
       const result = runPublishLinkedinCli(dir, ["--only", "d1"]);
@@ -1207,7 +1232,7 @@ describe("#2331/F2: fallback uncapped aplica caps (não infla contagem)", () => 
         "# Facebook", "", "## d1", "FB d1.",
       ].join("\n"), "utf8");
       writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({
-        images: { d1: { url: "https://img.test/d1.jpg" }, d2: { url: "https://img.test/d2.jpg" }, d3: { url: "https://img.test/d3.jpg" } }
+        images: { cover: { url: "https://img.test/d1.jpg" }, d2_2x1: { url: "https://img.test/d2.jpg" }, d3_2x1: { url: "https://img.test/d3.jpg" } }
       }), "utf8");
 
       const result = runPublishLinkedinCli(dir, ["--only", "d1"]);
@@ -1233,7 +1258,7 @@ describe("#2331/F3: outrosCount não-resolvível → abort (nunca posta literal)
         "# Facebook", "", "## d1", "FB d1.",
       ].join("\n"), "utf8");
       writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({
-        images: { d1: { url: "https://img.test/d1.jpg" }, d2: { url: "https://img.test/d2.jpg" }, d3: { url: "https://img.test/d3.jpg" } }
+        images: { cover: { url: "https://img.test/d1.jpg" }, d2_2x1: { url: "https://img.test/d2.jpg" }, d3_2x1: { url: "https://img.test/d3.jpg" } }
       }), "utf8");
 
       const result = runPublishLinkedinCli(dir, ["--only", "d1"]);
@@ -1258,7 +1283,7 @@ describe("#2331/F3: outrosCount não-resolvível → abort (nunca posta literal)
         "# Facebook", "", "## d1", "FB d1.",
       ].join("\n"), "utf8");
       writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({
-        images: { d1: { url: "https://img.test/d1.jpg" }, d2: { url: "https://img.test/d2.jpg" }, d3: { url: "https://img.test/d3.jpg" } }
+        images: { cover: { url: "https://img.test/d1.jpg" }, d2_2x1: { url: "https://img.test/d2.jpg" }, d3_2x1: { url: "https://img.test/d3.jpg" } }
       }), "utf8");
 
       const result = runPublishLinkedinCli(dir, ["--only", "d1"]);
@@ -1295,7 +1320,7 @@ describe("#3493: log de auditoria de main() (image_cache_state) isolado via --lo
         "# Facebook", "", "## d1", "FB d1.",
       ].join("\n"), "utf8");
       writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({
-        images: { d1: { url: "https://img.test/d1.jpg" }, d2: { url: "https://img.test/d2.jpg" }, d3: { url: "https://img.test/d3.jpg" } }
+        images: { cover: { url: "https://img.test/d1.jpg" }, d2_2x1: { url: "https://img.test/d2.jpg" }, d3_2x1: { url: "https://img.test/d3.jpg" } }
       }), "utf8");
 
       // runPublishLinkedinCli já passa --log-root-dir apontando pro parent
@@ -1348,9 +1373,9 @@ describe("#2454-finding-6: publish-linkedin le 05-edition-url.txt e injeta no co
       );
       writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({
         images: {
-          d1: { url: "https://img.test/d1.jpg" },
-          d2: { url: "https://img.test/d2.jpg" },
-          d3: { url: "https://img.test/d3.jpg" },
+          cover: { url: "https://img.test/d1.jpg" },
+          d2_2x1: { url: "https://img.test/d2.jpg" },
+          d3_2x1: { url: "https://img.test/d3.jpg" },
         },
       }), "utf8");
 
@@ -1388,9 +1413,9 @@ describe("#2454-finding-6: publish-linkedin le 05-edition-url.txt e injeta no co
       );
       writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({
         images: {
-          d1: { url: "https://img.test/d1.jpg" },
-          d2: { url: "https://img.test/d2.jpg" },
-          d3: { url: "https://img.test/d3.jpg" },
+          cover: { url: "https://img.test/d1.jpg" },
+          d2_2x1: { url: "https://img.test/d2.jpg" },
+          d3_2x1: { url: "https://img.test/d3.jpg" },
         },
       }), "utf8");
 
@@ -1417,8 +1442,8 @@ describe("#2454-finding-6: publish-linkedin le 05-edition-url.txt e injeta no co
 // aceita null explícito desde #1032/#974, ver linkedin-payload.ts).
 
 describe("#3385 classifyImageCache: distingue com-imagem / genuinamente-sem-imagem / falha-real", () => {
-  it("destaque com URL válida → destaques_with_url, não é missing nem no_image", () => {
-    const cache: ImageCacheFile = { images: { d1: { url: "https://img.test/d1.jpg" } } };
+  it("destaque com URL válida (via 4:5 — #7399: chave base 1x1 não resolve mais sozinha) → destaques_with_url, não é missing nem no_image", () => {
+    const cache: ImageCacheFile = { images: { d1_4x5: { url: "https://img.test/d1_4x5.jpg" } } };
     const r = classifyImageCache(["d1"], cache);
     assert.deepEqual(r.destaques_with_url, ["d1"]);
     assert.deepEqual(r.destaques_no_image, []);
@@ -1454,17 +1479,19 @@ describe("#3385 classifyImageCache: distingue com-imagem / genuinamente-sem-imag
     assert.deepEqual(r.missing, []);
   });
 
-  it("url válida vence sobre no_image:true (url presente tem prioridade)", () => {
-    const cache: ImageCacheFile = { images: { d1: { url: "https://img.test/d1.jpg", no_image: true } } };
+  it("url válida (via 4:5) vence sobre no_image:true na chave base (url resolvida tem prioridade)", () => {
+    const cache: ImageCacheFile = {
+      images: { d1_4x5: { url: "https://img.test/d1_4x5.jpg" }, d1: { no_image: true } },
+    };
     const r = classifyImageCache(["d1"], cache);
     assert.deepEqual(r.destaques_with_url, ["d1"]);
     assert.deepEqual(r.destaques_no_image, []);
   });
 
-  it("mix: d1 com url, d2 no_image:true, d3 falha real → classifica cada um corretamente", () => {
+  it("mix: d1 com url (4:5), d2 no_image:true, d3 falha real → classifica cada um corretamente", () => {
     const cache: ImageCacheFile = {
       images: {
-        d1: { url: "https://img.test/d1.jpg" },
+        d1_4x5: { url: "https://img.test/d1_4x5.jpg" },
         d2: { no_image: true },
         // d3 ausente do cache
       },

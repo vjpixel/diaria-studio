@@ -1,12 +1,35 @@
 #!/usr/bin/env bash
-# continuo-pr-review.sh (#6865, autoridade de merge desde #6926)
+# continuo-pr-review.sh (#6865, autoridade de merge desde #6926, escopo
+# ampliado a qualquer branch no #7446 item 4)
 #
-# Review Sonnet (assinatura claude.ai) de TODAS as PRs `continuo/*` abertas
-# por execução, uma por iteração do loop (ver `for PR in $PR_NUMBERS`,
-# ~linha 446) — não o diff acumulado do dia (esse é `opus-daily-diff-review.sh`,
-# irmão deste script). Roda em cron próprio (job `3330b108a5b2`) — a cadência
-# NÃO vive nesta prosa: derivar com `hermes cron list --all` (#6928;
-# já registrou valor errado duas vezes).
+# Review Sonnet (assinatura claude.ai) de TODA PR aberta no repo, exceto
+# `bot/*` (ver `PR_NUMBERS` abaixo — #7446 item 4), uma por iteração do loop
+# (ver `for PR in $PR_NUMBERS`, ~linha 446) — não o diff acumulado do dia
+# (esse é `opus-daily-diff-review.sh`, irmão deste script). Roda em cron
+# próprio (job `3330b108a5b2`) — a cadência NÃO vive nesta prosa: derivar com
+# `hermes cron list --all` (#6928; já registrou valor errado duas vezes).
+#
+# ## Escopo ampliado além de `continuo/*` (#7446 item 4, 05/09/2026)
+#
+# Até aqui `PR_NUMBERS` filtrava só branches `continuo/*` — qualquer PR de
+# sessão interativa, `/diaria-develop` (`develop/*`) ou chore/fix avulso
+# ficava sem merger automático nenhum, dependendo do editor mergear à mão ou
+# do pickup do `/diaria-overnight` (que só roda quando o editor inicia uma
+# rodada). Medido ao vivo (04-05/09/2026): PR #7403 (`chore/*`), verde e
+# `MERGEABLE`, parada 21h sem ninguém mergear — mesma classe do #6901 que
+# justificou a autoridade de merge deste script em primeiro lugar, só que
+# fora do filtro de branch. Decisão do editor: ampliar `PR_NUMBERS` pra
+# cobrir qualquer branch (exceto `bot/*`, que tem workflow/política própria
+# — regen automático, não precisa de review Sonnet) em vez de criar um 2º
+# cron restrito a "já tem review independente" — os mesmos 8 portões
+# fail-closed de `continuo-merge-gate.ts` já protegem qualquer PR, branch
+# nenhuma muda a lista de portões. PR que já foi revisada pelo hook
+# `pr-create-review.mjs` (marcador de formato diferente do que este script
+# reconhece) NÃO conta como "já revisada" pra este gate — `AUTH_RC` só
+# reconhece o marcador `continuo-review:` que este próprio script gera; a PR
+# passa por uma 2ª revisão (Sonnet, redundante mas inofensiva) antes do
+# portão de merge. Aceito: custo de 1 review a mais é menor que o de uma PR
+# verde parada por dias.
 #
 # ## Por que existe
 #
@@ -132,6 +155,21 @@ REPO="/home/vjpixel/diaria-studio"
 cd "$REPO"
 git fetch origin -q
 
+# #7446 item 2: `escalate` não tinha dono nem sinal — a PR ficava
+# implicitamente esperando o pickup do `/diaria-overnight` (sem agendador,
+# só roda quando o editor inicia uma rodada), invisível até alguém olhar por
+# acaso (medido: PR #7432, review `approve`, escalada por CI vermelho,
+# parada 15h). O label abaixo marca a PR como "tem dono declarado — revisão
+# humana ou pickup do overnight", e a notificação (linha de log, que o cron
+# entrega ao Telegram, `Deliver: telegram` no job) só sai da PRIMEIRA vez que
+# ela escala (ver `try_merge_gate`, ramo `1)`) — ticks seguintes continuam
+# contando ESCALATED no resumo, sem repetir o aviso. `gh label create` é
+# idempotente aqui (`|| true` engole "already exists"); falha de outra
+# natureza (gh indisponível) não bloqueia o resto do script.
+gh label create "continuo-escalado" --color "D93F0B" \
+  --description "PR escalada pelo gate de merge do contínuo (#7446 item 2) — aguardando revisão humana ou pickup do /diaria-overnight" \
+  >/dev/null 2>&1 || true
+
 # #6934: identidade de sessão pro merge-lock cross-sessão (`session-registry.ts
 # merge-lock-acquire`/`-release`) — decisão (b) do comentário durável da
 # issue. Gerada UMA VEZ aqui, no topo do tick (não dentro do laço por PR nem
@@ -158,11 +196,13 @@ SESSION_ID="continuo-review-$(date -u +%s)-$$"
 MERGE_LOCK_MAX_RETRIES=3
 MERGE_LOCK_RETRY_DELAY_S=20
 
+# #7446 item 4: qualquer branch, exceto `bot/*` (regen automático, workflow
+# próprio — ver docstring do topo do arquivo).
 PR_NUMBERS=$(gh pr list --state open --json number,headRefName \
-  --jq '.[] | select(.headRefName | startswith("continuo/")) | .number')
+  --jq '.[] | select(.headRefName | startswith("bot/") | not) | .number')
 
 if [ -z "$PR_NUMBERS" ]; then
-  echo "[continuo-pr-review] nenhuma PR continuo/* aberta — noop"
+  echo "[continuo-pr-review] nenhuma PR elegível aberta (exceto bot/*) — noop"
   exit 0
 fi
 
@@ -416,9 +456,50 @@ try_merge_gate() {
       trap - EXIT
       ;;
     1)
-      echo "[continuo-pr-review] PR #$pr: gate=escalate — deixando pro pickup do /diaria-overnight (fallback, #6823)"
       echo "$GATE_JSON"
       ESCALATED=$((ESCALATED + 1))
+      # #7446 item 2: label idempotente + notificação só na PRIMEIRA vez que
+      # esta PR escala — ticks seguintes contam ESCALATED em silêncio, sem
+      # repetir o aviso no resumo entregue ao Telegram.
+      # Review externo (PR #7449): `2>&1` misturaria a linha `npm notice run
+      # ...` que `npx` SEMPRE emite em stderr dentro do JSON que o `jq`
+      # abaixo tenta parsear — todo tick quebraria o parse e cairia sempre no
+      # fallback `|| echo`, notificando pra sempre (o oposto do que o item 2
+      # existe pra fazer). Mesma classe já corrigida uma vez pelo #6932 em
+      # `try_merge_gate()` — stdout/stderr SEPARADOS (arquivo temporário pro
+      # stderr) fecham isso aqui também.
+      ESCALATE_STDERR_TMP="$(mktemp)"
+      set +e
+      ESCALATE_JSON=$(npx tsx scripts/check-continuo-escalate-label.ts --pr "$pr" 2>"$ESCALATE_STDERR_TMP")
+      ESCALATE_RC=$?
+      set -e
+      ESCALATE_STDERR=$(cat "$ESCALATE_STDERR_TMP" 2>/dev/null || true)
+      rm -f "$ESCALATE_STDERR_TMP"
+      FIRST_TIME="true"
+      if [ "$ESCALATE_RC" -eq 0 ]; then
+        # #7446 (achado durante o teste de regressão do item 2, ao lado da
+        # correção de stdout/stderr acima): `jq`'s `//` trata `false` do
+        # LADO ESQUERDO como falsy — `.firstTime // true` devolve `true`
+        # mesmo quando `.firstTime` é genuinamente `false` (já sinalizada),
+        # invertendo o próprio veredito que o item 2 existe pra ler. `as $v |
+        # if $v == null then ... else $v end` distingue "ausente" (usa o
+        # default) de "presente e false" (preserva o valor real).
+        FIRST_TIME=$(printf '%s' "$ESCALATE_JSON" | jq -r '.firstTime as $v | if $v == null then true else $v end' 2>/dev/null || echo "true")
+      else
+        # Review externo (PR #7449, achado #1): faltava o padrão de
+        # visibilidade do #6910 — os outros 6+ pontos de falha de infra
+        # deste arquivo incrementam INFRA_ERRORS e chamam log_infra_error;
+        # este ramo só fazia echo, quebrando a paridade sem motivo (a
+        # rejeição/merge em si não muda — é só o rastro que faltava).
+        echo "[continuo-pr-review] PR #$pr: check-continuo-escalate-label.ts falhou (rc=$ESCALATE_RC) — notificando mesmo assim (fail-open): $ESCALATE_STDERR" >&2
+        INFRA_ERRORS=$((INFRA_ERRORS + 1))
+        log_infra_error "$pr" "escalate_label_rc=$ESCALATE_RC" "$ESCALATE_STDERR"
+      fi
+      if [ "$FIRST_TIME" = "true" ]; then
+        echo "[continuo-pr-review] PR #$pr: gate=escalate (1ª vez) — label continuo-escalado aplicado, deixando pro pickup do /diaria-overnight ou revisão humana (fallback, #6823/#7446)"
+      else
+        echo "[continuo-pr-review] PR #$pr: gate=escalate (já sinalizada — sem repetir notificação)"
+      fi
       ;;
     2)
       echo "[continuo-pr-review] PR #$pr: gate=reject — NÃO mergear"
@@ -428,17 +509,50 @@ try_merge_gate() {
       # (fora de escopo; fechamento de PR superseded continua trabalho do
       # tick, hermes-diaria-continuo/SKILL.md §3 passo 1).
       GATE_REASON=$(printf '%s' "$GATE_JSON" | jq -r '.reason // "motivo não disponível"')
+      REJECT_BODY="Gate de merge automático (#6926): rejeitado — $GATE_REASON"
+
+      # #7446 item 1: `reject` nunca era terminal — o mesmo motivo era
+      # repostado a CADA tick enquanto a PR seguisse aberta e rejeitada
+      # (medido ao vivo: 9 comentários idênticos em 18h na PR #7404). Pula o
+      # `gh pr comment` só quando o ÚLTIMO comentário já é byte-a-byte igual
+      # a este — qualquer motivo NOVO (CI mudou, veredito mudou) ainda posta
+      # normalmente. `source=error` (gh falhou ao ler comentários) nunca
+      # pula — fail-open em direção a comunicar, não a esconder.
+      # #6932/#7446 (review da PR #7449, mesma classe reincidente num ramo
+      # diferente): `2>&1` misturaria a linha `npm notice run ...` que `npx`
+      # sempre emite em stderr dentro do JSON que o `jq` abaixo tenta
+      # parsear — todo tick quebraria o parse e cairia sempre no fallback
+      # `|| echo`. stdout/stderr SEPARADOS (arquivo temporário pro stderr,
+      # mesmo padrão de `try_merge_gate()` acima) fecham isso.
+      DEDUPE_STDERR_TMP="$(mktemp)"
       set +e
-      gh pr comment "$pr" --body "Gate de merge automático (#6926): rejeitado — $GATE_REASON"
-      COMMENT_RC=$?
+      DEDUPE_JSON=$(npx tsx scripts/check-continuo-reject-comment-dedupe.ts --pr "$pr" --candidate "$REJECT_BODY" 2>"$DEDUPE_STDERR_TMP")
+      DEDUPE_RC=$?
       set -e
-      if [ "$COMMENT_RC" -ne 0 ]; then
-        # #6932 (P3): rejeição em si continua correta (merge bloqueado) —
-        # só a comunicação na PR falhou. Registrar pra não perder o rastro
-        # (mesma disciplina do #6910), nunca deixar isso silencioso.
-        echo "[continuo-pr-review] PR #$pr: gate=reject, mas gh pr comment falhou (rc=$COMMENT_RC) — motivo só nos logs desta rodada" >&2
-        INFRA_ERRORS=$((INFRA_ERRORS + 1))
-        log_infra_error "$pr" "reject_comment_rc=$COMMENT_RC" "rejeição correta ($GATE_REASON), falha ao postar o motivo na PR"
+      DEDUPE_STDERR=$(cat "$DEDUPE_STDERR_TMP" 2>/dev/null || true)
+      rm -f "$DEDUPE_STDERR_TMP"
+      SKIP_COMMENT="false"
+      if [ "$DEDUPE_RC" -eq 0 ]; then
+        SKIP_COMMENT=$(printf '%s' "$DEDUPE_JSON" | jq -r '.skip // false' 2>/dev/null || echo "false")
+      else
+        echo "[continuo-pr-review] PR #$pr: check-continuo-reject-comment-dedupe.ts falhou (rc=$DEDUPE_RC) — postando mesmo assim (fail-open): $DEDUPE_STDERR" >&2
+      fi
+
+      if [ "$SKIP_COMMENT" = "true" ]; then
+        echo "[continuo-pr-review] PR #$pr: motivo de rejeição idêntico ao último comentário — não duplicando (#7446 item 1)"
+      else
+        set +e
+        gh pr comment "$pr" --body "$REJECT_BODY"
+        COMMENT_RC=$?
+        set -e
+        if [ "$COMMENT_RC" -ne 0 ]; then
+          # #6932 (P3): rejeição em si continua correta (merge bloqueado) —
+          # só a comunicação na PR falhou. Registrar pra não perder o rastro
+          # (mesma disciplina do #6910), nunca deixar isso silencioso.
+          echo "[continuo-pr-review] PR #$pr: gate=reject, mas gh pr comment falhou (rc=$COMMENT_RC) — motivo só nos logs desta rodada" >&2
+          INFRA_ERRORS=$((INFRA_ERRORS + 1))
+          log_infra_error "$pr" "reject_comment_rc=$COMMENT_RC" "rejeição correta ($GATE_REASON), falha ao postar o motivo na PR"
+        fi
       fi
       ;;
     *)

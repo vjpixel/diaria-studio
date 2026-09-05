@@ -155,13 +155,23 @@ function getImageUrl(destaque: string, imageUrls: ImageMap, postPixelImageNum = 
   // #1690: post_pixel reusa a imagem do D1 por padrão; #2549: override per-edição
   // (quando o post pessoal cobre outro destaque, ex: D2) via marker.
   const dNum = isPostPixel(destaque) ? postPixelImageNum : destaque.replace(/\D/g, "");
-  // Card 4:5 (1080x1350, com o título na própria imagem) tem precedência sobre
-  // o 1:1 quando a edição o gerou — é o que de fato vai pro feed. Ausente →
-  // 1:1 de sempre, comportamento inalterado pras edições que não têm card.
+  // Cadeia de fallback: card 4:5 (1080x1350, com o título na própria imagem)
+  // tem precedência sobre o hero 2:1 quando a edição o gerou — é o que de
+  // fato vai pro feed. Ausente → hero 2:1 (`cover` pra d1, `d{N}_2x1` pra
+  // d2/d3). Ausente também → chave BASE `d{dNum}` (1:1 legado) — #7399
+  // removeu essa chave do cache PÚBLICO/CLOUD (`06-public-images.json`), então
+  // esse 3º fallback é inerte no caminho de publicação real; ele segue vivo
+  // porque o preview LOCAL do Studio (`buildLocalSocialImageMap` em
+  // studio-review.ts) monta seu próprio ImageMap a partir dos arquivos que a
+  // Etapa 3 sempre gera em disco (`04-d{N}-1x1.jpg`/`-2x1.jpg`) usando só essa
+  // chave base — sem este fallback o preview local perde a imagem de D1/D2/D3.
   // #1635: resolução delegada ao helper puro — prefere cloudflare_url, senão a
   // url real (Drive serve inline), nunca chuta uma key Cloudflare sem md5.
   const card = imageUrls[`d${dNum}_4x5`];
   if (card) return resolveSocialImageUrl(card, (m) => console.error(m));
+  const heroKey = dNum === "1" ? "cover" : `d${dNum}_2x1`;
+  const hero = imageUrls[heroKey];
+  if (hero) return resolveSocialImageUrl(hero, (m) => console.error(m));
   return resolveSocialImageUrl(imageUrls[`d${dNum}`], (m) => console.error(m));
 }
 

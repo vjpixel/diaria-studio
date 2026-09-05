@@ -121,6 +121,11 @@ export function mimeTypeFor(filename: string): string {
 /**
  * Escolhe o arquivo fonte pra cada destaque (modo social — LinkedIn/IG).
  * D1 usa variante 1x1 (social square); D2/D3 usam 1x1 (proporção forçada em #372).
+ *
+ * #7399: usada só pelo path de compat `opts.destaques` (override explícito,
+ * sem consumidor em produção — `main()` nunca passa `destaques`). O caminho
+ * default (`imageSpecsFor`) não sobe mais a chave base 1:1 — ver comentário
+ * em `imageSpecsFor`.
  */
 export function sourceImageFor(destaque: "d1" | "d2" | "d3"): string {
   return destaque === "d1" ? "04-d1-1x1.jpg" : `04-${destaque}-1x1.jpg`;
@@ -181,12 +186,15 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
   const destaqueCount: 2 | 3 = editionDir ? readDestaqueCount(editionDir) : 3;
 
   const social: ImageSpec[] = [
-    { key: "d1", filename: "04-d1-1x1.jpg" },
-    { key: "d2", filename: "04-d2-1x1.jpg" },
-    // #2352: d3 only required when destaque_count == 3.
-    ...(destaqueCount === 3 ? [{ key: "d3", filename: "04-d3-1x1.jpg" }] : []),
+    // #7399: chave BASE (1:1) removida do upload — sem consumidor real (o
+    // fallback do 4:5 nunca disparava porque gen-social-card-4x5.ts é
+    // bloqueante, #4090). Arquivo local `04-d{N}-1x1.jpg` continua gerado
+    // (Studio UI ainda lê do disco, ver studio-images.ts) — só o UPLOAD pro
+    // Cloudflare KV foi removido. Publishers agora caem no hero 2:1
+    // (`cover`/`d{N}_2x1`, sempre presente) quando o 4:5 falta.
+    //
     // Card 4:5 (1080x1350, título embutido) gerado por gen-social-card-4x5.ts.
-    // optional: edições sem card seguem publicando o 1:1 normalmente.
+    // optional: edições sem card seguem publicando via fallback 2:1.
     { key: "d1_4x5", filename: "04-d1-4x5.jpg", optional: true },
     { key: "d2_4x5", filename: "04-d2-4x5.jpg", optional: true },
     ...(destaqueCount === 3
@@ -239,25 +247,22 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
   // `04-d2-2x1.jpg` e `04-d3-2x1.jpg` são gerados pelo Stage 3 e substituem os
   // placeholders `{{IMG:04-d2-2x1.jpg}}` / `{{IMG:04-d3-2x1.jpg}}`.
   //
-  // #1583/#1701/#2147: d2/d3 1x1 sobem ao CF KV. Antes, social mode mandava
-  // d1/d2/d3 pro Drive e o preview usava Drive `uc?id` pra d2/d3 (quebrava
-  // como hotlink por cookie/referer check). Agora social mode usa cloudflare
-  // por default → d1/d2/d3 têm URLs KV estáveis em `url` e `cloudflare_url`.
-  // Newsletter mode também sobe d2/d3 1x1 (best-effort, optional) pra garantir
-  // `cloudflare_url` nos entries antes do social mode rodar.
+  // #7399: chaves BASE (1:1) de d1/d2/d3 removidas — sem consumidor real do
+  // upload (arquivo local continua gerado, só o KV upload foi cortado). O
+  // hero 2:1 (`cover` = d1, `d2_2x1`/`d3_2x1`) agora é o fallback direto dos
+  // publishers sociais quando o card 4:5 falta — ver resolvePublicCardImageUrl
+  // em publish-linkedin.ts e os fallbacks equivalentes em publish-instagram.ts
+  // /prep-twitter-posts.ts.
   const newsletter: ImageSpec[] = [
     { key: "cover", filename: "04-d1-2x1.jpg" },
-    { key: "d1", filename: "04-d1-1x1.jpg" },
     // #2133/#2141: d2/d3 hero 2x1 entram no email como {{IMG:04-d{N}-2x1.jpg}}.
     // optional=true: não bloqueiam o upload se ausentes (ex: re-run de edição
-    // pré-#2133, ou regeneração manual falhou parcialmente).
+    // pré-#2133, ou regeneração manual falhou parcialmente). Desde #7399, este
+    // é também o fallback direto dos publishers sociais (não passa mais pelo
+    // 1:1 legado) — ver comentário acima.
     { key: "d2_2x1", filename: "04-d2-2x1.jpg", optional: true },
     // #2352: d3_2x1 only expected when destaque_count == 3.
     ...(destaqueCount === 3 ? [{ key: "d3_2x1", filename: "04-d3-2x1.jpg", optional: true }] : []),
-    // #1701: 1x1 de d2/d3 sobem ao CF pro social preview.
-    { key: "d2", filename: "04-d2-1x1.jpg", optional: true },
-    // #2352: d3 1x1 only expected when destaque_count == 3.
-    ...(destaqueCount === 3 ? [{ key: "d3", filename: "04-d3-1x1.jpg", optional: true }] : []),
     // #1808: box promo de livros (entre D1 e D2 no email, renderMidCallout).
     // optional — nem toda edição tem o box. Mantém o md5 cache-bust (#1584): a
     // URL é per-edição (`img-{AAMMDD}-04-livros-promo.jpg`) e o sufixo md5 evita
@@ -605,6 +610,16 @@ export async function uploadPublicImages(
 }
 
 /**
+ * #7399: chave do hero 2:1 pra um destaque — fallback direto (sem passar mais
+ * pelo 1:1 legado, que deixou de ser uploadado) quando o card 4:5 falta.
+ * D1 é a exceção de nomenclatura: seu 2:1 é a chave `cover` (upload-a como
+ * capa do email, #1121), não `d1_2x1`; D2/D3 usam `d{N}_2x1` (#2133/#2141).
+ */
+export function hero2x1KeyFor(destaque: string): string {
+  return destaque === "d1" ? "cover" : `${destaque}_2x1`;
+}
+
+/**
  * Verifica que o cache final contém todas as keys esperadas pro mode.
  * (#1275) — defesa contra cache misto entre modes onde upload-images-public
  * é chamado várias vezes mas cache fica parcial (ex: mode newsletter rodou,
@@ -613,6 +628,13 @@ export async function uploadPublicImages(
  * #2352: `destaqueCount` (default 3) controla se d3/d3_2x1 são exigidas.
  * Para edições 2-destaque, d3 não é requerida em nenhum mode.
  *
+ * #7399: a chave BASE 1:1 (`d1`/`d2`/`d3`) deixou de ser uploadada — a
+ * "presença de imagem pro destaque" agora é satisfeita por QUALQUER um dos
+ * dois: o card 4:5 (`d{N}_4x5`) OU o hero 2:1 (`hero2x1KeyFor`, sempre
+ * presente em edições normais — é o mesmo hero que o email usa). Isso
+ * substitui o requisito antigo da chave base 1:1 sem reduzir a garantia real
+ * (o 1:1 nunca era, de fato, o que os publishers usavam quando o 4:5 existia).
+ *
  * Throw com erro claro se alguma key estiver faltando.
  */
 export function assertCacheCompleteness(
@@ -620,24 +642,34 @@ export function assertCacheCompleteness(
   mode: UploadMode,
   destaqueCount: 2 | 3 = 3,
 ): void {
-  const expectedKeys = (() => {
-    if (mode === "social") return destaqueCount === 2 ? ["d1", "d2"] : ["d1", "d2", "d3"];
-    // #1583: newsletter sobe cover/d1/eia (o que o EMAIL usa). #1701: d2/d3
-    // 1x1 também sobem ao CF (pro social preview) mas são BEST-EFFORT (optional).
+  const destaques = destaqueCount === 2 ? ["d1", "d2"] : ["d1", "d2", "d3"];
+  const missing: string[] = [];
+
+  if (mode === "social" || mode === "all") {
+    for (const d of destaques) {
+      const has4x5 = !!images[`${d}_4x5`]?.url;
+      const hasHero = !!images[hero2x1KeyFor(d)]?.url;
+      if (!has4x5 && !hasHero) missing.push(d);
+    }
+  }
+  if (mode === "newsletter" || mode === "all") {
+    // #1583: newsletter sobe cover/eia (o que o EMAIL usa).
     // #2133/#2141: d2_2x1/d3_2x1 são required — email body usa {{IMG:04-d2-2x1.jpg}}
     // / {{IMG:04-d3-2x1.jpg}}; se ausentes, substitute-image-urls.ts escreve o HTML
     // com placeholders crus e sai com exit 2. Defense-in-depth na camada de upload.
     // #2352: d3_2x1 only required when destaque_count == 3.
-    if (mode === "newsletter")
-      return destaqueCount === 2
-        ? ["cover", "d1", "eia_a", "eia_b", "d2_2x1"]
-        : ["cover", "d1", "eia_a", "eia_b", "d2_2x1", "d3_2x1"];
-    // mode === "all" — #2352: d3 only required when destaque_count == 3.
-    return destaqueCount === 2
-      ? ["cover", "eia_a", "eia_b", "d1", "d2"]
-      : ["cover", "eia_a", "eia_b", "d1", "d2", "d3"];
-  })();
-  const missing = expectedKeys.filter((k) => !images[k]?.url);
+    const newsletterKeys = [
+      "cover",
+      "eia_a",
+      "eia_b",
+      "d2_2x1",
+      ...(destaqueCount === 3 ? ["d3_2x1"] : []),
+    ];
+    for (const k of newsletterKeys) {
+      if (!images[k]?.url) missing.push(k);
+    }
+  }
+
   if (missing.length > 0) {
     throw new Error(
       `upload-images-public: cache final não tem todas as keys esperadas pro mode=${mode}. ` +

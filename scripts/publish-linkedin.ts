@@ -300,24 +300,30 @@ export interface ImageCacheState {
  * #4293: resolve a URL de imagem pública pra um destaque, aplicando a mesma
  * precedência já usada por publish-instagram.ts (~L488) e prep-twitter-posts.ts
  * (resolveTwitterImage, #4264): card 4:5 (`{destaque}_4x5`, com título
- * embutido, #4114/#4090) quando presente no cache, senão o 1:1 legado
- * (`{destaque}`). A chave `_4x5` é `optional` em upload-images-public.ts —
- * sua ausência (edição legada, geração pulada) cai silenciosamente pro 1:1,
- * nunca é tratada como falha.
+ * embutido, #4114/#4090) quando presente no cache, senão o hero 2:1
+ * (`cover` pra d1, `{destaque}_2x1` pra d2/d3 — #7399, substitui o 1:1 legado
+ * que deixou de ser uploadado por não ter consumidor real). A chave `_4x5` é
+ * `optional` em upload-images-public.ts — sua ausência (edição legada,
+ * geração pulada) cai silenciosamente pro hero 2:1, nunca é tratada como
+ * falha.
  *
  * O marcador `no_image` (#3385) NÃO é lido aqui — quem chama esta função
  * continua consultando `imgCache.images?.[destaque]?.no_image` na chave BASE,
- * nunca na `_4x5` (a variante 4:5 sendo opcional, sua ausência não é sinal de
- * "sem imagem"). `classifyImageCache` abaixo também classifica pela chave
- * base, então o fail-fast #999/#1275 não muda de semântica.
+ * nunca na `_4x5`/hero (a variante 4:5 sendo opcional, sua ausência não é
+ * sinal de "sem imagem"). `classifyImageCache` abaixo usa esta mesma função
+ * pra classificar `destaques_with_url` (#7427 — antes lia só a chave base,
+ * divergindo desta precedência e arriscando fail-fast #999/#1275 falso-positivo
+ * se o 1:1 legado deixasse de ser gerado/subido — o que de fato aconteceu no
+ * #7399).
  */
 export function resolvePublicCardImageUrl(
   imgCache: ImageCacheFile | null,
   destaque: string,
 ): string | null {
   const cardUrl = imgCache?.images?.[`${destaque}_4x5`]?.url;
-  const baseUrl = imgCache?.images?.[destaque]?.url;
-  return cardUrl ?? baseUrl ?? null;
+  const heroKey = destaque === "d1" ? "cover" : `${destaque}_2x1`;
+  const heroUrl = imgCache?.images?.[heroKey]?.url;
+  return cardUrl ?? heroUrl ?? null;
 }
 
 /**
@@ -333,7 +339,7 @@ export function classifyImageCache(
   imgCache: ImageCacheFile | null,
 ): ImageCacheState {
   const destaques_with_url = destaques.filter((d) => {
-    const url = imgCache?.images?.[d]?.url ?? null;
+    const url = resolvePublicCardImageUrl(imgCache, d);
     return typeof url === "string" && url.length > 0;
   });
   const destaques_no_image = destaques.filter(

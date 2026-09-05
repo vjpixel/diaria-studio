@@ -149,8 +149,9 @@ export function toNeverArmedFinding(taskName: string): AlarmFinding {
       `A task \`${taskName}\` está no registro declarativo (\`scripts/lib/scheduled-tasks.ts\`)`,
       "mas não tem timer systemd --user armado nesta máquina.",
       "",
-      "Armar: rodar `scripts/setup-systemd-timers.ts` (ou o passo manual equivalente) e " +
-        "confirmar com `systemctl --user list-timers`. Este alarme nunca arma sozinho.",
+      "Armar: rodar `npx tsx scripts/remediate-never-armed-tasks.ts` (#7441/#7442/#7443 — descobre " +
+        "sozinho todas as tasks em `neverArmed` e gera+arma só essas, idempotente; `--dry-run` primeiro " +
+        "pra ver o plano) e confirmar com `systemctl --user list-timers`. Este alarme nunca arma sozinho.",
       "",
       "Esta issue é criada automaticamente pelo alarme e será",
       "comentada/fechada sozinha quando o achado deixar de reproduzir por",

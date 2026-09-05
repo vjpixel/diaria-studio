@@ -54,11 +54,14 @@ Post fb 2.
 Post fb 3.
 `;
 
+// #7399: chave base 1:1 (d1/d2/d3) removida do upload — getImageUrl agora
+// resolve via card 4:5 (ausente aqui) com fallback pro hero 2:1 (`cover` pra
+// d1, `d{N}_2x1` pra d2/d3). Fixtures usam essas chaves em vez da base.
 const IMAGES = {
   images: {
-    d1: { url: "https://img.example/d1.jpg" },
-    d2: { url: "https://img.example/d2.jpg" },
-    d3: { url: "https://img.example/d3.jpg" },
+    cover: { url: "https://img.example/d1.jpg" },
+    d2_2x1: { url: "https://img.example/d2.jpg" },
+    d3_2x1: { url: "https://img.example/d3.jpg" },
   },
 };
 
@@ -108,7 +111,7 @@ describe("loadImageMap — nunca falha em silêncio (#1800)", () => {
       writeFileSync(p, JSON.stringify(IMAGES));
       const { map, warnings } = loadImageMap(p);
       assert.deepEqual(warnings, []);
-      assert.ok(map.d1?.url);
+      assert.ok(map.cover?.url);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -161,7 +164,7 @@ describe("render-social-html — largura limitada do preview (#3371)", () => {
 });
 
 describe("post_pixel — post standalone de D1 no perfil pessoal (#1690)", () => {
-  const IMAGES = { images: { d1: { url: "https://img.example/d1.jpg" } } };
+  const IMAGES = { images: { cover: { url: "https://img.example/d1.jpg" } } };
   const MD_PIXEL = `# LinkedIn
 
 ## d1
@@ -199,8 +202,8 @@ Opinião pessoal do Pixel sobre o D1, em primeira pessoa.
 
   it("#2549: override postPixelImageNum=2 → post_pixel usa imagem do D2 + label (D2)", () => {
     const images = {
-      d1: { url: "https://img.example/d1.jpg" },
-      d2: { url: "https://img.example/d2.jpg" },
+      cover: { url: "https://img.example/d1.jpg" },
+      d2_2x1: { url: "https://img.example/d2.jpg" },
     };
     const platforms = parsePlatforms(MD_PIXEL);
     const html = buildSocialHtml(platforms, images, "2");
@@ -211,8 +214,8 @@ Opinião pessoal do Pixel sobre o D1, em primeira pessoa.
 
   it("#2549: default (sem override) preserva #1690 — post_pixel usa imagem do D1", () => {
     const images = {
-      d1: { url: "https://img.example/d1.jpg" },
-      d2: { url: "https://img.example/d2.jpg" },
+      cover: { url: "https://img.example/d1.jpg" },
+      d2_2x1: { url: "https://img.example/d2.jpg" },
     };
     const platforms = parsePlatforms(MD_PIXEL);
     const html = buildSocialHtml(platforms, images); // sem 3º arg → "1"
@@ -247,9 +250,9 @@ describe("channelsForSection — fonte única de verdade compartilhada (#4091)",
 
 describe("groupByDestaque — reagrupamento por destaque (#4091)", () => {
   const IMAGES = {
-    d1: { url: "https://img.example/d1.jpg" },
-    d2: { url: "https://img.example/d2.jpg" },
-    d3: { url: "https://img.example/d3.jpg" },
+    cover: { url: "https://img.example/d1.jpg" },
+    d2_2x1: { url: "https://img.example/d2.jpg" },
+    d3_2x1: { url: "https://img.example/d3.jpg" },
     eia_a: { url: "https://img.example/eia-a.jpg" },
     eia_b: { url: "https://img.example/eia-b.jpg" },
   };
@@ -463,7 +466,7 @@ Post pessoal.
 });
 
 describe("renderDestaqueGroup — negrito ** vira <strong> no preview (#6871, achado 260901)", () => {
-  const IMAGES = { d1: { url: "https://img.example/d1.jpg" } };
+  const IMAGES = { cover: { url: "https://img.example/d1.jpg" } };
 
   it("** no corpo do post vira <strong>, nunca sobrevive como asterisco literal", () => {
     const MD = `# Social

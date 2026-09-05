@@ -593,7 +593,7 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     );
   });
 
-  it("0o — sem edição anterior com canal Kit, pula a rampa com nota fail-soft, nunca 'ok' silencioso (#7021)", async () => {
+  it("0o — sem edição anterior com canal Kit, pula a medição com nota fail-soft, nunca 'ok' silencioso (#7021)", async () => {
     const { exec, calls } = makeFakeExec(happyExecHandlers());
     const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
     const deps = baseDeps({ exec, execAsync });
@@ -609,115 +609,40 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     );
   });
 
-  it("0o — mede entrega + propõe onda e PERSISTE o proposal com o comando de aplicação exato (#7021)", async () => {
-    const { exec } = makeFakeExec(
+  it("0o — mede entrega por provedor e reporta o broadcast, sem propor onda (#7402)", async () => {
+    const { exec, calls } = makeFakeExec(
       happyExecHandlers({
         "find-last-edition-with-kit.ts": () => ({ code: 0, stdout: "data/editions/2604/260422\n", stderr: "" }),
         "kit-provider-split.ts": () => ok(JSON.stringify({ broadcastId: 555 })),
-        "kit-gmail-warmup-ramp.ts": () =>
-          ok(
-            JSON.stringify({
-              plan: { size: 12, skipped: false, reason: "gate OK — onda de 12 de 40 restante(s)." },
-              safeToTag: Array.from({ length: 10 }, (_, i) => `a${i}@gmail.com`),
-              needsBeehiivDeactivation: ["b1@gmail.com", "b2@gmail.com"],
-            }),
-          ),
       }),
     );
     const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
-    const root = mkdtempSync(join(tmpdir(), "stage-0-run-0m-"));
-    try {
-      const deps = baseDeps({
-        rootDir: root,
-        exec,
-        execAsync,
-        writeFile: (p, c) => writeFileSync(p, c, "utf8"),
-        mkdirSync: (p) => {
-          try {
-            nodeMkdirSync(p, { recursive: true });
-          } catch {
-            /* noop */
-          }
-        },
-        readFile: (p) => {
-          if (p.endsWith("platform.config.json")) return JSON.stringify({ newsletter_auto_capture: { enabled: false } });
-          throw new Error(`unmocked readFile: ${p}`);
-        },
-      });
-      nodeMkdirSync(join(root, "data/editions/2604/260423/_internal"), { recursive: true });
-
-      const result = await runStage0(
-        ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
-        deps,
-      );
-
-      assert.equal(result.code, 0);
-      const proposalPath = join(root, "data/editions/2604/260423/_internal/kit-gmail-ramp-proposal.json");
-      const written = JSON.parse(readFileSync(proposalPath, "utf8"));
-      assert.equal(written.sourceEdition, "260422");
-      assert.equal(written.gateBroadcastId, 555);
-      assert.equal(written.waveSkipped, false);
-      assert.equal(written.waveSize, 12);
-      assert.equal(written.safeToTagCount, 10);
-      assert.equal(written.needsBeehiivDeactivationCount, 2);
-      assert.equal(written.applyCommand, "npx tsx scripts/kit-gmail-warmup-ramp.ts --gate-broadcast 555 --push");
-      assert.ok(
-        result.notes.some((n) => n.includes("0o") && n.includes("onda de 12")),
-        `esperava nota com a proposta no relatório, recebeu: ${JSON.stringify(result.notes)}`,
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("0o — gate segurou (waveSkipped): persiste o motivo, size 0, nunca finge que houve onda (#7021)", async () => {
-    const { exec } = makeFakeExec(
-      happyExecHandlers({
-        "find-last-edition-with-kit.ts": () => ({ code: 0, stdout: "data/editions/2604/260422\n", stderr: "" }),
-        "kit-provider-split.ts": () => ok(JSON.stringify({ broadcastId: 555 })),
-        "kit-gmail-warmup-ramp.ts": () =>
-          ok(JSON.stringify({ plan: { size: 0, skipped: true, reason: "entrega Gmail abaixo do piso." }, safeToTag: [], needsBeehiivDeactivation: [] })),
-      }),
+    const written: string[] = [];
+    const deps = baseDeps({ exec, execAsync, writeFile: (path: string) => { written.push(path); } });
+    const result = await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      deps,
     );
-    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
-    const root = mkdtempSync(join(tmpdir(), "stage-0-run-0m-skip-"));
-    try {
-      const deps = baseDeps({
-        rootDir: root,
-        exec,
-        execAsync,
-        writeFile: (p, c) => writeFileSync(p, c, "utf8"),
-        mkdirSync: (p) => {
-          try {
-            nodeMkdirSync(p, { recursive: true });
-          } catch {
-            /* noop */
-          }
-        },
-        readFile: (p) => {
-          if (p.endsWith("platform.config.json")) return JSON.stringify({ newsletter_auto_capture: { enabled: false } });
-          throw new Error(`unmocked readFile: ${p}`);
-        },
-      });
-      nodeMkdirSync(join(root, "data/editions/2604/260423/_internal"), { recursive: true });
 
-      const result = await runStage0(
-        ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
-        deps,
-      );
+    assert.equal(result.code, 0);
+    assert.ok(
+      result.notes.some((n) => n.includes("0o") && n.includes("entrega por provedor medida") && n.includes("555")),
+      `esperava a nota da medição citando o broadcast, recebeu: ${JSON.stringify(result.notes)}`,
+    );
 
-      assert.equal(result.code, 0);
-      const proposalPath = join(root, "data/editions/2604/260423/_internal/kit-gmail-ramp-proposal.json");
-      const written = JSON.parse(readFileSync(proposalPath, "utf8"));
-      assert.equal(written.waveSkipped, true);
-      assert.equal(written.waveSize, 0);
-      assert.ok(
-        result.notes.some((n) => n.includes("0o") && n.includes("gate segurou")),
-        `esperava nota de gate segurado, recebeu: ${JSON.stringify(result.notes)}`,
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    // #7402 — a proposta de onda (antiga 0o.2) saiu do Stage 0: a coorte do
+    // aquecimento Gmail (os 311 recusados no 1º envio em massa, #6504) esgotou
+    // na migração em bloco do #7386, e sem coorte a rampa só proporia size 0,
+    // todo dia. Estas duas asserções são o guard contra reintroduzir o passo
+    // por engano — a MEDIÇÃO acima fica, ela nunca dependeu da rampa.
+    assert.ok(
+      !calls.some((c) => c.script.includes("kit-gmail-warmup-ramp")),
+      "kit-gmail-warmup-ramp não deve mais ser chamado pelo Stage 0",
+    );
+    assert.ok(
+      !written.some((path) => path.includes("kit-gmail-ramp-proposal")),
+      "kit-gmail-ramp-proposal.json não deve mais ser persistido",
+    );
   });
 
   it("0o — kit-provider-split sem broadcastId válido: fail-soft, NUNCA vira 'ok' sem dado (#633/#7021)", async () => {
@@ -738,33 +663,6 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     assert.ok(
       result.notes.some((n) => n.includes("0o") && n.includes("não mediu entrega")),
       `esperava nota de falha de medição, recebeu: ${JSON.stringify(result.notes)}`,
-    );
-  });
-
-  it("0o — kit-gmail-warmup-ramp falhando (ex: 1ª rodada sem --reference-broadcast): fail-soft, nada persistido (#7021)", async () => {
-    const { exec } = makeFakeExec(
-      happyExecHandlers({
-        "find-last-edition-with-kit.ts": () => ({ code: 0, stdout: "data/editions/2604/260422\n", stderr: "" }),
-        "kit-provider-split.ts": () => ok(JSON.stringify({ broadcastId: 555 })),
-        "kit-gmail-warmup-ramp.ts": () => fail(1, "nenhum estado ainda — passe --reference-broadcast."),
-      }),
-    );
-    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
-    const deps = baseDeps({
-      exec,
-      execAsync,
-      writeFile: () => {
-        throw new Error("writeFile NÃO deveria ser chamado — sem proposta válida, nada a persistir.");
-      },
-    });
-    const result = await runStage0(
-      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
-      deps,
-    );
-    assert.equal(result.code, 0, "falha fail-soft nunca aborta o Stage 0");
-    assert.ok(
-      result.notes.some((n) => n.includes("0o") && n.includes("não devolveu proposta válida")),
-      `esperava nota de falha da proposta, recebeu: ${JSON.stringify(result.notes)}`,
     );
   });
 

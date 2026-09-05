@@ -12,12 +12,12 @@ const HOME = "/home/vjpixel";
 const DIARIA = "/home/vjpixel/diaria-studio";
 
 describe("defaultWorkdirRoots (#6817)", () => {
-  it("diaria-studio nasce enabled; hermes-agent e dot-hermes nascem DESLIGADAS por padrão", () => {
+  it("as 3 raízes nascem enabled (ativação de 04/09/2026 — decisão do editor)", () => {
     const roots = defaultWorkdirRoots(HOME, DIARIA);
     const byName = Object.fromEntries(roots.map((r) => [r.name, r]));
     assert.equal(byName["diaria-studio"].enabled, true);
-    assert.equal(byName["hermes-agent"].enabled, false);
-    assert.equal(byName["dot-hermes"].enabled, false);
+    assert.equal(byName["hermes-agent"].enabled, true);
+    assert.equal(byName["dot-hermes"].enabled, true);
   });
 
   it("paths das 2 raízes novas resolvem sob $HOME, sem hardcode de usuário", () => {
@@ -37,25 +37,37 @@ describe("isPathAllowed (#6817)", () => {
     assert.equal(r.root, "diaria-studio");
   });
 
-  it("path dentro de hermes-agent (raiz desabilitada por padrão) -> denied, motivo cita 'desabilitada'", () => {
+  it("path dentro de hermes-agent (raiz ativada em 04/09/2026) -> allowed", () => {
     const r = isPathAllowed(`${HOME}/hermes-agent/foo.py`, "write", roots);
+    assert.equal(r.allowed, true);
+    assert.equal(r.root, "hermes-agent");
+  });
+
+  it("path dentro de ~/.hermes (raiz ativada em 04/09/2026) -> allowed (exceto sufixos hard-denied)", () => {
+    const r = isPathAllowed(`${HOME}/.hermes/config.yaml`, "write", roots);
+    assert.equal(r.allowed, true);
+    assert.equal(r.root, "dot-hermes");
+  });
+
+  it("raiz explicitamente desabilitada (não é mais o default, mas o mecanismo continua suportando) -> denied, motivo cita 'desabilitada'", () => {
+    const disabledRoots: WorkdirRoot[] = roots.map((r) => (r.name === "hermes-agent" ? { ...r, enabled: false } : r));
+    const r = isPathAllowed(`${HOME}/hermes-agent/foo.py`, "write", disabledRoots);
     assert.equal(r.allowed, false);
     assert.match(r.reason, /desabilitada/);
     assert.equal(r.root, "hermes-agent");
   });
 
-  it("path dentro de ~/.hermes (raiz desabilitada por padrão) -> denied", () => {
-    const r = isPathAllowed(`${HOME}/.hermes/config.yaml`, "write", roots);
-    assert.equal(r.allowed, false);
-    assert.equal(r.root, "dot-hermes");
-  });
-
-  it("~/.hermes/auth.json -> SEMPRE denied, mesmo se a raiz dot-hermes estivesse enabled (hard-deny vence)", () => {
-    const enabledRoots: WorkdirRoot[] = roots.map((r) => (r.name === "dot-hermes" ? { ...r, enabled: true } : r));
-    const r = isPathAllowed(`${HOME}/.hermes/auth.json`, "read", enabledRoots);
+  it("~/.hermes/auth.json -> SEMPRE denied, mesmo com a raiz dot-hermes enabled (hard-deny vence, #6817 item 2)", () => {
+    const r = isPathAllowed(`${HOME}/.hermes/auth.json`, "read", roots);
     assert.equal(r.allowed, false);
     assert.match(r.reason, /NEGADO permanentemente/);
     assert.equal(r.root, undefined, "hard-deny não atribui root — precede qualquer match de raiz");
+  });
+
+  it("~/.hermes/auth.json -> denied também para write, e mesmo se dot-hermes fosse read-only", () => {
+    const readOnlyDotHermes: WorkdirRoot[] = roots.map((r) => (r.name === "dot-hermes" ? { ...r, mode: "read-only" as const } : r));
+    assert.equal(isPathAllowed(`${HOME}/.hermes/auth.json`, "write", roots).allowed, false);
+    assert.equal(isPathAllowed(`${HOME}/.hermes/auth.json`, "read", readOnlyDotHermes).allowed, false);
   });
 
   it("path fora de qualquer raiz -> denied, sem root", () => {

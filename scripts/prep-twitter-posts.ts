@@ -34,8 +34,10 @@
  * `06-public-images.json` (gerado por `upload-images-public.ts` no 5c-pre),
  * MESMO critério de precedência já usado por `publish-instagram.ts`
  * (~L488): `images.d{N}_4x5.url` (card com título, preferencial) com
- * fallback pra `images.d{N}.url` (1:1, sempre presente). **Sem fallback
- * silencioso pro destaque inteiro** — se o cache não existe ou não tem a
+ * fallback pro hero 2:1 (`images.cover.url` pra d1, `images.d{N}_2x1.url`
+ * pra d2/d3 — #7399: a chave base 1:1 deixou de ser uploadada, sem consumidor
+ * real; o hero 2:1 é sempre presente, é o mesmo usado pelo email). **Sem
+ * fallback silencioso pro destaque inteiro** — se o cache não existe ou não tem a
  * entry, o post continua saindo (só texto, `imageUrl: null`) e o motivo vai
  * pra `skipped_image` (visível no resumo da edição) — X sem imagem é pior
  * que X nenhum, então isso nunca vira um `skipped` de verdade.
@@ -187,7 +189,10 @@ export function resolveTwitterImage(
     };
   }
 
-  const imageUrl = images?.[`${destaque}_4x5`]?.url ?? images?.[destaque]?.url ?? null;
+  // #7399: chave base 1:1 removida — fallback vai direto pro hero 2:1
+  // (`cover` pra d1, `{destaque}_2x1` pra d2/d3).
+  const heroKey = destaque === "d1" ? "cover" : `${destaque}_2x1`;
+  const imageUrl = images?.[`${destaque}_4x5`]?.url ?? images?.[heroKey]?.url ?? null;
   if (!imageUrl) {
     return {
       imageUrl: null,

@@ -781,83 +781,31 @@ describe("#5025/#5026/#5027 — par Diaria-Clarice-Envio / Diaria-Clarice-Envio-
   });
 });
 
-describe("#6945 — Diaria-Clarice-Envio-Engajados / -Alarm registradas, DECLARADAS mas NÃO ARMADAS", () => {
-  it("Diaria-Clarice-Envio-Engajados: presente, 20:15 diário, step aponta pro orquestrador correto", () => {
-    const t = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados");
-    assert.ok(t, "Diaria-Clarice-Envio-Engajados ausente de SCHEDULED_TASKS");
-    assert.deepEqual(
-      t!.steps.map((s) => s.script),
-      ["scripts/clarice-envio-engajados-run.ts"],
-    );
-    assert.deepEqual(t!.schedule, { kind: "daily", hour: 20, minute: 15 });
+describe("#7406 — Diaria-Clarice-Envio-Engajados / -Alarm APOSENTADAS (fila única por score)", () => {
+  it("REGRESSÃO: nenhuma task com esses nomes deve voltar ao registro", () => {
+    assert.equal(getScheduledTaskByName("Diaria-Clarice-Envio-Engajados"), undefined);
+    assert.equal(getScheduledTaskByName("Diaria-Clarice-Envio-Engajados-Alarm"), undefined);
   });
 
-  it("20:15 não colide com nenhuma outra daily do registro", () => {
+  it("nenhuma task do registro aponta mais pros scripts removidos (run/alarm engajados)", () => {
+    const scripts = SCHEDULED_TASKS.flatMap((t) => t.steps.map((s) => s.script));
+    assert.ok(!scripts.includes("scripts/clarice-envio-engajados-run.ts"));
+    assert.ok(!scripts.includes("scripts/clarice-envio-engajados-alarm.ts"));
+  });
+
+  it("20:15/21:15 BRT ficam livres — nenhuma daily do registro ocupa esses horários", () => {
     const dailies = SCHEDULED_TASKS.filter(
       (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
         t.schedule.kind === "daily",
     );
-    const collisions = dailies.filter((t) => t.name !== "Diaria-Clarice-Envio-Engajados" && t.schedule.hour === 20 && t.schedule.minute === 15);
-    assert.deepEqual(collisions, []);
-  });
-
-  it("roda DEPOIS de Diaria-Clarice-Envio (19:10) — reusa o assunto do dia já travado por aquela rodada", () => {
-    const envio = getScheduledTaskByName("Diaria-Clarice-Envio");
-    const engajados = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados");
-    assert.ok(envio && engajados);
-    const e = envio!.schedule as { kind: "daily"; hour: number; minute: number };
-    const g = engajados!.schedule as { kind: "daily"; hour: number; minute: number };
-    assert.ok(g.hour * 60 + g.minute > e.hour * 60 + e.minute);
-  });
-
-  it("mesmo guard.requiredFile das outras tasks Clarice-Envio (clarice-users.db)", () => {
-    const t = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados");
-    assert.ok(t);
-    assert.equal(t!.guard?.requiredFile, "clarice-subscribers/clarice-users.db");
-  });
-
-  it("exit 4 (lock de concorrência com o ramp-warm no mesmo ciclo) é successExitCode — nunca falha genuína", () => {
-    const t = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados");
-    assert.ok(t);
-    assert.deepEqual(t!.successExitCodes, [4]);
-  });
-
-  it("Diaria-Clarice-Envio-Engajados-Alarm: presente, 21:15 diário, step aponta pro alarme correto", () => {
-    const t = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados-Alarm");
-    assert.ok(t, "Diaria-Clarice-Envio-Engajados-Alarm ausente de SCHEDULED_TASKS");
     assert.deepEqual(
-      t!.steps.map((s) => s.script),
-      ["scripts/clarice-envio-engajados-alarm.ts"],
+      dailies.filter((t) => t.schedule.hour === 20 && t.schedule.minute === 15),
+      [],
     );
-    assert.deepEqual(t!.schedule, { kind: "daily", hour: 21, minute: 15 });
-  });
-
-  it("21:15 não colide com nenhuma outra daily do registro", () => {
-    const dailies = SCHEDULED_TASKS.filter(
-      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
-        t.schedule.kind === "daily",
+    assert.deepEqual(
+      dailies.filter((t) => t.schedule.hour === 21 && t.schedule.minute === 15),
+      [],
     );
-    const collisions = dailies.filter(
-      (t) => t.name !== "Diaria-Clarice-Envio-Engajados-Alarm" && t.schedule.hour === 21 && t.schedule.minute === 15,
-    );
-    assert.deepEqual(collisions, []);
-  });
-
-  it("o alarme roda DEPOIS da própria task Diaria-Clarice-Envio-Engajados (20:15)", () => {
-    const t = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados");
-    const alarm = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados-Alarm");
-    assert.ok(t && alarm);
-    const g = t!.schedule as { kind: "daily"; hour: number; minute: number };
-    const a = alarm!.schedule as { kind: "daily"; hour: number; minute: number };
-    assert.ok(a.hour * 60 + a.minute > g.hour * 60 + g.minute);
-  });
-
-  it("é DISTINTA de Diaria-Clarice-Envio-Alarm (não reaproveita o alarme do ramp-warm)", () => {
-    const engajadosAlarm = getScheduledTaskByName("Diaria-Clarice-Envio-Engajados-Alarm");
-    const rampWarmAlarm = getScheduledTaskByName("Diaria-Clarice-Envio-Alarm");
-    assert.ok(engajadosAlarm && rampWarmAlarm);
-    assert.notEqual(engajadosAlarm!.steps[0].script, rampWarmAlarm!.steps[0].script);
-    assert.notDeepEqual(engajadosAlarm!.schedule, rampWarmAlarm!.schedule);
   });
 });
 

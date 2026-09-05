@@ -27,6 +27,15 @@
  * precisa deste guard. Este módulo não tenta ser um detector universal de
  * "mudança arriscada"; ele responde uma pergunta estreita e verificável.
  *
+ * Paths de config de RUNTIME do Hermes (`~/.hermes/config.yaml` e afins,
+ * #6817 item 5) NÃO entram em `SENSITIVE_RULES` — vivem fora deste repo,
+ * e o teste de higiene abaixo (`describe("cada regra casa com arquivo REAL
+ * do repo")`) exige que toda regra case com um arquivo RASTREADO por `git
+ * ls-files`; uma regra sobre `~/.hermes/...` nasceria morta por
+ * construção. O critério análogo pra esses paths vive em
+ * `scripts/lib/hermes-runtime-sensitive-paths.ts` — módulo irmão, reusa
+ * `matchesGlob` (exportado abaixo), hygiene própria contra os paths reais.
+ *
  * ## Contrato
  *
  * `isSensitivePath` e `classifyChangedPaths` são PUROS (recebem os paths, não

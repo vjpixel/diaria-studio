@@ -614,11 +614,13 @@ async function main() {
       continue;
     }
 
-    // Chave esperada: images.d1 / images.d2 / images.d3 (crop 1x1 — mesmo
-    // shape lido por publish-linkedin.ts, ver ImageCacheFile em publish-linkedin.ts)
+    // Chave esperada: images.{d}_4x5 (card, título embutido) com fallback pro
+    // hero 2:1 (`cover` pra d1, `{d}_2x1` pra d2/d3 — #7399: a chave BASE 1:1
+    // deixou de ser uploadada, sem consumidor real; ver ImageCacheFile em
+    // publish-linkedin.ts / resolvePublicCardImageUrl).
     const images = (publicImages as { images?: Record<string, { url?: string }> }).images;
-    // Mesma precedência do arquivo local: card 4:5 quando existe no cache.
-    const imageUrl = images?.[`${d}_4x5`]?.url ?? images?.[d]?.url;
+    const heroKey = d === "d1" ? "cover" : `${d}_2x1`;
+    const imageUrl = images?.[`${d}_4x5`]?.url ?? images?.[heroKey]?.url;
     if (!imageUrl) {
       console.error(
         `ERROR: URL pública para ${d} não encontrada em 06-public-images.json.\n` +
