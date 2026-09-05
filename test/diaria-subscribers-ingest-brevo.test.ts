@@ -12,18 +12,22 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
+import { writeFileSync } from "node:fs";
 import {
   ingestAccount,
   checkpointPathForAccount,
   contactsByListPath,
+  loadBrevoDiariaListId,
   main,
   BREVO_ACCOUNTS,
 } from "../scripts/diaria-subscribers-ingest-brevo.ts";
 import { openDiariaSubscribersDb, getStoreCounts, findSubscriberIdsByEmail } from "../scripts/lib/diaria-subscribers-db.ts";
 
 /** `list_id` fixo usado nos testes — não precisa bater com o de
- *  `platform.config.json` (que só é lido em runtime real, não nesses
- *  mocks), só ser consistente entre o mock de fetch e a chamada testada. */
+ *  `platform.config.json` (que É lido de verdade no import do módulo, via
+ *  `loadBrevoDiariaListId()` dentro do literal de `BREVO_ACCOUNTS`, inclusive
+ *  em teste). Não precisa bater porque `ingestAccount`/`checkpointPathForAccount`
+ *  são chamados aqui com `listId` explícito, sem passar por `BREVO_ACCOUNTS`. */
 const TEST_LIST_ID = 7;
 
 function jsonResponse(body: unknown): Promise<Response> {
@@ -51,6 +55,68 @@ async function withMockedListing<T>(contacts: Array<{ id: number; email: string 
     globalThis.fetch = orig;
   }
 }
+
+describe("loadBrevoDiariaListId (#7199/#7451 review — os 2 caminhos de fallback avisam)", () => {
+  it("config válido: devolve o list_id do arquivo", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-cfg-"));
+    const cfgPath = resolve(tmp, "platform.config.json");
+    writeFileSync(cfgPath, JSON.stringify({ brevo_diaria: { list_id: 42 } }));
+    assert.equal(loadBrevoDiariaListId(cfgPath), 42);
+  });
+
+  it("arquivo ausente: cai no fallback (7) e avisa via console.error", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-cfg-"));
+    const cfgPath = resolve(tmp, "nao-existe.json");
+    const orig = console.error;
+    const messages: string[] = [];
+    console.error = (...args: unknown[]) => messages.push(args.join(" "));
+    try {
+      assert.equal(loadBrevoDiariaListId(cfgPath), 7);
+    } finally {
+      console.error = orig;
+    }
+    assert.ok(messages.some((m) => m.includes("platform.config.json não lido")));
+  });
+
+  it("config lido, mas brevo_diaria.list_id ausente: cai no fallback E avisa (achado dos reviewers do #7451 — antes era silencioso)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-cfg-"));
+    const cfgPath = resolve(tmp, "platform.config.json");
+    writeFileSync(cfgPath, JSON.stringify({ brevo_diaria: {} }));
+    const orig = console.error;
+    const messages: string[] = [];
+    console.error = (...args: unknown[]) => messages.push(args.join(" "));
+    try {
+      assert.equal(loadBrevoDiariaListId(cfgPath), 7);
+    } finally {
+      console.error = orig;
+    }
+    assert.ok(messages.some((m) => m.includes("list_id ausente ou inválido")));
+  });
+
+  it("config lido, mas list_id é string (tipo errado): cai no fallback E avisa", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-cfg-"));
+    const cfgPath = resolve(tmp, "platform.config.json");
+    writeFileSync(cfgPath, JSON.stringify({ brevo_diaria: { list_id: "7" } }));
+    const orig = console.error;
+    const messages: string[] = [];
+    console.error = (...args: unknown[]) => messages.push(args.join(" "));
+    try {
+      assert.equal(loadBrevoDiariaListId(cfgPath), 7);
+    } finally {
+      console.error = orig;
+    }
+    assert.ok(messages.some((m) => m.includes("list_id ausente ou inválido")));
+  });
+
+  it("list_id 0, negativo ou fracionário é rejeitado (Number.isInteger && > 0, não Number.isFinite)", () => {
+    for (const bad of [0, -1, 7.5]) {
+      const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-cfg-"));
+      const cfgPath = resolve(tmp, "platform.config.json");
+      writeFileSync(cfgPath, JSON.stringify({ brevo_diaria: { list_id: bad } }));
+      assert.equal(loadBrevoDiariaListId(cfgPath), 7, `list_id=${bad} deveria cair no fallback`);
+    }
+  });
+});
 
 describe("contactsByListPath (#7199 — nunca /contacts sem escopo de lista)", () => {
   it("monta o path escopado à lista, paginado", () => {
@@ -147,6 +213,38 @@ describe("ingestAccount", () => {
     const cp = JSON.parse(readFileSync(cpPath, "utf8"));
     assert.deepEqual(cp.doneIds, []);
     db.close();
+  });
+
+  it("404 no listing (list_id inválido) propaga erro — NUNCA vira '0 contatos, sucesso' (#7451 review, silent-failure-hunter)", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-ingest-404-"));
+    const dbDir = resolve(tmp, "data/diaria-subscribers");
+    mkdirSync(dbDir, { recursive: true });
+    const dbPath = resolve(dbDir, "diaria-subscribers.db");
+    const db = openDiariaSubscribersDb(dbPath);
+
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      if (String(url).includes("/contacts/lists/")) {
+        return {
+          ok: false,
+          status: 404,
+          text: async () => "{}",
+          json: async () => ({}),
+          headers: { get: () => "application/json" },
+        } as unknown as Response;
+      }
+      throw new Error(`fetch inesperado no teste: ${url}`);
+    }) as typeof fetch;
+
+    try {
+      await assert.rejects(
+        () => ingestAccount(db, "fake-key", "brevo_diaria", 999999, dbPath, {}),
+        /404 numa listagem em massa não significa lista vazia/,
+      );
+    } finally {
+      globalThis.fetch = orig;
+      db.close();
+    }
   });
 });
 

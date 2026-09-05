@@ -50,12 +50,13 @@
  *
  * ## Escopo por LISTA, não por conta inteira (#7199)
  *
- * A conta `brevo_diaria` hospeda MAIS de uma lista — `brevo_diaria.list_id`
- * (reativação Pending, `platform.config.json`) e `brevo_apoiadores.list_id`
- * (digest mensal, lista separada na MESMA conta), além de contatos
- * transacionais (`onboarding`) sem lista nenhuma. `GET /v3/contacts` (sem
- * filtro) enumera a conta INTEIRA — misturaria os três públicos como se
- * fossem assinante da diária. Por isso a enumeração usa
+ * A conta `brevo_diaria` hospeda MAIS de uma lista — pelo menos
+ * `brevo_diaria.list_id` (reativação Pending, `platform.config.json`),
+ * `brevo_apoiadores.list_id` (digest mensal) e a lista dinâmica de
+ * onboarding D+10 (`onboarding-welcome-run.ts` § `ensureD10List`) — a lista
+ * pode crescer, não é um trio fechado. `GET /v3/contacts` (sem filtro)
+ * enumera a conta INTEIRA — misturaria todos esses públicos como se fossem
+ * assinante da diária. Por isso a enumeração usa
  * `GET /contacts/lists/{listId}/contacts`, escopada ao `list_id` de cada
  * conta em `BREVO_ACCOUNTS` (lido de `platform.config.json`) — nunca o
  * listing de conta inteira. Achado ao vivo (260905): rodar sem esse escopo
@@ -90,23 +91,45 @@ import {
 export const DEFAULT_MANIFEST_PATH = resolve(dirname(DEFAULT_DB_PATH), "brevo-ingest-manifest.json");
 
 /** `list_id` da lista Brevo "Diária — Reativação Pending" (`brevo_diaria`
- *  em `platform.config.json`) — fallback só se o config não puder ser lido
- *  (mesmo padrão de `eia-compose.ts` §translate_model: nunca aborta por
- *  config ausente/corrompida, avisa e segue com o valor conhecido). */
+ *  em `platform.config.json`) — fallback se o config não puder ser lido OU
+ *  se `brevo_diaria.list_id` estiver ausente/inválido lá dentro. Fail-soft
+ *  deliberado (não `process.exit`, diferente de `sync-pending-to-brevo.ts`
+ *  pro MESMO campo): esta ingestão roda desassistida (overnight/cron), e
+ *  abortar o processo inteiro por um campo de config perderia a rodada de
+ *  ingestão toda por um problema menor. O preço do fail-soft é justamente
+ *  o achado dos reviewers do #7451: sem aviso alto o bastante, cair no
+ *  fallback é indistinguível de ler o config certo — por isso os DOIS
+ *  ramos de fallback (erro de leitura E `list_id` ausente/inválido) emitem
+ *  `console.error` alto (nunca silencioso), e o valor aceito é validado com
+ *  `Number.isInteger(x) && x > 0` (não `Number.isFinite`, que aceitava
+ *  0/negativo/fracionário como "válido"). */
 const FALLBACK_BREVO_DIARIA_LIST_ID = 7;
 
-function loadBrevoDiariaListId(): number {
+/** Exportada só para teste (injetar `cfgPath` fake) — nenhum call site de
+ *  produção passa o argumento, sempre resolve o `platform.config.json` real. */
+export function loadBrevoDiariaListId(
+  cfgPath: string = resolve(dirname(fileURLToPath(import.meta.url)), "..", "platform.config.json"),
+): number {
+  let listId: unknown;
   try {
-    const cfgPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "platform.config.json");
     const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
-    const listId = cfg?.brevo_diaria?.list_id;
-    if (typeof listId === "number" && Number.isFinite(listId)) return listId;
+    listId = cfg?.brevo_diaria?.list_id;
   } catch (e) {
     console.error(
       `⚠️  platform.config.json não lido (${e instanceof Error ? e.message : String(e)}); ` +
         `usando list_id default ${FALLBACK_BREVO_DIARIA_LIST_ID} pra brevo_diaria`,
     );
+    return FALLBACK_BREVO_DIARIA_LIST_ID;
   }
+  // #7199 fix reviewers (achado convergente, alta confiança): `Number.isFinite`
+  // aceitava 0/negativo/fracionário como "válido", e este ramo (config lido
+  // com sucesso mas `list_id` ausente/tipo errado) não emitia NENHUM aviso —
+  // exatamente a classe de "escopo errado, ninguém percebe" que #7199 corrige.
+  if (typeof listId === "number" && Number.isInteger(listId) && listId > 0) return listId;
+  console.error(
+    `⚠️  platform.config.json lido, mas brevo_diaria.list_id ausente ou inválido (valor: ${JSON.stringify(listId)}); ` +
+      `usando list_id default ${FALLBACK_BREVO_DIARIA_LIST_ID} pra brevo_diaria`,
+  );
   return FALLBACK_BREVO_DIARIA_LIST_ID;
 }
 
@@ -148,7 +171,15 @@ export function checkpointPathForAccount(dbPath: string, platform: BrevoAccountP
 
 /** Path do listing ESCOPADO À LISTA (`GET /contacts/lists/{listId}/contacts`)
  *  — nunca `/contacts` puro, que enumeraria a conta inteira (#7199). Mesma
- *  paginação `limit=500&offset=N` de `contactsListPath`. */
+ *  paginação `limit=500&offset=N` do antigo `contactsListPath` (removido
+ *  deste arquivo — ver `clarice-sync-brevo.ts` pro equivalente de conta
+ *  inteira, usado só pela Clarice).
+ *
+ *  `brevoListContacts` (`lib/brevo-client.ts`, #7385) já bate o MESMO
+ *  endpoint, mas devolve só `email[]` — aqui é preciso `{id, email}[]` (o
+ *  `id` alimenta `GET /contacts/{id}` por contato e o checkpoint `doneIds`),
+ *  então não é um drop-in trivial; não reusado de propósito, registrado
+ *  aqui pra quem for procurar duplicação de paginação Brevo. */
 export function contactsByListPath(listId: number, offset: number): string {
   return `/contacts/lists/${listId}/contacts?limit=500&offset=${offset}`;
 }
@@ -179,7 +210,23 @@ async function enumerateContacts(
   const doneIds = existing?.doneIds ?? [];
   let offset = ids.length;
   for (;;) {
-    const { body } = await brevoGet(apiKey, contactsByListPath(listId, offset));
+    const { status, body } = await brevoGet(apiKey, contactsByListPath(listId, offset));
+    // #7199 review (silent-failure-hunter, alta confiança): `brevoGet` trata
+    // 404 como benigno (`{status:404, body:{}}`) — desenhado pra "contato
+    // sumiu entre listar e buscar" (lookup de 1 entidade), nunca pra
+    // LISTAGEM em massa. Mesmo racional já corrigido em
+    // `fetchBrevoContactAttributeNames`/`iterateListContacts` (#4532/#4634):
+    // 404 aqui significa `listId` inválido/erro real, nunca "lista vazia".
+    // Sem este guard, `body?.contacts ?? []` silenciaria o 404 como 0
+    // contatos com `listingComplete: true` — o espelho exato do bug que
+    // este PR corrige (escopo errado sem nenhum aviso).
+    if (status !== 200) {
+      throw new Error(
+        `Brevo API ${status} em /contacts/lists/${listId}/contacts — 404 numa listagem em massa não ` +
+          `significa lista vazia, significa list_id inválido ou erro real (mesma disciplina de ` +
+          `fetchBrevoContactAttributeNames, #4532/#4634).`,
+      );
+    }
     const cs = (body?.contacts ?? []) as Array<{ id: number; email?: string }>;
     for (const c of cs) ids.push({ id: c.id, email: String(c.email ?? "").toLowerCase() });
     const complete = cs.length < 500;
