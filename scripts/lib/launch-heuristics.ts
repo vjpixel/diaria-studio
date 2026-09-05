@@ -424,8 +424,18 @@ export function isTutorialByDomainExtra(url: string): boolean {
  * `capacita[çc][ãa]o\s+gratuita` são específicos o bastante pra não pegar
  * cobertura genérica sobre "a academia de IA está crescendo" ou similar.
  */
-const TUTORIAL_TITLE_EXTRA_RE =
-  /\b(migrat(ing|ion)\b|how\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+)+\s+(used?|leverag(es?|ed?)|powered?)\b|case\s+stud(y|ies)\b|build\s+and\s+deploy\b|step[- ]by[- ]step\b|guia\s+(pr[áa]tico|completo|passo)\b|academy\s+courses?\b|capacita[çc][ãa]o\s+gratuita\b)\b/i;
+// #5995 (review PR #7473): fragmento de curso/capacitação extraído pra fonte
+// única, reusado abaixo por TUTORIAL_TITLE_EXTRA_RE e por
+// EDUCATIONAL_COURSE_TITLE_RE (precedência sobre type_hint) — antes os 2
+// padrões viviam duplicados byte-a-byte entre os dois regex, exatamente a
+// classe de drift que causou o bug original desta issue (sinal adicionado
+// num lugar sem precedência espelhada no outro).
+const EDUCATIONAL_COURSE_TITLE_FRAGMENT = "academy\\s+courses?|capacita[çc][ãa]o\\s+gratuita";
+
+const TUTORIAL_TITLE_EXTRA_RE = new RegExp(
+  `\\b(migrat(ing|ion)\\b|how\\s+[A-Z]\\w{2,}(?:\\s+[A-Z]\\w+)+\\s+(used?|leverag(es?|ed?)|powered?)\\b|case\\s+stud(y|ies)\\b|build\\s+and\\s+deploy\\b|step[- ]by[- ]step\\b|guia\\s+(pr[áa]tico|completo|passo)\\b|${EDUCATIONAL_COURSE_TITLE_FRAGMENT})\\b`,
+  "i",
+);
 
 function isTutorialByTitleExtra(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
@@ -445,9 +455,11 @@ function isTutorialByTitleExtra(article: Article): boolean {
  * confirmando arriscaria overfit (mesma disciplina anti-overfit do #6556/
  * #7331). "guia prático/completo/passo" não precisa entrar aqui: já vive em
  * `TUTORIAL_KEYWORDS_RE` (isTutorialByKeyword), que já tem essa precedência
- * sobre type_hint desde antes desta issue.
+ * sobre type_hint desde antes desta issue. Compartilha
+ * `EDUCATIONAL_COURSE_TITLE_FRAGMENT` com `TUTORIAL_TITLE_EXTRA_RE` (fonte
+ * única — ver comentário lá).
  */
-const EDUCATIONAL_COURSE_TITLE_RE = /\b(academy\s+courses?|capacita[çc][ãa]o\s+gratuita)\b/i;
+const EDUCATIONAL_COURSE_TITLE_RE = new RegExp(`\\b(${EDUCATIONAL_COURSE_TITLE_FRAGMENT})\\b`, "i");
 
 function isEducationalCourseByTitle(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
