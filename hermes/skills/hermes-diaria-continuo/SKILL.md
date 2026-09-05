@@ -104,7 +104,7 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
 | `~/.hermes/scripts/claude-openrouter.sh` | roda `claude -p` com OpenRouter (stdin=prompt; `--tools`, `--budget`, `--timeout`) | `dots-studio/dots-3-note-preview:free` → `poolside/laguna-s-2.1:free` → `z-ai/glm-5.3-flash` |
 | `npx tsx --eval` (direto, sem LLM) | classificação determinística | nenhum |
 | `~/.hermes/scripts/opus-daily-diff-review.sh` | review Opus do diff ACUMULADO do dia (cron separado, 1x/dia; #6865, ex-`daily-consolidated-review.sh`) | Anthropic (assinatura) |
-| `~/.hermes/scripts/continuo-pr-review.sh` | review Sonnet de 1 PR `continuo/*` aberta por vez (cron separado; cadência: derivar com `hermes cron list --all` — nunca esta prosa, #6928; #6865) — o MODELO nunca mergeia (`gh pr merge` fora do `--allowedTools`); o SCRIPT BASH mergeia depois, atrás de 8 portões fail-closed (#6926) — `REPO` fixo em `diaria-studio`, nunca toca PR do fork (#6817 item 6) | Anthropic (assinatura) |
+| `~/.hermes/scripts/continuo-pr-review.sh` | review Sonnet de toda PR aberta no repo, exceto `bot/*` (escopo ampliado além de `continuo/*` no #7446 item 4 — PR de qualquer branch podia ficar sem merger nenhum; cron separado, cadência: derivar com `hermes cron list --all` — nunca esta prosa, #6928; #6865) — o MODELO nunca mergeia (`gh pr merge` fora do `--allowedTools`); o SCRIPT BASH mergeia depois, atrás de 8 portões fail-closed (#6926) — `REPO` fixo em `diaria-studio`, nunca toca PR do fork (#6817 item 6). `escalate` label a PR (`continuo-escalado`) e notifica só na 1ª vez (#7446 item 2). | Anthropic (assinatura) |
 
 ## Cada ciclo (tick do cron)
 
@@ -535,7 +535,10 @@ aparecerem na classificação.
 `continuo-pr-review.sh` roda em cron próprio — a cadência NÃO vive nesta
 prosa: derivar com `hermes cron list --all` (#6928; já foi registrada
 errada aqui duas vezes) — com **assinatura
-Anthropic** (Sonnet) — review de 1 PR `continuo/*` ABERTA por vez, não o
+Anthropic** (Sonnet) — review de TODA PR aberta no repo, exceto `bot/*`
+(escopo ampliado além de `continuo/*` no #7446 item 4; #7242 já havia
+corrigido a prosa de "1 PR por vez" para "todas as PRs elegíveis abertas por
+execução" — o loop sempre iterou todas, nunca uma só), não o
 diff acumulado do dia (papel distinto do #6). Existe pra dar ao contínuo
 um revisor externo separado do tick, já que o contínuo é impedido de
 mergear a própria PR (#6864) e o review diário sozinho deixava PRs
@@ -546,9 +549,13 @@ review no formato que `check-pr-review-authenticity.ts` reconhece como
 `independent-review` (#6732) — um review de verdade, de uma sessão
 distinta da que abriu a PR, então o formato reconhecido passa a
 corresponder a um dispatch real, não a texto auto-declarado pela
-delegação (#6849). **NUNCA mergeia** — só comenta. O merge continua sendo
-exclusivo do pickup (seção 3, passo 3, #6823); os dois processos nunca
-disputam a mesma ação porque um só revisa e o outro só mergeia.
+delegação (#6849). **Autoridade de merge desde #6926** (esta seção dizia
+"NUNCA mergeia" — desatualizado; ver tabela da seção "Ferramentas desta
+skill" acima e `scripts/lib/continuo-merge-gate.ts` para os 8 portões
+fail-closed que decidem `merge`/`escalate`/`reject`). `escalate` labela a PR
+(`continuo-escalado`) e notifica só na 1ª vez que ela escala (#7446 item 2)
+— o pickup do `/diaria-overnight` (seção 3, passo 3, #6823) e a revisão
+humana continuam sendo os dois caminhos que resolvem uma PR escalada.
 
 ## Relatório de tick (formato inalterado)
 
