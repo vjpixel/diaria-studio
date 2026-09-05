@@ -39,15 +39,19 @@ import {
   isMergeGrantLive,
   isSelfAuthorizedMergeLive,
   listActiveSessions,
+  mergeSessionRecords,
   normalizeBeaconPath,
   registerSession,
   selfAuthorizeMerge,
+  sessionsDir,
   type ActiveSessionRecord,
 } from "../scripts/lib/session-registry.ts";
 import {
   CLOCK_SKEW_TOLERANCE_MS as HOOK_CLOCK_SKEW_TOLERANCE_MS,
   MERGE_GRANT_TTL_MS as HOOK_MERGE_GRANT_TTL_MS,
   MERGE_LOCK_TTL_MS as HOOK_MERGE_LOCK_TTL_MS,
+  readConsumedGrantFor,
+  readLiveMergeGrantFor,
   shouldBlockGhPrMerge,
 } from "../.claude/hooks/block-gh-pr-merge-subagent.mjs";
 import {
@@ -1144,5 +1148,305 @@ describe("#6952 — consume hook escreve sob o lock compartilhado", () => {
       "2026-09-01T12:00:00.000Z",
       "o consumedAt original foi sobrescrito pela 2ª chamada",
     );
+  });
+});
+
+// ─── #7462 — consumedAt só conta quando está no ARQUIVO REAL ──────────────
+//
+// O #6952 fez `mergeSessionRecords` UNIR o `merge_grant` entre o arquivo real
+// e as cópias `-safeBackup-*` do OneDrive, e a 2ª metade propagou
+// `consumedAt` de QUALQUER cópia. Resultado: uma concessão que nunca foi
+// consumida (nenhum `gh pr merge` succeed, nenhum `consume-merge-grant`)
+// parecia já usada porque um backup carregava um `consumedAt` que o real
+// nunca teve — `check-merge-grant` dizia `granted: true` e o gate de merge
+// bloqueava de qualquer jeito, reproduzido 2× na sessão develop do Neo.
+//
+// O `consumedAt` é um carimbo de FATO (deixado pelo merge bem-sucedido), não
+// um voto de maioria: só conta quando está no registro que o merge escreve.
+// O gate (`block-gh-pr-merge-subagent.mjs`) lê SÓ arquivos reais (pula
+// `-safeBackup-`), então o read-path precisa concordar com ele.
+describe("#7462 — consumedAt é testemunha do real, nunca de backup", () => {
+  const BENEF = "benef-7462";
+  const coord = "coord-7462";
+  const grantedAt = isoAgo(60_000);
+
+  function grantRecord(consumedAt?: string) {
+    return {
+      kind: "overnight" as const,
+      machineTag: "Neo",
+      sessionId: coord,
+      startedAt: isoAgo(60_000),
+      lastHeartbeat: isoAgo(60_000),
+      merge_grant: { grantedTo: BENEF, grantedBy: coord, grantedAt, pr: 7462, ...(consumedAt ? { consumedAt } : {}) },
+    };
+  }
+
+  // Real sem NENHUMA opinião sobre a identidade do winner — ou porque não
+  // carrega grant algum, ou porque carrega um de OUTRA identidade (mais
+  // antiga). Base da linha, sem `merge_grant`.
+  function realWithoutOpinion() {
+    return {
+      kind: "overnight" as const,
+      machineTag: "Neo",
+      sessionId: coord,
+      startedAt: isoAgo(60_000),
+      lastHeartbeat: isoAgo(60_000),
+    };
+  }
+
+  function realWithDifferentIdentity() {
+    return {
+      ...realWithoutOpinion(),
+      merge_grant: { grantedTo: BENEF, grantedBy: coord, grantedAt: isoAgo(120_000), pr: 6001 },
+    };
+  }
+
+  it("real VIVO + backup CONSUMIDO → concessão continua viva (o backup é detrito)", () => {
+    const root = makeTempRepo();
+    try {
+      writeFileSync(join(sessionsDir(root), `overnight-Neo-${coord}.json`), JSON.stringify(grantRecord()), "utf8");
+      writeFileSync(
+        join(sessionsDir(root), `overnight-Neo-${coord}-safeBackup-0001.json`),
+        JSON.stringify(grantRecord(isoAgo(30_000))),
+        "utf8",
+      );
+      const found = findLiveMergeGrant(root, BENEF, NOW);
+      assert.ok(found, "concessão viva no real não pode ser matada por um backup consumido");
+      assert.equal(found?.source, "real");
+      // O gate lê só o real — e o real está vivo.
+      assert.ok(readLiveMergeGrantFor(root, BENEF, NOW), "o gate honra a concessão");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("real CONSUMIDO + backup VIVO → concessão morta (o real é quem testemunha)", () => {
+    const root = makeTempRepo();
+    try {
+      writeFileSync(
+        join(sessionsDir(root), `overnight-Neo-${coord}.json`),
+        JSON.stringify(grantRecord(isoAgo(30_000))),
+        "utf8",
+      );
+      writeFileSync(join(sessionsDir(root), `overnight-Neo-${coord}-safeBackup-0001.json`), JSON.stringify(grantRecord()), "utf8");
+      assert.equal(findLiveMergeGrant(root, BENEF, NOW), null, "real consumido mata a concessão, mesmo com backup vivo");
+      assert.equal(readConsumedGrantFor(root, BENEF, NOW)?.pr, 7462, "o gate vê o consumo no real");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("órfão (só backup) com consumedAt → concessão continua viva (#6972: sem real, não há testemunha)", () => {
+    const root = makeTempRepo();
+    try {
+      writeFileSync(
+        join(sessionsDir(root), `overnight-Neo-${coord}-safeBackup-0001.json`),
+        JSON.stringify(grantRecord(isoAgo(30_000))),
+        "utf8",
+      );
+      const found = findLiveMergeGrant(root, BENEF, NOW);
+      assert.ok(found, "grupo órfão sem real: o grant é considerado vivo, como o #6972 decide pro merge_grant inteiro");
+      assert.equal(found?.source, "backup");
+      assert.equal(readLiveMergeGrantFor(root, BENEF, NOW), null, "o gate não honra grant que só vive em detrito — pedir reconcessão");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("real e backup ambos vivos → vivo, fonte real", () => {
+    const root = makeTempRepo();
+    try {
+      writeFileSync(join(sessionsDir(root), `overnight-Neo-${coord}.json`), JSON.stringify(grantRecord()), "utf8");
+      writeFileSync(join(sessionsDir(root), `overnight-Neo-${coord}-safeBackup-0001.json`), JSON.stringify(grantRecord()), "utf8");
+      const found = findLiveMergeGrant(root, BENEF, NOW);
+      assert.ok(found);
+      assert.equal(found?.source, "real");
+      assert.ok(readLiveMergeGrantFor(root, BENEF, NOW), "o gate honra");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("real e backup ambos consumidos → morta", () => {
+    const root = makeTempRepo();
+    try {
+      writeFileSync(join(sessionsDir(root), `overnight-Neo-${coord}.json`), JSON.stringify(grantRecord(isoAgo(30_000))), "utf8");
+      writeFileSync(join(sessionsDir(root), `overnight-Neo-${coord}-safeBackup-0001.json`), JSON.stringify(grantRecord(isoAgo(30_000))), "utf8");
+      assert.equal(findLiveMergeGrant(root, BENEF, NOW), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("puramente unitário: mergeSessionRecords não propaga consumedAt de backup", () => {
+    const real = grantRecord();
+    const backup = grantRecord(isoAgo(30_000));
+    const merged = mergeSessionRecords([real, backup]);
+    assert.equal(merged.merge_grant?.consumedAt, undefined, "o real não tem consumedAt → o mesclado não pode ter");
+    const mergedReversed = mergeSessionRecords([backup, real], 1);
+    assert.equal(mergedReversed.merge_grant?.consumedAt, undefined, "realIndex=1 salta o backup e lê o real");
+    const mergedOrphan = mergeSessionRecords([backup], -1);
+    assert.equal(mergedOrphan.merge_grant?.consumedAt, undefined, "órfão (realIndex=-1): vivo, nunca consumido");
+  });
+
+  // pr-test-analyzer (fleet review #7467, criticidade 8): o branch de
+  // fallback (`realIndex >= 0 && !realIsWitness`, real EXISTE mas não tem
+  // opinião sobre a identidade do winner) não tinha cobertura direta —
+  // é o branch cujo próprio comentário descreve o pior modo de falha dos
+  // três: "grant encontrável e PERPETUAMENTE inconsumível" (o achado do
+  // #6952 que reabriu esta issue).
+  describe("fallback: real EXISTE mas não testemunha a identidade do winner (#6952 reaberto)", () => {
+    it("real sem merge_grant + backup consumido → o fallback recupera o consumo", () => {
+      const real = realWithoutOpinion();
+      const consumedBackup = grantRecord(isoAgo(30_000));
+      const merged = mergeSessionRecords([real, consumedBackup]);
+      assert.equal(
+        merged.merge_grant?.consumedAt,
+        consumedBackup.merge_grant.consumedAt,
+        "real não tem opinião sobre esta identidade → cai pro pré-#7462 (união por identidade) → consumo do backup aparece",
+      );
+    });
+
+    it("real com identidade DIFERENTE (mais antiga) + backup com a identidade vencedora consumida → consumedAt aparece", () => {
+      const real = realWithDifferentIdentity();
+      const consumedBackup = grantRecord(isoAgo(30_000));
+      const merged = mergeSessionRecords([real, consumedBackup]);
+      assert.equal(
+        merged.merge_grant?.grantedAt,
+        grantedAt,
+        "o winner é a concessão mais recente (a do backup), não a antiga do real",
+      );
+      assert.equal(
+        merged.merge_grant?.consumedAt,
+        consumedBackup.merge_grant.consumedAt,
+        "real testemunha só a identidade ANTIGA (#6001), não a vencedora → fallback confia no backup pra esta identidade",
+      );
+    });
+
+    it("real sem merge_grant + backup VIVO (sem consumedAt em lugar nenhum) → resultado continua vivo", () => {
+      const real = realWithoutOpinion();
+      const liveBackup = grantRecord();
+      const merged = mergeSessionRecords([real, liveBackup]);
+      assert.equal(
+        merged.merge_grant?.consumedAt,
+        undefined,
+        "nada em lugar nenhum está consumido → o fallback não inventa um consumo",
+      );
+    });
+
+    it("real com identidade DIFERENTE + backup vencedor VIVO → resultado continua vivo", () => {
+      const real = realWithDifferentIdentity();
+      const liveBackup = grantRecord();
+      const merged = mergeSessionRecords([real, liveBackup]);
+      assert.equal(
+        merged.merge_grant?.grantedAt,
+        grantedAt,
+        "o winner ainda é a concessão mais recente do backup",
+      );
+      assert.equal(
+        merged.merge_grant?.consumedAt,
+        undefined,
+        "backup vencedor está vivo e o real não testemunha esta identidade → resultado vivo",
+      );
+    });
+  });
+
+  // #7462 (correção do próprio test): o VENCEDOR da união é um backup com um
+  // `consumedAt` que o real nunca teve — mesma concessão em duas cópias
+  // (mesma tripla de identidade), mas só o backup carrega o carimbo.
+  // `{ ...winner }` espalha o `consumedAt` do próprio winner, então sem a
+  // correção este caso saía consumido de qualquer jeito — e é este caso que
+  // a issue relata com `realIndex=1` (real na posição 1) e `realIndex=-1`
+  // (grupo órfão, só backups).
+  it("winner é um backup com consumedAt falso → o mesclado NÃO herda esse carimbo", () => {
+    const real = grantRecord(); // vivo, sem consumedAt
+    const consumedBackup = grantRecord(isoAgo(30_000)); // mesma concessão, mas com um consumedAt que o real nunca teve
+    // O backup é o winner (grants[0]) e o real está na posição 1.
+    const merged = mergeSessionRecords([consumedBackup, real], 1);
+    assert.equal(
+      merged.merge_grant?.consumedAt,
+      undefined,
+      "o winner é um backup com consumedAt falso: o real (vivo) é quem testemunha, então o mesclado sai vivo",
+    );
+  });
+
+  // Fleet review (#7467, achado CRÍTICO): os call sites que constroem o array
+  // pra `mergeSessionRecords` (`readMergedSessionGroups`,
+  // `readMergedRecordForRealFile`) usavam UM `.filter()` só pra descartar
+  // tanto o real quanto os backups ilegíveis — se o real falhasse ao ler
+  // (race ENOENT do #7002, ou JSON malformado; `readJsonSafe` devolve `null`
+  // silenciosamente pros dois), o array reindexava em silêncio e o primeiro
+  // BACKUP sobrevivente virava índice 0, tratado como REAL pelo `realIndex`
+  // default (0) — a mesma classe de bug que o #7462 fechou, reintroduzida
+  // um nível acima. Fix: checar a leitura do real EXPLICITAMENTE e cair pro
+  // tratamento de grupo ÓRFÃO (`realIndex=-1`, #6972) quando ela falhar.
+  it("arquivo real ILEGÍVEL (JSON malformado) + backup vivo com consumedAt → tratado como ÓRFÃO, consumedAt do backup NUNCA é confiado (#7467 fleet review)", () => {
+    const root = makeTempRepo();
+    try {
+      // Arquivo real: JSON malformado — `readJsonSafe` devolve `null`, mesmo
+      // sinal de "ausente" (a race do #7002).
+      writeFileSync(join(sessionsDir(root), `overnight-Neo-${coord}.json`), "{ isto não é JSON válido", "utf8");
+      // Backup sobrevive com a concessão JÁ carimbada como consumida — se o
+      // bug reaparecesse, o backup reindexaria pra "real" e seu consumedAt
+      // seria confiado, matando a concessão.
+      writeFileSync(
+        join(sessionsDir(root), `overnight-Neo-${coord}-safeBackup-0001.json`),
+        JSON.stringify(grantRecord(isoAgo(30_000))),
+        "utf8",
+      );
+      const found = findLiveMergeGrant(root, BENEF, NOW);
+      assert.ok(
+        found,
+        "grupo tratado como órfão (#6972): sem real legível, o consumedAt do backup nunca testemunha — grant considerado vivo",
+      );
+      assert.equal(found?.source, "backup");
+      // O grant não é considerado consumido (mesma semântica do teste
+      // "órfão com consumedAt" acima) — mas como o real não existe de fato
+      // pra confiar, o gate (que só lê arquivos reais) não honra.
+      assert.equal(
+        readLiveMergeGrantFor(root, BENEF, NOW),
+        null,
+        "o gate não honra grant que só vive em detrito de real ilegível — pedir reconcessão",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// Fleet review (#7467, achado MÉDIO): `realIndex` fora do range válido lança
+// erro nomeado, não um TypeError opaco de non-null assertion.
+describe("mergeSessionRecords: realIndex fora de range é erro nomeado (#7467 fleet review)", () => {
+  it("realIndex >= records.length lança com mensagem explicando o range válido", () => {
+    const rec = {
+      kind: "overnight" as const,
+      machineTag: "Neo",
+      sessionId: "coord-realindex",
+      startedAt: isoAgo(60_000),
+      lastHeartbeat: isoAgo(60_000),
+    };
+    assert.throws(() => mergeSessionRecords([rec], 5), /realIndex \(5\) fora do range válido/);
+  });
+
+  it("realIndex negativo diferente de -1 também lança", () => {
+    const rec = {
+      kind: "overnight" as const,
+      machineTag: "Neo",
+      sessionId: "coord-realindex",
+      startedAt: isoAgo(60_000),
+      lastHeartbeat: isoAgo(60_000),
+    };
+    assert.throws(() => mergeSessionRecords([rec], -2), /realIndex \(-2\) fora do range válido/);
+  });
+
+  it("realIndex = -1 (órfão) continua aceito, sem lançar", () => {
+    const rec = {
+      kind: "overnight" as const,
+      machineTag: "Neo",
+      sessionId: "coord-realindex",
+      startedAt: isoAgo(60_000),
+      lastHeartbeat: isoAgo(60_000),
+    };
+    assert.doesNotThrow(() => mergeSessionRecords([rec], -1));
   });
 });

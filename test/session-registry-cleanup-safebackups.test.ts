@@ -88,7 +88,18 @@ describe("planSafeBackupCleanup (#6970)", () => {
     assert.equal(plan[0]!.action, "has-merge-grant");
   });
 
-  it("merge_grant CONSUMIDO no backup, ausente do real → agora removable (#6573: a união já sabe que está morto, nada a perder)", () => {
+  // #7462: o `consumedAt` é um carimbo de FATO, não um voto de maioria — só
+  // testemunha quando está no arquivo REAL (o único que o merge de fato
+  // escreve). Cópias `-safeBackup-` são detrito de sync do OneDrive: um
+  // `consumedAt` nelas é um RESÍDUO, não uma prova. Antes de #7462, o caso
+  // abaixo saía `removable` porque a união propagava o `consumedAt` do
+  // backup pro winner e `isMergeGrantLive` via falsa-loja via morta. Agora
+  // o winner NÃO tem `consumedAt` (nem o real tem grant), então a união
+  // mostra a concessão VIVA — e removê-la perderia a única cópia legível.
+  // O fato de o backup dizer "consumido" é irrecuperável: o real, que é a
+  // única fonte de verdade, nem carrega a concessão, então não há quem
+  // ateste um consumo. A janela morre sozinha pelo TTL, não por remoção.
+  it("merge_grant CONSUMIDO só no backup, ausente do real → has-merge-grant (#7462: o consumedAt do backup não testemunha o real)", () => {
     const root = freshRoot();
     const grantedAt = "2026-01-01T00:00:00.000Z";
     writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
@@ -102,12 +113,14 @@ describe("planSafeBackupCleanup (#6970)", () => {
         consumedAt: "2026-01-01T00:05:00.000Z",
       },
     });
-    // `now` logo após a concessão (ainda dentro do TTL se não fosse
-    // consumida) — o ponto do teste é que CONSUMIDA já é morta
-    // independente do TTL, então nada se perde em remover.
+    // `now` logo após a concessão (ainda dentro do TTL). O ponto do teste é
+    // que o backup dizer "consumido" NÃO matou a concessão — o real, que é
+    // a única fonte de verdade (#7462), nem carrega o grant, então não há
+    // quem ateste um consumo. A janela morre sozinha pelo TTL, não por
+    // remoção; remover agora perderia a única cópia legível.
     const now = Date.parse(grantedAt) + 5 * 60_000;
     const plan = planSafeBackupCleanup(root, { now });
-    assert.equal(plan[0]!.action, "removable");
+    assert.equal(plan[0]!.action, "has-merge-grant");
   });
 
   it("merge_grant TTL-expirado no backup, nunca consumido, ausente do real → agora removable (#6573: TTL nunca desexpira)", () => {
@@ -126,7 +139,32 @@ describe("planSafeBackupCleanup (#6970)", () => {
     assert.equal(plan[0]!.action, "removable");
   });
 
-  it("merge_grant CONSUMIDO só no backup, MAS o real carrega a MESMA identidade SEM consumedAt e ainda dentro do TTL → has-merge-grant (risco de RESSURREIÇÃO — o real sozinho pareceria viva de novo)", () => {
+  // #7462 — REESCRITO deliberadamente: este caso agora vira `has-merge-grant`.
+  // O argumento da #7462 é que o `consumedAt` do backup NÃO testemunha o
+  // real: o real carrega a MESMA identidade, mas sem o carimbo, e é o real
+  // (o único arquivo que o gate de merge `.claude/hooks/block-gh-pr-merge-subagent.mjs`
+  // lê, que pula `-safeBackup-` nomes) quem decide se a concessão está
+  // morta. O backup dizer "consumido em 00:03" é um resíduo de sync do
+  // OneDrive — pode ter sido escrito por uma sessão que consumiu a janela
+  // enquanto o real ficou pra trás, mas não prova que O REAL foi consumido.
+  //
+  // Por que isso é deliberadamente has-merge-grant e não removable: o real,
+  // sozinho, tem a concessão VIVA e dentro do TTL — quem remover o backup
+  // deixaria o real como única cópia, e a próxima leitura
+  // (`findLiveMergeGrant` → `isMergeGrantLive`) veria a janela aberta
+  // novamente, autorizando um SEGUNDO merge. É o mesmo dano de uso duplo
+  // que o #6952/#6972 evitam pro read-path — só que aqui o custo é a
+  // perda da única cópia legível do grant, e o #7462 resolveu que o custo
+  // de errar pro lado do dano é pior que o de errar pro lado da perda: o
+  // backup é preservado, a janela expira sozinha pelo TTL, e o merge lock
+  // impede o uso duplo de qualquer jeito.
+  //
+  // O teste original chamava isso de "risco de RESSURREIÇÃO" e esperava
+  // `removable` — aquela leitura tratava o `consumedAt` do backup como
+  // prova de consumo, exatamente a semântica que o #7462 revogou. Não foi
+  // apagado: foi reescrito pra refletir a decisão, com este comentário
+  // explicando o porquê (#7462: "consumedAt do backup não testemunha o real").
+  it("merge_grant CONSUMIDO só no backup, MAS o real carrega a MESMA identidade SEM consumedAt e ainda dentro do TTL → has-merge-grant (#7462: o consumedAt do backup não testemunha o real)", () => {
     const root = freshRoot();
     const grantedAt = "2026-08-01T00:00:00.000Z";
     const identity = { grantedTo: "outra-sessao", grantedBy: "s1", grantedAt };
@@ -138,14 +176,14 @@ describe("planSafeBackupCleanup (#6970)", () => {
     writeRawSessionFile(root, "develop-Neo-s1-safeBackup-0001.json", {
       ...BASE,
       claimed_issues: [1],
-      merge_grant: { ...identity, consumedAt: "2026-08-01T00:03:00.000Z" }, // só o backup sabe que já foi consumida
+      merge_grant: { ...identity, consumedAt: "2026-08-01T00:03:00.000Z" }, // só o backup diz que já foi consumida
     });
     const now = Date.parse(grantedAt) + 5 * 60_000; // dentro do TTL — o real, sozinho, ainda pareceria viva
     const plan = planSafeBackupCleanup(root, { now });
     assert.equal(
       plan[0]!.action,
       "has-merge-grant",
-      "remover o backup apagaria a PROVA de consumo — o real sozinho reabriria a concessão como se ainda estivesse disponível",
+      "remover o backup deixaria o real como única cópia, e o real tem a concessão VIVA e sem carimbo — a próxima leitura reabriria a janela como se não tivesse sido consumida",
     );
   });
 
@@ -242,6 +280,33 @@ describe("planSafeBackupCleanup (#6970)", () => {
     assert.equal(plan[0]!.backupPaths.length, 2);
   });
 
+  // #7462 — o caminho legítimo pra `removable` com merge_grant: é o REAL
+  // (nunca o backup) quem carimba o consumo. Quando o real carrega a MESMA
+  // concessão já com `consumedAt`, a união mostra exatamente o mesmo estado
+  // que o real sozinho — o backup não acrescenta informação, e a concessão
+  // está de fato morta. Aí remover é seguro: nada se perde, e o #6573
+  // (nunca remover while alive) continua respeitado, porque a morte foi
+  // atestada pela única fonte de verdade.
+  it("merge_grant CONSUMIDO no REAL (mesma identidade, mesmo consumedAt) → removable, mesmo com o backup carregando o grant vivo (#7462: o real testemunha)", () => {
+    const root = freshRoot();
+    const grantedAt = "2026-08-01T00:00:00.000Z";
+    const identity = { grantedTo: "outra-sessao", grantedBy: "s1", grantedAt };
+    const consumedAt = "2026-08-01T00:03:00.000Z";
+    writeRawSessionFile(root, "develop-Neo-s1.json", {
+      ...BASE,
+      claimed_issues: [1],
+      merge_grant: { ...identity, consumedAt }, // o REAL carimba o consumo — fonte de verdade (#7462)
+    });
+    writeRawSessionFile(root, "develop-Neo-s1-safeBackup-0001.json", {
+      ...BASE,
+      claimed_issues: [1],
+      merge_grant: { ...identity }, // o backup tem o grant VIVO, mas isso é detrito de sync
+    });
+    const now = Date.parse(grantedAt) + 5 * 60_000; // dentro do TTL se não fosse consumido
+    const plan = planSafeBackupCleanup(root, { now });
+    assert.equal(plan[0]!.action, "removable");
+  });
+
   it("diretório ausente → plano vazio, nunca lança", () => {
     assert.deepEqual(planSafeBackupCleanup(freshRoot()), []);
   });
@@ -277,7 +342,14 @@ describe("cleanupReconciledSafeBackups (#6970) — execução real, isolada em t
     assert.ok(existsSync(backupPath), "backup com merge_grant ainda VIVO e não reproduzido no real nunca pode ser removido (#6573)");
   });
 
-  it("remove backup com merge_grant já MORTO (consumido, ausente do real) — relaxamento do #6573", () => {
+  // #7462 — REESCRITO: o `consumedAt` do backup não testemunha o real, então
+  // "o backup diz que o grant está morto" não é mais razão pra remover. O real
+  // aqui nem carrega o grant, então não há quem ateste um consumo de fato —
+  // a concessão continua VIVA na união e morre sozinha pelo TTL. Remover
+  // agora perderia a única cópia legível. O relaxamento do #6573 ("já morto
+  // ⇒ removable") só vale quando o REAL carimba o consumo, não quando o
+  // backup carrega um resíduo de sync.
+  it("backup com merge_grant 'consumido' só no backup, ausente do real → NÃO é removido (#7462: consumedAt do backup não testemunha o real)", () => {
     const root = freshRoot();
     const grantedAt = "2026-01-01T00:00:00.000Z";
     writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
@@ -295,8 +367,8 @@ describe("cleanupReconciledSafeBackups (#6970) — execução real, isolada em t
 
     const now = Date.parse(grantedAt) + 5 * 60_000;
     const plan = cleanupReconciledSafeBackups(root, { now });
-    assert.equal(plan[0]!.action, "removable");
-    assert.ok(!existsSync(backupPath), "backup com merge_grant já consumido/morto deve ser removido — nada se perde");
+    assert.equal(plan[0]!.action, "has-merge-grant");
+    assert.ok(existsSync(backupPath), "o backup é a única cópia legível do grant, que a união mostra VIVO (o real nem carrega ele) — preservado até o TTL expirar");
   });
 
   it("grupo pending-reconciliation nunca remove nada", () => {

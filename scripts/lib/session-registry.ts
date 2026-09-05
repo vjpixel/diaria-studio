@@ -1051,11 +1051,29 @@ function readMergedRecordForRealFile(repoRoot: string, realPath: string): Sessio
   const realName = basename(realPath);
   const stem = realName.slice(0, -".json".length);
   const backupNames = groupBackupsByRealStem(listSessionJsonFiles(repoRoot)).get(stem) ?? [];
-  const records = [realName, ...backupNames]
+  // Fleet review (#7467, achado CRÍTICO): a leitura do REAL é checada
+  // EXPLICITAMENTE, separada do `.filter()` que descarta backups
+  // ilegíveis — nunca misturadas no mesmo filtro. Se o real falhar (race
+  // ENOENT do #7002, ou JSON malformado — `readJsonSafe` devolve `null`
+  // silenciosamente pros dois), o `.filter()` sozinho reindexaria o
+  // primeiro BACKUP sobrevivente pra posição 0, e `mergeSessionRecords`
+  // com `realIndex` default (0) o trataria como testemunha autoritativa de
+  // `consumedAt` — exatamente a classe de bug que o #7462 existe pra
+  // fechar, reintroduzida aqui por um invariante implícito nunca validado.
+  const realRecord = readJsonSafe<SessionRecord>(join(dir, realName));
+  const backupRecords = backupNames
     .map((n) => readJsonSafe<SessionRecord>(join(dir, n)))
     .filter((r): r is SessionRecord => r !== null);
-  if (records.length === 0) return null;
-  return mergeSessionRecords(records);
+  if (realRecord === null && backupRecords.length === 0) return null;
+  if (realRecord === null) {
+    process.stderr.write(
+      `session-registry: ATENÇÃO — readMergedRecordForRealFile: o arquivo real "${realName}" está ilegível/ausente ` +
+        `mas ${backupRecords.length} cópia(s) -safeBackup- sobrevivem — tratando como grupo ÓRFÃO (realIndex=-1, #6972): ` +
+        "consumedAt de nenhuma delas é confiado como testemunha.\n",
+    );
+    return mergeSessionRecords(backupRecords, -1);
+  }
+  return mergeSessionRecords([realRecord, ...backupRecords]);
 }
 
 /**
@@ -1156,13 +1174,18 @@ function readOrphanBackupGroups(repoRoot: string): OrphanBackupGroup[] {
   const out: OrphanBackupGroup[] = [];
   for (const [stem, entry] of byIdentity) {
     const first = entry.records[0]!;
+    // #7462: grupo órfão = SÓ `-safeBackup-*`, sem arquivo real. Passa
+    // `realIndex = -1` pro `mergeSessionRecords` para que o `consumedAt` NUNCA
+    // propague de um backup: sem real a testemunhar, o grant é considerado
+    // vivo (mesma decisão do #6972 pro `merge_grant` inteiro). Antes, o
+    // default 0 fazia o primeiro backup da lista atuar como se fosse o real.
     out.push({
       stem,
       kind: first.kind,
       machineTag: first.machineTag,
       sessionId: first.sessionId,
       files: entry.files,
-      record: mergeSessionRecords(entry.records),
+      record: mergeSessionRecords(entry.records, -1),
       anyEnded: entry.records.some((r) => Boolean(r.endedAt)),
     });
   }
@@ -1269,7 +1292,15 @@ function recoverAnchorFromOrphanBackups(
   writeJsonSafeWithCas(
     path,
     (current) => {
-      const merged = mergeSessionRecords(current ? [group.record, current] : [group.record]);
+      // #7462: `group.record` é a união de um grupo ÓRFÃO (só backups, sem
+      // arquivo real) — o seu `consumedAt` nunca é testemunha. Quando
+      // `current` existe, ele é o arquivo REAL (outro escritor recriou a
+      // âncora enquanto esperávamos o lock), então o real é a posição 1; quando
+      // não existe, o grupo é só backups e não há real a consultar. O default
+      // `realIndex=0` trataria o órfão como se fosse o real e podia propagar
+      // um `consumedAt` que o real nunca teve — mesma classe de bug que a
+      // issue #7462 relata.
+      const merged = mergeSessionRecords(current ? [group.record, current] : [group.record], current ? 1 : -1);
       const record: SessionRecord = {
         ...merged,
         kind,
@@ -2099,13 +2130,34 @@ export function checkSessionsScanHealth(repoRoot: string): SessionsScanHealth {
  *   1. Vence o grant de `grantedAt` MAIS RECENTE do grupo — não o do
  *      `primary`. Uma concessão nova nunca é ofuscada por uma velha só
  *      porque a velha está no arquivo com heartbeat mais alto.
- *   2. `consumedAt` PROPAGA: se QUALQUER cópia do grupo mostra a concessão
- *      vencedora como consumida, o resultado sai consumido (com o
- *      `consumedAt` mais ANTIGO — a primeira consumação é a real). Isto não é
- *      simetria estética, é a direção segura: sem isto, uma cópia velha sem
- *      `consumedAt` RESSUSCITA um grant já usado e o transforma em uso duplo
- *      — dano pior que a perda que esta função conserta. Um guard que erra
- *      para o lado do dano é pior que nenhum guard.
+ *   2. `consumedAt` PROPAGA — mas só do arquivo REAL, nunca de uma cópia
+ *      `-safeBackup-` (#7462). Se o real mostra a concessão vencedora como
+ *      consumida, o resultado sai consumido (com o `consumedAt` mais ANTIGO —
+ *      a primeira consumação é a real). É a direção segura: sem isto, uma
+ *      cópia velha sem `consumedAt` RESSUSCITA um grant já usado e o transforma
+ *      em uso duplo — dano pior que a perda que esta função conserta. Um guard
+ *      que erra para o lado do dano é pior que nenhum guard.
+ *
+ *   **Por que a fonte do `consumedAt` importa (#7462).** O #6952 fez a união
+ *   para que uma concessão que sobrevivesse só num backup não sumisse na
+ *   leitura — e é isso mesmo que causou o sintoma: o `consumedAt` também
+ *   passou a vir de cópias de conflito, e o read-path (`findLiveMergeGrant` →
+ *   `isMergeGrantLive`) passou a ver uma concessão como já usada mesmo quando
+ *   o ARQUIVO REAL (o único que o gate de merge
+ *   `.claude/hooks/block-gh-pr-merge-subagent.mjs` lê, que pula
+ *   `-safeBackup-` nomes) nunca foi carimbado. Resultado: `check-merge-grant`
+ *   dizia `granted: true` e o `gh pr merge` era bloqueado com
+ *   `consumedAt` já presente, sem que nenhuma sessão tivesse chamado
+ *   `consume-merge-grant` — exatamente o que a issue #7462 relata, reproduzido
+ *   2×. O `consumedAt` é um carimbo de FATO, não um voto de maioria: só
+ *   conta quando está no registro que o merge de fato escreveu.
+ *
+ *   A distinção é o que `mergeSessionRecords` recebe já resolvido — o caller
+ *   passa os records com o real na posição 0 (ver `readMergedSessionGroups`,
+ *   `readMergedRecordForRealFile`, `dedupeBySessionId`). Quando o real é
+ *   ilegível/ausente, o grupo é de fato SÓ backups (órfão) e aí não há real a
+ *   consultar — o grant é considerado vivo, como o #6972 já decide pro
+ *   `merge_grant` inteiro (não se recupera um grant de órfão pro real).
  *
  * As duas identidades são comparadas por `(grantedBy, grantedTo, grantedAt)`:
  * é o que distingue "a mesma concessão em duas cópias do arquivo" de "duas
@@ -2113,12 +2165,35 @@ export function checkSessionsScanHealth(repoRoot: string): SessionsScanHealth {
  *
  * Pura — não lê disco. `records` não pode ser vazio.
  */
-export function mergeSessionRecords(records: readonly SessionRecord[]): SessionRecord {
+export function mergeSessionRecords(
+  records: readonly SessionRecord[],
+  // #7462: índice do arquivo REAL no array. `consumedAt` só propaga dele —
+  // cópias `-safeBackup-` são detrito de sync, não prova de consumo. Default 0
+  // porque os callers que passam records crus colocam o real em [0]
+  // (`readMergedSessionGroups`, `readMergedRecordForRealFile`,
+  // `decideClaimReconciliation`, `mergeGrantBlocksBackupCleanup`). `−1` = grupo
+  // sem real (órfão): o grant é considerado vivo, como o #6972 decide pro
+  // `merge_grant` inteiro. Callers que já mesclaram (ex: `dedupeBySessionId`)
+  // passam o default — o `consumedAt` deles já reflete o real.
+  realIndex: number = 0,
+): SessionRecord {
   // #6130 (achado do fleet review, P3 alta confiança): o invariante "records
   // não pode ser vazio" só existia em comentário — um `records[0]!` mentia
   // pro type checker. Falha nomeada em vez de um TypeError opaco.
   if (records.length === 0) {
     throw new Error("mergeSessionRecords: records não pode ser vazio");
+  }
+  // Fleet review (#7467, achado MÉDIO): `records[realIndex]!` mais abaixo é
+  // non-null assertion — fora do range, um `TypeError` opaco ("Cannot read
+  // properties of undefined") em vez de um erro nomeado que aponta pra causa.
+  // Mesma disciplina do guard "records não vazio" acima (#6130): `-1` (órfão,
+  // #6972) é o único valor negativo válido — qualquer outro fora de
+  // `[0, records.length)` é um bug do caller, não um caso a tolerar.
+  if (realIndex !== -1 && (realIndex < 0 || realIndex >= records.length)) {
+    throw new Error(
+      `mergeSessionRecords: realIndex (${realIndex}) fora do range válido — records tem ${records.length} elemento(s); ` +
+        "só -1 (grupo órfão, #6972) ou um índice dentro de [0, records.length) são aceitos",
+    );
   }
   let primary = records[0]!;
   let primaryHb = Date.parse(primary.lastHeartbeat ?? primary.startedAt ?? "");
@@ -2154,23 +2229,73 @@ export function mergeSessionRecords(records: readonly SessionRecord[]): SessionR
       const b = Date.parse(winner.grantedAt ?? "");
       if (Number.isFinite(a) && (!Number.isFinite(b) || a > b)) winner = g;
     }
-    // Toda cópia da MESMA concessão (mesma tripla de identidade). Se qualquer
-    // uma já está consumida, o resultado sai consumido — nunca ressuscitado.
+    // Só o ARQUIVO REAL testemunha um consumo de fato (#7462). Cópias
+    // `-safeBackup-` são detrito de sync do OneDrive — uma concessão viva
+    // nelas é sinal de que o real ficou pra trás, não de que alguém
+    // consumiu. O `consumedAt` é um carimbo de FATO (o merge bem-sucedido
+    // que o gravou), não um voto de maioria: quando o real é ilegível/ausente
+    // (grupo órfão, `realIndex === -1`) não há quem testemunhe, e o grant
+    // continua vivo — mesma decisão do #6972 pro `merge_grant` inteiro.
+    //
+    // O `consumedAt` vem SEMPRE do real, nunca do winner: o winner é o
+    // grant de `grantedAt` mais recente do grupo, e pode ser um backup com
+    // um `consumedAt` que o real nunca teve. `{ ...winner }` espalha o
+    // `consumedAt` do próprio winner, então sem este `delete` o mesclado
+    // sairia consumido de qualquer jeito quando o winner fosse um backup —
+    // reproduzido ao vivo em #7462 com `realIndex=1` (real na posição 1) e
+    // com `realIndex=-1` (grupo órfão, só backups).
+    const realGrant = realIndex >= 0 ? records[realIndex]!.merge_grant : undefined;
+    const realIsWitness =
+      realGrant !== undefined &&
+      realGrant.grantedBy === winner.grantedBy &&
+      realGrant.grantedTo === winner.grantedTo &&
+      realGrant.grantedAt === winner.grantedAt;
+    // #7462: o `consumedAt` vem SÓ do real, nunca do winner. O winner é o
+    // grant de `grantedAt` mais recente do grupo, e pode ser um backup com
+    // um `consumedAt` que o real nunca teve — `{ ...winner }` espalha o
+    // `consumedAt` do próprio winner, então sem este `delete` o mesclado
+    // sairia consumido de qualquer jeito quando o winner fosse um backup
+    // (reproduzido ao vivo em #7462 com `realIndex=1` e `realIndex=-1`).
+    // Retira o carimbo do winner ANTES de reconstruir: o grant mesclado só
+    // leva `consumedAt` quando alguém que TESTEMUNHA a MESMA identidade
+    // (ver abaixo) o mostra consumido.
+    const { consumedAt: _winnerConsumedAt, ...winnerClean } = winner;
     let consumedAt: string | undefined;
-    for (const g of grants) {
-      if (
-        g.grantedBy !== winner.grantedBy ||
-        g.grantedTo !== winner.grantedTo ||
-        g.grantedAt !== winner.grantedAt
-      ) {
-        continue;
-      }
-      if (!g.consumedAt) continue;
-      if (!consumedAt || Date.parse(g.consumedAt) < Date.parse(consumedAt)) {
-        consumedAt = g.consumedAt;
+    if (realIsWitness) {
+      // O real carrega ESTA identidade (consumida ou não) — é o único que
+      // testemunha (#7462). Backups nunca contradizem o real.
+      consumedAt = realGrant.consumedAt;
+    } else if (realIndex >= 0) {
+      // #6952 (achado que reabriu #7462): o real EXISTE, mas não carrega
+      // NENHUMA opinião sobre esta identidade — não tem `merge_grant`
+      // (beacon reescreveu sem ele) ou tem um de OUTRA concessão. O real
+      // nunca teve chance de testemunhar esta, então "só o real conta" não
+      // se aplica: cai pro comportamento pré-#7462 (união por identidade
+      // entre as cópias que de fato carregam o grant — normalmente só
+      // backups, já que o real não o carrega). Sem este fallback,
+      // `consumeMergeGrant` carimba o backup (única cópia com a
+      // identidade, igual sempre fez) mas a releitura nunca via o carimbo
+      // — grant encontrável e PERPETUAMENTE inconsumível.
+      for (const g of grants) {
+        if (g.grantedBy !== winner.grantedBy || g.grantedTo !== winner.grantedTo || g.grantedAt !== winner.grantedAt) {
+          continue;
+        }
+        if (!g.consumedAt) continue;
+        if (!consumedAt || Date.parse(g.consumedAt) < Date.parse(consumedAt)) consumedAt = g.consumedAt;
       }
     }
-    mergedGrant = consumedAt ? { ...winner, consumedAt } : { ...winner };
+    // Se `realIndex === -1` (grupo ÓRFÃO, #6972): nenhum dos dois ramos acima
+    // roda, `consumedAt` fica `undefined` — sem real, não há testemunha, e o
+    // grant é considerado vivo (nunca consumido), mesma decisão do #6972.
+    //
+    // Só inclui `consumedAt` quando REALMENTE está presente. Um grant vivo
+    // (não consumido) não tem o campo — e `assert.deepEqual` distingue
+    // `{ ...grant, consumedAt: undefined }` de `grant` (o campo ausente).
+    // Sem este spread condicional, o mesclado sairia com a CHAVE `consumedAt`
+    // definida como `undefined` pra qualquer grant vivo, quebrando a
+    // representação canônica do #6952/#6972 (um grant vivo é exatamente um
+    // objeto SEM `consumedAt`).
+    mergedGrant = consumedAt ? { ...winnerClean, consumedAt } : winnerClean;
   }
 
   return {
@@ -2235,12 +2360,30 @@ function readMergedSessionGroups(repoRoot: string, now: number = Date.now()): Se
   const merged: SessionRecord[] = [];
   for (const realName of realNames) {
     const stem = realName.slice(0, -".json".length);
-    const groupNames = [realName, ...(backupsByRealStem.get(stem) ?? [])];
-    const records = groupNames
+    const backupNames = backupsByRealStem.get(stem) ?? [];
+    // Fleet review (#7467, achado CRÍTICO): checagem do real SEPARADA do
+    // `.filter()` dos backups — ver o comentário gêmeo em
+    // `readMergedRecordForRealFile` acima. Sem isto, um real ilegível
+    // (race ENOENT do #7002, JSON malformado, ou sem `sessionId`/`kind`)
+    // some do `.filter()` em silêncio, o primeiro BACKUP sobrevivente
+    // reindexa pra posição 0, e `mergeSessionRecords` com `realIndex`
+    // default (0) o trata como testemunha REAL de `consumedAt`.
+    const rawReal = readJsonSafe<SessionRecord>(join(dir, realName));
+    const realRecord = rawReal && rawReal.sessionId && rawReal.kind ? rawReal : null;
+    const backupRecords = backupNames
       .map((n) => readJsonSafe<SessionRecord>(join(dir, n)))
       .filter((r): r is SessionRecord => r !== null && !!r.sessionId && !!r.kind);
-    if (records.length === 0) continue;
-    merged.push(mergeSessionRecords(records));
+    if (realRecord === null && backupRecords.length === 0) continue;
+    if (realRecord === null) {
+      process.stderr.write(
+        `session-registry: ATENÇÃO — readMergedSessionGroups: o arquivo real "${realName}" está ilegível/ausente/sem ` +
+          `sessionId+kind, mas ${backupRecords.length} cópia(s) -safeBackup- sobrevivem — tratando como grupo ÓRFÃO ` +
+          "(realIndex=-1, #6972): consumedAt de nenhuma delas é confiado como testemunha.\n",
+      );
+      merged.push(mergeSessionRecords(backupRecords, -1));
+      continue;
+    }
+    merged.push(mergeSessionRecords([realRecord, ...backupRecords]));
   }
 
   // #7002: grupos ÓRFÃOS que ainda parecem vivos voltam pra leitura. Um grupo
@@ -4201,11 +4344,18 @@ export interface SafeBackupCleanupResult {
  *      MESMA concessão (identidade `grantedBy`+`grantedTo`+`grantedAt`) —
  *      union só existe enquanto os backups existem; apagá-los apagaria a
  *      única cópia legível de uma concessão ainda utilizável.
- *   2. **Ressurreição**: `winner` já está CONSUMIDA (`consumedAt` veio de
- *      algum backup), mas o real sozinho — sem esse carimbo — ainda estaria
- *      dentro do TTL e pareceria viva. Uma concessão já usada não pode
- *      voltar a parecer disponível só porque a prova de consumo morava só
- *      no arquivo que foi removido.
+ *   2. **Ressurreição**: `winner` já está CONSUMIDA, mas o real sozinho — sem
+ *      esse carimbo — ainda estaria dentro do TTL e pareceria viva. Uma
+ *      concessão já usada não pode voltar a parecer disponível só porque a
+ *      prova de consumo morava só no arquivo que foi removido.
+ *
+ *   **#7462 corrigiu o que conta como "já está consumida".** Antes, o
+ *   `consumedAt` vinha de QUALQUER cópia do grupo (`mergeSessionRecords`
+ *   propagava de backups), então o caso 2 se disparava com o carimbo no
+ *   backup mesmo com o real vivo — exatamente o cenário que a issue relata:
+ *   o backup carregava um `consumedAt` que nunca foi escrito por um merge.
+ *   Agora o carimbo conta só quando está no real, e o caso 2 só dispara de
+ *   fato quando o real está consumido.
  *
  * Uma concessão sem nenhum dos dois riscos (já morta por TTL de qualquer
  * jeito, ou já integralmente reproduzida no real, carimbo de consumo
@@ -4218,27 +4368,66 @@ function mergeGrantBlocksBackupCleanup(
   backupRecords: readonly SessionRecord[],
   now: number,
 ): boolean {
-  const winner = mergeSessionRecords([realRecord, ...backupRecords]).merge_grant;
-  if (!winner) return false; // grupo não carrega merge_grant nenhum — nada a proteger
-
+  // #7462: o `consumedAt` é um carimbo de FATO, não um voto de maioria — só
+  // testemunha quando está no arquivo REAL. Cópias `-safeBackup-` são detrito
+  // de sync do OneDrive: um `consumedAt` nelas é um resíduo, não prova de
+  // consumo. Por isso esta função consulta o grant DO REAL (nunca o mesclado
+  // pela união, que pode herdar um `consumedAt` de backup e dizer "morto"
+  // sem que o real tenha sido consumido).
   const real = realRecord.merge_grant;
-  const sameIdentity =
-    real != null &&
-    real.grantedBy === winner.grantedBy &&
-    real.grantedTo === winner.grantedTo &&
-    real.grantedAt === winner.grantedAt;
 
-  if (sameIdentity && real!.consumedAt === winner.consumedAt) return false; // real sozinho já reproduz exatamente o que a união mostra
+  if (!real) {
+    // O real nem carrega o grant — a concessão vive só nos backups. A
+    // pergunta é se a união (só backups) ainda está VIVA: se sim, remover
+    // perde a única cópia legível (#6573); se não (consumida ou TTL
+    // expirado), nada se perde em remover.
+    //
+    // #7462: a união aqui NÃO é usada como testemunha de consumo. Um backup
+    // pode carregar um `consumedAt` que o real nunca teve (resíduo de sync
+    // do OneDrive) — e o `mergeSessionRecords` mescla esse `consumedAt` no
+    // grant vencedor, fazendo `isMergeGrantLive` dizer "morto" sem que
+    // NINGUÉM tenha consumido. O grant vivo é aquele SEM `consumedAt`:
+    // se a concessão não foi consumida de fato, ela morre sozinha pelo
+    // TTL, e até lá remover o backup perderia a única cópia legível.
+    const winner = mergeSessionRecords([realRecord, ...backupRecords]).merge_grant;
+    if (!winner) return false;
+    const liveGrant: MergeGrant = { ...winner, consumedAt: undefined };
+    return isMergeGrantLive(liveGrant, liveGrant.grantedTo, now);
+  }
 
-  // A partir daqui, ou a identidade nem existe no real, ou o real não tem o
-  // carimbo de consumo que a união (com os backups) mostra — nos dois casos,
-  // `real.consumedAt` está garantidamente ausente aqui (união propaga
-  // `consumedAt` de QUALQUER cópia do grupo; se o real tivesse o carimbo,
-  // `winner.consumedAt` também teria, e o `if` acima já teria retornado).
-  const realAloneWouldLookLive = sameIdentity && isMergeGrantLive(real!, real!.grantedTo, now);
-  if (realAloneWouldLookLive) return true; // risco de ressurreição — real, sem o carimbo, ainda pareceria viva
+  // O real carrega o grant. Se o real já mostra MORTO (consumido ou TTL
+  // expirado), o backup não acrescenta informação que mude o desfecho —
+  // remover é seguro. O #6573 ("nunca remover while alive") já não se
+  // aplica: a morte foi atestada pela única fonte de verdade.
+  if (!isMergeGrantLive(real, real.grantedTo, now)) return false;
 
-  return isMergeGrantLive(winner, winner.grantedTo, now); // risco de perda — só bloqueia se a união ainda está viva
+  // O real tem o grant VIVO. Verifica se algum backup carrega a MESMA
+  // concessão:
+  for (const backup of backupRecords) {
+    const bg = backup.merge_grant;
+    if (
+      bg &&
+      bg.grantedBy === real.grantedBy &&
+      bg.grantedTo === real.grantedTo &&
+      bg.grantedAt === real.grantedAt
+    ) {
+      // O backup reproduz a mesma concessão que o real, e o real já está
+      // vivo. Se o backup NÃO tem `consumedAt`, ele não acrescenta
+      // informação: o real sozinho já mostra o mesmo estado (caso #6952:
+      // "já integralmente reproduzido no real") — nada a proteger.
+      // Se o backup TEM `consumedAt` que o real não tem, há uma
+      // divergência: o backup diz "morto", o real diz "vivo". #7462: o
+      // carimbo do backup não testemunha o real, então o real continua
+      // vivo — e remover o backup deixaria o real como única cópia com a
+      // concessão viva (risco de ressurreição). Preserva o backup até o
+      // TTL expirar, quando a janela morre sozinha.
+      return bg.consumedAt ? true : false;
+    }
+  }
+
+  // O real tem um grant VIVO que NENHUM backup carrega como mesma identidade.
+  // Remover os backups perde a única cópia legível dele (#6573).
+  return true;
 }
 
 /**
