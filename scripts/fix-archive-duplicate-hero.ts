@@ -19,8 +19,14 @@
 
 import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { isMainModule } from "./lib/cli-args.ts";
-import { stripDuplicateHeroImage } from "./lib/strip-duplicate-hero.ts";
+import {
+  stripDuplicateHeroImage,
+  findHeroLayout,
+  removeHero,
+  srcOf,
+} from "./lib/strip-duplicate-hero.ts";
 
 const ARCHIVE_ROOT = "workers/site/public/p";
 
@@ -28,6 +34,13 @@ interface Outcome {
   slug: string;
   status: "fixed" | "skipped";
   detail: string;
+}
+
+/** Há `<img>` com asset antes do marcador do corpo? (usado só para relatar) */
+function hasHeroCandidate(html: string): boolean {
+  const at = html.indexOf("id='content-blocks'");
+  if (at < 0) return false;
+  return /<img\b[^>]*asset\/file\//.test(html.slice(0, at));
 }
 
 /** Algum asset do Beehiiv aparece mais de uma vez na página? */
@@ -81,8 +94,154 @@ export function run(apply: boolean): { outcomes: Outcome[]; fixed: number } {
   return { outcomes, fixed };
 }
 
-function main(): void {
+/**
+ * Passada por HASH — pega o que a comparação por asset id não pega.
+ *
+ * O mesmo arquivo reenviado ao Beehiiv ganha asset id novo, então o hero pode
+ * ser pixel a pixel idêntico a uma imagem do corpo e mesmo assim ter outro id.
+ * O nome do arquivo também não decide: medido no acervo em 05/09/2026, há
+ * imagens DISTINTAS com nome igual e cópias IDÊNTICAS com nome diferente. O
+ * único critério confiável é baixar e comparar o conteúdo.
+ *
+ * Compara o hero contra TODAS as imagens do corpo (não só a primeira — houve
+ * caso em que a cópia estava numa imagem posterior).
+ */
+export interface RunByHashOptions {
+  /** Injetável para teste; default é `fetch` com timeout. */
+  fetchImpl?: (url: string) => Promise<{ ok: boolean; bytes: Buffer } | null>;
+  /** Raiz do acervo; default `workers/site/public/p`. */
+  root?: string;
+  /** Timeout por download, em ms. */
+  timeoutMs?: number;
+}
+
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+export async function runByHash(
+  apply: boolean,
+  opts: RunByHashOptions = {},
+): Promise<{ outcomes: Outcome[]; fixed: number }> {
+  const root = opts.root ?? ARCHIVE_ROOT;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const outcomes: Outcome[] = [];
+  let fixed = 0;
+  const hashes = new Map<string, string | null>();
+
+  const doFetch =
+    opts.fetchImpl ??
+    (async (url: string) => {
+      // Sem timeout, uma requisição pendurada trava o script inteiro — os
+      // downloads são sequenciais e não há nada que a interrompa.
+      const res = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0" },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      return { ok: res.ok, bytes: Buffer.from(await res.arrayBuffer()) };
+    });
+
+  /** `null` = não foi possível determinar (rede/HTTP), nunca "conteúdo vazio". */
+  async function hashOf(url: string): Promise<string | null> {
+    if (hashes.has(url)) return hashes.get(url)!;
+    let h: string | null = null;
+    try {
+      const r = await doFetch(url);
+      if (r && r.ok) h = createHash("sha256").update(r.bytes).digest("hex");
+    } catch {
+      h = null;
+    }
+    hashes.set(url, h);
+    return h;
+  }
+
+  for (const slug of readdirSync(root).sort()) {
+    const file = join(root, slug, "index.html");
+    if (!existsSync(file)) continue;
+
+    const html = readFileSync(file, "utf8");
+    const hero = findHeroLayout(html);
+    if (!hero) {
+      // Só vale relatar quando HÁ imagem no topo mas a estrutura não bate —
+      // aí é caso de olho humano, como no modo por asset id. Página sem hero
+      // nenhum é o caso normal e não vira ruído.
+      if (hasHeroCandidate(html)) {
+        outcomes.push({ slug, status: "skipped", detail: "estrutura do topo inesperada — conferir" });
+      }
+      continue;
+    }
+    if (hero.bodySrcs.length === 0) {
+      outcomes.push({ slug, status: "skipped", detail: "hero e a unica imagem — nao remover" });
+      continue;
+    }
+
+    const heroSrc = srcOf(hero.heroTag);
+    if (!heroSrc) continue;
+
+    const heroHash = await hashOf(heroSrc);
+    if (heroHash === null) {
+      outcomes.push({ slug, status: "skipped", detail: "falha ao baixar o hero — nao decidido" });
+      continue;
+    }
+
+    let dup = false;
+    let algumaFalhou = false;
+    for (const src of hero.bodySrcs) {
+      const h = await hashOf(src);
+      if (h === null) {
+        algumaFalhou = true;
+        continue;
+      }
+      if (h === heroHash) {
+        dup = true;
+        break;
+      }
+    }
+    if (!dup) {
+      // Sem match E com download falho: "não é duplicata" e "não deu pra
+      // saber" seriam indistinguíveis no relatório. Sinalizar em vez de calar.
+      if (algumaFalhou) {
+        outcomes.push({
+          slug,
+          status: "skipped",
+          detail: "imagem do corpo nao pôde ser baixada — nao decidido",
+        });
+      }
+      continue;
+    }
+
+    fixed++;
+    const out = removeHero(html, hero);
+    outcomes.push({
+      slug,
+      status: "fixed",
+      detail: out.removedWrapper
+        ? `hero identico a imagem do corpo (hash ${heroHash.slice(0, 8)})`
+        : `hero identico (hash ${heroHash.slice(0, 8)}) — wrapper NAO reconhecido, conferir`,
+    });
+    if (apply) writeFileSync(file, out.html, "utf8");
+  }
+
+  return { outcomes, fixed };
+}
+
+async function main(): Promise<void> {
   const apply = process.argv.includes("--apply");
+
+  if (process.argv.includes("--by-hash")) {
+    const { outcomes, fixed } = await runByHash(apply);
+    const skipped = outcomes.filter((o) => o.status === "skipped");
+    console.log(`#7412 — hero duplicado POR HASH  [${apply ? "APPLY" : "DRY-RUN"}]`);
+    console.log(`  paginas corrigidas : ${fixed}`);
+    for (const o of outcomes.filter((x) => x.status === "fixed")) {
+      console.log(`      ${o.slug}`);
+    }
+    if (skipped.length) {
+      console.log(`  nao decididas      : ${skipped.length}`);
+      for (const o of skipped) console.log(`      ${o.slug}: ${o.detail}`);
+    }
+    if (!apply && fixed > 0) console.log(`\n  nada foi gravado. rode com --apply para aplicar.`);
+    return;
+  }
+
   const { outcomes, fixed } = run(apply);
 
   const attention = outcomes.filter((o) => o.status === "skipped");
