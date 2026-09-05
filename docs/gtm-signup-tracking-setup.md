@@ -356,6 +356,35 @@ Meta e Google Ads, não há chamada de API pronta para colar aqui. Verificação
 
 ---
 
+## Pixel base do Meta por host — #7492 (05/09/2026)
+
+A docstring da tag `Meta Pixel - CompleteRegistration` acima diz que "o Meta
+Pixel base carrega fora do GTM (injeção nativa da Beehiiv)" — isso vale só
+para **páginas hospedadas na Beehiiv**. Os hosts servidos por Worker deste
+repo **não** têm a injeção nativa, e até #7492 nenhum deles carregava pixel
+base nenhum — `window.fbq` era `undefined` e a tag de
+`CompleteRegistration` só logava o `console.warn` sem disparar nada.
+
+Desde #7492, o pixel base (`fbq('init', '1285191740325112')` +
+`fbq('track', 'PageView')`) é emitido **hardcoded no renderer** —
+`renderMetaPixelHead()` em `scripts/lib/shared/seo-meta.ts` — nas páginas de
+destino de tráfego pago do teste ABC de canais (#6150):
+
+- `cursos.diar.ia.br` — teaser (`public/index.html`), full
+  (`courses-full.generated.ts`) e gate (`/gate`);
+- `livros.diar.ia.br` — `public/index.html`.
+
+Não há tag de PageView do Meta no container GTM de propósito: nas páginas
+Beehiiv ela dispararia pixel duplicado (#5804), e hardcoded no renderer o
+ID fica versionado neste repo junto do mesmo dataset que a Meta CAPI
+server-side usa (`META_CAPI_DEFAULT_DATASET_ID`, #5504 — única fonte do ID).
+Adicionar o pixel a outros hosts (artigos, arquivo, apex) é decisão
+editorial, não efeito colateral — o teste
+`test/analytics-head-instrumentation.test.ts` trava presença nos destinos e
+ausência nos demais.
+
+---
+
 ## Relacionadas
 
 #5500 (issue-mãe, gatilho único de cadastro), #5524 (protocolo do teste de 3

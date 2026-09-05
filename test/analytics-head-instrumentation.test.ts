@@ -25,7 +25,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { renderAnalyticsHead, GTM_CONTAINER_ID } from "../scripts/lib/shared/seo-meta.ts";
+import { renderAnalyticsHead, renderMetaPixelHead, GTM_CONTAINER_ID, META_PIXEL_ID } from "../scripts/lib/shared/seo-meta.ts";
 import { renderAppPage } from "../workers/arquivo/src/render-app.ts";
 import { renderPrivacyPage } from "../workers/arquivo/src/render-privacy.ts";
 import { buildArchiveHtml } from "../workers/arquivo/src/render-archive.ts";
@@ -227,4 +227,95 @@ describe("sweep de assets committed — nenhum HTML servido em produção diverg
       assertGtmInHead(html, `entidades/${slug}`);
     });
   }
+});
+
+// #7492 — pixel base da Meta (fbq init + PageView) só nas páginas de
+// destino de tráfego pago do teste ABC de canais (#6150): cursos (teaser,
+// full e gate) e livros. Duas direções, pra a regressão não voltar por
+// nenhum dos lados:
+//   (1) PRESENÇA nos destinos — sem isto, o Meta fica sem sinal de visita
+//       de novo silenciosamente (o modo de falha exato que produziu a
+//       issue: Google/Microsoft mediam, Meta não media nada);
+//   (2) AUSÊNCIA nos demais hosts — o pixel é hardcoded no renderer, não
+//       tag do container, então um call site novo acidental adicionaria
+//       fbq a página que não é destino de tráfego pago (e mudaria sinal
+//       de audiência sem decisão editorial).
+const META_PIXEL_RE = /connect\.facebook\.net\/en_US\/fbevents\.js/;
+const FBQ_INIT_RE = new RegExp(`fbq\\('init','${META_PIXEL_ID}'\\)`);
+const FBQ_PAGEVIEW_RE = /fbq\('track','PageView'\)/;
+
+function assertMetaPixelInHead(html: string, label: string) {
+  const headMatch = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
+  assert.ok(headMatch, `${label}: sem <head>...</head> pra inspecionar`);
+  const head = headMatch![1];
+  assert.match(head, META_PIXEL_RE, `${label}: script do pixel Meta ausente do <head>`);
+  assert.match(head, FBQ_INIT_RE, `${label}: fbq('init', ${META_PIXEL_ID}) ausente do <head>`);
+  assert.match(head, FBQ_PAGEVIEW_RE, `${label}: fbq('track','PageView') ausente do <head>`);
+}
+
+function assertNoMetaPixel(html: string, label: string) {
+  assert.doesNotMatch(
+    html,
+    META_PIXEL_RE,
+    `${label}: pixel base Meta presente, mas esta página NÃO é destino de tráfego pago (#7492 — adicionar é decisão editorial)`,
+  );
+}
+
+describe("pixel base Meta (#7492)", () => {
+  it("renderMetaPixelHead emite init + PageView com o dataset da #5504", () => {
+    const snippet = renderMetaPixelHead();
+    assert.match(snippet, META_PIXEL_RE);
+    assert.match(snippet, FBQ_INIT_RE);
+    assert.match(snippet, FBQ_PAGEVIEW_RE);
+  });
+
+  it("META_PIXEL_ID é o pixel confirmado ao vivo (#5504/#7492)", () => {
+    assert.equal(META_PIXEL_ID, "1285191740325112");
+  });
+
+  it("cursos — renderCursosPage (teaser) carrega o pixel no <head>", () => {
+    assertMetaPixelInHead(renderCursosPage(loadCourses(), "teaser"), "cursos teaser");
+  });
+
+  it("cursos — renderCursosPage (full) carrega o pixel no <head>", () => {
+    assertMetaPixelInHead(renderCursosPage(loadCourses(), "full"), "cursos full");
+  });
+
+  it("cursos — renderGatePage carrega o pixel no <head>", () => {
+    assertMetaPixelInHead(renderGatePage(), "gate-page");
+  });
+
+  it("livros — renderLivrosPage carrega o pixel no <head>", () => {
+    assertMetaPixelInHead(renderLivrosPage(loadBooks()), "livros");
+  });
+
+  it("assets committed — cursos/livros index.html + courses-full.generated.ts carregam o pixel", () => {
+    for (const rel of [
+      "workers/cursos/public/index.html",
+      "workers/livros/public/index.html",
+    ]) {
+      const html = readFileSync(resolve(ROOT, rel), "utf8");
+      assertMetaPixelInHead(html, rel);
+    }
+    const src = readFileSync(resolve(ROOT, "workers/cursos/src/courses-full.generated.ts"), "utf8");
+    assert.match(src, META_PIXEL_RE, "courses-full.generated.ts: pixel Meta ausente");
+    assert.match(src, FBQ_INIT_RE, "courses-full.generated.ts: fbq init ausente");
+  });
+
+  it("demais hosts NÃO carregam o pixel (escopo deliberado da #7492)", () => {
+    assertNoMetaPixel(renderAppPage(), "renderAppPage");
+    assertNoMetaPixel(renderPrivacyPage(), "renderPrivacyPage");
+    assertNoMetaPixel(buildArchiveHtml([]), "buildArchiveHtml");
+    assertNoMetaPixel(renderConfirmadoPage(), "renderConfirmadoPage");
+    assertNoMetaPixel(renderJogarPageHtml({ edition: "260101", revealed: false }), "renderJogarPageHtml");
+    assertNoMetaPixel(
+      renderSharePageHtml({ token: "tok", payload: { edition: "260101", correct: true }, utmMedium: "link" }),
+      "renderSharePageHtml",
+    );
+    assertNoMetaPixel(renderHubIndexPage([]), "renderHubIndexPage");
+    const firstEntity = Object.keys(ENTITY_LOADERS)[0]!;
+    assertNoMetaPixel(renderEntityPage(ENTITY_LOADERS[firstEntity]()), `renderEntityPage(${firstEntity})`);
+    const artigos = readFileSync(resolve(ROOT, "workers/artigos/public/index.html"), "utf8");
+    assertNoMetaPixel(artigos, "artigos index.html");
+  });
 });
