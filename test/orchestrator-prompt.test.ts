@@ -313,7 +313,23 @@ describe("orchestrator-prompt (#634)", () => {
       // edição no Worker `diaria-site`) — teto 700. O passo é o que
       // destrava a janela de cutover do #467, então cabe no prompt em vez de
       // virar link externo que o orchestrator não lê.
-      "orchestrator-stage-6.md": 700,
+      // #7405 (04/09): +28 linhas do §6d-kit-social-retry (retry automático
+      // de Threads/X quando o backend Kit só resolve o slug real de
+      // `public_url` pós-agendamento — achado ao vivo na 260904). Mesmo
+      // padrão dos bumps acima: é o passo que o orchestrator EXECUTA
+      // (comando + tabela de decisão do JSON + os 2 sub-passos de retry),
+      // não referência — virar link externo o tornaria invisível pra quem
+      // precisa segui-lo. Teto 700→725.
+      // #7420 (04/09, mesma edição): §6d-kit-social-retry e §6d-site
+      // ganharam a correção de raiz (edition_url própria, não mais
+      // dependente do Kit) — a narrativa histórica mais longa (mecanismo
+      // de branch+PR do #6598) migrou pra `docs/site-page-publish-mechanism.md`,
+      // mas o resto (o QUE mudou e por quê, necessário pra quem executa o
+      // passo) fica no prompt. Teto 725→735.
+      // #6454 (04/09, mesma edição): +5 linhas líquidas — §6d-site ganhou
+      // `--sitemap` como flag obrigatória (não só `--slug`), com o motivo
+      // em 1 parágrafo curto. Teto 735→745 com headroom mínimo.
+      "orchestrator-stage-6.md": 745,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       const budget = PER_FILE_LINE_BUDGET[file];

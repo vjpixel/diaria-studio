@@ -176,8 +176,23 @@ function checkStep6Sentinel(editionDir: string): InvariantViolation[] {
  * O arquivo é escrito por `scripts/check-whatsapp-slug-guard.ts --out` — o
  * orchestrator passa `{EDITION_DIR}/_internal/whatsapp-slug-check.json` como
  * `--out` na chamada de §6d.
+ *
+ * Backend `"kit"` (#7388, achado ao vivo na edição 260904): §6d do
+ * orchestrator-stage-6.md instrui pular a seção INTEIRA (incluindo esta
+ * checagem) quando o backend é Kit — o problema de slug da UI da Beehiiv
+ * não tem equivalente lá (`public_url` do broadcast já é a URL final, sem
+ * etapa manual de slug que possa divergir dela). Sem este guard de backend,
+ * `whatsapp-slug-check.json` nunca é escrito por uma edição Kit e este check
+ * bloqueava o Stage 6 incondicionalmente todo dia desde a migração de
+ * backend em #7388 — falso positivo estrutural, não uma falha real.
+ * `backendOverride` opcional, só pra teste (mesmo padrão de `checkScheduledAt`
+ * acima) — produção sempre lê `platform.config.json` de verdade.
  */
-function checkWhatsappSlugGuard(editionDir: string): InvariantViolation[] {
+function checkWhatsappSlugGuard(
+  editionDir: string,
+  backendOverride?: string,
+): InvariantViolation[] {
+  if ((backendOverride ?? loadNewsletterBackend()) === "kit") return [];
   const path = resolve(editionDir, "_internal", "whatsapp-slug-check.json");
   if (!existsSync(path)) {
     return [

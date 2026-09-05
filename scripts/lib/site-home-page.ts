@@ -144,7 +144,10 @@ const CARD_RADIUS = "8px";
  * de `feature` duplicada na `archive` logo abaixo: a invariante fica
  * correta independente do que um caller futuro passar.
  */
-const ARCHIVE_CARD_LIMIT = 6;
+// Exportado (#6454) — reusado por `publish-edition-site-page.ts` pra
+// regenerar a home com o MESMO limite que `gen-home-page.ts` usa por
+// padrão, sem duplicar o número 6 numa 3ª constante.
+export const ARCHIVE_CARD_LIMIT = 6;
 
 export interface HomeFeedEntry {
   slug: string;

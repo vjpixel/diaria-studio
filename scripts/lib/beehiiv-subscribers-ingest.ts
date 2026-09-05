@@ -92,6 +92,7 @@ import {
 } from "./diaria-subscribers-db.ts";
 import type { BeehiivBackupSubscriber, BeehiivBackupCustomField } from "./beehiiv-backup-snapshots.ts";
 import { extractOrigemOriginalFromCustomFields } from "./shared/beehiiv-origem-original.ts";
+import type { BeehiivExitHistoryRecord } from "./beehiiv-exit-history.ts";
 
 /** Shape tolerante de 1 linha do JSONL — campos podem faltar (registro
  *  malformado, ou resposta parcial da MCP já gravada por uma corrida antiga
@@ -266,6 +267,51 @@ function insertBeehiivAliasIfMissing(
     `INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at)
      VALUES (?, 'beehiiv', ?, ?, ?)`,
   ).run(subscriberId, externalId, email, now);
+}
+
+/**
+ * Busca (SEM criar) o `subscriber` já resolvido pra esta identidade Beehiiv
+ * — mesma ordem de preferência de `resolveOrCreateBeehiivSubscriber` logo
+ * abaixo (passos 1-2 dela: `external_id` nativo primeiro, `email` como
+ * chave secundária), extraída em #7248 pra quem só quer REFINAR uma linha
+ * `subscription` já existente e nunca deve criar um `subscriber`/
+ * `subscription` novo a partir desta fonte (`applyBeehiivExitHistory` mais
+ * abaixo — exit-history não carrega `entered_at`/UTM/etc., então não é
+ * fonte primária de cadastro). `null` quando nenhum alias prévio casa — o
+ * chamador decide o que fazer (nunca cria aqui, ao contrário da função
+ * irmã, que segue imediatamente depois desta com seu próprio docstring).
+ *
+ * Duplica (não reusa) as duas queries de `resolveOrCreateBeehiivSubscriber`
+ * em vez de extrair um helper compartilhado — são ~10 linhas estáveis, e a
+ * função irmã já é coberta por teste de regressão pesado (#7135/#7181); um
+ * refactor de extração arriscaria essa cobertura por uma duplicação pequena
+ * e de baixo custo de manutenção.
+ *
+ * (#7426 review finding: esta função foi movida pra ANTES do docstring de
+ * `resolveOrCreateBeehiivSubscriber` de propósito, pra não deixar aquele
+ * docstring "órfão" — apontando pra uma função que não é mais a próxima do
+ * arquivo. Cada docstring abaixo continua imediatamente acima da função
+ * que descreve.)
+ */
+export function findExistingBeehiivSubscriberId(db: DatabaseSync, identity: BeehiivIdentity): number | null {
+  const { externalId, email } = identity;
+  const normalizedEmail = email ? email.trim().toLowerCase() : null;
+
+  if (externalId) {
+    const bySubscriberId = db
+      .prepare("SELECT subscriber_id FROM identity_alias WHERE platform = 'beehiiv' AND external_id = ? LIMIT 1")
+      .get(externalId) as { subscriber_id: number } | undefined;
+    if (bySubscriberId) return bySubscriberId.subscriber_id;
+  }
+
+  if (normalizedEmail) {
+    const byEmail = db
+      .prepare("SELECT subscriber_id FROM identity_alias WHERE platform = 'beehiiv' AND email = ? LIMIT 1")
+      .get(normalizedEmail) as { subscriber_id: number } | undefined;
+    if (byEmail) return byEmail.subscriber_id;
+  }
+
+  return null;
 }
 
 /**
@@ -775,4 +821,175 @@ export function ingestBeehiivRoster(
     attributesWritten,
     recordsSkippedNoEmail,
   };
+}
+
+// ---------------------------------------------------------------------------
+// applyBeehiivExitHistory (#7248) — refina `exited_at` de aproximação pra real
+// ---------------------------------------------------------------------------
+//
+// `ingestBeehiivRoster` acima só sabe gravar em `exited_at` a data em que a
+// TRANSIÇÃO foi DETECTADA (aproximação — a Beehiiv nunca devolveu esse
+// campo pra REST). `applyBeehiivExitHistory` é o passo SEGUINTE, opcional:
+// lê `data/beehiiv-backup/exit-history/subscribers.jsonl` (drenado via MCP
+// `list_subscriptions`, ver `scripts/lib/beehiiv-exit-history.ts` e o agent
+// `beehiiv-exit-history-drain`) e SUBSTITUI a aproximação pelo
+// `unsubscribed_on` REAL, sempre que a MCP tiver confirmado esse assinante.
+
+/** Linha crua de `subscription` lida de volta do SQLite pra refinar — só os
+ *  campos que `upsertSubscription` exige repassar intactos (nenhum é
+ *  recalculado aqui, exceto `exited_at`). */
+interface ExistingBeehiivSubscriptionRow {
+  status: string | null;
+  entered_at: string | null;
+  exited_at: string | null;
+  source: string | null;
+  utm_medium: string | null;
+  utm_campaign: string | null;
+  utm_channel: string | null;
+  referring_site: string | null;
+  origem_cadastro: string | null;
+  utm_source: string | null;
+  utm_term: string | null;
+  utm_content: string | null;
+  atribuicao_fonte: string | null;
+  reativado: number | null;
+  origem_serie: string | null;
+}
+
+export interface BeehiivExitHistoryApplyResult {
+  processed: number;
+  /** `exited_at` foi sobrescrito com o valor real desta rodada. */
+  updated: number;
+  /** `exited_at` já era exatamente o valor real (rodada repetida). */
+  unchanged: number;
+  /** Sem `subscriber`/`subscription(beehiiv)` prévio pra refinar — exit-
+   *  history nunca cria um do zero (ver docstring do módulo). */
+  skippedNoSubscription: number;
+  /** `subscription.status` gravado não é `"inactive"` no momento desta
+   *  rodada — o registro de exit-history é de uma captura mais antiga (ou
+   *  mais nova) que já não bate com o estado atual; nunca grava `exited_at`
+   *  sobre um estado que discorda dele. Também conta aqui (#7426 review
+   *  finding 1) um registro cujo `unsubscribedOn` é ANTERIOR ao
+   *  `entered_at` corrente — sinal de que o registro é de um ciclo
+   *  active→inactive antigo que o backup não redrenou desde a última
+   *  reativação, nunca do ciclo atual. */
+  skippedStatusMismatch: number;
+  skippedNoIdentity: number;
+}
+
+/**
+ * Aplica os registros de `data/beehiiv-backup/exit-history/subscribers.jsonl`
+ * — para cada um, encontra o `subscriber` já conhecido (nunca cria, ver
+ * `findExistingBeehiivSubscriberId`) e, se a `subscription(beehiiv)` dele
+ * estiver `status: "inactive"` no momento desta rodada, sobrescreve só
+ * `exited_at` com o `unsubscribedOn` REAL — todos os outros campos são
+ * relidos do banco e repassados intactos (`upsertSubscription` faz UPDATE
+ * total da linha, não PATCH — ver docstring da função).
+ *
+ * **Idempotente e nunca regressivo**: reaplicar o mesmo registro não muda
+ * nada (`unchanged`). Um registro de um ciclo active→inactive ANTERIOR ao
+ * atual (assinante saiu, voltou, saiu de novo, e o backup de exit-history
+ * não foi redrenado nesse meio-tempo) nunca sobrescreve a aproximação fresca
+ * do ciclo corrente — guardado comparando `unsubscribedOn` contra
+ * `entered_at` corrente (#7426, achado do review automatizado: `status ===
+ * "inactive"` sozinho não bastava pra distinguir os dois ciclos).
+ *
+ * **Nunca toca a coorte `invalid`** — não por um filtro explícito, mas por
+ * CONSTRUÇÃO: nenhum registro de `invalid` chega a este array (a MCP não
+ * expõe essa coorte, ver docstring de `beehiiv-exit-history.ts`), e mesmo
+ * que um chegasse por engano, o guard `status !== "inactive"` (um
+ * `subscriber` `invalid` está gravado com `status: "invalid"`, nunca
+ * `"inactive"`) o rejeitaria. A aproximação de `ingestBeehiivRoster`
+ * permanece a única fonte pra essa coorte — documentado, não esquecido.
+ */
+export function applyBeehiivExitHistory(
+  db: DatabaseSync,
+  records: readonly BeehiivExitHistoryRecord[],
+  now: string = new Date().toISOString(),
+): BeehiivExitHistoryApplyResult {
+  let processed = 0;
+  let updated = 0;
+  let unchanged = 0;
+  let skippedNoSubscription = 0;
+  let skippedStatusMismatch = 0;
+  let skippedNoIdentity = 0;
+
+  const selectExisting = db.prepare(
+    `SELECT status, entered_at, exited_at, source, utm_medium, utm_campaign, utm_channel,
+            referring_site, origem_cadastro, utm_source, utm_term, utm_content,
+            atribuicao_fonte, reativado, origem_serie
+     FROM subscription WHERE subscriber_id = ? AND platform = 'beehiiv'`,
+  );
+
+  for (const record of records) {
+    processed++;
+    const identity: BeehiivIdentity = { externalId: record.externalId, email: record.email };
+    if (!identity.externalId && !identity.email) {
+      skippedNoIdentity++;
+      continue;
+    }
+
+    const subscriberId = findExistingBeehiivSubscriberId(db, identity);
+    if (subscriberId === null) {
+      skippedNoSubscription++;
+      continue;
+    }
+
+    const existing = selectExisting.get(subscriberId) as ExistingBeehiivSubscriptionRow | undefined;
+    if (!existing) {
+      skippedNoSubscription++;
+      continue;
+    }
+    if (existing.status !== "inactive") {
+      skippedStatusMismatch++;
+      continue;
+    }
+    if (existing.exited_at === record.unsubscribedOn) {
+      unchanged++;
+      continue;
+    }
+    // #7426 review finding 1: um registro de exit-history pode ser de um
+    // ciclo active→inactive ANTERIOR ao atual (assinante saiu, voltou,
+    // saiu de novo — o backup só é atualizado quando o agent redrena) — sem
+    // este guard, um `unsubscribedOn` mais velho que a entrada da assinatura
+    // CORRENTE sobrescreveria a aproximação fresca do roster com um
+    // timestamp real, porém ERRADO (de um ciclo diferente). `status ===
+    // "inactive"` sozinho não distingue os dois ciclos porque
+    // `ingestBeehiivRoster` zera `exited_at` na reativação mas não muda
+    // `entered_at` retroativamente pra um ciclo novo de forma que este guard
+    // já não cubra — comparar contra `entered_at` é a âncora correta: um
+    // `unsubscribedOn` real só é válido pro ciclo corrente se aconteceu
+    // DEPOIS dele começar.
+    if (existing.entered_at != null && record.unsubscribedOn < existing.entered_at) {
+      skippedStatusMismatch++;
+      continue;
+    }
+
+    upsertSubscription(
+      db,
+      subscriberId,
+      "beehiiv",
+      {
+        status: existing.status,
+        enteredAt: existing.entered_at,
+        exitedAt: record.unsubscribedOn, // única mudança: aproximação -> real
+        source: existing.source,
+        utmMedium: existing.utm_medium,
+        utmCampaign: existing.utm_campaign,
+        utmChannel: existing.utm_channel,
+        referringSite: existing.referring_site,
+        origemCadastro: existing.origem_cadastro,
+        utmSource: existing.utm_source,
+        utmTerm: existing.utm_term,
+        utmContent: existing.utm_content,
+        atribuicaoFonte: existing.atribuicao_fonte,
+        reativado: existing.reativado == null ? null : existing.reativado === 1,
+        origemSerie: existing.origem_serie,
+      },
+      now,
+    );
+    updated++;
+  }
+
+  return { processed, updated, unchanged, skippedNoSubscription, skippedStatusMismatch, skippedNoIdentity };
 }

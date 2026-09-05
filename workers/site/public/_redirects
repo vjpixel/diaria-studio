@@ -52,3 +52,41 @@
 # não 2 que podem divergir.
 /subscribe https://diar-ia-br.kit.com/ 302
 /subscribe/ /subscribe 301
+
+# #7280 — 21 páginas do acervo publicadas com slug corrompido por perda de
+# acento (dois padrões: decomposição NFD sobrando hífen — `lanc-a`, `na-o` —
+# e descarte do caractere acentuado — `amea-as`, `educa-o`). A causa já não
+# existe (seoSlug/slugify normaliza PT-BR corretamente desde #1989, e o
+# Stage 6 é gate-blocking contra slug divergente desde #4570) — isto é só
+# resíduo histórico. `gen-archive-pages.ts` já gera a página NOVA no slug
+# correto (`LEGACY_SLUG_CORRECTIONS`/`applyLegacySlugCorrections` em
+# `lib/site-archive-pages.ts` — fonte única, este bloco espelha o mesmo
+# mapa; `test/gen-archive-pages.test.ts` trava que os dois nunca divergem).
+#
+# Decisão do editor (#7280, 04/09/2026): criar a página certa E redirecionar
+# a antiga (301, permanente) — preserva o link já compartilhado (e-mail
+# entregue, post social) em vez de deixá-lo quebrar. Regra exact-match, sem
+# barra final — mesma forma que `archiveUrlForSlug`/o `<link rel="canonical">`
+# de cada página sempre geraram (nunca com `/` no fim), então é a forma que
+# qualquer link real (WhatsApp, sitemap, compartilhamento) de fato usa.
+/p/90-das-pessoas-na-o-reconhecem-vi-deos-de-ia /p/90-das-pessoas-nao-reconhecem-videos-de-ia 301
+/p/90-dos-desenvolvedores-usam-ia-mas-na-o-confiam-totalmente /p/90-dos-desenvolvedores-usam-ia-mas-nao-confiam-totalmente 301
+/p/a-diar-ia-br-normalmente-te-conta-o-dia-hoje-ela-conta-o-m-s /p/a-diar-ia-br-normalmente-te-conta-o-dia-hoje-ela-conta-o-mes 301
+/p/ai-com-lanc-a-agentes-de-ia-auto-nomos /p/ai-com-lanca-agentes-de-ia-autonomos 301
+/p/alibaba-lanc-a-tre-s-modelos-de-open-source-e-quebra-32-recordes /p/alibaba-lanca-tres-modelos-de-open-source-e-quebra-32 301
+/p/altman-admite-a-ia-trar-amea-as /p/altman-admite-a-ia-trara-ameacas 301
+/p/anthropic-e-gates-200-mi-em-sa-de-e-educa-o /p/anthropic-e-gates-200-mi-em-saude-e-educacao 301
+/p/anthropic-expo-e-co-digo-do-claude-code-por-acidente /p/anthropic-expoe-codigo-do-claude-code-por-acidente 301
+/p/anthropic-lanc-a-plataforma-de-pesquisa-sociolo-gica /p/anthropic-lanca-plataforma-de-pesquisa-sociologica 301
+/p/brasil-70-da-gera-o-z-usa-chatgpt-todo-m-s /p/brasil-70-da-geracao-z-usa-chatgpt-todo-mes 301
+/p/brasil-fortalece-parceria-com-a-mala-sia-em-semicondutores-e-ia /p/brasil-fortalece-parceria-com-a-malasia-em-semicondutores-e 301
+/p/claude-code-afunda-ac-o-es-da-ibm /p/claude-code-afunda-acoes-da-ibm 301
+/p/governo-lanc-a-modelo-de-linguagem-100-nacional /p/governo-lanca-modelo-de-linguagem-100-nacional 301
+/p/ia-na-o-reduz-trabalho-ela-acelera-o-burnout /p/ia-nao-reduz-trabalho-ela-acelera-o-burnout 301
+/p/ia-nas-eleic-o-es-prepare-se-para-os-deepfakes /p/ia-nas-eleicoes-prepare-se-para-os-deepfakes 301
+/p/inscric-o-es-abertas-programa-da-openai-para-empreendedores /p/inscricoes-abertas-programa-da-openai-para-empreendedores 301
+/p/lanc-ado-o-comet-o-produto-de-ia-mais-desejado-do-ano /p/lancado-o-comet-o-produto-de-ia-mais-desejado-do-ano 301
+/p/modelos-se-replicam-sozinhos-diz-estudo-in-dito /p/modelos-se-replicam-sozinhos-diz-estudo-inedito 301
+/p/openai-lanc-a-gpt-5-5-com-foco-em-agentes /p/openai-lanca-gpt-5-5-com-foco-em-agentes 301
+/p/openai-lanc-a-instant-checkout-no-chatgpt /p/openai-lanca-instant-checkout-no-chatgpt 301
+/p/openai-lanc-a-sora-2 /p/openai-lanca-sora-2 301

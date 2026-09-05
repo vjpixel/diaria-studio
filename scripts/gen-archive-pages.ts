@@ -34,6 +34,14 @@
  *
  * Idempotente — pode ser rerodado a qualquer momento pra refletir um cache
  * atualizado (`beehiiv-sync.ts`); sobrescreve os arquivos existentes.
+ *
+ * ## #7280 — correção de slug histórico
+ *
+ * `main()` aplica `applyLegacySlugCorrections` (ver docstring em
+ * `lib/site-archive-pages.ts`) a TODO post carregado (Beehiiv + Kit) antes
+ * de gerar — os 21 slugs históricos com acento corrompido nascem direto na
+ * forma correta, sem passo extra. `workers/site/public/_redirects` tem as
+ * 301 old→new correspondentes, pra quem já tinha o link antigo.
  */
 
 import { readdirSync, readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
@@ -47,6 +55,7 @@ import {
   buildSitemapXml,
   sitemapEntriesForPosts,
   kitUnifiedPostToArchivePost,
+  applyLegacySlugCorrections,
   UnresolvedMergeTagError,
 } from "./lib/site-archive-pages.ts";
 import { loadKitCache } from "./lib/shared/edition-cache-reader.ts";
@@ -188,7 +197,11 @@ async function main() {
   const outDir = values["out"] ? resolve(ROOT, values["out"]) : DEFAULT_OUT_DIR;
   const sitemapPath = values["sitemap"] ? resolve(ROOT, values["sitemap"]) : DEFAULT_SITEMAP_PATH;
 
-  const posts = [...loadPosts(postsDir), ...loadKitArchivePosts()];
+  // #7280: corrige os 21 slugs históricos com acento corrompido ANTES de
+  // gerar — post.slug já sai certo, então buildArchivePageHtml/
+  // archiveUrlForSlug (canonical, diretório de saída) nunca veem o valor
+  // quebrado. Ver docstring de LEGACY_SLUG_CORRECTIONS.
+  const posts = applyLegacySlugCorrections([...loadPosts(postsDir), ...loadKitArchivePosts()]);
   const result = generateArchivePages(posts, outDir, sitemapPath);
 
   console.log(`gen-archive-pages: ${result.written} páginas escritas em ${outDir}`);

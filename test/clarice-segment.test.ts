@@ -25,6 +25,9 @@ import {
   parseBrevoListIds,
   excludeCommittedToQueuedCampaigns,
   assertRecencySelectionMonotonic,
+  isDailyQueueEligible,
+  compareDailyQueueOrder,
+  buildDailySendQueue,
   type StoreRow,
 } from "../scripts/lib/clarice-segment.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
@@ -1435,4 +1438,167 @@ test("assertRecencySelectionMonotonic — listas vazias (de qualquer lado) devol
   assert.deepEqual(assertRecencySelectionMonotonic([], someRow), []);
   assert.deepEqual(assertRecencySelectionMonotonic(someRow, []), []);
   assert.deepEqual(assertRecencySelectionMonotonic([], []), []);
+});
+
+// ---------------------------------------------------------------------------
+// Fila única do envio diário (#7406) — substitui engajados/ramp-warm
+// ---------------------------------------------------------------------------
+
+test("isDailyQueueEligible: equivale a isEngajados quando sends_count>0", () => {
+  const engajado = row({ email: "e@x.com", sends_count: 5, priority_points: 40 });
+  const decaido = row({ email: "d@x.com", sends_count: 5, priority_points: 0 });
+  const negativo = row({ email: "n@x.com", sends_count: 5, priority_points: -10 });
+  assert.equal(isDailyQueueEligible(engajado), isEngajados(engajado));
+  assert.equal(isDailyQueueEligible(engajado), true);
+  assert.equal(isDailyQueueEligible(decaido), isEngajados(decaido));
+  assert.equal(isDailyQueueEligible(decaido), false, "score decaído a 0 continua fora — território de reativação, não desta fila");
+  assert.equal(isDailyQueueEligible(negativo), isEngajados(negativo));
+});
+
+test("isDailyQueueEligible: equivale a isRampWarm quando sends_count=0", () => {
+  const verificado = row({ email: "v@x.com", sends_count: 0, mv_bucket: "verified" });
+  const naoVerificado = row({ email: "nv@x.com", sends_count: 0, mv_bucket: "unknown" });
+  assert.equal(isDailyQueueEligible(verificado), isRampWarm(verificado));
+  assert.equal(isDailyQueueEligible(verificado), true);
+  assert.equal(isDailyQueueEligible(naoVerificado), isRampWarm(naoVerificado));
+  assert.equal(isDailyQueueEligible(naoVerificado), false);
+});
+
+test("isDailyQueueEligible: respeita cutoffNovosIso pro ramo de 1º envio (#5410, mesmo corte de isRampWarm)", () => {
+  const dentroDaJanela = row({ email: "novo@x.com", sends_count: 0, mv_bucket: "verified", created: "2026-09-01T00:00:00Z" });
+  assert.equal(isDailyQueueEligible(dentroDaJanela, "2026-08-15T00:00:00Z"), false);
+  assert.equal(isDailyQueueEligible(dentroDaJanela, null), true);
+});
+
+test("isDailyQueueEligible: send_eligible=0 exclui em qualquer ramo", () => {
+  assert.equal(isDailyQueueEligible(row({ email: "a@x.com", send_eligible: 0, sends_count: 5, priority_points: 40 })), false);
+  assert.equal(isDailyQueueEligible(row({ email: "b@x.com", send_eligible: 0, sends_count: 0, mv_bucket: "verified" })), false);
+});
+
+test("isDailyQueueEligible: conta de teste do editor exclui em qualquer ramo", () => {
+  assert.equal(isDailyQueueEligible(row({ email: "vjpixel+test@gmail.com", sends_count: 5, priority_points: 40 })), false);
+  assert.equal(isDailyQueueEligible(row({ email: "vjpixel+test@gmail.com", sends_count: 0, mv_bucket: "verified" })), false);
+});
+
+test("compareDailyQueueOrder: priority_points DESC — score alto sempre antes de score 0, sem lógica de tier", () => {
+  const alto = row({ email: "alto@x.com", priority_points: 80 });
+  const zero = row({ email: "zero@x.com", priority_points: 0 });
+  assert.ok(compareDailyQueueOrder(alto, zero) < 0);
+  assert.ok(compareDailyQueueOrder(zero, alto) > 0);
+});
+
+test("compareDailyQueueOrder: empate em score>0 desempata por email ASC (mesmo que segmentEngajados)", () => {
+  const b = row({ email: "b@x.com", priority_points: 50 });
+  const a = row({ email: "a@x.com", priority_points: 50 });
+  assert.ok(compareDailyQueueOrder(a, b) < 0);
+});
+
+test("compareDailyQueueOrder: empate em score=0 desempata por compareContactRecency (mesmo que segmentRampWarm)", () => {
+  const recente = row({ email: "recente@x.com", priority_points: 0, cohort: "leads-2026h2", created: "2026-08-01T00:00:00Z" });
+  const antigo = row({ email: "antigo@x.com", priority_points: 0, cohort: "leads-2022h1", created: "2022-01-01T00:00:00Z" });
+  assert.ok(compareDailyQueueOrder(recente, antigo) < 0, "cadastro mais recente primeiro, não email ASC");
+});
+
+test("buildDailySendQueue: união de quem hoje é engajados+ramp-warm, na ordem certa (score DESC), sem grupo escolhido", () => {
+  const engajadoAlto = row({ email: "z-engajado-alto@x.com", sends_count: 3, priority_points: 90 });
+  const engajadoBaixo = row({ email: "a-engajado-baixo@x.com", sends_count: 3, priority_points: 10 });
+  const rampWarmRecente = row({ email: "b-ramp-recente@x.com", sends_count: 0, mv_bucket: "verified", cohort: "leads-2026h2", created: "2026-08-01T00:00:00Z" });
+  const rampWarmAntigo = row({ email: "y-ramp-antigo@x.com", sends_count: 0, mv_bucket: "verified", cohort: "leads-2022h1", created: "2022-01-01T00:00:00Z" });
+  const foraDaFila = row({ email: "decaido@x.com", sends_count: 3, priority_points: 0 }); // território reativação
+
+  const noGuard = { queuedListIds: new Set<string>(), committedListIds: new Set<string>() };
+  const queue = buildDailySendQueue(
+    [rampWarmAntigo, engajadoBaixo, foraDaFila, rampWarmRecente, engajadoAlto],
+    noGuard,
+  );
+
+  assert.deepEqual(
+    queue.map((r) => r.email),
+    [engajadoAlto.email, engajadoBaixo.email, rampWarmRecente.email, rampWarmAntigo.email],
+    "todo score>0 antes de todo score=0, cada bloco na ordem do grupo original — sem tier explícito",
+  );
+
+  // Equivale à UNIÃO de segmentEngajados + segmentRampWarm sobre o mesmo universo.
+  const universe = [rampWarmAntigo, engajadoBaixo, foraDaFila, rampWarmRecente, engajadoAlto];
+  const uniaoEsperada = new Set([...segmentEngajados(universe), ...segmentRampWarm(universe)].map((r) => r.email));
+  assert.deepEqual(new Set(queue.map((r) => r.email)), uniaoEsperada);
+});
+
+test("buildDailySendQueue: guard POR CONTATO — quem já recebeu (queued) NUNCA usa o guard committed que zeraria o grupo (achado 260731, #7236)", () => {
+  const engajado = row({ email: "engajado@x.com", sends_count: 3, priority_points: 50, brevo_list_ids: JSON.stringify(["list-sent-antiga"]) });
+  // "list-sent-antiga" está em committedListIds (queued∪sent) mas NÃO em queuedListIds — reproduz o bug que #6051/#7236 mediu: 15.123 de 15.123 engajados excluídos se o guard errado for aplicado.
+  const guards = { queuedListIds: new Set<string>(), committedListIds: new Set(["list-sent-antiga"]) };
+  const queue = buildDailySendQueue([engajado], guards);
+  assert.deepEqual(queue.map((r) => r.email), [engajado.email], "guard committed nunca se aplica a quem já tem sends_count>0");
+});
+
+test("buildDailySendQueue: guard POR CONTATO — quem já recebeu É excluído se estiver numa lista AGENDADA (queued)", () => {
+  const engajado = row({ email: "engajado@x.com", sends_count: 3, priority_points: 50, brevo_list_ids: JSON.stringify(["list-queued"]) });
+  const guards = { queuedListIds: new Set(["list-queued"]), committedListIds: new Set<string>() };
+  assert.deepEqual(buildDailySendQueue([engajado], guards), []);
+});
+
+test("buildDailySendQueue: guard POR CONTATO — quem nunca recebeu usa committed (protege contra lag de sync do Brevo, #3682)", () => {
+  const rampWarm = row({ email: "novo@x.com", sends_count: 0, mv_bucket: "verified", brevo_list_ids: JSON.stringify(["list-sent-recem"]) });
+  // Só em committedListIds (sent), não em queuedListIds — se o guard fosse só "queued" pra este contato, ele voltaria a ser selecionado apesar de já ter recebido (sync ainda não propagou sends_count).
+  const guards = { queuedListIds: new Set<string>(), committedListIds: new Set(["list-sent-recem"]) };
+  assert.deepEqual(buildDailySendQueue([rampWarm], guards), []);
+});
+
+test("buildDailySendQueue: guard POR CONTATO — quem nunca recebeu NÃO é excluído por uma lista só-queued de outro contato (isolamento por linha, não por batch)", () => {
+  const rampWarmA = row({ email: "a@x.com", sends_count: 0, mv_bucket: "verified", brevo_list_ids: JSON.stringify(["list-queued-de-outro"]) });
+  const guards = { queuedListIds: new Set(["list-queued-de-outro"]), committedListIds: new Set<string>() };
+  // "list-queued-de-outro" só está em queuedListIds — rampWarmA usa guard COMMITTED (sends_count=0), que está vazio aqui, então não é excluído por essa lista.
+  assert.deepEqual(buildDailySendQueue([rampWarmA], guards).map((r) => r.email), [rampWarmA.email]);
+});
+
+test("buildDailySendQueue: respeita cutoffNovosIso (repassa pro ramo de 1º envio)", () => {
+  const dentroDaJanela = row({ email: "novo@x.com", sends_count: 0, mv_bucket: "verified", created: "2026-09-01T00:00:00Z" });
+  const noGuard = { queuedListIds: new Set<string>(), committedListIds: new Set<string>() };
+  assert.deepEqual(buildDailySendQueue([dentroDaJanela], noGuard, "2026-08-15T00:00:00Z"), []);
+  assert.deepEqual(buildDailySendQueue([dentroDaJanela], noGuard, null).map((r) => r.email), [dentroDaJanela.email]);
+});
+
+// #7408 review — 3 gaps de cobertura apontados: priority_optin quebra a
+// premissa "1º envio sempre score 0" (documentado, comportamento correto,
+// não um bug); sends_count negativo/NaN; e uma linha cujo brevo_list_ids
+// aparece nos DOIS guard Sets ao mesmo tempo (garante que só o guard do
+// EIXO CERTO da linha é consultado, o outro nunca entra em jogo).
+
+test("compareDailyQueueOrder/buildDailySendQueue: priority_optin (+40) num contato NUNCA enviado fura a fila acima de engajados com score menor — esperado, não bug (#7408 review)", () => {
+  const optinNuncaEnviado = row({ email: "optin@x.com", sends_count: 0, mv_bucket: "verified", priority_points: 40 });
+  const engajadoFraco = row({ email: "fraco@x.com", sends_count: 2, priority_points: 15 });
+  const noGuard = { queuedListIds: new Set<string>(), committedListIds: new Set<string>() };
+  const queue = buildDailySendQueue([engajadoFraco, optinNuncaEnviado], noGuard);
+  assert.deepEqual(
+    queue.map((r) => r.email),
+    [optinNuncaEnviado.email, engajadoFraco.email],
+    "score decide sozinho, sem distinguir 1º envio de re-envio — é o pedido do editor (#7406)",
+  );
+});
+
+test("isDailyQueueEligible: sends_count negativo/NaN é tratado como 1º envio (mesmo fail-safe de isFirstSend/isRampWarm)", () => {
+  const negativo = row({ email: "neg@x.com", sends_count: -1 as unknown as number, mv_bucket: "verified" });
+  const nanValue = row({ email: "nan@x.com", sends_count: NaN, mv_bucket: "verified" });
+  assert.equal(isDailyQueueEligible(negativo), true);
+  assert.equal(isDailyQueueEligible(nanValue), true);
+});
+
+test("buildDailySendQueue: brevo_list_ids presente nos DOIS guard Sets — só o Set do eixo da linha (por sends_count) é consultado", () => {
+  const listaAmbigua = JSON.stringify(["list-ambigua"]);
+  const engajado = row({ email: "engajado@x.com", sends_count: 3, priority_points: 50, brevo_list_ids: listaAmbigua });
+  const rampWarm = row({ email: "ramp@x.com", sends_count: 0, mv_bucket: "verified", brevo_list_ids: listaAmbigua });
+  // A mesma lista está em AMBOS os Sets — se buildDailySendQueue consultasse o Set errado (ou os dois),
+  // um dos dois contatos sairia excluído por engano.
+  const guards = { queuedListIds: new Set(["list-ambigua"]), committedListIds: new Set(["list-ambigua"]) };
+  // engajado (sends_count>0) usa SÓ queuedListIds → excluído (está lá).
+  // rampWarm (sends_count=0) usa SÓ committedListIds → também excluído (está lá também, mas pelo Set certo).
+  assert.deepEqual(buildDailySendQueue([engajado, rampWarm], guards), []);
+
+  // Prova que é o EIXO, não "está em qualquer Set", que decide: tirando "list-ambigua" só de
+  // queuedListIds, o engajado (que consulta queuedListIds) volta; o rampWarm (que consulta
+  // committedListIds, ainda com a lista) continua fora.
+  const guardsSoCommitted = { queuedListIds: new Set<string>(), committedListIds: new Set(["list-ambigua"]) };
+  const queue = buildDailySendQueue([engajado, rampWarm], guardsSoCommitted);
+  assert.deepEqual(queue.map((r) => r.email), [engajado.email]);
 });

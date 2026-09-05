@@ -68,6 +68,27 @@
  * Determinístico: recebe dados já buscados (`gh issue list`/`gh issue view`
  * com `--json`), sem rede, sem `gh`. O CLI wrapper (`scripts/desbloqueia-scan.ts`)
  * é a única camada de I/O.
+ *
+ * ## #7343 — o comentário de revisão do Passo 2 não renova o bloqueio
+ *
+ * A skill `/diaria-desbloqueia` Passo 2 comenta, pra cada `bloqueioConfirmado`:
+ * "Revisado por /diaria-desbloqueia — bloqueio de execução de {recorded_at}
+ * ("{motivo}") segue valendo, nenhuma mudança." Comentar move o `updatedAt`
+ * da issue. A versão ORIGINAL (#6628) comparava `recorded_at` contra
+ * `updatedAt` ("o bloqueio cobre o estado ATUAL?"), então na execução seguinte
+ * o marcador era mais antigo que o `updatedAt` e a issue caía em
+ * `precisa-pergunta` — o único grupo que vira pergunta, exatamente o que a
+ * skill existe pra evitar. Nada tinha de fato mudado na issue.
+ *
+ * #6961 corrigiu a comparação pra ser entre os DOIS marcadores, nunca
+ * contra `updatedAt` — e isso corrige o sintoma: um comentário de revisão
+ * sem marcador não é um evento pra essa comparação, então o bloqueio segue
+ * confirmado. Premissa registrada (decisão do editor, #7343): **o único
+ * sinal que renova um `bloqueio-execucao` é um NOVO marcador
+ * `bloqueio-execucao` mais recente na thread** — um comentário de revisão
+ * em prosa, mesmo citando o `recorded_at` no texto, nunca renova. Se um
+ * estado de fato mudou, o mecanismo correto é `route-issue.ts --track
+ * bloqueada` (que embute um novo marcador), não um comentário em prosa.
  */
 import { classifyExecTrack, type ExecTrack, type ExecTrackInput } from "./issue-exec-track.ts";
 import {

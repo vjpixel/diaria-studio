@@ -32,7 +32,18 @@ apex (404 hoje) e `/sitemap.xml` já era servido certo.
   mesmas anteriores do acervo real — nunca mock (ver docstring do módulo
   pro porquê de ler o output já commitado em vez de `data/beehiiv-cache/`
   direto). Rodar `npx tsx scripts/gen-home-page.ts` depois de
-  `gen-archive-pages.ts` sempre que o acervo mudar. `<title>diar.ia.br</title>`
+  `gen-archive-pages.ts` sempre que o acervo mudar EM LOTE (ex: resync do
+  cache Beehiiv). **Edição por edição, isso é automático desde o #6454
+  (04/09/2026):** `publish-edition-site-page.ts --sitemap
+  workers/site/public/sitemap.xml`, chamado no Stage 6 (§6d-site), já
+  adiciona a entrada da edição recém-publicada ao `sitemap.xml`
+  (`sitemapEntryFromPost`/`addSitemapEntry`, idempotente) e regenera
+  `index.html` a partir do MESMO miolo puro (`buildHomeFeed`/`buildIndexHtml`
+  de `site-home-page.ts`) — a home se mantém sozinha sem depender de
+  ninguém rodar este script à mão. Achado original do #6454: a flag
+  `--sitemap` existia desde a 1ª versão do script, mas só STAGEAVA o
+  arquivo pro commit — nada escrevia o conteúdo, e a home ficou congelada
+  ~10 dias em produção antes do fix. `<title>diar.ia.br</title>`
   + meta description = tagline oficial são preservados do stub original
   (guard de regressão do #6359 continua valendo).
   **O form de inscrição (masthead + footer) resolve a inscrição no

@@ -353,7 +353,44 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
 
 **Guard refresh-dedup apos schedule confirmado** — mesmo passo do §6d: rodar `/diaria-refresh-dedup`.
 
-Ao concluir §6d-kit com sucesso, seguir para §6d-brevo (se aplicável) e §6e normalmente — o resto do Stage 6 (auto-reporter, sentinel, invariants) não depende de qual backend de newsletter rodou.
+#### §6d-kit-social-retry — backstop de Threads/X (#7405, neutralizado pelo #7420)
+
+**Histórico:** com backend Kit, `{edition_url}` costumava vir do `public_url`
+do broadcast (só ganhava slug depois do broadcast sair de `"draft"`),
+quebrando Threads/X (únicos 2 canais com o link INLINE no texto) na Etapa 5.
+**Corrigido em #7420:** `publish-newsletter-kit.ts` agora grava
+`05-edition-url.txt` com `deriveEditionUrl(d1.title)` — URL PRÓPRIA
+(`https://diar.ia.br/p/{seoSlug(d1Title)}`, `diar.ia.br` é nosso desde o
+cutover #467 — a mesma que o bloco WhatsApp já crava no e-mail), derivada só
+do título, sem chamada de rede. **Threads/X já saem certos na Etapa 5**;
+este passo virou backstop pra edições legadas.
+
+Rodar mesmo assim (idempotente, sem custo — o script recusa sobrescrever uma
+URL própria já resolvida, `reason:"already_own_domain"`):
+
+```bash
+npx tsx scripts/kit-refresh-social-edition-url.ts --edition-dir {EDITION_DIR}/
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se ok:true, error se ok:false} --message "kit-refresh-social-edition-url stage6: {resolved/reason}" --details '{json}'
+```
+
+`resolved:false` (`already_own_domain` — caminho feliz desde o #7420 —,
+`backend_not_kit`/`no_slug_yet`/`already_resolved` — só edições pré-#7420) →
+nada a fazer, seguir (sem retry adicional — evita loop). `ok:false` (code 3/4)
+→ logar erro, não bloqueia. **Só `resolved:true`** (só alcançável em edição
+legada pré-#7420, arquivos regravados) → re-dispatchar os 2 canais:
+
+1. **Threads** (idempotente, `--skip-existing` default só pula
+   `draft`/`scheduled`/`published`): `npx tsx scripts/publish-threads.ts
+   --edition-dir {EDITION_DIR}/ --schedule`
+2. **Twitter/X via Buffer MCP** — mesmo mecanismo do §5c-3b em
+   `orchestrator-stage-5.md` (só a sessão do agente alcança): rodar
+   `prep-twitter-posts.ts` de novo e, pra cada `posts` ainda sem entrada
+   `scheduled`/`published`/`draft` pra `platform:"twitter"` + `destaque`,
+   chamar `create_post` como em §5c-3b passo 2 **e gravar via
+   `append-twitter-published.ts` (passo 3) logo em seguida** — sem isso o
+   dedup não tem o que ler numa 2ª invocação, risco de duplicar post no X.
+
+Fail-soft nos 2 — nunca bloqueia o resto do Stage 6. Seguir pra §6d-brevo/§6e.
 
 ### 6d-brevo. Agendar campanha Brevo diária (#5772)
 
@@ -406,32 +443,41 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 
 Roda **depois** do agendamento confirmado, nos dois backends. Sem este passo o acervo do site fica congelado nos 253 posts já gerados e não cresce — e é ele que destrava a janela de cutover do #467 (greenlight do editor, 26/08).
 
-**`--slug` é obrigatório aqui, mesmo backend `"beehiiv"`.** `_internal/05-published.json`
+**`--slug` é obrigatório aqui, em qualquer backend.** `_internal/05-published.json`
 nunca tem `post_url` populado neste ponto do pipeline (só `refresh-dedup.ts` grava isso,
-no dia seguinte) — sem `--slug` o passo sempre cai em "nada a publicar" (`code: 4`, ver
-tabela abaixo). Passar o MESMO `{slug_atual_do_get_post}` já obtido em §6d (o valor que o
-guard do bloco WhatsApp comparou e confirmou bater):
+no dia seguinte). Backend `"beehiiv"`: passar `{slug_atual_do_get_post}` já obtido em §6d
+(o valor que o guard do bloco WhatsApp confirmou bater). Backend `"kit"` (#7420, fecha a
+lacuna do #464/#6202): passar `seoSlug(d1.title)` — mesmo algoritmo de `deriveEditionUrl`,
+já usado por `publish-newsletter-kit.ts` pra gravar `05-edition-url.txt` na Etapa 5, sem
+chamada de rede. Sem `--slug` o passo sempre cai em "nada a publicar" (`code: 4`, ver
+tabela abaixo).
+
+**`--sitemap` é obrigatório também (#6454)** — sem ela, `sitemap.xml`/`index.html`
+(a home) ficam congelados mesmo com `/p/{slug}` publicado certo (foi essa lacuna
+que travou `https://diar.ia.br/` ~10 dias numa edição antiga, 04/09/2026). Com a
+flag o script atualiza o sitemap e regenera a home no mesmo commit/push da página:
 
 ```bash
 npx tsx scripts/publish-edition-site-page.ts \
   --edition-dir {EDITION_DIR} \
-  --slug {slug_atual_do_get_post}
+  --slug {slug_atual_do_get_post ou seoSlug(d1.title) pro Kit} \
+  --sitemap workers/site/public/sitemap.xml
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se 0/2, warn se 3/4/5} --message "site-page stage6 publish: exit {code}"
 ```
 
 | exit | significado | ação |
 |---|---|---|
 | `0` | página escrita e branch `site-publish/{slug}` publicada com PR aberto/reusado (`git commit` + `push` da branch + `gh pr create`/reuso, ver mecanismo abaixo) — **o deploy real só acontece quando o PR for mergeado** | seguir |
-| `2` | edição sem `newsletter-final.html`/`05-published.json` — arquivo ainda não existe, nada a publicar | seguir, logar info |
+| `2` | edição sem `newsletter-final.html` — arquivo ainda não existe, nada a publicar | seguir, logar info |
 | `3` | escrita, commit, push ou `gh pr create` falhou (inclui checkout DIVERGENTE de `origin/master` — #7287: o guard compara COMMIT, não nome de branch; um checkout numa branch de nome qualquer cujo HEAD bata com `origin/master` passa normalmente) | **logar warn e seguir** |
-| `4` | artefato PRESENTE mas inválido (html/título vazio, slug não-extraível, `--slug` ausente e sem `post_url`, **ou backend `"kit"` sem `--slug`** — ainda sem fonte de slug própria, #464 não ligou o dispatch Kit ainda) — sintoma de bug num stage anterior (ou lacuna de wiring conhecida no caso Kit) | **logar warn e seguir** (nunca silencioso — não é o mesmo caso benigno do `2`) |
+| `4` | artefato PRESENTE mas inválido (html/título vazio, `--slug` ausente e sem `post_url`) — bug num stage anterior. Desde #7420, `--slug` sempre basta (não depende de `05-published.json`) | **logar warn e seguir** (nunca silencioso — não é o mesmo caso benigno do `2`) |
 | `5` | GUARD (#6202): `buildArchivePageHtml` recusou por merge tag não resolvida (`UnresolvedMergeTagError`, guard do #6210/#6256) — não é a tag padrão do voto (`{{email}}`, essa é sanitizada antes do guard rodar), é uma tag DESCONHECIDA. Nada escrito/commitado | **logar warn e seguir** (fail-soft; a edição segue normal, só o site não ganha página nova até a tag ser tratada) |
 
 **Fail-soft absoluto:** publicar no site é acessório ao envio. Nenhum exit pode bloquear §6e nem o auto-reporter. No `3`, a página costuma ficar escrita (e, se só o `push`/`gh pr create` falhou, já commitada na branch) localmente — a próxima rodada/push manual a leva junto.
 
 **A visibilidade da falha NÃO depende mais só deste `log-event.ts` (#7283).** O próprio script grava `_internal/site-page-published.json` (`{ code, slug, published, reason, prUrl, checked_at }`) a CADA chamada, determinístico — não depende de o agente lembrar de logar certo. `check-invariants.ts --stage 6` (§6g abaixo) lê esse arquivo e acusa (`severity: warning`, nunca bloqueia) quando `published !== true`. Foi a ausência desse mecanismo que deixou 4 edições consecutivas (31/08–03/09/2026) sem página no acervo sem NENHUM sinal em código — só a prosa deste passo, que ninguém verificava ter sido seguida.
 
-**Mecanismo: branch dedicada + PR, nunca push direto em `master` (#6598).** Até 260828 este passo fazia `git commit` + `push` DIRETO em `master` — `.github/workflows/deploy-site.yml` documenta que `workers/site/public/p/**` é COMMITADO e o deploy real dispara por push a master, e publicar via `wrangler deploy` local deixaria o worker em produção divergente do repo, sem sinal (isso não mudou: continua descartado). O que mudou é o `master` em si: uma regra de proteção de branch (`GH013`) foi ativada nesse dia e passou a rejeitar todo push direto — o `push` que este passo fazia começou a falhar (`remote rejected`, exit `3` fail-soft, sem derrubar a edição, mas o acervo do site parava de crescer). Correção: o script agora recria `site-publish/{slug}` a partir do `master` local a cada chamada (`git checkout -B`), commita/empurra pra essa branch (`--force-with-lease`, seguro porque a branch é de propriedade exclusiva do script), e abre um PR via `gh pr create` — reusando um PR já aberto pra essa branch, se `gh pr list` encontrar um, em vez de duplicar. **O script NUNCA mergeia o PR** (decisão do editor, #6598): mergear automaticamente foge do padrão branch→CI→merge já estabelecido pra esta linha de skills, e como Stage 6 já é gate humano, um PR extra pendente não atrasa a edição — o merge (manual, ou pela próxima rodada overnight/develop) é o que falta pro deploy real acontecer.
+**Mecanismo: branch dedicada + PR, nunca push direto em `master` (#6598).** Script recria `site-publish/{slug}` do `master` local, commita/empurra (`--force-with-lease`) e abre/reusa PR via `gh pr create` — nunca mergeia sozinho (decisão do editor). Detalhes/histórico do incidente que motivou (`GH013`, 260828): `docs/site-page-publish-mechanism.md`.
 
 ### 6e. Atualizar `05-published.json` com scheduled_at
 

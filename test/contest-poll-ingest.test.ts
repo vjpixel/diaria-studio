@@ -12,6 +12,8 @@ import {
   parseContestEntriesJsonl,
   buildContestReplyExternalId,
   ingestContestReplies,
+  mapRaffleEntryToContestEntry,
+  isWellFormedRaffleEntryForContestMap,
   isAnonymousPollIdentity,
   buildPollVoteExternalId,
   ingestPollVotes,
@@ -146,6 +148,88 @@ describe("ingestContestReplies", () => {
     const result = ingestContestReplies(db, [{ reader_email: "  ", edition: "260901", confirmed_at: "2026-09-01T10:00:00Z" }]);
     assert.equal(result.skippedNoEmail, 1);
     assert.equal(getStoreCounts(db).subscribers, 0);
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isWellFormedRaffleEntryForContestMap (#7419 self-review — guard pré-mapeamento)
+// ---------------------------------------------------------------------------
+
+describe("isWellFormedRaffleEntryForContestMap", () => {
+  it("entry completa passa", () => {
+    assert.equal(
+      isWellFormedRaffleEntryForContestMap({
+        email: "leitor@example.com",
+        edition: "260901",
+        issued_at: "2026-09-01T10:00:00Z",
+      }),
+      true,
+    );
+  });
+
+  it("edition ausente/vazia reprova", () => {
+    assert.equal(isWellFormedRaffleEntryForContestMap({ email: "a@x.com", issued_at: "2026-09-01T10:00:00Z" }), false);
+    assert.equal(
+      isWellFormedRaffleEntryForContestMap({ email: "a@x.com", edition: "  ", issued_at: "2026-09-01T10:00:00Z" }),
+      false,
+    );
+  });
+
+  it("issued_at ausente/vazia reprova", () => {
+    assert.equal(isWellFormedRaffleEntryForContestMap({ email: "a@x.com", edition: "260901" }), false);
+    assert.equal(
+      isWellFormedRaffleEntryForContestMap({ email: "a@x.com", edition: "260901", issued_at: "" }),
+      false,
+    );
+  });
+
+  it("email ausente reprova (mesmo com edition/issued_at presentes)", () => {
+    assert.equal(
+      isWellFormedRaffleEntryForContestMap({ edition: "260901", issued_at: "2026-09-01T10:00:00Z" }),
+      false,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mapRaffleEntryToContestEntry (#7209 residual — fonte VIVA raffle-numbers.json)
+// ---------------------------------------------------------------------------
+
+describe("mapRaffleEntryToContestEntry", () => {
+  it("mapeia email/nickname/edition/issued_at 1:1, reply_thread_id sempre undefined", () => {
+    const mapped = mapRaffleEntryToContestEntry({
+      email: "leitor@example.com",
+      nickname: "Leitor",
+      edition: "260901",
+      issued_at: "2026-09-01T10:00:00Z",
+    });
+    assert.deepEqual(mapped, {
+      reader_email: "leitor@example.com",
+      reader_name: "Leitor",
+      edition: "260901",
+      confirmed_at: "2026-09-01T10:00:00Z",
+    });
+  });
+
+  it("nickname ausente vira reader_name undefined, não string vazia", () => {
+    const mapped = mapRaffleEntryToContestEntry({
+      email: "bea@example.com",
+      edition: "260902",
+      issued_at: "2026-09-02T11:00:00Z",
+    });
+    assert.equal(mapped.reader_name, undefined);
+  });
+
+  it("saída alimenta ingestContestReplies diretamente (mesmo shape que parseContestEntriesJsonl produz)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const mapped = mapRaffleEntryToContestEntry({
+      email: "leitor@example.com",
+      edition: "260901",
+      issued_at: "2026-09-01T10:00:00Z",
+    });
+    const result = ingestContestReplies(db, [mapped]);
+    assert.equal(result.newEvents, 1);
     db.close();
   });
 });

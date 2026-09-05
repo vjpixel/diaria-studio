@@ -135,6 +135,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule, parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 import { extractContent, type NewsletterContent } from "./lib/newsletter-parse.ts";
+import { deriveEditionUrl } from "./lib/edition-url.ts";
 import { renderHTMLWithWarnings, type RenderWarningEvent } from "./lib/newsletter-render-html.ts";
 import { buildFilenameMap, substituteImagePlaceholders, type PublicImagesFile } from "./substitute-image-urls.ts";
 import {
@@ -427,32 +428,46 @@ export async function main(rootDirOverride?: string): Promise<void> {
   };
   writePublishedState(editionDir, state);
 
-  // #464 (Stage 5 wiring): `05-edition-url.txt` é o mesmo artefato que o
-  // playbook Beehiiv grava (ver orchestrator-stage-5.md §5c-1) — consumido
-  // por publish-linkedin/publish-facebook/publish-instagram (substituição
-  // de `{edition_url}` em `03-social.md`) e pelo `post_pixel` do Stage 6.
-  // `public_url` do broadcast Kit é o equivalente direto. Roda DEPOIS de
-  // `writePublishedState` acima (achado do review, PR #6096): o
-  // `broadcast_id` do draft real precisa estar persistido ANTES de
-  // qualquer I/O secundário que possa falhar — senão um erro de disco
-  // aqui (cheio, permissão) propagaria pra fora de `main()` sem o estado
-  // do draft ter sido salvo, e uma invocação seguinte veria `existing =
-  // null` e criaria um 2º draft de produção (exatamente o bug que a
-  // ordem "estado primeiro" logo acima já existe pra evitar). Try/catch
-  // dedicado torna esse fail-soft real, não só uma checagem de valor
-  // vazio — nenhuma falha aqui propaga pra fora de `main()`.
+  // #7420 (achado ao vivo, edição 260904 — apex diar.ia.br é NOSSO desde o
+  // cutover #467/26-08-2026, não mais "domínio da Beehiiv"): `05-edition-url.txt`
+  // é o mesmo artefato que o playbook Beehiiv grava (ver orchestrator-stage-5.md
+  // §5c-1) — consumido por publish-linkedin/publish-facebook/publish-instagram/
+  // publish-threads (substituição de `{edition_url}` em `03-social.md`) e pelo
+  // `post_pixel` do Stage 6. Usa `deriveEditionUrl(d1.title)` — o MESMO
+  // `https://diar.ia.br/p/{seoSlug(d1Title)}` que `buildWhatsappEditionUrl` já
+  // crava no corpo do e-mail (Stage 4, `newsletter-render-html.ts`,
+  // independente do backend de envio). `public_url` do broadcast Kit
+  // (`{pub}.kit.com/...`) NUNCA foi o valor certo aqui: era um domínio de
+  // terceiro (Kit), o oposto de "estrutura própria" — e ainda vinha sem slug
+  // até o broadcast sair de "draft" de verdade (#7405, motivo do antigo
+  // `kit-refresh-social-edition-url.ts`, hoje sem propósito pra este campo).
+  // Não depende de `publicUrl`/rede — puramente derivada do título do D1, já
+  // disponível em `content` desde o início de `main()`.
+  //
+  // Roda DEPOIS de `writePublishedState` acima (achado do review, PR #6096):
+  // o `broadcast_id` do draft real precisa estar persistido ANTES de
+  // qualquer I/O secundário que possa falhar — senão um erro de disco aqui
+  // (cheio, permissão) propagaria pra fora de `main()` sem o estado do draft
+  // ter sido salvo, e uma invocação seguinte veria `existing = null` e
+  // criaria um 2º draft de produção (exatamente o bug que a ordem "estado
+  // primeiro" logo acima já existe pra evitar). Try/catch dedicado torna
+  // esse fail-soft real, não só uma checagem de valor vazio — nenhuma falha
+  // aqui propaga pra fora de `main()`.
   try {
-    if (publicUrl) {
+    const d1Title = content.destaques[0]?.title;
+    if (d1Title) {
+      const editionUrl = deriveEditionUrl(d1Title);
       const internalDir = resolve(editionDir, "_internal");
       mkdirSync(internalDir, { recursive: true });
-      writeFileSync(resolve(internalDir, "05-edition-url.txt"), publicUrl);
+      writeFileSync(resolve(internalDir, "05-edition-url.txt"), editionUrl);
+      // Diagnóstico apenas — `publicUrl` (domínio Kit) não é mais gravado em
+      // lugar nenhum, mas continua útil no log pra comparar contra a URL
+      // própria acima enquanto o Kit é auditado (#7420).
+      log(`edition_url (próprio): ${editionUrl}${publicUrl ? ` — public_url do Kit (não usado): ${publicUrl}` : ""}`);
     } else {
-      // #464: nunca confirmado ao vivo que o Kit sempre popula `public_url`
-      // (ver docstring de `KitBroadcastDetail` em kit-client.ts) — se
-      // acontecer de verdade, o orchestrator (§5c-2) trata a ausência
-      // deste arquivo como sinal pra warning explícito, nunca cai no
-      // fallback de URL Beehiiv (domínio errado pro Kit).
-      log("warn: broadcast sem public_url — 05-edition-url.txt não gravado.");
+      // Sem D1 não há como derivar a URL própria — mesmo "nunca deveria
+      // acontecer" defensivo de `renderWhatsappShare` (#4512) pro mesmo caso.
+      log("warn: edição sem D1 (content.destaques[0] ausente) — 05-edition-url.txt não gravado.");
     }
   } catch (e) {
     log(`warn: falha ao gravar 05-edition-url.txt (${e instanceof Error ? e.message : String(e)}) — draft/estado já persistidos, artefato secundário não gravado.`);

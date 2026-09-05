@@ -397,7 +397,7 @@ describe("resolveTwitterImage (#4264)", () => {
     try {
       writePublicImages(dir, {
         d1_4x5: { url: "https://poll.diaria.workers.dev/img/d1-4x5.jpg" },
-        d1: { url: "https://poll.diaria.workers.dev/img/d1-1x1.jpg" },
+        cover: { url: "https://poll.diaria.workers.dev/img/d1-2x1.jpg" },
       });
       const result = resolveTwitterImage(dir, "d1", "260729");
       assert.equal(result.imageUrl, "https://poll.diaria.workers.dev/img/d1-4x5.jpg");
@@ -408,16 +408,16 @@ describe("resolveTwitterImage (#4264)", () => {
     }
   });
 
-  it("cai pro 1:1 quando o card 4x5 não existe pro destaque (só a entry 1:1 presente)", () => {
+  it("#7399: cai pro hero 2:1 quando o card 4x5 não existe pro destaque (só o hero presente)", () => {
     const dir = mkdtempSync(join(tmpdir(), "diaria-twitter-img-fallback-"));
     try {
       writePublicImages(dir, {
         d1_4x5: { url: "https://poll.diaria.workers.dev/img/d1-4x5.jpg" },
-        d1: { url: "https://poll.diaria.workers.dev/img/d1-1x1.jpg" },
-        d2: { url: "https://poll.diaria.workers.dev/img/d2-1x1.jpg" },
+        cover: { url: "https://poll.diaria.workers.dev/img/d1-2x1.jpg" },
+        d2_2x1: { url: "https://poll.diaria.workers.dev/img/d2-2x1.jpg" },
       });
       const result = resolveTwitterImage(dir, "d2", "260729");
-      assert.equal(result.imageUrl, "https://poll.diaria.workers.dev/img/d2-1x1.jpg");
+      assert.equal(result.imageUrl, "https://poll.diaria.workers.dev/img/d2-2x1.jpg");
       assert.equal(result.reason, null);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -435,10 +435,10 @@ describe("resolveTwitterImage (#4264)", () => {
     }
   });
 
-  it("retorna imageUrl null + reason quando o cache existe mas não tem entry pro destaque", () => {
+  it("retorna imageUrl null + reason quando o cache existe mas não tem entry pro destaque (nem 4x5, nem hero)", () => {
     const dir = mkdtempSync(join(tmpdir(), "diaria-twitter-img-missing-entry-"));
     try {
-      writePublicImages(dir, { d1: { url: "https://poll.diaria.workers.dev/img/d1-1x1.jpg" } });
+      writePublicImages(dir, { cover: { url: "https://poll.diaria.workers.dev/img/d1-2x1.jpg" } });
       const result = resolveTwitterImage(dir, "d3", "260729");
       assert.equal(result.imageUrl, null);
       assert.match(result.reason ?? "", /public URL para d3 ausente/);
@@ -446,24 +446,36 @@ describe("resolveTwitterImage (#4264)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("#7399: chave base 1x1 legada sozinha (sem 4x5, sem hero) NÃO resolve mais", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-twitter-img-legacy-base-"));
+    try {
+      writePublicImages(dir, { d2: { url: "https://poll.diaria.workers.dev/img/d2-1x1.jpg" } });
+      const result = resolveTwitterImage(dir, "d2", "260729");
+      assert.equal(result.imageUrl, null);
+      assert.match(result.reason ?? "", /public URL para d2 ausente/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("prepTwitterPosts — imageUrl/skipped_image (#4264)", () => {
-  it("com 06-public-images.json presente: d1 usa o card 4x5, d2 cai pro 1:1 (4x5 ausente pra d2)", () => {
+  it("com 06-public-images.json presente: d1 usa o card 4x5, d2 cai pro hero 2:1 (4x5 ausente pra d2, #7399)", () => {
     const dir = makeEditionDir("diaria-twitter-prep-img-", MD_CURTO);
     try {
       writePublicImages(dir, {
         d1_4x5: { url: "https://poll.diaria.workers.dev/img/d1-4x5.jpg" },
-        d1: { url: "https://poll.diaria.workers.dev/img/d1-1x1.jpg" },
-        d2: { url: "https://poll.diaria.workers.dev/img/d2-1x1.jpg" }, // sem d2_4x5
-        d3: { url: "https://poll.diaria.workers.dev/img/d3-1x1.jpg" },
+        cover: { url: "https://poll.diaria.workers.dev/img/d1-2x1.jpg" },
+        d2_2x1: { url: "https://poll.diaria.workers.dev/img/d2-2x1.jpg" }, // sem d2_4x5
+        d3_2x1: { url: "https://poll.diaria.workers.dev/img/d3-2x1.jpg" },
       });
       const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
 
       const d1 = result.posts.find((p) => p.destaque === "d1");
       const d2 = result.posts.find((p) => p.destaque === "d2");
       assert.equal(d1?.imageUrl, "https://poll.diaria.workers.dev/img/d1-4x5.jpg");
-      assert.equal(d2?.imageUrl, "https://poll.diaria.workers.dev/img/d2-1x1.jpg");
+      assert.equal(d2?.imageUrl, "https://poll.diaria.workers.dev/img/d2-2x1.jpg");
       assert.equal(result.skipped_image.length, 0);
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -55,14 +55,31 @@
  * campanhas comprometidas — queued/sent — é pulada com aviso se ausente ou se
  * a consulta falhar) mas OBRIGATÓRIA pra escrita real (aborta sem ela).
  *
+ * MODO FILA ÚNICA DO ENVIO DIÁRIO (#7406): substitui `--group ramp-warm` +
+ * `--group engajados` (duas tasks agendadas, 19:00 e 20:15 — a 2ª nunca
+ * deveria ter existido, #6945) por UMA fila só, ordenada por
+ * `priority_points DESC` (`buildDailySendQueue`, clarice-segment.ts).
+ * Decisão do editor (04/09/2026): "não faz mais sentido ter grupos
+ * diferentes... a gente pode trabalhar tudo só a partir do score." O guard
+ * de duplicidade (`CommittedGuardScope`) continua diferente por CONTATO
+ * (queued só pra quem já recebeu, queued∪sent só pra quem nunca recebeu —
+ * usar o guard errado zera quem já recebeu ou perde a proteção contra o lag
+ * de sync do Brevo), mas isso é interno — não é uma escolha exposta.
+ *
+ *   npx tsx scripts/clarice-build-segment.ts --daily --cycle 2609-09 --budget 500 --send-date 2026-09-05 [--dry-run]
+ *   --daily      sem argumento — liga o modo. Não aceita --cohort/--min-score/
+ *                --score/--guard-scope/--since (a fila decide os três sozinha,
+ *                por contato). --budget/--hold/--send-date/--dry-run/--force
+ *                continuam valendo, mesmo efeito dos outros 2 modos.
+ *
  * MODO WATERFALL MULTI-TIER (#4979): alternativa a `--group` pra composições
  * custom que nenhum NAMED_GROUP cobre (ex: "jurídico + vários cohorts score=0,
  * waterfall até um budget fixo" — a campanha própria que motivou a issue,
  * generalizando o one-off `clarice-build-wave-260812-especial.ts`, nunca
- * commitado). `--group` e `--tiers` são MUTUAMENTE EXCLUSIVOS — exatamente um
- * dos dois é obrigatório por invocação. Os guards (dedup por ciclo, recência
- * automática, campanha comprometida, `--hold`) são os MESMOS dos 4 grupos
- * nomeados — o modo tiers entra DEPOIS deles, nunca os bypassa.
+ * commitado). `--group`, `--tiers` e `--daily` são MUTUAMENTE EXCLUSIVOS —
+ * exatamente um dos três é obrigatório por invocação. Os guards (dedup por
+ * ciclo, recência automática, campanha comprometida, `--hold`) são os MESMOS
+ * nos 3 modos — tiers/daily entram DEPOIS deles, nunca os bypassam.
  *
  *   npx tsx scripts/clarice-build-segment.ts --tiers plano.json --key d12-especial --cycle 2607-08 --budget 3000 --exact-budget --dry-run
  *   --tiers ARQUIVO.json  composição declarativa: `{ "tiers": [ {...}, ... ] }`,
@@ -289,6 +306,8 @@ import {
   buildWaterfallSelection,
   validateWaterfallTiers,
   assertRecencySelectionMonotonic,
+  buildDailySendQueue,
+  isDailyQueueEligible,
   type NamedGroupKey,
   type NamedGroupContext,
   type StoreRow,
@@ -671,10 +690,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const cycle = requireCycleArg(argv);
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
 
-  // #4979: --group e --tiers são MUTUAMENTE EXCLUSIVOS — exatamente um dos
-  // dois modos por invocação. `groupArg` fica "" (getArg, mesmo padrão de
-  // sempre) quando ausente; `tiersPathArg` fica undefined (getStringArg).
+  // #4979/#7406: --group, --tiers e --daily são MUTUAMENTE EXCLUSIVOS —
+  // exatamente um dos três modos por invocação. `groupArg` fica "" (getArg,
+  // mesmo padrão de sempre) quando ausente; `tiersPathArg` fica undefined
+  // (getStringArg); `dailyArg` é um boolean puro (hasFlag).
+  //
+  // #7406: `--daily` substitui a escolha entre `--group engajados`/
+  // `--group ramp-warm` por UMA fila só, ordenada por score
+  // (`buildDailySendQueue`, clarice-segment.ts) — decisão do editor
+  // (04/09/2026): "não faz mais sentido ter grupos diferentes... a gente
+  // pode trabalhar tudo só a partir do score." Não é uma 4ª opção de escolha
+  // editorial — é o modo que `clarice-envio-run.ts` passa a chamar sozinho,
+  // substituindo o par de tasks (19:00 ramp-warm + 20:15 engajados, #6945 —
+  // a 2ª nunca deveria ter existido, ver #7406).
   const groupArg = getArg(argv, "group");
+  const dailyArg = hasFlag(argv, "daily");
   let tiersPathArg: string | undefined;
   try {
     tiersPathArg = getStringArg(argv, "tiers", { example: "plano.json" });
@@ -682,14 +712,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     console.error(`❌ ${(e as Error).message}`);
     process.exit(1);
   }
-  if (groupArg && tiersPathArg) {
-    console.error("❌ --group e --tiers são mutuamente exclusivos — escolha um modo por invocação (#4979).");
+  const modesPassed = [Boolean(groupArg), Boolean(tiersPathArg), dailyArg].filter(Boolean).length;
+  if (modesPassed > 1) {
+    console.error("❌ --group, --tiers e --daily são mutuamente exclusivos — escolha um modo por invocação (#4979/#7406).");
     process.exit(1);
   }
-  if (!groupArg && !tiersPathArg) {
+  if (modesPassed === 0) {
     console.error(
       `❌ é obrigatório passar --group (um dos grupos nomeados: ${Object.keys(NAMED_GROUPS).join(", ")}) ` +
-        `OU --tiers <arquivo.json> (composição multi-tier, #4979). Ex: --group engajados.`,
+        `OU --tiers <arquivo.json> (composição multi-tier, #4979) OU --daily (fila única por score, #7406). ` +
+        `Ex: --group engajados.`,
+    );
+    process.exit(1);
+  }
+  if (dailyArg && (getArg(argv, "cohort") || getArg(argv, "min-score") || getArg(argv, "score") || getArg(argv, "guard-scope") || getArg(argv, "since"))) {
+    console.error(
+      "❌ --cohort/--min-score/--score/--guard-scope/--since não são suportados com --daily — a fila única decide elegibilidade+ordem+guard por contato, não por flag (#7406).",
     );
     process.exit(1);
   }
@@ -796,6 +834,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     const cutoff = readNovosCutoff(getArg(argv, "data-root") || undefined);
     ctx = { cutoffNovosIso: cutoff?.cutoffIso ?? null };
   }
+  // #7406: `--daily` precisa do MESMO cutoff que `ramp-warm` — a fila única
+  // também particiona contra a janela `novos` do lado de 1º envio (o público
+  // `novos` continua servido pelo pipeline `/diaria-clarice-novos` separado).
+  const dailyCutoffNovosIso: string | null | undefined = dailyArg
+    ? readNovosCutoff(getArg(argv, "data-root") || undefined)?.cutoffIso ?? null
+    : undefined;
 
   // --budget é OPCIONAL (diferente de clarice-build-waves-store.ts, onde é
   // obrigatório): sem a flag, o grupo inteiro (já filtrado pelo predicado) é
@@ -899,8 +943,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // troca "onda menor sem aviso" por uma instrução clara de como destravar.
   // #4979: o modo --tiers também fica exposto ao #4205 sempre que algum tier
   // filtra por `score: "positive"` (mesmo eixo de priority_points que
-  // 'engajados' usa) — mesmo guard, gatilho generalizado.
-  const scoreSensitive = tiersPathArg ? tierSpecs.some((t) => t.score === "positive") : group === "engajados";
+  // 'engajados' usa) — mesmo guard, gatilho generalizado. #7406: `--daily`
+  // também é score-sensitive — a metade re-envio da fila única usa
+  // exatamente `isEngajados` (priority_points>0) por baixo.
+  const scoreSensitive = tiersPathArg
+    ? tierSpecs.some((t) => t.score === "positive")
+    : dailyArg
+      ? true
+      : group === "engajados";
   if (scoreSensitive && isDerivedStale(db)) {
     db.close();
     console.error(
@@ -997,11 +1047,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
   // #4979: no modo --tiers o escopo vem de --guard-scope (default "committed"
   // — ver docstring do topo do arquivo); no modo --group, do NAMED_GROUPS
-  // como sempre.
-  const guardScope: CommittedGuardScope = tiersPathArg ? tiersGuardScope : NAMED_GROUPS[group as NamedGroupKey].guardScope;
+  // como sempre. #7406: no modo --daily não há UM escopo — cada linha usa o
+  // seu (ver `buildDailySendQueue`), então os dois Sets são buscados aqui e
+  // repassados inteiros; a exclusão em si acontece dentro de computeArtifact.
+  const guardScope: CommittedGuardScope | null = tiersPathArg
+    ? tiersGuardScope
+    : dailyArg
+      ? null
+      : NAMED_GROUPS[group as NamedGroupKey].guardScope;
   // Nome neutro de propósito: o conteúdo é `queued` OU `queued ∪ sent` conforme
   // `guardScope` — chamá-lo de "committed" induziria a ler `sent` onde não há.
   let guardListIds: Set<string> = new Set();
+  // #7406 — só populados em `--daily`; os dois SEMPRE juntos (a fila única
+  // precisa dos dois eixos, nunca só um).
+  let dailyQueuedListIds: Set<string> = new Set();
+  let dailyCommittedListIds: Set<string> = new Set();
   if (apiKey) {
     // #6458 — aviso BEST-EFFORT, nunca bloqueante, logo antes da tentativa
     // real (mesmo padrão de `clarice-plan-wave.ts`): se a cota já estava
@@ -1012,28 +1072,50 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // scripts/lib/brevo-rate-state.ts).
     warnIfCampaignQuotaLow();
     try {
-      // `switch` + exhaustividade (em vez de ternário): um escopo novo
-      // adicionado a `CommittedGuardScope` quebra o TYPECHECK aqui, em vez de
-      // cair silenciosamente no ramo `committed` — que é a forma exata do bug
-      // que esta função corrige.
-      switch (guardScope) {
-        case "queued":
-          guardListIds = await fetchQueuedCampaignListIds(apiKey);
-          break;
-        case "committed":
-          guardListIds = await fetchCommittedCampaignListIds(apiKey);
-          break;
-        default: {
-          const jamais: never = guardScope;
-          throw new Error(`guardScope não tratado: ${String(jamais)}`);
+      if (dailyArg) {
+        // Sequencial (não Promise.all) — mesma disciplina de não paralelizar
+        // chamadas à API da Brevo que o resto do arquivo já segue (rate limit).
+        dailyQueuedListIds = await fetchQueuedCampaignListIds(apiKey);
+        dailyCommittedListIds = await fetchCommittedCampaignListIds(apiKey);
+        if (dailyQueuedListIds.size > 0 || dailyCommittedListIds.size > 0) {
+          console.error(
+            `🔒 guard por contato (#7406): ${dailyQueuedListIds.size} lista(s) queued, ` +
+              `${dailyCommittedListIds.size} lista(s) queued∪sent — cada linha usa o Set certo pro seu histórico de envio.`,
+          );
         }
-      }
-      if (guardListIds.size > 0) {
-        console.error(
-          guardScope === "queued"
-            ? `🔒 guard queued (grupo de re-envio): ${guardListIds.size} lista(s) Brevo com campanha AGENDADA serão excluídas.`
-            : `🔒 guard queued/sent: ${guardListIds.size} lista(s) Brevo comprometida(s) (campanha agendada ou já disparada) serão excluídas.`,
-        );
+      } else {
+        // #7413 review: `guardScope` só é `null` no ramo `dailyArg` acima —
+        // este `if` explícito devolve a garantia de compile-time do switch
+        // abaixo (sem ele, o `as CommittedGuardScope` cast escondia um
+        // `guardScope === null` indevido até o runtime, caindo no `default`
+        // — dano limitado, mas o comentário do switch promete mais do que
+        // o cast garantia).
+        if (guardScope === null) {
+          throw new Error("guardScope nulo fora do modo --daily — bug de programação, nunca deveria acontecer.");
+        }
+        // `switch` + exhaustividade (em vez de ternário): um escopo novo
+        // adicionado a `CommittedGuardScope` quebra o TYPECHECK aqui, em vez de
+        // cair silenciosamente no ramo `committed` — que é a forma exata do bug
+        // que esta função corrige.
+        switch (guardScope) {
+          case "queued":
+            guardListIds = await fetchQueuedCampaignListIds(apiKey);
+            break;
+          case "committed":
+            guardListIds = await fetchCommittedCampaignListIds(apiKey);
+            break;
+          default: {
+            const jamais: never = guardScope;
+            throw new Error(`guardScope não tratado: ${String(jamais)}`);
+          }
+        }
+        if (guardListIds.size > 0) {
+          console.error(
+            guardScope === "queued"
+              ? `🔒 guard queued (grupo de re-envio): ${guardListIds.size} lista(s) Brevo com campanha AGENDADA serão excluídas.`
+              : `🔒 guard queued/sent: ${guardListIds.size} lista(s) Brevo comprometida(s) (campanha agendada ou já disparada) serão excluídas.`,
+          );
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1049,14 +1131,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     );
     process.exit(1);
   }
-  const universe = excludeCommittedToQueuedCampaigns(afterRecency, guardListIds);
-  const committedExcluded = afterRecency.length - universe.length;
-  if (committedExcluded > 0) {
+  // #7406: `--daily` NÃO aplica um guard único aqui — `universe` é só o
+  // pós-recência, e a exclusão por contato acontece dentro de
+  // `buildDailySendQueue` (computeArtifact abaixo). Nos outros 2 modos,
+  // comportamento inalterado.
+  const universe = dailyArg ? afterRecency : excludeCommittedToQueuedCampaigns(afterRecency, guardListIds);
+  const committedExcludedLegacy = dailyArg ? 0 : afterRecency.length - universe.length;
+  if (committedExcludedLegacy > 0) {
     // A causa nomeada acompanha o escopo: em RE-envio nunca é "disparada".
     console.error(
       guardScope === "queued"
-        ? `🔒 ${committedExcluded} contato(s) excluído(s) por já estarem comprometidos com campanha AGENDADA.`
-        : `🔒 ${committedExcluded} contato(s) excluído(s) por já estarem comprometidos com campanha agendada/disparada.`,
+        ? `🔒 ${committedExcludedLegacy} contato(s) excluído(s) por já estarem comprometidos com campanha AGENDADA.`
+        : `🔒 ${committedExcludedLegacy} contato(s) excluído(s) por já estarem comprometidos com campanha agendada/disparada.`,
     );
   }
 
@@ -1094,8 +1180,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // --tiers usa uma seleção waterfall diferente, fora do escopo da issue
     // (que nomeia especificamente segmentRampWarm/firstSend.sort). Ausente
     // (não `[]`) no branch --tiers pra deixar explícito que não foi checado,
-    // não que passou vazio.
+    // não que passou vazio. #7406: `--daily` TAMBÉM computa isto, mas só
+    // sobre a fatia `priority_points=0` da fila (a única recência-ordenada —
+    // a fatia >0 é ordenada por engajamento, onde "monotonicidade de
+    // recência" não faz sentido, mesmo racional de RECENCY_ORDERED_GROUPS).
     recencyViolations?: RecencyMonotonicityViolation[];
+    // #7406: só `--daily` preenche — tamanho da fila ANTES do corte de
+    // `--budget` (depois de elegibilidade+guard), pra `main()` calcular
+    // quantos o guard por contato excluiu (não confundir com o corte de
+    // budget, que não é "excluído", é "próxima rodada pega o resto").
+    dailyPreBudgetCount?: number;
   } {
     const effBudget = budgetOverride ?? budget;
     if (tiersPathArg) {
@@ -1111,12 +1205,60 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         tierStats: wf.tierStats,
       };
     }
+    if (dailyArg) {
+      const ordered = buildDailySendQueue(
+        inputRows,
+        { queuedListIds: dailyQueuedListIds, committedListIds: dailyCommittedListIds },
+        dailyCutoffNovosIso ?? null,
+      );
+      const selected = effBudget > 0 ? ordered.slice(0, effBudget) : ordered;
+      // Só a fatia score=0 (ex-ramp-warm) é recência-ordenada — a fatia
+      // score>0 (ex-engajados) é ordenada por priority_points, não por
+      // `created`, então comparar monotonicidade de recência ali não tem
+      // sentido (mesmo racional de RECENCY_ORDERED_GROUPS acima).
+      const isScoreZero = (r: SegmentRow) => (r.priority_points ?? 0) === 0;
+      const recencyViolations = assertRecencySelectionMonotonic(
+        selected.filter(isScoreZero),
+        ordered.slice(selected.length).filter(isScoreZero),
+      );
+      const nameByEmail = new Map(rows.map((r) => [r.email, firstName(r.name)]));
+      const csvRows = selected.map((r) => ({ email: r.email, NOME: nameByEmail.get(r.email) ?? "" }));
+      const file = "daily.csv";
+      const csvOut = Papa.unparse({ fields: ["email", "NOME"], data: csvRows });
+      return {
+        csv: csvOut,
+        manifestEntry: { key: "daily", file, desc: "Fila única do envio diário (#7406)", count: selected.length },
+        selected,
+        recencyViolations,
+        dailyPreBudgetCount: ordered.length,
+      };
+    }
     return buildSegmentArtifact(inputRows, group as NamedGroupKey, effBudget, minScore, ctx);
   }
 
   // #5922: `let` (não const) — o auto-fatiamento do D13 (grupo `novos` acima
   // do teto, sem --force) substitui estas três pelo artefato fatiado.
-  let { csv, manifestEntry, selected, tierStats, recencyViolations } = computeArtifact(holdResult.kept);
+  let { csv, manifestEntry, selected, tierStats, recencyViolations, dailyPreBudgetCount } = computeArtifact(holdResult.kept);
+
+  // #4979/#7406: identificador único do artefato nos 3 modos — nome do
+  // grupo no modo --group, --key no modo --tiers, "daily" fixo no modo
+  // --daily (uma fila só, não há nome pra escolher). Içado pra ANTES do
+  // guard de recência abaixo (que já precisa citar o artefato nas mensagens
+  // de erro) — usado também pra nomear arquivos, a entrada em
+  // sent-or-queued.json, e demais mensagens de log/erro.
+  const artifactKey: string = group ?? tiersKey ?? "daily";
+
+  // #7406: quantos passaram elegibilidade mas caíram no guard por contato
+  // (não confundir com o corte de --budget, que fica pra próxima rodada, não
+  // é "excluído"). Contra `holdResult.kept` — mesmo universo que computeArtifact
+  // usou de fato pra esta invocação (não o `semReserva` mais abaixo).
+  const dailyCommittedExcluded = dailyArg
+    ? holdResult.kept.filter((r) => isDailyQueueEligible(r, dailyCutoffNovosIso ?? null)).length -
+      (dailyPreBudgetCount ?? 0)
+    : 0;
+  if (dailyCommittedExcluded > 0) {
+    console.error(`🔒 ${dailyCommittedExcluded} contato(s) excluído(s) pelo guard por contato (queued/committed conforme o histórico de envio de cada um, #7406).`);
+  }
 
   // #5169: guard de monotonicidade de recência — só grupos `ramp-warm`/
   // `novos` (RECENCY_ORDERED_GROUPS, clarice-segment.ts) produzem
@@ -1135,7 +1277,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const recencyCheck = checkRecencyMonotonic(recencyViolations ?? [], forceCap);
   if (!recencyCheck.ok) {
     console.error(
-      `❌ grupo '${group}' violou a monotonicidade de recência (#5169): ${recencyCheck.message} ` +
+      `❌ grupo '${artifactKey}' violou a monotonicidade de recência (#5169): ${recencyCheck.message} ` +
         `Sob operação normal isto nunca deveria acontecer — investigue antes de prosseguir. ` +
         `Use --force pra destravar depois de olhar.`,
     );
@@ -1143,7 +1285,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
   if (recencyCheck.forced) {
     console.error(
-      `⚠️  grupo '${group}' violou a monotonicidade de recência (#5169), mas --force estava ativo — a escrita ` +
+      `⚠️  grupo '${artifactKey}' violou a monotonicidade de recência (#5169), mas --force estava ativo — a escrita ` +
         `prosseguiu mesmo assim: ${recencyCheck.message} Registrado em recency_violations_forced no summary.`,
     );
   }
@@ -1231,27 +1373,27 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
   }
 
-  // #4979: identificador único do artefato nos dois modos — nome do grupo no
-  // modo --group, --key no modo --tiers. Usado pra nomear arquivos, a entrada
-  // em sent-or-queued.json, e as mensagens de log/erro abaixo.
-  const artifactKey: string = group ?? (tiersKey as string);
-
   const summary = {
     cycle,
-    mode: tiersPathArg ? "waterfall-tiers" : "named-group",
+    mode: tiersPathArg ? "waterfall-tiers" : dailyArg ? "daily-queue" : "named-group",
     group: group ?? undefined,
     tiers_key: tiersPathArg ? tiersKey : undefined,
     tiers_path: tiersPathArg || undefined,
-    label: tiersPathArg ? tiersDesc : NAMED_GROUPS[group as NamedGroupKey].label,
-    source: tiersPathArg ? "waterfall multi-tier (#4979)" : "store-driven, grupo nomeado (#2885)",
+    label: tiersPathArg ? tiersDesc : dailyArg ? "Fila única do envio diário (#7406)" : NAMED_GROUPS[group as NamedGroupKey].label,
+    source: tiersPathArg
+      ? "waterfall multi-tier (#4979)"
+      : dailyArg
+        ? "fila única por score, guard por contato (#7406)"
+        : "store-driven, grupo nomeado (#2885)",
     budget: budget || undefined,
     exact_budget: tiersPathArg && exactBudget ? true : undefined,
-    min_score: !tiersPathArg ? minScore || undefined : undefined,
+    min_score: !tiersPathArg && !dailyArg ? minScore || undefined : undefined,
     since: ctx?.sinceIso || undefined,
-    // #5410: só presente no grupo `ramp-warm` — o cutoff que exclui a janela
-    // `novos` desta seleção (auditoria; `null` = base ainda sem nenhuma
-    // rodada de `novos`, comportamento pré-#5410).
-    cutoff_novos: group === "ramp-warm" ? ctx?.cutoffNovosIso ?? null : undefined,
+    // #5410: presente no grupo `ramp-warm` e no modo `--daily` (mesmo corte
+    // do lado de 1º envio nos dois) — o cutoff que exclui a janela `novos`
+    // desta seleção (auditoria; `null` = base ainda sem nenhuma rodada de
+    // `novos`, comportamento pré-#5410).
+    cutoff_novos: group === "ramp-warm" ? (ctx?.cutoffNovosIso ?? null) : dailyArg ? (dailyCutoffNovosIso ?? null) : undefined,
     // #4622: auditoria — undefined vira ausente no JSON (não escreve `null` ruidoso).
     cohort: cohort ?? undefined,
     universe_total: rows.length,
@@ -1268,12 +1410,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     not_sent_cutoff: notSentCutoff,
     recency_cutoff_source: recencyCutoffSource,
     excluded_by_recency: excludedByRecency || undefined,
-    // Sempre presente (não `|| undefined`): saber QUAL escopo de guard rodou é
-    // o que permite auditar, meses depois, por que um contato entrou ou não
-    // numa rodada — e este guard já falhou em silêncio uma vez, zerando um
-    // grupo inteiro (ver `CommittedGuardScope`, clarice-segment.ts).
-    guard_scope: guardScope,
-    already_committed_brevo: committedExcluded || undefined,
+    // Sempre presente nos modos --group/--tiers (não `|| undefined`): saber
+    // QUAL escopo de guard rodou é o que permite auditar, meses depois, por
+    // que um contato entrou ou não numa rodada — e este guard já falhou em
+    // silêncio uma vez, zerando um grupo inteiro (ver `CommittedGuardScope`,
+    // clarice-segment.ts). `--daily` não tem escopo único (por isso o
+    // literal abaixo) — a auditoria por contato é `already_committed_brevo`.
+    guard_scope: dailyArg ? "per-contact (#7406)" : guardScope,
+    already_committed_brevo: dailyArg ? dailyCommittedExcluded || undefined : committedExcludedLegacy || undefined,
     // #4542: presente quando --hold foi PASSADA (independente de ter retido
     // alguem) — o operador precisa ver que a flag estava ativa mesmo com 0
     // retidos. Os campos held_* abaixo so aparecem quando algo casou.
