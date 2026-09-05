@@ -12,13 +12,23 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
+import { writeFileSync } from "node:fs";
 import {
   ingestAccount,
   checkpointPathForAccount,
+  contactsByListPath,
+  loadBrevoDiariaListId,
   main,
   BREVO_ACCOUNTS,
 } from "../scripts/diaria-subscribers-ingest-brevo.ts";
 import { openDiariaSubscribersDb, getStoreCounts, findSubscriberIdsByEmail } from "../scripts/lib/diaria-subscribers-db.ts";
+
+/** `list_id` fixo usado nos testes — não precisa bater com o de
+ *  `platform.config.json` (que É lido de verdade no import do módulo, via
+ *  `loadBrevoDiariaListId()` dentro do literal de `BREVO_ACCOUNTS`, inclusive
+ *  em teste). Não precisa bater porque `ingestAccount`/`checkpointPathForAccount`
+ *  são chamados aqui com `listId` explícito, sem passar por `BREVO_ACCOUNTS`. */
+const TEST_LIST_ID = 7;
 
 function jsonResponse(body: unknown): Promise<Response> {
   return Promise.resolve({
@@ -30,12 +40,13 @@ function jsonResponse(body: unknown): Promise<Response> {
   } as unknown as Response);
 }
 
-/** Troca `globalThis.fetch` só pra responder o LISTING (`/contacts?...`) —
- *  mesmo padrão de `brevo-committed-campaigns-3682.test.ts`. */
+/** Troca `globalThis.fetch` só pra responder o LISTING escopado à lista
+ *  (`/contacts/lists/{listId}/contacts?...`, #7199) — mesmo padrão de
+ *  `brevo-committed-campaigns-3682.test.ts`. */
 async function withMockedListing<T>(contacts: Array<{ id: number; email: string }>, fn: () => Promise<T>): Promise<T> {
   const orig = globalThis.fetch;
   globalThis.fetch = (async (url: string) => {
-    if (String(url).includes("/contacts?")) return jsonResponse({ contacts });
+    if (String(url).includes("/contacts/lists/")) return jsonResponse({ contacts });
     throw new Error(`fetch inesperado no teste: ${url}`);
   }) as typeof fetch;
   try {
@@ -45,10 +56,85 @@ async function withMockedListing<T>(contacts: Array<{ id: number; email: string 
   }
 }
 
+describe("loadBrevoDiariaListId (#7199/#7451 review — os 2 caminhos de fallback avisam)", () => {
+  it("config válido: devolve o list_id do arquivo", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-cfg-"));
+    const cfgPath = resolve(tmp, "platform.config.json");
+    writeFileSync(cfgPath, JSON.stringify({ brevo_diaria: { list_id: 42 } }));
+    assert.equal(loadBrevoDiariaListId(cfgPath), 42);
+  });
+
+  it("arquivo ausente: cai no fallback (7) e avisa via console.error", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-cfg-"));
+    const cfgPath = resolve(tmp, "nao-existe.json");
+    const orig = console.error;
+    const messages: string[] = [];
+    console.error = (...args: unknown[]) => messages.push(args.join(" "));
+    try {
+      assert.equal(loadBrevoDiariaListId(cfgPath), 7);
+    } finally {
+      console.error = orig;
+    }
+    assert.ok(messages.some((m) => m.includes("platform.config.json não lido")));
+  });
+
+  it("config lido, mas brevo_diaria.list_id ausente: cai no fallback E avisa (achado dos reviewers do #7451 — antes era silencioso)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-cfg-"));
+    const cfgPath = resolve(tmp, "platform.config.json");
+    writeFileSync(cfgPath, JSON.stringify({ brevo_diaria: {} }));
+    const orig = console.error;
+    const messages: string[] = [];
+    console.error = (...args: unknown[]) => messages.push(args.join(" "));
+    try {
+      assert.equal(loadBrevoDiariaListId(cfgPath), 7);
+    } finally {
+      console.error = orig;
+    }
+    assert.ok(messages.some((m) => m.includes("list_id ausente ou inválido")));
+  });
+
+  it("config lido, mas list_id é string (tipo errado): cai no fallback E avisa", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-cfg-"));
+    const cfgPath = resolve(tmp, "platform.config.json");
+    writeFileSync(cfgPath, JSON.stringify({ brevo_diaria: { list_id: "7" } }));
+    const orig = console.error;
+    const messages: string[] = [];
+    console.error = (...args: unknown[]) => messages.push(args.join(" "));
+    try {
+      assert.equal(loadBrevoDiariaListId(cfgPath), 7);
+    } finally {
+      console.error = orig;
+    }
+    assert.ok(messages.some((m) => m.includes("list_id ausente ou inválido")));
+  });
+
+  it("list_id 0, negativo ou fracionário é rejeitado (Number.isInteger && > 0, não Number.isFinite)", () => {
+    for (const bad of [0, -1, 7.5]) {
+      const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-cfg-"));
+      const cfgPath = resolve(tmp, "platform.config.json");
+      writeFileSync(cfgPath, JSON.stringify({ brevo_diaria: { list_id: bad } }));
+      assert.equal(loadBrevoDiariaListId(cfgPath), 7, `list_id=${bad} deveria cair no fallback`);
+    }
+  });
+});
+
+describe("contactsByListPath (#7199 — nunca /contacts sem escopo de lista)", () => {
+  it("monta o path escopado à lista, paginado", () => {
+    assert.equal(contactsByListPath(7, 0), "/contacts/lists/7/contacts?limit=500&offset=0");
+    assert.equal(contactsByListPath(7, 500), "/contacts/lists/7/contacts?limit=500&offset=500");
+  });
+});
+
 describe("checkpointPathForAccount", () => {
-  it("checkpoint nomeado pela conta, ao lado do .db", () => {
-    const p1 = checkpointPathForAccount("/x/data/diaria-subscribers/diaria-subscribers.db", "brevo_diaria");
-    assert.match(p1, /brevo-ingest-checkpoint-brevo_diaria\.json$/);
+  it("checkpoint nomeado pela conta + lista, ao lado do .db (#7199 — nunca reaproveita checkpoint de conta inteira)", () => {
+    const p1 = checkpointPathForAccount("/x/data/diaria-subscribers/diaria-subscribers.db", "brevo_diaria", TEST_LIST_ID);
+    assert.match(p1, /brevo-ingest-checkpoint-brevo_diaria-list7\.json$/);
+  });
+
+  it("listas diferentes da mesma conta nunca colidem no mesmo arquivo de checkpoint", () => {
+    const p7 = checkpointPathForAccount("/x/data/diaria-subscribers/diaria-subscribers.db", "brevo_diaria", 7);
+    const p8 = checkpointPathForAccount("/x/data/diaria-subscribers/diaria-subscribers.db", "brevo_diaria", 8);
+    assert.notEqual(p7, p8);
   });
 });
 
@@ -81,7 +167,7 @@ describe("ingestAccount", () => {
     const result = await withMockedListing(
       [{ id: 1, email: "a@x.com" }, { id: 2, email: "b@x.com" }],
       () =>
-        ingestAccount(db, "fake-key", "brevo_diaria", dbPath, {
+        ingestAccount(db, "fake-key", "brevo_diaria", TEST_LIST_ID, dbPath, {
           deps: { fetchContact: async (_key, id) => bodies[id] },
         }),
     );
@@ -95,7 +181,7 @@ describe("ingestAccount", () => {
     assert.equal(getStoreCounts(db).subscribers, 2);
 
     // checkpoint limpo ao terminar (enumeração + processamento completos)
-    assert.equal(existsSync(checkpointPathForAccount(dbPath, "brevo_diaria")), false);
+    assert.equal(existsSync(checkpointPathForAccount(dbPath, "brevo_diaria", TEST_LIST_ID)), false);
     db.close();
   });
 
@@ -108,7 +194,7 @@ describe("ingestAccount", () => {
 
     let attempt = 0;
     const result = await withMockedListing([{ id: 1, email: "a@x.com" }], () =>
-      ingestAccount(db, "fake-key", "brevo_diaria", dbPath, {
+      ingestAccount(db, "fake-key", "brevo_diaria", TEST_LIST_ID, dbPath, {
         deps: {
           fetchContact: async () => {
             attempt++;
@@ -122,11 +208,43 @@ describe("ingestAccount", () => {
     assert.equal(result.contactsProcessed, 0);
 
     // checkpoint preservado — contato 1 não está em doneIds
-    const cpPath = checkpointPathForAccount(dbPath, "brevo_diaria");
+    const cpPath = checkpointPathForAccount(dbPath, "brevo_diaria", TEST_LIST_ID);
     assert.ok(existsSync(cpPath), "checkpoint sobrevive quando algo falhou (retomável)");
     const cp = JSON.parse(readFileSync(cpPath, "utf8"));
     assert.deepEqual(cp.doneIds, []);
     db.close();
+  });
+
+  it("404 no listing (list_id inválido) propaga erro — NUNCA vira '0 contatos, sucesso' (#7451 review, silent-failure-hunter)", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-brevo-ingest-404-"));
+    const dbDir = resolve(tmp, "data/diaria-subscribers");
+    mkdirSync(dbDir, { recursive: true });
+    const dbPath = resolve(dbDir, "diaria-subscribers.db");
+    const db = openDiariaSubscribersDb(dbPath);
+
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      if (String(url).includes("/contacts/lists/")) {
+        return {
+          ok: false,
+          status: 404,
+          text: async () => "{}",
+          json: async () => ({}),
+          headers: { get: () => "application/json" },
+        } as unknown as Response;
+      }
+      throw new Error(`fetch inesperado no teste: ${url}`);
+    }) as typeof fetch;
+
+    try {
+      await assert.rejects(
+        () => ingestAccount(db, "fake-key", "brevo_diaria", 999999, dbPath, {}),
+        /404 numa listagem em massa não significa lista vazia/,
+      );
+    } finally {
+      globalThis.fetch = orig;
+      db.close();
+    }
   });
 });
 
@@ -168,6 +286,13 @@ describe("main() — a única conta (brevo_diaria), fail-soft por key ausente", 
       ["brevo_diaria"],
     );
   });
+
+  it("cada conta carrega um listId numérico (#7199 — enumeração sempre escopada à lista)", () => {
+    for (const account of BREVO_ACCOUNTS) {
+      assert.equal(typeof account.listId, "number");
+      assert.ok(Number.isFinite(account.listId) && account.listId > 0);
+    }
+  });
 });
 
 describe("main() — ponta a ponta com fixture da conta brevo_diaria (#6587 critério de pronto)", () => {
@@ -184,7 +309,7 @@ describe("main() — ponta a ponta com fixture da conta brevo_diaria (#6587 crit
 
     const orig = globalThis.fetch;
     globalThis.fetch = (async (url: string) => {
-      if (String(url).includes("/contacts?")) return jsonResponse({ contacts: listing });
+      if (String(url).includes("/contacts/lists/")) return jsonResponse({ contacts: listing });
       const match = String(url).match(/\/contacts\/(\d+)$/);
       if (match) return jsonResponse(contactById[Number(match[1])] ?? {});
       throw new Error(`fetch inesperado no teste: ${url}`);
