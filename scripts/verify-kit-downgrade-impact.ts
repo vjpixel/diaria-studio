@@ -36,9 +36,10 @@
  *   npx tsx scripts/verify-kit-downgrade-impact.ts --json       # imprime o JSON completo em vez do relatório em texto
  *
  * Exit code 1 se qualquer check não for "ok" (útil pra task agendada
- * detectar regressão sem precisar parsear o texto) — 0 se tudo OK ou se
- * a chamada de rede falhar antes da comparação (nesse caso a falha já
- * aparece no stderr; não é um "tudo OK" disfarçado).
+ * detectar regressão sem precisar parsear o texto) — 0 se tudo OK. Se a
+ * chamada de rede falhar ANTES da comparação (ex: `KIT_API_KEY` ausente,
+ * `/account` fora do ar), exit code é 2 e a mensagem vai pro stderr — nunca
+ * um "tudo OK" (0) disfarçado.
  *
  * ## Quando rodar de verdade
  *
@@ -52,7 +53,7 @@
  */
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { kitFetch } from "./lib/kit-client.ts";
+import { kitFetch, getKitAccount, listBroadcasts } from "./lib/kit-client.ts";
 import { listTags } from "./lib/kit-broadcasts.ts";
 import {
   KIT_DOWNGRADE_BASELINE_20260903,
@@ -66,11 +67,15 @@ import {
 
 loadProjectEnv();
 
+/**
+ * `kitFetch("/account")` cru é usado SÓ pra extrair `sending_addresses` —
+ * `getKitAccount` (kit-client.ts) não expõe esse campo. `planType` e
+ * `subscriberLimit` vêm de `getKitAccount`, não daqui — reusa o parsing
+ * fail-fast já corrigido pelo #7411 (aninhamento `account.plan.*` vs.
+ * `account.*` solto) em vez de duplicá-lo com um default silencioso.
+ */
 interface RawAccountResponse {
   account?: {
-    plan_type?: string;
-    plan?: { plan_type?: string; subscriber_limit?: number };
-    subscriber_limit?: number;
     sending_addresses?: KitDowngradeCurrentSendingAddress[];
   };
 }
@@ -89,10 +94,6 @@ interface RawCustomFieldsResponse {
   custom_fields?: Array<{ id: number; key: string }>;
 }
 
-interface RawBroadcastsResponse {
-  broadcasts?: unknown[];
-}
-
 /**
  * Busca o estado atual dos 5 recursos via REST puro contra a API v4 do Kit.
  * Impura de propósito — a decisão (o que conta como "quebrou") fica toda em
@@ -101,20 +102,15 @@ interface RawBroadcastsResponse {
  * Cada uma das 4 primeiras chamadas propaga o erro (fail-fast — se
  * `get_current_account` falhar, por exemplo, não faz sentido fingir que o
  * sending address "sumiu": o script todo aborta e o operador vê o erro de
- * rede real). Só a 5ª chamada (`listBroadcasts`, passo 4 do checklist —
- * "acesso à API") é capturada: falhar em LER broadcasts É o próprio sinal
- * que este check existe para detectar, não uma falha de infraestrutura do
- * script.
+ * rede real). Só a 5ª chamada (`listBroadcasts`, de `kit-client.ts`, passo 4
+ * do checklist — "acesso à API") é capturada: falhar em LER broadcasts É o
+ * próprio sinal que este check existe para detectar, não uma falha de
+ * infraestrutura do script.
  */
 export async function fetchCurrentKitDowngradeState(fetchedAt: string): Promise<KitDowngradeCurrentState> {
+  const { plan_type: planType, subscriber_limit: subscriberLimit } = await getKitAccount();
   const accountData = await kitFetch<RawAccountResponse | undefined>("/account");
-  const account = accountData?.account;
-  if (!account) {
-    throw new Error("[verify-kit-downgrade-impact] GET /account respondeu sem o envelope \"account\" esperado");
-  }
-  const planType = account.plan_type ?? account.plan?.plan_type ?? "";
-  const subscriberLimit = account.subscriber_limit ?? account.plan?.subscriber_limit ?? 0;
-  const sendingAddresses = account.sending_addresses ?? [];
+  const sendingAddresses = accountData?.account?.sending_addresses ?? [];
 
   const sequencesData = await kitFetch<RawSequencesResponse | undefined>("/sequences?per_page=100");
   const sequences: KitDowngradeCurrentSequence[] = (sequencesData?.sequences ?? []).map((s) => ({
@@ -136,7 +132,7 @@ export async function fetchCurrentKitDowngradeState(fetchedAt: string): Promise<
   let broadcastsAccessible = true;
   let broadcastsError: string | undefined;
   try {
-    await kitFetch<RawBroadcastsResponse | undefined>("/broadcasts?per_page=1");
+    await listBroadcasts({ perPage: 1 });
   } catch (e) {
     broadcastsAccessible = false;
     broadcastsError = (e as Error).message;

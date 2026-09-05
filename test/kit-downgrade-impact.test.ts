@@ -132,6 +132,14 @@ describe("compareKitDowngradeImpact — sequence de boas-vindas (#7365 passo 2)"
     const check = result.checks.find((c) => c.key === "sequence_boas_vindas")!;
     assert.equal(check.status, "ok");
   });
+
+  it("id não bate mas o NOME bate → fallback por nome acha a sequence (ok)", () => {
+    const current = healthyCurrentState();
+    current.sequences = current.sequences.map((s) => ({ ...s, id: 999999 }));
+    const result = compareKitDowngradeImpact(KIT_DOWNGRADE_BASELINE_20260903, current);
+    const check = result.checks.find((c) => c.key === "sequence_boas_vindas")!;
+    assert.equal(check.status, "ok");
+  });
 });
 
 describe("compareKitDowngradeImpact — tag rampa-kit (#7365 passo 3)", () => {

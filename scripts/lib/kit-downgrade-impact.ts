@@ -23,10 +23,13 @@
  * Os valores abaixo são os citados no corpo da issue #7365 — confirmados ao
  * vivo via `get_current_account`/`list_sequences`/`list_tags`/
  * `list_custom_fields` no mesmo dia (ver `KIT_DOWNGRADE_BASELINE_20260903`).
- * Contagens que mudam naturalmente com o tempo (`subscriber_count` da
- * sequence, quantos assinantes têm a tag) são INFORMATIVAS — a comparação
- * não falha por elas terem crescido, só por sumirem ou virarem 0 quando a
- * baseline não era 0.
+ * `subscriber_count` da sequence é INFORMATIVO só — aparece no detail do
+ * check "ok" mas nunca faz parte do veredito (`compareKitDowngradeImpact`
+ * só olha `active`/`email_count`; não há guard de "virou 0"). Deliberadamente
+ * omitido da baseline (nem comparado) — ver comentário na constante abaixo.
+ * A CONTAGEM de assinantes por tag não é lida por este módulo (só existência
+ * da tag em si, `KitDowngradeCurrentTag` não tem esse campo) — fora do
+ * escopo dos 5 passos da issue.
  *
  * ## Por que "custom fields ausentes" é enumerado, não só contado
  *
@@ -126,8 +129,9 @@ export interface KitDowngradeCurrentState {
   sequences: KitDowngradeCurrentSequence[];
   tags: KitDowngradeCurrentTag[];
   customFields: KitDowngradeCurrentCustomField[];
-  /** `null` = a chamada `listBroadcasts` falhou (erro capturado pelo
-   *  caller); array (mesmo vazio) = a API respondeu. */
+  /** `false` = a chamada de broadcasts falhou (erro capturado pelo
+   *  caller, ver `broadcastsError`); `true` = a API respondeu (mesmo que
+   *  com uma lista vazia). */
   broadcastsAccessible: boolean;
   /** Mensagem de erro da chamada de broadcasts, se `broadcastsAccessible`
    *  for `false` — carregada pro relatório, nunca descartada em silêncio. */
