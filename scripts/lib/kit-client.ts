@@ -477,14 +477,27 @@ export function kitBroadcastCtrPct(stats: Pick<KitBroadcastStats, "click_rate">)
  * viva, então precisa do caminho REST, mesmo padrão de todo o resto deste
  * arquivo.
  *
- * **Shape do envelope não confirmado ao vivo via REST direto** (só via MCP,
- * que pode normalizar a resposta) — aceita tanto `{ account: {...} }`
- * (padrão dos outros endpoints deste módulo, `getBroadcast`/
- * `getBroadcastStats`) quanto o objeto FLAT direto na raiz, sem lançar por
- * causa da forma do envelope. O que É fail-fast: `subscriber_limit` ausente
- * ou não-numérico — sem ele o alarme do #7362 não tem o que comparar, e
- * fabricar um default (`?? 0` ou similar) esconderia justamente o problema
- * que a issue existe pra resolver ("o teto é invisível pra maquinaria").
+ * **Shape do envelope confirmado ao vivo via REST direto em 05/09/2026
+ * (#7411)** — diferente do que o MCP normalizava: `subscriber_limit` e
+ * `renews_at` NÃO estão soltos em `account`, estão aninhados um nível
+ * abaixo, em `account.plan`:
+ *
+ * ```json
+ * { "account": { "name": "...", "plan_type": "creator",
+ *     "plan": { "plan_type": "creator", "subscriber_limit": 1000, "renews_at": null } } }
+ * ```
+ *
+ * (`account.plan_type` existe solto também, redundante com
+ * `account.plan.plan_type` — por isso continua sendo lido de `raw` direto.)
+ * Aceita ainda `{ account: {...} }` (padrão dos outros endpoints deste
+ * módulo, `getBroadcast`/`getBroadcastStats`) ou o objeto FLAT direto na
+ * raiz, sem lançar por causa da forma do envelope — e agora também aceita
+ * `subscriber_limit`/`renews_at` soltos em `raw` OU aninhados em
+ * `raw.plan`, nessa ordem de preferência. O que É fail-fast:
+ * `subscriber_limit` ausente ou não-numérico nos dois lugares — sem ele o
+ * alarme do #7362 não tem o que comparar, e fabricar um default (`?? 0` ou
+ * similar) esconderia justamente o problema que a issue existe pra
+ * resolver ("o teto é invisível pra maquinaria").
  */
 export interface KitAccount {
   name: string;
@@ -499,17 +512,20 @@ export async function getKitAccount(config?: KitConfig): Promise<KitAccount> {
   const raw = (data && typeof data.account === "object" && data.account !== null
     ? (data.account as Record<string, unknown>)
     : data) as Record<string, unknown> | undefined;
-  const limit = raw?.subscriber_limit;
+  const plan =
+    raw && typeof raw.plan === "object" && raw.plan !== null ? (raw.plan as Record<string, unknown>) : undefined;
+  const limit = typeof raw?.subscriber_limit === "number" ? raw.subscriber_limit : plan?.subscriber_limit;
   if (typeof limit !== "number" || !Number.isFinite(limit)) {
     throw new Error(
       `[kit-client] getKitAccount(): resposta sem "subscriber_limit" numérico (recebido: ${JSON.stringify(data)}) — ` +
         "não é seguro assumir um teto pra comparação (#7362).",
     );
   }
+  const renewsAt = typeof raw?.renews_at === "string" ? raw.renews_at : plan?.renews_at;
   return {
     name: typeof raw?.name === "string" ? raw.name : "",
     plan_type: typeof raw?.plan_type === "string" ? raw.plan_type : "",
     subscriber_limit: limit,
-    renews_at: typeof raw?.renews_at === "string" ? raw.renews_at : null,
+    renews_at: typeof renewsAt === "string" ? renewsAt : null,
   };
 }
