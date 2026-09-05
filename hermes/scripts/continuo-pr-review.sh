@@ -428,17 +428,41 @@ try_merge_gate() {
       # (fora de escopo; fechamento de PR superseded continua trabalho do
       # tick, hermes-diaria-continuo/SKILL.md §3 passo 1).
       GATE_REASON=$(printf '%s' "$GATE_JSON" | jq -r '.reason // "motivo não disponível"')
+      REJECT_BODY="Gate de merge automático (#6926): rejeitado — $GATE_REASON"
+
+      # #7446 item 1: `reject` nunca era terminal — o mesmo motivo era
+      # repostado a CADA tick enquanto a PR seguisse aberta e rejeitada
+      # (medido ao vivo: 9 comentários idênticos em 18h na PR #7404). Pula o
+      # `gh pr comment` só quando o ÚLTIMO comentário já é byte-a-byte igual
+      # a este — qualquer motivo NOVO (CI mudou, veredito mudou) ainda posta
+      # normalmente. `source=error` (gh falhou ao ler comentários) nunca
+      # pula — fail-open em direção a comunicar, não a esconder.
       set +e
-      gh pr comment "$pr" --body "Gate de merge automático (#6926): rejeitado — $GATE_REASON"
-      COMMENT_RC=$?
+      DEDUPE_JSON=$(npx tsx scripts/check-continuo-reject-comment-dedupe.ts --pr "$pr" --candidate "$REJECT_BODY" 2>&1)
+      DEDUPE_RC=$?
       set -e
-      if [ "$COMMENT_RC" -ne 0 ]; then
-        # #6932 (P3): rejeição em si continua correta (merge bloqueado) —
-        # só a comunicação na PR falhou. Registrar pra não perder o rastro
-        # (mesma disciplina do #6910), nunca deixar isso silencioso.
-        echo "[continuo-pr-review] PR #$pr: gate=reject, mas gh pr comment falhou (rc=$COMMENT_RC) — motivo só nos logs desta rodada" >&2
-        INFRA_ERRORS=$((INFRA_ERRORS + 1))
-        log_infra_error "$pr" "reject_comment_rc=$COMMENT_RC" "rejeição correta ($GATE_REASON), falha ao postar o motivo na PR"
+      SKIP_COMMENT="false"
+      if [ "$DEDUPE_RC" -eq 0 ]; then
+        SKIP_COMMENT=$(printf '%s' "$DEDUPE_JSON" | jq -r '.skip // false' 2>/dev/null || echo "false")
+      else
+        echo "[continuo-pr-review] PR #$pr: check-continuo-reject-comment-dedupe.ts falhou (rc=$DEDUPE_RC) — postando mesmo assim (fail-open): $DEDUPE_JSON" >&2
+      fi
+
+      if [ "$SKIP_COMMENT" = "true" ]; then
+        echo "[continuo-pr-review] PR #$pr: motivo de rejeição idêntico ao último comentário — não duplicando (#7446 item 1)"
+      else
+        set +e
+        gh pr comment "$pr" --body "$REJECT_BODY"
+        COMMENT_RC=$?
+        set -e
+        if [ "$COMMENT_RC" -ne 0 ]; then
+          # #6932 (P3): rejeição em si continua correta (merge bloqueado) —
+          # só a comunicação na PR falhou. Registrar pra não perder o rastro
+          # (mesma disciplina do #6910), nunca deixar isso silencioso.
+          echo "[continuo-pr-review] PR #$pr: gate=reject, mas gh pr comment falhou (rc=$COMMENT_RC) — motivo só nos logs desta rodada" >&2
+          INFRA_ERRORS=$((INFRA_ERRORS + 1))
+          log_infra_error "$pr" "reject_comment_rc=$COMMENT_RC" "rejeição correta ($GATE_REASON), falha ao postar o motivo na PR"
+        fi
       fi
       ;;
     *)
