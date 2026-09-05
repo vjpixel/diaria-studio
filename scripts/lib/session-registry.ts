@@ -2215,6 +2215,11 @@ export function mergeSessionRecords(
     // reproduzido ao vivo em #7462 com `realIndex=1` (real na posição 1) e
     // com `realIndex=-1` (grupo órfão, só backups).
     const realGrant = realIndex >= 0 ? records[realIndex]!.merge_grant : undefined;
+    const realIsWitness =
+      realGrant !== undefined &&
+      realGrant.grantedBy === winner.grantedBy &&
+      realGrant.grantedTo === winner.grantedTo &&
+      realGrant.grantedAt === winner.grantedAt;
     // #7462: o `consumedAt` vem SÓ do real, nunca do winner. O winner é o
     // grant de `grantedAt` mais recente do grupo, e pode ser um backup com
     // um `consumedAt` que o real nunca teve — `{ ...winner }` espalha o
@@ -2222,24 +2227,44 @@ export function mergeSessionRecords(
     // sairia consumido de qualquer jeito quando o winner fosse um backup
     // (reproduzido ao vivo em #7462 com `realIndex=1` e `realIndex=-1`).
     // Retira o carimbo do winner ANTES de reconstruir: o grant mesclado só
-    // leva `consumedAt` quando o real (a única fonte de verdade) o
-    // testemunha para a MESMA identidade.
+    // leva `consumedAt` quando alguém que TESTEMUNHA a MESMA identidade
+    // (ver abaixo) o mostra consumido.
     const { consumedAt: _winnerConsumedAt, ...winnerClean } = winner;
-    const consumedAt =
-      realGrant &&
-      realGrant.grantedBy === winner.grantedBy &&
-      realGrant.grantedTo === winner.grantedTo &&
-      realGrant.grantedAt === winner.grantedAt
-        ? realGrant.consumedAt
-        : undefined;
+    let consumedAt: string | undefined;
+    if (realIsWitness) {
+      // O real carrega ESTA identidade (consumida ou não) — é o único que
+      // testemunha (#7462). Backups nunca contradizem o real.
+      consumedAt = realGrant.consumedAt;
+    } else if (realIndex >= 0) {
+      // #6952 (achado que reabriu #7462): o real EXISTE, mas não carrega
+      // NENHUMA opinião sobre esta identidade — não tem `merge_grant`
+      // (beacon reescreveu sem ele) ou tem um de OUTRA concessão. O real
+      // nunca teve chance de testemunhar esta, então "só o real conta" não
+      // se aplica: cai pro comportamento pré-#7462 (união por identidade
+      // entre as cópias que de fato carregam o grant — normalmente só
+      // backups, já que o real não o carrega). Sem este fallback,
+      // `consumeMergeGrant` carimba o backup (única cópia com a
+      // identidade, igual sempre fez) mas a releitura nunca via o carimbo
+      // — grant encontrável e PERPETUAMENTE inconsumível.
+      for (const g of grants) {
+        if (g.grantedBy !== winner.grantedBy || g.grantedTo !== winner.grantedTo || g.grantedAt !== winner.grantedAt) {
+          continue;
+        }
+        if (!g.consumedAt) continue;
+        if (!consumedAt || Date.parse(g.consumedAt) < Date.parse(consumedAt)) consumedAt = g.consumedAt;
+      }
+    }
+    // Se `realIndex === -1` (grupo ÓRFÃO, #6972): nenhum dos dois ramos acima
+    // roda, `consumedAt` fica `undefined` — sem real, não há testemunha, e o
+    // grant é considerado vivo (nunca consumido), mesma decisão do #6972.
+    //
     // Só inclui `consumedAt` quando REALMENTE está presente. Um grant vivo
     // (não consumido) não tem o campo — e `assert.deepEqual` distingue
     // `{ ...grant, consumedAt: undefined }` de `grant` (o campo ausente).
     // Sem este spread condicional, o mesclado sairia com a CHAVE `consumedAt`
     // definida como `undefined` pra qualquer grant vivo, quebrando a
     // representação canônica do #6952/#6972 (um grant vivo é exatamente um
-    // objeto SEM `consumedAt`). O `consumedAt` continua vindo SÓ do real
-    // (#7462): cópias `-safeBackup-` nunca testemunham.
+    // objeto SEM `consumedAt`).
     mergedGrant = consumedAt ? { ...winnerClean, consumedAt } : winnerClean;
   }
 
