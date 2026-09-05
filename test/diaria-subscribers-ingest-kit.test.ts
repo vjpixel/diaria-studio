@@ -21,6 +21,7 @@ import {
   ingestOneBroadcast,
   main,
   listAllCompletedBroadcasts,
+  getAllBroadcastLinkClicks,
   detectSiblingConflictFiles,
   type KitIngestDeps,
 } from "../scripts/diaria-subscribers-ingest-kit.ts";
@@ -211,7 +212,7 @@ describe("ingestOneBroadcast", () => {
     db.close();
   });
 
-  it("#7206: falha no refinamento por-link é fail-soft — os 4 eixos principais seguem gravados, status ok preservado", async () => {
+  it("#7206: falha no refinamento por-link é fail-soft nos 4 eixos, mas NÃO em status — vira 'partial' pra ser retentado (#7454 review)", async () => {
     const db = openDiariaSubscribersDb(":memory:");
     const deps = {
       fetchAudience: fakeFetchAudience({ sent: ["a@x.com"], delivered: ["a@x.com"], opens: [], clicks: [] }),
@@ -222,9 +223,78 @@ describe("ingestOneBroadcast", () => {
       fetchUrlClicks: async () => ({ emails: [], descartadas: 0 }),
     };
     const outcome = await ingestOneBroadcast(db, { id: 1, subject: "X", published_at: null, send_at: "2026-01-01T00:00:00.000Z" }, deps);
-    assert.equal(outcome.entry.status, "ok", "guard segue ancorado só em sent/recipients — refinamento por-link nunca deriva o veredito");
+    // #7454 review (silent-failure-hunter + type-design-analyzer): status "ok"
+    // aqui faria `pendingManifestEntries` nunca mais retentar o refinamento —
+    // uma falha real e permanente ficaria mascarada de sucesso. "partial" é o
+    // MESMO status já usado por "guard não bateu"; os 4 eixos e o guard
+    // anti-fabricação seguem intocados (é isso que o teste abaixo confirma).
+    assert.equal(outcome.entry.status, "partial", "falha no refinamento precisa ser retentável, não mascarada de sucesso");
     assert.match(outcome.entry.error ?? "", /refinamento por-link.*7206/);
     assert.equal(outcome.eventsNew, 2, "2 sent + delivered continuam gravados apesar da falha no refinamento");
+    assert.equal(outcome.entry.counts?.clicks_com_url, 0, "inicializado antes do loop — 0, não undefined, quando falha antes de processar qualquer link");
+    db.close();
+  });
+
+  it("#7206: guard.ok=true E refinamento falha — combinedError junta os dois motivos, status vira partial (#7454 review, gap de teste)", async () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const deps = {
+      // sent=1 == recipients=1 → guard.ok true isoladamente
+      fetchAudience: fakeFetchAudience({ sent: ["a@x.com"], delivered: [], opens: [], clicks: [] }),
+      getBroadcastStats: async () => makeStats(1),
+      getBroadcastLinkClicks: async () => {
+        throw new Error("filtro urls rejeitado (400)");
+      },
+      fetchUrlClicks: async () => ({ emails: [], descartadas: 0 }),
+    };
+    const outcome = await ingestOneBroadcast(db, { id: 1, subject: "X", published_at: null, send_at: "2026-01-01T00:00:00.000Z" }, deps);
+    assert.equal(outcome.entry.status, "partial");
+    assert.match(outcome.entry.error ?? "", /refinamento por-link \(#7206\): filtro urls rejeitado/);
+    db.close();
+  });
+
+  it("#7206: progresso parcial de links já processados é preservado se um link no meio do loop lançar", async () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    let calls = 0;
+    const deps = {
+      fetchAudience: fakeFetchAudience({ sent: ["a@x.com"], delivered: [], opens: [], clicks: [] }),
+      getBroadcastStats: async () => makeStats(1),
+      getBroadcastLinkClicks: async () => ({
+        clicks: [
+          { id: 1, url: "https://a", unique_clicks: 1, click_to_delivery_rate: 0, click_to_open_rate: 0 },
+          { id: 2, url: "https://b", unique_clicks: 1, click_to_delivery_rate: 0, click_to_open_rate: 0 },
+        ],
+      }),
+      fetchUrlClicks: async () => {
+        calls += 1;
+        if (calls === 2) throw new Error("timeout no 2º link");
+        return { emails: ["a@x.com"], descartadas: 0 };
+      },
+    };
+    const outcome = await ingestOneBroadcast(db, { id: 1, subject: "X", published_at: null, send_at: "2026-01-01T00:00:00.000Z" }, deps);
+    assert.equal(outcome.entry.status, "partial");
+    assert.equal(outcome.entry.counts?.clicks_com_url, 1, "o 1º link já processado antes do 2º lançar fica refletido, não perdido");
+    db.close();
+  });
+
+  it("#7206: múltiplos links acumulam corretamente em clicks_com_url (sem bug de reset no loop)", async () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const deps = {
+      fetchAudience: fakeFetchAudience({ sent: ["a@x.com"], delivered: [], opens: [], clicks: [] }),
+      getBroadcastStats: async () => makeStats(1),
+      getBroadcastLinkClicks: async () => ({
+        clicks: [
+          { id: 1, url: "https://a", unique_clicks: 1, click_to_delivery_rate: 0, click_to_open_rate: 0 },
+          { id: 2, url: "https://b", unique_clicks: 1, click_to_delivery_rate: 0, click_to_open_rate: 0 },
+        ],
+      }),
+      fetchUrlClicks: async (_id: number, url: string) => ({
+        emails: url === "https://a" ? ["a@x.com", "b@x.com"] : ["c@x.com"],
+        descartadas: 0,
+      }),
+    };
+    const outcome = await ingestOneBroadcast(db, { id: 1, subject: "X", published_at: null, send_at: "2026-01-01T00:00:00.000Z" }, deps);
+    assert.equal(outcome.entry.status, "ok");
+    assert.equal(outcome.entry.counts?.clicks_com_url, 3, "2 do link a + 1 do link b");
     db.close();
   });
 });
@@ -371,6 +441,56 @@ describe("listAllCompletedBroadcasts — paginação de /broadcasts?status=compl
       )) as typeof fetch;
     try {
       await assert.rejects(() => listAllCompletedBroadcasts(), /end_cursor/);
+    } finally {
+      globalThis.fetch = orig;
+      if (origKey !== undefined) process.env.KIT_API_KEY = origKey;
+      else delete process.env.KIT_API_KEY;
+    }
+  });
+});
+
+describe("getAllBroadcastLinkClicks — paginação de /broadcasts/{id}/clicks (#7454 review, correctness + silent-failure-hunter)", () => {
+  it("junta as páginas seguindo end_cursor até has_next_page=false — antes só a 1ª página era lida", async () => {
+    const orig = globalThis.fetch;
+    const origKey = process.env.KIT_API_KEY;
+    process.env.KIT_API_KEY = "test-key";
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      const body =
+        calls === 1
+          ? {
+              broadcast: { id: 1, clicks: [{ id: 1, url: "https://a", unique_clicks: 1, click_to_delivery_rate: 0, click_to_open_rate: 0 }] },
+              pagination: { has_next_page: true, end_cursor: "c1" },
+            }
+          : {
+              broadcast: { id: 1, clicks: [{ id: 2, url: "https://b", unique_clicks: 1, click_to_delivery_rate: 0, click_to_open_rate: 0 }] },
+              pagination: { has_next_page: false, end_cursor: null },
+            };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      const { clicks } = await getAllBroadcastLinkClicks(1);
+      assert.deepEqual(clicks.map((c) => c.url), ["https://a", "https://b"]);
+      assert.equal(calls, 2);
+    } finally {
+      globalThis.fetch = orig;
+      if (origKey !== undefined) process.env.KIT_API_KEY = origKey;
+      else delete process.env.KIT_API_KEY;
+    }
+  });
+
+  it("has_next_page=true SEM end_cursor é erro — nunca trata como fim de lista silencioso", async () => {
+    const orig = globalThis.fetch;
+    const origKey = process.env.KIT_API_KEY;
+    process.env.KIT_API_KEY = "test-key";
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ broadcast: { id: 1, clicks: [] }, pagination: { has_next_page: true, end_cursor: null } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as typeof fetch;
+    try {
+      await assert.rejects(() => getAllBroadcastLinkClicks(1), /end_cursor/);
     } finally {
       globalThis.fetch = orig;
       if (origKey !== undefined) process.env.KIT_API_KEY = origKey;
