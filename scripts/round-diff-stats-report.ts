@@ -40,6 +40,7 @@ import {
   parseRoundDiffStatsEvents,
   ROUND_DIFF_RATIO_ALARM_THRESHOLD,
   type RoundDiffStatsRecord,
+  type WindowedRoundDiffStats,
 } from "./lib/round-diff-stats.ts";
 import {
   applyAlarmReconciliation,
@@ -99,14 +100,31 @@ function saveAlarmState(state: AlarmIssuesState, statePath: string = ALARM_STATE
   writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
 }
 
-export function buildRoundDiffRatioFinding(ratio: number | null, added: number, netPerDay: number): AlarmFinding {
+/**
+ * #7292: com `rounds < 2` (achado ao vivo: a "janela de 7 dias" que abriu a
+ * #7292 era, na prática, UMA rodada só — `n=1` — e "janela" e "última
+ * rodada" coincidiam por acidente, não por desenho). O texto não promete
+ * mais "janela" (que sugere tendência/agregação) quando não há tendência
+ * nenhuma pra medir — declara `n` explicitamente sempre, e troca a moldura
+ * pra "rodada" no singular quando `n=1`.
+ */
+export function buildRoundDiffRatioFinding(
+  ratio: number | null,
+  added: number,
+  netPerDay: number,
+  rounds: number,
+): AlarmFinding {
   const ratioLabel = formatRatio(ratio, added);
+  const periodLabel =
+    rounds < 2
+      ? `numa única rodada nos últimos 7 dias (n=1 — não é tendência, é um ponto)`
+      : `na janela dos últimos 7 dias (n=${rounds} rodadas)`;
   return {
     check: ALARM_CHECK,
     fingerprint: ALARM_FINGERPRINT,
-    title: `razão adição:remoção da janela de 7 dias cruzou o limiar (${ratioLabel})`,
+    title: `razão adição:remoção ${rounds < 2 ? "de uma rodada" : "da janela de 7 dias"} cruzou o limiar (${ratioLabel})`,
     body:
-      `A razão adição:remoção medida na janela dos últimos 7 dias (\`round_diff_stats\`, ` +
+      `A razão adição:remoção medida ${periodLabel} (\`round_diff_stats\`, ` +
       `\`data/run-log.jsonl\`) é **${ratioLabel}** — igual ou acima do limiar de ` +
       `${ROUND_DIFF_RATIO_ALARM_THRESHOLD}:1 (líquido ~${Math.round(netPerDay).toLocaleString("pt-BR")} linhas/dia).\n\n` +
       `Fora de escopo desta issue (#7113): recusar PR, impor cota de remoção, bloquear rodada. ` +
@@ -116,6 +134,39 @@ export function buildRoundDiffRatioFinding(ratio: number | null, added: number, 
     labels: ["enhancement"],
     priority: "P2",
   };
+}
+
+export type CheckAlarmState = "no-data" | "healthy" | "alarming";
+
+export interface CheckAlarmClassification {
+  state: CheckAlarmState;
+  message: string;
+}
+
+/**
+ * #7292: pura — decide qual das 3 mensagens de `--check-alarm` mostrar,
+ * separada de `main()` pra ser testável sem mockar `console.log`/argv. Antes
+ * desta issue, "sem dado" (`rounds === 0`) e "razão saudável" caíam na MESMA
+ * frase de saída ("sem alarme") — ver docstring no call site.
+ */
+export function classifyCheckAlarmState(
+  window7d: WindowedRoundDiffStats,
+  threshold: number = ROUND_DIFF_RATIO_ALARM_THRESHOLD,
+): CheckAlarmClassification {
+  if (window7d.rounds === 0) {
+    return {
+      state: "no-data",
+      message: `${LOG_PREFIX} 0 rodadas medidas na janela de 7 dias — sem dado pra avaliar (nunca leia isso como "razão saudável"; há registros mais antigos na série, ver tabela acima).`,
+    };
+  }
+  const evaluation = evaluateRoundDiffAlarm(window7d, threshold);
+  if (!evaluation.alarming) {
+    return {
+      state: "healthy",
+      message: `${LOG_PREFIX} razão de 7d (n=${window7d.rounds}) dentro do limiar (${threshold}:1) — sem alarme.`,
+    };
+  }
+  return { state: "alarming", message: "" };
 }
 
 async function main(): Promise<void> {
@@ -135,13 +186,18 @@ async function main(): Promise<void> {
   if (!checkAlarm) return;
 
   const window7d = windows.find((w) => w.windowDays === 7)!;
-  const evaluation = evaluateRoundDiffAlarm(window7d);
-  if (!evaluation.alarming) {
-    console.log(`${LOG_PREFIX} razão de 7d dentro do limiar (${ROUND_DIFF_RATIO_ALARM_THRESHOLD}:1) — sem alarme.`);
+  // #7292: achado ao vivo rodando isto na máquina errada (run-log.jsonl não
+  // é o mesmo arquivo em todo ambiente que escreve nele, ver docstring do
+  // módulo) — "sem dado" (`rounds === 0`) e "razão saudável" terminavam na
+  // MESMA frase de saída, silêncio verde nos dois casos que escondia
+  // justamente a diferença que importa pra confiar (ou não) no "sem alarme".
+  const classification = classifyCheckAlarmState(window7d);
+  if (classification.state !== "alarming") {
+    console.log(classification.message);
     return;
   }
 
-  const finding = buildRoundDiffRatioFinding(window7d.ratio, window7d.added, window7d.netPerDay);
+  const finding = buildRoundDiffRatioFinding(window7d.ratio, window7d.added, window7d.netPerDay, window7d.rounds);
   console.warn(`${LOG_PREFIX} ALARME: razão de 7d cruzou o limiar (${formatRatio(window7d.ratio, window7d.added)}).`);
 
   const state = loadAlarmState();
