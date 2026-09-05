@@ -370,6 +370,59 @@ else
   echo "[watch] gasto diario estimado (Hermes inteiro, 24h): \$$GASTO - sem limiar calibrado (#6771), so registro"
 fi
 
+# ── 9. fila de PRs abertas sem merge (#7446 item 6) ─────────────────────────
+# Medido ao vivo (04-05/09/2026): 8 PRs abertas simultaneamente, 3 delas
+# `continuo/rescue-*` verdes/mergeáveis paradas até 21h, e NENHUMA checagem
+# 1-8 acima olha pra fila de PRs em si — o observador tinha um ponto cego
+# exatamente onde o problema apareceu. Limiar duplo (conta OU idade da mais
+# velha) porque os dois modos de falha são distintos: muitas PRs pequenas
+# acumulando (merger não dá conta do volume) vs. 1 PR presa há muito tempo
+# (merger não decide aquele caso — CI vermelho sem fixer, escalate sem dono).
+QUEUE_COUNT_THRESHOLD=5
+QUEUE_AGE_H_THRESHOLD=12
+QUEUE_JSON=$(gh pr list --state open --json number,headRefName,createdAt 2>/dev/null)
+QUEUE_GH_RC=$?
+if [ "$QUEUE_GH_RC" -ne 0 ] || [ -z "$QUEUE_JSON" ]; then
+  echo "[watch] fila de PRs: INDETERMINADO (gh pr list falhou)" >&2
+  FAILS=$((FAILS + 1))
+else
+  QUEUE_SUMMARY=$(printf '%s' "$QUEUE_JSON" | python3 -c "
+import sys, json, datetime as dt
+try:
+    prs = json.load(sys.stdin)
+    now = dt.datetime.now(dt.timezone.utc)
+    count = len(prs)
+    oldest_h = 0.0
+    oldest_pr = None
+    for pr in prs:
+        created = dt.datetime.fromisoformat(pr['createdAt'].replace('Z', '+00:00'))
+        age_h = (now - created).total_seconds() / 3600
+        if age_h > oldest_h:
+            oldest_h = age_h
+            oldest_pr = pr
+    print(f\"{count}\t{oldest_h:.1f}\t{oldest_pr['number'] if oldest_pr else ''}\t{oldest_pr['headRefName'] if oldest_pr else ''}\")
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+  case "$QUEUE_SUMMARY" in *__ERR__*) QUEUE_SUMMARY="__ERR__" ;; esac
+  if [ "$QUEUE_SUMMARY" = "__ERR__" ] || [ -z "$QUEUE_SUMMARY" ]; then
+    echo "[watch] fila de PRs: INDETERMINADO (parse falhou)" >&2
+    FAILS=$((FAILS + 1))
+  else
+    IFS=$'\t' read -r QUEUE_COUNT QUEUE_OLDEST_H QUEUE_OLDEST_PR QUEUE_OLDEST_BRANCH <<< "$QUEUE_SUMMARY"
+    QUEUE_OLDEST_H_INT=${QUEUE_OLDEST_H%.*}
+    if [ "$QUEUE_COUNT" -ge "$QUEUE_COUNT_THRESHOLD" ] || [ "$QUEUE_OLDEST_H_INT" -ge "$QUEUE_AGE_H_THRESHOLD" ] 2>/dev/null; then
+      file_issue "[watch-continuo] fila de PRs sem merge" \
+        "[watch-continuo] fila de PRs sem merge: $QUEUE_COUNT abertas, mais velha há ${QUEUE_OLDEST_H}h" \
+        "bug,P1" \
+        "Detectado por watch-continuo-health.sh via \`gh pr list --state open\` — $QUEUE_COUNT PRs abertas (limiar: $QUEUE_COUNT_THRESHOLD), PR mais velha #$QUEUE_OLDEST_PR (\`$QUEUE_OLDEST_BRANCH\`) parada há ${QUEUE_OLDEST_H}h (limiar: ${QUEUE_AGE_H_THRESHOLD}h).
+
+Mesma classe do incidente 04-05/09/2026 (#7446): 8 PRs abertas, nenhuma avançando sozinha — reject sem estado terminal, escalate sem dono com agendador, CI vermelho em PR \`continuo/*\` sem fixer, branch fora de \`continuo/*\` sem merger. Checar \`gh pr list --state open\` e, por PR, por que o gate não decidiu (\`gh pr view <N> --json comments\` pro histórico de \`continuo-pr-review.sh\`, \`gh pr checks <N>\` pro CI)."
+    else
+      echo "[watch] fila de PRs ok ($QUEUE_COUNT abertas, mais velha há ${QUEUE_OLDEST_H}h)"
+    fi
+  fi
+fi
+
 echo "[watch] varredura concluída (checagens indeterminadas/falhas de infra: $FAILS)"
 # Exit honesto (finding P2 do review #6469): FAILS>0 = o observador NÃO pôde
 # garantir a varredura — o cron do Hermes registra a falha e o failure_streak

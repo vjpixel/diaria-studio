@@ -63,6 +63,50 @@ export function resolveRescuedExitCode(
   return { exitCode: 0 };
 }
 
+export interface OpenPrSummary {
+  number: number;
+  headRefName: string;
+}
+
+/** Pura (#7446 item 5): escolhe a PR de rescue ABERTA mais recente (maior
+ * `number`) entre as candidatas — usada para decidir se já existe uma PR
+ * `continuo/rescue-*` aberta antes de abrir outra. `null` quando não há
+ * nenhuma. Medido ao vivo (04-05/09/2026): 3 PRs de rescue abertas
+ * simultaneamente (#7404, #7444, #7445) sem nenhuma consolidação — cada
+ * tick com árvore suja abria uma PR nova, empilhando a fila em vez de
+ * apontar pra que já existia. */
+export function selectExistingOpenRescuePr(openPrs: OpenPrSummary[]): OpenPrSummary | null {
+  const rescuePrs = openPrs.filter((pr) => pr.headRefName.startsWith("continuo/rescue-"));
+  if (rescuePrs.length === 0) return null;
+  return rescuePrs.reduce((latest, pr) => (pr.number > latest.number ? pr : latest));
+}
+
+/** I/O: lista PRs `continuo/rescue-*` abertas via `gh pr list`. `null` = `gh`
+ * falhou (rede, auth) — o chamador trata como "não sei" e segue abrindo a PR
+ * normalmente (mesmo espírito fail-open de `tryOpenPr`: a pior consequência
+ * de um falso negativo aqui é 1 PR a mais na fila, nunca perda de dado). */
+function listOpenRescuePrs(): OpenPrSummary[] | null {
+  try {
+    const out = execFileSync(
+      "gh",
+      [
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--json",
+        "number,headRefName",
+        "--jq",
+        '[.[] | select(.headRefName | startswith("continuo/rescue-"))]',
+      ],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+    return JSON.parse(out) as OpenPrSummary[];
+  } catch {
+    return null;
+  }
+}
+
 /** Best-effort `gh pr create` — nunca aborta o script se `gh` estiver
  * ausente/sem auth: a branch já publicada (ou local) é o que importa
  * preservar; o PR é conveniência de triagem, não a garantia de dados. */
@@ -133,6 +177,25 @@ function main(): void {
   if (!pushResult.ok) {
     process.stderr.write(pushResult.message + "\n");
     process.exitCode = 1;
+    return;
+  }
+
+  // #7446 item 5: teto de 1 PR de rescue aberta por vez. Antes de abrir
+  // outra, checa se já existe uma `continuo/rescue-*` aberta — se sim, a
+  // branch nova fica publicada (push já rodou acima, trabalho preservado)
+  // mas SEM PR nova: evita empilhar a fila (medido: 3 PRs simultâneas,
+  // #7404/#7444/#7445, sem nenhuma consolidação). `gh` indisponível (`null`)
+  // segue o comportamento pré-existente (abre a PR normalmente) — fail-open
+  // em direção a preservar visibilidade, não a suprimir.
+  const openRescuePrs = listOpenRescuePrs();
+  const existingRescuePr = openRescuePrs === null ? null : selectExistingOpenRescuePr(openRescuePrs);
+  if (existingRescuePr !== null) {
+    const message =
+      `PR de rescue já aberta (#${existingRescuePr.number}, ${existingRescuePr.headRefName}) — não abrindo outra ` +
+      `(#7446 item 5, teto de 1). Branch ${result.branch} publicada em origin, sem PR própria; triagem manual pode ` +
+      `mergear/rebasear o conteúdo dela na PR existente se fizer sentido consolidar.`;
+    console.log(JSON.stringify({ pr: { ok: true, skipped: true, message } }, null, 2));
+    process.exitCode = 0;
     return;
   }
 
