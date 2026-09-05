@@ -36,9 +36,29 @@ describe("extractFilePathsFromIssueBody", () => {
     assert.deepEqual(extractFilePathsFromIssueBody(body), ["test/foo.test.ts"]);
   });
 
-  it("extrai paths de dentro de um bloco de código cercado (crase tripla vira crase simples linha a linha)", () => {
-    const body = "Escopo:\n```\nscripts/lib/foo.ts\n```\nna verdade cita assim: `scripts/lib/foo.ts`";
+  it("extrai path de DENTRO de um bloco cercado, SEM crase individual por linha (achado do fleet review #7466)", () => {
+    // Caso isolado — só o fence, sem duplicata via crase inline em nenhum
+    // outro lugar do body. Antes do fix, `matchAll(BACKTICK_PATH_RE)` numa
+    // linha sem crase própria retornava [] e este caso passava sozinho
+    // (falso negativo silencioso, mascarado no teste anterior porque o
+    // mesmo path também aparecia em crase inline no mesmo body).
+    const body = "Escopo:\n```\nscripts/lib/foo.ts\n```\n";
     assert.deepEqual(extractFilePathsFromIssueBody(body), ["scripts/lib/foo.ts"]);
+  });
+
+  it("extrai múltiplos paths de um bloco cercado com 1 por linha", () => {
+    const body = "```\nscripts/a.ts\nscripts/b.ts\n```";
+    assert.deepEqual(extractFilePathsFromIssueBody(body), ["scripts/a.ts", "scripts/b.ts"]);
+  });
+
+  it("bloco cercado + crase inline no resto do corpo — combina os dois, dedup", () => {
+    const body = "Escopo:\n```\nscripts/lib/foo.ts\n```\nna verdade cita assim: `scripts/lib/foo.ts` e também `scripts/outro.ts`.";
+    assert.deepEqual(extractFilePathsFromIssueBody(body), ["scripts/lib/foo.ts", "scripts/outro.ts"]);
+  });
+
+  it("NÃO extrai linha de PROSA/log dentro do fence que só CONTÉM um path (exige a linha inteira = path)", () => {
+    const body = "```\nerro em scripts/foo.ts:42: TypeError inesperado\n```";
+    assert.deepEqual(extractFilePathsFromIssueBody(body), []);
   });
 
   it("NÃO extrai texto entre crases sem barra (não é path)", () => {

@@ -828,13 +828,24 @@ onde os outros gates rodam).
 scripts `check-*`/`*-alarm`/`*-drift-check` sem NENHUM ponto de invocação —
 cruzando com o que a auditoria do #7112 já tinha achado por outro caminho.
 Três casos concretos, medidos na rodada de 03/09/2026, mostram o mesmo padrão
-em superfícies diferentes: `scripts/validate-agent-frontmatter.ts` existia,
-funcionava, e não rodava em nenhum workflow — dois defeitos entraram em
-master por essa porta (#7306, #7313); `which-set-guards` era cego a
-`orchestrator-stage-*.md`, mentindo sobre a própria cobertura (#7277); e 12
-`test/*.test.sh` existiam sem nenhum consumidor — `npm test` só varre
-`*.test.ts` — e todos passam em 9s quando rodados manualmente (#7129 item c,
-PR #7333). Três guards corretos e desligados, na mesma noite.
+em superfícies diferentes — **correção do fleet review da #7466: #7306 e
+#7313 são o MESMO buraco, não dois defeitos independentes** (o texto
+original implicava causas distintas). Os dois vieram de `ci.yml`
+(`paths-ignore: '**/*.md'`, tanto em `pull_request:` quanto em
+`push: master`) pulando o `npm test` inteiro pra diffs só-`.md` — o guard
+`findFrontmatterIssues`/`scripts/validate-agent-frontmatter.ts` já roda
+DENTRO da suíte normal (`test/validate-agent-frontmatter.test.ts`); o
+problema nunca foi ele estar desligado, foi a suíte inteira não rodar pra
+esse tipo de PR. Dois defeitos de frontmatter (`.claude/skills/diaria-zerar-
+fila/SKILL.md`) entraram em master por essa porta antes de uma PR que
+tocasse `.ts` revelar o master já quebrado (#7305). `which-set-guards` era
+cego a `orchestrator-stage-*.md`, mentindo sobre a própria cobertura
+(#7277) — causa independente, não relacionada ao `paths-ignore`; e um lote
+de `test/*.test.sh` (espalhados entre `test/`, `hermes/scripts/**` e
+`scripts/lib/`) existia sem nenhum consumidor — `npm test` só varre
+`*.test.ts` — e todos passam quando rodados manualmente (#7129 item c,
+PR #7333). Guards corretos e desligados (ou, no caso #7306/#7313, uma
+suíte inteira que não roda), na mesma noite.
 
 **Regra:** um guard/alarme/gate não está entregue enquanto não roda sozinho —
 registrado em `SCHEDULED_TASKS` (`scripts/lib/scheduled-tasks.ts`), num hook

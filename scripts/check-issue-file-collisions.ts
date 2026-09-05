@@ -18,7 +18,12 @@
  * derivação, não.
  *
  * É RELATÓRIO — nunca bloqueia (`exit 0` sempre, mesmo com colisões
- * encontradas ou `gh` indisponível, fail-soft #738). A decisão de serializar
+ * encontradas ou `gh` indisponível). **Fail-soft por desenho, não o #738**:
+ * o #738 é sobre halt-banner + parada explícita quando um MCP cai no MEIO de
+ * um stage do pipeline (o oposto de silencioso); aqui o `gh` indisponível é
+ * um sinal fraco de auditoria opcional, então o comportamento correto é o
+ * inverso — logar e seguir sem alarme, mesmo padrão de
+ * `check-dependency-prose-lint.ts` (#7137 item 4). A decisão de serializar
  * ou fundir 2 issues em 1 PR (mesma família do `#4319` no `/diaria-develop`)
  * é de quem despacha o trabalho, não deste script.
  *
@@ -91,8 +96,15 @@ if (isMainModule(import.meta.url)) {
 
   const fetched = fetchOpenIssues(cwd, limit);
   if (fetched.error) {
-    console.error(`${LOG_PREFIX} gh indisponível — pulando checagem (fail-soft, #738): ${fetched.error}`);
+    console.error(`${LOG_PREFIX} gh indisponível — pulando checagem (fail-soft por desenho, não #738): ${fetched.error}`);
     process.exit(0);
+  }
+
+  if (fetched.issues.length >= limit) {
+    console.error(
+      `${LOG_PREFIX} AVISO: ${fetched.issues.length} issue(s) retornada(s) == --limit (${limit}) — ` +
+        `possível truncamento silencioso do backlog real. Rode com --limit maior pra confirmar cobertura total.`,
+    );
   }
 
   const issuesWithPaths: IssueWithPaths[] = fetched.issues.map((i) => ({

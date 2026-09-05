@@ -13,13 +13,23 @@
  * — mesma semântica de overlap (path idêntico OU um é prefixo de diretório
  * do outro), pra não divergir do mecanismo irmão.
  *
- * **Extração de paths do corpo:** regex sobre trechos entre crases
- * (inline code, ` `caminho`) — cobre tanto crase simples quanto blocos de
- * código cercados (que markdown também delimita com crase tripla, mas o
- * conteúdo interno já cai no mesmo padrão linha a linha). Exige pelo menos
- * 1 "/" e uma extensão reconhecida de arquivo de código/config deste repo —
- * sem isso, qualquer palavra com ponto (ex: "v1.2", "gpt-4.1") viraria falso
- * positivo.
+ * **Extração de paths do corpo — DUAS varreduras, não uma:**
+ *   1. Inline code entre crase simples (` `caminho`) em qualquer lugar do
+ *      corpo, inclusive fora de bloco cercado.
+ *   2. Dentro de bloco cercado (crase tripla, ```...```): cada LINHA do
+ *      conteúdo, sem exigir crase própria — issues costumam listar paths
+ *      soltos, 1 por linha, dentro de um bloco de código (ex: "Escopo:\n```\n
+ *      scripts/lib/foo.ts\n```"). Corrigido no #7466 (achado do fleet review
+ *      da #7137): a versão original só cobria crase simples e a docstring
+ *      afirmava (incorretamente) cobrir também o caso de bloco cercado —
+ *      `matchAll` numa linha sem crase individual sempre retornava vazio.
+ *      Cada linha precisa CASAR INTEIRA com o padrão de path (âncoras
+ *      `^...$` após `trim()`) — não basta CONTER um path, senão uma linha de
+ *      log/prosa dentro do bloco ("erro em scripts/foo.ts:42: TypeError")
+ *      viraria falso positivo.
+ * Ambas exigem pelo menos 1 "/" e uma extensão reconhecida de arquivo de
+ * código/config deste repo — sem isso, qualquer palavra com ponto (ex:
+ * "v1.2", "gpt-4.1") viraria falso positivo.
  *
  * **Filtro de falso-positivo (paths genéricos demais):** um path como
  * `package.json` ou `CLAUDE.md` sozinho aparece em dezenas de issues sem
@@ -76,6 +86,31 @@ const BACKTICK_PATH_RE = new RegExp(
   "g",
 );
 
+// Mesmo formato de path, mas ANCORADO — usado linha a linha dentro de um
+// bloco cercado, onde não há crase individual por path.
+const BARE_PATH_LINE_RE = new RegExp(
+  "^([\\w.\\-]+(?:/[\\w.\\-]+)+\\.(?:" + EXT_ALTERNATION + "))$",
+);
+
+// Bloco de código cercado por crase tripla — captura o conteúdo interno
+// (com ou sem linguagem declarada após as 3 crases de abertura).
+const FENCED_BLOCK_RE = /```[^\n`]*\n([\s\S]*?)```/g;
+
+/** Extrai paths de dentro de blocos ```...``` — 1 por linha, sem exigir
+ * crase individual (ver docstring do módulo, ponto 2). */
+function extractFromFencedBlocks(body: string): string[] {
+  const found: string[] = [];
+  for (const block of body.matchAll(FENCED_BLOCK_RE)) {
+    for (const rawLine of block[1].split("\n")) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const m = line.match(BARE_PATH_LINE_RE);
+      if (m) found.push(m[1]);
+    }
+  }
+  return found;
+}
+
 /** Paths comuns demais pra sinalizar colisão sozinhos — citados como
  * contexto em quase qualquer issue, não como alvo específico de edição. */
 export const GENERIC_PATH_DENYLIST = new Set(
@@ -92,15 +127,19 @@ export const GENERIC_PATH_DENYLIST = new Set(
 );
 
 /**
- * Extrai paths de arquivo do corpo de uma issue — só trechos entre crase
- * simples (cobre inline code e, linha a linha, o conteúdo de blocos
- * cercados). Dedup + normalizado + ordenado.
+ * Extrai paths de arquivo do corpo de uma issue — duas varreduras (ver
+ * docstring do módulo): inline code entre crase simples, e linha-a-linha
+ * dentro de blocos ```...``` cercados. Dedup + normalizado + ordenado.
  */
 export function extractFilePathsFromIssueBody(body: string | null | undefined): string[] {
   if (!body) return [];
   const found = new Set<string>();
   for (const m of body.matchAll(BACKTICK_PATH_RE)) {
     const normalized = normalizeBeaconPath(m[1]);
+    if (normalized) found.add(normalized);
+  }
+  for (const raw of extractFromFencedBlocks(body)) {
+    const normalized = normalizeBeaconPath(raw);
     if (normalized) found.add(normalized);
   }
   return [...found].sort();

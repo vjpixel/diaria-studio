@@ -126,6 +126,25 @@ describe("evaluateGuardNeverInvoked", () => {
   });
 });
 
+describe("KNOWN_INDIRECT_INVOCATIONS — nenhuma chave vencida (#7466 fleet review, type-design)", () => {
+  it("toda chave do mapa corresponde a um GuardCandidate.name real, produzido hoje por listGuardCandidates", () => {
+    // Exatamente a classe de "prosa vencida" que esta PR inteira existe pra
+    // pegar: uma chave obsoleta/com typo aqui ficaria pra sempre suprimindo
+    // um finding de um candidato que já não existe (inofensivo) OU, pior,
+    // deixando de suprimir o candidato real que a chave PRETENDIA cobrir
+    // (typo silencioso — o script voltaria a aparecer como finding cru sem
+    // ninguém notar a causa). As duas direções exigem que a chave bata
+    // exatamente com um nome real.
+    const candidateNames = new Set(listGuardCandidates(join(ROOT, "scripts")).map((c) => c.name));
+    const staleKeys = Object.keys(KNOWN_INDIRECT_INVOCATIONS).filter((k) => !candidateNames.has(k));
+    assert.deepEqual(
+      staleKeys,
+      [],
+      `chave(s) de KNOWN_INDIRECT_INVOCATIONS sem GuardCandidate correspondente em scripts/: ${staleKeys.join(", ")} — renomear/remover a chave, ou o script real sumiu sem atualizar o mapa`,
+    );
+  });
+});
+
 describe("buildLocalCorpusText — integração com o repo real", () => {
   it("retorna texto não-vazio (corpus real do checkout tem conteúdo)", () => {
     const text = buildLocalCorpusText(ROOT);
