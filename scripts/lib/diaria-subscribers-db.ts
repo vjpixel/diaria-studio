@@ -462,8 +462,10 @@ const EVENT_MIGRATION_COLUMNS: ReadonlyArray<{ name: string; ddl: string }> = [
   // `recordEvent` (a heurística MIN(ts) só faz sentido depois que TODOS os
   // eventos daquele disparo já foram gravados). NULL até o backfill rodar
   // pra aquele grupo — quem lê nunca deve tratar NULL como "edição sem
-  // canônica conhecida", e sim "backfill ainda não rodou pra este grupo"
-  // (rodar de novo é sempre seguro, idempotente). Guarda as DUAS colunas —
+  // canônica conhecida", e sim "backfill ainda não resolveu este grupo"
+  // (rodar de novo é sempre seguro, idempotente; MAS se o grupo nunca tiver
+  // um evento delivered/sent — só click, por ex. — o NULL é definitivo, não
+  // transitório: rerodar não resolve, #7458 review). Guarda as DUAS colunas —
   // `edicao` continua a chave de rastreabilidade por plataforma; só a
   // AGREGAÇÃO cross-plataforma usa `edicao_canonica`.
   { name: "edicao_canonica", ddl: "ALTER TABLE event ADD COLUMN edicao_canonica TEXT" },

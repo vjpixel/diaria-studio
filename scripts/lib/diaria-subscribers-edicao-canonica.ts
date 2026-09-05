@@ -59,6 +59,18 @@
  * `(platform, edicao)` sem nenhum `delivered`/`sent` gravado ainda — nunca
  * inventa uma data (mesma disciplina de `resolveCanonicalEdicao`).
  *
+ * **Honestidade de escopo (#7458 review, type-design-analyzer):** a coluna
+ * `edicao_canonica` está provisionada ANTES de ter consumidor —
+ * `summarizeStoreLeitoresCanonicalDedup` (`leitor-store.ts`, o caminho
+ * DEFAULT que este PR liga) continua recomputando o mapa em TS via
+ * `buildCanonicalEdicaoMapFromEvents`, nunca lê a coluna persistida. Hoje
+ * ninguém em `scripts/` lê `edicao_canonica` fora do próprio backfill (a
+ * consulta de auditoria do CLI é circular — mede o que acabou de escrever).
+ * O propósito declarado (permitir `COUNT(DISTINCT edicao_canonica)` direto
+ * em SQL, sem recomputar o mapa em memória) fica pronto pra uso futuro
+ * (painel, auditoria ad-hoc), não é usado agora — decisão deliberada de
+ * não acoplar este PR a outra mudança, não uma lacuna esquecida.
+ *
  * @see https://github.com/vjpixel/diaria-studio/issues/7204
  * @see https://github.com/vjpixel/diaria-studio/issues/7163 (épico)
  */
@@ -108,7 +120,20 @@ export function buildCanonicalEdicaoMapFromEvents(db: DatabaseSync): Map<string,
 
   const map = new Map<string, string>();
   for (const r of rows) {
-    map.set(nativeEdicaoKey(r.platform, r.edicao), tsToBrtAAMMDD(r.min_ts));
+    // #7458 review (silent-failure-hunter, alta confiança): `tsToBrtAAMMDD`
+    // lança em `ts` malformado — `event.ts` não tem validação de formato em
+    // `recordEvent`. Sem o try/catch por-linha, 1 timestamp ruim em QUALQUER
+    // grupo abortava a função inteira (`for` sem tratamento), o que
+    // `runCanonicalEdicaoBackfillFailSoft` engolia como "erro genérico" —
+    // desabilitando o backfill de TODOS os grupos, pra sempre, por causa de
+    // 1 linha ruim. Pular só o grupo afetado (logado) preserva o resto.
+    try {
+      map.set(nativeEdicaoKey(r.platform, r.edicao), tsToBrtAAMMDD(r.min_ts));
+    } catch (e) {
+      console.error(
+        `[edicao-canonica] grupo ${r.platform}::${r.edicao} pulado — ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
   return map;
 }
@@ -187,7 +212,19 @@ export function runCanonicalEdicaoBackfillFailSoft(dbPath: string): CanonicalEdi
     } finally {
       db.close();
     }
-  } catch {
+  } catch (e) {
+    // #7458 review (silent-failure-hunter, alta confiança): antes o catch
+    // era mudo — o docstring prometia "chamador loga o motivo", mas nenhum
+    // dos 3 call sites (ingest-{beehiiv,kit,brevo}.ts) checava/logava o
+    // `null`. Um `ts` malformado em qualquer evento do store (nenhuma
+    // validação de formato em `recordEvent`) já basta pra `tsToBrtAAMMDD`
+    // lançar e desabilitar o backfill inteiro, pra sempre, em toda rodada
+    // futura, sem NENHUM sinal — exatamente a classe de erro silencioso que
+    // este projeto trata como P0/P1. `console.error` aqui não muda o
+    // fail-soft (a ingestão segue), só para de ser silencioso.
+    console.error(
+      `[canonical-edicao-backfill] falhou (ingestão prossegue sem atualizar edicao_canonica): ${e instanceof Error ? e.message : String(e)}`,
+    );
     return null;
   }
 }
@@ -219,7 +256,8 @@ export function backfillCanonicalEdicaoColumn(db: DatabaseSync): CanonicalEdicao
   for (const [key, aammdd] of canonicalMap) {
     // key = "platform::edicao" (nativeEdicaoKey) — separa de volta. `edicao`
     // nativo nunca contém "::" na prática (ids de post/broadcast/campanha),
-    // mas usar split com limite 2 é defensivo mesmo assim.
+    // mas usar indexOf (1ª ocorrência) + slice, em vez de split ingênuo, é
+    // defensivo mesmo assim caso isso mude no futuro.
     const sep = key.indexOf("::");
     const platform = key.slice(0, sep);
     const edicaoNativa = key.slice(sep + 2);

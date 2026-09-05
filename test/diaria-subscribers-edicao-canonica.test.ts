@@ -118,6 +118,32 @@ describe("buildCanonicalEdicaoMapFromEvents", () => {
     assert.equal(map.get(nativeEdicaoKey("kit", "bcast_xyz")), "260427");
     db.close();
   });
+
+  it("1 grupo com ts malformado é PULADO (logado), sem abortar os demais grupos (#7458 review, silent-failure-hunter)", () => {
+    // `event.ts` não tem validação de formato em `recordEvent` — sem o
+    // try/catch por-linha, esse único grupo ruim derrubava a função
+    // inteira, e `runCanonicalEdicaoBackfillFailSoft` engolia isso como
+    // "erro genérico", desabilitando o backfill de TODOS os grupos.
+    const db = openDiariaSubscribersDb(":memory:");
+    const good = ensureSubscriber(db, "kit", null, "a@x.com", "2026-04-27T06:00:00.000Z");
+    const bad = ensureSubscriber(db, "beehiiv", "bh-9", "b@x.com", "2026-04-27T06:00:00.000Z");
+    recordEvent(db, { subscriberId: good, platform: "kit", type: "delivered", externalEventId: "k1", edicao: "bcast_1", ts: "2026-04-27T06:00:00.000Z" });
+    recordEvent(db, { subscriberId: bad, platform: "beehiiv", type: "delivered", externalEventId: "bh1", edicao: "post_bad", ts: "não-é-um-timestamp" });
+
+    const orig = console.error;
+    const messages: string[] = [];
+    console.error = (...args: unknown[]) => messages.push(args.join(" "));
+    let map: Map<string, string>;
+    try {
+      map = buildCanonicalEdicaoMapFromEvents(db);
+    } finally {
+      console.error = orig;
+    }
+    assert.equal(map.get(nativeEdicaoKey("kit", "bcast_1")), "260427", "grupo válido resolve normalmente");
+    assert.equal(map.has(nativeEdicaoKey("beehiiv", "post_bad")), false, "grupo com ts inválido nunca entra no mapa");
+    assert.ok(messages.some((m) => m.includes("post_bad")), "o grupo pulado é logado, não silenciado");
+    db.close();
+  });
 });
 
 describe("resolveCanonicalEdicao", () => {
@@ -327,5 +353,20 @@ describe("runCanonicalEdicaoBackfillFailSoft", () => {
       const result = runCanonicalEdicaoBackfillFailSoft(bogusPath);
       assert.equal(result, null);
     });
+  });
+
+  it("null por erro AVISA no stderr — antes era silencioso (#7458 review, silent-failure-hunter)", () => {
+    const bogusPath = resolve(tmpdir(), `edicao-canonica-failsoft-bogus-${Date.now()}`, "nao-existe.db");
+    const orig = console.error;
+    const messages: string[] = [];
+    console.error = (...args: unknown[]) => messages.push(args.join(" "));
+    let result: ReturnType<typeof runCanonicalEdicaoBackfillFailSoft>;
+    try {
+      result = runCanonicalEdicaoBackfillFailSoft(bogusPath);
+    } finally {
+      console.error = orig;
+    }
+    assert.equal(result, null);
+    assert.ok(messages.some((m) => m.includes("canonical-edicao-backfill")), "falha vira aviso visível, não silêncio total");
   });
 });

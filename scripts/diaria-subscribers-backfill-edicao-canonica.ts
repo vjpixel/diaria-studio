@@ -21,9 +21,11 @@
  * guard de conservação de qualquer escrita real contra o store de produção:
  *
  *   - Sem `--apply`: só relata quantos grupos o mapa canônico resolve e
- *     quantas linhas SERIAM atualizadas (roda `backfillCanonicalEdicaoColumn`
- *     contra uma CÓPIA em memória do estado atual — nunca escreve no `.db`
- *     real).
+ *     quantas linhas SERIAM atualizadas — roda `backfillCanonicalEdicaoColumn`
+ *     de verdade dentro de uma transação (`BEGIN`/`ROLLBACK`, #7458 review:
+ *     não é uma cópia em memória, é o `.db` REAL sob transação) e desfaz
+ *     antes de sair; nunca COMMITA, mas a leitura/escrita transitória
+ *     acontece no arquivo real, não numa cópia.
  *   - Com `--apply`: conta linhas de `event` ANTES → backup (`backupStoreFile`,
  *     `{dbPath}.backup-{timestamp}`) → roda o backfill de verdade → conta
  *     DEPOIS → guard de conservação (`COUNT(*)` de `event` tem que bater
@@ -114,11 +116,22 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     // sem duplicar a query do backfill num modo "só contar".
     const db = openDiariaSubscribersDb(dbPath);
     const distinctBefore = countDistinctNativeEdicao(db);
+    let result: ReturnType<typeof backfillCanonicalEdicaoColumn>;
+    let distinctWouldBe: number;
+    // #7458 review (silent-failure-hunter, alta confiança): sem try/finally,
+    // uma exceção no meio (ex: erro de SQL) deixava a transação `BEGIN`
+    // aberta e pulava o `db.close()` — o dry-run promete "nunca escreve no
+    // .db real", e essa promessa dependia inteiramente de chegar até o
+    // `ROLLBACK` sem erro. Agora o ROLLBACK+close acontecem sempre, mesmo
+    // se `backfillCanonicalEdicaoColumn` lançar.
     db.exec("BEGIN");
-    const result = backfillCanonicalEdicaoColumn(db);
-    const distinctWouldBe = countDistinctCanonicalOrFallback(db);
-    db.exec("ROLLBACK");
-    db.close();
+    try {
+      result = backfillCanonicalEdicaoColumn(db);
+      distinctWouldBe = countDistinctCanonicalOrFallback(db);
+    } finally {
+      db.exec("ROLLBACK");
+      db.close();
+    }
 
     console.log(
       JSON.stringify(
