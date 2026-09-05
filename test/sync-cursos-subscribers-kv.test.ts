@@ -36,6 +36,7 @@ import {
   readKvSyncState,
   writeKvSyncState,
   evaluateKvEmptyGuard,
+  fetchActiveSubscriberEmailsForBackend,
   type KvBulkEntry,
   type KvSyncOps,
 } from "../scripts/sync-cursos-subscribers-kv.ts";
@@ -431,5 +432,43 @@ describe("evaluateKvEmptyGuard (#7338)", () => {
     const prev = { last_run_at: "2026-09-04T00:00:00Z", active_subscriber_count: 500 };
     const result = evaluateKvEmptyGuard(100, prev); // 20%
     assert.equal(result.ok, false);
+  });
+});
+
+describe("fetchActiveSubscriberEmailsForBackend (#7338 follow-up — reprodução ao vivo pós-#7463, 05/09/2026)", () => {
+  it("backend=beehiiv chama só o fetcher Beehiiv, nunca o Kit", async () => {
+    let beehiivCalls = 0;
+    let kitCalls = 0;
+    const emails = await fetchActiveSubscriberEmailsForBackend("beehiiv", {
+      fetchBeehiiv: async () => {
+        beehiivCalls++;
+        return ["a@example.com"];
+      },
+      fetchKit: async () => {
+        kitCalls++;
+        return ["b@example.com"];
+      },
+    });
+    assert.deepEqual(emails, ["a@example.com"]);
+    assert.equal(beehiivCalls, 1);
+    assert.equal(kitCalls, 0);
+  });
+
+  it("backend=kit chama só o fetcher Kit, nunca o Beehiiv — é exatamente o caso real #7338: Beehiiv zerada (0 ativos) pela migração #7386/#7388, subscriber_backend virou \"kit\" no #7395, e o script ANTES deste fix ignorava essa chave e continuava lendo a Beehiiv vazia", async () => {
+    let beehiivCalls = 0;
+    let kitCalls = 0;
+    const emails = await fetchActiveSubscriberEmailsForBackend("kit", {
+      fetchBeehiiv: async () => {
+        beehiivCalls++;
+        return [];
+      },
+      fetchKit: async () => {
+        kitCalls++;
+        return ["c@example.com", "d@example.com"];
+      },
+    });
+    assert.deepEqual(emails, ["c@example.com", "d@example.com"]);
+    assert.equal(kitCalls, 1);
+    assert.equal(beehiivCalls, 0);
   });
 });
