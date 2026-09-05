@@ -45,6 +45,7 @@
  *   npx tsx scripts/sync-cursos-subscribers-kv.ts                  # full sync
  *   npx tsx scripts/sync-cursos-subscribers-kv.ts --dry-run        # só imprime contagem, não escreve
  *   npx tsx scripts/sync-cursos-subscribers-kv.ts --namespace-id X # override do binding id
+ *   npx tsx scripts/sync-cursos-subscribers-kv.ts --force-empty-guard # ignora o guard de fonte suspeita-vazia (#7338)
  *
  * Env:
  *   BEEHIIV_API_KEY          obrigatório
@@ -57,15 +58,15 @@
  * funcionando standalone/manual também (uso abaixo).
  */
 import "dotenv/config";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, delimiter } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
-import { isMainModule } from "./lib/cli-args.ts";
+import { isMainModule, hasFlag } from "./lib/cli-args.ts";
 import { sha256Hex, subscriberKvKey } from "./lib/shared/subscriber-verify.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -73,6 +74,38 @@ const WORKER_DIR = resolve(ROOT, "workers", "cursos");
 const PER_PAGE = 100;
 const RATE_LIMIT_DELAY_MS = 300;
 const MAX_RETRIES = 3;
+/** Guard: se a Beehiiv devolver menos que este % do que tinha na última
+ *  rodada registrada, algo está errado (auth/paginação, ou — achado ao vivo
+ *  #7338 — a fonte em si foi zerada por uma migração de plataforma), não
+ *  "todo mundo cancelou". Mesmo valor/racional de `sync-beehiiv-subscribers-kit.ts`
+ *  (`EMPTY_GUARD_RATIO`, #6092). */
+const EMPTY_GUARD_RATIO = 0.5;
+
+/**
+ * #7338: `wranglerKvBulkPut`/`wranglerKvKeyListSubscribers`/`wranglerKvBulkDelete`
+ * chamam `npx wrangler` via `spawnSync({ shell: true })`, herdando o PATH do
+ * processo atual. Sob systemd `--user` (unit sem `Environment=PATH=`), esse
+ * PATH resolve `npx` pro Node do SISTEMA — que pode ser mais antigo que o
+ * Node com que ESTE script está rodando (`ExecStart` do unit aponta pra um
+ * Node ≥22 explícito, mas isso não afeta o PATH que o processo herda).
+ * Reproduzido ao vivo em `helios` 05/09/2026: unit falhando com `exit 1`
+ * silencioso (journalctl não captura stdout/stderr do processo) porque
+ * `npx` resolvia Node 20.20.2 via `/usr/bin/npx`, e wrangler exige ≥22
+ * (CLAUDE.md 1a). `dirname(process.execPath)` — o diretório do binário Node
+ * que está rodando ESTE processo agora, garantido ≥22 por construção — vai
+ * na FRENTE do PATH herdado, então `npx` (e o `wrangler` que ele invoca)
+ * resolvem pro mesmo Node deste processo, independente de qual PATH mínimo
+ * o unit systemd (ou qualquer outro caller) fornece.
+ */
+export function wranglerSpawnEnv(accountId: string): NodeJS.ProcessEnv {
+  const nodeBinDir = dirname(process.execPath);
+  const existingPath = process.env.PATH ?? process.env.Path ?? "";
+  return {
+    ...process.env,
+    CLOUDFLARE_ACCOUNT_ID: accountId,
+    PATH: [nodeBinDir, existingPath].filter(Boolean).join(delimiter),
+  };
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -196,7 +229,7 @@ function wranglerKvBulkPut(entries: KvBulkEntry[], namespaceId: string, accountI
     const r = spawnSync(cmd, {
       cwd: WORKER_DIR,
       encoding: "utf8",
-      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId },
+      env: wranglerSpawnEnv(accountId),
       shell: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -232,7 +265,7 @@ function wranglerKvKeyListSubscribers(namespaceId: string, accountId: string): s
   const r = spawnSync(cmd, {
     cwd: WORKER_DIR,
     encoding: "utf8",
-    env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId },
+    env: wranglerSpawnEnv(accountId),
     shell: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -286,7 +319,7 @@ function wranglerKvBulkDelete(keys: string[], namespaceId: string, accountId: st
     const r = spawnSync(cmd, {
       cwd: WORKER_DIR,
       encoding: "utf8",
-      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId },
+      env: wranglerSpawnEnv(accountId),
       shell: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -360,9 +393,103 @@ export function syncKvKeys(
   return { existingKeys, staleKeys, addedKeys: toAdd.map((e) => e.key) };
 }
 
-async function main(): Promise<void> {
+// ---------------------------------------------------------------------------
+// Guard: fonte de assinantes suspeita-vazia (#7338)
+// ---------------------------------------------------------------------------
+
+export interface KvSyncState {
+  last_run_at: string;
+  active_subscriber_count: number;
+}
+
+function statePath(rootDir: string): string {
+  return resolve(rootDir, "data", "cursos-subscribers", ".kv-sync-state.json");
+}
+
+/** Achado ao vivo #7338: `syncKvKeys` trata TODO assinante ausente de
+ *  `entries` como stale e o apaga do KV (`diffStaleSubscriberKeys`). Se
+ *  `fetchActiveSubscriberEmails` devolver 0 (ou quase 0) por uma falha de
+ *  fonte — não porque todo mundo cancelou —, a próxima chamada apagaria o
+ *  KV inteiro. Confirmado ao vivo: a migração de backend (#7388/#7395)
+ *  zerou os assinantes ATIVOS da Beehiiv (fonte que este script lê,
+ *  hardcoded via `loadBeehiivConfig` — ver #7393/#7395 pro mesmo padrão de
+ *  bug noutros scripts), e este script rodaria sobre uma base de 0 achando
+ *  que é o número real, apagando as chaves de quem de fato tem acesso ao
+ *  curso. Mesmo shape/racional de `evaluateEmptyGuard` em
+ *  `sync-beehiiv-subscribers-kit.ts` (#6092) — sem histórico prévio (1ª
+ *  rodada), sempre passa. */
+function isValidKvSyncState(v: unknown): v is KvSyncState {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return typeof o.last_run_at === "string" && typeof o.active_subscriber_count === "number" && Number.isFinite(o.active_subscriber_count);
+}
+
+export function readKvSyncState(rootDir: string): KvSyncState | null {
+  const path = statePath(rootDir);
+  if (!existsSync(path)) return null;
+  const raw = readFileSync(path, "utf8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`${path}: JSON inválido (${(e as Error).message}) — apagar o arquivo trata como "sem baseline" na próxima rodada.`);
+  }
+  if (!isValidKvSyncState(parsed)) {
+    throw new Error(`${path}: shape inesperado (esperava {last_run_at: string, active_subscriber_count: number}) — apagar o arquivo trata como "sem baseline" na próxima rodada.`);
+  }
+  return parsed;
+}
+
+export function writeKvSyncState(rootDir: string, state: KvSyncState): void {
+  const path = statePath(rootDir);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(state, null, 2) + "\n");
+}
+
+export type KvEmptyGuardResult = { ok: true } | { ok: false; reason: string };
+
+/** Pura — recusa a rodada se a contagem atual de ativos encolheu demais
+ *  desde a última vez (ver docstring acima). Sem histórico prévio, sempre
+ *  passa. `!Number.isFinite(ratio)` falha FECHADO (nunca aberto). */
+export function evaluateKvEmptyGuard(currentCount: number, previousState: KvSyncState | null): KvEmptyGuardResult {
+  // #7463 finding P0 (self-review): SEM baseline (1ª rodada desde que este
+  // guard existe — exatamente o estado real de produção hoje, já que
+  // `.kv-sync-state.json` nasce com esta mesma PR) `!previousState` cairia
+  // no `{ok:true}` de "sem histórico pra comparar" — mas a Beehiiv está
+  // ATUALMENTE com 0 assinantes ativos (migração #7388/#7395, fato do
+  // mundo real no momento deste deploy, não hipotético). Sem este piso
+  // absoluto, a 1ª rodada bem-sucedida após o fix do PATH (bug 1 desta
+  // mesma issue) leria 0, passaria o guard por falta de baseline, e
+  // apagaria o KV inteiro — o EXATO incidente que este guard existe pra
+  // prevenir. `currentCount === 0` recusa SEMPRE, com ou sem baseline;
+  // `--force-empty-guard` continua sendo o escape hatch caso 0 seja
+  // legitimamente o número certo (ex: KV genuinamente vazio, dia 1).
+  if (currentCount === 0) {
+    return {
+      ok: false,
+      reason:
+        `Beehiiv devolveu 0 assinantes ativos — piso absoluto, nunca aceito mesmo sem baseline prévio ` +
+        `(fonte pode estar zerada por migração de plataforma, não "todo mundo cancelou"). ` +
+        `A próxima etapa apagaria o KV CURSOS_SUBSCRIBERS inteiro.`,
+    };
+  }
+  if (!previousState || previousState.active_subscriber_count === 0) return { ok: true };
+  const ratio = currentCount / previousState.active_subscriber_count;
+  if (!Number.isFinite(ratio) || ratio < EMPTY_GUARD_RATIO) {
+    const pct = Number.isFinite(ratio) ? `${(ratio * 100).toFixed(0)}%` : "indefinido";
+    return {
+      ok: false,
+      reason: `Beehiiv devolveu ${currentCount} assinantes ativos, ${pct} dos ${previousState.active_subscriber_count} da última rodada (${previousState.last_run_at}) — provável falha de fonte/auth/paginação (ou fonte zerada por migração de plataforma), não "todo mundo cancelou". A próxima etapa apagaria essas chaves do KV CURSOS_SUBSCRIBERS.`,
+    };
+  }
+  return { ok: true };
+}
+
+export async function main(rootDirOverride?: string): Promise<void> {
+  const rootDir = rootDirOverride ?? ROOT;
   const argv = process.argv.slice(2);
   const dryRun = argv.includes("--dry-run");
+  const forceEmptyGuard = hasFlag(argv, "force-empty-guard");
   const nsIdx = argv.indexOf("--namespace-id");
   const namespaceId = nsIdx >= 0 ? argv[nsIdx + 1] : process.env.CURSOS_KV_NAMESPACE_ID;
 
@@ -397,6 +524,27 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  // #7338: guard ANTES de qualquer chamada real de wrangler — `syncKvKeys`
+  // trata todo ausente de `entries` como stale e apaga do KV
+  // (`diffStaleSubscriberKeys`); uma fonte suspeita-vazia apagaria o KV
+  // inteiro em vez de "ninguém mudou". `--force-empty-guard` é o escape
+  // hatch e NUNCA atualiza o baseline persistido (mesmo padrão de
+  // `sync-beehiiv-subscribers-kit.ts`, #6092) — só uma rodada que passou
+  // pelo guard normalmente grava estado, pra não perpetuar um número
+  // degradado como "normal".
+  const previousState = readKvSyncState(rootDir);
+  const guard = evaluateKvEmptyGuard(emails.length, previousState);
+  if (!guard.ok) {
+    if (!forceEmptyGuard) {
+      process.stderr.write(`[sync-cursos-subscribers-kv] GUARD: ${guard.reason}\n`);
+      process.stderr.write(
+        "[sync-cursos-subscribers-kv] abortando sem tocar no KV — rode com --force-empty-guard se a queda for legítima.\n",
+      );
+      process.exit(1);
+    }
+    process.stderr.write(`[sync-cursos-subscribers-kv] AVISO (--force-empty-guard): ${guard.reason} — prosseguindo mesmo assim.\n`);
+  }
+
   // #4442 (era #4381 put→list→diff→delete): agora list→diff→put(só as
   // novas)→delete, nesta ordem fixa — ver docstring de `syncKvKeys`. O put só
   // recebe as chaves AUSENTES do KV (write-amplification de 551/dia pra ~3/dia
@@ -412,6 +560,12 @@ async function main(): Promise<void> {
   );
   if (staleKeys.length > 0) {
     process.stderr.write(`[sync-cursos-subscribers-kv] ${staleKeys.length} chaves stale apagadas.\n`);
+  }
+
+  if (!forceEmptyGuard) {
+    writeKvSyncState(rootDir, { last_run_at: new Date().toISOString(), active_subscriber_count: emails.length });
+  } else {
+    process.stderr.write("[sync-cursos-subscribers-kv] baseline NÃO atualizado (rodada só seguiu via --force-empty-guard).\n");
   }
 
   console.log(
