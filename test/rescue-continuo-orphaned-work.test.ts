@@ -135,3 +135,95 @@ describe("#7484 buildRescuePrArgs — PR de rescue não é auto-mergeável", () 
     assert.ok(body.includes("draft"), "body deveria explicar por que a PR é draft");
   });
 });
+
+/**
+ * tryOpenPr — retry sem --label quando a label não existe (#7484, achado
+ * CRÍTICO do fleet review sobre este mesmo PR).
+ *
+ * `gh pr create --label X` falha o comando INTEIRO se a label X não existir
+ * (deletada/renomeada/typo) — sem o retry, essa falha cai no mesmo catch
+ * genérico que trata "gh ausente/sem auth" como benigno, e a PR de rescue
+ * simplesmente não é criada: sem PR, sem draft, sem label, sem proteção
+ * nenhuma, com o log soando como um caso trivial de "gh indisponível".
+ *
+ * `tryOpenPr` aceita um `spawn` injetável (mesmo padrão de `defaultSpawn` em
+ * `scripts/lib/continuo-tick-closure.ts`) — o fake abaixo falha só quando o
+ * argv inclui `--label`, simulando a label ausente, e sucede sem ela.
+ */
+import { tryOpenPr } from "../scripts/rescue-continuo-orphaned-work.ts";
+import type { GitSpawnFn as SpawnFn } from "../scripts/lib/spawn-types.ts";
+
+describe("#7484 tryOpenPr — retry sem --label quando gh pr create falha com a label", () => {
+  const branch = "continuo/rescue-20260905T000000Z-abc1234-deadbeef";
+
+  it("--label presente falha (label sumiu) → retry SEM --label acontece e sucede", () => {
+    const calls: string[][] = [];
+    const fakeSpawn: SpawnFn = (_cmd, args) => {
+      calls.push(args);
+      if (args.includes("--label")) {
+        return { status: 1, stdout: "", stderr: "gh: could not add label: 'bloqueio-execucao' not found" };
+      }
+      return { status: 0, stdout: "https://github.com/vjpixel/diaria-studio/pull/9999", stderr: "" };
+    };
+
+    const result = tryOpenPr(branch, fakeSpawn);
+
+    assert.equal(calls.length, 2, "esperava 2 tentativas (com label, depois sem label)");
+    assert.ok(calls[0].includes("--label"), "1ª tentativa deveria incluir --label");
+    assert.ok(!calls[1].includes("--label"), "2ª tentativa (retry) NÃO deveria incluir --label");
+    assert.ok(calls[1].includes("--draft"), "retry ainda precisa manter --draft");
+
+    // Sinaliza CLARAMENTE que a label não foi aplicada — nunca a mesma
+    // mensagem benigna de "gh indisponível, não bloqueia".
+    assert.equal(result.ok, true);
+    assert.equal(result.labelApplied, false);
+    assert.match(result.message, /SEM a label/);
+    assert.match(result.message, /bloqueio-execucao/);
+    assert.doesNotMatch(result.message, /não bloqueia — branch já preservada/);
+  });
+
+  it("1ª tentativa com sucesso → nenhum retry, labelApplied true", () => {
+    const calls: string[][] = [];
+    const fakeSpawn: SpawnFn = (_cmd, args) => {
+      calls.push(args);
+      return { status: 0, stdout: "https://github.com/vjpixel/diaria-studio/pull/9998", stderr: "" };
+    };
+
+    const result = tryOpenPr(branch, fakeSpawn);
+
+    assert.equal(calls.length, 1, "sucesso na 1ª tentativa não deveria disparar retry");
+    assert.equal(result.ok, true);
+    assert.equal(result.labelApplied, true);
+  });
+
+  it("as DUAS tentativas falham (gh ausente/sem auth) → falha benigna real, exit ok:false", () => {
+    const fakeSpawn: SpawnFn = () => ({ status: 1, stdout: "", stderr: "gh: command not found" });
+
+    const result = tryOpenPr(branch, fakeSpawn);
+
+    assert.equal(result.ok, false);
+    assert.match(result.message, /não bloqueia — branch já preservada/);
+  });
+});
+
+/**
+ * BLOCKED_LABELS_SET drift guard (#7484 nice-to-have 1, pr-test-analyzer).
+ *
+ * `RESCUE_PR_BLOCK_LABEL` é aplicada à PR de rescue justamente porque
+ * `classifyExecTrack` (via `BLOCKED_LABELS_SET`) já a lê e roteia pra
+ * Bloqueada — se um dia `bloqueio-execucao` sair de `BLOCKED_LABELS_SET`
+ * (renomeada/removida em `issue-exec-track.ts`) sem que este arquivo
+ * acompanhe, a PR de rescue continuaria aplicando uma label que não bloqueia
+ * mais nada — drift silencioso entre os dois arquivos.
+ */
+import { BLOCKED_LABELS_SET } from "../scripts/lib/issue-exec-track.ts";
+
+describe("#7484 RESCUE_PR_BLOCK_LABEL não diverge de BLOCKED_LABELS_SET", () => {
+  it("RESCUE_PR_BLOCK_LABEL está em BLOCKED_LABELS_SET (classifyExecTrack)", () => {
+    assert.ok(
+      BLOCKED_LABELS_SET.has(RESCUE_PR_BLOCK_LABEL),
+      `esperava "${RESCUE_PR_BLOCK_LABEL}" em BLOCKED_LABELS_SET — se a label mudou de nome/saiu do conjunto, ` +
+        "a PR de rescue precisa acompanhar",
+    );
+  });
+});
