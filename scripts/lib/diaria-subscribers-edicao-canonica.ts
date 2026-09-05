@@ -170,23 +170,6 @@ export interface CanonicalEdicaoBackfillResult {
 }
 
 /**
- * Popula `event.edicao_canonica` pra TODO evento cujo `(platform, edicao)`
- * o mapa canônico resolve — não só `delivered`/`sent` (a fonte do MIN(ts)),
- * mas TAMBÉM `open`/`click`/`bounce`/etc. do MESMO disparo, porque a chave
- * de agregação é por EDIÇÃO, não por tipo de evento (ver docstring do
- * módulo). Nunca inventa canônica pra um par que o mapa não resolve —
- * `edicao_canonica` fica `NULL` nesse caso (consumidor cai no fallback
- * `nativeEdicaoKey`, mesma semântica de `resolveCanonicalEdicao`).
- *
- * Idempotente e seguro rodar repetidamente (a cada ingestão, ou como
- * backfill manual único contra o store real): só regrava quando o valor
- * atual diverge do recém-calculado, então uma 2ª execução sem evento novo
- * grava 0 linhas. NUNCA insere nem apaga linha — só `UPDATE` de 1 coluna,
- * então o guard de conservação (`checkMergeConservation`-like: `COUNT(*)`
- * de `event` antes == depois) é trivialmente satisfeito por construção; o
- * CLI de backfill confirma isso mesmo assim, defensivamente.
- */
-/**
  * Wrapper fail-soft de `backfillCanonicalEdicaoColumn`, pensado pra rodar
  * como ÚLTIMO passo de cada CLI de ingestão (`diaria-subscribers-ingest-
  * {beehiiv,kit,brevo}.ts`) — abre o `.db` já ingerido, roda o backfill,
@@ -209,6 +192,23 @@ export function runCanonicalEdicaoBackfillFailSoft(dbPath: string): CanonicalEdi
   }
 }
 
+/**
+ * Popula `event.edicao_canonica` pra TODO evento cujo `(platform, edicao)`
+ * o mapa canônico resolve — não só `delivered`/`sent` (a fonte do MIN(ts)),
+ * mas TAMBÉM `open`/`click`/`bounce`/etc. do MESMO disparo, porque a chave
+ * de agregação é por EDIÇÃO, não por tipo de evento (ver docstring do
+ * módulo). Nunca inventa canônica pra um par que o mapa não resolve —
+ * `edicao_canonica` fica `NULL` nesse caso (consumidor cai no fallback
+ * `nativeEdicaoKey`, mesma semântica de `resolveCanonicalEdicao`).
+ *
+ * Idempotente e seguro rodar repetidamente (a cada ingestão, ou como
+ * backfill manual único contra o store real): só regrava quando o valor
+ * atual diverge do recém-calculado, então uma 2ª execução sem evento novo
+ * grava 0 linhas. NUNCA insere nem apaga linha — só `UPDATE` de 1 coluna,
+ * então o guard de conservação (`checkMergeConservation`-like: `COUNT(*)`
+ * de `event` antes == depois) é trivialmente satisfeito por construção; o
+ * CLI de backfill confirma isso mesmo assim, defensivamente.
+ */
 export function backfillCanonicalEdicaoColumn(db: DatabaseSync): CanonicalEdicaoBackfillResult {
   const canonicalMap = buildCanonicalEdicaoMapFromEvents(db);
   let rowsUpdated = 0;
