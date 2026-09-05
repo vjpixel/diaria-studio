@@ -461,15 +461,39 @@ try_merge_gate() {
       # #7446 item 2: label idempotente + notificação só na PRIMEIRA vez que
       # esta PR escala — ticks seguintes contam ESCALATED em silêncio, sem
       # repetir o aviso no resumo entregue ao Telegram.
+      # Review externo (PR #7449): `2>&1` misturaria a linha `npm notice run
+      # ...` que `npx` SEMPRE emite em stderr dentro do JSON que o `jq`
+      # abaixo tenta parsear — todo tick quebraria o parse e cairia sempre no
+      # fallback `|| echo`, notificando pra sempre (o oposto do que o item 2
+      # existe pra fazer). Mesma classe já corrigida uma vez pelo #6932 em
+      # `try_merge_gate()` — stdout/stderr SEPARADOS (arquivo temporário pro
+      # stderr) fecham isso aqui também.
+      ESCALATE_STDERR_TMP="$(mktemp)"
       set +e
-      ESCALATE_JSON=$(npx tsx scripts/check-continuo-escalate-label.ts --pr "$pr" 2>&1)
+      ESCALATE_JSON=$(npx tsx scripts/check-continuo-escalate-label.ts --pr "$pr" 2>"$ESCALATE_STDERR_TMP")
       ESCALATE_RC=$?
       set -e
+      ESCALATE_STDERR=$(cat "$ESCALATE_STDERR_TMP" 2>/dev/null || true)
+      rm -f "$ESCALATE_STDERR_TMP"
       FIRST_TIME="true"
       if [ "$ESCALATE_RC" -eq 0 ]; then
-        FIRST_TIME=$(printf '%s' "$ESCALATE_JSON" | jq -r '.firstTime // true' 2>/dev/null || echo "true")
+        # #7446 (achado durante o teste de regressão do item 2, ao lado da
+        # correção de stdout/stderr acima): `jq`'s `//` trata `false` do
+        # LADO ESQUERDO como falsy — `.firstTime // true` devolve `true`
+        # mesmo quando `.firstTime` é genuinamente `false` (já sinalizada),
+        # invertendo o próprio veredito que o item 2 existe pra ler. `as $v |
+        # if $v == null then ... else $v end` distingue "ausente" (usa o
+        # default) de "presente e false" (preserva o valor real).
+        FIRST_TIME=$(printf '%s' "$ESCALATE_JSON" | jq -r '.firstTime as $v | if $v == null then true else $v end' 2>/dev/null || echo "true")
       else
-        echo "[continuo-pr-review] PR #$pr: check-continuo-escalate-label.ts falhou (rc=$ESCALATE_RC) — notificando mesmo assim (fail-open): $ESCALATE_JSON" >&2
+        # Review externo (PR #7449, achado #1): faltava o padrão de
+        # visibilidade do #6910 — os outros 6+ pontos de falha de infra
+        # deste arquivo incrementam INFRA_ERRORS e chamam log_infra_error;
+        # este ramo só fazia echo, quebrando a paridade sem motivo (a
+        # rejeição/merge em si não muda — é só o rastro que faltava).
+        echo "[continuo-pr-review] PR #$pr: check-continuo-escalate-label.ts falhou (rc=$ESCALATE_RC) — notificando mesmo assim (fail-open): $ESCALATE_STDERR" >&2
+        INFRA_ERRORS=$((INFRA_ERRORS + 1))
+        log_infra_error "$pr" "escalate_label_rc=$ESCALATE_RC" "$ESCALATE_STDERR"
       fi
       if [ "$FIRST_TIME" = "true" ]; then
         echo "[continuo-pr-review] PR #$pr: gate=escalate (1ª vez) — label continuo-escalado aplicado, deixando pro pickup do /diaria-overnight ou revisão humana (fallback, #6823/#7446)"
