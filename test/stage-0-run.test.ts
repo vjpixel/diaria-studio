@@ -645,7 +645,7 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     );
   });
 
-  it("0o — path Windows (barra invertida) do find-last-edition-with-kit resolve --edition sem o path inteiro (#7483)", async () => {
+  it("0o — path com barra invertida (hardening defensivo, não a fonte atual) resolve --edition sem o path inteiro (#7483)", async () => {
     const { exec, calls } = makeFakeExec(
       happyExecHandlers({
         "find-last-edition-with-kit.ts": () => ({ code: 0, stdout: "C:\\x\\data\\editions\\2609\\260904\n", stderr: "" }),

@@ -867,13 +867,13 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     report.note("↷ 0o — entrega por provedor: nenhuma edição anterior com canal Kit despachado — nada a medir (fail-soft).");
   } else {
     // path.win32 (não o `path` "nu", que resolve pro SO do processo em
-    // execução) — kitPrevDir vem de find-last-edition-with-kit.ts via
-    // resolve(), que produz separador `\` no Windows (onde /diaria-edicao
-    // roda) e `/` no Linux/CI; win32.basename aceita os dois
-    // incondicionalmente, então o parse fica correto em qualquer SO que
-    // rode este processo — inclusive o CI (ubuntu-latest), que precisa
-    // validar o caso Windows sem uma máquina Windows real (#7483, mesmo
-    // padrão de scripts/lib/browser-capability.ts e
+    // execução) — hoje find-last-edition-with-kit.ts sempre devolve o path
+    // com barra normal (template literal fixo, `resolve()` só computa
+    // ROOT/editionsDir internamente e nunca é exposto ao caller), mas
+    // parsear com win32.basename (que aceita `\` e `/` incondicionalmente)
+    // protege contra uma mudança futura nessa fonte ou qualquer outro
+    // produtor deste valor, sem precisar de runner Windows no CI (#7483,
+    // mesmo padrão de scripts/lib/browser-capability.ts e
     // test/root-path-windows.test.ts).
     const kitPrevEdition = pathWin32.basename(kitPrevDir);
     const splitStep = softStep(deps, report, "kit-provider-split (0o — entrega por provedor)", "scripts/kit-provider-split.ts", ["--edition", kitPrevEdition, "--json"]);
