@@ -389,12 +389,26 @@ describe("readKvSyncState / writeKvSyncState (#7338, mesmo shape de sync-beehiiv
 });
 
 describe("evaluateKvEmptyGuard (#7338)", () => {
-  it("sem baseline anterior — sempre passa", () => {
-    assert.deepEqual(evaluateKvEmptyGuard(0, null), { ok: true });
+  it("SEM baseline anterior E currentCount === 0 — RECUSA (piso absoluto, achado P0 do #7463)", () => {
+    // Achado do self-review na PR #7463: SEM baseline (1ª rodada desde que
+    // este guard existe — o estado REAL de produção hoje, já que o state
+    // file nasce com esta mesma PR) `!previousState` cairia no {ok:true}
+    // de "sem histórico pra comparar" — mas a Beehiiv está ATUALMENTE com 0
+    // assinantes ativos (migração #7388/#7395). Sem este piso absoluto, a
+    // 1ª rodada bem-sucedida após o fix do PATH leria 0, passaria o guard
+    // por falta de baseline, e apagaria o KV inteiro.
+    const result = evaluateKvEmptyGuard(0, null);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.reason, /piso absoluto/);
+    }
+  });
+
+  it("sem baseline anterior, currentCount > 0 — passa (nada suspeito pra comparar)", () => {
     assert.deepEqual(evaluateKvEmptyGuard(551, null), { ok: true });
   });
 
-  it("baseline anterior era 0 — sempre passa (nada pra comparar)", () => {
+  it("baseline anterior era 0, currentCount > 0 — passa (nada pra comparar)", () => {
     const prev = { last_run_at: "2026-09-04T00:00:00Z", active_subscriber_count: 0 };
     assert.deepEqual(evaluateKvEmptyGuard(551, prev), { ok: true });
   });
@@ -404,17 +418,16 @@ describe("evaluateKvEmptyGuard (#7338)", () => {
     assert.deepEqual(evaluateKvEmptyGuard(300, prev), { ok: true }); // 60%
   });
 
-  it("caso real #7338: baseline 551, atual 0 (Beehiiv zerada pela migração #7388/#7395) — RECUSA", () => {
+  it("caso real #7338: baseline 551, atual 0 (Beehiiv zerada pela migração #7388/#7395) — RECUSA pelo piso absoluto", () => {
     const prev = { last_run_at: "2026-09-03T09:15:00Z", active_subscriber_count: 551 };
     const result = evaluateKvEmptyGuard(0, prev);
     assert.equal(result.ok, false);
     if (!result.ok) {
-      assert.match(result.reason, /0%/);
-      assert.match(result.reason, /551/);
+      assert.match(result.reason, /piso absoluto/);
     }
   });
 
-  it("queda abrupta abaixo do limiar (menos de 50% do baseline) — recusa", () => {
+  it("queda abrupta abaixo do limiar (menos de 50% do baseline, mas NÃO zero) — recusa pela razão, não pelo piso", () => {
     const prev = { last_run_at: "2026-09-04T00:00:00Z", active_subscriber_count: 500 };
     const result = evaluateKvEmptyGuard(100, prev); // 20%
     assert.equal(result.ok, false);

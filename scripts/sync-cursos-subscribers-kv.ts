@@ -452,6 +452,27 @@ export type KvEmptyGuardResult = { ok: true } | { ok: false; reason: string };
  *  desde a última vez (ver docstring acima). Sem histórico prévio, sempre
  *  passa. `!Number.isFinite(ratio)` falha FECHADO (nunca aberto). */
 export function evaluateKvEmptyGuard(currentCount: number, previousState: KvSyncState | null): KvEmptyGuardResult {
+  // #7463 finding P0 (self-review): SEM baseline (1ª rodada desde que este
+  // guard existe — exatamente o estado real de produção hoje, já que
+  // `.kv-sync-state.json` nasce com esta mesma PR) `!previousState` cairia
+  // no `{ok:true}` de "sem histórico pra comparar" — mas a Beehiiv está
+  // ATUALMENTE com 0 assinantes ativos (migração #7388/#7395, fato do
+  // mundo real no momento deste deploy, não hipotético). Sem este piso
+  // absoluto, a 1ª rodada bem-sucedida após o fix do PATH (bug 1 desta
+  // mesma issue) leria 0, passaria o guard por falta de baseline, e
+  // apagaria o KV inteiro — o EXATO incidente que este guard existe pra
+  // prevenir. `currentCount === 0` recusa SEMPRE, com ou sem baseline;
+  // `--force-empty-guard` continua sendo o escape hatch caso 0 seja
+  // legitimamente o número certo (ex: KV genuinamente vazio, dia 1).
+  if (currentCount === 0) {
+    return {
+      ok: false,
+      reason:
+        `Beehiiv devolveu 0 assinantes ativos — piso absoluto, nunca aceito mesmo sem baseline prévio ` +
+        `(fonte pode estar zerada por migração de plataforma, não "todo mundo cancelou"). ` +
+        `A próxima etapa apagaria o KV CURSOS_SUBSCRIBERS inteiro.`,
+    };
+  }
   if (!previousState || previousState.active_subscriber_count === 0) return { ok: true };
   const ratio = currentCount / previousState.active_subscriber_count;
   if (!Number.isFinite(ratio) || ratio < EMPTY_GUARD_RATIO) {
