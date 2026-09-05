@@ -5,6 +5,19 @@
  * replace-vazio (mesmo padrão de #4836 em apply-mcp-clicks.ts) e a
  * tolerância de shape do input. Sem rede — a extração real via MCP não
  * pode ser exercitada aqui (só chamável de dentro de uma sessão Claude).
+ *
+ * #7460: os fixtures deste arquivo passaram a incluir `status: "delivered"`
+ * nos registros que antes eram só `{ subscriber_id: "..." }` — não é
+ * cosmético. O guard `schema-fora-do-canonico` (novo neste PR) classifica
+ * CADA linha do payload via `classifyEngagementRecord`, e um objeto cuja
+ * ÚNICA chave é `subscriber_id` (sem `status`/`timestamp`) é EXATAMENTE a
+ * assinatura do stub sintético que contaminou o acervo real (#7181 —
+ * `{"subscriber_id":"s1"}`). Sem o campo `status`, todo fixture antigo
+ * deste arquivo seria classificado como stub e rejeitado pelo guard novo,
+ * fazendo testes que não têm nada a ver com schema (append, paginação,
+ * replace-vazio) falharem por um motivo alheio ao que testam. Os testes
+ * dedicados ao guard novo ficam na seção "schema-fora-do-canonico" abaixo,
+ * com fixtures deliberadamente SEM `status` (é o caso que eles testam).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -18,6 +31,7 @@ import {
   readExistingRecords,
   mergeEngagementRecords,
   EmptyReplaceGuardError,
+  SCHEMA_GUARD_REASON_PREFIX,
 } from "../scripts/apply-mcp-subscriber-engagement.ts";
 import type { EngagementManifest } from "../scripts/lib/beehiiv-engagement-manifest.ts";
 
@@ -54,8 +68,8 @@ describe("applyEngagement — grava JSONL cru + manifest de cobertura", () => {
     const { outDir } = setup();
     const stdin = JSON.stringify({
       engagement: [
-        { subscriber_id: "sub_1", opens: 3, clicks: 1 },
-        { subscriber_id: "sub_2", opens: 0, clicks: 0 },
+        { subscriber_id: "sub_1", status: "opened", opens: 3, clicks: 1 },
+        { subscriber_id: "sub_2", status: "delivered", opens: 0, clicks: 0 },
       ],
     });
     const result = applyEngagement(stdin, { postId: "post_1", title: "Título A", outDir });
@@ -66,12 +80,20 @@ describe("applyEngagement — grava JSONL cru + manifest de cobertura", () => {
     assert.ok(existsSync(jsonlPath));
     const lines = readFileSync(jsonlPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
     assert.equal(lines.length, 2);
-    assert.deepEqual(lines[0], { subscriber_id: "sub_1", opens: 3, clicks: 1 }, "registro gravado verbatim, sem remapear campos");
+    assert.deepEqual(
+      lines[0],
+      { subscriber_id: "sub_1", status: "opened", opens: 3, clicks: 1 },
+      "registro gravado verbatim, sem remapear campos",
+    );
   });
 
   it("grava/atualiza manifest.json com status ok e count", () => {
     const { outDir } = setup();
-    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1" }] }), { postId: "post_1", title: "T", outDir });
+    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1", status: "delivered" }] }), {
+      postId: "post_1",
+      title: "T",
+      outDir,
+    });
     const manifest = readManifest(outDir);
     const entry = manifest.posts.find((p) => p.post_id === "post_1")!;
     assert.equal(entry.status, "ok");
@@ -82,7 +104,7 @@ describe("applyEngagement — grava JSONL cru + manifest de cobertura", () => {
 
   it("pages_fetched < total_pages → status partial (paginação truncada)", () => {
     const { outDir } = setup();
-    const result = applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1" }] }), {
+    const result = applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1", status: "delivered" }] }), {
       postId: "post_1",
       pagesFetched: 1,
       totalPages: 3,
@@ -97,7 +119,7 @@ describe("applyEngagement — grava JSONL cru + manifest de cobertura", () => {
 
   it("pages_fetched === total_pages → status ok mesmo passando ambos explicitamente (com registros reais)", () => {
     const { outDir } = setup();
-    const result = applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1" }] }), {
+    const result = applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1", status: "delivered" }] }), {
       postId: "post_1",
       pagesFetched: 2,
       totalPages: 2,
@@ -108,8 +130,8 @@ describe("applyEngagement — grava JSONL cru + manifest de cobertura", () => {
 
   it("upsert de um 2º post não apaga a entry do 1º no manifest", () => {
     const { outDir } = setup();
-    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1" }] }), { postId: "post_1", outDir });
-    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_2" }] }), { postId: "post_2", outDir });
+    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1", status: "delivered" }] }), { postId: "post_1", outDir });
+    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_2", status: "delivered" }] }), { postId: "post_2", outDir });
     const manifest = readManifest(outDir);
     assert.equal(manifest.posts.length, 2);
   });
@@ -118,7 +140,7 @@ describe("applyEngagement — grava JSONL cru + manifest de cobertura", () => {
 describe("applyEngagement — guard REPLACE-vazio (mesmo padrão de #4836)", () => {
   it("recusa apagar JSONL não-vazio com payload vazio, por padrão", () => {
     const { outDir } = setup();
-    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1" }] }), { postId: "post_1", outDir });
+    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1", status: "delivered" }] }), { postId: "post_1", outDir });
     assert.equal(countExistingLines(resolve(outDir, "post_1.jsonl")), 1);
 
     assert.throws(
@@ -131,7 +153,7 @@ describe("applyEngagement — guard REPLACE-vazio (mesmo padrão de #4836)", () 
 
   it("--allow-empty-replace explícito permite o replace vazio", () => {
     const { outDir } = setup();
-    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1" }] }), { postId: "post_1", outDir });
+    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1", status: "delivered" }] }), { postId: "post_1", outDir });
 
     const result = applyEngagement(JSON.stringify({ engagement: [] }), { postId: "post_1", outDir, allowEmptyReplace: true });
     assert.equal(result.after_count, 0);
@@ -200,7 +222,7 @@ describe("applyEngagement — guard REPLACE-vazio (mesmo padrão de #4836)", () 
 
   it("guard dispara ANTES de atualizar o manifest — post continua com o status anterior, não vira ok/error espúrio", () => {
     const { outDir } = setup();
-    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1" }] }), { postId: "post_1", outDir });
+    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1", status: "delivered" }] }), { postId: "post_1", outDir });
     const before = readManifest(outDir).posts.find((p) => p.post_id === "post_1")!;
 
     assert.throws(() => applyEngagement(JSON.stringify({ engagement: [] }), { postId: "post_1", outDir }), EmptyReplaceGuardError);
@@ -214,14 +236,19 @@ describe("applyEngagement — modo --append (#6733)", () => {
   it("aplicar 2 páginas em sequência via --append resulta nas duas presentes (sem sobrescrever a 1ª)", () => {
     const { outDir } = setup();
     const page1 = applyEngagement(
-      JSON.stringify({ engagement: [{ subscriber_id: "sub_1", opens: 1 }, { subscriber_id: "sub_2", opens: 2 }] }),
+      JSON.stringify({
+        engagement: [
+          { subscriber_id: "sub_1", status: "delivered", opens: 1 },
+          { subscriber_id: "sub_2", status: "delivered", opens: 2 },
+        ],
+      }),
       { postId: "post_1", pagesFetched: 1, totalPages: 2, outDir },
     );
     assert.equal(page1.after_count, 2);
     assert.equal(page1.status, "partial");
 
     const page2 = applyEngagement(
-      JSON.stringify({ engagement: [{ subscriber_id: "sub_3", opens: 3 }] }),
+      JSON.stringify({ engagement: [{ subscriber_id: "sub_3", status: "delivered", opens: 3 }] }),
       { postId: "post_1", pagesFetched: 2, totalPages: 2, append: true, outDir },
     );
     assert.equal(page2.before_count, 2);
@@ -236,9 +263,9 @@ describe("applyEngagement — modo --append (#6733)", () => {
 
   it("dedup por subscriber_id entre páginas — incoming vence em caso de conflito", () => {
     const { outDir } = setup();
-    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1", opens: 1 }] }), { postId: "post_1", outDir });
+    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1", status: "delivered", opens: 1 }] }), { postId: "post_1", outDir });
     const result = applyEngagement(
-      JSON.stringify({ engagement: [{ subscriber_id: "sub_1", opens: 99 }] }),
+      JSON.stringify({ engagement: [{ subscriber_id: "sub_1", status: "delivered", opens: 99 }] }),
       { postId: "post_1", append: true, outDir },
     );
     assert.equal(result.after_count, 1, "mesmo subscriber_id não duplica");
@@ -252,7 +279,7 @@ describe("applyEngagement — modo --append (#6733)", () => {
   it("--append cobre a 1ª aplicação (arquivo ainda não existente)", () => {
     const { outDir } = setup();
     const result = applyEngagement(
-      JSON.stringify({ engagement: [{ subscriber_id: "sub_1" }] }),
+      JSON.stringify({ engagement: [{ subscriber_id: "sub_1", status: "delivered" }] }),
       { postId: "post_novo", append: true, outDir },
     );
     assert.equal(result.before_count, 0);
@@ -262,7 +289,7 @@ describe("applyEngagement — modo --append (#6733)", () => {
 
   it("--append com payload vazio nunca aciona o guard de replace-vazio (mescla, não substitui)", () => {
     const { outDir } = setup();
-    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1" }] }), { postId: "post_1", outDir });
+    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1", status: "delivered" }] }), { postId: "post_1", outDir });
     // Sem --allow-empty-replace — se isto fosse REPLACE, lançaria EmptyReplaceGuardError.
     const result = applyEngagement(JSON.stringify({ engagement: [] }), { postId: "post_1", append: true, outDir });
     assert.equal(result.after_count, 1, "página vazia em --append não apaga o que já estava");
@@ -307,7 +334,7 @@ describe("countExistingLines", () => {
 describe("applyEngagement — guard de completude via --recipients (#7197)", () => {
   function page(n: number, offset = 0): string {
     return JSON.stringify({
-      engagement: Array.from({ length: n }, (_, i) => ({ subscriber_id: `sub_${offset + i}` })),
+      engagement: Array.from({ length: n }, (_, i) => ({ subscriber_id: `sub_${offset + i}`, status: "delivered" })),
     });
   }
 
@@ -360,5 +387,164 @@ describe("applyEngagement — guard de completude via --recipients (#7197)", () 
     const result = applyEngagement(JSON.stringify({ engagement: [] }), { postId: "post_1", recipients: 0, outDir });
     assert.equal(result.status, "partial");
     assert.match(readManifest(outDir).posts[0].error ?? "", /--confirmed-empty/);
+  });
+});
+
+describe("applyEngagement — --kind click-subscribers grava no seu próprio diretório (#7460)", () => {
+  it("com --out-dir explícito, grava DIRETO nesse diretório (mesmo mecanismo write/manifest do kind default, só muda o destino)", () => {
+    const { outDir: engagementDir } = setup();
+    const clickOutDir = resolve(engagementDir, "..", "click-subscribers");
+    const clickRecord = {
+      subscription_id: "sub_d0620b3e",
+      email: "leitor@example.com",
+      url: "https://eia.diar.ia.br/vote?choice=B",
+      url_hash: "123",
+      clicked_at: "2026-08-29T15:01:40Z",
+    };
+    const result = applyEngagement(JSON.stringify({ engagement: [clickRecord] }), {
+      postId: "post_1",
+      kind: "click-subscribers",
+      outDir: clickOutDir,
+    });
+    assert.equal(result.status, "ok");
+    assert.equal(result.after_count, 1);
+
+    const clickPath = resolve(clickOutDir, "post_1.jsonl");
+    assert.ok(existsSync(clickPath));
+    const lines = readFileSync(clickPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(lines[0], clickRecord, "gravado verbatim, sem guard de schema (kind click-subscribers não classifica)");
+
+    // Nada vazou pro diretório de engagement, que nem foi criado por esta chamada.
+    assert.ok(!existsSync(resolve(engagementDir, "post_1.jsonl")));
+  });
+
+  it("manifest de click-subscribers é próprio, nunca toca o manifest de engagement", () => {
+    const { outDir: engagementDir } = setup();
+    const clickOutDir = resolve(engagementDir, "..", "click-subscribers");
+    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1", status: "delivered" }] }), { postId: "post_1", outDir: engagementDir });
+    applyEngagement(
+      JSON.stringify({ engagement: [{ subscription_id: "sub_x", url: "https://x", url_hash: "1", clicked_at: "2026-01-01T00:00:00Z" }] }),
+      { postId: "post_1", kind: "click-subscribers", outDir: clickOutDir },
+    );
+    const engagementManifest = readManifest(engagementDir);
+    assert.equal(engagementManifest.posts.find((p) => p.post_id === "post_1")!.count, 1, "manifest de engagement não mudou");
+
+    const clickManifest = readManifest(clickOutDir);
+    assert.equal(clickManifest.posts.find((p) => p.post_id === "post_1")!.count, 1);
+  });
+});
+
+describe("applyEngagement — guard schema-fora-do-canonico (#7460)", () => {
+  it("lote 100% stub sintético (classe A, #7181) nunca vira ok — vira error, disco não tocado", () => {
+    const { outDir } = setup();
+    const stubs = Array.from({ length: 10 }, (_, i) => ({ subscriber_id: `s${i + 1}` }));
+    const result = applyEngagement(JSON.stringify({ engagement: stubs }), { postId: "post_1", outDir });
+    assert.equal(result.status, "error");
+    assert.equal(result.after_count, 0);
+    assert.equal(countExistingLines(resolve(outDir, "post_1.jsonl")), 0, "nenhuma linha gravada");
+    const entry = readManifest(outDir).posts[0];
+    assert.equal(entry.status, "error");
+    assert.match(entry.error ?? "", new RegExp(SCHEMA_GUARD_REASON_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  });
+
+  it("guard dispara ANTES de tocar disco — JSONL existente permanece intacto", () => {
+    const { outDir } = setup();
+    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1", status: "delivered" }] }), { postId: "post_1", outDir });
+    const stubs = Array.from({ length: 10 }, (_, i) => ({ subscriber_id: `s${i + 1}` }));
+    const result = applyEngagement(JSON.stringify({ engagement: stubs }), { postId: "post_1", outDir });
+    assert.equal(result.status, "error");
+    assert.equal(result.before_count, 1);
+    assert.equal(result.after_count, 1, "disco não foi tocado — count anterior preservado");
+    assert.equal(countExistingLines(resolve(outDir, "post_1.jsonl")), 1);
+  });
+
+  it("<50% de linhas stub não dispara o guard — as boas são gravadas, as stub descartadas", () => {
+    const { outDir } = setup();
+    const records = [
+      { subscriber_id: "7bfa5666-27a9-4b14-8d1d-2a461af241b6", email: "a@x.com", status: "opened", timestamp: "2026-01-01T00:00:00Z" },
+      { subscriber_id: "8bfa5666-27a9-4b14-8d1d-2a461af241b7", email: "b@x.com", status: "delivered", timestamp: "2026-01-01T00:00:00Z" },
+      { subscriber_id: "9bfa5666-27a9-4b14-8d1d-2a461af241b8", email: "c@x.com", status: "delivered", timestamp: "2026-01-01T00:00:00Z" },
+      { subscriber_id: "s1" }, // 1 stub em 4 = 25%, abaixo do threshold de 50%
+    ];
+    const result = applyEngagement(JSON.stringify({ engagement: records }), { postId: "post_1", outDir });
+    assert.equal(result.status, "ok");
+    assert.equal(result.after_count, 3, "o stub foi descartado, só as 3 boas foram gravadas");
+    assert.equal(result.discarded_count, 1);
+  });
+
+  it("classe C (e-mail em subscriber_id) e classe D (sem e-mail) NÃO contam como stub — não disparam o guard nem são descartadas", () => {
+    const { outDir } = setup();
+    const records = [
+      { subscriber_id: "recuperavel@example.com", status: "opened", timestamp: "2026-01-01T00:00:00Z" }, // classe C
+      { subscriber_id: "sub_x", email: null, status: "delivered", timestamp: "2026-01-01T00:00:00Z" }, // classe D
+    ];
+    const result = applyEngagement(JSON.stringify({ engagement: records }), { postId: "post_1", outDir });
+    assert.equal(result.status, "ok");
+    assert.equal(result.after_count, 2, "ambas as classes recuperáveis são gravadas, nunca descartadas");
+    assert.equal(result.discarded_count, undefined);
+  });
+
+  it("linha classe B (click-identity) aplicada por engano com --kind default é roteada pro click-subscribers, não gravada no jsonl de engagement", () => {
+    const { outDir } = setup();
+    const clickLine = {
+      subscription_id: "sub_d0620b3e",
+      email: "leitor@example.com",
+      url: "https://eia.diar.ia.br/vote?choice=B",
+      url_hash: "123",
+      clicked_at: "2026-08-29T15:01:40Z",
+    };
+    const goodLine = { subscriber_id: "7bfa5666-27a9-4b14-8d1d-2a461af241b6", email: "a@x.com", status: "opened", timestamp: "2026-01-01T00:00:00Z" };
+    const result = applyEngagement(JSON.stringify({ engagement: [clickLine, goodLine] }), { postId: "post_1", outDir });
+    assert.equal(result.status, "ok");
+    assert.equal(result.after_count, 1, "só a linha canônica fica no jsonl de engagement");
+    assert.equal(result.routed_click_count, 1);
+
+    const engagementLines = readFileSync(resolve(outDir, "post_1.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(engagementLines, [goodLine]);
+
+    const clickLines = readFileSync(resolve(outDir, "..", "click-subscribers", "post_1.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    assert.deepEqual(clickLines, [clickLine], "roteado verbatim pro arquivo irmão");
+  });
+
+  it("--kind click-subscribers nunca aplica o guard schema-fora-do-canonico (payload já é confiavelmente de outro endpoint)", () => {
+    const { outDir } = setup();
+    // Payload deliberadamente "estranho" pro schema de engagement — mas em
+    // --kind click-subscribers isso não é avaliado, só gravado.
+    const records = Array.from({ length: 5 }, (_, i) => ({ subscription_id: `sub_${i}` }));
+    const result = applyEngagement(JSON.stringify({ engagement: records }), { postId: "post_1", kind: "click-subscribers", outDir });
+    assert.equal(result.status, "ok");
+    assert.equal(result.after_count, 5);
+  });
+
+  it("--kind click-subscribers --append aplicando a MESMA página 2x não duplica (#7460 finding 1 — registros trazem subscription_id, não subscriber_id)", () => {
+    const { outDir } = setup();
+    const clickOutDir = resolve(outDir, "..", "click-subscribers");
+    const page = JSON.stringify({
+      engagement: [
+        {
+          subscription_id: "sub_d0620b3e",
+          email: "leitor@example.com",
+          url: "https://eia.diar.ia.br/vote?choice=B",
+          url_hash: "123",
+          clicked_at: "2026-08-29T15:01:40Z",
+        },
+      ],
+    });
+    const opts = { postId: "post_1", kind: "click-subscribers" as const, outDir: clickOutDir, append: true };
+
+    // Antes do fix (#7460 finding 1): mergeEngagementRecords deduplica por
+    // subscriber_id, mas este registro só tem subscription_id — cai no ramo
+    // sintético __no_id_N, que NUNCA colide entre si, então retry de página
+    // duplicava a linha a cada --append.
+    const first = applyEngagement(page, opts);
+    assert.equal(first.after_count, 1);
+    const second = applyEngagement(page, opts);
+    assert.equal(second.after_count, 1, "retry da MESMA página não deve duplicar a linha");
+
+    const lines = readFileSync(resolve(clickOutDir, "post_1.jsonl"), "utf8").trim().split("\n");
+    assert.equal(lines.length, 1, "1 linha em disco, não 2");
   });
 });

@@ -23,9 +23,16 @@
  *
  * Uso (do agent `beehiiv-engagement-backup`):
  *   echo '{"engagement":[...]}' | npx tsx scripts/apply-mcp-subscriber-engagement.ts \
- *     --post-id post_<uuid> [--title "..."] \
+ *     --post-id post_<uuid> [--title "..."] [--kind engagement|click-subscribers] \
  *     [--pages-fetched 3 --total-pages 3] [--allow-empty-replace] [--confirmed-empty] \
  *     [--out-dir data/beehiiv-backup/subscriber-engagement]
+ *
+ *   # `list_post_click_subscribers` (identidade de clique) SEMPRE com
+ *   # `--kind click-subscribers` (#7460) — grava em
+ *   # `data/beehiiv-backup/click-subscribers/{post_id}.jsonl`, nunca no
+ *   # mesmo `.jsonl` de engagement:
+ *   echo '{"engagement":[...clique...]}' | npx tsx scripts/apply-mcp-subscriber-engagement.ts \
+ *     --post-id post_<uuid> --kind click-subscribers --append
  *
  *   # Append vs replace: default é REPLACE (reescreve o `.jsonl` inteiro a
  *   # partir do array completo). Use --append (#6733) pra aplicar página a
@@ -89,16 +96,59 @@
  * — status `ok` (todas as páginas confirmadas E ≥1 registro, ou 0 registros
  * com `--confirmed-empty`, ver guard #7197 acima), `partial` (paginação
  * truncada — `pages_fetched < total_pages` — OU 0 registros sem
- * `--confirmed-empty`), ou `error` (falha antes de escrever). Isso é o que
- * torna a extração retomável entre invocações do agent:
- * `list-posts-for-engagement-backup.ts` só reoferece posts que não estão
- * `ok`.
+ * `--confirmed-empty`), ou `error` (falha antes de escrever, OU guard
+ * `schema-fora-do-canonico` abaixo). Isso é o que torna a extração
+ * retomável entre invocações do agent: `list-posts-for-engagement-backup.ts`
+ * só reoferece posts que não estão `ok`.
+ *
+ * ## `--kind` (#7460, residual do #7181/#7172) — 2 fontes, 2 destinos
+ *
+ * `--kind engagement` (default) grava em `subscriber-engagement/{post_id}.jsonl`
+ * (per-subscriber engagement, `list_post_subscriber_engagement`). `--kind
+ * click-subscribers` grava num diretório IRMÃO,
+ * `click-subscribers/{post_id}.jsonl` (identidade de clique,
+ * `list_post_click_subscribers`) — próprio `.jsonl`, próprio
+ * `manifest.json`, nunca toca o `count`/manifest de engagement. Use `--kind
+ * click-subscribers` sempre que aplicar o resultado de
+ * `list_post_click_subscribers` — nunca aplique esse payload com o `--kind`
+ * default (`engagement`).
+ *
+ * ## Guard `schema-fora-do-canonico` (#7460) — só em `--kind engagement`
+ *
+ * O #7181 mediu 1.147/51.620 linhas (2,2%) fora da assinatura canônica no
+ * acervo, incluindo 768 stubs sintéticos (`{"subscriber_id":"s1"}`) que
+ * passaram por este script sem guard nenhum de conteúdo — só a contagem
+ * batia, então `status: "ok"` saía sobre lixo puro. Este guard usa o leitor
+ * canônico (`scripts/lib/beehiiv-engagement-read.ts`) pra classificar CADA
+ * linha do payload recém-chegado (`incoming`, antes do merge/replace):
+ *
+ *   - **click-identity** (schema de `list_post_click_subscribers` aplicado
+ *     por engano com `--kind engagement`) é ROTEADO automaticamente pro
+ *     `click-subscribers/{post_id}.jsonl` irmão — nunca gravado no `.jsonl`
+ *     de engagement, mesmo sem o chamador ter passado `--kind` certo.
+ *   - **stub / malformado** é REJEITADO — nunca gravado em lugar nenhum,
+ *     só contado.
+ *   - o resto (canônico, e-mail-em-subscriber_id, sem-e-mail — classes
+ *     recuperáveis do #7181) é gravado **verbatim**, sem reshape — a
+ *     fidelidade do dado cru continua sendo a prioridade (só o leitor, na
+ *     análise, remapeia/filtra; a escrita preserva).
+ *
+ * Se **≥50%** das linhas do payload forem stub/malformado (não-canônicas E
+ * também não são click-identity, que é payload legítimo de outro
+ * endpoint) — o lote inteiro é suspeito de fabricação/corrupção — `status`
+ * nunca vira `ok`/`partial`: vira **`error`**, motivo
+ * `schema-fora-do-canonico`, e o disco **não é tocado** (mesma disciplina
+ * do guard de replace-vazio: dispara antes de escrever). O post permanece
+ * como estava (`pendingEntries()` continua oferecendo pra retry — `error`
+ * conta como pendente, ver `beehiiv-engagement-manifest.ts`).
  *
  * Output (stdout): JSON `{ post_id, before_count, after_count, status }`.
  * Stderr: warnings.
  *
- * Exit codes: 0=sucesso, 1=erro IO/parse, 2=args inválidos, 3=guard —
- * replace apagaria JSONL não-vazio sem `--allow-empty-replace`.
+ * Exit codes: 0=sucesso (inclui `status: "error"` do guard de schema — não é
+ * falha do SCRIPT, é o resultado reportado), 1=erro IO/parse, 2=args
+ * inválidos, 3=guard — replace apagaria JSONL não-vazio sem
+ * `--allow-empty-replace`.
  */
 
 import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from "node:fs";
@@ -111,9 +161,21 @@ import {
   type EngagementManifest,
   type EngagementManifestEntry,
 } from "./lib/beehiiv-engagement-manifest.ts";
+import { classifyEngagementRecords, nonCanonicalFraction } from "./lib/beehiiv-engagement-read.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_OUT_DIR = resolve(ROOT, "data/beehiiv-backup/subscriber-engagement");
+const DEFAULT_CLICK_SUBSCRIBERS_OUT_DIR = resolve(ROOT, "data/beehiiv-backup/click-subscribers");
+
+/** As 2 fontes MCP que este script aceita — ver docstring `--kind` acima. */
+export type ApplyEngagementKind = "engagement" | "click-subscribers";
+
+/** Fração mínima de linhas stub/malformadas pra disparar o guard `schema-fora-do-canonico` (#7460). */
+export const SCHEMA_GUARD_THRESHOLD = 0.5;
+
+/** Erro do guard `schema-fora-do-canonico` — nunca lançado (o guard fecha via `status: "error"`
+ *  no resultado, não via exceção); exportado só pro motivo estável usado em teste/manifest. */
+export const SCHEMA_GUARD_REASON_PREFIX = "guard schema-fora-do-canonico (#7460)";
 
 /** Flag de override do guard de replace-vazio — mesma convenção de `apply-mcp-clicks.ts`. */
 export const ALLOW_EMPTY_REPLACE_FLAG = "--allow-empty-replace";
@@ -185,6 +247,8 @@ export function mergeEngagementRecords(existing: unknown[], incoming: unknown[])
 export interface ApplyEngagementOpts {
   postId: string;
   title?: string;
+  /** `"engagement"` (default) ou `"click-subscribers"` — ver docstring `--kind` no topo do arquivo. */
+  kind?: ApplyEngagementKind;
   pagesFetched?: number;
   totalPages?: number;
   /**
@@ -212,7 +276,15 @@ export interface ApplyEngagementResult {
   post_id: string;
   before_count: number;
   after_count: number;
-  status: "ok" | "partial";
+  status: "ok" | "partial" | "error";
+  /** Nº de linhas classe B (click-identity) roteadas automaticamente pro
+   *  `click-subscribers/{post_id}.jsonl` irmão nesta invocação — só presente
+   *  quando `kind === "engagement"` (default) e ≥1 linha foi roteada. */
+  routed_click_count?: number;
+  /** Nº de linhas stub/malformadas rejeitadas (nunca gravadas) nesta
+   *  invocação — só presente quando `kind === "engagement"` (default) e ≥1
+   *  linha foi rejeitada, mesmo quando o guard de 50% não disparou. */
+  discarded_count?: number;
 }
 
 /** Escreve `records` (JSON.stringify por linha) atomicamente via tmp+rename. */
@@ -239,25 +311,120 @@ function saveManifestAtomic(manifestPath: string, manifest: EngagementManifest):
 }
 
 /**
+ * Mescla `existing` com `incoming` deduplicando por igualdade EXATA de JSON
+ * (conteúdo, não campo específico) — usado para registros que não têm uma
+ * chave natural única acordada (ex: click-identity de `list_post_click_subscribers`,
+ * que traz `subscription_id`, não `subscriber_id`). Evita duplicata exata;
+ * nunca colapsa 2 registros distintos.
+ */
+export function mergeRecordsByContent(existing: unknown[], incoming: unknown[]): unknown[] {
+  const seen = new Set(existing.map((r) => JSON.stringify(r)));
+  const merged = [...existing];
+  for (const r of incoming) {
+    const key = JSON.stringify(r);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(r);
+  }
+  return merged;
+}
+
+/**
+ * Roteia linhas classe B (click-identity) pro `click-subscribers/{post_id}.jsonl`
+ * IRMÃO do outDir de engagement — sempre `--append` (nunca REPLACE: não temos
+ * como saber se este payload é a extração completa do endpoint de clique,
+ * então mesclar é a única opção que nunca perde dado já roteado antes).
+ * Dedup por conteúdo (`mergeRecordsByContent`) — registros de clique não têm
+ * uma chave natural única acordada aqui (podem faltar `subscription_id`).
+ */
+export function routeClickIdentityRecords(engagementOutDir: string, postId: string, clickRecords: unknown[]): void {
+  if (clickRecords.length === 0) return;
+  const clickOutDir = resolve(engagementOutDir, "..", "click-subscribers");
+  mkdirSync(clickOutDir, { recursive: true });
+  const jsonlPath = resolve(clickOutDir, `${postId}.jsonl`);
+  const existing = readExistingRecords(jsonlPath);
+  const merged = mergeRecordsByContent(existing, clickRecords);
+  writeJsonlAtomic(jsonlPath, merged);
+}
+
+/**
  * Aplica o payload de engagement de 1 post. Lança em erro de IO/parse ou no
  * guard de replace-vazio; caller (main) traduz pra exit code apropriado.
+ * Nunca lança pelo guard `schema-fora-do-canonico` (#7460) — esse guard
+ * fecha via `status: "error"` no resultado normal, ver docstring do módulo.
  */
 export function applyEngagement(stdinJson: string, opts: ApplyEngagementOpts): ApplyEngagementResult {
-  const outDir = opts.outDir ?? DEFAULT_OUT_DIR;
+  const kind: ApplyEngagementKind = opts.kind ?? "engagement";
+  const outDir = opts.outDir ?? (kind === "click-subscribers" ? DEFAULT_CLICK_SUBSCRIBERS_OUT_DIR : DEFAULT_OUT_DIR);
   mkdirSync(outDir, { recursive: true });
   const jsonlPath = resolve(outDir, `${opts.postId}.jsonl`);
   const manifestPath = resolve(outDir, "manifest.json");
 
   const beforeCount = countExistingLines(jsonlPath);
   const raw = JSON.parse(stdinJson) as unknown;
-  const incoming = extractEngagementArray(raw);
+  let incoming = extractEngagementArray(raw);
+
+  let routedClickCount = 0;
+  let discardedCount = 0;
+
+  if (kind === "engagement" && incoming.length > 0) {
+    // Guard `schema-fora-do-canonico` (#7460) — classifica ANTES de tocar
+    // disco/manifest, mesma ordem do guard de replace-vazio abaixo.
+    if (nonCanonicalFraction(incoming) >= SCHEMA_GUARD_THRESHOLD) {
+      const garbageCount = classifyEngagementRecords(incoming).filter(
+        (c) => c.class === "stub" || c.class === "malformed",
+      ).length;
+      const reason =
+        `${SCHEMA_GUARD_REASON_PREFIX}: ${garbageCount}/${incoming.length} linhas stub/malformadas ` +
+        `(fora do canônico e também fora do schema de click-identity) — lote rejeitado, disco não tocado`;
+      const manifest = loadManifest(manifestPath);
+      const entry: EngagementManifestEntry = {
+        post_id: opts.postId,
+        title: opts.title,
+        status: "error",
+        count: beforeCount,
+        pages_fetched: opts.pagesFetched,
+        total_pages: opts.totalPages,
+        fetched_at: new Date().toISOString(),
+        error: reason,
+      };
+      saveManifestAtomic(manifestPath, upsertEntry(manifest, entry));
+      return { post_id: opts.postId, before_count: beforeCount, after_count: beforeCount, status: "error" };
+    }
+
+    // Abaixo do threshold: roteia classe B (click-identity) pro arquivo
+    // irmão e rejeita stub/malformado — nunca gravados no `.jsonl` de
+    // engagement, mesmo sem o chamador ter passado `--kind` certo. Classes
+    // recuperáveis do #7181 (e-mail-em-subscriber_id, sem-e-mail) e
+    // canônica seguem verbatim, sem reshape.
+    const classified = classifyEngagementRecords(incoming);
+    const clickRecords: unknown[] = [];
+    const keep: unknown[] = [];
+    for (let i = 0; i < classified.length; i++) {
+      const c = classified[i];
+      if (c.class === "click-identity") clickRecords.push(incoming[i]);
+      else if (c.class === "stub" || c.class === "malformed") discardedCount++;
+      else keep.push(incoming[i]);
+    }
+    routedClickCount = clickRecords.length;
+    routeClickIdentityRecords(outDir, opts.postId, clickRecords);
+    incoming = keep;
+  }
 
   let records: unknown[];
   if (opts.append) {
     // Append (#6733): mescla com o que já está em disco — nunca apaga nada,
     // então o guard de replace-vazio abaixo não se aplica a este ramo.
     const existing = readExistingRecords(jsonlPath);
-    records = mergeEngagementRecords(existing, incoming);
+    // `click-subscribers` traz `subscription_id`, não `subscriber_id` — o
+    // dedup de `mergeEngagementRecords` (por `subscriber_id`) cai inteiro no
+    // ramo sintético `__no_id_N` pra esse kind e NUNCA colide entre si,
+    // duplicando cada linha a cada retry de página (#7460). Usa dedup por
+    // conteúdo (mesma lógica de `routeClickIdentityRecords`) neste kind.
+    records =
+      kind === "click-subscribers"
+        ? mergeRecordsByContent(existing, incoming)
+        : mergeEngagementRecords(existing, incoming);
   } else {
     if (beforeCount > 0 && incoming.length === 0 && !opts.allowEmptyReplace) {
       // Guard dispara ANTES de tocar manifest ou disco — mesma ordem de
@@ -319,7 +486,14 @@ export function applyEngagement(stdinJson: string, opts: ApplyEngagementOpts): A
   };
   saveManifestAtomic(manifestPath, upsertEntry(manifest, entry));
 
-  return { post_id: opts.postId, before_count: beforeCount, after_count: records.length, status };
+  return {
+    post_id: opts.postId,
+    before_count: beforeCount,
+    after_count: records.length,
+    status,
+    ...(routedClickCount > 0 ? { routed_click_count: routedClickCount } : {}),
+    ...(discardedCount > 0 ? { discarded_count: discardedCount } : {}),
+  };
 }
 
 function readStdin(): Promise<string> {
@@ -345,16 +519,24 @@ async function main(): Promise<void> {
   if (postIdIdx === -1 || !argv[postIdIdx + 1]) {
     console.error(
       "uso: apply-mcp-subscriber-engagement.ts --post-id post_<uuid> [--title T] " +
+        "[--kind engagement|click-subscribers] " +
         "[--pages-fetched N --total-pages M] [--recipients R] [--append] [--allow-empty-replace] [--confirmed-empty] [--out-dir DIR]  (JSON via stdin)",
     );
     process.exit(2);
   }
   const titleIdx = argv.indexOf("--title");
   const outDirIdx = argv.indexOf("--out-dir");
+  const kindIdx = argv.indexOf("--kind");
+  const kindArg = kindIdx !== -1 ? argv[kindIdx + 1] : undefined;
+  if (kindArg !== undefined && kindArg !== "engagement" && kindArg !== "click-subscribers") {
+    console.error(`--kind inválido: ${JSON.stringify(kindArg)} — esperado "engagement" ou "click-subscribers"`);
+    process.exit(2);
+  }
 
   const opts: ApplyEngagementOpts = {
     postId: argv[postIdIdx + 1],
     title: titleIdx !== -1 ? argv[titleIdx + 1] : undefined,
+    kind: kindArg as ApplyEngagementKind | undefined,
     pagesFetched: parseIntArg(argv, "--pages-fetched"),
     totalPages: parseIntArg(argv, "--total-pages"),
     recipients: parseIntArg(argv, "--recipients"),
