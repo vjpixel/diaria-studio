@@ -41,8 +41,8 @@
  *
  * Núcleo mínimo exigido para uma linha contar como "engagement usável":
  * `subscriber_id` (ou `subscription_id`, alias observado ao vivo em
- * click-identity records, #7206) presente E (`status` de
- * `ENGAGEMENT_EVENT_STATUSES` OU `timestamp` presente) — `total_clicked`/
+ * click-identity records, #7206) presente E (`status` string presente OU
+ * `timestamp` presente) — `total_clicked`/
  * `total_opened`/`acquisition_channel`/`acquisition_source` são OPCIONAIS: o
  * acervo real tem variantes de resposta da MCP sem esses 2 últimos campos
  * (medido ao vivo, post `post_077f565f…`, 397/497 linhas re-drenadas em
@@ -99,10 +99,6 @@ export interface RawEngagementLine {
   clicked_at?: unknown;
   clicks?: unknown;
 }
-
-/** Valores de `status` que a MCP `list_post_subscriber_engagement` pode
- *  retornar (mesmo conjunto fechado de `beehiiv-engagement-manifest.ts`). */
-export const ENGAGEMENT_EVENT_STATUSES = ["delivered", "opened", "clicked", "unsubscribed"] as const;
 
 export type EngagementLineClass =
   | "canonical"
