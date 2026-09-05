@@ -510,8 +510,17 @@ export type KvEmptyGuardResult = { ok: true } | { ok: false; reason: string };
 
 /** Pura — recusa a rodada se a contagem atual de ativos encolheu demais
  *  desde a última vez (ver docstring acima). Sem histórico prévio, sempre
- *  passa. `!Number.isFinite(ratio)` falha FECHADO (nunca aberto). */
-export function evaluateKvEmptyGuard(currentCount: number, previousState: KvSyncState | null): KvEmptyGuardResult {
+ *  passa. `!Number.isFinite(ratio)` falha FECHADO (nunca aberto).
+ *  `backendLabel` (default `"a fonte"`) nomeia o backend nas mensagens —
+ *  review do #7477 apontou que ficavam hardcoded "Beehiiv" mesmo quando
+ *  `main()` já lê do Kit (`subscriber_backend="kit"`, #7395): reportar o
+ *  sistema errado como culpado é exatamente a classe de confusão de
+ *  diagnóstico que este guard existe pra evitar. */
+export function evaluateKvEmptyGuard(
+  currentCount: number,
+  previousState: KvSyncState | null,
+  backendLabel: string = "a fonte",
+): KvEmptyGuardResult {
   // #7463 finding P0 (self-review): SEM baseline (1ª rodada desde que este
   // guard existe — exatamente o estado real de produção hoje, já que
   // `.kv-sync-state.json` nasce com esta mesma PR) `!previousState` cairia
@@ -528,7 +537,7 @@ export function evaluateKvEmptyGuard(currentCount: number, previousState: KvSync
     return {
       ok: false,
       reason:
-        `Beehiiv devolveu 0 assinantes ativos — piso absoluto, nunca aceito mesmo sem baseline prévio ` +
+        `${backendLabel} devolveu 0 assinantes ativos — piso absoluto, nunca aceito mesmo sem baseline prévio ` +
         `(fonte pode estar zerada por migração de plataforma, não "todo mundo cancelou"). ` +
         `A próxima etapa apagaria o KV CURSOS_SUBSCRIBERS inteiro.`,
     };
@@ -539,7 +548,7 @@ export function evaluateKvEmptyGuard(currentCount: number, previousState: KvSync
     const pct = Number.isFinite(ratio) ? `${(ratio * 100).toFixed(0)}%` : "indefinido";
     return {
       ok: false,
-      reason: `Beehiiv devolveu ${currentCount} assinantes ativos, ${pct} dos ${previousState.active_subscriber_count} da última rodada (${previousState.last_run_at}) — provável falha de fonte/auth/paginação (ou fonte zerada por migração de plataforma), não "todo mundo cancelou". A próxima etapa apagaria essas chaves do KV CURSOS_SUBSCRIBERS.`,
+      reason: `${backendLabel} devolveu ${currentCount} assinantes ativos, ${pct} dos ${previousState.active_subscriber_count} da última rodada (${previousState.last_run_at}) — provável falha de fonte/auth/paginação (ou fonte zerada por migração de plataforma), não "todo mundo cancelou". A próxima etapa apagaria essas chaves do KV CURSOS_SUBSCRIBERS.`,
     };
   }
   return { ok: true };
@@ -595,7 +604,8 @@ export async function main(rootDirOverride?: string): Promise<void> {
   // pelo guard normalmente grava estado, pra não perpetuar um número
   // degradado como "normal".
   const previousState = readKvSyncState(rootDir);
-  const guard = evaluateKvEmptyGuard(emails.length, previousState);
+  const backendLabel = backend === "kit" ? "Kit" : "Beehiiv";
+  const guard = evaluateKvEmptyGuard(emails.length, previousState, backendLabel);
   if (!guard.ok) {
     if (!forceEmptyGuard) {
       process.stderr.write(`[sync-cursos-subscribers-kv] GUARD: ${guard.reason}\n`);

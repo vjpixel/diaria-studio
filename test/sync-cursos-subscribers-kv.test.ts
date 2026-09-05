@@ -433,6 +433,23 @@ describe("evaluateKvEmptyGuard (#7338)", () => {
     const result = evaluateKvEmptyGuard(100, prev); // 20%
     assert.equal(result.ok, false);
   });
+
+  it("review do #7477: backendLabel nomeia o backend certo na mensagem — nunca fica hardcoded \"Beehiiv\" quando quem falhou foi o Kit", () => {
+    const result = evaluateKvEmptyGuard(0, null, "Kit");
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.reason, /^Kit devolveu 0 assinantes ativos/);
+      assert.doesNotMatch(result.reason, /Beehiiv/);
+    }
+  });
+
+  it("backendLabel default (não passado) continua com texto genérico, não afirma Beehiiv quando o caller não informou o backend", () => {
+    const result = evaluateKvEmptyGuard(0, null);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.doesNotMatch(result.reason, /Beehiiv/);
+    }
+  });
 });
 
 describe("fetchActiveSubscriberEmailsForBackend (#7338 follow-up — reprodução ao vivo pós-#7463, 05/09/2026)", () => {
