@@ -778,12 +778,74 @@ export function formatAggregateSummary(
   return `${header} — ${failedBatches.length}/${batchCount} batch(es) FALHARAM: ${failedBatches.join(", ")}`;
 }
 
+/** Marcador greppável análogo ao `RUN_TESTS_MODULE_FLAKE` (#6783) — cobre a
+ *  hipótese remanescente do #7448/#7430. */
+const STDOUT_PIPE_ERROR_MARKER = "RUN_TESTS_STDOUT_PIPE_ERROR";
+
+let destinationErrorListenersRegistered = false;
+
+/** #7448 (hipótese remanescente do #7430, depois de #6495/#6857/#6822/#7337
+ *  descartarem as anteriores): `child.stdout?.on("error", ...)` dentro de
+ *  `runWorker` (já existente, review #6909 P3) só cobre erro na FONTE (o
+ *  stream do processo filho) — `.pipe()` não propaga um erro do DESTINO
+ *  (`process.stdout`/`process.stderr`) de volta pro listener da fonte, e o
+ *  mesmo destino recebe escrita direta via `stdout.write`/`stderr.write` no
+ *  caminho sequencial (`processChunkedBatches`/`emit`). Se o lado que
+ *  consome `process.stdout` fechar (ex: `npm test | head`, um pipe quebrado
+ *  do runner) e NADA escutar `'error'` no destino, o Node lança uma exceção
+ *  NÃO CAPTURADA e derruba o processo pai — sintoma compatível com o #7430
+ *  (`exit 1` com `fail:0` no sumário): o `node:test` já reportou seu
+ *  sumário ANTES do EPIPE acontecer na escrita seguinte.
+ *
+ *  Registrado uma ÚNICA vez por processo (idempotente via
+ *  `destinationErrorListenersRegistered`) — `process.stdout`/`process.stderr`
+ *  são singletons globais, e múltiplos workers concorrentes chamando
+ *  `runWorker()` (ou repetidas chamadas a `runTestBatches`) não podem
+ *  empilhar N listeners no mesmo stream (memory-leak warning do Node acima
+ *  de 10 listeners, e cada um duplicaria a mesma linha de log).
+ *
+ *  Extraída como função pura, testável sem precisar reproduzir um EPIPE real
+ *  de processo — recebe os streams e o logger como parâmetro (default
+ *  `process.stdout`/`process.stderr`/`console.error`) em vez de fechar sobre
+ *  eles diretamente, então um teste pode injetar um `EventEmitter` fake e
+ *  emitir `'error'` nele. Isto é instrumentação (loga, não silencia) — não
+ *  prova a causa raiz do #7430 por si só, mas torna a hipótese verificável
+ *  na próxima ocorrência (marcador `RUN_TESTS_STDOUT_PIPE_ERROR` greppável,
+ *  mesmo padrão do `RUN_TESTS_MODULE_FLAKE` do #6783). */
+export function registerDestinationErrorListeners(
+  streams: { stdout: NodeJS.EventEmitter; stderr: NodeJS.EventEmitter } = {
+    stdout: process.stdout,
+    stderr: process.stderr,
+  },
+  log: (msg: string) => void = console.error,
+): void {
+  if (destinationErrorListenersRegistered) return;
+  destinationErrorListenersRegistered = true;
+  const onDestError = (streamName: string) => (err: Error) => {
+    log(
+      `${STDOUT_PIPE_ERROR_MARKER} stream=${streamName} erro=${err.message}\n` +
+        `run-tests: erro de escrita no pipe DESTINO (process.${streamName}) — hipótese do #7448/#7430. ` +
+        `O node:test pode já ter reportado seu sumário (fail 0) antes deste erro acontecer; se o processo ` +
+        `sair não-zero logo em seguida, esta é a causa confirmada.`,
+    );
+  };
+  streams.stdout.on("error", onDestError("stdout"));
+  streams.stderr.on("error", onDestError("stderr"));
+}
+
+/** Exposto só pra teste resetar o guard de idempotência entre casos — nunca
+ *  chamado em produção (o registro é, de propósito, "uma vez por processo"). */
+export function __resetDestinationErrorListenersForTest(): void {
+  destinationErrorListenersRegistered = false;
+}
+
 /** Roda `node --import tsx --test <batch...>` em batches sequenciais, num
  *  processo só (comportamento idêntico ao de antes do #6877 — usado pelos
  *  testes existentes deste arquivo, e como fallback do caminho paralelo
  *  quando `workerCount <= 1`). Retorna o exit code agregado (0 só se TODOS
  *  os batches saírem 0 E a cobertura bater com `files.length`). */
 export function runTestBatches(opts: RunTestsOptions): number {
+  registerDestinationErrorListeners();
   const { files, batchSize = BATCH_SIZE, stderr = process.stderr } = opts;
   if (files.length === 0) {
     // Sem arquivos: deixa o guard `assert-test-discovery.ts` (pretest) ser
@@ -990,11 +1052,17 @@ export function computeWorkerTimeoutMs(payload: Pick<WorkerPayload, "batches" | 
  *  interlaçam no log combinado; tradeoff aceito da opção 1 da issue
  *  (paralelismo dentro de UM processo/job de CI, não shards separados —
  *  decisão nossa ao escolher essa opção, a issue em si não discute
- *  interlaçamento de log explicitamente). Listener de `error` nos streams
- *  (achado do review, P3): sem ele, um erro de stream (ex: EPIPE) derrubaria
- *  o processo PAI inteiro sem a mensagem diagnóstica que todo outro caminho
- *  de falha deste arquivo tem. */
+ *  interlaçamento de log explicitamente). Listener de `error` na FONTE
+ *  (`child.stdout`/`child.stderr`, achado do review #6909 P3): sem ele, um
+ *  erro de stream (ex: EPIPE) do lado do CHILD derrubaria o processo PAI
+ *  inteiro sem a mensagem diagnóstica que todo outro caminho de falha deste
+ *  arquivo tem. **Isso NÃO cobre o DESTINO do pipe** (`process.stdout`/
+ *  `process.stderr`) — `.pipe()` não propaga erro do destino de volta pro
+ *  listener da fonte; `registerDestinationErrorListeners()` (#7448, chamada
+ *  logo no início desta função) fecha essa lacuna, que é a hipótese
+ *  remanescente do #7430. */
 function runWorker(payload: WorkerPayload, scriptPath: string, payloadPath: string): Promise<WorkerResult> {
+  registerDestinationErrorListeners();
   return new Promise((resolvePromise) => {
     let settled = false;
     const settle = (result: WorkerResult) => {

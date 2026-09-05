@@ -11,6 +11,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { EventEmitter } from "node:events";
 import {
   chunk,
   runTestBatches,
@@ -29,6 +30,8 @@ import {
   BATCH_SIZE,
   DEFAULT_BATCH_TIMEOUT_MS,
   computeWorkerTimeoutMs,
+  registerDestinationErrorListeners,
+  __resetDestinationErrorListenersForTest,
   type RunTestBatchesParallelOptions,
 } from "../scripts/run-tests.ts";
 
@@ -1268,5 +1271,59 @@ describe("#6783 — marcador contável do flake de módulo", () => {
   it("output sem a mensagem de módulo não quebra a extração (cai no fallback)", () => {
     const RE = /Cannot find module '?([^'\s]+)'?/;
     assert.equal(RE.exec("qualquer outra falha")?.[1] ?? "(arquivo não identificado no output)", "(arquivo não identificado no output)");
+  });
+});
+
+describe("registerDestinationErrorListeners (#7448) — instrumenta erro de escrita no DESTINO do pipe (process.stdout/stderr), hipótese remanescente do #7430", () => {
+  it("loga com o marcador RUN_TESTS_STDOUT_PIPE_ERROR quando o destino stdout emite 'error'", () => {
+    __resetDestinationErrorListenersForTest();
+    const stdout = new EventEmitter();
+    const stderr = new EventEmitter();
+    const logged: string[] = [];
+    registerDestinationErrorListeners({ stdout, stderr }, (msg) => logged.push(msg));
+
+    stdout.emit("error", new Error("write EPIPE"));
+
+    assert.equal(logged.length, 1, "o listener tem que capturar o 'error' — sem ele o Node lançaria exceção não capturada");
+    assert.match(logged[0], /^RUN_TESTS_STDOUT_PIPE_ERROR stream=stdout/);
+    assert.match(logged[0], /write EPIPE/);
+    assert.match(logged[0], /#7448\/#7430/);
+  });
+
+  it("cobre o destino stderr também", () => {
+    __resetDestinationErrorListenersForTest();
+    const stdout = new EventEmitter();
+    const stderr = new EventEmitter();
+    const logged: string[] = [];
+    registerDestinationErrorListeners({ stdout, stderr }, (msg) => logged.push(msg));
+
+    stderr.emit("error", new Error("write EPIPE"));
+
+    assert.equal(logged.length, 1);
+    assert.match(logged[0], /^RUN_TESTS_STDOUT_PIPE_ERROR stream=stderr/);
+  });
+
+  it("registra só UMA vez por processo — chamada subsequente sem reset é NO-OP, nunca empilha listener em streams novos", () => {
+    __resetDestinationErrorListenersForTest();
+    const stdoutA = new EventEmitter();
+    const stderrA = new EventEmitter();
+    const loggedA: string[] = [];
+    registerDestinationErrorListeners({ stdout: stdoutA, stderr: stderrA }, (msg) => loggedA.push(msg));
+
+    // 2ª chamada, streams DIFERENTES, sem reset — simula runWorker() e
+    // runTestBatches() chamando a mesma função em invocações concorrentes/
+    // sucessivas: o guard de processo inteiro já registrou, então isto
+    // precisa ser um no-op (nunca anexar um 2º listener em nada).
+    const stdoutB = new EventEmitter();
+    const stderrB = new EventEmitter();
+    const loggedB: string[] = [];
+    registerDestinationErrorListeners({ stdout: stdoutB, stderr: stderrB }, (msg) => loggedB.push(msg));
+
+    assert.equal(stdoutB.listenerCount("error"), 0, "2ª chamada não deveria ter registrado listener no novo stream");
+    assert.equal(stderrB.listenerCount("error"), 0);
+
+    stdoutA.emit("error", new Error("ainda funciona no registro original"));
+    assert.equal(loggedA.length, 1, "o registro original continua ativo");
+    assert.equal(loggedB.length, 0, "o segundo conjunto de streams nunca foi instrumentado");
   });
 });
