@@ -59,10 +59,22 @@ import type { DatabaseSync } from "node:sqlite";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { listBroadcasts, getBroadcastStats, type KitBroadcastSummary, type KitBroadcastStats } from "./lib/kit-client.ts";
-import { fetchAudience, todasOuNenhuma, type BroadcastAudience, type DrainResult } from "./kit-provider-split.ts";
+import {
+  listBroadcasts,
+  getBroadcastStats,
+  getBroadcastClicks,
+  type KitBroadcastSummary,
+  type KitBroadcastStats,
+  type KitBroadcastClick,
+} from "./lib/kit-client.ts";
+import { fetchAudience, fetchUrlClicks, todasOuNenhuma, type BroadcastAudience, type DrainResult } from "./kit-provider-split.ts";
 import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getStoreCounts } from "./lib/diaria-subscribers-db.ts";
-import { ingestBroadcastAudience, verifyKitIngestion, ingestKitRoster } from "./lib/kit-subscribers-ingest.ts";
+import {
+  ingestBroadcastAudience,
+  ingestBroadcastUrlClicks,
+  verifyKitIngestion,
+  ingestKitRoster,
+} from "./lib/kit-subscribers-ingest.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import { buildCapturaLogEntry, serializeCapturaLogEntry } from "./lib/metrics/captura-log.ts";
 import {
@@ -101,6 +113,24 @@ export interface KitIngestDeps {
   /** Roster COMPLETO — `status: "all"` sempre (#7174: omitir devolve só
    *  `active` em silêncio, ver `scripts/lib/kit-subscribers.ts`). */
   listAllRosterSubscribers: () => ReturnType<typeof listAllKitSubscribers>;
+  /**
+   * #7206, ambos OPCIONAIS: refinamento por-link do eixo "clicks", que
+   * popula `event.url` (Beehiiv e Brevo já populam; o Kit era o que faltava
+   * fechar). `getBroadcastLinkClicks` lista os links do broadcast (REST
+   * `/broadcasts/{id}/clicks`, endpoint confirmado ao vivo em #6185 —
+   * responde "quais URLs perguntar"); `fetchUrlClicks` devolve quem clicou
+   * em CADA um (`/subscribers/filter` escopado por URL — shape best-effort,
+   * ainda não confirmado ao vivo, ver docstring de
+   * `kit-provider-split.ts::buildUrlClickFilterBody`).
+   *
+   * Opcionais de propósito: `makeRealKitIngestDeps` sempre os fornece;
+   * fixtures/testes que antecedem o #7206 simplesmente não os populam, e
+   * `ingestOneBroadcast` trata a ausência como "pular o refinamento" —
+   * fail-soft, nunca afeta os 4 eixos principais nem o guard anti-fabricação
+   * (#6496), que seguem ancorados só em `sent`/`stats.recipients`.
+   */
+  getBroadcastLinkClicks?: (id: number) => Promise<{ clicks: KitBroadcastClick[] }>;
+  fetchUrlClicks?: (broadcastId: number, url: string) => Promise<DrainResult>;
 }
 
 /**
@@ -157,6 +187,9 @@ export function makeRealKitIngestDeps(): KitIngestDeps {
     // status: "all" SEMPRE (#7174) — nunca omitir a opção, senão a API
     // devolve só `active` em silêncio (ver docstring de kit-subscribers.ts).
     listAllRosterSubscribers: () => listAllKitSubscribers(undefined, { status: "all" }),
+    // #7206: produção sempre fornece o refinamento por-link.
+    getBroadcastLinkClicks: (id: number) => getBroadcastClicks(id),
+    fetchUrlClicks,
   };
 }
 
@@ -184,7 +217,7 @@ export interface BroadcastIngestOutcome {
 export async function ingestOneBroadcast(
   db: DatabaseSync,
   broadcast: Pick<KitBroadcastSummary, "id" | "subject" | "published_at" | "send_at">,
-  deps: Pick<KitIngestDeps, "fetchAudience" | "getBroadcastStats">,
+  deps: Pick<KitIngestDeps, "fetchAudience" | "getBroadcastStats" | "getBroadcastLinkClicks" | "fetchUrlClicks">,
   now: string = new Date().toISOString(),
 ): Promise<BroadcastIngestOutcome> {
   const id = String(broadcast.id);
@@ -234,7 +267,34 @@ export async function ingestOneBroadcast(
   }
   counts.recipients_reportados = stats.recipients;
 
+  // #7206: refinamento OPCIONAL por-link do eixo "clicks" — popula
+  // `event.url`. Fail-soft de propósito: uma falha aqui (rede, shape ainda
+  // não confirmado ao vivo — ver docstring de `buildUrlClickFilterBody`)
+  // NUNCA derruba os 4 eixos principais já gravados acima, nem muda o guard
+  // anti-fabricação abaixo (ancorado só em "sent"/`stats.recipients`).
+  let urlClicksError: string | undefined;
+  if (deps.getBroadcastLinkClicks && deps.fetchUrlClicks) {
+    try {
+      const { clicks: linkClicks } = await deps.getBroadcastLinkClicks(broadcast.id);
+      let urlClickEvents = 0;
+      for (const linkClick of linkClicks) {
+        if (!linkClick.url || linkClick.unique_clicks <= 0) continue;
+        const urlResult = await deps.fetchUrlClicks(broadcast.id, linkClick.url);
+        const r = ingestBroadcastUrlClicks(db, broadcast.id, linkClick.url, urlResult.emails, ts, now);
+        eventsNew += r.newEvents;
+        eventsAlreadyKnown += r.alreadyKnown;
+        urlClickEvents += r.newEvents + r.alreadyKnown;
+      }
+      counts.clicks_com_url = urlClickEvents;
+    } catch (e) {
+      urlClicksError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   const guard = verifyKitIngestion(sent.emails.length, stats.recipients);
+  const combinedError = [guard.reason, urlClicksError ? `refinamento por-link (#7206): ${urlClicksError}` : undefined]
+    .filter((x): x is string => Boolean(x))
+    .join(" | ");
   return {
     entry: {
       id,
@@ -242,7 +302,7 @@ export async function ingestOneBroadcast(
       status: guard.ok ? "ok" : "partial",
       counts,
       fetched_at: now,
-      ...(guard.reason ? { error: guard.reason } : {}),
+      ...(combinedError ? { error: combinedError } : {}),
     },
     eventsNew,
     eventsAlreadyKnown,

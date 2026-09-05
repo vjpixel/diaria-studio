@@ -24,7 +24,13 @@ import {
   detectSiblingConflictFiles,
   type KitIngestDeps,
 } from "../scripts/diaria-subscribers-ingest-kit.ts";
-import { openDiariaSubscribersDb, getStoreCounts, findSubscriberIdByAlias, getSubscriptionsForSubscriber } from "../scripts/lib/diaria-subscribers-db.ts";
+import {
+  openDiariaSubscribersDb,
+  getStoreCounts,
+  findSubscriberIdByAlias,
+  getSubscriptionsForSubscriber,
+  getSubscriberTimeline,
+} from "../scripts/lib/diaria-subscribers-db.ts";
 import type { KitSubscriberSummary } from "../scripts/lib/kit-subscribers.ts";
 
 /** Fixture literal do shape real de `/subscribers/filter` (1 página, sem cursor). */
@@ -134,6 +140,91 @@ describe("ingestOneBroadcast", () => {
     await ingestOneBroadcast(db, { id: 1, subject: null as any, published_at: null, send_at: "2026-02-02T00:00:00.000Z" }, deps);
     const row = db.prepare("SELECT ts FROM event LIMIT 1").get() as { ts: string };
     assert.equal(row.ts, "2026-02-02T00:00:00.000Z");
+    db.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // Refinamento por-link (#7206) — getBroadcastLinkClicks + fetchUrlClicks
+  // -------------------------------------------------------------------------
+
+  it("#7206: com getBroadcastLinkClicks + fetchUrlClicks, grava 'click' COM url por link, além dos 4 eixos", async () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const deps = {
+      fetchAudience: fakeFetchAudience({
+        sent: ["a@x.com", "b@x.com"],
+        delivered: ["a@x.com", "b@x.com"],
+        opens: ["a@x.com"],
+        clicks: ["a@x.com"],
+      }),
+      getBroadcastStats: async () => makeStats(2),
+      getBroadcastLinkClicks: async () => ({
+        clicks: [
+          { id: 1, url: "https://diar.ia.br/materia-x", unique_clicks: 1, click_to_delivery_rate: 0.5, click_to_open_rate: 1 },
+        ],
+      }),
+      fetchUrlClicks: async () => ({ emails: ["a@x.com"], descartadas: 0 }),
+    };
+    const broadcast = { id: 42, subject: "Edição", published_at: "2026-09-01T09:00:00.000Z", send_at: null };
+    const outcome = await ingestOneBroadcast(db, broadcast, deps, "2026-09-01T12:00:00.000Z");
+
+    assert.equal(outcome.entry.status, "ok");
+    assert.equal(outcome.entry.counts?.clicks_com_url, 1);
+    // 2 sent + 2 delivered + 1 open + 1 click (genérico) + 1 click (por-link) = 7
+    assert.equal(outcome.eventsNew, 7);
+
+    const subId = findSubscriberIdByAlias(db, "kit", null, "a@x.com");
+    const timeline = getSubscriberTimeline(db, subId!);
+    const clicksComUrl = timeline.filter((e) => e.type === "click" && e.url != null);
+    assert.equal(clicksComUrl.length, 1);
+    assert.equal(clicksComUrl[0].url, "https://diar.ia.br/materia-x");
+    db.close();
+  });
+
+  it("#7206: link com unique_clicks 0 é ignorado — não paga chamada de rede à toa", async () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    let calledFetchUrl = false;
+    const deps = {
+      fetchAudience: fakeFetchAudience({ sent: ["a@x.com"], delivered: [], opens: [], clicks: [] }),
+      getBroadcastStats: async () => makeStats(1),
+      getBroadcastLinkClicks: async () => ({
+        clicks: [{ id: 1, url: "https://x", unique_clicks: 0, click_to_delivery_rate: 0, click_to_open_rate: 0 }],
+      }),
+      fetchUrlClicks: async () => {
+        calledFetchUrl = true;
+        return { emails: [], descartadas: 0 };
+      },
+    };
+    await ingestOneBroadcast(db, { id: 1, subject: "X", published_at: null, send_at: "2026-01-01T00:00:00.000Z" }, deps);
+    assert.equal(calledFetchUrl, false);
+    db.close();
+  });
+
+  it("#7206: sem getBroadcastLinkClicks/fetchUrlClicks (deps antigas) — ingestão dos 4 eixos segue normal, sem erro", async () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const deps = {
+      fetchAudience: fakeFetchAudience({ sent: ["a@x.com"], delivered: ["a@x.com"], opens: [], clicks: [] }),
+      getBroadcastStats: async () => makeStats(1),
+    };
+    const outcome = await ingestOneBroadcast(db, { id: 1, subject: "X", published_at: null, send_at: "2026-01-01T00:00:00.000Z" }, deps);
+    assert.equal(outcome.entry.status, "ok");
+    assert.equal(outcome.entry.counts?.clicks_com_url, undefined);
+    db.close();
+  });
+
+  it("#7206: falha no refinamento por-link é fail-soft — os 4 eixos principais seguem gravados, status ok preservado", async () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const deps = {
+      fetchAudience: fakeFetchAudience({ sent: ["a@x.com"], delivered: ["a@x.com"], opens: [], clicks: [] }),
+      getBroadcastStats: async () => makeStats(1),
+      getBroadcastLinkClicks: async () => {
+        throw new Error("Kit API 500 (shape do filtro urls ainda não confirmado)");
+      },
+      fetchUrlClicks: async () => ({ emails: [], descartadas: 0 }),
+    };
+    const outcome = await ingestOneBroadcast(db, { id: 1, subject: "X", published_at: null, send_at: "2026-01-01T00:00:00.000Z" }, deps);
+    assert.equal(outcome.entry.status, "ok", "guard segue ancorado só em sent/recipients — refinamento por-link nunca deriva o veredito");
+    assert.match(outcome.entry.error ?? "", /refinamento por-link.*7206/);
+    assert.equal(outcome.eventsNew, 2, "2 sent + delivered continuam gravados apesar da falha no refinamento");
     db.close();
   });
 });

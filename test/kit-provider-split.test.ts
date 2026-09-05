@@ -29,6 +29,7 @@ import {
   DEFAULT_KIT_DELIVERY_HISTORY_PATH,
   formatTable,
   buildAudienceFilterBody,
+  buildUrlClickFilterBody,
   todasOuNenhuma,
   MAX_PAGES,
   type KitEngagedPage,
@@ -242,6 +243,27 @@ describe("buildAudienceFilterBody", () => {
   it("só manda 'after' quando há cursor (1ª página não leva a chave)", () => {
     assert.equal("after" in buildAudienceFilterBody(1, "sent"), false);
     assert.equal(buildAudienceFilterBody(1, "sent", "cursor-x").after, "cursor-x");
+  });
+});
+
+describe("buildUrlClickFilterBody (#7206)", () => {
+  it("sempre pede type: 'clicks' — escopar por URL nunca troca o eixo", () => {
+    const body = buildUrlClickFilterBody(25622689, "https://diar.ia.br/x") as {
+      all: Array<{ type: string; any: Array<{ type: string; ids: number[] }>; urls: string[] }>;
+    };
+    assert.equal(body.all[0].type, "clicks");
+    assert.deepEqual(body.all[0].any[0], { type: "broadcasts", ids: [25622689] });
+    assert.deepEqual(body.all[0].urls, ["https://diar.ia.br/x"]);
+  });
+
+  it("escopa a URL pedida, não outra", () => {
+    const body = buildUrlClickFilterBody(1, "https://diar.ia.br/a") as { all: Array<{ urls: string[] }> };
+    assert.deepEqual(body.all[0].urls, ["https://diar.ia.br/a"]);
+  });
+
+  it("só manda 'after' quando há cursor (1ª página não leva a chave)", () => {
+    assert.equal("after" in buildUrlClickFilterBody(1, "https://x"), false);
+    assert.equal(buildUrlClickFilterBody(1, "https://x", "cursor-x").after, "cursor-x");
   });
 });
 

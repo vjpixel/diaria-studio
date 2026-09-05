@@ -238,6 +238,50 @@ export function buildAudienceFilterBody(
 }
 
 /**
+ * Corpo de `POST /v4/subscribers/filter` escopado por LINK (#7206) — quem
+ * clicou numa `url` específica de um broadcast, não no broadcast inteiro.
+ * Mesmo molde de {@link buildAudienceFilterBody} (`type: "clicks"` sempre),
+ * com `urls: [url]` a mais no mesmo filtro — best-effort a partir da
+ * descrição da MCP `filter_subscribers` ("optionally scoped to specific
+ * broadcasts or URLs") e do corpo da issue #7206 ("filtro urls adicional
+ * (...) devolve um subconjunto diferente do broadcast inteiro").
+ *
+ * **NÃO confirmado ao vivo** (nem o nome do campo `urls`, nem se ele entra
+ * no MESMO objeto do `all[]` ou precisa de outro shape) — mesma disciplina
+ * de `kit-click-fields.ts` (sonda que confirma nome/tipo de campo contra um
+ * clique real antes de qualquer consumidor depender dele). Quem rodar isto
+ * contra a API pela 1ª vez deve comparar a resposta contra esta suposição
+ * — se o shape divergir, ajustar aqui, não silenciosamente no chamador.
+ */
+export function buildUrlClickFilterBody(broadcastId: number, url: string, after?: string): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    all: [{ type: "clicks", any: [{ type: "broadcasts", ids: [broadcastId] }], urls: [url], count_greater_than: 0 }],
+    per_page: 100,
+  };
+  if (after) body.after = after;
+  return body;
+}
+
+/**
+ * Quem clicou numa `url` específica de um broadcast (#7206) — o refinamento
+ * por-link que falta pra popular `event.url` do lado Kit (Beehiiv e Brevo já
+ * populam, ver `kit-subscribers-ingest.ts::ingestBroadcastUrlClicks`). Mesma
+ * paginação (`drainPages`) e mesma garantia de envelope não-malformado de
+ * {@link fetchAudience} — só o corpo da requisição muda
+ * ({@link buildUrlClickFilterBody} em vez de {@link buildAudienceFilterBody}).
+ */
+export function fetchUrlClicks(broadcastId: number, url: string): Promise<DrainResult> {
+  return drainPages(
+    (after) =>
+      kitFetch<KitEngagedPage>("/subscribers/filter", {
+        method: "POST",
+        body: buildUrlClickFilterBody(broadcastId, url, after),
+      }),
+    `cliques em ${url}`,
+  );
+}
+
+/**
  * Id do broadcast a partir do argv.
  *
  * `getIntArg` (`lib/cli-args.ts`) já lança em valor não-inteiro ou abaixo do

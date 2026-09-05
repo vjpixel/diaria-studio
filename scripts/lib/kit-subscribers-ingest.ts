@@ -25,19 +25,32 @@
  * timeline (`sent` sem `delivered` correspondente pro mesmo broadcast),
  * nunca um evento `bounce` que a fonte nunca confirmou individualmente.
  *
- * ## `event.url` no eixo "clicks" — AINDA NÃO POPULADO (#7206, gap conhecido)
+ * ## `event.url` no eixo "clicks" — refinamento por-link (#7206)
  *
- * `ingestBroadcastAudience` grava o eixo "clicks" sem `url` — o Kit devolve
- * a LISTA de quem clicou (`POST /subscribers/filter`, `type: "clicks"`),
- * nunca QUAL link. O corpo da issue #7206 cita `filter_subscribers type:
- * "clicks"` com um filtro `urls` adicional (escopar por URL devolveria um
- * subconjunto diferente do broadcast inteiro) como o caminho pra popular
- * este eixo — mas essa chamada nunca foi confirmada ao vivo NESTE dispatch
- * (guard do repo proíbe ingestão/rede ao vivo em sessão automatizada), e
- * "quais URLs perguntar" (os links da própria edição) não tem resolução
- * pronta nesta camada. Registrado aqui, não implementado — Beehiiv
- * (`beehiiv-subscribers-ingest.ts`) e Brevo (`brevo-subscribers-ingest.ts`)
- * já populam `event.url`; o Kit é o eixo que falta fechar.
+ * `ingestBroadcastAudience` grava o eixo "clicks" sem `url` (só sabe QUEM
+ * clicou, nunca EM QUÊ) — permanece assim de propósito, é o mesmo shape que
+ * `sent`/`delivered`/`opens` usam. `ingestBroadcastUrlClicks` abaixo é o
+ * REFINAMENTO: 1 chamada por LINK do broadcast (`POST /subscribers/filter`,
+ * `type: "clicks"` + escopo de URL — "quais URLs perguntar" resolvido pela
+ * camada de I/O em `kit-provider-split.ts`/`diaria-subscribers-ingest-kit.ts`
+ * usando os links que `GET /broadcasts/{id}/clicks` já lista, endpoint
+ * confirmado ao vivo em #6185) grava 1 evento "click" adicional COM a `url`.
+ * A chave natural inclui a url (`buildKitUrlClickExternalId`), então nunca
+ * colide com o "click" sem-url do eixo genérico — os dois convivem, mesmo
+ * padrão de `buildBeehiivClickExternalId` vs. `buildBeehiivEventExternalId`
+ * em `beehiiv-subscribers-ingest.ts`.
+ *
+ * **Shape da chamada `type:"clicks"` + filtro de URL ainda não confirmado ao
+ * vivo** (guard do repo proíbe rede ao vivo em sessão automatizada) — o
+ * corpo montado em `kit-provider-split.ts::buildUrlClickFilterBody` é
+ * best-effort a partir da descrição da MCP ("optionally scoped to specific
+ * broadcasts or URLs") e do corpo da issue #7206, seguindo o padrão exato de
+ * `buildAudienceFilterBody`. Mesma disciplina de `kit-click-fields.ts`
+ * (sonda que confirma nome/tipo de campo contra um clique real): quando
+ * alguém rodar isto contra a API de verdade, comparar a resposta contra esta
+ * suposição antes de confiar no resultado em produção. `ingestOneBroadcast`
+ * trata a ausência/falha desta camada como fail-soft — nunca derruba os 4
+ * eixos principais, que já fecham a issue #6586.
  */
 
 import type { DatabaseSync } from "node:sqlite";
@@ -156,6 +169,77 @@ export function ingestBroadcastAudience(
       // `COUNT(DISTINCT edicao)` de forma simétrica entre plataformas, sem
       // um caso especial pro Kit.
       edicao: String(broadcastId),
+      ts,
+    });
+    if (inserted) newEvents++;
+    else alreadyKnown++;
+  }
+
+  return { newEvents, alreadyKnown, subscribersTouched };
+}
+
+// ---------------------------------------------------------------------------
+// ingestBroadcastUrlClicks (#7206) — refinamento por-link do eixo "clicks"
+// ---------------------------------------------------------------------------
+
+/**
+ * Chave natural de 1 clique POR LINK do Kit (#7206) — inclui a `url` (2
+ * links diferentes do mesmo broadcast não podem colidir na mesma chave,
+ * mesmo padrão de `buildBeehiivClickExternalId` em
+ * `beehiiv-subscribers-ingest.ts`). Deliberadamente DIFERENTE de
+ * `buildKitEventExternalId(email, broadcastId, "clicks")` (sem sufixo de
+ * url, gravado por `ingestBroadcastAudience` pro eixo genérico) — as duas
+ * chaves nunca colidem, então um broadcast que tem TANTO o eixo "clicks"
+ * genérico (sem url) QUANTO o refinamento por-link grava 2 eventos "click"
+ * (1 sem url, 1 com) em vez de um sobrescrever o outro — aceito, mesma
+ * disciplina da contraparte Beehiiv.
+ */
+export function buildKitUrlClickExternalId(email: string, broadcastId: number, url: string): string {
+  return `${email.trim().toLowerCase()}:${broadcastId}:click:${url}`;
+}
+
+export interface KitUrlClickIngestResult {
+  newEvents: number;
+  alreadyKnown: number;
+  subscribersTouched: number;
+}
+
+/**
+ * Ingerir os cliques de 1 LINK específico de 1 broadcast (#7206) — grava 1
+ * evento "click" por e-mail COM a `url` populada. Molde de
+ * `ingestBroadcastAudience` (mesmo `ensureSubscriber`, mesmo dedup de
+ * e-mail repetido na página), só que sempre eixo "click" e sempre com `url`.
+ *
+ * `ts` é o timestamp do BROADCAST (mesma limitação do eixo genérico — o Kit
+ * não devolve timestamp por clique em `/subscribers/filter`).
+ */
+export function ingestBroadcastUrlClicks(
+  db: DatabaseSync,
+  broadcastId: number,
+  url: string,
+  emails: string[],
+  ts: string,
+  now: string = new Date().toISOString(),
+): KitUrlClickIngestResult {
+  const seen = new Set<string>();
+  let newEvents = 0;
+  let alreadyKnown = 0;
+  let subscribersTouched = 0;
+
+  for (const rawEmail of emails) {
+    const email = rawEmail.trim().toLowerCase();
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+
+    const subscriberId = ensureSubscriber(db, "kit", null, email, now);
+    subscribersTouched++;
+    const { inserted } = recordEvent(db, {
+      subscriberId,
+      platform: "kit",
+      type: "click",
+      externalEventId: buildKitUrlClickExternalId(email, broadcastId, url),
+      edicao: String(broadcastId),
+      url,
       ts,
     });
     if (inserted) newEvents++;
