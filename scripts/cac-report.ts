@@ -56,6 +56,23 @@
  * `KIT_API_KEY` ou com a API do Kit fora do ar, a seção continua aparecendo
  * com um aviso explicando o motivo (nunca desaparece em silêncio) — nunca
  * derruba o relatório Beehiiv. Só `--no-kit` omite a seção por completo.
+ *
+ * ## Seção Leitores via store unificado (#7393) — informativa e PARCIAL
+ *
+ * Segunda seção aditiva, mesma receita do #7359: lê `leitor-v1`
+ * CROSS-PLATAFORMA (Beehiiv + Kit + Brevo diária já ingeridos) direto de
+ * `data/diaria-subscribers/diaria-subscribers.db` via
+ * `summarizeStoreLeitoresCanonicalDedup` (`scripts/lib/leitor-store.ts`).
+ * Só leitura local (nunca chama API) — fail-soft: store ausente/ilegível vira
+ * aviso explícito, nunca some em silêncio nem derruba o relatório Beehiiv
+ * acima. **PARCIAL de propósito**: o store não tem, hoje, os mesmos campos de
+ * engajamento por-post que `computeMeasuredRow` usa pro funil Beehiiv (mesma
+ * ressalva que o #7359 já registrou pro Kit) — por isso esta seção mostra só
+ * o resumo `leitor-v1` (total/ativos/leitores + cobertura de assinatura), sem
+ * tentar produzir um "custo por leitor" cross-plataforma que pareceria
+ * autoritativo sem ser. Só `--no-store-leitores` omite a seção por completo;
+ * `--store-db <path>` sobrepõe o caminho do DB (default
+ * `data/diaria-subscribers/diaria-subscribers.db`).
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -90,6 +107,9 @@ import {
 import { registerReport, reportId } from "./studio-ui/studio-reports.ts";
 import { fetchAndAggregateKit, formatCountsTable, type UtmCountResult } from "./count-subscriptions-by-utm.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
+import type { DatabaseSync } from "node:sqlite";
+import { DEFAULT_DB_PATH as DEFAULT_STORE_DB_PATH, openDiariaSubscribersDbSafe } from "./lib/diaria-subscribers-db.ts";
+import { summarizeStoreLeitoresCanonicalDedup, type StoreLeitorSummary } from "./lib/leitor-store.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_BACKUP_ROOT = resolve(ROOT, "data", "beehiiv-backup");
@@ -149,6 +169,39 @@ export async function loadKitUtmSection(
   }
 }
 
+/** Resultado da seção "Leitores via store unificado" (#7393) — sempre um dos
+ *  dois shapes, nunca lança. */
+export type CacReportStoreSection =
+  | { applied: true; summary: StoreLeitorSummary }
+  | { applied: false; reason: string };
+
+/**
+ * Resume `leitor-v1` cross-plataforma a partir do store unificado (#7393) —
+ * fail-soft: store ausente/ilegível ou erro de leitura vira
+ * `{applied:false, reason}`, nunca lança. `openDb`/`dbPath` injetáveis pra
+ * teste (mesmo padrão de `loadKitUtmSection`).
+ */
+export function loadStoreLeitorSection(
+  dbPath: string = DEFAULT_STORE_DB_PATH,
+  openDb: (path: string) => DatabaseSync | null = openDiariaSubscribersDbSafe,
+): CacReportStoreSection {
+  const db = openDb(dbPath);
+  if (!db) {
+    return {
+      applied: false,
+      reason: `store não encontrado/ilegível em ${dbPath} — rode as ingestões (#6586/#6587) antes.`,
+    };
+  }
+  try {
+    const summary = summarizeStoreLeitoresCanonicalDedup(db);
+    return { applied: true, summary };
+  } catch (e) {
+    return { applied: false, reason: `falha ao ler o store: ${(e as Error).message}` };
+  } finally {
+    db.close();
+  }
+}
+
 export function loadPreparedSubscribers(
   root: string,
   date: string,
@@ -188,6 +241,14 @@ export interface CacReportCliArgs {
    *  que preferem pular a resolução de `KIT_API_KEY`/chamada de rede por
    *  completo, em vez de confiar no fail-soft de `loadKitUtmSection`. */
   kit: boolean;
+  /** `--no-store-leitores` (#7393): desliga a seção informativa "Leitores via
+   *  store unificado" (`loadStoreLeitorSection`) — default `true` (liga).
+   *  Só leitura local, mas existe pro mesmo motivo do `--no-kit`: CLI/testes
+   *  que preferem pular a tentativa de abrir o DB por completo. */
+  storeLeitores: boolean;
+  /** `--store-db <path>` (#7393): sobrepõe o caminho do store unificado
+   *  (default `data/diaria-subscribers/diaria-subscribers.db`). */
+  storeDbPath: string;
 }
 
 export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
@@ -202,6 +263,8 @@ export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
     ate: getStringArg(argv, "ate") ?? null,
     strict: hasFlag(argv, "strict"),
     kit: !hasFlag(argv, "no-kit"),
+    storeLeitores: !hasFlag(argv, "no-store-leitores"),
+    storeDbPath: getStringArg(argv, "store-db") ?? DEFAULT_STORE_DB_PATH,
   };
 }
 
@@ -254,6 +317,7 @@ export function formatCacReportMarkdown(
   budget: ReturnType<typeof computeMonthBudgetUsage>,
   provenance: CacReportProvenance = {},
   kitSection?: CacReportKitSection,
+  storeSection?: CacReportStoreSection,
 ): string {
   const lines: string[] = [];
   lines.push(`# Custo por leitor por canal`, "");
@@ -409,6 +473,34 @@ export function formatCacReportMarkdown(
     }
   }
 
+  if (storeSection) {
+    lines.push("");
+    lines.push("## Leitores via store unificado (informativo, PARCIAL, #7393)");
+    lines.push("");
+    if (!storeSection.applied) {
+      lines.push(`⚠ seção do store não aplicada: ${storeSection.reason}`);
+    } else {
+      const s = storeSection.summary;
+      lines.push(
+        "`leitor-v1` cross-plataforma (Beehiiv + Kit + Brevo diária já ingeridos), calculado sobre o store " +
+          "unificado (`data/diaria-subscribers/diaria-subscribers.db`) — NÃO é substituto do funil Beehiiv acima " +
+          "nem do custo por leitor: o store não tem, hoje, os mesmos campos de engajamento por-post que a tabela " +
+          "principal usa (mesma ressalva registrada pro Kit no #7359), então esta seção mostra só o resumo " +
+          "`leitor-v1`, sem ranquear custo por canal.",
+      );
+      lines.push("");
+      lines.push(`Plataformas cobertas: ${s.platforms_counted.join(", ")}.`);
+      lines.push(`Subscribers no store: ${s.total_subscribers}. Ativos: ${s.total_active}. Leitores-v1: ${s.leitores_v1}.`);
+      if (s.subscription_data_coverage_low) {
+        lines.push(
+          `⚠ cobertura de dado de assinatura BAIXA — "leitores_v1"/"total_active" acima NÃO significam ` +
+            `"zero leitores reais", significam "dado de assinatura pouco populado" (ver \`leitor-store.ts\`, #7198).`,
+        );
+      }
+      lines.push(`${s.note}`);
+    }
+  }
+
   return lines.join("\n") + "\n";
 }
 
@@ -494,14 +586,21 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
     ? await loadKitUtmSection()
     : undefined;
 
+  // #7393: seção informativa "Leitores via store unificado" — opt-out via
+  // --no-store-leitores; fail-soft por conta própria (loadStoreLeitorSection
+  // nunca lança).
+  const storeSection: CacReportStoreSection | undefined = args.storeLeitores
+    ? loadStoreLeitorSection(args.storeDbPath)
+    : undefined;
+
   if (args.json) {
-    console.log(JSON.stringify({ snapshotDate, previousDate, report, budget, apuradoEm, kitSection }, null, 2));
+    console.log(JSON.stringify({ snapshotDate, previousDate, report, budget, apuradoEm, kitSection, storeSection }, null, 2));
   } else {
-    console.log(formatCacReportMarkdown(report, budget, provenance, kitSection));
+    console.log(formatCacReportMarkdown(report, budget, provenance, kitSection, storeSection));
   }
 
   if (args.register) {
-    const markdown = formatCacReportMarkdown(report, budget, provenance, kitSection);
+    const markdown = formatCacReportMarkdown(report, budget, provenance, kitSection, storeSection);
     const dir = resolve(rootDir, "data", "aquisicao", "cac-reports");
     mkdirSync(dir, { recursive: true });
     // Id inclui a janela quando --desde/--ate foi passado (#5495 — "duas
