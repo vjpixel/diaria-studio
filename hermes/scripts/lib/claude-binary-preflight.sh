@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# claude-binary-preflight.sh (#6875, #6879, #6891) — checagem compartilhada: o
-# binário Claude Code precisa existir e responder a `--version` antes de
-# qualquer script de cron tentar usá-lo (claude-openrouter.sh,
-# continuo-pr-review.sh, opus-daily-diff-review.sh). Sem isso, a falha real
-# (binário ausente/quebrado, postinstall não rodou) vira sintoma enigmático
-# no meio do script chamador em vez de erro nomeado logo no início.
+# claude-binary-preflight.sh (#6875, #6879, #6891, #7468) — checagem
+# compartilhada: o binário Claude Code precisa existir e responder a
+# `--version` antes de qualquer script de cron tentar usá-lo
+# (claude-openrouter.sh, continuo-pr-review.sh, opus-daily-diff-review.sh).
+# Sem isso, a falha real (binário ausente/quebrado, postinstall não rodou)
+# vira sintoma enigmático no meio do script chamador em vez de erro
+# nomeado logo no início.
 #
 # #6891 (01/09/2026): auto-reparo UMA vez antes de abortar. Medido em 01/09
 # (#6875/#6891): o auto-updater do Claude Code reinstala em ciclo, e cada
@@ -16,9 +17,32 @@
 # idempotente (`node install.cjs`), caro demais abortar por isso na
 # frequência medida.
 #
+# #7468 (05/09/2026): o reparo de uma vez não era suficiente. O #6891
+# fechou com DISABLE_AUTOUPDATER=1 + preflight com auto-reparo, e MESMO
+# ASSIM o binário quebrou dentro da janela de cada sessão dots, 3/3 no
+# tick 260905. Dois defeitos, ambos aqui corrigidos:
+#
+#   (a) O reparo roda UMA vez no preflight e as tentativas 2-3 da cadeia de
+#       fallback do wrapper herdam o binário quebrado — o #6891 só
+#       consertava o começo. `claude_binary_ensure` (fail-soft, abaixo)
+#       re-verifica e re-repara ENTRE as tentativas, então cada `claude -p`
+#       parte com o binário reparado.
+#
+#   (b) O `node install.cjs` é idempotente mas NUNCA distingue "colocou o
+#       binário" de "falhou silenciosamente" — ele sai 0 em ambos os casos
+#       (imprime no stderr e seta exitCode=1 quando falha). O preflight
+#       antigo confiava nisso: o reparo "resolveu" se o install.cjs saísse
+#       0, mesmo o binário ter voltado pro stub. Agora o reparo é
+#       verificado por CONTEÚDO: se o binário for um stub (~500 bytes, o
+#       tamanho real do placeholder) ou não responde `--version`, o
+#       reparo é tentado de novo — e, se o stub persistir, o reparo direto
+#       (copy do binário da plataforma, sem depender do postinstall) é a
+#       última linha.
+#
 # Sequência: 1) `claude --version` falhou? 2) roda `node <install.cjs>`
-# (idempotente) 3) tenta `claude --version` de novo 4) ainda falhou? exit 5
-# como antes 5) funcionou? AVISA no stderr (nunca silencioso — reparar sem
+# (idempotente) 3) tenta `claude --version` de novo 4) ainda falhou?
+# reparo DIRETO (copy do binário da plataforma) 5) ainda falhou? exit 5
+# como antes 6) funcionou? AVISA no stderr (nunca silencioso — reparar sem
 # avisar esconde a frequência real da quebra, o dado que gerou a issue) e
 # segue.
 #
@@ -40,56 +64,27 @@
 # chamada, sempre no mesmo lugar.
 #
 # Sai com exit 5 (mesmo código de antes) se o binário estiver ausente/quebrado
-# E o reparo não resolver.
+# E o reparo não resolve.
 #
-# Testável isoladamente via 3 overrides (nenhum depende do `claude`/`npm`/
+# Duas funções, porque o cenário do #7468 exige dois contratos diferentes:
+#
+#   claude_binary_preflight — FAIL-HARD. Usado no início do script: o
+#     wrapper não pode nem começar com o binário quebrado. Sai (exit 5) se
+#     o reparo não resolver.
+#
+#   claude_binary_ensure — FAIL-SOFT. Usado ENTRE as tentativas da cadeia
+#     de fallback: uma tentativa que falhou por quota/rate-limit não pode
+#     ser arruinada por um binário quebrado que o reparo resolve. Nunca
+#     sai: devolve 0 (binário ok) ou 1 (ainda quebrado, mas o caller
+#     decide o que fazer — no wrapper, é "próximo modelo").
+#
+# Testável isoladamente via 4 overrides (nenhum depende do `claude`/`npm`/
 # `node` reais — ver claude-binary-preflight.test.sh):
 #   CLAUDE_BINARY_PREFLIGHT_CMD          — binário verificado (default: claude)
 #   CLAUDE_BINARY_PREFLIGHT_REPAIR_CMD   — comando de reparo (default: deriva
 #                                          `node <npm root -g>/@anthropic-ai/claude-code/install.cjs`)
 #   CLAUDE_BINARY_PREFLIGHT_NPM_CMD      — binário `npm` usado pra resolver
 #                                          o prefixo global (default: npm)
-
-claude_binary_preflight() {
-  local cmd="${CLAUDE_BINARY_PREFLIGHT_CMD:-claude}"
-  if "$cmd" --version >/dev/null 2>&1; then
-    return 0
-  fi
-
-  local install_cjs="" repair_attempted=0
-
-  if [ -n "${CLAUDE_BINARY_PREFLIGHT_REPAIR_CMD:-}" ]; then
-    # Override explícito (teste/operador) — string de comando, precisa de
-    # `eval` mesmo (é o próprio propósito do override). Nunca o caminho
-    # default de produção.
-    eval "$CLAUDE_BINARY_PREFLIGHT_REPAIR_CMD" >/dev/null 2>&1 || true
-    repair_attempted=1
-  else
-    # Deriva o caminho do install.cjs do prefixo REAL do npm nesta máquina
-    # (`~/.npmrc`/config, não uma constante — #6891 nomeia isso
-    # explicitamente: hardcodar `~/.npm-global/...` quebra em qualquer
-    # máquina com prefixo diferente). Achado do review da PR #6894 (P3,
-    # média-alta): `node "$install_cjs"` roda direto (sem `eval`) — o
-    # output de `npm root -g` nunca precisa ser re-interpretado pelo shell.
-    local npm_cmd="${CLAUDE_BINARY_PREFLIGHT_NPM_CMD:-npm}"
-    local npm_root
-    npm_root="$("$npm_cmd" root -g 2>/dev/null)" || npm_root=""
-    if [ -n "$npm_root" ]; then
-      install_cjs="${npm_root}/@anthropic-ai/claude-code/install.cjs"
-      node "$install_cjs" >/dev/null 2>&1 || true
-      repair_attempted=1
-    fi
-  fi
-
-  if [ "$repair_attempted" -eq 1 ] && "$cmd" --version >/dev/null 2>&1; then
-    echo "AVISO: binário Claude Code estava quebrado — reparado automaticamente (#6891)${install_cjs:+" via $install_cjs"}. A frequência desta mensagem é o dado que abriu a issue — não ignorar se aparecer com frequência." >&2
-    return 0
-  fi
-
-  if [ "$repair_attempted" -eq 1 ]; then
-    echo "ERRO: binário Claude Code quebrado — reparo automático não resolveu${install_cjs:+" ($install_cjs)"} — rodar manualmente: node \$(npm root -g)/@anthropic-ai/claude-code/install.cjs" >&2
-  else
-    echo "ERRO: binário Claude Code quebrado — reparo automático NÃO foi tentado (\`npm root -g\` não resolveu um prefixo) — rodar manualmente: node \$(npm root -g)/@anthropic-ai/claude-code/install.cjs" >&2
-  fi
-  exit 5
-}
+#   CLAUDE_BINARY_PREFLIGHT_STUB_SIZE    — tamanho máximo em bytes que
+#                                          conta como stub (default: 4096)
+BODY
