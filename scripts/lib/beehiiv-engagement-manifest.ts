@@ -56,6 +56,19 @@ export interface EngagementManifestEntry {
   /** ISO timestamp da última tentativa (sucesso ou falha). */
   fetched_at?: string;
   error?: string;
+  /**
+   * `true` quando o 0 registros deste post foi CONFIRMADO de propósito
+   * (`apply-mcp-subscriber-engagement.ts --confirmed-empty`, #7197) — o
+   * agent literalmente acabou de receber uma resposta vazia da MCP pra este
+   * post_id, e o JSONL vazio é o dado real (post sem envio por e-mail,
+   * `total_sent=0`, só web). Sem este flag, `reconcileManifestWithDisk`
+   * (checagem 1) rebaixa todo `ok` com 0 linhas pra `pending` — os mesmos
+   * posts confirmados vazios piscavam ok→pending a cada auditoria,
+   * forçando reprocessamento desnecessário (~90-160k tokens por lote de 8,
+   * medido ao vivo no #7268). Com o flag, a checagem 1 o respeita: nunca
+   * rebaixa uma entry que já foi confirmada vazia de propósito.
+   */
+  confirmed_empty?: boolean;
 }
 
 export interface EngagementManifest {
@@ -227,7 +240,18 @@ export const AUDIT_REASON_PREFIX = "auditoria #7197";
  * de trabalho" (`pendingEntries`) ou mecanicamente corretas
  * (`not_applicable`), nada a reconciliar.
  *
- * TRÊS checagens, primeira que casa vence:
+ * QUATRO checagens, primeira que casa vence:
+ *   0. `confirmed_empty` — 0 registros EM DISCO mas a entry já foi
+ *      confirmada vazia de propósito (#7418, #7197): o agent literalmente
+ *      acabou de receber uma resposta vazia da MCP pra este post_id e
+ *      gravou `confirmed_empty: true` em `apply-mcp-subscriber-engagement.ts
+ *      --confirmed-empty`. Nesse caso o `ok` é legítimo — o dado real É
+ *      zero, só o *status* pisca — e rebaixar forçaria reprocessamento
+ *      desnecessário (~90-160k tokens por lote de 8, medido no #7268).
+ *      Só entra em jogo quando a checagem 1 também encontraria 0 linhas.
+ *      Não há caminho mecânico de revogação do flag — levantá-lo exige um
+ *      re-drain que produza registros (a entry inteira é substituída via
+ *      `upsertEntry`) ou edição manual do manifest (#7418).
  *   1. `actual === 0` — nenhum registro real em disco. Um `ok` com 0
  *      registros só é legítimo quando `not_applicable` (post nunca
  *      enviado) — se chegou aqui como `ok` "normal", é o padrão de
@@ -300,6 +324,18 @@ export function reconcileManifestWithDisk(
   const posts = manifest.posts.map((entry) => {
     if (entry.status !== "ok") return entry;
     const actual = actualCounts.get(entry.post_id) ?? 0;
+    // Checagem 0 (#7418): 0 linhas em disco + `confirmed_empty: true` →
+    // o vazio foi confirmado de propósito pelo agent (`--confirmed-empty`,
+    // #7197). O dado real É zero (post sem envio por e-mail, total_sent=0,
+    // só web) — manter `ok` evita o ciclo sem fim em que os mesmos posts
+    // confirmados vazios piscavam ok→pending a cada auditoria, forçando
+    // reprocessamento (~90-160k tokens por lote de 8, medido no #7268).
+    // Só respeita o flag quando a checagem 1 também encontraria 0 linhas:
+    // se o disco tem dado real, o flag não vale nada (o post foi
+    // re-drenado depois e o JSONL não está mais vazio).
+    if (actual === 0 && entry.confirmed_empty) {
+      return entry;
+    }
     if (actual === 0) {
       const reason = `${AUDIT_REASON_PREFIX}: 0 registros reais em disco (manifest dizia count=${entry.count ?? 0}) — nunca "ok" sem dado, redrenar do zero`;
       downgraded.push({ post_id: entry.post_id, from: "ok", to: "pending", reason });

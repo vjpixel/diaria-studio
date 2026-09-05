@@ -38,13 +38,24 @@
  *
  * GUARD `ok` + 0 registros (#7197 — auditoria do acervo achou 7 posts assim,
  * herdados do padrão de fabricação que o #6496 já corrigiu no AGENT, mas
- * nunca ganhou um guard MECÂNICO neste script): por padrão, um resultado com
+ * nunca ganhou um guard MECÂNICO deste script): por padrão, um resultado com
  * 0 registros nunca fecha como `ok` — fecha como `partial` (`error` explica
  * o motivo), forçando o post de volta pra `pendingEntries()` até alguém
  * confirmar de propósito que o 0 é real. Passe `--confirmed-empty` só quando
  * você (o agent) *literalmente acabou de receber*, nesta invocação, uma
  * resposta vazia da MCP pra ESTE post_id — nunca porque "provavelmente é
  * isso" (mesma disciplina de anti-fabricação do agent `beehiiv-engagement-backup`).
+ *
+ * #7418: `--confirmed-empty` não é só um gate local — grava um flag
+ * `confirmed_empty: true` NO MANIFEST (`scripts/lib/beehiiv-engagement-manifest.ts`,
+ * campo novo em `EngagementManifestEntry`). O `reconcileManifestWithDisk`
+ * (checagem 1) rebaixa todo `ok` com 0 linhas em disco pra `pending` sem
+ * distinguir "nunca tentado" de "confirmado vazio de propósito" — os mesmos
+ * 6 posts confirmados vazios (post_0dbd15c0, post_a8b8fdd0, post_ae4b42b2,
+ * post_56cef195, post_6f15f694, post_815c6e63, medido no #7268) piscavam
+ * ok→pending a cada auditoria, forçando reprocessamento (~90-160k tokens por
+ * lote de 8). Com o flag, a checagem 1 o respeita: nunca rebaixa uma entry
+ * que já foi confirmada vazia de propósito.
  *
  * Stdin JSON (tolerante — mesmo padrão de `apply-mcp-clicks.ts`):
  *   { "engagement": [...] }   — wrapper shape (resposta direta da MCP)
@@ -287,6 +298,14 @@ export function applyEngagement(stdinJson: string, opts: ApplyEngagementOpts): A
   }
 
   const manifest = loadManifest(manifestPath);
+  // #7418: `confirmed_empty` é um flag NO MANIFEST, não só um gate local de
+  // `ok` — `reconcileManifestWithDisk` (checagem 1) rebaixa todo `ok` com 0
+  // linhas em disco pra `pending` sem distinguir "nunca tentado" de
+  // "confirmado vazio de propósito". Sem gravá-lo, os mesmos posts
+  // confirmados vazios piscavam ok→pending a cada auditoria, forçando
+  // reprocessamento desnecessário (~90-160k tokens por lote de 8, #7268).
+  // Só vale quando o status efetivamente fechou `ok` com 0 registros — um
+  // `partial` (paginação truncada) não tem 0 confirmado, tem dado faltando.
   const entry: EngagementManifestEntry = {
     post_id: opts.postId,
     title: opts.title,
@@ -295,6 +314,7 @@ export function applyEngagement(stdinJson: string, opts: ApplyEngagementOpts): A
     pages_fetched: pagesFetched,
     total_pages: totalPages,
     fetched_at: new Date().toISOString(),
+    ...(status === "ok" && records.length === 0 && opts.confirmedEmpty ? { confirmed_empty: true } : {}),
     ...(guardError ? { error: guardError } : {}),
   };
   saveManifestAtomic(manifestPath, upsertEntry(manifest, entry));
