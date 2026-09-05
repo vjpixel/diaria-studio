@@ -463,42 +463,50 @@ Falha de cover **não bloqueia** teste de email nem publicação — Beehiiv usa
 
 Issue #7412: quando o toggle "Show thumbnail on top in web" está ligado, o Beehiiv renderiza a cover como hero full-width no TOPO da versão web do post (acima do corpo, que já abre com a mesma imagem inline no D1) → duplicação + hero desproporcional. Exemplo ao vivo: `diar.ia.br/p/tend-ncias-2026`.
 
-**Fix automático, chamado IMEDIATAMENTE após cover aplicada (§4b):**
+**O DOM real (conferido ao vivo 05/09/2026, `post_78ed9837-bae3-41d4-ab09-84176b86f430`)** — duas armadilhas que uma implementação "óbvia" erra:
+
+```html
+<label for="hide-thumbnail">Show thumbnail on top in web</label>
+<button role="switch" id="hide-thumbnail" type="button" aria-checked="false">
+```
+
+1. **Não é `<input type=checkbox>`** — é `<button role="switch">`. `.checked` nele é `undefined`; o estado vive em `aria-checked`. Código que exija `tagName === 'INPUT'` nunca acha o controle.
+2. **O id (`hide-thumbnail`) contradiz o label (`Show thumbnail…`).** Quem deduzir a semântica pelo id inverte a lógica e **liga** o hero achando que desliga. Vale o label: `aria-checked="true"` = hero ligado. Confirmado cruzando com as páginas públicas — o post acima (`aria-checked="false"`) serve a capa **0×** no corpo; `diar.ia.br/p/tend-ncias-2026`, com o hero ligado, serve o mesmo asset **2×**.
+
+**Fluxo, logo após a cover ser aplicada (§4b).** Os snippets são **síncronos de propósito**: uma IIFE `async` com `setTimeout` cai no gotcha do #2341 (`javascript_tool` devolve `{}`) e a espera tem que ficar **fora** do `javascript_tool` (#1766).
 
 ```typescript
 import {
-  buildThumbnailToggleCheckAndFixJs,
+  buildThumbnailToggleReadJs,
+  buildThumbnailToggleClickJs,
   classifyThumbnailToggleResult,
+  classifyThumbnailToggleClick,
+  needsManualCheck,
   formatThumbnailToggleMessage,
 } from "scripts/lib/beehiiv-thumbnail-toggle.ts";
 
-// Disparar fix do toggle (§4b, após cover aplicada)
-const toggleResult = await mcp__claude-in-chrome__javascript_tool({
-  code: buildThumbnailToggleCheckAndFixJs()
-});
+// 1. Ler o estado
+let state = classifyThumbnailToggleResult(
+  await mcp__claude-in-chrome__javascript_tool({ code: buildThumbnailToggleReadJs() })
+);
 
-const toggleState = classifyThumbnailToggleResult(toggleResult);
-const toggleMessage = formatThumbnailToggleMessage(toggleState);
-log_info(toggleMessage); // Log do resultado
-
-// Se toggle não foi encontrado, avisar (pode não estar no DOM ainda, ou UI mudou)
-if (!toggleState.found) {
-  log_warn(toggleMessage);
-  // NUNCA bloqueia o fluxo — é possível que o Web step ainda esteja carregando
+// 2. Se ligado, clicar — e RE-LER, porque o React reprocessa async
+if (state.found && state.enabled) {
+  classifyThumbnailToggleClick(
+    await mcp__claude-in-chrome__javascript_tool({ code: buildThumbnailToggleClickJs() })
+  );
+  await computer.wait({ seconds: 1 });          // FORA do javascript_tool (#1766)
+  state = classifyThumbnailToggleResult(
+    await mcp__claude-in-chrome__javascript_tool({ code: buildThumbnailToggleReadJs() })
+  );
 }
 
-// Se estava ligado e não conseguimos desligar (rare), avisar pro editor
-if (toggleState.enabled && !toggleState.toggled) {
-  log_error(toggleMessage);
-  // Não bloqueia, mas garante visibilidade do problema
-}
+log_info(formatThumbnailToggleMessage(state));   // a mensagem sempre carrega o motivo
 ```
 
-**⚠️ Fallback: se automação não conseguir desligar, verificação manual obrigatória (#7412).** NÃO prosseguir se:
-- `found: false` — toggle não localizado (UI mudou, Web step ainda carregando, ou seletor desatualizado).
-- `enabled: true && toggled: false` — toggle estava ON e a automação não conseguiu desligar.
+**⚠️ `needsManualCheck(state) === true` → verificação visual obrigatória antes de "Update web".** Cobre os dois casos ruins: estado **não verificado** (`found:false` — inclui o retorno `{}` do #2341, que **nunca** é lido como "OFF") e toggle **ainda ligado** após o clique. Nesses casos, conferir na UI e desligar à mão (1 clique) — seguir sem conferir arrisca reintroduzir a duplicação.
 
-Em ambos os casos, **verificar visualmente no Beehiiv se "Show thumbnail on top in web" está OFF, e desligar manualmente (1 clique) se estiver ON, antes de "Update web"**. Sem confirmar manualmente, o editor corre risco de reintroduzir a duplicação de imagem (#7412 ao vivo).
+**Grau de verificação (não confundir):** a **leitura** foi exercitada contra o Beehiiv real na data acima e retornou `{found:true, enabled:false}`. O **clique** não foi disparado ao vivo — clicar num post publicado ligaria o hero, causando justamente o bug. Por isso o guard manual acima não é decorativo: é o que cobre um clique que não surta efeito.
 
 **⚠️ DEPRECATED (#1705) — NÃO usar como primário:** o fluxo legado "Use from library → **Upload from URL**" (`buildCoverUploadJs` + `buildCoverApplyLocateJs`) sobe a imagem pro media library mas **não aplica** como thumbnail na UI atual (clicar o card abre preview, não aplica). Em 260604 falhou em 4 tentativas; o DataTransfer aplicou de primeira. Mantido no helper só como fallback histórico.
 
