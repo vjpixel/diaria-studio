@@ -1338,8 +1338,16 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       "clarice-build-segment",
       "scripts/clarice-build-segment.ts",
       [
-        "--group",
-        "ramp-warm",
+        // #7406 — fila única por score (`--daily`), substitui `--group
+        // ramp-warm`: a task das 20:15 do `engajados` (#6945) nunca deveria
+        // ter existido como automação separada — decisão do editor:
+        // "trabalha tudo só a partir do score", sem grupo escolhido.
+        // Engajados (score>0) tem prioridade total sobre quem nunca recebeu
+        // (score=0) até esgotar a fila ou o budget do dia. A task das 20:15
+        // (`Diaria-Clarice-Envio-Engajados`) foi APOSENTADA nesta mesma
+        // unidade (timers desarmados + scripts removidos) — este passo
+        // agora é a ÚNICA montagem de fila diária.
+        "--daily",
         "--cycle",
         cycle,
         "--budget",
@@ -1352,8 +1360,8 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
         sendDate,
       ],
     );
-    // #5395 — reconciliação: `--group ramp-warm` sem `--exact-budget` (não
-    // suportado nesse modo) corta silenciosamente pra `ordered.slice(0,
+    // #5395 — reconciliação: `--daily` sem `--exact-budget` (não suportado
+    // nesse modo) corta silenciosamente pra `ordered.slice(0,
     // budget)` — se a fila real (pós-guards) for menor que `decision.volume`,
     // `selected` sai menor que o pedido sem NENHUM sinal no relatório (a
     // causa raiz do achado ao vivo de 260816: onda 25% menor, relatório
@@ -1389,7 +1397,8 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       );
     }
 
-    const splitArgs = ["--cycle", cycle, "--wave", String(n), "--date", sendDate, "--from", "segments/ramp-warm.csv"];
+    // #7406 — "daily.csv" (não mais "ramp-warm.csv"): artefato da fila única do Passo 6.
+    const splitArgs = ["--cycle", cycle, "--wave", String(n), "--date", sendDate, "--from", "segments/daily.csv"];
     if (hourCells) {
       splitArgs.push("--hour-cells", hourCells.join(","));
       report.note(`teste de horário ATIVO — células ${hourCells.map((h) => `${String(h).padStart(2, "0")}:00`).join(" × ")} BRT (#5140).`);

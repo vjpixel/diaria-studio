@@ -146,7 +146,7 @@ function goldenHandlers(opts: { proposal?: Partial<WaveProposal>; risk?: Record<
     "scripts/clarice-build-db.ts": textResult(""),
     "scripts/clarice-plan-wave.ts": jsonResult(proposal),
     "scripts/clarice-envio-risk.ts": jsonResult(healthyRisk(opts.risk)),
-    "scripts/clarice-build-segment.ts": jsonResult({ selected: proposal.volumes.baseVolume, cycle: CYCLE, group: "ramp-warm" }),
+    "scripts/clarice-build-segment.ts": jsonResult({ selected: proposal.volumes.baseVolume, cycle: CYCLE, group: "daily" }),
     "scripts/clarice-split-group-cells.ts": textResult("ok"),
     "scripts/clarice-import-waves.ts": jsonResult({ mode: "execute", results: [] }),
     "scripts/clarice-schedule-group.ts": [
@@ -578,8 +578,7 @@ describe("clarice-envio-run (#5026)", () => {
       // ciclo (resolvido pela data de EXECUÇÃO) — senão o 1º envio do mês herda
       // a janela do mês anterior e não reseta a fila.
       assert.deepEqual(segment!.args, [
-        "--group",
-        "ramp-warm",
+        "--daily",
         "--cycle",
         CYCLE,
         "--budget",
@@ -591,7 +590,7 @@ describe("clarice-envio-run (#5026)", () => {
       const split = calls.find((c) => c.script === "scripts/clarice-split-group-cells.ts");
       assert.ok(split);
       assert.ok(split!.args.includes("--no-cells"), "travar => 1 lista só, --no-cells presente");
-      assert.deepEqual(split!.args, ["--cycle", CYCLE, "--wave", "12", "--date", SEND_DATE, "--from", "segments/ramp-warm.csv", "--no-cells"]);
+      assert.deepEqual(split!.args, ["--cycle", CYCLE, "--wave", "12", "--date", SEND_DATE, "--from", "segments/daily.csv", "--no-cells"]);
 
       const importCall = calls.find((c) => c.script === "scripts/clarice-import-waves.ts");
       assert.ok(importCall);
@@ -687,7 +686,7 @@ describe("clarice-envio-run (#5026)", () => {
       // feliz" acima) — a fila real só entregou 2000, bem menos.
       const { exec, calls } = makeFakeExec({
         ...goldenHandlers(),
-        "scripts/clarice-build-segment.ts": jsonResult({ selected: 2000, cycle: CYCLE, group: "ramp-warm" }),
+        "scripts/clarice-build-segment.ts": jsonResult({ selected: 2000, cycle: CYCLE, group: "daily" }),
       });
       const r = await runEnvio(baseDeps(root, { exec }));
       assert.equal(r.code, 0, r.reportMarkdown);
@@ -709,7 +708,7 @@ describe("clarice-envio-run (#5026)", () => {
       // aqui a asserção depende disso, então fixamos `selected` = budget.
       const { exec } = makeFakeExec({
         ...goldenHandlers(),
-        "scripts/clarice-build-segment.ts": jsonResult({ selected: 3456, cycle: CYCLE, group: "ramp-warm" }),
+        "scripts/clarice-build-segment.ts": jsonResult({ selected: 3456, cycle: CYCLE, group: "daily" }),
       });
       const r = await runEnvio(baseDeps(root, { exec }));
       assert.equal(r.code, 0, r.reportMarkdown);
@@ -1089,8 +1088,7 @@ describe("clarice-envio-run (#5026)", () => {
       // `--send-date` (#7234) acompanha o build-segment em TODO caminho, não só
       // no feliz — inclusive quando o volume veio de `--volume N` do editor.
       assert.deepEqual(segment!.args, [
-        "--group",
-        "ramp-warm",
+        "--daily",
         "--cycle",
         CYCLE,
         "--budget",
@@ -1617,7 +1615,7 @@ describe("clarice-envio-run (#5026)", () => {
         const segment = calls.find((c) => c.script === "scripts/clarice-build-segment.ts");
         assert.deepEqual(
           segment!.args,
-          ["--group", "ramp-warm", "--cycle", CYCLE, "--budget", "3456", "--send-date", SEND_DATE],
+          ["--daily", "--cycle", CYCLE, "--budget", "3456", "--send-date", SEND_DATE],
           label,
         );
       }
@@ -1716,8 +1714,7 @@ describe("clarice-envio-run (#5026)", () => {
       // `--send-date` (#7234) acompanha o build-segment em TODO caminho, não só
       // no feliz — inclusive quando o volume veio de `--volume N` do editor.
       assert.deepEqual(segment!.args, [
-        "--group",
-        "ramp-warm",
+        "--daily",
         "--cycle",
         CYCLE,
         "--budget",

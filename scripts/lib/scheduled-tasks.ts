@@ -971,72 +971,16 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // real: par `.service`/`.timer` gerado por scripts/setup-systemd-timers.ts.
     issue: "#5058",
   },
-  {
-    name: "Diaria-Clarice-Envio-Engajados",
-    description: "estende a orquestracao diaria do ramp-warm ao grupo engajados (retencao) -- teto de volume + kill switch dedicado, #6945",
-    // Kill switch dedicado, DIFERENTE do Diaria-Clarice-Envio: nasce
-    // DESLIGADO (clarice-envio-engajados-enabled.ts) -- automacao NOVA que
-    // dispara e-mail real pra ate ENGAJADOS_MAX_DAILY_VOLUME contatos/dia
-    // sem gate humano no caminho normal; o editor liga explicitamente
-    // depois de revisar a 1a rodada. Ver docstring do script pro racional
-    // completo (mesma inversao de default de clarice-novos-enabled.ts).
-    steps: [{ key: "run", script: "scripts/clarice-envio-engajados-run.ts" }],
-    logPath: "clarice-subscribers/.envio-engajados-run.log",
-    // 20:15 BRT: depois do Diaria-Clarice-Envio das 19:10 (#5826) -- reusa
-    // o assunto do dia JA TRAVADO por aquela rodada (mesma edicao, publico
-    // diferente) e compartilha o MESMO lock por ciclo
-    // (clarice-envio-lock.ts) -- 1h+ de folga cobre o caso comum (ramp-warm
-    // termina em minutos); numa rodada rara em que o ramp-warm ainda esta
-    // retentando (#6831, ate ~2h20 no pior caso), esta task recebe
-    // LockHeldError e sai com exit 4 (nao e falha -- ver successExitCodes
-    // abaixo), self-healing no dia seguinte (a escalada de volume nao perde
-    // progresso num dia pulado, ver clarice-envio-engajados-state.ts).
-    schedule: { kind: "daily", hour: 20, minute: 15 },
-    // Mesmo guard das outras tasks Clarice-Envio -- sem o store, o
-    // planejamento leria uma base vazia.
-    guard: {
-      requiredFile: "clarice-subscribers/clarice-users.db",
-      abortMessage:
-        "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
-        "data/ nao montada ainda; abortando por seguranca.",
-    },
-    // exit 4 = lock ja detido por rodada concorrente (ramp-warm no mesmo
-    // ciclo, ou outra sessao manual) -- abort SEGURO, nunca falha genuina,
-    // mesmo padrao/codigo do Diaria-Clarice-Envio acima (mesmo lock
-    // compartilhado por design, ver docstring do script).
-    successExitCodes: [4],
-    // DECLARADA, NAO ARMADA nesta unidade (mesma disciplina do
-    // Diaria-Branch-Cleanup acima) -- armar requer, na helios, apos o
-    // merge E o editor confirmar a 1a rodada manual/dry-run e ligar o kill
-    // switch:
-    //   npx tsx scripts/clarice-envio-engajados-run.ts --dry-run   # revisar
-    //   npx tsx scripts/lib/clarice-envio-engajados-enabled.ts --set enabled
-    //   npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Envio-Engajados
-    //   npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Envio-Engajados
-    issue: "#6945",
-  },
-  {
-    name: "Diaria-Clarice-Envio-Engajados-Alarm",
-    description: "alarme de rodada falha do Diaria-Clarice-Envio-Engajados -- le o relatorio do dia e alarma se a onda nao foi agendada",
-    steps: [{ key: "alarm", script: "scripts/clarice-envio-engajados-alarm.ts" }],
-    logPath: "clarice-subscribers/.envio-engajados-alarm.log",
-    // 21:15 BRT -- 1h depois do Diaria-Clarice-Envio-Engajados (20:15).
-    // Diferente do ramp-warm, esta task NAO tem retry-com-backoff proprio
-    // (ver docstring de clarice-envio-engajados-run.ts) -- 1h e folga ampla
-    // pra uma rodada sem retry terminar.
-    schedule: { kind: "daily", hour: 21, minute: 15 },
-    guard: {
-      requiredFile: "clarice-subscribers/clarice-users.db",
-      abortMessage:
-        "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
-        "data/ nao montada ainda; sem sentido checar relatorio de uma rodada que nunca roda nesta maquina.",
-    },
-    // DECLARADA, NAO ARMADA nesta unidade -- mesmo par do zelador acima,
-    // armar junto com Diaria-Clarice-Envio-Engajados:
-    //   npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Envio-Engajados-Alarm
-    //   npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Envio-Engajados-Alarm
-    issue: "#6945",
-  },
+  // #7406 (05/09/2026) — "Diaria-Clarice-Envio-Engajados" e
+  // "Diaria-Clarice-Envio-Engajados-Alarm" (20:15/21:15 BRT, #6945) foram
+  // APOSENTADAS aqui — nunca deveriam ter existido como automação separada
+  // (decisão do editor: "não faz mais sentido ter grupos diferentes
+  // ramp-warm e engajados... trabalha tudo só a partir do score"). A fila
+  // única por score (`--daily`, #7408/#7413) já é montada pela ÚNICA task
+  // `Diaria-Clarice-Envio` (19:10) acima. Os timers systemd correspondentes
+  // foram desarmados (`disable --now`) na `helios` na mesma unidade que
+  // removeu `scripts/clarice-envio-engajados-{run,alarm}.ts` e
+  // `scripts/lib/clarice-envio-engajados-{policy,enabled,alarm,state}.ts`.
   {
     name: "Diaria-Postmaster-Spam-Sync",
     description: "sync automatico do spamRate do Google Postmaster Tools",
