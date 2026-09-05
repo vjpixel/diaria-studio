@@ -41,6 +41,11 @@
  * garantia (herdada do #4381) de que uma falha no `put` nunca é seguida de
  * um `delete`.
  *
+ * #7338 follow-up (05/09/2026): a fonte de assinantes ATIVOS agora segue
+ * `publishing.newsletter.subscriber_backend` (`resolveNewsletterSubscriberBackend`,
+ * `scripts/lib/shared/newsletter-subscriber-source.ts`) em vez de Beehiiv
+ * hardcoded — ver docstring de `fetchActiveSubscriberEmailsForBackend`.
+ *
  * Uso:
  *   npx tsx scripts/sync-cursos-subscribers-kv.ts                  # full sync
  *   npx tsx scripts/sync-cursos-subscribers-kv.ts --dry-run        # só imprime contagem, não escreve
@@ -48,8 +53,9 @@
  *   npx tsx scripts/sync-cursos-subscribers-kv.ts --force-empty-guard # ignora o guard de fonte suspeita-vazia (#7338)
  *
  * Env:
- *   BEEHIIV_API_KEY          obrigatório
+ *   BEEHIIV_API_KEY          obrigatório se subscriber_backend="beehiiv" (default)
  *   BEEHIIV_PUBLICATION_ID   opcional — fallback platform.config.json
+ *   KIT_API_KEY              obrigatório se subscriber_backend="kit"
  *   CLOUDFLARE_ACCOUNT_ID    obrigatório pro write real (não pro --dry-run)
  *   CURSOS_KV_NAMESPACE_ID   id do namespace CURSOS_SUBSCRIBERS (ou --namespace-id)
  *
@@ -68,6 +74,12 @@ import { fileURLToPath } from "node:url";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { isMainModule, hasFlag } from "./lib/cli-args.ts";
 import { sha256Hex, subscriberKvKey } from "./lib/shared/subscriber-verify.ts";
+import {
+  resolveNewsletterSubscriberBackend,
+  type NewsletterSubscriberBackend,
+} from "./lib/shared/newsletter-subscriber-source.ts";
+import { resolveKitConfig } from "./lib/kit-config.ts";
+import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WORKER_DIR = resolve(ROOT, "workers", "cursos");
@@ -195,6 +207,54 @@ export async function fetchActiveSubscriberEmails(
     page++;
   }
   return emails;
+}
+
+/**
+ * #7338 follow-up (achado pós-merge do #7463, 05/09/2026): o guard de fonte
+ * suspeita-vazia (`evaluateKvEmptyGuard` abaixo) protege o KV de ser
+ * apagado por engano, mas até aqui `main()` continuava hardcoded pra
+ * Beehiiv (`loadBeehiivConfig`/`fetchActiveSubscriberEmails`), nunca
+ * checando `publishing.newsletter.subscriber_backend` — o MESMO padrão de
+ * bug já achado e corrigido em `count-subscriptions-by-utm.ts` (#7395) e
+ * declarado (mas não corrigido) em `cleanup-preflight-subscribers.ts`
+ * (#7393). A Beehiiv zerou pra 0 assinantes ativos na migração #7386/#7388,
+ * e `subscriber_backend` virou `"kit"` no #7395 — só que este script nunca
+ * lia essa chave, então toda rodada buscava (corretamente, do ponto de
+ * vista da API) 0 assinantes na Beehiiv, e o guard novo (corretamente)
+ * recusava e saía com exit 1: a unit systemd falhava de novo, só que por
+ * DESIGN (fonte errada), não pelo bug de PATH que o #7463 já tinha
+ * corrigido. Esta função ramifica por `resolveNewsletterSubscriberBackend()`
+ * — mesmo padrão do #7395 — em vez de assumir Beehiiv incondicionalmente.
+ * Fetchers injetáveis (default os reais) pra ser testável sem rede — mesmo
+ * padrão de `fetchByBackend` em `count-subscriptions-by-utm.ts` (#7395).
+ */
+export async function fetchActiveSubscriberEmailsForBackend(
+  backend: NewsletterSubscriberBackend,
+  fetchers: {
+    fetchBeehiiv?: () => Promise<string[]>;
+    fetchKit?: () => Promise<string[]>;
+  } = {},
+): Promise<string[]> {
+  if (backend === "kit") {
+    return (
+      fetchers.fetchKit ??
+      (async () => {
+        const result = resolveKitConfig();
+        if (!result.ok) {
+          throw new Error(`[sync-cursos-subscribers-kv] Kit config inválida: ${result.reason}`);
+        }
+        const subscribers = await listAllKitSubscribers(result.config, { status: "active" });
+        return subscribers.map((s) => s.email_address);
+      })
+    )();
+  }
+  return (
+    fetchers.fetchBeehiiv ??
+    (() => {
+      const { apiKey, publicationId } = loadBeehiivConfig("[sync-cursos-subscribers-kv]");
+      return fetchActiveSubscriberEmails(publicationId, apiKey);
+    })
+  )();
 }
 
 export interface KvBulkEntry {
@@ -450,8 +510,17 @@ export type KvEmptyGuardResult = { ok: true } | { ok: false; reason: string };
 
 /** Pura — recusa a rodada se a contagem atual de ativos encolheu demais
  *  desde a última vez (ver docstring acima). Sem histórico prévio, sempre
- *  passa. `!Number.isFinite(ratio)` falha FECHADO (nunca aberto). */
-export function evaluateKvEmptyGuard(currentCount: number, previousState: KvSyncState | null): KvEmptyGuardResult {
+ *  passa. `!Number.isFinite(ratio)` falha FECHADO (nunca aberto).
+ *  `backendLabel` (default `"a fonte"`) nomeia o backend nas mensagens —
+ *  review do #7477 apontou que ficavam hardcoded "Beehiiv" mesmo quando
+ *  `main()` já lê do Kit (`subscriber_backend="kit"`, #7395): reportar o
+ *  sistema errado como culpado é exatamente a classe de confusão de
+ *  diagnóstico que este guard existe pra evitar. */
+export function evaluateKvEmptyGuard(
+  currentCount: number,
+  previousState: KvSyncState | null,
+  backendLabel: string = "a fonte",
+): KvEmptyGuardResult {
   // #7463 finding P0 (self-review): SEM baseline (1ª rodada desde que este
   // guard existe — exatamente o estado real de produção hoje, já que
   // `.kv-sync-state.json` nasce com esta mesma PR) `!previousState` cairia
@@ -468,7 +537,7 @@ export function evaluateKvEmptyGuard(currentCount: number, previousState: KvSync
     return {
       ok: false,
       reason:
-        `Beehiiv devolveu 0 assinantes ativos — piso absoluto, nunca aceito mesmo sem baseline prévio ` +
+        `${backendLabel} devolveu 0 assinantes ativos — piso absoluto, nunca aceito mesmo sem baseline prévio ` +
         `(fonte pode estar zerada por migração de plataforma, não "todo mundo cancelou"). ` +
         `A próxima etapa apagaria o KV CURSOS_SUBSCRIBERS inteiro.`,
     };
@@ -479,7 +548,7 @@ export function evaluateKvEmptyGuard(currentCount: number, previousState: KvSync
     const pct = Number.isFinite(ratio) ? `${(ratio * 100).toFixed(0)}%` : "indefinido";
     return {
       ok: false,
-      reason: `Beehiiv devolveu ${currentCount} assinantes ativos, ${pct} dos ${previousState.active_subscriber_count} da última rodada (${previousState.last_run_at}) — provável falha de fonte/auth/paginação (ou fonte zerada por migração de plataforma), não "todo mundo cancelou". A próxima etapa apagaria essas chaves do KV CURSOS_SUBSCRIBERS.`,
+      reason: `${backendLabel} devolveu ${currentCount} assinantes ativos, ${pct} dos ${previousState.active_subscriber_count} da última rodada (${previousState.last_run_at}) — provável falha de fonte/auth/paginação (ou fonte zerada por migração de plataforma), não "todo mundo cancelou". A próxima etapa apagaria essas chaves do KV CURSOS_SUBSCRIBERS.`,
     };
   }
   return { ok: true };
@@ -493,10 +562,12 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const nsIdx = argv.indexOf("--namespace-id");
   const namespaceId = nsIdx >= 0 ? argv[nsIdx + 1] : process.env.CURSOS_KV_NAMESPACE_ID;
 
-  const { apiKey, publicationId } = loadBeehiivConfig("[sync-cursos-subscribers-kv]");
-
-  process.stderr.write("[sync-cursos-subscribers-kv] buscando assinantes ativos…\n");
-  const emails = await fetchActiveSubscriberEmails(publicationId, apiKey);
+  // #7338 follow-up: backend segue publishing.newsletter.subscriber_backend
+  // (default "beehiiv") em vez de assumir Beehiiv incondicionalmente — ver
+  // docstring de fetchActiveSubscriberEmailsForBackend.
+  const backend = resolveNewsletterSubscriberBackend();
+  process.stderr.write(`[sync-cursos-subscribers-kv] buscando assinantes ativos (backend=${backend})…\n`);
+  const emails = await fetchActiveSubscriberEmailsForBackend(backend);
   process.stderr.write(`[sync-cursos-subscribers-kv] ${emails.length} assinantes ativos.\n`);
 
   const entries = await buildKvBulkEntries(emails);
@@ -533,7 +604,8 @@ export async function main(rootDirOverride?: string): Promise<void> {
   // pelo guard normalmente grava estado, pra não perpetuar um número
   // degradado como "normal".
   const previousState = readKvSyncState(rootDir);
-  const guard = evaluateKvEmptyGuard(emails.length, previousState);
+  const backendLabel = backend === "kit" ? "Kit" : "Beehiiv";
+  const guard = evaluateKvEmptyGuard(emails.length, previousState, backendLabel);
   if (!guard.ok) {
     if (!forceEmptyGuard) {
       process.stderr.write(`[sync-cursos-subscribers-kv] GUARD: ${guard.reason}\n`);
