@@ -15,14 +15,15 @@
  * só I/O: ler o log em disco, enviar e-mail, dedup/criação de issue via
  * `scripts/lib/alarm-issues.ts`.
  *
- * **Escopo desta unidade (#5597):** só o script do alarme. A task
- * `Diaria-Ads-Spend-Ingest` em si ainda NÃO existe no registro
- * (`docs/scheduled-tasks-registry.md`, #5502 Parte C) — este script fica
- * pronto pra quando ela for criada/armada; até lá, rodá-lo vai reportar
- * `alarm-no-run` todo dia (nenhum log existe ainda), o que é esperado e
- * não deve ser confundido com o próprio alarme estar quebrado. **Por isso
- * este script NÃO entra em `SCHEDULED_TASKS` nesta unidade** — armar um
- * alarme que sempre dispara enquanto o alvo não existe seria ruído puro.
+ * **Correção de prosa vencida (#7137, 05/09/2026):** este parágrafo dizia
+ * "a task `Diaria-Ads-Spend-Ingest` ainda NÃO existe no registro" — ficou
+ * desatualizado quando o #5704 registrou `Diaria-Google-Ads-Spend-Ingest`
+ * em `scripts/lib/scheduled-tasks.ts` (daily 09:50), o alvo que este alarme
+ * lê. Este script agora está registrado como `Diaria-Ads-Spend-Ingest-Alarm`
+ * (daily 10:05, logo depois) — exatamente o padrão de prosa-vencida que a
+ * #7137 mediu (10 entradas "DECLARADA, NÃO ARMADA" no registro tipado
+ * ficaram vencidas depois de armadas; aqui o vencimento era nesta
+ * docstring, fora do registro).
  *
  * Uso:
  *   npx tsx scripts/ads-spend-ingest-alarm.ts               # avalia + alarma se necessário

@@ -2,12 +2,18 @@
  * drive-cache.ts (#829)
  *
  * Helpers puros pra ler `data/drive-cache.json` produzido por
- * `scripts/drive-sync.ts`. Extraído de `scripts/check-drive-push.ts`
- * pra que outras libs possam consumir sem importar de um CLI script
- * (lib → script é inversão da fronteira usual).
+ * `scripts/drive-sync.ts`. Extraído originalmente de
+ * `scripts/check-drive-push.ts` pra que outras libs pudessem consumir sem
+ * importar de um CLI script (lib → script é inversão da fronteira usual).
  *
- * `check-drive-push.ts` re-exporta `readDriveCache` e `getPushCount`
- * pra retrocompat — código existente que importa de lá continua funcionando.
+ * **`check-drive-push.ts` removido no #7137 (05/09/2026)** — CLI órfão:
+ * verificava o gate "Stage 1w" do orchestrator DIÁRIO de antes do #3636
+ * (que retirou `drive-sync.ts` do fluxo diário por completo), nunca foi
+ * adaptado pro digest MENSAL (que ainda usa `drive-sync.ts` — ver
+ * `.claude/skills/diaria-mensal/SKILL.md` — mas nunca chamou este CLI pra
+ * verificar os pushes). Sem consumidor nas 13 superfícies do #7112 além do
+ * próprio teste do arquivo. Estes helpers permanecem — seguem sendo a fonte
+ * única de leitura de `drive-cache.json`.
  */
 
 import { existsSync, readFileSync } from "node:fs";
