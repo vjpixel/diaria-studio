@@ -40,6 +40,7 @@ import {
   parseRoundDiffStatsEvents,
   ROUND_DIFF_RATIO_ALARM_THRESHOLD,
   type RoundDiffStatsRecord,
+  type WindowedRoundDiffStats,
 } from "./lib/round-diff-stats.ts";
 import {
   applyAlarmReconciliation,
@@ -149,7 +150,7 @@ export interface CheckAlarmClassification {
  * frase de saída ("sem alarme") — ver docstring no call site.
  */
 export function classifyCheckAlarmState(
-  window7d: ReturnType<typeof computeAllRoundDiffStatsWindows>[number],
+  window7d: WindowedRoundDiffStats,
   threshold: number = ROUND_DIFF_RATIO_ALARM_THRESHOLD,
 ): CheckAlarmClassification {
   if (window7d.rounds === 0) {
