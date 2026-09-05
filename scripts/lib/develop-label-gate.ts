@@ -185,7 +185,12 @@ export function isWorkFinished(issue: Readonly<DevelopGatePlanIssue>): boolean {
 }
 
 /**
- * As 3 labels SIMPLES que fazem `classifyExecTrack` rotear pra `develop`.
+ * As labels SIMPLES que fazem `classifyExecTrack` rotear pra `develop` —
+ * `windows` e `develop-track` desde o #7493, que tirou `trade-off-real` do
+ * conjunto (ambiguidade de trade-off real voltou a ser pergunta do briefing
+ * do overnight, então deixou de produzir `develop`). Como o conjunto é
+ * derivado por PROBE contra o classificador, essa mudança não exigiu editar
+ * nada aqui — só esta frase.
  *
  * **Não é a enumeração completa dos caminhos pro track**: existe um 4º,
  * COMPOSTO — `external-blocker` + `credencial-escopo` (cat. A, #5694) —, e

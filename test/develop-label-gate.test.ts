@@ -75,11 +75,13 @@ describe("#6271 — isWorkFinished separa 'terminei' de 'não trabalhei'", () =>
 });
 
 describe("#6271 — developTriggeringLabels sai do classificador, não de literais", () => {
-  it("identifica as 3 labels que roteiam pra develop", () => {
+  it("identifica as labels que roteiam pra develop (trade-off-real saiu no #7493)", () => {
     // Derivadas por PROBE contra `classifyExecTrack`: se ele mudar o conjunto,
-    // isto acompanha sozinho, em vez de virar uma 4ª cópia dos literais.
+    // isto acompanha sozinho, em vez de virar uma 4ª cópia dos literais. Foi
+    // exatamente o que aconteceu no #7493 — `trade-off-real` deixou de
+    // produzir `develop` e sumiu daqui sem uma linha de código mudar no gate.
     const found = developTriggeringLabels(["bug", "P2", "windows", "develop-track", "trade-off-real"]);
-    assert.deepEqual(found.sort(), ["develop-track", "trade-off-real", "windows"]);
+    assert.deepEqual(found.sort(), ["develop-track", "windows"]);
   });
 
   it("label neutra não entra", () => {

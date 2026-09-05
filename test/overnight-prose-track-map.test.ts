@@ -140,9 +140,14 @@ describe("round-trip contra classifyExecTrack real", () => {
     assert.ok(isProseTrackConsistent("sem-direcao-acionavel", track));
   });
 
-  it("ambigua-trade-off-real: label trade-off-real → develop", () => {
+  it("ambigua-trade-off-real: label trade-off-real → overnight (#7493)", () => {
     const track = classifyExecTrack({ labels: ["trade-off-real"], body: "", state: "OPEN", now: NOW });
+    assert.equal(track, "overnight");
     assert.ok(isProseTrackConsistent("ambigua-trade-off-real", track));
+    // Regressão do #7493: enquanto a label roteava pra `develop`, a prosa do
+    // overnight e o classificador concordavam em mandar a ambiguidade
+    // embora — e o briefing ficou 20 rodadas sem nenhuma pergunta.
+    assert.ok(!isProseTrackConsistent("ambigua-trade-off-real", "develop"));
   });
 
   // #6438

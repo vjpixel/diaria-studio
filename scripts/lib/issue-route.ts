@@ -132,10 +132,14 @@ export const ROUTABLE_LABELS: readonly string[] = [
   "credencial-escopo",
   "not-this-week",
   "next-month",
-  // develop — MACHINE_DEVELOP_LABELS + TRADE_OFF_LABEL + DEVELOP_HUMAN_BLOCK_LABEL
+  // develop — MACHINE_DEVELOP_LABELS + DEVELOP_HUMAN_BLOCK_LABEL
   "windows",
-  "trade-off-real",
   "develop-track",
+  // overnight — #7493: `trade-off-real` migrou do grupo develop pra cá. A
+  // label continua ROTEÁVEL (aplicável/removível pelo verbo), só mudou o
+  // veredito que ela produz em `classifyExecTrack`: overnight (entra na fila
+  // de perguntas do briefing da Fase 0), não develop cat. C.
+  "trade-off-real",
   // #6197 (3a) — labels de mecanismos paralelos que o verbo agora pode aplicar:
   // RESOLVED_BY_PROSE_LABELS (fora-de-rodada) + ALARM_EVENT_LABEL (overnight)
   "epic-guarda-chuva",
@@ -210,6 +214,13 @@ export const MOTIVO_LABEL: Readonly<Record<string, string>> = {
   "alarme-estado": "alarm",
   // overnight
   "alarme-evento": "alarm-evento",
+  // #7493 — o único motivo que APLICA uma label mantendo o veredito
+  // `overnight`. Existe porque o briefing precisa registrar "já triei: é
+  // trade-off real, mas o editor respondeu 'decido depois'" de forma durável;
+  // sem ele, a issue voltaria ao briefing seguinte indistinguível de uma que
+  // ninguém olhou (`matched: "default"`), e o julgamento seria refeito do
+  // zero a cada rodada — exatamente o que `issue-decisions.ts` (#5373) evita.
+  "trade-off": "trade-off-real",
 };
 
 /**
@@ -262,17 +273,18 @@ const BLOCKED_SPECIFIC_LABELS = new Set([
  * Label canônica ADICIONADA por veredito — a mais genérica/segura das
  * opções que produzem aquele track em `classifyExecTrack`, escolhida porque
  * `route-issue.ts` não recebe motivo estruturado o bastante pra escolher
- * entre alternativas mais específicas (`windows` vs `trade-off-real` vs
- * `develop-track` todos produzem `develop`; `develop-track` é a única sem
- * pré-condição adicional — não presume máquina específica nem julgamento de
- * trade-off já feito). `--reason` (texto livre, vira comentário na issue)
+ * entre alternativas mais específicas (`windows` e `develop-track` produzem
+ * `develop`; `develop-track` é a única sem pré-condição adicional — não
+ * presume máquina específica). `--reason` (texto livre, vira comentário na issue)
  * é onde o motivo específico fica registrado em prosa; a label continua
  * genérica de propósito.
  *
  * `agendada` não tem entrada aqui — ver docstring do módulo ("único
  * veredito sem label"). `overnight` também não tem: é o default de
  * `classifyExecTrack` quando nenhuma label de `ROUTABLE_LABELS` está
- * presente, então "rotear pra overnight" é só limpar as outras.
+ * presente, então "rotear pra overnight" é só limpar as outras — quem quiser
+ * o overnight COM sinal positivo (#7493) passa `--motivo trade-off`, que
+ * aplica `trade-off-real` sem sair do track.
  */
 const TRACK_ADD_LABEL: Partial<Record<RouteTrack, string>> = {
   develop: "develop-track",

@@ -118,9 +118,12 @@ describe("classifyExecTrack — develop-track: bloqueio humano sem data (#5948)"
 
 describe("classifyExecTrack — ambiguidade NÃO classifica (regressão #5462)", () => {
   // O AMBIGUITY_RE antigo (studio-issues.ts) casava com os 4 corpos abaixo e
-  // mandava todos pra "ambigua". Dois deles são trade-off real (develop), dois
-  // são escolha técnica trivial (briefing do overnight) — e nada no texto
-  // distingue. Por isso o classificador não olha o corpo em busca disso.
+  // mandava todos pra "ambigua". Dois deles são trade-off real, dois são
+  // escolha técnica trivial — e nada no texto distingue. Por isso o
+  // classificador não olha o corpo em busca disso. (Desde o #7493 as duas
+  // ambiguidades convergem pro MESMO destino — o briefing da Fase 0 —, o que
+  // torna a confusão do AMBIGUITY_RE menos custosa, mas não a corrige: o
+  // corpo continua sem sinal confiável, e adivinhar aqui seguiria errado.)
   const CORPOS = [
     "precisamos decidir entre design system e documentar",
     "trade-off: CSS-only vs JS",
@@ -134,8 +137,12 @@ describe("classifyExecTrack — ambiguidade NÃO classifica (regressão #5462)",
     });
   }
 
-  it("vira develop só quando o overnight JÁ julgou e gravou a label", () => {
-    assert.equal(track(["trade-off-real"], CORPOS[0]), "develop");
+  it("segue overnight depois de o overnight julgar e gravar a label (#7493)", () => {
+    // Até 05/09/2026 a label roteava pra `develop` (cat. C, #2640). O #7493
+    // reverteu: trade-off real volta a ser pergunta do BRIEFING da Fase 0,
+    // então a issue permanece na fila do overnight — o que muda é só o
+    // `matched`, que passa a ser sinal positivo em vez de `default`.
+    assert.equal(track(["trade-off-real"], CORPOS[0]), "overnight");
   });
 
   it("volta pro overnight quando o develop remove a label após decidir", () => {
@@ -346,13 +353,16 @@ describe("classifyExecTrack — resolvida por prosa/alarme (#5532)", () => {
     assert.equal(track(["alarm"]), "fora-de-rodada");
   });
 
-  it("decisao-registrada + trade-off-real (caso real #4555) → develop, não fora-de-rodada", () => {
+  it("decisao-registrada + trade-off-real (caso real #4555) → overnight, não fora-de-rodada", () => {
     // #4555 carrega as duas labels: a decisão registrada fechou só o PERFIL
     // do parceiro, mas a prospecção em si é trabalho real de develop
     // (trade-off editorial de qual parceiro escolher). Reclassificar como
     // fora-de-rodada só por ganhar a checagem de decisao-registrada estaria
     // errado — ainda sobra trabalho de verdade, só que não é código.
-    assert.equal(track(["decisao-registrada", "trade-off-real"]), "develop");
+    // #7493 trocou o track (era `develop`), NÃO a precedência: o ponto do
+    // #4555 continua valendo — trade-off-real vence RESOLVED_BY_PROSE_LABELS,
+    // porque ainda há pergunta a fazer.
+    assert.equal(track(["decisao-registrada", "trade-off-real"]), "overnight");
   });
 
   it("decisao-registrada + windows → develop (outra label já classifica)", () => {
@@ -386,8 +396,8 @@ describe("classifyExecTrack — ambígua-sem-direção (#5968)", () => {
     assert.equal(track(["sem-direcao-acionavel", "kit-migration"]), "bloqueada");
   });
 
-  it("trade-off-real vence sem-direcao-acionavel (vira develop)", () => {
-    assert.equal(track(["sem-direcao-acionavel", "trade-off-real"]), "develop");
+  it("trade-off-real vence sem-direcao-acionavel (#7493: overnight, não fora-de-rodada)", () => {
+    assert.equal(track(["sem-direcao-acionavel", "trade-off-real"]), "overnight");
   });
 
   it("on-hold vence sem-direcao-acionavel — mesma resposta, motivo diferente", () => {
@@ -555,6 +565,19 @@ describe("classifyExecTrack — precedência", () => {
 
   it("bloqueio vence trade-off-real", () => {
     assert.equal(track(["trade-off-real", "beehiiv"]), "bloqueada");
+  });
+
+  it("windows vence trade-off-real (#7493 — pergunta de briefing não destrava Chrome logado)", () => {
+    // Depois do #7493 as duas labels produzem tracks DIFERENTES (develop vs.
+    // overnight), então a ordem entre elas passou a ser observável: uma issue
+    // que exige a máquina do editor continua Develop mesmo já triada como
+    // trade-off real — o briefing pode responder a pergunta, não pode abrir
+    // o Chrome logado.
+    assert.equal(track(["trade-off-real", "windows"]), "develop");
+  });
+
+  it("develop-track vence trade-off-real (#7493 — bloqueio humano não é pergunta)", () => {
+    assert.equal(track(["trade-off-real", "develop-track"]), "develop");
   });
 
   // As 4 acima cruzam label×label. O marcador de data é um branch
@@ -732,10 +755,13 @@ describe("classifyExecTrackWithRule — matched (#6200)", () => {
     assert.equal(r.matched, "label:windows");
   });
 
-  it("label trade-off-real → label:trade-off-real", () => {
+  it("label trade-off-real → label:trade-off-real, track overnight (#7493)", () => {
     const r = classifyExecTrackWithRule({ labels: ["trade-off-real"], body: "", now: NOW });
-    assert.equal(r.track, "develop");
+    assert.equal(r.track, "overnight");
     assert.equal(r.matched, "label:trade-off-real");
+    // O par (track overnight, matched label:...) é o ponto: distingue a issue
+    // JÁ triada como trade-off real de uma que ninguém olhou (`default`).
+    assert.notEqual(r.matched, "default");
   });
 
   it("external-blocker + credencial-escopo → label:credencial-escopo", () => {
@@ -802,7 +828,7 @@ describe("classifyExecTrackWithRule — matched (#6200)", () => {
 describe("classifyExecTrack — assinatura antiga preservada (#6200)", () => {
   it("continua devolvendo só ExecTrack (string), sem matched", () => {
     const result = classifyExecTrack({ labels: ["trade-off-real"], body: "", now: NOW });
-    assert.equal(result, "develop");
+    assert.equal(result, "overnight");
     assert.equal(typeof result, "string");
   });
 });
