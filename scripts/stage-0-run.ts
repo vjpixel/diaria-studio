@@ -129,7 +129,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, win32 as pathWin32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -866,7 +866,16 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
   if (!kitPrevDir) {
     report.note("↷ 0o — entrega por provedor: nenhuma edição anterior com canal Kit despachado — nada a medir (fail-soft).");
   } else {
-    const kitPrevEdition = kitPrevDir.split(/[\/]/).pop() ?? "";
+    // path.win32 (não o `path` "nu", que resolve pro SO do processo em
+    // execução) — kitPrevDir vem de find-last-edition-with-kit.ts via
+    // resolve(), que produz separador `\` no Windows (onde /diaria-edicao
+    // roda) e `/` no Linux/CI; win32.basename aceita os dois
+    // incondicionalmente, então o parse fica correto em qualquer SO que
+    // rode este processo — inclusive o CI (ubuntu-latest), que precisa
+    // validar o caso Windows sem uma máquina Windows real (#7483, mesmo
+    // padrão de scripts/lib/browser-capability.ts e
+    // test/root-path-windows.test.ts).
+    const kitPrevEdition = pathWin32.basename(kitPrevDir);
     const splitStep = softStep(deps, report, "kit-provider-split (0o — entrega por provedor)", "scripts/kit-provider-split.ts", ["--edition", kitPrevEdition, "--json"]);
     const splitJson = parseStepJson<{ broadcastId?: number }>(splitStep.result.stdout);
     if (splitStep.result.code !== 0 || typeof splitJson?.broadcastId !== "number") {

@@ -645,6 +645,36 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     );
   });
 
+  it("0o — path Windows (barra invertida) do find-last-edition-with-kit resolve --edition sem o path inteiro (#7483)", async () => {
+    const { exec, calls } = makeFakeExec(
+      happyExecHandlers({
+        "find-last-edition-with-kit.ts": () => ({ code: 0, stdout: "C:\\x\\data\\editions\\2609\\260904\n", stderr: "" }),
+        "kit-provider-split.ts": () => ok(JSON.stringify({ broadcastId: 777 })),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const deps = baseDeps({ exec, execAsync });
+    const result = await runStage0(
+      ["--edition", "260905", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      deps,
+    );
+
+    assert.equal(result.code, 0);
+    const splitCall = calls.find((c) => c.script.includes("kit-provider-split"));
+    assert.ok(splitCall, "kit-provider-split.ts deveria ter sido chamado");
+    const editionIdx = splitCall!.args.indexOf("--edition");
+    assert.ok(editionIdx !== -1, "chamada a kit-provider-split.ts deveria conter --edition");
+    assert.equal(
+      splitCall!.args[editionIdx + 1],
+      "260904",
+      `--edition deveria ser só o nome da edição, não o path Windows inteiro — recebeu: ${JSON.stringify(splitCall!.args)}`,
+    );
+    assert.ok(
+      result.notes.some((n) => n.includes("0o") && n.includes("entrega por provedor medida") && n.includes("260904")),
+      `esperava a nota da medição citando a edição 260904, recebeu: ${JSON.stringify(result.notes)}`,
+    );
+  });
+
   it("0o — kit-provider-split sem broadcastId válido: fail-soft, NUNCA vira 'ok' sem dado (#633/#7021)", async () => {
     const { exec, calls } = makeFakeExec(
       happyExecHandlers({
