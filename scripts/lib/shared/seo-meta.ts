@@ -37,6 +37,8 @@
  * pro favicon, só não é mais a única imagem disponível.
  */
 
+import { META_CAPI_DEFAULT_DATASET_ID } from "./meta-capi.ts"; // #7492: única fonte do ID do pixel Meta (dataset confirmado ao vivo na #5504)
+
 /**
  * Container GTM único, compartilhado por todos os hosts servidos por Worker
  * deste repo — GA4, pixel Meta e tag de conversão do Google Ads são
@@ -58,6 +60,43 @@ export const GTM_CONTAINER_ID = "GTM-TC8C65ZN";
  */
 export function renderAnalyticsHead(): string {
   return `<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','${GTM_CONTAINER_ID}');</script>`;
+}
+
+/**
+ * Pixel base da Meta (#7492) — mesmo dataset/pixel confirmado ao vivo na
+ * #5504 (`META_CAPI_DEFAULT_DATASET_ID`), reusado como única fonte pra não
+ * duplicar o ID em dois módulos.
+ */
+export const META_PIXEL_ID = META_CAPI_DEFAULT_DATASET_ID;
+
+/**
+ * Snippet `<script>` do pixel BASE da Meta (`fbq('init')` + `fbq('track',
+ * 'PageView')`) (#7492). Por que hardcoded e não tag no GTM: nas páginas
+ * Beehiiv o pixel base é injetado nativamente pela plataforma (docstring da
+ * tag GTM "Meta Pixel - CompleteRegistration", `docs/gtm-signup-tracking-
+ * setup.md`) — uma tag de PageView no container dispararia pixel duplicado
+ * lá (mesmo bug do #5804). Mas os hosts servidos por Worker deste repo NÃO
+ * têm Beehiiv por trás: nenhum pixel carregava, e o teste ABC de canais
+ * pagos (#6150) roteou tráfego pago pra `cursos`/`livros` — Meta ficou sem
+ * nenhum sinal de visita (achado ao vivo da #7492, 05/09/2026).
+ *
+ * ESCOPO DELIBERADO: só as páginas de destino de tráfego pago chamam esta
+ * função hoje (`cursos` teaser/full + gate, `livros`) — NÃO é o default de
+ * `renderAnalyticsHead()`, que continua emitindo só o container. Adicionar
+ * o pixel a páginas que não são destino de tráfego pago é decisão
+ * editorial, não efeito colateral de refactor. Uma tag de PageView dentro
+ * do container GTM (a alternativa) exige acesso ao console do GTM — conta
+ * externa — e escopo por hostname pra não conflitar com a injeção nativa
+ * das páginas Beehiiv; hardcoded no renderer do próprio host evita as duas
+ * coisas e vive versionado neste repo.
+ *
+ * O `window.dataLayer` não é tocado aqui — o GTM continua carregando
+ * independentemente (e a tag `CompleteRegistration` do container passa a
+ * funcionar de verdade nesses domínios, que hoje logam `console.warn`
+ * porque `window.fbq` é `undefined`).
+ */
+export function renderMetaPixelHead(): string {
+  return `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${META_PIXEL_ID}');fbq('track','PageView');</script>`;
 }
 
 /**

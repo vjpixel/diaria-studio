@@ -66,7 +66,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { slugify } from "./lib/slug.ts"; // #3118 item 6: alinha data-themes/option value ao padrão de build-cursos-page.ts
 import { escHtml as esc } from "./lib/html-escape.ts"; // #3118 item 13: era uma 3ª cópia idêntica local
-import { renderSeoMeta, renderAnalyticsHead, pushSignupConversionEventJs } from "./lib/shared/seo-meta.ts"; // #3106: meta description/OG/Twitter/canonical/favicon; #5498: container GTM; #7358: evento de conversão no sucesso do cadastro
+import { renderSeoMeta, renderAnalyticsHead, renderMetaPixelHead, pushSignupConversionEventJs } from "./lib/shared/seo-meta.ts"; // #3106: meta description/OG/Twitter/canonical/favicon; #5498: container GTM; #7492: pixel base Meta; #7358: evento de conversão no sucesso do cadastro
 import {
   renderCuradoriaRootStyles,
   renderCuradoriaHeaderStyles,
@@ -482,6 +482,7 @@ export function renderLivrosPage(books: Book[]): string {
 <title>${PAGE_TITLE}</title>
 ${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_URL })}
 ${renderAnalyticsHead()}
+${renderMetaPixelHead()} <!-- #7492: pixel base Meta — destino de tráfego pago do teste ABC #6150, sem injeção nativa Beehiiv neste host -->
 ${renderGeoJsonLd({
   pageUrl: PAGE_URL,
   headline: PAGE_TITLE,

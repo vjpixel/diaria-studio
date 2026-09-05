@@ -10,7 +10,7 @@
  * (esta é uma única página curta, não vale o import cruzado scripts/→worker
  * só por CSS).
  */
-import { renderAnalyticsHead, pushSignupConversionEventJs } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM; #7358: evento de conversão no sucesso do CADASTRO (nunca da verificação)
+import { renderAnalyticsHead, renderMetaPixelHead, pushSignupConversionEventJs } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM; #7492: pixel base Meta (cursos é destino de tráfego pago do teste ABC #6150); #7358: evento de conversão no sucesso do CADASTRO (nunca da verificação)
 
 export function renderGatePage(): string {
   return `<!DOCTYPE html>
@@ -40,6 +40,7 @@ export function renderGatePage(): string {
   a { color: var(--teal); }
 </style>
 ${renderAnalyticsHead()}
+${renderMetaPixelHead()} <!-- #7492: pixel base Meta — destino de tráfego pago do teste ABC #6150 -->
 </head>
 <body>
   <div class="wrap">
