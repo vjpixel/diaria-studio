@@ -424,12 +424,46 @@ export function isTutorialByDomainExtra(url: string): boolean {
  * `capacita[çc][ãa]o\s+gratuita` são específicos o bastante pra não pegar
  * cobertura genérica sobre "a academia de IA está crescendo" ou similar.
  */
-const TUTORIAL_TITLE_EXTRA_RE =
-  /\b(migrat(ing|ion)\b|how\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+)+\s+(used?|leverag(es?|ed?)|powered?)\b|case\s+stud(y|ies)\b|build\s+and\s+deploy\b|step[- ]by[- ]step\b|guia\s+(pr[áa]tico|completo|passo)\b|academy\s+courses?\b|capacita[çc][ãa]o\s+gratuita\b)\b/i;
+// #5995 (review PR #7473): fragmento de curso/capacitação extraído pra fonte
+// única, reusado abaixo por TUTORIAL_TITLE_EXTRA_RE e por
+// EDUCATIONAL_COURSE_TITLE_RE (precedência sobre type_hint) — antes os 2
+// padrões viviam duplicados byte-a-byte entre os dois regex, exatamente a
+// classe de drift que causou o bug original desta issue (sinal adicionado
+// num lugar sem precedência espelhada no outro).
+const EDUCATIONAL_COURSE_TITLE_FRAGMENT = "academy\\s+courses?|capacita[çc][ãa]o\\s+gratuita";
+
+const TUTORIAL_TITLE_EXTRA_RE = new RegExp(
+  `\\b(migrat(ing|ion)\\b|how\\s+[A-Z]\\w{2,}(?:\\s+[A-Z]\\w+)+\\s+(used?|leverag(es?|ed?)|powered?)\\b|case\\s+stud(y|ies)\\b|build\\s+and\\s+deploy\\b|step[- ]by[- ]step\\b|guia\\s+(pr[áa]tico|completo|passo)\\b|${EDUCATIONAL_COURSE_TITLE_FRAGMENT})\\b`,
+  "i",
+);
 
 function isTutorialByTitleExtra(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
   return TUTORIAL_TITLE_EXTRA_RE.test(hay);
+}
+
+/**
+ * #5995 (PR #7331, pergunta editorial resolvida — ver `isNewsNotTutorial`):
+ * subconjunto de `TUTORIAL_TITLE_EXTRA_RE` restrito aos 2 sinais de
+ * curso/capacitação ("academy courses", "capacitação gratuita") — os únicos
+ * casos reais medidos em que o `type_hint` do agent pesquisador ("noticia")
+ * discordou do editor, que corrigiu pra tutorial. Deliberadamente NÃO inclui
+ * "case study"/"how X used Y"/"build and deploy"/"step-by-step": esses
+ * padrões colidem com `isMarketingCaseStudy` (customer story real deve
+ * continuar `noticias`, mesmo com type_hint ausente) e não têm caso real
+ * medido de `type_hint=noticia` divergindo — promovê-los sem 2º caso
+ * confirmando arriscaria overfit (mesma disciplina anti-overfit do #6556/
+ * #7331). "guia prático/completo/passo" não precisa entrar aqui: já vive em
+ * `TUTORIAL_KEYWORDS_RE` (isTutorialByKeyword), que já tem essa precedência
+ * sobre type_hint desde antes desta issue. Compartilha
+ * `EDUCATIONAL_COURSE_TITLE_FRAGMENT` com `TUTORIAL_TITLE_EXTRA_RE` (fonte
+ * única — ver comentário lá).
+ */
+const EDUCATIONAL_COURSE_TITLE_RE = new RegExp(`\\b(${EDUCATIONAL_COURSE_TITLE_FRAGMENT})\\b`, "i");
+
+function isEducationalCourseByTitle(article: Article): boolean {
+  const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
+  return EDUCATIONAL_COURSE_TITLE_RE.test(hay);
 }
 
 /**
@@ -846,6 +880,15 @@ export function isNewsNotTutorial(article: Article): boolean {
   // sinal de tutorial explícito no título.
   if (hasReleaseVersionSignalOnMixedHost(article) && !isTutorialByKeyword(article)) return true;
   if (isTutorialByKeyword(article)) return false; // sinal de how-to vence (exceto launch slug, roundup, lançamento, visual-guide-explainer e family-member)
+  // #5995 (PR #7331, resolução da pergunta editorial sobre peso do type_hint):
+  // anúncio de curso/capacitação ("academy courses", "capacitação gratuita")
+  // vence type_hint=noticia/opiniao, mesma precedência de isTutorialByKeyword
+  // acima. 3 casos reais medidos onde o agent pesquisador rotulou "noticia" e
+  // o editor corrigiu pra tutorial (USE MELHOR) mesmo assim — resposta
+  // consistente o bastante (mesma direção nas 3 vezes) pra virar default
+  // sem perguntar de novo (CLAUDE.md "Perguntar é exceção", corolário
+  // "pergunta com resposta sempre igual vira default automático").
+  if (isEducationalCourseByTitle(article)) return false;
   if (article.type_hint === "noticia" || article.type_hint === "opiniao") {
     return true;
   }
