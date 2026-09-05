@@ -493,7 +493,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator -
 ```
 A flag injeta `informational: true` em `details` — `collect-edition-signals.ts` filtra por essa flag estruturada em vez do tag textual `(informativo)` no message (que era frágil).
 
-### 0o. Rampa Gmail (#7021, sem fallback — docstring de `stage-0-run.ts`) — mede entrega da edição anterior via Kit e propõe onda dry-run; persiste `kit-gmail-ramp-proposal.json` (exibição no resumo do Stage 4 é follow-up, não implementada ainda).
+### 0o. Entrega por provedor (#7021, reduzido em #7402 — sem fallback, docstring de `stage-0-run.ts`) — só mede entrega/abertura da edição anterior via Kit por provedor (`kit-provider-split.ts`, registro em `data/kit-delivery/history.jsonl`); não propõe mais onda dry-run do aquecimento Gmail — esse passo (`0o.2`) saiu em 04/09/2026 porque a coorte que ele servia esgotou (ver docstring de `scripts/stage-0-run.ts`). Sem proposta, não há mais artefato por edição pro Stage 4 exibir (§4c.8 foi removido pelo mesmo motivo).
 ### 0n. Detecção de falhas de CI via Gmail (#740)
 
 Fechar o loop de observabilidade: o GitHub envia notificações de CI falhou para o email do owner do repositório. Checar o inbox antes de iniciar a edição evita rodar o pipeline sobre código quebrado.

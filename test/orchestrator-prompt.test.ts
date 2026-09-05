@@ -1329,75 +1329,42 @@ describe("#6444: gate 4 consome a decisão gravada pelo painel do Studio (/revis
   });
 });
 
-describe("#7021: resumo consolidado do Stage 4 exibe a proposta de rampa Gmail medida no Stage 0 (§4c.8)", () => {
-  // A PR #7041 implementou a medição/proposta (passo 0o de stage-0-run.ts,
-  // persistida em `_internal/kit-gmail-ramp-proposal.json`) mas declarou
-  // explicitamente "REFS #7021, NÃO CLOSES" porque faltava a exibição no
-  // resumo consolidado do gate — o editor só vê o que já foi medido se abrir
-  // o JSON à mão. Este teste fecha esse resíduo: §4c.8 precisa ler o arquivo
-  // e o template do gate (§4d) precisa exibir a linha, sem virar gate novo.
+describe("#7402: §4c.8/{ramp_gmail_line} saem do Stage 4 — a proposta de onda do aquecimento Gmail não existe mais", () => {
+  // O #7021/#7041 tinham fechado a exibição, no gate do Stage 4, da proposta
+  // de onda do aquecimento Gmail que `scripts/stage-0-run.ts` media/persistia
+  // em `_internal/kit-gmail-ramp-proposal.json` (passo 0o.2). O #7402 desligou
+  // esse passo — a coorte que ele servia esgotou (04/09/2026) — e parou de
+  // escrever o arquivo. Um review da PR #7403 encontrou o Stage 4 dessincronizado:
+  // §4c.8 continuava instruindo "ausente → sempre mostrar 'não avaliada'", o que
+  // exibiria essa linha genérica pra sempre, o mesmo ruído que a remoção do
+  // #7402 existe pra eliminar. Este teste tranca a remoção — nenhum resíduo do
+  // mecanismo antigo pode reaparecer sem querer.
   const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
-  const section4c8Idx = stage4.indexOf("**4c.8");
-  const section4dIdx = stage4.indexOf("### 4d. Gate humano");
 
-  it("§4c.8 existe, lê kit-gmail-ramp-proposal.json e referencia #7021", () => {
-    assert.ok(section4c8Idx !== -1, "orchestrator-stage-4.md precisa ter uma seção §4c.8");
-    assert.ok(section4c8Idx < section4dIdx, "§4c.8 precisa vir ANTES do gate humano (§4d), como o resto de §4c");
-    const section4c8 = stage4.slice(section4c8Idx, section4dIdx);
+  it("não instrui mais ler kit-gmail-ramp-proposal.json nem referencia {ramp_gmail_line}", () => {
     assert.ok(
-      section4c8.includes("kit-gmail-ramp-proposal.json"),
-      "§4c.8 precisa ler _internal/kit-gmail-ramp-proposal.json — o arquivo persistido pelo passo 0o (#7041)",
-    );
-    assert.ok(/7021/.test(section4c8), "§4c.8 deve referenciar #7021 — rastreabilidade do resíduo fechado");
-  });
-
-  it("§4c.8 nunca aplica a onda — só leitura, e é explícito sobre nunca rodar --push", () => {
-    const section4c8 = stage4.slice(section4c8Idx, section4dIdx);
-    assert.ok(
-      /NUNCA roda `--push`/.test(section4c8),
-      "§4c.8 precisa deixar explícito que este passo NUNCA roda --push — aplicar a onda continua ação manual do editor (guard de publicação)",
+      !/ler `\{EDITION_DIR\}\/_internal\/kit-gmail-ramp-proposal\.json`/.test(stage4),
+      "orchestrator-stage-4.md não deve mais instruir a LER kit-gmail-ramp-proposal.json — o Stage 0 (#7402) parou de escrevê-lo (o nome pode seguir citado em prosa histórica explicando a remoção)",
     );
     assert.ok(
-      /nunca bloqueia o gate/.test(section4c8),
-      "§4c.8 precisa deixar explícito que é puramente informativo, sem criar gate novo (a issue #7021 pede isso literalmente)",
+      !stage4.includes("{ramp_gmail_line}"),
+      "orchestrator-stage-4.md não deve mais referenciar {ramp_gmail_line} — sem arquivo pra ler, não há o que exibir",
     );
   });
 
-  it("§4c.8 cobre tanto o caso 'ausente' (fail-soft) quanto o caso 'proposta presente' (gate segurou vs onda proposta)", () => {
-    const section4c8 = stage4.slice(section4c8Idx, section4dIdx);
-    assert.ok(
-      /Ausente.*não avaliada nesta edição/.test(section4c8),
-      "§4c.8 precisa tratar o arquivo ausente como 'não avaliada', nunca como silêncio ou falso positivo de entrega ok",
-    );
-    assert.ok(
-      /waveSkipped/.test(section4c8) && /gate segurou/.test(section4c8),
-      "§4c.8 precisa cobrir o caso waveSkipped=true (gate de entrega segurou a onda)",
-    );
-    assert.ok(
-      /waveSize/.test(section4c8) && /applyCommand/.test(section4c8),
-      "§4c.8 precisa incluir o tamanho da onda e o comando exato de aplicação — é literalmente o que a issue #7021 pede",
-    );
-  });
-
-  it("o template do gate (§4d) referencia {ramp_gmail_line} na seção RESUMO CONSOLIDADO, fora do menu sim/editar/ajustar/abortar", () => {
+  it("o template do gate (§4d) não tem mais a linha '📮 Rampa Gmail'", () => {
     const resumoIdx = stage4.indexOf("GATE HUMANO — RESUMO CONSOLIDADO");
     const menuIdx = stage4.indexOf("Aprovar e prosseguir para Publicação");
     assert.ok(resumoIdx !== -1 && menuIdx !== -1, "§4d precisa ter o header do resumo e o menu de aprovação");
     const templateBlock = stage4.slice(resumoIdx, menuIdx);
     assert.ok(
-      templateBlock.includes("{ramp_gmail_line}"),
-      "o template do resumo consolidado precisa exibir {ramp_gmail_line} — é onde o editor lê no gate, sem precisar abrir o JSON à mão",
+      !templateBlock.includes("Rampa Gmail"),
+      "o template do resumo consolidado não deve mais exibir uma linha de Rampa Gmail — o mecanismo que a alimentava foi removido (#7402)",
     );
   });
 
-  it("'Regras de apresentação' documenta {ramp_gmail_line} como não-bloqueante", () => {
-    const regrasIdx = stage4.indexOf("Regras de apresentação");
-    assert.ok(regrasIdx !== -1, "§4d precisa ter a seção 'Regras de apresentação'");
-    const regrasText = stage4.slice(regrasIdx, regrasIdx + 4000);
-    const ramLineIdx = regrasText.indexOf("{ramp_gmail_line}");
-    assert.ok(ramLineIdx !== -1, "'Regras de apresentação' precisa documentar {ramp_gmail_line}");
-    const ramLineText = regrasText.slice(ramLineIdx, ramLineIdx + 300);
-    assert.ok(/nunca bloqueia o gate/.test(ramLineText), "a entrada de {ramp_gmail_line} precisa deixar explícito que não bloqueia o gate");
+  it("referencia #7402 como o motivo da remoção, pra rastreabilidade histórica", () => {
+    assert.ok(/7402/.test(stage4), "orchestrator-stage-4.md deve citar #7402 onde documenta a remoção do antigo §4c.8");
   });
 });
 
