@@ -15,10 +15,16 @@ import { resolve, join } from "node:path";
 import {
   ingestAccount,
   checkpointPathForAccount,
+  contactsByListPath,
   main,
   BREVO_ACCOUNTS,
 } from "../scripts/diaria-subscribers-ingest-brevo.ts";
 import { openDiariaSubscribersDb, getStoreCounts, findSubscriberIdsByEmail } from "../scripts/lib/diaria-subscribers-db.ts";
+
+/** `list_id` fixo usado nos testes — não precisa bater com o de
+ *  `platform.config.json` (que só é lido em runtime real, não nesses
+ *  mocks), só ser consistente entre o mock de fetch e a chamada testada. */
+const TEST_LIST_ID = 7;
 
 function jsonResponse(body: unknown): Promise<Response> {
   return Promise.resolve({
@@ -30,12 +36,13 @@ function jsonResponse(body: unknown): Promise<Response> {
   } as unknown as Response);
 }
 
-/** Troca `globalThis.fetch` só pra responder o LISTING (`/contacts?...`) —
- *  mesmo padrão de `brevo-committed-campaigns-3682.test.ts`. */
+/** Troca `globalThis.fetch` só pra responder o LISTING escopado à lista
+ *  (`/contacts/lists/{listId}/contacts?...`, #7199) — mesmo padrão de
+ *  `brevo-committed-campaigns-3682.test.ts`. */
 async function withMockedListing<T>(contacts: Array<{ id: number; email: string }>, fn: () => Promise<T>): Promise<T> {
   const orig = globalThis.fetch;
   globalThis.fetch = (async (url: string) => {
-    if (String(url).includes("/contacts?")) return jsonResponse({ contacts });
+    if (String(url).includes("/contacts/lists/")) return jsonResponse({ contacts });
     throw new Error(`fetch inesperado no teste: ${url}`);
   }) as typeof fetch;
   try {
@@ -45,10 +52,23 @@ async function withMockedListing<T>(contacts: Array<{ id: number; email: string 
   }
 }
 
+describe("contactsByListPath (#7199 — nunca /contacts sem escopo de lista)", () => {
+  it("monta o path escopado à lista, paginado", () => {
+    assert.equal(contactsByListPath(7, 0), "/contacts/lists/7/contacts?limit=500&offset=0");
+    assert.equal(contactsByListPath(7, 500), "/contacts/lists/7/contacts?limit=500&offset=500");
+  });
+});
+
 describe("checkpointPathForAccount", () => {
-  it("checkpoint nomeado pela conta, ao lado do .db", () => {
-    const p1 = checkpointPathForAccount("/x/data/diaria-subscribers/diaria-subscribers.db", "brevo_diaria");
-    assert.match(p1, /brevo-ingest-checkpoint-brevo_diaria\.json$/);
+  it("checkpoint nomeado pela conta + lista, ao lado do .db (#7199 — nunca reaproveita checkpoint de conta inteira)", () => {
+    const p1 = checkpointPathForAccount("/x/data/diaria-subscribers/diaria-subscribers.db", "brevo_diaria", TEST_LIST_ID);
+    assert.match(p1, /brevo-ingest-checkpoint-brevo_diaria-list7\.json$/);
+  });
+
+  it("listas diferentes da mesma conta nunca colidem no mesmo arquivo de checkpoint", () => {
+    const p7 = checkpointPathForAccount("/x/data/diaria-subscribers/diaria-subscribers.db", "brevo_diaria", 7);
+    const p8 = checkpointPathForAccount("/x/data/diaria-subscribers/diaria-subscribers.db", "brevo_diaria", 8);
+    assert.notEqual(p7, p8);
   });
 });
 
@@ -81,7 +101,7 @@ describe("ingestAccount", () => {
     const result = await withMockedListing(
       [{ id: 1, email: "a@x.com" }, { id: 2, email: "b@x.com" }],
       () =>
-        ingestAccount(db, "fake-key", "brevo_diaria", dbPath, {
+        ingestAccount(db, "fake-key", "brevo_diaria", TEST_LIST_ID, dbPath, {
           deps: { fetchContact: async (_key, id) => bodies[id] },
         }),
     );
@@ -95,7 +115,7 @@ describe("ingestAccount", () => {
     assert.equal(getStoreCounts(db).subscribers, 2);
 
     // checkpoint limpo ao terminar (enumeração + processamento completos)
-    assert.equal(existsSync(checkpointPathForAccount(dbPath, "brevo_diaria")), false);
+    assert.equal(existsSync(checkpointPathForAccount(dbPath, "brevo_diaria", TEST_LIST_ID)), false);
     db.close();
   });
 
@@ -108,7 +128,7 @@ describe("ingestAccount", () => {
 
     let attempt = 0;
     const result = await withMockedListing([{ id: 1, email: "a@x.com" }], () =>
-      ingestAccount(db, "fake-key", "brevo_diaria", dbPath, {
+      ingestAccount(db, "fake-key", "brevo_diaria", TEST_LIST_ID, dbPath, {
         deps: {
           fetchContact: async () => {
             attempt++;
@@ -122,7 +142,7 @@ describe("ingestAccount", () => {
     assert.equal(result.contactsProcessed, 0);
 
     // checkpoint preservado — contato 1 não está em doneIds
-    const cpPath = checkpointPathForAccount(dbPath, "brevo_diaria");
+    const cpPath = checkpointPathForAccount(dbPath, "brevo_diaria", TEST_LIST_ID);
     assert.ok(existsSync(cpPath), "checkpoint sobrevive quando algo falhou (retomável)");
     const cp = JSON.parse(readFileSync(cpPath, "utf8"));
     assert.deepEqual(cp.doneIds, []);
@@ -168,6 +188,13 @@ describe("main() — a única conta (brevo_diaria), fail-soft por key ausente", 
       ["brevo_diaria"],
     );
   });
+
+  it("cada conta carrega um listId numérico (#7199 — enumeração sempre escopada à lista)", () => {
+    for (const account of BREVO_ACCOUNTS) {
+      assert.equal(typeof account.listId, "number");
+      assert.ok(Number.isFinite(account.listId) && account.listId > 0);
+    }
+  });
 });
 
 describe("main() — ponta a ponta com fixture da conta brevo_diaria (#6587 critério de pronto)", () => {
@@ -184,7 +211,7 @@ describe("main() — ponta a ponta com fixture da conta brevo_diaria (#6587 crit
 
     const orig = globalThis.fetch;
     globalThis.fetch = (async (url: string) => {
-      if (String(url).includes("/contacts?")) return jsonResponse({ contacts: listing });
+      if (String(url).includes("/contacts/lists/")) return jsonResponse({ contacts: listing });
       const match = String(url).match(/\/contacts\/(\d+)$/);
       if (match) return jsonResponse(contactById[Number(match[1])] ?? {});
       throw new Error(`fetch inesperado no teste: ${url}`);
