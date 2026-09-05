@@ -523,7 +523,19 @@ export function writeKvSyncState(rootDir: string, state: KvSyncState): void {
   writeFileSync(path, JSON.stringify(state, null, 2) + "\n");
 }
 
-export type KvEmptyGuardResult = { ok: true } | { ok: false; reason: string };
+/** #7485 finding HIGH (fleet review, silent-failure-hunter): `skippedReason`
+ *  distingue, no lado `ok:true`, um "passou porque a razão realmente está
+ *  boa" (ou "sem histórico, 1ª rodada") de um "passou porque o guard de
+ *  razão foi INTEIRAMENTE PULADO por mismatch de backend contra o
+ *  baseline" — sem esse campo, os dois caem no mesmo `{ok:true}` opaco e
+ *  `main()` não tinha como logar o caso de bypass: se o mismatch coincidir
+ *  com (ou for CAUSADO por) uma fonte genuinamente degradada — não um flip
+ *  real, mas um bug que muda `resolveNewsletterSubscriberBackend()` por
+ *  engano —, ninguém veria rastro nenhum de que o guard de razão foi
+ *  ignorado naquela rodada. */
+export type KvEmptyGuardResult =
+  | { ok: true; skippedReason?: "backend-mismatch" }
+  | { ok: false; reason: string };
 
 /** Pura — recusa a rodada se a contagem atual de ativos encolheu demais
  *  desde a última vez (ver docstring acima). Sem histórico prévio, sempre
@@ -578,7 +590,14 @@ export function evaluateKvEmptyGuard(
   if (!previousState || previousState.active_subscriber_count === 0) return { ok: true };
   // #7485: baseline de outro backend (ou legado sem `backend`, "desconhecido")
   // não é comparável — a razão só faz sentido entre rodadas da MESMA fonte.
-  if (currentBackend !== undefined && previousState.backend !== currentBackend) return { ok: true };
+  // `skippedReason: "backend-mismatch"` marca que o guard de razão foi
+  // INTEIRAMENTE PULADO nesta rodada (não "passou porque a razão está boa")
+  // — `main()` usa esse campo pra logar o bypass explicitamente (finding
+  // HIGH do fleet review: sem isso, o pulo era indistinguível de um "passou
+  // normal" nos logs).
+  if (currentBackend !== undefined && previousState.backend !== currentBackend) {
+    return { ok: true, skippedReason: "backend-mismatch" };
+  }
   const ratio = currentCount / previousState.active_subscriber_count;
   if (!Number.isFinite(ratio) || ratio < EMPTY_GUARD_RATIO) {
     const pct = Number.isFinite(ratio) ? `${(ratio * 100).toFixed(0)}%` : "indefinido";
@@ -651,6 +670,14 @@ export async function main(rootDirOverride?: string): Promise<void> {
       process.exit(1);
     }
     process.stderr.write(`[sync-cursos-subscribers-kv] AVISO (--force-empty-guard): ${guard.reason} — prosseguindo mesmo assim.\n`);
+  } else if (guard.skippedReason === "backend-mismatch") {
+    // #7485 finding HIGH (fleet review): sem este log, um bypass por
+    // mismatch de backend é indistinguível nos logs de "razão passou
+    // normal" ou "1ª rodada, sem baseline" — visibilidade explícita mesmo
+    // quando a rodada segue sem abortar.
+    process.stderr.write(
+      `[sync-cursos-subscribers-kv] AVISO: baseline é de outro backend (${previousState?.backend ?? "desconhecido"} → ${backend}) — guard de razão IGNORADO nesta rodada (só o piso absoluto de 0 continua valendo).\n`,
+    );
   }
 
   // #4442 (era #4381 put→list→diff→delete): agora list→diff→put(só as

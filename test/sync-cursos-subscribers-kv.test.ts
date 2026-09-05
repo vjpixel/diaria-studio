@@ -22,7 +22,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, delimiter, dirname } from "node:path";
 
@@ -411,6 +411,25 @@ describe("readKvSyncState / writeKvSyncState (#7338, mesmo shape de sync-beehiiv
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("#7485 (pr-test-analyzer): `backend` com valor CORROMPIDO/inválido (nem \"beehiiv\" nem \"kit\") é rejeitado — isValidKvSyncState lança shape inválido", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cursos-kv-sync-state-"));
+    try {
+      // Grava primeiro um estado válido pra garantir que o diretório
+      // `data/cursos-subscribers/` existe, depois sobrescreve o arquivo com
+      // um `backend` corrompido — simula corrupção de disco/edição manual
+      // malformada, não um caminho que o próprio script produziria.
+      writeKvSyncState(dir, { last_run_at: "2026-09-01T00:00:00Z", active_subscriber_count: 500, backend: "kit" });
+      const statePath = join(dir, "data", "cursos-subscribers", ".kv-sync-state.json");
+      writeFileSync(
+        statePath,
+        JSON.stringify({ last_run_at: "2026-09-01T00:00:00Z", active_subscriber_count: 500, backend: "invalid-backend" }),
+      );
+      assert.throws(() => readKvSyncState(dir), /shape inesperado/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("evaluateKvEmptyGuard (#7338)", () => {
@@ -476,12 +495,15 @@ describe("evaluateKvEmptyGuard (#7338)", () => {
   });
 
   describe("#7485: baseline registra backend — flip beehiiv→kit não trava a task de forma persistente", () => {
-    it("backend do baseline DIFERE do atual — sem baseline comparável, passa mesmo com razão < 50%", () => {
+    it("backend do baseline DIFERE do atual — sem baseline comparável, passa mesmo com razão < 50%, e sinaliza skippedReason pro caller logar o bypass", () => {
       const prev = { last_run_at: "2026-09-04T00:00:00Z", active_subscriber_count: 1000, backend: "beehiiv" as const };
       // 400/1000 = 40% do baseline — reprovaria se fosse a MESMA fonte, mas
       // o baseline é de um backend diferente (migração beehiiv→kit): a razão
       // não é comparável, então o guard trata como "sem baseline".
-      assert.deepEqual(evaluateKvEmptyGuard(400, prev, "kit"), { ok: true });
+      // `skippedReason: "backend-mismatch"` (achado HIGH do fleet review,
+      // #7485) marca que o guard de razão foi PULADO — não confundir com um
+      // "{ok:true}" de razão genuinamente boa.
+      assert.deepEqual(evaluateKvEmptyGuard(400, prev, "kit"), { ok: true, skippedReason: "backend-mismatch" });
     });
 
     it("backend do baseline é o MESMO do atual — guard continua disparando normalmente pela razão", () => {
@@ -492,7 +514,7 @@ describe("evaluateKvEmptyGuard (#7338)", () => {
 
     it("baseline legado sem campo `backend` (estado gravado antes desta PR) — tratado como backend desconhecido, sem baseline comparável", () => {
       const prev = { last_run_at: "2026-09-04T00:00:00Z", active_subscriber_count: 1000 };
-      assert.deepEqual(evaluateKvEmptyGuard(400, prev, "kit"), { ok: true });
+      assert.deepEqual(evaluateKvEmptyGuard(400, prev, "kit"), { ok: true, skippedReason: "backend-mismatch" });
     });
 
     it("piso absoluto de currentCount === 0 continua valendo mesmo com backend diferente do baseline", () => {
