@@ -476,6 +476,33 @@ describe("getKitAccount (#7362)", () => {
     assert.equal(account.renews_at, null);
   });
 
+  it("subscriber_limit/renews_at soltos em account VENCEM os aninhados em account.plan (ordem de preferência)", async () => {
+    const account = await withMockFetch(
+      (async () =>
+        jsonResponse(200, {
+          account: {
+            subscriber_limit: 500,
+            renews_at: "2026-01-01T00:00:00Z",
+            plan: { subscriber_limit: 1000, renews_at: "2026-12-31T00:00:00Z" },
+          },
+        })) as typeof fetch,
+      () => getKitAccount(TEST_CONFIG),
+    );
+    assert.equal(account.subscriber_limit, 500);
+    assert.equal(account.renews_at, "2026-01-01T00:00:00Z");
+  });
+
+  it("renews_at aninhado em account.plan com valor não-nulo propaga (não só o caso null do #7411)", async () => {
+    const account = await withMockFetch(
+      (async () =>
+        jsonResponse(200, {
+          account: { subscriber_limit: 1000, plan: { renews_at: "2026-10-01T00:00:00Z" } },
+        })) as typeof fetch,
+      () => getKitAccount(TEST_CONFIG),
+    );
+    assert.equal(account.renews_at, "2026-10-01T00:00:00Z");
+  });
+
   it("envelope FLAT (sem chave account) — mesmo resultado, shape REST não confirmado ao vivo", async () => {
     const account = await withMockFetch(
       (async () =>
