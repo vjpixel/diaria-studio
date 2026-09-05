@@ -460,6 +460,14 @@ export function syncKvKeys(
 export interface KvSyncState {
   last_run_at: string;
   active_subscriber_count: number;
+  /** #7485: backend que gerou este baseline (`resolveNewsletterSubscriberBackend()`
+   *  no momento da rodada). Opcional — estado legado gravado antes deste
+   *  campo existir (ou seja, qualquer arquivo `.kv-sync-state.json` já em
+   *  disco antes desta PR) não tem esta chave; `isValidKvSyncState` aceita
+   *  a ausência tratando como "backend desconhecido", e `evaluateKvEmptyGuard`
+   *  trata "desconhecido" como não-comparável ao backend atual (mesmo
+   *  caminho de troca de backend — ver docstring de `evaluateKvEmptyGuard`). */
+  backend?: NewsletterSubscriberBackend;
 }
 
 function statePath(rootDir: string): string {
@@ -477,11 +485,20 @@ function statePath(rootDir: string): string {
  *  que é o número real, apagando as chaves de quem de fato tem acesso ao
  *  curso. Mesmo shape/racional de `evaluateEmptyGuard` em
  *  `sync-beehiiv-subscribers-kit.ts` (#6092) — sem histórico prévio (1ª
- *  rodada), sempre passa. */
+ *  rodada), sempre passa.
+ *
+ *  #7485: `backend` é OPCIONAL de propósito — estado legado gravado antes
+ *  deste campo existir não o tem, e isso não é shape inválido: é tratado
+ *  como "backend desconhecido" (nunca compara igual a um backend
+ *  conhecido em `evaluateKvEmptyGuard`, então cai no mesmo caminho de "sem
+ *  baseline comparável" de uma troca de backend legítima). */
 function isValidKvSyncState(v: unknown): v is KvSyncState {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;
-  return typeof o.last_run_at === "string" && typeof o.active_subscriber_count === "number" && Number.isFinite(o.active_subscriber_count);
+  if (typeof o.last_run_at !== "string") return false;
+  if (typeof o.active_subscriber_count !== "number" || !Number.isFinite(o.active_subscriber_count)) return false;
+  if (o.backend !== undefined && o.backend !== "beehiiv" && o.backend !== "kit") return false;
+  return true;
 }
 
 export function readKvSyncState(rootDir: string): KvSyncState | null {
@@ -506,7 +523,19 @@ export function writeKvSyncState(rootDir: string, state: KvSyncState): void {
   writeFileSync(path, JSON.stringify(state, null, 2) + "\n");
 }
 
-export type KvEmptyGuardResult = { ok: true } | { ok: false; reason: string };
+/** #7485 finding HIGH (fleet review, silent-failure-hunter): `skippedReason`
+ *  distingue, no lado `ok:true`, um "passou porque a razão realmente está
+ *  boa" (ou "sem histórico, 1ª rodada") de um "passou porque o guard de
+ *  razão foi INTEIRAMENTE PULADO por mismatch de backend contra o
+ *  baseline" — sem esse campo, os dois caem no mesmo `{ok:true}` opaco e
+ *  `main()` não tinha como logar o caso de bypass: se o mismatch coincidir
+ *  com (ou for CAUSADO por) uma fonte genuinamente degradada — não um flip
+ *  real, mas um bug que muda `resolveNewsletterSubscriberBackend()` por
+ *  engano —, ninguém veria rastro nenhum de que o guard de razão foi
+ *  ignorado naquela rodada. */
+export type KvEmptyGuardResult =
+  | { ok: true; skippedReason?: "backend-mismatch" }
+  | { ok: false; reason: string };
 
 /** Pura — recusa a rodada se a contagem atual de ativos encolheu demais
  *  desde a última vez (ver docstring acima). Sem histórico prévio, sempre
@@ -515,10 +544,26 @@ export type KvEmptyGuardResult = { ok: true } | { ok: false; reason: string };
  *  review do #7477 apontou que ficavam hardcoded "Beehiiv" mesmo quando
  *  `main()` já lê do Kit (`subscriber_backend="kit"`, #7395): reportar o
  *  sistema errado como culpado é exatamente a classe de confusão de
- *  diagnóstico que este guard existe pra evitar. */
+ *  diagnóstico que este guard existe pra evitar.
+ *
+ *  #7485: `currentBackend` (opcional) é o backend da rodada CORRENTE —
+ *  quando informado e diferente de `previousState.backend` (inclusive
+ *  quando este último é `undefined`, baseline legado sem o campo, tratado
+ *  como "desconhecido" por `isValidKvSyncState`), o guard trata como "SEM
+ *  baseline comparável", mesmo caminho de `!previousState` acima — o piso
+ *  absoluto de `currentCount === 0` continua valendo nesse caso. Sem isso,
+ *  um flip legítimo de `publishing.newsletter.subscriber_backend` (ex:
+ *  Beehiiv 5000 assinantes → Kit 400, escala diferente da fonte nova, não
+ *  degradação) travava a task de forma persistente: a razão comparava
+ *  contagens de fontes DIFERENTES, e nem `--force-empty-guard` destravava
+ *  de vez, porque force não atualiza o baseline (por design, pro caso
+ *  normal de queda real). Quando `currentBackend` é omitido (chamador
+ *  legado que não conhece o backend), o comportamento é o de antes desta
+ *  PR — só compara a razão, sem checar backend. */
 export function evaluateKvEmptyGuard(
   currentCount: number,
   previousState: KvSyncState | null,
+  currentBackend?: NewsletterSubscriberBackend,
   backendLabel: string = "a fonte",
 ): KvEmptyGuardResult {
   // #7463 finding P0 (self-review): SEM baseline (1ª rodada desde que este
@@ -543,6 +588,16 @@ export function evaluateKvEmptyGuard(
     };
   }
   if (!previousState || previousState.active_subscriber_count === 0) return { ok: true };
+  // #7485: baseline de outro backend (ou legado sem `backend`, "desconhecido")
+  // não é comparável — a razão só faz sentido entre rodadas da MESMA fonte.
+  // `skippedReason: "backend-mismatch"` marca que o guard de razão foi
+  // INTEIRAMENTE PULADO nesta rodada (não "passou porque a razão está boa")
+  // — `main()` usa esse campo pra logar o bypass explicitamente (finding
+  // HIGH do fleet review: sem isso, o pulo era indistinguível de um "passou
+  // normal" nos logs).
+  if (currentBackend !== undefined && previousState.backend !== currentBackend) {
+    return { ok: true, skippedReason: "backend-mismatch" };
+  }
   const ratio = currentCount / previousState.active_subscriber_count;
   if (!Number.isFinite(ratio) || ratio < EMPTY_GUARD_RATIO) {
     const pct = Number.isFinite(ratio) ? `${(ratio * 100).toFixed(0)}%` : "indefinido";
@@ -605,7 +660,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
   // degradado como "normal".
   const previousState = readKvSyncState(rootDir);
   const backendLabel = backend === "kit" ? "Kit" : "Beehiiv";
-  const guard = evaluateKvEmptyGuard(emails.length, previousState, backendLabel);
+  const guard = evaluateKvEmptyGuard(emails.length, previousState, backend, backendLabel);
   if (!guard.ok) {
     if (!forceEmptyGuard) {
       process.stderr.write(`[sync-cursos-subscribers-kv] GUARD: ${guard.reason}\n`);
@@ -615,6 +670,14 @@ export async function main(rootDirOverride?: string): Promise<void> {
       process.exit(1);
     }
     process.stderr.write(`[sync-cursos-subscribers-kv] AVISO (--force-empty-guard): ${guard.reason} — prosseguindo mesmo assim.\n`);
+  } else if (guard.skippedReason === "backend-mismatch") {
+    // #7485 finding HIGH (fleet review): sem este log, um bypass por
+    // mismatch de backend é indistinguível nos logs de "razão passou
+    // normal" ou "1ª rodada, sem baseline" — visibilidade explícita mesmo
+    // quando a rodada segue sem abortar.
+    process.stderr.write(
+      `[sync-cursos-subscribers-kv] AVISO: baseline é de outro backend (${previousState?.backend ?? "desconhecido"} → ${backend}) — guard de razão IGNORADO nesta rodada (só o piso absoluto de 0 continua valendo).\n`,
+    );
   }
 
   // #4442 (era #4381 put→list→diff→delete): agora list→diff→put(só as
@@ -635,7 +698,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
   }
 
   if (!forceEmptyGuard) {
-    writeKvSyncState(rootDir, { last_run_at: new Date().toISOString(), active_subscriber_count: emails.length });
+    writeKvSyncState(rootDir, { last_run_at: new Date().toISOString(), active_subscriber_count: emails.length, backend });
   } else {
     process.stderr.write("[sync-cursos-subscribers-kv] baseline NÃO atualizado (rodada só seguiu via --force-empty-guard).\n");
   }
