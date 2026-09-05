@@ -286,13 +286,32 @@ export function estimateReadingMinutes(html: string): number | null {
  * `sitemap.xml`/`public/p/` desalinhado (ex: `slugFromCanonicalUrl` deixando
  * de casar um shape novo de URL) encolheria a home em silêncio, indistinguível
  * de "esta edição legitimamente não tem página ainda".
+ *
+ * Ordena as entradas por `lastmod` desc ANTES de cortar em `limit` (#7436) —
+ * não confia na ordem do documento do `sitemap.xml`. `gen-archive-pages.ts`
+ * de fato escreve newest-first, mas `addSitemapEntry` (`site-archive-pages.ts`)
+ * insere a entrada de uma edição nova sempre no FIM do XML (append, não
+ * insert-sorted) — sem essa ordenação aqui, a edição recém-publicada nunca
+ * aparecia nos `limit` primeiros cards da home (achado ao vivo, edição
+ * 260905: a home ficava congelada na edição anterior a cada publicação nova
+ * via `--sitemap`). Ordenar aqui, e não corrigir só o ponto de inserção,
+ * fecha a classe inteira — qualquer sitemap fora de ordem (append, merge,
+ * edição manual) já sai correto. Entrada sem `lastmod` (ex: publicação via
+ * backend Kit com `--slug`, #7437) ordena por último, não quebra a
+ * comparação.
  */
 export function buildHomeFeed(
   sitemapXml: string,
   readPageHtml: (slug: string) => string | null,
   limit = 10,
 ): HomeFeedEntry[] {
-  const entries = parseSitemap(sitemapXml);
+  const entries = [...parseSitemap(sitemapXml)].sort((a, b) => {
+    const aMs = a.lastmod ? Date.parse(a.lastmod) : Number.NEGATIVE_INFINITY;
+    const bMs = b.lastmod ? Date.parse(b.lastmod) : Number.NEGATIVE_INFINITY;
+    const aVal = Number.isNaN(aMs) ? Number.NEGATIVE_INFINITY : aMs;
+    const bVal = Number.isNaN(bMs) ? Number.NEGATIVE_INFINITY : bMs;
+    return bVal - aVal;
+  });
   const feed: HomeFeedEntry[] = [];
   for (const entry of entries) {
     if (feed.length >= limit) break;

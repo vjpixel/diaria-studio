@@ -150,7 +150,7 @@
  * publicação da página em si nunca é bloqueada por um problema aqui.
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { resolve, dirname, join } from "node:path";
+import { resolve, dirname, join, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -187,6 +187,48 @@ function readNewsletterBackend(rootDir: string): string {
   } catch {
     return "beehiiv";
   }
+}
+
+/**
+ * #7437: deriva um `publishedAtIso` pro caminho `--slug` (usado pelo backend
+ * Kit, que nunca escreve `05-published.json`) — antes disto, o campo ficava
+ * fixo em `null`, e esse `null` É consumido: `buildEditionArchivePost`
+ * (`edition-site-page.ts`) usa pra `publish_date` → `sitemapEntryFromPost`
+ * grava a `<url>` do sitemap SEM `<lastmod>` → `buildHomeFeed` (#7436, que
+ * agora ordena por `lastmod`) trata a entrada como a mais antiga possível.
+ * Toda edição publicada pelo caminho Kit saía sem data em lugar nenhum.
+ *
+ * Duas fontes, nesta ordem:
+ * 1. `_internal/newsletter-kit-published.json` → `scheduled_at` (gravado por
+ *    `publish-newsletter-kit.ts`, ver `KitNewsletterPublished`) — é o
+ *    timestamp real do broadcast, quando disponível.
+ * 2. Fallback: o `AAMMDD` do próprio nome do diretório da edição
+ *    (`data/editions/{AAMM}/{AAMMDD}` desde #2463, ou o layout flat antigo —
+ *    em ambos o basename é o `AAMMDD`), interpretado como meia-noite UTC.
+ *    Menos preciso que 1, mas nunca deixa o campo vazio à toa.
+ *
+ * Fail-soft: qualquer arquivo ausente/malformado ou basename que não bata
+ * `AAMMDD` cai silenciosamente pro próximo passo, terminando em `null` só se
+ * NENHUMA fonte render uma data válida.
+ */
+function deriveFallbackPublishedAtIso(editionDir: string): string | null {
+  const kitPublishedPath = join(editionDir, "_internal", "newsletter-kit-published.json");
+  if (existsSync(kitPublishedPath)) {
+    try {
+      const raw = JSON.parse(readFileSync(kitPublishedPath, "utf8")) as { scheduled_at?: unknown };
+      if (typeof raw.scheduled_at === "string" && !Number.isNaN(Date.parse(raw.scheduled_at))) {
+        return raw.scheduled_at;
+      }
+    } catch {
+      // segue pro fallback abaixo
+    }
+  }
+
+  const m = basename(editionDir).match(/^(\d{2})(\d{2})(\d{2})$/);
+  if (!m) return null;
+  const [, yy, mm, dd] = m;
+  const iso = `20${yy}-${mm}-${dd}T00:00:00.000Z`;
+  return Number.isNaN(Date.parse(iso)) ? null : iso;
 }
 
 /**
@@ -274,8 +316,10 @@ export function readEditionInputs(
   // ("passe --slug explicitamente") nunca funcionava de verdade pra Kit —
   // apenas trocava um `code: 4` silencioso por um `code: 2` igualmente mudo.
   // Com `slugOverride`, ignoramos `05-published.json` por completo (nem
-  // tentamos lê-lo) — a URL vem só do slug, e `publishedAtIso` fica `null`
-  // (nenhum consumidor downstream trata isso como erro, é só metadado).
+  // tentamos lê-lo) — a URL vem só do slug. `publishedAtIso` (#7437) vem de
+  // `deriveFallbackPublishedAtIso` — ver docstring dela: é metadado
+  // consumido (sitemap `<lastmod>` + data do card na home), não decorativo,
+  // então nunca fica fixo em `null` quando existe alguma fonte disponível.
   if (slugOverride) {
     const reviewedPath = join(editionDir, "02-reviewed.md");
     let title = "";
@@ -293,7 +337,7 @@ export function readEditionInputs(
       postUrl: `https://diar.ia.br/p/${slugOverride}`,
       title,
       subtitle,
-      publishedAtIso: null,
+      publishedAtIso: deriveFallbackPublishedAtIso(editionDir),
     };
   }
 
