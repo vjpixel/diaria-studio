@@ -66,6 +66,22 @@ describe("isSyntheticSubscriberEmail", () => {
     assert.equal(isSyntheticSubscriberEmail(undefined), false);
     assert.equal(isSyntheticSubscriberEmail(""), false);
   });
+
+  it("domínio REAL que termina na mesma sequência de um domínio sintético NUNCA é sintético (#7457 review, regressão do falso-positivo de fronteira)", () => {
+    // Achado convergente de 2 revisores (silent-failure-hunter + pr-test-analyzer):
+    // a versão anterior usava `domain.endsWith(suffix)` sem exigir o "." de
+    // fronteira — "fooexample.com" batia como "termina em example.com".
+    // Domínio composto real (nome de empresa comprado) é plausível.
+    assert.equal(isSyntheticSubscriberEmail("joao@fooexample.com"), false);
+    assert.equal(isSyntheticSubscriberEmail("maria@bikeexample.net"), false);
+    assert.equal(isSyntheticSubscriberEmail("contato@realexample.org"), false);
+    // Nota: um domínio como "fooweb.eia.diaria.local" AINDA bateria — não
+    // pela entrada específica "web.eia.diaria.local" (a fronteira "." está
+    // correta ali), mas pela regra genérica ".local" (RFC 6762), que
+    // captura qualquer coisa terminando em ".local" de propósito.
+    // Subdomínio de verdade (com o "." de fronteira) continua batendo.
+    assert.equal(isSyntheticSubscriberEmail("a@sub.example.com"), true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -87,6 +103,25 @@ describe("getSyntheticSubscriberIds", () => {
     const db = openDiariaSubscribersDb(":memory:");
     ensureSubscriber(db, "kit", null, "a@gmail.com", NOW);
     assert.equal(getSyntheticSubscriberIds(db).size, 0);
+    db.close();
+  });
+
+  it("subscriber com 1 alias REAL numa plataforma e 1 alias SINTÉTICO em outra (pós resolução de identidade) É marcado sintético — 'em qualquer plataforma' é literal, não só o alias usado pra achar a linha (#7457 review, gap de teste)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    // Mesmo subscriber_id resultante de uma fusão de identidade (#7205) —
+    // um alias real (beehiiv) e um sintético (kit) coexistem na MESMA
+    // linha de subscriber. O docstring de getSyntheticSubscriberIds promete
+    // "em qualquer plataforma" — este teste trava esse comportamento.
+    const id = ensureSubscriber(db, "beehiiv", "b1", "leitor.real@gmail.com", NOW);
+    // `ensureSubscriber` NÃO funde por e-mail entre plataformas (isso é
+    // trabalho de `resolveIdentitiesByEmail`, #7205) — inserir o 2º alias
+    // direto na tabela, escopado ao MESMO subscriber_id, simula o estado
+    // pós-fusão real sem depender da fusão em si.
+    db.prepare(
+      `INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, 'kit', 'k1', ?, ?)`,
+    ).run(id, "x@example.com", NOW);
+    const ids = getSyntheticSubscriberIds(db);
+    assert.equal(ids.has(id), true, "1 alias sintético em qualquer plataforma marca o subscriber inteiro");
     db.close();
   });
 });
@@ -174,6 +209,18 @@ describe("computeSubscriberPlatformRecency", () => {
 
     const r = computeSubscriberPlatformRecency(db, id, "kit");
     assert.equal(r.sendsSinceLastOpen, 0);
+  });
+
+  it("edicao NULL cai no fallback COALESCE(edicao, external_event_id) — 2 sends sem edicao contam 2, não 1 (#7457 review, gap de teste)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const id = ensureSubscriber(db, "kit", null, "a@gmail.com", NOW);
+    // edicao ausente (ingestão parcial/degradada) — sem o fallback, os dois
+    // `NULL` colidiriam no COUNT(DISTINCT edicao) e contariam como 1 send.
+    recordEvent(db, { subscriberId: id, platform: "kit", type: "sent", externalEventId: "s1", ts: "2026-04-01T09:00:00.000Z" });
+    recordEvent(db, { subscriberId: id, platform: "kit", type: "sent", externalEventId: "s2", ts: "2026-04-02T09:00:00.000Z" });
+
+    const r = computeSubscriberPlatformRecency(db, id, "kit");
+    assert.equal(r.sendsSinceLastOpen, 2, "COALESCE(edicao, external_event_id) distingue os 2 sends mesmo sem edicao");
   });
 
   it("sent e delivered da MESMA edição não duplicam a contagem (COUNT DISTINCT edicao)", () => {

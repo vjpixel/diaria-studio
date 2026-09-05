@@ -26,10 +26,12 @@
  *     `contest-poll-ingest.ts`, "Identidade anônima do voto"). `ingestPollVotes`
  *     hoje NUNCA chama `ensureSubscriber` pra esse padrão (o voto anônimo é
  *     contado em `skippedAnonymous`, nunca vira `subscriber`), então — medido
- *     ao vivo nesta sessão (04-05/09/2026), 0 linhas do store batem este
- *     padrão. A checagem aqui é DEFENSIVA, não reage a um problema
- *     observado: cobre uma reingestão futura de dado histórico anterior a
- *     essa decisão, ou uma regressão no ingestor que volte a chamar
+ *     ao vivo nesta sessão (04-05/09/2026), 0 linhas do store batem
+ *     especificamente este padrão de domínio (`web.eia.diaria.local`/
+ *     `vote.eia.diaria.local`/local-part E2E). A checagem aqui é
+ *     DEFENSIVA pra esses padrões, não reage a um problema observado:
+ *     cobre uma reingestão futura de dado histórico anterior a essa
+ *     decisão, ou uma regressão no ingestor que volte a chamar
  *     `ensureSubscriber` pra voto anônimo.
  *   - `@vote.eia.diaria.local` — o pseudo-email de token de voto
  *     (`shared/poll-token.ts`, `VOTE_TOKEN_DOMAIN`) que o merge tag da
@@ -47,15 +49,23 @@
  *     nunca se importam um ao outro por design — `merge-clarice-subscribers.ts`
  *     é escopo Clarice, fora deste store (#7196).
  *
- * **Nota de proveniência:** a issue original (#7208) citava "264 subscribers
- * sintéticos (863 eventos)" a excluir, medidos numa auditoria anterior à
- * escrita desta issue. Medido de novo ao vivo nesta sessão contra o store
- * atual (`data/diaria-subscribers/diaria-subscribers.db`, 1.410 subscribers,
- * 82.690 eventos): **0 linhas batem qualquer um dos padrões acima hoje** — o
- * número da issue não reproduz neste snapshot (o store foi reconstruído ao
- * menos uma vez desde então, `.db.backup-2026-09-05T01-24-38-264Z` ao lado
- * do arquivo vivo). A quarentena é implementada mesmo assim, pela razão
- * DEFENSIVA acima — nunca assumir que "0 hoje" significa "sempre 0".
+ * **Nota de proveniência (corrigida no #7457 review — a versão anterior
+ * desta nota afirmava "0 linhas batem hoje", e essa afirmação era falsa):**
+ * a issue original (#7208) citava "264 subscribers sintéticos (863
+ * eventos)" a excluir, medidos numa auditoria anterior à escrita desta
+ * issue. Medido de novo ao vivo contra o store atual
+ * (`data/diaria-subscribers/diaria-subscribers.db`, 1.410 subscribers,
+ * 82.690 eventos): **5 subscribers (10 eventos) batem o padrão
+ * `example.com`/`.org`/`.net`** (`ana@example.com`,
+ * `teste-6048-dup-probe@example.com`, `teste-6048-signup-probe@example.com`,
+ * `teste-diaria-migracao@example.com`, `teste-diaria-migracao2@example.com`)
+ * — a quarentena já está ativa e já filtra casos reais, não só hipotéticos.
+ * 0 linhas batem os outros padrões (`.local`, local-part E2E). Não
+ * reproduz a magnitude de 264/863 da issue original, mas não é zero — a
+ * comparação certa é "a quarentena captura o que existe HOJE", nunca uma
+ * contagem congelada no tempo. A quarentena seria implementada mesmo com 0
+ * hits, pela razão DEFENSIVA acima — nunca assumir que "N hoje" significa
+ * "sempre N", em nenhuma direção.
  *
  * `getSyntheticSubscriberIds`/`filterOutSyntheticSubscribers` são os dois
  * pontos de uso: qualquer consumidor que itere sobre TODOS os subscribers
@@ -155,8 +165,23 @@ export function isSyntheticSubscriberEmail(email: string | null | undefined): bo
   if (at < 0) return false;
   const local = trimmed.slice(0, at);
   const domain = trimmed.slice(at + 1);
+  // #7457 review (silent-failure-hunter + pr-test-analyzer + correctness,
+  // achado convergente, alta confiança): a versão anterior tinha um 3º
+  // operando `domain.endsWith(suffix)` SEM fronteira de "." — casava
+  // qualquer domínio terminando na mesma sequência de caracteres, sem
+  // exigir subdomínio de verdade. `fooexample.com`/`bikeexample.net`
+  // (domínios reais plausíveis, nomes compostos são comuns em registro)
+  // batiam como sintéticos e eram quarentenados em silêncio — o oposto do
+  // que a quarentena existe pra evitar: um assinante REAL desaparecendo de
+  // toda métrica de recência sem nenhum sinal de que isso aconteceu.
+  //
+  // `SYNTHETIC_EMAIL_DOMAIN_SUFFIXES` mistura entradas já com "." líder
+  // (`.local`) e sem (`example.com`) — normalizar pra sempre ter o "." e
+  // comparar com fronteira explícita cobre os dois formatos sem depender
+  // de qual dos dois cada entrada usa.
   for (const suffix of SYNTHETIC_EMAIL_DOMAIN_SUFFIXES) {
-    if (domain === suffix || domain.endsWith(`.${suffix}`) || domain.endsWith(suffix)) return true;
+    const dotted = suffix.startsWith(".") ? suffix : `.${suffix}`;
+    if (domain === dotted.slice(1) || domain.endsWith(dotted)) return true;
   }
   return SYNTHETIC_EMAIL_LOCAL_PART_PATTERN.test(local);
 }
@@ -364,6 +389,21 @@ export interface SubscriberCrossPlatformRecency extends SubscriberPlatformRecenc
  * chave canônica (são só `MAX(ts)`, sem contagem de edições) — o viés de
  * dupla-contagem só afeta CONTAGEM (`sends_since_last_*`), nunca "qual foi
  * o timestamp mais recente".
+ *
+ * **Custo por chamada (#7457 review, correctness — achado real, sem
+ * consumidor de produção ainda pra medir impacto):** cada chamada roda
+ * `buildCanonicalEdicaoMapFromEvents(db)` — um `GROUP BY platform, edicao`
+ * sobre a tabela `event` INTEIRA, não filtrado por `subscriberId` — e
+ * descarta `sendsSinceLastOpen`/`sendsSinceLastClick` de cada
+ * `computeSubscriberPlatformRecency` por plataforma (só usados aqui pra
+ * derivar os 4 `last*`). Pra 1 subscriber isolado (uso pontual, ex: página
+ * de detalhe) é barato na escala atual. Pra iterar a base INTEIRA (relatório,
+ * painel) isso vira N full-table-scans — mesma disciplina já documentada em
+ * `getSyntheticSubscriberIds` acima ("nunca dentro de um loop por
+ * subscriber"): antes de usar esta função num loop, extrair
+ * `buildCanonicalEdicaoMapFromEvents(db)` pra fora do loop e passar o
+ * resultado já pronto (a função ainda não aceita esse parâmetro — quem for
+ * conectar um consumidor em lote precisa adicionar isso primeiro).
  */
 export function computeSubscriberCrossPlatformRecency(
   db: DatabaseSync,
