@@ -19,6 +19,7 @@
 
 import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { isMainModule } from "./lib/cli-args.ts";
 import { stripDuplicateHeroImage } from "./lib/strip-duplicate-hero.ts";
 
 const ARCHIVE_ROOT = "workers/site/public/p";
@@ -102,8 +103,4 @@ function main(): void {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`.replace(/\\/g, "/")) {
-  main();
-} else if (process.argv[1]?.endsWith("fix-archive-duplicate-hero.ts")) {
-  main();
-}
+if (isMainModule(import.meta.url)) main();
