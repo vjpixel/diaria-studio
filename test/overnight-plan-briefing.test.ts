@@ -102,6 +102,36 @@ describe("checkOvernightPlanBriefingFromRoot", () => {
     const result = checkOvernightPlanBriefingFromRoot(plan);
     assert.equal(result.status, "invalid");
   });
+
+  it("reason não-string (número/null) é rejeitado", () => {
+    for (const reason of [42, null] as const) {
+      const plan: OvernightPlanRootLike = { briefing: { asked: false, reason } };
+      assert.equal(checkOvernightPlanBriefingFromRoot(plan).status, "invalid");
+    }
+  });
+
+  it("precisa_resposta_count inválido (negativo/não-número) é rejeitado", () => {
+    for (const count of [-1, "2", Number.NaN] as const) {
+      const plan: OvernightPlanRootLike = {
+        briefing: { asked: true, reason: "asked", precisa_resposta_count: count },
+      };
+      assert.equal(checkOvernightPlanBriefingFromRoot(plan).status, "invalid");
+    }
+  });
+
+  it("precisa_resposta_count omitido não é erro (campo opcional)", () => {
+    const plan: OvernightPlanRootLike = { briefing: { asked: true, reason: "asked" } };
+    assert.deepEqual(checkOvernightPlanBriefingFromRoot(plan), { status: "ok", present: true });
+  });
+
+  it("loop_estendido_asked/batch_approval_asked não-boolean são rejeitados", () => {
+    for (const field of ["loop_estendido_asked", "batch_approval_asked"] as const) {
+      const plan: OvernightPlanRootLike = {
+        briefing: { asked: true, reason: "asked", [field]: "sim" },
+      };
+      assert.equal(checkOvernightPlanBriefingFromRoot(plan).status, "invalid");
+    }
+  });
 });
 
 describe("isSuspiciousMissingBriefing", () => {
