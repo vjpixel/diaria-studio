@@ -331,6 +331,16 @@ model_in_openrouter_catalog() {
 
 for MODEL in "${MODELS[@]}"; do
   echo "[claude-openrouter] tentando model=$MODEL" >&2
+  # #7468: re-verifica (e re-repara, fail-soft) o binário ENTRE tentativas
+  # da cadeia — o preflight do topo do script (`claude_binary_preflight`,
+  # linha ~83) só cobre o INÍCIO; medido no tick 260905 (3/3): o binário
+  # quebra DENTRO da janela de uma sessão `:free` longa (14-27min), e as
+  # tentativas seguintes da MESMA invocação deste wrapper herdavam o
+  # binário quebrado porque nada re-checava entre elas. `claude_binary_ensure`
+  # nunca sai do processo (fail-soft) — se não conseguir reparar, a
+  # tentativa prossegue mesmo assim e é classificada normalmente pelos
+  # greps abaixo (tipicamente cai no ramo "sem sinal claro").
+  claude_binary_ensure || echo "[claude-openrouter] AVISO: binário Claude Code segue quebrado/stub antes de tentar model=$MODEL (#7468) — prosseguindo mesmo assim, a falha (se houver) é classificada abaixo" >&2
   ATTEMPT_LOG="${TMPDIR:-/tmp}/claude-openrouter-attempt.$$.log"
   : > "$ATTEMPT_LOG"
   set +e
