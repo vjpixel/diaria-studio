@@ -646,6 +646,74 @@ describe("runTestBatches — batch que TRAVA/MORRE produz exit != 0 (#6822, Defe
     }
   });
 
+  it("#7387: spawn ETIMEDOUT seguido de retry LIMPO → batch conta como sucesso, sem falha dura nem rerun manual", () => {
+    // Achado ao vivo (#7387: ≥5 PRs na mesma rodada overnight 260903,
+    // recorrência confirmada via #7416/#7455): o 1º spawnSync ETIMEDOUT
+    // sempre foi resolvido por 1 `gh run rerun --failed` manual — nunca uma
+    // falha de teste real. Este teste finge exatamente esse padrão: a 1ª
+    // chamada de spawn mata por ETIMEDOUT, a 2ª (o retry automático) sai
+    // limpa com sumário válido — o batch deve contar como sucesso, não
+    // como falha dura.
+    let calls = 0;
+    const exit = runTestBatches({
+      files: ["/hang-depois-passa.test.ts"],
+      spawn: (() => {
+        calls += 1;
+        if (calls === 1) {
+          return { error: Object.assign(new Error("spawnSync node ETIMEDOUT"), { code: "ETIMEDOUT" }), status: null };
+        }
+        return { status: 0, stdout: OK_SUMMARY, stderr: "" };
+      }) as unknown as typeof import("node:child_process").spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+    });
+    assert.equal(exit, 0, "retry limpo deve zerar o exit code — batch não deve contar como falha dura");
+    assert.equal(calls, 2, "deve ter tentado exatamente 2 vezes (tentativa original + 1 retry)");
+  });
+
+  it("#7387: spawn ETIMEDOUT nas DUAS tentativas (original + retry) → falha dura, mensagem nomeia o retry esgotado", () => {
+    const logs: string[] = [];
+    const origError = console.error;
+    console.error = (msg: string) => logs.push(msg);
+    let calls = 0;
+    try {
+      const exit = runTestBatches({
+        files: ["/hang-sempre.test.ts"],
+        batchTimeoutMs: 7777,
+        spawn: (() => {
+          calls += 1;
+          return { error: Object.assign(new Error("spawnSync node ETIMEDOUT"), { code: "ETIMEDOUT" }), status: null };
+        }) as unknown as typeof import("node:child_process").spawnSync,
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+      });
+      assert.equal(exit, 1);
+      assert.ok(calls >= 2, `retry deve ter sido tentado (>=2 chamadas de spawn na tentativa principal), veio calls=${calls}`);
+      assert.ok(
+        logs.some((s) => s.includes("/hang-sempre.test.ts") && s.includes("mesmo após retry") && s.includes("7777")),
+        `mensagem deve nomear o arquivo, indicar que o retry também esgotou, e citar o timeout, veio: ${JSON.stringify(logs)}`,
+      );
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  it("#7387: sem orçamento de bisecção sobrando (bisectBudgetMs=0) → NÃO tenta retry, mantém o caminho antigo (1 chamada só)", () => {
+    let calls = 0;
+    const exit = runTestBatches({
+      files: ["/hang.test.ts"],
+      bisectBudgetMs: 0,
+      spawn: (() => {
+        calls += 1;
+        return { error: Object.assign(new Error("spawnSync node ETIMEDOUT"), { code: "ETIMEDOUT" }), status: null };
+      }) as unknown as typeof import("node:child_process").spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+    });
+    assert.equal(exit, 1);
+    assert.equal(calls, 1, "sem orçamento de bisecção sobrando, não deve gastar uma chamada extra tentando o retry");
+  });
+
   it("loga os arquivos do batch ANTES de despachar (#6822 Defeito B: instrumentação pra bissecar hang futuro)", () => {
     const written: string[] = [];
     let spawnCalled = false;

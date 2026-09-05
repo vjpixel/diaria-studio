@@ -585,7 +585,12 @@ export function processChunkedBatches(
   let totalFail = 0;
   const failedBatches: string[] = [];
 
-  const runOne = (batch: string[]) =>
+  // #7387: aceita um teto de tempo OPCIONAL distinto de `batchTimeoutMs` —
+  // usado só pelo retry de spawn ETIMEDOUT abaixo, pra caber dentro do
+  // orçamento de bisecção já reservado (nunca soma tempo novo ao teto do
+  // worker, ver `computeWorkerTimeoutMs`). Sem argumento, comportamento
+  // idêntico ao de sempre.
+  const runOne = (batch: string[], timeoutMs: number = batchTimeoutMs) =>
     spawn(process.execPath, ["--import", "tsx", "--test", ...extraArgs, ...batch], {
       encoding: "utf8",
       stdio: ["inherit", "pipe", "pipe"],
@@ -601,7 +606,7 @@ export function processChunkedBatches(
       // módulo) bloqueia `spawnSync` — e portanto o processo pai — pra
       // sempre. SIGKILL (não o SIGTERM default) porque um processo já preso
       // numa promise pendente pode ignorar SIGTERM.
-      timeout: batchTimeoutMs,
+      timeout: timeoutMs,
       killSignal: "SIGKILL",
       // #6877 — ver docstring de `cleanChildEnv`: nunca propagar
       // NODE_TEST_CONTEXT/NODE_TEST_WORKER_ID herdados (processo pai já
@@ -649,15 +654,50 @@ export function processChunkedBatches(
       // (string livre — `"spawnSync <path> ETIMEDOUT"` embute o path
       // resolvido do executável, formato não-contratual entre versões).
       const isTimeout = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
-      const suffix = isTimeout
-        ? ` (timeout de ${batchTimeoutMs}ms — ${tryBisect(batch)})`
-        : "";
-      console.error(
-        `run-tests: falha ao spawnar ${label} (${batch.length} arquivos): ${result.error.message}${suffix}`,
-      );
-      exitCode = 1;
-      failedBatches.push(`${label} (falha ao spawnar)`);
-      return;
+      // #7387 (achado ao vivo: ≥5 PRs na mesma rodada overnight 260903,
+      // recorrência confirmada via #7416/#7455) — spawnSync ETIMEDOUT sempre
+      // resolvido por 1 `gh run rerun --failed` manual, nunca uma falha de
+      // teste real reproduzida na bisecção. Mesma assinatura de "erro de
+      // infra do runner, não de teste" que #6495/#6857 já tratam pra
+      // ERR_MODULE_NOT_FOUND — 1 retry automático da RODADA INTEIRA antes de
+      // declarar falha dura, evitando o rerun manual quando é timing/
+      // contenção transiente. Orçamento vem do MESMO `bisectDeadline` que a
+      // bisecção usaria (nunca soma tempo novo ao teto do worker —
+      // `computeWorkerTimeoutMs` já reserva `bisectBudgetMs` pro pior caso de
+      // diagnóstico de um batch travado; isto só troca "gastar tudo
+      // bissecando" por "gastar um retry primeiro, bissecar só se ele também
+      // falhar"). Sem orçamento sobrando (`bisectBudgetMs` já esgotado por
+      // batches anteriores do mesmo grupo): pula direto pro caminho antigo.
+      const remainingBudgetMs = isTimeout ? bisectDeadline - Date.now() : 0;
+      if (isTimeout && remainingBudgetMs > 1000) {
+        stderr.write(
+          `\nrun-tests: ${label} spawn ETIMEDOUT (${batchTimeoutMs}ms) — retentando UMA vez (#7387, erro de infra do runner, não de teste) antes de bissecar...\n`,
+        );
+        const retry = runOne(batch, Math.min(batchTimeoutMs, remainingBudgetMs));
+        if (!retry.error) {
+          // Retry limpo: segue o fluxo normal abaixo (emit + checks de
+          // status/sinal/sumário) como se tivesse sido a única tentativa.
+          result = retry;
+        } else {
+          emit(retry);
+          console.error(
+            `run-tests: falha ao spawnar ${label} (${batch.length} arquivos) mesmo após retry: ${retry.error.message} (timeout de ${batchTimeoutMs}ms — ${tryBisect(batch)})`,
+          );
+          exitCode = 1;
+          failedBatches.push(`${label} (falha ao spawnar, retry esgotado)`);
+          return;
+        }
+      } else {
+        const suffix = isTimeout
+          ? ` (timeout de ${batchTimeoutMs}ms — ${tryBisect(batch)})`
+          : "";
+        console.error(
+          `run-tests: falha ao spawnar ${label} (${batch.length} arquivos): ${result.error.message}${suffix}`,
+        );
+        exitCode = 1;
+        failedBatches.push(`${label} (falha ao spawnar)`);
+        return;
+      }
     }
     emit(result);
 
