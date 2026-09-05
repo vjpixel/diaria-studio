@@ -61,6 +61,18 @@ describe("planFileMigration — puro", () => {
     assert.deepEqual(plan!.clickLines[0], CLICK_LINE);
     assert.equal(plan!.garbageLines.length, 1);
   });
+
+  it("garbage SEM nenhuma linha classe B ainda é reportado, nunca silenciado (#7460 finding 2)", () => {
+    // Antes do fix: `clickLines.length === 0` retornava `null` incondicionalmente,
+    // então um arquivo só com stub/malformado (zero linha B) nunca somava em
+    // totalGarbage nem disparava o aviso — contradizendo o cabeçalho do script.
+    const plan = planFileMigration("post_1", [CANONICAL, { subscriber_id: "s1" }]);
+    assert.ok(plan, "não deve ser null — há garbage a reportar");
+    assert.equal(plan!.clickLines.length, 0);
+    assert.equal(plan!.garbageLines.length, 1);
+    assert.deepEqual(plan!.garbageLines[0], { subscriber_id: "s1" });
+    assert.deepEqual(plan!.keep, [CANONICAL, { subscriber_id: "s1" }], "arquivo intocado — keep é rawLines inteiro, sem descartar o garbage");
+  });
 });
 
 describe("migrate-engagement-click-lines.ts — fluxo de arquivo completo (reproduz o achado do #7181)", () => {
@@ -124,6 +136,23 @@ describe("migrate-engagement-click-lines.ts — fluxo de arquivo completo (repro
     assert.equal(entryA.count, 2, "manifest.count corrigido pro novo total (2, não mais 4)");
     const entryB = manifest.posts.find((p: { post_id: string }) => p.post_id === "post_B");
     assert.equal(entryB.count, 1, "manifest de post_B intocado");
+  });
+
+  it("arquivo só-garbage (zero linha classe B) reporta o aviso de stub/malformado e não é reescrito (#7460 finding 2)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "migrate-engagement-"));
+    const outDir = resolve(dir, "subscriber-engagement");
+    mkdirSync(outDir, { recursive: true });
+    // post_C: 1 canônica + 1 stub — ZERO linha classe B.
+    const before = [CANONICAL, { subscriber_id: "s1" }].map((r) => JSON.stringify(r)).join("\n") + "\n";
+    writeFileSync(resolve(outDir, "post_C.jsonl"), before);
+
+    const stdout = execFileSync(process.execPath, ["--import", "tsx", SCRIPT, "--out-dir", outDir], { encoding: "utf8" });
+    const report = JSON.parse(stdout);
+    assert.equal(report.total_garbage_lines_found, 1, "garbage contado mesmo sem linha classe B");
+    assert.equal(report.total_click_lines_routed, 0);
+
+    const after = readFileSync(resolve(outDir, "post_C.jsonl"), "utf8");
+    assert.equal(after, before, "arquivo só-garbage não é reescrito — nada a rotear");
   });
 
   it("idempotente — rodar 2x não duplica as linhas roteadas", () => {

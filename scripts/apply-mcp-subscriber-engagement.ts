@@ -311,13 +311,31 @@ function saveManifestAtomic(manifestPath: string, manifest: EngagementManifest):
 }
 
 /**
+ * Mescla `existing` com `incoming` deduplicando por igualdade EXATA de JSON
+ * (conteúdo, não campo específico) — usado para registros que não têm uma
+ * chave natural única acordada (ex: click-identity de `list_post_click_subscribers`,
+ * que traz `subscription_id`, não `subscriber_id`). Evita duplicata exata;
+ * nunca colapsa 2 registros distintos.
+ */
+export function mergeRecordsByContent(existing: unknown[], incoming: unknown[]): unknown[] {
+  const seen = new Set(existing.map((r) => JSON.stringify(r)));
+  const merged = [...existing];
+  for (const r of incoming) {
+    const key = JSON.stringify(r);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(r);
+  }
+  return merged;
+}
+
+/**
  * Roteia linhas classe B (click-identity) pro `click-subscribers/{post_id}.jsonl`
  * IRMÃO do outDir de engagement — sempre `--append` (nunca REPLACE: não temos
  * como saber se este payload é a extração completa do endpoint de clique,
  * então mesclar é a única opção que nunca perde dado já roteado antes).
- * Dedup ingênuo por igualdade de JSON — registros de clique não têm uma
- * chave natural única acordada aqui (podem faltar `subscription_id`), então
- * evitar duplicata exata é suficiente; nunca colapsa 2 registros distintos.
+ * Dedup por conteúdo (`mergeRecordsByContent`) — registros de clique não têm
+ * uma chave natural única acordada aqui (podem faltar `subscription_id`).
  */
 export function routeClickIdentityRecords(engagementOutDir: string, postId: string, clickRecords: unknown[]): void {
   if (clickRecords.length === 0) return;
@@ -325,14 +343,7 @@ export function routeClickIdentityRecords(engagementOutDir: string, postId: stri
   mkdirSync(clickOutDir, { recursive: true });
   const jsonlPath = resolve(clickOutDir, `${postId}.jsonl`);
   const existing = readExistingRecords(jsonlPath);
-  const seen = new Set(existing.map((r) => JSON.stringify(r)));
-  const merged = [...existing];
-  for (const r of clickRecords) {
-    const key = JSON.stringify(r);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    merged.push(r);
-  }
+  const merged = mergeRecordsByContent(existing, clickRecords);
   writeJsonlAtomic(jsonlPath, merged);
 }
 
@@ -405,7 +416,15 @@ export function applyEngagement(stdinJson: string, opts: ApplyEngagementOpts): A
     // Append (#6733): mescla com o que já está em disco — nunca apaga nada,
     // então o guard de replace-vazio abaixo não se aplica a este ramo.
     const existing = readExistingRecords(jsonlPath);
-    records = mergeEngagementRecords(existing, incoming);
+    // `click-subscribers` traz `subscription_id`, não `subscriber_id` — o
+    // dedup de `mergeEngagementRecords` (por `subscriber_id`) cai inteiro no
+    // ramo sintético `__no_id_N` pra esse kind e NUNCA colide entre si,
+    // duplicando cada linha a cada retry de página (#7460). Usa dedup por
+    // conteúdo (mesma lógica de `routeClickIdentityRecords`) neste kind.
+    records =
+      kind === "click-subscribers"
+        ? mergeRecordsByContent(existing, incoming)
+        : mergeEngagementRecords(existing, incoming);
   } else {
     if (beforeCount > 0 && incoming.length === 0 && !opts.allowEmptyReplace) {
       // Guard dispara ANTES de tocar manifest ou disco — mesma ordem de

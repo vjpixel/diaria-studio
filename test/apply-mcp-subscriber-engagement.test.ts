@@ -518,4 +518,33 @@ describe("applyEngagement — guard schema-fora-do-canonico (#7460)", () => {
     assert.equal(result.status, "ok");
     assert.equal(result.after_count, 5);
   });
+
+  it("--kind click-subscribers --append aplicando a MESMA página 2x não duplica (#7460 finding 1 — registros trazem subscription_id, não subscriber_id)", () => {
+    const { outDir } = setup();
+    const clickOutDir = resolve(outDir, "..", "click-subscribers");
+    const page = JSON.stringify({
+      engagement: [
+        {
+          subscription_id: "sub_d0620b3e",
+          email: "leitor@example.com",
+          url: "https://eia.diar.ia.br/vote?choice=B",
+          url_hash: "123",
+          clicked_at: "2026-08-29T15:01:40Z",
+        },
+      ],
+    });
+    const opts = { postId: "post_1", kind: "click-subscribers" as const, outDir: clickOutDir, append: true };
+
+    // Antes do fix (#7460 finding 1): mergeEngagementRecords deduplica por
+    // subscriber_id, mas este registro só tem subscription_id — cai no ramo
+    // sintético __no_id_N, que NUNCA colide entre si, então retry de página
+    // duplicava a linha a cada --append.
+    const first = applyEngagement(page, opts);
+    assert.equal(first.after_count, 1);
+    const second = applyEngagement(page, opts);
+    assert.equal(second.after_count, 1, "retry da MESMA página não deve duplicar a linha");
+
+    const lines = readFileSync(resolve(clickOutDir, "post_1.jsonl"), "utf8").trim().split("\n");
+    assert.equal(lines.length, 1, "1 linha em disco, não 2");
+  });
 });

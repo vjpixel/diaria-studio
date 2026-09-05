@@ -59,7 +59,15 @@ export function isEngagementJsonlFile(name: string): boolean {
 }
 
 /** Migra 1 arquivo já lido (linhas cruas parseadas) — puro, sem IO, pra testabilidade.
- *  Retorna `null` quando não há nenhuma linha classe B (nada a fazer). */
+ *  Retorna `null` só quando não há NADA a reportar (nem linha classe B, nem
+ *  garbage) — nada a fazer, arquivo intocado. Quando há garbage mas ZERO
+ *  linha classe B (#7460 finding 2), ainda retorna o plano — com `keep`
+ *  igual a `rawLines` (arquivo inteiro, sem alteração) — pra que o caller
+ *  CONTE/REPORTE o garbage mesmo sem reescrever/rotear nada; sem isso, um
+ *  arquivo só-garbage era pulado (`return null`) e o aviso de linhas
+ *  stub/malformadas nunca disparava pra ele, contradizendo o cabeçalho do
+ *  módulo ("linhas stub/malformed são REPORTADAS, nunca descartadas em
+ *  silêncio"). O caller só escreve/roteia quando `clickLines.length > 0`. */
 export function planFileMigration(
   postId: string,
   rawLines: unknown[],
@@ -74,7 +82,10 @@ export function planFileMigration(
     else if (c.class === "stub" || c.class === "malformed") garbageLines.push(rawLines[i]);
     else keep.push(rawLines[i]);
   }
-  if (clickLines.length === 0) return null;
+  if (clickLines.length === 0) {
+    if (garbageLines.length === 0) return null;
+    return { keep: rawLines, clickLines: [], garbageLines };
+  }
   return { keep, clickLines, garbageLines };
 }
 
@@ -148,6 +159,9 @@ async function main(): Promise<void> {
     totalGarbage += plan.garbageLines.length;
 
     if (dryRun) continue;
+    // Garbage-only (sem linha classe B, #7460 finding 2): já contado/reportado
+    // acima — nada a reescrever/rotear, `plan.keep` é o arquivo intocado.
+    if (plan.clickLines.length === 0) continue;
 
     writeJsonlAtomic(filePath, plan.keep);
     routeClickIdentityRecords(outDir, postId, plan.clickLines);
