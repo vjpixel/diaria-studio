@@ -1235,6 +1235,15 @@ export async function runTestBatchesParallel(opts: RunTestBatchesParallelOptions
  *  produção, não teste), e manda o resultado de volta ao pai via
  *  `process.send`. */
 function runAsWorker(payloadPath: string): void {
+  // #7448: este processo É o child forkado — `processChunkedBatches` escreve
+  // no PRÓPRIO `process.stdout`/`process.stderr` daqui (que por sua vez é o
+  // lado FONTE do pipe que o processo pai encana em `runWorker`). Sem este
+  // registro, um EPIPE neste nível (ex: o processo pai morrer/matar a pipe
+  // antes deste worker terminar de escrever) derrubaria o WORKER com exceção
+  // não capturada — o `child.on("exit")` do pai ainda reportaria a falha
+  // corretamente (nunca silenciosa), mas sem o marcador diagnóstico
+  // `RUN_TESTS_STDOUT_PIPE_ERROR` que ajudaria a confirmar a hipótese.
+  registerDestinationErrorListeners();
   const payload = JSON.parse(readFileSync(payloadPath, "utf8")) as WorkerPayload;
   const { exitCode, completedFiles, totalPass, totalFail, failedBatches } = processChunkedBatches(payload.batches, {
     extraArgs: payload.extraArgs,
