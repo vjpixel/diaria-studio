@@ -203,6 +203,29 @@ Rodar stage a stage já era suportado antes desta issue (as skills isoladas `/di
 
 **O que isso não cobre:** só os 9 valores acima foram auditados e persistidos. Se uma sessão nova de algum stage notar um comportamento diferente do que rodar tudo numa conversa só (algo que só existia "na cabeça" do stage anterior e não em nenhum arquivo), é sinal de mais um ponto não identificado — reportar em issue nova (o #5419 cobre rodar uma edição de controle formal comparando os dois modos; até lá, tratar qualquer divergência como achado a investigar, não como esperado).
 
+### Rodando uma edição de controle formal (#5419, #5547)
+
+Recipe manual — não é parte de `/diaria-edicao`, roda por fora quando alguém quiser comparar 2 modos de execução (ex: contexto-limpo × sessão-única acima) com números em vez de impressão:
+
+```bash
+# 0. Preflight — confirma que nenhum overnight/develop/continuo está rodando
+#    agora nesta máquina (ruído concorrente contaminaria a medição, #5547 item 3)
+npx tsx scripts/check-control-edition-noise.ts
+
+# 1. Rodar a edição de BASELINE normalmente, depois medir
+npx tsx scripts/measure-control-edition.ts --edition AAMMDD --out /tmp/baseline.json
+# (embute o pós-hoc de check-control-edition-noise.ts --edition AAMMDD internamente)
+
+# 2. Rodar a edição de TRATAMENTO, checklist de qualidade + medir
+npx tsx scripts/check-session-leakage.ts --edition AAMMDD   # #5414 — 9 valores persistidos, ✓/✗
+npx tsx scripts/measure-control-edition.ts --edition AAMMDD --out /tmp/tratamento.json
+
+# 3. Comparar
+npx tsx scripts/compare-control-editions.ts --baseline /tmp/baseline.json --treatment /tmp/tratamento.json
+```
+
+`check-control-edition-noise.ts` e `check-session-leakage.ts` nunca bloqueiam (exit 0 sempre no modo relatório) — são leitura humana antes de confiar na medição, não gates mecânicos.
+
 ## Outputs
 
 Todos em `data/editions/{AAMMDD}/` (ex: `260418/`):

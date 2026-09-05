@@ -818,3 +818,50 @@ mesma posição, sem numeração formal, no develop (`.claude/skills/diaria-deve
 logo após a linha do gate de drift de label). `continuo` não chama isto,
 mesmo critério do item 25 acima (a skill não tem a Fase 2 de relatório
 onde os outros gates rodam).
+
+## 27. Guard construído tem que ser ARMADO — "integração como follow-up" não fecha a issue (#7137)
+
+**Origem:** medição de 02/09/2026 contra um corpus explícito (`.claude/skills/**`,
+`.claude/agents/**`, `.claude/hooks/**`, `.claude/settings.json`, `hermes/**`,
+`.github/workflows/*`, `package.json`, `scripts/lib/scheduled-tasks.ts`,
+`docs/scheduled-tasks-registry.md`, `scripts/overnight/*`) achou **16 de 81**
+scripts `check-*`/`*-alarm`/`*-drift-check` sem NENHUM ponto de invocação —
+cruzando com o que a auditoria do #7112 já tinha achado por outro caminho.
+Três casos concretos, medidos na rodada de 03/09/2026, mostram o mesmo padrão
+em superfícies diferentes — **correção do fleet review da #7466: #7306 e
+#7313 são o MESMO buraco, não dois defeitos independentes** (o texto
+original implicava causas distintas). Os dois vieram de `ci.yml`
+(`paths-ignore: '**/*.md'`, tanto em `pull_request:` quanto em
+`push: master`) pulando o `npm test` inteiro pra diffs só-`.md` — o guard
+`findFrontmatterIssues`/`scripts/validate-agent-frontmatter.ts` já roda
+DENTRO da suíte normal (`test/validate-agent-frontmatter.test.ts`); o
+problema nunca foi ele estar desligado, foi a suíte inteira não rodar pra
+esse tipo de PR. Dois defeitos de frontmatter (`.claude/skills/diaria-zerar-
+fila/SKILL.md`) entraram em master por essa porta antes de uma PR que
+tocasse `.ts` revelar o master já quebrado (#7305). `which-set-guards` era
+cego a `orchestrator-stage-*.md`, mentindo sobre a própria cobertura
+(#7277) — causa independente, não relacionada ao `paths-ignore`; e um lote
+de `test/*.test.sh` (espalhados entre `test/`, `hermes/scripts/**` e
+`scripts/lib/`) existia sem nenhum consumidor — `npm test` só varre
+`*.test.ts` — e todos passam quando rodados manualmente (#7129 item c,
+PR #7333). Guards corretos e desligados (ou, no caso #7306/#7313, uma
+suíte inteira que não roda), na mesma noite.
+
+**Regra:** um guard/alarme/gate não está entregue enquanto não roda sozinho —
+registrado em `SCHEDULED_TASKS` (`scripts/lib/scheduled-tasks.ts`), num hook
+(`.claude/hooks/**`), ou numa fase de skill (`.claude/skills/**`). "Integração
+como follow-up" no corpo do PR não fecha a issue que pediu o guard — o guard
+sem ponto de invocação é, na prática, a mesma coisa que não ter sido escrito.
+
+**Auto-enforcement:** `scripts/check-guard-never-invoked.ts` (lógica pura em
+`scripts/lib/guard-never-invoked.ts`) varre `scripts/` por
+`check-*.ts`/`*-alarm.ts`/`*-gate.ts`/`*-drift-check.ts` e reporta quem não
+tem ponto de invocação no mesmo corpus da medição manual acima — com exclusão
+curada (`KNOWN_INDIRECT_INVOCATIONS`) pra cadeias de 2+ saltos (hook → script
+A → script B) e decisões deliberadas já documentadas na própria docstring do
+script (ex: `ads-kill-switch-alarm.ts`, bloqueado por decisão do editor até
+uma data). **Não-bloqueante por enquanto** (mesmo espírito do item 26 acima)
+— até acumular histórico de quantos achados reais este guard produz na
+prática; `--strict` inverte pra exit 1 pra quem quiser usá-lo como gate real.
+Registrado como `Diaria-Guard-Never-Invoked-Weekly-Check` em
+`scripts/lib/scheduled-tasks.ts` (relatório semanal, Domingo 12:00 BRT).

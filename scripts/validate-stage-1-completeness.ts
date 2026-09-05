@@ -4,8 +4,9 @@
  *
  * Validador anti-skip: garante que todos os passos do orchestrator-stage-1
  * que produzem outputs determinísticos rodaram. Roda antes do gate humano da
- * Etapa 1, depois do `validate-stage-1-injection.ts` (#625) e
- * `check-drive-push.ts` (#577).
+ * Etapa 1, depois do `validate-stage-1-injection.ts` (#625). (Rodava também
+ * depois do `check-drive-push.ts` (#577) — removido no #7137, órfão desde a
+ * retirada do Drive sync do fluxo diário no #3636.)
  *
  * Cobre:
  *   1. `researcher-results.json` existe E tem entries de `source-researcher`

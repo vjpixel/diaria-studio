@@ -1773,6 +1773,127 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // (`helios`) e acao POSTERIOR do editor.
     issue: "#7270, #7288",
   },
+  {
+    name: "Diaria-Ads-Spend-Ingest-Alarm",
+    description:
+      "interpreta o CONTEUDO (nao so exit code) do log acumulado de google-ads-ingest-spend.ts/" +
+      "microsoft-ads-ingest-spend.ts -- decisao do #5237/#5502 mantem exit 0 mesmo em defect, entao sem " +
+      "este alarme nenhum mecanismo existente enxerga um defeito real, #5597",
+    steps: [{ key: "alarm", script: "scripts/ads-spend-ingest-alarm.ts" }],
+    logPath: "aquisicao/.ads-spend-ingest-alarm.log",
+    // Diaria 10:05 BRT -- depois de Diaria-Google-Ads-Spend-Ingest (09:50) e
+    // Diaria-Microsoft-Ads-Editorial-Reasons (10:00), slot livre (ver grep de
+    // `kind: "daily"` neste arquivo). #7137: a docstring do script (em
+    // origin/master) ainda afirma "a task Diaria-Ads-Spend-Ingest ainda NAO
+    // existe" -- prosa vencida, ela existe desde o #5704
+    // (Diaria-Google-Ads-Spend-Ingest acima); a docstring foi corrigida no
+    // mesmo PR que adiciona esta entrada.
+    schedule: { kind: "daily", hour: 10, minute: 5 },
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // e acao POSTERIOR do editor.
+    issue: "#5597, #7137",
+  },
+  {
+    name: "Diaria-Alarm-Retirement-Candidates",
+    description:
+      "relatorio semanal de candidatos a aposentadoria de alarme (disparou sem gerar acao, limiar " +
+      "ALARM_RETIREMENT_THRESHOLD) -- e RELATORIO, nunca aposenta nada sozinho, decisao e do editor, #6798",
+    steps: [{ key: "check", script: "scripts/check-alarm-retirement-candidates.ts" }],
+    logPath: "alarm-retirement-candidates/.check.log",
+    // Domingo 11:30 BRT -- mesma familia de revisao semanal que
+    // Diaria-Route-Marker-Staleness-Alarm (11:15) e Diaria-On-Hold-Vencimento-
+    // Alarm (11:00), slot livre (ver grep de `kind: "weekly"` neste arquivo).
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 11, minute: 30 },
+    // Sem guard -- o script ja e fail-soft: falha do `gh` (spawnSync)
+    // devolve relatorio vazio, sempre sai 0 (e relatorio, nao gate).
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // e acao POSTERIOR do editor.
+    issue: "#6798, #7137",
+  },
+  {
+    name: "Diaria-Corrupted-Names-Weekly-Check",
+    description:
+      "visibilidade semanal de contatos com name corrompido (U+FFFD) no store clarice_users inteiro -- " +
+      "so reporta, nao corrige (correcao e acao manual do editor, #5214 item 2)",
+    steps: [{ key: "check", script: "scripts/check-corrupted-names.ts" }],
+    logPath: "clarice-subscribers/.corrupted-names-check.log",
+    // Domingo 11:45 BRT -- mesma familia de revisao semanal acima, slot
+    // livre (ver grep de `kind: "weekly"` neste arquivo).
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 11, minute: 45 },
+    // Sem guard -- o script abre o store SQLite (openClariceDb) com o path
+    // default; se `data/` ainda nao sincronizou, a leitura falha e o script
+    // reporta o erro (nao um alarme falso de "0 corrompidos").
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // e acao POSTERIOR do editor.
+    issue: "#5214, #7137",
+  },
+  {
+    name: "Diaria-Task-Registry-Prose-Drift-Alarm",
+    description:
+      "drift-check entre a PROSA de docs/scheduled-tasks-registry.md e o estado real do systemd --user -- " +
+      "quem mentiu no achado do #6105 foi a prosa do .md, nao o registro tipado (esse ja e coberto por " +
+      "Diaria-Task-Never-Armed-Alarm), #6105 item 2",
+    steps: [{ key: "check", script: "scripts/task-registry-prose-drift-check.ts" }],
+    logPath: "task-registry-prose-drift/.check.log",
+    // Diaria 18:35 BRT -- logo apos Diaria-Task-Never-Armed-Alarm (18:30),
+    // mesma familia de drift-check (registro declarativo x systemd real),
+    // slot livre (ver grep de `kind: "daily"` neste arquivo).
+    schedule: { kind: "daily", hour: 18, minute: 35 },
+    // Sem guard -- o script e fail-soft por design: `systemctl --user`
+    // indisponivel (maquina sem systemd) sai 0 com aviso honesto, nunca
+    // alarme falso (mesmo padrao de task-never-armed-alarm.ts).
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // e acao POSTERIOR do editor. Ironia notada e registrada no corpo da PR:
+    // este e exatamente o guard que a #7137 cita como "o guard da prosa
+    // vencida e ele proprio um dos desarmados" -- corrigido aqui.
+    issue: "#6105, #7137",
+  },
+  {
+    name: "Diaria-Guard-Never-Invoked-Weekly-Check",
+    description:
+      "relatorio semanal de check-*/*-alarm/*-gate/*-drift-check sem ponto de invocacao nas superficies " +
+      "verificaveis localmente -- nao-bloqueante por design ate acumular historico, #7137 item 1",
+    steps: [{ key: "check", script: "scripts/check-guard-never-invoked.ts" }],
+    logPath: "guard-never-invoked/.check.log",
+    // Domingo 12:00 BRT -- mesma familia de revisao semanal (Diaria-Alarm-
+    // Retirement-Candidates 11:30, Diaria-Corrupted-Names-Weekly-Check
+    // 11:45 acima), slot livre (ver grep de `kind: "weekly"` neste arquivo).
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 12, minute: 0 },
+    // Sem guard -- o script so le arquivos do proprio checkout, sempre
+    // disponivel; nunca chama rede nem `gh`.
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // e acao POSTERIOR do editor.
+    issue: "#7137",
+  },
+  {
+    name: "Diaria-Issue-File-Collisions-Weekly-Check",
+    description:
+      "versao de tempo-de-plano de session-registry.ts conflicts --paths -- deriva colisao de arquivo " +
+      "entre issues ABERTAS do backlog a partir dos paths que a propria issue ja lista no corpo, #7137 item 3",
+    steps: [{ key: "check", script: "scripts/check-issue-file-collisions.ts" }],
+    logPath: "issue-file-collisions/.check.log",
+    // Domingo 12:15 BRT -- mesma familia de revisao semanal do backlog
+    // (Diaria-Guard-Never-Invoked-Weekly-Check 12:00 acima), slot livre
+    // (ver grep de `kind: "weekly"` neste arquivo).
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 12, minute: 15 },
+    // Sem guard -- o script e fail-soft por design: `gh` indisponivel sai 0
+    // com aviso (mesmo padrao de check-dependency-prose-lint.ts, #7137 item 4).
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // e acao POSTERIOR do editor.
+    issue: "#7137",
+  },
 ];
 
 /**

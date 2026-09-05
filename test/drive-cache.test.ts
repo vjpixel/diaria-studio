@@ -1,6 +1,19 @@
+/**
+ * test/drive-cache.test.ts (#829, herdado de test/check-drive-push.test.ts)
+ *
+ * `scripts/check-drive-push.ts` (o CLI que originalmente motivou estes
+ * testes) foi removido no #7137 — órfão desde a retirada do Drive sync do
+ * fluxo diário (#3636), nunca adaptado pro digest mensal. Os helpers que ele
+ * re-exportava (`readDriveCache`, `getPushCount`) SEGUEM vivos como
+ * `scripts/lib/drive-cache.ts` — única fonte de leitura de
+ * `data/drive-cache.json`, ainda consumida pelo fluxo mensal. Estes casos
+ * (JSON malformado, array como schema, `push_count: 0`, schema com campo
+ * renomeado) não tinham herdeiro direto após a remoção do arquivo de teste
+ * do CLI — movidos pra cá sem alteração de comportamento coberto.
+ */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readDriveCache, getPushCount } from "../scripts/check-drive-push.ts";
+import { readDriveCache, getPushCount } from "../scripts/lib/drive-cache.ts";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

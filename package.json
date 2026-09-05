@@ -40,7 +40,8 @@
     "test": "tsx scripts/run-tests.ts",
     "check-cursos-links": "tsx scripts/check-cursos-links.ts",
     "studio": "tsx scripts/studio-ui/server.ts",
-    "sync-env": "tsx scripts/sync-env.ts"
+    "sync-env": "tsx scripts/sync-env.ts",
+    "glm-lane-dispatch": "bash scripts/dispatch-glm-lane-unit.sh"
   },
   "dependencies": {
     "dotenv": "^16.0.0",
