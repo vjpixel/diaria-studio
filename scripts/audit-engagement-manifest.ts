@@ -29,6 +29,15 @@
  *      `count` pro valor real (disco tem ALGUM dado, só precisa completar).
  *   3. Bate → mantém `ok`, intocado.
  *
+ * #7417: checagem 4 (shape por linha, `reconcileShapeViolations`) — a contagem
+ *   não é suficiente. O acervo levou 100 linhas placeholder
+ *   (`{"subscriber_id":"sub1"}` ... `sub100`, sem `email`/`status`/`timestamp`)
+ *   e `manifest.count` == 100 == linhas reais, então as checagens 1-3
+ *   concordavam perfeitamente com o dado fabricado; só a leitura do CONTEÚDO
+ *   de cada linha pega isso. `validateEngagementLine` exige `subscriber_id`
+ *   UUID real, `email` válido, `status` no conjunto da MCP
+ *   (`delivered`/`opened`/`clicked`/`unsubscribed`) e `timestamp` ISO 8601.
+ *
  * O que este script NÃO faz (fora de escopo, exige sessão com MCP Beehiiv
  * ao vivo — guard de publicação do overnight/develop não deixa um
  * subagente de dispatch tocar Beehiiv/qualquer API externa "ao vivo"):
@@ -56,7 +65,15 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
 import { countExistingLines } from "./apply-mcp-subscriber-engagement.ts";
-import { reconcileManifestWithDisk, coverageSummary, type EngagementManifest } from "./lib/beehiiv-engagement-manifest.ts";
+import {
+  reconcileManifestWithDisk,
+  reconcileShapeViolations,
+  validateEngagementLines,
+  coverageSummary,
+  type EngagementManifest,
+  type LineShapeReport,
+  type LineShapeViolation,
+} from "./lib/beehiiv-engagement-manifest.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 
@@ -81,6 +98,39 @@ export function readActualCounts(manifest: EngagementManifest, outDir: string): 
     counts.set(entry.post_id, countExistingLines(resolve(outDir, `${entry.post_id}.jsonl`)));
   }
   return counts;
+}
+
+/**
+ * Lê, pro `outDir` dado, o shape de cada linha de cada post_id do manifest —
+ * a fonte da checagem de #7417. Post sem `.jsonl` em disco é pulado (não
+ * entra no mapa): o `reconcileShapeViolations` ignora entradas sem relatório,
+ * e o post já foi rebaixado a `pending` pela checagem 1 de
+ * `reconcileManifestWithDisk` (0 linhas reais).
+ *
+ * Linhas com JSON.parse falhando são registradas como violações de shape
+ * (mensagem "JSON parse falhou"), não propagadas como exceção — um arquivo
+ * truncado por escrita interrompida não deve derrubar a auditoria inteira.
+ */
+export function readLineShapeReports(manifest: EngagementManifest, outDir: string): Map<string, LineShapeReport> {
+  const reports = new Map<string, LineShapeReport>();
+  for (const entry of manifest.posts) {
+    const path = resolve(outDir, `${entry.post_id}.jsonl`);
+    if (!existsSync(path)) continue;
+    const content = readFileSync(path, "utf8");
+    const lines = content.split("\n").filter((line) => line.trim().length > 0);
+    const records: unknown[] = [];
+    const violations: LineShapeViolation[] = [];
+    lines.forEach((line, i) => {
+      try {
+        records.push(JSON.parse(line) as unknown);
+      } catch {
+        violations.push({ line: i + 1, error: "JSON parse falhou (linha não é JSON válido)" });
+      }
+    });
+    const lineViolations = validateEngagementLines(records);
+    reports.set(entry.post_id, { total: lines.length, violations: [...violations, ...lineViolations] });
+  }
+  return reports;
 }
 
 /**
@@ -173,6 +223,15 @@ async function main(): Promise<void> {
   const coverageBefore = coverageSummary(manifest);
   const actualCounts = readActualCounts(manifest, outDir);
 
+  // #7417: shape de cada linha. Contagem não é suficiente — o acervo
+  // levou 100 linhas placeholder (`{"subscriber_id":"sub1"}`) sem email/status/
+  // timestamp e `reconcileManifestWithDisk` via `manifest.count` == 100 ==
+  // linhas reais, portanto concordava perfeitamente. Ler o CONTEÚDO de cada
+  // linha é o único jeito de pegar isso. Só posts com .jsonl em disco são
+  // candidatos; ausência de arquivo → Map vazio → nenhuma violação (o post
+  // já foi rebaixado a `pending` pela checagem 1 de `reconcileManifestWithDisk`).
+  const lineShapeReports = readLineShapeReports(manifest, outDir);
+
   // #7197: sem a âncora externa (`recipients`), esta auditoria só compara o
   // manifest com o disco — par que bate em 256/256 no acervo real, porque o
   // drenador é honesto sobre o que gravou. `--skip-recipients` existe pra
@@ -191,7 +250,20 @@ async function main(): Promise<void> {
     unavailable = fetched.unavailable;
   }
 
-  const { manifest: reconciled, downgraded } = reconcileManifestWithDisk(manifest, actualCounts, recipients, delivered);
+  const { manifest: countReconciled, downgraded: countDowngrades } = reconcileManifestWithDisk(
+    manifest,
+    actualCounts,
+    recipients,
+    delivered,
+  );
+  // #7417: shape por linha rode DEPOIS da contagem — um post cujo count já
+  // divergiu do disco foi rebaixado a `partial`/`pending` e `reconcileShapeViolations`
+  // ignora entradas não-ok, então não rebaixa de novo o mesmo post.
+  const { manifest: reconciled, downgraded: shapeDowngrades } = reconcileShapeViolations(
+    countReconciled,
+    lineShapeReports,
+  );
+  const downgraded = [...countDowngrades, ...shapeDowngrades];
   const coverageAfter = coverageSummary(reconciled);
 
   if (!dryRun && downgraded.length > 0) {
@@ -199,6 +271,10 @@ async function main(): Promise<void> {
   }
 
   if (asJson) {
+    const shapeViolations: Record<string, LineShapeReport> = {};
+    for (const [postId, report] of lineShapeReports) {
+      if (report.violations.length > 0) shapeViolations[postId] = report;
+    }
     console.log(
       JSON.stringify(
         {
@@ -209,6 +285,7 @@ async function main(): Promise<void> {
           recipients_checked: recipients ? recipients.size : 0,
           recipients_unavailable: unavailable,
           verdict: auditVerdict(skipRecipients, unavailable.length),
+          shape_violations: shapeViolations,
         },
         null,
         2,
@@ -236,9 +313,27 @@ async function main(): Promise<void> {
   for (const d of downgraded) {
     process.stderr.write(`  ${d.post_id}: ok → ${d.to} — ${d.reason}\n`);
   }
+  // #7417: shape violations são reportadas separado do rebaixamento (o post
+  // pode ter dados reais + contaminação → `partial`; ou 100% inválido →
+  // `pending`). O relatório mostra o shape mesmo quando não houve
+  // rebaixamento, pra que o editor veja que o guard rodou.
+  let shapeReported = 0;
+  for (const [postId, report] of lineShapeReports) {
+    if (report.violations.length === 0) continue;
+    shapeReported++;
+    process.stderr.write(
+      `[audit-engagement-manifest] shape #7417 ${postId}: ${report.violations.length}/${report.total} linha(s) inválida(s)\n`,
+    );
+    for (const v of report.violations) {
+      process.stderr.write(`    linha ${v.line}: ${v.error}\n`);
+    }
+  }
   process.stderr.write(
     `[audit-engagement-manifest] cobertura DEPOIS: ${coverageAfter.ok}/${coverageAfter.total} ok` +
-      `${dryRun ? " (--dry-run, manifest NÃO gravado)" : ""}\n`,
+      `${dryRun ? " (--dry-run, manifest NÃO gravado)" : ""}\n` +
+      (shapeReported === 0
+        ? `[audit-engagement-manifest] shape #7417: nenhuma linha inválida no acervo\n`
+        : ""),
   );
 }
 

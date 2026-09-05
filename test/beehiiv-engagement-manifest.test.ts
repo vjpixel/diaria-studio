@@ -18,7 +18,12 @@ import {
   isNeverSentPost,
   NEVER_SENT_REASON,
   reconcileManifestWithDisk,
+  reconcileShapeViolations,
+  validateEngagementLine,
+  validateEngagementLines,
+  ENGAGEMENT_EVENT_STATUSES,
   type EngagementManifest,
+  type LineShapeReport,
 } from "../scripts/lib/beehiiv-engagement-manifest.ts";
 
 describe("buildInitialManifest", () => {
@@ -310,6 +315,155 @@ describe("reconcileManifestWithDisk — auditoria contra o disco (#7197)", () =>
     const actual = new Map([["p1", 10], ["p2", 0], ["p3", 12]]);
     const { downgraded } = reconcileManifestWithDisk(manifest, actual);
     assert.deepEqual(downgraded.map((d) => d.post_id).sort(), ["p2", "p3"]);
+  });
+});
+
+describe("validateEngagementLine — guard de shape por linha (#7417)", () => {
+  const good = {
+    subscriber_id: "0987bafd-e2db-49dd-b63d-3bbd5d8f6f6b",
+    email: "orobobraga@gmail.com",
+    status: "opened",
+    timestamp: "2026-03-18T07:14:36Z",
+  };
+
+  it("registro completo e válido passa", () => {
+    assert.deepEqual(validateEngagementLine(good), { ok: true });
+  });
+
+  it("os 4 status da MCP são aceitos (medido no acervo real: delivered/opened/clicked/unsubscribed)", () => {
+    for (const s of ENGAGEMENT_EVENT_STATUSES) {
+      assert.deepEqual(validateEngagementLine({ ...good, status: s }), { ok: true });
+    }
+  });
+
+  it("subscriber_id de placeholder do #7417 (`sub1`) é rejeitado", () => {
+    const v = validateEngagementLine({ ...good, subscriber_id: "sub1" });
+    assert.equal(v.ok, false);
+    assert.ok(v.error.includes("subscriber_id"));
+  });
+
+  it("subscriber_id que não é UUID real é rejeitado", () => {
+    assert.equal(validateEngagementLine({ ...good, subscriber_id: "not-a-uuid" }).ok, false);
+  });
+
+  it("email inválido é rejeitado", () => {
+    assert.equal(validateEngagementLine({ ...good, email: "sub1" }).ok, false);
+    assert.equal(validateEngagementLine({ ...good, email: "a@b" }).ok, false);
+  });
+
+  it("status desconhecido é rejeitado", () => {
+    assert.equal(validateEngagementLine({ ...good, status: "bounced" }).ok, false);
+  });
+
+  it("timestamp não-ISO é rejeitado", () => {
+    assert.equal(validateEngagementLine({ ...good, timestamp: "sub1" }).ok, false);
+    assert.equal(validateEngagementLine({ ...good, timestamp: "2026-03-18" }).ok, false);
+  });
+
+  it("linha que não é objeto (null, array, primitivo) é rejeitada", () => {
+    assert.equal(validateEngagementLine(null).ok, false);
+    assert.equal(validateEngagementLine([]).ok, false);
+    assert.equal(validateEngagementLine("sub1").ok, false);
+  });
+
+  it("campo ausente também é rejeitado", () => {
+    const { email, ...noEmail } = good as Record<string, unknown>;
+    assert.equal(validateEngagementLine(noEmail).ok, false);
+  });
+});
+
+describe("reconcileShapeViolations — a 4ª checagem do #7417", () => {
+  const goodLine = {
+    subscriber_id: "0987bafd-e2db-49dd-b63d-3bbd5d8f6f6b",
+    email: "orobobraga@gmail.com",
+    status: "delivered",
+    timestamp: "2026-03-18T07:14:36Z",
+  };
+
+  it("post ok com todas as linhas válidas não é rebaixado", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_clean", status: "ok", count: 2 }],
+    };
+    const reports = new Map<string, LineShapeReport>([
+      ["post_clean", { total: 2, violations: validateEngagementLines([goodLine, goodLine]) }],
+    ]);
+    const { manifest: reconciled, downgraded } = reconcileShapeViolations(manifest, reports);
+    assert.equal(downgraded.length, 0);
+    assert.equal(reconciled.posts[0].status, "ok");
+  });
+
+  it("reproduz o #7417: 100 linhas placeholder → todas as linhas inválidas → pending (redrenar do zero)", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_077f565f", status: "ok", count: 100 }],
+    };
+    const placeholders = Array.from({ length: 100 }, (_, i) => ({ subscriber_id: `sub${i + 1}` }));
+    const reports = new Map<string, LineShapeReport>([
+      ["post_077f565f", { total: 100, violations: validateEngagementLines(placeholders) }],
+    ]);
+    const { manifest: reconciled, downgraded } = reconcileShapeViolations(manifest, reports);
+    assert.equal(downgraded.length, 1);
+    assert.equal(downgraded[0].to, "pending");
+    assert.equal(reconciled.posts[0].status, "pending");
+    assert.equal(reconciled.posts[0].count, 0);
+  });
+
+  it("contaminação (algumas linhas boas, algumas ruins) → partial", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_mixed", status: "ok", count: 3 }],
+    };
+    const reports = new Map<string, LineShapeReport>([
+      [
+        "post_mixed",
+        {
+          total: 3,
+          violations: validateEngagementLines([
+            goodLine,
+            { subscriber_id: "sub1" },
+            goodLine,
+          ]),
+        },
+      ],
+    ]);
+    const { manifest: reconciled, downgraded } = reconcileShapeViolations(manifest, reports);
+    assert.equal(downgraded.length, 1);
+    assert.equal(downgraded[0].to, "partial");
+    assert.equal(reconciled.posts[0].status, "partial");
+  });
+
+  it("post sem relatório (arquivo ausente) não é rebaixado pelo shape — já foi pending pela contagem", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [{ post_id: "post_ghost", status: "ok", count: 40 }],
+    };
+    const { downgraded } = reconcileShapeViolations(manifest, new Map());
+    assert.equal(downgraded.length, 0);
+  });
+
+  it("nunca mexe em pending/partial/error/not_applicable — só ok é candidato", () => {
+    const manifest: EngagementManifest = {
+      generated_at: "t",
+      posts: [
+        { post_id: "p", status: "pending" },
+        { post_id: "pa", status: "partial", count: 1 },
+        { post_id: "e", status: "error" },
+        { post_id: "na", status: "not_applicable" },
+        { post_id: "ok", status: "ok", count: 1 },
+      ],
+    };
+    const reports = new Map<string, LineShapeReport>([
+      ["ok", { total: 1, violations: validateEngagementLines([{ subscriber_id: "sub1" }]) }],
+    ]);
+    const { manifest: reconciled, downgraded } = reconcileShapeViolations(manifest, reports);
+    assert.equal(downgraded.length, 1);
+    assert.equal(downgraded[0].post_id, "ok");
+    const byId = Object.fromEntries(reconciled.posts.map((e) => [e.post_id, e.status]));
+    assert.equal(byId.p, "pending");
+    assert.equal(byId.pa, "partial");
+    assert.equal(byId.e, "error");
+    assert.equal(byId.na, "not_applicable");
   });
 });
 

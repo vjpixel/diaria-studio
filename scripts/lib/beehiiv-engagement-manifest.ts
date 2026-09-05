@@ -227,6 +227,9 @@ export interface ManifestReconcileResult {
 /** Prefixo estável dos motivos de rebaixamento — usado em teste e no `error` gravado na entry. */
 export const AUDIT_REASON_PREFIX = "auditoria #7197";
 
+/** Prefixo para motivos de rebaixamento de shape (#7417) — distinto de #7197 para direcionar debug. */
+export const SHAPE_AUDIT_REASON_PREFIX = "auditoria #7417";
+
 /**
  * Reconcilia o manifest contra a única fonte que não pode mentir sobre si
  * mesma: as linhas de fato gravadas em disco (#7197 — "255 de 256 posts
@@ -362,6 +365,121 @@ export function reconcileManifestWithDisk(
 
 /** Motivo gravado em `error` das entries `not_applicable` — texto estável, usado em teste. */
 export const NEVER_SENT_REASON = "post nunca enviado (rascunho) — sem engajamento a drenar";
+
+// ─── Guard de shape por linha (#7417) ───────────────────────────────────────
+
+/**
+ * Valores de `status` que a MCP `list_post_subscriber_engagement` pode
+ * retornar em um registro de engagement — medido em 04/09/2026 sobre o
+ * acervo real (`data/beehiiv-backup/subscriber-engagement/*.jsonl`):
+ * `delivered` (49.169), `opened` (21.623), `clicked` (3.470),
+ * `unsubscribed` (100). É o conjunto fechado da MCP — não há como um
+ * evento de engagement ter outro valor.
+ */
+export const ENGAGEMENT_EVENT_STATUSES = ["delivered", "opened", "clicked", "unsubscribed"] as const;
+
+/** UUID real (versão 4 não é obrigada — a MCP devolve UUIDs quaisquer). */
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+/** E-mail: pelo menos `local@domínio.ext` sem espaços. */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** ISO 8601: `2026-03-18T07:14:36Z` ou com offset. */
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+export interface LineShapeViolation {
+  /** 1-indexed: qual linha do `.jsonl` (pra o editor rastrear sem reler o arquivo). */
+  line: number;
+  error: string;
+}
+
+export interface LineShapeReport {
+  total: number;
+  violations: LineShapeViolation[];
+}
+
+/**
+ * Valida o shape de 1 registro de engagement — o guard de #7417.
+ *
+ * O acervo foi contaminado por 100 linhas placeholder
+ * (`{"subscriber_id":"sub1"}` ... `sub100`, sem `email`/`status`/`timestamp`)
+ * que passaram despercebidas porque `reconcileManifestWithDisk` (#7197) só
+ * compara `manifest.count` × linhas reais em disco — nunca o CONTEÚDO de
+ * cada linha. Com 100 linhas e `count: 100`, o manifest e o disco concordam
+ * perfeitamente; o dado fabricado só saiu à tona quando um agente posterior
+ * notou a ordenação estranha do arquivo e investigou por acaso.
+ *
+ * Quatro campos, todos obrigatórios: `subscriber_id` (UUID real — o placeholder
+ * `sub1` falha aqui), `email` válido, `status` no conjunto da MCP e `timestamp`
+ * ISO 8601. Linha que não é objeto, ou cujo JSON.parse falha, também é violação.
+ */
+export function validateEngagementLine(record: unknown): { ok: true } | { ok: false; error: string } {
+  if (record === null || typeof record !== "object" || Array.isArray(record)) {
+    return { ok: false, error: "linha não é um objeto JSON" };
+  }
+  const r = record as Record<string, unknown>;
+  const sid = r.subscriber_id;
+  if (typeof sid !== "string" || !UUID_RE.test(sid)) {
+    return { ok: false, error: `subscriber_id inválido (esperado UUID real, veio ${JSON.stringify(sid)})` };
+  }
+  const email = r.email;
+  if (typeof email !== "string" || !EMAIL_RE.test(email)) {
+    return { ok: false, error: `email inválido (esperado e-mail real, veio ${JSON.stringify(email)})` };
+  }
+  const status = r.status;
+  if (typeof status !== "string" || !(ENGAGEMENT_EVENT_STATUSES as readonly string[]).includes(status)) {
+    return { ok: false, error: `status inválido (esperado um de ${ENGAGEMENT_EVENT_STATUSES.join("/")}, veio ${JSON.stringify(status)})` };
+  }
+  const ts = r.timestamp;
+  if (typeof ts !== "string" || !ISO_RE.test(ts)) {
+    return { ok: false, error: `timestamp inválido (esperado ISO 8601, veio ${JSON.stringify(ts)})` };
+  }
+  return { ok: true };
+}
+
+/** Valida cada linha de uma lista de registros já parseados. */
+export function validateEngagementLines(records: unknown[]): LineShapeViolation[] {
+  const violations: LineShapeViolation[] = [];
+  for (let i = 0; i < records.length; i++) {
+    const v = validateEngagementLine(records[i]);
+    if (!v.ok) violations.push({ line: i + 1, error: v.error });
+  }
+  return violations;
+}
+
+/**
+ * Reconcilia o manifest contra a QUALidade (shape) de cada linha — a 4ª
+ * checagem, separada de `reconcileManifestWithDisk` porque fala do CONTEÚDO
+ * das linhas, não da contagem (#7417).
+ *
+ * Só entries `ok` são candidatas (mesma regra de #7197): `partial`/`error`
+ * já foram rebaixadas pela contagem ou pela âncora externa, e rebaixá-las
+ * de novo pelo shape só polui o relatório. Dois níveis de severidade:
+ *
+ *   - TODAS as linhas são malformadas → `pending` (redrenar do zero): é o
+ *     caso dos 100 placeholders — o post não tem nenhum dado real, e
+ *     re-drená-lo do zero é o único caminho.
+ *   - ALGUMAS linhas são malformadas (contaminação) → `partial`: o post tem
+ *     dados reais, mas precisa ser re-drenado pra limpar os inválidos.
+ */
+export function reconcileShapeViolations(
+  manifest: EngagementManifest,
+  lineShapeReports: Map<string, LineShapeReport>,
+): ManifestReconcileResult {
+  const downgraded: ManifestDowngrade[] = [];
+  const posts = manifest.posts.map((entry) => {
+    if (entry.status !== "ok") return entry;
+    const report = lineShapeReports.get(entry.post_id);
+    if (!report || report.violations.length === 0) return entry;
+    if (report.total > 0 && report.violations.length === report.total) {
+      const reason = `${SHAPE_AUDIT_REASON_PREFIX}: todas as ${report.total} linhas do JSONL são malformadas (shape inválido) — nenhum dado real, redrenar do zero`;
+      downgraded.push({ post_id: entry.post_id, from: "ok", to: "pending", reason });
+      return { ...entry, status: "pending" as const, count: 0, error: reason };
+    }
+    const reason = `${SHAPE_AUDIT_REASON_PREFIX}: ${report.violations.length} de ${report.total} linhas com shape inválido — contaminação, re-drenar pra limpar`;
+    downgraded.push({ post_id: entry.post_id, from: "ok", to: "partial", reason });
+    return { ...entry, status: "partial" as const, error: reason };
+  });
+  return { manifest: { ...manifest, posts }, downgraded };
+}
 
 /**
  * `true` quando o arquivo de backup do post indica que ele NUNCA foi enviado
