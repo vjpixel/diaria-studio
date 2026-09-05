@@ -29,8 +29,10 @@ import {
   BATCH_SIZE,
   DEFAULT_BATCH_TIMEOUT_MS,
   computeWorkerTimeoutMs,
+  pipeWorkerStream,
   type RunTestBatchesParallelOptions,
 } from "../scripts/run-tests.ts";
+import { PassThrough } from "node:stream";
 
 /** Sumário mínimo válido do node:test (reporter tap, o default sem TTY —
  *  mas `parseFailCount`/`hasTestSummary` reconhecem os dois prefixos). Os
@@ -1268,5 +1270,63 @@ describe("#6783 — marcador contável do flake de módulo", () => {
   it("output sem a mensagem de módulo não quebra a extração (cai no fallback)", () => {
     const RE = /Cannot find module '?([^'\s]+)'?/;
     assert.equal(RE.exec("qualquer outra falha")?.[1] ?? "(arquivo não identificado no output)", "(arquivo não identificado no output)");
+  });
+});
+
+describe("pipeWorkerStream (#7448) — erro de escrita no DESTINO do pipe é logado, não silenciado", () => {
+  it("registra o pipe (dados fluem da origem pro destino)", () => {
+    const source = new PassThrough();
+    const destination = new PassThrough();
+    pipeWorkerStream(source, destination, "stdout", "worker-1");
+
+    const recebido: string[] = [];
+    destination.on("data", (chunk) => recebido.push(String(chunk)));
+    source.write("linha de teste\n");
+    source.end();
+
+    assert.equal(recebido.join(""), "linha de teste\n", "pipe tem de continuar entregando dados normalmente");
+  });
+
+  it("erro no DESTINO do pipe é logado com o label do worker, nunca silenciado", () => {
+    const source = new PassThrough();
+    const destination = new PassThrough();
+    const originalError = console.error;
+    const logs: string[] = [];
+    console.error = (...args: unknown[]) => void logs.push(args.join(" "));
+    try {
+      pipeWorkerStream(source, destination, "stdout", "worker-3");
+      // Simula um erro de escrita (ex: EPIPE) emitido pelo stream de DESTINO
+      // — o cenário que a origem por si só (child.stdout) nunca enxerga.
+      destination.emit("error", new Error("EPIPE simulado"));
+    } finally {
+      console.error = originalError;
+    }
+    const linha = logs.find((l) => l.includes("erro de escrita em stdout"));
+    assert.ok(linha, `esperava uma linha de log sobre erro de escrita; logs capturados: ${JSON.stringify(logs)}`);
+    assert.match(linha, /worker-3/, "o label do worker precisa aparecer no log, pra identificar qual worker falhou");
+    assert.match(linha, /EPIPE simulado/, "a mensagem original do erro precisa aparecer no log");
+  });
+
+  it("erro na ORIGEM do stream continua logado (comportamento pré-existente preservado)", () => {
+    const source = new PassThrough();
+    const destination = new PassThrough();
+    const originalError = console.error;
+    const logs: string[] = [];
+    console.error = (...args: unknown[]) => void logs.push(args.join(" "));
+    try {
+      pipeWorkerStream(source, destination, "stderr", "worker-2");
+      source.emit("error", new Error("falha na origem"));
+    } finally {
+      console.error = originalError;
+    }
+    const linha = logs.find((l) => l.includes("erro no stream"));
+    assert.ok(linha, `esperava log de erro na origem; logs capturados: ${JSON.stringify(logs)}`);
+    assert.match(linha, /worker-2/);
+    assert.match(linha, /falha na origem/);
+  });
+
+  it("source ausente (null) não quebra — no-op seguro", () => {
+    const destination = new PassThrough();
+    assert.doesNotThrow(() => pipeWorkerStream(null, destination, "stdout", "worker-4"));
   });
 });

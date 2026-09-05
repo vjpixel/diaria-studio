@@ -961,6 +961,32 @@ export function computeWorkerTimeoutMs(payload: Pick<WorkerPayload, "batches" | 
   return payload.batches.length * payload.batchTimeoutMs + payload.bisectBudgetMs + WORKER_TIMEOUT_MARGIN_MS;
 }
 
+/** #7448: encana um stream do worker (`child.stdout`/`child.stderr`) pro
+ *  stream correspondente do processo pai (`process.stdout`/`process.stderr`),
+ *  logando qualquer `error` — tanto na ORIGEM (o stream do child) quanto no
+ *  DESTINO do pipe (o stream do pai). São eventos distintos: `.pipe()`
+ *  propaga 'error' do destino separadamente do 'error' da origem, e sem um
+ *  listener no destino um erro de escrita (ex: EPIPE no stdout do processo
+ *  pai) some em silêncio — nunca aparece no log. Isto é a hipótese
+ *  remanescente do flake #7430 ("fail:0 + exit 1" sem causa visível no
+ *  stderr) — instrumentação de diagnóstico, não corrige a causa raiz (se for
+ *  essa mesmo): torna a hipótese verificável na próxima ocorrência. Extraído
+ *  como função pura/exportada pra ser testável com streams mock (produção
+ *  sempre chama com `child.stdout`/`process.stdout` reais). */
+export function pipeWorkerStream(
+  source: NodeJS.ReadableStream | null | undefined,
+  destination: NodeJS.WritableStream,
+  streamName: string,
+  label: string,
+): void {
+  source?.on("error", (err: Error) => {
+    console.error(`run-tests: erro no stream ${streamName} do worker (${label}): ${err.message}`);
+  });
+  source?.pipe(destination).on("error", (err: Error) => {
+    console.error(`run-tests: erro de escrita em ${streamName} pro worker ${label}: ${err.message}`);
+  });
+}
+
 /** Roda um único worker (processo `fork`ado) até o fim — resolve com o
  *  `WorkerResult` recebido via IPC, ou com `{exitCode:1, completedFiles:0}`
  *  se o processo morrer sem mandar mensagem (crash, OOM, kill externo, OU
@@ -1006,13 +1032,8 @@ function runWorker(payload: WorkerPayload, scriptPath: string, payloadPath: stri
       execArgv: ["--import", "tsx"],
       stdio: ["inherit", "pipe", "pipe", "ipc"],
     });
-    const onStreamError = (streamName: string) => (err: Error) => {
-      console.error(`run-tests: erro no stream ${streamName} do worker (${payload.label}): ${err.message}`);
-    };
-    child.stdout?.on("error", onStreamError("stdout"));
-    child.stderr?.on("error", onStreamError("stderr"));
-    child.stdout?.pipe(process.stdout);
-    child.stderr?.pipe(process.stderr);
+    pipeWorkerStream(child.stdout, process.stdout, "stdout", payload.label);
+    pipeWorkerStream(child.stderr, process.stderr, "stderr", payload.label);
 
     const workerTimeoutMs = computeWorkerTimeoutMs(payload);
     const timer = setTimeout(() => {
