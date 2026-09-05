@@ -459,7 +459,46 @@ const coverChanged = postAfter.thumbnail_url !== postBefore.thumbnail_url;
 
 Falha de cover **não bloqueia** teste de email nem publicação — Beehiiv usa fallback da publication. Mas thumb correto melhora OG previews em LinkedIn/Twitter shares.
 
-**⚠️ Confirmar "Show thumbnail on top in web" OFF (#7412).** No mesmo passo Web onde a cover é setada, o Beehiiv tem um toggle "Show thumbnail on top in web" — quando ligado, ele renderiza a cover como hero full-width no TOPO da versão web do post, ACIMA do corpo, que já abre com a mesma imagem inline no D1 (duplicação + hero desproporcional, achado ao vivo #7412 em `diar.ia.br/p/tend-ncias-2026`, publicado em janeiro/2026). Verificado ao vivo 05/09/2026: as edições recentes (Sep 2026) já têm esse toggle **OFF** — não fica claro se é o default atual do template ou se alguém já ajustou manualmente. Fica logo abaixo da seção "Post thumbnail" (rótulo da UI, distinto do botão "Add thumbnail" usado em §4b acima) no step Web. **Checar visualmente antes de fechar §4b — se estiver ON, desligar (clicar o toggle) antes de "Update web"; nunca deixar ligado nem seguir sem checar.** Se em alguma edição futura o toggle nascer ON (ainda não observado, mas não confirmado como impossível), abrir issue nova pra decidir se vale automatizar via `javascript_tool` em vez de manter checagem visual manual. Sem custo de correção retroativa nas edições antigas já publicadas (aceitas como histórico, #7412) — isso é só pra não reintroduzir o problema pra frente.
+#### 4b.1 Desligar toggle "Show thumbnail on top in web" — automatizado (#7412)
+
+Issue #7412: quando o toggle "Show thumbnail on top in web" está ligado, o Beehiiv renderiza a cover como hero full-width no TOPO da versão web do post (acima do corpo, que já abre com a mesma imagem inline no D1) → duplicação + hero desproporcional. Exemplo ao vivo: `diar.ia.br/p/tend-ncias-2026`.
+
+**Fix automático, chamado IMEDIATAMENTE após cover aplicada (§4b):**
+
+```typescript
+import {
+  buildThumbnailToggleCheckAndFixJs,
+  classifyThumbnailToggleResult,
+  formatThumbnailToggleMessage,
+} from "scripts/lib/beehiiv-thumbnail-toggle.ts";
+
+// Disparar fix do toggle (§4b, após cover aplicada)
+const toggleResult = await mcp__claude-in-chrome__javascript_tool({
+  code: buildThumbnailToggleCheckAndFixJs()
+});
+
+const toggleState = classifyThumbnailToggleResult(toggleResult);
+const toggleMessage = formatThumbnailToggleMessage(toggleState);
+log_info(toggleMessage); // Log do resultado
+
+// Se toggle não foi encontrado, avisar (pode não estar no DOM ainda, ou UI mudou)
+if (!toggleState.found) {
+  log_warn(toggleMessage);
+  // NUNCA bloqueia o fluxo — é possível que o Web step ainda esteja carregando
+}
+
+// Se estava ligado e não conseguimos desligar (rare), avisar pro editor
+if (toggleState.enabled && !toggleState.toggled) {
+  log_error(toggleMessage);
+  // Não bloqueia, mas garante visibilidade do problema
+}
+```
+
+**⚠️ Fallback: se automação não conseguir desligar, verificação manual obrigatória (#7412).** NÃO prosseguir se:
+- `found: false` — toggle não localizado (UI mudou, Web step ainda carregando, ou seletor desatualizado).
+- `enabled: true && toggled: false` — toggle estava ON e a automação não conseguiu desligar.
+
+Em ambos os casos, **verificar visualmente no Beehiiv se "Show thumbnail on top in web" está OFF, e desligar manualmente (1 clique) se estiver ON, antes de "Update web"**. Sem confirmar manualmente, o editor corre risco de reintroduzir a duplicação de imagem (#7412 ao vivo).
 
 **⚠️ DEPRECATED (#1705) — NÃO usar como primário:** o fluxo legado "Use from library → **Upload from URL**" (`buildCoverUploadJs` + `buildCoverApplyLocateJs`) sobe a imagem pro media library mas **não aplica** como thumbnail na UI atual (clicar o card abre preview, não aplica). Em 260604 falhou em 4 tentativas; o DataTransfer aplicou de primeira. Mantido no helper só como fallback histórico.
 
