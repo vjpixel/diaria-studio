@@ -105,6 +105,7 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
 | `npx tsx --eval` (direto, sem LLM) | classificação determinística | nenhum |
 | `~/.hermes/scripts/opus-daily-diff-review.sh` | review Opus do diff ACUMULADO do dia (cron separado, 1x/dia; #6865, ex-`daily-consolidated-review.sh`) | Anthropic (assinatura) |
 | `~/.hermes/scripts/continuo-pr-review.sh` | review Sonnet de toda PR aberta no repo, exceto `bot/*` (escopo ampliado além de `continuo/*` no #7446 item 4 — PR de qualquer branch podia ficar sem merger nenhum; cron separado, cadência: derivar com `hermes cron list --all` — nunca esta prosa, #6928; #6865) — o MODELO nunca mergeia (`gh pr merge` fora do `--allowedTools`); o SCRIPT BASH mergeia depois, atrás de 8 portões fail-closed (#6926) — `REPO` fixo em `diaria-studio`, nunca toca PR do fork (#6817 item 6). `escalate` label a PR (`continuo-escalado`) e notifica só na 1ª vez (#7446 item 2). | Anthropic (assinatura) |
+| `npx tsx scripts/check-continuo-ci-fixer-candidate.ts` / `mark-continuo-ci-fix-attempted.ts` | antes de reivindicar issue nova, escolhe a PR `continuo/*` mais antiga com CI `fail` e sem tentativa de conserto ainda (§3b, #7446 item 3); cap de 1 tentativa via label `continuo-ci-fix-tentado` | determinístico (npx tsx), sem LLM |
 
 ## Cada ciclo (tick do cron)
 
@@ -330,6 +331,51 @@ ordem:
    (fallback, não mais caminho único): caminho sensível, e diff ≥ limiar —
    a revisão desta sessão é rasa por design, só decide sobre o que
    consegue julgar.
+
+### 3b. Antes de reivindicar issue nova: candidata de conserto de CI (#7446 item 3)
+
+**Medido ao vivo (04-05/09/2026): PR #7429/#7432 com CI em FAILURE há
+17h/15h, sem ninguém tentar consertar** — o tick que abre a PR morre
+(budget/crash/fim) antes do CI terminar, e o próximo reivindica outra
+issue sem voltar. **NÃO reintroduz "PR pendente bloqueia o tick"** (#6917:
+"PR aberta NUNCA encerra o tick" segue valendo — aquilo é PR aguardando
+REVIEW, estado normal; isto é CI **vermelho**, estado quebrado que ninguém
+mais conserta sozinho). Só muda a PRIORIDADE do que o tick faz primeiro.
+
+Logo antes de reivindicar uma issue nova (depois de processar a fila de PRs
+do passo 3 acima), rodar:
+
+```
+npx tsx scripts/check-continuo-ci-fixer-candidate.ts
+```
+
+Retorna `{"candidate": number | null, "checked": number}`. `candidate` não
+nulo = PR `continuo/*` aberta com CI reprovado de verdade (`fail` — nunca
+`pending`/`error`/`blocked_by_conflict`) sem label `continuo-ci-fix-tentado`
+ainda. Se houver candidata:
+
+1. **Antes de tocar em qualquer código**, rodar
+   `npx tsx scripts/mark-continuo-ci-fix-attempted.ts --pr N` — aplica
+   `continuo-ci-fix-tentado`, fechando o cap de 1 tentativa por PR
+   (`selectCiFixCandidate`, `scripts/lib/continuo-ci-fixer-eligibility.ts`)
+   ANTES de gastar tempo consertando (review da PR #7450: marcar só DEPOIS
+   deixaria uma janela de corrida do tamanho do conserto inteiro entre 2
+   ticks escolhendo a MESMA PR; marcar antes reduz a janela pro intervalo
+   entre "escolher" e "marcar"). Exit ≠ 0 = o label NÃO pegou de verdade —
+   tratar como falha real (não seguir como se tivesse fechado o cap; a PR
+   segue candidata no próximo tick, o que é aceitável — a alternativa,
+   assumir sucesso silenciosamente, É o livelock que este mecanismo existe
+   pra evitar).
+2. Consertar o CI dessa PR (harness delegado do passo 4, sobre a branch já
+   existente — nunca abrir PR novo pra isto). Sucesso ou falha do conserto
+   não muda nada aqui — o label já está aplicado, o cap já fechou.
+3. Seguir o tick normalmente (reivindicar issue nova se sobrar budget).
+
+`checked: -1` (`gh pr list` falhou) = "nenhuma candidata", fail-soft. PR que
+recebeu a tentativa e segue vermelha fica coberta pelo `escalate` do
+gate de merge (#7446 item 2, label `continuo-escalado`) e pela checagem 9
+de `watch-continuo-health.sh` (#7446 item 6, alarme de fila) — nunca fica
+invisível, só para de ser retentada mecanicamente.
 
 ### 4. Implementar issues elegíveis — via harness delegado
 
