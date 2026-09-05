@@ -209,6 +209,7 @@ import {
   openDiariaSubscribersDb,
   getStoreCounts,
 } from "./lib/diaria-subscribers-db.ts";
+import { runCanonicalEdicaoBackfillFailSoft } from "./lib/diaria-subscribers-edicao-canonica.ts";
 import {
   ingestPostEngagement,
   verifyBeehiivIngestion,
@@ -721,6 +722,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   const coverage = manifestCoverageSummary(manifest);
+  // #7204 (pós-#7249): último passo — refresca `event.edicao_canonica` com o
+  // dado recém-ingerido. Fail-soft de propósito (ver docstring de
+  // `runCanonicalEdicaoBackfillFailSoft`): uma falha aqui nunca deve
+  // reportar a ingestão inteira como erro.
+  const canonicalEdicaoBackfill = runCanonicalEdicaoBackfillFailSoft(dbPath);
   console.log(
     JSON.stringify(
       {
@@ -746,6 +752,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         },
         store_counts: storeCounts,
         reset_invalidated_sibling_manifests: invalidatedSiblingManifests,
+        canonical_edicao_backfill: canonicalEdicaoBackfill,
       },
       null,
       2,

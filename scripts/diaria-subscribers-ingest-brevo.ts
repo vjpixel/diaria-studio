@@ -81,6 +81,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoGet } from "./lib/brevo-client.ts";
 import { pool } from "./lib/pool.ts";
 import { DEFAULT_DB_PATH, openDiariaSubscribersDb } from "./lib/diaria-subscribers-db.ts";
+import { runCanonicalEdicaoBackfillFailSoft } from "./lib/diaria-subscribers-edicao-canonica.ts";
 import { ingestBrevoContact, type BrevoAccountPlatform } from "./lib/brevo-subscribers-ingest.ts";
 import {
   buildInitialManifest,
@@ -443,12 +444,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   db.close();
 
+  // #7204 (pós-#7249): último passo — refresca `event.edicao_canonica` com o
+  // dado recém-ingerido (fail-soft, ver docstring de `runCanonicalEdicaoBackfillFailSoft`).
+  const canonicalEdicaoBackfill = runCanonicalEdicaoBackfillFailSoft(dbPath);
+
   console.log(
     JSON.stringify(
       {
         db: dbPath,
         manifest: manifestPath,
         accounts: results,
+        canonical_edicao_backfill: canonicalEdicaoBackfill,
       },
       null,
       2,

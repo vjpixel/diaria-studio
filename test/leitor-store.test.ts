@@ -665,6 +665,130 @@ describe("summarizeStoreLeitoresCanonicalDedup", () => {
 // CLI
 // ---------------------------------------------------------------------------
 
+describe("main (CLI) — default agora é canônico (#7204, wiring pós-#7249)", () => {
+  it("sem flag nenhuma, o default JÁ dedupa por edição canônica — regressão central da issue", () => {
+    const dataRoot = mkdtempSync(resolve(tmpdir(), "leitor-store-default-canonical-"));
+    const dbDir = resolve(dataRoot, "diaria-subscribers");
+    mkdirSync(dbDir, { recursive: true });
+    const dbPath = resolve(dbDir, "diaria-subscribers.db");
+    const seed = openDiariaSubscribersDb(dbPath);
+    const id = ensureSubscriber(seed, "beehiiv", "bh-1", "leitor@x.com", "2026-04-27T06:00:00.000Z");
+    seed
+      .prepare(
+        "INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, 'kit', NULL, ?, ?)",
+      )
+      .run(id, "leitor@x.com", "2026-04-27T06:00:00.000Z");
+    upsertSubscription(seed, id, "beehiiv", { status: "active", enteredAt: "2026-04-27T06:00:00.000Z", exitedAt: null, source: null });
+    // A MESMA edição do dia, disparada por 2 plataformas — hoje (soma por
+    // plataforma) contaria 2 recebidas; o dedup canônico tem que contar 1.
+    // `--received-min 2` torna a diferença observável em `leitores_v1`:
+    // 1 recebida NUNCA passa nesse piso; 2 recebidas passam (CTR 0% não
+    // importa pro piso de recebidas em si, só pro CTR mínimo — usamos
+    // `--ctr-min 0` pra isolar exatamente o eixo "quantas recebidas").
+    recordEvent(seed, {
+      subscriberId: id,
+      platform: "beehiiv",
+      type: "delivered",
+      externalEventId: "bh-d1",
+      edicao: "post_abc",
+      ts: "2026-04-27T09:00:00.000Z",
+    });
+    recordEvent(seed, {
+      subscriberId: id,
+      platform: "kit",
+      type: "delivered",
+      externalEventId: "kit-d1",
+      edicao: "bcast_xyz",
+      ts: "2026-04-27T09:10:00.000Z",
+    });
+    seed.close();
+
+    const readOut = (argv: string[]): Record<string, unknown> => {
+      const origLog = console.log;
+      let out = "";
+      console.log = (msg?: unknown) => {
+        out += String(msg);
+      };
+      try {
+        leitorStoreMain(argv);
+      } finally {
+        console.log = origLog;
+      }
+      return JSON.parse(out);
+    };
+
+    const defaultPayload = readOut(["--db", dbPath, "--received-min", "2", "--ctr-min", "0"]);
+    const legacyPayload = readOut(["--db", dbPath, "--received-min", "2", "--ctr-min", "0", "--legacy-per-platform-sum"]);
+
+    assert.equal(defaultPayload.leitores_v1, 0, "default (canônico): 1 recebida deduplicada, não passa no piso de 2");
+    assert.equal(legacyPayload.leitores_v1, 1, "--legacy-per-platform-sum: 2 recebidas somadas, passa no piso de 2");
+  });
+
+  it("--legacy-per-platform-sum volta pra soma antiga (sem dedup) — leitores_v1 nunca é MENOR que o default canônico", () => {
+    const dataRoot = mkdtempSync(resolve(tmpdir(), "leitor-store-legacy-flag-"));
+    const dbDir = resolve(dataRoot, "diaria-subscribers");
+    mkdirSync(dbDir, { recursive: true });
+    const dbPath = resolve(dbDir, "diaria-subscribers.db");
+    const seed = openDiariaSubscribersDb(dbPath);
+    const id = ensureSubscriber(seed, "beehiiv", "bh-1", "leitor@x.com", "2026-04-27T06:00:00.000Z");
+    seed
+      .prepare(
+        "INSERT INTO identity_alias (subscriber_id, platform, external_id, email, created_at) VALUES (?, 'kit', NULL, ?, ?)",
+      )
+      .run(id, "leitor@x.com", "2026-04-27T06:00:00.000Z");
+    upsertSubscription(seed, id, "beehiiv", { status: "active", enteredAt: "2026-04-27T06:00:00.000Z", exitedAt: null, source: null });
+    // 20 edições REAIS na Beehiiv (dias distintos) + 1 edição do dia
+    // disparada TAMBÉM pelo Kit (mesmo AAMMDD) — soma ingênua: 21; canônica: 20.
+    for (let i = 0; i < 20; i++) {
+      recordEvent(seed, {
+        subscriberId: id,
+        platform: "beehiiv",
+        type: "delivered",
+        externalEventId: `bh-d${i}`,
+        edicao: `post-${i}`,
+        ts: `2026-0${1 + Math.floor(i / 28)}-${String((i % 28) + 1).padStart(2, "0")}T09:00:00.000Z`,
+      });
+    }
+    recordEvent(seed, {
+      subscriberId: id,
+      platform: "kit",
+      type: "delivered",
+      externalEventId: "kit-d1",
+      edicao: "bcast_xyz",
+      ts: "2026-01-01T09:05:00.000Z", // mesmo dia do post-0 (2026-01-01)
+    });
+    recordEvent(seed, { subscriberId: id, platform: "beehiiv", type: "click", externalEventId: "bh-c1", edicao: "post-0", ts: "2026-01-01T09:00:00.000Z" });
+    seed.close();
+
+    const readOut = (argv: string[]): Record<string, unknown> => {
+      const origLog = console.log;
+      let out = "";
+      console.log = (msg?: unknown) => {
+        out += String(msg);
+      };
+      try {
+        leitorStoreMain(argv);
+      } finally {
+        console.log = origLog;
+      }
+      return JSON.parse(out);
+    };
+
+    const defaultPayload = readOut(["--db", dbPath]);
+    const legacyPayload = readOut(["--db", dbPath, "--legacy-per-platform-sum"]);
+    const canonicalFlagPayload = readOut(["--db", dbPath, "--canonical-dedup"]);
+
+    // Default e --canonical-dedup são o MESMO caminho — leitores_v1 idêntico.
+    assert.equal(defaultPayload.leitores_v1, canonicalFlagPayload.leitores_v1);
+    // Default (21 recebidas ingênuas -> 20 canônicas) segue passando no
+    // piso de 20 recebidas de qualquer forma neste fixture — a asserção que
+    // importa é que a SOMA (legacy) nunca é menor que a canônica (o dedup
+    // só pode reduzir contagem, nunca aumentar).
+    assert.equal(defaultPayload.leitores_v1, 1);
+    assert.equal(legacyPayload.leitores_v1, 1);
+  });
+});
+
 describe("main (CLI)", () => {
   it("--canonical-dedup imprime summary via summarizeStoreLeitoresCanonicalDedup (mesmo shape)", () => {
     const dataRoot = mkdtempSync(resolve(tmpdir(), "leitor-store-canonical-cli-"));

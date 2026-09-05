@@ -97,11 +97,16 @@
  *
  * ## CLI
  *
- *   npx tsx scripts/lib/leitor-store.ts [--db <path>] [--ctr-min 2] [--received-min 20] [--canonical-dedup]
+ *   npx tsx scripts/lib/leitor-store.ts [--db <path>] [--ctr-min 2] [--received-min 20] [--legacy-per-platform-sum]
  *
- * `--canonical-dedup` (#7204): usa `summarizeStoreLeitoresCanonicalDedup` em
- * vez do default — dedup por edição canônica (AAMMDD) em vez de somar
- * recebidas/cliques por plataforma. Ver docstring dessa função.
+ * **Default (#7204, wiring pós-#7249): dedup por edição canônica.** Sem
+ * flag, o CLI usa `summarizeStoreLeitoresCanonicalDedup` — a mesma pessoa
+ * recebendo a MESMA edição do dia por 2+ plataformas conta 1, não 2 (ver
+ * `diaria-subscribers-edicao-canonica.ts`). `--canonical-dedup` continua
+ * aceito por compatibilidade (hoje um no-op — é o comportamento default).
+ * `--legacy-per-platform-sum` volta ao `summarizeStoreLeitores` antigo
+ * (soma por plataforma, infla por assinante multi-plataforma) — só pra
+ * comparação/auditoria, nunca deveria ser o número citado como fato.
  *
  * Só leitura local (mesma disciplina de `leitor.ts`) — nunca chama API
  * nenhuma ao vivo. Sem `data/diaria-subscribers/diaria-subscribers.db`
@@ -512,13 +517,13 @@ export function summarizeStoreLeitores(
  * mesmo shape de retorno (`StoreLeitorSummary`), só a fonte do `LeitorInput`
  * muda.
  *
- * **Não é o caminho default** — `summarizeStoreLeitores`/`main()` (CLI)
- * continuam usando a soma por-plataforma de sempre; esta função é aditiva,
- * disponível via `--canonical-dedup` no CLI (ver `main`) e pra qualquer
- * consumidor que já queira o número deduplicado. Ligar isto ao caminho
- * DEFAULT do painel/CLI é decisão de produto adiada — ver docstring de
- * `diaria-subscribers-edicao-canonica.ts`, seção "O que NÃO está feito
- * aqui".
+ * **É o caminho DEFAULT do CLI desde #7204 (pós-#7249)** — `main()` chama
+ * esta função sem flag nenhuma; `summarizeStoreLeitores` (soma por-plataforma
+ * de sempre, sem dedup) só roda via `--legacy-per-platform-sum`, mantida
+ * pra quem quiser comparar/auditar o número antigo. `computeStoreLeitorInput`/
+ * `summarizeStoreLeitores` continuam existindo com o comportamento de
+ * sempre (nenhuma mudança de assinatura) — só o que o CLI chama por padrão
+ * mudou.
  */
 export function summarizeStoreLeitoresCanonicalDedup(
   db: DatabaseSync,
@@ -565,12 +570,13 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     return;
   }
   try {
-    // --canonical-dedup (#7204): dedup por edição canônica em vez de somar
-    // por plataforma — ver docstring de `summarizeStoreLeitoresCanonicalDedup`
-    // pro porquê de não ser o default ainda.
-    const summary = hasFlag(argv, "canonical-dedup")
-      ? summarizeStoreLeitoresCanonicalDedup(db, thresholds)
-      : summarizeStoreLeitores(db, thresholds);
+    // Default (#7204 pós-#7249): dedup por edição canônica — ver docstring
+    // do módulo, seção CLI. `--legacy-per-platform-sum` é o único jeito de
+    // voltar à soma antiga (infla por assinante multi-plataforma);
+    // `--canonical-dedup` segue aceito por compatibilidade, hoje um no-op.
+    const summary = hasFlag(argv, "legacy-per-platform-sum")
+      ? summarizeStoreLeitores(db, thresholds)
+      : summarizeStoreLeitoresCanonicalDedup(db, thresholds);
     console.log(JSON.stringify(summary, null, 2));
   } finally {
     db.close();
