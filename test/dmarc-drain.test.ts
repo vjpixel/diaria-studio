@@ -9,11 +9,18 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { readFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
-import { fetchReports, alarmFindingsFor, DEFAULT_GMAIL_QUERY } from "../scripts/dmarc-drain.ts";
+import {
+  fetchReports,
+  alarmFindingsFor,
+  DEFAULT_GMAIL_QUERY,
+  buildAlignedPctHistoryEntries,
+  appendAlignedPctHistory,
+} from "../scripts/dmarc-drain.ts";
 import { aggregateDmarcReports } from "../scripts/lib/dmarc-report.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -81,6 +88,72 @@ test("alarmFindingsFor dispara 1 achado por domínio com volume não-alinhado > 
   assert.equal(findings[0].family, "estado");
   assert.match(findings[0].body, /198\.51\.100\.7/);
   assert.match(findings[0].body, /6 mensagem/); // 5 + 1 não alinhadas
+});
+
+// ─── alignedPct history (#7334, #6690) ──────────────────────────────────────
+
+test("buildAlignedPctHistoryEntries produz 1 entrada por domínio com os campos da série", async () => {
+  const xml = readFixture("google-multi-record.xml");
+  const { reports } = await fetchReports("q", async () => [{ buf: Buffer.from(xml, "utf8"), filename: "x.xml", messageId: "m1" }]);
+  const summaries = aggregateDmarcReports(reports);
+  const recordedAt = "2026-09-05T12:00:00.000Z";
+
+  const entries = buildAlignedPctHistoryEntries(summaries, recordedAt);
+  assert.equal(entries.length, summaries.length);
+  for (const [i, entry] of entries.entries()) {
+    const s = summaries[i];
+    assert.equal(entry.recordedAt, recordedAt);
+    assert.equal(entry.domain, s.domain);
+    assert.equal(entry.reportCount, s.reportCount);
+    assert.equal(entry.windowBegin, s.windowBegin);
+    assert.equal(entry.windowEnd, s.windowEnd);
+    assert.equal(entry.totalMessages, s.totalMessages);
+    assert.equal(entry.alignedMessages, s.alignedMessages);
+    assert.equal(entry.alignedPct, s.alignedPct);
+  }
+});
+
+test("buildAlignedPctHistoryEntries com summaries vazio retorna array vazio", () => {
+  assert.deepEqual(buildAlignedPctHistoryEntries([], "2026-09-05T12:00:00.000Z"), []);
+});
+
+test("appendAlignedPctHistory acrescenta 1 linha JSONL por entrada, preservando execuções anteriores", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dmarc-aligned-pct-"));
+  const path = join(dir, "sub", "dmarc-aligned-pct.jsonl"); // dir intermediário ausente de propósito — cobre o mkdirSync
+  try {
+    const run1 = buildAlignedPctHistoryEntries(
+      [{ domain: "news.diar.ia.br", reportCount: 1, windowBegin: 100, windowEnd: 200, totalMessages: 10, spfRawPassMessages: 10, dkimRawPassMessages: 10, alignedMessages: 9, spfRawPassPct: 100, dkimRawPassPct: 100, alignedPct: 90, failedAlignmentSources: [] }],
+      "2026-09-01T00:00:00.000Z",
+    );
+    const run2 = buildAlignedPctHistoryEntries(
+      [{ domain: "news.diar.ia.br", reportCount: 1, windowBegin: 300, windowEnd: 400, totalMessages: 20, spfRawPassMessages: 20, dkimRawPassMessages: 20, alignedMessages: 20, spfRawPassPct: 100, dkimRawPassPct: 100, alignedPct: 100, failedAlignmentSources: [] }],
+      "2026-09-02T00:00:00.000Z",
+    );
+
+    appendAlignedPctHistory(run1, path);
+    appendAlignedPctHistory(run2, path);
+
+    const lines = readFileSync(path, "utf8").trim().split("\n");
+    assert.equal(lines.length, 2);
+    const parsed = lines.map((l) => JSON.parse(l));
+    assert.equal(parsed[0].recordedAt, "2026-09-01T00:00:00.000Z");
+    assert.equal(parsed[0].alignedPct, 90);
+    assert.equal(parsed[1].recordedAt, "2026-09-02T00:00:00.000Z");
+    assert.equal(parsed[1].alignedPct, 100);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("appendAlignedPctHistory com entries vazio não cria/toca o arquivo", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dmarc-aligned-pct-"));
+  const path = join(dir, "dmarc-aligned-pct.jsonl");
+  try {
+    appendAlignedPctHistory([], path);
+    assert.equal(existsSync(path), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // #6229 — o remetente do Google na query não tinha NENHUM teste, e foi assim

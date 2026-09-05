@@ -55,8 +55,22 @@
  * Alarme: se qualquer domínio tiver volume NÃO-alinhado > 0, avisa o editor
  * (mesmo padrão `alarm-issues.ts` dos outros alarmes do repo — issue com
  * fingerprint por domínio, auto-fecha depois de 2 execuções limpas).
+ *
+ * **Série histórica de `alignedPct` (#7334, #6690, 05/09/2026):** cada
+ * execução (não-dry-run) acrescenta 1 linha por domínio em
+ * `data/dmarc-aligned-pct.jsonl` — append-only, nunca sobrescreve rodadas
+ * anteriores. Existe porque DUAS decisões futuras precisam da mesma série e
+ * nenhuma delas tinha dado nenhum até agora: (a) #7334 — o limiar de
+ * enforcement `p=none`→`quarantine` gated até 2026-09-15 precisa de "2-4
+ * semanas de relatório limpo" medido em percentual, não vibe; (b) #6690 —
+ * calibrar o limiar do alarme de `alarmFindingsFor` (hoje dispara com
+ * QUALQUER volume não-alinhado > 0, o que nunca fecha pra sempre num
+ * domínio com forwarding corporativo legítimo) exige olhar a série real
+ * antes de escolher um número. Esta unidade só INSTRUMENTA — não decide o
+ * limiar de nenhuma das duas, e não muda o gatilho do alarme existente nem
+ * configuração DNS.
  */
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -87,6 +101,8 @@ const GMAIL_API = "https://www.googleapis.com/gmail/v1/users/me";
 const OUTPUT_DIR = resolve(ROOT, "data", "dmarc-reports");
 // DMARC query corrigida (overnight 260826): remetente real = noreply-dmarc-support@google.com (corrigido de dmarc-noreply@google.com)
 const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "dmarc-reports", "alarm-issues.json");
+/** #7334/#6690: série histórica append-only de `alignedPct` por execução. */
+const ALIGNED_PCT_HISTORY_PATH = resolve(ROOT, "data", "dmarc-aligned-pct.jsonl");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[dmarc-drain]";
 
@@ -273,6 +289,46 @@ export function alarmFindingsFor(summaries: DmarcDomainSummary[]): AlarmFinding[
   return findings;
 }
 
+// ─── Série histórica de alignedPct (#7334, #6690) ───────────────────────────
+
+export interface AlignedPctHistoryEntry {
+  /** ISO 8601 — timestamp desta execução do drain (não a janela do relatório). */
+  recordedAt: string;
+  domain: string;
+  reportCount: number;
+  /** epoch segundos — janela coberta pelos relatórios agregados nesta execução. */
+  windowBegin: number;
+  windowEnd: number;
+  totalMessages: number;
+  alignedMessages: number;
+  alignedPct: number;
+}
+
+/** Converte os summaries de 1 execução em entradas de histórico — 1 por
+ * domínio. Pura, sem I/O; `appendAlignedPctHistory` é quem grava. */
+export function buildAlignedPctHistoryEntries(summaries: DmarcDomainSummary[], recordedAt: string): AlignedPctHistoryEntry[] {
+  return summaries.map((s) => ({
+    recordedAt,
+    domain: s.domain,
+    reportCount: s.reportCount,
+    windowBegin: s.windowBegin,
+    windowEnd: s.windowEnd,
+    totalMessages: s.totalMessages,
+    alignedMessages: s.alignedMessages,
+    alignedPct: s.alignedPct,
+  }));
+}
+
+/** Acrescenta as entradas desta execução em `data/dmarc-aligned-pct.jsonl` —
+ * append-only (1 linha por domínio por execução), nunca sobrescreve rodadas
+ * anteriores. Mesmo padrão de `data/sources/{slug}.jsonl`/`run-log.jsonl`. */
+export function appendAlignedPctHistory(entries: AlignedPctHistoryEntry[], path: string = ALIGNED_PCT_HISTORY_PATH): void {
+  if (entries.length === 0) return;
+  mkdirSync(dirname(path), { recursive: true });
+  const lines = entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
+  appendFileSync(path, lines, "utf-8");
+}
+
 // ─── Estado (alarm-issues) ───────────────────────────────────────────────────
 // saveAlarmIssuesState: consolidado em scripts/lib/alarm-issues.ts (#7124) —
 // importado acima. loadAlarmIssuesState continua LOCAL: diverge do padrão
@@ -328,8 +384,12 @@ async function main(): Promise<void> {
   mkdirSync(OUTPUT_DIR, { recursive: true });
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   const outPath = resolve(OUTPUT_DIR, `${stamp}-summary.json`);
-  writeFileAtomic(outPath, JSON.stringify({ generatedAt: new Date().toISOString(), query, summaries, parseErrors: result.errors }, null, 2) + "\n");
+  const generatedAt = new Date().toISOString();
+  writeFileAtomic(outPath, JSON.stringify({ generatedAt, query, summaries, parseErrors: result.errors }, null, 2) + "\n");
   console.log(`${LOG_PREFIX} resumo salvo em ${outPath}`);
+
+  appendAlignedPctHistory(buildAlignedPctHistoryEntries(summaries, generatedAt));
+  console.log(`${LOG_PREFIX} série histórica de alignedPct atualizada em ${ALIGNED_PCT_HISTORY_PATH}`);
 
   const findings = alarmFindingsFor(summaries);
   const alarmState = loadAlarmIssuesState();
