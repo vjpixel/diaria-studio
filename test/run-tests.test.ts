@@ -1287,7 +1287,7 @@ describe("pipeWorkerStream (#7448) — erro de escrita no DESTINO do pipe é log
     assert.equal(recebido.join(""), "linha de teste\n", "pipe tem de continuar entregando dados normalmente");
   });
 
-  it("erro no DESTINO do pipe é logado com o label do worker, nunca silenciado", () => {
+  it("erro no DESTINO do pipe é logado, nunca silenciado (sem atribuir a um worker — destino é compartilhado)", () => {
     const source = new PassThrough();
     const destination = new PassThrough();
     const originalError = console.error;
@@ -1303,8 +1303,38 @@ describe("pipeWorkerStream (#7448) — erro de escrita no DESTINO do pipe é log
     }
     const linha = logs.find((l) => l.includes("erro de escrita em stdout"));
     assert.ok(linha, `esperava uma linha de log sobre erro de escrita; logs capturados: ${JSON.stringify(logs)}`);
-    assert.match(linha, /worker-3/, "o label do worker precisa aparecer no log, pra identificar qual worker falhou");
     assert.match(linha, /EPIPE simulado/, "a mensagem original do erro precisa aparecer no log");
+    // #7448 (review PR #7472, P2): o destino é COMPARTILHADO entre workers —
+    // não dá pra atribuir corretamente a um worker específico, então o
+    // label NÃO aparece nesta mensagem (diferente da mensagem de erro na
+    // origem, que É por worker — ver teste seguinte).
+    assert.ok(!linha.includes("worker-3"), "mensagem de erro no DESTINO não deve fingir saber qual worker causou");
+  });
+
+  it("REGRESSÃO (#7448, review PR #7472 P2): 2 workers concorrentes no MESMO destino compartilhado — 1 erro gera 1 log, não N", () => {
+    const sourceA = new PassThrough();
+    const sourceB = new PassThrough();
+    const destinationCompartilhado = new PassThrough();
+    const originalError = console.error;
+    const logs: string[] = [];
+    console.error = (...args: unknown[]) => void logs.push(args.join(" "));
+    try {
+      // Antes do fix: cada chamada anexava um listener de erro NOVO no
+      // mesmo destino — 1 erro disparava em TODOS os listeners, cada um
+      // "culpando" o worker errado. Depois do fix: só o 1º listener é
+      // anexado (guarda de idempotência por objeto de stream).
+      pipeWorkerStream(sourceA, destinationCompartilhado, "stdout", "worker-A");
+      pipeWorkerStream(sourceB, destinationCompartilhado, "stdout", "worker-B");
+      destinationCompartilhado.emit("error", new Error("EPIPE simulado — destino compartilhado"));
+    } finally {
+      console.error = originalError;
+    }
+    const linhas = logs.filter((l) => l.includes("erro de escrita em stdout"));
+    assert.equal(
+      linhas.length,
+      1,
+      `1 erro no destino compartilhado deve gerar exatamente 1 linha de log, não uma por worker anexado; logs: ${JSON.stringify(logs)}`,
+    );
   });
 
   it("erro na ORIGEM do stream continua logado (comportamento pré-existente preservado)", () => {
