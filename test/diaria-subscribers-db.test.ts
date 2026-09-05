@@ -198,12 +198,13 @@ describe("migrateSubscriptionColumns — ALTER TABLE idempotente sobre .db povoa
 // ---------------------------------------------------------------------------
 
 describe("migrateEventColumns — ALTER TABLE idempotente sobre event (#7203)", () => {
-  it("adiciona 'subtype' quando o schema é criado do zero (via openDiariaSubscribersDb)", () => {
+  it("adiciona 'subtype' e 'edicao_canonica' quando o schema é criado do zero (via openDiariaSubscribersDb)", () => {
     const db = openDiariaSubscribersDb(":memory:");
     const cols = new Set(
       (db.prepare("PRAGMA table_info(event)").all() as Array<{ name: string }>).map((c) => c.name),
     );
     assert.ok(cols.has("subtype"));
+    assert.ok(cols.has("edicao_canonica"), "#7204 — coluna de agregação cross-plataforma");
     db.close();
   });
 
@@ -213,10 +214,19 @@ describe("migrateEventColumns — ALTER TABLE idempotente sobre event (#7203)", 
     assert.doesNotThrow(() => migrateEventColumns(db));
     const cols = (db.prepare("PRAGMA table_info(event)").all() as Array<{ name: string }>).map((c) => c.name);
     assert.equal(cols.filter((c) => c === "subtype").length, 1);
+    assert.equal(cols.filter((c) => c === "edicao_canonica").length, 1);
     db.close();
   });
 
-  it("engole 'duplicate column name' — processo concorrente já commitou a coluna (#7222 finding 2, mesmo padrão)", () => {
+  it("cria o índice idx_event_edicao_canonica (#7204) — idempotente, rodar 2x não lança", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    migrateEventColumns(db);
+    const indexes = (db.prepare("PRAGMA index_list(event)").all() as Array<{ name: string }>).map((i) => i.name);
+    assert.ok(indexes.includes("idx_event_edicao_canonica"));
+    db.close();
+  });
+
+  it("engole 'duplicate column name' — processo concorrente já commitou a(s) coluna(s) (#7222 finding 2, mesmo padrão)", () => {
     let alterCalls = 0;
     const fakeDb = {
       prepare: (sql: string) => {
@@ -225,11 +235,14 @@ describe("migrateEventColumns — ALTER TABLE idempotente sobre event (#7203)", 
       },
       exec: (ddl: string) => {
         alterCalls++;
-        if (ddl.includes("subtype")) throw new Error("SQLITE_ERROR: duplicate column name: subtype");
+        if (ddl.includes("ADD COLUMN")) throw new Error("SQLITE_ERROR: duplicate column name: x");
       },
     } as unknown as DatabaseSync;
     assert.doesNotThrow(() => migrateEventColumns(fakeDb));
-    assert.equal(alterCalls, 1);
+    // 2 colunas de migração (subtype, edicao_canonica) — ambas "já existem"
+    // no processo concorrente (engolidas) — + 1 CREATE INDEX (sempre roda,
+    // idempotente por si só, nunca lança "duplicate column name").
+    assert.equal(alterCalls, 3);
   });
 
   it("relança qualquer erro que NÃO seja 'duplicate column name'", () => {
@@ -273,9 +286,11 @@ describe("migrateEventColumns — ALTER TABLE idempotente sobre event (#7203)", 
 
     const after = (db.prepare("PRAGMA table_info(event)").all() as Array<{ name: string }>).map((c) => c.name);
     assert.ok(after.includes("subtype"));
+    assert.ok(after.includes("edicao_canonica"));
     const row = db.prepare("SELECT * FROM event WHERE id = 1").get() as Record<string, unknown>;
     assert.equal(row.type, "bounce");
     assert.equal(row.subtype, null, "linha pré-existente sobrevive, coluna nova NULL, sem backfill");
+    assert.equal(row.edicao_canonica, null, "coluna nova NULL, sem backfill automático no ALTER TABLE");
     db.close();
   });
 });

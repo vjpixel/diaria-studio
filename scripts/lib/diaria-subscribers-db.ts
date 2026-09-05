@@ -450,6 +450,23 @@ export function migrateSubscriptionColumns(db: DatabaseSync): void {
  */
 const EVENT_MIGRATION_COLUMNS: ReadonlyArray<{ name: string; ddl: string }> = [
   { name: "subtype", ddl: "ALTER TABLE event ADD COLUMN subtype TEXT" },
+  // #7204 (fatia 9 do épico #7163): `edicao` guarda o id NATIVO da
+  // plataforma (post id da Beehiiv, broadcast id do Kit, campaignId da
+  // Brevo) — a MESMA edição do dia entra 3x com 3 chaves diferentes quando
+  // as 3 plataformas têm dado, inflando `COUNT(DISTINCT edicao)`.
+  // `edicao_canonica` guarda a chave de agregação `AAMMDD` (mesma
+  // identidade editorial de `data/editions/{AAMMDD}/`) resolvida por
+  // `backfillCanonicalEdicaoColumn` (`diaria-subscribers-edicao-
+  // canonica.ts`) a partir do MENOR `ts` entre os eventos `delivered`/
+  // `sent` de cada `(platform, edicao)` — nunca calculada na hora do
+  // `recordEvent` (a heurística MIN(ts) só faz sentido depois que TODOS os
+  // eventos daquele disparo já foram gravados). NULL até o backfill rodar
+  // pra aquele grupo — quem lê nunca deve tratar NULL como "edição sem
+  // canônica conhecida", e sim "backfill ainda não rodou pra este grupo"
+  // (rodar de novo é sempre seguro, idempotente). Guarda as DUAS colunas —
+  // `edicao` continua a chave de rastreabilidade por plataforma; só a
+  // AGREGAÇÃO cross-plataforma usa `edicao_canonica`.
+  { name: "edicao_canonica", ddl: "ALTER TABLE event ADD COLUMN edicao_canonica TEXT" },
 ];
 
 /**
@@ -479,6 +496,11 @@ export function migrateEventColumns(db: DatabaseSync): void {
       // este exec — mesmo resultado final, seguir sem lançar.
     }
   }
+  // Índice pra consulta direta em SQL ("quantas edições canônicas distintas
+  // esta pessoa recebeu") sem precisar do mapa em memória de
+  // `buildCanonicalEdicaoMapFromEvents` — CREATE INDEX IF NOT EXISTS é
+  // idempotente, seguro rodar a cada abertura do DB (#7204).
+  db.exec("CREATE INDEX IF NOT EXISTS idx_event_edicao_canonica ON event(edicao_canonica)");
 }
 
 // ---------------------------------------------------------------------------

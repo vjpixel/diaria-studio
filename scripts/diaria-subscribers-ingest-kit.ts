@@ -62,6 +62,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { listBroadcasts, getBroadcastStats, type KitBroadcastSummary, type KitBroadcastStats } from "./lib/kit-client.ts";
 import { fetchAudience, todasOuNenhuma, type BroadcastAudience, type DrainResult } from "./kit-provider-split.ts";
 import { DEFAULT_DB_PATH, openDiariaSubscribersDb, getStoreCounts } from "./lib/diaria-subscribers-db.ts";
+import { runCanonicalEdicaoBackfillFailSoft } from "./lib/diaria-subscribers-edicao-canonica.ts";
 import { ingestBroadcastAudience, verifyKitIngestion, ingestKitRoster } from "./lib/kit-subscribers-ingest.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import { buildCapturaLogEntry, serializeCapturaLogEntry } from "./lib/metrics/captura-log.ts";
@@ -396,6 +397,9 @@ export async function main(
   db.close();
 
   const coverage = manifestCoverageSummary(manifest);
+  // #7204 (pós-#7249): último passo — refresca `event.edicao_canonica` com o
+  // dado recém-ingerido (fail-soft, ver docstring de `runCanonicalEdicaoBackfillFailSoft`).
+  const canonicalEdicaoBackfill = runCanonicalEdicaoBackfillFailSoft(dbPath);
   console.log(
     JSON.stringify(
       {
@@ -407,6 +411,7 @@ export async function main(
         events_new: eventsNewTotal,
         events_already_known: eventsAlreadyKnownTotal,
         coverage,
+        canonical_edicao_backfill: canonicalEdicaoBackfill,
       },
       null,
       2,
