@@ -34,6 +34,7 @@ const DIARIA_PATH_FILES = [
   "scripts/lib/brevo-subscribers-ingest.ts",
   "scripts/lib/leitor-store.ts",
   "scripts/lib/leitor.ts",
+  "scripts/lib/diaria-subscribers-recency.ts",
   "scripts/diaria-subscribers-ingest-brevo.ts",
   "scripts/studio-ui/studio-subscribers.ts",
 ];
