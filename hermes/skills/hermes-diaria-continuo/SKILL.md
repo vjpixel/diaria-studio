@@ -125,6 +125,17 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
    piora).
 1. `cd /home/vjpixel/diaria-studio && npx tsx scripts/sync-code.ts` — fail-soft:
    warning e segue; nunca forçar pull/reset/stash.
+1b. **Continuidade com o tick anterior (#7511):** `cat
+   data/continuo/last-tick-report.md` — é o relatório do tick anterior, a
+   única coisa que precisa atravessar de um tick pro seguinte. Ausente
+   (1º tick, ou arquivo apagado) → seguir normalmente, não é erro.
+   **Substitui `context_from: ["self"]` no job do cron, que foi removido:**
+   aquele mecanismo reinjetava o output ANTERIOR INTEIRO, e esse output é
+   `header + SKILL.md verbatim + prompt + relatório` — ou seja, reinjetava
+   uma 2ª cópia completa desta skill, que o tick já carrega fresco. Medido
+   em 05/09/2026: ~36 KB de duplicação (~10,6k tokens, ~20% do baseline de
+   54,3k medido no #6712) para trazer ~3 KB de relatório. Ler este arquivo
+   entrega a mesma continuidade sem a duplicação.
 2. Guard de colisão editorial: `npx tsx scripts/lib/find-current-edition.ts
    --stage 2` (e stages relevantes). Edição em curso → registrar pausa, não
    despachar trabalho técnico concorrente neste tick.
@@ -552,6 +563,14 @@ humana continuam sendo os dois caminhos que resolvem uma PR escalada.
 
 Relatório de uma linha quando não houver trabalho — nunca reimprimir backlog
 inteiro/git status/worktree list se normal (pitfall do ciclo 26/08).
+
+**Persistir o relatório, ÚLTIMO passo do tick (#7511):** gravar o mesmo texto
+acima em `data/continuo/last-tick-report.md`, **sobrescrevendo** (nunca
+append — o arquivo é o estado do último tick, não um histórico; `history.jsonl`
+no mesmo diretório é que acumula). É o que o passo 1b lê no tick seguinte.
+`data/` é gitignored, então isso não gera diff nem entra em `git status` —
+não conflita com a regra de nunca deixar mudança sem commit. Falha de escrita
+é fail-soft: avisar e seguir, o próximo tick só perde a continuidade.
 
 ## Definição de sucesso do ciclo (critério do editor, 23/08, inalterado)
 
