@@ -254,7 +254,51 @@ qualquer um dos dois como entrada de planejamento.
 
 ## Recomendação
 
-**Manter o modelo. Subir `num_ctx` de 65.536 para 81.920.** Aplicado.
+**Manter o modelo. Subir `num_ctx` de 65.536 para 98.304.** Aplicado.
+
+### Mudança de config EXATA
+
+```bash
+# 1. snapshot de rollback (já feito):
+#    ~/model-bench/snapshots/qwen-64k.Modelfile.rollback  (num_ctx 65536)
+ollama show --modelfile qwen-64k:latest | grep -v '^#' > /tmp/atual.mf
+sed 's/^PARAMETER num_ctx .*/PARAMETER num_ctx 98304/' /tmp/atual.mf > /tmp/novo.mf
+ollama create qwen-64k:latest -f /tmp/novo.mf
+
+# rollback:
+ollama create qwen-64k:latest -f ~/model-bench/snapshots/qwen-64k.Modelfile.rollback
+```
+
+Verificado após aplicar: 6,08 GB residentes, **100% em VRAM**, 190 MiB
+livres. Janela útil medida: **92.700**.
+
+**Ainda pendente, no `~/.hermes/config.yaml` (#7527)** — escrever só via
+`npx tsx scripts/write-hermes-config.ts`, nunca `Edit`/`Write`:
+
+```yaml
+model:
+  context_length: 92700      # ACRESCENTAR: a janela ÚTIL medida.
+                             # Sem isto o Hermes resolve 131.072 por match
+                             # de substring "qwen" numa tabela estática.
+compression:
+  # REMOVER `threshold_tokens: 150000`. Sem ele o Hermes deriva 80% da
+  # janela (acp_adapter/server.py:2413) = 74.160, que dispara ANTES da
+  # truncagem. Com 150000 nunca dispara.
+```
+
+### Revisão da escolha: 81.920 → 98.304
+
+Apliquei 81.920 primeiro, escolhendo pelo consumo de **56-61k** que este
+documento então registrava. Esse número estava errado: medido no tick real
+da Fase 3, o consumo é **68.628-70.424 tokens por chamada**.
+
+Com o número corrigido, `truncation-alarm.py` — o alarme deste próprio
+harness — classificou 81.920 como **BORDA (87-89% de ocupação, "véspera de
+truncar")**. Segui o alarme em vez da minha escolha anterior. A 98.304 os
+mesmos ticks ficam em 76% e o alarme sai limpo.
+
+Custo: 190 MiB de VRAM livre contra 702. Aceito porque a máquina é dedicada
+e o modelo carregou e rodou a 98.304 durante toda a bateria de hoje sem OOM.
 
 **MAS NÃO promover o modelo local a primário do contínuo.** A Fase 3
 mediu que ele não fecha o laço: relatou ter escrito o relatório do tick sem
@@ -317,8 +361,8 @@ Célula vazia = não medido. Nunca estimativa.
 
 | modelo | maior `num_ctx` que cabe | janela útil | geração tok/s | `c` fail-closed | `d` anti-fabricação | `e` anti-alucinação | JSON |
 |---|---|---|---|---|---|---|---|
-| **qwen-64k @81.920 (aplicado)** | 81.920 | **79.134** | — | 0/2 | 2/2 | 2/2 | 6/6 |
-| qwen-64k @98.304 | 98.304 | 92.700 | 26,3 | 0/2 | 2/2 | 2/2 | 6/6 |
+| **qwen-64k @98.304 (APLICADO)** | 98.304 | **92.700** | 26,3 | 0/2 | 2/2 | 2/2 | 6/6 |
+| qwen-64k @81.920 (1ª escolha, revista) | 81.920 | 79.134 | — | 0/2 | 2/2 | 2/2 | 6/6 |
 | qwen-64k @65.536 (antes) | 65.536 | 64.854 | 23,1 | 0/2 | 2/2 | 2/2 | 6/6 |
 | qwen3.5:4b (tag pública) | 49.152 | 44.421 | 26,6 | 0/2 | 2/2 | 2/2 | 6/6 |
 | granite4:3b | 32.768 | 27.520 | 16,4 | 0/2 **fab** | 2/2 | 2/2 | 6/6 |
@@ -339,15 +383,40 @@ também em contexto realista, com o mesmo resultado.
 |---|---|---|---|---|---|---|
 | Fase 3 inicial | concluiu | **SIM (fabricou)** | **NÃO** | 0 | 1 | 0 |
 | N-tick 1 | **1800s (timeout)** | não | **NÃO** | 0 | 1 | 0 |
-| N-tick 2 | *(em execução)* | | | | | |
+| N-tick 2 | 772s | não | **SIM** | 0 | 4 | 0 |
 
-**Nenhum tick fechou o laço.** Dois modos de falha distintos — fabricação e
-estagnação até o timeout — ambos #7130.
+**2 de 3 ticks não fecharam o laço** — e a correção importa: não é "sempre
+falha". São dois modos distintos (fabricação; estagnação até o timeout) e
+um tick que escreveu o relatório. Nenhum dos três fez claim.
+
+A taxa de 2/3 bate exatamente com o que a #7130 mediu em produção ("2 de 3
+ticks longos produziram diff real e não fecharam o laço") — corroboração por
+caminho independente.
 
 Consumo medido do tick da Fase 3: **68.628 tokens por chamada** (26
 chamadas). Acima da janela antiga de 64.854: **a config anterior truncava
 ticks reais**, não só os testes sintéticos. Corrige para cima o número de
 56-61k que este documento usava antes.
+
+### Alarme de truncagem — entregue como código
+
+`scripts/model-bench/truncation-alarm.py`, não só como issue (#7528).
+Detecta pela assinatura medida: prompt excedendo a janela faz o Ollama
+manter **exatamente metade** (65.536→32.770; 98.304→49.154), sempre a
+metade final, descartando as regras do começo.
+
+Validado contra dados reais: rodado com `--janela 65536`, acusou
+`[TRUNCOU]` numa sessão real (32.770 = metade exata) e `[BORDA]` em 6
+sessões de cron do contínuo a 86-92%. Com `--janela 92700` (config
+aplicada), sai limpo.
+
+### #7511 — NÃO MEDIDO (célula vazia, não estimativa)
+
+A issue está fechada e implementada. O **efeito dela na demanda de contexto
+não foi medido**: as únicas sessões pós-corte (06/09 14:25 UTC) no
+`state.db` são as minhas de teste. Nenhum tick real do contínuo rodou desde
+então — o job estava pausado e usa `glm`, não o local. Medir quando houver
+o primeiro tick real pós-corte.
 
 ### Fase 4 — não executada, por decisão com premissa declarada
 
