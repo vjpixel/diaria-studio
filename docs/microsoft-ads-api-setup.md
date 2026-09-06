@@ -219,7 +219,8 @@ API v13** é servida por um endpoint SOAP distinto e capta **motivo textual de
 rejeição de assets** — o que a UI mostra por ~14h antes que o estado
 `Disapproved` desapareça do painel (problema documentado em #5702 e #5878):
 
-- **Endpoint SOAP**: `https://api.bingads.microsoft.com/Api/Advertiser/CampaignManagement/v13/ApiCampaignManagementService.svc`
+- **Endpoint SOAP**: `https://campaign.api.bingads.microsoft.com/Api/Advertiser/CampaignManagement/v13/CampaignManagementService.svc`
+  (o host/path `api.bingads.microsoft.com/.../ApiCampaignManagementService.svc` não existe — produz HTTP 404 antes de qualquer auth ser avaliada; corrigido em #7504, confirmado ao vivo 05/09/2026).
 - **SOAPAction HTTP header**: `GetAssetGroupsEditorialReasons`
 - **SOAP 1.1** (`text/xml; charset=utf-8` — não `application/soap+xml`, que
   devolve HTTP 415).

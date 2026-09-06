@@ -41,14 +41,21 @@ export { refreshMicrosoftAdsAccessToken };
 
 /** Endpoint SOAP da Campaign Management API v13 — operações de gestão de
  *  campanha (assets, editorial reasons, etc.). Diferente da Reporting API
- *  (`reporting.api.bingads.microsoft.com`), esta é a API de *management*. */
+ *  (`reporting.api.bingads.microsoft.com`), esta é a API de *management*,
+ *  servida no subdomínio `campaign.api.bingads.microsoft.com` — **não**
+ *  `api.bingads.microsoft.com` (esse host/path não existe, produz HTTP 404
+ *  antes de qualquer auth ser avaliada; confirmado ao vivo #7504). */
 export const CAMPAIGN_MANAGEMENT_SERVICE_URL =
-  "https://api.bingads.microsoft.com/Api/Advertiser/CampaignManagement/v13/ApiCampaignManagementService.svc";
+  "https://campaign.api.bingads.microsoft.com/Api/Advertiser/CampaignManagement/v13/CampaignManagementService.svc";
 
 /** Namespace SOAP do Campaign Management v13 — vai no `@xmlns` do header e
- *  do body, igual ao `REPORTING_NAMESPACE` de PR #5934. */
+ *  do body. **Não** segue o padrão `https://api.bingads.microsoft.com/API/...`
+ *  usado erroneamente antes do #7504 — o namespace real, espelhando
+ *  `REPORTING_NAMESPACE` (`https://bingads.microsoft.com/Reporting/v13`) de
+ *  `microsoft-ads-ingest.ts`, é `https://bingads.microsoft.com/CampaignManagement/v13`
+ *  (confirmado ao vivo #7504). */
 export const CAMPAIGN_MANAGEMENT_NAMESPACE =
-  "https://api.bingads.microsoft.com/API/CampaignManagement/v13";
+  "https://bingads.microsoft.com/CampaignManagement/v13";
 
 const xmlBuilder = new XMLBuilder({
   ignoreAttributes: false,
@@ -105,28 +112,37 @@ export interface FetchAssetGroupEditorialReasonsOptions {
  * Estrutura (espelha PR #5934, mas namespace/body do Campaign Management):
  *
  *   <s:Envelope xmlns:i=... xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
- *     <s:Header xmlns="https://api.bingads.microsoft.com/API/CampaignManagement/v13">
+ *     <s:Header xmlns="https://bingads.microsoft.com/CampaignManagement/v13">
  *       <Action mustUnderstand="1">GetAssetGroupsEditorialReasons</Action>
  *       <AuthenticationToken>...</AuthenticationToken>
  *       <DeveloperToken>...</DeveloperToken>
  *       <CustomerId>...</CustomerId>
  *       <CustomerAccountId>...</CustomerAccountId>
+ *       <IdentityProvider>Google</IdentityProvider>  <!-- só quando auth.googleRefreshToken -->
  *     </s:Header>
  *     <s:Body>
- *       <GetAssetGroupsEditorialReasonsRequest xmlns="https://api.bingads.microsoft.com/API/CampaignManagement/v13">
+ *       <GetAssetGroupsEditorialReasonsRequest xmlns="https://bingads.microsoft.com/CampaignManagement/v13">
  *         <AccountId>...</AccountId>
  *         <AssetGroupId>...</AssetGroupId>
  *       </GetAssetGroupsEditorialReasonsRequest>
  *     </s:Body>
  *   </s:Envelope>
  *
+ * `<IdentityProvider>Google</IdentityProvider>` entra no SOAP Header só
+ * quando `auth.googleRefreshToken` está presente — mesmo critério e mesmo
+ * padrão de `buildSoapEnvelope` em `microsoft-ads-ingest.ts` (#5928,
+ * espelhado aqui em #7504: este módulo emitia a Reporting API corretamente
+ * mas não emitia o header aqui, na Campaign Management API). Contas Azure
+ * AD normais não devem levar este header.
+ *
  * @pure
  */
 export function buildEditorialReasonsEnvelope(
   accessToken: string,
-  auth: Pick<MicrosoftAdsAuthConfig, "developerToken" | "customerId" | "accountId">,
+  auth: Pick<MicrosoftAdsAuthConfig, "developerToken" | "customerId" | "accountId" | "googleRefreshToken">,
   assetGroupId: string,
 ): string {
+  const identityProviderHeader = auth.googleRefreshToken ? { IdentityProvider: "Google" } : {};
   return xmlBuilder.build({
     "s:Envelope": {
       "@_xmlns:i": "http://www.w3.org/2001/XMLSchema-instance",
@@ -141,6 +157,7 @@ export function buildEditorialReasonsEnvelope(
         DeveloperToken: auth.developerToken,
         CustomerId: auth.customerId,
         CustomerAccountId: auth.accountId,
+        ...identityProviderHeader,
       },
       "s:Body": {
         GetAssetGroupsEditorialReasonsRequest: {
