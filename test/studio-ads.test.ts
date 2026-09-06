@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAdsData, clearAdsCache } from "../scripts/studio-ui/studio-ads.ts";
+import { buildAdsData, clearAdsCache, buildAdsCampaignEconomics, clearAdsCampaignEconomicsCache } from "../scripts/studio-ui/studio-ads.ts";
 
 function makeRoot(): string {
   return mkdtempSync(join(tmpdir(), "studio-ads-"));
@@ -186,6 +186,128 @@ describe("buildAdsData — cache + forceRefresh", () => {
       buildAdsData(root, { now: () => new Date("2026-08-14T10:00:00Z"), cacheTtlMs: 1000 });
       const after = buildAdsData(root, { now: () => new Date("2026-08-14T10:00:02Z"), cacheTtlMs: 1000 });
       assert.equal(after.cached, false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── #7536: buildAdsCampaignEconomics ("Economia da campanha ao vivo") ────
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+function writeRunState(root: string): void {
+  const dir = join(root, "data", "aquisicao", "teste-2608");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "run-state.json"),
+    JSON.stringify(
+      {
+        d0: "2026-01-01",
+        fim_janela: "2026-01-15",
+        religar_brevo: "2026-01-22",
+        coorte_madura: "2026-02-11",
+        apuracao_snapshot: "2026-02-15",
+        bracos: ["Google Ads (teste 2608)", "Microsoft Ads (teste 2608)", "Meta Ads (teste 2608)"],
+        registrado_em: "2026-01-01T00:00:00.000Z",
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+}
+
+describe("buildAdsCampaignEconomics — sem run-state.json e sem credenciais (nunca lança)", () => {
+  it("runState null, testState com totais zerados, freshness reporta erro por fonte ausente", async () => {
+    clearAdsCampaignEconomicsCache();
+    const root = makeRoot();
+    try {
+      const fetchImpl = (async () => jsonResponse(200, { results: [] })) as typeof fetch;
+      const data = await buildAdsCampaignEconomics(root, {
+        now: () => new Date("2026-01-10T12:00:00Z"),
+        env: {},
+        fetchImpl,
+      });
+      assert.equal(data.runState, null);
+      assert.equal(data.runStateError, null);
+      assert.equal(data.testState.emAndamento, false);
+      assert.equal(data.cumulative.series.length, 0);
+      const google = data.freshness.find((f) => f.source === "Google Ads")!;
+      assert.equal(google.status, "error");
+      assert.match(google.error ?? "", /GOOGLE_ADS_/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildAdsCampaignEconomics — run-state.json presente + fontes respondendo", () => {
+  it("cruza gasto (Google Ads GAQL) com cadastros (Kit) e monta série acumulada + tabela por canal", async () => {
+    clearAdsCampaignEconomicsCache();
+    const root = makeRoot();
+    try {
+      writeRunState(root);
+      const env = {
+        GOOGLE_ADS_DEVELOPER_TOKEN: "dt",
+        GOOGLE_ADS_CLIENT_ID: "ci",
+        GOOGLE_ADS_CLIENT_SECRET: "cs",
+        GOOGLE_ADS_REFRESH_TOKEN: "rt",
+        GOOGLE_ADS_LOGIN_CUSTOMER_ID: "1",
+        GOOGLE_ADS_CUSTOMER_ID: "2",
+        KIT_API_KEY: "kit_test_key",
+      };
+      const fetchImpl = (async (url: string) => {
+        if (url.includes("oauth2.googleapis.com")) return jsonResponse(200, { access_token: "tok" });
+        return jsonResponse(200, {
+          results: [{ segments: { date: "2026-01-05" }, metrics: { costMicros: "5000000", clicks: "10", impressions: "500" } }],
+        });
+      }) as typeof fetch;
+
+      const origFetch = globalThis.fetch;
+      globalThis.fetch = (async () =>
+        jsonResponse(200, {
+          subscribers: [
+            { id: 1, email_address: "a@b.com", state: "active", created_at: "2026-01-05T00:00:00.000Z", fields: { utm_source: "google-ads" } },
+          ],
+          pagination: { has_previous_page: false, has_next_page: false, start_cursor: null, end_cursor: null, per_page: 500 },
+        })) as typeof fetch;
+
+      let data;
+      try {
+        data = await buildAdsCampaignEconomics(root, { now: () => new Date("2026-01-05T12:00:00Z"), env, fetchImpl });
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+
+      assert.ok(data.runState);
+      assert.equal(data.testState.emAndamento, true);
+      assert.equal(data.cumulative.series.length, 1);
+      assert.equal(data.cumulative.series[0].canal, "Google Ads (teste 2608)");
+      const googleRow = data.channels.find((c) => c.canal === "Google Ads (teste 2608)")!;
+      assert.equal(googleRow.gastoTotalBrl, 5);
+      assert.equal(googleRow.cadastrosTotal, 1);
+      assert.equal(googleRow.custoPorCadastroBrl, 5);
+      const googleFreshness = data.freshness.find((f) => f.source === "Google Ads")!;
+      assert.equal(googleFreshness.status, "ok");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildAdsCampaignEconomics — cache com TTL/forceRefresh", () => {
+  it("2ª chamada dentro do TTL vem do cache (cached=true)", async () => {
+    clearAdsCampaignEconomicsCache();
+    const root = makeRoot();
+    try {
+      const fetchImpl = (async () => jsonResponse(200, { results: [] })) as typeof fetch;
+      const first = await buildAdsCampaignEconomics(root, { now: () => new Date("2026-01-05T12:00:00Z"), env: {}, fetchImpl });
+      assert.equal(first.cached, false);
+      const second = await buildAdsCampaignEconomics(root, { now: () => new Date("2026-01-05T12:01:00Z"), env: {}, fetchImpl });
+      assert.equal(second.cached, true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

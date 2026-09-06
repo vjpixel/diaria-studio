@@ -53,3 +53,119 @@
   padding: 0.5rem 0.75rem;
   border-bottom: 2px solid var(--rule);
 }
+
+/* #7536 — "Economia da campanha ao vivo" (teste 2608) */
+
+.ads-freshness-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0 1rem;
+  font-size: 0.75rem;
+}
+
+.ads-freshness-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  background: var(--paper-alt);
+}
+
+.ads-freshness-badge .dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--status-ok);
+  display: inline-block;
+}
+.ads-freshness-badge.stale .dot {
+  background: var(--status-warn);
+}
+.ads-freshness-badge.error .dot,
+.ads-freshness-badge.unavailable .dot {
+  background: var(--status-danger);
+}
+
+#campaign-chart-container {
+  margin-top: 0.5rem;
+  overflow-x: auto;
+}
+
+#campaign-chart-container svg {
+  display: block;
+  max-width: 100%;
+}
+
+.ads-chart-axis-line {
+  stroke: var(--rule);
+  stroke-width: 1;
+}
+
+.ads-chart-axis-label {
+  fill: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.ads-chart-line {
+  fill: none;
+  stroke-width: 2;
+}
+
+.ads-chart-line-0 {
+  stroke: var(--brand);
+}
+.ads-chart-line-1 {
+  stroke: var(--status-info);
+}
+.ads-chart-line-2 {
+  stroke: var(--status-warn-ink);
+}
+
+.ads-chart-dot {
+  fill: var(--paper);
+  stroke-width: 2;
+}
+.ads-chart-dot-0 {
+  stroke: var(--brand);
+}
+.ads-chart-dot-1 {
+  stroke: var(--status-info);
+}
+.ads-chart-dot-2 {
+  stroke: var(--status-warn-ink);
+}
+
+.ads-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  margin: 0.4rem 0 1rem;
+  font-size: 0.78rem;
+}
+
+.ads-chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.ads-chart-legend-swatch {
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 2px;
+  display: inline-block;
+}
+.ads-chart-legend-swatch.c0 {
+  background: var(--brand);
+}
+.ads-chart-legend-swatch.c1 {
+  background: var(--status-info);
+}
+.ads-chart-legend-swatch.c2 {
+  background: var(--status-warn-ink);
+}

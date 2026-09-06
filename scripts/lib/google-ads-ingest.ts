@@ -229,12 +229,22 @@ export async function refreshGoogleAdsAccessToken(
  * `google-ads-associate.ts`, este caminho não tenta classificar "associou
  * ou não", só decide "consegui os dados ou preciso cair pro CSV manual".
  */
-export async function fetchGoogleAdsSpendRows(
+/**
+ * Genérica em `T` desde #7536 (Parte "Economia da campanha ao vivo") — o
+ * corpo HTTP/auth/classificação de erro é idêntico pra qualquer query GAQL
+ * (`segments.date` + `metrics.*` variam por caller), só o SHAPE de cada
+ * linha muda. Default `T = GaqlSpendApiRow` preserva todo caller anterior a
+ * esta mudança sem precisar anotar tipo — `runGoogleAdsIngest` (só
+ * `cost_micros`) continua compilando idêntico. `buildGoogleAdsPerformanceQuery`
+ * abaixo + `GaqlPerformanceApiRow` são quem usa o parâmetro de tipo de
+ * verdade, pro relatório diário de cliques/impressões do `/ads`.
+ */
+export async function fetchGoogleAdsSpendRows<T extends GaqlSpendApiRow = GaqlSpendApiRow>(
   fetchImpl: FetchLike,
   auth: GoogleAdsAuthConfig,
   accessToken: string,
   gaqlQuery: string,
-): Promise<{ rows: GaqlSpendApiRow[] } | { error: string; failureClass?: GoogleAdsFailureClass }> {
+): Promise<{ rows: T[] } | { error: string; failureClass?: GoogleAdsFailureClass }> {
   const apiVersion = auth.apiVersion ?? DEFAULT_API_VERSION;
   const customerId = auth.customerId.replace(/[^0-9]/g, "");
   const configuredLoginCustomerId = auth.loginCustomerId.replace(/[^0-9]/g, "");
@@ -298,7 +308,7 @@ export async function fetchGoogleAdsSpendRows(
     };
   }
 
-  let payload: { results?: GaqlSpendApiRow[] };
+  let payload: { results?: T[] };
   try {
     payload = JSON.parse(text);
   } catch {
@@ -368,6 +378,67 @@ export function buildDefaultGaqlQuery(now: Date, lookbackDays = DEFAULT_LOOKBACK
     "SELECT segments.date, metrics.cost_micros FROM customer " +
     `WHERE segments.date BETWEEN '${toGaqlDate(start)}' AND '${toGaqlDate(end)}'`
   );
+}
+
+/** Uma linha GAQL com cliques/impressões além do custo — o relatório diário
+ *  que `/ads` (#7536, "Economia da campanha ao vivo") precisa, distinto do
+ *  agregado mensal de `GaqlSpendApiRow` (que só serve `spend.csv`). Mesma
+ *  cautela de tipo dupla string/number que `costMicros` já tinha —
+ *  `clicks`/`impressions` também podem vir serializados como string. */
+export interface GaqlPerformanceApiRow extends GaqlSpendApiRow {
+  metrics?: {
+    costMicros?: string | number;
+    clicks?: string | number;
+    impressions?: string | number;
+  };
+}
+
+/**
+ * Query irmã de `buildDefaultGaqlQuery` — mesmo range `BETWEEN` explícito
+ * (ver a docstring dela pro motivo de não usar `DURING LAST_N_DAYS`), mas
+ * pedindo `metrics.clicks`/`metrics.impressions` além do custo, pro
+ * relatório diário por canal de #7536. Nunca reaproveitada pelo caminho de
+ * `spend.csv` — este e `buildDefaultGaqlQuery` divergem de propósito, cada
+ * um com o SELECT mínimo que seu consumidor precisa.
+ *
+ * @pure
+ */
+export function buildGoogleAdsPerformanceQuery(now: Date, lookbackDays: number): string {
+  const end = new Date(now.getTime());
+  const start = new Date(now.getTime() - (lookbackDays - 1) * 24 * 60 * 60 * 1000);
+  return (
+    "SELECT segments.date, metrics.cost_micros, metrics.clicks, metrics.impressions FROM customer " +
+    `WHERE segments.date BETWEEN '${toGaqlDate(start)}' AND '${toGaqlDate(end)}'`
+  );
+}
+
+/** Normaliza `GaqlPerformanceApiRow[]` (bruto, 1 linha por dia) pro shape
+ *  canônico `ChannelDailyMetric` que `scripts/lib/ads-campaign-economics.ts`
+ *  consome — linha sem `segments.date` reconhecível é descartada (mesma
+ *  disciplina de "nunca contaminar com 0 silencioso" de `aggregateGaqlSpendByMonthWithDiscards`,
+ *  só que aqui não há agregação por mês: cada dia vira 1 ponto). @pure */
+export function normalizeGoogleAdsPerformanceRows(
+  rows: GaqlPerformanceApiRow[],
+  canal: string,
+): Array<{ canal: string; date: string; gastoBrl: number; cliques: number; impressoes: number }> {
+  const out: Array<{ canal: string; date: string; gastoBrl: number; cliques: number; impressoes: number }> = [];
+  for (const row of rows) {
+    const date = row.segments?.date;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    const toNum = (v: string | number | undefined): number => {
+      if (v === undefined) return 0;
+      const n = typeof v === "string" ? Number(v) : v;
+      return Number.isFinite(n) ? n : 0;
+    };
+    out.push({
+      canal,
+      date,
+      gastoBrl: Math.round((toNum(row.metrics?.costMicros) / 1_000_000) * 100) / 100,
+      cliques: toNum(row.metrics?.clicks),
+      impressoes: toNum(row.metrics?.impressions),
+    });
+  }
+  return out;
 }
 
 /**
