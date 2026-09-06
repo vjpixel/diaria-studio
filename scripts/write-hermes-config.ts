@@ -70,7 +70,14 @@ import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { hasFlag, isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { defaultWorkdirRoots, isPathAllowed } from "./lib/continuo-workdir-allowlist.ts";
-import { buildBackupFileName, findMostRecentBackup, formatBackupTimestamp, redactConfigText, UnsafeMultilineSecretError } from "./lib/hermes-config-writer.ts";
+import {
+  buildBackupFileName,
+  findMostRecentBackup,
+  formatBackupTimestamp,
+  redactConfigText,
+  REASON_SIDE_SUFFIX,
+  UnsafeMultilineSecretError,
+} from "./lib/hermes-config-writer.ts";
 
 const LOG_PREFIX = "[write-hermes-config]";
 const DIARIA_STUDIO_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
@@ -168,13 +175,24 @@ function doRevert(path: string, backupName: string | undefined): void {
     process.exit(2);
   }
   const backupContent = safeReadFileSync(backupPath, "backup");
+  // Sidecar `.reason` (#7543): o slug no nome do backup é truncado, então
+  // a razão completa mora num arquivo ao lado. Ler (fail-soft) e relayar
+  // no log do revert — o rastro do #6817 sobrevive ao truncamento.
+  const reasonPath = `${backupPath}${REASON_SIDE_SUFFIX}`;
+  let revertReason: string | undefined;
+  try {
+    revertReason = readFileSync(reasonPath, "utf8");
+  } catch {
+    // Sem sidecar: backups criados antes da #7543 não têm. Não é erro —
+    // o revert ainda restaura o conteúdo, só perde o rastro do motivo.
+  }
   safeWriteFileSync(path, backupContent, "conteúdo restaurado");
   const confirm = safeReadFileSync(path, "conferência pós-revert");
   if (confirm !== backupContent) {
     console.error(`${LOG_PREFIX} revert aplicado mas a releitura NÃO bate byte-a-byte com o backup — investigar antes de confiar no estado de ${path}`);
     process.exit(2);
   }
-  console.log(`${LOG_PREFIX} revert ok — ${path} restaurado a partir de ${backupPath}`);
+  console.log(`${LOG_PREFIX} revert ok — ${path} restaurado a partir de ${backupPath}${revertReason !== undefined ? ` (motivo: ${revertReason})` : ""}`);
   process.exit(0);
 }
 
@@ -225,8 +243,15 @@ function main(): void {
   if (existsSync(path)) {
     originalContent = safeReadFileSync(path, "conteúdo atual (pré-backup)");
     const backupName = buildBackupFileName(base, reason, formatBackupTimestamp(new Date()));
-    backupPath = resolve(dir, backupName);
+    backupPath = resolve(dir, backupName.fileName);
     safeWriteFileSync(backupPath, originalContent, "backup");
+    // Sidecar `.reason` com a razão COMPLETA (#7543): o slug no nome do
+    // arquivo é truncado em `BACKUP_NAME_MAX_SLUG` (identificador), então
+    // a razão inteira — que é o rastro que o #6817 pede — sobrevive no
+    // sidecar, não no nome. Sem isto, encurtar o slug degradava exatamente
+    // o registro que o verbo existe pra criar.
+    const reasonSidecar = resolve(dir, `${backupName.fileName}${REASON_SIDE_SUFFIX}`);
+    safeWriteFileSync(reasonSidecar, backupName.reason, "razão do backup");
     // Mesma disciplina de `doRevert` (nunca assume sucesso só porque
     // `writeFileSync` não lançou): confere que o backup gravado bate
     // byte-a-byte com o conteúdo original ANTES de prosseguir pra
