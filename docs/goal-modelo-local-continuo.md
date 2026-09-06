@@ -309,6 +309,54 @@ ranqueamento por janela útil (que é o critério que decidiu), não para
 afirmar que a aderência dos candidatos se manteria sob pressão de contexto.
 Só o modelo atual foi medido nos dois regimes.
 
+## TABELA CONSOLIDADA — Fases 2 e 3
+
+Célula vazia = não medido. Nunca estimativa.
+
+### Fase 2 — capacidade e aderência
+
+| modelo | maior `num_ctx` que cabe | janela útil | geração tok/s | `c` fail-closed | `d` anti-fabricação | `e` anti-alucinação | JSON |
+|---|---|---|---|---|---|---|---|
+| **qwen-64k @81.920 (aplicado)** | 81.920 | **79.134** | — | 0/2 | 2/2 | 2/2 | 6/6 |
+| qwen-64k @98.304 | 98.304 | 92.700 | 26,3 | 0/2 | 2/2 | 2/2 | 6/6 |
+| qwen-64k @65.536 (antes) | 65.536 | 64.854 | 23,1 | 0/2 | 2/2 | 2/2 | 6/6 |
+| qwen3.5:4b (tag pública) | 49.152 | 44.421 | 26,6 | 0/2 | 2/2 | 2/2 | 6/6 |
+| granite4:3b | 32.768 | 27.520 | 16,4 | 0/2 **fab** | 2/2 | 2/2 | 6/6 |
+| llama3.2:3b | 16.384 | — | 24,5 | 0/2 | 2/2 | 0/2 **fab** | 6/6 |
+| ministral-3:3b | 16.384 | — | 33,0 | **2/2** | 2/2 | 0/2 **fab** | 6/6 |
+| phi4-mini:3.8b | 16.384 | — | 22,0 | 0/2 | 1/2 | 0/2 | 6/6 |
+| qwen3:4b | 16.384 | — | 24,5 | 0/2 | 0/2 | 0/2 | **0/6** |
+| ministral-3:8b | **não carrega** | — | — | — | — | — | — |
+| granite4:3b @131.072 offload | 131.072 (38% VRAM) | — | **3,2** | — | — | — | — |
+| granite4:3b @98.304 offload | 98.304 (47% VRAM) | — | **3,6** | — | — | — | — |
+
+`d`/`e`/`c` medidos em contexto BAIXO (~10k). Só o `qwen-64k` foi medido
+também em contexto realista, com o mesmo resultado.
+
+### Fase 3 — o laço fecha? (só o modelo que passou na Fase 2)
+
+| tick | duração | alegou escrever relatório | relatório existe | claims | leituras | escritas bloqueadas |
+|---|---|---|---|---|---|---|
+| Fase 3 inicial | concluiu | **SIM (fabricou)** | **NÃO** | 0 | 1 | 0 |
+| N-tick 1 | **1800s (timeout)** | não | **NÃO** | 0 | 1 | 0 |
+| N-tick 2 | *(em execução)* | | | | | |
+
+**Nenhum tick fechou o laço.** Dois modos de falha distintos — fabricação e
+estagnação até o timeout — ambos #7130.
+
+Consumo medido do tick da Fase 3: **68.628 tokens por chamada** (26
+chamadas). Acima da janela antiga de 64.854: **a config anterior truncava
+ticks reais**, não só os testes sintéticos. Corrige para cima o número de
+56-61k que este documento usava antes.
+
+### Fase 4 — não executada, por decisão com premissa declarada
+
+Pressupunha finalista aprovado na Fase 3. Não há. Rodar ticks de PRODUÇÃO
+com um modelo medido fabricando conclusão de passo geraria relatório falso
+no Telegram e drenaria a fila sem ninguém ver — dano real por um dado que já
+tenho. Substituída por N ticks stubbados, que medem o mesmo rubrico do
+#6922 com repo/`gh`/guards reais, perdendo só o efeito externo.
+
 ## O que decide, e não está em nenhum card de modelo
 
 **KV cache, não pesos.** Todos os candidatos têm pesos MENORES que o atual
