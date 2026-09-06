@@ -128,7 +128,10 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
 1b. **Continuidade com o tick anterior (#7511):** `cat
    data/continuo/last-tick-report.md` — é o relatório do tick anterior, a
    única coisa que precisa atravessar de um tick pro seguinte. Ausente
-   (1º tick, ou arquivo apagado) → seguir normalmente, não é erro.
+   (1º tick, ou arquivo apagado) → seguir normalmente, não é erro, **mas
+   registrar no relatório deste tick que veio ausente**: a leitura não
+   distingue "1º tick" de "o tick anterior morreu antes de gravar", e sem
+   essa linha as duas viram a mesma ausência muda.
    **Substitui `context_from: ["self"]` no job do cron, que foi removido:**
    aquele mecanismo reinjetava o output ANTERIOR INTEIRO, e esse output é
    `header + SKILL.md verbatim + prompt + relatório` — ou seja, reinjetava
@@ -568,6 +571,15 @@ inteiro/git status/worktree list se normal (pitfall do ciclo 26/08).
 acima em `data/continuo/last-tick-report.md`, **sobrescrevendo** (nunca
 append — o arquivo é o estado do último tick, não um histórico; `history.jsonl`
 no mesmo diretório é que acumula). É o que o passo 1b lê no tick seguinte.
+
+**Vale para TODO desfecho de tick, inclusive parada antecipada** (ex:
+`rescue_failed` no passo 0, guard de colisão editorial, halt por MCP). Esses
+caminhos encerram o tick centenas de linhas antes desta seção, e é fácil sair
+sem passar por aqui — mas um tick que para sem gravar deixa o seguinte lendo
+um relatório de 2+ ticks atrás **sem nenhum sinal de que está obsoleto**,
+que é exatamente a perda silenciosa que este mecanismo existe pra evitar.
+Parou cedo → gravar mesmo assim, com o motivo em `### Parada`, antes de
+encerrar a sessão.
 `data/` é gitignored, então isso não gera diff nem entra em `git status` —
 não conflita com a regra de nunca deixar mudança sem commit. Falha de escrita
 é fail-soft: avisar e seguir, o próximo tick só perde a continuidade.
