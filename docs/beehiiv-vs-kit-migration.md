@@ -136,6 +136,16 @@ Fase 0 — Preparação (conta Kit, import subscribers CSV, custom domain, templ
 | Poll Trivia → Tally introduz fricção UX | Média | Wireframe/mock antes de switch |
 | Custos Kit > Beehiiv | Baixa-média | Cotizar plan tier conforme list size |
 
+### 6. Kit Creator Network (#6674, 06/09/2026)
+
+Estado verificado ao vivo na conta Kit (`app.kit.com/creator-network`), sessão `/diaria-develop` 260906:
+
+- **Opt-in já ativo** (`recommendations_active: true`) — perfil preenchido (nome "diar.ia.br", bio em português, categorias Blogger/Educator/Journalist, tópicos Artificial Intelligence/Science/Technology, localização Brasília). Nada disto precisou de setup novo — já estava configurado.
+- **Incoming (outras newsletters recomendando a diar.ia.br) já gera assinante real**, sem nenhuma ação nossa adicional: 73 views, 6 assinantes, 8,22% de conversão acumulados; confirmado via `mcp__kit__filter_subscribers` com `include: [{type: "attribution"}]` — subscriber com `attribution.source_type: "creator_network_referral"`, `source_mechanism: "smart_recommendation"`, `source_name` = nome do criador que recomendou. **Esta é a query pra medir o canal** daqui pra frente (item "Medir" do checklist original da issue) — não precisa de custom field novo, o dado já vem na atribuição nativa do Kit.
+- **Outgoing (nós recomendando outras newsletters aos NOSSOS assinantes) está bloqueado por arquitetura, não por decisão pendente**: o painel mostra "No form or landing page set up with Recommendations" porque **o cadastro real da diar.ia.br não passa por um form/landing page nativo do Kit** — desde a migração do backend de envio pra Kit (#7388, 04/09/2026) o cadastro é 100% via API (`subscribeToKit`, workers `poll`/`cursos`/`reativar`), com `attribution.source_type: "api_subscription"` pra praticamente todo mundo. O widget de recomendações do Kit só injeta na tela pós-cadastro de um form/landing page hospedado por ELE — não existe hoje um desses no fluxo real de inscrição.
+- **Decisão do editor (06/09/2026, sessão develop) sobre onde a recomendação apareceria** se/quando isso for implementado: tela pós-inscrição, slot padrão "recommended by" (mesma decisão de sempre pro Kit) — registrada como comentário na issue #6674.
+- Implementar de fato o Outgoing exigiria embutir `embedded_recommendations_url` (`https://diariabr.kit.com/recommendations`, valor por conta) no fluxo de confirmação de um dos workers de cadastro — mudança de código na superfície de crescimento primária, fora do escopo de uma sessão que também cobre outras 8 issues. Follow-up acionável: #7524.
+
 ### Refs
 
 - #84 (scoping original — fechada) · **#461 (guarda-chuva, ABERTA — é o plano vivo)**
