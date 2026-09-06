@@ -354,6 +354,51 @@ certa recuperável da cauda, que é justamente o que a truncagem preserva.
 Hipótese não refutada — o tick real tem estado mais rico e muitos passos
 encadeados — mas não demonstrada por estes cenários.
 
+## Offload CPU/RAM — medido e rejeitado por dado
+
+O editor autorizou avaliar offload. Numa 1ª passada eu o excluí **por
+construção** (o critério da escada era "100% em VRAM"), o que é erro de
+escopo: descartei sem medir uma opção autorizada. Medido depois:
+
+| config | VRAM | RAM | geração |
+|---|---|---|---|
+| **qwen-64k @81.920 (recomendado)** | 100% | 0 GB | **~26 tok/s** |
+| granite4:3b @98.304, offload | 47% | 5,58 GB | **3,6 tok/s** |
+| granite4:3b @131.072, offload | 38% | 8,35 GB | **3,2 tok/s** |
+
+**Custa ~8× em geração** para comprar 131k de janela contra 79k. O tick faz
+~70 chamadas com geração em cada uma; 8× mais lento estoura o timeout de
+40min da delegação e a cadência de 60min do cron. A troca não fecha.
+
+No modelo de produção offload nem existe: acima de 98.304 o Ollama **morre**
+(`cudaMalloc failed: out of memory`, `llama-server startup failed after
+projector CPU offload retry`) em vez de transbordar. Entre 98.304 e 131.072
+não há degrau intermediário — há precipício. Confirma o teto por caminho
+independente.
+
+## Confiabilidade da Fase 2 após o review — o que sobrevive
+
+O review da PR #7534 achou 2 P0 e 8 P1 no harness. **Nem todos afetam as
+conclusões**, e a distinção importa:
+
+**Não afeta** — o critério que DECIDIU foi janela útil, medida por:
+- escada de VRAM: o P0 do `bench-tmp` reusado podia atribuir medição ao
+  candidato errado, mas **verifiquei que não ocorreu** — os degraus de
+  131072 saíram todos distintos (8,64 / 13,41 / 17,75 / 18,17 / 20,78 /
+  22,94 GB), e staleness produziria repetição.
+- `probe.py window`: tem calibragem própria, que roda.
+
+**Afeta** — `calibra()` nunca chamada invalidaria dimensionamento de prompt
+por modelo. Mas a bateria da Fase 2 rodou **sem `--pad-to`**, e sem essa
+flag `calibra()` não seria usada de todo modo. As colunas `d`/`e` da tabela
+foram medidas a ~10k, o que já está qualificado acima.
+
+**Fica em aberto** — o risco de prompt-caching do Ollama subestimar
+`prompt_eval_count` entre chamadas sucessivas (P1, confiança média do
+review). Não avaliei. Mitigante observado: os números medidos acompanharam o
+enviado de perto (84.530 lidos para ~80k alvo), e o colapso em metade exata
+não tem forma de artefato de cache — mas isso é argumento, não medição.
+
 ## Fases 3 e 4 — não executadas
 
 Fase 3 (tick stubbado) tem o shim de `gh` pronto (`scripts/model-bench/
