@@ -16,13 +16,41 @@ já está pronto pra upload).
 
 ---
 
+## ⚠️ ESTADO DESATUALIZADO a partir de 06/09/2026 (#7523)
+
+**Este documento descreve o container como ele era em 17/08/2026, antes do
+#7358 e do #7523.** O que mudou desde então, e que contradiz o texto abaixo:
+
+1. **Google Ads e LinkedIn NÃO estão mais "intocados" no trigger
+   `Newsletter Form Submit`.** O #7358 migrou Meta, LinkedIn, Microsoft UET
+   **e Google Ads** para o gatilho único `Newsletter Signup - signedUp`. As
+   seções "Google Ads e LinkedIn: intocados", a linha *(intocado, referência)*
+   da tabela de nomes técnicos (corrigida neste mesmo commit), e o item
+   "Reponte de Google Ads/LinkedIn para o novo trigger" na lista de
+   não-entregáveis **descrevem um estado que não existe mais**.
+2. **O rótulo de conversão do Google Ads estava quebrado e foi corrigido**
+   (#7523, versão 17 do container, 06/09/2026): apontava para
+   `pKZTCKnJxdAbEKmt_aJC`, rótulo da ação de conversão `7416669353 Sign-up`,
+   que está `REMOVED` — a tag disparava certo e o Google descartava o evento
+   (0 conversões em 162 cliques e 24 cadastros reais). Agora aponta para
+   `dxY1CIb1v9EbEKmt_aJC` = ação `7418673798 Assinatura Confirmada`
+   (`ENABLED`, categoria `SIGNUP`, primária para a meta).
+
+Confiar no texto abaixo para diagnosticar o container ao vivo levou a um
+diagnóstico errado no #7523. **Antes de usar este doc como fonte sobre o
+estado atual, conferir o container** — ou o rótulo contra
+`conversion_action.tag_snippets` via GAQL, que é o cruzamento que fechou o
+caso. O material de *procedimento* (modos de import, Plano B, checklist de
+verificação) continua válido.
+
 ## ⚠️ O aviso mais importante deste documento: importar em **Merge**, nunca **Overwrite**
 
 O container `GTM-TC8C65ZN` já tem em produção:
 
 - `Google Tag AW-17790097065` + `Google Ads Conversion Tracking` (trigger
-  `Newsletter Form Submit`) — conversão de cadastro do Google Ads, ativa
-  desde o fix do #4348.
+  `Newsletter Signup - signedUp` desde o #7358; era `Newsletter Form Submit`
+  quando este doc foi escrito) — conversão de cadastro do Google Ads, ativa
+  desde o fix do #4348, com o rótulo corrigido no #7523.
 - Duas tags do LinkedIn (`window.lintrk('track', {conversion_id: 29163954})`,
   conversion "Newsletter Signup", conta `550020065`).
 - `Conversion Linker`.
@@ -180,6 +208,9 @@ A parte cara do #5500 é decidir os nomes de evento e a estrutura do gatilho —
   A tag do Google Ads continua no trigger `Newsletter Form Submit` como está
   hoje — o objetivo é igualar Meta e Microsoft a ela, não mexer no que já
   funciona.
+  > **Superado em 06/09/2026 (#7358 e #7523).** Google Ads e LinkedIn foram
+  > migrados para `Newsletter Signup - signedUp`, e o rótulo de conversão do
+  > Google Ads foi corrigido. Ver o bloco de estado desatualizado no topo.
 - **Evento Meta: `CompleteRegistration`** (evento padrão da Meta), não
   `Subscribe` (sugestão da doc da Beehiiv, mas evento custom sem suporte de
   otimização) nem `Lead` (mais genérico — geralmente associado a formulário
@@ -250,8 +281,8 @@ o import não cria isso sozinho:
 |---|---|---|
 | **dataLayer (gatilho)** | `signedUp` (Custom Event, contrato Beehiiv) — fallback `Newsletter Form Submit` (Form Submission) | GTM → Preview → aba Summary/dataLayer, no momento do disparo |
 | **Meta** | `CompleteRegistration` (evento padrão) | Events Manager → Data Sources → dataset "Diar.ia" (`1285191740325112`) → Overview/Test Events, listado ao lado de `PageView`. Custom Conversion "Cadastro diar.ia.br" (se criada) → Events Manager → Custom Conversions |
-| **Google Ads** *(intocado, referência)* | Conversão ligada a `AW-17790097065`, tag `Google Ads Conversion Tracking` | Google Ads → Goals → Summary → Conversion actions |
-| **LinkedIn** *(intocado, referência)* | "Newsletter Signup" (`conversion_id: 29163954`) | Campaign Manager → conta `550020065` → Conversion Tracking |
+| **Google Ads** *(migrado no #7358; rótulo corrigido no #7523)* | Ação `7418673798 Assinatura Confirmada`, rótulo `dxY1CIb1v9EbEKmt_aJC`, sob `AW-17790097065`, tag `Google Ads Conversion Tracking` | Google Ads → Goals → Summary → Conversion actions |
+| **LinkedIn** *(migrado no #7358)* | "Newsletter Signup" (`conversion_id: 29163954`) | Campaign Manager → conta `550020065` → Conversion Tracking |
 | **Microsoft UET** | Custom Event `newsletter_signup` (categoria `signup`) → Conversion Goal "Newsletter Signup" | Microsoft Advertising → Tools → Conversion Goals → "Newsletter Signup"; validação crua via extensão UET Tag Helper |
 
 O nome humano ("Newsletter Signup") é deliberadamente o mesmo em LinkedIn e
@@ -353,6 +384,13 @@ Meta e Google Ads, não há chamada de API pronta para colar aqui. Verificação
   evento de dataLayer depois de validado, é uma issue separada — mexer numa
   série histórica de conversão que já funciona é decisão editorial, não
   técnica.
+  > **Feito desde então.** A issue separada prevista aqui aconteceu: o #7358
+  > migrou Google Ads e LinkedIn para `Newsletter Signup - signedUp`. E a
+  > premissa "uma série histórica de conversão que já funciona" não se
+  > sustentava para o Google Ads — o rótulo preservado aponta para uma ação
+  > `REMOVED`, e nenhuma conversão era contabilizada (#7523). Não dá para
+  > afirmar a partir do container quando a ação foi removida, só que em
+  > 05-06/09 ela já estava.
 
 ---
 
