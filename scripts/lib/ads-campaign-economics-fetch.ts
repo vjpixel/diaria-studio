@@ -35,6 +35,7 @@ import {
   refreshMicrosoftAdsAccessToken,
   fetchMicrosoftAdsPerformanceRows,
   normalizeMicrosoftAdsPerformanceRows,
+  ADS_DASHBOARD_PERFORMANCE_COLUMNS,
   type MicrosoftAdsAuthConfig,
   type FetchLike as MicrosoftFetchLike,
 } from "./microsoft-ads-ingest.ts";
@@ -174,7 +175,9 @@ export async function fetchMicrosoftAdsChannelMetrics(
 
   const end = new Date(now.getTime());
   const start = new Date(now.getTime() - (lookbackDays - 1) * 24 * 60 * 60 * 1000);
-  const perfResult = await fetchMicrosoftAdsPerformanceRows(fetchImpl, auth, tokenResult.accessToken, { start, end });
+  const perfResult = await fetchMicrosoftAdsPerformanceRows(fetchImpl, auth, tokenResult.accessToken, { start, end }, {
+    columns: ADS_DASHBOARD_PERFORMANCE_COLUMNS,
+  });
   if ("error" in perfResult) return { metrics: [], fetchedAt: null, error: perfResult.error };
 
   return { metrics: normalizeMicrosoftAdsPerformanceRows(perfResult.rows, canal), fetchedAt: now.toISOString(), error: null };
