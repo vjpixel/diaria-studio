@@ -1036,10 +1036,15 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
     }
 
     const abcAction = proposal.abc.action; // "continuar" | "travar"
-    let noEscalationReason: string | null = null;
+    // #7555: ressalva do teste A/B/C (ex.: "Poder baixo") é sobre
+    // significância estatística do TESTE, não sobre segurança de crescer a
+    // BASE — a #6888 decidiu passo fixo de 10%/dia SEMPRE, e este freio não
+    // estava no escopo dela. `abcCaveatNote` é só observação no relatório;
+    // não entra em `effectiveStep` (ver abaixo).
+    let abcCaveatNote: string | null = null;
     if (proposal.abc.caveats.length > 0) {
-      noEscalationReason = `ressalvas no teste A/B/C: ${proposal.abc.caveats.join("; ")}`;
-      report.note(`⚠️  ${noEscalationReason} — não escalando volume hoje (mantém a base), sem abortar.`);
+      abcCaveatNote = `ressalvas no teste A/B/C: ${proposal.abc.caveats.join("; ")}`;
+      report.note(`⚠️  ${abcCaveatNote} — passo fixo de crescimento da base (#6888) segue aplicado normalmente; a ressalva afeta só a leitura do teste A/B/C em si.`);
     }
 
     // --- Assunto(s) herdado(s). ---
@@ -1101,9 +1106,14 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
     );
     if (risk.staleNote) report.note(`⚠️  ${risk.staleNote}`);
 
-    const effectiveStep = missed || noEscalationReason ? 0 : risk.step;
+    // #7555: só "onda perdida" (`missed`) zera o passo fixo — é o único
+    // motivo real de segurança (agendamento não confirmado). Ressalvas do
+    // teste A/B/C (`abcCaveatNote`) NUNCA zeram: são sobre o TESTE, não
+    // sobre o freio de crescimento da #6888 (issue original desse freio,
+    // #6793/#6888, tratava só do risco de ISP — o A/B/C é mecanismo
+    // separado que ninguém revisou à luz da decisão "crescer sempre").
+    const effectiveStep = missed ? 0 : risk.step;
     if (missed && risk.step > 0) report.note(`passo fixo calculado seria +${(risk.step * 100).toFixed(1)}%, zerado por onda perdida (ver acima).`);
-    else if (noEscalationReason && risk.step > 0) report.note(`passo fixo calculado seria +${(risk.step * 100).toFixed(1)}%, zerado por ${noEscalationReason}.`);
 
     // --- Passo 4: fila de 1º envio — MV sob demanda se insuficiente, senão PARA (decisão do editor). ---
     //
