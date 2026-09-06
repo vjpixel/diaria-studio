@@ -63,6 +63,38 @@ describe("#7487 — computeChannelDeltas", () => {
     const deltas = computeChannelDeltas(rows, previous);
     assert.equal(deltas[0].deltaDia, 0.2);
   });
+
+  it("#7531 — canal+mes com 2 subcanais (PMax/Search) não colide: cada um tem seu próprio delta e sobrevive no histórico", () => {
+    const rows = [
+      spendRow({ subcanal: "PMax", valor: 718.39 }),
+      spendRow({ subcanal: "Search", valor: 239.62 }),
+    ];
+    const previous = toHistoryRows([
+      spendRow({ subcanal: "PMax", valor: 700 }),
+      spendRow({ subcanal: "Search", valor: 230 }),
+    ]);
+
+    const deltas = computeChannelDeltas(rows, previous);
+    assert.equal(deltas.length, 2);
+
+    const pmax = deltas.find((d) => d.subcanal === "PMax")!;
+    const search = deltas.find((d) => d.subcanal === "Search")!;
+    assert.equal(pmax.totalAtual, 718.39);
+    assert.equal(pmax.totalAnterior, 700);
+    assert.equal(pmax.deltaDia, 18.39);
+    assert.equal(search.totalAtual, 239.62);
+    assert.equal(search.totalAnterior, 230);
+    assert.equal(search.deltaDia, 9.62);
+
+    // Round-trip pro histórico preserva as 2 linhas distintas (não colapsa
+    // na mesma chave canal+mes) — regressão do bug original da #7531.
+    const historyRows = toHistoryRows(rows);
+    assert.equal(historyRows.length, 2);
+    assert.deepEqual(
+      historyRows.map((r) => r.subcanal).sort(),
+      ["PMax", "Search"],
+    );
+  });
 });
 
 describe("#7487 — hasSpendInPeriod", () => {
