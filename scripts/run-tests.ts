@@ -1037,7 +1037,30 @@ const destinationErrorLoggersAttached = new WeakSet<NodeJS.WritableStream>();
  *  intercalada), só confirma que HOUVE erro de escrita no destino
  *  compartilhado. O listener na ORIGEM continua por chamada/por worker —
  *  `child.stdout` é exclusivo de cada processo filho, então a atribuição
- *  ali É correta. */
+ *  ali É correta.
+ *
+ *  #7430 (causa raiz identificada, não só instrumentada): `.pipe()` do Node
+ *  chama `destination.end()` por padrão (`{ end: true }`) quando a ORIGEM
+ *  emite `'end'` — ou seja, assim que UM worker termina e seu `child.stdout`
+ *  fecha, o pipe encerra `process.stdout`/`process.stderr` do processo ATUAL
+ *  inteiro. Isso é inofensivo quando `destination` é exclusiva do worker,
+ *  mas aqui `destination` é sempre `process.stdout`/`process.stderr` —
+ *  singleton do processo, ainda em uso por QUALQUER escrita futura (outro
+ *  worker concorrente ainda rodando, o próprio `node:test` reportando o
+ *  resultado deste arquivo de teste, ou qualquer `console.log` posterior).
+ *  Uma vez `.end()`ado, escrever nesse stream lança
+ *  `ERR_STREAM_WRITE_AFTER_END`/dispara `'error'` no stream — e como o
+ *  encerramento acontece de forma assíncrona (drenagem do pipe, não o
+ *  retorno síncrono da chamada), o efeito aparece DEPOIS da asserção do
+ *  teste já ter passado: o sumário do `node:test` sai com `fail 0`
+ *  (nenhuma asserção quebrou) mas uma escrita subsequente nesse stream já
+ *  fechado derruba o processo com exit não-zero — exatamente a assinatura
+ *  do flake #7430 (`pass N, fail 0, exit 1`), sem exigir nenhum vazamento
+ *  de `process.exitCode` entre processos (isolamento de processo por
+ *  `fork()` continua intacto e nunca foi a causa). Passar `{ end: false }`
+ *  pro `.pipe()` evita que o fim de UM worker feche o stream compartilhado —
+ *  cada worker só some da escrita quando seu `child.stdout`/`stderr`
+ *  termina, sem nunca chamar `.end()` no destino. */
 export function pipeWorkerStream(
   source: NodeJS.ReadableStream | null | undefined,
   destination: NodeJS.WritableStream,
@@ -1047,7 +1070,12 @@ export function pipeWorkerStream(
   source?.on("error", (err: Error) => {
     console.error(`run-tests: erro no stream ${streamName} do worker (${label}): ${err.message}`);
   });
-  source?.pipe(destination);
+  // #7430: `{ end: false }` — nunca deixar o fim de UM worker encerrar o
+  // stream compartilhado (`process.stdout`/`process.stderr`), ver docstring
+  // acima. Sem isto, `.pipe()` chama `destination.end()` no `'end'` da
+  // origem por padrão, quebrando qualquer escrita posterior de outro
+  // worker/do próprio `node:test`.
+  source?.pipe(destination, { end: false });
   if (!destinationErrorLoggersAttached.has(destination)) {
     destinationErrorLoggersAttached.add(destination);
     destination.on("error", (err: Error) => {
