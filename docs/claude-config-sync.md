@@ -95,6 +95,43 @@ quando um pull traz commits novos — silencioso só quando nada mudou). Ambos
 gitignored: sem isso a árvore ficaria permanentemente suja e o próprio script
 recusaria puxar, auto-desativando o mecanismo.
 
+**Confirmado no Neo em 06/09/2026: era o caso ruim, e ficou assim ~1 mês.**
+`settings.json` e `statusline-wrapper.cjs` eram CÓPIA, não symlink — o pull
+atualizava o repo e o conteúdo nunca chegava. O `sync-check` detectava e
+registrava em `copies[]`, mas esse aviso mora num arquivo de estado que ninguém
+lê, então a máquina rodou config velha sem sinal nenhum. Efeito colateral que
+denuncia: cada execução do fallback renomeia o alvo para `.bak-<timestamp>` —
+havia **138** acumulados em `~/.claude` quando foi corrigido. O vazamento para
+sozinho depois do fix, porque o bootstrap pula limpo quando o item já é link.
+
+**Ordem que evita isso numa máquina nova:** ligar o Modo Desenvolvedor e
+**fazer logout/login ANTES** de rodar o bootstrap — o privilégio de symlink só
+entra no token no próximo logon, então ligar e rodar na mesma sessão cai no
+fallback do mesmo jeito. Depois, conferir em vez de confiar no "sucesso" que o
+bootstrap imprime:
+
+```powershell
+Get-Item $env:USERPROFILE\.claude\settings.json | Select-Object LinkType, Target
+```
+
+`LinkType` vazio = é cópia, refazer. Antes de trocar uma cópia por symlink,
+compare-a com o repo: se divergir, há edição local não commitada ali (no Neo as
+duas eram byte-idênticas, então nada se perdeu).
+
+**Corolário — árvore suja trava tudo, e o modo de falha é circular.** Em
+06/09 o `helios` estava em `skipped`/`working-tree-sujo` com 1 commit não
+aplicado, por duas causas: um arquivo de estado novo
+(`.diaria-studio-autosync-state.json`) sem entrada no `.gitignore`, e `autoMode`
+gerado em runtime pelo Claude dentro do `settings.json` — que, sendo symlink
+para o repo, faz config gerada sujar o repo sozinha. O detalhe que importa: **o
+fix do `.gitignore` já existia no remoto** (#6310), e o helios não conseguia
+recebê-lo justamente porque a sujeira que o fix resolve bloqueava o pull.
+Descartar `autoMode` não resolveria (regenera na sessão seguinte e trava de
+novo) — foi versionado. Ao versionar config gerada, conferir se ela é do
+PROJETO ou da MÁQUINA: o `soft_deny: Bash(gh pr merge*)` do helios faz sentido
+num host desassistido, mas em máquina interativa atrita com o auto-merge do
+#5251.
+
 **Rollout ainda não confirmado nas 3 máquinas (26/08/2026).** Há um
 chicken-and-egg: máquina que ainda não puxou até `90b537c` não tem o
 `sync-check.cjs` nem a entrada de hook, então precisa de UM `git pull`/
