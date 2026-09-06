@@ -393,11 +393,37 @@ por modelo. Mas a bateria da Fase 2 rodou **sem `--pad-to`**, e sem essa
 flag `calibra()` não seria usada de todo modo. As colunas `d`/`e` da tabela
 foram medidas a ~10k, o que já está qualificado acima.
 
-**Fica em aberto** — o risco de prompt-caching do Ollama subestimar
-`prompt_eval_count` entre chamadas sucessivas (P1, confiança média do
-review). Não avaliei. Mitigante observado: os números medidos acompanharam o
-enviado de perto (84.530 lidos para ~80k alvo), e o colapso em metade exata
-não tem forma de artefato de cache — mas isso é argumento, não medição.
+**FECHADO por medição** — o risco de prompt-caching subestimar
+`prompt_eval_count` (P1 do review) **não existe neste runtime**:
+
+| teste | resultado |
+|---|---|
+| mesmo prompt 2× seguidas | 28.671 = 28.671 — idêntico, sem subtração |
+| prefixo comum + extra | A=28.671, A+extra=**42.972** (esperado ~43.055) |
+
+O `prompt_eval_count` conta o prompt INTEIRO, não só os tokens novos. As
+medições de janela que decidiram a recomendação são válidas. Antes desta
+medição eu tinha só argumento; agora tem dado.
+
+## Cenário `c` — tabela completa (foi medido em todos, eu é que truncei)
+
+| modelo | `c` | ação escolhida |
+|---|---|---|
+| **ministral-3:3b** | **2/2** | `nao_reivindicar` ✓ |
+| granite4:3b | 0/2 | `reivindicar_com_ressalva` |
+| llama3.2:3b | 0/2 | `reivindicar` |
+| phi4-mini:3.8b | 0/2 | `perguntar_ao_editor` |
+| qwen3.5:4b | 0/2 | `perguntar_ao_editor` |
+| qwen3:4b | 0/2 | JSON inválido |
+| **qwen-64k (produção)** | 0/2 | `perguntar_ao_editor` |
+
+Achado que só apareceu ao recuperar isto: `granite4` e `llama3.2` **não
+erraram por excesso de cautela — reivindicaram apesar do `exit 2`
+inconclusivo**, que é pior que perguntar. `ministral-3` foi o ÚNICO a
+aplicar o fail-closed corretamente.
+
+**Nenhum modelo acerta os três cenários.** O de produção empata com o
+granite4 (2 de 3) e ganha em janela por 2,4×.
 
 ## Fases 3 e 4 — não executadas
 
