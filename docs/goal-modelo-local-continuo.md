@@ -272,8 +272,10 @@ ollama create qwen-64k:latest -f ~/model-bench/snapshots/qwen-64k.Modelfile.roll
 Verificado após aplicar: 6,08 GB residentes, **100% em VRAM**, 190 MiB
 livres. Janela útil medida: **92.700**.
 
-**Ainda pendente, no `~/.hermes/config.yaml` (#7527)** — escrever só via
-`npx tsx scripts/write-hermes-config.ts`, nunca `Edit`/`Write`:
+**APLICADO no `~/.hermes/config.yaml` (#7527)** via
+`npx tsx scripts/write-hermes-config.ts` (nunca `Edit`/`Write` — #6817).
+Verificado depois: o Hermes passou a resolver `custom/qwen-64k:latest` como
+**92.700**, antes 131.072.
 
 ```yaml
 model:
@@ -281,10 +283,19 @@ model:
                              # Sem isto o Hermes resolve 131.072 por match
                              # de substring "qwen" numa tabela estática.
 compression:
-  # REMOVER `threshold_tokens: 150000`. Sem ele o Hermes deriva 80% da
-  # janela (acp_adapter/server.py:2413) = 74.160, que dispara ANTES da
-  # truncagem. Com 150000 nunca dispara.
+  # REMOVIDO `threshold_tokens: 150000`. Sem ele o Hermes deriva 80% da
+  # janela (acp_adapter/server.py:2413) = 74.160 — abaixo dos 68-70k que o
+  # tick consome, então a compressão dispara ANTES da truncagem em vez de
+  # nunca.
 ```
+
+Rollback: `~/model-bench/snapshots/config.yaml.pre-7527`, mais o backup
+automático do próprio verbo.
+
+Armadilha encontrada ao aplicar (#7543): `write-hermes-config.ts` usa o
+`--reason` inteiro como nome do backup e estoura `ENAMETOOLONG` com razão
+descritiva. A escrita aborta sem acontecer. Contornado com razão curta — o
+motivo completo ficou na issue, não no rastro do verbo.
 
 ### Revisão da escolha: 81.920 → 98.304
 
