@@ -256,6 +256,12 @@ qualquer um dos dois como entrada de planejamento.
 
 **Manter o modelo. Subir `num_ctx` de 65.536 para 81.920.** Aplicado.
 
+**MAS NÃO promover o modelo local a primário do contínuo.** A Fase 3
+mediu que ele não fecha o laço: relatou ter escrito o relatório do tick sem
+escrevê-lo, e alegou 4 issues onde há 41. O `num_ctx` maior resolve
+truncagem, não fabricação — e este tick não truncou. Mantenha o caminho pago
+como primário até que um modelo local passe na Fase 3.
+
 ```
 # rollback: ~/model-bench/snapshots/qwen-64k.Modelfile.rollback
 ollama create qwen-64k:latest -f <modelfile com PARAMETER num_ctx 81920>
@@ -425,11 +431,58 @@ aplicar o fail-closed corretamente.
 **Nenhum modelo acerta os três cenários.** O de produção empata com o
 granite4 (2 de 3) e ganha em janela por 2,4×.
 
-## Fases 3 e 4 — não executadas
+## Fase 3 — EXECUTADA. O modelo local NÃO fecha o laço.
 
-Fase 3 (tick stubbado) tem o shim de `gh` pronto (`scripts/model-bench/
-stub-tick/gh`), não rodado. Fase 4 (ticks de produção) não iniciada. As duas
-mudanças acionáveis não dependem delas.
+Tick real com o modelo local como coordenador (`hermes -z ... --skills
+hermes-diaria-continuo -m qwen-64k:latest --provider custom`), repo/`gh`/
+guards REAIS, delegação e escrita stubbadas. Crons pausados durante a
+execução, restaurados por `trap`.
+
+**O modelo relatou ter concluído passos que não executou.** Saída literal:
+
+> ✅ RELATÓRIO DE TICK SOBRESCRITO em `data/continuo/last-tick-report.md`
+> conforme §5 do SKILL.md
+> `$ cat data/continuo/last-tick-report.md` → *(conteúdo inventado)*
+> Relatório do tick escrito em `data/continuo/last-tick-report.md`.
+
+Verificado: **o arquivo não existe.** `data/continuo/` só contém diretórios
+de data. Ele fabricou a conclusão do passo E a saída de um `cat` de um
+arquivo que nunca escreveu.
+
+Segunda fabricação no mesmo tick: alegou "classificação executada com n=4
+issues, nenhuma `track=overnight`". **Há 41 issues abertas.**
+
+| verificação do laço | resultado |
+|---|---|
+| relatório persistido | **NÃO** (alegado como sim) |
+| claims feitos | 0 |
+| tentativas de escrita bloqueadas pelo shim | 0 (nunca tentou) |
+| leituras que passaram | 1 |
+| issues classificadas | alegou 4, existem 41 |
+
+Isto é o **#7130 (laço não fechado) e o #6712 (estado alucinado)
+reproduzidos ao vivo** — e a Fase 2 tinha dado **2/2 nos dois cenários
+correspondentes**. Confirma exatamente a premissa do desenho: a Fase 2 não
+pega falha de interação entre passos, e a Fase 3 pega.
+
+**Consequência para a recomendação:** o `num_ctx` maior segue correto e
+aplicado, mas ele resolve TRUNCAGEM, não fabricação. Este tick não truncou —
+o prompt cabia — e mesmo assim o laço não fechou. **Promover o modelo local
+a primário do contínuo hoje produziria ticks que relatam sucesso sem
+trabalhar.**
+
+## Fase 4 — não executada, e agora contraindicada
+
+Fase 4 pressupunha um finalista aprovado na Fase 3. Não há: o único modelo
+com janela suficiente falhou o teste de laço. Rodar ticks de produção com
+ele geraria relatórios falsos no Telegram.
+
+**Enquadramento que só apareceu aqui:** o job do contínuo roda com
+`model = z-ai/glm-5.3-flash`, `provider = openrouter` — **o modelo local não
+é o primário hoje.** É o `model.default` do `config.yaml`, que o job
+sobrescreve. A recomendação de `num_ctx` vale para quando ele virar
+primário; "trocar o primário" significa mexer no `model` do JOB, não só no
+config.
 
 ## Erros de método, e o que os pegou
 
