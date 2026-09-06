@@ -48,6 +48,10 @@ export interface ChannelSpendHistoryEntry {
   canal: string;
   mes: string;
   valor: number;
+  /** Mesma coluna OPCIONAL de `SpendRow` (#5496) — precisa sobreviver ao
+   *  round-trip de histórico pra não colapsar linhas de subcanais diferentes
+   *  do mesmo canal+mes na mesma chave (#7531). */
+  subcanal?: string;
 }
 
 export interface AdsDailyDigestHistory {
@@ -62,19 +66,32 @@ export function emptyDigestHistory(): AdsDailyDigestHistory {
 
 /** @pure */
 export function toHistoryRows(spendRows: SpendRow[]): ChannelSpendHistoryEntry[] {
-  return spendRows.map((r) => ({ canal: r.canal, mes: r.mes, valor: r.valor }));
+  return spendRows.map((r) => ({ canal: r.canal, mes: r.mes, valor: r.valor, subcanal: r.subcanal }));
 }
 
 // ---------------------------------------------------------------------------
-// Delta por canal+mes
+// Delta por canal+mes(+subcanal)
 // ---------------------------------------------------------------------------
+
+/** Chave composta canal+mes+subcanal — mesma composição de `spendChannelLabel`/
+ *  a chave de dupla-contagem em `cac.ts:589` (#5496/#7531). `subcanal` ausente
+ *  vira string vazia, uma chave estável distinta de qualquer subcanal real
+ *  nomeado (nunca colide "canal inteiro" com "canal/algumSubcanal"). @pure */
+function channelDeltaKey(canal: string, mes: string, subcanal: string | undefined): string {
+  return `${canal}|${mes}|${subcanal ?? ""}`;
+}
 
 export interface ChannelDeltaRow {
   canal: string;
   mes: string;
+  /** Mesma coluna OPCIONAL de `SpendRow` (#5496) — preservada aqui pra que
+   *  duas linhas do mesmo canal+mes com subcanais diferentes (ex: PMax vs
+   *  Search) apareçam como entidades distintas no e-mail, não uma
+   *  sobrescrevendo a outra (#7531). */
+  subcanal?: string;
   moeda: string;
   totalAtual: number;
-  /** `null` = canal+mes sem entrada no histórico anterior (1ª checagem). */
+  /** `null` = canal+mes(+subcanal) sem entrada no histórico anterior (1ª checagem). */
   totalAnterior: number | null;
   /** `null` = sem baseline pra calcular incremento diário (ver acima). */
   deltaDia: number | null;
@@ -82,9 +99,9 @@ export interface ChannelDeltaRow {
 
 /**
  * Compara os totais ATUAIS de `spend.csv` contra o histórico da checagem
- * anterior, canal+mes a canal+mes. Uma linha presente em `previousRows` mas
- * ausente em `currentRows` (canal que sumiu do CSV) é simplesmente ignorada
- * — não há "delta negativo por remoção" a reportar.
+ * anterior, canal+mes(+subcanal) a canal+mes(+subcanal). Uma linha presente
+ * em `previousRows` mas ausente em `currentRows` (canal que sumiu do CSV) é
+ * simplesmente ignorada — não há "delta negativo por remoção" a reportar.
  *
  * @pure
  */
@@ -92,13 +109,21 @@ export function computeChannelDeltas(
   currentRows: SpendRow[],
   previousRows: ChannelSpendHistoryEntry[],
 ): ChannelDeltaRow[] {
-  const prevMap = new Map(previousRows.map((r) => [`${r.canal}|${r.mes}`, r.valor]));
+  const prevMap = new Map(previousRows.map((r) => [channelDeltaKey(r.canal, r.mes, r.subcanal), r.valor]));
   return currentRows.map((r) => {
-    const key = `${r.canal}|${r.mes}`;
+    const key = channelDeltaKey(r.canal, r.mes, r.subcanal);
     const hasPrev = prevMap.has(key);
     const prev = hasPrev ? prevMap.get(key)! : null;
     const deltaDia = hasPrev ? round2(r.valor - prev!) : null;
-    return { canal: r.canal, mes: r.mes, moeda: r.moeda, totalAtual: r.valor, totalAnterior: prev, deltaDia };
+    return {
+      canal: r.canal,
+      mes: r.mes,
+      subcanal: r.subcanal,
+      moeda: r.moeda,
+      totalAtual: r.valor,
+      totalAnterior: prev,
+      deltaDia,
+    };
   });
 }
 
@@ -213,6 +238,14 @@ export interface AdsDailyDigestEmailInput {
   readersSnapshotDate: string | null;
 }
 
+/** Rótulo de linha pro e-mail — inclui o subcanal quando presente
+ *  (`"Google Ads/PMax"`), mesma convenção de `spendChannelLabel` em
+ *  `cac.ts`, pra que duas linhas do mesmo canal+mes não apareçam idênticas
+ *  no digest (#7531). @pure */
+function channelDeltaLabel(d: ChannelDeltaRow): string {
+  return d.subcanal ? `${d.canal}/${d.subcanal}` : d.canal;
+}
+
 /** @pure */
 export function buildAdsDailyDigestEmail(input: AdsDailyDigestEmailInput): { subject: string; body: string } {
   const subject = `Ads Daily Digest — ${input.periodDate}`;
@@ -229,7 +262,7 @@ export function buildAdsDailyDigestEmail(input: AdsDailyDigestEmailInput): { sub
     lines.push("");
     lines.push("Totais acumulados por canal (sem mudança relevante):");
     for (const d of input.deltas) {
-      lines.push(`  - ${d.canal} (${d.mes}): ${d.moeda} ${d.totalAtual.toFixed(2)}`);
+      lines.push(`  - ${channelDeltaLabel(d)} (${d.mes}): ${d.moeda} ${d.totalAtual.toFixed(2)}`);
     }
   } else {
     lines.push("Gasto por canal (incremento desde a última checagem):");
@@ -238,7 +271,7 @@ export function buildAdsDailyDigestEmail(input: AdsDailyDigestEmailInput): { sub
         d.deltaDia === null
           ? `total mês ${d.mes}: ${d.moeda} ${d.totalAtual.toFixed(2)} (1ª checagem — sem baseline pra incremento diário)`
           : `+${d.moeda} ${d.deltaDia.toFixed(2)} (total mês ${d.mes}: ${d.moeda} ${d.totalAtual.toFixed(2)})`;
-      lines.push(`  - ${d.canal}: ${detalhe}`);
+      lines.push(`  - ${channelDeltaLabel(d)}: ${detalhe}`);
     }
   }
 
