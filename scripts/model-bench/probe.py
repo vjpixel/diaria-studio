@@ -113,6 +113,29 @@ def check_idle(verbose: bool = True) -> tuple[bool, str]:
     return ok, msg
 
 
+def wait_idle(max_wait: int = 300, verbose: bool = True) -> bool:
+    """Espera a máquina esfriar, em vez de abortar.
+
+    Numa SEQUÊNCIA de medições o estorvo é a rodada anterior: o modelo fica
+    residente e `gpu_util` segue alto por dezenas de segundos depois que a
+    chamada retornou. Abortar aí descarta uma célula boa por causa de si
+    mesmo — foi o que aconteceu na 1ª execução da bateria, que perdeu dois
+    dos três níveis de contexto. Abortar continua certo para carga ALHEIA
+    (tick em voo); para a própria cauda, esperar é o correto.
+    """
+    t0 = time.time()
+    while time.time() - t0 < max_wait:
+        ok, msg = check_idle(verbose=False)
+        if ok:
+            if verbose and time.time() - t0 > 2:
+                print(f"esfriou em {time.time()-t0:.0f}s: {msg}")
+            return True
+        time.sleep(10)
+    if verbose:
+        print(f"AVISO: nao esfriou em {max_wait}s — {check_idle(verbose=False)[1]}")
+    return False
+
+
 def _filler(n_chars: int, codeword: str) -> str:
     """Prompt com a palavra-código na PRIMEIRA linha.
 

@@ -120,13 +120,38 @@ def _extrai_json(txt: str) -> dict | None:
     return None
 
 
+def _enchimento(n_tokens: int) -> str:
+    """Histórico plausível de repositório, para levar o prompt ao tamanho alvo.
+
+    Vai ENTRE o SKILL.md e o estado do tick, de propósito: replica a forma do
+    prompt de produção, em que as regras estão no COMEÇO e o estado recente no
+    fim. Como o Ollama trunca do começo, é o SKILL.md que se perde primeiro —
+    exatamente o que se quer reproduzir. Enchimento no fim testaria outra
+    coisa.
+    """
+    if n_tokens <= 0:
+        return ""
+    linha = ("commit a1b2c3d  fix(#{n}): ajuste em scripts/lib/modulo-{n}.ts "
+             "— 2026-09-0{d} 1{h}:0{m}\n")
+    buf = []
+    i = 0
+    while sum(len(x) for x in buf) < n_tokens * 4.18:
+        i += 1
+        buf.append(linha.format(n=7000 + i, d=i % 7 + 1, h=i % 9, m=i % 6))
+    return ("\n\nHISTÓRICO RECENTE DO REPOSITÓRIO (contexto de fundo)\n"
+            + "".join(buf) + "\n")
+
+
 def roda_cenario(model: str, chave: str, skill_txt: str,
-                 show_prompt: bool = False) -> dict:
+                 show_prompt: bool = False, pad_to: int = 0) -> dict:
     c = CENARIOS[chave]
-    prompt = (
-        skill_txt + "\n\n" + c["estado"] + INSTRUCAO
-        + "Opções válidas para \"acao\": " + ", ".join(c["opcoes"]) + "\n"
-    )
+    cauda = ("\n\n" + c["estado"] + INSTRUCAO
+             + "Opções válidas para \"acao\": " + ", ".join(c["opcoes"]) + "\n")
+    pad = 0
+    if pad_to:
+        base = (len(skill_txt) + len(cauda)) / 4.18
+        pad = max(0, int(pad_to - base))
+    prompt = skill_txt + _enchimento(pad) + cauda
     if show_prompt:
         print(prompt[:2000], "\n[...]\n", prompt[-800:])
     t0 = time.time()
@@ -141,6 +166,7 @@ def roda_cenario(model: str, chave: str, skill_txt: str,
     return {
         "cenario": chave,
         "nome": c["nome"],
+        "pad_alvo": pad_to,
         "tokens_enviados_aprox": len(prompt) // 4,
         "tokens_lidos": lidos,
         # Truncou se leu bem menos do que o prompt tinha. Este é o sinal que
@@ -164,14 +190,21 @@ def main() -> int:
     p.add_argument("--repeats", type=int, default=3,
                    help="repetições por cenário (temperatura 0 não garante "
                         "determinismo com KV cache reaproveitado)")
+    p.add_argument("--pad-to", type=int, default=0, metavar="TOKENS",
+                   help="enche o prompt ate este tamanho, ANTES do estado, "
+                        "para reproduzir a ocupacao real do tick (56-61k). "
+                        "0 = so o SKILL.md (~10k), que mede aderencia pura "
+                        "mas NAO a condicao de producao")
     p.add_argument("--show-prompt", action="store_true")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--wait-idle", type=int, default=300, metavar="SEG",
+                   help="espera a maquina esfriar antes de medir (default 300)")
     a = p.parse_args()
 
-    ok, _ = probe.check_idle()
-    if not ok and not a.force:
-        print("ABORTADO: máquina não está ociosa (use --force).")
+    if not probe.wait_idle(a.wait_idle) and not a.force:
+        print("ABORTADO: máquina não esfriou (use --force).")
         return 2
+    probe.check_idle()
 
     if not SKILL.exists():
         print(f"ABORTADO: SKILL.md não encontrado em {SKILL}")
@@ -185,7 +218,8 @@ def main() -> int:
           f"{'acao':<26} {'ok':>3}")
     for k in chaves:
         for i in range(a.repeats):
-            r = roda_cenario(a.model, k, skill_txt, a.show_prompt and i == 0)
+            r = roda_cenario(a.model, k, skill_txt,
+                             a.show_prompt and i == 0, pad_to=a.pad_to)
             linhas.append(r)
             print(f"{k:>4} {i+1:>4} {r['tokens_lidos']:>8,} "
                   f"{str(r['truncou']):>6} {str(r['json_valido']):>5} "
