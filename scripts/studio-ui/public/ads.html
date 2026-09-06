@@ -47,6 +47,48 @@
       <div class="ads-summary-grid" id="ads-summary-grid"></div>
     </section>
 
+    <section class="panel" id="campaign-economics-panel" hidden>
+      <h2>Economia da campanha ao vivo (teste 2608)</h2>
+      <p class="hint">
+        Google Ads + Microsoft Ads via API ao vivo (Meta Ads fora desta
+        tela — só via MCP hoje, ver <code>#7536</code>). O custo por
+        <strong>leitor</strong> (acima) só amadurece por volta de 02/10;
+        até lá, esta seção acompanha custo por <strong>cadastro</strong>,
+        que já existe desde o D0.
+      </p>
+      <div class="ads-summary-grid" id="campaign-tiles-grid"></div>
+      <div id="campaign-freshness" class="ads-freshness-row"></div>
+
+      <h3>Custo/cadastro acumulado por canal</h3>
+      <p class="hint">
+        Acumulado desde o D0 — nunca o valor diário (dia sem cadastro
+        seria divisão por zero). Escala compartilhada entre os canais;
+        canal sem nenhum cadastro no período não ganha linha.
+      </p>
+      <div id="campaign-chart-empty" class="hint" hidden>Sem cadastro em nenhum canal ainda neste período.</div>
+      <div id="campaign-chart-container"></div>
+      <div id="campaign-chart-legend" class="ads-chart-legend"></div>
+
+      <h3>Canais (tabela)</h3>
+      <p class="hint">Cada linha usa só os dados do próprio canal — nunca uma média entre canais.</p>
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead>
+            <tr>
+              <th>Canal</th>
+              <th>Gasto</th>
+              <th>Cliques</th>
+              <th>Impressões</th>
+              <th>CPC médio</th>
+              <th>Cadastros</th>
+              <th>Custo/cadastro</th>
+            </tr>
+          </thead>
+          <tbody id="campaign-channels-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="panel" id="ads-table-panel" hidden>
       <div class="panel-header-row">
         <h2>Canais (<span id="ads-count">0</span>)</h2>

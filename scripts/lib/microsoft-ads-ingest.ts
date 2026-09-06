@@ -85,6 +85,12 @@ import { runSpendIngest, type SpendIngestFetchResult } from "./spend-ingest.ts";
 export interface MicrosoftAdsReportRow {
   TimePeriod?: string;
   Spend?: string | number;
+  /** Só presentes quando a submissão pediu essas colunas (ver `columns` em
+   *  `FetchMicrosoftAdsSpendRowsOptions`/`fetchMicrosoftAdsPerformanceRows`,
+   *  #7536) — o parser genérico (`parseReportCsv`) preenche só o que o
+   *  header trouxe, nunca inventa `undefined` como `0`. */
+  Impressions?: string | number;
+  Clicks?: string | number;
 }
 
 /**
@@ -810,16 +816,46 @@ function unzipFirstEntry(buf: Buffer): Buffer {
  * período" (mesmo raciocínio do #5598/#5605: nunca mascarar perda de dado
  * como zero silencioso).
  */
-function parseReportCsv(csvText: string): MicrosoftAdsReportRow[] {
+/** Colunas que este parser sabe mapear pra `MicrosoftAdsReportRow` — cobre
+ *  `SPEND_REPORT_COLUMNS` (caminho de `spend.csv`, único chamador hoje) mais
+ *  `Impressions`/`Clicks`, que `MicrosoftAdsReportRow` também aceita
+ *  opcionalmente. Uma coluna requisitada fora desta lista (ex: `CampaignName`
+ *  do relatório de fechamento, #7539 — fora de escopo aqui, ver
+ *  `parsePerformanceReportCsv`) simplesmente não aparece no objeto de saída
+ *  — nunca lança por coluna desconhecida, só por coluna ESPERADA ausente
+ *  (abaixo). */
+const KNOWN_COLUMN_KEYS = ["TimePeriod", "Spend", "Impressions", "Clicks"] as const;
+type KnownColumnKey = (typeof KNOWN_COLUMN_KEYS)[number];
+
+/**
+ * `expectedColumns` é o conjunto que a REQUEST pediu
+ * (`buildCampaignPerformanceReportSubmitEnvelope`) — cada uma precisa estar
+ * no header, senão é sinal de transporte quebrado (mesmo raciocínio já
+ * documentado abaixo: a request FIXOU as colunas, então ausência é erro, não
+ * "sem gasto no período"). Colunas fora de `KNOWN_COLUMN_KEYS` (não usadas
+ * por este módulo) são ignoradas mesmo se pedidas — nunca aparecem no objeto
+ * de saída. Único chamador hoje é `downloadAndParseReport` (caminho de
+ * `spend.csv`, `SPEND_REPORT_COLUMNS` fixo) — o parâmetro segue configurável
+ * por não haver motivo pra travar a assinatura, mas nada chama com override.
+ */
+function parseReportCsv(csvText: string, expectedColumns: readonly string[] = SPEND_REPORT_COLUMNS): MicrosoftAdsReportRow[] {
   const parsed = Papa.parse<string[]>(csvText.trim(), { skipEmptyLines: true });
   const [header, ...dataRows] = parsed.data;
   if (!header) return [];
-  const timePeriodIdx = header.indexOf("TimePeriod");
-  const spendIdx = header.indexOf("Spend");
-  if (timePeriodIdx === -1 || spendIdx === -1) {
-    throw new Error(`CSV do relatório sem as colunas esperadas (header: ${JSON.stringify(header)})`);
+  const missing = expectedColumns.filter((c) => header.indexOf(c) === -1);
+  if (missing.length > 0) {
+    throw new Error(`CSV do relatório sem as colunas esperadas (faltando: ${missing.join(", ")}; header: ${JSON.stringify(header)})`);
   }
-  return dataRows.map((row) => ({ TimePeriod: row[timePeriodIdx], Spend: row[spendIdx] }));
+  const knownIdx = new Map<KnownColumnKey, number>();
+  for (const key of KNOWN_COLUMN_KEYS) {
+    const idx = header.indexOf(key);
+    if (idx !== -1) knownIdx.set(key, idx);
+  }
+  return dataRows.map((row) => {
+    const out: MicrosoftAdsReportRow = {};
+    for (const [key, idx] of knownIdx) out[key] = row[idx];
+    return out;
+  });
 }
 
 /** Baixa (`downloadUrl`) + descompacta (`unzipFirstEntry`) — mecânica
@@ -1083,6 +1119,45 @@ export async function fetchMicrosoftAdsPerformanceRows(
   if (!outcome.downloadUrl) return { rows: [] };
 
   return downloadAndParsePerformanceReport(fetchImpl, outcome.downloadUrl);
+}
+
+/** Colunas que `/ads` (#7536, "Economia da campanha ao vivo") precisa do
+ *  relatório de PERFORMANCE — subconjunto de `DEFAULT_MICROSOFT_ADS_PERFORMANCE_COLUMNS`
+ *  (#7539): gasto/cliques/impressões diários, sem `CampaignName`/share/perda
+ *  de impressão (que o dashboard não usa). Passado como override de
+ *  `opts.columns` pra `fetchMicrosoftAdsPerformanceRows` — reusa a função
+ *  irmã já existente em vez de duplicar o fluxo submit→poll→download→parse. */
+export const ADS_DASHBOARD_PERFORMANCE_COLUMNS = ["TimePeriod", "Impressions", "Clicks", "Spend"] as const;
+
+/** Normaliza `MicrosoftAdsPerformanceReportRow[]` (de `fetchMicrosoftAdsPerformanceRows`,
+ *  #7539) pro shape canônico `ChannelDailyMetric` que `ads-campaign-economics.ts`
+ *  (#7536) consome — mesma disciplina de descarte silencioso só por `TimePeriod`
+ *  irreconhecível (nunca inventa dia) que `aggregateMicrosoftAdsSpendByMonthWithDiscards`
+ *  já usa; `Impressions`/`Clicks` ausentes/malformados viram `0` (nunca
+ *  `NaN` propagado pro acumulado). @pure */
+export function normalizeMicrosoftAdsPerformanceRows(
+  rows: MicrosoftAdsPerformanceReportRow[],
+  canal: string,
+): Array<{ canal: string; date: string; gastoBrl: number; cliques: number; impressoes: number }> {
+  const out: Array<{ canal: string; date: string; gastoBrl: number; cliques: number; impressoes: number }> = [];
+  const toNum = (v: string | number | undefined): number => {
+    if (v === undefined) return 0;
+    const n = typeof v === "string" ? Number(v) : v;
+    return Number.isFinite(n) ? n : 0;
+  };
+  for (const row of rows) {
+    if (!row.TimePeriod) continue;
+    const date = normalizeMicrosoftDate(row.TimePeriod);
+    if (!date) continue;
+    out.push({
+      canal,
+      date,
+      gastoBrl: Math.round(toNum(row.Spend) * 100) / 100,
+      cliques: toNum(row.Clicks),
+      impressoes: toNum(row.Impressions),
+    });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

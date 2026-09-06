@@ -361,7 +361,7 @@ import { buildTasksData } from "./studio-tasks.ts";
 import { refreshPollEiaSummaryLocal } from "../build-poll-eia-data.ts";
 // #5236: custo por leitor por canal — qual canal traz leitor mais barato,
 // abertura da coorte vs. base, orçamento do mês, degradação. Ver studio-ads.ts.
-import { buildAdsData } from "./studio-ads.ts";
+import { buildAdsData, buildAdsCampaignEconomics } from "./studio-ads.ts";
 // #6590: busca por e-mail -> timeline unificada + coorte por migração,
 // sobre o store diaria-subscribers-db.ts (épico #6464). Read-only por
 // construção — ver studio-subscribers.ts.
@@ -1243,15 +1243,29 @@ function handleApiTasks(rootDir: string, req: IncomingMessage, res: ServerRespon
  * leitor mais barato? abertura da coorte vs. base? orçamento do mês
  * consumido? degradação desde o snapshot anterior? Sempre 200:
  * `buildAdsData` é fail-soft por camada (spend/snapshot/origem — nunca
- * lança, mesmo em sessão cloud sem `data/`). `?refresh=1` bypassa o cache
- * de 10min (botão "Atualizar" da UI). */
+ * lança, mesmo em sessão cloud sem `data/`). `?refresh=1` bypassa os 2
+ * caches (o de `buildAdsData` E o de `buildAdsCampaignEconomics`).
+ *
+ * **`campaignEconomics` (#7536, "Economia da campanha ao vivo") entra
+ * SEMPRE junto** — mesma rota, campo a mais no JSON, não uma rota nova
+ * (o payload de `buildAdsData` já é a resposta inteira desta rota há
+ * tempo; adicionar um 2º `await` aqui é mais barato que espalhar a tela em
+ * 2 fetches do lado do cliente). `buildAdsCampaignEconomics` é assíncrona
+ * (bate em Google Ads/Microsoft Ads/Kit ao vivo, cache PRÓPRIO de 10min —
+ * ver docstring dela) — por isso este handler virou `.then/.catch`, mesmo
+ * padrão de `handleApiMetrics`. */
 function handleApiAds(rootDir: string, req: IncomingMessage, res: ServerResponse): void {
+  const forceRefresh = new URL(req.url ?? "/", "http://localhost").searchParams.get("refresh") === "1";
+  let adsData: ReturnType<typeof buildAdsData>;
   try {
-    const forceRefresh = new URL(req.url ?? "/", "http://localhost").searchParams.get("refresh") === "1";
-    sendJson(res, 200, buildAdsData(rootDir, { forceRefresh }));
+    adsData = buildAdsData(rootDir, { forceRefresh });
   } catch (e) {
     sendJson(res, 500, { error: (e as Error).message });
+    return;
   }
+  buildAdsCampaignEconomics(rootDir, { forceRefresh })
+    .then((campaignEconomics) => sendJson(res, 200, { ...adsData, campaignEconomics }))
+    .catch((e) => sendJson(res, 500, { error: (e as Error).message }));
 }
 
 // ── #7178: painel de métricas de negócio (baseline/queda/metas/decomposição) ──

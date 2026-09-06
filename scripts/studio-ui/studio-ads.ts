@@ -28,13 +28,30 @@
  * `forceRefresh` bypassa.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { detectExecMode, type ExecMode } from "../lib/exec-mode.ts";
 import { latestSnapshotDate, listSnapshotDates } from "../lib/beehiiv-backup-snapshots.ts";
 import { readSpendCsv, type SpendRow, type SpendRowError } from "../lib/aquisicao-spend.ts";
 import { buildCacReport, computeMonthBudgetUsage, MONTHLY_BUDGET_FLOOR_BRL, type CacReport, type MonthBudgetUsage } from "../lib/cac.ts";
 import { loadOrigemIndex, loadPreparedSubscribers } from "../cac-report.ts";
+import { assertValidRunState, type AdsTestRunState } from "../lib/ads-test-run-state.ts";
+import { daysBetween } from "../lib/ads-test-schedule.ts";
+import { resolveKitConfig } from "../lib/kit-config.ts";
+import {
+  fetchCampaignEconomicsSources,
+  type CampaignEconomicsSourcesResult,
+} from "../lib/ads-campaign-economics-fetch.ts";
+import {
+  buildCumulativeSeries,
+  buildChannelTable,
+  buildTestStateTiles,
+  computeSourceFreshness,
+  type CumulativeSeriesResult,
+  type ChannelSummaryRow,
+  type TestStateTiles,
+  type SourceFreshnessEntry,
+} from "../lib/ads-campaign-economics.ts";
 
 // ─── tipos do snapshot ──────────────────────────────────────────────────
 
@@ -177,5 +194,147 @@ export function buildAdsData(rootDir: string, opts: BuildAdsDataOptions = {}): A
     monthKey,
   };
   cacheByRoot.set(rootDir, { data, expiresAt: nowMs + cacheTtlMs });
+  return data;
+}
+
+// ─── #7536: "Economia da campanha ao vivo" (teste 2608) — Google Ads +
+// Microsoft Ads apenas; Meta Ads fica de fora desta unidade (ver docstring
+// de scripts/lib/ads-campaign-economics-fetch.ts) ──────────────────────
+
+export interface AdsCampaignEconomicsSnapshot {
+  generatedAt: string;
+  cached: boolean;
+  hasDataDir: boolean;
+  /** `null` quando `run-state.json` não existe (teste ainda não começou) —
+   *  `buildTestStateTiles` já é fail-soft pra esse caso (datas/janela
+   *  `null`, totais ainda reportados). */
+  runState: AdsTestRunState | null;
+  runStateError: string | null;
+  cumulative: CumulativeSeriesResult;
+  channels: ChannelSummaryRow[];
+  testState: TestStateTiles;
+  freshness: SourceFreshnessEntry[];
+}
+
+/** Lê `data/aquisicao/teste-2608/run-state.json` — fail-soft: arquivo
+ *  ausente/corrompido nunca lança, só reporta `runStateError` (mesma
+ *  disciplina de `loadRunState` em `scripts/ads-daily-digest.ts`, mas sem
+ *  logar no console — quem consome é uma página HTTP, não um CLI). */
+function loadRunStateFailSoft(path: string): { runState: AdsTestRunState | null; error: string | null } {
+  if (!existsSync(path)) return { runState: null, error: null };
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8"));
+    assertValidRunState(raw);
+    return { runState: raw, error: null };
+  } catch (e) {
+    return { runState: null, error: (e as Error).message };
+  }
+}
+
+export interface BuildAdsCampaignEconomicsOptions {
+  now?: () => Date;
+  cacheTtlMs?: number;
+  forceRefresh?: boolean;
+  runStatePath?: string;
+  /** Injetáveis pra teste — default `fetch`/`process.env` reais. */
+  fetchImpl?: typeof fetch;
+  env?: Record<string, string | undefined>;
+}
+
+interface CampaignEconomicsCacheEntry {
+  data: AdsCampaignEconomicsSnapshot;
+  expiresAt: number;
+}
+
+/** Cache SEPARADO do de `buildAdsData` (#7536) — fontes e TTL diferentes:
+ *  este bate em 2 APIs de ads + Kit ao vivo (custoso, TTL curto, 10min
+ *  default — a issue recomenda 5-15min pro requisito de "3+ consultas/dia
+ *  com botão de atualizar"), aquele só lê arquivo local (barato, TTL de
+ *  10min histórico do #5236 por motivo diferente — gasto muda pouco). */
+const campaignEconomicsCacheByRoot = new Map<string, CampaignEconomicsCacheEntry>();
+
+/** Usado só por testes, mesmo padrão de `clearAdsCache`. */
+export function clearAdsCampaignEconomicsCache(): void {
+  campaignEconomicsCacheByRoot.clear();
+}
+
+/**
+ * Monta o snapshot de "Economia da campanha ao vivo" pra `GET /api/ads`
+ * (#7536) — Google Ads + Microsoft Ads via REST ao vivo (nunca via
+ * `spend.csv`, que só agrega por MÊS) + cadastros por canal via Kit API.
+ * **Assíncrona** (diferente de `buildAdsData`) — bate em rede de verdade;
+ * mesmo padrão de `buildMetricsData` (`studio-metrics.ts`). Nunca lança:
+ * cada fonte é fail-soft por conta própria
+ * (`fetchCampaignEconomicsSources`), e a ausência de `run-state.json` só
+ * degrada `runState`/`testState`, nunca aborta o cálculo dos outros campos.
+ */
+export async function buildAdsCampaignEconomics(
+  rootDir: string,
+  opts: BuildAdsCampaignEconomicsOptions = {},
+): Promise<AdsCampaignEconomicsSnapshot> {
+  const now = opts.now ?? (() => new Date());
+  const nowMs = now().getTime();
+  const cacheTtlMs = opts.cacheTtlMs ?? 10 * 60_000;
+
+  if (!opts.forceRefresh) {
+    const cached = campaignEconomicsCacheByRoot.get(rootDir);
+    if (cached && cached.expiresAt > nowMs) {
+      return { ...cached.data, cached: true };
+    }
+  }
+
+  const generatedAt = new Date(nowMs).toISOString();
+  const hasDataDir = existsSync(resolve(rootDir, "data"));
+  const runStatePath = opts.runStatePath ?? resolve(rootDir, "data", "aquisicao", "teste-2608", "run-state.json");
+  const { runState, error: runStateError } = loadRunStateFailSoft(runStatePath);
+
+  const env = opts.env ?? (process.env as Record<string, string | undefined>);
+  const kitConfigResult = resolveKitConfig(env);
+  const kitConfig = kitConfigResult.ok ? kitConfigResult.config : null;
+
+  // O lookback do GAQL/Reporting API precisa cobrir DO D0 até hoje, nunca um
+  // fixo 30 dias (achado do self-review, #7536): a série acumulada começa em
+  // `runState.d0` — se a página for aberta mais de 30 dias depois do D0 (ex:
+  // revisitando o teste 2608 já em cauda, ~dia 35-40), um lookback fixo
+  // perderia os primeiros dias de gasto e SUBESTIMARIA o acumulado em
+  // silêncio, sem nenhum sinal de erro. `+1` inclusivo (D0..hoje). Sem
+  // `run-state.json`, cai no default de 30 dias de `fetchGoogleAdsChannelMetrics`/
+  // `fetchMicrosoftAdsChannelMetrics` (teste ainda não começou, nada a cobrir).
+  const todayIsoForLookback = generatedAt.slice(0, 10);
+  const lookbackDays = runState ? Math.max(daysBetween(runState.d0, todayIsoForLookback) + 1, 1) : undefined;
+
+  const sourcesResult: CampaignEconomicsSourcesResult = await fetchCampaignEconomicsSources(
+    (opts.fetchImpl ?? fetch) as typeof fetch,
+    kitConfig,
+    { env, now: now(), kitDateRangeStart: runState?.d0, lookbackDays },
+  );
+  // `fetchCampaignEconomicsSources` já reporta um erro genérico quando
+  // `kitConfig` é `null` — sobrescreve com o motivo mais específico de
+  // `resolveKitConfig` (ex: aponta pro `.env.example`), sem duplicar lógica.
+  if (!kitConfigResult.ok) sourcesResult.sources.Kit = { fetchedAt: null, error: kitConfigResult.reason };
+
+  const todayIso = generatedAt.slice(0, 10);
+  const dateRange = {
+    start: runState?.d0 ?? todayIso,
+    end: runState?.fim_janela && runState.fim_janela < todayIso ? runState.fim_janela : todayIso,
+  };
+
+  const cumulative = buildCumulativeSeries(sourcesResult.metrics, sourcesResult.signups, dateRange);
+  const channels = buildChannelTable(sourcesResult.metrics, sourcesResult.signups);
+  const testState = buildTestStateTiles(sourcesResult.metrics, sourcesResult.signups, runState, todayIso);
+  const freshness = computeSourceFreshness(sourcesResult.sources, nowMs);
+
+  const data: AdsCampaignEconomicsSnapshot = {
+    generatedAt,
+    cached: false,
+    hasDataDir,
+    runState,
+    runStateError,
+    cumulative,
+    channels,
+    testState,
+    freshness,
+  };
+  campaignEconomicsCacheByRoot.set(rootDir, { data, expiresAt: nowMs + cacheTtlMs });
   return data;
 }

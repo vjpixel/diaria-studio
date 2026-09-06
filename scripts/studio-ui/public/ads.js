@@ -20,6 +20,13 @@ const el = {
   refreshBtn: document.getElementById("refresh-btn"),
   lastUpdated: document.getElementById("last-updated"),
   tbody: document.getElementById("ads-tbody"),
+  campaignPanel: document.getElementById("campaign-economics-panel"),
+  campaignTilesGrid: document.getElementById("campaign-tiles-grid"),
+  campaignFreshness: document.getElementById("campaign-freshness"),
+  campaignChartEmpty: document.getElementById("campaign-chart-empty"),
+  campaignChartContainer: document.getElementById("campaign-chart-container"),
+  campaignChartLegend: document.getElementById("campaign-chart-legend"),
+  campaignChannelsTbody: document.getElementById("campaign-channels-tbody"),
 };
 
 function escapeHtml(s) {
@@ -241,6 +248,166 @@ function renderTable(report) {
   el.warnings.textContent = warnings.join(" ");
 }
 
+// ─── #7536: "Economia da campanha ao vivo" (teste 2608) ───────────────────
+
+function fmtInt(n) {
+  if (n == null) return "—";
+  return new Intl.NumberFormat("pt-BR").format(n);
+}
+
+/** Rótulo curto pro canal — encurta "X (teste 2608)" pra "X" nos lugares
+ *  onde o contexto (a seção inteira é do teste 2608) já deixa isso claro. */
+function shortChannelLabel(canal) {
+  return String(canal).replace(/\s*\(teste 2608\)\s*$/, "");
+}
+
+function renderCampaignTiles(testState) {
+  const tiles = [];
+  if (testState.d0) {
+    const janela =
+      testState.emAndamento
+        ? `dia ${testState.diasDecorridos} de ${testState.diasDecorridos + Math.max(testState.diasRestantes, 0)} · ${testState.diasRestantes} restante(s)`
+        : "janela de veiculação encerrada";
+    tiles.push(tile("Janela do teste", `${testState.d0} → ${testState.fimJanela}`, janela));
+  } else {
+    tiles.push(tile("Janela do teste", "—", "run-state.json ainda não existe (teste não começou)"));
+  }
+  tiles.push(tile("Gasto acumulado (Google+Microsoft)", fmtBrl(testState.gastoAcumuladoTotalBrl), null));
+  tiles.push(tile("Cadastros acumulados", fmtInt(testState.cadastrosAcumuladosTotal), null));
+  tiles.push(
+    tile(
+      "Sinal por canal",
+      `${testState.canaisComSinal}/${testState.canaisTotal}`,
+      "canal(is) com ≥1 cadastro no período — nunca uma média entre eles",
+    ),
+  );
+  el.campaignTilesGrid.innerHTML = tiles.join("");
+}
+
+function freshnessBadge(entry) {
+  const labelByStatus = { ok: "ok", stale: "desatualizado", error: "erro", unavailable: "indisponível" };
+  const ageLabel = entry.ageMinutes != null ? ` · ${entry.ageMinutes}min atrás` : "";
+  const title = entry.error ? escapeHtml(entry.error) : "";
+  return `<span class="ads-freshness-badge ${entry.status}" title="${title}"><span class="dot"></span>${escapeHtml(
+    entry.source,
+  )}: ${labelByStatus[entry.status] ?? entry.status}${ageLabel}</span>`;
+}
+
+function renderCampaignFreshness(freshness) {
+  el.campaignFreshness.innerHTML = freshness.map(freshnessBadge).join("");
+}
+
+function renderCampaignChannelsTable(channels) {
+  el.campaignChannelsTbody.innerHTML = channels
+    .map(
+      (row) => `
+    <tr>
+      <td><strong>${escapeHtml(shortChannelLabel(row.canal))}</strong></td>
+      <td class="mono">${fmtBrl(row.gastoTotalBrl)}</td>
+      <td>${fmtInt(row.cliquesTotal)}</td>
+      <td>${fmtInt(row.impressoesTotal)}</td>
+      <td class="mono">${fmtBrl(row.cpcMedioBrl)}</td>
+      <td>${fmtInt(row.cadastrosTotal)}</td>
+      <td class="mono">${fmtBrl(row.custoPorCadastroBrl)}</td>
+    </tr>`,
+    )
+    .join("");
+}
+
+const CHART_WIDTH = 720;
+const CHART_HEIGHT = 260;
+const CHART_MARGIN = { top: 16, right: 16, bottom: 28, left: 56 };
+
+/** Gráfico de linhas SVG desenhado à mão (sem lib externa — Studio serve
+ *  estático, sem build step) — custo/cadastro ACUMULADO por canal, eixo Y
+ *  COMPARTILHADO entre todos os canais (requisitos 1/2 da issue #7536).
+ *  `series` já vem filtrada pra só canais com ≥1 cadastro (requisito 3,
+ *  `buildCumulativeSeries` do lado do servidor) — esta função não filtra
+ *  de novo, só desenha o que recebeu. */
+function renderCampaignChart(cumulative) {
+  if (!cumulative.series || cumulative.series.length === 0) {
+    el.campaignChartEmpty.hidden = false;
+    el.campaignChartContainer.innerHTML = "";
+    el.campaignChartLegend.innerHTML = "";
+    return;
+  }
+  el.campaignChartEmpty.hidden = true;
+
+  const allDates = cumulative.series[0].points.map((p) => p.date);
+  const yMax = cumulative.sharedYAxisMax != null && cumulative.sharedYAxisMax > 0 ? cumulative.sharedYAxisMax : 1;
+  const plotW = CHART_WIDTH - CHART_MARGIN.left - CHART_MARGIN.right;
+  const plotH = CHART_HEIGHT - CHART_MARGIN.top - CHART_MARGIN.bottom;
+
+  const xForIndex = (i) => (allDates.length <= 1 ? 0 : (i / (allDates.length - 1)) * plotW);
+  const yForValue = (v) => plotH - (v / yMax) * plotH;
+
+  const axisLines = [
+    `<line class="ads-chart-axis-line" x1="0" y1="${plotH}" x2="${plotW}" y2="${plotH}" />`,
+    `<line class="ads-chart-axis-line" x1="0" y1="0" x2="0" y2="${plotH}" />`,
+  ];
+  const yTicks = [0, 0.5, 1].map((frac) => {
+    const y = plotH - frac * plotH;
+    const value = frac * yMax;
+    return `<text class="ads-chart-axis-label" x="-6" y="${y + 3}" text-anchor="end">${fmtBrl(value)}</text>`;
+  });
+  const xTicks = [0, allDates.length - 1]
+    .filter((i, idx, arr) => i >= 0 && arr.indexOf(i) === idx)
+    .map((i) => `<text class="ads-chart-axis-label" x="${xForIndex(i)}" y="${plotH + 18}" text-anchor="middle">${escapeHtml(allDates[i])}</text>`);
+
+  const lines = cumulative.series
+    .map((s, idx) => {
+      const withValue = s.points
+        .map((p, i) => ({ i, value: p.custoPorCadastroAcumulado }))
+        .filter((p) => p.value != null);
+      if (withValue.length === 0) return "";
+      const pathD = withValue
+        .map((p, k) => `${k === 0 ? "M" : "L"} ${xForIndex(p.i).toFixed(1)} ${yForValue(p.value).toFixed(1)}`)
+        .join(" ");
+      const dots = withValue
+        .map((p) => `<circle class="ads-chart-dot ads-chart-dot-${idx % 3}" cx="${xForIndex(p.i).toFixed(1)}" cy="${yForValue(p.value).toFixed(1)}" r="2.5" />`)
+        .join("");
+      return `<path class="ads-chart-line ads-chart-line-${idx % 3}" d="${pathD}" />${dots}`;
+    })
+    .join("");
+
+  el.campaignChartContainer.innerHTML = `
+    <svg viewBox="0 0 ${CHART_WIDTH} ${CHART_HEIGHT}" role="img" aria-label="Custo por cadastro acumulado por canal">
+      <g transform="translate(${CHART_MARGIN.left},${CHART_MARGIN.top})">
+        ${axisLines.join("")}
+        ${yTicks.join("")}
+        ${xTicks.join("")}
+        ${lines}
+      </g>
+    </svg>`;
+
+  el.campaignChartLegend.innerHTML = cumulative.series
+    .map(
+      (s, idx) =>
+        `<span class="ads-chart-legend-item"><span class="ads-chart-legend-swatch c${idx % 3}"></span>${escapeHtml(
+          shortChannelLabel(s.canal),
+        )}</span>`,
+    )
+    .join("");
+
+  if (cumulative.omittedNoSignups && cumulative.omittedNoSignups.length > 0) {
+    el.campaignChartLegend.innerHTML += `<span class="hint">Sem linha (gastou, 0 cadastro): ${cumulative.omittedNoSignups
+      .map((c) => escapeHtml(shortChannelLabel(c)))
+      .join(", ")}</span>`;
+  }
+}
+
+function renderCampaignEconomics(data) {
+  if (!data) {
+    el.campaignPanel.hidden = true;
+    return;
+  }
+  el.campaignPanel.hidden = false;
+  renderCampaignTiles(data.testState);
+  renderCampaignFreshness(data.freshness);
+  renderCampaignChart(data.cumulative);
+  renderCampaignChannelsTable(data.channels);
+}
+
 async function refresh(forceRefresh) {
   setFetchStatus("", "carregando…");
   try {
@@ -250,6 +417,11 @@ async function refresh(forceRefresh) {
     const data = await res.json();
     el.error.hidden = true;
     el.execModeValue.textContent = data.execMode ? `ambiente: ${data.execMode}` : "—";
+
+    // Independente do estado do relatório "custo por leitor" acima —
+    // Google Ads/Microsoft Ads/Kit são fontes próprias (#7536), podem ter
+    // dado mesmo sem `spend.csv`/snapshot Beehiiv locais.
+    renderCampaignEconomics(data.campaignEconomics);
 
     if (!data.hasDataDir) {
       el.nodata.hidden = false;
