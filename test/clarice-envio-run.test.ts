@@ -1673,6 +1673,59 @@ describe("clarice-envio-run (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    // -----------------------------------------------------------------------
+    // #7555 — ressalvas do teste A/B/C NUNCA zeram o passo fixo (#6888)
+    // -----------------------------------------------------------------------
+    it("#7555: ressalva do teste A/B/C (abc.caveats não-vazio) NÃO zera o passo fixo — só onda perdida zera", async () => {
+      const root = freshRoot();
+      const { exec } = makeFakeExec(
+        goldenHandlers({
+          proposal: {
+            abc: { action: "travar", metric: "abertura", winner: "A", caveats: ["Poder baixo: a amostra atual só detectaria..."], rationale: "vencedor claro" },
+          },
+        }),
+      );
+      const r = await runEnvio(baseDeps(root, { exec }), { planOnly: true });
+
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.ok(r.plan, "plan-only deveria devolver a proposta em `plan`");
+      // healthyRisk().step === 0.15 — ANTES do fix, ressalva do A/B/C zerava
+      // isso pra 0 mesmo sem nenhuma onda perdida (bug da #7555).
+      assert.equal(r.plan!.step, 0.15, "passo fixo (#6888) deve sobreviver a ressalvas do teste A/B/C");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#7555: onda perdida (`missed`) continua zerando o passo fixo — o freio de segurança real não regrediu", async () => {
+      const root = freshRoot();
+      const { exec } = makeFakeExec(
+        goldenHandlers({
+          proposal: {
+            state: {
+              cycle: CYCLE,
+              waves: [
+                wave({
+                  key: "d11-ter11",
+                  status: "scheduled",
+                  scheduledAt: "2026-08-11T09:00:00.000Z", // agendada pra HOJE (11/08 BRT), mas nunca marcada "sent"
+                }),
+              ],
+              volumeSum: 100000,
+              volumeComplete: true,
+              sentCount: 10,
+              scheduledCount: 0,
+              unscopedCount: 0,
+            } as unknown as WaveProposal["state"],
+          },
+        }),
+      );
+      const r = await runEnvio(baseDeps(root, { exec }), { planOnly: true });
+
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.ok(r.plan, "plan-only deveria devolver a proposta em `plan`");
+      assert.equal(r.plan!.step, 0, "onda perdida deve continuar zerando o passo fixo (freio de segurança real, fora do escopo da #7555)");
+      rmSync(root, { recursive: true, force: true });
+    });
+
     it("--volume N acima do teto de CRÉDITO => aborta (code 1) citando o teto violado", async () => {
       const root = freshRoot();
       // Crédito bem abaixo do N pedido (500), enquanto fila/freio permitiriam
