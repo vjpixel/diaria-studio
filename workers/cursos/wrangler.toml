@@ -111,6 +111,11 @@ KIT_UTM_MEDIUM_FIELD = "utm_medium"
 KIT_UTM_CAMPAIGN_FIELD = "utm_campaign"
 KIT_REFERRING_SITE_FIELD = "referring_site"
 
+# #7535 (Camada 1) — mesmo custom field de produção usado pelo worker `poll`
+# (id 1358403, key "origem_paga") pra gravar o canal pago do cliente que
+# chegou ao gate de cursos via querystring, sem tocar no triplo fixo acima.
+KIT_ORIGEM_PAGA_FIELD = "origem_paga"
+
 # #6048 (item 4/5, Gate B aprovado pelo editor 25/08/2026 — rollout worker-a-
 # worker, poll já verificado ao vivo, cursos é o 2º). env.SUBSCRIBE_BACKEND
 # === "kit" em workers/cursos/src/subscribe.ts — cadastro pelo gate de cursos

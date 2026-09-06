@@ -18,9 +18,13 @@
  *     `SUBSCRIBE_UTM_BY_SOURCE.apex` quando não casa, ou quando o cliente
  *     não manda nada.
  *   - `resolveSubscribeUtm` pra qualquer OUTRO `source` (ex: "jogar", "hub")
- *     IGNORA um `clientUtm` mesmo que ele seja "válido" pela allowlist — a
- *     exceção é estreita ao source "apex", não um buraco geral no design
- *     "nunca aceita utm_* do cliente" dos demais 9 sources.
+ *     IGNORA um `clientUtm` "válido" pela allowlist NO TRIPLO FIXO
+ *     (source/medium/campaign/referringSite) — a exceção de sobrescrever o
+ *     triplo é estreita ao source "apex". **Atualizado pelo #7535 (Camada
+ *     1):** isso não significa mais "clientUtm sem nenhum efeito" nos
+ *     outros 9 sources — o campo NOVO `origemPaga` passa a ser gravado pra
+ *     qualquer source quando o `clientUtm.source` casa a allowlist (ver
+ *     `test/subscribe-origem-paga-7535.test.ts` pra cobertura completa).
  *   - `handleJogarSubscribe` fim-a-fim: POST com `source: "apex"` +
  *     `utm_source: "google-ads"` (o valor REAL de campanha, não um prefixo
  *     genérico) chega no payload da Beehiiv com esse utm_source cru; POST
@@ -196,17 +200,29 @@ describe("resolveSubscribeUtm('apex', clientUtm) — allowlist de prefixo (#6427
   });
 });
 
-describe("resolveSubscribeUtm — exceção NUNCA vaza pros outros 9 sources (#6427)", () => {
-  it("source='jogar' com clientUtm 'válido' (allowlist) é IGNORADO — comportamento idêntico a sem clientUtm", () => {
+describe("resolveSubscribeUtm — exceção do TRIPLO NUNCA vaza pros outros 9 sources (#6427)", () => {
+  it("source='jogar' com clientUtm 'válido' (allowlist): triplo fixo IGNORADO — comportamento idêntico a sem clientUtm", () => {
     const withOverride = resolveSubscribeUtm("jogar", { source: "clarice-260901", medium: "email", campaign: "x" });
     const withoutOverride = resolveSubscribeUtm("jogar");
-    assert.deepEqual(withOverride, withoutOverride);
+    assert.equal(withOverride.source, withoutOverride.source);
+    assert.equal(withOverride.medium, withoutOverride.medium);
+    assert.equal(withOverride.campaign, withoutOverride.campaign);
+    assert.equal(withOverride.referringSite, withoutOverride.referringSite);
     assert.notEqual(withOverride.source, "clarice-260901");
   });
 
-  it("source='hub' com clientUtm 'válido' também é IGNORADO", () => {
+  it("source='hub' com clientUtm 'válido': triplo fixo também IGNORADO", () => {
     const withOverride = resolveSubscribeUtm("hub", { source: "google-ads" });
     assert.equal(withOverride.source, "arquivo-hub");
+  });
+
+  // #7535 (Camada 1): a exceção do TRIPLO fixo (acima) não significa mais
+  // "clientUtm sem nenhum efeito" — origemPaga é o campo NOVO que passa a
+  // registrar o canal pago pra QUALQUER source, cobertura completa em
+  // test/subscribe-origem-paga-7535.test.ts.
+  it("source='jogar' com clientUtm 'válido': origemPaga É gravado (#7535) — não é mais 'sem efeito nenhum'", () => {
+    const withOverride = resolveSubscribeUtm("jogar", { source: "clarice-260901", medium: "email", campaign: "x" });
+    assert.equal(withOverride.origemPaga, "clarice-260901");
   });
 });
 

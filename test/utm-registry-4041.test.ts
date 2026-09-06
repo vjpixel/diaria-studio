@@ -144,12 +144,14 @@ describe("#4041 — emissores derivam do registry (sem literal solto no call sit
       medium: shared.LIVROS_INLINE_UTM.hero.medium,
       campaign: shared.LIVROS_INLINE_UTM.campaign,
       referringSite: "livros-inline-hero",
+      origemPaga: "",
     });
     assert.deepEqual(resolveSubscribeUtm("livros-footer"), {
       source: shared.LIVROS_INLINE_UTM.source,
       medium: shared.LIVROS_INLINE_UTM.footer.medium,
       campaign: shared.LIVROS_INLINE_UTM.campaign,
       referringSite: "livros-inline-footer",
+      origemPaga: "",
     });
   });
 
@@ -159,12 +161,14 @@ describe("#4041 — emissores derivam do registry (sem literal solto no call sit
       medium: shared.ARQUIVO_INLINE_UTM.medium,
       campaign: shared.ARQUIVO_INLINE_UTM.campaign,
       referringSite: "arquivo-inline",
+      origemPaga: "",
     });
     assert.deepEqual(resolveSubscribeUtm("hub"), {
       source: shared.HUB_INLINE_UTM.source,
       medium: shared.HUB_INLINE_UTM.medium,
       campaign: shared.HUB_INLINE_UTM.campaign,
       referringSite: "hub-inline",
+      origemPaga: "",
     });
   });
 
@@ -520,6 +524,7 @@ describe("#4578 — voto vindo da versão web do post redireciona pro gate unifi
       medium: shared.JOGAR_POSTWEB_UTM.medium,
       campaign: shared.JOGAR_POSTWEB_UTM.campaign,
       referringSite: "jogar-postweb-gate",
+      origemPaga: "",
     });
   });
 });

@@ -107,6 +107,16 @@ export interface Env {
    *  var pra ligar. Mesmo degrade gracioso ausente dos demais `KIT_*_FIELD`
    *  acima. */
   KIT_ORIGEM_CADASTRO_FIELD?: string;
+  /** #7535 (Camada 1) — nome do custom field Kit onde gravar `origem_paga`
+   * (canal pago do cliente que chegou ao gate de cursos via querystring —
+   * ver `subscribe.ts`). Mesmo campo/id da conta de produção usado pelo
+   * worker `poll` (id 1358403, key "origem_paga"). Mesmo degrade gracioso
+   * ausente dos demais `KIT_*_FIELD` acima. */
+  KIT_ORIGEM_PAGA_FIELD?: string;
+  /** #7535 (Camada 1) — nome do custom field Beehiiv onde gravar
+   * `origem_paga`. Mesmo degrade gracioso ausente de `BEEHIIV_NAME_FIELD`
+   * acima — nenhum criado em produção ainda. */
+  BEEHIIV_ORIGEM_PAGA_FIELD?: string;
   ALLOWED_ORIGINS?: string;
   _requestOrigin?: string | null;
   /** #5504: Meta Conversions API — mesmo secret/mecanismo de

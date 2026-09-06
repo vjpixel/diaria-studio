@@ -170,6 +170,7 @@ describe("renderCuradoriaCtaSubscribeScript() — timeout do fetch (#6981)", () 
           }
         }),
       AbortController: typeof AbortController === "function" ? AbortController : undefined,
+      location: { search: "" },
     };
     const doc: any = { querySelectorAll: (sel: string) => (sel === ".cta-subscribe-form" ? [bundle.form] : []) };
     // eslint-disable-next-line no-new-func
@@ -205,6 +206,7 @@ describe("renderSubscribeCtaScript() (livros) — timeout do fetch (#6981)", () 
           }
         }),
       AbortController: typeof AbortController === "function" ? AbortController : undefined,
+      location: { search: "" },
     };
     const doc: any = { querySelectorAll: (sel: string) => (sel === ".cta-subscribe-form" ? [bundle.form] : []) };
     // eslint-disable-next-line no-new-func
@@ -237,6 +239,7 @@ describe("renderSubscribeCtaScript() (livros) — timeout do fetch (#6981)", () 
         return Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true }) });
       },
       AbortController: typeof AbortController === "function" ? AbortController : undefined,
+      location: { search: "" },
     };
     const doc: any = { querySelectorAll: (sel: string) => (sel === ".cta-subscribe-form" ? [bundle.form] : []) };
     // eslint-disable-next-line no-new-func

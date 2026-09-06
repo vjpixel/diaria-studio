@@ -86,6 +86,7 @@ import {
 } from "./lib/shared/geo-faq.ts"; // #4558 Parte B: estrutura GEO (FAQ + JSON-LD FAQPage/Article + autoria)
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #4051: /jogar/subscribe mora no worker `poll` (eia.diar.ia.br)
 import { SIGNUP_FORM_FETCH_TIMEOUT_MS } from "./lib/site-home-page.ts"; // #6981: mesmo timeout do form da home (#6979) — reusa a constante em vez de escolher outro número
+import { clientUtmPayloadFieldsJs } from "./lib/shared/client-utm-payload.ts"; // #7535 (Camada 1): utm_source/medium/campaign do querystring no payload
 import { LIVROS_FOOTER_NAV_UTM } from "./lib/shared/utm-registry.ts"; // #4537 item 2 — era literal solto, último dos 3 (Cursos/Arquivo já migrados) fora do registry
 import {
   isSafeUrl,
@@ -319,7 +320,8 @@ export function renderSubscribeCtaScript(): string {
           email: email,
           optin: true,
           website: val('input[name="website"]') || "",
-          source: form.getAttribute("data-source") || ""
+          source: form.getAttribute("data-source") || "",
+          ${clientUtmPayloadFieldsJs()}
         };
         if (typeof window.fetch !== "function") {
           setStatus("Seu navegador não suporta o cadastro direto — visite diar.ia.br pra assinar.", false);
