@@ -216,7 +216,10 @@
           email: email,
           optin: true,
           website: val('input[name="website"]') || "",
-          source: form.getAttribute("data-source") || ""
+          source: form.getAttribute("data-source") || "",
+          utm_source: new URLSearchParams(window.location.search).get("utm_source") || "",
+          utm_medium: new URLSearchParams(window.location.search).get("utm_medium") || "",
+          utm_campaign: new URLSearchParams(window.location.search).get("utm_campaign") || "",
         };
         if (typeof window.fetch !== "function") {
           setStatus("Seu navegador não suporta o cadastro direto — visite diar.ia.br pra assinar.", false);

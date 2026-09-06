@@ -484,6 +484,7 @@ function wireLivrosCtaForm(fetchImpl: (url: string, options: any) => Promise<any
   const win: any = {
     fetch: fetchImpl,
     AbortController: typeof AbortController === "function" ? AbortController : undefined,
+    location: { search: "" },
   };
   const doc: any = { querySelectorAll: (sel: string) => (sel === ".cta-subscribe-form" ? [form] : []) };
   const body = renderSubscribeCtaScript()
