@@ -19,6 +19,11 @@
 #      state.db vs ceiling do config.yaml. TRUNCANDO -> alarme P1; NA BORDA ->
 #      log apenas (aviso). 2+ sessoes no valor suspeito (~32770) ou 1+ colapso
 #      produtivo (calls >= 3, avg < 50% do teto) disparam o alarme.
+#   11. fabricação de conclusão pelo coordenador do contínuo (#7537) — o
+#      modelo relata ter escrito o relatório do tick/classificado N issues
+#      sem ter feito nada disso. Compara `data/continuo/last-tick-report.md`
+#      (existe + mtime dentro da janela do tick) e alegações de claim/contagem
+#      no próprio relatório contra `gh issue list` e `data/sessions/continuo-*.json`.
 #   (item 5 — adoção de prefixo de branch — CORTADO no #6798, 01/09/2026:
 #    informational, 0 correções, dedup falhava e produziu issue duplicada 3x
 #    antes do fix; sucessor mais preciso é `check-branch-issue-consistency.ts`.)
@@ -483,6 +488,56 @@ $TRUNC_SESSIONS
 **Acao**: investigar a sessao mais recente (primeiro_seen) — abrir o transcript no helios e conferir se chamadas foram truncadas. O alarme dispara com 2+ sessoes no valor suspeito (~32770 = 2^15) ou 1+ sessao produtiva (calls >= 3) com media < 50% do teto. P1: truncagem em silencio degrade a qualidade da fila continua sem deixar rastro visivel."
 else
   echo "[watch] truncagem: $TRUNC_PARSE (janela 24h, sem truncagem ativa; #7528)"
+fi
+
+# ── 11. fabricação de conclusão pelo coordenador do contínuo (#7537) ────────
+# Reproduzido ao vivo em 06/09/2026: o modelo local (qwen), coordenando um
+# tick de hermes-diaria-continuo, RELATOU ter escrito o relatório do tick e
+# classificado issues sem ter feito nada disso — o arquivo nunca existiu, e
+# a contagem alegada (n=4) não batia com a real (41 issues abertas). Este
+# detector NÃO lê a saída conversacional do modelo (não é persistida) —
+# compara data/continuo/last-tick-report.md (existe + mtime dentro da
+# janela do tick correlacionada via data/sessions/continuo-*.json) e
+# alegações de contagem/claim no próprio relatório contra o estado real
+# (gh issue list, session-registry). status=fabrication_suspected -> alarme
+# P1; indeterminate (1º tick sem sessão pra correlacionar, ou infra
+# indisponível) NÃO alarma — mesma disciplina fail-soft das checagens acima.
+FAB_JSON=$(python3 /home/vjpixel/diaria-studio/hermes/scripts/detect-tick-claim-fabrication.py --json 2>/dev/null)
+FAB_PARSE=$(printf '%s' "$FAB_JSON" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d['status'])
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+case "$FAB_PARSE" in *__ERR__*) FAB_PARSE="__ERR__" ;; esac
+if [ "$FAB_PARSE" = "__ERR__" ]; then
+  echo "[watch] fabricacao de tick: INDETERMINADO (detect-tick-claim-fabrication falhou)" >&2
+  FAILS=$((FAILS + 1))
+elif [ "$FAB_PARSE" = "indeterminate" ]; then
+  echo "[watch] fabricacao de tick: indeterminado (sem sessao continuo recente pra correlacionar — ok, nao alarma; #7537)"
+elif [ "$FAB_PARSE" = "fabrication_suspected" ]; then
+  FAB_DETAILS=$(printf '%s' "$FAB_JSON" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(f\"  sessao_correlacionada={d.get('session_correlated')}\")
+    for c in d.get('checks', []):
+        print(f\"  [{c['status']}] {c['check']}: {c['details']}\")
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+  file_issue "[watch-continuo] fabricação de conclusão pelo coordenador" \
+    "[watch-continuo] fabricação de conclusão pelo coordenador do contínuo detectada" \
+    "bug,P1" \
+    "Detectado por watch-continuo-health.sh via hermes/scripts/detect-tick-claim-fabrication.py (#7537) — o coordenador (modelo local, qwen) relatou ter concluído passos do tick (relatório escrito, N issues classificadas/reivindicadas) sem ter de fato executado; este detector compara o estado real (data/continuo/last-tick-report.md, gh issue list, data/sessions/continuo-*.json) contra o que o protocolo exige de todo tick.
+
+\`\`\`
+$FAB_DETAILS
+\`\`\`
+
+**Ação**: investigar a sessão correlacionada no helios (transcript do tick). Reproduzido ao vivo 06/09/2026: modelo alegou relatório escrito em data/continuo/last-tick-report.md (arquivo nunca existiu) e classificação com n=4 issues (existiam 41 abertas). Não promover o modelo local a primário do contínuo enquanto este alarme disparar (docs/goal-modelo-local-continuo.md). P1: relatório fabricado passa pro Telegram como se estivesse tudo bem, e a fila drena sem ninguém perceber."
+else
+  echo "[watch] fabricacao de tick: ok (sem sinal de fabricacao; #7537)"
 fi
 
 echo "[watch] varredura concluída (checagens indeterminadas/falhas de infra: $FAILS)"
