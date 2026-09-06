@@ -153,7 +153,7 @@ describe("subscribeToKit (#6048)", () => {
       env,
       { name: "", email: "a@b.com" },
       fetchMock,
-      { source: "eia-standalone", medium: "jogar-inline", campaign: "jogar-eia-inline", referringSite: "eia-jogar-inline" },
+      { source: "eia-standalone", medium: "jogar-inline", campaign: "jogar-eia-inline", referringSite: "eia-jogar-inline", origemPaga: "" },
     );
     const body = JSON.parse(String(fetchMock.calls[0].init?.body));
     assert.deepEqual(body.fields, {

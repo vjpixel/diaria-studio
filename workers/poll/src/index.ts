@@ -108,6 +108,11 @@ export interface Env {
    * (a API de criação não tem campo nativo de nome). Ausente → nome não é
    * enviado (assinatura segue só com e-mail + UTM, sem falhar). */
   BEEHIIV_NAME_FIELD?: string;
+  /** #7535 (Camada 1): nome do custom field da Beehiiv onde gravar
+   * `origem_paga` (canal pago do cliente — ver `SubscribeUtm.origemPaga`,
+   * subscribe.ts). Mesmo degrade gracioso de `BEEHIIV_NAME_FIELD` acima —
+   * ausente, cadastro segue normal sem essa atribuição gravada. */
+  BEEHIIV_ORIGEM_PAGA_FIELD?: string;
   /** #6048 (migração Beehiiv → Kit, #461/#463): seletor de backend do
    * cadastro inline — `"beehiiv"` (default, ausente/desconhecido = beehiiv)
    * ou `"kit"` (parse tolerante a espaço/capitalização, ver `resolveBackend`
@@ -159,6 +164,11 @@ export interface Env {
    *  produção (`origem_cadastro`, 25/08/2026) — falta só setar a var pra
    *  ligar. Mesmo degrade gracioso ausente dos demais `KIT_*_FIELD` acima. */
   KIT_ORIGEM_CADASTRO_FIELD?: string;
+  /** #7535 (Camada 1) — nome do custom field Kit onde gravar `origem_paga`
+   * (canal pago do cliente, `SubscribeUtm.origemPaga` em subscribe.ts) —
+   * criado em produção (`origem_paga`, id 1358403, 06/09/2026, ver issue).
+   * Mesmo degrade gracioso ausente dos demais `KIT_*_FIELD` acima. */
+  KIT_ORIGEM_PAGA_FIELD?: string;
   /** #6340 — ID do form do Kit usado pro double opt-in (`vincularKitDoiForm`,
    * `subscribe.ts`): vincular o subscriber recém-criado a este form dispara
    * o e-mail de confirmação "Important: confirm your subscription" quando o
@@ -1467,7 +1477,7 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
       // #4530 Parte B: `referringSite` PRÓPRIO — este é a caixa clarice do
       // `/set-name` (tela de resultado do voto), distinto de qualquer outro
       // call site que compartilhe o mesmo `VOTE_CLARICE_INLINE_UTM`.
-      const utm = { ...VOTE_CLARICE_INLINE_UTM, referringSite: VOTE_CLARICE_SET_NAME_REFERRING_SITE };
+      const utm = { ...VOTE_CLARICE_INLINE_UTM, referringSite: VOTE_CLARICE_SET_NAME_REFERRING_SITE, origemPaga: "" };
       // #6291: seleção de backend via a ÚNICA função exportada — ver
       // docstring de `subscribeViaConfiguredBackend` em subscribe.ts.
       const result = await subscribeViaConfiguredBackend(env, { name: cleanName, email }, fetch, utm);

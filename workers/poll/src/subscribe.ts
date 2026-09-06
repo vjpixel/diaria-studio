@@ -150,6 +150,12 @@ export interface SubscribeUtm {
   medium: string;
   campaign: string;
   referringSite: string;
+  /** #7535 (Camada 1): canal pago do CLIENTE quando `isAllowedClientUtmSource`
+   * casa — gravado num campo PRÓPRIO (`origem_paga`), nunca sobrescrevendo o
+   * triplo fixo por posição (`source`/`medium`/`campaign` acima). `""` =
+   * não veio de um canal pago reconhecido (cadastro orgânico, ou o triplo
+   * `apex` já carrega a info no próprio `source` — ver `resolveSubscribeUtm`). */
+  origemPaga: string;
 }
 
 const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
@@ -158,6 +164,7 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     medium: INLINE_SUBSCRIBE_UTM_MEDIUM,
     campaign: INLINE_SUBSCRIBE_UTM_CAMPAIGN,
     referringSite: "eia-jogar-inline",
+    origemPaga: "",
   },
   // utm_source=livros / utm_medium distinto por posição — pedido explícito da
   // issue #4051 pra medir hero × fim-de-lista separadamente.
@@ -167,12 +174,14 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     medium: LIVROS_INLINE_UTM.hero.medium,
     campaign: LIVROS_INLINE_UTM.campaign,
     referringSite: "livros-inline-hero",
+    origemPaga: "",
   },
   "livros-footer": {
     source: LIVROS_INLINE_UTM.source,
     medium: LIVROS_INLINE_UTM.footer.medium,
     campaign: LIVROS_INLINE_UTM.campaign,
     referringSite: "livros-inline-footer",
+    origemPaga: "",
   },
   // #4065: cadastro inline na tela de resultado do voto do brand clarice —
   // utm_source distinto (não é o funil "eia-standalone" do jogo público, é a
@@ -183,6 +192,7 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     medium: VOTE_CLARICE_INLINE_UTM.medium,
     campaign: VOTE_CLARICE_INLINE_UTM.campaign,
     referringSite: "vote-clarice-inline",
+    origemPaga: "",
   },
   // #4054: cadastro na tela de gate do caminho de fora (`web-gate.ts`).
   "jogar-gate": {
@@ -190,6 +200,7 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     medium: JOGAR_GATE_INLINE_UTM.medium,
     campaign: JOGAR_GATE_INLINE_UTM.campaign,
     referringSite: "jogar-gate-inline",
+    origemPaga: "",
   },
   // #4125 (item 4): opt-in de newsletter do form de IDENTIDADE (#3975,
   // `identify.ts`) — UTM próprio pra não colidir com "jogar" (form standalone
@@ -201,6 +212,7 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     medium: JOGAR_IDENTIFY_INLINE_UTM.medium,
     campaign: JOGAR_IDENTIFY_INLINE_UTM.campaign,
     referringSite: "jogar-identify-inline",
+    origemPaga: "",
   },
   // #4578: caixa unificada do gate no pós-voto de /jogar?from=post-web —
   // mesmo endpoint de "jogar-gate" (POST /jogar/gate/subscribe), source
@@ -210,6 +222,7 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     medium: JOGAR_POSTWEB_UTM.medium,
     campaign: JOGAR_POSTWEB_UTM.campaign,
     referringSite: "jogar-postweb-gate",
+    origemPaga: "",
   },
   // #5167 item 1: CTA no topo de arquivo.diar.ia.br.
   arquivo: {
@@ -217,6 +230,7 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     medium: ARQUIVO_INLINE_UTM.medium,
     campaign: ARQUIVO_INLINE_UTM.campaign,
     referringSite: "arquivo-inline",
+    origemPaga: "",
   },
   // #5167 item 2: CTA no topo de cada hub temático (arquivo.diar.ia.br/temas/{slug}).
   hub: {
@@ -224,6 +238,7 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     medium: HUB_INLINE_UTM.medium,
     campaign: HUB_INLINE_UTM.campaign,
     referringSite: "hub-inline",
+    origemPaga: "",
   },
   // #6427: triplo DEFAULT do cadastro do apex — usado sempre que o cliente
   // não mandar utm_source/utm_medium/utm_campaign, ou mandar um utm_source
@@ -235,58 +250,23 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     medium: "web",
     campaign: "cadastro-apex",
     referringSite: "apex-subscribe-page",
+    origemPaga: "",
   },
 };
 
 /**
- * #6427/#6980: prefixos de `utm_source` cliente que a página de cadastro do
- * apex (`source: "apex"`) tem permissão de repassar CRU pro triplo final —
- * a exceção estreita e validada ao design de `resolveSubscribeUtm`/
- * `SUBSCRIBE_UTM_BY_SOURCE` acima ("o servidor resolve o triplo UTM daqui —
- * NUNCA aceita utm_* vindo do cliente diretamente"). `"clarice"` cobre o
- * `utm_source=clarice` fixo que `withClariceUtm` grava em todo link de
- * marca da Clarice News (`scripts/lib/mensal/monthly-render.ts`);
- * `"google-ads"`/`"microsoft-ads"`/`"meta-ads"` cobrem os 3 canais pagos do
- * teste de atribuição (#5845/#5838) — os valores CANÔNICOS declarados em
- * `scripts/lib/shared/utm-registry.ts` (`EXTERNAL_UTM_SURFACES`, ids
- * `ads-{google,microsoft,meta}-2608`), não o prefixo genérico `"ads-*"` que
- * uma versão anterior desta allowlist aceitava (#6980 — os 3 `utm_source`
- * reais nunca bateram nesse prefixo invertido, então todo cadastro vindo de
- * campanha paga caía no default e a atribuição saía errada em silêncio,
- * sem log nem erro). Qualquer `utm_source` fora desta allowlist cai no
- * triplo `SUBSCRIBE_UTM_BY_SOURCE.apex` acima, igual a não ter mandado
- * nada — fechar essa allowlist é o que impede um visitante
- * mal-intencionado de forjar `utm_source=organic-fake` (ou qualquer string
- * arbitrária) e poluir a atribuição — o resto do enumerável
- * (SubscribeSource) continua imune a isso por completo, porque só `"apex"`
- * sequer consulta esta lista.
+ * #6427/#6980: allowlist de prefixos de `utm_source` que o cliente tem
+ * permissão de repassar cru — nasceu escopada só a `source === "apex"`
+ * (comportamento preservado abaixo). #7535 (Camada 1) estendeu a CONSULTA
+ * pra qualquer `source` (ver `resolveSubscribeUtm`), mas a allowlist em si
+ * NÃO mudou de lugar por acidente: moveu pra `scripts/lib/shared/
+ * client-utm-allowlist.ts` porque o worker `cursos` (bundle SEPARADO, sem
+ * import cross-worker por convenção — ver `workers/cursos/src/subscribe.ts`)
+ * também precisa dela pro mesmo fix. Re-exportado aqui pra não quebrar os
+ * imports existentes (`test/poll-subscribe-apex-utm-6427.test.ts` e afins).
  */
-export const CLIENT_UTM_SOURCE_ALLOWED_PREFIXES = [
-  "clarice",
-  "google-ads",
-  "microsoft-ads",
-  "meta-ads",
-] as const;
-
-/**
- * Pure (#6427/#6980): `true` só quando `rawSource` é uma string não-vazia
- * que é IGUAL a um prefixo da allowlist, ou começa com `"{prefixo}-"`.
- * `"clarice"`/`"google-ads"`/`"microsoft-ads"`/`"meta-ads"` batem no
- * primeiro caso (os 4 `utm_source` canônicos, sem sufixo — os 3 canais
- * pagos nunca têm variante com sufixo hoje, ver `utm-registry.ts`);
- * `"clarice-260901-d1"` (hipotético — não é o formato real, que fica no
- * utm_campaign, não no utm_source) e `"google-ads-2609"` (hipotético,
- * onda futura) bateriam no segundo. Exige o traço como fronteira de
- * palavra pra `"googleadsxyz"` NÃO colar em `"google-ads"` por acidente —
- * comparação por substring pura (`startsWith` sem o traço) aceitaria
- * qualquer string que começasse com as letras do prefixo, inclusive as não
- * intencionais.
- */
-export function isAllowedClientUtmSource(rawSource: unknown): boolean {
-  const s = typeof rawSource === "string" ? rawSource.trim().toLowerCase() : "";
-  if (!s) return false;
-  return CLIENT_UTM_SOURCE_ALLOWED_PREFIXES.some((prefix) => s === prefix || s.startsWith(`${prefix}-`));
-}
+export { CLIENT_UTM_SOURCE_ALLOWED_PREFIXES, isAllowedClientUtmSource } from "../../../scripts/lib/shared/client-utm-allowlist.ts";
+import { isAllowedClientUtmSource } from "../../../scripts/lib/shared/client-utm-allowlist.ts";
 
 /** #4530 Parte B: `magic-link.ts` reusa o triplo UTM de `"jogar-identify"`
  * (mesmo funil de opt-in do form de identidade), mas é um CALL SITE distinto
@@ -322,6 +302,16 @@ export interface ClientUtmOverride {
  * caminho). `referringSite` nunca vem do cliente. Fora desse caso (source
  * diferente de `"apex"`, ou `utm_source` fora da allowlist), comportamento
  * idêntico ao pré-#6427: cai no triplo fixo do `source` resolvido.
+ *
+ * #7535 (Camada 1): pra QUALQUER `source` que não seja `"apex"` (que já
+ * carrega o canal pago no próprio `source`, ver acima), quando
+ * `clientUtm.source` casa a allowlist, o valor vai pro campo NOVO
+ * `origemPaga` — o triplo fixo (`source`/`medium`/`campaign`) do registry
+ * NUNCA muda. É como `livros`/`cursos`/`arquivo`/`hub` deixam de perder a
+ * atribuição de tráfego pago sem sacrificar a granularidade por posição que
+ * o triplo fixo carrega (rationale completo na issue #7535). `utm_source`
+ * fora da allowlist (ou ausente) → `origemPaga: ""`, comportamento idêntico
+ * ao pré-#7535.
  */
 export function resolveSubscribeUtm(raw: unknown, clientUtm?: ClientUtmOverride): SubscribeUtm {
   const key = typeof raw === "string" ? raw : "";
@@ -332,7 +322,12 @@ export function resolveSubscribeUtm(raw: unknown, clientUtm?: ClientUtmOverride)
       typeof clientUtm.medium === "string" && clientUtm.medium.trim() ? clientUtm.medium.trim() : base.medium;
     const campaign =
       typeof clientUtm.campaign === "string" && clientUtm.campaign.trim() ? clientUtm.campaign.trim() : base.campaign;
-    return { source, medium, campaign, referringSite: base.referringSite };
+    return { source, medium, campaign, referringSite: base.referringSite, origemPaga: "" };
+  }
+  // #7535: triplo fixo intacto pra qualquer OUTRO source — só origemPaga
+  // muda, e só quando o cliente manda um utm_source da allowlist.
+  if (clientUtm && isAllowedClientUtmSource(clientUtm.source)) {
+    return { ...base, origemPaga: String(clientUtm.source).trim() };
   }
   return base;
 }
@@ -553,6 +548,12 @@ async function subscribeToBeehiiv(
   if (input.name && env.BEEHIIV_NAME_FIELD) {
     body.custom_fields = [{ name: env.BEEHIIV_NAME_FIELD, value: input.name }];
   }
+  // #7535: por simetria com KIT_ORIGEM_PAGA_FIELD abaixo — mesmo guard duplo
+  // (env configurado E valor presente) antes de gravar.
+  if (env.BEEHIIV_ORIGEM_PAGA_FIELD && utm.origemPaga) {
+    const field = { name: env.BEEHIIV_ORIGEM_PAGA_FIELD, value: utm.origemPaga };
+    body.custom_fields = Array.isArray(body.custom_fields) ? [...body.custom_fields, field] : [field];
+  }
 
   let res: Response;
   try {
@@ -720,6 +721,10 @@ async function subscribeToKit(
   if (env.KIT_UTM_MEDIUM_FIELD) fields[env.KIT_UTM_MEDIUM_FIELD] = utm.medium;
   if (env.KIT_UTM_CAMPAIGN_FIELD) fields[env.KIT_UTM_CAMPAIGN_FIELD] = utm.campaign;
   if (env.KIT_REFERRING_SITE_FIELD) fields[env.KIT_REFERRING_SITE_FIELD] = utm.referringSite;
+  // #7535 (Camada 1): canal pago do cliente, gravado num campo PRÓPRIO —
+  // nunca sobrescreve o triplo fixo por posição acima. Guard duplo (env
+  // configurado E valor presente) — mesmo padrão dos `KIT_*_FIELD` acima.
+  if (env.KIT_ORIGEM_PAGA_FIELD && utm.origemPaga) fields[env.KIT_ORIGEM_PAGA_FIELD] = utm.origemPaga;
   // #6048: marcador "entrou pelo funil" — distingue de quem só foi copiado
   // da Beehiiv pelo sync unidirecional (necessário pra segmentar o envio
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).

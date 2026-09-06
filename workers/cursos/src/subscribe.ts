@@ -19,6 +19,7 @@ import { CURSOS_GATE_INLINE_UTM } from "../../../scripts/lib/shared/utm-registry
 import { CURSOS_ALARM_COUNTER_KEYS, incrementKvCounter } from "../../../scripts/lib/shared/cursos-alarm-counters.ts";
 import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
+import { isAllowedClientUtmSource } from "../../../scripts/lib/shared/client-utm-allowlist.ts"; // #7535 (Camada 1)
 import { issueSessionCookie } from "./cookie.ts";
 
 export const SUBSCRIBE_RATE_LIMIT = 5;
@@ -42,6 +43,11 @@ export interface ParsedSubscribe {
   email: string;
   optin: boolean;
   honeypot: string;
+  /** #7535 (Camada 1): utm_source CRU do cliente — lido do querystring da
+   * página do gate (`workers/cursos/src/gate-page.ts`), só tem efeito
+   * quando casa `isAllowedClientUtmSource` (ver `resolveOrigemPaga`
+   * abaixo). Vazio (não `undefined`) quando ausente do body. */
+  utmSource: string;
 }
 
 function asStr(v: unknown): string {
@@ -59,9 +65,15 @@ export function parseSubscribeBody(raw: string, contentType: string): ParsedSubs
   if (ct.includes("application/json")) {
     try {
       const o = JSON.parse(raw) as Record<string, unknown>;
-      return { name: asStr(o.name), email: asStr(o.email), optin: truthyFlag(o.optin), honeypot: asStr(o.website) };
+      return {
+        name: asStr(o.name),
+        email: asStr(o.email),
+        optin: truthyFlag(o.optin),
+        honeypot: asStr(o.website),
+        utmSource: asStr(o.utm_source),
+      };
     } catch {
-      return { name: "", email: "", optin: false, honeypot: "" };
+      return { name: "", email: "", optin: false, honeypot: "", utmSource: "" };
     }
   }
   const params = new URLSearchParams(raw);
@@ -70,6 +82,7 @@ export function parseSubscribeBody(raw: string, contentType: string): ParsedSubs
     email: params.get("email") ?? "",
     optin: truthyFlag(params.get("optin")),
     honeypot: params.get("website") ?? "",
+    utmSource: params.get("utm_source") ?? "",
   };
 }
 
@@ -119,6 +132,7 @@ async function subscribeToBeehiiv(
   env: Env,
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
+  origemPaga: string = "",
 ): Promise<SubscribeResult> {
   const apiKey = env.BEEHIIV_API_KEY;
   const pubId = env.BEEHIIV_PUBLICATION_ID;
@@ -142,6 +156,12 @@ async function subscribeToBeehiiv(
   };
   if (input.name && env.BEEHIIV_NAME_FIELD) {
     body.custom_fields = [{ name: env.BEEHIIV_NAME_FIELD, value: input.name }];
+  }
+  // #7535 (Camada 1): canal pago do cliente, campo PRÓPRIO — nunca
+  // sobrescreve o triplo fixo (CURSOS_UTM_SOURCE/MEDIUM/CAMPAIGN) acima.
+  if (env.BEEHIIV_ORIGEM_PAGA_FIELD && origemPaga) {
+    const field = { name: env.BEEHIIV_ORIGEM_PAGA_FIELD, value: origemPaga };
+    body.custom_fields = Array.isArray(body.custom_fields) ? [...body.custom_fields, field] : [field];
   }
 
   let res: Response;
@@ -197,6 +217,7 @@ async function subscribeToKit(
   env: Env,
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
+  origemPaga: string = "",
 ): Promise<SubscribeResult> {
   const apiKey = env.KIT_API_KEY;
   if (!apiKey) return { ok: false, status: 503, reason: "not_configured" };
@@ -208,6 +229,9 @@ async function subscribeToKit(
   if (env.KIT_UTM_MEDIUM_FIELD) fields[env.KIT_UTM_MEDIUM_FIELD] = CURSOS_UTM_MEDIUM;
   if (env.KIT_UTM_CAMPAIGN_FIELD) fields[env.KIT_UTM_CAMPAIGN_FIELD] = CURSOS_UTM_CAMPAIGN;
   if (env.KIT_REFERRING_SITE_FIELD) fields[env.KIT_REFERRING_SITE_FIELD] = "cursos-gate-inline";
+  // #7535 (Camada 1): canal pago do cliente, campo PRÓPRIO — nunca
+  // sobrescreve o triplo fixo acima.
+  if (env.KIT_ORIGEM_PAGA_FIELD && origemPaga) fields[env.KIT_ORIGEM_PAGA_FIELD] = origemPaga;
   // #6048: marcador "entrou pelo funil" — distingue de quem só foi copiado
   // da Beehiiv pelo sync unidirecional (necessário pra segmentar o envio
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
@@ -271,10 +295,11 @@ export async function subscribeViaConfiguredBackend(
   env: Env,
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
+  origemPaga: string = "",
 ): Promise<SubscribeResult> {
   return resolveBackend(env) === "kit"
-    ? subscribeToKit(env, input, fetchImpl)
-    : subscribeToBeehiiv(env, input, fetchImpl);
+    ? subscribeToKit(env, input, fetchImpl, origemPaga)
+    : subscribeToBeehiiv(env, input, fetchImpl, origemPaga);
 }
 
 export interface SubscribeDeps {
@@ -317,10 +342,15 @@ export async function handleGateSubscribe(
   const rl = await checkSubscribeRateLimit(env.CURSOS_SUBSCRIBERS, ip);
   if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, env);
 
+  // #7535 (Camada 1): resolve o canal pago do cliente contra a mesma
+  // allowlist do worker `poll` — nunca sobrescreve o triplo UTM fixo
+  // (CURSOS_UTM_SOURCE/MEDIUM/CAMPAIGN acima), só alimenta origem_paga.
+  const origemPaga = isAllowedClientUtmSource(parsed.utmSource) ? parsed.utmSource.trim() : "";
+
   // #6291: seleção de backend via a ÚNICA função exportada — ver docstring
   // de `subscribeViaConfiguredBackend` acima.
   const backend = resolveBackend(env);
-  const result = await subscribeViaConfiguredBackend(env, { name: v.name, email: v.email }, fetchImpl);
+  const result = await subscribeViaConfiguredBackend(env, { name: v.name, email: v.email }, fetchImpl, origemPaga);
   if (!result.ok) {
     // #4305: os dois ramos abaixo eram a MESMA classe de falha muda que este
     // PR corrigiu no `COOKIE_HMAC_SECRET` — 503/502 e ninguém avisado. O

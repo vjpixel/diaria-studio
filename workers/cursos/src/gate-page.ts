@@ -69,6 +69,10 @@ ${renderAnalyticsHead()}
   var optinRow = document.getElementById('optin-row');
   var optinInput = document.getElementById('optin');
   var mode = 'verify';
+  // #7535 (Camada 1): utm_source cru do querystring — o servidor decide se
+  // casa a allowlist antes de gravar em origem_paga (nunca sobrescreve o
+  // triplo UTM fixo do gate).
+  var utmSource = new URLSearchParams(window.location.search).get('utm_source') || '';
 
   function setMsg(text, cls) {
     msg.textContent = text;
@@ -115,7 +119,7 @@ ${renderAnalyticsHead()}
     fetch('/gate/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email, name: name, optin: optinInput.checked, website: website }),
+      body: JSON.stringify({ email: email, name: name, optin: optinInput.checked, website: website, utm_source: utmSource }),
     }).then(function (res) { return res.json().then(function (data) { return { status: res.status, data: data }; }); })
       .then(function (r) {
         btn.disabled = false;

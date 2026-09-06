@@ -117,6 +117,11 @@ KIT_UTM_MEDIUM_FIELD = "utm_medium"
 KIT_UTM_CAMPAIGN_FIELD = "utm_campaign"
 KIT_REFERRING_SITE_FIELD = "referring_site"
 
+# #7535 (Camada 1) — custom field Kit que recebe o canal pago do cliente
+# (`origem_paga`, gravado SEM tocar no triplo UTM fixo acima). Campo já
+# criado na conta de produção (id 1358403, key "origem_paga", 06/09/2026).
+KIT_ORIGEM_PAGA_FIELD = "origem_paga"
+
 # #6340/#6508 (28/08/2026, decisão do editor via /diaria-desbloqueia) — form
 # "Newsletter site" no Kit, o mesmo já vinculado à sequence "Boas-vindas"
 # (#6508) via Automation Rule ("Subscribes to a form" → subscribe to
