@@ -11,7 +11,8 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { authConfigFromEnv } from "../scripts/microsoft-ads-ingest-spend.ts";
+import { authConfigFromEnv, MICROSOFT_ADS_CANAL } from "../scripts/microsoft-ads-ingest-spend.ts";
+import { CHANNEL_KEY_SPECS, RESERVED_CHANNEL_NAMES } from "../scripts/lib/shared/channel-key-specs.ts";
 
 const RELEVANT_VARS = [
   "MICROSOFT_ADS_DEVELOPER_TOKEN",
@@ -127,5 +128,34 @@ describe("#5928 — authConfigFromEnv (CLI, prioridade Google > Azure AD)", () =
     if ("missing" in out) {
       assert.deepEqual(out.missing, ["MICROSOFT_ADS_CUSTOMER_ID"]);
     }
+  });
+});
+
+describe("#7544 — MICROSOFT_ADS_CANAL trava contra drift de nome de canal", () => {
+  it("MICROSOFT_ADS_CANAL bate com uma entrada real de CHANNEL_KEY_SPECS (não apenas RESERVED_CHANNEL_NAMES)", () => {
+    // Defeito original (#7544): o script escrevia "Microsoft Advertising"
+    // (só RESERVED_CHANNEL_NAMES, sem spec cadastrada) — a linha caía no
+    // caminho "canal desconhecido" mesmo com gasto real. O canal ESCRITO
+    // precisa ter spec ativa em CHANNEL_KEY_SPECS, senão a asserção abaixo
+    // falha como erro de teste (não como aviso em stderr no runtime).
+    const specCanais = CHANNEL_KEY_SPECS.map((spec) => spec.canal);
+    assert.ok(
+      specCanais.includes(MICROSOFT_ADS_CANAL),
+      `MICROSOFT_ADS_CANAL="${MICROSOFT_ADS_CANAL}" não tem spec em CHANNEL_KEY_SPECS ` +
+        `(canais com spec: ${JSON.stringify(specCanais)}) — a ingestão cairia no caminho ` +
+        `"canal desconhecido" (unknownCanais) mesmo com gasto real. Se a spec "(teste 2608)" ` +
+        `saiu (decisão #5862), atualizar MICROSOFT_ADS_CANAL junto.`,
+    );
+  });
+
+  it("um canal fora de RESERVED_CHANNEL_NAMES/CHANNEL_KEY_SPECS falha esta asserção (prova que o guard pega o defeito original)", () => {
+    const driftedCanal = "Microsoft Advertising"; // valor antigo, causa raiz do #7544
+    const specCanais = CHANNEL_KEY_SPECS.map((spec) => spec.canal);
+    const hasSpec = specCanais.includes(driftedCanal);
+    const isReserved = (RESERVED_CHANNEL_NAMES as readonly string[]).includes(driftedCanal);
+    // "Microsoft Advertising" é RESERVADO mas não tem spec — reservado sozinho
+    // não basta pro relatório reconhecer o canal como medido.
+    assert.equal(isReserved, true, "sanity check: RESERVED_CHANNEL_NAMES deveria seguir citando o nome canônico legado");
+    assert.equal(hasSpec, false, "sanity check: o valor antigo não deveria ter spec própria — é essa lacuna que causa o defeito 2 da #7544");
   });
 });
