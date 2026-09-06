@@ -58,6 +58,22 @@ loadProjectEnv();
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_SPEND_CSV_PATH = resolve(ROOT, "data", "aquisicao", "spend.csv");
 
+/**
+ * Canal escrito em `spend.csv` (#7544 Defeito 2) — precisa bater EXATO com
+ * a entrada correspondente em `CHANNEL_KEY_SPECS`
+ * (`scripts/lib/shared/channel-key-specs.ts`), senão a linha cai no
+ * caminho "canal desconhecido" (`unknownCanais`, aviso em stderr + n=0 no
+ * relatório) mesmo com gasto real acontecendo. Antes desta constante,
+ * `runMicrosoftAdsIngest` usava o default `"Microsoft Advertising"`
+ * (`RESERVED_CHANNEL_NAMES`, não `CHANNEL_KEY_SPECS`) — nome reservado mas
+ * SEM spec cadastrada, então nunca era `measured`. Trocar aqui pra o nome
+ * que o teste 2608 (§8.2) cadastrou como spec ativa. Quando as specs
+ * temporárias "(teste 2608)" saírem (decisão da #5862, prevista 08/10),
+ * este valor muda junto — `test/microsoft-ads-ingest-spend.test.ts` trava
+ * que ele sempre bate com uma entrada real de `CHANNEL_KEY_SPECS`.
+ */
+export const MICROSOFT_ADS_CANAL = "Microsoft Ads (teste 2608)";
+
 /** Sempre exigidas, independente de qual identity provider a conta usa. */
 const ALWAYS_REQUIRED_ENV_VARS = ["MICROSOFT_ADS_DEVELOPER_TOKEN", "MICROSOFT_ADS_CUSTOMER_ID", "MICROSOFT_ADS_ACCOUNT_ID"] as const;
 /** Caminho Azure AD (default histórico, #5502) — vale pra qualquer conta
@@ -145,6 +161,7 @@ export async function main(): Promise<number> {
   const result = await runMicrosoftAdsIngest(fetch, {
     auth: configResult.auth,
     existingRows,
+    canal: MICROSOFT_ADS_CANAL,
   });
 
   if (result.kind === "fallback") {

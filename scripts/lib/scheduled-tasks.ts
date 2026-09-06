@@ -1415,6 +1415,41 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5704",
   },
   {
+    // #7544 — a credencial Microsoft Ads existe e funciona desde 21/08/2026
+    // (#5928: identidade Google, validada ao vivo), mas nenhuma task rodava
+    // a ingestão de gasto correspondente — o registro (linha acima) ainda
+    // dizia "Microsoft segue sem credencial" quando a premissa já tinha
+    // vencido. Decisão default (sem pergunta ao editor, CLAUDE.md "Perguntar
+    // é exceção" — escolha técnica de baixo impacto no leitor): task
+    // PRÓPRIA em vez de compartilhada com o Google, espelhando
+    // Diaria-Google-Ads-Spend-Ingest ponto a ponto (mesmo motivo do #5704
+    // original de não compartilhar: exit não-zero de um encadeado com `&&`
+    // calaria o outro — os dois já são fail-soft com exit 0 justamente
+    // pra isso, então nada impede rodar em paralelo como 2 tasks
+    // independentes).
+    //
+    // 09:55 BRT (5min depois do Google, mesma disciplina de espaçamento)
+    // já está ocupado por Diaria-Session-Registry-Gc — usa 09:52 (slot
+    // livre entre 09:50 e 09:55, ver grep de `hour: 9, minute:` neste
+    // arquivo), ainda dentro do cluster matinal e antes de
+    // Diaria-Microsoft-Ads-Editorial-Reasons (10:00) e
+    // Diaria-Ads-Spend-Ingest-Alarm (10:05, que lê o log desta ingestão).
+    name: "Diaria-Microsoft-Ads-Spend-Ingest",
+    description: "ingestao diaria de gasto do Microsoft Ads (Reporting API) para data/aquisicao/spend.csv",
+    steps: [{ key: "ingest", script: "scripts/microsoft-ads-ingest-spend.ts" }],
+    logPath: "aquisicao/.microsoft-ads-ingest.log",
+    // Fail-soft por design (#5237/#5502): sem credencial ou com a API
+    // indisponivel, o script sai limpo com exit 0 sem tocar spend.csv --
+    // mesma disciplina do Google Ads acima.
+    //
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do #5704/#5878 acima) -- maquina Windows nao roda mais
+    // tasks Diaria (#5074); arme real e acao POSTERIOR do editor via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (helios).
+    schedule: { kind: "daily", hour: 9, minute: 52 },
+    issue: "#7544",
+  },
+  {
     // #5878 — Campaign Management API v13 (SOAP) capta motivos editoriais de
     // assets rejeitados. Diferente da Reporting API (Google Ads Spend Ingest
     // acima, #5704), esta é uma chamada SINCRONA (GetAssetGroupsEditorialReasons
