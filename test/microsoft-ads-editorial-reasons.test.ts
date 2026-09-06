@@ -333,10 +333,67 @@ describe("#5878 — fetchAssetGroupEditorialReasons (fail-soft)", () => {
     assert.equal(result.ok, false);
   });
 
-  it("endpoint default é a Campaign Management API v13", () => {
+  it("endpoint default é a Campaign Management API v13, no subdomínio campaign.api (#7504 — api.bingads.microsoft.com não existe, produz HTTP 404)", () => {
     assert.equal(
       CAMPAIGN_MANAGEMENT_SERVICE_URL,
-      "https://api.bingads.microsoft.com/Api/Advertiser/CampaignManagement/v13/ApiCampaignManagementService.svc",
+      "https://campaign.api.bingads.microsoft.com/Api/Advertiser/CampaignManagement/v13/CampaignManagementService.svc",
     );
+  });
+});
+
+describe("#7504 — namespace SOAP correto (bug real: api.bingads.microsoft.com/API/... nunca funcionou)", () => {
+  it("CAMPAIGN_MANAGEMENT_NAMESPACE é https://bingads.microsoft.com/CampaignManagement/v13, não api.bingads.microsoft.com/API/...", () => {
+    assert.equal(CAMPAIGN_MANAGEMENT_NAMESPACE, "https://bingads.microsoft.com/CampaignManagement/v13");
+  });
+
+  it("envelope usa o namespace corrigido no Header e no Body", () => {
+    const env = buildEditorialReasonsEnvelope("tok", AUTH, ASSET_GROUP_ID);
+    assert.ok(env.includes(`<s:Header xmlns="${CAMPAIGN_MANAGEMENT_NAMESPACE}">`));
+    assert.ok(env.includes(`<GetAssetGroupsEditorialReasonsRequest xmlns="${CAMPAIGN_MANAGEMENT_NAMESPACE}">`));
+    assert.ok(!env.includes("api.bingads.microsoft.com/API/CampaignManagement"));
+  });
+});
+
+describe("#7504 — <IdentityProvider>Google</IdentityProvider> no SOAP Header, espelhando microsoft-ads-ingest.ts (#5928)", () => {
+  const AUTH_GOOGLE: MicrosoftAdsAuthConfig = {
+    ...AUTH,
+    googleClientId: "google-client-id",
+    googleClientSecret: "google-client-secret",
+    googleRefreshToken: "google-refresh-token",
+  };
+
+  it("auth com googleRefreshToken → envelope leva o header IdentityProvider=Google", () => {
+    const env = buildEditorialReasonsEnvelope("tok", AUTH_GOOGLE, ASSET_GROUP_ID);
+    assert.match(env, /<IdentityProvider>Google<\/IdentityProvider>/);
+  });
+
+  it("auth SEM googleRefreshToken (Azure AD) → envelope NUNCA leva IdentityProvider", () => {
+    const env = buildEditorialReasonsEnvelope("tok", AUTH, ASSET_GROUP_ID);
+    assert.doesNotMatch(env, /IdentityProvider/);
+  });
+
+  it("fetchAssetGroupEditorialReasons com auth Google propaga o header até o POST real", async () => {
+    let postedBody = "";
+    const fetchImpl: FetchLike = async (url: string, init?: RequestInit) => {
+      if (url.includes("login.microsoftonline.com") || url.includes("oauth2")) {
+        return new Response(JSON.stringify({ access_token: "tok" }), { status: 200 });
+      }
+      postedBody = String(init?.body ?? "");
+      return new Response(RESPONSE_XML_1_REASON, { status: 200 });
+    };
+
+    // AUTH_GOOGLE não tem clientId/refreshToken "azure" — mas fetchAssetGroupEditorialReasons
+    // roteia por refreshMicrosoftAdsAccessToken, que decide pelo googleRefreshToken.
+    const authGoogleFull: MicrosoftAdsAuthConfig = {
+      ...AUTH_GOOGLE,
+      googleTokenEndpoint: "https://oauth2.googleapis.com/token",
+    };
+
+    const result = await fetchAssetGroupEditorialReasons(fetchImpl, authGoogleFull, {
+      assetGroupId: ASSET_GROUP_ID,
+    });
+
+    assert.equal(result.ok, true);
+    assert.match(postedBody, /<IdentityProvider>Google<\/IdentityProvider>/);
   });
 });
