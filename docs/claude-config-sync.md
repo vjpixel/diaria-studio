@@ -193,14 +193,46 @@ dirty. Não houve decisão explícita a tomar; o `git pull --ff-only` de uma
 sessão seguinte parece ter resolvido sozinho (ou o editor já tinha feito
 `git checkout -- .`/commit manualmente).
 
-**Política de `memory/`, decidida pelo editor em 260811: nunca commitar.**
-Confirma o comportamento já vigente (exclusão de propósito, ver seção
-acima) — não é mudança de mecanismo, é o fechamento formal da decisão que
-estava marcada como "não revisitada"/pendente. `memory/` segue de sync
-manual (copiar o arquivo à mão quando precisar levar uma memória
-específica pra outra máquina); a alternativa de um mecanismo assistido
-(diff + confirmação antes de empurrar) continua não implementada, sem
-urgência.
+**Política de `memory/` REVERTIDA em 06/09/2026 (#7533) — sync manual
+descontinuado.** A política anterior ("nunca commitar", decidida em
+260811, texto original preservado no histórico git deste arquivo) partia
+da premissa de que o custo de divergência entre máquinas era tolerável.
+Medição ao vivo em #7533 mostrou o oposto: os acervos de memória de 3
+máquinas do editor tinham interseção de **1 arquivo** (o próprio
+`MEMORY.md`) — não divergência, três coleções praticamente disjuntas, com
+memórias relevantes presas numa única máquina sem acesso das demais. O
+editor autorizou reverter a política (comentário `decisao-editor` na
+issue) e adotar um repo git **próprio e privado** para `memory/`
+(distinto do `claude-config` — ver justificativa "Não no `claude-config`"
+na issue: aquele repo é `--ff-only` sem merge automático, e memória
+precisa de merge de verdade).
+
+Mecanismo (implementado em #7533, `scripts/lib/memory-sync.ts` +
+`scripts/memory-sync.ts` neste repo `diaria-studio`, não no `claude-config`):
+auto-commit + `git pull --rebase` + push, rodado manualmente (ou via hook,
+sob decisão futura do editor) em cada máquina. Setup do repo remoto é
+manual, 1x — o script nunca cria/conecta um repo GitHub sozinho:
+
+```bash
+# 1x, numa máquina (a de origem):
+cd <diretório de memória> && git init && git remote add origin <url-privada> \
+  && git add -A && git commit -m "memory: seed inicial" && git push -u origin HEAD
+
+# nas demais máquinas:
+cd <diretório de memória> && git init && git remote add origin <url-privada> \
+  && git fetch && git reset --hard origin/<branch>
+
+# a partir daí, em qualquer máquina:
+npx tsx scripts/memory-sync.ts --memory-dir <diretório de memória>
+```
+
+`MEMORY.md` em si passa a ser **gerado**, não sincronizado diretamente —
+é o único arquivo do acervo que de fato colidia (curadoria editada em
+paralelo em máquinas diferentes); o design completo (extrator/gerador,
+manifesto de curadoria, bloco `## Recentes (não classificadas)` para
+memória nova ainda não classificada) está em
+`scripts/lib/memory-index.ts` e na issue #7533. `scripts/extract-memory-index.ts`
+e `scripts/regenerate-memory-index.ts` fecham esse round-trip.
 
 ## Auto-arme via `diaria-studio` (260828 — fecha o rollout do #6310)
 
