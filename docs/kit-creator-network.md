@@ -169,6 +169,22 @@ A decisão 2 está implementada **para uma fatia do funil, não para ele inteiro
 recomendações ao resto exigiria rotear mais cadastro pelo form nativo — mudança de funil,
 decisão à parte, fora do escopo do que foi perguntado ao editor.
 
+**#7524 (06/09/2026) — mecanismo pra fechar parte do gap acima, sem rotear cadastro pelo
+form nativo.** Dos 3 workers de cadastro (`poll`, `cursos`, `reativar` — nomes de worker, não
+os subdomínios da tabela acima), só `reativar` de fato renderiza uma **tela de confirmação
+por navegação de página inteira** (`GET /?email=X` → `renderSuccessPage`, no clique do link
+de confirmação enviado por Brevo/e-mail de reativação). `poll` (`POST /jogar/subscribe`) e
+`cursos` (`POST /gate/subscribe`) são API pura consumida por JS inline — mostram uma mensagem
+de status e resetam o form, sem navegar pra lugar nenhum; não há tela onde embutir um widget.
+`renderSuccessPage` ganhou um `<iframe>` opcional (`Env.KIT_RECOMMENDATIONS_EMBED_URL`, só
+quando `SUBSCRIBE_BACKEND === "kit"`) — **placeholder configurável, não armado**: o MCP `kit`
+não expõe nenhum campo de embed distinto da página hospedada `/profile/recommendations`
+acima (checado ao vivo via `get_creator_profile`), e o valor citado no corpo original da
+issue (`.../recommendations`, sem `/profile/`) não bate com o confirmado nesta página. Editor
+decide se aponta o iframe pra própria página hospedada ou se existe um embed dedicado antes
+de `wrangler secret put KIT_RECOMMENDATIONS_EMBED_URL` em produção. Ver também seção 6 de
+`docs/beehiiv-vs-kit-migration.md`.
+
 ### `enabled_forms_count` continua 0 — e isso não significa "ninguém vê"
 
 O painel `app.kit.com/forms` está em empty-state e o modal "Select where to show

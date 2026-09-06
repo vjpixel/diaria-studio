@@ -143,6 +143,22 @@ Documentado em `docs/kit-creator-network.md` (doc dedicado, designado desde 28/0
 incoming gerando assinante real, outgoing com gap conhecido nos 3 workers de cadastro via API
 (#7524).
 
+**#7524 (06/09/2026) — mecanismo do gap fechado PARCIALMENTE.** Dos 3 workers, só
+`workers/reativar` renderiza uma tela de confirmação por navegação de página inteira
+(`GET /?email=X` → `renderSuccessPage`); `workers/poll` (`POST /jogar/subscribe`) e
+`workers/cursos` (`POST /gate/subscribe`) são API pura consumida por JS inline (mensagem de
+status + reset do form, sem tela própria) — o widget não tem onde embutir nesses dois.
+`renderSuccessPage` ganhou um parâmetro `embedUrl` opcional que, quando setado via
+`Env.KIT_RECOMMENDATIONS_EMBED_URL` **e** o backend for Kit (`SUBSCRIBE_BACKEND === "kit"`),
+embute um `<iframe>` do widget de recomendações logo abaixo da confirmação. **Valor NÃO
+confirmado como embed real** — checado ao vivo via MCP `kit` (`get_creator_profile` só
+devolve `profile_url`, sem campo de embed dedicado); o valor citado no corpo original da
+issue (`https://diariabr.kit.com/recommendations`) não bate com o confirmado em
+`docs/kit-creator-network.md` (`https://diariabr.kit.com/profile/recommendations`, a página
+hospedada). Var ausente por padrão — placeholder configurável (`wrangler secret put
+KIT_RECOMMENDATIONS_EMBED_URL`) até o editor confirmar se existe uma URL de embed distinta
+da página hospedada, ou decidir usar a própria página hospedada como `src` do iframe.
+
 ### Refs
 
 - #84 (scoping original — fechada) · **#461 (guarda-chuva, ABERTA — é o plano vivo)**
