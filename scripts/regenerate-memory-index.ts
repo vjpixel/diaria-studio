@@ -31,7 +31,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { resolve, join, basename } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   buildMemoryMd,
@@ -64,7 +64,7 @@ export function runRegenerate(argv: string[]): number {
     return 2;
   }
   const manifest: MemoryManifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
-  const files = loadMemoryFiles(memoryDir, "_index.json");
+  const files = loadMemoryFiles(memoryDir, basename(manifestPath));
   const discardedFilenames = values.discarded
     ? values.discarded.split(",").map((s) => s.trim()).filter(Boolean)
     : [];
