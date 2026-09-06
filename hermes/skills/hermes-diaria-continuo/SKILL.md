@@ -238,99 +238,32 @@ ordem:
    a delegação do passo 4 roda sem ferramenta Agent (`--tools` abaixo omite
    `Agent`/`Task`, de propósito — #6712), então ela não consegue de fato
    despachar um subagente revisor via o dispatch que
-   `.claude/hooks/pr-create-review.mjs` instrui. A instrução do hook cobre
-   isso (30/08/2026): sem Agent tool disponível, a sessão posta o review como
-   self-review honesto, com a linha literal `<!-- self-review: true -->`, em
-   vez de fabricar um comentário no formato `"Review automatizado (N
-   agente(s)..."` de um dispatch que não aconteceu (era exatamente isso que
-   os PRs #6713/#6715 mostravam, indistinguível de um review real).
+   `.claude/hooks/pr-create-review.mjs` instrui. Sem Agent tool disponível,
+   a sessão posta o review como self-review honesto, com a linha literal
+   `<!-- self-review: true -->`, em vez de fabricar um comentário no formato
+   de um dispatch que não aconteceu.
 
-   **#6864 (31/08/2026) — o contínuo NUNCA mergeia a própria PR, ponto.**
-   Decisão do editor, decorrente do #6849: o gate de autenticidade acima
-   (`check-pr-review-authenticity.ts`) é honor-system por CONSTRUÇÃO —
-   avaliador (esta delegação) e avaliado (a PR que ela mesma abriu) são o
-   MESMO processo, com a MESMA credencial `gh`, escrevendo no MESMO lugar.
-   o regex de prosa original (`INDEPENDENT_REVIEW_RE`, removido no #6849 —
-   ver "Marcador com nonce" em `references/changelog.md`, entrada v0.5.10) já aprovou o texto
-   fabricado exato do incidente #6713 uma vez, e o #6849 achou que o
-   revisor externo LEGÍTIMO (`continuo-pr-review.sh`) produzia a MESMA
-   prosa — endurecer a regex nunca teria fechado isso, era um
-   discriminador impossível por texto. O marcador com identidade de
-   execução que o #6849 introduziu reduz o caso de fabricação POR ACIDENTE,
-   mas não muda a conclusão desta seção: avaliador e avaliado seguem sendo
-   o MESMO processo com a MESMA credencial `gh`, então nada aqui autoriza
-   merge de volta pra esta delegação — a investigação do #6849 esgotou a
-   busca por sinal fora do texto
-   (autor — `["vjpixel"]` é o único ator que já comentou neste repo, sem
-   bot/App; `kind` do session-registry; `gh pr comment` × `gh pr review`;
-   telemetria de dispatch) e não achou nenhum. **Remover a capacidade de
-   merge é mais forte que confiar no texto ou proteger um segredo de bot**
-   — não há configuração a errar, e este repo já tem 3 incidentes
-   documentados de credencial vazando pro processo errado (#5608, #6714,
-   #6718) pra desconfiar de "revisor com token próprio" como solução.
+   **Este tick NUNCA mergeia a própria PR (#6864), ponto — e "PR aberta"
+   nunca encerra o tick (#6917).** Rode
+   `npx tsx scripts/check-pr-review-authenticity.ts --pr N` mesmo assim — o
+   resultado (`pass`/`self_review`/`no_review`/`error`) vira ROTULO
+   informativo no relatório do tick, nunca autorização de merge. Depois de
+   rotular a PR, siga para a próxima issue/PR da fila — não existe regra
+   que limite o contínuo a uma PR por vez, nem que "PR aguardando review"
+   pause o tick. Rationale completo (por que avaliador e avaliado são o
+   mesmo processo, o incidente #6713/#6849 que motivou a proibição, e o
+   achado ao vivo do #6917 sobre "regra de prioridade" fabricada):
+   `references/pr-queue-merge-authority-20260905.md`.
 
-   Rode `npx tsx scripts/check-pr-review-authenticity.ts --pr N` mesmo
-   assim — o resultado (`pass`/`self_review`/`no_review`/`error`) vira
-   ROTULO informativo no relatório do tick (ex: "review independente já
-   presente" vs "aguardando review externo"), não autorização de ação. Em
-   TODOS os casos, inclusive `exit 0`/`pass`: **NÃO mergear.** O merge
-   acontece exclusivamente no pickup (#6823, abaixo) ou no review
-   consolidado, que têm ferramenta Agent e conseguem revisar de verdade —
-   nunca nesta delegação. **Se você chegou aqui pensando em reintroduzir
-   merge nesta seção "por otimização" (menos latência, menos dependência
-   de outro processo): não. É exatamente o trade-off que o #6864 aceitou
-   de propósito — ver "Custo aceito" na issue.**
-
-   **PR aberta NUNCA encerra o tick (#6917, 01/09/2026).** Depois de
-   rotular a PR, siga para a próxima issue/PR da fila e trabalhe
-   normalmente. "Há PR aguardando review externo" descreve o estado
-   DAQUELA PR, não uma condição de parada do tick — não existe regra que
-   limite o contínuo a uma PR por vez. Se há issue `track=overnight`
-   elegível e não reivindicada, o tick trabalha. Achado ao vivo (#6917):
-   um tick com 36 issues `track=overnight` elegíveis na fila terminou sem
-   reivindicar nenhuma, justificando com "conforme a regra de prioridade
-   da fila" — **essa regra nunca existiu neste arquivo.** O tick preencheu
-   um vazio de instrução com uma regra plausível; nomear e negar
-   explicitamente a leitura errada aqui fecha esse vazio, no mesmo
-   princípio do aviso contra reintroduzir merge logo acima.
-
-   **Pickup existe desde o #6823 (31/08/2026) — só no `/diaria-overnight`.**
-   O fleet review do #6820 (30/08/2026) tinha achado que nenhuma das duas
-   skills adotava PR órfão marcado self-review; o #6823 fechou essa lacuna
-   no `/diaria-overnight` (passo 2b da Fase 0): lista PRs `continuo/*` com
-   `check-pr-review-authenticity.ts` → `exit 1` (self_review) **ou** `exit 2`
-   (no_review — tick morreu antes de sequer comentar; caso da PR que motivou
-   a issue, #6844), roda guard de caminho sensível + review independente de
-   verdade via Agent tool + gate de CI genuína, mergeia se limpo.
-   **`/diaria-develop` deliberadamente NÃO ganhou esse passo** — pickup de
-   PR órfão do contínuo não exige presença
-   do editor nem a máquina Windows, então é trabalho que cabe ao
-   `/diaria-overnight` (server, desassistido), não a uma sessão interativa
-   (#5751, "sessão interativa não faz o que o helios faria sozinho"). Na
-   prática, um PR self-reviewed do contínuo fica aberto até a próxima rodada
-   `/diaria-overnight` rodar a Fase 0, OU até o próximo tick do cron
-   próprio de `continuo-pr-review.sh` (cadência: derivar com
-   `hermes cron list --all`, #6928) revisar e mergear sozinho — ver
-   próximo parágrafo. `opus-daily-diff-review.sh` (ex-`daily-consolidated-
-   review.sh`) continua só gerando achados/comentários, nunca mergeando.
-
-   **`continuo-pr-review.sh` ganhou autoridade de merge própria desde o
-   #6926 (01/09/2026) — o pickup acima deixou de ser o único ponto de
-   merge, virou FALLBACK.** Motivo: o pickup só roda quando o editor inicia
-   uma rodada `/diaria-overnight` manualmente (sem agendador) — uma PR
-   pronta (review independente + CI verde) podia ficar parada indefinidamente
-   (medido ao vivo: PR #6901, 10h29 parada). `continuo-pr-review.sh`
-   continua NUNCA dando a ferramenta `gh pr merge` ao MODELO da sessão de
-   review (`--allowedTools` travado, `test/continuo-pr-review-never-
-   merges.test.ts`) — quem mergeia é o SCRIPT BASH, depois que a sessão já
-   saiu, atrás de 5 portões fail-closed em `scripts/check-continuo-merge-
-   gate.ts` (superseded, veredito `approve`/`reject` gravado no marcador
-   de review, HEAD não mudou desde o início da revisão — corrida do #5716,
-   caminho não-sensível, CI verde + mergeable, diff dentro do limiar de
-   effort de `pr-create-review.mjs`). Dois casos ainda escalam pro pickup
-   (fallback, não mais caminho único): caminho sensível, e diff ≥ limiar —
-   a revisão desta sessão é rasa por design, só decide sobre o que
-   consegue julgar.
+   **Quem de fato mergeia:** pickup do `/diaria-overnight` (#6823, passo 2b
+   da Fase 0 — review independente de verdade via Agent tool + gate de CI,
+   só quando o editor inicia uma rodada manualmente) OU
+   `continuo-pr-review.sh` (autoridade de merge própria desde #6926 — cron
+   separado com assinatura Anthropic, script bash mergeia atrás de portões
+   fail-closed em `scripts/check-continuo-merge-gate.ts`, nunca o modelo da
+   sessão de review). Detalhe de cada caminho e por que os dois coexistem
+   (fallback vs. principal): `references/pr-queue-merge-authority-
+   20260905.md`.
 
 ### 3b. Antes de reivindicar issue nova: candidata de conserto de CI (#7446 item 3)
 
