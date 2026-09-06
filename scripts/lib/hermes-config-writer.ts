@@ -72,14 +72,40 @@ export function slugifyMotivo(motivo: string): string {
   return slug.length > 0 ? slug : "sem-motivo";
 }
 
+/** Máximo tamanho do slug do motivo no nome do arquivo de backup (#7543).
+ * O filesystem tem limite de 255 bytes por nome — o nome inteiro
+ * (`<basename>.bak-<slug>-<timestamp>`) precisa caber, e o slug é só um
+ * identificador pra distinguir backups, não o registro do motivo. 60
+ * caracteres bastam pra isso e deixam ~160 de margem. */
+export const BACKUP_NAME_MAX_SLUG = 60;
+
+/** Sufixo do sidecar que guarda a razão COMPLETA ao lado do backup (#7543). */
+export const REASON_SIDE_SUFFIX = ".reason";
+
+/** Retorno de `buildBackupFileName`: o nome do arquivo (slug truncado) e a
+ * razão completa, que o CLI grava num sidecar `.reason` ao lado do backup.
+ * O nome de arquivo é identificador, não registro — separar os dois evita
+ * o aperto em que a mesma informação servia de tanto identificador quanto
+ * de rastro, e o filesystem só aceita tanto no identificador (#7543). */
+export interface BackupName {
+  readonly fileName: string;
+  readonly reason: string;
+}
+
 /**
- * Monta o nome do arquivo de backup: `<basename>.bak-<motivo>-<data>`.
+ * Monta o nome do arquivo de backup: `<basename>.bak-<slug>-<data>`, com o
+ * slug do motivo truncado em `BACKUP_NAME_MAX_SLUG` (#7543 — razões
+ * longas, que são o uso esperado do `--reason`, geravam `ENAMETOOLONG`).
+ * A razão COMPLETA é devolvida em `reason` (não truncada) — o caller a
+ * grava num sidecar `.reason` ao lado do backup.
+ *
  * `dateStr` é injetado pelo caller (nunca `new Date()` aqui — função pura,
  * testável sem mockar relógio) e deve já vir formatado pra ordenar
  * lexicograficamente (`YYYYMMDDTHHMMSSZ`, ver `formatBackupTimestamp`).
  */
-export function buildBackupFileName(basename: string, motivo: string, dateStr: string): string {
-  return `${basename}.bak-${slugifyMotivo(motivo)}-${dateStr}`;
+export function buildBackupFileName(basename: string, motivo: string, dateStr: string): BackupName {
+  const slug = slugifyMotivo(motivo).slice(0, BACKUP_NAME_MAX_SLUG).replace(/-+$/, "");
+  return { fileName: `${basename}.bak-${slug}-${dateStr}`, reason: motivo };
 }
 
 /** Formata um `Date` pro timestamp usado em `buildBackupFileName` — dígitos
@@ -100,7 +126,12 @@ export function formatBackupTimestamp(date: Date): string {
  */
 export function findMostRecentBackup(basename: string, filesInDir: readonly string[]): string | undefined {
   const prefix = `${basename}.bak-`;
-  const candidates = filesInDir.filter((f) => f.startsWith(prefix));
+  // Sidecar `.reason` (#7543) também começa pelo prefixo (`<basename>.bak-
+  // <slug>-<timestamp>.reason`) — filtra pra não devolvê-lo como backup
+  // (o `--revert` leria o sidecar de texto como se fosse o config).
+  const candidates = filesInDir.filter(
+    (f) => f.startsWith(prefix) && !f.endsWith(REASON_SIDE_SUFFIX),
+  );
   if (candidates.length === 0) return undefined;
   // NÃO ordenar pela string do nome inteiro: `<motivo>` vem ANTES do
   // timestamp no nome (`<basename>.bak-<motivo>-<data>`), então ordenar

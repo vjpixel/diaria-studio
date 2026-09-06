@@ -17,7 +17,9 @@ import { join, dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
+  BACKUP_NAME_MAX_SLUG,
   DEFAULT_SENSITIVE_CONFIG_KEYS,
+  REASON_SIDE_SUFFIX,
   UnsafeMultilineSecretError,
   buildBackupFileName,
   findMostRecentBackup,
@@ -51,10 +53,40 @@ describe("formatBackupTimestamp", () => {
 
 describe("buildBackupFileName", () => {
   it("monta <basename>.bak-<motivo>-<data>", () => {
-    assert.equal(
-      buildBackupFileName("config.yaml", "trocar modelo", "20260904T040832Z"),
-      "config.yaml.bak-trocar-modelo-20260904T040832Z",
-    );
+    const r = buildBackupFileName("config.yaml", "trocar modelo", "20260904T040832Z");
+    assert.equal(r.fileName, "config.yaml.bak-trocar-modelo-20260904T040832Z");
+    assert.equal(r.reason, "trocar modelo");
+  });
+
+  it("trunca o slug do motivo em BACKUP_NAME_MAX_SLUG (#7543 — razão longa não estoura ENAMETOOLONG)", () => {
+    const longReason =
+      "7527 janela e threshold do modelo local pro contínuo, compressão só dispara acima do valor errado e o modelo trunca em silêncio mantendo metade";
+    const r = buildBackupFileName("config.yaml", longReason, "20260906T200000Z");
+    // `fileName` = `config.yaml.bak-<slug>-<timestamp>` — o `-1` no slice
+    // exclui o separador `-` entre slug e timestamp.
+    const slugPart = r.fileName.slice("config.yaml.bak-".length, -"20260906T200000Z".length - 1);
+    assert.ok(slugPart.length <= BACKUP_NAME_MAX_SLUG, `slug ${slugPart.length} excede ${BACKUP_NAME_MAX_SLUG}`);
+    assert.ok(r.fileName.length < 255, `nome inteiro ${r.fileName.length} passa do limite do filesystem`);
+    // A razão COMPLETA sobrevive no sidecar — não no nome (#7543).
+    assert.equal(r.reason, longReason);
+  });
+
+  it("razão de ~300 caracteres (caso que quebra, do corpo da issue) — slug truncate, razão inteira preservada", () => {
+    const reason =
+      "hermes resolve a janela deste modelo como 131.072 por match de substring numa tabela estática, a real medida por sonagem é 92.700, threshold tokens 150.000 fica acima até do valor errado então a compressão nunca dispara e o modelo trunca em silêncio mantendo metade; remover o threshold faz o hermes derivar 80 da janela 74.160 que dispara antes da truncagem";
+    assert.ok(reason.length >= 300, `razão de teste tem ${reason.length} chars, esperava ≥300`);
+    const r = buildBackupFileName("config.yaml", reason, "20260906T202350Z");
+    assert.ok(r.fileName.length < 255);
+    assert.equal(r.reason, reason);
+  });
+
+  it("slug truncado no meio de palavra não deixa hífen nas pontas", () => {
+    const r = buildBackupFileName("config.yaml", "a".repeat(BACKUP_NAME_MAX_SLUG + 50), "20260906T200000Z");
+    // `fileName` = `config.yaml.bak-<slug>-<timestamp>` — o `-1` no slice
+    // exclui o separador `-` entre slug e timestamp.
+    const slugPart = r.fileName.slice("config.yaml.bak-".length, -"20260906T200000Z".length - 1);
+    assert.ok(!slugPart.startsWith("-"));
+    assert.ok(!slugPart.endsWith("-"));
   });
 });
 
@@ -71,6 +103,16 @@ describe("findMostRecentBackup", () => {
 
   it("nenhum backup no diretório -> undefined", () => {
     assert.equal(findMostRecentBackup("config.yaml", ["outro.txt"]), undefined);
+  });
+
+  it("filtra sidecar .reason do --revert auto (#7543)", () => {
+    const files = [
+      "config.yaml.bak-a-20260904T040000Z",
+      "config.yaml.bak-a-20260904T040000Z.reason",
+      "config.yaml.bak-b-20260904T090000Z",
+      "config.yaml.bak-b-20260904T090000Z.reason",
+    ];
+    assert.equal(findMostRecentBackup("config.yaml", files), "config.yaml.bak-b-20260904T090000Z");
   });
 });
 
@@ -219,6 +261,85 @@ describe("CLI write-hermes-config.ts", () => {
       const backupMatch = /backup criado e conferido: (\S+)/.exec(r.stdout);
       assert.ok(backupMatch, "stdout deveria citar o path do backup");
       assert.equal(readFileSync(backupMatch![1], "utf8"), "model: haiku\n");
+    });
+  });
+
+  it("escrita sobre arquivo existente cria sidecar .reason com a razão COMPLETA ao lado do backup (#7543)", () => {
+    withTmpDataDir((dir) => {
+      const target = join(dir, "config.yaml");
+      writeFileSync(target, "model: haiku\n");
+      const contentFile = join(dir, "novo.yaml");
+      writeFileSync(contentFile, "model: sonnet\n");
+      const r = runCli(["--path", target, "--content-file", contentFile, "--reason", "trocar modelo do profile coding"]);
+      assert.equal(r.status, 0, r.stderr);
+      const backupMatch = /backup criado e conferido: (\S+)/.exec(r.stdout);
+      assert.ok(backupMatch, "stdout deveria citar o path do backup");
+      const backupPath = backupMatch![1];
+      const reasonSidecarPath = `${backupPath}${REASON_SIDE_SUFFIX}`;
+      assert.equal(existsSync(reasonSidecarPath), true, "sidecar .reason deveria existir ao lado do backup");
+      assert.equal(readFileSync(reasonSidecarPath, "utf8"), "trocar modelo do profile coding");
+    });
+  });
+
+  it("razão de ~300 caracteres: nome do backup é truncado mas o .reason sidecar preserva a razão inteira (#7543 — caso que quebra)", () => {
+    withTmpDataDir((dir) => {
+      const target = join(dir, "config.yaml");
+      writeFileSync(target, "model: haiku\n");
+      const contentFile = join(dir, "novo.yaml");
+      writeFileSync(contentFile, "model: sonnet\n");
+      const longReason =
+        "hermes resolve a janela deste modelo como 131.072 por match de substring numa tabela estática, a real medida por sonagem é 92.700, threshold tokens 150.000 fica acima até do valor errado então a compressão nunca dispara e o modelo trunca em silêncio mantendo metade; remover o threshold faz o hermes derivar 80 da janela 74.160 que dispara antes da truncagem";
+      assert.ok(longReason.length >= 300, `razão de teste tem ${longReason.length} chars, esperava ≥300`);
+      const r = runCli(["--path", target, "--content-file", contentFile, "--reason", longReason]);
+      assert.equal(r.status, 0, r.stderr);
+      const backupMatch = /backup criado e conferido: (\S+)/.exec(r.stdout);
+      assert.ok(backupMatch, "stdout deveria citar o path do backup");
+      const backupPath = backupMatch![1];
+      // Nome do arquivo cabe no limite do filesystem (255 bytes)
+      assert.ok(basename(backupPath).length < 255, `nome do backup (${basename(backupPath).length}) passa do limite do filesystem`);
+      // A razão COMPLETA sobrevive no sidecar
+      const reasonSidecarPath = `${backupPath}${REASON_SIDE_SUFFIX}`;
+      assert.equal(existsSync(reasonSidecarPath), true, "sidecar .reason deveria existir");
+      assert.equal(readFileSync(reasonSidecarPath, "utf8"), longReason, "sidecar deveria conter a razão COMPLETA, não truncada");
+    });
+  });
+
+  it("--revert de backup com .reason sidecar inclui o motivo completo no log de saída", () => {
+    withTmpDataDir((dir) => {
+      const target = join(dir, "config.yaml");
+      writeFileSync(target, "model: haiku\n");
+      const contentFile = join(dir, "novo.yaml");
+      writeFileSync(contentFile, "model: sonnet\n");
+      const longReason = "remover threshold_tokens e ajustar janela do modelo local pro contínuo, compressão só dispara acima do valor errado";
+      const write = runCli(["--path", target, "--content-file", contentFile, "--reason", longReason]);
+      assert.equal(write.status, 0, write.stderr);
+
+      const revert = runCli(["--path", target, "--revert"]);
+      assert.equal(revert.status, 0, revert.stderr);
+      assert.match(revert.stdout, /revert ok/);
+      assert.match(revert.stdout, new RegExp(`motivo: ${longReason.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), "log do revert deveria incluir a razão completa do sidecar");
+    });
+  });
+
+  it("--revert com .reason ausente (backup legado) ainda restaura, sem incluir motivo no log", () => {
+    withTmpDataDir((dir) => {
+      const target = join(dir, "config.yaml");
+      writeFileSync(target, "model: haiku\n");
+      const contentFile = join(dir, "novo.yaml");
+      writeFileSync(contentFile, "model: sonnet\n");
+      const write = runCli(["--path", target, "--content-file", contentFile, "--reason", "antes do revert legado"]);
+      assert.equal(write.status, 0, write.stderr);
+      const backupMatch = /backup criado e conferido: (\S+)/.exec(write.stdout);
+      assert.ok(backupMatch);
+      const backupPath = backupMatch![1];
+
+      // Remove o sidecar para simular backup criado antes da #7543
+      rmSync(`${backupPath}${REASON_SIDE_SUFFIX}`, { force: true });
+
+      const revert = runCli(["--path", target, "--revert"]);
+      assert.equal(revert.status, 0, revert.stderr);
+      assert.equal(readFileSync(target, "utf8"), "model: haiku\n", "revert deve restaurar mesmo sem sidecar");
+      assert.doesNotMatch(revert.stdout, /motivo:/, "sem sidecar, log não inclui a seção (motivo:)");
     });
   });
 
