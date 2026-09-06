@@ -120,6 +120,34 @@ def _extrai_json(txt: str) -> dict | None:
     return None
 
 
+# Razões chars/token, MEDIDAS por conteúdo (não assumidas). Aferidas com
+# `prompt_eval_count` em 06/09/2026 contra o qwen3.5; recalibradas em
+# tempo de execução por `calibra()`, porque tokenizador diferente muda o
+# número e usar a razão errada faz a célula sair rotulada com um tamanho
+# que ela não tem.
+RAZAO_SKILL = 3.3       # markdown denso: código, IDs, pontuação
+RAZAO_ENCHIMENTO = 4.18  # linhas de git log, repetitivas
+
+
+def calibra(model: str, skill_txt: str) -> None:
+    """Mede as duas razões neste modelo, em vez de herdar as do qwen."""
+    global RAZAO_SKILL, RAZAO_ENCHIMENTO
+    amostra = skill_txt[:20000]
+    r = probe._post("/api/generate", {
+        "model": model, "prompt": amostra, "stream": False, "think": False,
+        "options": {"num_predict": 1, "temperature": 0}})
+    if r.get("prompt_eval_count"):
+        RAZAO_SKILL = len(amostra) / r["prompt_eval_count"]
+    ench = _enchimento(4000)
+    r2 = probe._post("/api/generate", {
+        "model": model, "prompt": ench, "stream": False, "think": False,
+        "options": {"num_predict": 1, "temperature": 0}})
+    if r2.get("prompt_eval_count"):
+        RAZAO_ENCHIMENTO = len(ench) / r2["prompt_eval_count"]
+    print(f"razões medidas: skill={RAZAO_SKILL:.2f} "
+          f"enchimento={RAZAO_ENCHIMENTO:.2f} chars/token")
+
+
 def _enchimento(n_tokens: int) -> str:
     """Histórico plausível de repositório, para levar o prompt ao tamanho alvo.
 
@@ -135,7 +163,7 @@ def _enchimento(n_tokens: int) -> str:
              "— 2026-09-0{d} 1{h}:0{m}\n")
     buf = []
     i = 0
-    while sum(len(x) for x in buf) < n_tokens * 4.18:
+    while sum(len(x) for x in buf) < n_tokens * RAZAO_ENCHIMENTO:
         i += 1
         buf.append(linha.format(n=7000 + i, d=i % 7 + 1, h=i % 9, m=i % 6))
     return ("\n\nHISTÓRICO RECENTE DO REPOSITÓRIO (contexto de fundo)\n"
@@ -149,8 +177,14 @@ def roda_cenario(model: str, chave: str, skill_txt: str,
              + "Opções válidas para \"acao\": " + ", ".join(c["opcoes"]) + "\n")
     pad = 0
     if pad_to:
-        base = (len(skill_txt) + len(cauda)) / 4.18
-        pad = max(0, int(pad_to - base))
+        # A razão chars/token NÃO é uma constante do modelo, é do TEXTO.
+        # A 1ª versão usava 4,18 — medido no filler repetitivo — para
+        # dimensionar um prompt cujo grosso é SKILL.md (markdown denso, com
+        # código e identificadores, ~3,3). O alvo de 58k virou ~73k reais e
+        # truncou, rotulando a célula com um número que ela não tinha.
+        # Agora cada parte usa a SUA razão, medida.
+        base = len(skill_txt) / RAZAO_SKILL + len(cauda) / RAZAO_SKILL
+        pad = max(0, int((pad_to - base) * RAZAO_ENCHIMENTO / RAZAO_ENCHIMENTO))
     prompt = skill_txt + _enchimento(pad) + cauda
     if show_prompt:
         print(prompt[:2000], "\n[...]\n", prompt[-800:])

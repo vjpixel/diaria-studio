@@ -199,9 +199,12 @@ def cmd_window(args) -> int:
     (~4,19 para o filler repetitivo em pt-BR) e sem ela a busca em chars
     não diz nada sobre a janela em tokens.
     """
-    ok, _ = check_idle()
-    if not ok and not args.force:
-        print("ABORTADO: máquina não está ociosa (use --force para ignorar).")
+    # Espera esfriar em vez de abortar: numa sequência, o estorvo costuma ser
+    # a própria rodada anterior (modelo residente, gpu_util alto por dezenas
+    # de segundos). Abortar aí perde célula boa por causa de si mesma — foi o
+    # que descartou janela e velocidade do phi4-mini na 1ª passada da Fase 2.
+    if not wait_idle(args.wait_idle) and not args.force:
+        print("ABORTADO: máquina não esfriou (use --force para ignorar).")
         return 2
 
     print(f"\ncalibrando chars/token de {args.model}...")
@@ -240,10 +243,10 @@ def cmd_window(args) -> int:
 
 
 def cmd_speed(args) -> int:
-    ok, antes = check_idle()
-    if not ok and not args.force:
-        print("ABORTADO: máquina não está ociosa (use --force para ignorar).")
+    if not wait_idle(args.wait_idle) and not args.force:
+        print("ABORTADO: máquina não esfriou (use --force para ignorar).")
         return 2
+    _, antes = check_idle()
     # ~3,2 chars/token para texto técnico em pt-BR; o número que vale é o
     # `tokens_lidos` devolvido, não esta estimativa.
     m = measure_prompt(args.model, args.ctx * 3, num_predict=args.predict)
@@ -290,12 +293,14 @@ def main() -> int:
     w.add_argument("--max-tokens", type=int, default=200_000)
     w.add_argument("--tolerance", type=int, default=2_000)
     w.add_argument("--force", action="store_true")
+    w.add_argument("--wait-idle", type=int, default=300)
 
     s = sub.add_parser("speed", help="prefill e geração num contexto dado")
     s.add_argument("--model", required=True)
     s.add_argument("--ctx", type=int, default=32_768)
     s.add_argument("--predict", type=int, default=128)
     s.add_argument("--force", action="store_true")
+    s.add_argument("--wait-idle", type=int, default=300)
 
     sh = sub.add_parser("show", help="o que o Ollama declara")
     sh.add_argument("--model", required=True)
