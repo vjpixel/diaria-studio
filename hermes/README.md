@@ -13,6 +13,7 @@ DIFERENTES, não confundir uma com a outra:
 ~/.hermes/scripts/hermes-model-cost-report.py          →  hermes/scripts/hermes-model-cost-report.py (STUB)
 ~/.hermes/scripts/monitor-cron-model-rotation.py       →  hermes/scripts/monitor-cron-model-rotation.py (STUB)
 ~/.hermes/scripts/pause-cron-on-ratelimit.py           →  hermes/scripts/pause-cron-on-ratelimit.py     (STUB)
+~/.hermes/scripts/detect-context-truncation.py          →  hermes/scripts/detect-context-truncation.py  (STUB, #7528)
 ```
 
 **Achado ao vivo, #6865 (31/08/2026) — o vínculo em `~/.hermes/scripts/`
@@ -92,7 +93,7 @@ ln -sfn /home/vjpixel/diaria-studio/hermes/skills/hermes-diaria-continuo \
 
 for f in claude-openrouter.sh opus-daily-diff-review.sh continuo-pr-review.sh \
          hermes-model-cost-report.py monitor-cron-model-rotation.py \
-         pause-cron-on-ratelimit.py; do
+         pause-cron-on-ratelimit.py detect-context-truncation.py; do
   cat > ~/.hermes/scripts/$f <<STUB
 #!/usr/bin/env bash
 # STUB (nao symlink): o guard de traversal do cron do Hermes rejeita symlink

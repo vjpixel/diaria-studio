@@ -15,6 +15,10 @@
 #   4. vazamento pago (hermes-model-cost-report --json, campo vazamento_pago);
 #   8. gasto diario estimado (#6771) - REPORTA, nao alarma: a checagem 4 cobre
 #      LEAK (modelo pago fora da allowlist), nunca VOLUME dentro dela;
+#   10. truncagem silenciosa do modelo local (#7528) — media por chamada do
+#      state.db vs ceiling do config.yaml. TRUNCANDO -> alarme P1; NA BORDA ->
+#      log apenas (aviso). 2+ sessoes no valor suspeito (~32770) ou 1+ colapso
+#      produtivo (calls >= 3, avg < 50% do teto) disparam o alarme.
 #   (item 5 — adoção de prefixo de branch — CORTADO no #6798, 01/09/2026:
 #    informational, 0 correções, dedup falhava e produziu issue duplicada 3x
 #    antes do fix; sucessor mais preciso é `check-branch-issue-consistency.ts`.)
@@ -421,6 +425,64 @@ Mesma classe do incidente 04-05/09/2026 (#7446): 8 PRs abertas, nenhuma avançan
       echo "[watch] fila de PRs ok ($QUEUE_COUNT abertas, mais velha há ${QUEUE_OLDEST_H}h)"
     fi
   fi
+fi
+
+# ── 10. truncagem silenciosa do modelo local (#7528) ──────────────────────────
+# Ollama trunca silenciosamente (HTTP 200, sem sinal) quando o prompt excede a
+# janela real do modelo. O valor truncado fica registrado em
+# `session_model_usage.input_tokens` no state.db (~/.hermes/state.db) — mas é
+# cumulativo por sessao, entao o detector divide por `api_call_count` para obter
+# a media por chamada e compara contra o ceiling do config.yaml
+# (model.context_length). Dois patamares:
+#   - TRUNCANDO (alarme, P1): media colapsou bem abaixo do teto, ou bate
+#     repetidamente no valor suspeito (~32770 = truncagem do Ollama).
+#   - NA BORDA (aviso, log apenas): ocupacao >85% da janela sem truncar ainda.
+#
+# #7528: este check NAO depende de scripts/model-bench/probe.py (PR nao mergeada).
+# O ceiling vem do config.yaml (model.context_length, medido por sondagem) com
+# fallback no num_ctx do Modelfile via Ollama API.
+TRUNC_JSON=$(python3 /home/vjpixel/diaria-studio/hermes/scripts/detect-context-truncation.py --days 1 --json 2>/dev/null)
+TRUNC_PARSE=$(printf '%s' "$TRUNC_JSON" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d['status'])
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+case "$TRUNC_PARSE" in *__ERR__*) TRUNC_PARSE="__ERR__" ;; esac
+if [ "$TRUNC_PARSE" = "__ERR__" ]; then
+  echo "[watch] truncagem: INDETERMINADO (detect-context-truncation falhou)" >&2
+  FAILS=$((FAILS + 1))
+elif [ "$TRUNC_PARSE" = "indeterminado" ]; then
+  echo "[watch] truncagem: INDETERMINADO (nao foi possivel resolver context_length do config.yaml nem Ollama API — #7528 fail-closed)" >&2
+  FAILS=$((FAILS + 1))
+elif [ "$TRUNC_PARSE" = "truncating" ]; then
+  TRUNC_SESSIONS=$(printf '%s' "$TRUNC_JSON" | python3 -c "
+import sys, json, datetime as dt
+try:
+    d = json.load(sys.stdin)
+    now = dt.datetime.now(dt.timezone.utc)
+    for s in d.get('truncating_sessions', []):
+        first = ''
+        if s.get('first_seen'):
+            first = dt.datetime.fromtimestamp(s['first_seen'], tz=dt.timezone.utc).strftime('%Y-%m-%d %H:%M')
+        print(f\"  sessao={s['session_id'][:35]} avg={s['avg_per_call']} calls={s['api_call_count']} ({s['pct_of_ceiling']}% de {d['ceiling']}) signal={s['signal']} first_seen={first}\")
+    print(f\"  ceiling={d['ceiling']} truncation_value={d['truncation_value']} edge_threshold={d['edge_threshold']}\")
+    print(f\"  details: {d['details']}\")
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+  file_issue "[watch-continuo] truncagem silenciosa do modelo local" \
+    "[watch-continuo] truncagem silenciosa do modelo local detectada (state.db)" \
+    "bug,P1" \
+    "Detectado por watch-continuo-health.sh via hermes/scripts/detect-context-truncation.py (#7528) — o Ollama trunca silenciosamente (HTTP 200 sem sinal) quando o prompt excede a janela real do modelo; o valor truncado fica registrado em session_model_usage.input_tokens no state.db, e este detector divide input_tokens por api_call_count para comparar a media por chamada contra o ceiling (config.yaml model.context_length).
+
+\`\`\`
+$TRUNC_SESSIONS
+\`\`\`
+
+**Acao**: investigar a sessao mais recente (primeiro_seen) — abrir o transcript no helios e conferir se chamadas foram truncadas. O alarme dispara com 2+ sessoes no valor suspeito (~32770 = 2^15) ou 1+ sessao produtiva (calls >= 3) com media < 50% do teto. P1: truncagem em silencio degrade a qualidade da fila continua sem deixar rastro visivel."
+else
+  echo "[watch] truncagem: $TRUNC_PARSE (janela 24h, sem truncagem ativa; #7528)"
 fi
 
 echo "[watch] varredura concluída (checagens indeterminadas/falhas de infra: $FAILS)"
