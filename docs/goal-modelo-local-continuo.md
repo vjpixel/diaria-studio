@@ -235,3 +235,112 @@ qualquer um dos dois como entrada de planejamento.
   enviar.
 - Reportar resultado negativo e "não verificado" como desfecho válido. Nunca
   relatar como medido o que não foi executado.
+
+---
+
+# RESULTADO (06/09/2026)
+
+## Recomendação
+
+**Manter o modelo. Subir `num_ctx` de 65.536 para 81.920.** Aplicado.
+
+```
+# rollback: ~/model-bench/snapshots/qwen-64k.Modelfile.rollback
+ollama create qwen-64k:latest -f <modelfile com PARAMETER num_ctx 81920>
+```
+
+Nenhum dos 5 candidatos supera o modelo em uso. A hipótese "janela vence
+parâmetros" **se confirmou, por um caminho diferente do esperado**: não era
+trocar por um modelo menor — era descobrir que o modelo já em produção tem
+geometria de KV muito mais eficiente que qualquer alternativa baixável,
+inclusive que a tag pública da própria família.
+
+## Fase 2 — bateria sintética
+
+Todos sob a mesma régua (`num_gpu 999` + `num_batch 512`, replicando o
+Modelfile de produção). Célula vazia = não medida, nunca estimativa.
+
+| modelo | maior `num_ctx` que cabe | janela útil | geração tok/s | `d` #6917 | `e` #6712 | JSON |
+|---|---|---|---|---|---|---|
+| **qwen-64k @81.920 (aplicado)** | 81.920 | **79.134** | — | 2/2 | 2/2 | ok |
+| qwen-64k @98.304 | 98.304 | 92.700 | 26,3 | 2/2 | 2/2 | ok |
+| qwen-64k @65.536 (antes) | 65.536 | 64.854 | 23,1 | 2/2 | 2/2 | ok |
+| granite4:3b | 32.768 | 27.520 | 16,4 | 2/2 | 2/2 | ok |
+| qwen3.5:4b (tag pública) | 49.152 | 44.421 | 26,6 | 2/2 | 2/2 | ok |
+| llama3.2:3b | 16.384 | — | 24,5 | 2/2 | **0/2, fabricou 2/2** | ok |
+| ministral-3:3b | 16.384 | — | 33,0 | 2/2 | **0/2, fabricou 2/2** | ok |
+| phi4-mini:3.8b | 16.384 | — | 22,0 | 1/2 | 0/2 | ok |
+| qwen3:4b | 16.384 | — | 24,5 | 0/2 | 0/2 | **inválido 0/2** |
+
+O tick consome **56-61k por chamada**. Só o modelo atual atende com folga.
+
+## O que decide, e não está em nenhum card de modelo
+
+**KV cache, não pesos.** Todos os candidatos têm pesos MENORES que o atual
+(2,0-3,0 GB contra 3,4) e mesmo assim entregam menos janela, porque o que
+consome VRAM na escala que importa é o KV — que depende de camadas ×
+cabeças-KV × head_dim, não de contagem de parâmetros. O `phi4-mini` precisa
+de 20,78 GB a 131.072; o atual, 8,64 GB.
+
+O contraste mais informativo é dentro da mesma família: `qwen3:4b` (geração
+anterior, pesos menores) precisa de **12,74 GB** para a janela que o atual
+faz com **6,09 GB**.
+
+## Truncagem: mecanismo caracterizado
+
+**Excedeu a janela, o Ollama mantém exatamente METADE — a metade final.**
+Confirmado em dois `num_ctx` independentes:
+
+| `num_ctx` | tokens lidos sob estouro | metade |
+|---|---|---|
+| 65.536 | 32.770 | 32.768 |
+| 98.304 | 49.154 | 49.152 |
+
+Perde-se o COMEÇO do prompt, que é onde ficam as regras. HTTP 200, sem erro,
+sem sinal. É o mecanismo do #6917: um tick que perdeu as regras precisa
+inventá-las.
+
+**Demonstração direta** (mesmo prompt, 168.392 chars, só o `num_ctx` muda):
+
+| config | tokens lidos | marcador da 1ª linha |
+|---|---|---|
+| 98.304 | 84.530 | **sobreviveu** |
+| 65.536 | 32.770 | **perdido** |
+
+## Aderência — resultado que independe da janela
+
+O modelo atual **erra o cenário `c` (fail-closed em `exit 2`) em todos os
+níveis de contexto**, escolhendo `perguntar_ao_editor` em vez de
+`nao_reivindicar`. Não é truncagem: erra com a regra inteira disponível a
+11k. É falha de aderência pura, e nenhum candidato acertou melhor.
+
+`ministral-3` e `llama3.2` não erraram o `e` — **fabricaram**: escolheram
+desfazer o claim com PR aberta na mão, que é o #6712 reproduzido.
+
+## Não reproduzido — dito explicitamente
+
+**Não reproduzi a fabricação do #6917 por truncagem.** Com o prompt truncado,
+o modelo deu as MESMAS respostas que a 11k. Os cenários `d`/`e` têm resposta
+certa recuperável da cauda, que é justamente o que a truncagem preserva.
+Hipótese não refutada — o tick real tem estado mais rico e muitos passos
+encadeados — mas não demonstrada por estes cenários.
+
+## Fases 3 e 4 — não executadas
+
+Fase 3 (tick stubbado) tem o shim de `gh` pronto (`scripts/model-bench/
+stub-tick/gh`), não rodado. Fase 4 (ticks de produção) não iniciada. As duas
+mudanças acionáveis não dependem delas.
+
+## Erros de método, e o que os pegou
+
+Quatro erros meus produziram **números plausíveis em vez de falhas visíveis**
+— nenhum deu erro, todos sairiam na tabela com cara de dado:
+
+1. "janela útil 0 tokens" — sinal semântico dirigindo a busca binária
+2. célula de 73k rotulada 58k — razão chars/token calibrada no texto errado
+3. candidatos comparados sem replicar `num_gpu`/`num_batch` do baseline
+4. colapso em metade chamado de coincidência — era o mecanismo real
+
+O que pegou os quatro foi sempre o mesmo: **cruzar duas medições
+independentes e tratar discordância como bug até prova em contrário.** Nas
+três vezes em que discordaram, era bug — nenhuma foi ruído.

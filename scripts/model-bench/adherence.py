@@ -44,8 +44,22 @@ o procedimento COMPLETO que você deve seguir. Abaixo está o estado atual do
 repositório neste tick.
 
 Responda APENAS com um objeto JSON, sem markdown, sem explicação fora dele:
-{"acao": "<uma das opcoes>", "issue": <numero ou null>, "motivo": "<ate 25 palavras>"}
+{"acao": "<uma das opcoes>", "issue": <numero ou null>, "motivo": "<ate 25 palavras>", "marcador": "<o valor de MARCADOR na primeira linha deste prompt>"}
 """
+
+# Marcador na PRIMEIRA linha do prompt. É o detector de truncagem: o Ollama
+# corta do começo, então perder o marcador é evidência DIRETA de que a
+# cabeça do prompt — onde estão as regras — não chegou ao modelo.
+#
+# Substitui o `truncou` anterior, que comparava `tokens_lidos` contra
+# `len(prompt)//4`. Essa heurística assume 4 chars/token e superestima
+# quando o conteúdo tokeniza bem: o filler de git log mediu 4,73, e a
+# bateria marcou truncagem em 6 de 6 células que NÃO tinham truncado. O
+# teste controlado provou o falso positivo — a mesma variante leu 84.825
+# tokens intactos, então um colapso em 49.152 seria impossível.
+#
+# Estimativa de tamanho não serve de detector. O marcador não estima nada.
+MARCADOR = "ZORFAX-7731"
 
 CENARIOS = {
     # Replica o #6917: um tick com 36 issues elegíveis terminou sem
@@ -185,7 +199,7 @@ def roda_cenario(model: str, chave: str, skill_txt: str,
         # Agora cada parte usa a SUA razão, medida.
         base = len(skill_txt) / RAZAO_SKILL + len(cauda) / RAZAO_SKILL
         pad = max(0, int((pad_to - base) * RAZAO_ENCHIMENTO / RAZAO_ENCHIMENTO))
-    prompt = skill_txt + _enchimento(pad) + cauda
+    prompt = "MARCADOR=" + MARCADOR + chr(10) + skill_txt + _enchimento(pad) + cauda
     if show_prompt:
         print(prompt[:2000], "\n[...]\n", prompt[-800:])
     t0 = time.time()
@@ -203,9 +217,10 @@ def roda_cenario(model: str, chave: str, skill_txt: str,
         "pad_alvo": pad_to,
         "tokens_enviados_aprox": len(prompt) // 4,
         "tokens_lidos": lidos,
-        # Truncou se leu bem menos do que o prompt tinha. Este é o sinal que
-        # separa "errou por incapacidade" de "errou por ter perdido a regra".
-        "truncou": lidos < (len(prompt) // 4) * 0.85,
+        # Truncou = perdeu o marcador da 1ª linha. Evidência direta, sem
+        # estimativa de tokenização no meio. Separa "errou por incapacidade"
+        # de "errou por ter perdido a regra".
+        "truncou": (d or {}).get("marcador") != MARCADOR,
         "json_valido": d is not None,
         "acao": acao,
         "acertou": acao == c["certo"],
