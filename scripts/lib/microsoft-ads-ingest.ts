@@ -49,7 +49,7 @@
  * cada um documentado por completo no ponto de uso (não repetido aqui —
  * índice, não 2ª fonte de verdade):** `Content-Type`/`SOAPAction` (SOAP 1.1,
  * não 1.2, ver `postSoap`); ordem `CustomDateRangeEnd` antes de
- * `CustomDateRangeStart` (ver `buildSubmitGenerateReportEnvelope`);
+ * `CustomDateRangeStart` (ver `buildCampaignPerformanceReportSubmitEnvelope`);
  * `Success` + `ReportDownloadUrl` nil é vazio legítimo, não erro (ver
  * `fetchMicrosoftAdsSpendRows`); e a conta em uso exige **Google OAuth**
  * como identity provider, não Azure AD (ver `MicrosoftAdsAuthConfig.googleRefreshToken`
@@ -85,6 +85,50 @@ import { runSpendIngest, type SpendIngestFetchResult } from "./spend-ingest.ts";
 export interface MicrosoftAdsReportRow {
   TimePeriod?: string;
   Spend?: string | number;
+}
+
+/**
+ * Uma linha do `CampaignPerformanceReport` do relatório de FECHAMENTO
+ * (§4 do protocolo, `data/aquisicao/campanhas-260816/00-PROTOCOLO.md`) —
+ * distinto de `MicrosoftAdsReportRow` acima, que é só `{TimePeriod, Spend}`
+ * pro caminho de `spend.csv` (#7539: misturar os 2 formatos num único tipo
+ * pioraria os dois — o de spend nunca precisou de mais que essas 2 colunas,
+ * e o de fechamento precisa de share/perda de impressão que o de spend
+ * nunca vai submeter). Todo campo é opcional porque a coluna correspondente
+ * pode não ter sido submetida (`columns` de `fetchMicrosoftAdsPerformanceRows`
+ * é configurável) — ausência de coluna no header vira `undefined`, nunca um
+ * valor inventado.
+ */
+export interface MicrosoftAdsPerformanceReportRow {
+  TimePeriod?: string;
+  CampaignName?: string;
+  Impressions?: string | number;
+  Clicks?: string | number;
+  Spend?: string | number;
+  /** Já convertido de `"88.14%"` para `88.14` no parse (`parseMicrosoftAdsPercent`)
+   *  — `undefined` quando a coluna não veio no header OU a célula veio vazia
+   *  pra esta linha; nunca `0` por ausência (0% é um valor real e distinto). */
+  ImpressionSharePercent?: number;
+  ImpressionLostToBudgetPercent?: number;
+  ImpressionLostToRankAggPercent?: number;
+}
+
+/**
+ * `"88.14%"` → `88.14`. `undefined` (nunca `NaN`) quando `raw` é `undefined`,
+ * string vazia, ou não-numérico — distingue "a coluna não veio" de "veio
+ * como 0%", mesma disciplina de nunca mascarar ausência como zero que já
+ * rege `aggregateMicrosoftAdsSpendByMonthWithDiscards` acima (#5605). Aceita
+ * a string com ou sem o sufixo `%` (a Reporting API sempre manda o `%`
+ * nesses campos — confirmado ao vivo em 06/09/2026, #7539 — mas o parser não
+ * assume isso).
+ * @pure
+ */
+export function parseMicrosoftAdsPercent(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (trimmed === "") return undefined;
+  const n = Number(trimmed.endsWith("%") ? trimmed.slice(0, -1) : trimmed);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 export interface AggregateMicrosoftAdsSpendOptions {
@@ -488,12 +532,50 @@ function buildSoapEnvelope(
   });
 }
 
-/** `CampaignPerformanceReportRequest` com só `TimePeriod`+`Spend` (sem
- *  `CampaignId`/`CampaignName`) — excluir as colunas de atributo faz o
+/** Colunas do caminho de `spend.csv` — `TimePeriod`+`Spend` apenas (sem
+ *  `CampaignId`/`CampaignName`): excluir as colunas de atributo faz o
  *  relatório agregar automaticamente entre campanhas (documentado em
  *  "Columns that Group the Data"), então cada linha já é o total da CONTA
- *  no dia, sem precisar somar campanha por campanha aqui. */
-function buildSubmitGenerateReportEnvelope(auth: MicrosoftAdsAuthConfig, accessToken: string, range: MicrosoftAdsDateRange): string {
+ *  no dia, sem precisar somar campanha por campanha aqui. **Nunca muda**
+ *  (#7539) — é o default que trava o caminho de ingestão de spend existente
+ *  independente de qualquer coluna nova que o relatório de fechamento passe
+ *  a pedir. */
+const SPEND_REPORT_COLUMNS = ["TimePeriod", "Spend"] as const;
+
+/**
+ * Colunas do relatório de FECHAMENTO (§4 do protocolo,
+ * `data/aquisicao/campanhas-260816/00-PROTOCOLO.md`, #7539) —
+ * `CampaignName` entra de propósito (ao contrário de `SPEND_REPORT_COLUMNS`)
+ * porque o fechamento quer a granularidade por campanha, não o agregado da
+ * conta. Validado ao vivo em 06/09/2026 (ver corpo da issue #7539) — as 3
+ * colunas de share/perda vieram populadas junto de `Impressions`/`Clicks`.
+ */
+export const DEFAULT_MICROSOFT_ADS_PERFORMANCE_COLUMNS = [
+  "TimePeriod",
+  "CampaignName",
+  "Impressions",
+  "Clicks",
+  "Spend",
+  "ImpressionSharePercent",
+  "ImpressionLostToBudgetPercent",
+  "ImpressionLostToRankAggPercent",
+] as const;
+
+/**
+ * Envelope SOAP de `SubmitGenerateReport` pra um `CampaignPerformanceReportRequest`
+ * — parametrizado por `columns` desde #7539 (era fixo em `["TimePeriod","Spend"]`).
+ * Único chamador é `submitGenerateReport` abaixo, que recebe `columns` de
+ * quem chama (`fetchMicrosoftAdsSpendRows` fixa `SPEND_REPORT_COLUMNS`;
+ * `fetchMicrosoftAdsPerformanceRows` usa `DEFAULT_MICROSOFT_ADS_PERFORMANCE_COLUMNS`
+ * ou o override do chamador) — nenhum caminho depende de um default
+ * esquecido aqui dentro.
+ */
+function buildCampaignPerformanceReportSubmitEnvelope(
+  auth: MicrosoftAdsAuthConfig,
+  accessToken: string,
+  range: MicrosoftAdsDateRange,
+  columns: readonly string[],
+): string {
   return buildSoapEnvelope("SubmitGenerateReport", auth, accessToken, {
     SubmitGenerateReportRequest: {
       "@_xmlns": REPORTING_NAMESPACE,
@@ -509,7 +591,7 @@ function buildSubmitGenerateReportEnvelope(auth: MicrosoftAdsAuthConfig, accessT
         ReturnOnlyCompleteData: false,
         Aggregation: "Daily",
         Columns: {
-          CampaignPerformanceReportColumn: ["TimePeriod", "Spend"],
+          CampaignPerformanceReportColumn: [...columns],
         },
         Scope: {
           AccountIds: {
@@ -622,8 +704,9 @@ async function submitGenerateReport(
   accessToken: string,
   serviceUrl: string,
   range: MicrosoftAdsDateRange,
+  columns: readonly string[],
 ): Promise<{ reportRequestId: string } | { error: string }> {
-  const envelope = buildSubmitGenerateReportEnvelope(auth, accessToken, range);
+  const envelope = buildCampaignPerformanceReportSubmitEnvelope(auth, accessToken, range, columns);
   const res = await postSoap(fetchImpl, serviceUrl, "SubmitGenerateReport", envelope);
   if ("error" in res) return res;
   if (res.status !== 200) {
@@ -739,7 +822,11 @@ function parseReportCsv(csvText: string): MicrosoftAdsReportRow[] {
   return dataRows.map((row) => ({ TimePeriod: row[timePeriodIdx], Spend: row[spendIdx] }));
 }
 
-async function downloadAndParseReport(fetchImpl: FetchLike, downloadUrl: string): Promise<{ rows: MicrosoftAdsReportRow[] } | { error: string }> {
+/** Baixa (`downloadUrl`) + descompacta (`unzipFirstEntry`) — mecânica
+ *  compartilhada por `downloadAndParseReport` (spend) e
+ *  `downloadAndParsePerformanceReport` (fechamento, #7539); só o parser do
+ *  CSV difere entre os 2. */
+async function downloadAndUnzipReport(fetchImpl: FetchLike, downloadUrl: string): Promise<{ csvText: string } | { error: string }> {
   let res: Response;
   try {
     res = await fetchImpl(downloadUrl);
@@ -756,10 +843,75 @@ async function downloadAndParseReport(fetchImpl: FetchLike, downloadUrl: string)
   }
 
   try {
-    const csvText = unzipFirstEntry(buf).toString("utf8");
-    return { rows: parseReportCsv(csvText) };
+    return { csvText: unzipFirstEntry(buf).toString("utf8") };
   } catch (e) {
-    return { error: `falha ao descompactar/parsear o relatório baixado: ${e instanceof Error ? e.message : e}` };
+    return { error: `falha ao descompactar o relatório baixado: ${e instanceof Error ? e.message : e}` };
+  }
+}
+
+async function downloadAndParseReport(fetchImpl: FetchLike, downloadUrl: string): Promise<{ rows: MicrosoftAdsReportRow[] } | { error: string }> {
+  const unzipped = await downloadAndUnzipReport(fetchImpl, downloadUrl);
+  if ("error" in unzipped) return unzipped;
+  try {
+    return { rows: parseReportCsv(unzipped.csvText) };
+  } catch (e) {
+    return { error: `falha ao parsear o relatório baixado: ${e instanceof Error ? e.message : e}` };
+  }
+}
+
+/** Colunas de valor (não-percentual) que `parsePerformanceReportCsv` mapeia
+ *  quando presentes no header — `TimePeriod` é tratado à parte porque é
+ *  obrigatória (sem ela não há como agrupar/datar a linha). */
+const PERFORMANCE_VALUE_COLUMN_KEYS = ["CampaignName", "Impressions", "Clicks", "Spend"] as const;
+
+/** Colunas percentuais — convertidas via `parseMicrosoftAdsPercent` no parse
+ *  (a linha já sai com `number | undefined`, nunca a string crua). */
+const PERFORMANCE_PERCENT_COLUMN_KEYS = ["ImpressionSharePercent", "ImpressionLostToBudgetPercent", "ImpressionLostToRankAggPercent"] as const;
+
+/**
+ * CSV → `MicrosoftAdsPerformanceReportRow[]` — ao contrário de `parseReportCsv`
+ * (caminho de spend, que EXIGE `TimePeriod`+`Spend` porque a request sempre
+ * pede só essas 2), este parser aceita QUALQUER subconjunto das colunas de
+ * `DEFAULT_MICROSOFT_ADS_PERFORMANCE_COLUMNS` — só `TimePeriod` é
+ * obrigatória; qualquer outra coluna ausente do header vira campo
+ * `undefined` na linha, nunca erro (#7539 — quem chama pode legitimamente
+ * submeter um subconjunto menor que o default). Percentuais são convertidos
+ * pra number aqui (não deixados como string crua), então a linha resultante
+ * já está pronta pro consumo — nunca `NaN` propagado (`parseMicrosoftAdsPercent`
+ * devolve `undefined` pra célula vazia/não-numérica).
+ */
+function parsePerformanceReportCsv(csvText: string): MicrosoftAdsPerformanceReportRow[] {
+  const parsed = Papa.parse<string[]>(csvText.trim(), { skipEmptyLines: true });
+  const [header, ...dataRows] = parsed.data;
+  if (!header) return [];
+  const timePeriodIdx = header.indexOf("TimePeriod");
+  if (timePeriodIdx === -1) {
+    throw new Error(`CSV do relatório de performance sem a coluna TimePeriod (header: ${JSON.stringify(header)})`);
+  }
+  return dataRows.map((row) => {
+    const out: MicrosoftAdsPerformanceReportRow = { TimePeriod: row[timePeriodIdx] };
+    for (const key of PERFORMANCE_VALUE_COLUMN_KEYS) {
+      const idx = header.indexOf(key);
+      if (idx !== -1) out[key] = row[idx];
+    }
+    for (const key of PERFORMANCE_PERCENT_COLUMN_KEYS) {
+      const idx = header.indexOf(key);
+      if (idx !== -1) out[key] = parseMicrosoftAdsPercent(row[idx]);
+    }
+    return out;
+  });
+}
+
+async function downloadAndParsePerformanceReport(
+  fetchImpl: FetchLike,
+  downloadUrl: string,
+): Promise<{ rows: MicrosoftAdsPerformanceReportRow[] } | { error: string }> {
+  const unzipped = await downloadAndUnzipReport(fetchImpl, downloadUrl);
+  if ("error" in unzipped) return unzipped;
+  try {
+    return { rows: parsePerformanceReportCsv(unzipped.csvText) };
+  } catch (e) {
+    return { error: `falha ao parsear o relatório de performance baixado: ${e instanceof Error ? e.message : e}` };
   }
 }
 
@@ -780,11 +932,63 @@ export interface FetchMicrosoftAdsSpendRowsOptions {
 }
 
 /**
+ * `undefined` no campo `downloadUrl` do sucesso é o vazio legítimo (ver
+ * comentário dentro da função) — só o formato de saída (tri-state) evita que
+ * cada chamador tenha que reimplementar essa distinção.
+ */
+type SubmitAndPollOutcome = { kind: "ok"; downloadUrl: string | undefined } | { error: string };
+
+/**
+ * `SubmitGenerateReport` → `PollGenerateReport` (repetido até
+ * `Success`/erro/teto de tentativas) — a mecânica de transporte
+ * COMPARTILHADA entre `fetchMicrosoftAdsSpendRows` e
+ * `fetchMicrosoftAdsPerformanceRows` (#7539); as 2 diferem só nas `columns`
+ * submetidas e no parser do CSV baixado (cada uma resolve isso depois de
+ * chamar esta função). Nunca lança.
+ */
+async function submitAndPollForDownloadUrl(
+  fetchImpl: FetchLike,
+  auth: MicrosoftAdsAuthConfig,
+  accessToken: string,
+  serviceUrl: string,
+  range: MicrosoftAdsDateRange,
+  columns: readonly string[],
+  pollIntervalMs: number,
+  maxPollAttempts: number,
+  sleepImpl: (ms: number) => Promise<void>,
+): Promise<SubmitAndPollOutcome> {
+  const submitResult = await submitGenerateReport(fetchImpl, auth, accessToken, serviceUrl, range, columns);
+  if ("error" in submitResult) return submitResult;
+
+  for (let attempt = 0; attempt < maxPollAttempts; attempt++) {
+    if (attempt > 0) await sleepImpl(pollIntervalMs);
+    const pollResult = await pollGenerateReport(fetchImpl, auth, accessToken, serviceUrl, submitResult.reportRequestId);
+    if ("error" in pollResult) return pollResult;
+    if (pollResult.status === "Success") {
+      // `Success` + `ReportDownloadUrl` nil é COMPORTAMENTO REAL confirmado
+      // ao vivo (#5928, 22/08/2026, conta sem nenhum gasto histórico) — a
+      // API não gera arquivo pra baixar quando o relatório teria zero
+      // linhas. Tratar como vazio legítimo (`downloadUrl: undefined`),
+      // NUNCA como erro — mesma disciplina de "zero não é falha de
+      // ingestão" que já rege `google-ads-ingest.ts` (`GoogleAdsFailureClass.empty`).
+      return { kind: "ok", downloadUrl: pollResult.downloadUrl };
+    }
+    if (pollResult.status !== "Pending") {
+      return { error: `PollGenerateReport respondeu status inesperado: ${pollResult.status}` };
+    }
+  }
+  return { error: `PollGenerateReport não completou após ${maxPollAttempts} tentativa(s) (ReportRequestId ${submitResult.reportRequestId})` };
+}
+
+/**
  * Resolve o fluxo assíncrono completo da Reporting API — `SubmitGenerateReport`
  * → `PollGenerateReport` (repetido até `Success`/erro/teto de tentativas) →
  * download do ZIP → parse do CSV — devolvendo as linhas já parseadas. Nunca
  * lança: qualquer etapa que falhar devolve `{ error }`, mesma disciplina
- * fail-soft de `fetchGoogleAdsSpendRows`.
+ * fail-soft de `fetchGoogleAdsSpendRows`. **Colunas sempre
+ * `SPEND_REPORT_COLUMNS` (`["TimePeriod","Spend"]`) — nunca configuráveis**
+ * (#7539: quem precisa de mais colunas usa `fetchMicrosoftAdsPerformanceRows`
+ * abaixo, função irmã dedicada, em vez de parametrizar esta).
  */
 export async function fetchMicrosoftAdsSpendRows(
   fetchImpl: FetchLike,
@@ -802,36 +1006,83 @@ export async function fetchMicrosoftAdsSpendRows(
   const maxPollAttempts = opts.maxPollAttempts ?? DEFAULT_MAX_POLL_ATTEMPTS;
   const sleepImpl = opts.sleepImpl ?? defaultSleep;
 
-  const submitResult = await submitGenerateReport(fetchImpl, auth, accessToken, serviceUrl, dateRange);
-  if ("error" in submitResult) return submitResult;
+  const outcome = await submitAndPollForDownloadUrl(
+    fetchImpl,
+    auth,
+    accessToken,
+    serviceUrl,
+    dateRange,
+    SPEND_REPORT_COLUMNS,
+    pollIntervalMs,
+    maxPollAttempts,
+    sleepImpl,
+  );
+  if ("error" in outcome) return outcome;
+  if (!outcome.downloadUrl) return { rows: [] };
 
-  let downloadUrl: string | undefined;
-  for (let attempt = 0; attempt < maxPollAttempts; attempt++) {
-    if (attempt > 0) await sleepImpl(pollIntervalMs);
-    const pollResult = await pollGenerateReport(fetchImpl, auth, accessToken, serviceUrl, submitResult.reportRequestId);
-    if ("error" in pollResult) return pollResult;
-    if (pollResult.status === "Success") {
-      // `Success` + `ReportDownloadUrl` nil é COMPORTAMENTO REAL confirmado
-      // ao vivo (#5928, 22/08/2026, conta sem nenhum gasto histórico) — a
-      // API não gera arquivo pra baixar quando o relatório teria zero
-      // linhas. Tratar como `{ rows: [] }` (vazio legítimo), NUNCA como
-      // erro — mesma disciplina de "zero não é falha de ingestão" que já
-      // rege `google-ads-ingest.ts` (`GoogleAdsFailureClass.empty`).
-      if (!pollResult.downloadUrl) return { rows: [] };
-      downloadUrl = pollResult.downloadUrl;
-      break;
-    }
-    if (pollResult.status !== "Pending") {
-      return { error: `PollGenerateReport respondeu status inesperado: ${pollResult.status}` };
-    }
-  }
-  if (!downloadUrl) {
-    return {
-      error: `PollGenerateReport não completou após ${maxPollAttempts} tentativa(s) (ReportRequestId ${submitResult.reportRequestId})`,
-    };
+  return downloadAndParseReport(fetchImpl, outcome.downloadUrl);
+}
+
+export interface FetchMicrosoftAdsPerformanceRowsOptions {
+  /** Default `REPORTING_SERVICE_URL` — sobreponível pra teste. */
+  reportingServiceUrl?: string;
+  pollIntervalMs?: number;
+  maxPollAttempts?: number;
+  /** Injetável — testes passam um no-op pra não esperar de verdade. */
+  sleepImpl?: (ms: number) => Promise<void>;
+  /** Colunas do `CampaignPerformanceReport` a submeter — default
+   *  `DEFAULT_MICROSOFT_ADS_PERFORMANCE_COLUMNS` (as exigidas pelo §4 do
+   *  protocolo de fechamento). Um subconjunto menor é aceito — o parser
+   *  (`parsePerformanceReportCsv`) mapeia só as colunas presentes no header
+   *  devolvido, deixando as demais `undefined` na linha. */
+  columns?: readonly string[];
+}
+
+/**
+ * Função IRMÃ de `fetchMicrosoftAdsSpendRows` pro relatório de FECHAMENTO
+ * (#7539, §4 do protocolo `data/aquisicao/campanhas-260816/00-PROTOCOLO.md`)
+ * — mesmo transporte (`submitAndPollForDownloadUrl`), colunas e tipo de
+ * retorno diferentes (`MicrosoftAdsPerformanceReportRow`, com
+ * `CampaignName`/`Impressions`/`Clicks` + as 2 colunas de perda de
+ * impressão que separam "sem inventário" de "lance não alcança"). O
+ * caminho de `spend.csv` (`fetchMicrosoftAdsSpendRows`) fica intocado —
+ * deliberadamente uma função separada em vez de um parâmetro `columns?`
+ * genérico na existente, pra que o tipo de retorno de cada uma reflita
+ * exatamente as colunas que ela sabe popular (ver corpo da issue #7539
+ * pro racional completo).
+ */
+export async function fetchMicrosoftAdsPerformanceRows(
+  fetchImpl: FetchLike,
+  auth: MicrosoftAdsAuthConfig,
+  accessToken: string,
+  dateRange: MicrosoftAdsDateRange,
+  opts: FetchMicrosoftAdsPerformanceRowsOptions = {},
+): Promise<{ rows: MicrosoftAdsPerformanceReportRow[] } | { error: string }> {
+  if (dateRange.start.getTime() > dateRange.end.getTime()) {
+    return { error: `MicrosoftAdsDateRange invertido: start (${dateRange.start.toISOString()}) > end (${dateRange.end.toISOString()})` };
   }
 
-  return downloadAndParseReport(fetchImpl, downloadUrl);
+  const serviceUrl = opts.reportingServiceUrl ?? REPORTING_SERVICE_URL;
+  const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const maxPollAttempts = opts.maxPollAttempts ?? DEFAULT_MAX_POLL_ATTEMPTS;
+  const sleepImpl = opts.sleepImpl ?? defaultSleep;
+  const columns = opts.columns ?? DEFAULT_MICROSOFT_ADS_PERFORMANCE_COLUMNS;
+
+  const outcome = await submitAndPollForDownloadUrl(
+    fetchImpl,
+    auth,
+    accessToken,
+    serviceUrl,
+    dateRange,
+    columns,
+    pollIntervalMs,
+    maxPollAttempts,
+    sleepImpl,
+  );
+  if ("error" in outcome) return outcome;
+  if (!outcome.downloadUrl) return { rows: [] };
+
+  return downloadAndParsePerformanceReport(fetchImpl, outcome.downloadUrl);
 }
 
 // ---------------------------------------------------------------------------
