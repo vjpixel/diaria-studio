@@ -86,6 +86,21 @@ KIT_REFERRING_SITE_FIELD = "referring_site"
 # passa a ir pro Kit em vez da Beehiiv.
 SUBSCRIBE_BACKEND = "kit"
 
+# KIT_RECOMMENDATIONS_EMBED_URL — OPCIONAL (#7524, lado OUTGOING do Kit
+# Creator Network, follow-up do #6674). Ausente = tela de confirmação
+# (renderSuccessPage) sem o widget, comportamento de hoje. NÃO setar sem
+# antes confirmar com o editor se existe uma URL de embed real distinta da
+# página hospedada `https://diariabr.kit.com/profile/recommendations`
+# (docs/kit-creator-network.md) — o MCP `kit` não expõe esse campo
+# (`get_creator_profile` só devolve `profile_url`), e o valor citado na
+# issue original (`.../recommendations`, sem `/profile/`) não bateu com o
+# confirmado no doc. AÇÃO PENDENTE DO EDITOR — mesmo padrão dos
+# #4320/#4382/#4490/#4534 acima:
+#   cd workers/reativar && npx wrangler secret put KIT_RECOMMENDATIONS_EMBED_URL
+# (secret, não var — mesmo tratamento de qualquer URL externa que aponte pra
+# uma conta específica, diferente dos KIT_*_FIELD acima, que são só nomes de
+# campo).
+
 # #6318 — paridade com poll/cursos. A ausência deste bloco deixou o worker
 # `reativar` SEM NENHUM log retido: quando a atribuição sumiu no switchover,
 # poll e cursos ainda tinham os Workers Logs (que registram a URL com query

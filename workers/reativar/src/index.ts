@@ -176,6 +176,24 @@ export interface Env {
    *  var pra ligar. Mesmo degrade gracioso ausente dos demais `KIT_*_FIELD`
    *  acima. */
   KIT_ORIGEM_CADASTRO_FIELD?: string;
+  /**
+   * #7524 (lado OUTGOING do Kit Creator Network, follow-up do #6674) —
+   * URL do widget de recomendações da Kit (`https://{subdomínio}.kit.com/profile/recommendations`,
+   * ver `docs/kit-creator-network.md`) embutida via `<iframe>` na tela de
+   * confirmação (`renderSuccessPage`), SÓ quando `useKit` (o widget é
+   * específico do Creator Network da Kit — não faz sentido no caminho
+   * Beehiiv). **VALOR NÃO CONFIRMADO como embed real** — a Kit não expõe
+   * (MCP `kit` checado ao vivo: `get_creator_profile` só devolve
+   * `profile_url`, sem campo de embed dedicado) nenhum
+   * `embedded_recommendations_url` distinto da página hospedada
+   * `/profile/recommendations`; o valor citado no corpo da issue #7524
+   * (`https://diariabr.kit.com/recommendations`, sem `/profile/`) não bateu
+   * com o confirmado em `docs/kit-creator-network.md`. Ausente (default) =
+   * comportamento de hoje, sem widget — placeholder configurável até o
+   * editor confirmar a URL de embed real (se existir) antes de armar em
+   * produção. Ver seção 6 de `docs/beehiiv-vs-kit-migration.md`.
+   */
+  KIT_RECOMMENDATIONS_EMBED_URL?: string;
 }
 
 const CORS_HEADERS = { "Access-Control-Allow-Origin": "*" } as const;
@@ -689,15 +707,28 @@ a{color:#0a5}
 <body>${body}</body></html>`;
 }
 
-export function renderSuccessPage(): string {
+/**
+ * #7524 — bloco opcional do widget Kit Creator Network (lado OUTGOING),
+ * embutido só quando `embedUrl` está configurado (ver docstring de
+ * `KIT_RECOMMENDATIONS_EMBED_URL` no `Env`). `<iframe>` simples — a Kit não
+ * documenta um script de embed dedicado pra esta página; se um dia expuser
+ * um, este bloco troca de `<iframe>` pra o snippet oficial sem afetar o
+ * call site (`renderSuccessPage`/`handleConfirm`).
+ */
+function renderKitRecommendationsBlock(embedUrl: string): string {
+  return `<div style="margin-top:32px"><iframe src="${embedUrl}" width="100%" height="480" style="border:none" title="Outras newsletters recomendadas"></iframe></div>`;
+}
+
+export function renderSuccessPage(embedUrl?: string): string {
   // #6048 (achado ao vivo, rollout do worker cursos): esta página é
   // compartilhada pelos dois backends (activateSubscription/Beehiiv e
   // activateSubscriptionKit) — nomear "Beehiiv" aqui ficaria errado assim
   // que SUBSCRIBE_BACKEND virar "kit" neste worker, e o nome do provedor
   // não importa pro leitor de qualquer forma. Copy vendor-neutro.
+  const kitBlock = embedUrl ? renderKitRecommendationsBlock(embedUrl) : "";
   return page(
     "Cadastro confirmado",
-    `<h1>Cadastro confirmado!</h1><p>Você vai voltar a receber a diária a partir da próxima edição.</p><p><a href="https://diar.ia.br">Voltar pra diar.ia.br</a></p>`,
+    `<h1>Cadastro confirmado!</h1><p>Você vai voltar a receber a diária a partir da próxima edição.</p><p><a href="https://diar.ia.br">Voltar pra diar.ia.br</a></p>${kitBlock}`,
   );
 }
 
@@ -866,7 +897,11 @@ export async function handleConfirm(
     } else {
       await sendEvent;
     }
-    return htmlResponse(renderSuccessPage(), 200);
+    // #7524: widget Kit Creator Network (outgoing) só faz sentido no
+    // caminho Kit — `useKit` já resolvido acima, `KIT_RECOMMENDATIONS_EMBED_URL`
+    // ausente (default) mantém a página idêntica ao comportamento pré-#7524.
+    const embedUrl = useKit ? env.KIT_RECOMMENDATIONS_EMBED_URL : undefined;
+    return htmlResponse(renderSuccessPage(embedUrl), 200);
   }
   return htmlResponse(renderNotConfirmedPage(), 200);
 }
