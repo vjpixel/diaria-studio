@@ -49,7 +49,7 @@
  * cada um documentado por completo no ponto de uso (não repetido aqui —
  * índice, não 2ª fonte de verdade):** `Content-Type`/`SOAPAction` (SOAP 1.1,
  * não 1.2, ver `postSoap`); ordem `CustomDateRangeEnd` antes de
- * `CustomDateRangeStart` (ver `buildSubmitGenerateReportEnvelope`);
+ * `CustomDateRangeStart` (ver `buildCampaignPerformanceReportSubmitEnvelope`);
  * `Success` + `ReportDownloadUrl` nil é vazio legítimo, não erro (ver
  * `fetchMicrosoftAdsSpendRows`); e a conta em uso exige **Google OAuth**
  * como identity provider, não Azure AD (ver `MicrosoftAdsAuthConfig.googleRefreshToken`
@@ -564,10 +564,11 @@ export const DEFAULT_MICROSOFT_ADS_PERFORMANCE_COLUMNS = [
 /**
  * Envelope SOAP de `SubmitGenerateReport` pra um `CampaignPerformanceReportRequest`
  * — parametrizado por `columns` desde #7539 (era fixo em `["TimePeriod","Spend"]`).
- * `buildSubmitGenerateReportEnvelope`/`buildSubmitPerformanceReportEnvelope`
- * abaixo são os 2 únicos chamadores — cada um fixa suas próprias colunas, de
- * propósito, pra que o caminho de `spend.csv` nunca dependa de um parâmetro
- * esquecido.
+ * Único chamador é `submitGenerateReport` abaixo, que recebe `columns` de
+ * quem chama (`fetchMicrosoftAdsSpendRows` fixa `SPEND_REPORT_COLUMNS`;
+ * `fetchMicrosoftAdsPerformanceRows` usa `DEFAULT_MICROSOFT_ADS_PERFORMANCE_COLUMNS`
+ * ou o override do chamador) — nenhum caminho depende de um default
+ * esquecido aqui dentro.
  */
 function buildCampaignPerformanceReportSubmitEnvelope(
   auth: MicrosoftAdsAuthConfig,
@@ -616,20 +617,6 @@ function buildCampaignPerformanceReportSubmitEnvelope(
       },
     },
   });
-}
-
-/** Envelope de `SubmitGenerateReport` parametrizado por `columns` — usado
- *  tanto pelo caminho de `spend.csv` (`submitGenerateReport` chamado com
- *  `SPEND_REPORT_COLUMNS`) quanto pelo de fechamento (#7539, chamado com
- *  `DEFAULT_MICROSOFT_ADS_PERFORMANCE_COLUMNS` ou o override de quem chama
- *  `fetchMicrosoftAdsPerformanceRows`). */
-function buildSubmitPerformanceReportEnvelope(
-  auth: MicrosoftAdsAuthConfig,
-  accessToken: string,
-  range: MicrosoftAdsDateRange,
-  columns: readonly string[],
-): string {
-  return buildCampaignPerformanceReportSubmitEnvelope(auth, accessToken, range, columns);
 }
 
 function buildPollGenerateReportEnvelope(auth: MicrosoftAdsAuthConfig, accessToken: string, reportRequestId: string): string {
@@ -719,7 +706,7 @@ async function submitGenerateReport(
   range: MicrosoftAdsDateRange,
   columns: readonly string[],
 ): Promise<{ reportRequestId: string } | { error: string }> {
-  const envelope = buildSubmitPerformanceReportEnvelope(auth, accessToken, range, columns);
+  const envelope = buildCampaignPerformanceReportSubmitEnvelope(auth, accessToken, range, columns);
   const res = await postSoap(fetchImpl, serviceUrl, "SubmitGenerateReport", envelope);
   if ("error" in res) return res;
   if (res.status !== 200) {
