@@ -1437,7 +1437,16 @@ describe("pipeWorkerStream (#7448) — erro de escrita no DESTINO do pipe é log
   // outro worker (ou do próprio reporter) derruba o processo com exit
   // não-zero mesmo com todas as asserções passando. Ver docstring de
   // `pipeWorkerStream` pro mecanismo completo.
-  it("REGRESSÃO (#7430): source terminar NÃO fecha o destino compartilhado — destino continua escrevível", () => {
+  // `.pipe()` só chama `destination.end()` DEPOIS do evento `'end'` da
+  // origem se propagar — que é assíncrono (confirmado ao vivo: falso-verde
+  // na 1ª versão deste teste, que checava `writableEnded` na MESMA
+  // tick de `source.end()` e passava mesmo sem o fix `{ end: false }`,
+  // porque o `.end()` do destino ainda não tinha acontecido). Por isso os 2
+  // testes abaixo são `async` e esperam um `setImmediate` — tempo de sobra
+  // pro `'end'`/`.end()` encadeados se propagarem antes de checar o estado.
+  const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+  it("REGRESSÃO (#7430): source terminar NÃO fecha o destino compartilhado — destino continua escrevível", async () => {
     const source = new PassThrough();
     const destination = new PassThrough();
     // Consome os dados do destino pra ele não travar em backpressure (o
@@ -1447,6 +1456,7 @@ describe("pipeWorkerStream (#7448) — erro de escrita no DESTINO do pipe é log
 
     source.write("dados do worker 1\n");
     source.end();
+    await tick();
 
     assert.equal(destination.writableEnded, false, "worker 1 terminar não pode encerrar o stream compartilhado");
     assert.doesNotThrow(
@@ -1455,7 +1465,7 @@ describe("pipeWorkerStream (#7448) — erro de escrita no DESTINO do pipe é log
     );
   });
 
-  it("REGRESSÃO (#7430): 2 workers no MESMO destino — o 1º terminar não corta a escrita do 2º", () => {
+  it("REGRESSÃO (#7430): 2 workers no MESMO destino — o 1º terminar não corta a escrita do 2º", async () => {
     const sourceA = new PassThrough();
     const sourceB = new PassThrough();
     const destinationCompartilhado = new PassThrough();
@@ -1467,10 +1477,12 @@ describe("pipeWorkerStream (#7448) — erro de escrita no DESTINO do pipe é log
 
     sourceA.write("A termina primeiro\n");
     sourceA.end();
+    await tick();
     assert.equal(destinationCompartilhado.writableEnded, false, "worker A terminar não pode fechar o destino compartilhado");
 
     sourceB.write("B ainda escreve depois\n");
     sourceB.end();
+    await tick();
 
     assert.ok(
       recebido.join("").includes("B ainda escreve depois"),
