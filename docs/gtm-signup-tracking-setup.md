@@ -25,9 +25,9 @@ já está pronto pra upload).
    `Newsletter Form Submit`.** O #7358 migrou Meta, LinkedIn, Microsoft UET
    **e Google Ads** para o gatilho único `Newsletter Signup - signedUp`. As
    seções "Google Ads e LinkedIn: intocados", a linha *(intocado, referência)*
-   da tabela de nomes técnicos, e o item "Reponte de Google Ads/LinkedIn para
-   o novo trigger" na lista de não-entregáveis **descrevem um estado que não
-   existe mais**.
+   da tabela de nomes técnicos (corrigida neste mesmo commit), e o item
+   "Reponte de Google Ads/LinkedIn para o novo trigger" na lista de
+   não-entregáveis **descrevem um estado que não existe mais**.
 2. **O rótulo de conversão do Google Ads estava quebrado e foi corrigido**
    (#7523, versão 17 do container, 06/09/2026): apontava para
    `pKZTCKnJxdAbEKmt_aJC`, rótulo da ação de conversão `7416669353 Sign-up`,
@@ -384,11 +384,13 @@ Meta e Google Ads, não há chamada de API pronta para colar aqui. Verificação
   evento de dataLayer depois de validado, é uma issue separada — mexer numa
   série histórica de conversão que já funciona é decisão editorial, não
   técnica.
-  > **Feito desde então.** A issue separada previsto aqui aconteceu: o #7358
+  > **Feito desde então.** A issue separada prevista aqui aconteceu: o #7358
   > migrou Google Ads e LinkedIn para `Newsletter Signup - signedUp`. E a
-  > premissa "uma série histórica de conversão que já funciona" era falsa
-  > para o Google Ads — o rótulo apontava para uma ação `REMOVED` e nenhuma
-  > conversão era contabilizada (#7523).
+  > premissa "uma série histórica de conversão que já funciona" não se
+  > sustentava para o Google Ads — o rótulo preservado aponta para uma ação
+  > `REMOVED`, e nenhuma conversão era contabilizada (#7523). Não dá para
+  > afirmar a partir do container quando a ação foi removida, só que em
+  > 05-06/09 ela já estava.
 
 ---
 

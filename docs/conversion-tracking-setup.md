@@ -47,7 +47,19 @@ padrão. **As duas tags existentes FORAM repontadas**: o acionador antigo
 manter os dois teria disparado a conversão 2× por cadastro). O que ficou
 intacto foi a **ação de conversão em si** — o Google Ads continua ligado ao
 mesmo `AW-17790097065`/rótulo `pKZTCKnJxdAbEKmt_aJC`, sem criar uma 2ª ação
-que quebraria a série histórica pós-31/07. O trigger antigo continua
+que quebraria a série histórica pós-31/07.
+
+> **⚠️ CORRIGIDO em 06/09/2026 (#7523) — o rótulo acima está MORTO, não use.**
+> `pKZTCKnJxdAbEKmt_aJC` é o rótulo da ação de conversão `7416669353
+> Sign-up`, cujo status é **`REMOVED`**. Preservá-lo aqui para "não quebrar a
+> série histórica" protegia uma série que não existia: o Google recebia o
+> evento e o descartava, então nenhuma conversão era contabilizada — medido
+> em 05-06/09 como **0 conversões em 162 cliques e 24 cadastros reais**. O
+> rótulo vigente é **`dxY1CIb1v9EbEKmt_aJC`**, da ação `7418673798
+> Assinatura Confirmada` (`ENABLED`, categoria `SIGNUP`, `primaryForGoal`),
+> publicado na versão 17 do container. Para conferir a que ação um rótulo
+> pertence, cruzar com `conversion_action.tag_snippets` via GAQL — foi esse
+> cruzamento que achou o problema. O trigger antigo continua
 existindo no container, sem tags — deixado de propósito como caminho de
 volta se `signedUp` regredir.
 
