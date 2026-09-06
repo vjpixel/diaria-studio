@@ -36,6 +36,7 @@ import { readSpendCsv, type SpendRow, type SpendRowError } from "../lib/aquisica
 import { buildCacReport, computeMonthBudgetUsage, MONTHLY_BUDGET_FLOOR_BRL, type CacReport, type MonthBudgetUsage } from "../lib/cac.ts";
 import { loadOrigemIndex, loadPreparedSubscribers } from "../cac-report.ts";
 import { assertValidRunState, type AdsTestRunState } from "../lib/ads-test-run-state.ts";
+import { daysBetween } from "../lib/ads-test-schedule.ts";
 import { resolveKitConfig } from "../lib/kit-config.ts";
 import {
   fetchCampaignEconomicsSources,
@@ -291,10 +292,21 @@ export async function buildAdsCampaignEconomics(
   const kitConfigResult = resolveKitConfig(env);
   const kitConfig = kitConfigResult.ok ? kitConfigResult.config : null;
 
+  // O lookback do GAQL/Reporting API precisa cobrir DO D0 até hoje, nunca um
+  // fixo 30 dias (achado do self-review, #7536): a série acumulada começa em
+  // `runState.d0` — se a página for aberta mais de 30 dias depois do D0 (ex:
+  // revisitando o teste 2608 já em cauda, ~dia 35-40), um lookback fixo
+  // perderia os primeiros dias de gasto e SUBESTIMARIA o acumulado em
+  // silêncio, sem nenhum sinal de erro. `+1` inclusivo (D0..hoje). Sem
+  // `run-state.json`, cai no default de 30 dias de `fetchGoogleAdsChannelMetrics`/
+  // `fetchMicrosoftAdsChannelMetrics` (teste ainda não começou, nada a cobrir).
+  const todayIsoForLookback = generatedAt.slice(0, 10);
+  const lookbackDays = runState ? Math.max(daysBetween(runState.d0, todayIsoForLookback) + 1, 1) : undefined;
+
   const sourcesResult: CampaignEconomicsSourcesResult = await fetchCampaignEconomicsSources(
     (opts.fetchImpl ?? fetch) as typeof fetch,
     kitConfig,
-    { env, now: now(), kitDateRangeStart: runState?.d0 },
+    { env, now: now(), kitDateRangeStart: runState?.d0, lookbackDays },
   );
   // `fetchCampaignEconomicsSources` já reporta um erro genérico quando
   // `kitConfig` é `null` — sobrescreve com o motivo mais específico de

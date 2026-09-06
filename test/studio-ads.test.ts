@@ -298,6 +298,40 @@ describe("buildAdsCampaignEconomics — run-state.json presente + fontes respond
   });
 });
 
+describe("buildAdsCampaignEconomics — lookback cobre D0..hoje, nunca um fixo 30 dias (self-review #7536)", () => {
+  it("mais de 30 dias após o D0: a query GAQL enviada ainda começa em run-state.d0, não recorta os primeiros dias", async () => {
+    clearAdsCampaignEconomicsCache();
+    const root = makeRoot();
+    try {
+      writeRunState(root); // d0: 2026-01-01
+      const env = {
+        GOOGLE_ADS_DEVELOPER_TOKEN: "dt",
+        GOOGLE_ADS_CLIENT_ID: "ci",
+        GOOGLE_ADS_CLIENT_SECRET: "cs",
+        GOOGLE_ADS_REFRESH_TOKEN: "rt",
+        GOOGLE_ADS_LOGIN_CUSTOMER_ID: "1",
+        GOOGLE_ADS_CUSTOMER_ID: "2",
+      };
+      let capturedQuery = "";
+      const fetchImpl = (async (url: string, init?: RequestInit) => {
+        if (url.includes("oauth2.googleapis.com")) return jsonResponse(200, { access_token: "tok" });
+        if (init?.body) {
+          const parsed = JSON.parse(String(init.body));
+          if (parsed.query) capturedQuery = parsed.query;
+        }
+        return jsonResponse(200, { results: [] });
+      }) as typeof fetch;
+
+      // 45 dias depois do D0 — mais que o antigo lookback fixo de 30 dias.
+      await buildAdsCampaignEconomics(root, { now: () => new Date("2026-02-15T12:00:00Z"), env, fetchImpl });
+
+      assert.match(capturedQuery, /BETWEEN '2026-01-01'/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("buildAdsCampaignEconomics — cache com TTL/forceRefresh", () => {
   it("2ª chamada dentro do TTL vem do cache (cached=true)", async () => {
     clearAdsCampaignEconomicsCache();
