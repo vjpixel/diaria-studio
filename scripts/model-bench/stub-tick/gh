@@ -52,7 +52,17 @@ passar() {
 # como distinguir query de mutation por flag).
 if [ "${1:-}" = "api" ]; then
   [ "${2:-}" = "graphql" ] && bloquear "$@"
+  # Método explícito de escrita.
   if printf '%s ' "$@" | grep -qiE '(-X|--method)[ =]*(POST|PATCH|PUT|DELETE)'; then
+    bloquear "$@"
+  fi
+  # Método IMPLÍCITO: o gh promove a POST sozinho quando há parâmetro de
+  # corpo (`-f`, `-F`, `--input`, `--raw-field`), sem nunca escrever `-X`.
+  # Foi o furo que sobreviveu à 1ª correção (2º review da PR #7534): a
+  # allow-list fechou `graphql` e `--method`, e esta forma continuava
+  # passando — `gh api repos/.../issues/N/comments -f body=...` comentaria
+  # de verdade numa issue real.
+  if printf '%s ' "$@" | grep -qE '(^| )(-f|-F|--input|--raw-field|--field)( |=)'; then
     bloquear "$@"
   fi
   passar "$@"

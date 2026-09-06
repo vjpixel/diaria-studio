@@ -51,7 +51,14 @@ def _post(path: str, payload: dict, timeout: int = 900) -> dict:
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+        d = json.loads(r.read())
+    # O Ollama devolve 200 com `error` no corpo em alguns modos de falha
+    # (OOM do runner, modelo inexistente). Sem esta checagem, `.get(...,0)`
+    # transforma o erro em `prompt_eval_count=0`, que a busca binária lê
+    # como truncagem — erro de infra virando medição.
+    if isinstance(d, dict) and d.get("error"):
+        raise RuntimeError(f"Ollama devolveu 200 com erro: {d['error']}")
+    return d
 
 
 def _sh(cmd: str) -> str:
@@ -61,13 +68,22 @@ def _sh(cmd: str) -> str:
 
 
 def gpu_state() -> tuple[int, int, int]:
-    """(util%, usado MiB, livre MiB) — zeros se não houver nvidia-smi."""
+    """(util%, usado MiB, livre MiB). Levanta se o nvidia-smi FALHAR.
+
+    Devolver (0,0,0) em falha faria `check_idle` aprovar a máquina como
+    ociosa justamente quando não dá para saber se ela está — guard que
+    falha aberto. Ausência de GPU e falha de ferramenta são coisas
+    diferentes e precisam de tratamento diferente.
+    """
     out = _sh(
         "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.free "
         "--format=csv,noheader,nounits"
     )
     if not out:
-        return (0, 0, 0)
+        raise RuntimeError(
+            "nvidia-smi não devolveu nada. Se esta máquina não tem GPU, "
+            "rode com --force; se tem, o guard de ociosidade não pode "
+            "aprovar sem saber o estado dela.")
     util, used, free = (int(x.strip()) for x in out.split(","))
     return (util, used, free)
 
@@ -247,9 +263,11 @@ def cmd_speed(args) -> int:
         print("ABORTADO: máquina não esfriou (use --force para ignorar).")
         return 2
     _, antes = check_idle()
-    # ~3,2 chars/token para texto técnico em pt-BR; o número que vale é o
-    # `tokens_lidos` devolvido, não esta estimativa.
-    m = measure_prompt(args.model, args.ctx * 3, num_predict=args.predict)
+    # 4,18 chars/token: razão MEDIDA do `_filler()` (repetitivo), não de
+    # "texto técnico" — o comentário anterior dizia ~3,2 e o código usava 3,
+    # e nenhum dos dois descrevia o conteúdo realmente enviado. O número que
+    # vale continua sendo o `tokens_lidos` devolvido, não esta estimativa.
+    m = measure_prompt(args.model, int(args.ctx * 4.18), num_predict=args.predict)
     _, depois = check_idle(verbose=False)
     print(json.dumps({
         "modelo": args.model, "ctx_alvo": args.ctx,

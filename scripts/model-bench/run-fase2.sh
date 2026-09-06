@@ -5,7 +5,8 @@
 # concorrentes disputariam o mesmo recurso serial e produziriam justamente
 # as medições contaminadas que o guard de ociosidade existe para evitar.
 #
-# ESCADA DE num_ctx, e não um alvo fixo. A 1ª versão fixava 131072 para
+# ESCADA DE num_ctx, e não um alvo fixo. (Todos os números citados
+# neste cabeçalho foram medidos em 06/09/2026, Ollama 0.32.6, GTX 1060.) A 1ª versão fixava 131072 para
 # todos e mandava a sonda de janela em cima. Medido: o phi4-mini a 131072
 # fica com 20,78 GB residentes e só 24% em VRAM — sondar a janela de um
 # modelo 76% na CPU custa horas para descobrir o que a carga já disse. E a
@@ -36,6 +37,13 @@ cd ~/model-bench
 # parâmetros de memória do Modelfile de produção, variando só o modelo e o
 # num_ctx. Parâmetro não replicado vira desvantagem silenciosa do candidato.
 
+curl -sf --max-time 10 http://127.0.0.1:11434/api/tags >/dev/null || {
+  echo "ERRO: Ollama inacessível. Abortando — sem esta checagem, cada degrau"
+  echo "devolveria 0% e os 5 candidatos sairiam como DESCARTADO por não caber,"
+  echo "que é um resultado negativo plausível produzido por infra quebrada."
+  exit 1
+}
+
 ESCADA=${ESCADA:-"131072 98304 65536 49152 32768 16384"}
 CANDIDATOS=${CANDIDATOS:-"phi4-mini:3.8b ministral-3:3b qwen3:4b llama3.2:3b granite4:3b"}
 
@@ -55,11 +63,20 @@ for M in $CANDIDATOS; do
   echo "################ $M ################"
   CABE=""
   for CTX in $ESCADA; do
-    TAG="bench-tmp"
+    # Tag ÚNICA por candidato+degrau. A versão anterior reusava o literal
+    # "bench-tmp" entre todos os candidatos e degraus: se `ollama create`
+    # falhasse (Modelfile ruim, disco cheio, nome errado), o curl seguinte
+    # media a variante ANTERIOR e o número ia para a tabela atribuído ao
+    # candidato errado, sem sinal nenhum. Verificado que não chegou a
+    # ocorrer (os degraus saíram todos distintos), mas o risco era real.
+    TAG="bench-tmp-$(echo "$M" | tr ':/.' '---')-$CTX"
     printf 'FROM %s\nPARAMETER num_ctx %s\nPARAMETER num_predict 2048\nPARAMETER temperature 0.3\n' \
       "$M" "$CTX" > /tmp/bench.Modelfile
-    ollama create "$TAG" -f /tmp/bench.Modelfile > /dev/null 2>&1
-    curl -s http://127.0.0.1:11434/api/generate \
+    if ! ollama create "$TAG" -f /tmp/bench.Modelfile 2>&1 | tail -1 | grep -q success; then
+      echo "  num_ctx $CTX: ollama create FALHOU — degrau NÃO medido"
+      continue
+    fi
+    curl -s --max-time 300 http://127.0.0.1:11434/api/generate \
       -d "{\"model\":\"$TAG\",\"prompt\":\"oi\",\"stream\":false,\"options\":{\"num_predict\":1}}" \
       > /dev/null 2>&1
     read -r PCT GB <<< "$(split_vram)"
@@ -78,7 +95,10 @@ for M in $CANDIDATOS; do
   TAG="bench-$(echo "$M" | tr ':/.' '---')"
   printf 'FROM %s\nPARAMETER num_ctx %s\nPARAMETER num_predict 2048\nPARAMETER temperature 0.3\n' \
     "$M" "$CABE" > "/tmp/$TAG.Modelfile"
-  ollama create "$TAG" -f "/tmp/$TAG.Modelfile" > /dev/null 2>&1
+  if ! ollama create "$TAG" -f "/tmp/$TAG.Modelfile" 2>&1 | tail -1 | grep -q success; then
+    echo "  ERRO: create da variante final falhou — candidato NÃO medido"
+    echo; continue
+  fi
   echo "  --> maior num_ctx que cabe: $CABE  (variante $TAG)"
 
   echo "--- janela útil real (sonda, nao confia no num_ctx) ---"

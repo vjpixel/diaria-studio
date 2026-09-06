@@ -83,9 +83,9 @@ Velocidade (tok/s, todas com máquina ociosa, load ≤1,44):
 | KV cache | ctx  | prefill | geração | KV buffer | VRAM |
 |----------|------|---------|---------|-----------|------|
 | fp16     | 32k  | 309     | 23,1    | 2048 MiB  | 5801 |
-| q8_0     | 32k  | 306     | 20,8    | 2490 MiB  | 5935 |
+| q8_0     | 32k  | 306     | 20,8    | —         | —    |
 | q4_0     | 32k  | 305     | 15,3    | —         | —    |
-| q8_0     | 100k | 159     | 12,7    | 2490 MiB  | 5935 |
+| q8_0     | 100k | 159     | 12,7    | —         | —    |
 | q4_0     | 100k | 159     | 7,8     | —         | —    |
 
 **Células de buffer/VRAM do `q4_0` estão vazias de propósito** (review da PR
@@ -94,6 +94,18 @@ Velocidade (tok/s, todas com máquina ociosa, load ≤1,44):
 com o comprimento da sequência. Os tok/s das duas linhas divergem
 corretamente (15,3 vs 7,8), então só as colunas de memória têm cara de
 artefato de cópia. Re-medir antes de usar; não estimar.
+
+**As células do `q8_0` foram esvaziadas pelo mesmo motivo** (2º review da PR
+#7534): 2490 MiB / 5935 MiB idênticos em 32k e 100k, exatamente o padrão que
+eu havia marcado como implausível uma linha acima — e não apliquei o mesmo
+critério. Duplo padrão corrigido.
+
+Ressalva sobre o alcance disso, porque o review foi um pouco além do dado: a
+conclusão "fp16 > q8_0 (−12%) > q4_0 (−26%)" é sobre **tok/s de geração**, e
+essas colunas divergem corretamente em todas as linhas. O artefato está só
+nas colunas de MEMÓRIA. A conclusão de degradação por quantização se
+sustenta; o que não se sustenta é qualquer uso das cifras de buffer/VRAM
+dessas quatro células.
 
 Conclusões travadas:
 
@@ -278,6 +290,18 @@ O tick consome **56-61k por chamada**. Só o modelo atual atende com folga.
 medido, e TODOS falharam**, o atual inclusive (ver seção "Aderência"
 abaixo). Omitir a coluna sem esta nota faria a tabela parecer limpa em
 aderência, que é leitura errada (achado do review da PR #7534).
+
+**Qualificação obrigatória das colunas `d`/`e` (2º review da PR #7534): elas
+foram medidas em contexto BAIXO (~10k, só o SKILL.md), não na ocupação de
+produção.** O `run-fase2.sh` chama a bateria sem `--pad-to`, e o próprio help
+da flag diz que 0 "mede aderência pura mas NÃO a condição de produção".
+
+Isso é uma lacuna real do que foi medido, não um detalhe: o harness inteiro
+se justifica por perguntar se o modelo ALCANÇA a regra a 56-61k, e a
+comparação entre os 5 candidatos não testou esse tamanho. Vale para o
+ranqueamento por janela útil (que é o critério que decidiu), não para
+afirmar que a aderência dos candidatos se manteria sob pressão de contexto.
+Só o modelo atual foi medido nos dois regimes.
 
 ## O que decide, e não está em nenhum card de modelo
 

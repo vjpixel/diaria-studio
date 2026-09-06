@@ -215,7 +215,10 @@ def roda_cenario(model: str, chave: str, skill_txt: str,
         "cenario": chave,
         "nome": c["nome"],
         "pad_alvo": pad_to,
-        "tokens_enviados_aprox": len(prompt) // 4,
+        # Razão medida, não o `//4` que este arquivo documenta como
+        # defeituoso três blocos acima. Campo de exibição, mas exibir
+        # número ruim é como a célula de 73k saiu rotulada 58k.
+        "tokens_enviados_aprox": int(len(prompt) / RAZAO_ENCHIMENTO),
         "tokens_lidos": lidos,
         # Truncou = perdeu o marcador da 1ª linha. Evidência direta, sem
         # estimativa de tokenização no meio. Separa "errou por incapacidade"
