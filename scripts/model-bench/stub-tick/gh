@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Shim de `gh` para o tick stubbado (Fase 3).
+#
+# O tick precisa de leitura REAL (a fila de issues, o estado das PRs e os
+# exit codes dos guards são o objeto do teste — falseá-los mediria uma
+# ficção). Mas não pode escrever: abrir PR, comentar em issue ou mergear
+# são efeitos externos e irreversíveis, e o modelo sob teste é justamente
+# o que ainda não se confia.
+#
+# Então: leitura passa direto para o `gh` real; escrita é REGISTRADA e
+# recusada com exit 0.
+#
+# Por que exit 0 e não exit 1: o tick tem ramificação fail-closed em quase
+# todo comando. Devolver erro faria o coordenador entrar no caminho de
+# tratamento de falha, e eu estaria medindo a reação dele a um `gh`
+# quebrado em vez do laço normal. Exit 0 com saída plausível mantém o tick
+# no trilho que se quer observar. O que ele NÃO pode é ter feito o efeito.
+set -u
+
+LOG="${STUB_TICK_LOG:-/tmp/stub-tick-gh.log}"
+GH_REAL="${GH_REAL:-/usr/bin/gh}"
+
+# Subcomandos que produzem efeito externo. `api` entra na lista porque
+# aceita -X POST/PATCH/DELETE e é a porta dos fundos para tudo acima.
+case "${1:-} ${2:-}" in
+  "pr create"|"pr merge"|"pr close"|"pr edit"|"pr comment"|"pr review"|\
+  "issue create"|"issue close"|"issue comment"|"issue edit"|"issue reopen"|\
+  "release create"|"api "*)
+    if [ "${1:-}" = "api" ] && ! printf '%s ' "$@" | grep -qE '\-X *(POST|PATCH|PUT|DELETE)'; then
+      exec "$GH_REAL" "$@"        # `gh api` de leitura: deixa passar
+    fi
+    printf '%s  BLOQUEADO: gh %s\n' "$(date -Is)" "$*" >> "$LOG"
+    # Saída plausível para o caminho feliz, sem ter feito nada.
+    case "$1 $2" in
+      "pr create") echo "https://github.com/vjpixel/diaria-studio/pull/999999" ;;
+      *) echo "ok" ;;
+    esac
+    exit 0
+    ;;
+esac
+
+printf '%s  passou:    gh %s\n' "$(date -Is)" "$*" >> "$LOG"
+exec "$GH_REAL" "$@"

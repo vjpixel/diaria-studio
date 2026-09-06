@@ -19,6 +19,23 @@
 set -u
 cd ~/model-bench
 
+# `num_gpu 999` em toda variante: sem ele o Ollama decide o split sozinho e
+# retém camadas na CPU por conservadorismo. A 1ª passada da escada mediu
+# ONDE O OLLAMA ESCOLHEU alocar tudo, não onde o modelo CABE — e como o
+# Modelfile de produção (`qwen-64k`) tem num_gpu 999, os candidatos foram
+# comparados em desvantagem contra o baseline. Medido: qwen3.5:4b a 65.536
+# fica em 77% da VRAM sem a flag.
+#
+# `num_batch 512` pelo mesmo motivo: o buffer de computação escala com ele,
+# e o Modelfile de produção o fixa. Sem replicar, a variante de bench pesa
+# ~0,29 GB a mais que o modelo real na MESMA janela — diferença que decide
+# se um degrau cabe ou não.
+#
+# REGRA GERAL, aprendida em 3 iterações desta escada (alvo fixo -> num_gpu
+# -> num_batch): toda comparação contra o baseline tem que replicar TODOS os
+# parâmetros de memória do Modelfile de produção, variando só o modelo e o
+# num_ctx. Parâmetro não replicado vira desvantagem silenciosa do candidato.
+
 ESCADA=${ESCADA:-"131072 98304 65536 49152 32768 16384"}
 CANDIDATOS=${CANDIDATOS:-"phi4-mini:3.8b ministral-3:3b qwen3:4b llama3.2:3b granite4:3b"}
 
@@ -68,8 +85,13 @@ for M in $CANDIDATOS; do
   python3 -u probe.py window --model "$TAG" --max-tokens "$CABE" \
     --min-tokens 12000 --tolerance 8000 2>&1 | tail -3
 
-  echo "--- velocidade a 32k ---"
-  python3 -u probe.py speed --model "$TAG" --ctx 32768 2>&1 | tail -10
+  # Velocidade na MAIOR janela que o modelo comporta, não num 32k fixo:
+  # medir a 32k um modelo que só cabe em 16.384 excede a janela dele e o
+  # número deixa de descrever o que se quis medir. Teto de 32k para manter
+  # comparabilidade com o baseline do qwen.
+  CTX_VEL=$([ "$CABE" -lt 32768 ] && echo "$CABE" || echo 32768)
+  echo "--- velocidade a ${CTX_VEL} ---"
+  python3 -u probe.py speed --model "$TAG" --ctx "$CTX_VEL" 2>&1 | tail -10
 
   echo "--- aderência ---"
   python3 -u adherence.py --model "$TAG" --repeats 2 2>&1 | tail -4
