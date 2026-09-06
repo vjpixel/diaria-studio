@@ -274,6 +274,11 @@ Modelfile de produção). Célula vazia = não medida, nunca estimativa.
 
 O tick consome **56-61k por chamada**. Só o modelo atual atende com folga.
 
+**A tabela não tem coluna para o cenário `c` de propósito — mas ele foi
+medido, e TODOS falharam**, o atual inclusive (ver seção "Aderência"
+abaixo). Omitir a coluna sem esta nota faria a tabela parecer limpa em
+aderência, que é leitura errada (achado do review da PR #7534).
+
 ## O que decide, e não está em nenhum card de modelo
 
 **KV cache, não pesos.** Todos os candidatos têm pesos MENORES que o atual

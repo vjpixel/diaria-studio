@@ -7,37 +7,68 @@
 # são efeitos externos e irreversíveis, e o modelo sob teste é justamente
 # o que ainda não se confia.
 #
-# Então: leitura passa direto para o `gh` real; escrita é REGISTRADA e
-# recusada com exit 0.
+# DESENHO: allow-list de LEITURA, não block-list de escrita.
 #
-# Por que exit 0 e não exit 1: o tick tem ramificação fail-closed em quase
-# todo comando. Devolver erro faria o coordenador entrar no caminho de
-# tratamento de falha, e eu estaria medindo a reação dele a um `gh`
-# quebrado em vez do laço normal. Exit 0 com saída plausível mantém o tick
-# no trilho que se quer observar. O que ele NÃO pode é ter feito o efeito.
+# A 1ª versão fazia o inverso — listava subcomandos de escrita e deixava o
+# resto passar. O review da PR #7534 achou dois furos P1 nessa forma, e os
+# dois são instrutivos porque nenhum é obscuro:
+#
+#   1. `gh api graphql` faz POST por baixo SEMPRE, mas a linha de comando
+#      nunca contém `-X POST` — o método é implícito ao subcomando. Uma
+#      mutation (comentar, fechar, mergear, rotular) passava batido.
+#   2. `--method POST` é a forma longa de `-X`. O regex só casava `-X`.
+#
+# Block-list numa fronteira de segurança falha assim por construção: só
+# protege contra o que quem escreveu lembrou de listar, e o custo do
+# esquecimento é o efeito real acontecer. Com allow-list, esquecer bloqueia
+# a mais — que num harness de medição custa uma célula, não um efeito.
+#
+# Exit 0 e saída plausível de propósito: o tick tem ramificação fail-closed
+# em quase todo comando, e devolver erro mediria a reação dele a um `gh`
+# quebrado em vez do laço normal. O que ele NÃO pode é ter feito o efeito.
 set -u
 
 LOG="${STUB_TICK_LOG:-/tmp/stub-tick-gh.log}"
 GH_REAL="${GH_REAL:-/usr/bin/gh}"
 
-# Subcomandos que produzem efeito externo. `api` entra na lista porque
-# aceita -X POST/PATCH/DELETE e é a porta dos fundos para tudo acima.
+bloquear() {
+  # Log é best-effort: se falhar (disco cheio, path inexistente), a escrita
+  # continua bloqueada. Nunca deixar a falha do registro liberar o efeito.
+  printf '%s  BLOQUEADO: gh %s\n' "$(date -Is)" "$*" >> "$LOG" 2>/dev/null || \
+    printf 'AVISO: log falhou, mas gh %s segue bloqueado\n' "$*" >&2
+  case "${1:-} ${2:-}" in
+    "pr create") echo "https://github.com/vjpixel/diaria-studio/pull/999999" ;;
+    *) echo "ok" ;;
+  esac
+  exit 0
+}
+
+passar() {
+  printf '%s  passou:    gh %s\n' "$(date -Is)" "$*" >> "$LOG" 2>/dev/null || true
+  exec "$GH_REAL" "$@"
+}
+
+# `gh api`: só GET passa. graphql SEMPRE bloqueia (POST implícito, e não há
+# como distinguir query de mutation por flag).
+if [ "${1:-}" = "api" ]; then
+  [ "${2:-}" = "graphql" ] && bloquear "$@"
+  if printf '%s ' "$@" | grep -qiE '(-X|--method)[ =]*(POST|PATCH|PUT|DELETE)'; then
+    bloquear "$@"
+  fi
+  passar "$@"
+fi
+
+# Demais subcomandos: allow-list explícita de LEITURA.
 case "${1:-} ${2:-}" in
-  "pr create"|"pr merge"|"pr close"|"pr edit"|"pr comment"|"pr review"|\
-  "issue create"|"issue close"|"issue comment"|"issue edit"|"issue reopen"|\
-  "release create"|"api "*)
-    if [ "${1:-}" = "api" ] && ! printf '%s ' "$@" | grep -qE '\-X *(POST|PATCH|PUT|DELETE)'; then
-      exec "$GH_REAL" "$@"        # `gh api` de leitura: deixa passar
-    fi
-    printf '%s  BLOQUEADO: gh %s\n' "$(date -Is)" "$*" >> "$LOG"
-    # Saída plausível para o caminho feliz, sem ter feito nada.
-    case "$1 $2" in
-      "pr create") echo "https://github.com/vjpixel/diaria-studio/pull/999999" ;;
-      *) echo "ok" ;;
-    esac
-    exit 0
-    ;;
+  "pr list"|"pr view"|"pr diff"|"pr checks"|"pr status"|\
+  "issue list"|"issue view"|"issue status"|\
+  "repo view"|"release list"|"release view"|\
+  "run list"|"run view"|"workflow list"|"workflow view"|\
+  "label list"|"search "*|"auth status"|"browse "*|"config get")
+    passar "$@" ;;
 esac
 
-printf '%s  passou:    gh %s\n' "$(date -Is)" "$*" >> "$LOG"
-exec "$GH_REAL" "$@"
+# Não reconhecido como leitura => bloqueia. É o ponto do desenho: um
+# subcomando novo do gh, ou um que ninguém previu, para aqui em vez de
+# executar.
+bloquear "$@"

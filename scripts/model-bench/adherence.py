@@ -198,7 +198,7 @@ def roda_cenario(model: str, chave: str, skill_txt: str,
         # truncou, rotulando a célula com um número que ela não tinha.
         # Agora cada parte usa a SUA razão, medida.
         base = len(skill_txt) / RAZAO_SKILL + len(cauda) / RAZAO_SKILL
-        pad = max(0, int((pad_to - base) * RAZAO_ENCHIMENTO / RAZAO_ENCHIMENTO))
+        pad = max(0, int(pad_to - base))
     prompt = "MARCADOR=" + MARCADOR + chr(10) + skill_txt + _enchimento(pad) + cauda
     if show_prompt:
         print(prompt[:2000], "\n[...]\n", prompt[-800:])

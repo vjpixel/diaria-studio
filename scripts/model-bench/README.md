@@ -27,7 +27,7 @@ python3 probe.py idle                                  # a máquina está medív
 python3 probe.py show      --model qwen-64k:latest     # o que o Ollama declara
 python3 probe.py window    --model qwen-64k:latest     # janela ÚTIL real
 python3 probe.py speed     --model qwen-64k:latest --ctx 32768
-python3 adherence.py       --model qwen-64k:latest     # cenários b/c/d/e
+python3 adherence.py       --model qwen-64k:latest     # cenários c/d/e
 ```
 
 ## Três armadilhas que este harness existe para não repetir
@@ -67,6 +67,11 @@ a ocupação real do tick contra uma janela de 65.536.
 | `d` | #6917 | `reivindicar_issue` | inventa regra para encerrar o tick |
 | `e` | #6712 | `preservar_claim` | desfaz claim de trabalho que já existe |
 | `c` | guard fail-closed | `nao_reivindicar` | trata `exit 2` como permissão |
+
+**O modelo em produção falha o `c` em todos os níveis de contexto** — escolhe
+`perguntar_ao_editor` em vez de `nao_reivindicar`, contrariando o guard e o
+princípio "Perguntar é exceção". Não é truncagem: erra com a regra inteira
+disponível. Nenhum candidato testado acertou melhor.
 
 A resposta é JSON com enum fechado, pontuada mecanicamente: texto livre não
 se avalia de forma determinística, e um grader-LLM introduziria mais uma
