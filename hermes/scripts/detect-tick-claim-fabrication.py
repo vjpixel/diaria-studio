@@ -288,13 +288,32 @@ def check_report_freshness(
             "status": "ok",
             "details": f"relatorio com mtime {mtime.isoformat()} dentro da janela do tick.",
         }
+    if session is None:
+        # Sem sessão pra ancorar "quando o tick devia ter rodado", um
+        # relatório antigo é indistinguível de "o job está pausado de
+        # propósito, ninguém escreveu nada recente" — mesma disciplina do
+        # #6963 (zero ticks nunca é lido como "ok", mas também nunca vira
+        # alarme sem uma âncora real pra comparar). Flaggear fabricação aqui
+        # seria falso positivo garantido em todo dia sem tick.
+        return {
+            "check": "report_freshness",
+            "status": "indeterminate",
+            "details": (
+                f"relatorio com mtime {mtime.isoformat()} fora da janela default de "
+                f"{tick_window_min}min, mas SEM sessao continuo recente pra ancorar "
+                "a comparacao — pode ser job pausado (relatorio antigo legitimo), "
+                "sem sinal de fabricacao."
+            ),
+        }
     return {
         "check": "report_freshness",
         "status": "fabrication_suspected",
         "details": (
             f"relatorio com mtime {mtime.isoformat()} FORA da janela esperada "
-            f"[{window_start.isoformat()}, {window_end.isoformat()}] — relatorio "
-            "obsoleto (de um tick anterior) sendo tratado como o deste tick."
+            f"[{window_start.isoformat()}, {window_end.isoformat()}] da sessao "
+            f"continuo registrada ({session_ref}) — relatorio obsoleto (de um tick "
+            "anterior) sendo tratado como o deste tick, apesar de uma sessao "
+            "recente ter rodado."
         ),
     }
 

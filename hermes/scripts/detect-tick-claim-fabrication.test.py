@@ -243,19 +243,34 @@ def main() -> int:
         # 10. Relatorio sem mencao de reivindicacao/claim -> not_applicable
         # ------------------------------------------------------------------
         check10 = mod.check_claimed_issues(
-            "## Tick 12:00\n### Trabalhado\ntrabalhei na issue #300 mas nao reivindiquei ainda(*).\n"
-            .replace("(*)", ""),
-            claimed8, sessions8.is_dir(),
-        )
-        # a linha acima nao contem "reivindic"/"claim" isolado o suficiente
-        # -- criar caso limpo explicito:
-        check10b = mod.check_claimed_issues(
             "## Tick 12:00\n### Trabalhado\nlinha qualquer sem #refs de claim.\n",
             claimed8, sessions8.is_dir(),
         )
         assert_true(
             "10. relatorio sem mencao de reivindicacao/claim -> not_applicable",
-            check10b["status"] == "not_applicable",
+            check10["status"] == "not_applicable",
+        )
+
+        # ------------------------------------------------------------------
+        # 10b. Relatorio ANTIGO mas SEM sessao continuo recente pra ancorar
+        # -> indeterminado, NUNCA fabricacao (job pausado de proposito e
+        # relatorio antigo legitimo sao indistinguiveis sem uma sessao pra
+        # comparar contra).
+        # ------------------------------------------------------------------
+        repo10b = td / "repo10b"
+        report10b = repo10b / "data" / "continuo" / "last-tick-report.md"
+        sessions10b = repo10b / "data" / "sessions"  # sem sessao nenhuma
+        _write_report(report10b, "## Tick de ha dias\n### Trabalhado\nnada.\n",
+                       mtime=now - timedelta(days=3))
+        result10b = mod.run(repo10b, report10b, sessions10b, 45, now, None)
+        assert_true(
+            "10b. relatorio antigo SEM sessao pra ancorar -> indeterminado, nunca fabricacao",
+            result10b["status"] != "fabrication_suspected",
+        )
+        assert_true(
+            "10b. checagem report_freshness fica indeterminada (nao 'ok' nem fabricacao)",
+            any(c["check"] == "report_freshness" and c["status"] == "indeterminate"
+                for c in result10b["checks"]),
         )
 
         # ------------------------------------------------------------------
