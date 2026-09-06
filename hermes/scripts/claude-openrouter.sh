@@ -183,7 +183,7 @@ EFFORT=""
 # continua resolvendo (endpoint ativo, ctx 256k) — a troca de posição do
 # laguna é só sobre contexto menor, não sobre um id inválido. glm-5.3-flash
 # (pago) continua por último, é o fallback.
-MODELS_DEFAULT=("dots-studio/dots-3-note-preview:free" "poolside/laguna-s-2.1:free" "z-ai/glm-5.3-flash")
+MODELS_DEFAULT=("dots-studio/dots-3-note-preview:free" "thinkingmachines/inkling-small:free" "poolside/laguna-s-2.1:free" "z-ai/glm-5.3-flash")
 MODEL_FORCED=""
 
 while [ $# -gt 0 ]; do

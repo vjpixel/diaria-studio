@@ -154,17 +154,96 @@ assert_eq "npm root -g falha: preflight sai com exit 5" "5" "$RC_NO_NPM_ROOT"
 assert_contains "npm root -g falha: mensagem diz que o reparo NÃO foi tentado (nunca 'não resolveu')" "$STDERR_NO_NPM_ROOT" "reparo automático NÃO foi tentado"
 
 # ── Binário ausente (sem override de reparo) — mesmo comportamento de antes ─
+# KNOWN_PATHS="" desliga de propósito o fallback do #7554 (senão, numa
+# máquina que tenha um `claude` real instalado em ~/.npm-global/bin, o
+# fallback poderia "achar" esse binário real e mudar o resultado deste
+# teste — que quer medir o caminho SEM nenhum binário disponível).
 
 set +e
 (
   CLAUDE_BINARY_PREFLIGHT_CMD="$WORKDIR/claude-ausente-nao-existe"
   CLAUDE_BINARY_PREFLIGHT_REPAIR_CMD="true"
   CLAUDE_BINARY_PREFLIGHT_STUB_SIZE=0
+  CLAUDE_BINARY_PREFLIGHT_KNOWN_PATHS=""
   claude_binary_preflight
 ) >/dev/null 2>&1
 RC_ABSENT=$?
 set -e
 assert_eq "binário ausente: preflight sai com exit 5" "5" "$RC_ABSENT"
+
+# ══════════════════════════════════════════════════════════════════════
+# #7554 — falso positivo de "binário quebrado" quando `$cmd` não está no
+# PATH da sessão (shell não-interativo/SSH), com um binário íntegro
+# instalado num caminho conhecido de instalação global.
+# ══════════════════════════════════════════════════════════════════════
+
+# ── Caminho 11: `$cmd` não resolve via `command -v` (nome sem barra, fora
+# do PATH desta sessão de teste) — mas um caminho conhecido (injetado via
+# CLAUDE_BINARY_PREFLIGHT_KNOWN_PATHS, nunca o npm/HOME reais) responde
+# `--version` OK. Preflight deve resolver (exit 0), avisar que era
+# problema de PATH — nunca declarar quebrado nem tentar reparo.
+
+cat > "$WORKDIR/claude-known-path-healthy" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$WORKDIR/claude-known-path-healthy"
+
+set +e
+STDERR_KNOWN_PATH="$(
+  (
+    CLAUDE_BINARY_PREFLIGHT_CMD="claude-7554-nao-existe-no-path-de-teste"
+    CLAUDE_BINARY_PREFLIGHT_REPAIR_CMD="touch $WORKDIR/repair-called-unnecessarily-7554"
+    CLAUDE_BINARY_PREFLIGHT_KNOWN_PATHS="$WORKDIR/claude-known-path-healthy"
+    claude_binary_preflight
+  ) 2>&1 1>/dev/null
+)"
+RC_KNOWN_PATH=$?
+set -e
+assert_eq "PATH ausente, binário íntegro em caminho conhecido: preflight resolve (exit 0)" "0" "$RC_KNOWN_PATH"
+assert_contains "PATH ausente: AVISO cita PATH desta sessão, não binário quebrado (#7554)" "$STDERR_KNOWN_PATH" "não estava no PATH desta sessão"
+assert_contains "PATH ausente: AVISO cita o caminho conhecido encontrado" "$STDERR_KNOWN_PATH" "$WORKDIR/claude-known-path-healthy"
+assert_not_contains "PATH ausente: NUNCA declara binário quebrado" "$STDERR_KNOWN_PATH" "ERRO: binário Claude Code quebrado"
+assert_eq "PATH ausente: reparo NUNCA acionado (marker ausente)" "false" "$([ -f "$WORKDIR/repair-called-unnecessarily-7554" ] && echo true || echo false)"
+
+# ── Caminho 12: mesmo cenário, mas NENHUM caminho conhecido resolve —
+# continua indo pro fluxo de reparo normal (comportamento pré-#7554
+# preservado quando o fallback não acha nada).
+
+set +e
+STDERR_NO_KNOWN_PATH="$(
+  (
+    CLAUDE_BINARY_PREFLIGHT_CMD="claude-7554-nao-existe-no-path-de-teste"
+    CLAUDE_BINARY_PREFLIGHT_REPAIR_CMD="true"
+    CLAUDE_BINARY_PREFLIGHT_KNOWN_PATHS="$WORKDIR/claude-tambem-nao-existe"
+    CLAUDE_BINARY_PREFLIGHT_STUB_SIZE=0
+    claude_binary_preflight
+  ) 2>&1 1>/dev/null
+)"
+RC_NO_KNOWN_PATH=$?
+set -e
+assert_eq "PATH ausente e sem caminho conhecido: cai no fluxo de reparo normal (exit 5)" "5" "$RC_NO_KNOWN_PATH"
+assert_contains "PATH ausente e sem caminho conhecido: mensagem de binário quebrado" "$STDERR_NO_KNOWN_PATH" "ERRO: binário Claude Code quebrado"
+
+# ── Caminho 13: `command -v` ACHA `$cmd` (existe, path absoluto) e ele
+# mesmo assim falha — mesmo com um caminho conhecido saudável disponível,
+# o fallback NUNCA deve mascarar um binário genuinamente quebrado (só
+# ataca o caso "não encontrado", não "encontrado e quebrado").
+
+set +e
+STDERR_FOUND_BUT_BROKEN="$(
+  (
+    CLAUDE_BINARY_PREFLIGHT_CMD="$WORKDIR/claude-broken"
+    CLAUDE_BINARY_PREFLIGHT_REPAIR_CMD="true"
+    CLAUDE_BINARY_PREFLIGHT_KNOWN_PATHS="$WORKDIR/claude-known-path-healthy"
+    CLAUDE_BINARY_PREFLIGHT_STUB_SIZE=0
+    claude_binary_preflight
+  ) 2>&1 1>/dev/null
+)"
+RC_FOUND_BUT_BROKEN=$?
+set -e
+assert_eq "encontrado via command -v e quebrado: fallback de PATH NUNCA mascara (exit 5)" "5" "$RC_FOUND_BUT_BROKEN"
+assert_contains "encontrado e quebrado: mensagem de binário quebrado, não de PATH" "$STDERR_FOUND_BUT_BROKEN" "ERRO: binário Claude Code quebrado"
 
 # ── Derivação do install.cjs a partir do prefixo do npm (não hardcoded) ───
 # #6891: o caminho vem de `npm root -g`, config da máquina, não constante.

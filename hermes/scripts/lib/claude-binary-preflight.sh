@@ -42,6 +42,18 @@
 #       nativo de dentro do pacote `@anthropic-ai/claude-code-*` do MESMO
 #       prefixo npm, sem depender do postinstall) é a última linha.
 #
+# #7554 (06/09/2026): a checagem inicial (`"$cmd" --version`) falha por
+# dois motivos que a versão anterior deste script não distinguia — o
+# binário está quebrado, OU `$cmd` simplesmente não está no PATH da
+# sessão atual (shell não-interativo/SSH sem login shell nunca carrega
+# `~/.npm-global/bin`). Antes de tentar qualquer reparo, se `command -v`
+# também não resolver `$cmd`, tenta caminhos conhecidos de instalação
+# global (`_claude_binary_try_known_paths`) — se um deles responder
+# `--version` OK, o binário está são, só invisível pelo PATH: ajusta o
+# PATH desta sessão e segue, sem reparo nenhum. Reparo entra em cena só
+# quando `command -v` ACHA `$cmd` e ele mesmo assim falha (quebrado de
+# verdade), ou quando nenhum caminho conhecido resolve.
+#
 # Sequência: 1) `claude --version` falhou? 2) roda `node <install.cjs>`
 # (idempotente) 3) `--version` de novo E não-stub? resolvido. 4) ainda
 # quebrado/stub? reparo DIRETO (copy do binário da plataforma) 5) ainda
@@ -81,7 +93,7 @@
 #     sai: devolve 0 (binário ok) ou 1 (ainda quebrado, mas o caller
 #     decide o que fazer — no wrapper, é "próximo modelo").
 #
-# Testável isoladamente via 4 overrides (nenhum depende do `claude`/`npm`/
+# Testável isoladamente via 5 overrides (nenhum depende do `claude`/`npm`/
 # `node` reais — ver claude-binary-preflight.test.sh):
 #   CLAUDE_BINARY_PREFLIGHT_CMD          — binário verificado (default: claude)
 #   CLAUDE_BINARY_PREFLIGHT_REPAIR_CMD   — comando de reparo (default: deriva
@@ -90,6 +102,11 @@
 #                                          o prefixo global (default: npm)
 #   CLAUDE_BINARY_PREFLIGHT_STUB_SIZE    — tamanho máximo em bytes que
 #                                          conta como stub (default: 4096)
+#   CLAUDE_BINARY_PREFLIGHT_KNOWN_PATHS  — lista de caminhos (#7554,
+#                                          separados por ':') que SUBSTITUI
+#                                          os candidatos default de
+#                                          instalação global; "" desliga o
+#                                          fallback de propósito
 #
 # #7468: quando `CLAUDE_BINARY_PREFLIGHT_REPAIR_CMD` é passado explicitamente
 # (sempre o caso em teste, pra nunca depender de npm/node reais), o reparo
@@ -108,6 +125,52 @@ _claude_binary_resolve_path() {
     */*) printf '%s' "$cmd" ;;
     *) command -v "$cmd" 2>/dev/null ;;
   esac
+}
+
+# Candidatos conhecidos de instalação global do Claude Code, tentados
+# quando `$cmd` não resolve via `command -v` (#7554) — típico de shell
+# NÃO-interativo (SSH sem login shell), onde `~/.npm-global/bin` nunca
+# entra no PATH da sessão mesmo com o binário instalado e íntegro no
+# disco. Achar um candidato aqui não é reparo: é resolver um binário que
+# já está bom, só invisível pelo PATH atual.
+#
+# CLAUDE_BINARY_PREFLIGHT_KNOWN_PATHS (teste/operador): lista separada por
+# ':' que SUBSTITUI os candidatos default (inclusive lista VAZIA = nenhum
+# candidato, desliga o fallback de propósito) — setada, nunca deriva de
+# $HOME/npm reais; mesmo padrão dos demais overrides deste arquivo.
+_claude_binary_known_paths() {
+  local npm_cmd="$1"
+  if [ -n "${CLAUDE_BINARY_PREFLIGHT_KNOWN_PATHS+x}" ]; then
+    local IFS=':'
+    # shellcheck disable=SC2086
+    printf '%s\n' $CLAUDE_BINARY_PREFLIGHT_KNOWN_PATHS
+    return 0
+  fi
+
+  local npm_root
+  npm_root="$("$npm_cmd" root -g 2>/dev/null)" || npm_root=""
+
+  [ -n "${HOME:-}" ] && printf '%s\n' "${HOME}/.npm-global/bin/claude"
+  # Apesar da extensão `.exe`, o Claude Code distribui o binário ELF/nativo
+  # com esse nome dentro do pacote de plataforma (achado da issue #7554).
+  [ -n "$npm_root" ] && printf '%s\n' "${npm_root}/@anthropic-ai/claude-code/bin/claude.exe"
+}
+
+# Devolve (via stdout) o primeiro candidato de `_claude_binary_known_paths`
+# que existe, é executável, E responde `--version` OK. Vazio/retorno 1 se
+# nenhum resolver. Nunca tenta reparar nada — só localizar um binário são
+# fora do PATH atual.
+_claude_binary_try_known_paths() {
+  local npm_cmd="$1"
+  local candidate
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    if [ -x "$candidate" ] && "$candidate" --version >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done <<< "$(_claude_binary_known_paths "$npm_cmd")"
+  return 1
 }
 
 # Verdadeiro se o arquivo resolvido de `$1` existir e tiver <= `$2` bytes
@@ -170,6 +233,23 @@ _claude_binary_check_and_repair() {
 
   if "$cmd" --version >/dev/null 2>&1; then
     return 0
+  fi
+
+  # #7554: "$cmd" pode falhar por dois motivos bem diferentes — o binário
+  # está quebrado, OU simplesmente não está no PATH desta sessão (shell
+  # não-interativo/SSH sem login shell — o caso real do achado). Só
+  # quando `command -v` TAMBÉM não resolve `$cmd` é que vale tentar
+  # caminhos conhecidos de instalação global ANTES de declarar quebrado —
+  # se `command -v` acha o binário e ele mesmo assim falha, é quebrado de
+  # verdade, e este fallback não deve mascarar isso.
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    local npm_cmd_probe="${CLAUDE_BINARY_PREFLIGHT_NPM_CMD:-npm}"
+    local known_path
+    if known_path="$(_claude_binary_try_known_paths "$npm_cmd_probe")" && [ -n "$known_path" ]; then
+      export PATH="$(dirname "$known_path"):$PATH"
+      echo "AVISO: '$cmd' não estava no PATH desta sessão (comum em shell não-interativo/SSH) — binário íntegro encontrado em $known_path (#7554); PATH ajustado para esta sessão. Não é binário quebrado — se isto persistir, exporte PATH permanentemente." >&2
+      return 0
+    fi
   fi
 
   local install_cjs="" repair_attempted=0 npm_root="" used_override=0
