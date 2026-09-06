@@ -716,7 +716,10 @@ a{color:#0a5}
  * call site (`renderSuccessPage`/`handleConfirm`).
  */
 function renderKitRecommendationsBlock(embedUrl: string): string {
-  return `<div style="margin-top:32px"><iframe src="${embedUrl}" width="100%" height="480" style="border:none" title="Outras newsletters recomendadas"></iframe></div>`;
+  // Escapa o atributo mesmo o valor vindo de secret (não de request): um
+  // typo com `"`/`<` no `wrangler secret put` quebraria o HTML em silêncio.
+  const src = embedUrl.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  return `<div style="margin-top:32px"><iframe src="${src}" width="100%" height="480" style="border:none" title="Outras newsletters recomendadas"></iframe></div>`;
 }
 
 export function renderSuccessPage(embedUrl?: string): string {
