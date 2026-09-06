@@ -1427,4 +1427,54 @@ describe("pipeWorkerStream (#7448) — erro de escrita no DESTINO do pipe é log
     const destination = new PassThrough();
     assert.doesNotThrow(() => pipeWorkerStream(null, destination, "stdout", "worker-4"));
   });
+
+  // REGRESSÃO (#7430): causa raiz do flake "pass N, fail 0, exit 1" —
+  // `.pipe()` do Node chama `destination.end()` por padrão quando a ORIGEM
+  // termina. Como `destination` aqui é sempre `process.stdout`/`process.stderr`
+  // (singleton do processo, compartilhado por todos os workers concorrentes
+  // + pelo próprio `node:test` reportando este arquivo), um worker terminar
+  // não pode jamais fechar esse stream — senão qualquer escrita POSTERIOR de
+  // outro worker (ou do próprio reporter) derruba o processo com exit
+  // não-zero mesmo com todas as asserções passando. Ver docstring de
+  // `pipeWorkerStream` pro mecanismo completo.
+  it("REGRESSÃO (#7430): source terminar NÃO fecha o destino compartilhado — destino continua escrevível", () => {
+    const source = new PassThrough();
+    const destination = new PassThrough();
+    // Consome os dados do destino pra ele não travar em backpressure (o
+    // teste quer só checar writableEnded/writes subsequentes, não os bytes).
+    destination.on("data", () => {});
+    pipeWorkerStream(source, destination, "stdout", "worker-1");
+
+    source.write("dados do worker 1\n");
+    source.end();
+
+    assert.equal(destination.writableEnded, false, "worker 1 terminar não pode encerrar o stream compartilhado");
+    assert.doesNotThrow(
+      () => destination.write("dados do worker 2 (ainda vivo)\n"),
+      "escrita de outro worker/do próprio node:test depois do fim do 1º worker precisa continuar funcionando",
+    );
+  });
+
+  it("REGRESSÃO (#7430): 2 workers no MESMO destino — o 1º terminar não corta a escrita do 2º", () => {
+    const sourceA = new PassThrough();
+    const sourceB = new PassThrough();
+    const destinationCompartilhado = new PassThrough();
+    const recebido: string[] = [];
+    destinationCompartilhado.on("data", (chunk) => recebido.push(String(chunk)));
+
+    pipeWorkerStream(sourceA, destinationCompartilhado, "stdout", "worker-A");
+    pipeWorkerStream(sourceB, destinationCompartilhado, "stdout", "worker-B");
+
+    sourceA.write("A termina primeiro\n");
+    sourceA.end();
+    assert.equal(destinationCompartilhado.writableEnded, false, "worker A terminar não pode fechar o destino compartilhado");
+
+    sourceB.write("B ainda escreve depois\n");
+    sourceB.end();
+
+    assert.ok(
+      recebido.join("").includes("B ainda escreve depois"),
+      "dado do worker B (que terminou DEPOIS de A) tem de chegar ao destino inteiro",
+    );
+  });
 });
