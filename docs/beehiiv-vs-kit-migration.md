@@ -136,6 +136,13 @@ Fase 0 — Preparação (conta Kit, import subscribers CSV, custom domain, templ
 | Poll Trivia → Tally introduz fricção UX | Média | Wireframe/mock antes de switch |
 | Custos Kit > Beehiiv | Baixa-média | Cotizar plan tier conforme list size |
 
+### 6. Kit Creator Network (#6674)
+
+Documentado em `docs/kit-creator-network.md` (doc dedicado, designado desde 28/08/2026 como
+"o registro vivo do canal" — não duplicar aqui). Estado resumido: opt-in ativo desde 01/09/2026,
+incoming gerando assinante real, outgoing com gap conhecido nos 3 workers de cadastro via API
+(#7524).
+
 ### Refs
 
 - #84 (scoping original — fechada) · **#461 (guarda-chuva, ABERTA — é o plano vivo)**

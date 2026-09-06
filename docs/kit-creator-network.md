@@ -314,6 +314,36 @@ nos dois lados** — esperado, o perfil nasceu no dia. Recomendação da rede **
 
 ---
 
+## Atualização 06/09/2026 (sessão `/diaria-develop` 260906) — correção de fato + números novos
+
+**Correção da negativa registrada em 02/09: `source_type` TEM, sim, um valor ligado à rede.**
+O item (1) acima ("RESPONDIDO") afirmava como fato verificado que `source_type` é um enum
+fechado sem valor de Creator Network. Isso está **errado** — medido ao vivo hoje via
+`mcp__kit__filter_subscribers` (`include: [{type: "attribution"}]`, sem filtro de form):
+um assinante ativo (`lcastromelo@gmail.com`, cadastrado 05/09) trouxe
+`attribution.source_type: "creator_network_referral"`, `source_mechanism:
+"smart_recommendation"`, `source_name: "Amanda Moita"` (nome de quem recomendou). **Não sei
+dizer se a Kit adicionou esse valor entre 02/09 e 06/09, ou se ele sempre existiu e a consulta
+de 02/09 não pegou por não ter caído numa amostra com esse tipo de atribuição** — o método de
+02/09 (checar a doc pública + tentar `kit_source.mechanism` arbitrário) não é o mesmo de hoje
+(ler `attribution` de uma amostra ampla de assinantes recentes). Não reabrir a pergunta "existe
+o campo" sem essa ressalva — a resposta certa hoje é "existe, visto ao vivo", e a de 02/09 fica
+como histórico de uma busca que não achou, não como fato.
+
+**Consequência prática:** a query recomendada de agora em diante pra medir Incoming é filtrar
+por `attribution.source_type === "creator_network_referral"` direto (não mais só pelo form id
+9870650) — mais direta e não depende de o assinante ter passado pelo form nativo específico.
+
+**Números atualizados** (painel `app.kit.com/creator-network`, Incoming): **73 views, 6
+assinantes, 8,22% conversão** — o baseline de 01-02/09 era zero nos dois lados; o canal saiu do
+zero em 4-5 dias sem nenhuma ação adicional nossa.
+
+**Issue #6674 fechada** nesta sessão — passos 1/3/4 confirmados concluídos, item 4 corrigido
+acima. Passo 2 (recomendações outgoing pro leitor recém-inscrito) segue com o mesmo gap já
+registrado nas Pendências abaixo (form nativo só cobre `/subscribe` do site; os 3 workers de
+API não) — desdobrado em #7524, escopo restrito a esses 3 workers (não ao funil inteiro, que já
+tem cobertura parcial via `/subscribe`).
+
 ## Pendências
 
 - [x] ~~Responder (1) acima: a API/MCP `kit` expõe origem `creator_network` por assinante?~~
