@@ -42,6 +42,11 @@ import {
   resolveGroupKey,
   type EngagementSubscriber,
 } from "./cohort-engagement.ts";
+import { listAllKitSubscribers, type KitSubscriberSummary } from "./lib/kit-subscribers.ts";
+import {
+  resolveNewsletterSubscriberBackend,
+  type NewsletterSubscriberBackend,
+} from "./lib/shared/newsletter-subscriber-source.ts";
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -108,6 +113,71 @@ export function aggregateBaseline(subs: EngagementSubscriber[], fromIso: string,
     per_day,
     method: "beehiv-api expand[]=stats+utm_params, coorte real por assinante (decisão editor 21/08/2026, #5734)",
   };
+}
+
+// ---------------------------------------------------------------------------
+// Kit backend (#7561) — cadastro migrou pra Kit em 04/09/2026 (#7388), Beehiiv
+// zerada. Espelha `fetchByBackend`/`fetchAndAggregateKit` de
+// count-subscriptions-by-utm.ts: fonte primária é o custom field
+// `fields.utm_source`, `attribution.utm_source` só como fallback nativo
+// (#7359 — `attribution` vem sempre presente mas com UTM nulo pra quem se
+// cadastrou via POST /v4/subscribers, que é a maioria real do cadastro).
+// ---------------------------------------------------------------------------
+
+/**
+ * Projeta um `KitSubscriberSummary` no mesmo shape de `EngagementSubscriber`
+ * que `aggregateBaseline` já consome — permite reusar `aggregateBaseline`/
+ * `resolveGroupKey` sem nenhuma mudança nesses dois, backend-agnósticos.
+ *
+ * `created_at` do Kit é ISO string; `EngagementSubscriber.created` é epoch
+ * em segundos (mesma unidade que a Beehiiv usa) — convertido aqui.
+ * `referring_site` recebe `attribution.referrer` como fallback de
+ * agrupamento quando não há `utm_source` (mesmo papel que cumpre pro lado
+ * Beehiiv em `resolveGroupKey`).
+ *
+ * @pure
+ */
+export function kitSubscriberToEngagementSubscriber(s: KitSubscriberSummary): EngagementSubscriber {
+  const createdMs = Date.parse(s.created_at);
+  return {
+    id: String(s.id),
+    status: s.state ?? null,
+    created: Number.isFinite(createdMs) ? Math.floor(createdMs / 1000) : null,
+    utm_source: s.fields?.utm_source ?? s.attribution?.utm_source ?? null,
+    referring_site: s.attribution?.referrer ?? null,
+  };
+}
+
+/**
+ * Drena todos os subscribers do Kit (`status: "all"` — cadastro pendente de
+ * double opt-in ainda conta pra coorte de aquisição) e projeta pro shape de
+ * `EngagementSubscriber`.
+ */
+async function fetchAllKitAsEngagementSubscribers(): Promise<EngagementSubscriber[]> {
+  const subs = await listAllKitSubscribers(undefined, { status: "all", includeAttribution: true });
+  return subs.map(kitSubscriberToEngagementSubscriber);
+}
+
+/**
+ * Dispatch por `publishing.newsletter.subscriber_backend` (mesmo mecanismo
+ * de `fetchByBackend` em `count-subscriptions-by-utm.ts`, #7561) — fetchers
+ * injetáveis pra ser testável sem rede.
+ */
+export function fetchSubscribersByBackend(
+  backend: NewsletterSubscriberBackend,
+  fetchers: {
+    fetchBeehiiv?: () => Promise<EngagementSubscriber[]>;
+    fetchKit?: () => Promise<EngagementSubscriber[]>;
+  } = {},
+): Promise<EngagementSubscriber[]> {
+  if (backend === "kit") return (fetchers.fetchKit ?? fetchAllKitAsEngagementSubscribers)();
+  const fetchBeehiiv =
+    fetchers.fetchBeehiiv ??
+    (() => {
+      const cfg = loadBeehiivConfig();
+      return fetchAllSubscribers(cfg.publicationId, cfg.apiKey);
+    });
+  return fetchBeehiiv();
 }
 
 export interface PanelInput {
@@ -188,10 +258,17 @@ async function main(argv: string[]): Promise<number> {
       console.error("baseline exige --from AAAA-MM-DD --to AAAA-MM-DD");
       return 1;
     }
-    const cfg = loadBeehiivConfig();
-    process.stderr.write("[aquisicao-reconcile] drenando subscriptions (expand[]=stats&expand[]=utm_params)...\n");
-    const subs = await fetchAllSubscribers(cfg.publicationId, cfg.apiKey);
+    const backend = resolveNewsletterSubscriberBackend();
+    process.stderr.write(
+      backend === "kit"
+        ? "[aquisicao-reconcile] backend=kit — drenando /v4/subscribers (fields.utm_source primário, #7561)...\n"
+        : "[aquisicao-reconcile] backend=beehiiv — drenando subscriptions (expand[]=stats&expand[]=utm_params)...\n",
+    );
+    const subs = await fetchSubscribersByBackend(backend);
     const baseline = aggregateBaseline(subs, from, to);
+    if (backend === "kit") {
+      baseline.method = "kit-api /v4/subscribers, fields.utm_source primário + attribution fallback (#7561)";
+    }
     const outPath = resolve(
       typeof args.out === "string" && args.out
         ? args.out
