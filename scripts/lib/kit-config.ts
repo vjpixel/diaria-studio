@@ -2,12 +2,18 @@
  * kit-config.ts (#463 — migração Beehiiv → Kit, #461)
  *
  * Espelho de `beehiiv-config.ts`: centraliza resolução de credencial +
- * base URL da API do Kit via `resolveKitConfig` (pura/injetável). O par
- * Beehiiv também tem `loadBeehiivConfig` — casca fina de CLI que sai do
- * processo — mas nenhum dos 6 consumidores que este módulo vai alimentar
- * (#463) foi migrado ainda nesta PR, então essa casca ficaria sem chamador
- * real (knip a flagou como dead code). Adicionar `loadKitConfig` de volta
- * quando o 1º script CLI (ex: publish de #464) precisar dela.
+ * base URL da API do Kit via `resolveKitConfig` (pura/injetável).
+ * `loadKitConfig` (#7570) é a casca fina de CLI que sai do processo —
+ * adicionada de volta quando `kit-sync.ts` se tornou o 1º consumidor real
+ * (a nota original dizia "adicionar quando o 1º script CLI precisar dela").
+ * Correção sobre uma nota anterior deste docstring (achado do review do
+ * PR #7573, comment-analyzer): `publish-newsletter-kit.ts`/#464 nunca
+ * chegou a usar este módulo — ele chama `kit-broadcasts.ts` sem passar
+ * nenhum `config`, e a resolução cai no fallback fail-fast de dentro de
+ * `kit-client.ts` (lança `Error` quando `resolveKitConfig()` falha, não
+ * `process.exit`). A lacuna persistiu porque nenhum caminho ali precisava
+ * derrubar o processo com um código de saída específico — não porque
+ * alguém tenha optado por passar `KitConfig` explícito em algum lugar.
  *
  * Diferença deliberada do par Beehiiv: o Kit não tem um "publicationId"
  * separado da API key — uma key já resolve pra UMA conta (confirmado ao vivo
@@ -53,4 +59,21 @@ export function resolveKitConfig(
     };
   }
   return { ok: true, config: { apiKey } };
+}
+
+/**
+ * Casca de CLI sobre `resolveKitConfig` — escreve em stderr e chama
+ * `process.exit(2)` se `KIT_API_KEY` estiver ausente, em vez de deixar o
+ * consumidor lançar (mesmo contrato de `loadBeehiivConfig`). Scripts
+ * long-running (Studio) devem seguir usando `resolveKitConfig` direto —
+ * esta casca é só para entry-points de CLI onde derrubar o processo é o
+ * comportamento certo.
+ */
+export function loadKitConfig(callerTag = "[kit-config]"): KitConfig {
+  const result = resolveKitConfig();
+  if (!result.ok) {
+    process.stderr.write(`${callerTag} ${result.reason}\n`);
+    process.exit(2);
+  }
+  return result.config;
 }
