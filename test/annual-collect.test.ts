@@ -135,7 +135,9 @@ describe("agrupamento por mês da janela", () => {
 });
 
 describe("top-K por mês", () => {
-  const d = (month: string, edition: string, position: number, score: number | null): AnnualDestaque => ({
+  // `score` é `number | undefined` (não `| null`): as duas formas
+  // significariam "ainda não pontuado" e o tipo passou a ter só uma.
+  const d = (month: string, edition: string, position: number, score?: number): AnnualDestaque => ({
     edition,
     month,
     position,
@@ -171,7 +173,7 @@ describe("top-K por mês", () => {
   });
 
   it("destaque sem score fica atrás, mas não some quando há espaço", () => {
-    const list = [d("2601", "260110", 1, null), d("2601", "260111", 1, 80)];
+    const list = [d("2601", "260110", 1), d("2601", "260111", 1, 80)];
     const out = topKPerMonth(list, 2);
     assert.deepEqual(out.map((x) => x.edition), ["260111", "260110"]);
     assert.equal(unscoredCount(list), 1);
