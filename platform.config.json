@@ -23,6 +23,11 @@
     "affiliate_url_note": "#6195 (26/08/2026) — link de afiliado do Kit (PartnerStack). VAZIO = o crédito do rodapé nas edições Kit sai NEUTRO (\"enviei por e-mail\"), sem link. Preencher quando o editor se cadastrar em partnerstack.com: 50% recorrente nos 12 primeiros meses, cookie 90 dias, paga no Brasil via PayPal/Stripe/AirWallex (verificado 26/08). Preencher aqui basta — não exige mudança de código.",
     "affiliate_offer_text": "ganhe 50% de desconto"
   },
+  "annual": {
+    "top_k_per_month": 10,
+    "top_k_note": "#7569 — quantos destaques de CADA mês seguem para o analyst-anual. O corte é por mês, nunca global: a janela mistura meses com 3 edições (o de estreia) e meses com 24, e um corte global apagaria o começo da história. Subir isto encarece o prompt do analista linearmente no número de meses.",
+    "channel_note": "#7569 — a anual vai para a BASE PRÓPRIA, pelo backend em publishing.newsletter.backend (hoje \"kit\"). Não tem conta/lista própria: reusa a mesma base da diária, como envio EXTRA (a edição diária do dia sai normal). Etapa 5 cria só o RASCUNHO; o disparo é sempre ação humana."
+  },
   "newsletter_monthly": "brevo",
   "brevo_monthly": {
     "api_key_env": "BREVO_CLARICE_API_KEY",

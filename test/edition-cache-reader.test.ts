@@ -20,6 +20,7 @@ import {
   loadBeehiivCache,
   loadKitCache,
   loadUnifiedEditionCache,
+  editorialDate,
   KIT_STATUS_TO_BEEHIIV_STATUS,
   DEFAULT_BEEHIIV_POSTS_DIR,
   type UnifiedCachedPost,
@@ -40,7 +41,24 @@ describe("normalizeBeehiivPost", () => {
       content: { free: { web: "<p>corpo</p>" } },
     };
     const got = normalizeBeehiivPost(raw);
-    assert.deepEqual(got, { origin: "beehiiv", ...raw, stats: undefined });
+    // `displayed_date` entrou no shape em #7569 (passthrough, ausente aqui).
+    assert.deepEqual(got, { origin: "beehiiv", ...raw, displayed_date: undefined, stats: undefined });
+  });
+
+  it("passa `displayed_date` adiante (#7569) — data editorial das edições importadas", () => {
+    const got = normalizeBeehiivPost({
+      slug: "post-x",
+      publish_date: 1_756_944_000, // 04/09/2025, o dia da importação em bloco
+      displayed_date: 1_756_252_800, // 27/08/2025, a data editorial real
+    });
+    assert.equal(got.displayed_date, 1_756_252_800);
+  });
+
+  it("editorialDate prefere displayed_date; sem ele, cai em publish_date (#7569)", () => {
+    assert.equal(editorialDate({ displayed_date: 10, publish_date: 20 }), 10);
+    assert.equal(editorialDate({ publish_date: 20 }), 20);
+    assert.equal(editorialDate({ displayed_date: null, publish_date: 20 }), 20);
+    assert.equal(editorialDate({}), undefined, "rascunho sem data nenhuma nunca vira uma data inventada");
   });
 
   it("passa `stats.clicks` adiante sem transformação (#6185) — Beehiiv já escreve no vocabulário certo", () => {

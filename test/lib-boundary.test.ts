@@ -35,7 +35,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LIB = join(ROOT, "scripts", "lib");
 
-const DOMAINS = ["shared", "diaria", "mensal", "metrics"] as const;
+const DOMAINS = ["shared", "diaria", "mensal", "metrics", "anual"] as const;
 type Domain = (typeof DOMAINS)[number];
 
 /** Lista .ts recursivamente sob um diretório (retorna [] se não existe). */
@@ -81,8 +81,8 @@ function violations(fromDomain: Domain, forbidden: Domain[]): string[] {
 }
 
 describe("fronteira scripts/lib shared/diaria/mensal (#2747)", () => {
-  it("shared/ não importa de diaria/ nem mensal/", () => {
-    const v = violations("shared", ["diaria", "mensal"]);
+  it("shared/ não importa de diaria/, mensal/ nem anual/", () => {
+    const v = violations("shared", ["diaria", "mensal", "anual"]);
     assert.deepEqual(v, [], `shared/ importando domínio específico:\n  ${v.join("\n  ")}`);
   });
 
@@ -102,6 +102,15 @@ describe("fronteira scripts/lib shared/diaria/mensal (#2747)", () => {
     // diaria/mensal.
     const v = violations("metrics", ["diaria", "mensal"]);
     assert.deepEqual(v, [], `metrics/ importando domínio específico (passe por shared/):\n  ${v.join("\n  ")}`);
+  });
+
+  it("anual/ não importa de diaria/ nem mensal/ (#7569)", () => {
+    // scripts/lib/anual/ é domínio novo desde #7569 (edição anual). Mesma
+    // regra de metrics/: a anual reusa a mensal SÓ via shared/ — o que ela
+    // precisar de lá (conversão de HTML publicado pra pseudo-markdown, por
+    // exemplo) migra pra shared/ com `git mv`, não vira import cruzado.
+    const v = violations("anual", ["diaria", "mensal"]);
+    assert.deepEqual(v, [], `anual/ importando domínio específico (passe por shared/):\n  ${v.join("\n  ")}`);
   });
 
   it("sanity: a estrutura existe e o scan enxerga os módulos movidos", () => {
