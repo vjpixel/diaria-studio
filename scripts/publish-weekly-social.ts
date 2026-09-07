@@ -968,6 +968,17 @@ async function runOneMode(
   // nunca lança. Sem validação de "cabe garantido": é override manual,
   // quem passa decide o risco. Ver issue #7571 pro fix definitivo (piso
   // fixo automático + guard de rejeição, mesmo padrão do carrossel diário).
+  // Mesmo guard de `--force-urls` acima (#5905 fleet review ALTO):
+  // `parseArgs` põe uma flag sem valor (ou seguida de outra `--flag`) em
+  // `flags`, não em `values` — sem isto, `--force-font-size` sozinho
+  // silenciosamente caía no cálculo automático, sem erro nenhum (achado do
+  // review do PR #7573, confirmado por 3 agentes independentes).
+  if (flags.has("force-font-size")) {
+    console.error(
+      `ERRO: --force-font-size foi passado sem valor (ex: "--force-font-size 72"). Omita a flag pra não usá-la.`,
+    );
+    return false;
+  }
   const forceFontSizeArg = values["force-font-size"];
   let carouselFontSize: number;
   if (forceFontSizeArg != null) {

@@ -5,10 +5,15 @@
  * base URL da API do Kit via `resolveKitConfig` (pura/injetável).
  * `loadKitConfig` (#7570) é a casca fina de CLI que sai do processo —
  * adicionada de volta quando `kit-sync.ts` se tornou o 1º consumidor real
- * (a nota original dizia "adicionar quando o 1º script CLI precisar dela";
- * `publish-newsletter-kit.ts`/#464 seguiu passando `KitConfig` explícito em
- * vez de chamar uma casca que sai do processo, então a lacuna persistiu até
- * agora).
+ * (a nota original dizia "adicionar quando o 1º script CLI precisar dela").
+ * Correção sobre uma nota anterior deste docstring (achado do review do
+ * PR #7573, comment-analyzer): `publish-newsletter-kit.ts`/#464 nunca
+ * chegou a usar este módulo — ele chama `kit-broadcasts.ts` sem passar
+ * nenhum `config`, e a resolução cai no fallback fail-fast de dentro de
+ * `kit-client.ts` (lança `Error` quando `resolveKitConfig()` falha, não
+ * `process.exit`). A lacuna persistiu porque nenhum caminho ali precisava
+ * derrubar o processo com um código de saída específico — não porque
+ * alguém tenha optado por passar `KitConfig` explícito em algum lugar.
  *
  * Diferença deliberada do par Beehiiv: o Kit não tem um "publicationId"
  * separado da API key — uma key já resolve pra UMA conta (confirmado ao vivo

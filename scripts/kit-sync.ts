@@ -55,9 +55,17 @@
  *   KIT_API_URL    opcional — override para tests
  *
  * Output (stdout): JSON `{ mode, broadcasts_fetched, broadcasts_skipped,
- *   broadcasts_total, dry_run }`. Stderr: progresso humano.
+ *   broadcasts_failed, broadcasts_total, dry_run }`. `broadcasts_failed`
+ *   (#7573 review) é distinto de `broadcasts_skipped` — skipped é "já
+ *   estava atualizado, não precisava buscar"; failed é "tentou buscar e o
+ *   fetch lançou" — sem essa distinção, o processo saía com exit 0 mesmo
+ *   quando TODO fetch falhava (ex: credencial revogada), indistinguível de
+ *   "nada precisava atualizar" pra quem só olha o exit code. Stderr:
+ *   progresso humano.
  *
- * Exit codes: 0=sucesso, 1=erro API/IO, 2=config inválida (KIT_API_KEY ausente).
+ * Exit codes: 0=sucesso (mesmo com `broadcasts_failed > 0` — falha
+ *   por-broadcast é fail-soft, ver caller em stage-0-run.ts), 1=erro API/IO
+ *   fatal fora do loop por-broadcast, 2=config inválida (KIT_API_KEY ausente).
  */
 
 import "dotenv/config";
@@ -93,13 +101,7 @@ function ensureDirs(): void {
   mkdirSync(BROADCASTS_DIR, { recursive: true });
 }
 
-interface BroadcastIndexEntry {
-  id: number;
-  subject: string;
-  status: KitBroadcastSummary["status"];
-  published_at: string | null;
-  send_at: string | null;
-}
+type BroadcastIndexEntry = Pick<KitBroadcastSummary, "id" | "subject" | "status" | "published_at" | "send_at">;
 
 function loadIndex(): BroadcastIndexEntry[] {
   if (!existsSync(BROADCASTS_INDEX)) return [];
@@ -154,6 +156,18 @@ export interface KitSyncResult {
   mode: "bootstrap" | "incremental" | "full";
   broadcasts_fetched: number;
   broadcasts_skipped: number;
+  /**
+   * Broadcasts cujo fetch (detail/clicks/stats) lançou e foi capturado pelo
+   * catch — achado do review do PR #7573 (silent-failure-hunter, confiança
+   * alta): antes disto, uma falha entrava no MESMO contador que "já estava
+   * atualizado" (`broadcasts_skipped`), indistinguível de sucesso no JSON de
+   * saída. Separado pra `stage-0-run.ts` poder avisar mesmo quando o
+   * processo sai com código 0 (ver `needsKitUpdate`/loop de fetch abaixo —
+   * um broadcast NOVO cujo fetch falhar NUNCA entra no índice persistido,
+   * pra ser re-tentado no próximo run em vez de ficar "esquecido" depois que
+   * a janela de refresh expirar).
+   */
+  broadcasts_failed: number;
   broadcasts_total: number;
   dry_run: boolean;
 }
@@ -177,8 +191,25 @@ export async function syncKit(opts: KitSyncOpts): Promise<KitSyncResult> {
   process.stderr.write(`[kit-sync] mode=${mode}\n`);
 
   const newIndex: BroadcastIndexEntry[] = [];
+  /**
+   * IDs cujo fetch lançou nesta rodada — achado do review do PR #7573
+   * (P1, confiança alta): sem isto, `newIndex.push(indexEntry)` acontecia
+   * incondicionalmente ANTES da tentativa de fetch, marcando um broadcast
+   * NOVO como "já no cache" mesmo quando `data/kit-cache/broadcasts/{id}.json`
+   * nunca chegou a ser escrito — na próxima rodada, `needsKitUpdate` via
+   * `cachedIds.has(id) === true` deixava de tentar de novo assim que a
+   * janela de refresh expirasse, perdendo o broadcast pra sempre e em
+   * silêncio. Ao final do loop, `newIndex` é filtrado pra excluir todo id
+   * em `failedIds` que NÃO tinha entrada prévia em `cachedIndex` — assim ele
+   * fica "ausente do cache" e é re-tentado incondicionalmente no próximo
+   * run. Um broadcast que JÁ tinha um JSON válido de um sync anterior e
+   * falhou só o REFRESH desta rodada mantém a entrada antiga (o arquivo em
+   * disco não foi tocado, então não há nada a "perder").
+   */
+  const failedIds = new Set<number>();
   let fetched = 0;
   let skipped = 0;
+  let failed = 0;
   let after: string | undefined;
   let pageNum = 0;
 
@@ -214,7 +245,20 @@ export async function syncKit(opts: KitSyncOpts): Promise<KitSyncResult> {
       try {
         const detail = await getBroadcast(s.id, config);
         await sleep(RATE_LIMIT_DELAY_MS);
-        const { clicks } = await getBroadcastClicks(s.id, { perPage: 100, config });
+        // Pagina até o fim — achado do review (P3, confiança alta): sem
+        // isto, um broadcast com mais de 100 links clicados tinha os
+        // excedentes descartados em silêncio, contaminando CTR/audience
+        // rio abaixo sem nenhum aviso.
+        const clicks: Awaited<ReturnType<typeof getBroadcastClicks>>["clicks"] = [];
+        let clicksAfter: string | undefined;
+        while (true) {
+          const page = await getBroadcastClicks(s.id, { perPage: 100, after: clicksAfter, config });
+          clicks.push(...page.clicks);
+          if (!page.pagination.has_next_page) break;
+          clicksAfter = page.pagination.end_cursor ?? undefined;
+          if (!clicksAfter) break;
+          await sleep(RATE_LIMIT_DELAY_MS);
+        }
         await sleep(RATE_LIMIT_DELAY_MS);
         const stats = await getBroadcastStats(s.id, config);
 
@@ -244,7 +288,8 @@ export async function syncKit(opts: KitSyncOpts): Promise<KitSyncResult> {
         process.stderr.write(`  ↓ ${s.id} — ${s.subject.slice(0, 60)}\n`);
       } catch (e) {
         process.stderr.write(`  ! fetch failed for ${s.id}: ${e instanceof Error ? e.message : e}\n`);
-        skipped++;
+        failed++;
+        failedIds.add(s.id);
       }
     }
 
@@ -253,8 +298,16 @@ export async function syncKit(opts: KitSyncOpts): Promise<KitSyncResult> {
     // confirmado ao vivo contra `listBroadcasts`/`list_broadcasts`).
     if (!opts.full && allSkipped && pageNum > 1) {
       process.stderr.write(`[kit-sync] página ${pageNum} toda estável — parando incremental\n`);
+      // Entradas carregadas do cache anterior sem terem sido individualmente
+      // vistas nesta rodada — contam como `skipped` (achado do review, P3:
+      // sem isto, `broadcasts_total` podia ficar maior que
+      // `fetched + skipped`, uma métrica que não fecha pra quem audita a
+      // saúde do sync a partir do JSON de stdout).
       for (const entry of cachedIndex) {
-        if (!newIndex.find((p) => p.id === entry.id)) newIndex.push(entry);
+        if (!newIndex.find((p) => p.id === entry.id)) {
+          newIndex.push(entry);
+          skipped++;
+        }
       }
       break;
     }
@@ -264,21 +317,28 @@ export async function syncKit(opts: KitSyncOpts): Promise<KitSyncResult> {
     if (!after) break;
   }
 
-  newIndex.sort((a, b) => {
+  // Ver comentário de `failedIds` acima: um broadcast NOVO (sem entrada
+  // prévia em `cachedIndex`) cujo fetch falhou é excluído do índice
+  // persistido, pra ser re-tentado incondicionalmente no próximo run em vez
+  // de ser silenciosamente esquecido assim que a janela de refresh expirar.
+  const finalIndex = newIndex.filter((entry) => !failedIds.has(entry.id) || cachedIds.has(entry.id));
+
+  finalIndex.sort((a, b) => {
     const da = a.published_at ?? a.send_at;
     const db = b.published_at ?? b.send_at;
     return (db ? Date.parse(db) : 0) - (da ? Date.parse(da) : 0);
   });
 
   if (!opts.dryRun) {
-    atomicWrite(BROADCASTS_INDEX, JSON.stringify(newIndex, null, 2));
+    atomicWrite(BROADCASTS_INDEX, JSON.stringify(finalIndex, null, 2));
   }
 
   return {
     mode,
     broadcasts_fetched: fetched,
     broadcasts_skipped: skipped,
-    broadcasts_total: newIndex.length,
+    broadcasts_failed: failed,
+    broadcasts_total: finalIndex.length,
     dry_run: opts.dryRun,
   };
 }

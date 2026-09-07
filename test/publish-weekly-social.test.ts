@@ -993,6 +993,94 @@ describe("main(): dispatch mockado", () => {
     });
   });
 
+  describe("#7571: --force-font-size (override manual do tamanho de fonte do carrossel)", () => {
+    it("sem valor (fim do argv ou seguido de outra flag) — aborta com erro explícito, nunca cai de volta pro cálculo automático em silêncio", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dirA = setupEdition(editionsRoot, "271220", [{ n: 1, title: "D1 da segunda", url: "https://exemplo.com/seg" }]);
+      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+
+      let captured = "";
+      const origError = console.error;
+      console.error = (...args: any[]) => {
+        captured += args.join(" ") + "\n";
+      };
+      try {
+        await expectMockedExit(
+          // --force-font-size é o ÚLTIMO token — parseArgs não tem valor
+          // seguinte pra atribuir, então cai em `flags`, não em `values`
+          // (mesmo achado do #5905 pra --force-urls, replicado aqui pelo
+          // review do PR #7573 — 3 agentes independentes flagaram).
+          () => main(
+            ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-font-size"],
+            { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+          ),
+          1,
+        );
+      } finally {
+        console.error = origError;
+      }
+
+      assert.match(captured, /--force-font-size foi passado sem valor/);
+    });
+
+    it("valor inválido (não-inteiro, zero, negativo) — aborta com erro nomeando o valor recebido", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      setupEdition(editionsRoot, "271220", [{ n: 1, title: "D1 da segunda", url: "https://exemplo.com/seg" }]);
+
+      for (const bad of ["0", "-5", "3.5", "abc"]) {
+        let captured = "";
+        const origError = console.error;
+        console.error = (...args: any[]) => {
+          captured += args.join(" ") + "\n";
+        };
+        try {
+          await expectMockedExit(
+            () => main(
+              ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-font-size", bad],
+              { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+            ),
+            1,
+          );
+        } finally {
+          console.error = origError;
+        }
+        assert.match(captured, /--force-font-size inválido/, `valor '${bad}' deveria ser rejeitado`);
+      }
+    });
+
+    it("valor válido substitui computeCarouselTitleFontSize — URLs dos cards de notícia embutem o tamanho forçado, não o calculado", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dirA = setupEdition(editionsRoot, "271220", [{ n: 1, title: "D1 da segunda", url: "https://exemplo.com/seg" }]);
+      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+
+      let capturedBody: any = null;
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          capturedBody = JSON.parse(opts.body as string);
+          return {
+            statusCode: 200,
+            data: JSON.stringify({ queued: true, key: "queue:instagram:forced-font:1", scheduled_at: "2027-12-25T11:00:00-03:00", destaque: "weekly-highlights" }),
+          };
+        });
+
+      await main(
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-font-size", "99"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      // 99 é um valor que computeCarouselTitleFontSize nunca produziria pro
+      // título curto deste fixture (ficaria em TITLE_SIZE_MAX de verdade) —
+      // se o override não tivesse efeito, a asserção abaixo falharia contra
+      // o tamanho calculado de verdade, não contra 99.
+      assert.match(capturedBody.image_urls[1], /\/news\/img-unknown-weekly-271225-highlights-271220-d1-99-4x5\.jpg$/);
+    });
+  });
+
   describe("#5330: --mode highlights (os 5 D1 da semana, sem ranking, agenda no PRÓPRIO sábado)", () => {
     it("D1 de cada edição, ordem cronológica, agendado no sábado (não domingo) — ignora dado de clique inteiramente", async () => {
       const saturday = new Date(2027, 11, 25); // sábado

@@ -791,9 +791,17 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
   // sem manifest/dispatch de agent, porque clicks/stats do Kit são REST
   // síncrono (buscados dentro do próprio script) — não há 2ª fase aqui.
   if (kitSyncRes.code === 0) {
-    const kitSyncJson = parseStepJson<{ broadcasts_fetched?: number }>(kitSyncRes.stdout);
+    const kitSyncJson = parseStepJson<{ broadcasts_fetched?: number; broadcasts_failed?: number }>(kitSyncRes.stdout);
     if ((kitSyncJson?.broadcasts_fetched ?? 0) > 0) {
       report.note(`kit-sync: ${kitSyncJson?.broadcasts_fetched} broadcast(s) atualizado(s).`);
+    }
+    // #7573 review (silent-failure-hunter, P2): exit 0 não implica sucesso
+    // por-broadcast — falha isolada (credencial revogada, 5xx persistente)
+    // é fail-soft DENTRO do script e não muda o exit code. Sem este warn,
+    // um kit-sync que falhasse em TODOS os broadcasts saía indistinguível
+    // de "nada precisava atualizar" pra quem só olha exit code + relatório.
+    if ((kitSyncJson?.broadcasts_failed ?? 0) > 0) {
+      logEvent(deps, opts.edition, "warn", `kit-sync: ${kitSyncJson?.broadcasts_failed} broadcast(s) falharam o fetch (ver stderr) — CTR/carrossel semanal podem ficar com dado Kit incompleto`);
     }
   } else {
     logEvent(deps, opts.edition, "warn", "kit-sync falhou — CTR/carrossel semanal podem ficar com dado Kit desatualizado");
