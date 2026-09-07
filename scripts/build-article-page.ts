@@ -9,11 +9,12 @@
  * `artigo-mensal` sob a chave `article:{cycle}` — mesmo padrão de
  * `scripts/clarice-db-summary.ts` (`uploadTextToWorkerKV`).
  *
- * IMPORTANTE (#3940 — escopo desta unidade): `--push` NUNCA foi executado
- * nesta sessão. `ARTICLE_KV_NAMESPACE_ID` ainda é placeholder em
- * `workers/artigo-mensal/wrangler.toml` até o 1º
- * `wrangler kv namespace create` (próximo passo manual do editor, ver
- * `workers/artigo-mensal/README.md`).
+ * HISTÓRICO (#3940 → #7580): por dois meses `--push` nunca foi executado, e o
+ * namespace era um literal `REPLACE_ME_...` que o `wrangler.toml` já tinha
+ * substituído pelo id real — divergência que só se manifestava ao GRAVAR, num
+ * 400 do Cloudflare. Em 07/09/2026 os 5 ciclos com `draft.md` foram
+ * publicados; o namespace passou a ser lido do `wrangler.toml` (ver
+ * `articleKvNamespaceId` abaixo) e não pode mais divergir.
  *
  * Uso:
  *   npx tsx scripts/build-article-page.ts --cycle 2607-08 [--out path.html] [--push]
@@ -35,11 +36,20 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, "..");
 
 /**
- * KV namespace ID do binding `ARTICLES` em `workers/artigo-mensal/wrangler.toml`.
- * Placeholder até o editor rodar `wrangler kv namespace create ARTICLES --remote`
- * (deploy real fora do escopo desta unidade, #3940).
+ * Namespace KV do binding `ARTICLES`, lido de
+ * `workers/artigo-mensal/wrangler.toml` — a MESMA fonte que o `wrangler deploy`
+ * consome.
+ *
+ * Função, e não `const` de módulo: a leitura acontece só no caminho que grava.
+ * Como `const` ela rodava no IMPORT, acoplando qualquer uso deste arquivo
+ * (dry-run, teste que importe um helper daqui) à existência e ao formato do
+ * `wrangler.toml`, com exceção de carga de módulo antes de qualquer tratamento
+ * de erro do `main()`. Mesma disciplina do `loadProjectEnv`, que já é escopado
+ * ao push (achado do review da PR #7592).
  */
-export const ARTICLE_KV_NAMESPACE_ID = readArtigoMensalNamespaceId("ARTICLES");
+export function articleKvNamespaceId(): string {
+  return readArtigoMensalNamespaceId("ARTICLES");
+}
 
 export function articleKvKey(cycle: string): string {
   return `article:${cycle}`;
@@ -79,7 +89,7 @@ async function main(): Promise<void> {
       `[build-article-page] --push: enviando article:${cycle} (${page.html.length} bytes) pro KV ARTICLES...`,
     );
     await uploadTextToWorkerKV(page.html, articleKvKey(cycle), {
-      kvNamespaceId: ARTICLE_KV_NAMESPACE_ID,
+      kvNamespaceId: articleKvNamespaceId(),
       contentType: "text/html; charset=utf-8",
     });
     console.error(`[build-article-page] push concluído. URL pública: ${DIARIA_ARTIGO_URL}/${cycle}`);

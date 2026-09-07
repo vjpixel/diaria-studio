@@ -51,7 +51,15 @@ export function parseNamespaceId(toml: string, binding: ArtigoMensalBinding): st
     const escopo = bloco.split(/^\s*\[/m)[0];
     if (escopo.match(/^\s*binding\s*=\s*"([^"]+)"/m)?.[1] !== binding) continue;
     const id = escopo.match(/^\s*id\s*=\s*"([^"]+)"/m)?.[1];
-    if (!id) break;
+    if (!id) {
+      // Erro PRÓPRIO: o bloco foi encontrado, só está incompleto. Cair no
+      // "binding não encontrado" genérico mandaria quem depura procurar um
+      // nome errado de binding em vez de uma linha `id` que falta (achado do
+      // review da PR #7592).
+      throw new Error(
+        `workers/artigo-mensal/wrangler.toml: bloco [[kv_namespaces]] do binding "${binding}" não declara \`id\`.`,
+      );
+    }
     if (id.startsWith("REPLACE_ME")) {
       throw new Error(
         `workers/artigo-mensal/wrangler.toml: binding "${binding}" ainda tem o id placeholder "${id}". ` +

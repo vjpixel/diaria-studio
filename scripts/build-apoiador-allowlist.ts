@@ -39,11 +39,12 @@
  * de contatos, cenário onde recusar sempre tornaria o push impraticável),
  * sempre logando os e-mails afetados.
  *
- * IMPORTANTE (#3940 — escopo desta unidade): `--push` NUNCA foi executado
- * nesta sessão, nem contra `data/apoia-se/contacts.jsonl` real nem contra um
- * KV namespace real. `APOIADOR_ALLOWLIST_KV_NAMESPACE_ID` ainda é
- * placeholder em `workers/artigo-mensal/wrangler.toml` até o 1º
- * `wrangler kv namespace create` (próximo passo manual do editor).
+ * HISTÓRICO (#3940 → #7580): `--push` nunca tinha sido executado, e o
+ * namespace era um literal `REPLACE_ME_...`. Em 07/09/2026 a allowlist foi
+ * publicada pela primeira vez (21 apoiadores, contra `contacts.jsonl` real) —
+ * até então o KV estava VAZIO, e o fail-closed do gate recusava todo mundo,
+ * apoiador incluído. O namespace agora é lido do `wrangler.toml` (ver
+ * `apoiadorAllowlistKvNamespaceId` abaixo).
  */
 import { writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -58,11 +59,20 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, "..");
 
 /**
- * KV namespace ID do binding `ALLOWLIST` em `workers/artigo-mensal/wrangler.toml`.
- * Placeholder até o editor rodar `wrangler kv namespace create ALLOWLIST --remote`
- * (deploy real fora do escopo desta unidade, #3940).
+ * Namespace KV do binding `ALLOWLIST`, lido de
+ * `workers/artigo-mensal/wrangler.toml` — a MESMA fonte que o `wrangler deploy`
+ * consome.
+ *
+ * Função, e não `const` de módulo: a leitura acontece só no caminho que grava.
+ * Como `const` ela rodava no IMPORT, acoplando qualquer uso deste arquivo
+ * (dry-run, teste que importe um helper daqui) à existência e ao formato do
+ * `wrangler.toml`, com exceção de carga de módulo antes de qualquer tratamento
+ * de erro do `main()`. Mesma disciplina do `loadProjectEnv`, que já é escopado
+ * ao push (achado do review da PR #7592).
  */
-export const APOIADOR_ALLOWLIST_KV_NAMESPACE_ID = readArtigoMensalNamespaceId("ALLOWLIST");
+export function apoiadorAllowlistKvNamespaceId(): string {
+  return readArtigoMensalNamespaceId("ALLOWLIST");
+}
 
 /** Chave única do KV ALLOWLIST — valor é o JSON array de e-mails. */
 export const APOIADOR_ALLOWLIST_KV_KEY = "emails";
@@ -159,7 +169,7 @@ async function main(): Promise<void> {
       `[build-apoiador-allowlist] --push: enviando ${allowlist.length} e-mail(s) pro KV ALLOWLIST...`,
     );
     await uploadTextToWorkerKV(payload, APOIADOR_ALLOWLIST_KV_KEY, {
-      kvNamespaceId: APOIADOR_ALLOWLIST_KV_NAMESPACE_ID,
+      kvNamespaceId: apoiadorAllowlistKvNamespaceId(),
       contentType: "application/json",
     });
     console.error(`[build-apoiador-allowlist] push concluído.`);

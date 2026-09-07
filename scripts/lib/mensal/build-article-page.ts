@@ -47,16 +47,18 @@ import { draftToEmail } from "./monthly-render.ts";
  * a consequência é idêntica: a página publica o template como texto.
  */
 export class UnresolvedMergeTagInArticleError extends Error {
-  constructor(
-    readonly cycle: string,
-    readonly tags: string[],
-  ) {
+  readonly cycle: string;
+  readonly tags: string[];
+
+  constructor(cycle: string, tags: string[]) {
     super(
       `artigo do ciclo "${cycle}" contém merge tag não resolvida no HTML web: ${tags.join(", ")}. ` +
         `O render vem de \`draftToEmail\`, então toda tag que o provedor de e-mail resolveria precisa ser ` +
         `tratada em \`stripEmailOnlyFooter\` antes de publicar — na web ninguém as resolve.`,
     );
     this.name = "UnresolvedMergeTagInArticleError";
+    this.cycle = cycle;
+    this.tags = tags;
   }
 }
 
@@ -95,12 +97,23 @@ export function stripEmailOnlyFooter(html: string): string {
  * que `stripEmailOnlyFooter` faz: jogar fora o link de cadastro para se livrar
  * de uma frase seria perder a única conversão do rodapé.
  *
- * Ancorado em "responda a este e-mail" e no ponto final da frase. Se a copy
- * mudar, a frase simplesmente permanece — degradar para "sobrou uma frase
- * estranha" é aceitável; recortar no lugar errado e comer o link, não.
+ * O fim da frase é um limite REAL — ponto seguido de início de outra frase
+ * (maiúscula) ou de fim de parágrafo — e não o primeiro ponto que aparecer.
+ * A 1ª versão usava `[^.]*?\.` e o review da PR #7592 mostrou o estrago: com
+ * uma abreviação no meio ("dizendo ex. \"quero\"") o corte parava em "ex." e a
+ * página publicava `"quero". Se quiser…` — um fragmento quebrado, exatamente o
+ * que esta docstring dizia que nunca podia acontecer. Um decimal ("3.5x")
+ * antes de "responda" fazia a remoção falhar inteira, em silêncio.
+ *
+ * Se a copy mudar a ponto de a âncora não casar, a frase simplesmente
+ * permanece: degradar para "sobrou uma frase estranha" é aceitável; recortar
+ * no lugar errado e comer o link, não.
  */
 export function stripReplyByEmailSentence(html: string): string {
-  return html.replace(/Se você quiser receber[^.]*?responda a este e-mail[^.]*?\.\s*/gi, "");
+  return html.replace(
+    /Se você quiser receber(?:(?!<\/p>)[\s\S])*?responda a este e-mail(?:(?!<\/p>)[\s\S])*?\.(?=\s*(?:[A-ZÀ-Ú]|<\/p>))\s*/gi,
+    "",
+  );
 }
 
 /**
@@ -132,7 +145,16 @@ export function retagWebUtmMedium(html: string): string {
  * vez de gravá-la no KV e só alguém notar meses depois olhando a página.
  */
 export function verifyNoMergeTagsInArticle(html: string, cycle: string): void {
-  const tags = [...new Set(html.match(/\{\{[^}]+\}\}/g) ?? [])];
+  // Casa o FORMATO de merge tag — identificador simples ou caminho pontuado
+  // (`{{ unsubscribe }}`, `{{ contact.EMAIL }}`, `{{email}}`) — e não qualquer
+  // `{{...}}`. A diferença importa porque esta é uma newsletter SOBRE IA: um
+  // destaque pode legitimamente citar sintaxe de template ("prompt com
+  // `{{ variável }}`", Jinja, Handlebars). Com o casamento largo, uma linha
+  // editorial assim BLOQUEARIA a publicação de um artigo correto — o guard
+  // existe para pegar tag de template que vazou, não para censurar o texto.
+  // Toda merge tag real de ESP é identificador puro, então o formato separa
+  // os dois casos sem escape hatch que ninguém usaria.
+  const tags = [...new Set(html.match(/\{\{\s*[A-Za-z_][\w.]*\s*\}\}/g) ?? [])];
   if (tags.length > 0) throw new UnresolvedMergeTagInArticleError(cycle, tags);
 }
 

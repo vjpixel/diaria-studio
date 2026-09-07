@@ -38,6 +38,7 @@ import {
   verifyNoMergeTagsInArticle,
 } from "../scripts/lib/mensal/build-article-page.ts";
 import { draftToEmail } from "../scripts/lib/mensal/monthly-render.ts";
+import { parseNamespaceId } from "../scripts/lib/mensal/artigo-mensal-kv-namespaces.ts";
 
 const PARAGRAFO_EMAIL =
   '<p style="margin:0 0 16px 0;font-family:\'Geist\', sans-serif;">Você está recebendo esse e-mail ' +
@@ -186,5 +187,91 @@ describe("#7580 — o clique na PÁGINA não pode ser contado como clique de e-m
     const { html } = buildArticleHtml(readFileSync("data/monthly/2608-09/draft.md", "utf8"), "2608-09");
     assert.ok(!html.includes("utm_medium=email"), "a versão web não pode carimbar clique como e-mail");
     assert.ok(html.includes("utm_medium=artigo-web"), "e precisa carimbar como web");
+  });
+});
+
+/**
+ * Achados do review da PR #7592. O primeiro bloco é o mais importante: o
+ * recorte da frase quebrava exatamente do jeito que a docstring da função
+ * dizia que nunca podia quebrar.
+ */
+describe("#7580 — o corte da frase respeita fim de frase REAL, não o primeiro ponto", () => {
+  const monta = (miolo: string) =>
+    `<p>Se você quiser receber ${miolo}, responda a este e-mail dizendo &quot;quero&quot;. ` +
+    'Se quiser tutoriais, <a href="https://diar.ia.br/">aqui</a>.</p>';
+
+  it("REGRESSÃO: abreviação no meio não parte a frase ao meio", () => {
+    // A 1ª versão (`[^.]*?\.`) parava em "ex." e publicava `"quero". Se
+    // quiser…` — fragmento quebrado numa página pública.
+    const html = '<p>Se você quiser receber com prioridade, responda a este e-mail dizendo ex. &quot;quero&quot;. Se quiser tutoriais, <a href="https://diar.ia.br/">aqui</a>.</p>';
+    const out = stripReplyByEmailSentence(html);
+    assert.ok(!out.includes("responda a este e-mail"));
+    assert.ok(!out.includes("quero"), "não pode sobrar o resto da frase cortada");
+    assert.match(out, /href="https:\/\/diar\.ia\.br\/"/, "o link continua");
+  });
+
+  it("REGRESSÃO: decimal antes da âncora não faz a remoção falhar em silêncio", () => {
+    const out = stripReplyByEmailSentence(monta("3.5x por semana"));
+    assert.ok(!out.includes("responda a este e-mail"));
+    assert.match(out, /Se quiser tutoriais/);
+  });
+
+  it("frase no fim do parágrafo também sai", () => {
+    const out = stripReplyByEmailSentence(
+      "<p>Se você quiser receber com prioridade, responda a este e-mail dizendo &quot;quero&quot;.</p>",
+    );
+    assert.equal(out, "<p></p>");
+  });
+
+  it("não atravessa o fim do parágrafo atrás da âncora", () => {
+    const html = "<p>Se você quiser receber algo.</p><p>responda a este e-mail. Outra.</p>";
+    assert.match(stripReplyByEmailSentence(html), /Se você quiser receber algo/);
+  });
+});
+
+describe("#7580 — o guard não bloqueia texto editorial que cita sintaxe de template", () => {
+  it("acusa merge tag de verdade", () => {
+    for (const tag of ["{{ unsubscribe }}", "{{email}}", "{{ contact.EMAIL }}", "{{first_name}}"]) {
+      assert.throws(() => verifyNoMergeTagsInArticle(`<p>${tag}</p>`, "2608-09"), UnresolvedMergeTagInArticleError, tag);
+    }
+  });
+
+  it("NÃO bloqueia prosa sobre template — é uma newsletter sobre IA", () => {
+    // Um destaque pode citar Jinja/Handlebars. Bloquear a publicação de um
+    // artigo correto por causa disso inverteria o propósito do guard.
+    for (const prosa of ["{{ variável }}", "{{ nome do campo }}", "{{ 1 + 1 }}"]) {
+      assert.doesNotThrow(() => verifyNoMergeTagsInArticle(`<p>use ${prosa} no prompt</p>`, "2608-09"), prosa);
+    }
+  });
+});
+
+describe("#7580 — parseNamespaceId nomeia a causa certa", () => {
+  const toml = (corpo: string) => `name = "artigo-mensal"\n\n[[kv_namespaces]]\n${corpo}\n`;
+
+  it("lê o id do binding pedido", () => {
+    assert.equal(parseNamespaceId(toml('binding = "ARTICLES"\nid = "abc123"'), "ARTICLES"), "abc123");
+  });
+
+  it("REGRESSÃO: bloco SEM id acusa 'não declara id', não 'binding não encontrado'", () => {
+    // Cair na mensagem genérica mandava quem depura procurar um nome errado de
+    // binding, em vez da linha `id` que falta.
+    assert.throws(() => parseNamespaceId(toml('binding = "ARTICLES"'), "ARTICLES"), /não declara/);
+  });
+
+  it("recusa placeholder nomeando o comando que resolve", () => {
+    assert.throws(
+      () => parseNamespaceId(toml('binding = "ALLOWLIST"\nid = "REPLACE_ME_APOS_CRIAR"'), "ALLOWLIST"),
+      /wrangler kv namespace create ALLOWLIST/,
+    );
+  });
+
+  it("binding ausente acusa ausência", () => {
+    assert.throws(() => parseNamespaceId(toml('binding = "OUTRO"\nid = "x"'), "ARTICLES"), /não encontrado/);
+  });
+
+  it("não confunde o id de um bloco vizinho", () => {
+    const dois = 'name = "w"\n\n[[kv_namespaces]]\nbinding = "ARTICLES"\nid = "aaa"\n\n[[kv_namespaces]]\nbinding = "ALLOWLIST"\nid = "bbb"\n';
+    assert.equal(parseNamespaceId(dois, "ARTICLES"), "aaa");
+    assert.equal(parseNamespaceId(dois, "ALLOWLIST"), "bbb");
   });
 });
