@@ -298,7 +298,7 @@ describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site 
     const v = checkSitePagePublished(fixture);
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "site-page-published");
-    assert.equal(v[0].severity, "warning");
+    assert.equal(v[0].severity, "error", "#7578 item 4: code 3 (infra falha) = error");
     assert.match(v[0].message, /gates-propoe-empregos-so-para-humanos/);
     assert.match(v[0].message, /checkout não está sincronizado/);
     rmSync(fixture, { recursive: true, force: true });
@@ -335,7 +335,7 @@ describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site 
     const v = checkSitePagePublished(fixture);
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "site-page-published-parseable");
-    assert.equal(v[0].severity, "warning");
+    assert.equal(v[0].severity, "warning", "#7578 item 4: code 3 (infra falha) = error");
     rmSync(fixture, { recursive: true, force: true });
   });
 });

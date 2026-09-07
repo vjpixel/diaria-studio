@@ -246,22 +246,29 @@ function checkWhatsappSlugGuard(
  * `_internal/site-page-published.json` (escrito por
  * `publish-edition-site-page.ts`, #7283) deve existir e registrar
  * `published: true` — senão a página `/p/{slug}` do acervo não foi
- * publicada (branch pushada + PR aberto). `severity: "warning"` de
- * propósito: o fail-soft do #6202 é intencional (site é acessório ao
- * envio) — este check não bloqueia Stage 6, só torna a falha VISÍVEL no
- * relatório de invariantes em vez de depender de um agente LLM lembrar de
- * logar via `log-event.ts` (prosa em `orchestrator-stage-6.md` §6d-site,
- * não reforçada em código — foi exatamente essa lacuna que deixou 4
- * edições consecutivas (31/08–03/09) sem página no acervo em silêncio
- * absoluto, ver #7283/#7266).
+ * publicada (branch pushada + PR aberto). A severidade varia por tipo de
+ * falha (#7578 item 4):
+ *
+ *   - `code: 3` → **`error`**. Commit/push falhou, incluindo o caso de
+ *     checkout divergente (#7287) — o guard de `commitAndPushSitePage`
+ *     LANÇA antes de tocar qualquer arquivo, então nada foi escrito nem
+ *     commitado. É falha de infra real, não "trabalho adiado": deixá-la em
+ *     `warning` repetiu o incidente do #7283 (4 edições seguidas sem
+ *     página, sem que nada parasse o Stage 6).
+ *   - ausente / inparseável / `code: 4` / `code: 0 published:false` →
+ *     `warning`. Fail-soft do #6202 (site é acessório ao envio) — o passo
+ *     nunca rodou, rodou em versão antiga, ou o trabalho está feito e só
+ *     adia o push; não bloqueia Stage 6, só torna a falha VISÍVEL no
+ *     relatório de invariantes em vez de depender de um agente LLM
+ *     lembrar de logar via `log-event.ts` (prosa em
+ *     `orchestrator-stage-6.md` §6d-site, não reforçada em código — foi
+ *     exatamente essa lacuna que deixou as 4 edições do #7283/#7266 em
+ *     silêncio absoluto).
  *
  * `code: 2` ("nada a publicar ainda" — insumos ausentes) é tratado como
  * benigno, não gera violação: não é falha de publish, e não deveria
  * acontecer no Stage 6 normal (Stage 4/5 já rodaram), mas se acontecer não
  * é isto que deve acusar.
- *
- * Arquivo ausente também vira warning (não error) — cobre tanto "o passo
- * nunca rodou" quanto "versão antiga do script, sem este mecanismo ainda".
  */
 function checkSitePagePublished(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "_internal", "site-page-published.json");
@@ -296,16 +303,32 @@ function checkSitePagePublished(editionDir: string): InvariantViolation[] {
   }
   if (data.code === 2) return [];
   if (data.published !== true) {
+    // #7578 item 4 — `code: 3` (commit/push falhou, incl. checkout divergente
+    // da #7287) sobe para `error`. O fail-soft do #6202 continua valendo pra
+    // `code: 4` (artefato presente mas inválido) e pra o caminho de
+    // `--skip-publish`/`code: 0 published:false` (página escrita localmente,
+    // só adia o push) — aqueles são "trabalho feito, esperar push", não
+    // falha de infra. `code: 3` é diferente: NADA foi escrito nem commitado
+    // (o guard de checkout divergente LANÇA antes de tocar qualquer arquivo,
+    // ver commitAndPushSitePage), então é falha real do passo de publicação
+    // de site, e deixá-la em warning repetiu o incidente do #7283 — 4
+    // edições seguidas sem página, sem que nada parasse o Stage 6.
+    const isInfraFailure = data.code === 3;
     return [
       {
         rule: "site-page-published",
         message:
           `site-page-published.json registra published=${String(data.published)} (code=${data.code ?? "?"}) ` +
           `— a página /p/${data.slug ?? "?"} do acervo do site NÃO foi publicada (branch pushada + PR ` +
-          `aberto/reusado). Motivo: ${data.reason ?? "não registrado"}. Fail-soft intencional (#6202) — não ` +
-          `bloqueia a edição, mas o link fica 404 até alguém publicar manualmente (ver #7266/#7280).`,
+          `aberto/reusado). Motivo: ${data.reason ?? "não registrado"}.` +
+          (isInfraFailure
+            ? ` Falha de infra (commit/push, checkout divergente #7287) — não é fail-soft: o trabalho ` +
+              `não foi adiado, foi perdido nesta rodada. Re-rodar \`npx tsx scripts/publish-edition-site-page.ts\` ` +
+              `depois de \`git fetch origin && git pull\`.`
+            : ` Fail-soft intencional (#6202) — não bloqueia a edição, mas o link fica 404 até alguém ` +
+              `publicar manualmente (ver #7266/#7280).`),
         source_issue: "#7283",
-        severity: "warning",
+        severity: isInfraFailure ? "error" : "warning",
         file: path,
       },
     ];
