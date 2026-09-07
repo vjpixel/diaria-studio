@@ -60,10 +60,20 @@
  *     [--editions-root data/editions] [--time 11:00]
  *     [--no-skip-existing] [--force-incomplete-week]
  *     [--force-incomplete-click-data] [--manifest-only]
- *     [--force-urls url1,url2,...]
+ *     [--force-urls url1,url2,...] [--force-font-size N]
  *
  * `--saturday` é OBRIGATÓRIO e explícito (mesmo invariante de CLAUDE.md pras
  * skills `/diaria-*`: nunca inferir data de `today()`).
+ *
+ * `--force-font-size N` (override manual, ad-hoc — #7571): substitui
+ * `computeCarouselTitleFontSize` (o menor tamanho que caiba os 5 títulos
+ * DESTA rodada) por um valor fixo. Cada modo/rodada calcula seu próprio
+ * tamanho de forma independente — não há garantia de que `highlights` e
+ * `clicked` fechem no mesmo valor na mesma semana, e quando divergem muito
+ * fica visualmente discrepante (achado real, semana 260831-260904: 72px vs
+ * 52-54px). Sem validação de "cabe garantido" — título que não couber no
+ * valor forçado ainda renderiza (pode ficar apertado), nunca lança. Ver
+ * issue #7571 pro fix definitivo (piso fixo + guard de rejeição).
  *
  * `--force-urls` (override manual, ad-hoc — #5903 sessão 260821): lista de
  * URLs separadas por vírgula, na ordem desejada do carrossel, substituindo a
@@ -948,7 +958,29 @@ async function runOneMode(
   // tipo de slide visualmente diferente de propósito, decisão do editor
   // 260815 2ª rodada).
   const flatTexts = buildFlatCardTexts(mode, contentWindow);
-  const carouselFontSize = computeCarouselTitleFontSize(items.map((i) => i.title));
+  // #7571: `--force-font-size <n>` sobrescreve o cálculo automático (menor
+  // tamanho que caiba TODOS os títulos DESTA rodada) — ad-hoc pra padronizar
+  // manualmente com o tamanho de outro modo/rodada (ex: `highlights` fechou
+  // em 72px, `clicked` fechou em 52-54px na mesma semana — visualmente
+  // discrepante, mas cada um é o resultado CORRETO do próprio cálculo).
+  // Título que não couber no tamanho forçado ainda passa pelo mesmo
+  // `wrapBody`/overflow do renderer — pode ficar visualmente apertado, mas
+  // nunca lança. Sem validação de "cabe garantido": é override manual,
+  // quem passa decide o risco. Ver issue #7571 pro fix definitivo (piso
+  // fixo automático + guard de rejeição, mesmo padrão do carrossel diário).
+  const forceFontSizeArg = values["force-font-size"];
+  let carouselFontSize: number;
+  if (forceFontSizeArg != null) {
+    const parsed = Number(forceFontSizeArg);
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+      console.error(`ERRO: --force-font-size inválido: '${forceFontSizeArg}' (esperado inteiro positivo, ex: 72).`);
+      return false;
+    }
+    carouselFontSize = parsed;
+    console.log(`[publish-weekly-social] --force-font-size ${carouselFontSize} — ignorando cálculo automático (computeCarouselTitleFontSize).`);
+  } else {
+    carouselFontSize = computeCarouselTitleFontSize(items.map((i) => i.title));
+  }
 
   // Carrossel: 1 imagem por item selecionado (#4146/#4483) — ver
   // resolveWeeklyImageUrls acima; falha o post inteiro se qualquer item não

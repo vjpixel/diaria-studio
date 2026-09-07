@@ -22,6 +22,18 @@
 
 import { editorialDate, type UnifiedCachedPost } from "../shared/edition-cache-reader.ts";
 
+/**
+ * Marcas combinantes (U+0300–U+036F), para tirar acento depois de `NFD`.
+ * Construída por `String.fromCodePoint` em vez de literal — mesma disciplina
+ * de `collect-monthly.ts`: caractere não-imprimível dentro de uma regex
+ * literal some em copy/paste e troca de encoding, e a regex passa a não casar
+ * nada em silêncio.
+ */
+const COMBINING_MARKS_RE = new RegExp(
+  `[${String.fromCodePoint(0x0300)}-${String.fromCodePoint(0x036f)}]`,
+  "gu",
+);
+
 /** Um destaque coletado, no shape que o `analyst-anual` recebe. */
 export interface AnnualDestaque {
   /** AAMMDD da edição diária de origem. */
@@ -77,11 +89,44 @@ export function postEdition(post: UnifiedCachedPost): string | undefined {
 }
 
 /**
+ * Chave de deduplicação: data editorial + título normalizado.
+ *
+ * A mesma edição pode existir nos DOIS caches — a leitura vem de Beehiiv e de
+ * Kit ao mesmo tempo, e o cutover de plataforma (04/09/2026) não apagou nada
+ * do lado antigo. Deduplicar por URL não resolve: publicada nas duas
+ * plataformas, a edição tem duas URLs diferentes. O que não muda é o dia e o
+ * título.
+ *
+ * Dias com DUAS edições distintas existem de verdade (14 na janela do 1º ano)
+ * — por isso a data sozinha nunca é a chave.
+ */
+export function dedupKey(post: UnifiedCachedPost): string | null {
+  const edition = postEdition(post);
+  if (!edition) return null;
+  const title = (post.title ?? post.subject ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(COMBINING_MARKS_RE, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  // Sem título não dá pra afirmar que dois posts do mesmo dia são a mesma
+  // edição — e dias com duas edições distintas existem. Devolver a data
+  // sozinha como chave descartaria uma edição real.
+  if (!title) return null;
+  return `${edition}::${title}`;
+}
+
+/**
  * Filtra o cache unificado pela janela: só edições publicadas
  * (`status === "confirmed"`, o vocabulário normalizado do reader) cujo mês
- * editorial está na lista. Devolve um mapa YYMM → posts, com **todo mês da
- * janela presente**, inclusive os vazios — um mês sem edição é um fato a
- * reportar no gate, não uma chave ausente que some do relatório.
+ * editorial está na lista, **sem duplicata entre os dois caches** (ver
+ * `dedupKey`). Devolve um mapa YYMM → posts, com **todo mês da janela
+ * presente**, inclusive os vazios — um mês sem edição é um fato a reportar no
+ * gate, não uma chave ausente que some do relatório.
+ *
+ * Em caso de duplicata, o primeiro post vence. A lista chega ordenada por
+ * `mergeEditionsByDate`, que desempata por origem — então a escolha é
+ * determinística, não "o que o `readdir` devolveu primeiro".
  */
 export function groupPostsByMonth(
   posts: readonly UnifiedCachedPost[],
@@ -90,6 +135,7 @@ export function groupPostsByMonth(
   const wanted = new Set(months);
   const out = new Map<string, UnifiedCachedPost[]>();
   for (const m of months) out.set(m, []);
+  const seen = new Set<string>();
 
   for (const post of posts) {
     if (post.status !== "confirmed") continue;
@@ -97,6 +143,13 @@ export function groupPostsByMonth(
     if (!edition) continue;
     const month = editionMonth(edition);
     if (!wanted.has(month)) continue;
+    const key = dedupKey(post);
+    // Post sem título não tem como ser deduplicado com segurança — entra, e o
+    // pior caso é uma duplicata a mais, não uma edição real descartada.
+    if (key !== null) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
     out.get(month)!.push(post);
   }
 

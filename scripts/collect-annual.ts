@@ -246,6 +246,12 @@ export function collectAnnual(opts: {
  */
 export function selectTopK(rootDir: string, slug: string, topK: number): { selected: number; byMonth: Record<string, number> } {
   const paths = annualPaths(slug, resolve(rootDir, "data/annual"));
+  if (!existsSync(paths.rawDestaques)) {
+    throw new Error(
+      `--select-top-k precisa do pool coletado, e ${paths.rawDestaques} não existe. ` +
+        `Rode a coleta primeiro (sem --select-top-k).`,
+    );
+  }
   const pool = JSON.parse(readFileSync(paths.rawDestaques, "utf8")) as {
     window: unknown;
     destaques: AnnualDestaque[];

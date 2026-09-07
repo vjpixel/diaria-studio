@@ -84,6 +84,47 @@ describe("agrupamento por mês da janela", () => {
     assert.equal([...g.values()].flat().length, 0);
   });
 
+  it("a mesma edição nos dois caches entra uma vez só", () => {
+    // Cenário da rodada de janeiro/2027: a leitura vem de Beehiiv E de Kit, e
+    // uma edição publicada nos dois lados tem URLs diferentes — deduplicar por
+    // URL não pegaria. O que não muda é o dia e o título.
+    const dia = unix("2025-09-10T00:00:00Z");
+    const posts = [
+      post({ origin: "beehiiv", title: "OpenAI lança Sora 2", web_url: "https://diaria.beehiiv.com/p/sora", publish_date: dia }),
+      post({ origin: "kit", title: "OpenAI lança Sora 2", web_url: "https://news.diar.ia.br/posts/sora", publish_date: dia }),
+    ];
+    assert.equal(groupPostsByMonth(posts, months).get("2509")!.length, 1);
+  });
+
+  it("dois posts distintos no mesmo dia continuam sendo dois", () => {
+    // Acontece de verdade: 14 dias da janela do 1º ano têm 2 edições.
+    const dia = unix("2025-09-10T00:00:00Z");
+    const posts = [
+      post({ title: "AWS sofre queda", publish_date: dia }),
+      post({ title: "Restrições do Sora 2 em Hollywood", publish_date: dia }),
+    ];
+    assert.equal(groupPostsByMonth(posts, months).get("2509")!.length, 2);
+  });
+
+  it("dedup ignora acento, caixa e pontuação do título", () => {
+    const dia = unix("2025-09-10T00:00:00Z");
+    const posts = [
+      post({ title: "IA na educação: o que muda", publish_date: dia }),
+      post({ origin: "kit", title: "IA NA EDUCACAO — O QUE MUDA", publish_date: dia }),
+    ];
+    assert.equal(groupPostsByMonth(posts, months).get("2509")!.length, 1);
+  });
+
+  it("post sem título entra em vez de ser descartado como duplicata", () => {
+    const dia = unix("2025-09-10T00:00:00Z");
+    const posts = [post({ publish_date: dia }), post({ publish_date: dia })];
+    assert.equal(
+      groupPostsByMonth(posts, months).get("2509")!.length,
+      2,
+      "sem título não dá pra afirmar que são a mesma edição — descartar seria pior",
+    );
+  });
+
   it("dentro do mês, as edições saem em ordem cronológica", () => {
     const posts = [
       post({ slug: "tarde", publish_date: unix("2025-09-20T00:00:00Z") }),
