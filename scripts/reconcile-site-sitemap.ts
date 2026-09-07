@@ -60,8 +60,11 @@
  *   2 — `--check`: há página órfã (nomeadas na saída)
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { addSitemapEntry, archiveUrlForSlug } from "./lib/site-archive-pages.ts";
+import { ARCHIVE_CARD_LIMIT, buildHomeFeed, buildIndexHtml } from "./lib/site-home-page.ts";
 import {
+  DEFAULT_HOME,
   DEFAULT_PAGES_DIR,
   DEFAULT_SITEMAP,
   buildSlugDateMap,
@@ -79,11 +82,12 @@ function parseArgs(argv: string[]) {
     check: argv.includes("--check"),
     pagesDir: get("--pages-dir", DEFAULT_PAGES_DIR),
     sitemapPath: get("--sitemap", DEFAULT_SITEMAP),
+    homePath: get("--home", DEFAULT_HOME),
   };
 }
 
 export function main(argv = process.argv.slice(2)): number {
-  const { check, pagesDir, sitemapPath } = parseArgs(argv);
+  const { check, pagesDir, sitemapPath, homePath } = parseArgs(argv);
 
   if (!existsSync(sitemapPath)) {
     console.error(`[reconcile-site-sitemap] sitemap ausente: ${sitemapPath}`);
@@ -151,8 +155,22 @@ export function main(argv = process.argv.slice(2)): number {
     return 1;
   }
 
+  // A home (`index.html`) é DERIVADA do sitemap + das páginas
+  // (`buildHomeFeed`), então acrescentar entrada sem regenerá-la deixa
+  // `diar.ia.br/` mostrando uma edição antiga — o mesmo tipo de defasagem
+  // que este script existe para acabar, uma superfície acima. É a mesma
+  // regeneração que `publish-edition-site-page.ts --sitemap` já faz por
+  // edição; aqui ela fecha o caso do backfill em lote. Idempotente e barata:
+  // só lê arquivos que já estão em disco.
+  const readPageHtml = (slug: string): string | null => {
+    const f = join(pagesDir, slug, "index.html");
+    return existsSync(f) ? readFileSync(f, "utf8") : null;
+  };
+  const feed = buildHomeFeed(readFileSync(sitemapPath, "utf8"), readPageHtml, ARCHIVE_CARD_LIMIT + 1);
+  writeFileSync(homePath, buildIndexHtml({ feature: feed[0] ?? null, archive: feed.slice(1) }), "utf8");
+
   console.log(
-    `[reconcile-site-sitemap] ${orphans.length} entrada(s) acrescentada(s), 0 órfãs restantes` +
+    `[reconcile-site-sitemap] ${orphans.length} entrada(s) acrescentada(s), 0 órfãs restantes; home regenerada` +
       (semData > 0 ? ` (${semData} sem <lastmod> — nenhuma fonte de data disponível)` : "") +
       (corrupt.length > 0 ? ` (${corrupt.length} arquivo(s) de cache ilegível)` : ""),
   );
