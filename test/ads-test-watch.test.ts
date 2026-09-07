@@ -279,3 +279,69 @@ describe("#5845 — ads-test-watch: idempotência assimétrica (markX)", () => {
     assert.equal(next.apuracaoReportPath, "data/aquisicao/cac-reports/2026-10-11.md");
   });
 });
+
+/**
+ * #7577 — `cadastros_acumulado` é o NUMERADOR do CAC da janela móvel de 3 dias
+ * (`scripts/lib/ads-rolling-window.ts`).
+ *
+ * A coluna existia no CSV desde o início do teste e nada a parseava; a #7577
+ * passou a lê-la. O review da PR #7586 apontou que a mudança tinha entrado sem
+ * teste NENHUM no parser — os testes da janela constroem `ClicksCsvRow` à mão e
+ * pulam `parseClicksCsv` inteiro, então um erro aqui (nome de chave trocado,
+ * validação frouxa) passaria por todos eles. A coluna irmã `leitores_acumulado`
+ * ganhou exatamente estes quatro casos quando entrou (#5239).
+ */
+describe("#7577 — parseClicksCsv: coluna 'cadastros_acumulado'", () => {
+  const HEADER_BASE = "canal,data_apuracao,gasto_acumulado,cliques,impressoes,cpc_medio,conversoes,custo_por_conversao,perda_orcamento,perda_ranking,fonte";
+  const HEADER_COM = `${HEADER_BASE},cadastros_acumulado\n`;
+
+  it("coluna AUSENTE do header -> null, nunca erro", () => {
+    const csv = `${HEADER_BASE}\n` + "Google Ads (teste 2608),2026-09-04,190.00,10,1000,7.1,1,71.43,,,painel\n";
+    const { rows, errors } = parseClicksCsv(csv);
+    assert.equal(errors.length, 0);
+    assert.equal(rows[0].cadastrosAcumulado, null);
+  });
+
+  it("presente e preenchida -> número", () => {
+    const csv = HEADER_COM + "Google Ads (teste 2608),2026-09-04,190.00,10,1000,7.1,1,71.43,,,painel,25\n";
+    const { rows, errors } = parseClicksCsv(csv);
+    assert.equal(errors.length, 0);
+    assert.equal(rows[0].cadastrosAcumulado, 25);
+  });
+
+  it("presente e VAZIA na linha -> null (sem amostra), e a linha continua válida", () => {
+    // A linha ainda serve pro watchdog de gasto — perder `gasto_acumulado` por
+    // causa de uma coluna opcional em branco seria pior que não ter a coluna.
+    const csv = HEADER_COM + "Google Ads (teste 2608),2026-09-04,190.00,10,1000,7.1,1,71.43,,,painel,\n";
+    const { rows, errors } = parseClicksCsv(csv);
+    assert.equal(errors.length, 0);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].cadastrosAcumulado, null);
+    assert.equal(rows[0].gasto_acumulado, 190);
+  });
+
+  it("valor NÃO-NUMÉRICO é erro da linha — nunca coagido em silêncio", () => {
+    const csv = HEADER_COM + "Google Ads (teste 2608),2026-09-04,190.00,10,1000,7.1,1,71.43,,,painel,vinte\n";
+    const { rows, errors } = parseClicksCsv(csv);
+    assert.equal(rows.length, 0);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].reason, /cadastros_acumulado/);
+  });
+
+  it("valor NEGATIVO é erro — acumulado de cadastros não pode ser negativo", () => {
+    const csv = HEADER_COM + "Google Ads (teste 2608),2026-09-04,190.00,10,1000,7.1,1,71.43,,,painel,-3\n";
+    const { rows, errors } = parseClicksCsv(csv);
+    assert.equal(rows.length, 0);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].reason, /cadastros_acumulado/);
+  });
+
+  it("zero é valor VÁLIDO, distinto de vazio", () => {
+    // `0` significa "medido, nenhum cadastro"; vazio significa "não medido".
+    // Colapsar os dois é o erro que a §3.5 do protocolo proíbe.
+    const csv = HEADER_COM + "Microsoft Ads (teste 2608),2026-09-04,1.34,2,80,0.67,0,,,,painel,0\n";
+    const { rows, errors } = parseClicksCsv(csv);
+    assert.equal(errors.length, 0);
+    assert.equal(rows[0].cadastrosAcumulado, 0);
+  });
+});
