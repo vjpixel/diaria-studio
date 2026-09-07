@@ -515,6 +515,42 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     assert.equal(result.pendingAgentDispatch.length, 0);
   });
 
+  it("0h.1-kit (#7570) — kit-sync roda no mesmo batch de beehiiv-sync e é fail-soft (falha não aborta Stage 0)", async () => {
+    const { exec } = makeFakeExec(happyExecHandlers());
+    const { execAsync, calls: asyncCalls } = makeFakeExecAsync(
+      happyExecAsyncHandlers({
+        "kit-sync.ts": () => fail(1, "KIT_API_KEY não definida"),
+      }),
+    );
+    const deps = baseDeps({ exec, execAsync });
+
+    const result = await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      deps,
+    );
+
+    assert.equal(result.code, 0);
+    assert.ok(asyncCalls.some((c) => c.script.includes("kit-sync")));
+  });
+
+  it("0h.1-kit (#7570) — kit-sync bem-sucedido reporta broadcasts_fetched no relatório", async () => {
+    const { exec } = makeFakeExec(happyExecHandlers());
+    const { execAsync } = makeFakeExecAsync(
+      happyExecAsyncHandlers({
+        "kit-sync.ts": () => ok(JSON.stringify({ mode: "incremental", broadcasts_fetched: 3, broadcasts_skipped: 16, broadcasts_total: 19, dry_run: false })),
+      }),
+    );
+    const deps = baseDeps({ exec, execAsync });
+
+    const result = await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      deps,
+    );
+
+    assert.equal(result.code, 0);
+    assert.ok(result.notes.some((n) => n.includes("kit-sync") && n.includes("3")));
+  });
+
   it("0g — dedup freshness stale vira pendingHumanDecision, não aborta o Stage 0", async () => {
     const { exec } = makeFakeExec(happyExecHandlers());
     const { execAsync } = makeFakeExecAsync(
