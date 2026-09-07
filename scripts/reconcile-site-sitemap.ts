@@ -20,18 +20,24 @@
  * 07/09/2026: 259 páginas locais, 254 no sitemap, **5 órfãs**, a mais antiga
  * de 28/08.
  *
- * ## A armadilha que torna este script obrigatório, não conveniente
+ * ## A armadilha: `gen-archive-pages.ts` APAGA página que não conhece
  *
- * `gen-archive-pages.ts` reescreve o sitemap INTEIRO a partir do cache
- * Beehiiv. Desde 04/09/2026 (`publishing.newsletter.backend = "kit"`, #7388)
- * as edições novas não passam mais pela Beehiiv, e o caminho Kit daquele
- * script é gated por `read_backend === "kit"` — ainda `"beehiiv"`, então
- * devolve `[]`.
+ * `gen-archive-pages.ts` faz `rmSync(outDir)` no `public/p/` inteiro e depois
+ * reescreve só o que está na fonte dele — o cache Beehiiv (o caminho Kit é
+ * gated por `read_backend`, ainda `"beehiiv"`). Desde 04/09/2026
+ * (`publishing.newsletter.backend = "kit"`, #7388) as edições novas não
+ * passam mais pela Beehiiv.
  *
- * Ou seja: **rodar `gen-archive-pages.ts` hoje REMOVE do sitemap as edições
- * publicadas via Kit.** Este script é aditivo e roda DEPOIS, restaurando o
- * que a regeneração não conhece. Enquanto os dois backends divergirem, a
- * ordem `gen-archive-pages` → `reconcile-site-sitemap` é obrigatória.
+ * Ou seja: rodá-lo **apagaria do DISCO** as páginas publicadas pelo Kit, não
+ * só as tiraria do sitemap. **Este script NÃO recupera isso** — ele só
+ * reconcilia o sitemap a partir de páginas que existem; recuperar exige
+ * re-rodar `publish-edition-site-page.ts` slug por slug.
+ *
+ * Por isso o #7578 fechou o buraco na origem: `gen-archive-pages.ts` agora
+ * RECUSA rodar (exit 2, `WouldDeleteUnknownPagesError`) quando encontraria
+ * página que não reproduziria, e só apaga com `--allow-prune` explícito.
+ * Este script continua sendo o passo aditivo que garante o sitemap; os dois
+ * resolvem problemas diferentes e nenhum substitui o outro.
  *
  * ## Modos
  *
@@ -106,7 +112,22 @@ export function main(argv = process.argv.slice(2)): number {
     return 2;
   }
 
-  const dates = buildSlugDateMap();
+  // `addSitemapEntry` insere via `.replace("</urlset>", …)`, que num XML sem
+  // essa tag devolve a string intacta — no-op SILENCIOSO. Checar antes para
+  // que a causa apareça nomeada, em vez de virar "0 entradas" inexplicável.
+  if (!xml.includes("</urlset>")) {
+    console.error(
+      `[reconcile-site-sitemap] ${sitemapPath} não tem a tag de fechamento </urlset> — ` +
+        `nenhuma entrada pode ser inserida. Corrigir o arquivo antes de reconciliar.`,
+    );
+    return 1;
+  }
+
+  const { map: dates, corrupt } = buildSlugDateMap();
+  // "sem data" tem duas causas opostas (data/ ausente vs. cache ilegível) e
+  // colapsá-las esconderia corrupção sistêmica — por isso reporta separado.
+  for (const c of corrupt) console.warn(`[reconcile-site-sitemap] cache ilegível, ignorado: ${c}`);
+
   let next = xml;
   let semData = 0;
   for (const slug of orphans) {
@@ -115,9 +136,25 @@ export function main(argv = process.argv.slice(2)): number {
     next = addSitemapEntry(next, { loc: archiveUrlForSlug(slug), lastmod });
   }
   writeFileSync(sitemapPath, next, "utf8");
+
+  // VERIFICA O PRÓPRIO CONSERTO antes de reportar sucesso. Contar chamadas a
+  // `addSitemapEntry` não prova que houve inserção; sem esta releitura, um
+  // no-op devolveria exit 0 com "N entradas acrescentadas" e mandaria o editor
+  // de volta ao gate achando que resolveu — que é exatamente a classe de falha
+  // silenciosa que este script existe para acabar, reintroduzida no corretor.
+  const restantes = findOrphanSlugs(pageSlugs, readFileSync(sitemapPath, "utf8"));
+  if (restantes.length > 0) {
+    console.error(
+      `[reconcile-site-sitemap] a escrita não resolveu ${restantes.length} órfã(s): ` +
+        `${restantes.join(", ")}. O sitemap foi gravado, mas segue incompleto — NÃO tratar como corrigido.`,
+    );
+    return 1;
+  }
+
   console.log(
-    `[reconcile-site-sitemap] ${orphans.length} entrada(s) acrescentada(s)` +
-      (semData > 0 ? ` (${semData} sem <lastmod> — nenhuma fonte de data disponível)` : ""),
+    `[reconcile-site-sitemap] ${orphans.length} entrada(s) acrescentada(s), 0 órfãs restantes` +
+      (semData > 0 ? ` (${semData} sem <lastmod> — nenhuma fonte de data disponível)` : "") +
+      (corrupt.length > 0 ? ` (${corrupt.length} arquivo(s) de cache ilegível)` : ""),
   );
   return 0;
 }

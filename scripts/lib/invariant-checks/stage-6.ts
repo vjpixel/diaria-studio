@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
-import { findOrphanSlugs, listPageSlugs } from "../site-sitemap-orphans.ts";
+import { findOrphanSlugs, listPageSlugs, slugsInSitemap } from "../site-sitemap-orphans.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -354,16 +354,46 @@ function checkSitePagePublished(editionDir: string): InvariantViolation[] {
  * o custo é o mesmo e pega órfã de QUALQUER edição, inclusive as que uma
  * execução anterior deixou para trás.
  *
- * Ausência de `workers/site/public/` não viola nada (checkout parcial,
- * fixture de teste): o invariante é sobre página órfã, não sobre o site
- * existir.
+ * Ausência do diretório inteiro não viola nada (checkout parcial, fixture de
+ * teste): o invariante é sobre página órfã, não sobre o site existir. Mas
+ * diretório PRESENTE e VAZIO enquanto o sitemap declara URLs é outra coisa —
+ * é perda de conteúdo, e sai como violação. Sem essa distinção o pior caso
+ * possível (o acervo inteiro sumir do disco) passaria como "0 órfãs", que é
+ * o mesmo silêncio que o #7578 existe para acabar, só que maior.
+ *
+ * `paths` é injetável só para teste (mesmo padrão de `backendOverride` em
+ * `checkScheduledAt`): sem isso o único teste possível seria contra o repo
+ * real, que este próprio PR deixa limpo — ou seja, um teste cujo corpo nunca
+ * executa e que passa sem verificar nada.
  */
-function checkSiteSitemapNoOrphans(_editionDir: string): InvariantViolation[] {
-  const pagesDir = resolve(ROOT, "workers", "site", "public", "p");
-  const sitemapPath = resolve(ROOT, "workers", "site", "public", "sitemap.xml");
+function checkSiteSitemapNoOrphans(
+  _editionDir: string,
+  paths?: { pagesDir: string; sitemapPath: string },
+): InvariantViolation[] {
+  const pagesDir = paths?.pagesDir ?? resolve(ROOT, "workers", "site", "public", "p");
+  const sitemapPath = paths?.sitemapPath ?? resolve(ROOT, "workers", "site", "public", "sitemap.xml");
   if (!existsSync(pagesDir) || !existsSync(sitemapPath)) return [];
 
-  const orphans = findOrphanSlugs(listPageSlugs(pagesDir), readFileSync(sitemapPath, "utf8"));
+  const xml = readFileSync(sitemapPath, "utf8");
+  const pageSlugs = listPageSlugs(pagesDir);
+  const declarados = slugsInSitemap(xml).size;
+  if (pageSlugs.length === 0 && declarados > 0) {
+    return [
+      {
+        rule: "site-sitemap-no-orphans",
+        message:
+          `${pagesDir} existe mas não tem NENHUMA página, enquanto o sitemap declara ${declarados} URL(s) ` +
+          `sob /p/. Isso é perda de conteúdo, não ausência de acervo — provável apagamento acidental ` +
+          `(ver o guard \`--allow-prune\` de gen-archive-pages.ts, #7578) ou checkout corrompido. ` +
+          `Restaurar as páginas antes de seguir; \`reconcile-site-sitemap.ts\` NÃO recupera página apagada.`,
+        source_issue: "#7578",
+        severity: "error",
+        file: pagesDir,
+      },
+    ];
+  }
+
+  const orphans = findOrphanSlugs(pageSlugs, xml);
   if (orphans.length === 0) return [];
 
   return [
@@ -442,4 +472,7 @@ export {
   checkWhatsappSlugGuard,
   checkStep6Sentinel,
   checkSitePagePublished,
+  // #7578: exportada pra teste com paths injetados — sem isso o unico teste
+  // possivel seria contra o repo real, que fica limpo e nunca exercita o caminho.
+  checkSiteSitemapNoOrphans,
 };

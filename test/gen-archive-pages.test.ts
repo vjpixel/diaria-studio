@@ -434,7 +434,11 @@ describe("generateArchivePages (integração, tmpdir)", () => {
       generateArchivePages([makePost({ slug: "vai-sumir" }), makePost({ slug: "fica" })], outDir, sitemapPath);
       assert.deepEqual(readdirSync(outDir).sort(), ["fica", "vai-sumir"]);
 
-      generateArchivePages([makePost({ slug: "fica" })], outDir, sitemapPath);
+      // #7578: a poda passou a exigir `allowPrune` explícito. Este teste é o
+      // caso LEGÍTIMO dela (o slug saiu mesmo da fonte, é despublicação real),
+      // então opta por ela — o que a flag impede é a poda ACIDENTAL de páginas
+      // publicadas por um backend que este gerador não lê (Kit, #7388).
+      generateArchivePages([makePost({ slug: "fica" })], outDir, sitemapPath, { allowPrune: true });
       assert.deepEqual(readdirSync(outDir).sort(), ["fica"]);
     } finally {
       rmSync(tmp, { recursive: true, force: true });

@@ -30,7 +30,12 @@
  * leitura, ver `kitUnifiedPostToArchivePost` em `lib/site-archive-pages.ts`.
  *
  * Uso:
- *   npx tsx scripts/gen-archive-pages.ts [--posts-dir data/beehiiv-cache/posts] [--out workers/site/public/p] [--sitemap workers/site/public/sitemap.xml]
+ *   npx tsx scripts/gen-archive-pages.ts [--posts-dir data/beehiiv-cache/posts] [--out workers/site/public/p] [--sitemap workers/site/public/sitemap.xml] [--allow-prune]
+ *
+ * `--allow-prune` (#7578): autoriza APAGAR páginas em disco que este gerador
+ * não reproduziria. Sem ele, encontrar qualquer uma é recusa (exit 2) — ver
+ * `WouldDeleteUnknownPagesError`. Necessário desde que a diária passou a
+ * publicar pelo Kit (#7388), fonte que este gerador não lê.
  *
  * Idempotente — pode ser rerodado a qualquer momento pra refletir um cache
  * atualizado (`beehiiv-sync.ts`); sobrescreve os arquivos existentes.
@@ -118,10 +123,42 @@ export interface GenerateResult {
   unresolvedMergeTags: { slug: string; tags: string[] }[];
 }
 
+/**
+ * Erro de recusa do prune (#7578): há páginas em disco que este gerador NÃO
+ * reproduziria, e apagá-las seria perda de dado, não limpeza de órfão.
+ */
+export class WouldDeleteUnknownPagesError extends Error {
+  constructor(readonly slugs: string[]) {
+    super(
+      `gen-archive-pages recusou regenerar: ${slugs.length} página(s) em disco não estão na fonte deste ` +
+        `gerador e seriam APAGADAS — ${slugs.slice(0, 10).join(", ")}${slugs.length > 10 ? ", …" : ""}. ` +
+        `Causa provável: foram publicadas por um backend que este gerador não lê. Ele monta o acervo do ` +
+        `cache Beehiiv (o caminho Kit é gated por 'read_backend', hoje "beehiiv"), enquanto ` +
+        `'publishing.newsletter.backend' é "kit" desde 04/09/2026 (#7388) — toda edição nova nasce fora ` +
+        `da fonte dele. Se a remoção for MESMO desejada (despublicação real), rode com --allow-prune.`,
+    );
+    this.name = "WouldDeleteUnknownPagesError";
+  }
+}
+
+/**
+ * Slugs com página em disco que `published` não reproduziria — os que um
+ * `rmSync(outDir)` destruiria sem que nada os reescrevesse depois.
+ */
+export function findPagesThatWouldBeDeleted(outDir: string, publishedSlugs: Iterable<string>): string[] {
+  if (!existsSync(outDir)) return [];
+  const keep = new Set(publishedSlugs);
+  return readdirSync(outDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && existsSync(join(outDir, d.name, "index.html")) && !keep.has(d.name))
+    .map((d) => d.name)
+    .sort();
+}
+
 export function generateArchivePages(
   posts: ArchivePost[],
   outDir: string,
   sitemapPath: string,
+  options: { allowPrune?: boolean } = {},
 ): GenerateResult {
   const published = selectPublishedPosts(posts);
   const skipped: { slug: string; reason: string }[] = [];
@@ -129,6 +166,23 @@ export function generateArchivePages(
 
   // Regenera do zero — evita órfão de um slug que saiu do cache (ex:
   // despublicado) continuar servindo página velha.
+  //
+  // #7578: mas SÓ depois de confirmar que a regeneração reescreve tudo que
+  // está lá. Esse `rmSync` nasceu quando o cache Beehiiv era a única fonte de
+  // páginas, e "está no disco mas não no cache" só podia significar
+  // despublicado. Isso deixou de valer em 04/09/2026, quando
+  // `publishing.newsletter.backend` virou "kit" (#7388) e `read_backend`
+  // continuou "beehiiv": edição publicada pelo Kit escreve em `outDir` via
+  // `publish-edition-site-page.ts` e NUNCA aparece na fonte deste gerador.
+  // Rodá-lo apagaria essas páginas do DISCO — perda silenciosa de conteúdo
+  // que nem `reconcile-site-sitemap.ts` recupera (ele só reconcilia o sitemap
+  // a partir de páginas existentes; recuperar exige re-rodar
+  // `publish-edition-site-page.ts` por slug). Falha fechada, nomeia as
+  // páginas, e exige `--allow-prune` para o caso legítimo.
+  const wouldDelete = findPagesThatWouldBeDeleted(outDir, published.map((p) => p.slug));
+  if (wouldDelete.length > 0 && !options.allowPrune) {
+    throw new WouldDeleteUnknownPagesError(wouldDelete);
+  }
   if (existsSync(outDir)) {
     rmSync(outDir, { recursive: true, force: true });
   }
@@ -202,7 +256,22 @@ async function main() {
   // archiveUrlForSlug (canonical, diretório de saída) nunca veem o valor
   // quebrado. Ver docstring de LEGACY_SLUG_CORRECTIONS.
   const posts = applyLegacySlugCorrections([...loadPosts(postsDir), ...loadKitArchivePosts()]);
-  const result = generateArchivePages(posts, outDir, sitemapPath);
+  // #7578: sem `--allow-prune`, o gerador RECUSA rodar quando encontraria
+  // páginas em disco que não reproduziria (hoje: toda edição publicada pelo
+  // Kit). Antes disso ele as apagava em silêncio. Sai 2 pra distinguir
+  // "recusa deliberada, dado intacto" de crash.
+  let result: GenerateResult;
+  try {
+    result = generateArchivePages(posts, outDir, sitemapPath, {
+      allowPrune: process.argv.includes("--allow-prune"),
+    });
+  } catch (e) {
+    if (e instanceof WouldDeleteUnknownPagesError) {
+      console.error(`gen-archive-pages: ${e.message}`);
+      process.exit(2);
+    }
+    throw e;
+  }
 
   console.log(`gen-archive-pages: ${result.written} páginas escritas em ${outDir}`);
   if (result.skipped.length > 0) {

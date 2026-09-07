@@ -25,6 +25,7 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { publishDateToIso, type ArchivePost } from "./site-archive-pages.ts";
 
 export const DEFAULT_PAGES_DIR = "workers/site/public/p";
 export const DEFAULT_SITEMAP = "workers/site/public/sitemap.xml";
@@ -65,6 +66,22 @@ export function findOrphanSlugs(pageSlugs: string[], sitemapXml: string): string
   return pageSlugs.filter((s) => !declared.has(s));
 }
 
+/** Resultado de `buildSlugDateMap` — o mapa e os arquivos de cache ilegíveis. */
+export interface SlugDateMapResult {
+  /** slug → `YYYY-MM-DD`. Vazio quando `data/` não existe (CI, clone fresco). */
+  map: Map<string, string>;
+  /**
+   * Arquivos do cache Beehiiv que não puderam ser lidos ou parseados.
+   *
+   * Existe porque "mapa vazio" tem DUAS causas de significado oposto: `data/`
+   * ausente (esperado em CI) e `data/` presente com todo arquivo ilegível
+   * (corrupção sistêmica, ou mudança de schema upstream). Sem esta lista as
+   * duas colapsam na mesma saída silenciosa — a classe de falha que este
+   * módulo inteiro existe para acabar. Quem chama reporta a diferença.
+   */
+  corrupt: string[];
+}
+
 /**
  * slug → `YYYY-MM-DD` para o `<lastmod>`, unindo as duas fontes disponíveis.
  *
@@ -73,33 +90,43 @@ export function findOrphanSlugs(pageSlugs: string[], sitemapXml: string): string
  * Kit (`backend = "kit"`, #7388), que não alimenta aquele cache. Um mapa só
  * cobriria metade do acervo.
  *
+ * A data do lado Beehiiv sai de `publishDateToIso` (`site-archive-pages.ts`),
+ * a MESMA função que o sitemap normal usa — e não de `displayed_date ??
+ * publish_date` cru. A diferença importa nas 6 edições mais antigas, cujo
+ * `publish_date` aponta para o dia do import em lote e não para o envio real
+ * (`beehiiv-publish-date-overrides.json`, #4796): resolver isso à mão aqui
+ * escreveria uma data errada justamente nas que já têm correção conhecida.
+ *
  * As duas fontes vivem em `data/`, que é gitignored (junction do OneDrive) —
- * em CI e em clone fresco este mapa vem VAZIO, e quem chama precisa tratar
+ * em CI e em clone fresco o mapa vem VAZIO, e quem chama precisa tratar
  * `undefined` como "entra sem lastmod", nunca como erro. `lastmod` é opcional
  * no protocolo de sitemap; URL indexável sem data é melhor que URL invisível.
  */
 export function buildSlugDateMap(
   postsDir = BEEHIIV_POSTS_DIR,
   editionsRoot = EDITIONS_ROOT,
-): Map<string, string> {
+): SlugDateMapResult {
   const map = new Map<string, string>();
+  const corrupt: string[] = [];
 
   if (existsSync(postsDir)) {
     for (const file of readdirSync(postsDir)) {
       if (!file.endsWith(".json")) continue;
       try {
-        const post = JSON.parse(readFileSync(join(postsDir, file), "utf8"));
-        const slug: string | undefined = post.slug ?? post.web_settings?.slug;
-        const raw = post.displayed_date ?? post.publish_date;
-        if (!slug || raw == null) continue;
-        // `publish_date` do cache é epoch em SEGUNDOS; `displayed_date` pode
-        // vir como string ISO. Number.isFinite separa os dois sem adivinhar.
-        const ms = typeof raw === "number" ? raw * 1000 : Date.parse(String(raw));
-        if (!Number.isFinite(ms)) continue;
-        map.set(slug, new Date(ms).toISOString().slice(0, 10));
-      } catch {
+        const post = JSON.parse(readFileSync(join(postsDir, file), "utf8")) as ArchivePost & {
+          web_settings?: { slug?: string };
+        };
+        const slug = post.slug ?? post.web_settings?.slug;
+        if (!slug) continue;
+        const iso = publishDateToIso(post);
+        if (iso) map.set(slug, iso);
+      } catch (e) {
         // Um arquivo de cache corrompido não pode derrubar a reconciliação
-        // inteira — a página segue entrando no sitemap, só que sem data.
+        // inteira — a página segue entrando no sitemap, só que sem data. Mas
+        // engolir sem deixar rastro esconderia corrupção SISTÊMICA (schema
+        // mudou, diretório ilegível) atrás do mesmo silêncio de "sem cache":
+        // por isso nomeia o arquivo e devolve a lista em `corrupt`.
+        corrupt.push(`${file}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   }
@@ -117,10 +144,14 @@ export function buildSlugDateMap(
         // enquanto AAMMDD é a data EDITORIAL da edição. Coincidem no caso
         // normal e divergem nas importadas (#4796) — ali o cache é a verdade.
         if (!slug || map.has(slug)) continue;
-        map.set(slug, `20${ed.slice(0, 2)}-${ed.slice(2, 4)}-${ed.slice(4, 6)}`);
+        // Valida MÊS e DIA, não só "são 6 dígitos": `/^\d{6}$/` aceita
+        // "999999" e produziria `<lastmod>2099-99-99`, um valor inválido que
+        // o crawler descarta em silêncio. Fora de faixa entra sem data.
+        const iso = `20${ed.slice(0, 2)}-${ed.slice(2, 4)}-${ed.slice(4, 6)}`;
+        if (!Number.isNaN(Date.parse(`${iso}T00:00:00Z`))) map.set(slug, iso);
       }
     }
   }
 
-  return map;
+  return { map, corrupt };
 }

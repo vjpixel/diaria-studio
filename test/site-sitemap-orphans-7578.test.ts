@@ -31,7 +31,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -40,7 +40,13 @@ import {
   listPageSlugs,
   slugsInSitemap,
 } from "../scripts/lib/site-sitemap-orphans.ts";
-import { STAGE_6_RULES } from "../scripts/lib/invariant-checks/stage-6.ts";
+import { STAGE_6_RULES, checkSiteSitemapNoOrphans } from "../scripts/lib/invariant-checks/stage-6.ts";
+import { main as cliMain } from "../scripts/reconcile-site-sitemap.ts";
+import {
+  findPagesThatWouldBeDeleted,
+  generateArchivePages,
+  WouldDeleteUnknownPagesError,
+} from "../scripts/gen-archive-pages.ts";
 
 function sitemapWith(slugs: string[]): string {
   const urls = slugs
@@ -114,7 +120,7 @@ describe("#7578 — detecção de página órfã do sitemap", () => {
 
   it("buildSlugDateMap devolve mapa vazio quando data/ não existe (CI, clone fresco)", () => {
     const ausente = join(tmpdir(), "nao-existe-7578");
-    assert.equal(buildSlugDateMap(ausente, ausente).size, 0);
+    assert.equal(buildSlugDateMap(ausente, ausente).map.size, 0);
   });
 
   it("buildSlugDateMap mapeia a edição publicada pelo Kit via 05-edition-url.txt", () => {
@@ -125,7 +131,7 @@ describe("#7578 — detecção de página órfã do sitemap", () => {
     mkdirSync(internal, { recursive: true });
     writeFileSync(join(internal, "05-edition-url.txt"), "https://diar.ia.br/p/nvidia-controla\n", "utf8");
     try {
-      const map = buildSlugDateMap(join(tmpdir(), "nao-existe-7578"), root);
+      const { map } = buildSlugDateMap(join(tmpdir(), "nao-existe-7578"), root);
       assert.equal(map.get("nvidia-controla"), "2026-09-04");
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -161,6 +167,192 @@ describe("#7578 — o invariante de Stage 6 bloqueia o gate", () => {
     // O repo real precisa estar limpo; se houver órfã, a violação é error.
     for (const v of rule.run(mkdtempSync(join(tmpdir(), "vazio-7578-")))) {
       assert.equal(v.severity, "error");
+    }
+  });
+});
+
+/**
+ * Achados do fleet de review da PR #7584 (07/09/2026). Os dois P1 diziam a
+ * mesma coisa por caminhos diferentes: **o corretor não verificava o próprio
+ * conserto, e o invariante novo não tinha teste que de fato executasse.** Os
+ * dois reintroduziam, DENTRO da correção, a classe de falha silenciosa que a
+ * correção existe para acabar.
+ */
+describe("#7578 — a CLI verifica o próprio conserto (achado P1 do review)", () => {
+  it("--check devolve 2 quando há órfã e 0 quando não há", () => {
+    const dir = makePagesDir(["a", "b"]);
+    const smOk = join(dir, "ok.xml");
+    const smFalta = join(dir, "falta.xml");
+    writeFileSync(smOk, sitemapWith(["a", "b"]), "utf8");
+    writeFileSync(smFalta, sitemapWith(["a"]), "utf8");
+    try {
+      assert.equal(cliMain(["--check", "--pages-dir", dir, "--sitemap", smOk]), 0);
+      assert.equal(cliMain(["--check", "--pages-dir", dir, "--sitemap", smFalta]), 2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("modo escrita acrescenta a órfã e deixa o sitemap sem nenhuma", () => {
+    const dir = makePagesDir(["a", "b"]);
+    const sm = join(dir, "sitemap.xml");
+    writeFileSync(sm, sitemapWith(["a"]), "utf8");
+    try {
+      assert.equal(cliMain(["--pages-dir", dir, "--sitemap", sm]), 0);
+      const depois = readFileSync(sm, "utf8");
+      assert.ok(depois.includes("/p/b"), "a órfã precisa ter entrado no sitemap");
+      assert.deepEqual(findOrphanSlugs(listPageSlugs(dir), depois), []);
+      // Idempotente: rodar de novo não duplica nem falha.
+      assert.equal(cliMain(["--pages-dir", dir, "--sitemap", sm]), 0);
+      assert.equal((readFileSync(sm, "utf8").match(/\/p\/b</g) ?? []).length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("REGRESSÃO P1: XML sem fechamento de urlset NÃO reporta sucesso", () => {
+    // Sem esta guarda, `.replace("</urlset>", …)` devolvia a string intacta,
+    // o script imprimia "1 entrada acrescentada" e saía 0 — mandando o editor
+    // de volta ao gate achando que tinha corrigido.
+    const dir = makePagesDir(["a", "b"]);
+    const sm = join(dir, "quebrado.xml");
+    writeFileSync(sm, '<?xml version="1.0"?>\n<urlset>\n  <url><loc>https://diar.ia.br/p/a</loc></url>\n', "utf8");
+    try {
+      assert.notEqual(cliMain(["--pages-dir", dir, "--sitemap", sm]), 0, "nunca pode sair 0 sem ter inserido");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sitemap ausente e diretório sem página nenhuma saem 1, não 0", () => {
+    const dir = makePagesDir(["a"]);
+    const vazio = mkdtempSync(join(tmpdir(), "vazio-cli-7578-"));
+    const sm = join(dir, "sitemap.xml");
+    writeFileSync(sm, sitemapWith(["a"]), "utf8");
+    try {
+      assert.equal(cliMain(["--pages-dir", dir, "--sitemap", join(dir, "nao-existe.xml")]), 1);
+      assert.equal(cliMain(["--pages-dir", vazio, "--sitemap", sm]), 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(vazio, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#7578 — o invariante de Stage 6 realmente executa (achado P1 do review)", () => {
+  it("acusa error quando há órfã, com regra e issue corretas", () => {
+    const dir = makePagesDir(["a", "orfa"]);
+    const sm = join(dir, "sitemap.xml");
+    writeFileSync(sm, sitemapWith(["a"]), "utf8");
+    try {
+      const v = checkSiteSitemapNoOrphans("qualquer-edicao", { pagesDir: dir, sitemapPath: sm });
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "site-sitemap-no-orphans");
+      assert.equal(v[0].severity, "error");
+      assert.equal(v[0].source_issue, "#7578");
+      assert.match(v[0].message, /orfa/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("REGRESSÃO: diretório de páginas VAZIO com sitemap cheio é perda de conteúdo, não zero órfãs", () => {
+    // O pior caso possível — o acervo inteiro sumir do disco — passava como
+    // verde, porque `findOrphanSlugs([], xml)` devolve `[]`.
+    const vazio = mkdtempSync(join(tmpdir(), "apagado-7578-"));
+    const sm = join(vazio, "sitemap.xml");
+    writeFileSync(sm, sitemapWith(["a", "b", "c"]), "utf8");
+    try {
+      const v = checkSiteSitemapNoOrphans("qualquer-edicao", { pagesDir: vazio, sitemapPath: sm });
+      assert.equal(v.length, 1, "sumiço do acervo inteiro não pode passar como verde");
+      assert.equal(v[0].severity, "error");
+      assert.match(v[0].message, /perda de conteúdo/);
+    } finally {
+      rmSync(vazio, { recursive: true, force: true });
+    }
+  });
+
+  it("ausência do diretório inteiro continua não violando (checkout parcial)", () => {
+    const ausente = join(tmpdir(), "nao-existe-7578");
+    assert.deepEqual(checkSiteSitemapNoOrphans("x", { pagesDir: ausente, sitemapPath: ausente }), []);
+  });
+});
+
+describe("#7578 — buildSlugDateMap reporta cache ilegível em vez de engolir", () => {
+  it("arquivo corrompido entra em `corrupt` e não derruba o resto", () => {
+    const posts = mkdtempSync(join(tmpdir(), "posts-7578-"));
+    writeFileSync(join(posts, "bom.json"), JSON.stringify({ slug: "ok", publish_date: 1787937295 }), "utf8");
+    writeFileSync(join(posts, "ruim.json"), "{ isto nao e json", "utf8");
+    try {
+      const { map, corrupt } = buildSlugDateMap(posts, join(tmpdir(), "nao-existe-7578"));
+      assert.ok(map.has("ok"), "o arquivo bom precisa continuar sendo lido");
+      assert.equal(corrupt.length, 1);
+      assert.match(corrupt[0], /ruim\.json/);
+    } finally {
+      rmSync(posts, { recursive: true, force: true });
+    }
+  });
+
+  it("cache Beehiiv tem precedência sobre a data editorial do AAMMDD", () => {
+    const posts = mkdtempSync(join(tmpdir(), "posts-prec-7578-"));
+    const eds = mkdtempSync(join(tmpdir(), "eds-prec-7578-"));
+    // O cache diz uma data; o AAMMDD do diretório diz 2026-09-04. O cache vence.
+    writeFileSync(join(posts, "p.json"), JSON.stringify({ slug: "dupla", publish_date: 1787937295 }), "utf8");
+    const internal = join(eds, "2609", "260904", "_internal");
+    mkdirSync(internal, { recursive: true });
+    writeFileSync(join(internal, "05-edition-url.txt"), "https://diar.ia.br/p/dupla\n", "utf8");
+    try {
+      const { map } = buildSlugDateMap(posts, eds);
+      assert.notEqual(map.get("dupla"), "2026-09-04", "a data editorial não pode sobrescrever a do cache");
+    } finally {
+      rmSync(posts, { recursive: true, force: true });
+      rmSync(eds, { recursive: true, force: true });
+    }
+  });
+
+  it("AAMMDD fora de faixa não vira lastmod inválido", () => {
+    const eds = mkdtempSync(join(tmpdir(), "eds-inval-7578-"));
+    const internal = join(eds, "2699", "269999", "_internal");
+    mkdirSync(internal, { recursive: true });
+    writeFileSync(join(internal, "05-edition-url.txt"), "https://diar.ia.br/p/impossivel\n", "utf8");
+    try {
+      const { map } = buildSlugDateMap(join(tmpdir(), "nao-existe-7578"), eds);
+      assert.equal(map.get("impossivel"), undefined, "2099-99-99 nunca pode entrar no sitemap");
+    } finally {
+      rmSync(eds, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#7578 — gen-archive-pages não apaga página que não conhece", () => {
+  it("REGRESSÃO P0: recusa (e não apaga) quando há página fora da sua fonte", () => {
+    // `gen-archive-pages` faz rmSync do diretório inteiro e reescreve só o que
+    // vem do cache Beehiiv. Com a diária publicando pelo Kit (#7388), rodá-lo
+    // apagaria do DISCO toda edição nova — perda que nem o reconcile recupera,
+    // porque ele só reconcilia o sitemap a partir de páginas existentes.
+    const dir = makePagesDir(["do-cache", "publicada-pelo-kit"]);
+    try {
+      assert.deepEqual(findPagesThatWouldBeDeleted(dir, ["do-cache"]), ["publicada-pelo-kit"]);
+      assert.throws(
+        () => generateArchivePages([], dir, join(dir, "sitemap.xml")),
+        WouldDeleteUnknownPagesError,
+        "sem --allow-prune, precisa recusar em vez de apagar",
+      );
+      assert.ok(
+        existsSync(join(dir, "publicada-pelo-kit", "index.html")),
+        "a página não pode ter sido apagada pela tentativa recusada",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("nada a apagar quando a fonte reproduz todas as páginas", () => {
+    const dir = makePagesDir(["a", "b"]);
+    try {
+      assert.deepEqual(findPagesThatWouldBeDeleted(dir, ["a", "b"]), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
