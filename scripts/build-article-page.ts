@@ -27,7 +27,9 @@ import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { requireMonthlyCycleArg, monthlyDir } from "./lib/mensal/monthly-paths.ts";
 import { buildArticleHtml } from "./lib/mensal/build-article-page.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
 import { DIARIA_ARTIGO_URL } from "./lib/canonical-urls.ts";
+import { readArtigoMensalNamespaceId } from "./lib/mensal/artigo-mensal-kv-namespaces.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, "..");
@@ -37,7 +39,7 @@ const REPO_ROOT = resolve(__dir, "..");
  * Placeholder até o editor rodar `wrangler kv namespace create ARTICLES --remote`
  * (deploy real fora do escopo desta unidade, #3940).
  */
-export const ARTICLE_KV_NAMESPACE_ID = "REPLACE_ME_APOS_CRIAR_NAMESPACE_ARTICLES";
+export const ARTICLE_KV_NAMESPACE_ID = readArtigoMensalNamespaceId("ARTICLES");
 
 export function articleKvKey(cycle: string): string {
   return `article:${cycle}`;
@@ -67,6 +69,12 @@ async function main(): Promise<void> {
   }
 
   if (hasFlag(argv, "push")) {
+    // `uploadTextToWorkerKV` lê CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_WORKERS_TOKEN
+    // do ambiente, e nada na cadeia de imports deste script carregava o
+    // `.env` (o de allowlist carregava, por outro caminho) — o `--push`
+    // morria com "não definidos" mesmo com as chaves no arquivo. Só no
+    // caminho de push: o dry-run não precisa de credencial nenhuma.
+    loadProjectEnv(REPO_ROOT);
     console.error(
       `[build-article-page] --push: enviando article:${cycle} (${page.html.length} bytes) pro KV ARTICLES...`,
     );

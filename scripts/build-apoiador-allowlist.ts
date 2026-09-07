@@ -52,6 +52,7 @@ import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { buildApoiosData, computeRewardGroup, type ContactWithStatus } from "./studio-ui/studio-apoios.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
+import { readArtigoMensalNamespaceId } from "./lib/mensal/artigo-mensal-kv-namespaces.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, "..");
@@ -61,7 +62,7 @@ const REPO_ROOT = resolve(__dir, "..");
  * Placeholder até o editor rodar `wrangler kv namespace create ALLOWLIST --remote`
  * (deploy real fora do escopo desta unidade, #3940).
  */
-export const APOIADOR_ALLOWLIST_KV_NAMESPACE_ID = "REPLACE_ME_APOS_CRIAR_NAMESPACE_ALLOWLIST";
+export const APOIADOR_ALLOWLIST_KV_NAMESPACE_ID = readArtigoMensalNamespaceId("ALLOWLIST");
 
 /** Chave única do KV ALLOWLIST — valor é o JSON array de e-mails. */
 export const APOIADOR_ALLOWLIST_KV_KEY = "emails";
