@@ -244,7 +244,14 @@ export function buildFlatCardTexts(
   contentWindow: string[],
 ): { cover: { kicker: string; title: string; footer: string }; cta: { kicker: string; title: string; footer: string } } {
   const range = weekRangeLabel(contentWindow);
-  const coverTitle = mode === "highlights" ? "Os principais destaques de IA da semana" : "Os mais clicados da semana";
+  // #7571: "Os mais clicados da semana" nomeava a metodologia (clique) em vez
+  // do resultado — pouco convidativo pra quem não conhece a diar.ia.br e não
+  // sabe o que "mais clicado" quer dizer aqui. "Mais lidas" comunica
+  // popularidade de forma natural, sem soar a jargão de analytics, e ainda
+  // deixa implícito que a seleção não foi editorial (contraste com "Os
+  // principais destaques", que soa a escolha nossa) — decisão do editor,
+  // entre 6 alternativas propostas.
+  const coverTitle = mode === "highlights" ? "Os principais destaques de IA da semana" : "As notícias de IA mais lidas da semana";
   return {
     cover: { kicker: "Resumo semanal", title: coverTitle, footer: range ? `${range} · diar.ia.br` : "diar.ia.br" },
     cta: {
@@ -844,8 +851,9 @@ async function runOneMode(
   const timezone = platformConfig?.publishing?.social?.timezone ?? "America/Sao_Paulo";
   const scheduledAt = computeWeeklyScheduledAt({ saturday, time, timezone, dayOffset });
   // #5905: seleção manual (--force-urls) torna a intro padrão de "clicked"
-  // ("Os mais clicados da semana") factualmente incorreta — a ordem não vem
-  // mais do ranking. `introOverride` troca por uma frase neutra nesse caso;
+  // ("As notícias de IA mais lidas da semana", #7571) factualmente incorreta
+  // — a ordem não vem mais do ranking. `introOverride` troca por uma frase
+  // neutra nesse caso;
   // `undefined` preserva a intro de sempre pro caminho algorítmico.
   const introOverride = manualOverride ? "Os destaques da semana na diar.ia.br:" : undefined;
   const caption = formatInstagramWeekly(items, mode, introOverride);
