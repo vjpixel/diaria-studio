@@ -356,3 +356,44 @@ describe("#7578 — gen-archive-pages não apaga página que não conhece", () =
     }
   });
 });
+
+/**
+ * `--keep-unknown` (#7576) — a terceira saída entre apagar e desistir.
+ *
+ * Com dois backends escrevendo em `public/p/`, propagar uma mudança de template
+ * ao acervo inteiro exigia escolher entre `rmSync` (apaga o que veio do Kit) e
+ * a recusa do #7578 (não roda). Este modo reescreve o que o gerador conhece e
+ * não toca no resto.
+ */
+describe("#7576 — gen-archive-pages --keep-unknown regenera sem apagar", () => {
+  it("não apaga a página desconhecida, e não precisa de --allow-prune", () => {
+    const dir = makePagesDir(["do-cache", "publicada-pelo-kit"]);
+    try {
+      assert.doesNotThrow(() =>
+        generateArchivePages([], dir, join(dir, "sitemap.xml"), { unknownPages: "keep" }),
+      );
+      assert.ok(
+        existsSync(join(dir, "publicada-pelo-kit", "index.html")),
+        "a página fora da fonte do gerador precisa sobreviver intacta",
+      );
+      assert.ok(existsSync(join(dir, "do-cache", "index.html")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("o sitemap resultante só conhece a fonte do gerador — reconcile depois continua obrigatório", () => {
+    const dir = makePagesDir(["publicada-pelo-kit"]);
+    const sm = join(dir, "sitemap.xml");
+    try {
+      generateArchivePages([], dir, sm, { unknownPages: "keep" });
+      assert.deepEqual(
+        findOrphanSlugs(listPageSlugs(dir), readFileSync(sm, "utf8")),
+        ["publicada-pelo-kit"],
+        "é justamente por isso que reconcile-site-sitemap roda logo depois",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -438,7 +438,7 @@ describe("generateArchivePages (integração, tmpdir)", () => {
       // caso LEGÍTIMO dela (o slug saiu mesmo da fonte, é despublicação real),
       // então opta por ela — o que a flag impede é a poda ACIDENTAL de páginas
       // publicadas por um backend que este gerador não lê (Kit, #7388).
-      generateArchivePages([makePost({ slug: "fica" })], outDir, sitemapPath, { allowPrune: true });
+      generateArchivePages([makePost({ slug: "fica" })], outDir, sitemapPath, { unknownPages: "prune" });
       assert.deepEqual(readdirSync(outDir).sort(), ["fica"]);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
@@ -1072,5 +1072,39 @@ describe("LEGACY_SLUG_CORRECTIONS / applyLegacySlugCorrections (#7280)", () => {
       );
       assert.ok(!sitemap.includes(oldLoc), `slug antigo não deveria sobrar no sitemap: ${oldSlug}`);
     }
+  });
+});
+
+/**
+ * #7576 — a ponta a ponta que faltava.
+ *
+ * O review da PR #7588 apontou que os testes do CTA exercitavam
+ * `editionCtaBlock()` isolado e `injectBeforeBodyEnd` com HTML sintético, mas
+ * NADA verificava que `buildArchivePageHtml` — a função que de fato produz as
+ * 261 páginas — entrega uma página com o convite. Ou seja: a regressão literal
+ * que a issue existe para corrigir (0 formulários nas páginas publicadas) podia
+ * voltar sem que nenhum teste notasse.
+ */
+describe("#7576 — a página REAL sai com o convite a assinar", () => {
+  it("buildArchivePageHtml entrega formulário, modal e script", () => {
+    const html = buildArchivePageHtml(makePost());
+    assert.match(html, /id="cta-rodape"/, "formulário do rodapé");
+    assert.match(html, /id="diaria-cta-modal"/, "modal");
+    assert.match(html, /jogar\/subscribe/, "endpoint de cadastro");
+    assert.ok(html.includes("<form"), "a regressão literal: a página publicada tem formulário");
+  });
+
+  it("o convite entra ANTES do fechamento do body, não solto no fim do arquivo", () => {
+    const html = buildArchivePageHtml(makePost());
+    const posCta = html.indexOf('id="diaria-cta-modal"');
+    const posBody = html.lastIndexOf("</body>");
+    assert.ok(posCta > 0 && posBody > posCta, "o bloco precisa ficar dentro do body");
+  });
+
+  it("o convite passa pelo guard de merge tag — não carrega {{...}} nenhum", () => {
+    // A injeção acontece ANTES de `verifyNoUnresolvedMergeTags` de propósito:
+    // se um template futuro do CTA vazar uma merge tag, o guard existente pega,
+    // em vez de publicá-la.
+    assert.doesNotThrow(() => buildArchivePageHtml(makePost()));
   });
 });
