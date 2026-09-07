@@ -32,6 +32,12 @@
  * Uso:
  *   npx tsx scripts/gen-archive-pages.ts [--posts-dir data/beehiiv-cache/posts] [--out workers/site/public/p] [--sitemap workers/site/public/sitemap.xml] [--allow-prune]
  *
+ * `--keep-unknown` (#7576): regenera todas as páginas que este gerador conhece
+ * e NÃO TOCA nas demais (sem `rmSync` do diretório). É o modo para propagar
+ * uma mudança de template ao acervo inteiro enquanto dois backends escrevem no
+ * mesmo lugar. Não apaga nada; o sitemap sai só com o que ele conhece, então
+ * rodar `reconcile-site-sitemap.ts` depois continua obrigatório.
+ *
  * `--allow-prune` (#7578): autoriza APAGAR páginas em disco que este gerador
  * não reproduziria. Sem ele, encontrar qualquer uma é recusa (exit 2) — ver
  * `WouldDeleteUnknownPagesError`. Necessário desde que a diária passou a
@@ -158,7 +164,7 @@ export function generateArchivePages(
   posts: ArchivePost[],
   outDir: string,
   sitemapPath: string,
-  options: { allowPrune?: boolean } = {},
+  options: { allowPrune?: boolean; keepUnknown?: boolean } = {},
 ): GenerateResult {
   const published = selectPublishedPosts(posts);
   const skipped: { slug: string; reason: string }[] = [];
@@ -179,11 +185,17 @@ export function generateArchivePages(
   // a partir de páginas existentes; recuperar exige re-rodar
   // `publish-edition-site-page.ts` por slug). Falha fechada, nomeia as
   // páginas, e exige `--allow-prune` para o caso legítimo.
+  //
+  // `keepUnknown` é a terceira saída, e a certa para uma regeneração em lote
+  // com dois backends escrevendo no mesmo diretório: reescreve TODAS as páginas
+  // que este gerador conhece e não toca nas demais. Não apaga (ao contrário do
+  // prune) e não desiste (ao contrário da recusa) — é o modo para propagar uma
+  // mudança de template ao acervo inteiro sem perder o que veio do Kit.
   const wouldDelete = findPagesThatWouldBeDeleted(outDir, published.map((p) => p.slug));
-  if (wouldDelete.length > 0 && !options.allowPrune) {
+  if (wouldDelete.length > 0 && !options.allowPrune && !options.keepUnknown) {
     throw new WouldDeleteUnknownPagesError(wouldDelete);
   }
-  if (existsSync(outDir)) {
+  if (existsSync(outDir) && !options.keepUnknown) {
     rmSync(outDir, { recursive: true, force: true });
   }
   mkdirSync(outDir, { recursive: true });
@@ -264,6 +276,7 @@ async function main() {
   try {
     result = generateArchivePages(posts, outDir, sitemapPath, {
       allowPrune: process.argv.includes("--allow-prune"),
+      keepUnknown: process.argv.includes("--keep-unknown"),
     });
   } catch (e) {
     if (e instanceof WouldDeleteUnknownPagesError) {

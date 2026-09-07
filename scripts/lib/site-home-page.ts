@@ -434,7 +434,13 @@ const FAQS: Array<{ q: string; a: string }> = [
  * Confira seu e-mail…" de uma inscrição de verdade (#6979, achado 3 do
  * review da PR #6976).
  */
-function renderSignupForm(opts: { id: string; onDark?: boolean }): string {
+/**
+ * Exportada desde o #7576: as páginas de edição (`/p/{slug}`) reusam este
+ * MESMO formulário — honeypot, opt-in, UTM da query string, endpoint do worker
+ * `poll` — em vez de inventar um segundo mecanismo de cadastro que teria que
+ * ser mantido em paralelo. Ver `scripts/lib/edition-page-cta.ts`.
+ */
+export function renderSignupForm(opts: { id: string; onDark?: boolean }): string {
   const dark = opts.onDark ?? false;
   const emailId = `${opts.id}-email`;
   return `<form class="signup${dark ? " signup--dark" : ""}" id="${opts.id}" method="POST" action="https://eia.diar.ia.br/jogar/subscribe" aria-label="Assinar diar.ia.br gratuitamente" novalidate>

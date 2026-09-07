@@ -25,6 +25,7 @@
 import { escHtml } from "./html-escape.ts";
 import { loadPublishDateOverrides } from "./beehiiv-publish-date.ts";
 import type { UnifiedCachedPost } from "./shared/edition-cache-reader.ts";
+import { editionCtaBlock } from "./edition-page-cta.ts";
 
 export interface ArchivePost {
   slug: string;
@@ -466,12 +467,44 @@ export function buildArchivePageHtml(post: ArchivePost): string {
   // o lote inteiro — quebrando o deploy do acervo (.github/workflows/deploy-site.yml).
   html = html.replace(/\{\{email_address_id\}\}/gi, "");
 
+  // Convite a assinar (#7576) — formulário no rodapé + modal a 50% de rolagem.
+  // Injetado ANTES do guard abaixo de propósito: o bloco é HTML nosso, sem
+  // merge tag nenhuma, mas passar por `verifyNoUnresolvedMergeTags` junto com
+  // o resto garante que uma regressão futura nele (uma `{{...}}` que escape de
+  // um template) seja pega pelo mesmo mecanismo, em vez de sair publicada.
+  //
+  // A Beehiiv injetava um modal equivalente em cada edição; ele se perdeu no
+  // cutover do apex (#467) e essas páginas ficaram sendo a superfície mais
+  // visitada do domínio sem nenhuma forma de virar assinante (medido em
+  // 07/09/2026: 0 formulários contra 2 na versão Beehiiv da mesma edição).
+  html = injectBeforeBodyEnd(html, editionCtaBlock(), post.slug);
+
   // Guard (#6210) DEPOIS: agora ele valida o HTML que de fato vai ser
   // publicado, e segue pegando toda merge tag não resolvida que o sanitize
   // acima NÃO cobre — que é exatamente o que o #6210 pediu.
   verifyNoUnresolvedMergeTags(html, post.slug);
 
   return html;
+}
+
+/**
+ * Insere `block` imediatamente antes de `</body>`.
+ *
+ * Falha alto se a tag não existir, em vez de deixar o `.replace()` virar no-op
+ * silencioso — mesma disciplina do guard de `<html>` no começo desta função, e
+ * pela mesma razão: uma página publicada sem o convite, sem nenhum erro, é
+ * exatamente o tipo de perda que ninguém percebe até alguém medir meses depois.
+ */
+export function injectBeforeBodyEnd(html: string, block: string, slug: string): string {
+  const BODY_END = /<\/body\s*>/i;
+  if (!BODY_END.test(html)) {
+    throw new Error(
+      `post "${slug}": HTML sem </body> — não há onde injetar o bloco de cadastro (#7576). ` +
+        `Publicar assim geraria uma página de edição sem nenhuma forma de assinar.`,
+    );
+  }
+  return html.replace(BODY_END, `${block}
+</body>`);
 }
 
 export interface SitemapEntry {
