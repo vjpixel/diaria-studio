@@ -20,16 +20,18 @@
  *   npx tsx scripts/ads-rolling-cac.ts
  *   npx tsx scripts/ads-rolling-cac.ts --ate 2026-09-06 --dias 3
  *   npx tsx scripts/ads-rolling-cac.ts --json
+ *   npx tsx scripts/ads-rolling-cac.ts --csv ... --run-state ... --edicoes ...
  *
  * `--ate` default: ontem em BRT (o último dia FECHADO — o dia em curso nunca
  * entra, ver docstring da lib).
  *
  * Exit codes:
  *   0 — calculou (mesmo com braços não-comparáveis: isso é resultado, não erro)
- *   1 — CSV ausente, ilegível, ou com erro de parsing
+ *   1 — uso inválido (--dias/--ate), CSV ausente ou com erro de parsing, ou
+ *       algum braço sem linha de apuração no último dia da janela
  */
 import { existsSync, readFileSync } from "node:fs";
-import { parseClicksCsv } from "./lib/ads-test-watch.ts";
+import { findMissingClicksBracosForDate, parseClicksCsv } from "./lib/ads-test-watch.ts";
 import {
   DEFAULT_WINDOW_DAYS,
   brtDateOf,
@@ -152,6 +154,11 @@ export function main(argv = process.argv.slice(2)): number {
     return 1;
   }
   const csvPath = get("--csv") ?? CLICKS_CSV;
+  // `--run-state`/`--edicoes` existem pela mesma razão que `--csv`: sem elas o
+  // guard de cobertura abaixo leria a lista de braços de PRODUÇÃO mesmo com o
+  // CSV apontado para outro lugar, e nenhum teste da CLI seria hermético.
+  const runStatePath = get("--run-state") ?? RUN_STATE;
+  const edicoesPath = get("--edicoes") ?? EDICOES_JSONL;
 
   if (!existsSync(csvPath)) {
     console.error(`[ads-rolling-cac] CSV ausente: ${csvPath}`);
@@ -159,16 +166,39 @@ export function main(argv = process.argv.slice(2)): number {
   }
   const { rows, errors } = parseClicksCsv(readFileSync(csvPath, "utf8"));
   if (errors.length > 0) {
-    // Nunca calcular sobre um CSV que não parseou inteiro: o parser engole
-    // linhas em silêncio quando a quebra de linha não bate (CRLF vs LF), e o
-    // resultado seria uma janela silenciosamente incompleta.
+    // Erro de validação de campo numa linha que PARSEOU. Não calcular sobre um
+    // CSV parcialmente inválido.
     console.error(`[ads-rolling-cac] ${errors.length} erro(s) de parsing em ${csvPath} — não é seguro calcular:`);
     for (const e of errors) console.error(`  linha ${e.line}: ${e.reason}`);
     return 1;
   }
 
-  const bracos = lerBracos(RUN_STATE, [...new Set(rows.map((r) => r.canal))]);
-  const edicoes = lerEdicoes(EDICOES_JSONL);
+  const bracos = lerBracos(runStatePath, [...new Set(rows.map((r) => r.canal))]);
+
+  // Cobertura do último dia — e este guard NÃO é redundante com o de cima.
+  //
+  // O incidente de 07/09/2026 (memória `clicks-2608-csv-e-crlf`) foi: linhas
+  // anexadas com LF num arquivo CRLF sumiram do parse e `errors[]` veio VAZIO.
+  // A última coluna (`fonte`) é texto livre entre aspas, e uma quebra de linha
+  // solta dentro de um campo citado é conteúdo, não fim de linha — as linhas seguintes são
+  // engolidas pelo campo da anterior e nunca chegam a existir como linha, então
+  // nunca chegam à validação que alimenta `errors[]`. O guard acima é cego
+  // para isso por construção.
+  //
+  // O que dá para checar é COBERTURA: se um braço registrado não tem linha no
+  // último dia da janela, ou a apuração daquele dia não rodou para ele, ou a
+  // linha foi engolida. Nos dois casos a janela sai errada e é melhor parar.
+  const faltando = findMissingClicksBracosForDate(rows, bracos, ate as never);
+  if (faltando.length > 0) {
+    console.error(
+      `[ads-rolling-cac] sem linha de apuração em ${ate} para: ${faltando.join(", ")}. ` +
+        `Ou a apuração do dia não rodou para esse(s) braço(s), ou a linha foi engolida pelo parser ` +
+        `(quebra de linha LF num arquivo CRLF some sem erro — ver clicks-2608-csv-e-crlf). ` +
+        `Conferir o CSV antes de confiar na janela.`,
+    );
+    return 1;
+  }
+  const edicoes = lerEdicoes(edicoesPath);
   const resultados = bracos.map((canal) => computeRollingWindow(rows, { canal, ate, dias, edicoes }));
 
   if (argv.includes("--json")) {

@@ -36,20 +36,31 @@
  * BRT cai na terça em UTC. Numa janela de 3 dias isso é ruído sobre um
  * denominador pequeno.
  *
- * Por isso `BRT_UTC_OFFSET_HOURS` existe e `brtDateOf` é a ÚNICA conversão de
- * instante para dia neste fluxo. Quem contar cadastros do Kit para a janela
- * usa ela, não `toISOString().slice(0,10)`.
+ * Hoje o número de cadastros vem da coluna `cadastros_acumulado`, reconciliada
+ * à mão contra o painel do Kit — não de uma consulta à API. Se algum dia passar
+ * a vir de `created_at` direto do Kit, a conversão é `brtDateOf`, nunca
+ * `toISOString().slice(0,10)`: é aí que o deslocamento apareceria.
  *
  * ## O que este módulo deliberadamente NÃO faz
  *
  * Não ranqueia e não decide nada. Devolve os números e os motivos pelos quais
  * um braço não é comparável (`comparavel: false` + `motivo`); quem escreve o
- * relatório decide o texto. É a mesma separação do #5304: quem mede não
- * ranqueia.
+ * relatório decide o texto. Mesma separação de responsabilidade do #5304, num
+ * domínio diferente: quem mede não ranqueia.
  */
 import type { ClicksCsvRow } from "./ads-test-watch.ts";
 
-/** BRT (America/Sao_Paulo) não tem horário de verão desde 2019 — offset fixo. */
+/**
+ * BRT (America/Sao_Paulo) não tem horário de verão desde 2019 — offset fixo.
+ *
+ * O repo tem os dois padrões: `next-edition-date.ts` e `scheduled-task-status.ts`
+ * convertem via `Intl` com `timeZone: "America/Sao_Paulo"` (sobrevive a uma
+ * mudança futura de política de DST, que já mudou duas vezes por decreto);
+ * `studio-metrics.ts` faz a mesma aritmética de offset fixo daqui. A escolha
+ * aqui é a mais simples de propósito — só é preciso TRUNCAR para o dia, nunca
+ * decompor hora/minuto —, mas é a menos durável das duas. Se a política mudar,
+ * este é um dos lugares a corrigir.
+ */
 export const BRT_UTC_OFFSET_HOURS = -3;
 
 /** Tamanho padrão da janela, em dias fechados. Decisão do editor (#7577). */
