@@ -1,0 +1,126 @@
+/**
+ * scripts/lib/site-sitemap-orphans.ts (#7578)
+ *
+ * Miolo puro da reconciliação `workers/site/public/p/` ⊆ `sitemap.xml`.
+ *
+ * Vive em `lib/` porque tem DOIS consumidores em camadas diferentes: a CLI
+ * `scripts/reconcile-site-sitemap.ts` (corrige) e o invariante de Stage 6
+ * `scripts/lib/invariant-checks/stage-6.ts` (acusa antes do gate). O
+ * invariante não pode importar da CLI — inverteria a direção da dependência
+ * e arrastaria o `process.exit` do entrypoint para dentro de uma checagem.
+ *
+ * ## O invariante, e por que ele importa
+ *
+ * Uma página em `public/p/{slug}/index.html` sem `<loc>` correspondente no
+ * `sitemap.xml` responde 200 em produção e mesmo assim é invisível em DUAS
+ * superfícies:
+ *
+ *   - no buscador, que descobre o acervo pelo sitemap;
+ *   - em `arquivo.diar.ia.br`, cujo acervo é DERIVADO do sitemap do apex em
+ *     request-time (`fetchSitemapXml`/`parseSitemap` em
+ *     `workers/arquivo/src/index.ts`) — não tem fonte de dados própria.
+ *
+ * Corolário que vale ter em mente ao mexer aqui: **consertar o sitemap
+ * conserta o arquivo junto**, sem deploy do Worker `arquivo`.
+ */
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+
+export const DEFAULT_PAGES_DIR = "workers/site/public/p";
+export const DEFAULT_SITEMAP = "workers/site/public/sitemap.xml";
+const BEEHIIV_POSTS_DIR = "data/beehiiv-cache/posts";
+const EDITIONS_ROOT = "data/editions";
+
+/**
+ * Slugs presentes como diretório COM `index.html` — a definição operacional
+ * de "página existe". Diretório vazio (resto de execução interrompida) não
+ * conta: não serve nada, então não faz sentido declará-lo no sitemap.
+ */
+export function listPageSlugs(pagesDir: string): string[] {
+  if (!existsSync(pagesDir)) return [];
+  return readdirSync(pagesDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && existsSync(join(pagesDir, d.name, "index.html")))
+    .map((d) => d.name)
+    .sort();
+}
+
+/**
+ * Slugs já declarados no sitemap.
+ *
+ * Casa a tag `<loc>` INTEIRA sob `/p/`, nunca substring — é a mesma armadilha
+ * que o #7280 corrigiu em `addSitemapEntry`: um slug que é PREFIXO de outro
+ * (`.../p/90-das-pessoas-nao-reconhecem-videos-de-ia` vs
+ * `...-ec15971b8c4f589e`) daria falso positivo, a órfã nunca seria detectada,
+ * e o silêncio seria idêntico ao bug que este módulo existe para pegar.
+ */
+export function slugsInSitemap(xml: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of xml.matchAll(/<loc>\s*[^<]*?\/p\/([^<\/\s]+?)\/?\s*<\/loc>/g)) out.add(m[1]);
+  return out;
+}
+
+/** Órfãs: página no disco sem `<loc>` correspondente. Ordem estável (a de `listPageSlugs`). */
+export function findOrphanSlugs(pageSlugs: string[], sitemapXml: string): string[] {
+  const declared = slugsInSitemap(sitemapXml);
+  return pageSlugs.filter((s) => !declared.has(s));
+}
+
+/**
+ * slug → `YYYY-MM-DD` para o `<lastmod>`, unindo as duas fontes disponíveis.
+ *
+ * Precisa das duas porque as edições vêm de backends diferentes conforme a
+ * data: até 03/09/2026 pela Beehiiv (cache local), de 04/09 em diante pelo
+ * Kit (`backend = "kit"`, #7388), que não alimenta aquele cache. Um mapa só
+ * cobriria metade do acervo.
+ *
+ * As duas fontes vivem em `data/`, que é gitignored (junction do OneDrive) —
+ * em CI e em clone fresco este mapa vem VAZIO, e quem chama precisa tratar
+ * `undefined` como "entra sem lastmod", nunca como erro. `lastmod` é opcional
+ * no protocolo de sitemap; URL indexável sem data é melhor que URL invisível.
+ */
+export function buildSlugDateMap(
+  postsDir = BEEHIIV_POSTS_DIR,
+  editionsRoot = EDITIONS_ROOT,
+): Map<string, string> {
+  const map = new Map<string, string>();
+
+  if (existsSync(postsDir)) {
+    for (const file of readdirSync(postsDir)) {
+      if (!file.endsWith(".json")) continue;
+      try {
+        const post = JSON.parse(readFileSync(join(postsDir, file), "utf8"));
+        const slug: string | undefined = post.slug ?? post.web_settings?.slug;
+        const raw = post.displayed_date ?? post.publish_date;
+        if (!slug || raw == null) continue;
+        // `publish_date` do cache é epoch em SEGUNDOS; `displayed_date` pode
+        // vir como string ISO. Number.isFinite separa os dois sem adivinhar.
+        const ms = typeof raw === "number" ? raw * 1000 : Date.parse(String(raw));
+        if (!Number.isFinite(ms)) continue;
+        map.set(slug, new Date(ms).toISOString().slice(0, 10));
+      } catch {
+        // Um arquivo de cache corrompido não pode derrubar a reconciliação
+        // inteira — a página segue entrando no sitemap, só que sem data.
+      }
+    }
+  }
+
+  if (existsSync(editionsRoot)) {
+    for (const ym of readdirSync(editionsRoot)) {
+      const ymDir = join(editionsRoot, ym);
+      if (!existsSync(ymDir) || !statSync(ymDir).isDirectory()) continue;
+      for (const ed of readdirSync(ymDir)) {
+        if (!/^\d{6}$/.test(ed)) continue;
+        const urlFile = join(ymDir, ed, "_internal", "05-edition-url.txt");
+        if (!existsSync(urlFile)) continue;
+        const slug = readFileSync(urlFile, "utf8").trim().match(/\/p\/([^\/\s?]+)/)?.[1];
+        // Cache Beehiiv tem precedência: a data dele é a de publicação real,
+        // enquanto AAMMDD é a data EDITORIAL da edição. Coincidem no caso
+        // normal e divergem nas importadas (#4796) — ali o cache é a verdade.
+        if (!slug || map.has(slug)) continue;
+        map.set(slug, `20${ed.slice(0, 2)}-${ed.slice(2, 4)}-${ed.slice(4, 6)}`);
+      }
+    }
+  }
+
+  return map;
+}
