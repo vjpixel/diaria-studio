@@ -74,12 +74,22 @@ export function annualPaths(slug: string, base: string = ANNUAL_BASE) {
   };
 }
 
-/** Prompt de imagem do tema N (1-based), gerado pelo `writer-anual`. */
-export function annualThemePromptPath(slug: string, n: number, base: string = ANNUAL_BASE): string {
-  return join(annualInternalDir(slug, base), `02-d${n}-prompt.md`);
+/**
+ * Índice do tema a partir do nome do arquivo de imagem (`04-d2-2x1.jpg` → 2),
+ * ou `null` quando o arquivo não é imagem de tema — o manifesto de imagens
+ * públicas mistura outras coisas.
+ *
+ * Este é o único lugar em TypeScript que conhece o padrão do nome. A Etapa 3
+ * o constrói em shell (`image-generate.ts --destaque d{N} --ratio 2x1`) e a
+ * SKILL o cita; um helper de construção aqui não teria consumidor e só
+ * envelheceria fora de sincronia com os outros dois.
+ */
+export function themeIndexFromImageFilename(filename: string): number | null {
+  const m = filename.match(/^04-d(\d+)-2x1\.jpg$/);
+  return m ? Number(m[1]) : null;
 }
 
-/** Imagem 2:1 do tema N (1-based). */
-export function annualThemeImagePath(slug: string, n: number, base: string = ANNUAL_BASE): string {
-  return join(annualDir(slug, base), `04-d${n}-2x1.jpg`);
-}
+// Não existe um `annualThemeImagePath(slug, n)` aqui de propósito: a Etapa 3
+// monta o caminho em shell (`--out-dir` + `--destaque`) e a Etapa 5 resolve a
+// imagem pela URL pública, não pelo caminho local. Um helper sem consumidor
+// só envelheceria fora de sincronia com os dois.

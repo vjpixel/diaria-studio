@@ -41,7 +41,7 @@ import {
   buildTestSendFilter,
   resolveTestSendTagId,
 } from "./lib/kit-broadcasts.ts";
-import { annualPaths } from "./lib/anual/annual-paths.ts";
+import { annualPaths, themeIndexFromImageFilename } from "./lib/anual/annual-paths.ts";
 import { parseAnnualDraft } from "./lib/anual/annual-parse.ts";
 import { renderAnnualEmail } from "./lib/anual/annual-render.ts";
 import { lintAnnualDraft } from "./lint-annual-draft.ts";
@@ -169,8 +169,8 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
   // precisamos do inverso, por índice de tema (`04-d{N}-2x1.jpg`).
   const images: Record<number, string> = {};
   for (const [url, filename] of Object.entries(publicImages)) {
-    const m = String(filename).match(/^04-d(\d+)-2x1\.jpg$/);
-    if (m) images[Number(m[1])] = url;
+    const n = themeIndexFromImageFilename(String(filename));
+    if (n !== null) images[n] = url;
   }
 
   const windowLabel = args.values["window-label"] ?? slug;
