@@ -37,6 +37,8 @@ import {
   DIARIA_X_URL, // #4829
   DIARIA_YOUTUBE_URL, // #4829
   DIARIA_EIA_URL, // #3904
+  DIARIA_APOIASE_URL, // #7580: CTA de apoio no shell do trecho
+  DIARIA_ARTIGO_URL, // #7580: canonical + og:url do trecho
 } from "../canonical-urls.ts"; // #2645/#2790 — reusa as URLs canônicas (mesmas que a diária)
 
 const INK = COLORS.ink; // --ink #171411 (todo o texto)
@@ -1337,23 +1339,62 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
 </html>`;
 }
 
-// #2794: vocabulário de labels SEM negrito — usado como defesa em profundidade
-// quando o writer-monthly emite `DESTAQUE 1 | TEMA` em texto plano (causa raiz
-// real do ciclo 2606-07: sem `**`, splitByLabels não separava NADA e o draft
-// inteiro caía no fallback renderParagraphs — zero imagens, zero seções).
-//
-// Deliberadamente restrito, DUPLAMENTE:
-//   1. Labels de vocabulário FIXO (sem parte variável) exigem match da linha
-//      INTEIRA ($ ancorado) — uma linha de prosa comum não pode virar seção
-//      por acidente. Só os 3 formatos com parte variável (`DESTAQUE N | TEMA`,
-//      `CLARICE — ...`, `É IA? ...`) usam prefixo.
-//   2. CASE-SENSITIVE (sem flag `/i`) — o template sempre emite labels em
-//      CAIXA ALTA ("PREVIEW", "DESTAQUE 1 | BRASIL"). Prosa comum do corpo
-//      não é toda-maiúscula, então isso evita falso-positivo em corpo que
-//      contenha a MESMA palavra em caixa mista como texto comum (ex: a
-//      palavra "Preview" apareceria como body text sem ser confundida com
-//      o label `PREVIEW`; sem essa restrição um teste real capturou esse
-//      exato colapso — 3 seções em vez de 2 porque "Preview" virou boundary).
+// #7580: shell WEB do treicho do não-apoiador — og:* + canonical + CTA de
+// apoio. Diferente de `wrapEmail` (shell XHTML de e-mail, sem og:*), este
+// shell é uma página pública indexável pelo crawler: o trecho é o único
+// conteúdo do artigo que pode sair do KV pra quem não é apoiador, então
+// precisa declarar o que é (title/description/og:title/og:description/canonical)
+// e o que NÃO é (não há o artigo completo — o CTA de apoio é o único caminho
+// pra lê-lo). O bodyParts aqui já é SÓ a capa do artigo (INTRO +
+// APRESENTAÇÃO + DESTAQUE 1), cortado em `draftToEmailBody`.
+function wrapTeaserWebShell(
+  subject: string,
+  previewText: string,
+  bodyParts: string[],
+  cycle: string,
+): string {
+  const canonicalUrl = `${DIARIA_ARTIGO_URL}/${encodeURIComponent(cycle)}`;
+  const body = bodyParts.join(
+    `<div style="line-height:28px;font-size:0;">&nbsp;</div>`,
+  );
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>${escHtml(subject)}</title>
+  <meta name="description" content="${escHtml(previewText)}" />
+  <link rel="canonical" href="${escHtml(canonicalUrl)}" />
+  <meta property="og:type" content="article" />
+  <meta property="og:site_name" content="diar.ia.br" />
+  <meta property="og:locale" content="pt_BR" />
+  <meta property="og:title" content="${escHtml(subject)}" />
+  <meta property="og:description" content="${escHtml(previewText)}" />
+  <meta property="og:url" content="${escHtml(canonicalUrl)}" />
+</head>
+<body style="margin:0;padding:0;background:${SHELL};font-family:${FONT_SANS};color:${INK};">
+  <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" class="ds-canvas">
+    <tr>
+      <td align="center" style="padding:20px 10px;">
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="600" style="max-width:600px;background:${PAPER};">
+          <tr>
+            <td style="padding:36px 32px;font-family:${FONT_SANS};color:${INK};font-size:16px;line-height:1.62;">
+              ${body}
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+  <div style="text-align:center;padding:24px 16px 40px;font-family:${FONT_SANS};color:${INK};font-size:14px;line-height:1.6;">
+    <p style="margin:0 0 12px;">O artigo completo tem mais seções (Use Melhor, Radar, É IA?, encerramento…) e é exclusivo pra quem apoia a diar.ia.br.</p>
+    <p style="margin:0 0 16px;"><a class="button" href="${DIARIA_APOIASE_URL}" style="display:inline-block;background:${TEAL};color:#fff !important;text-decoration:none;font-family:${FONT_SANS};font-weight:bold;padding:14px 28px;border-radius:8px;font-size:16px;">Apoiar a diar.ia.br</a></p>
+    <p style="margin:0;color:${INK};opacity:0.7;">Já apoia? <a href="${DIARIA_ARTIGO_URL}/${encodeURIComponent(cycle)}?email=" style="color:${INK};text-decoration-color:${TEAL};">Tente outro e-mail</a>.</p>
+  </div>
+</body>
+</html>`;
+}
 const FIXED_LABEL_RE_NO_BOLD =
   /^(REMETENTE|ASSUNTO(\s*\(\s*3\s*OP[ÇC][ÕO]ES\s*\))?|PREVIEW|APRESENTA[ÇC][ÃA]O|INTRO|DIVULGA[ÇC][ÃA]O|LIVROS|LIVRO( DO M[ÊE]S)?|LABORAT[ÓO]RIO CLARICE|USE MELHOR( DO M[ÊE]S)?|RADAR( DO M[ÊE]S)?|OUTRAS NOT[ÍI]CIAS DO M[ÊE]S|ENCERRAMENTO|PARA ENCERRAR)$/;
 // "É IA?" não-bold só é label quando é a linha INTEIRA ("É IA?") ou seguido de
@@ -1425,6 +1466,15 @@ export function splitByLabels(text: string): string[] {
  *   A variante Brevo apoiadores (`scripts/lib/mensal/monthly-apoiadores-brevo-render.ts`) passa
  *   `APOIADORES_BREVO_UTM_PROFILE` (sucessora de `BEEHIIV_UTM_PROFILE`, removida por #7121).
  */
+export interface TeaserOpts {
+  /** #7580: corta o corpo após o 1º destaque temático e envelopa num shell web
+   * (og:* + canonical + CTA de apoio), em vez do shell de e-mail. Usado pra
+   * gerar o `article:{cycle}:teaser` que o worker `artigo-mensal` serve aos
+   * não-apoiadores. O artigo completo NUNCA sai do KV pra quem não é
+   * apoiador — fail-closed em `workers/artigo-mensal/src/index.ts`. */
+  cycle: string;
+}
+
 export function draftToEmail(
   draft: string,
   chosenSubject: string | null,
@@ -1437,6 +1487,7 @@ export function draftToEmail(
   livrosImageUrl?: string, // #editor: imagem do box de curadoria de livros
   eiaPrevResultLine?: string | null, // #2709: "Resultado da última edição: X% acertaram" — opt-in, ver renderEia
   utmProfile: MonthlyUtmProfile = CLARICE_UTM_PROFILE, // #4482: perfil de UTM por audiência
+  opts?: { teaser?: TeaserOpts }, // #7580: ver TeaserOpts
 ): { subject: string; previewText: string; html: string } {
   const text = draft.replace(/\r\n/g, "\n");
   const rawSections = splitByLabels(text);
@@ -1463,6 +1514,15 @@ export function draftToEmail(
   }
 
   function draftToEmailBody(): { subject: string; previewText: string; html: string } {
+  // #7580: quando o caller pede o TEASER (shell web servido aos não-apoiadores),
+  // paramos de renderizar SECTIONS após o 1º destaque temático — o trecho
+  // que sai do KV é só a capa do artigo, nunca o conteúdo completo. O corte
+  // é em BLOCO de markdown (splitByLabels), não em byte-offset: cortar no
+  // meio de uma tag abalaria o HTML. Fail-closed no Worker: se o `:teaser`
+  // key estiver ausente, o não-apoiador recebe o paywall seco de hoje,
+  // nunca o artigo completo.
+  let teaserMode = !!opts?.teaser;
+  let teaserCutDone = false;
   for (let idx = 0; idx < rawSections.length; idx++) {
     const chunk = rawSections[idx].trim();
     if (!chunk) continue;
@@ -1559,6 +1619,15 @@ export function draftToEmail(
       const n = Number(destaqueMatch[1]); // #1916: imagem 2x1 por destaque
       // #2018: repassa a legenda parametrizada do gerador configurado
       bodyParts.push(renderDestaque(chunk, undefined, destaqueImageUrls?.[n], destaqueImageCaption));
+      // #7580: no modo teaser, o 1º destaque temático é a LASTRA do trecho
+      // que sai do KV — o corte é AQUI, após o destaque completo (título +
+      // parágrafos + "O fio condutor"), nunca no meio dele. Depois disso,
+      // paramos de renderizar: DESTAQUE 2, LIVRO DO MÊS, USE MELHOR, RADAR,
+      // É IA?, PARA ENCERRAR etc. NUNCA entram no trecho.
+      if (teaserMode && !teaserCutDone) {
+        teaserCutDone = true;
+        break;
+      }
       continue;
     }
 
@@ -1617,6 +1686,19 @@ export function draftToEmail(
   // Fora do corpo não existe "seção" — wrapEmail/header/rodapé caem em
   // `inline-geral` em vez de herdar a última seção iterada.
   setMonthlyUtmSecao(null);
+
+  // #7580: trecho do não-apoiador. O corte já parou o loop no 1º destaque
+  // (`teaserCutDone`); `bodyParts` tem só a capa do artigo (INTRO +
+  // APRESENTAÇÃO + DESTAQUE 1). Envelopa num shell WEB (og:* + canonical +
+  // CTA de apoio), NUNCA no shell de e-mail `wrapEmail` — o trecho é uma
+  // página pública indexável pelo crawler, não um e-mail.
+  if (teaserMode) {
+    return {
+      subject,
+      previewText,
+      html: wrapTeaserWebShell(subject, previewText, bodyParts, opts!.teaser!.cycle),
+    };
+  }
 
   return {
     subject,

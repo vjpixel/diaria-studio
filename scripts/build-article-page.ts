@@ -25,7 +25,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { requireMonthlyCycleArg, monthlyDir } from "./lib/mensal/monthly-paths.ts";
-import { buildArticleHtml } from "./lib/mensal/build-article-page.ts";
+import { buildArticleHtml, buildArticleTeaser } from "./lib/mensal/build-article-page.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { DIARIA_ARTIGO_URL } from "./lib/canonical-urls.ts";
 
@@ -43,6 +43,11 @@ export function articleKvKey(cycle: string): string {
   return `article:${cycle}`;
 }
 
+/** #7580: key do TREASER (capa do artigo servida aos não-apoiadores). */
+export function articleTeaserKvKey(cycle: string): string {
+  return `article:${cycle}:teaser`;
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const cycle = requireMonthlyCycleArg(argv);
@@ -56,7 +61,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const page = buildArticleHtml(draftMd, cycle);
+  // #7580: `--teaser` gera o trecho do não-apoiador (capa + shell web com
+  // og:* + canonical + CTA de apoio). Sem a flag, comportamento inalterado:
+  // artigo completo. `--push` e `--push-teaser` são mutuamente exclusivos
+  // com `--out` só no sentido de que o --out escreve o HTML gerado; o push
+  // grava no KV e NUNCA é executado nesta sessão (nenhuma ação de
+  // publicação/deploy — ver PR body).
+  const teaser = hasFlag(argv, "teaser");
+  const page = teaser ? buildArticleTeaser(draftMd, cycle) : buildArticleHtml(draftMd, cycle);
 
   const outPath = getArg(argv, "out");
   if (outPath) {
@@ -67,17 +79,21 @@ async function main(): Promise<void> {
   }
 
   if (hasFlag(argv, "push")) {
-    console.error(
-      `[build-article-page] --push: enviando article:${cycle} (${page.html.length} bytes) pro KV ARTICLES...`,
-    );
-    await uploadTextToWorkerKV(page.html, articleKvKey(cycle), {
+    if (teaser) {
+      console.error(
+        "[build-article-page] --teaser + --push: enviando article:{cycle}:teaser pro KV ARTICLES...",
+      );
+    }
+    const key = teaser ? articleTeaserKvKey(cycle) : articleKvKey(cycle);
+    console.error(`[build-article-page] --push: enviando ${key} (${page.html.length} bytes) pro KV ARTICLES...`);
+    await uploadTextToWorkerKV(page.html, key, {
       kvNamespaceId: ARTICLE_KV_NAMESPACE_ID,
       contentType: "text/html; charset=utf-8",
     });
     console.error(`[build-article-page] push concluído. URL pública: ${DIARIA_ARTIGO_URL}/${cycle}`);
   } else {
     console.error(
-      `[build-article-page] dry-run (default) — HTML gerado (${page.html.length} bytes), NENHUM push ao KV. Use --push para gravar.`,
+      `[build-article-page] dry-run (default) — HTML gerado (${page.html.length} bytes), NENHUM push ao KV. Use --push (artigo completo) ou --push-teaser (trecho) para gravar.`,
     );
   }
 }

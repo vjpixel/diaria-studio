@@ -30,6 +30,30 @@ export interface ArticlePage {
 }
 
 /**
+ * #7580: versão do TEASER do artigo — a capa do artigo (até o fim do 1º
+ * destaque temático) envelopada num shell WEB (og:* + canonical + CTA de
+ * apoio), pra servir aos não-apoiadores sem vazar o conteúdo completo.
+ * O corte é em bloco de markdown (ver `draftToEmail` opts.teaser), nunca em
+ * byte-offset. O artigo completo NUNCA entra nessa resposta — fail-closed no
+ * Worker (`workers/artigo-mensal/src/index.ts`): se o key `:teaser` estiver
+ * ausente, o não-apoiador recebe o paywall seco de hoje.
+ *
+ * @param draftMd conteúdo de `data/monthly/{cycle}/draft.md`
+ * @param cycle ciclo no formato `{conteúdo}-{envio}` (ex: `2607-08`)
+ * @throws se `cycle` não é um ciclo válido (`{conteúdo}-{envio}`).
+ */
+export function buildArticleTeaser(draftMd: string, cycle: string): ArticlePage {
+  if (!isValidMonthlyCycle(cycle)) {
+    throw new Error(
+      `build-article-teaser: ciclo inválido "${cycle}" (esperado {conteúdo}-{envio}, ex: 2607-08)`,
+    );
+  }
+  const yymm = cycleToYymm(cycle);
+  const { subject, previewText, html } = draftToEmail(draftMd, null, yymm, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, { teaser: { cycle } });
+  return { subject, previewText, html };
+}
+
+/**
  * Pure: converte o markdown do draft mensal no HTML completo do artigo
  * público.
  *
