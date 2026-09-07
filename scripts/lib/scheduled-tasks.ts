@@ -506,17 +506,22 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     description: "compara a edição mais recente PRODUZIDA com a que o leitor vê em arquivo.diar.ia.br",
     steps: [{ key: "check", script: "scripts/acervo-staleness-alarm.ts" }],
     logPath: "acervo-staleness/.alarm.log",
-    // Diária 10:05, na mesma banda matinal dos demais drift-checks e pelo
-    // mesmo motivo (#5113): o conserto — mergear o PR de publicação, rodar o
-    // deploy — é ação manual do editor de manhã, então detectar de madrugada
-    // não antecipa nada. 10:05 e não 10:00 porque o slot já é do
-    // Diaria-Hub-Drift-Check.
+    // Diária 11:05, na banda matinal dos demais drift-checks e pelo mesmo
+    // motivo (#5113): o conserto — mergear o PR de publicação, rodar o deploy —
+    // é ação manual do editor de manhã, então detectar de madrugada não
+    // antecipa nada.
+    //
+    // 11:05, e não 10:05 como a 1ª versão desta PR tentou: a hora das 10 está
+    // LOTADA de 5 em 5 (:00 a :55), e 10:05 já é do Diaria-Ads-Spend-Ingest-Alarm.
+    // O comentário original afirmava que o slot estava livre — errado, e o
+    // review da PR #7595 pegou. O teste de colisão abaixo passou a existir por
+    // causa disso.
     //
     // Por que existe além do Diaria-Edicao-Diaria-Staleness-Alarm (#5563):
     // aquele checa se a edição foi PRODUZIDA, e esteve correto e mudo durante
     // os 12 dias em que o acervo ficou parado (27/08–07/09/2026) — as edições
     // existiam em disco. Ninguém comparava produção com publicação.
-    schedule: { kind: "daily", hour: 10, minute: 5 },
+    schedule: { kind: "daily", hour: 11, minute: 5 },
     issue: "#7591, refs #7578",
   },
   {

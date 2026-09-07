@@ -39,7 +39,7 @@ import {
   ACERVO_STALENESS_MAX_BUSINESS_DAYS,
   editionIdToDate,
   evaluateAcervoStaleness,
-  latestDateInArchiveHtml,
+  latestLastmodInLiveSitemap,
   latestLastmod,
   type AcervoSnapshot,
   type DateOnly,
@@ -56,7 +56,8 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG = "[acervo-staleness]";
 const CHECK = "acervo-staleness";
-const ARQUIVO_URL = "https://arquivo.diar.ia.br/";
+/** Sitemap AO VIVO do apex — a fonte de que `arquivo.diar.ia.br` deriva. */
+const SITEMAP_AO_VIVO_URL = "https://diar.ia.br/sitemap.xml";
 const SITEMAP_PATH = join(ROOT, "workers", "site", "public", "sitemap.xml");
 const EDITIONS_ROOT = join(ROOT, "data", "editions");
 const STATE_PATH = join(ROOT, "data", "acervo-staleness", ".alarm-issues.json");
@@ -76,20 +77,32 @@ export function latestProducedEdition(root = EDITIONS_ROOT): DateOnly | null {
   const datas = ids.map(editionIdToDate).filter((d): d is DateOnly => d !== null);
   // Descarta data futura: fixture com AAMMDD adiante de hoje faria o acervo
   // parecer eternamente defasado.
-  const hoje = new Date().toISOString().slice(0, 10);
-  return datas.filter((d) => d <= hoje).sort().at(-1) ?? null;
+  return datas.filter((d) => d <= hojeBRT()).sort().at(-1) ?? null;
 }
 
-async function fetchArchiveLatest(url = ARQUIVO_URL): Promise<DateOnly | null> {
+async function fetchArchiveLatest(url = SITEMAP_AO_VIVO_URL): Promise<DateOnly | null> {
   try {
     const res = await fetch(url, { headers: { "User-Agent": "diaria-acervo-staleness/1.0" } });
     if (!res.ok) return null;
-    return latestDateInArchiveHtml(await res.text());
+    return latestLastmodInLiveSitemap(await res.text(), hojeBRT());
   } catch {
     // Rede indisponível vira "sem dado", nunca alarme: alarmar por falha de
     // rede transformaria instabilidade momentânea em issue aberta toda noite.
     return null;
   }
+}
+
+/**
+ * Hoje em BRT, não em UTC.
+ *
+ * `toISOString().slice(0,10)` é UTC, e edição é datada em BRT (UTC-3): entre
+ * 21h e meia-noite BRT o dia UTC já virou, e "hoje" ficaria um dia à frente.
+ * A task roda 11:05 BRT e nunca cai nessa janela, mas as funções são
+ * exportadas e reusáveis fora dela — e o repo já tem a disciplina de tratar
+ * "hoje" em BRT em todo o resto do pipeline (achado do review da PR #7595).
+ */
+export function hojeBRT(agora = new Date()): string {
+  return new Date(agora.getTime() - 3 * 3600_000).toISOString().slice(0, 10);
 }
 
 function loadState(path: string): AlarmIssuesState {
@@ -108,7 +121,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     produzida: latestProducedEdition(),
     sitemapLocal: existsSync(SITEMAP_PATH) ? latestLastmod(readFileSync(SITEMAP_PATH, "utf8")) : null,
     aoVivo: await fetchArchiveLatest(),
-    hoje: new Date().toISOString().slice(0, 10),
+    hoje: hojeBRT(),
   };
   const r = evaluateAcervoStaleness(snap, ACERVO_STALENESS_MAX_BUSINESS_DAYS);
 
@@ -126,7 +139,18 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       ? [
           {
             check: CHECK,
-            fingerprint: `acervo:${snap.aoVivo ?? "?"}`,
+            // Fingerprint FIXO, não `acervo:${aoVivo}` (achado do review da
+            // PR #7595): `family: "estado"` fecha a issue quando o fingerprint
+            // some do pendente. Embutir o valor corrente faria uma recuperação
+            // PARCIAL (o host avança um dia, ainda defasado) trocar o
+            // fingerprint, fechar a issue anterior como "resolvida" — que não
+            // foi — e abrir outra. O incidente vira uma sequência de issues
+            // fechadas em falso em vez de uma só, do começo ao fim.
+            fingerprint: "acervo:defasado",
+            // `contentSignature` preserva o sinal "aconteceu de novo": com
+            // fingerprint fixo a issue seria reusada em silêncio, e mudar de 3
+            // para 9 dias de defasagem não apareceria em lugar nenhum.
+            contentSignature: `${snap.aoVivo ?? "?"}->${snap.produzida ?? snap.sitemapLocal ?? "?"}:${r.diasUteis}`,
             title: `[diar.ia.br] acervo público defasado em ${r.diasUteis} dias úteis`,
             body:
               `Achado automático do alarme \`Diaria-Acervo-Staleness\`\n(\`scripts/acervo-staleness-alarm.ts\`, #7591).\n\n` +

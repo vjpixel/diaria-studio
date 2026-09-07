@@ -26,7 +26,7 @@ import {
   businessDaysBetween,
   editionIdToDate,
   evaluateAcervoStaleness,
-  latestDateInArchiveHtml,
+  latestLastmodInLiveSitemap,
   latestLastmod,
   type AcervoSnapshot,
 } from "../scripts/lib/acervo-staleness.ts";
@@ -103,7 +103,7 @@ describe("#7591 — 'sem dado' nunca vira alarme", () => {
     const r = evaluateAcervoStaleness({ ...base, aoVivo: null });
     assert.equal(r.verdict, "sem-dado");
     assert.equal(r.diasUteis, null);
-    assert.ok(r.lacunas.some((l) => l.includes("arquivo.diar.ia.br")));
+    assert.ok(r.lacunas.some((l) => l.includes("sitemap ao vivo")));
   });
 
   it("sem `data/` usa o sitemap do repo como referência e SEGUE avaliando", () => {
@@ -137,8 +137,65 @@ describe("#7591 — leitura das três fontes", () => {
     assert.equal(latestLastmod("<urlset><url><loc>x</loc></url></urlset>"), null);
   });
 
-  it("latestDateInArchiveHtml lê a data mais recente do HTML do acervo", () => {
-    assert.equal(latestDateInArchiveHtml("<li>2026-08-04</li><li>2026-09-04</li>"), "2026-09-04");
-    assert.equal(latestDateInArchiveHtml("<p>sem data</p>"), null);
+});
+
+/**
+ * Achado P2 do review da PR #7595: a 1ª versão registrou a task às 10:05
+ * afirmando no comentário que o slot estava livre. Estava ocupado pelo
+ * `Diaria-Ads-Spend-Ingest-Alarm`, e a hora das 10 está lotada de 5 em 5.
+ *
+ * O repo tem a convenção de um teste de colisão por entrada nova; esta PR não
+ * tinha. Se tivesse, teria pego antes do review.
+ */
+describe("#7591 — o horário da task não colide", () => {
+  it("Diaria-Acervo-Staleness não divide horário com nenhuma outra daily", async () => {
+    const { SCHEDULED_TASKS } = await import("../scripts/lib/scheduled-tasks.ts");
+    const minha = SCHEDULED_TASKS.find((t) => t.name === "Diaria-Acervo-Staleness");
+    assert.ok(minha, "a task precisa estar registrada");
+    assert.equal(minha.schedule.kind, "daily");
+
+    // `ScheduledTaskSchedule` é união discriminada — estreitar por `kind`
+    // antes de ler hora/minuto, senão o typecheck-ratchet acusa TS2339.
+    const meu = minha.schedule;
+    if (meu.kind !== "daily") throw new Error("esperava schedule daily");
+    const colisoes = SCHEDULED_TASKS.filter((t) => {
+      if (t.name === minha.name) return false;
+      const s2 = t.schedule;
+      return s2.kind === "daily" && s2.hour === meu.hour && s2.minute === meu.minute;
+    }).map((t) => t.name);
+    assert.deepEqual(colisoes, [], `colide com: ${colisoes.join(", ")}`);
+  });
+});
+
+/**
+ * Achados do review da PR #7595. O que mais importa é o **falso negativo**: uma
+ * data mais recente que a realidade faz o alarme calar durante uma defasagem
+ * real — pior que falso positivo, porque nada sinaliza.
+ */
+describe("#7591 — o alarme não pode calar por data que não é de edição", () => {
+  it("REGRESSÃO: o sinal ao vivo é o sitemap do apex, não metadado de página", () => {
+    // A 1ª versão raspava datas do HTML de arquivo.diar.ia.br. Medido em
+    // 07/09/2026: aquele HTML tem DUAS datas ISO, ambas no JSON-LD do <head>
+    // — o corpo não renderiza data nenhuma. O alarme lia `dateModified` de
+    // PÁGINA e chamava de "a edição que o leitor vê".
+    const xml = "<url><lastmod>2026-09-04</lastmod></url><url><lastmod>2026-08-26</lastmod></url>";
+    assert.equal(latestLastmodInLiveSitemap(xml, "2026-09-07"), "2026-09-04");
+  });
+
+  it("REGRESSÃO: lastmod FUTURO é descartado — falso negativo cala o alarme", () => {
+    const xml = "<url><lastmod>2026-12-31</lastmod></url><url><lastmod>2026-08-26</lastmod></url>";
+    assert.equal(latestLastmodInLiveSitemap(xml, "2026-09-07"), "2026-08-26");
+  });
+
+  it("sitemap sem lastmod devolve null, não uma data inventada", () => {
+    assert.equal(latestLastmodInLiveSitemap("<urlset><url><loc>x</loc></url></urlset>", "2026-09-07"), null);
+  });
+
+  it("data corrompida não trava o laço de dias úteis", () => {
+    // Sem o teto, `9999-12-31` rodaria milhões de iterações.
+    const t0 = Date.now();
+    const d = businessDaysBetween("2026-09-04", "9999-12-31");
+    assert.ok(Date.now() - t0 < 1000, "precisa retornar rápido");
+    assert.ok(d <= 366, `capado em 366, veio ${d}`);
   });
 });

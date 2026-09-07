@@ -23,7 +23,7 @@
  *   - `data/editions/` — é gitignored (junction do OneDrive). Ausente em CI e
  *     em clone fresco; presente na máquina do editor e no servidor.
  *   - `sitemap.xml` do repo — sempre presente num checkout normal.
- *   - `arquivo.diar.ia.br` ao vivo — depende de rede.
+ *   - o `sitemap.xml` do apex AO VIVO — depende de rede.
  *
  * Comparar só o que dá, e DIZER o que não deu, é melhor que exigir as três e
  * não rodar. Um alarme que não roda é pior que um alarme parcial.
@@ -57,8 +57,13 @@ export function businessDaysBetween(from: DateOnly, to: DateOnly): number {
   const inicio = Date.parse(`${from}T00:00:00Z`);
   const fim = Date.parse(`${to}T00:00:00Z`);
   if (!Number.isFinite(inicio) || !Number.isFinite(fim) || fim <= inicio) return 0;
+  // Teto de 1 ano: uma data corrompida (`9999-12-31` vindo de um scrape) faria
+  // este laço rodar milhões de vezes. Qualquer defasagem acima disso já está
+  // ordens de grandeza acima do limiar — o número exato não muda decisão
+  // nenhuma, e travar o alarme sim (achado do review da PR #7595).
+  const MAX = 366;
   let dias = 0;
-  for (let t = inicio + 86_400_000; t <= fim; t += 86_400_000) {
+  for (let t = inicio + 86_400_000; t <= fim && dias < MAX; t += 86_400_000) {
     const dow = new Date(t).getUTCDay();
     if (dow !== 0 && dow !== 6) dias += 1;
   }
@@ -70,7 +75,7 @@ export interface AcervoSnapshot {
   produzida: DateOnly | null;
   /** `lastmod` mais recente no `sitemap.xml` do REPO. `null` se ilegível. */
   sitemapLocal: DateOnly | null;
-  /** Edição mais recente que o leitor vê em `arquivo.diar.ia.br`. `null` se a rede falhou. */
+  /** Edição mais recente no sitemap AO VIVO do apex — o que o leitor vê. `null` se a rede falhou. */
   aoVivo: DateOnly | null;
   /** Hoje, para medir a defasagem. */
   hoje: DateOnly;
@@ -105,7 +110,7 @@ export function evaluateAcervoStaleness(
   const lacunas: string[] = [];
   if (!snap.produzida) lacunas.push("data/editions/ ausente — não dá para saber qual é a edição mais recente");
   if (!snap.sitemapLocal) lacunas.push("sitemap.xml do repo ilegível");
-  if (!snap.aoVivo) lacunas.push("arquivo.diar.ia.br não respondeu — a comparação que mede o leitor não foi feita");
+  if (!snap.aoVivo) lacunas.push("sitemap ao vivo do apex não respondeu — a comparação que mede o leitor não foi feita");
 
   // Referência: o que existe. Sem `data/`, o sitemap local serve de proxy —
   // pior, mas ainda pega o caso "mergeou e não deployou".
@@ -163,12 +168,34 @@ export function latestLastmod(xml: string): DateOnly | null {
 }
 
 /**
- * Data mais recente listada no HTML de `arquivo.diar.ia.br`.
+ * Data mais recente do sitemap AO VIVO do apex.
  *
- * O acervo lá é DERIVADO do sitemap do apex em request-time, então basta ler as
- * datas que ele renderiza — não é preciso um endpoint próprio.
+ * ## Por que o sitemap, e não o HTML do arquivo
+ *
+ * A 1ª versão raspava `YYYY-MM-DD` do HTML de `arquivo.diar.ia.br`. Medido em
+ * 07/09/2026: aquela página tem **exatamente duas** datas ISO, e as duas estão
+ * no JSON-LD do `<head>` (`datePublished`/`dateModified`) — o corpo lista as
+ * edições por título e mês, sem data legível. O alarme estava lendo metadado de
+ * PÁGINA e chamando de "a edição que o leitor vê"; coincidiu com a verdade
+ * porque a página é regenerada quando uma edição publica, mas mediria errado no
+ * primeiro redeploy de template.
+ *
+ * O sinal certo é o `sitemap.xml` do apex ao vivo: é dele que
+ * `arquivo.diar.ia.br` DERIVA o acervo em request-time
+ * (`fetchSitemapXml`/`parseSitemap`), tem `<lastmod>` por edição, e é servido
+ * pelo mesmo deploy — então mede o que o leitor recebe, com dado legível.
+ *
+ * Achado do review da PR #7595, que perguntou se a raspagem podia pegar data
+ * que não fosse de edição. Podia — e era a única coisa que ela pegava.
  */
-export function latestDateInArchiveHtml(html: string): DateOnly | null {
-  const datas = [...html.matchAll(/(\d{4})-(\d{2})-(\d{2})/g)].map((m) => m[0]).sort();
+export function latestLastmodInLiveSitemap(xml: string, hoje?: DateOnly): DateOnly | null {
+  // Descarta data futura: `lastmod` adiantado (fuso, erro de geração) faria o
+  // alarme calar durante uma defasagem real — falso negativo é pior aqui,
+  // porque nada sinaliza.
+  const limite = hoje ?? new Date().toISOString().slice(0, 10);
+  const datas = [...xml.matchAll(/<lastmod>\s*(\d{4}-\d{2}-\d{2})/g)]
+    .map((m) => m[1])
+    .filter((d) => d <= limite)
+    .sort();
   return datas.at(-1) ?? null;
 }
