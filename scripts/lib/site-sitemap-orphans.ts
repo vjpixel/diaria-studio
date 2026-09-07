@@ -29,8 +29,6 @@ import { publishDateToIso, type ArchivePost } from "./site-archive-pages.ts";
 
 export const DEFAULT_PAGES_DIR = "workers/site/public/p";
 export const DEFAULT_SITEMAP = "workers/site/public/sitemap.xml";
-/** A home é derivada do sitemap + das páginas — regenerada junto (#7578). */
-export const DEFAULT_HOME = "workers/site/public/index.html";
 const BEEHIIV_POSTS_DIR = "data/beehiiv-cache/posts";
 const EDITIONS_ROOT = "data/editions";
 
