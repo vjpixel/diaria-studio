@@ -93,7 +93,7 @@ export function renderPaywall(): string {
     <h1>Este artigo é exclusivo para apoiadores da diar.ia.br</h1>
     <p>Não encontramos um apoio ativo de R$10/mês ou mais para esse e-mail neste mês. Apoiadores R$10+ têm acesso ao artigo mensal completo.</p>
     <p><a class="button" href="${APOIASE_URL}">Apoiar a diar.ia.br</a></p>
-    <p class="muted">Já apoia e acha que isso é um erro? <a href="?">Tente outro e-mail</a>.</p>
+    <p class="muted">Já apoia e acha que isso é um erro? <a href="?entrar=1">Entre com seu e-mail</a>.</p>
   `;
   return shell("diar.ia.br — Conteúdo exclusivo para apoiadores", body);
 }
@@ -114,4 +114,73 @@ export function renderMissingCycle(): string {
     <p>Use o link completo do artigo mensal (ex: <code>/2607-08</code>).</p>
   `;
   return shell("diar.ia.br — ciclo obrigatório", body);
+}
+
+/**
+ * URL de cadastro na diária, com UTM próprio (#7580).
+ *
+ * O CTA secundário do trecho aponta para `/assinar` em vez de embutir um
+ * formulário: o endpoint de cadastro (`workers/poll/src/subscribe.ts`) valida
+ * `source` contra um enum por superfície, e acrescentar `artigo.diar.ia.br` ali
+ * seria mais um deploy e mais uma origem para manter — desproporcional a um
+ * CTA que a decisão do editor colocou como linha SECUNDÁRIA. `/assinar` já tem
+ * o formulário funcionando.
+ */
+const ASSINAR_URL =
+  "https://diar.ia.br/assinar?utm_source=artigo-mensal&utm_medium=artigo-web&utm_campaign=trecho-paywall";
+
+/**
+ * Trecho público + paywall por cima (#7580).
+ *
+ * O `teaserHtml` é um documento HTML COMPLETO vindo do KV (`article:{ciclo}:teaser`),
+ * cortado no fim do 1º destaque por `cutDraftAfterFirstDestaque` no lado Node.
+ * Aqui só se injeta o bloco de conversão antes de `</body>`, preservando a
+ * tipografia e o layout do artigo — que é justamente o que se quer mostrar.
+ *
+ * ## O corte é do servidor, o degradê é decoração
+ *
+ * O texto pago NÃO está nesta resposta: ele nunca sai do KV para quem não
+ * passou no gate. Desabilitar CSS ou ver o código-fonte não revela nada, porque
+ * não há nada para revelar. O degradê existe para comunicar "continua", não
+ * para esconder.
+ *
+ * ## Dois CTAs, hierarquizados
+ *
+ * Decisão do editor (07/09/2026): apoio em destaque, cadastro como linha
+ * secundária. Quem chega aqui sem apoiar é o perfil que assinaria a diária de
+ * graça, mas dois CTAs com o mesmo peso diluem os dois — a página vende apoio,
+ * e o cadastro é a saída de quem não vai apoiar hoje.
+ *
+ * Falha alto se não houver `</body>`: publicar o trecho SEM o bloco de
+ * conversão seria entregar conteúdo de graça sem pedir nada em troca — o pior
+ * dos dois mundos. Quem chama trata como "sem trecho" e cai no paywall seco.
+ */
+export function renderTeaserWithPaywall(teaserHtml: string): string {
+  const BODY_END = /<\/body\s*>/i;
+  if (!BODY_END.test(teaserHtml)) {
+    throw new Error("teaser sem </body> — não há onde injetar o bloco de conversão (#7580)");
+  }
+  const bloco = `
+<div style="position:relative;margin-top:-120px;height:120px;background:linear-gradient(to bottom, rgba(255,255,255,0), ${PAPER});pointer-events:none;"></div>
+<div style="background:${BEGE};padding:40px 20px;font-family:-apple-system,Helvetica,Arial,sans-serif;">
+  <div style="max-width:520px;margin:0 auto;background:${PAPER};border-radius:12px;padding:32px 28px;box-sizing:border-box;">
+    <h2 style="font-family:Georgia,'Times New Roman',serif;font-size:22px;line-height:1.3;margin:0 0 12px;color:${INK};">
+      O resto deste artigo é para quem apoia a diar.ia.br
+    </h2>
+    <p style="font-size:16px;line-height:1.6;margin:0 0 20px;color:${INK};opacity:.85;">
+      Apoiadores de R$&nbsp;10/mês ou mais leem o artigo mensal completo — os outros dois destaques,
+      as recomendações e o fechamento.
+    </p>
+    <p style="margin:0 0 20px;">
+      <a href="${APOIASE_URL}" style="display:inline-block;background:${TEAL};color:#fff;text-decoration:none;font-weight:bold;padding:14px 28px;border-radius:8px;font-size:16px;">Apoiar a diar.ia.br</a>
+    </p>
+    <p style="font-size:14px;line-height:1.6;margin:0 0 8px;color:${INK};opacity:.75;">
+      Já apoia? <a href="?entrar=1" style="color:${INK};text-decoration-color:${TEAL};">Entre com seu e-mail</a>.
+    </p>
+    <p style="font-size:14px;line-height:1.6;margin:0;color:${INK};opacity:.75;">
+      Não quer apoiar agora? A <a href="${ASSINAR_URL}" style="color:${INK};text-decoration-color:${TEAL};">diária é de graça</a> — notícias e tutoriais de IA todo dia útil.
+    </p>
+  </div>
+</div>`;
+  return teaserHtml.replace(BODY_END, `${bloco}\n</body>`);
 }

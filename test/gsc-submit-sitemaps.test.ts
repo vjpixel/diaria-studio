@@ -20,12 +20,22 @@ function fakeResponse(status: number, body: string): Response {
 }
 
 describe("CURADORIA_SITEMAPS (#4546)", () => {
-  it("são exatamente os 3 sitemaps próprios de cursos/livros/arquivo — sem o do host principal nem o de artigo.", () => {
+  // #7580: `artigo` ENTROU. Era excluído porque "todo conteúdo é gated de
+  // apoiador, não há URL pública indexável" (#4546) — e isso deixou de valer
+  // quando o não-apoiador passou a receber o trecho do artigo. Mudou o FATO,
+  // não a leitura. O host principal continua fora (sitemap gerado pela
+  // Beehiiv, já auto-descoberto).
+  it("são os 4 sitemaps próprios — artigo/cursos/livros/arquivo, sem o do host principal", () => {
     assert.deepEqual(CURADORIA_SITEMAPS, [
+      "https://artigo.diar.ia.br/sitemap.xml",
       "https://cursos.diar.ia.br/sitemap.xml",
       "https://livros.diar.ia.br/sitemap.xml",
       "https://arquivo.diar.ia.br/sitemap.xml",
     ]);
+    assert.ok(
+      !CURADORIA_SITEMAPS.some((u) => u === "https://diar.ia.br/sitemap.xml"),
+      "o host principal segue fora",
+    );
   });
 });
 
@@ -90,13 +100,13 @@ describe("submitAll (#4546)", () => {
       return fakeResponse(200, "");
     };
     const results = await submitAll("sc-domain:diar.ia.br", CURADORIA_SITEMAPS, fetchImpl);
-    assert.equal(results.length, 3);
+    assert.equal(results.length, CURADORIA_SITEMAPS.length);
     assert.ok(results.every((r) => r.ok));
     assert.deepEqual(
       results.map((r) => r.sitemapUrl),
       CURADORIA_SITEMAPS as unknown as string[],
     );
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, CURADORIA_SITEMAPS.length);
   });
 
   it("uma falha no meio não impede as demais de serem tentadas (nunca aborta cedo)", async () => {
@@ -106,10 +116,14 @@ describe("submitAll (#4546)", () => {
       return i === 2 ? fakeResponse(403, "nope") : fakeResponse(200, "");
     };
     const results = await submitAll("sc-domain:diar.ia.br", CURADORIA_SITEMAPS, fetchImpl);
-    assert.equal(results.length, 3);
+    assert.equal(results.length, CURADORIA_SITEMAPS.length);
+    // Derivado do tamanho do array: a lista cresce (o `artigo` entrou no
+      // #7580) e travar [true,false,true] fazia o teste falhar por MUDANÇA DE
+      // LISTA, não por regressão do comportamento sob teste — que é "a 2ª
+      // falha não aborta as demais".
     assert.deepEqual(
       results.map((r) => r.ok),
-      [true, false, true],
+      CURADORIA_SITEMAPS.map((_, idx) => idx !== 1),
     );
   });
 
@@ -121,10 +135,14 @@ describe("submitAll (#4546)", () => {
       return fakeResponse(200, "");
     };
     const results = await submitAll("sc-domain:diar.ia.br", CURADORIA_SITEMAPS, fetchImpl);
-    assert.equal(results.length, 3);
+    assert.equal(results.length, CURADORIA_SITEMAPS.length);
+    // Derivado do tamanho do array: a lista cresce (o `artigo` entrou no
+      // #7580) e travar [true,false,true] fazia o teste falhar por MUDANÇA DE
+      // LISTA, não por regressão do comportamento sob teste — que é "a 2ª
+      // falha não aborta as demais".
     assert.deepEqual(
       results.map((r) => r.ok),
-      [true, false, true],
+      CURADORIA_SITEMAPS.map((_, idx) => idx !== 1),
     );
     assert.equal(results[1].status, 0);
     assert.match(results[1].error ?? "", /invalid_grant/);

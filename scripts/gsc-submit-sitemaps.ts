@@ -35,13 +35,18 @@ import { gFetch } from "./google-auth.ts";
  * Sitemaps próprios dos 3 Workers de curadoria (#4546 passo 1 — já servidos
  * em produção: `workers/cursos/public/sitemap.xml`,
  * `workers/livros/public/sitemap.xml`, rota dinâmica de
- * `workers/arquivo/src/index.ts`). Deliberadamente NÃO inclui
- * `artigo.diar.ia.br/sitemap.xml` (vazio por design — todo conteúdo é gated
- * de apoiador, ver #4546 achado lateral em `workers/artigo-mensal/src/index.ts`)
- * nem `diar.ia.br/sitemap.xml` (gerado pela Beehiiv, já auto-descoberto —
- * fora do escopo desta issue).
+ * `workers/arquivo/src/index.ts`).
+ *
+ * `artigo.diar.ia.br/sitemap.xml` ENTROU no #7580. Era excluído porque "todo
+ * conteúdo é gated de apoiador, não há URL pública indexável" (#4546) — e isso
+ * deixou de valer quando o não-apoiador passou a receber o trecho do artigo.
+ * Mudou o FATO, não a leitura.
+ *
+ * Continua fora `diar.ia.br/sitemap.xml` (gerado pela Beehiiv, já
+ * auto-descoberto — fora do escopo daquela issue).
  */
 export const CURADORIA_SITEMAPS = [
+  "https://artigo.diar.ia.br/sitemap.xml",
   "https://cursos.diar.ia.br/sitemap.xml",
   "https://livros.diar.ia.br/sitemap.xml",
   "https://arquivo.diar.ia.br/sitemap.xml",
