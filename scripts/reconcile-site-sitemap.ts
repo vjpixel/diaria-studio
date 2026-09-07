@@ -60,11 +60,10 @@
  *   2 — `--check`: há página órfã (nomeadas na saída)
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { addSitemapEntry, archiveUrlForSlug } from "./lib/site-archive-pages.ts";
 import { ARCHIVE_CARD_LIMIT, buildHomeFeed, buildIndexHtml } from "./lib/site-home-page.ts";
 import {
-  DEFAULT_HOME,
   DEFAULT_PAGES_DIR,
   DEFAULT_SITEMAP,
   buildSlugDateMap,
@@ -82,7 +81,13 @@ function parseArgs(argv: string[]) {
     check: argv.includes("--check"),
     pagesDir: get("--pages-dir", DEFAULT_PAGES_DIR),
     sitemapPath: get("--sitemap", DEFAULT_SITEMAP),
-    homePath: get("--home", DEFAULT_HOME),
+    // A home DERIVA do sitemap — mora no mesmo diretório. Usar um caminho fixo
+    // aqui fazia `--sitemap /tmp/x.xml` regenerar mesmo assim
+    // `workers/site/public/index.html`, ou seja: apontar o script pra outro
+    // lugar sobrescrevia a home de PRODUÇÃO. Foi o que os testes desta PR
+    // fizeram (a home passou a listar os slugs de fixture "a" e "b"), e o guard
+    // do #6375 pegou. Um `--home` explícito continua vencendo.
+    homePath: get("--home", join(dirname(get("--sitemap", DEFAULT_SITEMAP)), "index.html")),
   };
 }
 

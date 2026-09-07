@@ -466,14 +466,7 @@ npx tsx scripts/reconcile-site-sitemap.ts
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se 0/2, warn se 3/4/5} --message "site-page stage6 publish: exit {code}"
 ```
 
-**`reconcile-site-sitemap.ts` roda SEMPRE, logo depois (#7578)** — aditivo e
-idempotente, sai `0` quando não há nada a fazer. Ele fecha o buraco entre os
-dois caminhos que escrevem página: garante que toda página em
-`workers/site/public/p/` tenha `<loc>` no `sitemap.xml`. Página fora do
-sitemap é invisível no buscador **e** em `arquivo.diar.ia.br` ao mesmo tempo —
-o acervo de lá é DERIVADO do sitemap do apex em request-time, não tem fonte
-própria. Foi assim que 5 edições ficaram órfãs entre 28/08 e 03/09/2026
-respondendo 200 sem ninguém chegar nelas.
+**`reconcile-site-sitemap.ts` roda SEMPRE, logo depois (#7578)** — aditivo, idempotente, sai `0` quando não há o que fazer. Garante que toda página em `workers/site/public/p/` tenha `<loc>` no `sitemap.xml` e regenera a home. Página fora do sitemap é invisível no buscador **e** em `arquivo.diar.ia.br` (cujo acervo DERIVA do sitemap do apex em request-time, sem fonte própria) — foi assim que 5 edições ficaram órfãs entre 28/08 e 03/09/2026, respondendo 200 sem ninguém chegar nelas.
 
 | exit | significado | ação |
 |---|---|---|
@@ -483,11 +476,7 @@ respondendo 200 sem ninguém chegar nelas.
 | `4` | artefato PRESENTE mas inválido (html/título vazio, `--slug` ausente e sem `post_url`) — bug num stage anterior. Desde #7420, `--slug` sempre basta (não depende de `05-published.json`) | **logar warn e seguir** (nunca silencioso — não é o mesmo caso benigno do `2`) |
 | `5` | GUARD (#6202): `buildArchivePageHtml` recusou por merge tag não resolvida (`UnresolvedMergeTagError`, guard do #6210/#6256) — não é a tag padrão do voto (`{{email}}`, essa é sanitizada antes do guard rodar), é uma tag DESCONHECIDA. Nada escrito/commitado | **logar warn e seguir** (fail-soft; a edição segue normal, só o site não ganha página nova até a tag ser tratada) |
 
-**Fail-soft do SCRIPT, inalterado:** nenhum exit deste comando lança nem interrompe §6d-site. No `3`, a página costuma ficar escrita (e, se só o `push`/`gh pr create` falhou, já commitada na branch) localmente — a próxima rodada/push manual a leva junto.
-
-**Mas o GATE agora trava (#7578, decisão do editor 07/09/2026).** O invariante `site-page-published` de §6g virou `severity: "error"` — era `warning`, e o warning provou duas vezes que ninguém o lê: 4 edições silenciosas em 31/08–03/09 (registradas na própria docstring do check) e mais 12 dias de acervo parado depois disso. A premissa de "site é acessório" também caiu: hoje ele é destino de campanha paga (#7575) e a superfície mais indexável do domínio (#7576).
-
-Separação que importa: **o script continua seguindo, o gate é que para.** Quem decide publicar assim mesmo é o editor, com a falha na frente — não o silêncio. Para destravar: re-rodar o comando acima (com `--sitemap`) e mergear o PR, ou aprovar o gate ciente de que `/p/{slug}` fica 404.
+**Fail-soft do SCRIPT, inalterado:** nenhum exit lança nem interrompe §6d-site; no `3` a página costuma ficar escrita localmente. **Mas o GATE agora trava (#7578, decisão do editor 07/09/2026).** O invariante `site-page-published` de §6g virou `error` — era `warning`, e o warning provou duas vezes que ninguém o lê (4 edições silenciosas em 31/08–03/09, mais 12 dias de acervo parado depois disso). A premissa de "site é acessório" também caiu: hoje ele é destino de campanha paga (#7575) e a superfície mais indexável do domínio (#7576). **O script segue, o gate é que para** — quem decide publicar assim mesmo é o editor, com a falha na frente. Destravar: re-rodar o comando acima e mergear o PR, ou aprovar ciente de que `/p/{slug}` fica 404.
 
 **A visibilidade da falha NÃO depende mais só deste `log-event.ts` (#7283).** O próprio script grava `_internal/site-page-published.json` (`{ code, slug, published, reason, prUrl, checked_at }`) a CADA chamada, determinístico — não depende de o agente lembrar de logar certo. `check-invariants.ts --stage 6` (§6g abaixo) lê esse arquivo e acusa (`severity: error`, **GATE-BLOCKING desde #7578** — era `warning`) quando `published !== true`. Foi a ausência desse mecanismo que deixou 4 edições consecutivas (31/08–03/09/2026) sem página no acervo sem NENHUM sinal em código — só a prosa deste passo, que ninguém verificava ter sido seguida.
 
