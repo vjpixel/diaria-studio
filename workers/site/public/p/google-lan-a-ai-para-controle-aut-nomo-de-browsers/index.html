@@ -428,7 +428,14 @@ li a { word-break: break-word; }
     var st = f.querySelector(".signup-status");
     if (!st || typeof window.MutationObserver !== "function") return;
     new window.MutationObserver(function () {
-      if (st.className.indexOf("ok") >= 0) marcarDispensado();
+      // A MESMA guarda de "Enviando" do observer do modal, e pela mesma razão:
+      // signupFormScript chama setStatus("Enviando…", true) no INÍCIO do
+      // envio, e esse true já grava a classe ok. Sem a guarda, clicar em
+      // enviar marcava a dispensa na hora — mesmo que o envio falhasse por
+      // rede, timeout ou 4xx. O leitor não assinava E perdia o convite para
+      // sempre naquele navegador, em silêncio: é a falha desta PR inteira,
+      // reproduzida no escopo de um visitante.
+      if (st.className.indexOf("ok") >= 0 && st.textContent.indexOf("Enviando") < 0) marcarDispensado();
     }).observe(st, { attributes: true, childList: true, subtree: true });
   });
 

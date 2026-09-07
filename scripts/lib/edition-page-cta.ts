@@ -37,7 +37,13 @@
  *
  * `localStorage` pode lançar (janela privada, cookies bloqueados) — toda
  * leitura e escrita é envolvida em try/catch e o default é "mostrar", nunca
- * quebrar a página.
+ * quebrar a página. Há um caso assimétrico conhecido e aceito: navegador que
+ * PERMITE ler e BLOQUEIA escrever (cota estourada por outro uso da mesma
+ * origem) fecha o modal na hora e não persiste a dispensa, então ele volta na
+ * próxima edição. É raro — quase toda configuração que bloqueia escrita
+ * bloqueia leitura junto, e esse caso já resolve para "mostrar" — e a
+ * alternativa (insistir na escrita, ou avisar o leitor) custa mais do que o
+ * incômodo que evita.
  *
  * ## Reuso, não reimplementação
  *
@@ -217,7 +223,14 @@ export function editionCtaScript(): string {
     var st = f.querySelector(".signup-status");
     if (!st || typeof window.MutationObserver !== "function") return;
     new window.MutationObserver(function () {
-      if (st.className.indexOf("ok") >= 0) marcarDispensado();
+      // A MESMA guarda de "Enviando" do observer do modal, e pela mesma razão:
+      // signupFormScript chama setStatus("Enviando…", true) no INÍCIO do
+      // envio, e esse true já grava a classe ok. Sem a guarda, clicar em
+      // enviar marcava a dispensa na hora — mesmo que o envio falhasse por
+      // rede, timeout ou 4xx. O leitor não assinava E perdia o convite para
+      // sempre naquele navegador, em silêncio: é a falha desta PR inteira,
+      // reproduzida no escopo de um visitante.
+      if (st.className.indexOf("ok") >= 0 && st.textContent.indexOf("Enviando") < 0) marcarDispensado();
     }).observe(st, { attributes: true, childList: true, subtree: true });
   });
 

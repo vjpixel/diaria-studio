@@ -370,7 +370,7 @@ describe("#7576 — gen-archive-pages --keep-unknown regenera sem apagar", () =>
     const dir = makePagesDir(["do-cache", "publicada-pelo-kit"]);
     try {
       assert.doesNotThrow(() =>
-        generateArchivePages([], dir, join(dir, "sitemap.xml"), { keepUnknown: true }),
+        generateArchivePages([], dir, join(dir, "sitemap.xml"), { unknownPages: "keep" }),
       );
       assert.ok(
         existsSync(join(dir, "publicada-pelo-kit", "index.html")),
@@ -386,7 +386,7 @@ describe("#7576 — gen-archive-pages --keep-unknown regenera sem apagar", () =>
     const dir = makePagesDir(["publicada-pelo-kit"]);
     const sm = join(dir, "sitemap.xml");
     try {
-      generateArchivePages([], dir, sm, { keepUnknown: true });
+      generateArchivePages([], dir, sm, { unknownPages: "keep" });
       assert.deepEqual(
         findOrphanSlugs(listPageSlugs(dir), readFileSync(sm, "utf8")),
         ["publicada-pelo-kit"],

@@ -496,15 +496,24 @@ export function buildArchivePageHtml(post: ArchivePost): string {
  * exatamente o tipo de perda que ninguém percebe até alguém medir meses depois.
  */
 export function injectBeforeBodyEnd(html: string, block: string, slug: string): string {
-  const BODY_END = /<\/body\s*>/i;
-  if (!BODY_END.test(html)) {
+  // ÚLTIMO `</body>`, não o primeiro (achado do review da PR #7588).
+  //
+  // `String.replace` com regex não-global casa o PRIMEIRO. Numa edição que cite
+  // HTML como texto — plausível numa newsletter sobre tecnologia — o primeiro
+  // `</body>` seria o do exemplo, e o convite entraria no meio do artigo, com o
+  // resto da edição caindo depois do fechamento. O navegador reabre o body por
+  // recuperação de erro, então a página não quebra visivelmente: some em
+  // silêncio dentro de 261 páginas indexadas. O último é sempre o real.
+  const ocorrencias = [...html.matchAll(/<\/body\s*>/gi)];
+  const ultima = ocorrencias.at(-1);
+  if (!ultima?.index) {
     throw new Error(
       `post "${slug}": HTML sem </body> — não há onde injetar o bloco de cadastro (#7576). ` +
         `Publicar assim geraria uma página de edição sem nenhuma forma de assinar.`,
     );
   }
-  return html.replace(BODY_END, `${block}
-</body>`);
+  return `${html.slice(0, ultima.index)}${block}
+${html.slice(ultima.index)}`;
 }
 
 export interface SitemapEntry {

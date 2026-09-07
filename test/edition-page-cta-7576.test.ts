@@ -141,9 +141,16 @@ describe("#7576 — injeção antes de </body> falha alto, nunca em silêncio", 
     );
   });
 
-  it("injeta uma vez só, no ÚLTIMO </body> se houver mais de um", () => {
-    const out = injectBeforeBodyEnd("<body>a</body>", "<!--C-->", "s");
-    assert.equal((out.match(/<!--C-->/g) ?? []).length, 1);
+  it("REGRESSÃO: com DOIS </body>, injeta antes do ÚLTIMO", () => {
+    // O título deste teste afirmava "último" enquanto o código usava
+    // `String.replace` com regex não-global, que casa o PRIMEIRO — e a fixture
+    // tinha só um `</body>`, então nunca exercitou a diferença (achado do
+    // review da PR #7588). Numa edição que cite HTML como texto, o primeiro
+    // seria o do exemplo: o convite entraria no meio do artigo e o resto da
+    // edição cairia depois do fechamento, sem quebrar visivelmente.
+    const out = injectBeforeBodyEnd("<body>a</body>resto</body>", "<!--C-->", "s");
+    assert.equal((out.match(/<!--C-->/g) ?? []).length, 1, "injeta uma vez só");
+    assert.match(out, /resto<!--C-->\n<\/body>$/, "o bloco precisa ficar antes do ÚLTIMO </body>");
   });
 });
 
