@@ -77,7 +77,7 @@ import {
   scanWrongValueAdoption, // #7324
 } from "../intentional-errors.ts";
 import { checkHasNegativeImpactHighlight } from "./stage-1.ts"; // #3916, #3918
-import { hero2x1KeyFor } from "../../upload-images-public.ts"; // #7399
+import { hero2x1KeyFor, isDestaqueImagePresent } from "../shared/public-image-keys.ts"; // #7399, extraído em #7596
 
 // #6336: usado só por checkKitFixtureAudit, pra localizar
 // scripts/audit-kit-fixtures.ts a partir de scripts/lib/invariant-checks/.
@@ -101,8 +101,9 @@ interface PublicImagesJson {
  * image_url=null e Make rejeita (DLQ incident 260508).
  * #2147: URLs sociais são KV Worker (não Drive uc?id).
  * #7399: a chave base 1x1 (`d1`/`d2`/`d3`) deixou de ser uploadada — a
- * presença é satisfeita por `d{N}_4x5` OU pelo hero 2:1 (`hero2x1KeyFor`),
- * mesma lógica de `assertCacheCompleteness` em `upload-images-public.ts`.
+ * presença é satisfeita por `d{N}_4x5` OU pelo hero 2:1 (`hero2x1KeyFor`).
+ * #7596: regra compartilhada com `assertCacheCompleteness` (upload-images-
+ * public.ts) via `isDestaqueImagePresent` (lib/shared/public-image-keys.ts).
  *
  * #2133/#2141: também valida d2_2x1/d3_2x1/cover (hero 2:1 consumidos pelo email
  * body via substitute-image-urls). Ausentes aqui = email sai com placeholders crus.
@@ -110,7 +111,7 @@ interface PublicImagesJson {
  * newsletter mode falhou silenciosamente, esse check pega antes do publish.
  *
  * Shape real (escrito por scripts/upload-images-public.ts):
- *   { images: { d1: { url, file_id, filename, mime_type } } }
+ *   { images: { d1_4x5: { url, file_id, filename, mime_type }, cover: {...}, ... } }
  */
 function checkPublicImagesPopulated(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "06-public-images.json");
@@ -151,17 +152,14 @@ function checkPublicImagesPopulated(editionDir: string): InvariantViolation[] {
   // Social image presence for LinkedIn/Facebook (DLQ incident #999).
   // #7399: a chave base 1x1 (`d1`/`d2`/`d3`) deixou de ser uploadada —
   // "presença de imagem pro destaque" agora é satisfeita por QUALQUER um dos
-  // dois: o card 4:5 (`d{N}_4x5`) OU o hero 2:1 (`hero2x1KeyFor`) — mesma
-  // lógica de assertCacheCompleteness em upload-images-public.ts. Checar só
+  // dois: o card 4:5 (`d{N}_4x5`) OU o hero 2:1 (`hero2x1KeyFor`). #7596:
+  // `isDestaqueImagePresent` é a MESMA função usada por assertCacheCompleteness
+  // em upload-images-public.ts (lib/shared/public-image-keys.ts) — checar só
   // a chave base 1x1 (removida) sempre falhava depois do #7399, mesmo com
   // o pipeline saudável.
   for (const d of socialDestaques) {
-    const card4x5 = images[`${d}_4x5`]?.url;
     const heroKey = hero2x1KeyFor(d);
-    const hero = images[heroKey]?.url;
-    const has4x5 = typeof card4x5 === "string" && card4x5.trim().length > 0;
-    const hasHero = typeof hero === "string" && hero.trim().length > 0;
-    if (!has4x5 && !hasHero) {
+    if (!isDestaqueImagePresent(images, d)) {
       violations.push({
         rule: "public-images-populated",
         message: `06-public-images.json: nem images.${d}_4x5.url nem images.${heroKey}.url estão presentes (destaque ${d})`,
@@ -171,7 +169,8 @@ function checkPublicImagesPopulated(editionDir: string): InvariantViolation[] {
       });
       continue;
     }
-    for (const [key, url] of [[`${d}_4x5`, card4x5], [heroKey, hero]] as const) {
+    for (const key of [`${d}_4x5`, heroKey]) {
+      const url = images[key]?.url;
       if (typeof url === "string" && url.trim().length > 0 && !/^https?:\/\//.test(url)) {
         violations.push({
           rule: "public-images-url-shape",

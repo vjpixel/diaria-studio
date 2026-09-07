@@ -38,6 +38,7 @@ import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts"; // #2352
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts"; // #2834
 import { md5OfFile } from "./lib/shared/file-md5.ts"; // #6068 (era local, #1418)
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
+import { hero2x1KeyFor, isDestaqueImagePresent } from "./lib/shared/public-image-keys.ts"; // #7596 — extraído pra módulo puro
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -609,15 +610,10 @@ export async function uploadPublicImages(
   return { out_path: cachePath, images, warnings };
 }
 
-/**
- * #7399: chave do hero 2:1 pra um destaque — fallback direto (sem passar mais
- * pelo 1:1 legado, que deixou de ser uploadado) quando o card 4:5 falta.
- * D1 é a exceção de nomenclatura: seu 2:1 é a chave `cover` (upload-a como
- * capa do email, #1121), não `d1_2x1`; D2/D3 usam `d{N}_2x1` (#2133/#2141).
- */
-export function hero2x1KeyFor(destaque: string): string {
-  return destaque === "d1" ? "cover" : `${destaque}_2x1`;
-}
+// #7596: hero2x1KeyFor migrou pra lib/shared/public-image-keys.ts (módulo
+// puro, sem side effect de .env/CLI) — re-exportado aqui pra não quebrar
+// consumidores existentes que importam a função a partir deste arquivo.
+export { hero2x1KeyFor };
 
 /**
  * Verifica que o cache final contém todas as keys esperadas pro mode.
@@ -647,9 +643,7 @@ export function assertCacheCompleteness(
 
   if (mode === "social" || mode === "all") {
     for (const d of destaques) {
-      const has4x5 = !!images[`${d}_4x5`]?.url;
-      const hasHero = !!images[hero2x1KeyFor(d)]?.url;
-      if (!has4x5 && !hasHero) missing.push(d);
+      if (!isDestaqueImagePresent(images, d)) missing.push(d);
     }
   }
   if (mode === "newsletter" || mode === "all") {
