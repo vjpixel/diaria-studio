@@ -13,6 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+import { findOrphanSlugs, listPageSlugs, slugsInSitemap } from "../site-sitemap-orphans.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -246,22 +247,37 @@ function checkWhatsappSlugGuard(
  * `_internal/site-page-published.json` (escrito por
  * `publish-edition-site-page.ts`, #7283) deve existir e registrar
  * `published: true` — senão a página `/p/{slug}` do acervo não foi
- * publicada (branch pushada + PR aberto). `severity: "warning"` de
- * propósito: o fail-soft do #6202 é intencional (site é acessório ao
- * envio) — este check não bloqueia Stage 6, só torna a falha VISÍVEL no
- * relatório de invariantes em vez de depender de um agente LLM lembrar de
- * logar via `log-event.ts` (prosa em `orchestrator-stage-6.md` §6d-site,
- * não reforçada em código — foi exatamente essa lacuna que deixou 4
- * edições consecutivas (31/08–03/09) sem página no acervo em silêncio
- * absoluto, ver #7283/#7266).
+ * publicada (branch pushada + PR aberto).
+ *
+ * ## `severity: "error"` desde #7578 — era `"warning"` (decisão do editor, 07/09/2026)
+ *
+ * O `warning` original vinha do fail-soft do #6202: publicar no site é
+ * acessório ao ENVIO, e nenhuma falha ali podia derrubar a edição. A premissa
+ * mudou duas vezes desde então:
+ *
+ *   1. o site virou destino de campanha PAGA (#7575) e a superfície mais
+ *      indexável do domínio (#7576) — não é mais acessório;
+ *   2. o próprio mecanismo provou que `warning` não é lido. A docstring desta
+ *      função já registrava que a lacuna tinha deixado "4 edições consecutivas
+ *      (31/08–03/09) sem página no acervo em silêncio absoluto" — e o #7578
+ *      mediu que **continuou acontecendo depois disso**, somando 12 dias de
+ *      acervo parado. Um aviso que ninguém lê pela segunda vez não é aviso.
+ *
+ * Bloquear no Stage 6 é barato: o gate já é humano, e a correção é re-rodar
+ * uma linha. O fail-soft do SCRIPT (#6202) continua intacto — ele segue
+ * saindo com `code != 0` sem lançar, e o envio da edição não depende dele.
+ * O que mudou é só quem decide seguir: agora é o editor, no gate, com a falha
+ * na frente — não o silêncio.
  *
  * `code: 2` ("nada a publicar ainda" — insumos ausentes) é tratado como
  * benigno, não gera violação: não é falha de publish, e não deveria
  * acontecer no Stage 6 normal (Stage 4/5 já rodaram), mas se acontecer não
  * é isto que deve acusar.
  *
- * Arquivo ausente também vira warning (não error) — cobre tanto "o passo
- * nunca rodou" quanto "versão antiga do script, sem este mecanismo ainda".
+ * Arquivo ausente também bloqueia: cobre "o passo nunca rodou", que é
+ * indistinguível de "rodou e falhou" do ponto de vista do acervo — nos dois
+ * casos a edição não tem página. (Antes do #7578 era `warning`, para tolerar
+ * uma versão do script anterior ao #7283; esse período já passou.)
  */
 function checkSitePagePublished(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "_internal", "site-page-published.json");
@@ -272,10 +288,11 @@ function checkSitePagePublished(editionDir: string): InvariantViolation[] {
         message:
           `_internal/site-page-published.json ausente — §6d-site (publish-edition-site-page.ts) não ` +
           `rodou, ou rodou numa versão anterior ao #7283. Acervo do site pode estar sem a página desta ` +
-          `edição (link de hub cairia no fallback do Kit e daria 404, ver #7266). Rodar manualmente: ` +
-          `\`npx tsx scripts/publish-edition-site-page.ts --edition-dir {EDITION_DIR} --slug {slug}\`.`,
-        source_issue: "#7283",
-        severity: "warning",
+          `edição (link de hub cairia no fallback do Kit e daria 404, ver #7266). GATE-BLOCKING desde ` +
+          `#7578. Rodar manualmente: \`npx tsx scripts/publish-edition-site-page.ts --edition-dir ` +
+          `{EDITION_DIR} --slug {slug} --sitemap workers/site/public/sitemap.xml\`.`,
+        source_issue: "#7578",
+        severity: "error",
         file: path,
       },
     ];
@@ -287,9 +304,12 @@ function checkSitePagePublished(editionDir: string): InvariantViolation[] {
     return [
       {
         rule: "site-page-published-parseable",
+        // Estado DESCONHECIDO: não dá pra afirmar que a página foi publicada.
+        // Bloqueia junto com os demais (#7578) — a direção segura de um
+        // artefato ilegível é a mesma de um artefato ausente.
         message: `site-page-published.json não parseável: ${(e as Error).message}`,
-        source_issue: "#7283",
-        severity: "warning",
+        source_issue: "#7578",
+        severity: "error",
         file: path,
       },
     ];
@@ -302,15 +322,93 @@ function checkSitePagePublished(editionDir: string): InvariantViolation[] {
         message:
           `site-page-published.json registra published=${String(data.published)} (code=${data.code ?? "?"}) ` +
           `— a página /p/${data.slug ?? "?"} do acervo do site NÃO foi publicada (branch pushada + PR ` +
-          `aberto/reusado). Motivo: ${data.reason ?? "não registrado"}. Fail-soft intencional (#6202) — não ` +
-          `bloqueia a edição, mas o link fica 404 até alguém publicar manualmente (ver #7266/#7280).`,
-        source_issue: "#7283",
-        severity: "warning",
+          `aberto/reusado). Motivo: ${data.reason ?? "não registrado"}. GATE-BLOCKING desde #7578 (era ` +
+          `warning, e o silêncio deixou 12 dias de acervo parado): re-rodar \`publish-edition-site-page.ts\` ` +
+          `com \`--sitemap workers/site/public/sitemap.xml\` e mergear o PR, ou aprovar o gate ciente de que ` +
+          `a página fica 404 (ver #7266/#7280).`,
+        source_issue: "#7578",
+        severity: "error",
         file: path,
       },
     ];
   }
   return [];
+}
+
+/**
+ * Toda página em `workers/site/public/p/` precisa ter `<loc>` no
+ * `sitemap.xml` do mesmo Worker (#7578).
+ *
+ * Por que é invariante de Stage 6, e não só um script de manutenção: uma
+ * página fora do sitemap fica invisível em DUAS superfícies ao mesmo tempo —
+ * no buscador (que segue o sitemap) e em `arquivo.diar.ia.br`, cujo acervo é
+ * DERIVADO do sitemap do apex em request-time (`fetchSitemapXml`/
+ * `parseSitemap`, `workers/arquivo/src/index.ts`), sem fonte própria. A
+ * página responde 200 e mesmo assim ninguém chega nela.
+ *
+ * Foi assim que 5 edições ficaram órfãs entre 28/08 e 03/09/2026 sem nenhum
+ * sinal: o `publish-edition-site-page.ts` gravou `/p/{slug}` e o sitemap não
+ * acompanhou (a flag `--sitemap` só passou a escrever de verdade no #6454).
+ *
+ * Independente da edição em curso — varre o repo inteiro. É de propósito:
+ * o custo é o mesmo e pega órfã de QUALQUER edição, inclusive as que uma
+ * execução anterior deixou para trás.
+ *
+ * Ausência do diretório inteiro não viola nada (checkout parcial, fixture de
+ * teste): o invariante é sobre página órfã, não sobre o site existir. Mas
+ * diretório PRESENTE e VAZIO enquanto o sitemap declara URLs é outra coisa —
+ * é perda de conteúdo, e sai como violação. Sem essa distinção o pior caso
+ * possível (o acervo inteiro sumir do disco) passaria como "0 órfãs", que é
+ * o mesmo silêncio que o #7578 existe para acabar, só que maior.
+ *
+ * `paths` é injetável só para teste (mesmo padrão de `backendOverride` em
+ * `checkScheduledAt`): sem isso o único teste possível seria contra o repo
+ * real, que este próprio PR deixa limpo — ou seja, um teste cujo corpo nunca
+ * executa e que passa sem verificar nada.
+ */
+function checkSiteSitemapNoOrphans(
+  _editionDir: string,
+  paths?: { pagesDir: string; sitemapPath: string },
+): InvariantViolation[] {
+  const pagesDir = paths?.pagesDir ?? resolve(ROOT, "workers", "site", "public", "p");
+  const sitemapPath = paths?.sitemapPath ?? resolve(ROOT, "workers", "site", "public", "sitemap.xml");
+  if (!existsSync(pagesDir) || !existsSync(sitemapPath)) return [];
+
+  const xml = readFileSync(sitemapPath, "utf8");
+  const pageSlugs = listPageSlugs(pagesDir);
+  const declarados = slugsInSitemap(xml).size;
+  if (pageSlugs.length === 0 && declarados > 0) {
+    return [
+      {
+        rule: "site-sitemap-no-orphans",
+        message:
+          `${pagesDir} existe mas não tem NENHUMA página, enquanto o sitemap declara ${declarados} URL(s) ` +
+          `sob /p/. Isso é perda de conteúdo, não ausência de acervo — provável apagamento acidental ` +
+          `(ver o guard \`--allow-prune\` de gen-archive-pages.ts, #7578) ou checkout corrompido. ` +
+          `Restaurar as páginas antes de seguir; \`reconcile-site-sitemap.ts\` NÃO recupera página apagada.`,
+        source_issue: "#7578",
+        severity: "error",
+        file: pagesDir,
+      },
+    ];
+  }
+
+  const orphans = findOrphanSlugs(pageSlugs, xml);
+  if (orphans.length === 0) return [];
+
+  return [
+    {
+      rule: "site-sitemap-no-orphans",
+      message:
+        `${orphans.length} página(s) em workers/site/public/p/ sem entrada no sitemap.xml: ` +
+        `${orphans.slice(0, 5).join(", ")}${orphans.length > 5 ? ", …" : ""}. ` +
+        `Página fora do sitemap é invisível no buscador E em arquivo.diar.ia.br (que deriva o acervo ` +
+        `do sitemap do apex). Corrigir: \`npx tsx scripts/reconcile-site-sitemap.ts\`.`,
+      source_issue: "#7578",
+      severity: "error",
+      file: sitemapPath,
+    },
+  ];
 }
 
 export const STAGE_6_RULES: InvariantRule[] = [
@@ -352,10 +450,18 @@ export const STAGE_6_RULES: InvariantRule[] = [
   {
     id: "site-page-published",
     description:
-      "_internal/site-page-published.json registra published:true — torna visível o fail-soft do §6d-site (#7283)",
-    source_issue: "#7283",
+      "_internal/site-page-published.json registra published:true — GATE-BLOCKING desde #7578 (era warning, #7283)",
+    source_issue: "#7578",
     stage: 6,
     run: checkSitePagePublished,
+  },
+  {
+    id: "site-sitemap-no-orphans",
+    description:
+      "toda página em workers/site/public/p/ tem entrada no sitemap.xml — sem isso a página é invisível no buscador E no arquivo (#7578)",
+    source_issue: "#7578",
+    stage: 6,
+    run: checkSiteSitemapNoOrphans,
   },
 ];
 
@@ -366,4 +472,7 @@ export {
   checkWhatsappSlugGuard,
   checkStep6Sentinel,
   checkSitePagePublished,
+  // #7578: exportada pra teste com paths injetados — sem isso o unico teste
+  // possivel seria contra o repo real, que fica limpo e nunca exercita o caminho.
+  checkSiteSitemapNoOrphans,
 };

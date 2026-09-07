@@ -50,14 +50,15 @@ describe("STAGE_6_RULES registry (#4574)", () => {
     assert.ok(ids.includes("whatsapp-slug-guard-ok"));
     assert.ok(ids.includes("step-6-sentinel-exists"));
     assert.ok(ids.includes("site-page-published"));
-    assert.equal(ids.length, 6, `esperava 6 regras no Stage 6, achei: ${JSON.stringify(ids)}`);
+    assert.ok(ids.includes("site-sitemap-no-orphans"));
+    assert.equal(ids.length, 7, `esperava 7 regras no Stage 6, achei: ${JSON.stringify(ids)}`);
   });
 
-  it("contém a entry site-page-published, stage 6, source_issue #7283, severity warning (fail-soft não bloqueia)", () => {
+  it("contém a entry site-page-published, stage 6, source_issue #7578 (GATE-BLOCKING desde a decisão do editor de 07/09/2026)", () => {
     const entry = STAGE_6_RULES.find((r) => r.id === "site-page-published");
     assert.ok(entry !== undefined, "STAGE_6_RULES deve conter 'site-page-published'");
     assert.equal(entry!.stage, 6);
-    assert.equal(entry!.source_issue, "#7283");
+    assert.equal(entry!.source_issue, "#7578");
   });
 });
 
@@ -274,17 +275,23 @@ describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site 
     fixture = makeFixtureEdition();
   });
 
-  it("REGRESSÃO: warning (não error) quando site-page-published.json ausente — o passo nunca rodou/versão antiga do script, e ninguém percebeu por 4 edições (#7283/#7266)", () => {
+  // #7578 inverteu a direção desta asserção, e o motivo precisa ficar no
+  // teste: o `warning` original era fail-soft deliberado (#6202, site
+  // acessório ao envio), mas o próprio nome deste teste registrava que
+  // "ninguém percebeu por 4 edições". Depois disso o silêncio custou mais 12
+  // dias de acervo parado (#7578). Decisão do editor em 07/09/2026: travar o
+  // gate. O fail-soft do SCRIPT continua — quem passou a bloquear é o gate.
+  it("REGRESSÃO #7578: error (não mais warning) quando site-page-published.json ausente — o passo nunca rodou, e o warning já provou que ninguém lê (#7283/#7266)", () => {
     const v = checkSitePagePublished(fixture);
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "site-page-published");
-    assert.equal(v[0].severity, "warning", "fail-soft intencional (#6202) — nunca pode virar error/bloqueio");
-    assert.equal(v[0].source_issue, "#7283");
+    assert.equal(v[0].severity, "error", "decisão do editor 07/09/2026 (#7578) — o gate 6 trava até a página existir");
+    assert.equal(v[0].source_issue, "#7578");
     assert.match(v[0].message, /não rodou/);
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("REGRESSÃO: warning quando published:false (commit/push/gh pr create falhou) — o caso real do incidente", () => {
+  it("REGRESSÃO #7578: error quando published:false (commit/push/gh pr create falhou) — o caso real do incidente de 260904", () => {
     writeFileSync(
       join(fixture, "_internal", "site-page-published.json"),
       JSON.stringify({
@@ -298,7 +305,7 @@ describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site 
     const v = checkSitePagePublished(fixture);
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "site-page-published");
-    assert.equal(v[0].severity, "warning");
+    assert.equal(v[0].severity, "error");
     assert.match(v[0].message, /gates-propoe-empregos-so-para-humanos/);
     assert.match(v[0].message, /checkout não está sincronizado/);
     rmSync(fixture, { recursive: true, force: true });
@@ -330,12 +337,14 @@ describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site 
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("warning quando o arquivo existe mas não é JSON parseável", () => {
+  // Estado DESCONHECIDO segue a mesma direção segura do artefato ausente
+  // (#7578): não dá para afirmar que a página foi publicada.
+  it("error quando o arquivo existe mas não é JSON parseável", () => {
     writeFileSync(join(fixture, "_internal", "site-page-published.json"), "{ not valid json");
     const v = checkSitePagePublished(fixture);
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "site-page-published-parseable");
-    assert.equal(v[0].severity, "warning");
+    assert.equal(v[0].severity, "error");
     rmSync(fixture, { recursive: true, force: true });
   });
 });

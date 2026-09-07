@@ -544,7 +544,14 @@ function resolvePublishTimestampMs(post: ArchivePost): number | undefined {
   return Number.isNaN(ms) ? undefined : ms;
 }
 
-function publishDateToIso(post: ArchivePost): string | undefined {
+/**
+ * Exportada desde o #7578: `site-sitemap-orphans.ts` precisa da MESMA
+ * resolução de data para o `<lastmod>` das órfãs que este módulo usa para o
+ * sitemap normal. Reimplementar `displayed_date ?? publish_date` lá teria
+ * ignorado `beehiiv-publish-date-overrides.json` (#4796) e escrito a data do
+ * IMPORT em lote, não a do envio real, nas 6 edições mais antigas.
+ */
+export function publishDateToIso(post: ArchivePost): string | undefined {
   const ms = resolvePublishTimestampMs(post);
   if (ms === undefined) return undefined;
   const date = new Date(ms);
