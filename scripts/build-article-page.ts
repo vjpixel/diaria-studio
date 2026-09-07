@@ -26,7 +26,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { requireMonthlyCycleArg, monthlyDir } from "./lib/mensal/monthly-paths.ts";
-import { buildArticleHtml } from "./lib/mensal/build-article-page.ts";
+import { TeaserCutError, buildArticleHtml, buildArticleTeaserHtml } from "./lib/mensal/build-article-page.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { DIARIA_ARTIGO_URL } from "./lib/canonical-urls.ts";
@@ -53,6 +53,17 @@ export function articleKvNamespaceId(): string {
 
 export function articleKvKey(cycle: string): string {
   return `article:${cycle}`;
+}
+
+/**
+ * Chave do TRECHO público no KV (#7580).
+ *
+ * Sufixo `:teaser` na mesma chave do artigo — o Worker escolhe qual ler pelo
+ * resultado do gate, sem precisar de um segundo namespace nem de convenção de
+ * nome paralela.
+ */
+export function articleTeaserKvKey(cycle: string): string {
+  return `${articleKvKey(cycle)}:teaser`;
 }
 
 async function main(): Promise<void> {
@@ -92,6 +103,29 @@ async function main(): Promise<void> {
       kvNamespaceId: articleKvNamespaceId(),
       contentType: "text/html; charset=utf-8",
     });
+    // O TRECHO é secundário ao artigo: falhar em cortá-lo não pode impedir a
+    // publicação do artigo completo, que é o que o apoiador paga para ler. Sem
+    // `:teaser` no KV o Worker cai no paywall seco — fail-closed, o
+    // não-apoiador simplesmente não vê conteúdo, que é o comportamento de
+    // antes desta issue. O ciclo 2604-05 cai aqui de propósito: é anterior à
+    // convenção `**DESTAQUE N | TEMA**` e não tem onde cortar.
+    try {
+      const trecho = buildArticleTeaserHtml(draftMd, cycle);
+      console.error(
+        `[build-article-page] --push: enviando ${articleTeaserKvKey(cycle)} (${trecho.html.length} bytes, ` +
+          `${Math.round((trecho.html.length / page.html.length) * 100)}% do artigo)...`,
+      );
+      await uploadTextToWorkerKV(trecho.html, articleTeaserKvKey(cycle), {
+        kvNamespaceId: articleKvNamespaceId(),
+        contentType: "text/html; charset=utf-8",
+      });
+    } catch (e) {
+      if (!(e instanceof TeaserCutError)) throw e;
+      console.error(
+        `[build-article-page] AVISO: trecho NÃO publicado — ${e.message}. ` +
+          `O artigo completo foi publicado normalmente; o não-apoiador verá o paywall sem trecho.`,
+      );
+    }
     console.error(`[build-article-page] push concluído. URL pública: ${DIARIA_ARTIGO_URL}/${cycle}`);
   } else {
     console.error(

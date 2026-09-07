@@ -166,6 +166,65 @@ export interface ArticlePage {
 }
 
 /**
+ * Erro do corte do trecho: o draft não tem a estrutura que o corte pressupõe.
+ *
+ * Falha ALTO em vez de devolver um trecho torto. Um trecho vazio (ou o artigo
+ * inteiro por engano) publicado como "amostra grátis" é pior que não ter
+ * trecho: no primeiro caso a página não vende nada, no segundo ela entrega o
+ * conteúdo pago. `build-article-page.ts` trata isso como falha do ciclo.
+ */
+export class TeaserCutError extends Error {
+  readonly cycle: string;
+
+  constructor(cycle: string, motivo: string) {
+    super(`não foi possível cortar o trecho público do ciclo "${cycle}": ${motivo}`);
+    this.name = "TeaserCutError";
+    this.cycle = cycle;
+  }
+}
+
+/** Marcador de seção do draft mensal: `**DESTAQUE 1 | INDÚSTRIA**`, `**LIVROS**`, … */
+const SECTION_MARKER = /^\*\*[A-ZÀ-Ú][^*]*\*\*$/;
+
+/**
+ * Corta o markdown do draft no fim do 1º destaque temático.
+ *
+ * Decisão do editor (07/09/2026): dos 3 destaques do mensal, o trecho público
+ * leva o primeiro INTEIRO. Uma peça completa e coerente convence melhor que
+ * três parágrafos picados, e ainda deixa dois terços pagos.
+ *
+ * O corte é no MARKDOWN, não no HTML. Cortar HTML de e-mail — tabelas
+ * aninhadas, estilos inline — por offset produz documento malformado; aqui o
+ * limite é uma linha de marcador de seção, e o render depois devolve HTML
+ * completo e válido por construção.
+ *
+ * Corta no PRÓXIMO marcador depois do `DESTAQUE 1`, seja ele qual for
+ * (`CLARICE — DIVULGAÇÃO`, `DESTAQUE 2`, …). Deixa o trecho terminando no
+ * "fio condutor" do destaque, que é gancho melhor do que terminar num bloco
+ * patrocinado — e sobrevive a uma reordenação de seções sem precisar saber o
+ * que vem depois.
+ */
+export function cutDraftAfterFirstDestaque(draftMd: string, cycle: string): string {
+  const linhas = draftMd.split(/\r?\n/);
+  const iDestaque = linhas.findIndex((l) => /^\*\*DESTAQUE 1\b/.test(l));
+  if (iDestaque < 0) {
+    throw new TeaserCutError(cycle, "não há marcador `**DESTAQUE 1 ...**` no draft");
+  }
+  // `.trim()`: espaço à direita num cabeçalho gerado por LLM faria o
+  // marcador não casar, e o corte seguiria varrendo — até dentro do DESTAQUE 2.
+  const iCorte = linhas.findIndex((l, i) => i > iDestaque && SECTION_MARKER.test(l.trim()));
+  if (iCorte < 0) {
+    throw new TeaserCutError(cycle, "não há seção depois do DESTAQUE 1 — o trecho seria o artigo inteiro");
+  }
+  const trecho = linhas.slice(0, iCorte).join("\n").trimEnd();
+  // Um corte que não deixa corpo nenhum é bug de estrutura, não trecho curto.
+  if (trecho.length < 500) {
+    throw new TeaserCutError(cycle, `trecho ficou com ${trecho.length} caracteres — estrutura inesperada`);
+  }
+  return trecho;
+}
+
+/**
  * Pure: converte o markdown do draft mensal no HTML completo do artigo
  * público.
  *
@@ -175,6 +234,21 @@ export interface ArticlePage {
  *   UTM da seção É IA?/links Beehiiv e pro cálculo interno de edição É IA?.
  * @throws se `cycle` não é um ciclo válido (`{conteúdo}-{envio}`).
  */
+/**
+ * HTML do TRECHO público — o que o não-apoiador recebe.
+ *
+ * Passa pelo mesmo render e pelas mesmas três transformações web do artigo
+ * completo, então herda o guard de merge tag e a correção de UTM sem
+ * duplicação. A diferença é só o markdown de entrada, já cortado.
+ *
+ * O bloco de paywall (fade + CTA) NÃO entra aqui: ele é montado pelo Worker
+ * (`workers/artigo-mensal/src/render.ts`), onde o CTA já vive. Assim mudar o
+ * texto do convite não exige reconstruir e republicar todos os ciclos.
+ */
+export function buildArticleTeaserHtml(draftMd: string, cycle: string): ArticlePage {
+  return buildArticleHtml(cutDraftAfterFirstDestaque(draftMd, cycle), cycle);
+}
+
 export function buildArticleHtml(draftMd: string, cycle: string): ArticlePage {
   if (!isValidMonthlyCycle(cycle)) {
     throw new Error(

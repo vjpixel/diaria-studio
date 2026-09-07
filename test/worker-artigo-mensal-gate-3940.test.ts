@@ -194,22 +194,44 @@ describe("handleGet — cenário 3: não-apoiador bate no paywall (#3940)", () =
 });
 
 describe("handleGet — cenário 4: e-mail ausente/inválido → fail-closed (#3940)", () => {
-  it("sem ?email= → form de e-mail, NUNCA o artigo", async () => {
+  // #7580 inverteu a PRIMEIRA TELA: era o formulário de e-mail, que pedia
+  // credencial antes de dar qualquer motivo para se importar — e era o que via
+  // quem chegava de busca ou de link compartilhado. Agora é o trecho (ou o
+  // paywall seco, quando não há trecho no KV). O que NÃO mudou, e é o que estes
+  // testes guardam: o artigo completo nunca aparece.
+  it("sem ?email= → paywall (nunca o artigo); form de e-mail só em ?entrar", async () => {
     const articles: MockKV = new Map([[`article:${CYCLE}`, ARTICLE_HTML]]);
     const env = makeEnv(articles, JSON.stringify(["apoiador10@x.com"]));
     const res = await handleGet(new URL(`https://artigo.diar.ia.br/${CYCLE}`), env);
     assert.equal(res.status, 200);
     const body = await res.text();
-    assert.match(body, /Digite o e-mail/i);
-    assert.doesNotMatch(body, /Artigo completo de julho/);
+    assert.doesNotMatch(body, /Artigo completo de julho/, "o artigo pago nunca sai sem gate");
+    assert.match(body, /exclusivo para apoiadores/i, "sem :teaser no KV, cai no paywall seco");
+
+    const comEntrar = await handleGet(new URL(`https://artigo.diar.ia.br/${CYCLE}?entrar=1`), env);
+    assert.match(await comEntrar.text(), /Digite o e-mail/i, "a porta do apoiador continua existindo");
   });
 
-  it("?email= vazio → tratado como ausente (form de e-mail)", async () => {
+  it("#7580: com :teaser no KV, o não-apoiador recebe o trecho + bloco de conversão", async () => {
+    const articles: MockKV = new Map([
+      [`article:${CYCLE}`, ARTICLE_HTML],
+      [`article:${CYCLE}:teaser`, "<html><body><p>começo do artigo</p></body></html>"],
+    ]);
+    const env = makeEnv(articles, JSON.stringify(["apoiador10@x.com"]));
+    const body = await (await handleGet(new URL(`https://artigo.diar.ia.br/${CYCLE}`), env)).text();
+    assert.match(body, /começo do artigo/, "o trecho aparece");
+    assert.match(body, /apoia\.se\/diaria/, "com o CTA de apoio");
+    assert.doesNotMatch(body, /Artigo completo de julho/, "e o artigo pago continua fora");
+  });
+
+  it("?email= vazio → tratado como ausente (paywall, nunca o artigo)", async () => {
     const articles: MockKV = new Map([[`article:${CYCLE}`, ARTICLE_HTML]]);
     const env = makeEnv(articles, JSON.stringify(["apoiador10@x.com"]));
     const res = await handleGet(new URL(`https://artigo.diar.ia.br/${CYCLE}?email=`), env);
     assert.equal(res.status, 200);
-    assert.match(await res.text(), /Digite o e-mail/i);
+    const body = await res.text();
+    assert.doesNotMatch(body, /Artigo completo de julho/);
+    assert.match(body, /exclusivo para apoiadores/i);
   });
 
   it("path sem ciclo (/) → 400, mesmo com e-mail válido", async () => {
@@ -317,7 +339,7 @@ describe("fetch handler — método != GET → 405 (#3940)", () => {
 });
 
 describe("GET /sitemap.xml — sitemap vazio válido, não a página de paywall/form (#4546 achado lateral)", () => {
-  it("200 XML com <urlset> vazio — antes disto, o catch-all tratava 'sitemap.xml' como {cycle} e devolvia o form de e-mail com 200", async () => {
+  it("200 XML listando os ciclos COM trecho (#7580; era vazio, #4546) — antes disto, o catch-all tratava 'sitemap.xml' como {cycle} e devolvia o form de e-mail com 200", async () => {
     const worker = (await import("../workers/artigo-mensal/src/index.ts")).default;
     // Nem allowlist nem artigo no KV — se o defeito antigo reaparecesse, o
     // gate cairia em "no_email" (sem `?email=`) e devolveria o form de
@@ -329,7 +351,11 @@ describe("GET /sitemap.xml — sitemap vazio válido, não a página de paywall/
     const body = await res.text();
     assert.match(body, /<urlset/);
     assert.doesNotMatch(body, /<html/i, "não deve devolver HTML (form de e-mail/paywall) em /sitemap.xml");
-    assert.doesNotMatch(body, /<loc>/, "sem URL pública indexável — todo conteúdo é gated, sitemap deve ficar vazio");
+    // #7580: era vazio porque "todo conteúdo é gated, não há URL pública
+    // indexável". Com o trecho servido a quem não apoia, mudou o FATO — e o
+    // sitemap passou a listar os ciclos que TÊM trecho.
+    assert.match(body, /<loc>https:\/\/artigo\.diar\.ia\.br\/2608-09<\/loc>/);
+    assert.doesNotMatch(body, /2604-05/, "ciclo sem trecho não é anunciado ao crawler");
   });
 
   it("continua servindo /sitemap.xml mesmo com ?email= na query (não é tratado como cycle)", async () => {

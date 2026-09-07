@@ -56,6 +56,7 @@ import { normalizeEmail, parseAllowlist, decideGate } from "./gate.ts";
 import {
   renderEmailForm,
   renderPaywall,
+  renderTeaserWithPaywall,
   renderCycleNotFound,
   renderMissingCycle,
 } from "./render.ts";
@@ -84,13 +85,42 @@ function htmlResponse(body: string, status = 200): Response {
  * distinto tanto de um 404 quanto de servir o form de e-mail como se fosse
  * conteúdo de sitemap.
  */
-const EMPTY_SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
+/**
+ * Ciclos com trecho público, do mais recente para o mais antigo (#7580).
+ *
+ * Lista explícita, e não varredura do KV: `list()` custa uma chamada por
+ * request de sitemap e traria também o ciclo sem trecho (`2604-05`, anterior à
+ * convenção `**DESTAQUE N | TEMA**`), que não deve ser anunciado ao crawler —
+ * ele responde paywall seco, sem conteúdo indexável.
+ *
+ * Acrescentar um ciclo aqui é o passo que o torna descobrível; publicar o
+ * `:teaser` no KV é o que o torna legível. Os dois são deliberados.
+ */
+const CICLOS_COM_TRECHO = ["2608-09", "2607-08", "2606-07", "2605-06"] as const;
+
+/**
+ * Sitemap com os ciclos que têm trecho público (#7580).
+ *
+ * Era vazio de propósito até aqui — a justificativa literal era "todo `/{cycle}`
+ * é gated por allowlist de apoiador, não há URL pública indexável". Com o
+ * trecho servido a quem não apoia, isso deixou de valer: mudou o FATO, não a
+ * leitura. `gsc-submit-sitemaps.ts` passa a incluir este host pelo mesmo motivo.
+ */
+function buildSitemapXml(): string {
+  const urls = CICLOS_COM_TRECHO.map(
+    (c) => `  <url>
+    <loc>${ARTIGO_MENSAL_HOST}/${c}</loc>
+  </url>`,
+  ).join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls}
 </urlset>
 `;
+}
 
 function sitemapResponse(): Response {
-  return new Response(EMPTY_SITEMAP_XML, {
+  return new Response(buildSitemapXml(), {
     status: 200,
     headers: { "Content-Type": "application/xml;charset=utf-8", "Cache-Control": "public, max-age=3600" },
   });
@@ -99,10 +129,9 @@ function sitemapResponse(): Response {
 /**
  * `robots.txt` PRÓPRIO (#4777) — mesmo mecanismo/racional de
  * `workers/arquivo` (`renderCuradoriaRobotsTxt`, `scripts/lib/shared/robots-txt.ts`,
- * #4546). `Sitemap:` aponta pro `/sitemap.xml` deste próprio host (vazio,
- * ver `EMPTY_SITEMAP_XML` acima) — declará-lo não muda a semântica "nenhuma
- * URL indexável hoje", só evita que o crawler descubra o robots.txt e ache
- * que não há sitemap nenhum.
+ * #4546). `Sitemap:` aponta pro `/sitemap.xml` deste próprio host, que desde o
+ * #7580 lista os ciclos com trecho público — deixou de ser vazio junto com a
+ * premissa que o mantinha assim.
  */
 const ARTIGO_MENSAL_ROBOTS_TXT = renderCuradoriaRobotsTxt(`${ARTIGO_MENSAL_HOST}/sitemap.xml`);
 
@@ -132,6 +161,47 @@ export async function loadArticle(env: Env, cycle: string): Promise<string | nul
   }
 }
 
+/**
+ * Lê o TRECHO público do ciclo (#7580). `null` se ausente ou erro de leitura.
+ *
+ * Ausência é estado LEGÍTIMO, não erro: o ciclo `2604-05` é anterior à
+ * convenção `**DESTAQUE N | TEMA**` e não tem onde cortar, então
+ * `build-article-page.ts --push` publica o artigo e pula o trecho, avisando.
+ * Aqui isso vira paywall seco — o comportamento de antes desta issue.
+ */
+export async function loadArticleTeaser(env: Env, cycle: string): Promise<string | null> {
+  try {
+    return await env.ARTICLES.get(`article:${cycle}:teaser`);
+  } catch (e) {
+    // Loga em vez de engolir: sem sinal, uma quebra no trecho degrada para o
+    // paywall seco — resposta plausível — e ninguém descobre até alguém olhar
+    // a página por acaso, que é literalmente como o #7578 foi encontrado.
+    console.error(`[artigo-mensal] falha lendo article:${cycle}:teaser: ${e instanceof Error ? e.message : e}`);
+    return null;
+  }
+}
+
+/**
+ * Página servida a quem NÃO passou no gate.
+ *
+ * Com trecho: artigo cortado + bloco de conversão. Sem trecho, ou se a injeção
+ * falhar: paywall seco.
+ *
+ * O fail-closed vale nas DUAS direções, e a segunda é a que se esquece: nunca
+ * servir o artigo completo por engano (óbvia), e nunca servir o trecho SEM o
+ * bloco de conversão (entregaria conteúdo de graça sem pedir nada em troca —
+ * o pior dos dois mundos).
+ */
+function paywallResponse(teaser: string | null): Response {
+  if (!teaser) return htmlResponse(renderPaywall());
+  try {
+    return htmlResponse(renderTeaserWithPaywall(teaser));
+  } catch (e) {
+    console.error(`[artigo-mensal] trecho presente mas não injetável, caindo no paywall seco: ${e instanceof Error ? e.message : e}`);
+    return htmlResponse(renderPaywall());
+  }
+}
+
 /** Extrai o ciclo do path (`/2607-08` → `"2607-08"`). `""` se path vazio (`/`). */
 export function extractCycle(pathname: string): string {
   return decodeURIComponent(pathname.replace(/^\/+/, "").replace(/\/+$/, ""));
@@ -147,12 +217,17 @@ export async function handleGet(url: URL, env: Env): Promise<Response> {
   const allowlist = await loadAllowlist(env);
   const gate = decideGate(emailParam, allowlist);
 
-  if (gate.state === "no_email") {
-    return htmlResponse(renderEmailForm(cycle));
-  }
-
-  if (gate.state === "not_backer") {
-    return htmlResponse(renderPaywall());
+  // `no_email` e `not_backer` recebem o MESMO trecho (#7580). Antes o primeiro
+  // via um formulário de e-mail sem contexto — pedia credencial antes de dar
+  // qualquer motivo para se importar, e era a primeira tela de quem chega de
+  // busca ou de link compartilhado. O formulário continua existindo, agora
+  // como "já apoia? entre com seu e-mail" DENTRO do bloco de conversão.
+  if (gate.state === "no_email" || gate.state === "not_backer") {
+    // `?entrar` é a porta explícita do apoiador (link "Já apoia?" no bloco de
+    // conversão). Sem ela o link voltaria para `?`, que agora serve o trecho —
+    // um laço que deixaria o formulário de e-mail inalcançável.
+    if (url.searchParams.has("entrar")) return htmlResponse(renderEmailForm(cycle));
+    return paywallResponse(await loadArticleTeaser(env, cycle));
   }
 
   // gate.state === "allowed" — o e-mail provou ser apoiador R$10+. O artigo
