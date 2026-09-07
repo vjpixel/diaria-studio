@@ -502,6 +502,24 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4750, #5113",
   },
   {
+    name: "Diaria-Acervo-Staleness",
+    description: "compara a edição mais recente PRODUZIDA com a que o leitor vê em arquivo.diar.ia.br",
+    steps: [{ key: "check", script: "scripts/acervo-staleness-alarm.ts" }],
+    logPath: "acervo-staleness/.alarm.log",
+    // Diária 10:05, na mesma banda matinal dos demais drift-checks e pelo
+    // mesmo motivo (#5113): o conserto — mergear o PR de publicação, rodar o
+    // deploy — é ação manual do editor de manhã, então detectar de madrugada
+    // não antecipa nada. 10:05 e não 10:00 porque o slot já é do
+    // Diaria-Hub-Drift-Check.
+    //
+    // Por que existe além do Diaria-Edicao-Diaria-Staleness-Alarm (#5563):
+    // aquele checa se a edição foi PRODUZIDA, e esteve correto e mudo durante
+    // os 12 dias em que o acervo ficou parado (27/08–07/09/2026) — as edições
+    // existiam em disco. Ninguém comparava produção com publicação.
+    schedule: { kind: "daily", hour: 10, minute: 5 },
+    issue: "#7591, refs #7578",
+  },
+  {
     name: "Diaria-Robots-Txt-Drift-Check",
     description: "smoke-test do robots.txt SERVIDO pelos Workers de curadoria (bloco gerenciado da Cloudflare + bots fora do esperado)",
     steps: [{ key: "check", script: "scripts/robots-txt-drift-check.ts" }],
