@@ -284,7 +284,11 @@ describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site 
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("REGRESSÃO: warning quando published:false (commit/push/gh pr create falhou) — o caso real do incidente", () => {
+  // #7578 item 4 — o caso real do incidente do #7283: `code: 3` (commit/push
+  // falhou, checkout divergente #7287) agora é `error`, não `warning`. Deixar
+  // em warning repetiu o incidente: 4 edições seguidas sem página e nada
+  // parou o Stage 6.
+  it("REGRESSÃO (#7578): error (não warning) quando published:false com code:3 — falha de commit/push, checkout divergente", () => {
     writeFileSync(
       join(fixture, "_internal", "site-page-published.json"),
       JSON.stringify({
@@ -298,9 +302,45 @@ describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site 
     const v = checkSitePagePublished(fixture);
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "site-page-published");
-    assert.equal(v[0].severity, "error", "#7578 item 4: code 3 (infra falha) = error");
+    assert.equal(v[0].severity, "error", "code:3 = falha de infra, não fail-soft adiável (#7578 item 4)");
+    assert.equal(v[0].source_issue, "#7283");
     assert.match(v[0].message, /gates-propoe-empregos-so-para-humanos/);
     assert.match(v[0].message, /checkout não está sincronizado/);
+    assert.match(v[0].message, /Re-rodar/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("REGRESSÃO (#7578): warning ainda quando published:false com code:4 — artefato presente mas inválido, fail-soft do #6202", () => {
+    writeFileSync(
+      join(fixture, "_internal", "site-page-published.json"),
+      JSON.stringify({
+        code: 4,
+        slug: "slug-com-acento",
+        published: false,
+        reason: "newsletter-final.html vazio",
+        checked_at: new Date().toISOString(),
+      }),
+    );
+    const v = checkSitePagePublished(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].severity, "warning", "code:4 é fail-soft (#6202) — trabalho adiado, não infra");
+    assert.match(v[0].message, /Fail-soft intencional/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("REGRESSÃO (#7578): warning ainda quando code:0 published:false — página escrita localmente, push adiado (--skip-publish)", () => {
+    writeFileSync(
+      join(fixture, "_internal", "site-page-published.json"),
+      JSON.stringify({
+        code: 0,
+        slug: "slug-local",
+        published: false,
+        checked_at: new Date().toISOString(),
+      }),
+    );
+    const v = checkSitePagePublished(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].severity, "warning", "code:0 published:false = trabalho feito, não falha de infra");
     rmSync(fixture, { recursive: true, force: true });
   });
 
@@ -335,7 +375,7 @@ describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site 
     const v = checkSitePagePublished(fixture);
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "site-page-published-parseable");
-    assert.equal(v[0].severity, "warning", "#7578 item 4: code 3 (infra falha) = error");
+    assert.equal(v[0].severity, "warning");
     rmSync(fixture, { recursive: true, force: true });
   });
 });
