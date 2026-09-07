@@ -33,7 +33,7 @@ import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { annualPaths } from "./lib/anual/annual-paths.ts";
 import { parseAnnualDraft, themeCharCount, FORBIDDEN_LABELS, type AnnualDraft } from "./lib/anual/annual-parse.ts";
 import { renderAnnualEmail } from "./lib/anual/annual-render.ts";
-import type { AnnualTipo } from "./lib/anual/annual-window.ts";
+import { tipoFromSlug, type AnnualTipo } from "./lib/anual/annual-window.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -99,6 +99,12 @@ export function lintAnnualDraft(md: string, tipo: AnnualTipo): LintAnnualResult 
   if (tipo === "janeiro" && draft.anniversary) {
     errors.push("rodada de janeiro não leva bloco ANIVERSÁRIO — remova a seção");
   }
+  // A carta do editor vive DENTRO do bloco de aniversário. Numa rodada de
+  // janeiro o render simplesmente a ignora — o texto sumiria do e-mail sem
+  // erro nem aviso. Mesmo guard simétrico que o bloco acima já tem.
+  if (tipo === "janeiro" && draft.editorLetter) {
+    errors.push("rodada de janeiro não leva CARTA DO EDITOR — o render descartaria a seção em silêncio");
+  }
 
   // ── Crítico: sonda de render ────────────────────────────────────────
   // Imagens fictícias: na Etapa 2 as reais ainda não existem, e o que se está
@@ -158,7 +164,7 @@ function main(argv: string[] = process.argv.slice(2)): void {
   if (args.values.slug) {
     const slug = args.values.slug;
     draftPath = annualPaths(slug, resolve(ROOT, "data/annual")).draft;
-    tipo = slug.endsWith("-aniversario") ? "aniversario" : "janeiro";
+    tipo = tipoFromSlug(slug);
   } else if (args.values.draft) {
     draftPath = resolve(args.values.draft);
     tipo = (args.values.tipo as AnnualTipo) ?? "janeiro";

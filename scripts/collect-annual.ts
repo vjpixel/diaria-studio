@@ -39,6 +39,7 @@
  *   npx tsx scripts/collect-annual.ts --tipo aniversario --desde 2508 --ate 2608
  *   npx tsx scripts/collect-annual.ts --tipo janeiro
  *   npx tsx scripts/collect-annual.ts --tipo aniversario --top-k 12
+ *   npx tsx scripts/collect-annual.ts --tipo aniversario --allow-empty-month
  *
  * Output (stdout): JSON com o resumo por mês. Os arquivos vão pra
  * `data/annual/{AAAA}-{tipo}/_internal/`.
@@ -57,6 +58,7 @@ import {
   type AnnualWindow,
 } from "./lib/anual/annual-window.ts";
 import { annualSlugFor, annualPaths } from "./lib/anual/annual-paths.ts";
+import { annualCounts, type AnnualCounts } from "./lib/anual/annual-counts.ts";
 import {
   groupPostsByMonth,
   postEdition,
@@ -85,6 +87,13 @@ export interface CollectAnnualResult {
   editions_found: number;
   destaques_found: number;
   months: AnnualMonthReport[];
+  /**
+   * Publicações do período, para o bloco de aniversário — **escopadas à
+   * janela**, não contagem cumulativa de diretório (ver `annual-counts.ts`).
+   * Sai daqui, e não de um `readdirSync` na skill, justamente porque é aqui
+   * que a janela existe.
+   */
+  counts: AnnualCounts;
   warnings: string[];
 }
 
@@ -124,9 +133,10 @@ export function destaquesForPost(
   // layout ATUAL (título como link markdown, `##### CATEGORIA`) e o ANTIGO
   // (título em texto puro, URL no `[Aprofunde]` do fim) — a transição foi
   // gradual, ~fev–abr/2026, sem um dia de corte. Por isso a escolha é por
-  // RENDIMENTO, não por data: roda os dois e fica com o que extraiu mais
-  // destaques. Um corte por data seria uma linha inventada, e erraria nas
-  // edições de transição que misturam os dois.
+  // RENDIMENTO, não por data: o parser atual roda primeiro e, quando entrega
+  // os 3 destaques esperados, fecha o caso; qualquer resultado abaixo disso
+  // faz o legado rodar também, e fica quem extraiu mais. Um corte por data
+  // seria uma linha inventada, e erraria nas edições de transição.
   const html = post.content?.free?.web ?? post.content?.free?.email;
   if (!html) {
     warnings.push(`${edition}: sem conteúdo no cache (content.free ausente) — edição ignorada`);
@@ -210,10 +220,19 @@ export function collectAnnual(opts: {
     for (const post of posts) {
       const edition = postEdition(post);
       if (!edition) continue;
-      const { destaques, source } = destaquesForPost(post, edition, opts.localEditionDirs, monthWarnings);
-      sources.push(source);
-      found += destaques.length;
-      all.push(...destaques);
+      // Isolamento por edição, mesmo padrão que `loadBeehiivCache` usa por
+      // arquivo: uma edição com encoding estranho ou markdown inesperado não
+      // pode derrubar a coleta dos outros 12 meses. Perder uma edição é um
+      // aviso; perder a janela inteira é recomeçar do zero.
+      try {
+        const { destaques, source } = destaquesForPost(post, edition, opts.localEditionDirs, monthWarnings);
+        sources.push(source);
+        found += destaques.length;
+        all.push(...destaques);
+      } catch (err) {
+        monthWarnings.push(`${edition}: falha ao extrair destaques (${(err as Error).message}) — edição pulada`);
+        sources.push("vazio");
+      }
     }
 
     if (posts.length === 0) {
@@ -301,7 +320,14 @@ export function main(argv: string[] = process.argv.slice(2), rootDir: string = R
     try {
       const cfg = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8"));
       return typeof cfg.annual?.top_k_per_month === "number" ? cfg.annual.top_k_per_month : undefined;
-    } catch {
+    } catch (err) {
+      // Chave ausente é normal (cai no default). Config ilegível não é — e
+      // `platform.config.json` é lido pelo pipeline inteiro, então engolir
+      // isso aqui esconde um problema que não é desta unidade.
+      process.stderr.write(
+        `[collect-annual] aviso: não consegui ler platform.config.json (${(err as Error).message}) — ` +
+          `usando top-K default ${DEFAULT_TOP_K}.\n`,
+      );
       return undefined;
     }
   })();
@@ -310,6 +336,7 @@ export function main(argv: string[] = process.argv.slice(2), rootDir: string = R
     throw new Error(`--top-k inválido: ${args.values["top-k"]} — precisa ser inteiro >= 1`);
   }
 
+  const allowEmptyMonth = args.flags.has("allow-empty-month");
   const slug = annualSlugFor(window);
   const paths = annualPaths(slug, resolve(rootDir, "data/annual"));
   const log = (msg: string) => process.stderr.write(`[collect-annual] ${msg}\n`);
@@ -361,11 +388,46 @@ export function main(argv: string[] = process.argv.slice(2), rootDir: string = R
     editions_found: months.reduce((n, m) => n + m.editions_found, 0),
     destaques_found: destaques.length,
     months,
+    counts: annualCounts({
+      monthlyBase: resolve(rootDir, "data/monthly"),
+      specialBase: resolve(rootDir, "data/artigo-especial"),
+      months: window.months,
+      edicoesDiarias: months.reduce((n, m) => n + m.editions_found, 0),
+    }),
     warnings: [...window.warnings, ...warnings],
   };
   writeFileSync(paths.collectReport, JSON.stringify(result, null, 2));
 
   log(`${result.editions_found} edições, ${result.destaques_found} destaques → ${paths.rawDestaques}`);
+
+  // Todo aviso vai pro stderr, não só pro JSON. Um relatório de 13 meses tem
+  // dezenas de linhas; contar com "alguém abre e lê o arquivo" é como não
+  // avisar (a instrução em prosa da skill não é um gate).
+  for (const w of warnings) log(`aviso: ${w}`);
+
+  // Mês vazio é o modo de falha central desta coleta: a retrospectiva sai com
+  // um buraco e ninguém percebe, porque o texto continua sendo escrito
+  // normalmente sobre os meses que sobraram. Por isso é BARULHENTO e, por
+  // padrão, faz o passo falhar — a causa quase sempre é cache faltando ou um
+  // formato de edição que nenhum dos parsers reconhece, e as duas têm
+  // conserto. `--allow-empty-month` é a válvula para o caso legítimo (janela
+  // que atravessa um mês em que a newsletter de fato não publicou).
+  const empty = months.filter((m) => m.destaques_found === 0);
+  if (empty.length > 0) {
+    log(
+      `MESES SEM NENHUM DESTAQUE: ${empty.map((m) => m.month).join(", ")} — ` +
+        `a retrospectiva sairia com buraco nesse(s) período(s).`,
+    );
+    if (!allowEmptyMonth) {
+      throw new Error(
+        `${empty.length} mês(es) sem destaque (${empty.map((m) => m.month).join(", ")}). ` +
+          `Confira o cache de edições e os parsers antes de seguir, ou passe --allow-empty-month ` +
+          `se a newsletter realmente não publicou nesse período.`,
+      );
+    }
+    log("--allow-empty-month passado — seguindo mesmo assim.");
+  }
+
   return result;
 }
 

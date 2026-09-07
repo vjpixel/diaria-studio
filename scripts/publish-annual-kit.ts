@@ -45,7 +45,7 @@ import { annualPaths } from "./lib/anual/annual-paths.ts";
 import { parseAnnualDraft } from "./lib/anual/annual-parse.ts";
 import { renderAnnualEmail } from "./lib/anual/annual-render.ts";
 import { lintAnnualDraft } from "./lint-annual-draft.ts";
-import type { AnnualTipo } from "./lib/anual/annual-window.ts";
+import { tipoFromSlug, type AnnualTipo } from "./lib/anual/annual-window.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -58,11 +58,6 @@ export interface AnnualPublishedState {
   test_broadcast_ids: number[];
   created_at: string;
   updated_at: string;
-}
-
-/** O tipo de rodada sai do slug — `2026-aniversario` / `2026-janeiro`. */
-export function tipoFromSlug(slug: string): AnnualTipo {
-  return slug.endsWith("-aniversario") ? "aniversario" : "janeiro";
 }
 
 /** Guard do #5608: nenhuma execução deste script deve autenticar pela API paga. */
@@ -80,12 +75,35 @@ export function checkKitBackend(config: { publishing?: { newsletter?: { backend?
   return { ok: true };
 }
 
-function readState(path: string): AnnualPublishedState | null {
+/**
+ * Lê o estado do broadcast já criado.
+ *
+ * **Arquivo ausente e arquivo ilegível NÃO são a mesma coisa.** Ausente é o
+ * primeiro run (devolve `null`, e o fluxo cria o rascunho). Ilegível é
+ * corrupção — escrita truncada por processo morto no meio, conflito de sync
+ * do OneDrive, encoding — e tratá-la como "ainda não existe" faz o script
+ * criar um SEGUNDO rascunho da mesma edição no Kit, quebrando em silêncio a
+ * idempotência que a skill promete. Por isso corrupção lança: é melhor o
+ * editor olhar o arquivo do que descobrir dois broadcasts depois.
+ */
+export function readState(path: string): AnnualPublishedState | null {
   if (!existsSync(path)) return null;
+  const raw = readFileSync(path, "utf8");
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as AnnualPublishedState;
-  } catch {
-    return null;
+    const parsed = JSON.parse(raw) as Partial<AnnualPublishedState>;
+    // JSON válido não basta: um arquivo truncado para `{}` passaria no parse
+    // e levaria `updateBroadcast(undefined, ...)` adiante. O `broadcast_id` é
+    // o único campo sem o qual o estado não serve pra nada.
+    if (typeof parsed?.broadcast_id !== "number") {
+      throw new Error("sem `broadcast_id` numérico");
+    }
+    return parsed as AnnualPublishedState;
+  } catch (err) {
+    throw new Error(
+      `${path} existe mas não é JSON válido (${(err as Error).message}). ` +
+        `Seguir daqui criaria um 2º rascunho da mesma edição no Kit. ` +
+        `Verifique o arquivo — se o broadcast não existe mesmo, apague-o e rode de novo.`,
+    );
   }
 }
 

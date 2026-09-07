@@ -27,6 +27,25 @@
 /** Rodada anual — define a janela default e se há bloco de aniversário. */
 export type AnnualTipo = "aniversario" | "janeiro";
 
+/**
+ * Deriva o tipo de rodada do slug do diretório (`2026-aniversario`).
+ *
+ * **Valida, não adivinha.** A versão anterior disto era um
+ * `slug.endsWith("-aniversario") ? "aniversario" : "janeiro"` duplicado no
+ * lint e no publisher: um slug com erro de digitação (`2026-anivesario`)
+ * viraria silenciosamente uma rodada de janeiro, e o lint deixaria de exigir
+ * o bloco de aniversário justamente na edição que existe por causa dele.
+ */
+export function tipoFromSlug(slug: string): AnnualTipo {
+  const m = slug.match(/^(\d{4})-(aniversario|janeiro)$/);
+  if (!m) {
+    throw new Error(
+      `slug inválido: ${JSON.stringify(slug)} — esperado {AAAA}-aniversario ou {AAAA}-janeiro (ex: 2026-aniversario)`,
+    );
+  }
+  return m[2] as AnnualTipo;
+}
+
 export interface AnnualWindow {
   tipo: AnnualTipo;
   /** Primeiro mês da janela, YYMM. */
@@ -165,6 +184,12 @@ export function resolveAnnualWindow(args: ResolveAnnualWindowArgs = {}): AnnualW
   // Ano de referência: o do `--ate` quando ele existe (a janela manda), senão
   // o ano corrente. Sem isso, `--ate 2608` em setembro/2026 e em janeiro/2027
   // resolveriam diretórios diferentes pra mesma edição.
+  //
+  // O `+1` no caso `janeiro` existe porque `defaultWindowFor` recebe o ano do
+  // ENVIO, e a rodada de janeiro cobre o ano ANTERIOR: `--ate 2612` descreve
+  // a edição enviada em 2027. Sem ele, `defaultWindowFor("janeiro", 2026)`
+  // devolveria 2501–2512 e um `--ate 2612` legítimo seria marcado como
+  // exceção.
   const refYear = args.ate ? 2000 + Number(args.ate.slice(0, 2)) + (tipo === "janeiro" ? 1 : 0) : today.getFullYear();
   const dflt = defaultWindowFor(tipo, refYear);
 

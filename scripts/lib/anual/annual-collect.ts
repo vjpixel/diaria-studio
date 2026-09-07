@@ -7,8 +7,10 @@
  *
  * ## Por que existe um pré-filtro
  *
- * A janela da 1ª rodada tem 256 edições diárias × ~3 destaques ≈ **750
- * destaques** — ordem de grandeza que não cabe num prompt de analista. E o
+ * A janela da 1ª rodada tem ~265 edições diárias e rende ~660 destaques —
+ * ordem de grandeza que não cabe num prompt de analista (e que CRESCE, porque
+ * o cache de edições continua recebendo arquivos; trate como grandeza, não
+ * como valor esperado). E o
  * volume por mês é desigual por construção: agosto/2025 tem 3 edições (o
  * projeto nasceu dia 27), março/2026 tem 15, julho/2026 tem 24. Jogar tudo
  * junto e cortar por score global faria os meses gordos abafarem os magros —
@@ -47,8 +49,14 @@ export interface AnnualDestaque {
   body: string;
   why: string;
   is_brazil: boolean;
-  /** Preenchido pelo `scorer-monthly` na Etapa 1; ausente antes disso. */
-  score?: number | null;
+  /**
+   * Preenchido pelo `scorer-monthly` na Etapa 1; ausente antes disso.
+   * Opcional e NÃO nullable de propósito: `undefined` e `null` significariam
+   * a mesma coisa ("ainda não pontuado") e todo consumidor os fundia com
+   * `??` — as duas formas para o mesmo estado só convidam a checagem
+   * assimétrica.
+   */
+  score?: number;
 }
 
 /** De onde os destaques de um mês vieram — vai pro relatório do gate. */
@@ -63,7 +71,17 @@ export interface AnnualMonthReport {
   warnings: string[];
 }
 
-/** Unix seconds → AAMMDD em UTC. */
+/**
+ * Unix seconds → AAMMDD, em **UTC**.
+ *
+ * A premissa: a diar.ia.br publica de manhã no horário de Brasília (UTC-3),
+ * então a data UTC e a local coincidem para toda edição real — nenhuma sai
+ * depois das 21h BRT, que é onde a virada de dia em UTC começaria a mover a
+ * edição para o dia seguinte. Diferente de `collect-monthly.ts`, que lê o
+ * AAMMDD do nome do arquivo e não precisa converter nada, aqui a data vem de
+ * um timestamp e a conversão é inevitável. Se algum dia uma edição sair à
+ * noite, é este ponto que a dataria um dia à frente.
+ */
 export function unixToEdition(seconds: number): string {
   const d = new Date(seconds * 1000);
   const yy = String(d.getUTCFullYear() % 100).padStart(2, "0");

@@ -15,7 +15,7 @@ Você escreve a edição **anual** da diar.ia.br — a retrospectiva do período
 - `out_path`: ex. `data/annual/2026-aniversario/draft.md`.
 - `tipo`: `aniversario` ou `janeiro`.
 - `window_label`: ex. `agosto/2025 a agosto/2026`.
-- `counts`: objeto com `edicoes_diarias`, `digests_mensais`, `artigos_especiais` — números já apurados pela skill, para o bloco de aniversário.
+- `counts`: objeto com `edicoes_diarias`, `digests_mensais`, `artigos_especiais` e `especiais_ano_aproximado`, vindo de `_internal/01-collect-report.json` → `counts`. São números **do período**, já escopados à janela.
 
 ## Contexto obrigatório
 
@@ -27,7 +27,7 @@ Releia antes de escrever: `context/templates/newsletter-anual.md` (o formato exa
 2. **N temas variável.** Escreva exatamente os temas que o `prioritized.md` traz — não corte para caber em 3 nem invente um quarto por simetria.
 3. **O bloco ANIVERSÁRIO só existe se `tipo == "aniversario"`.** Na rodada de janeiro, ele não aparece — nem como cabeçalho vazio.
 4. **A CARTA DO EDITOR é sempre um placeholder.** Escreva literalmente `[Placeholder — carta do editor, a ser escrita antes da publicação.]` e nada mais. Você não escreve em primeira pessoa pelo editor.
-5. **Os números do bloco de aniversário vêm de `counts`.** Nunca estime, nunca arredonde "cerca de".
+5. **Os números do bloco de aniversário vêm de `counts`.** Nunca estime, nunca arredonde "cerca de", e nunca conte diretório por conta própria — `data/monthly/` e `data/artigo-especial/` acumulam desde o começo do projeto, não desde o começo da janela. Se `counts.especiais_ano_aproximado` for `true`, a contagem de artigos especiais é por ano e pode incluir um de fora do período: prefira uma formulação que não afirme precisão que o dado não tem.
 6. **Previsões saem só do período.** Nada de pesquisa nova, previsão de terceiro ou número que não esteja nos destaques. O parágrafo de ressalva que abre a seção é obrigatório e sai como está no template.
 7. **Sem Use Melhor, sem Radar, sem "É IA?".** Essas seções não existem na anual.
 8. **Todo label de seção sai em `**negrito**`.** Sem isso o render colapsa o draft inteiro num bloco de prosa.

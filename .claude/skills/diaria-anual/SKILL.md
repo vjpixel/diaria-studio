@@ -116,17 +116,9 @@ gate consolidado da Etapa 4; para ajustar antes, edite prioritized.md e peça
 
 Disparar `writer-anual` via `Agent` com `prioritized_path`, `raw_path`, `report_path`, `out_path`, `tipo`, `window_label` e `counts`.
 
-O `counts` (bloco de aniversário) é apurado aqui, nunca estimado:
+O `counts` (bloco de aniversário) já vem apurado no relatório da Etapa 1 — `_internal/01-collect-report.json` → `counts`, com `edicoes_diarias`, `digests_mensais`, `artigos_especiais` e `especiais_ano_aproximado`. **Não conte por `readdirSync` na mão:** `data/monthly/` e `data/artigo-especial/` acumulam desde sempre, e a partir da 2ª rodada anual isso publicaria um número maior que o do período, com o texto ao lado dizendo "no período".
 
-```bash
-node -e "
-const r=require('./data/annual/$SLUG/_internal/01-collect-report.json');
-const fs=require('fs');
-const mensais=fs.readdirSync('data/monthly').filter(c=>fs.existsSync('data/monthly/'+c+'/draft.md')).length;
-const especiais=fs.existsSync('data/artigo-especial')?fs.readdirSync('data/artigo-especial').length:0;
-console.log(JSON.stringify({edicoes_diarias:r.editions_found,digests_mensais:mensais,artigos_especiais:especiais}));
-"
-```
+Se `especiais_ano_aproximado` for `true`, a janela não cobre anos inteiros e a contagem de especiais é por ANO (o diretório deles não guarda mês) — pode incluir um especial de fora da janela. Nesse caso, confira à mão antes de o número entrar no texto.
 
 Depois:
 

@@ -199,7 +199,10 @@ describe("contagem de caracteres", () => {
     // "Título" (6) + "\n" + "abc ancora." (11) + "\n" (do fio vazio) = 19.
     // O ponto do teste é a URL não contar: com ela seriam 19 + 37.
     assert.equal(themeCharCount(t), 19);
-    assert.ok(!t.paragraphs.join("").includes("exemplo.com") === false, "a URL segue no texto, só não é contada");
+    assert.ok(
+      t.paragraphs.join("").includes("exemplo.com"),
+      "a URL segue no texto do parágrafo — o que a contagem faz é não contá-la, não removê-la",
+    );
   });
 
   it("tema acima do teto é aviso, não erro", () => {

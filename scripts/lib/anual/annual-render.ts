@@ -41,8 +41,20 @@ export interface AnnualRenderResult {
   warnings: string[];
 }
 
+/**
+ * Escapa texto para HTML, **incluindo aspas duplas** — o valor é interpolado
+ * dentro de atributos (`alt="..."`, `href="..."`), e um título com aspas
+ * retas (`Sam Altman diz "a IA muda tudo"`, comum em português) fecharia o
+ * atributo no meio e vazaria o resto do título como marcação solta.
+ * `lib/weekly-linkedin-render.ts::escapeHtml` já escapava aspas pelo mesmo
+ * motivo; omiti-las aqui era uma regressão silenciosa em relação a ele.
+ */
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 /**
@@ -55,7 +67,9 @@ export function inlineMarkdown(text: string, brand: string): string {
     .replace(
       /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
       (_m, label: string, url: string) =>
-        `<a href="${url}" style="color:${brand};text-decoration:underline;">${label}</a>`,
+        // A URL vem do `[texto](url)` do draft, ou seja, de conteúdo escrito
+        // por agente — escapar aspas aqui também, pelo mesmo motivo do `alt`.
+        `<a href="${url.replace(/"/g, "&quot;")}" style="color:${brand};text-decoration:underline;">${label}</a>`,
     )
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 }
