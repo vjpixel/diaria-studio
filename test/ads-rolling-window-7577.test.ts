@@ -155,6 +155,7 @@ describe("#7577 — janela que cruza refinamento não é estado estável", () =>
       motivo: null,
       gastoAcumulado: 0,
       cadastrosAcumulado: null,
+      janelaDias: 3,
     };
     assert.match(descreverEstabilidade({ ...base, diasAposUltimaEdicao: null, ultimaEdicao: null }), /estável/);
     assert.match(
@@ -187,5 +188,96 @@ describe("#7577 — a fronteira do dia é BRT, um só, dos dois lados", () => {
   it("shiftDate atravessa virada de mês sem depender de fuso", () => {
     assert.equal(shiftDate("2026-09-02", -3), "2026-08-30");
     assert.equal(shiftDate("2026-09-01", -1), "2026-08-31");
+  });
+});
+
+/**
+ * Achados do fleet de review da PR #7586. Os dois mais graves eram do mesmo
+ * formato — **um número errado que parece certo**, entrando na comparação com
+ * `comparavel: true` e nenhum aviso. É o pior resultado possível num relatório
+ * que o editor lê de manhã e usa para decidir se continua financiando um canal.
+ */
+describe("#7577 — linha-base sem cadastros não vira zero (achado P0 do review)", () => {
+  it("base PRESENTE com a coluna vazia sai da comparação, em vez de descontar 0", () => {
+    // Descontar 0 faria `cadUltima − 0` devolver o HISTÓRICO INTEIRO do braço
+    // como se tudo tivesse acontecido nos 3 dias: numerador inflado, CAC
+    // artificialmente barato, e nenhum sinal de que o número está errado.
+    const rows = [row("2026-09-01", 100, null), row("2026-09-04", 190, 40)];
+    const r = computeRollingWindow(rows, { canal: CANAL, ate: "2026-09-04" });
+    assert.equal(r.comparavel, false);
+    assert.equal(r.custoPorCadastro, null);
+    assert.match(r.motivo ?? "", /linha-base/);
+    assert.match(r.motivo ?? "", /2026-09-01/, "o motivo precisa nomear a linha problemática");
+  });
+
+  it("base AUSENTE continua valendo 0 — é o braço que começou dentro da janela", () => {
+    const rows = [row("2026-09-03", 60, 6), row("2026-09-04", 90, 9)];
+    const r = computeRollingWindow(rows, { canal: CANAL, ate: "2026-09-04" });
+    assert.equal(r.comparavel, true, "ausência de base é caso legítimo, não erro");
+    assert.equal(r.cadastrosJanela, 9);
+  });
+});
+
+describe("#7577 — acumulado que CAI é dado inconsistente, não janela pequena", () => {
+  // Já aconteceu neste dataset: em 07/09/2026 a mesma consulta devolveu 47
+  // cadastros para 05/09 onde no dia anterior tinha devolvido 48.
+  it("cadastros_acumulado menor que a base sai da comparação nomeando a queda", () => {
+    const rows = [row("2026-09-01", 100, 48), row("2026-09-04", 190, 47)];
+    const r = computeRollingWindow(rows, { canal: CANAL, ate: "2026-09-04" });
+    assert.equal(r.comparavel, false);
+    assert.match(r.motivo ?? "", /DIMINUIU/);
+    assert.match(r.motivo ?? "", /cadastros_acumulado/);
+  });
+
+  it("gasto_acumulado que cai NUNCA produz CAC negativo comparável", () => {
+    // Sem a guarda: gastoJanela = 150 − 200 = −50, cadastrosJanela = 10 (passa
+    // do piso), custoPorCadastro = −5 e `comparavel: true`. A tabela mostraria
+    // "R$ -5,00" alinhado à direita, onde o sinal passa batido.
+    const rows = [row("2026-09-01", 200, 10), row("2026-09-04", 150, 20)];
+    const r = computeRollingWindow(rows, { canal: CANAL, ate: "2026-09-04" });
+    assert.equal(r.comparavel, false);
+    assert.equal(r.custoPorCadastro, null, "CAC negativo nunca pode entrar na comparação");
+    assert.match(r.motivo ?? "", /gasto_acumulado/);
+    assert.match(r.motivo ?? "", /DIMINUIU/);
+  });
+
+  it("a queda é distinguida de amostra baixa — exigem ações opostas do editor", () => {
+    const queda = computeRollingWindow([row("2026-09-01", 10, 9), row("2026-09-04", 20, 8)], {
+      canal: CANAL,
+      ate: "2026-09-04",
+    });
+    const amostra = computeRollingWindow([row("2026-09-01", 10, 5), row("2026-09-04", 20, 6)], {
+      canal: CANAL,
+      ate: "2026-09-04",
+    });
+    assert.match(queda.motivo ?? "", /DIMINUIU/, "corrigir o CSV");
+    assert.match(amostra.motivo ?? "", /abaixo do piso/, "esperar mais dado");
+    assert.notEqual(queda.motivo, amostra.motivo);
+  });
+});
+
+describe("#7577 — dia faltando na janela é visível, e não estraga a aritmética", () => {
+  it("o CAC continua correto com um buraco no meio da janela", () => {
+    // Sem o dia 03: o gasto ainda é `último − anterior à janela`, e um buraco
+    // no MEIO não causa contagem dupla nem falta.
+    const rows = [row("2026-09-01", 100, 10), row("2026-09-02", 130, 14), row("2026-09-04", 190, 22)];
+    const r = computeRollingWindow(rows, { canal: CANAL, ate: "2026-09-04" });
+    assert.equal(r.gastoJanela, 90);
+    assert.equal(r.cadastrosJanela, 12);
+    assert.equal(r.comparavel, true);
+  });
+
+  it("`janelaDias` expõe o buraco que `dias.length` sozinho esconderia", () => {
+    const rows = [row("2026-09-01", 100, 10), row("2026-09-04", 190, 22)];
+    const r = computeRollingWindow(rows, { canal: CANAL, ate: "2026-09-04" });
+    assert.equal(r.janelaDias, 3, "a janela pedida tem 3 dias de calendário");
+    assert.equal(r.dias.length, 1, "só 1 tem linha de apuração");
+    assert.match(descreverEstabilidade(r), /sem linha de apuração/, "o relatório precisa dizer isso");
+  });
+
+  it("janela completa não emite aviso de buraco", () => {
+    const rows = [row("2026-09-02", 130, 14), row("2026-09-03", 160, 17), row("2026-09-04", 190, 22)];
+    const r = computeRollingWindow(rows, { canal: CANAL, ate: "2026-09-04" });
+    assert.doesNotMatch(descreverEstabilidade(r), /sem linha de apuração/);
   });
 });

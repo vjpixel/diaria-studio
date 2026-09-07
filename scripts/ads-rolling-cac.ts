@@ -47,25 +47,59 @@ const RUN_STATE = "data/aquisicao/teste-2608/run-state.json";
 function lerEdicoes(path: string): EdicaoEmVoo[] {
   if (!existsSync(path)) return [];
   const out: EdicaoEmVoo[] = [];
+  const ignoradas: string[] = [];
   for (const linha of readFileSync(path, "utf8").split(/\r?\n/)) {
     if (!linha.trim()) continue;
     try {
       out.push(JSON.parse(linha));
     } catch {
       // JSONL append-only escrito por várias sessões — uma linha truncada não
-      // pode derrubar o relatório do dia. O efeito de ignorá-la é uma janela
-      // marcada como mais estável do que é, nunca um número de CAC errado.
+      // pode derrubar o relatório do dia, e nenhum número de CAC depende dela.
+      // Mas o efeito de ignorá-la NÃO é inofensivo: se a única edição em voo
+      // de um braço estiver na linha perdida, `descreverEstabilidade` afirma
+      // "janela sem edição em voo — estado estável" — o oposto da verdade,
+      // sobre a frase que diz ao editor se pode confiar na comparação. Por
+      // isso é fail-soft, mas nunca silenciosa.
+      ignoradas.push(linha.slice(0, 100));
     }
+  }
+  for (const l of ignoradas) {
+    console.warn(`[ads-rolling-cac] linha ilegível em ${path}, ignorada: ${l}`);
+  }
+  if (ignoradas.length > 0) {
+    console.warn(
+      `[ads-rolling-cac] ${ignoradas.length} linha(s) de edições ilegível(is) — a frase de estabilidade ` +
+        `pode subestimar refinamentos recentes.`,
+    );
   }
   return out;
 }
 
+/**
+ * Lista de braços do relatório.
+ *
+ * O fallback são os canais DERIVADOS do CSV, e por isso as duas causas de
+ * "não consegui ler o run-state" não podem ser tratadas igual: arquivo ausente
+ * é benigno, arquivo presente e ilegível é corrupção — e nesse segundo caso um
+ * braço registrado que ainda não tem nenhuma linha no CSV (recém-ligado, ou
+ * com o feed de gasto quebrado) simplesmente NÃO APARECERIA no relatório, sem
+ * nenhuma linha dizendo que sumiu. Some em silêncio é pior que aparecer vazio.
+ */
 function lerBracos(path: string, fallback: string[]): string[] {
-  if (!existsSync(path)) return fallback;
+  if (!existsSync(path)) {
+    console.warn(`[ads-rolling-cac] ${path} ausente — usando os braços presentes no CSV.`);
+    return fallback;
+  }
   try {
     const st = JSON.parse(readFileSync(path, "utf8")) as { bracos?: string[] };
-    return st.bracos?.length ? st.bracos : fallback;
-  } catch {
+    if (st.bracos?.length) return st.bracos;
+    console.error(`[ads-rolling-cac] ${path} não declara \`bracos\` — usando os presentes no CSV. Conferir o arquivo.`);
+    return fallback;
+  } catch (e) {
+    console.error(
+      `[ads-rolling-cac] ${path} ilegível (${e instanceof Error ? e.message : e}) — usando os braços presentes no ` +
+        `CSV. Um braço registrado e ainda sem linha no CSV NÃO aparecerá no relatório até isto ser corrigido.`,
+    );
     return fallback;
   }
 }
@@ -74,13 +108,23 @@ function fmtBRL(v: number): string {
   return `R$ ${v.toFixed(2).replace(".", ",")}`;
 }
 
+/**
+ * Uma linha da tabela.
+ *
+ * `null` NUNCA é renderizado como `0` (§3.5): "não medido" e "zero cadastros"
+ * exigem ações opostas do editor, e num alinhamento à direita os dois se leem
+ * igual. Coluna sem dado sai como `—`, do mesmo jeito que a de CAC.
+ */
 function linhaTabela(r: RollingWindowResult): string {
   const cac = r.custoPorCadastro === null ? "—" : fmtBRL(r.custoPorCadastro);
-  const acum = r.cadastrosAcumulado ?? 0;
-  const cacAcum = acum > 0 ? fmtBRL(r.gastoAcumulado / acum) : "—";
+  const acum = r.cadastrosAcumulado;
+  const cacAcum = acum != null && acum > 0 ? fmtBRL(r.gastoAcumulado / acum) : "—";
+  // Sem numerador conhecido, `cadastrosJanela` é 0 por construção — mostrar
+  // esse 0 afirmaria "nenhum cadastro na janela", que não foi medido.
+  const cadJanela = r.cadastrosAcumulado == null ? "—" : String(r.cadastrosJanela);
   return (
-    `${r.canal.padEnd(30)} ${fmtBRL(r.gastoJanela).padStart(11)} ${String(r.cadastrosJanela).padStart(4)} ` +
-    `${cac.padStart(11)} | ${fmtBRL(r.gastoAcumulado).padStart(11)} ${String(acum).padStart(4)} ${cacAcum.padStart(11)}`
+    `${r.canal.padEnd(30)} ${fmtBRL(r.gastoJanela).padStart(11)} ${cadJanela.padStart(4)} ` +
+    `${cac.padStart(11)} | ${fmtBRL(r.gastoAcumulado).padStart(11)} ${(acum == null ? "—" : String(acum)).padStart(4)} ${cacAcum.padStart(11)}`
   );
 }
 
@@ -89,10 +133,24 @@ export function main(argv = process.argv.slice(2)): number {
     const i = argv.indexOf(flag);
     return i >= 0 ? argv[i + 1] : undefined;
   };
+  // `Number("abc")` é NaN, e NaN atravessa `shiftDate` até `toISOString`
+  // lançar `RangeError` — um typo de flag viraria stack trace em vez de um
+  // exit code do contrato documentado, num script que roda desassistido.
   const dias = Number(get("--dias") ?? DEFAULT_WINDOW_DAYS);
+  if (!Number.isInteger(dias) || dias < 1) {
+    console.error(`[ads-rolling-cac] --dias precisa ser inteiro >= 1; recebi "${get("--dias")}".`);
+    return 1;
+  }
   // Default: ontem em BRT. O dia em curso nunca entra — gasto parcial sobre
   // cadastros parciais dá um CAC que varia com a hora da leitura.
   const ate = get("--ate") ?? shiftDate(brtDateOf(new Date()), -1);
+  // `ate` entra em comparação de STRING contra `data_apuracao`. Um formato
+  // diferente não lança: compara errado e devolve uma janela silenciosamente
+  // vazia ou torta — pior que um erro.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ate) || Number.isNaN(Date.parse(`${ate}T00:00:00Z`))) {
+    console.error(`[ads-rolling-cac] --ate precisa ser uma data AAAA-MM-DD válida; recebi "${ate}".`);
+    return 1;
+  }
   const csvPath = get("--csv") ?? CLICKS_CSV;
 
   if (!existsSync(csvPath)) {
@@ -114,7 +172,11 @@ export function main(argv = process.argv.slice(2)): number {
   const resultados = bracos.map((canal) => computeRollingWindow(rows, { canal, ate, dias, edicoes }));
 
   if (argv.includes("--json")) {
-    console.log(JSON.stringify({ ate, dias, resultados }, null, 2));
+    // `comparacaoPossivel` no topo em vez de deixar cada consumidor
+    // re-derivar de `resultados[].comparavel` — é a mesma disciplina de não
+    // reconstruir um julgamento a partir de saída ad-hoc.
+    const comparacaoPossivel = resultados.filter((r) => r.comparavel).length >= 2;
+    console.log(JSON.stringify({ ate, dias, comparacaoPossivel, resultados }, null, 2));
     return 0;
   }
 

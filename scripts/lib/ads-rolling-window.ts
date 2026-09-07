@@ -78,8 +78,19 @@ export function shiftDate(date: string, days: number): string {
 
 export interface RollingWindowResult {
   canal: string;
-  /** Datas BRT que a janela cobre, da mais antiga à mais recente. */
+  /**
+   * Datas BRT que TÊM linha de apuração dentro da janela — não o calendário da
+   * janela.
+   *
+   * A distinção importa quando falta um dia no CSV (reconciliação manual, §8.3,
+   * é um processo humano que escapa): a aritmética de gasto/cadastros continua
+   * correta, porque é `último − linha anterior à janela` e independe de buracos
+   * no meio; mas `dias.length` fica menor que `janelaDias`, e ler os dois como
+   * sinônimos faz uma janela de 3 dias parecer de 1.
+   */
   dias: string[];
+  /** Tamanho pedido da janela, em dias de calendário. Compare com `dias.length`. */
+  janelaDias: number;
   gastoJanela: number;
   cadastrosJanela: number;
   /**
@@ -170,6 +181,7 @@ export function computeRollingWindow(
     return {
       canal: opts.canal,
       dias: diasCobertos,
+      janelaDias: dias,
       gastoJanela: 0,
       cadastrosJanela: 0,
       custoPorCadastro: null,
@@ -184,17 +196,54 @@ export function computeRollingWindow(
 
   const gastoJanela = ultima.gasto_acumulado - (base?.gasto_acumulado ?? 0);
   const cadUltima = ultima.cadastrosAcumulado;
+  // `base` AUSENTE e `base` com a coluna VAZIA são coisas diferentes, e tratar
+  // as duas como 0 foi o achado P0 do review desta PR:
+  //
+  //   - base ausente  → o braço começou dentro da janela; 0 é o valor certo.
+  //   - base presente com a coluna vazia → a linha-base EXISTE e não sabemos
+  //     seu acumulado. Usar 0 faz `cadUltima − 0` devolver o HISTÓRICO INTEIRO
+  //     do braço como se tudo tivesse acontecido nos 3 dias — numerador
+  //     inflado, CAC artificialmente barato, `comparavel: true` e nenhum
+  //     aviso. É o pior formato de erro possível aqui: um número errado que
+  //     parece certo e sustenta a decisão de continuar financiando um canal.
+  //
+  // O caso do ÚLTIMO dia vazio já era tratado; a assimetria era o bug.
+  const baseSemCadastros = base !== undefined && base.cadastrosAcumulado == null;
   const cadBase = base?.cadastrosAcumulado ?? 0;
   // Cadastro só é calculável quando o ÚLTIMO dia tem a coluna preenchida. Sem
   // ela não há numerador — e reportar 0 seria afirmar "nenhum cadastro", que é
   // diferente de "não medido" (§3.5).
   const cadastrosJanela = cadUltima == null ? 0 : cadUltima - cadBase;
 
+  // Acumulado que DIMINUI entre dois dias não é uma janela pequena — é dado
+  // inconsistente. Já aconteceu neste dataset: em 07/09/2026 a mesma consulta
+  // devolveu 47 cadastros para 05/09 onde no dia anterior tinha devolvido 48
+  // (um contato saiu da base). Sem esta guarda, uma correção para baixo produz
+  // `gastoJanela` ou `cadastrosJanela` negativo; um CAC negativo passa como
+  // `comparavel: true` e é renderizado como "R$ -12,34", que num alinhamento à
+  // direita se lê de relance como um número comum.
+  const gastoCaiu = base !== undefined && ultima.gasto_acumulado < base.gasto_acumulado;
+  const cadastrosCairam =
+    base !== undefined && cadUltima != null && base.cadastrosAcumulado != null && cadUltima < base.cadastrosAcumulado;
+
   let comparavel = true;
   let motivo: string | null = null;
-  if (cadUltima == null) {
+  if (gastoCaiu || cadastrosCairam) {
+    comparavel = false;
+    const qual = [gastoCaiu ? "gasto_acumulado" : null, cadastrosCairam ? "cadastros_acumulado" : null]
+      .filter(Boolean)
+      .join(" e ");
+    motivo =
+      `${qual} DIMINUIU entre ${base!.data_apuracao} e ${ultima.data_apuracao} — acumulado não pode cair. ` +
+      `Correção manual ou reconciliação inconsistente; a janela não é calculável até o CSV ser conferido`;
+  } else if (cadUltima == null) {
     comparavel = false;
     motivo = `coluna cadastros_acumulado vazia em ${ultima.data_apuracao} — sem numerador para o CAC`;
+  } else if (baseSemCadastros) {
+    comparavel = false;
+    motivo =
+      `coluna cadastros_acumulado vazia na linha-base (${base!.data_apuracao}) — sem denominador de partida. ` +
+      `Descontar 0 reportaria o acumulado histórico do braço como se fosse da janela`;
   } else if (cadastrosJanela < MIN_CADASTROS_PARA_COMPARAR) {
     comparavel = false;
     motivo = `${cadastrosJanela} cadastro(s) na janela, abaixo do piso de ${MIN_CADASTROS_PARA_COMPARAR}`;
@@ -203,6 +252,7 @@ export function computeRollingWindow(
   return {
     canal: opts.canal,
     dias: diasCobertos,
+    janelaDias: dias,
     gastoJanela,
     cadastrosJanela,
     custoPorCadastro: comparavel && cadastrosJanela > 0 ? gastoJanela / cadastrosJanela : null,
@@ -220,12 +270,17 @@ export function computeRollingWindow(
  * re-derivar a regra em prosa toda vez (e não ter que lembrar dela).
  */
 export function descreverEstabilidade(r: RollingWindowResult): string {
-  if (r.ultimaEdicao === null) return "janela sem edição em voo — estado estável";
+  const faltando = r.janelaDias - r.dias.length;
+  const gap =
+    faltando > 0
+      ? ` (atenção: ${faltando} de ${r.janelaDias} dias sem linha de apuração — o CAC segue correto, mas a janela tem buraco)`
+      : "";
+  if (r.ultimaEdicao === null) return `janela sem edição em voo — estado estável${gap}`;
   if (r.diasAposUltimaEdicao === 0) {
-    return `TODOS os ${r.dias.length} dias da janela são anteriores ou iguais à última edição (${r.ultimaEdicao}) — não é estado estável`;
+    return `TODOS os ${r.dias.length} dias com apuração são anteriores ou iguais à última edição (${r.ultimaEdicao}) — não é estado estável${gap}`;
   }
   if (r.diasAposUltimaEdicao !== null && r.diasAposUltimaEdicao < r.dias.length) {
-    return `${r.diasAposUltimaEdicao} de ${r.dias.length} dias da janela são posteriores à última edição (${r.ultimaEdicao}) — janela cruza refinamento`;
+    return `${r.diasAposUltimaEdicao} de ${r.dias.length} dias com apuração são posteriores à última edição (${r.ultimaEdicao}) — janela cruza refinamento${gap}`;
   }
-  return `todos os ${r.dias.length} dias são posteriores à última edição (${r.ultimaEdicao}) — estado estável`;
+  return `todos os ${r.dias.length} dias com apuração são posteriores à última edição (${r.ultimaEdicao}) — estado estável${gap}`;
 }
