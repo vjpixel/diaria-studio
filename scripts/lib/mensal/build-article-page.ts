@@ -210,7 +210,9 @@ export function cutDraftAfterFirstDestaque(draftMd: string, cycle: string): stri
   if (iDestaque < 0) {
     throw new TeaserCutError(cycle, "não há marcador `**DESTAQUE 1 ...**` no draft");
   }
-  const iCorte = linhas.findIndex((l, i) => i > iDestaque && SECTION_MARKER.test(l));
+  // `.trim()`: espaço à direita num cabeçalho gerado por LLM faria o
+  // marcador não casar, e o corte seguiria varrendo — até dentro do DESTAQUE 2.
+  const iCorte = linhas.findIndex((l, i) => i > iDestaque && SECTION_MARKER.test(l.trim()));
   if (iCorte < 0) {
     throw new TeaserCutError(cycle, "não há seção depois do DESTAQUE 1 — o trecho seria o artigo inteiro");
   }

@@ -130,3 +130,111 @@ describe("#7580 — chaves do KV", () => {
     assert.equal(articleTeaserKvKey(CICLO), "article:2608-09:teaser");
   });
 });
+
+/**
+ * Achado P1 do review da PR #7594: os testes acima que provam o invariante de
+ * segurança dependem dos drafts em `data/monthly` — e `data` é gitignored
+ * (junction do OneDrive). Em CI eles PULAM em silêncio, então a propriedade
+ * "o artigo completo nunca vaza" não era verificada justamente no ambiente que
+ * decide se a PR pode entrar.
+ *
+ * Este bloco usa uma fixture inline com a MESMA estrutura do draft real (as
+ * seções, na ordem, com os marcadores como o `writer-monthly` os emite), então
+ * roda em qualquer lugar. Os testes com draft real continuam acima como camada
+ * extra — eles pegam mudança de FORMATO, que fixture nenhuma pega.
+ */
+const DRAFT_SINTETICO = [
+  "**ASSUNTO (3 OPÇÕES)**",
+  "",
+  "1. diar.ia.br | Mês 2026 — Um título",
+  "",
+  "**PREVIEW**",
+  "",
+  "Uma linha de preview.",
+  "",
+  "**APRESENTAÇÃO**",
+  "",
+  "Esta é a newsletter mensal, em parceria com a Clarice.",
+  "",
+  "**INTRO**",
+  "",
+  `Uma introdução com corpo suficiente para o piso de 500 caracteres não disparar. ${"Texto de enchimento com tamanho realista. ".repeat(12)}`,
+  "",
+  "---",
+  "",
+  "**DESTAQUE 1 | INDÚSTRIA**",
+  "",
+  "Título do primeiro destaque",
+  "",
+  `Corpo do primeiro destaque. ${"Mais texto do primeiro destaque. ".repeat(10)}`,
+  "",
+  "O fio condutor: o fecho do primeiro destaque.",
+  "",
+  "---",
+  "",
+  "**CLARICE — DIVULGAÇÃO**",
+  "",
+  "Texto patrocinado que NAO deve entrar no trecho.",
+  "",
+  "**DESTAQUE 2 | BRASIL**",
+  "",
+  "SEGREDO-DO-SEGUNDO-DESTAQUE",
+  "",
+  "Corpo do segundo destaque, que é conteúdo pago.",
+  "",
+  "**DESTAQUE 3 | MERCADO**",
+  "",
+  "SEGREDO-DO-TERCEIRO-DESTAQUE",
+  "",
+  "**PARA ENCERRAR**",
+  "",
+  "SEGREDO-DO-FECHAMENTO",
+  "",
+].join("\n");
+
+describe("#7580 — o invariante roda SEM data/ (achado P1 do review)", () => {
+  it("o corte para no fim do 1º destaque, com fixture inline", () => {
+    const trecho = cutDraftAfterFirstDestaque(DRAFT_SINTETICO, "26xx-yy");
+    assert.match(trecho, /DESTAQUE 1/);
+    assert.match(trecho, /O fio condutor/, "o 1º destaque entra inteiro");
+    assert.ok(!trecho.includes("CLARICE — DIVULGAÇÃO"), "corta ANTES do bloco seguinte");
+  });
+
+  it("o conteúdo PAGO nunca aparece no trecho renderizado", () => {
+    const html = buildArticleTeaserHtml(DRAFT_SINTETICO, "2608-09").html;
+    for (const segredo of ["SEGREDO-DO-SEGUNDO-DESTAQUE", "SEGREDO-DO-TERCEIRO-DESTAQUE", "SEGREDO-DO-FECHAMENTO"]) {
+      assert.ok(!html.includes(segredo), `${segredo} vazou para o trecho`);
+    }
+  });
+
+  it("e continua fora depois de o Worker montar o bloco de conversão", () => {
+    const servido = renderTeaserWithPaywall(buildArticleTeaserHtml(DRAFT_SINTETICO, "2608-09").html);
+    assert.ok(!servido.includes("SEGREDO-DO-SEGUNDO-DESTAQUE"));
+    assert.match(servido, /apoia\.se\/diaria/, "e o CTA está lá");
+  });
+
+  it("o trecho herda as transformações web (merge tag, UTM, copy de e-mail)", () => {
+    const html = buildArticleTeaserHtml(DRAFT_SINTETICO, "2608-09").html;
+    assert.deepEqual(html.match(/\{\{[^}]+\}\}/g), null);
+    assert.ok(!html.includes("utm_medium=email"));
+  });
+
+  it("REGRESSÃO: marcador com espaço à direita não faz o corte varrer até o DESTAQUE 2", () => {
+    // `SECTION_MARKER` exige a linha inteira; sem `.trim()` um cabeçalho com
+    // espaço sobrando não casaria e o corte seguiria adiante — engolindo
+    // conteúdo pago.
+    const comEspaco = DRAFT_SINTETICO.replace("**CLARICE — DIVULGAÇÃO**", "**CLARICE — DIVULGAÇÃO**   ");
+    const trecho = cutDraftAfterFirstDestaque(comEspaco, "26xx-yy");
+    assert.ok(!trecho.includes("SEGREDO-DO-SEGUNDO-DESTAQUE"));
+  });
+});
+
+describe("#7580 — injeção no ÚLTIMO </body> (regressão do #7592, reintroduzida e corrigida)", () => {
+  it("com DOIS </body>, o bloco entra antes do último", () => {
+    // O #7592 corrigiu isto nas páginas de edição e eu reintroduzi aqui: numa
+    // newsletter que cita HTML como texto, o primeiro `</body>` é o do exemplo.
+    const out = renderTeaserWithPaywall("<body>artigo <code>&lt;/body&gt;</code></body>resto</body>");
+    assert.equal((out.match(/apoia\.se\/diaria/g) ?? []).length, 1, "injeta uma vez só");
+    assert.match(out, /resto[\s\S]*apoia\.se\/diaria[\s\S]*<\/body>$/, "antes do ÚLTIMO </body>");
+  });
+});

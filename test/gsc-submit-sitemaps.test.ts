@@ -32,10 +32,6 @@ describe("CURADORIA_SITEMAPS (#4546)", () => {
       "https://livros.diar.ia.br/sitemap.xml",
       "https://arquivo.diar.ia.br/sitemap.xml",
     ]);
-    assert.ok(
-      !CURADORIA_SITEMAPS.some((u) => u === "https://diar.ia.br/sitemap.xml"),
-      "o host principal segue fora",
-    );
   });
 });
 

@@ -172,7 +172,11 @@ export async function loadArticle(env: Env, cycle: string): Promise<string | nul
 export async function loadArticleTeaser(env: Env, cycle: string): Promise<string | null> {
   try {
     return await env.ARTICLES.get(`article:${cycle}:teaser`);
-  } catch {
+  } catch (e) {
+    // Loga em vez de engolir: sem sinal, uma quebra no trecho degrada para o
+    // paywall seco — resposta plausível — e ninguém descobre até alguém olhar
+    // a página por acaso, que é literalmente como o #7578 foi encontrado.
+    console.error(`[artigo-mensal] falha lendo article:${cycle}:teaser: ${e instanceof Error ? e.message : e}`);
     return null;
   }
 }
@@ -192,7 +196,8 @@ function paywallResponse(teaser: string | null): Response {
   if (!teaser) return htmlResponse(renderPaywall());
   try {
     return htmlResponse(renderTeaserWithPaywall(teaser));
-  } catch {
+  } catch (e) {
+    console.error(`[artigo-mensal] trecho presente mas não injetável, caindo no paywall seco: ${e instanceof Error ? e.message : e}`);
     return htmlResponse(renderPaywall());
   }
 }

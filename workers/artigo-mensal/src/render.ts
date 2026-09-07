@@ -156,8 +156,20 @@ const ASSINAR_URL =
  * dos dois mundos. Quem chama trata como "sem trecho" e cai no paywall seco.
  */
 export function renderTeaserWithPaywall(teaserHtml: string): string {
-  const BODY_END = /<\/body\s*>/i;
-  if (!BODY_END.test(teaserHtml)) {
+  // ÚLTIMO `</body>`, não o primeiro. `String.replace` com regex não-global
+  // casa o PRIMEIRO, e o #7592 já mostrou o estrago disso nas páginas de
+  // edição: numa newsletter que cita HTML como texto, o primeiro `</body>`
+  // é o do exemplo — o bloco de conversão entraria no meio do artigo e o
+  // resto renderizaria depois de um fechamento precoce. O navegador reabre o
+  // body por recuperação de erro, então some em silêncio.
+  //
+  // A lógica é a mesma de `injectBeforeBodyEnd` (`site-archive-pages.ts`),
+  // reescrita aqui em vez de importada: os Workers não importam de
+  // `scripts/lib/` (convenção observada em todos eles, ver o topo deste
+  // arquivo). Duplicar 4 linhas é o preço dessa fronteira.
+  const ocorrencias = [...teaserHtml.matchAll(/<\/body\s*>/gi)];
+  const ultima = ocorrencias.at(-1);
+  if (ultima?.index === undefined) {
     throw new Error("teaser sem </body> — não há onde injetar o bloco de conversão (#7580)");
   }
   const bloco = `
@@ -182,5 +194,5 @@ export function renderTeaserWithPaywall(teaserHtml: string): string {
     </p>
   </div>
 </div>`;
-  return teaserHtml.replace(BODY_END, `${bloco}\n</body>`);
+  return `${teaserHtml.slice(0, ultima.index)}${bloco}\n${teaserHtml.slice(ultima.index)}`;
 }
