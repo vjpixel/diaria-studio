@@ -1588,32 +1588,31 @@ describe("Stage 4 invariants", () => {
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("public-images-populated falha quando d1.url ausente (shape real)", () => {
+  it("public-images-populated falha quando nem d1_4x5 nem cover (hero) estão presentes (#7399)", () => {
     writeFileSync(
       join(fixture, "06-public-images.json"),
       JSON.stringify({
         images: {
-          d1: { file_id: "abc", filename: "04-d1-1x1.jpg" }, // sem url
-          d2: { url: "https://drive.example/d2" },
-          d3: { url: "https://drive.example/d3" },
+          d2_4x5: { url: "https://drive.example/d2_4x5" },
+          d3_4x5: { url: "https://drive.example/d3_4x5" },
         },
       }),
     );
     const v = checkPublicImagesPopulated(fixture);
-    assert.ok(v.some((x) => x.message.includes("images.d1.url")));
+    assert.ok(v.some((x) => x.message.includes("images.d1_4x5.url") && x.message.includes("images.cover.url")));
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("public-images-populated passa com shape real completo (social 1x1 + newsletter hero 2x1)", () => {
-    // #2158 finding 4: shape completo inclui cover/d2_2x1/d3_2x1 (newsletter hero)
-    // além dos d1/d2/d3 1x1 (social). Todos presentes → 0 violations.
+  it("public-images-populated passa com shape real completo (4:5 + newsletter hero 2x1, #7399)", () => {
+    // #7399: a chave base 1x1 (d1/d2/d3) deixou de ser uploadada — presença
+    // do destaque é satisfeita por d{N}_4x5 OU pelo hero 2:1 (cover/d{N}_2x1).
     writeFileSync(
       join(fixture, "06-public-images.json"),
       JSON.stringify({
         images: {
-          d1: { url: "https://drive.example/d1", file_id: "a" },
-          d2: { url: "https://drive.example/d2", file_id: "b" },
-          d3: { url: "https://drive.example/d3", file_id: "c" },
+          d1_4x5: { url: "https://drive.example/d1_4x5", file_id: "a" },
+          d2_4x5: { url: "https://drive.example/d2_4x5", file_id: "b" },
+          d3_4x5: { url: "https://drive.example/d3_4x5", file_id: "c" },
           cover: { url: "https://cf.example/cover" },
           d2_2x1: { url: "https://cf.example/d2_2x1" },
           d3_2x1: { url: "https://cf.example/d3_2x1" },
@@ -1625,16 +1624,34 @@ describe("Stage 4 invariants", () => {
     rmSync(fixture, { recursive: true, force: true });
   });
 
+  it("public-images-populated passa quando só o hero 2:1 está presente, sem 4:5 (#7399 fallback)", () => {
+    // Card 4:5 pode não existir (ex: falha isolada de rasterização); o hero
+    // 2:1 (o mesmo que o email usa) já basta pra satisfazer a presença.
+    writeFileSync(
+      join(fixture, "06-public-images.json"),
+      JSON.stringify({
+        images: {
+          cover: { url: "https://cf.example/cover" },
+          d2_2x1: { url: "https://cf.example/d2_2x1" },
+          d3_2x1: { url: "https://cf.example/d3_2x1" },
+        },
+      }),
+    );
+    const v = checkPublicImagesPopulated(fixture);
+    assert.equal(v.filter((x) => x.rule === "public-images-populated").length, 0, JSON.stringify(v));
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
   it("#2158 finding 4: public-images-newsletter-hero emite warning quando d2_2x1 ausente (cross-mode blind spot)", () => {
-    // Social mode só preenche d2/d3 1x1; newsletter mode optional falhou silenciosamente.
+    // Social mode só preenche d{N}_4x5; newsletter mode optional falhou silenciosamente.
     // O check deve emitir warning para cada chave hero 2x1 ausente.
     writeFileSync(
       join(fixture, "06-public-images.json"),
       JSON.stringify({
         images: {
-          d1: { url: "https://drive.example/d1", file_id: "a" },
-          d2: { url: "https://drive.example/d2", file_id: "b" },
-          d3: { url: "https://drive.example/d3", file_id: "c" },
+          d1_4x5: { url: "https://drive.example/d1_4x5", file_id: "a" },
+          d2_4x5: { url: "https://drive.example/d2_4x5", file_id: "b" },
+          d3_4x5: { url: "https://drive.example/d3_4x5", file_id: "c" },
           // cover, d2_2x1, d3_2x1 ausentes (newsletter mode falhou)
         },
       }),
