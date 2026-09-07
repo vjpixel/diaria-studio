@@ -1,5 +1,14 @@
 /**
- * monthly-html-convert.ts (#2791)
+ * edition-html-convert.ts (#2791; movido de `lib/mensal/monthly-html-convert.ts`
+ * pra `lib/shared/` em #7569)
+ *
+ * **Por que mora em shared/:** converter o HTML de uma edição PUBLICADA pro
+ * pseudo-markdown do parser de destaques não tem nada de mensal — a `/diaria-anual`
+ * (#7569) precisa exatamente disto pros meses cuja única fonte é o cache
+ * (`data/beehiiv-cache/posts/*.json` guarda `content.free.web` em HTML, não
+ * markdown), e `lib/anual/` não pode importar de `lib/mensal/`
+ * (`test/lib-boundary.test.ts`). O módulo não mudou de comportamento na
+ * mudança de casa — só de endereço.
  *
  * A API REST v2 do Beehiiv só expõe o conteúdo publicado em HTML
  * (`content.free.email`/`content.free.web`) — sem endpoint markdown, que

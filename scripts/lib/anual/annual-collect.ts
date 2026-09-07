@@ -1,0 +1,149 @@
+/**
+ * annual-collect.ts (#7569)
+ *
+ * Miolo puro da Etapa 1 da `/diaria-anual`: recorte da janela, agrupamento
+ * por mês e pré-filtro top-K. Sem I/O — `scripts/collect-annual.ts` é quem
+ * lê disco e chama isto.
+ *
+ * ## Por que existe um pré-filtro
+ *
+ * A janela da 1ª rodada tem 256 edições diárias × ~3 destaques ≈ **750
+ * destaques** — ordem de grandeza que não cabe num prompt de analista. E o
+ * volume por mês é desigual por construção: agosto/2025 tem 3 edições (o
+ * projeto nasceu dia 27), março/2026 tem 15, julho/2026 tem 24. Jogar tudo
+ * junto e cortar por score global faria os meses gordos abafarem os magros —
+ * a retrospectiva perderia justamente o começo da história.
+ *
+ * Por isso o corte é **por mês** (top-K de cada um), não global: todo mês
+ * chega ao analista com o mesmo peso máximo, e um mês com menos material
+ * entra inteiro em vez de sumir. Mesmo padrão do scorer chunked da diária
+ * (#1611): pontuar em paralelo por chunk, selecionar depois.
+ */
+
+import { editorialDate, type UnifiedCachedPost } from "../shared/edition-cache-reader.ts";
+
+/** Um destaque coletado, no shape que o `analyst-anual` recebe. */
+export interface AnnualDestaque {
+  /** AAMMDD da edição diária de origem. */
+  edition: string;
+  /** YYMM do mês da edição — chave do agrupamento. */
+  month: string;
+  position: number;
+  category: string;
+  title: string;
+  url: string;
+  body: string;
+  why: string;
+  is_brazil: boolean;
+  /** Preenchido pelo `scorer-monthly` na Etapa 1; ausente antes disso. */
+  score?: number | null;
+}
+
+/** De onde os destaques de um mês vieram — vai pro relatório do gate. */
+export type AnnualMonthSource = "edicoes-locais" | "cache-html" | "cache-html-legado" | "vazio";
+
+export interface AnnualMonthReport {
+  month: string;
+  source: AnnualMonthSource;
+  editions_found: number;
+  destaques_found: number;
+  destaques_selected: number;
+  warnings: string[];
+}
+
+/** Unix seconds → AAMMDD em UTC. */
+export function unixToEdition(seconds: number): string {
+  const d = new Date(seconds * 1000);
+  const yy = String(d.getUTCFullYear() % 100).padStart(2, "0");
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${yy}${mm}${dd}`;
+}
+
+/** AAMMDD → YYMM. */
+export function editionMonth(edition: string): string {
+  return edition.slice(0, 4);
+}
+
+/**
+ * Data editorial de uma edição do cache, como AAMMDD — `undefined` quando o
+ * post não tem data nenhuma (rascunho). Usa `editorialDate`, **nunca**
+ * `publish_date` cru: as edições importadas de agosto/2025 carregam a data
+ * da importação ali e cairiam em setembro.
+ */
+export function postEdition(post: UnifiedCachedPost): string | undefined {
+  const secs = editorialDate(post);
+  return secs === undefined || secs === null ? undefined : unixToEdition(secs);
+}
+
+/**
+ * Filtra o cache unificado pela janela: só edições publicadas
+ * (`status === "confirmed"`, o vocabulário normalizado do reader) cujo mês
+ * editorial está na lista. Devolve um mapa YYMM → posts, com **todo mês da
+ * janela presente**, inclusive os vazios — um mês sem edição é um fato a
+ * reportar no gate, não uma chave ausente que some do relatório.
+ */
+export function groupPostsByMonth(
+  posts: readonly UnifiedCachedPost[],
+  months: readonly string[],
+): Map<string, UnifiedCachedPost[]> {
+  const wanted = new Set(months);
+  const out = new Map<string, UnifiedCachedPost[]>();
+  for (const m of months) out.set(m, []);
+
+  for (const post of posts) {
+    if (post.status !== "confirmed") continue;
+    const edition = postEdition(post);
+    if (!edition) continue;
+    const month = editionMonth(edition);
+    if (!wanted.has(month)) continue;
+    out.get(month)!.push(post);
+  }
+
+  for (const list of out.values()) {
+    list.sort((a, b) => (editorialDate(a) ?? 0) - (editorialDate(b) ?? 0));
+  }
+  return out;
+}
+
+/**
+ * Top-K por mês, por score decrescente. Mês com menos de K destaques entra
+ * inteiro (nunca é preenchido com material de outro mês — o objetivo é teto
+ * igual, não cota igual).
+ *
+ * Desempate determinístico: score desc → edição asc → posição asc. Sem isso
+ * a saída variaria entre execuções com a mesma entrada, e o diff de
+ * `raw-destaques.json` viraria ruído.
+ *
+ * Destaque sem score (`undefined`/`null`) vale -1: fica atrás de qualquer
+ * pontuado, mas ainda entra se sobrar espaço. Rodar isto ANTES do scorer é
+ * um erro de ordem, não um caminho suportado — quem chama garante o score.
+ */
+export function topKPerMonth(destaques: readonly AnnualDestaque[], k: number): AnnualDestaque[] {
+  if (k <= 0) throw new Error(`top-K inválido: ${k} — precisa ser >= 1`);
+
+  const byMonth = new Map<string, AnnualDestaque[]>();
+  for (const d of destaques) {
+    const list = byMonth.get(d.month);
+    if (list) list.push(d);
+    else byMonth.set(d.month, [d]);
+  }
+
+  const out: AnnualDestaque[] = [];
+  for (const month of [...byMonth.keys()].sort()) {
+    const list = byMonth.get(month)!.slice().sort((a, b) => {
+      const sa = a.score ?? -1;
+      const sb = b.score ?? -1;
+      if (sa !== sb) return sb - sa;
+      if (a.edition !== b.edition) return a.edition < b.edition ? -1 : 1;
+      return a.position - b.position;
+    });
+    out.push(...list.slice(0, k));
+  }
+  return out;
+}
+
+/** Quantos destaques faltam pontuar — o gate da Etapa 1 checa isto. */
+export function unscoredCount(destaques: readonly AnnualDestaque[]): number {
+  return destaques.filter((d) => d.score === undefined || d.score === null).length;
+}

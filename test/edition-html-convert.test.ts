@@ -11,7 +11,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { convertBeehiivHtmlToMarkdown, htmlToLines } from "../scripts/lib/mensal/monthly-html-convert.ts";
+import { convertBeehiivHtmlToMarkdown, htmlToLines } from "../scripts/lib/shared/edition-html-convert.ts";
 import { parsePost, type MonthlyDestaque } from "../scripts/collect-monthly.ts";
 
 // Recorte pequeno e representativo do HTML de e-mail do Beehiiv: 3 blocos —

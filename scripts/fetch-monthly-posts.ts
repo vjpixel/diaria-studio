@@ -37,7 +37,7 @@ import {
   cycleToYymm,
   monthlyDir as resolveMonthlyDir,
 } from "./lib/mensal/monthly-paths.ts";
-import { convertBeehiivHtmlToMarkdown } from "./lib/mensal/monthly-html-convert.ts";
+import { convertBeehiivHtmlToMarkdown } from "./lib/shared/edition-html-convert.ts";
 import {
   resolveNewsletterReadConfig,
   listNewsletterPostsInWindow,

@@ -145,6 +145,21 @@ export interface UnifiedCachedPost {
   /** Unix seconds — sempre, independente da origem (ver conversão do Kit
    *  na docstring do módulo). */
   publish_date?: number | null;
+  /**
+   * Data EDITORIAL, quando a plataforma sabe que ela difere de
+   * `publish_date` (#7569). Só existe do lado Beehiiv, e só nas edições
+   * **importadas**: as primeiras edições da diar.ia.br (a partir de
+   * 27/08/2025) foram importadas em bloco em 04/09/2025, e todas carregam
+   * a data da IMPORTAÇÃO em `publish_date` — ordenar/recortar por
+   * `publish_date` faz o projeto parecer ter começado em 03/09/2025 e joga
+   * agosto/2025 inteiro dentro de setembro. `null`/ausente no resto do
+   * cache Beehiiv e em todo broadcast Kit.
+   *
+   * **Não leia este campo direto pra datar uma edição — use
+   * `editorialDate()`**, que aplica a precedência certa. Passthrough puro
+   * aqui: este módulo normaliza, não decide.
+   */
+  displayed_date?: number | null;
   /** Normalizado pro vocabulário Beehiiv (`confirmed` = publicado) — ver
    *  `KIT_STATUS_TO_BEEHIIV_STATUS`. */
   status?: string;
@@ -244,6 +259,7 @@ interface RawBeehiivPostFile {
   subject?: string;
   web_url?: string;
   publish_date?: number | null;
+  displayed_date?: number | null;
   status?: string;
   thumbnail_url?: string;
   content?: { free?: { web?: string; email?: string } };
@@ -336,6 +352,7 @@ export function normalizeBeehiivPost(raw: RawBeehiivPostFile): UnifiedCachedPost
     subject: raw.subject,
     web_url: raw.web_url,
     publish_date: raw.publish_date,
+    displayed_date: raw.displayed_date,
     status: raw.status,
     thumbnail_url: raw.thumbnail_url,
     content: raw.content,
@@ -430,6 +447,23 @@ export function normalizeKitBroadcast(b: RawKitBroadcastFile): UnifiedCachedPost
  * Lança se o diretório não existir — é a fonte PRIMÁRIA hoje (259 edições
  * confirmadas), diferente do lado Kit (ver `loadKitCache`).
  */
+/**
+ * Data EDITORIAL de uma edição, em Unix seconds — `displayed_date` quando a
+ * plataforma o preencheu, senão `publish_date` (#7569). Devolve `undefined`
+ * quando nenhum dos dois existe (rascunho sem data), nunca `NaN`.
+ *
+ * Esta é a única forma correta de datar uma edição do cache. Ler
+ * `publish_date` direto data as edições importadas de agosto/início de
+ * setembro de 2025 pelo dia da importação (04/09/2025) — ver a docstring de
+ * `UnifiedCachedPost.displayed_date`. `mergeEditionsByDate` **não** usa esta
+ * função de propósito: a ordenação lá é do cache inteiro e mudar o critério
+ * mexeria na saída dos ~38 consumidores existentes; quem precisa da data
+ * editorial (recorte por mês, arquivo, retrospectiva) chama isto.
+ */
+export function editorialDate(post: Pick<UnifiedCachedPost, "displayed_date" | "publish_date">): number | undefined {
+  return post.displayed_date ?? post.publish_date ?? undefined;
+}
+
 export function loadBeehiivCache(dir: string = DEFAULT_BEEHIIV_POSTS_DIR): UnifiedCachedPost[] {
   if (!existsSync(dir)) {
     throw new Error(
