@@ -77,6 +77,7 @@ import {
   scanWrongValueAdoption, // #7324
 } from "../intentional-errors.ts";
 import { checkHasNegativeImpactHighlight } from "./stage-1.ts"; // #3916, #3918
+import { hero2x1KeyFor } from "../../upload-images-public.ts"; // #7399
 
 // #6336: usado só por checkKitFixtureAudit, pra localizar
 // scripts/audit-kit-fixtures.ts a partir de scripts/lib/invariant-checks/.
@@ -95,10 +96,13 @@ interface PublicImagesJson {
 }
 
 /**
- * `06-public-images.json` deve ter URLs públicas pra d1, d2, d3
- * (1x1 cada — formato consumido por LinkedIn + Facebook). Sem isso,
- * publish-linkedin envia image_url=null e Make rejeita (DLQ incident 260508).
- * #2147: desde o fix, URLs d1/d2/d3 são KV Worker (não Drive uc?id).
+ * `06-public-images.json` deve ter, pra cada destaque d1/d2/d3, uma URL
+ * pública utilizável por LinkedIn/Facebook. Sem isso, publish-linkedin envia
+ * image_url=null e Make rejeita (DLQ incident 260508).
+ * #2147: URLs sociais são KV Worker (não Drive uc?id).
+ * #7399: a chave base 1x1 (`d1`/`d2`/`d3`) deixou de ser uploadada — a
+ * presença é satisfeita por `d{N}_4x5` OU pelo hero 2:1 (`hero2x1KeyFor`),
+ * mesma lógica de `assertCacheCompleteness` em `upload-images-public.ts`.
  *
  * #2133/#2141: também valida d2_2x1/d3_2x1/cover (hero 2:1 consumidos pelo email
  * body via substitute-image-urls). Ausentes aqui = email sai com placeholders crus.
@@ -140,30 +144,43 @@ function checkPublicImagesPopulated(editionDir: string): InvariantViolation[] {
   const violations: InvariantViolation[] = [];
   const images = data.images ?? {};
 
-  // #2352: d3 URL only required when destaque_count == 3.
+  // #2352: d3 required only when destaque_count == 3.
   const destaqueCount = readDestaqueCount(editionDir);
-  const socialKeys = destaqueCount === 2 ? ["d1", "d2"] : ["d1", "d2", "d3"];
+  const socialDestaques = destaqueCount === 2 ? ["d1", "d2"] : ["d1", "d2", "d3"];
 
-  // Social 1x1 keys — required for LinkedIn/Facebook (DLQ incident #999).
-  for (const key of socialKeys) {
-    const slot = images[key];
-    const url = slot?.url;
-    if (!url || typeof url !== "string" || url.trim().length === 0) {
+  // Social image presence for LinkedIn/Facebook (DLQ incident #999).
+  // #7399: a chave base 1x1 (`d1`/`d2`/`d3`) deixou de ser uploadada —
+  // "presença de imagem pro destaque" agora é satisfeita por QUALQUER um dos
+  // dois: o card 4:5 (`d{N}_4x5`) OU o hero 2:1 (`hero2x1KeyFor`) — mesma
+  // lógica de assertCacheCompleteness em upload-images-public.ts. Checar só
+  // a chave base 1x1 (removida) sempre falhava depois do #7399, mesmo com
+  // o pipeline saudável.
+  for (const d of socialDestaques) {
+    const card4x5 = images[`${d}_4x5`]?.url;
+    const heroKey = hero2x1KeyFor(d);
+    const hero = images[heroKey]?.url;
+    const has4x5 = typeof card4x5 === "string" && card4x5.trim().length > 0;
+    const hasHero = typeof hero === "string" && hero.trim().length > 0;
+    if (!has4x5 && !hasHero) {
       violations.push({
         rule: "public-images-populated",
-        message: `06-public-images.json: images.${key}.url ausente ou vazio`,
+        message: `06-public-images.json: nem images.${d}_4x5.url nem images.${heroKey}.url estão presentes (destaque ${d})`,
         source_issue: "#999",
         severity: "error",
         file: path,
       });
-    } else if (!/^https?:\/\//.test(url)) {
-      violations.push({
-        rule: "public-images-url-shape",
-        message: `06-public-images.json: images.${key}.url="${url.slice(0, 50)}" não é URL válida`,
-        source_issue: "#999",
-        severity: "error",
-        file: path,
-      });
+      continue;
+    }
+    for (const [key, url] of [[`${d}_4x5`, card4x5], [heroKey, hero]] as const) {
+      if (typeof url === "string" && url.trim().length > 0 && !/^https?:\/\//.test(url)) {
+        violations.push({
+          rule: "public-images-url-shape",
+          message: `06-public-images.json: images.${key}.url="${url.slice(0, 50)}" não é URL válida`,
+          source_issue: "#999",
+          severity: "error",
+          file: path,
+        });
+      }
     }
   }
 

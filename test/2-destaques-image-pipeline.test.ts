@@ -287,14 +287,16 @@ describe("Stage-3 checkPromptsClean 2-destaque (#2352)", () => {
 
 describe("Stage-4 checkPublicImagesPopulated 2-destaque (#2352)", () => {
   it("PASSA com d1/d2 URLs (sem d3) em edição 2-destaque", () => {
+    // #7399: base 1x1 (d1/d2) deixou de ser uploadada — usa d{N}_4x5 (fallback
+    // do hero 2:1 seria equivalente) pra satisfazer a presença de imagem.
     const { dir, cleanup } = makeEdition(2);
     try {
       writeFileSync(
         join(dir, "06-public-images.json"),
         JSON.stringify({
           images: {
-            d1: { url: "https://cf.example/d1", file_id: "a" },
-            d2: { url: "https://cf.example/d2", file_id: "b" },
+            d1_4x5: { url: "https://cf.example/d1_4x5", file_id: "a" },
+            d2_4x5: { url: "https://cf.example/d2_4x5", file_id: "b" },
             cover: { url: "https://cf.example/cover" },
             d2_2x1: { url: "https://cf.example/d2_2x1" },
           },
@@ -311,26 +313,26 @@ describe("Stage-4 checkPublicImagesPopulated 2-destaque (#2352)", () => {
     }
   });
 
-  it("FALHA para edição 2-destaque quando d2.url ausente (d3 não conta)", () => {
+  it("FALHA para edição 2-destaque quando d2_4x5 E hero d2_2x1 ausentes (d3 não conta)", () => {
     const { dir, cleanup } = makeEdition(2);
     try {
       writeFileSync(
         join(dir, "06-public-images.json"),
         JSON.stringify({
           images: {
-            d1: { url: "https://cf.example/d1", file_id: "a" },
-            // d2 ausente
+            d1_4x5: { url: "https://cf.example/d1_4x5", file_id: "a" },
+            // d2_4x5 e d2_2x1 ausentes
           },
         }),
       );
       const v = checkPublicImagesPopulated(dir);
       const errors = v.filter((x) => x.severity === "error");
       assert.ok(
-        errors.some((x) => x.message.includes("images.d2.url")),
-        `Deve falhar com d2 ausente. Violations: ${JSON.stringify(errors)}`,
+        errors.some((x) => x.message.includes("images.d2_4x5.url") && x.message.includes("images.d2_2x1.url")),
+        `Deve falhar com d2 ausente (4:5 e hero). Violations: ${JSON.stringify(errors)}`,
       );
       assert.ok(
-        !errors.some((x) => x.message.includes("images.d3.url")),
+        !errors.some((x) => x.message.includes("d3")),
         `d3 NÃO deve ser requerida em edição 2-destaque. Violations: ${JSON.stringify(errors)}`,
       );
     } finally {
@@ -338,43 +340,43 @@ describe("Stage-4 checkPublicImagesPopulated 2-destaque (#2352)", () => {
     }
   });
 
-  it("REGRESSÃO 3-destaque: FALHA quando d3.url ausente", () => {
+  it("REGRESSÃO 3-destaque: FALHA quando d3_4x5 E hero d3_2x1 ausentes", () => {
     const { dir, cleanup } = makeEdition(3);
     try {
       writeFileSync(
         join(dir, "06-public-images.json"),
         JSON.stringify({
           images: {
-            d1: { url: "https://cf.example/d1", file_id: "a" },
-            d2: { url: "https://cf.example/d2", file_id: "b" },
-            // d3 ausente
+            d1_4x5: { url: "https://cf.example/d1_4x5", file_id: "a" },
+            d2_4x5: { url: "https://cf.example/d2_4x5", file_id: "b" },
+            // d3_4x5 ausente
             cover: { url: "https://cf.example/cover" },
             d2_2x1: { url: "https://cf.example/d2_2x1" },
-            d3_2x1: { url: "https://cf.example/d3_2x1" },
+            // d3_2x1 (hero) também ausente — nenhum fallback resta pra d3
           },
         }),
       );
       const v = checkPublicImagesPopulated(dir);
       const errors = v.filter((x) => x.severity === "error");
       assert.ok(
-        errors.some((x) => x.message.includes("images.d3.url")),
-        `3D edition deve exigir d3. Violations: ${JSON.stringify(errors)}`,
+        errors.some((x) => x.message.includes("images.d3_4x5.url") && x.message.includes("images.d3_2x1.url")),
+        `3D edition deve exigir d3 (4:5 ou hero). Violations: ${JSON.stringify(errors)}`,
       );
     } finally {
       cleanup();
     }
   });
 
-  it("REGRESSÃO 3-destaque: PASSA com d1/d2/d3 URLs e newsletter heroes", () => {
+  it("REGRESSÃO 3-destaque: PASSA com d1/d2/d3 4:5 e newsletter heroes", () => {
     const { dir, cleanup } = makeEdition(3);
     try {
       writeFileSync(
         join(dir, "06-public-images.json"),
         JSON.stringify({
           images: {
-            d1: { url: "https://cf.example/d1", file_id: "a" },
-            d2: { url: "https://cf.example/d2", file_id: "b" },
-            d3: { url: "https://cf.example/d3", file_id: "c" },
+            d1_4x5: { url: "https://cf.example/d1_4x5", file_id: "a" },
+            d2_4x5: { url: "https://cf.example/d2_4x5", file_id: "b" },
+            d3_4x5: { url: "https://cf.example/d3_4x5", file_id: "c" },
             cover: { url: "https://cf.example/cover" },
             d2_2x1: { url: "https://cf.example/d2_2x1" },
             d3_2x1: { url: "https://cf.example/d3_2x1" },
@@ -396,8 +398,8 @@ describe("Stage-4 checkPublicImagesPopulated 2-destaque (#2352)", () => {
         join(dir, "06-public-images.json"),
         JSON.stringify({
           images: {
-            d1: { url: "https://cf.example/d1", file_id: "a" },
-            d2: { url: "https://cf.example/d2", file_id: "b" },
+            d1_4x5: { url: "https://cf.example/d1_4x5", file_id: "a" },
+            d2_4x5: { url: "https://cf.example/d2_4x5", file_id: "b" },
             cover: { url: "https://cf.example/cover" },
             d2_2x1: { url: "https://cf.example/d2_2x1" },
             // d3_2x1 ausente — OK em edição 2D
