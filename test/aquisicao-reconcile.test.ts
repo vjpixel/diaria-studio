@@ -13,9 +13,12 @@ import {
   aggregateBaseline,
   computeFactor,
   dayToEpochSeconds,
+  fetchSubscribersByBackend,
+  kitSubscriberToEngagementSubscriber,
   type BaselineFile,
 } from "../scripts/aquisicao-reconcile.ts";
 import type { EngagementSubscriber } from "../scripts/cohort-engagement.ts";
+import type { KitSubscriberSummary } from "../scripts/lib/kit-subscribers.ts";
 
 function sub(created: number, utm: string | null, referring?: string | null): EngagementSubscriber {
   return { id: `s${created}-${utm}`, created, utm_source: utm, referring_site: referring ?? null, status: "active" };
@@ -73,6 +76,115 @@ describe("aggregateBaseline", () => {
     );
     assert.equal(b.per_day["2026-08-24"], 2);
     assert.equal(b.per_day["2026-08-25"], 1);
+  });
+});
+
+describe("kitSubscriberToEngagementSubscriber (#7561)", () => {
+  function kitSub(overrides: Partial<KitSubscriberSummary> = {}): KitSubscriberSummary {
+    return {
+      id: 42,
+      email_address: "leitor@example.com",
+      state: "active",
+      created_at: "2026-09-05T12:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("prioriza fields.utm_source sobre attribution (#7359)", () => {
+    const sub = kitSub({
+      fields: { utm_source: "google-ads" },
+      attribution: {
+        referrer: null,
+        utm_source: null,
+        utm_medium: null,
+        utm_campaign: null,
+        source_type: "api_subscription",
+        source_name: null,
+        source_mechanism: "direct_api_call",
+      },
+    });
+    const mapped = kitSubscriberToEngagementSubscriber(sub);
+    assert.equal(mapped.utm_source, "google-ads");
+    assert.equal(mapped.created, Math.floor(Date.parse("2026-09-05T12:00:00.000Z") / 1000));
+  });
+
+  it("cai pro attribution.utm_source quando fields ausente (form nativo do Kit)", () => {
+    const sub = kitSub({
+      attribution: {
+        referrer: "diar.ia.br",
+        utm_source: "meta-ads",
+        utm_medium: null,
+        utm_campaign: null,
+        source_type: "form",
+        source_name: null,
+        source_mechanism: null,
+      },
+    });
+    const mapped = kitSubscriberToEngagementSubscriber(sub);
+    assert.equal(mapped.utm_source, "meta-ads");
+    assert.equal(mapped.referring_site, "diar.ia.br");
+  });
+
+  it("sem fields nem attribution: utm_source null (fica __none__ no agrupamento)", () => {
+    const mapped = kitSubscriberToEngagementSubscriber(kitSub());
+    assert.equal(mapped.utm_source, null);
+    assert.equal(mapped.referring_site, null);
+  });
+});
+
+describe("fetchSubscribersByBackend — cenário real da issue #7561", () => {
+  it("backend kit usa fetchKit, nunca a Beehiiv, mesmo com Beehiiv zerada", async () => {
+    let beehiivCalled = false;
+    const kitSubs: EngagementSubscriber[] = [
+      { id: "1", created: 1_757_000_000, utm_source: "google-ads", referring_site: null },
+      { id: "2", created: 1_757_000_100, utm_source: "meta-ads", referring_site: null },
+    ];
+    const result = await fetchSubscribersByBackend("kit", {
+      fetchBeehiiv: async () => {
+        beehiivCalled = true;
+        return []; // Beehiiv zerada (#7388) — 0 subscriptions
+      },
+      fetchKit: async () => kitSubs,
+    });
+    assert.equal(beehiivCalled, false);
+    assert.deepEqual(result, kitSubs);
+  });
+
+  it("backend beehiiv (default/legado) segue usando fetchBeehiiv", async () => {
+    let kitCalled = false;
+    const beehiivSubs: EngagementSubscriber[] = [
+      { id: "1", created: 1_757_000_000, utm_source: "clarice", referring_site: null },
+    ];
+    const result = await fetchSubscribersByBackend("beehiiv", {
+      fetchBeehiiv: async () => beehiivSubs,
+      fetchKit: async () => {
+        kitCalled = true;
+        return [];
+      },
+    });
+    assert.equal(kitCalled, false);
+    assert.deepEqual(result, beehiivSubs);
+  });
+
+  it("janela real (05-06/09/2026) via Kit devolve contagem plausível por canal, não 0/1 (#7561)", () => {
+    const kitSubs: EngagementSubscriber[] = [
+      ...Array.from({ length: 25 }, (_, i) => ({
+        id: `g${i}`,
+        created: dayToEpochSeconds("2026-09-05", "--from") + i * 60,
+        utm_source: "google-ads",
+        referring_site: null,
+      })),
+      ...Array.from({ length: 76 }, (_, i) => ({
+        id: `m${i}`,
+        created: dayToEpochSeconds("2026-09-05", "--from") + 3600 + i * 60,
+        utm_source: "meta-ads",
+        referring_site: null,
+      })),
+    ];
+    const baseline = aggregateBaseline(kitSubs, "2026-09-05", "2026-09-06");
+    assert.equal(baseline.total, 101);
+    assert.equal(baseline.per_channel["google-ads"], 25);
+    assert.equal(baseline.per_channel["meta-ads"], 76);
   });
 });
 
