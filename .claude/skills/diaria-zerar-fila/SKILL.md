@@ -101,7 +101,7 @@ O critério que substitui a pergunta é **reversibilidade**:
 
 **Mais da metade, nos dois.** Isso não é ruído de borda — é viés sistemático do categorizador para o lado errado: ele produz falso "não dá" com muito mais frequência que falso "dá". Toda rodada que aceitar as tracks como veredito deixa metade do alvo na mesa.
 
-**Portanto: trate todo track que não seja `overnight` como SUSPEITO por padrão.** O ônus da prova é de quem afirma que não dá, não de quem quer executar. Ler a issue **inteira** (`gh issue view N --comments` — corpo + TODOS os comentários) e julgar pelo conteúdo antes de aceitar qualquer "não dá agora".
+**Portanto: trate todo track que não seja `overnight` como SUSPEITO por padrão.** O ônus da prova é de quem afirma que não dá, não de quem quer executar. Ler a issue **inteira** (#7572: em gh 2.46 `gh issue view N --comments` quebra com GraphQL `repository.issue.projectCards deprecated` — Projects clássico descontinuado; use o caminho REST: `gh api repos/{owner}/{repo}/issues/N` p/ título+corpo e `gh api repos/{owner}/{repo}/issues/N/comments` p/ comentários. `gh issue view N --json comments` também funciona, e `--json title,body` p/ só o corpo) e julgar pelo conteúdo antes de aceitar qualquer "não dá agora".
 
 **O categorizador também é alvo.** Se uma track erra sistematicamente, isso é bug, não fato da vida — e entra no alvo vivo como qualquer outro. **#7270** cobre `bloqueada` (label sem razão durável nem reavaliação) e **#7288** cobre `agendada` (marcador `aguardando-ate` usado como estacionamento). Se a releitura desta rodada revelar padrão equivalente em `fora-de-rodada` ou `epica`, abra a issue correspondente em vez de só corrigir caso a caso.
 

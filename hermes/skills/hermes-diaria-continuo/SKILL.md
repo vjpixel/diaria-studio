@@ -425,7 +425,7 @@ Para cada issue elegível (após claim):
 ) &
 HEARTBEAT_PID=$!
 
-printf '%s' "Implemente a issue #N do repo atual (leia com gh issue view N).
+printf '%s' "Implemente a issue #N do repo atual (leia fresca: gh api repos/{owner}/{repo}/issues/N p/ título+corpo e gh api repos/{owner}/{repo}/issues/N/comments p/ comentários). #7572: em gh 2.46 (Ubuntu ESM, Helios) 'gh issue view N --comments' quebra com GraphQL 'repository.issue.projectCards deprecated' (Projects clássico descontinuado) — o caminho canônico é a REST API. 'gh issue view N --json title,body' e '--json comments' também funcionam, mas o REST é o que sobrevive à deprecacao. NUNCA parsear saida do gh com Python ad-hoc (regra dura, secao 3).
 Siga o CLAUDE.md. Crie branch com o prefixo continuo/ (convenção
 continuo/fix-N-slug — é o que faz o PR aparecer como CONTINUO na Triagem
 do Studio, #6446), implemente com edições cirúrgicas, adicione
