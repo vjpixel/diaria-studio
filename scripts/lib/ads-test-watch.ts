@@ -150,6 +150,14 @@ export interface ClicksCsvRow {
    *  tratados de forma idêntica por `buildArmCostSamplesFromRows`
    *  (`scripts/lib/ads-kill-switch.ts`). */
   leitoresAcumulado?: number | null;
+  /** #7577 — coluna OPCIONAL (`cadastros_acumulado`), cadastros atribuídos a
+   *  este braço até esta data (Kit, campo personalizado `utm_source`). Mesma
+   *  disciplina de `leitoresAcumulado` acima: `null` quando ausente do header
+   *  OU vazia na linha (nunca erro); presente com valor não-numérico/negativo
+   *  É erro. É o numerador do CAC da janela móvel de 3 dias
+   *  (`scripts/lib/ads-rolling-window.ts`) — antes do #7577 nada parseava esta
+   *  coluna, embora ela exista no CSV desde o começo do teste. */
+  cadastrosAcumulado?: number | null;
 }
 
 export interface ClicksCsvRowError {
@@ -215,7 +223,19 @@ export function parseClicksCsv(content: string): ClicksCsvParseResult {
       }
       leitoresAcumulado = parsedLeitores;
     }
-    rows.push({ canal, data_apuracao, gasto_acumulado, leitoresAcumulado });
+    // #7577: mesma disciplina da coluna acima — vazia é `null` (sem amostra),
+    // presente e inválida é erro da linha.
+    let cadastrosAcumulado: number | null = null;
+    const cadastrosRaw = (raw.cadastros_acumulado ?? "").trim();
+    if (cadastrosRaw !== "") {
+      const parsedCadastros = Number(cadastrosRaw);
+      if (!Number.isFinite(parsedCadastros) || parsedCadastros < 0) {
+        errors.push({ line, reason: `"cadastros_acumulado" não é um número não-negativo válido: "${cadastrosRaw}"` });
+        return;
+      }
+      cadastrosAcumulado = parsedCadastros;
+    }
+    rows.push({ canal, data_apuracao, gasto_acumulado, leitoresAcumulado, cadastrosAcumulado });
   });
   return { rows, errors };
 }
