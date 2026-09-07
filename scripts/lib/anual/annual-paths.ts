@@ -55,6 +55,9 @@ export function annualPaths(slug: string, base: string = ANNUAL_BASE) {
     rawDestaques: join(internal, "raw-destaques.json"),
     /** Manifesto da coleta: fonte e contagem por mês (auditoria do gate). */
     collectReport: join(internal, "01-collect-report.json"),
+    /** Top-K por mês do pool já pontuado — é ISTO que o analista lê. O pool
+     *  completo fica intocado em `rawDestaques`, pra trocar o K sem recoletar. */
+    selected: join(internal, "01-selected.json"),
     /** Saída do `analyst-anual` — revisada pelo editor. */
     prioritized: join(dir, "prioritized.md"),
     /** Saída do `writer-anual` — o texto da edição. */

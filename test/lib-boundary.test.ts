@@ -110,9 +110,7 @@ describe("fronteira scripts/lib shared/diaria/mensal (#2747)", () => {
     // precisar de lá (conversão de HTML publicado pra pseudo-markdown, por
     // exemplo) migra pra shared/ com `git mv`, não vira import cruzado.
     const v = violations("anual", ["diaria", "mensal"]);
-    assert.deepEqual(v, [], `anual/ importando domínio específico (passe por shared/):
-  ${v.join("
-  ")}`);
+    assert.deepEqual(v, [], `anual/ importando domínio específico (passe por shared/):\n  ${v.join("\n  ")}`);
   });
 
   it("sanity: a estrutura existe e o scan enxerga os módulos movidos", () => {

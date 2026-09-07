@@ -35,8 +35,11 @@
  *     0f. sync-eia-used.ts
  *     0g. check-dedup-freshness.ts (staleness vira `pendingHumanDecision`,
  *         nunca aborta sozinho — a confirmação [c/a] é decisão do editor)
- *     0h.1 + 0h.3. beehiiv-sync.ts + build-link-ctr.ts (0h.2, o enrichment
- *         via subagent `beehiiv-clicks-enricher`, é OUT — ver abaixo)
+ *     0h.1 + 0h.3. beehiiv-sync.ts + kit-sync.ts (#7570, mesmo batch,
+ *         escritor de `data/kit-cache/broadcasts/`) + build-link-ctr.ts
+ *         (0h.2, o enrichment via subagent `beehiiv-clicks-enricher`, é OUT
+ *         — ver abaixo; kit-sync não tem 0h.2 equivalente, clicks/stats do
+ *         Kit são REST comum buscados no próprio script)
  *   0i. update-audience.ts + snapshot-audience-profile.ts (sequencial, após
  *       o batch).
  *   0j. find-pending-issue-drafts.ts (script). Se vazio, no-op. Se não-vazio,
@@ -693,7 +696,7 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
 
   // --- 0e-0h: batch paralelo (fail-soft cada um, exceto onde indicado) ---
   report.note("▶ batch paralelo 0e/0f/0g/0h.1 (concorrente)");
-  const [mergeRes, syncEiaRes, freshnessRes, beehiivSyncRes] = await Promise.all([
+  const [mergeRes, syncEiaRes, freshnessRes, beehiivSyncRes, kitSyncRes] = await Promise.all([
     deps.execAsync("scripts/merge-local-pending.ts", [
       "--current",
       opts.edition,
@@ -709,6 +712,10 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     deps.execAsync("scripts/sync-eia-used.ts", ["--editions-dir", "data/editions/"]),
     deps.execAsync("scripts/check-dedup-freshness.ts", []),
     deps.execAsync("scripts/beehiiv-sync.ts", []),
+    // #7570 — escritor do lado Kit de data/kit-cache/broadcasts/, ao lado do
+    // beehiiv-sync.ts acima. Sem 2ª fase de enrichment (0h.2): clicks/stats
+    // do Kit são REST comum (kit-client.ts), buscados no próprio processo.
+    deps.execAsync("scripts/kit-sync.ts", []),
   ]);
 
   // 0e
@@ -778,6 +785,18 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     }
   } else {
     logEvent(deps, opts.edition, "warn", "beehiiv-sync falhou — CTR pode ficar desatualizado");
+  }
+
+  // 0h.1-kit — kit-sync (#7570). Fail-soft, mesmo tratamento do lado Beehiiv:
+  // sem manifest/dispatch de agent, porque clicks/stats do Kit são REST
+  // síncrono (buscados dentro do próprio script) — não há 2ª fase aqui.
+  if (kitSyncRes.code === 0) {
+    const kitSyncJson = parseStepJson<{ broadcasts_fetched?: number }>(kitSyncRes.stdout);
+    if ((kitSyncJson?.broadcasts_fetched ?? 0) > 0) {
+      report.note(`kit-sync: ${kitSyncJson?.broadcasts_fetched} broadcast(s) atualizado(s).`);
+    }
+  } else {
+    logEvent(deps, opts.edition, "warn", "kit-sync falhou — CTR/carrossel semanal podem ficar com dado Kit desatualizado");
   }
 
   // 0h.3 — build CTR (sequencial após 0h.1; roda mesmo sem 0h.2, fail-soft).

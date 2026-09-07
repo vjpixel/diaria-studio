@@ -48,7 +48,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
-import { loadUnifiedEditionCache, editorialDate, type UnifiedCachedPost } from "./lib/shared/edition-cache-reader.ts";
+import { loadUnifiedEditionCache, type UnifiedCachedPost } from "./lib/shared/edition-cache-reader.ts";
 import { convertBeehiivHtmlToMarkdown } from "./lib/shared/edition-html-convert.ts";
 import { parseLegacyEditionHtml } from "./lib/shared/legacy-edition-parse.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
@@ -61,6 +61,8 @@ import {
   groupPostsByMonth,
   postEdition,
   editionMonth,
+  topKPerMonth,
+  unscoredCount,
   type AnnualDestaque,
   type AnnualMonthReport,
   type AnnualMonthSource,
@@ -232,6 +234,53 @@ export function collectAnnual(opts: {
   return { destaques: all, months, warnings };
 }
 
+/**
+ * Modo `--select-top-k`: lê o pool já pontuado e grava a seleção que vai pro
+ * analista. É um passo SEPARADO da coleta de propósito — entre um e outro
+ * roda o `scorer-monthly`, e refazer a coleta só pra aplicar o corte
+ * descartaria os scores.
+ *
+ * O pool (`raw-destaques.json`) nunca é sobrescrito: a seleção vai pra um
+ * arquivo próprio. Assim, mudar o K é re-rodar este passo, não a coleta
+ * inteira nem o scoring.
+ */
+export function selectTopK(rootDir: string, slug: string, topK: number): { selected: number; byMonth: Record<string, number> } {
+  const paths = annualPaths(slug, resolve(rootDir, "data/annual"));
+  const pool = JSON.parse(readFileSync(paths.rawDestaques, "utf8")) as {
+    window: unknown;
+    destaques: AnnualDestaque[];
+  };
+
+  const missing = unscoredCount(pool.destaques);
+  if (missing > 0) {
+    process.stderr.write(
+      `[collect-annual] aviso: ${missing} destaque(s) sem score — rode o scorer-monthly antes, ` +
+        `senão o corte vira ordem de leitura, não mérito.\n`,
+    );
+  }
+
+  const selected = topKPerMonth(pool.destaques, topK);
+  const byMonth: Record<string, number> = {};
+  for (const d of selected) byMonth[d.month] = (byMonth[d.month] ?? 0) + 1;
+
+  writeFileSync(
+    paths.selected,
+    JSON.stringify(
+      {
+        slug,
+        window: pool.window,
+        generated_at: new Date().toISOString(),
+        top_k_per_month: topK,
+        destaques_count: selected.length,
+        destaques: selected,
+      },
+      null,
+      2,
+    ),
+  );
+  return { selected: selected.length, byMonth };
+}
+
 export function main(argv: string[] = process.argv.slice(2), rootDir: string = ROOT): CollectAnnualResult {
   const args = parseCliArgs(argv);
   const window = resolveAnnualWindow({
@@ -239,7 +288,18 @@ export function main(argv: string[] = process.argv.slice(2), rootDir: string = R
     desde: args.values.desde,
     ate: args.values.ate,
   });
-  const topK = args.values["top-k"] ? Number(args.values["top-k"]) : DEFAULT_TOP_K;
+  // Precedência: --top-k > platform.config.json → annual.top_k_per_month >
+  // constante. O config existe pro editor mexer sem editar código; a
+  // constante é só a rede de segurança pra um config incompleto.
+  const configTopK = (() => {
+    try {
+      const cfg = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8"));
+      return typeof cfg.annual?.top_k_per_month === "number" ? cfg.annual.top_k_per_month : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  const topK = args.values["top-k"] ? Number(args.values["top-k"]) : (configTopK ?? DEFAULT_TOP_K);
   if (!Number.isInteger(topK) || topK < 1) {
     throw new Error(`--top-k inválido: ${args.values["top-k"]} — precisa ser inteiro >= 1`);
   }
@@ -247,6 +307,17 @@ export function main(argv: string[] = process.argv.slice(2), rootDir: string = R
   const slug = annualSlugFor(window);
   const paths = annualPaths(slug, resolve(rootDir, "data/annual"));
   const log = (msg: string) => process.stderr.write(`[collect-annual] ${msg}\n`);
+
+  // Passo SEPARADO da coleta: aplicar o top-K sobre o pool já pontuado. Entre
+  // um e outro roda o `scorer-monthly` — recoletar aqui descartaria os scores.
+  if (args.flags.has("select-top-k")) {
+    const r = selectTopK(rootDir, slug, topK);
+    log(`seleção: ${r.selected} destaques (top-${topK} por mês) → ${paths.selected}`);
+    const report = JSON.parse(readFileSync(paths.collectReport, "utf8")) as CollectAnnualResult;
+    for (const m of report.months) m.destaques_selected = r.byMonth[m.month] ?? 0;
+    writeFileSync(paths.collectReport, JSON.stringify(report, null, 2));
+    return report;
+  }
 
   for (const w of window.warnings) log(`aviso: ${w}`);
   log(`janela: ${window.label} (${window.months.length} meses) — tipo ${window.tipo}, dir ${slug}`);
@@ -301,4 +372,3 @@ if (isMainModule(import.meta.url)) {
   }
 }
 
-export { editorialDate };
