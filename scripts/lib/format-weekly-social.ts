@@ -93,7 +93,9 @@ const THREADS_ARCHIVE_URL = buildThreadsWeeklyArchiveUrl();
 export type WeeklyInstagramMode = "clicked" | "highlights";
 
 const INTRO_LINES: Record<WeeklyInstagramMode, string> = {
-  clicked: "Os mais clicados da semana na diar.ia.br:",
+  // #7571: trocado de "Os mais clicados da semana" — decisão do editor,
+  // mesmo texto do card de capa em `publish-weekly-social.ts::buildFlatCardTexts`.
+  clicked: "As notícias de IA mais lidas da semana na diar.ia.br:",
   highlights: "Confira aqui o resumo dos destaques:",
 };
 
@@ -149,10 +151,10 @@ function contextLine(item: InstagramWeeklyItem): string {
 /**
  * `introOverride` (#5905): quando o editor força a seleção manualmente
  * (`--force-urls` em `publish-weekly-social.ts`), a intro padrão do modo
- * `clicked` ("Os mais clicados da semana") vira uma afirmação factualmente
- * incorreta — a ordem não veio mais do ranking de clique. Passa uma intro
- * neutra nesse caso; `undefined` preserva `INTRO_LINES[mode]` (comportamento
- * de sempre).
+ * `clicked` ("As notícias de IA mais lidas da semana", #7571) vira uma
+ * afirmação factualmente incorreta — a ordem não veio mais do ranking de
+ * clique. Passa uma intro neutra nesse caso; `undefined` preserva
+ * `INTRO_LINES[mode]` (comportamento de sempre).
  */
 export function formatInstagramWeekly(
   items: InstagramWeeklyItem[],

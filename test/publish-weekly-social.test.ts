@@ -171,9 +171,9 @@ describe("buildFlatCardTexts (#5330 — textos dos slides sem foto, por modo)", 
     assert.equal(texts.cover.footer, "10–14 ago · diar.ia.br");
   });
 
-  it("modo 'clicked': título de capa é 'Os mais clicados da semana'", () => {
+  it("modo 'clicked': título de capa é 'As notícias de IA mais lidas da semana' (#7571)", () => {
     const texts = buildFlatCardTexts("clicked", ["260810", "260811", "260812", "260813", "260814"]);
-    assert.equal(texts.cover.title, "Os mais clicados da semana");
+    assert.equal(texts.cover.title, "As notícias de IA mais lidas da semana");
   });
 
   it("CTA final é IDÊNTICO nos dois modos (convite pra assinar não depende de qual carrossel é)", () => {
@@ -866,11 +866,11 @@ describe("main(): dispatch mockado", () => {
       // Sem --force-urls, D1 (8%) viria antes de D2 (2%) — a ordem forçada
       // inverte isso: D2 (menos clicado) primeiro, por ter sido listado primeiro.
       assert.match(capturedBody.text, /1\. D2 pouco clicado[\s\S]*2\. D1 muito clicado/);
-      // #5905 fleet review: em modo clicked, "Os mais clicados da semana"
-      // viraria uma afirmação factualmente incorreta sob seleção manual —
-      // a intro troca pra uma frase neutra.
+      // #5905 fleet review: em modo clicked, "As notícias de IA mais lidas
+      // da semana" (#7571) viraria uma afirmação factualmente incorreta sob
+      // seleção manual — a intro troca pra uma frase neutra.
       assert.match(capturedBody.text, /^Os destaques da semana na diar\.ia\.br:/);
-      assert.doesNotMatch(capturedBody.text, /mais clicados/i);
+      assert.doesNotMatch(capturedBody.text, /mais lidas/i);
     });
 
     it("--force-urls sem valor (fim do argv ou seguido de outra flag) — aborta com erro explícito, nunca cai de volta pra seleção algorítmica em silêncio", async () => {
