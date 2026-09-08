@@ -434,7 +434,7 @@ describe("#880 dead-letter retry após MAX_RETRIES", () => {
       destaque: "d1",
       created_at: "2020-01-01T00:00:00.000Z",
       retry_count: 0,
-      channel: "instagram", // sem image_url/image_urls — dlq instantâneo (guard, não retriable)
+      channel: "instagram", // sem credenciais Instagram configuradas em mkEnv() — dlq instantâneo (guard, não retriable)
     };
     kv.store.set(key, JSON.stringify(entry));
 
