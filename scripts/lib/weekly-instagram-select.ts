@@ -68,6 +68,7 @@
 
 import { parseDestaques } from "../extract-destaques.ts";
 import { parseSections } from "./newsletter-parse.ts";
+import type { ClickWindowPostBase } from "./shared/click-window-resolution.ts";
 import {
   isCommercialOrOwnLink,
   hasSuspiciousCommercialLanguage,
@@ -184,11 +185,12 @@ export function extractInstagramCandidates(md: string, editionDate: string): Ins
  * satisfaz este shape estruturalmente (`stats.clicks: NormalizedLinkClick[]`
  * é assignable a `CachedClickRow[]` — mesmos campos), então não precisa de
  * cast no caller. */
-export interface ClickWindowPost {
-  status?: string;
-  publish_date?: number | null;
+export interface ClickWindowPost extends ClickWindowPostBase {
   stats?: {
-    email?: { unique_opens?: number };
+    /** `recipients` (#7637, discriminador de test-send) é lido pela
+     *  resolução por data via `ClickWindowPostBase.stats`; `unique_opens` é
+     *  o denominador do CTR usado por `uniqueOpensOf`. */
+    email?: { unique_opens?: number; recipients?: number };
     clicks?: CachedClickRow[];
   };
 }
@@ -206,7 +208,7 @@ export interface BeehiivCachePost {
   status?: string;
   publish_date?: number | null; // epoch seconds
   stats?: {
-    email?: { clicks?: number; unique_opens?: number };
+    email?: { clicks?: number; unique_opens?: number; recipients?: number };
     clicks?: CachedClickRow[];
   };
 }
@@ -217,36 +219,21 @@ export interface InstagramPostNeedingClicks {
   email_clicks: number;
 }
 
-/** Pure: `epoch seconds` → `AAMMDD` local. */
-export function aammddFromEpochSeconds(epochSec: number): string {
-  const d = new Date(epochSec * 1000);
-  const yy = String(d.getFullYear() % 100).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yy}${mm}${dd}`;
-}
-
 /**
- * Pure: mapa `AAMMDD → post` pros posts cacheados cujo `publish_date` cai
- * numa das datas de `windowDates` e `status === "confirmed"`. Genérico desde
- * #6185 (ver `ClickWindowPost` acima) — aceita `BeehiivCachePost[]` e
- * `UnifiedCachedPost[]` sem cast.
+ * Resolução por data (#7637): `matchPostsToWindow` e vizinhas moram em
+ * `shared/click-window-resolution.ts` — `weekly-linkedin-clicks.ts`
+ * carregava a MESMA cópia byte-a-byte, e o defeito de fusão Beehiiv×Kit que
+ * o #7637 corrigiu estava nas duas. Re-exportadas daqui pra nenhum caller
+ * precisar trocar de import.
  */
-export function matchPostsToWindow<T extends ClickWindowPost>(
-  posts: T[],
-  windowDates: string[],
-): Map<string, T> {
-  const windowSet = new Set(windowDates);
-  const out = new Map<string, T>();
-  for (const post of posts) {
-    if (post.status !== "confirmed" || !post.publish_date) continue;
-    const date = aammddFromEpochSeconds(post.publish_date);
-    if (!windowSet.has(date)) continue;
-    const existing = out.get(date);
-    if (!existing || (existing.publish_date ?? 0) < post.publish_date) out.set(date, post);
-  }
-  return out;
-}
+export {
+  aammddFromEpochSeconds,
+  matchPostsToWindow,
+  detectPostCutoverBeehiivDates,
+  detectDualOriginDates,
+  KIT_SEND_CUTOVER_AAMMDD,
+  MIN_REAL_DELIVERY_RECIPIENTS,
+} from "./shared/click-window-resolution.ts";
 
 /** Pure: posts da janela que ainda precisam de enriquecimento de clicks via MCP. */
 export function identifyInstagramPostsNeedingClicks(

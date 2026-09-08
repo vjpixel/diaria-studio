@@ -120,10 +120,33 @@ O **ciclo** (`{YY}w{WW}`, ex: `26w31`) é derivado da semana de CONTEÚDO
   retenção documentado em `/diaria-instagram-semanal` (se
   `data/editions/{AAMMDD}/` for arquivado antes de rodar esta skill, essa
   edição não pode ser recuperada pro cálculo).
-- `data/beehiiv-cache/posts/*.json` — populado por `scripts/beehiiv-sync.ts`
-  (roda automaticamente no Stage 0 de cada edição diária). Não precisa
-  rodar manualmente, mas o Passo 1 abaixo checa se falta enriquecimento de
-  clicks pros posts da janela.
+- **Dois caches de clique, os dois obrigatórios** — ambos populados
+  automaticamente no Stage 0 de cada edição diária, nenhum precisa rodar à
+  mão:
+  - `data/kit-cache/broadcasts/*.json` (`scripts/kit-sync.ts`, #7570) — **é
+    daqui que vem o clique que conta hoje.** O envio migrou pro Kit em
+    04/09/2026 (#7388/#7386) e a Beehiiv ficou com 0 assinantes ativos.
+  - `data/beehiiv-cache/posts/*.json` (`scripts/beehiiv-sync.ts`) — arquivo
+    histórico, e a única origem que o Passo 1 abaixo consegue enriquecer.
+
+  **A seleção por clique (Passo 2) lê os DOIS unificados; o manifest de
+  enriquecimento do Passo 1 é Beehiiv-only de propósito** — "precisa de
+  enriquecimento via MCP `list_post_clicks`" é um conceito que só existe do
+  lado Beehiiv (o Kit é REST comum, `kit-sync.ts` já traz cliques e
+  aberturas junto). Não confundir os dois caminhos: um manifest vazio no
+  Passo 1 **não** significa "sem dado de clique" — significa que não há nada
+  Beehiiv a enriquecer.
+
+  Quando a mesma data tem post nas duas origens (janela de rampa,
+  ~260817–260903), **o Kit vence** e o script avisa que o sinal do
+  outro canal ficou de fora (#7637 — `matchPostsToWindow` em
+  `scripts/lib/shared/click-window-resolution.ts`). Test-send do
+  `review-test-email` nunca compete: é descartado por `recipients` abaixo do
+  piso, **não** por `public` (edição real da rampa também sai
+  `public: false`). Broadcast Kit cujas stats ainda não foram agregadas
+  (`kit-sync.ts` rodou logo depois do envio) também fica de fora — sem
+  `recipients` não dá pra distinguir edição de teste, então a data cai no
+  warning de "sem dados de clique" e volta ao re-rodar o sync.
 
 ## Passo 1 — Checar se falta enriquecimento de clicks
 

@@ -140,6 +140,9 @@ import {
   selectInstagramHighlights,
   hasSuspiciousCommercialLanguage,
   normalizeUrl,
+  detectPostCutoverBeehiivDates,
+  detectDualOriginDates,
+  KIT_SEND_CUTOVER_AAMMDD,
   type BeehiivCachePost,
   type InstagramRankedCandidate,
 } from "./lib/weekly-instagram-select.ts";
@@ -618,13 +621,13 @@ async function runOneMode(
 
   // #6185: seleção por clique lê Beehiiv+Kit unificado — mesma partição por
   // origem que o #6048 aplicou à verificação de assinante e que
-  // `select-linkedin-weekly.ts` já aplica desde o mesmo PR. Hoje
-  // `loadKitCache` devolve `[]` (sem `kit-sync.ts` ainda), então o
-  // comportamento observável não muda até esse escritor existir.
-  const windowPostsUnified = matchPostsToWindow(
-    loadUnifiedPostsForRanking(beehiivPostsDir, kitBroadcastsDir),
-    contentWindow,
-  );
+  // `select-linkedin-weekly.ts` já aplica desde o mesmo PR. **O cache Kit é
+  // real desde o #7570** (`kit-sync.ts` roda no Stage 0 diário) — a ressalva
+  // original ("`loadKitCache` devolve `[]`, comportamento não muda") caducou,
+  // e foi o que mascarou o defeito de fusão corrigido no #7637: com as duas
+  // origens populadas, quem vence a vaga da data passou a importar.
+  const unifiedPosts = loadUnifiedPostsForRanking(beehiivPostsDir, kitBroadcastsDir);
+  const windowPostsUnified = matchPostsToWindow(unifiedPosts, contentWindow);
 
   // #4456-style manifest mode (mesmo padrão de `select-linkedin-weekly.ts
   // --manifest-only`): resolvido ANTES de qualquer console.log narrativo,
@@ -753,6 +756,25 @@ async function runOneMode(
       `Sem dados de clique pra edição ${date} — post não encontrado/confirmado no cache Beehiiv/Kit; candidatos dessa edição não competiram por clique real.`,
     );
   }
+  // #7637: mesma checagem de `select-linkedin-weekly.ts` — data pós-cutover
+  // de envio (#7388/#7386) que resolveu pro cache BEEHIIV. `matchPostsToWindow`
+  // já prefere Kit quando os dois existem, então isto só acontece quando o
+  // Kit não tem post cacheado pro dia. Só faz sentido no modo "clicked"
+  // (o modo "highlights" não ranqueia por clique, ver #5330).
+  if (mode === "clicked") {
+    for (const date of detectPostCutoverBeehiivDates(windowPostsUnified)) {
+      warnings.push(
+        `Edição ${date} resolveu pro cache BEEHIIV mesmo sendo pós-cutover de envio (${KIT_SEND_CUTOVER_AAMMDD}, #7388) — a Beehiiv tem 0 assinantes ativos, então esses cliques não medem entrega real. Rode \`npx tsx scripts/kit-sync.ts\` e re-rode antes de confiar na seleção.`,
+      );
+    }
+    const dualOrigin = detectDualOriginDates(unifiedPosts, contentWindow);
+    if (dualOrigin.length > 0) {
+      warnings.push(
+        `${dualOrigin.length} edição(ões) da janela saíram pelos DOIS canais (rampa Kit + base Beehiiv): ${dualOrigin.join(", ")} — o ranking usou só os cliques do Kit (lado que venceu o desempate), então o número de cada candidato desses dias cobre um canal só — a proporção entre os dois lados varia por dia, não é meio a meio.`,
+      );
+    }
+  }
+
   const manifest = mode === "clicked" ? identifyInstagramPostsNeedingClicks(windowPosts) : [];
   if (manifest.length > 0) {
     warnings.push(
