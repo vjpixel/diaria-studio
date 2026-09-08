@@ -98,6 +98,9 @@ describe("#4153 Instagram carrossel: 5 containers filhos + 1 pai + 1 publish, na
       if (u.endsWith("/media_publish")) {
         return new Response(JSON.stringify({ id: "parent-published-id" }), { status: 200 });
       }
+      if (u.includes("status_code")) {
+        return new Response(JSON.stringify({ status_code: "FINISHED" }), { status: 200 });
+      }
       if (u.endsWith("/media") && body.includes("media_type=CAROUSEL")) {
         return new Response(JSON.stringify({ id: "parent-container-id" }), { status: 200 });
       }
@@ -290,6 +293,9 @@ describe("#4153 Instagram carrossel: falha parcial aborta o post inteiro e vai p
         // Também não deveria ser chamado — o pai só é criado se todos os filhos vingarem.
         return new Response(JSON.stringify({ id: "should-not-happen-parent" }), { status: 200 });
       }
+      if (u.includes("status_code")) {
+        return new Response(JSON.stringify({ status_code: "FINISHED" }), { status: 200 });
+      }
       if (u.endsWith("/media")) {
         childAttempt++;
         if (childAttempt === 3) {
@@ -353,6 +359,9 @@ describe("#4153 Instagram carrossel: falha parcial aborta o post inteiro e vai p
     let childAttempt = 0;
     globalThis.fetch = (async (url: string | Request) => {
       const u = typeof url === "string" ? url : url.url;
+      if (u.includes("status_code")) {
+        return new Response(JSON.stringify({ status_code: "FINISHED" }), { status: 200 });
+      }
       if (u.endsWith("/media")) {
         childAttempt++;
         if (childAttempt === 3) {
@@ -397,6 +406,9 @@ describe("#4153 Instagram carrossel: falha parcial aborta o post inteiro e vai p
       if (u.endsWith("/media") && body.includes("media_type=CAROUSEL")) {
         return new Response(JSON.stringify({ error: { message: "Invalid children" } }), { status: 400 });
       }
+      if (u.includes("status_code")) {
+        return new Response(JSON.stringify({ status_code: "FINISHED" }), { status: 200 });
+      }
       if (u.endsWith("/media")) {
         return new Response(JSON.stringify({ id: "child-ok" }), { status: 200 });
       }
@@ -423,6 +435,157 @@ describe("#4153 Instagram carrossel: falha parcial aborta o post inteiro e vai p
       assert.match((outcome as { reason: string }).reason, /container pai/);
     } finally {
       globalThis.fetch = originalFetch2;
+    }
+  });
+});
+
+// ── #7630: poll obrigatório de status_code (fix da causa raiz da #7626) ────
+
+describe("#7630 Instagram carrossel: poll de status_code elimina a race condition da #7626", () => {
+  let originalFetch: typeof globalThis.fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  it("child ainda IN_PROGRESS na 1ª checagem, FINISHED na 2ª — carrossel publica (não mais dlq instantâneo)", async () => {
+    // Reproduz literalmente o erro capturado ao vivo na investigação da #7626:
+    // HTTP 400 code=9007 "Media ID is not available... please wait for a
+    // moment" — a Graph API ainda processando a mídia quando o passo
+    // seguinte tentava usá-la. Antes do #7630 não havia poll no carrossel;
+    // agora IN_PROGRESS é tolerado e o poll espera até FINISHED.
+    const pollCountByContainer = new Map<string, number>();
+    let childCounter = 0;
+    globalThis.fetch = (async (url: string | Request, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url.url;
+      const body = bodyOf(init);
+      if (u.endsWith("/media_publish")) {
+        return new Response(JSON.stringify({ id: "parent-published-id" }), { status: 200 });
+      }
+      if (u.includes("status_code")) {
+        // Extrai o container_id do path (formato `{base}/{id}?fields=status_code&...`).
+        const containerId = u.split("/").pop()!.split("?")[0];
+        const n = (pollCountByContainer.get(containerId) ?? 0) + 1;
+        pollCountByContainer.set(containerId, n);
+        // 1ª checagem de QUALQUER container: ainda processando. 2ª em diante: pronto.
+        return new Response(JSON.stringify({ status_code: n === 1 ? "IN_PROGRESS" : "FINISHED" }), { status: 200 });
+      }
+      if (u.endsWith("/media") && body.includes("media_type=CAROUSEL")) {
+        return new Response(JSON.stringify({ id: "parent-container-id" }), { status: 200 });
+      }
+      if (u.endsWith("/media")) {
+        childCounter++;
+        return new Response(JSON.stringify({ id: `child-${childCounter}` }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const entry: QueueEntry = {
+      text: "Legenda",
+      image_url: null,
+      image_urls: ["https://x.test/1.jpg", "https://x.test/2.jpg", "https://x.test/3.jpg"],
+      scheduled_at: new Date().toISOString(),
+      destaque: "d1",
+      created_at: new Date().toISOString(),
+      channel: "instagram",
+    };
+
+    try {
+      const outcome = await fireQueueEntry(entry, {
+        webhookUrl: "https://make.test/diaria",
+        instagram: { igUserId: "acc", accessToken: "tok", apiVersion: "v25.0" },
+      });
+      assert.deepEqual(outcome, { status: "fired" }, "IN_PROGRESS transitório não deve mais matar o carrossel");
+      // Todo container (3 filhos + 1 pai) foi checado ≥2× — provando que o
+      // poll de fato esperou o IN_PROGRESS virar FINISHED, não ignorou.
+      assert.equal(pollCountByContainer.size, 4, "deve ter feito poll dos 3 filhos + 1 pai");
+      for (const n of pollCountByContainer.values()) {
+        assert.ok(n >= 2, "cada container deve ter sido checado pelo menos 2× (IN_PROGRESS → FINISHED)");
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("child preso em IN_PROGRESS além do orçamento de tentativas → dlq fail-closed (nunca publica às cegas)", async () => {
+    globalThis.fetch = (async (url: string | Request, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url.url;
+      const body = bodyOf(init);
+      if (u.endsWith("/media_publish")) {
+        return new Response(JSON.stringify({ id: "should-not-happen" }), { status: 200 });
+      }
+      if (u.includes("status_code")) {
+        return new Response(JSON.stringify({ status_code: "IN_PROGRESS" }), { status: 200 });
+      }
+      if (u.endsWith("/media") && body.includes("media_type=CAROUSEL")) {
+        return new Response(JSON.stringify({ id: "should-not-happen-parent" }), { status: 200 });
+      }
+      if (u.endsWith("/media")) {
+        return new Response(JSON.stringify({ id: "child-stuck" }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const entry: QueueEntry = {
+      text: "t",
+      image_url: null,
+      image_urls: ["https://x.test/1.jpg", "https://x.test/2.jpg"],
+      scheduled_at: new Date().toISOString(),
+      destaque: "d1",
+      created_at: new Date().toISOString(),
+      channel: "instagram",
+    };
+
+    try {
+      const outcome = await fireQueueEntry(entry, {
+        webhookUrl: "https://make.test/diaria",
+        instagram: { igUserId: "acc", accessToken: "tok", apiVersion: "v25.0" },
+      });
+      assert.equal(outcome.status, "dlq");
+      assert.match((outcome as { reason: string }).reason, /nunca ficou FINISHED/);
+      assert.doesNotMatch(
+        (outcome as { reason: string }).reason,
+        /media_publish/,
+        "não deve nem chegar perto de publicar — falha no poll do 1º filho",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("child com status_code=ERROR aborta imediato (permanent), sem gastar as 10 tentativas", async () => {
+    let pollCalls = 0;
+    globalThis.fetch = (async (url: string | Request) => {
+      const u = typeof url === "string" ? url : url.url;
+      if (u.includes("status_code")) {
+        pollCalls++;
+        return new Response(JSON.stringify({ status_code: "ERROR" }), { status: 200 });
+      }
+      if (u.endsWith("/media")) {
+        return new Response(JSON.stringify({ id: "child-broken" }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const entry: QueueEntry = {
+      text: "t",
+      image_url: null,
+      image_urls: ["https://x.test/1.jpg", "https://x.test/2.jpg"],
+      scheduled_at: new Date().toISOString(),
+      destaque: "d1",
+      created_at: new Date().toISOString(),
+      channel: "instagram",
+    };
+
+    try {
+      const outcome = await fireQueueEntry(entry, {
+        webhookUrl: "https://make.test/diaria",
+        instagram: { igUserId: "acc", accessToken: "tok", apiVersion: "v25.0" },
+      });
+      assert.equal(outcome.status, "dlq");
+      assert.match((outcome as { reason: string }).reason, /status_code=ERROR/);
+      assert.equal(pollCalls, 1, "ERROR é sinal definitivo — não deve consumir as 10 tentativas de poll");
+    } finally {
+      globalThis.fetch = originalFetch;
     }
   });
 });

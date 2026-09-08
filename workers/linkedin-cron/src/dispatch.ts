@@ -274,25 +274,124 @@ async function fireInstagramSingle(imageUrl: string, caption: string, creds: Ins
   }
 }
 
+/** Nº máximo de tentativas de poll do status de um container Instagram
+ * (carrossel) antes de desistir (fail-closed) — #7630. Mesmos valores do
+ * poll OBRIGATÓRIO de Threads (`THREADS_POLL_MAX_ATTEMPTS`, #5348) — mantido
+ * como constante separada (não reaproveitada) pra permitir ajuste
+ * independente por plataforma sem risco de efeito colateral cruzado. */
+const IG_POLL_MAX_ATTEMPTS = 10;
+/** Intervalo entre tentativas de poll (ms) — #7630. Mesmo racional de
+ * `THREADS_POLL_INTERVAL_MS`. */
+const IG_POLL_INTERVAL_MS = 2000;
+
+/**
+ * Faz polling do status de UM container Instagram (filho de carrossel ou
+ * pai) até `status_code=FINISHED`, `ERROR`, ou esgotar `IG_POLL_MAX_ATTEMPTS`
+ * — #7630, causa raiz confirmada da #7626.
+ *
+ * Mesmo padrão de `pollThreadsContainerStatus` acima (#5348) — a diferença
+ * de campo é só nomenclatura da Graph API: Instagram usa `status_code`
+ * (`FINISHED`/`IN_PROGRESS`/`ERROR`/`EXPIRED`), Threads usa `status`. Falha
+ * TRANSITÓRIA (fetch/HTTP/parse) consome o orçamento de tentativas em vez de
+ * abortar na 1ª (mesma correção do #5348 self-review); só `ERROR`/`EXPIRED`
+ * — sinal real e informativo da própria API — aborta imediato como
+ * `permanent: true`.
+ *
+ * Motivado por erro real capturado ao vivo (reprocessamento manual, achado
+ * #7630): `HTTP 400 code=9007 subcode=2207027 "Media ID is not available...
+ * please wait for a moment"` — o carrossel criava os N containers filhos e
+ * chamava `media_publish` do pai IMEDIATAMENTE, sem esperar a Graph API
+ * terminar de processar a mídia (transcodificação assíncrona) — uma race
+ * condition transitória que o desenho anterior tratava como falha permanente
+ * (`dlq` instantâneo, #4153, sem nenhum retry), matando o carrossel inteiro
+ * por um blip que se resolveria sozinho em poucos segundos.
+ */
+async function pollInstagramContainerStatus(
+  base: string,
+  containerId: string,
+  accessToken: string,
+): Promise<{ ok: true } | { ok: false; reason: string; permanent: boolean }> {
+  for (let attempt = 1; attempt <= IG_POLL_MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(
+        `${base}/${containerId}?fields=status_code&access_token=${encodeURIComponent(accessToken)}`,
+        { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
+      );
+      const text = await res.text();
+      let data: { status_code?: string; error?: { message?: string } };
+      try {
+        data = JSON.parse(text);
+      } catch {
+        console.warn(
+          `[instagram-poll] resposta não-JSON na tentativa ${attempt}/${IG_POLL_MAX_ATTEMPTS} (container_id=${containerId}): HTTP ${res.status}: ${text.slice(0, 200)} — tratado como transitório, tentando de novo.`,
+        );
+        if (attempt < IG_POLL_MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, IG_POLL_INTERVAL_MS));
+        continue;
+      }
+      if (!res.ok || data.error) {
+        console.warn(
+          `[instagram-poll] HTTP ${res.status} na tentativa ${attempt}/${IG_POLL_MAX_ATTEMPTS} (container_id=${containerId}): ${data.error?.message ?? text.slice(0, 200)} — tratado como transitório, tentando de novo.`,
+        );
+        if (attempt < IG_POLL_MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, IG_POLL_INTERVAL_MS));
+        continue;
+      }
+      if (data.status_code === "FINISHED") return { ok: true };
+      if (data.status_code === "ERROR" || data.status_code === "EXPIRED") {
+        return {
+          ok: false,
+          permanent: true,
+          reason: `Instagram container status_code=${data.status_code} (container_id=${containerId})`,
+        };
+      }
+      // IN_PROGRESS (ou estado transitório desconhecido) — segue tentando.
+    } catch (e) {
+      const err = e as Error;
+      const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+      console.warn(
+        `[instagram-poll] fetch ${timeout ? "timeout" : "failed"} na tentativa ${attempt}/${IG_POLL_MAX_ATTEMPTS} (container_id=${containerId}): ${err.message} — tratado como transitório, tentando de novo.`,
+      );
+    }
+    if (attempt < IG_POLL_MAX_ATTEMPTS) {
+      await new Promise((r) => setTimeout(r, IG_POLL_INTERVAL_MS));
+    }
+  }
+  return {
+    ok: false,
+    permanent: false,
+    reason:
+      `Instagram container nunca ficou FINISHED após ${IG_POLL_MAX_ATTEMPTS} tentativas ` +
+      `(~${Math.round((IG_POLL_MAX_ATTEMPTS * IG_POLL_INTERVAL_MS) / 1000)}s) — ` +
+      `container_id=${containerId}, fail-closed (não publica).`,
+  };
+}
+
 /**
  * Dispara um carrossel Instagram (#4153) — fluxo de 3 passos da Graph API:
  *   1. N containers filhos (`is_carousel_item=true`), 1 POST por imagem, na
- *      ordem da lista — cada um devolve um `creation_id`.
- *   2. 1 container pai (`media_type=CAROUSEL`, `children=[ids]`, `caption`).
+ *      ordem da lista — cada um devolve um `creation_id`, seguido de poll
+ *      OBRIGATÓRIO até `FINISHED` (#7630 — ver `pollInstagramContainerStatus`
+ *      acima; antes não havia poll aqui, só no caminho single-image).
+ *   2. 1 container pai (`media_type=CAROUSEL`, `children=[ids]`, `caption`),
+ *      seguido do MESMO poll obrigatório.
  *   3. `media_publish` do container pai.
  *
- * Falha parcial (decisão de escopo #4153): se QUALQUER passo falhar —
- * inclusive um único container filho no meio da lista — o post inteiro é
- * abortado e o outcome é SEMPRE "dlq", nunca "failed"/retriable. Isto é
- * DELIBERADAMENTE diferente do caminho single-image (`fireInstagramSingle`),
- * que deixa falhas transitórias serem re-tentadas pelo `retry_count` normal
- * (#880): publicar um carrossel incompleto é pior que não publicar (o texto
- * do post promete N dias), e re-tentar do zero recriaria N containers a cada
- * ciclo do cron sem garantia de sucesso — a fila de retry padrão foi
- * desenhada pra 1 chamada isolada, não pra uma cadeia de até 7 chamadas
- * interdependentes. Motivo real (não só "cron", crash mid-flight — inclui
- * `alarm()` do DO) é preservado no `reason`, junto com quantos containers já
- * tinham sido criados até o ponto da falha (auditoria manual pelo editor).
+ * Falha parcial (decisão de escopo #4153, mantida pelo #7630): se QUALQUER
+ * passo falhar — inclusive o poll de um único container filho — o post
+ * inteiro é abortado e o outcome é SEMPRE "dlq", nunca "failed"/retriable.
+ * Isto é DELIBERADAMENTE diferente do caminho single-image
+ * (`fireInstagramSingle`), que deixa falhas transitórias serem re-tentadas
+ * pelo `retry_count` normal (#880): publicar um carrossel incompleto é pior
+ * que não publicar (o texto do post promete N dias), e re-tentar do zero
+ * recriaria N containers a cada ciclo do cron sem garantia de sucesso — a
+ * fila de retry padrão foi desenhada pra 1 chamada isolada, não pra uma
+ * cadeia de até 7 chamadas interdependentes. O que o #7630 muda NÃO é essa
+ * política de retry externo — é que agora o poll interno (dentro da MESMA
+ * invocação, antes de decidir dlq) dá à Graph API a chance de terminar de
+ * processar a mídia antes do próximo passo depender dela, eliminando a race
+ * condition que antes gerava um `dlq` para um erro puramente transitório.
+ * Motivo real (não só "cron", crash mid-flight — inclui `alarm()` do DO) é
+ * preservado no `reason`, junto com quantos containers já tinham sido
+ * criados até o ponto da falha (auditoria manual pelo editor).
  */
 async function fireInstagramCarousel(
   imageUrls: string[],
@@ -359,6 +458,19 @@ async function fireInstagramCarousel(
         reason: `Instagram carrossel: child container ${i + 1}/${imageUrls.length} fetch ${timeout ? "timeout" : "failed"}: ${err.message} (containers já criados: ${childIds.length})`,
       };
     }
+
+    // Poll OBRIGATÓRIO (#7630) — sem isto, um filho ainda `IN_PROGRESS`
+    // (transcodificação assíncrona da Graph API) referenciado pelo container
+    // pai no passo seguinte causa o erro 9007 "Media ID is not available"
+    // capturado ao vivo na investigação da #7626 — uma race condition
+    // transitória que o `dlq` instantâneo tratava como permanente.
+    const childPoll = await pollInstagramContainerStatus(base, childIds[childIds.length - 1], creds.accessToken);
+    if (!childPoll.ok) {
+      return {
+        status: "dlq",
+        reason: `Instagram carrossel: child container ${i + 1}/${imageUrls.length} (id=${childIds[childIds.length - 1]}) — ${childPoll.reason} (containers já criados: ${childIds.length})`,
+      };
+    }
   }
 
   // Passo 2: container pai — media_type=CAROUSEL + children (ordem
@@ -406,6 +518,13 @@ async function fireInstagramCarousel(
       status: "dlq",
       reason: `Instagram carrossel: container pai fetch ${timeout ? "timeout" : "failed"}: ${err.message} (children=${childIds.join(",")})`,
     };
+  }
+
+  // Poll OBRIGATÓRIO do container pai (#7630) — mesmo racional dos filhos:
+  // o container CAROUSEL também processa antes de ficar publicável.
+  const parentPoll = await pollInstagramContainerStatus(base, parentId, creds.accessToken);
+  if (!parentPoll.ok) {
+    return { status: "dlq", reason: `Instagram carrossel: container pai (id=${parentId}) — ${parentPoll.reason}` };
   }
 
   // Passo 3: publicar o container pai — NENHUMA chamada aqui acontece se
