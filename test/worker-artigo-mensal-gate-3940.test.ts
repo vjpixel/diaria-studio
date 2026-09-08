@@ -7,7 +7,7 @@
  *     mesmo padrão de `test/worker-draft.test.ts` (sem wrangler/unstable_dev).
  *
  * Casos centrais exigidos pelo dispatch (#3940):
- *   1. apoiador R$10+ (mockado): e-mail na allowlist + artigo no KV → artigo completo.
+ *   1. apoiador Mantenedor R$25+ (mockado): e-mail na allowlist + artigo no KV → artigo completo.
  *   2. R$5 (mockado fora da allowlist, "amigo" não qualifica) → paywall.
  *   3. não-apoiador (mockado fora da allowlist) → paywall.
  *   4. e-mail ausente/inválido → fail-closed (form de e-mail, NUNCA o artigo).
@@ -141,7 +141,7 @@ function makeEnv(articles: MockKV, allowlistRaw: string | null): Env {
 const ARTICLE_HTML = "<html><body>Artigo completo de julho</body></html>";
 const CYCLE = "2607-08";
 
-describe("handleGet — cenário 1: apoiador R$10+ passa (#3940)", () => {
+describe("handleGet — cenário 1: apoiador Mantenedor (R$25+) passa (#3940)", () => {
   it("e-mail na allowlist + artigo no KV → 200 com o artigo completo", async () => {
     const articles: MockKV = new Map([[`article:${CYCLE}`, ARTICLE_HTML]]);
     const env = makeEnv(articles, JSON.stringify(["apoiador10@x.com"]));

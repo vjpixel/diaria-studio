@@ -40,6 +40,11 @@
  * publicada em janeiro de 2027, mora em `/2026`. "Retrospectiva de 2026" lê-se
  * sozinho; `/2027` exigiria explicar que o número é a data do envio.
  *
+ * O repo já seguia essa convenção nos diretórios (`data/annual/2026-janeiro/`
+ * é a edição enviada em jan/2027 — ver `annual-window.ts`, "o ano que a
+ * retrospectiva fecha, independente de quando ela é enviada"), então
+ * `anualPathFromSlug` é IDENTIDADE, não conversão.
+ *
  * O aniversário tem prefixo próprio porque não cobre um ano civil: a edição de
  * agosto cobre ago–jul, e o `AAAA` ali é o ano do aniversário (`/aniversario2026`
  * = 1º aniversário, agosto de 2026).
@@ -126,10 +131,18 @@ export function anualPathFromSlug(slug: string): string | null {
   if (aniversario) return `aniversario${aniversario[1]}`;
   const janeiro = /^(\d{4})-janeiro$/.exec(s);
   if (janeiro) {
-    // A edição de janeiro cobre o ano civil ANTERIOR ao da publicação —
-    // decisão "ano coberto" do editor. `2027-janeiro` (publicada em jan/2027)
-    // cobre 2026 e vira `/2026`.
-    return String(Number(janeiro[1]) - 1);
+    // IDENTIDADE, sem offset: o slug do repo JÁ é o ano coberto. A 1ª versão
+    // disto subtraía 1, assumindo que o slug carregava o ano de PUBLICAÇÃO —
+    // e `annual-window.ts` diz o contrário, na letra: "O ano do diretório/
+    // edição é o do último mês da janela — é o ano que a retrospectiva fecha,
+    // independente de quando ela é enviada". A edição enviada em jan/2027
+    // cobre 2026 e mora em `data/annual/2026-janeiro/`, não `2027-janeiro`.
+    //
+    // O erro era invisível: devolvia `2025` para `2026-janeiro`, um ano que
+    // existe e classifica como anual — redirect pra retrospectiva errada, sem
+    // 404 pra denunciar. O teste de round-trip contra `annualSlug` (a fonte
+    // real do slug) existe pra que a suposição não volte a divergir.
+    return janeiro[1];
   }
   return null;
 }

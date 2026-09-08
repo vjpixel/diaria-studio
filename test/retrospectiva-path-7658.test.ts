@@ -17,6 +17,7 @@ import {
   mensalPathFromCycle,
   anualPathFromSlug,
 } from "../scripts/lib/shared/retrospectiva-path.ts";
+import { annualSlug } from "../scripts/lib/anual/annual-paths.ts";
 
 describe("#7658 — classifyRetrospectivaPath: mensal (/AAMM)", () => {
   it("2607 -> julho de 2026, gate de apoio Mantenedor", () => {
@@ -147,8 +148,12 @@ describe("#7658 — anualPathFromSlug: slug do repo -> path", () => {
     assert.equal(anualPathFromSlug("2026-aniversário"), "aniversario2026");
   });
 
-  it("2027-janeiro -> 2026 (ano COBERTO, não o de publicação)", () => {
-    assert.equal(anualPathFromSlug("2027-janeiro"), "2026");
+  it("2026-janeiro -> 2026 — IDENTIDADE: o slug do repo já é o ano coberto", () => {
+    // Regressão do achado do review: a 1ª versão subtraía 1 ano, assumindo
+    // que o slug carregava o ano de PUBLICAÇÃO. Devolvia 2025 pra 2026-janeiro
+    // — um ano que existe e classifica como anual, ou seja, redirect pra
+    // retrospectiva errada sem 404 nenhum pra denunciar.
+    assert.equal(anualPathFromSlug("2026-janeiro"), "2026");
   });
 
   it("slug desconhecido -> null", () => {
@@ -160,5 +165,37 @@ describe("#7658 — anualPathFromSlug: slug do repo -> path", () => {
   it("round-trip: os dois formatos voltam com o kind certo", () => {
     assert.equal(classifyRetrospectivaPath(`/${anualPathFromSlug("2026-aniversario")}`)?.kind, "aniversario");
     assert.equal(classifyRetrospectivaPath(`/${anualPathFromSlug("2027-janeiro")}`)?.kind, "anual");
+  });
+});
+
+describe("#7658 — o tradutor está amarrado ao gerador REAL de slug", () => {
+  // A lacuna que deixou o bug do ano passar no primeiro commit: os testes
+  // validavam `anualPathFromSlug` contra um formato de slug HIPOTÉTICO
+  // ("2027-janeiro"), nunca contra o que a pipeline de fato produz. Aqui o
+  // slug vem de `annualSlug`, a mesma função que a `/diaria-anual` usa pra
+  // nomear o diretório da edição — se um dia ela mudar de formato, quebra
+  // aqui em vez de virar redirect silencioso pro ano errado.
+  it("annualSlug(2026, 'janeiro') -> path 2026 (o ano que a retrospectiva FECHA)", () => {
+    const slug = annualSlug(2026, "janeiro");
+    assert.equal(slug, "2026-janeiro");
+    assert.equal(anualPathFromSlug(slug), "2026");
+  });
+
+  it("annualSlug(2026, 'aniversario') -> path aniversario2026", () => {
+    const slug = annualSlug(2026, "aniversario");
+    assert.equal(slug, "2026-aniversario");
+    assert.equal(anualPathFromSlug(slug), "aniversario2026");
+  });
+
+  it("todo slug gerado pelos 2 tipos traduz e classifica com o kind certo", () => {
+    for (const ano of [2026, 2027, 2030]) {
+      const janeiro = anualPathFromSlug(annualSlug(ano, "janeiro"));
+      assert.ok(janeiro, `janeiro/${ano} devia traduzir`);
+      assert.equal(classifyRetrospectivaPath(`/${janeiro}`)?.kind, "anual");
+
+      const aniversario = anualPathFromSlug(annualSlug(ano, "aniversario"));
+      assert.ok(aniversario, `aniversario/${ano} devia traduzir`);
+      assert.equal(classifyRetrospectivaPath(`/${aniversario}`)?.kind, "aniversario");
+    }
   });
 });
