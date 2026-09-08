@@ -244,11 +244,27 @@ atual:
   inteiro em vez de publicar parcial" vale se a geração sob demanda falhar
   (ex: crédito de API esgotado, fonte de marca ausente na máquina).
 
-## Passo 1 — Checar se falta enriquecimento de clicks
+## Passo 1 — Aquecer o cache Kit + checar enriquecimento Beehiiv
 
 **Só se aplica ao modo `clicked`** — `highlights` não ranqueia por clique,
 então `--manifest-only` sempre retorna `posts_needing_clicks: []` nesse modo
 (pule direto pro Passo 2).
+
+**1a. Sempre, antes de tudo (#7629):**
+
+```bash
+npx tsx scripts/kit-sync.ts
+```
+
+Incremental e barato (mesma chamada que o Stage 0 diário faz no batch
+0h.1-kit, #7570) — rodar duas vezes não custa nada. **Não é opcional:** o
+Kit é o canal vivo desde 04/09/2026 (#7388), e numa máquina que não rodou
+Stage 0 recente (clone fresco, `data/` ainda sincronizando pelo OneDrive,
+ou um dia sem edição) `data/kit-cache/broadcasts/` pode estar vazio. Aí a
+seleção sairia com **0 cliques pra semana inteira, em silêncio** — o
+manifest do passo 1b NÃO cobre isso (é Beehiiv-only, ver abaixo).
+
+**1b. Checar o que falta enriquecer do lado Beehiiv:**
 
 ```bash
 npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --mode clicked --manifest-only

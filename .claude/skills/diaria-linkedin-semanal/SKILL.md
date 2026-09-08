@@ -148,7 +148,24 @@ O **ciclo** (`{YY}w{WW}`, ex: `26w31`) é derivado da semana de CONTEÚDO
   `recipients` não dá pra distinguir edição de teste, então a data cai no
   warning de "sem dados de clique" e volta ao re-rodar o sync.
 
-## Passo 1 — Checar se falta enriquecimento de clicks
+## Passo 1 — Aquecer o cache Kit + checar enriquecimento Beehiiv
+
+**1a. Sempre, antes de tudo (#7629):**
+
+```bash
+npx tsx scripts/kit-sync.ts
+```
+
+Incremental e barato (mesma chamada que o Stage 0 diário faz no batch
+0h.1-kit, #7570) — rodar duas vezes não custa nada. **Não é opcional:** o
+Kit é o canal vivo desde 04/09/2026 (#7388), e numa máquina que não rodou
+Stage 0 recente (clone fresco, `data/` ainda sincronizando pelo OneDrive,
+ou um dia sem edição) `data/kit-cache/broadcasts/` pode estar vazio. Aí a
+seleção sairia com **0 cliques pra semana inteira, em silêncio** — o
+manifest do passo 1b NÃO cobre isso (é Beehiiv-only, ver abaixo). Foi
+exatamente o que aconteceu em 08/09/2026 (#7629).
+
+**1b. Checar o que falta enriquecer do lado Beehiiv:**
 
 ```bash
 npx tsx scripts/select-linkedin-weekly.ts --publish-monday {AAMMDD} --manifest-only
