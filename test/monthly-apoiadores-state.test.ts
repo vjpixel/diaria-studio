@@ -25,6 +25,8 @@ import {
   buildSentState,
   decidePublishBrevoAction,
   buildApoiadoresBrevoPublishedState,
+  decidePublishKitAction,
+  buildApoiadoresKitPublishedState,
   type ApoiadoresState,
 } from "../scripts/lib/mensal/monthly-apoiadores-state.ts";
 
@@ -60,6 +62,8 @@ const PREPARED: ApoiadoresState = {
   subject: "diar.ia.br | Julho 2026",
   segments: ["Apoio — Mantenedor", "Apoio — Patrono"],
   brevoCampaignId: null,
+  kitBroadcastId: null,
+  kitAudienceVerified: null,
 };
 
 const SENT: ApoiadoresState = {
@@ -131,6 +135,12 @@ test("readApoiadoresState: arquivo legado sem a chave brevoCampaignId -> brevoCa
   const stderr = captureStderr(() => { result = readApoiadoresState(dir); });
   assert.equal(result?.brevoCampaignId, null);
   assert.equal(result?.cycle, "2607-08");
+  // Leitura própria (fora do closure do captureStderr, que faz o TS estreitar
+  // `result` pra `never`) — evita adicionar mais uma ocorrência do padrão que
+  // já está na baseline do typecheck-ratchet.
+  const legadoLido = readApoiadoresState(dir);
+  assert.equal(legadoLido?.kitBroadcastId, null, "#7633: state legado também não tem kitBroadcastId — mesmo tratamento silencioso");
+  assert.equal(legadoLido?.kitAudienceVerified, null, "#7633: idem pra kitAudienceVerified");
   assert.equal(stderr, "", "chave ausente é o formato legado esperado — nunca deveria logar aviso");
 });
 
@@ -229,17 +239,35 @@ test("buildPreparedState: preserva htmlPath/subject/segments/preparedAt exatamen
     subject: "Assunto X",
     segments: ["Apoio — Mantenedor", "Apoio — Patrono"],
     brevoCampaignId: null,
+    kitBroadcastId: null,
+    kitAudienceVerified: null,
   });
 });
 
-test("buildPreparedState: sem previousBrevoCampaignId -> brevoCampaignId null (default)", () => {
+test("buildPreparedState: sem previousChannelIds -> ids null (default)", () => {
   const s = buildPreparedState("2607-08", "2026-08-03T10:00:00.000Z", "/x/y.html", "Assunto X", []);
   assert.equal(s.brevoCampaignId, null);
+  assert.equal(s.kitBroadcastId, null);
 });
 
-test("buildPreparedState: com previousBrevoCampaignId -> preserva (Passo 1 rodado depois do Passo 2 não apaga o registro)", () => {
-  const s = buildPreparedState("2607-08", "2026-08-03T10:00:00.000Z", "/x/y.html", "Assunto X", [], 777);
+test("buildPreparedState: com previousChannelIds -> preserva (Passo 1 rodado depois do Passo 2 não apaga o registro)", () => {
+  const s = buildPreparedState("2607-08", "2026-08-03T10:00:00.000Z", "/x/y.html", "Assunto X", [], {
+    brevoCampaignId: 777,
+    kitBroadcastId: 888,
+  });
   assert.equal(s.brevoCampaignId, 777);
+  assert.equal(s.kitBroadcastId, 888);
+});
+
+test("buildPreparedState (#7633): id de UM canal não vaza pro campo do outro", () => {
+  // O parâmetro virou objeto justamente porque dois `number | null`
+  // posicionais seguidos deixariam a troca de ordem compilar em silêncio,
+  // gravando o id do canal errado no campo que serve pra impedir duplicata.
+  const s = buildPreparedState("2607-08", "2026-08-03T10:00:00.000Z", "/x/y.html", "Assunto X", [], {
+    kitBroadcastId: 888,
+  });
+  assert.equal(s.kitBroadcastId, 888);
+  assert.equal(s.brevoCampaignId, null);
 });
 
 // ---------------------------------------------------------------------------
@@ -298,6 +326,8 @@ test("buildApoiadoresBrevoPublishedState: state novo (sem previous) -> status dr
     subject: "Assunto",
     segments: [],
     brevoCampaignId: 555,
+    kitBroadcastId: null,
+    kitAudienceVerified: null,
   });
 });
 
@@ -312,6 +342,92 @@ test("buildApoiadoresBrevoPublishedState: NUNCA herda sentAt de um previous 'sen
 test("buildApoiadoresBrevoPublishedState: preserva segments do previous quando presente", () => {
   const s = buildApoiadoresBrevoPublishedState(PREPARED, "2607-08", "2026-08-04T10:00:00.000Z", "/x/y.html", "Assunto", 555);
   assert.deepEqual(s.segments, PREPARED.segments);
+});
+
+test("buildApoiadoresBrevoPublishedState (#7633): preserva o kitBroadcastId do previous", () => {
+  // O publisher Brevo legado não pode apagar o rastro do rascunho Kit — os
+  // dois ids são fatos monotônicos independentes, cada um guardando o guard
+  // de duplicata do seu canal.
+  const previous: ApoiadoresState = { ...PREPARED, kitBroadcastId: 999 };
+  const s = buildApoiadoresBrevoPublishedState(previous, "2607-08", "2026-08-04T10:00:00.000Z", "/x/y.html", "Assunto", 555);
+  assert.equal(s.kitBroadcastId, 999);
+  assert.equal(s.brevoCampaignId, 555);
+});
+
+// ---------------------------------------------------------------------------
+// decidePublishKitAction / buildApoiadoresKitPublishedState (#7633 — mesmos 2
+// guards do canal Brevo, lidos do campo do canal Kit).
+// ---------------------------------------------------------------------------
+
+test("decidePublishKitAction: sem state prévio -> sempre permite criar", () => {
+  assert.deepEqual(decidePublishKitAction(null, false), { action: "create" });
+});
+
+test("decidePublishKitAction: state prévio sem kitBroadcastId (só Passo 1 rodou) -> permite criar", () => {
+  assert.deepEqual(decidePublishKitAction(PREPARED, false), { action: "create" });
+});
+
+test("decidePublishKitAction: kitBroadcastId já setado, SEM --force -> bloqueia (evita rascunho duplicado)", () => {
+  const state: ApoiadoresState = { ...PREPARED, kitBroadcastId: 999 };
+  const decision = decidePublishKitAction(state, false);
+  assert.equal(decision.action, "blocked");
+  if (decision.action === "blocked") {
+    assert.match(decision.reason, /999/);
+    assert.match(decision.reason, /--force/);
+    assert.match(decision.reason, /Kit/, "a mensagem precisa citar o painel certo — é ela que o operador lê");
+  }
+});
+
+test("decidePublishKitAction: kitBroadcastId já setado, COM --force -> permite criar outro", () => {
+  const state: ApoiadoresState = { ...PREPARED, kitBroadcastId: 999 };
+  assert.deepEqual(decidePublishKitAction(state, true), { action: "create" });
+});
+
+test("decidePublishKitAction: status sent, SEM --force -> bloqueia (mesmo sem kitBroadcastId)", () => {
+  const state: ApoiadoresState = { ...PREPARED, status: "sent", sentAt: "2026-08-04T09:00:00.000Z" };
+  const decision = decidePublishKitAction(state, false);
+  assert.equal(decision.action, "blocked");
+  if (decision.action === "blocked") {
+    assert.match(decision.reason, /já foi marcado como ENVIADO/);
+  }
+});
+
+test("decidePublishKitAction (#7633): brevoCampaignId de um canal aposentado NÃO bloqueia o canal Kit", () => {
+  // Um rascunho órfão no ESP anterior (que nunca enviou nada) não pode
+  // impedir o envio real pelo canal atual — os guards são por canal.
+  const state: ApoiadoresState = { ...PREPARED, brevoCampaignId: 555 };
+  assert.deepEqual(decidePublishKitAction(state, false), { action: "create" });
+});
+
+test("buildApoiadoresKitPublishedState: state novo -> draft_prepared, sentAt null, kitBroadcastId gravado", () => {
+  const s = buildApoiadoresKitPublishedState(null, "2607-08", "2026-08-04T10:00:00.000Z", "/x/apoiadores-kit-preview.html", "Assunto", 999);
+  assert.deepEqual(s, {
+    cycle: "2607-08",
+    status: "draft_prepared",
+    preparedAt: "2026-08-04T10:00:00.000Z",
+    sentAt: null,
+    htmlPath: "/x/apoiadores-kit-preview.html",
+    subject: "Assunto",
+    segments: [],
+    brevoCampaignId: null,
+    kitBroadcastId: 999,
+    kitAudienceVerified: null,
+  });
+});
+
+test("buildApoiadoresKitPublishedState: NUNCA herda sentAt de um previous 'sent'", () => {
+  const previous: ApoiadoresState = { ...PREPARED, status: "sent", sentAt: "2026-08-04T09:00:00.000Z" };
+  const s = buildApoiadoresKitPublishedState(previous, "2607-08", "2026-08-05T10:00:00.000Z", "/x/y.html", "Assunto novo", 999);
+  assert.equal(s.status, "draft_prepared");
+  assert.equal(s.sentAt, null);
+  assert.equal(s.kitBroadcastId, 999);
+});
+
+test("buildApoiadoresKitPublishedState: preserva segments e brevoCampaignId do previous", () => {
+  const previous: ApoiadoresState = { ...PREPARED, brevoCampaignId: 555 };
+  const s = buildApoiadoresKitPublishedState(previous, "2607-08", "2026-08-04T10:00:00.000Z", "/x/y.html", "Assunto", 999);
+  assert.deepEqual(s.segments, PREPARED.segments);
+  assert.equal(s.brevoCampaignId, 555);
 });
 
 // ---------------------------------------------------------------------------

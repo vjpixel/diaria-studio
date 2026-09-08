@@ -22,6 +22,7 @@ import { applyBrandWordmark } from "../shared/brand-wordmark.ts"; // wordmark di
 import { tealDot } from "../shared/email-components.ts"; // #3269 — extraído de newsletter-render-html.ts pra shared/ (era o mesmo import cruzado ad-hoc do applyBrandWordmark acima; ponto ● teal, #3181)
 import { isUnpairedBoldMarker, scanBalancedParenClose } from "../shared/markdown-primitives.ts"; // #7126 — item 6 do plano do #3269, antes duplicado aqui
 import { buildMensalStyleBlock } from "../shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
+import type { Brand } from "../../../workers/poll/src/lib.ts"; // #7633 — fonte única do vocabulário de brand (só o TIPO, sem runtime do worker)
 // #4040/#4041: fonte única dos valores de UTM + composição do sufixo de posição.
 import {
   MENSAL_UTM_SOURCE,
@@ -158,8 +159,13 @@ export interface MonthlyUtmProfile {
    * literal `{{ contact.EMAIL }}` — a Beehiiv
    * não a substitui, e `isValidVoteEmailFormat` (workers/poll) rejeita esse
    * formato: 100% dos votos quebrados nessa variante.
+   *
+   * #7633: 3º formato, `{{ subscriber.email_address }}` (Liquid do Kit,
+   * confirmado ao vivo no #464 — ver `kit-broadcasts.ts`). Mesma disciplina:
+   * um perfil que envia pelo Kit com a sintaxe da Brevo produz exatamente o
+   * bug do #4510 de novo, só que no canal novo.
    */
-  pollMergeTag: "{{email}}" | "{{ contact.EMAIL }}";
+  pollMergeTag: "{{email}}" | "{{ contact.EMAIL }}" | "{{ subscriber.email_address }}";
   /**
    * #4510: `brand` do leaderboard do "É IA?" (`workers/poll/src/lib.ts`,
    * `Brand`) pra onde os votos deste perfil vão. Antes `renderEia` hardcodava
@@ -172,8 +178,20 @@ export interface MonthlyUtmProfile {
    * pra esse brand aceitar edição em formato de ciclo, ver comentário lá;
    * `BEEHIIV_UTM_PROFILE`, o perfil original que motivou este design,
    * removido por #7121, sem consumidor de runtime).
+   *
+   * #7633 (achado do type-design-analyzer): era `string` aberto — o campo
+   * MAIS perigoso do perfil (brand errado = votos contados no leaderboard de
+   * outra audiência, em silêncio) era justamente o único sem trava de tipo,
+   * ao lado de um `pollMergeTag` que já é união fechada por causa do #4510. E
+   * a forma de errar é concreta: os perfis são objetos quase idênticos, então
+   * copiar um pra criar o próximo e esquecer de trocar este campo compilava.
+   * Agora é o `Brand` canônico de `workers/poll/src/lib.ts` — um brand
+   * inexistente (typo) ou copiado do perfil errado deixou de compilar, e a
+   * checagem sai de graça em qualquer perfil novo. O import cruzado
+   * `scripts/` → `workers/poll/src/lib.ts` já é padrão no repo
+   * (`backfill-score-by-month.ts`, `backfill-seq-state.ts`).
    */
-  pollBrand: string;
+  pollBrand: Brand;
 }
 
 /** Perfil DEFAULT — envio Clarice/Brevo (#2975/#4040). Todo caller que não

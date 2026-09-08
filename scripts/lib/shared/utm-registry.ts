@@ -92,6 +92,28 @@ export const MENSAL_APOIADORES_BREVO_UTM_SOURCE = "mensal-apoiadores-brevo";
 export const MENSAL_APOIADORES_BREVO_UTM_MEDIUM = "email";
 
 /**
+ * `utm_source`/`utm_medium` da variante KIT do envio extra pra apoiadores
+ * (#7633) — 3º canal da MESMA audiência (Mantenedor/Patrono) e do MESMO
+ * conteúdo (`draft.md` do ciclo). Beehiiv (`mensal-beehiiv`) e Brevo
+ * (`mensal-apoiadores-brevo`) precederam este, e NENHUM DOS DOIS chegou a
+ * enviar ao vivo: o Beehiiv por bloqueio de plano (#4572), o Brevo porque a
+ * lista dedicada nunca foi populada (`sync-apoio-nivel-brevo.ts --push` nunca
+ * rodou) e nenhuma campanha saiu de `--dry-run`. O motivo da troca aqui é
+ * outro: `publishing.newsletter.backend` virou `"kit"` (#7388) e a base
+ * inteira migrou (#7386), então manter um 2º ESP vivo só pro envio de
+ * apoiadores é manutenção sem contrapartida.
+ *
+ * `utm_source` PRÓPRIO pelos mesmos 2 motivos das variantes anteriores: não
+ * misturar atribuição com `mensal-clarice` (assinantes Clarice/Brevo reais,
+ * outra audiência) e manter a série histórica de cada canal separável. Nunca
+ * reusar `MENSAL_UTM_SOURCE` nem os dois sources aposentados acima.
+ * Consumido por `APOIADORES_KIT_UTM_PROFILE` em
+ * `scripts/lib/mensal/monthly-apoiadores-kit-render.ts`.
+ */
+export const MENSAL_APOIADORES_KIT_UTM_SOURCE = "mensal-apoiadores-kit";
+export const MENSAL_APOIADORES_KIT_UTM_MEDIUM = "email";
+
+/**
  * Slug de seção usado no sufixo do wordmark (`wordmark-{secao}`): minúsculo,
  * sem acento, `[a-z0-9-]`, ≤32 chars. Nunca lança — entrada vazia/ilegível cai
  * em `geral`, que mantém o funil mensurável em vez de emitir um campaign quebrado.
@@ -171,6 +193,18 @@ export function tagHourCellUtm(html: string, hourCell: string): string {
 export function buildMensalApoiadoresBrevoCampaign(ciclo: string, posicao: string): string {
   const p = slugifySecao(posicao);
   return `${MENSAL_APOIADORES_BREVO_UTM_SOURCE}-${ciclo}-${p}`;
+}
+
+/**
+ * Compõe o `utm_campaign` da variante Kit do envio extra pra apoiadores
+ * (#7633): `mensal-apoiadores-kit-{ciclo}-{posicao}` — mesmo padrão das
+ * variantes anteriores, só o `utm_source` muda.
+ *
+ * @pure
+ */
+export function buildMensalApoiadoresKitCampaign(ciclo: string, posicao: string): string {
+  const p = slugifySecao(posicao);
+  return `${MENSAL_APOIADORES_KIT_UTM_SOURCE}-${ciclo}-${p}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -830,7 +864,26 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "sucessor do canal Beehiiv ('mensal-beehiiv' acima, aposentado sem nunca ter enviado ao " +
       "vivo): mesmo conteúdo/posições/audiência do #4482, canal trocado por bloqueio de plano da " +
       "Beehiiv. `utm_source` próprio pra não misturar atribuição com 'mensal-clarice' " +
-      "(assinantes Clarice reais) nem com o 'mensal-beehiiv' aposentado.",
+      "(assinantes Clarice reais) nem com o 'mensal-beehiiv' aposentado. " +
+      "SUPERSEDIDO pelo canal Kit ('mensal-apoiadores-kit' abaixo, #7633) — como o " +
+      "'mensal-beehiiv' antes dele, este canal NUNCA enviou ao vivo (a lista Brevo dedicada " +
+      "nunca foi populada e nenhuma campanha saiu de --dry-run), então não há série histórica " +
+      "de cliques pra preservar; mantido no registry por rastreabilidade.",
+    status: "aposentado",
+  },
+  {
+    id: "mensal-apoiadores-kit",
+    label: "Digest mensal (Kit, apoiadores)",
+    source: MENSAL_APOIADORES_KIT_UTM_SOURCE,
+    medium: MENSAL_APOIADORES_KIT_UTM_MEDIUM,
+    campaignPattern: `${MENSAL_APOIADORES_KIT_UTM_SOURCE}-{ciclo}-{posicao}`,
+    originFile: "scripts/lib/mensal/monthly-apoiadores-kit-render.ts",
+    description:
+      "Envio EXTRA do digest mensal pra apoiadores Mantenedor/Patrono via Kit (#7633) — 3º canal " +
+      "da mesma audiência/conteúdo, sucessor de 'mensal-apoiadores-brevo' (e este, do " +
+      "'mensal-beehiiv'). Motivo da troca, diferente das anteriores: o backend da newsletter " +
+      "virou \"kit\" (#7388) e a base inteira migrou (#7386) — manter um 2º ESP vivo só pra este " +
+      "envio virou manutenção sem contrapartida. `utm_source` próprio pelo mesmo motivo de sempre.",
     status: "ativo",
   },
   {

@@ -87,6 +87,37 @@ export interface ApoiadoresState {
    * duplicados na Brevo, sem essa trava).
    */
   brevoCampaignId: number | null;
+  /**
+   * Id do broadcast Kit real criado por `scripts/publish-monthly-apoiadores-kit.ts`
+   * (Passo 2 do canal ATUAL, #7633) — `null` enquanto nenhum broadcast Kit foi
+   * criado pra este ciclo (inclui todo state legado dos fluxos Beehiiv/Brevo,
+   * que nunca setavam este campo). Guard de idempotência do Passo 2 Kit
+   * (`decidePublishKitAction`), gêmeo do `brevoCampaignId` acima.
+   *
+   * Os dois campos coexistem de propósito em vez de um campo genérico
+   * `campaignId`: durante a transição um mesmo ciclo pode ter registro dos
+   * dois canais, e colapsá-los faria o guard de um canal bloquear o outro (ou,
+   * pior, um `--force` num canal apagar o rastro do rascunho órfão do outro).
+   * Quando `brevo_apoiadores` for aposentado de vez (depois do 1º envio Kit
+   * real, ver #7633), o campo Brevo pode virar só leitura de histórico.
+   */
+  kitBroadcastId: number | null;
+  /**
+   * Resultado da RELEITURA pós-criação do broadcast Kit (#7633, achado do
+   * silent-failure-hunter): `true` = `GET /v4/broadcasts/{id}` devolveu um
+   * `subscriber_filter` igual ao enviado; `false` = divergiu (a API aceitou
+   * 2xx sem aplicar o filtro certo — broadcast criado com audiência ERRADA,
+   * possivelmente a base inteira); `null` = não confirmável (a releitura
+   * falhou, ou não ecoou o campo) ou o broadcast nem foi criado por este
+   * canal.
+   *
+   * Existe porque o 2xx da criação não é prova de que o filtro pegou —
+   * mesma disciplina de `kit-diaria-stage5-dispatch.ts` (#6582), o canal
+   * irmão de mesmo perfil de risco. `false` é registro de INCIDENTE, não
+   * estado normal: significa que existe um rascunho no Kit cuja audiência
+   * precisa ser conferida à mão antes de qualquer disparo.
+   */
+  kitAudienceVerified: boolean | null;
 }
 
 /** Nome do arquivo de estado, sob `_internal/` do ciclo — mesma convenção de `05-published.json`/`06-social-published.json`. */
@@ -136,6 +167,8 @@ export function readApoiadoresState(monthlyDir: string): ApoiadoresState | null 
       subject: typeof parsed.subject === "string" ? parsed.subject : "",
       segments: Array.isArray(parsed.segments) ? parsed.segments.filter((s): s is string => typeof s === "string") : [],
       brevoCampaignId: typeof parsed.brevoCampaignId === "number" ? parsed.brevoCampaignId : null,
+      kitBroadcastId: typeof parsed.kitBroadcastId === "number" ? parsed.kitBroadcastId : null,
+      kitAudienceVerified: typeof parsed.kitAudienceVerified === "boolean" ? parsed.kitAudienceVerified : null,
     };
   } catch (e) {
     warn(`não pôde ser lido/parseado como JSON (${(e as Error).message})`);
@@ -193,22 +226,23 @@ export function decidePrepareAction(state: ApoiadoresState | null, force: boolea
  * pra travar esse contrato com teste, em vez de confiar em revisão visual da
  * linha inline no `main()`.
  *
- * `previousBrevoCampaignId` (#4572/#4593) é uma exceção deliberada ao "não
- * recebe o state anterior" — hoje a única, mas o motivo abaixo é específico
- * dela, não uma regra geral; se um 3º campo precisar do mesmo tratamento no
- * futuro, avalie-o pelo mesmo critério (é um FATO monotônico, não um valor
- * derivado do `status`?) em vez de assumir que "já existe uma exceção,
- * então tudo bem". Passo 1 (este `prepare`, fluxo Beehiiv legado) e Passo 2
- * (`publish-monthly-apoiadores-brevo.ts`, cria a campanha Brevo real)
- * escrevem no MESMO state file — sem repassar esse campo, rodar o Passo 1
- * depois do Passo 2 apagaria o registro de que já existe uma campanha Brevo
- * criada pro ciclo, reabrindo a janela do "Gap conhecido" do SKILL.md (2
- * rascunhos duplicados na Brevo). Diferente de `sentAt` (que É derivado do
- * `status` e por isso pode ficar contraditório numa transição), este campo
- * é passado por VALOR, nunca derivado do `status`/`sentAt` deste `prepare`
- * — não há transição interna que o torne inconsistente, só registra um fato
- * ("essa campanha Brevo já existe") que continua verdadeiro independente do
- * que o Passo 1 faz.
+ * `previousChannelIds` (#4572/#4593 pro Brevo, #7633 pro Kit) é a exceção
+ * deliberada ao "não recebe o state anterior" — e o critério pra entrar nela
+ * é específico, não "já existe exceção, então tudo bem": só FATO MONOTÔNICO,
+ * nunca valor derivado do `status`. Passo 1 (este `prepare`) e Passo 2
+ * (`publish-monthly-apoiadores-kit.ts`, ou o `-brevo.ts` legado) escrevem no
+ * MESMO state file — sem repassar esses ids, rodar o Passo 1 depois do Passo
+ * 2 apagaria o registro de que já existe campanha/broadcast criado pro ciclo,
+ * reabrindo a janela do "Gap conhecido" do SKILL.md (2 rascunhos duplicados
+ * no ESP). Diferente de `sentAt` (que É derivado do `status` e por isso pode
+ * ficar contraditório numa transição), estes campos são passados por VALOR:
+ * registram um fato ("esse rascunho já existe") que continua verdadeiro
+ * independente do que o Passo 1 faz.
+ *
+ * #7633: o parâmetro virou OBJETO (era o número solto `previousBrevoCampaignId`)
+ * quando o 2º id apareceu — dois `number | null` posicionais seguidos são
+ * exatamente a assinatura em que trocar a ordem por engano compila e grava o
+ * id do canal errado, num campo cuja função é justamente impedir duplicata.
  */
 export function buildPreparedState(
   cycle: string,
@@ -216,7 +250,11 @@ export function buildPreparedState(
   htmlPath: string,
   subject: string,
   segments: readonly string[],
-  previousBrevoCampaignId: number | null = null,
+  previousChannelIds: {
+    brevoCampaignId?: number | null;
+    kitBroadcastId?: number | null;
+    kitAudienceVerified?: boolean | null;
+  } = {},
 ): ApoiadoresState {
   return {
     cycle,
@@ -226,7 +264,12 @@ export function buildPreparedState(
     htmlPath,
     subject,
     segments: [...segments],
-    brevoCampaignId: previousBrevoCampaignId,
+    brevoCampaignId: previousChannelIds.brevoCampaignId ?? null,
+    kitBroadcastId: previousChannelIds.kitBroadcastId ?? null,
+    // Fato do broadcast que já existe, não deste `prepare` — nunca "melhora"
+    // sozinho: um re-prepare não re-verifica audiência nenhuma, então
+    // sobrescrever um `false` aqui apagaria o registro de um incidente real.
+    kitAudienceVerified: previousChannelIds.kitAudienceVerified ?? null,
   };
 }
 
@@ -366,5 +409,89 @@ export function buildApoiadoresBrevoPublishedState(
     subject,
     segments: previous?.segments ?? [],
     brevoCampaignId,
+    // #7633: preserva o id do OUTRO canal — mesmo motivo de `buildPreparedState`
+    // repassar os ids (fato monotônico), e o único jeito de o rascunho Kit de um
+    // ciclo não sumir do registro se alguém rodar o publisher Brevo legado depois.
+    kitBroadcastId: previous?.kitBroadcastId ?? null,
+    kitAudienceVerified: previous?.kitAudienceVerified ?? null,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// #7633 — mesmos 2 guards, canal Kit (`publish-monthly-apoiadores-kit.ts`).
+// Gêmeos deliberados dos de Brevo acima em vez de uma função genérica
+// parametrizada pelo canal: as mensagens de bloqueio citam o painel e o
+// vocabulário certos ("broadcast"/"Broadcasts" no Kit, "campanha"/"Drafts" na
+// Brevo), e é justamente a mensagem que o operador lê pra decidir o que fazer.
+// ─────────────────────────────────────────────────────────────────────────
+
+export type PublishKitDecision = { action: "create" } | { action: "blocked"; reason: string };
+
+/**
+ * Pura/testável: decide se `publish-monthly-apoiadores-kit.ts` (Passo 2) pode
+ * criar um broadcast Kit novo pra este ciclo. Mesmos 2 motivos de bloqueio de
+ * `decidePublishBrevoAction`, lidos do campo do PRÓPRIO canal:
+ *
+ *   1. `status === "sent"` — ciclo já confirmado como enviado (`--mark-sent`).
+ *   2. `kitBroadcastId != null` — já existe broadcast criado pra este ciclo.
+ *
+ * `brevoCampaignId` de um ciclo antigo NÃO bloqueia aqui, de propósito: um
+ * rascunho órfão no ESP anterior (que nunca enviou nada, #7633) não é motivo
+ * pra impedir o envio real pelo canal atual.
+ *
+ * `force: true` ignora os dois.
+ */
+export function decidePublishKitAction(state: ApoiadoresState | null, force: boolean): PublishKitDecision {
+  if (force) return { action: "create" };
+  if (state?.status === "sent") {
+    return {
+      action: "blocked",
+      reason:
+        `Ciclo ${state.cycle} já foi marcado como ENVIADO pros apoiadores em ${state.sentAt}. ` +
+        "Criar um novo broadcast Kit pra um ciclo já confirmado como enviado é bloqueado por padrão " +
+        "(mesmo dedup do Passo 1). Use --force se realmente precisa (ex: reenviar uma correção).",
+    };
+  }
+  if (state?.kitBroadcastId != null) {
+    return {
+      action: "blocked",
+      reason:
+        `Já existe um broadcast Kit criado pro ciclo ${state.cycle} (id ${state.kitBroadcastId}, criado em ` +
+        `${state.preparedAt}) — rodar de novo sem --force criaria um 2º rascunho duplicado no Kit. Confira o ` +
+        "painel do Kit (Broadcasts → Drafts); use --force se realmente precisa criar outro.",
+    };
+  }
+  return { action: "create" };
+}
+
+/**
+ * Pura/testável: monta o `ApoiadoresState` gravado depois do Passo 2 Kit criar
+ * o broadcast com sucesso. Mesma filosofia de `buildApoiadoresBrevoPublishedState`
+ * (nunca herdar `sentAt`; preservar `segments` e o id do outro canal).
+ */
+export function buildApoiadoresKitPublishedState(
+  previous: ApoiadoresState | null,
+  cycle: string,
+  preparedAt: string,
+  htmlPath: string,
+  subject: string,
+  kitBroadcastId: number,
+  /** Resultado da releitura pós-criação (#7633) — ver `ApoiadoresState.kitAudienceVerified`.
+   *  Default `null` ("não confirmável") em vez de `true`: um caller que
+   *  esquecer de passar o resultado nunca deve produzir um registro que
+   *  AFIRMA audiência verificada sem ninguém ter verificado nada. */
+  kitAudienceVerified: boolean | null = null,
+): ApoiadoresState {
+  return {
+    cycle,
+    status: "draft_prepared",
+    preparedAt,
+    sentAt: null,
+    htmlPath,
+    subject,
+    segments: previous?.segments ?? [],
+    brevoCampaignId: previous?.brevoCampaignId ?? null,
+    kitBroadcastId,
+    kitAudienceVerified,
   };
 }

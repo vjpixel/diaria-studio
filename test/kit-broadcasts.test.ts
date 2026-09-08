@@ -15,6 +15,7 @@ import {
   listTags,
   createTag,
   tagSubscriber,
+  untagSubscriber,
   listSubscriberTags,
   resolveTestSendTagId,
   buildTestSendFilter,
@@ -154,6 +155,28 @@ describe("tags", () => {
       () => tagSubscriber(5, 10, TEST_CONFIG),
     );
     assert.match(capturedUrl, /\/tags\/5\/subscribers\/10$/);
+  });
+
+  it("untagSubscriber DELETE /tags/:tagId/subscribers/:subscriberId (#7633)", async () => {
+    // Contrato barato mas não redundante: `tagSubscriber` e `untagSubscriber`
+    // batem na MESMA URL e diferem só pelo verbo, então uma troca de método
+    // num refactor (POST no lugar de DELETE, ou PATCH/PUT "equivalentes")
+    // continuaria respondendo 2xx sem remover nada — exatamente a armadilha
+    // que a docstring do módulo documenta pro DELETE de tag do Kit.
+    let capturedUrl = "";
+    let capturedMethod = "";
+    await withMockFetch(
+      (async (url: string, init?: RequestInit) => {
+        capturedUrl = url;
+        capturedMethod = String(init?.method ?? "GET");
+        // 204 real não carrega corpo — `new Response(body, {status:204})`
+        // lança no undici, então o mock precisa devolver corpo nulo.
+        return new Response(null, { status: 204 });
+      }) as typeof fetch,
+      () => untagSubscriber(5, 10, TEST_CONFIG),
+    );
+    assert.match(capturedUrl, /\/tags\/5\/subscribers\/10$/);
+    assert.equal(capturedMethod, "DELETE");
   });
 });
 

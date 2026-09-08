@@ -685,14 +685,23 @@ export function classify403Reason(sig: string): Vote403Reason {
  * `brand=clarice`); `mensal-apoiadores-brevo` (#4593) é o SUCESSOR de
  * `mensal-beehiiv` — mesma audiência (apoiadores Mantenedor/Patrono), canal
  * trocado de Beehiiv pra Brevo porque a Beehiiv bloqueia "Include and
- * exclude segments" atrás do plano Scale (#4572). `mensal-beehiiv` nunca
- * chegou a enviar ao vivo (fica no tipo por histórico/rastreabilidade, sem
- * uso ativo). Cada marca tem ranking, gate de edições e apelidos
+ * exclude segments" atrás do plano Scale (#4572); `mensal-apoiadores-kit`
+ * (#7633) sucede o Brevo pelo mesmo motivo que o resto do projeto migrou —
+ * backend da newsletter em "kit" (#7388), base inteira já lá (#7386). Nem
+ * `mensal-beehiiv` nem `mensal-apoiadores-brevo` chegaram a enviar ao vivo
+ * (ficam no tipo por histórico/rastreabilidade, sem uso ativo). Cada marca
+ * tem ranking, gate de edições e apelidos
  * isolados (mecânica #1905 — um brand novo entra de graça na isolação, ver
  * `brandKvPrefix`/`parseBrandParam` abaixo, derivados de
  * `Object.keys(BRAND_INFO)`).
  */
-export type Brand = "diaria" | "clarice" | "web" | "mensal-beehiiv" | "mensal-apoiadores-brevo";
+export type Brand =
+  | "diaria"
+  | "clarice"
+  | "web"
+  | "mensal-beehiiv"
+  | "mensal-apoiadores-brevo"
+  | "mensal-apoiadores-kit";
 
 /**
  * #2018: leaderboardPeriod — período canônico do leaderboard por brand.
@@ -742,6 +751,15 @@ export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderbo
   // OBRIGATÓRIO pelo mesmo motivo documentado acima pra "mensal-beehiiv" —
   // sem isso `vote.ts` rejeita edição em formato de ciclo com 400 (#4435).
   "mensal-apoiadores-brevo": { name: "diar.ia.br", siteUrl: "https://diar.ia.br", leaderboardPeriod: "year" },
+  // #7633: sucessor de "mensal-apoiadores-brevo" — mesma audiência, mesma
+  // cadência de edição (ciclo `YYMM-MM`), canal trocado de Brevo pra Kit
+  // (backend da newsletter virou "kit" no #7388 e a base migrou no #7386).
+  // `leaderboardPeriod: "year"` OBRIGATÓRIO pelo mesmo motivo dos 2 acima —
+  // sem isso `vote.ts` rejeita edição em formato de ciclo com 400 (#4435).
+  // Diferente dos antecessores, este canal deve de fato enviar: os dois
+  // anteriores morreram antes do 1º disparo, então este é o primeiro brand
+  // desta audiência que vai receber voto real.
+  "mensal-apoiadores-kit": { name: "diar.ia.br", siteUrl: "https://diar.ia.br", leaderboardPeriod: "year" },
 };
 
 /**

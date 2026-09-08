@@ -723,7 +723,7 @@ Todos em `data/monthly/{ciclo}/` (ex: `data/monthly/2605-06/`):
 - `_internal/04-fact-check.json` — claims verificados (Etapa 4)
 - `_internal/.step-N-done.json` (N=1..5) — checkpoints de conclusão por etapa, mesmo formato do diário (#2795)
 - `_internal/05-published.json` — campanha Brevo criada (Etapa 5)
-- `_internal/apoiadores-brevo-preview.html` + `_internal/beehiiv-apoiadores-state.json` (nome residual do fluxo Beehiiv original, conteúdo channel-agnostic) — variante Brevo pra apoiadores Mantenedor/Patrono (#4482 produto, canal Brevo desde #4572/#4593, opcional, fora da sequência 0-5 — gerados por `/diaria-mensal-apoiadores`, skill separada desde #4521, ver seção "Envio extra Brevo" abaixo)
+- `_internal/apoiadores-kit-preview.html` + `_internal/beehiiv-apoiadores-state.json` (nome residual do fluxo Beehiiv original, conteúdo channel-agnostic) — variante Kit pra apoiadores Mantenedor/Patrono (#4482 produto; canal Kit desde #7633, Brevo entre #4572/#4593 e #7633; opcional, fora da sequência 0-5 — gerados por `/diaria-mensal-apoiadores`, skill separada desde #4521, ver seção do envio extra abaixo)
 
 ## Notas
 
@@ -758,7 +758,7 @@ Para pular a verificação (não recomendado): `clarice-schedule-sends --schedul
 
 ---
 
-## Envio extra Brevo — apoiadores Mantenedor/Patrono (#4482 produto, canal Brevo #4572/#4593, skill própria desde #4521)
+## Envio extra Kit — apoiadores Mantenedor/Patrono (#4482 produto, canal Kit desde #7633, skill própria desde #4521)
 
 Canal SEPARADO do envio Clarice/Brevo acima (lista Brevo dedicada, não a
 `brevo_monthly` do envio canônico) — mesmo `draft.md`, audiência e
@@ -772,17 +772,26 @@ ciclo 0-5 acima):
 ```
 
 Ver `.claude/skills/diaria-mensal-apoiadores/SKILL.md` para o fluxo completo
-(render via `scripts/lib/mensal/monthly-apoiadores-brevo-render.ts` com UTM
-próprio `APOIADORES_BREVO_UTM_PROFILE`, publicação via
-`scripts/publish-monthly-apoiadores-brevo.ts` — cria a campanha Brevo real,
+(render via `scripts/lib/mensal/monthly-apoiadores-kit-render.ts` com UTM
+próprio `APOIADORES_KIT_UTM_PROFILE`, publicação via
+`scripts/publish-monthly-apoiadores-kit.ts` — cria o broadcast Kit real,
 sempre como rascunho —, idempotência/dedup do envio via
 `scripts/lib/mensal/monthly-apoiadores-state.ts`, e o passo-a-passo de
-publicação manual). Audiência = lista Brevo dedicada (`platform.config.json`
-→ `brevo_apoiadores.list_id`), convergida com quem tem nível Mantenedor/
-Patrono por `scripts/sync-apoio-nivel-brevo.ts`. O canal original era
-Beehiiv, mas o mecanismo de audiência multi-segmento ("Include and exclude
-segments") ficou bloqueado atrás do plano Scale (workspace é Launch/free,
-confirmado ao vivo no #4572/260804). **#7121 (260902): `scripts/render-monthly-beehiiv.ts`
+publicação manual). **#7633 (260908): canal migrado de Brevo pra Kit** — o
+backend da newsletter virou `"kit"` (#7388) e a base inteira migrou (#7386),
+então manter um 2º ESP vivo só pra este envio era manutenção sem
+contrapartida; nada se perdeu porque a Brevo nunca chegou a enviar (lista
+dedicada jamais populada, nenhuma campanha fora de `--dry-run`). Audiência =
+TAG dedicada (`platform.config.json` → `kit_apoiadores.audience_tag`),
+convergida com quem tem nível Mantenedor/Patrono por
+`scripts/sync-apoio-mensal-tag-kit.ts` — **tag e não segmento** porque a
+membresia de segmento do Kit não é legível pela API (`segment_id` é ignorado
+em silêncio nas leituras), então segmento seria enviar sem poder conferir a
+audiência. Os scripts `*-apoiadores-brevo.ts` e a chave `brevo_apoiadores`
+seguem no repo até o 1º envio Kit real. O canal ORIGINAL era Beehiiv, mas o
+mecanismo de audiência multi-segmento ("Include and exclude segments") ficou
+bloqueado atrás do plano Scale (workspace é Launch/free, confirmado ao vivo
+no #4572/260804). **#7121 (260902): `scripts/render-monthly-beehiiv.ts`
 foi removido** (sem consumidor de runtime — `readPublicImages`/`EXPECTED_IMAGE_KEYS`/
 `missingImageKeys`, canal-agnósticas, migraram pra `scripts/render-monthly-apoiadores-brevo.ts`);
 `scripts/lib/mensal/monthly-draft-filter.ts` continua no repo, mas perdeu

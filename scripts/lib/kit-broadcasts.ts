@@ -195,6 +195,23 @@ export async function tagSubscriber(tagId: number, subscriberId: number, config?
 }
 
 /**
+ * Remove UMA tag de UM assinante — `DELETE /v4/tags/{tagId}/subscribers/{subscriberId}`
+ * (#7633, primeiro consumidor: `sync-apoio-mensal-tag-kit.ts`).
+ *
+ * ⚠️ **O 2xx não é prova de remoção.** `DELETE /v4/tags/{id}` (a tag inteira,
+ * rota diferente desta) responde 204 sem remover nada — armadilha já
+ * documentada em `kit-client.ts`. Não há motivo pra assumir que ESTA rota se
+ * comporta melhor sem medir, então todo caller deve confirmar por releitura
+ * de `listSubscriberTags` (direção assinante→tags, a única sem atraso de
+ * propagação observado) antes de tratar a remoção como feita — é o que o
+ * `sync-apoio-mensal-tag-kit.ts` faz, mesma disciplina de
+ * `applyApoioTagEntryKit`.
+ */
+export async function untagSubscriber(tagId: number, subscriberId: number, config?: KitConfig): Promise<void> {
+  await kitFetch<undefined>(`/tags/${tagId}/subscribers/${subscriberId}`, { method: "DELETE", config });
+}
+
+/**
  * `GET /v4/subscribers/{id}/tags` — lista as tags de UM assinante.
  *
  * Único caminho de verificação pós-`tagSubscriber` sem o atraso de
