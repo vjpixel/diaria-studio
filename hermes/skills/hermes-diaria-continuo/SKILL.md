@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.15
+version: 0.5.16
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -81,10 +81,19 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
   mergeia PR de outro repo, por construção. Sem maquinaria de review
   equivalente no fork (`pr-create-review.mjs` é deste checkout), PR do
   fork fica sempre aberta aguardando review humano/externo.
-- **Item 7 (2 trackers) RESIDUAL** — issues do fork `vjpixel/hermes#6/#8/#9`
-  como 2ª fila não implementado: exige decisão de design (ordem de
-  prioridade entre filas) que a issue não especifica. `classifyExecTrack`
-  segue única fonte pras issues deste repo.
+- **Duas filas, um relatório (#6817 item 7).** `classifyExecTrack` segue a
+  ÚNICA fonte pras issues DESTE repo — não é tocado. O fork `vjpixel/hermes`
+  é lido como **2ª fila**, via `npx tsx scripts/list-fork-issues.ts` (`gh
+  issue list --repo vjpixel/hermes --state open`) — a ordem É a
+  proposta mínima da issue ("2ª fila"): `shouldConsultForkQueue`
+  (`scripts/lib/hermes-fork-issue-queue.ts`) só devolve `true` quando a
+  fila primária não tem mais trabalho elegível no ciclo — nenhuma decisão
+  de intercalação nova precisa do editor. Toda referência a issue do fork
+  em relatório usa `vjpixel/hermes#N` (`formatForkIssueRef`), nunca `#N`
+  cru — `npx tsx scripts/list-fork-issues.ts --report --primary-count N`
+  já produz as linhas prontas. Falha de `gh` (rede, auth, fork
+  inacessível) é fail-soft — relatório, nunca gate: fila secundária
+  reportada vazia, ciclo segue.
 - Nunca tocar `data/editions/` de edição em curso, credenciais, ou disparar
   publicação. Fila TÉCNICA (issues/PRs), nunca fluxo editorial.
 - Env vars `ANTHROPIC_*` NUNCA no ambiente global — só dentro do wrapper
