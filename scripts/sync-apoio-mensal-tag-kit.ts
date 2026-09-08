@@ -60,6 +60,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
+import { KitApiError } from "./lib/kit-client.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import {
   createTag,
@@ -140,6 +141,27 @@ export function selectDesiredMembers(subs: readonly SelectableKitSubscriber[]): 
 /** I/O: lê a base do Kit e aplica `selectDesiredMembers`. */
 export async function fetchDesiredMembers(config?: KitConfig): Promise<KitTagMember[]> {
   return selectDesiredMembers(await listAllKitSubscribers(config));
+}
+
+/**
+ * Pure: a falha é SISTÊMICA (credencial revogada, rate limit, indisponibilidade
+ * do Kit) e não específica daquele contato? (#7633, achado do
+ * silent-failure-hunter.)
+ *
+ * Sem esta distinção, uma credencial revogada no meio de um `--push` faz o
+ * loop tentar e falhar em CADA um dos N contatos restantes — N chamadas de API
+ * inúteis e um relatório de "N falhas" que esconde a causa única. Quem lê o
+ * log precisa correlacionar as N linhas pra descobrir o que uma linha só já
+ * diria.
+ *
+ * Só olha o status HTTP (`KitApiError.status`), nunca o texto da mensagem:
+ * casar substring de erro é frágil e classificaria errado uma falha de
+ * verificação por releitura (que é semântica, específica do contato, e DEVE
+ * seguir pro próximo).
+ */
+export function isSystemicKitFailure(err: unknown): boolean {
+  if (!(err instanceof KitApiError)) return false;
+  return err.status === 401 || err.status === 403 || err.status === 429 || err.status >= 500;
 }
 
 /** Log do diff, no mesmo formato dos outros syncs de apoio (lista explícita,
@@ -250,38 +272,52 @@ export async function main(rootDir: string = ROOT): Promise<void> {
 
   let applied = 0;
   let failed = 0;
-  for (const email of diff.toAdd) {
-    const member = byEmail.get(email);
-    if (!member) {
-      failed++;
-      log(`FALHA em ${email}: sem id de assinante (não deveria acontecer — e-mail veio da própria leitura).`);
-      continue;
-    }
-    try {
-      await applyAdd(member, tagId, kitConfig);
-      applied++;
-    } catch (e) {
-      failed++;
-      log(`FALHA ao adicionar ${email}: ${(e as Error).message}`);
-    }
-  }
-  for (const email of diff.toRemove) {
-    const member = byEmail.get(email);
-    if (!member) {
-      failed++;
-      log(`FALHA em ${email}: sem id de assinante (não deveria acontecer — e-mail veio da própria leitura).`);
-      continue;
-    }
-    try {
-      await applyRemove(member, tagId, kitConfig);
-      applied++;
-    } catch (e) {
-      failed++;
-      log(`FALHA ao remover ${email}: ${(e as Error).message}`);
-    }
-  }
+  let aborted = false;
 
-  log(`push concluído: ${applied} aplicada(s), ${failed} falha(s).`);
+  // Um verbo só pros dois loops: a única diferença é a mutação e o rótulo, e
+  // blocos espelhados são justamente onde `tagSubscriber`/`untagSubscriber`
+  // trocam de lugar num refactor sem nada acusar.
+  const applyAll = async (
+    emails: readonly string[],
+    verbo: "adicionar" | "remover",
+    apply: (m: KitTagMember) => Promise<void>,
+  ): Promise<void> => {
+    for (const email of emails) {
+      if (aborted) return;
+      const member = byEmail.get(email);
+      if (!member) {
+        failed++;
+        log(`FALHA em ${email}: sem id de assinante (não deveria acontecer — e-mail veio da própria leitura).`);
+        continue;
+      }
+      try {
+        await apply(member);
+        applied++;
+      } catch (e) {
+        failed++;
+        log(`FALHA ao ${verbo} ${email}: ${(e as Error).message}`);
+        if (isSystemicKitFailure(e)) {
+          aborted = true;
+          log(
+            "ABORTANDO o restante do --push: a falha acima é SISTÊMICA (credencial, rate limit ou " +
+              "indisponibilidade do Kit), não específica deste contato — insistir nos demais só gastaria " +
+              "chamadas e produziria um relatório de N falhas escondendo a causa única. Corrija e re-rode: " +
+              "o sync é idempotente, quem já foi aplicado não é reaplicado.",
+          );
+          return;
+        }
+      }
+    }
+  };
+
+  await applyAll(diff.toAdd, "adicionar", (m) => applyAdd(m, tagId, kitConfig));
+  await applyAll(diff.toRemove, "remover", (m) => applyRemove(m, tagId, kitConfig));
+
+  const pendentes = diff.toAdd.length + diff.toRemove.length - applied - failed;
+  log(
+    `push ${aborted ? "ABORTADO" : "concluído"}: ${applied} aplicada(s), ${failed} falha(s)` +
+      (aborted ? `, ${pendentes} não tentada(s).` : "."),
+  );
   if (failed > 0) process.exit(1);
 }
 

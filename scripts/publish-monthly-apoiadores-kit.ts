@@ -22,6 +22,13 @@
  *   4. Cria o broadcast (`POST /v4/broadcasts`) sem `send_at` — rascunho. O
  *      test-send, a conferência visual e o disparo continuam sendo ação
  *      humana no painel do Kit.
+ *   5. **Relê o broadcast e confere o `subscriber_filter` aplicado** — o 2xx
+ *      da criação não é prova de que o filtro pegou, e o erro que passaria
+ *      batido aqui é o pior do domínio (rascunho mirando a base inteira).
+ *      Divergência aborta ALTO, depois de gravar o id no state pra que uma
+ *      reexecução não crie um 2º rascunho por cima do problema; falha de rede
+ *      na releitura é fail-soft (vira `kitAudienceVerified: null` + aviso).
+ *      Mesma disciplina de `kit-diaria-stage5-dispatch.ts` (#6582).
  *
  * ## Duas escolhas de payload que não são detalhe
  *
@@ -76,7 +83,9 @@ import {
   countKitTagMembers,
   buildTagFilter,
   type CreateBroadcastInput,
+  type KitSubscriberFilter,
 } from "./lib/kit-broadcasts.ts";
+import { getBroadcast } from "./lib/kit-client.ts";
 import {
   renderMonthlyApoiadoresKitEmail,
   type RenderedMonthlyApoiadoresKitEmail,
@@ -139,6 +148,14 @@ export interface ApoiadoresKitDeps {
   findTagId: (name: string, config?: KitConfig) => Promise<number | null>;
   countTagMembers: (tagId: number, config?: KitConfig) => Promise<number>;
   createBroadcast: (input: CreateBroadcastInput, config?: KitConfig) => Promise<{ id: number }>;
+  /**
+   * Releitura pós-criação (#7633) — o 2xx da criação NÃO é prova de que o
+   * `subscriber_filter` pegou. Mesmo dep e mesma disciplina de
+   * `kit-diaria-stage5-dispatch.ts` (#6582), o canal irmão de mesmo perfil de
+   * risco. Tipado como `{ subscriber_filter?: unknown }` de propósito: só
+   * este campo importa aqui, e a API pode não ecoá-lo.
+   */
+  getBroadcast: (id: number, config?: KitConfig) => Promise<{ subscriber_filter?: unknown }>;
 }
 
 const defaultDeps: ApoiadoresKitDeps = {
@@ -148,7 +165,43 @@ const defaultDeps: ApoiadoresKitDeps = {
   findTagId: findTagIdByName,
   countTagMembers: countKitTagMembers,
   createBroadcast,
+  getBroadcast,
 };
+
+export type AudienceVerification =
+  | { verified: true }
+  | { verified: false; reason: string }
+  | { verified: null; reason: string };
+
+/**
+ * Pura: compara o `subscriber_filter` relido contra o esperado (#7633, achado
+ * do silent-failure-hunter; espelha `kit-diaria-stage5-dispatch.ts` #6582).
+ *
+ * Três resultados, e a distinção entre os dois últimos importa:
+ *   - `true` — a API ecoou exatamente o filtro enviado.
+ *   - `false` — ecoou algo DIFERENTE: o Kit aceitou 2xx sem aplicar o filtro
+ *     certo, e existe um rascunho com audiência possivelmente ERRADA (no pior
+ *     caso, a base inteira). É incidente, não aviso.
+ *   - `null` — não confirmável: a releitura não trouxe o campo. Não é
+ *     divergência (não há confirmação ao vivo de que `GET /broadcasts/{id}`
+ *     ecoa `subscriber_filter`), mas também não é confirmação — e registrar
+ *     isso como `true` seria afirmar uma verificação que não aconteceu.
+ */
+export function verifyAudienceFilter(rereadFilter: unknown, expected: KitSubscriberFilter): AudienceVerification {
+  if (rereadFilter === undefined) {
+    return {
+      verified: null,
+      reason: "a releitura do broadcast não trouxe 'subscriber_filter' — audiência NÃO confirmada por esta camada.",
+    };
+  }
+  if (JSON.stringify(rereadFilter) === JSON.stringify(expected)) return { verified: true };
+  return {
+    verified: false,
+    reason:
+      `a releitura mostra subscriber_filter DIVERGENTE do enviado — o Kit respondeu 2xx sem aplicar o ` +
+      `filtro certo. Esperado ${JSON.stringify(expected)}, recebido ${JSON.stringify(rereadFilter)}.`,
+  };
+}
 
 export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = defaultDeps): Promise<void> {
   const rootDir = rootDirOverride ?? ROOT;
@@ -237,12 +290,85 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
       "conferência visual e disparo continuam sendo ação manual no painel do Kit.",
   );
 
+  // #7633 (achado do silent-failure-hunter) — o 2xx da criação NÃO é prova de
+  // que o `subscriber_filter` pegou, e aqui o erro que passaria batido é o
+  // pior do domínio: rascunho com a base INTEIRA em vez da tag de apoiadores.
+  // Mesma releitura que `kit-diaria-stage5-dispatch.ts` faz desde o #6582.
+  // Fail-soft na REDE (a releitura é camada adicional; o broadcast já existe
+  // de qualquer jeito), fail-loud na DIVERGÊNCIA.
+  let verification: AudienceVerification;
+  try {
+    const reread = await deps.getBroadcast(created.id, kitConfig);
+    verification = verifyAudienceFilter(reread.subscriber_filter, buildTagFilter(tagId));
+  } catch (e) {
+    verification = { verified: null, reason: `a releitura do broadcast falhou (${(e as Error).message}).` };
+  }
+  if (verification.verified !== true) log(`AVISO: ${verification.reason}`);
+
+  const persistState = (audienceVerified: boolean | null): void => {
+    deps.writeState(
+      dir,
+      buildApoiadoresKitPublishedState(
+        existingState,
+        cycle,
+        new Date().toISOString(),
+        rendered.htmlPath,
+        content.subject,
+        created.id,
+        audienceVerified,
+      ),
+    );
+  };
+
+  if (verification.verified === false) {
+    // O broadcast JÁ EXISTE — gravar o id ANTES de abortar é o que faz a
+    // próxima invocação cair no guard de idempotência em vez de criar um 2º
+    // rascunho por cima de um problema não resolvido (mesma disciplina do
+    // #6693 no canal diário). `kitAudienceVerified: false` deixa o incidente
+    // registrado no arquivo, não só no terminal desta sessão.
+    let persistError: string | undefined;
+    try {
+      persistState(false);
+    } catch (e) {
+      persistError = (e as Error).message;
+    }
+    throw new Error(
+      `AUDIÊNCIA NÃO CONFERE: o broadcast Kit id=${created.id} FOI CRIADO, mas ${verification.reason} ` +
+        "NÃO dispare esse rascunho sem antes conferir a audiência no painel do Kit — no pior caso ele está " +
+        "mirando a base INTEIRA em vez da tag de apoiadores." +
+        (persistError
+          ? ` ADICIONALMENTE, o state local não pôde ser gravado (${persistError}) — o guard de idempotência ` +
+            "NÃO vai reconhecer este broadcast e uma reexecução criaria um 2º rascunho."
+          : " O id ficou gravado no state com kitAudienceVerified:false — uma reexecução é bloqueada pelo guard."),
+    );
+  }
+
   // Mesma janela TOCTOU que o publisher Brevo fecha (#4572 fleet review): o
   // state foi lido ANTES da chamada de rede. Se `--mark-sent` (Passo 3) rodou
   // nesse intervalo, sobrescrever agora apagaria a confirmação de envio do
   // editor. Re-lê e aborta sem escrever nesse caso — não é um lock, é um
   // re-check adequado a um CLI manual de baixa frequência.
   const freshState = deps.readState(dir);
+
+  // #7633 (2º achado do silent-failure-hunter): a corrida simétrica — duas
+  // invocações passam pelo guard de idempotência lendo o MESMO state sem
+  // `kitBroadcastId` e as duas criam um rascunho. Sem este check, o segundo
+  // `writeState` sobrescreveria o id do primeiro em silêncio: um dos dois
+  // rascunhos vira órfão, invisível pro guard, e nada acusa. Não é um lock
+  // (não impede a 2ª criação), é o que garante que a duplicata seja RELATADA.
+  if (
+    freshState?.kitBroadcastId != null &&
+    freshState.kitBroadcastId !== created.id &&
+    existingState?.kitBroadcastId !== freshState.kitBroadcastId
+  ) {
+    throw new Error(
+      `race de idempotência: o broadcast Kit id=${created.id} FOI CRIADO por esta invocação, mas outra ` +
+        `invocação concorrente gravou o id=${freshState.kitBroadcastId} pro ciclo ${cycle} nesse meio-tempo — ` +
+        "existem DOIS rascunhos no Kit. NÃO sobrescrevendo o registro do outro processo; confira o painel " +
+        "(Broadcasts → Drafts), apague o duplicado e ajuste o state à mão.",
+    );
+  }
+
   if (freshState?.status === "sent" && existingState?.status !== "sent") {
     log(
       `ERRO CRÍTICO: o broadcast Kit id=${created.id} FOI CRIADO, mas o ciclo ${cycle} foi marcado como ` +
@@ -257,17 +383,7 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
   }
 
   try {
-    deps.writeState(
-      dir,
-      buildApoiadoresKitPublishedState(
-        existingState,
-        cycle,
-        new Date().toISOString(),
-        rendered.htmlPath,
-        content.subject,
-        created.id,
-      ),
-    );
+    persistState(verification.verified);
   } catch (e) {
     log(
       `ERRO CRÍTICO: o broadcast Kit id=${created.id} FOI CRIADO, mas o registro de idempotência NÃO foi ` +

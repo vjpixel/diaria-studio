@@ -31,6 +31,7 @@ import {
   buildApoiadoresKitBroadcastInput,
   buildApoiadoresKitDescription,
   main,
+  verifyAudienceFilter,
   type ApoiadoresKitDeps,
   type ApoiadoresKitEmailContent,
 } from "../scripts/publish-monthly-apoiadores-kit.ts";
@@ -130,6 +131,8 @@ function makeSpy(overrides: Partial<ApoiadoresKitDeps> = {}, existing: Apoiadore
       created.push(input);
       return { id: 999 };
     },
+    // Default do caminho feliz: a releitura ecoa exatamente o filtro enviado.
+    getBroadcast: async () => ({ subscriber_filter: [{ all: [{ type: "tag", ids: [42] }] }] }),
     ...overrides,
   };
   return { deps, created, written, renderCalls };
@@ -375,6 +378,163 @@ describe("#7633 — main()", () => {
       await assert.rejects(() => main(root, spy.deps), /race de idempotência/);
       assert.equal(spy.created.length, 1, "o broadcast chegou a ser criado — é justamente o cenário do aviso");
       assert.equal(spy.written.length, 0, "o state 'sent' NUNCA pode ser sobrescrito de volta pra draft_prepared");
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── verificação de audiência pós-criação (#7633) ───────────────────────────
+//
+// O 2xx da criação não prova que o `subscriber_filter` pegou. Este bloco é a
+// tradução direta do achado do silent-failure-hunter: sem releitura, um Kit
+// que aceitasse a chamada e ignorasse o filtro produziria um rascunho mirando
+// a base INTEIRA, e o script reportaria sucesso.
+
+describe("#7633 — verifyAudienceFilter", () => {
+  const expected = [{ all: [{ type: "tag" as const, ids: [42] }] }];
+
+  it("filtro relido idêntico -> verified true", () => {
+    assert.deepEqual(verifyAudienceFilter([{ all: [{ type: "tag", ids: [42] }] }], expected), { verified: true });
+  });
+
+  it("filtro relido DIFERENTE -> verified false, com o esperado e o recebido na razão", () => {
+    const r = verifyAudienceFilter([{ all: [{ type: "tag", ids: [7] }] }], expected);
+    assert.equal(r.verified, false);
+    if (r.verified === false) {
+      assert.match(r.reason, /DIVERGENTE/);
+      assert.match(r.reason, /42/);
+      assert.match(r.reason, /7/);
+    }
+  });
+
+  it("filtro VAZIO relido -> verified false (vazio no Kit = base inteira, o pior caso)", () => {
+    const r = verifyAudienceFilter([], expected);
+    assert.equal(r.verified, false);
+  });
+
+  it("campo ausente na releitura -> verified null (não confirmável), nunca true", () => {
+    const r = verifyAudienceFilter(undefined, expected);
+    assert.equal(r.verified, null);
+    if (r.verified === null) assert.match(r.reason, /NÃO confirmada/);
+  });
+});
+
+describe("#7633 — main(): audiência divergente na releitura", () => {
+  afterEach(() => {
+    process.exit = originalExit;
+    process.argv = originalArgv;
+    delete process.env.KIT_API_KEY;
+  });
+
+  it("aborta ALTO, mas grava o kitBroadcastId com kitAudienceVerified:false antes (senão a reexecução duplica)", async () => {
+    const root = mkTmpRoot();
+    const restore = silenceStderr();
+    try {
+      writePlatformConfig(root, "apoio-mensal");
+      process.env.KIT_API_KEY = "fake_key";
+      process.argv = ["node", "publish-monthly-apoiadores-kit.ts", "--cycle", "2607-08"];
+      mockProcessExit();
+
+      const spy = makeSpy({
+        // A API respondeu 2xx na criação, mas aplicou um filtro diferente.
+        getBroadcast: async () => ({ subscriber_filter: [] }),
+      });
+      await assert.rejects(() => main(root, spy.deps), /AUDIÊNCIA NÃO CONFERE/);
+
+      assert.equal(spy.created.length, 1, "o broadcast chegou a ser criado — é o cenário do alerta");
+      assert.equal(spy.written.length, 1, "o id precisa ficar gravado, senão o guard não bloqueia a reexecução");
+      assert.equal(spy.written[0].state.kitBroadcastId, 999);
+      assert.equal(spy.written[0].state.kitAudienceVerified, false);
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("releitura que FALHA (rede) é fail-soft: grava kitAudienceVerified null e não aborta", async () => {
+    const root = mkTmpRoot();
+    const restore = silenceStderr();
+    try {
+      writePlatformConfig(root, "apoio-mensal");
+      process.env.KIT_API_KEY = "fake_key";
+      process.argv = ["node", "publish-monthly-apoiadores-kit.ts", "--cycle", "2607-08"];
+      mockProcessExit();
+
+      const spy = makeSpy({
+        getBroadcast: async () => {
+          throw new Error("ECONNRESET");
+        },
+      });
+      await main(root, spy.deps);
+
+      // O broadcast já existe independente da releitura — derrubar o comando
+      // aqui não desfaria nada e ainda deixaria o operador sem o registro.
+      assert.equal(spy.written.length, 1);
+      assert.equal(spy.written[0].state.kitAudienceVerified, null);
+      assert.equal(spy.written[0].state.kitBroadcastId, 999);
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("caminho feliz grava kitAudienceVerified:true", async () => {
+    const root = mkTmpRoot();
+    const restore = silenceStderr();
+    try {
+      writePlatformConfig(root, "apoio-mensal");
+      process.env.KIT_API_KEY = "fake_key";
+      process.argv = ["node", "publish-monthly-apoiadores-kit.ts", "--cycle", "2607-08"];
+      mockProcessExit();
+
+      const spy = makeSpy();
+      await main(root, spy.deps);
+      assert.equal(spy.written[0].state.kitAudienceVerified, true);
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#7633 — main(): corrida de dois publishers", () => {
+  afterEach(() => {
+    process.exit = originalExit;
+    process.argv = originalArgv;
+    delete process.env.KIT_API_KEY;
+  });
+
+  it("outra invocação gravou um kitBroadcastId diferente durante a criação -> lança e NÃO sobrescreve", async () => {
+    const root = mkTmpRoot();
+    const restore = silenceStderr();
+    try {
+      writePlatformConfig(root, "apoio-mensal");
+      process.env.KIT_API_KEY = "fake_key";
+      process.argv = ["node", "publish-monthly-apoiadores-kit.ts", "--cycle", "2607-08"];
+      mockProcessExit();
+
+      const doOutro: ApoiadoresState = {
+        cycle: "2607-08",
+        status: "draft_prepared",
+        preparedAt: "2026-08-04T10:00:00.000Z",
+        sentAt: null,
+        htmlPath: "/x/y.html",
+        subject: "Assunto",
+        segments: [],
+        brevoCampaignId: null,
+        kitBroadcastId: 555,
+        kitAudienceVerified: true,
+      };
+      let readCount = 0;
+      // 1ª leitura (guard de idempotência) não vê nada; a 2ª (pré-escrita) já
+      // vê o rascunho que o outro processo criou em paralelo.
+      const spy = makeSpy({ readState: () => (readCount++ === 0 ? null : doOutro) });
+
+      await assert.rejects(() => main(root, spy.deps), /race de idempotência/);
+      assert.equal(spy.created.length, 1, "os dois processos criaram rascunho — é justamente o que o erro relata");
+      assert.equal(spy.written.length, 0, "não pode sobrescrever o id do outro processo em silêncio");
     } finally {
       restore();
       rmSync(root, { recursive: true, force: true });

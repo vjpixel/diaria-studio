@@ -102,6 +102,22 @@ export interface ApoiadoresState {
    * real, ver #7633), o campo Brevo pode virar só leitura de histórico.
    */
   kitBroadcastId: number | null;
+  /**
+   * Resultado da RELEITURA pós-criação do broadcast Kit (#7633, achado do
+   * silent-failure-hunter): `true` = `GET /v4/broadcasts/{id}` devolveu um
+   * `subscriber_filter` igual ao enviado; `false` = divergiu (a API aceitou
+   * 2xx sem aplicar o filtro certo — broadcast criado com audiência ERRADA,
+   * possivelmente a base inteira); `null` = não confirmável (a releitura
+   * falhou, ou não ecoou o campo) ou o broadcast nem foi criado por este
+   * canal.
+   *
+   * Existe porque o 2xx da criação não é prova de que o filtro pegou —
+   * mesma disciplina de `kit-diaria-stage5-dispatch.ts` (#6582), o canal
+   * irmão de mesmo perfil de risco. `false` é registro de INCIDENTE, não
+   * estado normal: significa que existe um rascunho no Kit cuja audiência
+   * precisa ser conferida à mão antes de qualquer disparo.
+   */
+  kitAudienceVerified: boolean | null;
 }
 
 /** Nome do arquivo de estado, sob `_internal/` do ciclo — mesma convenção de `05-published.json`/`06-social-published.json`. */
@@ -152,6 +168,7 @@ export function readApoiadoresState(monthlyDir: string): ApoiadoresState | null 
       segments: Array.isArray(parsed.segments) ? parsed.segments.filter((s): s is string => typeof s === "string") : [],
       brevoCampaignId: typeof parsed.brevoCampaignId === "number" ? parsed.brevoCampaignId : null,
       kitBroadcastId: typeof parsed.kitBroadcastId === "number" ? parsed.kitBroadcastId : null,
+      kitAudienceVerified: typeof parsed.kitAudienceVerified === "boolean" ? parsed.kitAudienceVerified : null,
     };
   } catch (e) {
     warn(`não pôde ser lido/parseado como JSON (${(e as Error).message})`);
@@ -233,7 +250,11 @@ export function buildPreparedState(
   htmlPath: string,
   subject: string,
   segments: readonly string[],
-  previousChannelIds: { brevoCampaignId?: number | null; kitBroadcastId?: number | null } = {},
+  previousChannelIds: {
+    brevoCampaignId?: number | null;
+    kitBroadcastId?: number | null;
+    kitAudienceVerified?: boolean | null;
+  } = {},
 ): ApoiadoresState {
   return {
     cycle,
@@ -245,6 +266,10 @@ export function buildPreparedState(
     segments: [...segments],
     brevoCampaignId: previousChannelIds.brevoCampaignId ?? null,
     kitBroadcastId: previousChannelIds.kitBroadcastId ?? null,
+    // Fato do broadcast que já existe, não deste `prepare` — nunca "melhora"
+    // sozinho: um re-prepare não re-verifica audiência nenhuma, então
+    // sobrescrever um `false` aqui apagaria o registro de um incidente real.
+    kitAudienceVerified: previousChannelIds.kitAudienceVerified ?? null,
   };
 }
 
@@ -388,6 +413,7 @@ export function buildApoiadoresBrevoPublishedState(
     // repassar os ids (fato monotônico), e o único jeito de o rascunho Kit de um
     // ciclo não sumir do registro se alguém rodar o publisher Brevo legado depois.
     kitBroadcastId: previous?.kitBroadcastId ?? null,
+    kitAudienceVerified: previous?.kitAudienceVerified ?? null,
   };
 }
 
@@ -450,6 +476,11 @@ export function buildApoiadoresKitPublishedState(
   htmlPath: string,
   subject: string,
   kitBroadcastId: number,
+  /** Resultado da releitura pós-criação (#7633) — ver `ApoiadoresState.kitAudienceVerified`.
+   *  Default `null` ("não confirmável") em vez de `true`: um caller que
+   *  esquecer de passar o resultado nunca deve produzir um registro que
+   *  AFIRMA audiência verificada sem ninguém ter verificado nada. */
+  kitAudienceVerified: boolean | null = null,
 ): ApoiadoresState {
   return {
     cycle,
@@ -461,5 +492,6 @@ export function buildApoiadoresKitPublishedState(
     segments: previous?.segments ?? [],
     brevoCampaignId: previous?.brevoCampaignId ?? null,
     kitBroadcastId,
+    kitAudienceVerified,
   };
 }

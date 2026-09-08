@@ -104,7 +104,10 @@ npx tsx scripts/sync-apoio-mensal-tag-kit.ts --push
 Cria a tag se ainda não existir, adiciona quem virou Mantenedor/Patrono,
 remove quem deixou de ser. Cada mutação é confirmada por releitura (o `2xx` do
 Kit não é prova de escrita). Remoções acima de 30% da tag bloqueiam o `--push`
-inteiro — `--force-blast-radius` destrava, sempre logado.
+inteiro — `--force-blast-radius` destrava, sempre logado. Falha SISTÊMICA
+(credencial, rate limit, 5xx) aborta o resto do `--push` na hora, em vez de
+repetir o mesmo erro em cada contato restante e produzir um relatório de N
+falhas escondendo a causa única — re-rodar é seguro, o sync é idempotente.
 
 Rodar `sync-apoio-nivel-kit.ts --push` ANTES, se o `apoio_nivel` do ciclo
 ainda não estiver atualizado: este sync só projeta o que aquele decidiu.
@@ -143,6 +146,14 @@ npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE
   `send_at: null` e **`public: false`** — sem `public_url`, pra recompensa de
   apoiador não virar página pública (a anual e a diária usam `public: true`
   justamente pelo motivo inverso).
+- **Depois de criar, relê o broadcast e confere o `subscriber_filter` que a
+  API de fato aplicou** — o 2xx da criação não é prova de que o filtro pegou,
+  e o erro que passaria batido aqui é o pior possível (rascunho mirando a base
+  inteira). Divergência aborta ALTO, gravando antes o `kitBroadcastId` com
+  `kitAudienceVerified: false` pra que uma reexecução não crie um 2º rascunho
+  por cima do problema. Falha de REDE na releitura é fail-soft: vira
+  `kitAudienceVerified: null` + aviso, porque o broadcast já existe de todo
+  jeito. Mesma disciplina de `kit-diaria-stage5-dispatch.ts` (#6582).
 - Aborta (exit 2) se: `kit_apoiadores.audience_tag` ausente, `KIT_API_KEY`
   ausente, tag inexistente, tag vazia, ou guard de idempotência.
 - **Idempotência:** fora de `--dry-run`, lê o state antes de criar e recusa um
@@ -172,9 +183,13 @@ padrão; `--force` cobre o caso legítimo "preciso reenviar uma correção".
 - `data/monthly/{ciclo}/_internal/apoiadores-kit-preview.html` — HTML do
   broadcast (UTM `mensal-apoiadores-kit`).
 - `data/monthly/{ciclo}/_internal/beehiiv-apoiadores-state.json` — estado de
-  idempotência (`draft_prepared` | `sent`, timestamps, `kitBroadcastId`, e o
-  `brevoCampaignId` legado quando existir). Os dois ids coexistem de propósito:
-  o guard de cada canal lê o campo do seu canal.
+  idempotência (`draft_prepared` | `sent`, timestamps, `kitBroadcastId`,
+  `kitAudienceVerified`, e o `brevoCampaignId` legado quando existir). Os dois
+  ids coexistem de propósito: o guard de cada canal lê o campo do seu canal.
+  **`kitAudienceVerified: false` é registro de INCIDENTE** — existe um rascunho
+  no Kit cuja audiência divergiu do esperado e precisa ser conferida à mão
+  antes de qualquer disparo; `null` significa "não confirmável" (a releitura
+  falhou ou a API não ecoou o campo), não "ok".
 - Broadcast criado como rascunho na conta Kit (id no stdout), visível em
   `Broadcasts → Drafts`.
 

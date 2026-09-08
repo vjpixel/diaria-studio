@@ -63,6 +63,7 @@ const PREPARED: ApoiadoresState = {
   segments: ["Apoio — Mantenedor", "Apoio — Patrono"],
   brevoCampaignId: null,
   kitBroadcastId: null,
+  kitAudienceVerified: null,
 };
 
 const SENT: ApoiadoresState = {
@@ -234,6 +235,7 @@ test("buildPreparedState: preserva htmlPath/subject/segments/preparedAt exatamen
     segments: ["Apoio — Mantenedor", "Apoio — Patrono"],
     brevoCampaignId: null,
     kitBroadcastId: null,
+    kitAudienceVerified: null,
   });
 });
 
@@ -320,6 +322,7 @@ test("buildApoiadoresBrevoPublishedState: state novo (sem previous) -> status dr
     segments: [],
     brevoCampaignId: 555,
     kitBroadcastId: null,
+    kitAudienceVerified: null,
   });
 });
 
@@ -403,6 +406,7 @@ test("buildApoiadoresKitPublishedState: state novo -> draft_prepared, sentAt nul
     segments: [],
     brevoCampaignId: null,
     kitBroadcastId: 999,
+    kitAudienceVerified: null,
   });
 });
 
