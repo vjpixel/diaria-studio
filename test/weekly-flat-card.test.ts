@@ -121,10 +121,21 @@ describe("buildFlatCardSvg (pure)", () => {
     assert.doesNotMatch(svg, /tspan[^>]*> · /);
   });
 
-  it("#6136 item 1: compactHandle=true + handle -> rodapé é SÓ o handle ('@' em brand), nunca wordmark + handle", () => {
+  it("#6136 item 1: compactHandle=true + handle -> rodapé é SÓ o handle ('@' em brand + wordmark colorido), nunca wordmark+handle duplicado", () => {
     const svg = buildFlatCardSvg({ kicker: "x", title: "y", footer: "diar.ia.br", handle: "@diar.ia.br", compactHandle: true });
-    assert.match(svg, new RegExp(`<tspan fill="${COLORS.brand}">@</tspan>diar\\.ia\\.br`));
-    assert.doesNotMatch(svg, /diar<tspan/, "wordmark completo não deveria aparecer no modo compacto");
+    // #7672: "diar.ia.br" dentro do handle usa a MESMA colorização do
+    // wordmark do rodapé completo (pontos + "br" em brand) — antes saía
+    // como texto plano escapado, marca inteira em ink (achado ao vivo,
+    // edição 260909).
+    assert.match(
+      svg,
+      new RegExp(
+        `<tspan fill="${COLORS.brand}">@</tspan>diar<tspan fill="${COLORS.brand}">\\.</tspan>ia<tspan fill="${COLORS.brand}">\\.</tspan><tspan fill="${COLORS.brand}">br</tspan>`,
+      ),
+    );
+    // #6136 item 1 continua valendo: só 1 ocorrência do wordmark completo
+    // (dentro do handle) — nunca "diar.ia.br · @diar.ia.br" duplicado.
+    assert.equal((svg.match(/diar<tspan/g) ?? []).length, 1, "wordmark completo aparece só 1× (dentro do handle)");
     assert.doesNotMatch(svg, / · @diar\.ia\.br/, "sem o separador ' · ' do modo antigo — não é mais wordmark+handle");
   });
 
