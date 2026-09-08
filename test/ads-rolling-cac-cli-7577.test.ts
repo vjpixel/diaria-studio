@@ -193,3 +193,79 @@ describe("#7577 — cobertura do último dia pega a linha engolida que o parser 
     }
   });
 });
+
+describe("#7577 — CLI: colunas de CAC diário (ontem e anteontem)", () => {
+  const CANAL = "Google Ads (teste 2608)";
+  // Acumulados escolhidos para que os dois dias tenham CAC DIFERENTE entre si
+  // e diferente do da janela: se a CLI imprimisse a mesma célula três vezes,
+  // um teste com números coincidentes passaria.
+  const linhas = [
+    `${CANAL},2026-09-04,100.00,10,10.00,0,painel`,
+    `${CANAL},2026-09-05,200.00,20,10.00,0,painel`,
+    `${CANAL},2026-09-06,300.00,45,6.67,0,painel`,
+    `${CANAL},2026-09-07,400.00,55,7.27,0,painel`,
+  ];
+
+  it("imprime uma coluna por dia fechado, rotulada com a data", () => {
+    const { dir, args } = csvFixture(linhas);
+    try {
+      const { valor, out } = capturar(() => main([...args, "--ate", "2026-09-07"]));
+      assert.equal(valor, 0);
+      assert.match(out, /CAC 09-06/, "a coluna de anteontem precisa se identificar pela data");
+      assert.match(out, /CAC 09-07/, "a coluna de ontem precisa se identificar pela data");
+      // anteontem: (300−200)/(45−20) = R$ 4,00 | ontem: (400−300)/(55−45) = R$ 10,00
+      assert.match(out, /R\$ 4,00/);
+      assert.match(out, /R\$ 10,00/);
+      // A ordem é cronológica: anteontem antes de ontem, na mesma linha.
+      const linha = out.split("\n").find((l) => l.startsWith(CANAL)) ?? "";
+      assert.ok(
+        linha.indexOf("R$ 4,00") < linha.indexOf("R$ 10,00"),
+        `coluna de anteontem deve vir antes da de ontem; linha: ${linha}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("dia sem amostra sai como célula vazia, e a linha do braço continua saindo", () => {
+    // O braço de baixo volume é o caso comum desta coluna. Ele não pode sumir
+    // da tabela nem aparecer como R$ 0,00 — as duas leituras levariam o editor
+    // à ação errada (§3.5).
+    const semAmostra = [
+      `${CANAL},2026-09-05,200.00,20,10.00,0,painel`,
+      `${CANAL},2026-09-06,300.00,20,,0,painel`,
+      `${CANAL},2026-09-07,400.00,20,,0,painel`,
+    ];
+    const { dir, args } = csvFixture(semAmostra);
+    try {
+      const { valor, out } = capturar(() => main([...args, "--ate", "2026-09-07"]));
+      assert.equal(valor, 0);
+      const linha = out.split("\n").find((l) => l.startsWith(CANAL)) ?? "";
+      assert.ok(linha.length > 0, "o braço não pode sumir da tabela por falta de amostra no dia");
+      assert.doesNotMatch(linha, /R\$ 0,00/, "sem amostra nunca vira R$ 0,00");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--json expõe a série diária por braço, para consumo programático", () => {
+    const { dir, args } = csvFixture(linhas);
+    try {
+      const { valor, out } = capturar(() => main([...args, "--ate", "2026-09-07", "--json"]));
+      assert.equal(valor, 0);
+      const parsed = JSON.parse(out) as {
+        resultados: { canal: string; diarios: { dia: string; custoPorCadastro: number | null }[] }[];
+      };
+      const braco = parsed.resultados.find((r) => r.canal === CANAL);
+      assert.ok(braco, "braço ausente do JSON");
+      assert.deepEqual(
+        braco.diarios.map((d) => d.dia),
+        ["2026-09-06", "2026-09-07"],
+      );
+      assert.equal(braco.diarios[0].custoPorCadastro, 4);
+      assert.equal(braco.diarios[1].custoPorCadastro, 10);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

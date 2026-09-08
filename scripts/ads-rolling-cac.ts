@@ -35,9 +35,11 @@ import { findMissingClicksBracosForDate, parseClicksCsv } from "./lib/ads-test-w
 import {
   DEFAULT_WINDOW_DAYS,
   brtDateOf,
+  computeDailyCacSeries,
   computeRollingWindow,
   descreverEstabilidade,
   shiftDate,
+  type DailyCac,
   type EdicaoEmVoo,
   type RollingWindowResult,
 } from "./lib/ads-rolling-window.ts";
@@ -45,6 +47,16 @@ import {
 const CLICKS_CSV = "data/aquisicao/clicks-2608.csv";
 const EDICOES_JSONL = "data/aquisicao/teste-2608/edicoes.jsonl";
 const RUN_STATE = "data/aquisicao/teste-2608/run-state.json";
+
+/**
+ * Quantos dias fechados isolados entram na tabela, além da janela.
+ *
+ * 2 = ontem e anteontem, o pedido literal do editor (08/09/2026). Não é uma
+ * série de tendência: são os dois dias que ele consegue amarrar de cabeça às
+ * edições que fez, e mais colunas empurrariam a janela — que segue sendo a
+ * métrica de decisão — para fora do campo de visão.
+ */
+const DIAS_CAC_DIARIO = 2;
 
 function lerEdicoes(path: string): EdicaoEmVoo[] {
   if (!existsSync(path)) return [];
@@ -117,15 +129,18 @@ function fmtBRL(v: number): string {
  * exigem ações opostas do editor, e num alinhamento à direita os dois se leem
  * igual. Coluna sem dado sai como `—`, do mesmo jeito que a de CAC.
  */
-function linhaTabela(r: RollingWindowResult): string {
+function linhaTabela(r: RollingWindowResult, diarios: DailyCac[]): string {
   const cac = r.custoPorCadastro === null ? "—" : fmtBRL(r.custoPorCadastro);
   const acum = r.cadastrosAcumulado;
   const cacAcum = acum != null && acum > 0 ? fmtBRL(r.gastoAcumulado / acum) : "—";
   // Sem numerador conhecido, `cadastrosJanela` é 0 por construção — mostrar
   // esse 0 afirmaria "nenhum cadastro na janela", que não foi medido.
   const cadJanela = r.cadastrosAcumulado == null ? "—" : String(r.cadastrosJanela);
+  const cols = diarios
+    .map((d) => (d.custoPorCadastro === null ? "—" : fmtBRL(d.custoPorCadastro)).padStart(11))
+    .join(" ");
   return (
-    `${r.canal.padEnd(30)} ${fmtBRL(r.gastoJanela).padStart(11)} ${cadJanela.padStart(4)} ` +
+    `${r.canal.padEnd(28)} ${cols} | ${fmtBRL(r.gastoJanela).padStart(11)} ${cadJanela.padStart(4)} ` +
     `${cac.padStart(11)} | ${fmtBRL(r.gastoAcumulado).padStart(11)} ${(acum == null ? "—" : String(acum)).padStart(4)} ${cacAcum.padStart(11)}`
   );
 }
@@ -200,22 +215,34 @@ export function main(argv = process.argv.slice(2)): number {
   }
   const edicoes = lerEdicoes(edicoesPath);
   const resultados = bracos.map((canal) => computeRollingWindow(rows, { canal, ate, dias, edicoes }));
+  // CAC por dia fechado, pedido do editor em 08/09/2026: a média de 3 dias
+  // dilui o efeito de um refinamento feito ontem, e é justamente esse efeito
+  // que o editor precisa ver quando está editando as contas todo dia.
+  const diarios = new Map(
+    bracos.map((canal) => [canal, computeDailyCacSeries(rows, { canal, ate, n: DIAS_CAC_DIARIO })]),
+  );
 
   if (argv.includes("--json")) {
     // `comparacaoPossivel` no topo em vez de deixar cada consumidor
     // re-derivar de `resultados[].comparavel` — é a mesma disciplina de não
     // reconstruir um julgamento a partir de saída ad-hoc.
     const comparacaoPossivel = resultados.filter((r) => r.comparavel).length >= 2;
-    console.log(JSON.stringify({ ate, dias, comparacaoPossivel, resultados }, null, 2));
+    const comDiarios = resultados.map((r) => ({ ...r, diarios: diarios.get(r.canal) ?? [] }));
+    console.log(JSON.stringify({ ate, dias, comparacaoPossivel, resultados: comDiarios }, null, 2));
     return 0;
   }
 
   console.log(`Janela móvel de ${dias} dias (BRT), até ${ate} — último dia fechado.\n`);
+  // Rótulos derivados da PRÓPRIA série, nunca recalculados aqui: repetir a
+  // fórmula de datas deixaria cabeçalho e células livres para divergir em
+  // silêncio — "número certo com rótulo errado" (achado do review da #7632).
+  const diasSerie = [...diarios.values()][0]?.map((d) => d.dia) ?? [];
   console.log(
-    `${"braço".padEnd(30)} ${"gasto".padStart(11)} ${"cad".padStart(4)} ${"CAC".padStart(11)} | ` +
+    `${"braço".padEnd(28)} ${diasSerie.map((d) => `CAC ${d.slice(5)}`.padStart(11)).join(" ")} | ` +
+      `${"gasto".padStart(11)} ${"cad".padStart(4)} ${"CAC".padStart(11)} | ` +
       `${"gasto acum".padStart(11)} ${"cad".padStart(4)} ${"CAC acum".padStart(11)}`,
   );
-  for (const r of resultados) console.log(linhaTabela(r));
+  for (const r of resultados) console.log(linhaTabela(r, diarios.get(r.canal) ?? []));
 
   console.log("");
   for (const r of resultados) {
