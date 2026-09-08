@@ -106,6 +106,13 @@ describe("official-domains registry (#566)", () => {
       assert.ok(matches, "blog.google/products/ deve continuar sendo lancamento");
     });
 
+    it("inclui pattern de blog.google/products-and-platforms/ (achado ao vivo, edição 260908)", () => {
+      const matches = patterns.some(
+        (p) => p.test("blog.google/products-and-platforms/products/translate/google-translate-ios-android-upgrades/"),
+      );
+      assert.ok(matches, "blog.google/products-and-platforms/ deve ser lancamento (re-org do blog oficial do Google)");
+    });
+
     // #2370: claude.com/blog/ como caminho de anúncio oficial da Anthropic.
     // Restrito a /blog/ — verificado contra dado real: /news e /release-notes
     // redirecionam pra claude.ai; /product/* são marketing estático evergreen.
