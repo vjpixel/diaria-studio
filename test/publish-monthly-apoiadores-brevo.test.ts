@@ -389,6 +389,8 @@ describe("#4572/#4593 — main() guard de idempotência (deps.readState/writeSta
         subject: "Assunto anterior",
         segments: [],
         brevoCampaignId: 999,
+        kitBroadcastId: null,
+        kitAudienceVerified: null,
       };
 
       let renderCalled = false;
@@ -429,6 +431,8 @@ describe("#4572/#4593 — main() guard de idempotência (deps.readState/writeSta
         subject: "Assunto anterior",
         segments: [],
         brevoCampaignId: 999,
+        kitBroadcastId: null,
+        kitAudienceVerified: null,
       };
 
       let fetchCalled = false;
@@ -465,6 +469,8 @@ describe("#4572/#4593 — main() guard de idempotência (deps.readState/writeSta
         subject: "Assunto anterior",
         segments: [],
         brevoCampaignId: null,
+        kitBroadcastId: null,
+        kitAudienceVerified: null,
       };
 
       let fetchCalled = false;
@@ -593,6 +599,8 @@ describe("#4572/#4593 self-review — silent-failure hardening", () => {
         subject: "Assunto anterior",
         segments: [],
         brevoCampaignId: null,
+        kitBroadcastId: null,
+        kitAudienceVerified: null,
       };
       const concurrentlyMarkedSentState: ApoiadoresState = {
         ...initialState,
@@ -650,6 +658,8 @@ describe("#4572/#4593 self-review — silent-failure hardening", () => {
         subject: "Assunto anterior",
         segments: [],
         brevoCampaignId: 999,
+        kitBroadcastId: null,
+        kitAudienceVerified: null,
       };
 
       globalThis.fetch = (async () => jsonRes(201, { id: 1000 })) as typeof fetch;

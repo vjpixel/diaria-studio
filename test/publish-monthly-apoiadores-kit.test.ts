@@ -90,7 +90,9 @@ let exitCode: number | null = null;
 
 function mockProcessExit(): void {
   exitCode = null;
-  // @ts-expect-error mocking
+  // Sem `@ts-expect-error`: o corpo sempre lança, então o retorno infere
+  // `never` e a atribuição já bate com `process.exit` — a diretiva ficaria
+  // "não usada" e o typecheck-ratchet trataria isso como erro novo.
   process.exit = (code?: number) => {
     exitCode = code ?? 0;
     throw new Error("__mocked_exit__");
@@ -305,6 +307,7 @@ describe("#7633 — main()", () => {
         segments: [],
         brevoCampaignId: null,
         kitBroadcastId: 111,
+        kitAudienceVerified: null,
       };
       const spy = makeSpy({}, existing);
       await assert.rejects(() => main(root, spy.deps), /__mocked_exit__/);
@@ -336,6 +339,7 @@ describe("#7633 — main()", () => {
         segments: [],
         brevoCampaignId: null,
         kitBroadcastId: 111,
+        kitAudienceVerified: null,
       };
       const spy = makeSpy({}, existing);
       await main(root, spy.deps);
@@ -367,6 +371,7 @@ describe("#7633 — main()", () => {
         segments: [],
         brevoCampaignId: null,
         kitBroadcastId: null,
+        kitAudienceVerified: null,
       };
       let readCount = 0;
       const spy = makeSpy({

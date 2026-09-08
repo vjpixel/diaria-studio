@@ -134,8 +134,13 @@ test("readApoiadoresState: arquivo legado sem a chave brevoCampaignId -> brevoCa
   let result: ApoiadoresState | null = null;
   const stderr = captureStderr(() => { result = readApoiadoresState(dir); });
   assert.equal(result?.brevoCampaignId, null);
-  assert.equal(result?.kitBroadcastId, null, "#7633: state legado também não tem kitBroadcastId — mesmo tratamento silencioso");
   assert.equal(result?.cycle, "2607-08");
+  // Leitura própria (fora do closure do captureStderr, que faz o TS estreitar
+  // `result` pra `never`) — evita adicionar mais uma ocorrência do padrão que
+  // já está na baseline do typecheck-ratchet.
+  const legadoLido = readApoiadoresState(dir);
+  assert.equal(legadoLido?.kitBroadcastId, null, "#7633: state legado também não tem kitBroadcastId — mesmo tratamento silencioso");
+  assert.equal(legadoLido?.kitAudienceVerified, null, "#7633: idem pra kitAudienceVerified");
   assert.equal(stderr, "", "chave ausente é o formato legado esperado — nunca deveria logar aviso");
 });
 
