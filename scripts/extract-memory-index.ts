@@ -46,7 +46,16 @@ export function runExtract(argv: string[]): number {
     return 2;
   }
   const raw = readFileSync(memoryMdPath, "utf-8");
-  const manifest = extractManifest(raw);
+  let manifest;
+  try {
+    manifest = extractManifest(raw);
+  } catch (e) {
+    // #7601: a mensagem de `extractManifest` já traz linha + o que era
+    // esperado — só prefixamos o arquivo real (o erro em si é agnóstico de
+    // caminho, puro) em vez de deixar a stack trace crua até o console.
+    console.error(`Falha ao extrair ${memoryMdPath}: ${(e as Error).message}`);
+    return 2;
+  }
   const outPath = resolve(values.out ?? join(memoryDir, "_index.json"));
   writeFileSync(outPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf-8");
   console.log(`Manifesto extraído: ${manifest.blocks.length} blocos → ${outPath}`);

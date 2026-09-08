@@ -15,6 +15,9 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   extractManifest,
   generateMemoryMd,
@@ -203,5 +206,103 @@ describe("extractManifest — erros esperados", () => {
   it("lança em linha fora da gramática esperada", () => {
     const bad = "# Memory index\n\n* item sem colchetes nem em dash";
     assert.throws(() => extractManifest(bad));
+  });
+
+  it("REGRESSÃO #7601: mensagem de erro é acionável — cita o nº da linha e o que era esperado, não stack trace crua", () => {
+    const bad = "# Memory index\n\n- [ok](ok.md) — descrição\n* item sem colchetes nem em dash";
+    assert.throws(() => extractManifest(bad), (err: unknown) => {
+      const message = (err as Error).message;
+      // Linha 4 (1-based): título=1, branco=2, "- [ok]..."=3, a linha ruim=4.
+      assert.match(message, /linha 4/);
+      assert.match(message, /esperado/i);
+      assert.match(message, /item sem colchetes nem em dash/);
+      return true;
+    });
+  });
+});
+
+describe("REGRESSÃO #7601: comentário HTML dentro de um bloco é tolerado e preservado no round-trip", () => {
+  const FIXTURE_WITH_COMMENT = `# Memory index
+
+- [Entrada normal](normal.md) — descrição normal
+
+## Legado do ZenBook — importado 06/09/2026, NÃO triado
+<!-- 50 memórias de um acervo que ficou isolado no ZenBook. Sobreposição medida
+     com o acervo curado: 7 de 50, nenhuma forte. Precisam de triagem e
+     agrupamento próprio; até lá ficam aqui, localizáveis mas marcadas. -->
+- [feedback legado](feedback_legado.md) + [outro legado](outro_legado.md)`;
+
+  it("extrai sem lançar e preserva o comentário verbatim (3 linhas) como entrada própria do bloco", () => {
+    const manifest = extractManifest(FIXTURE_WITH_COMMENT);
+    const block = manifest.blocks[1];
+    assert.equal(block.heading, "Legado do ZenBook — importado 06/09/2026, NÃO triado");
+    assert.equal(block.lines.length, 2, "comentário (1 entrada multi-linha) + 1 bullet");
+    assert.equal(
+      block.lines[0].raw,
+      "<!-- 50 memórias de um acervo que ficou isolado no ZenBook. Sobreposição medida\n" +
+        "     com o acervo curado: 7 de 50, nenhuma forte. Precisam de triagem e\n" +
+        "     agrupamento próprio; até lá ficam aqui, localizáveis mas marcadas. -->",
+    );
+    assert.deepEqual(block.lines[0].refs, []);
+    assert.equal(block.lines[1].refs.length, 2);
+  });
+
+  it("round-trip extract → generate é byte a byte idêntico com comentário HTML presente", () => {
+    const manifest = extractManifest(FIXTURE_WITH_COMMENT);
+    const regenerated = generateMemoryMd(manifest);
+    assert.equal(regenerated, FIXTURE_WITH_COMMENT);
+  });
+
+  it("lança com mensagem acionável quando o comentário HTML nunca fecha (sem '-->')", () => {
+    const unclosed = "# Memory index\n\n<!-- comentário nunca fecha\nmais uma linha solta";
+    assert.throws(() => extractManifest(unclosed), /linha 3.*sem fechamento/is);
+  });
+});
+
+/**
+ * REGRESSÃO #7601: round-trip contra o `MEMORY.md` REAL desta máquina, não
+ * só a fixture sintética acima — é o guard que faltava (o formato só quebrou
+ * porque nada verificava que o gerador relê o que escreve, ver issue). O
+ * arquivo real vive fora do repo git (`~/.claude/projects/{slug}/memory/`,
+ * caminho varia por máquina/usuário) — o teste localiza o diretório
+ * `.../memory/` deste projeto sob `~/.claude/projects/` por convenção de
+ * nome (contém "diaria-studio") e degrada para no-op quando não encontra
+ * (CI, outra máquina, clone fresco) em vez de falhar por ausência de dado
+ * local.
+ */
+describe("REGRESSÃO #7601: round-trip contra o MEMORY.md real desta máquina (quando presente)", () => {
+  function findRealMemoryMd(): string | null {
+    const projectsDir = join(homedir(), ".claude", "projects");
+    if (!existsSync(projectsDir)) return null;
+    let entries: string[] = [];
+    try {
+      entries = readdirSync(projectsDir);
+    } catch {
+      return null;
+    }
+    for (const entry of entries) {
+      if (!entry.toLowerCase().includes("diaria-studio")) continue;
+      const candidate = join(projectsDir, entry, "memory", "MEMORY.md");
+      if (existsSync(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  it("extract → generate reproduz o arquivo real byte a byte (skip silencioso se ausente nesta máquina)", () => {
+    const path = findRealMemoryMd();
+    if (!path) {
+      // Sem MEMORY.md real acessível nesta máquina/sessão — nada a validar
+      // aqui; o guard de fixture sintética acima já cobre a gramática.
+      return;
+    }
+    const raw = readFileSync(path, "utf-8").replace(/\r\n/g, "\n").replace(/\n+$/, "");
+    let manifest;
+    try {
+      manifest = extractManifest(raw);
+    } catch (e) {
+      assert.fail(`extractManifest falhou no MEMORY.md real (${path}): ${(e as Error).message}`);
+    }
+    const regenerated = generateMemoryMd(manifest);
+    assert.equal(regenerated, raw, "round-trip extract→generate deve reproduzir o arquivo real byte a byte");
   });
 });

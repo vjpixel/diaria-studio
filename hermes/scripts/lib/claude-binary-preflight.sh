@@ -173,6 +173,36 @@ _claude_binary_try_known_paths() {
   return 1
 }
 
+# #7565: garante um diretório cujo PATH torna `$cmd` (bare) resolvível a
+# partir de `$known_path` — mesmo quando o basename do candidato difere de
+# `$cmd` (o caso real: candidato `.../bin/claude.exe`, `$cmd` = `claude`).
+# Prependar só `dirname "$known_path"` ao PATH resolve `claude.exe`, nunca
+# `claude` — o bug original assumia que os dois sempre coincidiam.
+#
+# Basename igual: devolve `dirname "$known_path"` direto, sem symlink (0
+# I/O extra — é o caminho já correto de antes do #7565).
+#
+# Basename diferente: cria um symlink `$cmd -> $known_path` num diretório
+# TEMPORÁRIO dedicado (nunca no diretório do candidato — instalação global
+# pode ser gerenciada por outro usuário/root, sem permissão de escrita) e
+# devolve esse diretório. Fail-soft: retorna 1 (stdout vazio) se `mktemp`/
+# `ln` falharem — o caller trata como "fallback não resolveu", cai no
+# reparo normal, nunca finge sucesso.
+_claude_binary_named_path_dir() {
+  local known_path="$1" cmd="$2"
+  local dir
+  dir="$(dirname "$known_path")"
+  if [ "$(basename "$known_path")" = "$cmd" ]; then
+    printf '%s' "$dir"
+    return 0
+  fi
+  local link_dir
+  link_dir="$(mktemp -d 2>/dev/null)" || return 1
+  ln -sf "$known_path" "${link_dir}/${cmd}" 2>/dev/null || return 1
+  printf '%s' "$link_dir"
+  return 0
+}
+
 # Verdadeiro se o arquivo resolvido de `$1` existir e tiver <= `$2` bytes
 # (o tamanho default do placeholder/stub, ~500 bytes, é bem menor que o
 # limiar default de 4096 — folga proposital). Arquivo ausente/irresolvível
@@ -246,9 +276,25 @@ _claude_binary_check_and_repair() {
     local npm_cmd_probe="${CLAUDE_BINARY_PREFLIGHT_NPM_CMD:-npm}"
     local known_path
     if known_path="$(_claude_binary_try_known_paths "$npm_cmd_probe")" && [ -n "$known_path" ]; then
-      export PATH="$(dirname "$known_path"):$PATH"
-      echo "AVISO: '$cmd' não estava no PATH desta sessão (comum em shell não-interativo/SSH) — binário íntegro encontrado em $known_path (#7554); PATH ajustado para esta sessão. Não é binário quebrado — se isto persistir, exporte PATH permanentemente." >&2
-      return 0
+      # #7565: o candidato pode ter basename diferente de "$cmd" (ex:
+      # `.../bin/claude.exe` vs. `claude`) — só prependar `dirname
+      # "$known_path"` não torna "$cmd" bare resolvível nesse caso.
+      # `_claude_binary_named_path_dir` resolve isso (symlink quando
+      # necessário) e o `command -v` logo abaixo VALIDA o ajuste antes de
+      # declarar sucesso — nunca mais assumido sem checar.
+      local named_dir
+      if named_dir="$(_claude_binary_named_path_dir "$known_path" "$cmd")" && [ -n "$named_dir" ]; then
+        export PATH="${named_dir}:$PATH"
+        if command -v "$cmd" >/dev/null 2>&1; then
+          local via_note=""
+          [ "$(basename "$known_path")" != "$cmd" ] && via_note=" via symlink '$cmd' -> $known_path (#7565)"
+          echo "AVISO: '$cmd' não estava no PATH desta sessão (comum em shell não-interativo/SSH) — binário íntegro encontrado em $known_path (#7554); PATH ajustado para esta sessão${via_note}. Não é binário quebrado — se isto persistir, exporte PATH permanentemente." >&2
+          return 0
+        fi
+      fi
+      # named_dir vazio (mktemp/ln falhou) OU "$cmd" ainda não resolve
+      # depois do ajuste — cai no fluxo de reparo normal abaixo, nunca
+      # retorna 0 sem ter verificado de fato.
     fi
   fi
 

@@ -245,6 +245,51 @@ set -e
 assert_eq "encontrado via command -v e quebrado: fallback de PATH NUNCA mascara (exit 5)" "5" "$RC_FOUND_BUT_BROKEN"
 assert_contains "encontrado e quebrado: mensagem de binário quebrado, não de PATH" "$STDERR_FOUND_BUT_BROKEN" "ERRO: binário Claude Code quebrado"
 
+# ── Caminho 14 (#7565): candidato conhecido tem BASENAME DIFERENTE de
+# `$cmd` — o cenário real que motivou a issue: `claude.exe` no disco,
+# `$cmd`="claude" bare. O #7554 original prependava só o dirname (nunca
+# tornava "claude" bare resolvível); o fix do #7565 cria um symlink
+# `$cmd -> candidato` num dir temp e VALIDA com `command -v` antes de
+# declarar sucesso. Este teste invoca "claude" bare DEPOIS do preflight —
+# exatamente como `claude-openrouter.sh:430` faz — pra travar a regressão
+# de verdade, não só checar o texto do AVISO.
+
+mkdir -p "$WORKDIR/pkgdir/bin"
+cat > "$WORKDIR/pkgdir/bin/claude.exe" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$WORKDIR/pkgdir/bin/claude.exe"
+
+# Nome FAKE, único, garantidamente ausente do PATH real desta máquina —
+# mesmo cuidado das demais fixtures ("claude-7554-nao-existe-no-path-de-
+# teste" acima). Usar "claude" literal aqui colidiria com o Claude Code
+# de verdade instalado na máquina que roda o teste (esta é uma sessão
+# Claude Code), mascarando o cenário "$cmd ausente do PATH" que o teste
+# precisa exercitar.
+FAKE_CMD="claude-7565-nao-existe-no-path-de-teste"
+
+set +e
+OUTPUT_EXE_BASENAME="$(
+  (
+    CLAUDE_BINARY_PREFLIGHT_CMD="$FAKE_CMD"
+    CLAUDE_BINARY_PREFLIGHT_REPAIR_CMD="touch $WORKDIR/repair-called-unnecessarily-7565"
+    CLAUDE_BINARY_PREFLIGHT_KNOWN_PATHS="$WORKDIR/pkgdir/bin/claude.exe"
+    claude_binary_preflight
+    if command -v "$FAKE_CMD" >/dev/null 2>&1; then echo "BARE_RESOLVE_OK"; else echo "BARE_RESOLVE_FAIL"; fi
+    if "$FAKE_CMD" --version >/dev/null 2>&1; then echo "BARE_INVOKE_OK"; else echo "BARE_INVOKE_FAIL"; fi
+  ) 2>&1
+)"
+RC_EXE_BASENAME=$?
+set -e
+assert_eq "basename diferente (claude.exe): preflight resolve (exit 0)" "0" "$RC_EXE_BASENAME"
+assert_contains "basename diferente: 'claude' bare fica resolvível via command -v" "$OUTPUT_EXE_BASENAME" "BARE_RESOLVE_OK"
+assert_not_contains "basename diferente: NUNCA 'claude' bare continua irresolvível" "$OUTPUT_EXE_BASENAME" "BARE_RESOLVE_FAIL"
+assert_contains "basename diferente: 'claude' bare É invocável de verdade (a regressão real do #7565)" "$OUTPUT_EXE_BASENAME" "BARE_INVOKE_OK"
+assert_not_contains "basename diferente: NUNCA falso-positivo sem invocação bare funcionar" "$OUTPUT_EXE_BASENAME" "BARE_INVOKE_FAIL"
+assert_contains "basename diferente: AVISO cita o symlink (#7565)" "$OUTPUT_EXE_BASENAME" "symlink"
+assert_eq "basename diferente: reparo NUNCA acionado (marker ausente)" "false" "$([ -f "$WORKDIR/repair-called-unnecessarily-7565" ] && echo true || echo false)"
+
 # ── Derivação do install.cjs a partir do prefixo do npm (não hardcoded) ───
 # #6891: o caminho vem de `npm root -g`, config da máquina, não constante.
 # Testado com um `npm` FAKE (via CLAUDE_BINARY_PREFLIGHT_NPM_CMD) + um
