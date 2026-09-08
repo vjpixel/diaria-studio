@@ -55,6 +55,14 @@ export interface MemoryLine {
   refs: MemoryRef[];
   /** Texto após " — ". String vazia quando a linha não tem descrição. */
   description: string;
+  /**
+   * Linha (ou bloco multi-linha) preservada verbatim, quando a entrada não é
+   * um bullet `- [label](arquivo) — descrição` — hoje só comentário HTML
+   * (`<!-- ... -->`, #7601). Quando presente, `refs`/`description` ficam
+   * vazios e `renderLine` devolve `raw` sem modificação, byte a byte
+   * (inclusive quebras de linha internas do comentário).
+   */
+  raw?: string;
 }
 
 export interface MemoryBlock {
@@ -94,8 +102,11 @@ const LINE_REGEX = /^- ((?:\[[^\]]+\]\([^)]+\)(?: \+ )?)+)(?: — (.*))?$/;
  * `MEMORY.md` existente. Puro — não lê arquivo, não sabe de disco.
  *
  * Lança se alguma linha não-vazia dentro de um bloco não casar a gramática
- * esperada (`- [label](file) [+ [label](file) ...] [— descrição]`) — falha
- * alta é preferível a silenciosamente descartar uma memória curada.
+ * esperada (`- [label](file) [+ [label](file) ...] [— descrição]`, OU um
+ * comentário HTML `<!-- ... -->`, tolerado desde #7601 e preservado verbatim
+ * no round-trip) — falha alta é preferível a silenciosamente descartar uma
+ * memória curada. O erro identifica o número da linha (1-based, dentro do
+ * `MEMORY.md` inteiro) e o que era esperado, em vez de uma stack trace crua.
  */
 export function extractManifest(raw: string): MemoryManifest {
   const normalized = raw.replace(/\r\n/g, "\n").replace(/\n+$/, "");
@@ -104,28 +115,66 @@ export function extractManifest(raw: string): MemoryManifest {
     throw new Error("MEMORY.md vazio ou sem linha de título");
   }
   const title = chunks[0];
-  const blocks = chunks
-    .slice(1)
-    .filter((chunk) => chunk.trim().length > 0)
-    .map(parseBlockChunk);
+  let consumed = title.split("\n").length; // nº de linhas (1-based) já consumidas pelo título
+  const blocks: MemoryBlock[] = [];
+  for (const chunk of chunks.slice(1)) {
+    consumed += 1; // a linha em branco que separa este chunk do anterior
+    const chunkStartLine = consumed + 1; // 1ª linha do chunk, 1-based
+    if (chunk.trim().length > 0) {
+      blocks.push(parseBlockChunk(chunk, chunkStartLine));
+    }
+    consumed += chunk.split("\n").length;
+  }
   return { title, blocks };
 }
 
-function parseBlockChunk(chunk: string): MemoryBlock {
-  const lines = chunk.split("\n").filter((l) => l.length > 0);
+function parseBlockChunk(chunk: string, chunkStartLine: number): MemoryBlock {
+  const rawLines = chunk.split("\n");
   let heading: string | undefined;
-  let bodyLines = lines;
-  if (lines[0]?.startsWith("## ")) {
-    heading = lines[0].slice(3);
-    bodyLines = lines.slice(1);
+  let bodyStart = 0;
+  if (rawLines[0]?.startsWith("## ")) {
+    heading = rawLines[0].slice(3);
+    bodyStart = 1;
   }
-  return { heading, lines: bodyLines.map(parseLine) };
+  const lines: MemoryLine[] = [];
+  let i = bodyStart;
+  while (i < rawLines.length) {
+    const raw = rawLines[i];
+    if (raw.length === 0) {
+      i += 1;
+      continue;
+    }
+    if (raw.trimStart().startsWith("<!--")) {
+      const commentLines = [raw];
+      let j = i;
+      while (!commentLines[commentLines.length - 1].includes("-->") && j + 1 < rawLines.length) {
+        j += 1;
+        commentLines.push(rawLines[j]);
+      }
+      if (!commentLines[commentLines.length - 1].includes("-->")) {
+        throw new Error(
+          `MEMORY.md linha ${chunkStartLine + i}: comentário HTML aberto (\`<!--\`) sem fechamento ` +
+            `(\`-->\`) até o fim do arquivo — esperado um comentário fechado na mesma seção.`,
+        );
+      }
+      lines.push({ refs: [], description: "", raw: commentLines.join("\n") });
+      i = j + 1;
+      continue;
+    }
+    lines.push(parseLine(raw, chunkStartLine + i));
+    i += 1;
+  }
+  return { heading, lines };
 }
 
-function parseLine(line: string): MemoryLine {
+function parseLine(line: string, lineNumber: number): MemoryLine {
   const match = line.match(LINE_REGEX);
   if (!match) {
-    throw new Error(`Linha de memória em formato inesperado: ${JSON.stringify(line)}`);
+    throw new Error(
+      `MEMORY.md linha ${lineNumber}: formato inesperado — esperado um bullet ` +
+        `"- [label](arquivo.md) — descrição" (ou "+ [label](arquivo.md)" para múltiplas refs) ` +
+        `ou um comentário HTML "<!-- ... -->". Recebido: ${JSON.stringify(line)}`,
+    );
   }
   const refsPart = match[1];
   const description = match[2] ?? "";
@@ -139,6 +188,7 @@ function parseLine(line: string): MemoryLine {
 }
 
 function renderLine(line: MemoryLine): string {
+  if (line.raw !== undefined) return line.raw;
   const refsStr = line.refs.map((r) => `[${r.label}](${r.file})`).join(" + ");
   return line.description ? `- ${refsStr} — ${line.description}` : `- ${refsStr}`;
 }

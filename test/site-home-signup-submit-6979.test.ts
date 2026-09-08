@@ -42,6 +42,9 @@ interface FormBundle {
   website: any;
   btn: any;
   status: any;
+  utmSource: any;
+  utmMedium: any;
+  utmCampaign: any;
 }
 
 /** Form mínimo sobre EventTarget nativo, com os seletores que `wireSignupForm` usa. */
@@ -75,7 +78,7 @@ function makeForm(opts: { email?: string; optinChecked?: boolean; website?: stri
   form.getAttribute = (attr: string) => (attr === "action" ? "https://eia.diar.ia.br/jogar/subscribe" : null);
   form.reset = () => {};
 
-  return { form, email, optin, website, btn, status };
+  return { form, email, optin, website, btn, status, utmSource, utmMedium, utmCampaign };
 }
 
 /** Roda o corpo JS de `signupFormScript()` num `window`/`document` mínimos. */
@@ -89,10 +92,15 @@ function wire(win: any, doc: any) {
 function setup(
   fetchImpl: (url: string, options: any) => Promise<any>,
   formOpts: { email?: string; optinChecked?: boolean; website?: string } = {},
+  // #7360: `location.search` — default "" preserva o comportamento de todo
+  // caller existente (nenhum passava isto antes; o buraco de cobertura que
+  // a issue aponta é justamente essa ausência). Só o describe dedicado ao
+  // prefill de UTM abaixo passa um valor não-vazio.
+  locationSearch = "",
 ) {
   const bundle = makeForm(formOpts);
   const win: any = {
-    location: { search: "" },
+    location: { search: locationSearch },
     fetch: fetchImpl,
     AbortController: typeof AbortController === "function" ? AbortController : undefined,
   };
@@ -347,5 +355,71 @@ describe("signupFormScript — timeout do fetch (achado 1, #6979)", () => {
 
     assert.equal(aborted, false, "o clearTimeout no .then() de sucesso deve ter cancelado o abort agendado");
     assert.equal(status.textContent, "Pronto! Confira seu e-mail pra confirmar a assinatura.");
+  });
+});
+
+/**
+ * REGRESSÃO #7360: `wireSignupForm` (scripts/lib/site-home-page.ts:541) lê
+ * `window.location.search` e preenche os hidden inputs `utm_source`/
+ * `utm_medium`/`utm_campaign` — até aqui SEM nenhum teste exercitando isso
+ * com `location.search` preenchido (o único caller de `setup()` sempre
+ * rodava com `""`, ver comentário do parâmetro `locationSearch` acima). Se
+ * esse prefill quebrar em silêncio, o cadastro cai no default (mesma
+ * inversão do #6980) sem que nenhum teste acuse — este describe fecha essa
+ * lacuna. Escopo do #7360 aqui é só ESTE teste unitário; o smoke manual com
+ * cadastro real no Kit descrito na issue fica fora (exige sessão com
+ * Chrome/Kit logado e GTM Preview, não é código autônomo).
+ */
+describe("REGRESSÃO #7360: prefill de UTM a partir de location.search", () => {
+  it("location.search com os 3 UTMs preenche os 3 hidden inputs correspondentes", () => {
+    const { utmSource, utmMedium, utmCampaign } = setup(
+      () => Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true }) }),
+      {},
+      "?utm_source=google&utm_medium=cpc&utm_campaign=lancamento-260907",
+    );
+    assert.equal(utmSource.value, "google");
+    assert.equal(utmMedium.value, "cpc");
+    assert.equal(utmCampaign.value, "lancamento-260907");
+  });
+
+  it("location.search com só utm_source preenchido deixa medium/campaign vazios (guard `if (el && v)` não sobrescreve com string vazia)", () => {
+    const { utmSource, utmMedium, utmCampaign } = setup(
+      () => Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true }) }),
+      {},
+      "?utm_source=newsletter",
+    );
+    assert.equal(utmSource.value, "newsletter");
+    assert.equal(utmMedium.value, "");
+    assert.equal(utmCampaign.value, "");
+  });
+
+  it("location.search vazio (default) deixa os 3 hidden inputs vazios — o cenário que TODO teste anterior a este cobria, exclusivamente", () => {
+    const { utmSource, utmMedium, utmCampaign } = setup(() =>
+      Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true }) }),
+    );
+    assert.equal(utmSource.value, "");
+    assert.equal(utmMedium.value, "");
+    assert.equal(utmCampaign.value, "");
+  });
+
+  it("REGRESSÃO ponta-a-ponta: o UTM prefillado a partir da query string chega no payload do POST — é o elo que, quebrado, causa a inversão silenciosa do #6980", async () => {
+    const calls: any[] = [];
+    const { submit } = setup(
+      (url, options) => {
+        calls.push({ url, options });
+        return Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true }) });
+      },
+      {},
+      "?utm_source=google&utm_medium=cpc&utm_campaign=lancamento-260907",
+    );
+
+    submit();
+    await flush();
+
+    assert.equal(calls.length, 1);
+    const payload = JSON.parse(calls[0].options.body);
+    assert.equal(payload.utm_source, "google");
+    assert.equal(payload.utm_medium, "cpc");
+    assert.equal(payload.utm_campaign, "lancamento-260907");
   });
 });
