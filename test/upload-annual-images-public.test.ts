@@ -166,6 +166,13 @@ describe("uploadAnnualImages — grava public-images.json achatado (URL -> filen
       const md5CachePath = md5CachePathFor(cachePath);
       const md5s = JSON.parse(readFileSync(md5CachePath, "utf8"));
       assert.ok(md5s["04-d1-2x1.jpg"], "sidecar de md5 grava o hash real dos bytes atuais");
+
+      // Achado do self-review do #7619: `images` é keyed por URL — sem podar
+      // a entry antiga, a URL da 1ª upload (apontando pro blob KV stale)
+      // ficava pra trás junto da nova, acumulando 1 URL morta por regeneração.
+      const onDisk = JSON.parse(readFileSync(cachePath, "utf8"));
+      const entriesForFile = Object.entries(onDisk).filter(([, f]) => f === "04-d1-2x1.jpg");
+      assert.equal(entriesForFile.length, 1, "re-upload deve substituir a URL antiga, não acumular");
     } finally {
       cleanup();
     }

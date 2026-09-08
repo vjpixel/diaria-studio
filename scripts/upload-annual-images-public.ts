@@ -174,6 +174,16 @@ export async function uploadAnnualImages(opts: UploadAnnualOptions): Promise<Upl
       throw new Error("cfConfig ausente — passe cfConfig ou opts.uploaders.uploadToCloudflare");
     }
     const url = await uploadToCloudflare(imagePath, key, opts.cfConfig!);
+    // `images` é keyed por URL, não por filename — um re-upload (md5 mudou)
+    // gera uma URL nova (o key KV leva o md5 no sufixo). Sem podar a entry
+    // antiga primeiro, a URL velha (apontando pro blob KV stale) ficava pra
+    // trás em `images`, e `public-images.json` acumulava 1 URL morta por
+    // regeneração — a mesma classe de staleness silenciosa do #7618, um
+    // nível acima (URL morta em vez de md5 nunca comparado). Achado do
+    // self-review do #7619.
+    for (const oldUrl of Object.keys(images)) {
+      if (images[oldUrl] === theme.filename) delete images[oldUrl];
+    }
     images[url] = theme.filename;
     md5s[theme.filename] = localMd5;
     uploaded++;
