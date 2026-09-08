@@ -929,3 +929,76 @@ describe("#7637 warnings de origem chegam ao ln-selection.json", () => {
     assert.equal(dupla!.ratePct, 20);
   });
 });
+
+/**
+ * #7642: banner de dado de clique incompleto — barulhento, NÃO bloqueante.
+ *
+ * A assimetria com `publish-weekly-social.ts` (que aborta a menos de
+ * `--force-incomplete-click-data`, #4511) é deliberada: aquele script
+ * DESPACHA (`--schedule`), este só escreve `ln-selection.json` e o editor
+ * cola o artigo à mão depois do gate humano do Passo 3. O que este bloco
+ * trava é justamente o par de invariantes que a decisão do #7642 escolheu:
+ * (a) o banner SAI quando o dado está incompleto; (b) o script NÃO aborta.
+ */
+describe("#7642 banner de dado incompleto: barulhento, não bloqueante", () => {
+  let root: string;
+  const stderrChunks: string[] = [];
+  const originalStderrWrite = process.stderr.write.bind(process.stderr);
+
+  before(() => {
+    root = mkTmpRoot();
+
+    // 260904 (pós-cutover) com edição no disco mas SEM post nenhum no
+    // cache — o caso que dispara `editionsMissingClickData`.
+    writeEdition(
+      root,
+      "260904",
+      [
+        "**DESTAQUE 1 | 💼 MERCADO**",
+        "",
+        "**[Materia sem cache](https://exemplo.com/sem-cache)**",
+        "",
+        "Corpo.",
+        "",
+        "Por que isso importa:",
+        "",
+        "Explicação.",
+        "",
+      ].join("\n"),
+    );
+
+    process.stderr.write = ((chunk: unknown) => {
+      stderrChunks.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      process.argv = ["node", "select-linkedin-weekly.ts", "--publish-monday", "260907"];
+      selectMain(root);
+    } finally {
+      process.stderr.write = originalStderrWrite;
+    }
+  });
+
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  it("NÃO aborta — a seleção é escrita mesmo com dado incompleto", () => {
+    const outPath = join(root, "data/weekly/26w36/_internal/ln-selection.json");
+    assert.ok(existsSync(outPath), "ln-selection.json deveria existir — este script não bloqueia (#7642)");
+  });
+
+  it("emite banner em stderr nomeando a edição sem dado de clique", () => {
+    const stderr = stderrChunks.join("");
+    assert.ok(/ATENÇÃO: dado de clique INCOMPLETO/.test(stderr), `stderr: ${stderr.slice(0, 500)}`);
+    assert.ok(stderr.includes("260904"), `banner deveria nomear a edição: ${stderr.slice(0, 500)}`);
+  });
+
+  it("o banner manda rodar kit-sync — o canal vivo desde o cutover (#7629)", () => {
+    const stderr = stderrChunks.join("");
+    assert.ok(/kit-sync\.ts/.test(stderr), `stderr: ${stderr.slice(0, 500)}`);
+  });
+
+  it("o banner diz explicitamente que a seleção foi escrita assim mesmo", () => {
+    const stderr = stderrChunks.join("");
+    assert.ok(/seleção FOI escrita mesmo assim/.test(stderr), `stderr: ${stderr.slice(0, 500)}`);
+  });
+});

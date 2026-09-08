@@ -478,6 +478,81 @@ export function main(rootDirOverride?: string) {
     console.log("\nWarnings:");
     for (const w of warnings) console.log(`  - ${w}`);
   }
+
+  emitIncompleteClickDataBanner({
+    cycle,
+    editionsMissingClickData,
+    manifestCount: manifest.length,
+    postCutoverBeehiiv,
+  });
+}
+
+/**
+ * Banner de dado de clique INCOMPLETO (#7642) — barulhento, **não**
+ * bloqueante.
+ *
+ * ## Por que não bloqueia (a assimetria com o irmão é deliberada)
+ *
+ * `publish-weekly-social.ts` (semanal do Instagram) aborta no mesmo sinal, a
+ * menos de `--force-incomplete-click-data` (#4511). A razão declarada lá é
+ * específica do que aquele script FAZ: ele **despacha** (`--schedule`
+ * enfileira post no Worker), e em `--no-gates` "ninguém via o warning antes
+ * do `--schedule` disparar" — sem o abort, dado incompleto viraria post
+ * publicado sem nenhum humano no meio.
+ *
+ * Aqui não existe esse caminho. Este script só ESCREVE
+ * `ln-selection.json`; quem publica é o editor, colando o artigo à mão na
+ * newsletter nativa do LinkedIn (não há API de publicação), depois de passar
+ * pelo gate humano do Passo 3 do SKILL.md — que existe justamente pra ele
+ * olhar a seleção antes de virar artigo. Abortar aqui adicionaria fricção
+ * sem reduzir blast radius nenhum: não há nada pra "não disparar".
+ *
+ * **O que o #7642 conserta é o VOLUME do sinal, não a ausência de gate.** O
+ * aviso existia, mas como mais uma linha entre 4-5 warnings — e numa lista
+ * onde os outros são rotina (empate dentro do ruído, linguagem comercial),
+ * "esta edição não competiu por clique" some. Banner com a mesma
+ * proeminência visual do irmão, em `stderr`, resolve isso sem trocar a
+ * natureza do fluxo.
+ *
+ * Se um dia este script ganhar um caminho que publique sozinho, a decisão
+ * muda junto — é o DESPACHO que justifica o abort, não a incompletude.
+ */
+function emitIncompleteClickDataBanner(args: {
+  cycle: string;
+  editionsMissingClickData: string[];
+  manifestCount: number;
+  postCutoverBeehiiv: string[];
+}): void {
+  const { cycle, editionsMissingClickData, manifestCount, postCutoverBeehiiv } = args;
+  if (editionsMissingClickData.length === 0 && manifestCount === 0 && postCutoverBeehiiv.length === 0) return;
+
+  const linhas = [
+    "",
+    "=".repeat(72),
+    `ATENÇÃO: dado de clique INCOMPLETO para a newsletter semanal ${cycle}.`,
+    "",
+    ...(editionsMissingClickData.length > 0
+      ? [`• ${editionsMissingClickData.length} edição(ões) sem post confirmado no cache Beehiiv/Kit: ${editionsMissingClickData.join(", ")}.`]
+      : []),
+    ...(postCutoverBeehiiv.length > 0
+      ? [`• ${postCutoverBeehiiv.length} edição(ões) pós-cutover resolveram pro cache BEEHIIV (0 assinantes ativos): ${postCutoverBeehiiv.join(", ")}.`]
+      : []),
+    ...(manifestCount > 0 ? [`• ${manifestCount} post(s) Beehiiv sem clicks enriquecidos por link.`] : []),
+    "",
+    "Candidatos dessas edições entram no ranking com ratePct=0 — indistinguível",
+    "de 'genuinamente zero cliques'. Eles NÃO competiram de verdade por manchete.",
+    "",
+    "Antes de aprovar no gate do Passo 3:",
+    "  npx tsx scripts/kit-sync.ts        # cache Kit (é o canal vivo desde 04/09)",
+    "  npx tsx scripts/select-linkedin-weekly.ts --manifest-only   # + beehiiv-clicks-enricher",
+    "e re-rode este script.",
+    "",
+    "A seleção FOI escrita mesmo assim — este script não publica nada, e o gate",
+    "humano do Passo 3 vem antes de qualquer coisa ir pro LinkedIn (#7642).",
+    "=".repeat(72),
+    "",
+  ];
+  console.error(linhas.join("\n"));
 }
 
 if (isMainModule(import.meta.url)) {
