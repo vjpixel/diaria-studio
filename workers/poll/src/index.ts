@@ -47,9 +47,11 @@ import {
   renderBrandShellStyles, // #4110: mesma régua+rodapé de leaderboard/arquivo — /vote era a única página pública sem shell
   renderBrandFooter, // #4110
   isOwnWorkOnlyCredit, // #4258 item 2: suprime "Own work" cru gravado no KV de edições antigas
-  imageCacheControlFor, // #5136: Cache-Control immutable pras imagens content-addressed de /img/{key}
 } from "./lib";
 import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts"; // #4777
+// #7657: miolo de /img/{key} compartilhado com workers/site, que serve as
+// MESMAS imagens em diar.ia.br/img/{key} (mesma origem do documento da home).
+import { imageKeyFromPath, serveKvImage } from "../../../scripts/lib/shared/kv-image.ts";
 // #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
 // partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
 // cor/fonte inline aqui (ver test/poll-ds-tokens.test.ts para a trava).
@@ -1605,107 +1607,27 @@ async function propagateNicknameByMonth(
 // ── /img/{key} — serve imagens armazenadas no KV ─────────────────────────────
 
 /**
- * #5136: ETag forte via SHA-256 dos bytes — barato o bastante pra rodar por
- * request nas imagens (<500 KB cada, ver medição na issue) e correto
- * independente de a key ser content-addressed ou não (cobre também as
- * imagens de convenção fixa do É IA?, cujo conteúdo PODE mudar sob o mesmo
- * key numa regeneração — o ETag muda junto, então `If-None-Match` continua
- * válido mesmo aí).
+ * #7657: o corpo desta função (allowlist de key #4112, ETag SHA-256 +
+ * `If-None-Match` #5136, `Cache-Control` por classe de key #5136, CORS em
+ * todos os paths #1132 P2.4) virou `serveKvImage` em
+ * `scripts/lib/shared/kv-image.ts`, pra que `workers/site` sirva as MESMAS
+ * imagens em `diar.ia.br/img/{key}` — mesma origem do documento da home,
+ * fora do alcance de um bloqueador de conteúdo por hostname (o modo de
+ * falha medido ao vivo em 08/09/2026; ver docstring do módulo).
+ *
+ * Esta rota (`eia.diar.ia.br/img/{key}`) NÃO está depreciada e não vai sair:
+ * toda edição já enviada por e-mail e todas as páginas `/p/{slug}` do acervo
+ * carregam esta URL. As duas leem o mesmo KV e devolvem a mesma resposta.
+ *
+ * A assinatura fica como estava — `handleImage` é exportada e usada por
+ * `test/worker-img-cors.test.ts` / `test/poll-img-key-allowlist-*.test.ts`.
  */
-async function sha256HexOfBytes(buf: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", buf);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 export async function handleImage(path: string, env: Env, request?: Request): Promise<Response> {
-  // CORS: imagens são públicas — emitir Access-Control-Allow-Origin em todos
-  // os paths (200 e 404). #1132 P2.4: pre-check de CORS faz probe contra key
-  // que pode não existir; com CORS apenas em 200, pre-check produzia falso
-  // negativo. Padrão consistente.
-  const corsHeaders = { "Access-Control-Allow-Origin": "*" };
-
-  // #4112: `decodeURIComponent` lança URIError em `%` malformado (`/img/%`).
-  // Sem este guard, uma rota pública devolvia 500 pra input trivial.
-  let key: string;
-  try {
-    key = decodeURIComponent(path.slice("/img/".length));
-  } catch {
-    return new Response("not found", { status: 404, headers: corsHeaders });
+  const key = imageKeyFromPath(path);
+  if (key === null) {
+    return new Response("not found", { status: 404, headers: { "Access-Control-Allow-Origin": "*" } });
   }
-  if (!key) {
-    return new Response("not found", { status: 404, headers: corsHeaders });
-  }
-
-  // #4112 (P0, achado do review 260727 e CONFIRMADO em produção): sem esta
-  // allowlist, `/img/{key}` era um leitor arbitrário do KV INTEIRO — a chave
-  // vinha crua da URL direto pro `get`. Em produção dava, sem autenticação
-  // nenhuma e com `Access-Control-Allow-Origin: *`:
-  //   GET /img/correct:{hoje}                 → o gabarito do dia (spoiler
-  //                                             total; a chave é escrita no
-  //                                             Stage 4, ANTES do e-mail sair)
-  //   GET /img/leaderboard-snapshot:{slug}    → e-mails dos leitores EM CLARO
-  //                                             (o snapshot guarda `email`
-  //                                             cru; ~50 por mês)
-  //   GET /img/score:{email}, /img/vote:{ed}:{email}, /img/nickname:{apelido}
-  //                                           → dado individual + harvest de
-  //                                             e-mail a partir dos apelidos
-  //                                             públicos do leaderboard
-  // Isso derrubava de uma vez o anti-spoiler de todas as outras superfícies e
-  // o mascaramento de e-mail (`maskEmail` #3118, `hashEmailForMatch` #4029).
-  //
-  // O gate é o prefixo `img-`: TODA chave de imagem gravada pelo pipeline usa
-  // `img-{edition}-{basename}` / `img-monthly-*` (upload-images-public.ts,
-  // lib/mensal/monthly-image-upload.ts), e NENHUMA chave de estado começa
-  // assim — todas usam namespace com `:` (`correct:`, `stats:`, `vote:`,
-  // `score:`, `score-by-month:`, `nickname:`, `counted:`, `votelog:`,
-  // `identify-linked:`, `leaderboard-snapshot:`, `eiameta:`, `rl:`,
-  // `subscriber:`, mais os prefixos de brand `clarice:`/`web:`) ou são
-  // singletons (`valid_editions`). Recusar `:` é defesa em profundidade
-  // (redundante hoje, protege de uma chave futura tipo `img-algo:secreto`) e
-  // não restringe charset de filename — não quebra nenhuma URL já enviada em
-  // edição passada, que é o requisito duro aqui.
-  if (!/^img-[^:]+$/.test(key)) {
-    return new Response("not found", { status: 404, headers: corsHeaders });
-  }
-
-  const value = await env.POLL.get(key, "arrayBuffer");
-  if (!value) {
-    return new Response("not found", { status: 404, headers: corsHeaders });
-  }
-
-  // #5136: Cache-Control por classe de key — `imageCacheControlFor` dá
-  // `immutable`/1 ano pras keys content-addressed (destaques d1/d2/d3, nome
-  // já carrega o hash do conteúdo) e preserva o `max-age=3600` de sempre
-  // (#1242) pras keys de convenção fixa (É IA? A/B), que podem apontar pra
-  // bytes diferentes numa regeneração — ver docstring de
-  // `isContentAddressedImageKey`/`imageCacheControlFor` em lib.ts.
-  const etag = `"${await sha256HexOfBytes(value)}"`;
-  const cacheControl = imageCacheControlFor(key);
-
-  // #5136: conditional GET — devolve 304 sem corpo quando o client já tem
-  // os mesmos bytes (If-None-Match). Vale sobretudo pras keys de convenção
-  // fixa: `max-age=3600` faz o browser revalidar a cada hora, e a maioria
-  // das revalidações vai bater o mesmo ETag (a imagem só muda numa
-  // regeneração real).
-  const ifNoneMatch = request?.headers.get("If-None-Match");
-  if (ifNoneMatch === etag) {
-    return new Response(null, {
-      status: 304,
-      headers: { ...corsHeaders, "Cache-Control": cacheControl, ETag: etag },
-    });
-  }
-
-  // Imagens do È IA? são sempre JPEG.
-  return new Response(value, {
-    headers: {
-      ...corsHeaders,
-      "Content-Type": "image/jpeg",
-      "Cache-Control": cacheControl,
-      ETag: etag,
-    },
-  });
+  return serveKvImage(key, env.POLL, request?.headers.get("If-None-Match"));
 }
 
 // ── /sitemap.xml (#5135 item 2) ──────────────────────────────────────────────

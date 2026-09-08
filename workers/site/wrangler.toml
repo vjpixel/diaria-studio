@@ -98,6 +98,22 @@ run_worker_first = true
 # então `html_handling` não se aplica a ele.
 html_handling = "drop-trailing-slash"
 
+# #7657: KV `POLL` — o MESMO namespace que `workers/poll/wrangler.toml`
+# declara (id idêntico, conferido contra aquele arquivo). Este Worker só LÊ,
+# e só através de `serveKvImage` (scripts/lib/shared/kv-image.ts), que aplica
+# a allowlist de key do #4112 — o KV guarda o gabarito do dia, e-mails de
+# leitores em claro e votos individuais além das imagens, então uma leitura
+# nova daqui que não passe por aquele helper reabriria o buraco do #4112 num
+# host novo.
+#
+# `id` real e não placeholder de propósito: `deploy-site.yml` roda
+# `wrangler deploy` em todo push que toque `workers/site/**`, e o wrangler
+# valida o id no `deploy` (mesma armadilha já documentada em
+# workers/poll/wrangler.toml pro binding OPCIONAL `SUBSCRIBERS_KV`).
+[[kv_namespaces]]
+binding = "POLL"
+id = "72784da4ae39444481eb422ebac357c6"
+
 # #5920: Workers Logs ligado (observability.enabled = true) + head_sampling_rate = 1
 # em todos os Workers com `main` público — mesmo padrão de
 # workers/livros/wrangler.toml. Sem isto, console.log/console.error do
