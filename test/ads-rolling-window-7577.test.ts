@@ -348,13 +348,38 @@ describe("#7577 — CAC diário (ontem/anteontem) reusa as guardas da janela", (
     assert.equal(serie[1].cadastros, 10);
   });
 
-  it("dia sem nenhuma linha de apuração não é um dia de gasto zero", () => {
+  it("REGRESSÃO (review #7632): dia sem linha de apuração devolve null em gasto E cadastros", () => {
+    // O buraco NÃO está no último dia da série, de propósito: é justamente o
+    // caso que `findMissingClicksBracosForDate` (guard da CLI) não cobre, e o
+    // único jeito de ele aparecer é aqui.
+    //
+    // O bug era ler a nulidade de `r.cadastrosAcumulado`, que no ramo sem
+    // `ultima` traz a última linha CONHECIDA (aqui, a de 09-05, com 10) — o dia
+    // saía com `cadastros: 0`, afirmando "nenhum cadastro em 09-06" sobre um
+    // dia que ninguém mediu. A versão anterior deste teste passava mesmo com o
+    // bug, porque não checava `cadastros` nem `gasto`.
     const rows = [row("2026-09-05", 100, 10), row("2026-09-07", 300, 34)];
     const serie = computeDailyCacSeries(rows, { canal: CANAL, ate: "2026-09-07", n: 2 });
     const anteontem = serie[0];
     assert.equal(anteontem.dia, "2026-09-06");
+    assert.equal(anteontem.cadastros, null, "0 aqui afirmaria 'nenhum cadastro' sobre um dia não medido");
+    assert.equal(anteontem.gasto, null, "0 aqui afirmaria 'não gastou' sobre um dia não medido");
     assert.equal(anteontem.custoPorCadastro, null);
     assert.equal(anteontem.comparavel, false);
     assert.match(anteontem.motivo ?? "", /sem nenhuma linha de apuração/);
+
+    // E o dia que TEM linha continua medido — a guarda nova não pode engolir
+    // o caminho normal junto.
+    assert.equal(serie[1].gasto, 200);
+    assert.equal(serie[1].cadastros, 24);
+  });
+
+  it("dia com linha e gasto genuinamente zero continua sendo 0, não null", () => {
+    // A contrapartida do teste acima: braço que não entregou num dia em que
+    // FOI apurado é um fato medido, e apagá-lo esconderia um braço parado.
+    const rows = [row("2026-09-06", 200, 24), row("2026-09-07", 200, 30)];
+    const d = computeDailyCac(rows, { canal: CANAL, dia: "2026-09-07" });
+    assert.equal(d.gasto, 0);
+    assert.equal(d.cadastros, 6);
   });
 });

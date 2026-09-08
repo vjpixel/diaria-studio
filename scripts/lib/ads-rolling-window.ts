@@ -330,8 +330,16 @@ export function descreverEstabilidade(r: RollingWindowResult): string {
 export interface DailyCac {
   /** Dia BRT (`YYYY-MM-DD`) fechado a que este CAC se refere. */
   dia: string;
-  gasto: number;
-  /** `null` = não medido (coluna vazia no CSV), nunca "zero cadastros" (§3.5). */
+  /**
+   * `null` = o dia não tem linha de apuração no CSV, nunca "gastou zero".
+   *
+   * Buraco de reconciliação acontece — a §8.3 é um processo humano —, e a série
+   * diária é onde ele passa despercebido: o guard de cobertura da CLI
+   * (`findMissingClicksBracosForDate`) só valida o ÚLTIMO dia, então um buraco
+   * em "anteontem" atravessa sem nenhum aviso.
+   */
+  gasto: number | null;
+  /** `null` = não medido (coluna vazia, ou dia sem linha nenhuma), nunca "zero cadastros" (§3.5). */
   cadastros: number | null;
   /** `null` quando abaixo do piso de amostra ou sem dado. Ver `motivo`. */
   custoPorCadastro: number | null;
@@ -345,12 +353,34 @@ export function computeDailyCac(
   opts: { canal: string; dia: string },
 ): DailyCac {
   const r = computeRollingWindow(rows, { canal: opts.canal, ate: opts.dia, dias: 1 });
+  // Numa janela de 1 dia, "existe linha PARA ESTE DIA" é o discriminante entre
+  // medido e não-medido — e NÃO dá para lê-lo de `r`.
+  //
+  // Achado P1 do review da PR #7632: sem linha no dia, o ramo sem `ultima` de
+  // `computeRollingWindow` devolve `cadastrosAcumulado` da última linha
+  // CONHECIDA (de qualquer data anterior) junto com `cadastrosJanela: 0`.
+  // Testar a nulidade de `r.cadastrosAcumulado` responde "existe alguma leitura
+  // histórica deste braço?", que não é a pergunta — e o dia sai como
+  // `cadastros: 0`, isto é "nenhum cadastro neste dia", sobre um dia que
+  // ninguém mediu. A tabela não imprime essa coluna, mas o `--json` imprime, e
+  // consumo programático é literalmente o motivo de ele existir.
+  const temApuracao = rows.some((x) => x.canal === opts.canal && x.data_apuracao === opts.dia);
+  if (!temApuracao) {
+    return {
+      dia: opts.dia,
+      gasto: null,
+      cadastros: null,
+      custoPorCadastro: null,
+      comparavel: false,
+      motivo: r.motivo,
+    };
+  }
   return {
     dia: opts.dia,
     gasto: r.gastoJanela,
-    // Mesma distinção do relatório: sem a coluna do dia preenchida não há
-    // numerador, e `cadastrosJanela` seria 0 por construção — o que afirmaria
-    // "nenhum cadastro" onde a verdade é "não medido".
+    // O outro caminho para "não medido": a linha EXISTE mas a coluna está
+    // vazia. Sem ela não há numerador, e `cadastrosJanela` seria 0 por
+    // construção — afirmando "nenhum cadastro" onde a verdade é "não medido".
     cadastros: r.cadastrosAcumulado == null ? null : r.cadastrosJanela,
     custoPorCadastro: r.custoPorCadastro,
     comparavel: r.comparavel,

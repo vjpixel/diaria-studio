@@ -233,7 +233,10 @@ export function main(argv = process.argv.slice(2)): number {
   }
 
   console.log(`Janela móvel de ${dias} dias (BRT), até ${ate} — último dia fechado.\n`);
-  const diasSerie = Array.from({ length: DIAS_CAC_DIARIO }, (_, i) => shiftDate(ate, -(DIAS_CAC_DIARIO - 1 - i)));
+  // Rótulos derivados da PRÓPRIA série, nunca recalculados aqui: repetir a
+  // fórmula de datas deixaria cabeçalho e células livres para divergir em
+  // silêncio — "número certo com rótulo errado" (achado do review da #7632).
+  const diasSerie = [...diarios.values()][0]?.map((d) => d.dia) ?? [];
   console.log(
     `${"braço".padEnd(28)} ${diasSerie.map((d) => `CAC ${d.slice(5)}`.padStart(11)).join(" ")} | ` +
       `${"gasto".padStart(11)} ${"cad".padStart(4)} ${"CAC".padStart(11)} | ` +
