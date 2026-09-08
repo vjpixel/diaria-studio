@@ -158,7 +158,11 @@ export interface HomeFeedEntry {
   /** Src do primeiro `<img class="hero">` da página da edição — capa do D1
    *  (#6978 item 1). `null` quando a página não tem `img.hero`, o parse
    *  falha, ou o `src` vem vazio — a home nunca quebra por capa ausente,
-   *  degrada pra layout só-texto (ver `extractHeroImage`). */
+   *  degrada pra layout só-texto (ver `extractHeroImage`).
+   *
+   *  #7657: já vem reescrito pra `/img/{key}` (mesma origem) quando a capa é
+   *  do KV do É IA? — ver `sameOriginImageUrl`. Src de outro host passa
+   *  intacto e continua absoluto. */
   image: string | null;
   /** Tempo de leitura estimado em minutos, arredondado (#7022 item 2).
    *  `null`/ausente quando o HTML não rende nenhuma palavra — o card
@@ -221,9 +225,39 @@ export function extractHeroImage(html: string): string | null {
   for (const tag of imgTags) {
     if (!/\bclass=["']hero["']/i.test(tag)) continue;
     const srcMatch = tag.match(/\bsrc=["']([^"']+)["']/i);
-    if (srcMatch && srcMatch[1]) return srcMatch[1];
+    if (srcMatch && srcMatch[1]) return sameOriginImageUrl(srcMatch[1]);
   }
   return null;
+}
+
+/**
+ * #7657: reescreve `https://eia.diar.ia.br/img/{key}` → `/img/{key}`.
+ *
+ * O `src` que `extractHeroImage` acha vem do corpo da edição, que aponta pro
+ * host de marca do "É IA?" — host DIFERENTE do documento da home. Um
+ * bloqueador de conteúdo no navegador do leitor que corte esse subdomínio
+ * derruba as 7 capas da home de uma vez, e a falha é 100% client-side: não
+ * gera log nosso, não dá pra medir quantos leitores veem a home quebrada
+ * (reproduzido ao vivo no Chrome do editor em 08/09/2026 — requisições
+ * morrendo em 4-10 ms com `transferSize: 0`, enquanto o analytics da zona
+ * registrava ZERO 403 em `/img/` no mesmo período).
+ *
+ * `workers/site` passou a servir os MESMOS bytes em `/img/{key}` (ver
+ * `scripts/lib/shared/kv-image.ts`), então a home referencia a própria
+ * origem e não há hostname de terceiro pra um filtro cortar.
+ *
+ * URL RELATIVA de propósito, não `https://diar.ia.br/img/...`: o mesmo HTML
+ * é servido pelo apex e pelo `*.workers.dev` do Worker, e uma URL absoluta
+ * mandaria o preview cross-host de volta pro apex — anulando o mesmo-origem
+ * justamente onde ele é testado.
+ *
+ * Só toca `/img/` do host do É IA?. Qualquer outro src (`media.beehiiv.com`
+ * nas edições antigas, `poll.diaria.workers.dev` nas legadas) passa intacto:
+ * este Worker não sabe servir aqueles bytes, reescrever daria imagem morta.
+ */
+export function sameOriginImageUrl(src: string): string {
+  const match = src.match(/^https?:\/\/eia\.diar\.ia\.br(\/img\/[^?#]*(?:[?#].*)?)$/i);
+  return match ? match[1] : src;
 }
 
 /**

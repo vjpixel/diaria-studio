@@ -38,6 +38,10 @@ function fakeEnv(assetStatus: number, assetBody = "<html>fake asset</html>"): { 
         return new Response(assetBody, { status: assetStatus });
       },
     },
+    // #7657: o Worker ganhou o binding do KV `POLL` pra servir `/img/{key}`.
+    // Nenhum caso deste arquivo toca `/img/`, então um KV vazio basta — se
+    // algum passasse por aqui, o `null` viraria 404 e o teste acusaria.
+    POLL: { get: async () => null },
   };
   return { env, calls };
 }

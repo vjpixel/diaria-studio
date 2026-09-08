@@ -1070,34 +1070,20 @@ export function closedPeriodCacheControl(): string {
 }
 
 /**
- * #5136: distingue keys de imagem com cache-bust por hash
- * (`img-{AAMMDD}-{base}-{md5short}.{ext}`, `md5short` = 8 hex chars
- * minúsculos — ver `cloudflareKvKey` em `scripts/upload-images-public.ts`)
- * das keys de convenção FIXA sem hash (`img-{AAMMDD}-01-eia-{A|B}.jpg` e as
- * variantes real/ia legadas — `noCacheBust: true`, #1704), cujo fluxo
- * `/vote` depende do nome nunca mudar entre regenerações da mesma edição.
+ * #5136 / #7657: `isContentAddressedImageKey` + `imageCacheControlFor` —
+ * implementação movida pra `scripts/lib/shared/kv-image.ts` quando
+ * `workers/site` passou a servir as MESMAS imagens em `diar.ia.br/img/{key}`
+ * (mesma origem do documento da home, fora do alcance de um bloqueador por
+ * hostname). Os dois Workers precisam do MESMO `Cache-Control` por classe de
+ * key — duas cópias divergiriam em silêncio e a mesma imagem passaria a ter
+ * validade diferente conforme o host que a serviu.
  *
- * Só a 1ª categoria pode receber `Cache-Control: immutable` de longa
- * duração: a 2ª pode passar a apontar pra bytes diferentes a qualquer
- * momento (correção pós-envio regenera a mesma key), então servir
- * `immutable` pra ela faria o browser nunca revalidar — imagem errada
- * presa em cache por até 1 ano.
+ * Re-export, e não import direto nos callers, porque as duas já eram
+ * superfície pública deste módulo (`test/poll-img-etag-cache-5136.test.ts`
+ * importa daqui) — mover sem re-exportar quebraria justamente o teste que
+ * trava o contrato de cache.
  */
-export function isContentAddressedImageKey(key: string): boolean {
-  return /-[0-9a-f]{8}\.[A-Za-z0-9]+$/.test(key);
-}
-
-/**
- * #5136: `Cache-Control` pra `/img/{key}` — `immutable` de 1 ano quando a
- * key é content-addressed (ver `isContentAddressedImageKey` acima), ou o
- * mesmo `max-age=3600` de sempre (#1242) pras keys de convenção fixa
- * (É IA? A/B), que podem apontar pra bytes diferentes numa regeneração.
- */
-export function imageCacheControlFor(key: string): string {
-  return isContentAddressedImageKey(key)
-    ? "public, max-age=31536000, immutable"
-    : "public, max-age=3600";
-}
+export { isContentAddressedImageKey, imageCacheControlFor } from "../../../scripts/lib/shared/kv-image.ts";
 
 /**
  * Href do leaderboard preservando o brand (`?brand=clarice` só p/ não-default).

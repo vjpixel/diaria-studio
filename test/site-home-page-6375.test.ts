@@ -79,9 +79,13 @@ describe("extractPageMeta", () => {
 });
 
 describe("extractHeroImage", () => {
+  // #7657: o src de `eia.diar.ia.br/img/` sai daqui já reescrito pra caminho
+  // relativo (mesma origem do documento) — ver `sameOriginImageUrl` e
+  // test/site-img-same-origin-7657.test.ts para o porquê e para os casos
+  // que NÃO são reescritos.
   it("extrai o src do primeiro img.hero", () => {
     const html = fakePageHtml("T", "D", "https://eia.diar.ia.br/img/img-260729-04-d1-2x1-x.jpg");
-    assert.equal(extractHeroImage(html), "https://eia.diar.ia.br/img/img-260729-04-d1-2x1-x.jpg");
+    assert.equal(extractHeroImage(html), "/img/img-260729-04-d1-2x1-x.jpg");
   });
 
   it("devolve o PRIMEIRO img.hero quando há vários (D1, não D2/D3)", () => {
@@ -89,7 +93,14 @@ describe("extractHeroImage", () => {
       <img class="hero" src="https://eia.diar.ia.br/img/d1.jpg" alt="d1">
       <img class="hero" src="https://eia.diar.ia.br/img/d2.jpg" alt="d2">
     </body></html>`;
-    assert.equal(extractHeroImage(html), "https://eia.diar.ia.br/img/d1.jpg");
+    assert.equal(extractHeroImage(html), "/img/d1.jpg");
+  });
+
+  it("src de host que este Worker não serve passa intacto (#7657)", () => {
+    const html = `<!DOCTYPE html><html><body>
+      <img class="hero" src="https://media.beehiiv.com/uploads/asset/file/x/capa.png" alt="d1">
+    </body></html>`;
+    assert.equal(extractHeroImage(html), "https://media.beehiiv.com/uploads/asset/file/x/capa.png");
   });
 
   it("devolve null quando não há img.hero", () => {
@@ -129,9 +140,14 @@ describe("buildHomeFeed", () => {
     assert.equal(feed[1].slug, "edicao-anterior");
   });
 
-  it("popula image quando a página tem img.hero", () => {
+  it("popula image quando a página tem img.hero, reescrita pra mesma origem (#7657)", () => {
     const feed = buildHomeFeed(sitemapXml, (slug) => pages[slug] ?? null);
-    assert.equal(feed[0].image, "https://eia.diar.ia.br/img/img-x-04-d1-2x1-x.jpg");
+    // Até o #7657 esta asserção esperava a URL absoluta do host do É IA?
+    // (`https://eia.diar.ia.br/img/...`). Mudou de propósito: aquele host é
+    // diferente do documento da home, e um bloqueador no navegador do leitor
+    // que o corte derruba todas as capas de uma vez, sem gerar log nosso.
+    // `workers/site` passou a servir os mesmos bytes em `/img/{key}`.
+    assert.equal(feed[0].image, "/img/img-x-04-d1-2x1-x.jpg");
   });
 
   it("image é null (nunca pula a entrada) quando a página não tem img.hero", () => {

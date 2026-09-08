@@ -32,11 +32,29 @@
  * Qualquer outro path (`/`, `/subscribe`, acervo que EXISTE) segue
  * exatamente como antes — `env.ASSETS.fetch(request)` é sempre a 1ª coisa
  * chamada, e só um 404 especificamente em `/p/{slug}` muda de rumo.
+ *
+ * #7657 — 2ª responsabilidade deste script: `/img/{key}` serve as capas das
+ * edições a partir do KV `POLL`, os MESMOS bytes que `workers/poll` já servia
+ * em `eia.diar.ia.br/img/{key}`. Motivo: as capas da home vinham de um host
+ * DIFERENTE do documento, e um bloqueador de conteúdo no navegador do leitor
+ * que corte o subdomínio derruba as 7 imagens da home de uma vez — sem gerar
+ * log nosso, então sem como medir quantos leitores veem a página quebrada
+ * (reproduzido ao vivo em 08/09/2026, ver a issue). Servindo na mesma origem
+ * do documento não há hostname de terceiro pra um filtro cortar.
+ *
+ * `eia.diar.ia.br/img/{key}` continua no ar, permanentemente: toda edição já
+ * ENVIADA por e-mail e as 262 páginas `/p/{slug}` do acervo carregam aquela
+ * URL. Este path é adição, nunca substituição.
  */
 import { EXPECTED_SUBSCRIBE_REDIRECT_HOST } from "../../../scripts/lib/apex-cutover.ts";
+// #7657: mesmo miolo que workers/poll usa em eia.diar.ia.br/img/{key}.
+import { imageKeyFromPath, serveKvImage, type KvImageStore } from "../../../scripts/lib/shared/kv-image.ts";
 
 export interface Env {
   ASSETS: Fetcher;
+  /** #7657: KV `POLL` — o MESMO namespace que `workers/poll` lê. Só leitura
+   *  aqui; quem escreve continua sendo a pipeline (upload-images-public.ts). */
+  POLL: KvImageStore;
 }
 
 /** Casa `/p/{slug}` (com ou sem barra final — `html_handling` já resolve a
@@ -49,6 +67,20 @@ export function matchArchiveSlug(pathname: string): string | null {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // #7657: `/img/{key}` é resolvido ANTES do asset lookup — não existe
+    // arquivo nenhum em `public/img/`, então deixar cair no `env.ASSETS`
+    // primeiro só gastaria um 404 pra chegar aqui de qualquer jeito. Só GET
+    // e HEAD: o KV é leitura pura, qualquer outro método cai no fluxo de
+    // sempre e termina no 404 do asset (mesmo critério do dispatch de
+    // `/img/*` em workers/poll/src/index.ts).
+    const imageUrl = new URL(request.url);
+    if (request.method === "GET" || request.method === "HEAD") {
+      const key = imageKeyFromPath(imageUrl.pathname);
+      if (key !== null) {
+        return serveKvImage(key, env.POLL, request.headers.get("If-None-Match"));
+      }
+    }
+
     const response = await env.ASSETS.fetch(request);
     if (response.status !== 404) return response;
 
