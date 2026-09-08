@@ -161,7 +161,7 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       const dlqKey = buildDlqKey(k.name, entry.scheduled_at);
       await env.LINKEDIN_QUEUE.put(
         dlqKey,
-        JSON.stringify({ ...entry, retry_count: MAX_RETRIES }),
+        JSON.stringify({ ...entry, retry_count: MAX_RETRIES, last_error: outcome.reason }),
         { expirationTtl: DLQ_TTL_SECONDS },
       );
       await env.LINKEDIN_QUEUE.delete(k.name);
@@ -171,6 +171,11 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
     }
 
     let succeeded = false;
+    // (#7626) Capturado fora do narrowing de `outcome.status` porque o uso
+    // mais abaixo (DLQ por retry esgotado) acontece após o `if/else` que
+    // discrimina fired/failed — nesse ponto TS já não sabe mais que
+    // `!succeeded` implica `outcome.status === "failed"`.
+    let failureReason: string | undefined;
     if (outcome.status === "fired") {
       await env.LINKEDIN_QUEUE.delete(k.name);
       // (#2235 fix) Transicionar DO para fired=true + limpar payload com retry robusto.
@@ -240,6 +245,7 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
         const doStub = env.LINKEDIN_SCHEDULER.get(doId);
         await doStub.fetch("https://do/release-claim", { method: "POST" });
       } catch { /* non-fatal */ }
+      failureReason = outcome.reason;
       console.error(`[fire] ${k.name} fire failed: ${outcome.reason}`);
     }
 
@@ -262,7 +268,7 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       // `dlq:<ts>:<uuid>`). Pra schema legacy (`queue:<uuid>`), usa o uuid
       // direto. Mantém vínculo entre entry da fila e entry no DLQ.
       const dlqKey = buildDlqKey(k.name, entry.scheduled_at);
-      const dlqEntry: QueueEntry = { ...entry, retry_count: nextRetry };
+      const dlqEntry: QueueEntry = { ...entry, retry_count: nextRetry, last_error: failureReason };
       await env.LINKEDIN_QUEUE.put(dlqKey, JSON.stringify(dlqEntry), {
         expirationTtl: DLQ_TTL_SECONDS, // #894 P1-B
       });
