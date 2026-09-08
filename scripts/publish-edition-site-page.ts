@@ -807,7 +807,13 @@ export function commitAndPushSitePage(
             `problema P1-A). Commit abortado, nada foi commitado: ${outsidePathspec.join(", ")}`,
         );
       }
-      const commitPaths = pathsToStage.map((p) => ["--", p]).flat();
+      // #7604: `git commit` aceita UM único `--` separando opções de pathspec —
+      // colocar um `--` por pathspec (`.map((p) => ["--", p]).flat()`) faz o git
+      // tratar os `--` excedentes como pathspec literal e recusar com
+      // `error: pathspec '--' did not match any file(s) known to git`.
+      // Pathspecs são paths relativos do repo (forward-slash, ver `pathsToStage`)
+      // e não contêm espaço/`--`, então a concatenação direta é segura sem shell.
+      const commitPaths = ["--", ...pathsToStage];
       git(
         ["commit", "-m", `chore(site): publica página da edição /p/${slug}\n\nRefs #6202, #6598`, ...commitPaths],
         rootDir,

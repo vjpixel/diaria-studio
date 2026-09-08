@@ -681,6 +681,37 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
     assert.deepEqual(commitCall.slice(-2), ["--", "workers/site/public/p/abc"]);
   });
 
+  /**
+   * #7604 REGRESSÃO: com sitemap + home, `pathsToStage` tem 3 pathspecs e o commit
+   * resultante deve ter UM único `--` separador (git recusa `--` duplicado como
+   * pathspec literal). Antes do fix, `pathsToStage.map((p) => ["--", p]).flat()`
+   * colocava um `--` por pathspec e o git devolvia
+   * `error: pathspec '--' did not match any file(s) known to git`.
+   */
+  it("REGRESSÃO #7604: commit com sitemap+home tem UM único '--' (não um por pathspec)", () => {
+    const { git, calls } = makeGit({
+      status: () =>
+        " M workers/site/public/p/abc/index.html\n M workers/site/public/sitemap.xml\n M workers/site/public/index.html\n",
+      diff: () =>
+        "workers/site/public/p/abc/index.html\nworkers/site/public/sitemap.xml\nworkers/site/public/index.html\n",
+    });
+    const { gh } = makeGh();
+    commitAndPushSitePage("/repo", "abc", git, "workers/site/public/sitemap.xml", gh, makeLock().lock, makeSleep().sleep);
+    const commitCall = calls.find((c) => c[0] === "commit")!;
+    // pathspec final: "--" seguido dos 3 paths, sem "--" extra no meio.
+    assert.equal(commitCall[0], "commit");
+    assert.equal(commitCall[1], "-m");
+    const sepIdx = commitCall.indexOf("--");
+    assert.ok(sepIdx >= 0, "commit tem um separador --");
+    assert.equal(commitCall.indexOf("--", sepIdx + 1), -1, "não há 2º '--' após o primeiro");
+    assert.deepEqual(commitCall.slice(sepIdx), [
+      "--",
+      "workers/site/public/p/abc",
+      "workers/site/public/sitemap.xml",
+      "workers/site/public/index.html",
+    ]);
+  });
+
   it("REGRESSÃO P1-A: staged alheio fora do pathspec ⇒ lança, NÃO commita (checkout compartilhado, #5156)", () => {
     const { git, calls } = makeGit({
       status: () => " M workers/site/public/p/abc/index.html\n",
