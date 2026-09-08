@@ -4671,3 +4671,83 @@ describe("CLI consume-merge-grant: aviso de uso indevido (#7171) vai pro stderr,
     );
   });
 });
+
+// ─── CLI register --unattended (#7546) ──────────────────────────────────────
+//
+// Cobertura funcional pura de `attended`/`selfAuthorizeMerge` já vive em
+// test/session-conflicts-and-merge-grant.test.ts ("#7546 — reprodução do bug
+// real..."); aqui só a fiação do CLI — `--unattended` grava `attended: false`
+// no arquivo, e sem a flag o default por kind (`overnight`/`develop` → true)
+// continua sendo gravado explicitamente, sem mudança de comportamento pra
+// quem já chama `register` hoje.
+describe("CLI register --unattended (#7546)", () => {
+  const REGISTER_CLI = fileURLToPath(new URL("../scripts/lib/session-registry.ts", import.meta.url));
+  const REGISTER_TSX_LOADER = pathToFileURL(
+    fileURLToPath(new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url)),
+  ).href;
+  const registerRoots: string[] = [];
+
+  after(() => {
+    for (const r of registerRoots) rmSync(r, { recursive: true, force: true });
+  });
+
+  function makeRegisterRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), "register-unattended-7546-"));
+    registerRoots.push(root);
+    mkdirSync(join(root, "data", "sessions"), { recursive: true });
+    return root;
+  }
+
+  function registerCli(root: string, args: string[]) {
+    const r = spawnSync(process.execPath, ["--import", REGISTER_TSX_LOADER, REGISTER_CLI, "register", ...args], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  }
+
+  function readOnlyRecord(root: string): Record<string, unknown> {
+    const dir = join(root, "data", "sessions");
+    const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    assert.equal(files.length, 1, `esperava 1 registro, achou ${JSON.stringify(files)}`);
+    return JSON.parse(readFileSync(join(dir, files[0]!), "utf8"));
+  }
+
+  it("--unattended grava attended:false num kind que por default é atendido (overnight)", () => {
+    const root = makeRegisterRoot();
+    const res = registerCli(root, ["--kind", "overnight", "--session-id", "s-unattended", "--unattended"]);
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    const record = readOnlyRecord(root);
+    assert.equal(record.attended, false);
+  });
+
+  it("sem --unattended, overnight/develop continuam attended:true — sem mudança de comportamento", () => {
+    const root = makeRegisterRoot();
+    const res = registerCli(root, ["--kind", "develop", "--session-id", "s-atendida"]);
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    const record = readOnlyRecord(root);
+    assert.equal(record.attended, true);
+  });
+
+  it("continuo segue default attended:false mesmo sem --unattended (comportamento pré-existente preservado)", () => {
+    const root = makeRegisterRoot();
+    const res = registerCli(root, ["--kind", "continuo", "--session-id", "cron-1"]);
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    const record = readOnlyRecord(root);
+    assert.equal(record.attended, false);
+  });
+
+  it("re-registrar sem --unattended NÃO reverte uma sessão já marcada desassistida — attended é recomputado a cada register, mas o default por kind preserva o valor quando o chamador não muda de ideia", () => {
+    const root = makeRegisterRoot();
+    registerCli(root, ["--kind", "overnight", "--session-id", "s-unattended", "--unattended"]);
+    const res = registerCli(root, ["--kind", "overnight", "--session-id", "s-unattended"]);
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    const record = readOnlyRecord(root);
+    // Sem `--unattended` nesta chamada, `meta.attended` é `undefined` e
+    // `registerSession` cai pro valor PRESERVADO do registro anterior
+    // (`base.attended`) antes de considerar o default por kind — ver a
+    // docstring do campo em `SessionRecord`.
+    assert.equal(record.attended, false);
+  });
+});

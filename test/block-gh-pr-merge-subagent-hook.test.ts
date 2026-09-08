@@ -16,7 +16,7 @@ import {
   readLiveMergeGrantFor,
   readConsumedGrantFor,
   resolveGrantWasConsumed,
-  onlyContinuoCoordinatorsActive,
+  onlyUnreachableCoordinatorsActive,
   readLiveSelfAuthorizationFor,
   LOCK_HOLDER_CORRUPTED,
   sessionsDir,
@@ -1066,54 +1066,125 @@ describe("resolveGrantWasConsumed (#7223) — o hint de janela auto-consumida s�
 });
 
 // #7303: guard #5716 bloqueava `gh pr merge` de uma sessão sem escape hatch
-// quando a ÚNICA coordenadora ativa é `continuo` (cron, não conversa —
-// `grant-merge` normal é estruturalmente inalcançável). `onlyContinuoCoordinatorsActive`
+// quando toda coordenadora ativa é INALCANÇÁVEL (`grant-merge` normal é
+// estruturalmente impossível). `onlyUnreachableCoordinatorsActive`
 // é o discriminador puro; `readLiveSelfAuthorizationFor` lê o registro que
 // `selfAuthorizeMerge` (scripts/lib/session-registry.ts) grava no PRÓPRIO
 // arquivo da sessão bloqueada; `classifyMergeBlockCause` compõe os dois com
 // o merge lock exatamente como já compõe `merge_grant` (a auto-autorização
 // destrava IDENTIDADE, nunca TEMPO — o lock continua obrigatório).
+//
+// #7546: o discriminador deixou de ser o KIND (`!== "continuo"`) e passou a
+// ser a ALCANÇABILIDADE (`attended !== false`, com fallback pra kind quando
+// o record é anterior ao #7546 e não traz o campo). Sem esta metade, o
+// `selfAuthorizeMerge` corrigido concedia a auto-autorização e o `gh pr
+// merge` real continuava bloqueado aqui — as duas cópias precisam concordar.
 
-describe("onlyContinuoCoordinatorsActive (#7303)", () => {
+describe("onlyUnreachableCoordinatorsActive (#7303, #7546)", () => {
   it("nenhuma coordenadora (Map vazio) → false", () => {
-    assert.equal(onlyContinuoCoordinatorsActive(new Map()), false);
+    assert.equal(onlyUnreachableCoordinatorsActive({ kinds: new Map() }), false);
   });
 
   it("uma única coordenadora continuo → true", () => {
-    assert.equal(onlyContinuoCoordinatorsActive(new Map([["sess-continuo", "continuo"]])), true);
+    assert.equal(onlyUnreachableCoordinatorsActive({ kinds: new Map([["sess-continuo", "continuo"]]) }), true);
   });
 
   it("duas coordenadoras, ambas continuo → true", () => {
     assert.equal(
-      onlyContinuoCoordinatorsActive(
-        new Map([
+      onlyUnreachableCoordinatorsActive({
+        kinds: new Map([
           ["sess-c1", "continuo"],
           ["sess-c2", "continuo"],
         ]),
-      ),
+      }),
       true,
     );
   });
 
   it("uma coordenadora continuo + uma overnight → false (há interlocutor)", () => {
     assert.equal(
-      onlyContinuoCoordinatorsActive(
-        new Map([
+      onlyUnreachableCoordinatorsActive({
+        kinds: new Map([
           ["sess-continuo", "continuo"],
           ["sess-overnight", "overnight"],
         ]),
-      ),
+      }),
       false,
     );
   });
 
   it("uma coordenadora develop sozinha → false", () => {
-    assert.equal(onlyContinuoCoordinatorsActive(new Map([["sess-develop", "develop"]])), false);
+    assert.equal(onlyUnreachableCoordinatorsActive({ kinds: new Map([["sess-develop", "develop"]]) }), false);
   });
 
   it("não é um Map → false (fail-safe)", () => {
-    assert.equal(onlyContinuoCoordinatorsActive(undefined), false);
-    assert.equal(onlyContinuoCoordinatorsActive(null), false);
+    assert.equal(onlyUnreachableCoordinatorsActive(undefined), false);
+    assert.equal(onlyUnreachableCoordinatorsActive(null), false);
+    assert.equal(onlyUnreachableCoordinatorsActive({ kinds: undefined }), false);
+  });
+
+  // #7546 — o cenário da issue: overnight ATIVA, mas registrada
+  // `--unattended` (task agendada/dispatched, sem quem leia SendMessage).
+  it("overnight com attended:false → true (inalcançável, mesmo tratamento que continuo)", () => {
+    assert.equal(
+      onlyUnreachableCoordinatorsActive({
+        kinds: new Map([["sess-overnight", "overnight"]]),
+        attended: new Map([["sess-overnight", false]]),
+      }),
+      true,
+    );
+  });
+
+  it("overnight attended:false + continuo → true (as duas inalcançáveis)", () => {
+    assert.equal(
+      onlyUnreachableCoordinatorsActive({
+        kinds: new Map([
+          ["sess-overnight", "overnight"],
+          ["sess-continuo", "continuo"],
+        ]),
+        attended: new Map([["sess-overnight", false]]),
+      }),
+      true,
+    );
+  });
+
+  it("overnight attended:false + develop ALCANÇÁVEL → false (há interlocutor, pede a janela a ela)", () => {
+    assert.equal(
+      onlyUnreachableCoordinatorsActive({
+        kinds: new Map([
+          ["sess-overnight", "overnight"],
+          ["sess-develop", "develop"],
+        ]),
+        attended: new Map([
+          ["sess-overnight", false],
+          ["sess-develop", true],
+        ]),
+      }),
+      false,
+    );
+  });
+
+  it("continuo com attended:true explícito → false (o sinal explícito vence o kind)", () => {
+    assert.equal(
+      onlyUnreachableCoordinatorsActive({
+        kinds: new Map([["sess-continuo", "continuo"]]),
+        attended: new Map([["sess-continuo", true]]),
+      }),
+      false,
+    );
+  });
+
+  it("campo ausente (record anterior ao #7546) mantém a leitura antiga por kind", () => {
+    // continuo sem o campo continua inalcançável…
+    assert.equal(
+      onlyUnreachableCoordinatorsActive({ kinds: new Map([["c", "continuo"]]), attended: new Map() }),
+      true,
+    );
+    // …e overnight sem o campo continua alcançável (comportamento pré-#7546).
+    assert.equal(
+      onlyUnreachableCoordinatorsActive({ kinds: new Map([["o", "overnight"]]), attended: new Map() }),
+      false,
+    );
   });
 });
 
@@ -1280,7 +1351,7 @@ describe("classifyMergeBlockCause — auto-autorização (#7303)", () => {
     // este teste documenta que, se REALMENTE setado, o guard ainda assim só
     // destrava identidade (comportamento idêntico a merge_grant) — a
     // proteção real de "nunca deveria estar true aqui" vive em
-    // `selfAuthorizeMerge`/`onlyContinuoCoordinatorsActive` no entrypoint,
+    // `selfAuthorizeMerge`/`onlyUnreachableCoordinatorsActive` no entrypoint,
     // não neste classificador puro.
     const coords = new Set(["coord-overnight", "coord-develop"]);
     assert.equal(
@@ -1296,7 +1367,7 @@ describe("classifyMergeBlockCause — auto-autorização (#7303)", () => {
 // #7353 fleet review Finding 1: `selfAuthStillValid` no entrypoint CLI
 // (`scripts/lib/block-gh-pr-merge-subagent.mjs`, não exportado — só
 // testável via stdin real) precisa exigir `!scan.degraded`, não só
-// `onlyContinuoCoordinatorsActive(scan.kinds)`. Sem isso, uma varredura
+// `onlyUnreachableCoordinatorsActive(scan)`. Sem isso, uma varredura
 // DEGRADADA (uma entrada `overnight`/`develop` que falhou ao ler/parsear)
 // podia deixar `scan.kinds` só com `continuo` por SUBCONTAGEM — a auto-
 // autorização "confirmava" um estado que a varredura não confirmou de

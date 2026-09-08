@@ -63,7 +63,14 @@
  *
  * Uso CLI (chamado pelas skills — sempre SEM `--session-id`, injetado pelo
  * hook, ver acima):
- *   npx tsx scripts/lib/session-registry.ts register --kind overnight|develop|continuo [--pid N]
+ *   npx tsx scripts/lib/session-registry.ts register --kind overnight|develop|continuo [--pid N] [--unattended]
+ *     (`--unattended`, #7546: grava que esta sessão NÃO consegue receber
+ *     SendMessage/Remote Control — ex: rodando como task agendada/dispatched
+ *     sem interlocutor do outro lado. Sem a flag, o default por `kind` vale
+ *     como antes — `continuo` já nasce `attended: false` sozinho, os demais
+ *     `true`. Consumido por `selfAuthorizeMerge`: uma coordenadora
+ *     `overnight`/`develop` `--unattended` deixa de contar como "responsiva"
+ *     no guard do #5716, mesmo tratamento que `continuo` já tinha.)
  *   npx tsx scripts/lib/session-registry.ts heartbeat --kind ... [--phase X] [--active-worktrees N]
  *   npx tsx scripts/lib/session-registry.ts end --kind ... [--tag MAQUINA] [--allow-dirty]
  *     (`--tag` opcional, #5797: default é o machineTag() local; passar o tag de
@@ -338,6 +345,32 @@ export interface SessionRecord {
    * próprio record, não arquivo novo" do `merge_grant` acima. Ver
    * `selfAuthorizeMerge`. */
   self_authorized_merge?: SelfAuthorizedMerge;
+  /**
+   * #7546 — a sessão CONSEGUE receber um pedido (`SendMessage`/Remote
+   * Control) de outra sessão? Existe pra corrigir um proxy errado em
+   * `selfAuthorizeMerge`: o filtro de "coordenadora responsiva" usava
+   * `kind !== "continuo"`, assumindo que todo `overnight`/`develop` é
+   * alcançável e só `continuo` (cron) não conversa. Falso — um `overnight`
+   * rodando como task agendada/dispatched (sem terminal interativo do outro
+   * lado) tem exatamente a mesma propriedade de `continuo`: existe, está
+   * ativo, mas não há como entregar mensagem nenhuma a ela. A pergunta certa
+   * é "alcançável?", não "qual o kind?".
+   *
+   * Default quando ausente/`undefined` — decidido por `registerSession` a
+   * partir do `kind` (`continuo` → `false`; qualquer outro → `true`) —
+   * preserva o comportamento anterior a esta issue sem exigir que todo
+   * call site existente passe o campo explicitamente. Um chamador que SABE
+   * que está rodando desassistido (ex: um wrapper de scheduling que spawna
+   * a sessão sem interlocutor) passa `--unattended` no CLI `register` pra
+   * gravar `false` mesmo em kind `overnight`/`develop`.
+   *
+   * Não é auto-detectado a partir de sinais do harness (ex: variável de
+   * ambiente de modo de execução) — nenhum sinal desses está confirmado
+   * como estável/documentado no momento desta issue; inventar uma heurística
+   * sobre um sinal não verificado seria pior que exigir o flag explícito.
+   * Ver `selfAuthorizeMerge` pro consumidor.
+   */
+  attended?: boolean;
   /**
    * Campo COMPUTADO por `listActiveSessions` (#5474) — nunca persistido em
    * disco. `true` quando `now - lastHeartbeat > SOFT_STALE_MS`, sinalizando
@@ -1483,7 +1516,7 @@ export function registerSession(
   repoRoot: string,
   kind: SessionKind,
   sessionId: string,
-  meta: { pid?: number; tag?: string; startedAt?: string } = {},
+  meta: { pid?: number; tag?: string; startedAt?: string; attended?: boolean } = {},
   removeIo: PromotionRemoveIo = REAL_PROMOTION_REMOVE_IO,
 ): RegisterSessionResult {
   const tag = meta.tag ?? machineTag();
@@ -1551,6 +1584,14 @@ export function registerSession(
       if (meta.pid !== undefined) {
         record.pid = meta.pid;
       }
+      // #7546 — `attended` sempre recomputado nesta chamada quando o
+      // chamador passa `meta.attended` explícito (CLI `register` sempre
+      // passa, derivado de `--unattended`/kind); só cai pro valor
+      // preservado (`base.attended`, herdado de um registro/promoção
+      // anterior) ou pro default por kind quando nenhum dos dois existe —
+      // nunca deixa o campo definitivamente ausente pra um kind que precisa
+      // dele (`continuo`, ver docstring do campo em `SessionRecord`).
+      record.attended = meta.attended ?? base.attended ?? kind !== "continuo";
       // #6326 fleet review item 5b (decisão registrada, não "corrigida" — ambas
       // as opções são defensáveis, esta é a escolhida): quando a promoção
       // sucede e `--pid` NÃO foi passado a ESTA chamada, o `pid` do registro
@@ -4881,8 +4922,15 @@ export function selfAuthorizeMerge(
   );
   if (coordinators.length === 0) return { ok: false, reason: "no-active-coordinator" };
   if (coordinators.some((s) => s.sessionId === sessionId)) return { ok: false, reason: "caller-is-coordinator" };
-  const responsiveKinds = [...new Set(coordinators.filter((s) => s.kind !== "continuo").map((s) => s.kind))];
-  if (responsiveKinds.length > 0) {
+  // #7546 — a pergunta certa é "alcançável?" (`attended !== false`), não
+  // "qual o kind?". Antes desta issue, `kind !== "continuo"` assumia que
+  // todo overnight/develop conversa — falso pra uma rodada rodando como
+  // task agendada/dispatched, sem interlocutor do outro lado (o próprio
+  // cenário que motivou o #7303: PR pronto, sem caminho de merge). Ver a
+  // docstring de `attended` em `SessionRecord`.
+  const responsiveCoordinators = coordinators.filter((s) => s.attended !== false);
+  if (responsiveCoordinators.length > 0) {
+    const responsiveKinds = [...new Set(responsiveCoordinators.map((s) => s.kind))];
     return { ok: false, reason: "responsive-coordinator-active", coordinatorKinds: responsiveKinds };
   }
 
@@ -5383,7 +5431,14 @@ function main(): void {
         const kind = requireKind(values.kind);
         const sessionId = requireSessionId(values);
         const pid = values.pid ? Number(values.pid) : undefined;
-        const result = registerSession(repoRoot, kind, sessionId, { pid });
+        // #7546 — `--unattended` grava explicitamente que esta sessão não
+        // consegue receber SendMessage/Remote Control (ex: um wrapper de
+        // scheduling que spawna sem interlocutor do outro lado). Sem a
+        // flag, `registerSession` aplica o default por kind (ver docstring
+        // de `attended` em `SessionRecord`) — nenhuma mudança pra quem já
+        // chama `register` sem essa flag hoje.
+        const attended = flags.has("unattended") ? false : undefined;
+        const result = registerSession(repoRoot, kind, sessionId, { pid, attended });
         const path = sessionFilePath(repoRoot, kind, result.record.machineTag, sessionId);
         // #6326 fleet review — o CLI precisa IMPRIMIR o desfecho, não só o
         // código carregar o tipo: os 2 casos de falha parcial
