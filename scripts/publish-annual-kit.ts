@@ -44,10 +44,24 @@ import {
 import { annualPaths, themeIndexFromImageFilename } from "./lib/anual/annual-paths.ts";
 import { parseAnnualDraft } from "./lib/anual/annual-parse.ts";
 import { renderAnnualEmail } from "./lib/anual/annual-render.ts";
+import { relinkAnnualEditionHtml } from "./lib/anual/annual-relink.ts";
+import { loadUnifiedEditionCache } from "./lib/shared/edition-cache-reader.ts";
 import { lintAnnualDraft } from "./lint-annual-draft.ts";
 import { tipoFromSlug, type AnnualTipo } from "./lib/anual/annual-window.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * `_internal/02-chosen-subject.txt` guarda a linha INTEIRA do bloco ASSUNTO
+ * escolhida (#7587 item 6) — inclusive o prefixo numérico do markdown
+ * (`1. Manchete do ano`), porque quem grava o arquivo copia a linha como
+ * está. Ler cru manda o prefixo pro assunto real do e-mail. Defesa no
+ * CONSUMIDOR (preferível a mudar quem grava, por decisão do editor na
+ * issue): normaliza aqui, tirando `N. ` do início se presente.
+ */
+export function normalizeChosenSubject(raw: string): string {
+  return raw.trim().replace(/^\d+\.\s*/, "").trim();
+}
 
 export interface AnnualPublishedState {
   slug: string;
@@ -148,14 +162,10 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
     process.exitCode = 3;
     return;
   }
-  if (lint.editor_letter_pending) {
-    log("AVISO: a carta do editor ainda é placeholder — ela NÃO vai no e-mail (o render a omite).");
-  }
-
   const draft = parseAnnualDraft(md);
-  const subject = existsSync(paths.chosenSubject)
-    ? readFileSync(paths.chosenSubject, "utf8").trim()
-    : (draft.subjects[0] ?? "");
+  const subject = normalizeChosenSubject(
+    existsSync(paths.chosenSubject) ? readFileSync(paths.chosenSubject, "utf8") : (draft.subjects[0] ?? ""),
+  );
   if (!subject) {
     log("assunto vazio — nem 02-chosen-subject.txt nem opções no bloco ASSUNTO.");
     process.exitCode = 7;
@@ -179,6 +189,40 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
   if (rendered.missingImages.length > 0) {
     log(`aviso: temas sem imagem pública: ${rendered.missingImages.join(", ")}`);
   }
+
+  // #7587 item 2: relink pras edições diárias de origem — mesmo ponto em que
+  // `monthly-preview-cloudflare.ts` chama `relinkMonthlyEditionHtml`, logo
+  // após o render. Escopo diferente do mensal: sem Use Melhor/Radar na
+  // anual, o relink vale pra TODOS os links, não só os destaques.
+  let html = rendered.html;
+  if (existsSync(paths.rawDestaques)) {
+    try {
+      const raw = JSON.parse(readFileSync(paths.rawDestaques, "utf8")) as {
+        destaques?: { url?: string; edition?: string }[];
+      };
+      const posts = loadUnifiedEditionCache();
+      // #7613 (achado do self-review da #7587 item 2): sem sourceOverride,
+      // buildRelink cai no default "clarice" — errado aqui, o canal da anual
+      // é Kit (ver publishing.newsletter.backend), não Clarice.
+      const relinked = relinkAnnualEditionHtml(html, raw.destaques ?? [], posts, `anual-${slug}`, "kit");
+      html = relinked.html;
+      log(
+        `relink: ${relinked.relinked} link(s) reescrito(s) pra edição diária, ` +
+          `${relinked.naoMapeado} sem mapeamento.`,
+      );
+      if (relinked.ambiguous.length > 0) {
+        log(
+          `aviso: ${relinked.ambiguous.length} URL(s) aparecem em mais de uma edição — usada a 1ª: ` +
+            relinked.ambiguous.map((a) => `${a.url} → ${a.editions.join(",")}`).join("; "),
+        );
+      }
+    } catch (err) {
+      log(`aviso: relink pulado (${(err as Error).message})`);
+    }
+  } else {
+    log(`aviso: relink pulado — ${paths.rawDestaques} não encontrado.`);
+  }
+  rendered.html = html;
 
   if (dryRun) {
     log(`[dry-run] assunto: ${subject}`);

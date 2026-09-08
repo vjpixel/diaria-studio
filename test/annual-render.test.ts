@@ -8,9 +8,9 @@
  *    interpolados dentro de atributos (`alt="..."`, `href="..."`). Aspas
  *    retas em português são comuns (`Sam Altman diz "a IA muda tudo"`) e
  *    fechariam o atributo no meio.
- * 2. **O placeholder da carta do editor nunca vaza pro e-mail** — publicar
- *    "[Placeholder — carta do editor]" para a base é o pior desfecho
- *    possível desta skill.
+ * 2. **A anual não tem carta do editor (#7587 item 1).** O bloco foi
+ *    removido do template, do writer, do parser e do render — não há mais
+ *    nada aqui pra travar sobre placeholder vazando.
  * 3. **As seções finais aparecem.** "O que mudou" e "Previsões" são metade
  *    do valor editorial da anual; sumirem em silêncio é indistinguível de
  *    terem sido escritas curtas.
@@ -37,7 +37,7 @@ function draftMd(opts: { tipo?: "aniversario" | "janeiro"; tema1?: string } = {}
     "Os doze meses foram assim.",
     "",
     ...(tipo === "aniversario"
-      ? ["**ANIVERSÁRIO**", "", "Saíram 256 edições diárias.", "", "**CARTA DO EDITOR**", "", "[Placeholder — carta do editor, a ser escrita antes da publicação.]", ""]
+      ? ["**ANIVERSÁRIO**", "", "Saíram 256 edições diárias.", ""]
       : []),
     "**TEMA 1 | ENERGIA**",
     "",
@@ -112,21 +112,12 @@ describe("escaping — o texto vem de agente e entra em atributo HTML", () => {
   });
 });
 
-describe("carta do editor", () => {
-  it("placeholder nunca chega ao e-mail, e o render avisa", () => {
+describe("carta do editor removida (#7587 item 1)", () => {
+  it("o bloco de aniversário renderiza sem nenhuma menção a carta/placeholder", () => {
     const r = render(draftMd());
-    assert.ok(!r.html.includes("Placeholder"));
-    assert.ok(r.warnings.some((w) => w.includes("placeholder")));
-  });
-
-  it("carta escrita aparece no e-mail", () => {
-    const md = draftMd().replace(
-      "[Placeholder — carta do editor, a ser escrita antes da publicação.]",
-      "Faz um ano que esta newsletter existe.",
-    );
-    const r = render(md);
-    assert.ok(r.html.includes("Faz um ano que esta newsletter existe."));
-    assert.ok(!r.warnings.some((w) => w.includes("placeholder")));
+    assert.ok(r.html.includes("Saíram 256 edições diárias."));
+    assert.ok(!r.html.toLowerCase().includes("carta do editor"));
+    assert.ok(!r.warnings.some((w) => w.toLowerCase().includes("carta")));
   });
 });
 

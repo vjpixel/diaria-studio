@@ -57,10 +57,6 @@ function draft(opts: { themes?: number; tipo?: "aniversario" | "janeiro"; extra?
           "",
           "Saíram 256 edições diárias, 5 digests mensais e 1 artigo especial.",
           "",
-          "**CARTA DO EDITOR**",
-          "",
-          "[Placeholder — carta do editor, a ser escrita antes da publicação.]",
-          "",
         ]
       : []),
     ...Array.from({ length: n }, (_, i) => theme(i + 1)),
@@ -170,24 +166,21 @@ describe("bloco de aniversário por tipo de rodada", () => {
   });
 });
 
-describe("carta do editor", () => {
-  it("placeholder NÃO bloqueia o lint, mas é sinalizado pro gate", () => {
+describe("carta do editor removida do pipeline (#7587 item 1)", () => {
+  it("um draft sem CARTA DO EDITOR passa limpo — não é mais exigida nem sinalizada", () => {
     const r = lintAnnualDraft(draft(), "aniversario");
-    assert.equal(r.ok, true, "bloquear aqui impediria o pipeline de chegar ao gate onde a carta é escrita");
-    assert.equal(r.editor_letter_pending, true);
+    assert.equal(r.ok, true);
+    assert.equal((r as unknown as Record<string, unknown>).editor_letter_pending, undefined);
   });
 
-  it("carta escrita zera o pendente", () => {
-    const md = draft().replace("[Placeholder — carta do editor, a ser escrita antes da publicação.]", "Faz um ano.");
+  it("se o label ainda aparecer no draft (resíduo de edição antiga), vira erro de label não reconhecido", () => {
+    const md = draft().replace(
+      "Saíram 256 edições diárias, 5 digests mensais e 1 artigo especial.",
+      "Saíram 256 edições diárias, 5 digests mensais e 1 artigo especial.\n\n**CARTA DO EDITOR**\n\nTexto.",
+    );
     const r = lintAnnualDraft(md, "aniversario");
-    assert.equal(r.editor_letter_pending, false);
-  });
-
-  it("placeholder nunca vai pro HTML do e-mail", () => {
-    const parsed = parseAnnualDraft(draft());
-    const r = renderAnnualEmail(parsed, { windowLabel: "x", tipo: "aniversario" });
-    assert.ok(!r.html.includes("Placeholder"), "publicar o placeholder para a base inteira é o pior desfecho");
-    assert.ok(r.warnings.some((w) => w.includes("placeholder")));
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some((e) => e.includes("label não reconhecido")));
   });
 });
 
@@ -213,5 +206,21 @@ describe("contagem de caracteres", () => {
     const r = lintAnnualDraft(gordo, "aniversario");
     assert.equal(r.ok, true);
     assert.ok(r.warnings.some((w) => w.includes("TEMA 1") && w.includes("teto")));
+  });
+
+  it("O QUE MUDOU e PREVISÕES também descontam a URL do relink (#7587 item 3)", () => {
+    // Só a URL cresce (relink coloca uma URL longa cheia de UTM) — sem o
+    // desconto, o mesmo texto passaria a acusar teto estourado só por causa
+    // do comprimento do link, não do que o leitor lê.
+    const urlLonga = "https://diar.ia.br/p/edicao-de-origem?utm_source=diaria&utm_medium=email&utm_campaign=anual-2026-aniversario&utm_term=algum-fato-ancorado-bem-especifico";
+    const comLink = draft().replace(
+      "No começo da janela o assunto era um; no fim, outro.",
+      `No começo da janela o [assunto](${urlLonga}) era um; no fim, outro.`,
+    );
+    const r = lintAnnualDraft(comLink, "aniversario");
+    assert.ok(
+      !r.warnings.some((w) => w.startsWith("O QUE MUDOU")),
+      `não devia acusar teto só pela URL: ${r.warnings.join("; ")}`,
+    );
   });
 });

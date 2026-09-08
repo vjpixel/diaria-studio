@@ -64,6 +64,7 @@ import {
   postEdition,
   editionMonth,
   topKPerMonth,
+  dedupDestaquesByUrl,
   unscoredCount,
   type AnnualDestaque,
   type AnnualMonthReport,
@@ -284,7 +285,8 @@ export function selectTopK(rootDir: string, slug: string, topK: number): { selec
     );
   }
 
-  const selected = topKPerMonth(pool.destaques, topK);
+  const deduped = dedupDestaquesByUrl(pool.destaques);
+  const selected = topKPerMonth(deduped, topK);
   const byMonth: Record<string, number> = {};
   for (const d of selected) byMonth[d.month] = (byMonth[d.month] ?? 0) + 1;
 

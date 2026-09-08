@@ -163,14 +163,6 @@ export function renderAnnualEmail(draft: AnnualDraft, opts: AnnualRenderOptions)
     } else {
       warnings.push("rodada de aniversário sem bloco ANIVERSÁRIO");
     }
-    if (draft.editorLetter && !draft.editorLetter.placeholder) {
-      body.push(renderProse(null, draft.editorLetter.text, brand));
-    } else if (draft.editorLetter?.placeholder) {
-      // Nunca renderizar o placeholder no e-mail — o gate da Etapa 4 é quem
-      // cobra o preenchimento; deixá-lo passar pro HTML seria publicar
-      // "[Placeholder — carta do editor]" para a base inteira.
-      warnings.push("carta do editor ainda é placeholder — bloco omitido do render");
-    }
   } else if (draft.anniversary) {
     warnings.push("rodada de janeiro com bloco ANIVERSÁRIO — ignorado no render");
   }

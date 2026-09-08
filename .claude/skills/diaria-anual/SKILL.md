@@ -150,7 +150,11 @@ done
 
 Sem "É IA?". Prompt sem resolução em pixels e sem Noite Estrelada (regra invariável).
 
-Subir as imagens e gravar `_internal/public-images.json` (URL pública → nome do arquivo local) — é o mapa que a Etapa 5 usa para achar `04-d{N}-2x1.jpg`.
+```bash
+npx tsx scripts/upload-annual-images-public.ts --slug $SLUG
+```
+
+Sobe as N imagens (N = número real de temas, não fixo) e grava `_internal/public-images.json` (URL pública → nome do arquivo local) — é o mapa que a Etapa 5 usa para achar `04-d{N}-2x1.jpg`.
 
 ---
 
@@ -204,10 +208,6 @@ Lint de densidade: {resumo}
 
 Fact-check: {total} claims — {sustained} sustentados, {atenção} pedem atenção
   (as PREVISÕES não são verificadas: extrapolação do período, sem fonte externa)
-
-[se editor_letter_pending]
-⚠️ A CARTA DO EDITOR ainda é placeholder. O render a OMITE do e-mail — a edição
-   de aniversário sairia sem ela. Escreva no draft.md antes de aprovar.
 
 Confirma o N de {N} temas e aprova? sim / editar / retry
 ```
