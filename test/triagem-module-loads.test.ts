@@ -132,7 +132,7 @@ function installDomStub(): void {
   // com `issues: []`/`prs: []` os `for` de `renderIssuesTable`/
   // `renderPrsTable`/`renderLabelFilters` completam com ZERO iterações, e
   // nenhum dos helpers de linha (`dispatchBadge`, `priorityBadge`,
-  // `labelsBadges`, `ciBadge`, `trackBadge`, `ageLabel`) chega a ser chamado —
+  // `reasonCell`, `ciBadge`, `trackBadge`, `ageLabel`) chega a ser chamado —
   // um identificador órfão dentro de um `<td>` passaria batido, que é
   // exatamente a classe que este guard promete cobrir.
   //
