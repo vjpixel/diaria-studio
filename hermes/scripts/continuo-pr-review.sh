@@ -170,6 +170,16 @@ gh label create "continuo-escalado" --color "D93F0B" \
   --description "PR escalada pelo gate de merge do contínuo (#7446 item 2) — aguardando revisão humana ou pickup do /diaria-overnight" \
   >/dev/null 2>&1 || true
 
+# #7567: mesmo mecanismo do bloco acima, lado `reject` — até aqui `gate=
+# reject` só comentava (deduplicado desde #7446 item 1) e nunca ganhava
+# nenhum sinal PERSISTENTE (label, notificação) além do 1º comentário. PR
+# rejeitada ficava sem dono declarado e sem forma de ser filtrada depois do
+# 1º tick — medido ao vivo na PR #7593 (#7567). Ver
+# scripts/lib/continuo-reject-owner.ts para o rationale completo.
+gh label create "continuo-rejeitado" --color "B60205" \
+  --description "PR rejeitada pelo gate de merge do contínuo (#7567) — decidir entre consertar ou fechar (hermes-diaria-continuo/SKILL.md §3 passo 1)" \
+  >/dev/null 2>&1 || true
+
 # #6934: identidade de sessão pro merge-lock cross-sessão (`session-registry.ts
 # merge-lock-acquire`/`-release`) — decisão (b) do comentário durável da
 # issue. Gerada UMA VEZ aqui, no topo do tick (não dentro do laço por PR nem
@@ -505,9 +515,10 @@ try_merge_gate() {
       echo "[continuo-pr-review] PR #$pr: gate=reject — NÃO mergear"
       echo "$GATE_JSON"
       REJECTED=$((REJECTED + 1))
-      # #6926: só comenta o motivo — nunca fecha/reabre a PR sozinho aqui
-      # (fora de escopo; fechamento de PR superseded continua trabalho do
-      # tick, hermes-diaria-continuo/SKILL.md §3 passo 1).
+      # #6926: comenta o motivo e (desde #7567) labela a PR — nunca
+      # fecha/reabre a PR sozinho aqui (fora de escopo; fechamento de PR
+      # superseded ou irrecuperável continua trabalho do tick,
+      # hermes-diaria-continuo/SKILL.md §3 passo 1).
       GATE_REASON=$(printf '%s' "$GATE_JSON" | jq -r '.reason // "motivo não disponível"')
       REJECT_BODY="Gate de merge automático (#6926): rejeitado — $GATE_REASON"
 
@@ -553,6 +564,37 @@ try_merge_gate() {
           INFRA_ERRORS=$((INFRA_ERRORS + 1))
           log_infra_error "$pr" "reject_comment_rc=$COMMENT_RC" "rejeição correta ($GATE_REASON), falha ao postar o motivo na PR"
         fi
+      fi
+
+      # #7567: label + notificação de dono, SEPARADO do dedupe de comentário
+      # acima — `reject` nunca era terminal (achado #7567, PR #7593: rejeitada
+      # às 23:40 UTC de 07/09, sem NENHUM sinal persistente depois do 1º
+      # comentário, que ainda por cima é deduplicado a partir da 2ª vez).
+      # Roda sempre, mesmo quando `SKIP_COMMENT=true` — o label é o sinal
+      # DURÁVEL (não o comentário, que existe pra deduplicar), então precisa
+      # aplicar mesmo em ticks onde o comentário some por dedupe. Mesmo
+      # padrão de `check-continuo-escalate-label.ts` (ramo `1)` acima):
+      # stdout/stderr separados, `firstTime` decide só a NOTIFICAÇÃO (o
+      # label em si é idempotente e sempre tentado).
+      REJECT_LABEL_STDERR_TMP="$(mktemp)"
+      set +e
+      REJECT_LABEL_JSON=$(npx tsx scripts/check-continuo-reject-label.ts --pr "$pr" 2>"$REJECT_LABEL_STDERR_TMP")
+      REJECT_LABEL_RC=$?
+      set -e
+      REJECT_LABEL_STDERR=$(cat "$REJECT_LABEL_STDERR_TMP" 2>/dev/null || true)
+      rm -f "$REJECT_LABEL_STDERR_TMP"
+      REJECT_FIRST_TIME="true"
+      if [ "$REJECT_LABEL_RC" -eq 0 ]; then
+        REJECT_FIRST_TIME=$(printf '%s' "$REJECT_LABEL_JSON" | jq -r '.firstTime as $v | if $v == null then true else $v end' 2>/dev/null || echo "true")
+      else
+        echo "[continuo-pr-review] PR #$pr: check-continuo-reject-label.ts falhou (rc=$REJECT_LABEL_RC) — notificando mesmo assim (fail-open): $REJECT_LABEL_STDERR" >&2
+        INFRA_ERRORS=$((INFRA_ERRORS + 1))
+        log_infra_error "$pr" "reject_label_rc=$REJECT_LABEL_RC" "$REJECT_LABEL_STDERR"
+      fi
+      if [ "$REJECT_FIRST_TIME" = "true" ]; then
+        echo "[continuo-pr-review] PR #$pr: gate=reject (1ª vez) — label continuo-rejeitado aplicado, decidir entre consertar ou fechar (hermes-diaria-continuo/SKILL.md §3 passo 1, #7567)"
+      else
+        echo "[continuo-pr-review] PR #$pr: gate=reject (já sinalizada — sem repetir notificação)"
       fi
       ;;
     *)

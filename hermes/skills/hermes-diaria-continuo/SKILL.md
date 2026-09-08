@@ -233,6 +233,24 @@ ordem:
    --oneline -- <arquivos-do-pr> | head -5` — se o master atual já tratou a
    mesma issue igual ou melhor, `gh pr close N --comment "superseded por
    <ref>"`. Nunca mergear por inércia.
+
+   **PR com label `continuo-rejeitado` (#7567) tem dono declarado — decidir,
+   não ignorar.** Desde #7567, `gate=reject` de `continuo-pr-review.sh`
+   labela a PR na 1ª vez que ela é rejeitada (mesmo mecanismo de
+   `continuo-escalado`, #7446 item 2) — antes disso `reject` não tinha
+   NENHUM sinal persistente além de um comentário que se deduplica sozinho a
+   partir da 2ª vez (achado ao vivo: PR #7593, rejeitada e esquecida). Ao
+   achar uma PR com esse label neste passo, decidir e agir, nunca só contar
+   no relatório: (a) branch `continuo/*` com causa consertável (mesma
+   disciplina do §3b — CI vermelho, achado pontual, diff pequeno) → push do
+   fix na mesma branch, NUNCA merge (a autoridade de merge continua sendo
+   só o `continuo-pr-review.sh`, #6864/#6926); (b) conteúdo irrecuperável
+   (branch reverte fix já mergeado, artefato de sessão sem valor, escopo
+   abandonado) → `gh pr close N --comment "..."` explicando o motivo — mesma
+   ação do superseded-check acima, só que o gatilho é o veredito do gate, não
+   um `git log` batendo. Não remover o label ao fechar/consertar (idempotente,
+   sem custo deixar) — ele só existe pra tornar a PR rejeitada BUSCÁVEL
+   (`gh pr list --label continuo-rejeitado`), nunca precisa ser limpo.
 2. **Guard de caminho sensível** (fail-closed, #6277): `npx tsx
    scripts/lib/sensitive-path-guard.ts --base origin/master --json`.
    `"sensitive": true`, exit ≠ 0, stdout vazio ou JSON inválido → NÃO mergear;
