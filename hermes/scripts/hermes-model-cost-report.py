@@ -76,7 +76,7 @@ PAID_ALLOWLIST = {
     # NAO removido junto: o glm continua sendo o 4o elo (piso pago) da cadeia
     # de claude-openrouter.sh, que a SKILL do continuo invoca na delegacao
     # (hermes-diaria-continuo/SKILL.md:464) — ou seja, ainda aparece em
-    # producao. Tirar daqui o transformaria em "vazamento" falso.
+    # producao. Tirar daqui o transformaria em vazamento falso.
     "z-ai/glm-5.3-flash",       # piso pago da lane + visao
     "openai-codex/gpt-5.6-luna",
     "gpt-5.6-luna",

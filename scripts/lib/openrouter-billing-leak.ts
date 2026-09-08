@@ -80,6 +80,11 @@ export interface BillingLeakEvaluation {
  * por outro guard, ver #6907).
  */
 export const EXPECTED_PAID_MODELS: ReadonlySet<string> = new Set([
+  // Fallback pago do Hermes (~/.hermes/config.yaml) desde 08/09/2026 —
+  // substituiu o glm nas 20 ocorrencias de la. O glm CONTINUA abaixo: segue
+  // sendo o elo pago da cadeia do wrapper, que a SKILL do continuo invoca na
+  // delegacao. Os dois convivem de proposito.
+  "deepseek/deepseek-v4-flash",
   "z-ai/glm-5.3-flash", // elo pago da cadeia do wrapper (MODELS_DEFAULT)
   "gpt-5.6-luna",
   "openai-codex/gpt-5.6-luna",
