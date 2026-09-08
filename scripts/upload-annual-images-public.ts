@@ -22,12 +22,20 @@
  *   npx tsx scripts/upload-annual-images-public.ts --dir data/annual/2026-aniversario [--no-cache]
  *
  * Cache: reusa upload anterior quando o md5 do arquivo local bate com o
- * cache — mesma disciplina de `shouldReuseCachedUpload` na diária, versão
- * simplificada (a anual não tem drive↔cloudflare, é sempre cloudflare).
+ * cache — mesma disciplina de `shouldReuseCachedUpload` na diária (#7618
+ * fecha o gap: até então o reuse era só por PRESENÇA do filename, o md5
+ * nunca era comparado — imagem regenerada com o MESMO nome ficava stale em
+ * silêncio). O `public-images.json` que `publish-annual-kit.ts` lê continua
+ * achatado (`url -> filename`, formato público inalterado); o md5 real vive
+ * num sidecar `_internal/public-images-md5.json` (`filename -> md5`),
+ * interno a este script — mesma separação "cache de reuse" vs "arquivo que
+ * outro consumidor lê" que a diária resolve guardando `md5` dentro de
+ * `PublicImage` (aqui o formato público não tem campos extras, daí o
+ * sidecar em vez de inline).
  */
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { resolve, dirname, join } from "node:path";
+import { resolve, dirname, join, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
@@ -75,6 +83,27 @@ function loadCache(cachePath: string): Record<string, string> {
   }
 }
 
+/**
+ * Caminho do sidecar de md5 (#7618) — mesmo diretório do `cachePath` público,
+ * nome derivado dele (`public-images.json` → `public-images-md5.json`).
+ * Nunca lido por `publish-annual-kit.ts`; só este script consome.
+ */
+export function md5CachePathFor(cachePath: string): string {
+  const dir = dirname(cachePath);
+  const base = basename(cachePath).replace(/\.json$/, "");
+  return join(dir, `${base}-md5.json`);
+}
+
+/** Carrega o sidecar de md5 (`filename -> md5`). Ausente/corrompido → `{}` (nunca lança, mesma falha-aberta de `loadCache`). */
+function loadMd5Cache(md5CachePath: string): Record<string, string> {
+  if (!existsSync(md5CachePath)) return {};
+  try {
+    return JSON.parse(readFileSync(md5CachePath, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
 export interface UploadDeps {
   uploadToCloudflare?: (
     imagePath: string,
@@ -111,40 +140,57 @@ export async function uploadAnnualImages(opts: UploadAnnualOptions): Promise<Upl
   const uploadToCloudflare = opts.uploaders?.uploadToCloudflare ?? uploadImageToWorkerKV;
 
   const themes = findThemeImages(opts.editionDir);
-  const existingByFilename = new Map<string, CachedAnnualImage>();
   const existing = loadCache(opts.cachePath);
-  // O cache é `url -> filename`; pra decidir reuse por arquivo, precisamos do
-  // inverso. O md5 não é gravado no cache achatado (não há campo pra isso no
-  // formato que `publish-annual-kit.ts` espera) — reuse aqui é só "a URL já
-  // existe pra este filename", sem revalidar bytes. `--no-cache` força
-  // re-upload de tudo quando isso não é bom o bastante (arquivo regerado).
+  // O cache público é `url -> filename`; pra decidir reuse por arquivo,
+  // precisamos do inverso.
+  const existingByFilename = new Map<string, CachedAnnualImage>();
+  const md5CachePath = md5CachePathFor(opts.cachePath);
+  const md5Cache = loadMd5Cache(md5CachePath);
   for (const [url, filename] of Object.entries(existing)) {
-    existingByFilename.set(filename, { url, filename, md5: "" });
+    existingByFilename.set(filename, { url, filename, md5: md5Cache[filename] ?? "" });
   }
 
   const images: Record<string, string> = { ...existing };
+  const md5s: Record<string, string> = { ...md5Cache };
   let uploaded = 0;
   let reused = 0;
 
   for (const theme of themes) {
     const imagePath = resolve(opts.editionDir, theme.filename);
     const cached = existingByFilename.get(theme.filename);
-    if (skipExisting && cached) {
+    const localMd5 = md5OfFile(imagePath);
+    // #7618: reuse exige filename já cacheado E md5 real batendo — md5
+    // ausente no sidecar (entry pré-#7618, ou sidecar perdido) conta como
+    // drift, mesma disciplina fail-closed de `shouldReuseCachedUpload` na
+    // diária (ausência de md5 = assume drift, re-upload).
+    if (skipExisting && cached?.md5 && cached.md5 === localMd5) {
       images[cached.url] = theme.filename;
+      md5s[theme.filename] = cached.md5;
       reused++;
       continue;
     }
-    const md5 = md5OfFile(imagePath);
-    const key = annualKvKey(opts.slug, theme.filename, md5);
+    const key = annualKvKey(opts.slug, theme.filename, localMd5);
     if (!opts.cfConfig && !opts.uploaders?.uploadToCloudflare) {
       throw new Error("cfConfig ausente — passe cfConfig ou opts.uploaders.uploadToCloudflare");
     }
     const url = await uploadToCloudflare(imagePath, key, opts.cfConfig!);
+    // `images` é keyed por URL, não por filename — um re-upload (md5 mudou)
+    // gera uma URL nova (o key KV leva o md5 no sufixo). Sem podar a entry
+    // antiga primeiro, a URL velha (apontando pro blob KV stale) ficava pra
+    // trás em `images`, e `public-images.json` acumulava 1 URL morta por
+    // regeneração — a mesma classe de staleness silenciosa do #7618, um
+    // nível acima (URL morta em vez de md5 nunca comparado). Achado do
+    // self-review do #7619.
+    for (const oldUrl of Object.keys(images)) {
+      if (images[oldUrl] === theme.filename) delete images[oldUrl];
+    }
     images[url] = theme.filename;
+    md5s[theme.filename] = localMd5;
     uploaded++;
   }
 
   writeFileSync(opts.cachePath, JSON.stringify(images, null, 2) + "\n", "utf8");
+  writeFileSync(md5CachePath, JSON.stringify(md5s, null, 2) + "\n", "utf8");
 
   return { out_path: opts.cachePath, images, themes_found: themes.length, uploaded, reused };
 }

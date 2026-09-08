@@ -16,6 +16,7 @@ import {
   findThemeImages,
   annualKvKey,
   uploadAnnualImages,
+  md5CachePathFor,
 } from "../scripts/upload-annual-images-public.ts";
 
 function withEditionDir(files: string[]): { dir: string; cleanup: () => void } {
@@ -133,6 +134,68 @@ describe("uploadAnnualImages — grava public-images.json achatado (URL -> filen
         uploaders: uploader,
       });
       assert.equal(calls, 2, "--no-cache deveria forçar novo upload");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#7618: md5 diferente com mesmo filename NÃO reusa — faz upload novo", async () => {
+    const { dir, cleanup } = withEditionDir(["04-d1-2x1.jpg"]);
+    const cachePath = join(dir, "public-images.json");
+    try {
+      let calls = 0;
+      const uploader = {
+        uploadToCloudflare: async (path: string, key: string) => {
+          calls++;
+          return `https://eia.diar.ia.br/img/${key}`;
+        },
+      };
+      await uploadAnnualImages({ slug: "2026-aniversario", editionDir: dir, cachePath, uploaders: uploader });
+      assert.equal(calls, 1);
+
+      // Regenerar o arquivo local com o MESMO filename mas bytes diferentes —
+      // o cenário de falha real da issue (imagem de tema reprocessada antes
+      // de publicar, filename inalterado).
+      writeFileSync(join(dir, "04-d1-2x1.jpg"), "bytes-completamente-diferentes-agora");
+
+      const r2 = await uploadAnnualImages({ slug: "2026-aniversario", editionDir: dir, cachePath, uploaders: uploader });
+      assert.equal(calls, 2, "md5 divergente deveria forçar re-upload, não reuse por filename");
+      assert.equal(r2.uploaded, 1);
+      assert.equal(r2.reused, 0);
+
+      const md5CachePath = md5CachePathFor(cachePath);
+      const md5s = JSON.parse(readFileSync(md5CachePath, "utf8"));
+      assert.ok(md5s["04-d1-2x1.jpg"], "sidecar de md5 grava o hash real dos bytes atuais");
+
+      // Achado do self-review do #7619: `images` é keyed por URL — sem podar
+      // a entry antiga, a URL da 1ª upload (apontando pro blob KV stale)
+      // ficava pra trás junto da nova, acumulando 1 URL morta por regeneração.
+      const onDisk = JSON.parse(readFileSync(cachePath, "utf8"));
+      const entriesForFile = Object.entries(onDisk).filter(([, f]) => f === "04-d1-2x1.jpg");
+      assert.equal(entriesForFile.length, 1, "re-upload deve substituir a URL antiga, não acumular");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("md5 idêntico com mesmo filename reusa (via sidecar), sem re-chamar o uploader", async () => {
+    const { dir, cleanup } = withEditionDir(["04-d1-2x1.jpg"]);
+    const cachePath = join(dir, "public-images.json");
+    try {
+      let calls = 0;
+      const uploader = {
+        uploadToCloudflare: async (path: string, key: string) => {
+          calls++;
+          return `https://eia.diar.ia.br/img/${key}`;
+        },
+      };
+      await uploadAnnualImages({ slug: "2026-aniversario", editionDir: dir, cachePath, uploaders: uploader });
+      assert.equal(calls, 1);
+
+      // Bytes locais inalterados — reuse de verdade, não só filename.
+      const r2 = await uploadAnnualImages({ slug: "2026-aniversario", editionDir: dir, cachePath, uploaders: uploader });
+      assert.equal(calls, 1, "md5 idêntico deveria reusar sem re-upload");
+      assert.equal(r2.reused, 1);
     } finally {
       cleanup();
     }
