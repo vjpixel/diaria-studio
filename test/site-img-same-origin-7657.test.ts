@@ -38,13 +38,17 @@ const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]).buffer;
 function fakeEnv(kv: Record<string, ArrayBuffer>): { env: Env; assetCalls: string[] } {
   const assetCalls: string[] = [];
   const env: Env = {
+    // Cast e não `@ts-expect-error`: só o método `fetch` importa pro teste, e
+    // um `@ts-expect-error` aqui vira TS2578 ("directive não usada") sob
+    // `tsconfig.test.json`, onde o erro que ele suprimiria não acontece —
+    // exatamente a entrada de baseline que `site-worker-kit-fallback-6429`
+    // carrega. O cast é honesto nas duas configs.
     ASSETS: {
-      // @ts-expect-error — só o método `fetch` importa pro teste.
       fetch: async (req: Request) => {
         assetCalls.push(new URL(req.url).pathname);
         return new Response("not found", { status: 404 });
       },
-    },
+    } as unknown as Env["ASSETS"],
     POLL: { get: async (key: string) => kv[key] ?? null },
   };
   return { env, assetCalls };
@@ -220,9 +224,8 @@ describe("workers/site — GET /img/{key} (#7657)", () => {
   it("KV lançando → 503 COM CORS, nunca exceção crua nem 404 (que seria cacheável)", async () => {
     const env: Env = {
       ASSETS: {
-        // @ts-expect-error — só o método `fetch` importa pro teste.
         fetch: async () => new Response("not found", { status: 404 }),
-      },
+      } as unknown as Env["ASSETS"],
       POLL: {
         get: async () => {
           throw new Error("KV indisponível");
