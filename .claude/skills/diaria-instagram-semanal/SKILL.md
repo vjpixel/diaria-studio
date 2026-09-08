@@ -188,10 +188,27 @@ atual:
   for limpo/arquivado antes do sábado, os destaques daquele dia não podem mais
   ser recuperados (o disco é a ÚNICA fonte pra edição de sexta, que ainda não
   foi publicada no Beehiiv no momento da produção).
-- `data/beehiiv-cache/posts/*.json` — populado por `scripts/beehiiv-sync.ts`
-  (roda automaticamente no Stage 0 de cada edição diária). O Passo 1 abaixo
-  checa se falta enriquecimento de clicks pros posts da janela antes de
-  confiar na seleção.
+- **Dois caches de clique, os dois obrigatórios** (só valem no modo
+  `clicked` — `highlights` não ranqueia por clique). Ambos populados
+  automaticamente no Stage 0 de cada edição diária:
+  - `data/kit-cache/broadcasts/*.json` (`scripts/kit-sync.ts`, #7570) — **é
+    daqui que vem o clique que conta hoje.** O envio migrou pro Kit em
+    04/09/2026 (#7388/#7386) e a Beehiiv ficou com 0 assinantes ativos.
+  - `data/beehiiv-cache/posts/*.json` (`scripts/beehiiv-sync.ts`) — arquivo
+    histórico, e a única origem que o Passo 1 abaixo consegue enriquecer.
+
+  **A seleção por clique lê os DOIS unificados; o manifest do Passo 1 é
+  Beehiiv-only de propósito** — enriquecimento via MCP `list_post_clicks` é
+  um conceito que só existe do lado Beehiiv (o Kit é REST comum). Manifest
+  vazio **não** significa "sem dado de clique".
+
+  Quando a mesma data tem post nas duas origens (janela de rampa,
+  ~260817–260903), **o Kit vence** e o script avisa que metade do sinal
+  daquele dia ficou de fora (#7637 — `matchPostsToWindow` em
+  `scripts/lib/shared/click-window-resolution.ts`, compartilhado com
+  `/diaria-linkedin-semanal`). Test-send do `review-test-email` nunca
+  compete: é descartado por `recipients` abaixo do piso, **não** por
+  `public` (edição real da rampa também sai `public: false`).
 - Credenciais Instagram/Threads (mesmas dos publishers diários):
   `DIARIA_LINKEDIN_CRON_URL` + `DIARIA_LINKEDIN_CRON_TOKEN` (Worker queue —
   mesmo endpoint usado pelo Instagram/Threads/LinkedIn diários,
