@@ -295,3 +295,82 @@ export function descreverEstabilidade(r: RollingWindowResult): string {
   }
   return `todos os ${r.dias.length} dias com apuração são posteriores à última edição (${r.ultimaEdicao}) — estado estável${gap}`;
 }
+
+/**
+ * CAC de UM dia fechado, por braço (#7577, pedido do editor em 08/09/2026).
+ *
+ * ## Por que existe, se a janela de 3 dias já é a métrica de decisão
+ *
+ * A janela de 3 dias responde "quanto custa o cadastro neste braço HOJE"; ela
+ * é deliberadamente lenta para reagir, porque é isso que a torna legível. Mas
+ * com refinamento em voo virando o modo de operação (Emenda 07/09), o editor
+ * passou a precisar também do movimento DENTRO da janela: um braço editado
+ * anteontem cujo CAC de ontem despencou é uma informação que a média de 3 dias
+ * esconde por construção — ela dilui o dia bom com os dois dias do estado
+ * anterior. Os dois números respondem perguntas diferentes e por isso convivem
+ * na mesma tabela.
+ *
+ * ## Por que reusar `computeRollingWindow` com `dias: 1`
+ *
+ * Um dia é uma janela de tamanho 1, e TODAS as armadilhas continuam valendo
+ * idênticas: o CSV é acumulado (o gasto do dia é `linha do dia − linha
+ * anterior`, nunca o valor da linha), a fronteira é BRT dos dois lados, e
+ * acumulado que cai é dado inconsistente, não um dia barato. Reimplementar a
+ * aritmética aqui duplicaria as quatro guardas — e a que faltasse seria
+ * descoberta como um número errado que parece certo, que é o formato de erro
+ * que este módulo inteiro existe para evitar.
+ *
+ * O piso de `MIN_CADASTROS_PARA_COMPARAR` também vale para o dia, e é mais
+ * mordaz aqui: sobre um único dia o denominador é ~1/3 do da janela, então um
+ * braço de baixo volume sai como `null` com frequência. É o comportamento
+ * certo — `null` é "sem amostra suficiente", nunca "o pior" (§3.5) —, mas quem
+ * lê a tabela precisa saber que uma célula vazia na coluna do dia é bem mais
+ * comum que na da janela, e não significa que o braço parou.
+ */
+export interface DailyCac {
+  /** Dia BRT (`YYYY-MM-DD`) fechado a que este CAC se refere. */
+  dia: string;
+  gasto: number;
+  /** `null` = não medido (coluna vazia no CSV), nunca "zero cadastros" (§3.5). */
+  cadastros: number | null;
+  /** `null` quando abaixo do piso de amostra ou sem dado. Ver `motivo`. */
+  custoPorCadastro: number | null;
+  comparavel: boolean;
+  motivo: string | null;
+}
+
+/** CAC de um único dia fechado. Ver a docstring de `DailyCac`. */
+export function computeDailyCac(
+  rows: ClicksCsvRow[],
+  opts: { canal: string; dia: string },
+): DailyCac {
+  const r = computeRollingWindow(rows, { canal: opts.canal, ate: opts.dia, dias: 1 });
+  return {
+    dia: opts.dia,
+    gasto: r.gastoJanela,
+    // Mesma distinção do relatório: sem a coluna do dia preenchida não há
+    // numerador, e `cadastrosJanela` seria 0 por construção — o que afirmaria
+    // "nenhum cadastro" onde a verdade é "não medido".
+    cadastros: r.cadastrosAcumulado == null ? null : r.cadastrosJanela,
+    custoPorCadastro: r.custoPorCadastro,
+    comparavel: r.comparavel,
+    motivo: r.motivo,
+  };
+}
+
+/**
+ * Os `n` últimos dias fechados, do mais ANTIGO para o mais recente.
+ *
+ * A ordem é cronológica de propósito: a tabela lê "anteontem → ontem →
+ * janela", e uma coluna de tendência invertida se lê como o oposto da
+ * tendência real.
+ */
+export function computeDailyCacSeries(
+  rows: ClicksCsvRow[],
+  opts: { canal: string; ate: string; n?: number },
+): DailyCac[] {
+  const n = opts.n ?? 2;
+  return Array.from({ length: n }, (_, i) => shiftDate(opts.ate, -(n - 1 - i))).map((dia) =>
+    computeDailyCac(rows, { canal: opts.canal, dia }),
+  );
+}

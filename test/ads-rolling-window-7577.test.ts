@@ -21,6 +21,8 @@ import type { ClicksCsvRow } from "../scripts/lib/ads-test-watch.ts";
 import {
   MIN_CADASTROS_PARA_COMPARAR,
   brtDateOf,
+  computeDailyCac,
+  computeDailyCacSeries,
   computeRollingWindow,
   contarDiasAposUltimaEdicao,
   descreverEstabilidade,
@@ -279,5 +281,80 @@ describe("#7577 — dia faltando na janela é visível, e não estraga a aritmé
     const rows = [row("2026-09-02", 130, 14), row("2026-09-03", 160, 17), row("2026-09-04", 190, 22)];
     const r = computeRollingWindow(rows, { canal: CANAL, ate: "2026-09-04" });
     assert.doesNotMatch(descreverEstabilidade(r), /sem linha de apuração/);
+  });
+});
+
+describe("#7577 — CAC diário (ontem/anteontem) reusa as guardas da janela", () => {
+  it("o gasto do dia é a DIFERENÇA de acumulados, não o valor da linha", () => {
+    // A armadilha nº 1 do CSV acumulado, agora sobre um único dia: ler
+    // `gasto_acumulado` da linha de 07 como se fosse o gasto de 07 devolveria
+    // R$ 300,00 no lugar de R$ 100,00 — um CAC 3x mais caro.
+    const rows = [row("2026-09-05", 100, 10), row("2026-09-06", 200, 24), row("2026-09-07", 300, 34)];
+    const d = computeDailyCac(rows, { canal: CANAL, dia: "2026-09-07" });
+    assert.equal(d.gasto, 100);
+    assert.equal(d.cadastros, 10);
+    assert.equal(d.custoPorCadastro, 10);
+    assert.equal(d.comparavel, true);
+  });
+
+  it("o primeiro dia do braço não tem linha-base, e o acumulado JÁ é o dia", () => {
+    const rows = [row("2026-09-05", 100, 10)];
+    const d = computeDailyCac(rows, { canal: CANAL, dia: "2026-09-05" });
+    assert.equal(d.gasto, 100);
+    assert.equal(d.cadastros, 10);
+  });
+
+  it("dia abaixo do piso de amostra sai sem CAC, e o motivo diz por quê", () => {
+    // O piso morde bem mais sobre 1 dia que sobre 3 — é o comportamento certo,
+    // e a célula vazia precisa continuar significando "sem amostra", nunca
+    // "o braço parou" nem "o pior" (§3.5).
+    const rows = [row("2026-09-06", 200, 24), row("2026-09-07", 260, 24 + MIN_CADASTROS_PARA_COMPARAR - 1)];
+    const d = computeDailyCac(rows, { canal: CANAL, dia: "2026-09-07" });
+    assert.equal(d.custoPorCadastro, null);
+    assert.equal(d.comparavel, false);
+    assert.match(d.motivo ?? "", /abaixo do piso/);
+    // gasto continua reportável — só o CAC é que não é.
+    assert.equal(d.gasto, 60);
+  });
+
+  it("coluna de cadastros vazia no dia devolve null, nunca 0", () => {
+    const rows = [row("2026-09-06", 200, 24), row("2026-09-07", 300, null)];
+    const d = computeDailyCac(rows, { canal: CANAL, dia: "2026-09-07" });
+    assert.equal(d.cadastros, null, "0 aqui afirmaria 'nenhum cadastro' onde a verdade é 'não medido'");
+    assert.equal(d.custoPorCadastro, null);
+    assert.equal(d.comparavel, false);
+  });
+
+  it("acumulado que CAI no dia não vira dia barato", () => {
+    // Já aconteceu neste dataset: a base do Kit se move para trás entre
+    // leituras. Sem a guarda herdada, o dia sairia com CAC negativo.
+    const rows = [row("2026-09-06", 200, 30), row("2026-09-07", 300, 28)];
+    const d = computeDailyCac(rows, { canal: CANAL, dia: "2026-09-07" });
+    assert.equal(d.comparavel, false);
+    assert.equal(d.custoPorCadastro, null);
+    assert.match(d.motivo ?? "", /DIMINUIU/);
+  });
+
+  it("a série sai do mais ANTIGO para o mais recente", () => {
+    // Ordem invertida faria a coluna de tendência contar o oposto da
+    // tendência real, sem nada na tela denunciando a inversão.
+    const rows = [row("2026-09-05", 100, 10), row("2026-09-06", 200, 24), row("2026-09-07", 300, 34)];
+    const serie = computeDailyCacSeries(rows, { canal: CANAL, ate: "2026-09-07", n: 2 });
+    assert.deepEqual(
+      serie.map((d) => d.dia),
+      ["2026-09-06", "2026-09-07"],
+    );
+    assert.equal(serie[0].cadastros, 14);
+    assert.equal(serie[1].cadastros, 10);
+  });
+
+  it("dia sem nenhuma linha de apuração não é um dia de gasto zero", () => {
+    const rows = [row("2026-09-05", 100, 10), row("2026-09-07", 300, 34)];
+    const serie = computeDailyCacSeries(rows, { canal: CANAL, ate: "2026-09-07", n: 2 });
+    const anteontem = serie[0];
+    assert.equal(anteontem.dia, "2026-09-06");
+    assert.equal(anteontem.custoPorCadastro, null);
+    assert.equal(anteontem.comparavel, false);
+    assert.match(anteontem.motivo ?? "", /sem nenhuma linha de apuração/);
   });
 });
