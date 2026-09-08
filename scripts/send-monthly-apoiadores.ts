@@ -8,6 +8,19 @@
  * pro fluxo completo e `scripts/lib/mensal/monthly-apoiadores-state.ts` pra
  * semântica do dedup.
  *
+ * ## ⚠️ `--mark-sent` é opcional na prática, e isso já custou um mês (#7655)
+ *
+ * O ciclo 2607-08 foi ENVIADO de verdade em 04/08/2026 (campanha Brevo 12,
+ * 10 entregues) e o state ficou em `draft_prepared` até hoje, porque o envio
+ * saiu pela UI e ninguém rodou `--mark-sent`. Três documentos e um punhado de
+ * docstrings passaram a afirmar que aquele canal nunca tinha enviado nada,
+ * cada um citando o anterior.
+ *
+ * Consequência para quem lê este state depois: `status` responde "o que os
+ * scripts registraram", nunca "o que o ESP fez". Para a segunda pergunta,
+ * consultar o ESP — e é por isso que `--mark-sent` existe, embora nada o
+ * force.
+ *
  * ## #7633 — render trocado de Brevo pra Kit
  *
  * Mesma troca que o #7121 abaixo fez (Beehiiv → Brevo), agora Brevo → Kit, e

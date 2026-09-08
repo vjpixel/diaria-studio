@@ -780,8 +780,10 @@ sempre como rascunho —, idempotência/dedup do envio via
 publicação manual). **#7633 (260908): canal migrado de Brevo pra Kit** — o
 backend da newsletter virou `"kit"` (#7388) e a base inteira migrou (#7386),
 então manter um 2º ESP vivo só pra este envio era manutenção sem
-contrapartida; nada se perdeu porque a Brevo nunca chegou a enviar (lista
-dedicada jamais populada, nenhuma campanha fora de `--dry-run`). Audiência =
+contrapartida. **Correção do #7655:** a Brevo NÃO era um canal natimorto —
+enviou o ciclo 2607-08 em 04/08/2026 (campanha 12, lista 8, 10 entregues,
+4 aberturas únicas, 2 cliques), e o state local só dizia o contrário porque
+`--mark-sent` nunca foi rodado depois do envio manual pela UI. Audiência =
 TAG dedicada (`platform.config.json` → `kit_apoiadores.audience_tag`),
 convergida com quem tem nível Mantenedor/Patrono por
 `scripts/sync-apoio-mensal-tag-kit.ts` — **tag e não segmento** porque a

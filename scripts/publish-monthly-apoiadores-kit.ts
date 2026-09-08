@@ -5,9 +5,12 @@
  *
  * Cria o broadcast do envio extra pros apoiadores Mantenedor/Patrono na base
  * própria (Kit), **sempre como rascunho**. Sucessor de
- * `publish-monthly-apoiadores-brevo.ts` (#4593) — que nunca criou uma
- * campanha real (a lista Brevo dedicada nunca foi populada e nada saiu de
- * `--dry-run`), e este por sua vez sucede o paste manual no Beehiiv do #4482.
+ * `publish-monthly-apoiadores-brevo.ts` (#4593), que por sua vez sucede o
+ * paste manual no Beehiiv do #4482.
+ *
+ * O canal Brevo **enviou uma edição de verdade** (ciclo 2607-08, 04/08/2026,
+ * 10 entregues — #7655), ainda que a campanha tenha sido criada à mão no
+ * painel, não por este script.
  *
  * ## Pipeline
  *

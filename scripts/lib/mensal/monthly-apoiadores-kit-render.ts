@@ -4,13 +4,12 @@
  * Variante KIT do envio extra pra apoiadores Mantenedor/Patrono — sucessora
  * de `monthly-apoiadores-brevo-render.ts` (#4593), que por sua vez sucedeu o
  * módulo Beehiiv do #4482. É o TERCEIRO canal da mesma audiência e do mesmo
- * conteúdo, e o primeiro com chance real de enviar: os dois anteriores nunca
- * saíram do papel (Beehiiv por bloqueio de plano, #4572; Brevo porque a lista
- * dedicada nunca foi populada e nenhuma campanha saiu de `--dry-run`).
+ * conteúdo. O Beehiiv nunca saiu do papel (bloqueio de plano, #4572); o Brevo
+ * enviou 1 edição (ciclo 2607-08, 04/08/2026, 10 entregues — #7655).
  *
  * ## Por que trocar de novo — e por que não é "mais um pivot"
  *
- * As trocas anteriores foram forçadas por bloqueio de plataforma. Esta é
+ * A troca anterior foi forçada por bloqueio de plataforma. Esta é
  * consolidação: `publishing.newsletter.backend` virou `"kit"` (#7388), a base
  * inteira migrou da Beehiiv (#7386, 317 → 0 ativos) e a anual já nasceu no
  * Kit (#7569). Manter a Brevo viva só pro envio de apoiadores significaria um
