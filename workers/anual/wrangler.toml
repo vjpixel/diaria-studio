@@ -1,0 +1,47 @@
+name = "anual"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# #7581: hosting da retrospectiva anual pública com gate de CADASTRO (não
+# apoio, decisão do editor 07/09/2026 — comentário-marcador da issue).
+# Domínio de marca dedicado — mesmo mecanismo comprovado de
+# cursos.diar.ia.br / livros.diar.ia.br / eia.diar.ia.br / artigo.diar.ia.br
+# (custom_domain, NÃO a rota clássica na raiz).
+[[routes]]
+pattern = "anual.diar.ia.br"
+custom_domain = true
+
+# KV namespace com o HTML JÁ RENDERIZADO da retrospectiva anual, por slug
+# (key `article:{slug}` completo, `article:{slug}:teaser` trecho — ex:
+# `article:2026-aniversario`). Escrito por `scripts/build-annual-page.ts --push`
+# (Node-side; o Worker NUNCA renderiza markdown — só serve o HTML pronto).
+#
+# PRÓXIMO PASSO MANUAL (fora do escopo desta unidade, #7581): criar o
+# namespace antes do 1º deploy e substituir o id abaixo pelo retornado:
+#   cd workers/anual && npx wrangler kv namespace create ARTICLES --remote
+[[kv_namespaces]]
+binding = "ARTICLES"
+id = "REPLACE_ME_APOS_CRIAR_NAMESPACE_ARTICLES"
+
+# KV namespace do rate-limit por IP do gate (`checkKvRateLimit`,
+# scripts/lib/shared/rate-limit.ts) — mesmo padrão de `workers/poll`
+# (binding `POLL`, reusado como namespace de rate-limit genérico lá).
+#
+# PRÓXIMO PASSO MANUAL (fora do escopo desta unidade, #7581): criar o
+# namespace antes do 1º deploy e substituir o id abaixo pelo retornado:
+#   cd workers/anual && npx wrangler kv namespace create RATE_LIMIT --remote
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "REPLACE_ME_APOS_CRIAR_NAMESPACE_RATE_LIMIT"
+
+# #5920: Workers Logs ligado para observabilidade de erro (fail-closed do gate).
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+# KIT_API_KEY é SECRET (não var) — setar via:
+#   cd workers/anual && npx wrangler secret put KIT_API_KEY
+# Mesma key já usada pelo worker `poll` (verificação Kit, #6048) e por
+# `scripts/lib/kit-client.ts` (Node-side) — não é uma key nova a gerar.

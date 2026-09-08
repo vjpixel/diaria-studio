@@ -205,6 +205,22 @@ export const DIARIA_ARQUIVO_URL = "https://arquivo.diar.ia.br";
  */
 export const DIARIA_ESPECIAL_URL = "https://especial.diar.ia.br";
 
+/**
+ * URL canônica da página pública da retrospectiva ANUAL (#7581) — domínio de
+ * marca dedicado (Workers Custom Domain, `workers/anual/wrangler.toml`,
+ * `anual.diar.ia.br`). Mesmo padrão de `DIARIA_CURSOS_URL`/`DIARIA_LIVROS_URL`/
+ * `DIARIA_EIA_URL`/`DIARIA_ARTIGO_URL`/`DIARIA_ARQUIVO_URL`/`DIARIA_ESPECIAL_URL`
+ * acima. Path completo é `${DIARIA_ANUAL_URL}/{slug}` (ex: `.../2026-aniversario`),
+ * slug no formato `{AAAA}-{tipo}` de `scripts/lib/anual/annual-paths.ts`.
+ *
+ * **Gate de CADASTRO, não de apoio** (decisão do editor, 07/09/2026, #7581) —
+ * diferente do `DIARIA_ARTIGO_URL` (paywall de apoiador R$10+/mês): aqui
+ * basta ser assinante da base própria (Kit) pra ler o completo. Isso torna a
+ * anual candidata a destino de anúncio (era descartada com gate de apoio —
+ * venderia apoio a quem só queria assinar).
+ */
+export const DIARIA_ANUAL_URL = "https://anual.diar.ia.br";
+
 interface ArticleLike {
   url?: string;
   title?: string;

@@ -44,12 +44,18 @@ import { gFetch } from "./google-auth.ts";
  *
  * Continua fora `diar.ia.br/sitemap.xml` (gerado pela Beehiiv, já
  * auto-descoberto — fora do escopo daquela issue).
+ *
+ * `anual.diar.ia.br/sitemap.xml` ENTROU no #7581 pelo mesmo motivo do
+ * `artigo` acima: com o gate virando CADASTRO (não apoio) e o trecho público
+ * servido a quem não é assinante, existe URL indexável a anunciar — mesma
+ * lógica, host diferente.
  */
 export const CURADORIA_SITEMAPS = [
   "https://artigo.diar.ia.br/sitemap.xml",
   "https://cursos.diar.ia.br/sitemap.xml",
   "https://livros.diar.ia.br/sitemap.xml",
   "https://arquivo.diar.ia.br/sitemap.xml",
+  "https://anual.diar.ia.br/sitemap.xml",
 ] as const;
 
 export interface SitemapSubmitResult {
