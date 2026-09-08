@@ -259,8 +259,9 @@ export function normalizeSubject(subject: string | undefined | null): string {
  * Adicionar uma nova automação é UMA LINHA aqui.
  */
 const AUTOMATED_SUBJECTS = [
-  "Bem-vindo(a) à Diar.ia!", // atual
-  "Bem-vindo à Diar.ia!", // usado até ~2026-07-09, sem o "(a)"
+  "Bem-vindo(a) à Diar.ia!", // usado até ~2026-07-09, sem o "(a)"
+  "Bem-vindo à Diar.ia!", // variantes antigas (Beehiiv, rebrand pré-#4424)
+  "Bem-vindo à diar.ia.br: isto é o que vem a seguir", // atual (Kit, sequence 2876508, email id 10248813) — #7652
 ];
 const AUTOMATED_SUBJECTS_NORMALIZED = new Set(AUTOMATED_SUBJECTS.map(normalizeSubject));
 

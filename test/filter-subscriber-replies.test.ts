@@ -397,6 +397,33 @@ describe("filterSubscriberReplies — exclusão de automação (#4324)", () => {
     const { automatedSubjectCount } = filterSubscriberReplies(threads);
     assert.equal(automatedSubjectCount, 0);
   });
+
+  // ── #7652: boas-vindas do Kit (sequence 2876508, email id 10248813) ──────
+
+  it("#7652: reply ao boas-vindas do Kit (assunto vigente) → automatedSubjectCount 1 e fora de replies[]", () => {
+    const threads = [
+      {
+        thread_id: "kit-1",
+        subject: "Re: Bem-vindo à diar.ia.br: isto é o que vem a seguir",
+        from: "carlos.favoretto_terceiro@minerbo-fuchs.com.br",
+        body: "Oi",
+      },
+    ];
+    const { total, replies, automatedSubjectCount } = filterSubscriberReplies(threads);
+    assert.equal(total, 1);
+    assert.equal(automatedSubjectCount, 1, "o assunto do Kit bate a blacklist atualizada");
+    assert.equal(replies.length, 0, "a reply do boas-vindas sai de replies[] por completo");
+  });
+
+  it("#7652: variantes de caixa/acento/prefixo do assunto do Kit também batem", () => {
+    for (const subject of [
+      "Bem-vindo à diar.ia.br: isto é o que vem a seguir",
+      "RES: BEM-VINDO À DIAR.IA.BR: ISTO É O QUE VEM A SEGUIR",
+      "Fwd: Re: Bem-vindo à diar.ia.br: isto é o que vem a seguir",
+    ]) {
+      assert.ok(isAutomatedSubject(subject), `casou: "${subject}"`);
+    }
+  });
 });
 
 // ── #4509: near-miss (possibleStaleAutomatedSubjects) ──────────────────────
@@ -437,5 +464,21 @@ describe("filterSubscriberReplies — near-miss de boas-vindas pós-rename (#450
     ];
     const { possibleStaleAutomatedSubjects } = filterSubscriberReplies(threads);
     assert.deepEqual(possibleStaleAutomatedSubjects, []);
+  });
+
+  it("#7652: assunto do Kit que JÁ bate a blacklist não vira near-miss (não duplica)", () => {
+    const threads = [
+      {
+        thread_id: "1",
+        subject: "Re: Bem-vindo à diar.ia.br: isto é o que vem a seguir",
+        from: "leitor@x.com",
+        body: "oi",
+      },
+    ];
+    const { automatedSubjectCount, possibleStaleAutomatedSubjects, replies } =
+      filterSubscriberReplies(threads);
+    assert.equal(automatedSubjectCount, 1, "bate a blacklist atualizada — não é mais near-miss");
+    assert.deepEqual(possibleStaleAutomatedSubjects, [], "já excluído pela blacklist exata");
+    assert.equal(replies.length, 0, "fora de replies[]");
   });
 });
