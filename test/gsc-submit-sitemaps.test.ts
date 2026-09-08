@@ -25,12 +25,14 @@ describe("CURADORIA_SITEMAPS (#4546)", () => {
   // quando o não-apoiador passou a receber o trecho do artigo. Mudou o FATO,
   // não a leitura. O host principal continua fora (sitemap gerado pela
   // Beehiiv, já auto-descoberto).
-  it("são os 4 sitemaps próprios — artigo/cursos/livros/arquivo, sem o do host principal", () => {
+  // #7581: `anual` ENTROU pelo mesmo motivo — gate de cadastro + trecho público.
+  it("são os 5 sitemaps próprios — artigo/cursos/livros/arquivo/anual, sem o do host principal", () => {
     assert.deepEqual(CURADORIA_SITEMAPS, [
       "https://artigo.diar.ia.br/sitemap.xml",
       "https://cursos.diar.ia.br/sitemap.xml",
       "https://livros.diar.ia.br/sitemap.xml",
       "https://arquivo.diar.ia.br/sitemap.xml",
+      "https://anual.diar.ia.br/sitemap.xml",
     ]);
   });
 });

@@ -95,7 +95,10 @@ new_sqlite_classes = ["ScoreCounter"]
 # #5167 itens 1/2: arquivo.diar.ia.br adicionado pelo mesmo motivo — CTA
 # inline no topo da página de arquivo e de cada hub temático (mesmo Worker
 # `arquivo`, mesmo host) chama POST /jogar/subscribe cross-origin.
-ALLOWED_ORIGINS = "https://diar.ia.br,https://diaria.beehiiv.com,https://livros.diar.ia.br,https://arquivo.diar.ia.br"
+# #7581: anual.diar.ia.br adicionado pelo mesmo motivo — form de cadastro
+# inline no gate da retrospectiva anual (worker `anual`) chama
+# POST /jogar/subscribe cross-origin, sem navegar pra fora da página.
+ALLOWED_ORIGINS = "https://diar.ia.br,https://diaria.beehiiv.com,https://livros.diar.ia.br,https://arquivo.diar.ia.br,https://anual.diar.ia.br"
 
 # #6048 (item 2/5 do checklist de migração Kit) — nome do custom field Kit
 # que recebe o marcador "entrou pelo funil" (KIT_NATIVE_SIGNUP_MARKER, ver
