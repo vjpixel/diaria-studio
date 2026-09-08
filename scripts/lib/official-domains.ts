@@ -104,9 +104,11 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     // blog.google/products|technology = produto; cloud.google.com/blog = dev blog;
     // blog.research.google = pesquisa aplicada;
     // innovation-and-ai = re-org Google blog post-2025 (anúncios Gemini, infra AI);
+    // products-and-platforms = re-org Google blog (produtos de consumo — Translate,
+    // Workspace, Search — achado ao vivo na edição 260908, mesma classe do #7401);
     // developers.googleblog.com = dev tools/SDK announcements (Genkit, AI Studio, Android dev)
     path_patterns: [
-      /^blog\.google\/(products|technology|outreach-initiatives|innovation-and-ai)\//,
+      /^blog\.google\/(products|technology|outreach-initiatives|innovation-and-ai|products-and-platforms)\//,
       /^cloud\.google\.com\/blog\//,
       /^blog\.research\.google\//,
       /^developers\.googleblog\.com\//,
