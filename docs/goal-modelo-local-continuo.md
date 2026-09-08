@@ -213,6 +213,25 @@ números acima. Provavelmente escopos diferentes (uma key vs. o degrau pago
 inteiro), mas isso **não foi verificado**. Reconciliar antes de usar
 qualquer um dos dois como entrada de planejamento.
 
+## Guard mecânico de promoção (#7568)
+
+**"Não promover o modelo local a primário enquanto o alarme de fabricação
+(#7537) dispara" deixou de ser só prosa neste arquivo.**
+`scripts/write-hermes-config.ts` — o único verbo autorizado a escrever
+`~/.hermes/config.yaml` — recusa (exit 1, nada é tocado) qualquer escrita
+que mude `model.default` pro modelo local (`qwen`/`custom/`/`ollama/`)
+enquanto `hermes/scripts/detect-tick-claim-fabrication.py --json` reportar
+`status=fabrication_suspected`. Escritas que não mexem em `model.default`
+passam direto; `--force-model-promotion` (com `--reason` justificando)
+sobrepõe o bloqueio pra quando o operador já investigou e decide seguir
+mesmo assim. Miolo puro + racional completo:
+`scripts/lib/continuo-model-promotion-guard.ts`; regressão:
+`test/continuo-model-promotion-guard.test.ts` +
+`test/hermes-config-writer.test.ts` (describe "guard de promoção do modelo
+local (#7568)"). Isto significa que a Fase de decisão deste `/goal` — se
+chegar a promover o modelo local — passa por este guard automaticamente,
+sem precisar lembrar de rodar o detector à mão antes.
+
 ## Guardrails
 
 - **Medir ocioso.** Verificar antes de CADA célula que nenhum tick do
