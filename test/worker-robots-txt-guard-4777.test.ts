@@ -61,6 +61,7 @@ const WORKERS_DIR = resolve(ROOT, "workers");
  * conferir/atualizar deliberadamente, nunca silencioso.
  */
 const EXPECTED_HOSTS = [
+  "anual:anual.diar.ia.br",
   "arquivo:arquivo.diar.ia.br",
   "artigo-mensal:artigo.diar.ia.br",
   "artigos:especial.diar.ia.br",
