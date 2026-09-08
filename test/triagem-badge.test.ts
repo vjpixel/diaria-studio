@@ -70,7 +70,7 @@ for (const key of ["document", "window", "fetch"]) {
 // chaveada por arquivo+código, então um arquivo de teste NOVO precisa
 // suprimir localmente em vez de herdar a entrada já aceita de outro arquivo).
 // @ts-expect-error TS7016
-const { dispatchBadge, claimBadge } = await import("../scripts/studio-ui/public/triagem.js");
+const { dispatchBadge, claimBadge, reasonCell } = await import("../scripts/studio-ui/public/triagem.js");
 
 after(() => {
   for (const [key, value] of Object.entries(originals)) {
@@ -104,6 +104,85 @@ describe("triagem.js dispatchBadge — #6200 badge de 'sem sinal'", () => {
     const html = dispatchBadge("develop", undefined, EXEC_TRACK_UI);
     assert.doesNotMatch(html, /dispatch-default/);
     assert.doesNotMatch(html, /sem sinal/);
+  });
+});
+
+/** Espelha a forma de `data.execTrackReasonUi` sem importar o lib real: o
+ * ponto do teste é que `reasonCell` LÊ a tabela servida em vez de redeclarar
+ * as frases. Importar o Record de verdade tornaria o teste incapaz de
+ * distinguir as duas coisas. A cobertura de "todo `matched` emitido tem
+ * frase" fica em `test/issue-exec-track.test.ts`, do lado do lib. */
+const REASON_UI = {
+  reasons: {
+    "label:kit-migration": { short: "migração Kit em curso", long: "Bloqueada pela migração de canal para o Kit." },
+    "marker:aguardando-ate": { short: "data marcada", long: "Volta sozinha ao fluxo na data." },
+    "label:windows": { short: "exige máquina Windows", long: "Precisa do Chrome logado / ComfyUI." },
+    default: { short: "sem sinal — ninguém triou", long: "Nasce Overnight por construção." },
+  },
+  actionable: {
+    overnight: true,
+    develop: true,
+    agendada: false,
+    bloqueada: false,
+    epica: false,
+    "fora-de-rodada": false,
+  },
+};
+
+describe("triagem.js reasonCell — #7644 coluna 'Motivo'", () => {
+  it("track não-acionável mostra a frase DA REGRA, não a do track inteiro", () => {
+    const html = reasonCell("bloqueada", "label:kit-migration", REASON_UI);
+    assert.match(html, /migração Kit em curso/);
+    assert.match(html, /class="reason-text"/);
+  });
+
+  it("o texto longo vai pro tooltip, não pra célula", () => {
+    const html = reasonCell("agendada", "marker:aguardando-ate", REASON_UI);
+    assert.match(html, /title="Volta sozinha ao fluxo na data\."/);
+    assert.match(html, />data marcada</);
+  });
+
+  it("track ACIONÁVEL renderiza '—' mesmo tendo frase disponível pro seu matched", () => {
+    // `label:windows` TEM entrada em `reasons` — o que suprime a célula é a
+    // acionabilidade do track, não a falta de texto. É a distinção que faz a
+    // coluna responder "por que isto não anda" em vez de "por que este track".
+    const html = reasonCell("develop", "label:windows", REASON_UI);
+    assert.match(html, /class="reason-none"/);
+    assert.doesNotMatch(html, /Windows/);
+  });
+
+  it("overnight sem sinal não polui a coluna — o badge já sinaliza isso", () => {
+    const html = reasonCell("overnight", "default", REASON_UI);
+    assert.match(html, /class="reason-none"/);
+    assert.doesNotMatch(html, /ninguém triou/);
+  });
+
+  it("vocabulário ausente (1º render antes do fetch) degrada pra '—', nunca lança", () => {
+    assert.match(reasonCell("bloqueada", "label:kit-migration", undefined), /reason-none/);
+  });
+
+  it("matched sem frase na tabela servida degrada pra '—' em vez de imprimir o identificador cru", () => {
+    const html = reasonCell("bloqueada", "label:regra-que-o-cliente-nao-conhece", REASON_UI);
+    assert.match(html, /class="reason-none"/);
+    assert.doesNotMatch(html, /regra-que-o-cliente-nao-conhece/);
+  });
+
+  it("track desconhecido pelo mapa de acionabilidade MOSTRA o motivo (leitura conservadora)", () => {
+    // Servidor à frente do cliente: valor novo em `ExecTrack` que esta tabela
+    // ainda não conhece. Some da coluna só o que sabemos que anda sozinho —
+    // assumir acionável por omissão esconderia um bloqueio real.
+    const html = reasonCell("track-novo", "label:kit-migration", REASON_UI);
+    assert.match(html, /migração Kit em curso/);
+  });
+
+  it("escapa o conteúdo servido — a tabela vem do payload, não é confiável por construção", () => {
+    const hostile = {
+      reasons: { "label:x": { short: "<img src=x onerror=alert(1)>", long: '"><script>alert(1)</script>' } },
+      actionable: { bloqueada: false },
+    };
+    const html = reasonCell("bloqueada", "label:x", hostile);
+    assert.doesNotMatch(html, /<img/);
+    assert.doesNotMatch(html, /<script/);
   });
 });
 

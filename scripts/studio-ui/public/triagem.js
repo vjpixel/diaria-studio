@@ -86,11 +86,6 @@ function setFetchStatus(status, label) {
   el.fetchLabel.textContent = label;
 }
 
-function labelsBadges(labels) {
-  if (!labels || labels.length === 0) return "";
-  return labels.map((l) => `<span class="label-chip">${escapeHtml(l)}</span>`).join(" ");
-}
-
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, "&amp;")
@@ -213,6 +208,43 @@ function renderDispatchTrackLegend() {
     .join("");
 }
 
+// #7644 — coluna "Motivo": por que ESTA issue não é acionável hoje.
+//
+// O badge de Classificação já carrega o `explain` do TRACK no tooltip, mas
+// esse texto descreve a categoria inteira — o de `bloqueada` enumera cinco
+// causas possíveis. Ver `Bloqueada` numa linha não dizia qual das cinco se
+// aplicava; descobrir exigia abrir a issue no GitHub e ler as labels.
+//
+// O veredito por regra (`execTrackMatched`) já vinha no payload desde o #6200,
+// usado só pra pintar o sufixo "·sem sinal". Aqui ele finalmente é traduzido.
+//
+// Mesma disciplina de `execTrackEntry`: as frases NÃO são redeclaradas aqui.
+// Vêm de `data.execTrackReasonUi`, montado em scripts/lib/issue-exec-track.ts
+// a partir de `Record<ExecTrackMatch, …>` — regra nova sem frase quebra o
+// build do servidor em vez de cair em branco no cliente.
+//
+// Track ACIONÁVEL (overnight, develop) renderiza "—": a coluna responde "por
+// que isto não anda", não "por que este track". Quem decide o que é acionável
+// é `EXEC_TRACK_ACTIONABLE`, servido junto — não uma lista repetida aqui.
+//
+// Exportada pra ser testável direto, como `dispatchBadge`: o caller de teste
+// passa `reasonUiOverride` em vez de mutar `data`.
+export function reasonCell(track, matched, reasonUiOverride) {
+  const ui = reasonUiOverride ?? data.execTrackReasonUi;
+  // Payload ainda não chegou (1º render antes do fetch) ou servidor antigo:
+  // sem vocabulário não há o que dizer, e inventar texto aqui recriaria a 2ª
+  // fonte de verdade. Célula vazia é a degradação correta.
+  if (!ui) return '<span class="reason-none">—</span>';
+  // `actionable` ausente pro track (valor novo que o servidor já emite e esta
+  // tabela ainda não conhece) → NÃO assume acionável: mostra o motivo se
+  // houver, que é a leitura conservadora — some da coluna só o que sabemos
+  // que anda sozinho.
+  if (ui.actionable?.[track] === true) return '<span class="reason-none">—</span>';
+  const entry = ui.reasons?.[matched];
+  if (!entry) return '<span class="reason-none">—</span>';
+  return `<span class="reason-text" title="${escapeHtml(entry.long)}">${escapeHtml(entry.short)}</span>`;
+}
+
 function ciBadge(ciState) {
   const labelPt = { green: "verde", red: "vermelho", pending: "pendente", none: "sem checks" }[ciState] ?? ciState;
   return `<span class="ci-badge ci-${ciState}">${labelPt}</span>`;
@@ -314,7 +346,7 @@ function renderIssuesTable() {
       <td>${escapeHtml(i.title)}</td>
       <td>${dispatchBadge(i.execTrack, i.execTrackMatched)}${claimBadge(i.claim)}</td>
       <td>${priorityBadge(i.priority)}</td>
-      <td>${labelsBadges(i.labels)}</td>
+      <td>${reasonCell(i.execTrack, i.execTrackMatched)}</td>
       <td class="mono">${ageLabel(i.createdAt)}</td>
       <td class="mono">${fmtTime(i.updatedAt)}</td>
     `;
@@ -349,7 +381,6 @@ function renderPrsTable() {
       <td>${priorityBadge(p.priority)}</td>
       <td>${ciBadge(p.ciState)}</td>
       <td class="mono">${escapeHtml(p.reviewDecision ?? "—")}</td>
-      <td>${labelsBadges(p.labels)}</td>
       <td class="mono">${fmtTime(p.updatedAt)}</td>
     `;
     el.prsBody.appendChild(tr);
@@ -457,6 +488,7 @@ async function fetchIssues() {
       issues: data.issues,
       prs: data.prs,
       execTrackUi: data.execTrackUi,
+      execTrackReasonUi: data.execTrackReasonUi,
       error: String(failure),
       cached: true,
       generatedAt: data.generatedAt,

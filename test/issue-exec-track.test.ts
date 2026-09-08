@@ -21,7 +21,9 @@ import {
   EXEC_TRACK_LABELS,
   EXEC_TRACK_UI,
   type ExecTrack,
+  EXEC_TRACK_ACTIONABLE,
   EXEC_TRACK_MATCH_CATALOG,
+  EXEC_TRACK_MATCH_REASON,
 } from "../scripts/lib/issue-exec-track.ts";
 
 /** Data fixa — nenhum teste deste arquivo pode depender do relógio real. */
@@ -962,5 +964,54 @@ describe("classifyExecTrackFromListItem (#7018)", () => {
       { now: NOW },
     );
     assert.equal(track, "fora-de-rodada");
+  });
+});
+
+// #7644 — a coluna "Motivo" da Triagem traduz `matched` numa frase. O
+// `Record<ExecTrackMatch, …>` já quebra o BUILD se uma regra nova entrar sem
+// frase; isto fecha o outro lado, o que o tipo não vê: que a frase não é
+// vazia, e que a tabela não acumulou entradas de regras já removidas.
+describe("EXEC_TRACK_MATCH_REASON — motivo por regra (#7644)", () => {
+  it("todo membro do catálogo de matched tem frase curta e longa não-vazias", () => {
+    for (const matched of EXEC_TRACK_MATCH_CATALOG) {
+      const entry = EXEC_TRACK_MATCH_REASON[matched];
+      assert.ok(entry, `sem motivo para ${matched}`);
+      assert.ok(entry.short.trim().length > 0, `short vazio para ${matched}`);
+      assert.ok(entry.long.trim().length > 0, `long vazio para ${matched}`);
+    }
+  });
+
+  it("não sobra frase para regra que não existe mais", () => {
+    const catalog = new Set<string>(EXEC_TRACK_MATCH_CATALOG);
+    for (const key of Object.keys(EXEC_TRACK_MATCH_REASON)) {
+      assert.ok(catalog.has(key), `motivo órfão: ${key} não está em EXEC_TRACK_MATCH_CATALOG`);
+    }
+  });
+
+  it("short é curto o bastante pra caber numa célula de tabela", () => {
+    for (const [matched, entry] of Object.entries(EXEC_TRACK_MATCH_REASON)) {
+      assert.ok(entry.short.length <= 40, `short longo demais em ${matched}: ${entry.short.length} chars`);
+    }
+  });
+
+  it("long diz mais que short — o tooltip existe pra acrescentar, não repetir", () => {
+    for (const [matched, entry] of Object.entries(EXEC_TRACK_MATCH_REASON)) {
+      assert.ok(entry.long.length > entry.short.length, `long não acrescenta nada em ${matched}`);
+    }
+  });
+});
+
+describe("EXEC_TRACK_ACTIONABLE — quem anda hoje (#7644)", () => {
+  it("só overnight e develop são acionáveis", () => {
+    assert.equal(EXEC_TRACK_ACTIONABLE.overnight, true);
+    assert.equal(EXEC_TRACK_ACTIONABLE.develop, true);
+    assert.equal(EXEC_TRACK_ACTIONABLE.agendada, false);
+    assert.equal(EXEC_TRACK_ACTIONABLE.bloqueada, false);
+    assert.equal(EXEC_TRACK_ACTIONABLE.epica, false);
+    assert.equal(EXEC_TRACK_ACTIONABLE["fora-de-rodada"], false);
+  });
+
+  it("cobre exatamente os mesmos tracks que EXEC_TRACK_LABELS", () => {
+    assert.deepEqual(Object.keys(EXEC_TRACK_ACTIONABLE).sort(), Object.keys(EXEC_TRACK_LABELS).sort());
   });
 });

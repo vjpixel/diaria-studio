@@ -46,7 +46,14 @@
  */
 
 import { spawnGhSync, GH_SPAWN_TIMEOUT_MS } from "../lib/shared/gh-run.ts";
-import { classifyExecTrackWithRule, EXEC_TRACK_UI, type ExecTrack, type ExecTrackMatch } from "../lib/issue-exec-track.ts";
+import {
+  classifyExecTrackWithRule,
+  EXEC_TRACK_ACTIONABLE,
+  EXEC_TRACK_MATCH_REASON,
+  EXEC_TRACK_UI,
+  type ExecTrack,
+  type ExecTrackMatch,
+} from "../lib/issue-exec-track.ts";
 import { listActiveSessions, type ActiveSessionRecord } from "../lib/session-registry.ts";
 import { flattenClaims, type ClaimBearingSession } from "../lib/claim-staleness.ts";
 
@@ -179,6 +186,15 @@ export interface TriageData {
    * lado do servidor, passando silenciosamente no cliente (achado no review
    * do PR #5463). */
   execTrackUi: typeof EXEC_TRACK_UI;
+  /** Motivo por REGRA (`ExecTrackMatch` → `{ short, long }`) + quais tracks
+   * são acionáveis, pra coluna "Motivo" da Triagem (#7644). Servido junto do
+   * payload pelo mesmo motivo que `execTrackUi`: o front consome esta tabela
+   * em vez de redeclarar as frases, senão uma regra nova ganharia texto só do
+   * lado do servidor e cairia em branco no cliente, sem quebrar nada. */
+  execTrackReasonUi: {
+    reasons: typeof EXEC_TRACK_MATCH_REASON;
+    actionable: typeof EXEC_TRACK_ACTIONABLE;
+  };
   /** Mensagem de erro da última tentativa de fetch via `gh`, ou `null` se a
    * última tentativa (ou o dado servido do cache) foi bem-sucedida. */
   error: string | null;
@@ -608,6 +624,7 @@ export function fetchTriageData(rootDir: string, opts: FetchTriageDataOptions = 
       issues: attachClaims(parseIssues(issuesRaw), sessions),
       prs: parsePrs(prsRaw),
       execTrackUi: EXEC_TRACK_UI,
+      execTrackReasonUi: { reasons: EXEC_TRACK_MATCH_REASON, actionable: EXEC_TRACK_ACTIONABLE },
       error: null,
       cached: false,
     };
@@ -627,6 +644,7 @@ export function fetchTriageData(rootDir: string, opts: FetchTriageDataOptions = 
       // depende do `gh`. Sem isso o front perderia rótulo/tooltip justamente
       // quando já está degradado.
       execTrackUi: EXEC_TRACK_UI,
+      execTrackReasonUi: { reasons: EXEC_TRACK_MATCH_REASON, actionable: EXEC_TRACK_ACTIONABLE },
       error: message,
       cached: false,
     };
