@@ -17,8 +17,8 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const WRANGLER_TOML = resolve(ROOT, "workers", "anual", "wrangler.toml");
 
-/** Bindings KV declarados pelo worker `anual`. */
-export type AnnualBinding = "ARTICLES";
+/** Bindings KV declarados pelo worker `anual` (ver `workers/anual/wrangler.toml`). */
+export type AnnualBinding = "ARTICLES" | "RATE_LIMIT";
 
 /**
  * Extrai o `id` do bloco `[[kv_namespaces]]` cujo `binding` casa. Puro — o

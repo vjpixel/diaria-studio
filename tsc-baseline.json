@@ -140,7 +140,6 @@
   "test/notify-continuo-askuserquestion.test.ts::TS7016": 1,
   "test/notify-sound-hook.test.ts::TS7006": 2,
   "test/notify-sound-hook.test.ts::TS7016": 1,
-  "test/onboarding-state.test.ts::TS2339": 2,
   "test/overnight-report-counts.test.ts::TS2339": 3,
   "test/overnight-session-marker.test.ts::TS18046": 2,
   "test/overnight-session-marker.test.ts::TS2345": 1,
