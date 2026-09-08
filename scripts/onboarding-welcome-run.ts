@@ -847,11 +847,21 @@ async function main(): Promise<void> {
   // disciplina que evitou repetir o #6043. ---
   if (shouldResetCursorForBackendSwitch(store.last_detection_backend, backend)) {
     const backendAnterior = store.last_detection_backend;
+    // #7665 (residual): contar cadastros na janela entre cursor antigo e now
+    // (decisão do editor necessária — não executa reinscrição automática).
+    let gapCount = 0;
+    try {
+      const gapFetch = backend === "kit"
+        ? await fetchSubscriptionsSinceKit(kitCfg!, store.last_detection_cursor)
+        : await fetchSubscriptionsSince(beeCfg!.config.publicationId, beeCfg!.config.apiKey, store.last_detection_cursor);
+      gapCount = gapFetch.length;
+    } catch (_) { gapCount = -1; }
     store.last_detection_cursor = nowSec;
     store.last_detection_backend = backend;
+    const gapReport = gapCount >= 0 ? `; janela entre cursor antigo e bootstrap: ${gapCount} cadastros (coorte órfã — reinscrever só sob decisão do editor, #7665)` : "; não foi possível contar coorte órfã";
     const nota =
       `bootstrap (troca de backend de detecção ${backendAnterior} → ${backend}): cursor remarcado em now; ` +
-      `nenhuma entrada retroativa adicionada (#7599)`;
+      `nenhuma entrada retroativa adicionada (#7599)${gapReport}`;
     if (args.send) {
       writeStore(store, storePath);
       summary.notes.push(nota);
