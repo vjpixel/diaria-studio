@@ -76,7 +76,7 @@ function declaracao(corpo: string, prop: string): string | null {
  * Cor da borda, aceitando tanto `border-color:` quanto o shorthand `border:`.
  *
  * O shorthand importa: é a forma PREDOMINANTE no resto deste arquivo
- * (`.label-chip`, `.draft-tag`, o próprio `.dispatch-badge` base). Sem
+ * (`.draft-tag`, `.reason-text`, o próprio `.dispatch-badge` base). Sem
  * reconhecê-lo, uma variante futura escrita com `border: 1px solid X` falhava
  * com a mensagem "não declara border-color" — factualmente errada, já que a
  * borda ESTÁ definida (achado no review do PR #5486).

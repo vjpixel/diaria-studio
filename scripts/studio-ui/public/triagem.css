@@ -155,15 +155,22 @@
 .track-edicao { border-color: var(--status-ok); color: var(--status-ok); }
 .track-mensal { border-color: var(--status-warn); color: var(--status-warn); }
 
-.label-chip {
-  display: inline-block;
-  font-size: 0.72rem;
-  padding: 0.05rem 0.35rem;
-  border-radius: 999px;
-  background: var(--paper-alt);
-  border: 1px solid var(--rule);
-  margin: 0 0.15rem 0.15rem 0;
-  white-space: nowrap;
+/* #7644 — coluna "Motivo". Substituiu `.label-chip` (as chips de label saíram
+   das duas tabelas; o filtro por label acima delas usa `.label-filter-item`,
+   classe distinta, e segue intacto).
+
+   Texto corrido, não badge: já há dois badges por linha (Classificação,
+   Prioridade) e um terceiro competiria com eles em vez de se ler como a
+   legenda que é. O tooltip carrega o texto longo, com o que DESTRAVA. */
+.reason-text {
+  font-size: 0.78rem;
+  opacity: 0.85;
+  border-bottom: 1px dotted var(--rule);
+  cursor: help;
+}
+
+.reason-none {
+  opacity: 0.35;
 }
 
 .draft-tag {

@@ -787,6 +787,153 @@ export const EXEC_TRACK_EXPLAIN: Record<ExecTrack, string> = {
     "Fora de rodada — quatro motivos distintos, nenhum com código pendente: o editor tirou de circulação (`on-hold`, `wontfix` — não é 'ainda não', é 'não'); já foi resolvida por registro de decisão em prosa (`decisao-registrada`, só quando nenhuma outra label já classificar a issue de outro jeito — uma decisão parcial numa issue que segue sendo trabalho real, ex: trade-off-real, não entra aqui); é alarme de ESTADO que se auto-resolve (`alarm` sem `alarm-evento`, comenta/fecha sozinho quando o achado para de reproduzir — #5553: alarme de EVENTO PASSADO, `alarm-evento`, vai pro Overnight em vez de aqui); ou é ambígua-sem-direção (`sem-direcao-acionavel` — o overnight já concluiu explicitamente 'sem ação de código clara a tomar', diferente de `precisa-resposta`/`trade-off-real`). EPIC guarda-chuva SAIU daqui em #6201 — ver Épica.",
 };
 
+/**
+ * A issue neste track pode ser trabalhada por ALGUMA sessão hoje? (#7644)
+ *
+ * `overnight` = o helios pega sozinho; `develop` = uma sessão com o editor
+ * presente pega. Os outros quatro não têm sessão que os pegue no estado
+ * atual — cada um por um motivo diferente, que é o que
+ * `EXEC_TRACK_MATCH_REASON` abaixo nomeia.
+ *
+ * `agendada` conta como NÃO-acionável de propósito, apesar de ser "trabalho
+ * fazível que volta sozinho na data": hoje ninguém a pega, e a coluna Motivo
+ * responde "por que isto não anda AGORA". A data é justamente o motivo, e
+ * aparece como tal.
+ *
+ * `Record<ExecTrack, boolean>` e não um `Set` de literais: um valor novo na
+ * união quebra o build até alguém decidir de que lado ele cai — a mesma
+ * garantia de `EXEC_TRACK_LABELS`/`EXEC_TRACK_EXPLAIN`. Um `Set` aceitaria o
+ * valor novo em silêncio, tratando-o como acionável por omissão.
+ */
+export const EXEC_TRACK_ACTIONABLE: Record<ExecTrack, boolean> = {
+  overnight: true,
+  develop: true,
+  agendada: false,
+  bloqueada: false,
+  epica: false,
+  "fora-de-rodada": false,
+};
+
+/**
+ * Motivo POR REGRA — a frase que responde "por que esta issue específica não
+ * é acionável", em oposição a `EXEC_TRACK_EXPLAIN`, que descreve o track
+ * inteiro (#7644).
+ *
+ * A distinção é o ponto: o `explain` de `bloqueada` enumera CINCO causas
+ * possíveis, porque descreve a categoria. Quem olha a Triagem e vê o badge
+ * `Bloqueada` não fica sabendo qual das cinco se aplica àquela linha — tem
+ * que abrir a issue no GitHub e ler as labels. O veredito por regra já era
+ * calculado (`ExecTrackResult.matched`) e já viajava até o cliente desde o
+ * #6200; só não era traduzido pra lugar nenhum, servindo apenas pra pintar o
+ * sufixo `·sem sinal`.
+ *
+ * Mora aqui pelo mesmo motivo que `EXEC_TRACK_EXPLAIN`: é a descrição do que
+ * cada BRAÇO do classificador faz, e mantê-la ao lado do braço é o que evita
+ * a regra mudar e o texto ficar. Sendo `Record<ExecTrackMatch, …>` exaustivo,
+ * um valor novo na união não compila até ganhar rótulo — o mesmo guard que
+ * `EXEC_TRACK_MATCH_CATALOG` exerce pelo lado do runtime.
+ *
+ * Inclui as regras de track ACIONÁVEL (`label:windows`, `default`, …), ainda
+ * que a Triagem não as renderize hoje: a tabela descreve o classificador, não
+ * a coluna. Deixar buracos aqui converteria o guard de compilação num
+ * `Partial` decorativo, e a próxima regra acionável entraria sem que ninguém
+ * escrevesse o que ela significa.
+ *
+ * `short` é o que cabe na célula (curto, minúsculo — não é título); `long` é
+ * o tooltip, e diz o que DESTRAVA, não só o que trava: é a pergunta seguinte
+ * de quem lê a coluna.
+ */
+export const EXEC_TRACK_MATCH_REASON: Record<ExecTrackMatch, { short: string; long: string }> = {
+  "state:closed": {
+    short: "issue fechada",
+    long: "A issue está fechada — nunca é candidata a rodada nenhuma. Se apareceu na Triagem, o snapshot está defasado.",
+  },
+  "label:on-hold": {
+    short: "tirada de circulação",
+    long: "Label `on-hold`: o editor tirou a issue de circulação. Não é 'ainda não', é 'não' — destrava removendo a label.",
+  },
+  "label:wontfix": {
+    short: "tirada de circulação",
+    long: "Label `wontfix`: decidido que não será feito. Destrava só reabrindo a decisão com o editor.",
+  },
+  "label:external-blocker": {
+    short: "conta/serviço de terceiro",
+    long: "Label `external-blocker`: depende de ação numa conta ou serviço de terceiro que nenhuma sessão faz sozinha. Destrava o editor agindo na conta — e, se o que falta for só escopo de uma credencial que já existe, a label `credencial-escopo` reclassifica a issue como Develop (#5694).",
+  },
+  "label:kit-migration": {
+    short: "migração Kit em curso",
+    long: "Label `kit-migration`: bloqueada pela migração de canal para o Kit. Destrava quando a etapa correspondente da migração concluir.",
+  },
+  "label:beehiiv": {
+    short: "plan-gate da Beehiiv",
+    long: "Label `beehiiv`: depende de recurso da Beehiiv fora do plano contratado (o workspace é Launch/free). Não há fix neste repo — destrava com upgrade de plano ou trocando de caminho.",
+  },
+  "label:bloqueio-execucao": {
+    short: "bloqueio de execução",
+    long: "Label `bloqueio-execucao`: existe um impedimento concreto de execução registrado na issue. Destrava resolvendo o que a issue descreve — ler os comentários antes de reinvestigar.",
+  },
+  "label:dependencia-aberta": {
+    short: "depende de issue aberta",
+    long: "Label `dependencia-aberta` (#7137): a issue declara `depends-on: #N` e essa dependência ainda está aberta. Desarma SOZINHA quando a dependência fechar — quem remove a label é `scripts/reconcile-issue-dependencies.ts`, nunca a mão. O número da dependência está no corpo da issue.",
+  },
+  "marker:aguardando-ate": {
+    short: "data marcada",
+    long: "Marcador `aguardando-ate: AAAA-MM-DD` com data futura. Não está bloqueada por nada — é trabalho fazível que volta sozinho ao fluxo na data, sem ninguém remover label. A data está no corpo da issue.",
+  },
+  "label:not-this-week": {
+    short: "adiada, sem data",
+    long: "Label `not-this-week`: deferimento vago, sem data específica. Como não há data, não vira Agendada — destrava removendo a label, ou trocando-a por um marcador `aguardando-ate: AAAA-MM-DD`.",
+  },
+  "label:next-month": {
+    short: "adiada, sem data",
+    long: "Label `next-month`: deferimento vago, sem data específica. Como não há data, não vira Agendada — destrava removendo a label, ou trocando-a por um marcador `aguardando-ate: AAAA-MM-DD`.",
+  },
+  "label:windows": {
+    short: "exige máquina Windows",
+    long: "Label `windows`: precisa do Chrome logado / ComfyUI / `data/` local. É Develop — acionável numa sessão na máquina do editor, nunca no helios.",
+  },
+  "label:trade-off-real": {
+    short: "trade-off na fila do briefing",
+    long: "Label `trade-off-real`: já triada como trade-off de produto/editorial. Desde o #7493 continua Overnight — entra na fila de perguntas do briefing da Fase 0, em vez do bounce pro Develop.",
+  },
+  "label:credencial-escopo": {
+    short: "falta escopo de credencial",
+    long: "Labels `external-blocker` + `credencial-escopo` (#5694): a credencial já existe, falta só a permissão/escopo. Por isso é Develop e não Bloqueada — acionável com o editor presente.",
+  },
+  "label:develop-track": {
+    short: "precisa do editor presente",
+    long: "Label `develop-track` (#5948): bloqueio humano ou dependência sem data específica. Acionável numa sessão com o editor — se tivesse data, seria `aguardando-ate:` e viraria Agendada.",
+  },
+  "label:alarm-evento": {
+    short: "alarme de evento passado",
+    long: "Label `alarm-evento` (#5553): alarme ancorado a um evento/ID imutável, que nunca se auto-resolve. Precisa de revisão — por isso é Overnight, e não Fora de rodada como o alarme de estado.",
+  },
+  "label:alarm-acao": {
+    short: "alarme que exige ação",
+    long: "Label `alarm-acao` (#6772): alarme de ESTADO que só normaliza por AÇÃO (ex: timer nunca armado ou órfão). Remediado rodando um script — por isso é Overnight.",
+  },
+  "label:decisao-registrada": {
+    short: "resolvida por decisão em prosa",
+    long: "Label `decisao-registrada`: a issue foi resolvida por registro de decisão, sem código pendente. Só classifica assim quando nenhuma outra label já classificou a issue de outro jeito.",
+  },
+  "label:alarm": {
+    short: "alarme que se auto-resolve",
+    long: "Label `alarm` (sem `alarm-evento`): alarme de ESTADO que comenta e fecha sozinho quando o achado para de reproduzir. Não há ação a tomar — se ainda está aberto, o achado ainda reproduz.",
+  },
+  "label:epic-guarda-chuva": {
+    short: "épica — fecha com as filhas",
+    long: "Label `epic-guarda-chuva` (#5968): issue `[ÉPICA]` guarda-chuva, nunca implementada direto. Fecha só quando as issues-filhas mergearem — o trabalho acionável está nelas, não aqui.",
+  },
+  "label:sem-direcao-acionavel": {
+    short: "sem ação de código clara",
+    long: "Label `sem-direcao-acionavel` (#5968): a rodada já investigou e concluiu explicitamente que não há próximo passo de código prescrito. Diferente de `precisa-resposta`/`trade-off-real`, que são ambiguidades ANTES de qualquer tentativa.",
+  },
+  default: {
+    short: "sem sinal — ninguém triou",
+    long: "Nenhuma label ou marcador classificou esta issue: ela nasce Overnight por construção, o que é a verdade (o overnight ainda vai olhar pra ela). Acionável — o badge já sinaliza isso com o sufixo `·sem sinal`.",
+  },
+};
+
 /** Forma do badge por valor, na ordem de LEITURA da legenda: do que anda
  * sozinho hoje à noite até o que não anda de jeito nenhum — `agendada` entra
  * entre `develop` e `bloqueada` (#5682): anda sozinha *depois*, na data; não
