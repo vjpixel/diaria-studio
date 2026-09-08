@@ -254,10 +254,40 @@ export function extractHeroImage(html: string): string | null {
  * Só toca `/img/` do host do É IA?. Qualquer outro src (`media.beehiiv.com`
  * nas edições antigas, `poll.diaria.workers.dev` nas legadas) passa intacto:
  * este Worker não sabe servir aqueles bytes, reescrever daria imagem morta.
+ *
+ * Aceita esquema explícito (`https:`/`http:`) e protocol-relative (`//host/…`,
+ * achado do review): as três formas são URL válida pro mesmo host, e deixar a
+ * terceira de fora significaria reproduzir o bug do #7657 em silêncio caso a
+ * pipeline passasse a gravá-la. Porta explícita NÃO é aceita — o host de
+ * produção nunca a usa, e casá-la exigiria decidir o que fazer com uma porta
+ * que este Worker não escuta.
  */
 export function sameOriginImageUrl(src: string): string {
-  const match = src.match(/^https?:\/\/eia\.diar\.ia\.br(\/img\/[^?#]*(?:[?#].*)?)$/i);
+  const match = src.match(/^(?:https?:)?\/\/eia\.diar\.ia\.br(\/img\/[^?#]*(?:[?#].*)?)$/i);
   return match ? match[1] : src;
+}
+
+/**
+ * #7657 (achado do review): sinal de build pra drift no formato da URL de
+ * capa.
+ *
+ * `sameOriginImageUrl` devolve o src intacto quando não casa — correto pros
+ * hosts que este Worker de fato não serve, mas o MESMO silêncio cobriria
+ * "isto deveria ter sido reescrito e o padrão mudou" (porta explícita,
+ * subdomínio novo, path prefixado). Nesse caso a home voltaria a apontar
+ * cross-host e reabriria o #7657 sem nenhum sinal — só detectável pela mesma
+ * medição manual e cara que originou a issue.
+ *
+ * O gerador da home roda localmente, não em runtime do Worker, então um
+ * `console.warn` aqui é grátis e aparece no terminal de quem regenerar.
+ */
+function warnIfEiaHostNotRewritten(slug: string, src: string): void {
+  if (src.includes("eia.diar.ia.br")) {
+    console.warn(
+      `site-home-page: capa de "${slug}" continua apontando pra eia.diar.ia.br ` +
+        `depois da reescrita (${src}) — o formato da URL mudou? ver sameOriginImageUrl (#7657)`,
+    );
+  }
 }
 
 /**
@@ -365,6 +395,7 @@ export function buildHomeFeed(
       continue;
     }
     const image = extractHeroImage(html);
+    if (image) warnIfEiaHostNotRewritten(slug, image);
     if (!image) {
       // Nunca pula a entrada por isso (diferente do <title> vazio acima) —
       // só loga: a home renderiza a edição sem capa, layout só-texto (#6978).

@@ -43,7 +43,7 @@
  * do documento não há hostname de terceiro pra um filtro cortar.
  *
  * `eia.diar.ia.br/img/{key}` continua no ar, permanentemente: toda edição já
- * ENVIADA por e-mail e as 262 páginas `/p/{slug}` do acervo carregam aquela
+ * ENVIADA por e-mail e todas as páginas `/p/{slug}` do acervo carregam aquela
  * URL. Este path é adição, nunca substituição.
  */
 import { EXPECTED_SUBSCRIBE_REDIRECT_HOST } from "../../../scripts/lib/apex-cutover.ts";

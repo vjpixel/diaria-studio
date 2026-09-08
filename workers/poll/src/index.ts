@@ -1616,7 +1616,7 @@ async function propagateNicknameByMonth(
  * falha medido ao vivo em 08/09/2026; ver docstring do módulo).
  *
  * Esta rota (`eia.diar.ia.br/img/{key}`) NÃO está depreciada e não vai sair:
- * toda edição já enviada por e-mail e as 262 páginas `/p/{slug}` do acervo
+ * toda edição já enviada por e-mail e todas as páginas `/p/{slug}` do acervo
  * carregam esta URL. As duas leem o mesmo KV e devolvem a mesma resposta.
  *
  * A assinatura fica como estava — `handleImage` é exportada e usada por

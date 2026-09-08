@@ -66,6 +66,15 @@ describe("sameOriginImageUrl (puro, #7657)", () => {
     assert.equal(sameOriginImageUrl("http://eia.diar.ia.br/img/img-260101-x.jpg"), "/img/img-260101-x.jpg");
   });
 
+  it("aceita protocol-relative //host/img/ — senão o bug volta em silêncio", () => {
+    assert.equal(sameOriginImageUrl("//eia.diar.ia.br/img/img-260908-a.jpg"), "/img/img-260908-a.jpg");
+  });
+
+  it("NÃO casa porta explícita — o host de produção não usa, e este Worker não a escuta", () => {
+    const comPorta = "https://eia.diar.ia.br:8443/img/img-260908-a.jpg";
+    assert.equal(sameOriginImageUrl(comPorta), comPorta);
+  });
+
   it("NÃO toca src de outro host — reescrever daria imagem morta", () => {
     // `workers/site` não sabe servir esses bytes: não estão no KV `POLL`.
     for (const src of [
@@ -191,6 +200,53 @@ describe("workers/site — GET /img/{key} (#7657)", () => {
     const res = await worker.fetch(new Request(`https://diar.ia.br/img/${key}`, { method: "POST" }), env);
     assert.equal(res.status, 404);
     assert.deepEqual(assetCalls, [`/img/${key}`]);
+  });
+
+  it("HEAD devolve os mesmos headers do GET (ramo aceito no dispatch, antes sem cobertura)", async () => {
+    const key = "img-260908-04-d1-2x1-984d45b7.jpg";
+    const { env, assetCalls } = fakeEnv({ [key]: JPEG_BYTES });
+    const get = await worker.fetch(new Request(`https://diar.ia.br/img/${key}`), env);
+    const head = await worker.fetch(new Request(`https://diar.ia.br/img/${key}`, { method: "HEAD" }), env);
+
+    assert.equal(head.status, 200);
+    assert.equal(head.headers.get("Content-Type"), "image/jpeg");
+    assert.equal(head.headers.get("Cache-Control"), get.headers.get("Cache-Control"));
+    assert.equal(head.headers.get("ETag"), get.headers.get("ETag"));
+    assert.equal(head.headers.get("Access-Control-Allow-Origin"), "*");
+    // Nunca cai no asset lookup — HEAD é servido pelo KV como o GET.
+    assert.deepEqual(assetCalls, []);
+  });
+
+  it("KV lançando → 503 COM CORS, nunca exceção crua nem 404 (que seria cacheável)", async () => {
+    const env: Env = {
+      ASSETS: {
+        // @ts-expect-error — só o método `fetch` importa pro teste.
+        fetch: async () => new Response("not found", { status: 404 }),
+      },
+      POLL: {
+        get: async () => {
+          throw new Error("KV indisponível");
+        },
+      },
+    };
+    const errs: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => void errs.push(args);
+    try {
+      const res = await worker.fetch(
+        new Request("https://diar.ia.br/img/img-260908-04-d1-2x1-984d45b7.jpg"),
+        env,
+      );
+      // 503 e não 404: falha de KV é transitória, 404 é definitivo e cacheável.
+      assert.equal(res.status, 503);
+      // Sem o catch, a exceção subiria e o leitor receberia a página de erro
+      // da Cloudflare — que não emite CORS, furando o invariante do #1132 P2.4.
+      assert.equal(res.headers.get("Access-Control-Allow-Origin"), "*");
+      assert.equal(errs.length, 1, "a falha precisa aparecer no Workers Logs");
+      assert.match(String(errs[0][0]), /img-260908-04-d1-2x1-984d45b7\.jpg/);
+    } finally {
+      console.error = original;
+    }
   });
 
   it("path fora de /img/ segue intocado pelo caminho novo", async () => {

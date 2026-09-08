@@ -22,7 +22,7 @@
  *
  * `workers/poll` continua servindo `eia.diar.ia.br/img/{key}` pelo mesmo
  * caminho, agora delegando aqui. **Isso não é transição, é permanente**: toda
- * edição já ENVIADA por e-mail e as 262 páginas `/p/{slug}` do acervo
+ * edição já ENVIADA por e-mail e todas as páginas `/p/{slug}` do acervo
  * carregam a URL antiga. As duas rotas leem o mesmo KV e devolvem resposta
  * byte a byte idêntica.
  *
@@ -158,7 +158,26 @@ export async function serveKvImage(
     return new Response("not found", { status: 404, headers: corsHeaders });
   }
 
-  const value = await kv.get(key, "arrayBuffer");
+  // #7657 (achado do review): `kv.get` REJEITA em falha do KV (timeout, erro
+  // interno da Cloudflare). Sem este catch a exception subia pelo `fetch()` do
+  // Worker e o leitor recebia a página de erro genérica da Cloudflare — que
+  // não emite `Access-Control-Allow-Origin`, furando justamente o invariante
+  // de "CORS em TODO path" que o #1132 P2.4 estabeleceu, e sem nenhum registro
+  // de qual key falhou.
+  //
+  // 503 e não 404 de propósito: 404 significa "esta imagem não existe" e é
+  // cacheável/definitivo; falha de KV é transitória e o cliente deve poder
+  // tentar de novo. Distinguir os dois também é o que torna o modo de falha
+  // VISÍVEL no analytics da zona — um 404 a mais se perde no ruído, um pico de
+  // 503 não. O gap é herdado do `handleImage` original (que também não
+  // tratava), mas esta PR o propagaria pra um 2º Worker sem endereçá-lo.
+  let value: ArrayBuffer | null;
+  try {
+    value = await kv.get(key, "arrayBuffer");
+  } catch (err) {
+    console.error(`kv-image: falha lendo "${key}" do KV:`, err);
+    return new Response("temporarily unavailable", { status: 503, headers: corsHeaders });
+  }
   if (!value) {
     return new Response("not found", { status: 404, headers: corsHeaders });
   }
