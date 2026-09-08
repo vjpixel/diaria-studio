@@ -70,6 +70,20 @@ describe("relinkAnnualEditionHtml — escopo é TODO link, sem exceção de Use 
     assert.ok(r.html.includes("https://diar.ia.br/p/edicao-260810"), r.html);
     assert.ok(r.html.includes("utm_campaign=anual-2026-aniversario"));
     assert.ok(!r.html.includes("exemplo.com/materia-x"), "a URL original não deve sobrar no href");
+    // Sem sourceOverride, buildRelink cai no default "clarice" (#4510) — não
+    // é o comportamento desejado pra anual (canal é Kit), mas é o default
+    // desta função pura; quem chama com o canal errado é o consumidor
+    // (regressão coberta abaixo).
+    assert.ok(r.html.includes("utm_source=clarice"));
+  });
+
+  it("#7613 — sourceOverride propaga pro utm_source do link relinkado (canal real da anual é Kit, não Clarice)", () => {
+    const html = '<a href="https://exemplo.com/materia-x">a matéria</a>';
+    const destaques = [{ url: "https://exemplo.com/materia-x", edition: "260810" }];
+    const r = relinkAnnualEditionHtml(html, destaques, posts, "anual-2026-aniversario", "kit");
+    assert.equal(r.relinked, 1);
+    assert.ok(r.html.includes("utm_source=kit"), r.html);
+    assert.ok(!r.html.includes("utm_source=clarice"));
   });
 
   it("link sem destaque mapeado é mantido na fonte original — nunca inventa link", () => {

@@ -201,7 +201,10 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
         destaques?: { url?: string; edition?: string }[];
       };
       const posts = loadUnifiedEditionCache();
-      const relinked = relinkAnnualEditionHtml(html, raw.destaques ?? [], posts, `anual-${slug}`);
+      // #7613 (achado do self-review da #7587 item 2): sem sourceOverride,
+      // buildRelink cai no default "clarice" — errado aqui, o canal da anual
+      // é Kit (ver publishing.newsletter.backend), não Clarice.
+      const relinked = relinkAnnualEditionHtml(html, raw.destaques ?? [], posts, `anual-${slug}`, "kit");
       html = relinked.html;
       log(
         `relink: ${relinked.relinked} link(s) reescrito(s) pra edição diária, ` +
