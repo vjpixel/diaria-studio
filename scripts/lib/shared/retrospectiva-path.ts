@@ -50,8 +50,11 @@
  * = 1º aniversário, agosto de 2026).
  */
 
-/** Gate exigido por cada formato — ver tabela no topo do módulo. */
-export type RetrospectivaGate = "apoio-mantenedor" | "cadastro";
+// O gate de cada formato vive como literal na variante correspondente de
+// `RetrospectivaPath` abaixo — não há alias `RetrospectivaGate` porque ainda
+// não existe consumidor que trate gate genericamente (o Worker que vai fazer
+// isso é a próxima fatia da #7658). Exportar o alias antes disso é export
+// órfão, e o knip reprova — com razão.
 
 export type RetrospectivaPath =
   | { kind: "mensal"; ano: number; mes: number; slug: string; gate: "apoio-mantenedor" }
