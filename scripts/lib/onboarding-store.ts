@@ -2,15 +2,17 @@
  * onboarding-store.ts (#5908)
  *
  * Store JSON simples (mesma família de `brevo-diaria-store.ts` — sem SQLite)
- * que rastreia o ciclo de vida de onboarding de cada assinante novo da
- * Beehiiv detectado pelo script diário `scripts/onboarding-welcome-run.ts`:
+ * que rastreia o ciclo de vida de onboarding de cada assinante novo
+ * detectado pelo script diário `scripts/onboarding-welcome-run.ts`
+ * (Beehiiv ou Kit, ver `last_detection_backend` abaixo — #7599):
  *
  *   detected → email1_sent (transacional, imediato) →
  *     email2_sent (transacional, D+3) →
- *       email3: campaign_created (D+10, zero aberturas+cliques — campanha
- *               Brevo, SEMPRE rascunho por padrão)
- *             | skipped_opened (abriu ou clicou algo antes do D+10)
- *             | skipped_inactive (status Beehiiv ≠ active na decisão)
+ *       email3: campaign_created (D+10, PELO MENOS 1 abertura — campanha
+ *               Brevo, SEMPRE rascunho por padrão; condição INVERTIDA em
+ *               #7599, era "zero aberturas+cliques")
+ *             | skipped_no_open (zero abertura em D+10 — #7599, terminal)
+ *             | skipped_inactive (status/state ≠ active na decisão)
  *             | skipped_sem_dados (stats ausentes após janela de tolerância)
  *
  * Contexto (#5908, decisão do editor 22/08/2026 ~11:08 BRT via Telegram):
@@ -36,15 +38,27 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const DEFAULT_STORE_PATH = resolve(ROOT, "data/onboarding/store.json");
 
-/** Estado do e-mail 3 (única etapa com ramificação condicional). */
+/**
+ * Estado do e-mail 3 (única etapa com ramificação condicional).
+ *
+ * #7599 (08/09/2026, decisão do editor registrada na issue): a condição de
+ * disparo INVERTEU — o e-mail 3 (copy de apoio, ex-Kit) agora dispara só
+ * para quem ABRIU pelo menos 1 edição em D+10 (`campaign_created`); quem
+ * tem ZERO aberturas nessa data simplesmente não recebe nada por ora
+ * (`skipped_no_open`, terminal) — não é o reengajamento antigo (que exigia
+ * exatamente o oposto: zero aberturas+cliques). `skipped_opened` foi
+ * renomeado para `skipped_no_open` porque o nome antigo descrevia o motivo
+ * do skip da condição ANTIGA (abriu = skip) — manter o nome com a condição
+ * invertida teria o sentido oposto ao que o campo passou a significar.
+ */
 export type OnboardingEmail3State =
   | "pending"
   | "campaign_created"
-  | "skipped_opened"
+  | "skipped_no_open"
   | "skipped_inactive"
-  /** Stats Beehiiv ausentes mesmo após a janela de tolerância — não dá pra
-   * avaliar "zero aberturas" sem dado; desiste de propósito (terminal),
-   * nunca envia às cegas. */
+  /** Stats de abertura ausentes mesmo após a janela de tolerância — não dá
+   * pra avaliar "abriu pelo menos 1 edição" sem dado; desiste de propósito
+   * (terminal), nunca envia às cegas. */
   | "skipped_sem_dados";
 
 export interface OnboardingEntry {
@@ -93,10 +107,35 @@ export interface OnboardingStore {
   /** Id da lista Brevo dedicada ao cohort D+10 (criada sob demanda). */
   d10_brevo_list_id: number | null;
   entries: Record<string, OnboardingEntry>;
+  /**
+   * #7599: qual backend gerou `last_detection_cursor` — Beehiiv (`created`,
+   * epoch segundos) e Kit (`created_at`, ISO convertido) não são
+   * garantidamente comparáveis no mesmo relógio/base. Uma troca de backend
+   * (ex: Beehiiv → Kit em 04/09/2026) precisa re-bootstrapar o cursor —
+   * nunca reusar um valor calculado sob a fonte antiga, que é exatamente o
+   * tipo de erro silencioso que causou o #6043 (585 e-mails retroativos).
+   * `null`/ausente = store criado antes deste campo existir; tratado como
+   * "backend desconhecido" (força bootstrap na 1ª leitura pós-upgrade).
+   */
+  last_detection_backend?: "beehiiv" | "kit" | null;
+  /**
+   * #7599: rodadas `--send` consecutivas (não-bootstrap, não
+   * `--cancel-pending`) com `detected_new === 0` — alimenta o alarme de
+   * "detecção zerada" (`zeroDetectionAlarm` em `onboarding-state.ts`). Zera
+   * a qualquer detecção > 0.
+   */
+  consecutive_zero_detections?: number;
 }
 
 export function emptyStore(): OnboardingStore {
-  return { version: 1, last_detection_cursor: null, d10_brevo_list_id: null, entries: {} };
+  return {
+    version: 1,
+    last_detection_cursor: null,
+    d10_brevo_list_id: null,
+    entries: {},
+    last_detection_backend: null,
+    consecutive_zero_detections: 0,
+  };
 }
 
 /**
@@ -115,6 +154,8 @@ export function readStore(path: string = DEFAULT_STORE_PATH): { store: Onboardin
         last_detection_cursor: raw.last_detection_cursor ?? null,
         d10_brevo_list_id: raw.d10_brevo_list_id ?? null,
         entries: raw.entries ?? {},
+        last_detection_backend: raw.last_detection_backend ?? null,
+        consecutive_zero_detections: raw.consecutive_zero_detections ?? 0,
       },
       corrupted: false,
     };

@@ -8,12 +8,13 @@
  *   - assertSnippetSendable: pendente/sem assunto/sem corpo → throw.
  *   - classifyNewSubscribers: dedupe por store E dentro do mesmo lote.
  *   - dueForEmail2 / ageDays: D+3 exato e independência do email1.
- *   - email3Eligibility: D+10 + zero aberturas/cliques; stats ausentes
- *     NUNCA elegível (fail-safe).
+ *   - email3Eligibility: D+10 + PELO MENOS 1 abertura (#7599, 08/09/2026 —
+ *     condição INVERTIDA: o corpo virou copy de apoio, elegível é quem já
+ *     leu, não quem nunca abriu); stats ausentes NUNCA elegível (fail-safe).
  *   - buildRunPlan: o cenário-carro de segurança — snippet pendente ⇒ plano
  *     contém ZERO ações, mesmo com --send implícito; status ≠ active não
- *     recebe email1; cohort D+10 vira UMA campanha; skipped_opened grava
- *     decisão terminal.
+ *     recebe email1; cohort D+10 vira UMA campanha (quem abriu); quem tem
+ *     zero abertura grava decisão terminal `skipped_no_open` (#7599).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -147,35 +148,42 @@ describe("dueForEmail2 / ageDays", () => {
 
 // ─── email3Eligibility ───────────────────────────────────────────────────────
 
-describe("email3Eligibility", () => {
-  it("D+10 com zero aberturas e cliques → elegível", () => {
+/** Narrowing helper — `Email3Decision` só carrega `reason` no branch `eligible:false`. */
+function reasonOf(d: ReturnType<typeof email3Eligibility>): string | undefined {
+  return d.eligible ? undefined : d.reason;
+}
+
+describe("email3Eligibility (#7599: condição invertida — pedido de apoio pra quem já leu)", () => {
+  it("D+10 com pelo menos 1 abertura → elegível", () => {
     const e = entry();
-    const d = email3Eligibility(e, { total_unique_opened: 0, total_clicked: 0 }, T0 + 10 * DAY);
+    const d = email3Eligibility(e, { total_unique_opened: 1, total_clicked: 0 }, T0 + 10 * DAY);
     assert.deepEqual(d, { eligible: true });
+    // Cliques deixaram de fazer parte do critério — só abertura importa.
+    const d2 = email3Eligibility(e, { total_unique_opened: 5, total_clicked: null }, T0 + 10 * DAY);
+    assert.deepEqual(d2, { eligible: true });
   });
 
-  it("abriu OU clicou → inelegível com reason abriu_ou_clicou", () => {
+  it("zero abertura em D+10 → inelegível com reason sem_abertura (terminal — nunca recebe e-mail 3)", () => {
     const e = entry();
-    const abriu = email3Eligibility(e, { total_unique_opened: 1, total_clicked: 0 }, T0 + 10 * DAY);
-    assert.deepEqual(abriu, { eligible: false, reason: "abriu_ou_clicou" });
-    const clicou = email3Eligibility(e, { total_unique_opened: 0, total_clicked: 2 }, T0 + 10 * DAY);
-    assert.deepEqual(clicou, { eligible: false, reason: "abriu_ou_clicou" });
+    const semAbertura = email3Eligibility(e, { total_unique_opened: 0, total_clicked: 3 }, T0 + 10 * DAY);
+    assert.deepEqual(semAbertura, { eligible: false, reason: "sem_abertura" });
   });
 
-  it("stats ausentes/parciais → NUNCA elegível (fail-safe)", () => {
+  it("stats ausentes (total_unique_opened null/ausente) → NUNCA elegível (fail-safe)", () => {
     const e = entry();
     assert.equal(email3Eligibility(e, null, T0 + 30 * DAY).eligible, false);
+    assert.equal(reasonOf(email3Eligibility(e, null, T0 + 30 * DAY)), "stats_ausentes");
     assert.equal(
-      email3Eligibility(e, { total_unique_opened: 0 }, T0 + 30 * DAY).eligible,
-      false,
+      reasonOf(email3Eligibility(e, { total_unique_opened: null, total_clicked: 0 }, T0 + 30 * DAY)),
+      "stats_ausentes",
     );
   });
 
   it("antes do D+10 e já decidido → reasons corretos", () => {
     const e = entry();
-    assert.equal(email3Eligibility(e, { total_unique_opened: 0, total_clicked: 0 }, T0 + 9 * DAY).reason, "age<min");
-    const decidido = entry({ email3_state: "skipped_opened" });
-    assert.equal(email3Eligibility(decidido, null, T0 + 30 * DAY).reason, "ja_decidido");
+    assert.equal(reasonOf(email3Eligibility(e, { total_unique_opened: 1, total_clicked: 0 }, T0 + 9 * DAY)), "age<min");
+    const decidido = entry({ email3_state: "skipped_no_open" });
+    assert.equal(reasonOf(email3Eligibility(decidido, null, T0 + 30 * DAY)), "ja_decidido");
   });
 });
 
@@ -209,18 +217,27 @@ describe("buildRunPlan — cenário-carro de segurança (#5908)", () => {
     assert.ok(motivos.includes("corpo_pendente"));
   });
 
-  it("plano completo com snippets ok: email1 novo + email2 D+3 + UMA campanha pro cohort D+10", () => {
+  it("plano completo com snippets ok: email1 novo + email2 D+3 + UMA campanha pro cohort D+10 QUE ABRIU (#7599)", () => {
     const entries = [
       entry({ subscription_id: "novo" }),
       entry({ subscription_id: "d3", email1_sent_at: "x", created_at: T0 - 4 * DAY }),
       entry({ subscription_id: "d10a", email1_sent_at: "x", email2_sent_at: "x", created_at: T0 - 12 * DAY }),
       entry({ subscription_id: "d10b", email1_sent_at: "x", email2_sent_at: "x", created_at: T0 - 13 * DAY }),
-      entry({ subscription_id: "abriu", email1_sent_at: "x", email2_sent_at: "x", created_at: T0 - 12 * DAY, email3_state: "pending" }),
+      entry({
+        subscription_id: "sem_abertura",
+        email1_sent_at: "x",
+        email2_sent_at: "x",
+        created_at: T0 - 12 * DAY,
+        email3_state: "pending",
+      }),
     ];
-    const statsById: Record<string, { total_unique_opened: number; total_clicked: number }> = {
-      d10a: { total_unique_opened: 0, total_clicked: 0 },
-      d10b: { total_unique_opened: 0, total_clicked: 0 },
-      abriu: { total_unique_opened: 3, total_clicked: 0 },
+    // #7599: quem ABRIU entra na campanha de apoio; quem tem zero abertura
+    // (mesmo com cliques!) fica de fora, terminal — condição invertida da
+    // #5908 original (reengajamento pra quem nunca abriu).
+    const statsById: Record<string, { total_unique_opened: number; total_clicked: number | null }> = {
+      d10a: { total_unique_opened: 2, total_clicked: 0 },
+      d10b: { total_unique_opened: 1, total_clicked: null },
+      sem_abertura: { total_unique_opened: 0, total_clicked: 5 },
     };
     const r = buildRunPlan({ entries, statsById, ...PLAN_DEFAULTS, snippets: planSnippets(false) });
 
@@ -232,10 +249,10 @@ describe("buildRunPlan — cenário-carro de segurança (#5908)", () => {
       assert.deepEqual(camp.entries.map((e) => e.subscription_id).sort(), ["d10a", "d10b"]);
     }
 
-    // quem abriu teve decisão terminal gravada in-place
-    const abriu = entries.find((e) => e.subscription_id === "abriu")!;
-    assert.equal(abriu.email3_state, "skipped_opened");
-    assert.ok(abriu.email3_decided_at);
+    // quem NÃO abriu teve decisão terminal gravada in-place — nunca recebe e-mail 3
+    const semAbertura = entries.find((e) => e.subscription_id === "sem_abertura")!;
+    assert.equal(semAbertura.email3_state, "skipped_no_open");
+    assert.ok(semAbertura.email3_decided_at);
   });
 
   it("status ≠ active NUNCA recebe email1 nem email2 (skip status_nao_active)", () => {
