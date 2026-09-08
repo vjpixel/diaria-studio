@@ -138,6 +138,15 @@ export interface QueueEntry {
   // o KV.delete falha após o DO cancel. O cron detecta este flag, pula o item sem
   // postar, e o deleta do KV (cleanup do tombstone).
   cancelled?: boolean;
+  // (#7626) Motivo da última falha — gravado SÓ ao mover pra dlq: (fire.ts,
+  // nos 2 pontos que escrevem lá: outcome.status="dlq" instantâneo e retry
+  // esgotado). Antes deste campo, o motivo só existia em console.error
+  // efêmero do Worker — sem acesso a `wrangler tail` em tempo real no
+  // momento exato da falha, uma entry em DLQ virava um "post sumiu" sem
+  // diagnóstico possível (achado ao vivo: 2 posts semanais de Instagram
+  // caíram em DLQ em 260907 e só foram notados 260908, achado #7626).
+  // Nunca setado em entries "queue:" ativas — só em "dlq:".
+  last_error?: string;
 }
 
 // ── Constantes ─────────────────────────────────────────────────────────────

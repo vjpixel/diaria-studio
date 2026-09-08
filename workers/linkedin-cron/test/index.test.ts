@@ -417,6 +417,36 @@ describe("#880 dead-letter retry após MAX_RETRIES", () => {
     const dlqEntry = JSON.parse(dlqRaw as string) as QueueEntry;
     assert.equal(dlqEntry.destaque, "d2");
     assert.equal(dlqEntry.retry_count, MAX_RETRIES);
+    // (#7626) motivo da falha persistido — antes só existia em console.error
+    // efêmero, tornando um item em DLQ indiagnosticável retroativamente
+    // (achado ao vivo: 2 posts semanais de Instagram sumiram em DLQ sem
+    // rastro do motivo, só notado 1 dia depois).
+    assert.match(dlqEntry.last_error ?? "", /HTTP 500/);
+  });
+
+  it("(#7626) falha instantânea (dlq direto, sem retry) também persiste last_error", async () => {
+    const { env, kv } = mkEnv();
+    const key = buildQueueKey("2020-01-01T00:00:00.000Z", "uuid-ig-no-image");
+    const entry: QueueEntry = {
+      text: "t",
+      image_url: null,
+      scheduled_at: "2020-01-01T00:00:00.000Z",
+      destaque: "d1",
+      created_at: "2020-01-01T00:00:00.000Z",
+      retry_count: 0,
+      channel: "instagram", // sem credenciais Instagram configuradas em mkEnv() — dlq instantâneo (guard, não retriable)
+    };
+    kv.store.set(key, JSON.stringify(entry));
+
+    const result = await __test__.fireDueItems(env);
+
+    assert.equal(result.dlq, 1);
+    assert.equal(kv.store.has(key), false);
+    const dlqKeys = Array.from(kv.store.keys()).filter(k => k.startsWith("dlq:"));
+    assert.equal(dlqKeys.length, 1);
+    const dlqEntry = JSON.parse(kv.store.get(dlqKeys[0]) as string) as QueueEntry;
+    assert.equal(dlqEntry.retry_count, MAX_RETRIES);
+    assert.match(dlqEntry.last_error ?? "", /credenciais Instagram/);
   });
 
   it("GET /dlq lista items dead-letter (auth required)", async () => {
