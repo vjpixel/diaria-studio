@@ -70,7 +70,14 @@ STATE_DB = Path.home() / ".hermes" / "state.db"
 # Modelos pagos que o config engaja DE PROPOSITO. Qualquer outro id pago que
 # apareca no relatorio e vazamento e deve ser investigado, nao normalizado.
 PAID_ALLOWLIST = {
-    "z-ai/glm-5.3-flash",       # rede de seguranca da cadeia + visao
+    # Fallback pago do Hermes (config.yaml) desde 08/09/2026 — substituiu o
+    # glm-5.3-flash nas 20 ocorrencias de ~/.hermes/config.yaml.
+    "deepseek/deepseek-v4-flash",
+    # NAO removido junto: o glm continua sendo o 4o elo (piso pago) da cadeia
+    # de claude-openrouter.sh, que a SKILL do continuo invoca na delegacao
+    # (hermes-diaria-continuo/SKILL.md:464) — ou seja, ainda aparece em
+    # producao. Tirar daqui o transformaria em "vazamento" falso.
+    "z-ai/glm-5.3-flash",       # piso pago da lane + visao
     "openai-codex/gpt-5.6-luna",
     "gpt-5.6-luna",
 }
@@ -90,7 +97,7 @@ CONTINUO_JOB_ID = "5d791ef6fc2c"
 # percentual, corrompendo justo a linha de base que esta issue quer coletar.
 CONTINUO_PRIMARY_MODEL_IDS = {"gpt-5.6-luna", "openai-codex/gpt-5.6-luna"}
 CONTINUO_LOCAL_FALLBACK_HINT = "qwen"
-CONTINUO_PAID_FALLBACK_MODEL = "z-ai/glm-5.3-flash"
+CONTINUO_PAID_FALLBACK_MODEL = "deepseek/deepseek-v4-flash"
 
 # ---------------------------------------------------------------------------
 # #6818 item 4 — aumento de preco em modelo PAGO ja em uso
@@ -112,6 +119,13 @@ CONTINUO_PAID_FALLBACK_MODEL = "z-ai/glm-5.3-flash"
 # atualiza o baseline junto. Baseline defasado gera alarme, nunca silencio —
 # a direcao segura.
 PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {
+    # Medido ao vivo em 08/09/2026 contra o catalogo da OpenRouter, no mesmo
+    # dia em que virou o fallback pago do config.yaml.
+    "deepseek/deepseek-v4-flash": {
+        "prompt": 0.000000084,          # $0,084/M
+        "completion": 0.000000168,      # $0,168/M
+        "input_cache_read": 0.0000000168,  # $0,0168/M
+    },
     "z-ai/glm-5.3-flash": {
         "prompt": 0.000000075,          # $0,075/M — promocao, expira 09/09/2026
         "completion": 0.00000025,       # $0,25/M
