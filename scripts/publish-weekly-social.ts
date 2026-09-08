@@ -770,7 +770,7 @@ async function runOneMode(
     const dualOrigin = detectDualOriginDates(unifiedPosts, contentWindow);
     if (dualOrigin.length > 0) {
       warnings.push(
-        `${dualOrigin.length} edição(ões) da janela saíram pelos DOIS canais (rampa Kit + base Beehiiv): ${dualOrigin.join(", ")} — o ranking usou só os cliques do Kit (lado maior), então o número de cada candidato desses dias subestima o alcance real.`,
+        `${dualOrigin.length} edição(ões) da janela saíram pelos DOIS canais (rampa Kit + base Beehiiv): ${dualOrigin.join(", ")} — o ranking usou só os cliques do Kit (lado que venceu o desempate), então o número de cada candidato desses dias cobre um canal só — a proporção entre os dois lados varia por dia, não é meio a meio.`,
       );
     }
   }

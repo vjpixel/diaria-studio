@@ -138,12 +138,15 @@ O **ciclo** (`{YY}w{WW}`, ex: `26w31`) é derivado da semana de CONTEÚDO
   Beehiiv a enriquecer.
 
   Quando a mesma data tem post nas duas origens (janela de rampa,
-  ~260817–260903), **o Kit vence** e o script avisa que metade do sinal
-  daquele dia ficou de fora (#7637 — `matchPostsToWindow` em
+  ~260817–260903), **o Kit vence** e o script avisa que o sinal do
+  outro canal ficou de fora (#7637 — `matchPostsToWindow` em
   `scripts/lib/shared/click-window-resolution.ts`). Test-send do
   `review-test-email` nunca compete: é descartado por `recipients` abaixo do
   piso, **não** por `public` (edição real da rampa também sai
-  `public: false`).
+  `public: false`). Broadcast Kit cujas stats ainda não foram agregadas
+  (`kit-sync.ts` rodou logo depois do envio) também fica de fora — sem
+  `recipients` não dá pra distinguir edição de teste, então a data cai no
+  warning de "sem dados de clique" e volta ao re-rodar o sync.
 
 ## Passo 1 — Checar se falta enriquecimento de clicks
 

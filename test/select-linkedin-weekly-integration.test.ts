@@ -821,3 +821,111 @@ describe("#6185: seleção por clique lê edição de origem Kit (broadcast comp
     assert.equal(headlines[1].ratePct, 0);
   });
 });
+
+/**
+ * #7637: wiring dos 2 warnings novos de origem no boundary CLI.
+ *
+ * A lógica pura (`click-window-resolution.ts`) já é coberta por
+ * `test/click-window-resolution.test.ts`. O que ESTE bloco cobre é o que o
+ * `tsc` não pega: import trocado, `unifiedPosts` passado no lugar de
+ * `windowPosts` (tipam compatível), warning computado mas nunca empurrado
+ * pro array. A manifestação visível do bug do #7637 pro editor É o warning
+ * aparecer no output — sem este teste, o wiring podia quebrar em silêncio.
+ */
+describe("#7637 warnings de origem chegam ao ln-selection.json", () => {
+  let root: string;
+  let selectionJson: any;
+
+  const EDICAO = (titulo: string, url: string) =>
+    [
+      "**DESTAQUE 1 | 💼 MERCADO**",
+      "",
+      `**[${titulo}](${url})**`,
+      "",
+      "Corpo.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Explicação.",
+      "",
+    ].join("\n");
+
+  before(() => {
+    root = mkTmpRoot();
+
+    // 260907 é uma segunda; janela de conteúdo = 260831..260904.
+    // 260831: envio DUPLO (Beehiiv + Kit, ambos com entrega real) → dispara
+    // `detectDualOriginDates`, e o Kit tem que vencer o desempate.
+    writeEdition(root, "260831", EDICAO("Materia dupla", "https://exemplo.com/dupla"));
+    writeCachePost(root, "post_831", {
+      id: "post_831",
+      status: "confirmed",
+      publish_date: epochFor("260831"),
+      stats: {
+        email: { clicks: 5, unique_opens: 50, recipients: 314 },
+        clicks: [{ url: "https://exemplo.com/dupla", base_url: "https://exemplo.com/dupla", email: { unique_verified_clicks: 1 } }],
+      },
+    });
+    writeKitCachePost(root, 900831, {
+      id: 900831,
+      subject: "Materia dupla",
+      status: "completed",
+      public: false, // rampa: edição REAL, mesmo com public:false
+      published_at: new Date(epochFor("260831") * 1000).toISOString(),
+      stats: { emails_opened: 100, recipients: 280 },
+      clicks: [{ id: 1, url: "https://exemplo.com/dupla", unique_clicks: 20, click_to_open_rate: 20 }],
+    });
+
+    // 260904: SÓ Beehiiv, e é pós-cutover → dispara
+    // `detectPostCutoverBeehiivDates`.
+    writeEdition(root, "260904", EDICAO("Materia orfa", "https://exemplo.com/orfa"));
+    writeCachePost(root, "post_904", {
+      id: "post_904",
+      status: "confirmed",
+      publish_date: epochFor("260904"),
+      stats: {
+        email: { clicks: 3, unique_opens: 40, recipients: 300 },
+        clicks: [{ url: "https://exemplo.com/orfa", base_url: "https://exemplo.com/orfa", email: { unique_verified_clicks: 2 } }],
+      },
+    });
+
+    process.argv = ["node", "select-linkedin-weekly.ts", "--publish-monday", "260907"];
+    selectMain(root);
+    selectionJson = JSON.parse(readFileSync(join(root, "data/weekly/26w36/_internal/ln-selection.json"), "utf8"));
+  });
+
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  it("warning de envio duplo nomeia 260831 e chega ao JSON", () => {
+    const w = selectionJson.warnings as string[];
+    assert.ok(
+      w.some((x) => /DOIS canais/.test(x) && x.includes("260831")),
+      `warnings: ${JSON.stringify(w)}`,
+    );
+  });
+
+  it("warning de pós-cutover-resolveu-Beehiiv nomeia 260904 e chega ao JSON", () => {
+    const w = selectionJson.warnings as string[];
+    assert.ok(
+      w.some((x) => /cache BEEHIIV/.test(x) && x.includes("260904") && /kit-sync/.test(x)),
+      `warnings: ${JSON.stringify(w)}`,
+    );
+  });
+
+  it("260831 não dispara o warning de pós-cutover — é pré-cutover e resolveu pro Kit", () => {
+    const w = selectionJson.warnings as string[];
+    assert.ok(
+      !w.some((x) => /cache BEEHIIV/.test(x) && x.includes("260831")),
+      `warnings: ${JSON.stringify(w)}`,
+    );
+  });
+
+  it("na data de envio duplo o ranking usou os cliques do KIT, não os do Beehiiv", () => {
+    // Kit: 20 cliques / 100 aberturas = 20%. Beehiiv: 1 / 50 = 2%.
+    const dupla = (selectionJson.headlines as Array<{ editionDate: string; ratePct: number }>).find(
+      (h) => h.editionDate === "260831",
+    );
+    assert.ok(dupla, `260831 deveria estar nas headlines: ${JSON.stringify(selectionJson.headlines)}`);
+    assert.equal(dupla!.ratePct, 20);
+  });
+});

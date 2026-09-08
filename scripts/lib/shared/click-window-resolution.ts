@@ -23,6 +23,8 @@
  * propósito (o Kit é REST comum, sem enriquecimento assíncrono a esperar).
  */
 
+import type { EditionOrigin } from "./edition-cache-reader.ts";
+
 /**
  * Campos que a RESOLUÇÃO por data precisa — deliberadamente sem `stats`.
  * `matchPostsToWindow` nunca lê cliques; quem lê são as funções de ranking
@@ -43,7 +45,7 @@ export interface ClickWindowPostBase {
    * usado pelos manifests de enriquecimento via MCP) deixa `undefined` e o
    * desempate por origem vira no-op — ver `matchPostsToWindow`.
    */
-  origin?: string;
+  origin?: EditionOrigin;
   /**
    * Tamanho da entrega (#6186 — `KitBroadcastStats.recipients`, passthrough
    * do Beehiiv do outro lado). É ISTO que separa test-send de edição real,
@@ -72,10 +74,10 @@ export function aammddFromEpochSeconds(epochSec: number): string {
  * desempate volta a ser só por `publish_date` — comportamento pré-#7637
  * preservado pra esse caminho.
  */
-const ORIGIN_PRECEDENCE: Record<string, number> = { kit: 2, beehiiv: 1 };
+const ORIGIN_PRECEDENCE: Record<EditionOrigin, number> = { kit: 2, beehiiv: 1 };
 
 function originRank(post: ClickWindowPostBase): number {
-  return post.origin === undefined ? 0 : (ORIGIN_PRECEDENCE[post.origin] ?? 0);
+  return post.origin === undefined ? 0 : ORIGIN_PRECEDENCE[post.origin];
 }
 
 /**
@@ -98,12 +100,36 @@ function originRank(post: ClickWindowPostBase): number {
  */
 export const MIN_REAL_DELIVERY_RECIPIENTS = 10;
 
-/** Pure: `true` quando a entrega é grande o bastante pra ser edição, não
- *  test-send. `recipients` ausente (Beehiiv sem o campo, cache antigo) NUNCA
- *  é lido como teste — na dúvida o post entra, e o resto dos gates decide. */
+/**
+ * Pure: `true` quando a entrega é grande o bastante pra ser edição, não
+ * test-send.
+ *
+ * **`recipients` ausente NÃO significa a mesma coisa nas duas origens** —
+ * por isso a checagem é origin-aware (achado do review da PR #7638,
+ * verificado contra `normalizeKitBroadcast`):
+ *
+ * - **Kit sem NENHUMA agregação** (`stats.email` inteiro ausente): fica de
+ *   fora. `normalizeKitBroadcast` popula os 4 campos de `stats.email`
+ *   juntos, sob o mesmo gate `hasOpens` — então `email` ausente quer dizer
+ *   que `kit-sync.ts` rodou antes de a Kit agregar as stats do envio.
+ *   "Ausente" aí é **não sei**, e num broadcast que pode ser o test-send do
+ *   `review-test-email` deixar entrar reabre exatamente o buraco que o
+ *   #7637 fechou. Fora do mapa, a data cai no warning
+ *   `editionsMissingClickData` que os dois callers já emitem — a falha
+ *   BARULHENTA: o editor re-roda `kit-sync.ts` e a data volta.
+ * - **Kit COM agregação mas sem `recipients`**: entra. Há evidência de que
+ *   a Kit já fechou as stats; um `recipients` faltando aí é lacuna de campo
+ *   (fixture, cache de versão anterior do normalizador), não corrida.
+ * - **Beehiiv / origem ausente**: entra sempre. Aqui "ausente" quer dizer
+ *   *cache velho, escrito antes de o campo existir* — não há corrida de
+ *   agregação a perder (medido em 08/09/2026: `recipients` presente em
+ *   265/265 posts do cache Beehiiv). Excluir por ausência apagaria o
+ *   caminho Beehiiv-only (manifest de enriquecimento via MCP) inteiro.
+ */
 function isRealDelivery(post: ClickWindowPostBase): boolean {
   const recipients = post.stats?.email?.recipients;
-  return recipients === undefined || recipients >= MIN_REAL_DELIVERY_RECIPIENTS;
+  if (recipients === undefined) return post.origin !== "kit" || post.stats?.email !== undefined;
+  return recipients >= MIN_REAL_DELIVERY_RECIPIENTS;
 }
 
 /**

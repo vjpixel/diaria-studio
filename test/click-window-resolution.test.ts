@@ -88,14 +88,71 @@ describe("matchPostsToWindow — desempate por origem (#7637)", () => {
     assert.equal(matchPostsToWindow([rampa], ["260903"]).get("260903")?.label, "rampa");
   });
 
-  it("recipients ausente nunca é lido como test-send", () => {
+  it("recipients ausente no lado BEEHIIV nunca é lido como test-send", () => {
+    // Lá "ausente" = cache velho, escrito antes do campo existir. Não há
+    // corrida de agregação a perder (medido: presente em 265/265 posts).
     const semCampo: TestPost = { label: "sem-campo", status: "confirmed", origin: "beehiiv", publish_date: epochAt("260904") };
     assert.equal(semCampo.stats, undefined);
     assert.equal(matchPostsToWindow([semCampo], ["260904"]).get("260904")?.label, "sem-campo");
   });
 
+  it("recipients ausente sem origem (caminho Beehiiv-only) também entra", () => {
+    const semOrigem: TestPost = { label: "manifest", status: "confirmed", publish_date: epochAt("260904") };
+    assert.equal(matchPostsToWindow([semOrigem], ["260904"]).get("260904")?.label, "manifest");
+  });
+
+  it("Kit COM agregação mas sem recipients entra — há evidência de stats fechadas", () => {
+    // Distingue "lacuna de campo" de "corrida de agregação". Fixture do
+    // #6185 (`weekly-instagram-select.test.ts`) depende deste caminho.
+    const comOpens: TestPost = {
+      label: "com-opens",
+      status: "confirmed",
+      origin: "kit",
+      publish_date: epochAt("260904"),
+      stats: { email: {} },
+    };
+    assert.equal(matchPostsToWindow([comOpens], ["260904"]).get("260904")?.label, "com-opens");
+  });
+
+  it("Kit sem NENHUMA agregação fica de fora — 'não sei' não é 'entrega real'", () => {
+    // `normalizeKitBroadcast` só popula `recipients` junto com
+    // `emails_opened`: se o kit-sync roda antes de a Kit agregar, `stats`
+    // sai undefined. Deixar entrar reabriria o buraco do #7637 — um
+    // test-send nessa janela competiria pela vaga da data.
+    const statsNaoAgregadas: TestPost = { label: "kit-cru", status: "confirmed", origin: "kit", publish_date: epochAt("260904") };
+    assert.equal(matchPostsToWindow([statsNaoAgregadas], ["260904"]).has("260904"), false);
+  });
+
+  it("Kit sem stats não rouba a vaga de um Beehiiv com entrega comprovada", () => {
+    const kitCru: TestPost = { label: "kit-cru", status: "confirmed", origin: "kit", publish_date: epochAt("260904", 23) };
+    const beehiiv = post("beehiiv", { origin: "beehiiv", publish_date: epochAt("260904", 9) });
+    assert.equal(matchPostsToWindow([kitCru, beehiiv], ["260904"]).get("260904")?.label, "beehiiv");
+  });
+
+  it("recipients EXATAMENTE no piso conta como entrega real (>=, não >)", () => {
+    const noPiso = post("no-piso", {
+      origin: "kit",
+      publish_date: epochAt("260904"),
+      stats: { email: { recipients: MIN_REAL_DELIVERY_RECIPIENTS } },
+    });
+    assert.equal(matchPostsToWindow([noPiso], ["260904"]).get("260904")?.label, "no-piso");
+  });
+
+  it("um destinatário abaixo do piso já fica de fora", () => {
+    const abaixo = post("abaixo", {
+      origin: "kit",
+      publish_date: epochAt("260904"),
+      stats: { email: { recipients: MIN_REAL_DELIVERY_RECIPIENTS - 1 } },
+    });
+    assert.equal(matchPostsToWindow([abaixo], ["260904"]).has("260904"), false);
+  });
+
   it("o piso de entrega real é uma faixa vazia, não uma fronteira apertada", () => {
     assert.equal(MIN_REAL_DELIVERY_RECIPIENTS, 10);
+  });
+
+  it("janela vazia devolve mapa vazio", () => {
+    assert.equal(matchPostsToWindow([post("x", { origin: "kit", publish_date: epochAt("260904") })], []).size, 0);
   });
 
   it("Beehiiv ainda resolve a data quando o Kit não tem post nenhum", () => {
@@ -111,11 +168,13 @@ describe("matchPostsToWindow — desempate por origem (#7637)", () => {
     assert.equal(out.get("260904")?.label, "tarde");
   });
 
-  it("origem desconhecida não vence Kit nem Beehiiv por acidente", () => {
-    const kit = post("kit", { origin: "kit", publish_date: epochAt("260904", 4, 0) });
-    const alien = post("alien", { origin: "substack", publish_date: epochAt("260904", 23, 0) });
-    assert.equal(matchPostsToWindow([kit, alien], ["260904"]).get("260904")?.label, "kit");
-  });
+  // NOTA: "origem desconhecida" deixou de ser testável em runtime depois do
+  // review da PR #7638 — `origin` passou de `string` pra `EditionOrigin`
+  // (union fechado) e `ORIGIN_PRECEDENCE` pra `Record<EditionOrigin, number>`,
+  // então uma origem fora do union vira erro de COMPILAÇÃO, não fallback
+  // silencioso pro piso. O guard migrou do teste pro compilador, que é onde
+  // ele deveria estar — e o dia em que `EditionOrigin` ganhar um 3º valor,
+  // `ORIGIN_PRECEDENCE` não compila até alguém decidir a precedência dele.
 
   it("status != confirmed continua fora, em qualquer origem", () => {
     const scheduled = post("scheduled", { origin: "kit", status: "scheduled", publish_date: epochAt("260904") });

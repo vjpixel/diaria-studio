@@ -333,12 +333,12 @@ export function main(rootDirOverride?: string) {
   }
 
   // #7637: janela de rampa (envio duplo Beehiiv+Kit) — o ranking fica com o
-  // lado Kit e metade do sinal do dia não entra. Ver `detectDualOriginDates`
+  // lado Kit e o sinal do outro canal não entra. Ver `detectDualOriginDates`
   // pra por que somar as duas origens não é uma opção.
   const dualOrigin = detectDualOriginDates(unifiedPosts, contentWindow);
   if (dualOrigin.length > 0) {
     warnings.push(
-      `${dualOrigin.length} edição(ões) da janela saíram pelos DOIS canais (rampa Kit + base Beehiiv): ${dualOrigin.join(", ")} — o ranking usou só os cliques do Kit (lado maior), então o número de cada candidato desses dias subestima o alcance real.`,
+      `${dualOrigin.length} edição(ões) da janela saíram pelos DOIS canais (rampa Kit + base Beehiiv): ${dualOrigin.join(", ")} — o ranking usou só os cliques do Kit (lado que venceu o desempate), então o número de cada candidato desses dias cobre um canal só — a proporção entre os dois lados varia por dia, não é meio a meio.`,
     );
   }
 
