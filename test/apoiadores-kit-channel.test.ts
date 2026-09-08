@@ -18,6 +18,7 @@ import {
   evaluateApoiadoresBlastRadius,
   resolveApoiadoresTagId,
   resolveApoiadoresTagName,
+  resolveApoiadoresAudience,
 } from "../scripts/lib/mensal/apoiadores-kit-channel.ts";
 
 describe("#7633 — níveis-alvo", () => {
@@ -146,5 +147,38 @@ describe("#7633 — evaluateApoiadoresBlastRadius", () => {
 
   it("--force-blast-radius destrava (decisão consciente, sempre logada pelo caller)", () => {
     assert.equal(evaluateApoiadoresBlastRadius(10, 10, true).blocked, false);
+  });
+});
+
+describe("#7651 — resolveApoiadoresAudience", () => {
+  const nomeOk = { ok: true, tagName: "apoio-mensal" } as const;
+  const idOk = { ok: true, tagId: 42 } as const;
+  const membrosOk = { ok: true } as const;
+  const falhou = { ok: false, reason: "motivo qualquer" } as const;
+
+  it("os 3 guards ok -> devolve a prova com tagId e tagName", () => {
+    const audiencia = resolveApoiadoresAudience(nomeOk, idOk, membrosOk);
+    assert.ok(audiencia);
+    assert.equal(audiencia.tagId, 42);
+    assert.equal(audiencia.tagName, "apoio-mensal");
+  });
+
+  // Cada guard sozinho basta pra negar a prova — é o ponto do tipo: não existe
+  // "audiência quase resolvida". O caller já reportou a razão específica de
+  // cada um; aqui só se decide se o payload pode ser montado.
+  it("nome de tag reprovado -> null, mesmo com id e membros ok", () => {
+    assert.equal(resolveApoiadoresAudience(falhou, idOk, membrosOk), null);
+  });
+
+  it("id de tag reprovado -> null (tag inexistente é o caso real: filtro não resolvido = base inteira)", () => {
+    assert.equal(resolveApoiadoresAudience(nomeOk, falhou, membrosOk), null);
+  });
+
+  it("tag vazia -> null (broadcast que reportaria sucesso sem entregar a ninguém)", () => {
+    assert.equal(resolveApoiadoresAudience(nomeOk, idOk, falhou), null);
+  });
+
+  it("todos reprovados -> null", () => {
+    assert.equal(resolveApoiadoresAudience(falhou, falhou, falhou), null);
   });
 });
