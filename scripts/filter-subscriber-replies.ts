@@ -247,11 +247,14 @@ export function normalizeSubject(subject: string | undefined | null): string {
 }
 
 /**
- * #4324: assuntos de e-mails de AUTOMAÇÃO da Beehiiv cuja resposta nunca deve
- * virar rascunho nem entrar na resolução de edição/matcher do concurso "ache o
+ * #4324: assuntos de e-mails de AUTOMAÇÃO cuja resposta nunca deve virar
+ * rascunho nem entrar na resolução de edição/matcher do concurso "ache o
  * erro" — a exclusão é total (ver docstring do módulo), diferente de
  * `trivial`. Comparados via `normalizeSubject`, então cada entry aqui cobre
- * qualquer variação de prefixo Re:/Res:/Fwd:/Enc:, caixa e acento.
+ * qualquer variação de prefixo Re:/Res:/Fwd:/Enc:, caixa e acento. Hoje cobre
+ * automações da Beehiiv (as duas entradas `Diar.ia` legadas) e do Kit
+ * (`Bem-vindo à diar.ia.br: isto é o que vem a seguir`, sequence 2876508,
+ * email id 10248813, #7652) — adicionar uma nova é UMA LINHA aqui.
  *
  * Blacklist de propósito (decisão da issue #4324): assuntos de EDIÇÃO variam
  * por teste A/B — uma whitelist descartaria retorno legítimo em silêncio.
@@ -261,7 +264,15 @@ export function normalizeSubject(subject: string | undefined | null): string {
 const AUTOMATED_SUBJECTS = [
   "Bem-vindo(a) à Diar.ia!", // usado até ~2026-07-09, sem o "(a)"
   "Bem-vindo à Diar.ia!", // variantes antigas (Beehiiv, rebrand pré-#4424)
-  "Bem-vindo à diar.ia.br: isto é o que vem a seguir", // atual (Kit, sequence 2876508, email id 10248813) — #7652
+  // Série de boas-vindas do Kit (sequence 2876508), verificada em
+  // data/kit-backup/sequence-2876508-boas-vindas.json — #7652 cobria só o
+  // e-mail 1, mas os e-mails 2 e 3 também são automação e quem respondeu
+  // entrava como reply legítima (falso rascunho). Se o Kit renomear a
+  // sequence ou algum e-mail, atualizar esta linha e o snapshot local (o
+  // #4509 near-miss sinaliza quando a blacklist para de bater).
+  "Bem-vindo à diar.ia.br: isto é o que vem a seguir", // id 10248813
+  "Você consegue diferenciar imagem real de imagem gerada?", // id 10248814
+  "Por que a diar.ia.br pede apoio (e o que isso muda)", // id 10248815
 ];
 const AUTOMATED_SUBJECTS_NORMALIZED = new Set(AUTOMATED_SUBJECTS.map(normalizeSubject));
 
