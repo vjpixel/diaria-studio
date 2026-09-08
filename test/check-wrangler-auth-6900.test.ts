@@ -9,7 +9,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { sanitizedCloudflareOAuthEnv, CLOUDFLARE_OAUTH_STRIPPED_ENV_VARS } from "../scripts/lib/cloudflare-oauth-env.ts";
-import { checkWranglerAuth, type ExecFn } from "../scripts/check-wrangler-auth.ts";
+import { checkWranglerAuth, type ExecFn, type ResolveWranglerBin } from "../scripts/check-wrangler-auth.ts";
 
 describe("#6900 sanitizedCloudflareOAuthEnv", () => {
   it("remove CLOUDFLARE_API_TOKEN e CLOUDFLARE_ACCOUNT_ID de uma cópia — nunca muta o env original", () => {
@@ -91,6 +91,39 @@ describe("#6900 checkWranglerAuth valida a MESMA auth que purge-leaderboard.ts u
     assert.match(result.stdout, /OAuth Token/);
   });
 
+  // #7610 review P1 — verificado ao vivo: `wrangler whoami` sai com EXIT 0
+  // também quando não está logado (imprime "You are not authenticated. Please
+  // run `wrangler login`"). O exit code do child sozinho nunca discrimina, e
+  // o §6h tratava `exit != 0` como degrade-to-warn — então sem este parse o
+  // cenário mais comum (sessão cloud sem OAuth) passava ok:true, a purga
+  // rodava e falhava em `purge-leaderboard.ts` com `Authentication error`,
+  // e o degrade nunca acontecia.
+  it("REGRESSÃO #7610: stdout de 'não autenticado' (exit 0) vira ok:false, nunca ok:true", () => {
+    const fakeExec: ExecFn = () =>
+      "⛅️ wrangler 4.128.0\nGetting User settings...\nYou are not authenticated. Please run `wrangler login`.\n";
+    const result = checkWranglerAuth(fakeExec, {});
+    assert.equal(result.ok, false);
+    assert.match(result.stderr, /nao esta autenticado/i);
+  });
+
+  it("REGRESSÃO #7610: variações da mensagem de não-autenticação também vira ok:false", () => {
+    for (const stdout of [
+      "Authentication error [code: 10000]",
+      "not logged in",
+      "Please run `wrangler login` to fix this.",
+    ]) {
+      const result = checkWranglerAuth((() => stdout) as ExecFn, {});
+      assert.equal(result.ok, false, `falha em: ${stdout}`);
+    }
+  });
+
+  it("REGRESSÃO #7610: stdout sem marca de não-autenticação vira ok:true mesmo com texto estranho", () => {
+    // um stdout que não combina nenhum padrão de não-autenticação é considerado
+    // autenticado — o wrangler não tem saída "neutra" que signifique fracasso
+    const result = checkWranglerAuth((() => "some unrelated output\n") as ExecFn, {});
+    assert.equal(result.ok, true);
+  });
+
   it("timeout/erro sem stdout/stderr (ex: ENOENT) vira ok:false sem lançar — chamador decide o que fazer", () => {
     const err = Object.assign(new Error("spawnSync wrangler ENOENT"), { stdout: undefined, stderr: undefined });
     const fakeExec: ExecFn = () => {
@@ -101,5 +134,56 @@ describe("#6900 checkWranglerAuth valida a MESMA auth que purge-leaderboard.ts u
     assert.equal(result.stdout, "");
     // cai no fallback de err.message quando stderr também está ausente
     assert.match(result.stderr, /ENOENT/);
+  });
+});
+
+describe("#7606 resolução do binário não derruba o processo (#7606)", () => {
+  // Antes de #7606, `WRANGLER_BIN = resolveWranglerBin(import.meta.url)`
+  // rodava NO MOMENTO DO IMPORT — um node_modules desatualizado
+  // (wrangler não hoistado na raiz) matava o processo inteiro com stack trace
+  // bruto em vez de sair com exit != 0 limpo que o §6h já sabe tratar como
+  // "não autenticado, degradar pra warn e seguir".
+  // #7610 review P2: o mesmo pattern vivia em `purge-leaderboard.ts` —
+  // corrigido lá, não aqui, pra não duplicar.
+
+  it("REGRESSÃO #7606: falha na resolução do binário vira ok:false, nunca crash no import", () => {
+    const fakeExec: ExecFn = () => "you are logged in\n";
+    const resolveFail: ResolveWranglerBin = () => {
+      throw new Error("Cannot find module 'wrangler/package.json'");
+    };
+
+    const result = checkWranglerAuth(fakeExec, {}, resolveFail);
+
+    assert.equal(result.ok, false);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Cannot find module 'wrangler\/package\.json'/);
+    // o wrangler NUNCA foi chamado — o erro é de resolução, não de auth
+    assert.match(result.stderr, /Cannot find module 'wrangler\/package\.json'/);
+  });
+
+  it("REGRESSÃO #7606: resolução que joga um Error sem message também vira ok:false", () => {
+    const fakeExec: ExecFn = () => "ok";
+    const resolveFail: ResolveWranglerBin = () => {
+      throw "string crash";
+    };
+
+    const result = checkWranglerAuth(fakeExec, {}, resolveFail);
+
+    assert.equal(result.ok, false);
+    assert.match(result.stderr, /string crash/);
+  });
+
+  it("REGRESSÃO #7606: quando o binário resolve, a resolução é passada pro exec (não o default)", () => {
+    let capturedBin: string | undefined;
+    const fakeExec: ExecFn = (_cmd, args) => {
+      capturedBin = args[0];
+      return "you are logged in\n";
+    };
+    const resolveCustom: ResolveWranglerBin = () => "/custom/wrangler.js";
+
+    const result = checkWranglerAuth(fakeExec, {}, resolveCustom);
+
+    assert.equal(result.ok, true);
+    assert.equal(capturedBin, "/custom/wrangler.js");
   });
 });

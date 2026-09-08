@@ -110,7 +110,17 @@ const NAMESPACE_ID = "72784da4ae39444481eb422ebac357c6"; // POLL namespace (KV)
 // `workers/poll/node_modules` (que não existe mais).
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_DIR = resolve(ROOT, "workers", "poll");
-const WRANGLER_BIN = resolveWranglerBin(import.meta.url);
+
+// #7610 (review P2): resolvido LAZILY dentro de `wrangler`, não no import —
+// igual o `check-wrangler-auth.ts` (#7606). `wrangler` é hoistado pro
+// node_modules da raiz (#7117); um node_modules desatualizado onde ele não
+// está hoistado até hoje matava o processo no import com stack trace bruto.
+// Este script roda como `npx tsx scripts/purge-leaderboard.ts`, então o
+// crash dava exit != 0 — aceitável por si só —, mas é o MESMO pattern do
+// guard e o MESMO risco de regressão se o hoist mudar de novo.
+function resolveWranglerBinLazy(): string {
+  return resolveWranglerBin(import.meta.url);
+}
 
 function wrangler(wargs: string[]): string {
   // Tira CLOUDFLARE_API_TOKEN (auth) E CLOUDFLARE_ACCOUNT_ID (seleção de conta)
@@ -120,7 +130,7 @@ function wrangler(wargs: string[]): string {
   // Helper compartilhado com o guard `wrangler whoami` de §6h (#6900) — os
   // dois lados nunca podem divergir sobre qual env conta como "autenticado".
   const childEnv = sanitizedCloudflareOAuthEnv(process.env);
-  return execFileSync(process.execPath, [WRANGLER_BIN, ...wargs], {
+  return execFileSync(process.execPath, [resolveWranglerBinLazy(), ...wargs], {
     cwd: POLL_DIR,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
