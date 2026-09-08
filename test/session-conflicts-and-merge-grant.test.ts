@@ -400,6 +400,39 @@ describe("#7303 — selfAuthorizeMerge: escopo estreito, nunca abre mão de prot
     }
   });
 
+  // #7546 — reprodução do bug real: uma rodada overnight rodando como task
+  // agendada/dispatched (sem interlocutor do outro lado) é `kind: "overnight"`
+  // mas NÃO consegue receber `grant-merge` — o filtro antigo (`kind !==
+  // "continuo"`) a tratava como "responsiva" só por causa do kind, deixando
+  // quem bloqueado pelo #5716 sem NENHUM caminho (nem grant-merge — ninguém
+  // responde —, nem self-authorize-merge — recusado por "responsive-
+  // coordinator-active" contra uma coordenadora inalcançável).
+  it("overnight `attended: false` (rodando como task agendada/dispatched) NÃO conta como responsiva — mesmo tratamento que continuo", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "overnight", "coord-desassistida", { tag: LOCAL_TAG, attended: false });
+      registerSession(root, "interactive", "eu", { tag: LOCAL_TAG });
+      const r = selfAuthorizeMerge(root, "eu", { reason: "overnight ativa mas inalcançável, medido via #7546" });
+      assert.equal(r.ok, true);
+      assert.equal(r.reason, "authorized");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("develop `attended: false` explícito some do cálculo de responsividade, mesmo com continuo ativo também", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "continuo", "cron-1", { tag: LOCAL_TAG });
+      registerSession(root, "develop", "coord-desassistida", { tag: LOCAL_TAG, attended: false });
+      registerSession(root, "interactive", "eu", { tag: LOCAL_TAG });
+      const r = selfAuthorizeMerge(root, "eu", { reason: "teste" });
+      assert.equal(r.ok, true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("recusa (session-not-registered) quando quem chama não tem NENHUM registro em data/sessions/", () => {
     const root = makeTempRepo();
     try {
