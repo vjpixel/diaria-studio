@@ -1002,3 +1002,85 @@ describe("#7642 banner de dado incompleto: barulhento, não bloqueante", () => {
     assert.ok(/seleção FOI escrita mesmo assim/.test(stderr), `stderr: ${stderr.slice(0, 500)}`);
   });
 });
+
+/**
+ * #7642 (review): o par do bloco acima — dado COMPLETO não pode disparar
+ * banner. Sem este teste, um bug futuro que emitisse o banner
+ * incondicionalmente passaria despercebido, e o aviso viraria ruído de
+ * rotina — que é exatamente a falha que o #7642 conserta (aviso que some
+ * no meio do que é normal). Cobre também `--manifest-only`, que retorna
+ * antes de o banner ser computado.
+ */
+describe("#7642 banner NÃO dispara com dado completo (guard de falso-positivo)", () => {
+  let root: string;
+  const stderrChunks: string[] = [];
+  const originalStderrWrite = process.stderr.write.bind(process.stderr);
+
+  function captureStderr(fn: () => void): void {
+    process.stderr.write = ((chunk: unknown) => {
+      stderrChunks.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      fn();
+    } finally {
+      process.stderr.write = originalStderrWrite;
+    }
+  }
+
+  before(() => {
+    root = mkTmpRoot();
+    writeEdition(
+      root,
+      "260904",
+      [
+        "**DESTAQUE 1 | 💼 MERCADO**",
+        "",
+        "**[Materia com cache](https://exemplo.com/com-cache)**",
+        "",
+        "Corpo.",
+        "",
+        "Por que isso importa:",
+        "",
+        "Explicação.",
+        "",
+      ].join("\n"),
+    );
+    // Broadcast Kit real e completo pra 260904: entrega acima do piso,
+    // stats agregadas, cliques por link presentes. Nada a avisar.
+    writeKitCachePost(root, 900904, {
+      id: 900904,
+      subject: "Materia com cache",
+      status: "completed",
+      public: true,
+      published_at: new Date(epochFor("260904") * 1000).toISOString(),
+      stats: { emails_opened: 200, recipients: 630 },
+      clicks: [{ id: 1, url: "https://exemplo.com/com-cache", unique_clicks: 30, click_to_open_rate: 15 }],
+    });
+
+    captureStderr(() => {
+      process.argv = ["node", "select-linkedin-weekly.ts", "--publish-monday", "260907"];
+      selectMain(root);
+    });
+  });
+
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  it("stderr fica sem banner quando toda a janela tem clique cacheado", () => {
+    const stderr = stderrChunks.join("");
+    assert.ok(
+      !/ATENÇÃO: dado de clique INCOMPLETO/.test(stderr),
+      `banner não deveria disparar com dado completo: ${stderr.slice(0, 500)}`,
+    );
+  });
+
+  it("--manifest-only nunca emite o banner (retorna antes de computá-lo)", () => {
+    const antes = stderrChunks.length;
+    captureStderr(() => {
+      process.argv = ["node", "select-linkedin-weekly.ts", "--publish-monday", "260907", "--manifest-only"];
+      selectMain(root);
+    });
+    const stderr = stderrChunks.slice(antes).join("");
+    assert.ok(!/ATENÇÃO: dado de clique INCOMPLETO/.test(stderr), `stderr: ${stderr.slice(0, 500)}`);
+  });
+});
