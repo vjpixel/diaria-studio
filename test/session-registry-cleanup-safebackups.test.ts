@@ -202,6 +202,37 @@ describe("planSafeBackupCleanup (#6970)", () => {
     assert.equal(plan[0]!.action, "removable");
   });
 
+  // #7564 — caso mais comum: o real carrega o grant VIVO (dentro do TTL) e
+  // NENHUM backup carrega grant algum. Antes da correção o fallthrough final
+  // retornava `true` ("Remover os backups perde a única cópia legível dele,
+  // #6573"), que é falso: quem carrega o grant vivo e é a fonte de verdade
+  // (#7462) é o real; os backups não carregam nada, então não há o que
+  // preservar. O grant mora no real, que continua vivo com ou sem os backups,
+  // então remover é seguro e não ressuscita nada. O teste original de #7462
+  // cobria todos os casos com merge_grant colocando o grant em pelo menos um
+  // backup — deixou de cobrir exatamente este, que é o que a reescrita
+  // inverteu (violando #633: mudou o desfecho de um caminho não testado).
+  it("real com merge_grant VIVO (dentro do TTL) × backup SEM grant nenhum, claims reconciliadas → removable (#7564: o grant vivo mora no real, não há cópia única a preservar)", () => {
+    const root = freshRoot();
+    const grantedAt = "2026-08-01T00:00:00.000Z";
+    writeRawSessionFile(root, "develop-Neo-s1.json", {
+      ...BASE,
+      claimed_issues: [1],
+      merge_grant: { grantedTo: "outra-sessao", grantedBy: "s1", grantedAt }, // real tem o grant VIVO, sem consumedAt
+    });
+    writeRawSessionFile(root, "develop-Neo-s1-safeBackup-0001.json", {
+      ...BASE,
+      claimed_issues: [1], // claims já reconciliadas, e SEM merge_grant nenhum
+    });
+    const now = Date.parse(grantedAt) + 5 * 60_000; // dentro do TTL — o grant do real ainda está vivo
+    const plan = planSafeBackupCleanup(root, { now });
+    assert.equal(
+      plan[0]!.action,
+      "removable",
+      "o real é a fonte de verdade e tem o grant vivo; os backups não carregam grant, então não há cópia única a preservar — remover não perde nada",
+    );
+  });
+
   it("backups ÓRFÃOS (real desapareceu por completo, claims+grant vivos só nos backups) NUNCA são REMOVIDOS por este módulo, mas SÃO reportados como orphan-backups-only (#7002 incidente ao vivo 01/09/2026; observabilidade adicionada em resposta ao self-review finding 2 do #7005)", () => {
     // Reprodução do incidente real relatado pela coordenadora durante esta
     // rodada: o arquivo REAL overnight-helios-{sessionId}.json sumiu do

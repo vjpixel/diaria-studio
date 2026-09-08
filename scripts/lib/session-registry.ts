@@ -4426,8 +4426,15 @@ function mergeGrantBlocksBackupCleanup(
   }
 
   // O real tem um grant VIVO que NENHUM backup carrega como mesma identidade.
-  // Remover os backups perde a única cópia legível dele (#6573).
-  return true;
+  // Nesse caso NÃO há o que preservar: o real, que é a fonte de verdade (#7462),
+  // já carrega a concessão viva e continua vivo com ou sem os backups. Os
+  // backups não carregam grant algum — não há "única cópia legível" do grant
+  // guardada neles, então removê-los não perde nada (o grant mora no real, e
+  // o real continua vivo). O #6573 ("nunca remover while alive") já está
+  // satisfeito: a concessão viva está no real, que não é tocado por aqui.
+  // (#7564: o `return true` anterior era um falso positivo conservador —
+  // invertia a monotonicidade: menos informação nos backups bloqueava mais).
+  return false;
 }
 
 /**
