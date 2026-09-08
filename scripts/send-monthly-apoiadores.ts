@@ -8,6 +8,15 @@
  * pro fluxo completo e `scripts/lib/mensal/monthly-apoiadores-state.ts` pra
  * semântica do dedup.
  *
+ * ## #7633 — render trocado de Brevo pra Kit
+ *
+ * Mesma troca que o #7121 abaixo fez (Beehiiv → Brevo), agora Brevo → Kit, e
+ * pelo mesmo motivo estrutural: este Passo 1 deve renderizar o MESMO HTML que
+ * o Passo 2 vai publicar, senão o `htmlPath` gravado no state aponta pro
+ * preview de um canal que não é o que envia. O canal atual é o Kit
+ * (`publish-monthly-apoiadores-kit.ts`) — ver `.claude/skills/diaria-mensal-apoiadores/SKILL.md`.
+ * Os scripts Brevo continuam no repo até o 1º envio Kit real (#7633).
+ *
  * ## #7121 (260902) — render trocado de Beehiiv pra Brevo
  *
  * Este script (Passo 1 — "prepare") historicamente renderizava a variante
@@ -71,7 +80,7 @@
 import { requireMonthlyCycleArg, monthlyDir as resolveMonthlyDir } from "./lib/mensal/monthly-paths.ts";
 import { hasFlag } from "./lib/cli-args.ts";
 import { isMainModule } from "./lib/cli-args.ts";
-import { renderMonthlyApoiadoresBrevoEmail } from "./render-monthly-apoiadores-brevo.ts";
+import { renderMonthlyApoiadoresKitEmail } from "./render-monthly-apoiadores-kit.ts";
 import {
   readApoiadoresState,
   writeApoiadoresState,
@@ -81,11 +90,21 @@ import {
   buildSentState,
   type ApoiadoresState,
 } from "./lib/mensal/monthly-apoiadores-state.ts";
-import { APOIO_SEGMENTS_CANONICAL } from "./lib/apoio-segments-canonical.ts";
+import { APOIO_SEGMENTS_CANONICAL_KIT } from "./lib/apoio-segments-canonical-kit.ts";
+import { APOIADORES_MENSAL_NIVEIS } from "./lib/mensal/apoiadores-kit-channel.ts";
 
-/** Segmentos-alvo do envio extra (decisão 2 do #4482 — só Mantenedor/Patrono, nunca a base inteira). */
-export const APOIADORES_TARGET_SEGMENT_NAMES: readonly string[] = APOIO_SEGMENTS_CANONICAL.filter(
-  (s) => s.name === "Apoio — Mantenedor" || s.name === "Apoio — Patrono",
+/**
+ * Audiência-alvo do envio extra (decisão 2 do #4482 — só Mantenedor/Patrono,
+ * nunca a base inteira), gravada no state só como METADADO de auditoria.
+ *
+ * #7633: derivada do catálogo de segmentos do KIT (era o da Beehiiv), pra que
+ * o registro cite a plataforma em que o envio de fato acontece. Continua sendo
+ * descrição de audiência, não o mecanismo: quem de fato define quem recebe é a
+ * TAG `kit_apoiadores.audience_tag`, porque a membresia de segmento do Kit não
+ * é legível pela API (ver `lib/mensal/apoiadores-kit-channel.ts`).
+ */
+export const APOIADORES_TARGET_SEGMENT_NAMES: readonly string[] = APOIO_SEGMENTS_CANONICAL_KIT.filter(
+  (s) => s.nivel !== null && APOIADORES_MENSAL_NIVEIS.includes(s.nivel),
 ).map((s) => s.name);
 
 async function main(): Promise<void> {
@@ -125,7 +144,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const rendered = renderMonthlyApoiadoresBrevoEmail(cycle);
+  const rendered = renderMonthlyApoiadoresKitEmail(cycle);
 
   const newState: ApoiadoresState = buildPreparedState(
     cycle,
@@ -133,10 +152,10 @@ async function main(): Promise<void> {
     rendered.htmlPath,
     rendered.subject,
     APOIADORES_TARGET_SEGMENT_NAMES,
-    // #4572/#4593: preserva o brevoCampaignId de um Passo 2 já rodado — este
-    // Passo 1 não pode apagar o registro de que já existe uma campanha
-    // Brevo criada pro ciclo (ver docstring de buildPreparedState).
-    state?.brevoCampaignId ?? null,
+    // #4572/#4593 (Brevo) e #7633 (Kit): preserva os ids de um Passo 2 já
+    // rodado — este Passo 1 não pode apagar o registro de que já existe
+    // rascunho criado pro ciclo (ver docstring de buildPreparedState).
+    { brevoCampaignId: state?.brevoCampaignId ?? null, kitBroadcastId: state?.kitBroadcastId ?? null },
   );
   writeApoiadoresState(monthlyDir, newState);
 
@@ -156,7 +175,7 @@ async function main(): Promise<void> {
     ),
   );
   console.log(
-    `\nPróximo passo: npx tsx scripts/publish-monthly-apoiadores-brevo.ts --cycle ${cycle} --dry-run`,
+    `\nPróximo passo: npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle ${cycle} --dry-run`,
   );
 }
 

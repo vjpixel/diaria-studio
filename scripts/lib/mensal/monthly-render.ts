@@ -158,8 +158,13 @@ export interface MonthlyUtmProfile {
    * literal `{{ contact.EMAIL }}` — a Beehiiv
    * não a substitui, e `isValidVoteEmailFormat` (workers/poll) rejeita esse
    * formato: 100% dos votos quebrados nessa variante.
+   *
+   * #7633: 3º formato, `{{ subscriber.email_address }}` (Liquid do Kit,
+   * confirmado ao vivo no #464 — ver `kit-broadcasts.ts`). Mesma disciplina:
+   * um perfil que envia pelo Kit com a sintaxe da Brevo produz exatamente o
+   * bug do #4510 de novo, só que no canal novo.
    */
-  pollMergeTag: "{{email}}" | "{{ contact.EMAIL }}";
+  pollMergeTag: "{{email}}" | "{{ contact.EMAIL }}" | "{{ subscriber.email_address }}";
   /**
    * #4510: `brand` do leaderboard do "É IA?" (`workers/poll/src/lib.ts`,
    * `Brand`) pra onde os votos deste perfil vão. Antes `renderEia` hardcodava
