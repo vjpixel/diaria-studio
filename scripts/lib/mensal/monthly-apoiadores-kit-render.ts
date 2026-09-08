@@ -14,7 +14,8 @@
  * inteira migrou da Beehiiv (#7386, 317 → 0 ativos) e a anual já nasceu no
  * Kit (#7569). Manter a Brevo viva só pro envio de apoiadores significaria um
  * 2º ESP, um 2º sync de audiência e um 2º formato de merge tag pra manter —
- * sem nenhum envio real do outro lado pra justificar.
+ * custo recorrente para 1 envio a cada ciclo, numa audiência que já está
+ * inteira do lado do Kit.
  *
  * ## O que muda em relação ao perfil Brevo (e é TUDO que muda)
  *
