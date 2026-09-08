@@ -17,6 +17,7 @@ import {
   groupPostsByMonth,
   postEdition,
   topKPerMonth,
+  dedupDestaquesByUrl,
   unscoredCount,
   unixToEdition,
   type AnnualDestaque,
@@ -181,5 +182,76 @@ describe("top-K por mês", () => {
 
   it("K inválido falha alto", () => {
     assert.throws(() => topKPerMonth([], 0), /top-K inválido/);
+  });
+});
+
+describe("dedup de destaques por URL (#7587 item 5)", () => {
+  // `score` é `number | undefined`, mesma disciplina do bloco acima.
+  const d = (edition: string, position: number, url: string, score?: number): AnnualDestaque => ({
+    edition,
+    month: edition.slice(0, 4),
+    position,
+    category: "IA",
+    title: `${edition}-${position}`,
+    url,
+    body: "",
+    why: "",
+    is_brazil: false,
+    score,
+  });
+
+  it("5 cópias da mesma matéria (caso real: agosto/2026) viram 1 — 1ª ocorrência vence", () => {
+    // Réplica do achado ao vivo: "Brasil investe R$ 2,3 bi em infraestrutura"
+    // repetido 5x no pool de agosto/2026, sobrando só 6 itens únicos pro
+    // top-K de 10 do mês.
+    const url = "https://exemplo.com/brasil-investe-2-3-bi";
+    const copias = Array.from({ length: 5 }, (_, i) => d("260825", i + 1, url));
+    const unico = d("260826", 1, "https://exemplo.com/outra-materia");
+    const out = dedupDestaquesByUrl([...copias, unico]);
+    assert.equal(out.length, 2);
+    assert.equal(out[0].edition, "260825");
+    assert.equal(out[0].position, 1, "mantém a 1ª ocorrência, não uma arbitrária");
+  });
+
+  it("mesma matéria republicada em edições diferentes também deduplica", () => {
+    const url = "https://exemplo.com/materia-desdobrada";
+    const out = dedupDestaquesByUrl([d("260810", 1, url), d("260901", 2, url)]);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].edition, "260810");
+  });
+
+  it("URLs diferentes (mesmo domínio/path parecido) não são fundidas por engano", () => {
+    const out = dedupDestaquesByUrl([
+      d("260810", 1, "https://exemplo.com/artigo-a"),
+      d("260810", 2, "https://exemplo.com/artigo-b"),
+    ]);
+    assert.equal(out.length, 2);
+  });
+
+  it("querystring de tracking não impede o dedup (mesma matéria, UTM diferente)", () => {
+    const out = dedupDestaquesByUrl([
+      d("260810", 1, "https://exemplo.com/artigo?utm_source=a"),
+      d("260811", 1, "https://exemplo.com/artigo?utm_source=b"),
+    ]);
+    assert.equal(out.length, 1);
+  });
+
+  it("destaque sem URL nunca é descartado — não tem identidade pra comparar", () => {
+    const semUrl1 = d("260810", 1, "");
+    const semUrl2 = d("260811", 1, "");
+    const out = dedupDestaquesByUrl([semUrl1, semUrl2]);
+    assert.equal(out.length, 2);
+  });
+
+  it("roda ANTES do top-K: sem dedup, 5 cópias sozinhas encheriam o corte de um mês pequeno", () => {
+    const url = "https://exemplo.com/repetido";
+    const copias = Array.from({ length: 5 }, (_, i) => d("260825", i + 1, url, 90 - i));
+    const outros = [d("260826", 1, "https://exemplo.com/a", 10), d("260827", 1, "https://exemplo.com/b", 5)];
+    const semDedup = topKPerMonth([...copias, ...outros], 3);
+    assert.equal(semDedup.filter((x) => x.url === url).length, 3, "sem dedup, as cópias dominam o top-K");
+
+    const comDedup = topKPerMonth(dedupDestaquesByUrl([...copias, ...outros]), 3);
+    assert.equal(comDedup.filter((x) => x.url === url).length, 1);
+    assert.equal(comDedup.length, 3, "com dedup, os outros 2 itens únicos entram no corte");
   });
 });

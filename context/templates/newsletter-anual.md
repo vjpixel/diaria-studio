@@ -39,11 +39,6 @@ digests mensais, quantos artigos especiais. Números vêm do relatório da Etapa
 [Parágrafo 2 — marcos editoriais: as seções que nasceram, o que mudou de
 plataforma, os canais que abriram.]
 
-**CARTA DO EDITOR**
-
-[Placeholder — escrito pelo editor, em primeira pessoa. O pipeline nunca
-preenche este bloco; o gate da Etapa 4 acusa se ele continuar assim.]
-
 ---
 
 **TEMA 1 | [NOME DO TEMA]**
@@ -121,7 +116,7 @@ abre o ano novo. Convite para responder ao e-mail.]
 | Cada tema | 2.000 chars | Maior que o mensal (1.500) — o tema cobre um ano, não um mês |
 | O que mudou | 1.800 chars | |
 | Previsões | 2.000 chars | incluindo o parágrafo de ressalva |
-| Aniversário | 1.500 chars | sem contar a carta do editor |
+| Aniversário | 1.500 chars | |
 
 Warnings do `lint-annual-draft.ts`, não bloqueios — exceto o guardrail de render (label não reconhecido, ou tema sem imagem), que bloqueia.
 

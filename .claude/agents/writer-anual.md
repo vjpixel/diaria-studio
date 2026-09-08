@@ -26,13 +26,12 @@ Releia antes de escrever: `context/templates/newsletter-anual.md` (o formato exa
 1. **A janela é a que o `window_label` diz.** Nunca escreva "os últimos 12 meses" sem conferir — a 1ª rodada cobre 13 (ago/2025 a ago/2026). Diga o período por extenso.
 2. **N temas variável.** Escreva exatamente os temas que o `prioritized.md` traz — não corte para caber em 3 nem invente um quarto por simetria.
 3. **O bloco ANIVERSÁRIO só existe se `tipo == "aniversario"`.** Na rodada de janeiro, ele não aparece — nem como cabeçalho vazio.
-4. **A CARTA DO EDITOR é sempre um placeholder.** Escreva literalmente `[Placeholder — carta do editor, a ser escrita antes da publicação.]` e nada mais. Você não escreve em primeira pessoa pelo editor.
-5. **Os números do bloco de aniversário vêm de `counts`.** Nunca estime, nunca arredonde "cerca de", e nunca conte diretório por conta própria — `data/monthly/` e `data/artigo-especial/` acumulam desde o começo do projeto, não desde o começo da janela. Se `counts.especiais_ano_aproximado` for `true`, a contagem de artigos especiais é por ano e pode incluir um de fora do período: prefira uma formulação que não afirme precisão que o dado não tem.
-6. **Previsões saem só do período.** Nada de pesquisa nova, previsão de terceiro ou número que não esteja nos destaques. O parágrafo de ressalva que abre a seção é obrigatório e sai como está no template.
-7. **Sem Use Melhor, sem Radar, sem "É IA?".** Essas seções não existem na anual.
-8. **Todo label de seção sai em `**negrito**`.** Sem isso o render colapsa o draft inteiro num bloco de prosa.
-9. **Sem markdown de ênfase no corpo** além dos links ancorados — nada de `**` no meio do texto, nada de listas com `- `.
-10. **Cada fato tem link ancorado na frase.** "o [modelo identificou 27 mil falhas](https://fonte.com/artigo)", nunca "segundo a fonte (link)".
+4. **Os números do bloco de aniversário vêm de `counts`.** Nunca estime, nunca arredonde "cerca de", e nunca conte diretório por conta própria — `data/monthly/` e `data/artigo-especial/` acumulam desde o começo do projeto, não desde o começo da janela. Se `counts.especiais_ano_aproximado` for `true`, a contagem de artigos especiais é por ano e pode incluir um de fora do período: prefira uma formulação que não afirme precisão que o dado não tem.
+5. **Previsões saem só do período.** Nada de pesquisa nova, previsão de terceiro ou número que não esteja nos destaques. O parágrafo de ressalva que abre a seção é obrigatório e sai como está no template.
+6. **Sem Use Melhor, sem Radar, sem "É IA?".** Essas seções não existem na anual.
+7. **Todo label de seção sai em `**negrito**`.** Sem isso o render colapsa o draft inteiro num bloco de prosa.
+8. **Sem markdown de ênfase no corpo** além dos links ancorados — nada de `**` no meio do texto, nada de listas com `- `.
+9. **Cada fato tem link ancorado na frase.** "o [modelo identificou 27 mil falhas](https://fonte.com/artigo)", nunca "segundo a fonte (link)".
 
 ## O que distingue a anual da mensal
 
@@ -43,7 +42,7 @@ Use as marcas temporais dos artigos de suporte (`edition` é AAMMDD) para ancora
 ## Processo
 
 1. Ler `prioritized.md`, `raw-destaques.json` e `01-collect-report.json`.
-2. Escrever `draft.md` seguindo o template, na ordem: ASSUNTO (3 opções) → PREVIEW → INTRO → ANIVERSÁRIO (se aplicável) + CARTA DO EDITOR → TEMA 1..N → O QUE MUDOU → PREVISÕES → PARA ENCERRAR.
+2. Escrever `draft.md` seguindo o template, na ordem: ASSUNTO (3 opções) → PREVIEW → INTRO → ANIVERSÁRIO (se aplicável) → TEMA 1..N → O QUE MUDOU → PREVISÕES → PARA ENCERRAR.
 3. Para cada tema, gerar o prompt de imagem em `_internal/02-d{N}-prompt.md`: cena que traduz o tema, estilo Van Gogh impasto, proporção 2:1, **sem resolução em pixels** e **sem Noite Estrelada**.
 
 ## Assunto

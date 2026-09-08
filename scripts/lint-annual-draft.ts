@@ -13,12 +13,6 @@
  *     apareceu, ou se o bloco de aniversário está no lugar errado para o
  *     tipo de rodada.
  *
- * A carta do editor em placeholder é caso à parte: **não bloqueia aqui**
- * (o writer sempre a deixa assim, e o lint roda logo depois dele na Etapa 2),
- * mas sai como `editor_letter_pending: true` no relatório, e é o gate da
- * Etapa 4 que cobra. Bloquear na Etapa 2 impediria o pipeline de chegar até o
- * gate onde o editor de fato escreve a carta.
- *
  * Uso:
  *   npx tsx scripts/lint-annual-draft.ts --slug 2026-aniversario
  *   npx tsx scripts/lint-annual-draft.ts --draft caminho/draft.md --tipo aniversario
@@ -31,7 +25,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { annualPaths } from "./lib/anual/annual-paths.ts";
-import { parseAnnualDraft, themeCharCount, FORBIDDEN_LABELS, type AnnualDraft } from "./lib/anual/annual-parse.ts";
+import { parseAnnualDraft, themeCharCount, textCharCount, FORBIDDEN_LABELS, type AnnualDraft } from "./lib/anual/annual-parse.ts";
 import { renderAnnualEmail } from "./lib/anual/annual-render.ts";
 import { tipoFromSlug, type AnnualTipo } from "./lib/anual/annual-window.ts";
 
@@ -53,7 +47,6 @@ export interface LintAnnualResult {
   themes: number;
   errors: string[];
   warnings: string[];
-  editor_letter_pending: boolean;
   render: { imageCount: number; missingImages: number[] };
 }
 
@@ -99,13 +92,6 @@ export function lintAnnualDraft(md: string, tipo: AnnualTipo): LintAnnualResult 
   if (tipo === "janeiro" && draft.anniversary) {
     errors.push("rodada de janeiro não leva bloco ANIVERSÁRIO — remova a seção");
   }
-  // A carta do editor vive DENTRO do bloco de aniversário. Numa rodada de
-  // janeiro o render simplesmente a ignora — o texto sumiria do e-mail sem
-  // erro nem aviso. Mesmo guard simétrico que o bloco acima já tem.
-  if (tipo === "janeiro" && draft.editorLetter) {
-    errors.push("rodada de janeiro não leva CARTA DO EDITOR — o render descartaria a seção em silêncio");
-  }
-
   // ── Crítico: sonda de render ────────────────────────────────────────
   // Imagens fictícias: na Etapa 2 as reais ainda não existem, e o que se está
   // testando é se o RENDER as colocaria, não se elas já foram geradas.
@@ -129,11 +115,17 @@ export function lintAnnualDraft(md: string, tipo: AnnualTipo): LintAnnualResult 
     if (n > LIMITS.theme) warnings.push(`TEMA ${theme.index}: ${n} chars (teto ${LIMITS.theme})`);
     if (theme.paragraphs.length === 0) warnings.push(`TEMA ${theme.index}: sem parágrafo de corpo`);
   }
-  if (draft.whatChanged.length > LIMITS.whatChanged) {
-    warnings.push(`O QUE MUDOU: ${draft.whatChanged.length} chars (teto ${LIMITS.whatChanged})`);
+  // #7587 item 3: mesmo desconto de URL que `themeCharCount` já aplica —
+  // sem ele, o relink (#7587 item 2) infla a contagem só pelo comprimento
+  // das URLs, que ninguém lê (medido na 1ª rodada: 3.670 chars pós-relink
+  // contra 2.705 antes, mesmo texto).
+  const whatChangedChars = textCharCount(draft.whatChanged);
+  if (whatChangedChars > LIMITS.whatChanged) {
+    warnings.push(`O QUE MUDOU: ${whatChangedChars} chars (teto ${LIMITS.whatChanged})`);
   }
-  if (draft.predictions.length > LIMITS.predictions) {
-    warnings.push(`PREVISÕES: ${draft.predictions.length} chars (teto ${LIMITS.predictions})`);
+  const predictionsChars = textCharCount(draft.predictions);
+  if (predictionsChars > LIMITS.predictions) {
+    warnings.push(`PREVISÕES: ${predictionsChars} chars (teto ${LIMITS.predictions})`);
   }
   if (draft.anniversary && draft.anniversary.length > LIMITS.anniversary) {
     warnings.push(`ANIVERSÁRIO: ${draft.anniversary.length} chars (teto ${LIMITS.anniversary})`);
@@ -149,7 +141,6 @@ export function lintAnnualDraft(md: string, tipo: AnnualTipo): LintAnnualResult 
     themes: draft.themes.length,
     errors,
     warnings,
-    editor_letter_pending: tipo === "aniversario" && (draft.editorLetter?.placeholder ?? true),
     render: { imageCount: render.imageCount, missingImages: render.missingImages },
   };
 }
@@ -185,7 +176,6 @@ function main(argv: string[] = process.argv.slice(2)): void {
 
   for (const w of result.warnings) log(`aviso: ${w}`);
   for (const e of result.errors) log(`ERRO: ${e}`);
-  if (result.editor_letter_pending) log("carta do editor ainda é placeholder — o gate da Etapa 4 vai cobrar.");
   if (!result.ok) process.exitCode = 1;
 }
 

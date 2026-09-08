@@ -22,10 +22,26 @@ import { tmpdir } from "node:os";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkKitBackend, readState } from "../scripts/publish-annual-kit.ts";
+import { checkKitBackend, readState, normalizeChosenSubject } from "../scripts/publish-annual-kit.ts";
 import { tipoFromSlug } from "../scripts/lib/anual/annual-window.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+describe("assunto sem prefixo numérico (#7587 item 6)", () => {
+  it("tira o prefixo `N. ` da linha gravada em 02-chosen-subject.txt", () => {
+    assert.equal(normalizeChosenSubject("1. Um ano de IA em cinco atos"), "Um ano de IA em cinco atos");
+    assert.equal(normalizeChosenSubject("3. Doze meses, cinco viradas\n"), "Doze meses, cinco viradas");
+  });
+
+  it("assunto sem prefixo (ex: gravado por outro caminho) passa intocado", () => {
+    assert.equal(normalizeChosenSubject("Um ano de IA em cinco atos"), "Um ano de IA em cinco atos");
+  });
+
+  it("string vazia continua vazia (o caller decide o que fazer com assunto vazio)", () => {
+    assert.equal(normalizeChosenSubject(""), "");
+    assert.equal(normalizeChosenSubject("   \n"), "");
+  });
+});
 
 describe("guard de backend (#5608)", () => {
   it("aceita apenas backend kit", () => {

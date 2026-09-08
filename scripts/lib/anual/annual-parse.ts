@@ -34,8 +34,6 @@ export interface AnnualDraft {
   intro: string;
   /** Presente só na rodada de aniversário. */
   anniversary?: string;
-  /** Carta do editor — `placeholder: true` enquanto não for escrita. */
-  editorLetter?: { text: string; placeholder: boolean };
   themes: AnnualTheme[];
   whatChanged: string;
   predictions: string;
@@ -49,8 +47,6 @@ export interface AnnualDraft {
 const LABEL_RE = /^\*\*(.+?)\*\*$/;
 const THEME_LABEL_RE = /^TEMA\s+(\d+)\s*(?:\|\s*(.*))?$/i;
 const FIO_RE = /^O fio condutor:\s*$/i;
-/** Marca da carta do editor ainda não escrita. */
-const PLACEHOLDER_RE = /^\[placeholder\b/i;
 /** Seções que não podem existir numa edição anual (decisão do editor). */
 export const FORBIDDEN_LABELS = ["USE MELHOR", "RADAR", "É IA?", "E IA?", "É AI?", "E AI?"];
 
@@ -149,11 +145,6 @@ export function parseAnnualDraft(md: string): AnnualDraft {
       draft.anniversary = joinBlock(block.lines);
       continue;
     }
-    if (label.startsWith("CARTA DO EDITOR")) {
-      const text = joinBlock(block.lines);
-      draft.editorLetter = { text, placeholder: PLACEHOLDER_RE.test(text) || text === "" };
-      continue;
-    }
     if (label.startsWith("O QUE MUDOU")) {
       draft.whatChanged = joinBlock(block.lines);
       continue;
@@ -177,9 +168,18 @@ export function parseAnnualDraft(md: string): AnnualDraft {
   return draft;
 }
 
+/**
+ * Conta caracteres de um bloco de markdown, descontando as URLs dos links
+ * ancorados — `[âncora](url)` conta só a âncora, porque a URL não é texto
+ * que o leitor lê. Usado por qualquer bloco de prosa livre do draft (temas,
+ * "O que mudou", "Previsões") para que o lint meça o que o leitor vê, não o
+ * tamanho do markdown cru.
+ */
+export function textCharCount(text: string): number {
+  return text.replace(/\[([^\]]*)\]\((?:[^)]*)\)/g, "$1").length;
+}
+
 /** Conta caracteres de um tema, descontando as URLs dos links ancorados. */
 export function themeCharCount(theme: AnnualTheme): number {
-  const text = [theme.title, ...theme.paragraphs, theme.fioCondutor].join("\n");
-  // `[âncora](url)` conta só a âncora — a URL não é texto que o leitor lê.
-  return text.replace(/\[([^\]]*)\]\((?:[^)]*)\)/g, "$1").length;
+  return textCharCount([theme.title, ...theme.paragraphs, theme.fioCondutor].join("\n"));
 }

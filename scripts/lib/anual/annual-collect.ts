@@ -177,6 +177,50 @@ export function groupPostsByMonth(
   return out;
 }
 
+/** Identidade de artigo pro dedup por URL — sem querystring de tracking, `www.` e barra final. */
+function normDestaqueUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    for (const k of [...u.searchParams.keys()]) if (/^utm_|^ref$|^via$/i.test(k)) u.searchParams.delete(k);
+    return (u.host.replace(/^www\./, "") + u.pathname.replace(/\/+$/, "") + (u.search || "")).toLowerCase();
+  } catch {
+    return url.trim().toLowerCase();
+  }
+}
+
+/**
+ * Deduplica destaques pela URL da matéria, mantendo a **1ª ocorrência**
+ * (a lista chega ordenada por mês/edição — ver `groupPostsByMonth`).
+ *
+ * `groupPostsByMonth`/`dedupKey` já deduplicam EDIÇÃO repetida entre os dois
+ * caches (Beehiiv + Kit); isto é uma camada diferente — a MESMA matéria
+ * publicada como destaque em edições diferentes (desdobramento da notícia,
+ * ou a mesma edição indexada mais de uma vez no pool bruto). Medido na 1ª
+ * rodada real (agosto/2026): 5 cópias do mesmo item ("Brasil investe R$ 2,3
+ * bi em infraestrutura", edição 260825) sozinhas encheram o top-K do mês,
+ * entregando 6 itens únicos ao analista em vez de 10 (#7587 item 5).
+ *
+ * Roda **antes** do corte top-K (`topKPerMonth`) — deduplicar depois do
+ * corte já teria descartado material bom pra abrir espaço pra cópias.
+ * Destaque sem URL nunca é deduplicado por esta função (não tem identidade
+ * pra comparar) — mesma postura conservadora do `dedupKey` acima.
+ */
+export function dedupDestaquesByUrl(destaques: readonly AnnualDestaque[]): AnnualDestaque[] {
+  const seen = new Set<string>();
+  const out: AnnualDestaque[] = [];
+  for (const d of destaques) {
+    if (!d.url) {
+      out.push(d);
+      continue;
+    }
+    const key = normDestaqueUrl(d.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(d);
+  }
+  return out;
+}
+
 /**
  * Top-K por mês, por score decrescente. Mês com menos de K destaques entra
  * inteiro (nunca é preenchido com material de outro mês — o objetivo é teto
