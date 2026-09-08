@@ -2,9 +2,9 @@
 /**
  * scripts/build-apoiador-allowlist.ts (#3940)
  *
- * Constrói a allowlist de e-mails com direito ao **Panorama do Mês** — o
+ * Constrói a allowlist de e-mails com direito à **Retrospectiva do Mês** — o
  * recap mensal servido por `workers/artigo-mensal` (`artigo.diar.ia.br`).
- * Limiar: Mantenedor R$25+/mês do mês vigente (ver `PANORAMA_DO_MES_NIVEIS`
+ * Limiar: Mantenedor R$25+/mês do mês vigente (ver `RETROSPECTIVA_DO_MES_NIVEIS`
  * abaixo; era R$10+ até o #7658, que alinhou o gate à recompensa anunciada).
  *
  * NÃO reimplementa a checagem de apoio: reusa a MESMA maquinaria já testada
@@ -79,14 +79,14 @@ export function apoiadorAllowlistKvNamespaceId(): string {
 export const APOIADOR_ALLOWLIST_KV_KEY = "emails";
 
 /**
- * Níveis que têm direito ao **Panorama do Mês** — o recap mensal servido em
+ * Níveis que têm direito à **Retrospectiva do Mês** — o recap mensal servido em
  * `artigo.diar.ia.br/{ciclo}` (futuramente `retrospectiva.diar.ia.br/AAMM`,
  * #7658).
  *
  * **Corrigido de R$10+ para R$25+ em 08/09/2026 (#7658).** A página pública
- * da campanha vende o Panorama do Mês como recompensa de **Mantenedor
+ * da campanha vende a Retrospectiva do Mês como recompensa de **Mantenedor
  * (R$25/mês)** — transcrito da apoia.se: "🚀 Mantenedor — R$ 25/mês […]
- * Panorama do Mês - Recap conectando os principais acontecimentos do último
+ * Retrospectiva do Mês - Recap conectando os principais acontecimentos do último
  * mês. Enviado na primeira semana do mês." O que o Apoiador (R$10) compra é
  * outra coisa: o **Artigo Especial**, servido por `especial.diar.ia.br`
  * (`workers/artigos`, limiar próprio em `apoio-gate-config.ts`, que segue
@@ -103,11 +103,11 @@ export const APOIADOR_ALLOWLIST_KV_KEY = "emails";
  *
  * Mudar o limiar é mudar ESTA lista, e nada mais.
  */
-export const PANORAMA_DO_MES_NIVEIS: readonly RewardGroup[] = ["mantenedor", "patrono"];
+export const RETROSPECTIVA_DO_MES_NIVEIS: readonly RewardGroup[] = ["mantenedor", "patrono"];
 
 /**
  * Pure: filtra contatos com status "apoiando" no mês corrente E nível dentro
- * de `PANORAMA_DO_MES_NIVEIS` (Mantenedor/Patrono, R$25+). Cada contato pode ter
+ * de `RETROSPECTIVA_DO_MES_NIVEIS` (Mantenedor/Patrono, R$25+). Cada contato pode ter
  * múltiplos e-mails cadastrados (#3500) — TODOS entram na allowlist, não só
  * o e-mail que casou com a apoia.se, pra que o apoiador consiga logar com
  * qualquer um dos e-mails que ele mesmo cadastrou.
@@ -120,7 +120,7 @@ export function computeApoiadorAllowlist(contacts: ContactWithStatus[]): string[
   for (const c of contacts) {
     if (c.status.label !== "apoiando") continue;
     const group = computeRewardGroup(c.status.monthlyValue);
-    if (group === null || !PANORAMA_DO_MES_NIVEIS.includes(group)) continue;
+    if (group === null || !RETROSPECTIVA_DO_MES_NIVEIS.includes(group)) continue;
     for (const email of c.emails) emails.add(email);
   }
   return [...emails].sort();

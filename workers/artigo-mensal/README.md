@@ -2,8 +2,8 @@
 
 Hosting do artigo mensal público da diar.ia.br em `https://artigo.diar.ia.br/{ciclo}`,
 com paywall dinâmico restrito a apoiadores **Mantenedor (R$25+/mês)** — o
-nível em que a apoia.se vende o "Panorama do Mês" (#3940; limiar corrigido de
-R$10+ pra R$25+ no #7658, ver `PANORAMA_DO_MES_NIVEIS` em
+nível em que a apoia.se vende o "Retrospectiva do Mês" (#3940; limiar corrigido de
+R$10+ pra R$25+ no #7658, ver `RETROSPECTIVA_DO_MES_NIVEIS` em
 `scripts/build-apoiador-allowlist.ts`).
 
 Diferente de `workers/artigos` (#3961, static-only): este worker **tem

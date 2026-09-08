@@ -4,7 +4,7 @@ compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
-# #3940: hosting do artigo mensal (Panorama do Mês) com paywall dinâmico de
+# #3940: hosting do artigo mensal (Retrospectiva do Mês) com paywall dinâmico de
 # apoiador Mantenedor (R$25+/mês — limiar corrigido no #7658; era R$10+).
 # Rota escopada em domínio de marca dedicado — mesmo mecanismo comprovado de
 # cursos.diar.ia.br / livros.diar.ia.br / eia.diar.ia.br (custom_domain, NÃO

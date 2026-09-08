@@ -77,7 +77,7 @@ export function renderEmailForm(cycle: string): string {
   const action = `/${encodeURIComponent(cycle)}`;
   const body = `
     <h1>Artigo exclusivo para apoiadores</h1>
-    <p>O Panorama do Mês faz parte dos benefícios de quem apoia a diar.ia.br como Mantenedor, a partir de R$25/mês. Digite o e-mail que você usa para apoiar:</p>
+    <p>A Retrospectiva do Mês faz parte dos benefícios de quem apoia a diar.ia.br como Mantenedor, a partir de R$25/mês. Digite o e-mail que você usa para apoiar:</p>
     <form method="GET" action="${escHtml(action)}">
       <input type="email" name="email" placeholder="seu@email.com" required />
       <button class="button" type="submit">Acessar artigo</button>
@@ -95,13 +95,13 @@ export function renderEmailForm(cycle: string): string {
  * R$25+, isso deixaria de ser doc desatualizada pra virar informação ERRADA
  * mostrada ao leitor: quem apoia com R$10 leria que deveria ter acesso, na
  * página que acabou de negá-lo. O valor citado aqui tem que ser o mesmo de
- * `PANORAMA_DO_MES_NIVEIS` (`scripts/build-apoiador-allowlist.ts`), que é
+ * `RETROSPECTIVA_DO_MES_NIVEIS` (`scripts/build-apoiador-allowlist.ts`), que é
  * quem de fato monta a allowlist.
  */
 export function renderPaywall(): string {
   const body = `
     <h1>Este artigo é exclusivo para apoiadores da diar.ia.br</h1>
-    <p>O Panorama do Mês faz parte da recompensa de Mantenedor, a partir de R$25/mês — não encontramos um apoio ativo nesse nível para esse e-mail neste mês.</p>
+    <p>A Retrospectiva do Mês faz parte da recompensa de Mantenedor, a partir de R$25/mês — não encontramos um apoio ativo nesse nível para esse e-mail neste mês.</p>
     <p><a class="button" href="${APOIASE_URL}">Apoiar a diar.ia.br</a></p>
     <p class="muted">Já apoia e acha que isso é um erro? <a href="?entrar=1">Entre com seu e-mail</a>.</p>
   `;

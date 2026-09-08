@@ -6,7 +6,7 @@
  *
  *   | path               | conteúdo                        | gate            |
  *   |--------------------|---------------------------------|-----------------|
- *   | `/AAMM`            | Panorama do Mês (recap mensal)  | apoio R$25+     |
+ *   | `/AAMM`            | Retrospectiva do Mês (recap mensal)  | apoio R$25+     |
  *   | `/AAAA`            | retrospectiva anual (janeiro)   | cadastro grátis |
  *   | `/aniversarioAAAA` | retrospectiva de aniversário    | cadastro grátis |
  *
@@ -100,7 +100,7 @@ export function classifyRetrospectivaPath(pathname: string): RetrospectivaPath |
 }
 
 /**
- * Path do Panorama do Mês a partir do CICLO do repo (`YYMM-MM`, ex:
+ * Path da Retrospectiva do Mês a partir do CICLO do repo (`YYMM-MM`, ex:
  * `2607-08` = conteúdo de julho, envio em agosto).
  *
  * O path leva o mês de CONTEÚDO (`2607`), não o de envio: é o mês sobre o qual
