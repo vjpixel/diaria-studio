@@ -187,9 +187,9 @@ export function extractInstagramCandidates(md: string, editionDate: string): Ins
  * cast no caller. */
 export interface ClickWindowPost extends ClickWindowPostBase {
   stats?: {
-    /** `recipients` vem de `ClickWindowPostBase` (#7637, discriminador de
-     *  test-send); `unique_opens` é o denominador do CTR usado por
-     *  `uniqueOpensOf`. */
+    /** `recipients` (#7637, discriminador de test-send) é lido pela
+     *  resolução por data via `ClickWindowPostBase.stats`; `unique_opens` é
+     *  o denominador do CTR usado por `uniqueOpensOf`. */
     email?: { unique_opens?: number; recipients?: number };
     clicks?: CachedClickRow[];
   };

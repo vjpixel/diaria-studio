@@ -47,11 +47,33 @@ export interface ClickWindowPostBase {
    */
   origin?: EditionOrigin;
   /**
-   * Tamanho da entrega (#6186 — `KitBroadcastStats.recipients`, passthrough
-   * do Beehiiv do outro lado). É ISTO que separa test-send de edição real,
-   * **não** `public` — ver `MIN_REAL_DELIVERY_RECIPIENTS`.
+   * `unknown` DE PROPÓSITO. Este módulo lê exatamente dois bits de `stats`
+   * (`email` presente? `email.recipients` numérico?), e o shape completo
+   * diverge entre todos os produtores — `UnifiedCachedPost`,
+   * `BeehiivCachePost` das duas skills, e os `ClickWindowPost` de cada
+   * módulo, cada um com o seu `stats.clicks`. Declarar aqui um shape
+   * concreto obrigaria (e obrigou, na 1ª versão do #7637) a repetir
+   * `recipients` em 4 interfaces só pra satisfazer a checagem de weak type,
+   * e ainda assim rejeitava literal mais rico passado direto pro genérico.
+   * `unknown` deixa qualquer produtor satisfazer o contrato; a leitura vai
+   * por `emailStatsOf`, que valida em runtime.
    */
-  stats?: { email?: { recipients?: number } };
+  stats?: unknown;
+}
+
+/** Os dois únicos bits de `stats` que a resolução por data lê — ver
+ *  `ClickWindowPostBase.stats`. Narrowing em runtime, sem confiar em cast. */
+function emailStatsOf(post: ClickWindowPostBase): { present: boolean; recipients: number | undefined } {
+  const stats = post.stats;
+  if (typeof stats !== "object" || stats === null || !("email" in stats)) {
+    return { present: false, recipients: undefined };
+  }
+  const email = (stats as { email?: unknown }).email;
+  if (typeof email !== "object" || email === null) {
+    return { present: false, recipients: undefined };
+  }
+  const recipients = (email as { recipients?: unknown }).recipients;
+  return { present: true, recipients: typeof recipients === "number" ? recipients : undefined };
 }
 
 /** Pure: `epoch seconds` → `AAMMDD` local. */
@@ -127,8 +149,8 @@ export const MIN_REAL_DELIVERY_RECIPIENTS = 10;
  *   caminho Beehiiv-only (manifest de enriquecimento via MCP) inteiro.
  */
 function isRealDelivery(post: ClickWindowPostBase): boolean {
-  const recipients = post.stats?.email?.recipients;
-  if (recipients === undefined) return post.origin !== "kit" || post.stats?.email !== undefined;
+  const { present, recipients } = emailStatsOf(post);
+  if (recipients === undefined) return post.origin !== "kit" || present;
   return recipients >= MIN_REAL_DELIVERY_RECIPIENTS;
 }
 

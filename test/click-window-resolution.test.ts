@@ -50,7 +50,7 @@ describe("matchPostsToWindow — desempate por origem (#7637)", () => {
     // O ponto do teste: se o critério ainda fosse `publish_date`, a Beehiiv
     // (09:02) venceria o Kit (04:08). Pós-#7637 a origem decide primeiro.
     const beehiiv = post("beehiiv", { origin: "beehiiv", publish_date: epochAt("260904", 9, 2) });
-    const kit = post("kit", { origin: "kit", publish_date: epochAt("260904", 4, 8), public: true });
+    const kit = post("kit", { origin: "kit", publish_date: epochAt("260904", 4, 8) });
 
     for (const ordem of [
       [beehiiv, kit],
