@@ -372,6 +372,28 @@ def main() -> int:
         set(mod.PAID_ALLOWLIST) <= coberto,
     )
 
+    # 9b. Regressao da troca glm -> deepseek (08/09/2026): quando o fallback
+    #     pago do config.yaml muda, CONTINUO_PAID_FALLBACK_MODEL e o
+    #     PAID_ALLOWLIST tem que andar JUNTOS. Se so a constante mudasse, todo
+    #     tick que caisse no fallback seria classificado como VAZAMENTO; se so
+    #     a allowlist mudasse, a composicao por tick atribuiria o fallback a
+    #     other_calls e a linha de base do #6912 ficaria silenciosamente
+    #     errada. Nenhum dos dois erros levanta excecao — sao ambos silenciosos,
+    #     que e o motivo de existir um teste em vez de confiar na revisao.
+    assert_true(
+        "fallback pago do continuo esta na PAID_ALLOWLIST (nunca classificado como vazamento)",
+        mod.CONTINUO_PAID_FALLBACK_MODEL in mod.PAID_ALLOWLIST,
+    )
+    assert_true(
+        "fallback pago do continuo tem baseline de preco (o alarme do #6818 o cobre)",
+        mod.CONTINUO_PAID_FALLBACK_MODEL in set(mod.PAID_PRICE_BASELINE)
+        | set(mod.PAID_MODELS_NOT_ON_OPENROUTER),
+    )
+    assert_true(
+        "primario do continuo tambem esta na allowlist (mesma classe de erro)",
+        set(mod.CONTINUO_PRIMARY_MODEL_IDS) <= set(mod.PAID_ALLOWLIST),
+    )
+
     # --- achados do review do PR #7085 ---
 
     # 10. (P2) O caminho "catálogo inacessível" agora é função PURA. Antes era

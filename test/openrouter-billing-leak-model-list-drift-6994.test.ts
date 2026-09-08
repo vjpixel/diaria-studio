@@ -72,7 +72,13 @@ function parsePythonAllowlist(source: string): string[] {
     "PAID_ALLOWLIST = { ... } não encontrado em hermes/scripts/hermes-model-cost-report.py — " +
       "o script mudou de forma estrutural, atualize o regex deste teste.",
   );
-  const inner = match![1];
+  // Comentarios saem ANTES da extracao (achado ao vivo, PR #7648): o regex
+  // abaixo raspa QUALQUER string entre aspas dentro do bloco, e um comentario
+  // explicativo que continha a palavra vazamento entre aspas virou uma entrada
+  // fantasma da allowlist. O teste falhou apontando um slug que nunca existiu,
+  // mandando quem lesse procurar typo no lugar errado. Comentario e prosa,
+  // nunca dado.
+  const inner = match![1].replace(/#[^\n]*/g, "");
   const slugs = [...inner.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   assert.ok(
     slugs.length > 0,
@@ -82,6 +88,16 @@ function parsePythonAllowlist(source: string): string[] {
 }
 
 describe("#6994 — EXPECTED_PAID_MODELS (TS) x PAID_ALLOWLIST (Python) não divergem sem sinal", () => {
+  it("comentário com aspas dentro do bloco não vira entrada fantasma (regressão, PR #7648)", () => {
+    const comAspasNoComentario = [
+      "PAID_ALLOWLIST = {",
+      '    # Tirar daqui o transformaria em "vazamento" falso.',
+      '    "z-ai/glm-5.3-flash",',
+      "}",
+    ].join("\n");
+    assert.deepEqual(parsePythonAllowlist(comAspasNoComentario), ["z-ai/glm-5.3-flash"]);
+  });
+
   it("toda entrada do PAID_ALLOWLIST (Python) também está em EXPECTED_PAID_MODELS (TS)", () => {
     const pythonSlugs = parsePythonAllowlist(readFileSync(PYTHON_PATH, "utf8"));
     const missingFromTs = pythonSlugs.filter((slug) => !EXPECTED_PAID_MODELS.has(slug));
