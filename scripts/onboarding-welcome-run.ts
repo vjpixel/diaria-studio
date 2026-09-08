@@ -4,15 +4,33 @@
  *
  * Script DIÁRIO de onboarding fora da automação Beehiiv — mecanismo 1 da
  * decisão do editor (22/08/2026 ~11:08 BRT): Brevo transacional + detecção
- * de novos assinantes pela API pública v2 (`created_at__gte`, custo zero).
+ * de novos assinantes.
  *
- *   E-mail 1 (transacional)  → imediato na detecção (só status `active`)
+ *   E-mail 1 (transacional)  → imediato na detecção (só status/state `active`)
  *   E-mail 2 (transacional)  → D+3
- *   E-mail 3 (CAMPANHA Brevo, marketing) → D+10 condicional a ZERO aberturas
- *     e cliques (mesma condição da automação descartada na #5808). A campanha
- *     é criada SEMPRE como RASCUNHO mirando a lista dedicada do cohort —
- *     agendamento/envio é ação humana explícita (mesma disciplina de
- *     rascunho-por-padrão dos outros publicadores Brevo do projeto).
+ *   E-mail 3 (CAMPANHA Brevo, marketing) → D+10, copy de apoio (apoia.se) —
+ *     condição INVERTIDA em #7599 (08/09/2026, decisão do editor): dispara
+ *     só pra quem ABRIU pelo menos 1 edição até D+10 (não mais "zero
+ *     aberturas+cliques", a condição de reengajamento original da #5808/
+ *     #5908 — o pedido de apoio só faz sentido pra quem já leu algo). Quem
+ *     tem zero aberturas em D+10 não recebe e-mail 3 nenhum por ora
+ *     (`skipped_no_open`, terminal). A campanha é criada SEMPRE como
+ *     RASCUNHO mirando a lista dedicada do cohort — agendamento/envio é
+ *     ação humana explícita (mesma disciplina de rascunho-por-padrão dos
+ *     outros publicadores Brevo do projeto).
+ *
+ * DETECÇÃO (#7599, 08/09/2026): o backend segue
+ * `publishing.newsletter.subscriber_backend` (`scripts/lib/shared/
+ * newsletter-subscriber-source.ts`, mesma chave já usada por
+ * `count-subscriptions-by-utm.ts`/Studio) — Beehiiv (`GET /publications/
+ * {id}/subscriptions`, API pública v2, `created`) ou Kit (`GET /v4/
+ * subscribers`, `created_at`). O cadastro migrou pra Kit em 04/09/2026
+ * (#7388); detectar contra a Beehiiv depois disso mirava uma base zerada e
+ * a rodada saía "verde" (exit 0, `detected_new: 0`) sem detectar ninguém,
+ * em silêncio — daí o alarme de detecção zerada abaixo (item 4 da #7599) e
+ * o guard de troca de backend (`shouldResetCursorForBackendSwitch`, nunca
+ * reusa um cursor calculado sob a fonte antiga — mesma disciplina que
+ * evitou repetir o #6043).
  *
  * SEGURANÇA:
  *   - Default é DRY-RUN: sem `--send` nada é escrito (nem store, nem Brevo,
@@ -50,7 +68,11 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { resolveBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
+import { resolveBeehiivConfig, beehiivApiBase, type BeehiivConfig } from "./lib/beehiiv-config.ts";
+import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
+import { kitFetch } from "./lib/kit-client.ts";
+import { listAllKitSubscribers, getSubscriberById as getKitSubscriberById } from "./lib/kit-subscribers.ts";
+import { resolveNewsletterSubscriberBackend, type NewsletterSubscriberBackend } from "./lib/shared/newsletter-subscriber-source.ts";
 import {
   emptyStore,
   readStore,
@@ -63,6 +85,9 @@ import {
   parseOnboardingSnippet,
   buildRunPlan,
   classifyNewSubscribers,
+  shouldResetCursorForBackendSwitch,
+  updateZeroDetectionStreak,
+  zeroDetectionAlarm,
   type DetectedSubscription,
   type OpenStats,
   type RunAction,
@@ -233,6 +258,91 @@ async function fetchSubscriptionById(
   );
   if (!res.ok || !res.body) return null;
   return res.body;
+}
+
+// ---------------------------------------------------------------------------
+// Detecção via Kit (#7599 — cadastro migrado da Beehiiv pro Kit em 04/09/2026,
+// #7388; a detecção lendo `resolveBeehiivConfig`/`beehiivFetch` acima ficou
+// mirando uma base zerada e saía "verde" sem detectar ninguém, ver #7599)
+// ---------------------------------------------------------------------------
+
+/** ISO 8601 (`created_at` do Kit) → epoch SEGUNDOS, mesma unidade do campo
+ *  `created` da Beehiiv usada pelo resto do módulo (cursor, D+3/D+10). */
+function isoToEpochSec(iso: string): number {
+  return Math.floor(new Date(iso).getTime() / 1000);
+}
+
+/**
+ * Drena TODOS os assinantes do Kit (`status: "all"` — precisa enxergar quem
+ * ainda não confirmou double opt-in, mesmo racional do `status !== "active"`
+ * já tratado pelo resto do módulo) e filtra client-side por `created_at >=
+ * gteSec`. Diferente de `fetchSubscriptionsSince` (Beehiiv), o Kit não
+ * documenta `order_by`/`direction` pra `/v4/subscribers` — sem um jeito
+ * confirmado de pedir "mais recente primeiro" e parar cedo, este helper
+ * pagina a base inteira (mesmo padrão de `fetchAndAggregateKit` em
+ * `count-subscriptions-by-utm.ts`, volume esperado "algumas centenas a ~2
+ * mil", aceitável pra 1 rodada/dia).
+ */
+async function fetchSubscriptionsSinceKit(config: KitConfig, gteSec: number): Promise<DetectedSubscription[]> {
+  const subs = await listAllKitSubscribers(config, { status: "all" });
+  const result: DetectedSubscription[] = [];
+  for (const s of subs) {
+    const created = isoToEpochSec(s.created_at);
+    if (created >= gteSec) {
+      result.push({ id: String(s.id), email: s.email_address, status: s.state, created });
+    }
+  }
+  return result;
+}
+
+/**
+ * #7599: leitura de engajamento (aberturas) por assinante do Kit — **NÃO
+ * CONFIRMADO AO VIVO** (mesma ressalva de várias funções em
+ * `kit-subscribers.ts`). `GET /v4/subscribers/{id}/stats` é a melhor
+ * suposição a partir do padrão REST do resto da v4 e do nome do tool MCP
+ * equivalente (`list_stats_for_a_subscriber`) — nenhuma sessão pôde
+ * confirmar o shape real contra a conta, porque scripts não têm acesso à
+ * MCP (só sessões interativas têm).
+ *
+ * Fail-safe por desenho: qualquer erro (404, shape inesperado, campo
+ * ausente sob os nomes tentados) devolve `null`. O caller (`email3Eligibility`
+ * em `onboarding-state.ts`) trata `null` como `stats_ausentes` — dentro da
+ * janela de tolerância mantém o candidato pendente pra próxima rodada; fora
+ * dela desiste terminalmente (`skipped_sem_dados`). Em NENHUM caso um erro
+ * ou shape desconhecido vira "elegível" por acidente — o e-mail 3 nunca
+ * sai adivinhando. Reverificar os nomes de campo reais ao vivo antes de
+ * confiar neste dado pra qualquer decisão além desse fail-safe.
+ */
+async function fetchSubscriberStatsKit(id: number, config: KitConfig): Promise<OpenStats | null> {
+  try {
+    const data = await kitFetch<Record<string, unknown> | undefined>(`/subscribers/${id}/stats`, { config });
+    if (!data) return null;
+    const body = (data as { subscriber?: Record<string, unknown> }).subscriber ?? data;
+    const opens =
+      body["total_unique_opens"] ?? body["total_opens"] ?? body["unique_opens"] ?? body["opens"] ?? null;
+    if (typeof opens !== "number") return null;
+    return { total_unique_opened: opens, total_clicked: null };
+  } catch {
+    return null;
+  }
+}
+
+/** Equivalente Kit de `fetchSubscriptionById` (refresh de status + stats
+ *  antes da decisão) — `subscription_id` do store é o id numérico do Kit
+ *  como string (ver `fetchSubscriptionsSinceKit`). */
+async function fetchSubscriptionByIdKit(
+  config: KitConfig,
+  subscriptionId: string,
+): Promise<{ status: string; stats: OpenStats | null } | null> {
+  const id = Number(subscriptionId);
+  if (!Number.isFinite(id)) return null;
+  try {
+    const subscriber = await getKitSubscriberById(id, config);
+    const stats = await fetchSubscriberStatsKit(id, config);
+    return { status: subscriber.state, stats };
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -489,10 +599,30 @@ async function main(): Promise<void> {
 
   const nowSec = Math.floor(Date.now() / 1000);
 
-  const beeCfg = resolveBeehiivConfig();
-  if (!beeCfg.ok) {
-    process.stderr.write(`[onboarding] ${beeCfg.reason}\n`);
-    process.exit(2);
+  // #7599: backend de DETECÇÃO segue `publishing.newsletter.subscriber_backend`
+  // (mesma chave já usada por `count-subscriptions-by-utm.ts`/Studio) — o
+  // cadastro migrou pra Kit em 04/09/2026 (#7388) e a detecção lendo a
+  // Beehiiv ficava mirando uma base zerada, saindo "verde" sem detectar
+  // ninguém.
+  const configPathAbs = args.configPath ?? resolve(ROOT, "platform.config.json");
+  const backend: NewsletterSubscriberBackend = resolveNewsletterSubscriberBackend(configPathAbs);
+
+  let beeCfg: { ok: true; config: BeehiivConfig } | null = null;
+  let kitCfg: KitConfig | null = null;
+  if (backend === "kit") {
+    const kitResult = resolveKitConfig();
+    if (!kitResult.ok) {
+      process.stderr.write(`[onboarding] ${kitResult.reason}\n`);
+      process.exit(2);
+    }
+    kitCfg = kitResult.config;
+  } else {
+    const beeResult = resolveBeehiivConfig();
+    if (!beeResult.ok) {
+      process.stderr.write(`[onboarding] ${beeResult.reason}\n`);
+      process.exit(2);
+    }
+    beeCfg = beeResult;
   }
   if (!brevoKey) {
     process.stderr.write(`[onboarding] ${apiKeyEnv} ausente no env.\n`);
@@ -518,6 +648,7 @@ async function main(): Promise<void> {
   // --- BOOTSTRAP: primeira execução marca cursor e NÃO onboarda a base existente ---
   if (store.last_detection_cursor == null) {
     store.last_detection_cursor = nowSec;
+    store.last_detection_backend = backend;
     if (args.send) {
       writeStore(store, storePath);
       summary.notes.push("bootstrap: cursor marcado em now; nenhuma entrada adicionada (base existente não recebe onboarding retroativo)");
@@ -529,11 +660,50 @@ async function main(): Promise<void> {
     return;
   }
 
+  // --- #7599: troca de backend de detecção — cursor NUNCA é reusado sob a
+  // fonte nova (Beehiiv `created` epoch vs. Kit `created_at` ISO convertido
+  // não são garantidamente comparáveis). Re-bootstrapa exatamente como a
+  // 1ª execução: cursor em now, zero entradas retroativas — mesma
+  // disciplina que evitou repetir o #6043. ---
+  if (shouldResetCursorForBackendSwitch(store.last_detection_backend, backend)) {
+    const backendAnterior = store.last_detection_backend;
+    store.last_detection_cursor = nowSec;
+    store.last_detection_backend = backend;
+    const nota =
+      `bootstrap (troca de backend de detecção ${backendAnterior} → ${backend}): cursor remarcado em now; ` +
+      `nenhuma entrada retroativa adicionada (#7599)`;
+    if (args.send) {
+      writeStore(store, storePath);
+      summary.notes.push(nota);
+      console.log(JSON.stringify(summary, null, 2));
+      return;
+    }
+    summary.notes.push(`${nota} — pendente, só grava com --send`);
+    console.log(JSON.stringify(summary, null, 2));
+    return;
+  }
+  store.last_detection_backend = backend;
+
   // --- 1. Detecção ---
-  const fetched = await fetchSubscriptionsSince(beeCfg.config.publicationId, beeCfg.config.apiKey, store.last_detection_cursor);
+  const fetched =
+    backend === "kit"
+      ? await fetchSubscriptionsSinceKit(kitCfg!, store.last_detection_cursor)
+      : await fetchSubscriptionsSince(beeCfg!.config.publicationId, beeCfg!.config.apiKey, store.last_detection_cursor);
   const knownIds = new Set(Object.keys(store.entries));
   const { novos } = classifyNewSubscribers(fetched, knownIds);
   summary.detected_new = novos.length;
+
+  // #7599 item 4: alarme de detecção zerada — atualiza o streak em memória;
+  // só persiste (junto do resto do store) quando a rodada é `--send` real.
+  store.consecutive_zero_detections = updateZeroDetectionStreak(
+    store.consecutive_zero_detections ?? 0,
+    summary.detected_new,
+  );
+  const alarm = zeroDetectionAlarm(store.consecutive_zero_detections);
+  if (alarm) {
+    summary.notes.push(alarm);
+    process.stderr.write(`[onboarding] ${alarm}\n`);
+  }
 
   const detectedAt = new Date(nowSec * 1000).toISOString();
   for (const s of novos) {
@@ -574,7 +744,10 @@ async function main(): Promise<void> {
   });
   const statsById: Record<string, OpenStats | null> = {};
   for (const e of candidates) {
-    const fresh = await fetchSubscriptionById(beeCfg.config.publicationId, beeCfg.config.apiKey, e.subscription_id);
+    const fresh =
+      backend === "kit"
+        ? await fetchSubscriptionByIdKit(kitCfg!, e.subscription_id)
+        : await fetchSubscriptionById(beeCfg!.config.publicationId, beeCfg!.config.apiKey, e.subscription_id);
     if (fresh) {
       e.status_detectado = fresh.status ?? e.status_detectado;
       statsById[e.subscription_id] = fresh.stats ?? null;

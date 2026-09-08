@@ -145,9 +145,16 @@ describe("onboarding-welcome-run.ts — detecção via cursor (#6043)", () => {
         JSON.stringify({ onboarding: { enabled: true, snippets_dir: snippetsDir, store_path: storePath } }),
       );
       // Store fixture: cursor já bootstrapado (não é a 1ª execução), sem entries conhecidas.
+      // `last_detection_backend: "beehiiv"` explícito e IGUAL ao backend
+      // default deste teste (config sem `subscriber_backend` → beehiiv) —
+      // sem isso o guard de troca de backend do #7599
+      // (`shouldResetCursorForBackendSwitch`) trataria o campo ausente como
+      // "backend desconhecido" e forçaria um re-bootstrap, mascarando o
+      // comportamento de detecção normal que ESTE teste cobre (ver
+      // test/onboarding-kit-detection-7599.test.ts pro teste do guard em si).
       writeFileSync(
         storePath,
-        JSON.stringify({ version: 1, last_detection_cursor: CURSOR, d10_brevo_list_id: null, entries: {} }),
+        JSON.stringify({ version: 1, last_detection_cursor: CURSOR, last_detection_backend: "beehiiv", d10_brevo_list_id: null, entries: {} }),
       );
 
       const r = await spawnScriptAsync(["--config", configPath, "--store", storePath], {
@@ -197,7 +204,7 @@ describe("onboarding-welcome-run.ts — detecção via cursor (#6043)", () => {
       );
       writeFileSync(
         storePath,
-        JSON.stringify({ version: 1, last_detection_cursor: CURSOR, d10_brevo_list_id: null, entries: {} }),
+        JSON.stringify({ version: 1, last_detection_cursor: CURSOR, last_detection_backend: "beehiiv", d10_brevo_list_id: null, entries: {} }),
       );
 
       const r = await spawnScriptAsync(["--config", configPath, "--store", storePath, "--send"], {

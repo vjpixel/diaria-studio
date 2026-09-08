@@ -151,13 +151,24 @@ export interface OpenStats {
 
 export type Email3Decision =
   | { eligible: true }
-  | { eligible: false; reason: "ja_decidido" | "sem_created_at" | "age<min" | "abriu_ou_clicou" | "stats_ausentes" };
+  | { eligible: false; reason: "ja_decidido" | "sem_created_at" | "age<min" | "sem_abertura" | "stats_ausentes" };
 
 /**
- * Decisão do e-mail 3: elegível só se pendente, idade ≥ D+10, stats
- * presentes e ZERO aberturas + ZERO cliques. Stats ausentes → não elegível
+ * Decisão do e-mail 3 — condição INVERTIDA em #7599 (08/09/2026, decisão do
+ * editor registrada na issue): o corpo trocou pela copy de apoio (ex-Kit),
+ * e o pedido de apoio só faz sentido pra quem JÁ leu ao menos uma edição —
+ * o oposto da condição anterior (reengajamento: zero aberturas+cliques).
+ *
+ * Elegível só se pendente, idade ≥ D+10, stats presentes e PELO MENOS UMA
+ * abertura registrada (`total_unique_opened > 0`). Cliques deixaram de
+ * fazer parte do critério — abertura é o sinal mínimo de "leu ao menos
+ * uma edição" que a decisão do editor pede; exigir clique também seria mais
+ * restritivo que o critério registrado. Stats ausentes → não elegível
  * (fail-safe: sem dado não há como checar a condição; após a janela de
- * tolerância o caller marca `skipped_sem_dados`).
+ * tolerância o caller marca `skipped_sem_dados`). Zero aberturas em D+10 →
+ * `sem_abertura`, que o caller trata como TERMINAL (`skipped_no_open`,
+ * nunca reavaliado) — decisão explícita do editor: "quem tem zero
+ * aberturas em D+10 simplesmente não recebe e-mail 3 nenhum por ora".
  */
 export function email3Eligibility(
   entry: OnboardingEntry,
@@ -169,11 +180,11 @@ export function email3Eligibility(
   if (entry.created_at == null) return { eligible: false, reason: "sem_created_at" };
   const idade = nowSec - entry.created_at;
   if (idade < days * DAY_S) return { eligible: false, reason: "age<min" };
-  if (stats == null || stats.total_unique_opened == null || stats.total_clicked == null) {
+  if (stats == null || stats.total_unique_opened == null) {
     return { eligible: false, reason: "stats_ausentes" };
   }
-  if (stats.total_unique_opened > 0 || stats.total_clicked > 0) {
-    return { eligible: false, reason: "abriu_ou_clicou" };
+  if (stats.total_unique_opened <= 0) {
+    return { eligible: false, reason: "sem_abertura" };
   }
   return { eligible: true };
 }
@@ -206,7 +217,7 @@ export interface RunSkip {
     | "snippet_invalido"
     | "snippet_ausente"
     | "age<min"
-    | "abriu_ou_clicou"
+    | "sem_abertura"
     | "stats_ausentes"
     | "sem_created_at";
   detalhe?: string;
@@ -301,8 +312,10 @@ export function buildRunPlan(opts: {
       const dec = email3Eligibility(entry, statsById[entry.subscription_id] ?? null, nowSec, email3Days);
       if (dec.eligible) {
         cohort3.push(entry);
-      } else if (dec.reason === "abriu_ou_clicou") {
-        entry.email3_state = "skipped_opened";
+      } else if (dec.reason === "sem_abertura") {
+        // #7599: condição invertida — zero aberturas em D+10 é TERMINAL
+        // (nunca reavaliado), não mais o gatilho de envio.
+        entry.email3_state = "skipped_no_open";
         entry.email3_decided_at = new Date(nowSec * 1000).toISOString();
       } else if (
         dec.reason === "stats_ausentes" &&
@@ -329,4 +342,80 @@ export function buildRunPlan(opts: {
   }
 
   return { actions, skips, detectedEntries };
+}
+
+// ---------------------------------------------------------------------------
+// #7599: troca de backend de detecção (Beehiiv → Kit) — cursor precisa
+// re-bootstrapar, nunca reusar valor calculado sob a fonte antiga
+// ---------------------------------------------------------------------------
+
+/**
+ * `true` quando o cursor persistido NÃO tem procedência CONHECIDA e SEGURA
+ * contra o backend atual — Beehiiv usa `created` (epoch segundos da API
+ * pública v2), Kit usa `created_at` (ISO, convertido) — e reusar o cursor
+ * antigo sob a fonte nova é exatamente a classe de erro silencioso que
+ * causou o #6043 (585 e-mails retroativos por um filtro que não fazia o
+ * que parecia fazer). A #7599 é justamente essa migração acontecendo de
+ * novo (Beehiiv → Kit em 04/09/2026, #7388) — inclusive com o mesmo risco
+ * concreto de assinantes MIGRADOS em bloco carregarem `created_at` do
+ * MOMENTO DA IMPORTAÇÃO em vez da data real de cadastro (mesma armadilha
+ * documentada em CLAUDE.md pra `displayed_date`/`publish_date` da Beehiiv).
+ *
+ * `storedBackend == null` — store criado ANTES deste campo existir — é
+ * exatamente o estado do store de PRODUÇÃO real na hora em que este guard
+ * foi escrito (rodava há semanas sob Beehiiv sem nunca ter gravado
+ * `last_detection_backend`). Tratar isso como "não é uma troca" (ausência
+ * de sinal ≠ ausência de risco) deixaria o 1º `--send` pós-merge deste PR
+ * comparar o cursor Beehiiv-era direto contra `created_at` do Kit sem
+ * NENHUM re-bootstrap — reabrindo o #6043 pela porta dos fundos. Por isso
+ * `null`/`undefined` conta como DESCONHECIDO, não como "mesmo backend": só
+ * `storedBackend === currentBackend` (ambos conhecidos e iguais) evita o
+ * reset. O custo de um falso positivo (bootstrap desnecessário quando o
+ * backend nunca mudou de fato, só o campo nunca foi gravado) é 1 rodada
+ * sem detectar ninguém — o de um falso negativo é reenvio em massa.
+ *
+ * @pure testável sem I/O
+ */
+export function shouldResetCursorForBackendSwitch(
+  storedBackend: "beehiiv" | "kit" | null | undefined,
+  currentBackend: "beehiiv" | "kit",
+): boolean {
+  return storedBackend !== currentBackend;
+}
+
+// ---------------------------------------------------------------------------
+// #7599: alarme de detecção zerada — item 4 da issue
+// ---------------------------------------------------------------------------
+
+/** Rodadas `--send` consecutivas com `detected_new === 0` que disparam o alarme. */
+export const ZERO_DETECTION_ALARM_THRESHOLD_RUNS = 3;
+
+/**
+ * Atualiza o contador de rodadas consecutivas sem detecção — zera a
+ * qualquer `detectedNew > 0`, incrementa caso contrário.
+ *
+ * @pure testável sem I/O
+ */
+export function updateZeroDetectionStreak(previousStreak: number, detectedNew: number): number {
+  return detectedNew > 0 ? 0 : previousStreak + 1;
+}
+
+/**
+ * Mensagem de alarme quando o streak cruza o limiar — `null` abaixo dele.
+ * A rodada de origem do #7599 é exatamente o cenário que este alarme
+ * existe pra pegar: a detecção lendo da fonte errada saía "verde"
+ * (`detected_new: 0`, exit 0) indefinidamente, sem nenhum sinal.
+ *
+ * @pure testável sem I/O
+ */
+export function zeroDetectionAlarm(
+  streak: number,
+  threshold: number = ZERO_DETECTION_ALARM_THRESHOLD_RUNS,
+): string | null {
+  if (streak < threshold) return null;
+  return (
+    `ALARME: ${streak} rodadas --send consecutivas com 0 novos assinantes detectados ` +
+    `(limiar ${threshold}) — possível quebra silenciosa na detecção (fonte errada, filtro no-op, etc). ` +
+    `Ver #7599.`
+  );
 }
