@@ -456,12 +456,19 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {})
   // coordenadora ativa é continuo?" precisa saber o kind de cada uma, não só
   // contar quantas existem.
   const kinds = new Map();
+  // #7546: `attended` por `sessionId` — só populado quando o record TRAZ o
+  // campo (boolean). Ausência é significativa e diferente de `false`: um
+  // record gravado antes do #7546 não tem o campo, e nesse caso a leitura
+  // correta continua sendo a antiga (por `kind`) — ver
+  // `onlyUnreachableCoordinatorsActive`. Aditivo: o shape `{ids, kinds,
+  // degraded}` de todo consumidor existente segue valendo.
+  const attended = new Map();
   let entries;
   try {
-    if (!existsSync(dir)) return { ids, kinds, degraded: false };
+    if (!existsSync(dir)) return { ids, kinds, attended, degraded: false };
     entries = readdirSync(dir);
   } catch {
-    return { ids, kinds, degraded: true }; // não deu nem pra listar — contagem não confiável
+    return { ids, kinds, attended, degraded: true }; // não deu nem pra listar — contagem não confiável
   }
   const myTag = machineTag();
   let degraded = false;
@@ -500,6 +507,7 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {})
       if (ageMs > SOFT_STALE_MS) continue;
       ids.add(record.sessionId);
       kinds.set(record.sessionId, record.kind);
+      if (typeof record.attended === "boolean") attended.set(record.sessionId, record.attended);
     } catch {
       // JSON malformado (pode ser outra sessão escrevendo agora, ou
       // corrupção genuína — não dá pra distinguir com segurança) OU qualquer
@@ -509,7 +517,7 @@ export function readActiveCoordinatorScan(repoRoot, now = Date.now(), opts = {})
       degraded = true;
     }
   }
-  return { ids, kinds, degraded };
+  return { ids, kinds, attended, degraded };
 }
 
 /**
@@ -530,19 +538,45 @@ export function readActiveCoordinatorSessionIds(repoRoot, now = Date.now(), opts
 }
 
 /**
- * `true` quando existe PELO MENOS 1 coordenadora ativa E TODAS as
- * coordenadoras ativas são `continuo` (#7303) — o único estado em que a
- * auto-autorização (`SelfAuthorizedMerge`) pode valer. `false` tanto quando
- * não há coordenadora nenhuma (nada bloqueado, nada a contornar) quanto
- * quando há pelo menos uma `overnight`/`develop` (kind que CONVERSA — o
- * caminho normal de `grant-merge` continua sendo o único).
+ * `true` quando existe PELO MENOS 1 coordenadora ativa E NENHUMA delas
+ * consegue receber um pedido de `grant-merge` — o único estado em que a
+ * auto-autorização (`SelfAuthorizedMerge`, #7303) pode valer. `false` tanto
+ * quando não há coordenadora nenhuma (nada bloqueado, nada a contornar)
+ * quanto quando há pelo menos uma ALCANÇÁVEL (o caminho normal de
+ * `grant-merge` continua sendo o único).
  *
- * Pura — opera sobre o `kinds` já lido por `readActiveCoordinatorScan`.
+ * **#7546 — a pergunta é "alcançável?", não "qual o kind?".** Até esta
+ * issue a função se chamava `onlyContinuoCoordinatorsActive` e decidia por
+ * `kind !== "continuo"`, assumindo que toda `overnight`/`develop` conversa.
+ * Falso pra uma rodada rodando como task agendada/dispatched: existe, está
+ * ativa, e não há como entregar mensagem nenhuma a ela — medido ao vivo em
+ * 06/09/2026 (`SendMessage`, `ListAgents` e `ccd_session_mgmt` os três
+ * confirmaram). Esta é a MESMA correção que `selfAuthorizeMerge`
+ * (`scripts/lib/session-registry.ts`) recebeu; as duas cópias precisam
+ * concordar, senão o `gh pr merge` real segue bloqueado apesar da
+ * auto-autorização ter sido concedida (a lógica é duplicada aqui, não
+ * importada, pela mesma razão self-contained do resto deste arquivo).
+ *
+ * Precedência por sessão, nesta ordem:
+ *   1. `attended === false` no record → INALCANÇÁVEL (sinal explícito,
+ *      gravado por `register --unattended`);
+ *   2. `attended === true` → alcançável;
+ *   3. campo AUSENTE (record anterior ao #7546) → cai na leitura antiga,
+ *      `kind === "continuo"` decide. Preserva exatamente o comportamento
+ *      pré-#7546 pros registros que já estão em disco.
+ *
+ * Pura — opera sobre o `kinds`/`attended` já lidos por
+ * `readActiveCoordinatorScan`. Aceita o scan inteiro; um scan sem `attended`
+ * (chamador antigo) degrada sozinho pra leitura por kind, nunca lança.
  */
-export function onlyContinuoCoordinatorsActive(kinds) {
+export function onlyUnreachableCoordinatorsActive(scan) {
+  const kinds = scan?.kinds;
   if (!(kinds instanceof Map) || kinds.size === 0) return false;
-  for (const kind of kinds.values()) {
-    if (kind !== "continuo") return false;
+  const attended = scan?.attended instanceof Map ? scan.attended : new Map();
+  for (const [sessionId, kind] of kinds.entries()) {
+    const flag = attended.get(sessionId);
+    const unreachable = flag === false || (flag === undefined && kind === "continuo");
+    if (!unreachable) return false;
   }
   return true;
 }
@@ -982,10 +1016,11 @@ export const BLOCK_REASON =
   "merge-lock-acquire --pr N` (a concessão destrava IDENTIDADE, nunca TEMPO: havendo outra coordenadora " +
   "ativa, é o lock que ainda serializa quem mergeia agora), liberando com `merge-lock-release --pr N` " +
   "depois do merge (ou se desistir). Reconfirmar a concessão sem adquirir o lock repete o mesmo bloqueio. " +
-  "Se a ÚNICA coordenadora ativa for `continuo` (cron, não lê SendMessage nem concede grant-merge — #7303): " +
-  "`session-registry.ts self-authorize-merge --reason \"...\" [--pr N]` é o escape hatch — recusa sozinho se " +
-  "houver alguma coordenadora overnight/develop ativa (nesse caso, peça a janela dela normalmente); depois " +
-  "dele, o passo de merge-lock-acquire acima continua obrigatório do mesmo jeito.";
+  "Se TODA coordenadora ativa for INALCANÇÁVEL — `continuo` (cron), ou uma overnight/develop registrada " +
+  "com `register --unattended` porque roda como task agendada/dispatched, sem quem leia SendMessage " +
+  "(#7303, #7546): `session-registry.ts self-authorize-merge --reason \"...\" [--pr N]` é o escape hatch — " +
+  "recusa sozinho se houver alguma coordenadora ALCANÇÁVEL ativa (nesse caso, peça a janela dela " +
+  "normalmente); depois dele, o passo de merge-lock-acquire acima continua obrigatório do mesmo jeito.";
 
 /**
  * Complemento ao `BLOCK_REASON` explicando POR QUE uma concessão de merge
@@ -1127,14 +1162,17 @@ if (
       // teve" ou "teve e consumiu antes de mergear".
       const consumedGrant = grant === null ? readConsumedGrantFor(repoRoot, payload.session_id) : null;
       // #7303: auto-autorização só conta se, AGORA (não no instante em que
-      // foi gravada), a composição de coordenadoras ativas ainda for só
-      // `continuo` — defesa em profundidade contra uma `overnight`/`develop`
-      // ter entrado no ar depois da auto-autorização e antes deste merge.
+      // foi gravada), TODA coordenadora ativa continuar INALCANÇÁVEL
+      // (#7546 — antes era "só `continuo`", ver
+      // `onlyUnreachableCoordinatorsActive`) — defesa em profundidade contra
+      // uma coordenadora que CONVERSA ter entrado no ar depois da
+      // auto-autorização e antes deste merge.
       // `!scan.degraded` é exigido explicitamente aqui (achado do fleet
       // review da PR #7353): sem isto, uma varredura DEGRADADA (uma entrada
       // `overnight`/`develop` que falhou ao ler/parsear, ver `readActiveCoordinatorScan`)
       // podia deixar `scan.kinds` só com `continuo` por SUBCONTAGEM, e
-      // `onlyContinuoCoordinatorsActive` concluía "só continuo" por engano.
+      // `onlyUnreachableCoordinatorsActive` concluía "todas inalcançáveis"
+      // por engano.
       // Downstream, `classifyMergeBlockCause` já bloqueia de qualquer forma
       // via `ctx.scanDegraded` (linha "if (ctx.scanDegraded === true) return
       // 'scan-degraded';", que roda incondicionalmente e não depende deste
@@ -1146,7 +1184,7 @@ if (
       // não só confiando no check posterior.
       const selfAuth = readLiveSelfAuthorizationFor(repoRoot, payload.session_id);
       const selfAuthStillValid =
-        selfAuth !== null && !scan.degraded && onlyContinuoCoordinatorsActive(scan.kinds);
+        selfAuth !== null && !scan.degraded && onlyUnreachableCoordinatorsActive(scan);
       const ctx = {
         // #6296: os dois sinais que o guard passou a compor — a janela
         // concedida por uma coordenadora, e quem segura o merge lock agora.
