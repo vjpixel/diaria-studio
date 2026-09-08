@@ -128,6 +128,52 @@ export function checkApoiadoresAudienceNotEmpty(tagName: string, memberCount: nu
   return { ok: true };
 }
 
+// ── audiência resolvida (tipo nominal, #7651) ─────────────────────────────
+
+declare const resolvedAudienceBrand: unique symbol;
+
+/**
+ * Prova, no tipo, de que a audiência passou pelos TRÊS guards acima — nome de
+ * tag configurado, id resolvido e válido, e tag com pelo menos 1 membro
+ * (#7651, achado do type-design-analyzer no review do #7633).
+ *
+ * Antes disto, `buildApoiadoresKitBroadcastInput` recebia um `tagId: number`
+ * cru: estruturalmente idêntico a um id NÃO validado. O fato "esta audiência
+ * foi conferida" vivia só na ORDEM das chamadas dentro do `main()`, e um
+ * refactor que montasse o payload antes dos guards — ou um teste novo que
+ * pulasse a etapa — compilava sem reclamar. Num canal cujo modo de falha é
+ * mandar conteúdo pago pra base inteira, precondição por convenção é pouco.
+ *
+ * Só `resolveApoiadoresAudience` constrói este tipo, e ela exige os
+ * resultados dos três guards.
+ */
+export interface ResolvedAudienceTag {
+  readonly tagId: number;
+  readonly tagName: string;
+  readonly [resolvedAudienceBrand]: true;
+}
+
+/**
+ * Fecha o encadeamento dos três guards num único valor que o construtor do
+ * payload aceita. Devolve `null` se qualquer um deles reprovou — o caller já
+ * reportou o motivo específico e não deve seguir.
+ *
+ * Recebe os RESULTADOS (não faz I/O nem revalida): manter a checagem e a
+ * prova em funções separadas é o que permite ao caller logar a razão exata de
+ * cada falha, que é o que o operador lê pra saber o que corrigir.
+ */
+export function resolveApoiadoresAudience(
+  tagNameResolution: ApoiadoresTagNameResolution,
+  tagIdResolution: ApoiadoresTagIdResolution,
+  audienceCheck: ApoiadoresAudienceCheck,
+): ResolvedAudienceTag | null {
+  if (!tagNameResolution.ok || !tagIdResolution.ok || !audienceCheck.ok) return null;
+  return {
+    tagId: tagIdResolution.tagId,
+    tagName: tagNameResolution.tagName,
+  } as ResolvedAudienceTag;
+}
+
 // ── diff de membresia (puro) ──────────────────────────────────────────────
 
 export interface ApoiadoresTagDiff {

@@ -98,7 +98,39 @@ export const KIT_TEST_SEND_TAG_NAME = "diaria-test-email";
  * "todo mundo" é `subscriber_filter: []`, ver `buildAllSubscribersFilter`.
  */
 export type KitFilterCondition = { type: "tag"; ids: number[] };
-export type KitSubscriberFilter = { all: KitFilterCondition[] }[];
+export type KitFilterGroup = { all: KitFilterCondition[] };
+
+/**
+ * Filtro que RESTRINGE a audiência — tupla NÃO-VAZIA de propósito (#7651).
+ *
+ * `[]` deixou de ser atribuível aqui, e isso é o ponto: no Kit, um
+ * `subscriber_filter` vazio significa **a base INTEIRA** (#6126), não
+ * audiência nenhuma. Enquanto o tipo era `KitFilterGroup[]`, "restringir a uma
+ * tag" e "mandar pra todo mundo" tinham exatamente a mesma forma, e a segunda
+ * era alcançável por acidente — bastava um array que veio vazio de um `.map()`
+ * ou de um filtro que não casou nada.
+ *
+ * Quem quer mesmo mandar pra base inteira usa `buildAllSubscribersFilter()`,
+ * cujo retorno é um tipo PRÓPRIO (`AllSubscribersFilter`) que não se escreve
+ * inline. A distinção só existe no compilador: na serialização os dois viram
+ * o mesmo JSON que a API espera.
+ */
+export type KitSubscriberFilter = [KitFilterGroup, ...KitFilterGroup[]];
+
+declare const allSubscribersBrand: unique symbol;
+
+/**
+ * Retorno de `buildAllSubscribersFilter()` — o array vazio que a API do Kit
+ * lê como "todo mundo", nominalmente distinto de um `[]` escrito à mão
+ * (#7651). Não é construtível fora daquele builder, então "mandar pra base
+ * inteira" passa a ser sempre uma frase explícita e grepável no diff, nunca
+ * o resultado silencioso de uma lista que esvaziou.
+ */
+export type AllSubscribersFilter = KitFilterGroup[] & { readonly [allSubscribersBrand]: true };
+
+/** O que `createBroadcast` aceita: ou um filtro que restringe, ou a sentinela
+ *  explícita de base inteira. Não há terceira opção — e não há omissão. */
+export type KitAudienceFilter = KitSubscriberFilter | AllSubscribersFilter;
 
 export interface CreateBroadcastInput {
   subject: string;
@@ -113,7 +145,18 @@ export interface CreateBroadcastInput {
   thumbnail_alt?: string | null;
   email_template_id?: number;
   email_address?: string;
-  subscriber_filter?: KitSubscriberFilter;
+  /**
+   * OBRIGATÓRIO desde o #7651 — era opcional, e omiti-lo mandava pra base
+   * INTEIRA (#6126). O campo de maior blast radius do módulo era o único que
+   * dava pra esquecer; agora "esqueci" não compila, e "quero todo mundo"
+   * precisa ser dito com `buildAllSubscribersFilter()`.
+   *
+   * Três guard chains independentes (diária #6126/#6582, anual, apoiadores
+   * #7633) foram escritas pra compensar essa opcionalidade no call site. Elas
+   * seguem valendo — validam a audiência ANTES de montar o payload e relêem
+   * DEPOIS de criar; este tipo só fecha a porta que ficava aberta antes delas.
+   */
+  subscriber_filter: KitAudienceFilter;
 }
 
 export async function createBroadcast(
@@ -348,9 +391,16 @@ export async function findTagIdByName(name: string, config?: KitConfig): Promise
  *  (developers.kit.com/api-reference/broadcasts/create-a-broadcast): "If
  *  nothing is provided, will default to all of your subscribers" — e o
  *  próprio #6126 já documentava esse entendimento em `kit-diaria-channel.ts`,
- *  só o builder aqui divergia. */
-export function buildAllSubscribersFilter(): KitSubscriberFilter {
-  return [];
+ *  só o builder aqui divergia.
+ *
+ *  #7651: o retorno virou `AllSubscribersFilter` — mesmo `[]` na
+ *  serialização, tipo próprio no compilador. Chamar esta função é a ÚNICA
+ *  forma de dizer "base inteira" no repo, e por isso a frase aparece no diff
+ *  em vez de emergir de um array que esvaziou. */
+export function buildAllSubscribersFilter(): AllSubscribersFilter {
+  // O cast é o ÚNICO ponto do repo que produz a sentinela — é ele que torna
+  // "base inteira" inexprimível por acidente em qualquer outro lugar (#7651).
+  return [] as unknown as AllSubscribersFilter;
 }
 
 /**
