@@ -572,4 +572,82 @@ describe("CLI write-hermes-config.ts", () => {
       assert.equal(r2.status, 2);
     });
   });
+
+  describe("guard de promoção do modelo local (#7568)", () => {
+    const FABRICATION_ENV = "CONTINUO_MODEL_PROMOTION_FABRICATION_CMD";
+    // Comandos-stub que devolvem JSON fixo sem chamar python3/gh reais —
+    // mesmo racional de exec injetável do módulo puro, só que aqui via
+    // env var (o CLI real só sabe rodar um comando de shell).
+    const STUB_FABRICATION_SUSPECTED = `node -e "console.log(JSON.stringify({status:'fabrication_suspected'}))"`;
+    const STUB_OK = `node -e "console.log(JSON.stringify({status:'ok'}))"`;
+
+    function runCliWithFabricationStub(args: string[], stubCmd: string) {
+      return spawnSync(process.execPath, ["--import", "tsx", script, ...args], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: { ...process.env, [FABRICATION_ENV]: stubCmd },
+      });
+    }
+
+    it("promoção pro modelo local + alarme ATIVO -> BLOQUEADO, exit 1, arquivo não tocado", () => {
+      withTmpDataDir((dir) => {
+        const target = join(dir, "config.yaml");
+        writeFileSync(target, "model:\n  default: gpt-5.6-luna\n");
+        const contentFile = join(dir, "novo.yaml");
+        writeFileSync(contentFile, "model:\n  default: custom/qwen-64k:latest\n");
+        const r = runCliWithFabricationStub(
+          ["--path", target, "--content-file", contentFile, "--reason", "promover modelo local"],
+          STUB_FABRICATION_SUSPECTED,
+        );
+        assert.equal(r.status, 1, r.stderr);
+        assert.match(r.stderr, /BLOQUEADO/);
+        assert.equal(readFileSync(target, "utf8"), "model:\n  default: gpt-5.6-luna\n", "config não deveria ter sido tocado");
+      });
+    });
+
+    it("promoção pro modelo local + alarme ok -> escreve normalmente", () => {
+      withTmpDataDir((dir) => {
+        const target = join(dir, "config.yaml");
+        writeFileSync(target, "model:\n  default: gpt-5.6-luna\n");
+        const contentFile = join(dir, "novo.yaml");
+        writeFileSync(contentFile, "model:\n  default: custom/qwen-64k:latest\n");
+        const r = runCliWithFabricationStub(
+          ["--path", target, "--content-file", contentFile, "--reason", "promover modelo local"],
+          STUB_OK,
+        );
+        assert.equal(r.status, 0, r.stderr);
+        assert.equal(readFileSync(target, "utf8"), "model:\n  default: custom/qwen-64k:latest\n");
+      });
+    });
+
+    it("--force-model-promotion sobrepõe o bloqueio mesmo com alarme ATIVO", () => {
+      withTmpDataDir((dir) => {
+        const target = join(dir, "config.yaml");
+        writeFileSync(target, "model:\n  default: gpt-5.6-luna\n");
+        const contentFile = join(dir, "novo.yaml");
+        writeFileSync(contentFile, "model:\n  default: custom/qwen-64k:latest\n");
+        const r = runCliWithFabricationStub(
+          ["--path", target, "--content-file", contentFile, "--reason", "override deliberado", "--force-model-promotion"],
+          STUB_FABRICATION_SUSPECTED,
+        );
+        assert.equal(r.status, 0, r.stderr);
+        assert.equal(readFileSync(target, "utf8"), "model:\n  default: custom/qwen-64k:latest\n");
+      });
+    });
+
+    it("escrita de config.yaml que NÃO mexe em model.default passa direto (alarme ativo é irrelevante)", () => {
+      withTmpDataDir((dir) => {
+        const target = join(dir, "config.yaml");
+        writeFileSync(target, "model:\n  default: gpt-5.6-luna\n  max_tokens: 8192\n");
+        const contentFile = join(dir, "novo.yaml");
+        writeFileSync(contentFile, "model:\n  default: gpt-5.6-luna\n  max_tokens: 16384\n");
+        const r = runCliWithFabricationStub(
+          ["--path", target, "--content-file", contentFile, "--reason", "so trocar max_tokens"],
+          STUB_FABRICATION_SUSPECTED,
+        );
+        assert.equal(r.status, 0, r.stderr);
+        assert.equal(readFileSync(target, "utf8"), "model:\n  default: gpt-5.6-luna\n  max_tokens: 16384\n");
+      });
+    });
+  });
 });

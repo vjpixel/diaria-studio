@@ -50,6 +50,26 @@
  * Omitir os dois ainda produz backup + escrita — é o mínimo do verbo, nunca
  * um erro (nem toda mudança tem probe automatizado disponível).
  *
+ * ## Guard de promoção do modelo local (#7568)
+ *
+ * Quando `path` resolve pra um arquivo `config.yaml`, o passo 3 acima
+ * ganha uma checagem extra ANTES de escrever: se o novo conteúdo muda
+ * `model.default` pro modelo LOCAL do contínuo (padrão `qwen`/`custom/`/
+ * `ollama/` — ver `scripts/lib/continuo-model-promotion-guard.ts`) e a
+ * checagem de fabricação de conclusão (`hermes/scripts/detect-tick-claim-
+ * fabrication.py`, #7537) reporta `status=fabrication_suspected`, a
+ * escrita é RECUSADA (exit 1, nada é tocado) — converte em mecanismo a
+ * recomendação que antes só existia em prosa em `docs/goal-modelo-local-
+ * continuo.md`. Escritas de `config.yaml` que não mexem em `model.default`
+ * passam direto; o comando de checagem é `python3 .../detect-tick-claim-
+ * fabrication.py --json` por default, sobrescrevível via
+ * `CONTINUO_MODEL_PROMOTION_FABRICATION_CMD` (usado pelos testes pra
+ * injetar um stub, sem chamar `gh`/`python3` reais). `--force-model-
+ * promotion` sobrepõe o guard pra quando o operador já investigou o
+ * alarme e decide seguir mesmo assim — sempre acompanhado de `--reason`
+ * (já obrigatório no modo escrita), que fica registrado no sidecar de
+ * backup.
+ *
  * ## Modo revert
  *
  *   npx tsx scripts/write-hermes-config.ts --revert --path ~/.hermes/config.yaml \
@@ -69,6 +89,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { hasFlag, isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { evaluateModelPromotionGuard } from "./lib/continuo-model-promotion-guard.ts";
 import { defaultWorkdirRoots, isPathAllowed } from "./lib/continuo-workdir-allowlist.ts";
 import {
   buildBackupFileName,
@@ -201,7 +222,7 @@ function main(): void {
   const { values } = parseArgs(argv);
   const rawPath = values.path;
   if (!rawPath) {
-    console.error(`${LOG_PREFIX} uso: --path <caminho> [--revert [--backup nome] | --content-file <arquivo> --reason <motivo> [--validate-cmd ...] [--smoke-cmd ...] [--echo-to <destino>] [--sensitive-keys a,b,c]]`);
+    console.error(`${LOG_PREFIX} uso: --path <caminho> [--revert [--backup nome] | --content-file <arquivo> --reason <motivo> [--validate-cmd ...] [--smoke-cmd ...] [--echo-to <destino>] [--sensitive-keys a,b,c] [--force-model-promotion]]`);
     process.exit(2);
   }
   const path = resolveInputPath(rawPath);
@@ -238,10 +259,36 @@ function main(): void {
   const base = basename(path);
   safeMkdirSync(dir, "destino");
 
-  let backupPath: string | undefined;
   let originalContent: string | undefined;
   if (existsSync(path)) {
-    originalContent = safeReadFileSync(path, "conteúdo atual (pré-backup)");
+    originalContent = safeReadFileSync(path, "conteúdo atual (pré-checagem/backup)");
+  }
+
+  // Guard de promoção do modelo local (#7568): só se aplica a `config.yaml`
+  // e só RODA a checagem de fabricação quando `detectsModelPromotionToLocal`
+  // já confirma que esta escrita muda `model.default` pro modelo local —
+  // ver `scripts/lib/continuo-model-promotion-guard.ts` pro racional
+  // completo (por que fail-open em indeterminate/error, escopo do guard).
+  if (base === "config.yaml" && !hasFlag(argv, "force-model-promotion")) {
+    const fabricationCmd =
+      process.env.CONTINUO_MODEL_PROMOTION_FABRICATION_CMD ??
+      `python3 ${resolve(DIARIA_STUDIO_ROOT, "hermes/scripts/detect-tick-claim-fabrication.py")} --json`;
+    const verdict = evaluateModelPromotionGuard(originalContent, newContent, fabricationCmd);
+    if (!verdict.allowed) {
+      console.error(`${LOG_PREFIX} BLOQUEADO — ${verdict.reason}`);
+      console.error(
+        `${LOG_PREFIX} use --force-model-promotion (documentando o motivo em --reason) pra sobrepor, ` +
+          `só depois de investigar o alarme (docs/goal-modelo-local-continuo.md).`,
+      );
+      process.exit(1);
+    }
+    if (verdict.detection.isPromotion) {
+      console.log(`${LOG_PREFIX} guard de promoção do modelo local: ${verdict.reason}`);
+    }
+  }
+
+  let backupPath: string | undefined;
+  if (originalContent !== undefined) {
     const backupName = buildBackupFileName(base, reason, formatBackupTimestamp(new Date()));
     backupPath = resolve(dir, backupName.fileName);
     safeWriteFileSync(backupPath, originalContent, "backup");
