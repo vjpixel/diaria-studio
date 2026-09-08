@@ -576,13 +576,17 @@ describe("#7630 Instagram carrossel: poll de status_code elimina a race conditio
       channel: "instagram",
     };
 
-    const outcome = await fireQueueEntry(entry, {
-      webhookUrl: "https://make.test/diaria",
-      instagram: { igUserId: "acc", accessToken: "tok", apiVersion: "v25.0" },
-    });
-    assert.equal(outcome.status, "dlq");
-    assert.match((outcome as { reason: string }).reason, /status_code=ERROR/);
-    assert.equal(pollCalls, 1, "ERROR é sinal definitivo — não deve consumir as 10 tentativas de poll");
+    try {
+      const outcome = await fireQueueEntry(entry, {
+        webhookUrl: "https://make.test/diaria",
+        instagram: { igUserId: "acc", accessToken: "tok", apiVersion: "v25.0" },
+      });
+      assert.equal(outcome.status, "dlq");
+      assert.match((outcome as { reason: string }).reason, /status_code=ERROR/);
+      assert.equal(pollCalls, 1, "ERROR é sinal definitivo — não deve consumir as 10 tentativas de poll");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 
