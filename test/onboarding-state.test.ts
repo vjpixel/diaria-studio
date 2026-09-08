@@ -26,6 +26,10 @@ import {
   ageDays,
   email3Eligibility,
   buildRunPlan,
+  shouldResetCursorForBackendSwitch,
+  updateZeroDetectionStreak,
+  zeroDetectionAlarm,
+  ZERO_DETECTION_ALARM_THRESHOLD_RUNS,
   PENDING_BODY_MARKER,
   type OnboardingSnippet,
 } from "../scripts/lib/onboarding-state.ts";
@@ -301,5 +305,41 @@ describe("buildRunPlan — cenário-carro de segurança (#5908)", () => {
     const entries = [entry({ subscription_id: "qualquer" })];
     const r = buildRunPlan({ entries, statsById: {}, ...PLAN_DEFAULTS, snippets: planSnippets(false) });
     assert.ok(r.actions.length >= 1);
+  });
+});
+
+// ─── shouldResetCursorForBackendSwitch (#7599) ──────────────────────────────
+
+describe("shouldResetCursorForBackendSwitch (#7599)", () => {
+  it("backends conhecidos e iguais → false (nada muda)", () => {
+    assert.equal(shouldResetCursorForBackendSwitch("kit", "kit"), false);
+    assert.equal(shouldResetCursorForBackendSwitch("beehiiv", "beehiiv"), false);
+  });
+
+  it("backends conhecidos e diferentes → true", () => {
+    assert.equal(shouldResetCursorForBackendSwitch("beehiiv", "kit"), true);
+    assert.equal(shouldResetCursorForBackendSwitch("kit", "beehiiv"), true);
+  });
+
+  it("backend armazenado ausente (null/undefined) → true — NUNCA reusa cursor de procedência desconhecida (achado do self-review: é o estado real do store de produção hoje)", () => {
+    assert.equal(shouldResetCursorForBackendSwitch(null, "kit"), true);
+    assert.equal(shouldResetCursorForBackendSwitch(undefined, "kit"), true);
+    assert.equal(shouldResetCursorForBackendSwitch(null, "beehiiv"), true);
+  });
+});
+
+// ─── updateZeroDetectionStreak / zeroDetectionAlarm (#7599) ─────────────────
+
+describe("updateZeroDetectionStreak / zeroDetectionAlarm (#7599)", () => {
+  it("detecção > 0 zera o streak; detecção 0 incrementa", () => {
+    assert.equal(updateZeroDetectionStreak(5, 1), 0);
+    assert.equal(updateZeroDetectionStreak(0, 0), 1);
+    assert.equal(updateZeroDetectionStreak(2, 0), 3);
+  });
+
+  it("alarme só dispara ao cruzar o limiar, nunca antes", () => {
+    assert.equal(zeroDetectionAlarm(ZERO_DETECTION_ALARM_THRESHOLD_RUNS - 1), null);
+    assert.match(zeroDetectionAlarm(ZERO_DETECTION_ALARM_THRESHOLD_RUNS) ?? "", /ALARME/);
+    assert.match(zeroDetectionAlarm(ZERO_DETECTION_ALARM_THRESHOLD_RUNS + 10) ?? "", /ALARME/);
   });
 });

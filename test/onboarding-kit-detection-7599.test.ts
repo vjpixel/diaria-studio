@@ -233,6 +233,58 @@ describe("onboarding-welcome-run.ts — detecção via Kit (#7599)", () => {
     }
   });
 
+  it("(b2) store LEGADO (last_detection_backend ausente — estado real do store de produção) TAMBÉM re-bootstrapa, nunca reusa o cursor às cegas", async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const subscribers: MockKitSubscriber[] = [
+      // Simula um assinante MIGRADO em bloco: created_at é o momento da
+      // migração (recente), não a data real de cadastro — exatamente o
+      // cenário que faria este item "parecer novo" se o cursor legado
+      // fosse reusado sem re-bootstrap.
+      { id: 301, email_address: "migrado@example.com", state: "active", created_at: new Date((nowSec - 100) * 1000).toISOString() },
+    ];
+    const { server, url, hitPaths } = await startMockKit(subscribers);
+    const dir = mkdtempSync(resolve(tmpdir(), "diaria-onboarding-7599-legacy-"));
+    try {
+      const configPath = resolve(dir, "platform.config.json");
+      const storePath = resolve(dir, "store.json");
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          onboarding: { enabled: true, store_path: storePath, sender_email: "oi@example.com" },
+          publishing: { newsletter: { subscriber_backend: "kit" } },
+        }),
+      );
+      // Store LEGADO: sem o campo `last_detection_backend` — o estado real
+      // de qualquer store que rodou antes deste PR existir.
+      writeFileSync(
+        storePath,
+        JSON.stringify({
+          version: 1,
+          last_detection_cursor: nowSec - 999_999_999,
+          d10_brevo_list_id: null,
+          entries: {},
+        }),
+      );
+
+      const r = await spawnScriptAsync(["--config", configPath, "--store", storePath, "--send"], baseEnv(url));
+
+      assert.equal(r.status, 0, `esperado exit 0 — stderr: ${r.stderr}`);
+      const summary = JSON.parse(r.stdout) as { detected_new: number; notes: string[] };
+      assert.equal(summary.detected_new, 0, "re-bootstrap por campo ausente não deve detectar nada nesta rodada");
+      assert.ok(
+        summary.notes.some((n) => n.includes("troca de backend")),
+        `esperada nota de re-bootstrap mesmo com campo ausente (backend desconhecido tratado como troca): ${JSON.stringify(summary.notes)}`,
+      );
+      assert.equal(hitPaths().length, 0, "re-bootstrap por campo ausente não deveria chamar o Kit");
+
+      const written = JSON.parse(readFileSync(storePath, "utf8")) as { last_detection_backend: string };
+      assert.equal(written.last_detection_backend, "kit");
+    } finally {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("(c) N rodadas --send seguidas com detected_new=0 emitem alarme de detecção zerada", async () => {
     const { server, url } = await startMockKit([]); // nunca há assinante novo
     const dir = mkdtempSync(resolve(tmpdir(), "diaria-onboarding-7599-alarm-"));

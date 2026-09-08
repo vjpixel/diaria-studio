@@ -350,18 +350,29 @@ export function buildRunPlan(opts: {
 // ---------------------------------------------------------------------------
 
 /**
- * `true` quando o cursor persistido foi calculado sob um backend DIFERENTE
- * do backend atual — Beehiiv usa `created` (epoch segundos da API pública
- * v2), Kit usa `created_at` (ISO, convertido) — os dois números não são
- * garantidamente comparáveis no mesmo relógio/base, e reusar o cursor
+ * `true` quando o cursor persistido NÃO tem procedência CONHECIDA e SEGURA
+ * contra o backend atual — Beehiiv usa `created` (epoch segundos da API
+ * pública v2), Kit usa `created_at` (ISO, convertido) — e reusar o cursor
  * antigo sob a fonte nova é exatamente a classe de erro silencioso que
  * causou o #6043 (585 e-mails retroativos por um filtro que não fazia o
- * que parecia fazer).
+ * que parecia fazer). A #7599 é justamente essa migração acontecendo de
+ * novo (Beehiiv → Kit em 04/09/2026, #7388) — inclusive com o mesmo risco
+ * concreto de assinantes MIGRADOS em bloco carregarem `created_at` do
+ * MOMENTO DA IMPORTAÇÃO em vez da data real de cadastro (mesma armadilha
+ * documentada em CLAUDE.md pra `displayed_date`/`publish_date` da Beehiiv).
  *
- * `storedBackend == null` (store criado antes deste campo existir, ou
- * ainda no bootstrap — `last_detection_cursor == null`) NUNCA conta como
- * troca — é tratado pelo bootstrap normal (`main()`), não por este guard.
- * Só dispara quando os dois backends são conhecidos e DIFEREM.
+ * `storedBackend == null` — store criado ANTES deste campo existir — é
+ * exatamente o estado do store de PRODUÇÃO real na hora em que este guard
+ * foi escrito (rodava há semanas sob Beehiiv sem nunca ter gravado
+ * `last_detection_backend`). Tratar isso como "não é uma troca" (ausência
+ * de sinal ≠ ausência de risco) deixaria o 1º `--send` pós-merge deste PR
+ * comparar o cursor Beehiiv-era direto contra `created_at` do Kit sem
+ * NENHUM re-bootstrap — reabrindo o #6043 pela porta dos fundos. Por isso
+ * `null`/`undefined` conta como DESCONHECIDO, não como "mesmo backend": só
+ * `storedBackend === currentBackend` (ambos conhecidos e iguais) evita o
+ * reset. O custo de um falso positivo (bootstrap desnecessário quando o
+ * backend nunca mudou de fato, só o campo nunca foi gravado) é 1 rodada
+ * sem detectar ninguém — o de um falso negativo é reenvio em massa.
  *
  * @pure testável sem I/O
  */
@@ -369,7 +380,7 @@ export function shouldResetCursorForBackendSwitch(
   storedBackend: "beehiiv" | "kit" | null | undefined,
   currentBackend: "beehiiv" | "kit",
 ): boolean {
-  return storedBackend != null && storedBackend !== currentBackend;
+  return storedBackend !== currentBackend;
 }
 
 // ---------------------------------------------------------------------------
