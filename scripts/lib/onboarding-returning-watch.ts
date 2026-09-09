@@ -81,6 +81,20 @@ export type WatchDecision =
    * sobrescreveria histórico. Marca como resolvido para parar de observar.
    */
   | { kind: "ja-no-store"; email: string; detalhe: string }
+  /**
+   * O Kit devolveu `created_at` que não parseia. NÃO semeia.
+   *
+   * Parece pedantismo e não é: `created_at` da entrada é derivado por
+   * `Date.parse`, e `NaN` **atravessa os guards do pipeline**. Em
+   * `onboarding-state.ts` as checagens são `created_at == null` /
+   * `!= null`, e `NaN != null` é `true` — então a entrada passa por elas,
+   * mas toda comparação seguinte (`nowSec >= created_at + D*86400`) é
+   * `false` para sempre. Resultado: a pessoa fica com o e-mail 1 marcado
+   * (certo) e os e-mails 2 e 3 nunca disparam (errado), sem log, sem skip,
+   * indistinguível de "a data ainda não chegou". Achado do review da PR
+   * #7698.
+   */
+  | { kind: "data-invalida"; email: string; created_at: string }
   /** Recadastrou e está limpo: semear com o e-mail 1 já marcado. */
   | {
       kind: "semear";
@@ -113,6 +127,9 @@ export function decideWatchEntry(
       email: entry.email,
       detalhe: storeHasEmail ? "já existe entrada com este e-mail" : `já existe entrada com o id ${kit.id}`,
     };
+  }
+  if (!Number.isFinite(Date.parse(kit.created_at))) {
+    return { kind: "data-invalida", email: entry.email, created_at: kit.created_at };
   }
   return {
     kind: "semear",
@@ -179,6 +196,8 @@ export function renderWatchDecision(d: WatchDecision): string {
       return `  ignorado   · ${d.email} — existe no Kit mas state=${d.state}, continua em observação`;
     case "ja-no-store":
       return `  resolvido  · ${d.email} — ${d.detalhe}; nada a semear`;
+    case "data-invalida":
+      return `  ERRO       · ${d.email} — created_at do Kit não parseia (${JSON.stringify(d.created_at)}); NÃO semeado, segue em observação`;
     case "semear":
       return `  SEMEAR     · ${d.email} · kit=${d.kitId} · e-mail 1 marcado como enviado em ${d.seedEmail1SentAt}`;
   }

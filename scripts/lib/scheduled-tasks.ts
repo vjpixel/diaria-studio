@@ -1587,6 +1587,18 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       "watcher de recadastro: quem ja foi assinante e volta nao pode receber o e-mail 1 de boas-vindas de novo",
     steps: [{ key: "watch", script: "scripts/onboarding-watch-returning.ts", args: ["--send"] }],
     logPath: "onboarding/.watch-returning.log",
+    // Mesmo guard da task-irmã `Diaria-Onboarding-Welcome-Run`, que escreve o
+    // MESMO arquivo (#5956): sem ele, uma junction `data/` caída no `helios`
+    // faria `readStore` devolver store vazio e o write seguinte apagaria o
+    // histórico de onboarding de todos os assinantes. O script também checa
+    // `corrupted` por conta própria — os dois são cinto e suspensório, porque
+    // este watcher roda de hora em hora (mais exposição que a rodada diária).
+    guard: {
+      requiredFile: "onboarding/store.json",
+      abortMessage:
+        "store.json nao encontrado (data/onboarding/store.json) -- provavel junction data/ nao montada; " +
+        "abortando por seguranca, NAO semeando nem gravando.",
+    },
     // De hora em hora, no minuto :00. A rodada de onboarding é 09:05, então a
     // execução das 09:00 cobre quem se cadastrou durante a noite ou a manhã —
     // 5 minutos de folga. FRESTA CONHECIDA: quem se cadastrar ENTRE 09:00 e

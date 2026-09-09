@@ -77,13 +77,27 @@ function parseArgs(argv: string[]): Args {
   return a;
 }
 
+/**
+ * Arquivo AUSENTE é "ninguém em observação" — estado legítimo, exit 0.
+ *
+ * Arquivo PRESENTE mas ilegível é outra coisa: significa que existia uma
+ * lista e não sabemos mais quem estava nela. Tratar isso como lista vazia
+ * faria a task sair verde tendo perdido a observação inteira — a mesma
+ * classe de silêncio do #7599, em que o onboarding rodava, detectava 0 e
+ * saía exit 0 por semanas sem ninguém receber nada. Aqui aborta com exit 2,
+ * que é o que o alarme de units falhas do `helios` enxerga (achado do review
+ * da PR #7698).
+ */
 function readWatchlist(path: string): ReturningWatchlist {
   if (!existsSync(path)) return emptyWatchlist();
   try {
     return JSON.parse(readFileSync(path, "utf8")) as ReturningWatchlist;
-  } catch {
-    process.stderr.write(`[watch-returning] watchlist corrompida em ${path} — tratando como vazia\n`);
-    return emptyWatchlist();
+  } catch (err) {
+    process.stderr.write(
+      `[watch-returning] watchlist ILEGÍVEL em ${path}: ${err instanceof Error ? err.message : String(err)}\n` +
+        `[watch-returning] abortando — tratar como lista vazia esconderia quem estava sendo observado.\n`,
+    );
+    process.exit(2);
   }
 }
 
@@ -133,13 +147,35 @@ async function main(): Promise<void> {
   }
   const kitCfg = kitResult.config;
 
-  const { store } = readStore(storePath);
+  // `corrupted` NÃO pode ser descartado (achado P0 do review da PR #7698).
+  // `readStore` devolve `emptyStore()` quando o JSON não parseia — e este
+  // script GRAVA o store. Seguir com um store "vazio" e depois escrever
+  // apagaria o histórico de onboarding de TODO MUNDO (quem aguarda o e-mail
+  // 2 em D+3, quem aguarda a decisão do e-mail 3) num único `writeStore`,
+  // sem erro visível. O cenário é concreto neste projeto: junction `data/`
+  // do OneDrive momentaneamente caída no `helios` — foi exatamente por isso
+  // que a task-irmã `Diaria-Onboarding-Welcome-Run` ganhou
+  // `guard.requiredFile` no #5956.
+  const { store, corrupted } = readStore(storePath);
+  if (corrupted) {
+    process.stderr.write(
+      `[watch-returning] store ILEGÍVEL em ${storePath} — abortando SEM escrever.\n` +
+        `[watch-returning] prosseguir apagaria o histórico de onboarding de todos os assinantes rastreados.\n`,
+    );
+    process.exit(2);
+  }
   const emailsNoStore = new Set(Object.values(store.entries).map((e) => e.email.toLowerCase()));
   const idsNoStore = new Set(Object.keys(store.entries));
 
   console.log(`[watch-returning] ${pendentes.length} em observação${args.send ? "" : " (dry-run)"}:`);
   let mudouStore = false;
   let mudouLista = false;
+  /** #7698: quantas consultas ao Kit falharam. Sem isto, um apagão do Kit
+   *  fazia a task sair 0 — indistinguível de "consultei todo mundo e ninguém
+   *  recadastrou". O alarme de units falhas do `helios` só enxerga exit ≠ 0,
+   *  e é justamente durante o apagão que a rodada das 09:05 pode detectar o
+   *  recadastro primeiro e mandar o e-mail indevido. */
+  let falhasDeConsulta = 0;
   const nowIso = new Date().toISOString();
 
   for (const entry of pendentes) {
@@ -154,6 +190,7 @@ async function main(): Promise<void> {
       process.stderr.write(
         `[watch-returning] ERRO consultando ${entry.email}: ${err instanceof Error ? err.message : String(err)} — segue em observação\n`,
       );
+      falhasDeConsulta++;
       continue;
     }
 
@@ -168,6 +205,12 @@ async function main(): Promise<void> {
     if (d.kind === "ja-no-store") {
       list = markWatchResolved(list, d.email, nowIso, null);
       mudouLista = true;
+      continue;
+    }
+    if (d.kind === "data-invalida") {
+      // Não sai da observação: a data pode vir boa na próxima hora, e semear
+      // com `NaN` congelaria a pessoa antes dos e-mails 2 e 3 sem sinal.
+      process.exitCode = 1;
       continue;
     }
     if (d.kind !== "semear") continue;
@@ -195,11 +238,45 @@ async function main(): Promise<void> {
     mudouLista = true;
   }
 
+  if (falhasDeConsulta > 0) {
+    process.exitCode = 1;
+    process.stderr.write(
+      `[watch-returning] ${falhasDeConsulta} de ${pendentes.length} consulta(s) ao Kit falharam — ` +
+        `saindo com erro pra não passar por "rodei e ninguém recadastrou".\n`,
+    );
+  }
+
   if (!args.send) {
     console.log("[watch-returning] dry-run — nada escrito. Use --send.");
     return;
   }
-  if (mudouStore) writeStore(store, storePath);
+  if (mudouStore) {
+    // Relê o store IMEDIATAMENTE antes de gravar e reaplica só as entradas
+    // que este watcher criou.
+    //
+    // Motivo (achado do review da PR #7698): até agora
+    // `onboarding-welcome-run.ts` era o único escritor de
+    // `data/onboarding/store.json`. Esta task é o segundo, e `readStore` →
+    // modificar → `writeStore` não tem exclusão mútua entre processos. O
+    // agendamento nominal não colide (:00 de cada hora vs. 09:05), mas uma
+    // rodada atrasada por retry de rede pode se sobrepor — e aí quem grava
+    // por último apaga as entradas que o outro acabou de criar. Reler e
+    // reaplicar reduz a janela ao intervalo entre estas duas linhas, em vez
+    // do run inteiro. Não é lock: é minimizar o que se perde.
+    const { store: atual, corrupted: corrompeuAgora } = readStore(storePath);
+    if (corrompeuAgora) {
+      // Ficou ilegível ENTRE o início do run e agora. Mesmo raciocínio do
+      // guard lá em cima: escrever por cima destruiria o resto do store.
+      process.stderr.write(
+        `[watch-returning] store ficou ILEGÍVEL durante o run — abortando SEM escrever; a watchlist não avança.\n`,
+      );
+      process.exit(2);
+    }
+    for (const [chave, entrada] of Object.entries(store.entries)) {
+      if (entrada.seeded_by != null && atual.entries[chave] == null) atual.entries[chave] = entrada;
+    }
+    writeStore(atual, storePath);
+  }
   if (mudouLista) writeWatchlist(list, watchlistPath);
   if (!mudouStore && !mudouLista) console.log("[watch-returning] nenhuma mudança.");
 }
