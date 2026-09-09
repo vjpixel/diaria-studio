@@ -603,15 +603,18 @@ function isGitResetHard(tokens) {
 }
 
 /**
- * `git stash` mutante — bare (== `push`), `push`, `pop`, `apply`, `drop`,
- * `clear`. `list`/`show` são leitura pura, não casam de propósito.
+ * `git stash` mutante — bare (== `push`), `push`, `save` (sintaxe antiga,
+ * mesmo efeito de `push`), `pop`, `apply`, `drop`, `clear`. `list`/`show`
+ * são leitura pura, `create`/`store` não tocam a working tree (`create`
+ * só devolve um objeto de commit; `store` só grava uma ref já existente) —
+ * nenhum dos 4 casa, de propósito.
  */
 function isGitStashMutating(tokens) {
   if (tokens[0]?.toLowerCase() !== "git" || tokens[1]?.toLowerCase() !== "stash") return false;
   const sub = tokens[2]?.toLowerCase();
   if (sub === undefined) return true; // `git stash` bare == `git stash push`
   if (sub.startsWith("-")) return true; // ex: `git stash -u` (flag do push implícito)
-  return ["push", "pop", "apply", "drop", "clear"].includes(sub);
+  return ["push", "save", "pop", "apply", "drop", "clear"].includes(sub);
 }
 
 /**

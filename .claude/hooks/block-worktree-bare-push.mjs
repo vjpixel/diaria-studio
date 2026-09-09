@@ -100,18 +100,35 @@ function commandSegments(command) {
 const BRANCH_INDEPENDENT_FLAGS = new Set(["--tags", "--all", "--mirror"]);
 
 /**
+ * `true` quando o refspec (2º argumento não-flag de `git push`, ex:
+ * `<branch>` em `git push origin <branch>`) ainda depende de HEAD — `HEAD`
+ * puro, ou `HEAD:<algo>` (lado esquerdo do refspec é HEAD). Achado do
+ * self-review (#7767): `git push origin <branch>` só fecha a ambiguidade
+ * quando `<branch>` é um NOME de branch, não o símbolo `HEAD` — `git push
+ * origin HEAD` reintroduz exatamente o problema que este guard existe pra
+ * fechar (empurra o que HEAD apontar for no momento, não uma branch
+ * nomeada).
+ */
+function refspecDependsOnHead(refspec) {
+  const leftSide = refspec.split(":")[0];
+  return leftSide.toUpperCase() === "HEAD";
+}
+
+/**
  * `true` quando `tokens` é um segmento `git push` SEM remote+refspec
- * explícitos — bare (`git push`), só remote (`git push origin`), ou só
- * flags (`git push -u`). `git push origin <branch>` (≥2 argumentos
- * não-flag) sempre passa. `--tags`/`--all`/`--mirror` também passam
- * (não dependem de branch checked out).
+ * explícitos — bare (`git push`), só remote (`git push origin`), só flags
+ * (`git push -u`), ou refspec que ainda depende de HEAD (`git push origin
+ * HEAD`, ver `refspecDependsOnHead`). `git push origin <branch-nomeada>`
+ * (≥2 argumentos não-flag, refspec ≠ HEAD) sempre passa. `--tags`/`--all`/
+ * `--mirror` também passam (não dependem de branch checked out).
  */
 export function isBareGitPush(tokens) {
   if (tokens[0]?.toLowerCase() !== "git" || tokens[1]?.toLowerCase() !== "push") return false;
   const rest = tokens.slice(2);
   if (rest.some((t) => BRANCH_INDEPENDENT_FLAGS.has(t))) return false;
   const nonFlags = rest.filter((t) => !t.startsWith("-"));
-  return nonFlags.length < 2;
+  if (nonFlags.length < 2) return true;
+  return nonFlags.slice(1).some(refspecDependsOnHead);
 }
 
 /** `true` se `command` contém algum `git push` bare (ver `isBareGitPush`). */

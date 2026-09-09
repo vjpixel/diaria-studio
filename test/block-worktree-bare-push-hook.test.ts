@@ -50,6 +50,21 @@ describe("isBareGitPush (#7722)", () => {
     assert.equal(isBareGitPush(["git", "pull"]), false);
     assert.equal(isBareGitPush(["npm", "run", "push"]), false);
   });
+
+  it("(self-review #7767) 'git push origin HEAD' → true — refspec ainda depende de HEAD, mesma ambiguidade do bare", () => {
+    assert.equal(isBareGitPush(["git", "push", "origin", "HEAD"]), true);
+    assert.equal(isBareGitPush(["git", "push", "origin", "head"]), true); // case-insensitive
+  });
+
+  it("(self-review #7767) 'git push origin HEAD:<branch>' → true — lado esquerdo do refspec é HEAD", () => {
+    assert.equal(isBareGitPush(["git", "push", "origin", "HEAD:fix/123"]), true);
+  });
+
+  it("(self-review #7767) 'git push origin <branch>:HEAD' → false — HEAD só do lado DIREITO não é ambíguo", () => {
+    // Lado direito é o destino no remoto, não depende de qual branch está
+    // checked out localmente — a branch local (esquerda) já é explícita.
+    assert.equal(isBareGitPush(["git", "push", "origin", "fix/123:HEAD"]), false);
+  });
 });
 
 describe("commandHasBareGitPush (#7722)", () => {

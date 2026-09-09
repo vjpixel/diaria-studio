@@ -537,6 +537,15 @@ describe("detectDestructiveGitTarget (#7730)", () => {
     }
   });
 
+  it("(self-review #7767) 'git stash save <msg>' → wholeTree true — sintaxe antiga, mesmo efeito de 'push'", () => {
+    assert.deepEqual(detectDestructiveGitTarget("git stash save 'wip'"), { wholeTree: true, paths: [] });
+  });
+
+  it("(self-review #7767) 'git stash create'/'store' → NÃO casa (não tocam a working tree)", () => {
+    assert.equal(detectDestructiveGitTarget("git stash create"), null);
+    assert.equal(detectDestructiveGitTarget("git stash store abc123"), null);
+  });
+
   it("'git stash list'/'git stash show' → NÃO casa (leitura pura)", () => {
     assert.equal(detectDestructiveGitTarget("git stash list"), null);
     assert.equal(detectDestructiveGitTarget("git stash show -p"), null);
