@@ -667,13 +667,13 @@ export function everyActiveRoundLacksMergeAuthority(scan) {
  * registro `interactive`, e a leniência do #7702 não o alcança.
  *
  * **O alcance dessa garantia é o fluxo contínuo, não "subagente" em geral —
- * não generalizar (#7711).** Há um SEGUNDO caminho de dispatch, a ferramenta
+ * não generalizar (#7712).** Há um SEGUNDO caminho de dispatch, a ferramenta
  * `Agent` (in-process), cujo comportamento diverge: medido em 09/09/2026,
  * um subagente despachado por ela não ganha registro próprio, e há indício
  * de que as chamadas dele carregam o `session_id` da sessão-MÃE — nesse caso
  * ele apareceria a esta função como a mãe, com o registro dela emprestado.
  * O docblock do topo deste arquivo afirma o contrário ("rodam com
- * `session_id` PRÓPRIO"); a divergência está aberta na #7711 e é
+ * `session_id` PRÓPRIO"); a divergência está aberta na #7712 e é
  * PRÉ-EXISTENTE a esta função (se confirmada, atinge o discriminador do
  * #5716 inteiro, não só esta leniência).
  *
