@@ -38,5 +38,8 @@
   // scripts/google-ads-associate-token.ts (#5294) invoca `rundll32` (Windows,
   // System32) pra abrir a URL de consentimento OAuth sem passar por cmd.exe --
   // utilitário do SO, não uma dependência npm.
-  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32"]
+  // scripts/lib/session-registry.ts (#7687) invoca `tasklist` (Windows,
+  // System32) pra confirmar PID vivo quando `process.kill(pid, 0)` lança
+  // EPERM ambíguo no libuv/Windows -- utilitário do SO, não npm.
+  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist"]
 }
