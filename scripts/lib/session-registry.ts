@@ -2899,12 +2899,11 @@ export function claimIssueAutoRegistering(
  * registro vivo já reivindica o mesmo path, recusa.
  */
 function findActiveSessionFiles(root: string, kind: SessionKind): string[] {
-  // Linha de arquivo baseada nos paths que listActiveSessions usa
-  const dir = require("path").join(root, ".claude", "sessions", kind);
+  const dir = join(root, "data", "sessions", kind);
   try {
-    return (require("fs").readdirSync(dir, { withFileTypes: true }) || [])
+    return (readdirSync(dir, { withFileTypes: true }) || [])
       .filter((d: any) => d.isFile() && d.name.endsWith(".json"))
-      .map((d: any) => require("path").join(dir, d.name));
+      .map((d: any) => join(dir, d.name));
   } catch { return []; }
 }
 

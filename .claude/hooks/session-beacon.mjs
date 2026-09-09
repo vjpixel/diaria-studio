@@ -104,7 +104,7 @@
 // testes lá afirma isso.
 
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostname } from "node:os";
 

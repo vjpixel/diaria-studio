@@ -2,9 +2,9 @@
 /** Guard de commit (#7722 item 4, real — corrigindo #7806 stub que sempre retornava blocked:false).
  * Bloqueia `git commit` quando a branch do HEAD diverge da reivindicada pela sessão
  * no beacon / session-registry (outra sessão trocou branch do worktree). */
-const { execSync } = require("child_process");
-const fs = require("fs");
-const path = require("path");
+import { execSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 
 function getWorktreeHeadBranch() {
   try {
@@ -44,12 +44,27 @@ try {
 
 // Se o beacon mostra que o worktree tem branch diferente da sessão ativa: bloqueia
 try {
-  const { resolveWorktreeBranches } = require("./session-beacon.mjs");
-  const entries = resolveWorktreeBranches(process.cwd());
-  const wtEntry = entries.find(e => e.path === process.cwd() || e.path === ".");
-  if (wtEntry && wtEntry.branch && wtEntry.branch !== branchNow) {
-    console.error("[block-worktree-alien-commit] BLOQUEADO: branch do worktree (" + wtEntry.branch + ") diverge da reivindicada; outra sessão pode ter feito checkout.");
-    process.exit(1);
+  const beaconPath = path.join(process.cwd(), ".claude/hooks/session-beacon.mjs");
+  if (fs.existsSync(beaconPath)) {
+    // Beacon é código ESM; não importável por require. Lemos a worktree list via git diretamente.
+    const gitOut = execSync("git worktree list --porcelain", { encoding: "utf8", timeout: 1000 }).trim();
+    const lines = gitOut.split("\n");
+    let foundBranch = null;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith("worktree ")) {
+        const wtPath = lines[i].slice("worktree ".length).trim();
+        if (wtPath === process.cwd() || wtPath === ".") {
+          for (let j = i + 1; j < lines.length; j++) {
+            if (lines[j].startsWith("branch ")) { foundBranch = lines[j].slice("branch ".length).trim(); break; }
+            if (lines[j].startsWith("worktree ") || lines[j].startsWith("HEAD ")) break;
+          }
+        }
+      }
+    }
+    if (foundBranch && foundBranch !== branchNow && branchNow !== "HEAD" && foundBranch !== "HEAD") {
+      console.error("[block-worktree-alien-commit] BLOQUEADO: worktree branch (" + foundBranch + ") diverge da HEAD atual (" + branchNow + ")");
+      process.exit(1);
+    }
   }
 } catch {}
 
