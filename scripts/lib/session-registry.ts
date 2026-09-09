@@ -3656,19 +3656,77 @@ export const GC_ORPHAN_LIVENESS_MARGIN = 4;
  * (`process.kill(pid, 0)` nunca envia sinal de verdade, só testa
  * existência; funciona em POSIX e Windows). `ESRCH` (processo não existe)
  * → `false`; `EPERM` (existe, mas sem permissão de sinalizar) → `true`
- * (existe é o que importa aqui, não permissão); qualquer outro erro →
- * `false` por segurança de INTERPRETAÇÃO (nunca finge "vivo" sobre um erro
- * que não sabemos classificar) — mas ver `decideSessionGc`: um resultado
- * `false` por si só só remove o registro se TAMBÉM estiver na mesma máquina
- * E além de `SOFT_STALE_MS`, nunca por PID sozinho.
+ * em POSIX (existe é o que importa aqui, não permissão); qualquer outro
+ * erro → `false` por segurança de INTERPRETAÇÃO (nunca finge "vivo" sobre um
+ * erro que não sabemos classificar) — mas ver `decideSessionGc`: um
+ * resultado `false` por si só só remove o registro se TAMBÉM estiver na
+ * mesma máquina E além de `SOFT_STALE_MS`, nunca por PID sozinho.
+ *
+ * **Ressalva Windows (#7687):** o mapeamento acima é POSIX. No libuv/Windows,
+ * `process.kill(pid, 0)` pode lançar `EPERM` tanto pra um processo vivo sem
+ * permissão de sinalizar QUANTO pra um PID que simplesmente não existe —
+ * `EPERM` sozinho é ambíguo nesta plataforma, não prova existência (medido
+ * ao vivo: 2 registros de sessão com PID inexistente confirmados "vivos" por
+ * este código antes do fix). Por isso, em `win32`, um `EPERM` dispara uma
+ * segunda checagem real via `tasklist` (fonte de verdade do SO) em vez de
+ * assumir "vivo" — só confirma `true` se o PID de fato aparecer na listagem.
+ * Comportamento POSIX (`EPERM` → `true` direto) não muda.
+ *
+ * `runTasklist` é um seam injetável pra teste (mesmo padrão de `execImpl` em
+ * `openInBrowser`, `scripts/serve-preview.ts`) — default roda o `tasklist`
+ * real via `spawnSync`. Mockar o `spawnSync` do módulo `node:child_process`
+ * direto não funciona aqui: o binding importado no topo deste arquivo não
+ * observa mutação feita via `createRequire`/`mock.method` num teste noutro
+ * módulo (verificado ao vivo — chamada real ao `tasklist` continuava indo a
+ * despeito do mock), então a injeção de dependência é o caminho real.
  */
-export function defaultIsPidAlive(pid: number): boolean {
+export function defaultIsPidAlive(pid: number, runTasklist: TasklistRunner = runTasklistReal): boolean {
   try {
     process.kill(pid, 0);
     return true;
   } catch (e) {
-    return (e as NodeJS.ErrnoException)?.code === "EPERM";
+    const code = (e as NodeJS.ErrnoException)?.code;
+    if (code !== "EPERM") return false;
+    if (process.platform === "win32") return isPidAliveViaTasklist(pid, runTasklist);
+    return true;
   }
+}
+
+/** Resultado bruto de rodar `tasklist` pra um PID — `null` se o comando falhou em rodar. */
+export type TasklistResult = { status: number | null; stdout: string; stderr: string } | null;
+
+/** Seam injetável de `defaultIsPidAlive` pro Windows — ver docstring acima. */
+export type TasklistRunner = (pid: number) => TasklistResult;
+
+function runTasklistReal(pid: number): TasklistResult {
+  try {
+    const result = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH", "/FO", "CSV"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Confirmação real de PID vivo no Windows via `tasklist /FI "PID eq N"` —
+ * usado só quando `process.kill(pid, 0)` lança `EPERM`, que no libuv/Windows
+ * é ambíguo entre "existe, sem permissão" e "não existe" (#7687). Qualquer
+ * falha em rodar/parsear `tasklist` (comando ausente, saída inesperada)
+ * devolve `false` — mesma postura de segurança de interpretação do resto da
+ * função: nunca finge "vivo" sobre um sinal que não sabemos ler.
+ */
+function isPidAliveViaTasklist(pid: number, runTasklist: TasklistRunner): boolean {
+  const result = runTasklist(pid);
+  if (!result || result.status !== 0 || !result.stdout) return false;
+  const output = result.stdout.trim();
+  if (!output || /no tasks/i.test(output)) return false;
+  // Formato CSV do tasklist: "imagename","pid","sessionname",... — o PID
+  // aparece entre aspas como 2º campo; checar a string exata evita casar
+  // substring de outro PID (ex: 123 dentro de 1234).
+  return output.split(/\r?\n/).some((line) => line.split(",")[1]?.trim() === `"${pid}"`);
 }
 
 export interface SessionGcOptions {
