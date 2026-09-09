@@ -66,33 +66,59 @@ export function stripHeredocSpans(command) {
   return result;
 }
 
-// Prefixo que não muda QUAL comando roda: atribuição de variável inline
-// (`FOO=bar cmd`) e wrappers no-op (`sudo`, `env`, `exec`, `nice`, `command`,
-// `time`, `nohup`). Achado do review da PR #7774: ao ancorar a detecção do
-// wrapper em `^`, `sudo bash -c "npm ci"` e `FOO=bar bash -c "npm ci"` — que a
-// versão anterior pegava — passaram a escapar. Reconhecer esse prefixo devolve
-// a semântica correta ("está em POSIÇÃO DE COMANDO") sem voltar a casar
-// wrapper no meio de um texto citado.
-// O valor da atribuição pode vir citado e conter espaço
-// (`NODE_OPTIONS="--stack-size 4096" npm ci`), e o no-op pode levar flags
-// próprias (`sudo -u foo`, `env -i`) — as duas coisas achadas no review da
-// PR #7774. Flag com valor só nas que de fato pedem um (`-u`/`-g`/`-C`),
-// senão `env -i npm ci` engoliria o `npm` como se fosse argumento do `-i`.
-const COMMAND_PREFIX_RE =
-  /^(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)|(?:sudo|env|exec|nice|command|time|nohup)(?:\.exe)?(?:\s+(?:-[ugCG]\s+\S+|--(?:user|group|chdir)=\S+|-{1,2}[A-Za-z][A-Za-z-]*))*)\s+)*/i;
+// Reconhecimento por POSIÇÃO ESTRUTURAL, não por enumeração de prefixos.
+//
+// As rodadas anteriores do review da PR #7774 tentaram listar o que pode vir
+// ANTES do comando — atribuição inline (`FOO=bar`), no-op (`sudo`, `env`,
+// `exec`…), e depois as flags de cada um (`sudo -u foo`, `env -i`). Cada
+// rodada fechava os casos citados e o review devolvia outros: `sudo -p 'pw:'`,
+// `sudo -a`, `sudo -t 30`, `--preserve-env=LIST`. A lista de flags de `sudo` e
+// `env` é aberta demais para enumerar, e errar para o lado de "não bloqueia" é
+// o lado errado — o guard existe justamente para o caso em que alguém invocou
+// o npm de um jeito que ninguém previu.
+//
+// Então o critério deixou de ser "o que vem antes" e passou a ser: **está
+// fora de aspas?** Um `npm ci` em texto não citado é comando, venha lá qual
+// prefixo vier; um `npm ci` DENTRO de aspas é texto — que é exatamente o que
+// distingue `sudo -p 'pw:' npm ci` (bloqueia) de
+// `git commit -m "roda npm ci"` e `echo "use bash -c 'npm ci'"` (não
+// bloqueiam). O mesmo vale para o wrapper de shell.
+//
+// Limitação honesta, herdada de tratar aspas como texto — o NOME do programa
+// citado também vira texto, então escapam: `env -S 'npm ci'` (que executa o
+// conteúdo citado), `'bash' -c "npm ci"`, e um caminho citado com espaço
+// (`"C:/Program Files/nodejs/npm.cmd" ci`). É o mesmo trade-off do corpo de
+// heredoc que de fato roda um comando, e do hook irmão. Fechar isso pediria um
+// parser de shell de verdade; o custo não se paga para um guard que é uma das
+// camadas, não a única.
 
-/** Remove o prefixo no-op, devolvendo o comando de fato invocado no segmento. */
-export function stripCommandPrefix(segment) {
-  const text = String(segment).trim();
-  return text.replace(COMMAND_PREFIX_RE, "").trim();
+/**
+ * Devolve o segmento com o CONTEÚDO de cada string citada trocado por espaços,
+ * preservando comprimento e offsets — assim uma regex casa só no que está fora
+ * de aspas, e `readQuotedString` ainda lê o texto original no mesmo índice.
+ */
+export function maskQuotedSpans(segment) {
+  const text = String(segment);
+  let masked = "";
+  let i = 0;
+  while (i < text.length) {
+    const quoted = readQuotedString(text, i);
+    if (quoted) {
+      masked += " ".repeat(quoted.end - i);
+      i = quoted.end;
+      continue;
+    }
+    masked += text[i];
+    i++;
+  }
+  return masked;
 }
 
-// Ancorado em `^` (depois do prefixo no-op): o wrapper só conta quando está em
-// posição de comando. Sem a âncora, `echo "ver bash -c 'npm ci' no guard"` —
-// texto que apenas MENCIONA o comando — tinha o miolo promovido a comando e
-// era bloqueado. Mesma classe do falso positivo do heredoc, por outra porta.
+// Termina na flag, sem consumir os espaços seguintes: como a máscara troca o
+// span citado por espaços do mesmo tamanho, um `\s+` guloso no fim engoliria a
+// própria aspa de abertura e `readQuotedString` não acharia mais o payload.
 const SHELL_WRAPPER_FLAG_RE =
-  /^(?:[A-Za-z]:[^\s]*|[^\s]*\/)?['"]?(?:bash|sh|zsh|dash|ksh|powershell|pwsh|cmd)(?:\.exe)?['"]?\s+(?:-c|-Command|-command|\/c|\/C)\s+/i;
+  /(?:^|\s)(?:[A-Za-z]:[^\s]*|[^\s]*\/)?(?:bash|sh|zsh|dash|ksh|powershell|pwsh|cmd)(?:\.exe)?\s+(?:-c|-Command|-command|\/c|\/C)(?=\s)/i;
 
 /**
  * A partir de `start`, lê uma string entre aspas simples ou duplas e devolve
@@ -161,22 +187,25 @@ function splitTopLevel(text) {
 }
 
 /**
- * Quando o segmento ABRE com um wrapper de shell — `bash -c "cd /wt && npm
- * ci"`, `powershell -Command "..."`, `cmd /c "..."` —, devolve o conteúdo da
- * string que ele executa; senão, `null`.
+ * Quando o segmento invoca um wrapper de shell FORA DE ASPAS — `bash -c "cd
+ * /wt && npm ci"`, `sudo -p 'senha:' bash -c "..."`, `cmd /c "..."` —, devolve
+ * o conteúdo da string que ele executa; senão, `null`.
  *
  * Achado do review da PR #7774: o hook irmão usa `stripQuotedSpans`, que
  * DESCARTA o conteúdo citado. Serve pra não confundir separadores dentro de
  * uma string, mas aqui jogaria fora justamente o `npm ci` perigoso, que é o
- * que está DENTRO das aspas. Promover só o argumento de um wrapper que abre o
- * segmento — e não toda string citada, em qualquer posição — mantém
- * `git commit -m "roda npm ci"` e `echo "use bash -c 'npm ci'"` fora do radar.
+ * que está DENTRO das aspas. Promover o argumento de um wrapper que aparece
+ * fora de aspas — e não toda string citada — mantém
+ * `git commit -m "roda npm ci"` e `echo "use bash -c 'npm ci'"` fora do radar,
+ * sem depender de enumerar o que pode vir antes do wrapper.
  */
 export function shellWrapperPayload(segment) {
-  const command = stripCommandPrefix(segment);
-  const m = SHELL_WRAPPER_FLAG_RE.exec(command);
+  const text = String(segment);
+  const m = SHELL_WRAPPER_FLAG_RE.exec(maskQuotedSpans(text));
   if (!m) return null;
-  const quoted = readQuotedString(command, m[0].length);
+  let i = m.index + m[0].length;
+  while (i < text.length && /\s/.test(text[i])) i++;
+  const quoted = readQuotedString(text, i);
   return quoted && quoted.value ? quoted.value : null;
 }
 
@@ -202,10 +231,14 @@ export function commandSegments(command, depth = 0) {
  * estiver lá. `npm run`, `npm test`, `npm ls` etc. não contam.
  */
 export function isNpmInstallSegment(segment) {
-  // `stripCommandPrefix` pelo mesmo motivo do wrapper: `sudo npm ci` e
-  // `FOO=bar npm ci` instalam igual (achado do review da PR #7774).
-  return /^(?:[A-Za-z]:[^\s]*|[^\s]*\/)?npm(?:\.cmd)?\s+(?:ci|install|i|add)(?:\s|$)/.test(
-    stripCommandPrefix(segment),
+  // Casa em QUALQUER posição fora de aspas, não só no início do segmento: o
+  // que pode vir antes (`sudo -p 'senha:'`, `env -i`, `FOO=bar`, `nice -n 10`)
+  // é lista aberta demais para enumerar, e cada tentativa de enumerar deixou
+  // um bypass novo (rodadas do review da PR #7774). O `npm ci` de dentro de
+  // aspas continua sendo texto, que é o que separa `sudo -p 'x' npm ci` de
+  // `git commit -m "roda npm ci"`.
+  return /(?:^|\s)(?:[A-Za-z]:[^\s]*|[^\s]*\/)?npm(?:\.cmd)?\s+(?:ci|install|i|add)(?:\s|$)/.test(
+    maskQuotedSpans(String(segment).trim()),
   );
 }
 

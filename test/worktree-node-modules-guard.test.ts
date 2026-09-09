@@ -221,25 +221,51 @@ test("hook enxerga através de sudo/env/atribuição inline e de agrupamento (#7
   assert.ok(blocked('exec bash -c "npm ci"'), "exec");
   assert.ok(blocked('command bash -c "npm ci"'), "command");
   assert.ok(blocked('nohup bash -c "npm ci"'), "nohup");
-  assert.ok(blocked(`'bash' -c "npm ci"`), "binário do shell entre aspas");
 
   // Agrupamento por chaves, mesma porta do subshell.
   assert.ok(blocked("{ cd /wt && npm ci; }", "/x"), "agrupamento por chaves");
 
-  // O prefixo restrito não reabre o falso positivo do texto citado.
+  // O reconhecimento por posição estrutural não reabre o falso positivo do
+  // texto citado.
   assert.equal(blocked(`gh pr comment 1 --body "rode npm ci depois"`), false, "corpo de comentário é texto");
   assert.equal(blocked("npx tsx scripts/x.ts"), false, "npx não é npm install");
+});
 
-  // Rodada seguinte do review: o prefixo no-op pode levar flag própria, e o
-  // valor da atribuição pode vir citado com espaço dentro.
-  assert.ok(blocked("sudo -u foo npm ci"), "sudo com flag que leva valor");
-  assert.ok(blocked("env -i npm ci"), "env -i (flag sem valor não engole o npm)");
-  assert.ok(blocked("sudo -E -H npm ci"), "flags encadeadas sem valor");
+// Última rodada do review da PR #7774. A enumeração de prefixos foi trocada
+// por um critério ESTRUTURAL — "está fora de aspas?" — porque cada rodada que
+// listava o que pode vir antes do comando (`FOO=bar`, `sudo`, depois as flags
+// de cada um) fechava os casos citados e o review devolvia outros:
+// `sudo -p 'senha:'`, `sudo -a`, `sudo -t 30`, `--preserve-env=`. A lista de
+// flags de `sudo`/`env` é aberta demais para enumerar, e o lado errado do erro
+// aqui é "não bloqueia".
+test("hook reconhece npm/wrapper por posição estrutural, não por lista de prefixos (#7774)", async () => {
+  const hook = await import(`../.claude/hooks/${HOOK_BASENAME}`);
+  const inspect = (dir: string) => (dir.replaceAll("\\", "/").endsWith("/wt") ? "/principal/node_modules" : null);
+  const blocked = (cmd: string, cwd = "/wt") => Boolean(hook.findBlockedNpmInstall(cmd, cwd, inspect));
+
+  // Prefixos que nenhuma lista previa — todos bloqueiam agora.
+  assert.ok(blocked("sudo -p 'senha:' npm ci"), "flag com valor citado");
+  assert.ok(blocked("sudo -a pam npm ci"), "flag de auth com valor");
+  assert.ok(blocked("sudo -t 30 npm ci"), "flag de timeout com valor");
+  assert.ok(blocked("sudo --preserve-env=PATH npm ci"), "--flag=valor");
+  assert.ok(blocked("nice -n 10 npm ci"), "nice com nível");
+  assert.ok(blocked("timeout 300 npm ci"), "wrapper que nunca esteve na lista");
+  assert.ok(blocked("xargs -I{} npm ci"), "wrapper com chave no argumento");
+  assert.ok(blocked("sudo -p 'senha:' bash -c \"npm ci\""), "prefixo arbitrário + wrapper");
+
+  // Os que a enumeração já pegava seguem pegando.
+  assert.ok(blocked("sudo -u foo npm ci"), "sudo -u");
+  assert.ok(blocked("env -i npm ci"), "env -i");
+  assert.ok(blocked("sudo -E -H npm ci"), "flags encadeadas");
   assert.ok(blocked(`NODE_OPTIONS="--stack-size 4096" npm ci`), "valor citado com espaço");
   assert.ok(blocked(`NPM_CONFIG_CACHE='/tmp/a b' npm ci`), "valor citado com aspas simples");
   assert.ok(blocked(`sudo -u foo bash -c "npm ci"`), "flag com valor + wrapper");
-  assert.equal(blocked("A=B npm run test"), false, "atribuição antes de npm run segue liberada");
+
+  // E o critério continua distinguindo comando de texto.
+  assert.equal(blocked("A=B npm run test"), false, "npm run não reinstala");
   assert.equal(blocked(`curl --data '{"a":1}' http://x`), false, "JSON citado não vira comando");
+  assert.equal(blocked(`gh issue create --body "veja: npm install falha"`), false, "corpo de issue é texto");
+  assert.equal(blocked(`git commit -m 'fix: npm install lento'`), false, "mensagem de commit é texto");
 });
 
 // O hook é self-contained (nenhum import de `.ts`, convenção dos hooks
