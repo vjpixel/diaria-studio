@@ -1166,7 +1166,7 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
         note: probe.note,
         brake: { level: risk.brake.level, reasons: [...risk.brake.reasons] },
         overrideApplied: risk.overrideApplied,
-        queueAvailable: proposal.availableFirstSend,
+        queueAvailable: proposal.dailyQueueAvailable ?? proposal.availableFirstSend,
         brevoCredits: proposal.brevoCredits,
         mvOnDemand: {
           deficit: proposal.mvOnDemandPlan.deficit,
@@ -1191,7 +1191,7 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       );
     }
 
-    let queueAvailable = proposal.availableFirstSend;
+    let queueAvailable = proposal.dailyQueueAvailable ?? proposal.availableFirstSend;
     if (queueAvailable < desiredVolume && proposal.mvOnDemandPlan.byCohort.length > 0) {
       if (!hasMv) {
         report.note(
@@ -1265,7 +1265,7 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
     }
 
     if (queueAvailable < desiredVolume) {
-      const filaMsg = `fila de 1º envio insuficiente mesmo após MV sob demanda (disponível: ${queueAvailable}, desejado: ${desiredVolume})`;
+      const filaMsg = `fila diária unificada insuficiente (disponível: ${queueAvailable}, desejado: ${desiredVolume}) — 1º envio vitalício = ${proposal.availableFirstSend ?? 'N/A'}; cenário 4254 (fila diária >> 1º envio) exige usar dailyQueueAvailable como teto (#7738).`;
       // #5985 — `--volume N` explícito: fila insuficiente é um teto
       // violado, não um "nada a fazer" — o editor confirmou um número e
       // precisa saber POR QUE não dá pra entregá-lo, nunca um corte
