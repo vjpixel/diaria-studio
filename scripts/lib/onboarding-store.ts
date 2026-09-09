@@ -163,6 +163,24 @@ export interface OnboardingStore {
    * a qualquer detecção > 0.
    */
   consecutive_zero_detections?: number;
+
+  /**
+   * #7665: ISO da última rodada `--send` que de fato EXECUTOU e atualizou
+   * `consecutive_zero_detections`. Existe pro alarme de continuidade
+   * (`onboarding-continuity-alarm.ts`) distinguir "a rodada rodou e detectou
+   * zero" de "a rodada parou de rodar".
+   *
+   * Sem este campo, a streak congela quando o run para (timer desarmado,
+   * crash, guard abortando por `data/` ausente) — e congelada ABAIXO do
+   * limiar, o alarme reportaria `ok` pra sempre, ficando mudo exatamente
+   * quando a situação é pior. Era o achado P1/alta do review da PR #7805, e
+   * é a mesma classe do #7776 um nível acima: o detector precisa saber se
+   * ele próprio ainda está sendo alimentado.
+   *
+   * Ausente (store anterior a este campo) → o alarme responde
+   * `cannot-verify`, nunca `ok`.
+   */
+  last_zero_detection_run_at?: string | null;
 }
 
 export function emptyStore(): OnboardingStore {
@@ -173,6 +191,7 @@ export function emptyStore(): OnboardingStore {
     entries: {},
     last_detection_backend: null,
     consecutive_zero_detections: 0,
+    last_zero_detection_run_at: null,
   };
 }
 
@@ -194,6 +213,10 @@ export function readStore(path: string = DEFAULT_STORE_PATH): { store: Onboardin
         entries: raw.entries ?? {},
         last_detection_backend: raw.last_detection_backend ?? null,
         consecutive_zero_detections: raw.consecutive_zero_detections ?? 0,
+        // `?? null` e NÃO um default de "agora": store antigo genuinamente
+        // não sabe quando rodou, e fingir frescor aqui seria exatamente o
+        // `ok` mentiroso que o campo existe pra impedir.
+        last_zero_detection_run_at: raw.last_zero_detection_run_at ?? null,
       },
       corrupted: false,
     };

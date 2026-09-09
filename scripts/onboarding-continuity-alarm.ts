@@ -148,7 +148,15 @@ async function main(): Promise<void> {
   const now = new Date();
   const storeExists = existsSync(DEFAULT_STORE_PATH);
   const { store, corrupted } = readStore(DEFAULT_STORE_PATH);
-  const evaluation = evaluateOnboardingContinuity(storeExists, corrupted, store.consecutive_zero_detections ?? 0);
+  const evaluation = evaluateOnboardingContinuity(
+    storeExists,
+    corrupted,
+    store.consecutive_zero_detections ?? 0,
+    undefined,
+    // #7665: sem o carimbo da última rodada, a streak sozinha não distingue
+    // "detectou zero" de "parou de rodar" — ver evaluateOnboardingContinuity.
+    store.last_zero_detection_run_at ?? null,
+  );
 
   if (evaluation.verdict === "cannot-verify") {
     // Fail-soft honesto: não dá pra concluir nada — nunca alarma a partir

@@ -79,7 +79,21 @@ export { ZERO_DETECTION_ALARM_THRESHOLD_RUNS };
 
 export type OnboardingContinuityVerdict = "ok" | "stale" | "cannot-verify";
 
-export type OnboardingContinuityCannotVerifyReason = "store_missing" | "store_corrupted";
+export type OnboardingContinuityCannotVerifyReason =
+  | "store_missing"
+  | "store_corrupted"
+  /** #7665 (P1 do review da PR #7805): store existe e é legível, mas não diz
+   *  QUANDO a rodada diária atualizou a streak — store anterior ao campo. */
+  | "run_timestamp_ausente"
+  /** A rodada diária parou de atualizar a streak. Sem isto, uma streak
+   *  congelada ABAIXO do limiar renderia `ok` indefinidamente, com o alarme
+   *  mudo exatamente quando a situação é pior. */
+  | "run_parado";
+
+/** Quantas horas sem a rodada diária atualizar a streak antes de o alarme
+ *  parar de confiar nela. 48h = 2 janelas diárias, tolerando um dia pulado
+ *  por guard (`data/` ausente numa máquina) sem virar ruído. */
+export const RUN_FRESHNESS_MAX_HORAS = 48;
 
 export interface OnboardingContinuityEvaluation {
   verdict: OnboardingContinuityVerdict;
@@ -101,12 +115,42 @@ export function evaluateOnboardingContinuity(
   corrupted: boolean,
   consecutiveZeroDetections: number,
   threshold: number = ZERO_DETECTION_ALARM_THRESHOLD_RUNS,
+  /** ISO da última atualização da streak (`store.last_zero_detection_run_at`)
+   *  e o instante de referência. Ausentes → `cannot-verify`. */
+  lastRunAtIso?: string | null,
+  now: Date = new Date(),
 ): OnboardingContinuityEvaluation {
   if (!storeExists) {
     return { verdict: "cannot-verify", streak: null, threshold, cannotVerifyReason: "store_missing" };
   }
   if (corrupted) {
     return { verdict: "cannot-verify", streak: null, threshold, cannotVerifyReason: "store_corrupted" };
+  }
+  // #7665 (P1 do review da PR #7805): a streak sozinha não distingue "rodou e
+  // detectou zero" de "parou de rodar". Se o run morre, ela CONGELA — e
+  // congelada abaixo do limiar, o veredito seria `ok` pra sempre. O detector
+  // precisa saber se ele próprio ainda está sendo alimentado; é a mesma
+  // classe do #7776, um nível acima.
+  if (lastRunAtIso === undefined || lastRunAtIso === null || lastRunAtIso === "") {
+    return {
+      verdict: "cannot-verify",
+      streak: null,
+      threshold,
+      cannotVerifyReason: "run_timestamp_ausente",
+    };
+  }
+  const lastRunMs = Date.parse(lastRunAtIso);
+  if (Number.isNaN(lastRunMs)) {
+    return {
+      verdict: "cannot-verify",
+      streak: null,
+      threshold,
+      cannotVerifyReason: "run_timestamp_ausente",
+    };
+  }
+  const horas = (now.getTime() - lastRunMs) / 3_600_000;
+  if (horas > RUN_FRESHNESS_MAX_HORAS) {
+    return { verdict: "cannot-verify", streak: null, threshold, cannotVerifyReason: "run_parado" };
   }
   const streak = consecutiveZeroDetections;
   return {
