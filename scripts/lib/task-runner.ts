@@ -159,7 +159,8 @@ export interface RunScheduledTaskOptions {
    * do módulo) sempre chama esta função — sucesso na 1ª tentativa nunca
    * distingue "sempre funcionou" de "não precisou retry". */
   appendLog?: AppendLogFn;
-  /** Injeção de syncCode antes dos passos (testes). Default: `syncCode` real de `./git-sync.ts`. */
+  /** Injeção de syncCode antes dos passos (testes). Default: `syncCode` real de `./git-sync.ts`.
+   * **Obrigatório sob `node:test` (#7736)** — omitir lança, ver guard no corpo de `runScheduledTask`. */
   syncCode?: () => GitSyncResult;
 }
 
@@ -186,11 +187,16 @@ function sleepSync(ms: number): void {
 
 /**
  * Roda uma `ScheduledTaskDefinition` de ponta a ponta: guard opcional →
- * passos em sequência → log resiliente → exit code honesto. Nunca lança —
- * qualquer falha inesperada de um passo (exceção síncrona de `execStep`,
- * não só um exit code ≠ 0) é capturada e tratada como falha desse passo,
- * nunca propagada pra fora (a run inteira tem que terminar e reportar,
- * mesmo quando um passo individual quebra de um jeito imprevisto).
+ * passos em sequência → log resiliente → exit code honesto. Nunca lança por
+ * falha de PASSO — qualquer falha inesperada de um passo (exceção síncrona
+ * de `execStep`, não só um exit code ≠ 0) é capturada e tratada como falha
+ * desse passo, nunca propagada pra fora (a run inteira tem que terminar e
+ * reportar, mesmo quando um passo individual quebra de um jeito
+ * imprevisto). **Exceção, de propósito (#7736):** lança IMEDIATAMENTE, antes
+ * de qualquer passo, se rodar sob `node:test` (`NODE_TEST_CONTEXT` definido)
+ * sem `opts.syncCode` injetado — isso é erro de TESTE (call site que
+ * esqueceu de injetar), não falha de produção; nunca dispara fora de
+ * `node --test`. Ver o guard logo no início do corpo da função.
  */
 export function runScheduledTask(
   def: ScheduledTaskDefinition,
@@ -200,6 +206,29 @@ export function runScheduledTask(
   const now = opts.now ?? (() => new Date());
   const execStep = opts.execStep ?? execTsxStep;
   const appendLog = opts.appendLog ?? defaultAppendLog;
+
+  // #7736 — guard mecânico contra a classe inteira do defeito, não só a
+  // ocorrência atual. `NODE_TEST_CONTEXT` é setado pelo PRÓPRIO `node:test`
+  // (não uma convenção deste repo, ao contrário de `NODE_ENV` — que este
+  // projeto não define em teste) em todo processo rodando sob `node --test`,
+  // main thread ou worker. Sem `opts.syncCode` injetado nesse contexto, o
+  // default seria o `syncCode()` REAL de `./git-sync.ts` — que roda
+  // `checkout`/`fetch`/`merge --ff-only`/`stash` contra `rootDir` — dentro
+  // de uma run de teste. Foi exatamente essa lacuna, em 13 call sites de
+  // `test/task-runner.test.ts` que não injetavam `syncCode`, que moveu o
+  // HEAD do repo durante o `npm test` do CI (#7736: arquivo modificado pela
+  // PR lido na versão da base; arquivo adicionado pela PR "não existia").
+  // Lançar aqui torna a omissão um erro de teste IMEDIATO (falha alta e
+  // óbvia) em vez de um sync silencioso contra o checkout real — nunca
+  // dispara em produção, onde `NODE_TEST_CONTEXT` nunca está setado.
+  if (!opts.syncCode && process.env.NODE_TEST_CONTEXT) {
+    throw new Error(
+      "runScheduledTask() chamado sem 'opts.syncCode' enquanto rodava sob node:test " +
+        "(NODE_TEST_CONTEXT definido) — sem essa injeção o default seria o syncCode() REAL " +
+        "de ./git-sync.ts, rodando checkout/fetch/merge/stash contra rootDir dentro do teste " +
+        "(causa raiz do #7736). Injete opts.syncCode (mesmo um no-op) neste call site.",
+    );
+  }
   const syncCode = opts.syncCode ?? syncCodeFn;
 
   const logPath = opts.logPathOverride ?? join(rootDir, "data", ...def.logPath.split("/"));
