@@ -1,33 +1,93 @@
 // Regressão #7763: symlink node_modules → fora do worktree + npm ci = principal vazio
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, symlinkSync, writeFileSync, rmSync, mkdirSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
-import { checkNodeModulesSymlink, guardBeforeNpmInstall } from "../scripts/lib/worktree-node-modules-guard";
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, symlinkSync, rmSync, mkdirSync, chmodSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { checkNodeModulesSymlink, guardBeforeNpmInstall } from "../scripts/lib/worktree-node-modules-guard.ts";
 
-describe("worktree-node-modules-guard #7763", () => {
-  let tmp: string;
-  beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), "wt-7763-")); });
-  afterEach(() => { try { rmSync(tmp, { recursive: true, force: true }); } catch {} });
+function withTmp(fn: (dir: string) => void): void {
+  const tmp = mkdtempSync(join(tmpdir(), "wt-7763-"));
+  try {
+    fn(tmp);
+  } finally {
+    try {
+      rmSync(tmp, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  }
+}
 
-  it("bloqueia symlink apontando para checkout principal", () => {
-    mkdirSync(join(tmp, "node_modules"), { recursive: true }); // placeholder
-    rmSync(join(tmp, "node_modules"), { recursive: true, force: true });
-    // Simula symlink pro principal (fora do tmp)
-    symlinkSync("/home/vjpixel/diaria-studio/node_modules", join(tmp, "node_modules"));
-    const r = checkNodeModulesSymlink(tmp);
-    expect(r.blocked).toBe(true);
-    expect(r.reason).toContain("fora do worktree");
+test("bloqueia symlink apontando para fora do worktree", () => {
+  withTmp((tmp) => {
+    const outside = mkdtempSync(join(tmpdir(), "wt-7763-principal-"));
+    try {
+      mkdirSync(join(outside, "node_modules"), { recursive: true });
+      symlinkSync(join(outside, "node_modules"), join(tmp, "node_modules"), "junction");
+      const r = checkNodeModulesSymlink(tmp);
+      assert.equal(r.blocked, true);
+      assert.match(r.reason, /fora do worktree/);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
+});
 
-  it("aceita diretório real", () => {
+test("aceita diretório real", () => {
+  withTmp((tmp) => {
     mkdirSync(join(tmp, "node_modules"), { recursive: true });
     const r = checkNodeModulesSymlink(tmp);
-    expect(r.blocked).toBe(false);
+    assert.equal(r.blocked, false);
   });
+});
 
-  it("lança no guardBeforeNpmInstall quando bloqueado", () => {
-    symlinkSync("/tmp/fake-principal", join(tmp, "node_modules"));
-    expect(() => guardBeforeNpmInstall(tmp)).toThrow("[GUARD #7763]");
+test("aceita node_modules ausente (instalação necessária)", () => {
+  withTmp((tmp) => {
+    const r = checkNodeModulesSymlink(tmp);
+    assert.equal(r.blocked, false);
+    assert.match(r.reason, /ausente/);
+  });
+});
+
+test("aceita symlink intra-worktree (self-referente)", () => {
+  withTmp((tmp) => {
+    const inner = join(tmp, "vendor-node-modules");
+    mkdirSync(inner, { recursive: true });
+    symlinkSync(inner, join(tmp, "node_modules"), "junction");
+    const r = checkNodeModulesSymlink(tmp);
+    assert.equal(r.blocked, false);
+    assert.match(r.reason, /intra-worktree/);
+  });
+});
+
+test("lança no guardBeforeNpmInstall quando bloqueado", () => {
+  withTmp((tmp) => {
+    const outside = mkdtempSync(join(tmpdir(), "wt-7763-principal-"));
+    try {
+      mkdirSync(join(outside, "node_modules"), { recursive: true });
+      symlinkSync(join(outside, "node_modules"), join(tmp, "node_modules"), "junction");
+      assert.throws(() => guardBeforeNpmInstall(tmp), /\[GUARD #7763\]/);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+// Achado do review da PR #7774: erro de inspeção que NÃO seja ENOENT (EACCES,
+// EPERM) não pode virar "não bloqueado" — mascarar falha de inspeção é
+// exatamente o caminho que o guard existe para fechar.
+test("erro de inspeção não-ENOENT bloqueia em vez de mascarar", { skip: process.platform === "win32" ? "chmod não restringe leitura no Windows" : process.getuid?.() === 0 ? "root ignora permissão de diretório" : false }, () => {
+  withTmp((tmp) => {
+    const locked = join(tmp, "locked");
+    mkdirSync(locked, { recursive: true });
+    chmodSync(locked, 0o000);
+    try {
+      const r = checkNodeModulesSymlink(locked);
+      assert.equal(r.blocked, true);
+      assert.match(r.reason, /não foi possível inspecionar/);
+    } finally {
+      chmodSync(locked, 0o700);
+    }
   });
 });
