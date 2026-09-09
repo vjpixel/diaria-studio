@@ -2012,6 +2012,28 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // e acao POSTERIOR do editor.
     issue: "#7137",
   },
+  {
+    name: "Diaria-Meta-Capi-Staleness-Alarm",
+    description:
+      "compara server_last_fired_time do dataset Meta contra now -- a Conversions API do #5504 e " +
+      "fail-soft por design (token ausente = no-op silencioso), entao sem este alarme nada no projeto " +
+      "enxerga a CAPI parada -- achado ao vivo 09/09/2026: META_CAPI_ACCESS_TOKEN nunca foi setado " +
+      "em nenhum dos 3 workers (poll/cursos/reativar), #7776",
+    steps: [{ key: "alarm", script: "scripts/meta-capi-staleness-alarm.ts" }],
+    logPath: "aquisicao/.meta-capi-staleness-alarm.log",
+    // Diaria 20:05 BRT -- hora inteira livre no registro (nenhuma outra
+    // task usa `hour: 20`, checado via grep antes de escolher, #5408).
+    schedule: { kind: "daily", hour: 20, minute: 5 },
+    // Sem guard -- o script e fail-soft por design: sem META_CAPI_ACCESS_TOKEN
+    // no .env local (situacao atual) ou com a Meta indisponivel, sai limpo
+    // com aviso honesto (verdict "cannot-verify"), nunca alarme falso -- ver
+    // docstring de scripts/lib/meta-capi-staleness.ts.
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // e acao POSTERIOR do editor.
+    issue: "#7776",
+  },
 ];
 
 /**

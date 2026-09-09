@@ -53,7 +53,7 @@ import { json } from "./index";
 // do quiz.
 import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
 import { ARQUIVO_INLINE_UTM, HUB_INLINE_UTM, JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, JOGAR_POSTWEB_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4, #4578, #5167 itens 1/2
-import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
+import { sendCompleteRegistrationEvent, logMetaCapiSendResult } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 import { DOUBLE_OPT_IN_FLAG } from "./optin-flag-6340"; // #6340
 import { verificarDoiForm, mensagemDoiFormInvalido } from "./doi-form-guard-7723"; // #7723
@@ -971,9 +971,16 @@ export async function handleJogarSubscribe(
     // depois da resposta ao usuário — o `await` direto (achado do review
     // pós-merge #5504) atrasava a resposta em até
     // `META_CAPI_FETCH_TIMEOUT_MS` (8s) sempre que a Meta respondia lento.
-    const sendEvent = sendCompleteRegistrationEvent(
-      { email: v.email, eventSourceUrl: request.url },
-      { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
+    // #7776: `logMetaCapiSendResult` encaixa o log estruturado (not_configured
+    // vs. meta_error/network_error vs. sent) NO MEIO do mesmo caminho
+    // fire-and-forget — não muda o tipo nem o timing do que `waitUntil`/
+    // `await` abaixo já faziam.
+    const sendEvent = logMetaCapiSendResult(
+      sendCompleteRegistrationEvent(
+        { email: v.email, eventSourceUrl: request.url },
+        { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
+      ),
+      "poll",
     );
     if (ctx && typeof ctx.waitUntil === "function") {
       ctx.waitUntil(sendEvent);

@@ -245,3 +245,73 @@ export async function sendCompleteRegistrationEvent(
     return { ok: false, status: 502, reason: "network_error" };
   }
 }
+
+/**
+ * Log estruturado do caminho de no-op (#7776, follow-up do #5504).
+ *
+ * `sendCompleteRegistrationEvent` já distinguia `"not_configured"` de
+ * `"meta_error"`/`"network_error"` no `MetaCapiSendResult` desde o #5504 —
+ * o gap real era que os 3 call sites (`workers/poll`, `workers/cursos`,
+ * `workers/reativar`) descartavam esse resultado em silêncio
+ * (`ctx.waitUntil(sendEvent)`/`await sendEvent` sem `.then`/leitura),
+ * então "token ausente" (esperado até o editor setar o secret) e "token
+ * presente mas a Meta rejeitou/a rede caiu" (defeito real) eram
+ * indistinguíveis de fora — nenhum dos dois deixava rastro nenhum. Achado
+ * ao vivo em 09/09/2026: `META_CAPI_ACCESS_TOKEN` nunca foi setado em
+ * nenhum dos 3 workers, e nada no projeto observava isso.
+ *
+ * Pure — decide SÓ o formato do evento; quem loga (`console.log`/
+ * `console.error`) é o call site, mesmo padrão dos `console.error(JSON
+ * .stringify({event: ...}))` já usados em `workers/reativar/src/index.ts`
+ * (ex: `reativar_kit_not_configured`). Nunca inclui e-mail nem qualquer
+ * outro PII — só o nome do worker (`"poll"`/`"cursos"`/`"reativar"`,
+ * baixo volume/baixo risco) e o desfecho.
+ *
+ * `not_configured` é log-level "informativo" (mesmo padrão que
+ * `reativar_kit_not_configured` já usa incondicionalmente) — é o estado
+ * ESPERADO até o secret ser setado nos 3 workers, não um erro; o alarme
+ * periódico (`scripts/meta-capi-staleness-alarm.ts`) é quem decide se essa
+ * ausência já passou de aceitável, não este log.
+ */
+export type MetaCapiLogEvent =
+  | { event: "meta_capi_not_configured"; worker: string }
+  | { event: "meta_capi_sent"; worker: string; status: number }
+  | {
+      event: "meta_capi_send_failed";
+      worker: string;
+      status: number;
+      reason: "meta_error" | "network_error";
+    };
+
+/** @pure */
+export function buildMetaCapiLogEvent(result: MetaCapiSendResult, worker: string): MetaCapiLogEvent {
+  if (result.ok) return { event: "meta_capi_sent", worker, status: result.status };
+  if (result.reason === "not_configured") return { event: "meta_capi_not_configured", worker };
+  return { event: "meta_capi_send_failed", worker, status: result.status, reason: result.reason };
+}
+
+/**
+ * Encaixa o log estruturado NO CAMINHO fire-and-forget existente — `.then`
+ * sobre a promise de `sendCompleteRegistrationEvent` preserva o tipo
+ * (`Promise<MetaCapiSendResult>`) e o valor resolvido, então
+ * `ctx.waitUntil(logMetaCapiSendResult(sendEvent, worker))` e o fallback
+ * síncrono `await logMetaCapiSendResult(sendEvent, worker)` continuam
+ * funcionando exatamente como antes desta função existir — só ganham o log
+ * como efeito colateral no meio do caminho. `console.error` pra
+ * `send_failed` (mesmo nível dos outros `_failed`/`_fetch_failed` deste
+ * repo), `console.log` pros demais.
+ */
+export function logMetaCapiSendResult(
+  sendEvent: Promise<MetaCapiSendResult>,
+  worker: string,
+): Promise<MetaCapiSendResult> {
+  return sendEvent.then((result) => {
+    const logEvent = buildMetaCapiLogEvent(result, worker);
+    if (logEvent.event === "meta_capi_send_failed") {
+      console.error(JSON.stringify(logEvent));
+    } else {
+      console.log(JSON.stringify(logEvent));
+    }
+    return result;
+  });
+}

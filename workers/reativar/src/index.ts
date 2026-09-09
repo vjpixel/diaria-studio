@@ -93,7 +93,7 @@ import { REATIVAR_ALARM_COUNTER_KEYS, incrementReativarAlarmCounter } from "../.
 import { BREVO_DIARIA_REATIVAR_CLIQUE_UTM } from "../../../scripts/lib/shared/utm-registry.ts"; // #4530
 import { unlinkFromBrevoListShared } from "../../../scripts/lib/shared/brevo-list-unlink.ts"; // #4535
 import { buildOrigemOriginalCustomFields } from "../../../scripts/lib/shared/beehiiv-origem-original.ts"; // #5231
-import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
+import { sendCompleteRegistrationEvent, logMetaCapiSendResult } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 
 export interface Env {
@@ -891,9 +891,14 @@ export async function handleConfirm(
     // adia o envio pra depois da resposta ao usuário — o `await` direto
     // (achado do review pós-merge #5504) atrasava a resposta em até
     // `META_CAPI_FETCH_TIMEOUT_MS` (8s) sempre que a Meta respondia lento.
-    const sendEvent = sendCompleteRegistrationEvent(
-      { email: parsed.email, eventSourceUrl: url.toString() },
-      { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
+    // #7776: log estruturado no meio do mesmo caminho fire-and-forget — ver
+    // docstring de `logMetaCapiSendResult` (meta-capi.ts).
+    const sendEvent = logMetaCapiSendResult(
+      sendCompleteRegistrationEvent(
+        { email: parsed.email, eventSourceUrl: url.toString() },
+        { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
+      ),
+      "reativar",
     );
     if (ctx && typeof ctx.waitUntil === "function") {
       ctx.waitUntil(sendEvent);

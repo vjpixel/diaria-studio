@@ -908,6 +908,42 @@ describe("#5405 — alarme removido pelo #5660", () => {
   });
 });
 
+describe("#7776 — Diaria-Meta-Capi-Staleness-Alarm registrada, diária, systemd-only, NÃO armada", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária às 20:05", () => {
+    const t = getScheduledTaskByName("Diaria-Meta-Capi-Staleness-Alarm");
+    assert.ok(t, "Diaria-Meta-Capi-Staleness-Alarm ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/meta-capi-staleness-alarm.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 20, minute: 5 });
+    assert.equal(t!.issue, "#7776");
+  });
+
+  it("horário de 20:05 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Meta-Capi-Staleness-Alarm" && t.schedule.hour === 20 && t.schedule.minute === 5,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const t = getScheduledTaskByName("Diaria-Meta-Capi-Staleness-Alarm")!;
+    const script = t.steps[0].script;
+    const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
+    assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
+  });
+
+  it("sem guard modelado — o script é fail-soft por design (verdict cannot-verify)", () => {
+    const t = getScheduledTaskByName("Diaria-Meta-Capi-Staleness-Alarm")!;
+    assert.equal(t.guard, undefined);
+  });
+});
+
 describe("#5704 — Diaria-Google-Ads-Spend-Ingest registrada, diária, systemd-only, NÃO armada", () => {
   it("está presente no registro, com o step apontando pro script correto, diária às 09:50", () => {
     const t = getScheduledTaskByName("Diaria-Google-Ads-Spend-Ingest");
