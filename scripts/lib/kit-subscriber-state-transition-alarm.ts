@@ -69,9 +69,17 @@ export interface KitStateTransitionSnapshotEntry {
    * dizer "o id 4264399626 sumiu", que não é acionável por um humano.
    */
   address?: string;
-  /** Mesmo racional de `address` — o `apoio_nivel` de quem sumiu só existe
-   *  no snapshot anterior, e é ele que separa "apoiador pagante evaporou"
-   *  de "cadastro de teste removido". */
+  /**
+   * `apoio_nivel` do assinante — é ele que separa "apoiador pagante
+   * evaporou" de "cadastro de teste removido", e como quem some não está no
+   * snapshot atual, o anterior é a única fonte.
+   *
+   * Ausente por DOIS motivos distintos, e o comum não é o do `address`
+   * acima: (1) o assinante simplesmente não é apoiador — o caso da maioria
+   * da base, permanente, nunca vai deixar de acontecer; (2) o snapshot é
+   * anterior a este campo — transitório, some quando os snapshots velhos
+   * rolarem. Não deduzir de "ausente" que o snapshot é antigo.
+   */
   apoioNivel?: string;
 }
 
@@ -210,10 +218,16 @@ export function onboardingCorrelationLines(
     (Date.parse(detectedAt) - Date.parse(ctx.email1SentAt)) / 86_400_000,
   );
   const dentroDaJanela = dias >= 0 && dias <= KIT_LOSS_CORRELATION_WINDOW_DAYS;
+  // `dias` negativo não deveria acontecer (o envio precede a detecção), mas
+  // nada no tipo impede — e "(-3 dia(s) antes)" seria uma frase sem sentido.
+  const intervalo = !Number.isFinite(dias)
+    ? "."
+    : dias >= 0
+      ? ` (${dias} dia(s) antes desta detecção).`
+      : ` (${Math.abs(dias)} dia(s) DEPOIS desta detecção — ordem inesperada, conferir os dois carimbos).`;
   const linhas = [
     `${dentroDaJanela ? "⚠️ CORRELAÇÃO" : "Correlação de envio"}: recebeu o e-mail 1 de ` +
-      `boas-vindas em ${ctx.email1SentAt}` +
-      (Number.isFinite(dias) ? ` (${dias} dia(s) antes desta detecção).` : "."),
+      `boas-vindas em ${ctx.email1SentAt}${intervalo}`,
   ];
   if (ctx.seededBy) linhas.push(`Entrada semeada manualmente por ${ctx.seededBy}.`);
   if (dentroDaJanela) {
@@ -253,6 +267,43 @@ export function kitLossRecoveryPlaybook(): string[] {
   ];
 }
 
+/**
+ * Pura — o esqueleto comum aos dois corpos de issue (cabeçalho, rótulo de
+ * apoiador, correlação, playbook, rodapé). Os dois EVENTOS continuam com
+ * tipos e fingerprints separados de propósito; o que se compartilha aqui é
+ * só a FORMATAÇÃO, que antes estava copiada nos dois construtores e já
+ * tinha começado a divergir (achado do review da PR #7828).
+ */
+function buildLossFindingBody(opts: {
+  /** As linhas que descrevem o que aconteceu — a única parte que difere. */
+  fato: readonly string[];
+  apoioNivel: string | undefined;
+  /** Texto do rótulo quando NÃO há `apoio_nivel` — a transição e o
+   *  desaparecimento falam de tempos diferentes ("preenchido" vs "no último
+   *  snapshot"). */
+  semApoioNivel: string;
+  comApoioNivelSufixo: string;
+  correlationLines: readonly string[];
+}): string {
+  return [
+    "Achado automático do alarme `Diaria-Kit-Subscriber-State-Transition-Alarm`",
+    "(`scripts/kit-subscriber-state-transition-alarm.ts`).",
+    "",
+    ...opts.fato,
+    "",
+    opts.apoioNivel
+      ? `Custom field \`apoio_nivel\` preenchido (${opts.apoioNivel}) — ${opts.comApoioNivelSufixo}`
+      : opts.semApoioNivel,
+    "",
+    ...opts.correlationLines,
+    "",
+    ...kitLossRecoveryPlaybook(),
+    "",
+    "Esta issue é `alarm-evento` — fato histórico, NUNCA fecha sozinha.",
+    "Só um humano fecha após ação concreta.",
+  ].join("\n");
+}
+
 /** Pura — converte cada transição em um `AlarmFinding` do `alarm-issues.ts`.
  *  `family: "evento"` (fato histórico, não auto-resolve) — o assinante
  *  continua naquele estado até o editor agir manualmente (ex: re-registro
@@ -266,25 +317,17 @@ export function toStateTransitionAlarmFindings(
     const title = isApoiador
       ? `[diar.ia.br] Kit: apoiador ${t.address} (id ${t.id}) virou ${t.toState} a partir de ${t.fromState}`
       : `[diar.ia.br] Kit: assinante ${t.address} (id ${t.id}) virou ${t.toState} a partir de ${t.fromState}`;
-    const body = [
-      "Achado automático do alarme `Diaria-Kit-Subscriber-State-Transition-Alarm`",
-      "(`scripts/kit-subscriber-state-transition-alarm.ts`).",
-      "",
-      `Assinante ${t.address} (id ${t.id}) mudou de estado no Kit:`,
-      `  ${t.fromState} → ${t.toState}`,
-      `  detectado em ${t.detectedAt}`,
-      "",
-      isApoiador
-        ? "Custom field `apoio_nivel` preenchido (" + t.apoioNivel + ") — é um apoiador real, não cadastro de teste."
-        : "Sem custom field `apoio_nivel` preenchido.",
-      "",
-      ...onboardingCorrelationLines(correlations.get(t.address.toLowerCase()), t.detectedAt),
-      "",
-      ...kitLossRecoveryPlaybook(),
-      "",
-      "Esta issue é `alarm-evento` — fato histórico, NUNCA fecha sozinha.",
-      "Só um humano fecha após ação concreta.",
-    ].join("\n");
+    const body = buildLossFindingBody({
+      fato: [
+        `Assinante ${t.address} (id ${t.id}) mudou de estado no Kit:`,
+        `  ${t.fromState} → ${t.toState}`,
+        `  detectado em ${t.detectedAt}`,
+      ],
+      apoioNivel: t.apoioNivel,
+      comApoioNivelSufixo: "é um apoiador real, não cadastro de teste.",
+      semApoioNivel: "Sem custom field `apoio_nivel` preenchido.",
+      correlationLines: onboardingCorrelationLines(correlations.get(t.address.toLowerCase()), t.detectedAt),
+    });
     return {
       check: KIT_STATE_TRANSITION_FINDING_KEY_PREFIX,
       fingerprint: kitStateTransitionFindingKey(t.id),
@@ -309,36 +352,30 @@ export function toDisappearanceAlarmFindings(
   correlations: ReadonlyMap<string, KitLossOnboardingContext> = new Map(),
 ): import("./alarm-issues.ts").AlarmFinding[] {
   return disappearances.map((d) => {
-    const isApoiador = Boolean(d.apoioNivel);
     const quem = d.address ?? `id ${d.id}`;
-    const rotulo = isApoiador ? "apoiador" : "assinante";
+    const rotulo = d.apoioNivel ? "apoiador" : "assinante";
     const title = `[diar.ia.br] Kit: ${rotulo} ${quem} (id ${d.id}) SUMIU da conta (último estado: ${d.lastState})`;
-    const body = [
-      "Achado automático do alarme `Diaria-Kit-Subscriber-State-Transition-Alarm`",
-      "(`scripts/kit-subscriber-state-transition-alarm.ts`).",
-      "",
-      `O assinante ${quem} (id ${d.id}) estava no snapshot anterior e NÃO está no atual —`,
-      "não mudou de estado, deixou de existir na conta Kit.",
-      `  último estado conhecido: ${d.lastState}`,
-      `  detectado em ${d.detectedAt}`,
-      "",
-      ...(d.address === null
-        ? ["Snapshot anterior sem `address` (gravado antes do follow-up do #7660) — só o id é conhecido."]
-        : []),
-      isApoiador
-        ? "Custom field `apoio_nivel` preenchido (" + d.apoioNivel + ") — era um apoiador real."
-        : "Sem custom field `apoio_nivel` no último snapshot.",
-      "",
-      "Causas possíveis, em ordem de frequência esperada: remoção manual pelo painel do",
-      "Kit (foi o que aconteceu no caso de origem), limpeza de cadastro de teste, ou purga",
-      "do próprio Kit. O alarme não distingue — só garante que a saída deixe registro.",
-      "",
-      ...(d.address ? onboardingCorrelationLines(correlations.get(d.address.toLowerCase()), d.detectedAt) : []),
-      "",
-      ...kitLossRecoveryPlaybook(),
-      "",
-      "Esta issue é `alarm-evento` — fato histórico, NUNCA fecha sozinha.",
-    ].join("\n");
+    const body = buildLossFindingBody({
+      fato: [
+        `O assinante ${quem} (id ${d.id}) estava no snapshot anterior e NÃO está no atual —`,
+        "não mudou de estado, deixou de existir na conta Kit.",
+        `  último estado conhecido: ${d.lastState}`,
+        `  detectado em ${d.detectedAt}`,
+        ...(d.address === null
+          ? ["", "Snapshot anterior sem `address` (gravado antes do follow-up do #7660) — só o id é conhecido."]
+          : []),
+        "",
+        "Causas possíveis, em ordem de frequência esperada: remoção manual pelo painel do",
+        "Kit (foi o que aconteceu no caso de origem), limpeza de cadastro de teste, ou purga",
+        "do próprio Kit. O alarme não distingue — só garante que a saída deixe registro.",
+      ],
+      apoioNivel: d.apoioNivel,
+      comApoioNivelSufixo: "era um apoiador real.",
+      semApoioNivel: "Sem custom field `apoio_nivel` no último snapshot.",
+      correlationLines: d.address
+        ? onboardingCorrelationLines(correlations.get(d.address.toLowerCase()), d.detectedAt)
+        : ["Correlação de envio: endereço desconhecido no snapshot anterior — não dá pra cruzar com o onboarding."],
+    });
     return {
       check: KIT_DISAPPEARANCE_FINDING_KEY_PREFIX,
       fingerprint: kitDisappearanceFindingKey(d.id),
@@ -392,6 +429,30 @@ export function shouldAlarmKitStateTransition(
   transitions: readonly KitStateTransition[],
 ): boolean {
   return transitions.some((t) => !state.alertedSubscriberIds.includes(t.id));
+}
+
+/**
+ * Pura — quais eventos podem entrar no latch: só os que de fato viraram
+ * issue. `failedFingerprints` são as findings cujo `ensureAlarmIssue`
+ * falhou (`action: "failed"` — `gh` sem auth, rate limit, 5xx transitório).
+ *
+ * Sem este filtro o alarme reproduz, no seu próprio mecanismo, a falha que
+ * ele existe pra impedir: `applyAlarmReconciliation` é fail-soft POR
+ * FINDING e deixa a entrada de estado intocada pra tentar de novo na
+ * execução seguinte — mas quem decide se a finding é sequer regerada é este
+ * latch. Latchar um id cuja issue falhou remove a transição de `novas` pra
+ * sempre, o retry nunca acontece, e o registro durável daquele assinante
+ * some em silêncio (achado do review da PR #7828, P1).
+ */
+export function selectLatchableEvents(
+  transitions: readonly KitStateTransition[],
+  disappearances: readonly KitDisappearance[],
+  failedFingerprints: ReadonlySet<string>,
+): { transitions: KitStateTransition[]; disappearances: KitDisappearance[] } {
+  return {
+    transitions: transitions.filter((t) => !failedFingerprints.has(kitStateTransitionFindingKey(t.id))),
+    disappearances: disappearances.filter((d) => !failedFingerprints.has(kitDisappearanceFindingKey(d.id))),
+  };
 }
 
 /** Pura — avança o latch: marca os ids alertados e limpa os que voltaram

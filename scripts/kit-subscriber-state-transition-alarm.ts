@@ -36,8 +36,11 @@
  * caso sumiu antes de dar pra reproduzir. Um alarme cujo dado de entrada
  * talvez omita justamente o estado que ele existe pra pegar não serve, então
  * `fetchCurrentSnapshot` varre `all` E cada estado de alarme
- * separadamente, unindo por id. Custa 4 páginas a mais (os estados não-ativos
- * somam algumas dezenas de registros) e não depende da resposta da pergunta.
+ * separadamente, unindo por id. Custa 4 varreduras paginadas a mais — hoje 1
+ * página cada, porque os estados não-ativos somam dezenas de registros contra
+ * o `per_page` 500 de `listAllKitSubscribers`; se `cancelled`/`inactive`
+ * crescerem além disso vira mais de uma página por estado, sem mudar nada no
+ * mecanismo. E não depende da resposta da pergunta acima.
  *
  * Medido ao vivo em 09/09/2026 (conta Kit da diária): `all` = 930, e as
  * varreduras por estado (`bounced` 6, `cancelled` 30, `inactive` 18) não
@@ -69,6 +72,7 @@ import {
   shouldAlarmKitStateTransition,
   shouldAlarmKitDisappearance,
   advanceKitStateTransitionAlarmState,
+  selectLatchableEvents,
   emptyKitStateTransitionAlarmState,
   KIT_STATE_TRANSITION_ALARM_STATES,
   KIT_STATE_TRANSITION_FROM_STATE,
@@ -183,6 +187,14 @@ export async function fetchCurrentSnapshot(): Promise<KitSubscriberSummary[]> {
  * Fail-soft por desenho — store ausente (clone fresco, sessão sem `data/`)
  * devolve mapa vazio, e a issue diz "nenhum registro" em vez de o alarme
  * inteiro morrer por causa do enriquecimento.
+ *
+ * Quem garante isso é o próprio `readStore`, que trata ausência e JSON
+ * corrompido internamente e nunca lança — o `try/catch` abaixo NÃO é o que
+ * cobre esses dois casos. Ele existe pro resto: mudança de schema, `entries`
+ * vindo `undefined`, qualquer `TypeError` sobre dado malformado. Por isso
+ * loga como ERRO (não `warn`): perder a correlação em silêncio por meses
+ * seria a mesma classe de falha que o alarme existe pra impedir, um nível
+ * acima (achado do review da PR #7828).
  */
 export function loadOnboardingCorrelations(
   storePath: string = DEFAULT_STORE_PATH,
@@ -198,21 +210,50 @@ export function loadOnboardingCorrelations(
       });
     }
   } catch (e) {
-    console.warn(`${LOG} store de onboarding ilegível (${(e as Error).message}) — seguindo sem correlação.`);
+    console.error(
+      `${LOG} ERRO estrutural lendo o store de onboarding (${(e as Error).message}) — ` +
+        `seguindo SEM correlação. Ausência e JSON corrompido não caem aqui (readStore os trata), ` +
+        `então isto é schema/dado inesperado, não "ainda não tem store".`,
+    );
   }
   return map;
 }
 
-/** Corpo do e-mail — o canal que faltava no caso de origem, onde a saída
- *  ficou onze dias sem ninguém saber. A issue é o registro durável; o
- *  e-mail é o que chega ao editor no mesmo dia. */
-function buildAlarmEmail(
+/** Só o que o e-mail lê de um `AlarmFindingOutcome` — declarado à parte pra
+ *  o teste montar um outcome sem depender do envelope inteiro do
+ *  `alarm-issues.ts`. */
+export interface AlarmEmailOutcome {
+  fingerprint: string;
+  action: string;
+  issueNumber: number | null;
+  url: string | null;
+  error?: string;
+}
+
+/**
+ * Corpo do e-mail — o canal que faltava no caso de origem, onde a saída
+ * ficou onze dias sem ninguém saber. A issue é o registro durável; o e-mail
+ * é o que chega ao editor no mesmo dia.
+ *
+ * Exportado pra ser testável em unidade, como `buildKitSubscriberLimitAlarmEmail`
+ * no alarme irmão — um bug de formatação aqui falharia exatamente do jeito
+ * que este alarme existe pra impedir (achado do review da PR #7828).
+ *
+ * Outcome com `action: "failed"` sai NOMEADO e com o erro, nunca como um
+ * `#?` mudo: é o único aviso de que aquele assinante ficou sem registro
+ * durável nesta rodada (será retentado na próxima, ver `selectLatchableEvents`).
+ */
+export function buildAlarmEmail(
   transitions: readonly { address: string; id: number; fromState: string; toState: string }[],
   disappearances: readonly KitDisappearance[],
-  findingOutcomes: readonly { issueNumber: number | null; url: string | null }[],
+  findingOutcomes: readonly AlarmEmailOutcome[],
 ): { subject: string; body: string } {
   const total = transitions.length + disappearances.length;
-  const subject = `[diar.ia.br] Kit: ${total} assinante(s) saíram da base`;
+  const falhas = findingOutcomes.filter((o) => o.action === "failed");
+  const ok = findingOutcomes.filter((o) => o.action !== "failed");
+  const subject =
+    `[diar.ia.br] Kit: ${total} assinante(s) saíram da base` +
+    (falhas.length ? ` — ${falhas.length} issue(s) NÃO abertas` : "");
   const linhas = [
     "Alarme de perda de assinante no Kit (#7660).",
     "",
@@ -231,9 +272,17 @@ function buildAlarmEmail(
         ]
       : []),
     "Issues abertas com o playbook de recuperação:",
-    ...(findingOutcomes.length
-      ? findingOutcomes.map((o) => `  - ${o.url ?? `#${o.issueNumber ?? "?"}`}`)
+    ...(ok.length
+      ? ok.map((o) => `  - ${o.url ?? `#${o.issueNumber ?? "?"}`}`)
       : ["  (nenhuma — ver o log da task)"]),
+    ...(falhas.length
+      ? [
+          "",
+          "FALHA ao abrir issue (o assinante fica sem registro durável nesta rodada;",
+          "não entra no latch, então a próxima execução tenta de novo):",
+          ...falhas.map((o) => `  - ${o.fingerprint}: ${o.error ?? "erro não reportado"}`),
+        ]
+      : []),
   ];
   return { subject, body: linhas.join("\n") };
 }
@@ -316,6 +365,15 @@ export async function run(argv: readonly string[], now: Date = new Date()): Prom
   for (const o of findingOutcomes) {
     console.log(`${LOG} issue ${o.action}${o.issueNumber ? ` #${o.issueNumber}` : ""}${o.url ? ` ${o.url}` : ""}`);
   }
+  const failedFingerprints = new Set(
+    findingOutcomes.filter((o) => o.action === "failed").map((o) => o.fingerprint),
+  );
+  if (failedFingerprints.size > 0) {
+    console.error(
+      `${LOG} ${failedFingerprints.size} issue(s) NÃO abertas — esses assinantes ficam FORA do latch ` +
+        `e serão reprocessados na próxima execução.`,
+    );
+  }
 
   if (findings.length > 0) {
     // Sem try/catch, mesma disciplina de kit-subscriber-limit-alarm.ts: se o
@@ -329,9 +387,15 @@ export async function run(argv: readonly string[], now: Date = new Date()): Prom
 
   // Latch e snapshot avançam DEPOIS das issues e do e-mail: se qualquer um
   // lançar, a próxima execução redetecta e tenta de novo, em vez de perder o
-  // evento.
+  // evento. E entram no latch só os eventos cuja issue de fato foi aberta
+  // (`selectLatchableEvents`) — latchar um que falhou o removeria de `novas`
+  // pra sempre, matando o retry que o `applyAlarmReconciliation` preserva.
   const activeIds = current.filter((s) => s.state === KIT_STATE_TRANSITION_FROM_STATE).map((s) => s.id);
-  saveState(advanceKitStateTransitionAlarmState(latch, transitions, activeIds, now, disappearances), LATCH_PATH);
+  const latchable = selectLatchableEvents(novas, novosSumicos, failedFingerprints);
+  saveState(
+    advanceKitStateTransitionAlarmState(latch, latchable.transitions, activeIds, now, latchable.disappearances),
+    LATCH_PATH,
+  );
   persistSnapshot(current);
   return 0;
 }

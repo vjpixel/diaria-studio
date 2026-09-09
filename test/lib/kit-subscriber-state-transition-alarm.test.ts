@@ -25,6 +25,9 @@ import {
   shouldAlarmKitStateTransition,
   shouldAlarmKitDisappearance,
   advanceKitStateTransitionAlarmState,
+  selectLatchableEvents,
+  kitStateTransitionFindingKey,
+  kitDisappearanceFindingKey,
   emptyKitStateTransitionAlarmState,
   KIT_STATE_TRANSITION_ALARM_STATES,
   type KitLossOnboardingContext,
@@ -263,5 +266,89 @@ describe("onboardingCorrelationLines (#7660, 1º comentário)", () => {
     );
     assert.match(f.body, /CORRELAÇÃO/);
     assert.match(f.body, /#7660/);
+  });
+});
+
+describe("selectLatchableEvents — issue que falhou NÃO entra no latch (#7828)", () => {
+  const t = { id: 1, address: "a@x.com", fromState: "active", toState: "complained", detectedAt: NOW.toISOString() };
+  const d = { id: 2, address: "b@x.com", lastState: "active", detectedAt: NOW.toISOString() };
+
+  it("sem falha, tudo é latchável", () => {
+    const r = selectLatchableEvents([t], [d], new Set());
+    assert.deepEqual(r.transitions.map((x) => x.id), [1]);
+    assert.deepEqual(r.disappearances.map((x) => x.id), [2]);
+  });
+
+  it("transição cuja issue falhou fica FORA — senão o retry morre e o assinante some em silêncio", () => {
+    const r = selectLatchableEvents([t], [d], new Set([kitStateTransitionFindingKey(1)]));
+    assert.deepEqual(r.transitions, []);
+    assert.deepEqual(r.disappearances.map((x) => x.id), [2], "a falha de uma não pode arrastar a outra");
+  });
+
+  it("desaparecimento cuja issue falhou fica FORA", () => {
+    const r = selectLatchableEvents([t], [d], new Set([kitDisappearanceFindingKey(2)]));
+    assert.deepEqual(r.transitions.map((x) => x.id), [1]);
+    assert.deepEqual(r.disappearances, []);
+  });
+
+  it("o fingerprint da transição não silencia o desaparecimento do MESMO id", () => {
+    const mesmoId = { id: 1, address: "a@x.com", lastState: "complained", detectedAt: NOW.toISOString() };
+    const r = selectLatchableEvents([t], [mesmoId], new Set([kitStateTransitionFindingKey(1)]));
+    assert.deepEqual(r.transitions, []);
+    assert.deepEqual(r.disappearances.map((x) => x.id), [1]);
+  });
+
+  it("ponta a ponta: falha → não latcha → próxima execução redetecta e realarma", () => {
+    const latch0 = emptyKitStateTransitionAlarmState();
+    const falhou = new Set([kitStateTransitionFindingKey(1)]);
+    const latchable = selectLatchableEvents([t], [], falhou);
+    const latch1 = advanceKitStateTransitionAlarmState(latch0, latchable.transitions, [], NOW, latchable.disappearances);
+    assert.deepEqual(latch1.alertedSubscriberIds, [], "o id da issue que falhou não pode entrar no latch");
+    assert.equal(shouldAlarmKitStateTransition(latch1, [t]), true, "a próxima execução PRECISA realarmar");
+  });
+});
+
+describe("mesmo assinante nos DOIS eventos, como no caso de origem (#7660)", () => {
+  it("transição alertada não impede o alarme do desaparecimento posterior do mesmo id", () => {
+    const id = 4264399626;
+    const transicao = {
+      id,
+      address: "pedro@x.com",
+      fromState: "active",
+      toState: "complained",
+      detectedAt: "2026-08-29T00:00:00Z",
+    };
+    // Dia 1: vira complained, alarma, latcha.
+    let latch = advanceKitStateTransitionAlarmState(emptyKitStateTransitionAlarmState(), [transicao], [], NOW);
+    assert.equal(shouldAlarmKitStateTransition(latch, [transicao]), false, "não realarma a mesma transição");
+
+    // Dia 12: some da conta. Snapshot anterior o tinha como complained.
+    const sumico = detectKitDisappearances(
+      [{ id, state: "complained", address: "pedro@x.com", apoioNivel: "apoiador" }],
+      [],
+      NOW,
+    );
+    assert.equal(sumico.length, 1);
+    assert.equal(
+      shouldAlarmKitDisappearance(latch, sumico),
+      true,
+      "o latch da transição não pode silenciar o desaparecimento — são dois eventos",
+    );
+    latch = advanceKitStateTransitionAlarmState(latch, [], [], NOW, sumico);
+    assert.deepEqual(latch.alertedSubscriberIds, [id]);
+    assert.deepEqual(latch.alertedDisappearedIds, [id]);
+    assert.equal(shouldAlarmKitDisappearance(latch, sumico), false, "mas o segundo evento também só alarma uma vez");
+  });
+});
+
+describe("onboardingCorrelationLines — ordem inesperada (#7828)", () => {
+  it("envio POSTERIOR à detecção não vira '-3 dia(s) antes'", () => {
+    const linhas = onboardingCorrelationLines(
+      { email1SentAt: "2026-09-01T00:00:00Z" },
+      "2026-08-29T00:00:00Z",
+    ).join("\n");
+    assert.match(linhas, /DEPOIS desta detecção/);
+    assert.doesNotMatch(linhas, /-\d+ dia/);
+    assert.doesNotMatch(linhas, /CORRELAÇÃO/, "ordem invertida não é correlação destacada");
   });
 });
