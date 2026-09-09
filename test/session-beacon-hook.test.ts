@@ -1008,9 +1008,17 @@ describe("#6952 — beacon e session-registry se excluem mutuamente no mesmo reg
     const root = mkdtempSync(join(tmpdir(), "beacon-registry-6952-"));
     roots.push(root);
     // `.git` como diretório vazio: o beacon resolve a raiz por ele
-    // (`resolveMainRepoRootNoSpawn`), e o `git rev-parse` do CLI falha e cai
-    // no fallback do cwd — as duas resoluções concordam nesta mesma raiz.
+    // (`resolveMainRepoRootNoSpawn`), e o `git rev-parse` do CLI falha —
+    // caindo no fallback de `resolveRepoRoot`. Desde o #7699 esse fallback
+    // não é mais cego: ele exige um `package.json` com
+    // `"name": "diaria-studio"` num ancestral, senão LANÇA (era exatamente o
+    // fallback cego que criava a árvore recursiva `data/data/…` quando o cwd
+    // ficava preso dentro do junction do OneDrive). Este fixture precisa do
+    // marcador pra continuar representando uma raiz legítima — sem ele o
+    // `register` do CLI falha e o teste quebra, que foi o que a CI da PR
+    // #7797 pegou.
     mkdirSync(join(root, ".git"), { recursive: true });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "diaria-studio" }));
     mkdirSync(join(root, "data", "sessions"), { recursive: true });
     mkdirSync(join(root, ".claude", "hooks"), { recursive: true });
     const hookPath = join(root, ".claude", "hooks", "session-beacon.mjs");
