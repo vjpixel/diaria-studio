@@ -117,6 +117,7 @@
  */
 
 import { HUB_META, type HubMeta } from "../../workers/arquivo/src/hubs/meta.ts";
+import { LEGACY_BRAND_RE as SHARED_LEGACY_BRAND_RE } from "./shared/legacy-brand-guard.ts";
 
 // ─── Extração (pura) ────────────────────────────────────────────────────────
 
@@ -183,8 +184,16 @@ export function extractHomeMeta(html: string): HomeMetaExtract {
 /** Marca oficial (minúscula, sempre) — ver `test/reader-facing-no-legacy-brand-4424.test.ts`. */
 const OFFICIAL_BRAND = "diar.ia.br";
 
-/** Grafia legada — nunca deveria aparecer em superfície reader-facing. */
-const LEGACY_BRAND_RE = /Diar\.ia\b/;
+/**
+ * Grafia legada — nunca deveria aparecer em superfície reader-facing.
+ *
+ * Reusa `LEGACY_BRAND_RE` de `scripts/lib/shared/legacy-brand-guard.ts` (#7719
+ * review) em vez de manter uma cópia local: chegou a existir uma 3ª cópia
+ * divergente do mesmo regex (aqui com `\b`, nas outras duas sem) — inofensivo
+ * hoje, mas exatamente o tipo de drift que uma 2ª edição da marca (ex: cobrir
+ * `DIAR.IA` maiúsculo) esqueceria de propagar pras 3 cópias.
+ */
+const LEGACY_BRAND_RE = SHARED_LEGACY_BRAND_RE;
 
 /** Conta ocorrências de `href="http://diar.ia.br` (self-link inseguro) no HTML. */
 export function countHttpSelfLinks(html: string): number {

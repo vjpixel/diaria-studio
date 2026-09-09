@@ -55,3 +55,21 @@ describe("buildArticleHtml (#3940)", () => {
     assert.doesNotThrow(() => page.html.length);
   });
 });
+
+describe("buildArticleHtml — guard de marca legada (#7719)", () => {
+  it("ASSUNTO com a grafia legada 'Diar.ia' (texto real que saiu ao vivo em /2607) → lança, nunca publica", () => {
+    const draft = FIXTURE_DRAFT.replace(
+      "**ASSUNTO**\n\nEdição de Teste",
+      "**ASSUNTO**\n\nDiar.ia | Julho 2026 — Agentes saem do controle",
+    );
+    assert.throws(() => buildArticleHtml(draft, "2604-05"), /marca legada "Diar\.ia"/);
+  });
+
+  it("ASSUNTO com a grafia correta 'diar.ia.br' não acusa", () => {
+    const draft = FIXTURE_DRAFT.replace(
+      "**ASSUNTO**\n\nEdição de Teste",
+      "**ASSUNTO**\n\ndiar.ia.br | Julho 2026 — Agentes saem do controle",
+    );
+    assert.doesNotThrow(() => buildArticleHtml(draft, "2604-05"));
+  });
+});
