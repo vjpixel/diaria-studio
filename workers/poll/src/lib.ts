@@ -687,9 +687,11 @@ export function classify403Reason(sig: string): Vote403Reason {
  * trocado de Beehiiv pra Brevo porque a Beehiiv bloqueia "Include and
  * exclude segments" atrás do plano Scale (#4572); `mensal-apoiadores-kit`
  * (#7633) sucede o Brevo pelo mesmo motivo que o resto do projeto migrou —
- * backend da newsletter em "kit" (#7388), base inteira já lá (#7386). Nem
- * `mensal-beehiiv` nem `mensal-apoiadores-brevo` chegaram a enviar ao vivo
- * (ficam no tipo por histórico/rastreabilidade, sem uso ativo). Cada marca
+ * backend da newsletter em "kit" (#7388), base inteira já lá (#7386).
+ * `mensal-beehiiv` nunca chegou a enviar; `mensal-apoiadores-brevo` ENVIOU
+ * uma vez (04/08/2026, ciclo 2607-08, 10 entregues — correção do #7655,
+ * medida na API da Brevo), então pode ter voto real registrado sob ele e não
+ * é um brand vazio. Cada marca
  * tem ranking, gate de edições e apelidos
  * isolados (mecânica #1905 — um brand novo entra de graça na isolação, ver
  * `brandKvPrefix`/`parseBrandParam` abaixo, derivados de
@@ -756,9 +758,10 @@ export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderbo
   // (backend da newsletter virou "kit" no #7388 e a base migrou no #7386).
   // `leaderboardPeriod: "year"` OBRIGATÓRIO pelo mesmo motivo dos 2 acima —
   // sem isso `vote.ts` rejeita edição em formato de ciclo com 400 (#4435).
-  // Diferente dos antecessores, este canal deve de fato enviar: os dois
-  // anteriores morreram antes do 1º disparo, então este é o primeiro brand
-  // desta audiência que vai receber voto real.
+  // #7655: o antecessor Brevo JÁ enviou uma edição (04/08/2026) — se algum
+  // apoiador votou naquele envio, o voto está sob `mensal-apoiadores-brevo`.
+  // Consolidar leaderboard entre os dois brands, se um dia fizer sentido, é
+  // trabalho deliberado; não acontece de graça só porque o canal mudou.
   "mensal-apoiadores-kit": { name: "diar.ia.br", siteUrl: "https://diar.ia.br", leaderboardPeriod: "year" },
 };
 

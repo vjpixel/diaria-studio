@@ -95,10 +95,11 @@ export const MENSAL_APOIADORES_BREVO_UTM_MEDIUM = "email";
  * `utm_source`/`utm_medium` da variante KIT do envio extra pra apoiadores
  * (#7633) — 3º canal da MESMA audiência (Mantenedor/Patrono) e do MESMO
  * conteúdo (`draft.md` do ciclo). Beehiiv (`mensal-beehiiv`) e Brevo
- * (`mensal-apoiadores-brevo`) precederam este, e NENHUM DOS DOIS chegou a
- * enviar ao vivo: o Beehiiv por bloqueio de plano (#4572), o Brevo porque a
- * lista dedicada nunca foi populada (`sync-apoio-nivel-brevo.ts --push` nunca
- * rodou) e nenhuma campanha saiu de `--dry-run`. O motivo da troca aqui é
+ * (`mensal-apoiadores-brevo`) precederam este. O Beehiiv nunca enviou
+ * (bloqueio de plano, #4572); **o Brevo enviou uma vez** — ciclo 2607-08 em
+ * 04/08/2026, 10 entregues, 2 cliques únicos (correção do #7655; até então
+ * este comentário afirmava o contrário, com base num state local que só
+ * registra o que os scripts fizeram). O motivo da troca aqui é
  * outro: `publishing.newsletter.backend` virou `"kit"` (#7388) e a base
  * inteira migrou (#7386), então manter um 2º ESP vivo só pro envio de
  * apoiadores é manutenção sem contrapartida.
@@ -865,10 +866,11 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "vivo): mesmo conteúdo/posições/audiência do #4482, canal trocado por bloqueio de plano da " +
       "Beehiiv. `utm_source` próprio pra não misturar atribuição com 'mensal-clarice' " +
       "(assinantes Clarice reais) nem com o 'mensal-beehiiv' aposentado. " +
-      "SUPERSEDIDO pelo canal Kit ('mensal-apoiadores-kit' abaixo, #7633) — como o " +
-      "'mensal-beehiiv' antes dele, este canal NUNCA enviou ao vivo (a lista Brevo dedicada " +
-      "nunca foi populada e nenhuma campanha saiu de --dry-run), então não há série histórica " +
-      "de cliques pra preservar; mantido no registry por rastreabilidade.",
+      "SUPERSEDIDO pelo canal Kit ('mensal-apoiadores-kit' abaixo, #7633). Diferente do " +
+      "'mensal-beehiiv', este canal ENVIOU ao vivo: 1 edição (ciclo 2607-08, 04/08/2026, " +
+      "campanha Brevo 12, lista 8 — 10 entregues, 4 aberturas únicas, 2 cliques únicos, medido " +
+      "na API em 08/09/2026, #7655). HÁ série histórica sob este utm_source, ainda que de uma " +
+      "edição só — aposentado significa 'não recebe envio novo', nunca 'não tem dado'.",
     status: "aposentado",
   },
   {

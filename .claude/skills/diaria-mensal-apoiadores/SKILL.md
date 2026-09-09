@@ -5,41 +5,64 @@ description: Envia a edição mensal (data/monthly/{ciclo}/draft.md) por e-mail 
 
 # /diaria-mensal-apoiadores
 
-> **STATUS (#7633, 08/09/2026): canal migrado pra Kit; nenhum envio real
-> aconteceu ainda em canal nenhum.**
+> **STATUS (#7655, 08/09/2026): canal migrado pra Kit, audiência populada,
+> falta o 1º broadcast Kit. O canal Brevo anterior JÁ ENVIOU uma vez.**
 >
-> Entrega o "artigo especial do mês" já anunciado como recompensa Mantenedor/
-> Patrono (`data/snippets/agradecimento-apoiadores.md`) — prometido desde
-> #4482, sem canal funcional até hoje. Reusa o MESMO `draft.md` que vai pra
-> Clarice, trocando só a AUDIÊNCIA (tag `kit_apoiadores.audience_tag`) e
-> removendo o conteúdo Clarice-only.
+> Entrega o recap mensal como recompensa Mantenedor/Patrono
+> (`data/snippets/agradecimento-apoiadores.md`), prometida desde #4482. Reusa
+> o MESMO `draft.md` que vai pra Clarice, trocando só a AUDIÊNCIA (tag
+> `kit_apoiadores.audience_tag`) e removendo o conteúdo Clarice-only.
 >
-> **O que falta pro 1º envio real (ação do editor, nesta ordem):**
-> 1. `npx tsx scripts/sync-apoio-nivel-kit.ts --push` — garante `apoio_nivel`
->    atualizado no Kit (só se ainda não rodou neste ciclo de apoio).
-> 2. `npx tsx scripts/sync-apoio-mensal-tag-kit.ts --push` — **cria e popula a
->    tag `apoio-mensal`**, que ainda NÃO existe na conta.
-> 3. Passo 2 abaixo, real (sem `--dry-run`), e conferência no painel do Kit.
+> **O envio de 04/08/2026 (ciclo 2607-08) aconteceu de verdade** — campanha
+> Brevo 12, "Mensal apoiadores 2607-08", lista 8 (Mantenedor+Patrono): 10
+> entregues, 4 aberturas únicas, 5 clickers, 2 cliques únicos. Medido na API
+> em 08/09/2026 (#7655). Até então TODA a documentação desta skill afirmava o
+> contrário — ver "⚠️ O state local não é prova de envio" abaixo, que é a
+> lição de método, não uma nota de rodapé.
 >
-> Nenhuma escrita real rodou contra o Kit nesta unidade — mesma disciplina de
-> #4320/#4382/#4490/#4534/#4572.
+> **Estado da audiência:** `sync-apoio-mensal-tag-kit.ts --push` rodou em
+> 08/09/2026 e criou a tag `apoio-mensal` (id 23210615) com os 8
+> Mantenedor/Patrono do momento. Quem recebeu em agosto e não está mais:
+> 1 caiu pra `apoiador` (R$10–25, abaixo do corte), 2 estão sem `apoio_nivel`
+> (apoio não vigente) e 1 está blacklisted na Brevo e não existe no Kit.
+>
+> **O que falta pro 1º envio Kit:** rodar o Passo 2 abaixo sem `--dry-run` e
+> conferir o rascunho no painel. Nenhum broadcast Kit foi criado ainda.
+
+## ⚠️ O state local não é prova de envio
+
+`beehiiv-apoiadores-state.json` registra o que os SCRIPTS fizeram, e
+`--mark-sent` é um passo manual. O envio de 04/08 saiu à mão pela UI da Brevo
+e ninguém rodou `--mark-sent` — o state ficou em `draft_prepared` para sempre.
+
+Isso enganou por um mês, e enganou em cadeia: as docstrings do #4572/#4593
+foram escritas num worktree isolado SEM credencial Brevo, concluíram "a lista
+está vazia, nada foi enviado" a partir de uma leitura que nunca aconteceu, e
+todo texto posterior (inclusive o do #7633) repetiu isso como fato
+estabelecido. A verificação que resolveu foi uma chamada à API da Brevo.
+
+**Regra prática:** antes de afirmar que um canal nunca enviou, perguntar ao
+ESP. O repo só sabe o que foi feito através dele.
 
 **Skill manual e SEPARADA de `/diaria-mensal`** (decisão do #4521): o editor
 decide quando disparar, independente do timing do envio Clarice do mês.
 
-## Por que Kit (e por que a troca não custou nada)
+## Por que Kit
 
-Beehiiv (#4482) → Brevo (#4572/#4593) → Kit (#7633). As duas primeiras trocas
-foram forçadas por bloqueio de plataforma; esta é consolidação:
+Beehiiv (#4482) → Brevo (#4572/#4593) → Kit (#7633). A 1ª troca foi forçada
+por bloqueio de plataforma (a Beehiiv gateia segmentação multi-condição atrás
+do plano Scale, e nunca chegou a enviar); esta é consolidação:
 `publishing.newsletter.backend` virou `"kit"` (#7388) e a base inteira migrou
 (#7386, Beehiiv 317 → 0 ativos). Manter um 2º ESP vivo só pra este envio era
 manutenção sem contrapartida.
 
-**Nada foi perdido porque nada tinha acontecido:** a lista Brevo dedicada
-nunca foi populada (`sync-apoio-nivel-brevo.ts --push` nunca rodou), nenhuma
-campanha saiu de `--dry-run`, nenhum apoiador recebeu por lá. Os scripts
-`*-apoiadores-brevo.ts` e a chave `brevo_apoiadores` continuam no repo até o
-1º envio Kit real — depois disso, remover.
+**O que a troca custa (correção do #7655):** a Brevo enviou 1 edição real,
+com audiência e engajamento medidos — não é um canal natimorto. O Kit começa
+do zero em série histórica, e comparar o desempenho do 1º envio Kit com o de
+04/08 exige ir buscar os números na Brevo (campanha 12), porque eles não
+migram junto. Os scripts `*-apoiadores-brevo.ts` e a chave `brevo_apoiadores`
+continuam no repo; quando forem removidos, o registro daquele envio precisa
+sobreviver em algum lugar — aposentar o canal não é fingir que ele não rodou.
 
 ## ⚠️ Audiência é TAG, nunca segmento
 
