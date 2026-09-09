@@ -37,7 +37,6 @@
     "typecheck-ratchet": "tsx scripts/typecheck-ratchet.ts",
     "generate-worker-tokens": "tsx scripts/generate-worker-tokens.ts",
     "pretest": "tsx scripts/generate-worker-tokens.ts && tsx scripts/assert-test-discovery.ts",
-    "preinstall": "node scripts/guard-node-modules-symlink.ts",
     "test": "tsx scripts/run-tests.ts",
     "check-cursos-links": "tsx scripts/check-cursos-links.ts",
     "studio": "tsx scripts/studio-ui/server.ts",
