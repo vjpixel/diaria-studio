@@ -1,34 +1,37 @@
 #!/usr/bin/env node
 /**
- * scripts/ads-spend-ingest-alarm.ts (#5597)
+ * scripts/ads-spend-ingest-alarm.ts (#5597, reescrito no #7518)
  *
- * Alarme que interpreta o CONTEÚDO (não só o exit code) do log acumulado de
- * `scripts/google-ads-ingest-spend.ts` (e, quando espelhado lá, do
- * Microsoft Ads) — decisão deliberada do #5237/#5502 mantém exit code 0
- * mesmo em `defect` (query malformada, versão de API descontinuada), pra
- * não calar o canal vizinho na task encadeada `google-ads-ingest-spend.ts
- * && microsoft-ads-ingest-spend.ts`. Sem este alarme, nenhum mecanismo
- * existente (`Diaria-Systemd-Failed-Units-Alarm`, `--state=failed`) enxerga
- * um defeito real — a unit sempre reporta sucesso.
+ * Alarme que interpreta o CONTEÚDO (não só o exit code) dos logs
+ * acumulados de `scripts/google-ads-ingest-spend.ts` e
+ * `scripts/microsoft-ads-ingest-spend.ts` — decisão deliberada do
+ * #5237/#5502 mantém exit code 0 mesmo em `defect` (query malformada,
+ * versão de API descontinuada), pra não calar a ingestão da plataforma
+ * vizinha. Sem este alarme, nenhum mecanismo existente
+ * (`Diaria-Systemd-Failed-Units-Alarm`, `--state=failed`) enxerga um
+ * defeito real — a unit sempre reporta sucesso.
  *
  * Lógica pura em `scripts/lib/ads-spend-ingest-alarm.ts` — este arquivo é
- * só I/O: ler o log em disco, enviar e-mail, dedup/criação de issue via
- * `scripts/lib/alarm-issues.ts`.
+ * só I/O: ler os DOIS logs em disco (um por plataforma), enviar e-mail,
+ * dedup/criação de issue via `scripts/lib/alarm-issues.ts`.
  *
- * **Correção de prosa vencida (#7137, 05/09/2026):** este parágrafo dizia
- * "a task `Diaria-Ads-Spend-Ingest` ainda NÃO existe no registro" — ficou
- * desatualizado quando o #5704 registrou `Diaria-Google-Ads-Spend-Ingest`
- * em `scripts/lib/scheduled-tasks.ts` (daily 09:50), o alvo que este alarme
- * lê. Este script agora está registrado como `Diaria-Ads-Spend-Ingest-Alarm`
- * (daily 10:05, logo depois) — exatamente o padrão de prosa-vencida que a
- * #7137 mediu (10 entradas "DECLARADA, NÃO ARMADA" no registro tipado
- * ficaram vencidas depois de armadas; aqui o vencimento era nesta
- * docstring, fora do registro).
+ * **Correção de causa raiz (#7518, 09/09/2026):** a versão original lia um
+ * ÚNICO path (`data/aquisicao/.ads-spend-ingest.log`) que descrevia a
+ * convenção de uma task unificada que nunca chegou a existir — as duas
+ * tasks reais (`Diaria-Google-Ads-Spend-Ingest`,
+ * `Diaria-Microsoft-Ads-Spend-Ingest`) sempre gravaram em logs SEPARADOS.
+ * O alarme nunca leu run nenhum (o arquivo lido nunca existiu) e sempre
+ * reportou `alarm-no-run` — pelo motivo ERRADO: "achei o arquivo mas não
+ * tem run de hoje" nunca foi verdade, o arquivo nunca existiu. Ver a
+ * docstring de `scripts/lib/ads-spend-ingest-alarm.ts` pro racional
+ * completo (tri-state honesto por plataforma + composição do veredito
+ * combinado).
  *
  * Uso:
  *   npx tsx scripts/ads-spend-ingest-alarm.ts               # avalia + alarma se necessário
  *   npx tsx scripts/ads-spend-ingest-alarm.ts --dry-run      # avalia + imprime, NÃO envia nem persiste
  *   npx tsx scripts/ads-spend-ingest-alarm.ts --to email@x   # override do destinatário
+ *   npx tsx scripts/ads-spend-ingest-alarm.ts --google-log-path X --microsoft-log-path Y  # override p/ teste manual
  *
  * Env: `data/.credentials.json` com o scope `gmail.send` — só necessário pra
  * ENVIAR o alarme (mesmo requisito dos outros alarmes locais deste repo).
@@ -53,6 +56,8 @@ import {
   isAlarmingVerdict,
   type AdsSpendIngestAlarmState,
   type AdsSpendIngestAlarmEvaluation,
+  type PlatformLogInput,
+  platformLabel,
 } from "./lib/ads-spend-ingest-alarm.ts";
 import {
   planAlarmReconciliation,
@@ -68,42 +73,60 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = resolve(ROOT, "data");
 const AQUISICAO_DIR = join(DATA_DIR, "aquisicao");
-/** Convenção de logPath que a futura entrada `Diaria-Ads-Spend-Ingest` em
- *  `scheduled-tasks.ts` deveria usar (mesma subpasta que `spend.csv` já
- *  ocupa) — `data/aquisicao/.ads-spend-ingest.log`. Sobreponível via
- *  `--log-path` só pra teste manual/depuração local. */
-const DEFAULT_LOG_PATH = join(AQUISICAO_DIR, ".ads-spend-ingest.log");
+/** Paths REAIS — batem com `logPath` de `Diaria-Google-Ads-Spend-Ingest` e
+ *  `Diaria-Microsoft-Ads-Spend-Ingest` em `scripts/lib/scheduled-tasks.ts`
+ *  (relativo a `data/`, mesma convenção de `ScheduledTaskDef.logPath`).
+ *  `test/ads-spend-ingest-alarm-log-path-guard.test.ts` trava que os dois
+ *  batem — é o guard que impede esta issue de reproduzir com um path
+ *  diferente no futuro. */
+/** Exportados pra `test/ads-spend-ingest-alarm-log-path-guard.test.ts` —
+ *  o guard estático que compara estes 2 paths contra o `logPath` real das
+ *  2 tasks em `scripts/lib/scheduled-tasks.ts`, pra nunca mais deixar este
+ *  alarme apontar pra um arquivo que nenhuma task grava (a causa raiz do
+ *  #7518). */
+export const DEFAULT_GOOGLE_LOG_PATH = join(AQUISICAO_DIR, ".google-ads-ingest.log");
+export const DEFAULT_MICROSOFT_LOG_PATH = join(AQUISICAO_DIR, ".microsoft-ads-ingest.log");
 const STATE_PATH = join(AQUISICAO_DIR, ".ads-spend-ingest-alarm-state.json");
 const ALARM_ISSUES_STATE_PATH = join(AQUISICAO_DIR, ".ads-spend-ingest-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[ads-spend-ingest-alarm]";
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
-function readLogContent(logPath: string): string | null {
-  if (!existsSync(logPath)) return null;
+function readPlatformLog(logPath: string): PlatformLogInput {
+  const exists = existsSync(logPath);
+  if (!exists) return { logPath, exists: false, content: null };
   try {
-    return readFileSync(logPath, "utf8");
+    return { logPath, exists: true, content: readFileSync(logPath, "utf8") };
   } catch {
-    return null;
+    // Existe mas não dá pra ler (permissão, etc.) — mesmo tratamento de
+    // "cannot-verify" que arquivo ausente recebe do lado da lógica pura;
+    // `exists: true` + `content: null` deixa `evaluateSinglePlatformLog`
+    // reportar `cannotVerifyReason: "log_unparseable"` em vez de
+    // `"log_missing"` (mais preciso pro operador que for investigar).
+    return { logPath, exists: true, content: null };
   }
 }
 
 export function toAlarmFinding(evaluation: AdsSpendIngestAlarmEvaluation): AlarmFinding {
   const fingerprint = evaluation.verdict === "alarm-defect" ? "defect" : "no-run";
+  const offendingPlatforms = evaluation.platforms.filter((p) =>
+    evaluation.verdict === "alarm-defect" ? p.verdict === "defect" : p.verdict === "no-run",
+  );
+  const platformNames = offendingPlatforms.map((p) => platformLabel(p.platform)).join(", ");
   return {
     check: "ads-spend-ingest",
     fingerprint,
     title:
       evaluation.verdict === "alarm-defect"
-        ? "[diar.ia.br] ads-spend-ingest: DEFEITO real detectado no log (exit code não avisa)"
-        : "[diar.ia.br] ads-spend-ingest: nenhuma execução encontrada hoje",
+        ? `[diar.ia.br] ads-spend-ingest: DEFEITO real detectado no log (${platformNames}) — exit code não avisa`
+        : `[diar.ia.br] ads-spend-ingest: nenhuma execução encontrada hoje (${platformNames})`,
     body: [
       "Achado automático do alarme `Diaria-Ads-Spend-Ingest-Alarm`",
-      "(`scripts/ads-spend-ingest-alarm.ts`, #5597).",
+      "(`scripts/ads-spend-ingest-alarm.ts`, #5597/#7518).",
       "",
       evaluation.verdict === "alarm-defect"
-        ? `O run de ${evaluation.latestRunAt} contém o marcador "✖ DEFEITO" — ver e-mail/log completo.`
-        : "Nenhum run de hoje foi encontrado no log da ingestão.",
+        ? `O run de ${evaluation.latestRunAt} (${platformNames}) contém sinal de defeito/fallback — ver e-mail/log completo.`
+        : `Log presente mas sem run de hoje em: ${platformNames}.`,
       "",
       "Esta issue é criada automaticamente pelo alarme e será",
       "comentada/fechada sozinha quando o achado deixar de reproduzir por",
@@ -150,12 +173,29 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const isDryRun = hasFlag(argv, "dry-run");
   const toOverride = getArg(argv, "to");
-  const logPath = getArg(argv, "log-path") ?? DEFAULT_LOG_PATH;
+  const googleLogPath = getArg(argv, "google-log-path") ?? DEFAULT_GOOGLE_LOG_PATH;
+  const microsoftLogPath = getArg(argv, "microsoft-log-path") ?? DEFAULT_MICROSOFT_LOG_PATH;
 
   const now = new Date();
-  const logContent = readLogContent(logPath);
-  const evaluation = evaluateAdsSpendIngestAlarm(logContent, now);
-  console.log(`${LOG_PREFIX} verdict=${evaluation.verdict} latestRunAt=${evaluation.latestRunAt ?? "-"} logPath=${logPath}`);
+  const google = readPlatformLog(googleLogPath);
+  const microsoft = readPlatformLog(microsoftLogPath);
+  const evaluation = evaluateAdsSpendIngestAlarm(google, microsoft, now);
+  console.log(
+    `${LOG_PREFIX} verdict=${evaluation.verdict} ` +
+      evaluation.platforms.map((p) => `${p.platform}=${p.verdict}(${p.logPath})`).join(" "),
+  );
+
+  if (evaluation.verdict === "cannot-verify") {
+    // Fail-soft do PRÓPRIO alarme (mesma disciplina de
+    // `onboarding-continuity-alarm.ts`/`meta-capi-staleness.ts`, #7776):
+    // nunca cria issue/envia e-mail a partir de uma leitura que não
+    // aconteceu — mas o veredito acima já ficou honesto no console
+    // (nunca "ok", nunca "alarm-no-run"). Retorna ANTES de ler qualquer
+    // estado de dedup — nada precisa ser lido pra um caminho que não
+    // grava/envia nada (achado do self-review da #7518).
+    console.log(`${LOG_PREFIX} cannot-verify — pelo menos uma plataforma sem log legível; nenhum alarme disparado (fail-soft).`);
+    return;
+  }
 
   const state = loadState(STATE_PATH);
   const alarmFindings: AlarmFinding[] = isAlarmingVerdict(evaluation.verdict) ? [toAlarmFinding(evaluation)] : [];
@@ -205,7 +245,7 @@ async function main(): Promise<void> {
         .map((r) => (r.action === "failed" ? `  - falha ao criar/reusar (${r.error})` : `  - #${r.issueNumber} (${r.url})`))
         .join("\n")
     : "";
-  const { subject, body } = buildAdsSpendIngestAlarmEmail(evaluation, logPath, issueLines);
+  const { subject, body } = buildAdsSpendIngestAlarmEmail(evaluation, issueLines);
   const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
   if (isDryRun) {
     console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
