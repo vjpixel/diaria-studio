@@ -1,10 +1,14 @@
 // Regressão #7763: symlink node_modules → fora do worktree + npm ci = principal vazio
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, symlinkSync, rmSync, mkdirSync, chmodSync } from "node:fs";
+import { mkdtempSync, symlinkSync, rmSync, mkdirSync, chmodSync, readFileSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { checkNodeModulesSymlink, guardBeforeNpmInstall } from "../scripts/lib/worktree-node-modules-guard.ts";
+
+const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function withTmp(fn: (dir: string) => void): void {
   const tmp = mkdtempSync(join(tmpdir(), "wt-7763-"));
@@ -89,5 +93,49 @@ test("erro de inspeção não-ENOENT bloqueia em vez de mascarar", { skip: proce
     } finally {
       chmodSync(locked, 0o700);
     }
+  });
+});
+
+// #7774: o guard só fecha o #7763 se ALGUMA COISA o invocar antes do `npm ci`
+// real. O enforcement é o `preinstall` do package.json — sem ele a função é
+// biblioteca testável, não recusa mecânica (achado P1 do review da PR).
+test("package.json declara o preinstall que invoca o guard", () => {
+  const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+    scripts?: Record<string, string>;
+  };
+  const preinstall = pkg.scripts?.preinstall;
+  assert.ok(preinstall, "package.json precisa de um script 'preinstall' — é o que faz o guard rodar antes do npm ci");
+  assert.match(preinstall, /guard-node-modules-symlink\.ts/);
+  // `node` puro, não `tsx`: no preinstall as dependências ainda não existem.
+  assert.match(preinstall, /^node\s/);
+  assert.ok(existsSync(join(repoRoot, "scripts/guard-node-modules-symlink.ts")), "CLI do preinstall precisa existir");
+});
+
+test("CLI do preinstall sai 1 quando node_modules é symlink externo", () => {
+  withTmp((tmp) => {
+    const outside = mkdtempSync(join(tmpdir(), "wt-7763-principal-"));
+    try {
+      mkdirSync(join(outside, "node_modules"), { recursive: true });
+      symlinkSync(join(outside, "node_modules"), join(tmp, "node_modules"), "junction");
+      const r = spawnSync(process.execPath, [join(repoRoot, "scripts/guard-node-modules-symlink.ts")], {
+        cwd: tmp,
+        encoding: "utf8",
+      });
+      assert.equal(r.status, 1, `esperado exit 1; stdout=${r.stdout} stderr=${r.stderr}`);
+      assert.match(r.stderr, /\[GUARD #7763\]/);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("CLI do preinstall sai 0 quando node_modules é diretório real", () => {
+  withTmp((tmp) => {
+    mkdirSync(join(tmp, "node_modules"), { recursive: true });
+    const r = spawnSync(process.execPath, [join(repoRoot, "scripts/guard-node-modules-symlink.ts")], {
+      cwd: tmp,
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 0, `esperado exit 0; stderr=${r.stderr}`);
   });
 });
