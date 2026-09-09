@@ -80,6 +80,19 @@ PAID_ALLOWLIST = {
     "z-ai/glm-5.3-flash",       # piso pago da lane + visao
     "openai-codex/gpt-5.6-luna",
     "gpt-5.6-luna",
+    # #7649 (08/09/2026): elo final de assinatura claude.ai de
+    # claude-openrouter.sh (depois do glm-5.3-flash, quando os 3 :free E o
+    # pago falham). Sentinela "sonnet" gravada literalmente como `model` na
+    # linha de billing — nao e cobranca de gateway (roda com as 5 vars
+    # ANTHROPIC_* de gateway UNSET, ver docstring do wrapper), mas sem
+    # allowlist seria indistinguivel de um vazamento pago de verdade. Mesmo
+    # tratamento do gpt-5.6-luna acima (drift do PR #7648): entra tanto aqui
+    # (pra _is_leak nao sinalizar) quanto em PAID_MODELS_NOT_ON_OPENROUTER
+    # abaixo (pro --price-check nao tentar achar preco de um modelo que a
+    # OpenRouter nunca serviu) — o invariante mais abaixo neste arquivo
+    # (todo item do PAID_ALLOWLIST coberto por baseline OU por
+    # PAID_MODELS_NOT_ON_OPENROUTER) exige as DUAS entradas juntas.
+    "sonnet",
 }
 
 # #6912 (01/09/2026): cadeia de modelo do job `continuo` — MANTIDA A MAO
@@ -142,7 +155,7 @@ PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {
 # catalogo cairia em "nao encontrei" e seria indistinguivel de um id digitado
 # errado no baseline. Com ela, o relatorio diz "nao verificavel por esta
 # fonte" — que e a verdade, e nunca "preco ok".
-PAID_MODELS_NOT_ON_OPENROUTER = {"openai-codex/gpt-5.6-luna", "gpt-5.6-luna"}
+PAID_MODELS_NOT_ON_OPENROUTER = {"openai-codex/gpt-5.6-luna", "gpt-5.6-luna", "sonnet"}
 
 OPENROUTER_CATALOG_URL = "https://openrouter.ai/api/v1/models"
 

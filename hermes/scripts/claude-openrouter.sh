@@ -49,6 +49,22 @@
 #     certa. Antes de editar MODELS_DEFAULT por causa de um exit 4, conferir
 #     o catálogo: `curl -s https://openrouter.ai/api/v1/models` (sem auth) e
 #     procurar o id. Tratamento dos 3 casos: issue #6803.
+#   - Elo final de assinatura claude.ai (#7649, decisão do editor 08/09/2026):
+#     depois do glm-5.3-flash, a cadeia tenta MAIS UM elo — o MESMO `claude
+#     -p`, mas SEM nenhuma das 5 vars ANTHROPIC_* de gateway (unset explícito,
+#     nunca "deixar de exportar" — ANTHROPIC_AUTH_TOKEN tem PRECEDÊNCIA sobre
+#     o OAuth da assinatura, então resíduo herdado do ambiente pai
+#     transformaria este elo "grátis" numa chamada PAGA em silêncio; regra
+#     #5608/#6714 do diaria-studio). Sentinela reconhecida por
+#     `is_subscription_lane_model()`. Sem `--max-budget-usd` (não há custo em
+#     dólar por chamada na assinatura). Novos exit codes SÓ deste elo: 96 =
+#     guard fail-closed disparou (resíduo de ANTHROPIC_* sobreviveu ao unset)
+#     — ABORT IMEDIATO da cadeia inteira, nunca "próximo elo" nem "tenta de
+#     novo sozinho"; corrigir o ambiente antes de qualquer nova invocação.
+#     `exit 3` de "nenhuma chave OpenRouter legível" (linha ~229) virou
+#     WARNING (a cadeia segue, pulando direto pros elos que não dependem da
+#     key — normalmente só o de assinatura) — antes matava o script inteiro
+#     antes mesmo de chegar no elo que não precisa de chave nenhuma.
 #   - Marcador de exaustão da cota free (#6712, 31/08/2026): quando um elo
 #     `:free` bate 429/rate-limit, este script grava
 #     `${TMPDIR:-/tmp}/claude-openrouter-free-quota-exhausted-until` com o
@@ -183,7 +199,23 @@ EFFORT=""
 # continua resolvendo (endpoint ativo, ctx 256k) — a troca de posição do
 # laguna é só sobre contexto menor, não sobre um id inválido. glm-5.3-flash
 # (pago) continua por último, é o fallback.
-MODELS_DEFAULT=("dots-studio/dots-3-note-preview:free" "thinkingmachines/inkling-small:free" "poolside/laguna-s-2.1:free" "z-ai/glm-5.3-flash")
+#
+# #7649 (08/09/2026): elo final de assinatura claude.ai, depois do
+# glm-5.3-flash — quando os 3 :free E o pago falharem, a cadeia não morre
+# mais: cai pro OAuth nativo da assinatura (ver docstring do topo). A
+# sentinela é a string nua "sonnet" — nenhum id real do catálogo da
+# OpenRouter é uma palavra sem "/" (todos são "provedor/modelo"), então não
+# há colisão possível. `is_subscription_lane_model()` abaixo é a ÚNICA fonte
+# de verdade sobre "isto é o elo de assinatura?" — usada pro branch de
+# invocação (sem export de gateway), pro fallback de "sem chave OpenRouter"
+# (exit 3 virou warning, ver mais abaixo) e implicitamente sobrevive ao
+# filtro de cota free (`filter_out_free_models` só remove sufixo `:free`,
+# que esta sentinela nunca tem).
+SUBSCRIPTION_LANE_MODEL="sonnet"
+is_subscription_lane_model() {
+  [ "${1:-}" = "$SUBSCRIPTION_LANE_MODEL" ]
+}
+MODELS_DEFAULT=("dots-studio/dots-3-note-preview:free" "thinkingmachines/inkling-small:free" "poolside/laguna-s-2.1:free" "z-ai/glm-5.3-flash" "$SUBSCRIPTION_LANE_MODEL")
 MODEL_FORCED=""
 
 while [ $# -gt 0 ]; do
@@ -226,7 +258,15 @@ for c in a.get('credential_pool', {}).get('openrouter', []):
         break
 PY
 )
-[ -n "$KEY" ] || { echo "ERRO: nenhuma chave OpenRouter legível em ~/.hermes/auth.json (arquivo ausente, JSON inválido, ou sem token sk-or-*)" >&2; exit 3; }
+if [ -z "$KEY" ]; then
+  # #7649 item 3: isto MATAVA o script inteiro (exit 3) antes de sequer
+  # montar a cadeia — mas o elo de assinatura, logo abaixo, não precisa de
+  # chave nenhuma. Virou warning; a filtragem que pula direto pro elo de
+  # assinatura quando não há key acontece mais abaixo, depois de MODELS
+  # estar montado (MODEL_FORCED e a lógica da cota free precisam rodar
+  # primeiro — não duplicar essa filtragem aqui).
+  echo "AVISO: nenhuma chave OpenRouter legível em ~/.hermes/auth.json (arquivo ausente, JSON inválido, ou sem token sk-or-*) — elos que dependem dela vão falhar; seguindo mesmo assim, o elo de assinatura (#7649) não precisa de key" >&2
+fi
 
 PROMPT=$(cat)
 [ -n "$PROMPT" ] || { echo "ERRO: prompt vazio no stdin" >&2; exit 2; }
@@ -253,6 +293,26 @@ else
       # fail-soft: mantém a cadeia inteira, melhor tentar o free "exaurido"
       # (pode já ter resetado, marcador pode estar errado) do que ficar
       # sem NENHUM modelo pra tentar.
+    fi
+  fi
+  # #7649 item 3: se não há chave OpenRouter legível (warning acima, em vez
+  # do exit 3 de antes), TODO elo que não seja o de assinatura vai falhar
+  # de qualquer forma (token vazio) — pular direto pro elo de assinatura em
+  # vez de queimar até `$TIMEOUT` segundos por tentativa fadada (o default é
+  # 1800s cada; 4 tentativas inúteis adiariam o único elo que funcionaria).
+  # Mesma disciplina fail-soft do filtro de cota free logo acima: se por
+  # algum motivo futuro o sentinela sumir de MODELS, mantém a cadeia
+  # inteira em vez de ficar sem NENHUM modelo pra tentar.
+  if [ -z "$KEY" ]; then
+    ONLY_SUBSCRIPTION_LANE=()
+    for m in "${MODELS[@]}"; do
+      if is_subscription_lane_model "$m"; then
+        ONLY_SUBSCRIPTION_LANE+=("$m")
+      fi
+    done
+    if [ "${#ONLY_SUBSCRIPTION_LANE[@]}" -gt 0 ]; then
+      echo "[claude-openrouter] sem chave OpenRouter legível — pulando direto pro elo de assinatura (#7649), sem queimar tentativas que falhariam com token vazio" >&2
+      MODELS=("${ONLY_SUBSCRIPTION_LANE[@]}")
     fi
   fi
 fi
@@ -412,27 +472,66 @@ for MODEL in "${MODELS[@]}"; do
   # <1s (crash imediato) vs um que roda até o TIMEOUT completo são causas
   # bem diferentes, e nenhuma das duas era distinguível antes disto.
   ATTEMPT_START_TS=$(date +%s)
-  OUT=$(printf '%s' "$PROMPT" | (
-    export ANTHROPIC_BASE_URL="https://openrouter.ai/api"
-    export ANTHROPIC_AUTH_TOKEN="$KEY"
-    export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL"
-    export ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL"
-    # OPUS_MODEL: risco só TEÓRICO hoje (review da PR #6859) — o único call
-    # site (hermes-diaria-continuo/SKILL.md) passa `--tools "Read,Grep,Glob,
-    # Bash,Edit,Write"`, sem Task/Agent, então não há como este processo
-    # despachar um subagente que peça Opus. Vira risco real se algum call
-    # site futuro incluir Task/Agent nas --tools — não remover o pin por
-    # isso (custa nada, evita a classe de bug se/quando isso mudar), só
-    # lembrar que ele está PROTEGENDO um caminho que não existe ainda.
-    export ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL"
-    export CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000
-    timeout "$TIMEOUT" \
-    claude -p \
-      --model "$MODEL" \
-      --allowedTools "$TOOLS" \
-      --max-budget-usd "$BUDGET" \
-      ${EFFORT:+--effort "$EFFORT"} 2> "$ATTEMPT_LOG"
-  ))
+  if is_subscription_lane_model "$MODEL"; then
+    # #7649: elo final de assinatura claude.ai. SEM nenhuma das 5 vars
+    # ANTHROPIC_* de gateway — `unset` EXPLÍCITO, nunca "deixar de
+    # exportar": ANTHROPIC_AUTH_TOKEN tem PRECEDÊNCIA sobre o OAuth da
+    # assinatura (confirmado ao vivo em #6718/#5608), então qualquer
+    # resíduo herdado do ambiente pai transformaria este elo "grátis" numa
+    # chamada PAGA em silêncio — exatamente a classe #5608/#6714 que o
+    # CLAUDE.md do diaria-studio proíbe. Guard fail-closed logo abaixo
+    # confirma que o `unset` pegou de verdade ANTES de invocar `claude`;
+    # se algo sobreviver, aborta a cadeia inteira na hora (RC=97 é
+    # reconhecido no bloco de classificação abaixo e vira `exit 96` sem
+    # passar pelo caminho normal de "tenta o próximo elo").
+    #
+    # Nenhum ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL é setado neste
+    # ramo, de propósito (item 2 da issue) — o pin dos outros elos existe
+    # só pra impedir que chamadas de BACKGROUND caiam em modelo caro no
+    # GATEWAY; não há gateway aqui, o comportamento NATIVO da assinatura
+    # já é o correto.
+    #
+    # Sem --max-budget-usd (item 4): não existe custo em dólar por chamada
+    # na assinatura — o teto não tem o que proteger neste elo.
+    OUT=$(printf '%s' "$PROMPT" | (
+      unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN \
+            ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL
+      for _subscription_guard_var in ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN \
+          ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL; do
+        if [ -n "${!_subscription_guard_var:-}" ]; then
+          echo "FATAL (#7649): $_subscription_guard_var sobreviveu ao unset explícito no elo de assinatura — abortando ANTES de invocar claude. Prefira abortar demais a rodar com dúvida (regra #5608/#6714 do diaria-studio): um resíduo aqui transformaria o elo 'grátis' numa chamada PAGA no gateway em silêncio." >&2
+          exit 97
+        fi
+      done
+      timeout "$TIMEOUT" \
+      claude -p \
+        --model "$MODEL" \
+        --allowedTools "$TOOLS" \
+        ${EFFORT:+--effort "$EFFORT"} 2> "$ATTEMPT_LOG"
+    ))
+  else
+    OUT=$(printf '%s' "$PROMPT" | (
+      export ANTHROPIC_BASE_URL="https://openrouter.ai/api"
+      export ANTHROPIC_AUTH_TOKEN="$KEY"
+      export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL"
+      export ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL"
+      # OPUS_MODEL: risco só TEÓRICO hoje (review da PR #6859) — o único call
+      # site (hermes-diaria-continuo/SKILL.md) passa `--tools "Read,Grep,Glob,
+      # Bash,Edit,Write"`, sem Task/Agent, então não há como este processo
+      # despachar um subagente que peça Opus. Vira risco real se algum call
+      # site futuro incluir Task/Agent nas --tools — não remover o pin por
+      # isso (custa nada, evita a classe de bug se/quando isso mudar), só
+      # lembrar que ele está PROTEGENDO um caminho que não existe ainda.
+      export ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL"
+      export CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000
+      timeout "$TIMEOUT" \
+      claude -p \
+        --model "$MODEL" \
+        --allowedTools "$TOOLS" \
+        --max-budget-usd "$BUDGET" \
+        ${EFFORT:+--effort "$EFFORT"} 2> "$ATTEMPT_LOG"
+    ))
+  fi
   RC=$?
   ATTEMPT_DURATION_S=$(( $(date +%s) - ATTEMPT_START_TS ))
     set -e
@@ -470,6 +569,18 @@ for MODEL in "${MODELS[@]}"; do
       echo "[claude-openrouter] ok model=$MODEL" >&2
       rm -f "$STDERR_LOG" "$ATTEMPT_LOG" "$STDERR_ONLY_LOG"
       exit 0
+    fi
+    # #7649: RC=97 é o guard fail-closed do elo de assinatura disparando —
+    # NUNCA "próximo elo da cadeia" (não há elo mais seguro que este) nem
+    # "transitório, reset resolve sozinho" (é um bug de ambiente, precisa de
+    # correção manual). Sai ANTES de entrar na classificação
+    # SAW_QUOTA_SIGNAL/SAW_CONFIG_ERROR_SIGNAL de propósito — misturar este
+    # caso com qualquer um dos dois mascararia a gravidade (é a mesma classe
+    # de incidente que a regra #5608/#6714 do diaria-studio existe pra
+    # prevenir). Log já redigido/persistido pelas linhas acima.
+    if [ "$RC" -eq 97 ]; then
+      echo "[claude-openrouter] ABORT IMEDIATO (#7649): guard fail-closed do elo de assinatura disparou — resíduo de ANTHROPIC_* sobreviveu ao unset explícito. Não repetir sem correção manual do ambiente; stderr cru em $STDERR_LOG" >&2
+      exit 96
     fi
     # #6696 finding 3: filtro de ruído só no caminho de FALHA. Antes disto
     # rodava incondicionalmente ANTES do check de sucesso acima — mesmo um
