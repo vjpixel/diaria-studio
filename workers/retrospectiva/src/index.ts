@@ -73,6 +73,12 @@ import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt
 import { resolveWorkersDevRedirect } from "../../../scripts/lib/shared/workers-dev-redirect.ts"; // #5104
 import { verifySubscriberViaKitByEmail } from "../../../scripts/lib/shared/subscriber-verify.ts"; // #6048
 import { checkKvRateLimit, clientIpFromRequest } from "../../../scripts/lib/shared/rate-limit.ts"; // #4052
+import {
+  deriveDescription,
+  extractTitleText,
+  buildRetrospectivaJsonLd,
+  injectRetrospectivaHeadMeta,
+} from "../../../scripts/lib/shared/retrospectiva-seo.ts"; // #7720
 
 /** Host canônico — usado na `Sitemap:` do robots.txt, no `canonical`/`og:url`
  *  das páginas, e como destino dos redirects (legado e `.workers.dev`). */
@@ -202,13 +208,41 @@ export function legacyRedirectPath(host: string, pathname: string, search: strin
   return `/${novo}${search}`;
 }
 
+/**
+ * Injeta `description`/`canonical`/JSON-LD no HTML já renderizado do trecho
+ * (#7720) — a mesma página que os 3 sinais faltavam nas 5 edições medidas.
+ * `descriptionSource` é o teaser CRU (antes do bloco de conversão), não o
+ * `rendered` final: descrever a página pela copy do CTA ("apoie a diária")
+ * em vez do conteúdo real seria pior que a description ausente que já havia.
+ *
+ * Fail-soft por herança de `injectRetrospectivaHeadMeta` — HTML sem `</head>`
+ * nunca derruba a resposta, só sai sem os 3 sinais (mesmo que já era o
+ * estado antes desta unidade).
+ */
+function injectSeo(
+  rendered: string,
+  descriptionSource: string,
+  canonical: string,
+  isAccessibleForFree: boolean,
+  paywallCssSelector?: string,
+): string {
+  const headline = extractTitleText(descriptionSource) ?? "Retrospectiva diar.ia.br";
+  const description = deriveDescription(descriptionSource);
+  const jsonLd = buildRetrospectivaJsonLd({ headline, description, url: canonical, isAccessibleForFree, paywallCssSelector });
+  return injectRetrospectivaHeadMeta(rendered, { description, canonical, jsonLd });
+}
+
 /** Página servida a quem NÃO passou no gate de CADASTRO (sem e-mail,
- *  não-cadastrado, OU falha de verificação — anti-probing). */
+ *  não-cadastrado, OU falha de verificação — anti-probing).
+ *
+ *  `/AAAA` e `/aniversarioAAAA` são gate de CADASTRO grátis, não paywall
+ *  (#7658/#7715) — `isAccessibleForFree: true`, sem `hasPart` (#7720). */
 async function cadastroTeaserResponse(env: Env, path: string, canonical: string): Promise<Response> {
   const teaser = await loadArticleTeaser(env, path);
   if (!teaser) return htmlResponse(anual.renderNoTeaser(canonical));
   try {
-    return htmlResponse(anual.renderTeaserWithSignup(teaser, canonical));
+    const rendered = anual.renderTeaserWithSignup(teaser, canonical);
+    return htmlResponse(injectSeo(rendered, teaser, canonical, true));
   } catch (e) {
     console.error(`[retrospectiva] trecho presente mas não injetável: ${e instanceof Error ? e.message : e}`);
     return htmlResponse(anual.renderNoTeaser(canonical));
@@ -264,19 +298,25 @@ async function handleCadastro(
  * O paywall seco é o fallback, NUNCA o form de e-mail: o form é a porta de
  * quem já apoia (`?entrar=1`), e mostrá-lo como primeira tela troca a página
  * que VENDE por um campo de login — inversão que o #7580 tratou de desfazer.
+ *
+ * `/AAMM` é o produto PAGO do domínio (apoio Mantenedor R$25+) — JSON-LD leva
+ * `isAccessibleForFree: false` + `hasPart` marcando `#retrospectiva-paywall`
+ * (#7720, ver `retrospectiva-seo.ts` sobre por que esse selector, não o texto
+ * pago em si — que nunca chega neste HTML).
  */
-async function apoioTeaserResponse(env: Env, path: string): Promise<Response> {
+async function apoioTeaserResponse(env: Env, path: string, canonical: string): Promise<Response> {
   const teaser = await loadArticleTeaser(env, path);
   if (!teaser) return htmlResponse(mensal.renderPaywall());
   try {
-    return htmlResponse(mensal.renderTeaserWithPaywall(teaser));
+    const rendered = mensal.renderTeaserWithPaywall(teaser);
+    return htmlResponse(injectSeo(rendered, teaser, canonical, false, "#retrospectiva-paywall"));
   } catch (e) {
     console.error(`[retrospectiva] trecho mensal não injetável: ${e instanceof Error ? e.message : e}`);
     return htmlResponse(mensal.renderPaywall());
   }
 }
 
-async function handleApoio(request: Request, env: Env, classified: RetrospectivaPath): Promise<Response> {
+async function handleApoio(request: Request, env: Env, classified: RetrospectivaPath, canonical: string): Promise<Response> {
   const url = new URL(request.url);
   const path = classified.slug;
   const normalized = normalizeEmail(url.searchParams.get("email"));
@@ -287,7 +327,7 @@ async function handleApoio(request: Request, env: Env, classified: Retrospectiva
   // do form (senão o link "já apoia?" cairia no trecho de novo).
   if (!normalized) {
     if (querEntrar) return htmlResponse(mensal.renderEmailForm(path));
-    return apoioTeaserResponse(env, path);
+    return apoioTeaserResponse(env, path, canonical);
   }
   if (querEntrar) return htmlResponse(mensal.renderEmailForm(path));
 
@@ -307,7 +347,7 @@ async function handleApoio(request: Request, env: Env, classified: Retrospectiva
   // mais precisa da amostra pra decidir apoiar (achado do code-reviewer e do
   // silent-failure-hunter no review da #7709).
   if (decideApoioGate(normalized, parseAllowlist(raw)).state !== "allowed") {
-    return apoioTeaserResponse(env, path);
+    return apoioTeaserResponse(env, path, canonical);
   }
 
   const article = await loadArticle(env, path);
@@ -328,7 +368,7 @@ export async function handleGet(request: Request, env: Env, fetchImpl: typeof fe
 
   const canonical = `${RETROSPECTIVA_HOST}/${classified.slug}`;
   return classified.gate === "apoio-mantenedor"
-    ? handleApoio(request, env, classified)
+    ? handleApoio(request, env, classified, canonical)
     : handleCadastro(request, env, classified, canonical, fetchImpl);
 }
 
