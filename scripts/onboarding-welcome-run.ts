@@ -377,18 +377,35 @@ async function fetchSubscriptionByIdKit(
       const stats = await fetchSubscriberStatsKit(id, config);
       return { status: subscriber.state, stats };
     } catch {
-      return null;
+      // NÃO devolve `null` aqui quando há e-mail disponível (achado do review
+      // da PR #7693, confiança 82): o id numérico pode ser um
+      // `kit_subscriber_id` CACHEADO, que a docstring do campo já declara não
+      // ser fonte de verdade. Se ele envelhecer — assinante removido e
+      // recadastrado no Kit, por exemplo, que é um caso REAL observado em
+      // 09/09/2026 — desistir aqui recria exatamente o loop permanente de
+      // "refresh falhou" que este PR existe pra fechar, só que atrás de um
+      // gatilho mais raro. O e-mail é a identidade estável da entrada; se o
+      // id falhou, vale tentar por ele antes de desistir.
+      if (!emailFallback) return null;
     }
   }
 
-  // id não-numérico = entrada legada da Beehiiv. Resolve pelo e-mail.
+  // Chega aqui em dois casos: id não-numérico (entrada legada da Beehiiv) ou
+  // id numérico que falhou e temos e-mail pra tentar.
   if (!emailFallback) return null;
   try {
     const subscriber = await getKitSubscriberByEmail(emailFallback, config);
     if (!subscriber) return null;
     const stats = await fetchSubscriberStatsKit(subscriber.id, config);
     return { status: subscriber.state, stats, resolvedKitId: subscriber.id };
-  } catch {
+  } catch (err) {
+    // `getKitSubscriberByEmail` LANÇA quando a API devolve assinantes mas
+    // nenhum bate o e-mail exato (#7373) — nunca escolhe o primeiro. Isso é
+    // integridade de dado, não blip de rede, e some se cair no mesmo
+    // "refresh falhou" genérico (achado 2 do mesmo review). Distingue no log.
+    process.stderr.write(
+      `[onboarding] resolução por e-mail falhou para ${emailFallback}: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
     return null;
   }
 }

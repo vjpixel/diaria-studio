@@ -90,6 +90,17 @@ function startMockKit(opts: { statsOpens: number }): Promise<{ server: Server; u
         rsp.end(JSON.stringify({ subscriber: { stats: { total_unique_opens: opts.statsOpens } } }));
         return;
       }
+      // GET singular por id — o caminho numérico direto, usado quando
+      // `kit_subscriber_id` já está cacheado.
+      if (parsed.pathname === `/subscribers/${KIT_ID}`) {
+        rsp.writeHead(200);
+        rsp.end(
+          JSON.stringify({
+            subscriber: { id: KIT_ID, email_address: EMAIL, state: "active", created_at: "2026-08-25T12:00:00Z", fields: {} },
+          }),
+        );
+        return;
+      }
       rsp.writeHead(404);
       rsp.end(JSON.stringify({ error: `rota inesperada ${parsed.pathname}` }));
     });
@@ -221,6 +232,70 @@ describe("onboarding: id legado da Beehiiv sob backend Kit (#7670)", () => {
         !paths().some((p) => p.includes("email_address=")),
         `id cacheado devia entrar pelo caminho numérico — rotas: ${JSON.stringify(paths())}`,
       );
+    } finally {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("REGRESSÃO (review #7693): id CACHEADO que não existe mais cai de volta no e-mail", async () => {
+    // Caso real observado em 09/09/2026: o assinante foi REMOVIDO do Kit e se
+    // recadastrou com id novo. O `kit_subscriber_id` cacheado aponta pro id
+    // morto. Sem o fallback, a entrada voltaria a nunca refrescar — o mesmo
+    // loop permanente que este PR fecha, atrás de um gatilho mais raro.
+    const ID_MORTO = 999_999_999;
+    const paths: string[] = [];
+    const server = createServer((req, rsp) => {
+      const parsed = new URL(req.url ?? "/", "http://127.0.0.1");
+      paths.push(parsed.pathname + parsed.search);
+      rsp.setHeader("content-type", "application/json");
+      if (parsed.pathname === `/subscribers/${ID_MORTO}`) {
+        rsp.writeHead(404);
+        rsp.end(JSON.stringify({ errors: ["not found"] }));
+        return;
+      }
+      if (parsed.pathname === "/subscribers" && parsed.searchParams.get("email_address")) {
+        rsp.writeHead(200);
+        rsp.end(
+          JSON.stringify({
+            subscribers: [
+              { id: KIT_ID, email_address: EMAIL, state: "active", created_at: "2026-08-25T12:00:00Z", fields: {} },
+            ],
+            pagination: { has_previous_page: false, has_next_page: false, start_cursor: null, end_cursor: null, per_page: 500 },
+          }),
+        );
+        return;
+      }
+      if (parsed.pathname === `/subscribers/${KIT_ID}/stats`) {
+        rsp.writeHead(200);
+        rsp.end(JSON.stringify({ subscriber: { stats: { total_unique_opens: 2 } } }));
+        return;
+      }
+      rsp.writeHead(200);
+      rsp.end(
+        JSON.stringify({
+          subscribers: [],
+          pagination: { has_previous_page: false, has_next_page: false, start_cursor: null, end_cursor: null, per_page: 500 },
+        }),
+      );
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const addr = server.address();
+    const url = `http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}`;
+    const dir = mkdtempSync(resolve(tmpdir(), "diaria-7670-"));
+    try {
+      const { configPath, storePath } = fixture(dir, { kit_subscriber_id: ID_MORTO });
+
+      const r = await spawnScript(["--config", configPath, "--store", storePath, "--send"], env(url));
+
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      assert.ok(
+        paths.some((p) => p.includes("email_address=")),
+        `id cacheado morto devia cair no lookup por e-mail — rotas: ${JSON.stringify(paths)}`,
+      );
+      const store = JSON.parse(readFileSync(storePath, "utf8"));
+      const e = store.entries["sub_c32a8dc4-b64f-45e6-b4ec-54f4c7f50ea4"];
+      assert.equal(e.kit_subscriber_id, KIT_ID, "o cache obsoleto é substituído pelo id recém-resolvido");
     } finally {
       server.close();
       rmSync(dir, { recursive: true, force: true });
