@@ -9,11 +9,12 @@
  * como #7743 (commit fb428a36). O grep por #7634 não acha; o grep pelo
  * identificador de origem acha.
  */
-import { describe, it, expect } from "vitest";
+import { describe, test } from "node:test";
+import assert from "node:assert/strict";
 import { assessDuplicatePreflight } from "../../scripts/lib/issue-duplicate-preflight.ts";
 
 describe("duplicate-preflight provenance (#7801)", () => {
-  it("detecta closess via provenance mesmo quando #N não aparece no commit", () => {
+  test("detecta closess via provenance mesmo quando #N não aparece no commit", () => {
     // Simula commit de master que cita #7743 (número do fix) e 44205ff0 (provenance de #7634)
     const provenanceCommits = [
       {
@@ -29,22 +30,22 @@ describe("duplicate-preflight provenance (#7801)", () => {
       commits: [], // #7634 não aparece diretamente em master
       provenanceCommits,
     });
-    expect(result.verdict).toBe("closes-should-be-closed");
-    expect(result.matchingCommits.length).toBeGreaterThan(0);
-    expect(result.recommendation).toContain("detectado via proveniência");
+    assert.strictEqual(result.verdict, "closes-should-be-closed");
+    assert.ok(result.matchingCommits.length > 0);
+    assert.ok(result.recommendation.includes("detectado via proveniência"));
   });
 
-  it("não inventa duplicidade quando provenance não casa", () => {
+  test("não inventa duplicidade quando provenance não casa", () => {
     const result = assessDuplicatePreflight({
       issueNumber: 9999,
       commits: [],
       provenanceCommits: [{ sha: "aaa", subject: "x", body: "ref #other", authorDateIso: "2026-09-09T10:00:00Z" }],
     });
     // Sem closes/refs no commit de provenance => resíduo declarado (conservador)
-    expect(result.verdict).toBe("refs-declared-residue");
+    assert.strictEqual(result.verdict, "refs-declared-residue");
   });
 
-  it("não marca closes para commit direto que menciona outra issue (falso positivo #7801)", () => {
+  test("não marca closes para commit direto que menciona outra issue (falso positivo #7801)", () => {
     // Commit direto por #7634 que contém "Closes #7743" — deve ser unknown,
     // NÃO closes-should-be-closed (o fix pertence a outra issue).
     const result = assessDuplicatePreflight({
@@ -52,29 +53,29 @@ describe("duplicate-preflight provenance (#7801)", () => {
       commits: [{ sha: "directbad", subject: "x", body: "Closes #7743", authorDateIso: "2026-09-09T10:00:00Z" }],
       provenanceCommits: [],
     });
-    expect(result.verdict).toBe("refs-declared-residue");
-    expect(result.matchingCommits[0].closeMarker).toBe("unknown");
+    assert.strictEqual(result.verdict, "refs-declared-residue");
+    assert.strictEqual(result.matchingCommits[0].closeMarker, "unknown");
   });
 
-  it("unifica commits de #N e provenance sem duplicar SHA", () => {
+  test("unifica commits de #N e provenance sem duplicar SHA", () => {
     const sharedSha = "shareddeadbeef";
     const result = assessDuplicatePreflight({
       issueNumber: 100,
       commits: [{ sha: sharedSha, subject: "closes #100", body: "Closes #100", authorDateIso: "2026-09-09T10:00:00Z" }],
       provenanceCommits: [{ sha: sharedSha, subject: "closes #100", body: "Closes #100", authorDateIso: "2026-09-09T10:00:00Z" }],
     });
-    expect(result.matchingCommits.length).toBe(1); // dedup por SHA
-    expect(result.verdict).toBe("closes-should-be-closed");
+    assert.strictEqual(result.matchingCommits.length, 1); // dedup por SHA
+    assert.strictEqual(result.verdict, "closes-should-be-closed");
   });
 
-  it("regressão #7803: commit direto que menciona outra issue NÃO herda closes (só provenance aplica fallback)", () => {
+  test("regressão #7803: commit direto que menciona outra issue NÃO herda closes (só provenance aplica fallback)", () => {
     const res = assessDuplicatePreflight({
       issueNumber: 7634,
       commits: [{ sha: "d", subject: "fix(#7743)", body: "Closes #7743\nresolve", authorDateIso: "2026-09-09T10:00:00Z" }],
       provenanceCommits: [],
     });
-    expect(res.matchingCommits[0].closeMarker).toBe("unknown");
-    expect(res.matchingCommits[0].closeMarker).not.toBe("closes");
-    expect(res.verdict).toBe("refs-declared-residue");
+    assert.strictEqual(res.matchingCommits[0].closeMarker, "unknown");
+    assert.notStrictEqual(res.matchingCommits[0].closeMarker, "closes");
+    assert.strictEqual(res.verdict, "refs-declared-residue");
   });
 });
