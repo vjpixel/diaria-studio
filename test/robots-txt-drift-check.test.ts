@@ -369,3 +369,69 @@ describe("buildRobotsDriftAlarmEmail com issueRefs (#5339)", () => {
     assert.doesNotMatch(body, /Issue:/);
   });
 });
+
+
+describe("redirect esperado de host aposentado (#7793 / #7658)", () => {
+  it("301 para retrospectiva.diar.ia.br = ok (não drift, não error)", () => {
+    const r = evaluateRobotsDrift(
+      input({
+        host: "artigo.diar.ia.br",
+        url: "https://artigo.diar.ia.br/robots.txt",
+        httpStatus: 301,
+        robotsTxt: null,
+        finalUrl: "https://retrospectiva.diar.ia.br/robots.txt",
+      }),
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.httpStatus, 301);
+    assert.ok(r.message.includes("301 esperado"));
+  });
+
+  it("301 para outro destino (não canônico) = error", () => {
+    const r = evaluateRobotsDrift(
+      input({
+        host: "artigo.diar.ia.br",
+        url: "https://artigo.diar.ia.br/robots.txt",
+        httpStatus: 301,
+        robotsTxt: null,
+        finalUrl: "https://malicious.example/robots.txt",
+      }),
+    );
+    assert.strictEqual(r.status, "error");
+    assert.strictEqual(r.httpStatus, 301);
+  });
+
+  it("301 sem finalUrl = error (não pode confirmar canônico)", () => {
+    const r = evaluateRobotsDrift(
+      input({
+        host: "artigo.diar.ia.br",
+        url: "https://artigo.diar.ia.br/robots.txt",
+        httpStatus: 301,
+        robotsTxt: null,
+        finalUrl: null,
+      }),
+    );
+    assert.strictEqual(r.status, "error");
+  });
+
+  it("301 para retrospectiva mas HOST já é canônico = error (loop/indesejado)", () => {
+    const r = evaluateRobotsDrift(
+      input({
+        host: "retrospectiva.diar.ia.br",
+        url: "https://retrospectiva.diar.ia.br/robots.txt",
+        httpStatus: 301,
+        robotsTxt: null,
+        finalUrl: "https://retrospectiva.diar.ia.br/robots.txt",
+      }),
+    );
+    assert.strictEqual(r.status, "error");
+  });
+
+  it("200 válido no host canônico segue ok", () => {
+    const clean = renderCuradoriaRobotsTxt(`https://retrospectiva.diar.ia.br/sitemap.xml`);
+    const r = evaluateRobotsDrift(
+      input({ host: "retrospectiva.diar.ia.br", url: "https://retrospectiva.diar.ia.br/robots.txt", robotsTxt: clean, httpStatus: 200 }),
+    );
+    assert.strictEqual(r.status, "ok");
+  });
+});

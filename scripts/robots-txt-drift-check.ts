@@ -165,18 +165,19 @@ export function toAlarmFinding(r: RobotsDriftResult): AlarmFinding {
 export async function checkRobotsTxt(
   url: string,
   fetchFn: typeof fetch = fetch,
-): Promise<{ httpStatus: number | null; robotsTxt: string | null; fetchError: string | null }> {
+): Promise<{ httpStatus: number | null; robotsTxt: string | null; fetchError: string | null; finalUrl: string | null }> {
   try {
     const res = await fetchFn(url, {
       method: "GET",
       headers: { "User-Agent": USER_AGENT },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    if (res.status !== 200) return { httpStatus: res.status, robotsTxt: null, fetchError: null };
+    const finalUrl = typeof res.url === "string" ? res.url : null;
+    if (res.status !== 200) return { httpStatus: res.status, robotsTxt: null, fetchError: null, finalUrl };
     const body = await res.text();
-    return { httpStatus: res.status, robotsTxt: body, fetchError: null };
+    return { httpStatus: res.status, robotsTxt: body, fetchError: null, finalUrl };
   } catch (e) {
-    return { httpStatus: null, robotsTxt: null, fetchError: (e as Error).message };
+    return { httpStatus: null, robotsTxt: null, fetchError: (e as Error).message, finalUrl: null };
   }
 }
 
@@ -205,8 +206,8 @@ async function main(): Promise<void> {
   const inputs: RobotsCheckInput[] = await Promise.all(
     hosts.map(async (host) => {
       const url = `https://${host}/robots.txt`;
-      const { httpStatus, robotsTxt, fetchError } = await checkRobotsTxt(url);
-      return { host, url, robotsTxt, httpStatus, fetchError };
+      const { httpStatus, robotsTxt, fetchError, finalUrl } = await checkRobotsTxt(url);
+      return { host, url, robotsTxt, httpStatus, fetchError, finalUrl };
     }),
   );
 

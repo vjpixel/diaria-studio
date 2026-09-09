@@ -217,6 +217,9 @@ export interface RobotsCheckInput {
   robotsTxt: string | null;
   httpStatus: number | null;
   fetchError: string | null;
+  /** URL efetiva após redirects (fetch nativo expõe `res.url`); usado para
+   * aceitar redirect esperado de hosts aposentados (#7793 / #7658). */
+  finalUrl?: string | null;
 }
 
 export interface RobotsDriftResult {
@@ -233,7 +236,7 @@ export interface RobotsDriftResult {
 /** Pura — decide o status de drift de UM host, a partir do resultado do
  * fetch já resolvido (nenhuma chamada de rede aqui). */
 export function evaluateRobotsDrift(input: RobotsCheckInput): RobotsDriftResult {
-  const { host, url, robotsTxt, httpStatus, fetchError } = input;
+  const { host, url, robotsTxt, httpStatus, fetchError, finalUrl } = input;
 
   if (fetchError) {
     return {
@@ -245,6 +248,30 @@ export function evaluateRobotsDrift(input: RobotsCheckInput): RobotsDriftResult 
       reasons: [],
       message: `falha ao consultar ${url}: ${fetchError}`,
     };
+  }
+
+  // #7793 / #7658: hosts aposentados (artigo.diar.ia.br, anual.diar.ia.br) respondem
+  // 301 -> retrospectiva.diar.ia.br (host canônico). Não é erro — é redirect
+  // esperado após migração (#7658). Aceitar só se 301 E finalUrl aponta pro
+  // host canônico; qualquer outro 301 (loop, outro destino) ainda é erro.
+  const RETIRED_CANONICAL_HOST = "retrospectiva.diar.ia.br";
+  if (httpStatus === 301 && finalUrl) {
+    try {
+      const finalHost = new URL(finalUrl).hostname;
+      if (finalHost === RETIRED_CANONICAL_HOST && host !== RETIRED_CANONICAL_HOST) {
+        return {
+          host,
+          url,
+          status: "ok",
+          httpStatus,
+          fetchError: null,
+          reasons: [],
+          message: `${url} -> ${finalUrl} (301 esperado de host aposentado #7793; não é drift)`,
+        };
+      }
+    } catch {
+      // finalUrl malformado — cair no tratamento de erro normal
+    }
   }
 
   if (httpStatus !== 200 || robotsTxt === null) {
