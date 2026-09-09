@@ -56,7 +56,7 @@ if [ "$FAILED" -eq 0 ]; then
 #!/usr/bin/env bash
 echo "npm notice run diaria-studio@0.1.0 npx" >&2
 echo "npm notice run 'tsx' scripts/check-continuo-escalate-label.ts" >&2
-echo '{"firstTime":false,"labelApplied":false,"source":"ok"}'
+echo '{"firstTime":false,"labelApplied":true,"source":"ok"}'
 exit 0
 EOF
   chmod +x "$WORKDIR/bin/npx"
@@ -65,8 +65,14 @@ EOF
     echo 'pr=7432'
     echo 'GATE_JSON="{}"'
     echo 'ESCALATED=0'
+    # #7704: o bloco passou a contabilizar erro de infra quando o label não
+    # foi aplicado — stub o contador e a função pra rodar o fragmento real
+    # isolado, e capturar se ele disparou.
+    echo 'INFRA_ERRORS=0'
+    echo 'log_infra_error() { echo "INFRA:$2" >> "'"$WORKDIR/infra.txt"'"; }'
     echo "$BLOCK"
     echo 'echo "FIRST_TIME=$FIRST_TIME" > "'"$WORKDIR/out.txt"'"'
+    echo 'echo "INFRA_ERRORS=$INFRA_ERRORS" >> "'"$WORKDIR/out.txt"'"'
   } > "$WORKDIR/runnable.sh"
 
   PATH="$WORKDIR/bin:$PATH" bash "$WORKDIR/runnable.sh" >"$WORKDIR/stdout.txt" 2>"$WORKDIR/stderr.txt"
@@ -82,7 +88,45 @@ EOF
     # chamada, FIRST_TIME resolve o valor REAL do JSON (false — já
     # sinalizada), não o fallback "true" de um jq que falhou o parse.
     assert_contains "FIRST_TIME reflete o JSON real (false), não o fallback do jq quebrado" "$RESULT" "FIRST_TIME=false"
+    # #7704: PR JÁ sinalizada é o estado estacionário esperado a partir do 2º
+    # tick — nunca um erro de infra. A 1ª versão desta checagem lia
+    # `labelApplied` sem distinguir "não precisei aplicar" de "tentei e
+    # falhei", e teria acusado falha aqui a cada tick, para sempre, com
+    # stderr vazio (achado do fleet review da PR #7706).
+    assert_contains "PR já sinalizada não conta erro de infra" "$RESULT" "INFRA_ERRORS=0"
   fi
+fi
+
+# Cenário 2 (#7704): falha REAL de aplicação do label (`labelApplied:false`
+# com rc=0 — o wrapper nunca aborta) precisa virar erro de infra visível. É
+# o modo de falha que deixou `continuo-escalado`/`continuo-rejeitado` sem
+# existir por meses sem nenhum sinal.
+if [ "$FAILED" -eq 0 ]; then
+  WORKDIR2="$(mktemp -d)"
+  trap 'rm -rf "$WORKDIR" "$WORKDIR2"' EXIT
+  mkdir -p "$WORKDIR2/bin"
+  cat > "$WORKDIR2/bin/npx" <<'EOF'
+#!/usr/bin/env bash
+echo "npm notice run diaria-studio@0.1.0 npx" >&2
+echo '{"firstTime":true,"labelApplied":false,"source":"ok"}'
+exit 0
+EOF
+  chmod +x "$WORKDIR2/bin/npx"
+  {
+    echo 'pr=7432'
+    echo 'GATE_JSON="{}"'
+    echo 'ESCALATED=0'
+    echo 'INFRA_ERRORS=0'
+    echo 'log_infra_error() { echo "INFRA:$2" >> "'"$WORKDIR2/infra.txt"'"; }'
+    echo "$BLOCK"
+    echo 'echo "INFRA_ERRORS=$INFRA_ERRORS" > "'"$WORKDIR2/out.txt"'"'
+  } > "$WORKDIR2/runnable.sh"
+
+  PATH="$WORKDIR2/bin:$PATH" bash "$WORKDIR2/runnable.sh" >/dev/null 2>&1
+  RESULT2="$(cat "$WORKDIR2/out.txt" 2>/dev/null || echo "SEM SAIDA")"
+  assert_contains "labelApplied=false real conta erro de infra" "$RESULT2" "INFRA_ERRORS=1"
+  INFRA2="$(cat "$WORKDIR2/infra.txt" 2>/dev/null || echo "SEM LOG")"
+  assert_contains "log_infra_error recebe o motivo tipado" "$INFRA2" "INFRA:escalate_label_not_applied"
 fi
 
 if [ "$FAILED" -eq 1 ]; then
