@@ -95,6 +95,7 @@ import {
   parseOnboardingSnippet,
   buildRunPlan,
   classifyNewSubscribers,
+  reguaAnchorSec,
   shouldResetCursorForBackendSwitch,
   updateZeroDetectionStreak,
   zeroDetectionAlarm,
@@ -914,12 +915,21 @@ async function main(): Promise<void> {
   const graceDays = cfg.email3_grace_days ?? 10;
 
   const candidates = Object.values(store.entries).filter((e) => {
+    // #7723: os vencimentos D+3/D+10 passaram a contar da CONFIRMAÇÃO
+    // (`reguaAnchorSec` = `email1_sent_at`), não de `created_at`. Este filtro
+    // decide QUANDO buscar os dados que a decisão consome, então precisa usar
+    // a MESMA âncora — senão o filtro e a decisão discordam: entrada com
+    // `created_at: null` mas já confirmada andaria na régua sem nunca ter
+    // status refrescado nem stats buscadas (o e-mail 3 veria `stats_ausentes`
+    // até estourar a tolerância e virar `skipped_sem_dados`, sem jamais ser
+    // avaliada de verdade). Achado do review da PR #7741.
+    const anchor = reguaAnchorSec(e);
     const needsStatusRefresh =
       (e.email1_sent_at == null && e.status_detectado !== "active") ||
-      (e.email2_sent_at == null && e.created_at != null && nowSec >= e.created_at + email2Days * 86_400) ||
+      (e.email2_sent_at == null && anchor != null && nowSec >= anchor + email2Days * 86_400) ||
       (e.email3_state === "pending" &&
-        e.created_at != null &&
-        nowSec >= e.created_at + email3Days * 86_400);
+        anchor != null &&
+        nowSec >= anchor + email3Days * 86_400);
     return needsStatusRefresh;
   });
   const statsById: Record<string, OpenStats | null> = {};

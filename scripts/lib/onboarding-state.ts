@@ -9,7 +9,9 @@
  *   - E-mail 1 transacional imediato na detecção (só se status Beehiiv for
  *     `active` — `pending` aguarda confirmação do double opt-in; nunca
  *     e-mail para quem ainda não confirmou assinatura).
- *   - E-mail 2 transacional em D+3 (idade desde `created_at`).
+ *   - E-mail 2 transacional em D+3 — desde #7723, contado da CONFIRMAÇÃO
+ *     (`reguaAnchorSec` = `email1_sent_at`), não do cadastro. Idem o D+10 do
+ *     e-mail 3. Ver o docstring de `reguaAnchorSec` para o porquê.
  *   - E-mail 3 em D+10, CONDICIONAL a zero aberturas E zero cliques (mesma
  *     condição da automação descartada da #5808: "Days Without Opens And
  *     Clicks >= 10"). É marketing → campanha Brevo, NUNCA transacional, e o
@@ -130,17 +132,54 @@ export function classifyNewSubscribers(
 
 const DAY_S = 86_400;
 
-/** `true` quando o e-mail 2 venceu (idade ≥ D+3 e ainda não enviado). Não exige email1 — falha de um toque não trava a escada (premissa registrada na #5908). */
-export function dueForEmail2(entry: OnboardingEntry, nowSec: number, days = 3): boolean {
-  if (entry.email2_sent_at != null) return false;
-  if (entry.created_at == null) return false;
-  return nowSec >= entry.created_at + days * DAY_S;
+/**
+ * Âncora da régua: o instante a partir do qual D+3 e D+10 contam.
+ *
+ * É o `email1_sent_at` — que, com o double opt-in ligado (#7723), é o
+ * primeiro momento em que sabemos que a pessoa CONFIRMOU: o e-mail 1 só sai
+ * quando o status no Kit está `active`.
+ *
+ * **Por que não `created_at` (#7723, 09/09/2026).** Até o DOI entrar, todo
+ * cadastro nascia `active` e o e-mail 1 saía na primeira rodada — a distância
+ * entre cadastro e confirmação era de horas, e ancorar em `created_at` dava no
+ * mesmo. Com o DOI, o relógio passaria a correr enquanto a pessoa ainda não
+ * confirmou: quem confirmasse no 4º dia receberia o e-mail 2 ANTES do 1, e
+ * quem confirmasse depois do D+10 receberia a régua inteira de uma vez.
+ *
+ * Devolve `null` quando o e-mail 1 ainda não saiu — e nesse caso a régua não
+ * anda. Isso REVISA a premissa do #5908 ("não exige email1 — falha de um toque
+ * não trava a escada"), que foi escrita quando `email1_sent_at == null`
+ * significava "o envio falhou". Hoje significa, quase sempre, "a pessoa não
+ * confirmou", que é outra coisa: mandar o toque 2 para quem nunca confirmou
+ * atravessa exatamente a fronteira que o double opt-in existe para proteger.
+ *
+ * O caso "envio falhou de verdade" não pode virar silêncio — era a
+ * preocupação legítima do #5908. Ele aparece de duas formas, dependendo de
+ * onde a entrada está: enquanto ela ainda é NOVA, o bloco do e-mail 1 já a
+ * cobre (vira ação, ou skip `status_nao_active`); depois disso,
+ * `buildRunPlan` emite skip `aguardando_confirmacao` explícito. Nunca
+ * ausência de registro — checado por teste.
+ */
+export function reguaAnchorSec(entry: OnboardingEntry): number | null {
+  if (entry.email1_sent_at == null) return null;
+  const ms = Date.parse(entry.email1_sent_at);
+  if (!Number.isFinite(ms)) return null;
+  return Math.floor(ms / 1000);
 }
 
-/** Idade em dias completos desde `created_at` (null → null). */
+/** `true` quando o e-mail 2 venceu (≥ D+3 desde a CONFIRMAÇÃO e ainda não enviado). */
+export function dueForEmail2(entry: OnboardingEntry, nowSec: number, days = 3): boolean {
+  if (entry.email2_sent_at != null) return false;
+  const anchor = reguaAnchorSec(entry);
+  if (anchor == null) return false;
+  return nowSec >= anchor + days * DAY_S;
+}
+
+/** Idade em dias completos desde a âncora da régua (`reguaAnchorSec`; null → null). */
 export function ageDays(entry: OnboardingEntry, nowSec: number): number | null {
-  if (entry.created_at == null) return null;
-  return Math.floor((nowSec - entry.created_at) / DAY_S);
+  const anchor = reguaAnchorSec(entry);
+  if (anchor == null) return null;
+  return Math.floor((nowSec - anchor) / DAY_S);
 }
 
 /** Stats por assinante que a decisão D+10 consome (expand[]=stats). */
@@ -151,7 +190,7 @@ export interface OpenStats {
 
 export type Email3Decision =
   | { eligible: true }
-  | { eligible: false; reason: "ja_decidido" | "sem_created_at" | "age<min" | "sem_abertura" | "stats_ausentes" };
+  | { eligible: false; reason: "ja_decidido" | "aguardando_confirmacao" | "age<min" | "sem_abertura" | "stats_ausentes" };
 
 /**
  * Decisão do e-mail 3 — condição INVERTIDA em #7599 (08/09/2026, decisão do
@@ -177,8 +216,11 @@ export function email3Eligibility(
   days = 10,
 ): Email3Decision {
   if (entry.email3_state !== "pending") return { eligible: false, reason: "ja_decidido" };
-  if (entry.created_at == null) return { eligible: false, reason: "sem_created_at" };
-  const idade = nowSec - entry.created_at;
+  // #7723: D+10 conta da CONFIRMAÇÃO (`reguaAnchorSec`), não do cadastro —
+  // mesmo motivo do D+3. Sem âncora, a régua não anda.
+  const anchor = reguaAnchorSec(entry);
+  if (anchor == null) return { eligible: false, reason: "aguardando_confirmacao" };
+  const idade = nowSec - anchor;
   if (idade < days * DAY_S) return { eligible: false, reason: "age<min" };
   if (stats == null || stats.total_unique_opened == null) {
     return { eligible: false, reason: "stats_ausentes" };
@@ -219,7 +261,7 @@ export interface RunSkip {
     | "age<min"
     | "sem_abertura"
     | "stats_ausentes"
-    | "sem_created_at";
+    | "aguardando_confirmacao";
   detalhe?: string;
 }
 
@@ -296,6 +338,23 @@ export function buildRunPlan(opts: {
       skips.push({ entry, etapa: "email1", motivo: "status_nao_active", detalhe: `status=${entry.status_detectado}` });
     }
 
+    // #7723 (achado do review da PR #7741): entrada que já saiu de "nova" mas
+    // não tem âncora fica FORA das duas escadas abaixo — `dueForEmail2` devolve
+    // `false` e o gate do e-mail 3 não abre — e sairia da rodada sem ação E sem
+    // skip, ou seja, invisível. Era exatamente o silêncio que o #5908 existe
+    // pra evitar, e que o docstring de `reguaAnchorSec` promete não haver.
+    // Emite o skip explícito. `isNovo` não entra aqui: quem ainda é novo já é
+    // coberto pelo bloco do e-mail 1 acima (ação, ou skip `status_nao_active`).
+    const semAncora = reguaAnchorSec(entry) == null;
+    if (semAncora && !isNovo) {
+      skips.push({
+        entry,
+        etapa: entry.email2_sent_at == null ? "email2" : "email3",
+        motivo: "aguardando_confirmacao",
+        detalhe: `email1_sent_at=${entry.email1_sent_at ?? "null"}`,
+      });
+    }
+
     // --- E-mail 2: D+3 ---
     if (dueForEmail2(entry, nowSec, email2Days) && !isNovo) {
       if (!shouldAttemptSend(entry.status_detectado)) {
@@ -308,7 +367,9 @@ export function buildRunPlan(opts: {
     }
 
     // --- E-mail 3: D+10 condicional ---
-    if (entry.email3_state === "pending" && entry.created_at != null && nowSec >= entry.created_at + email3Days * DAY_S) {
+    // #7723: D+10 conta da CONFIRMAÇÃO (`reguaAnchorSec`), não do cadastro.
+    const anchor3 = reguaAnchorSec(entry);
+    if (entry.email3_state === "pending" && anchor3 != null && nowSec >= anchor3 + email3Days * DAY_S) {
       const dec = email3Eligibility(entry, statsById[entry.subscription_id] ?? null, nowSec, email3Days);
       if (dec.eligible) {
         cohort3.push(entry);
@@ -319,7 +380,7 @@ export function buildRunPlan(opts: {
         entry.email3_decided_at = new Date(nowSec * 1000).toISOString();
       } else if (
         dec.reason === "stats_ausentes" &&
-        nowSec >= entry.created_at + (email3Days + email3GraceDays) * DAY_S
+        nowSec >= anchor3 + (email3Days + email3GraceDays) * DAY_S
       ) {
         entry.email3_state = "skipped_sem_dados";
         entry.email3_decided_at = new Date(nowSec * 1000).toISOString();
