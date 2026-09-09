@@ -1649,6 +1649,50 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5908",
   },
   {
+    name: "Diaria-Onboarding-Continuity-Alarm",
+    description:
+      "alarma (issue + e-mail) quando a deteccao diaria de assinante novo do onboarding fica " +
+      ">= 3 rodadas seguidas com 0 detectados -- o streak ja existia (#7599), mas so virava nota de " +
+      "log que ninguem lia (#7665)",
+    steps: [{ key: "check", script: "scripts/onboarding-continuity-alarm.ts" }],
+    logPath: "onboarding/.continuity-alarm.log",
+    // 09:10 BRT — 5 minutos DEPOIS de Diaria-Onboarding-Welcome-Run (09:05,
+    // acima), tempo suficiente pra rodada diária terminar de persistir
+    // `consecutive_zero_detections` no store antes deste alarme ler o
+    // mesmo arquivo (ver grep de `kind: "daily"` neste arquivo — slot
+    // livre, sem colisão com nenhuma outra).
+    schedule: { kind: "daily", hour: 9, minute: 10 },
+    // Mesmo guard da task-irmã acima: sem ele, uma junction `data/` caída
+    // faria este alarme ler um store vazio (`emptyStore()`,
+    // `consecutive_zero_detections: 0`) e reportar "ok" quando na verdade
+    // não deu pra verificar nada — exatamente o falso-negativo que o
+    // tri-state (`"cannot-verify"` distinto de `"ok"`, regra do #7776)
+    // existe pra evitar. O script confere `existsSync` por conta própria
+    // ANTES de chamar `readStore` (não confia só no guard mecânico) —
+    // mesmo cinto-e-suspensório do watcher `Diaria-Onboarding-Watch-Returning`.
+    guard: {
+      requiredFile: "onboarding/store.json",
+      abortMessage:
+        "store.json nao encontrado (data/onboarding/store.json) -- provavel junction data/ nao " +
+        "montada; abortando por seguranca -- o proprio script tambem reporta cannot-verify nesse caso.",
+    },
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado de rodada
+    // overnight) — armar via `scripts/setup-systemd-timers.ts` na checkout
+    // compartilhada (`helios`) é ação POSTERIOR do editor, mesma disciplina
+    // de toda task nova deste arquivo.
+    //
+    // Escopo desta unidade é SÓ detecção — o alarme de sequence do Kit que
+    // a #7665 propôs originalmente foi descartado no próprio thread da
+    // issue (sequence morta pelo downgrade de plano, #7365, não reativável;
+    // canal migrou pro Brevo, #7599). O que sobrou de código real pra
+    // detecção é este: dar voz ao streak que `zeroDetectionAlarm`
+    // (`scripts/lib/onboarding-state.ts`) já computa mas nunca alarmava de
+    // verdade. Reinscrever os cadastros órfãos da própria #7665 é ação de
+    // remediação (envio real a pessoas reais) — fora do escopo desta task,
+    // decisão do editor.
+    issue: "#7665",
+  },
+  {
     name: "Diaria-Session-Registry-Gc",
     description:
       "GC de registros ENCERRADOS de data/sessions/ (arquivo real + backups de conflito do OneDrive) — " +
