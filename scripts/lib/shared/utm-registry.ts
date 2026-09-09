@@ -237,6 +237,62 @@ export function buildArtigoEspecialEmailCampaign(ano: string, slug: string): str
   return `${ARTIGO_ESPECIAL_EMAIL_UTM_SOURCE}-${ano}-${slug}`;
 }
 
+/**
+ * `utm_source`/`utm_medium` da Retrospectiva do Mês (`retrospectiva.diar.ia.br/AAMM`,
+ * gate de apoio Mantenedor R$25+, #7715). Link de saída = CTA "Apoiar a diar.ia.br"
+ * (apoia.se) no bloco de conversão do trecho e no paywall seco — os dois pontos
+ * onde quem NÃO passou no gate pode converter.
+ *
+ * Fonte PRÓPRIA (não `kit`/`mensal-apoiadores-kit`/nenhum outro emissor acima):
+ * esta página é uma superfície de conversão nova, com público (não-apoiador
+ * batendo num link de e-mail/busca) e objetivo (converter em apoio) distintos
+ * dos e-mails — ver a decisão do editor na #7715. `utm_medium="web"` porque a
+ * superfície é uma página, não um envio.
+ *
+ * Consumido por `workers/retrospectiva/src/render-mensal.ts`.
+ */
+export const RETROSPECTIVA_MENSAL_UTM_SOURCE = "retrospectiva-mensal";
+export const RETROSPECTIVA_MENSAL_UTM_MEDIUM = "web";
+
+/**
+ * `utm_campaign` da Retrospectiva do Mês — `retrospectiva-mensal-{path}`, onde
+ * `path` é o path da própria página (`AAMM`, ex: `2607`). Mesmo padrão de
+ * `buildArtigoEspecialEmailCampaign` acima (#7659): por EDIÇÃO, não por ciclo
+ * genérico — cada mês publicado vira uma linha própria no funil.
+ *
+ * @pure
+ */
+export function buildRetrospectivaMensalCampaign(path: string): string {
+  return `${RETROSPECTIVA_MENSAL_UTM_SOURCE}-${path}`;
+}
+
+/**
+ * `utm_source`/`utm_medium` da retrospectiva anual/aniversário
+ * (`retrospectiva.diar.ia.br/AAAA` ou `/aniversarioAAAA`, gate de cadastro
+ * grátis, #7715). Link de saída = CTA de cadastro (form + submit por fetch)
+ * no bloco de conversão do trecho e na página de paywall seco.
+ *
+ * Fonte PRÓPRIA — não `retrospectiva-mensal` acima: misturar as duas apagaria
+ * justamente a distinção que motivou a #7715 (dois produtos, dois públicos —
+ * apoiador Mantenedor × leitor qualquer —, duas métricas de conversão).
+ *
+ * Consumido por `workers/retrospectiva/src/render-anual.ts`.
+ */
+export const RETROSPECTIVA_ANUAL_UTM_SOURCE = "retrospectiva-anual";
+export const RETROSPECTIVA_ANUAL_UTM_MEDIUM = "web";
+
+/**
+ * `utm_campaign` da retrospectiva anual/aniversário —
+ * `retrospectiva-anual-{path}`, onde `path` é o path da própria página
+ * (`AAAA` ou `aniversarioAAAA`, ex: `2026`/`aniversario2026`). Mesmo padrão de
+ * `buildRetrospectivaMensalCampaign` acima.
+ *
+ * @pure
+ */
+export function buildRetrospectivaAnualCampaign(path: string): string {
+  return `${RETROSPECTIVA_ANUAL_UTM_SOURCE}-${path}`;
+}
+
 /** `utm_source` de tudo que nasce no jogo standalone "É IA?" (#3518). */
 export const EIA_STANDALONE_SOURCE = "eia-standalone";
 
@@ -925,6 +981,34 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "são garantidamente mensais. `utm_source` próprio pra separar a série de cliques deste envio da " +
       "diária ('kit') e do digest mensal de apoiadores ('mensal-apoiadores-kit'), que têm audiência e " +
       "cadência distintas.",
+    status: "ativo",
+  },
+  {
+    id: "retrospectiva-mensal",
+    label: "Retrospectiva do Mês (apoia.se, web)",
+    source: RETROSPECTIVA_MENSAL_UTM_SOURCE,
+    medium: RETROSPECTIVA_MENSAL_UTM_MEDIUM,
+    campaignPattern: `${RETROSPECTIVA_MENSAL_UTM_SOURCE}-{path}`,
+    originFile: "workers/retrospectiva/src/render-mensal.ts",
+    description:
+      "CTA \"Apoiar a diar.ia.br\" (apoia.se) no bloco de conversão do trecho e no paywall seco de " +
+      "`retrospectiva.diar.ia.br/AAMM` (#7715) — quem não passou no gate de apoio Mantenedor R$25+. " +
+      "`utm_source` próprio, distinto de todo canal de e-mail: audiência e objetivo diferentes " +
+      "(converter em apoio, não em leitura).",
+    status: "ativo",
+  },
+  {
+    id: "retrospectiva-anual",
+    label: "Retrospectiva anual/aniversário (cadastro, web)",
+    source: RETROSPECTIVA_ANUAL_UTM_SOURCE,
+    medium: RETROSPECTIVA_ANUAL_UTM_MEDIUM,
+    campaignPattern: `${RETROSPECTIVA_ANUAL_UTM_SOURCE}-{path}`,
+    originFile: "workers/retrospectiva/src/render-anual.ts",
+    description:
+      "CTA de cadastro (form + submit por fetch) no bloco de conversão do trecho e na página de " +
+      "paywall seco de `retrospectiva.diar.ia.br/AAAA`|`/aniversarioAAAA` (#7715) — quem não passou no " +
+      "gate de cadastro grátis. `utm_source` próprio, distinto de `retrospectiva-mensal` acima (mesmo " +
+      "domínio, outro produto/público/objetivo — não misturar as duas séries).",
     status: "ativo",
   },
   {
