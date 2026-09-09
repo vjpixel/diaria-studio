@@ -152,8 +152,13 @@ const DAY_S = 86_400;
  * significava "o envio falhou". Hoje significa, quase sempre, "a pessoa não
  * confirmou", que é outra coisa: mandar o toque 2 para quem nunca confirmou
  * atravessa exatamente a fronteira que o double opt-in existe para proteger.
- * O caso "envio falhou de verdade" fica visível como skip
- * `aguardando_confirmacao`, nunca como silêncio.
+ *
+ * O caso "envio falhou de verdade" não pode virar silêncio — era a
+ * preocupação legítima do #5908. Ele aparece de duas formas, dependendo de
+ * onde a entrada está: enquanto ela ainda é NOVA, o bloco do e-mail 1 já a
+ * cobre (vira ação, ou skip `status_nao_active`); depois disso,
+ * `buildRunPlan` emite skip `aguardando_confirmacao` explícito. Nunca
+ * ausência de registro — checado por teste.
  */
 export function reguaAnchorSec(entry: OnboardingEntry): number | null {
   if (entry.email1_sent_at == null) return null;
@@ -331,6 +336,23 @@ export function buildRunPlan(opts: {
       else actions.push({ kind: "email1", entry });
     } else if (isNovo && entry.status_detectado !== "active") {
       skips.push({ entry, etapa: "email1", motivo: "status_nao_active", detalhe: `status=${entry.status_detectado}` });
+    }
+
+    // #7723 (achado do review da PR #7741): entrada que já saiu de "nova" mas
+    // não tem âncora fica FORA das duas escadas abaixo — `dueForEmail2` devolve
+    // `false` e o gate do e-mail 3 não abre — e sairia da rodada sem ação E sem
+    // skip, ou seja, invisível. Era exatamente o silêncio que o #5908 existe
+    // pra evitar, e que o docstring de `reguaAnchorSec` promete não haver.
+    // Emite o skip explícito. `isNovo` não entra aqui: quem ainda é novo já é
+    // coberto pelo bloco do e-mail 1 acima (ação, ou skip `status_nao_active`).
+    const semAncora = reguaAnchorSec(entry) == null;
+    if (semAncora && !isNovo) {
+      skips.push({
+        entry,
+        etapa: entry.email2_sent_at == null ? "email2" : "email3",
+        motivo: "aguardando_confirmacao",
+        detalhe: `email1_sent_at=${entry.email1_sent_at ?? "null"}`,
+      });
     }
 
     // --- E-mail 2: D+3 ---

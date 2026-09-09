@@ -180,6 +180,31 @@ describe("dueForEmail2 / ageDays", () => {
     assert.equal(ageDays(e, T0 + 8 * DAY), 3, "idade é medida da confirmação");
   });
 
+  // Achados #1 e #5 do review da PR #7741: o branch `aguardando_confirmacao`
+  // de `email3Eligibility` não tinha teste NENHUM — nem direto, nem via
+  // `buildRunPlan`, que nem chegava a alcançá-lo. E o docstring prometia um
+  // skip que na prática não era emitido.
+  it("email3Eligibility sem âncora → reason aguardando_confirmacao (#7741)", () => {
+    const e = entry(); // pending, email1 nunca saiu
+    const d = email3Eligibility(e, { total_unique_opened: 5, total_clicked: 2 }, T0 + 60 * DAY);
+    assert.deepEqual(d, { eligible: false, reason: "aguardando_confirmacao" });
+  });
+
+  it("buildRunPlan NÃO deixa entrada sem âncora invisível — emite skip, nunca silêncio (#7741)", () => {
+    // Já saiu de "nova" (email2 enviado) mas perdeu/nunca teve email1_sent_at.
+    const orfa = entry({ subscription_id: "orfa", email1_sent_at: null, email2_sent_at: "x" });
+    const r = buildRunPlan({
+      entries: [orfa],
+      statsById: {},
+      ...PLAN_DEFAULTS,
+      snippets: planSnippets(false),
+    });
+    assert.equal(r.actions.length, 0, "sem âncora não pode gerar ação");
+    const skip = r.skips.find((s) => s.motivo === "aguardando_confirmacao");
+    assert.ok(skip, "precisa registrar o skip — invisível é o que o #5908 proíbe");
+    assert.match(skip!.detalhe ?? "", /email1_sent_at=null/);
+  });
+
   it("email1_sent_at ilegível → sem âncora, régua parada (não cai em created_at)", () => {
     const e = entry({ email1_sent_at: "x", created_at: T0 });
     assert.equal(dueForEmail2(e, T0 + 30 * DAY), false);
