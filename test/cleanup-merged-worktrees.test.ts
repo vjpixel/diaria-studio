@@ -11,8 +11,12 @@ import assert from "node:assert/strict";
 import {
   parseWorktreePorcelain,
   filterUnderWorktreesDir,
+  excludeMainWorktree,
   selectMergedForRemoval,
   selectOrphanedForStaleRemoval,
+  extractIssueNumberFromWorktreeBranch,
+  selectAbandonedForRemoval,
+  ABANDONED_ISSUE_CLOSED_STALE_THRESHOLD_MS,
   shouldSkipForSharedSession,
   shouldSkipEntireScanForUnreadableRegistry,
   extractWorktreeNamesFromPaths,
@@ -129,6 +133,30 @@ test("filterUnderWorktreesDir — tolera barra final no worktreesDir", () => {
   const entries = [{ path: "C:/repo/.claude/worktrees/agent-a", branch: "b", locked: false }];
   const result = filterUnderWorktreesDir(entries, "C:/repo/.claude/worktrees/");
   assert.equal(result.length, 1);
+});
+
+// ── excludeMainWorktree (#7650 fatia 1) ──
+
+test("#7650 — excludeMainWorktree remove só o 1º da lista (principal), preserva os demais dentro E fora de .claude/worktrees/", () => {
+  const entries = [
+    { path: "C:/repo", branch: "master", locked: false },
+    { path: "C:/repo/.claude/worktrees/agent-a", branch: "overnight/fix-1", locked: false },
+    { path: "C:/Users/vjpix/Projects/wt-develop-7406c", branch: "develop/clarice-daily-cutover-7406", locked: false },
+  ];
+  const result = excludeMainWorktree(entries);
+  assert.deepEqual(
+    result.map((e) => e.path),
+    ["C:/repo/.claude/worktrees/agent-a", "C:/Users/vjpix/Projects/wt-develop-7406c"],
+    "worktree externo (fora de .claude/worktrees/) agora entra na varredura — só o principal (1º da lista) fica de fora",
+  );
+});
+
+test("#7650 — excludeMainWorktree com lista vazia retorna vazio, sem lançar", () => {
+  assert.deepEqual(excludeMainWorktree([]), []);
+});
+
+test("#7650 — excludeMainWorktree com só o principal retorna vazio", () => {
+  assert.deepEqual(excludeMainWorktree([{ path: "C:/repo", branch: "master", locked: false }]), []);
 });
 
 // ── selectMergedForRemoval ──
@@ -255,6 +283,154 @@ test("selectOrphanedForStaleRemoval — respeita threshold customizado", () => {
 
 test("ORPHAN_STALE_THRESHOLD_MS — 7 dias em ms", () => {
   assert.equal(ORPHAN_STALE_THRESHOLD_MS, 7 * 24 * 60 * 60 * 1000);
+});
+
+// ── extractIssueNumberFromWorktreeBranch (#7650 fatia 2) ──
+
+test("#7650 — extractIssueNumberFromWorktreeBranch casa 'fix-NNNN-slug' sem prefixo de trilha", () => {
+  assert.equal(extractIssueNumberFromWorktreeBranch("fix-4306-review-pass3"), 4306);
+  assert.equal(extractIssueNumberFromWorktreeBranch("fix-4669-work"), 4669);
+});
+
+test("#7650 — extractIssueNumberFromWorktreeBranch casa com prefixo de trilha (overnight/develop/continuo)", () => {
+  assert.equal(extractIssueNumberFromWorktreeBranch("develop/fix-7739"), 7739);
+  assert.equal(extractIssueNumberFromWorktreeBranch("overnight/fix-7487-ads-daily-digest"), 7487);
+  assert.equal(extractIssueNumberFromWorktreeBranch("continuo/fix-7701-onedrive-alarm-action"), 7701);
+});
+
+test("#7650 — extractIssueNumberFromWorktreeBranch casa 'fix/NNNN' (barra em vez de hífen)", () => {
+  assert.equal(extractIssueNumberFromWorktreeBranch("fix/7650-slug"), 7650);
+});
+
+test("#7650 — extractIssueNumberFromWorktreeBranch casa 'fixNNNN' sem separador", () => {
+  assert.equal(extractIssueNumberFromWorktreeBranch("fix5156-local"), 5156);
+});
+
+test("#7650 — extractIssueNumberFromWorktreeBranch rejeita 'fixer-NNNN' (fix seguido de letra, não dígito/separador)", () => {
+  assert.equal(extractIssueNumberFromWorktreeBranch("fixer-5611-local"), null);
+});
+
+test("#7650 — extractIssueNumberFromWorktreeBranch rejeita 'prefix-NNNN' (fix precedido de letra — falso-positivo do lookbehind)", () => {
+  assert.equal(extractIssueNumberFromWorktreeBranch("prefix-1234-slug"), null);
+});
+
+test("#7650 — extractIssueNumberFromWorktreeBranch rejeita branch sem número após 'fix' ('work-4790-fix')", () => {
+  assert.equal(extractIssueNumberFromWorktreeBranch("work-4790-fix"), null);
+});
+
+test("#7650 — extractIssueNumberFromWorktreeBranch rejeita branch sem 'fix' nenhum (nomes aleatórios do harness)", () => {
+  assert.equal(extractIssueNumberFromWorktreeBranch("worktree-agent-a80abb401b0a84448"), null);
+  assert.equal(extractIssueNumberFromWorktreeBranch("merge-4581-work"), null);
+  assert.equal(extractIssueNumberFromWorktreeBranch("mr-now"), null);
+});
+
+// ── ABANDONED_ISSUE_CLOSED_STALE_THRESHOLD_MS (#7650 fatia 2) ──
+
+test("#7650 — ABANDONED_ISSUE_CLOSED_STALE_THRESHOLD_MS é o DOBRO de ORPHAN_STALE_THRESHOLD_MS (14 dias, folga deliberada — ver docblock)", () => {
+  assert.equal(ABANDONED_ISSUE_CLOSED_STALE_THRESHOLD_MS, 2 * ORPHAN_STALE_THRESHOLD_MS);
+  assert.equal(ABANDONED_ISSUE_CLOSED_STALE_THRESHOLD_MS, 14 * 24 * 60 * 60 * 1000);
+});
+
+// ── selectAbandonedForRemoval (#7650 fatia 2) ──
+
+const NOW_7650 = Date.parse("2026-09-09T12:00:00.000Z");
+const ISSUE_CLOSED_20_DAYS_AGO = NOW_7650 - 20 * 24 * 60 * 60 * 1000;
+const ISSUE_CLOSED_2_DAYS_AGO = NOW_7650 - 2 * 24 * 60 * 60 * 1000;
+
+test("#7650 — selectAbandonedForRemoval remove worktree com branch viva cuja issue fechou há mais do que o piso, sem PR aberta", () => {
+  const entries = [{ path: "/repo/.claude/worktrees/agent-abandonado", branch: "fix-7650-slug", locked: false }];
+  const result = selectAbandonedForRemoval(
+    entries,
+    [],
+    () => ISSUE_CLOSED_20_DAYS_AGO,
+    () => false,
+    NOW_7650,
+  );
+  assert.deepEqual(result.map((e) => e.path), ["/repo/.claude/worktrees/agent-abandonado"]);
+});
+
+test("#7650 — selectAbandonedForRemoval preserva quando a issue fechou há MENOS do que o piso (14 dias)", () => {
+  const entries = [{ path: "/repo/.claude/worktrees/agent-recente", branch: "fix-7650-slug", locked: false }];
+  const result = selectAbandonedForRemoval(
+    entries,
+    [],
+    () => ISSUE_CLOSED_2_DAYS_AGO,
+    () => false,
+    NOW_7650,
+  );
+  assert.deepEqual(result, []);
+});
+
+test("#7650 — selectAbandonedForRemoval preserva quando a branch tem PR ABERTA, mesmo com issue fechada há muito tempo", () => {
+  const entries = [{ path: "/repo/.claude/worktrees/agent-com-pr-aberta", branch: "fix-7650-slug", locked: false }];
+  const result = selectAbandonedForRemoval(
+    entries,
+    [],
+    () => ISSUE_CLOSED_20_DAYS_AGO,
+    () => true, // tem PR aberta
+    NOW_7650,
+  );
+  assert.deepEqual(result, []);
+});
+
+test("#7650 — selectAbandonedForRemoval preserva quando a issue NÃO está fechada (getIssueClosedAtMs retorna null)", () => {
+  const entries = [{ path: "/repo/.claude/worktrees/agent-issue-aberta", branch: "fix-7650-slug", locked: false }];
+  const result = selectAbandonedForRemoval(
+    entries,
+    [],
+    () => null, // issue aberta, ou dado indeterminado
+    () => false,
+    NOW_7650,
+  );
+  assert.deepEqual(result, []);
+});
+
+test("#7650 — selectAbandonedForRemoval nunca avalia worktree sem branch (órfão é outro seletor)", () => {
+  const entries = [{ path: "/repo/.claude/worktrees/agent-detached", branch: null, locked: false }];
+  const result = selectAbandonedForRemoval(
+    entries,
+    [],
+    () => ISSUE_CLOSED_20_DAYS_AGO,
+    () => false,
+    NOW_7650,
+  );
+  assert.deepEqual(result, []);
+});
+
+test("#7650 — selectAbandonedForRemoval nunca avalia branch que não referencia issue nenhuma (nome sem convenção fix-N)", () => {
+  const entries = [{ path: "/repo/.claude/worktrees/agent-sem-issue", branch: "worktree-agent-xyz", locked: false }];
+  const getIssueClosedAtMs = (): number | null => {
+    throw new Error("não deveria ser chamado — branch não tem issue extraível");
+  };
+  const result = selectAbandonedForRemoval(entries, [], getIssueClosedAtMs, () => false, NOW_7650);
+  assert.deepEqual(result, []);
+});
+
+test("#7650 — selectAbandonedForRemoval não duplica worktree já selecionado por merge ou por órfão+stale", () => {
+  const entries = [{ path: "/repo/.claude/worktrees/agent-x", branch: "fix-7650-slug", locked: false }];
+  const alreadySelected = [{ path: "/repo/.claude/worktrees/agent-x", branch: "fix-7650-slug", locked: false }];
+  const result = selectAbandonedForRemoval(
+    entries,
+    alreadySelected,
+    () => ISSUE_CLOSED_20_DAYS_AGO,
+    () => false,
+    NOW_7650,
+  );
+  assert.deepEqual(result, []);
+});
+
+test("#7650 — selectAbandonedForRemoval respeita threshold customizado", () => {
+  const entries = [{ path: "/repo/.claude/worktrees/agent-x", branch: "fix-7650-slug", locked: false }];
+  const oneDayThreshold = 24 * 60 * 60 * 1000;
+  const result = selectAbandonedForRemoval(
+    entries,
+    [],
+    () => ISSUE_CLOSED_2_DAYS_AGO, // 2 dias > piso customizado de 1 dia
+    () => false,
+    NOW_7650,
+    oneDayThreshold,
+  );
+  assert.deepEqual(result.map((e) => e.path), ["/repo/.claude/worktrees/agent-x"]);
 });
 
 // ── #7045: exclusão POR WORKTREE em vez de skip global ──
