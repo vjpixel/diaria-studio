@@ -358,14 +358,18 @@ async function createPostContainer(
  * sucesso de qualquer forma — só não temos o link canônico). O caller registra
  * url: null em vez de um link quebrado.
  */
-async function fetchPermalink(
+export async function fetchPermalink(
   mediaId: string,
   accessToken: string,
   apiVersion: string,
 ): Promise<string | null> {
   try {
-    const url = `${INSTAGRAM_API_BASE}/${apiVersion}/${mediaId}?fields=permalink&access_token=${encodeURIComponent(accessToken)}`;
-    const res = await fetch(url, { method: "GET" });
+    // Token vai no header Authorization, nunca na query string (#7779) —
+    // com head_sampling_rate=1 nos Workers e String(err) embutindo a URL em
+    // vários runtimes, a query string vaza o segredo pro log sem ninguém
+    // logar a URL de propósito.
+    const url = `${INSTAGRAM_API_BASE}/${apiVersion}/${mediaId}?fields=permalink`;
+    const res = await fetch(url, { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } });
     if (!res.ok) return null;
     const data = (await res.json()) as { permalink?: string; error?: unknown };
     if (data.error || !data.permalink) return null;

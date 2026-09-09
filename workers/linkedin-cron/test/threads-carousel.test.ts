@@ -137,12 +137,12 @@ describe("#5348 Threads carrossel: 3 containers filhos + 1 pai + 1 publish, com 
   });
 
   it("1 imagem só (image_urls[1]): caminho fireThreadsSingleImage — container IMAGE direto, COM poll obrigatório, sem is_carousel_item/children", async () => {
-    const calls: Array<{ url: string; body: string }> = [];
+    const calls: Array<{ url: string; body: string; headers?: Record<string, string> }> = [];
     let statusPollCount = 0;
     globalThis.fetch = (async (url: string | Request, init?: RequestInit) => {
       const u = typeof url === "string" ? url : url.url;
       const body = bodyOf(init);
-      calls.push({ url: u, body });
+      calls.push({ url: u, body, headers: init?.headers as Record<string, string> | undefined });
       if (u.includes("?fields=status")) {
         statusPollCount++;
         return new Response(JSON.stringify({ status: "FINISHED" }), { status: 200 });
@@ -168,6 +168,13 @@ describe("#5348 Threads carrossel: 3 containers filhos + 1 pai + 1 publish, com 
       assert.match(mediaCalls[0].body, /media_type=IMAGE/);
       assert.match(mediaCalls[0].body, /text=/, "caminho de imagem única leva o texto no único container");
       assert.equal(statusPollCount, 1, "poll obrigatório mesmo com 1 imagem só — diferente do Instagram (best-effort)");
+
+      // NUNCA põe o access token na query string — vai no header Authorization (#7779)
+      const statusCall = calls.find((c) => c.url.includes("?fields=status"));
+      assert.ok(statusCall, "deve ter chamado o poll de status");
+      assert.ok(!statusCall!.url.includes("access_token"), "token vazou na URL do poll de status");
+      assert.ok(!statusCall!.url.includes("tok"), "token vazou na URL do poll de status");
+      assert.equal(statusCall!.headers?.Authorization, "Bearer tok");
     } finally {
       restore();
     }

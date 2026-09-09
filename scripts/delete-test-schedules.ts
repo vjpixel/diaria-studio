@@ -82,8 +82,9 @@ export async function deleteFbPost(
   apiVersion: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ ok: boolean; httpStatus: number; body?: string }> {
-  const url = `https://graph.facebook.com/${apiVersion}/${fbPostId}?access_token=${encodeURIComponent(pageToken)}`;
-  const res = await fetchImpl(url, { method: "DELETE" });
+  // Token vai no header Authorization, nunca na query string (#7779).
+  const url = `https://graph.facebook.com/${apiVersion}/${fbPostId}`;
+  const res = await fetchImpl(url, { method: "DELETE", headers: { Authorization: `Bearer ${pageToken}` } });
   const body = await res.text();
   return { ok: res.ok, httpStatus: res.status, body: body.slice(0, 300) };
 }

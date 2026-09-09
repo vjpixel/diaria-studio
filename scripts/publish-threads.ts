@@ -304,12 +304,14 @@ export async function waitForContainerReady(
   apiVersion: string,
   sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<void> {
-  const url = `${THREADS_API_BASE}/${apiVersion}/${containerId}?fields=status,error_message&access_token=${encodeURIComponent(accessToken)}`;
+  // Token vai no header Authorization, nunca na query string (#7779) — ver
+  // motivação em scripts/publish-instagram.ts::fetchPermalink.
+  const url = `${THREADS_API_BASE}/${apiVersion}/${containerId}?fields=status,error_message`;
   for (let attempt = 1; attempt <= CONTAINER_POLL_MAX_ATTEMPTS; attempt++) {
     let status: string | undefined;
     let errorMessage: string | undefined;
     try {
-      const res = await fetch(url, { method: "GET" });
+      const res = await fetch(url, { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } });
       if (res.ok) {
         const data = (await res.json()) as { status?: string; error_message?: string };
         status = data.status;
@@ -405,16 +407,15 @@ async function publishThread(
  * Best-effort: se falhar, retorna null (o post foi publicado com sucesso,
  * só não temos o link canônico).
  */
-async function fetchThreadsPermalink(
+export async function fetchThreadsPermalink(
   mediaId: string,
   accessToken: string,
   apiVersion: string,
 ): Promise<string | null> {
   try {
-    const url =
-      `${THREADS_API_BASE}/${apiVersion}/${mediaId}` +
-      `?fields=permalink&access_token=${encodeURIComponent(accessToken)}`;
-    const res = await fetch(url, { method: "GET" });
+    // Token vai no header Authorization, nunca na query string (#7779).
+    const url = `${THREADS_API_BASE}/${apiVersion}/${mediaId}?fields=permalink`;
+    const res = await fetch(url, { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } });
     if (!res.ok) return null;
     const data = (await res.json()) as { permalink?: string; error?: unknown };
     if (data.error || !data.permalink) return null;
