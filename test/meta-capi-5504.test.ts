@@ -17,6 +17,8 @@ import {
   buildCompleteRegistrationEvent,
   sendMetaCapiEvent,
   sendCompleteRegistrationEvent,
+  buildMetaCapiLogEvent,
+  logMetaCapiSendResult,
   META_CAPI_DEFAULT_DATASET_ID,
   META_CAPI_DEFAULT_API_VERSION,
 } from "../scripts/lib/shared/meta-capi.ts";
@@ -267,5 +269,88 @@ describe("#5504 — sendCompleteRegistrationEvent (wrapper fail-soft ponta-a-pon
       { accessToken: "tok", fetchImpl },
     );
     assert.equal(result.ok, false);
+  });
+});
+
+describe("#7776 — buildMetaCapiLogEvent (distingue not_configured de configurado-e-falhou)", () => {
+  it("ok:true → meta_capi_sent, com status", () => {
+    const ev = buildMetaCapiLogEvent({ ok: true, status: 200 }, "poll");
+    assert.deepEqual(ev, { event: "meta_capi_sent", worker: "poll", status: 200 });
+  });
+
+  it("reason:not_configured → meta_capi_not_configured, SEM status (distinto de erro real)", () => {
+    const ev = buildMetaCapiLogEvent({ ok: false, status: 503, reason: "not_configured" }, "cursos");
+    assert.deepEqual(ev, { event: "meta_capi_not_configured", worker: "cursos" });
+  });
+
+  it("reason:meta_error → meta_capi_send_failed com reason preservado (token PRESENTE, mas a Meta rejeitou)", () => {
+    const ev = buildMetaCapiLogEvent({ ok: false, status: 401, reason: "meta_error" }, "reativar");
+    assert.deepEqual(ev, { event: "meta_capi_send_failed", worker: "reativar", status: 401, reason: "meta_error" });
+  });
+
+  it("reason:network_error → meta_capi_send_failed", () => {
+    const ev = buildMetaCapiLogEvent({ ok: false, status: 502, reason: "network_error" }, "poll");
+    assert.deepEqual(ev, { event: "meta_capi_send_failed", worker: "poll", status: 502, reason: "network_error" });
+  });
+
+  it("nunca inclui e-mail/PII — só worker + desfecho", () => {
+    const ev = buildMetaCapiLogEvent({ ok: true, status: 200 }, "poll");
+    assert.ok(!JSON.stringify(ev).includes("@"));
+  });
+});
+
+describe("#7776 — logMetaCapiSendResult (log estruturado encaixado no caminho fire-and-forget)", () => {
+  it("preserva o resultado original (mesmo valor que a promise de entrada resolveria)", async () => {
+    const original = sendCompleteRegistrationEvent(
+      { email: "leitor@example.com", eventSourceUrl: "https://diar.ia.br/" },
+      { accessToken: undefined },
+    );
+    const wrapped = logMetaCapiSendResult(original, "poll");
+    assert.deepEqual(await wrapped, { ok: false, status: 503, reason: "not_configured" });
+  });
+
+  it("loga via console.log pra not_configured (nível informativo, não erro)", async () => {
+    const calls: unknown[][] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => calls.push(args);
+    try {
+      await logMetaCapiSendResult(Promise.resolve({ ok: false, status: 503, reason: "not_configured" }), "cursos");
+    } finally {
+      console.log = original;
+    }
+    assert.equal(calls.length, 1);
+    const parsed = JSON.parse(calls[0][0] as string);
+    assert.deepEqual(parsed, { event: "meta_capi_not_configured", worker: "cursos" });
+  });
+
+  it("loga via console.error pra send_failed (token presente, falha real)", async () => {
+    const calls: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => calls.push(args);
+    try {
+      await logMetaCapiSendResult(
+        Promise.resolve({ ok: false, status: 401, reason: "meta_error" }),
+        "reativar",
+      );
+    } finally {
+      console.error = original;
+    }
+    assert.equal(calls.length, 1);
+    const parsed = JSON.parse(calls[0][0] as string);
+    assert.deepEqual(parsed, { event: "meta_capi_send_failed", worker: "reativar", status: 401, reason: "meta_error" });
+  });
+
+  it("loga via console.log pro caminho de sucesso", async () => {
+    const calls: unknown[][] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => calls.push(args);
+    try {
+      await logMetaCapiSendResult(Promise.resolve({ ok: true, status: 200 }), "poll");
+    } finally {
+      console.log = original;
+    }
+    assert.equal(calls.length, 1);
+    const parsed = JSON.parse(calls[0][0] as string);
+    assert.deepEqual(parsed, { event: "meta_capi_sent", worker: "poll", status: 200 });
   });
 });
