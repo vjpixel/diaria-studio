@@ -865,3 +865,56 @@ uma data). **Não-bloqueante por enquanto** (mesmo espírito do item 26 acima)
 prática; `--strict` inverte pra exit 1 pra quem quiser usá-lo como gate real.
 Registrado como `Diaria-Guard-Never-Invoked-Weekly-Check` em
 `scripts/lib/scheduled-tasks.ts` (relatório semanal, Domingo 12:00 BRT).
+
+## 28. Preflight de duplicidade contra PR ABERTA — companion do item 21 (#7788)
+
+**Escopo:** mesmo lugar do item 21 (roda ANTES de abrir worktree/dispatchar,
+do lado do coordenador), cobrindo um estado que o item 21 **não vê por
+desenho**: o item 21 só enxerga trabalho já MERGEADO
+(`git log origin/master --grep "#N"`). Uma **PR aberta** cobrindo a mesma
+issue — trabalho em voo, cuja sessão que a abriu já pode ter terminado — é
+invisível pra ele. É o estado mais comum numa lane que abre PR a cada ~60min
+e drena a cada ~120min (`/diaria-continuo`): a claim (`is-claimed`) caduca
+junto com a sessão, mas a PR segue aberta. Rodada overnight 260909: dois
+dispatches inteiros (~420k tokens) só descobriram, já dentro da própria
+sessão, que uma PR `continuo/fix-*` aberta cobria o escopo — os dois check
+existentes (`is-claimed`, item 21) passaram por não cobrirem este estado.
+
+**Mecanismo:** `npx tsx scripts/check-issue-open-pr.ts --issue N` — CLI fino
+sobre `scripts/lib/issue-open-pr-check.ts` (`assessOpenPrCoverage`, puro) +
+`scripts/lib/gh-open-pr-fetch.ts` (fetch real via `gh pr list --state open`,
+1 chamada, sem paginar por issue). Mira **duas vias** de match, porque cada
+uma sozinha tem ponto cego: número da issue (`#N`, boundary de dígito — `#77`
+nunca casa com `#7788`) no título/corpo da PR, **e** padrão de branch
+(`*fix-{N}*`, `*feat-{N}*` — a convenção das lanes autônomas; as duas PRs
+que motivaram a issue só casavam por esta via, sem `#N` no título).
+
+Três vereditos exclusivos:
+
+- **`no-open-pr`** (exit 0) — nenhuma PR aberta cobre o escopo (inclui o
+  caso de uma PR só MENCIONAR a issue em prosa — `matchKind: "mention-only"`
+  fica visível no resultado mas não eleva o veredito: citação incidental não
+  é prova de que a PR resolve a issue).
+- **`open-pr-covers-scope`** (exit 1) — marcador de fechamento explícito
+  (`closes`/`fixes`/`resolves #N`) ou branch na convenção `fix-N`/`feat-N`.
+  Antes de esperar por ela, aplicar o checklist de 3 perguntas do item 16
+  acima (autor conhecido? CI verde/rodando? atualizada nas últimas
+  ~24-48h?) — as 3 juntas justificam esperar; falhando qualquer uma, tratar
+  como se a PR não existisse e avaliar implementação independente.
+- **`cannot-verify`** (exit 2) — `gh` indisponível, sem auth, JSON
+  malformado ou rate limit. **Regra inegociável desta issue:** isto NUNCA
+  vira `no-open-pr` — transformaria uma falha de consulta em sinal verde e
+  reintroduziria o desperdício em silêncio (mesma classe do #7776, achado
+  na mesma rodada). Reter/retry antes de dispatchar.
+
+`ciState` (`green`/`pending`/`failing`/`unknown`) e `updatedAt` acompanham
+cada match — o suficiente pro checklist do item 16 sem uma 2ª chamada `gh`
+por PR candidata (o custo desta checagem inteira é 1 `gh pr list`, contra um
+dispatch de subagente inteiro).
+
+**Onde plugar:** logo depois do item 21 (mesmo passo — overnight: Fase 0
+passo 4; develop: Fase 1 passo 4; continuo: passo 1 do "Loop invariável" —
+ver o `SKILL.md` de cada skill pro texto exato). Não substitui o item 21 nem
+o item 14 (preflight do subagente) — os três cobrem estados diferentes da
+mesma pergunta ("essa issue já está sendo/foi resolvida?"): merged, em voo,
+e rede de segurança pós-dispatch.

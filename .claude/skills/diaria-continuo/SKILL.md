@@ -626,6 +626,26 @@ aqui.
    aberta, mesmo tratamento que o overnight já documenta. O preflight do
    subagente (item 14 do checklist) continua como rede de segurança.
 
+   **Preflight de PR ABERTA, logo em seguida (#7788) — o mais relevante
+   pra esta skill.** O preflight acima só enxerga trabalho já MERGEADO em
+   `origin/master`; uma PR aberta cobrindo a mesma issue — o estado MAIS
+   COMUM justamente aqui, já que `continuo` abre PR a cada ~60min e drena a
+   cada ~120min, deixando janelas em que a claim da sessão que abriu já
+   caducou mas a PR segue aberta — é invisível pra ele. Achado ao vivo:
+   dois dispatches da rodada overnight 260909 custaram ~420k tokens só pra
+   descobrir, já dentro da sessão, que uma PR `continuo/fix-*` aberta
+   cobria o escopo. Rodar `npx tsx scripts/check-issue-open-pr.ts --issue
+   N` (CLI sobre `scripts/lib/issue-open-pr-check.ts`, 1 chamada `gh pr
+   list`, mira número da issue E padrão de branch `fix-N`/`feat-N`). Três
+   vereditos: **`no-open-pr`** (exit 0) — dispatch normal. **`open-pr-covers-scope`**
+   (exit 1) — aplicar o checklist de 3 perguntas do item 16 de
+   `context/overnight-dispatch-rules.md` (autor conhecido? CI verde/rodando?
+   atualizada nas últimas ~24-48h?) antes de decidir esperar; falhando
+   qualquer uma, tratar como se a PR não existisse e dispatchar
+   normalmente. **`cannot-verify`** (exit 2) — `gh` indisponível/erro:
+   **nunca** tratar como "sem PR aberta"; reter/retry, não degradar pra
+   dispatch silencioso.
+
    **Agrupamento em lotes (#5344 Parte A — lacuna fechada nesta unidade).**
    `/diaria-continuo` reusa a Fase 1 do overnight verbatim ("Reuso da
    maquinaria" acima), e essa Fase opera sobre "unidade de trabalho = issue
