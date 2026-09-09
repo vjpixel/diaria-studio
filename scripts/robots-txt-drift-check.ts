@@ -177,7 +177,7 @@ export async function checkRobotsTxt(
     const body = await res.text();
     return { httpStatus: res.status, robotsTxt: body, fetchError: null, finalUrl };
   } catch (e) {
-    return { httpStatus: null, robotsTxt: null, fetchError: (e as Error).message };
+    return { httpStatus: null, robotsTxt: null, fetchError: (e as Error).message, finalUrl: null };
   }
 }
 
