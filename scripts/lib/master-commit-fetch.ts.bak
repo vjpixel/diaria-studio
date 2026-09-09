@@ -45,42 +45,6 @@ const RECORD_SEP = "\x1e";
  * mesma premissa de qualquer outro `git log origin/master` já usado no
  * repo).
  */
-/** Busca commits de `origin/master` que citam uma PROVENIÊNCIA (string de
- * identificação do achado — ex: range de diff `615b0de0..8b959ef2`, PR `#7605`,
- * SHA `44205ff0`) em vez do número da issue. Mesmas restrições: sempre
- * `origin/master`, `--fixed-strings`, nunca `--all`. Fail-soft (#738). */
-export function fetchMasterCommitsForProvenance(
-  cwd: string,
-  provenance: string,
-): FetchMasterCommitsResult {
-  const format = `%H${FIELD_SEP}%s${FIELD_SEP}%aI${FIELD_SEP}%B${RECORD_SEP}`;
-  const result = spawnSync(
-    "git",
-    ["log", "origin/master", "--grep", provenance, "--fixed-strings", `--format=${format}`],
-    { cwd, encoding: "utf8", timeout: 30_000, maxBuffer: 10 * 1024 * 1024 },
-  );
-  if (result.error) {
-    return { commits: [], error: `git error (provenance "${provenance}"): ${String(result.error)}` };
-  }
-  if (result.status !== 0) {
-    // git log --grep retorna 0 mesmo sem match; não é erro.
-  }
-  const commits = parseProvenanceLogOutput(result.stdout || "");
-  return { commits };
-}
-
-function parseProvenanceLogOutput(stdout: string): MasterCommitInfo[] {
-  if (!stdout.trim()) return [];
-  const records = stdout.split(RECORD_SEP).map((r) => r.trim()).filter(Boolean);
-  const out: MasterCommitInfo[] = [];
-  for (const record of records) {
-    const [sha, subject, authorDateIso, ...bodyParts] = record.split(FIELD_SEP);
-    if (!sha) continue;
-    out.push({ sha: sha.trim(), subject: (subject ?? "").trim(), body: bodyParts.join(FIELD_SEP).trim(), authorDateIso: (authorDateIso ?? "").trim() });
-  }
-  return out;
-}
-
 export function fetchMasterCommitsForIssue(cwd: string, issueNumber: number): FetchMasterCommitsResult {
   const format = `%H${FIELD_SEP}%s${FIELD_SEP}%aI${FIELD_SEP}%B${RECORD_SEP}`;
   // `--grep "#N"` sozinho é deliberadamente amplo (o motor de regex do
