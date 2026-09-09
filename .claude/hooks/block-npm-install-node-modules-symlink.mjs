@@ -25,11 +25,110 @@ import { lstatSync, readlinkSync } from "node:fs";
 import { isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** Divide o comando em segmentos separados por `&&`, `;`, `||`, `|`, nova linha. */
+/**
+ * Remove o CORPO de heredocs (`<<EOF ... EOF`, `<<'EOF' ... EOF`, `<<-EOF ...
+ * EOF`), preservando a linha de abertura. Duplicado de
+ * `block-unsafe-shared-checkout-ops.mjs` (#7757) pela mesma razão: estes hooks
+ * são self-contained, sem import de `.ts`.
+ *
+ * Sem isto, um `cat <<EOF ... npm ci ... EOF` que apenas MENCIONA o comando
+ * (um README, o corpo de uma issue) era bloqueado como se estivesse
+ * instalando — achado do review da PR #7774. Efeito colateral aceito, o mesmo
+ * do hook irmão: um `bash <<EOF` que de fato EXECUTE `npm ci` pelo corpo do
+ * heredoc passa sem inspeção.
+ */
+export function stripHeredocSpans(command) {
+  if (typeof command !== "string") return command;
+  const startRe = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/g;
+  let result = "";
+  let lastIndex = 0;
+  let m;
+  while ((m = startRe.exec(command)) !== null) {
+    if (m.index < lastIndex) continue; // dentro de um heredoc já removido
+    const delim = m[2];
+    const isDashVariant = m[0].startsWith("<<-");
+    const markerEnd = m.index + m[0].length;
+    const lineEnd = command.indexOf("\n", markerEnd);
+    if (lineEnd === -1) {
+      result += command.slice(lastIndex);
+      lastIndex = command.length;
+      break;
+    }
+    const bodyStart = lineEnd + 1;
+    const terminatorRe = new RegExp(`^${isDashVariant ? "[ \t]*" : ""}${delim}[ \t]*$`, "m");
+    const termMatch = terminatorRe.exec(command.slice(bodyStart));
+    const stripEnd = termMatch ? bodyStart + termMatch.index + termMatch[0].length : command.length;
+    result += command.slice(lastIndex, lineEnd + 1);
+    lastIndex = stripEnd;
+    startRe.lastIndex = stripEnd;
+  }
+  result += command.slice(lastIndex);
+  return result;
+}
+
+const SHELL_WRAPPER_FLAG_RE =
+  /(?:^|[\s;&|])(?:bash|sh|zsh|dash|ksh|powershell|pwsh|cmd)(?:\.exe)?\s+(?:-c|-Command|-command|\/c|\/C)\s+/gi;
+
+/**
+ * A partir de `start`, lê uma string entre aspas simples ou duplas e devolve
+ * `{ value, end }` — ou `null` se não houver string citada ali. Feito à mão em
+ * vez de regex porque escapes (`\"`) dentro da string exigem um scanner.
+ */
+function readQuotedString(text, start) {
+  const quote = text[start];
+  if (quote !== '"' && quote !== "'") return null;
+  let value = "";
+  let i = start + 1;
+  while (i < text.length) {
+    const ch = text[i];
+    if (quote === '"' && ch === "\\" && i + 1 < text.length) {
+      value += text[i + 1];
+      i += 2;
+      continue;
+    }
+    if (ch === quote) return { value, end: i + 1 };
+    value += ch;
+    i++;
+  }
+  return null; // string não fechada — nada confiável a promover
+}
+
+/**
+ * Desembrulha o comando passado a um wrapper de shell — `bash -c "cd /wt &&
+ * npm ci"`, `powershell -Command "..."`, `cmd /c "..."` —, promovendo o
+ * CONTEÚDO dessas strings a comando de verdade (recursivo, até 3 níveis).
+ *
+ * Achado do review da PR #7774: o hook irmão usa `stripQuotedSpans`, que
+ * DESCARTA o conteúdo citado. Serve pra não confundir separadores dentro de
+ * uma string, mas aqui deixaria passar justamente o `npm ci` perigoso, que é o
+ * que está DENTRO das aspas. Desembrulhar só o argumento de um wrapper
+ * conhecido — e não toda string citada — mantém `git commit -m "roda npm ci"`
+ * fora do radar.
+ */
+export function unwrapShellWrappers(command, depth = 0) {
+  if (typeof command !== "string" || depth > 3) return String(command ?? "");
+  let unwrapped = command;
+  let found = false;
+  SHELL_WRAPPER_FLAG_RE.lastIndex = 0;
+  let m;
+  while ((m = SHELL_WRAPPER_FLAG_RE.exec(command)) !== null) {
+    const quoted = readQuotedString(command, m.index + m[0].length);
+    if (!quoted || !quoted.value) continue;
+    found = true;
+    unwrapped += "\n" + quoted.value;
+  }
+  return found ? unwrapShellWrappers(unwrapped, depth + 1) : unwrapped;
+}
+
+/**
+ * Divide o comando em segmentos separados por `&&`, `;`, `||`, `|`, nova
+ * linha — depois de remover corpos de heredoc e de promover o conteúdo de
+ * wrappers de shell a comando.
+ */
 export function commandSegments(command) {
-  return String(command)
+  return unwrapShellWrappers(stripHeredocSpans(String(command)))
     .split(/(?:&&|\|\||;|\||\n)/)
-    .map((s) => s.trim())
+    .map((seg) => seg.trim().replace(/^['"]|['"]$/g, "").trim())
     .filter(Boolean);
 }
 

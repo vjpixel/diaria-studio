@@ -143,6 +143,32 @@ test("hook rastreia cd e --prefix, e ignora npm que não instala", async () => {
   assert.equal(hook.findBlockedNpmInstall("cd /wt && npm test", "/x", inspect), null, "npm test não reinstala");
 });
 
+// Dois achados do review da PR #7774, ambos reproduzidos ao vivo antes do fix:
+// (1) BYPASS — `bash -c "cd /wt && npm ci"` passava batido, porque o split
+//     ingênuo por separadores quebrava dentro da string citada e o `npm ci"`
+//     resultante não casava com a regex. O hook irmão resolve casos assim com
+//     `stripQuotedSpans`, que aqui seria pior: DESCARTA justamente o comando
+//     perigoso. A saída foi promover o argumento de wrappers conhecidos.
+// (2) FALSO POSITIVO — um heredoc que só MENCIONA `npm ci` (README, corpo de
+//     issue) era negado como se estivesse instalando.
+test("hook não é enganado por wrapper de shell nem por heredoc (#7774)", async () => {
+  const hook = await import(`../.claude/hooks/${HOOK_BASENAME}`);
+  const inspect = (dir: string) => (dir.replaceAll("\\", "/").endsWith("/wt") ? "/principal/node_modules" : null);
+  const blocked = (cmd: string, cwd = "/x") => Boolean(hook.findBlockedNpmInstall(cmd, cwd, inspect));
+
+  // Bypass: o comando real está DENTRO das aspas do wrapper.
+  assert.ok(blocked('bash -c "cd /wt && npm ci"'), "bash -c com aspas duplas");
+  assert.ok(blocked("sh -c 'cd /wt && npm install'"), "sh -c com aspas simples");
+  assert.ok(blocked('powershell -Command "cd /wt; npm ci"'), "powershell -Command");
+  assert.ok(blocked('cmd /c "cd /wt && npm ci"'), "cmd /c");
+  assert.ok(blocked('bash -c "bash -c \\"cd /wt && npm ci\\""'), "wrapper aninhado (escape de aspas)");
+
+  // Falso positivo: heredoc que só cita o comando como texto.
+  assert.equal(blocked("cat <<EOF\ncd /wt\nnpm ci\nEOF", "/wt"), false, "corpo de heredoc é texto, não comando");
+  // E string citada que NÃO é argumento de wrapper continua fora do radar.
+  assert.equal(blocked('git commit -m "roda npm ci"', "/wt"), false, "mensagem de commit não é comando");
+});
+
 // O hook é self-contained (nenhum import de `.ts`, convenção dos hooks
 // irmãos), então a paridade com a lib precisa ser travada por teste.
 test("hook e lib concordam nos mesmos casos (paridade do guard duplicado)", async () => {
