@@ -1,7 +1,9 @@
 /**
  * test/site-home-nav-cta-utm-propagation-7360.test.ts (#7360)
  *
- * `buildIndexHtml` (`scripts/lib/site-home-page.ts:1266-1281`) embute um IIFE
+ * `buildIndexHtml` (`scripts/lib/site-home-page.ts`, IIFE do #6427 — o bloco
+ * é localizado por âncora de comentário, não por número de linha, justamente
+ * porque a linha anda a cada edição do arquivo) embute um IIFE
  * inline (comentário `#6427`) que repassa `window.location.search` — cru,
  * sem reserializar — pro `href` do CTA "Assinar" do nav (`a[href="/assinar"]`,
  * linha 1126) antes do primeiro clique. É o mecanismo IRMÃO do prefill de
