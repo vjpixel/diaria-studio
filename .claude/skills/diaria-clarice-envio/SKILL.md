@@ -620,6 +620,7 @@ reavaliar; não sobrevive como caminho manual.
 `scripts/lib/clarice-segment.ts` — `priority_points DESC`, engajados
 esgotam antes de ramp-warm começar, guard de duplicidade por CONTATO em vez
 de por grupo escolhido, #7408/#7413). Não há mais `--group`/audiência a
+  **#7738 (correção de teto):** o guard de fila (`queueAvailable`) NÃO usa `availableFirstSend` (1º envio vitalício, `sends_count<=0`) como teto — usa `dailyQueueAvailable` (tamanho da fila unificada via `buildDailySendQueue`). Engajados de ciclos anteriores (`priority_points > 0`) entram; ramp-warm (`cutoffNovosIso`) entra; reativacao (`priority_points == 0, sends > 0`) fica deliberadamente FORA até decisão do editor. Preserva distinção entre as duas métricas no relatório.
 escolher no caminho de produção — quem quiser reproduzir uma composição
 manual da fila usa `clarice-build-segment.ts --daily --cycle {ciclo} --budget N --send-date {AAAA-MM-DD} --dry-run`.
 
