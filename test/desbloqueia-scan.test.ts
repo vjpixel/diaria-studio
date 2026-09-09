@@ -35,7 +35,17 @@ import {
   scanDesbloqueioCandidates,
   type DesbloqueioIssueInput,
 } from "../scripts/lib/desbloqueia-scan.ts";
-import { formatDecisionMarker, formatExecutionBlockMarker } from "../scripts/lib/issue-decisions.ts";
+import {
+  resolveDependencyStates,
+  runDesbloqueioScan,
+  type GhRunFn,
+} from "../scripts/desbloqueia-scan.ts";
+import {
+  ACAO_ADIADA_COOLDOWN_DAYS,
+  formatAcaoAdiadaMarker,
+  formatDecisionMarker,
+  formatExecutionBlockMarker,
+} from "../scripts/lib/issue-decisions.ts";
 
 function baseInput(overrides: Partial<DesbloqueioIssueInput> = {}): DesbloqueioIssueInput {
   return {
@@ -46,6 +56,7 @@ function baseInput(overrides: Partial<DesbloqueioIssueInput> = {}): DesbloqueioI
     state: "OPEN",
     updatedAt: "2026-08-01T00:00:00Z",
     comments: [],
+    dependencyState: null,
     ...overrides,
   };
 }
@@ -133,7 +144,7 @@ describe("classifyDesbloqueioCandidate", () => {
     const result = classifyDesbloqueioCandidate(input);
     assert.equal(result?.track, "overnight");
     assert.equal(result?.matched, "default");
-    assert.equal(result?.semSinal, true);
+    assert.equal(result?.escopo, "sem-sinal");
     assert.equal(result?.status, "sem-sinal-nao-triada");
   });
 
@@ -159,7 +170,7 @@ describe("classifyDesbloqueioCandidate", () => {
     });
     const result = classifyDesbloqueioCandidate(baseInput({ labels: [], comments: [blocked] }));
     assert.equal(result?.status, "bloqueio-confirmado");
-    assert.equal(result?.semSinal, true);
+    assert.equal(result?.escopo, "sem-sinal");
     assert.equal(result?.track, "overnight");
   });
 
@@ -172,7 +183,7 @@ describe("classifyDesbloqueioCandidate", () => {
     });
     const result = classifyDesbloqueioCandidate(baseInput({ labels: [], comments: [decided] }));
     assert.equal(result?.status, "ja-destravada");
-    assert.equal(result?.semSinal, true);
+    assert.equal(result?.escopo, "sem-sinal");
   });
 
   it("#7694: sem-sinal com erro de leitura → erro-leitura, NUNCA sem-sinal-nao-triada", () => {
@@ -180,13 +191,13 @@ describe("classifyDesbloqueioCandidate", () => {
       baseInput({ labels: [], comments: [], commentsFetchError: "gh falhou" }),
     );
     assert.equal(result?.status, "erro-leitura");
-    assert.equal(result?.semSinal, true);
+    assert.equal(result?.escopo, "sem-sinal");
   });
 
   it("#7694: candidata COM label (bloqueada) e sem marcador continua precisa-pergunta, não sem-sinal", () => {
     const result = classifyDesbloqueioCandidate(baseInput({ labels: ["external-blocker"], comments: [] }));
     assert.equal(result?.status, "precisa-pergunta");
-    assert.equal(result?.semSinal, false);
+    assert.notEqual(result?.escopo, "sem-sinal");
     assert.equal(result?.matched, "label:external-blocker");
   });
 
@@ -477,15 +488,497 @@ describe("scanDesbloqueioCandidates", () => {
     assert.deepEqual(report.foraDoEscopo, [6]);
   });
 
-  it("lista vazia devolve os 6 grupos vazios", () => {
+  it("lista vazia devolve os 9 grupos vazios", () => {
     const report = scanDesbloqueioCandidates([]);
     assert.deepEqual(report, {
       jaDestravadas: [],
       bloqueioConfirmado: [],
+      bloqueioObsoleto: [],
       precisaPergunta: [],
       semSinalNaoTriadas: [],
+      acaoImediataCandidatas: [],
+      acaoAdiada: [],
       erroLeitura: [],
       foraDoEscopo: [],
     });
+  });
+});
+
+describe("#7707 — dependência declarada que já fechou vira bloqueio-obsoleto", () => {
+  const blocoDepende = (issue: number, recordedAt = "2026-09-06T00:00:00Z") =>
+    formatExecutionBlockMarker({
+      recorded_at: recordedAt,
+      motivo: `depende do veredito de #${issue}`,
+      sessao: "overnight",
+      condicao: { tipo: "depends_on", issue },
+    });
+
+  it("dependência CLOSED → bloqueio-obsoleto (o caso #5734)", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ comments: [blocoDepende(7523)], dependencyState: "closed" }),
+    );
+    assert.equal(r?.status, "bloqueio-obsoleto");
+  });
+
+  it("dependência OPEN → segue bloqueio-confirmado", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ comments: [blocoDepende(7523)], dependencyState: "open" }),
+    );
+    assert.equal(r?.status, "bloqueio-confirmado");
+  });
+
+  it("dependência MISSING nunca desbloqueia — marcador podre não é condição satisfeita", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ comments: [blocoDepende(999999)], dependencyState: "missing" }),
+    );
+    assert.equal(r?.status, "bloqueio-confirmado");
+  });
+
+  it("dependencyState ausente (caller não resolveu) → bloqueio-confirmado, nunca obsoleto", () => {
+    const r = classifyDesbloqueioCandidate(baseInput({ comments: [blocoDepende(7523)] }));
+    assert.equal(r?.status, "bloqueio-confirmado");
+  });
+
+  it("condicao externo com dependencyState closed pendurado NÃO vira obsoleto", () => {
+    // Defesa contra caller confuso: só `depends_on` consulta o estado.
+    const externo = formatExecutionBlockMarker({
+      recorded_at: "2026-09-06T00:00:00Z",
+      motivo: "conta de terceiro não existe",
+      sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "conta de terceiro não existe" },
+    });
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ comments: [externo], dependencyState: "closed" }),
+    );
+    assert.equal(r?.status, "bloqueio-confirmado");
+  });
+});
+
+describe("#7708 — fora-de-rodada no escopo + anti-fadiga do acao-adiada", () => {
+  const adiada = (pedidoEm: string) =>
+    formatAcaoAdiadaMarker({
+      pedido_em: pedidoEm,
+      acao: "reiniciar a unit diaria-reconcile-send-audiences no helios",
+      motivo: "",
+      sessao: "develop",
+    });
+  const agora = new Date("2026-09-09T12:00:00Z");
+  const diasAtras = (n: number) =>
+    new Date(agora.getTime() - n * 86_400_000).toISOString();
+
+  it("alarme de estado entra no escopo como acao-imediata-candidata", () => {
+    const r = classifyDesbloqueioCandidate(baseInput({ labels: ["alarm"], now: agora }));
+    assert.equal(r?.track, "fora-de-rodada");
+    assert.equal(r?.escopo, "fora-de-rodada");
+    assert.equal(r?.status, "acao-imediata-candidata");
+  });
+
+  it("decisao-registrada e sem-direcao-acionavel também entram", () => {
+    for (const label of ["decisao-registrada", "sem-direcao-acionavel"]) {
+      const r = classifyDesbloqueioCandidate(baseInput({ labels: [label], now: agora }));
+      assert.equal(r?.status, "acao-imediata-candidata", label);
+    }
+  });
+
+  it("on-hold/wontfix ficam FORA por default — engavetamento deliberado não se repergunta", () => {
+    for (const label of ["on-hold", "wontfix"]) {
+      assert.equal(classifyDesbloqueioCandidate(baseInput({ labels: [label], now: agora })), null, label);
+    }
+  });
+
+  it("--incluir-engavetadas traz on-hold/wontfix pro escopo", () => {
+    for (const label of ["on-hold", "wontfix"]) {
+      const r = classifyDesbloqueioCandidate(
+        baseInput({ labels: [label], incluirEngavetadas: true, now: agora }),
+      );
+      assert.equal(r?.escopo, "fora-de-rodada", label);
+    }
+  });
+
+  it("issue CLOSED continua fora do escopo mesmo com --incluir-engavetadas", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ state: "CLOSED", labels: [], incluirEngavetadas: true, now: agora }),
+    );
+    assert.equal(r, null);
+  });
+
+  it("adiamento DENTRO do cooldown suprime a pergunta", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ labels: ["alarm"], comments: [adiada(diasAtras(2))], now: agora }),
+    );
+    assert.equal(r?.status, "acao-adiada");
+    assert.equal(r?.acaoAdiada?.acao, "reiniciar a unit diaria-reconcile-send-audiences no helios");
+  });
+
+  it("adiamento EXPIRADO volta a ser perguntável, mas o candidate ainda carrega o pedido anterior", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({
+        labels: ["alarm"],
+        comments: [adiada(diasAtras(ACAO_ADIADA_COOLDOWN_DAYS + 1))],
+        now: agora,
+      }),
+    );
+    assert.equal(r?.status, "acao-imediata-candidata");
+    assert.ok(r?.acaoAdiada, "o adiamento expirado continua visível pra a repergunta citar o que já foi pedido");
+  });
+
+  it("adiamento ativo suprime também numa issue bloqueada, sem apagar o bloqueio", () => {
+    const bloco = formatExecutionBlockMarker({
+      recorded_at: diasAtras(10),
+      motivo: "falta recarregar a conta",
+      sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "falta recarregar a conta" },
+    });
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ labels: ["external-blocker"], comments: [bloco, adiada(diasAtras(1))], now: agora }),
+    );
+    assert.equal(r?.status, "acao-adiada");
+    assert.equal(r?.executionBlock?.motivo, "falta recarregar a conta");
+  });
+
+  it("sintoma NOVO (bloqueio posterior ao adiamento) reabre a pergunta antes do cooldown", () => {
+    const blocoNovo = formatExecutionBlockMarker({
+      recorded_at: diasAtras(1),
+      motivo: "agora é outra coisa",
+      sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "agora é outra coisa" },
+    });
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ labels: ["external-blocker"], comments: [adiada(diasAtras(3)), blocoNovo], now: agora }),
+    );
+    assert.equal(r?.status, "bloqueio-confirmado");
+  });
+
+  it("decisão do editor vence um adiamento ativo — não há mais o que pender", () => {
+    const decisao = formatDecisionMarker({
+      decided_at: diasAtras(1),
+      pergunta: "?",
+      resposta: "resolvido assim",
+      sessao: "develop",
+    });
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ labels: ["alarm"], comments: [adiada(diasAtras(2)), decisao], now: agora }),
+    );
+    assert.equal(r?.status, "ja-destravada");
+  });
+});
+
+describe("#7707 resolveDependencyStates — a camada de I/O", () => {
+  const semRede: GhRunFn = () => {
+    throw new Error("não deveria chamar gh — a issue estava na lista de abertas");
+  };
+  const respondendo = (payload: Record<number, { status?: number; state?: string; stdout?: string }>): GhRunFn =>
+    (args) => {
+      const n = Number(args[2]);
+      const p = payload[n] ?? { status: 1 };
+      return {
+        status: p.status ?? 0,
+        stdout: p.stdout ?? (p.state ? JSON.stringify({ state: p.state }) : ""),
+        stderr: "",
+      };
+    };
+
+  it("issue na lista de abertas resolve como open SEM nenhuma chamada gh", () => {
+    const out = resolveDependencyStates([42], new Set([42]), ".", semRede);
+    assert.equal(out.get(42), "open");
+  });
+
+  it("issue fora da lista e CLOSED → closed", () => {
+    const out = resolveDependencyStates([7523], new Set([1]), ".", respondendo({ 7523: { state: "CLOSED" } }));
+    assert.equal(out.get(7523), "closed");
+  });
+
+  it("gh falhando → missing (direção segura: o bloqueio continua de pé)", () => {
+    const out = resolveDependencyStates([999], new Set(), ".", respondendo({ 999: { status: 1 } }));
+    assert.equal(out.get(999), "missing");
+  });
+
+  it("JSON malformado → missing, nunca lança", () => {
+    const out = resolveDependencyStates([5], new Set(), ".", respondendo({ 5: { stdout: "não é json" } }));
+    assert.equal(out.get(5), "missing");
+  });
+
+  it("state desconhecido → missing", () => {
+    const out = resolveDependencyStates([6], new Set(), ".", respondendo({ 6: { state: "ARQUIVADA" } }));
+    assert.equal(out.get(6), "missing");
+  });
+
+  it("deduplica: a mesma dependência citada por 3 issues consulta gh 1 vez só", () => {
+    let chamadas = 0;
+    const contando: GhRunFn = () => {
+      chamadas++;
+      return { status: 0, stdout: JSON.stringify({ state: "CLOSED" }), stderr: "" };
+    };
+    const out = resolveDependencyStates([7523, 7523, 7523], new Set(), ".", contando);
+    assert.equal(chamadas, 1);
+    assert.equal(out.get(7523), "closed");
+  });
+});
+
+describe("#7711 review — lacunas apontadas pelo fleet", () => {
+  const agora = new Date("2026-09-09T12:00:00Z");
+  const diasAtras = (n: number) => new Date(agora.getTime() - n * 86_400_000).toISOString();
+  const blocoExterno = (recordedAt: string) =>
+    formatExecutionBlockMarker({
+      recorded_at: recordedAt,
+      motivo: "falta recarregar a conta",
+      sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "falta recarregar a conta" },
+    });
+  const blocoDepende = (issue: number, recordedAt: string) =>
+    formatExecutionBlockMarker({
+      recorded_at: recordedAt,
+      motivo: "depende de outra issue",
+      sessao: "overnight",
+      condicao: { tipo: "depends_on", issue },
+    });
+  const adiada = (pedidoEm: string) =>
+    formatAcaoAdiadaMarker({ pedido_em: pedidoEm, acao: "reiniciar a unit", motivo: "", sessao: "develop" });
+
+  // ── O bug de comparação de data que o code-reviewer achou ────────────────
+  // `route-issue.ts` grava `recorded_at` truncado em DIA (`slice(0, 10)`),
+  // enquanto `pedido_em` é timestamp completo. A comparação lexicográfica
+  // antiga dava `"2026-09-09" > "2026-09-09T09:00:00Z" === false` sempre, e o
+  // gatilho de sintoma novo nunca disparava no mesmo dia. Estes 3 testes
+  // usam o formato REAL de produção; os antigos usavam `toISOString()` cheio
+  // nos dois lados e por isso não pegavam nada.
+  it("recorded_at TRUNCADO EM DIA no dia SEGUINTE reabre a pergunta", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({
+        labels: ["external-blocker"],
+        comments: [adiada("2026-09-08T09:00:00Z"), blocoExterno("2026-09-09")],
+        now: agora,
+      }),
+    );
+    assert.equal(r?.status, "bloqueio-confirmado", "bloqueio de dia posterior e sintoma novo");
+  });
+
+  it("recorded_at truncado no MESMO dia do adiamento mantem a supressao — limitacao assumida", () => {
+    // O dado nao diz qual veio primeiro (o bloqueio so carrega o dia). A
+    // escolha e manter suprimido, limitada pelo cooldown de 7 dias — nunca
+    // "para sempre". Este teste PINA a escolha pra ela nao mudar por acidente.
+    const r = classifyDesbloqueioCandidate(
+      baseInput({
+        labels: ["external-blocker"],
+        comments: [adiada("2026-09-09T09:00:00Z"), blocoExterno("2026-09-09")],
+        now: agora,
+      }),
+    );
+    assert.equal(r?.status, "acao-adiada");
+  });
+
+  it("recorded_at truncado num dia ANTERIOR nao reabre — o adiamento ja respondia a ele", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({
+        labels: ["external-blocker"],
+        comments: [adiada("2026-09-08T09:00:00Z"), blocoExterno("2026-09-05")],
+        now: agora,
+      }),
+    );
+    assert.equal(r?.status, "acao-adiada");
+  });
+
+  // ── Precedencia que o pr-test-analyzer apontou sem cobertura ─────────────
+  it("bloqueio-obsoleto VENCE um adiamento ativo — dependencia fechada destrava na hora", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({
+        comments: [adiada(diasAtras(1)), blocoDepende(7523, "2026-09-08")],
+        dependencyState: "closed",
+        now: agora,
+      }),
+    );
+    assert.equal(r?.status, "bloqueio-obsoleto");
+  });
+
+  // ── Combos status x escopo descobertos ──────────────────────────────────
+  it("bloqueio-confirmado x develop", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ labels: ["windows"], comments: [blocoExterno("2026-09-01")], now: agora }),
+    );
+    assert.equal(r?.escopo, "develop");
+    assert.equal(r?.status, "bloqueio-confirmado");
+  });
+
+  it("bloqueio-confirmado x fora-de-rodada", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ labels: ["alarm"], comments: [blocoExterno("2026-09-01")], now: agora }),
+    );
+    assert.equal(r?.escopo, "fora-de-rodada");
+    assert.equal(r?.status, "bloqueio-confirmado");
+  });
+
+  it("bloqueio-obsoleto nao e exclusivo de escopo bloqueada", () => {
+    const casos: Array<[string[], string]> = [
+      [["windows"], "develop"],
+      [["alarm"], "fora-de-rodada"],
+      [[], "sem-sinal"],
+    ];
+    for (const [labels, escopo] of casos) {
+      const r = classifyDesbloqueioCandidate(
+        baseInput({ labels, comments: [blocoDepende(1, "2026-09-01")], dependencyState: "closed", now: agora }),
+      );
+      assert.equal(r?.escopo, escopo, labels.join(","));
+      assert.equal(r?.status, "bloqueio-obsoleto", labels.join(","));
+    }
+  });
+
+  it("acao-adiada x develop e x sem-sinal", () => {
+    const casos: Array<[string[], string]> = [
+      [["windows"], "develop"],
+      [[], "sem-sinal"],
+    ];
+    for (const [labels, escopo] of casos) {
+      const r = classifyDesbloqueioCandidate(baseInput({ labels, comments: [adiada(diasAtras(1))], now: agora }));
+      assert.equal(r?.escopo, escopo, labels.join(","));
+      assert.equal(r?.status, "acao-adiada", labels.join(","));
+    }
+  });
+
+  // ── STATUS_TO_GROUP semantico, nao so exaustivo ─────────────────────────
+  // O `satisfies Record<...>` garante que todo status TEM entrada, nao que a
+  // entrada aponta pro grupo CERTO: trocar "bloqueio-obsoleto" por
+  // "acaoAdiada" no mapa compila igual. Este teste pega o mis-mapeamento.
+  it("scanDesbloqueioCandidates poe os 3 status NOVOS no grupo certo", () => {
+    const report = scanDesbloqueioCandidates([
+      baseInput({ number: 10, comments: [blocoDepende(1, "2026-09-01")], dependencyState: "closed", now: agora }),
+      baseInput({ number: 11, labels: ["alarm"], now: agora }),
+      baseInput({ number: 12, labels: ["alarm"], comments: [adiada(diasAtras(1))], now: agora }),
+    ]);
+    assert.deepEqual(
+      report.bloqueioObsoleto.map((c) => c.number),
+      [10],
+    );
+    assert.deepEqual(
+      report.acaoImediataCandidatas.map((c) => c.number),
+      [11],
+    );
+    assert.deepEqual(
+      report.acaoAdiada.map((c) => c.number),
+      [12],
+    );
+    assert.deepEqual(report.precisaPergunta, [], "nenhum dos tres deve vazar pro grupo de pergunta");
+  });
+});
+
+describe("#7711 review — runDesbloqueioScan fim-a-fim (regressao da #7707, regra #633)", () => {
+  // O review de cobertura apontou que o bug da #5734 vivia na FIACAO
+  // (comentario -> condicao.issue -> resolver estado -> dependencyState), nao
+  // no miolo puro: um teste que so exercita `classifyDesbloqueioCandidate`
+  // passando `dependencyState` a mao continuaria verde se alguem removesse a
+  // chamada a `resolveDependencyStates`. Estes testes rodam o pipeline
+  // inteiro com um `gh` fake.
+  const issueList = (entries: Array<{ number: number; labels?: string[] }>) =>
+    JSON.stringify(
+      entries.map((e) => ({
+        number: e.number,
+        title: "issue " + e.number,
+        labels: (e.labels ?? ["external-blocker"]).map((name) => ({ name })),
+        body: null,
+        state: "OPEN",
+        updatedAt: "2026-09-01T00:00:00Z",
+      })),
+    );
+
+  const fakeGh =
+    (spec: {
+      open: Array<{ number: number; labels?: string[] }>;
+      comments: Record<number, string[]>;
+      states?: Record<number, string>;
+    }): GhRunFn =>
+    (args) => {
+      if (args[1] === "list") return { status: 0, stdout: issueList(spec.open), stderr: "" };
+      const n = Number(args[2]);
+      if (args.includes("comments")) {
+        return {
+          status: 0,
+          stdout: JSON.stringify({ comments: (spec.comments[n] ?? []).map((body) => ({ body })) }),
+          stderr: "",
+        };
+      }
+      const state = spec.states?.[n];
+      if (!state) return { status: 1, stdout: "", stderr: "not found" };
+      return { status: 0, stdout: JSON.stringify({ state }), stderr: "" };
+    };
+
+  const blocoDepende = (issue: number) =>
+    formatExecutionBlockMarker({
+      recorded_at: "2026-09-06",
+      motivo: "depende de outra issue",
+      sessao: "overnight",
+      condicao: { tipo: "depends_on", issue },
+    });
+
+  it("dependencia FECHADA vira bloqueio-obsoleto pelo pipeline real (o caso #5734)", () => {
+    const report = runDesbloqueioScan(".", {
+      runGh: fakeGh({
+        open: [{ number: 5734 }],
+        comments: { 5734: [blocoDepende(7523)] },
+        states: { 7523: "CLOSED" },
+      }),
+    });
+    assert.deepEqual(
+      report.bloqueioObsoleto.map((c) => c.number),
+      [5734],
+    );
+    assert.deepEqual(report.bloqueioConfirmado, []);
+  });
+
+  it("dependencia ABERTA descoberta via fetch (fora da lista) segue bloqueio-confirmado", () => {
+    // Cobre o retorno "open" pelo caminho do gh, nao pelo fast-path da lista
+    // — inverter a comparacao `state === "OPEN"` passava sem este teste.
+    const report = runDesbloqueioScan(".", {
+      runGh: fakeGh({
+        open: [{ number: 5734 }],
+        comments: { 5734: [blocoDepende(9999)] },
+        states: { 9999: "OPEN" },
+      }),
+    });
+    assert.deepEqual(
+      report.bloqueioConfirmado.map((c) => c.number),
+      [5734],
+    );
+    assert.deepEqual(report.bloqueioObsoleto, []);
+    assert.deepEqual(report.dependenciasNaoResolvidas, []);
+  });
+
+  it("dependencia na LISTA de abertas resolve sem chamar gh de novo (fast-path)", () => {
+    const report = runDesbloqueioScan(".", {
+      runGh: fakeGh({
+        open: [{ number: 5734 }, { number: 7523 }],
+        comments: { 5734: [blocoDepende(7523)], 7523: [] },
+        // Sem `states`: se o codigo tentar buscar, o fake devolve status 1, a
+        // dependencia cai em `missing` e o assert de baixo pega.
+      }),
+    });
+    assert.deepEqual(
+      report.bloqueioConfirmado.map((c) => c.number),
+      [5734],
+    );
+    assert.deepEqual(report.dependenciasNaoResolvidas, []);
+  });
+
+  it("gh sem rede pra dependencia devolve dependenciasNaoResolvidas, nao silencio", () => {
+    const report = runDesbloqueioScan(".", {
+      runGh: fakeGh({ open: [{ number: 5734 }], comments: { 5734: [blocoDepende(7523)] }, states: {} }),
+    });
+    assert.deepEqual(
+      report.bloqueioConfirmado.map((c) => c.number),
+      [5734],
+    );
+    assert.deepEqual(
+      report.dependenciasNaoResolvidas,
+      [7523],
+      "quem consome o JSON precisa distinguir dependencia aberta de nao deu pra checar",
+    );
+  });
+
+  it("--incluir-engavetadas muda o escopo pelo pipeline real", () => {
+    const spec = { open: [{ number: 1, labels: ["on-hold"] }], comments: { 1: [] } };
+    assert.deepEqual(runDesbloqueioScan(".", { runGh: fakeGh(spec) }).foraDoEscopo, [1]);
+    const comFlag = runDesbloqueioScan(".", { runGh: fakeGh(spec), incluirEngavetadas: true });
+    assert.deepEqual(
+      comFlag.acaoImediataCandidatas.map((c) => c.number),
+      [1],
+    );
   });
 });

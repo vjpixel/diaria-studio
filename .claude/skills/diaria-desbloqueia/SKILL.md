@@ -1,6 +1,6 @@
 ---
 name: diaria-desbloqueia
-description: Sessão SÓ DE DESBLOQUEIO — lê a issue inteira (corpo + TODOS os comentários) antes de perguntar, faz uma bateria batchada de perguntas ao editor pra destravar issues bloqueadas/cat. C, tria o bucket `overnight ·sem sinal`, grava a resposta como comentário durável, re-rotea a issue. Não implementa, não abre PR. Uso — `/diaria-desbloqueia [--issues N,M] [--track bloqueada|develop|sem-sinal] [--skip-sem-sinal]`.
+description: Sessão SÓ DE DESBLOQUEIO — lê a issue inteira (corpo + TODOS os comentários) antes de perguntar, pede ao editor as AÇÕES que destravam issues na hora (bloqueada + fora-de-rodada), faz uma bateria batchada de perguntas, tria o bucket `overnight ·sem sinal`, grava tudo como comentário durável e re-rotea. Não implementa, não abre PR. Uso — `/diaria-desbloqueia [--issues N,M] [--track bloqueada|develop|sem-sinal|fora-de-rodada] [--skip-sem-sinal] [--incluir-engavetadas]`.
 ---
 
 # /diaria-desbloqueia
@@ -28,22 +28,31 @@ implementação completa.
 pule direto pra `gh issue view` improvisado. Ele:
 
 1. Varre issues abertas (`--issues N,M` restringe; sem flag, backlog
-   inteiro) e classifica cada uma via `classifyExecTrackWithRule`
-   (`scripts/lib/issue-exec-track.ts`). Entram no escopo: `bloqueada`,
-   `develop`, e — desde o #7694 — `overnight` **com `matched: "default"`**
-   (o bucket que o painel Triagem pinta como `·sem sinal`: nenhuma label ou
-   marcador classificou a issue, ninguém olhou). `agendada`/`epica`/
-   `fora-de-rodada`, e `overnight` já triado (`trade-off-real`,
-   `alarm-evento`, `triada-overnight`), saem direto em `foraDoEscopo` sem
-   leitura de comentário — não há nada ali pra desbloquear.
+   inteiro) e resolve o BUCKET de cada uma via `resolveDesbloqueioEscopo`
+   (`scripts/lib/desbloqueia-scan.ts`, sobre `classifyExecTrackWithRule`).
+   Entram no escopo:
+   - `bloqueada` e `develop` (sempre);
+   - `overnight` **com `matched: "default"`** — o bucket que o painel
+     Triagem pinta como `·sem sinal`: nenhuma label ou marcador classificou
+     a issue, ninguém olhou (#7694);
+   - `fora-de-rodada`, **menos** `on-hold`/`wontfix` (#7708).
+
+   Saem em `foraDoEscopo`: `agendada`, `epica`, issue FECHADA, `overnight`
+   já triado (`trade-off-real`, `alarm-evento`, `triada-overnight`) e as
+   engavetadas — a menos de `--incluir-engavetadas`.
 2. Pra cada candidata real, busca **corpo + TODOS os comentários** (não uma
-   amostra, não os últimos N) e classifica em 5 grupos —
+   amostra, não os últimos N), resolve o estado de qualquer dependência
+   declarada (#7707) e classifica em 8 grupos —
    `scripts/lib/desbloqueia-scan.ts`, testado em `test/desbloqueia-scan.test.ts`:
    - **`jaDestravadas`** — existe `decisao-editor` mais recente que o
      `updatedAt` da issue. A resposta já está na thread.
    - **`bloqueioConfirmado`** — sem decisão nova, mas existe
      `bloqueio-execucao` recente. O que falta já está documentado (token
      que não chegou, conta que não existe).
+   - **`bloqueioObsoleto`** (#7707) — o bloqueio declarava depender de outra
+     issue, e essa issue **já fechou**. A condição foi satisfeita; o
+     bloqueio não vale mais. Nunca comentar "segue valendo" — rotear pra
+     fora de `bloqueada`.
    - **`precisaPergunta`** — nem um nem outro cobre o estado atual. É a
      ÚNICA lista que vira pergunta.
    - **`semSinalNaoTriadas`** (#7694) — candidata `·sem sinal` cuja thread
@@ -52,6 +61,12 @@ pule direto pra `gh issue view` improvisado. Ele:
      no Passo 2b — despejar dezenas de issues não-triadas numa bateria de
      `AskUserQuestion` é exatamente o que "Perguntar é exceção" (#5321)
      proíbe.
+   - **`acaoImediataCandidatas`** (#7708) — vieram de `fora-de-rodada`
+     (alarme de estado, decisão em prosa, sem-direção) e ninguém avaliou se
+     existe uma ação do editor que as destrava AGORA. Alimentam o Passo 3b.
+   - **`acaoAdiada`** (#7708) — já pedimos a ação e o editor adiou; o
+     cooldown ainda vale. **Nunca vira pergunta.** É este grupo que impede a
+     skill de repetir as mesmas ~22 perguntas por rodada.
    - **`erroLeitura`** — a busca de comentário FALHOU pra essa issue (`gh`
      deu erro, JSON malformado). Nunca vira `precisaPergunta` mesmo que a
      lista de comentários tenha vindo vazia — `[]` por falha de leitura é
@@ -65,8 +80,9 @@ Rodar:
 ```bash
 npx tsx scripts/desbloqueia-scan.ts                    # backlog aberto inteiro
 npx tsx scripts/desbloqueia-scan.ts --issues 123,456    # só essas issues
-npx tsx scripts/desbloqueia-scan.ts --track bloqueada    # só bloqueada (ou develop / sem-sinal)
-npx tsx scripts/desbloqueia-scan.ts --skip-sem-sinal     # escopo antigo, varredura barata
+npx tsx scripts/desbloqueia-scan.ts --track bloqueada    # 1 bucket (bloqueada|develop|sem-sinal|fora-de-rodada)
+npx tsx scripts/desbloqueia-scan.ts --skip-sem-sinal     # sem o bucket ·sem sinal
+npx tsx scripts/desbloqueia-scan.ts --incluir-engavetadas  # varre também on-hold/wontfix
 ```
 
 O bucket `·sem sinal` entra **por default** — é o motivo de a #7694 existir,
@@ -95,14 +111,21 @@ npx tsx scripts/route-issue.ts --issue N --track {develop|overnight} \
   --reason "decisão já registrada em comentário anterior — reclassificando sem nova pergunta (#6628)"
 ```
 
-Para cada issue em `bloqueioConfirmado` **com `semSinal: false`**: nada muda
-— o bloqueio segue de pé e já está documentado. Comentar (curto, sem
+Para cada issue em `bloqueioConfirmado` **com `escopo` ≠ `"sem-sinal"`**
+(ou seja `"bloqueada"`/`"develop"`/`"fora-de-rodada"`): nada muda — o
+bloqueio segue de pé e já está documentado. Comentar (curto, sem
 `route-issue.ts` — o track já está correto) confirmando que a sessão revisou
 e o estado é o mesmo: `Revisado por /diaria-desbloqueia — bloqueio de
 execução de {recorded_at} ("{motivo}") segue valendo, nenhuma mudança.`
-**Nunca** perguntar de novo o que o `bloqueio-execucao` já documenta.
+**Nunca** perguntar de novo O QUE o `bloqueio-execucao` já documenta.
 
-Para cada issue em `bloqueioConfirmado` **com `semSinal: true`** (#7694):
+> Isto **não** proíbe o Passo 3b de tocar o mesmo grupo. São perguntas de
+> natureza diferente: aqui é *"o que falta?"* — já respondido, não se
+> repergunta; lá é *"você pode agir nisso agora?"* — nunca perguntado antes.
+> O que blinda contra repetição no Passo 3b é o marcador `acao-adiada`, não
+> esta regra.
+
+Para cada issue em `bloqueioConfirmado` **com `escopo: "sem-sinal"`** (#7694):
 aqui o estado MUDA, e é o achado de maior valor da varredura — a thread
 documenta um bloqueio e a **label está faltando**, então a issue estava
 classificada `overnight` e o `helios` ia tentar executá-la e falhar.
@@ -111,6 +134,18 @@ Comentar não basta: rotear.
 ```bash
 npx tsx scripts/route-issue.ts --issue N --track bloqueada   --reason "{motivo do bloqueio-execucao já registrado na thread}"   # --motivo conta-de-terceiro | plataforma | kit | execucao — conforme a thread
 ```
+
+Se `dependenciasNaoResolvidas` no relatório não estiver vazio, o estado das
+dependências dessas issues **não** foi verificado (`gh` sem rede, token
+expirado, issue apagada) — elas aparecem como `bloqueio-confirmado` por
+segurança, não por confirmação. Não afirmar "bloqueio segue valendo" pra
+elas sem rodar o scan de novo.
+
+Para cada issue em `bloqueioObsoleto` (#7707): a condição de desbloqueio já
+foi satisfeita — a issue de que ela dependia fechou. Rotear pra fora de
+`bloqueada` (normalmente `overnight`, `develop` se a execução ainda exige o
+editor), citando no `--reason` qual dependência fechou. **Nunca** comentar
+"bloqueio segue valendo" — ele não segue.
 
 ## Passo 2b — triar `semSinalNaoTriadas` (#7694), sem perguntar
 
@@ -138,8 +173,9 @@ idêntica na varredura seguinte, e o custo de ler a thread foi gasto à toa.
 
 ## Passo 3 — bateria de perguntas (só `precisaPergunta`)
 
-Nenhum outro grupo entra aqui — `semSinalNaoTriadas` incluído: ele é
-triagem (Passo 2b), não pergunta.
+Nenhum outro grupo entra aqui — `semSinalNaoTriadas` (triagem, Passo 2b) e
+`acaoAdiada` (cooldown ativo) incluídos. `acaoImediataCandidatas` tem
+bateria própria, no Passo 3b.
 
 Agrupar por tipo, igual à Fase 0.5 do develop (#2966) — cap de 4 perguntas
 × 4 opções por chamada de `AskUserQuestion`, várias chamadas sequenciais se
@@ -166,6 +202,48 @@ default (ambiguidade trivial, deferimento vago, confirmação pós-sucesso).
 Se uma issue `precisaPergunta` na verdade bate um dos defaults automáticos
 da política, aplicar o default e rotear, sem gastar turno de pergunta.
 
+## Passo 3b — pedir AÇÃO IMEDIATA (#7708)
+
+Pedido direto do editor (09/09/2026): quando existe uma ação que **ele**
+executa em minutos e que destrava a issue, a skill deve **pedir que ele faça
+agora** — não registrar que está bloqueada e seguir.
+
+Vale para dois grupos: `bloqueioConfirmado` (bloqueio documentado) e
+`acaoImediataCandidatas` (veio de `fora-de-rodada`). O julgamento é seu, sobre
+o texto da thread — o scan não decide isto, porque distinguir "recarregar a
+conta" de "a conta volta em 29/09" é leitura de prosa, não regra mecânica.
+
+**Vira pedido de ação imediata** quando o que falta é uma ação do editor no
+teclado, agora: reiniciar uma unit caída, recarregar uma conta, colar uma
+chave em `.env`/Doppler, virar uma configuração num painel, aprovar algo.
+
+**NÃO vira** — segue como está, com o comentário de revisão do Passo 2:
+espera com data (conta de terceiro que retorna em D, `agendada`), plataforma
+sem fix disponível, dependência de outra issue ainda aberta, ou qualquer
+coisa que o editor não consegue resolver sozinho hoje.
+
+A pergunta é imperativa, não deliberativa — *"faça isto"*, não *"o que
+acha?"*. Sempre com o comando/passo exato e as 3 saídas:
+
+> A unit `diaria-reconcile-send-audiences.service` está caída desde 05/09.
+> Rodar `systemctl --user restart diaria-reconcile-send-audiences` no
+> `helios` destrava. Já rodou?
+> ( já rodei / agora não / não é isso — o problema é outro )
+
+**Priorização dentro do cap.** `AskUserQuestion` é 4 perguntas × 4 opções por
+chamada, e o pool pode passar de 20. Ordenar e CORTAR — nunca despejar 6
+chamadas sequenciais:
+
+1. o que está quebrado AGORA e afeta produção (unit caída, sync parado,
+   ingest sem execução);
+2. o que bloqueia issue `P0`/`P1`;
+3. o resto — que fica para a próxima rodada, sem pedido nenhum registrado.
+
+Nunca gravar `acao-adiada` para uma issue que você **decidiu não perguntar**
+por causa do cap: o marcador significa "pedi e o editor adiou", e usá-lo pra
+"não deu tempo de pedir" criaria um cooldown de 7 dias sobre uma pergunta
+que ninguém fez.
+
 ## Passo 4 — gravar cada resposta
 
 - **Decisão (cat. C, ou cat. A/B "conta confirmada")**: comentar com o
@@ -180,6 +258,21 @@ da política, aplicar o default e rotear, sem gastar turno de pergunta.
   bloqueada` (ver abaixo) — desde #7270, o marcador `formatExecutionBlockMarker`
   é embutido automaticamente pelo `route-issue.ts`, não precisa (nem deve)
   ser postado à mão como comentário separado.
+- **Ação imediata executada** ("já rodei"): confirmar com um probe
+  determinístico quando existir (a unit está `active`, o alarme parou de
+  reproduzir, a var existe) e comentar o RESULTADO do probe. Confirmado,
+  rotear pra fora de `bloqueada`/`fora-de-rodada`. **Nunca** registrar
+  "resolvido" só porque o editor disse que rodou — é a mesma disciplina do
+  #573 (validar estado externo por caminho determinístico antes de afirmar).
+- **Ação imediata adiada** ("agora não"): gravar
+  `formatAcaoAdiadaMarker` (`scripts/lib/issue-decisions.ts`) com a ação
+  pedida e o motivo, se ele deu um. Não rotear nada — o track não mudou. O
+  marcador some sozinho depois de `ACAO_ADIADA_COOLDOWN_DAYS` (7 dias) ou
+  quando um sintoma novo aparecer.
+- **"Não é isso, o problema é outro"**: a ação que imaginamos estava errada.
+  Isso é informação de conteúdo, não adiamento — comentar o que o editor
+  disse e rotear conforme, **nunca** gravar `acao-adiada` (senão a issue
+  fica 7 dias em silêncio por uma pergunta que estava mal formulada).
 - **Token colado**: nunca vai pro comentário. Só confirmar via probe
   determinístico (ex: a var existe em `.env`, um script de dry-run passa)
   e comentar o RESULTADO do probe, nunca o valor.
@@ -214,18 +307,22 @@ Terminar com um resumo, não uma lista de comandos executados:
 ```
 /diaria-desbloqueia — resumo
 
-Varridas: N issues candidatas (bloqueada/develop/·sem sinal)
+Varridas: N candidatas (bloqueada/develop/·sem sinal/fora-de-rodada)
   {A} já destravadas pela thread — re-roteadas sem pergunta
   {B} bloqueio confirmado — sem mudança, comentário de revisão
   {B2} bloqueio documentado com LABEL FALTANDO — roteadas pra bloqueada (#7694)
-  {C} perguntadas — {D} respondidas e destravadas, {E} seguem bloqueadas
-       (editor não tinha a resposta agora / cat. B sem conta ainda)
+  {B3} bloqueio OBSOLETO — a dependência já fechou, re-roteadas (#7707)
+  {C} perguntadas (o que falta) — {D} respondidas e destravadas, {E} seguem bloqueadas
+  {H} AÇÕES IMEDIATAS pedidas (#7708) — {H1} executadas e confirmadas por probe,
+       {H2} adiadas (cooldown 7d), {H3} "não é isso" → re-roteadas
   {G} ·sem sinal triadas sem pergunta — {G1} confirmadas overnight (triada-overnight),
        {G2} viraram develop, {G3} viraram bloqueada
+  {I} não perguntadas nesta rodada — cooldown de adiamento ativo, ou cortadas pelo cap
   {F} erro de leitura — não foi possível ler a thread, ninguém foi perguntado (rodar de novo: #...)
 
 Pronto pro helios na próxima rodada: #X, #Y, #Z
 Seguem bloqueadas: #W (motivo: ...)
+Esperando ação sua: #V (ação: ..., adiada em {data})
 ```
 
 ## Fronteiras
@@ -239,6 +336,10 @@ Seguem bloqueadas: #W (motivo: ...)
   #5578, "skills `/diaria-N-*` invocadas isoladamente NUNCA encadeiam pro
   próximo stage") — imprimir `Fila destravada. Rode /diaria-develop ou
   aguarde o /diaria-overnight.` e parar.
+- **Não executa a ação imediata no lugar do editor.** O Passo 3b PEDE que
+  ele rode o comando; a skill não roda. Se a ação fosse executável por uma
+  sessão, a issue não estaria bloqueada — e as que exigem a máquina/conta
+  dele são exatamente as que ninguém mais consegue fazer.
 - **Não decide trade-off real no lugar do editor.** É exatamente o que
   esta skill existe pra perguntar — critério 2 do #5321 nunca vira default
   aqui.
