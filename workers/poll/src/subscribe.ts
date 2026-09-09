@@ -56,6 +56,7 @@ import { ARQUIVO_INLINE_UTM, HUB_INLINE_UTM, JOGAR_GATE_INLINE_UTM, JOGAR_IDENTI
 import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 import { DOUBLE_OPT_IN_FLAG } from "./optin-flag-6340"; // #6340
+import { verificarDoiForm, mensagemDoiFormInvalido } from "./doi-form-guard-7723"; // #7723
 
 /** UTM próprio do cadastro inline (#3580) — `utm_source` continua
  * `eia-standalone` (convenção de medição), medium/campaign distintos pra medir
@@ -657,11 +658,21 @@ async function subscribeToBeehiiv(
  * deste fluxo em produção.
  */
 function resolveKitCreateState(env: Env): "active" | "inactive" {
-  // #6565: sem o form de confirmação configurado, criar `inactive` prende o
-  // subscriber para sempre (nenhum e-mail de confirmação sai, nada promove
-  // inactive→active sozinho) — o rollout do flag por worker só se aplica
-  // quando o caminho de confirmação de fato existe.
-  if (!env.KIT_DOI_FORM_ID) return "active";
+  // #6565 + #7723: sem um form de confirmação UTILIZÁVEL, criar `inactive`
+  // prende o subscriber para sempre (nenhum e-mail de confirmação sai, nada
+  // promove inactive→active sozinho) — o rollout do flag por worker só se
+  // aplica quando o caminho de confirmação de fato existe.
+  //
+  // O #6565 cobria só a AUSÊNCIA do id. O #7723 acrescentou o caso que de
+  // fato aconteceu: id presente apontando para um form de SISTEMA do Kit,
+  // que não tem o toggle "Send confirmation email" e portanto nunca envia
+  // nada. Ver `doi-form-guard-7723.ts`.
+  const veredito = verificarDoiForm(env.KIT_DOI_FORM_ID);
+  if (!veredito.ok) {
+    const aviso = mensagemDoiFormInvalido(veredito);
+    if (aviso) console.error(aviso);
+    return "active";
+  }
   return DOUBLE_OPT_IN_FLAG.enabledForWorkers.includes("poll")
     ? DOUBLE_OPT_IN_FLAG.createState
     : "active";
@@ -781,15 +792,25 @@ async function subscribeToKit(
     }
     // #6508/#6694: cadastro via API direta também entra na sequence de
     // boas-vindas — mas SÓ quando `createState !== "inactive"` (worker fora
-    // do rollout de double opt-in, ou DOI desligado): #6340 introduziu
-    // `vincularKitDoiForm` acima, que já vincula o subscriber `inactive` ao
-    // form DOI (`KIT_DOI_FORM_ID`) — e esse vínculo dispara a Automation
-    // Rule do Kit (trigger "Subscribes to a form" → "Subscribe to an email
-    // sequence", rule id 5578342, sequence 2876508) sozinha. Manter a
-    // chamada explícita abaixo TAMBÉM pra esse caminho duplicava a
-    // inscrição (2 caminhos pra mesma sequence) e — pior — atravessava a
-    // fronteira que o #6340 existe pra proteger: o subscriber `inactive`
-    // ainda não confirmou o double opt-in.
+    // do rollout de double opt-in, ou DOI desligado). A razão que vale é a
+    // fronteira que o #6340 existe pra proteger: subscriber `inactive` não
+    // confirmou o double opt-in e não pode entrar em régua de boas-vindas.
+    //
+    // ⚠️ #7723 (09/09/2026) — a justificativa ORIGINAL deste branch dizia
+    // outra coisa: que o vínculo ao form DOI dispararia "sozinha" a
+    // Automation Rule do Kit (trigger "Subscribes to a form" → "Subscribe to
+    // an email sequence", rule id 5578342, sequence 2876508), e que a chamada
+    // explícita aqui duplicaria a inscrição. Isso foi MEDIDO e é falso:
+    // Rules é "Paid feature" no plano Free (app.kit.com/rules redireciona pra
+    // billing) e a sequence 2876508 está `active: false` — todo enroll
+    // responde `422 "Sequence is inactive"`. Não existe segundo caminho, e
+    // portanto não existe duplicação a evitar.
+    //
+    // O comportamento não muda (não inscrever antes da confirmação segue
+    // certo), mas quem ler isto precisa saber que o `inactive` NÃO entra em
+    // sequence nenhuma do Kit depois de confirmar — a régua de boas-vindas
+    // vive na Brevo (`scripts/onboarding-welcome-run.ts`). Limpar a sequence
+    // morta e este branch é follow-up da #7723.
     // Pro caminho `active` (DOI desligado, ou worker fora do rollout),
     // `vincularKitDoiForm` nunca roda — o subscriber nunca é linkado ao
     // form, então a Automation Rule não tem gatilho — daí a chamada
