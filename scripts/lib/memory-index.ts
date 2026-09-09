@@ -212,7 +212,13 @@ function parseLine(line: string, lineNumber: number): MemoryLine {
 function renderLine(line: MemoryLine): string {
   if (line.raw !== undefined) return line.raw;
   const refsStr = line.refs.map((r) => `[${r.label}](${r.file})`).join(" + ");
-  const prefixed = line.prefix ? `${line.prefix}: ${refsStr}` : refsStr;
+  // `!== undefined` e não truthy: mesma disciplina de `parseLine` e do
+  // `line.raw !== undefined` logo abaixo nesta função (achado P3 do review
+  // da PR #7796). Hoje `parseLine` nunca produz prefixo vazio, então os dois
+  // se comportam igual — mas se um dia produzir, o truthy silenciosamente
+  // DESCARTA o prefixo em vez de round-tripá-lo, que é exatamente a perda
+  // que esta PR existe pra impedir.
+  const prefixed = line.prefix !== undefined ? `${line.prefix}: ${refsStr}` : refsStr;
   return line.description ? `- ${prefixed} — ${line.description}` : `- ${prefixed}`;
 }
 
