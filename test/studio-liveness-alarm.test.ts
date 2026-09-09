@@ -178,4 +178,16 @@ describe("toAlarmFinding — family/priority/fingerprint", () => {
     assert.equal(finding.check, "studio-liveness");
     assert.equal(finding.priority, "P1");
   });
+
+  it("#7701 (review da PR #7726): leva alarm-acao — a condição só normaliza por ação manual do editor", () => {
+    // Mesma classe do alarm-service-down do OneDrive: sem `alarm-acao`, a
+    // issue nasce `family:estado` e roteia fora-de-rodada, ninguém a pega, e
+    // o Studio fica no chão até alguém ler o alarme (#7503, 10h). Asserção
+    // semântica (presença), não de forma (`length`/`deepEqual`) — imune ao
+    // ALARM_LABEL que `ensureAlarmIssue` injeta no envio real (#5112).
+    const { evaluation } = replay(["failure", "failure"]);
+    const finding = toAlarmFinding(evaluation);
+    assert.ok(finding.labels?.includes("bug"));
+    assert.ok(finding.labels?.includes("alarm-acao"));
+  });
 });

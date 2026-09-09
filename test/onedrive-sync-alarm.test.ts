@@ -43,14 +43,19 @@ describe("toAlarmFinding — family (#5558/#5561, 15º emissor)", () => {
 describe("toAlarmFinding — labels (#7701)", () => {
   it("alarm-service-down leva alarm-acao (roteia pra overnight, nunca fora-de-rodada)", () => {
     const finding = toAlarmFinding("alarm-service-down", "inactive");
+    // Asserções SEMÂNTICAS (review da PR, P3): `length === 2` e
+    // `deepEqual(["bug"])` quebrariam com qualquer label extra ou reordenação
+    // — inclusive o ALARM_LABEL que `ensureAlarmIssue` injeta no envio real
+    // (#5112) — sem dizer o que mudou. O que importa é presença/ausência do
+    // `alarm-acao`, imune a ordem e a labels vizinhos.
     assert.ok(finding.labels?.includes("bug"));
     assert.ok(finding.labels?.includes("alarm-acao"));
-    assert.equal(finding.labels?.length, 2);
   });
 
   it("alarm-canary-stale NÃO leva alarm-acao (condição ambíguo, auto-resolve ou task parada)", () => {
     const finding = toAlarmFinding("alarm-canary-stale", "active");
-    assert.deepEqual(finding.labels, ["bug"]);
+    assert.ok(finding.labels?.includes("bug"));
+    assert.ok(!finding.labels?.includes("alarm-acao"));
   });
 });
 
