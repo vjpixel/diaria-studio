@@ -61,13 +61,19 @@ const WORKERS_DIR = resolve(ROOT, "workers");
  * conferir/atualizar deliberadamente, nunca silencioso.
  */
 const EXPECTED_HOSTS = [
-  "anual:anual.diar.ia.br",
   "arquivo:arquivo.diar.ia.br",
-  "artigo-mensal:artigo.diar.ia.br",
   "artigos:especial.diar.ia.br",
   "cursos:cursos.diar.ia.br",
   "livros:livros.diar.ia.br",
   "poll:eia.diar.ia.br",
+  // #7658/#7709: os Workers `anual` e `artigo-mensal` foram consolidados num
+  // só (`retrospectiva`), que serve TRÊS hosts — o domínio novo mais os dois
+  // antigos, preservados. É por isso que `retrospectiva` aparece 3× aqui: a
+  // chave é `worker:host`, e um Worker com N `custom_domain` contribui com N
+  // entradas. O guard segue exigindo `/robots.txt` próprio por HOST.
+  "retrospectiva:anual.diar.ia.br",
+  "retrospectiva:artigo.diar.ia.br",
+  "retrospectiva:retrospectiva.diar.ia.br",
 ].sort();
 
 describe("guard: todo Worker com host público (custom_domain) tem /robots.txt próprio (#4777)", () => {
