@@ -620,7 +620,7 @@ export function extractCoverageLine(text: string): string | null {
   // que colar o parágrafo extra ANTES da frase-fronteira, frágil). Agora a
   // frase-CTA só ANCORA o início do bloco — a captura real se estende até o
   // próximo boundary estrutural (`---` isolado em linha própria, ou o próximo
-  // `**DESTAQUE`), o que vier first. Sem boundary (MD malformado) captura
+  // `**DESTAQUE`), o que vier primeiro. Sem boundary (MD malformado) captura
   // até o fim do texto — defensivo, não deveria ocorrer em MD bem formado.
   //
   // #7666: a captura também para no INÍCIO do bloco bold-wrap da intro
