@@ -1,0 +1,45 @@
+name: Deploy meta-leads Worker
+
+# #7769: `workers/meta-leads` (Worker do webhook `leadgen` do Meta Lead Ads →
+# Kit) subiu no PR #7777 sem workflow de deploy — o dispatch daquela unidade
+# omitiu de propósito, com o receio de "auto-deployar sem os secrets". O
+# efeito foi deixar `master` VERMELHO: o guard `test/workers-deploy-workflow-
+# coverage.test.ts` (#5337) exige que todo worker descoberto tenha um
+# workflow que referencie `workers/{dir}/**`, e o `meta-leads` não tinha.
+# Este arquivo fecha o gap (hotfix da rodada overnight 260909).
+#
+# Por que deployar cedo é INÓCUO aqui, e o receio original não se sustenta:
+#
+#   1. `wrangler.toml` não declara `custom_domain` nem `route` — só
+#      `workers_dev = true`. O deploy publica em `*.workers.dev`, não num
+#      host de produção; nada do projeto aponta pra ele.
+#   2. Sem `META_APP_SECRET` provisionado, TODO `POST /webhook` reprova na
+#      verificação de assinatura e é rejeitado. O Worker falha FECHADO —
+#      não existe estado intermediário em que ele aceite lead indevido.
+#   3. A URL `*.workers.dev` gerada pelo deploy é justamente o que o editor
+#      precisa ter em mãos pra configurar a subscription da Página no Meta
+#      for Developers (passo documentado em `workers/meta-leads/SECRETS.md`).
+#      Deployar antes dos secrets ajuda esse fluxo em vez de atrapalhar.
+#
+# Segue o padrão de caller fino do #7118 (`deploy-worker.yml` via
+# `workflow_call`), igual a deploy-draft.yml / deploy-poll.yml / os outros 6
+# convergidos — `paths:`, `concurrency.group` e o nome do worker ficam aqui;
+# os steps de deploy vivem no reutilizável.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'workers/meta-leads/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-meta-leads
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy-worker.yml
+    with:
+      worker: meta-leads
+    secrets: inherit
