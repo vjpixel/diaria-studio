@@ -4818,7 +4818,7 @@ describe("defaultIsPidAlive — EPERM ambíguo no Windows (#7687)", () => {
 
   it("Windows: EPERM em process.kill + tasklist confirma o PID presente → true", () => {
     withPlatform("win32", () => {
-      const runTasklist = mock.fn(() => ({
+      const runTasklist = mock.fn((_pid: number) => ({
         status: 0,
         stdout: '"node.exe","4242","Console","1","12.345 K"\r\n',
         stderr: "",
