@@ -6,6 +6,8 @@
  * interessam ao cadastro no Kit (e-mail, nome).
  */
 
+import { redactPii } from "./redact.ts";
+
 export const DEFAULT_GRAPH_API_VERSION = "v21.0";
 
 export interface MetaFieldDatum {
@@ -38,16 +40,25 @@ export async function fetchMetaLead(
   graphApiVersion: string = DEFAULT_GRAPH_API_VERSION,
 ): Promise<FetchLeadResult> {
   if (!accessToken) return { ok: false, status: 500, reason: "missing_access_token" };
-  const url = `https://graph.facebook.com/${graphApiVersion}/${encodeURIComponent(leadgenId)}?fields=field_data,created_time,ad_id,form_id&access_token=${encodeURIComponent(accessToken)}`;
+  // Token vai no header `Authorization`, NUNCA na query string (achado
+  // P3/média do review da PR #7777). A Graph API aceita as duas formas; a
+  // query string é a convenção mais comum na doc da Meta, mas com
+  // `head_sampling_rate = 1` no wrangler.toml qualquer URL que apareça num
+  // log — ou dentro de `String(err)` de uma exceção de fetch, que em vários
+  // runtimes embute a URL — carregaria o segredo junto.
+  const url = `https://graph.facebook.com/${graphApiVersion}/${encodeURIComponent(leadgenId)}?fields=field_data,created_time,ad_id,form_id`;
   let res: Response;
   try {
-    res = await fetchImpl(url, { signal: AbortSignal.timeout(10_000) });
+    res = await fetchImpl(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(10_000),
+    });
   } catch (err) {
-    return { ok: false, status: 502, reason: `fetch_exception: ${String(err)}` };
+    return { ok: false, status: 502, reason: `fetch_exception: ${redactPii(String(err))}` };
   }
   if (!res.ok) {
     const bodyText = await res.text().catch(() => "<unreadable>");
-    return { ok: false, status: 502, reason: `graph_api_${res.status}: ${bodyText.slice(0, 300)}` };
+    return { ok: false, status: 502, reason: `graph_api_${res.status}: ${redactPii(bodyText).slice(0, 300)}` };
   }
   const body = (await res.json().catch(() => undefined)) as MetaLead | undefined;
   if (!body || typeof body.id !== "string") {

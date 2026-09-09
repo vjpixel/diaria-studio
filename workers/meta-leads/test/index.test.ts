@@ -20,6 +20,7 @@ import {
 } from "../src/graph.ts";
 import { createKitSubscriberFromLead } from "../src/kit.ts";
 import { META_LEADS_UTM } from "../src/utm.ts";
+import { redactPii } from "../src/redact.ts";
 import {
   handleVerify,
   handleWebhookPost,
@@ -199,6 +200,68 @@ describe("fetchMetaLead", () => {
     }) as unknown as typeof fetch;
     await fetchMetaLead("L1", "token", fetchImpl);
     assert.match(capturedUrl, new RegExp(`/${DEFAULT_GRAPH_API_VERSION}/`));
+  });
+
+  // Achado P3/média do review da PR #7777: token na query string vazaria pro
+  // Cloudflare Logs (head_sampling_rate = 1), inclusive dentro de
+  // `String(err)` de uma exceção de fetch, que em vários runtimes embute a URL.
+  it("NUNCA põe o access token na query string — vai no header Authorization", async () => {
+    let capturedUrl = "";
+    let capturedInit: RequestInit | undefined;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      capturedUrl = String(url);
+      capturedInit = init;
+      return new Response(JSON.stringify({ id: "L1" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await fetchMetaLead("L1", "token-secreto-123", fetchImpl);
+    assert.ok(!capturedUrl.includes("token-secreto-123"), "token vazou na URL");
+    assert.ok(!capturedUrl.includes("access_token"), "query string ainda tem access_token");
+    const headers = capturedInit?.headers as Record<string, string> | undefined;
+    assert.equal(headers?.Authorization, "Bearer token-secreto-123");
+  });
+
+  it("redige PII do corpo de erro do Graph antes de embutir no reason", async () => {
+    const fetchImpl = (async () =>
+      new Response('{"error":{"message":"Invalid user lead@exemplo.com.br"}}', {
+        status: 400,
+      })) as unknown as typeof fetch;
+    const result = await fetchMetaLead("L1", "token", fetchImpl);
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.ok(!result.reason.includes("lead@exemplo.com.br"), "e-mail vazou no reason");
+    assert.match(result.reason, /\[email redigido\]/);
+  });
+});
+
+// ── redactPii (achado P2/alta do review da PR #7777) ──────────────────────
+
+describe("redactPii", () => {
+  it("redige e-mail em texto livre de terceiro", () => {
+    const out = redactPii(`{"errors":{"email_address":["'maria.silva@gmail.com' is invalid"]}}`);
+    assert.ok(!out.includes("maria.silva@gmail.com"));
+    assert.match(out, /\[email redigido\]/);
+    // preserva o que torna o erro diagnosticável
+    assert.match(out, /email_address/);
+    assert.match(out, /is invalid/);
+  });
+
+  it("redige telefone", () => {
+    const out = redactPii("phone +55 11 91234-5678 rejected");
+    assert.ok(!out.includes("91234-5678"));
+    assert.match(out, /\[telefone redigido\]/);
+    assert.match(out, /rejected/);
+  });
+
+  it("redige TODOS os e-mails, não só o primeiro", () => {
+    const out = redactPii("a@b.com e c@d.com.br falharam");
+    assert.ok(!out.includes("a@b.com"));
+    assert.ok(!out.includes("c@d.com.br"));
+    assert.equal(out.match(/\[email redigido\]/g)?.length, 2);
+  });
+
+  it("texto sem PII passa intacto", () => {
+    const s = '{"error":{"code":190,"message":"Invalid OAuth access token"}}';
+    assert.equal(redactPii(s), s);
   });
 });
 
