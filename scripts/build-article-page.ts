@@ -117,7 +117,7 @@ async function main(): Promise<void> {
     // caminho de push: o dry-run não precisa de credencial nenhuma.
     loadProjectEnv(REPO_ROOT);
     console.error(
-      `[build-article-page] --push: enviando article:${cycle} (${page.html.length} bytes) pro KV ARTICLES...`,
+      `[build-article-page] --push: enviando ${articleKvKey(cycle)} (${page.html.length} bytes) pro KV ARTICLES...`,
     );
     await uploadTextToWorkerKV(page.html, articleKvKey(cycle), {
       kvNamespaceId: articleKvNamespaceId(),

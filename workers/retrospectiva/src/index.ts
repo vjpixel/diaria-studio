@@ -194,7 +194,11 @@ export function legacyRedirectPath(host: string, pathname: string, search: strin
   let novo: string | null = null;
   if (host === LEGACY_ANUAL_HOST) novo = anualPathFromSlug(slug);
   else if (host === LEGACY_MENSAL_HOST) novo = mensalPathFromCycle(slug);
-  if (!novo) return null;
+  // Intraduzível: manda pra raiz, mas COM a query. A 1ª versão devolvia `null`
+  // e o caller montava `/` seco — perdendo o UTM justamente no caminho em que
+  // o link antigo já estava errado, que é onde saber a origem mais ajuda
+  // (achado do silent-failure-hunter no review da #7709).
+  if (!novo) return search ? `/${search}` : null;
   return `/${novo}${search}`;
 }
 
@@ -251,25 +255,41 @@ async function handleCadastro(
   return htmlResponse(article);
 }
 
+/**
+ * Página servida a quem NÃO passou no gate de APOIO — sem e-mail ou com e-mail
+ * fora da allowlist, indistintamente, como no `artigo-mensal` antes da
+ * unificação: trecho + bloco de conversão quando há trecho no KV, paywall seco
+ * quando não há (ou quando o trecho não é injetável).
+ *
+ * O paywall seco é o fallback, NUNCA o form de e-mail: o form é a porta de
+ * quem já apoia (`?entrar=1`), e mostrá-lo como primeira tela troca a página
+ * que VENDE por um campo de login — inversão que o #7580 tratou de desfazer.
+ */
+async function apoioTeaserResponse(env: Env, path: string): Promise<Response> {
+  const teaser = await loadArticleTeaser(env, path);
+  if (!teaser) return htmlResponse(mensal.renderPaywall());
+  try {
+    return htmlResponse(mensal.renderTeaserWithPaywall(teaser));
+  } catch (e) {
+    console.error(`[retrospectiva] trecho mensal não injetável: ${e instanceof Error ? e.message : e}`);
+    return htmlResponse(mensal.renderPaywall());
+  }
+}
+
 async function handleApoio(request: Request, env: Env, classified: RetrospectivaPath): Promise<Response> {
   const url = new URL(request.url);
   const path = classified.slug;
   const normalized = normalizeEmail(url.searchParams.get("email"));
 
-  // Sem e-mail: trecho + bloco de conversão; `?entrar=1` é a porta explícita
+  const querEntrar = url.searchParams.has("entrar");
+
+  // Sem e-mail: trecho + bloco de conversão. `?entrar=1` é a porta explícita
   // do form (senão o link "já apoia?" cairia no trecho de novo).
-  if (!normalized && !url.searchParams.has("entrar")) {
-    const teaser = await loadArticleTeaser(env, path);
-    if (teaser) {
-      try {
-        return htmlResponse(mensal.renderTeaserWithPaywall(teaser));
-      } catch (e) {
-        console.error(`[retrospectiva] trecho mensal não injetável: ${e instanceof Error ? e.message : e}`);
-      }
-    }
-    return htmlResponse(mensal.renderEmailForm(path));
+  if (!normalized) {
+    if (querEntrar) return htmlResponse(mensal.renderEmailForm(path));
+    return apoioTeaserResponse(env, path);
   }
-  if (!normalized) return htmlResponse(mensal.renderEmailForm(path));
+  if (querEntrar) return htmlResponse(mensal.renderEmailForm(path));
 
   // Allowlist fail-closed: ausente/corrompida/binding não configurado → `null`
   // → NINGUÉM passa. Nunca serve a edição paga por erro de leitura.
@@ -280,8 +300,14 @@ async function handleApoio(request: Request, env: Env, classified: Retrospectiva
     console.error(`[retrospectiva] falha lendo ALLOWLIST: ${e instanceof Error ? e.message : e}`);
   }
 
+  // Reprovado no gate recebe o MESMO tratamento de quem não informou e-mail:
+  // trecho + bloco de conversão quando há trecho, paywall seco quando não há.
+  // A 1ª versão desta unificação devolvia o paywall seco direto neste ramo,
+  // engolindo o trecho pra quem informou um e-mail fora da allowlist — quem
+  // mais precisa da amostra pra decidir apoiar (achado do code-reviewer e do
+  // silent-failure-hunter no review da #7709).
   if (decideApoioGate(normalized, parseAllowlist(raw)).state !== "allowed") {
-    return htmlResponse(mensal.renderPaywall());
+    return apoioTeaserResponse(env, path);
   }
 
   const article = await loadArticle(env, path);
