@@ -466,6 +466,8 @@ npx tsx scripts/reconcile-site-sitemap.ts
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se 0/2, warn se 3/4/5} --message "site-page stage6 publish: exit {code}"
 ```
 
+**A home NÃO passa a mostrar esta edição agora, e isso é o comportamento correto (#7686).** `buildHomeFeed` descarta entrada de sitemap cuja `<lastmod>` (= data de ENVIO) ainda não chegou, em BRT — então o `index.html` regenerado neste commit sai SEM a edição que você acabou de publicar. Quem a faz aparecer é o workflow `.github/workflows/regen-home.yml`, às 06:00 BRT, junto do envio real. Decisão do editor (08/09/2026): a página `/p/{slug}` pode ficar pronta antes, sem problema; só a HOME espera. **Não "corrija" isso** — antes do #7686 a home anunciava a edição ~9h antes de qualquer assinante recebê-la, e a home é destino de campanha paga (#7575). Se a home amanhecer sem a edição do dia, o culpado é o workflow das 06:00 ter falhado, nunca o filtro: checar `gh run list --workflow=regen-home.yml`.
+
 **`reconcile-site-sitemap.ts` roda SEMPRE, logo depois (#7578)** — aditivo, idempotente, sai `0` quando não há o que fazer. Garante que toda página em `workers/site/public/p/` tenha `<loc>` no `sitemap.xml` e regenera a home. Página fora do sitemap é invisível no buscador **e** em `arquivo.diar.ia.br` (cujo acervo DERIVA do sitemap do apex em request-time, sem fonte própria) — foi assim que 5 edições ficaram órfãs entre 28/08 e 03/09/2026, respondendo 200 sem ninguém chegar nelas.
 
 | exit | significado | ação |

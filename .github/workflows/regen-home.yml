@@ -1,0 +1,166 @@
+name: Regenerar home às 06:00 BRT
+
+# #7686: a home (`workers/site/public/index.html`) é ARQUIVO ESTÁTICO servido
+# pelo Worker `site` — só muda quando alguém a regenera e commita. Até esta
+# unidade, quem a regenerava era o Stage 6 (§6d-site de
+# `.claude/agents/orchestrator-stage-6.md`), que roda na NOITE ANTERIOR ao
+# envio: o PR `site-publish/{slug}` era mergeado ~21h BRT, `deploy-site.yml`
+# disparava, e a home passava a anunciar a edição de amanhã ~9h antes de
+# qualquer assinante recebê-la.
+#
+# A correção tem duas metades, e as duas são necessárias:
+#
+#  1. `buildHomeFeed` (`scripts/lib/site-home-page.ts`) passou a DESCARTAR
+#     entrada de sitemap cuja `<lastmod>` (= data de envio) ainda não chegou,
+#     em BRT. Isso mata a ANTECIPAÇÃO — o Stage 6 continua regenerando a home
+#     no mesmo commit da página, só que sem a edição de amanhã dentro.
+#  2. Este workflow, que roda às 06:00 BRT e regenera a home com o relógio já
+#     no dia da edição — é ele que faz a edição APARECER na hora certa. Sem
+#     ele, o filtro do item 1 sozinho deixaria a home sempre uma edição
+#     atrasada (só o Stage 6 seguinte, à noite, a incluiria).
+#
+# A página `/p/{slug}` continua saindo antes, no Stage 6 — decisão explícita
+# do editor (08/09/2026): "a página da edição pode ficar pronta antes, sem
+# problema". A fronteira das 06:00 é só da HOME.
+#
+# Por que GitHub Actions e não uma scheduled task no `helios`
+# (`scripts/lib/scheduled-tasks.ts`): `gen-home-page.ts` lê SÓ entrada já
+# commitada — `workers/site/public/sitemap.xml` + `workers/site/public/p/
+# {slug}/index.html` — e nenhum `data/` (que é junction do OneDrive,
+# indisponível em runner). Não há razão pra amarrar o horário da home à
+# disponibilidade de uma máquina; o deploy do mesmo Worker já vive aqui
+# (`deploy-site.yml`).
+#
+# Por que branch + PR + merge, e não push direto em master: o ruleset
+# "Protect main branch" exige `pull_request` no branch default, sem bypass
+# actors (mesma restrição que levou `publish-edition-site-page.ts` a migrar
+# de push-direto pra PR no #6598). `required_approving_review_count` é 0,
+# então o merge é imediato — não há espera por revisão.
+#
+# Por que o job `deploy` existe em vez de deixar `deploy-site.yml` reagir ao
+# push: push feito com `GITHUB_TOKEN` NÃO dispara outros workflows (proteção
+# antirrecursão do Actions). Sem este job, o merge entraria em master e o
+# Worker em produção continuaria servindo a home antiga.
+
+on:
+  schedule:
+    # 09:00 UTC = 06:00 BRT. BRT não tem horário de verão desde 2019 (mesma
+    # premissa de `scripts/lib/ads-rolling-window.ts`), então o offset é fixo
+    # e um único cron cobre o ano inteiro.
+    #
+    # Todo dia, inclusive fim de semana: em dia sem edição nova o
+    # `gen-home-page.ts` reproduz byte a byte o `index.html` já commitado, o
+    # passo de diff não acha mudança e o job termina sem abrir PR. Sai mais
+    # barato que manter uma lista de dias de publicação em sincronia aqui.
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: regen-home
+  cancel-in-progress: false
+
+jobs:
+  regen:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Regenerar index.html
+        run: npx tsx scripts/gen-home-page.ts
+
+      - name: Detectar mudança na home
+        id: diff
+        run: |
+          if git diff --quiet -- workers/site/public/index.html; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Home já está atualizada — nada a fazer."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Home mudou:"
+            git diff --stat -- workers/site/public/index.html
+          fi
+
+      - name: Commitar, abrir PR e mergear
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BRANCH="regen-home/$(date -u +%Y-%m-%d)"
+
+          # Identidade do bot do próprio Actions (e não um nome inventado):
+          # o ruleset tem `require_extra_approval_for_unattributed_changes`,
+          # e commit cujo autor não mapeia pra uma conta do GitHub conta como
+          # "unattributed" — este e-mail mapeia pra github-actions[bot].
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout -B "$BRANCH"
+          # Pathspec explícito, nunca `git add -A`: o runner pode ter
+          # subproduto de `npm ci`/build no working tree, e esta unidade
+          # publica UM arquivo.
+          git add -- workers/site/public/index.html
+          git commit -m "chore(#7686): regenera home das 06:00 BRT" \
+                     -m "Regeneração automática de workers/site/public/index.html para incluir a edição cuja data de envio chegou. Gerado por .github/workflows/regen-home.yml."
+          git push --force origin "$BRANCH"
+
+          # `gh pr create` falha se já houver PR aberto pra esta branch (2ª
+          # execução no mesmo dia, ex: workflow_dispatch depois do cron).
+          # Reusar o PR existente é o caminho correto, não abrir outro.
+          if ! gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+            gh pr create --base master --head "$BRANCH" \
+              --title "chore(#7686): regenera home das 06:00 BRT" \
+              --body "Regeneração automática da home (\`workers/site/public/index.html\`) no horário de envio da edição.
+
+Aberto e mergeado por \`.github/workflows/regen-home.yml\`. O deploy do Worker \`site\` roda no job seguinte deste mesmo workflow — push feito com \`GITHUB_TOKEN\` não dispara \`deploy-site.yml\` sozinho.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+          fi
+
+          gh pr merge "$BRANCH" --squash --delete-branch
+
+      - name: Confirmar que o merge entrou em master
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # #573: nunca confiar só no exit code de `gh pr merge` — confirmar
+          # o estado pela API antes de deixar o job `deploy` rodar em cima de
+          # um master que talvez não tenha a mudança.
+          BRANCH="regen-home/$(date -u +%Y-%m-%d)"
+          STATE=$(gh pr view "$BRANCH" --json state --jq .state)
+          if [ "$STATE" != "MERGED" ]; then
+            echo "PR de $BRANCH terminou em estado '$STATE', não MERGED — abortando antes do deploy." >&2
+            exit 1
+          fi
+          echo "PR mergeado ✓"
+
+  deploy:
+    needs: regen
+    if: needs.regen.outputs.changed == 'true'
+    # MESMO group de `deploy-site.yml` (grupos de concurrency são globais no
+    # repo, não por workflow): os dois publicam o Worker `site`, e sem isso um
+    # push humano tocando `workers/site/**` coincidindo com o cron das 06:00
+    # rodaria dois `wrangler deploy` concorrentes — o que terminasse por
+    # último venceria, podendo reverter a home recém-regenerada. `cancel-in-
+    # progress: false` idêntico ao de lá: deploy pela metade não se cancela.
+    concurrency:
+      group: deploy-site
+      cancel-in-progress: false
+    uses: ./.github/workflows/deploy-worker.yml
+    with:
+      worker: site
+    secrets: inherit
