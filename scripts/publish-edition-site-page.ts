@@ -807,9 +807,14 @@ export function commitAndPushSitePage(
             `problema P1-A). Commit abortado, nada foi commitado: ${outsidePathspec.join(", ")}`,
         );
       }
-      const commitPaths = pathsToStage.map((p) => ["--", p]).flat();
       git(
-        ["commit", "-m", `chore(site): publica página da edição /p/${slug}\n\nRefs #6202, #6598`, ...commitPaths],
+        [
+          "commit",
+          "-m",
+          `chore(site): publica página da edição /p/${slug}\n\nRefs #6202, #6598`,
+          "--",
+          ...pathsToStage,
+        ],
         rootDir,
       );
     }
