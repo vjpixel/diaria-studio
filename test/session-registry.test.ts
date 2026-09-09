@@ -7,7 +7,7 @@
  * merge lock (acquire/release com TTL). Tudo isolado em tmpdir — nunca toca
  * `data/` real do repo.
  */
-import { describe, it, after } from "node:test";
+import { describe, it, after, mock } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -61,6 +61,7 @@ import {
   CLOCK_SKEW_TOLERANCE_MS,
   assessCrossMachineSyncFreshness,
   CROSS_MACHINE_HEARTBEAT_LAG_WARN_MS,
+  defaultIsPidAlive,
   type MergeLockIo,
   type SessionRecord,
   type MergeGrant,
@@ -4768,5 +4769,126 @@ describe("CLI register --unattended (#7546)", () => {
     // (`base.attended`) antes de considerar o default por kind — ver a
     // docstring do campo em `SessionRecord`.
     assert.equal(record.attended, false);
+  });
+});
+
+describe("defaultIsPidAlive — EPERM ambíguo no Windows (#7687)", () => {
+  // `runTasklist` é o seam injetável (mesmo padrão do `execImpl` de
+  // `openInBrowser` em `scripts/serve-preview.ts`) — mockar o `spawnSync` do
+  // `node:child_process` via `createRequire`/`mock.method` NÃO funciona aqui:
+  // verificado ao vivo que o binding `import { spawnSync }` no topo de
+  // `session-registry.ts` não observa a troca feita via mock noutro módulo
+  // (a chamada real ao `tasklist` continuava acontecendo) — só a injeção de
+  // dependência intercepta de verdade.
+
+  function withPlatform<T>(platform: NodeJS.Platform, fn: () => T): T {
+    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    try {
+      return fn();
+    } finally {
+      Object.defineProperty(process, "platform", original);
+    }
+  }
+
+  function withKillThrowing<T>(code: string, fn: () => T): T {
+    const killSpy = mock.method(process, "kill", () => {
+      const err = new Error(`mock ${code}`) as NodeJS.ErrnoException;
+      err.code = code;
+      throw err;
+    });
+    try {
+      return fn();
+    } finally {
+      killSpy.mock.restore();
+    }
+  }
+
+  it("POSIX: EPERM em process.kill → true direto, sem chamar tasklist (comportamento pré-#7687 preservado)", () => {
+    withPlatform("linux", () => {
+      const runTasklist = mock.fn(() => {
+        throw new Error("não deveria chamar runTasklist em POSIX — EPERM já é suficiente");
+      });
+      withKillThrowing("EPERM", () => {
+        assert.equal(defaultIsPidAlive(4242, runTasklist), true);
+      });
+      assert.equal(runTasklist.mock.callCount(), 0);
+    });
+  });
+
+  it("Windows: EPERM em process.kill + tasklist confirma o PID presente → true", () => {
+    withPlatform("win32", () => {
+      const runTasklist = mock.fn((_pid: number) => ({
+        status: 0,
+        stdout: '"node.exe","4242","Console","1","12.345 K"\r\n',
+        stderr: "",
+      }));
+      withKillThrowing("EPERM", () => {
+        assert.equal(defaultIsPidAlive(4242, runTasklist), true);
+      });
+      assert.equal(runTasklist.mock.callCount(), 1);
+      assert.equal(runTasklist.mock.calls[0].arguments[0], 4242);
+    });
+  });
+
+  it("Windows: EPERM em process.kill + tasklist NÃO acha o PID → false — o bug original do #7687 (antes, EPERM sozinho virava true)", () => {
+    withPlatform("win32", () => {
+      const runTasklist = mock.fn(() => ({
+        status: 0,
+        stdout: "INFO: No tasks are running which match the specified criteria.\r\n",
+        stderr: "",
+      }));
+      withKillThrowing("EPERM", () => {
+        assert.equal(defaultIsPidAlive(4242, runTasklist), false);
+      });
+    });
+  });
+
+  it("Windows: tasklist falha em rodar (status ≠ 0, ou runTasklist devolve null) → false por segurança de interpretação, nunca finge vivo", () => {
+    withPlatform("win32", () => {
+      const runTasklistBadStatus = mock.fn(() => ({ status: 1, stdout: "", stderr: "erro" }));
+      withKillThrowing("EPERM", () => {
+        assert.equal(defaultIsPidAlive(4242, runTasklistBadStatus), false);
+      });
+
+      const runTasklistNull = mock.fn(() => null);
+      withKillThrowing("EPERM", () => {
+        assert.equal(defaultIsPidAlive(4242, runTasklistNull), false);
+      });
+    });
+  });
+
+  it("Windows: tasklist não distingue PID de substring (123 não casa dentro de 1234)", () => {
+    withPlatform("win32", () => {
+      const runTasklist = mock.fn(() => ({
+        status: 0,
+        stdout: '"node.exe","1234","Console","1","12.345 K"\r\n',
+        stderr: "",
+      }));
+      withKillThrowing("EPERM", () => {
+        assert.equal(defaultIsPidAlive(123, runTasklist), false);
+      });
+    });
+  });
+
+  it("ESRCH (processo não existe) → false em qualquer plataforma, sem chamar tasklist", () => {
+    withPlatform("win32", () => {
+      const runTasklist = mock.fn(() => {
+        throw new Error("não deveria chamar runTasklist quando o código já é ESRCH, não EPERM");
+      });
+      withKillThrowing("ESRCH", () => {
+        assert.equal(defaultIsPidAlive(4242, runTasklist), false);
+      });
+      assert.equal(runTasklist.mock.callCount(), 0);
+    });
+  });
+
+  it("default sem runTasklist explícito continua funcionando (roda o tasklist real) — não quebra o call site de decideSessionGc/planSessionGc", () => {
+    // Sem mock nenhum: exercita o default real `runTasklistReal` contra um
+    // PID quase certamente livre (65535+ pouco usado) só pra garantir que a
+    // função não lança e devolve boolean — não afirma vivo/morto específico
+    // (comportamento do SO real, fora do nosso controle).
+    const result = defaultIsPidAlive(999999);
+    assert.equal(typeof result, "boolean");
   });
 });
