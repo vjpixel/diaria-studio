@@ -1399,7 +1399,14 @@ describe("runOne mata a árvore inteira no timeout — integração REAL (#7753,
           `import { writeFileSync } from "node:fs";`,
           `import { test } from "node:test";`,
           `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
-          `test("trava de propósito (#7753 fixture)", async () => { await new Promise(() => {}); });`,
+          // Segura o event loop com um timer ATIVO, não com uma promise que
+          // nunca resolve: o runner do Node cancela a promise ociosa sozinho
+          // (~400ms no Node 20), e aí o batch termina ANTES do timeout — o
+          // teste passaria com e sem o fix. Um `setInterval` mantém o handle
+          // vivo em qualquer versão, então o timeout dispara de verdade e o
+          // neto só morre se `killProcessTree` matar o grupo (achado
+          // alta/P2 do review da PR #7764).
+          `test("trava de propósito (#7753 fixture)", async () => { setInterval(() => {}, 1000); await new Promise(() => {}); });`,
         ].join("\n"),
       );
 
