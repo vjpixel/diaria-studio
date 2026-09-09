@@ -221,7 +221,14 @@ export function evaluateAllowlistBlastRadius(
   force: boolean,
 ): AllowlistBlastRadius {
   const diff = diffTagMembership(next, current);
-  const blast = evaluateTagBlastRadius(diff.toRemove.length, current.length, force);
+  // Denominador DEDUPLICADO/normalizado, não `current.length` cru: o numerador
+  // (`toRemove`) já sai de um `Set` normalizado dentro de `diffTagMembership`,
+  // e misturar as duas contagens diluiria a razão — uma allowlist com e-mails
+  // repetidos (só alcançável por uma escrita forçada/à mão anterior, já que
+  // `computeApoiadorAllowlist` sempre deduplica) faria o guard bloquear MENOS
+  // do que deveria. Achado do review da #7688.
+  const currentCount = new Set(current.map((e) => e.trim().toLowerCase()).filter(Boolean)).size;
+  const blast = evaluateTagBlastRadius(diff.toRemove.length, currentCount, force);
   return {
     entram: diff.toAdd,
     saem: diff.toRemove,
@@ -230,6 +237,68 @@ export function evaluateAllowlistBlastRadius(
     ratio: blast.ratio,
     currentCount: blast.currentCount,
   };
+}
+
+/**
+ * Decisão de push, com a leitura do KV injetada — é ESTE o miolo do #7688
+ * (ler o estado anterior antes de sobrescrever), e ele fica fora de `main()`
+ * justamente pra ser testável: a 1ª versão desta PR só tinha teste das funções
+ * puras, deixando sem cobertura o caminho que a issue chama de correção
+ * (achado do code-reviewer).
+ *
+ * Três desfechos, e o terceiro existe pra não mentir no log:
+ *   - `refuse` — leitura falhou sem `--force-blast-radius`, ou queda acima do
+ *     limiar. Nada é escrito.
+ *   - `push` — comparado de verdade; `blast` traz quem entra e quem sai.
+ *   - `push-unverified` — a leitura falhou e o editor forçou. Grava, mas SEM
+ *     diff: reportar "-0 saem (atual: 0)" aqui pareceria autoritativo e diria
+ *     o oposto da verdade (as remoções reais são desconhecidas) — justamente
+ *     no cenário em que o operador mais precisa saber que não sabe.
+ */
+export type AllowlistPushDecision =
+  | { action: "refuse"; reason: string }
+  | { action: "push"; blast: AllowlistBlastRadius }
+  | { action: "push-unverified"; reason: string };
+
+export async function decideAllowlistPush(opts: {
+  next: readonly string[];
+  force: boolean;
+  readCurrent: () => Promise<string | null>;
+}): Promise<AllowlistPushDecision> {
+  let current: string[];
+  try {
+    current = parseCurrentAllowlist(await opts.readCurrent());
+  } catch (e) {
+    if (!opts.force) {
+      return {
+        action: "refuse",
+        reason:
+          `não foi possível ler a allowlist ATUAL do KV pra comparar (${(e as Error).message}). Sem essa ` +
+          "leitura o guard de blast radius não tem como rodar, e sobrescrever às cegas é justamente o que o " +
+          "#7688 fechou. Re-tente, ou use --force-blast-radius pra gravar assumindo o risco (sempre logado).",
+      };
+    }
+    return {
+      action: "push-unverified",
+      reason:
+        `leitura da allowlist atual falhou (${(e as Error).message}), mas --force-blast-radius foi passado — ` +
+        "gravando SEM comparação prévia. As remoções desta escrita são DESCONHECIDAS.",
+    };
+  }
+
+  const blast = evaluateAllowlistBlastRadius(opts.next, current, opts.force);
+  if (blast.blocked) {
+    return {
+      action: "refuse",
+      reason:
+        `${blast.saem.length}/${blast.currentCount} remoções (${(blast.ratio * 100).toFixed(1)}%) — acima do ` +
+        `limiar de ${(APOIO_TAG_BLAST_RADIUS_THRESHOLD * 100).toFixed(0)}%. Quem sai perde acesso às ` +
+        "Retrospectivas do Mês já publicadas, então uma queda desse tamanho precisa ser confirmada, não " +
+        "aplicada por inércia: confira se não é leitura parcial do apoia.se/virada de mês. Se a queda for " +
+        "REAL (ex: mudança de limiar), use --force-blast-radius.",
+    };
+  }
+  return { action: "push", blast };
 }
 
 async function main(): Promise<void> {
@@ -261,6 +330,7 @@ async function main(): Promise<void> {
           "(ver aviso acima) — nunca sobrescreve a allowlist do KV com dado parcial.",
       );
       process.exit(1);
+      return;
     }
 
     const transientFailures = findTransientFailureContacts(data.contacts);
@@ -275,6 +345,7 @@ async function main(): Promise<void> {
             "(decisão consciente do editor, sempre logada).",
         );
         process.exit(1);
+        return;
       }
       console.error(
         `[build-apoiador-allowlist] aviso: prosseguindo com --allow-partial apesar de ${transientFailures.length} ` +
@@ -288,50 +359,31 @@ async function main(): Promise<void> {
     // sync de audiência do projeto sem guard de blast radius — e nem sequer
     // consultava o estado anterior, então uma leitura parcial do apoia.se que
     // derrubasse metade dos apoiadores seria aplicada sem nada acusar.
-    let current: string[];
-    try {
-      current = parseCurrentAllowlist(
-        await getTextFromWorkerKV(APOIADOR_ALLOWLIST_KV_KEY, { kvNamespaceId }),
-      );
-    } catch (e) {
-      if (!hasFlag(argv, "force-blast-radius")) {
-        console.error(
-          `[build-apoiador-allowlist] RECUSANDO --push: não foi possível ler a allowlist ATUAL do KV pra ` +
-            `comparar (${(e as Error).message}). Sem essa leitura o guard de blast radius não tem como ` +
-            "rodar, e sobrescrever às cegas é justamente o que o #7688 fechou. Re-tente, ou use " +
-            "--force-blast-radius pra gravar assumindo o risco (sempre logado).",
-        );
-        process.exit(1);
-        return;
-      }
-      console.error(
-        `[build-apoiador-allowlist] aviso: leitura da allowlist atual falhou (${(e as Error).message}), ` +
-          "mas --force-blast-radius foi passado — gravando SEM comparação prévia.",
-      );
-      current = [];
-    }
+    const decision = await decideAllowlistPush({
+      next: allowlist,
+      force: hasFlag(argv, "force-blast-radius"),
+      readCurrent: () => getTextFromWorkerKV(APOIADOR_ALLOWLIST_KV_KEY, { kvNamespaceId }),
+    });
 
-    const blast = evaluateAllowlistBlastRadius(allowlist, current, hasFlag(argv, "force-blast-radius"));
-    console.error(
-      `[build-apoiador-allowlist] diff vs KV: +${blast.entram.length} entram · -${blast.saem.length} saem · ` +
-        `${blast.inalterados.length} já corretos (allowlist atual: ${blast.currentCount}).`,
-    );
-    // Lista explícita, como os syncs vizinhos — quem revisa precisa ver QUEM
-    // perde acesso, não só quantos.
-    for (const e of blast.entram) console.error(`[build-apoiador-allowlist]   + ${e}`);
-    for (const e of blast.saem) console.error(`[build-apoiador-allowlist]   - ${e}`);
-
-    if (blast.blocked) {
-      console.error(
-        `[build-apoiador-allowlist] RECUSANDO --push: ${blast.saem.length}/${blast.currentCount} remoções ` +
-          `(${(blast.ratio * 100).toFixed(1)}%) — acima do limiar de ` +
-          `${(APOIO_TAG_BLAST_RADIUS_THRESHOLD * 100).toFixed(0)}%. Quem sai perde acesso às Retrospectivas ` +
-          "do Mês já publicadas, então uma queda desse tamanho precisa ser confirmada, não aplicada por " +
-          "inércia: confira se não é leitura parcial do apoia.se/virada de mês. Se a queda for REAL (ex: " +
-          "mudança de limiar), use --force-blast-radius.",
-      );
+    if (decision.action === "refuse") {
+      console.error(`[build-apoiador-allowlist] RECUSANDO --push: ${decision.reason}`);
       process.exit(1);
       return;
+    }
+
+    if (decision.action === "push-unverified") {
+      // Sem diff aqui de propósito — ver `decideAllowlistPush`.
+      console.error(`[build-apoiador-allowlist] aviso: ${decision.reason}`);
+    } else {
+      const { blast } = decision;
+      console.error(
+        `[build-apoiador-allowlist] diff vs KV: +${blast.entram.length} entram · -${blast.saem.length} saem · ` +
+          `${blast.inalterados.length} já corretos (allowlist atual: ${blast.currentCount}).`,
+      );
+      // Lista explícita, como os syncs vizinhos — quem revisa precisa ver QUEM
+      // perde acesso, não só quantos.
+      for (const e of blast.entram) console.error(`[build-apoiador-allowlist]   + ${e}`);
+      for (const e of blast.saem) console.error(`[build-apoiador-allowlist]   - ${e}`);
     }
 
     console.error(

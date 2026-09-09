@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import {
   parseCurrentAllowlist,
   evaluateAllowlistBlastRadius,
+  decideAllowlistPush,
 } from "../scripts/build-apoiador-allowlist.ts";
 import { APOIO_TAG_BLAST_RADIUS_THRESHOLD } from "../scripts/lib/shared/kit-apoio-tag.ts";
 
@@ -114,5 +115,118 @@ describe("#7688 — evaluateAllowlistBlastRadius: quem entra, quem sai, e quando
     // Se alguém afrouxar este guard, que seja em um lugar só — duas respostas
     // diferentes pra mesma pergunta é a origem do próximo bug.
     assert.equal(APOIO_TAG_BLAST_RADIUS_THRESHOLD, 0.3);
+  });
+
+  it("denominador é DEDUPLICADO — allowlist com repetidos não dilui a razão", () => {
+    // Achado do review: `current.length` cru contra um numerador já
+    // normalizado faria o guard bloquear MENOS do que deveria. Só alcançável
+    // por uma escrita forçada/à mão anterior, mas é justamente o estado em que
+    // o guard mais precisa funcionar.
+    const atual = ["a@x.com", "A@X.com", " a@x.com ", "b@x.com"]; // 2 distintos
+    const r = evaluateAllowlistBlastRadius(["b@x.com"], atual, false);
+    assert.equal(r.currentCount, 2, "deduplicado");
+    assert.deepEqual(r.saem, ["a@x.com"]);
+    assert.equal(r.ratio, 0.5);
+    assert.equal(r.blocked, true, "1 de 2 é 50% — bloqueia; com denominador 4 daria 25% e passaria");
+  });
+});
+
+describe("#7688 — decideAllowlistPush: o miolo da issue (ler ANTES de sobrescrever)", () => {
+  const dez = emails(10);
+
+  it("leitura ok e queda pequena → push, com o diff preenchido", async () => {
+    const d = await decideAllowlistPush({
+      next: dez.slice(0, 8),
+      force: false,
+      readCurrent: async () => JSON.stringify(dez),
+    });
+    assert.equal(d.action, "push");
+    assert.equal(d.action === "push" ? d.blast.saem.length : -1, 2);
+  });
+
+  it("queda acima do limiar → refuse, e a razão diz o que conferir", async () => {
+    const d = await decideAllowlistPush({
+      next: dez.slice(0, 4),
+      force: false,
+      readCurrent: async () => JSON.stringify(dez),
+    });
+    assert.equal(d.action, "refuse");
+    assert.match(d.action === "refuse" ? d.reason : "", /leitura parcial do apoia\.se/);
+  });
+
+  it("mesma queda COM force → push (a decisão consciente), com diff", async () => {
+    const d = await decideAllowlistPush({
+      next: dez.slice(0, 4),
+      force: true,
+      readCurrent: async () => JSON.stringify(dez),
+    });
+    assert.equal(d.action, "push");
+    assert.equal(d.action === "push" ? d.blast.saem.length : -1, 6);
+  });
+
+  it("LEITURA falha sem force → refuse (nunca sobrescreve às cegas)", async () => {
+    const d = await decideAllowlistPush({
+      next: dez,
+      force: false,
+      readCurrent: async () => {
+        throw new Error("ETIMEDOUT");
+      },
+    });
+    assert.equal(d.action, "refuse");
+    assert.match(d.action === "refuse" ? d.reason : "", /ETIMEDOUT/);
+    assert.match(d.action === "refuse" ? d.reason : "", /--force-blast-radius/);
+  });
+
+  it("leitura falha COM force → push-unverified, e NÃO inventa um diff", async () => {
+    // O ponto: a 1ª versão caía pra `current = []` e logava "-0 saem
+    // (atual: 0)" — autoritativo e falso, justo quando o operador mais precisa
+    // saber que não sabe. Agora o desfecho é um estado próprio, sem diff.
+    const d = await decideAllowlistPush({
+      next: dez,
+      force: true,
+      readCurrent: async () => {
+        throw new Error("ETIMEDOUT");
+      },
+    });
+    assert.equal(d.action, "push-unverified");
+    assert.match(d.action === "push-unverified" ? d.reason : "", /DESCONHECIDAS/);
+    assert.ok(!("blast" in d), "não pode carregar um diff que não existe");
+  });
+
+  it("KV corrompido sem force → refuse (não trata lixo como lista vazia)", async () => {
+    const d = await decideAllowlistPush({
+      next: dez,
+      force: false,
+      readCurrent: async () => "{{{",
+    });
+    assert.equal(d.action, "refuse");
+    assert.match(d.action === "refuse" ? d.reason : "", /não é JSON válido/);
+  });
+
+  it("chave ausente (1º push) → push sem bloquear, mesmo com a lista inteira entrando", async () => {
+    const d = await decideAllowlistPush({ next: dez, force: false, readCurrent: async () => null });
+    assert.equal(d.action, "push");
+    assert.equal(d.action === "push" ? d.blast.entram.length : -1, 10);
+    assert.equal(d.action === "push" ? d.blast.saem.length : -1, 0);
+  });
+
+  it("esvaziar a allowlist inteira → refuse", async () => {
+    const d = await decideAllowlistPush({
+      next: [],
+      force: false,
+      readCurrent: async () => JSON.stringify(dez),
+    });
+    assert.equal(d.action, "refuse");
+  });
+
+  it("o caso real de 08/09/2026 (21 → 10) → refuse", async () => {
+    const atual = emails(21);
+    const d = await decideAllowlistPush({
+      next: atual.slice(0, 10),
+      force: false,
+      readCurrent: async () => JSON.stringify(atual),
+    });
+    assert.equal(d.action, "refuse");
+    assert.match(d.action === "refuse" ? d.reason : "", /11\/21/);
   });
 });
