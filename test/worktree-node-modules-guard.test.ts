@@ -221,14 +221,104 @@ test("hook enxerga através de sudo/env/atribuição inline e de agrupamento (#7
   assert.ok(blocked('exec bash -c "npm ci"'), "exec");
   assert.ok(blocked('command bash -c "npm ci"'), "command");
   assert.ok(blocked('nohup bash -c "npm ci"'), "nohup");
-  assert.ok(blocked(`'bash' -c "npm ci"`), "binário do shell entre aspas");
 
   // Agrupamento por chaves, mesma porta do subshell.
   assert.ok(blocked("{ cd /wt && npm ci; }", "/x"), "agrupamento por chaves");
 
-  // O prefixo restrito não reabre o falso positivo do texto citado.
+  // O reconhecimento por posição estrutural não reabre o falso positivo do
+  // texto citado.
   assert.equal(blocked(`gh pr comment 1 --body "rode npm ci depois"`), false, "corpo de comentário é texto");
   assert.equal(blocked("npx tsx scripts/x.ts"), false, "npx não é npm install");
+});
+
+// Última rodada do review da PR #7774. A enumeração de prefixos foi trocada
+// por um critério ESTRUTURAL — "está fora de aspas?" — porque cada rodada que
+// listava o que pode vir antes do comando (`FOO=bar`, `sudo`, depois as flags
+// de cada um) fechava os casos citados e o review devolvia outros:
+// `sudo -p 'senha:'`, `sudo -a`, `sudo -t 30`, `--preserve-env=`. A lista de
+// flags de `sudo`/`env` é aberta demais para enumerar, e o lado errado do erro
+// aqui é "não bloqueia".
+test("hook reconhece npm/wrapper por posição estrutural, não por lista de prefixos (#7774)", async () => {
+  const hook = await import(`../.claude/hooks/${HOOK_BASENAME}`);
+  const inspect = (dir: string) => (dir.replaceAll("\\", "/").endsWith("/wt") ? "/principal/node_modules" : null);
+  const blocked = (cmd: string, cwd = "/wt") => Boolean(hook.findBlockedNpmInstall(cmd, cwd, inspect));
+
+  // Prefixos que nenhuma lista previa — todos bloqueiam agora.
+  assert.ok(blocked("sudo -p 'senha:' npm ci"), "flag com valor citado");
+  assert.ok(blocked("sudo -a pam npm ci"), "flag de auth com valor");
+  assert.ok(blocked("sudo -t 30 npm ci"), "flag de timeout com valor");
+  assert.ok(blocked("sudo --preserve-env=PATH npm ci"), "--flag=valor");
+  assert.ok(blocked("nice -n 10 npm ci"), "nice com nível");
+  assert.ok(blocked("timeout 300 npm ci"), "wrapper que nunca esteve na lista");
+  assert.ok(blocked("xargs -I{} npm ci"), "wrapper com chave no argumento");
+  assert.ok(blocked("sudo -p 'senha:' bash -c \"npm ci\""), "prefixo arbitrário + wrapper");
+
+  // Os que a enumeração já pegava seguem pegando.
+  assert.ok(blocked("sudo -u foo npm ci"), "sudo -u");
+  assert.ok(blocked("env -i npm ci"), "env -i");
+  assert.ok(blocked("sudo -E -H npm ci"), "flags encadeadas");
+  assert.ok(blocked(`NODE_OPTIONS="--stack-size 4096" npm ci`), "valor citado com espaço");
+  assert.ok(blocked(`NPM_CONFIG_CACHE='/tmp/a b' npm ci`), "valor citado com aspas simples");
+  assert.ok(blocked(`sudo -u foo bash -c "npm ci"`), "flag com valor + wrapper");
+
+  // E o critério continua distinguindo comando de texto.
+  assert.equal(blocked("A=B npm run test"), false, "npm run não reinstala");
+  assert.equal(blocked(`curl --data '{"a":1}' http://x`), false, "JSON citado não vira comando");
+  assert.equal(blocked(`gh issue create --body "veja: npm install falha"`), false, "corpo de issue é texto");
+  assert.equal(blocked(`git commit -m 'fix: npm install lento'`), false, "mensagem de commit é texto");
+});
+
+// Achado do review da PR #7848: mascarar TODO span citado desligava a detecção
+// quando o próprio nome do programa vinha citado — `"npm" ci` roda exatamente
+// como `npm ci`. A distinção que resolve, sem parser de shell: span citado SEM
+// espaço dentro é um token (nome de programa), span COM espaço é prosa.
+test("nome de programa citado é token, não texto (#7848)", async () => {
+  const hook = await import(`../.claude/hooks/${HOOK_BASENAME}`);
+  const inspect = (dir: string) => (dir.replaceAll("\\", "/").endsWith("/wt") ? "/principal/node_modules" : null);
+  const blocked = (cmd: string, cwd = "/wt") => Boolean(hook.findBlockedNpmInstall(cmd, cwd, inspect));
+
+  assert.ok(blocked(`"npm" ci`), "npm citado com aspas duplas");
+  assert.ok(blocked(`'npm' install`), "npm citado com aspas simples");
+  assert.ok(blocked(`'bash' -c "npm ci"`), "binário do wrapper citado");
+  assert.ok(blocked(`"npm" ci --prefix /wt`, "/x"), "npm citado + --prefix");
+
+  // Span COM espaço segue sendo prosa — é o que separa token de texto.
+  assert.equal(blocked(`gh issue create --title "npm"`), false, "argumento citado de uma palavra não é comando");
+  assert.equal(blocked(`echo "npm" && echo ok`), false, "eco de uma palavra não é npm install");
+  assert.equal(blocked(`git commit -m "roda npm ci"`), false, "prosa citada segue sendo texto");
+
+  // Só o token que ABRE o segmento vale como nome de programa: sem isso, dois
+  // argumentos citados adjacentes de OUTRO programa se juntavam num `npm ci`
+  // que ninguém invocou (falso positivo do mesmo review).
+  assert.equal(blocked(`echo "npm" "ci"`), false, "dois argumentos citados adjacentes não são um comando");
+  assert.equal(blocked(`assert_equal "npm" "ci"`), false, "assertion com dois argumentos citados");
+  assert.equal(blocked(`printf "%s" "npm" "install"`), false, "printf com argumentos citados");
+
+  // A restrição de posição vale só para o `npm`: dois argumentos citados não se
+  // fundem num WRAPPER, então lá o token citado conta em qualquer posição — e
+  // `sudo 'bash' -c "npm ci"` segue detectado (achado do review do #7848).
+  assert.ok(blocked(`sudo 'bash' -c "npm ci"`), "wrapper citado atrás de sudo");
+  assert.ok(blocked(`env FOO=bar 'bash' -c "npm ci"`), "wrapper citado atrás de env");
+  assert.ok(blocked(`sudo -u foo 'bash' -c "npm ci"`), "wrapper citado atrás de sudo com flag");
+  assert.equal(blocked(`echo "bash" "-c"`), false, "argumentos citados não viram wrapper");
+});
+
+// `maskQuotedSpans` precisa preservar OFFSET, não só esconder texto: o payload
+// do wrapper é lido no texto ORIGINAL a partir do índice casado na versão
+// mascarada. Escape (`\"`) ocupa 2 caracteres no original e 1 no valor lido,
+// então o span mascarado é preenchido até a largura original.
+test("maskQuotedSpans preserva comprimento e offsets", async () => {
+  const hook = await import(`../.claude/hooks/${HOOK_BASENAME}`);
+  for (const input of [
+    `git commit -m "roda npm ci"`,
+    `bash -c "bash -c \\"npm ci\\""`,
+    `echo "a\\"b" fim`,
+    `'npm' ci`,
+    `"aspas nao fechadas`,
+    ``,
+  ]) {
+    assert.equal(hook.maskQuotedSpans(input).length, input.length, `comprimento preservado em: ${input}`);
+  }
 });
 
 // O hook é self-contained (nenhum import de `.ts`, convenção dos hooks
