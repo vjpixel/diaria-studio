@@ -3046,14 +3046,22 @@ describe("findExistingSessionFileAnyKind ignora arquivo com prefixo de kind desc
 // ─── grant-merge: --kind obrigatório, mensagem nomeia o referente (#6331) ──
 
 describe("requireCoordinatorKind (#6331 caminho de erro)", () => {
-  it("aceita as 3 coordenadoras", () => {
+  // #7702: o critério passou de "é coordenadora" para "TEM AUTORIDADE DE
+  // MERGE". `continuo` é rodada mas não decide merge (quem mergeia no fluxo
+  // dela é `continuo-pr-review.sh`), e enquanto este gate a aceitava ele
+  // afirmava permitido o que `grantMergeWindow` recusava logo abaixo com
+  // `not-a-coordinator`.
+  it("aceita as 2 com autoridade de merge", () => {
     assert.equal(requireCoordinatorKind("overnight"), "overnight");
     assert.equal(requireCoordinatorKind("develop"), "develop");
-    assert.equal(requireCoordinatorKind("continuo"), "continuo");
   });
 
-  it("recusa \"interactive\" — só coordenadora concede janela de merge", () => {
-    assert.throws(() => requireCoordinatorKind("interactive"), /não é uma sessão coordenadora/);
+  it("#7702: recusa \"continuo\" — é rodada, mas não concede janela de merge", () => {
+    assert.throws(() => requireCoordinatorKind("continuo"), /não tem autoridade de merge/);
+  });
+
+  it("recusa \"interactive\" — sessão interativa nunca concede janela de merge", () => {
+    assert.throws(() => requireCoordinatorKind("interactive"), /não tem autoridade de merge/);
   });
 });
 
@@ -3081,7 +3089,18 @@ describe("CLI grant-merge: --kind ausente dá erro nomeando o referente (#6331)"
   it("--kind inválido (não-coordenadora) continua recusado por requireCoordinatorKind", () => {
     const res = runGrantMergeCli(["--kind", "interactive", "--session-id", "s1", "--granted-to", "s2"]);
     assert.notEqual(res.status, 0);
-    assert.match(res.stderr, /não é uma sessão coordenadora/);
+    assert.match(res.stderr, /não tem autoridade de merge/);
+  });
+
+  it("#7702: --kind continuo é recusado NO GATE, não mais fundo em grantMergeWindow", () => {
+    // O ponto do teste é o LUGAR da recusa: enquanto o gate aceitava
+    // continuo, o operador passava por uma validação que dizia "continuo
+    // pode" e só falhava adiante com `not-a-coordinator` — duas fontes de
+    // verdade discordando dentro da mesma operação.
+    const res = runGrantMergeCli(["--kind", "continuo", "--session-id", "cron-1", "--granted-to", "s2"]);
+    assert.notEqual(res.status, 0);
+    assert.match(res.stderr, /não tem autoridade de merge/);
+    assert.match(res.stderr, /continuo é uma RODADA/);
   });
 
   it("--help (comando desconhecido) documenta --kind como parte da invocação real do grant-merge (#6331)", () => {
