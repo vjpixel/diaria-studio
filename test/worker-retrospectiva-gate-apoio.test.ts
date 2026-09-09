@@ -1,5 +1,5 @@
 /**
- * test/worker-artigo-mensal-gate-3940.test.ts (#3940)
+ * test/worker-retrospectiva-gate-apoio.test.ts (#3940)
  *
  * Teste de regressão do gate do artigo mensal (`workers/artigo-mensal/`):
  *   - `src/gate.ts` — lógica pura de decisão (normalize/parse/isAllowed/decide)
@@ -21,9 +21,9 @@ import {
   normalizeEmail,
   parseAllowlist,
   isEmailAllowed,
-  decideGate,
-} from "../workers/artigo-mensal/src/gate.ts";
-import { handleGet, extractCycle, type Env } from "../workers/artigo-mensal/src/index.ts";
+  decideApoioGate,
+} from "../workers/retrospectiva/src/gate-apoio.ts";
+import { handleGet, type Env } from "../workers/retrospectiva/src/index.ts";
 
 // ── gate.ts — funções puras ─────────────────────────────────────────────────
 
@@ -89,35 +89,28 @@ describe("isEmailAllowed (#3940)", () => {
   });
 });
 
-describe("decideGate (#3940)", () => {
+describe("decideApoioGate (#3940)", () => {
   it("e-mail ausente → no_email", () => {
-    assert.deepEqual(decideGate(null, ["foo@bar.com"]), { state: "no_email" });
-    assert.deepEqual(decideGate("", ["foo@bar.com"]), { state: "no_email" });
+    assert.deepEqual(decideApoioGate(null, ["foo@bar.com"]), { state: "no_email" });
+    assert.deepEqual(decideApoioGate("", ["foo@bar.com"]), { state: "no_email" });
   });
   it("e-mail presente mas fora da allowlist → not_backer", () => {
-    assert.deepEqual(decideGate("naoapoia@bar.com", ["foo@bar.com"]), { state: "not_backer" });
+    assert.deepEqual(decideApoioGate("naoapoia@bar.com", ["foo@bar.com"]), { state: "not_backer" });
   });
   it("e-mail presente e na allowlist → allowed", () => {
-    assert.deepEqual(decideGate("foo@bar.com", ["foo@bar.com"]), { state: "allowed" });
+    assert.deepEqual(decideApoioGate("foo@bar.com", ["foo@bar.com"]), { state: "allowed" });
   });
   it("e-mail presente mas allowlist null (fail-closed) → not_backer, NUNCA allowed", () => {
-    assert.deepEqual(decideGate("foo@bar.com", null), { state: "not_backer" });
+    assert.deepEqual(decideApoioGate("foo@bar.com", null), { state: "not_backer" });
   });
 });
 
-// ── extractCycle ─────────────────────────────────────────────────────────────
+// `extractCycle` saiu no #7658: a resolução do path virou
+// `classifyRetrospectivaPath` (`scripts/lib/shared/retrospectiva-path.ts`),
+// compartilhada com os publishers e testada em
+// `test/retrospectiva-path-7658.test.ts`. O ciclo `YYMM-MM` deixou de ser
+// path público — virou `/AAMM`.
 
-describe("extractCycle (#3940)", () => {
-  it("path /2607-08 → \"2607-08\"", () => {
-    assert.equal(extractCycle("/2607-08"), "2607-08");
-  });
-  it("path / (raiz) → string vazia", () => {
-    assert.equal(extractCycle("/"), "");
-  });
-  it("trailing slash é removido", () => {
-    assert.equal(extractCycle("/2607-08/"), "2607-08");
-  });
-});
 
 // ── handleGet — fiado com KV mock (Map em memória) ──────────────────────────
 
@@ -139,13 +132,13 @@ function makeEnv(articles: MockKV, allowlistRaw: string | null): Env {
 }
 
 const ARTICLE_HTML = "<html><body>Artigo completo de julho</body></html>";
-const CYCLE = "2607-08";
+const CYCLE = "2607"; // #7658: path público, não mais o ciclo YYMM-MM
 
 describe("handleGet — cenário 1: apoiador Mantenedor (R$25+) passa (#3940)", () => {
   it("e-mail na allowlist + artigo no KV → 200 com o artigo completo", async () => {
     const articles: MockKV = new Map([[`article:${CYCLE}`, ARTICLE_HTML]]);
     const env = makeEnv(articles, JSON.stringify(["apoiador10@x.com"]));
-    const res = await handleGet(new URL(`https://artigo.diar.ia.br/${CYCLE}?email=apoiador10@x.com`), env);
+    const res = await handleGet(new Request(`https://retrospectiva.diar.ia.br/${CYCLE}?email=apoiador10@x.com`), env);
     assert.equal(res.status, 200);
     const body = await res.text();
     assert.equal(body, ARTICLE_HTML);
@@ -155,7 +148,7 @@ describe("handleGet — cenário 1: apoiador Mantenedor (R$25+) passa (#3940)", 
     const articles: MockKV = new Map([[`article:${CYCLE}`, ARTICLE_HTML]]);
     const env = makeEnv(articles, JSON.stringify(["apoiador10@x.com"]));
     const res = await handleGet(
-      new URL(`https://artigo.diar.ia.br/${CYCLE}?email=APOIADOR10@X.COM`),
+      new Request(`https://retrospectiva.diar.ia.br/${CYCLE}?email=APOIADOR10@X.COM`),
       env,
     );
     assert.equal(res.status, 200);
@@ -170,7 +163,7 @@ describe("handleGet — cenário 2: R$5 (\"amigo\", abaixo do gate) bate no payw
     // qualificou no build. O worker não conhece valores, só a allowlist final.
     const articles: MockKV = new Map([[`article:${CYCLE}`, ARTICLE_HTML]]);
     const env = makeEnv(articles, JSON.stringify(["apoiador10@x.com"])); // amigo5@x.com de fora
-    const res = await handleGet(new URL(`https://artigo.diar.ia.br/${CYCLE}?email=amigo5@x.com`), env);
+    const res = await handleGet(new Request(`https://retrospectiva.diar.ia.br/${CYCLE}?email=amigo5@x.com`), env);
     assert.equal(res.status, 200); // paywall é 200 (página normal, não erro)
     const body = await res.text();
     assert.match(body, /exclusivo para apoiadores/i);
@@ -183,7 +176,7 @@ describe("handleGet — cenário 3: não-apoiador bate no paywall (#3940)", () =
     const articles: MockKV = new Map([[`article:${CYCLE}`, ARTICLE_HTML]]);
     const env = makeEnv(articles, JSON.stringify(["apoiador10@x.com"]));
     const res = await handleGet(
-      new URL(`https://artigo.diar.ia.br/${CYCLE}?email=naoapoia@x.com`),
+      new Request(`https://retrospectiva.diar.ia.br/${CYCLE}?email=naoapoia@x.com`),
       env,
     );
     assert.equal(res.status, 200);
@@ -202,13 +195,13 @@ describe("handleGet — cenário 4: e-mail ausente/inválido → fail-closed (#3
   it("sem ?email= → paywall (nunca o artigo); form de e-mail só em ?entrar", async () => {
     const articles: MockKV = new Map([[`article:${CYCLE}`, ARTICLE_HTML]]);
     const env = makeEnv(articles, JSON.stringify(["apoiador10@x.com"]));
-    const res = await handleGet(new URL(`https://artigo.diar.ia.br/${CYCLE}`), env);
+    const res = await handleGet(new Request(`https://retrospectiva.diar.ia.br/${CYCLE}`), env);
     assert.equal(res.status, 200);
     const body = await res.text();
     assert.doesNotMatch(body, /Artigo completo de julho/, "o artigo pago nunca sai sem gate");
     assert.match(body, /exclusivo para apoiadores/i, "sem :teaser no KV, cai no paywall seco");
 
-    const comEntrar = await handleGet(new URL(`https://artigo.diar.ia.br/${CYCLE}?entrar=1`), env);
+    const comEntrar = await handleGet(new Request(`https://retrospectiva.diar.ia.br/${CYCLE}?entrar=1`), env);
     assert.match(await comEntrar.text(), /Digite o e-mail/i, "a porta do apoiador continua existindo");
   });
 
@@ -218,7 +211,7 @@ describe("handleGet — cenário 4: e-mail ausente/inválido → fail-closed (#3
       [`article:${CYCLE}:teaser`, "<html><body><p>começo do artigo</p></body></html>"],
     ]);
     const env = makeEnv(articles, JSON.stringify(["apoiador10@x.com"]));
-    const body = await (await handleGet(new URL(`https://artigo.diar.ia.br/${CYCLE}`), env)).text();
+    const body = await (await handleGet(new Request(`https://retrospectiva.diar.ia.br/${CYCLE}`), env)).text();
     assert.match(body, /começo do artigo/, "o trecho aparece");
     assert.match(body, /apoia\.se\/diaria/, "com o CTA de apoio");
     assert.doesNotMatch(body, /Artigo completo de julho/, "e o artigo pago continua fora");
@@ -227,7 +220,7 @@ describe("handleGet — cenário 4: e-mail ausente/inválido → fail-closed (#3
   it("?email= vazio → tratado como ausente (paywall, nunca o artigo)", async () => {
     const articles: MockKV = new Map([[`article:${CYCLE}`, ARTICLE_HTML]]);
     const env = makeEnv(articles, JSON.stringify(["apoiador10@x.com"]));
-    const res = await handleGet(new URL(`https://artigo.diar.ia.br/${CYCLE}?email=`), env);
+    const res = await handleGet(new Request(`https://retrospectiva.diar.ia.br/${CYCLE}?email=`), env);
     assert.equal(res.status, 200);
     const body = await res.text();
     assert.doesNotMatch(body, /Artigo completo de julho/);
@@ -237,7 +230,7 @@ describe("handleGet — cenário 4: e-mail ausente/inválido → fail-closed (#3
   it("path sem ciclo (/) → 400, mesmo com e-mail válido", async () => {
     const articles: MockKV = new Map([[`article:${CYCLE}`, ARTICLE_HTML]]);
     const env = makeEnv(articles, JSON.stringify(["apoiador10@x.com"]));
-    const res = await handleGet(new URL(`https://artigo.diar.ia.br/?email=apoiador10@x.com`), env);
+    const res = await handleGet(new Request(`https://retrospectiva.diar.ia.br/?email=apoiador10@x.com`), env);
     assert.equal(res.status, 400);
   });
 });
@@ -247,7 +240,7 @@ describe("handleGet — cenário 5: allowlist KV corrompida/indisponível → fa
     const articles: MockKV = new Map([[`article:${CYCLE}`, ARTICLE_HTML]]);
     const env = makeEnv(articles, "{not valid json");
     const res = await handleGet(
-      new URL(`https://artigo.diar.ia.br/${CYCLE}?email=apoiador10@x.com`),
+      new Request(`https://retrospectiva.diar.ia.br/${CYCLE}?email=apoiador10@x.com`),
       env,
     );
     assert.equal(res.status, 200);
@@ -260,7 +253,7 @@ describe("handleGet — cenário 5: allowlist KV corrompida/indisponível → fa
     const articles: MockKV = new Map([[`article:${CYCLE}`, ARTICLE_HTML]]);
     const env = makeEnv(articles, null);
     const res = await handleGet(
-      new URL(`https://artigo.diar.ia.br/${CYCLE}?email=apoiador10@x.com`),
+      new Request(`https://retrospectiva.diar.ia.br/${CYCLE}?email=apoiador10@x.com`),
       env,
     );
     assert.equal(res.status, 200);
@@ -282,7 +275,7 @@ describe("handleGet — cenário 5: allowlist KV corrompida/indisponível → fa
       } as never,
     };
     const res = await handleGet(
-      new URL(`https://artigo.diar.ia.br/${CYCLE}?email=apoiador10@x.com`),
+      new Request(`https://retrospectiva.diar.ia.br/${CYCLE}?email=apoiador10@x.com`),
       env,
     );
     assert.equal(res.status, 200);
@@ -295,7 +288,7 @@ describe("handleGet — allowed mas artigo ausente do KV → 404 dedicado, não 
     const articles: MockKV = new Map(); // KV ARTICLES vazio
     const env = makeEnv(articles, JSON.stringify(["apoiador10@x.com"]));
     const res = await handleGet(
-      new URL(`https://artigo.diar.ia.br/${CYCLE}?email=apoiador10@x.com`),
+      new Request(`https://retrospectiva.diar.ia.br/${CYCLE}?email=apoiador10@x.com`),
       env,
     );
     assert.equal(res.status, 404);
@@ -318,7 +311,7 @@ describe("handleGet — allowed mas artigo ausente do KV → 404 dedicado, não 
       } as never,
     };
     const res = await handleGet(
-      new URL(`https://artigo.diar.ia.br/${CYCLE}?email=apoiador10@x.com`),
+      new Request(`https://retrospectiva.diar.ia.br/${CYCLE}?email=apoiador10@x.com`),
       env,
     );
     assert.equal(res.status, 404);
@@ -327,11 +320,11 @@ describe("handleGet — allowed mas artigo ausente do KV → 404 dedicado, não 
 
 describe("fetch handler — método != GET → 405 (#3940)", () => {
   it("POST → 405", async () => {
-    const worker = (await import("../workers/artigo-mensal/src/index.ts")).default;
+    const worker = (await import("../workers/retrospectiva/src/index.ts")).default;
     const articles: MockKV = new Map([[`article:${CYCLE}`, ARTICLE_HTML]]);
     const env = makeEnv(articles, JSON.stringify(["apoiador10@x.com"]));
     const res = await worker.fetch(
-      new Request(`https://artigo.diar.ia.br/${CYCLE}`, { method: "POST" }),
+      new Request(`https://retrospectiva.diar.ia.br/${CYCLE}`, { method: "POST" }),
       env,
     );
     assert.equal(res.status, 405);
@@ -340,12 +333,12 @@ describe("fetch handler — método != GET → 405 (#3940)", () => {
 
 describe("GET /sitemap.xml — sitemap vazio válido, não a página de paywall/form (#4546 achado lateral)", () => {
   it("200 XML listando os ciclos COM trecho (#7580; era vazio, #4546) — antes disto, o catch-all tratava 'sitemap.xml' como {cycle} e devolvia o form de e-mail com 200", async () => {
-    const worker = (await import("../workers/artigo-mensal/src/index.ts")).default;
+    const worker = (await import("../workers/retrospectiva/src/index.ts")).default;
     // Nem allowlist nem artigo no KV — se o defeito antigo reaparecesse, o
     // gate cairia em "no_email" (sem `?email=`) e devolveria o form de
     // e-mail, não um sitemap.
     const env = makeEnv(new Map(), null);
-    const res = await worker.fetch(new Request("https://artigo.diar.ia.br/sitemap.xml"), env);
+    const res = await worker.fetch(new Request("https://retrospectiva.diar.ia.br/sitemap.xml"), env);
     assert.equal(res.status, 200);
     assert.match(res.headers.get("Content-Type") ?? "", /xml/);
     const body = await res.text();
@@ -354,15 +347,15 @@ describe("GET /sitemap.xml — sitemap vazio válido, não a página de paywall/
     // #7580: era vazio porque "todo conteúdo é gated, não há URL pública
     // indexável". Com o trecho servido a quem não apoia, mudou o FATO — e o
     // sitemap passou a listar os ciclos que TÊM trecho.
-    assert.match(body, /<loc>https:\/\/artigo\.diar\.ia\.br\/2608-09<\/loc>/);
+    assert.match(body, /<loc>https:\/\/retrospectiva\.diar\.ia\.br\/2608<\/loc>/);
     assert.doesNotMatch(body, /2604-05/, "ciclo sem trecho não é anunciado ao crawler");
   });
 
   it("continua servindo /sitemap.xml mesmo com ?email= na query (não é tratado como cycle)", async () => {
-    const worker = (await import("../workers/artigo-mensal/src/index.ts")).default;
+    const worker = (await import("../workers/retrospectiva/src/index.ts")).default;
     const env = makeEnv(new Map(), JSON.stringify(["apoiador10@x.com"]));
     const res = await worker.fetch(
-      new Request("https://artigo.diar.ia.br/sitemap.xml?email=apoiador10@x.com"),
+      new Request("https://retrospectiva.diar.ia.br/sitemap.xml?email=apoiador10@x.com"),
       env,
     );
     assert.equal(res.status, 200);
@@ -372,18 +365,18 @@ describe("GET /sitemap.xml — sitemap vazio válido, não a página de paywall/
 
 describe("GET /robots.txt — robots.txt PRÓPRIO, não a página de paywall/form (#4777)", () => {
   it("200 texto com Allow: /, Sitemap: própria e liberação seletiva dos 7 crawlers de assistente/treino", async () => {
-    const worker = (await import("../workers/artigo-mensal/src/index.ts")).default;
+    const worker = (await import("../workers/retrospectiva/src/index.ts")).default;
     // Mesmo racional do teste de /sitemap.xml acima: sem allowlist/artigo no
     // KV, se o defeito do #4546 reaparecesse aqui o catch-all trataria
     // "robots.txt" como {cycle} e devolveria o form de e-mail com 200.
     const env = makeEnv(new Map(), null);
-    const res = await worker.fetch(new Request("https://artigo.diar.ia.br/robots.txt"), env);
+    const res = await worker.fetch(new Request("https://retrospectiva.diar.ia.br/robots.txt"), env);
     assert.equal(res.status, 200);
     assert.match(res.headers.get("Content-Type") ?? "", /text\/plain/);
     const body = await res.text();
     assert.doesNotMatch(body, /<html/i, "não deve devolver HTML (form de e-mail/paywall) em /robots.txt");
     assert.match(body, /Allow: \//);
-    assert.match(body, /Sitemap: https:\/\/artigo\.diar\.ia\.br\/sitemap\.xml/);
+    assert.match(body, /Sitemap: https:\/\/retrospectiva\.diar\.ia\.br\/sitemap\.xml/);
     assert.match(body, /User-agent: Amazonbot\nDisallow: \//);
     assert.match(body, /User-agent: CloudflareBrowserRenderingCrawler\nDisallow: \//);
     for (const bot of [
@@ -400,10 +393,10 @@ describe("GET /robots.txt — robots.txt PRÓPRIO, não a página de paywall/for
   });
 
   it("continua servindo /robots.txt mesmo com ?email= na query (não é tratado como cycle)", async () => {
-    const worker = (await import("../workers/artigo-mensal/src/index.ts")).default;
+    const worker = (await import("../workers/retrospectiva/src/index.ts")).default;
     const env = makeEnv(new Map(), JSON.stringify(["apoiador10@x.com"]));
     const res = await worker.fetch(
-      new Request("https://artigo.diar.ia.br/robots.txt?email=apoiador10@x.com"),
+      new Request("https://retrospectiva.diar.ia.br/robots.txt?email=apoiador10@x.com"),
       env,
     );
     assert.equal(res.status, 200);

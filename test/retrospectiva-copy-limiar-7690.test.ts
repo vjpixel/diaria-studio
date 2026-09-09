@@ -1,5 +1,5 @@
 /**
- * test/artigo-mensal-copy-limiar-7690.test.ts (#7690)
+ * test/retrospectiva-copy-limiar-7690.test.ts (#7690)
  *
  * Trava as TRÊS superfícies de copy do gate da Retrospectiva do Mês contra o
  * limiar que de fato monta a allowlist (`RETROSPECTIVA_DO_MES_NIVEIS`).
@@ -22,7 +22,7 @@ import {
   renderEmailForm,
   renderPaywall,
   renderTeaserWithPaywall,
-} from "../workers/artigo-mensal/src/render.ts";
+} from "../workers/retrospectiva/src/render-mensal.ts";
 import { RETROSPECTIVA_DO_MES_NIVEIS } from "../scripts/build-apoiador-allowlist.ts";
 import { computeRewardGroup } from "../scripts/studio-ui/studio-apoios.ts";
 

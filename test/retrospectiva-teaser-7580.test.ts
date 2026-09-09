@@ -1,7 +1,7 @@
 /**
- * test/artigo-mensal-teaser-7580.test.ts (#7580)
+ * test/retrospectiva-teaser-7580.test.ts (#7580)
  *
- * `artigo.diar.ia.br/{ciclo}` servia 2.066 bytes de paywall seco a QUALQUER
+ * `retrospectiva.diar.ia.br/AAMM` servia 2.066 bytes de paywall seco a QUALQUER
  * visitante — e, até 07/09/2026, também a apoiador, porque os dois KV estavam
  * vazios. Agora o não-apoiador recebe o começo real do artigo, cortado no fim
  * do 1º destaque, com o bloco de conversão por cima.
@@ -27,7 +27,7 @@ import {
   cutDraftAfterFirstDestaque,
 } from "../scripts/lib/mensal/build-article-page.ts";
 import { articleKvKey, articleTeaserKvKey } from "../scripts/build-article-page.ts";
-import { renderPaywall, renderTeaserWithPaywall } from "../workers/artigo-mensal/src/render.ts";
+import { renderPaywall, renderTeaserWithPaywall } from "../workers/retrospectiva/src/render-mensal.ts";
 
 const CICLO = "2608-09";
 const draftPath = (c: string) => `data/monthly/${c}/draft.md`;
@@ -126,8 +126,17 @@ describe("#7580 — o bloco de conversão, e o fail-closed nas duas direções",
 
 describe("#7580 — chaves do KV", () => {
   it("o trecho é sufixo da chave do artigo, não um namespace paralelo", () => {
-    assert.equal(articleKvKey(CICLO), "article:2608-09");
-    assert.equal(articleTeaserKvKey(CICLO), "article:2608-09:teaser");
+    // #7658: a chave passou a ser o PATH público (`2608`), não o ciclo cru
+    // (`2608-09`) — derivada por `mensalPathFromCycle`, a mesma função que o
+    // Worker usa pra classificar a URL.
+    assert.equal(articleKvKey(CICLO), "article:2608");
+    assert.equal(articleTeaserKvKey(CICLO), "article:2608:teaser");
+  });
+
+  it("#7658: ciclo malformado LANÇA — nunca grava sob uma chave que o Worker não leria", () => {
+    for (const ruim of ["2608", "26-09", "abcd-ef", ""]) {
+      assert.throws(() => articleKvKey(ruim), /não vira path de retrospectiva/, ruim);
+    }
   });
 });
 

@@ -1,5 +1,5 @@
 /**
- * workers/artigo-mensal/src/render.ts (#3940)
+ * workers/retrospectiva/src/render-mensal.ts (#3940, movido em #7658)
  *
  * Páginas do GATE (form de e-mail + paywall + "não encontrado"). O artigo
  * completo NÃO é renderizado aqui — ele já chega pronto (HTML completo) do
@@ -117,14 +117,11 @@ export function renderCycleNotFound(cycle: string): string {
   return shell("diar.ia.br — artigo não encontrado", body);
 }
 
-/** Página 400 — nenhum ciclo informado no path (`GET /`). */
-export function renderMissingCycle(): string {
-  const body = `
-    <h1>Ciclo não informado</h1>
-    <p>Use o link completo do artigo mensal (ex: <code>/2607-08</code>).</p>
-  `;
-  return shell("diar.ia.br — ciclo obrigatório", body);
-}
+// `renderMissingCycle` saiu no #7658: o path vazio e o path que não casa
+// nenhum dos três formatos passaram a cair numa página só
+// (`render-anual.ts::renderMissingSlug`), porque o roteador unificado nem
+// sabe ainda se a URL malformada seria mensal ou anual — e chutar seria
+// servir o gate errado.
 
 /**
  * URL de cadastro na diária, com UTM próprio (#7580).

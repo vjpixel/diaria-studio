@@ -1,5 +1,5 @@
 /**
- * workers/artigo-mensal/src/gate.ts (#3940)
+ * workers/retrospectiva/src/gate-apoio.ts (#3940, movido em #7658)
  *
  * Lógica PURA do gate de paywall do artigo mensal — decide se um e-mail tem
  * acesso ao artigo completo. Sem I/O: o caller (index.ts) resolve o KV e
@@ -15,10 +15,12 @@
  * está nela.
  */
 
-/** Normaliza e-mail pra comparação: trim + lowercase. `null`/`undefined` → "". */
-export function normalizeEmail(raw: string | null | undefined): string {
-  return (raw ?? "").trim().toLowerCase();
-}
+// `normalizeEmail` vem de `gate-cadastro.ts` — os dois gates normalizam
+// igual, e ter duas cópias da mesma regra num worker que decide acesso é
+// exatamente onde uma divergência passaria despercebida (#7658).
+import { normalizeEmail } from "./gate-cadastro.ts";
+
+export { normalizeEmail };
 
 /**
  * Parseia o valor bruto lido de `env.ALLOWLIST.get("emails")`.
@@ -57,7 +59,7 @@ export function isEmailAllowed(
   return allowlist.includes(normalized);
 }
 
-export type GateDecision =
+export type ApoioGateDecision =
   | { state: "allowed" }
   | { state: "no_email" }
   | { state: "not_backer" };
@@ -69,10 +71,10 @@ export type GateDecision =
  * e-mail informado não está na allowlist). O caminho de acesso concedido é
  * idêntico ao de `isEmailAllowed` — esta função nunca é MENOS restritiva.
  */
-export function decideGate(
+export function decideApoioGate(
   email: string | null | undefined,
   allowlist: string[] | null,
-): GateDecision {
+): ApoioGateDecision {
   const normalized = normalizeEmail(email);
   if (!normalized) return { state: "no_email" };
   if (isEmailAllowed(normalized, allowlist)) return { state: "allowed" };

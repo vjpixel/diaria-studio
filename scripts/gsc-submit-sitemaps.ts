@@ -37,25 +37,20 @@ import { gFetch } from "./google-auth.ts";
  * `workers/livros/public/sitemap.xml`, rota dinâmica de
  * `workers/arquivo/src/index.ts`).
  *
- * `artigo.diar.ia.br/sitemap.xml` ENTROU no #7580. Era excluído porque "todo
- * conteúdo é gated de apoiador, não há URL pública indexável" (#4546) — e isso
- * deixou de valer quando o não-apoiador passou a receber o trecho do artigo.
- * Mudou o FATO, não a leitura.
+ * `retrospectiva.diar.ia.br/sitemap.xml` ENTROU no #7658, sucedendo os dois
+ * que existiam antes — `artigo.diar.ia.br` (#7580) e `anual.diar.ia.br`
+ * (#7581), que viraram um domínio só. Os dois hosts antigos respondem com 301
+ * e por isso saem daqui: submeter sitemap de host que só redireciona não
+ * indexa nada e ainda gera aviso no GSC.
  *
- * Continua fora `diar.ia.br/sitemap.xml` (gerado pela Beehiiv, já
- * auto-descoberto — fora do escopo daquela issue).
- *
- * `anual.diar.ia.br/sitemap.xml` ENTROU no #7581 pelo mesmo motivo do
- * `artigo` acima: com o gate virando CADASTRO (não apoio) e o trecho público
- * servido a quem não é assinante, existe URL indexável a anunciar — mesma
- * lógica, host diferente.
+ * O motivo de estarem na lista continua o mesmo dos irmãos: são páginas
+ * públicas com trecho indexável, não conteúdo fechado.
  */
 export const CURADORIA_SITEMAPS = [
-  "https://artigo.diar.ia.br/sitemap.xml",
+  "https://retrospectiva.diar.ia.br/sitemap.xml",
   "https://cursos.diar.ia.br/sitemap.xml",
   "https://livros.diar.ia.br/sitemap.xml",
   "https://arquivo.diar.ia.br/sitemap.xml",
-  "https://anual.diar.ia.br/sitemap.xml",
 ] as const;
 
 export interface SitemapSubmitResult {

@@ -1,10 +1,8 @@
-name: Deploy anual Worker
+name: Deploy retrospectiva Worker
 
-# #7620: workers/anual (mergeado pelos #7581/#7616) nunca ganhou deploy
-# automático — mesma classe de gap já fechada 3x (#3268 brevo-dashboard,
-# #3399 poll, #5337 reativar). Este workflow fecha o gap: dispara
-# `wrangler deploy` automaticamente sempre que um push em master tocar
-# `workers/anual/**` — mesmo molde de deploy-poll.yml/deploy-reativar.yml.
+# #7658: sucede deploy-anual.yml e deploy-artigo-mensal.yml, que viraram um só
+# quando os dois Workers viraram um só (`workers/retrospectiva` = o antigo
+# `anual` renomeado, absorvendo o `artigo-mensal`).
 #
 # Secrets reusados (mesmos dos outros deploy-*.yml): CLOUDFLARE_ACCOUNT_ID e
 # CLOUDFLARE_WORKERS_TOKEN.
@@ -13,11 +11,11 @@ on:
   push:
     branches: [master]
     paths:
-      - 'workers/anual/**'
+      - 'workers/retrospectiva/**'
   workflow_dispatch:
 
 concurrency:
-  group: deploy-anual
+  group: deploy-retrospectiva
   cancel-in-progress: false
 
 jobs:
@@ -28,5 +26,5 @@ jobs:
   deploy:
     uses: ./.github/workflows/deploy-worker.yml
     with:
-      worker: anual
+      worker: retrospectiva
     secrets: inherit

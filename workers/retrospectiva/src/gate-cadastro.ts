@@ -1,5 +1,5 @@
 /**
- * workers/anual/src/gate.ts (#7581)
+ * workers/retrospectiva/src/gate-cadastro.ts (#7581, movido em #7658)
  *
  * Lógica PURA do gate de CADASTRO da retrospectiva anual — decide se um
  * e-mail tem acesso à edição completa. Sem I/O: `index.ts` resolve o estado
@@ -32,7 +32,7 @@ export function normalizeEmail(raw: string | null | undefined): string {
   return (raw ?? "").trim().toLowerCase();
 }
 
-export type GateDecision =
+export type CadastroGateDecision =
   | { state: "allowed" }
   | { state: "no_email" }
   | { state: "not_registered" };
@@ -46,10 +46,10 @@ export type GateDecision =
  * `"not_registered"`, nunca em `"allowed"`. Uma falha de verificação nunca
  * concede acesso por omissão.
  */
-export function decideGate(
+export function decideCadastroGate(
   email: string | null | undefined,
   kitState: SubscriberVerifyState | null,
-): GateDecision {
+): CadastroGateDecision {
   const normalized = normalizeEmail(email);
   if (!normalized) return { state: "no_email" };
   if (kitState === "active") return { state: "allowed" };

@@ -167,20 +167,31 @@ export const DIARIA_AMAZON_LOJA_URL = "https://www.amazon.com.br/shop/vjpixel";
 export const DIARIA_EIA_URL = "https://eia.diar.ia.br";
 
 /**
- * URL canônica do artigo mensal público com paywall de apoiador (#3940) —
- * domínio de marca dedicado (Workers Custom Domain,
- * `workers/artigo-mensal/wrangler.toml`, `artigo.diar.ia.br`). Mesmo padrão
- * de `DIARIA_CURSOS_URL`/`DIARIA_LIVROS_URL`/`DIARIA_EIA_URL` acima. Path
- * completo é `${DIARIA_ARTIGO_URL}/{ciclo}` (ex: `.../2607-08`), ciclo no
- * formato `{conteúdo}-{envio}` de `scripts/lib/mensal/monthly-paths.ts`.
+ * URL canônica das TRÊS retrospectivas (#7658) — domínio de marca dedicado
+ * (Workers Custom Domain, `workers/retrospectiva/wrangler.toml`,
+ * `retrospectiva.diar.ia.br`). Mesmo padrão de `DIARIA_CURSOS_URL`/
+ * `DIARIA_LIVROS_URL`/`DIARIA_EIA_URL` acima.
+ *
+ * O path diz QUAL retrospectiva é e QUAL gate se aplica
+ * (`scripts/lib/shared/retrospectiva-path.ts`):
+ *
+ *   - `/AAMM` — Retrospectiva do Mês, gate de apoio R$25+ (Mantenedor)
+ *   - `/AAAA` — retrospectiva anual (janeiro), gate de cadastro
+ *   - `/aniversarioAAAA` — retrospectiva de aniversário (agosto), cadastro
+ *
+ * Sucede `DIARIA_ARTIGO_URL` (`artigo.diar.ia.br`, ciclo `YYMM-MM`) e
+ * `DIARIA_ANUAL_URL` (`anual.diar.ia.br`, slug `AAAA-tipo`), que continuam
+ * respondendo com 301 pro path novo. **Não confundir com
+ * `DIARIA_ESPECIAL_URL`** (`especial.diar.ia.br`) — o Artigo Especial é outro
+ * produto, outro tier (apoio R$10+) e outro Worker.
  */
-export const DIARIA_ARTIGO_URL = "https://artigo.diar.ia.br";
+export const DIARIA_RETROSPECTIVA_URL = "https://retrospectiva.diar.ia.br";
 
 /**
  * URL canônica da página de arquivo de edições (#3698/#4265) — domínio de
  * marca (Workers Custom Domain, `workers/arquivo/wrangler.toml`,
  * `arquivo.diar.ia.br`). Mesmo padrão de `DIARIA_CURSOS_URL`/
- * `DIARIA_LIVROS_URL`/`DIARIA_EIA_URL`/`DIARIA_ARTIGO_URL` acima. Fonte única
+ * `DIARIA_LIVROS_URL`/`DIARIA_EIA_URL`/`DIARIA_RETROSPECTIVA_URL` acima. Fonte única
  * pra referências reader-facing — a 4ª pill "Arquivo" do PARA ENCERRAR
  * (`CURADORIA_PILLS`, #4536) importa daqui em vez de hardcodear a URL de
  * novo (o Worker mantém seu próprio `PAGE_URL` local pra canonical/og:url,
@@ -193,33 +204,17 @@ export const DIARIA_ARQUIVO_URL = "https://arquivo.diar.ia.br";
  * URL canônica dos artigos especiais avulsos (#5126) — domínio de marca
  * (Workers Custom Domain, `workers/artigos/wrangler.toml`,
  * `especial.diar.ia.br`). Mesmo padrão de `DIARIA_CURSOS_URL`/
- * `DIARIA_LIVROS_URL`/`DIARIA_EIA_URL`/`DIARIA_ARTIGO_URL`/`DIARIA_ARQUIVO_URL`
+ * `DIARIA_LIVROS_URL`/`DIARIA_EIA_URL`/`DIARIA_RETROSPECTIVA_URL`/`DIARIA_ARQUIVO_URL`
  * acima. Fonte única pra referências reader-facing — a nav cruzada
  * (`CURADORIA_NAV_LINKS`) importa daqui. **Não confundir com
- * `DIARIA_ARTIGO_URL`** (singular, `artigo.diar.ia.br`) — são hosts/Workers
- * DIFERENTES: `artigo.` é o artigo mensal com paywall de apoiador (Worker
- * `artigo-mensal`), `especial.` é o hosting de artigos especiais avulsos
- * (Worker `artigos`, este). O Worker mantém seu conteúdo estático em
+ * `DIARIA_RETROSPECTIVA_URL`** — são hosts/Workers DIFERENTES:
+ * `retrospectiva.` serve as três retrospectivas (Worker `retrospectiva`),
+ * `especial.` é o hosting de artigos especiais avulsos (Worker `artigos`,
+ * este). O Worker mantém seu conteúdo estático em
  * `public/` sem importar esta constante (é assets puro, sem `main`/script —
  * ver `workers/artigos/README.md`).
  */
 export const DIARIA_ESPECIAL_URL = "https://especial.diar.ia.br";
-
-/**
- * URL canônica da página pública da retrospectiva ANUAL (#7581) — domínio de
- * marca dedicado (Workers Custom Domain, `workers/anual/wrangler.toml`,
- * `anual.diar.ia.br`). Mesmo padrão de `DIARIA_CURSOS_URL`/`DIARIA_LIVROS_URL`/
- * `DIARIA_EIA_URL`/`DIARIA_ARTIGO_URL`/`DIARIA_ARQUIVO_URL`/`DIARIA_ESPECIAL_URL`
- * acima. Path completo é `${DIARIA_ANUAL_URL}/{slug}` (ex: `.../2026-aniversario`),
- * slug no formato `{AAAA}-{tipo}` de `scripts/lib/anual/annual-paths.ts`.
- *
- * **Gate de CADASTRO, não de apoio** (decisão do editor, 07/09/2026, #7581) —
- * diferente do `DIARIA_ARTIGO_URL` (paywall de apoiador R$10+/mês): aqui
- * basta ser assinante da base própria (Kit) pra ler o completo. Isso torna a
- * anual candidata a destino de anúncio (era descartada com gate de apoio —
- * venderia apoio a quem só queria assinar).
- */
-export const DIARIA_ANUAL_URL = "https://anual.diar.ia.br";
 
 interface ArticleLike {
   url?: string;
