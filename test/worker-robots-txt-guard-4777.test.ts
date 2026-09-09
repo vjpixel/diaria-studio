@@ -23,22 +23,36 @@
  *
  * Descoberta 100% automática via `discoverWorkerPublicHosts`
  * (`scripts/lib/worker-public-hosts.ts`) — sem lista hardcoded de hosts, o
- * mesmo padrão de `worker-drift-check.ts` (#4723). Dois caminhos de
- * handler são aceitos:
+ * mesmo padrão de `worker-drift-check.ts` (#4723). A asserção por host é
+ * HOST-AWARE (#7733) via `classifyHostRobotsHandling`, que reconhece três
+ * padrões de roteamento (não há verificação genérica "src/ menciona
+ * robots.txt em algum lugar" — isso é exatamente o defeito que o #7733
+ * corrigiu, que dava `ok` pra qualquer host de um diretório com custom_domain
+ * múltiplo só porque OUTRO host do mesmo diretório tinha a rota):
  *   1. Worker static-assets-only: `public/robots.txt` existe e passa por um
  *      mínimo de correção de conteúdo (`robotsTxtAllowsGeneralCrawling` —
  *      `Allow: /` sob `User-agent: *`, sem `Disallow: /` genérico ali,
  *      #4782 achado 2); o conteúdo exato específico de cada Worker segue
  *      nos testes dedicados, ex: `curadoria-sitemap-robots.test.ts`,
  *      `artigos-robots-txt-4777.test.ts`.
- *   2. Worker com script: `src/` tem um dispatch de rota REAL pra
- *      `/robots.txt` (`anyTsFileHasRobotsRouteDispatch` — `===`/`case`,
- *      não apenas a string aparecendo solta num comentário ou log, #4782
- *      achado 1) — sinal de que existe uma rota registrada no código
- *      (verificação estrutural, não invoca `fetch` — cada Worker dinâmico
- *      já tem seu próprio teste de integração via `worker.fetch`, ex:
- *      `test/arquivo-render.test.ts`, `test/poll-robots-txt-4777.test.ts`,
- *      `test/worker-artigo-mensal-gate-3940.test.ts`).
+ *   2. Worker com script, host sem ramificação por `url.host`: `src/` tem
+ *      um dispatch de rota REAL pra `/robots.txt` (`anyTsFileHasRobotsRouteDispatch`
+ *      — `===`/`case`, não apenas a string aparecendo solta num comentário
+ *      ou log, #4782 achado 1) — sinal de que existe uma rota registrada no
+ *      código (verificação estrutural, não invoca `fetch` — cada Worker
+ *      dinâmico já tem seu próprio teste de integração via `worker.fetch`,
+ *      ex: `test/arquivo-render.test.ts`, `test/poll-robots-txt-4777.test.ts`).
+ *   3. Worker multi-host com redirect-tudo (#7658/#7709, `workers/retrospectiva`):
+ *      um host redireciona INCONDICIONALMENTE (`if (url.host === X) { ...
+ *      return Response.redirect(...) }`, sem testar `url.pathname` na mesma
+ *      condição) pra outro host que, por sua vez, serve robots.txt via 1 ou
+ *      2 acima. Reconhecido por `analyzeHostBranching`.
+ *   Roteamento que não casa nenhum dos três padrões — inclusive um host que
+ *   aparece numa condição `url.host === ...` cujo bloco NÃO é redirect-tudo
+ *   reconhecível (redirect parcial por path, alvo não resolvível) — produz
+ *   `cannot-verify`, nunca `ok`: o guard preventivo que passa por não ter
+ *   entendido o código é pior que o guard impreciso de antes do #7733, que
+ *   ao menos era honesto sobre o que checava.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -46,7 +60,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { discoverWorkerPublicHosts, anyTsFileHasRobotsRouteDispatch } from "../scripts/lib/worker-public-hosts.ts";
+import { discoverWorkerPublicHosts, classifyHostRobotsHandling } from "../scripts/lib/worker-public-hosts.ts";
 import { robotsTxtAllowsGeneralCrawling } from "../scripts/lib/shared/robots-txt.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -100,30 +114,52 @@ describe("guard: todo Worker com host público (custom_domain) tem /robots.txt p
     );
   });
 
+  const siblingHostsByWorkerDir = new Map<string, string[]>();
+  for (const { workerDir, host } of hosts) {
+    const list = siblingHostsByWorkerDir.get(workerDir) ?? [];
+    list.push(host);
+    siblingHostsByWorkerDir.set(workerDir, list);
+  }
+
   for (const { workerDir, host } of hosts) {
     it(`workers/${workerDir} (${host}) serve /robots.txt próprio (não o default da Cloudflare)`, () => {
+      const verdict = classifyHostRobotsHandling(WORKERS_DIR, workerDir, host, siblingHostsByWorkerDir.get(workerDir));
+
+      if (verdict.kind === "cannot-verify") {
+        assert.fail(
+          `workers/${workerDir} (host ${host}): o guard não conseguiu determinar o roteamento de robots.txt com ` +
+            `confiança — ${verdict.reason}. Analise manualmente; se o comportamento estiver correto, ensine o ` +
+            `padrão ao guard (analyzeHostBranching em scripts/lib/worker-public-hosts.ts) em vez de contornar aqui ` +
+            `— um guard que passa em silêncio por não ter entendido o código é pior que um guard impreciso (#7733).`,
+        );
+        return;
+      }
+
+      if (verdict.kind === "missing") {
+        assert.fail(
+          `workers/${workerDir} (host público ${host}) não tem public/robots.txt nem uma rota real pra "/robots.txt" ` +
+            `em src/ — nasceu servindo o robots.txt DEFAULT da Cloudflare (bloqueia os 7 crawlers de IA, ver #4546/#4777).`,
+        );
+        return;
+      }
+
+      // "ok-direct" ou "ok-redirect": se este Worker serve public/robots.txt
+      // (diretamente, ou como destino de um redirect-tudo de outro host),
+      // ainda valida o CONTEÚDO — existência sozinha não basta (#4782
+      // achado 2: pode ser cópia do default bloqueante da Cloudflare).
       const publicRobots = join(WORKERS_DIR, workerDir, "public", "robots.txt");
       if (existsSync(publicRobots)) {
         const content = readFileSync(publicRobots, "utf8");
         assert.ok(content.trim().length > 0, `${publicRobots} existe mas está vazio`);
-        // #4782 achado 2: arquivo não-vazio não basta — um robots.txt
-        // estático que fosse cópia do default bloqueante da Cloudflare
-        // também passaria na checagem acima. Exige o mínimo de correção:
-        // `Allow: /` sob `User-agent: *` e nenhum `Disallow: /` genérico ali.
         assert.ok(
           robotsTxtAllowsGeneralCrawling(content),
           `${publicRobots} não libera crawling geral (falta "Allow: /" sob "User-agent: *", ou tem um ` +
             `"Disallow: /" genérico ali) — conteúdo pode ser cópia do default bloqueante da Cloudflare.`,
         );
-        return;
       }
-
-      const srcDir = join(WORKERS_DIR, workerDir, "src");
-      assert.ok(
-        anyTsFileHasRobotsRouteDispatch(srcDir),
-        `workers/${workerDir} (host público ${host}) não tem public/robots.txt nem uma rota real pra "/robots.txt" ` +
-          `em src/ — nasceu servindo o robots.txt DEFAULT da Cloudflare (bloqueia os 7 crawlers de IA, ver #4546/#4777).`,
-      );
+      // Sem public/robots.txt: verificado estruturalmente (verdict acima)
+      // que este host alcança um dispatch de rota real pra "/robots.txt",
+      // direto ou via redirect-tudo pra outro host do mesmo Worker.
     });
   }
 });

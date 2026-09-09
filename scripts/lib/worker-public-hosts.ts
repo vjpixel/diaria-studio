@@ -114,3 +114,267 @@ export function anyTsFileHasRobotsRouteDispatch(dir: string): boolean {
   }
   return false;
 }
+
+/**
+ * Concatena o conteúdo de todo `.ts` sob `dir` (recursivo) — usado pela
+ * análise de branching por host abaixo, que precisa enxergar `const`s e
+ * condicionais que podem estar espalhados por vários arquivos do mesmo
+ * Worker (ex: a constante do host legado num módulo, o `if` que a testa em
+ * `src/index.ts`).
+ */
+function collectAllTsSource(dir: string): string {
+  if (!existsSync(dir)) return "";
+  let out = "";
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out += collectAllTsSource(full);
+    } else if (entry.isFile() && entry.name.endsWith(".ts")) {
+      out += "\n" + readFileSync(full, "utf8");
+    }
+  }
+  return out;
+}
+
+/** Remove `https://`/`http://` e barra final — pra comparar host "puro" com
+ *  valores de constante que às vezes trazem o protocolo (`RETROSPECTIVA_HOST
+ *  = "https://retrospectiva.diar.ia.br"`) e às vezes não (`LEGACY_ANUAL_HOST
+ *  = "anual.diar.ia.br"`). */
+export function stripProtocol(hostOrUrl: string): string {
+  return hostOrUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+}
+
+/**
+ * Extrai declarações `const NOME = "valor"` (com ou sem `export`, com ou sem
+ * anotação de tipo) de código TS — parser-sobre-texto deliberadamente
+ * simples, mesmo racional de `parseWranglerTomlCustomDomainHosts` acima:
+ * cobre o idioma real usado neste repo (`export const RETROSPECTIVA_HOST =
+ * "https://retrospectiva.diar.ia.br";`), não tenta ser um parser TS
+ * completo. Usado pra resolver o identificador de um host (`LEGACY_ANUAL_HOST`)
+ * pro seu valor de string, tanto na condição (`url.host === LEGACY_ANUAL_HOST`)
+ * quanto no alvo do redirect (`` Response.redirect(`${RETROSPECTIVA_HOST}...`) ``).
+ */
+export function extractStringConstants(source: string): Map<string, string> {
+  const map = new Map<string, string>();
+  const re = /(?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::\s*[^=]+)?=\s*["'`]([^"'`]*)["'`]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(source))) map.set(m[1], m[2]);
+  return map;
+}
+
+function findMatchingBracket(source: string, openIndex: number, open: string, close: string): number {
+  let depth = 0;
+  for (let i = openIndex; i < source.length; i++) {
+    if (source[i] === open) depth++;
+    else if (source[i] === close) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+interface IfBlock {
+  condition: string;
+  body: string;
+}
+
+/**
+ * Acha todo `if (...) { ... }` cuja CONDIÇÃO menciona `url.host` — varredura
+ * por balanceamento de parênteses/chaves, não regex de linha única (uma
+ * condição pode ter `||` e o corpo pode ter múltiplas statements). `if` sem
+ * bloco (`if (x) return y;`, sem `{`) é ignorado de propósito: não é o
+ * padrão usado hoje em nenhum roteador de Worker deste repo — reconhecer só
+ * o idioma real, não inventar cobertura.
+ */
+function findIfBlocksWithUrlHost(source: string): IfBlock[] {
+  const result: IfBlock[] = [];
+  const ifRe = /\bif\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = ifRe.exec(source))) {
+    const parenOpen = m.index + m[0].length - 1;
+    const parenClose = findMatchingBracket(source, parenOpen, "(", ")");
+    if (parenClose === -1) continue;
+    const condition = source.slice(parenOpen + 1, parenClose);
+    if (!/url\.host\b/.test(condition)) continue;
+    let i = parenClose + 1;
+    while (i < source.length && /\s/.test(source[i])) i++;
+    if (source[i] !== "{") continue;
+    const braceClose = findMatchingBracket(source, i, "{", "}");
+    if (braceClose === -1) continue;
+    result.push({ condition, body: source.slice(i + 1, braceClose) });
+  }
+  return result;
+}
+
+/** Escapa metacaracteres de regex — usado pra casar um host literal
+ *  (`"anual.diar.ia.br"`) dentro de uma condição, já que o host tem `.`. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Resolve o argumento de `Response.redirect(ARG)` pro host de DESTINO, se
+ * reconhecível. Cobre os dois idiomas usados hoje: interpolação de
+ * identificador (`` `${RETROSPECTIVA_HOST}${resto}` ``, resolvido via
+ * `consts`) e literal direto (`"https://outro.host/..."`). Qualquer outra
+ * forma (concatenação por `+`, identificador não-const, chamada de função
+ * que monta a URL) devolve `null` — o caller trata isso como "não deu pra
+ * confirmar", nunca como "não redireciona".
+ */
+function resolveRedirectTarget(arg: string, consts: Map<string, string>): string | null {
+  const identMatch = /\$\{\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\}/.exec(arg);
+  if (identMatch) {
+    const value = consts.get(identMatch[1]);
+    return value ? stripProtocol(value) : null;
+  }
+  const literalMatch = /^\s*["'`](https?:\/\/[^"'`]+)["'`]/.exec(arg);
+  if (literalMatch) return stripProtocol(literalMatch[1]);
+  return null;
+}
+
+export type HostBranchAnalysis =
+  /** `host` nunca aparece numa condição `url.host === ...` neste código —
+   *  trata-se do host "canônico" implícito, que alcança o roteamento normal
+   *  do Worker sem ramificação nenhuma (o caso comum: worker de host único). */
+  | { kind: "no-branch" }
+  /** Achado o padrão redirect-tudo: `if (url.host === <este host>) { ...
+   *  return Response.redirect(<alvo resolvido>); }`, incondicional em
+   *  relação ao path (a condição não testa `url.pathname`). */
+  | { kind: "redirect-target"; targetHost: string }
+  /** `host` aparece numa condição `url.host === ...`, mas o guard não
+   *  reconheceu o padrão com confiança (redirect condicionado também por
+   *  path, alvo não resolvível, ou branch que não termina em redirect) —
+   *  sinal explícito de "não sei", nunca tratado como "está tudo bem". */
+  | { kind: "unresolvable-branch"; reason: string };
+
+/**
+ * Analisa se/como `host` é tratado por ramificação explícita em `url.host`
+ * dentro de `source` (tipicamente a concatenação de todo `src/` de um
+ * Worker, via `collectAllTsSource`). Núcleo do guard host-aware do #7733:
+ * sem isto, `anyTsFileHasRobotsRouteDispatch` (dir-wide) não distingue "este
+ * host serve robots.txt" de "este host redireciona pra outro que serve".
+ */
+export function analyzeHostBranching(source: string, host: string): HostBranchAnalysis {
+  const consts = extractStringConstants(source);
+  const hostIdentNames = [...consts.entries()].filter(([, v]) => stripProtocol(v) === host).map(([k]) => k);
+
+  const blocks = findIfBlocksWithUrlHost(source);
+  let sawHostMention = false;
+
+  for (const { condition, body } of blocks) {
+    const matchesThisHost =
+      hostIdentNames.some((name) => new RegExp(`url\\.host\\s*===\\s*${escapeRegExp(name)}\\b`).test(condition)) ||
+      new RegExp(`url\\.host\\s*===\\s*["'\`]${escapeRegExp(host)}["'\`]`).test(condition);
+    if (!matchesThisHost) continue;
+    sawHostMention = true;
+
+    // Condição também testa o path (`url.pathname === ...` no mesmo `if`):
+    // não é "redirect-tudo", é um redirect PARCIAL — não dá pra assumir que
+    // `/robots.txt` especificamente cai nesse ramo. Continua procurando
+    // outro bloco (pode haver mais de um `if` mencionando o mesmo host).
+    if (/url\.pathname\b/.test(condition)) continue;
+
+    const redirectMatch = /return\s+Response\.redirect\(([\s\S]*?)\);/.exec(body);
+    if (!redirectMatch) continue; // este bloco não é o formato redirect-tudo — segue procurando
+
+    const target = resolveRedirectTarget(redirectMatch[1], consts);
+    if (!target) {
+      return {
+        kind: "unresolvable-branch",
+        reason: `achou "if (url.host === ...) { ... return Response.redirect(...) }" pra ${host}, mas não deu pra resolver o host de destino do redirect (não é interpolação de const conhecida nem literal http(s) direto)`,
+      };
+    }
+    return { kind: "redirect-target", targetHost: target };
+  }
+
+  if (sawHostMention) {
+    return {
+      kind: "unresolvable-branch",
+      reason: `${host} aparece em alguma condição "url.host === ..." mas nenhum bloco casa o padrão redirect-tudo reconhecido (redirect condicionado também por url.pathname, ou bloco sem "return Response.redirect(...)")`,
+    };
+  }
+  return { kind: "no-branch" };
+}
+
+export type HostRobotsVerdict =
+  /** Host alcança o roteamento normal do Worker (sem ramificação por host),
+   *  e o Worker serve robots.txt próprio (public/robots.txt válido OU
+   *  dispatch de rota em src/). */
+  | { kind: "ok-direct" }
+  /** Host redireciona incondicionalmente (todo path, `/robots.txt`
+   *  inclusive) pra `targetHost` — verificado que `targetHost` é outro host
+   *  declarado pelo MESMO workerDir (irmão em `siblingHosts`) e que o
+   *  workerDir serve robots.txt próprio (senão o redirect levaria a lugar
+   *  nenhum, ou a um destino que este guard não tem como confirmar). */
+  | { kind: "ok-redirect"; targetHost: string }
+  /** Host alcança o roteamento normal (sem ramificação), mas o Worker NÃO
+   *  serve robots.txt próprio — nasceu servindo o default da Cloudflare
+   *  (#4546/#4777). Falha real, mesma classe de antes deste guard existir. */
+  | { kind: "missing" }
+  /** O guard não conseguiu determinar o comportamento deste host com
+   *  confiança — NUNCA tratado como "ok" (regra do #7733: falhar alto e
+   *  nomear o motivo é preferível a passar em silêncio por não ter
+   *  entendido o roteamento). */
+  | { kind: "cannot-verify"; reason: string };
+
+/**
+ * Classifica como `host` (dentro de `workerDir`) é tratado pra fins de
+ * `/robots.txt` — o núcleo host-aware do guard (#7733). Só responde sobre
+ * ROTEAMENTO (a request deste host alcança algum handler de robots.txt?);
+ * a checagem de CONTEÚDO de `public/robots.txt` (`robotsTxtAllowsGeneralCrawling`)
+ * continua no lado do teste, como antes (#4782 achado 2) — a separação
+ * evita que esta função precise conhecer a política de conteúdo.
+ *
+ * `siblingHosts` (opcional): todos os hosts declarados por `workerDir`
+ * (`custom_domain = true`, incluindo o próprio `host`) — quando fornecido,
+ * um redirect-tudo só vira `ok-redirect` se o alvo resolvido for de fato um
+ * DESSES hosts (não basta o workerDir ter ALGUM handler em algum lugar; o
+ * redirect precisa apontar pra um host que o próprio Worker declara e
+ * serve). Omitido (chamadores que não têm a lista à mão, ex: testes
+ * unitários isolados) cai pro critério mais fraco de antes: só "o workerDir
+ * tem handling em algum lugar" — ainda estrito o bastante pra nunca dar
+ * `ok` num alvo não-resolvível.
+ */
+export function classifyHostRobotsHandling(
+  workersDir: string,
+  workerDir: string,
+  host: string,
+  siblingHosts?: string[],
+): HostRobotsVerdict {
+  const dirPath = join(workersDir, workerDir);
+  const publicRobots = join(dirPath, "public", "robots.txt");
+  const srcDir = join(dirPath, "src");
+
+  const ownHandlingExists = existsSync(publicRobots) || anyTsFileHasRobotsRouteDispatch(srcDir);
+  const allSource = collectAllTsSource(srcDir);
+  const branching = analyzeHostBranching(allSource, host);
+
+  if (branching.kind === "unresolvable-branch") {
+    return { kind: "cannot-verify", reason: branching.reason };
+  }
+
+  if (branching.kind === "redirect-target") {
+    if (siblingHosts && !siblingHosts.includes(branching.targetHost)) {
+      return {
+        kind: "cannot-verify",
+        reason:
+          `${host} redireciona (padrão redirect-tudo) para "${branching.targetHost}", que não é nenhum dos hosts ` +
+          `declarados por workers/${workerDir} (${siblingHosts.join(", ")}) — não dá pra confirmar que o destino ` +
+          `serve robots.txt sem sair do escopo deste Worker`,
+      };
+    }
+    if (!ownHandlingExists) {
+      return {
+        kind: "cannot-verify",
+        reason:
+          `${host} redireciona (padrão redirect-tudo) para "${branching.targetHost}", mas workers/${workerDir} ` +
+          `não tem public/robots.txt nem dispatch de rota — não dá pra confirmar que o destino serve robots.txt`,
+      };
+    }
+    return { kind: "ok-redirect", targetHost: branching.targetHost };
+  }
+
+  // branching.kind === "no-branch": host alcança o roteamento normal.
+  return ownHandlingExists ? { kind: "ok-direct" } : { kind: "missing" };
+}
