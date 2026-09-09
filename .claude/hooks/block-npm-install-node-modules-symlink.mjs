@@ -108,18 +108,23 @@ export function maskQuotedSpans(segment) {
   while (i < text.length) {
     const quoted = readQuotedString(text, i);
     if (quoted) {
-      // Span citado SEM espaço é um token — tipicamente o nome do programa
+      // Span citado SEM espaço e no INÍCIO do segmento é o nome do programa
       // (`"npm" ci`, `'bash' -c "..."`), forma que executa exatamente como sem
       // as aspas. Mascará-lo desligava a detecção inteira (achado do review da
       // PR #7848). Fica visível, com as aspas viradas em espaço: mesmo
       // comprimento, offsets preservados, e o token continua delimitado.
+      //
+      // Só no início, e não em qualquer posição: dois argumentos citados
+      // adjacentes de um outro programa (`echo "npm" "ci"`) se juntavam num
+      // `npm ci` que ninguém invocou — falso positivo achado no mesmo review.
       // Span COM espaço é prosa (`-m "roda npm ci"`) e segue mascarado.
       const width = quoted.end - i;
       // `padEnd`/`slice` porque escape (`\"`) ocupa 2 caracteres no original e
       // 1 no valor lido: sem isso o span encolheria e todo offset à direita
       // sairia do lugar.
       const token = ` ${quoted.value} `.slice(0, width).padEnd(width, " ");
-      masked += /\s/.test(quoted.value) ? " ".repeat(width) : token;
+      const isProgramName = i === 0 && !/\s/.test(quoted.value);
+      masked += isProgramName ? token : " ".repeat(width);
       i = quoted.end;
       continue;
     }

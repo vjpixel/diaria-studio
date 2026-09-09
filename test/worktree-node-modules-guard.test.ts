@@ -286,6 +286,13 @@ test("nome de programa citado é token, não texto (#7848)", async () => {
   assert.equal(blocked(`gh issue create --title "npm"`), false, "argumento citado de uma palavra não é comando");
   assert.equal(blocked(`echo "npm" && echo ok`), false, "eco de uma palavra não é npm install");
   assert.equal(blocked(`git commit -m "roda npm ci"`), false, "prosa citada segue sendo texto");
+
+  // Só o token que ABRE o segmento vale como nome de programa: sem isso, dois
+  // argumentos citados adjacentes de OUTRO programa se juntavam num `npm ci`
+  // que ninguém invocou (falso positivo do mesmo review).
+  assert.equal(blocked(`echo "npm" "ci"`), false, "dois argumentos citados adjacentes não são um comando");
+  assert.equal(blocked(`assert_equal "npm" "ci"`), false, "assertion com dois argumentos citados");
+  assert.equal(blocked(`printf "%s" "npm" "install"`), false, "printf com argumentos citados");
 });
 
 // `maskQuotedSpans` precisa preservar OFFSET, não só esconder texto: o payload
