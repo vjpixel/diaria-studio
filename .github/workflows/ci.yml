@@ -99,14 +99,14 @@ jobs:
       - name: Estado da árvore ANTES do npm test (#7736)
         run: |
           git rev-parse HEAD
-          git status --porcelain | head -50
+          git status --porcelain | head -50 || true
           git stash list | wc -l
       - run: npm test
       - name: Estado da árvore DEPOIS do npm test (#7736)
         if: always()
         run: |
           git rev-parse HEAD
-          git status --porcelain | head -50
+          git status --porcelain | head -50 || true
           git stash list | wc -l
           git reflog --date=iso -20
       - run: npm run smoke
