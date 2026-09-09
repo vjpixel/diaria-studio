@@ -1284,7 +1284,16 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
           branch_before: branchBefore,
           warnings,
           proceed: true,
-          preserved_stash: { ref: createdStashRef, message: GIT_SYNC_STASH_MESSAGE },
+          // #7740 (achado P2/alta do review da PR #7791): só afirmar que há
+          // stash preservado quando o pop de fato FALHOU. No sub-caso
+          // defensivo (`popRes.status === 0` com unmerged no disco), o pop
+          // bem-sucedido já dropou o stash pela semântica padrão do git —
+          // apontar um ref aqui manda o operador atrás de um stash que não
+          // existe mais. É a mesma distinção que `stashStateNote` logo acima
+          // já fazia na prosa; o campo estruturado estava contradizendo o
+          // texto ao lado dele.
+          preserved_stash:
+            popRes.status !== 0 ? { ref: createdStashRef, message: GIT_SYNC_STASH_MESSAGE } : null,
         };
       }
 

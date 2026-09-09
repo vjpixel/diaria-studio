@@ -441,6 +441,16 @@ describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco
     // "stash preservado" — um pop bem-sucedido já teria dropado o stash por
     // semântica padrão do git; a mensagem antiga estaria errada aqui.
     assert.doesNotMatch(r.message, /Stash preservado \(N[ÃA]O fazer/);
+    // #7740 (achado P2/alta do review da PR #7791): o campo ESTRUTURADO
+    // precisa concordar com a prosa acima. A 1ª versão preenchia
+    // `preserved_stash` incondicionalmente neste ramo — apontando o operador
+    // (e o banner do sync-code.ts) para um stash que o pop bem-sucedido já
+    // dropou. O teste existente só olhava `r.message`, por isso não pegou.
+    assert.equal(
+      r.preserved_stash,
+      null,
+      "pop exit 0 já dropou o stash — preserved_stash não pode afirmar que existe",
+    );
   });
 
   it("ff também falhou (divergência) E pop deixou UU → 'stash_pop_conflict' (não 'ff_failed')", () => {

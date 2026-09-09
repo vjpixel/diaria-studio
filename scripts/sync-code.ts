@@ -110,8 +110,17 @@ if (result.preserved_stash) {
       `   ref: ${result.preserved_stash.ref ?? "(não capturado)"} | mensagem identificável: ` +
       `'${result.preserved_stash.message}'.\n` +
       `   Localizar: git stash list | grep -F '${result.preserved_stash.message}'\n` +
-      `   Resolver: git stash show -p ${result.preserved_stash.ref ?? `'${result.preserved_stash.message}'`}` +
-      ` ; git status ; git diff — NÃO 'git stash drop' até revisar.\n\n`,
+      // #7740: com `ref` capturado, `git stash show -p <sha>` funciona direto.
+      // SEM ele, NÃO sugerir `git stash show -p '<mensagem>'`: git resolve
+      // revisão, não mensagem, e o comando falha com "is not a valid
+      // reference" (verificado ao vivo no review da PR #7791 — a 1ª versão
+      // deste banner afirmava o contrário e estava errada). O caminho que
+      // funciona é achar o índice pela mensagem e usar o `stash@{N}`.
+      `   Resolver: ${
+        result.preserved_stash.ref
+          ? `git stash show -p ${result.preserved_stash.ref}`
+          : `ache o índice com o 'git stash list' acima e rode git stash show -p 'stash@{N}'`
+      } ; git status ; git diff — NÃO 'git stash drop' até revisar.\n\n`,
   );
 }
 
