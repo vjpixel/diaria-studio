@@ -385,15 +385,29 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   // (isRampWarm com cutoffNovosIso) vs engajados (priority_points>0, qualquer
   // histórico) e exclui deliberadamente reativacao (sends_count>0, sem opens,
   // score 0) — decisão própria do editor (#7406).
-  const queued = await fetchQueuedCampaignListIds(apiKey).catch((e)=>new Set<string>());
+  let queuedLookupFailed = false;
+  let queued: Set<string>;
+  try {
+    queued = await fetchQueuedCampaignListIds(apiKey);
+  } catch (e) {
+    queued = new Set<string>();
+    queuedLookupFailed = true;
+    console.error(`⚠️  Consulta de campanhas enfileiradas falhou: ${e instanceof Error ? e.message : String(e)}`);
+  }
   const queuedListIds = new Set<string>([...queued]);
   const committedListIds = new Set<string>([...committed]);
-  const dailyQueueRows = buildDailySendQueue(
+  // #7738 (diagnóstico 2): fila diária unificada deve excluir já enviados/reservados
+  // pelo guard cycle-wide (#5395 / #5410), mesmo caminho que availableFirstSend.
+  const dailyPoolRows = excludeSentOrQueued(
     rows,
+    loadSentOrQueuedEmails(clariceSegmentsDir(opts.cycle, opts.segmentsBaseDir ?? CLARICE_BASE)),
+  );
+  const dailyQueueRows = buildDailySendQueue(
+    dailyPoolRows,
     { queuedListIds, committedListIds },
     novosCutoff?.cutoffIso ?? null,
   );
-  const dailyQueueAvailable = dailyQueueRows.length;
+  const dailyQueueAvailable = queuedLookupFailed ? null : dailyQueueRows.length;
 
   // 5. Crédito Brevo — validado ANTES de qualquer proposta de escrita.
   let brevoCredits: number | null = null;

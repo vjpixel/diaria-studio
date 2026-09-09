@@ -1236,7 +1236,7 @@ export interface WaveProposalInput {
   abc: AbcRecommendation;
   state: CycleSendState;
   /** Fila diária unificada (ciclo atual): engajados (priority_points>0, qualquer histórico) + ramp-warm (nunca enviado, corte de novos). NÃO inclui reativacao sem decisão (#7738). */
-  dailyQueueAvailable: number;
+  dailyQueueAvailable: number | null;
   /** Fila de 1º envio vitalício (sends_count<=0). Separada para referência; NÃO é o teto de fila (#7738). */
   availableFirstSend: number;
   /**
