@@ -24,15 +24,38 @@ import {
   renderTeaserWithPaywall,
 } from "../workers/artigo-mensal/src/render.ts";
 import { RETROSPECTIVA_DO_MES_NIVEIS } from "../scripts/build-apoiador-allowlist.ts";
+import { computeRewardGroup } from "../scripts/studio-ui/studio-apoios.ts";
 
 /**
- * Valor em R$ do menor nível que hoje tem direito — derivado das faixas
- * canônicas (`computeRewardGroup`, documentadas em
- * `scripts/lib/apoio-segments-canonical-kit.ts`), não digitado à mão: é o que
- * amarra a copy à constante em vez de a outro literal.
+ * Pisos em R$ de cada nível, SONDADOS de `computeRewardGroup` — a mesma
+ * função que decide o nível de cada apoiador a partir do valor pago.
+ *
+ * Sondar em vez de transcrever um mapa à mão é o que fecha o último literal
+ * do teste (achado do review da #7690): um mapa transcrito continuaria
+ * "passando" se as faixas de `REWARD_TIER_*_MIN` mudassem, validando a copy
+ * contra números que já não valem. Aqui, mexer nas faixas move o piso
+ * automaticamente — e a copy tem que acompanhar.
+ *
+ * A varredura vai a R$200 porque o maior piso hoje é R$50; um piso novo
+ * acima disso apareceria como nível sem entrada no mapa, e o `PISO` abaixo
+ * quebraria em vez de silenciar.
  */
-const PISO_POR_NIVEL: Record<string, number> = { amigo: 5, apoiador: 10, mantenedor: 25, patrono: 50 };
-const PISO = Math.min(...RETROSPECTIVA_DO_MES_NIVEIS.map((n) => PISO_POR_NIVEL[n]));
+const PISO_POR_NIVEL: Record<string, number> = (() => {
+  const out: Record<string, number> = {};
+  for (let v = 1; v <= 200; v++) {
+    const nivel = computeRewardGroup(v);
+    if (nivel && !(nivel in out)) out[nivel] = v;
+  }
+  return out;
+})();
+
+const PISO = Math.min(
+  ...RETROSPECTIVA_DO_MES_NIVEIS.map((n) => {
+    const piso = PISO_POR_NIVEL[n];
+    if (piso === undefined) throw new Error(`nível "${n}" sem piso sondado — a varredura precisa ir além de R$200.`);
+    return piso;
+  }),
+);
 
 const TEASER = `<html><body><h1>Retrospectiva</h1><p>trecho</p></body></html>`;
 
