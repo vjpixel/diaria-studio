@@ -24,6 +24,14 @@
 #      sem ter feito nada disso. Compara `data/continuo/last-tick-report.md`
 #      (existe + mtime dentro da janela do tick) e alegações de claim/contagem
 #      no próprio relatório contra `gh issue list` e `data/sessions/continuo-*.json`.
+#   12. aumento de preço em modelo pago já em uso na OpenRouter (#6818 item
+#      4) — a checagem 4 acima só pergunta "está na allowlist?"; um modelo
+#      que ESTÁ na allowlist nunca é sinalizado, a qualquer preço, e foi
+#      assim que o degrau de 09/09 do glm-5.3-flash quase passou batido.
+#      `hermes-model-cost-report.py --price-check` compara o catálogo
+#      público da OpenRouter contra PAID_PRICE_BASELINE; indeterminado
+#      (catálogo inacessível/campo sumiu) NUNCA vira "ok", só alarme ou
+#      indeterminado.
 #   (item 5 — adoção de prefixo de branch — CORTADO no #6798, 01/09/2026:
 #    informational, 0 correções, dedup falhava e produziu issue duplicada 3x
 #    antes do fix; sucessor mais preciso é `check-branch-issue-consistency.ts`.)
@@ -538,6 +546,73 @@ $FAB_DETAILS
 **Ação**: investigar a sessão correlacionada no helios (transcript do tick). Reproduzido ao vivo 06/09/2026: modelo alegou relatório escrito em data/continuo/last-tick-report.md (arquivo nunca existiu) e classificação com n=4 issues (existiam 41 abertas). Não promover o modelo local a primário do contínuo enquanto este alarme disparar (docs/goal-modelo-local-continuo.md). P1: relatório fabricado passa pro Telegram como se estivesse tudo bem, e a fila drena sem ninguém perceber."
 else
   echo "[watch] fabricacao de tick: ok (sem sinal de fabricacao; #7537)"
+fi
+
+# ── 12. aumento de preço em modelo pago já em uso (#6818 item 4) ────────────
+# A checagem 4 acima só pergunta "está na allowlist?" — um modelo que ESTÁ
+# na allowlist nunca é sinalizado, a qualquer preço. Foi assim que o degrau
+# de 09/09 do glm-5.3-flash (promoção de lançamento expira, custo do tick
+# dobra — ~$176 -> ~$352/mês — ZERO mudança de config/código/volume) quase
+# passou batido: só não custou porque alguém foi olhar à mão (#6818).
+# `hermes-model-cost-report.py --price-check` compara o catálogo público da
+# OpenRouter (sem auth) contra PAID_PRICE_BASELINE (mantido à mão no
+# script, mesmo trade-off já aceito pro PAID_ALLOWLIST). Exit 3 = aumento
+# real; exit 1 = indeterminado (catálogo inacessível, ou id/campo do
+# baseline sumiu do catálogo) — NUNCA lido como "ok" (mesma disciplina
+# fail-closed do #6992/#7776/#7805); exit 0 = preço estável ou só caiu.
+PRICE_JSON=$(python3 /home/vjpixel/.hermes/scripts/hermes-model-cost-report.py --price-check --json 2>/dev/null)
+PRICE_RC=$?
+PRICE_PARSE=$(printf '%s' "$PRICE_JSON" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('increases'):
+        print('INCREASE')
+    elif d.get('unverifiable'):
+        print('UNVERIFIABLE')
+    else:
+        print('OK')
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+case "$PRICE_PARSE" in *__ERR__*) PRICE_PARSE="__ERR__" ;; esac
+case "$PRICE_PARSE" in INCREASE|UNVERIFIABLE|OK) : ;; *) PRICE_PARSE="__ERR__" ;; esac
+if [ "$PRICE_PARSE" = "__ERR__" ]; then
+  echo "[watch] preço OpenRouter: INDETERMINADO (price-check falhou, rc=$PRICE_RC)" >&2
+  FAILS=$((FAILS + 1))
+elif [ "$PRICE_PARSE" = "UNVERIFIABLE" ]; then
+  PRICE_DETAILS=$(printf '%s' "$PRICE_JSON" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    for f in d.get('unverifiable', []):
+        print(f\"  {f.get('modelo')} {f.get('campo', '-')}: {f.get('motivo')}\")
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+  echo "[watch] preço OpenRouter: INDETERMINADO (catálogo não confirma o baseline; rc=$PRICE_RC)" >&2
+  printf '%s\n' "$PRICE_DETAILS" >&2
+  FAILS=$((FAILS + 1))
+elif [ "$PRICE_PARSE" = "INCREASE" ]; then
+  PRICE_DETAILS=$(printf '%s' "$PRICE_JSON" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    for f in d.get('increases', []):
+        fator = f\"{f['fator']:.2f}x\" if f.get('fator') else '?'
+        print(f\"  {f['modelo']} {f['campo']}: {f['baseline']:.9f} -> {f['atual']:.9f} ({fator})\")
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+  file_issue "[watch-continuo] aumento de preço em modelo pago já em uso" \
+    "[watch-continuo] aumento de preço em modelo pago já em uso (OpenRouter, #6818)" \
+    "bug,P2" \
+    "Detectado por watch-continuo-health.sh via hermes-model-cost-report.py --price-check (#6818 item 4) — o catálogo público da OpenRouter mostra preço acima do baseline registrado em \`PAID_PRICE_BASELINE\` (hermes-model-cost-report.py) para pelo menos 1 modelo pago já em uso:
+
+\`\`\`
+$PRICE_DETAILS
+\`\`\`
+
+Mesma classe da issue #6818: uma promoção de lançamento expira e o custo do tick dobra sem nenhuma mudança de config/código/volume. **Ação**: recalcular o custo-mix real com o preço novo (não pelo preço de prompt isolado — no mix do tick, output é ~9% dos tokens e até 84% da conta), decidir se mantém o modelo ao preço novo ou troca por um candidato mais barato medido contra o workload real (nunca por ficha técnica), e atualizar \`PAID_PRICE_BASELINE\` pra refletir o preço vigente — senão este alarme repete todo dia."
+else
+  echo "[watch] preço OpenRouter: ok (sem aumento vs baseline; #6818 item 4)"
 fi
 
 # --- Parada dura por AUTH no cron do contínuo (#7647) --------------------
