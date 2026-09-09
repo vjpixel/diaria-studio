@@ -18,6 +18,23 @@
  * --head {branch} --state merged` se existe PR mergeada pra essa branch, e
  * remove (`git worktree remove --force`) os confirmados.
  *
+ * **#7750 review — worktree EXTERNO não tinha como ser protegido como "em
+ * uso".** `selectInUseWorktreeNames`/`extractWorktreeNamesFromPaths` extraem
+ * o nome do worktree via regex ancorado em `.claude/worktrees/{nome}` — com
+ * a fatia 1 (#7650) trazendo worktrees externos pro conjunto de candidatos,
+ * um worktree fora dessa árvore **estruturalmente nunca** podia aparecer em
+ * `inUseNames`, porque nenhum `touched_paths`/`dirty_paths` casa esse regex
+ * pra um path externo. Caso real medido: `C:/Users/vjpix/Projects/wt-model-bench`
+ * (branch `chore/model-bench-harness`, PR já mergeada, árvore limpa) — o
+ * guard de sujeira (#7304) não protege porque a árvore está limpa, e "branch
+ * mergeada" não tem piso de dias, diferente de órfão/abandonado. Uma sessão
+ * usando esse worktree pra follow-up pós-merge o perderia sob os pés dela.
+ * Correção: `selectInUseWorktreeNames` agora TAMBÉM devolve o conjunto de
+ * BRANCHES declaradas por sessão ativa não-stale (`SessionRecord.branch`), e
+ * `filterOutInUseWorktrees` exclui um worktree cujo nome OU cuja branch
+ * batam — cobre o caso externo sem depender do formato do path, sem tirar a
+ * proteção por nome já existente.
+ *
  * **Extensão #5418 — worktrees órfãos além do caso "branch mergeada".** A
  * varredura acima cobre só worktrees com branch nomeada E PR já mergeada
  * confirmada via `gh`. Dois casos ficam de fora, achados numa auditoria de
@@ -108,11 +125,12 @@
  * script foi invocado). Critério de remoção não mudou — só o conjunto de
  * ENTRADA que passa por ele. `filterUnderWorktreesDir` continua exportada
  * (não quebrar `test/cleanup-merged-worktrees.test.ts`), só não é mais
- * usada por `main()`. **Limitação conhecida, não fechada por esta
- * extensão:** a proteção "em uso por sessão ativa" (`selectInUseWorktreeNames`)
- * só enxerga `touched_paths`/`dirty_paths` sob `.claude/worktrees/` (é onde
- * o beacon do harness escreve) — um worktree externo em uso por uma sessão
- * não ganha essa proteção específica, só as demais (`locked`, #7304 sujeira).
+ * usada por `main()`. **Limitação por nome fechada pelo #7750 (ver docblock
+ * logo acima) via matching por BRANCH** — `selectInUseWorktreeNames` só
+ * enxergava `touched_paths`/`dirty_paths` sob `.claude/worktrees/` (é onde o
+ * beacon do harness escreve), então um worktree externo em uso não ganhava
+ * proteção nenhuma por nome; agora casa também pela branch que a sessão
+ * ativa declara, independente de onde o worktree mora no disco.
  *
  * **Extensão #7650 fatia 2 — `selectAbandonedForRemoval`, terceiro
  * seletor.** `selectOrphanedForStaleRemoval` (acima) nunca remove um
@@ -123,7 +141,7 @@
  * `fix-NNNN[-slug]`/`fix/NNNN[-slug]`, com ou sem prefixo de trilha
  * `overnight/`/`develop/`/`continuo/`) já fechou por outro caminho e o
  * worktree ficou pra trás. `selectAbandonedForRemoval` cobre isso:
- * `extractIssueNumberFromWorktreeBranch` extrai o número; se a issue está
+ * `extractIssueNumbersFromWorktreeBranch` extrai TODAS as issues (#7750); se a issue está
  * FECHADA (`getIssueClosedAtMs`, via `gh issue view --json state,closedAt`)
  * há mais que `ABANDONED_ISSUE_CLOSED_STALE_THRESHOLD_MS` E a branch não
  * tem PR ABERTA (`hasOpenPr`, via `gh pr list --state open`), o worktree
@@ -321,26 +339,57 @@ export function selectOrphanedForStaleRemoval(
 }
 
 /**
- * Extrai o número da issue do NOME de uma branch de worktree (#7650 fatia
- * 2), convenção `fix-NNNN[-slug]` / `fix/NNNN[-slug]` — com ou sem prefixo
- * de trilha (`overnight/`, `develop/`, `continuo/fix-NNNN-slug`). Retorna
- * `null` quando a branch não segue essa convenção (não é erro, só "não
- * aplicável" — mesmo espírito de `extractIssueNumberFromBranch` em
- * `scripts/lib/branch-issue-consistency.ts`, que este módulo NÃO reusa
- * porque aquele é ancorado ao prefixo de trilha no INÍCIO da branch —
- * branch legada sem prefixo, ex: `fix-4306-review-pass3` (achada ao vivo
- * no inventário de worktrees do #7650), também precisa ser detectável
- * aqui).
+ * Extrai TODOS os números de issue do NOME de uma branch de worktree (#7650
+ * fatia 2, pluralizado no review do #7750), convenção `fix-NNNN[-slug]` /
+ * `fix/NNNN[-slug]` — com ou sem prefixo de trilha (`overnight/`,
+ * `develop/`, `continuo/fix-NNNN-slug`). Retorna `[]` quando a branch não
+ * segue essa convenção (não é erro, só "não aplicável" — mesmo espírito de
+ * `extractIssueNumberFromBranch` em `scripts/lib/branch-issue-consistency.ts`,
+ * que este módulo NÃO reusa porque aquele é ancorado ao prefixo de trilha no
+ * INÍCIO da branch — branch legada sem prefixo, ex: `fix-4306-review-pass3`
+ * (achada ao vivo no inventário de worktrees do #7650), também precisa ser
+ * detectável aqui).
+ *
+ * **Plural — #7750, review da PR #7750.** Este repo tem branches reais com
+ * VÁRIAS issues no nome, ex: `develop/fix-4121-4160-4161-4054` e
+ * `develop/fix-4059-4040-4041-mensal-utm` (confirmado via `git branch
+ * --list --all` no achado que motivou a mudança). A versão anterior usava
+ * `exec` sem `/g` e extraía só o PRIMEIRO número — se essa 1ª issue
+ * estivesse fechada há mais que o piso mas as demais seguissem abertas,
+ * `selectAbandonedForRemoval` classificava a branch inteira como
+ * "abandonada", destruindo trabalho pendente. `matchAll` com o `g` flag
+ * substitui o `exec` único; `selectAbandonedForRemoval` agora exige que
+ * TODAS as issues extraídas estejam fechadas há mais que o piso antes de
+ * considerar o worktree elegível.
  *
  * Lookbehind negativo (`(?<![a-zA-Z])`) evita falso-positivo em substring
  * tipo `prefix-1234` — o `fix` dentro de `prefix` é precedido por uma
  * letra (`e`), nunca por início-de-string ou separador (`-`/`/`), então
  * não casa. Também rejeita corretamente `fixer-5611-local` (achada no
- * mesmo inventário: `fix` seguido de `er`, não de dígito/separador).
+ * mesmo inventário: `fix` seguido de `er`, não de dígito/separador). Um só
+ * `fix[-/]?` no início da sequência de números — `fix-4121-4160-4161-4054`
+ * casa os 4 números seguidos porque cada um vira um match próprio via
+ * `matchAll` sobre o padrão original repetido por número (ver regex
+ * abaixo: cada dígito-run após `fix` OU após um separador `-`/`/` seguido
+ * de dígitos é capturado).
  */
+export function extractIssueNumbersFromWorktreeBranch(branch: string): number[] {
+  const numbers: number[] = [];
+  const re = /(?<![a-zA-Z])fix[-/]?(\d+(?:[-/]\d+)*)/i.exec(branch);
+  if (!re) return numbers;
+  for (const part of re[1].split(/[-/]/)) {
+    const n = Number(part);
+    if (Number.isInteger(n) && !Number.isNaN(n)) numbers.push(n);
+  }
+  return numbers;
+}
+
+/** @deprecated Alias legado — use `extractIssueNumbersFromWorktreeBranch` (#7750, plural). Devolve só a
+ * primeira issue extraída, ou `null` se nenhuma. Mantido só pra não quebrar chamador externo eventual;
+ * `selectAbandonedForRemoval` não usa mais este alias. */
 export function extractIssueNumberFromWorktreeBranch(branch: string): number | null {
-  const m = /(?<![a-zA-Z])fix[-/]?(\d+)/i.exec(branch);
-  return m ? Number(m[1]) : null;
+  const all = extractIssueNumbersFromWorktreeBranch(branch);
+  return all.length > 0 ? all[0] : null;
 }
 
 /** 14 dias — piso de staleness pra worktree "abandonado" (#7650 fatia 2):
@@ -356,7 +405,7 @@ export const ABANDONED_ISSUE_CLOSED_STALE_THRESHOLD_MS = 2 * ORPHAN_STALE_THRESH
  * Seleciona, dentre os worktrees candidatos que NÃO já foram selecionados
  * por `selectMergedForRemoval`/`selectOrphanedForStaleRemoval`, os
  * "abandonados" (#7650 fatia 2): branch local viva referenciando uma issue
- * no nome (`extractIssueNumberFromWorktreeBranch`), issue essa já FECHADA
+ * no nome (`extractIssueNumbersFromWorktreeBranch`, plural — #7750), TODAS já FECHADAS
  * há mais que `thresholdMs` (`getIssueClosedAtMs`, injetável — `null` =
  * issue não fechada OU dado indisponível, fail-soft, nunca seleciona), E
  * sem PR ABERTA pela branch (`hasOpenPr`, injetável — `true` também no caso
@@ -369,6 +418,16 @@ export const ABANDONED_ISSUE_CLOSED_STALE_THRESHOLD_MS = 2 * ORPHAN_STALE_THRESH
  * viva que aquele exclui de propósito, mas só quando o sinal externo
  * (issue fechada há muito tempo, sem PR aberta) descarta a leitura
  * "trabalho bloqueado esperando desbloqueio".
+ *
+ * **Multi-issue — #7750, review da PR #7750.** Uma branch pode referenciar
+ * VÁRIAS issues no nome (`extractIssueNumbersFromWorktreeBranch`, ex:
+ * `develop/fix-4121-4160-4161-4054`). Antes deste fix só a PRIMEIRA issue
+ * era considerada — se ela fechou há muito tempo mas as demais seguiam
+ * abertas, o worktree era classificado como abandonado mesmo representando
+ * trabalho pendente. Agora o worktree só é "abandonado" se **TODAS** as
+ * issues extraídas estiverem fechadas há mais que `thresholdMs` — qualquer
+ * issue ainda aberta, ou com `getIssueClosedAtMs` indeterminado (fail-soft),
+ * preserva o worktree inteiro.
  */
 export function selectAbandonedForRemoval(
   entries: WorktreeEntry[],
@@ -383,12 +442,14 @@ export function selectAbandonedForRemoval(
   for (const e of entries) {
     if (alreadyPaths.has(e.path)) continue;
     if (e.branch === null) continue; // sem branch = caso órfão, outro seletor
-    const issueNumber = extractIssueNumberFromWorktreeBranch(e.branch);
-    if (issueNumber === null) continue;
+    const issueNumbers = extractIssueNumbersFromWorktreeBranch(e.branch);
+    if (issueNumbers.length === 0) continue;
     if (hasOpenPr(e.branch)) continue;
-    const closedAtMs = getIssueClosedAtMs(issueNumber);
-    if (closedAtMs === null) continue;
-    if (nowMs - closedAtMs > thresholdMs) result.push(e);
+    const allClosedPastThreshold = issueNumbers.every((issueNumber) => {
+      const closedAtMs = getIssueClosedAtMs(issueNumber);
+      return closedAtMs !== null && nowMs - closedAtMs > thresholdMs;
+    });
+    if (allClosedPastThreshold) result.push(e);
   }
   return result;
 }
@@ -609,11 +670,13 @@ export function extractWorktreeNamesFromPaths(paths: string[]): Set<string> {
 }
 
 /**
- * Nomes de worktree (basename) EM USO por alguma sessão ATIVA e NÃO-stale —
- * união de `touched_paths`/`dirty_paths` de TODAS as sessões (qualquer
- * `kind`, não só coordenadora: um worktree aberto à mão por uma sessão
- * interativa via `EnterWorktree` também está em uso). Pura, testável sem
- * tocar `data/sessions/` real.
+ * Nomes de worktree (basename) e branches EM USO por alguma sessão ATIVA e
+ * NÃO-stale — nomes vêm da união de `touched_paths`/`dirty_paths` de TODAS
+ * as sessões (qualquer `kind`, não só coordenadora: um worktree aberto à mão
+ * por uma sessão interativa via `EnterWorktree` também está em uso); branches
+ * vêm de `SessionRecord.branch` (#7750 — ver docblock do topo do arquivo,
+ * "worktree EXTERNO não tinha como ser protegido"). Pura, testável sem tocar
+ * `data/sessions/` real.
  *
  * **`excludeSessionId` — a própria sessão nunca se protege de si mesma
  * (#7304).** O beacon (`.claude/hooks/session-beacon.mjs`) não emite de
@@ -624,7 +687,8 @@ export function extractWorktreeNamesFromPaths(paths: string[]): Set<string> {
  * mesma preserva exatamente os worktrees que acabou de terminar de usar —
  * e quem limpa é a rodada SEGUINTE. Medido ao vivo na rodada 260902b: 23
  * removidos no passo 6 (todos de rodadas anteriores), 15 a mais 10min
- * depois, já com o registro encerrado (todos da própria rodada).
+ * depois, já com o registro encerrado (todos da própria rodada). Mesma
+ * exclusão vale pro conjunto de branches.
  *
  * O docblock de `shouldSkipForSharedSession` afirmava que dava pra dispensar
  * o `session_id` porque a sessão não sabe o próprio — isso vale pro processo,
@@ -636,15 +700,17 @@ export function extractWorktreeNamesFromPaths(paths: string[]): Set<string> {
 export function selectInUseWorktreeNames(
   activeSessions: SessionRecord[],
   excludeSessionId?: string,
-): Set<string> {
+): { names: Set<string>; branches: Set<string> } {
   const names = new Set<string>();
+  const branches = new Set<string>();
   for (const s of activeSessions) {
     if (s.stale) continue;
     if (excludeSessionId !== undefined && s.sessionId === excludeSessionId) continue;
     const paths = [...(s.touched_paths ?? []), ...(s.dirty_paths ?? [])];
     for (const name of extractWorktreeNamesFromPaths(paths)) names.add(name);
+    if (s.branch) branches.add(s.branch);
   }
-  return names;
+  return { names, branches };
 }
 
 /** Basename do path do worktree (mesmo formato usado por `extractWorktreeNamesFromPaths`). */
@@ -654,9 +720,21 @@ export function worktreeNameFromPath(path: string): string {
   return idx >= 0 ? normalized.slice(idx + 1) : normalized;
 }
 
-/** Remove de `entries` os worktrees cujo nome está em `inUseNames` — pura. */
-export function filterOutInUseWorktrees(entries: WorktreeEntry[], inUseNames: Set<string>): WorktreeEntry[] {
-  return entries.filter((e) => !inUseNames.has(worktreeNameFromPath(e.path)));
+/**
+ * Remove de `entries` os worktrees cujo nome está em `inUse.names` OU cuja
+ * branch está em `inUse.branches` — pura. O critério por branch (#7750)
+ * cobre worktree fora de `.claude/worktrees/`, onde o nome nunca aparece em
+ * `touched_paths`/`dirty_paths` (ver docblock do topo do arquivo).
+ */
+export function filterOutInUseWorktrees(
+  entries: WorktreeEntry[],
+  inUse: { names: Set<string>; branches: Set<string> },
+): WorktreeEntry[] {
+  return entries.filter((e) => {
+    if (inUse.names.has(worktreeNameFromPath(e.path))) return false;
+    if (e.branch !== null && inUse.branches.has(e.branch)) return false;
+    return true;
+  });
 }
 
 /**
@@ -820,11 +898,13 @@ function main(): void {
     // topo do arquivo.
     const all = listWorktreesSafe(repoRoot);
     const candidatesAll = excludeMainWorktree(all);
-    const inUse = candidatesAll.filter((e) => inUseNames.has(worktreeNameFromPath(e.path)));
+    const isInUse = (e: WorktreeEntry) =>
+      inUseNames.names.has(worktreeNameFromPath(e.path)) || (e.branch !== null && inUseNames.branches.has(e.branch));
+    const inUse = candidatesAll.filter(isInUse);
     // #7048: worktree `locked` (git worktree lock — pinado a um agent ativo)
     // é excluído independentemente de aparecer em `inUse` — cobre a janela
     // antes do primeiro `touched_paths` do agent chegar ao session-registry.
-    const locked = candidatesAll.filter((e) => e.locked && !inUseNames.has(worktreeNameFromPath(e.path)));
+    const locked = candidatesAll.filter((e) => e.locked && !isInUse(e));
     const candidates = filterOutLockedWorktrees(filterOutInUseWorktrees(candidatesAll, inUseNames));
 
     if (inUse.length > 0) {
