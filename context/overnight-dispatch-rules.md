@@ -55,7 +55,7 @@ AUTO-REFERENTE ao vivo (achado overnight 260817c), quebrando todo `npx tsx`
 nesse checkout com `FilesystemLoop`/"Too many levels of symbolic links" até
 alguém rodar `rm node_modules && npm ci` manualmente. Cada worktree isolado
 já tem seu próprio `node_modules/` — nunca há motivo pra reinstalar no
-checkout principal a partir de dentro de um worktree.
+checkout principal a partir de dentro de um worktree. **Nunca symlinkar `node_modules` do worktree pro checkout principal** — `npm ci` apaga o symlink e, se o alvo é o principal compartilhado, esvazia `node_modules/` do principal (incidente #7763, 260909). Se precisa economizar o ~4s de `npm ci`, use `npm ci --prefer-offline` no próprio worktree; se já tem symlink, remova (`rm node_modules && npm ci`) **antes** do comando destrutivo. Guard mecânico: `scripts/lib/worktree-node-modules-guard.ts`.
 
 ## 4. Disciplina de testes (#2959) — NUNCA a suíte completa local
 
