@@ -204,12 +204,17 @@ describe("#3817 Instagram: sequência /media → /media_publish com os parâmetr
   });
 
   it("cron dispara channel=instagram: cria container (image_url+caption) e publica (creation_id) na ordem certa", async () => {
-    const calls: Array<{ url: string; method?: string; body: string }> = [];
+    const calls: Array<{ url: string; method?: string; body: string; headers?: Record<string, string> }> = [];
     globalThis.fetch = (async (url: string | Request, init?: RequestInit) => {
       const u = typeof url === "string" ? url : url.url;
       const body =
         init?.body instanceof URLSearchParams ? init.body.toString() : String(init?.body ?? "");
-      calls.push({ url: u, method: init?.method, body });
+      calls.push({
+        url: u,
+        method: init?.method,
+        body,
+        headers: init?.headers as Record<string, string> | undefined,
+      });
       if (u.endsWith("/media_publish")) {
         return new Response(JSON.stringify({ id: "17896453961137500" }), { status: 200 });
       }
@@ -257,6 +262,13 @@ describe("#3817 Instagram: sequência /media → /media_publish com os parâmetr
         /creation_id=container-123/,
         "publish deve usar o creation_id retornado pelo passo 1",
       );
+
+      // NUNCA põe o access token na query string — vai no header Authorization (#7779)
+      const statusCall = calls.find((c) => c.url.includes("status_code"));
+      assert.ok(statusCall, "deve ter chamado o poll de status_code");
+      assert.ok(!statusCall!.url.includes("access_token"), "token vazou na URL do poll de status");
+      assert.ok(!statusCall!.url.includes("test-token"), "token vazou na URL do poll de status");
+      assert.equal(statusCall!.headers?.Authorization, "Bearer test-token");
 
       // Item disparado com sucesso → removido do KV (mesmo invariante do LinkedIn)
       assert.equal(kv.store.has(key), false);

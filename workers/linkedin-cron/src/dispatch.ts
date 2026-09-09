@@ -215,10 +215,11 @@ async function fireInstagramSingle(imageUrl: string, caption: string, creds: Ins
   // ficar FINISHED de imediato; isto é rede de segurança, não o caminho comum.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const statusRes = await fetch(
-        `${base}/${containerId}?fields=status_code&access_token=${encodeURIComponent(creds.accessToken)}`,
-        { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
-      );
+      // Token vai no header Authorization, nunca na query string (#7779).
+      const statusRes = await fetch(`${base}/${containerId}?fields=status_code`, {
+        headers: { Authorization: `Bearer ${creds.accessToken}` },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
       if (statusRes.ok) {
         const statusData = (await statusRes.json()) as { status_code?: string };
         if (statusData.status_code === "FINISHED") break;
@@ -313,10 +314,11 @@ async function pollInstagramContainerStatus(
 ): Promise<{ ok: true } | { ok: false; reason: string; permanent: boolean }> {
   for (let attempt = 1; attempt <= IG_POLL_MAX_ATTEMPTS; attempt++) {
     try {
-      const res = await fetch(
-        `${base}/${containerId}?fields=status_code&access_token=${encodeURIComponent(accessToken)}`,
-        { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
-      );
+      // Token vai no header Authorization, nunca na query string (#7779).
+      const res = await fetch(`${base}/${containerId}?fields=status_code`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
       const text = await res.text();
       let data: { status_code?: string; error?: { message?: string } };
       try {
@@ -742,10 +744,11 @@ async function pollThreadsContainerStatus(
 ): Promise<{ ok: true } | { ok: false; reason: string; permanent: boolean }> {
   for (let attempt = 1; attempt <= THREADS_POLL_MAX_ATTEMPTS; attempt++) {
     try {
-      const res = await fetch(
-        `${base}/${containerId}?fields=status,error_message&access_token=${encodeURIComponent(accessToken)}`,
-        { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
-      );
+      // Token vai no header Authorization, nunca na query string (#7779).
+      const res = await fetch(`${base}/${containerId}?fields=status,error_message`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
       const text = await res.text();
       let data: { status?: string; error_message?: string; error?: { message?: string } };
       try {

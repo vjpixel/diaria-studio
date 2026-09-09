@@ -15,6 +15,7 @@ import {
   extractPostText,
   truncateCaption,
   postToWorkerQueue,
+  fetchPermalink,
   type InstagramQueuePayload,
 } from "../scripts/publish-instagram.ts";
 import { INSTAGRAM_CTA_LINE } from "../scripts/lib/social-cta-lines.ts";
@@ -368,6 +369,31 @@ describe("Fluxo Instagram 2 passos (verificação estática do script)", () => {
 
   it("lê 06-public-images.json UMA vez antes do loop (não por destaque) (#49)", () => {
     assert.match(SRC, /const publicImagesExists = existsSync/, "deve hoistar a leitura");
+  });
+});
+
+describe("fetchPermalink (#7779 — token no header, não na query string)", () => {
+  let originalFetch: typeof globalThis.fetch;
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+
+  it("NUNCA põe o access token na query string — vai no header Authorization", async () => {
+    let capturedUrl: string | undefined;
+    let capturedInit: RequestInit | undefined;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      capturedUrl = typeof url === "string" ? url : url.toString();
+      capturedInit = init;
+      return { ok: true, json: async () => ({ permalink: "https://instagram.com/p/abc" }) } as Response;
+    }) as typeof fetch;
+    try {
+      const permalink = await fetchPermalink("media1", "token-secreto-789", "v1.0");
+      assert.equal(permalink, "https://instagram.com/p/abc");
+      assert.ok(!(capturedUrl ?? "").includes("token-secreto-789"), "token vazou na URL");
+      assert.ok(!(capturedUrl ?? "").includes("access_token"), "query string ainda tem access_token");
+      const headers = capturedInit?.headers as Record<string, string> | undefined;
+      assert.equal(headers?.Authorization, "Bearer token-secreto-789");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

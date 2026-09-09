@@ -17,7 +17,6 @@ describe("deleteFbPost (#1058)", () => {
     assert.equal(r.ok, true);
     assert.equal(r.httpStatus, 200);
     assert.match(capturedUrl ?? "", /graph\.facebook\.com\/v25\.0\/12345/);
-    assert.match(capturedUrl ?? "", /access_token=tok-abc/);
   });
 
   it("DELETE Graph API: 404 not found → ok=false", async () => {
@@ -27,15 +26,19 @@ describe("deleteFbPost (#1058)", () => {
     assert.equal(r.httpStatus, 404);
   });
 
-  it("encoda token no URL pra evitar caracteres especiais", async () => {
+  it("NUNCA põe o access token na query string — vai no header Authorization (#7779)", async () => {
     let capturedUrl: string | undefined;
-    globalThis.fetch = (async (url: string | Request) => {
+    let capturedInit: RequestInit | undefined;
+    globalThis.fetch = (async (url: string | Request, init?: RequestInit) => {
       capturedUrl = typeof url === "string" ? url : url.url;
+      capturedInit = init;
       return new Response("{}", { status: 200 });
     }) as typeof fetch;
-    await deleteFbPost("12345", "tok+with/chars=", "v25.0");
-    // Token com `+`, `/`, `=` deve ser URL-encoded
-    assert.match(capturedUrl ?? "", /access_token=tok%2Bwith%2Fchars%3D/);
+    await deleteFbPost("12345", "tok-secreto-com+chars/especiais=", "v25.0");
+    assert.ok(!(capturedUrl ?? "").includes("tok-secreto-com"), "token vazou na URL");
+    assert.ok(!(capturedUrl ?? "").includes("access_token"), "query string ainda tem access_token");
+    const headers = capturedInit?.headers as Record<string, string> | undefined;
+    assert.equal(headers?.Authorization, "Bearer tok-secreto-com+chars/especiais=");
   });
 });
 

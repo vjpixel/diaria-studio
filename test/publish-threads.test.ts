@@ -27,6 +27,7 @@ import {
   waitForContainerReady,
   CONTAINER_POLL_MAX_ATTEMPTS,
   loadPublicImagesFile,
+  fetchThreadsPermalink,
 } from "../scripts/publish-threads.ts";
 import { postToWorkerQueue } from "../scripts/lib/worker-queue-client.ts"; // #3944 Parte B
 import { resolveCarouselImageUrls } from "../scripts/lib/daily-carousel-card.ts"; // #6095
@@ -945,6 +946,49 @@ describe("waitForContainerReady (#3995)", () => {
     try {
       await waitForContainerReady("cid5", "token", "v1.0", async () => {});
       assert.equal(call, 2, "1ª tentativa falhou de rede, 2ª teve sucesso");
+    } finally {
+      global.fetch = ORIGINAL_FETCH;
+    }
+  });
+
+  it("NUNCA põe o access token na query string — vai no header Authorization (#7779)", async () => {
+    let capturedUrl: string | undefined;
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      capturedUrl = typeof url === "string" ? url : url.toString();
+      capturedInit = init;
+      return { ok: true, json: async () => ({ status: "FINISHED" }) } as Response;
+    }) as typeof fetch;
+    try {
+      await waitForContainerReady("cid6", "token-secreto-123", "v1.0", async () => {});
+      assert.ok(!(capturedUrl ?? "").includes("token-secreto-123"), "token vazou na URL");
+      assert.ok(!(capturedUrl ?? "").includes("access_token"), "query string ainda tem access_token");
+      const headers = capturedInit?.headers as Record<string, string> | undefined;
+      assert.equal(headers?.Authorization, "Bearer token-secreto-123");
+    } finally {
+      global.fetch = ORIGINAL_FETCH;
+    }
+  });
+});
+
+describe("fetchThreadsPermalink (#7779 — token no header, não na query string)", () => {
+  const ORIGINAL_FETCH = global.fetch;
+
+  it("NUNCA põe o access token na query string — vai no header Authorization", async () => {
+    let capturedUrl: string | undefined;
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      capturedUrl = typeof url === "string" ? url : url.toString();
+      capturedInit = init;
+      return { ok: true, json: async () => ({ permalink: "https://threads.net/p/abc" }) } as Response;
+    }) as typeof fetch;
+    try {
+      const permalink = await fetchThreadsPermalink("media1", "token-secreto-456", "v1.0");
+      assert.equal(permalink, "https://threads.net/p/abc");
+      assert.ok(!(capturedUrl ?? "").includes("token-secreto-456"), "token vazou na URL");
+      assert.ok(!(capturedUrl ?? "").includes("access_token"), "query string ainda tem access_token");
+      const headers = capturedInit?.headers as Record<string, string> | undefined;
+      assert.equal(headers?.Authorization, "Bearer token-secreto-456");
     } finally {
       global.fetch = ORIGINAL_FETCH;
     }
