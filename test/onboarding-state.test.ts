@@ -56,6 +56,25 @@ function entry(over: Partial<OnboardingEntry> = {}): OnboardingEntry {
   };
 }
 
+/** epoch seg → ISO, o formato real de `email1_sent_at`. */
+function iso(sec: number): string {
+  return new Date(sec * 1000).toISOString();
+}
+
+/**
+ * Entrada JÁ CONFIRMADA: `email1_sent_at` preenchido, que desde o #7723 é a
+ * âncora de D+3/D+10 (`reguaAnchorSec`). `confirmedAtSec` default = T0, então
+ * `confirmed()` se comporta como o `entry()` de antes, quando a régua contava
+ * de `created_at`.
+ *
+ * Fixtures anteriores usavam `email1_sent_at: "x"` — bastava ser não-nulo,
+ * porque só a nulidade era consultada. Agora o valor é PARSEADO, e "x" vira
+ * `NaN` → sem âncora → régua parada. Placeholder não serve mais.
+ */
+function confirmed(over: Partial<OnboardingEntry> = {}, confirmedAtSec = T0): OnboardingEntry {
+  return entry({ email1_sent_at: iso(confirmedAtSec), ...over });
+}
+
 function sendableSnippet(numero: 1 | 2 | 3): OnboardingSnippet {
   return { numero, assunto: `Assunto ${numero}`, previewText: "preview", body: "<p>corpo</p>", hasPendingMarker: false };
 }
@@ -128,25 +147,49 @@ describe("classifyNewSubscribers", () => {
 
 describe("dueForEmail2 / ageDays", () => {
   it("D+3 exato vence; D+2 não", () => {
-    const e = entry();
+    const e = confirmed();
     assert.equal(dueForEmail2(e, T0 + 2 * DAY), false);
     assert.equal(dueForEmail2(e, T0 + 3 * DAY), true);
   });
 
   it("já enviado não vence de novo", () => {
-    const e = entry({ email2_sent_at: new Date(T0 * 1000).toISOString() });
+    const e = confirmed({ email2_sent_at: new Date(T0 * 1000).toISOString() });
     assert.equal(dueForEmail2(e, T0 + 10 * DAY), false);
   });
 
-  it("independe do email1 (falha de um toque não trava a escada)", () => {
-    const e = entry(); // email1 nunca saiu
-    assert.equal(dueForEmail2(e, T0 + 4 * DAY), true);
+  // #7723 INVERTE a premissa do #5908 ("não exige email1 — falha de um toque
+  // não trava a escada"). Aquela premissa nasceu quando todo cadastro era
+  // `active` e `email1_sent_at == null` só podia significar "o envio falhou".
+  // Com o double opt-in ligado significa, quase sempre, "a pessoa não
+  // confirmou" — e mandar o toque 2 pra quem não confirmou atravessa a
+  // fronteira que o DOI existe pra proteger.
+  it("SEM email1 a régua não anda — quem não confirmou nunca recebe o e-mail 2 (#7723)", () => {
+    const e = entry(); // email1 nunca saiu ⇒ não confirmou
+    assert.equal(dueForEmail2(e, T0 + 4 * DAY), false);
+    assert.equal(dueForEmail2(e, T0 + 90 * DAY), false, "nem depois de muito tempo");
+    assert.equal(ageDays(e, T0 + 4 * DAY), null, "sem âncora não há idade de régua");
   });
 
-  it("created_at null → nunca vence; ageDays null", () => {
-    const e = entry({ created_at: null });
+  it("D+3 conta da CONFIRMAÇÃO, não do cadastro (#7723)", () => {
+    // Cadastrou em T0, confirmou 5 dias depois.
+    const e = confirmed({ created_at: T0 }, T0 + 5 * DAY);
+    // D+3 contado do CADASTRO já teria vencido aqui — não pode vencer.
+    assert.equal(dueForEmail2(e, T0 + 4 * DAY), false, "não pode vencer antes da confirmação");
+    assert.equal(dueForEmail2(e, T0 + 7 * DAY), false, "D+2 desde a confirmação ainda não");
+    assert.equal(dueForEmail2(e, T0 + 8 * DAY), true, "D+3 desde a confirmação vence");
+    assert.equal(ageDays(e, T0 + 8 * DAY), 3, "idade é medida da confirmação");
+  });
+
+  it("email1_sent_at ilegível → sem âncora, régua parada (não cai em created_at)", () => {
+    const e = entry({ email1_sent_at: "x", created_at: T0 });
     assert.equal(dueForEmail2(e, T0 + 30 * DAY), false);
     assert.equal(ageDays(e, T0 + 30 * DAY), null);
+  });
+
+  it("created_at null não impede a régua quando houve confirmação", () => {
+    const e = confirmed({ created_at: null });
+    assert.equal(dueForEmail2(e, T0 + 3 * DAY), true);
+    assert.equal(ageDays(e, T0 + 3 * DAY), 3);
   });
 });
 
@@ -159,7 +202,7 @@ function reasonOf(d: ReturnType<typeof email3Eligibility>): string | undefined {
 
 describe("email3Eligibility (#7599: condição invertida — pedido de apoio pra quem já leu)", () => {
   it("D+10 com pelo menos 1 abertura → elegível", () => {
-    const e = entry();
+    const e = confirmed();
     const d = email3Eligibility(e, { total_unique_opened: 1, total_clicked: 0 }, T0 + 10 * DAY);
     assert.deepEqual(d, { eligible: true });
     // Cliques deixaram de fazer parte do critério — só abertura importa.
@@ -168,13 +211,13 @@ describe("email3Eligibility (#7599: condição invertida — pedido de apoio pra
   });
 
   it("zero abertura em D+10 → inelegível com reason sem_abertura (terminal — nunca recebe e-mail 3)", () => {
-    const e = entry();
+    const e = confirmed();
     const semAbertura = email3Eligibility(e, { total_unique_opened: 0, total_clicked: 3 }, T0 + 10 * DAY);
     assert.deepEqual(semAbertura, { eligible: false, reason: "sem_abertura" });
   });
 
   it("stats ausentes (total_unique_opened null/ausente) → NUNCA elegível (fail-safe)", () => {
-    const e = entry();
+    const e = confirmed();
     assert.equal(email3Eligibility(e, null, T0 + 30 * DAY).eligible, false);
     assert.equal(reasonOf(email3Eligibility(e, null, T0 + 30 * DAY)), "stats_ausentes");
     assert.equal(
@@ -184,9 +227,9 @@ describe("email3Eligibility (#7599: condição invertida — pedido de apoio pra
   });
 
   it("antes do D+10 e já decidido → reasons corretos", () => {
-    const e = entry();
+    const e = confirmed();
     assert.equal(reasonOf(email3Eligibility(e, { total_unique_opened: 1, total_clicked: 0 }, T0 + 9 * DAY)), "age<min");
-    const decidido = entry({ email3_state: "skipped_no_open" });
+    const decidido = confirmed({ email3_state: "skipped_no_open" });
     assert.equal(reasonOf(email3Eligibility(decidido, null, T0 + 30 * DAY)), "ja_decidido");
   });
 });
@@ -212,8 +255,8 @@ describe("buildRunPlan — cenário-carro de segurança (#5908)", () => {
   it("GUARD DURO: snippets pendentes ⇒ ZERO ações, só skips corpo_pendente", () => {
     const entries = [
       entry({ subscription_id: "novo" }), // detectado agora, active
-      entry({ subscription_id: "d3", email1_sent_at: "x", created_at: T0 - 4 * DAY }),
-      entry({ subscription_id: "d10", email1_sent_at: "x", email2_sent_at: "x", created_at: T0 - 12 * DAY }),
+      entry({ subscription_id: "d3", email1_sent_at: iso(T0 - 4 * DAY) }),
+      entry({ subscription_id: "d10", email1_sent_at: iso(T0 - 12 * DAY), email2_sent_at: "x" }),
     ];
     const r = buildRunPlan({ entries, statsById: {}, ...PLAN_DEFAULTS, snippets: planSnippets(true) });
     assert.equal(r.actions.length, 0, "nenhuma ação pode existir com corpo pendente");
@@ -224,14 +267,13 @@ describe("buildRunPlan — cenário-carro de segurança (#5908)", () => {
   it("plano completo com snippets ok: email1 novo + email2 D+3 + UMA campanha pro cohort D+10 QUE ABRIU (#7599)", () => {
     const entries = [
       entry({ subscription_id: "novo" }),
-      entry({ subscription_id: "d3", email1_sent_at: "x", created_at: T0 - 4 * DAY }),
-      entry({ subscription_id: "d10a", email1_sent_at: "x", email2_sent_at: "x", created_at: T0 - 12 * DAY }),
-      entry({ subscription_id: "d10b", email1_sent_at: "x", email2_sent_at: "x", created_at: T0 - 13 * DAY }),
+      entry({ subscription_id: "d3", email1_sent_at: iso(T0 - 4 * DAY) }),
+      entry({ subscription_id: "d10a", email1_sent_at: iso(T0 - 12 * DAY), email2_sent_at: "x" }),
+      entry({ subscription_id: "d10b", email1_sent_at: iso(T0 - 13 * DAY), email2_sent_at: "x" }),
       entry({
         subscription_id: "sem_abertura",
-        email1_sent_at: "x",
+        email1_sent_at: iso(T0 - 12 * DAY),
         email2_sent_at: "x",
-        created_at: T0 - 12 * DAY,
         email3_state: "pending",
       }),
     ];
@@ -262,7 +304,7 @@ describe("buildRunPlan — cenário-carro de segurança (#5908)", () => {
   it("status ≠ active NUNCA recebe email1 nem email2 (skip status_nao_active)", () => {
     const entries = [
       entry({ subscription_id: "pendente", status_detectado: "pending" }),
-      entry({ subscription_id: "d3-pending", email1_sent_at: "x", status_detectado: "pending", created_at: T0 - 9 * DAY }),
+      entry({ subscription_id: "d3-pending", email1_sent_at: iso(T0 - 9 * DAY), status_detectado: "pending" }),
     ];
     const r = buildRunPlan({ entries, statsById: {}, ...PLAN_DEFAULTS, snippets: planSnippets(false) });
     assert.equal(r.actions.filter((a) => a.kind !== "email3_campaign").length, 0);
@@ -272,15 +314,13 @@ describe("buildRunPlan — cenário-carro de segurança (#5908)", () => {
   it("stats ausentes pós-tolerância → skipped_sem_dados; dentro da tolerância fica pendente", () => {
     const fora = entry({
       subscription_id: "fora",
-      email1_sent_at: "x",
+      email1_sent_at: iso(T0 - (10 + 8) * DAY), // confirmou há muito: além do grace de 7
       email2_sent_at: "x",
-      created_at: T0 - (10 + 8) * DAY, // além do grace de 7
     });
     const dentro = entry({
       subscription_id: "dentro",
-      email1_sent_at: "x",
+      email1_sent_at: iso(T0 - 3 * DAY), // idade = 14d: passou do D+10, dentro do grace até D+17
       email2_sent_at: "x",
-      created_at: T0 - 3 * DAY, // idade = 14d: passou do D+10, dentro do grace até D+17
     });
     const r = buildRunPlan({
       entries: [fora, dentro],
