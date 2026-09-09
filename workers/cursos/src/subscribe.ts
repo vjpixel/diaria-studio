@@ -20,6 +20,7 @@ import { CURSOS_ALARM_COUNTER_KEYS, incrementKvCounter } from "../../../scripts/
 import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 import { isAllowedClientUtmSource } from "../../../scripts/lib/shared/client-utm-allowlist.ts"; // #7535 (Camada 1)
+import { resolveKitCreateState, vincularKitDoiForm } from "../../../scripts/lib/shared/kit-doi.ts"; // #7723
 import { issueSessionCookie } from "./cookie.ts";
 
 export const SUBSCRIBE_RATE_LIMIT = 5;
@@ -237,9 +238,17 @@ async function subscribeToKit(
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
   applyKitSignupOriginField(fields, env);
 
+  // #7723: double opt-in. O assinante nasce `inactive` e o VÍNCULO ao designer
+  // form (abaixo, pós-criação) é o que dispara o e-mail de confirmação.
+  // `resolveKitCreateState` devolve "active" — sem DOI — quando o worker está
+  // fora do rollout OU quando o form configurado é inutilizável: criar
+  // `inactive` sem caminho de confirmação prende o assinante para sempre
+  // (#6565), que é pior que não ter DOI.
+  const createState = resolveKitCreateState(env.KIT_DOI_FORM_ID, "cursos");
+
   const body: Record<string, unknown> = {
     email_address: input.email,
-    state: "active",
+    state: createState,
   };
   if (Object.keys(fields).length > 0) body.fields = fields;
 
@@ -256,7 +265,33 @@ async function subscribeToKit(
   }
   // 200 (upsert de e-mail já existente) e 201 (criação) são ambos sucesso —
   // mesma idempotência documentada em subscribeToKit do worker poll.
-  if (res.ok) return { ok: true, status: res.status, beehiivStatus: "active" };
+  if (res.ok) {
+    // #7723: só vincula quando o assinante de fato nasceu `inactive` por este
+    // caminho — nunca quando `createState === "active"` (worker fora do
+    // rollout, ou form inutilizável), mesmo com KIT_DOI_FORM_ID configurado
+    // por engano. Best-effort: nunca falha a assinatura.
+    if (createState === "inactive") {
+      const criado = await res.clone().json().catch(() => undefined) as { subscriber?: { id?: number } } | undefined;
+      const subscriberId = criado?.subscriber?.id;
+      if (typeof subscriberId === "number") {
+        await vincularKitDoiForm({
+          apiKey,
+          base,
+          formId: env.KIT_DOI_FORM_ID,
+          subscriberId,
+          referrer: `https://cursos.diar.ia.br/?utm_source=${encodeURIComponent(CURSOS_UTM_SOURCE)}&utm_medium=${encodeURIComponent(CURSOS_UTM_MEDIUM)}&utm_campaign=${encodeURIComponent(CURSOS_UTM_CAMPAIGN)}`,
+          fetchImpl,
+          log: (m) => console.error(`[cursos] ${m}`),
+        });
+      } else {
+        console.error(
+          `[cursos] #7723: resposta ${res.status} sem subscriber.id — não foi possível vincular ao form DOI ` +
+          `(e-mail de confirmação NÃO disparado; assinante fica inactive até alguém vincular à mão).`,
+        );
+      }
+    }
+    return { ok: true, status: res.status, beehiivStatus: createState };
+  }
   // #6048 (achado ao vivo no worker poll, 25/08/2026): branch de erro não-2xx
   // era o único ponto silencioso aqui (o catch de exceção já logava) — foi
   // exatamente esse tipo de silêncio que escondeu um KIT_API_KEY inválido.

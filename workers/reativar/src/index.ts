@@ -18,16 +18,24 @@
  * nunca colidem porque `evaluate-brevo-diaria.ts` checa auto-confirmação
  * Beehiiv ANTES de avaliar score).
  *
- * ## Sem assinatura HMAC — risco aceito (mesmo perfil do link de /vote)
+ * ## Sem assinatura HMAC — risco FECHADO pelo double opt-in (#7723)
  *
- * Qualquer terceiro que descubra o padrão da URL pode "confirmar" um
- * e-mail alheio sem prova de posse da caixa de entrada. Risco aceito, mesmo
- * racional da decisão #1186: o pior caso é a pessoa passar a RECEBER a
- * newsletter (efeito equivalente a ela mesma confirmando o double opt-in da
- * Beehiiv por conta própria), não um vazamento de dado nem uma ação
- * destrutiva/irreversível — reverter é 1 clique de unsubscribe. Sem
- * KV/rate-limit por IP nesta 1ª versão: volume esperado é baixo (o link só
- * chega a quem já recebe o e-mail via Brevo, população cap 300).
+ * A URL não é assinada, então qualquer terceiro que descubra o padrão pode
+ * chamá-la com e-mail alheio, sem prova de posse da caixa. De 260802 até
+ * 09/09/2026 isso foi RISCO ACEITO (racional da #1186: o pior caso é a pessoa
+ * passar a RECEBER a newsletter, não vazamento nem ação destrutiva; reverter
+ * é 1 clique de unsubscribe; volume baixo, população cap 300).
+ *
+ * O #7723 fechou o risco sem precisar de HMAC. Com o DOI ligado neste worker,
+ * o clique na URL cria/atualiza o assinante como `inactive` e o vincula ao
+ * designer form do Kit — a ativação passa a depender de um clique no e-mail
+ * de confirmação, que só chega ao DONO do endereço. A URL sozinha não ativa
+ * mais ninguém: no pior caso, um terceiro faz o dono receber um e-mail de
+ * confirmação que ele pode simplesmente ignorar.
+ *
+ * O que NÃO mudou: continua sem KV/rate-limit por IP. Chamadas em massa à URL
+ * ainda geram e-mails de confirmação não solicitados — é abuso de envio, não
+ * mais ativação indevida. Se o volume aparecer, é aí que o rate-limit entra.
  *
  * ## Verificação ao vivo (#4476 item 3) — CONFIRMADA em 260802
  *
@@ -95,6 +103,7 @@ import { unlinkFromBrevoListShared } from "../../../scripts/lib/shared/brevo-lis
 import { buildOrigemOriginalCustomFields } from "../../../scripts/lib/shared/beehiiv-origem-original.ts"; // #5231
 import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
+import { resolveKitCreateState, vincularKitDoiForm } from "../../../scripts/lib/shared/kit-doi.ts"; // #7723
 
 export interface Env {
   /** Secret — `wrangler secret put BEEHIIV_API_KEY`. Sem ela, 503 amigável. */
@@ -161,6 +170,11 @@ export interface Env {
   KIT_API_KEY?: string;
   /** Override só pra teste (mock server local) — default `https://api.kit.com/v4`. */
   KIT_API_URL?: string;
+  /** #7723: designer form do Kit com "Send confirmation email" ligado. É o
+   * VÍNCULO a ele que dispara o e-mail de confirmação. Aqui ele fecha o risco
+   * do link sem HMAC descrito no topo deste arquivo: sem o clique de
+   * confirmação, a URL sozinha não ativa mais ninguém. VAR, não secret. */
+  KIT_DOI_FORM_ID?: string;
   /** Nomes dos custom fields Kit onde gravar UTM/referring-site de reativação
    * (Kit não tem atribuição nativa — achado ao vivo #6048) — nenhum criado
    * em produção ainda, degrade gracioso. */
@@ -661,7 +675,18 @@ export async function activateSubscriptionKit(
   // #6127) e o log estruturado que sinaliza quando isso acontece.
   applyKitSignupOriginField(fields, env);
 
-  const postBody: Record<string, unknown> = { email_address: email, state: "active" };
+  // #7723: double opt-in também aqui — e neste worker ele não é só
+  // conformidade, é o conserto de um risco DOCUMENTADO E ACEITO no topo deste
+  // arquivo: o link de reativação não tem assinatura HMAC, então qualquer
+  // terceiro que descubra o padrão da URL pode "confirmar" e-mail alheio sem
+  // prova de posse da caixa. Em agosto/2026 o risco foi aceito por falta de
+  // alternativa barata ("o pior caso é a pessoa passar a RECEBER"). O DOI é
+  // essa alternativa: criar `inactive` + vincular ao form faz a ativação
+  // depender de um clique no e-mail que só chega ao dono do endereço. O link
+  // sem HMAC deixa de ativar ninguém sozinho.
+  const createState = resolveKitCreateState(env.KIT_DOI_FORM_ID, "reativar");
+
+  const postBody: Record<string, unknown> = { email_address: email, state: createState };
   if (Object.keys(fields).length > 0) postBody.fields = fields;
 
   let res: Response;
@@ -686,10 +711,39 @@ export async function activateSubscriptionKit(
     return { ok: false, status: res.status, reason: "beehiiv_error" };
   }
 
-  // Kit sempre confirma `state: "active"` na resposta quando o POST manda
-  // `state: "active"` (achado ao vivo #6048, Fase 1) — sem o estado
-  // transitório "validating" que a Beehiiv tem, então sem retry necessário.
-  return { ok: true, status: res.status, beehiivStatus: "active" };
+  // #7723: vincula ao designer form — é o vínculo que dispara o e-mail de
+  // confirmação. Só quando o assinante nasceu `inactive` por este caminho.
+  // Best-effort: nunca falha a reativação.
+  if (createState === "inactive") {
+    const criado = await res.clone().json().catch(() => undefined) as { subscriber?: { id?: number } } | undefined;
+    const subscriberId = criado?.subscriber?.id;
+    if (typeof subscriberId === "number") {
+      await vincularKitDoiForm({
+        apiKey,
+        base,
+        formId: env.KIT_DOI_FORM_ID,
+        subscriberId,
+        referrer: `https://reativar.diar.ia.br/?utm_source=${encodeURIComponent(BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source)}&utm_medium=${encodeURIComponent(BREVO_DIARIA_REATIVAR_CLIQUE_UTM.medium)}&utm_campaign=${encodeURIComponent(BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign)}`,
+        fetchImpl,
+        timeoutMs: ACTIVATE_FETCH_TIMEOUT_MS,
+        log: (m) => console.error(JSON.stringify({ event: "reativar_kit_doi_link_failed", detail: m })),
+      });
+    } else {
+      console.error(
+        JSON.stringify({
+          event: "reativar_kit_doi_sem_subscriber_id",
+          status: res.status,
+          detail: "não foi possível vincular ao form DOI — e-mail de confirmação NÃO disparado; assinante fica inactive",
+        }),
+      );
+    }
+  }
+
+  // Kit confirma na resposta o `state` que o POST mandou (achado ao vivo
+  // #6048, Fase 1) — sem o estado transitório "validating" da Beehiiv, então
+  // sem retry necessário. Com DOI, esse estado é `inactive` até a pessoa
+  // confirmar: o retorno reflete isso em vez de afirmar "active".
+  return { ok: true, status: res.status, beehiivStatus: createState };
 }
 
 // ── HTML (puro) ───────────────────────────────────────────────────────────
