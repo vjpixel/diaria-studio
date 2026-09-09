@@ -369,13 +369,37 @@ export interface SessionRecord {
    * "idade desconhecida", nunca como "acabou de reivindicar".
    */
   claimed_issues_at?: Record<string, string>;
-  /** Branch atual do checkout desta sessão (#6168 Parte A). Lido de
-   * `.git/HEAD` pelo beacon — sem subprocesso. É o campo que responde "a
-   * branch ainda é minha?" antes de um `git commit` (evidência 5 da issue:
-   * outra sessão fez `checkout master` no meio, o commit caiu em master, e
-   * `commit`/`push` reportaram sucesso). */
+  /** Branch atual do checkout ONDE O HOOK MORA (#6168 Parte A) — nunca a
+   * branch de um worktree que a sessão só visitou via `cd` numa chamada de
+   * Bash. Lido de `.git/HEAD` pelo beacon — sem subprocesso. É o campo que
+   * responde "a branch ainda é minha?" antes de um `git commit` (evidência 5
+   * da issue: outra sessão fez `checkout master` no meio, o commit caiu em
+   * master, e `commit`/`push` reportaram sucesso).
+   *
+   * **#7722 — sessão que opera em worktrees via `cd` por chamada (o padrão
+   * deste projeto: coordenadora rodando no checkout principal, `cd
+   * <worktree> && …` dentro de CADA Bash) nunca vê essa realidade refletida
+   * aqui.** Três sessões `overnight`/`develop`/`continuo` concorrentes, cada
+   * uma num worktree com branch diferente, publicam TODAS a mesma `branch`
+   * (a do checkout principal onde o hook do beacon mora) — comparar `branch`
+   * entre peers pra decidir "quem está em qual branch" é enganoso nesse
+   * caso. Usar `worktrees` (abaixo) pra saber, com precisão, qual branch
+   * está em qual worktree AGORA. */
   branch?: string;
-  /** Worktrees abertos por esta sessão (#6168 Parte A). */
+  /** Todos os worktrees ATIVOS do repo (não só os desta sessão, apesar do
+   * nome — #6168 Parte A criou o campo como "worktrees abertos por esta
+   * sessão", mas nunca foi populado; #7722 item 2 o populou como foto global
+   * do `git worktree list`, mais útil dado que nenhuma sessão tem cwd
+   * estável e MÚLTIPLAS sessões concorrentes leem/escrevem o mesmo
+   * `.git/worktrees/`). Escrito pelo beacon (`resolveWorktreeBranches` em
+   * `.claude/hooks/session-beacon.mjs`, sem spawnar processo — lê
+   * `.git/worktrees/<nome>/{HEAD,gitdir}` diretamente), re-derivado do disco
+   * a cada write (nunca faz merge com o `worktrees` anterior — sempre a foto
+   * fresca). Consumido por `selectInUseWorktreeNames`
+   * (`scripts/cleanup-merged-worktrees.ts`) pra proteger, por branch, um
+   * worktree externo (fora de `.claude/worktrees/`) de limpeza enquanto
+   * alguma sessão está viva — o `branch` singular acima não bastava pra isso
+   * (ver seu docblock). */
   worktrees?: WorktreeRef[];
   /** Caminhos tocados nesta sessão, com teto (`TOUCHED_PATHS_CAP`) — colapsa
    * pra prefixo de diretório quando estoura. */

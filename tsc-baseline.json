@@ -258,6 +258,7 @@
   "test/serve-preview.test.ts::TS2352": 1,
   "test/session-beacon-blast-radius.test.ts::TS7016": 2,
   "test/session-beacon-hook.test.ts::TS7016": 1,
+  "test/session-beacon-worktree-list.test.ts::TS7016": 1,
   "test/session-conflicts-and-merge-grant.test.ts::TS7016": 2,
   "test/session-registry-7743-regression.test.ts::TS7016": 1,
   "test/session-transcript.test.ts::TS2339": 1,

@@ -709,6 +709,16 @@ export function selectInUseWorktreeNames(
     const paths = [...(s.touched_paths ?? []), ...(s.dirty_paths ?? [])];
     for (const name of extractWorktreeNamesFromPaths(paths)) names.add(name);
     if (s.branch) branches.add(s.branch);
+    // #7722 item 2 — `s.branch` sozinho só reflete o checkout onde o beacon
+    // mora (o principal), nunca a branch de um worktree onde a sessão só
+    // `cd`ou. `s.worktrees` (populado pelo beacon via `resolveWorktreeBranches`,
+    // ver docstring em session-registry.ts) é a foto real de TODOS os
+    // worktrees ativos — protege por branch (e por nome, quando cai sob
+    // `.claude/worktrees/`) o worktree externo que `s.branch` nunca cobria.
+    for (const wt of s.worktrees ?? []) {
+      if (wt.branch) branches.add(wt.branch);
+      if (wt.path) names.add(worktreeNameFromPath(wt.path));
+    }
   }
   return { names, branches };
 }
