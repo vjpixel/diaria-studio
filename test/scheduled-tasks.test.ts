@@ -1322,3 +1322,47 @@ describe("#6802 — Diaria-Branch-Cleanup registrada, diária, isolada da Diaria
     assert.ok(!others.some((s) => s.script === "scripts/branch-cleanup.ts"));
   });
 });
+
+describe("#7665 — Diaria-Onboarding-Continuity-Alarm registrada, diária, systemd-only, NÃO armada", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária às 09:10", () => {
+    const t = getScheduledTaskByName("Diaria-Onboarding-Continuity-Alarm");
+    assert.ok(t, "Diaria-Onboarding-Continuity-Alarm ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/onboarding-continuity-alarm.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 9, minute: 10 });
+    assert.equal(t!.issue, "#7665");
+  });
+
+  it("horário de 09:10 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Onboarding-Continuity-Alarm" && t.schedule.hour === 9 && t.schedule.minute === 10,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("roda DEPOIS de Diaria-Onboarding-Welcome-Run (09:05) — tempo do run persistir o streak antes de ler", () => {
+    const alarm = getScheduledTaskByName("Diaria-Onboarding-Continuity-Alarm")!;
+    const welcomeRun = getScheduledTaskByName("Diaria-Onboarding-Welcome-Run")!;
+    assert.ok(alarm.schedule.kind === "daily" && welcomeRun.schedule.kind === "daily");
+    const alarmMinutes = (alarm.schedule as { hour: number; minute: number }).hour * 60 + (alarm.schedule as { minute: number }).minute;
+    const welcomeMinutes =
+      (welcomeRun.schedule as { hour: number; minute: number }).hour * 60 + (welcomeRun.schedule as { minute: number }).minute;
+    assert.ok(alarmMinutes > welcomeMinutes, "Diaria-Onboarding-Continuity-Alarm precisa rodar depois de Diaria-Onboarding-Welcome-Run");
+  });
+
+  it("guard.requiredFile aponta pro mesmo store.json das tasks-irmãs de onboarding", () => {
+    const t = getScheduledTaskByName("Diaria-Onboarding-Continuity-Alarm")!;
+    assert.equal(t.guard?.requiredFile, "onboarding/store.json");
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const others = SCHEDULED_TASKS.filter((t) => t.name !== "Diaria-Onboarding-Continuity-Alarm").flatMap((t) => t.steps);
+    assert.ok(!others.some((s) => s.script === "scripts/onboarding-continuity-alarm.ts"));
+  });
+});
