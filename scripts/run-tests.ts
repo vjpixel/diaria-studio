@@ -329,7 +329,7 @@ const ERR_MODULE_NOT_FOUND_RE = /ERR_MODULE_NOT_FOUND/;
  *  "ENOENT" ou nomes de arquivo `.test.ts` fora desse formato exato
  *  (checado contra a suíte inteira antes de aplicar: nenhum teste hoje
  *  produz essa frase completa como fixture). */
-const VANISHED_TEST_FILE_RE = /ENOENT:\s*no such file or directory,\s*open\s+'[^']*\.test\.ts'/;
+const VANISHED_TEST_FILE_RE = /ENOENT:\s*no such file or directory,\s*open\s+'([^']*\.test\.ts)'/;
 
 /** Casa a linha de sumário final do `node:test` — reporter `spec` (local,
  *  TTY) usa prefixo `ℹ`; reporter `tap` (CI, sem TTY) usa `#`. Pega a
@@ -790,7 +790,7 @@ export function processChunkedBatches(
         // VANISHED_TEST_FILE_RE.
         const culprit =
           /Cannot find module '?([^'\s]+)'?/.exec(combined)?.[1] ??
-          /ENOENT:\s*no such file or directory,\s*open\s+'([^']*\.test\.ts)'/.exec(combined)?.[1] ??
+          VANISHED_TEST_FILE_RE.exec(combined)?.[1] ??
           "(arquivo não identificado no output)";
         stderr.write(
           `\nRUN_TESTS_MODULE_FLAKE batch=${label} arquivos=${batch.length} modulo=${culprit}\n` +
