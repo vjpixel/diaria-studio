@@ -61,13 +61,14 @@ const WORKERS_DIR = resolve(ROOT, "workers");
  * conferir/atualizar deliberadamente, nunca silencioso.
  */
 const EXPECTED_HOSTS = [
-  "anual:anual.diar.ia.br",
   "arquivo:arquivo.diar.ia.br",
-  "artigo-mensal:artigo.diar.ia.br",
   "artigos:especial.diar.ia.br",
   "cursos:cursos.diar.ia.br",
   "livros:livros.diar.ia.br",
   "poll:eia.diar.ia.br",
+  "retrospectiva:anual.diar.ia.br",
+  "retrospectiva:artigo.diar.ia.br",
+  "retrospectiva:retrospectiva.diar.ia.br",
 ].sort();
 
 describe("guard: todo Worker com host público (custom_domain) tem /robots.txt próprio (#4777)", () => {
