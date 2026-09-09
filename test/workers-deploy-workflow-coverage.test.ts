@@ -49,9 +49,10 @@ import { discoverWorkers } from "../scripts/worker-drift-check.ts";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WORKFLOWS_DIR = resolve(ROOT, ".github", "workflows");
 
-function readWorkflowContents(): string[] {
-  return readWorkflowFiles().map((f) => f.content);
-}
+// #7769: `readWorkflowContents()` (só o conteúdo, descartando o nome do
+// arquivo) foi removido — o único caller passou a precisar dos NOMES para o
+// inventário na mensagem de falha, e manter o wrapper deixaria uma função
+// órfã que o check de código não usado (knip) acusaria.
 
 function readWorkflowFiles(): { name: string; content: string }[] {
   const files = readdirSync(WORKFLOWS_DIR).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"));
@@ -85,7 +86,8 @@ describe("cobertura de deploy workflow por worker (#5337)", () => {
     const workers = discoverWorkers();
     assert.ok(workers.length > 0, "discoverWorkers() não encontrou nenhum worker — algo está errado na varredura");
 
-    const workflowContents = readWorkflowContents();
+    const workflowFiles = readWorkflowFiles();
+    const workflowContents = workflowFiles.map((f) => f.content);
 
     const missing: string[] = [];
     for (const worker of workers) {
@@ -99,7 +101,15 @@ describe("cobertura de deploy workflow por worker (#5337)", () => {
       [],
       `worker(s) sem workflow de deploy correspondente em .github/workflows/: ${missing.join(", ")} — ` +
         "criar um deploy-{worker}.yml espelhando deploy-poll.yml/deploy-reativar.yml (push em master " +
-        `tocando "workers/{worker}/**" + workflow_dispatch).`,
+        `tocando "workers/{worker}/**" + workflow_dispatch).\n` +
+        // #7769: a mensagem dizia o que FALTA e nunca o que foi VISTO, o que
+        // torna impossível distinguir "esqueci de criar o workflow" (o caso
+        // que o guard existe pra pegar) de "criei e o ambiente não está
+        // enxergando" — cenário real: este guard passou local, em execução
+        // isolada e em suíte completa, e falhou só no CI, com o arquivo
+        // comprovadamente presente na árvore do commit testado. Sem o
+        // inventário abaixo não há como decidir entre os dois de fora.
+        `workflows lidos de ${WORKFLOWS_DIR} (${workflowFiles.length}): ${workflowFiles.map((f) => f.name).join(", ")}`,
     );
   });
 
