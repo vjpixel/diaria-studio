@@ -285,6 +285,148 @@ export function latestExecutionBlockFor(
   );
 }
 
+// ─── Adiamento de ação imediata (#7708) ────────────────────────────────────
+
+/**
+ * #7708 — o editor foi convidado a executar uma ação que destravaria a issue
+ * AGORA (reiniciar uma unit caída, recarregar uma conta, colar uma chave) e
+ * disse "agora não".
+ *
+ * Existe puramente como ANTI-FADIGA, e sem ele a feature que o cria não pode
+ * ser mergeada. `/diaria-desbloqueia` passa a varrer `bloqueada` +
+ * `fora-de-rodada`, o que na medição de 09/09/2026 dava 6 + 18 = 24
+ * candidatas — 16 delas alarmes de estado. Sem memória de "já perguntei e
+ * ele adiou", cada rodada da skill despejaria as mesmas ~22 perguntas, e
+ * duas rodadas bastariam pra o editor parar de rodar a skill. É o mesmo
+ * princípio de `IssueDecision` (#5373) — julgamento feito uma vez por quem
+ * tem contexto, gravado de forma durável, lido depois — aplicado ao "não
+ * agora" em vez de ao "é assim que se faz".
+ *
+ * Diferente de `ExecutionBlock`: aquele registra o que impede a execução
+ * (fato sobre o mundo); este registra que já pedimos e o editor declinou
+ * (fato sobre a conversa). Uma issue pode ter os dois — o bloqueio segue de
+ * pé E já perguntamos hoje.
+ *
+ * **Expira por tempo, de propósito**, ao contrário dos outros dois
+ * marcadores (que só expiram por evento, #6961). "Agora não" é uma resposta
+ * sobre o INSTANTE, não sobre o mérito: no dia seguinte a mesma ação pode
+ * ser trivial. `ACAO_ADIADA_COOLDOWN_DAYS` é o intervalo em que a pergunta
+ * não se repete.
+ */
+export interface AcaoAdiada {
+  /** ISO 8601 — quando a ação foi pedida e adiada. */
+  pedido_em: string;
+  /** A ação que foi pedida (ex: "reiniciar a unit diaria-reconcile-send-audiences
+   * no helios") — gravada pra a repergunta, depois do cooldown, poder citar o
+   * que já tinha sido pedido em vez de recomeçar do zero. */
+  acao: string;
+  /** Por que o editor adiou, quando ele disse. String vazia = adiou sem
+   * justificar (resposta "agora não" seca), que é legítimo e não deve
+   * inventar motivo. */
+  motivo: string;
+  /** Qual sessão pediu. */
+  sessao: SessionKind;
+}
+
+/**
+ * Janela em que uma ação adiada não é repreguntada. 7 dias (decisão do
+ * editor, #7708): curto o bastante pra uma unit caída não ficar um mês
+ * esquecida, longo o bastante pra a skill poder rodar várias vezes na
+ * mesma semana sem repetir nada.
+ *
+ * Não é o ÚNICO gatilho de repergunta — ver `isAcaoAdiadaAtiva`: um sintoma
+ * novo (marcador de bloqueio mais recente que o adiamento) reabre a
+ * pergunta antes do prazo, porque aí o que se pergunta mudou.
+ */
+export const ACAO_ADIADA_COOLDOWN_DAYS = 7;
+
+const ACAO_ADIADA_MARKER_PREFIX = "<!-- acao-adiada: ";
+const ACAO_ADIADA_MARKER_SUFFIX = " -->";
+
+/** Gera o marcador de ação adiada. Determinístico. */
+export function formatAcaoAdiadaMarker(opts: AcaoAdiada): string {
+  const payload = {
+    pedido_em: opts.pedido_em,
+    acao: opts.acao,
+    motivo: opts.motivo,
+    sessao: opts.sessao,
+  };
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+  return `${ACAO_ADIADA_MARKER_PREFIX}${encoded}${ACAO_ADIADA_MARKER_SUFFIX}`;
+}
+
+function isValidAcaoAdiada(value: unknown): value is AcaoAdiada {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.pedido_em === "string" &&
+    v.pedido_em.length > 0 &&
+    typeof v.acao === "string" &&
+    v.acao.length > 0 &&
+    // `motivo` vazio é VÁLIDO — "agora não" sem justificativa é uma resposta
+    // legítima, e exigir texto aqui empurraria o caller a inventar um.
+    typeof v.motivo === "string" &&
+    (v.sessao === "continuo" || v.sessao === "overnight" || v.sessao === "develop")
+  );
+}
+
+/** Extrai todos os marcadores de ação-adiada válidos. Mesmo contrato
+ * fail-soft de `parseDecisionMarkers`/`parseExecutionBlockMarkers`. */
+export function parseAcaoAdiadaMarkers(commentsBodies: readonly string[]): AcaoAdiada[] {
+  const items: AcaoAdiada[] = [];
+  for (const body of commentsBodies) {
+    if (typeof body !== "string") continue;
+    const start = body.indexOf(ACAO_ADIADA_MARKER_PREFIX);
+    if (start === -1) continue;
+    const encodedStart = start + ACAO_ADIADA_MARKER_PREFIX.length;
+    const end = body.indexOf(ACAO_ADIADA_MARKER_SUFFIX, encodedStart);
+    if (end === -1) continue;
+    const rawEncoded = body.slice(encodedStart, end).trim();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(Buffer.from(rawEncoded, "base64").toString("utf8"));
+    } catch {
+      continue;
+    }
+    if (isValidAcaoAdiada(parsed)) items.push(parsed);
+  }
+  return items;
+}
+
+/** Devolve o adiamento MAIS RECENTE (por `pedido_em`), ou `null`. */
+export function latestAcaoAdiadaFor(commentsBodies: readonly string[]): AcaoAdiada | null {
+  const items = parseAcaoAdiadaMarkers(commentsBodies);
+  if (items.length === 0) return null;
+  return items.reduce((latest, current) => (current.pedido_em > latest.pedido_em ? current : latest));
+}
+
+/**
+ * O adiamento ainda suprime a pergunta? Dois gatilhos INDEPENDENTES de
+ * reabertura, e basta um:
+ *
+ *   1. **Tempo** — passaram `ACAO_ADIADA_COOLDOWN_DAYS` desde `pedido_em`.
+ *   2. **Sintoma novo** — existe um `bloqueio-execucao` gravado DEPOIS do
+ *      adiamento. Aí o que se pergunta mudou: o adiamento respondia ao
+ *      estado antigo, e suprimir com base nele esconderia um fato novo.
+ *
+ * `pedido_em` inválido (não-data) → `false` (não suprime). Fail-open é o
+ * lado certo aqui: na dúvida, perguntar de novo é recuperável; suprimir pra
+ * sempre por causa de um timestamp podre não é.
+ */
+export function isAcaoAdiadaAtiva(
+  adiada: AcaoAdiada | null,
+  opts: { now?: Date; blocoMaisRecente?: ExecutionBlock | null } = {},
+): boolean {
+  if (!adiada) return false;
+  const pedidoEm = new Date(adiada.pedido_em).getTime();
+  if (Number.isNaN(pedidoEm)) return false;
+  const bloco = opts.blocoMaisRecente;
+  if (bloco && bloco.recorded_at > adiada.pedido_em) return false;
+  const now = (opts.now ?? new Date()).getTime();
+  const idadeDias = (now - pedidoEm) / 86_400_000;
+  return idadeDias < ACAO_ADIADA_COOLDOWN_DAYS;
+}
+
 // ─── CLI wrapper (busca via gh, imprime a decisão mais recente ou nada) ────
 
 interface GhComment {

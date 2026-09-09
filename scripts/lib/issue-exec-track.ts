@@ -230,6 +230,27 @@ export interface ExecTrackResult {
 const OUT_OF_ROUND_LABELS = new Set(["on-hold", "wontfix"]);
 
 /**
+ * #7708 — o subconjunto de `fora-de-rodada` que é retirada DELIBERADA de
+ * circulação pelo editor, e não "resolvida por outro mecanismo".
+ *
+ * `/diaria-desbloqueia` passou a varrer `fora-de-rodada` atrás de ações que
+ * o editor pode executar na hora, mas estas duas ficam de fora por default:
+ * `on-hold`/`wontfix` significam "não é 'ainda não', é 'não'", e perguntar
+ * toda rodada sobre uma issue que o editor engavetou de propósito é a
+ * fricção que "Perguntar é exceção" (#5321) existe pra eliminar. As demais
+ * labels de `fora-de-rodada` (`alarm`, `decisao-registrada`,
+ * `sem-direcao-acionavel`) não têm essa semântica — chegaram ali por um
+ * mecanismo automático, não por um veredito de "não fazer".
+ *
+ * É exatamente `OUT_OF_ROUND_LABELS`, exportado sob um nome que diz o
+ * CRITÉRIO (engavetada pelo editor) em vez da consequência (fora de rodada)
+ * — os dois Sets seriam idênticos hoje, mas respondem a perguntas
+ * diferentes, e uma label futura de `fora-de-rodada` automática entraria só
+ * num deles.
+ */
+export const ENGAVETADAS_LABELS: ReadonlySet<string> = OUT_OF_ROUND_LABELS;
+
+/**
  * #6201 item 8 — issue `[ÉPICA]` guarda-chuva: nunca implementada direto,
  * fecha só quando as issues-filhas mergearem (#5968). Checada logo depois
  * de `OUT_OF_ROUND_LABELS` e ANTES de `BLOCKED_LABELS`/`agendada`/deferimento

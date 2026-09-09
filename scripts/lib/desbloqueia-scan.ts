@@ -127,10 +127,18 @@
  * estado de fato mudou, o mecanismo correto é `route-issue.ts --track
  * bloqueada` (que embute um novo marcador), não um comentário em prosa.
  */
-import { classifyExecTrackWithRule, type ExecTrack, type ExecTrackInput } from "./issue-exec-track.ts";
 import {
+  classifyExecTrackWithRule,
+  ENGAVETADAS_LABELS,
+  type ExecTrack,
+  type ExecTrackInput,
+} from "./issue-exec-track.ts";
+import {
+  isAcaoAdiadaAtiva,
+  latestAcaoAdiadaFor,
   latestDecisionFor,
   latestExecutionBlockFor,
+  type AcaoAdiada,
   type ExecutionBlock,
   type IssueDecision,
 } from "./issue-decisions.ts";
@@ -138,9 +146,30 @@ import {
 export type DesbloqueioStatus =
   | "ja-destravada"
   | "bloqueio-confirmado"
+  | "bloqueio-obsoleto"
   | "precisa-pergunta"
   | "sem-sinal-nao-triada"
+  | "acao-imediata-candidata"
+  | "acao-adiada"
   | "erro-leitura";
+
+/**
+ * De qual bucket do backlog a candidata veio. Determina o que "a thread não
+ * tem marcador nenhum" SIGNIFICA — e portanto o que o playbook faz com ela:
+ *
+ *   - `bloqueada`/`develop` — alguém já determinou que há um bloqueio, e a
+ *     thread não diz qual → `precisa-pergunta`.
+ *   - `sem-sinal` (#7694) — ninguém classificou nada → `sem-sinal-nao-triada`,
+ *     que é TRIAGEM, não pergunta.
+ *   - `fora-de-rodada` (#7708) — a issue foi tirada da fila por um mecanismo
+ *     paralelo (alarme de estado, decisão em prosa, sem-direção) e ninguém
+ *     avaliou se existe uma ação do editor que a destrava agora →
+ *     `acao-imediata-candidata`.
+ *
+ * Sem este campo os três colapsariam em `precisa-pergunta`, e a bateria de
+ * `AskUserQuestion` receberia o backlog inteiro.
+ */
+export type DesbloqueioEscopo = "bloqueada" | "develop" | "sem-sinal" | "fora-de-rodada";
 
 export interface DesbloqueioIssueInput {
   number: number;
@@ -162,6 +191,21 @@ export interface DesbloqueioIssueInput {
    * = leitura OK. Presente = `classifyDesbloqueioCandidate` força
    * `erro-leitura`, nunca deixa cair em `precisa-pergunta` por engano. */
   commentsFetchError?: string | null;
+  /**
+   * #7707 — estado da issue apontada por um `bloqueio-execucao` cuja
+   * `condicao.tipo` é `"depends_on"`. Resolvido pelo CALLER (é I/O; este
+   * módulo é puro), `undefined` quando não há dependência a resolver.
+   *
+   * `"missing"` (a issue apontada não existe) NUNCA vira `bloqueio-obsoleto`:
+   * um marcador apontando pra issue inexistente é dado corrompido, e
+   * tratá-lo como "dependência satisfeita" desbloquearia por engano — o
+   * oposto exato do defeito que a #7707 corrige.
+   */
+  dependencyState?: "open" | "closed" | "missing" | null;
+  /** #7708 — `true` quando `on-hold`/`wontfix` também devem ser varridas
+   * (`--incluir-engavetadas`). Default `false`: engavetada pelo editor não
+   * se repergunta a cada rodada. */
+  incluirEngavetadas?: boolean;
   /** Injetável pra teste; default `new Date()`. */
   now?: Date;
 }
@@ -173,13 +217,19 @@ export interface DesbloqueioCandidate {
   /** Regra que decidiu o `track` (`ExecTrackResult.matched`) — o playbook
    * relata o valor MECÂNICO, nunca prosa (guard do Passo 5 da SKILL, #573). */
   matched: string;
-  /** #7694 — `true` quando a candidata veio do bucket `overnight ·sem sinal`
-   * (`track === "overnight" && matched === "default"`): nenhuma label ou
-   * marcador classificou a issue. Muda a AÇÃO do playbook para os mesmos
-   * status — um `bloqueio-confirmado` com `semSinal: true` não é "bloqueio já
-   * conhecido, só revisar", é "bloqueio documentado na thread e label
-   * FALTANDO, rotear pra `bloqueada`". Ver docstring do módulo. */
-  semSinal: boolean;
+  /**
+   * De qual bucket a candidata veio — ver `DesbloqueioEscopo`. Muda a AÇÃO
+   * do playbook mesmo para o MESMO status: um `bloqueio-confirmado` com
+   * escopo `sem-sinal` não é "bloqueio já conhecido, só revisar", é
+   * "bloqueio documentado na thread e label FALTANDO, rotear pra
+   * `bloqueada`" (#7694).
+   */
+  escopo: DesbloqueioEscopo;
+  /** #7708 — o adiamento mais recente na thread, se houver. Preenchido
+   * mesmo quando o cooldown já expirou (`status` deixa de ser
+   * `acao-adiada`): a repergunta cita o que já foi pedido antes em vez de
+   * recomeçar do zero. */
+  acaoAdiada: AcaoAdiada | null;
   status: DesbloqueioStatus;
   decision: IssueDecision | null;
   executionBlock: ExecutionBlock | null;
@@ -195,13 +245,14 @@ export interface DesbloqueioCandidate {
 }
 
 /**
- * Classifica uma issue candidata. Devolve `null` quando ela está fora do
- * escopo desta skill: `agendada`, `epica`, `fora-de-rodada`, e `overnight`
- * **com sinal positivo** (alguém já triou — ver #7694 na docstring do
- * módulo). Ficam dentro: `bloqueada`, `develop`, e `overnight` com
- * `matched: "default"` (o bucket `·sem sinal`).
+ * Resolve de qual bucket a issue veio, ou `null` se ela está fora do escopo
+ * desta skill. Puro — separado de `classifyDesbloqueioCandidate` pra o CLI
+ * poder filtrar na passada 1 (antes de gastar um `gh issue view` por
+ * candidata) usando exatamente a mesma regra que o miolo aplica depois.
  */
-export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): DesbloqueioCandidate | null {
+export function resolveDesbloqueioEscopo(
+  input: Pick<DesbloqueioIssueInput, "labels" | "body" | "state" | "incluirEngavetadas" | "now">,
+): { escopo: DesbloqueioEscopo; track: ExecTrack; matched: string } | null {
   const trackInput: ExecTrackInput = {
     labels: input.labels,
     body: input.body,
@@ -209,8 +260,32 @@ export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): Desb
     now: input.now,
   };
   const { track, matched } = classifyExecTrackWithRule(trackInput);
-  const semSinal = track === "overnight" && matched === "default";
-  if (track !== "bloqueada" && track !== "develop" && !semSinal) return null;
+  if (track === "bloqueada" || track === "develop") return { escopo: track, track, matched };
+  // #7694 — `overnight` só entra pelo bucket `·sem sinal`. Com sinal
+  // positivo (trade-off-real, alarm-evento, triada-overnight) já foi triado.
+  if (track === "overnight" && matched === "default") return { escopo: "sem-sinal", track, matched };
+  if (track === "fora-de-rodada") {
+    // #7708 — `on-hold`/`wontfix` são engavetamento deliberado do editor;
+    // só entram sob pedido explícito. As demais causas de `fora-de-rodada`
+    // (alarme de estado, decisão em prosa, sem-direção) entram sempre.
+    const engavetada = input.labels.some((l) => ENGAVETADAS_LABELS.has(l));
+    if (engavetada && !input.incluirEngavetadas) return null;
+    // Issue FECHADA também classifica `fora-de-rodada` (`state:closed`) e
+    // nunca é candidata a nada — o filtro de escopo é sobre backlog ABERTO.
+    if (matched === "state:closed") return null;
+    return { escopo: "fora-de-rodada", track, matched };
+  }
+  return null;
+}
+
+/**
+ * Classifica uma issue candidata. Devolve `null` quando ela está fora do
+ * escopo desta skill — ver `resolveDesbloqueioEscopo` para a regra exata.
+ */
+export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): DesbloqueioCandidate | null {
+  const escopoInfo = resolveDesbloqueioEscopo(input);
+  if (!escopoInfo) return null;
+  const { escopo, track, matched } = escopoInfo;
 
   if (input.commentsFetchError) {
     return {
@@ -218,7 +293,8 @@ export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): Desb
       title: input.title,
       track,
       matched,
-      semSinal,
+      escopo,
+      acaoAdiada: null,
       status: "erro-leitura",
       decision: null,
       executionBlock: null,
@@ -229,6 +305,11 @@ export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): Desb
 
   const decision = latestDecisionFor(input.comments);
   const executionBlock = latestExecutionBlockFor(input.comments);
+  const acaoAdiada = latestAcaoAdiadaFor(input.comments);
+  const adiamentoSuprime = isAcaoAdiadaAtiva(acaoAdiada, {
+    now: input.now,
+    blocoMaisRecente: executionBlock,
+  });
 
   // #6961: comparação é entre os dois marcadores, nunca contra
   // `input.updatedAt` (ver docstring do módulo — o próprio POST do
@@ -236,27 +317,15 @@ export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): Desb
   // tornando `decided_at >= updatedAt` insatisfazível por construção).
   // Marcador MAIS RECENTE (por `decided_at`/`recorded_at`) vence; empate
   // favorece a decisão (sinal mais forte — resolução explícita do editor).
-  let status: DesbloqueioStatus;
-  if (decision && (!executionBlock || decision.decided_at >= executionBlock.recorded_at)) {
-    status = "ja-destravada";
-  } else if (executionBlock && (!decision || executionBlock.recorded_at > decision.decided_at)) {
-    status = "bloqueio-confirmado";
-  } else {
-    // #7694 — sem marcador nenhum, o destino depende de a issue TER ou não um
-    // sinal de classificação. Com label (`bloqueada`/`develop`): alguém já
-    // determinou que há um bloqueio, e a thread não diz qual → é pergunta.
-    // Sem sinal nenhum: ninguém determinou nada ainda → é TRIAGEM, e mandar
-    // isso pra `AskUserQuestion` transformaria "ninguém olhou" em pergunta
-    // ao editor, contra "Perguntar é exceção" (#5321).
-    status = semSinal ? "sem-sinal-nao-triada" : "precisa-pergunta";
-  }
+  const status = decideStatus({ decision, executionBlock, adiamentoSuprime, escopo, input });
 
   return {
     number: input.number,
     title: input.title,
     track,
     matched,
-    semSinal,
+    escopo,
+    acaoAdiada,
     status,
     decision,
     executionBlock,
@@ -265,15 +334,69 @@ export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): Desb
   };
 }
 
+function decideStatus(args: {
+  decision: IssueDecision | null;
+  executionBlock: ExecutionBlock | null;
+  adiamentoSuprime: boolean;
+  escopo: DesbloqueioEscopo;
+  input: DesbloqueioIssueInput;
+}): DesbloqueioStatus {
+  const { decision, executionBlock, adiamentoSuprime, escopo, input } = args;
+
+  // Decisão do editor mais recente que o bloqueio resolve a issue INTEIRA —
+  // vence inclusive um adiamento ativo (o adiamento é sobre uma ação
+  // pendente; a decisão diz que não há mais o que pender).
+  if (decision && (!executionBlock || decision.decided_at >= executionBlock.recorded_at)) {
+    return "ja-destravada";
+  }
+
+  if (executionBlock && (!decision || executionBlock.recorded_at > decision.decided_at)) {
+    // #7707 — a condição declarada já foi satisfeita: a issue de que este
+    // bloqueio dependia FECHOU. O bloqueio é obsoleto, não válido. Só
+    // `"closed"` conta: `"missing"` é marcador podre (ver `dependencyState`)
+    // e `"open"`/ausente mantêm o bloqueio de pé.
+    if (executionBlock.condicao.tipo === "depends_on" && input.dependencyState === "closed") {
+      return "bloqueio-obsoleto";
+    }
+    // Um adiamento ativo não apaga o bloqueio — só suprime a REPERGUNTA.
+    // O `executionBlock` continua no candidate pra o relatório mostrar por
+    // que a issue está parada.
+    return adiamentoSuprime ? "acao-adiada" : "bloqueio-confirmado";
+  }
+
+  if (adiamentoSuprime) return "acao-adiada";
+
+  // Sem marcador nenhum, o destino depende do BUCKET de origem — ver
+  // `DesbloqueioEscopo`. Colapsar os três em `precisa-pergunta` jogaria o
+  // backlog inteiro na bateria de `AskUserQuestion`, contra #5321.
+  if (escopo === "sem-sinal") return "sem-sinal-nao-triada";
+  if (escopo === "fora-de-rodada") return "acao-imediata-candidata";
+  return "precisa-pergunta";
+}
+
 export interface DesbloqueioScanReport {
   jaDestravadas: DesbloqueioCandidate[];
   bloqueioConfirmado: DesbloqueioCandidate[];
   precisaPergunta: DesbloqueioCandidate[];
+  /** #7707 — o bloqueio declarava depender de outra issue, e essa issue já
+   * FECHOU. A condição foi satisfeita; o bloqueio é obsoleto. O playbook
+   * roteia pra fora de `bloqueada`, nunca comenta "segue valendo". */
+  bloqueioObsoleto: DesbloqueioCandidate[];
   /** #7694 — candidatas do bucket `overnight ·sem sinal` cuja thread não tem
    * marcador nenhum: ninguém triou. NÃO viram pergunta — o playbook lê
    * título+corpo e roteia (`triada-overnight` quando confirma o overnight,
    * `bloqueada`/`develop` quando descobre um bloqueio que faltava rotular). */
   semSinalNaoTriadas: DesbloqueioCandidate[];
+  /** #7708 — candidatas do bucket `fora-de-rodada` (alarme de estado,
+   * decisão em prosa, sem-direção) que ninguém avaliou pra ação imediata do
+   * editor. O playbook lê e decide quais viram um pedido "faça isto agora";
+   * as que não forem acionáveis ficam como estão, sem comentário. */
+  acaoImediataCandidatas: DesbloqueioCandidate[];
+  /** #7708 — já pedimos a ação e o editor adiou; o cooldown
+   * (`ACAO_ADIADA_COOLDOWN_DAYS`) ainda vale. **Nunca** vira pergunta — é o
+   * grupo que impede a skill de repetir as mesmas ~22 perguntas por rodada
+   * e queimar a paciência do editor em duas execuções. */
+  acaoAdiada: DesbloqueioCandidate[];
   /** Leitura da thread falhou — NUNCA entra na bateria de perguntas (ver
    * docstring de `erro-leitura` acima). O chamador reporta e sugere retry. */
   erroLeitura: DesbloqueioCandidate[];
@@ -285,15 +408,31 @@ export interface DesbloqueioScanReport {
 
 /**
  * Agrupa um lote de issues já buscadas (corpo + labels + TODOS os
- * comentários, ou o erro de por que não deu pra buscar) nos 5 destinos +
+ * comentários, ou o erro de por que não deu pra buscar) nos 8 destinos +
  * fora-de-escopo. Ordem de entrada preservada dentro de cada grupo.
  */
+type DesbloqueioGroupKey = Exclude<keyof DesbloqueioScanReport, "foraDoEscopo">;
+
+const STATUS_TO_GROUP = {
+  "ja-destravada": "jaDestravadas",
+  "bloqueio-confirmado": "bloqueioConfirmado",
+  "bloqueio-obsoleto": "bloqueioObsoleto",
+  "precisa-pergunta": "precisaPergunta",
+  "sem-sinal-nao-triada": "semSinalNaoTriadas",
+  "acao-imediata-candidata": "acaoImediataCandidatas",
+  "acao-adiada": "acaoAdiada",
+  "erro-leitura": "erroLeitura",
+} as const satisfies Record<DesbloqueioStatus, DesbloqueioGroupKey>;
+
 export function scanDesbloqueioCandidates(inputs: readonly DesbloqueioIssueInput[]): DesbloqueioScanReport {
   const report: DesbloqueioScanReport = {
     jaDestravadas: [],
     bloqueioConfirmado: [],
     precisaPergunta: [],
+    bloqueioObsoleto: [],
     semSinalNaoTriadas: [],
+    acaoImediataCandidatas: [],
+    acaoAdiada: [],
     erroLeitura: [],
     foraDoEscopo: [],
   };
@@ -303,11 +442,13 @@ export function scanDesbloqueioCandidates(inputs: readonly DesbloqueioIssueInput
       report.foraDoEscopo.push(input.number);
       continue;
     }
-    if (candidate.status === "ja-destravada") report.jaDestravadas.push(candidate);
-    else if (candidate.status === "bloqueio-confirmado") report.bloqueioConfirmado.push(candidate);
-    else if (candidate.status === "erro-leitura") report.erroLeitura.push(candidate);
-    else if (candidate.status === "sem-sinal-nao-triada") report.semSinalNaoTriadas.push(candidate);
-    else report.precisaPergunta.push(candidate);
+    // Mapa exaustivo status→grupo: `satisfies Record<DesbloqueioStatus, …>`
+    // faz o compilador exigir uma entrada nova sempre que a união crescer.
+    // A versão anterior era uma cadeia de if/else com `precisaPergunta` como
+    // fallback silencioso — um status novo caía lá sem ninguém notar, que é
+    // o pior destino possível (vira pergunta ao editor por omissão).
+    const grupo = STATUS_TO_GROUP[candidate.status];
+    report[grupo].push(candidate);
   }
   return report;
 }

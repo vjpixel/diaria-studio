@@ -35,7 +35,16 @@ import {
   scanDesbloqueioCandidates,
   type DesbloqueioIssueInput,
 } from "../scripts/lib/desbloqueia-scan.ts";
-import { formatDecisionMarker, formatExecutionBlockMarker } from "../scripts/lib/issue-decisions.ts";
+import {
+  resolveDependencyStates,
+  type IssueStateFetcher,
+} from "../scripts/desbloqueia-scan.ts";
+import {
+  ACAO_ADIADA_COOLDOWN_DAYS,
+  formatAcaoAdiadaMarker,
+  formatDecisionMarker,
+  formatExecutionBlockMarker,
+} from "../scripts/lib/issue-decisions.ts";
 
 function baseInput(overrides: Partial<DesbloqueioIssueInput> = {}): DesbloqueioIssueInput {
   return {
@@ -133,7 +142,7 @@ describe("classifyDesbloqueioCandidate", () => {
     const result = classifyDesbloqueioCandidate(input);
     assert.equal(result?.track, "overnight");
     assert.equal(result?.matched, "default");
-    assert.equal(result?.semSinal, true);
+    assert.equal(result?.escopo, "sem-sinal");
     assert.equal(result?.status, "sem-sinal-nao-triada");
   });
 
@@ -159,7 +168,7 @@ describe("classifyDesbloqueioCandidate", () => {
     });
     const result = classifyDesbloqueioCandidate(baseInput({ labels: [], comments: [blocked] }));
     assert.equal(result?.status, "bloqueio-confirmado");
-    assert.equal(result?.semSinal, true);
+    assert.equal(result?.escopo, "sem-sinal");
     assert.equal(result?.track, "overnight");
   });
 
@@ -172,7 +181,7 @@ describe("classifyDesbloqueioCandidate", () => {
     });
     const result = classifyDesbloqueioCandidate(baseInput({ labels: [], comments: [decided] }));
     assert.equal(result?.status, "ja-destravada");
-    assert.equal(result?.semSinal, true);
+    assert.equal(result?.escopo, "sem-sinal");
   });
 
   it("#7694: sem-sinal com erro de leitura → erro-leitura, NUNCA sem-sinal-nao-triada", () => {
@@ -180,13 +189,13 @@ describe("classifyDesbloqueioCandidate", () => {
       baseInput({ labels: [], comments: [], commentsFetchError: "gh falhou" }),
     );
     assert.equal(result?.status, "erro-leitura");
-    assert.equal(result?.semSinal, true);
+    assert.equal(result?.escopo, "sem-sinal");
   });
 
   it("#7694: candidata COM label (bloqueada) e sem marcador continua precisa-pergunta, não sem-sinal", () => {
     const result = classifyDesbloqueioCandidate(baseInput({ labels: ["external-blocker"], comments: [] }));
     assert.equal(result?.status, "precisa-pergunta");
-    assert.equal(result?.semSinal, false);
+    assert.notEqual(result?.escopo, "sem-sinal");
     assert.equal(result?.matched, "label:external-blocker");
   });
 
@@ -477,15 +486,228 @@ describe("scanDesbloqueioCandidates", () => {
     assert.deepEqual(report.foraDoEscopo, [6]);
   });
 
-  it("lista vazia devolve os 6 grupos vazios", () => {
+  it("lista vazia devolve os 9 grupos vazios", () => {
     const report = scanDesbloqueioCandidates([]);
     assert.deepEqual(report, {
       jaDestravadas: [],
       bloqueioConfirmado: [],
+      bloqueioObsoleto: [],
       precisaPergunta: [],
       semSinalNaoTriadas: [],
+      acaoImediataCandidatas: [],
+      acaoAdiada: [],
       erroLeitura: [],
       foraDoEscopo: [],
     });
+  });
+});
+
+describe("#7707 — dependência declarada que já fechou vira bloqueio-obsoleto", () => {
+  const blocoDepende = (issue: number, recordedAt = "2026-09-06T00:00:00Z") =>
+    formatExecutionBlockMarker({
+      recorded_at: recordedAt,
+      motivo: `depende do veredito de #${issue}`,
+      sessao: "overnight",
+      condicao: { tipo: "depends_on", issue },
+    });
+
+  it("dependência CLOSED → bloqueio-obsoleto (o caso #5734)", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ comments: [blocoDepende(7523)], dependencyState: "closed" }),
+    );
+    assert.equal(r?.status, "bloqueio-obsoleto");
+  });
+
+  it("dependência OPEN → segue bloqueio-confirmado", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ comments: [blocoDepende(7523)], dependencyState: "open" }),
+    );
+    assert.equal(r?.status, "bloqueio-confirmado");
+  });
+
+  it("dependência MISSING nunca desbloqueia — marcador podre não é condição satisfeita", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ comments: [blocoDepende(999999)], dependencyState: "missing" }),
+    );
+    assert.equal(r?.status, "bloqueio-confirmado");
+  });
+
+  it("dependencyState ausente (caller não resolveu) → bloqueio-confirmado, nunca obsoleto", () => {
+    const r = classifyDesbloqueioCandidate(baseInput({ comments: [blocoDepende(7523)] }));
+    assert.equal(r?.status, "bloqueio-confirmado");
+  });
+
+  it("condicao externo com dependencyState closed pendurado NÃO vira obsoleto", () => {
+    // Defesa contra caller confuso: só `depends_on` consulta o estado.
+    const externo = formatExecutionBlockMarker({
+      recorded_at: "2026-09-06T00:00:00Z",
+      motivo: "conta de terceiro não existe",
+      sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "conta de terceiro não existe" },
+    });
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ comments: [externo], dependencyState: "closed" }),
+    );
+    assert.equal(r?.status, "bloqueio-confirmado");
+  });
+});
+
+describe("#7708 — fora-de-rodada no escopo + anti-fadiga do acao-adiada", () => {
+  const adiada = (pedidoEm: string) =>
+    formatAcaoAdiadaMarker({
+      pedido_em: pedidoEm,
+      acao: "reiniciar a unit diaria-reconcile-send-audiences no helios",
+      motivo: "",
+      sessao: "develop",
+    });
+  const agora = new Date("2026-09-09T12:00:00Z");
+  const diasAtras = (n: number) =>
+    new Date(agora.getTime() - n * 86_400_000).toISOString();
+
+  it("alarme de estado entra no escopo como acao-imediata-candidata", () => {
+    const r = classifyDesbloqueioCandidate(baseInput({ labels: ["alarm"], now: agora }));
+    assert.equal(r?.track, "fora-de-rodada");
+    assert.equal(r?.escopo, "fora-de-rodada");
+    assert.equal(r?.status, "acao-imediata-candidata");
+  });
+
+  it("decisao-registrada e sem-direcao-acionavel também entram", () => {
+    for (const label of ["decisao-registrada", "sem-direcao-acionavel"]) {
+      const r = classifyDesbloqueioCandidate(baseInput({ labels: [label], now: agora }));
+      assert.equal(r?.status, "acao-imediata-candidata", label);
+    }
+  });
+
+  it("on-hold/wontfix ficam FORA por default — engavetamento deliberado não se repergunta", () => {
+    for (const label of ["on-hold", "wontfix"]) {
+      assert.equal(classifyDesbloqueioCandidate(baseInput({ labels: [label], now: agora })), null, label);
+    }
+  });
+
+  it("--incluir-engavetadas traz on-hold/wontfix pro escopo", () => {
+    for (const label of ["on-hold", "wontfix"]) {
+      const r = classifyDesbloqueioCandidate(
+        baseInput({ labels: [label], incluirEngavetadas: true, now: agora }),
+      );
+      assert.equal(r?.escopo, "fora-de-rodada", label);
+    }
+  });
+
+  it("issue CLOSED continua fora do escopo mesmo com --incluir-engavetadas", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ state: "CLOSED", labels: [], incluirEngavetadas: true, now: agora }),
+    );
+    assert.equal(r, null);
+  });
+
+  it("adiamento DENTRO do cooldown suprime a pergunta", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ labels: ["alarm"], comments: [adiada(diasAtras(2))], now: agora }),
+    );
+    assert.equal(r?.status, "acao-adiada");
+    assert.equal(r?.acaoAdiada?.acao, "reiniciar a unit diaria-reconcile-send-audiences no helios");
+  });
+
+  it("adiamento EXPIRADO volta a ser perguntável, mas o candidate ainda carrega o pedido anterior", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({
+        labels: ["alarm"],
+        comments: [adiada(diasAtras(ACAO_ADIADA_COOLDOWN_DAYS + 1))],
+        now: agora,
+      }),
+    );
+    assert.equal(r?.status, "acao-imediata-candidata");
+    assert.ok(r?.acaoAdiada, "o adiamento expirado continua visível pra a repergunta citar o que já foi pedido");
+  });
+
+  it("adiamento ativo suprime também numa issue bloqueada, sem apagar o bloqueio", () => {
+    const bloco = formatExecutionBlockMarker({
+      recorded_at: diasAtras(10),
+      motivo: "falta recarregar a conta",
+      sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "falta recarregar a conta" },
+    });
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ labels: ["external-blocker"], comments: [bloco, adiada(diasAtras(1))], now: agora }),
+    );
+    assert.equal(r?.status, "acao-adiada");
+    assert.equal(r?.executionBlock?.motivo, "falta recarregar a conta");
+  });
+
+  it("sintoma NOVO (bloqueio posterior ao adiamento) reabre a pergunta antes do cooldown", () => {
+    const blocoNovo = formatExecutionBlockMarker({
+      recorded_at: diasAtras(1),
+      motivo: "agora é outra coisa",
+      sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "agora é outra coisa" },
+    });
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ labels: ["external-blocker"], comments: [adiada(diasAtras(3)), blocoNovo], now: agora }),
+    );
+    assert.equal(r?.status, "bloqueio-confirmado");
+  });
+
+  it("decisão do editor vence um adiamento ativo — não há mais o que pender", () => {
+    const decisao = formatDecisionMarker({
+      decided_at: diasAtras(1),
+      pergunta: "?",
+      resposta: "resolvido assim",
+      sessao: "develop",
+    });
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ labels: ["alarm"], comments: [adiada(diasAtras(2)), decisao], now: agora }),
+    );
+    assert.equal(r?.status, "ja-destravada");
+  });
+});
+
+describe("#7707 resolveDependencyStates — a camada de I/O", () => {
+  const semRede: IssueStateFetcher = () => {
+    throw new Error("não deveria chamar gh — a issue estava na lista de abertas");
+  };
+  const respondendo = (payload: Record<number, { status?: number; state?: string; stdout?: string }>): IssueStateFetcher =>
+    (n) => {
+      const p = payload[n] ?? { status: 1 };
+      return {
+        status: p.status ?? 0,
+        stdout: p.stdout ?? (p.state ? JSON.stringify({ state: p.state }) : ""),
+        stderr: "",
+      };
+    };
+
+  it("issue na lista de abertas resolve como open SEM nenhuma chamada gh", () => {
+    const out = resolveDependencyStates([42], new Set([42]), ".", semRede);
+    assert.equal(out.get(42), "open");
+  });
+
+  it("issue fora da lista e CLOSED → closed", () => {
+    const out = resolveDependencyStates([7523], new Set([1]), ".", respondendo({ 7523: { state: "CLOSED" } }));
+    assert.equal(out.get(7523), "closed");
+  });
+
+  it("gh falhando → missing (direção segura: o bloqueio continua de pé)", () => {
+    const out = resolveDependencyStates([999], new Set(), ".", respondendo({ 999: { status: 1 } }));
+    assert.equal(out.get(999), "missing");
+  });
+
+  it("JSON malformado → missing, nunca lança", () => {
+    const out = resolveDependencyStates([5], new Set(), ".", respondendo({ 5: { stdout: "não é json" } }));
+    assert.equal(out.get(5), "missing");
+  });
+
+  it("state desconhecido → missing", () => {
+    const out = resolveDependencyStates([6], new Set(), ".", respondendo({ 6: { state: "ARQUIVADA" } }));
+    assert.equal(out.get(6), "missing");
+  });
+
+  it("deduplica: a mesma dependência citada por 3 issues consulta gh 1 vez só", () => {
+    let chamadas = 0;
+    const contando: IssueStateFetcher = (n) => {
+      chamadas++;
+      return { status: 0, stdout: JSON.stringify({ state: "CLOSED" }), stderr: "" };
+    };
+    const out = resolveDependencyStates([7523, 7523, 7523], new Set(), ".", contando);
+    assert.equal(chamadas, 1);
+    assert.equal(out.get(7523), "closed");
   });
 });

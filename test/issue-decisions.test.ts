@@ -32,8 +32,14 @@ import {
   formatExecutionBlockMarker,
   parseExecutionBlockMarkers,
   latestExecutionBlockFor,
+  ACAO_ADIADA_COOLDOWN_DAYS,
+  formatAcaoAdiadaMarker,
+  parseAcaoAdiadaMarkers,
+  latestAcaoAdiadaFor,
+  isAcaoAdiadaAtiva,
   type IssueDecision,
   type ExecutionBlock,
+  type AcaoAdiada,
 } from "../scripts/lib/issue-decisions.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -325,5 +331,107 @@ describe("CLI wrapper (#5535 — main() precisa rodar de fato)", () => {
     });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /--issue inválido: abc/);
+  });
+});
+
+// ─── #7708 — marcador de ação adiada (anti-fadiga) ─────────────────────────
+
+describe("#7708 acao-adiada — round-trip do marcador", () => {
+  const base: AcaoAdiada = {
+    pedido_em: "2026-09-09T12:00:00Z",
+    acao: "reiniciar a unit diaria-reconcile-send-audiences no helios",
+    motivo: "não estou no servidor agora",
+    sessao: "develop",
+  };
+
+  it("format → parse devolve o payload idêntico", () => {
+    assert.deepEqual(parseAcaoAdiadaMarkers([formatAcaoAdiadaMarker(base)]), [base]);
+  });
+
+  it("motivo VAZIO é válido — 'agora não' seco não deve forçar motivo inventado", () => {
+    const semMotivo = { ...base, motivo: "" };
+    assert.deepEqual(parseAcaoAdiadaMarkers([formatAcaoAdiadaMarker(semMotivo)]), [semMotivo]);
+  });
+
+  it("acao vazia é INVÁLIDA — sem saber o que foi pedido o marcador não serve pra nada", () => {
+    assert.deepEqual(parseAcaoAdiadaMarkers([formatAcaoAdiadaMarker({ ...base, acao: "" })]), []);
+  });
+
+  it("marcador malformado é ignorado, nunca lança (mesmo contrato dos outros dois)", () => {
+    assert.deepEqual(parseAcaoAdiadaMarkers(["<!-- acao-adiada: nao-e-base64-valido -->"]), []);
+    assert.deepEqual(parseAcaoAdiadaMarkers(["comentário comum sem marcador"]), []);
+  });
+
+  it("latestAcaoAdiadaFor devolve o mais recente por pedido_em", () => {
+    const velho = formatAcaoAdiadaMarker({ ...base, pedido_em: "2026-09-01T00:00:00Z", acao: "velha" });
+    const novo = formatAcaoAdiadaMarker({ ...base, pedido_em: "2026-09-08T00:00:00Z", acao: "nova" });
+    assert.equal(latestAcaoAdiadaFor([velho, novo])?.acao, "nova");
+    assert.equal(latestAcaoAdiadaFor([novo, velho])?.acao, "nova");
+  });
+
+  it("não confunde com os outros dois marcadores na mesma thread", () => {
+    const thread = [
+      formatDecisionMarker(decision()),
+      formatAcaoAdiadaMarker(base),
+      formatExecutionBlockMarker({
+        recorded_at: "2026-09-01T00:00:00Z",
+        motivo: "x",
+        sessao: "overnight",
+        condicao: { tipo: "externo", descricao: "x" },
+      }),
+    ];
+    assert.equal(parseAcaoAdiadaMarkers(thread).length, 1);
+    assert.equal(parseDecisionMarkers(thread).length, 1);
+    assert.equal(parseExecutionBlockMarkers(thread).length, 1);
+  });
+});
+
+describe("#7708 isAcaoAdiadaAtiva — o cooldown", () => {
+  const agora = new Date("2026-09-09T12:00:00Z");
+  const diasAtras = (n: number): string => new Date(agora.getTime() - n * 86_400_000).toISOString();
+  const adiada = (n: number): AcaoAdiada => ({
+    pedido_em: diasAtras(n),
+    acao: "reiniciar a unit",
+    motivo: "",
+    sessao: "develop",
+  });
+
+  it("null nunca suprime", () => {
+    assert.equal(isAcaoAdiadaAtiva(null, { now: agora }), false);
+  });
+
+  it("dentro da janela suprime; fora dela, não", () => {
+    assert.equal(isAcaoAdiadaAtiva(adiada(0), { now: agora }), true);
+    assert.equal(isAcaoAdiadaAtiva(adiada(ACAO_ADIADA_COOLDOWN_DAYS - 1), { now: agora }), true);
+    assert.equal(isAcaoAdiadaAtiva(adiada(ACAO_ADIADA_COOLDOWN_DAYS + 1), { now: agora }), false);
+  });
+
+  it("exatamente no limite do cooldown já NÃO suprime (janela é aberta em cima)", () => {
+    assert.equal(isAcaoAdiadaAtiva(adiada(ACAO_ADIADA_COOLDOWN_DAYS), { now: agora }), false);
+  });
+
+  it("bloqueio POSTERIOR ao adiamento reabre antes do prazo — o que se pergunta mudou", () => {
+    const bloco: ExecutionBlock = {
+      recorded_at: diasAtras(1),
+      motivo: "sintoma novo",
+      sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "sintoma novo" },
+    };
+    assert.equal(isAcaoAdiadaAtiva(adiada(3), { now: agora, blocoMaisRecente: bloco }), false);
+  });
+
+  it("bloqueio ANTERIOR ao adiamento não reabre — o adiamento já respondia a ele", () => {
+    const bloco: ExecutionBlock = {
+      recorded_at: diasAtras(5),
+      motivo: "sintoma velho",
+      sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "sintoma velho" },
+    };
+    assert.equal(isAcaoAdiadaAtiva(adiada(3), { now: agora, blocoMaisRecente: bloco }), true);
+  });
+
+  it("pedido_em podre → fail-OPEN (não suprime): perguntar de novo é recuperável, suprimir pra sempre não", () => {
+    const podre: AcaoAdiada = { pedido_em: "nao-e-data", acao: "x", motivo: "", sessao: "develop" };
+    assert.equal(isAcaoAdiadaAtiva(podre, { now: agora }), false);
   });
 });
