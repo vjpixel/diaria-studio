@@ -1,8 +1,10 @@
 /**
  * test/lib/kit-subscriber-state-transition-alarm.test.ts (#7660)
  *
- * Regressão do alarme de transição de estado no Kit — `active` →
- * `complained`/`bounced`/`cancelled`/`inactive`.
+ * Regressão do alarme de perda de assinante no Kit — transição `active` →
+ * `complained`/`bounced`/`cancelled`/`inactive`, DESAPARECIMENTO da conta
+ * (o 2º evento do caso de origem, que um diff só de estado não vê), e a
+ * correlação com o histórico de envio de onboarding.
  *
  * A 1ª versão importava de `vitest`, dependência que este repo não usa (o
  * runner é `node:test`): quebrava `test`, `Typecheck ratchet` (TS2307) e
@@ -16,11 +18,16 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   detectKitStateTransitions,
+  detectKitDisappearances,
   toStateTransitionAlarmFindings,
+  toDisappearanceAlarmFindings,
+  onboardingCorrelationLines,
   shouldAlarmKitStateTransition,
+  shouldAlarmKitDisappearance,
   advanceKitStateTransitionAlarmState,
   emptyKitStateTransitionAlarmState,
   KIT_STATE_TRANSITION_ALARM_STATES,
+  type KitLossOnboardingContext,
   type KitStateTransitionSnapshotEntry,
 } from "../../scripts/lib/kit-subscriber-state-transition-alarm.ts";
 import type { KitSubscriberSummary } from "../../scripts/lib/kit-subscribers.ts";
@@ -113,7 +120,11 @@ describe("toStateTransitionAlarmFindings (#7660)", () => {
     assert.match(f.title, /apoiador/);
     assert.equal(f.priority, "P1");
     assert.equal(f.family, "evento");
-    assert.match(f.body, /re-registrar o assinante via form de DOI/);
+    assert.match(f.body, /form de DOI/);
+    // O playbook precisa carregar a ARMADILHA, não só o caminho feliz: o
+    // recadastro dispara o e-mail 1 de boas-vindas pra quem lê há meses.
+    assert.match(f.body, /onboarding-welcome-run\.ts/);
+    assert.match(f.body, /--seed-email1-sent-at/);
   });
 
   it("sem apoio_nivel o título diz 'assinante', não 'apoiador'", () => {
@@ -130,5 +141,127 @@ describe("toStateTransitionAlarmFindings (#7660)", () => {
       { id: 2, address: "b@x.com", fromState: "active", toState: "bounced", detectedAt: NOW.toISOString() },
     ]);
     assert.equal(new Set(fs.map((f) => f.fingerprint)).size, 2);
+  });
+});
+
+describe("detectKitDisappearances (#7660, 3º comentário)", () => {
+  it("assinante presente no anterior e ausente no atual é detectado", () => {
+    const prev: KitStateTransitionSnapshotEntry[] = [
+      { id: 1, state: "active", address: "s1@x.com" },
+      { id: 2, state: "active", address: "s2@x.com" },
+    ];
+    const res = detectKitDisappearances(prev, [sub(2, "active")], NOW);
+    assert.equal(res.length, 1);
+    assert.equal(res[0].id, 1);
+    assert.equal(res[0].address, "s1@x.com");
+    assert.equal(res[0].lastState, "active");
+  });
+
+  it("NÃO exige estado anterior `active` — o caso real sumiu estando `complained`", () => {
+    const prev: KitStateTransitionSnapshotEntry[] = [
+      { id: 4264399626, state: "complained", address: "pedro@x.com", apoioNivel: "apoiador" },
+    ];
+    const res = detectKitDisappearances(prev, [], NOW);
+    assert.equal(res.length, 1);
+    assert.equal(res[0].lastState, "complained");
+    assert.equal(res[0].apoioNivel, "apoiador");
+  });
+
+  it("snapshot anterior sem `address` (pré-follow-up) ainda emite, com address null", () => {
+    const res = detectKitDisappearances([{ id: 9, state: "active" }], [], NOW);
+    assert.equal(res[0].address, null);
+    const [f] = toDisappearanceAlarmFindings(res);
+    assert.match(f.title, /id 9/);
+    assert.match(f.body, /só o id é conhecido/);
+  });
+
+  it("ninguém some quando todos continuam presentes", () => {
+    const prev: KitStateTransitionSnapshotEntry[] = [{ id: 1, state: "active", address: "s1@x.com" }];
+    assert.equal(detectKitDisappearances(prev, [sub(1, "complained")], NOW).length, 0);
+  });
+
+  it("fingerprint de desaparecimento NÃO colide com o de transição do mesmo id", () => {
+    const [transicao] = toStateTransitionAlarmFindings([
+      { id: 42, address: "a@x.com", fromState: "active", toState: "complained", detectedAt: NOW.toISOString() },
+    ]);
+    const [sumico] = toDisappearanceAlarmFindings([
+      { id: 42, address: "a@x.com", lastState: "complained", detectedAt: NOW.toISOString() },
+    ]);
+    assert.notEqual(
+      transicao.fingerprint,
+      sumico.fingerprint,
+      "o assinante do caso passou pelos DOIS eventos — colidir deduplicaria o segundo",
+    );
+    assert.equal(sumico.family, "evento");
+    assert.equal(sumico.priority, "P1");
+  });
+});
+
+describe("latch de desaparecimento (#7660)", () => {
+  it("alarma na 1ª vez; depois do advance, não realarma", () => {
+    const d = [{ id: 1, address: "a@x.com", lastState: "active", detectedAt: NOW.toISOString() }];
+    const s = emptyKitStateTransitionAlarmState();
+    assert.equal(shouldAlarmKitDisappearance(s, d), true);
+    const next = advanceKitStateTransitionAlarmState(s, [], [], NOW, d);
+    assert.equal(shouldAlarmKitDisappearance(next, d), false);
+    assert.deepEqual(next.alertedDisappearedIds, [1]);
+  });
+
+  it("latch antigo sem o campo novo é lido como vazio, não como corrupção", () => {
+    const antigo = { alertedSubscriberIds: [7], lastCheckedAt: "2026-09-07T00:00:00Z" };
+    const d = [{ id: 7, address: "a@x.com", lastState: "complained", detectedAt: NOW.toISOString() }];
+    // id 7 já alertado por TRANSIÇÃO, mas nunca por desaparecimento.
+    assert.equal(shouldAlarmKitDisappearance(antigo, d), true);
+  });
+
+  it("o latch de transição não é contaminado pelo de desaparecimento", () => {
+    const s = emptyKitStateTransitionAlarmState();
+    const d = [{ id: 5, address: "a@x.com", lastState: "active", detectedAt: NOW.toISOString() }];
+    const next = advanceKitStateTransitionAlarmState(s, [], [], NOW, d);
+    assert.deepEqual(next.alertedSubscriberIds, []);
+  });
+});
+
+describe("onboardingCorrelationLines (#7660, 1º comentário)", () => {
+  const detectado = "2026-08-29T14:00:00Z";
+
+  it("envio recente de boas-vindas vira CORRELAÇÃO destacada com o intervalo em dias", () => {
+    const ctx: KitLossOnboardingContext = { email1SentAt: "2026-08-24T12:05:25.000Z" };
+    const linhas = onboardingCorrelationLines(ctx, detectado).join("\n");
+    assert.match(linhas, /CORRELAÇÃO/);
+    assert.match(linhas, /5 dia\(s\) antes/);
+    assert.match(linhas, /#6043/);
+  });
+
+  it("envio antigo é histórico, não correlação destacada", () => {
+    const ctx: KitLossOnboardingContext = { email1SentAt: "2026-01-01T00:00:00Z" };
+    const linhas = onboardingCorrelationLines(ctx, detectado).join("\n");
+    assert.doesNotMatch(linhas, /CORRELAÇÃO/);
+    assert.match(linhas, /Correlação de envio/);
+  });
+
+  it("sem contexto diz explicitamente que não há registro — nunca silêncio", () => {
+    const linhas = onboardingCorrelationLines(undefined, detectado).join("\n");
+    assert.match(linhas, /nenhum registro/i);
+  });
+
+  it("a correlação entra no corpo da issue quando o endereço bate (case-insensitive)", () => {
+    const correl = new Map<string, KitLossOnboardingContext>([
+      ["pedro@x.com", { email1SentAt: "2026-08-24T12:05:25.000Z", seededBy: "#7660" }],
+    ]);
+    const [f] = toStateTransitionAlarmFindings(
+      [
+        {
+          id: 1,
+          address: "Pedro@X.com",
+          fromState: "active",
+          toState: "complained",
+          detectedAt: detectado,
+        },
+      ],
+      correl,
+    );
+    assert.match(f.body, /CORRELAÇÃO/);
+    assert.match(f.body, /#7660/);
   });
 });
