@@ -3,7 +3,8 @@
  * Cobre: wiring real (queued/committed NÃO trocados — lição #7784),
  * pool suf/insuf, fallback quando guard falha, nunca superestimar.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
 import { buildDailySendQueue, isDailyQueueEligible, compareDailyQueueOrder } from "../scripts/lib/clarice-segment.js";
 import { computeDailyQueueAvailable } from "../scripts/lib/clarice-segment.js";
 
@@ -34,7 +35,7 @@ describe("#7738 wiring real — queued vs committed (não #7784)", () => {
     expect(q.map((r: any) => r.email)).toEqual(["e1@test.com", "w1@test.com"]); // ambos elegíveis se listas não estão no guard
     // Se queued tem list-A, e1 sai; se committed tem list-B, w1 sai — wiring correto.
     const qBlocked = buildDailySendQueue(rows, { queuedListIds: new Set(["list-A"]), committedListIds: new Set(["list-B"]) });
-    expect(qBlocked).toHaveLength(0); // ambos bloqueados pelo guard correto
+    assert.strictEqual(qBlocked.length, 0); // ambos bloqueados pelo guard correto
   });
 
   it("não inverte: queued em committed ou vice-versa", () => {
@@ -51,19 +52,19 @@ describe("#7738 pool suficiente / insuficiente / fallback", () => {
   it("pool suficiente: fila >= desejado", () => {
     const rows = Array.from({ length: 100 }, (_, i) => row(`u${i}@t`, { sends_count: 0, priority_points: 0 }));
     const q = computeDailyQueueAvailable(rows, { queuedListIds: new Set(), committedListIds: new Set() });
-    expect(q).toBe(100);
+    assert.strictEqual(q, 100);
   });
 
   it("pool insuficiente: alguns já agendados (queued)", () => {
     const rows = Array.from({ length: 50 }, (_, i) => row(`u${i}@t`, { sends_count: 0, brevo_list_ids: `l${i}` }));
     const queued = new Set(rows.map((r: any) => r.brevo_list_ids as string));
     const q = computeDailyQueueAvailable(rows, { queuedListIds: queued, committedListIds: new Set() });
-    expect(q).toBe(0); // todos já agendados
+    assert.strictEqual(q, 0); // todos já agendados
   });
 
   it("fallback seguro: guard vazio + eligible vazio → 0 (nunca superestima)", () => {
     const q = computeDailyQueueAvailable([], { queuedListIds: new Set(), committedListIds: new Set() });
-    expect(q).toBe(0);
+    assert.strictEqual(q, 0);
   });
 
   it("nunca retorna > eligible real (capacidade não superestimada)", () => {
