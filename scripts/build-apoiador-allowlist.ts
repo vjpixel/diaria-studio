@@ -2,15 +2,16 @@
 /**
  * scripts/build-apoiador-allowlist.ts (#3940)
  *
- * Constrói a allowlist de e-mails de apoiadores R$10+/mês (mês vigente) —
- * pra push no KV `ALLOWLIST` do worker `artigo-mensal` (gate do artigo
- * mensal, ver `workers/artigo-mensal/`).
+ * Constrói a allowlist de e-mails com direito à **Retrospectiva do Mês** — o
+ * recap mensal servido por `workers/artigo-mensal` (`artigo.diar.ia.br`).
+ * Limiar: Mantenedor R$25+/mês do mês vigente (ver `RETROSPECTIVA_DO_MES_NIVEIS`
+ * abaixo; era R$10+ até o #7658, que alinhou o gate à recompensa anunciada).
  *
  * NÃO reimplementa a checagem de apoio: reusa a MESMA maquinaria já testada
  * do painel Apoios (`scripts/studio-ui/studio-apoios.ts`) —
  * `buildApoiosData` (loadContacts + fetchCurrentStatuses/checkBacker +
  * deriveContactStatus, tudo já fail-soft em 3 camadas) e `computeRewardGroup`
- * (fonte única do limiar R$10 = tier "apoiador"). A ÚNICA lógica nova aqui é
+ * (fonte única da correspondência valor→nível). A ÚNICA lógica nova aqui é
  * `computeApoiadorAllowlist` — pura, filtra `ContactWithStatus[]` já
  * resolvido pra a lista de e-mails que qualificam.
  *
@@ -51,7 +52,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { buildApoiosData, computeRewardGroup, type ContactWithStatus } from "./studio-ui/studio-apoios.ts";
+import { buildApoiosData, computeRewardGroup, type ContactWithStatus, type RewardGroup } from "./studio-ui/studio-apoios.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { readArtigoMensalNamespaceId } from "./lib/mensal/artigo-mensal-kv-namespaces.ts";
 
@@ -78,9 +79,35 @@ export function apoiadorAllowlistKvNamespaceId(): string {
 export const APOIADOR_ALLOWLIST_KV_KEY = "emails";
 
 /**
- * Pure: filtra contatos com status "apoiando" no mês corrente E valor pago
- * dentro do tier R$10+ (`computeRewardGroup` !== null && !== "amigo" — a
- * faixa "amigo" é R$5–10, abaixo do gate desta issue). Cada contato pode ter
+ * Níveis que têm direito à **Retrospectiva do Mês** — o recap mensal servido em
+ * `artigo.diar.ia.br/{ciclo}` (futuramente `retrospectiva.diar.ia.br/AAMM`,
+ * #7658).
+ *
+ * **Corrigido de R$10+ para R$25+ em 08/09/2026 (#7658).** A página pública
+ * da campanha vende a Retrospectiva do Mês como recompensa de **Mantenedor
+ * (R$25/mês)** — transcrito da apoia.se: "🚀 Mantenedor — R$ 25/mês […]
+ * Retrospectiva do Mês - Recap conectando os principais acontecimentos do último
+ * mês. Enviado na primeira semana do mês." O que o Apoiador (R$10) compra é
+ * outra coisa: o **Artigo Especial**, servido por `especial.diar.ia.br`
+ * (`workers/artigos`, limiar próprio em `apoio-gate-config.ts`, que segue
+ * correto em R$10+).
+ *
+ * O gate daqui nasceu em R$10+ (#3940, "paywall de apoiador R$10+") e nunca
+ * acompanhou a recompensa anunciada — quem apoiava com R$10 lia na web um
+ * conteúdo vendido como exclusivo de Mantenedor, esvaziando a diferença entre
+ * os dois níveis. Não era acesso negado indevidamente; era o contrário.
+ *
+ * O canal de E-MAIL do mesmo recap (`/diaria-mensal-apoiadores`) já mirava
+ * Mantenedor/Patrono desde sempre — esta constante é o que faz web e e-mail
+ * finalmente concordarem.
+ *
+ * Mudar o limiar é mudar ESTA lista, e nada mais.
+ */
+export const RETROSPECTIVA_DO_MES_NIVEIS: readonly RewardGroup[] = ["mantenedor", "patrono"];
+
+/**
+ * Pure: filtra contatos com status "apoiando" no mês corrente E nível dentro
+ * de `RETROSPECTIVA_DO_MES_NIVEIS` (Mantenedor/Patrono, R$25+). Cada contato pode ter
  * múltiplos e-mails cadastrados (#3500) — TODOS entram na allowlist, não só
  * o e-mail que casou com a apoia.se, pra que o apoiador consiga logar com
  * qualquer um dos e-mails que ele mesmo cadastrou.
@@ -93,7 +120,7 @@ export function computeApoiadorAllowlist(contacts: ContactWithStatus[]): string[
   for (const c of contacts) {
     if (c.status.label !== "apoiando") continue;
     const group = computeRewardGroup(c.status.monthlyValue);
-    if (group === null || group === "amigo") continue; // < R$10 — não qualifica
+    if (group === null || !RETROSPECTIVA_DO_MES_NIVEIS.includes(group)) continue;
     for (const email of c.emails) emails.add(email);
   }
   return [...emails].sort();

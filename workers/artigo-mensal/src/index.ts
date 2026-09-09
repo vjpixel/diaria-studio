@@ -1,7 +1,7 @@
 /**
  * workers/artigo-mensal/src/index.ts (#3940)
  *
- * Serve o artigo mensal público com paywall dinâmico de apoiador (R$10+/mês,
+ * Serve o artigo mensal público com paywall dinâmico de apoiador Mantenedor (R$25+/mês, #7658,
  * mês vigente) — Opção B da issue #3940 (allowlist de e-mails em KV + login
  * por e-mail, decisão do editor, não reaberta aqui).
  *
@@ -230,7 +230,7 @@ export async function handleGet(url: URL, env: Env): Promise<Response> {
     return paywallResponse(await loadArticleTeaser(env, cycle));
   }
 
-  // gate.state === "allowed" — o e-mail provou ser apoiador R$10+. O artigo
+  // gate.state === "allowed" — o e-mail provou ser apoiador Mantenedor (R$25+, #7658). O artigo
   // ainda assim pode não existir pra esse ciclo (ciclo errado, ou ainda não
   // publicado) — 404 dedicado, NÃO paywall (o problema aqui é o conteúdo).
   const article = await loadArticle(env, cycle);
