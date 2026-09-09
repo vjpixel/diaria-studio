@@ -2,8 +2,7 @@
 /**
  * check-continuo-reject-label.ts (#7567)
  *
- * CLI wrapper de `scripts/lib/continuo-reject-owner.ts` — todo I/O (`gh pr
- * view`/`gh pr edit`) fica aqui; a decisão pura fica na lib. Consumido pelo
+ * CLI wrapper de `scripts/lib/continuo-reject-owner.ts` — todo I/O (`gh pr view` + REST) fica aqui; a decisão pura fica na lib. Consumido pelo
  * ramo `gate=reject` de `try_merge_gate()` em
  * `hermes/scripts/continuo-pr-review.sh`: aplica o label
  * `continuo-rejeitado` (idempotente) e diz ao chamador se esta é a PRIMEIRA
@@ -28,7 +27,9 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { isAlreadyRejectLabeled, CONTINUO_REJECTED_LABEL } from "./lib/continuo-reject-owner.ts";
+import { isAlreadyRejectLabeled } from "./lib/continuo-reject-owner.ts";
+import { CONTINUO_REJECTED_LABEL_SPEC, ensureContinuoLabel } from "./lib/continuo-labels.ts";
+import { addPrLabelsRest } from "./lib/gh-pr-safe-edit.ts";
 
 function parseArgs(argv: string[]): { pr: string } | null {
   let pr: string | null = null;
@@ -53,19 +54,35 @@ function fetchLabels(pr: string): string[] | null {
   }
 }
 
-/** Best-effort: aplica o label — nunca aborta se `gh` falhar (a decisão
- * `firstTime` já foi tomada; o pior caso é o label não pegar desta vez e a
- * próxima rejeição tentar de novo). */
+/**
+ * Cria o label (se ausente) e o aplica na PR, ambos por REST.
+ *
+ * **Nunca `gh label create` + `gh pr edit --add-label` (#7704).** Os dois
+ * falhavam e o `catch {}` engolia: o `create` saía 422 porque a descrição
+ * passava dos 100 chars do GitHub, e o `--add-label` seguinte saía 1 porque
+ * o label não existia — `labelApplied: false` era o ÚNICO sinal, e o bash
+ * chamador o ignorava. `addPrLabelsRest` (#6292) ainda cobre o outro modo de
+ * falha do `gh pr edit`: exit 0 sem aplicar nada quando a mutação GraphQL
+ * bate em `projectCards`.
+ *
+ * Continua best-effort quanto ao PROCESSO (nunca aborta — a decisão
+ * `firstTime` já foi tomada), mas o motivo da falha agora sai em stderr em
+ * vez de sumir, pra `continuo-pr-review.sh` registrar como erro de infra.
+ */
 function applyLabel(pr: string): boolean {
-  try {
-    execFileSync("gh", ["pr", "edit", pr, "--add-label", CONTINUO_REJECTED_LABEL], {
-      encoding: "utf8",
-      timeout: 30_000,
-    });
-    return true;
-  } catch {
+  const cwd = process.cwd();
+  const ensured = ensureContinuoLabel(CONTINUO_REJECTED_LABEL_SPEC, cwd);
+  if (!ensured.ok) {
+    process.stderr.write(`[check-continuo-reject-label] ${CONTINUO_REJECTED_LABEL_SPEC.name}: ${ensured.error}\n`);
     return false;
   }
+
+  const applied = addPrLabelsRest(Number(pr), [CONTINUO_REJECTED_LABEL_SPEC.name], cwd);
+  if (!applied.ok) {
+    process.stderr.write(`[check-continuo-reject-label] PR #${pr}: ${applied.error}\n`);
+    return false;
+  }
+  return true;
 }
 
 function main(): void {

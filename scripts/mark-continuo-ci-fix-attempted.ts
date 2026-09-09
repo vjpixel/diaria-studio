@@ -3,7 +3,7 @@
  * mark-continuo-ci-fix-attempted.ts (#7446 item 3)
  *
  * Aplica o label `continuo-ci-fix-tentado` (idempotente — cria o label se
- * ausente, `gh pr edit --add-label` não falha se já presente) numa PR
+ * ausente, e reaplicar um label já presente é no-op na API) numa PR
  * `continuo/*` depois que o tick tentou consertar o CI dela — INDEPENDENTE
  * do resultado da tentativa (sucesso ou não). É o que fecha o cap de 1
  * tentativa por PR em `selectCiFixCandidate`
@@ -24,7 +24,8 @@
  * falha real de `gh pr edit` atrás de um campo de JSON que só um humano
  * leria — o consumidor real é um harness LLM que pode não notar):
  *   0 = label aplicado com sucesso (`labelApplied: true`).
- *   1 = `gh pr edit --add-label` falhou de verdade (rede, auth, PR sumiu) —
+ *   1 = a criação ou a aplicação do label falhou de verdade (rede, auth,
+ *       PR sumiu, descrição inválida) —
  *       o cap de 1 tentativa NÃO foi fechado; o chamador deve tratar como
  *       falha real (retry manual ou escalar), nunca assumir que "tentou e
  *       seguiu" é suficiente — é exatamente o livelock que este script
@@ -35,8 +36,9 @@
  * @see scripts/check-continuo-ci-fixer-candidate.ts
  */
 
-import { execFileSync } from "node:child_process";
 import { CI_FIX_ATTEMPTED_LABEL } from "./lib/continuo-ci-fixer-eligibility.ts";
+import { CONTINUO_CI_FIX_ATTEMPTED_LABEL_SPEC, ensureContinuoLabel } from "./lib/continuo-labels.ts";
+import { addPrLabelsRest } from "./lib/gh-pr-safe-edit.ts";
 
 function parseArgs(argv: string[]): { pr: string } | null {
   let pr: string | null = null;
@@ -55,38 +57,31 @@ function main(): void {
     return;
   }
 
-  try {
-    execFileSync(
-      "gh",
-      [
-        "label",
-        "create",
-        CI_FIX_ATTEMPTED_LABEL,
-        "--color",
-        "5319E7",
-        "--description",
-        "1 tentativa de conserto de CI já feita nesta PR pelo contínuo (#7446 item 3) — não retentar mecanicamente",
-      ],
-      { encoding: "utf8", timeout: 30_000 },
-    );
-  } catch {
-    // best-effort: "already exists" é o caso comum depois da 1ª chamada em
-    // todo o repo; qualquer outra falha (gh indisponível) segue pro
-    // gh pr edit abaixo mesmo assim — se falhar também, o catch de fora
-    // reporta.
+  const cwd = process.cwd();
+
+  // #7704: era `gh label create ... catch {}` + `gh pr edit --add-label`.
+  // Os dois falhavam calados — o `create` com 422 (descrição acima dos 100
+  // chars do GitHub) e o `--add-label` com exit 1 porque o label não
+  // existia — mas o `catch` do `create` era vazio e só o `--add-label`
+  // decidia o exit code, então este script chegou a reportar
+  // `labelApplied: true` em cenários onde o cap de 1 tentativa NÃO foi
+  // fechado. Agora as DUAS metades falham alto, e o `addPrLabelsRest`
+  // (#6292) relê o label depois de escrever em vez de confiar no exit code.
+  const ensured = ensureContinuoLabel(CONTINUO_CI_FIX_ATTEMPTED_LABEL_SPEC, cwd);
+  if (!ensured.ok) {
+    console.log(JSON.stringify({ pr: Number(args.pr), labelApplied: false, error: ensured.error }));
+    process.exitCode = 1;
+    return;
   }
 
-  try {
-    execFileSync("gh", ["pr", "edit", args.pr, "--add-label", CI_FIX_ATTEMPTED_LABEL], {
-      encoding: "utf8",
-      timeout: 30_000,
-    });
-    console.log(JSON.stringify({ pr: Number(args.pr), labelApplied: true }));
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.log(JSON.stringify({ pr: Number(args.pr), labelApplied: false, error: message }));
+  const applied = addPrLabelsRest(Number(args.pr), [CI_FIX_ATTEMPTED_LABEL], cwd);
+  if (!applied.ok) {
+    console.log(JSON.stringify({ pr: Number(args.pr), labelApplied: false, error: applied.error }));
     process.exitCode = 1;
+    return;
   }
+
+  console.log(JSON.stringify({ pr: Number(args.pr), labelApplied: true }));
 }
 
 main();
