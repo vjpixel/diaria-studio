@@ -1,9 +1,9 @@
 /**
- * test/worker-anual-gate-7581.test.ts (#7581)
+ * test/worker-retrospectiva-gate.test.ts (#7581)
  *
  * Teste de regressão do gate de CADASTRO da retrospectiva anual
  * (`workers/anual/`):
- *   - `src/gate.ts` — lógica pura de decisão (normalize/decideGate)
+ *   - `src/gate.ts` — lógica pura de decisão (normalize/decideCadastroGate)
  *   - `src/index.ts` — `handleGet` fiado com um KV mock (Map em memória) e um
  *     `fetchImpl` injetado no lugar da chamada real à API Kit, mesmo padrão
  *     de `test/worker-artigo-mensal-gate-3940.test.ts` (#3940).
@@ -23,8 +23,8 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeEmail, decideGate } from "../workers/anual/src/gate.ts";
-import { handleGet, extractSlug, type Env } from "../workers/anual/src/index.ts";
+import { normalizeEmail, decideCadastroGate } from "../workers/retrospectiva/src/gate-cadastro.ts";
+import { handleGet, type Env } from "../workers/retrospectiva/src/index.ts";
 
 // ── gate.ts — funções puras ─────────────────────────────────────────────────
 
@@ -39,38 +39,33 @@ describe("normalizeEmail (#7581)", () => {
   });
 });
 
-describe("decideGate (#7581) — fail-closed + anti-probing", () => {
+describe("decideCadastroGate (#7581) — fail-closed + anti-probing", () => {
   it("sem e-mail → no_email", () => {
-    assert.deepEqual(decideGate(null, null), { state: "no_email" });
-    assert.deepEqual(decideGate("", "active"), { state: "no_email" });
+    assert.deepEqual(decideCadastroGate(null, null), { state: "no_email" });
+    assert.deepEqual(decideCadastroGate("", "active"), { state: "no_email" });
   });
   it("kitState 'active' → allowed (único caminho de acesso)", () => {
-    assert.deepEqual(decideGate("foo@bar.com", "active"), { state: "allowed" });
+    assert.deepEqual(decideCadastroGate("foo@bar.com", "active"), { state: "allowed" });
   });
   it("kitState 'inactive'/'unknown'/'verification_failed'/null → SEMPRE not_registered, nunca allowed", () => {
     for (const s of ["inactive", "unknown", "verification_failed", null] as const) {
-      assert.deepEqual(decideGate("foo@bar.com", s), { state: "not_registered" });
+      assert.deepEqual(decideCadastroGate("foo@bar.com", s), { state: "not_registered" });
     }
   });
   it("anti-probing: 'unknown' (não encontrado) e 'verification_failed' (API fora do ar) são INDISTINGUÍVEIS na decisão", () => {
-    assert.deepEqual(decideGate("x@y.com", "unknown"), decideGate("x@y.com", "verification_failed"));
+    assert.deepEqual(decideCadastroGate("x@y.com", "unknown"), decideCadastroGate("x@y.com", "verification_failed"));
   });
 });
 
-describe("extractSlug (#7581)", () => {
-  it("extrai o slug do path, sem barras", () => {
-    assert.equal(extractSlug("/2026-aniversario"), "2026-aniversario");
-    assert.equal(extractSlug("/2026-aniversario/"), "2026-aniversario");
-  });
-  it("path vazio → string vazia", () => {
-    assert.equal(extractSlug("/"), "");
-    assert.equal(extractSlug(""), "");
-  });
-});
+// `extractSlug` saiu no #7658: a resolução do path virou
+// `classifyRetrospectivaPath` (`scripts/lib/shared/retrospectiva-path.ts`),
+// compartilhada com os publishers e testada em
+// `test/retrospectiva-path-7658.test.ts` — inclusive a colisão /AAMM × /AAAA,
+// que é o caso que este teste local nunca cobriu.
 
 // ── handleGet — fiado com KV mock + fetchImpl injetado ──────────────────────
 
-const SLUG = "2026-aniversario";
+const SLUG = "aniversario2026"; // #7658: path novo, não mais o slug do repo
 const FULL_HTML = "<html><body><h1>completo</h1></body></html>";
 const TEASER_HTML = "<html><body><h1>trecho</h1></body></html>";
 
@@ -123,7 +118,7 @@ describe("handleGet — cenário 1: anônimo (sem ?email=) NUNCA recebe o comple
       [`article:${SLUG}:teaser`, TEASER_HTML],
     ]);
     const env = makeEnv(articles, { kitApiKey: "k" });
-    const res = await handleGet(req(`https://anual.diar.ia.br/${SLUG}`), env, kitFetch([]));
+    const res = await handleGet(req(`https://retrospectiva.diar.ia.br/${SLUG}`), env, kitFetch([]));
     const body = await res.text();
     assert.equal(res.status, 200);
     assert.ok(body.includes("trecho"));
@@ -136,7 +131,7 @@ describe("handleGet — cenário 2: e-mail ATIVO no Kit → completo (#7581)", (
     const articles: MockKV = new Map([[`article:${SLUG}`, FULL_HTML]]);
     const env = makeEnv(articles, { kitApiKey: "k" });
     const res = await handleGet(
-      req(`https://anual.diar.ia.br/${SLUG}?email=ativo@x.com`),
+      req(`https://retrospectiva.diar.ia.br/${SLUG}?email=ativo@x.com`),
       env,
       kitFetch(["ativo@x.com"]),
     );
@@ -153,9 +148,9 @@ describe("handleGet — cenário 3: e-mail NÃO encontrado no Kit → MESMA resp
       [`article:${SLUG}:teaser`, TEASER_HTML],
     ]);
     const env = makeEnv(articles, { kitApiKey: "k" });
-    const semEmail = await handleGet(req(`https://anual.diar.ia.br/${SLUG}`), env, kitFetch([]));
+    const semEmail = await handleGet(req(`https://retrospectiva.diar.ia.br/${SLUG}`), env, kitFetch([]));
     const naoCadastrado = await handleGet(
-      req(`https://anual.diar.ia.br/${SLUG}?email=naocadastrado@x.com`),
+      req(`https://retrospectiva.diar.ia.br/${SLUG}?email=naocadastrado@x.com`),
       env,
       kitFetch([]),
     );
@@ -172,7 +167,7 @@ describe("handleGet — cenário 4: falha de verificação (Kit fora do ar) → 
     ]);
     const env = makeEnv(articles, { kitApiKey: "k" });
     const res = await handleGet(
-      req(`https://anual.diar.ia.br/${SLUG}?email=alguem@x.com`),
+      req(`https://retrospectiva.diar.ia.br/${SLUG}?email=alguem@x.com`),
       env,
       kitFetchDown(),
     );
@@ -188,7 +183,7 @@ describe("handleGet — cenário 4: falha de verificação (Kit fora do ar) → 
       [`article:${SLUG}:teaser`, TEASER_HTML],
     ]);
     const env = makeEnv(articles, {}); // sem kitApiKey
-    const res = await handleGet(req(`https://anual.diar.ia.br/${SLUG}?email=alguem@x.com`), env, kitFetch([]));
+    const res = await handleGet(req(`https://retrospectiva.diar.ia.br/${SLUG}?email=alguem@x.com`), env, kitFetch([]));
     const body = await res.text();
     assert.ok(body.includes("trecho"));
     assert.ok(!body.includes("<h1>completo</h1>"));
@@ -199,7 +194,7 @@ describe("handleGet — cenário 5: ausência de trecho no KV NUNCA cai no compl
   it("sem article:{slug}:teaser no KV → paywall seco dedicado, nunca o HTML completo", async () => {
     const articles: MockKV = new Map([[`article:${SLUG}`, FULL_HTML]]); // SEM :teaser
     const env = makeEnv(articles, { kitApiKey: "k" });
-    const res = await handleGet(req(`https://anual.diar.ia.br/${SLUG}`), env, kitFetch([]));
+    const res = await handleGet(req(`https://retrospectiva.diar.ia.br/${SLUG}`), env, kitFetch([]));
     const body = await res.text();
     assert.equal(res.status, 200);
     assert.ok(!body.includes("<h1>completo</h1>"));
@@ -210,7 +205,7 @@ describe("handleGet — cenário 5: ausência de trecho no KV NUNCA cai no compl
     const articles: MockKV = new Map(); // KV ARTICLES vazio
     const env = makeEnv(articles, { kitApiKey: "k" });
     const res = await handleGet(
-      req(`https://anual.diar.ia.br/${SLUG}?email=ativo@x.com`),
+      req(`https://retrospectiva.diar.ia.br/${SLUG}?email=ativo@x.com`),
       env,
       kitFetch(["ativo@x.com"]),
     );
@@ -222,7 +217,7 @@ describe("handleGet — cenário 6: ?entrar=1 mostra form de login, sem ele cai 
   it("sem ?email= e sem ?entrar= → trecho", async () => {
     const articles: MockKV = new Map([[`article:${SLUG}:teaser`, TEASER_HTML]]);
     const env = makeEnv(articles, { kitApiKey: "k" });
-    const res = await handleGet(req(`https://anual.diar.ia.br/${SLUG}`), env, kitFetch([]));
+    const res = await handleGet(req(`https://retrospectiva.diar.ia.br/${SLUG}`), env, kitFetch([]));
     const body = await res.text();
     assert.ok(body.includes("trecho"));
   });
@@ -230,7 +225,7 @@ describe("handleGet — cenário 6: ?entrar=1 mostra form de login, sem ele cai 
   it("?entrar=1 → form de e-mail (login), não o trecho", async () => {
     const articles: MockKV = new Map([[`article:${SLUG}:teaser`, TEASER_HTML]]);
     const env = makeEnv(articles, { kitApiKey: "k" });
-    const res = await handleGet(req(`https://anual.diar.ia.br/${SLUG}?entrar=1`), env, kitFetch([]));
+    const res = await handleGet(req(`https://retrospectiva.diar.ia.br/${SLUG}?entrar=1`), env, kitFetch([]));
     const body = await res.text();
     assert.ok(!body.includes("<h1>trecho</h1>"));
     assert.ok(body.toLowerCase().includes("já é assinante") || body.toLowerCase().includes("entre com seu"));
@@ -240,7 +235,7 @@ describe("handleGet — cenário 6: ?entrar=1 mostra form de login, sem ele cai 
 describe("handleGet — sem slug (GET /) → 400 (#7581)", () => {
   it("path raiz → 400, slug obrigatório", async () => {
     const env = makeEnv(new Map(), { kitApiKey: "k" });
-    const res = await handleGet(req("https://anual.diar.ia.br/"), env, kitFetch([]));
+    const res = await handleGet(req("https://retrospectiva.diar.ia.br/"), env, kitFetch([]));
     assert.equal(res.status, 400);
   });
 });
@@ -251,9 +246,9 @@ describe("handleGet — rate limit do gate por IP (#7581)", () => {
       [`article:${SLUG}`, FULL_HTML],
       [`article:${SLUG}:teaser`, TEASER_HTML],
     ]);
-    const rateLimit: MockKV = new Map([["rl:anual-gate:1.2.3.4", "999"]]);
+    const rateLimit: MockKV = new Map([["rl:retrospectiva-gate:1.2.3.4", "999"]]);
     const env = makeEnv(articles, { kitApiKey: "k", rateLimit });
-    const request = new Request(`https://anual.diar.ia.br/${SLUG}?email=x@y.com`, {
+    const request = new Request(`https://retrospectiva.diar.ia.br/${SLUG}?email=x@y.com`, {
       headers: { "CF-Connecting-IP": "1.2.3.4" },
     });
     const res = await handleGet(request, env, kitFetch(["x@y.com"]));
@@ -264,7 +259,7 @@ describe("handleGet — rate limit do gate por IP (#7581)", () => {
     const articles: MockKV = new Map([[`article:${SLUG}`, FULL_HTML]]);
     const env = makeEnv(articles, { kitApiKey: "k" }); // sem rateLimit
     const res = await handleGet(
-      req(`https://anual.diar.ia.br/${SLUG}?email=ativo@x.com`),
+      req(`https://retrospectiva.diar.ia.br/${SLUG}?email=ativo@x.com`),
       env,
       kitFetch(["ativo@x.com"]),
     );

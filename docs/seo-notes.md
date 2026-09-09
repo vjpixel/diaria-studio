@@ -259,7 +259,7 @@ pra grafo de link e cópia de host:
   retry do cliente) incondicional pro host canônico quando `Host` não é o
   canônico, função pura `resolveWorkersDevRedirect`
   (`scripts/lib/shared/workers-dev-redirect.ts`), wired nos `fetch` handlers
-  ANTES de qualquer outra lógica. **`artigo-mensal` (mesmo padrão
+  ANTES de qualquer outra lógica. **`retrospectiva` (mesmo padrão
   `workers_dev = true` + `custom_domain`, sem passivo de link-legado)
   aplicado no mesmo mecanismo em #5104** — blind spot da auditoria original
   do #5097, não exclusão deliberada. `poll.diaria.workers.dev` fica DE FORA

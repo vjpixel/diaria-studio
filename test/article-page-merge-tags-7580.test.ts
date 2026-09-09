@@ -38,7 +38,7 @@ import {
   verifyNoMergeTagsInArticle,
 } from "../scripts/lib/mensal/build-article-page.ts";
 import { draftToEmail } from "../scripts/lib/mensal/monthly-render.ts";
-import { parseNamespaceId } from "../scripts/lib/mensal/artigo-mensal-kv-namespaces.ts";
+import { parseNamespaceId } from "../scripts/lib/shared/retrospectiva-kv-namespaces.ts";
 
 const PARAGRAFO_EMAIL =
   '<p style="margin:0 0 16px 0;font-family:\'Geist\', sans-serif;">Você está recebendo esse e-mail ' +

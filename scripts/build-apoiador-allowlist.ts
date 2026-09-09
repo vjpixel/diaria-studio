@@ -66,7 +66,7 @@ import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { buildApoiosData, computeRewardGroup, type ContactWithStatus, type RewardGroup } from "./studio-ui/studio-apoios.ts";
 import { uploadTextToWorkerKV, getTextFromWorkerKV } from "./lib/cloudflare-kv-upload.ts";
-import { readArtigoMensalNamespaceId } from "./lib/mensal/artigo-mensal-kv-namespaces.ts";
+import { readRetrospectivaNamespaceId } from "./lib/shared/retrospectiva-kv-namespaces.ts";
 import {
   diffTagMembership,
   evaluateTagBlastRadius,
@@ -89,7 +89,7 @@ const REPO_ROOT = resolve(__dir, "..");
  * ao push (achado do review da PR #7592).
  */
 export function apoiadorAllowlistKvNamespaceId(): string {
-  return readArtigoMensalNamespaceId("ALLOWLIST");
+  return readRetrospectivaNamespaceId("ALLOWLIST");
 }
 
 /** Chave única do KV ALLOWLIST — valor é o JSON array de e-mails. */

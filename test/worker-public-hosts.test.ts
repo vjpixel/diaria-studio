@@ -29,7 +29,7 @@ describe("hasRobotsRouteDispatch (#4782 achado 1)", () => {
     );
   });
 
-  it("casa dispatch real via === (idioma usado em workers/artigo-mensal e workers/arquivo)", () => {
+  it("casa dispatch real via === (idioma usado em workers/retrospectiva e workers/arquivo)", () => {
     const src = `if (url.pathname === "/robots.txt") { return robotsResponse(); }`;
     assert.equal(hasRobotsRouteDispatch(src), true);
   });

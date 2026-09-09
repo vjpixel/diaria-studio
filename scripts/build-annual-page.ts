@@ -24,8 +24,9 @@ import { tipoFromSlug } from "./lib/anual/annual-window.ts";
 import { AnnualTeaserCutError, buildAnnualHtml, buildAnnualTeaserHtml } from "./lib/anual/build-annual-page.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { DIARIA_ANUAL_URL } from "./lib/canonical-urls.ts";
-import { readAnnualNamespaceId } from "./lib/anual/annual-kv-namespaces.ts";
+import { DIARIA_RETROSPECTIVA_URL } from "./lib/canonical-urls.ts";
+import { readRetrospectivaNamespaceId } from "./lib/shared/retrospectiva-kv-namespaces.ts";
+import { anualPathFromSlug } from "./lib/shared/retrospectiva-path.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, "..");
@@ -35,11 +36,25 @@ const REPO_ROOT = resolve(__dir, "..");
  * `const`), mesma disciplina de `articleKvNamespaceId` em
  * `build-article-page.ts` — só resolve no caminho que grava. */
 export function annualKvNamespaceId(): string {
-  return readAnnualNamespaceId("ARTICLES");
+  return readRetrospectivaNamespaceId("ARTICLES");
 }
 
+/**
+ * Chave do KV a partir do SLUG do repo (`2026-aniversario`, `2026-janeiro`).
+ *
+ * #7658: derivada do PATH público (`anualPathFromSlug` → `aniversario2026` /
+ * `2026`), não mais do slug cru. Mesma função que o Worker usa pra classificar
+ * a URL — divergir aqui grava numa chave que ele nunca lê.
+ */
 export function annualKvKey(slug: string): string {
-  return `article:${slug}`;
+  const path = anualPathFromSlug(slug);
+  if (!path) {
+    throw new Error(
+      `slug "${slug}" não vira path de retrospectiva (esperado AAAA-janeiro ou AAAA-aniversario) — ` +
+        "recusando gravar sob uma chave que o Worker não leria.",
+    );
+  }
+  return `article:${path}`;
 }
 
 export function annualTeaserKvKey(slug: string): string {
@@ -117,7 +132,7 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
       if (!(e instanceof AnnualTeaserCutError)) throw e;
       log(`AVISO: trecho NÃO publicado — ${e.message}. O completo foi publicado normalmente.`);
     }
-    log(`push concluído. URL pública: ${DIARIA_ANUAL_URL}/${slug}`);
+    log(`push concluído. URL pública: ${DIARIA_RETROSPECTIVA_URL}/${anualPathFromSlug(slug)}`);
   } else if (!outPath) {
     log(`dry-run (default) — HTML gerado (${page.html.length} bytes), NENHUM push ao KV. Use --push para gravar.`);
   }
