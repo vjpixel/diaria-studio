@@ -516,7 +516,15 @@ export function isCallerInLinkedWorktree(cwd, execFn = execFileSync) {
     const opts = { encoding: "utf8", timeout: 10_000, cwd };
     const gitDir = resolvePath(cwd, execFn("git", ["rev-parse", "--git-dir"], opts).trim());
     const commonDir = resolvePath(cwd, execFn("git", ["rev-parse", "--git-common-dir"], opts).trim());
-    const norm = (p) => p.replaceAll("\\", "/").replace(/\/+$/, "");
+    // Lowercase também — fleet review #7849 item 2: no Windows, `git
+    // rev-parse` pode devolver o mesmo diretório com capitalização de drive
+    // distinta entre `--git-dir` e `--git-common-dir` dependendo de como o
+    // path foi resolvido, o que produziria uma divergência espúria (falso
+    // "está em worktree") mesmo apontando pro mesmo `.git`. Comparação
+    // case-insensitive é segura aqui: o risco inverso (dois `.git` REAIS
+    // distintos que só diferem em capitalização) não existe no filesystem
+    // do Windows, que é case-insensitive por padrão.
+    const norm = (p) => p.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
     return norm(gitDir) !== norm(commonDir);
   } catch {
     return null;
