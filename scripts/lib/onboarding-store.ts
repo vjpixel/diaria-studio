@@ -102,8 +102,15 @@ export interface OnboardingEntry {
    * origens: sem isto, uma coorte semeada à mão fica indistinguível de
    * uma detectada, e qualquer medição de "quantos o onboarding alcançou
    * sozinho" passa a contar recuperação manual como detecção.
+   *
+   * Sem `| null` de propósito (achado do review da PR #7683): nenhum
+   * produtor grava `null` — a detecção automática simplesmente não escreve
+   * o campo, e a semeadura só escreve string não-vazia (`planSeed` recusa
+   * `seededBy` em branco). Admitir `null` no tipo criaria um terceiro
+   * estado inalcançável, convidando consumidores a distinguir
+   * `=== undefined` de `== null` sem que a diferença exista.
    */
-  seeded_by?: string | null;
+  seeded_by?: string;
 }
 
 export interface OnboardingStore {

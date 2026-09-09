@@ -554,10 +554,14 @@ function parseArgs(argv: string[]): CliArgs {
         process.stderr.write(`[onboarding] --emails-file não encontrado: ${p}\n`);
         process.exit(2);
       }
-      // Uma linha por e-mail; `#` inicia comentário para o operador anotar a origem da lista.
+      // Uma linha por e-mail; `#` inicia comentário para o operador anotar a
+      // origem da lista. O `#` só conta como comentário no INÍCIO da linha ou
+      // depois de espaço — `#` é caractere válido em local-part (RFC 5322), e
+      // um `/#.*$/` cru truncaria `user#tag@x.com` para `user`, perdendo o
+      // domínio inteiro (achado do review da PR #7683).
       const linhas = readFileSync(p, "utf8")
         .split(/\r?\n/)
-        .map((l) => l.replace(/#.*$/, "").trim())
+        .map((l) => l.replace(/(^|\s)#.*$/, "").trim())
         .filter(Boolean);
       (args.seedEmails ??= []).push(...linhas);
     } else if (a === "--seed-email1-sent-at") args.seedEmail1SentAt = argv[++i];
@@ -638,6 +642,18 @@ async function main(): Promise<void> {
   const configPathAbs = args.configPath ?? resolve(ROOT, "platform.config.json");
   const backend: NewsletterSubscriberBackend = resolveNewsletterSubscriberBackend(configPathAbs);
 
+  // #7674: o modo dirigido resolve assinante por e-mail contra a API do Kit,
+  // então recusa qualquer outro backend. Fica ANTES da resolução de
+  // credencial de propósito: no caminho Beehiiv o script morreria primeiro
+  // com "BEEHIIV_API_KEY não definida", que manda o operador procurar uma
+  // credencial quando o problema real é o backend estar errado pra este modo.
+  if (args.seedEmails && args.seedEmails.length > 0 && backend !== "kit") {
+    process.stderr.write(
+      `[onboarding] modo dirigido exige backend de assinante "kit" (atual: "${backend}") — a resolução por e-mail é da API do Kit.\n`,
+    );
+    process.exit(2);
+  }
+
   let beeCfg: { ok: true; config: BeehiivConfig } | null = null;
   let kitCfg: KitConfig | null = null;
   if (backend === "kit") {
@@ -686,12 +702,8 @@ async function main(): Promise<void> {
   // Não detecta e não envia: escreve entradas e sai. O envio continua sendo
   // do caminho normal, que já tem todos os guards (#6043).
   if (args.seedEmails && args.seedEmails.length > 0) {
-    if (backend !== "kit") {
-      process.stderr.write(
-        `[onboarding] modo dirigido exige backend de assinante "kit" (atual: "${backend}") — a resolução por e-mail é da API do Kit.\n`,
-      );
-      process.exit(2);
-    }
+    // O guard de backend já rodou lá em cima, antes da resolução de
+    // credencial — aqui `backend === "kit"` e `kitCfg` está preenchido.
     const kitSubs = await listAllKitSubscribers(kitCfg!, { status: "all" });
     const kitByEmail = new Map<string, SeedKitSubscriber>();
     for (const s of kitSubs) {
@@ -703,18 +715,24 @@ async function main(): Promise<void> {
       });
     }
     const existingByEmail = new Map<string, SeedExistingEntry>();
-    for (const e of Object.values(store.entries)) {
-      existingByEmail.set(e.email.toLowerCase(), {
+    const existingById = new Map<string, SeedExistingEntry>();
+    for (const [chave, e] of Object.entries(store.entries)) {
+      const resumo: SeedExistingEntry = {
         subscription_id: e.subscription_id,
         email: e.email,
         email1_sent_at: e.email1_sent_at,
-      });
+      };
+      existingByEmail.set(e.email.toLowerCase(), resumo);
+      // Indexa pela CHAVE do mapa, não por `e.subscription_id`: são iguais
+      // no caminho normal, mas é a chave que o write vai sobrescrever.
+      existingById.set(chave, resumo);
     }
 
     const plan = planSeed({
       emails: args.seedEmails,
       kitByEmail,
       existingByEmail,
+      existingById,
       seedEmail1SentAt: args.seedEmail1SentAt ?? null,
       seededBy: args.seededBy ?? "",
     });

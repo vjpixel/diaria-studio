@@ -76,6 +76,22 @@ export interface SeedInput {
   /** Entradas já existentes no store, indexadas por e-mail minúsculo. */
   existingByEmail: Map<string, SeedExistingEntry>;
   /**
+   * As MESMAS entradas, indexadas por `subscription_id` — a CHAVE do mapa
+   * `entries` do store.
+   *
+   * Existe porque a dedup por e-mail sozinha tem um furo com consequência
+   * real (achado do review da PR #7683): o store é escrito em
+   * `entries[subscription_id]`, mas a checagem `ja_no_store` casava só por
+   * e-mail. Se alguém MUDA de e-mail no Kit (mesmo id, endereço novo), a
+   * entrada antiga continua guardada sob o e-mail ANTIGO — a busca por
+   * e-mail não acha, a recusa não dispara, e o `store.entries[id] = {...}`
+   * seguinte SOBRESCREVE o histórico de onboarding daquela pessoa
+   * (`email1_sent_at` volta a `null`). Na rodada seguinte ela é detectada
+   * como nova e recebe os 3 e-mails de novo — o #6043 em miniatura, chegando
+   * pelo descasamento id↔e-mail em vez de endereço duplicado.
+   */
+  existingById: Map<string, SeedExistingEntry>;
+  /**
    * ISO — quando o e-mail 1 JÁ saiu por outro canal (#7675: a data de
    * inscrição na sequence do Kit). `null` = a coorte não recebeu nada e
    * deve receber o e-mail 1 pelo caminho normal (#7665).
@@ -95,7 +111,9 @@ export type SeedRefusalReason =
   /** Já tem entrada no store — semear por cima é ambíguo, nunca implícito. */
   | "ja_no_store"
   /** `seededBy` vazio — a origem é obrigatória para auditoria posterior. */
-  | "seeded_by_ausente";
+  | "seeded_by_ausente"
+  /** `--seed-email1-sent-at` não é uma data ISO parseável. */
+  | "seed_email1_sent_at_invalido";
 
 export interface SeedRefusal {
   email: string;
@@ -116,6 +134,13 @@ export interface SeedPlannedEntry {
   seeded_by: string;
 }
 
+/**
+ * O tipo TUPLA VAZIA (`[]`) nos campos cruzados não é decoração: um
+ * `SeedPlannedEntry[]` de comprimento arbitrário **não é atribuível** a `[]`,
+ * então `return { ok: false, entries: <array não vazio>, ... }` não compila.
+ * É o compilador, e não convenção, garantindo o invariante que sustenta o
+ * tudo-ou-nada — "recusou ⇒ nada a escrever" e "aprovou ⇒ nada a recusar".
+ */
 export type SeedPlan =
   | { ok: true; entries: SeedPlannedEntry[]; refusals: [] }
   | { ok: false; entries: []; refusals: SeedRefusal[] };
@@ -149,6 +174,25 @@ export function isoToEpochSeconds(iso: string): number | null {
 export function planSeed(input: SeedInput): SeedPlan {
   const refusals: SeedRefusal[] = [];
   const entries: SeedPlannedEntry[] = [];
+
+  // O `created_at` vindo do Kit já é validado por e-mail lá embaixo; este
+  // valor vem do OPERADOR e não tinha guard nenhum (achado do review da PR
+  // #7683). Data malformada não quebra o agendamento (D+3/D+10 saem de
+  // `created_at`), mas corrompe justamente o registro de auditoria que este
+  // campo existe pra ser.
+  if (input.seedEmail1SentAt != null && isoToEpochSeconds(input.seedEmail1SentAt) == null) {
+    return {
+      ok: false,
+      entries: [],
+      refusals: [
+        {
+          email: "",
+          reason: "seed_email1_sent_at_invalido",
+          detalhe: `não é uma data ISO parseável: ${JSON.stringify(input.seedEmail1SentAt)}`,
+        },
+      ],
+    };
+  }
 
   if (input.seededBy.trim() === "") {
     // Recusa de lista inteira, não por e-mail: sem origem, nenhuma entrada
@@ -198,6 +242,23 @@ export function planSeed(input: SeedInput): SeedPlan {
         email,
         reason: "nao_encontrado_no_kit",
         detalhe: `created_at inválido: ${JSON.stringify(kit.created_at)}`,
+      });
+      continue;
+    }
+
+    // Segunda checagem de duplicata, por CHAVE do store — pega quem trocou
+    // de e-mail no Kit e ficaria invisível à busca por e-mail acima. Sem
+    // isto, o write sobrescreveria o histórico e a pessoa receberia os 3
+    // e-mails de novo (ver docstring de `existingById`).
+    const porId = input.existingById.get(String(kit.id));
+    if (porId) {
+      refusals.push({
+        email,
+        reason: "ja_no_store",
+        detalhe:
+          `id ${kit.id} já está no store sob o e-mail ${porId.email}` +
+          (porId.email1_sent_at ? ` (e-mail 1 enviado em ${porId.email1_sent_at})` : " (e-mail 1 pendente)") +
+          " — provável troca de endereço no Kit; semear sobrescreveria o histórico",
       });
       continue;
     }

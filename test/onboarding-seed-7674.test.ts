@@ -30,6 +30,9 @@ function kitMap(...subs: SeedKitSubscriber[]): Map<string, SeedKitSubscriber> {
 function storeMap(...es: SeedExistingEntry[]): Map<string, SeedExistingEntry> {
   return new Map(es.map((e) => [e.email.toLowerCase(), e]));
 }
+function idMap(...es: SeedExistingEntry[]): Map<string, SeedExistingEntry> {
+  return new Map(es.map((e) => [e.subscription_id, e]));
+}
 
 test("normalizeSeedEmail apara espaço e baixa a caixa", () => {
   assert.equal(normalizeSeedEmail("  Pedro@Example.COM \n"), "pedro@example.com");
@@ -45,6 +48,7 @@ test("#7665: coorte sem nada recebido é semeada com e-mail 1 PENDENTE", () => {
     emails: ["orfao1@x.com", "orfao2@x.com"],
     kitByEmail: kitMap(kit("orfao1@x.com", { id: 1 }), kit("orfao2@x.com", { id: 2 })),
     existingByEmail: storeMap(),
+    existingById: idMap(),
     seedEmail1SentAt: null,
     seededBy: "#7665",
   });
@@ -63,6 +67,7 @@ test("#7675: coorte que já recebeu o e-mail 1 pelo Kit entra com a data preench
     emails: ["rampa@x.com"],
     kitByEmail: kitMap(kit("rampa@x.com", { id: 7, created_at: "2026-09-05T14:00:00Z" })),
     existingByEmail: storeMap(),
+    existingById: idMap(),
     seedEmail1SentAt: "2026-09-05T14:02:00Z",
     seededBy: "#7675",
   });
@@ -79,6 +84,7 @@ test("subscription_id semeado é o id NUMÉRICO do Kit, nunca um sub_... da Beeh
     emails: ["a@x.com"],
     kitByEmail: kitMap(kit("a@x.com", { id: 4264399626 })),
     existingByEmail: storeMap(),
+    existingById: idMap(),
     seedEmail1SentAt: null,
     seededBy: "#7665",
   });
@@ -93,6 +99,7 @@ test("assinante não-active é recusado — complained/bounced nunca é semeado"
       emails: ["supri@x.com"],
       kitByEmail: kitMap(kit("supri@x.com", { state })),
       existingByEmail: storeMap(),
+    existingById: idMap(),
       seedEmail1SentAt: null,
       seededBy: "#7665",
     });
@@ -106,6 +113,7 @@ test("e-mail ausente do Kit é recusado, e a recusa nomeia o endereço", () => {
     emails: ["existe@x.com", "fantasma@x.com"],
     kitByEmail: kitMap(kit("existe@x.com")),
     existingByEmail: storeMap(),
+    existingById: idMap(),
     seedEmail1SentAt: null,
     seededBy: "#7665",
   });
@@ -121,6 +129,7 @@ test("duplicata na lista de entrada aborta", () => {
     emails: ["a@x.com", "A@X.com"],
     kitByEmail: kitMap(kit("a@x.com")),
     existingByEmail: storeMap(),
+    existingById: idMap(),
     seedEmail1SentAt: null,
     seededBy: "#7665",
   });
@@ -133,6 +142,7 @@ test("seededBy vazio aborta — entrada sem origem não é auditável depois", (
     emails: ["a@x.com"],
     kitByEmail: kitMap(kit("a@x.com")),
     existingByEmail: storeMap(),
+    existingById: idMap(),
     seedEmail1SentAt: null,
     seededBy: "   ",
   });
@@ -145,6 +155,7 @@ test("todas as recusas são reportadas juntas, não só a primeira", () => {
     emails: ["fantasma@x.com", "supri@x.com", "ok@x.com"],
     kitByEmail: kitMap(kit("supri@x.com", { state: "complained" }), kit("ok@x.com")),
     existingByEmail: storeMap(),
+    existingById: idMap(),
     seedEmail1SentAt: null,
     seededBy: "#7665",
   });
@@ -163,6 +174,11 @@ test("REGRESSÃO #7674: lista com endereço JÁ processado aborta o run inteiro,
       email: "javeio@x.com",
       email1_sent_at: "2026-09-05T12:05:00Z",
     }),
+    existingById: idMap({
+      subscription_id: "2",
+      email: "javeio@x.com",
+      email1_sent_at: "2026-09-05T12:05:00Z",
+    }),
     seedEmail1SentAt: null,
     seededBy: "#7665",
   });
@@ -175,11 +191,67 @@ test("REGRESSÃO #7674: lista com endereço JÁ processado aborta o run inteiro,
   assert.match(r.detalhe ?? "", /2026-09-05T12:05:00Z/, "o detalhe diz quando o e-mail 1 já saiu");
 });
 
+test("REGRESSÃO: quem TROCOU DE E-MAIL no Kit é pego pelo id, não escapa da dedup", () => {
+  // A pessoa foi onboardada como old@x.com (kit id 555). Depois trocou o
+  // endereço no Kit para new@x.com — mesmo id. O store continua guardando a
+  // entrada sob o e-mail ANTIGO, então a busca por e-mail não acha nada.
+  // Sem a checagem por id, `store.entries["555"] = {...}` sobrescreveria o
+  // histórico e ela receberia os 3 e-mails de novo.
+  const plan = planSeed({
+    emails: ["new@x.com"],
+    kitByEmail: kitMap(kit("new@x.com", { id: 555 })),
+    existingByEmail: storeMap({
+      subscription_id: "555",
+      email: "old@x.com",
+      email1_sent_at: "2026-08-25T12:05:00Z",
+    }),
+    existingById: idMap({
+      subscription_id: "555",
+      email: "old@x.com",
+      email1_sent_at: "2026-08-25T12:05:00Z",
+    }),
+    seedEmail1SentAt: null,
+    seededBy: "#7665",
+  });
+
+  assert.equal(plan.ok, false, "o id colide com uma entrada existente — não pode semear");
+  assert.equal(plan.entries.length, 0);
+  assert.equal(plan.refusals[0].reason, "ja_no_store");
+  assert.match(plan.refusals[0].detalhe ?? "", /old@x\.com/, "a recusa mostra sob qual e-mail o id já está");
+});
+
+test("--seed-email1-sent-at malformado aborta antes de tocar em qualquer e-mail", () => {
+  const plan = planSeed({
+    emails: ["a@x.com"],
+    kitByEmail: kitMap(kit("a@x.com")),
+    existingByEmail: storeMap(),
+    existingById: idMap(),
+    seedEmail1SentAt: "25/08/2026",
+    seededBy: "#7675",
+  });
+  assert.equal(plan.ok, false, "data do operador não pode entrar no store sem validação");
+  assert.equal(plan.refusals[0].reason, "seed_email1_sent_at_invalido");
+  assert.equal(plan.entries.length, 0);
+});
+
+test("--seed-email1-sent-at ISO válido passa", () => {
+  const plan = planSeed({
+    emails: ["a@x.com"],
+    kitByEmail: kitMap(kit("a@x.com")),
+    existingByEmail: storeMap(),
+    existingById: idMap(),
+    seedEmail1SentAt: "2026-09-05T14:02:00Z",
+    seededBy: "#7675",
+  });
+  assert.equal(plan.ok, true);
+});
+
 test("render do dry-run imprime a lista NOMINAL, não só a contagem", () => {
   const plan = planSeed({
     emails: ["um@x.com", "dois@x.com"],
     kitByEmail: kitMap(kit("um@x.com", { id: 1 }), kit("dois@x.com", { id: 2 })),
     existingByEmail: storeMap(),
+    existingById: idMap(),
     seedEmail1SentAt: null,
     seededBy: "#7665",
   });
@@ -194,6 +266,7 @@ test("render de plano abortado lista cada recusa com motivo", () => {
     emails: ["fantasma@x.com"],
     kitByEmail: kitMap(),
     existingByEmail: storeMap(),
+    existingById: idMap(),
     seedEmail1SentAt: null,
     seededBy: "#7665",
   });
