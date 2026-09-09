@@ -293,6 +293,14 @@ test("nome de programa citado é token, não texto (#7848)", async () => {
   assert.equal(blocked(`echo "npm" "ci"`), false, "dois argumentos citados adjacentes não são um comando");
   assert.equal(blocked(`assert_equal "npm" "ci"`), false, "assertion com dois argumentos citados");
   assert.equal(blocked(`printf "%s" "npm" "install"`), false, "printf com argumentos citados");
+
+  // A restrição de posição vale só para o `npm`: dois argumentos citados não se
+  // fundem num WRAPPER, então lá o token citado conta em qualquer posição — e
+  // `sudo 'bash' -c "npm ci"` segue detectado (achado do review do #7848).
+  assert.ok(blocked(`sudo 'bash' -c "npm ci"`), "wrapper citado atrás de sudo");
+  assert.ok(blocked(`env FOO=bar 'bash' -c "npm ci"`), "wrapper citado atrás de env");
+  assert.ok(blocked(`sudo -u foo 'bash' -c "npm ci"`), "wrapper citado atrás de sudo com flag");
+  assert.equal(blocked(`echo "bash" "-c"`), false, "argumentos citados não viram wrapper");
 });
 
 // `maskQuotedSpans` precisa preservar OFFSET, não só esconder texto: o payload

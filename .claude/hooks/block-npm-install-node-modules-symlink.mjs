@@ -86,7 +86,11 @@ export function stripHeredocSpans(command) {
 //
 // Nome de programa citado (`"npm" ci`, `'bash' -c "..."`) NÃO é exceção: um
 // span citado sem espaço dentro é um token, não prosa, e fica visível — ver
-// `maskQuotedSpans`.
+// `maskQuotedSpans`. Para o `npm` isso vale só no INÍCIO do segmento (senão
+// `echo "npm" "ci"` viraria um comando que ninguém invocou); para o wrapper
+// vale em qualquer posição, já que dois argumentos citados não se fundem num
+// `bash -c`. Custo que sobra dessa assimetria: `sudo "npm" ci` — o nome do
+// NPM citado atrás de um prefixo — não é detectado.
 //
 // Limitações honestas que sobram, todas herdadas de tratar aspas como texto:
 // um caminho citado COM espaço (`"C:/Program Files/nodejs/npm.cmd" ci`),
@@ -101,7 +105,7 @@ export function stripHeredocSpans(command) {
  * preservando comprimento e offsets — assim uma regex casa só no que está fora
  * de aspas, e `readQuotedString` ainda lê o texto original no mesmo índice.
  */
-export function maskQuotedSpans(segment) {
+export function maskQuotedSpans(segment, { tokensAnywhere = false } = {}) {
   const text = String(segment);
   let masked = "";
   let i = 0;
@@ -117,13 +121,17 @@ export function maskQuotedSpans(segment) {
       // Só no início, e não em qualquer posição: dois argumentos citados
       // adjacentes de um outro programa (`echo "npm" "ci"`) se juntavam num
       // `npm ci` que ninguém invocou — falso positivo achado no mesmo review.
+      // `tokensAnywhere` levanta essa restrição para quem procura o WRAPPER
+      // (`sudo 'bash' -c "npm ci"`): ali o nome buscado é `bash`/`sh`/…, e
+      // dois argumentos citados não se fundem num wrapper — só o `npm` sofria
+      // desse falso positivo.
       // Span COM espaço é prosa (`-m "roda npm ci"`) e segue mascarado.
       const width = quoted.end - i;
       // `padEnd`/`slice` porque escape (`\"`) ocupa 2 caracteres no original e
       // 1 no valor lido: sem isso o span encolheria e todo offset à direita
       // sairia do lugar.
       const token = ` ${quoted.value} `.slice(0, width).padEnd(width, " ");
-      const isProgramName = i === 0 && !/\s/.test(quoted.value);
+      const isProgramName = (tokensAnywhere || i === 0) && !/\s/.test(quoted.value);
       masked += isProgramName ? token : " ".repeat(width);
       i = quoted.end;
       continue;
@@ -221,7 +229,7 @@ function splitTopLevel(text) {
  */
 export function shellWrapperPayload(segment) {
   const text = String(segment);
-  const m = SHELL_WRAPPER_FLAG_RE.exec(maskQuotedSpans(text));
+  const m = SHELL_WRAPPER_FLAG_RE.exec(maskQuotedSpans(text, { tokensAnywhere: true }));
   if (!m) return null;
   let i = m.index + m[0].length;
   while (i < text.length && /\s/.test(text[i])) i++;
