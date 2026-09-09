@@ -36,6 +36,31 @@ FAIL-SOFT/graduada — uma checagem indeterminada não derruba as outras:
       (é exatamente o cenário reproduzido no #7537: sessão rodou, relatório
       nunca foi escrito).
 
+      **mtime fora da janela se divide em DOIS casos com peso de evidência
+      diferente (achado da investigação do #7641, 09/09/2026)** — mtime é o
+      horário real da ÚLTIMA ESCRITA no disco, então ele nunca "recua"
+      sozinho:
+        - mtime ANTERIOR ao início da janela → relatório genuinamente
+          obsoleto (reaproveitamento de arquivo de um tick anterior, sem
+          nada de novo ter sido escrito nesta sessão) → `fabrication_suspected`,
+          o mesmo sinal de sempre.
+        - mtime POSTERIOR ao fim da janela → só pode vir de uma escrita
+          REAL e mais recente (não de arquivo velho reaproveitado, que
+          preservaria mtime antigo). A sessão #604fba55-476a-41a1-9432-
+          1194484f4f31 citada no #7641 é exatamente este caso: o log do
+          Hermes (`~/.hermes/logs/agent.log.1`, sessão
+          `cron_5d791ef6fc2c_20260908_064744`) confirma um `write_file`
+          real de 611 bytes às 09:51:26 UTC — no mesmo segundo do mtime do
+          alarme — mas aquele tick nunca registrou
+          `data/sessions/continuo-*.json` para si mesmo (provavelmente por
+          ter terminado cedo após falhas de credencial no início). O
+          relatório não era obsoleto — a sessão "mais recente" escolhida
+          por `latest_continuo_session` simplesmente não era a que o
+          escreveu. Sem outro registro de sessão pra correlacionar, não dá
+          pra confirmar NEM descartar fabricação só pelo mtime →
+          `indeterminate` (cannot-verify), nunca fabricação presumida por
+          default nem "ok" silencioso.
+
   (b) CONTAGEM DE ISSUES — o relatório persistido pode conter uma alegação
       numérica em prosa (ex: "n=4 issues", "4 issues classificadas"); quando
       existe, compara contra a contagem REAL de `gh issue list --state open`
@@ -305,15 +330,53 @@ def check_report_freshness(
                 "sem sinal de fabricacao."
             ),
         }
+    if mtime < window_start:
+        # Relatorio é MAIS ANTIGO que a janela da sessao correlacionada —
+        # exatamente o padrao do #7537 (sessao rodou, nao escreveu nada, o
+        # arquivo obsoleto de um tick anterior ficou por ali sendo tratado
+        # como se fosse deste tick). mtime nunca "recua" sozinho — um
+        # arquivo reaproveitado carrega o horario da ULTIMA escrita real,
+        # que aqui é anterior ao inicio da sessao. Sinal forte.
+        return {
+            "check": "report_freshness",
+            "status": "fabrication_suspected",
+            "details": (
+                f"relatorio com mtime {mtime.isoformat()} ANTERIOR a janela esperada "
+                f"[{window_start.isoformat()}, {window_end.isoformat()}] da sessao "
+                f"continuo registrada ({session_ref}) — relatorio obsoleto (de um tick "
+                "anterior) sendo tratado como o deste tick, apesar de uma sessao "
+                "recente ter rodado."
+            ),
+        }
+    # mtime > window_end: relatorio é MAIS NOVO que a janela da sessao
+    # correlacionada. Achado ao vivo do #7641 (investigacao da sessao
+    # 604fba55-476a-41a1-9432-1194484f4f31): um mtime "fora da janela pra
+    # frente" nao é o mesmo sinal que "pra tras" — mtime é o horario real
+    # da ULTIMA ESCRITA, entao um relatorio mais novo que a sessao
+    # correlacionada só pode ter sido escrito por uma atividade REAL e
+    # POSTERIOR (write_file de verdade, confirmado no log do Hermes daquela
+    # ocorrencia) — nunca por reaproveitamento de arquivo velho, que
+    # preservaria um mtime antigo, nao um mais novo. O que isso demonstra é
+    # que a sessao "mais recente" escolhida por `latest_continuo_session`
+    # nao é necessariamente a que escreveu o relatorio: um tick pode
+    # concluir (inclusive escrever o relatorio) sem nunca registrar
+    # `data/sessions/continuo-*.json` para si mesmo (ex: tick curto que
+    # falha cedo em credencial e só faz o minimo). Sem outra sessao
+    # registrada pra correlacionar a esse mtime mais novo, nao dá pra
+    # provar NEM refutar fabricacao — cannot-verify, nunca "ok" silencioso
+    # nem fabricacao presumida por default.
     return {
         "check": "report_freshness",
-        "status": "fabrication_suspected",
+        "status": "indeterminate",
         "details": (
-            f"relatorio com mtime {mtime.isoformat()} FORA da janela esperada "
+            f"relatorio com mtime {mtime.isoformat()} POSTERIOR a janela esperada "
             f"[{window_start.isoformat()}, {window_end.isoformat()}] da sessao "
-            f"continuo registrada ({session_ref}) — relatorio obsoleto (de um tick "
-            "anterior) sendo tratado como o deste tick, apesar de uma sessao "
-            "recente ter rodado."
+            f"continuo registrada ({session_ref}) — mtime mais novo so pode vir de "
+            "escrita real e posterior (nao de reaproveitamento de arquivo antigo, "
+            "que preservaria mtime antigo), mas nenhuma sessao registrada cobre esse "
+            "horario — provavel tick que concluiu sem registrar "
+            "`data/sessions/continuo-*.json` para si (achado #7641). Nao é possivel "
+            "confirmar nem descartar fabricacao so pelo mtime; cannot-verify."
         ),
     }
 
