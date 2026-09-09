@@ -662,9 +662,26 @@ export function everyActiveRoundLacksMergeAuthority(scan) {
  * despachado pela rodada", e ele existe de graça: `session-beacon.mjs`
  * registra a sessão do checkout PRINCIPAL como `interactive`, e recusa
  * explicitamente registrar quem roda de um worktree vinculado — que é
- * exatamente como todo subagente implementador roda (`isolation:
- * "worktree"`). Um subagente, portanto, NUNCA tem registro `interactive`, e
- * a leniência do #7702 não o alcança.
+ * exatamente como o implementador do fluxo contínuo roda (`claude -p` via
+ * `claude-openrouter.sh`, `isolation: "worktree"`). Esse subagente não tem
+ * registro `interactive`, e a leniência do #7702 não o alcança.
+ *
+ * **O alcance dessa garantia é o fluxo contínuo, não "subagente" em geral —
+ * não generalizar (#7711).** Há um SEGUNDO caminho de dispatch, a ferramenta
+ * `Agent` (in-process), cujo comportamento diverge: medido em 09/09/2026,
+ * um subagente despachado por ela não ganha registro próprio, e há indício
+ * de que as chamadas dele carregam o `session_id` da sessão-MÃE — nesse caso
+ * ele apareceria a esta função como a mãe, com o registro dela emprestado.
+ * O docblock do topo deste arquivo afirma o contrário ("rodam com
+ * `session_id` PRÓPRIO"); a divergência está aberta na #7711 e é
+ * PRÉ-EXISTENTE a esta função (se confirmada, atinge o discriminador do
+ * #5716 inteiro, não só esta leniência).
+ *
+ * Por que isso não bloqueia o #7702: a leniência só liga quando a única
+ * rodada ativa é `continuo`, que dispacha por `claude -p` e omite a
+ * ferramenta `Agent` do `--tools`. E uma sessão `interactive` sem rodada
+ * ativa nenhuma já podia mergear sem passar por aqui (#5251) — subagente de
+ * mãe interativa nunca esteve coberto por este guard, com ou sem #7702.
  *
  * **Falso negativo é o lado seguro, e é conhecido:** uma sessão interativa
  * rodando a partir de um worktree também não emite beacon (consequência
@@ -893,7 +910,15 @@ export function extractGhPrMergeTargetPr(command) {
  *   - `mergeLockHolder` — resultado de `readMergeLockHolder`;
  *   - `scanDegraded` — `true` quando a varredura que produziu
  *     `activeCoordinatorSessionIds` não é confiável (ver
- *     `readActiveCoordinatorScan`, Finding B).
+ *     `readActiveCoordinatorScan`, Finding B);
+ *   - `roundsLackMergeAuthority` (#7702) — `true` quando NENHUMA rodada
+ *     ativa tem autoridade de merge (`everyActiveRoundLacksMergeAuthority`);
+ *   - `callerIsLiveInteractive` (#7702) — `true` quando o chamador tem
+ *     registro `interactive` vivo (`readLiveInteractiveRegistrationFor`).
+ *
+ * Todos comparados com `=== true`/`!== true` ESTRITO, nunca por truthiness:
+ * é isso que dá ao `undefined` de um chamador que não popula o campo a
+ * semântica segura de "não libera" (comportamento pré-#7702 preservado).
  */
 /**
  * Classifica a CAUSA de um bloqueio (#6497) — mesma lógica de

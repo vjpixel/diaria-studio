@@ -39,6 +39,7 @@ import {
   sessionsDir,
   machineTag,
 } from "../.claude/hooks/block-gh-pr-merge-subagent.mjs";
+import { grantMergeWindow, requireCoordinatorKind } from "../scripts/lib/session-registry.ts";
 
 const HOOK_PATH = fileURLToPath(
   new URL("../.claude/hooks/block-gh-pr-merge-subagent.mjs", import.meta.url),
@@ -221,6 +222,70 @@ describe("#7702 readLiveInteractiveRegistrationFor", () => {
   });
 });
 
+describe("#7702 grantMergeWindow / requireCoordinatorKind — continuo não concede o que não tem", () => {
+  const roots: string[] = [];
+  after(() => {
+    for (const r of roots) rmSync(r, { recursive: true, force: true });
+  });
+
+  function makeRoot(): string {
+    const root = join(tmpdir(), `hook-7702-grant-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    roots.push(root);
+    mkdirSync(join(root, "data", "sessions"), { recursive: true });
+    spawnSync("git", ["init", "-q"], { cwd: root });
+    return root;
+  }
+
+  /** Registro em disco da concedente — `grantMergeWindow` escreve a
+   *  concessão DENTRO do record dela, então sem arquivo sai
+   *  `no-op-session-missing` antes de qualquer checagem de kind. */
+  function writeCoordinatorRecord(root: string, kind: string, sessionId: string) {
+    writeFileSync(
+      join(root, "data", "sessions", `${kind}-${machineTag()}-${sessionId}.json`),
+      JSON.stringify({
+        kind,
+        sessionId,
+        machineTag: machineTag(),
+        startedAt: new Date().toISOString(),
+        lastHeartbeat: new Date().toISOString(),
+      }),
+      "utf8",
+    );
+  }
+
+  it("continuo tentando conceder janela -> recusa 'not-a-coordinator'", () => {
+    // Antes do #7702 isto SUCEDIA: continuo era coordenadora e podia
+    // conceder uma janela de merge que ela própria nunca teve autoridade
+    // pra dar. Era o que sustentava a ficção de que "peça a janela à
+    // coordenadora ativa" era um caminho real quando a única ativa era o cron.
+    const root = makeRoot();
+    writeCoordinatorRecord(root, "continuo", "cron-1");
+    const res = grantMergeWindow(root, "continuo", "cron-1", "sess-interativa", { pr: 7696 });
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, "not-a-coordinator");
+  });
+
+  it("overnight e develop seguem concedendo normalmente", () => {
+    for (const kind of ["overnight", "develop"] as const) {
+      const root = makeRoot();
+      writeCoordinatorRecord(root, kind, `coord-${kind}`);
+      const res = grantMergeWindow(root, kind, `coord-${kind}`, "sess-interativa", { pr: 7696 });
+      assert.equal(res.ok, true, `${kind} deveria continuar podendo conceder janela`);
+    }
+  });
+
+  it("o gate de CLI concorda com grantMergeWindow — não aceita um kind que a função abaixo recusa", () => {
+    // O gate dizia "só overnight/develop/continuo podem executar esta
+    // operação" e deixava passar `--kind continuo`, que então falhava mais
+    // fundo com `not-a-coordinator`. Validação afirmando permitido +
+    // execução recusando = a inconsistência que este teste tranca.
+    assert.equal(requireCoordinatorKind("overnight"), "overnight");
+    assert.equal(requireCoordinatorKind("develop"), "develop");
+    assert.throws(() => requireCoordinatorKind("continuo"), /não tem autoridade de merge/);
+    assert.throws(() => requireCoordinatorKind("interactive"), /não tem autoridade de merge/);
+  });
+});
+
 describe("#7702 entrypoint CLI — cenário real da PR #7696", () => {
   const roots: string[] = [];
   after(() => {
@@ -298,7 +363,12 @@ describe("#7702 entrypoint CLI — cenário real da PR #7696", () => {
     writeContinuoCron(root, now);
     writeFileSync(
       join(sessionsDir(root), ".merge-lock.json"),
-      JSON.stringify({ sessionId: "subagente", acquiredAt: now, pr: 7696 }),
+      // `heldBy`, não `sessionId` — é o campo real de `MergeLockRecord`. Com
+      // a chave errada o lock parseia como CORROMPIDO e o bloqueio vinha do
+      // ramo `lock-held-other`, não da porta de identidade que este teste diz
+      // provar: passava pelo motivo errado, e um bypass real do #5716 não
+      // seria detectado aqui (achado do pr-test-analyzer nesta PR).
+      JSON.stringify({ heldBy: "subagente", acquiredAt: now, pr: 7696 }),
       "utf8",
     );
 

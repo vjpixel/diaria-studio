@@ -285,8 +285,17 @@ export function isCoordinatorKind(kind: string): boolean {
  */
 export const MERGE_AUTHORITY_SESSION_KINDS: readonly SessionKind[] = ["overnight", "develop"];
 
-/** `true` quando `kind` decide merge — e portanto pode conceder janela (#7702). */
-export function hasMergeAuthorityKind(kind: string): boolean {
+/**
+ * `true` quando `kind` decide merge — e portanto pode conceder janela (#7702).
+ *
+ * Type predicate (diferente de `isCoordinatorKind`, que devolve `boolean` cru):
+ * depois de um `if (hasMergeAuthorityKind(k))` o TypeScript sabe que `k` é um
+ * dos kinds com autoridade, em vez de seguir como `string`. Não muda call site
+ * nenhum; só deixa de jogar fora a informação na saída.
+ */
+export function hasMergeAuthorityKind(
+  kind: string,
+): kind is (typeof MERGE_AUTHORITY_SESSION_KINDS)[number] {
   return (MERGE_AUTHORITY_SESSION_KINDS as readonly string[]).includes(kind);
 }
 
@@ -5027,7 +5036,10 @@ export interface GrantMergeResult {
  *   propriedade que o #5716 protege (a coordenadora decide quando entra
  *   merge) em vez de contorná-la; sem isso, "conceder a si mesma" seria só um
  *   relabel com outro nome.
- * - **`not-a-coordinator`** — só overnight/develop/continuo concedem.
+ * - **`not-a-coordinator`** — só overnight/develop concedem
+ *   (`MERGE_AUTHORITY_SESSION_KINDS`). `continuo` deixou de qualificar no
+ *   #7702: é rodada, mas não decide merge. O nome do motivo ficou por
+ *   retrocompatibilidade de quem faz match nele.
  */
 export function grantMergeWindow(
   repoRoot: string,
@@ -5385,16 +5397,28 @@ export function requireKind(value: string | undefined): SessionKind {
 }
 
 /**
- * Como `requireKind`, mas recusa `interactive` (#6168) — usada nos
- * subcomandos que só fazem sentido pra uma coordenadora. Hoje: `grant-merge`
- * (só coordenadora concede janela, #6296).
+ * Como `requireKind`, mas exige AUTORIDADE DE MERGE — usada nos subcomandos
+ * que só fazem sentido pra quem decide merge. Hoje: `grant-merge` (#6296).
+ *
+ * **#7702: passou a checar `hasMergeAuthorityKind`, não `isCoordinatorKind`.**
+ * Enquanto checava coordenadora, este gate aceitava `--kind continuo` e dizia
+ * na própria mensagem que continuo podia — mas `grantMergeWindow` logo abaixo
+ * recusa com `not-a-coordinator`. O operador passava a validação que o
+ * afirmava permitido e falhava adiante, com uma mensagem que contradizia a
+ * primeira (achado do pr-test-analyzer nesta PR). O nome da função ficou por
+ * retrocompatibilidade de import; o critério é autoridade de merge.
  */
 export function requireCoordinatorKind(value: string | undefined): SessionKind {
   const kind = requireKind(value);
-  if (!isCoordinatorKind(kind)) {
+  if (!hasMergeAuthorityKind(kind)) {
     throw new Error(
-      `--kind "${kind}" não é uma sessão coordenadora — só overnight/develop/continuo podem executar esta operação. ` +
-        "Uma sessão interativa nunca concede janela de merge (nem a si mesma): peça à coordenadora registrada (#6296).",
+      `--kind "${kind}" não tem autoridade de merge — só overnight/develop podem executar esta operação. ` +
+        (kind === "continuo"
+          ? "continuo é uma RODADA, mas não decide merge (#7702): quem mergeia no fluxo contínuo é " +
+            "`continuo-pr-review.sh`, e nada a impede de conceder janela porque ela nunca teve uma pra dar. " +
+            "Uma sessão interativa bloqueada por uma rodada continuo não precisa de concessão — ela já tem " +
+            "direito de mergear, só falta `merge-lock-acquire --pr N`."
+          : "Uma sessão interativa nunca concede janela de merge (nem a si mesma): peça à coordenadora registrada (#6296)."),
     );
   }
   return kind;
@@ -5874,7 +5898,9 @@ function main(): void {
             process.exitCode = 1;
             break;
           case "not-a-coordinator":
-            process.stdout.write("session-registry: grant-merge RECUSADO — só overnight/develop/continuo concedem\n");
+            process.stdout.write(
+              "session-registry: grant-merge RECUSADO — só overnight/develop concedem (#7702: continuo é rodada, mas não decide merge)\n",
+            );
             process.exitCode = 1;
             break;
           case "grantee-is-coordinator-refused":
