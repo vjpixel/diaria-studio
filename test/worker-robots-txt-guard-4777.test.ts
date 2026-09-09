@@ -60,14 +60,27 @@ const WORKERS_DIR = resolve(ROOT, "workers");
  * lista) faz este teste falhar — o que é o comportamento desejado: força
  * conferir/atualizar deliberadamente, nunca silencioso.
  */
+// #7658/PR #7709 consolidou as três retrospectivas num Worker só:
+// `workers/anual` virou `workers/retrospectiva` e `workers/artigo-mensal` foi
+// absorvido (removido). O Worker resultante declara os TRÊS custom_domain —
+// `retrospectiva.diar.ia.br` (novo) mais `anual.diar.ia.br` e
+// `artigo.diar.ia.br` (preservados pra não quebrar link publicado). Esta
+// lista não acompanhou o rename e deixou o master vermelho; é exatamente o
+// caso que a mensagem de erro da asserção prevê ("se foi Worker novo/
+// renomeado de propósito, atualize EXPECTED_HOSTS").
+//
+// O guard por Worker (abaixo) não acusou nada junto, o que é o sinal de que
+// a consolidação NÃO perdeu robots.txt no caminho — só a lista esperada
+// ficou defasada.
 const EXPECTED_HOSTS = [
-  "anual:anual.diar.ia.br",
   "arquivo:arquivo.diar.ia.br",
-  "artigo-mensal:artigo.diar.ia.br",
   "artigos:especial.diar.ia.br",
   "cursos:cursos.diar.ia.br",
   "livros:livros.diar.ia.br",
   "poll:eia.diar.ia.br",
+  "retrospectiva:anual.diar.ia.br",
+  "retrospectiva:artigo.diar.ia.br",
+  "retrospectiva:retrospectiva.diar.ia.br",
 ].sort();
 
 describe("guard: todo Worker com host público (custom_domain) tem /robots.txt próprio (#4777)", () => {
