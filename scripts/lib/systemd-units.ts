@@ -15,6 +15,7 @@
  * @see scripts/lib/scheduled-tasks.ts (fonte dos dados traduzidos aqui)
  */
 
+import { assertSupportedNodeVersion } from "./check-node-version.ts";
 import { BRT_TIMEZONE } from "./next-edition-date.ts";
 import type { ScheduledTaskDefinition, ScheduledTaskSchedule, WeekDay } from "./scheduled-tasks.ts";
 
@@ -116,6 +117,26 @@ export interface SystemdUnitFiles {
  * arquivo de unit.
  */
 export function buildSystemdUnitFiles(task: ScheduledTaskDefinition, repoRootAbs: string): SystemdUnitFiles {
+  // #7522: `ExecStart=` abaixo assa `process.execPath` — o node que GEROU o
+  // unit, não o node do `.nvmrc`/CI. Rodar este gerador com o node do
+  // sistema (ex: `/usr/bin/node`, tipicamente < piso do projeto — achado
+  // ao vivo #4823, Node 20.20.2 via `apt`) produz um unit nascido quebrado
+  // e SEM aviso: o `node:sqlite` builtin (usado por `clarice-db.ts`) só
+  // existe a partir do Node 22.5, então a task falha silenciosamente na
+  // primeira invocação real (`ERR_UNKNOWN_BUILTIN_MODULE`/erro do
+  // `assertSupportedNodeVersion` dentro de `openClariceDb`), muito depois
+  // deste ponto de geração — nenhum sinal chega a quem rodou o gerador.
+  // Falhar ALTO aqui, na geração, é preferível a gerar um unit quebrado em
+  // silêncio: NUNCA emitir um `ExecStart=` com node abaixo do piso do
+  // projeto. `assertSupportedNodeVersion()` (sem args) checa `process.version`
+  // — o node que está rodando ESTE processo agora é exatamente o mesmo que
+  // seria embutido em `execStart` via `process.execPath` logo abaixo, então
+  // checar a versão corrente é suficiente (não precisa resolver o binário
+  // separadamente). Ver `scripts/lib/systemd-node-floor-guard.ts` pro guard
+  // complementar, que detecta units JÁ ARMADOS em `~/.config/systemd/user/`
+  // nascidos antes deste fix.
+  assertSupportedNodeVersion();
+
   const unitName = unitBaseName(task.name);
   const onCalendar = scheduleToOnCalendar(task.schedule);
   // Mesmo padrão de invocação de scripts/lib/task-runner.ts (execTsxStep):
