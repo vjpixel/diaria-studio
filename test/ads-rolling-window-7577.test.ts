@@ -423,3 +423,72 @@ describe("#7635 — buraco no CSV não pode inflar o dia seguinte marcado compar
     assert.equal(d.motivo, null);
   });
 });
+
+/**
+ * #7790 — o mesmo defeito do #7635, um nível acima: `computeRollingWindow`
+ * com `dias > 1` (a métrica de decisão primária de `ads-rolling-cac.ts:217`)
+ * tinha a MESMA absorção quando o buraco cai exatamente na borda da janela,
+ * sem que nada marcasse `comparavel: false`.
+ *
+ * "Base esperada" (decisão desta issue, travada aqui): o dia imediatamente
+ * ANTERIOR ao início da janela — `shiftDate(inicio, -1)` —, não "o primeiro
+ * dia com linha dentro da janela". A leitura alternativa só verificaria se a
+ * janela tem dado (já coberto pelo ramo `!ultima` e pelo piso de amostra) e
+ * não pega o defeito: aqui `base` EXISTE, só que mais antiga do que devia.
+ */
+describe("#7790 — buraco que cruza a BORDA da janela de N dias não pode inflar a métrica", () => {
+  it("buraco imediatamente antes do início da janela: NÃO absorve dias de fora, sai não-comparável", () => {
+    // Janela de 3 dias terminando em 10/09 começa em 08/09; a base esperada é
+    // 07/09. Aqui 06/09 e 07/09 estão faltando — a última linha antes da
+    // janela é 05/09, dois dias atrás da esperada. Sem a guarda, `gastoJanela`
+    // e `cadastrosJanela` (= último − base) somariam 5 dias de gasto/cadastro
+    // como se fossem 3, com `comparavel: true` e nenhum aviso.
+    const rows = [
+      row("2026-09-05", 100, 10),
+      row("2026-09-08", 150, 15),
+      row("2026-09-09", 180, 18),
+      row("2026-09-10", 220, 24),
+    ];
+    const r = computeRollingWindow(rows, { canal: CANAL, ate: "2026-09-10", dias: 3 });
+    assert.equal(r.comparavel, false, "linha-base recuou por causa do buraco na borda — não é a janela pedida");
+    assert.match(r.motivo ?? "", /linha-base é de 2026-09-05, não de 2026-09-07/);
+    assert.equal(r.custoPorCadastro, null, "CAC calculado sobre >3 dias não pode ser lido como CAC de 3 dias");
+    // Números crus continuam reportados — mesma disciplina do #7635, só o
+    // rótulo `comparavel` muda.
+    assert.equal(r.gastoJanela, 120, "220 − 100, o número cru, mesmo não sendo comparável");
+    assert.equal(r.cadastrosJanela, 14);
+    assert.equal(r.gastoAcumulado, 220);
+    assert.equal(r.cadastrosAcumulado, 24);
+  });
+
+  it("buraco INTERNO à janela (não toca a borda) continua comparável — é a distinção que separa o defeito do ruído", () => {
+    // A linha-base (07/09) É a esperada; só falta uma linha DENTRO da janela
+    // (08/09). O acumulado permanece correto porque é sempre último − base,
+    // independente de buracos no meio — só a granularidade (`dias.length`)
+    // fica menor que `janelaDias`.
+    const rows = [row("2026-09-07", 100, 10), row("2026-09-09", 160, 17), row("2026-09-10", 190, 20)];
+    const r = computeRollingWindow(rows, { canal: CANAL, ate: "2026-09-10", dias: 3 });
+    assert.equal(r.comparavel, true, "buraco interno não é o defeito desta issue — o total acumulado segue correto");
+    assert.equal(r.motivo, null);
+    assert.equal(r.gastoJanela, 90, "190 − 100");
+    assert.equal(r.cadastrosJanela, 10, "20 − 10");
+    assert.equal(r.dias.length, 2, "só 2 das 3 datas da janela têm linha — o buraco é visível aqui, não em `comparavel`");
+    assert.equal(r.janelaDias, 3);
+  });
+
+  it("janela íntegra (sem buraco nenhum): comparável, números inalterados", () => {
+    const rows = [
+      row("2026-09-07", 100, 10),
+      row("2026-09-08", 130, 13),
+      row("2026-09-09", 160, 16),
+      row("2026-09-10", 190, 19),
+    ];
+    const r = computeRollingWindow(rows, { canal: CANAL, ate: "2026-09-10", dias: 3 });
+    assert.equal(r.comparavel, true);
+    assert.equal(r.motivo, null);
+    assert.equal(r.gastoJanela, 90, "190 − 100, nunca a soma das linhas");
+    assert.equal(r.cadastrosJanela, 9);
+    assert.equal(r.dias.length, 3, "janela sem buraco cobre os 3 dias de calendário");
+    assert.equal(r.baseData, "2026-09-07");
+  });
+});
