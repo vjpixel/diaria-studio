@@ -30,11 +30,20 @@ Qualquer ambiguidade — KV fora do ar, Kit indisponível, allowlist ausente ou 
 
 ## Cutover — FEITO em 09/09/2026
 
-Executado e verificado ao vivo. Os três domínios estão anexados a este Worker; `anual` e `artigo-mensal` foram apagados da conta. O que ficou registrado, porque o roteiro original estava errado num ponto que causou ~10 min de indisponibilidade:
+Executado e verificado ao vivo. Os três domínios estão anexados a este Worker; `anual` e `artigo-mensal` foram apagados da conta. O que ficou registrado, porque o roteiro original estava errado num ponto que tirou dois hosts do ar por **2min46s** — janela fechada, medida em `wrangler deployments list`:
+
+| horário (UTC) | versão | o que foi |
+|---|---|---|
+| 03:39:49 | `76791f17` | deploy automático da CI no merge — anexa os TRÊS domínios |
+| **03:41:28** | `13d60da8` | meu "passo 1" com as rotas legadas comentadas — **remove** `anual.` e `artigo.`, apaga o DNS |
+| 03:41:54 | `77bdffe0` | `wrangler secret put KIT_API_KEY` |
+| **03:44:14** | `7a9e9e9a` | re-deploy com o arquivo íntegro — os três domínios voltam |
+
+(a propagação de DNS acrescenta uma cauda além dessa janela; o intervalo acima é o tempo em que os domínios não estavam anexados a Worker nenhum.)
 
 **`deploy-retrospectiva.yml` dispara no merge.** No instante em que a PR entra em `master`, a CI publica o Worker com o `wrangler.toml` versionado — incluindo os três `custom_domain`. Ou seja, a CI faz o passo de mover os domínios sozinha, antes de qualquer ação manual.
 
-O roteiro anterior mandava começar com um "deploy só do host novo", com as rotas legadas comentadas, "sem tocar em nada que já serve tráfego". Depois que a CI já anexou os domínios aqui, essa frase deixa de valer: **comentar uma rota e deployar REMOVE o custom domain e apaga o DNS**. Foi o que derrubou `anual.` e `artigo.` até o re-deploy com o arquivo íntegro.
+O roteiro anterior mandava começar com um "deploy só do host novo", com as rotas legadas comentadas, "sem tocar em nada que já serve tráfego". Depois que a CI já anexou os domínios aqui, essa frase deixa de valer: **comentar uma rota e deployar REMOVE o custom domain e apaga o DNS**. Foi o que derrubou `anual.` e `artigo.` entre 03:41:28 e 03:44:14, até o re-deploy com o arquivo íntegro.
 
 ### Se um dia for preciso repetir isto (outro Worker, outro rename)
 
