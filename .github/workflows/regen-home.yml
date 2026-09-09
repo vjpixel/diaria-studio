@@ -122,11 +122,19 @@ jobs:
           if ! gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
             gh pr create --base master --head "$BRANCH" \
               --title "chore(#7686): regenera home das 06:00 BRT" \
-              --body "Regeneração automática da home (\`workers/site/public/index.html\`) no horário de envio da edição.
-
-Aberto e mergeado por \`.github/workflows/regen-home.yml\`. O deploy do Worker \`site\` roda no job seguinte deste mesmo workflow — push feito com \`GITHUB_TOKEN\` não dispara \`deploy-site.yml\` sozinho.
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+              --body "$(printf '%s\n' \
+                'Regeneração automática da home (`workers/site/public/index.html`) no horário de envio da edição.' \
+                '' \
+                'Aberto e mergeado por `.github/workflows/regen-home.yml`. O deploy do Worker `site` roda no job seguinte deste mesmo workflow — push feito com `GITHUB_TOKEN` não dispara `deploy-site.yml` sozinho.' \
+                '' \
+                '🤖 Generated with [Claude Code](https://claude.com/claude-code)')"
+            # printf com uma string por linha, e NÃO uma string multilinha:
+            # a versão anterior tinha linhas do corpo em coluna 0, o que
+            # TERMINA o bloco `run: |` do YAML — o GitHub deixou de parsear o
+            # arquivo inteiro (workflow_dispatch respondia 422 "não tem o
+            # trigger", cada push registrava um run failure sem job nenhum, e
+            # o cron das 06:00 nunca rodaria). Toda linha dentro do bloco
+            # precisa ficar indentada além do `run:`.
           fi
 
           gh pr merge "$BRANCH" --squash --delete-branch

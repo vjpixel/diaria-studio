@@ -135,3 +135,46 @@ describe("#7686 guard — o workflow que regenera a home existe e roda no horár
     );
   });
 });
+
+describe("#7686 guard — bloco `run: |` do regen-home.yml não pode ter linha em coluna 0", () => {
+  // Incidente 09/09/2026: o corpo do `gh pr create --body "..."` foi escrito
+  // com linhas em coluna 0 dentro do `run: |`. Em YAML isso TERMINA o bloco
+  // literal, e o parser tenta ler o texto seguinte como chave — o GitHub
+  // deixou de parsear o arquivo inteiro: `workflow_dispatch` respondia 422
+  // "não tem o trigger", cada push a qualquer branch registrava um run
+  // failure sem job nenhum, e o cron das 06:00 (o ponto do #7686) nunca
+  // rodaria. Passou pelo guard acima porque ele só checa o cron e o worker
+  // por regex, sem validar a estrutura. Sem lib de YAML no repo, este teste
+  // trava a classe exata do defeito: toda linha não-vazia dentro de um
+  // bloco `run: |` precisa estar indentada ALÉM da chave `run:`.
+  it("toda linha não-vazia dentro de um `run: |` está indentada além do `run:`", async () => {
+    const { readFileSync } = await import("node:fs");
+    const lines = readFileSync(".github/workflows/regen-home.yml", "utf8").split(/\r?\n/);
+    const violations: string[] = [];
+    let blockIndent: number | null = null;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const runMatch = line.match(/^(\s*)run:\s*\|/);
+      if (runMatch) {
+        blockIndent = runMatch[1].length;
+        continue;
+      }
+      if (blockIndent === null) continue;
+      if (line.trim() === "") continue;
+      const indent = line.length - line.trimStart().length;
+      if (indent > blockIndent) continue;
+      // Indentação <= a do `run:` encerra o bloco. Legítimo quando é a
+      // próxima chave YAML (`- name:`, `if:`, `env:`, `uses:`, `id:` ...);
+      // qualquer outra coisa é texto do script vazando pra fora do bloco.
+      const looksLikeYamlKey = /^\s*(-\s+)?[A-Za-z_][A-Za-z0-9_-]*:(\s|$)/.test(line) || /^\s*-\s/.test(line);
+      if (!looksLikeYamlKey) violations.push(`linha ${i + 1}: ${line.slice(0, 60)}`);
+      blockIndent = null;
+    }
+    assert.deepEqual(
+      violations,
+      [],
+      "linha de script em coluna 0 (ou abaixo da indentação do `run:`) dentro de um bloco `run: |` — " +
+        "isso termina o bloco literal e invalida o YAML inteiro para o GitHub",
+    );
+  });
+});
