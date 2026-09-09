@@ -148,13 +148,39 @@ export async function processLead(
   return { leadgenId, ok: true };
 }
 
-/** Validação de formato leve — mesmo racional de `isValidVoteEmailFormat`
+/**
+ * #3296 (gap 1): confusáveis Unicode / invisíveis. `\p{Cf}` (format —
+ * zero-width space/joiner/BOM) e `\p{Cc}` (control) cobrem a classe geral;
+ * `：` (fullwidth U+FF1A) entra explícito por não cair em nenhuma das duas
+ * categorias mas ser visualmente um ":".
+ *
+ * Cópia byte-a-byte de `FORBIDDEN_EMAIL_CHARS_RE` em `workers/poll/src/lib.ts`
+ * — bundle de worker não importa de outro worker por convenção (ver
+ * `workers/cursos/src/subscribe.ts`). `test/meta-leads-email-hardening-7826.test.ts`
+ * trava a paridade com a fonte.
+ */
+const FORBIDDEN_EMAIL_CHARS_RE = /[\p{Cf}\p{Cc}：]/u;
+
+/**
+ * Validação de formato — a MESMA regra de `isValidVoteEmailFormat`
  * (workers/poll/src/lib.ts), sem depender daquele arquivo (cada worker
- * mantém sua própria cópia mínima, mesma convenção de `crypto.ts`). */
+ * mantém sua própria cópia mínima, mesma convenção de `crypto.ts`).
+ *
+ * #7826: a versão anterior desta função afirmava paridade na docstring sem
+ * ter — faltavam o teto em BYTES UTF-8 (`.length` do JS conta code units
+ * UTF-16, deixando passar e-mail com acento acima do limite real de 254),
+ * o bloqueio de confusáveis/invisíveis Unicode acima, e o `:` seguia
+ * aceito no regex principal. O input aqui vem de formulário PÚBLICO da
+ * Meta — exatamente a classe de entrada contra a qual o #3296 endureceu o
+ * resto do projeto; `trim()` é deliberado por isso (dado digitado por uma
+ * pessoa, não normalizado por um form nosso).
+ */
 export function isPlausibleEmail(email: string): boolean {
-  if (!email) return false;
-  if (email.length > 254) return false;
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const e = (email ?? "").trim();
+  if (e.length === 0) return false;
+  if (new TextEncoder().encode(e).length > 254) return false; // #3296 gap 2: bytes UTF-8
+  if (FORBIDDEN_EMAIL_CHARS_RE.test(e)) return false; // #3296 gap 1: confusáveis/invisíveis
+  return /^[^\s@:]+@[^\s@:]+\.[^\s@:]+$/.test(e);
 }
 
 /**
