@@ -1,6 +1,6 @@
 # workers/meta-leads — Secrets manifest + checklist de go-live (#7769)
 
-Este worker foi só **escrito** por esta unidade — nunca deployado, nunca
+Este worker foi só **escrito** pela unidade que o criou — nunca deployado por ela, nunca
 testado contra a API real da Meta/Kit (guard de publicação do overnight,
 `context/overnight-dispatch-rules.md` item 1: subagente implementador nunca
 roda `wrangler deploy` nem chama API de terceiro ao vivo). Todos os passos
@@ -31,9 +31,24 @@ nunca "sem verificação").
 
 ## Checklist de go-live (ordem importa)
 
-1. **Deploy do worker**: `cd workers/meta-leads && npx wrangler deploy`
-   (primeiro deploy cria a rota `*.workers.dev` automaticamente — nenhum KV/DO
-   a provisionar antes, este worker é stateless).
+1. **Deploy do worker** — **já é automático** desde o PR #7781: o workflow
+   `.github/workflows/deploy-meta-leads.yml` roda `wrangler deploy` a cada
+   push em `master` que toque `workers/meta-leads/**`. Ou seja, quando você
+   chegar neste checklist o worker provavelmente **já está no ar** em
+   `*.workers.dev` — confira em `wrangler deployments list` (ou no dashboard)
+   antes de deployar à mão.
+
+   Isso inverte a ordem original deste checklist, que pressupunha deploy
+   manual como passo 1. **É seguro por construção:** sem os secrets do passo
+   2, todo `POST /webhook` reprova na verificação de assinatura e é
+   rejeitado (falha fechada), e `wrangler.toml` não declara `custom_domain`
+   nem `route` — nada do projeto aponta pro worker até você configurar a
+   subscription no passo 4. O deploy antecipado inclusive **ajuda**: é ele
+   que gera a URL `*.workers.dev` que o passo 4 precisa.
+
+   Para deployar à mão mesmo assim (ex: validar uma mudança local antes do
+   push): `cd workers/meta-leads && npx wrangler deploy`. Este worker é
+   stateless — nenhum KV/DO a provisionar antes.
 2. **Setar os 4 secrets acima.**
 3. **App no Meta for Developers**: criar (ou reusar) um app com o produto
    "Webhooks" adicionado, permissões `leads_retrieval` + `pages_show_list` +
