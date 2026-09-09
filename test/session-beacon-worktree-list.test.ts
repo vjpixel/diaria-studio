@@ -96,7 +96,7 @@ test("#7722 item 2 — sem .git/worktrees (repo sem worktree nenhum) → null, f
   }
 });
 
-test("#7722 item 2 — buildBeaconRecord publica `worktrees` (path+branch) a partir de worktreeBranches do event", () => {
+test("#7722 item 2 — buildBeaconRecord publica `known_worktrees` (path+branch) a partir de worktreeBranches do event", () => {
   const event = {
     kind: "overnight",
     machineTag: "helios",
@@ -114,7 +114,7 @@ test("#7722 item 2 — buildBeaconRecord publica `worktrees` (path+branch) a par
   const record = buildBeaconRecord(null, event);
   assert.notEqual(record, null);
   assert.equal(record.branch, "master", "o singular continua publicado, por compatibilidade");
-  assert.deepEqual(record.worktrees, [
+  assert.deepEqual(record.known_worktrees, [
     { path: "/repo/.claude/worktrees/agent-a1", branch: "overnight/fix-100" },
     { path: "/repo/.claude/worktrees/agent-b2", branch: "develop/fix-200" },
   ]);
@@ -136,7 +136,7 @@ test("#7722 item 2 — buildBeaconRecord descarta entradas sem path resolvido (g
     ],
   };
   const record = buildBeaconRecord(null, event);
-  assert.deepEqual(record.worktrees, [{ path: "/repo/.claude/worktrees/agent-b2", branch: "develop/fix-200" }]);
+  assert.deepEqual(record.known_worktrees, [{ path: "/repo/.claude/worktrees/agent-b2", branch: "develop/fix-200" }]);
 });
 
 test("#7722 item 2 — cleanup-merged-worktrees: 3 sessões concorrentes, mesmo `branch` singular (checkout principal), CADA worktree protegido pela sua PRÓPRIA branch via `worktrees`", () => {
@@ -153,7 +153,7 @@ test("#7722 item 2 — cleanup-merged-worktrees: 3 sessões concorrentes, mesmo 
       startedAt: "2026-09-09T00:00:00.000Z",
       lastHeartbeat: "2026-09-09T00:05:00.000Z",
       branch: SAME_MAIN_BRANCH,
-      worktrees: [{ path: "C:/Users/vjpix/Projects/wt-A", branch: "overnight/fix-100" }],
+      known_worktrees: [{ path: "C:/Users/vjpix/Projects/wt-A", branch: "overnight/fix-100" }],
     },
     {
       kind: "develop",
@@ -162,7 +162,7 @@ test("#7722 item 2 — cleanup-merged-worktrees: 3 sessões concorrentes, mesmo 
       startedAt: "2026-09-09T00:00:00.000Z",
       lastHeartbeat: "2026-09-09T00:05:00.000Z",
       branch: SAME_MAIN_BRANCH,
-      worktrees: [{ path: "C:/Users/vjpix/Projects/wt-B", branch: "develop/fix-200" }],
+      known_worktrees: [{ path: "C:/Users/vjpix/Projects/wt-B", branch: "develop/fix-200" }],
     },
     {
       kind: "continuo",
@@ -171,7 +171,7 @@ test("#7722 item 2 — cleanup-merged-worktrees: 3 sessões concorrentes, mesmo 
       startedAt: "2026-09-09T00:00:00.000Z",
       lastHeartbeat: "2026-09-09T00:05:00.000Z",
       branch: SAME_MAIN_BRANCH,
-      worktrees: [{ path: "C:/Users/vjpix/Projects/wt-C", branch: "continuo/fix-300" }],
+      known_worktrees: [{ path: "C:/Users/vjpix/Projects/wt-C", branch: "continuo/fix-300" }],
     },
   ];
 
@@ -198,7 +198,7 @@ test("#7722 item 2 — cleanup-merged-worktrees: 3 sessões concorrentes, mesmo 
   );
 });
 
-test("#7722 item 2 — sem `worktrees` no registro (sessão anterior ao fix, ou beacon nunca resolveu), comportamento cai pro anterior (só `branch` singular)", () => {
+test("#7722 item 2 — sem `known_worktrees` no registro (sessão anterior ao fix, ou beacon nunca resolveu), comportamento cai pro anterior (só `branch` singular)", () => {
   const sessions: SessionRecord[] = [
     {
       kind: "develop",
@@ -207,10 +207,38 @@ test("#7722 item 2 — sem `worktrees` no registro (sessão anterior ao fix, ou 
       startedAt: "2026-09-09T00:00:00.000Z",
       lastHeartbeat: "2026-09-09T00:05:00.000Z",
       branch: "chore/legado",
-      // sem `worktrees` — registro anterior ao #7722
+      // sem `known_worktrees` — registro anterior ao #7722
     },
   ];
   const inUse = selectInUseWorktreeNames(sessions);
   assert.deepEqual([...inUse.branches], ["chore/legado"]);
   assert.equal(inUse.names.size, 0);
+});
+
+test("#7722 item 2 — buildBeaconRecord NUNCA escreve no campo `worktrees` (contrato estreito de #6168 Parte A, `activeSessionWorktreePaths`) — só `known_worktrees`", () => {
+  // Achado do self-review desta PR: a 1ª versão reaproveitava `worktrees`
+  // (schema existente, nunca populado) pra publicar a foto global — isso
+  // alargaria silenciosamente o contrato ESTREITO que
+  // `scripts/lib/shared-session-guard.ts` (`activeSessionWorktreePaths`) já
+  // documenta pra esse campo: "path aberto POR ESTA SESSÃO", usado por
+  // `branch-cleanup.ts` como proteção incondicional mesmo com
+  // `--confirm-shared`. Se `worktrees` virasse a lista global, TODO
+  // worktree existente passaria a ficar protegido sempre que qualquer
+  // sessão estivesse viva — justamente o que `--confirm-shared` existe pra
+  // permitir ultrapassar. Por isso o campo publicado é outro:
+  // `known_worktrees`, nunca `worktrees`.
+  const event = {
+    kind: "overnight",
+    machineTag: "helios",
+    sessionId: "sess-1",
+    branch: "master",
+    newPaths: [],
+    verb: null,
+    nowIso: "2026-09-09T12:00:00.000Z",
+    pid: 4242,
+    worktreeBranches: [{ worktreeName: "agent-a1", branch: "overnight/fix-100", path: "/repo/.claude/worktrees/agent-a1" }],
+  };
+  const record = buildBeaconRecord(null, event);
+  assert.equal(record.worktrees, undefined, "worktrees (contrato estreito, #6168 Parte A) deve continuar intocado por este fix");
+  assert.ok(Array.isArray(record.known_worktrees) && record.known_worktrees.length === 1, "known_worktrees é quem publica a foto global");
 });

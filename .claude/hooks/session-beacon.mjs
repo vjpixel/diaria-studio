@@ -104,7 +104,7 @@
 // testes lá afirma isso.
 
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostname } from "node:os";
 
@@ -241,7 +241,10 @@ function statIsDirectory(path) {
  */
 export function resolveWorktreeBranches(startDir) {
   try {
-    const mainRoot = resolveMainRepoRootNoSpawn(startDir) ?? (statIsDirectory(join(startDir, ".git")) ? startDir : null);
+    // `resolveMainRepoRootNoSpawn` já devolve o próprio `startDir` quando
+    // `<startDir>/.git` é DIRETÓRIO (checkout principal) — não precisa de
+    // fallback adicional aqui.
+    const mainRoot = resolveMainRepoRootNoSpawn(startDir);
     if (!mainRoot) return null;
     const wtDir = join(mainRoot, ".git", "worktrees");
     if (!existsSync(wtDir)) return null;
@@ -426,17 +429,25 @@ export function buildBeaconRecord(previous, event) {
     dirty_paths: verb === "commit" ? [] : collapsePaths([...prevDirty, ...newPaths]),
   };
   if (branch) record.branch = branch;
-  // #7722 item 2 — `worktrees` (schema já existente em `SessionRecord`,
-  // nunca populado até aqui, ver docblock de `resolveWorktreeBranches`):
-  // lista (path, branch) de TODOS os worktrees ativos do repo, re-derivada
-  // do disco a cada write (sem merge com `previous` — é sempre a foto
-  // fresca, nunca acumula entradas de worktrees já removidos). Entradas sem
-  // `path` resolvível (gitdir ilegível) são descartadas aqui — o consumidor
-  // (`selectInUseWorktreeNames`) precisa de `path`/`branch` juntos pra
-  // proteger um worktree externo por branch.
-  if (worktreeBranches) {
-    record.worktrees = worktreeBranches.filter((w) => w.path).map((w) => ({ path: w.path, branch: w.branch }));
-  }
+  // #7722 item 2 — campo NOVO `known_worktrees` (nunca `worktrees`, de
+  // propósito — self-review da PR achou que reaproveitar `worktrees`
+  // quebraria o contrato ESTREITO que `activeSessionWorktreePaths`,
+  // scripts/lib/shared-session-guard.ts, já documenta pra esse campo:
+  // "path exato ABERTO POR ESTA SESSÃO", usado por `branch-cleanup.ts` como
+  // proteção incondicional mesmo sob `--confirm-shared`. `known_worktrees`
+  // é outra coisa — a foto GLOBAL de todos os worktrees do repo, a mesma
+  // pra qualquer sessão que a escreva — e teria alargado silenciosamente
+  // aquele conjunto pra "todo worktree que existe", derrotando o próprio
+  // propósito de `--confirm-shared`).
+  //
+  // Sempre reatribuído (nunca só quando truthy) — `resolveWorktreeBranches`
+  // devolvendo `null` (repo sem worktree, ou todos removidos desde o
+  // último heartbeat) precisa VIRAR lista vazia aqui, não preservar a
+  // lista antiga do `previous`; senão o registro publicaria worktrees
+  // fantasmas depois do último ser removido.
+  record.known_worktrees = (worktreeBranches ?? [])
+    .filter((w) => w.path)
+    .map((w) => ({ path: w.path, branch: w.branch }));
   if (verb) record.last_action = { verb, at: nowIso };
   if (previous?.pid === undefined && pid !== undefined) record.pid = pid;
   return record;
