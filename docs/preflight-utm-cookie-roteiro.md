@@ -109,11 +109,13 @@ passo 7, que não é sinal real sobre o teste de produção.
    confirmação abriu** — o redirect pós-confirmação é configurado no painel
    "Incentive" do form do Kit (mesmo painel citado em
    `docs/kit-doi-confirmation-copy.md`), não neste repo; não presumir que é
-   `eia.diar.ia.br/confirmado` sem checar ao vivo (aquela página existe —
-   `workers/poll/src/confirmado.ts` — mas foi escrita pro redirect da
-   Beehiiv, `opt_in_redirect_url`, que não é mais o mecanismo de DOI ativo;
-   se o painel Incentive do Kit ainda aponta pra lá, ótimo — GTM/cookies
-   testam igual; se não, ajustar este passo com a URL real observada).
+   `eia.diar.ia.br/confirmado` sem checar ao vivo (desde #7737 a página real
+   mora em `scripts/lib/shared/confirmado-page.ts`, servida pelo Worker
+   `site` no apex — `workers/poll/src/confirmado.ts` hoje só devolve um 301
+   pro apex, para não quebrar o link antigo já entregue em e-mails de
+   confirmação; se o painel Incentive do Kit ainda aponta pro endereço
+   antigo, ótimo — o redirect cobre isso e GTM/cookies testam igual; se não,
+   ajustar este passo com a URL real observada).
    Comparar com o que foi anotado no passo 2: os mesmos `_fbc`/`_fbp`/`_ga`
    deveriam aparecer aqui também, com o mesmo `domain` `.diar.ia.br`. Se
    sumiram, ou se o `domain` anotado no passo 2 era `diar.ia.br` restrito
