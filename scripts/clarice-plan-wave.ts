@@ -60,6 +60,7 @@ import {
   type StoreRow,
 } from "./lib/clarice-segment.ts";
 import { loadSentOrQueuedEmails, excludeSentOrQueued } from "./clarice-build-segment.ts";
+import { buildDailySendQueue } from "./lib/clarice-segment.ts";
 import {
   brevoGet,
   fetchCommittedCampaignListIds,
@@ -379,6 +380,20 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   // — alimenta o gatilho proativo de inversão de safra em buildWaveProposal.
   const availableFirstSendByCohort = summarizeAvailableFirstSendByCohort(availableFirstSendRows);
 
+  // #7738 — teto de fila deve ser a fila diária unificada (engajados + ramp-warm,
+  // ciclo atual), NÃO o pool vitalício de 1º envio. Preserva distinção ramp-warm
+  // (isRampWarm com cutoffNovosIso) vs engajados (priority_points>0, qualquer
+  // histórico) e exclui deliberadamente reativacao (sends_count>0, sem opens,
+  // score 0) — decisão própria do editor (#7406).
+  const queuedListIds = new Set<string>([...committed]);
+  const committedListIds = new Set<string>([...committed]);
+  const dailyQueueRows = buildDailySendQueue(
+    rows,
+    { queuedListIds, committedListIds },
+    novosCutoff?.cutoffIso ?? null,
+  );
+  const dailyQueueAvailable = dailyQueueRows.length;
+
   // 5. Crédito Brevo — validado ANTES de qualquer proposta de escrita.
   let brevoCredits: number | null = null;
   if (apiKey) {
@@ -435,6 +450,7 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     state,
     hourCellsBrt: hourTest.status === "ativo" ? hourTest.hoursBrt : undefined,
     availableFirstSend,
+    dailyQueueAvailable,
     availableFirstSendByCohort,
     mvBacklog: summarizeMvBacklog(rows),
     nonOpeners: measureNonOpenerExposure(rows),
