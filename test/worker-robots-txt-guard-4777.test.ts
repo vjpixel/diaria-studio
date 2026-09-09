@@ -61,13 +61,24 @@ const WORKERS_DIR = resolve(ROOT, "workers");
  * conferir/atualizar deliberadamente, nunca silencioso.
  */
 const EXPECTED_HOSTS = [
-  "anual:anual.diar.ia.br",
   "arquivo:arquivo.diar.ia.br",
-  "artigo-mensal:artigo.diar.ia.br",
   "artigos:especial.diar.ia.br",
   "cursos:cursos.diar.ia.br",
   "livros:livros.diar.ia.br",
   "poll:eia.diar.ia.br",
+  // #7658/#7709: os Workers `anual` e `artigo-mensal` viraram um só
+  // (`workers/retrospectiva`), que serve TRÊS hosts — o domínio novo mais os
+  // dois antigos, preservados pra devolver 301 em vez de quebrar links que já
+  // saíram em e-mail com UTM.
+  //
+  // A chave é `worker:host`, então um Worker com N `custom_domain` contribui
+  // com N entradas — o guard continua exigindo `/robots.txt` próprio POR HOST,
+  // que é a propriedade do #4777. Um host que só redireciona também precisa
+  // responder robots: enquanto o 301 não é seguido, é o robots dele que o
+  // crawler lê.
+  "retrospectiva:anual.diar.ia.br",
+  "retrospectiva:artigo.diar.ia.br",
+  "retrospectiva:retrospectiva.diar.ia.br",
 ].sort();
 
 describe("guard: todo Worker com host público (custom_domain) tem /robots.txt próprio (#4777)", () => {
