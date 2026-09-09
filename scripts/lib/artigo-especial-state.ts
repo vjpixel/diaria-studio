@@ -22,7 +22,14 @@ import { writeFileAtomic } from "./atomic-write.ts";
 
 export type ChannelStatus = "pending" | "done" | "failed";
 
-export const ARTIGO_ESPECIAL_CHANNELS = ["apoiase", "linkedin_pagina", "linkedin_perfil", "box"] as const;
+/**
+ * Canais do artigo especial. `email` (#7659) é o 5º — o broadcast Kit pros
+ * apoiadores R$10+, gravado por `publish-artigo-especial-kit.ts`. O detalhe
+ * do envio (id do broadcast, tag de audiência, verificação do filtro) mora em
+ * `email-published.json`, mesma divisão de `linkedin_pagina`/`linkedin_perfil`
+ * e `linkedin-published.json`: aqui fica só o status agregado.
+ */
+export const ARTIGO_ESPECIAL_CHANNELS = ["apoiase", "linkedin_pagina", "linkedin_perfil", "box", "email"] as const;
 export type ArtigoEspecialChannel = (typeof ARTIGO_ESPECIAL_CHANNELS)[number];
 
 export interface ChannelState {
