@@ -59,6 +59,25 @@ function codeLines(): string[] {
     .map(stripInlineComment);
 }
 
+/**
+ * Linhas de `codeLines()` que são a declaração `export VARNAME=...` da var —
+ * não qualquer menção a ela.
+ *
+ * Existe desde a rodada overnight 260909 (#7649): o elo de assinatura
+ * claude.ai adicionou um `unset` explícito + um loop de guard fail-closed no
+ * branch de assinatura, e os DOIS mencionam literalmente os mesmos nomes de
+ * var que o `export` do branch OpenRouter (#6716) fixa — 3 menções
+ * legítimas por var, não 1. As duas primeiras (`unset`/guard) existem pra
+ * IMPEDIR que a var chegue ao processo no elo de assinatura; a 3ª (`export`)
+ * existe pra GARANTIR que ela chegue no elo OpenRouter. São propósitos
+ * opostos com o mesmo nome de var — contar "qualquer menção" deixou de
+ * distinguir os dois. Este helper isola só a declaração de export, que é o
+ * que #6716 de fato precisa verificar.
+ */
+function exportLines(varName: string): string[] {
+  return codeLines().filter((l) => new RegExp(`^\\s*export\\s+${varName}=`).test(l));
+}
+
 /** Remove `# ...` no fim da linha, respeitando aspas simples e duplas. */
 export function stripInlineComment(line: string): string {
   let quote: string | null = null;
@@ -101,14 +120,16 @@ describe("claude-openrouter.sh — pin do modelo de background (#6716)", () => {
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
   ]) {
     it(`passa ${varName} para o CLI, fixado em "$MODEL"`, () => {
-      const hit = codeLines().filter((l) => l.includes(varName));
+      const hit = exportLines(varName);
       assert.equal(
         hit.length,
         1,
-        `esperava exatamente 1 uso de ${varName} em código (fora de ` +
+        `esperava exatamente 1 \`export ${varName}=\` em código (fora de ` +
           `comentário), achei ${hit.length}. Sem essa var, caminho interno que ` +
           "peça a família resolve pelo ID default da Anthropic e o gateway " +
-          "fatura a preço cheio — ver #6716.",
+          "fatura a preço cheio — ver #6716. (Menções fora de `export` — " +
+          "`unset`/guard do elo de assinatura, #7649 — não contam aqui; " +
+          "ver `exportLines`.)",
       );
       assert.match(
         hit[0],
@@ -121,18 +142,18 @@ describe("claude-openrouter.sh — pin do modelo de background (#6716)", () => {
   }
 
   it("passa ANTHROPIC_DEFAULT_HAIKU_MODEL para o CLI", () => {
-    const hit = codeLines().filter((l) => l.includes("ANTHROPIC_DEFAULT_HAIKU_MODEL"));
+    const hit = exportLines("ANTHROPIC_DEFAULT_HAIKU_MODEL");
     assert.equal(
       hit.length,
       1,
-      "esperava exatamente 1 uso de ANTHROPIC_DEFAULT_HAIKU_MODEL em código " +
+      "esperava exatamente 1 `export ANTHROPIC_DEFAULT_HAIKU_MODEL=` em código " +
         `(fora de comentário), achei ${hit.length}. Sem essa var o CLI roda as ` +
         "chamadas de background no modelo default (Sonnet a preço cheio) — ver #6716.",
     );
   });
 
   it("fixa o background no elo corrente da cadeia, não num slug hardcoded", () => {
-    const [line] = codeLines().filter((l) => l.includes("ANTHROPIC_DEFAULT_HAIKU_MODEL"));
+    const [line] = exportLines("ANTHROPIC_DEFAULT_HAIKU_MODEL");
     assert.match(
       line,
       /ANTHROPIC_DEFAULT_HAIKU_MODEL="\$MODEL"/,
@@ -180,12 +201,29 @@ describe("claude-openrouter.sh — pin do modelo de background (#6716)", () => {
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
   ]) {
     it(`${varName} fica DENTRO do subshell do OUT=$(printf ... | ( ... )) (chega ao processo do CLI, nunca vaza pro ambiente global)`, () => {
+      // #7649: existem DOIS subshells `OUT=$(printf ... | ( ... ))` no arquivo
+      // agora (assinatura e OpenRouter) — este teste é sobre o export do #6716,
+      // que vive só no branch OpenRouter, então iVar precisa ser o índice da
+      // linha de EXPORT (exportLines), nunca o 1º `findIndex` por conteúdo —
+      // esse pegaria o `unset`/guard do branch de assinatura, que vem ANTES no
+      // arquivo, e validaria (por coincidência, não por desenho) o subshell
+      // errado.
       const lines = codeLines();
-      const iSub = lines.findIndex((l) => l.includes(`OUT=$(printf '%s' "$PROMPT" | (`));
-      const iVar = lines.findIndex((l) => l.includes(varName));
+      const [exportLine] = exportLines(varName);
+      assert.ok(exportLine, `export ${varName} não encontrado em código`);
+      const iVar = lines.indexOf(exportLine);
+      // Precisa ser o ÚLTIMO subshell aberto ANTES de iVar (o que de fato o
+      // contém) — `findIndex` sozinho devolveria o 1º do ARQUIVO (o subshell
+      // do elo de assinatura, que abre mais cedo), não o mais próximo.
+      let iSub = -1;
+      for (let i = iVar; i >= 0; i--) {
+        if (lines[i].includes(`OUT=$(printf '%s' "$PROMPT" | (`)) {
+          iSub = i;
+          break;
+        }
+      }
       const iClose = lines.findIndex((l, i) => i > iSub && l.trim() === "))");
-      assert.ok(iSub >= 0, "subshell do OUT=$(printf ... | ( não encontrado — a estrutura do fix #6718 mudou");
-      assert.ok(iVar >= 0, `${varName} não encontrada em código`);
+      assert.ok(iSub >= 0, "subshell do OUT=$(printf ... | ( não encontrado antes do export — a estrutura do fix #6718 mudou");
       assert.ok(iClose > iSub, "fechamento )) do subshell não encontrado depois de iSub");
       assert.ok(
         iVar > iSub && iVar < iClose,

@@ -89,6 +89,17 @@ export const EXPECTED_PAID_MODELS: ReadonlySet<string> = new Set([
   "gpt-5.6-luna",
   "openai-codex/gpt-5.6-luna",
   "openai/gpt-5.6-luna", // mesma família sob o id prefixado do gateway
+  // Elo de assinatura claude.ai (#7649) — mesmo tratamento defensivo de
+  // "gpt-5.6-luna" acima: NUNCA passa pelo gateway OpenRouter de verdade
+  // (é `claude -p --model sonnet` com as 8 vars de auth/gateway em `unset`
+  // explícito — ver hermes/scripts/claude-openrouter.sh), então nunca
+  // deveria aparecer como linha no feed de billing que este módulo lê. A
+  // entrada existe só pra manter paridade com PAID_ALLOWLIST (Python,
+  // hermes-model-cost-report.py — #7803/test/openrouter-billing-leak-model-
+  // list-drift-6994.test.ts trava a correspondência) — se "sonnet" um dia
+  // aparecer de verdade num billing row do OpenRouter, é sinal de que o
+  // guard fail-closed do #7649 falhou, não motivo pra remover esta linha.
+  "sonnet",
 ]);
 
 /**
