@@ -25,7 +25,7 @@
  * o cron do Hermes entrega ao Telegram) só nessa primeira vez — ticks
  * seguintes continuam contando `REJECTED` no resumo, sem repetir o aviso.
  *
- * @see scripts/check-continuo-reject-label.ts (I/O: `gh pr view`/`gh pr edit`)
+ * @see scripts/check-continuo-reject-label.ts (I/O: `gh pr view` + REST, #7704)
  * @see scripts/lib/continuo-escalate-owner.ts (mesmo padrão, lado `escalate`)
  * @see hermes/scripts/continuo-pr-review.sh (ramo `2)` de `try_merge_gate()`)
  */

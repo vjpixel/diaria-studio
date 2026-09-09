@@ -2,7 +2,9 @@
 /**
  * check-continuo-reject-label.ts (#7567)
  *
- * CLI wrapper de `scripts/lib/continuo-reject-owner.ts` — todo I/O (`gh pr view` + REST) fica aqui; a decisão pura fica na lib. Consumido pelo
+ * CLI wrapper de `scripts/lib/continuo-reject-owner.ts` — todo I/O
+ * (`gh pr view` pra ler labels + REST pra criar/aplicar) fica aqui; a
+ * decisão pura fica na lib. Consumido pelo
  * ramo `gate=reject` de `try_merge_gate()` em
  * `hermes/scripts/continuo-pr-review.sh`: aplica o label
  * `continuo-rejeitado` (idempotente) e diz ao chamador se esta é a PRIMEIRA
@@ -15,7 +17,9 @@
  *   npx tsx scripts/check-continuo-reject-label.ts --pr 7593
  *
  * Saída: JSON `{"firstTime": boolean, "labelApplied": boolean, "source":
- * "ok" | "error"}` em stdout. `source: "error"` (gh falhou ao ler labels)
+ * "ok" | "error"}` em stdout. `labelApplied` = "o label ESTÁ na PR ao
+ * final" (true também quando já estava lá antes desta chamada, #7704) —
+ * não "eu apliquei agora"; para isso existe o `firstTime`. `source: "error"` (gh falhou ao ler labels)
  * resolve `firstTime: true` — fail-OPEN em direção a notificar (o pior caso
  * de um falso positivo aqui é 1 notificação a mais, nunca um merge indevido
  * nem uma PR rejeitada ficando muda para sempre).
@@ -100,7 +104,15 @@ function main(): void {
   }
 
   const alreadyRejected = isAlreadyRejectLabeled(labels);
-  const labelApplied = alreadyRejected ? false : applyLabel(args.pr);
+  /** Semântica de `labelApplied` (#7704): "o label ESTÁ na PR ao final desta
+   *  chamada", nunca "eu acabei de aplicá-lo agora". A distinção importa
+   *  porque `continuo-pr-review.sh` trata `labelApplied: false` como erro de
+   *  infra — e PR que JÁ carrega o label (o estado estacionário de toda PR
+   *  rejeitada a partir do 2º tick) não teve aplicação nenhuma TENTADA, então
+   *  reportar `false` ali faria o bash acusar falha a cada tick, para sempre,
+   *  com stderr vazio. Quem quer saber se houve escrita nesta chamada lê
+   *  `firstTime`. */
+  const labelApplied = alreadyRejected ? true : applyLabel(args.pr);
   console.log(JSON.stringify({ firstTime: !alreadyRejected, labelApplied, source: "ok" }));
 }
 

@@ -2,7 +2,9 @@
 /**
  * check-continuo-escalate-label.ts (#7446 item 2)
  *
- * CLI wrapper de `scripts/lib/continuo-escalate-owner.ts` — todo I/O (`gh pr view` + REST) fica aqui; a decisão pura fica na lib. Consumido pelo
+ * CLI wrapper de `scripts/lib/continuo-escalate-owner.ts` — todo I/O
+ * (`gh pr view` pra ler labels + REST pra criar/aplicar) fica aqui; a
+ * decisão pura fica na lib. Consumido pelo
  * ramo `gate=escalate` de `try_merge_gate()` em
  * `hermes/scripts/continuo-pr-review.sh`: aplica o label
  * `continuo-escalado` (idempotente) e diz ao chamador se esta é a PRIMEIRA
@@ -13,7 +15,9 @@
  *   npx tsx scripts/check-continuo-escalate-label.ts --pr 7432
  *
  * Saída: JSON `{"firstTime": boolean, "labelApplied": boolean, "source":
- * "ok" | "error"}` em stdout. `source: "error"` (gh falhou ao ler labels)
+ * "ok" | "error"}` em stdout. `labelApplied` = "o label ESTÁ na PR ao
+ * final" (true também quando já estava lá antes desta chamada, #7704) —
+ * não "eu apliquei agora"; para isso existe o `firstTime`. `source: "error"` (gh falhou ao ler labels)
  * resolve `firstTime: true` — fail-OPEN em direção a notificar (o pior caso
  * de um falso positivo aqui é 1 notificação a mais, nunca um merge indevido
  * nem uma PR escalada ficando muda para sempre).
@@ -98,7 +102,15 @@ function main(): void {
   }
 
   const alreadyEscalated = isAlreadyEscalated(labels);
-  const labelApplied = alreadyEscalated ? false : applyLabel(args.pr);
+  /** Semântica de `labelApplied` (#7704): "o label ESTÁ na PR ao final desta
+   *  chamada", nunca "eu acabei de aplicá-lo agora". A distinção importa
+   *  porque `continuo-pr-review.sh` trata `labelApplied: false` como erro de
+   *  infra — e PR que JÁ carrega o label (o estado estacionário de toda PR
+   *  escalada a partir do 2º tick) não teve aplicação nenhuma TENTADA, então
+   *  reportar `false` ali faria o bash acusar falha a cada tick, para sempre,
+   *  com stderr vazio. Quem quer saber se houve escrita nesta chamada lê
+   *  `firstTime`. */
+  const labelApplied = alreadyEscalated ? true : applyLabel(args.pr);
   console.log(JSON.stringify({ firstTime: !alreadyEscalated, labelApplied, source: "ok" }));
 }
 

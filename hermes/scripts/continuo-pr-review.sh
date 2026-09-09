@@ -493,6 +493,26 @@ try_merge_gate() {
         # if $v == null then ... else $v end` distingue "ausente" (usa o
         # default) de "presente e false" (preserva o valor real).
         FIRST_TIME=$(printf '%s' "$ESCALATE_JSON" | jq -r '.firstTime as $v | if $v == null then true else $v end' 2>/dev/null || echo "true")
+        # #7704: `labelApplied: false` com rc=0 é o modo de falha REAL
+        # deste caminho — o wrapper nunca aborta (a decisão `firstTime`
+        # já foi tomada), então o único sinal de "o label não pegou"
+        # vinha num campo de JSON que ninguém lia, e a PR seguia sem
+        # dono declarado em silêncio. `labelApplied` significa "o label
+        # ESTÁ na PR ao final" (true também quando já estava lá antes),
+        # então `false` aqui é sempre falha, nunca o estado estacionário
+        # de uma PR já sinalizada — a semântica que torna esta checagem
+        # possível sem cruzar com `firstTime`.
+        #
+        # DENTRO do ramo rc=0 de propósito: no ramo rc≠0 a falha já foi
+        # contada logo abaixo, e checar `labelApplied` lá também
+        # dobraria INFRA_ERRORS pro MESMO erro (stdout vazio → jq sai 0
+        # com saída vazia, que também não é "true").
+        ESCALATE_LABEL_APPLIED=$(printf '%s' "$ESCALATE_JSON" | jq -r '.labelApplied // false' 2>/dev/null || echo "false")
+        if [ "$ESCALATE_LABEL_APPLIED" != "true" ]; then
+          echo "[continuo-pr-review] PR #$pr: check-continuo-escalate-label.ts não aplicou o label (labelApplied=false) — a PR fica sem dono declarado: $ESCALATE_STDERR" >&2
+          INFRA_ERRORS=$((INFRA_ERRORS + 1))
+          log_infra_error "$pr" "escalate_label_not_applied" "$ESCALATE_STDERR"
+        fi
       else
         # Review externo (PR #7449, achado #1): faltava o padrão de
         # visibilidade do #6910 — os outros 6+ pontos de falha de infra
@@ -502,17 +522,6 @@ try_merge_gate() {
         echo "[continuo-pr-review] PR #$pr: check-continuo-escalate-label.ts falhou (rc=$ESCALATE_RC) — notificando mesmo assim (fail-open): $ESCALATE_STDERR" >&2
         INFRA_ERRORS=$((INFRA_ERRORS + 1))
         log_infra_error "$pr" "escalate_label_rc=$ESCALATE_RC" "$ESCALATE_STDERR"
-      fi
-      # #7704: `labelApplied: false` com rc=0 era o modo de falha REAL
-      # deste caminho — o wrapper nunca aborta (a decisão `firstTime` já
-      # foi tomada), então o único sinal de "o label não pegou" vinha num
-      # campo de JSON que ninguém lia. Sem isto, PR rejeitada/escalada
-      # segue sem dono e nada no resumo do tick denuncia.
-      ESCALATE_LABEL_APPLIED=$(printf '%s' "$ESCALATE_JSON" | jq -r '.labelApplied // false' 2>/dev/null || echo "false")
-      if [ "$ESCALATE_LABEL_APPLIED" != "true" ]; then
-        echo "[continuo-pr-review] PR #$pr: check-continuo-escalate-label.ts não aplicou o label (labelApplied=false) — a PR fica sem dono declarado: $ESCALATE_STDERR" >&2
-        INFRA_ERRORS=$((INFRA_ERRORS + 1))
-        log_infra_error "$pr" "escalate_label_not_applied" "$ESCALATE_STDERR"
       fi
       if [ "$FIRST_TIME" = "true" ]; then
         echo "[continuo-pr-review] PR #$pr: gate=escalate (1ª vez) — label continuo-escalado aplicado, deixando pro pickup do /diaria-overnight ou revisão humana (fallback, #6823/#7446)"
@@ -595,21 +604,30 @@ try_merge_gate() {
       REJECT_FIRST_TIME="true"
       if [ "$REJECT_LABEL_RC" -eq 0 ]; then
         REJECT_FIRST_TIME=$(printf '%s' "$REJECT_LABEL_JSON" | jq -r '.firstTime as $v | if $v == null then true else $v end' 2>/dev/null || echo "true")
+        # #7704: `labelApplied: false` com rc=0 é o modo de falha REAL
+        # deste caminho — o wrapper nunca aborta (a decisão `firstTime`
+        # já foi tomada), então o único sinal de "o label não pegou"
+        # vinha num campo de JSON que ninguém lia, e a PR seguia sem
+        # dono declarado em silêncio. `labelApplied` significa "o label
+        # ESTÁ na PR ao final" (true também quando já estava lá antes),
+        # então `false` aqui é sempre falha, nunca o estado estacionário
+        # de uma PR já sinalizada — a semântica que torna esta checagem
+        # possível sem cruzar com `firstTime`.
+        #
+        # DENTRO do ramo rc=0 de propósito: no ramo rc≠0 a falha já foi
+        # contada logo abaixo, e checar `labelApplied` lá também
+        # dobraria INFRA_ERRORS pro MESMO erro (stdout vazio → jq sai 0
+        # com saída vazia, que também não é "true").
+        REJECT_LABEL_APPLIED=$(printf '%s' "$REJECT_LABEL_JSON" | jq -r '.labelApplied // false' 2>/dev/null || echo "false")
+        if [ "$REJECT_LABEL_APPLIED" != "true" ]; then
+          echo "[continuo-pr-review] PR #$pr: check-continuo-reject-label.ts não aplicou o label (labelApplied=false) — a PR fica sem dono declarado: $REJECT_LABEL_STDERR" >&2
+          INFRA_ERRORS=$((INFRA_ERRORS + 1))
+          log_infra_error "$pr" "reject_label_not_applied" "$REJECT_LABEL_STDERR"
+        fi
       else
         echo "[continuo-pr-review] PR #$pr: check-continuo-reject-label.ts falhou (rc=$REJECT_LABEL_RC) — notificando mesmo assim (fail-open): $REJECT_LABEL_STDERR" >&2
         INFRA_ERRORS=$((INFRA_ERRORS + 1))
         log_infra_error "$pr" "reject_label_rc=$REJECT_LABEL_RC" "$REJECT_LABEL_STDERR"
-      fi
-      # #7704: `labelApplied: false` com rc=0 era o modo de falha REAL
-      # deste caminho — o wrapper nunca aborta (a decisão `firstTime` já
-      # foi tomada), então o único sinal de "o label não pegou" vinha num
-      # campo de JSON que ninguém lia. Sem isto, PR rejeitada/escalada
-      # segue sem dono e nada no resumo do tick denuncia.
-      REJECT_LABEL_APPLIED=$(printf '%s' "$REJECT_LABEL_JSON" | jq -r '.labelApplied // false' 2>/dev/null || echo "false")
-      if [ "$REJECT_LABEL_APPLIED" != "true" ]; then
-        echo "[continuo-pr-review] PR #$pr: check-continuo-reject-label.ts não aplicou o label (labelApplied=false) — a PR fica sem dono declarado: $REJECT_LABEL_STDERR" >&2
-        INFRA_ERRORS=$((INFRA_ERRORS + 1))
-        log_infra_error "$pr" "reject_label_not_applied" "$REJECT_LABEL_STDERR"
       fi
       if [ "$REJECT_FIRST_TIME" = "true" ]; then
         echo "[continuo-pr-review] PR #$pr: gate=reject (1ª vez) — label continuo-rejeitado aplicado, decidir entre consertar ou fechar (hermes-diaria-continuo/SKILL.md §3 passo 1, #7567)"

@@ -60,13 +60,24 @@ function main(): void {
   const cwd = process.cwd();
 
   // #7704: era `gh label create ... catch {}` + `gh pr edit --add-label`.
-  // Os dois falhavam calados — o `create` com 422 (descrição acima dos 100
-  // chars do GitHub) e o `--add-label` com exit 1 porque o label não
-  // existia — mas o `catch` do `create` era vazio e só o `--add-label`
-  // decidia o exit code, então este script chegou a reportar
-  // `labelApplied: true` em cenários onde o cap de 1 tentativa NÃO foi
-  // fechado. Agora as DUAS metades falham alto, e o `addPrLabelsRest`
-  // (#6292) relê o label depois de escrever em vez de confiar no exit code.
+  //
+  // A criação falhava calada — 422, descrição com 105 chars contra o teto de
+  // 100 do GitHub — e o `catch` vazio a engolia. Diferente dos labels de
+  // escalate/reject, porém, `continuo-ci-fix-tentado` ACABOU existindo (por
+  // outro caminho, com descrição vazia), então o `--add-label` seguinte
+  // tendia a suceder e o cap de 1 tentativa costumava fechar.
+  //
+  // O risco de `labelApplied: true` sem o label aplicado é outro, e
+  // independente da criação: `gh pr edit` sai **exit 0 sem aplicar nada**
+  // quando a mutação GraphQL bate em `projectCards` (#6292, medido ao vivo
+  // com a label `no-regression-test` no PR #6257). Aí o script reportava
+  // sucesso com o cap NÃO fechado — livelock, o próprio modo de falha que
+  // ele existe pra evitar.
+  //
+  // Agora as duas metades falham alto: `ensureContinuoLabel` valida a
+  // descrição antes de gastar a chamada e distingue `already_exists` de erro
+  // real, e `addPrLabelsRest` (#6292) relê o label depois de escrever em vez
+  // de confiar no exit code.
   const ensured = ensureContinuoLabel(CONTINUO_CI_FIX_ATTEMPTED_LABEL_SPEC, cwd);
   if (!ensured.ok) {
     console.log(JSON.stringify({ pr: Number(args.pr), labelApplied: false, error: ensured.error }));
