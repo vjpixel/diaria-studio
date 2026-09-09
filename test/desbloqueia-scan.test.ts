@@ -125,10 +125,69 @@ describe("classifyDesbloqueioCandidate", () => {
     assert.equal(result?.status, "precisa-pergunta");
   });
 
-  it("issue elegível (sem label de bloqueio) → fora do escopo, devolve null", () => {
-    const input = baseInput({ labels: [] });
+  it("#7694: issue sem label nenhuma (overnight ·sem sinal) ENTRA no escopo como sem-sinal-nao-triada", () => {
+    // Antes da #7694 esta issue era `null` (fora do escopo) — era exatamente o
+    // bug: o bucket mais provável de esconder um bloqueio sem label era o
+    // único que a skill nunca lia.
+    const input = baseInput({ labels: [], comments: ["comentário sem marcador"] });
     const result = classifyDesbloqueioCandidate(input);
-    assert.equal(result, null);
+    assert.equal(result?.track, "overnight");
+    assert.equal(result?.matched, "default");
+    assert.equal(result?.semSinal, true);
+    assert.equal(result?.status, "sem-sinal-nao-triada");
+  });
+
+  it("#7694: overnight com sinal POSITIVO (trade-off-real) fica fora do escopo — já foi triado", () => {
+    const input = baseInput({ labels: ["trade-off-real"] });
+    assert.equal(classifyDesbloqueioCandidate(input), null);
+  });
+
+  it("#7694: overnight confirmado por triada-overnight fica fora do escopo", () => {
+    const input = baseInput({ labels: ["triada-overnight"] });
+    assert.equal(classifyDesbloqueioCandidate(input), null);
+  });
+
+  it("#7694: sem-sinal com bloqueio-execucao na thread → bloqueio-confirmado + semSinal (label FALTANDO)", () => {
+    // O achado de maior valor da extensão: a thread documenta o bloqueio e
+    // ninguém aplicou a label. O playbook roteia pra `bloqueada` em vez de só
+    // comentar "segue valendo".
+    const blocked = formatExecutionBlockMarker({
+      recorded_at: "2026-08-20T00:00:00Z",
+      motivo: "conta da Brevo ainda não existe",
+      sessao: "overnight",
+      condicao: { tipo: "externo", descricao: "conta da Brevo ainda não existe" },
+    });
+    const result = classifyDesbloqueioCandidate(baseInput({ labels: [], comments: [blocked] }));
+    assert.equal(result?.status, "bloqueio-confirmado");
+    assert.equal(result?.semSinal, true);
+    assert.equal(result?.track, "overnight");
+  });
+
+  it("#7694: sem-sinal com decisao-editor na thread → ja-destravada, como qualquer outra", () => {
+    const decided = formatDecisionMarker({
+      decided_at: "2026-08-20T00:00:00Z",
+      pergunta: "?",
+      resposta: "opção B",
+      sessao: "develop",
+    });
+    const result = classifyDesbloqueioCandidate(baseInput({ labels: [], comments: [decided] }));
+    assert.equal(result?.status, "ja-destravada");
+    assert.equal(result?.semSinal, true);
+  });
+
+  it("#7694: sem-sinal com erro de leitura → erro-leitura, NUNCA sem-sinal-nao-triada", () => {
+    const result = classifyDesbloqueioCandidate(
+      baseInput({ labels: [], comments: [], commentsFetchError: "gh falhou" }),
+    );
+    assert.equal(result?.status, "erro-leitura");
+    assert.equal(result?.semSinal, true);
+  });
+
+  it("#7694: candidata COM label (bloqueada) e sem marcador continua precisa-pergunta, não sem-sinal", () => {
+    const result = classifyDesbloqueioCandidate(baseInput({ labels: ["external-blocker"], comments: [] }));
+    assert.equal(result?.status, "precisa-pergunta");
+    assert.equal(result?.semSinal, false);
+    assert.equal(result?.matched, "label:external-blocker");
   });
 
   it("issue on-hold (fora-de-rodada) → fora do escopo, devolve null", () => {
@@ -372,7 +431,7 @@ describe("classifyDesbloqueioCandidate", () => {
 });
 
 describe("scanDesbloqueioCandidates", () => {
-  it("agrupa múltiplas issues nos 4 destinos + fora do escopo", () => {
+  it("agrupa múltiplas issues nos 5 destinos + fora do escopo", () => {
     const decided = formatDecisionMarker({
       decided_at: "2026-08-15T00:00:00Z",
       pergunta: "?",
@@ -391,6 +450,7 @@ describe("scanDesbloqueioCandidates", () => {
       baseInput({ number: 3, comments: [] }),
       baseInput({ number: 4, labels: [] }),
       baseInput({ number: 5, comments: [], commentsFetchError: "gh falhou" }),
+      baseInput({ number: 6, labels: ["on-hold"] }),
     ]);
     assert.deepEqual(
       report.jaDestravadas.map((c) => c.number),
@@ -408,15 +468,22 @@ describe("scanDesbloqueioCandidates", () => {
       report.erroLeitura.map((c) => c.number),
       [5],
     );
-    assert.deepEqual(report.foraDoEscopo, [4]);
+    // #7694 — #4 (sem label nenhuma) MIGROU de foraDoEscopo pra
+    // semSinalNaoTriadas; quem sai do escopo agora é #6 (`on-hold`).
+    assert.deepEqual(
+      report.semSinalNaoTriadas.map((c) => c.number),
+      [4],
+    );
+    assert.deepEqual(report.foraDoEscopo, [6]);
   });
 
-  it("lista vazia devolve os 5 grupos vazios", () => {
+  it("lista vazia devolve os 6 grupos vazios", () => {
     const report = scanDesbloqueioCandidates([]);
     assert.deepEqual(report, {
       jaDestravadas: [],
       bloqueioConfirmado: [],
       precisaPergunta: [],
+      semSinalNaoTriadas: [],
       erroLeitura: [],
       foraDoEscopo: [],
     });

@@ -167,6 +167,7 @@ export type ExecTrackMatch =
   | "label:alarm"
   | "label:epic-guarda-chuva"
   | "label:sem-direcao-acionavel"
+  | "label:triada-overnight"
   | "default";
 
 /**
@@ -205,6 +206,7 @@ export const EXEC_TRACK_MATCH_CATALOG: readonly ExecTrackMatch[] = [
   "label:alarm",
   "label:epic-guarda-chuva",
   "label:sem-direcao-acionavel",
+  "label:triada-overnight",
   "default",
 ] as const;
 
@@ -438,6 +440,36 @@ const MACHINE_DEVELOP_LABELS = new Set(["windows"]);
 const TRADE_OFF_LABEL = "trade-off-real";
 
 /**
+ * #7694 — "já triei esta issue: nada a desbloquear, é overnight mesmo".
+ *
+ * Existe por causa do badge `·sem sinal` do painel Triagem
+ * (`dispatchBadge`, `scripts/studio-ui/public/triagem.js`), que marca toda
+ * issue cuja classificação caiu no `matched: "default"` — nenhum sinal
+ * positivo decidiu nada, **ninguém verificou**. Antes desta label não havia
+ * como registrar o veredito oposto: uma issue conferida e confirmada como
+ * overnight ficava indistinguível de uma que nunca foi lida, e era retriada
+ * do zero a cada varredura (mesma classe de desperdício que
+ * `issue-decisions.ts`/#5373 evita pra decisão do editor, aqui aplicada ao
+ * ato de TRIAR).
+ *
+ * Não muda veredito nenhum — o track continua `overnight`, exatamente como
+ * seria sem ela. O que muda é só `matched`, que passa de `"default"` pra
+ * `"label:triada-overnight"`, e o badge deixa de dizer `·sem sinal`.
+ *
+ * Precedência: é a ÚLTIMA regra antes do `default`, de propósito. Toda outra
+ * label (bloqueio, deferimento, máquina, trade-off, prosa) vence — a label
+ * só confirma o caminho que a issue já ia tomar por omissão, nunca sobrepõe
+ * um sinal real. Consequência: `triada-overnight` + `on-hold` continua
+ * `fora-de-rodada`, `triada-overnight` + `windows` continua `develop`, etc.
+ *
+ * Diferente de `TRADE_OFF_LABEL` (#7493), que também mantém `overnight` mas
+ * significa "triada E tem pergunta pro briefing": esta significa "triada e
+ * NÃO tem pergunta". As duas juntas não fazem sentido; `trade-off-real`
+ * vence por ser checada antes (o sinal mais informativo).
+ */
+export const TRIAGED_OVERNIGHT_LABEL = "triada-overnight";
+
+/**
  * #5948 — bloqueio HUMANO/dependência sem data específica (o editor precisa
  * agir, mas não há `aguardando-ate:` porque não há data — ex: exportar algo
  * manualmente num painel, decidir e rodar um passo, revisar antes de seguir).
@@ -666,6 +698,13 @@ export function classifyExecTrackWithRule(input: ExecTrackInput): ExecTrackResul
 
   const proseLabel = labels.find((l) => RESOLVED_BY_PROSE_LABELS.has(l));
   if (proseLabel) return { track: "fora-de-rodada", matched: `label:${proseLabel}`  };
+
+  // #7694 — última regra antes do default, de propósito: `triada-overnight`
+  // só CONFIRMA o caminho que a issue já ia tomar por omissão (ver docstring
+  // de `TRIAGED_OVERNIGHT_LABEL`). O track é o mesmo; o que muda é `matched`,
+  // que deixa de ser `"default"` — e com isso o badge do painel deixa de
+  // dizer `·sem sinal` pra uma issue que alguém de fato conferiu.
+  if (has(TRIAGED_OVERNIGHT_LABEL)) return { track: "overnight", matched: "label:triada-overnight" };
 
   return { track: "overnight", matched: "default" };
 }
@@ -927,6 +966,10 @@ export const EXEC_TRACK_MATCH_REASON: Record<ExecTrackMatch, { short: string; lo
   "label:sem-direcao-acionavel": {
     short: "sem ação de código clara",
     long: "Label `sem-direcao-acionavel` (#5968): a rodada já investigou e concluiu explicitamente que não há próximo passo de código prescrito. Diferente de `precisa-resposta`/`trade-off-real`, que são ambiguidades ANTES de qualquer tentativa.",
+  },
+  "label:triada-overnight": {
+    short: "triada — overnight confirmado",
+    long: "Label `triada-overnight` (#7694): alguém já leu a issue e confirmou que não há nada a desbloquear — é Overnight mesmo. O veredito é idêntico ao que ela teria sem a label; o que muda é deixar de ser `·sem sinal`, pra a próxima varredura não retriar do zero. Destrava sozinha: o overnight pega normalmente.",
   },
   default: {
     short: "sem sinal — ninguém triou",

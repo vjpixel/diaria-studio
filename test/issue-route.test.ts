@@ -32,7 +32,7 @@ import {
   type RouteMotivo,
   type RouteTrack,
 } from "../scripts/lib/issue-route.ts";
-import { classifyExecTrack } from "../scripts/lib/issue-exec-track.ts";
+import { classifyExecTrack, classifyExecTrackWithRule } from "../scripts/lib/issue-exec-track.ts";
 import { routeIssue, routeIssueForCreate, type GhRunFn } from "../scripts/route-issue.ts";
 import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
 import { latestExecutionBlockFor } from "../scripts/lib/issue-decisions.ts";
@@ -95,6 +95,9 @@ describe("planRouteLabels — round-trip dos 5 motivos #6197 (3a)", () => {
     // #7493 — trade-off real voltou a ser pergunta de briefing: a label
     // aplica um sinal POSITIVO sem tirar a issue do track overnight.
     ["overnight", "trade-off"],
+    // #7694 — complemento de `trade-off`: "triei e NÃO tem pergunta". Mesmo
+    // track, sinal positivo diferente.
+    ["overnight", "triada"],
   ];
 
   for (const [track, motivo] of cases) {
@@ -1196,5 +1199,30 @@ describe("routeIssue — #7316 P1: dependencia-aberta sai do conjunto ROUTABLE_L
     assert.equal(result.ok, true);
     assert.ok(gh.state.labels.includes("dependencia-aberta"));
     assert.ok(!gh.state.labels.includes("bloqueio-execucao"));
+  });
+});
+
+describe("#7694 — triada-overnight é roteável nos dois sentidos", () => {
+  it("--motivo triada aplica a label e o round-trip devolve overnight", () => {
+    const plan = planRouteLabels("overnight", "triada" as RouteMotivo);
+    assert.deepEqual(plan.add, ["triada-overnight"]);
+    const resolved = classifyExecTrackWithRule({
+      labels: applyRouteLabelPlan([], plan),
+      body: "",
+      state: "OPEN",
+    });
+    assert.equal(resolved.track, "overnight");
+    assert.equal(resolved.matched, "label:triada-overnight");
+  });
+
+  it("issue triada e depois bloqueada PERDE a label — não carrega 'já conferi' obsoleto (#7316)", () => {
+    const plan = planRouteLabels("bloqueada", "conta-de-terceiro" as RouteMotivo);
+    assert.ok(
+      plan.remove.includes("triada-overnight"),
+      "triada-overnight precisa estar em ROUTABLE_LABELS pra entrar no conjunto remove",
+    );
+    const nextLabels = applyRouteLabelPlan(["triada-overnight"], plan);
+    assert.equal(nextLabels.includes("triada-overnight"), false);
+    assert.equal(classifyExecTrack({ labels: nextLabels, body: "", state: "OPEN" }), "bloqueada");
   });
 });

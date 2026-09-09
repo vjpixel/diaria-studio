@@ -1015,3 +1015,63 @@ describe("EXEC_TRACK_ACTIONABLE — quem anda hoje (#7644)", () => {
     assert.deepEqual(Object.keys(EXEC_TRACK_ACTIONABLE).sort(), Object.keys(EXEC_TRACK_LABELS).sort());
   });
 });
+
+describe("#7694 — triada-overnight confirma o default sem sobrepor sinal real", () => {
+  it("sozinha: track segue overnight, mas matched deixa de ser default", () => {
+    const r = classifyExecTrackWithRule({ labels: ["triada-overnight"], body: null, state: "OPEN" });
+    assert.equal(r.track, "overnight");
+    assert.equal(r.matched, "label:triada-overnight");
+  });
+
+  it("sem ela, a MESMA issue cai em default — é só o matched que muda", () => {
+    const semLabel = classifyExecTrackWithRule({ labels: [], body: null, state: "OPEN" });
+    const comLabel = classifyExecTrackWithRule({ labels: ["triada-overnight"], body: null, state: "OPEN" });
+    assert.equal(semLabel.track, comLabel.track);
+    assert.equal(semLabel.matched, "default");
+    assert.notEqual(comLabel.matched, "default");
+  });
+
+  it("perde pra TODO sinal real — nunca reclassifica uma issue que outra label já decidiu", () => {
+    const casos: Array<[string[], string]> = [
+      [["triada-overnight", "on-hold"], "fora-de-rodada"],
+      [["triada-overnight", "wontfix"], "fora-de-rodada"],
+      [["triada-overnight", "epic-guarda-chuva"], "epica"],
+      [["triada-overnight", "external-blocker"], "bloqueada"],
+      [["triada-overnight", "bloqueio-execucao"], "bloqueada"],
+      [["triada-overnight", "not-this-week"], "bloqueada"],
+      [["triada-overnight", "windows"], "develop"],
+      [["triada-overnight", "develop-track"], "develop"],
+      [["triada-overnight", "decisao-registrada"], "fora-de-rodada"],
+      [["triada-overnight", "sem-direcao-acionavel"], "fora-de-rodada"],
+    ];
+    for (const [labels, esperado] of casos) {
+      assert.equal(classifyExecTrack({ labels, body: null, state: "OPEN" }), esperado, labels.join("+"));
+    }
+  });
+
+  it("trade-off-real vence: 'triada E tem pergunta' é o sinal mais informativo", () => {
+    const r = classifyExecTrackWithRule({
+      labels: ["triada-overnight", "trade-off-real"],
+      body: null,
+      state: "OPEN",
+    });
+    assert.equal(r.track, "overnight");
+    assert.equal(r.matched, "label:trade-off-real");
+  });
+
+  it("marcador aguardando-ate futuro vence a label", () => {
+    const r = classifyExecTrackWithRule({
+      labels: ["triada-overnight"],
+      body: "<!-- aguardando-ate: 2099-01-01 -->",
+      state: "OPEN",
+    });
+    assert.equal(r.track, "agendada");
+  });
+
+  it("issue CLOSED com a label continua fora-de-rodada", () => {
+    assert.equal(
+      classifyExecTrack({ labels: ["triada-overnight"], body: null, state: "CLOSED" }),
+      "fora-de-rodada",
+    );
+  });
+});

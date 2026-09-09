@@ -3,12 +3,24 @@
  * scripts/desbloqueia-scan.ts (#6628)
  *
  * Wrapper de I/O de `/diaria-desbloqueia`. Varre issues abertas candidatas
- * (`bloqueada`/`develop` via `classifyExecTrack`), lê o CORPO E TODOS OS
- * COMENTÁRIOS de cada uma, e classifica em `ja-destravada` /
- * `bloqueio-confirmado` / `precisa-pergunta` / `erro-leitura` via
- * `scripts/lib/desbloqueia-scan.ts`. O playbook (`.claude/skills/diaria-desbloqueia/SKILL.md`)
- * só faz `AskUserQuestion` para o grupo `precisaPergunta` — as outras três
- * (`jaDestravadas`, `bloqueioConfirmado`, `erroLeitura`) nunca geram pergunta.
+ * (`bloqueada`/`develop`, mais o bucket `overnight ·sem sinal` desde a
+ * #7694 — ver abaixo), lê o CORPO E TODOS OS COMENTÁRIOS de cada uma, e
+ * classifica em `ja-destravada` / `bloqueio-confirmado` / `precisa-pergunta` /
+ * `sem-sinal-nao-triada` / `erro-leitura` via `scripts/lib/desbloqueia-scan.ts`.
+ * O playbook (`.claude/skills/diaria-desbloqueia/SKILL.md`) só faz
+ * `AskUserQuestion` para o grupo `precisaPergunta` — os outros quatro
+ * (`jaDestravadas`, `bloqueioConfirmado`, `semSinalNaoTriadas`,
+ * `erroLeitura`) nunca geram pergunta.
+ *
+ * ## `--skip-sem-sinal` e o custo da passada 2 (#7694)
+ *
+ * Incluir o bucket `·sem sinal` (`matched: "default"`) no escopo triplica o
+ * número de `gh issue view` da passada 2 — na medição de 08/09/2026, de 9
+ * candidatas pra 35 (26 sem-sinal + 9 do escopo antigo, sobre 68 abertas).
+ * O default é INCLUIR mesmo assim: o bucket é o motivo de a #7694 existir, e
+ * uma flag de opt-in que ninguém lembra de passar não corrige nada. Quando o
+ * que se quer é só a varredura barata do escopo antigo, `--skip-sem-sinal`
+ * (ou `--track bloqueada`/`--track develop`, que já restringem) desliga.
  *
  * ## Duas passadas de verdade, de propósito (custo de contexto)
  *
@@ -40,7 +52,8 @@
  *
  *   npx tsx scripts/desbloqueia-scan.ts                       # varre todo o backlog aberto
  *   npx tsx scripts/desbloqueia-scan.ts --issues 123,456        # só essas issues
- *   npx tsx scripts/desbloqueia-scan.ts --track bloqueada       # só issues bloqueada (ou develop)
+ *   npx tsx scripts/desbloqueia-scan.ts --track bloqueada       # só bloqueada (ou develop / sem-sinal)
+ *   npx tsx scripts/desbloqueia-scan.ts --skip-sem-sinal         # escopo antigo (bloqueada+develop)
  *   npx tsx scripts/desbloqueia-scan.ts --limit 50               # teto de issues na passada 1 (default 500)
  *
  * `--issues` com qualquer token que não seja um número válido LANÇA
@@ -53,14 +66,21 @@
  */
 import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
-import { classifyExecTrack } from "./lib/issue-exec-track.ts";
+import { classifyExecTrackWithRule } from "./lib/issue-exec-track.ts";
 import {
   scanDesbloqueioCandidates,
   type DesbloqueioIssueInput,
   type DesbloqueioScanReport,
 } from "./lib/desbloqueia-scan.ts";
 
-const SCOPED_TRACKS = ["bloqueada", "develop"] as const;
+/**
+ * Valores de `--track`. `sem-sinal` NÃO é um `ExecTrack` — é o subconjunto de
+ * `overnight` com `matched: "default"` (#7694), que só existe como escopo
+ * desta varredura. Nomeado assim, e não `overnight`, justamente pra não
+ * sugerir que `--track overnight` traria todo issue overnight (não traz: os
+ * já triados estão fora do escopo por construção).
+ */
+const SCOPED_TRACKS = ["bloqueada", "develop", "sem-sinal"] as const;
 type ScopedTrack = (typeof SCOPED_TRACKS)[number];
 
 interface GhIssueListEntry {
@@ -142,21 +162,32 @@ function fetchCommentsChecked(issueNumber: number, cwd: string): { comments: str
 
 export function runDesbloqueioScan(
   cwd: string,
-  opts: { limit?: number; issues?: number[]; track?: ScopedTrack } = {},
+  opts: { limit?: number; issues?: number[]; track?: ScopedTrack; skipSemSinal?: boolean } = {},
 ): DesbloqueioScanReport {
   const limit = opts.limit ?? 500;
   const issues = fetchOpenIssues(cwd, limit, opts.issues ?? null);
+  // `--track sem-sinal` pedindo explicitamente o bucket vence um
+  // `--skip-sem-sinal` que tenha vindo junto (pedido explícito > desligamento
+  // genérico); fora isso, a flag desliga o bucket.
+  const includeSemSinal = opts.track === "sem-sinal" || !opts.skipSemSinal;
 
   // Passada 1 (barata, sem gh issue view): filtra pra quem é candidata real
   // ANTES de gastar uma chamada de comentário. Ver docstring do módulo.
   const candidates = issues.filter((issue) => {
-    const track = classifyExecTrack({
+    const { track, matched } = classifyExecTrackWithRule({
       labels: issue.labels.map((l) => l.name),
       body: issue.body,
       state: issue.state,
     });
-    if (track !== "bloqueada" && track !== "develop") return false;
-    if (opts.track && track !== opts.track) return false;
+    // #7694 — `overnight` só entra pelo bucket `·sem sinal` (`matched`
+    // default). `overnight` com sinal positivo (trade-off-real, alarm-evento,
+    // triada-overnight) já foi triado: não há o que desbloquear.
+    const semSinal = track === "overnight" && matched === "default";
+    const scope: ScopedTrack | null =
+      track === "bloqueada" || track === "develop" ? track : semSinal ? "sem-sinal" : null;
+    if (scope === null) return false;
+    if (scope === "sem-sinal" && !includeSemSinal) return false;
+    if (opts.track && scope !== opts.track) return false;
     return true;
   });
 
@@ -195,12 +226,16 @@ function parseTrackArg(raw: string): ScopedTrack {
 }
 
 async function main() {
-  const { values } = parseArgs(process.argv.slice(2));
+  const { values, flags } = parseArgs(process.argv.slice(2));
   const limit = values.limit ? Number(values.limit) : undefined;
   const issues = values.issues ? parseIssuesArg(values.issues) : undefined;
   const track = values.track ? parseTrackArg(values.track) : undefined;
+  // `parseArgs` põe flag booleana em `flags` e `--k=v` em `values` — aceitar
+  // as duas formas (`--skip-sem-sinal` e `--skip-sem-sinal=true`) evita o
+  // silêncio de uma flag digitada com `=` e simplesmente ignorada.
+  const skipSemSinal = flags.has("skip-sem-sinal") || values["skip-sem-sinal"] === "true";
 
-  const report = runDesbloqueioScan(process.cwd(), { limit, issues, track });
+  const report = runDesbloqueioScan(process.cwd(), { limit, issues, track, skipSemSinal });
   console.log(JSON.stringify(report, null, 2));
 }
 
