@@ -41,5 +41,5 @@
   // scripts/lib/session-registry.ts (#7687) invoca `tasklist` (Windows,
   // System32) pra confirmar PID vivo quando `process.kill(pid, 0)` lança
   // EPERM ambíguo no libuv/Windows -- utilitário do SO, não npm.
-  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist"]
+  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist", "taskkill"]
 }
