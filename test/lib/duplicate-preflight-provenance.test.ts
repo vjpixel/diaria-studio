@@ -66,4 +66,15 @@ describe("duplicate-preflight provenance (#7801)", () => {
     expect(result.matchingCommits.length).toBe(1); // dedup por SHA
     expect(result.verdict).toBe("closes-should-be-closed");
   });
+
+  it("regressão #7803: commit direto que menciona outra issue NÃO herda closes (só provenance aplica fallback)", () => {
+    const res = assessDuplicatePreflight({
+      issueNumber: 7634,
+      commits: [{ sha: "d", subject: "fix(#7743)", body: "Closes #7743\nresolve", authorDateIso: "2026-09-09T10:00:00Z" }],
+      provenanceCommits: [],
+    });
+    expect(res.matchingCommits[0].closeMarker).toBe("unknown");
+    expect(res.matchingCommits[0].closeMarker).not.toBe("closes");
+    expect(res.verdict).toBe("refs-declared-residue");
+  });
 });

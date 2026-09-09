@@ -125,7 +125,7 @@ export function classifyMasterCommits(commits: MasterCommitInfo[], issueNumber: 
     // PARA commits diretos (#N) NÃO aplicamos o fallback — se o número
     // direto não aparece, não presumimos que ele fecha esta issue.
     const marker = c.provenance
-      ? (direct === "refs" ? "refs" : (direct === "closes" || (direct === "unknown" && /\bcloses\b/i.test(c.body))) ? "closes" : direct)
+      ? parseCommitCloseMarkerProvenance(c.body)
       : direct;
     return { ...c, closeMarker: marker };
   });
