@@ -10,8 +10,13 @@ Cobre:
      relatorio AUSENTE -> fabrication_suspected, exit 2.
   3. Relatorio ausente e NENHUMA sessao correlacionada -> indeterminado
      (1o tick legitimo), nunca "ok" nem "fabricacao" por default.
-  4. Relatorio existe mas mtime FORA da janela do tick (relatorio obsoleto
-     de um tick anterior sendo reaproveitado) -> fabrication_suspected.
+  4. Relatorio existe mas mtime ANTERIOR ao inicio da janela do tick
+     (relatorio obsoleto de um tick anterior sendo reaproveitado) ->
+     fabrication_suspected.
+  4b. Relatorio existe mas mtime POSTERIOR ao fim da janela do tick ->
+     indeterminado (cannot-verify), NUNCA fabrication_suspected — achado do
+     #7641: mtime mais novo so pode vir de escrita real e posterior, nunca
+     de arquivo obsoleto reaproveitado (que preservaria mtime antigo).
   5. Contagem de issues classificadas alegada no relatorio ("n=4 issues")
      diverge muito do real (41 abertas, via --open-issues-json) ->
      fabrication_suspected (mesmo padrao do #7537).
@@ -162,6 +167,37 @@ def main() -> int:
         assert_true(
             "4. relatorio com mtime fora da janela (obsoleto) -> fabrication_suspected",
             result4["status"] == "fabrication_suspected",
+        )
+
+        # ------------------------------------------------------------------
+        # 4b. Relatorio com mtime POSTERIOR ao fim da janela -> indeterminado,
+        # NUNCA fabricacao presumida (achado #7641: mtime mais novo que a
+        # janela so pode vir de escrita real e posterior — nao de arquivo
+        # obsoleto reaproveitado, que preservaria mtime antigo. E o padrao
+        # exato da sessao 604fba55-476a-41a1-9432-1194484f4f31: um tick REAL
+        # e mais recente escreveu o relatorio de verdade, so nao registrou
+        # sessao propria em data/sessions/ pra ser correlacionado).
+        # ------------------------------------------------------------------
+        repo4b = td / "repo4b"
+        report4b = repo4b / "data" / "continuo" / "last-tick-report.md"
+        sessions4b = repo4b / "data" / "sessions"
+        _write_session(sessions4b, "tick-d2", now - timedelta(hours=7), now - timedelta(hours=6))
+        newer_mtime = now  # bem depois do fim da janela (heartbeat + buffer)
+        _write_report(report4b, "## Tick mais novo que a sessao correlacionada\n### Trabalhado\nnada.\n",
+                       mtime=newer_mtime)
+        result4b = mod.run(repo4b, report4b, sessions4b, 45, now, None)
+        assert_true(
+            "4b. relatorio com mtime POSTERIOR a janela -> NUNCA fabrication_suspected (#7641)",
+            result4b["status"] != "fabrication_suspected",
+        )
+        assert_true(
+            "4b. status agregado fica indeterminado (cannot-verify), nao 'ok' silencioso",
+            result4b["status"] == "indeterminate",
+        )
+        assert_true(
+            "4b. checagem report_freshness fica indeterminada, distinguindo do caso 4 (mtime anterior)",
+            any(c["check"] == "report_freshness" and c["status"] == "indeterminate"
+                for c in result4b["checks"]),
         )
 
         # ------------------------------------------------------------------
