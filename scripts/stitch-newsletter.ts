@@ -731,9 +731,12 @@ export function stitchNewsletter(input: StitchInput): string {
   // 1 GET por item de USE MELHOR (3–4 por edição) é barato perto de publicar
   // um número errado. `fetchBodyForCache` é fail-soft e reusa `saveCachedBody`
   // pra que execuções seguintes reutilizem o body (evita refetch repetido).
-  // Feito no caller (não em `estimateFor`) pra manter `renderUseMelhorSection`
-  // síncrona — `stitchNewsletter` e seus testes dependem da assinatura atual.
-  await prefetchUseMelhorBodies(approved.use_melhor ?? [], useMelhorBodiesDir);
+  // O prefetch (`prefetchUseMelhorBodies`, async) roda no `main()` do CLI,
+  // ANTES desta função — não aqui: `stitchNewsletter` é SÍNCRONA e 55 arquivos
+  // de teste dependem dessa assinatura. A versão anterior desta PR tinha o
+  // `await` aqui dentro (TS1308, `await` fora de função async), o que fazia o
+  // tsx nem compilar o módulo e derrubava os 5 arquivos de teste que o
+  // importam — o "test: fail" do CI era isso, não os testes em si.
   const useMelhor = renderUseMelhorSection(approved.use_melhor ?? [], {
     bodiesDir: useMelhorBodiesDir,
     instrumentation: useMelhorTempoInstrumentation,
@@ -1024,7 +1027,7 @@ export function regenerateHubDivulgacaoBoxForEdition(
   }
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const { values } = parseArgs(process.argv.slice(2));
   const editionDirArg = values["edition-dir"];
@@ -1091,6 +1094,16 @@ function main(): void {
       aammdd: editionAammdd,
       boxesCfg: boxesCfgLoaded,
     });
+
+    // #7668 item 2: fallback de busca sob demanda dos bodies de USE MELHOR,
+    // ANTES do stitch. Aqui, no caller assíncrono, porque `stitchNewsletter`
+    // é síncrona por contrato (ver comentário lá). Fail-soft: item sem body
+    // continua caindo na heurística de título, como antes.
+    const approvedForPrefetch = JSON.parse(readFileSync(approvedCappedPath, "utf8")) as { use_melhor?: ArticleLike[] };
+    await prefetchUseMelhorBodies(
+      approvedForPrefetch.use_melhor ?? [],
+      join(editionDir, "_internal", "_forensic", "link-verify-bodies"),
+    );
 
     const out = stitchNewsletter({
       d1Path: join(editionDir, "_internal", "02-d1-draft.md"),
@@ -1169,4 +1182,9 @@ function main(): void {
 }
 
 const isDirectRun = isMainModule(import.meta.url);
-if (isDirectRun) main();
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error(`[stitch-newsletter] falha inesperada: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+    process.exit(1);
+  });
+}
