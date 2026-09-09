@@ -16,6 +16,11 @@ import {
   shouldBlockSharedCheckoutRm,
   RM_BLOCK_REASON,
   stripQuotedSpans,
+  stripHeredocSpans,
+  extractRmTargetsWithCwd,
+  detectDestructiveGitTarget,
+  shouldBlockSharedCheckoutGitDestructive,
+  GIT_DESTRUCTIVE_BLOCK_REASON,
 } from "../.claude/hooks/block-unsafe-shared-checkout-ops.mjs";
 
 // Lote `guards-de-subagente` (01/09/2026) — #6982 (taskkill /IM) + #6971 (rm
@@ -346,5 +351,363 @@ describe("RM_BLOCK_REASON (#6971)", () => {
     assert.match(RM_BLOCK_REASON, /#6971/);
     assert.match(RM_BLOCK_REASON, /checkout principal/);
     assert.match(RM_BLOCK_REASON, /HONESTA/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #7757 — 2 falsos-positivos do Guard 2 (#6971): path relativo resolvido
+// contra o project root em vez do cwd EFETIVO, e casamento com a MENÇÃO do
+// comando dentro de heredoc. Testes de regressão (a)-(e) literalmente
+// listados na issue.
+// ---------------------------------------------------------------------------
+
+describe("stripHeredocSpans (#7757 Modo 2)", () => {
+  it("remove o CORPO de um heredoc, preserva a linha de abertura e o que vem depois", () => {
+    const cmd = 'cat <<EOF > file.md\nrm -f /home/x/y\nEOF\necho done';
+    const stripped = stripHeredocSpans(cmd);
+    assert.match(stripped, /^cat <<EOF > file\.md\n/);
+    assert.doesNotMatch(stripped, /rm -f \/home\/x\/y/);
+    assert.match(stripped, /echo done/);
+  });
+
+  it("respeita delimitador entre aspas simples ('EOF') — sem expansão, mesma extração", () => {
+    const cmd = "cat <<'EOF' > file.md\nrm -f /a\nEOF\n";
+    assert.doesNotMatch(stripHeredocSpans(cmd), /rm -f \/a/);
+  });
+
+  it("respeita '<<-' (permite indentação na linha terminadora)", () => {
+    const cmd = "cat <<-EOF > file.md\n  rm -f /a\n  EOF\necho ok";
+    const stripped = stripHeredocSpans(cmd);
+    assert.doesNotMatch(stripped, /rm -f \/a/);
+    assert.match(stripped, /echo ok/);
+  });
+
+  it("sem heredoc no comando: devolve inalterado", () => {
+    assert.equal(stripHeredocSpans("rm -f foo.md"), "rm -f foo.md");
+  });
+
+  it("tipo não-string: devolve como veio", () => {
+    assert.equal(stripHeredocSpans(undefined), undefined);
+  });
+});
+
+describe("isRmCommand não casa MENÇÃO dentro de heredoc (#7757 Modo 2, teste (e) da issue)", () => {
+  it("gh issue create --body-file cujo heredoc descreve 'rm -f X' → NÃO detecta rm real", () => {
+    const cmd =
+      "cat <<'EOF' > /tmp/body.md\n" +
+      "O guard bloqueou um comando `rm -f /home/x/data.md` que nunca rodou.\n" +
+      "EOF\n" +
+      "gh issue create --title 'bug' --body-file /tmp/body.md";
+    assert.equal(isRmCommand(cmd), false);
+    assert.deepEqual(extractRmTargetPaths(cmd), []);
+  });
+});
+
+describe("extractRmTargetsWithCwd / isPathInsideCheckout com cwd (#7757 Modo 1)", () => {
+  const checkoutRoot = process.platform === "win32" ? "C:\\repo" : "/repo";
+  const outsideDir = process.platform === "win32" ? "C:\\Users\\x\\memory" : "/home/x/memory";
+  const insideSubdir = process.platform === "win32" ? "C:\\repo\\sub" : "/repo/sub";
+
+  it("(a) cd <dir FORA do checkout> && rm <relativo> → resolve contra o cwd real, FORA do checkout", () => {
+    const cmd = `cd "${outsideDir}" && rm -f project_x.md`;
+    const targets = extractRmTargetsWithCwd(cmd, checkoutRoot);
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0].path, "project_x.md");
+    assert.equal(isPathInsideCheckout(targets[0].path, checkoutRoot, targets[0].cwd), false);
+  });
+
+  it("(b) cd <subdir DO checkout> && rm <relativo> → segue DENTRO do checkout", () => {
+    const cmd = `cd "${insideSubdir}" && rm -f leftover.md`;
+    const targets = extractRmTargetsWithCwd(cmd, checkoutRoot);
+    assert.equal(targets.length, 1);
+    assert.equal(isPathInsideCheckout(targets[0].path, checkoutRoot, targets[0].cwd), true);
+  });
+
+  it("(c) path ABSOLUTO fora do checkout, sem cd → FORA (cwd é irrelevante pra absoluto)", () => {
+    const abs = process.platform === "win32" ? "C:\\tmp\\x.md" : "/tmp/x.md";
+    const targets = extractRmTargetsWithCwd(`rm -f ${abs}`, checkoutRoot);
+    assert.equal(isPathInsideCheckout(targets[0].path, checkoutRoot, targets[0].cwd), false);
+  });
+
+  it("(d) path ABSOLUTO dentro do checkout, sem cd → DENTRO", () => {
+    const abs = process.platform === "win32" ? "C:\\repo\\x.md" : "/repo/x.md";
+    const targets = extractRmTargetsWithCwd(`rm -f ${abs}`, checkoutRoot);
+    assert.equal(isPathInsideCheckout(targets[0].path, checkoutRoot, targets[0].cwd), true);
+  });
+
+  it("sem 'cd': cwd efetivo é o initialCwd (checkoutRoot) — mesmo comportamento de antes", () => {
+    const targets = extractRmTargetsWithCwd("rm -f leftover.md", checkoutRoot);
+    assert.equal(targets[0].cwd, checkoutRoot);
+  });
+
+  it("isPathInsideCheckout sem 3º argumento continua resolvendo contra checkoutRoot (compat)", () => {
+    assert.equal(isPathInsideCheckout("leftover.md", checkoutRoot), true);
+  });
+});
+
+describe("shouldBlockSharedCheckoutRm aceita entradas {path, cwd} (#7757)", () => {
+  const checkoutRoot = process.platform === "win32" ? "C:\\repo" : "/repo";
+  const outsideDir = process.platform === "win32" ? "C:\\Users\\x\\memory" : "/home/x/memory";
+
+  it("bloco (a) reproduzido: cwd fora do checkout → NÃO bloqueia", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutRm({
+        targetPaths: [{ path: "project_x.md", cwd: outsideDir }],
+        checkoutRoot,
+        isWorktree: false,
+        activeCoordinatorSessionIds: new Set(["coord-1"]),
+        callerSessionId: "outra-sessao",
+      }),
+      false,
+    );
+  });
+
+  it("bloco (b) reproduzido: cwd dentro do checkout → bloqueia", () => {
+    const insideSubdir = process.platform === "win32" ? "C:\\repo\\sub" : "/repo/sub";
+    assert.equal(
+      shouldBlockSharedCheckoutRm({
+        targetPaths: [{ path: "leftover.md", cwd: insideSubdir }],
+        checkoutRoot,
+        isWorktree: false,
+        activeCoordinatorSessionIds: new Set(["coord-1"]),
+        callerSessionId: "outra-sessao",
+      }),
+      true,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #7730 — Guard 3: comandos git destrutivos (checkout --/restore/clean/
+// reset --hard/stash) no checkout principal compartilhado.
+// ---------------------------------------------------------------------------
+
+describe("detectDestructiveGitTarget (#7730)", () => {
+  it("'git checkout <ref> -- <path>' → wholeTree false, paths = [<path>]", () => {
+    const t = detectDestructiveGitTarget("git checkout origin/master -- .");
+    assert.deepEqual(t, { wholeTree: false, paths: ["."] });
+  });
+
+  it("'git checkout -- <path>' (sem ref) → casa igual", () => {
+    const t = detectDestructiveGitTarget("git checkout -- wrangler.toml");
+    assert.deepEqual(t, { wholeTree: false, paths: ["wrangler.toml"] });
+  });
+
+  it("'git checkout <branch>' (SEM --) → NÃO casa — troca de branch, outro guard", () => {
+    assert.equal(detectDestructiveGitTarget("git checkout master"), null);
+    assert.equal(detectDestructiveGitTarget("git checkout -b feature/x"), null);
+  });
+
+  it("'git switch' → NÃO casa (fora de escopo deste guard)", () => {
+    assert.equal(detectDestructiveGitTarget("git switch master"), null);
+  });
+
+  it("(fix iteration 1 #7767) 'git checkout HEAD -- <path>' → NÃO casa — exceção do lockout git-sync.ts", () => {
+    assert.equal(detectDestructiveGitTarget("git checkout HEAD -- data/foo.md"), null);
+    assert.equal(detectDestructiveGitTarget("git checkout head -- data/foo.md"), null); // case-insensitive
+  });
+
+  it("(fix iteration 1 #7767) 'git checkout origin/master -- <path>' CONTINUA casando — exceção é só HEAD", () => {
+    assert.deepEqual(detectDestructiveGitTarget("git checkout origin/master -- data/foo.md"), {
+      wholeTree: false,
+      paths: ["data/foo.md"],
+    });
+  });
+
+  it("(fix iteration 1 #7767) 'git checkout -f <branch>' → wholeTree true (falso-negativo original: só olhava '--')", () => {
+    assert.deepEqual(detectDestructiveGitTarget("git checkout -f master"), { wholeTree: true, paths: [] });
+    assert.deepEqual(detectDestructiveGitTarget("git checkout --force master"), { wholeTree: true, paths: [] });
+  });
+
+  it("(fix iteration 1 #7767) 'git checkout .' (SEM --) → wholeTree true", () => {
+    assert.deepEqual(detectDestructiveGitTarget("git checkout ."), { wholeTree: true, paths: [] });
+  });
+
+  it("(fix iteration 1 #7767) 'git checkout -b feature/x' continua NÃO casando — criação de branch, não força nem é '.'", () => {
+    assert.equal(detectDestructiveGitTarget("git checkout -b feature/x"), null);
+  });
+
+  it("'git restore <path...>' → wholeTree false", () => {
+    const t = detectDestructiveGitTarget("git restore test/foo.test.ts");
+    assert.deepEqual(t, { wholeTree: false, paths: ["test/foo.test.ts"] });
+  });
+
+  it("'git clean -f'/'-fd'/'-fdx'/'--force' → wholeTree true", () => {
+    for (const cmd of ["git clean -f", "git clean -fd", "git clean -fdx", "git clean --force"]) {
+      assert.deepEqual(detectDestructiveGitTarget(cmd), { wholeTree: true, paths: [] }, cmd);
+    }
+  });
+
+  it("'git clean -n' (dry-run, sem force) → NÃO casa", () => {
+    assert.equal(detectDestructiveGitTarget("git clean -n"), null);
+    assert.equal(detectDestructiveGitTarget("git clean -nd"), null);
+  });
+
+  it("'git reset --hard [ref]' → wholeTree true", () => {
+    assert.deepEqual(detectDestructiveGitTarget("git reset --hard"), { wholeTree: true, paths: [] });
+    assert.deepEqual(detectDestructiveGitTarget("git reset --hard origin/master"), {
+      wholeTree: true,
+      paths: [],
+    });
+  });
+
+  it("'git reset' (soft/mixed, sem --hard) → NÃO casa", () => {
+    assert.equal(detectDestructiveGitTarget("git reset HEAD~1"), null);
+    assert.equal(detectDestructiveGitTarget("git reset --soft HEAD~1"), null);
+  });
+
+  it("'git stash' bare, 'push', 'pop', 'apply', 'drop', 'clear' → wholeTree true", () => {
+    for (const cmd of ["git stash", "git stash push", "git stash pop", "git stash apply", "git stash drop", "git stash clear"]) {
+      assert.deepEqual(detectDestructiveGitTarget(cmd), { wholeTree: true, paths: [] }, cmd);
+    }
+  });
+
+  it("(self-review #7767) 'git stash save <msg>' → wholeTree true — sintaxe antiga, mesmo efeito de 'push'", () => {
+    assert.deepEqual(detectDestructiveGitTarget("git stash save 'wip'"), { wholeTree: true, paths: [] });
+  });
+
+  it("(self-review #7767) 'git stash create'/'store' → NÃO casa (não tocam a working tree)", () => {
+    assert.equal(detectDestructiveGitTarget("git stash create"), null);
+    assert.equal(detectDestructiveGitTarget("git stash store abc123"), null);
+  });
+
+  it("'git stash list'/'git stash show' → NÃO casa (leitura pura)", () => {
+    assert.equal(detectDestructiveGitTarget("git stash list"), null);
+    assert.equal(detectDestructiveGitTarget("git stash show -p"), null);
+  });
+
+  it("nenhum comando destrutivo → null", () => {
+    assert.equal(detectDestructiveGitTarget("git status"), null);
+    assert.equal(detectDestructiveGitTarget("git diff"), null);
+    assert.equal(detectDestructiveGitTarget("git show origin/master:wrangler.toml"), null);
+  });
+
+  it("dentro de comando encadeado ainda casa", () => {
+    assert.deepEqual(detectDestructiveGitTarget("cd repo && git reset --hard"), {
+      wholeTree: true,
+      paths: [],
+    });
+  });
+
+  it("menção dentro de heredoc NÃO casa (mesmo fix do #7757 aplicado aqui via commandSegments)", () => {
+    const cmd = "cat <<'EOF' > /tmp/x.md\nnunca rode git reset --hard aqui\nEOF\necho ok";
+    assert.equal(detectDestructiveGitTarget(cmd), null);
+  });
+});
+
+describe("shouldBlockSharedCheckoutGitDestructive (#7730)", () => {
+  const root = process.platform === "win32" ? "C:\\repo" : "/repo";
+
+  it("bloqueia: rodada ativa, chamada não é a coordenadora, wholeTree (clean/reset/stash)", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutGitDestructive({
+        target: { wholeTree: true, paths: [] },
+        checkoutRoot: root,
+        isWorktree: false,
+        activeCoordinatorSessionIds: new Set(["coord-1"]),
+        callerSessionId: "review-subagent-2",
+      }),
+      true,
+    );
+  });
+
+  it("bloqueia: checkout -- com path dentro do checkout", () => {
+    const insidePath = process.platform === "win32" ? "wrangler.toml" : "wrangler.toml";
+    assert.equal(
+      shouldBlockSharedCheckoutGitDestructive({
+        target: { wholeTree: false, paths: [insidePath] },
+        checkoutRoot: root,
+        isWorktree: false,
+        activeCoordinatorSessionIds: new Set(["coord-1"]),
+        callerSessionId: "review-subagent-2",
+      }),
+      true,
+    );
+  });
+
+  it("permite: path FORA do checkout", () => {
+    const outsidePath = process.platform === "win32" ? "C:\\tmp\\x.md" : "/tmp/x.md";
+    assert.equal(
+      shouldBlockSharedCheckoutGitDestructive({
+        target: { wholeTree: false, paths: [outsidePath] },
+        checkoutRoot: root,
+        isWorktree: false,
+        activeCoordinatorSessionIds: new Set(["coord-1"]),
+        callerSessionId: "review-subagent-2",
+      }),
+      false,
+    );
+  });
+
+  it("permite: é a própria coordenadora", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutGitDestructive({
+        target: { wholeTree: true, paths: [] },
+        checkoutRoot: root,
+        isWorktree: false,
+        activeCoordinatorSessionIds: new Set(["coord-1"]),
+        callerSessionId: "coord-1",
+      }),
+      false,
+    );
+  });
+
+  it("permite: é um worktree vinculado", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutGitDestructive({
+        target: { wholeTree: true, paths: [] },
+        checkoutRoot: root,
+        isWorktree: true,
+        activeCoordinatorSessionIds: new Set(["coord-1"]),
+        callerSessionId: "subagent-2",
+      }),
+      false,
+    );
+  });
+
+  it("permite: sem coordenadora ativa (sessão interativa comum)", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutGitDestructive({
+        target: { wholeTree: true, paths: [] },
+        checkoutRoot: root,
+        isWorktree: false,
+        activeCoordinatorSessionIds: new Set(),
+        callerSessionId: "qualquer-sessao",
+      }),
+      false,
+    );
+  });
+
+  it("target null → nunca bloqueia", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutGitDestructive({
+        target: null,
+        checkoutRoot: root,
+        isWorktree: false,
+        activeCoordinatorSessionIds: new Set(["coord-1"]),
+        callerSessionId: "subagent-2",
+      }),
+      false,
+    );
+  });
+
+  it("session_id ausente com coordenadora ativa → bloqueia (mesmo fail-closed do #7055)", () => {
+    assert.equal(
+      shouldBlockSharedCheckoutGitDestructive({
+        target: { wholeTree: true, paths: [] },
+        checkoutRoot: root,
+        isWorktree: false,
+        activeCoordinatorSessionIds: new Set(["coord-1"]),
+        callerSessionId: undefined,
+      }),
+      true,
+    );
+  });
+});
+
+describe("GIT_DESTRUCTIVE_BLOCK_REASON (#7730)", () => {
+  it("cita a issue de origem e a alternativa não-destrutiva (git show/diff)", () => {
+    assert.match(GIT_DESTRUCTIVE_BLOCK_REASON, /#7730/);
+    assert.match(GIT_DESTRUCTIVE_BLOCK_REASON, /git show/);
   });
 });

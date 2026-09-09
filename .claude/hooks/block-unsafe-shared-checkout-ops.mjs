@@ -51,14 +51,128 @@ export function stripQuotedSpans(command) {
 
 const SEPARATOR_RE = /(?:&&|;|\|\||\||\n)/;
 
-/** Divide `command` (já sem aspas) em segmentos de comando REAL, cada um
- * já tokenizado por espaço. */
+/**
+ * Remove o CORPO de heredocs (`<<EOF ... EOF`, `<<'EOF' ... EOF`,
+ * `<<-EOF ... EOF`), preservando a linha de abertura (#7757, Modo 2).
+ *
+ * Sem isto, `commandSegments` divide por `\n` (`SEPARATOR_RE`) e trata cada
+ * LINHA do corpo de um heredoc como um segmento de comando independente —
+ * um `gh issue create --body-file x <<'EOF' ... rm -f /caminho ... EOF`
+ * cujo corpo apenas DESCREVE um comando perigoso (documentação, issue body)
+ * era detectado como se o comando estivesse sendo de fato invocado. Nenhum
+ * arquivo seria apagado; o guard bloqueava mesmo assim.
+ *
+ * Escopo: casa `<<` ou `<<-`, seguido de um delimitador (com ou sem aspas
+ * simples/duplas — a diferença dita só se o shell faz expansão dentro do
+ * corpo, irrelevante aqui). Localiza a linha terminadora — `<<-` permite
+ * indentação antes do delimitador, `<<` exige coluna 0. Sem terminador
+ * encontrado (heredoc mal-formado, ou string truncada), o restante do
+ * comando é descartado da varredura — mais seguro do que arriscar reincluir
+ * um corpo de heredoc não fechado como se fosse comando real.
+ */
+export function stripHeredocSpans(command) {
+  if (typeof command !== "string") return command;
+  const startRe = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/g;
+  let result = "";
+  let lastIndex = 0;
+  let m;
+  while ((m = startRe.exec(command)) !== null) {
+    if (m.index < lastIndex) continue; // dentro de um heredoc já removido
+    const delim = m[2];
+    const isDashVariant = m[0].startsWith("<<-");
+    const markerEnd = m.index + m[0].length;
+    const lineEnd = command.indexOf("\n", markerEnd);
+    if (lineEnd === -1) {
+      // Sem corpo nesta string (marcador na última linha) — nada a remover.
+      result += command.slice(lastIndex);
+      lastIndex = command.length;
+      break;
+    }
+    const bodyStart = lineEnd + 1;
+    const terminatorRe = new RegExp(`^${isDashVariant ? "[ \\t]*" : ""}${delim}[ \\t]*$`, "m");
+    const termMatch = terminatorRe.exec(command.slice(bodyStart));
+    const stripEnd = termMatch ? bodyStart + termMatch.index + termMatch[0].length : command.length;
+    result += command.slice(lastIndex, lineEnd + 1);
+    lastIndex = stripEnd;
+    startRe.lastIndex = stripEnd;
+  }
+  result += command.slice(lastIndex);
+  return result;
+}
+
+/** Divide `command` (sem heredocs nem aspas) em segmentos de comando REAL,
+ * cada um já tokenizado por espaço. */
 function commandSegments(command) {
   if (typeof command !== "string") return [];
-  const stripped = stripQuotedSpans(command);
+  const stripped = stripQuotedSpans(stripHeredocSpans(command));
   return stripped
     .split(SEPARATOR_RE)
     .map((seg) => seg.trim().split(/\s+/).filter(Boolean))
+    .filter((tokens) => tokens.length > 0);
+}
+
+/**
+ * Tokeniza um segmento de comando preservando o VALOR de tokens entre aspas
+ * (diferente de `commandSegments`, que descarta o conteúdo citado via
+ * `stripQuotedSpans` — suficiente pra detecção de comando, insuficiente pra
+ * extrair o ARGUMENTO de um `cd`, ex: `cd "C:/Users/.../memory"`).
+ */
+function tokenizeSegmentPreservingQuotes(segment) {
+  const tokens = [];
+  let current = "";
+  let inToken = false;
+  let i = 0;
+  const n = segment.length;
+  while (i < n) {
+    const ch = segment[i];
+    if (ch === " " || ch === "\t") {
+      if (inToken) {
+        tokens.push(current);
+        current = "";
+        inToken = false;
+      }
+      i++;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      const quote = ch;
+      i++;
+      inToken = true;
+      while (i < n && segment[i] !== quote) {
+        current += segment[i];
+        i++;
+      }
+      i++; // fecha aspas (ou fim da string, se malformado)
+      continue;
+    }
+    inToken = true;
+    current += ch;
+    i++;
+  }
+  if (inToken) tokens.push(current);
+  return tokens;
+}
+
+/**
+ * Divide `command` em segmentos preservando o VALOR entre aspas (usado só
+ * pra rastrear `cd`, que precisa do argumento real — ver
+ * `extractRmTargetsWithCwd`). Heredocs ainda são removidos primeiro (mesmo
+ * motivo de `commandSegments`).
+ */
+// Limitação aceita: divide por SEPARATOR_RE ANTES de tokenizar (diferente de
+// `commandSegments`, que usa `stripQuotedSpans` — remove o conteúdo citado
+// antes de separar, então um `&&`/`;` dentro de aspas nunca quebra o
+// segmento errado). Aqui precisamos do VALOR entre aspas (o argumento de
+// `cd`), então não dá pra remover o conteúdo antes. Um separador LITERAL
+// dentro de um path entre aspas (`cd "a && b"`) quebraria incorretamente —
+// caso extremo, não observado em uso real, aceito pelo mesmo padrão de
+// cobertura parcial documentada nos guards irmãos deste arquivo.
+function commandSegmentsPreservingQuotes(command) {
+  if (typeof command !== "string") return [];
+  const withoutHeredoc = stripHeredocSpans(command);
+  return withoutHeredoc
+    .split(SEPARATOR_RE)
+    .map((seg) => tokenizeSegmentPreservingQuotes(seg.trim()))
     .filter((tokens) => tokens.length > 0);
 }
 
@@ -218,15 +332,59 @@ export function extractRmTargetPaths(command) {
 }
 
 /**
+ * Igual a `extractRmTargetPaths`, mas devolve `{ path, cwd }` — o `cwd`
+ * EFETIVO de cada invocação `rm`, rastreado simulando `cd` ao longo dos
+ * segmentos do comando (#7757, Modo 1). Sem isto, um `cd <dir fora do
+ * checkout> && rm <relativo>` resolvia o `<relativo>` contra `initialCwd`
+ * (a raiz do checkout, premissa fixa dos hooks irmãos) em vez do diretório
+ * pra onde o `cd` de fato mudou — falso-positivo medido ao vivo: comando
+ * rodando fora do checkout, acusado de mirar "dentro do checkout principal
+ * compartilhado".
+ *
+ * `cd <path>` relativo resolve contra o `cwd` corrente (encadeamento de
+ * `cd`s); `cd <path>` absoluto substitui o `cwd` por completo. Só o PRIMEIRO
+ * argumento não-flag de cada segmento `cd` é considerado.
+ */
+export function extractRmTargetsWithCwd(command, initialCwd) {
+  const results = [];
+  let cwd = initialCwd;
+  for (const tokens of commandSegmentsPreservingQuotes(command)) {
+    const cmdToken = (tokens[0] ?? "").toLowerCase();
+    if (cmdToken === "cd") {
+      const target = tokens.slice(1).find((t) => !t.startsWith("-"));
+      if (target) {
+        try {
+          cwd = isAbsolute(target) ? resolvePath(target) : resolvePath(cwd, target);
+        } catch {
+          // cwd inválido: mantém o anterior, fail-safe (não perde rastro).
+        }
+      }
+      continue;
+    }
+    const isRm = cmdToken === "rm" || /[\\/]rm$/i.test(cmdToken);
+    if (!isRm) continue;
+    for (const t of tokens.slice(1)) {
+      if (t.startsWith("-")) continue;
+      results.push({ path: t, cwd });
+    }
+  }
+  return results;
+}
+
+/**
  * `true` quando `targetPath` (token cru de um argumento `rm`) resolve para
  * DENTRO de `checkoutRoot`. Caminho relativo é resolvido contra
- * `checkoutRoot` (mesma suposição de "cwd ≈ raiz do checkout" já feita pelos
- * hooks irmãos, que também não recebem `cwd` no payload). Nunca lança.
+ * `effectiveCwd` quando informado (#7757 — o `cwd` real no momento da
+ * invocação, rastreado por `extractRmTargetsWithCwd`), senão contra
+ * `checkoutRoot` (comportamento anterior, preservado por compatibilidade —
+ * mesma suposição de "cwd ≈ raiz do checkout" já feita pelos hooks irmãos,
+ * que também não recebem `cwd` no payload). Nunca lança.
  */
-export function isPathInsideCheckout(targetPath, checkoutRoot) {
+export function isPathInsideCheckout(targetPath, checkoutRoot, effectiveCwd) {
   try {
     if (typeof targetPath !== "string" || targetPath === "") return false;
-    const resolved = isAbsolute(targetPath) ? resolvePath(targetPath) : resolvePath(checkoutRoot, targetPath);
+    const baseCwd = effectiveCwd ?? checkoutRoot;
+    const resolved = isAbsolute(targetPath) ? resolvePath(targetPath) : resolvePath(baseCwd, targetPath);
     const rootResolved = resolvePath(checkoutRoot);
     if (resolved === rootResolved) return true;
     return resolved.startsWith(rootResolved + sep);
@@ -333,6 +491,14 @@ export function readActiveCoordinatorSessionIds(repoRoot, now = Date.now()) {
  * `/diaria-develop` já registrada. A ausência do discriminador agora é
  * tratada como "não é a coordenadora" — mesmo destino de um `session_id`
  * genuinamente diferente — em vez de um passe livre.
+ *
+ * **#7757 — `targetPaths` aceita entradas mistas.** Cada entrada é uma
+ * `string` (comportamento anterior: resolvida contra `checkoutRoot`) OU um
+ * objeto `{ path, cwd }` (novo: resolvida contra o `cwd` EFETIVO daquela
+ * invocação — ver `extractRmTargetsWithCwd`, que corrige o falso-positivo
+ * "path relativo resolvido contra o project root em vez do `cwd` real após
+ * um `cd`"). Mantém os testes existentes (que passam `string[]`) verdes sem
+ * mudança.
  */
 export function shouldBlockSharedCheckoutRm({
   targetPaths,
@@ -345,7 +511,9 @@ export function shouldBlockSharedCheckoutRm({
   const coordinators = activeCoordinatorSessionIds ?? new Set();
   if (coordinators.size === 0) return false; // sem rodada ativa: fora do escopo deste guard
   const paths = targetPaths ?? [];
-  const targetsInsideCheckout = paths.some((p) => isPathInsideCheckout(p, checkoutRoot));
+  const targetsInsideCheckout = paths.some((p) =>
+    typeof p === "string" ? isPathInsideCheckout(p, checkoutRoot) : isPathInsideCheckout(p.path, checkoutRoot, p.cwd),
+  );
   if (!targetsInsideCheckout) return false;
   const isCoordinatorCall =
     typeof callerSessionId === "string" && callerSessionId !== "" && coordinators.has(callerSessionId);
@@ -372,6 +540,186 @@ export const RM_BLOCK_REASON =
   "coordenadora está registrada — uma frota de review dispatchada por sessão interativa comum, sem " +
   "rodada registrada, não é coberta por este hook (ver docblock do arquivo). Evite `rm` em caminho do " +
   "checkout compartilhado por padrão, coberto ou não.";
+
+// ---------------------------------------------------------------------------
+// Guard 3 — comandos git DESTRUTIVOS de working tree no checkout PRINCIPAL
+// compartilhado, mesmo discriminador do Guard 2 (#7730)
+//
+// Incidente de origem (09/09/2026): um agente `pr-review-toolkit:code-reviewer`
+// despachado pra revisar a PR #7721, no checkout PRINCIPAL compartilhado, rodou
+// `git checkout origin/master -- .` pra comparar `wrangler.toml` entre
+// branches — reverteu TODO o working tree, não só o arquivo que ele queria
+// comparar, apesar de instrução explícita de "somente leitura". O guard do
+// #6971 (Guard 2 acima) já cobre `rm`; este cobre a MESMA classe de dano
+// (descarte de trabalho não-commitado num checkout compartilhado, sem
+// desfazer possível — working tree não tem reflog) pelos comandos git que
+// fazem o equivalente: `git checkout <ref> -- <path>`/`git checkout --
+// <path>`, `git restore`, `git clean -f`/`-fd`/`-fdx`, `git reset --hard`,
+// `git stash`.
+//
+// Deliberadamente FORA do escopo: `git checkout <branch>` (troca de branch
+// sem `--`/path — território de `block-branch-checkout-main.mjs`) e
+// `git checkout`/`git switch` sem argumento que descarte arquivo.
+//
+// Mesmas condições do Guard 2: bloqueia só quando (a) não é worktree
+// vinculado, (b) existe ≥1 coordenadora ativa registrada, (c) o alvo do
+// comando (path específico pra checkout/restore; o working tree INTEIRO pra
+// clean/reset --hard/stash, que não recebem path) está dentro do checkout, e
+// (d) `session_id` da chamada não é o de nenhuma coordenadora (ausente/vazio
+// inclusos — mesmo fail-closed do #7055).
+
+export const GIT_DESTRUCTIVE_COMMANDS = ["checkout", "restore", "clean", "reset", "stash"];
+
+/**
+ * `git checkout <ref> -- <path...>` ou `git checkout -- <path...>` — só casa
+ * quando há um token `--` literal no segmento (descarta arquivo). `git
+ * checkout <branch>` (sem `--`) NÃO casa — é troca de branch, coberta em
+ * outro hook. Devolve os paths depois do `--`, ou `null` se o segmento não
+ * for um checkout com `--`.
+ *
+ * **Exceção fix iteration 1 do #7767 (lockout real, não hipotético):**
+ * `scripts/lib/git-sync.ts` — que roda no Stage 0 de TODA edição — instrui
+ * literalmente `git checkout HEAD -- <arquivo>` como o remédio documentado
+ * pro estado absorvente `preexisting_unmerged_state` (índice com caminhos
+ * UU/AA de uma stash pop conflitante de rodada anterior). Bloquear esse
+ * comando quando uma coordenadora está ativa deixaria o fluxo de edição sem
+ * caminho de recuperação. `HEAD` como ref explícito (não `origin/master`,
+ * não qualquer outro ref — o caso do incidente que originou o #7730) é
+ * exempto: descarta o lado LOCAL de um path específico em favor do último
+ * commit já mergeado, blast radius bem mais estreito que
+ * `git checkout origin/master -- .` (árvore inteira, ref arbitrário
+ * potencialmente divergente).
+ */
+function extractGitCheckoutDashDashPaths(tokens) {
+  if (tokens[0]?.toLowerCase() !== "git" || tokens[1]?.toLowerCase() !== "checkout") return null;
+  const dashIdx = tokens.indexOf("--");
+  if (dashIdx === -1) return null;
+  const refToken = dashIdx > 2 ? tokens[dashIdx - 1] : undefined;
+  if (refToken?.toUpperCase() === "HEAD") return null; // exceção documentada acima
+  return tokens.slice(dashIdx + 1);
+}
+
+/**
+ * `git checkout -f`/`--force` (com ou sem `--`) — descarta modificações
+ * locais mesmo quando git normalmente recusaria (troca de branch com
+ * arquivo modificado que conflitaria). Achado do fix iteration 1 do #7767:
+ * o falso-negativo original só olhava `--`, então `git checkout -f
+ * <branch>` (força a troca por cima de mudanças locais, tão destrutivo
+ * quanto `reset --hard`) passava batido.
+ */
+function isGitCheckoutForce(tokens) {
+  if (tokens[0]?.toLowerCase() !== "git" || tokens[1]?.toLowerCase() !== "checkout") return false;
+  return tokens.slice(2).some((t) => t === "-f" || t === "--force");
+}
+
+/**
+ * `git checkout .` (SEM `--` explícito) — idioma comum pra "descartar tudo
+ * que mudou no cwd". Não há ambiguidade real (nenhuma branch se chama
+ * literalmente `.`), então git resolve isso como pathspec mesmo sem `--`.
+ * Achado do fix iteration 1 do #7767 (mesmo tipo de falso-negativo do
+ * `-f` acima — `detectDestructiveGitTarget` só casava com `--` literal).
+ */
+function isGitCheckoutBareDot(tokens) {
+  if (tokens[0]?.toLowerCase() !== "git" || tokens[1]?.toLowerCase() !== "checkout") return false;
+  const nonFlags = tokens.slice(2).filter((t) => !t.startsWith("-"));
+  return nonFlags.length === 1 && nonFlags[0] === ".";
+}
+
+/** `git restore <path...>` — sempre destrutivo (equivalente moderno do checkout -- path). */
+function extractGitRestorePaths(tokens) {
+  if (tokens[0]?.toLowerCase() !== "git" || tokens[1]?.toLowerCase() !== "restore") return null;
+  return tokens.slice(2).filter((t) => !t.startsWith("-"));
+}
+
+/** `git clean` com flag de força (`-f`, `-fd`, `-fdx`, `-dfx`, `--force`, ...). */
+function isGitCleanForce(tokens) {
+  if (tokens[0]?.toLowerCase() !== "git" || tokens[1]?.toLowerCase() !== "clean") return false;
+  return tokens.slice(2).some((t) => t === "--force" || /^-[a-z]*f[a-z]*$/i.test(t));
+}
+
+/** `git reset --hard [ref]`. */
+function isGitResetHard(tokens) {
+  if (tokens[0]?.toLowerCase() !== "git" || tokens[1]?.toLowerCase() !== "reset") return false;
+  return tokens.slice(2).some((t) => t === "--hard");
+}
+
+/**
+ * `git stash` mutante — bare (== `push`), `push`, `save` (sintaxe antiga,
+ * mesmo efeito de `push`), `pop`, `apply`, `drop`, `clear`. `list`/`show`
+ * são leitura pura, `create`/`store` não tocam a working tree (`create`
+ * só devolve um objeto de commit; `store` só grava uma ref já existente) —
+ * nenhum dos 4 casa, de propósito.
+ */
+function isGitStashMutating(tokens) {
+  if (tokens[0]?.toLowerCase() !== "git" || tokens[1]?.toLowerCase() !== "stash") return false;
+  const sub = tokens[2]?.toLowerCase();
+  if (sub === undefined) return true; // `git stash` bare == `git stash push`
+  if (sub.startsWith("-")) return true; // ex: `git stash -u` (flag do push implícito)
+  return ["push", "save", "pop", "apply", "drop", "clear"].includes(sub);
+}
+
+/**
+ * Varre `command` por qualquer comando git destrutivo (#7730). Devolve
+ * `{ wholeTree: boolean, paths: string[] }` do PRIMEIRO segmento que casar,
+ * ou `null` se nenhum casar. `wholeTree: true` (clean/reset --hard/stash) —
+ * sem path próprio, o alvo é a working tree inteira do cwd corrente.
+ * `wholeTree: false` (checkout --/restore) — `paths` traz os alvos
+ * explícitos.
+ */
+export function detectDestructiveGitTarget(command) {
+  for (const tokens of commandSegments(command)) {
+    const checkoutPaths = extractGitCheckoutDashDashPaths(tokens);
+    if (checkoutPaths !== null) return { wholeTree: false, paths: checkoutPaths };
+    if (isGitCheckoutForce(tokens)) return { wholeTree: true, paths: [] };
+    if (isGitCheckoutBareDot(tokens)) return { wholeTree: true, paths: [] };
+    const restorePaths = extractGitRestorePaths(tokens);
+    if (restorePaths !== null) return { wholeTree: false, paths: restorePaths };
+    if (isGitCleanForce(tokens)) return { wholeTree: true, paths: [] };
+    if (isGitResetHard(tokens)) return { wholeTree: true, paths: [] };
+    if (isGitStashMutating(tokens)) return { wholeTree: true, paths: [] };
+  }
+  return null;
+}
+
+/**
+ * Função pura — mesma decisão de `shouldBlockSharedCheckoutRm`, generalizada
+ * pro alvo de um comando git destrutivo (`detectDestructiveGitTarget`).
+ * `wholeTree: true` conta como "dentro do checkout" incondicionalmente
+ * quando não é worktree (o comando roda no cwd corrente, que — na ausência
+ * de payload de `cwd`, mesma premissa dos guards irmãos — é o checkoutRoot).
+ */
+export function shouldBlockSharedCheckoutGitDestructive({
+  target,
+  checkoutRoot,
+  isWorktree,
+  activeCoordinatorSessionIds,
+  callerSessionId,
+}) {
+  if (!target) return false;
+  if (isWorktree) return false;
+  const coordinators = activeCoordinatorSessionIds ?? new Set();
+  if (coordinators.size === 0) return false;
+  const targetsInsideCheckout = target.wholeTree || target.paths.some((p) => isPathInsideCheckout(p, checkoutRoot));
+  if (!targetsInsideCheckout) return false;
+  const isCoordinatorCall =
+    typeof callerSessionId === "string" && callerSessionId !== "" && coordinators.has(callerSessionId);
+  if (isCoordinatorCall) return false;
+  return true;
+}
+
+export const GIT_DESTRUCTIVE_BLOCK_REASON =
+  "Comando git DESTRUTIVO de working tree (`git checkout <ref> -- <path>`, `git restore`, `git clean -f`, " +
+  "`git reset --hard`, ou `git stash`) bloqueado pelo guard mecânico do overnight/develop/continuo (#7730, " +
+  "mesma classe do #6971 acima) — há uma rodada ativa registrada nesta máquina e esta chamada não pertence " +
+  "à sessão coordenadora registrada. O checkout é compartilhado por várias sessões concorrentes; working " +
+  "tree não tem reflog — o que este comando descartaria não tem desfazer. Se você é subagente " +
+  "implementador ou de review: não rode comandos git destrutivos no checkout PRINCIPAL compartilhado — " +
+  "seu trabalho roda no PRÓPRIO worktree (isolation: \"worktree\"); se precisa só COMPARAR conteúdo entre " +
+  "branches, use `git show <ref>:<path>` ou `git diff <ref> -- <path>` (nunca escrevem no working tree). " +
+  "Se você é a coordenadora vendo isto por engano, renove seu registro (`npx tsx " +
+  "scripts/lib/session-registry.ts register --kind {overnight|develop|continuo}`) e tente de novo. " +
+  "Cobertura HONESTA: só protege enquanto uma rodada coordenadora está registrada (mesma ressalva do Guard " +
+  "2/#6971).";
 
 // ---------------------------------------------------------------------------
 // Entry point CLI
@@ -411,7 +759,10 @@ if (
         const hookDir = dirname(fileURLToPath(import.meta.url));
         const checkoutRoot = join(hookDir, "..", "..");
         const worktree = isLinkedWorktree(checkoutRoot);
-        const targetPaths = extractRmTargetPaths(command);
+        // #7757: cwd-aware — resolve cada path relativo contra o cwd EFETIVO
+        // (rastreando `cd` no próprio comando), não incondicionalmente
+        // contra checkoutRoot.
+        const targetPaths = extractRmTargetsWithCwd(command, checkoutRoot);
         const coordinators = worktree ? new Set() : readActiveCoordinatorSessionIds(checkoutRoot);
         if (
           shouldBlockSharedCheckoutRm({
@@ -432,6 +783,38 @@ if (
             }),
           );
           return;
+        }
+      }
+
+      // Guard 3: git destrutivo (checkout --/restore/clean/reset --hard/stash) no
+      // checkout principal compartilhado, sem ser a coordenadora (#7730).
+      {
+        const target = detectDestructiveGitTarget(command);
+        if (target) {
+          const hookDir = dirname(fileURLToPath(import.meta.url));
+          const checkoutRoot = join(hookDir, "..", "..");
+          const worktree = isLinkedWorktree(checkoutRoot);
+          const coordinators = worktree ? new Set() : readActiveCoordinatorSessionIds(checkoutRoot);
+          if (
+            shouldBlockSharedCheckoutGitDestructive({
+              target,
+              checkoutRoot,
+              isWorktree: worktree,
+              activeCoordinatorSessionIds: coordinators,
+              callerSessionId: payload.session_id,
+            })
+          ) {
+            process.stdout.write(
+              JSON.stringify({
+                hookSpecificOutput: {
+                  hookEventName: "PreToolUse",
+                  permissionDecision: "deny",
+                  permissionDecisionReason: GIT_DESTRUCTIVE_BLOCK_REASON,
+                },
+              }),
+            );
+            return;
+          }
         }
       }
       // Sem bloqueio: não emitir nada — cai no fluxo normal de permissão.
