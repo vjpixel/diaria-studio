@@ -350,8 +350,17 @@ export function estimateReadingMinutes(html: string): number | null {
  * (`publishDateToIso`/`site-archive-pages.ts`), e o envio acontece às 06:00
  * BRT — então "hoje" para efeito de "esta edição já saiu?" é o dia civil em
  * `America/Sao_Paulo`, nunca em UTC (o servidor roda em UTC; às 22:00 BRT o
- * dia UTC já virou e "hoje" em UTC seria o dia SEGUINTE, exatamente o erro
- * que o filtro existe pra evitar).
+ * dia UTC já virou e "hoje" em UTC seria o dia SEGUINTE — a edição de amanhã
+ * deixaria de ser "futuro" e voltaria pra home, exatamente o erro que o
+ * filtro existe pra evitar).
+ *
+ * Assimetria deliberada, e vale saber que ela existe: só o lado "hoje" é
+ * BRT. `publishDateToIso` corta o dia com `toISOString().slice(0, 10)`, ou
+ * seja, `<lastmod>` é o dia civil em UTC. Os dois coincidem porque o envio
+ * das 06:00 BRT é 09:00 UTC, longe das duas viradas de meia-noite — a
+ * comparação só ficaria ambígua para um canal que publicasse entre 21:00 e
+ * 00:00 BRT (aí o dia UTC do `<lastmod>` já seria o seguinte). Se algum dia
+ * existir esse canal, o conserto é em `publishDateToIso`, não aqui.
  */
 export const BRT_TIMEZONE = "America/Sao_Paulo";
 

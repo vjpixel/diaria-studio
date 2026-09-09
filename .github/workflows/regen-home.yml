@@ -151,6 +151,15 @@ Aberto e mergeado por \`.github/workflows/regen-home.yml\`. O deploy do Worker \
   deploy:
     needs: regen
     if: needs.regen.outputs.changed == 'true'
+    # MESMO group de `deploy-site.yml` (grupos de concurrency são globais no
+    # repo, não por workflow): os dois publicam o Worker `site`, e sem isso um
+    # push humano tocando `workers/site/**` coincidindo com o cron das 06:00
+    # rodaria dois `wrangler deploy` concorrentes — o que terminasse por
+    # último venceria, podendo reverter a home recém-regenerada. `cancel-in-
+    # progress: false` idêntico ao de lá: deploy pela metade não se cancela.
+    concurrency:
+      group: deploy-site
+      cancel-in-progress: false
     uses: ./.github/workflows/deploy-worker.yml
     with:
       worker: site
