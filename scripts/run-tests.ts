@@ -31,6 +31,37 @@
  * child process próprio, então `process.chdir()` num deles não é visível
  * para os outros.
  *
+ * ## CAUSA RAIZ ENCONTRADA (#7736, 09/09/2026) — leia isto antes do resto
+ *
+ * O parágrafo abaixo especulava uma corrida na descoberta assíncrona do
+ * `node --test`. **Estava errado.** A causa real foi provada em 09/09/2026
+ * (#7736, corrigida na PR #7785): `test/task-runner.test.ts` chamava
+ * `runScheduledTask()` sem injetar `syncCode`, e o default do parâmetro
+ * opcional é o `syncCode()` REAL de `./git-sync.ts` — que rodava
+ * `git checkout master` + `merge --ff-only origin/master` **na raiz do repo,
+ * no meio do `npm test`**. A árvore de trabalho saía do merge ref da PR e
+ * virava `master`; todo teste que rodasse DEPOIS disso lia a versão da base.
+ *
+ * Isso explica cada sintoma sem sobra: o arquivo "que genuinamente existia no
+ * commit testado" era um arquivo ADICIONADO pela PR — inexistente em `master`,
+ * portanto sumido do disco após o checkout; a falha era determinística (o
+ * checkout ocorre em toda run, não por acaso); e nunca reproduziu localmente
+ * porque localmente se roda o arquivo isolado, sem `task-runner.test.ts`
+ * antes. O #6783 registrou o mesmo padrão 2× ("sempre em arquivo recém-criado",
+ * "batch 8 de ~9-10" — ou seja, tarde, depois do checkout) e foi fechado por
+ * este achado.
+ *
+ * A mitigação abaixo (lista explícita de arquivos + retry) permanece: ela é
+ * defensável por si e cobre outras causas de I/O do runner. Mas NÃO é mais a
+ * explicação do #6495 — o guard que de fato fecha isso é
+ * `test/task-runner-tree-guard-7736.test.ts`, que reprova se a suíte mover o
+ * HEAD.
+ *
+ * ---
+ *
+ * Especulação original, preservada por honestidade histórica (e porque a
+ * mitigação foi desenhada a partir dela):
+ *
  * A causa raiz exata (provavelmente uma condição de corrida no mecanismo de
  * descoberta *assíncrona* embutido do `node --test` — que resolve cada
  * especificador de arquivo descoberto em runtime contra `process.cwd()` no
