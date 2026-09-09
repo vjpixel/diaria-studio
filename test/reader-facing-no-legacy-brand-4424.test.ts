@@ -15,6 +15,11 @@
  * lugar dos outros gates transversais (`knip-clean.test.ts`,
  * `lib-boundary.test.ts`).
  *
+ * `LEGACY_BRAND_RE` vem de `scripts/lib/shared/legacy-brand-guard.ts` (#7719)
+ * — fonte única do regex, reusada também pelo guard em RUNTIME (caminho de
+ * publicação do mensal/anual, que cobre conteúdo fora do repo que este guard
+ * ESTÁTICO não alcança, ver docstring daquele módulo).
+ *
  * Escopo estático (grep de conteúdo, não comportamental): a lista de arquivos
  * abaixo É a Fatia 1 tal como fechada no PR #4424 — arquivo novo que deveria
  * entrar na Fatia 1 precisa ser adicionado aqui manualmente (mesmo padrão do
@@ -45,10 +50,9 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { LEGACY_BRAND_RE } from "../scripts/lib/shared/legacy-brand-guard.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-const LEGACY_BRAND_RE = /Diar\.ia/;
 
 /** Arquivos individuais da Fatia 1 (fora de diretório varrido por inteiro abaixo). */
 const PROTECTED_FILES: string[] = [
