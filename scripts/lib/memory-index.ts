@@ -33,9 +33,16 @@
  *   <linha em branco>
  *   - [label](arquivo.md) — descrição
  *   - [label1](arquivo1.md) + [label2](arquivo2.md) — descrição
+ *   - Categoria: [label](arquivo.md) + [label2](arquivo2.md) — descrição
  *   <linha em branco>
  *   ## Nome do bloco opcional
  *   - [label](arquivo.md) — descrição
+ *
+ * A "Categoria: " antes da 1ª ref (#7692) é um prefixo opcional, delimitado
+ * por ": " logo depois do "- " e antes do primeiro "[" — agrupamento inline
+ * legado, sem uso em nenhum `MEMORY.md` do projeto hoje (o `## heading` de
+ * bloco cobre o mesmo caso de uso). Suportado só para não travar o
+ * round-trip se reaparecer.
  *
  * Blocos são separados por exatamente uma linha em branco (`\n\n` após
  * normalizar `\r\n`→`\n`). Um bloco pode abrir com um cabeçalho `## texto`
@@ -55,6 +62,15 @@ export interface MemoryLine {
   refs: MemoryRef[];
   /** Texto após " — ". String vazia quando a linha não tem descrição. */
   description: string;
+  /**
+   * Categoria opcional antes da 1ª ref, delimitada por ": " (ex: `Beehiiv/
+   * editor: [autor vazio](arquivo.md)`), #7692. Formato legado de agrupamento
+   * inline — hoje sem uso em nenhum `MEMORY.md` do projeto (o agrupamento
+   * atual usa `## heading` de bloco, que já vira estrutura em vez de texto
+   * dentro do bullet), mas suportado para o parser não travar o round-trip
+   * caso reapareça. `undefined` quando a linha não tem prefixo.
+   */
+  prefix?: string;
   /**
    * Linha (ou bloco multi-linha) preservada verbatim, quando a entrada não é
    * um bullet `- [label](arquivo) — descrição` — hoje só comentário HTML
@@ -95,7 +111,12 @@ export interface MemoryFileEntry {
 export const RECENTES_HEADING = "Recentes (não classificadas)";
 
 const REF_REGEX = /\[([^\]]+)\]\(([^)]+)\)/g;
-const LINE_REGEX = /^- ((?:\[[^\]]+\]\([^)]+\)(?: \+ )?)+)(?: — (.*))?$/;
+/**
+ * Grupo 1 (opcional): prefixo de categoria antes da 1ª ref, delimitado por
+ * ": " — texto sem "[" seguido de dois-pontos+espaço, imediatamente antes do
+ * primeiro `[label](arquivo)` (#7692). Grupo 2: refs. Grupo 3: descrição.
+ */
+const LINE_REGEX = /^- (?:([^[]+): )?((?:\[[^\]]+\]\([^)]+\)(?: \+ )?)+)(?: — (.*))?$/;
 
 /**
  * Extrai o manifesto de curadoria a partir do conteúdo bruto de um
@@ -176,21 +197,23 @@ function parseLine(line: string, lineNumber: number): MemoryLine {
         `ou um comentário HTML "<!-- ... -->". Recebido: ${JSON.stringify(line)}`,
     );
   }
-  const refsPart = match[1];
-  const description = match[2] ?? "";
+  const prefix = match[1];
+  const refsPart = match[2];
+  const description = match[3] ?? "";
   const refs: MemoryRef[] = [];
   let m: RegExpExecArray | null;
   REF_REGEX.lastIndex = 0;
   while ((m = REF_REGEX.exec(refsPart))) {
     refs.push({ label: m[1], file: m[2] });
   }
-  return { refs, description };
+  return prefix !== undefined ? { refs, description, prefix } : { refs, description };
 }
 
 function renderLine(line: MemoryLine): string {
   if (line.raw !== undefined) return line.raw;
   const refsStr = line.refs.map((r) => `[${r.label}](${r.file})`).join(" + ");
-  return line.description ? `- ${refsStr} — ${line.description}` : `- ${refsStr}`;
+  const prefixed = line.prefix ? `${line.prefix}: ${refsStr}` : refsStr;
+  return line.description ? `- ${prefixed} — ${line.description}` : `- ${prefixed}`;
 }
 
 function renderBlock(block: MemoryBlock): string {
