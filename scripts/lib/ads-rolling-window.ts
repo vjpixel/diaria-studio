@@ -272,6 +272,35 @@ export function computeRollingWindow(
     motivo = `${cadastrosJanela} cadastro(s) na janela, abaixo do piso de ${MIN_CADASTROS_PARA_COMPARAR}`;
   }
 
+  // #7790: buraco que cruza a BORDA da janela — última checagem, sobrepõe as
+  // anteriores (mesmo formato de override que `computeDailyCac` já fazia para
+  // `dias: 1`, ver #7635).
+  //
+  // "Base esperada" = o dia imediatamente ANTERIOR ao início da janela
+  // (`shiftDate(inicio, -1)`), não "o primeiro dia com linha dentro da
+  // janela". A segunda leitura só verificaria se a janela tem algum dado — já
+  // coberto pelo ramo `!ultima` acima e pelo piso de amostra — e não detecta
+  // o defeito desta issue: se a linha-base recuou por causa de um buraco
+  // ANTES da janela, `gastoJanela`/`cadastrosJanela` (= `último − base`)
+  // absorvem gasto/cadastros de dias FORA da janela pedida, com a aritmética
+  // idêntica a uma janela íntegra — nada além do `baseData` denuncia isso.
+  //
+  // Buraco INTERNO à janela (dia faltando entre `inicio` e `ate`) não aciona
+  // esta checagem — `base` só olha para o dia imediatamente ANTES de
+  // `inicio`; um buraco depois disso não desloca `base` e o total acumulado
+  // continua correto (só perde granularidade, ver `dias.length` vs.
+  // `janelaDias` e `descreverEstabilidade`). É essa distinção que separa o
+  // defeito do ruído (issue #7790).
+  const baseEsperada = shiftDate(inicio, -1);
+  const baseCruzaBorda = base !== undefined && base.data_apuracao !== baseEsperada;
+  if (baseCruzaBorda) {
+    comparavel = false;
+    motivo =
+      `linha-base é de ${base!.data_apuracao}, não de ${baseEsperada} (dia imediatamente anterior ao início ` +
+      `da janela, ${inicio}) — falta linha de apuração entre as duas, e gasto/cadastros reportados abrangem ` +
+      `mais dia(s) que o(s) ${dias} pedido(s)`;
+  }
+
   return {
     canal: opts.canal,
     dias: diasCobertos,
@@ -388,15 +417,13 @@ export function computeDailyCac(
       motivo: r.motivo,
     };
   }
-  // #7635: `r.gastoJanela`/`r.cadastrosJanela` são `último − base`, e essa
-  // subtração é idêntica quer `base` seja o dia imediatamente anterior, quer
-  // seja mais antigo por falta de linha no meio (buraco de reconciliação,
-  // §8.3). Sem esta checagem, o dia seguinte a um buraco absorve gasto e
-  // cadastros de dois (ou mais) dias e sai como `comparavel: true` — um
-  // número errado que se apresenta como comparável, o formato de erro que
-  // este módulo inteiro existe para evitar (ver docstring de `DailyCac`).
-  const diaAnterior = shiftDate(opts.dia, -1);
-  const baseNaoEhDiaAnterior = r.baseData !== null && r.baseData !== diaAnterior;
+  // #7635/#7790: uma janela de 1 dia é o caso `dias: 1` de `computeRollingWindow`,
+  // que desde a #7790 já detecta sozinho a linha-base fora do lugar (buraco
+  // que cruza a borda da janela) e marca `comparavel: false` com motivo — a
+  // checagem especial que vivia aqui foi generalizada para lá porque a
+  // aritmética (`último − base`) é idêntica nos dois módulos e duplicar a
+  // guarda só arriscava as duas divergirem. `r.comparavel`/`r.motivo` já
+  // carregam o veredito certo.
   return {
     dia: opts.dia,
     gasto: r.gastoJanela,
@@ -404,12 +431,9 @@ export function computeDailyCac(
     // vazia. Sem ela não há numerador, e `cadastrosJanela` seria 0 por
     // construção — afirmando "nenhum cadastro" onde a verdade é "não medido".
     cadastros: r.cadastrosAcumulado == null ? null : r.cadastrosJanela,
-    custoPorCadastro: baseNaoEhDiaAnterior ? null : r.custoPorCadastro,
-    comparavel: r.comparavel && !baseNaoEhDiaAnterior,
-    motivo: baseNaoEhDiaAnterior
-      ? `linha-base é de ${r.baseData}, não de ${diaAnterior} (dia imediatamente anterior) — falta ` +
-        `linha de apuração entre as duas, e gasto/cadastros reportados somam mais de um dia`
-      : r.motivo,
+    custoPorCadastro: r.custoPorCadastro,
+    comparavel: r.comparavel,
+    motivo: r.motivo,
   };
 }
 
