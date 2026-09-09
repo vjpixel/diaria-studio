@@ -1905,8 +1905,11 @@ describe("extractCoverageLine + renderCoverage (#1093)", () => {
       title: "Título do destaque",
       subtitle: "",
       coverImage: "",
-      destaques: [{ title: "Título do destaque", url: "https://example.com/d1", body: "Corpo do destaque.", why: "Importa por isso.", category: "🚀 LANÇAMENTO", credit: null }],
-      eia: { credit: "", correctAnswer: null },
+      // `n`/`emoji` são obrigatórios em `RenderDestaque` — sem eles o literal não
+      // tipa (TS2345). As outras 4 fixtures deste arquivo com a mesma forma já
+      // estão na baseline do ratchet; esta é nova, então nasce tipada (#7666).
+      destaques: [{ n: 1 as const, emoji: "🚀", title: "Título do destaque", url: "https://example.com/d1", body: "Corpo do destaque.", why: "Importa por isso.", category: "🚀 LANÇAMENTO", credit: null }],
+      eia: { credit: "", correctAnswer: null, imageA: "", imageB: "", edition: "260909" },
       sections: [],
       sorteio: null,
       encerrar: null,
