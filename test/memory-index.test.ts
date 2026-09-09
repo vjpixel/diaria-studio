@@ -15,8 +15,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, readFileSync, readdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   extractManifest,
@@ -26,8 +26,11 @@ import {
   truncateForLabel,
   parseMemoryFrontmatter,
   collectReferencedFilenames,
+  stripGeneratedHeaderFromTitle,
   type MemoryFileEntry,
 } from "../scripts/lib/memory-index.ts";
+import { runRegenerate } from "../scripts/regenerate-memory-index.ts";
+import { runExtract } from "../scripts/extract-memory-index.ts";
 
 const FIXTURE_MEMORY_MD = `# Memory index
 
@@ -371,5 +374,74 @@ describe("REGRESSÃO #7601: round-trip contra o MEMORY.md real desta máquina (q
     }
     const regenerated = generateMemoryMd(manifest);
     assert.equal(regenerated, raw, "round-trip extract→generate deve reproduzir o arquivo real byte a byte");
+  });
+});
+
+describe("stripGeneratedHeaderFromTitle (#7845)", () => {
+  const HEADER =
+    "<!-- GERADO AUTOMATICAMENTE por scripts/regenerate-memory-index.ts (#7533) — não editar à mão.\n" +
+    "     Curadoria mora em _index.json; memória nova mora nos arquivos *.md individuais. -->";
+
+  it("devolve o title intacto quando não há cabeçalho gerado", () => {
+    assert.equal(stripGeneratedHeaderFromTitle("# Memory index"), "# Memory index");
+  });
+
+  it("descarta 1 cópia do cabeçalho gerado", () => {
+    assert.equal(stripGeneratedHeaderFromTitle(`${HEADER}\n# Memory index`), "# Memory index");
+  });
+
+  it("descarta N cópias empilhadas do cabeçalho gerado (achado #7845: chegou a 3)", () => {
+    assert.equal(stripGeneratedHeaderFromTitle(`${HEADER}\n${HEADER}\n${HEADER}\n# Memory index`), "# Memory index");
+  });
+});
+
+describe("REGRESSÃO #7845: ciclo regenerate → extract → regenerate é idempotente no nº de cabeçalhos", () => {
+  function countHeaders(memoryMd: string): number {
+    return (memoryMd.match(/<!-- GERADO AUTOMATICAMENTE/g) ?? []).length;
+  }
+
+  it("regenerate → extract → regenerate produz exatamente 1 cabeçalho (não 2)", () => {
+    const memoryDir = mkdtempSync(join(tmpdir(), "memory-index-7845-"));
+    try {
+      const manifest = {
+        title: "# Memory index",
+        blocks: [
+          {
+            lines: [{ refs: [{ label: "exemplo", file: "exemplo.md" }], description: "descrição de teste" }],
+          },
+        ],
+      };
+      writeFileSync(join(memoryDir, "_index.json"), JSON.stringify(manifest, null, 2));
+      writeFileSync(
+        join(memoryDir, "exemplo.md"),
+        "---\nname: exemplo\ndescription: descrição de teste\n---\nconteúdo\n",
+      );
+
+      // 1ª regeneração: MEMORY.md nasce com 1 cabeçalho.
+      assert.equal(runRegenerate(["--memory-dir", memoryDir]), 0);
+      const afterFirstRegenerate = readFileSync(join(memoryDir, "MEMORY.md"), "utf-8");
+      assert.equal(countHeaders(afterFirstRegenerate), 1);
+
+      // extract lê esse MEMORY.md já gerado e reescreve _index.json — é
+      // aqui que o bug #7845 capturava o cabeçalho dentro do `title`.
+      assert.equal(runExtract(["--memory-dir", memoryDir]), 0);
+      const reExtracted = JSON.parse(readFileSync(join(memoryDir, "_index.json"), "utf-8"));
+      assert.equal(reExtracted.title, "# Memory index", "title não deve carregar o cabeçalho gerado");
+
+      // 2ª regeneração: se o title tivesse capturado o cabeçalho, este
+      // passo prependeria um 2º cabeçalho por cima — 1 (script) + 1 (title).
+      assert.equal(runRegenerate(["--memory-dir", memoryDir]), 0);
+      const afterSecondRegenerate = readFileSync(join(memoryDir, "MEMORY.md"), "utf-8");
+      assert.equal(countHeaders(afterSecondRegenerate), 1, "ciclo regenerate→extract→regenerate deve manter 1 cabeçalho, não 2");
+
+      // 3ª volta do ciclo completo — a issue relata que cresceu até 3;
+      // confirma que o ciclo é de fato idempotente, não só "melhorou".
+      assert.equal(runExtract(["--memory-dir", memoryDir]), 0);
+      assert.equal(runRegenerate(["--memory-dir", memoryDir]), 0);
+      const afterThirdRegenerate = readFileSync(join(memoryDir, "MEMORY.md"), "utf-8");
+      assert.equal(countHeaders(afterThirdRegenerate), 1);
+    } finally {
+      rmSync(memoryDir, { recursive: true, force: true });
+    }
   });
 });

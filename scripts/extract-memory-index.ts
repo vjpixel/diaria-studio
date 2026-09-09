@@ -27,7 +27,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
-import { extractManifest } from "./lib/memory-index.ts";
+import { extractManifest, stripGeneratedHeaderFromTitle } from "./lib/memory-index.ts";
 
 export function resolveMemoryDir(values: Record<string, string>): string | undefined {
   return values["memory-dir"] ?? process.env.MEMORY_DIR;
@@ -56,6 +56,12 @@ export function runExtract(argv: string[]): number {
     console.error(`Falha ao extrair ${memoryMdPath}: ${(e as Error).message}`);
     return 2;
   }
+  // #7845: se este MEMORY.md já foi gerado por regenerate-memory-index.ts,
+  // seu cabeçalho `<!-- GERADO AUTOMATICAMENTE ... -->` entrou no mesmo
+  // chunk do título (sem linha em branco entre os dois) — descartar aqui
+  // pra não gravar o cabeçalho DENTRO do manifesto, o que faria a próxima
+  // regeneração prepender um 2º cabeçalho por cima (cresce a cada ciclo).
+  manifest.title = stripGeneratedHeaderFromTitle(manifest.title);
   const outPath = resolve(values.out ?? join(memoryDir, "_index.json"));
   writeFileSync(outPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf-8");
   console.log(`Manifesto extraído: ${manifest.blocks.length} blocos → ${outPath}`);

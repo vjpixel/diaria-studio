@@ -119,6 +119,38 @@ const REF_REGEX = /\[([^\]]+)\]\(([^)]+)\)/g;
 const LINE_REGEX = /^- (?:([^[]+): )?((?:\[[^\]]+\]\([^)]+\)(?: \+ )?)+)(?: — (.*))?$/;
 
 /**
+ * Descarta comentários HTML do TOPO de `title` (#7845) — usado por
+ * `extract-memory-index.ts` ao derivar o `title` que vai pro manifesto
+ * (`_index.json`), nunca por `extractManifest`/`generateMemoryMd` em si
+ * (esse par continua fazendo round-trip byte a byte de qualquer `MEMORY.md`,
+ * header incluído — é o que `test/memory-index.test.ts` trava contra o
+ * arquivo real).
+ *
+ * `regenerate-memory-index.ts` sempre prepende
+ * `<!-- GERADO AUTOMATICAMENTE ... -->` antes de `manifest.title`, sem linha
+ * em branco entre os dois — então quando `extractManifest` lê um
+ * `MEMORY.md` já gerado, esse cabeçalho vira parte do `chunks[0]` (mesmo
+ * chunk do `# Memory index`) e `title` carrega as duas coisas juntas. Sem
+ * este strip, `extract → regenerate` prepende um 2º cabeçalho por cima do
+ * capturado no `title` — e cresce 1 por ciclo (achado #7845: chegou a 3).
+ *
+ * Aceita 0, 1 ou N cabeçalhos líderes (cada um um comentário `<!-- ... -->`,
+ * possivelmente multi-linha, sem linha em branco entre eles) e devolve só o
+ * que sobra a partir da 1ª linha que não abre comentário — tipicamente
+ * `# Memory index`.
+ */
+export function stripGeneratedHeaderFromTitle(title: string): string {
+  const lines = title.split("\n");
+  let i = 0;
+  while (i < lines.length && lines[i].trimStart().startsWith("<!--")) {
+    let j = i;
+    while (!lines[j].includes("-->") && j + 1 < lines.length) j += 1;
+    i = j + 1;
+  }
+  return lines.slice(i).join("\n");
+}
+
+/**
  * Extrai o manifesto de curadoria a partir do conteúdo bruto de um
  * `MEMORY.md` existente. Puro — não lê arquivo, não sabe de disco.
  *
