@@ -8,10 +8,13 @@ workers_dev = true
 # instantâneo) e cria o subscriber no Kit. Zero KV/DO — stateless, cada
 # request se resolve sozinha (Kit já dedup por e-mail, ver src/kit.ts).
 #
-# NÃO deployar (`wrangler deploy`) nem `wrangler secret put` a partir deste
-# worktree — decisão do editor, ação POSTERIOR (ver PR body / SECRETS.md
-# deste diretório para os passos completos, incluindo criar o App no Meta
-# for Developers e subscrever a Página ao campo `leadgen`).
+# Deploy: automático desde o PR #7781 (.github/workflows/deploy-meta-leads.yml,
+# a cada push em master que toque workers/meta-leads/**). O que continua sendo
+# ação do editor são os SECRETS e a configuração no Meta — ver SECRETS.md
+# deste diretório (criar o App no Meta for Developers, subscrever a Página ao
+# campo `leadgen`). Sem os secrets o worker falha FECHADO: todo POST /webhook
+# reprova na verificação de assinatura, e sem custom_domain/route abaixo nada
+# do projeto aponta pra ele.
 
 [vars]
 # Versão da Graph API usada em GET /{leadgen_id} — não secret, atualizar
