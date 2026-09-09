@@ -385,7 +385,8 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   // (isRampWarm com cutoffNovosIso) vs engajados (priority_points>0, qualquer
   // histórico) e exclui deliberadamente reativacao (sends_count>0, sem opens,
   // score 0) — decisão própria do editor (#7406).
-  const queuedListIds = new Set<string>([...committed]);
+  const queued = await fetchQueuedCampaignListIds(apiKey).catch((e)=>new Set<string>());
+  const queuedListIds = new Set<string>([...queued]);
   const committedListIds = new Set<string>([...committed]);
   const dailyQueueRows = buildDailySendQueue(
     rows,
