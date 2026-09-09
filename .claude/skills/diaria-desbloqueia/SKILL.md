@@ -1,6 +1,6 @@
 ---
 name: diaria-desbloqueia
-description: Sessão SÓ DE DESBLOQUEIO — lê a issue inteira (corpo + TODOS os comentários) antes de perguntar, faz uma bateria batchada de perguntas ao editor pra destravar issues bloqueadas/cat. C, grava a resposta como comentário durável, re-rotea a issue. Não implementa, não abre PR. Uso — `/diaria-desbloqueia [--issues N,M] [--track bloqueada|develop]`.
+description: Sessão SÓ DE DESBLOQUEIO — lê a issue inteira (corpo + TODOS os comentários) antes de perguntar, faz uma bateria batchada de perguntas ao editor pra destravar issues bloqueadas/cat. C, tria o bucket `overnight ·sem sinal`, grava a resposta como comentário durável, re-rotea a issue. Não implementa, não abre PR. Uso — `/diaria-desbloqueia [--issues N,M] [--track bloqueada|develop|sem-sinal] [--skip-sem-sinal]`.
 ---
 
 # /diaria-desbloqueia
@@ -28,13 +28,16 @@ implementação completa.
 pule direto pra `gh issue view` improvisado. Ele:
 
 1. Varre issues abertas (`--issues N,M` restringe; sem flag, backlog
-   inteiro) e classifica cada uma via `classifyExecTrack`
-   (`scripts/lib/issue-exec-track.ts`) — só `bloqueada`/`develop` entram no
-   escopo desta skill (`elegível`/`agendada`/`epica`/`fora-de-rodada` saem
-   direto em `foraDoEscopo`, sem leitura de comentário — não há nada aqui
-   pra desbloquear).
+   inteiro) e classifica cada uma via `classifyExecTrackWithRule`
+   (`scripts/lib/issue-exec-track.ts`). Entram no escopo: `bloqueada`,
+   `develop`, e — desde o #7694 — `overnight` **com `matched: "default"`**
+   (o bucket que o painel Triagem pinta como `·sem sinal`: nenhuma label ou
+   marcador classificou a issue, ninguém olhou). `agendada`/`epica`/
+   `fora-de-rodada`, e `overnight` já triado (`trade-off-real`,
+   `alarm-evento`, `triada-overnight`), saem direto em `foraDoEscopo` sem
+   leitura de comentário — não há nada ali pra desbloquear.
 2. Pra cada candidata real, busca **corpo + TODOS os comentários** (não uma
-   amostra, não os últimos N) e classifica em 4 grupos —
+   amostra, não os últimos N) e classifica em 5 grupos —
    `scripts/lib/desbloqueia-scan.ts`, testado em `test/desbloqueia-scan.test.ts`:
    - **`jaDestravadas`** — existe `decisao-editor` mais recente que o
      `updatedAt` da issue. A resposta já está na thread.
@@ -43,6 +46,12 @@ pule direto pra `gh issue view` improvisado. Ele:
      que não chegou, conta que não existe).
    - **`precisaPergunta`** — nem um nem outro cobre o estado atual. É a
      ÚNICA lista que vira pergunta.
+   - **`semSinalNaoTriadas`** (#7694) — candidata `·sem sinal` cuja thread
+     não tem marcador nenhum. **Nunca vira pergunta**: não é "falta uma
+     resposta do editor", é "ninguém leu esta issue ainda". Vira TRIAGEM
+     no Passo 2b — despejar dezenas de issues não-triadas numa bateria de
+     `AskUserQuestion` é exatamente o que "Perguntar é exceção" (#5321)
+     proíbe.
    - **`erroLeitura`** — a busca de comentário FALHOU pra essa issue (`gh`
      deu erro, JSON malformado). Nunca vira `precisaPergunta` mesmo que a
      lista de comentários tenha vindo vazia — `[]` por falha de leitura é
@@ -56,8 +65,15 @@ Rodar:
 ```bash
 npx tsx scripts/desbloqueia-scan.ts                    # backlog aberto inteiro
 npx tsx scripts/desbloqueia-scan.ts --issues 123,456    # só essas issues
-npx tsx scripts/desbloqueia-scan.ts --track bloqueada    # só issues bloqueada (ou develop)
+npx tsx scripts/desbloqueia-scan.ts --track bloqueada    # só bloqueada (ou develop / sem-sinal)
+npx tsx scripts/desbloqueia-scan.ts --skip-sem-sinal     # escopo antigo, varredura barata
 ```
+
+O bucket `·sem sinal` entra **por default** — é o motivo de a #7694 existir,
+e flag de opt-in que ninguém lembra de passar não corrige nada. O custo é
+real (medição de 08/09/2026: 26 issues sem sinal contra 9 do escopo antigo,
+sobre 68 abertas ⇒ ~4× mais chamadas `gh issue view` na passada 2);
+`--skip-sem-sinal` desliga quando o que se quer é só a varredura barata.
 
 **Nenhuma pergunta é feita antes deste comando rodar e seu output ser lido
 por completo.** Se `erroLeitura` não estiver vazio, rodar o scan de novo
@@ -79,14 +95,51 @@ npx tsx scripts/route-issue.ts --issue N --track {develop|overnight} \
   --reason "decisão já registrada em comentário anterior — reclassificando sem nova pergunta (#6628)"
 ```
 
-Para cada issue em `bloqueioConfirmado`: nada muda — o bloqueio segue de
-pé e já está documentado. Comentar (curto, sem `route-issue.ts` — o track
-já está correto) confirmando que a sessão revisou e o estado é o mesmo:
-`Revisado por /diaria-desbloqueia — bloqueio de execução de {recorded_at}
-("{motivo}") segue valendo, nenhuma mudança.` **Nunca** perguntar de novo o
-que o `bloqueio-execucao` já documenta.
+Para cada issue em `bloqueioConfirmado` **com `semSinal: false`**: nada muda
+— o bloqueio segue de pé e já está documentado. Comentar (curto, sem
+`route-issue.ts` — o track já está correto) confirmando que a sessão revisou
+e o estado é o mesmo: `Revisado por /diaria-desbloqueia — bloqueio de
+execução de {recorded_at} ("{motivo}") segue valendo, nenhuma mudança.`
+**Nunca** perguntar de novo o que o `bloqueio-execucao` já documenta.
+
+Para cada issue em `bloqueioConfirmado` **com `semSinal: true`** (#7694):
+aqui o estado MUDA, e é o achado de maior valor da varredura — a thread
+documenta um bloqueio e a **label está faltando**, então a issue estava
+classificada `overnight` e o `helios` ia tentar executá-la e falhar.
+Comentar não basta: rotear.
+
+```bash
+npx tsx scripts/route-issue.ts --issue N --track bloqueada   --reason "{motivo do bloqueio-execucao já registrado na thread}"   # --motivo conta-de-terceiro | plataforma | kit | execucao — conforme a thread
+```
+
+## Passo 2b — triar `semSinalNaoTriadas` (#7694), sem perguntar
+
+Ninguém leu estas issues ainda. Ler título + corpo (o scan já trouxe os
+dois) e decidir o track, aplicando "Perguntar é exceção" (#5321) — a
+resposta padrão aqui é **decidir e registrar**, não perguntar:
+
+- **Exige a máquina do editor** (Chrome logado, ComfyUI, `data/` local) →
+  `route-issue.ts --track develop` (a label `windows` é o sinal).
+- **Depende de conta/credencial/plataforma de terceiro** →
+  `--track bloqueada` com `--motivo` e `--reason`.
+- **Tem trade-off editorial genuíno** (critério 2 do #5321: muda a
+  experiência do leitor e nada documentado decide) → `--track overnight
+  --motivo trade-off`, que entra na fila de perguntas do briefing (#7493).
+  Se o editor já está presente NESTA sessão, é legítimo perguntar aqui em
+  vez de empurrar pro briefing — nesse caso a issue migra pra bateria do
+  Passo 3.
+- **Nada disso: é trabalho mecânico** → `--track overnight --motivo triada`.
+  A label `triada-overnight` (#7694) mantém o veredito `overnight` e só
+  troca `matched: "default"` por um sinal positivo, pra a issue deixar de
+  aparecer como `·sem sinal` e a próxima varredura não retriá-la do zero.
+
+Nunca deixar uma `semSinalNaoTriadas` sem roteamento: a issue voltaria
+idêntica na varredura seguinte, e o custo de ler a thread foi gasto à toa.
 
 ## Passo 3 — bateria de perguntas (só `precisaPergunta`)
+
+Nenhum outro grupo entra aqui — `semSinalNaoTriadas` incluído: ele é
+triagem (Passo 2b), não pergunta.
 
 Agrupar por tipo, igual à Fase 0.5 do develop (#2966) — cap de 4 perguntas
 × 4 opções por chamada de `AskUserQuestion`, várias chamadas sequenciais se
@@ -161,11 +214,14 @@ Terminar com um resumo, não uma lista de comandos executados:
 ```
 /diaria-desbloqueia — resumo
 
-Varridas: N issues candidatas (bloqueada/develop)
+Varridas: N issues candidatas (bloqueada/develop/·sem sinal)
   {A} já destravadas pela thread — re-roteadas sem pergunta
   {B} bloqueio confirmado — sem mudança, comentário de revisão
+  {B2} bloqueio documentado com LABEL FALTANDO — roteadas pra bloqueada (#7694)
   {C} perguntadas — {D} respondidas e destravadas, {E} seguem bloqueadas
        (editor não tinha a resposta agora / cat. B sem conta ainda)
+  {G} ·sem sinal triadas sem pergunta — {G1} confirmadas overnight (triada-overnight),
+       {G2} viraram develop, {G3} viraram bloqueada
   {F} erro de leitura — não foi possível ler a thread, ninguém foi perguntado (rodar de novo: #...)
 
 Pronto pro helios na próxima rodada: #X, #Y, #Z
@@ -174,6 +230,10 @@ Seguem bloqueadas: #W (motivo: ...)
 
 ## Fronteiras
 
+- **Triar não é implementar.** O Passo 2b decide o TRACK de uma issue
+  `·sem sinal` e nada mais — nunca começa o trabalho da issue, mesmo quando
+  ele é óbvio e pequeno. Issue triada como `overnight` fica pro `helios`
+  (#5751), sem exceção.
 - **Não implementa nada.** Se o editor quiser seguir direto pra
   implementação, esta skill não encadeia sozinha (mesma fronteira do
   #5578, "skills `/diaria-N-*` invocadas isoladamente NUNCA encadeiam pro
