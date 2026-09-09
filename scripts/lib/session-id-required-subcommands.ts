@@ -67,4 +67,8 @@ export const SESSION_ID_REQUIRED_SUBCOMMANDS = [
   "self-authorize-merge",
 ] as const;
 
-export type SessionIdRequiredSubcommand = (typeof SESSION_ID_REQUIRED_SUBCOMMANDS)[number];
+// Sem `export`: nada no repo importa este tipo hoje (knip acusa dead export).
+// A lista em si (SESSION_ID_REQUIRED_SUBCOMMANDS) é o que os consumidores
+// (session-registry.ts, inject-session-id.mjs) usam de verdade. Reintroduzir
+// o export é seguro se um consumidor futuro precisar tipar contra ela.
+type SessionIdRequiredSubcommand = (typeof SESSION_ID_REQUIRED_SUBCOMMANDS)[number];
