@@ -238,3 +238,9 @@ test("runReconcile: state COM pendingSend mas SEM API key -> aborta ANTES de ten
     if (savedBase !== undefined) process.env.BREVO_API_KEY = savedBase;
   }
 });
+
+// #7765 — regressão: caminho de exit 3 (disparo incerto) deve atualizar
+// lastRunAt sem alterar lastHtmlSha256/sentCount. Movida para
+// test/clarice-novos-state.test.ts (#7771) — cobre `clarice-novos-state.ts`
+// diretamente, mesmo arquivo das demais unit tests de touchLastRunAt/
+// readNovosState/writeNovosState; este arquivo cobre só a integração da CLI.

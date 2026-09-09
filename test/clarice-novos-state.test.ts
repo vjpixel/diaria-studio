@@ -20,6 +20,7 @@ import {
   buildFinalizeState,
   reconcilePendingSend,
   reconcileNovosSentCount,
+  touchLastRunAt,
   type NovosState,
   type NovosCampaignSentCount,
 } from "../scripts/lib/clarice-novos-state.ts";
@@ -539,4 +540,41 @@ test("reconcileNovosSentCount: nenhuma campanha novos-* ainda (1ª rodada) -> ac
   assert.equal(result.matchedCampaigns, 0);
   assert.equal(result.actual, 0);
   assert.equal(result.matches, true);
+});
+
+// ---------------------------------------------------------------------------
+// touchLastRunAt (#7765)
+// ---------------------------------------------------------------------------
+
+test("touchLastRunAt: atualiza lastRunAt mantendo o resto do state intacto (não soma sentCount)", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "novos-state-touch-"));
+  const inicial: NovosState = {
+    lastRunAt: "2026-09-05T12:00:00.000Z",
+    lastHtmlSha256: "aabb...",
+    lastCycle: "2609-09",
+    lastListId: 99,
+    lastCampaignId: 111,
+    sentCount: 350,
+    pendingSend: null,
+  };
+  writeNovosState(inicial, dir);
+  touchLastRunAt(dir, "2026-09-05T18:00:00.000Z");
+  const depois = readNovosState(dir);
+  assert.ok(depois !== null);
+  assert.notEqual(depois!.lastRunAt, inicial.lastRunAt); // atualizado
+  assert.equal(depois!.lastHtmlSha256, inicial.lastHtmlSha256); // preservado
+  assert.equal(depois!.sentCount, inicial.sentCount); // NÃO somado
+  assert.equal(depois!.lastCampaignId, inicial.lastCampaignId); // preservado
+  assert.equal(depois!.lastRunAt, "2026-09-05T18:00:00.000Z");
+});
+
+test("touchLastRunAt: state ausente (1ª rodada) -> cria state mínimo só com lastRunAt", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "novos-state-touch-empty-"));
+  touchLastRunAt(dir, "2026-09-05T18:00:00.000Z");
+  const depois = readNovosState(dir);
+  assert.ok(depois !== null);
+  assert.equal(depois!.lastRunAt, "2026-09-05T18:00:00.000Z");
+  assert.equal(depois!.lastHtmlSha256, null);
+  assert.equal(depois!.sentCount, 0);
+  assert.equal(depois!.pendingSend, null);
 });
