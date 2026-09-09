@@ -324,4 +324,83 @@ export default {
 `;
     assert.deepEqual(analyzeHostBranching(source, "solo.example.com"), { kind: "no-branch" });
   });
+
+  // Achados do self-review da PR #7818: operandos invertidos (`CONST ===
+  // url.host`) e negação (`url.host !== CONST`) mencionam o host mas não são
+  // o padrão redirect-tudo reconhecido — precisam contar como "mencionado,
+  // mas não reconhecido" (unresolvable-branch), NUNCA cair silenciosamente
+  // em "no-branch" (que trataria o host como canônico implícito e poderia
+  // produzir um ok-direct/ok-redirect falso).
+  it("analyzeHostBranching: operandos invertidos (CONST === url.host) → unresolvable-branch, nunca no-branch", () => {
+    const source = `
+export const LEGACY_HOST = "legacy.example.com";
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (LEGACY_HOST === url.host) {
+      return Response.redirect("https://canonical.example.com" + url.pathname, 301);
+    }
+    return new Response("ok");
+  },
+};
+`;
+    const result = analyzeHostBranching(source, "legacy.example.com");
+    assert.equal(result.kind, "unresolvable-branch");
+  });
+
+  it("analyzeHostBranching: negação (url.host !== CONST) → unresolvable-branch, nunca no-branch", () => {
+    const source = `
+export const CANONICAL_HOST = "canonical.example.com";
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.host !== CANONICAL_HOST) {
+      return new Response("not found", { status: 404 });
+    }
+    if (url.pathname === "/robots.txt") return new Response("User-agent: *\\nAllow: /\\n");
+    return new Response("ok");
+  },
+};
+`;
+    // O host CANÔNICO também é "mencionado" (via negação) e não casa o
+    // padrão redirect-tudo — então também vira unresolvable-branch, mesmo
+    // sendo o host que efetivamente funciona. É o preço da precisão
+    // conservadora: o guard nunca inventa reconhecimento de negação, então
+    // avisa "não sei" em vez de arriscar um falso "sei" no lado oposto.
+    const result = analyzeHostBranching(source, "canonical.example.com");
+    assert.equal(result.kind, "unresolvable-branch");
+  });
+
+  it("classifyHostRobotsHandling: bloco redirect-tudo COMENTADO (código morto) não é lido como roteamento vivo", () => {
+    withFixtureWorkersDir(
+      (workersDir) => {
+        writeWrangler(workersDir, "commented-out", [{ host: "commented-out.example.com" }]);
+        writeSrc(
+          workersDir,
+          "commented-out",
+          "index.ts",
+          `
+// Isto é código morto de um refactor anterior — NÃO deve ser lido como
+// roteamento vivo:
+// if (url.host === "commented-out.example.com") {
+//   return Response.redirect("https://outro.example.com" + url.pathname, 301);
+// }
+export default {
+  async fetch(request: Request): Promise<Response> {
+    return new Response("ok");
+  },
+};
+`,
+        );
+      },
+      (workersDir) => {
+        // Sem o strip de comentário, o bloco comentado seria lido como um
+        // redirect-tudo real (achado do self-review da PR #7818) — o
+        // veredito correto é "missing" (o worker de fato não serve nem
+        // redireciona), nunca "ok-redirect".
+        const verdict = classifyHostRobotsHandling(workersDir, "commented-out", "commented-out.example.com");
+        assert.deepEqual(verdict, { kind: "missing" });
+      },
+    );
+  });
 });

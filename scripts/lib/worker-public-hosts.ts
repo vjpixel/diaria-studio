@@ -116,11 +116,33 @@ export function anyTsFileHasRobotsRouteDispatch(dir: string): boolean {
 }
 
 /**
+ * Remove linhas que são comentário `//` INTEIRO (a linha, já sem espaço em
+ * branco à esquerda, começa com `//`) — mitigação pro achado do #7818
+ * (self-review): sem isso, um bloco `if (url.host === ...) { ... return
+ * Response.redirect(...) }` deixado COMENTADO (código morto de um refactor,
+ * ou exemplo ilustrativo num doc-comment) seria indistinguível de código
+ * vivo pro scanner por balanceamento de chaves, podendo produzir um
+ * `ok-redirect` falso. Deliberadamente conservador: só linha 100% comentário
+ * — comentário de fim de linha (`código(); // nota`) e bloco `/* ... *&#47;`
+ * continuam fora do escopo (risco de corromper uma URL `https://` dentro de
+ * uma string ao tentar reconhecer esses dois formatos com regex sobre
+ * texto), mesmo racional de simplicidade do resto deste módulo.
+ */
+function stripFullLineComments(source: string): string {
+  return source
+    .split("\n")
+    .map((line) => (/^\s*\/\//.test(line) ? "" : line))
+    .join("\n");
+}
+
+/**
  * Concatena o conteúdo de todo `.ts` sob `dir` (recursivo) — usado pela
  * análise de branching por host abaixo, que precisa enxergar `const`s e
  * condicionais que podem estar espalhados por vários arquivos do mesmo
  * Worker (ex: a constante do host legado num módulo, o `if` que a testa em
- * `src/index.ts`).
+ * `src/index.ts`). Linhas 100% comentário são removidas primeiro
+ * (`stripFullLineComments`) pra código morto comentado não ser lido como
+ * roteamento vivo.
  */
 function collectAllTsSource(dir: string): string {
   if (!existsSync(dir)) return "";
@@ -130,7 +152,7 @@ function collectAllTsSource(dir: string): string {
     if (entry.isDirectory()) {
       out += collectAllTsSource(full);
     } else if (entry.isFile() && entry.name.endsWith(".ts")) {
-      out += "\n" + readFileSync(full, "utf8");
+      out += "\n" + stripFullLineComments(readFileSync(full, "utf8"));
     }
   }
   return out;
@@ -258,16 +280,26 @@ export type HostBranchAnalysis =
 export function analyzeHostBranching(source: string, host: string): HostBranchAnalysis {
   const consts = extractStringConstants(source);
   const hostIdentNames = [...consts.entries()].filter(([, v]) => stripProtocol(v) === host).map(([k]) => k);
+  const hostNeedles = [...hostIdentNames.map(escapeRegExp), `["'\`]${escapeRegExp(host)}["'\`]`];
 
   const blocks = findIfBlocksWithUrlHost(source);
   let sawHostMention = false;
 
   for (const { condition, body } of blocks) {
-    const matchesThisHost =
-      hostIdentNames.some((name) => new RegExp(`url\\.host\\s*===\\s*${escapeRegExp(name)}\\b`).test(condition)) ||
-      new RegExp(`url\\.host\\s*===\\s*["'\`]${escapeRegExp(host)}["'\`]`).test(condition);
-    if (!matchesThisHost) continue;
+    // Padrão redirect-tudo reconhecido: SÓ `url.host === <este host>` (ordem
+    // e operador exatos). Achado do #7818 (self-review): `<este host> ===
+    // url.host` (operandos invertidos) e `url.host !== ...`/`!== url.host`
+    // (negação) mencionam o host mas NÃO são este padrão — precisam contar
+    // como "mencionado, mas não reconhecido" (→ unresolvable-branch), nunca
+    // silenciosamente como "no-branch" (que trataria o host como canônico
+    // implícito e poderia dar `ok` sem checar a ramificação de verdade).
+    const matchesForwardEquality = hostNeedles.some((needle) =>
+      new RegExp(`url\\.host\\s*===\\s*${needle}\\b`).test(condition),
+    );
+    const mentionsHostSomehow = matchesForwardEquality || hostNeedles.some((needle) => new RegExp(needle).test(condition));
+    if (!mentionsHostSomehow) continue;
     sawHostMention = true;
+    if (!matchesForwardEquality) continue; // mencionado, mas não no formato reconhecido — segue procurando
 
     // Condição também testa o path (`url.pathname === ...` no mesmo `if`):
     // não é "redirect-tudo", é um redirect PARCIAL — não dá pra assumir que
