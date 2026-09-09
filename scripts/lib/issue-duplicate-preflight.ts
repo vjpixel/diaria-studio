@@ -95,6 +95,9 @@ export interface MasterCommitInfo {
   body: string;
   /** ISO 8601, data de autoria do commit (`%aI` do `git log`). */
   authorDateIso: string;
+  /** Quando true, este commit veio do fetch por PROVENIÊNCIA (não por #N
+   * direto) — usado para distinguir origem antes de classificar. */
+  provenance?: boolean;
 }
 
 /** `MasterCommitInfo` + o marcador já extraído. */
@@ -116,9 +119,14 @@ function parseCommitCloseMarkerProvenance(body: string): CommitCloseMarker {
 export function classifyMasterCommits(commits: MasterCommitInfo[], issueNumber: number): MasterCommitMatch[] {
   return commits.map((c) => {
     const direct = parseCommitCloseMarker(c.body, issueNumber);
-    // Se o número direto não aparece, mas o corpo contém `closes` (outro #,
-    // exemplo provenance #7801), não perder o sinal de fix.
-    const marker = (direct === "refs" ? "refs" : (direct === "closes" || (direct === "unknown" && /\bcloses\b/i.test(c.body))) ? "closes" : direct);
+    // Fallback conservador SÓ para provenance: quando o commit veio do fetch
+    // por origem (range/PR/commit) e não cita #N diretamente, qualquer
+    // `closes` no corpo ainda pode ser sinal do fix mergeado sob outro ID.
+    // PARA commits diretos (#N) NÃO aplicamos o fallback — se o número
+    // direto não aparece, não presumimos que ele fecha esta issue.
+    const marker = c.provenance
+      ? (direct === "refs" ? "refs" : (direct === "closes" || (direct === "unknown" && /\bcloses\b/i.test(c.body))) ? "closes" : direct)
+      : direct;
     return { ...c, closeMarker: marker };
   });
 }
@@ -177,7 +185,7 @@ export function assessDuplicatePreflight(input: DuplicatePreflightInput): Duplic
   // mesmo commit cita ambos (ex: commit que cita #7743 e 44205ff0).
   const shaSeen = new Set<string>();
   const unified: MasterCommitInfo[] = [];
-  for (const c of [...commits, ...provenanceCommits]) {
+  for (const c of [...commits, ...provenanceCommits.map((pc) => ({ ...pc, provenance: true as const }))]) {
     if (!shaSeen.has(c.sha)) { shaSeen.add(c.sha); unified.push(c); }
   }
   const classified = sortByDateDesc(classifyMasterCommits(unified, issueNumber));

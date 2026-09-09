@@ -44,6 +44,18 @@ describe("duplicate-preflight provenance (#7801)", () => {
     expect(result.verdict).toBe("refs-declared-residue");
   });
 
+  it("não marca closes para commit direto que menciona outra issue (falso positivo #7801)", () => {
+    // Commit direto por #7634 que contém "Closes #7743" — deve ser unknown,
+    // NÃO closes-should-be-closed (o fix pertence a outra issue).
+    const result = assessDuplicatePreflight({
+      issueNumber: 7634,
+      commits: [{ sha: "directbad", subject: "x", body: "Closes #7743", authorDateIso: "2026-09-09T10:00:00Z" }],
+      provenanceCommits: [],
+    });
+    expect(result.verdict).toBe("refs-declared-residue");
+    expect(result.matchingCommits[0].closeMarker).toBe("unknown");
+  });
+
   it("unifica commits de #N e provenance sem duplicar SHA", () => {
     const sharedSha = "shareddeadbeef";
     const result = assessDuplicatePreflight({
