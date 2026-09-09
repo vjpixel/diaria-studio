@@ -639,6 +639,56 @@ function checkUseMelhorTempoConsistent(editionDir: string): InvariantViolation[]
 }
 
 /**
+ * #7668 item 3: observabilidade de cache miss do body do USE MELHOR.
+ *
+ * `stitch-newsletter.ts` escreve `_internal/use-melhor-tempo-source.json` com a
+ * fonte real de cada estimativa injetada (`wordcount` | `youtube` |
+ * `title-heuristic`). Este check lê esse artifact e sinaliza quando MUITOS
+ * itens ainda caem no fallback de title-heuristic — o sintoma silencioso do
+ * bug: body não cacheado no Stage 1 → estimativa de `(5 min)` em vez da real.
+ *
+ * severity: "warning" (não bloqueia o gate, #7668 — é um sinal de qualidade,
+ * não uma reprovação do conteúdo). O editor cura o conteúdo; este check diz
+ * se a curadoria está sendo feita com dados reais ou com o placeholder.
+ *
+ * Fail-soft: artifact ausente/inválido → sem violação (não é erro; é só ausência
+ * de instrumentação, igual ao padrão dos outros checks que leem `_internal/*`).
+ */
+function checkUseMelhorTempoTitleHeuristicShare(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "use-melhor-tempo-source.json");
+  if (!existsSync(path)) return [];
+  let entries: { source?: string }[];
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    entries = parsed;
+  } catch {
+    return [];
+  }
+  const total = entries.length;
+  if (total === 0) return [];
+  const heuristic = entries.filter((e) => e.source === "title-heuristic").length;
+  if (heuristic === 0) return [];
+  const pct = Math.round((heuristic / total) * 100);
+  return [
+    {
+      rule: "use-melhor-tempo-title-heuristic-share",
+      message:
+        `${heuristic} de ${total} item(ns) de USE MELHOR (${pct}%) foram estimados por ` +
+        `title-heuristic em vez de wordcount/youtube — bodies não cacheados no Stage 1 ` +
+        `(browser fallback não persistiu o HTML, ou fetchBodyForCache não correu). ` +
+        `Estimação real exige '_internal/_forensic/link-verify-bodies/<sha1>.html' para ` +
+        `cada URL. Verifique ` +
+        `scripts/verify-accessibility.ts (saveCachedBody no browser fallback) e ` +
+        `scripts/stitch-newsletter.ts (prefetchUseMelhorBodies antes do render).`,
+      source_issue: "#7668",
+      severity: "warning",
+      file: path,
+    },
+  ];
+}
+
+/**
  * #2377/#2411/#2419/#6734 (rewrite): detecta quando a fonte do reveal para a PRÓXIMA
  * edição seria inválida — genérica, catalog-shaped (label interno "DESTAQUE N"), sem
  * o prefixo temporal correto, ou agramatical.
@@ -2398,6 +2448,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkUseMelhorTempoConsistent,
   },
   {
+    id: "use-melhor-tempo-title-heuristic-share",
+    description: "itens USE MELHOR cuja estimativa veio de title-heuristic (body não cacheado) — sinal de qualidade, warning-only (#7668)",
+    source_issue: "#7668",
+    stage: 4,
+    run: checkUseMelhorTempoTitleHeuristicShare,
+  },
+  {
     id: "narrative-not-generic-placeholder",
     description: "narrative ERRO INTENCIONAL é declaração real de primeira pessoa (#2377)",
     source_issue: "#2377",
@@ -2589,4 +2646,5 @@ export {
   checkBoxDivulgacaoRuntimeExcluded,
   checkRenderWarnings,
   checkKitFixtureAudit,
+  checkUseMelhorTempoTitleHeuristicShare,
 };

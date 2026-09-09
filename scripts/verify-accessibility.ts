@@ -475,7 +475,7 @@ export async function verify(
       if (body.includes(marker)) return { verdict: "paywall", finalUrl: effectiveUrl, note: `marker: ${marker}`, ...(resolvedFrom ? { resolvedFrom } : {}) };
     }
     if (body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").length < 500) {
-      if (browser) return { ...(await verifyWithBrowser(url, browser)), ...(resolvedFrom ? { resolvedFrom } : {}) };
+      if (browser) return { ...(await verifyWithBrowser(url, browser, bodiesDir)), ...(resolvedFrom ? { resolvedFrom } : {}) };
       return { verdict: "uncertain", finalUrl: effectiveUrl, note: "body < 500 chars", ...(resolvedFrom ? { resolvedFrom } : {}) };
     }
     // #695: soft 404 via título — página retorna 200 mas <title> indica não encontrado
@@ -568,6 +568,7 @@ export function reclassifyExhaustedTimeout(
 async function verifyWithBrowser(
   url: string,
   browser: Browser,
+  bodiesDir: string | null = null,
   timeoutMs = 20000
 ): Promise<VerifyResult> {
   const finalUrl = canonicalize(url);
@@ -613,6 +614,15 @@ async function verifyWithBrowser(
     // deixava passar mesmo com semanas de idade (#3211).
     const html = await page.content();
     const dateResult = extractDateFromBody(html);
+    // #7668: o path primário (GET) salva o body em `bodiesDir`, mas URLs que
+    // só passam pelo browser fallback (body < 500 chars, fetch error, anti-bot
+    // em publisher confiável) saiam daqui sem body — e viravam cache miss no
+    // Stage 2, caindo silenciosamente na heurística de título e saindo
+    // `(5 min)` para tudo. Persistir o HTML renderizado aqui fecha a lacuna
+    // pro bucket use_melhor (#6739): o body está disponível (custo zero de
+    // fetch adicional — o browser já renderizou a página) e o fail-soft
+    // permanece: `saveCachedBody` é no-op quando bodiesDir é null ou falha.
+    saveCachedBody(bodiesDir, finalUrl, html);
     return {
       verdict: "accessible",
       finalUrl,
@@ -728,7 +738,7 @@ async function main() {
       await runBounded(uncertainIdxs, effectiveConcurrency, async (idx) => {
         const r = results[idx];
         const firstPassNote = r.note;
-        const browserResult = await verifyWithBrowser(r.url, launched);
+        const browserResult = await verifyWithBrowser(r.url, launched, bodiesCacheDir);
         // #4730: exhausted timeout (ambas tentativas falharam por infra) vira
         // needs_reverify em vez de uncertain — sinal específico pro gate do
         // Stage 2 forçar re-verificação determinística.

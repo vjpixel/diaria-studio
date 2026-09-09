@@ -34,7 +34,7 @@ import {
   normalizeDashToParens,
   type UseMelhorTempoSource, // #6739
 } from "./lib/use-melhor-curation.ts"; // #2447/#2450
-import { loadCachedBody } from "./lib/url-body-cache.ts"; // #6739 — body cacheado do Stage 1
+import { loadCachedBody, saveCachedBody } from "./lib/url-body-cache.ts"; // #6739 — body cacheado do Stage 1
 import { USE_MELHOR_TEMPO_RE } from "./lib/lint-checks/use-melhor-tempo.ts"; // #2464 finding 5 — evitar cópia de regex
 import {
   renderEncerramentoSocialApoio,
@@ -558,6 +558,68 @@ function writeUseMelhorTempoInstrumentation(
 }
 
 /**
+ * #7668 item 2: busca sob demanda pro USE MELHOR item que veio sem body
+ * cacheado. Chamado apenas em cache miss (1 GET por item, 3–4 por edição).
+ *
+ * Fail-soft invariável: qualquer falha de rede/status/timeout vira `null` —
+ * o item cai na heurística de título e o stitch continua. Reusa
+ * `saveCachedBody` pra que execuções seguintes reutilizem o body (evita
+ * refetch repetido entre `stitch` e `verify-dates`).
+ *
+ * Escopo: GET simples, sem browser, sem redirect-following. O Stage 1 já
+ * verificou acessibilidade — aqui o único objetivo é obter o body pra
+ * contagem de palavras, não re-avaliar verdict.
+ */
+async function fetchBodyForCache(
+  bodiesDir: string,
+  url: string,
+): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      signal: controller.signal,
+      headers: { "user-agent": "Mozilla/5.0 (compatible; DiariaBot/1.0)" },
+    });
+    if (!res.ok) return null;
+    const body = await res.text();
+    if (body.length < 500) return null;
+    saveCachedBody(bodiesDir, url, body);
+    return body;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * #7668 item 2: prefetch sob demanda dos bodies dos itens USE MELHOR que
+ * ainda não estão cacheados. Chamado no caller (`stitchNewsletter`) antes do
+ * `renderUseMelhorSection` síncrono — o body precisa estar no cache quando
+ * `estimateFor` ler, e `renderUseMelhorSection` não pode ser async sem
+ * quebrar `stitchNewsletter` e seus testes.
+ *
+ * Fail-soft total: cada item é independente — um que falhar de rede/status/
+ * timeout simplesmente cai na heurística de título e o stitch continua. Os
+ * bodies que chegam são salvos via `saveCachedBody` pra que execuções
+ * seguintes (verify-dates, re-stitch) reutilizem, sem refetch repetido.
+ */
+async function prefetchUseMelhorBodies(
+  items: ArticleLike[],
+  bodiesDir: string,
+): Promise<void> {
+  await Promise.all(
+    items.map(async (item) => {
+      if (!item.url) return;
+      if (loadCachedBody(bodiesDir, item.url)) return;
+      await fetchBodyForCache(bodiesDir, item.url);
+    }),
+  );
+}
+
+/**
  * Lê o bloco É IA? do `01-eia.md`. Se ausente, retorna placeholder simples.
  * Format do 01-eia.md:
  *   "É IA?\n\n{description}\n\n> Gabarito: **{A|B} é a IA**"
@@ -661,8 +723,19 @@ export function stitchNewsletter(input: StitchInput): string {
   // em `_internal/use-melhor-tempo-source.json` pra medir depois quanto ainda
   // sai de `title-heuristic`.
   const useMelhorTempoInstrumentation: UseMelhorTempoInstrumentationEntry[] = [];
+  const useMelhorBodiesDir = join(input.editionDir, "_internal", "_forensic", "link-verify-bodies");
+  // #7668 item 2: fallback de busca sob demanda ANTES do render. O body
+  // cacheado do Stage 1 é a fonte primária, mas URLs que passaram pelo browser
+  // fallback (ou por paths HEAD-only) podem sair sem body — e o cache miss
+  // caía silenciosamente na heurística de título, saindo `(5 min)` para tudo.
+  // 1 GET por item de USE MELHOR (3–4 por edição) é barato perto de publicar
+  // um número errado. `fetchBodyForCache` é fail-soft e reusa `saveCachedBody`
+  // pra que execuções seguintes reutilizem o body (evita refetch repetido).
+  // Feito no caller (não em `estimateFor`) pra manter `renderUseMelhorSection`
+  // síncrona — `stitchNewsletter` e seus testes dependem da assinatura atual.
+  await prefetchUseMelhorBodies(approved.use_melhor ?? [], useMelhorBodiesDir);
   const useMelhor = renderUseMelhorSection(approved.use_melhor ?? [], {
-    bodiesDir: join(input.editionDir, "_internal", "_forensic", "link-verify-bodies"),
+    bodiesDir: useMelhorBodiesDir,
     instrumentation: useMelhorTempoInstrumentation,
   });
   writeUseMelhorTempoInstrumentation(input.editionDir, useMelhorTempoInstrumentation);
