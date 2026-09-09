@@ -63,6 +63,14 @@
             "args": [
               "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start-claude-config-sync.mjs"
             ]
+          },
+          {
+            "type": "command",
+            "command": "node",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start-memory-sync-guard.mjs"
+            ]
           }
         ]
       }
