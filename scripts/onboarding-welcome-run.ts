@@ -72,6 +72,12 @@ import { resolveBeehiivConfig, beehiivApiBase, type BeehiivConfig } from "./lib/
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
 import { kitFetch } from "./lib/kit-client.ts";
 import { listAllKitSubscribers, getSubscriberById as getKitSubscriberById } from "./lib/kit-subscribers.ts";
+import {
+  planSeed,
+  renderSeedPlan,
+  type SeedKitSubscriber,
+  type SeedExistingEntry,
+} from "./lib/onboarding-seed.ts";
 import { resolveNewsletterSubscriberBackend, type NewsletterSubscriberBackend } from "./lib/shared/newsletter-subscriber-source.ts";
 import {
   emptyStore,
@@ -509,6 +515,16 @@ interface CliArgs {
   skip: Set<"email1" | "email2" | "email3">;
   /** #6158: modo dedicado — cancela via DELETE tudo que o store ainda tem como pendente, e sai. Não faz detecção nem envio nessa invocação. */
   cancelPending: boolean;
+  /**
+   * #7674 — modo DIRIGIDO: lista explícita de e-mails a semear no store,
+   * de `--emails` e/ou `--emails-file`. Presente ⇒ a rodada NÃO detecta e
+   * NÃO envia; só escreve entradas (ver `scripts/lib/onboarding-seed.ts`).
+   */
+  seedEmails?: string[];
+  /** #7674 — ISO; marca `email1_sent_at` sem enviar (coorte que já recebeu o e-mail 1 por outro canal, #7675). */
+  seedEmail1SentAt?: string;
+  /** #7674 — rótulo de origem gravado em `seeded_by`. Obrigatório no modo dirigido. */
+  seededBy?: string;
 }
 
 /** Resumo JSON impresso no fim da rodada (stdout — consumível por alarmes/logs). */
@@ -531,6 +547,21 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === "--snippets-dir") args.snippetsDir = argv[++i];
     else if (a === "--config") args.configPath = argv[++i];
     else if (a === "--env-root") args.envRoot = argv[++i];
+    else if (a === "--emails") (args.seedEmails ??= []).push(...argv[++i].split(",").map((s) => s.trim()).filter(Boolean));
+    else if (a === "--emails-file") {
+      const p = argv[++i];
+      if (!existsSync(p)) {
+        process.stderr.write(`[onboarding] --emails-file não encontrado: ${p}\n`);
+        process.exit(2);
+      }
+      // Uma linha por e-mail; `#` inicia comentário para o operador anotar a origem da lista.
+      const linhas = readFileSync(p, "utf8")
+        .split(/\r?\n/)
+        .map((l) => l.replace(/#.*$/, "").trim())
+        .filter(Boolean);
+      (args.seedEmails ??= []).push(...linhas);
+    } else if (a === "--seed-email1-sent-at") args.seedEmail1SentAt = argv[++i];
+    else if (a === "--seeded-by") args.seededBy = argv[++i];
     else if (a === "--skip-email1") args.skip.add("email1");
     else if (a === "--skip-email2") args.skip.add("email2");
     else if (a === "--skip-email3") args.skip.add("email3");
@@ -644,6 +675,78 @@ async function main(): Promise<void> {
     skips: [],
     notes: [],
   };
+
+  // --- #7674: MODO DIRIGIDO (semeadura) -------------------------------------
+  // Vem ANTES do bootstrap e da troca de backend de propósito: as duas
+  // coortes que este modo existe pra recuperar (#7665, #7675) só ficaram
+  // órfãs PORQUE o cursor foi remarcado à frente delas. Se a semeadura
+  // caísse depois desses early-returns, ela seria inalcançável justamente
+  // no estado em que é necessária.
+  //
+  // Não detecta e não envia: escreve entradas e sai. O envio continua sendo
+  // do caminho normal, que já tem todos os guards (#6043).
+  if (args.seedEmails && args.seedEmails.length > 0) {
+    if (backend !== "kit") {
+      process.stderr.write(
+        `[onboarding] modo dirigido exige backend de assinante "kit" (atual: "${backend}") — a resolução por e-mail é da API do Kit.\n`,
+      );
+      process.exit(2);
+    }
+    const kitSubs = await listAllKitSubscribers(kitCfg!, { status: "all" });
+    const kitByEmail = new Map<string, SeedKitSubscriber>();
+    for (const s of kitSubs) {
+      kitByEmail.set(s.email_address.toLowerCase(), {
+        id: s.id,
+        email: s.email_address,
+        state: s.state,
+        created_at: s.created_at,
+      });
+    }
+    const existingByEmail = new Map<string, SeedExistingEntry>();
+    for (const e of Object.values(store.entries)) {
+      existingByEmail.set(e.email.toLowerCase(), {
+        subscription_id: e.subscription_id,
+        email: e.email,
+        email1_sent_at: e.email1_sent_at,
+      });
+    }
+
+    const plan = planSeed({
+      emails: args.seedEmails,
+      kitByEmail,
+      existingByEmail,
+      seedEmail1SentAt: args.seedEmail1SentAt ?? null,
+      seededBy: args.seededBy ?? "",
+    });
+    process.stdout.write(`${renderSeedPlan(plan, { send: args.send, seededBy: args.seededBy ?? "" })}\n`);
+    if (!plan.ok) process.exit(1);
+
+    if (args.send) {
+      for (const p of plan.entries) {
+        store.entries[p.key] = {
+          subscription_id: p.subscription_id,
+          email: p.email,
+          status_detectado: p.status_detectado,
+          created_at: p.created_at,
+          detected_at: new Date(nowSec * 1000).toISOString(),
+          email1_sent_at: p.email1_sent_at,
+          email1_brevo_id: null,
+          email2_sent_at: null,
+          email2_brevo_id: null,
+          email3_state: "pending",
+          email3_campaign_id: null,
+          email3_decided_at: null,
+          seeded_by: p.seeded_by,
+        };
+      }
+      writeStore(store, storePath);
+      summary.notes.push(`#7674 modo dirigido: ${plan.entries.length} entrada(s) semeada(s), origem ${args.seededBy}`);
+    } else {
+      summary.notes.push(`#7674 modo dirigido (dry-run): ${plan.entries.length} entrada(s) seriam semeada(s) — nada escrito`);
+    }
+    console.log(JSON.stringify(summary, null, 2));
+    return;
+  }
 
   // --- BOOTSTRAP: primeira execução marca cursor e NÃO onboarda a base existente ---
   if (store.last_detection_cursor == null) {

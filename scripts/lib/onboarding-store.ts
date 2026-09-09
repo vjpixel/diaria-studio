@@ -92,6 +92,18 @@ export interface OnboardingEntry {
   email3_campaign_id: number | null;
   /** ISO — quando o destino do e-mail 3 foi decidido (qualquer branch). */
   email3_decided_at: string | null;
+  /**
+   * #7674: rótulo da recuperação MANUAL que criou esta entrada (ex.:
+   * `"#7665"`, `"#7675"`), gravado pelo modo dirigido de
+   * `onboarding-welcome-run.ts`. Ausente/`null` = entrada nasceu da
+   * detecção automática, o caso normal.
+   *
+   * Existe para que uma auditoria posterior consiga separar as duas
+   * origens: sem isto, uma coorte semeada à mão fica indistinguível de
+   * uma detectada, e qualquer medição de "quantos o onboarding alcançou
+   * sozinho" passa a contar recuperação manual como detecção.
+   */
+  seeded_by?: string | null;
 }
 
 export interface OnboardingStore {
