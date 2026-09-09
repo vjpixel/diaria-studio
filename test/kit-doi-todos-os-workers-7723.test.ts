@@ -77,6 +77,13 @@ test("resolveKitCreateState: id ausente ⇒ active em silêncio (caminho documen
 });
 
 test("resolveKitCreateState: worker FORA do rollout ⇒ active mesmo com form bom", () => {
+  // `KitDoiWorker` é um union FECHADO de propósito (ver KIT_DOI_WORKERS): alargar
+  // pra `string` reintroduziria o bug do typo silencioso que o #7723 fecha. Este
+  // caso testa a defesa em PROFUNDIDADE — o que acontece se um worker fora do
+  // rollout chegar em runtime (config, deploy defasado), que o tipo por
+  // construção não consegue cobrir. Daí o @ts-expect-error: a violação de tipo é
+  // o objeto do teste, não um descuido.
+  // @ts-expect-error worker fora do union — é exatamente o cenário sob teste
   assert.equal(resolveKitCreateState("9897918", "worker-inexistente", () => {}), "active");
 });
 
