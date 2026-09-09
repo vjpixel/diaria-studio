@@ -24,11 +24,16 @@ describe("#7722 worktree guard — regressão executável (não grep)", () => {
     assert.ok(reg.includes("other?.worktree_claim?.path === path"), "deve comparar path do outro claim");
   });
 
-  it("hook session-beacon.mjs exporta basename e é ESM", () => {
+  it("hook session-beacon.mjs é ESM, sem require CJS", () => {
+    // #7722 item 2 (PR de correção): `basename` era importado só pra um
+    // trecho de derivação de path que a correção real removeu (a versão
+    // anterior de `resolveWorktreeBranches` nunca produzia saída — ver
+    // docstring da função). A checagem de "sem require CJS" continua sendo
+    // o que importa aqui; `basename` deixou de ser prova disso.
     const beacon = fs.readFileSync(".claude/hooks/session-beacon.mjs", "utf8");
-    assert.ok(beacon.includes("basename"), "basename deve ser importado");
     assert.ok(!beacon.includes('require("node:path")'), "não pode usar require CJS no beacon");
     assert.ok(beacon.includes('import {'), "deve ser ESM com import");
+    assert.ok(beacon.includes("resolveWorktreeBranches"), "resolveWorktreeBranches deve continuar exportada");
   });
 
   it("hook block-worktree-alien-commit.mjs é ESM coerente com fail-open", () => {

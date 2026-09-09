@@ -104,7 +104,7 @@
 // testes lá afirma isso.
 
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostname } from "node:os";
 
@@ -205,45 +205,69 @@ function statIsDirectory(path) {
  */
 
 /**
- * Deriva lista (worktree_path, branch) de `git worktree list --porcelain`.
- * Só faz sentido quando a sessão está operando em worktrees (padrão deste
- * projeto: Bash com cd por chamada). Não spawnar no beacon — usamos
- * leitura de arquivo do .git do main + worktrees/.  Se falhar, retorna null
- * (fail-open); o guard que consome isso trata como "não sei, vou exigir
- * explicitação" (ver item 4).
+ * Deriva a lista (path, branch, worktreeName) de TODOS os worktrees
+ * conhecidos pelo repo — equivalente a `git worktree list --porcelain`, mas
+ * sem spawnar processo (mesma disciplina do resto do hook): lê
+ * `.git/worktrees/<nome>/HEAD` (branch) e `.git/worktrees/<nome>/gitdir`
+ * (path absoluto do worktree — o arquivo contém `<worktree>/.git`, basta
+ * remover o sufixo).
+ *
+ * **Correção do #7722 item 2 — a versão anterior (#7810) nunca produzia
+ * saída no caminho real de uso.** Ela só populava `out` quando `startDir` em
+ * SI já era um worktree vinculado (checava `.git` do `startDir` ser ARQUIVO
+ * antes de fazer `push`) — mas o beacon NUNCA roda a partir de um worktree
+ * vinculado: `isLinkedWorktree` faz o entrypoint retornar antes disso (todo
+ * subagente com `isolation: "worktree"` não emite beacon, ver blast radius
+ * acima). O único `startDir` que chega até aqui é o checkout PRINCIPAL —
+ * coordenador ou sessão interativa — que é exatamente o caso `.git` é
+ * DIRETÓRIO. A versão anterior devolvia sempre `null` nesse caso: a função
+ * ficava morta em produção apesar de exportada e coberta só por asserts de
+ * string (nunca executada contra um worktree real).
+ *
+ * Independe de qual worktree a chamada Bash ATUAL fez `cd` — o ponto central
+ * desta issue é que a sessão não tem cwd estável (`cd` por chamada), então
+ * em vez de adivinhar "em qual worktree a chamada de agora está", listamos
+ * TODOS os worktrees ativos do repo, sempre. `resolveMainRepoRootNoSpawn`
+ * já resolve pro mesmo `mainRoot` seja `startDir` o checkout principal ou um
+ * worktree vinculado — esta função funciona a partir de qualquer um dos
+ * dois, não só do checkout principal.
+ *
+ * `path` pode vir `null` se `gitdir` estiver ausente/ilegível — degrada para
+ * só `(worktreeName, branch)`, nunca lança. Entradas com HEAD detached (sem
+ * `ref: refs/heads/...`) são omitidas — mesma regra de `readCurrentBranch`.
+ *
+ * `null` (fail-open) quando não há `.git/worktrees/` (repo sem worktree
+ * nenhum) ou qualquer falha de leitura.
  */
 export function resolveWorktreeBranches(startDir) {
   try {
-    const mainGit = resolveMainRepoRootNoSpawn(startDir);
-    if (!mainGit) return null;
-    const wtDir = join(mainGit,'.git','worktrees');
+    // `resolveMainRepoRootNoSpawn` já devolve o próprio `startDir` quando
+    // `<startDir>/.git` é DIRETÓRIO (checkout principal) — não precisa de
+    // fallback adicional aqui.
+    const mainRoot = resolveMainRepoRootNoSpawn(startDir);
+    if (!mainRoot) return null;
+    const wtDir = join(mainRoot, ".git", "worktrees");
     if (!existsSync(wtDir)) return null;
-    const entries = readdirSync(wtDir,{withFileTypes:true}).filter(e=>e.isDirectory());
+    const entries = readdirSync(wtDir, { withFileTypes: true }).filter((e) => e.isDirectory());
     const out = [];
     for (const e of entries) {
       const wtName = e.name;
-      const wtGit = join(wtDir,wtName);
-      const headPath = join(wtGit,'HEAD');
+      const wtMetaDir = join(wtDir, wtName);
+      const headPath = join(wtMetaDir, "HEAD");
       if (!existsSync(headPath)) continue;
-      const head = readFileSync(headPath,'utf8').trim();
+      const head = readFileSync(headPath, "utf8").trim();
       const m = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
-      if (m) {
-        // Caminho do worktree: derivado do gitdir no .git do worktree
-        const gitFile = join(startDir,'.git');
-        if (existsSync(gitFile) && !statIsDirectory(gitFile)) {
-          const raw = readFileSync(gitFile,'utf8');
-          const m2 = /gitdir:\s*(.+)/.exec(raw);
-          if (m2) {
-            const gitDir = resolvePath(startDir, m2[1].trim());
-            // gitdir: .../main/.git/worktrees/<wtName> → worktree é irmão do .git do main
-            const worktreePath = resolvePath(dirname(dirname(gitDir)), basename(dirname(gitDir)) === '.git' ? '..' : '.');
-            // Simplificação segura: o worktree está sob <main>/../worktrees/ não,
-            // está vinculado pelo gitdir. Para o beacon, o campo útil é
-            // (branch, worktree_name), não path absoluto.
-            out.push({ worktreeName: wtName, branch: m[1] });
-          }
+      if (!m) continue; // detached HEAD no worktree — sem branch, pula
+      let path = null;
+      try {
+        const gitdirPath = join(wtMetaDir, "gitdir");
+        if (existsSync(gitdirPath)) {
+          path = normalizePath(readFileSync(gitdirPath, "utf8").trim()).replace(/\/\.git$/, "");
         }
+      } catch {
+        path = null; // path é bônus — branch/worktreeName seguem úteis sem ele
       }
+      out.push({ worktreeName: wtName, branch: m[1], path });
     }
     return out.length ? out : null;
   } catch {
@@ -374,7 +398,7 @@ export function collapsePaths(paths, cap = TOUCHED_PATHS_CAP) {
  * publicaria trabalho de outra frente na PR errada).
  */
 export function buildBeaconRecord(previous, event) {
-  const { kind, machineTag: tag, sessionId, branch, newPaths, verb, nowIso, pid } = event;
+  const { kind, machineTag: tag, sessionId, branch, newPaths, verb, nowIso, pid, worktreeBranches } = event;
   const nowMs = Date.parse(nowIso);
 
   const prevTouched = previous?.touched_paths ?? [];
@@ -405,6 +429,25 @@ export function buildBeaconRecord(previous, event) {
     dirty_paths: verb === "commit" ? [] : collapsePaths([...prevDirty, ...newPaths]),
   };
   if (branch) record.branch = branch;
+  // #7722 item 2 — campo NOVO `known_worktrees` (nunca `worktrees`, de
+  // propósito — self-review da PR achou que reaproveitar `worktrees`
+  // quebraria o contrato ESTREITO que `activeSessionWorktreePaths`,
+  // scripts/lib/shared-session-guard.ts, já documenta pra esse campo:
+  // "path exato ABERTO POR ESTA SESSÃO", usado por `branch-cleanup.ts` como
+  // proteção incondicional mesmo sob `--confirm-shared`. `known_worktrees`
+  // é outra coisa — a foto GLOBAL de todos os worktrees do repo, a mesma
+  // pra qualquer sessão que a escreva — e teria alargado silenciosamente
+  // aquele conjunto pra "todo worktree que existe", derrotando o próprio
+  // propósito de `--confirm-shared`).
+  //
+  // Sempre reatribuído (nunca só quando truthy) — `resolveWorktreeBranches`
+  // devolvendo `null` (repo sem worktree, ou todos removidos desde o
+  // último heartbeat) precisa VIRAR lista vazia aqui, não preservar a
+  // lista antiga do `previous`; senão o registro publicaria worktrees
+  // fantasmas depois do último ser removido.
+  record.known_worktrees = (worktreeBranches ?? [])
+    .filter((w) => w.path)
+    .map((w) => ({ path: w.path, branch: w.branch }));
   if (verb) record.last_action = { verb, at: nowIso };
   if (previous?.pid === undefined && pid !== undefined) record.pid = pid;
   return record;
@@ -760,6 +803,12 @@ if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_ar
         // (não há fonte melhor disponível daqui), mas `decideSessionGc` não
         // trata mais "pid morto" como sinal de remoção por causa disso.
         pid: process.ppid,
+        // #7722 item 2: lista completa de worktrees ativos + branch, em vez
+        // do singular `branch` (que só reflete o checkout onde ESTE hook
+        // mora — o checkout principal, pra coordenador/interativa — nunca a
+        // do worktree que uma chamada de Bash específica `cd`ou). Ver
+        // docstring de `resolveWorktreeBranches`.
+        worktreeBranches: resolveWorktreeBranches(cwdRoot),
       };
       // Throttle no estado STALE (mesmo do antes): pula o CAS inteiro quando
       // nada mudou desde o último heartbeat.

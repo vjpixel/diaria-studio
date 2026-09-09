@@ -369,14 +369,49 @@ export interface SessionRecord {
    * "idade desconhecida", nunca como "acabou de reivindicar".
    */
   claimed_issues_at?: Record<string, string>;
-  /** Branch atual do checkout desta sessão (#6168 Parte A). Lido de
-   * `.git/HEAD` pelo beacon — sem subprocesso. É o campo que responde "a
-   * branch ainda é minha?" antes de um `git commit` (evidência 5 da issue:
-   * outra sessão fez `checkout master` no meio, o commit caiu em master, e
-   * `commit`/`push` reportaram sucesso). */
+  /** Branch atual do checkout ONDE O HOOK MORA (#6168 Parte A) — nunca a
+   * branch de um worktree que a sessão só visitou via `cd` numa chamada de
+   * Bash. Lido de `.git/HEAD` pelo beacon — sem subprocesso. É o campo que
+   * responde "a branch ainda é minha?" antes de um `git commit` (evidência 5
+   * da issue: outra sessão fez `checkout master` no meio, o commit caiu em
+   * master, e `commit`/`push` reportaram sucesso).
+   *
+   * **#7722 — sessão que opera em worktrees via `cd` por chamada (o padrão
+   * deste projeto: coordenadora rodando no checkout principal, `cd
+   * <worktree> && …` dentro de CADA Bash) nunca vê essa realidade refletida
+   * aqui.** Três sessões `overnight`/`develop`/`continuo` concorrentes, cada
+   * uma num worktree com branch diferente, publicam TODAS a mesma `branch`
+   * (a do checkout principal onde o hook do beacon mora) — comparar `branch`
+   * entre peers pra decidir "quem está em qual branch" é enganoso nesse
+   * caso. Usar `known_worktrees` (abaixo) pra saber, com precisão, qual
+   * branch está em qual worktree AGORA. */
   branch?: string;
-  /** Worktrees abertos por esta sessão (#6168 Parte A). */
+  /** Worktrees abertos POR ESTA SESSÃO (#6168 Parte A) — nunca populado até
+   * hoje (nenhuma skill chama isto), mas o CONTRATO documentado é estreito
+   * de propósito: `activeSessionWorktreePaths`
+   * (`scripts/lib/shared-session-guard.ts`) trata qualquer path aqui como
+   * "esta sessão está trabalhando exatamente aqui, nunca remover mesmo com
+   * `--confirm-shared`". **#7722 item 2 considerou reaproveitar este campo
+   * pra popular a foto GLOBAL de `git worktree list` — rejeitado no
+   * self-review da própria PR**: teria alargado silenciosamente esse
+   * contrato estreito pra "todo worktree que existe agora", esvaziando
+   * `--confirm-shared` em `branch-cleanup.ts`. Ver `known_worktrees` abaixo
+   * pro campo que de fato resolve o #7722 (semântica DIFERENTE, deixada
+   * como campo distinto de propósito). */
   worktrees?: WorktreeRef[];
+  /** Foto GLOBAL de todos os worktrees ATIVOS do repo — não só os desta
+   * sessão (#7722 item 2; campo NOVO, distinto de `worktrees` acima de
+   * propósito, ver o porquê no docblock dele). Escrito pelo beacon
+   * (`resolveWorktreeBranches` em `.claude/hooks/session-beacon.mjs`, sem
+   * spawnar processo — lê `.git/worktrees/<nome>/{HEAD,gitdir}`
+   * diretamente), re-derivado do disco a CADA write (nunca faz merge com o
+   * `known_worktrees` anterior — sempre a foto fresca, nunca acumula
+   * entradas de worktrees já removidos). Consumido por
+   * `selectInUseWorktreeNames` (`scripts/cleanup-merged-worktrees.ts`) pra
+   * proteger, por branch, um worktree externo (fora de
+   * `.claude/worktrees/`) de limpeza enquanto alguma sessão está viva — o
+   * `branch` singular acima não bastava pra isso (ver seu docblock). */
+  known_worktrees?: WorktreeRef[];
   /** Caminhos tocados nesta sessão, com teto (`TOUCHED_PATHS_CAP`) — colapsa
    * pra prefixo de diretório quando estoura. */
   touched_paths?: string[];
