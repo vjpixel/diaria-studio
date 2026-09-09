@@ -353,6 +353,11 @@ export interface RunTestsOptions {
    *  `DEFAULT_BISECT_BUDGET_MS`. `0` desliga a bisecção inteiramente
    *  (volta ao comportamento anterior: só a lista crua do batch). */
   bisectBudgetMs?: number;
+  /** #7736: espera (ms) antes do retry de `shouldRetryBatch` — default
+   *  `DEFAULT_RETRY_DELAY_MS`. `0` desliga a espera (retry imediato). */
+  retryDelayMs?: number;
+  /** #7736: injeção de dependência pra teste — default `sleepSync`. */
+  sleepFn?: (ms: number) => void;
 }
 
 /** #6822: teto por batch — bem acima da duração normal observada (~40-90s
@@ -371,6 +376,24 @@ export const DEFAULT_BATCH_TIMEOUT_MS = (() => {
  *  que o processo PAI já confirmou existir (foi ele quem enumerou e passou
  *  como argumento). */
 const ERR_MODULE_NOT_FOUND_RE = /ERR_MODULE_NOT_FOUND/;
+
+/** #7736: assinatura COLATERAL do mesmo evento que `ERR_MODULE_NOT_FOUND_RE`
+ *  captura — medida ao vivo na PR #7735 (mesma run, mesmo batch): um arquivo
+ *  `.test.ts` que outro teste enumerou via `readdirSync` (ex:
+ *  `spawn-npx-windows-guard.test.ts`, que varre `test/` inteiro) e tentou
+ *  ler em seguida com `readFileSync`/`open` deu `ENOENT` — um dirent listado
+ *  e ilegível logo depois só se explica pelo arquivo ter sumido do disco
+ *  DURANTE a run (ver issue #7736, comentário "a evidência unifica os dois
+ *  sintomas"). Diferente de `ERR_MODULE_NOT_FOUND_RE`, que só pega o
+ *  processo filho falhando ao IMPORTAR um arquivo do próprio batch, esta
+ *  assinatura pega um teste QUALQUER (mesmo de outro batch) tropeçando no
+ *  mesmo desaparecimento ao LER um `.test.ts` como dado (não como módulo).
+ *  Precisa da frase completa do erro de `fs` do Node MAIS um path entre
+ *  aspas terminando em `.test.ts` — não casa com fixtures que só mencionam
+ *  "ENOENT" ou nomes de arquivo `.test.ts` fora desse formato exato
+ *  (checado contra a suíte inteira antes de aplicar: nenhum teste hoje
+ *  produz essa frase completa como fixture). */
+const VANISHED_TEST_FILE_RE = /ENOENT:\s*no such file or directory,\s*open\s+'([^']*\.test\.ts)'/;
 
 /** Casa a linha de sumário final do `node:test` — reporter `spec` (local,
  *  TTY) usa prefixo `ℹ`; reporter `tap` (CI, sem TTY) usa `#`. Pega a
@@ -421,8 +444,9 @@ export function parsePassCount(output: string): number | null {
 }
 
 /** Pure: decide se um batch que falhou merece 1 retry — critérios do #6495,
- *  alargados pelo #6857. Precisam ser verdadeiros: status != 0 e assinatura
- *  `ERR_MODULE_NOT_FOUND` presente no output combinado.
+ *  alargados pelo #6857 e pelo #7736. Precisam ser verdadeiros: status != 0
+ *  e (`ERR_MODULE_NOT_FOUND` OU a assinatura colateral de arquivo `.test.ts`
+ *  sumido — `VANISHED_TEST_FILE_RE`) presente no output combinado.
  *
  *  #6857 (achado ao vivo 31/08/2026, PR #6855, 2 tentativas consecutivas,
  *  mesmo arquivo nas duas): a versão original também exigia `fail 0` no
@@ -435,10 +459,58 @@ export function parsePassCount(output: string): number | null {
  *  `ERR_MODULE_NOT_FOUND` sozinha já é suficiente: é sempre o processo
  *  filho falhando ao resolver um import de um arquivo que o PAI já
  *  confirmou existir (ele quem enumerou e passou como argumento) — nunca
- *  uma asserção de teste real, então não faz sentido gatear por `fail`. */
+ *  uma asserção de teste real, então não faz sentido gatear por `fail`.
+ *
+ *  #7736 (achado ao vivo 09/09/2026, PR #7735): o mesmo evento de fundo
+ *  (arquivo tocado pela PR sumindo/revertendo DURANTE a run — mecanismo
+ *  ainda não confirmado, ver a issue) também aparece como um teste
+ *  QUALQUER falhando com `ENOENT` ao LER (não importar) um `.test.ts` que
+ *  ele mesmo enumerou momentos antes — sem `ERR_MODULE_NOT_FOUND` nenhum
+ *  nesse batch específico, porque o arquivo não é um módulo sendo
+ *  importado, é dado sendo lido. `VANISHED_TEST_FILE_RE` cobre esse caso
+ *  colateral. Confiança MÉDIA, não alta — a causa raiz do #7736 segue sob
+ *  investigação (ver PR #7758, instrumentação de estado da árvore); esta é
+ *  a mitigação mais provável documentada na issue, não uma correção
+ *  confirmada. Risco aceito: uma falha REAL e determinística nesse formato
+ *  exato de mensagem (nenhuma conhecida hoje na suíte, checado ao aplicar
+ *  este regex) seria mascarada por 1 retry — mesmo risco residual que o
+ *  `ERR_MODULE_NOT_FOUND` já aceita acima. */
 export function shouldRetryBatch(output: string, status: number | null): boolean {
   if ((status ?? 1) === 0) return false;
-  return ERR_MODULE_NOT_FOUND_RE.test(output);
+  return ERR_MODULE_NOT_FOUND_RE.test(output) || VANISHED_TEST_FILE_RE.test(output);
+}
+
+/** #7736: espera curta ANTES do retry de `shouldRetryBatch` — o retry
+ *  imediato já existia (#6495) e, medido ao vivo na PR #7735, falhou de
+ *  novo 2 de 3 vezes com o mesmo sintoma, sem nenhuma mudança de código
+ *  entre as tentativas ("é corrida, não defeito determinístico" — comentário
+ *  da issue). Se o evento de fundo for uma janela de tempo genuína (glitch
+ *  de filesystem do runner em torno de `actions/checkout`, ou qualquer outra
+ *  coisa que se autocorrija — a issue segue sem confirmar qual), um retry
+ *  disparado no MESMO instante que o primeiro falhou tem chance real de
+ *  cair na mesma janela; dar um respiro aumenta a chance do retry acontecer
+ *  DEPOIS dela fechar. Overridável via `RUN_TESTS_RETRY_DELAY_MS` (ms);
+ *  `0` desliga a espera (volta ao retry imediato de sempre). Default 2s —
+ *  pequeno o bastante pra não pesar no wall-clock do CI mesmo se disparar
+ *  em vários batches, grande o bastante pra não ser ruído perto da duração
+ *  normal de um batch (~40-90s). Confiança BAIXA de que isto move a agulha
+ *  — é a mitigação mais barata e menos arriscada disponível enquanto a
+ *  causa raiz não é confirmada (ver PR #7758), não uma correção. */
+export const DEFAULT_RETRY_DELAY_MS = (() => {
+  const raw = process.env.RUN_TESTS_RETRY_DELAY_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 2000;
+})();
+
+/** Pausa síncrona real via `Atomics.wait` sobre um `SharedArrayBuffer` —
+ *  mesmo idioma já usado em `scripts/lib/task-runner.ts` (`sleepSync`) e
+ *  `scripts/lib/file-lock.ts`. Necessário aqui porque `processChunkedBatches`
+ *  é síncrono de ponta a ponta (usa `spawnSync`), então não há como usar
+ *  `await`/Promise sem reescrever a cadeia de chamada inteira. Injetável via
+ *  `sleepFn` nas opções pra testes não pagarem o tempo real de espera. */
+export function sleepSync(ms: number): void {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /** #6822 (Defeito B): teto por RODADA de bisecção — bem menor que
@@ -578,6 +650,11 @@ export interface ProcessChunkedBatchesOptions {
   batchTimeoutMs?: number;
   bisectTimeoutMs?: number;
   bisectBudgetMs?: number;
+  /** #7736: espera (ms) antes do retry de `shouldRetryBatch` — default
+   *  `DEFAULT_RETRY_DELAY_MS`. */
+  retryDelayMs?: number;
+  /** #7736: injeção de dependência pra teste — default `sleepSync`. */
+  sleepFn?: (ms: number) => void;
   /** #6877: rótulo do batch no log inclui "grupo N" quando rodando dentro
    *  de um worker paralelo (só pra legibilidade do log combinado — não
    *  afeta nenhuma decisão). `undefined` no caminho single-process
@@ -626,6 +703,8 @@ export function processChunkedBatches(
     batchTimeoutMs = DEFAULT_BATCH_TIMEOUT_MS,
     bisectTimeoutMs = DEFAULT_BISECT_TIMEOUT_MS,
     bisectBudgetMs = DEFAULT_BISECT_BUDGET_MS,
+    retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+    sleepFn = sleepSync,
     labelPrefix,
   } = opts;
   /** #6822 (Defeito B): tenta isolar o(s) arquivo(s) culpado(s) de um batch
@@ -792,11 +871,18 @@ export function processChunkedBatches(
       if (shouldRetryBatch(combined, result.status)) {
         // #6783: marcador estável e greppável — rationale e comando de
         // contagem no docblock de topo, seção "Retry de ERR_MODULE_NOT_FOUND".
-        const culprit = /Cannot find module '?([^'\s]+)'?/.exec(combined)?.[1] ?? "(arquivo não identificado no output)";
+        // #7736: culprit também tenta a assinatura colateral (ENOENT ao LER
+        // um .test.ts) quando não há `Cannot find module` — ver
+        // VANISHED_TEST_FILE_RE.
+        const culprit =
+          /Cannot find module '?([^'\s]+)'?/.exec(combined)?.[1] ??
+          VANISHED_TEST_FILE_RE.exec(combined)?.[1] ??
+          "(arquivo não identificado no output)";
         stderr.write(
           `\nRUN_TESTS_MODULE_FLAKE batch=${label} arquivos=${batch.length} modulo=${culprit}\n` +
-            `run-tests: ${label} com ERR_MODULE_NOT_FOUND (#6495/#6857, erro de infra do runner, não de teste) — retentando UMA vez (${batch.length} arquivos)...\n`,
+            `run-tests: ${label} com ERR_MODULE_NOT_FOUND/arquivo .test.ts sumido (#6495/#6857/#7736, erro de infra do runner, não de teste) — aguardando ${retryDelayMs}ms antes de retentar UMA vez (${batch.length} arquivos)...\n`,
         );
+        sleepFn(retryDelayMs);
         const retry = runOne(batch);
         if (retry.error) {
           // Review #6833: mesmo fix do branch acima — emitir o parcial antes
@@ -1031,6 +1117,10 @@ interface WorkerPayload {
   batchTimeoutMs: number;
   bisectTimeoutMs: number;
   bisectBudgetMs: number;
+  /** #7736: mesmo valor que o pai resolveu (CLI/env) — threaded explicitamente
+   *  em vez de deixar cada worker re-derivar do próprio env, mesmo padrão dos
+   *  outros timeouts acima. */
+  retryDelayMs: number;
   /** Rótulo pro log combinado (ex: "grupo 1/4") — só legibilidade. */
   label: string;
 }
@@ -1302,6 +1392,7 @@ export async function runTestBatchesParallel(opts: RunTestBatchesParallelOptions
     batchTimeoutMs = DEFAULT_BATCH_TIMEOUT_MS,
     bisectTimeoutMs = DEFAULT_BISECT_TIMEOUT_MS,
     bisectBudgetMs = DEFAULT_BISECT_BUDGET_MS,
+    retryDelayMs = DEFAULT_RETRY_DELAY_MS,
     workerCount = DEFAULT_WORKER_COUNT,
     scriptPath = fileURLToPath(import.meta.url),
   } = opts;
@@ -1329,6 +1420,7 @@ export async function runTestBatchesParallel(opts: RunTestBatchesParallelOptions
       batchTimeoutMs,
       bisectTimeoutMs,
       bisectBudgetMs,
+      retryDelayMs,
       label,
     };
     const payloadPath = join(tmpDir, `worker-${i}.json`);
@@ -1379,6 +1471,7 @@ function runAsWorker(payloadPath: string): void {
     batchTimeoutMs: payload.batchTimeoutMs,
     bisectTimeoutMs: payload.bisectTimeoutMs,
     bisectBudgetMs: payload.bisectBudgetMs,
+    retryDelayMs: payload.retryDelayMs,
     labelPrefix: payload.label,
   });
   const result: WorkerResult = { exitCode, completedFiles, totalPass, totalFail, failedBatches };
