@@ -57,6 +57,7 @@ import {
   type AdsSpendIngestAlarmState,
   type AdsSpendIngestAlarmEvaluation,
   type PlatformLogInput,
+  platformLabel,
 } from "./lib/ads-spend-ingest-alarm.ts";
 import {
   planAlarmReconciliation,
@@ -111,7 +112,7 @@ export function toAlarmFinding(evaluation: AdsSpendIngestAlarmEvaluation): Alarm
   const offendingPlatforms = evaluation.platforms.filter((p) =>
     evaluation.verdict === "alarm-defect" ? p.verdict === "defect" : p.verdict === "no-run",
   );
-  const platformNames = offendingPlatforms.map((p) => (p.platform === "google" ? "Google Ads" : "Microsoft Ads")).join(", ");
+  const platformNames = offendingPlatforms.map((p) => platformLabel(p.platform)).join(", ");
   return {
     check: "ads-spend-ingest",
     fingerprint,
@@ -184,20 +185,22 @@ async function main(): Promise<void> {
       evaluation.platforms.map((p) => `${p.platform}=${p.verdict}(${p.logPath})`).join(" "),
   );
 
-  const state = loadState(STATE_PATH);
-  const alarmFindings: AlarmFinding[] = isAlarmingVerdict(evaluation.verdict) ? [toAlarmFinding(evaluation)] : [];
-  const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
-  const issueRefs: AlarmIssueResult[] = [];
-
   if (evaluation.verdict === "cannot-verify") {
     // Fail-soft do PRÓPRIO alarme (mesma disciplina de
     // `onboarding-continuity-alarm.ts`/`meta-capi-staleness.ts`, #7776):
     // nunca cria issue/envia e-mail a partir de uma leitura que não
     // aconteceu — mas o veredito acima já ficou honesto no console
-    // (nunca "ok", nunca "alarm-no-run").
+    // (nunca "ok", nunca "alarm-no-run"). Retorna ANTES de ler qualquer
+    // estado de dedup — nada precisa ser lido pra um caminho que não
+    // grava/envia nada (achado do self-review da #7518).
     console.log(`${LOG_PREFIX} cannot-verify — pelo menos uma plataforma sem log legível; nenhum alarme disparado (fail-soft).`);
     return;
   }
+
+  const state = loadState(STATE_PATH);
+  const alarmFindings: AlarmFinding[] = isAlarmingVerdict(evaluation.verdict) ? [toAlarmFinding(evaluation)] : [];
+  const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
+  const issueRefs: AlarmIssueResult[] = [];
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);

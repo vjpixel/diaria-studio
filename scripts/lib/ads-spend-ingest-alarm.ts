@@ -34,7 +34,7 @@
  * motivo ERRADO — "achei o arquivo mas não tem run de hoje" nunca foi
  * verdade; o arquivo nunca existiu) e nunca detectou um defeito real —
  * inclusive o defeito de fato reproduzido em produção (renovação de access
- * token do Google respondendo HTTP 502 não-JSON, ver `DEFECT_MARKERS`
+ * token do Google respondendo HTTP 502 não-JSON, ver `classifyRunText`
  * abaixo).
  *
  * Este módulo passa a ler os DOIS logs reais (`evaluateSinglePlatformLog`
@@ -127,23 +127,65 @@ export interface AdsSpendIngestAlarmEvaluation {
   latestRunAt: string | null;
 }
 
-/** Marcadores literais que indicam que a ingestão do dia NÃO atualizou
- *  `spend.csv` por um motivo que merece alarme — não só o `failureClass:
- *  "defect"` explícito (`✖ DEFEITO`, ver `google-ads-ingest-spend.ts`), mas
- *  qualquer fallback (`fallback pro CSV manual —`, emitido por
- *  `google-ads-ingest-spend.ts` E `microsoft-ads-ingest-spend.ts` em TODA
- *  classe de falha exceto `empty`/`defect`, que têm banners próprios) —
- *  achado ao vivo desta issue (09/09/2026): o run real do dia continha
- *  "fallback pro CSV manual — renovação do access token respondeu
- *  não-JSON (HTTP 502)" sem o marcador "✖ DEFEITO" (a falha classificou
- *  como `transient` em `classifyGoogleAdsFailure`, não `defect`) — e o
- *  alarme antigo, mesmo se estivesse lendo o path certo, teria reportado
- *  `ok` pra esse run. Do ponto de vista do editor, "spend.csv não foi
- *  atualizado hoje por qualquer motivo que não seja 'sem gasto no
- *  período'" já é sinal suficiente pra alarmar — `empty` (`✔ API
- *  respondeu, sem gasto`) continua legitimamente `ok`, único caso de
- *  sucesso sem atualização que NÃO carrega nenhum destes marcadores. */
-const DEFECT_MARKERS = ["✖ DEFEITO", "fallback pro CSV manual"];
+/** Banner exclusivo de defeito confirmado (`failureClass: "defect"` do
+ *  Google, ver `google-ads-ingest-spend.ts`) — nunca aparece em estado
+ *  esperado, sempre conta como `defect`. */
+const DEFECT_BANNER_MARKER = "✖ DEFEITO";
+
+/** Marcador GENÉRICO de fallback — `google-ads-ingest-spend.ts` E
+ *  `microsoft-ads-ingest-spend.ts` emitem "fallback pro CSV manual —
+ *  {reason}" em TODA classe de falha que não tem banner próprio (`defect`
+ *  usa `DEFECT_BANNER_MARKER` acima; `empty` do Google usa `✔`). Achado ao
+ *  vivo desta issue (09/09/2026): o run real do dia continha "fallback pro
+ *  CSV manual — renovação do access token respondeu não-JSON (HTTP 502)"
+ *  sem `DEFECT_BANNER_MARKER` (a falha classificou como `transient` em
+ *  `classifyGoogleAdsFailure`, não `defect`) — e o alarme antigo, mesmo se
+ *  estivesse lendo o path certo, teria reportado `ok` pra esse run.
+ *
+ *  **Este marcador sozinho NÃO basta** (achado do self-review da #7518,
+ *  09/09/2026) — ele também aparece em 2 estados esperados, não-defeito:
+ *  1. Google `auth-pending` (Basic Access na fila, #5262) —
+ *     `reportFallback` cai no ramo `auth-pending` (avisa, sem `return`) e
+ *     ENTÃO chama `fallback(reason)`, carregando o mesmo texto genérico.
+ *  2. Microsoft zero-spend — `microsoft-ads-ingest-spend.ts` não separa
+ *     `empty`/`defect`/`transient` como o Google faz; TODO fallback
+ *     (inclusive "sem gasto no período", legitimamente `fail-soft (não
+ *     erro)` por decisão de `runSpendIngest`) passa pelo mesmo
+ *     `fallback()` genérico.
+ *  Ver `BENIGN_FALLBACK_REASON_MARKERS` abaixo pra como esses 2 casos são
+ *  excluídos. */
+const GENERIC_FALLBACK_MARKER = "fallback pro CSV manual";
+
+/** Textos de `reason` que, mesmo carregando `GENERIC_FALLBACK_MARKER`, são
+ *  estado ESPERADO documentado — nunca contam como defeito:
+ *  - "acesso ainda não liberado (Basic Access na fila" — literal do ramo
+ *    `auth-pending` de `reportFallback` (`google-ads-ingest-spend.ts`).
+ *  - "fetch não devolveu nenhuma linha com custo" — literal do fallback de
+ *    `runSpendIngest` (`scripts/lib/spend-ingest.ts`) quando o fetch não
+ *    devolveu NENHUMA linha — "sem gasto no período" pro Microsoft (que,
+ *    ao contrário do Google, não separa isso num banner `✔` próprio). */
+const BENIGN_FALLBACK_REASON_MARKERS = [
+  "acesso ainda não liberado (Basic Access na fila",
+  "fetch não devolveu nenhuma linha com custo",
+];
+
+/**
+ * Classifica o texto do run mais recente em `ok`/`defect`. `DEFECT_BANNER_MARKER`
+ * sempre conta. `GENERIC_FALLBACK_MARKER` conta SÓ quando nenhum
+ * `BENIGN_FALLBACK_REASON_MARKERS` também aparece no mesmo texto — evita
+ * alarmar em auth-pending/zero-spend, que passam pelo mesmo `fallback()`
+ * genérico dos 2 scripts mas são estado normal, não defeito.
+ *
+ * @pure
+ */
+function classifyRunText(text: string): "ok" | "defect" {
+  if (text.includes(DEFECT_BANNER_MARKER)) return "defect";
+  if (text.includes(GENERIC_FALLBACK_MARKER)) {
+    const isBenign = BENIGN_FALLBACK_REASON_MARKERS.some((m) => text.includes(m));
+    return isBenign ? "ok" : "defect";
+  }
+  return "ok";
+}
 
 /** Regex do cabeçalho de bloco escrito por `runScheduledTask` —
  *  `===== 2026-08-17T18:20:00.000Z - descrição qualquer =====`. Captura o
@@ -219,7 +261,7 @@ export function evaluateSinglePlatformLog(
   if (!isRunFromToday(latest.startedAt, now)) {
     return { platform, logPath, verdict: "no-run", latestRun: latest.text, latestRunAt: latest.startedAt };
   }
-  const verdict: SinglePlatformVerdict = DEFECT_MARKERS.some((m) => latest.text.includes(m)) ? "defect" : "ok";
+  const verdict: SinglePlatformVerdict = classifyRunText(latest.text);
   return { platform, logPath, verdict, latestRun: latest.text, latestRunAt: latest.startedAt };
 }
 
@@ -306,11 +348,19 @@ export function markAdsSpendIngestAlarmed(now: Date): AdsSpendIngestAlarmState {
 // E-mail
 // ---------------------------------------------------------------------------
 
+/** Label legível pra 1 plataforma — usado tanto no e-mail (`describePlatform`
+ *  abaixo) quanto em `toAlarmFinding` (`scripts/ads-spend-ingest-alarm.ts`),
+ *  fonte única em vez de duplicar o ternário nos 2 arquivos (achado do
+ *  self-review da #7518). */
+export function platformLabel(platform: AdsSpendPlatform): string {
+  return platform === "google" ? "Google Ads" : "Microsoft Ads";
+}
+
 /** Descreve o estado de UMA plataforma numa linha, pro corpo do e-mail —
  *  usado tanto pra listar a plataforma "vencedora" quanto, quando as duas
  *  discordam, a outra pra contexto. */
 function describePlatform(p: SinglePlatformEvaluation): string {
-  const label = p.platform === "google" ? "Google Ads" : "Microsoft Ads";
+  const label = platformLabel(p.platform);
   if (p.verdict === "ok") return `${label}: ok (run ${p.latestRunAt}, ${p.logPath}).`;
   if (p.verdict === "defect") return `${label}: DEFEITO no run de ${p.latestRunAt} (${p.logPath}).`;
   if (p.verdict === "no-run") return `${label}: log presente (${p.logPath}) mas sem run de hoje — último run: ${p.latestRunAt ?? "nenhum encontrado"}.`;

@@ -65,6 +65,32 @@ const MICROSOFT_OK_RUN =
   "[microsoft-ads-ingest-spend] ✔ data/aquisicao/spend.csv atualizado via identidade Google (12 linha(s) de relatório agregadas).\n" +
   "===== fim (ingest=0) =====\n";
 
+/** Estado esperado, NÃO defeito (achado do self-review da #7518): Basic
+ *  Access do Google ainda na fila (#5262). `reportFallback` cai no ramo
+ *  `auth-pending` (avisa) e então chama `fallback()` — o mesmo texto
+ *  genérico "fallback pro CSV manual" do caso de defeito real. Sem a
+ *  exclusão por `BENIGN_FALLBACK_REASON_MARKERS`, isto alarmaria
+ *  incorretamente toda vez que a conta estivesse esperando aprovação. */
+const GOOGLE_AUTH_PENDING_RUN =
+  "\n===== 2026-08-17T09:50:00.000Z - ingestao diaria de gasto do Google Ads (GAQL) para data/aquisicao/spend.csv =====\n" +
+  "----- ingest -----\n" +
+  "[google-ads-ingest-spend] acesso ainda não liberado (Basic Access na fila, #5262).\n" +
+  "[google-ads-ingest-spend] fallback pro CSV manual — USER_PERMISSION_DENIED\n" +
+  "  spend.csv não foi alterado. Editar manualmente ou rodar seed-spend-csv.ts se necessário.\n" +
+  "===== fim (ingest=0) =====\n";
+
+/** Estado esperado, NÃO defeito: Microsoft não separa `empty`/`defect`
+ *  como o Google faz — um dia sem NENHUM gasto (legítimo, ver docstring de
+ *  `microsoft-ads-ingest-spend.ts`: "Zero gasto no período consultado
+ *  também é fail-soft") passa pelo MESMO `fallback()` genérico que um
+ *  defeito real usaria. Sem a exclusão, isto alarmaria todo dia sem
+ *  campanha rodando. */
+const MICROSOFT_ZERO_SPEND_RUN =
+  "\n===== 2026-08-17T09:52:00.000Z - ingestao diaria de gasto do Microsoft Ads (Reporting API) para data/aquisicao/spend.csv =====\n" +
+  "----- ingest -----\n" +
+  "[microsoft-ads-ingest-spend] fallback pro CSV manual — [identidade: Google] fetch não devolveu nenhuma linha com custo — nada pra atualizar\n" +
+  "===== fim (ingest=0) =====\n";
+
 function input(logPath: string, exists: boolean, content: string | null): PlatformLogInput {
   return { logPath, exists, content };
 }
@@ -157,6 +183,28 @@ describe("evaluateSinglePlatformLog — tri-state honesto por plataforma", () =>
       NOW,
     );
     assert.equal(ev.verdict, "defect");
+  });
+
+  it("Google auth-pending (Basic Access na fila) → ok, NÃO defect, mesmo carregando 'fallback pro CSV manual' (regressão do self-review #7820)", () => {
+    const ev = evaluateSinglePlatformLog(
+      "google",
+      GOOGLE_LOG_PATH,
+      true,
+      GOOGLE_AUTH_PENDING_RUN.replace("2026-08-17", NOW.toISOString().slice(0, 10)),
+      NOW,
+    );
+    assert.equal(ev.verdict, "ok");
+  });
+
+  it("Microsoft zero-spend legítimo → ok, NÃO defect, mesmo carregando 'fallback pro CSV manual' (regressão do self-review #7820)", () => {
+    const ev = evaluateSinglePlatformLog(
+      "microsoft",
+      MICROSOFT_LOG_PATH,
+      true,
+      MICROSOFT_ZERO_SPEND_RUN.replace("2026-08-17", NOW.toISOString().slice(0, 10)),
+      NOW,
+    );
+    assert.equal(ev.verdict, "ok");
   });
 });
 
