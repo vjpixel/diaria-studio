@@ -133,24 +133,43 @@ function citesIssue(text: string, issueNumber: number): boolean {
   return new RegExp(`(?<!\\d)#${issueNumber}(?!\\d)`).test(text);
 }
 
-/** `closes`/`fixes`/`resolves #N` (case-insensitive, plural incluso —
- * `fixes`/`resolves` já são a forma flexionada; `close`/`fix`/`resolve`
- * cobertos pelo `s?`). */
+/** `closes`/`fixes`/`resolves #N` (case-insensitive) — inclui as formas no
+ * PASSADO (`closed`/`fixed`/`resolved`), que o GitHub também reconhece como
+ * keyword de auto-close e que aparecem com frequência em prosa de commit/PR
+ * ("Fixed #7788"). Achado no self-review desta PR (#7788): a 1ª versão só
+ * cobria `close[s]`/`fix[es]`/`resolve[s]`, perdendo `closed`/`fixed`/
+ * `resolved` — mais completo que o `parseCommitCloseMarker` irmão em
+ * `issue-duplicate-preflight.ts` (que só reconhece `closes` literal), mas
+ * ainda não pretende ser o dicionário completo de keywords do GitHub
+ * (ex: "close by", plurais de terceira pessoa incomuns) — os 6 verbos aqui
+ * cobrem o vocabulário observado neste repo. */
 function hasClosesMarker(text: string, issueNumber: number): boolean {
-  return new RegExp(`\\b(closes?|fix(?:es)?|resolves?)\\s+(?<!\\d)#${issueNumber}(?!\\d)`, "i").test(text);
+  return new RegExp(
+    `\\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+(?<!\\d)#${issueNumber}(?!\\d)`,
+    "i",
+  ).test(text);
 }
 
 /** Convenção de branch das lanes autônomas (`continuo/fix-N-slug`,
- * `overnight/fix-N-slug`, `develop/feat-N-slug`, etc) — extrai TODOS os
- * números de issue que a branch declara, não só o primeiro, porque a
- * convenção não impede `fix-7746-and-7738`. */
+ * `overnight/fix-N-slug`, `develop/feat-N-slug`, `develop/blast-N-slug`,
+ * ou a variante FUNDIDA `develop/fix-NNNN-MMMM-slug` documentada em
+ * `.claude/skills/diaria-develop/SKILL.md`) — extrai TODOS os números de
+ * issue que a branch declara, não só o primeiro: a convenção permite tanto
+ * `fix-7746-and-7738` (prefixo repetido — não coberto aqui, não observado
+ * na prática) quanto `fix-7746-7738` (números encadeados direto após o
+ * MESMO prefixo — é o padrão real de unidade fundida, e a 1ª versão deste
+ * regex perdia o 2º número silenciosamente; achado no self-review desta
+ * PR). Também cobre `blast-N` (cat. D do develop), que a 1ª versão não
+ * reconhecia de forma alguma. */
 function branchDeclaredIssueNumbers(headRefName: string): number[] {
   const out: number[] = [];
-  const re = /\b(?:fix|feat)-([0-9]+)\b/gi;
+  const re = /\b(?:fix|feat|blast)-([0-9]+(?:-[0-9]+)*)\b/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(headRefName)) !== null) {
-    const n = Number(m[1]);
-    if (Number.isInteger(n) && n > 0) out.push(n);
+    for (const part of m[1].split("-")) {
+      const n = Number(part);
+      if (Number.isInteger(n) && n > 0) out.push(n);
+    }
   }
   return out;
 }

@@ -124,6 +124,39 @@ describe("assessOpenPrCoverage (#7788)", () => {
     assert.equal(result.matches[0].matchKind, "closes-marker");
     assert.equal(result.matches[0].number, 11);
   });
+
+  it("branch FUNDIDA develop/fix-7746-7738 casa AMBOS os números (regressão self-review)", () => {
+    const prs = [pr({ number: 20, headRefName: "develop/fix-7746-7738-slug", title: "x", body: "" })];
+    const r7746 = assessOpenPrCoverage(7746, prs);
+    const r7738 = assessOpenPrCoverage(7738, prs);
+    assert.equal(r7746.verdict, "open-pr-covers-scope");
+    assert.equal(r7746.matches[0].matchKind, "branch-pattern");
+    assert.equal(r7738.verdict, "open-pr-covers-scope");
+    assert.equal(r7738.matches[0].matchKind, "branch-pattern");
+  });
+
+  it("branch develop/blast-7788 casa via branch-pattern (regressão self-review)", () => {
+    const prs = [pr({ number: 21, headRefName: "develop/blast-7788-slug", title: "x", body: "" })];
+    const result = assessOpenPrCoverage(7788, prs);
+    assert.equal(result.verdict, "open-pr-covers-scope");
+    assert.equal(result.matches[0].matchKind, "branch-pattern");
+  });
+
+  it("branch fix-7746-pr-cap NÃO casa com issue 7746-pr (sanity: não vaza número de fora do run de dígitos)", () => {
+    const prs = [pr({ number: 22, headRefName: "continuo/fix-7746-pr-cap", title: "x", body: "" })];
+    const result = assessOpenPrCoverage(7746, prs);
+    assert.equal(result.verdict, "open-pr-covers-scope");
+    assert.equal(result.matches[0].matchKind, "branch-pattern");
+  });
+
+  it("marcador closes no tempo PASSADO (Fixed/Closed/Resolved #N) conta como cobertura (regressão self-review)", () => {
+    for (const verbo of ["Fixed", "Closed", "Resolved"]) {
+      const prs = [pr({ number: 30, headRefName: "qualquer", title: "x", body: `${verbo} #7788 de vez.` })];
+      const result = assessOpenPrCoverage(7788, prs);
+      assert.equal(result.verdict, "open-pr-covers-scope", `verbo ${verbo} deveria casar`);
+      assert.equal(result.matches[0].matchKind, "closes-marker");
+    }
+  });
 });
 
 describe("deriveOpenPrCiState (#7788)", () => {
