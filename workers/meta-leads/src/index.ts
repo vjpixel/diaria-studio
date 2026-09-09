@@ -22,12 +22,24 @@
  * esperando a página, e o status HTTP é o ÚNICO canal de retry que existe.
  * Respondendo 200 antes de saber se o lead entrou no Kit, uma falha vira
  * perda definitiva e silenciosa. Então processa síncrono e responde o que
- * de fato aconteceu; a Meta reentrega quem não voltou 200.
+ * de fato aconteceu.
  *
- * O custo é latência: a Meta espera resposta em poucos segundos. Por isso os
- * timeouts abaixo são curtos (3s cada, contra os 8s do fluxo de cadastro
- * on-page) — no pior caso Graph + Kit somam ~6s, ainda dentro da janela, e
- * um timeout vira retry em vez de lead perdido.
+ * ## As duas janelas da Meta, que não são a mesma coisa
+ *
+ * Confundi-las na 1ª versão deste arquivo levou a um orçamento de latência
+ * errado (achado do review do #7775, conferido na doc da Meta):
+ *
+ *   - RESPOSTA: o endpoint tem ~20s pra devolver status. É o que limita o
+ *     processamento síncrono aqui.
+ *   - REENTREGA: qualquer não-200 é reentregue com frequência decrescente
+ *     por até ~7 DIAS. É a rede de segurança do fail-alto.
+ *   - RETENÇÃO: o lead segue buscável na Graph por 90 dias. NÃO é janela de
+ *     retry — passados os 7 dias, a Meta para de reentregar mesmo com o lead
+ *     ainda existindo do lado dela.
+ *
+ * Ou seja: uma falha que dure mais de 7 dias (token revogado, key rotacionada)
+ * perde o lead de vez, ainda que o dado exista por mais 83. Por isso o log de
+ * erro aqui não é conforto — é o único sinal antes da perda.
  */
 import {
   META_INSTANT_FORM_UTM,
@@ -40,6 +52,23 @@ import {
 } from "./leadgen.ts";
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts";
 
+/**
+ * POR QUE TODO SECRET É `?: string` AQUI, e não `string` como em
+ * `workers/poll/src/index.ts` (onde `POLL_SECRET`/`ADMIN_SECRET` são
+ * obrigatórios): levantado no review do #7775 como divergência da convenção
+ * do repo, e mantido de propósito.
+ *
+ * `?:` é a verdade de runtime — um binding do Workers de fato chega
+ * `undefined` quando o secret não foi setado, e é EXATAMENTE esse o cenário
+ * que este worker existe pra tratar alto (foi o que matou a CAPI do #5504).
+ * Tipar como `string` obrigatório descreveria um deploy ideal em vez do
+ * possível, e convidaria alguém a remover as checagens de ausência por
+ * parecerem redundantes ao compilador — trocando um 503/403 explícito por um
+ * `TypeError` em runtime.
+ *
+ * A obrigatoriedade real está onde pode ser verificada: `SECRETS.md` e os
+ * testes que exigem não-200 para cada secret ausente.
+ */
 export interface Env {
   /** App Secret do app Meta — valida `X-Hub-Signature-256`. Secret. */
   META_APP_SECRET?: string;
@@ -64,12 +93,46 @@ export interface Env {
   KIT_ORIGEM_CADASTRO_FIELD?: string;
 }
 
-/** Ver "Por que NÃO usa ctx.waitUntil" no topo — metade do timeout do
- *  cadastro on-page, porque aqui há uma janela de resposta a respeitar. */
+/**
+ * Timeout por chamada externa (Graph e Kit, uma cada por lead).
+ *
+ * 3s, contra os 8s do cadastro on-page (`SUBSCRIBE_FETCH_TIMEOUT_MS`,
+ * `workers/poll/src/subscribe.ts`) — não é "metade", é ~37%: o número foi
+ * escolhido pelo orçamento abaixo, não por proporção com o outro worker.
+ *
+ * O orçamento é a janela de ~20s de resposta da Meta (ver topo do arquivo),
+ * dividida pelo pior caso de um lote: os leads são processados em sequência,
+ * 2 chamadas por lead. Com 3s, cabem ~3 leads no pior caso absoluto
+ * (3 × 2 × 3s = 18s) antes de arriscar estourar a janela. Lote maior que isso
+ * só estoura se TODAS as chamadas forem ao timeout — cenário em que a
+ * reentrega da Meta é justamente o que se quer, e a idempotência por e-mail
+ * do Kit torna o reprocessamento seguro.
+ */
 export const LEAD_FETCH_TIMEOUT_MS = 3000;
 
 export interface Deps {
   fetchImpl?: typeof fetch;
+}
+
+/**
+ * Prefixo de log que separa falha PERMANENTE de TRANSITÓRIA.
+ *
+ * Achado do review (#7775): sem essa distinção, um token revogado e um blip
+ * de rede produzem exatamente a mesma linha de log e o mesmo 500. A diferença
+ * importa por causa da janela de reentrega: um erro transitório é resolvido
+ * pela própria reentrega da Meta; um 401/403 (token revogado, permissão
+ * `leads_retrieval` retirada, key do Kit rotacionada) NUNCA se resolve
+ * sozinho — a Meta reentrega em vão por ~7 dias e aí desiste, e cada lead
+ * daquela janela é perdido de vez.
+ *
+ * O prefixo é o que permite um alarme (ou o editor lendo `wrangler tail`)
+ * separar "aconteceu, vai se resolver" de "alguém precisa reautorizar AGORA".
+ * O worker segue devolvendo 500 nos dois casos: mesmo sem esperança de que a
+ * reentrega resolva, insistir preserva o lead se a credencial for consertada
+ * dentro dos 7 dias.
+ */
+export function severidadeDeStatus(status: number): "AÇÃO-NECESSÁRIA" | "TRANSITÓRIO" {
+  return status === 401 || status === 403 ? "AÇÃO-NECESSÁRIA" : "TRANSITÓRIO";
 }
 
 export type LeadProcessResult =
@@ -99,7 +162,9 @@ export async function fetchLead(
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "<unreadable>");
-      console.error(`[meta-leads] Graph respondeu ${res.status} para lead ${leadgenId}: ${body.slice(0, 300)}`);
+      console.error(
+        `${severidadeDeStatus(res.status)} [meta-leads] Graph respondeu ${res.status} para lead ${leadgenId}: ${body.slice(0, 300)}`,
+      );
       return undefined;
     }
     return await res.json();
@@ -153,7 +218,9 @@ export async function subscribeLeadToKit(
     });
     if (res.ok) return { ok: true };
     const text = await res.text().catch(() => "<unreadable>");
-    console.error(`[meta-leads] Kit respondeu ${res.status}: ${text.slice(0, 300)}`);
+    console.error(
+      `${severidadeDeStatus(res.status)} [meta-leads] Kit respondeu ${res.status}: ${text.slice(0, 300)}`,
+    );
     return { ok: false, reason: "kit_error" };
   } catch (err) {
     console.error(`[meta-leads] exception ao criar subscriber no Kit: ${String(err)}`);

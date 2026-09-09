@@ -129,19 +129,38 @@ export async function verifySignature(
   if (!header || !header.startsWith("sha256=")) return false;
   const expected = header.slice("sha256=".length).trim().toLowerCase();
 
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(appSecret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sigBuf = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(rawBody));
-  const actual = [...new Uint8Array(sigBuf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  return timingSafeEqualStr(actual, expected);
+  // O try/catch não é defensivo por reflexo: sem ele, uma exceção do
+  // WebCrypto escaparia até o runtime da Cloudflare, que responderia um 5xx
+  // genérico. O retry aconteceria (5xx serve), mas SEM nenhuma linha
+  // `[meta-leads]` no log — perdendo justamente a observabilidade que o
+  // resto do arquivo persegue, no ponto mais difícil de diagnosticar.
+  try {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(appSecret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const sigBuf = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(rawBody));
+    const actual = [...new Uint8Array(sigBuf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    return timingSafeEqualStr(actual, expected);
+  } catch (err) {
+    console.error(`[meta-leads] WebCrypto falhou ao validar assinatura: ${String(err)}`);
+    return false;
+  }
 }
 
-/** Um lead anunciado pelo webhook — só o id; os dados vêm de uma 2ª chamada. */
+/**
+ * Metadados do lead anunciados pelo webhook — os DADOS do formulário (nome,
+ * e-mail) vêm de uma 2ª chamada à Graph API.
+ *
+ * `adId`/`pageId`/`createdTime` não são consumidos hoje (só `leadgenId` e,
+ * num log, `formId`). Ficam porque são o material de uma atribuição por
+ * ANÚNCIO — hoje todo lead de formulário instantâneo entra no Kit com o mesmo
+ * `referring_site`, sem distinguir qual dos anúncios (d1/d2/d3/d4) o trouxe.
+ * Não remover como código morto sem antes decidir essa granularidade.
+ */
 export interface LeadgenNotification {
   leadgenId: string;
   formId: string;
@@ -158,17 +177,35 @@ export interface LeadgenNotification {
  * Um POST pode trazer VÁRIAS entries e várias changes por entry; a Meta
  * agrupa. Ignora silenciosamente change de campo que não seja `leadgen`.
  *
- * @pure
+ * POR QUE OS DOIS PRIMEIROS RAMOS LOGAM E O TERCEIRO NÃO: quando esta função
+ * roda, `verifySignature` JÁ provou que o corpo é exatamente o que a Meta
+ * enviou. Então "JSON inválido" e "sem array `entry`" não são lixo de
+ * internet — são anomalia estrutural num payload autêntico, ou seja, sinal de
+ * mudança de schema da Meta. Nesse cenário TODO lead subsequente cairia aqui,
+ * responderia 200 (encerrando o retry) e sumiria sem rastro: o mesmo desfecho
+ * do #5504 por outra porta. Já `field !== "leadgen"` segue mudo de propósito
+ * — é o caso normal de uma Página assinada em `feed`/`messages`.
+ *
+ * @pure — os `console.error` são observabilidade, não efeito de domínio; o
+ * valor de retorno segue função só do input.
  */
 export function parseLeadgenPayload(rawBody: string): LeadgenNotification[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawBody);
-  } catch {
+  } catch (err) {
+    console.error(
+      `[meta-leads] payload assinado mas com JSON inválido — possível mudança de schema da Meta: ${String(err)}`,
+    );
     return [];
   }
   const root = parsed as { object?: unknown; entry?: unknown };
-  if (!Array.isArray(root?.entry)) return [];
+  if (!Array.isArray(root?.entry)) {
+    console.error(
+      `[meta-leads] payload assinado sem array "entry" — possível mudança de schema da Meta: ${rawBody.slice(0, 300)}`,
+    );
+    return [];
+  }
 
   const out: LeadgenNotification[] = [];
   for (const entry of root.entry) {
@@ -252,19 +289,43 @@ function joinFirstLast(first?: string, last?: string): string | undefined {
 }
 
 /**
- * Validação de formato de e-mail. Deliberadamente a MESMA regra do resto do
- * projeto (`isValidVoteEmailFormat`, `workers/poll/src/lib.ts`) — um e-mail
- * aceito num funil e recusado noutro seria divergência silenciosa.
+ * #3296 (gap 1): confusáveis Unicode / invisíveis. `\p{Cf}` (format —
+ * zero-width space/joiner/BOM) e `\p{Cc}` (control) cobrem a classe geral;
+ * `：` (fullwidth U+FF1A) entra explícito por não cair em nenhuma das duas
+ * categorias mas ser visualmente um ":". Acento PT-BR normal (á, ç, ã) é
+ * categoria de letra e não é afetado.
+ *
+ * Cópia byte-a-byte de `FORBIDDEN_EMAIL_CHARS_RE` em `workers/poll/src/lib.ts`
+ * — bundle de worker não importa de outro worker por convenção (ver
+ * `workers/cursos/src/subscribe.ts`). `test/meta-leads-webhook-7769.test.ts`
+ * trava a paridade com a fonte.
+ */
+const FORBIDDEN_EMAIL_CHARS_RE = /[\p{Cf}\p{Cc}：]/u;
+
+/**
+ * Validação de formato de e-mail — a MESMA regra de `isValidVoteEmailFormat`
+ * (`workers/poll/src/lib.ts`), com uma diferença deliberada: aqui o valor é
+ * `trim()`-ado antes, porque vem de `field_data` da Graph API (digitado por
+ * uma pessoa num formulário da Meta), não de um form nosso que já normaliza.
+ *
+ * As três checagens abaixo NÃO são cosmética herdada — cada uma fecha um gap
+ * medido no #3279/#3296:
+ *   - comprimento em BYTES UTF-8, não em code units UTF-16 (um e-mail com
+ *     acento passa do teto real antes de o `.length` acusar);
+ *   - `FORBIDDEN_EMAIL_CHARS_RE` acima;
+ *   - `:` barrado no regex, além de espaço e `@` extra.
+ *
+ * A 1ª versão deste arquivo tinha uma reimplementação à mão que afirmava na
+ * docstring ser "a MESMA regra" e não era — faltavam as três. Como o input
+ * aqui vem de formulário PÚBLICO, era exatamente a classe de entrada contra a
+ * qual o #3296 endureceu o resto do projeto (achado do review do #7775).
  *
  * @pure
  */
 export function isEmailLike(email: string): boolean {
   const e = (email ?? "").trim();
-  if (!e || e.length > 254) return false;
-  if (/\s/.test(e)) return false;
-  const at = e.indexOf("@");
-  if (at <= 0 || at !== e.lastIndexOf("@")) return false;
-  const domain = e.slice(at + 1);
-  if (!domain.includes(".") || domain.startsWith(".") || domain.endsWith(".")) return false;
-  return true;
+  if (e.length === 0) return false;
+  if (new TextEncoder().encode(e).length > 254) return false; // #3296 gap 2: bytes UTF-8
+  if (FORBIDDEN_EMAIL_CHARS_RE.test(e)) return false; // #3296 gap 1: confusáveis/invisíveis
+  return /^[^\s@:]+@[^\s@:]+\.[^\s@:]+$/.test(e);
 }

@@ -20,7 +20,8 @@ import {
   verifySignature,
   META_INSTANT_FORM_UTM,
 } from "../workers/meta-leads/src/leadgen.ts";
-import { handleWebhookPost, processLead, type Env } from "../workers/meta-leads/src/index.ts";
+import worker, { handleWebhookPost, processLead, severidadeDeStatus, type Env } from "../workers/meta-leads/src/index.ts";
+import { isValidVoteEmailFormat } from "../workers/poll/src/lib.ts";
 
 const APP_SECRET = "test-app-secret";
 
@@ -154,6 +155,13 @@ describe("resolveVerification — handshake GET", () => {
     const r = resolveVerification(params, "verify-me");
     assert.equal(r.ok, false);
   });
+
+  it("recusa com 400 quando o challenge falta (modo e token corretos)", () => {
+    const params = new URLSearchParams({ "hub.mode": "subscribe", "hub.verify_token": "verify-me" });
+    const r = resolveVerification(params, "verify-me");
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.status, 400);
+  });
 });
 
 describe("verifySignature", () => {
@@ -175,6 +183,22 @@ describe("verifySignature", () => {
   it("recusa sem App Secret configurado", async () => {
     const body = leadgenBody();
     assert.equal(await verifySignature(body, await sign(body), undefined), false);
+  });
+
+  it("recusa corpo RESERIALIZADO — mesma informação, bytes diferentes", async () => {
+    // A armadilha que a docstring de verifySignature nomeia: reserializar
+    // (JSON.stringify(JSON.parse(body))) preserva o significado e destrói a
+    // assinatura. O teste anterior só provava que conteúdo DIFERENTE falha,
+    // que é o caso óbvio.
+    // Espaçamento no fixture de propósito: é o que a reserialização apaga.
+    // Um corpo já compacto reserializaria byte-a-byte igual e o teste não
+    // provaria nada (a 1ª versão deste caso caiu exatamente nessa armadilha).
+    const original = '{"object": "page", "entry": [{"changes": [{"field": "leadgen", "value": {"leadgen_id": "L1"}}]}]}';
+    const reserializado = JSON.stringify(JSON.parse(original));
+    const signature = await sign(original);
+    assert.equal(await verifySignature(original, signature, APP_SECRET), true);
+    assert.notEqual(reserializado, original, "fixture precisa diferir em bytes");
+    assert.equal(await verifySignature(reserializado, signature, APP_SECRET), false);
   });
 
   it("recusa header sem o prefixo sha256=", async () => {
@@ -246,6 +270,29 @@ describe("extractLeadFields", () => {
 
   it("devolve vazio para payload sem field_data", () => {
     assert.deepEqual(extractLeadFields({}), { email: "", name: "" });
+  });
+
+  // Os aliases listados no código não tinham teste — um refactor que trocasse
+  // a ordem de precedência passaria despercebido.
+  for (const [chave, valor] of [["email_address", "x@y.com"], ["e-mail", "x@y.com"]] as const) {
+    it(`reconhece o alias de e-mail "${chave}"`, () => {
+      assert.equal(extractLeadFields({ field_data: [{ name: chave, values: [valor] }] }).email, valor);
+    });
+  }
+
+  for (const chave of ["nome_completo", "nome"] as const) {
+    it(`reconhece o alias de nome "${chave}"`, () => {
+      const r = extractLeadFields({
+        field_data: [{ name: "email", values: ["a@b.com"] }, { name: chave, values: ["João Lima"] }],
+      });
+      assert.equal(r.name, "João Lima");
+    });
+  }
+
+  it("tolera field_data malformado (não-array, values vazio) sem lançar", () => {
+    assert.deepEqual(extractLeadFields({ field_data: "não é array" }), { email: "", name: "" });
+    assert.deepEqual(extractLeadFields({ field_data: [{ name: "email", values: [] }] }), { email: "", name: "" });
+    assert.deepEqual(extractLeadFields({ field_data: [{ name: "email" }] }), { email: "", name: "" });
   });
 });
 
@@ -339,6 +386,46 @@ describe("handleWebhookPost", () => {
     assert.equal(fetchMock.calls.filter((c) => c.url.startsWith("https://kit.test")).length, 0);
   });
 
+  it("lote MISTO: o lead que dá certo entra no Kit, e o lote ainda pede reentrega", async () => {
+    // O caso que sustenta a decisão de responder 500 pro lote inteiro: o
+    // sucesso parcial de fato acontece (efeito colateral real), e a
+    // idempotência por e-mail do Kit é o que torna a reentrega segura.
+    const body = JSON.stringify({
+      entry: [{ changes: [
+        { field: "leadgen", value: { leadgen_id: "BOM" } },
+        { field: "leadgen", value: { leadgen_id: "RUIM" } },
+      ] }],
+    });
+    const calls: Call[] = [];
+    const mixed = (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      calls.push({ url: u, init });
+      if (u.startsWith("https://graph.test")) {
+        if (u.includes("RUIM")) return new Response("graph boom", { status: 500 });
+        return new Response(JSON.stringify({ field_data: [{ name: "email", values: ["bom@example.com"] }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ subscriber: { id: 1 } }), { status: 201 });
+    }) as unknown as typeof fetch;
+
+    const res = await handleWebhookPost(postRequest(body, await sign(body)), baseEnv(), { fetchImpl: mixed });
+    assert.equal(res.status, 500, "lote com 1 falha pede reentrega");
+    const kitCalls = calls.filter((c) => c.url.startsWith("https://kit.test"));
+    assert.equal(kitCalls.length, 1, "o lead bom foi criado no Kit apesar do irmão falhar");
+    assert.equal(JSON.parse(String(kitCalls[0].init?.body)).email_address, "bom@example.com");
+  });
+
+  it("grava o nome no Kit quando KIT_NAME_FIELD está configurado", async () => {
+    const body = leadgenBody();
+    const fetchMock = makeFetchMock();
+    await handleWebhookPost(
+      postRequest(body, await sign(body)),
+      baseEnv({ KIT_NAME_FIELD: "first_name" }),
+      { fetchImpl: fetchMock },
+    );
+    const kitCall = fetchMock.calls.find((c) => c.url.startsWith("https://kit.test"))!;
+    assert.equal(JSON.parse(String(kitCall.init?.body)).fields.first_name, "Maria Silva");
+  });
+
   it("processa todos os leads do lote e pede reentrega se qualquer um falhar", async () => {
     const body = JSON.stringify({
       entry: [{ changes: [{ field: "leadgen", value: { leadgen_id: "A" } }, { field: "leadgen", value: { leadgen_id: "B" } }] }],
@@ -349,6 +436,107 @@ describe("handleWebhookPost", () => {
     // Os dois foram tentados — um falhar não aborta o resto do lote.
     assert.equal(fetchMock.calls.filter((c) => c.url.startsWith("https://graph.test")).length, 2);
   });
+});
+
+describe("entrypoint do Worker (export default fetch)", () => {
+  // O roteamento real que a Cloudflare invoca não era exercitado por teste
+  // nenhum — só as funções internas (achado do review do #7775). Quebrar o
+  // path, o método ou o plug do handshake passaria despercebido.
+  const ctx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
+
+  it("GET /webhook com token correto ecoa o challenge", async () => {
+    const req = new Request("https://x.test/webhook?hub.mode=subscribe&hub.verify_token=verify-me&hub.challenge=42");
+    const res = await worker.fetch(req, baseEnv(), ctx);
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), "42");
+  });
+
+  it("GET /webhook com token errado responde 403", async () => {
+    const req = new Request("https://x.test/webhook?hub.mode=subscribe&hub.verify_token=errado&hub.challenge=42");
+    const res = await worker.fetch(req, baseEnv(), ctx);
+    assert.equal(res.status, 403);
+  });
+
+  it("POST /webhook chega em handleWebhookPost (assinatura inválida → 403)", async () => {
+    const req = postRequest(leadgenBody(), "sha256=deadbeef");
+    const res = await worker.fetch(req, baseEnv(), ctx);
+    assert.equal(res.status, 403);
+  });
+
+  it("path diferente de /webhook responde 404", async () => {
+    const res = await worker.fetch(new Request("https://x.test/outra"), baseEnv(), ctx);
+    assert.equal(res.status, 404);
+  });
+
+  it("método não suportado em /webhook responde 405", async () => {
+    const res = await worker.fetch(new Request("https://x.test/webhook", { method: "DELETE" }), baseEnv(), ctx);
+    assert.equal(res.status, 405);
+  });
+});
+
+describe("exceção de rede (fetch rejeita, não devolve status)", () => {
+  // Timeout/DNS/AbortError é o modo de falha mais realista em produção e é
+  // justamente o que os `catch` dedicados existem pra converter em 500. O
+  // mock de status nunca alcançava esses branches.
+  const rejecting = (async () => {
+    throw new Error("network down");
+  }) as unknown as typeof fetch;
+
+  it("Graph lançando vira 500, nunca 200", async () => {
+    const body = leadgenBody();
+    const res = await handleWebhookPost(postRequest(body, await sign(body)), baseEnv(), { fetchImpl: rejecting });
+    assert.equal(res.status, 500);
+  });
+
+  it("Kit lançando vira 500, nunca 200", async () => {
+    const body = leadgenBody();
+    const graphOkKitThrows = (async (url: string | URL | Request) => {
+      if (String(url).startsWith("https://graph.test")) {
+        return new Response(JSON.stringify({ field_data: [{ name: "email", values: ["a@b.com"] }] }), { status: 200 });
+      }
+      throw new Error("kit unreachable");
+    }) as unknown as typeof fetch;
+    const res = await handleWebhookPost(postRequest(body, await sign(body)), baseEnv(), { fetchImpl: graphOkKitThrows });
+    assert.equal(res.status, 500);
+  });
+});
+
+describe("severidadeDeStatus", () => {
+  // Separa "vai se resolver pela reentrega" de "alguém precisa reautorizar":
+  // a reentrega da Meta dura ~7 dias, então credencial revogada perde lead.
+  it("401 e 403 são AÇÃO-NECESSÁRIA", () => {
+    assert.equal(severidadeDeStatus(401), "AÇÃO-NECESSÁRIA");
+    assert.equal(severidadeDeStatus(403), "AÇÃO-NECESSÁRIA");
+  });
+
+  it("500, 429 e 503 são TRANSITÓRIO", () => {
+    for (const s of [500, 429, 503]) assert.equal(severidadeDeStatus(s), "TRANSITÓRIO");
+  });
+});
+
+describe("paridade da validação de e-mail com isValidVoteEmailFormat (#3296)", () => {
+  // A 1ª versão reimplementou a validação à mão e a docstring afirmava
+  // paridade que não existia — faltavam o teto em BYTES UTF-8 e o bloqueio de
+  // confusáveis Unicode. Input aqui vem de formulário PÚBLICO, exatamente a
+  // classe de entrada que o #3296 endureceu.
+  const casos = [
+    "leitor@diar.ia.br",
+    "com.acento@diária.br",
+    "zero​width@b.com", // U+200B (Cf) — deve ser recusado
+    "full：width@b.com", // U+FF1A — deve ser recusado
+    "control char@b.com", // Cc — deve ser recusado
+    "dois:pontos@b.com",
+    "a".repeat(250) + "@b.com",
+    "ç".repeat(200) + "@b.com", // 400 bytes UTF-8, 201 code units UTF-16
+    "",
+    "sem-arroba",
+  ];
+
+  for (const caso of casos) {
+    it(`concorda com a fonte para ${JSON.stringify(caso.slice(0, 40))}`, () => {
+      assert.equal(isEmailLike(caso), isValidVoteEmailFormat(caso.trim()));
+    });
+  }
 });
 
 describe("processLead", () => {

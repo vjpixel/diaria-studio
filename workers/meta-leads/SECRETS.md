@@ -13,16 +13,23 @@ O padrão do repo é degradar em silêncio quando falta secret. Aqui **todos os
 O motivo está no topo de `src/leadgen.ts`, e o precedente é caro: o #5504
 (Meta Conversions API) é fail-soft, nunca recebeu o secret
 `META_CAPI_ACCESS_TOKEN` nos 3 workers, e virou no-op silencioso — descoberto
-meses depois com `server_last_fired_time` ainda em epoch 0. Lá o custo foi
-medição degradada. Aqui seria uma pessoa que preencheu o formulário, nunca
-recebeu a newsletter, e cujo clique já foi pago — com a Meta descartando o
-lead em 90 dias.
+meses depois com `server_last_fired_time` ainda em epoch 0 (ver #7776; o
+token, aliás, nunca chegou a ser gerado — não existe nem no `.env` nem no
+Doppler). Lá o custo foi medição degradada. Aqui seria uma pessoa que
+preencheu o formulário, nunca recebeu a newsletter, e cujo clique já foi pago.
+
+**A janela é mais apertada do que parece:** a Meta reentrega qualquer não-200
+por ~**7 dias**, não pelos 90 dias de retenção do lead. Uma credencial
+inválida por mais de uma semana perde os leads daquele período de vez, mesmo
+com o dado ainda existindo do lado da Meta. Por isso o log distingue
+`AÇÃO-NECESSÁRIA` (401/403 — token revogado, permissão retirada, key
+rotacionada) de `TRANSITÓRIO`: o primeiro nunca se resolve sozinho.
 
 ## Required secrets
 
 | Nome | Onde pegar | Sem ele |
 |------|-----------|---------|
-| `META_APP_SECRET` | Meta for Developers → App → Configurações → Básico → Chave Secreta do App | **todo POST responde 403** — `verifySignature` recusa sem chave pra validar |
+| `META_APP_SECRET` | **Já existe**: `FACEBOOK_APP_SECRET` no Doppler, do app `Vigil.ia.br` (`2461854084275909`) — é o mesmo app que publica no Facebook/Instagram hoje | **todo POST responde 403** — `verifySignature` recusa sem chave pra validar |
 | `META_WEBHOOK_VERIFY_TOKEN` | Escolhido por nós; tem que ser o MESMO valor colado no painel ao criar a subscrição | **handshake responde 503** — a subscrição não chega a ser criada |
 | `META_LEADS_PAGE_ACCESS_TOKEN` | Token de página com escopo `leads_retrieval` | **POST responde 500** (pede reentrega) — sem ele o `leadgen_id` não vira dado |
 | `KIT_API_KEY` | Mesma chave já usada pelos outros workers (`scripts/lib/kit-config.ts`) | **POST responde 500** (pede reentrega) — o lead chega mas não vira subscriber |
@@ -54,8 +61,18 @@ Setar só depois de confirmar o campo na conta.
 
 Cada passo depende do anterior:
 
-1. App no Meta for Developers com `leads_retrieval` (+ `pages_show_list`,
-   `pages_manage_ads`); App Review se a Meta exigir.
+1. Adicionar `leads_retrieval` + `pages_manage_ads` ao app **`Vigil.ia.br`**
+   (`2461854084275909`) e regerar o token de página; App Review se a Meta
+   exigir.
+
+   **Medido em 09/09/2026, não presumido** — o token de página atual
+   (`FACEBOOK_PAGE_ACCESS_TOKEN`, sem expiração) tem só:
+   `pages_show_list, business_management, instagram_basic,
+   instagram_content_publish, pages_read_engagement, pages_manage_posts,
+   public_profile`. Confirmado na prática: `GET /{page}/leadgen_forms` devolve
+   403 `Requires pages_manage_ads permission`, e `GET /{page}/subscribed_apps`
+   devolve 403 `Requires pages_manage_metadata permission` (esta última só é
+   necessária pra INSPECIONAR a subscrição, não pro fluxo em si).
 2. Os 4 `wrangler secret put` acima.
 3. Subscrever a Página ao campo `leadgen` apontando pra
    `https://meta-leads.<subdomínio>.workers.dev/webhook`. A Meta chama o GET
