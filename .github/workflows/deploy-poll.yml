@@ -11,6 +11,28 @@ name: Deploy poll Worker
 #
 # Secrets reusados (mesmos do deploy-brevo-dashboard.yml, #2750/#3268):
 # CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_WORKERS_TOKEN.
+#
+# #7755: `poll` serve uma rota (`eia.diar.ia.br/confirmado`) cujo redirect
+# aponta pra uma página que `site` publica — acoplamento exposto pela #7737
+# (PR #7751). `deploy-poll.yml` e `deploy-site.yml` disparam pelo MESMO push
+# em grupos de concorrência separados, sem ordem garantida entre si — se
+# `poll` publicasse primeiro, a janela entre os dois deploys serviria 404 na
+# confirmação de assinatura. O job `wait-for-site` abaixo fecha essa janela
+# SÓ quando ela existe de fato: se este push também tocou `workers/site/**`,
+# espera o run de `deploy-site.yml` para o MESMO commit terminar com sucesso
+# antes de publicar `poll`; se não tocou (a maioria dos pushes que mexem só
+# em `poll`), não há run de `deploy-site.yml` pra esperar e o job segue sem
+# atraso — mesma direção 3 ("ordem só onde importa") descrita na issue.
+#
+# Por que não `workflow_run` (a alternativa nativa mais comum pra ordenar
+# workflows): trocar o trigger de `poll` por `workflow_run` em cima de
+# `deploy-site.yml` faria `poll` só disparar quando `site` de fato rodasse —
+# quebrando o caso comum (push que mexe só em `workers/poll/**`, sem tocar
+# `site` nenhuma vez) e duplicando a lógica de `paths:` num trigger que não
+# tem esse conceito. O job abaixo preserva os dois triggers (`push` com
+# `paths:` + `workflow_dispatch`) como sempre foram, e só ganha uma espera
+# CONDICIONAL por cima — sem depender de `site` ter rodado para `poll`
+# rodar.
 
 on:
   push:
@@ -24,11 +46,90 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # #7118: bloco de steps extraído para .github/workflows/deploy-worker.yml
-  # (workflow_call) — 8 dos 12 deploy-*.yml eram byte-idênticos além do
-  # nome do worker. Ver comentário de topo de deploy-worker.yml para a
-  # justificativa (por que workflow_call aqui e não o padrão de ci.yml).
+  # #7755: espera o deploy de `site` terminar com sucesso SÓ quando este
+  # push também tocou `workers/site/**` (checagem determinística via `git
+  # diff` no próprio commit — sem race, sem timeout adivinhado). Se não
+  # tocou, ou se o trigger foi `workflow_dispatch` (não tem `before`/`after`
+  # de push pra comparar), o job conclui sem esperar nada.
+  wait-for-site:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detecta se este push também tocou workers/site/**
+        id: check
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "Trigger é workflow_dispatch — sem before/after de push pra comparar, nada a esperar."
+            echo "touched=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            # Primeiro push da branch/ref (before não resolvível) — fail-safe
+            # conservador: assume que pode ter tocado site e espera.
+            echo "before não resolvível (push inicial) — assumindo touched=true por segurança."
+            echo "touched=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git diff --name-only "$BEFORE" "${{ github.sha }}" | grep -q '^workers/site/'; then
+            echo "touched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "touched=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Aguarda deploy-site.yml terminar com sucesso para este commit
+        if: steps.check.outputs.touched == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          run_id=""
+          # Até ~3min pro run de deploy-site.yml aparecer na API pra este SHA
+          # — os dois workflows disparam pelo mesmo push, então o run
+          # normalmente já existe (mesmo que ainda "queued") em segundos.
+          for _ in $(seq 1 36); do
+            run_id=$(gh api "repos/$REPO/actions/workflows/deploy-site.yml/runs?head_sha=$SHA&per_page=5" \
+              --jq '.workflow_runs[0].id // empty')
+            if [ -n "$run_id" ]; then
+              break
+            fi
+            sleep 5
+          done
+
+          if [ -z "$run_id" ]; then
+            # Fail-CLOSED (self-review #7833 finding 1): este push tocou
+            # workers/site/** segundo o próprio git diff, então um run de
+            # deploy-site.yml DEVERIA existir — se depois de ~3min não
+            # apareceu (lookup da API lento/instável, ou divergência entre
+            # este git diff e o `paths:` filter real do GitHub), o risco é
+            # justamente o que este job existe pra fechar. Abortar aqui é
+            # mais seguro que seguir sem esperar — nunca reintroduzir a
+            # janela de 404 do #7755 por um timeout de lookup.
+            echo "Nenhum run de deploy-site.yml encontrado para $SHA depois de ~3min — abortando (fail-closed) em vez de seguir sem esperar. Investigar: lookup da API lento, ou divergência entre este git diff e o paths filter de deploy-site.yml."
+            exit 1
+          fi
+
+          echo "Aguardando run $run_id (deploy-site.yml) concluir..."
+          gh run watch "$run_id" --repo "$REPO" --exit-status
+
   deploy:
+    needs: wait-for-site
+    # #7118: bloco de steps extraído para .github/workflows/deploy-worker.yml
+    # (workflow_call) — 8 dos 12 deploy-*.yml eram byte-idênticos além do
+    # nome do worker. Ver comentário de topo de deploy-worker.yml para a
+    # justificativa (por que workflow_call aqui e não o padrão de ci.yml).
     uses: ./.github/workflows/deploy-worker.yml
     with:
       worker: poll
