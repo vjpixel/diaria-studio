@@ -18,6 +18,7 @@ import {
   resolveGrantWasConsumed,
   onlyUnreachableCoordinatorsActive,
   readLiveSelfAuthorizationFor,
+  isCallerInLinkedWorktree,
   LOCK_HOLDER_CORRUPTED,
   sessionsDir,
   machineTag,
@@ -375,6 +376,112 @@ describe("classifyMergeBlockCause (#6497) — motivo nomeado por trás de should
   it("1 coordenadora ativa, é ela mesma chamando, lock livre → null (caso solo comum, não bloqueia)", () => {
     const coords = new Set(["coord-a"]);
     assert.equal(classifyMergeBlockCause(coords, "coord-a", { mergeLockHolder: null }), null);
+  });
+
+  // #7712 — regressão do incidente de origem (#5716/#4740/#5713): um subagente
+  // despachado via `Agent` com `isolation: "worktree"` herda o `session_id`
+  // do coordenador (medido diretamente, ver docblock de
+  // `isCallerInLinkedWorktree`), então `session_id` sozinho não discrimina
+  // "é a coordenadora" de "é o subagente dela". `callerInLinkedWorktree` é o
+  // segundo sinal que fecha esse furo.
+  describe("#7712 — callerInLinkedWorktree veta a identidade de coordenadora mesmo com session_id batendo", () => {
+    it("session_id bate com a coordenadora, mas a chamada vem de um worktree vinculado → 'not-authorized' (é um subagente, não a coordenadora)", () => {
+      const coords = new Set(["coord-a"]);
+      assert.equal(
+        classifyMergeBlockCause(coords, "coord-a", {
+          mergeLockHolder: null,
+          callerInLinkedWorktree: true,
+        }),
+        "not-authorized",
+      );
+    });
+
+    it("session_id bate com a coordenadora, chamada do checkout principal (não-worktree) → null (é de fato a coordenadora)", () => {
+      const coords = new Set(["coord-a"]);
+      assert.equal(
+        classifyMergeBlockCause(coords, "coord-a", {
+          mergeLockHolder: null,
+          callerInLinkedWorktree: false,
+        }),
+        null,
+      );
+    });
+
+    it("session_id bate com a coordenadora, sinal de worktree INDETERMINADO (null) → null (fail-open, mesmo comportamento pré-#7712)", () => {
+      const coords = new Set(["coord-a"]);
+      assert.equal(
+        classifyMergeBlockCause(coords, "coord-a", {
+          mergeLockHolder: null,
+          callerInLinkedWorktree: null,
+        }),
+        null,
+      );
+    });
+
+    it("session_id bate com a coordenadora, ctx sem callerInLinkedWorktree nenhum (undefined) → null (retrocompat, comportamento pré-#7712)", () => {
+      const coords = new Set(["coord-a"]);
+      assert.equal(
+        classifyMergeBlockCause(coords, "coord-a", { mergeLockHolder: null }),
+        null,
+      );
+    });
+
+    it("callerInLinkedWorktree true mas session_id NÃO bate com nenhuma coordenadora → 'not-authorized' de qualquer forma (sem grant/lenientInteractive)", () => {
+      const coords = new Set(["coord-a"]);
+      assert.equal(
+        classifyMergeBlockCause(coords, "sessao-alheia", {
+          mergeLockHolder: null,
+          callerInLinkedWorktree: true,
+        }),
+        "not-authorized",
+      );
+    });
+  });
+});
+
+describe("isCallerInLinkedWorktree (#7712)", () => {
+  it("cwd ausente/vazio → null (indeterminado, sem tentar git)", () => {
+    assert.equal(isCallerInLinkedWorktree(undefined), null);
+    assert.equal(isCallerInLinkedWorktree(""), null);
+    assert.equal(isCallerInLinkedWorktree("   "), null);
+  });
+
+  type ExecFn = (bin: string, args: string[], opts?: { encoding?: string; timeout?: number; cwd?: string }) => string;
+
+  it("--git-dir e --git-common-dir resolvem pro MESMO path → false (checkout principal)", () => {
+    const execFn: ExecFn = (_bin, args) => {
+      if (args.includes("--git-dir")) return "/repo/.git\n";
+      if (args.includes("--git-common-dir")) return "/repo/.git\n";
+      throw new Error("comando git inesperado: " + args.join(" "));
+    };
+    assert.equal(isCallerInLinkedWorktree("/repo", execFn), false);
+  });
+
+  it("--git-dir e --git-common-dir DIVERGEM → true (worktree vinculado)", () => {
+    const execFn: ExecFn = (_bin, args) => {
+      if (args.includes("--git-dir")) return "/repo/.git/worktrees/agent-x\n";
+      if (args.includes("--git-common-dir")) return "/repo/.git\n";
+      throw new Error("comando git inesperado: " + args.join(" "));
+    };
+    assert.equal(isCallerInLinkedWorktree("/repo/.claude/worktrees/agent-x", execFn), true);
+  });
+
+  it("git rev-parse lança (não é repo git, ou git ausente) → null (fail-open)", () => {
+    const execFn: ExecFn = () => {
+      throw new Error("not a git repository");
+    };
+    assert.equal(isCallerInLinkedWorktree("/tmp/nao-e-repo", execFn), null);
+  });
+
+  it("usa `cwd` explícito passado ao execFn — nunca o cwd do processo do hook (opts.cwd presente)", () => {
+    let sawCwdOpt: string | undefined = undefined;
+    const execFn: ExecFn = (_bin, args, opts) => {
+      sawCwdOpt = opts?.cwd;
+      if (args.includes("--git-dir")) return "/wt/.git/worktrees/x\n";
+      return "/wt/.git\n";
+    };
+    isCallerInLinkedWorktree("/wt", execFn);
+    assert.equal(sawCwdOpt, "/wt");
   });
 });
 

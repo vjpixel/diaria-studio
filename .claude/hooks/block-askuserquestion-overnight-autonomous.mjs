@@ -46,6 +46,17 @@
 // comportamento pré-#5156 (bloqueia por máquina, sem distinguir chamador) —
 // ver `shouldBlockAskUserQuestion` pro racional completo.
 //
+// Nota (#7712, 09/09/2026): "a MESMA sessão" acima inclui, na prática, um
+// subagente despachado via `Agent` com `isolation: "worktree"` — medição
+// direta mostrou que ele herda o `session_id` do coordenador, não tem um
+// próprio (ver docblock de `block-gh-pr-merge-subagent.mjs` pro mecanismo e
+// a medição completa). Diferente daquele guard, isto aqui NÃO é um furo: um
+// subagente da Fase autônoma do overnight fazendo `AskUserQuestion` é
+// exatamente o que este hook deve bloquear — a identidade compartilhada
+// produz o resultado CERTO por um motivo que o texto antigo descrevia
+// errado (assumia `session_id` próprio do subagente), não o comportamento
+// errado. Nenhuma mudança de lógica necessária aqui.
+//
 // Self-contained (nenhum import de `scripts/*.ts`): mesma razão documentada em
 // `.claude/hooks/pr-create-review.mjs` — um import estático de `.ts` executa
 // antes de qualquer try/catch deste arquivo e pode derrubar o hook inteiro

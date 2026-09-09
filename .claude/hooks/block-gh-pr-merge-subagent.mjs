@@ -18,11 +18,41 @@
 // por sessão COORDENADORA ativa em `data/sessions/{kind}-{tag}-{sessionId}.json`.
 // Subagentes implementadores despachados via `Agent` NUNCA chamam esse
 // `register` (não são as skills `/diaria-overnight`/`/diaria-develop`/
-// `/diaria-continuo` — são subagentes ad-hoc lendo um prompt de dispatch) e
-// rodam com `session_id` PRÓPRIO, diferente do coordenador que os despachou
-// (mesmo fato que `block-askuserquestion-overnight-autonomous.mjs` e
-// `pr-create-review.mjs` já assumem ao comparar `payload.session_id` contra
-// o `session_id` gravado por quem escreveu o marker/registro).
+// `/diaria-continuo` — são subagentes ad-hoc lendo um prompt de dispatch).
+//
+// **CORREÇÃO (#7712, 09/09/2026) — a premissa abaixo, que este docblock
+// afirmava até aqui, é FALSA e foi medida diretamente:** um subagente
+// despachado via ferramenta `Agent` com `isolation: "worktree"` NÃO roda com
+// `session_id` próprio — herda o MESMO `session_id` do coordenador que o
+// despachou. Medido de 4 formas independentes e concordantes em 09/09/2026
+// (issue #7712): (1) `claim-issue` de um subagente aterrissando no record
+// JÁ EXISTENTE da sessão-mãe em vez de criar um novo; (2) ausência de novo
+// record após despachar subagentes via `Agent`; (3) `is-claimed` se
+// auto-excluindo da própria claim da coordenadora (só explicável por
+// identidade compartilhada); (4) leitura DIRETA do valor `--session-id`
+// injetado no processo real de um subagente — o valor lido foi literalmente
+// o `session_id` da sessão coordenadora, não um id distinto.
+//
+// Consequência: `session_id` sozinho NUNCA discriminou "é a coordenadora" de
+// "é um subagente dela" pela ferramenta `Agent` com `isolation: "worktree"`
+// — um subagente implementador aparecia a este guard como a própria
+// coordenadora e passava pelo bloqueio (o furo de origem do #5716/#4740/
+// #5713, agora confirmado, não só temido). O fix: `isCallerInLinkedWorktree`
+// abaixo, um SEGUNDO sinal independente de `session_id` — coordenadora nunca
+// roda de dentro de um worktree vinculado, só subagente roda; ver seu
+// docblock pro mecanismo e uma nota importante sobre POR QUE ele usa
+// `payload.cwd` e não o cwd do processo deste próprio hook.
+//
+// `block-askuserquestion-overnight-autonomous.mjs` e `pr-create-review.mjs`
+// comparam o mesmo `payload.session_id` contra um marker/registro — mas
+// pelo que a medição acima mostra, os dois continuam corretos: um subagente
+// que herda o `session_id` da rodada overnight SENDO bloqueado de
+// `AskUserQuestion` (o primeiro) ou tendo o PR dele tratado como parte da
+// MESMA rodada overnight pro cálculo de effort (o segundo) é exatamente o
+// comportamento desejado — os dois erravam na premissa, não no resultado.
+// Só este guard tinha uma AÇÃO (merge) que a identidade compartilhada
+// deixava passar quando devia bloquear — por isso só ele precisou do 2º
+// sinal.
 //
 // Esse fato dá o discriminador: se existe pelo menos uma rodada
 // overnight/develop/continuo ATIVA registrada (`data/sessions/*.json`) e o
@@ -433,6 +463,71 @@ export function resolveMainRepoRoot(execFn = execFileSync) {
     return dirname(resolvePath(gitDir));
   } catch {
     return join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  }
+}
+
+/**
+ * #7712 — segundo sinal de identidade, independente de `session_id`.
+ *
+ * Medição direta (09/09/2026, 4 medições independentes concordantes,
+ * inclusive uma lendo o `--session-id` injetado no processo REAL, não
+ * inferido): um subagente despachado via ferramenta `Agent` com
+ * `isolation: "worktree"` roda com o MESMO `session_id` do coordenador que o
+ * despachou — não um `session_id` próprio. Isso invalida a premissa de que
+ * `session_id` sozinho discrimina "é o coordenador" de "é um subagente dele"
+ * (ver docblock de topo, revisado).
+ *
+ * `payload.cwd` do `PreToolUse` acompanha o worktree e os `cd` já executados
+ * pela sessão corrente (doc oficial do harness, mesmo fato que
+ * `resolveRepoRootCandidates` de `block-pr-create-pii-runtime-artifacts.mjs`
+ * já documenta e usa). Coordenadoras (`/diaria-overnight`/`/diaria-develop`/
+ * `/diaria-continuo`) sempre rodam no checkout PRINCIPAL — nunca despacham a
+ * SI PRÓPRIAS para dentro de um worktree; só os subagentes implementadores
+ * que elas despacham rodam isolados. Logo: uma chamada `gh pr merge` cujo
+ * `cwd` resolve para dentro de um worktree VINCULADO não pode ser a
+ * coordenadora, mesmo que `session_id` bata com o registro dela.
+ *
+ * Discriminador: `git rev-parse --git-dir` vs `--git-common-dir`, RODADOS
+ * COM `cwd` EXPLÍCITO (nunca o cwd do processo do hook em si — ver nota
+ * abaixo sobre por que isso importa). No checkout principal os dois
+ * resolvem pro MESMO `.git`; num worktree vinculado, `--git-dir` aponta pra
+ * `<main>/.git/worktrees/<nome>` enquanto `--git-common-dir` aponta pro
+ * `.git` do checkout principal — divergem.
+ *
+ * Por que `cwd` explícito, nunca o cwd herdado do processo do hook: medição
+ * ao vivo (mesma rodada #7712) mostrou que o ARQUIVO deste hook, quando
+ * spawnado pelo harness pra uma sessão isolada em worktree, é carregado do
+ * checkout PRINCIPAL (`${CLAUDE_PROJECT_DIR}` fica fixo na raiz original da
+ * sessão, não acompanha `isolation: "worktree"`) — `process.cwd()`/
+ * `import.meta.url` deste próprio arquivo não são confiáveis pra essa
+ * pergunta. `payload.cwd`, em contraste, é o campo que o harness preenche
+ * com o cwd REAL da chamada Bash que disparou o hook — é isso, não a
+ * localização do arquivo do hook, que este discriminador precisa.
+ *
+ * `null` = indeterminado (sem `cwd` no payload, ou `git rev-parse` falhou) —
+ * fail-open NA MESMA direção que o resto deste guard já trata sinais que não
+ * deu pra ler: não vira um NOVO motivo de bloqueio sozinho, só deixa de
+ * reforçar a identidade (mesmo custo que "scanDegraded" indeterminado já
+ * tinha antes deste guard existir).
+ */
+export function isCallerInLinkedWorktree(cwd, execFn = execFileSync) {
+  if (typeof cwd !== "string" || cwd.trim() === "") return null;
+  try {
+    const opts = { encoding: "utf8", timeout: 10_000, cwd };
+    const gitDir = resolvePath(cwd, execFn("git", ["rev-parse", "--git-dir"], opts).trim());
+    const commonDir = resolvePath(cwd, execFn("git", ["rev-parse", "--git-common-dir"], opts).trim());
+    // Lowercase também — fleet review #7849 item 2: no Windows, `git
+    // rev-parse` pode devolver o mesmo diretório com capitalização de drive
+    // distinta entre `--git-dir` e `--git-common-dir` dependendo de como o
+    // path foi resolvido, o que produziria uma divergência espúria (falso
+    // "está em worktree") mesmo apontando pro mesmo `.git`. Comparação
+    // case-insensitive é segura aqui: o risco inverso (dois `.git` REAIS
+    // distintos que só diferem em capitalização) não existe no filesystem
+    // do Windows, que é case-insensitive por padrão.
+    const norm = (p) => p.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
+    return norm(gitDir) !== norm(commonDir);
+  } catch {
+    return null;
   }
 }
 
@@ -1080,7 +1175,20 @@ export function classifyMergeBlockCause(activeCoordinatorSessionIds, callerSessi
     (ctx.hasLiveGrant === true && (ctx.grantPr === undefined || ctx.grantPr === ctx.targetPr)) ||
     selfAuthCoversTarget;
 
-  const isCoordinator = coordinators.has(callerSessionId);
+  // #7712: `session_id` sozinho não basta mais — um subagente despachado via
+  // `Agent` com `isolation: "worktree"` roda com o MESMO `session_id` do
+  // coordenador que o despachou (medido diretamente, 4 medições
+  // independentes concordantes), então `coordinators.has(callerSessionId)`
+  // dá `true` tanto pra coordenadora real quanto pra QUALQUER subagente dela
+  // — exatamente o furo de origem do #5716/#4740/#5713. `callerInLinkedWorktree
+  // === true` é o segundo sinal (ver `isCallerInLinkedWorktree`): coordenadora
+  // nunca roda de dentro de um worktree vinculado, só subagente roda. Quando
+  // esse sinal é POSITIVO, ele VETA a identidade de coordenadora mesmo com
+  // `session_id` batendo — é a chamada real que o #5716 original queria
+  // bloquear. `callerInLinkedWorktree` INDETERMINADO (`null`, `undefined`)
+  // não veta nada — mesmo fail-open que os outros sinais deste guard já
+  // usam pra estado que não deu pra ler.
+  const isCoordinator = coordinators.has(callerSessionId) && ctx.callerInLinkedWorktree !== true;
   // Duas portas de identidade, e só duas. Note que isto NÃO é mais um
   // retorno terminal — passar aqui só significa "tem direito de mergear"; se
   // pode mergear AGORA é o bloco de lock abaixo que decide (P1·a).
@@ -1416,6 +1524,9 @@ if (
         // `resolveGrantWasConsumed`: só conta quando o PR da concessão
         // consumida bate com o PR sendo mergeado agora.
         grantWasConsumed: resolveGrantWasConsumed(consumedGrant, targetPr),
+        // #7712: `payload.cwd` — nunca o cwd do processo deste hook (ver
+        // docblock de `isCallerInLinkedWorktree` pro porquê).
+        callerInLinkedWorktree: isCallerInLinkedWorktree(payload.cwd),
       };
       // #6497: classifica a causa UMA vez e reusa — `shouldBlockGhPrMerge`
       // decide SE bloqueia (mesmo cálculo), `buildBlockReason` usa o motivo

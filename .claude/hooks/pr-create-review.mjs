@@ -198,6 +198,17 @@ function activeSessionPath(repoRoot, tag) {
  * "ativo nesta máquina" já basta, independente de `callerSessionId` — nunca
  * degradar o desconto de effort de uma rodada em voo por causa de um marker
  * que ela não sabe que precisa reescrever.
+ *
+ * Nota (#7712, 09/09/2026): medição direta mostrou que um subagente
+ * despachado via `Agent` com `isolation: "worktree"` herda o `session_id`
+ * do coordenador que o despachou — não tem um próprio (ver docblock de
+ * `block-gh-pr-merge-subagent.mjs` pro mecanismo e a medição completa). Isso
+ * não é um furo aqui: um `gh pr create` de um subagente da MESMA rodada
+ * overnight cair no limiar de diff do overnight (em vez do geral) pro
+ * cálculo de effort é o resultado CORRETO — a PR É da rodada overnight,
+ * `callerSessionId` batendo com `marker.session_id` só confirma isso, ainda
+ * que por um motivo (identidade compartilhada) que o texto acima não previa
+ * quando foi escrito. Nenhuma mudança de lógica necessária aqui.
  */
 export function isOvernightRoundActive(
   repoRoot = resolveMainRepoRoot(),
