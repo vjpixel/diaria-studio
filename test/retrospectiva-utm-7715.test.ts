@@ -38,7 +38,7 @@ import {
   buildRetrospectivaMensalCampaign,
   buildRetrospectivaAnualCampaign,
 } from "../scripts/lib/shared/utm-registry.ts";
-import { renderPaywall, renderTeaserWithPaywall } from "../workers/retrospectiva/src/render-mensal.ts";
+import { renderPaywall, renderTeaserWithPaywall, renderEmailForm as renderMensalEmailForm } from "../workers/retrospectiva/src/render-mensal.ts";
 import { renderNoTeaser, renderTeaserWithSignup } from "../workers/retrospectiva/src/render-anual.ts";
 
 const MENSAL_PATH = "2607";
@@ -118,6 +118,10 @@ describe("#7715 — link de saída da Retrospectiva do Mês carrega o triplo cer
       "utm_campaign",
     );
     assert.notEqual(campA, campB);
+  });
+
+  it("form 'já apoia? entre com seu e-mail' (renderEmailForm) — achado do self-review: 3ª superfície de apoio, não só 2", () => {
+    assertUtm(renderMensalEmailForm(MENSAL_PATH), "retrospectiva-mensal-2607");
   });
 });
 

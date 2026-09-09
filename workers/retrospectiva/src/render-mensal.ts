@@ -34,9 +34,9 @@ const APOIASE_URL = "https://apoia.se/diaria";
 /**
  * URL de apoio com UTM próprio (#7715) — `path` é o path público da página
  * (`AAMM`, ex: `2607`), o mesmo que `classifyRetrospectivaPath` resolve no
- * roteador. Único CTA de apoio desta página; as duas superfícies que o usam
- * (paywall seco e bloco de conversão do trecho) chamam este helper em vez de
- * `APOIASE_URL` cru.
+ * roteador. As 3 superfícies com CTA de apoio (paywall seco, bloco de
+ * conversão do trecho, e o form de "já apoia? entre com seu e-mail") chamam
+ * este helper em vez de `APOIASE_URL` cru.
  */
 function apoiaseUrlComUtm(path: string): string {
   const params = new URLSearchParams({
@@ -104,7 +104,7 @@ export function renderEmailForm(cycle: string): string {
       <input type="email" name="email" placeholder="seu@email.com" required />
       <button class="button" type="submit">Acessar artigo</button>
     </form>
-    <p class="muted">Ainda não apoia? <a href="${APOIASE_URL}">Conheça o Apoia.se da diar.ia.br</a>.</p>
+    <p class="muted">Ainda não apoia? <a href="${escHtml(apoiaseUrlComUtm(cycle))}">Conheça o Apoia.se da diar.ia.br</a>.</p>
   `;
   return shell("diar.ia.br — Artigo exclusivo para apoiadores", body);
 }
