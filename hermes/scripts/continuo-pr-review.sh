@@ -751,11 +751,14 @@ Se não encontrar NENHUM achado de confiança alta ou média (P0/P1): poste mesm
 VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramentas permitidas. Decidir e mergear é responsabilidade do SCRIPT BASH que te invocou, depois que você sair — não sua. Seu único trabalho é revisar e postar o comentário com o veredito."
 
   set +e
+  #Pedido do editor (09/09): entrega ao Telegram deve ser CURTA — stdout
+  #completo do claude vai pro log, só 1 linha de veredito vai pro cron.
   echo "$PROMPT" | timeout 1800 claude -p \
     --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*)" \
-    --model sonnet --effort low
+    --model sonnet --effort low 1>&2
   CLAUDE_RC=$?
   set -e
+  echo "[continuo-pr-review] PR #$PR: revisada (veredito e comentário na própria PR no GitHub)"
 
   if [ "$CLAUDE_RC" -ne 0 ]; then
     echo "[continuo-pr-review] PR #$PR: sessão de review saiu com rc=$CLAUDE_RC — não conta como revisada, tenta de novo no próximo tick" >&2
