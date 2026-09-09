@@ -287,7 +287,7 @@ Texto curto do d2.
     assert.equal(d1.blocks[1].channels, "𝕏 X (Twitter) · Threads");
   });
 
-  it("ordem: destaques numerados (d1→d3) → É IA? → post_pixel, mesmo com MD fora de ordem", () => {
+  it("ordem: destaques numerados (d1→d3) → post_pixel, mesmo com MD fora de ordem", () => {
     // Seção deliberadamente escrita fora de ordem (post_pixel antes, eia no
     // meio, d3 antes de d1) — a ordem de EXIBIÇÃO não pode depender da ordem
     // de escrita no markdown.
@@ -317,28 +317,51 @@ Texto do d2.
     const groups = groupByDestaque(platforms, IMAGES);
     assert.deepEqual(
       groups.map((g) => g.key),
-      ["d1", "d2", "d3", "eia", "post_pixel"],
-      "ordem final deve ser d1→d3, depois É IA?, depois post_pixel — independente da ordem no MD",
+      ["d1", "d2", "d3", "post_pixel"],
+      "ordem final deve ser d1→d3, depois post_pixel — independente da ordem no MD",
     );
+    // #7678: o `## eia` do MD (aqui de propósito, simulando um 03-social.md
+    // legado) NÃO vira grupo — o post do "É IA?" saiu de 03-social.md e é
+    // dispatchado por `publish-eia-social.ts` a partir de 01-eia-social.md.
+    assert.ok(!groups.some((g) => g.key === "eia"), "seção `## eia` legada é ignorada, não vira grupo");
   });
 
-  it("É IA? monta o par de imagens A/B (opção A e opção B), não uma imagem só", () => {
+  it("#7678: `## eia` sobrando num 03-social.md legado é ignorado — não vira grupo, não quebra o preview", () => {
+    // Substitui o teste que exigia o par de imagens A/B do "É IA?" (removido
+    // junto com a seção). O contrato virou o oposto: `## eia` em
+    // 03-social.md é resíduo de edição antiga ou reestrutura manual, e o
+    // preview precisa atravessar isso sem grupo órfão e sem exceção.
     const MD_EIA = `# Social
 
 ## eia
 
 Texto do É IA? de hoje.
+
+## d1
+
+Texto do d1.
 `;
     const platforms = parsePlatforms(MD_EIA);
     const groups = groupByDestaque(platforms, IMAGES);
-    const eia = groups.find((g) => g.key === "eia")!;
-    assert.equal(eia.label, "É IA?");
-    assert.equal(eia.imageUrl, "", "É IA? não usa a imagem `imageUrl` de destaque numerado");
-    assert.equal(eia.extraImages?.length, 2, "deve ter exatamente o par A/B");
-    assert.equal(eia.extraImages?.[0].label, "Opção A");
-    assert.equal(eia.extraImages?.[0].url, "https://img.example/eia-a.jpg");
-    assert.equal(eia.extraImages?.[1].label, "Opção B");
-    assert.equal(eia.extraImages?.[1].url, "https://img.example/eia-b.jpg");
+    assert.deepEqual(
+      groups.map((g) => g.key),
+      ["d1"],
+      "só o destaque numerado vira grupo — o `## eia` legado é descartado",
+    );
+    // O grupo restante é um destaque numerado normal: imagem única, nunca o
+    // par A/B que o "É IA?" usava (o campo `extraImages` saiu do
+    // `DestaqueGroup` junto com a seção, #7678).
+    assert.equal(groups[0].imageUrl, "https://img.example/d1.jpg");
+  });
+
+  it("#7678: 03-social.md só com `## eia` produz zero grupos, sem lançar", () => {
+    const platforms = parsePlatforms(`# Social
+
+## eia
+
+Texto do É IA?
+`);
+    assert.deepEqual(groupByDestaque(platforms, IMAGES).map((g) => g.key), []);
   });
 
   it("formato legado pré-#3991 (3 seções, uma por rede) agrupa por destaque igual ao formato novo", () => {

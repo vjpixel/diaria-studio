@@ -262,8 +262,6 @@ export interface DestaqueGroup {
   key: string;
   label: string;
   imageUrl: string;
-  /** É IA? publica DUAS imagens (opção A e B), não uma. */
-  extraImages?: { label: string; url: string }[];
   /** #6005 Parte B / #6064: os 5 slides do carrossel diário do Instagram
    * (capa + 3 parágrafos + CTA), quando os 4 slides sem foto existem no
    * `06-public-images.json` (tudo-ou-nada, mesma regra de
@@ -382,15 +380,16 @@ function renderCarouselGallery(group: DestaqueGroup): string {
 }
 
 export function renderDestaqueGroup(group: DestaqueGroup, color: string): string {
+  // #7678: o ramo `extraImages` (par A/B do "É IA?") saiu junto com a seção
+  // `## eia` — nada mais popula esse campo a partir de 03-social.md, então
+  // era uma condição que nunca podia ser verdadeira. O par A/B continua
+  // existindo no produto, só que pelo caminho de `publish-eia-social.ts` /
+  // `01-eia-social.md`, que não passa por aqui.
   const imgHtml = group.carouselImages?.length
     ? renderCarouselGallery(group)
-    : group.extraImages?.length
-      ? `<div class="post-image eia-pair">${group.extraImages
-          .map(img => `<figure><img src="${escHtml(img.url)}" alt="${escHtml(`${group.label} — ${img.label}`)}" /><figcaption>${escHtml(img.label)}</figcaption></figure>`)
-          .join("")}</div>`
-      : group.imageUrl
-        ? `<div class="post-image"><img src="${escHtml(group.imageUrl)}" alt="${escHtml(group.label)}" /></div>`
-        : "";
+    : group.imageUrl
+      ? `<div class="post-image"><img src="${escHtml(group.imageUrl)}" alt="${escHtml(group.label)}" /></div>`
+      : "";
   return `
   <div class="post">
     <div class="post-header" style="border-left: 3px solid ${color}">${escHtml(group.label)}</div>
@@ -487,9 +486,6 @@ export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, post
     margin-top: 10px;
     word-spacing: 4px;
   }
-  .eia-pair { display:flex; gap:10px; }
-  .eia-pair figure { flex:1; margin:0; }
-  .eia-pair figcaption { font-size:12px; color:#666; text-align:center; padding:4px 0 8px; }
   .carousel-gallery-scroll {
     display: flex;
     gap: 10px;
