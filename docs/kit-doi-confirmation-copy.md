@@ -1,7 +1,7 @@
 # Copy do e-mail de confirmação (double opt-in) — CANÔNICA
 
 > **Fonte: o e-mail real que a Beehiiv enviava.** Recuperado em 09/09/2026 do
-> Gmail do editor (`diaria@mail.beehiiv.com`, thread `1a03e8a2c2bf1bb9`,
+> Gmail do editor (remetente `diaria` em `mail.beehiiv.com`, thread `1a03e8a2c2bf1bb9`,
 > enviado 26/08/2026), porque o texto não existia em lugar nenhum do repo e a
 > conta Beehiiv está com 0 assinantes ativos desde o #7386 — se ela fosse
 > encerrada antes, a copy se perderia.
@@ -70,7 +70,7 @@ Gmail (#6504).
 
 | | Beehiiv | Kit |
 |---|---|---|
-| Remetente | `diaria@mail.beehiiv.com` | `oi@news.diar.ia.br` |
+| Remetente | `diaria` em `mail.beehiiv.com` | `oi` em `news.diar.ia.br` (o sender já verificado da conta) |
 | Link do botão | `diaria.beehiiv.com/opt_in?opt_in_token=…` | token do Kit, inserido pelo editor de conteúdo do form |
 | Redirect pós-confirmação | `https://eia.diar.ia.br/confirmado` (`opt_in_redirect_url`, medido nas settings da Beehiiv em 09/09/2026) | default é `https://app.kit.com/confirm-subscription` — **reapontar para `https://eia.diar.ia.br/confirmado`** |
 
