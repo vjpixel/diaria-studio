@@ -271,6 +271,70 @@ memória nova ainda não classificada) está em
 `scripts/lib/memory-index.ts` e na issue #7533. `scripts/extract-memory-index.ts`
 e `scripts/regenerate-memory-index.ts` fecham esse round-trip.
 
+### Guard contra máquina fora do mecanismo (#7759 item 2, 09/09/2026)
+
+O item 1 do #7759 (conectar o ZenBook) fechou o rollout — as 3 máquinas do
+editor estão em `4fb93e8`, mesmo commit, working tree limpa. Faltava o
+item 2: nada detectava uma 4ª máquina (ou uma das 3 atuais, se voltar a
+divergir) caindo fora do mecanismo — cada sessão só descobria ao tentar
+indexar, e o desvio manual (editar `MEMORY.md` direto) parecia funcionar
+até a próxima regeneração apagar a edição em silêncio.
+
+**Decisão: `SessionStart` vendorado no `diaria-studio`
+(`.claude/hooks/session-start-memory-sync-guard.mjs`), não um item no
+alarme de drift existente.** A issue oferecia os dois caminhos e pedia
+julgamento explícito para escolher entre eles — o argumento decisivo é
+onde cada um consegue RODAR:
+
+- Um alarme de drift, neste repo, é sempre uma **scheduled task** — e
+  scheduled tasks só rodam no `helios`/servidor (`docs/scheduled-tasks-
+  registry.md`; máquinas locais não rodam mais tasks agendadas, ver
+  `local-machine-nao-roda-mais-tasks-diaria` na memória do editor). O
+  `helios` já É uma máquina conectada por definição — ele não tem como
+  observar `~/.claude/projects/{slug}/memory/` de uma máquina que está
+  justamente fora do mecanismo, sem que essa máquina primeiro sincronize
+  alguma coisa (o que é exatamente o que falhou em acontecer). Um alarme
+  de drift rodando só no servidor detecta tudo, MENOS o próprio caso de
+  uso que a issue pede.
+- Um `SessionStart` vendorado no `diaria-studio`, por outro lado, chega a
+  QUALQUER máquina via `git pull` normal do próprio repo de trabalho
+  diário — mesma inversão de dependência que
+  `session-start-claude-config-sync.mjs` já usou pro problema irmão
+  (#6310, ver §"Auto-arme via `diaria-studio`" abaixo). Roda exatamente
+  onde o problema existe: na máquina desconectada, na próxima vez que
+  alguém abrir o `diaria-studio` nela.
+
+Contrato de tri-estado (lógica pura em `scripts/lib/memory-sync-guard.ts`,
+testada em `test/memory-sync-guard.test.ts`; o hook `.mjs` duplica a
+decisão em JS puro, mesmo padrão dos hooks irmãos — import estático de
+`.ts` quebraria o hook em silêncio num Node sem type-stripping nativo):
+
+| status | quando | ação do hook |
+|---|---|---|
+| `ok` | diretório de memória existe, tem `.git` E `_index.json` | silencioso |
+| `not-connected` | diretório existe mas falta `.git` e/ou `_index.json` | avisa via `additionalContext` (nunca bloqueia) |
+| `cannot-verify` | diretório ausente (sessão cloud/CI/worktree efêmero) ou ilegível | silencioso |
+
+`cannot-verify` é, de longe, o caso mais comum na frota inteira — toda
+sessão cloud, todo worktree de subagente dispatchado via `Agent()`, todo
+CI cai nele, porque não existe `~/.claude/projects/.../memory/` local de
+verdade nesses contextos. Por isso o hook fica em silêncio nesse status:
+um aviso disparando em toda sessão onde o diretório simplesmente não
+existe por design seria ruído puro, e ruído é como um guard mecânico
+deixa de ser lido. A distinção continua sendo respeitada onde importa —
+o valor de retorno nunca maquia `cannot-verify` como `ok` (testado
+explicitamente) — só a decisão de SURGIR como aviso visível é exclusiva
+do `not-connected`, o único status que corresponde a uma máquina real,
+usando memória, genuinamente fora do mecanismo.
+
+**Fail-soft total, sem exceção**: o hook nunca escreve nada em disco (nem
+log, nem estado de debounce — repetir o aviso a cada sessão até a máquina
+ser conectada é aceito de propósito, evita reintroduzir a mesma classe de
+"verde silencioso" que a issue proíbe), nunca lança (try/catch único em
+volta de tudo), e não tenta consertar nada (não roda `git init`, não
+escreve `_index.json`) — só relata via `additionalContext`, sem bloquear
+nem atrasar o início da sessão.
+
 ## Auto-arme via `diaria-studio` (260828 — fecha o rollout do #6310)
 
 **O ovo-e-galinha que sobrou:** o mecanismo acima (`sync-check.cjs` + hook
