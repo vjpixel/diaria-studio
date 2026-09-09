@@ -157,6 +157,7 @@ describe("#7577 — janela que cruza refinamento não é estado estável", () =>
       motivo: null,
       gastoAcumulado: 0,
       cadastrosAcumulado: null,
+      baseData: null,
       janelaDias: 3,
     };
     assert.match(descreverEstabilidade({ ...base, diasAposUltimaEdicao: null, ultimaEdicao: null }), /estável/);
@@ -381,5 +382,44 @@ describe("#7577 — CAC diário (ontem/anteontem) reusa as guardas da janela", (
     const d = computeDailyCac(rows, { canal: CANAL, dia: "2026-09-07" });
     assert.equal(d.gasto, 0);
     assert.equal(d.cadastros, 6);
+  });
+});
+
+describe("#7635 — buraco no CSV não pode inflar o dia seguinte marcado comparável", () => {
+  it("dia com linha-base de 2 dias atrás (buraco de 1 dia) não soma dois dias como comparável", () => {
+    // Cenário exato da issue: 04/09 tem linha, 05/09 falta (buraco de
+    // reconciliação), 06/09 tem linha. `base` de 06/09 vira a linha de 04/09
+    // — dois dias de gasto/cadastros, não um — e SEM a guarda isso saía como
+    // `gasto: 200`, `cadastros: 8`, `comparavel: true`.
+    const rows = [row("2026-09-04", 300, 40), row("2026-09-06", 500, 48)];
+    const d = computeDailyCac(rows, { canal: CANAL, dia: "2026-09-06" });
+    assert.equal(d.comparavel, false, "linha-base não é o dia imediatamente anterior — não é comparável");
+    assert.match(d.motivo ?? "", /linha-base é de 2026-09-04, não de 2026-09-05/);
+    assert.equal(d.custoPorCadastro, null, "CAC calculado sobre 2 dias não pode ser lido como CAC de 1 dia");
+    // gasto/cadastros continuam reportados (mesma disciplina das outras
+    // guardas do módulo) — só o rótulo `comparavel` muda, não os números.
+    assert.equal(d.gasto, 200);
+    assert.equal(d.cadastros, 8);
+  });
+
+  it("dia com linha-base no dia imediatamente anterior continua comparável (caminho feliz)", () => {
+    // Contrapartida do teste acima: a guarda não pode acusar buraco onde não
+    // há um. Mesmos números do teste #7577 "o gasto do dia é a DIFERENÇA...".
+    const rows = [row("2026-09-05", 100, 10), row("2026-09-06", 200, 24), row("2026-09-07", 300, 34)];
+    const d = computeDailyCac(rows, { canal: CANAL, dia: "2026-09-07" });
+    assert.equal(d.comparavel, true);
+    assert.equal(d.motivo, null);
+    assert.equal(d.gasto, 100);
+    assert.equal(d.cadastros, 10);
+    assert.equal(d.custoPorCadastro, 10);
+  });
+
+  it("primeiro dia do braço (sem linha-base nenhuma) não é acusado de buraco", () => {
+    // `baseData` é `null` aqui, não uma data distante — a guarda só se aplica
+    // quando HÁ uma linha-base e ela não é o dia anterior.
+    const rows = [row("2026-09-05", 100, 10)];
+    const d = computeDailyCac(rows, { canal: CANAL, dia: "2026-09-05" });
+    assert.equal(d.comparavel, true);
+    assert.equal(d.motivo, null);
   });
 });

@@ -118,6 +118,17 @@ export interface RollingWindowResult {
   gastoAcumulado: number;
   cadastrosAcumulado: number | null;
   /**
+   * `data_apuracao` da linha-base (a última ANTES da janela), ou `null`
+   * quando não há linha-base (o braço começou dentro da janela).
+   *
+   * Existe para `computeDailyCac` conseguir distinguir "linha-base é o dia
+   * imediatamente anterior" de "linha-base é mais antiga, porque falta uma
+   * linha no meio" (#7635) — informação que `gastoJanela`/`cadastrosJanela`
+   * sozinhos não carregam, já que a aritmética (`último − base`) é idêntica
+   * nos dois casos.
+   */
+  baseData: string | null;
+  /**
    * Quantos dos dias da janela são POSTERIORES à última edição em voo deste
    * braço. Ver `contarDiasAposUltimaEdicao`.
    */
@@ -200,6 +211,7 @@ export function computeRollingWindow(
       motivo: `sem nenhuma linha de apuração entre ${inicio} e ${opts.ate}`,
       gastoAcumulado: doCanal.at(-1)?.gasto_acumulado ?? 0,
       cadastrosAcumulado: doCanal.at(-1)?.cadastrosAcumulado ?? null,
+      baseData: base?.data_apuracao ?? null,
       diasAposUltimaEdicao: diasApos,
       ultimaEdicao,
     };
@@ -271,6 +283,7 @@ export function computeRollingWindow(
     motivo,
     gastoAcumulado: ultima.gasto_acumulado,
     cadastrosAcumulado: cadUltima ?? null,
+    baseData: base?.data_apuracao ?? null,
     diasAposUltimaEdicao: diasApos,
     ultimaEdicao,
   };
@@ -375,6 +388,15 @@ export function computeDailyCac(
       motivo: r.motivo,
     };
   }
+  // #7635: `r.gastoJanela`/`r.cadastrosJanela` são `último − base`, e essa
+  // subtração é idêntica quer `base` seja o dia imediatamente anterior, quer
+  // seja mais antigo por falta de linha no meio (buraco de reconciliação,
+  // §8.3). Sem esta checagem, o dia seguinte a um buraco absorve gasto e
+  // cadastros de dois (ou mais) dias e sai como `comparavel: true` — um
+  // número errado que se apresenta como comparável, o formato de erro que
+  // este módulo inteiro existe para evitar (ver docstring de `DailyCac`).
+  const diaAnterior = shiftDate(opts.dia, -1);
+  const baseNaoEhDiaAnterior = r.baseData !== null && r.baseData !== diaAnterior;
   return {
     dia: opts.dia,
     gasto: r.gastoJanela,
@@ -382,9 +404,12 @@ export function computeDailyCac(
     // vazia. Sem ela não há numerador, e `cadastrosJanela` seria 0 por
     // construção — afirmando "nenhum cadastro" onde a verdade é "não medido".
     cadastros: r.cadastrosAcumulado == null ? null : r.cadastrosJanela,
-    custoPorCadastro: r.custoPorCadastro,
-    comparavel: r.comparavel,
-    motivo: r.motivo,
+    custoPorCadastro: baseNaoEhDiaAnterior ? null : r.custoPorCadastro,
+    comparavel: r.comparavel && !baseNaoEhDiaAnterior,
+    motivo: baseNaoEhDiaAnterior
+      ? `linha-base é de ${r.baseData}, não de ${diaAnterior} (dia imediatamente anterior) — falta ` +
+        `linha de apuração entre as duas, e gasto/cadastros reportados somam mais de um dia`
+      : r.motivo,
   };
 }
 
