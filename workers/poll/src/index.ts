@@ -1831,7 +1831,7 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // #5167 item 7: destino do double opt-in da Beehiiv/Kit. #7737: 301 pro
     // apex (diar.ia.br/confirmado, Worker `site`) — a página real não mora
     // mais aqui, só o redirect (ver docstring de confirmado.ts).
-    if (path === "/confirmado" && request.method === "GET") return handleConfirmadoRedirect();
+    if (path === "/confirmado" && request.method === "GET") return handleConfirmadoRedirect(request.url);
     // #3519: arquivo de pares passados (índice) — mesmo racional acima:
     // `env` cru, lê `correct:{edition}` compartilhado, não `bEnv`.
     if (path === "/jogar/arquivo" && request.method === "GET") return handleJogarArchivePage(url, env);

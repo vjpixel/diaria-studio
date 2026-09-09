@@ -46,6 +46,26 @@ export const CONFIRMADO_REDIRECT_URL = CONFIRMADO_APEX_URL;
  * (`/jogar`, `/jogar/quiz`, `/share`, `/quiz-share`, auto-heal de
  * `/leaderboard/{YYYY-MM}`) — ver a docstring de `applyFrameDenyHeaders`.
  */
-export function handleConfirmadoRedirect(): Response {
-  return new Response(null, { status: 301, headers: { Location: CONFIRMADO_REDIRECT_URL } });
+export function handleConfirmadoRedirect(requestUrl?: string | URL): Response {
+  let location = CONFIRMADO_REDIRECT_URL;
+  // #7799: preservar a query string do salto. Sem isto, um clique no link de
+  // confirmação que carregue UTM (o ESP anexa parâmetros ao
+  // `opt_in_redirect_url`) chegava no apex SEM eles, e o GTM/GA da página de
+  // confirmação registrava a sessão como referral de `eia.diar.ia.br` em vez
+  // da campanha de origem — atribuição perdida exatamente no momento de
+  // engajamento máximo que o #5167 escolheu instrumentar.
+  //
+  // Só a QUERY é repassada; nunca o hash (não chega ao servidor) nem o path
+  // (o destino é fixo por desenho). Argumento opcional para não quebrar
+  // chamador nem teste que invoque sem request.
+  if (requestUrl !== undefined) {
+    try {
+      const search = new URL(requestUrl).search;
+      if (search) location = `${CONFIRMADO_REDIRECT_URL}${search}`;
+    } catch {
+      // URL inválida: cai no destino seco em vez de propagar erro — este
+      // redirect nunca deve ser o que derruba a confirmação de um assinante.
+    }
+  }
+  return new Response(null, { status: 301, headers: { Location: location } });
 }

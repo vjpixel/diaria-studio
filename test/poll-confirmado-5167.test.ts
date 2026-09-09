@@ -63,12 +63,59 @@ describe("handleConfirmadoRedirect (#7737) — Response", () => {
   });
 });
 
+describe("handleConfirmadoRedirect (#7799) — preserva a query string", () => {
+  it("query com UTM sobrevive ao 301 — atribuição não vira referral de eia.diar.ia.br", () => {
+    const res = handleConfirmadoRedirect(
+      "https://eia.diar.ia.br/confirmado?utm_source=kit&utm_campaign=doi",
+    );
+    assert.equal(res.status, 301);
+    assert.equal(
+      res.headers.get("Location"),
+      "https://diar.ia.br/confirmado?utm_source=kit&utm_campaign=doi",
+    );
+  });
+
+  it("sem query, destino segue seco (não inventa '?')", () => {
+    const res = handleConfirmadoRedirect("https://eia.diar.ia.br/confirmado");
+    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmado");
+  });
+
+  it("chamada sem argumento continua funcionando (compatibilidade)", () => {
+    const res = handleConfirmadoRedirect();
+    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmado");
+  });
+
+  it("URL inválida cai no destino seco em vez de lançar — nunca derruba a confirmação", () => {
+    const res = handleConfirmadoRedirect("nao-e-url");
+    assert.equal(res.status, 301);
+    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmado");
+  });
+
+  it("o PATH da origem é ignorado — só a query viaja (destino é fixo por desenho)", () => {
+    const res = handleConfirmadoRedirect("https://eia.diar.ia.br/confirmado/extra?a=1");
+    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmado?a=1");
+  });
+});
+
 describe("GET /confirmado (#5167 item 7, redirect desde #7737) — router", () => {
   it("301 pro apex sem exigir nenhum secret (rota pública)", async () => {
     const env = makeEnv();
     const res = await worker.fetch(new Request("https://eia.diar.ia.br/confirmado"), env);
     assert.equal(res.status, 301);
     assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmado");
+  });
+
+  it("#7799: o router repassa a query real da request pro redirect", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(
+      new Request("https://eia.diar.ia.br/confirmado?utm_source=kit&utm_medium=email"),
+      env,
+    );
+    assert.equal(res.status, 301);
+    assert.equal(
+      res.headers.get("Location"),
+      "https://diar.ia.br/confirmado?utm_source=kit&utm_medium=email",
+    );
   });
 
   it("só GET — outro método cai no 404 padrão do router (não crasha)", async () => {
