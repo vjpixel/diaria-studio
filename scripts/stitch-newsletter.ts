@@ -34,7 +34,7 @@ import {
   normalizeDashToParens,
   type UseMelhorTempoSource, // #6739
 } from "./lib/use-melhor-curation.ts"; // #2447/#2450
-import { loadCachedBody } from "./lib/url-body-cache.ts"; // #6739 — body cacheado do Stage 1
+import { loadCachedBody, saveCachedBody } from "./lib/url-body-cache.ts"; // #6739 — body cacheado do Stage 1
 import { USE_MELHOR_TEMPO_RE } from "./lib/lint-checks/use-melhor-tempo.ts"; // #2464 finding 5 — evitar cópia de regex
 import {
   renderEncerramentoSocialApoio,
@@ -558,6 +558,68 @@ function writeUseMelhorTempoInstrumentation(
 }
 
 /**
+ * #7668 item 2: busca sob demanda pro USE MELHOR item que veio sem body
+ * cacheado. Chamado apenas em cache miss (1 GET por item, 3–4 por edição).
+ *
+ * Fail-soft invariável: qualquer falha de rede/status/timeout vira `null` —
+ * o item cai na heurística de título e o stitch continua. Reusa
+ * `saveCachedBody` pra que execuções seguintes reutilizem o body (evita
+ * refetch repetido entre `stitch` e `verify-dates`).
+ *
+ * Escopo: GET simples, sem browser, sem redirect-following. O Stage 1 já
+ * verificou acessibilidade — aqui o único objetivo é obter o body pra
+ * contagem de palavras, não re-avaliar verdict.
+ */
+export async function fetchBodyForCache(
+  bodiesDir: string,
+  url: string,
+): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      signal: controller.signal,
+      headers: { "user-agent": "Mozilla/5.0 (compatible; DiariaBot/1.0)" },
+    });
+    if (!res.ok) return null;
+    const body = await res.text();
+    if (body.length < 500) return null;
+    saveCachedBody(bodiesDir, url, body);
+    return body;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * #7668 item 2: prefetch sob demanda dos bodies dos itens USE MELHOR que
+ * ainda não estão cacheados. Chamado no caller (`stitchNewsletter`) antes do
+ * `renderUseMelhorSection` síncrono — o body precisa estar no cache quando
+ * `estimateFor` ler, e `renderUseMelhorSection` não pode ser async sem
+ * quebrar `stitchNewsletter` e seus testes.
+ *
+ * Fail-soft total: cada item é independente — um que falhar de rede/status/
+ * timeout simplesmente cai na heurística de título e o stitch continua. Os
+ * bodies que chegam são salvos via `saveCachedBody` pra que execuções
+ * seguintes (verify-dates, re-stitch) reutilizem, sem refetch repetido.
+ */
+export async function prefetchUseMelhorBodies(
+  items: ArticleLike[],
+  bodiesDir: string,
+): Promise<void> {
+  await Promise.all(
+    items.map(async (item) => {
+      if (!item.url) return;
+      if (loadCachedBody(bodiesDir, item.url)) return;
+      await fetchBodyForCache(bodiesDir, item.url);
+    }),
+  );
+}
+
+/**
  * Lê o bloco É IA? do `01-eia.md`. Se ausente, retorna placeholder simples.
  * Format do 01-eia.md:
  *   "É IA?\n\n{description}\n\n> Gabarito: **{A|B} é a IA**"
@@ -661,8 +723,22 @@ export function stitchNewsletter(input: StitchInput): string {
   // em `_internal/use-melhor-tempo-source.json` pra medir depois quanto ainda
   // sai de `title-heuristic`.
   const useMelhorTempoInstrumentation: UseMelhorTempoInstrumentationEntry[] = [];
+  const useMelhorBodiesDir = join(input.editionDir, "_internal", "_forensic", "link-verify-bodies");
+  // #7668 item 2: fallback de busca sob demanda ANTES do render. O body
+  // cacheado do Stage 1 é a fonte primária, mas URLs que passaram pelo browser
+  // fallback (ou por paths HEAD-only) podem sair sem body — e o cache miss
+  // caía silenciosamente na heurística de título, saindo `(5 min)` para tudo.
+  // 1 GET por item de USE MELHOR (3–4 por edição) é barato perto de publicar
+  // um número errado. `fetchBodyForCache` é fail-soft e reusa `saveCachedBody`
+  // pra que execuções seguintes reutilizem o body (evita refetch repetido).
+  // O prefetch (`prefetchUseMelhorBodies`, async) roda no `main()` do CLI,
+  // ANTES desta função — não aqui: `stitchNewsletter` é SÍNCRONA e 55 arquivos
+  // de teste dependem dessa assinatura. A versão anterior desta PR tinha o
+  // `await` aqui dentro (TS1308, `await` fora de função async), o que fazia o
+  // tsx nem compilar o módulo e derrubava os 5 arquivos de teste que o
+  // importam — o "test: fail" do CI era isso, não os testes em si.
   const useMelhor = renderUseMelhorSection(approved.use_melhor ?? [], {
-    bodiesDir: join(input.editionDir, "_internal", "_forensic", "link-verify-bodies"),
+    bodiesDir: useMelhorBodiesDir,
     instrumentation: useMelhorTempoInstrumentation,
   });
   writeUseMelhorTempoInstrumentation(input.editionDir, useMelhorTempoInstrumentation);
@@ -951,7 +1027,7 @@ export function regenerateHubDivulgacaoBoxForEdition(
   }
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const { values } = parseArgs(process.argv.slice(2));
   const editionDirArg = values["edition-dir"];
@@ -1018,6 +1094,16 @@ function main(): void {
       aammdd: editionAammdd,
       boxesCfg: boxesCfgLoaded,
     });
+
+    // #7668 item 2: fallback de busca sob demanda dos bodies de USE MELHOR,
+    // ANTES do stitch. Aqui, no caller assíncrono, porque `stitchNewsletter`
+    // é síncrona por contrato (ver comentário lá). Fail-soft: item sem body
+    // continua caindo na heurística de título, como antes.
+    const approvedForPrefetch = JSON.parse(readFileSync(approvedCappedPath, "utf8")) as { use_melhor?: ArticleLike[] };
+    await prefetchUseMelhorBodies(
+      approvedForPrefetch.use_melhor ?? [],
+      join(editionDir, "_internal", "_forensic", "link-verify-bodies"),
+    );
 
     const out = stitchNewsletter({
       d1Path: join(editionDir, "_internal", "02-d1-draft.md"),
@@ -1096,4 +1182,9 @@ function main(): void {
 }
 
 const isDirectRun = isMainModule(import.meta.url);
-if (isDirectRun) main();
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error(`[stitch-newsletter] falha inesperada: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+    process.exit(1);
+  });
+}
