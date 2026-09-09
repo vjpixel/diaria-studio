@@ -1366,3 +1366,33 @@ describe("#7665 — Diaria-Onboarding-Continuity-Alarm registrada, diária, syst
     assert.ok(!others.some((s) => s.script === "scripts/onboarding-continuity-alarm.ts"));
   });
 });
+
+describe("#7663 — Diaria-Kv-Image-Binding-Smoke registrada, diária, DECLARADA e NÃO ARMADA", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária às 06:45, enabled: false", () => {
+    const t = getScheduledTaskByName("Diaria-Kv-Image-Binding-Smoke");
+    assert.ok(t, "Diaria-Kv-Image-Binding-Smoke ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/check-kv-image-binding.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 6, minute: 45 });
+    assert.equal(t!.enabled, false);
+    assert.equal(t!.issue, "#7663");
+  });
+
+  it("horário de 06:45 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Kv-Image-Binding-Smoke" && t.schedule.hour === 6 && t.schedule.minute === 45,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const others = SCHEDULED_TASKS.filter((t) => t.name !== "Diaria-Kv-Image-Binding-Smoke").flatMap((t) => t.steps);
+    assert.ok(!others.some((s) => s.script === "scripts/check-kv-image-binding.ts"));
+  });
+});
