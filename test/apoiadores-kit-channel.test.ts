@@ -84,7 +84,9 @@ describe("#7633 — checkApoiadoresAudienceNotEmpty", () => {
   });
 
   it("pelo menos 1 membro -> ok", () => {
-    assert.deepEqual(checkApoiadoresAudienceNotEmpty("apoio-mensal", 1), { ok: true });
+    // #7681: o `ok` passou a carregar `memberCount` — o guard devolve o número
+    // que validou, em vez de exigir uma 2ª consulta pra logá-lo.
+    assert.deepEqual(checkApoiadoresAudienceNotEmpty("apoio-mensal", 1), { ok: true, memberCount: 1 });
   });
 });
 
@@ -153,7 +155,8 @@ describe("#7633 — evaluateApoiadoresBlastRadius", () => {
 describe("#7651 — resolveApoiadoresAudience", () => {
   const nomeOk = { ok: true, tagName: "apoio-mensal" } as const;
   const idOk = { ok: true, tagId: 42 } as const;
-  const membrosOk = { ok: true } as const;
+  // #7681: o guard de audiência passou a devolver o `memberCount` que validou.
+  const membrosOk = { ok: true, memberCount: 8 } as const;
   const falhou = { ok: false, reason: "motivo qualquer" } as const;
 
   it("os 3 guards ok -> devolve a prova com tagId e tagName", () => {
@@ -161,6 +164,7 @@ describe("#7651 — resolveApoiadoresAudience", () => {
     assert.ok(audiencia);
     assert.equal(audiencia.tagId, 42);
     assert.equal(audiencia.tagName, "apoio-mensal");
+    assert.equal(audiencia.memberCount, 8, "a prova carrega o tamanho conferido, pro log do caller");
   });
 
   // Cada guard sozinho basta pra negar a prova — é o ponto do tipo: não existe

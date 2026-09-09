@@ -37,14 +37,20 @@
  * Mantenedor mudar, ela muda LÁ, e as tags acompanham na próxima
  * sincronização.
  *
- * ## Relação com `lib/mensal/apoiadores-kit-channel.ts`
+ * ## Quem usa
  *
- * Aquele módulo (#7633) é o irmão mais velho: mesmas regras, fixadas em
- * Mantenedor/Patrono. Ele NÃO foi reescrito sobre este aqui porque tem uma PR
- * em voo tocando-o (#7651) e o conflito custaria mais do que a duplicação
- * temporária vale — a dobra está registrada como issue de follow-up, e
- * `test/kit-apoio-tag-parity.test.ts` trava as duas implementações contra os
- * MESMOS casos, pra que não divirjam em silêncio enquanto convivem.
+ * Os dois canais do formato, ambos como FACHADA fina sobre este módulo desde
+ * o #7681 — não há mais uma 2ª implementação destas regras em lugar nenhum:
+ *
+ *   - `lib/mensal/apoiadores-kit-channel.ts` (#7633) — envio extra mensal,
+ *     tag `apoio-mensal`, Mantenedor/Patrono (R$25+).
+ *   - `lib/artigo-especial-kit-channel.ts` (#7659) — e-mail do Artigo
+ *     Especial, tag `apoio-especial`, Apoiador+ (R$10+).
+ *
+ * Enquanto as duas implementações conviveram (entre o #7659 e o #7681, porque
+ * a #7651 estava em voo tocando o módulo mensal), um teste de paridade travava
+ * as duas contra os mesmos casos. Com a dobra feita ele saiu: compararia um
+ * módulo consigo mesmo.
  */
 
 import type { ApoioNivel } from "./apoio-nivel-types.ts";
@@ -142,6 +148,7 @@ export async function resolveVerifiedAudience(
   configPath: string,
   syncCommand: string,
   lookup: (tagName: string) => Promise<{ tagId: number | null; memberCount: number }>,
+  niveis?: readonly ApoioNivel[],
 ): Promise<AudienceResolution> {
   const name = resolveAudienceTagName(rawTagName, configPath);
   if (!name.ok) return name;
@@ -150,7 +157,7 @@ export async function resolveVerifiedAudience(
   const id = resolveAudienceTagId(name.tagName, rawId, syncCommand);
   if (!id.ok) return id;
 
-  const check = checkAudienceNotEmpty(name.tagName, memberCount, syncCommand);
+  const check = checkAudienceNotEmpty(name.tagName, memberCount, syncCommand, niveis);
   if (!check.ok) return check;
 
   return {
@@ -166,17 +173,28 @@ export async function resolveVerifiedAudience(
  * cenário é ainda mais provável, porque a tag só existe depois de um `--push`
  * do sync de audiência — nunca "por padrão".
  */
-export function checkAudienceNotEmpty(tagName: string, memberCount: number, syncCommand: string): AudienceCheck {
+export function checkAudienceNotEmpty(
+  tagName: string,
+  memberCount: number,
+  syncCommand: string,
+  niveis?: readonly ApoioNivel[],
+): AudienceCheck {
   if (!Number.isInteger(memberCount) || memberCount < 0) {
     return { ok: false, reason: `contagem de membros inválida para a tag "${tagName}": ${String(memberCount)}.` };
   }
   if (memberCount === 0) {
+    // Os níveis entram na mensagem quando o canal os informa: a versão
+    // genérica dizia só "o apoio_nivel esperado", e quem lê a recusa teria de
+    // ir descobrir em outro lugar QUAIS níveis a tag deveria conter — um
+    // salto a mais justamente no momento de depurar (achado do
+    // silent-failure-hunter no review da #7681).
+    const quais = niveis?.length ? `${niveis.join("/")}` : "o nível esperado";
     return {
       ok: false,
       reason:
         `tag "${tagName}" resolveu (id válido) mas está VAZIA — 0 membros. Recusando criar um broadcast ` +
         `que reportaria sucesso sem entregar a ninguém. Rode '${syncCommand}' e confira se há assinante ` +
-        "com o apoio_nivel esperado gravado no Kit (sync-apoio-nivel-kit.ts).",
+        `com apoio_nivel ${quais} gravado no Kit (sync-apoio-nivel-kit.ts).`,
     };
   }
   return { ok: true, memberCount };

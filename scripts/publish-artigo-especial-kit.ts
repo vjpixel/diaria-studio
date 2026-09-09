@@ -68,6 +68,7 @@ import {
 import { getBroadcast } from "./lib/kit-client.ts";
 import { readArtigoMeta, type ArtigoEspecialMeta } from "./lib/artigo-especial-meta.ts";
 import {
+  ARTIGO_ESPECIAL_EMAIL_NIVEIS,
   ARTIGO_ESPECIAL_TAG_SYNC_COMMAND,
   ArtigoEspecialKitGuardError,
   readPlatformConfig,
@@ -397,6 +398,7 @@ async function runPublishArtigoEspecialKitInner(options: RunOptions): Promise<vo
       const tagId = await deps.findTagId(name, kitConfig);
       return { tagId, memberCount: tagId === null ? 0 : await deps.countTagMembers(tagId, kitConfig) };
     },
+    ARTIGO_ESPECIAL_EMAIL_NIVEIS,
   );
   if (!audienceResolution.ok) throw new ArtigoEspecialKitGuardError(audienceResolution.reason);
   const audience = audienceResolution.audience;
