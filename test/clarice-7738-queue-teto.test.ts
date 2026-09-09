@@ -32,7 +32,7 @@ describe("#7738 wiring real — queued vs committed (não #7784)", () => {
     const queued = new Set(["list-A"]);
     const committed = new Set(["list-B"]);
     const q = buildDailySendQueue(rows, { queuedListIds: queued, committedListIds: committed });
-    expect(q.map((r: any) => r.email)).toEqual(["e1@test.com", "w1@test.com"]); // ambos elegíveis se listas não estão no guard
+    assert.deepStrictEqual(q.map((r: any) => r.email), ["e1@test.com", "w1@test.com"]); // ambos elegíveis se listas não estão no guard
     // Se queued tem list-A, e1 sai; se committed tem list-B, w1 sai — wiring correto.
     const qBlocked = buildDailySendQueue(rows, { queuedListIds: new Set(["list-A"]), committedListIds: new Set(["list-B"]) });
     assert.strictEqual(qBlocked.length, 0); // ambos bloqueados pelo guard correto
@@ -44,7 +44,7 @@ describe("#7738 wiring real — queued vs committed (não #7784)", () => {
     const wrong = buildDailySendQueue([r], { queuedListIds: new Set(), committedListIds: new Set(["X"]) });
     // Com #7784 o engajado seria filtrado por committed (errado); com wiring real, queued está vazio → passa (correto)
     // O teste assertivo: se queued tem X, deve sair.
-    expect(buildDailySendQueue([r], { queuedListIds: new Set(["X"]), committedListIds: new Set() })).toHaveLength(0);
+    assert.strictEqual(buildDailySendQueue([r], { queuedListIds: new Set(["X"]), committedListIds: new Set() }).length, 0);
   });
 });
 
@@ -70,8 +70,8 @@ describe("#7738 pool suficiente / insuficiente / fallback", () => {
   it("nunca retorna > eligible real (capacidade não superestimada)", () => {
     const rows = [row("a@test.com", { sends_count: 0, brevo_list_ids: "L1" })];
     // Com guard vazio → 1; com guard contendo L1 → 0
-    expect(computeDailyQueueAvailable(rows, { queuedListIds: new Set(), committedListIds: new Set() })).toBe(1);
-    expect(computeDailyQueueAvailable(rows, { committedListIds: new Set(["L1"]), queuedListIds: new Set() })).toBe(0);
+    assert.strictEqual(computeDailyQueueAvailable(rows, { queuedListIds: new Set(), committedListIds: new Set() }), 1);
+    assert.strictEqual(computeDailyQueueAvailable(rows, { committedListIds: new Set(["L1"]), queuedListIds: new Set() }), 0);
   });
 });
 
@@ -83,7 +83,7 @@ describe("#7738 distinção 1º-envio vitalício vs fila unificada", () => {
     // Sem guard: fila unificada = 1; 1º-envio também = 1 (coincidente para este caso isolado)
     // Mas se já recebeu e tem score > 0, fila unificada conta, 1º-envio não.
     const sent = [row("eng@test.com", { sends_count: 2, priority_points: 10, brevo_list_ids: "L" })];
-    expect(computeDailyQueueAvailable(sent, { queuedListIds: new Set(), committedListIds: new Set() })).toBe(1);
+    assert.strictEqual(computeDailyQueueAvailable(sent, { queuedListIds: new Set(), committedListIds: new Set() }), 1);
     // 1º-envio para esse caso seria 0 (sends_count>0)
   });
 });
