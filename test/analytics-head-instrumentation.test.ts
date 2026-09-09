@@ -30,7 +30,10 @@ import { renderAppPage } from "../workers/arquivo/src/render-app.ts";
 import { renderPrivacyPage } from "../workers/arquivo/src/render-privacy.ts";
 import { buildArchiveHtml } from "../workers/arquivo/src/render-archive.ts";
 import { renderGatePage } from "../workers/cursos/src/gate-page.ts";
-import { renderConfirmadoPage } from "../workers/poll/src/confirmado.ts";
+// #7737: renderConfirmadoPage mudou de workers/poll/src/confirmado.ts
+// (agora só um 301 pro apex) pra scripts/lib/shared/confirmado-page.ts —
+// consumida pelo Worker `site` (diar.ia.br/confirmado).
+import { renderConfirmadoPage } from "../scripts/lib/shared/confirmado-page.ts";
 import { renderJogarPageHtml, renderJogarSequencePageHtml, renderJogarArchiveHtml, renderJogarQuizPageHtml } from "../workers/poll/src/jogar.ts";
 import { renderSharePageHtml, renderQuizSharePageHtml } from "../workers/poll/src/share.ts";
 import { renderArchiveListHtml, renderArchiveVoteHtml, handleLeaderboard } from "../workers/poll/src/leaderboard-routes.ts";
@@ -117,7 +120,7 @@ describe("sweep de renderers — todo <head> emite o container GTM (#5498)", () 
     assertGtmInHead(renderGatePage(), "renderGatePage");
   });
 
-  it("workers/poll/src/confirmado.ts — renderConfirmadoPage", () => {
+  it("scripts/lib/shared/confirmado-page.ts — renderConfirmadoPage (#7737, era workers/poll/src/confirmado.ts)", () => {
     assertGtmInHead(renderConfirmadoPage(), "renderConfirmadoPage");
   });
 

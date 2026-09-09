@@ -507,10 +507,11 @@ import { handleJogarArchivePage, handleJogarPage, handleJogarQuizPage, handleJog
 // inline antigo usava via `resolveSubscribeUtm("vote-clarice")`.
 import { handleJogarSubscribe, subscribeViaConfiguredBackend, VOTE_CLARICE_SET_NAME_REFERRING_SITE } from "./subscribe"; // #6291: função única, ramifica por SUBSCRIBE_BACKEND internamente
 import { VOTE_CLARICE_INLINE_UTM } from "./utm-registry";
-// #5167 item 7: página de destino do double opt-in (opt_in_redirect_url,
-// ver docstring de confirmado.ts) — sem KV/brand, mesmo padrão de
-// /jogar/arquivo, /robots.txt, /sitemap.xml abaixo.
-import { handleConfirmadoPage } from "./confirmado";
+// #5167 item 7: destino do double opt-in (opt_in_redirect_url, ver docstring
+// de confirmado.ts). #7737: a página real mudou pro apex (Worker `site`) —
+// esta rota agora só devolve 301 pra lá, mas fica no ar (link já entregue
+// em e-mails de confirmação).
+import { handleConfirmadoRedirect } from "./confirmado";
 // #4054: gate por rodada do caminho de fora — tela + verify + subscribe.
 import { clearWebSessionCookieHeader, handleJogarGateSubscribe, handleJogarGateVerify, renderJogarGatePage } from "./web-gate";
 // #3975: identidade por e-mail no leaderboard do brand web (POST
@@ -1827,9 +1828,10 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // #4054: 3º arg `request` — habilita o gate por rodada (contador de
     // rodadas jogadas, #4253 item 3 + checagem de sessão), ver rationale em jogar.ts.
     if (path === "/jogar" && request.method === "GET") return handleJogarPage(url, env, request);
-    // #5167 item 7: destino do double opt-in da Beehiiv — página estática,
-    // sem KV/brand (mesmo racional de /robots.txt/sitemap.xml abaixo).
-    if (path === "/confirmado" && request.method === "GET") return handleConfirmadoPage();
+    // #5167 item 7: destino do double opt-in da Beehiiv/Kit. #7737: 301 pro
+    // apex (diar.ia.br/confirmado, Worker `site`) — a página real não mora
+    // mais aqui, só o redirect (ver docstring de confirmado.ts).
+    if (path === "/confirmado" && request.method === "GET") return handleConfirmadoRedirect();
     // #3519: arquivo de pares passados (índice) — mesmo racional acima:
     // `env` cru, lê `correct:{edition}` compartilhado, não `bEnv`.
     if (path === "/jogar/arquivo" && request.method === "GET") return handleJogarArchivePage(url, env);

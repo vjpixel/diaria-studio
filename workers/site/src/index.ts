@@ -49,6 +49,11 @@
 import { EXPECTED_SUBSCRIBE_REDIRECT_HOST } from "../../../scripts/lib/apex-cutover.ts";
 // #7657: mesmo miolo que workers/poll usa em eia.diar.ia.br/img/{key}.
 import { imageKeyFromPath, serveKvImage, type KvImageStore } from "../../../scripts/lib/shared/kv-image.ts";
+// #7737: página de confirmação do double opt-in, movida de
+// eia.diar.ia.br/confirmado (Worker `poll`, que agora só faz 301 pra cá) —
+// render puro em scripts/lib/shared/, sem import cross-worker (ver
+// docstring do módulo).
+import { handleConfirmadoPage } from "../../../scripts/lib/shared/confirmado-page.ts";
 
 export interface Env {
   ASSETS: Fetcher;
@@ -73,12 +78,23 @@ export default {
     // e HEAD: o KV é leitura pura, qualquer outro método cai no fluxo de
     // sempre e termina no 404 do asset (mesmo critério do dispatch de
     // `/img/*` em workers/poll/src/index.ts).
-    const imageUrl = new URL(request.url);
+    // reqUrl: parse único reusado pelos dispatches abaixo que precisam do
+    // pathname ANTES do asset lookup (/img/{key} e /confirmado) — nome não
+    // é mais "imageUrl" desde que o 2º dispatch (#7737) passou a usá-lo.
+    const reqUrl = new URL(request.url);
     if (request.method === "GET" || request.method === "HEAD") {
-      const key = imageKeyFromPath(imageUrl.pathname);
+      const key = imageKeyFromPath(reqUrl.pathname);
       if (key !== null) {
         return serveKvImage(key, env.POLL, request.headers.get("If-None-Match"));
       }
+    }
+
+    // #7737: /confirmado — sem arquivo em public/, mesmo racional do
+    // /img/{key} acima: resolvido ANTES do asset lookup pra não gastar um
+    // 404 desnecessário. Só GET, mesmo critério do dispatch em
+    // workers/poll/src/index.ts (que agora só redireciona pra cá).
+    if (request.method === "GET" && reqUrl.pathname === "/confirmado") {
+      return handleConfirmadoPage();
     }
 
     const response = await env.ASSETS.fetch(request);
