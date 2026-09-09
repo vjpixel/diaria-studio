@@ -67,15 +67,22 @@ const EXPECTED_HOSTS = [
   "livros:livros.diar.ia.br",
   "poll:eia.diar.ia.br",
   // #7658/#7709: os Workers `anual` e `artigo-mensal` viraram um só
-  // (`workers/retrospectiva`), que serve TRÊS hosts — o domínio novo mais os
-  // dois antigos, preservados pra devolver 301 em vez de quebrar links que já
-  // saíram em e-mail com UTM.
+  // (`workers/retrospectiva`), que declara TRÊS `custom_domain` — o domínio
+  // novo mais os dois antigos, preservados pra devolver 301 em vez de quebrar
+  // links que já saíram em e-mail com UTM.
   //
-  // A chave é `worker:host`, então um Worker com N `custom_domain` contribui
-  // com N entradas — o guard continua exigindo `/robots.txt` próprio POR HOST,
-  // que é a propriedade do #4777. Um host que só redireciona também precisa
-  // responder robots: enquanto o 301 não é seguido, é o robots dele que o
-  // crawler lê.
+  // As 3 entradas saem da chave ser `worker:host`: a descoberta lê os blocos
+  // `[[routes]]` do `wrangler.toml`, então um Worker com N `custom_domain`
+  // contribui com N linhas. É contagem de DOMÍNIO DECLARADO, não promessa de
+  // que cada host sirva um robots próprio.
+  //
+  // E, nos dois hosts antigos, ele não serve mesmo: `workers/retrospectiva/
+  // src/index.ts` redireciona por host ANTES de olhar o path, então
+  // `anual.diar.ia.br/robots.txt` devolve 301 — de propósito, pra não manter o
+  // host antigo vivo no índice (`test/worker-retrospectiva-router-7658.test.ts`
+  // trava isso). O que este guard checa é estrutural e por WORKER: que exista
+  // rota de `/robots.txt` no código, em vez do default da Cloudflare (#4777).
+  // Pro conjunto acima, quem responde robots de verdade é o host canônico.
   "retrospectiva:anual.diar.ia.br",
   "retrospectiva:artigo.diar.ia.br",
   "retrospectiva:retrospectiva.diar.ia.br",
