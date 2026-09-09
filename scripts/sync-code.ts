@@ -94,6 +94,26 @@ if (result.outcome === "preexisting_unmerged_state") {
   );
 }
 
+// #7740: banner — um stash deste sync ficou preservado (pop falhou ou
+// conflitou) sem ser recuperado automaticamente. Cobre os outcomes que os
+// banners #6668/#6800 acima NÃO cobrem (`stash_pop_failed`, `ff_failed` com
+// pop também falho, `stash_partial_failure_unrecovered`) — o vazamento que a
+// #7740 descreve era exatamente este: o stash ficava pra trás sem nenhum
+// sinal legível apontando de volta pra ele. O stash em si já é identificável
+// em `git stash list` pela mensagem (ver `GIT_SYNC_STASH_MESSAGE`, gravada no
+// próprio stash desde este fix) — o banner só garante que o operador VEJA
+// isso agora, não precise descobrir via análise forense depois (como a #7740
+// precisou fazer pros 248 acumulados).
+if (result.preserved_stash) {
+  process.stderr.write(
+    `\n📦 STASH PRESERVADO (não recuperado) — outcome '${result.outcome}'.\n` +
+      `   ref: ${result.preserved_stash.ref ?? "(não capturado)"} | mensagem identificável: ` +
+      `'${result.preserved_stash.message}'.\n` +
+      `   Localizar: git stash list | grep -F '${result.preserved_stash.message}'\n` +
+      `   Resolver: git stash show -p <ref> ; git status ; git diff — NÃO 'git stash drop' até revisar.\n\n`,
+  );
+}
+
 // #7336: banner — sync foi recusado por rodar dentro de um worktree de
 // agente. Ainda fail-soft (exit 0 abaixo, inalterado) — o chamador que
 // invocou este script de dentro de um worktree provavelmente tem um bug de

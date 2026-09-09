@@ -45,6 +45,7 @@ const NOOP_SYNC_RESULT: GitSyncResult = {
   proceed: true,
   up_to_date: true,
   commits_behind: 0,
+  preserved_stash: null,
 };
 const NOOP_SYNC = (): GitSyncResult => NOOP_SYNC_RESULT;
 
@@ -495,6 +496,7 @@ describe("runScheduledTask — sync de código antes dos passos (#6431)", () => 
       proceed: true,
       up_to_date: true,
       commits_behind: 0,
+      preserved_stash: null,
     };
 
     let syncCalled = false;
@@ -568,6 +570,7 @@ describe("runScheduledTask — sync de código antes dos passos (#6431)", () => 
       proceed: true,
       up_to_date: false,
       commits_behind: -1,
+      preserved_stash: null,
     };
     const success: GitSyncResult = {
       outcome: "synced",
@@ -577,6 +580,7 @@ describe("runScheduledTask — sync de código antes dos passos (#6431)", () => 
       proceed: true,
       up_to_date: true,
       commits_behind: 0,
+      preserved_stash: null,
     };
 
     let calls = 0;
@@ -610,6 +614,7 @@ describe("runScheduledTask — sync de código antes dos passos (#6431)", () => 
       proceed: true,
       up_to_date: false,
       commits_behind: -1,
+      preserved_stash: null,
     };
 
     let calls = 0;
@@ -647,6 +652,7 @@ describe("runScheduledTask — sync de código antes dos passos (#6431)", () => 
       proceed: true,
       up_to_date: false,
       commits_behind: 3,
+      preserved_stash: null,
     };
 
     const result = runScheduledTask(baseDef(), {

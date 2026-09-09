@@ -46,6 +46,7 @@ import {
   GIT_FETCH_TIMEOUT_MS,
   MAX_SEQUENTIAL_GIT_SPAWNS,
   LOCK_STALE_MS,
+  GIT_SYNC_STASH_MESSAGE,
   type SpawnFn,
   type SpawnResult,
   type SyncLock,
@@ -86,6 +87,15 @@ const NOOP_LOCK: SyncLock = {
  * mascarando os cenários que cada teste de fato quer exercitar.
  */
 const MAIN_CHECKOUT = "/home/editor/diaria-studio";
+
+/**
+ * #7740: chave do `makeSpawn()` para `git stash push --include-untracked -m
+ * <mensagem>` — construída a partir de `GIT_SYNC_STASH_MESSAGE` (não
+ * hardcoded) para que a suíte quebre em COMPILE-TIME/runtime se o comando
+ * ou a mensagem divergirem do código de produção, em vez de silenciosamente
+ * testar uma chave que o `syncCode()` real nunca chama.
+ */
+const STASH_PUSH_KEY = `git stash push --include-untracked -m ${GIT_SYNC_STASH_MESSAGE}`;
 
 /**
  * Constrói um SpawnFn a partir de um mapa de "git <args[0]> <args[1]>" → resultado.
@@ -214,7 +224,7 @@ describe("git-sync — cenários de sucesso", () => {
       "git rev-parse --abbrev-ref HEAD": ok("master"),
       "git fetch origin": ok(""),
       "git status --porcelain": ok(" M .claude/settings.json\n M seed/lancamentos-tool-allowlist.txt"),
-      "git stash --include-untracked": ok("Saved working directory..."),
+      [STASH_PUSH_KEY]: ok("Saved working directory..."),
       "git merge --ff-only origin/master": ok("Fast-forward\n 3 files changed"),
       "git stash pop": ok("On branch master..."),
     });
@@ -230,7 +240,7 @@ describe("git-sync — cenários de sucesso", () => {
       "git rev-parse --abbrev-ref HEAD": ok("master"),
       "git fetch origin": ok(""),
       "git status --porcelain": ok(" M .claude/settings.local.json"),
-      "git stash --include-untracked": ok("Saved working directory..."),
+      [STASH_PUSH_KEY]: ok("Saved working directory..."),
       "git merge --ff-only origin/master": ok("Already up to date."),
       "git stash pop": ok(""),
     });
@@ -247,7 +257,8 @@ describe("git-sync — dirty tree edge cases", () => {
       "git rev-parse --abbrev-ref HEAD": ok("master"),
       "git fetch origin": ok(""),
       "git status --porcelain": ok(" M .claude/settings.json"),
-      "git stash --include-untracked": ok("Saved working directory..."),
+      [STASH_PUSH_KEY]: ok("Saved working directory..."),
+      "git rev-parse refs/stash": ok("abc1234\n"),
       "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
       "git stash pop": fail("CONFLICT (content): Merge conflict in .claude/settings.json"),
     });
@@ -258,12 +269,52 @@ describe("git-sync — dirty tree edge cases", () => {
     assert.ok(r.warnings.some((w) => /stash pop/i.test(w)));
   });
 
+  it("#7740: stash pop falhou → stash NÃO fica órfão silenciosamente — preserved_stash reporta ref+mensagem identificável", () => {
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("master"),
+      "git fetch origin": ok(""),
+      "git status --porcelain": ok(" M .claude/settings.json"),
+      [STASH_PUSH_KEY]: ok("Saved working directory..."),
+      "git rev-parse refs/stash": ok("abc1234\n"),
+      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
+      "git stash pop": fail("CONFLICT (content): Merge conflict in .claude/settings.json"),
+    });
+
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+    assert.equal(r.outcome, "stash_pop_failed");
+    // #7740: dado ESTRUTURADO do stash preservado, não só texto solto em warnings.
+    assert.deepEqual(r.preserved_stash, { ref: "abc1234", message: GIT_SYNC_STASH_MESSAGE });
+    // A mensagem do próprio comando de criação já é a mensagem identificável —
+    // não a mensagem default do git ("WIP on <branch>: ...", indistinguível de
+    // um stash manual de sessão interativa, a raiz do vazamento da #7740).
+    assert.ok(
+      r.warnings.some((w) => w.includes(GIT_SYNC_STASH_MESSAGE)),
+      "warning deve citar a mensagem identificável do stash preservado",
+    );
+  });
+
+  it("#7740: stash pop popou com sucesso (caso comum) → preserved_stash é null, nenhum stash órfão", () => {
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("master"),
+      "git fetch origin": ok(""),
+      "git status --porcelain": ok(" M .claude/settings.json"),
+      [STASH_PUSH_KEY]: ok("Saved working directory..."),
+      "git rev-parse refs/stash": ok("abc1234\n"),
+      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
+      "git stash pop": ok("Dropped refs/stash@{0}"),
+    });
+
+    const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+    assert.equal(r.outcome, "synced_stashed");
+    assert.equal(r.preserved_stash, null);
+  });
+
   it("stash falhou → 'stash_failed', tree não tocada, proceed=true", () => {
     const spawn = makeSpawn({
       "git rev-parse --abbrev-ref HEAD": ok("master"),
       "git fetch origin": ok(""),
       "git status --porcelain": ok(" M .claude/settings.json"),
-      "git stash --include-untracked": fail("error: cannot stash"),
+      [STASH_PUSH_KEY]: fail("error: cannot stash"),
     });
 
     const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
@@ -282,7 +333,7 @@ describe("git-sync — dirty tree edge cases", () => {
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
         "git status --porcelain": ok(" M .claude/settings.json"),
-        "git stash --include-untracked": ok("No local changes to save"),
+        [STASH_PUSH_KEY]: ok("No local changes to save"),
         "git merge --ff-only origin/master": ok("Already up to date."),
       })(cmd, args);
     };
@@ -307,7 +358,7 @@ describe("git-sync — dirty tree edge cases", () => {
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
         "git status --porcelain": fail("fatal: unable to read index"), // força dirty
-        "git stash --include-untracked": ok("No local changes to save"),
+        [STASH_PUSH_KEY]: ok("No local changes to save"),
         "git merge --ff-only origin/master": ok("Fast-forward\n 2 files changed"),
       })(cmd, args);
     };
@@ -346,7 +397,7 @@ describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco
       return makeSpawn({
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
-        "git stash --include-untracked": ok("Saved working directory..."),
+        [STASH_PUSH_KEY]: ok("Saved working directory..."),
         "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
         "git stash pop": fail("CONFLICT (content): Merge conflict in hermes/skills/hermes-diaria-continuo/SKILL.md"),
       })(cmd, args);
@@ -358,6 +409,9 @@ describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco
     assert.match(r.message, /ERROR/, "mensagem deve ser ERROR, mais forte que o WARN genérico");
     assert.match(r.message, /SKILL\.md/, "mensagem deve nomear o arquivo em conflito");
     assert.ok(r.warnings.some((w) => /stash_pop_conflict|UU|unmerged|conflito n[aã]o/i.test(w) || /ERROR/.test(w)));
+    // #7740: mesmo com marcador de conflito no disco (#6668), o stash em si não
+    // fica órfão sem ninguém saber — reportado estruturado.
+    assert.equal(r.preserved_stash?.message, GIT_SYNC_STASH_MESSAGE);
   });
 
   it("stash pop retorna exit 0 MAS deixa arquivo UU (defensivo) → ainda 'stash_pop_conflict'", () => {
@@ -374,7 +428,7 @@ describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco
       return makeSpawn({
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
-        "git stash --include-untracked": ok("Saved working directory..."),
+        [STASH_PUSH_KEY]: ok("Saved working directory..."),
         "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
         "git stash pop": ok("On branch master..."), // exit 0, apesar disso
       })(cmd, args);
@@ -403,7 +457,7 @@ describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco
       return makeSpawn({
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
-        "git stash --include-untracked": ok("Saved working directory..."),
+        [STASH_PUSH_KEY]: ok("Saved working directory..."),
         "git merge --ff-only origin/master": fail("fatal: Not possible to fast-forward, aborting."),
         "git stash pop": fail("CONFLICT (content): Merge conflict in arquivo.txt"),
       })(cmd, args);
@@ -430,7 +484,7 @@ describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco
       return makeSpawn({
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
-        "git stash --include-untracked": ok("Saved working directory..."),
+        [STASH_PUSH_KEY]: ok("Saved working directory..."),
         "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
         "git stash pop": fail("CONFLICT (content): Merge conflict in arquivo.txt"),
       })(cmd, args);
@@ -455,7 +509,7 @@ describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco
       "git rev-parse --abbrev-ref HEAD": ok("master"),
       "git fetch origin": ok(""),
       "git status --porcelain": ok(" M .claude/settings.json"),
-      "git stash --include-untracked": ok("Saved working directory..."),
+      [STASH_PUSH_KEY]: ok("Saved working directory..."),
       "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
       "git stash pop": ok("On branch master..."),
     });
@@ -528,7 +582,7 @@ describe("git-sync — #6800: estado ABSORVENTE (caminho(s) já unmerged ANTES d
       "git rev-parse --abbrev-ref HEAD": ok("master"),
       "git fetch origin": ok(""),
       "git status --porcelain": ok(" M arquivo-normal.txt"),
-      "git stash --include-untracked": ok("Saved working directory..."),
+      [STASH_PUSH_KEY]: ok("Saved working directory..."),
       "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
       "git stash pop": ok("On branch master..."),
     });
@@ -542,7 +596,7 @@ describe("git-sync — #6800: estado ABSORVENTE (caminho(s) já unmerged ANTES d
       "git rev-parse --abbrev-ref HEAD": ok("master"),
       "git fetch origin": ok(""),
       "git status --porcelain": fail("fatal: unable to read index file", 1),
-      "git stash --include-untracked": ok("Saved working directory..."),
+      [STASH_PUSH_KEY]: ok("Saved working directory..."),
       "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
       "git stash pop": ok("On branch master..."),
     });
@@ -576,7 +630,7 @@ describe("git-sync — #6800: estado ABSORVENTE (caminho(s) já unmerged ANTES d
       "git status --porcelain": ok(" M arquivo-normal.txt"),
       "git checkout master": ok("Switched to branch 'master'"),
       "git fetch origin": ok(""),
-      "git stash --include-untracked": ok("Saved working directory..."),
+      [STASH_PUSH_KEY]: ok("Saved working directory..."),
       "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
       "git stash pop": ok("On branch master..."),
     });
@@ -625,7 +679,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
         "git status --porcelain": ok(" M arquivo.txt"),
-        "git stash --include-untracked": fail(
+        [STASH_PUSH_KEY]: fail(
           "warning: failed to remove some/untracked/dir: Permission denied",
           1,
         ),
@@ -660,7 +714,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
         "git status --porcelain": ok(" M arquivo.txt"),
-        "git stash --include-untracked": fail(
+        [STASH_PUSH_KEY]: fail(
           "warning: failed to remove some/untracked/dir: Permission denied",
           1,
         ),
@@ -692,7 +746,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
           "fatal: ambiguous argument 'refs/stash': unknown revision",
           128,
         ),
-        "git stash --include-untracked": fail("error: cannot stash"),
+        [STASH_PUSH_KEY]: fail("error: cannot stash"),
       })(cmd, args);
     };
 
@@ -718,7 +772,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
         "git status --porcelain": ok(" M arquivo.txt"),
         // mesmo hash antes E depois — nenhum stash NOVO foi criado
         "git rev-parse --verify refs/stash": ok("existing-stash-hash-999"),
-        "git stash --include-untracked": fail("error: cannot stash"),
+        [STASH_PUSH_KEY]: fail("error: cannot stash"),
       })(cmd, args);
     };
 
@@ -812,7 +866,7 @@ describe("git-sync — cenários de falha fail-soft", () => {
       "git rev-parse --abbrev-ref HEAD": ok("master"),
       "git fetch origin": ok(""),
       "git status --porcelain": ok(" M .claude/settings.json"),
-      "git stash --include-untracked": ok("Saved working directory..."),
+      [STASH_PUSH_KEY]: ok("Saved working directory..."),
       "git merge --ff-only origin/master": fail("fatal: Not possible to fast-forward"),
       "git stash pop": ok(""), // pop deve ser chamado mesmo com ff falho
     });
@@ -829,7 +883,7 @@ describe("git-sync — cenários de falha fail-soft", () => {
       "git rev-parse --abbrev-ref HEAD": ok("master"),
       "git fetch origin": ok(""),
       "git status --porcelain": ok(" M .claude/settings.json"),
-      "git stash --include-untracked": ok("Saved working directory..."),
+      [STASH_PUSH_KEY]: ok("Saved working directory..."),
       "git merge --ff-only origin/master": fail("fatal: Not possible to fast-forward, aborting."),
       "git stash pop": fail("CONFLICT (content): Merge conflict in .claude/settings.json"),
     });
@@ -850,12 +904,12 @@ describe("git-sync — robustez de detecção (locale + status)", () => {
     const stashCalled: boolean[] = [];
     const spawn: SpawnFn = (cmd, args) => {
       const key = [cmd, ...args].join(" ");
-      if (key === "git stash --include-untracked") stashCalled.push(true);
+      if (key === STASH_PUSH_KEY) stashCalled.push(true);
       return makeSpawn({
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
         "git status --porcelain": fail("fatal: unable to read index"),
-        "git stash --include-untracked": ok("Saved working directory..."),
+        [STASH_PUSH_KEY]: ok("Saved working directory..."),
         "git merge --ff-only origin/master": ok("Already up to date."),
         "git stash pop": ok(""),
       })(cmd, args);
@@ -877,7 +931,7 @@ describe("git-sync — robustez de detecção (locale + status)", () => {
         "git rev-parse --abbrev-ref HEAD": ok("master"),
         "git fetch origin": ok(""),
         "git status --porcelain": ok(" M .claude/settings.json"),
-        "git stash --include-untracked": ok("Não há mudanças locais para salvar"),
+        [STASH_PUSH_KEY]: ok("Não há mudanças locais para salvar"),
         "git merge --ff-only origin/master": ok("Already up to date."),
       })(cmd, args);
     };
@@ -1055,7 +1109,7 @@ describe("git-sync — #3423: TOCTOU race no stash-recovery, serializada via loc
         "git fetch origin": ok(""),
         "git status --porcelain": ok(" M arquivo-do-processo-A.txt"),
         "git rev-parse --verify refs/stash": ok("stash-do-processo-B"),
-        "git stash --include-untracked": fail("warning: failed to remove some/dir: Permission denied", 1),
+        [STASH_PUSH_KEY]: fail("warning: failed to remove some/dir: Permission denied", 1),
       })(cmd, args);
     };
 
@@ -1771,7 +1825,7 @@ describe("git-sync — #3435 finding 6: MAX_SEQUENTIAL_GIT_SPAWNS reflete a cont
         "git fetch origin": ok(""),
         "git status --porcelain": ok(" M arquivo.txt"),
         "git rev-parse --verify refs/stash": ok(""),
-        "git stash --include-untracked": ok("Saved working directory..."),
+        [STASH_PUSH_KEY]: ok("Saved working directory..."),
         "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
         "git stash pop": ok("On branch master..."),
       })(cmd, args);
@@ -1804,7 +1858,7 @@ describe("git-sync — #6090: up_to_date/commits_behind medidos via rev-list, nu
       "git fetch origin": ok(""),
       "git status --porcelain": ok(" M arquivo.txt"),
       "git rev-parse --verify refs/stash": ok(""),
-      "git stash --include-untracked": ok("Saved working directory..."),
+      [STASH_PUSH_KEY]: ok("Saved working directory..."),
       "git merge --ff-only origin/master": ok("Fast-forward"),
       "git stash pop": ok(""),
       "git rev-list --count HEAD..origin/master": ok("2\n"),
@@ -1815,7 +1869,7 @@ describe("git-sync — #6090: up_to_date/commits_behind medidos via rev-list, nu
     "git fetch origin",
     "git checkout master",
     "git status --porcelain",
-    "git stash --include-untracked",
+    STASH_PUSH_KEY,
     "git merge --ff-only origin/master",
   ]) {
     it(`outcome de falha (${key}) carrega up_to_date:false / commits_behind:2 e proceed:true`, () => {

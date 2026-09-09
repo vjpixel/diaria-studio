@@ -189,6 +189,23 @@ export type GitSyncOutcome =
                            // deve tratar como mais urgente que qualquer outro warning — ver
                            // #6800.
 
+/**
+ * #7740: mensagem identificável usada em TODO `git stash push` que este módulo
+ * cria (`git stash push --include-untracked -m GIT_SYNC_STASH_MESSAGE`), no
+ * lugar da mensagem default do git (`WIP on <branch>: <sha> <subject>`, o que
+ * `git stash --include-untracked` bare gera). Sem isso, um stash órfão (pop
+ * conflitante, #6668) fica INDISTINGUÍVEL no `git stash list` de qualquer
+ * `git stash` manual de uma sessão interativa — foi exatamente essa
+ * ambiguidade que impediu classificar automaticamente os 248 stashes
+ * acumulados citados na #7740 (a issue precisou de uma análise manual por
+ * árvore/timestamp). Com a mensagem fixa, `git stash list | grep -F
+ * "${GIT_SYNC_STASH_MESSAGE}"` isola confiavelmente os autostashes deste
+ * módulo — é o critério que uma futura limpeza (ou o alarme de contagem que a
+ * issue propõe) pode usar sem heurística. Exportado para reuso em scripts de
+ * auditoria/limpeza e nos testes.
+ */
+export const GIT_SYNC_STASH_MESSAGE = "diaria-git-sync-autostash";
+
 /** Resultado completo do sync. */
 export interface GitSyncResult {
   outcome: GitSyncOutcome;
@@ -210,6 +227,21 @@ export interface GitSyncResult {
    * `up_to_date`). `-1` = não foi possível medir (rev-list falhou).
    */
   commits_behind: number;
+  /**
+   * #7740: preenchido só quando este `syncCode()` termina com um stash NÃO
+   * recuperado (o `pop` falhou ou conflitou — outcomes `stash_pop_failed`,
+   * `stash_pop_conflict`, `stash_partial_failure_unrecovered`, e o caso
+   * `ff_failed` que ocorre no MESMO ponto do código que `stash_pop_failed`
+   * quando o merge --ff-only TAMBÉM falhou) — o SHA do stash (`refs/stash` no
+   * momento em que foi criado, pode ser `null` se o próprio `rev-parse` de
+   * captura falhar) e a mensagem identificável usada, para que o CONSUMIDOR
+   * (task-runner, sync-code.ts, orchestrator) tenha um dado ESTRUTURADO para
+   * reportar/logar em vez de só texto solto dentro de `warnings` — fecha o
+   * "reportar" do vazamento da #7740 (o stash em si já fica identificável via
+   * `GIT_SYNC_STASH_MESSAGE`, isto aqui é o ponteiro pronto pra esse stash
+   * específico). `null` em todo outcome que não preserva stash.
+   */
+  preserved_stash: { ref: string | null; message: string } | null;
 }
 
 /**
@@ -334,8 +366,18 @@ export interface LockFs {
  * master + unmerged pré-existente) caía no `checkout_failed` genérico em
  * vez do outcome específico que este fix introduz. Mesma categoria de
  * spawn rápido (`git status`), reflete automaticamente em `LOCK_STALE_MS`.
+ *
+ * #7740: o pior caso ganhou o 12º spawn — `rev-parse refs/stash` roda logo
+ * APÓS `git stash push` (dentro do ramo `stashedSomething`, ANTES do
+ * `git stash pop`), pra capturar o SHA do stash recém-criado enquanto ainda
+ * é o topo garantido da pilha — necessário para popular `preserved_stash` do
+ * resultado quando o pop que segue falha/conflita (o vazamento que a #7740
+ * corrige: sem esse ponteiro, um stash preservado por conflito fica sem
+ * referência estruturada de volta pra ele, só a mensagem identificável
+ * gravada no próprio stash via `GIT_SYNC_STASH_MESSAGE`). Mesma categoria de
+ * spawn rápido (`git rev-parse`), reflete automaticamente em `LOCK_STALE_MS`.
  */
-export const MAX_SEQUENTIAL_GIT_SPAWNS = 11;
+export const MAX_SEQUENTIAL_GIT_SPAWNS = 12;
 
 /**
  * Lock morto (processo dono crashou sem `release()`) é considerado stale após
@@ -871,6 +913,7 @@ export function syncCode(
       proceed: true,
       up_to_date: false,
       commits_behind: -1,
+      preserved_stash: null,
     };
   }
 
@@ -890,7 +933,7 @@ export function syncCode(
     // #6090: NESTE caminho NÃO medimos — o invariante do #3423 é que nenhum
     // comando git roda quando o lock está com outro processo (testado). Estado
     // fica desconhecido (-1/false), conservador.
-    return { outcome: "sync_in_progress", message: msg, branch_before: "unknown", warnings: [msg], proceed: true, up_to_date: false, commits_behind: -1 };
+    return { outcome: "sync_in_progress", message: msg, branch_before: "unknown", warnings: [msg], proceed: true, up_to_date: false, commits_behind: -1, preserved_stash: null };
   }
 
   try {
@@ -967,6 +1010,7 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
           branch_before: branchBefore,
           warnings,
           proceed: true,
+          preserved_stash: null,
         };
       }
     }
@@ -984,7 +1028,7 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
         `Sync ignorado — edição continua com código local. ` +
         `Stderr: ${checkoutRes.stderr.trim() || "(vazio)"}`;
       warnings.push(msg);
-      return { outcome: "checkout_failed", message: msg, branch_before: branchBefore, warnings, proceed: true };
+      return { outcome: "checkout_failed", message: msg, branch_before: branchBefore, warnings, proceed: true, preserved_stash: null };
     }
     warnings.push("[git-sync] Switched to master.");
   }
@@ -1017,6 +1061,7 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
       branch_before: branchBefore,
       warnings,
       proceed: true,
+      preserved_stash: null,
     };
   }
 
@@ -1070,6 +1115,7 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
         branch_before: branchBefore,
         warnings,
         proceed: true,
+        preserved_stash: null,
       };
     }
   }
@@ -1089,7 +1135,13 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
     const stashRefBeforeRes = spawn("git", ["rev-parse", "--verify", "refs/stash"]);
     const stashRefBefore = stashRefBeforeRes.status === 0 ? stashRefBeforeRes.stdout.trim() : null;
 
-    const stashRes = spawn("git", ["stash", "--include-untracked"]);
+    // #7740: `push -m` (não o bare `git stash --include-untracked`, que gera a
+    // mensagem default "WIP on <branch>: <sha> <subject>") — dá a TODO
+    // autostash deste módulo uma mensagem identificável em `git stash list`,
+    // então um pop conflitante (abaixo) nunca fica indistinguível de um
+    // `git stash` manual de sessão interativa. Ver docstring de
+    // `GIT_SYNC_STASH_MESSAGE`.
+    const stashRes = spawn("git", ["stash", "push", "--include-untracked", "-m", GIT_SYNC_STASH_MESSAGE]);
     if (stashRes.status !== 0) {
       const stashRefAfterRes = spawn("git", ["rev-parse", "--verify", "refs/stash"]);
       const stashRefAfter = stashRefAfterRes.status === 0 ? stashRefAfterRes.stdout.trim() : null;
@@ -1118,6 +1170,8 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
             branch_before: branchBefore,
             warnings,
             proceed: true,
+            // #7740: recuperado automaticamente pelo pop acima — nada preservado.
+            preserved_stash: null,
           };
         }
 
@@ -1133,7 +1187,8 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
           `um stash (${stashRefAfter}) apesar disso — possível remoção NÃO-RECUPERÁVEL de arquivos não-` +
           `rastreados (#3411). A recuperação automática via 'git stash pop' TAMBÉM falhou (conflito ou ` +
           `outro erro) — stash NÃO foi descartado, preservado para investigação manual: ` +
-          `'git stash show -p ${stashRefAfter}' ou 'git stash apply ${stashRefAfter}'. ` +
+          `'git stash show -p ${stashRefAfter}' ou 'git stash apply ${stashRefAfter}'. Identificável por ` +
+          `mensagem em 'git stash list' (#7740): '${GIT_SYNC_STASH_MESSAGE}'. ` +
           `Stderr stash: ${stashRes.stderr.trim() || "(vazio)"} | Stderr pop: ${popRes.stderr.trim() || "(vazio)"}`;
         warnings.push(msg);
         return {
@@ -1142,6 +1197,10 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
           branch_before: branchBefore,
           warnings,
           proceed: true,
+          // #7740: stash NÃO recuperado — reportar ref+mensagem estruturados em
+          // vez de deixar só texto solto dentro de `warnings` (o vazamento que a
+          // issue descreve: "ninguém sabe" que este stash ficou pendurado).
+          preserved_stash: { ref: stashRefAfter, message: GIT_SYNC_STASH_MESSAGE },
         };
       }
 
@@ -1150,7 +1209,7 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
         `(nenhum stash foi criado — refs/stash não mudou). ` +
         `Stderr: ${stashRes.stderr.trim() || "(vazio)"}`;
       warnings.push(msg);
-      return { outcome: "stash_failed", message: msg, branch_before: branchBefore, warnings, proceed: true };
+      return { outcome: "stash_failed", message: msg, branch_before: branchBefore, warnings, proceed: true, preserved_stash: null };
     }
 
     // Detecção locale-robusta de "nada foi guardado" (#2686 review — EN + PT-BR).
@@ -1168,6 +1227,13 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
 
     // ── restaurar stash sempre (mesmo se o merge falhou) ──────────────────
     if (stashedSomething) {
+      // #7740: captura o SHA do stash recém-criado ANTES do pop — se o pop
+      // falhar/conflitar abaixo, este é o ponteiro estruturado que vai pro
+      // `preserved_stash` do resultado (a mensagem identificável em si já
+      // está gravada no próprio stash via `-m GIT_SYNC_STASH_MESSAGE` acima).
+      const createdStashRefRes = spawn("git", ["rev-parse", "refs/stash"]);
+      const createdStashRef = createdStashRefRes.status === 0 ? createdStashRefRes.stdout.trim() : null;
+
       const popRes = spawn("git", ["stash", "pop"]);
 
       // #6668: checar ANTES de decidir o outcome, e INDEPENDENTE do exit code
@@ -1209,9 +1275,17 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
           (ffFailed
             ? ` ff (merge --ff-only) também falhou (divergência) — stderr: ${pullRes.stderr.trim() || "(vazio)"}.`
             : "") +
-          ` Stderr pop: ${popRes.stderr.trim() || "(vazio)"}`;
+          ` Stderr pop: ${popRes.stderr.trim() || "(vazio)"} Identificável por mensagem em 'git stash list' ` +
+          `(#7740): '${GIT_SYNC_STASH_MESSAGE}'.`;
         warnings.push(msg);
-        return { outcome: "stash_pop_conflict", message: msg, branch_before: branchBefore, warnings, proceed: true };
+        return {
+          outcome: "stash_pop_conflict",
+          message: msg,
+          branch_before: branchBefore,
+          warnings,
+          proceed: true,
+          preserved_stash: { ref: createdStashRef, message: GIT_SYNC_STASH_MESSAGE },
+        };
       }
 
       if (popRes.status !== 0) {
@@ -1222,13 +1296,23 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
         const ffFailed = pullRes.status !== 0;
         const msg = ffFailed
           ? `[git-sync] WARN: ff (merge --ff-only) falhou (divergência) E git stash pop teve conflito. ` +
-            `Stash preservado — use 'git stash show'. ` +
+            `Stash preservado — use 'git stash show'. Identificável por mensagem em 'git stash list' ` +
+            `(#7740): '${GIT_SYNC_STASH_MESSAGE}'. ` +
             `Stderr ff: ${pullRes.stderr.trim() || "(vazio)"} | Stderr pop: ${popRes.stderr.trim() || "(vazio)"}`
           : `[git-sync] WARN: git stash pop teve conflito. Stash preservado — ` +
-            `use 'git stash show' para ver. Stderr: ${popRes.stderr.trim() || "(vazio)"}`;
+            `use 'git stash show' para ver. Identificável por mensagem em 'git stash list' (#7740): ` +
+            `'${GIT_SYNC_STASH_MESSAGE}'. Stderr: ${popRes.stderr.trim() || "(vazio)"}`;
         warnings.push(msg);
         const outcome = ffFailed ? "ff_failed" : "stash_pop_failed";
-        return { outcome, message: msg, branch_before: branchBefore, warnings, proceed: true };
+        return {
+          outcome,
+          message: msg,
+          branch_before: branchBefore,
+          warnings,
+          proceed: true,
+          // #7740: pop falhou → stash preservado (git não dropa em conflito).
+          preserved_stash: { ref: createdStashRef, message: GIT_SYNC_STASH_MESSAGE },
+        };
       }
     }
 
@@ -1238,7 +1322,7 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
         `Working tree restaurada. Edição continua com código local. ` +
         `Stderr: ${pullRes.stderr.trim() || "(vazio)"}`;
       warnings.push(msg);
-      return { outcome: "ff_failed", message: msg, branch_before: branchBefore, warnings, proceed: true };
+      return { outcome: "ff_failed", message: msg, branch_before: branchBefore, warnings, proceed: true, preserved_stash: null };
     }
 
     const upToDate = isAlreadyUpToDate(pullRes.stdout);
@@ -1259,6 +1343,7 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
       branch_before: branchBefore,
       warnings,
       proceed: true,
+      preserved_stash: null,
     };
   } else {
     // ── 5b. Clean tree: merge --ff-only direto ────────────────────────────
@@ -1270,7 +1355,7 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
         `Edição continua com código local. ` +
         `Stderr: ${pullRes.stderr.trim() || "(vazio)"}`;
       warnings.push(msg);
-      return { outcome: "ff_failed", message: msg, branch_before: branchBefore, warnings, proceed: true };
+      return { outcome: "ff_failed", message: msg, branch_before: branchBefore, warnings, proceed: true, preserved_stash: null };
     }
 
     const upToDate = isAlreadyUpToDate(pullRes.stdout);
@@ -1282,6 +1367,7 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
       branch_before: branchBefore,
       warnings,
       proceed: true,
+      preserved_stash: null,
     };
   }
 }
