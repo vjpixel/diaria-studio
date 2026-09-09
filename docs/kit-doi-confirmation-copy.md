@@ -1,61 +1,85 @@
-# Copy do e-mail de confirmação (double opt-in) do Kit — pronta pra colar
+# Copy do e-mail de confirmação (double opt-in) — CANÔNICA
 
-> **Status: aguardando aprovação do editor.** Refs #6812. Nada disto foi
-> colado no Kit — é só o texto proposto.
+> **Fonte: o e-mail real que a Beehiiv enviava.** Recuperado em 09/09/2026 do
+> Gmail do editor (`diaria@mail.beehiiv.com`, thread `1a03e8a2c2bf1bb9`,
+> enviado 26/08/2026), porque o texto não existia em lugar nenhum do repo e a
+> conta Beehiiv está com 0 assinantes ativos desde o #7386 — se ela fosse
+> encerrada antes, a copy se perderia.
 >
-> Calibrado pelo mesmo tom de `docs/kit-welcome-sequence-draft.md` (E-mail 1,
-> D0), contra 14 edições reais e `context/editorial-rules.md` §5. Evita o
-> padrão identificado em `docs/experiments/cta-ab-mensal-2606-07.md`
-> (CTA-01): CTA imperativo + "grátis" + seta no mesmo bloco, above the fold,
-> é sinal textual de classificador promocional — aqui o botão é o único
-> elemento de ação, sem link concorrente e sem essa densidade.
+> Decisão do editor (09/09/2026, #7723): **portar esta copy para o Kit**, em
+> vez de usar a proposta anterior. Ela já passou pelo design system (#5518) e
+> é o que os assinantes reais receberam até 04/09.
+>
+> A proposta anterior desta issue (#6812) está preservada em
+> `kit-doi-confirmation-copy-proposta-6812.md` — vale como referência de tom,
+> não como fonte.
 
 ## Onde colar
 
-Dashboard do Kit → form "Newsletter site" (`KIT_DOI_FORM_ID` = 9839463) →
-Settings → Incentive. **Não desligar o toggle "Send confirmation email" ao
-sair** — é o mesmo painel, e o double opt-in do cadastro novo depende dele
-ligado (contexto #6810).
+⚠️ **Não é o form `9839463` ("Newsletter site")**, apesar do que a #6812 e a
+nota de `kit.doiFormId` dizem. Aquele é form de **sistema** (`format: null`
+em `GET /v4/forms`): não aparece em `Landing pages & forms`, as URLs de
+edição dão 404, e ele **não tem o toggle**.
 
-## Assunto (3 opções)
+O toggle vive em **designer form** (`format` preenchido):
 
-1. Pixel aqui — falta 1 clique pra você começar a receber a diária
-2. Confirme e a diar.ia.br chega no seu próximo dia útil
-3. Você quase assinou. Falta confirmar.
+```
+Kit → Landing pages & forms → {designer form} → Settings → Confirmation email
+  ☑ Send confirmation email
+  [ Edit Email Contents ]        ← a copy abaixo vai aqui
+  After confirming redirect to:  ← ver "Redirect" abaixo
+```
 
-**Preview text:** Um clique confirma que foi você — a diária de segunda a sexta começa depois disso.
+**Não desligar o toggle ao sair** — o double opt-in do cadastro novo depende
+dele ligado.
+
+## Assunto
+
+```
+🚀 Falta 1 clique para sua dose diária de IA
+```
+
+**Preview text:**
+
+```
+Sem essa confirmação, nenhuma edição chega até você.
+```
 
 ## Corpo
 
 ```
-Oi! Aqui é o Pixel, editor da diar.ia.br.
+Falta um passo pra sua assinatura da diar.ia.br começar: confirmar que este
+e-mail é seu.
 
-Você pediu pra assinar — todos os dias úteis, de segunda a sexta, um resumo
-de ~5 minutos com as notícias mais relevantes sobre inteligência artificial,
-com curadoria minha, não de robô.
+[Confirmar meu e-mail]
 
-Falta só confirmar que foi você mesmo quem pediu. É por isso que existe este
-passo: sem ele, qualquer pessoa poderia inscrever seu e-mail sem você saber.
+Depois de confirmar, sua primeira edição chega numa manhã de segunda a sexta,
+com 5 minutos das notícias essenciais sobre IA e os tutoriais que importam.
 
-[Confirmar assinatura]
-
-Depois de confirmar, a próxima edição já chega no seu próximo dia útil.
-
-Até já,
-Pixel
+Se não foi você que se cadastrou, é só ignorar este e-mail. Sem o clique
+acima, nada é enviado.
 ```
 
-**Texto do botão:** Confirmar assinatura
+O botão é o **único** elemento de ação — sem link concorrente. Densidade
+promocional above the fold é o gatilho de classificador identificado no
+CTA-01 (`docs/experiments/cta-ab-mensal-2606-07.md`), e importa mais aqui:
+`news.diar.ia.br` saiu há pouco da rampa de aquecimento da recusa de 72% do
+Gmail (#6504).
 
-## Por que este texto
+## O que muda ao portar para o Kit
 
-- Nomeia o remetente (Pixel) e o formato (diária, seg-sex, ~5min) antes de
-  pedir o clique — mesmo padrão do E-mail 1 da sequence de boas-vindas.
-- 1 CTA só, texto de botão sem "grátis"/seta/imperativo em bold — evita o
-  sinal de densidade promocional do CTA-01.
-- Explica o motivo da confirmação em 1 linha ("sem ele, qualquer pessoa
-  poderia inscrever seu e-mail sem você saber") — reduz "não pedi isto" e
-  report de spam, que é o que machuca `news.diar.ia.br` em aquecimento
-  (#6504).
-- Assunto nomeia o remetente ou o próximo passo concreto, evita o padrão
-  genérico "Confirme sua inscrição" que a issue pediu pra evitar.
+| | Beehiiv | Kit |
+|---|---|---|
+| Remetente | `diaria@mail.beehiiv.com` | `oi@news.diar.ia.br` |
+| Link do botão | `diaria.beehiiv.com/opt_in?opt_in_token=…` | token do Kit, inserido pelo editor de conteúdo do form |
+| Redirect pós-confirmação | `https://eia.diar.ia.br/confirmado` (`opt_in_redirect_url`, medido nas settings da Beehiiv em 09/09/2026) | default é `https://app.kit.com/confirm-subscription` — **reapontar para `https://eia.diar.ia.br/confirmado`** |
+
+A página `/confirmado` foi criada no #5167 e continua no ar; não há motivo
+para mandar o assinante para uma URL da Kit.
+
+## Marca no corpo
+
+O plaintext da Beehiiv trazia `**diar**.**ia****.br**` — artefato da
+conversão HTML→texto do negrito parcial, não texto literal. Ao colar no Kit,
+escrever `diar.ia.br` normalmente. A grafia da marca é sempre minúscula e
+nunca "Diar.ia".

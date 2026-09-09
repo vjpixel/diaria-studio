@@ -56,6 +56,7 @@ import { ARQUIVO_INLINE_UTM, HUB_INLINE_UTM, JOGAR_GATE_INLINE_UTM, JOGAR_IDENTI
 import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 import { DOUBLE_OPT_IN_FLAG } from "./optin-flag-6340"; // #6340
+import { verificarDoiForm, mensagemDoiFormInvalido } from "./doi-form-guard-7723"; // #7723
 
 /** UTM próprio do cadastro inline (#3580) — `utm_source` continua
  * `eia-standalone` (convenção de medição), medium/campaign distintos pra medir
@@ -657,11 +658,21 @@ async function subscribeToBeehiiv(
  * deste fluxo em produção.
  */
 function resolveKitCreateState(env: Env): "active" | "inactive" {
-  // #6565: sem o form de confirmação configurado, criar `inactive` prende o
-  // subscriber para sempre (nenhum e-mail de confirmação sai, nada promove
-  // inactive→active sozinho) — o rollout do flag por worker só se aplica
-  // quando o caminho de confirmação de fato existe.
-  if (!env.KIT_DOI_FORM_ID) return "active";
+  // #6565 + #7723: sem um form de confirmação UTILIZÁVEL, criar `inactive`
+  // prende o subscriber para sempre (nenhum e-mail de confirmação sai, nada
+  // promove inactive→active sozinho) — o rollout do flag por worker só se
+  // aplica quando o caminho de confirmação de fato existe.
+  //
+  // O #6565 cobria só a AUSÊNCIA do id. O #7723 acrescentou o caso que de
+  // fato aconteceu: id presente apontando para um form de SISTEMA do Kit,
+  // que não tem o toggle "Send confirmation email" e portanto nunca envia
+  // nada. Ver `doi-form-guard-7723.ts`.
+  const veredito = verificarDoiForm(env.KIT_DOI_FORM_ID);
+  if (!veredito.ok) {
+    const aviso = mensagemDoiFormInvalido(veredito);
+    if (aviso) console.error(aviso);
+    return "active";
+  }
   return DOUBLE_OPT_IN_FLAG.enabledForWorkers.includes("poll")
     ? DOUBLE_OPT_IN_FLAG.createState
     : "active";
