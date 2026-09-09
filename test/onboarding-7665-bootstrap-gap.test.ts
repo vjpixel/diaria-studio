@@ -72,3 +72,20 @@ describe("#7665 bootstrap gap report (residual — reporta, nunca reinscreve)", 
     assert.match(nota, /0 cadastros/);
   });
 });
+
+describe("#7665: campo de backend AUSENTE não é troca real — não conta, não afirma zero", () => {
+  it("houveTrocaReal=false omite o relato de coorte em vez de dizer '0 cadastros'", () => {
+    const nota = buildBackendSwitchNote(null, "kit", 0, false);
+    assert.match(nota, /sem janela de coorte órfã/);
+    assert.doesNotMatch(
+      nota,
+      /0 cadastros/,
+      "afirmar '0 cadastros' diria ao editor que se mediu e não havia ninguém — não se mediu nada",
+    );
+  });
+
+  it("troca real (default) mantém o relato com o número", () => {
+    assert.match(buildBackendSwitchNote("beehiiv", "kit", 3), /3 cadastros/);
+    assert.match(buildBackendSwitchNote("beehiiv", "kit", 3, true), /3 cadastros/);
+  });
+});

@@ -410,9 +410,15 @@ export function buildBackendSwitchNote(
   backendAnterior: "beehiiv" | "kit" | null | undefined,
   backend: "beehiiv" | "kit",
   gapCount: number,
+  /** `false` quando o re-bootstrap veio de campo AUSENTE (backend nunca
+   *  registrado, #7599), não de uma troca real. Aí não existe janela a
+   *  reportar — e afirmar "0 cadastros" seria pior que omitir, porque diz
+   *  ao editor que se mediu e não havia ninguém, quando não se mediu nada. */
+  houveTrocaReal = true,
 ): string {
-  const gapReport =
-    gapCount >= 0
+  const gapReport = !houveTrocaReal
+    ? "; sem janela de coorte órfã (backend anterior desconhecido — nada a comparar)"
+    : gapCount >= 0
       ? `; janela entre cursor antigo e bootstrap: ${gapCount} cadastros ` +
         `(coorte órfã — reinscrever só sob decisão do editor, #7665)`
       : "; não foi possível contar coorte órfã";

@@ -850,13 +850,29 @@ async function main(): Promise<void> {
   if (shouldResetCursorForBackendSwitch(store.last_detection_backend, backend)) {
     const backendAnterior = store.last_detection_backend;
     // #7665 (residual): contar cadastros na janela entre cursor antigo e now
-    // (decisão do editor necessária — não executa reinscrição automática).
+    // (decisão do editor: REPORTAR — nunca executa reinscrição automática).
+    //
+    // Só quando houve troca REAL de backend (`backendAnterior` conhecido e
+    // diferente). `shouldResetCursorForBackendSwitch` também dispara com o
+    // campo AUSENTE (null/undefined ⇒ desconhecido, #7599), e ali contar
+    // seria errado por duas razões: não existe "janela entre cursor antigo e
+    // bootstrap" quando nunca houve backend registrado, e o cursor legado
+    // pode ser antigo o bastante pra fazer o fetch paginar a base INTEIRA —
+    // custo de API real por um número que não significa nada. Isso também é
+    // o que preserva o invariante do #7599 ("re-bootstrap por campo ausente
+    // não chama o Kit"), que não é sobre reenvio e sim sobre não gastar
+    // chamada num caminho que não tem o que reportar.
+    const houveTrocaReal = backendAnterior === "beehiiv" || backendAnterior === "kit";
     let gapCount = 0;
     try {
-      const gapFetch = backend === "kit"
-        ? await fetchSubscriptionsSinceKit(kitCfg!, store.last_detection_cursor)
-        : await fetchSubscriptionsSince(beeCfg!.config.publicationId, beeCfg!.config.apiKey, store.last_detection_cursor);
-      gapCount = gapFetch.length;
+      if (!houveTrocaReal) {
+        gapCount = 0;
+      } else {
+        const gapFetch = backend === "kit"
+          ? await fetchSubscriptionsSinceKit(kitCfg!, store.last_detection_cursor)
+          : await fetchSubscriptionsSince(beeCfg!.config.publicationId, beeCfg!.config.apiKey, store.last_detection_cursor);
+        gapCount = gapFetch.length;
+      }
     } catch (err) {
       // O relato degrada pra "não foi possível contar" (a nota já diz isso
       // ao editor), mas o MOTIVO ia embora com o `catch (_)` mudo — e é ele
@@ -870,7 +886,7 @@ async function main(): Promise<void> {
     }
     store.last_detection_cursor = nowSec;
     store.last_detection_backend = backend;
-    const nota = buildBackendSwitchNote(backendAnterior, backend, gapCount);
+    const nota = buildBackendSwitchNote(backendAnterior, backend, gapCount, houveTrocaReal);
     if (args.send) {
       writeStore(store, storePath);
       summary.notes.push(nota);
