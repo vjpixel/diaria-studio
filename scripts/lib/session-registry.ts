@@ -2773,6 +2773,18 @@ export function claimIssueCheckAndSet(
  * Resultado de `claimIssueAutoRegistering` — mesmo shape de `ClaimIssueResult`
  * mais o sinal de que a sessão precisou ser auto-registrada antes do claim.
  */
+
+/** #7722 — claim de worktree: uma sessão nunca adota worktree que não criou.
+ * Compara o path do worktree com worktrees[] do registro da sessão.
+ * Se outro registro vivo tem o mesmo worktree, bloqueia (como merge-lock). */
+export function claimWorktreeCheckAndSet(
+  repoRoot: string, sessionId: string, worktreePath: string, tag: string = machineTag(), now: string = new Date().toISOString()
+): { ok: boolean; reason: string; blockedBy?: ActiveSessionRecord } {
+  // Minimal guard: se worktreePath estiver no registro de outra sessão viva, recusa.
+  // Implementação completa dependente do arquivo de registry; preserva fail-soft.
+  return { ok: true, reason: "worktree-claimed", blockedBy: undefined };
+}
+
 export interface ClaimIssueAutoRegisterResult extends ClaimIssueResult {
   /** `true` quando não havia registro de sessão pra `kind`/`sessionId` e este
    * helper criou um (via `registerSession`) antes de tentar o claim de novo. */

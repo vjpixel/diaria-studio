@@ -236,6 +236,28 @@ export function readCurrentBranch(startDir) {
 }
 
 /** Normaliza caminho pra comparação cross-máquina. Espelha `normalizeBeaconPath`. */
+export function extractWorktreeBranches(repoRoot) {
+  try {
+    const { execSync } = require("child_process");
+    const out = execSync("git worktree list --porcelain", { cwd: repoRoot, encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 5000 });
+    const lines = out.split(/\r?\n/);
+    const worktrees = [];
+    let cur = null;
+    for (const line of lines) {
+      if (line.startsWith("worktree ")) {
+        if (cur) worktrees.push(cur);
+        cur = { path: line.slice("worktree ".length), branch: null };
+      } else if (line.startsWith("branch ") && cur) {
+        cur.branch = line.slice("branch ".length).replace(/^refs\/heads\//, "");
+      }
+    }
+    if (cur) worktrees.push(cur);
+    return worktrees;
+  } catch {
+    return [];
+  }
+}
+
 export function normalizePath(path) {
   return String(path)
     .replaceAll("\\", "/")
@@ -701,7 +723,8 @@ if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_ar
         kind: BEACON_KIND,
         machineTag: tag,
         sessionId,
-        branch: readCurrentBranch(cwdRoot),
+        // #7722: identidade por worktree, não checkout principal
+        worktrees: extractWorktreeBranches(cwdRoot),
         newPaths: extractTouchedPaths(payload.tool_name, payload.tool_input, cwdRoot),
         verb: sniffVerb(payload.tool_input?.command),
         nowIso,
