@@ -85,6 +85,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { clariceActivityDepsFromDisk, mostRecentActiveClariceCycle } from "./lib/mensal/monthly-paths.ts";
 import { writeNovosCutoff } from "./lib/clarice-novos-cutoff.ts";
 import { writeNovosRunStatus, type NovosRunStatusValue } from "./lib/clarice-novos-run-status.ts";
+import { touchLastRunAt } from "./lib/clarice-novos-state.ts";
 import type { ResolveLatestMonthlyCycleResult } from "./lib/mensal/monthly-paths.ts";
 import { datePartsInTz, toAammdd, BRT_TIMEZONE, type DateParts } from "./lib/next-edition-date.ts";
 import { registerReport } from "./studio-ui/studio-reports.ts";
@@ -620,6 +621,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
           `(status="${sendJson?.status ?? "?"}"). NÃO declarado como sucesso. A rodada de amanhã reconcilia ` +
           `(idempotente por key/campanha, re-tentar --send-now é seguro).`,
       );
+      touchLastRunAt(); // #7765 — exit 3: rodou, não confirmou envio; atualiza lastRunAt
       writeAndRegisterReport(deps, reportIdSent, `diar.ia.br Clarice novos ${aammdd} — disparo incerto`, report.build());
       noteRunStatus(deps, now, "uncertain");
       return { code: NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE, reportId: reportIdSent, reportMarkdown: report.build() };
@@ -640,6 +642,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
         `⚠️  --send-now saiu exit 0 mas status="${sendJson?.status ?? "desconhecido"}" (esperado "sent") — ` +
           `tratando como disparo INCERTO por segurança, não declarando sucesso.`,
       );
+      touchLastRunAt(); // #7765 — exit 3: rodou, não confirmou envio; atualiza lastRunAt
       writeAndRegisterReport(deps, reportIdSent, `diar.ia.br Clarice novos ${aammdd} — disparo incerto`, report.build());
       noteRunStatus(deps, now, "uncertain");
       return { code: NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE, reportId: reportIdSent, reportMarkdown: report.build() };

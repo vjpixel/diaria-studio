@@ -455,3 +455,23 @@ export async function reconcilePendingSend(
       "KNOWN_CANCELLED_STATUSES em scripts/lib/clarice-novos-state.ts.",
   };
 }
+
+/** #7765 — atualiza apenas lastRunAt (rodou, não confirmou envio). 
+ * Usado nos caminhos de exit 3 (disparo incerto) onde o state não deve 
+ * perder o registro de execução mas não pode somar sentCount nem tocar 
+ * lastHtmlSha256 (não há confirmação de campanha). */
+export function touchLastRunAt(baseDir: string = CLARICE_BASE, now?: string): void {
+  const prev = readNovosState(baseDir);
+  const state: NovosState = prev
+    ? { ...prev, lastRunAt: now ?? new Date().toISOString() }
+    : {
+        lastRunAt: now ?? new Date().toISOString(),
+        lastHtmlSha256: null,
+        lastCycle: null,
+        lastListId: null,
+        lastCampaignId: null,
+        sentCount: 0,
+        pendingSend: null,
+      };
+  writeNovosState(state, baseDir);
+}
