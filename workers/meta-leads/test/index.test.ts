@@ -532,4 +532,31 @@ describe("handleWebhookPost", () => {
     const res = await handleWebhookPost(request, env);
     assert.equal(res.status, 400);
   });
+
+  // #7769 self-review: `JSON.parse("null")` NÃO lança — sem o guard de
+  // "é objeto, não array" em handleWebhookPost, `payload.object` explodiria
+  // num TypeError não-tratado (500 opaco) para qualquer um destes 4 corpos,
+  // apesar de todos serem JSON sintaticamente válido.
+  for (const body of ["null", "true", "42", '"uma string qualquer"']) {
+    it(`400 (não crash) para corpo JSON válido porém não-objeto: ${body}`, async () => {
+      const request = new Request("https://x.workers.dev/webhook", {
+        method: "POST",
+        body,
+        headers: { "X-Hub-Signature-256": await sign(body) },
+      });
+      const res = await handleWebhookPost(request, env);
+      assert.equal(res.status, 400);
+    });
+  }
+
+  it("400 para corpo JSON válido que é um array (não objeto de payload)", async () => {
+    const body = "[1,2,3]";
+    const request = new Request("https://x.workers.dev/webhook", {
+      method: "POST",
+      body,
+      headers: { "X-Hub-Signature-256": await sign(body) },
+    });
+    const res = await handleWebhookPost(request, env);
+    assert.equal(res.status, 400);
+  });
 });

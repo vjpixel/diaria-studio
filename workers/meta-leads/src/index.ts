@@ -171,17 +171,27 @@ export async function handleWebhookPost(request: Request, env: Env, fetchImpl: t
     return json({ ok: false, error: "invalid_signature" }, 403);
   }
 
-  let payload: MetaWebhookPayload;
+  let parsed: unknown;
   try {
-    payload = JSON.parse(rawBody) as MetaWebhookPayload;
+    parsed = JSON.parse(rawBody);
   } catch {
-    // Corpo malformado apesar de assinatura válida (não deveria acontecer
-    // vindo da Meta) — não-2xx de qualquer forma: retry não vai "consertar"
-    // o parse, mas o status não-200 mantém visível no error rate do app no
-    // Meta for Developers em vez de sumir num 200 silencioso.
-    console.error("[meta-leads] corpo do webhook não é JSON válido apesar de assinatura correta.");
+    parsed = undefined;
+  }
+  // #7769 self-review: `JSON.parse` NÃO lança para JSON válido porém
+  // não-objeto (`"null"`, `"true"`, `"42"`, `'"str"'`) — sem este guard,
+  // `payload.object` abaixo lançaria um TypeError não-tratado (500 opaco,
+  // sem o corpo estruturado de erro) pra um corpo assim, mesmo com
+  // assinatura correta. Mesmo tratamento do `catch` acima: não-2xx, nunca
+  // 500 sem corpo.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    // Corpo malformado/inesperado apesar de assinatura válida (não deveria
+    // acontecer vindo da Meta) — não-2xx de qualquer forma: retry não vai
+    // "consertar" o parse, mas o status não-200 mantém visível no error rate
+    // do app no Meta for Developers em vez de sumir num 200 silencioso.
+    console.error("[meta-leads] corpo do webhook não é um objeto JSON válido apesar de assinatura correta.");
     return json({ ok: false, error: "malformed_body" }, 400);
   }
+  const payload = parsed as MetaWebhookPayload;
 
   if (payload.object !== "page") {
     // Evento de um objeto que não é página (fora do escopo deste worker) —
