@@ -31,6 +31,7 @@
  */
 import { parseAnnualDraft } from "./annual-parse.ts";
 import { renderAnnualEmail, type AnnualRenderOptions } from "./annual-render.ts";
+import { assertNoLegacyBrand, checkLegacyBrand } from "../shared/legacy-brand-guard.ts";
 
 /**
  * Erro do corte do trecho: o draft não tem a estrutura que o corte pressupõe.
@@ -95,7 +96,15 @@ export interface AnnualPage {
  */
 export function buildAnnualHtml(draftMd: string, opts: AnnualRenderOptions): AnnualPage {
   const draft = parseAnnualDraft(draftMd);
-  return renderAnnualEmail(draft, opts);
+  const page = renderAnnualEmail(draft, opts);
+  // Guard de marca legada (#7719) — mesmo raciocínio do irmão mensal
+  // (`buildArticleHtml`, `scripts/lib/mensal/build-article-page.ts`): o
+  // conteúdo vem de `data/annual/{slug}/draft.md`, fora do repo, sem
+  // cobertura do guard estático em
+  // `test/reader-facing-no-legacy-brand-4424.test.ts`. Checa o HTML final,
+  // depois do render.
+  assertNoLegacyBrand(checkLegacyBrand(page.html), `retrospectiva anual "${opts.windowLabel}"`);
+  return page;
 }
 
 /**

@@ -133,3 +133,21 @@ describe("buildAnnualHtml — completo contém TODOS os temas (#7581)", () => {
     assert.doesNotThrow(() => buildAnnualHtml("**INTRO**\n\nsó isso", OPTS));
   });
 });
+
+describe("buildAnnualHtml — guard de marca legada (#7719, irmão do mensal)", () => {
+  it("INTRO com a grafia legada 'Diar.ia' → lança, nunca publica", () => {
+    const md = draftMd().replace(
+      "Os doze meses foram assim.",
+      "Diar.ia teve um ano e tanto — os doze meses foram assim.",
+    );
+    assert.throws(() => buildAnnualHtml(md, OPTS), /marca legada "Diar\.ia"/);
+  });
+
+  it("INTRO com a grafia correta 'diar.ia.br' não acusa", () => {
+    const md = draftMd().replace(
+      "Os doze meses foram assim.",
+      "diar.ia.br teve um ano e tanto — os doze meses foram assim.",
+    );
+    assert.doesNotThrow(() => buildAnnualHtml(md, OPTS));
+  });
+});

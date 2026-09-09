@@ -37,6 +37,7 @@
  */
 import { cycleToYymm, isValidMonthlyCycle } from "./monthly-paths.ts";
 import { draftToEmail } from "./monthly-render.ts";
+import { assertNoLegacyBrand, checkLegacyBrand } from "../shared/legacy-brand-guard.ts";
 
 /**
  * Erro do guard de merge tag na versão WEB do artigo (#7580).
@@ -262,5 +263,12 @@ export function buildArticleHtml(draftMd: string, cycle: string): ArticlePage {
   // do que sobrou, para o guard validar exatamente o HTML que vai ser servido.
   const web = retagWebUtmMedium(stripReplyByEmailSentence(stripEmailOnlyFooter(html)));
   verifyNoMergeTagsInArticle(web, cycle);
+  // Guard de marca legada (#7719) — mesma disciplina do guard de merge tag
+  // acima: checa o HTML final, DEPOIS do render, porque é dado que vem do
+  // `draft.md` (fora do repo, sem cobertura do guard estático em
+  // `test/reader-facing-no-legacy-brand-4424.test.ts`). Cobre título e corpo
+  // com uma chamada só — o `<title>` mensal é `escHtml(subject)` embutido no
+  // mesmo `web`, ver `wrapEmail` em `monthly-render.ts`.
+  assertNoLegacyBrand(checkLegacyBrand(web), `artigo do ciclo "${cycle}"`);
   return { subject, previewText, html: web };
 }
