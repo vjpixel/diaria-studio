@@ -227,6 +227,18 @@ describe("#7720 — /AAMM (mensal, paywall Mantenedor) leva isAccessibleForFree:
     // O artigo pago continua fora — a #7720 é só sobre SEO, não muda o gate.
     assert.doesNotMatch(body, /artigo completo</);
   });
+
+  it("o hasPart.cssSelector do JSON-LD casa com o id de fato servido no HTML (não é dois valores que podem divergir)", async () => {
+    const articles: MockKV = new Map([[`article:2609:teaser`, MENSAL_TEASER]]);
+    const env = makeApoioEnv(articles, JSON.stringify([]));
+    const body = await (await handleGet(new Request("https://retrospectiva.diar.ia.br/2609"), env)).text();
+
+    const jsonLd = JSON.parse(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(body)![1]);
+    const selector: string = jsonLd.hasPart.cssSelector;
+    assert.match(selector, /^#/, "selector é um id CSS");
+    const idAttr = selector.slice(1);
+    assert.match(body, new RegExp(`id="${idAttr}"`), "o id referenciado pelo JSON-LD existe de fato no HTML servido");
+  });
 });
 
 describe("#7720 — /AAAA e /aniversarioAAAA (cadastro grátis) levam isAccessibleForFree: true, sem hasPart", () => {
