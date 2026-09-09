@@ -164,6 +164,17 @@ const ASSINAR_URL =
  * Falha alto se não houver `</body>`: publicar o trecho SEM o bloco de
  * conversão seria entregar conteúdo de graça sem pedir nada em troca — o pior
  * dos dois mundos. Quem chama trata como "sem trecho" e cai no paywall seco.
+ *
+ * ## O valor citado aqui é o do gate, sempre (#7690)
+ *
+ * Esta é a superfície que o leitor deslogado de fato vê — e foi a única das 3
+ * que a #7658 esqueceu ao corrigir o limiar de R$10+ para R$25+. Medido ao vivo
+ * em 08/09/2026, logo depois do push da allowlist nova: quem apoia com R$10 lia
+ * "Apoiadores de R$10/mês ou mais leem o artigo completo" na mesma página que
+ * acabava de negar o acesso a ele. `test/artigo-mensal-copy-limiar-7690.test.ts`
+ * casa o número da copy das 3 superfícies contra `RETROSPECTIVA_DO_MES_NIVEIS`,
+ * que é quem monta a allowlist — mudar o limiar sem mudar o texto quebra o
+ * teste.
  */
 export function renderTeaserWithPaywall(teaserHtml: string): string {
   // ÚLTIMO `</body>`, não o primeiro. `String.replace` com regex não-global
@@ -190,8 +201,8 @@ export function renderTeaserWithPaywall(teaserHtml: string): string {
       O resto deste artigo é para quem apoia a diar.ia.br
     </h2>
     <p style="font-size:16px;line-height:1.6;margin:0 0 20px;color:${INK};opacity:.85;">
-      Apoiadores de R$&nbsp;10/mês ou mais leem o artigo mensal completo — os outros dois destaques,
-      as recomendações e o fechamento.
+      Mantenedores, a partir de R$&nbsp;25/mês, leem a Retrospectiva do Mês completa — os outros dois
+      destaques, as recomendações e o fechamento.
     </p>
     <p style="margin:0 0 20px;">
       <a href="${APOIASE_URL}" style="display:inline-block;background:${TEAL};color:#fff;text-decoration:none;font-weight:bold;padding:14px 28px;border-radius:8px;font-size:16px;">Apoiar a diar.ia.br</a>
