@@ -64,7 +64,7 @@ const FAKE_RENDERED: RenderedMonthlyApoiadoresKitEmail = {
 const AUDIENCIA = resolveApoiadoresAudience(
   { ok: true, tagName: "apoio-mensal" },
   { ok: true, tagId: 42 },
-  { ok: true },
+  { ok: true, memberCount: 8 }, // #7681: o guard devolve o tamanho que validou
 )!;
 
 describe("#7633 — buildApoiadoresKitBroadcastInput", () => {
