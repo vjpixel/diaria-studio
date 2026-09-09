@@ -88,7 +88,7 @@ describe("guard: todo Worker com host público (custom_domain) tem /robots.txt p
     assert.deepEqual(
       discovered,
       EXPECTED_HOSTS,
-      "conjunto de hosts descobertos mudou — se foi Worker novo/renomeado de propósito, atualize EXPECTED_HOSTS " +
+      "[MARCADOR-7724] conjunto de hosts descobertos mudou — se foi Worker novo/renomeado de propósito, atualize EXPECTED_HOSTS " +
         "acima; se não, é regressão do parser (hosts.length > 0 sozinho não detectaria isso).",
     );
   });
