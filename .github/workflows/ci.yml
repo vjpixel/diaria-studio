@@ -87,7 +87,28 @@ jobs:
       - name: Typecheck brevo-dashboard worker (#3164)
         working-directory: workers/brevo-dashboard
         run: npx tsc -p tsconfig.json --noEmit
+      # #7736 — discriminante da anomalia "arquivo tocado pela PR some/volta à
+      # versão da base DURANTE a run". A evidência que a motivou: um dirent
+      # listado por `readdirSync` e ilegível (`ENOENT`) no `readFileSync`
+      # seguinte, no mesmo arquivo adicionado pela PR — só se explica por
+      # árvore de trabalho mudando sob a run. Estes 2 passos provam ou
+      # derrubam isso sem depender de narrativa: se HEAD ou `status` diferirem
+      # entre antes e depois, o culpado é um teste rodando git na raiz do
+      # repo, e o `reflog` do passo final nomeia o comando. `if: always()`
+      # porque o caso interessante é justamente a run que falhou.
+      - name: Estado da árvore ANTES do npm test (#7736)
+        run: |
+          git rev-parse HEAD
+          git status --porcelain | head -50
+          git stash list | wc -l
       - run: npm test
+      - name: Estado da árvore DEPOIS do npm test (#7736)
+        if: always()
+        run: |
+          git rev-parse HEAD
+          git status --porcelain | head -50
+          git stash list | wc -l
+          git reflog --date=iso -20
       - run: npm run smoke
       - name: Validate RSS feeds
         run: npm run validate-feeds
