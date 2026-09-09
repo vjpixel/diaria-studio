@@ -1,12 +1,19 @@
 /**
  * scripts/lib/shared/kit-doi.ts (#7723 — extração; DOI em todos os workers)
  *
- * Maquinaria ÚNICA do double opt-in do Kit, compartilhada pelos workers que
+ * Maquinaria ÚNICA do double opt-in do Kit, consumida pelos TRÊS workers que
  * criam assinante (`poll`, `cursos`, `reativar`). Nasceu dentro do `poll`
- * (`doi-form-guard-7723.ts` + `optin-flag-6340.ts` + os dois helpers privados
- * de `subscribe.ts`) e foi extraída quando o editor mandou ligar o DOI em
- * todos os lugares: três cópias da mesma regra é exatamente como um worker
- * fica para trás em silêncio — que é a classe de bug do próprio #7723.
+ * (`doi-form-guard-7723.ts` + `optin-flag-6340.ts` + dois helpers privados de
+ * `subscribe.ts`) e foi extraída quando o editor mandou ligar o DOI em todos
+ * os lugares: três cópias da mesma regra é exatamente como um worker fica
+ * para trás em silêncio — a classe de bug do próprio #7723.
+ *
+ * "Única" é literal, e custou uma segunda passada: a 1ª versão desta extração
+ * moveu só a flag e o guard, deixando `resolveKitCreateState`/
+ * `vincularKitDoiForm` DUPLICADOS (cópia local no `poll`, versão nova aqui) —
+ * enquanto este mesmo docstring já afirmava unificação. O review pegou, e o
+ * `poll` passou a consumir daqui de verdade. Se alguém for reintroduzir uma
+ * cópia local em qualquer worker, é este parágrafo que explica por que não.
  *
  * O mecanismo, em uma frase: cria o assinante `state: "inactive"` e o VINCULA
  * a um designer form do Kit com "Send confirmation email" ligado — é o
@@ -76,14 +83,32 @@ export function mensagemDoiFormInvalido(v: DoiFormVerdict): string | null {
  * consentiram, e reconfirmar retroativamente derrubaria gente que nunca
  * pediu para sair.
  */
+/**
+ * Os workers que criam assinante no Kit. Conjunto FECHADO e conhecido em
+ * tempo de compilação — por isso vale a pena derivar o tipo dele.
+ *
+ * A 1ª versão desta extração tipava `worker: string`, porque `.includes()`
+ * reclamava do union literal. Isso resolvia o erro pelo lado errado: alargar
+ * o array em vez de estreitar o parâmetro. O custo era um typo
+ * (`resolveKitCreateState(id, "cursoss")`) compilar e o assinante nascer sem
+ * DOI, **em silêncio** — a mesma classe de bug que o #7723 existe para
+ * fechar, reintroduzida pela própria correção. Achado do review desta PR.
+ */
+export const KIT_DOI_WORKERS = ["poll", "cursos", "reativar"] as const;
+export type KitDoiWorker = (typeof KIT_DOI_WORKERS)[number];
+
+/** Estado com que o assinante é criado no Kit. Nomeado para não se dissolver
+ * em `string` ao atravessar a fronteira dos workers. */
+export type KitCreateState = "active" | "inactive";
+
 export const DOUBLE_OPT_IN_FLAG: {
-  enabledForWorkers: readonly string[];
+  enabledForWorkers: readonly KitDoiWorker[];
   createState: "inactive";
   confirmationSource: string;
   brevoPendingSegment: boolean;
   scopeExcludesLegacyBase: boolean;
 } = {
-  enabledForWorkers: ["poll", "cursos", "reativar"],
+  enabledForWorkers: KIT_DOI_WORKERS,
   createState: "inactive",
   confirmationSource: "kit-form",
   brevoPendingSegment: true,
@@ -99,9 +124,9 @@ export const DOUBLE_OPT_IN_FLAG: {
  */
 export function resolveKitCreateState(
   formId: string | undefined,
-  worker: string,
+  worker: KitDoiWorker,
   log: (msg: string) => void = console.error,
-): "active" | "inactive" {
+): KitCreateState {
   const veredito = verificarDoiForm(formId);
   if (!veredito.ok) {
     const aviso = mensagemDoiFormInvalido(veredito);
@@ -113,10 +138,54 @@ export function resolveKitCreateState(
     : "active";
 }
 
+/**
+ * Extrai o `subscriber.id` da resposta de criação, distinguindo as TRÊS causas
+ * de "não deu" — que antes colapsavam num `undefined` só (achado do review).
+ *
+ * Importa porque este é o ramo que deixa alguém `inactive` sem vínculo, ou
+ * seja, preso: sem saber se o JSON não parseou, se o campo faltou, ou se veio
+ * com o tipo errado, investigar depois é adivinhação.
+ */
+export type SubscriberIdExtraction =
+  | { ok: true; id: number }
+  | { ok: false; motivo: "parse-falhou"; detalhe: string }
+  | { ok: false; motivo: "campo-ausente" }
+  | { ok: false; motivo: "tipo-inesperado"; bruto: string };
+
+export async function extrairSubscriberId(res: Response): Promise<SubscriberIdExtraction> {
+  let corpo: unknown;
+  try {
+    corpo = await res.clone().json();
+  } catch (err) {
+    return { ok: false, motivo: "parse-falhou", detalhe: String(err) };
+  }
+  const bruto = (corpo as { subscriber?: { id?: unknown } } | null | undefined)?.subscriber?.id;
+  if (bruto === undefined || bruto === null) return { ok: false, motivo: "campo-ausente" };
+  if (typeof bruto !== "number") return { ok: false, motivo: "tipo-inesperado", bruto: String(bruto) };
+  return { ok: true, id: bruto };
+}
+
+/** Mensagem do fracasso de extração, já com o e-mail — sem ele, o log nomeia
+ * um problema que ninguém consegue localizar depois. */
+export function mensagemSubscriberIdAusente(
+  e: Extract<SubscriberIdExtraction, { ok: false }>,
+  email: string,
+  status: number,
+): string {
+  const causa =
+    e.motivo === "parse-falhou" ? `resposta não parseou como JSON (${e.detalhe})`
+    : e.motivo === "tipo-inesperado" ? `subscriber.id veio como ${JSON.stringify(e.bruto)}, não number`
+    : "resposta 2xx sem subscriber.id";
+  return (
+    `[kit-doi] ${causa} — status ${status}, e-mail ${email}. NÃO foi possível vincular ao form DOI: ` +
+    `o e-mail de confirmação não saiu e o assinante fica "inactive" até alguém vincular à mão.`
+  );
+}
+
 export interface VincularDoiFormOpts {
   apiKey: string;
   base: string;
-  formId: string | undefined;
+  formId?: string;
   subscriberId: number;
   /** URL de origem gravada no Kit como referrer do vínculo. */
   referrer: string;

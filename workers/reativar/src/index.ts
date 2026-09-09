@@ -26,16 +26,27 @@
  * passar a RECEBER a newsletter, não vazamento nem ação destrutiva; reverter
  * é 1 clique de unsubscribe; volume baixo, população cap 300).
  *
- * O #7723 fechou o risco sem precisar de HMAC. Com o DOI ligado neste worker,
- * o clique na URL cria/atualiza o assinante como `inactive` e o vincula ao
- * designer form do Kit — a ativação passa a depender de um clique no e-mail
- * de confirmação, que só chega ao DONO do endereço. A URL sozinha não ativa
- * mais ninguém: no pior caso, um terceiro faz o dono receber um e-mail de
- * confirmação que ele pode simplesmente ignorar.
+ * O #7723 fecha o risco **no caminho Kit**, sem precisar de HMAC: o clique na
+ * URL cria o assinante como `inactive` e o vincula ao designer form, então a
+ * ativação passa a depender de um clique no e-mail de confirmação, que só
+ * chega ao DONO do endereço. No pior caso um terceiro faz o dono receber um
+ * e-mail que ele ignora.
  *
- * O que NÃO mudou: continua sem KV/rate-limit por IP. Chamadas em massa à URL
- * ainda geram e-mails de confirmação não solicitados — é abuso de envio, não
- * mais ativação indevida. Se o volume aparecer, é aí que o rate-limit entra.
+ * ⚠️ **O fechamento é CONDICIONAL a `SUBSCRIBE_BACKEND === "kit"`**, e isso é
+ * config, não garantia de código. O caminho Beehiiv (`activateSubscription`,
+ * abaixo) NÃO foi tocado pelo #7723: continua fazendo DELETE+CREATE com
+ * `double_opt_override: "off"` e ativando direto, sem confirmação nenhuma —
+ * ou seja, sob aquele backend o risco original permanece exatamente como
+ * descrito acima. Hoje `wrangler.toml` fixa `kit`, mas um rollback, um
+ * ambiente novo ou um `.dev.vars` incompleto reverte o comportamento em
+ * silêncio. Esta ressalva existe porque a 1ª versão desta nota dizia "a URL
+ * sozinha não ativa mais ninguém", sem qualificar — afirmação mais forte que
+ * o código sustenta (achado do review da PR #7760).
+ *
+ * O que NÃO mudou nem no caminho Kit: continua sem KV/rate-limit por IP.
+ * Chamadas em massa à URL ainda geram e-mails de confirmação não solicitados —
+ * é abuso de envio, não mais ativação indevida. Se o volume aparecer, é aí
+ * que o rate-limit entra.
  *
  * ## Verificação ao vivo (#4476 item 3) — CONFIRMADA em 260802
  *
@@ -103,7 +114,7 @@ import { unlinkFromBrevoListShared } from "../../../scripts/lib/shared/brevo-lis
 import { buildOrigemOriginalCustomFields } from "../../../scripts/lib/shared/beehiiv-origem-original.ts"; // #5231
 import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
-import { resolveKitCreateState, vincularKitDoiForm } from "../../../scripts/lib/shared/kit-doi.ts"; // #7723
+import { resolveKitCreateState, vincularKitDoiForm, extrairSubscriberId, mensagemSubscriberIdAusente } from "../../../scripts/lib/shared/kit-doi.ts"; // #7723
 
 export interface Env {
   /** Secret — `wrangler secret put BEEHIIV_API_KEY`. Sem ela, 503 amigável. */
@@ -715,14 +726,13 @@ export async function activateSubscriptionKit(
   // confirmação. Só quando o assinante nasceu `inactive` por este caminho.
   // Best-effort: nunca falha a reativação.
   if (createState === "inactive") {
-    const criado = await res.clone().json().catch(() => undefined) as { subscriber?: { id?: number } } | undefined;
-    const subscriberId = criado?.subscriber?.id;
-    if (typeof subscriberId === "number") {
+    const extraido = await extrairSubscriberId(res);
+    if (extraido.ok) {
       await vincularKitDoiForm({
         apiKey,
         base,
         formId: env.KIT_DOI_FORM_ID,
-        subscriberId,
+        subscriberId: extraido.id,
         referrer: `https://reativar.diar.ia.br/?utm_source=${encodeURIComponent(BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source)}&utm_medium=${encodeURIComponent(BREVO_DIARIA_REATIVAR_CLIQUE_UTM.medium)}&utm_campaign=${encodeURIComponent(BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign)}`,
         fetchImpl,
         timeoutMs: ACTIVATE_FETCH_TIMEOUT_MS,
@@ -733,7 +743,9 @@ export async function activateSubscriptionKit(
         JSON.stringify({
           event: "reativar_kit_doi_sem_subscriber_id",
           status: res.status,
-          detail: "não foi possível vincular ao form DOI — e-mail de confirmação NÃO disparado; assinante fica inactive",
+          email,
+          motivo: extraido.motivo,
+          detail: mensagemSubscriberIdAusente(extraido, email, res.status),
         }),
       );
     }
@@ -822,6 +834,27 @@ export function renderNotConfirmedPage(): string {
   return page(
     "Ainda não confirmado",
     `<h1>Ainda não confirmado</h1><p>Recebemos seu clique, mas não conseguimos confirmar o cadastro automaticamente. Tente se cadastrar direto em <a href="https://diar.ia.br">diar.ia.br</a>.</p>`,
+  );
+}
+
+/**
+ * #7723 — página de "falta 1 passo", o desfecho NORMAL do clique desde que o
+ * double opt-in entrou neste worker.
+ *
+ * Sem ela, o clique caía em `renderNotConfirmedPage` (achado do review desta
+ * PR): com DOI o cadastro nasce `inactive`, e `handleConfirm` só tratava
+ * `"active"` como sucesso — ou seja, TODO clique legítimo veria "não
+ * conseguimos confirmar" e seria mandado se recadastrar em outro lugar, o que
+ * geraria um segundo DOI pendente. O cadastro tinha funcionado; só a leitura
+ * do resultado é que estava presa ao estado antigo.
+ *
+ * A distinção que a copy precisa carregar: não é falha nem é fim: é "chegou um
+ * e-mail, clica nele". Por isso não reusa nenhuma das duas páginas existentes.
+ */
+export function renderConfirmacaoEnviadaPage(): string {
+  return page(
+    "Falta 1 passo",
+    `<h1>Falta 1 passo</h1><p>Enviamos um e-mail de confirmação para você agora. Abra e clique no botão para voltar a receber a diar.ia.br.</p><p>Se não chegar em alguns minutos, confira o spam.</p>`,
   );
 }
 
@@ -933,6 +966,20 @@ export async function handleConfirm(
   // garantia de `active` — só `beehiivStatus === "active"` conta como
   // confirmação real (mesma correção aplicada em
   // `verifyPromotedToBeehiiv`, scripts/evaluate-brevo-diaria.ts).
+  // #7723 (achado do review desta PR): com o double opt-in ligado, o desfecho
+  // NORMAL do clique e `inactive` — o assinante foi criado e o e-mail de
+  // confirmacao saiu, falta ele clicar. Antes deste branch, esse caso caia no
+  // `renderNotConfirmedPage` la embaixo: TODO clique legitimo via "nao
+  // conseguimos confirmar" e era mandado se recadastrar em outro lugar, o que
+  // geraria um SEGUNDO DOI pendente. O cadastro funcionava; so a leitura do
+  // resultado e que continuava presa ao mundo pre-DOI.
+  //
+  // Nao desvincula da lista Brevo Pending aqui, de proposito: a pessoa ainda
+  // nao confirmou, entao ela continua sendo Pending de fato. O unlink segue
+  // amarrado ao `active` abaixo, que e quando a confirmacao existe.
+  if (result.beehiivStatus === "inactive") {
+    return htmlResponse(renderConfirmacaoEnviadaPage(), 200);
+  }
   if (result.beehiivStatus === "active") {
     // #4535: desvincula da lista Brevo Pending SÓ quando a ativação Beehiiv
     // está de fato confirmada — best-effort, nunca bloqueia a página de

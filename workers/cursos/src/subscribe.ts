@@ -20,7 +20,7 @@ import { CURSOS_ALARM_COUNTER_KEYS, incrementKvCounter } from "../../../scripts/
 import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 import { isAllowedClientUtmSource } from "../../../scripts/lib/shared/client-utm-allowlist.ts"; // #7535 (Camada 1)
-import { resolveKitCreateState, vincularKitDoiForm } from "../../../scripts/lib/shared/kit-doi.ts"; // #7723
+import { resolveKitCreateState, vincularKitDoiForm, extrairSubscriberId, mensagemSubscriberIdAusente } from "../../../scripts/lib/shared/kit-doi.ts"; // #7723
 import { issueSessionCookie } from "./cookie.ts";
 
 export const SUBSCRIBE_RATE_LIMIT = 5;
@@ -123,6 +123,13 @@ export interface SubscribeResult {
 
 // #4295: valores derivados do registry único (scripts/lib/shared/utm-registry.ts)
 // — antes eram literais locais, ausentes de UTM_EMITTERS/`/utms` (drift).
+/** #7723 (achado do review): o fetch de vinculo ao form DOI ficava SEM
+ * timeout algum — a lib compartilhada so aplica `AbortSignal` quando recebe
+ * `timeoutMs`. Mesmo valor/rationale de `SUBSCRIBE_FETCH_TIMEOUT_MS` do
+ * worker `poll`: um POST de assinatura nao pode pendurar a resposta ao
+ * usuario ate o teto de CPU do Worker. */
+export const CURSOS_KIT_FETCH_TIMEOUT_MS = 8000;
+
 const CURSOS_UTM_SOURCE = CURSOS_GATE_INLINE_UTM.source;
 const CURSOS_UTM_MEDIUM = CURSOS_GATE_INLINE_UTM.medium;
 const CURSOS_UTM_CAMPAIGN = CURSOS_GATE_INLINE_UTM.campaign;
@@ -271,23 +278,22 @@ async function subscribeToKit(
     // rollout, ou form inutilizável), mesmo com KIT_DOI_FORM_ID configurado
     // por engano. Best-effort: nunca falha a assinatura.
     if (createState === "inactive") {
-      const criado = await res.clone().json().catch(() => undefined) as { subscriber?: { id?: number } } | undefined;
-      const subscriberId = criado?.subscriber?.id;
-      if (typeof subscriberId === "number") {
+      const extraido = await extrairSubscriberId(res);
+      if (extraido.ok) {
         await vincularKitDoiForm({
           apiKey,
           base,
           formId: env.KIT_DOI_FORM_ID,
-          subscriberId,
+          subscriberId: extraido.id,
           referrer: `https://cursos.diar.ia.br/?utm_source=${encodeURIComponent(CURSOS_UTM_SOURCE)}&utm_medium=${encodeURIComponent(CURSOS_UTM_MEDIUM)}&utm_campaign=${encodeURIComponent(CURSOS_UTM_CAMPAIGN)}`,
           fetchImpl,
+          // Sem isto o fetch de vinculo ficava SEM timeout algum (achado do
+          // review): a lib so aplica AbortSignal quando recebe timeoutMs.
+          timeoutMs: CURSOS_KIT_FETCH_TIMEOUT_MS,
           log: (m) => console.error(`[cursos] ${m}`),
         });
       } else {
-        console.error(
-          `[cursos] #7723: resposta ${res.status} sem subscriber.id — não foi possível vincular ao form DOI ` +
-          `(e-mail de confirmação NÃO disparado; assinante fica inactive até alguém vincular à mão).`,
-        );
+        console.error(`[cursos] ${mensagemSubscriberIdAusente(extraido, input.email, res.status)}`);
       }
     }
     return { ok: true, status: res.status, beehiivStatus: createState };

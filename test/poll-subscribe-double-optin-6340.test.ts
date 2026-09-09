@@ -98,7 +98,14 @@ describe("subscribeToKit — double opt-in (#6340)", () => {
     assert.equal(result.status, 201);
   });
 
-  it("worker cursos (FORA da allowlist do flag) continua criando active — base existente e outros workers não regridem", async () => {
+  // #7723: o título anterior — "worker cursos (FORA da allowlist do flag)" —
+  // ficou falso quando `cursos` entrou no rollout. Pior: o teste continuava
+  // PASSANDO, porque o env de teste não define `KIT_DOI_FORM_ID`, então o
+  // `active` vinha do branch "form ausente", não de "worker fora da lista".
+  // Descrevia uma causa que não era a sua. Renomeado para o que de fato
+  // verifica; a cobertura do rollout vive em
+  // `test/kit-doi-integracao-workers-7723.test.ts`, com o form configurado.
+  it("cursos SEM KIT_DOI_FORM_ID cria active — nunca inactive órfão (#6565)", async () => {
     const { subscribeViaConfiguredBackend } = await import("../workers/cursos/src/subscribe.ts");
     const fetchMock = makeFetchMock();
     const env = { SUBSCRIBE_BACKEND: "kit", KIT_API_KEY: "kk" } as any;

@@ -140,10 +140,28 @@ test("vincularKitDoiForm bate no endpoint certo, com o subscriber no PATH", asyn
   assert.deepEqual(body, { referrer: "https://cursos.diar.ia.br/?utm_source=x" });
 });
 
-test("a base já ATIVA nunca é reconfirmada retroativamente", () => {
-  assert.equal(
-    DOUBLE_OPT_IN_FLAG.scopeExcludesLegacyBase,
-    true,
-    "reconfirmar quem já consentiu derrubaria gente que nunca pediu para sair",
-  );
+// Onde estava um teste tautológico (`scopeExcludesLegacyBase === true`, um
+// campo que NENHUM código de produção lê — só pegaria alguém apagando a
+// linha) agora está a verificação de comportamento que ele fingia fazer:
+// quem já é `active` não é rebaixado. Medido ao vivo em 09/09/2026 — o upsert
+// do Kit responde 200 preservando `state: "active"` mesmo quando o payload
+// manda `inactive`. Este teste trava o lado que É nosso: nunca mandamos
+// `inactive` para quem o worker já sabe estar `active`.
+test("assinante já ATIVO não é rebaixado a inactive pelo nosso payload", async () => {
+  const { activateSubscriptionKit } = await import("../workers/reativar/src/index.ts");
+  const chamadas: { url: string; body: unknown }[] = [];
+  const fetchImpl = async (u: URL | RequestInfo, init?: RequestInit) => {
+    const url = String(u);
+    chamadas.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
+    if (url.includes("?email_address=")) {
+      return new Response(JSON.stringify({ subscribers: [{ id: 1, state: "active" }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ subscriber: { id: 1 } }), { status: 200 });
+  };
+  const env = { KIT_API_KEY: "k", KIT_API_URL: "https://kit.test/v4", KIT_DOI_FORM_ID: "9897918" } as never;
+
+  await activateSubscriptionKit(env, "jaativo@b.com", fetchImpl as typeof fetch);
+
+  const criacao = chamadas.find((c) => c.url.endsWith("/subscribers") && c.body !== null);
+  assert.equal(criacao, undefined, "quem já é active não passa pelo POST de criação — early-return de idempotência");
 });

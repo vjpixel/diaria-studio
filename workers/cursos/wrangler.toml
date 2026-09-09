@@ -119,8 +119,10 @@ KIT_ORIGEM_PAGA_FIELD = "origem_paga"
 # #6048 (item 4/5, Gate B aprovado pelo editor 25/08/2026 — rollout worker-a-
 # worker, poll já verificado ao vivo, cursos é o 2º). env.SUBSCRIBE_BACKEND
 # === "kit" em workers/cursos/src/subscribe.ts — cadastro pelo gate de cursos
-# passa a ir pro Kit em vez da Beehiiv. reativar segue em Beehiiv até
-# verificação ao vivo deste worker.
+# passa a ir pro Kit em vez da Beehiiv. (A frase seguinte dizia "reativar
+# segue em Beehiiv até verificação ao vivo deste worker" — desatualizada:
+# workers/reativar/wrangler.toml já fixa SUBSCRIBE_BACKEND = "kit", os 3
+# workers migraram. Corrigido em 09/09/2026, #7723.)
 SUBSCRIBE_BACKEND = "kit"
 
 # #7723 (09/09/2026, "habilita DOI em todos os lugares") — designer form
