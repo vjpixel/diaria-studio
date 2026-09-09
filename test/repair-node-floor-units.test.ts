@@ -21,6 +21,7 @@ import {
   type NodeFloorRepairPlan,
 } from "../scripts/lib/repair-node-floor-units.ts";
 import type { SystemdUnitsNodeFloorReport, UnitNodeFloorResult } from "../scripts/lib/systemd-node-floor-guard.ts";
+import { formatPlan } from "../scripts/repair-node-floor-units.ts";
 
 function unit(overrides: Partial<UnitNodeFloorResult>): UnitNodeFloorResult {
   return {
@@ -161,8 +162,9 @@ test("applyNodeFloorRepairs — escreve SÓ as units do plano, preserva as demai
       skipped: [],
     };
 
-    const written = applyNodeFloorRepairs(plan, dir);
-    assert.deepEqual(written, ["broken.service"]);
+    const result = applyNodeFloorRepairs(plan, dir);
+    assert.deepEqual(result.written, ["broken.service"]);
+    assert.deepEqual(result.errors, []);
 
     const fixedContent = readFileSync(join(dir, "broken.service"), "utf8");
     assert.match(fixedContent, /^ExecStart=\/nvm\/node --import tsx run-task\.ts --task X$/m);
@@ -172,4 +174,80 @@ test("applyNodeFloorRepairs — escreve SÓ as units do plano, preserva as demai
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("applyNodeFloorRepairs — unit ausente no disco falha ISOLADAMENTE (errors), não lança, não trava as demais", () => {
+  const dir = mkdtempSync(join(tmpdir(), "repair-node-floor-partial-"));
+  try {
+    writeFileSync(
+      join(dir, "ok.service"),
+      ["[Service]", "ExecStart=/usr/bin/node --import tsx run-task.ts --task Y", ""].join("\n"),
+    );
+    // "missing.service" está no plano mas NÃO existe em disco (ex: removida
+    // entre o scan e o --apply) — simula o cenário do finding de silent-failure.
+    const plan: NodeFloorRepairPlan = {
+      targetNodePath: "/nvm/node",
+      repairs: [
+        { unitFileName: "missing.service", oldNodePath: "/usr/bin/node", newNodePath: "/nvm/node" },
+        { unitFileName: "ok.service", oldNodePath: "/usr/bin/node", newNodePath: "/nvm/node" },
+      ],
+      skipped: [],
+    };
+
+    const result = applyNodeFloorRepairs(plan, dir);
+    // A unit que existia foi escrita com sucesso mesmo com a outra falhando.
+    assert.deepEqual(result.written, ["ok.service"]);
+    assert.equal(result.errors.length, 1);
+    assert.equal(result.errors[0].unitFileName, "missing.service");
+    assert.ok(result.errors[0].message.length > 0);
+
+    const fixedContent = readFileSync(join(dir, "ok.service"), "utf8");
+    assert.match(fixedContent, /^ExecStart=\/nvm\/node/m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- formatPlan (CLI) — cobre o gap de finding #4 / bug de finding #1 ------
+
+test("formatPlan — sem repairs mas com skipped NUNCA diz \"nada a reparar\" (#7847 finding 1)", () => {
+  const plan: NodeFloorRepairPlan = {
+    targetNodePath: "/nvm/node",
+    repairs: [],
+    skipped: [
+      {
+        unitFileName: "unreadable.service",
+        nodePath: "/usr/bin/node",
+        nodeVersion: "v20.20.2",
+        verdict: "below-floor",
+        detail: "abaixo do piso",
+      },
+    ],
+  };
+  const output = formatPlan(plan);
+  assert.doesNotMatch(output, /nada a reparar/i);
+  assert.match(output, /unreadable\.service/);
+});
+
+test("formatPlan — sem repairs e sem skipped -> \"nada a reparar\"", () => {
+  const plan: NodeFloorRepairPlan = { targetNodePath: "/nvm/node", repairs: [], skipped: [] };
+  assert.match(formatPlan(plan), /nada a reparar/i);
+});
+
+test("formatPlan — com repairs e skipped, ambos aparecem no output", () => {
+  const plan: NodeFloorRepairPlan = {
+    targetNodePath: "/nvm/node",
+    repairs: [{ unitFileName: "a.service", oldNodePath: "/usr/bin/node", newNodePath: "/nvm/node" }],
+    skipped: [
+      { unitFileName: "b.service", nodePath: "/usr/bin/node", nodeVersion: "v20.20.2", verdict: "below-floor" },
+    ],
+  };
+  const output = formatPlan(plan);
+  assert.match(output, /a\.service/);
+  assert.match(output, /b\.service/);
+});
+
+test("formatPlan — targetNodePath null sempre sinaliza reparo manual, nunca sucesso", () => {
+  const plan: NodeFloorRepairPlan = { targetNodePath: null, repairs: [], skipped: [] };
+  assert.match(formatPlan(plan), /manual necessário/i);
 });

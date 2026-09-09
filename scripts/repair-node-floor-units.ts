@@ -26,10 +26,14 @@
  *   npx tsx scripts/repair-node-floor-units.ts --apply      # escreve os .service corrigidos
  *
  * Exit codes: 0 = nada pra reparar (relatório já "ok") ou reparo aplicado
- * com sucesso; 1 = há units below-floor mas nenhum `targetNodePath`
- * resolvível (nenhuma unit "ok" no relatório pra servir de alvo — reparo
- * manual); 2 = relatório "cannot-verify" (diretório ausente/ilegível —
- * normal fora do `helios`, ex: worktree isolado, sessão cloud).
+ * com sucesso, sem erros; 1 = plano incompleto — sem `targetNodePath`
+ * resolvível (nenhuma unit "ok" no relatório pra servir de alvo), unit(s)
+ * below-floor com conteúdo ilegível (`skipped`), ou falha ao escrever
+ * algum `.service` sob `--apply` (`errors` — as demais já escritas com
+ * sucesso continuam válidas, ver mensagem); 2 = relatório "cannot-verify"
+ * — diretório ausente/ilegível (normal fora do `helios`, ex: worktree
+ * isolado, sessão cloud) OU toda unit node-based encontrada é
+ * "cannot-verify" (nenhuma below-floor nem ok pra basear um plano).
  */
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { readFileSync } from "node:fs";
@@ -47,6 +51,10 @@ const POST_APPLY_COMMAND = [
 
 export function formatPlan(plan: NodeFloorRepairPlan): string {
   const lines: string[] = [];
+
+  // Sem alvo resolvível: nunca dizer "nada a reparar" — mesmo quando
+  // `skipped` está vazio (nenhuma unit below-floor detectada), a causa raiz
+  // (nenhuma unit "ok" no relatório) é distinta de "está tudo certo".
   if (plan.targetNodePath === null) {
     lines.push("Nenhum node-alvo resolvível (nenhuma unit \"ok\" no relatório) — reparo manual necessário.");
     if (plan.skipped.length > 0) {
@@ -54,17 +62,25 @@ export function formatPlan(plan: NodeFloorRepairPlan): string {
     }
     return lines.join("\n");
   }
-  if (plan.repairs.length === 0) {
+
+  // Sem NENHUM repair E sem NENHUM skip: aí sim está tudo certo.
+  if (plan.repairs.length === 0 && plan.skipped.length === 0) {
     lines.push("Nenhuma unit below-floor — nada a reparar.");
     return lines.join("\n");
   }
-  lines.push(`Alvo (mais usado entre units "ok"): ${plan.targetNodePath}`);
-  lines.push("");
-  for (const r of plan.repairs) {
-    lines.push(`  ${r.unitFileName}: ${r.oldNodePath} -> ${r.newNodePath}`);
-  }
-  if (plan.skipped.length > 0) {
+
+  if (plan.repairs.length > 0) {
+    lines.push(`Alvo (mais usado entre units "ok"): ${plan.targetNodePath}`);
     lines.push("");
+    for (const r of plan.repairs) {
+      lines.push(`  ${r.unitFileName}: ${r.oldNodePath} -> ${r.newNodePath}`);
+    }
+  }
+  // Unit(s) below-floor que NÃO entraram no plano (conteúdo ilegível) — sempre
+  // reportadas, mesmo quando repairs está vazio (nenhuma unit reparável
+  // sobrou), pra nunca soar como "nada a reparar" quando há trabalho pendente.
+  if (plan.skipped.length > 0) {
+    if (plan.repairs.length > 0) lines.push("");
     lines.push(`${plan.skipped.length} unit(s) below-floor NÃO incluída(s) no plano (conteúdo ilegível): ${plan.skipped.map((u) => u.unitFileName).join(", ")}`);
   }
   return lines.join("\n");
@@ -75,7 +91,16 @@ export function main(argv: string[]): number {
   const dirAbs = systemdUserUnitDir();
 
   const report = scanArmedUnitsNodeFloor();
-  if (report.verdict === "cannot-verify" && report.units.length === 0) {
+
+  // "cannot-verify" no nível do RELATÓRIO cobre dois casos distintos, mas
+  // ambos significam "não deu pra concluir nada com segurança" — nunca cair
+  // no fluxo de planejamento abaixo achando que "não below-floor" == "ok"
+  // (#7776, mesma disciplina do detector em systemd-node-floor-guard.ts):
+  //   (a) diretório ausente/ilegível (units.length === 0)
+  //   (b) diretório legível, mas TODA unit node-based encontrada é
+  //       "cannot-verify" (ex: node --version falhou em todas) — não há
+  //       nenhuma "below-floor" nem nenhuma "ok" pra basear um plano.
+  if (report.verdict === "cannot-verify") {
     console.error(`veredito: cannot-verify — ${report.detail}`);
     return 2;
   }
@@ -97,8 +122,11 @@ export function main(argv: string[]): number {
   if (plan.targetNodePath === null) {
     return 1;
   }
+  // Nada reparável sobrou no plano: ou está tudo ok (repairs e skipped
+  // vazios) ou sobrou só unit(s) skipped (conteúdo ilegível) — nesse 2º caso
+  // não é sucesso, é trabalho pendente sem como avançar automaticamente.
   if (plan.repairs.length === 0) {
-    return 0;
+    return plan.skipped.length > 0 ? 1 : 0;
   }
 
   if (!apply) {
@@ -116,11 +144,15 @@ export function main(argv: string[]): number {
     return 1;
   }
 
-  const written = applyNodeFloorRepairs(plan, dirAbs);
+  const { written, errors } = applyNodeFloorRepairs(plan, dirAbs);
   console.log(`\n${written.length} unit(s) reapontada(s) para ${plan.targetNodePath} (${targetVersion}).`);
+  if (errors.length > 0) {
+    console.error(`\n${errors.length} unit(s) FALHARAM ao reapontar (as demais acima já foram escritas com sucesso):`);
+    for (const e of errors) console.error(`  ${e.unitFileName}: ${e.message}`);
+  }
   console.log("\nPróximo passo (manual — este script nunca chama systemctl):");
   console.log(POST_APPLY_COMMAND);
-  return 0;
+  return errors.length > 0 ? 1 : 0;
 }
 
 if (isMainModule(import.meta.url)) {

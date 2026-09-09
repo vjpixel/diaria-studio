@@ -141,22 +141,39 @@ export function planNodeFloorRepairs(
   return { targetNodePath, repairs, skipped };
 }
 
+export interface ApplyRepairsResult {
+  /** Units efetivamente escritas (mesma ordem do plano). */
+  written: string[];
+  /** Units do plano que falharam ao ler/regravar — NUNCA lançado (silent-failure seria pior que reportar parcial). */
+  errors: Array<{ unitFileName: string; message: string }>;
+}
+
 /**
  * Aplica o plano em disco: para cada `UnitRepair`, lê o `.service` de
  * `dirAbs`, reaponta o `ExecStart=` via `repointExecStartNodePath`, e
  * regrava o arquivo. **Muta o filesystem** — só o CLI chama isto, e só sob
  * `--apply` (ver docstring do módulo). Nunca chama `systemctl`.
  *
- * Retorna a lista de units efetivamente escritas (mesma ordem do plano).
+ * Uma falha isolada (arquivo removido/permissão mudou entre o scan e o
+ * apply) NUNCA lança e NUNCA aborta o restante do lote — cada repair é
+ * tentado independentemente, e a falha vira uma entrada em `errors` em vez
+ * de derrubar o processo (e perder visibilidade de quais units JÁ foram
+ * escritas com sucesso antes da falha). O CLI decide o exit code a partir
+ * de `errors.length`.
  */
-export function applyNodeFloorRepairs(plan: NodeFloorRepairPlan, dirAbs: string): string[] {
+export function applyNodeFloorRepairs(plan: NodeFloorRepairPlan, dirAbs: string): ApplyRepairsResult {
   const written: string[] = [];
+  const errors: Array<{ unitFileName: string; message: string }> = [];
   for (const repair of plan.repairs) {
     const path = join(dirAbs, repair.unitFileName);
-    const content = readFileSync(path, "utf8");
-    const nextContent = repointExecStartNodePath(content, repair.newNodePath);
-    writeFileSync(path, nextContent, "utf8");
-    written.push(repair.unitFileName);
+    try {
+      const content = readFileSync(path, "utf8");
+      const nextContent = repointExecStartNodePath(content, repair.newNodePath);
+      writeFileSync(path, nextContent, "utf8");
+      written.push(repair.unitFileName);
+    } catch (e) {
+      errors.push({ unitFileName: repair.unitFileName, message: (e as Error).message });
+    }
   }
-  return written;
+  return { written, errors };
 }
