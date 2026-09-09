@@ -11,8 +11,8 @@
  * pra ler uma lista de strings. Este arquivo é seguro de importar de
  * qualquer lugar (zero I/O no import, zero efeito colateral).
  *
- * `session-registry.ts` importa esta mesma constante (ver `INJECTABLE_...`
- * não — ver import perto do topo) e
+ * `session-registry.ts` importa esta mesma constante (usada na mensagem de
+ * erro de `requireSessionId`, perto do topo do arquivo) e
  * `test/session-id-required-subcommands.test.ts` trava as duas pontas
  * contra o código real:
  *   1. Todo `case "X":` do switch de `main()` (em `session-registry.ts`)

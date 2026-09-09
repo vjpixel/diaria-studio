@@ -179,11 +179,10 @@ import { parseArgs, isMainModule } from "./cli-args.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
 import { withFileLock } from "./file-lock.ts";
 // #7836 — mesma constante que `.claude/hooks/inject-session-id.mjs` importa
-// pra montar `INJECTABLE_SUBCOMMANDS`. Usada aqui em `requireSessionId` (só
-// pra enriquecer a mensagem de erro com a fonte única, sem duplicar a
-// lista) e no texto de uso do `default` do switch abaixo — ver docblock de
-// `session-id-required-subcommands.ts` pro motivo de ser um módulo à parte
-// em vez de o hook importar `session-registry.ts` inteiro.
+// pra montar `INJECTABLE_SUBCOMMANDS`. Usada aqui só em `requireSessionId`,
+// pra enriquecer a mensagem de erro com a fonte única sem duplicar a lista
+// — ver docblock de `session-id-required-subcommands.ts` pro motivo de ser
+// um módulo à parte em vez de o hook importar `session-registry.ts` inteiro.
 import { SESSION_ID_REQUIRED_SUBCOMMANDS } from "./session-id-required-subcommands.ts";
 
 /**
