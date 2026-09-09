@@ -299,7 +299,13 @@ export async function handleWebhookPost(
 }
 
 export default {
-  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+  // `_ctx` é `unknown`, não `ExecutionContext`, de propósito: o tipo global
+  // vem de `@cloudflare/workers-types`, que o `tsconfig.test.json` do repo
+  // não carrega — usá-lo adicionaria uma chave TS2304 nova à baseline do
+  // `typecheck-ratchet` (é o que `poll`/`cursos` carregam lá desde sempre).
+  // Como este worker não usa o ctx (processa síncrono, sem `waitUntil` — ver
+  // topo do arquivo), tipar como `unknown` evita a dívida em vez de herdá-la.
+  async fetch(request: Request, env: Env, _ctx: unknown): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname !== "/webhook") {
       return new Response("not found", { status: 404 });

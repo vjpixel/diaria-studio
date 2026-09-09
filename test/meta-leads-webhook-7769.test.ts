@@ -442,7 +442,9 @@ describe("entrypoint do Worker (export default fetch)", () => {
   // O roteamento real que a Cloudflare invoca não era exercitado por teste
   // nenhum — só as funções internas (achado do review do #7775). Quebrar o
   // path, o método ou o plug do handshake passaria despercebido.
-  const ctx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
+  // `unknown`, não `ExecutionContext`: o tipo global não existe sob
+  // `tsconfig.test.json` — ver comentário no `export default` do worker.
+  const ctx: unknown = { waitUntil() {}, passThroughOnException() {} };
 
   it("GET /webhook com token correto ecoa o challenge", async () => {
     const req = new Request("https://x.test/webhook?hub.mode=subscribe&hub.verify_token=verify-me&hub.challenge=42");
