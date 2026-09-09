@@ -130,6 +130,7 @@
   "test/load-carry-over.test.ts::TS2345": 1,
   "test/log-dedup.test.ts::TS7016": 1,
   "test/log-editor-request.test.ts::TS2345": 3,
+  "test/merge-guard-continuo-sem-autoridade-7702.test.ts::TS7016": 1,
   "test/meta-capi-wiring-5504.test.ts::TS2304": 2,
   "test/meta-description.test.ts::TS2367": 1,
   "test/microsoft-ads-ingest-5502.test.ts::TS2345": 1,
