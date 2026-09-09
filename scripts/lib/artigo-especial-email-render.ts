@@ -16,7 +16,9 @@
  *
  * ## Regras de e-mail que este arquivo respeita de propósito
  *
- * - **Tudo inline, tabela única, largura fixa 600.** Sem `<style>` no head:
+ * - **Tudo inline; tabela externa 100% + tabela interna fixa em 600.** (Não é
+ *   uma tabela só — o par externa/interna é o padrão que centraliza e limita
+ *   largura em cliente de e-mail.) Sem `<style>` no head:
  *   Gmail descarta parte dele (memória do projeto sobre a Beehiiv, e o Kit
  *   injeta o seu por cima do nosso).
  * - **`paperEmail` (#FFFFFF), não `paper`.** Token de e-mail existe

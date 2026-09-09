@@ -103,7 +103,61 @@ export function resolveAudienceTagId(tagName: string, tagId: number | null, sync
   return { ok: true, tagId };
 }
 
-export type AudienceCheck = { ok: true } | { ok: false; reason: string };
+export type AudienceCheck = { ok: true; memberCount: number } | { ok: false; reason: string };
+
+/**
+ * Audiência RESOLVIDA E CONFERIDA — tag que existe, com id válido e pelo menos
+ * 1 membro. Só `resolveVerifiedAudience` produz uma, e é o que os construtores
+ * de payload devem exigir: um `tagId: number` cru tem o mesmo tipo de um id
+ * inventado, não resolvido ou fora por um, e a segurança passaria a depender de
+ * os 3 guards serem chamados na ordem certa por cada caller futuro — disciplina
+ * de call site, não do tipo (achado do type-design-analyzer, review da #7659).
+ *
+ * A marca (`__verifiedAudience`) existe pra que um literal `{ tagName, tagId,
+ * memberCount }` montado à mão não passe como resolvido. É a mesma disciplina
+ * que a #7651 aplicou ao `subscriber_filter` do lado do canal diário.
+ */
+declare const verifiedAudienceBrand: unique symbol;
+export interface ResolvedAudience {
+  readonly tagName: string;
+  readonly tagId: number;
+  readonly memberCount: number;
+  readonly [verifiedAudienceBrand]: true;
+}
+
+export type AudienceResolution = { ok: true; audience: ResolvedAudience } | { ok: false; reason: string };
+
+/**
+ * Encadeia os 3 guards numa chamada só: nome configurado → id existente e
+ * válido → tag não-vazia. Devolve a `ResolvedAudience` que os construtores de
+ * payload exigem, ou a primeira razão de recusa.
+ *
+ * `lookup` recebe o nome já validado e devolve `{ tagId, memberCount }` (ou
+ * `tagId: null` quando a tag não existe) — a I/O fica com o caller, este módulo
+ * segue puro. `memberCount` só é consultado depois do id resolver, então o
+ * lookup pode devolver qualquer coisa nesse campo quando `tagId` é `null`.
+ */
+export async function resolveVerifiedAudience(
+  rawTagName: unknown,
+  configPath: string,
+  syncCommand: string,
+  lookup: (tagName: string) => Promise<{ tagId: number | null; memberCount: number }>,
+): Promise<AudienceResolution> {
+  const name = resolveAudienceTagName(rawTagName, configPath);
+  if (!name.ok) return name;
+
+  const { tagId: rawId, memberCount } = await lookup(name.tagName);
+  const id = resolveAudienceTagId(name.tagName, rawId, syncCommand);
+  if (!id.ok) return id;
+
+  const check = checkAudienceNotEmpty(name.tagName, memberCount, syncCommand);
+  if (!check.ok) return check;
+
+  return {
+    ok: true,
+    audience: { tagName: name.tagName, tagId: id.tagId, memberCount: check.memberCount } as ResolvedAudience,
+  };
+}
 
 /**
  * Tag resolvida (id válido) mas VAZIA — recusa criar o broadcast. Mesmo
@@ -125,7 +179,7 @@ export function checkAudienceNotEmpty(tagName: string, memberCount: number, sync
         "com o apoio_nivel esperado gravado no Kit (sync-apoio-nivel-kit.ts).",
     };
   }
-  return { ok: true };
+  return { ok: true, memberCount };
 }
 
 // ── seleção de quem DEVE ter a tag ────────────────────────────────────────

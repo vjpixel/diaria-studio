@@ -1,14 +1,15 @@
 ---
 name: diaria-artigo-especial
-description: Fecha as 4 ações manuais que seguem o deploy de um Artigo Especial (`especial.diar.ia.br/{ano}/{slug}/`) — post teaser no apoia.se, posts agendados no LinkedIn (página diar.ia.br D+1 09:00 BRT + perfil pessoal D+2 09:30 BRT — #6014) atualização + pin do box "Artigo Especial" (slot 2, desde #6748 — era slot 3, eliminado) da diária e e-mail pros apoiadores R$10+ via Kit (#7659). Requer a máquina do editor (Claude in Chrome logado) — não roda no `helios`. Uso — `/diaria-artigo-especial --slug {slug} [--ano AAAA] [--at ISO] [--skip apoiase,linkedin,box,email] [--dry-run] [--unpin]`.
+description: Fecha as 4 ações manuais que seguem o deploy de um Artigo Especial (`especial.diar.ia.br/{ano}/{slug}/`) — post teaser no apoia.se, posts agendados no LinkedIn (página diar.ia.br D+1 09:00 BRT + perfil pessoal D+2 09:30 BRT — #6014), atualização + pin do box "Artigo Especial" (slot 2, desde #6748 — era slot 3, eliminado) da diária, e e-mail pros apoiadores R$10+ via Kit (#7659). Requer a máquina do editor (Claude in Chrome logado) — não roda no `helios`. Uso — `/diaria-artigo-especial --slug {slug} [--ano AAAA] [--at ISO] [--skip apoiase,linkedin,box,email] [--dry-run] [--unpin]`.
 ---
 
 # /diaria-artigo-especial
 
 Fecha o loop de divulgação de um Artigo Especial já **deployado** (issue
-#5979). Todo mês o artigo sai com 3 ações manuais repetidas pelo editor:
-post teaser no apoia.se, posts agendados no LinkedIn (página + perfil), e
-atualização do box "Artigo Especial" da diária pinado no slot 2 (desde
+#5979). Todo mês o artigo sai com 4 ações manuais repetidas pelo editor:
+post teaser no apoia.se, posts agendados no LinkedIn (página + perfil),
+e-mail pros apoiadores R$10+ (#7659) e atualização do box "Artigo
+Especial" da diária pinado no slot 2 (desde
 #6748 — era slot 3 até 29/08/2026, quando o #6748 eliminou o slot 3 da
 rotação inteira; pinar no slot 3 hoje escreveria a config e reportaria
 sucesso sem NENHUM efeito, porque `stitch-newsletter.ts` nunca mais
@@ -16,7 +17,7 @@ renderiza esse slot). **Trade-off aceito na troca para o slot 2**: o slot 2
 só existe no gap D2/D3 — em edição de 2 destaques (#2343/#3369) o box do
 Artigo Especial não aparece nessa edição, mesmo pinado (diferente do antigo
 slot 3, que injetava sempre após o último destaque, independente da
-contagem). Esta skill empacota as 3 ações num único playbook, com gate
+contagem). Esta skill empacota as 4 ações num único playbook, com gate
 humano único antes de qualquer publicação e state file por canal pra
 resumir com segurança.
 
@@ -43,7 +44,7 @@ inteira não fecha de ponta a ponta.
 | Box | Reescrever `data/snippets/artigo-especial-apoiadores.md` + pinar no slot 2 (`boxes_divulgacao.slot2` + `boxes_divulgacao_auto.pinned_slots: [2]` em `platform.config.json` — era slot 3 até o #6748 eliminá-lo, ver seção "Decisões já tomadas" acima). |
 | **E-mail: íntegra ou chamada + link?** (#7659) | **Chamada + link**, e por impossibilidade técnica, não por gosto: o artigo é um documento web de 43–52 KB com `<style>`, CSS grid, infográficos e barra de progresso — não sobrevive a cliente de e-mail, e acima de ~102 KB o Gmail corta a mensagem (cortando o pixel de abertura junto). Mandar a íntegra entregaria um artigo quebrado E perderia a medição. |
 | **E-mail: envio extra ou substitui a diária?** (#7659) | **Extra** — a diária do dia sai normal, mesma escolha da anual (#7569). Audiências diferentes (R$10+ × base inteira) e o volume é de 1 e-mail a mais por mês pra algumas dezenas de pessoas que pagam justamente por ele. |
-| **E-mail: unificar com a Retrospectiva do Mês?** (#7659) | **Não** — dois envios distintos, com audiências distintas: Retrospectiva do Mês é recompensa de Mantenedor (R$25+, tag `apoio-mensal`), Artigo Especial é de Apoiador (R$10+, tag `apoio-especial`). Unificar entregaria a recompensa de R$25 a quem paga R$10 — o mesmo vazamento que a #7658 corrigiu do lado da web. |
+| **E-mail: unificar com a Retrospectiva do Mês?** (#7659) | **Não** — dois envios distintos, com audiências distintas: Retrospectiva do Mês é recompensa de Mantenedor/Patrono (R$25+, tag `apoio-mensal`), Artigo Especial é de Apoiador (R$10+, tag `apoio-especial`). Unificar entregaria a recompensa de R$25 a quem paga R$10 — o mesmo vazamento que a #7658 corrigiu do lado da web. |
 | Visibilidade apoia.se | **Restrito a apoiadores R$10+ (revisto pelo editor 23/08/2026, 1ª execução ao vivo — substitui "público").** Motivo: `data/snippets/artigo-especial-apoiadores.md` vende o Artigo Especial como benefício de R$10+/mês; post público entregaria o benefício a quem não paga no mesmo instante. A restrição é do POST — o artigo em si segue público em `especial.diar.ia.br` (o canal com paywall continua sendo outro: `artigo.diar.ia.br`, `workers/artigo-mensal`). Consequência no texto: o `apoiase.md` fala com quem JÁ apoia, sem CTA de conversão. |
 
 ## Argumentos
@@ -171,13 +172,13 @@ mcp__clarice__correct_text(<texto humanizado>)
 
 Aplicar todas as sugestões da Clarice incondicionalmente (mesma disciplina
 do Stage 2 diário — #4514), exceto sugestão que corrompa marca/identificador
-técnico. Gravar o texto final (humanizado + corrigido) de volta nos 3
+técnico. Gravar o texto final (humanizado + corrigido) de volta nos 4
 arquivos.
 
 **Isenção do `--skip`**: se `--skip apoiase` (ou `linkedin`, ou `email`),
 ainda assim gerar o texto correspondente é opcional — pular a geração de um canal que já
 será pulado nos Passos 3-4 evita trabalho descartado. `box` não usa nenhum
-dos 3 arquivos (o gancho do box vem separado, ver Passo 5).
+dos 4 arquivos (o gancho do box vem separado, ver Passo 5).
 
 ## Passo 2 — gate humano único
 
@@ -338,9 +339,25 @@ a tag não resolver ou estiver vazia (filtro ausente no Kit significa a base
 INTEIRA, #6126) e **relê o broadcast pra conferir o `subscriber_filter`
 aplicado** — o 2xx da criação não é prova de que o filtro pegou.
 
-Grava `email-published.json` (id do broadcast, tag, verificação) e o canal
-`email` em `published.json`. Exit 2 = guard (config/audiência/idempotência),
-exit 1 = falha real. Falha aqui **continua** pros outros canais.
+**A conferência de audiência tem 3 desfechos, e 2 deles param o canal:**
+
+| `audienceVerification.status` | O que significa | O que o script faz |
+|---|---|---|
+| `confirmed` | a API ecoou exatamente o filtro enviado | canal `email` vira `done` |
+| `diverged` | ecoou OUTRO filtro — no pior caso a base inteira | erro, canal `failed` |
+| `unconfirmed` | a releitura não respondeu (1 retentativa) ou não trouxe o campo | erro, canal `failed` |
+
+`unconfirmed` também para de propósito: este passo é o único do fluxo sem
+gate humano depois, e tratar "não sei" como "confirmado" aqui seria aceitar
+em silêncio uma audiência não conferida. Nos dois casos o rascunho **existe**
+e o id fica gravado — o que falta é olho humano no painel antes de disparar,
+e uma reexecução é bloqueada pelo guard de duplicata.
+
+Grava `email-published.json` (id do broadcast, tag, nº de membros e a
+verificação COM a razão) e o status do canal `email` em `published.json` —
+`done` no sucesso, `failed` com o motivo em qualquer falha, como os canais
+irmãos já fazem. Exit 2 = guard (config/audiência/idempotência), exit 1 =
+falha real. Falha aqui **continua** pros outros canais.
 
 **O e-mail leva chamada + link, não o artigo inteiro** — e isso é mecânico,
 não preferência: os Artigos Especiais são documentos web de 43–52 KB com
@@ -454,7 +471,7 @@ data/artigo-especial/{ano}-{slug}/
   email.md                    chamada do e-mail pros apoiadores R$10+ (Passo 1)
   published.json              status agregado por canal — apoiase/linkedin_pagina/linkedin_perfil/box/email (Passo 0 guard, atualizado nos Passos 3-5)
   linkedin-published.json     detalhe do dispatch LinkedIn (worker_queue_key, route, scheduled_at — Passo 4)
-  email-published.json        detalhe do broadcast Kit (broadcastId, tag de audiência, audienceVerified — Passo 4b)
+  email-published.json        detalhe do broadcast Kit (broadcastId, tag + nº de membros, audienceVerification com a razão — Passo 4b)
 ```
 
 `platform.config.json` (`boxes_divulgacao.slot2` + `pinned_slots` — desde

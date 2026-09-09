@@ -11,7 +11,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, dirname } from "node:path";
 
@@ -38,9 +38,14 @@ import {
   readEmailPublished,
   emailPublishedPath,
   runPublishArtigoEspecialKit,
-  ArtigoEspecialKitGuardError,
+  toPersistedVerification,
   type ArtigoEspecialKitDeps,
 } from "../scripts/publish-artigo-especial-kit.ts";
+import {
+  ArtigoEspecialKitGuardError,
+  readPlatformConfig,
+} from "../scripts/lib/artigo-especial-kit-channel.ts";
+import type { ResolvedAudience } from "../scripts/lib/shared/kit-apoio-tag.ts";
 import type { ArtigoEspecialMeta } from "../scripts/lib/artigo-especial-meta.ts";
 
 const META: ArtigoEspecialMeta = {
@@ -232,7 +237,8 @@ describe("#7659 — payload do broadcast", () => {
     ano: "2026",
     slug: "o-agente",
   });
-  const input = buildArtigoEspecialKitBroadcastInput(email, "2026", "o-agente", 42);
+  const audience = { tagName: "apoio-especial", tagId: 42, memberCount: 5 } as unknown as ResolvedAudience;
+  const input = buildArtigoEspecialKitBroadcastInput(email, "2026", "o-agente", audience);
 
   it("SEMPRE rascunho — send_at null, nunca agendamento automático", () => {
     assert.equal(input.send_at, null);
@@ -533,7 +539,8 @@ describe("#7659 — runPublishArtigoEspecialKit: caminho feliz e idempotência",
     });
     const detail = readEmailPublished(emailPublishedPath(dataDir, "2026", "o-agente"));
     assert.equal(detail?.broadcastId, 555);
-    assert.equal(detail?.audienceVerified, true);
+    assert.deepEqual(detail?.audienceVerification, { status: "confirmed" });
+    assert.equal(detail?.audienceMemberCount, 5);
     assert.equal(detail?.audienceTag, "apoio-especial");
 
     const state = JSON.parse(
@@ -611,11 +618,58 @@ describe("#7659 — runPublishArtigoEspecialKit: caminho feliz e idempotência",
     // rascunho por cima de um problema não resolvido.
     const detail = readEmailPublished(emailPublishedPath(dataDir, "2026", "o-agente"));
     assert.equal(detail?.broadcastId, 555);
-    assert.equal(detail?.audienceVerified, false);
+    assert.equal(detail?.audienceVerification.status, "diverged");
+    // A `reason` tem que sobreviver ao disco: sem ela, quem auditar depois vê
+    // "divergiu" sem saber QUAL filtro veio.
+    assert.match(
+      detail?.audienceVerification.status === "diverged" ? detail.audienceVerification.reason : "",
+      /DIVERGENTE/,
+    );
   });
 
-  it("releitura que falha na REDE é fail-soft (audienceVerified null), não aborta", async () => {
+  it("releitura que NÃO confirma (rede falhou) também ABORTA, e o canal não vira done", async () => {
+    // Mudança deliberada em relação à 1ª versão desta PR, que seguia com um
+    // AVISO em stderr e exit 0. Este é o único ponto do fluxo sem gate humano
+    // depois — tratar "não sei" como "confirmado" aqui era exatamente o
+    // silêncio que o guard existe pra evitar.
     const { rootDir, dataDir } = makeFixture();
+    let tentativas = 0;
+    await assert.rejects(
+      () =>
+        runPublishArtigoEspecialKit({
+          ano: "2026",
+          slug: "o-agente",
+          dataDir,
+          rootDir,
+          dryRun: false,
+          force: false,
+          log: silent,
+          deps: makeDeps({
+            getBroadcast: async () => {
+              tentativas++;
+              throw new Error("timeout");
+            },
+          }),
+        }),
+      /AUDIÊNCIA NÃO CONFIRMADA/,
+    );
+    // Retenta 1x antes de desistir — um timeout transitório não pode virar
+    // "não sei" quando 1 chamada a mais responderia.
+    assert.equal(tentativas, 2);
+
+    const detail = readEmailPublished(emailPublishedPath(dataDir, "2026", "o-agente"));
+    assert.equal(detail?.broadcastId, 555, "o id tem que ficar gravado — o rascunho existe");
+    assert.equal(detail?.audienceVerification.status, "unconfirmed");
+
+    const state = JSON.parse(
+      readFileSync(resolve(dataDir, "artigo-especial", "2026-o-agente", "published.json"), "utf8"),
+    );
+    assert.equal(state.channels.email.status, "failed");
+  });
+
+  it("releitura que falha na 1ª e responde na 2ª → confirmado, sem abortar", async () => {
+    const { rootDir, dataDir } = makeFixture();
+    let tentativas = 0;
     await runPublishArtigoEspecialKit({
       ano: "2026",
       slug: "o-agente",
@@ -626,10 +680,152 @@ describe("#7659 — runPublishArtigoEspecialKit: caminho feliz e idempotência",
       log: silent,
       deps: makeDeps({
         getBroadcast: async () => {
-          throw new Error("timeout");
+          tentativas++;
+          if (tentativas === 1) throw new Error("timeout transitório");
+          return { subscriber_filter: buildTagFilter(42) };
         },
       }),
     });
-    assert.equal(readEmailPublished(emailPublishedPath(dataDir, "2026", "o-agente"))?.audienceVerified, null);
+    assert.equal(readEmailPublished(emailPublishedPath(dataDir, "2026", "o-agente"))?.audienceVerification.status, "confirmed");
+  });
+});
+
+describe("#7659 — falha do registro de idempotência é o 2º pior caso do domínio", () => {
+  it("writeJson lançando → erro que MANDA conferir o painel antes de reexecutar", async () => {
+    const { rootDir, dataDir } = makeFixture();
+    await assert.rejects(
+      () =>
+        runPublishArtigoEspecialKit({
+          ano: "2026",
+          slug: "o-agente",
+          dataDir,
+          rootDir,
+          dryRun: false,
+          force: false,
+          log: silent,
+          deps: makeDeps({
+            writeJson: () => {
+              throw new Error("EACCES");
+            },
+          }),
+        }),
+      (e: Error) => /NÃO reexecute/.test(e.message) && /Drafts/.test(e.message),
+    );
+  });
+
+  it("writeJson lançando E filtro divergente → a mensagem cobre os DOIS problemas", async () => {
+    // O caso composto é o pior: existe um rascunho com audiência possivelmente
+    // errada E o guard de duplicata não vai enxergá-lo.
+    const { rootDir, dataDir } = makeFixture();
+    await assert.rejects(
+      () =>
+        runPublishArtigoEspecialKit({
+          ano: "2026",
+          slug: "o-agente",
+          dataDir,
+          rootDir,
+          dryRun: false,
+          force: false,
+          log: silent,
+          deps: makeDeps({
+            getBroadcast: async () => ({ subscriber_filter: buildTagFilter(99) }),
+            writeJson: () => {
+              throw new Error("EACCES");
+            },
+          }),
+        }),
+      (e: Error) => /AUDIÊNCIA NÃO CONFERE/.test(e.message) && /ADICIONALMENTE/.test(e.message),
+    );
+  });
+});
+
+describe("#7659 — toda falha fica registrada no status agregado", () => {
+  it("guard antes de qualquer criação → canal email vira failed (como os canais irmãos)", async () => {
+    const { rootDir, dataDir } = makeFixture();
+    await assert.rejects(
+      () =>
+        runPublishArtigoEspecialKit({
+          ano: "2026",
+          slug: "o-agente",
+          dataDir,
+          rootDir,
+          dryRun: false,
+          force: false,
+          log: silent,
+          deps: makeDeps({ countTagMembers: async () => 0 }),
+        }),
+      ArtigoEspecialKitGuardError,
+    );
+    const state = JSON.parse(
+      readFileSync(resolve(dataDir, "artigo-especial", "2026-o-agente", "published.json"), "utf8"),
+    );
+    assert.equal(state.channels.email.status, "failed");
+    assert.match(state.channels.email.reason, /VAZIA/);
+  });
+
+  it("guard de \"já criado\" NÃO rebaixa um done anterior pra failed", async () => {
+    // Recusar o 2º rascunho é o guard funcionando, não uma falha do canal.
+    const { rootDir, dataDir } = makeFixture();
+    const run = () =>
+      runPublishArtigoEspecialKit({
+        ano: "2026",
+        slug: "o-agente",
+        dataDir,
+        rootDir,
+        dryRun: false,
+        force: false,
+        log: silent,
+        deps: makeDeps(),
+      });
+    await run();
+    await assert.rejects(run, ArtigoEspecialKitGuardError);
+    const state = JSON.parse(
+      readFileSync(resolve(dataDir, "artigo-especial", "2026-o-agente", "published.json"), "utf8"),
+    );
+    assert.equal(state.channels.email.status, "done");
+  });
+
+  it("--dry-run que falha no guard NÃO escreve state nenhum", async () => {
+    const { rootDir, dataDir } = makeFixture();
+    writeFileSync(resolve(rootDir, "platform.config.json"), JSON.stringify({}), "utf8");
+    await assert.rejects(
+      () =>
+        runPublishArtigoEspecialKit({
+          ano: "2026",
+          slug: "o-agente",
+          dataDir,
+          rootDir,
+          dryRun: true,
+          force: false,
+          log: silent,
+          deps: makeDeps(),
+        }),
+      ArtigoEspecialKitGuardError,
+    );
+    assert.equal(existsSync(resolve(dataDir, "artigo-especial", "2026-o-agente", "published.json")), false);
+  });
+});
+
+describe("#7659 — platform.config.json malformado é GUARD, não SyntaxError cru", () => {
+  it("JSON quebrado → ArtigoEspecialKitGuardError com o caminho do arquivo", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "ae-cfg-"));
+    writeFileSync(resolve(dir, "platform.config.json"), "{ isto não é json", "utf8");
+    assert.throws(() => readPlatformConfig(dir), ArtigoEspecialKitGuardError);
+  });
+
+  it("arquivo ausente → {} (o guard de tag não configurada é quem recusa)", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "ae-cfg-vazio-"));
+    assert.deepEqual(readPlatformConfig(dir), {});
+  });
+});
+
+describe("#7659 — toPersistedVerification preserva a razão", () => {
+  it("confirmed não carrega razão (não há o que explicar)", () => {
+    assert.deepEqual(toPersistedVerification({ verified: true }), { status: "confirmed" });
+  });
+
+  it("diverged e unconfirmed carregam a razão — é o que sobra pra auditoria depois", () => {
+    assert.deepEqual(toPersistedVerification({ verified: false, reason: "x" }), { status: "diverged", reason: "x" });
+    assert.deepEqual(toPersistedVerification({ verified: null, reason: "y" }), { status: "unconfirmed", reason: "y" });
   });
 });

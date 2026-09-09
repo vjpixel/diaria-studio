@@ -29,7 +29,6 @@
  *   npx tsx scripts/sync-apoio-especial-tag-kit.ts --push
  *   npx tsx scripts/sync-apoio-especial-tag-kit.ts --push --force-blast-radius
  */
-import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -38,8 +37,9 @@ import { resolveKitConfig } from "./lib/kit-config.ts";
 import { runKitApoioTagSync } from "./lib/kit-apoio-tag-sync.ts";
 import {
   ARTIGO_ESPECIAL_EMAIL_NIVEIS,
+  ArtigoEspecialKitGuardError,
+  readPlatformConfig,
   resolveArtigoEspecialTagName,
-  type KitArtigoEspecialChannelConfig,
 } from "./lib/artigo-especial-kit-channel.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -53,10 +53,7 @@ export async function main(rootDir: string = ROOT): Promise<void> {
   const push = hasFlag(argv, "push");
   const forceBlastRadius = hasFlag(argv, "force-blast-radius");
 
-  const platformConfigPath = resolve(rootDir, "platform.config.json");
-  const platformConfig = existsSync(platformConfigPath)
-    ? (JSON.parse(readFileSync(platformConfigPath, "utf8")) as { kit_artigo_especial?: KitArtigoEspecialChannelConfig })
-    : {};
+  const platformConfig = readPlatformConfig(rootDir);
   const tagNameResolution = resolveArtigoEspecialTagName(platformConfig.kit_artigo_especial);
   if (!tagNameResolution.ok) {
     log(`ERRO: ${tagNameResolution.reason}`);
@@ -85,7 +82,10 @@ export async function main(rootDir: string = ROOT): Promise<void> {
 
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {
-    process.stderr.write(`${LOG_PREFIX} erro fatal: ${(e as Error).message}\n`);
-    process.exit(1);
+    // Guard (config malformada/ausente) sai com 2, como todo o resto do canal;
+    // erro real sai com 1.
+    const guard = e instanceof ArtigoEspecialKitGuardError;
+    process.stderr.write(`${LOG_PREFIX} ${guard ? "ERRO" : "erro fatal"}: ${(e as Error).message}\n`);
+    process.exit(guard ? 2 : 1);
   });
 }

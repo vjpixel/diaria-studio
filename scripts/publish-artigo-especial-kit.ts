@@ -69,22 +69,48 @@ import { getBroadcast } from "./lib/kit-client.ts";
 import { readArtigoMeta, type ArtigoEspecialMeta } from "./lib/artigo-especial-meta.ts";
 import {
   ARTIGO_ESPECIAL_TAG_SYNC_COMMAND,
+  ArtigoEspecialKitGuardError,
+  readPlatformConfig,
   resolveArtigoEspecialTagName,
-  type KitArtigoEspecialChannelConfig,
 } from "./lib/artigo-especial-kit-channel.ts";
-import { renderArtigoEspecialEmail, type RenderedArtigoEspecialEmail } from "./lib/artigo-especial-email-render.ts";
-import { resolveAudienceTagId, checkAudienceNotEmpty } from "./lib/shared/kit-apoio-tag.ts";
+import {
+  renderArtigoEspecialEmail,
+  withArtigoEspecialEmailUtm,
+  type RenderedArtigoEspecialEmail,
+} from "./lib/artigo-especial-email-render.ts";
+import { resolveVerifiedAudience, type ResolvedAudience } from "./lib/shared/kit-apoio-tag.ts";
 import {
   artigoEspecialStatePath,
   readArtigoEspecialState,
   writeArtigoEspecialState,
   buildDoneChannelState,
+  buildFailedChannelState,
   decideChannelAction,
   withChannelState,
 } from "./lib/artigo-especial-state.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[publish-artigo-especial-kit]";
+
+/**
+ * Estado da conferência de audiência, como fica GRAVADO — mesma união de
+ * `AudienceVerification`, incluindo a `reason`.
+ *
+ * A 1ª versão gravava `audienceVerified: boolean | null` e jogava a `reason`
+ * fora (achado do type-design-analyzer, review da #7659). Isso quebrava
+ * justamente o caso que o arquivo existe pra registrar: `diverged` significa
+ * "existe um rascunho no Kit possivelmente mirando a base inteira", e quem
+ * fosse auditar depois via só o booleano, sem QUAL filtro divergiu — a
+ * informação estava no stderr daquela sessão e em lugar nenhum durável.
+ *
+ * Nomes em vez de `boolean | null` porque os 3 estados não são "sim/não/não
+ * sei" de mesma gravidade: `diverged` é incidente acionável, `unconfirmed` é
+ * ausência de confirmação. Um `if (!audienceVerified)` colapsava os dois.
+ */
+export type PersistedAudienceVerification =
+  | { status: "confirmed" }
+  | { status: "diverged"; reason: string }
+  | { status: "unconfirmed"; reason: string };
 
 /** Detalhe do envio — irmão de `linkedin-published.json`. */
 export interface ArtigoEspecialEmailPublished {
@@ -94,9 +120,18 @@ export interface ArtigoEspecialEmailPublished {
   subject: string;
   audienceTag: string;
   audienceTagId: number;
-  /** `true` confirmado por releitura · `false` divergiu · `null` não confirmável. */
-  audienceVerified: boolean | null;
+  /** Quantos membros a tag tinha no momento da criação — o número que o
+   *  editor confere contra o painel antes de disparar. */
+  audienceMemberCount: number;
+  audienceVerification: PersistedAudienceVerification;
   createdAt: string;
+}
+
+/** Pura: projeta a verificação em memória no shape gravado. @pure */
+export function toPersistedVerification(v: AudienceVerification): PersistedAudienceVerification {
+  if (v.verified === true) return { status: "confirmed" };
+  if (v.verified === false) return { status: "diverged", reason: v.reason };
+  return { status: "unconfirmed", reason: v.reason };
 }
 
 export function emailPublishedPath(dataDir: string, ano: string, slug: string): string {
@@ -148,13 +183,18 @@ export function buildArtigoEspecialKitDescription(ano: string, slug: string): st
  * Pura — payload de `POST /v4/broadcasts`. NUNCA inclui `send_at` (rascunho
  * sempre) e SEMPRE inclui um `subscriber_filter` de tag resolvida.
  *
+ * Recebe `ResolvedAudience`, não um `tagId: number` cru: um número solto tem o
+ * mesmo tipo de um id inventado ou não resolvido, e a segurança do canal
+ * passaria a depender de cada caller futuro chamar os 3 guards na ordem certa.
+ * Com a audiência marcada, montar o payload sem passar por eles não compila.
+ *
  * @pure
  */
 export function buildArtigoEspecialKitBroadcastInput(
   email: RenderedArtigoEspecialEmail,
   ano: string,
   slug: string,
-  tagId: number,
+  audience: ResolvedAudience,
 ): CreateBroadcastInput {
   return {
     subject: email.subject,
@@ -162,7 +202,7 @@ export function buildArtigoEspecialKitBroadcastInput(
     preview_text: email.previewText,
     description: buildArtigoEspecialKitDescription(ano, slug),
     send_at: null,
-    subscriber_filter: buildTagFilter(tagId),
+    subscriber_filter: buildTagFilter(audience.tagId),
     public: false,
   };
 }
@@ -230,18 +270,54 @@ export interface RunOptions {
   deps?: ArtigoEspecialKitDeps;
 }
 
-/** Erro de guard — o caller sai com exit 2 (config/audiência/idempotência),
- *  distinto de erro fatal (exit 1). */
-export class ArtigoEspecialKitGuardError extends Error {}
+/**
+ * Registra `failed` no status agregado quando o canal falha — o que os canais
+ * irmãos (`publish-artigo-especial-linkedin.ts`, `update-artigo-especial-box.ts`)
+ * já fazem e a 1ª versão deste script não fazia: toda falha saía sem tocar
+ * `published.json`, então o resumo da skill e qualquer leitor daquele arquivo
+ * viam o canal como "nunca tentado" em vez de "tentou e falhou" (achado do
+ * code-reviewer, review da #7659).
+ *
+ * Nunca sobrescreve um `done` anterior: o caso "já foi criado, recusando o 2º
+ * rascunho" é um guard funcionando, não uma falha do canal.
+ *
+ * Fail-soft de propósito — não pode substituir o erro real que está subindo.
+ */
+function recordChannelFailure(statePath: string, ano: string, slug: string, reason: string, log: (m: string) => void): void {
+  try {
+    const state = readArtigoEspecialState(statePath, ano, slug);
+    if (state.channels.email?.status === "done") return;
+    writeArtigoEspecialState(
+      statePath,
+      withChannelState(state, "email", buildFailedChannelState(new Date().toISOString(), reason)),
+    );
+  } catch (e) {
+    log(`AVISO: não foi possível registrar a falha do canal "email" em ${statePath} (${(e as Error).message}).`);
+  }
+}
 
 export async function runPublishArtigoEspecialKit(options: RunOptions): Promise<void> {
+  // `--dry-run` nunca toca o state (preview local é sempre seguro de repetir).
+  if (options.dryRun) return runPublishArtigoEspecialKitInner(options);
+  try {
+    await runPublishArtigoEspecialKitInner(options);
+  } catch (e) {
+    recordChannelFailure(
+      artigoEspecialStatePath(options.dataDir, options.ano, options.slug),
+      options.ano,
+      options.slug,
+      (e as Error).message,
+      options.log,
+    );
+    throw e;
+  }
+}
+
+async function runPublishArtigoEspecialKitInner(options: RunOptions): Promise<void> {
   const { ano, slug, dataDir, rootDir, dryRun, force, log } = options;
   const deps = options.deps ?? defaultDeps;
 
-  const platformConfigPath = resolve(rootDir, "platform.config.json");
-  const platformConfig = existsSync(platformConfigPath)
-    ? (JSON.parse(readFileSync(platformConfigPath, "utf8")) as { kit_artigo_especial?: KitArtigoEspecialChannelConfig })
-    : {};
+  const platformConfig = readPlatformConfig(rootDir);
   const tagNameResolution = resolveArtigoEspecialTagName(platformConfig.kit_artigo_especial);
   if (!tagNameResolution.ok) {
     // Vale inclusive em --dry-run: sem nome de tag não há audiência possível,
@@ -289,6 +365,17 @@ export async function runPublishArtigoEspecialKit(options: RunOptions): Promise<
     ano,
     slug,
   });
+  // `withArtigoEspecialEmailUtm` devolve a URL inalterada quando ela não
+  // parseia — decisão certa (e-mail sem UTM é perda de medição; e-mail que não
+  // sai é perda de entrega), mas silenciosa: sem este aviso, a atribuição de um
+  // envio inteiro sumia sem deixar rastro em log nenhum (achado do
+  // silent-failure-hunter, review da #7659).
+  if (withArtigoEspecialEmailUtm(meta.url, ano, slug) === meta.url) {
+    log(
+      `AVISO: UTM não aplicado ao link do artigo — "${meta.url}" (og:url) não é uma URL absoluta válida. ` +
+        "O e-mail sai normalmente, mas os cliques deste envio não vão aparecer na atribuição.",
+    );
+  }
 
   if (dryRun) {
     log(`[DRY RUN] assunto: ${email.subject}`);
@@ -302,36 +389,44 @@ export async function runPublishArtigoEspecialKit(options: RunOptions): Promise<
   if (!kitConfigResult.ok) throw new ArtigoEspecialKitGuardError(kitConfigResult.reason);
   const kitConfig = kitConfigResult.config;
 
-  const tagIdResolution = resolveAudienceTagId(
-    tagName,
-    await deps.findTagId(tagName, kitConfig),
+  const audienceResolution = await resolveVerifiedAudience(
+    platformConfig.kit_artigo_especial?.audience_tag,
+    "kit_artigo_especial.audience_tag",
     ARTIGO_ESPECIAL_TAG_SYNC_COMMAND,
+    async (name) => {
+      const tagId = await deps.findTagId(name, kitConfig);
+      return { tagId, memberCount: tagId === null ? 0 : await deps.countTagMembers(tagId, kitConfig) };
+    },
   );
-  if (!tagIdResolution.ok) throw new ArtigoEspecialKitGuardError(tagIdResolution.reason);
-  const tagId = tagIdResolution.tagId;
-
-  const memberCheck = checkAudienceNotEmpty(
-    tagName,
-    await deps.countTagMembers(tagId, kitConfig),
-    ARTIGO_ESPECIAL_TAG_SYNC_COMMAND,
-  );
-  if (!memberCheck.ok) throw new ArtigoEspecialKitGuardError(memberCheck.reason);
+  if (!audienceResolution.ok) throw new ArtigoEspecialKitGuardError(audienceResolution.reason);
+  const audience = audienceResolution.audience;
 
   const created = await deps.createBroadcast(
-    buildArtigoEspecialKitBroadcastInput(email, ano, slug, tagId),
+    buildArtigoEspecialKitBroadcastInput(email, ano, slug, audience),
     kitConfig,
   );
   log(
-    `broadcast criado: id=${created.id} (rascunho, audiência = tag "${tagName}" id=${tagId}) — test email, ` +
-      "conferência visual e disparo continuam sendo ação manual no painel do Kit.",
+    `broadcast criado: id=${created.id} (rascunho, audiência = tag "${audience.tagName}" id=${audience.tagId}, ` +
+      `${audience.memberCount} membro(s)) — test email, conferência visual e disparo continuam sendo ação ` +
+      "manual no painel do Kit.",
   );
 
-  let verification: AudienceVerification;
-  try {
-    const reread = await deps.getBroadcast(created.id, kitConfig);
-    verification = verifyAudienceFilter(reread.subscriber_filter, buildTagFilter(tagId));
-  } catch (e) {
-    verification = { verified: null, reason: `a releitura do broadcast falhou (${(e as Error).message}).` };
+  // Uma retentativa antes de desistir: a releitura é a única confirmação de que
+  // o filtro pegou, e desistir dela num timeout transitório deixaria o operador
+  // com "não sei" quando 1 chamada a mais responderia (achado do
+  // silent-failure-hunter, review da #7659).
+  let verification: AudienceVerification = { verified: null, reason: "releitura não tentada." };
+  for (let tentativa = 1; tentativa <= 2; tentativa++) {
+    try {
+      const reread = await deps.getBroadcast(created.id, kitConfig);
+      verification = verifyAudienceFilter(reread.subscriber_filter, buildTagFilter(audience.tagId));
+      break;
+    } catch (e) {
+      verification = {
+        verified: null,
+        reason: `a releitura do broadcast falhou em ${tentativa} tentativa(s) (${(e as Error).message}).`,
+      };
+    }
   }
   if (verification.verified !== true) log(`AVISO: ${verification.reason}`);
 
@@ -343,9 +438,10 @@ export async function runPublishArtigoEspecialKit(options: RunOptions): Promise<
     slug,
     broadcastId: created.id,
     subject: email.subject,
-    audienceTag: tagName,
-    audienceTagId: tagId,
-    audienceVerified: verification.verified,
+    audienceTag: audience.tagName,
+    audienceTagId: audience.tagId,
+    audienceMemberCount: audience.memberCount,
+    audienceVerification: toPersistedVerification(verification),
     createdAt: new Date().toISOString(),
   };
   let persistError: string | undefined;
@@ -355,15 +451,34 @@ export async function runPublishArtigoEspecialKit(options: RunOptions): Promise<
     persistError = (e as Error).message;
   }
 
+  const persistSuffix = persistError
+    ? ` ADICIONALMENTE, ${publishedPath} não pôde ser gravado (${persistError}) — o guard de duplicata NÃO vai ` +
+      "reconhecer este broadcast e uma reexecução criaria um 2º rascunho."
+    : ` O id ficou gravado (audienceVerification.status: "${detail.audienceVerification.status}") — uma ` +
+      "reexecução é bloqueada pelo guard.";
+
   if (verification.verified === false) {
     throw new Error(
       `AUDIÊNCIA NÃO CONFERE: o broadcast Kit id=${created.id} FOI CRIADO, mas ${verification.reason} NÃO ` +
         "dispare esse rascunho sem antes conferir a audiência no painel do Kit — no pior caso ele está " +
         "mirando a base INTEIRA em vez da tag de apoiadores." +
-        (persistError
-          ? ` ADICIONALMENTE, ${emailPublishedPath(dataDir, ano, slug)} não pôde ser gravado (${persistError}) — ` +
-            "o guard de duplicata NÃO vai reconhecer este broadcast e uma reexecução criaria um 2º rascunho."
-          : " O id ficou gravado com audienceVerified:false — uma reexecução é bloqueada pelo guard."),
+        persistSuffix,
+    );
+  }
+
+  // Audiência NÃO CONFIRMADA (a releitura não respondeu, ou não trouxe o
+  // campo) também para aqui, e o canal NÃO é marcado `done`. A 1ª versão
+  // seguia com um AVISO em stderr e exit 0 — na prática, tratar "não sei" como
+  // "confirmado" no único ponto do fluxo que não tem gate humano depois
+  // (achado do silent-failure-hunter, review da #7659). O rascunho existe e
+  // está protegido pelo guard de duplicata; o que falta é olho humano no
+  // painel, e é isso que o exit não-zero força.
+  if (verification.verified === null) {
+    throw new Error(
+      `AUDIÊNCIA NÃO CONFIRMADA: o broadcast Kit id=${created.id} FOI CRIADO, mas ${verification.reason} ` +
+        `Confira no painel do Kit que a audiência é a tag "${audience.tagName}" (${audience.memberCount} ` +
+        "membro(s)) ANTES de disparar — no pior caso ele está mirando a base INTEIRA." +
+        persistSuffix,
     );
   }
 
@@ -375,11 +490,23 @@ export async function runPublishArtigoEspecialKit(options: RunOptions): Promise<
     );
   }
 
-  const state = readArtigoEspecialState(statePath, ano, slug);
-  writeArtigoEspecialState(
-    statePath,
-    withChannelState(state, "email", buildDoneChannelState(detail.createdAt, null)),
-  );
+  // Status agregado — secundário: o guard de duplicata real é o
+  // `email-published.json` acima, que já foi gravado. Falha aqui não muda o que
+  // existe no Kit nem desprotege a reexecução, então vira aviso em vez de
+  // exceção crua vinda de `main()` (achado do silent-failure-hunter).
+  try {
+    const state = readArtigoEspecialState(statePath, ano, slug);
+    writeArtigoEspecialState(
+      statePath,
+      withChannelState(state, "email", buildDoneChannelState(detail.createdAt, null)),
+    );
+  } catch (e) {
+    log(
+      `AVISO: o broadcast id=${created.id} foi criado e registrado normalmente, mas o status agregado ` +
+        `(${statePath}) não pôde ser gravado (${(e as Error).message}) — o canal "email" vai aparecer como ` +
+        "pendente no resumo da skill. Nada a refazer no Kit.",
+    );
+  }
 }
 
 async function main(): Promise<void> {

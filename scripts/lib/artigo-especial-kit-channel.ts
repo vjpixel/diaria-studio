@@ -37,6 +37,8 @@
  * lado, na Retrospectiva do Mês).
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { ARTIGOS_ESPECIAIS_APOIO_THRESHOLD } from "../../workers/artigos/src/apoio-gate-config.ts";
 import type { ApoioNivel } from "./shared/apoio-nivel-types.ts";
 import { resolveAudienceTagName, type TagNameResolution } from "./shared/kit-apoio-tag.ts";
@@ -62,4 +64,36 @@ export function resolveArtigoEspecialTagName(
   config: KitArtigoEspecialChannelConfig | undefined | null,
 ): TagNameResolution {
   return resolveAudienceTagName(config?.audience_tag, "kit_artigo_especial.audience_tag");
+}
+
+/** Erro de guard deste canal — o caller sai com exit 2 (config/audiência/
+ *  idempotência), distinto de erro fatal (exit 1). */
+export class ArtigoEspecialKitGuardError extends Error {}
+
+export interface PlatformConfigSlice {
+  kit_artigo_especial?: KitArtigoEspecialChannelConfig;
+}
+
+/**
+ * Lê a fatia de `platform.config.json` que este canal usa.
+ *
+ * O `JSON.parse` é embrulhado de propósito: cru, um `platform.config.json`
+ * malformado (arquivo sendo editado, merge conflict) escapava como `SyntaxError`
+ * genérico com exit 1 (fatal), passando ao lado da classificação de guard que
+ * todo o resto do canal usa — falha alta, mas com a mensagem errada e o exit
+ * code errado (achado do silent-failure-hunter, review da #7659). Arquivo
+ * ausente continua sendo `{}`: o guard de tag não configurada é quem recusa,
+ * com mensagem acionável.
+ */
+export function readPlatformConfig(rootDir: string): PlatformConfigSlice {
+  const path = resolve(rootDir, "platform.config.json");
+  if (!existsSync(path)) return {};
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as PlatformConfigSlice;
+  } catch (e) {
+    throw new ArtigoEspecialKitGuardError(
+      `${path} não pôde ser parseado (${(e as Error).message}) — conserte o JSON antes de rodar. ` +
+        "Nada foi criado no Kit.",
+    );
+  }
 }

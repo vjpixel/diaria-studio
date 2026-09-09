@@ -24,9 +24,11 @@
  * - **Nunca confia no 2xx.** Cada `tagSubscriber`/`untagSubscriber` é
  *   verificado por releitura de `GET /subscribers/{id}/tags` (direção
  *   assinante→tags, a única sem atraso de propagação observado — ver
- *   `kit-client.ts`). O `DELETE` de tag no Kit tem histórico de responder 204
- *   sem remover em rota vizinha, então releitura aqui não é zelo, é o único
- *   jeito de saber.
+ *   `kit-client.ts`). O `DELETE /v4/tags/{id}` (apagar a TAG) tem histórico
+ *   medido de responder 204 sem remover; a rota usada aqui é outra (tirar a tag
+ *   de UM assinante) e o mesmo defeito nunca foi medido nela — a releitura é
+ *   precaução por analogia, não confirmação de bug conhecido. Barata o
+ *   bastante pra valer mesmo assim.
  * - **Guard de blast radius** (30%): `forceBlastRadius` é a decisão
  *   consciente, sempre logada.
  * - A tag é CRIADA se ainda não existir (só em `push`) — diferente de
@@ -79,6 +81,13 @@ export function isSystemicKitFailure(err: unknown): boolean {
  * I/O: pagina `GET /tags/{id}/subscribers` até o fim preservando o `id` de
  * cada membro. `listAllTagSubscriberEmails` (kit-broadcasts) devolve só os
  * e-mails — aqui a remoção precisa do id, então a paginação é feita local.
+ *
+ * ⚠️ Esta é a direção COM atraso de propagação (~180s medidos, ver
+ * `kit-client.ts`): rodar o sync logo depois de um push anterior pode ler uma
+ * membresia defasada. O efeito é benigno e auto-corrige — quem já tem a tag
+ * reaparece em `toAdd` e é re-adicionado (idempotente); o risco seria uma
+ * REMOÇÃO indevida, e essa não acontece por defasagem, porque o lado desejado
+ * vem do custom field, não desta rota.
  */
 export async function fetchTagMembers(tagId: number, config?: KitConfig): Promise<KitTagMember[]> {
   const out: KitTagMember[] = [];
@@ -117,10 +126,38 @@ export async function applyRemove(member: KitTagMember, tagId: number, config?: 
   if (tags.some((t) => t.id === tagId)) {
     throw new Error(
       `releitura pós-untag NÃO confere pra ${member.email} (subscriber ${member.id}) — tag ${tagId} ainda presente ` +
-        "(o DELETE respondeu 2xx mas não removeu; mesma armadilha do DELETE /tags/{id} documentada em kit-client.ts).",
+        "(o DELETE respondeu 2xx mas não removeu — mesma FAMÍLIA da armadilha medida em DELETE /tags/{id}, " +
+        "documentada em kit-client.ts; nesta rota o defeito é analogia, não medição).",
     );
   }
 }
+
+/**
+ * Costuras de I/O do runner. Injetáveis pra que os guards que importam —
+ * blast radius bloqueando o push INTEIRO, abort em falha sistêmica, criação da
+ * tag só em `push` — sejam testáveis sem rede; produção usa `defaultSyncDeps`.
+ *
+ * A 1ª versão não tinha isso e o runner ficou sem teste nenhum (achado do
+ * pr-test-analyzer, review da #7659) — justo o arquivo onde mora a verificação
+ * por releitura que o módulo chama de "o único jeito de saber".
+ */
+export interface KitApoioTagSyncDeps {
+  findTagId: (name: string, config?: KitConfig) => Promise<number | null>;
+  createTag: (name: string, config?: KitConfig) => Promise<{ id: number }>;
+  fetchTagMembers: (tagId: number, config?: KitConfig) => Promise<KitTagMember[]>;
+  fetchDesiredMembers: (niveis: readonly ApoioNivel[], config?: KitConfig) => Promise<KitTagMember[]>;
+  applyAdd: (member: KitTagMember, tagId: number, config?: KitConfig) => Promise<void>;
+  applyRemove: (member: KitTagMember, tagId: number, config?: KitConfig) => Promise<void>;
+}
+
+export const defaultSyncDeps: KitApoioTagSyncDeps = {
+  findTagId: findTagIdByName,
+  createTag,
+  fetchTagMembers,
+  fetchDesiredMembers,
+  applyAdd,
+  applyRemove,
+};
 
 export interface KitApoioTagSyncOptions {
   tagName: string;
@@ -129,6 +166,7 @@ export interface KitApoioTagSyncOptions {
   forceBlastRadius: boolean;
   config?: KitConfig;
   log: (msg: string) => void;
+  deps?: KitApoioTagSyncDeps;
 }
 
 export interface KitApoioTagSyncResult {
@@ -153,12 +191,13 @@ export function logDiff(diff: TagMembershipDiff, log: (msg: string) => void): vo
 
 export async function runKitApoioTagSync(options: KitApoioTagSyncOptions): Promise<KitApoioTagSyncResult> {
   const { tagName, niveis, push, forceBlastRadius, config, log } = options;
+  const deps = options.deps ?? defaultSyncDeps;
 
   log(`lendo assinantes do Kit (níveis alvo: ${niveis.join(", ")})…`);
-  const desired = await fetchDesiredMembers(niveis, config);
+  const desired = await deps.fetchDesiredMembers(niveis, config);
   log(`${desired.length} assinante(s) ativo(s) com nível alvo.`);
 
-  let tagId = await findTagIdByName(tagName, config);
+  let tagId = await deps.findTagId(tagName, config);
   if (tagId === null) {
     if (!push) {
       log(
@@ -170,11 +209,11 @@ export async function runKitApoioTagSync(options: KitApoioTagSyncOptions): Promi
       return { tagId: null, diff, applied: 0, failed: 0, aborted: false, blastRadiusBlocked: false };
     }
     log(`tag "${tagName}" não existe — criando.`);
-    tagId = (await createTag(tagName, config)).id;
+    tagId = (await deps.createTag(tagName, config)).id;
     log(`tag criada: id=${tagId}. (A listagem de tags do Kit leva ~1-2min pra refletir — normal.)`);
   }
 
-  const current = await fetchTagMembers(tagId, config);
+  const current = await deps.fetchTagMembers(tagId, config);
   log(`tag "${tagName}" (id=${tagId}) tem ${current.length} membro(s) hoje.`);
 
   const diff = diffTagMembership(desired.map((m) => m.email), current.map((m) => m.email));
@@ -244,8 +283,8 @@ export async function runKitApoioTagSync(options: KitApoioTagSyncOptions): Promi
     }
   };
 
-  await applyAll(diff.toAdd, "adicionar", (m) => applyAdd(m, tagId, config));
-  await applyAll(diff.toRemove, "remover", (m) => applyRemove(m, tagId, config));
+  await applyAll(diff.toAdd, "adicionar", (m) => deps.applyAdd(m, tagId, config));
+  await applyAll(diff.toRemove, "remover", (m) => deps.applyRemove(m, tagId, config));
 
   const pendentes = diff.toAdd.length + diff.toRemove.length - applied - failed;
   log(
