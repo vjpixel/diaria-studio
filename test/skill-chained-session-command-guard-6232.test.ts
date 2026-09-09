@@ -40,6 +40,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SESSION_ID_REQUIRED_SUBCOMMANDS } from "../scripts/lib/session-id-required-subcommands.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SKILLS_DIR = join(ROOT, ".claude", "skills");
@@ -49,35 +50,35 @@ const TARGET_MARKER = "overnight-session-marker.ts";
 const TARGET_REGISTRY = "session-registry.ts";
 
 /**
- * Extrai a lista de subcomandos injetáveis DIRETO do texto-fonte de
- * `.claude/hooks/inject-session-id.mjs` (regex sobre a declaração
- * `const INJECTABLE_SUBCOMMANDS = /\b(...)\b/;`), em vez de manter uma
- * cópia estática hardcoded aqui (#6351 — a cópia anterior já tinha
- * divergido em silêncio do hook real: `conflicts`, `grant-merge`,
- * `check-merge-grant`, `consume-merge-grant` e `merge-lock-renew` foram
- * adicionados ao hook nos #6168/#6296/#6303 sem nunca entrar aqui, e nada
- * acusava — este teste continuava verde testando um regex incompleto).
- * Ler o texto via `readFileSync` + regex (sem `import` do `.mjs` como
- * módulo) preserva a restrição registrada de "teste estático,
- * self-contained" — não é o teste chamando o hook, é o teste lendo o
- * literal que o hook declara, a mesma fonte única. Se o hook mudar de
- * forma (nome da const, formato da regex) a ponto de a extração falhar,
- * o teste "guard das SKILLs" abaixo falha alto (a asserção de não-vazio
- * logo adiante) em vez de voltar a divergir em silêncio.
+ * Extrai a lista de subcomandos injetáveis.
+ *
+ * #6351: a 1ª versão desta função lia o LITERAL `const INJECTABLE_
+ * SUBCOMMANDS = /\b(...)\b/;` do texto-fonte do hook via regex — a lista
+ * hardcoded anterior tinha divergido em silêncio do hook real (`conflicts`,
+ * `grant-merge`, `check-merge-grant`, `consume-merge-grant`,
+ * `merge-lock-renew` faltando), e a extração por regex existia pra não
+ * repetir uma 2ª cópia estática que pudesse envelhecer sozinha.
+ *
+ * #7836: o hook parou de DECLARAR o literal — passou a IMPORTAR a lista de
+ * `scripts/lib/session-id-required-subcommands.ts` e montar o regex em
+ * runtime a partir dela (join com "|", envolto em `\b(...)\b`), exatamente
+ * pra fechar a MESMA classe de divergência silenciosa que o #6351
+ * documentou — agora numa fonte única só, não duas cópias envelhecendo em
+ * paralelo. A extração por regex sobre o texto do hook não tem mais o que
+ * capturar (não existe mais literal nenhum ali). A correção não é "ler de outro jeito o texto do
+ * hook" — é importar o MESMO módulo compartilhado que o hook agora importa,
+ * que é a fonte única real. `hookPath` continua no parâmetro só pra manter
+ * a asserção de existência do arquivo (teste logo abaixo), não porque o
+ * conteúdo dele ainda seja parseado.
  */
 export function loadInjectableSubcommandsFromHook(hookPath: string): RegExp {
-  const source = readFileSync(hookPath, "utf8");
-  const match = source.match(
-    /const\s+INJECTABLE_SUBCOMMANDS\s*=\s*\/\\b\(([^)]+)\)\\b\//,
-  );
-  if (!match) {
+  if (!existsSync(hookPath)) {
     throw new Error(
-      `Não foi possível extrair INJECTABLE_SUBCOMMANDS de ${hookPath} — ` +
-        "o formato da declaração no hook mudou; atualize o regex de extração " +
-        "em loadInjectableSubcommandsFromHook (test/skill-chained-session-command-guard-6232.test.ts).",
+      `${hookPath} não existe — a fonte única (scripts/lib/session-id-required-subcommands.ts) ` +
+        "pode ter perdido o consumidor real no hook; confirme que inject-session-id.mjs ainda importa dela.",
     );
   }
-  return new RegExp(`\\b(${match[1]})\\b`);
+  return new RegExp(`\\b(${SESSION_ID_REQUIRED_SUBCOMMANDS.join("|")})\\b`);
 }
 
 const INJECTABLE_SUBCOMMANDS = loadInjectableSubcommandsFromHook(INJECT_SESSION_ID_HOOK);
