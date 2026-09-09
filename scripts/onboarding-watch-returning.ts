@@ -11,7 +11,7 @@
  *
  * ## Uso
  *
- *   npx tsx scripts/onboarding-watch-returning.ts --add fulano@x.com --reason "#7660"
+ *   npx tsx scripts/onboarding-watch-returning.ts --add {email} --reason "#7660"
  *   npx tsx scripts/onboarding-watch-returning.ts            # dry-run
  *   npx tsx scripts/onboarding-watch-returning.ts --send     # grava
  *
