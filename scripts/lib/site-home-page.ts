@@ -172,6 +172,17 @@ export interface HomeFeedEntry {
   readingMinutes?: number | null;
 }
 
+/** Opções de `buildHomeFeed` (#7686). */
+export interface BuildHomeFeedOptions {
+  /**
+   * Dia civil BRT (`YYYY-MM-DD`) usado como corte de "já publicada".
+   * Só testes passam — produção deixa `buildHomeFeed` ler o relógio, pra
+   * que o comportamento no ar dependa da hora real e não de um argumento
+   * que algum caller possa esquecer de atualizar.
+   */
+  todayBrt?: string;
+}
+
 /**
  * Extrai o slug de uma URL canônica `https://diar.ia.br/p/{slug}` — `null`
  * se não casar o shape. `sitemap.xml` nunca carrega query string/fragment em
@@ -334,6 +345,37 @@ export function estimateReadingMinutes(html: string): number | null {
 }
 
 /**
+ * Fuso das datas editoriais do projeto (#7686). `<lastmod>` do sitemap é
+ * `YYYY-MM-DD` derivado do timestamp de ENVIO da edição
+ * (`publishDateToIso`/`site-archive-pages.ts`), e o envio acontece às 06:00
+ * BRT — então "hoje" para efeito de "esta edição já saiu?" é o dia civil em
+ * `America/Sao_Paulo`, nunca em UTC (o servidor roda em UTC; às 22:00 BRT o
+ * dia UTC já virou e "hoje" em UTC seria o dia SEGUINTE — a edição de amanhã
+ * deixaria de ser "futuro" e voltaria pra home, exatamente o erro que o
+ * filtro existe pra evitar).
+ *
+ * Assimetria deliberada, e vale saber que ela existe: só o lado "hoje" é
+ * BRT. `publishDateToIso` corta o dia com `toISOString().slice(0, 10)`, ou
+ * seja, `<lastmod>` é o dia civil em UTC. Os dois coincidem porque o envio
+ * das 06:00 BRT é 09:00 UTC, longe das duas viradas de meia-noite — a
+ * comparação só ficaria ambígua para um canal que publicasse entre 21:00 e
+ * 00:00 BRT (aí o dia UTC do `<lastmod>` já seria o seguinte). Se algum dia
+ * existir esse canal, o conserto é em `publishDateToIso`, não aqui.
+ */
+export const BRT_TIMEZONE = "America/Sao_Paulo";
+
+/**
+ * Dia civil em BRT no formato `YYYY-MM-DD` — mesma comparação lexicográfica
+ * que `<lastmod>` usa. `en-CA` porque é o locale cujo formato de data curta
+ * JÁ é ISO (`YYYY-MM-DD`), idioma idêntico ao de
+ * `clarice-envio-policy.ts` — não reimplementar com `toISOString()`, que
+ * devolveria o dia em UTC.
+ */
+export function brtDateString(now: Date = new Date()): string {
+  return now.toLocaleDateString("en-CA", { timeZone: BRT_TIMEZONE });
+}
+
+/**
  * Monta a lista de edições reais (mais recente primeiro) a partir do
  * `sitemap.xml` já commitado + um reader de página injetado (produção lê
  * `workers/site/public/p/{slug}/index.html`; teste injeta fixtures em
@@ -368,7 +410,11 @@ export function buildHomeFeed(
   sitemapXml: string,
   readPageHtml: (slug: string) => string | null,
   limit = 10,
+  opts: BuildHomeFeedOptions = {},
 ): HomeFeedEntry[] {
+  // #7686: "hoje" em BRT. Injetável só pra teste — produção sempre usa o
+  // relógio real; nenhum caller de produção passa `todayBrt`.
+  const todayBrt = opts.todayBrt ?? brtDateString();
   const entries = [...parseSitemap(sitemapXml)].sort((a, b) => {
     const aMs = a.lastmod ? Date.parse(a.lastmod) : Number.NEGATIVE_INFINITY;
     const bMs = b.lastmod ? Date.parse(b.lastmod) : Number.NEGATIVE_INFINITY;
@@ -378,6 +424,31 @@ export function buildHomeFeed(
   });
   const feed: HomeFeedEntry[] = [];
   for (const entry of entries) {
+    // #7686: edição cuja data de ENVIO ainda não chegou não entra na home.
+    // O Stage 6 publica `/p/{slug}` + entrada no sitemap na NOITE ANTERIOR
+    // (a página pode ficar pronta antes, decisão do editor 08/09/2026) e
+    // regenera a home no mesmo commit — sem este filtro a home anunciava a
+    // edição ~9h antes de qualquer assinante recebê-la. Quem a faz aparecer
+    // no horário é o workflow `regen-home.yml` (06:00 BRT), que roda esta
+    // mesma função com o relógio já do dia da edição.
+    //
+    // ANTES do corte por `limit` de propósito: entrada futura não pode
+    // consumir uma das N vagas da grade — senão publicar a edição de amanhã
+    // ENCOLHERIA a home de hoje em um card.
+    //
+    // Comparação lexicográfica direta: os dois lados são `YYYY-MM-DD`.
+    // Entrada SEM `lastmod` (caminho legado/Kit pré-#7437) passa — não dá
+    // pra julgar o que não tem data, e o default seguro aqui é mostrar (a
+    // alternativa esconderia acervo antigo em silêncio).
+    if (entry.lastmod && entry.lastmod > todayBrt) {
+      // console.log e não console.warn: este skip é o caminho ESPERADO toda
+      // noite de Stage 6, não um sintoma. Um warn diário aqui viraria ruído
+      // e treinaria a ignorar os warns reais logo abaixo.
+      console.log(
+        `site-home-page: "${entry.loc}" tem lastmod ${entry.lastmod} > hoje (${todayBrt}) — ainda não publicada, fora da home`,
+      );
+      continue;
+    }
     if (feed.length >= limit) break;
     const slug = slugFromCanonicalUrl(entry.loc);
     if (!slug) {

@@ -2,7 +2,7 @@
  * test/workers-dev-redirect-wiring-5097.test.ts (#5097 item D, #5104)
  *
  * Teste de COMPORTAMENTO (fetch handler real dos Workers, sem rede) —
- * confirma que `arquivo`/`cursos`/`livros`/`artigo-mensal` fecham o host
+ * confirma que `arquivo`/`cursos`/`livros`/`retrospectiva` fecham o host
  * genérico `*.diaria.workers.dev` com 301 (métodos seguros) ou 308 (demais
  * métodos, #5104 — preserva corpo no retry do cliente) pro host canônico
  * ANTES de qualquer outra lógica (log de Referer, gate, cache, ASSETS).
@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import arquivoWorker from "../workers/arquivo/src/index.ts";
 import cursosWorker from "../workers/cursos/src/index.ts";
 import livrosWorker from "../workers/livros/src/index.ts";
-import artigoMensalWorker from "../workers/artigo-mensal/src/index.ts";
+import artigoMensalWorker from "../workers/retrospectiva/src/index.ts";
 
 function fakeAssetsEnv(): { ASSETS: Fetcher } {
   return {
@@ -127,7 +127,7 @@ describe("workers/livros — fecha .workers.dev com 301 (#5097 item D)", () => {
   });
 });
 
-// #5104 (fleet review do #5097/#5099): `artigo-mensal` tem o MESMO padrão
+// #5104 (fleet review do #5097/#5099): `retrospectiva` tem o MESMO padrão
 // `workers_dev = true` + `custom_domain` que `arquivo`/`cursos`/`livros`,
 // sem nenhum passivo de link-legado (diferente de `poll`) — ficar fora do
 // #5097 original era blind spot da auditoria, não exclusão deliberada.
@@ -142,43 +142,43 @@ function makeArtigoMensalEnv(): { ARTICLES: KVNamespace; ALLOWLIST: KVNamespace 
   return { ARTICLES: kv, ALLOWLIST: kv };
 }
 
-describe("workers/artigo-mensal — fecha .workers.dev com 301/308 (#5104)", () => {
-  it("GET em artigo-mensal.diaria.workers.dev/2607-08 -> 301 pro host canônico, KV nunca consultado", async () => {
+describe("workers/retrospectiva — fecha .workers.dev com 301/308 (#5104)", () => {
+  it("GET em retrospectiva.diaria.workers.dev/2607-08 -> 301 pro host canônico, KV nunca consultado", async () => {
     const env = makeArtigoMensalEnv();
     const res = await artigoMensalWorker.fetch(
-      new Request("https://artigo-mensal.diaria.workers.dev/2607-08"),
+      new Request("https://retrospectiva.diaria.workers.dev/2607"),
       env as never,
     );
     assert.equal(res.status, 301);
-    assert.equal(res.headers.get("Location"), "https://artigo.diar.ia.br/2607-08");
+    assert.equal(res.headers.get("Location"), "https://retrospectiva.diar.ia.br/2607");
   });
 
   it("preserva query string (?email=...) no redirect", async () => {
     const env = makeArtigoMensalEnv();
     const res = await artigoMensalWorker.fetch(
-      new Request("https://artigo-mensal.diaria.workers.dev/2607-08?email=apoiador%40example.com"),
+      new Request("https://retrospectiva.diaria.workers.dev/2607?email=apoiador%40example.com"),
       env as never,
     );
     assert.equal(res.status, 301);
     assert.equal(
       res.headers.get("Location"),
-      "https://artigo.diar.ia.br/2607-08?email=apoiador%40example.com",
+      "https://retrospectiva.diar.ia.br/2607?email=apoiador%40example.com",
     );
   });
 
-  it("POST em artigo-mensal.diaria.workers.dev -> 308 (método não-seguro), NUNCA 301", async () => {
+  it("POST em retrospectiva.diaria.workers.dev -> 308 (método não-seguro), NUNCA 301", async () => {
     const env = makeArtigoMensalEnv();
     const res = await artigoMensalWorker.fetch(
-      new Request("https://artigo-mensal.diaria.workers.dev/2607-08", { method: "POST" }),
+      new Request("https://retrospectiva.diaria.workers.dev/2607", { method: "POST" }),
       env as never,
     );
     assert.equal(res.status, 308);
-    assert.equal(res.headers.get("Location"), "https://artigo.diar.ia.br/2607-08");
+    assert.equal(res.headers.get("Location"), "https://retrospectiva.diar.ia.br/2607");
   });
 
-  it("host canônico (artigo.diar.ia.br) -> resposta normal, nunca 301/308", async () => {
+  it("host canônico (retrospectiva.diar.ia.br) -> resposta normal, nunca 301/308", async () => {
     const env = makeArtigoMensalEnv();
-    const res = await artigoMensalWorker.fetch(new Request("https://artigo.diar.ia.br/sitemap.xml"), env as never);
+    const res = await artigoMensalWorker.fetch(new Request("https://retrospectiva.diar.ia.br/sitemap.xml"), env as never);
     assert.notEqual(res.status, 301);
     assert.notEqual(res.status, 308);
     assert.equal(res.status, 200);

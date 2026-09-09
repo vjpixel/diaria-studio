@@ -17,10 +17,24 @@ import {
   applyRemove,
   fetchTagMembers,
   isSystemicKitFailure,
-  selectDesiredMembers,
+} from "../scripts/lib/kit-apoio-tag-sync.ts";
+import {
+  selectMembersByApoioNivel,
   type SelectableKitSubscriber,
-} from "../scripts/sync-apoio-mensal-tag-kit.ts";
+} from "../scripts/lib/shared/kit-apoio-tag.ts";
+import { KIT_APOIO_NIVEL_FIELD_KEY } from "../scripts/lib/apoio-segments-canonical-kit.ts";
+import { APOIADORES_MENSAL_NIVEIS } from "../scripts/lib/mensal/apoiadores-kit-channel.ts";
 import { KitApiError } from "../scripts/lib/kit-client.ts";
+
+/**
+ * #7681: a seleção deixou de morar no script do canal e virou
+ * `selectMembersByApoioNivel`, genérica. Este binding preserva os casos abaixo
+ * exatamente como eram — o que se testa aqui é a seleção COM os níveis do
+ * canal mensal, que é o que o `sync-apoio-mensal-tag-kit.ts` de fato pede ao
+ * runner.
+ */
+const selectDesiredMembers = (subs: readonly SelectableKitSubscriber[]) =>
+  selectMembersByApoioNivel(subs, APOIADORES_MENSAL_NIVEIS, KIT_APOIO_NIVEL_FIELD_KEY);
 
 const sub = (over: Partial<SelectableKitSubscriber> & { id: number; email_address: string }): SelectableKitSubscriber => ({
   state: "active",

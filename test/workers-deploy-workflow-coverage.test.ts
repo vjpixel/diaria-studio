@@ -190,16 +190,39 @@ describe("cobertura de deploy workflow por worker (#5337)", () => {
 
     assert.ok(callers.length > 0, "nenhum caller de deploy-worker.yml encontrado — reusable workflow ficou órfão?");
 
+    const knownWorkers = new Set(discoverWorkers().map((w) => w.workerDir));
     const mismatched: string[] = [];
     for (const { name, content } of callers) {
-      const expectedWorker = name.replace(/^deploy-/, "").replace(/\.ya?ml$/, "");
-      const workerLine = new RegExp(`^\\s*worker:\\s*(\\S+)\\s*$`, "m").exec(content);
+      const workerLine = /^\s*worker:\s*(\S+)\s*$/m.exec(content);
       if (!workerLine) {
         mismatched.push(`${name} (chama deploy-worker.yml mas não passa 'worker:' em with:)`);
         continue;
       }
-      if (workerLine[1] !== expectedWorker) {
-        mismatched.push(`${name} (passa worker: ${workerLine[1]}, esperava worker: ${expectedWorker} pelo próprio nome do arquivo)`);
+      const passedWorker = workerLine[1];
+
+      // Vale pra QUALQUER caller, inclusive os que não se chamam `deploy-*`:
+      // o worker passado precisa existir de fato em `workers/{dir}`. É o que
+      // pega um typo (`worker: sitee`) num workflow que a convenção de nome
+      // abaixo não alcança.
+      if (!knownWorkers.has(passedWorker)) {
+        mismatched.push(`${name} (passa worker: ${passedWorker}, que não é um diretório em workers/)`);
+        continue;
+      }
+
+      // A convenção "nome do arquivo = nome do worker" só se aplica aos
+      // callers `deploy-{worker}.yml` — são eles que existem PARA deployar um
+      // worker, e é neles que o copy-paste do #7118 erraria em silêncio. Um
+      // workflow com outra finalidade pode legitimamente deployar um worker
+      // como consequência: `regen-home.yml` (#7686) regenera a home às 06:00
+      // BRT e precisa publicar o worker `site` no mesmo run, porque push
+      // feito com `GITHUB_TOKEN` não dispara `deploy-site.yml` (proteção
+      // antirrecursão do Actions). Exigir dele o nome `deploy-site.yml`
+      // colidiria com o caller que já tem esse nome.
+      if (!name.startsWith("deploy-")) continue;
+
+      const expectedWorker = name.replace(/^deploy-/, "").replace(/\.ya?ml$/, "");
+      if (passedWorker !== expectedWorker) {
+        mismatched.push(`${name} (passa worker: ${passedWorker}, esperava worker: ${expectedWorker} pelo próprio nome do arquivo)`);
       }
     }
 

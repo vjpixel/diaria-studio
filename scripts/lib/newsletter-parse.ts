@@ -622,6 +622,18 @@ export function extractCoverageLine(text: string): string | null {
   // próximo boundary estrutural (`---` isolado em linha própria, ou o próximo
   // `**DESTAQUE`), o que vier primeiro. Sem boundary (MD malformado) captura
   // até o fim do texto — defensivo, não deveria ocorrer em MD bem formado.
+  //
+  // #7666: a captura também para no INÍCIO do bloco bold-wrap da intro
+  // (`findIntroCalloutMatch`). Antes, um callout colado SEM `---` à frente
+  // (caminho que o snippet `agradecimento-apoiadores.md` documenta como válido)
+  // satisfazia `extractCoverageLine` (que estende até o boundary) E
+  // `extractIntroCallout` (que pega o mesmo bloco) ao mesmo tempo → o texto
+  // saía DUPLICADO no HTML: uma vez como parágrafo solto na coverage (com os
+  // `**` aninhados casados errado pelo conversor genérico) e outra como callout
+  // de verdade. `extractCoverageLineTrailer` já fatia a partir de
+  // `calloutMatch.matchEnd` (#3705) — falta a metade simétrica: coverage
+  // terminando em `calloutMatch.matchStart`. A região de intro passa a ser
+  // particionada em três faixas sem sobreposição (coverage → callout → trailer).
   const anchorMatch = text.match(
     /^Olá! Eu sou o [\s\S]*?considere apoiar o projeto\]\([^)]+\)\./m,
   );
@@ -659,6 +671,23 @@ function captureUntilCoverageBoundary(text: string, startIdx: number): string {
   let endIdx = rest.length;
   if (sepMatch?.index !== undefined) endIdx = Math.min(endIdx, sepMatch.index);
   if (destMatch?.index !== undefined) endIdx = Math.min(endIdx, destMatch.index);
+  // #7666: o coverage line também para no INÍCIO do bloco bold-wrap da intro
+  // (`findIntroCalloutMatch`). Sem isso, um callout colado sem `---` à frente
+  // caía tanto na coverage (até o boundary) quanto no callout → duplicação.
+  // O match é calculado na região de intro (antes do 1º `**DESTAQUE`), e a
+  // posição é mapeada de volta pra coordenada absoluta em `text` (a
+  // fatia `rest` começa em `startIdx`). `extractCoverageLineTrailer` já
+  // fatia a partir de `calloutMatch.matchEnd` (#3705); esta é a metade
+  // simétrica. A partição resultante é coverage → callout → trailer, sem
+  // sobreposição.
+  const introRegion = text.split(/^\*\*DESTAQUE/m)[0];
+  const calloutMatch = findIntroCalloutMatch(introRegion);
+  if (calloutMatch) {
+    const calloutAbsStart = startIdx + calloutMatch.matchStart;
+    if (calloutAbsStart > startIdx && calloutAbsStart < startIdx + endIdx) {
+      endIdx = calloutAbsStart - startIdx;
+    }
+  }
   return rest.slice(0, endIdx).trim();
 }
 

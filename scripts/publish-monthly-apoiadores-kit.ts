@@ -5,9 +5,12 @@
  *
  * Cria o broadcast do envio extra pros apoiadores Mantenedor/Patrono na base
  * própria (Kit), **sempre como rascunho**. Sucessor de
- * `publish-monthly-apoiadores-brevo.ts` (#4593) — que nunca criou uma
- * campanha real (a lista Brevo dedicada nunca foi populada e nada saiu de
- * `--dry-run`), e este por sua vez sucede o paste manual no Beehiiv do #4482.
+ * `publish-monthly-apoiadores-brevo.ts` (#4593), que por sua vez sucede o
+ * paste manual no Beehiiv do #4482.
+ *
+ * O canal Brevo **enviou uma edição de verdade** (ciclo 2607-08, 04/08/2026,
+ * 10 entregues — #7655), ainda que a campanha tenha sido criada à mão no
+ * painel, não por este script.
  *
  * ## Pipeline
  *
@@ -94,6 +97,8 @@ import {
   resolveApoiadoresTagName,
   resolveApoiadoresTagId,
   checkApoiadoresAudienceNotEmpty,
+  resolveApoiadoresAudience,
+  type ResolvedAudienceTag,
   type KitApoiadoresChannelConfig,
 } from "./lib/mensal/apoiadores-kit-channel.ts";
 import {
@@ -123,11 +128,16 @@ export function buildApoiadoresKitDescription(cycle: string): string {
  * Pura — monta o payload de `POST /v4/broadcasts`. NUNCA inclui `send_at`
  * (rascunho sempre) e SEMPRE inclui um `subscriber_filter` de tag resolvida.
  * `public: false` de propósito — ver docstring do módulo.
+ *
+ * #7651: recebe `ResolvedAudienceTag`, não um `tagId: number` cru. O tipo é
+ * construtível só por `resolveApoiadoresAudience`, que exige os três guards
+ * de audiência — então "montei o payload sem ter conferido a audiência"
+ * deixou de compilar, em vez de depender da ordem das chamadas no `main()`.
  */
 export function buildApoiadoresKitBroadcastInput(
   content: ApoiadoresKitEmailContent,
   cycle: string,
-  tagId: number,
+  audience: ResolvedAudienceTag,
 ): CreateBroadcastInput {
   return {
     subject: content.subject,
@@ -135,7 +145,7 @@ export function buildApoiadoresKitBroadcastInput(
     preview_text: content.previewText,
     description: buildApoiadoresKitDescription(cycle),
     send_at: null,
-    subscriber_filter: buildTagFilter(tagId),
+    subscriber_filter: buildTagFilter(audience.tagId),
     public: false,
   };
 }
@@ -284,7 +294,17 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
     return;
   }
 
-  const created = await deps.createBroadcast(buildApoiadoresKitBroadcastInput(content, cycle, tagId), kitConfig);
+  // #7651: junta os três guards numa prova de tipo. `null` aqui é
+  // inalcançável (os três já foram checados acima, cada um com sua própria
+  // mensagem) — o guard existe pra que a prova nunca seja fabricada sem eles.
+  const audience = resolveApoiadoresAudience(tagNameResolution, tagIdResolution, memberCheck);
+  if (!audience) {
+    log("ERRO: audiência não resolvida — os guards de tag/membros não passaram.");
+    process.exit(2);
+    return;
+  }
+
+  const created = await deps.createBroadcast(buildApoiadoresKitBroadcastInput(content, cycle, audience), kitConfig);
   log(
     `broadcast criado: id=${created.id} (rascunho, audiência = tag "${tagName}" id=${tagId}) — test email, ` +
       "conferência visual e disparo continuam sendo ação manual no painel do Kit.",

@@ -2,8 +2,9 @@
 /**
  * check-continuo-escalate-label.ts (#7446 item 2)
  *
- * CLI wrapper de `scripts/lib/continuo-escalate-owner.ts` — todo I/O (`gh pr
- * view`/`gh pr edit`) fica aqui; a decisão pura fica na lib. Consumido pelo
+ * CLI wrapper de `scripts/lib/continuo-escalate-owner.ts` — todo I/O
+ * (`gh pr view` pra ler labels + REST pra criar/aplicar) fica aqui; a
+ * decisão pura fica na lib. Consumido pelo
  * ramo `gate=escalate` de `try_merge_gate()` em
  * `hermes/scripts/continuo-pr-review.sh`: aplica o label
  * `continuo-escalado` (idempotente) e diz ao chamador se esta é a PRIMEIRA
@@ -14,7 +15,9 @@
  *   npx tsx scripts/check-continuo-escalate-label.ts --pr 7432
  *
  * Saída: JSON `{"firstTime": boolean, "labelApplied": boolean, "source":
- * "ok" | "error"}` em stdout. `source: "error"` (gh falhou ao ler labels)
+ * "ok" | "error"}` em stdout. `labelApplied` = "o label ESTÁ na PR ao
+ * final" (true também quando já estava lá antes desta chamada, #7704) —
+ * não "eu apliquei agora"; para isso existe o `firstTime`. `source: "error"` (gh falhou ao ler labels)
  * resolve `firstTime: true` — fail-OPEN em direção a notificar (o pior caso
  * de um falso positivo aqui é 1 notificação a mais, nunca um merge indevido
  * nem uma PR escalada ficando muda para sempre).
@@ -26,7 +29,9 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { isAlreadyEscalated, CONTINUO_ESCALATED_LABEL } from "./lib/continuo-escalate-owner.ts";
+import { isAlreadyEscalated } from "./lib/continuo-escalate-owner.ts";
+import { CONTINUO_ESCALATED_LABEL_SPEC, ensureContinuoLabel } from "./lib/continuo-labels.ts";
+import { addPrLabelsRest } from "./lib/gh-pr-safe-edit.ts";
 
 function parseArgs(argv: string[]): { pr: string } | null {
   let pr: string | null = null;
@@ -51,19 +56,35 @@ function fetchLabels(pr: string): string[] | null {
   }
 }
 
-/** Best-effort: aplica o label — nunca aborta se `gh` falhar (a decisão
- * `firstTime` já foi tomada; o pior caso é o label não pegar desta vez e a
- * próxima escalada tentar de novo). */
+/**
+ * Cria o label (se ausente) e o aplica na PR, ambos por REST.
+ *
+ * **Nunca `gh label create` + `gh pr edit --add-label` (#7704).** Os dois
+ * falhavam e o `catch {}` engolia: o `create` saía 422 porque a descrição
+ * passava dos 100 chars do GitHub, e o `--add-label` seguinte saía 1 porque
+ * o label não existia — `labelApplied: false` era o ÚNICO sinal, e o bash
+ * chamador o ignorava. `addPrLabelsRest` (#6292) ainda cobre o outro modo de
+ * falha do `gh pr edit`: exit 0 sem aplicar nada quando a mutação GraphQL
+ * bate em `projectCards`.
+ *
+ * Continua best-effort quanto ao PROCESSO (nunca aborta — a decisão
+ * `firstTime` já foi tomada), mas o motivo da falha agora sai em stderr em
+ * vez de sumir, pra `continuo-pr-review.sh` registrar como erro de infra.
+ */
 function applyLabel(pr: string): boolean {
-  try {
-    execFileSync("gh", ["pr", "edit", pr, "--add-label", CONTINUO_ESCALATED_LABEL], {
-      encoding: "utf8",
-      timeout: 30_000,
-    });
-    return true;
-  } catch {
+  const cwd = process.cwd();
+  const ensured = ensureContinuoLabel(CONTINUO_ESCALATED_LABEL_SPEC, cwd);
+  if (!ensured.ok) {
+    process.stderr.write(`[check-continuo-escalate-label] ${CONTINUO_ESCALATED_LABEL_SPEC.name}: ${ensured.error}\n`);
     return false;
   }
+
+  const applied = addPrLabelsRest(Number(pr), [CONTINUO_ESCALATED_LABEL_SPEC.name], cwd);
+  if (!applied.ok) {
+    process.stderr.write(`[check-continuo-escalate-label] PR #${pr}: ${applied.error}\n`);
+    return false;
+  }
+  return true;
 }
 
 function main(): void {
@@ -81,7 +102,15 @@ function main(): void {
   }
 
   const alreadyEscalated = isAlreadyEscalated(labels);
-  const labelApplied = alreadyEscalated ? false : applyLabel(args.pr);
+  /** Semântica de `labelApplied` (#7704): "o label ESTÁ na PR ao final desta
+   *  chamada", nunca "eu acabei de aplicá-lo agora". A distinção importa
+   *  porque `continuo-pr-review.sh` trata `labelApplied: false` como erro de
+   *  infra — e PR que JÁ carrega o label (o estado estacionário de toda PR
+   *  escalada a partir do 2º tick) não teve aplicação nenhuma TENTADA, então
+   *  reportar `false` ali faria o bash acusar falha a cada tick, para sempre,
+   *  com stderr vazio. Quem quer saber se houve escrita nesta chamada lê
+   *  `firstTime`. */
+  const labelApplied = alreadyEscalated ? true : applyLabel(args.pr);
   console.log(JSON.stringify({ firstTime: !alreadyEscalated, labelApplied, source: "ok" }));
 }
 

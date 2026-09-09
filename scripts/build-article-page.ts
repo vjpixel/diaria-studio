@@ -29,8 +29,9 @@ import { requireMonthlyCycleArg, monthlyDir } from "./lib/mensal/monthly-paths.t
 import { TeaserCutError, buildArticleHtml, buildArticleTeaserHtml } from "./lib/mensal/build-article-page.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { DIARIA_ARTIGO_URL } from "./lib/canonical-urls.ts";
-import { readArtigoMensalNamespaceId } from "./lib/mensal/artigo-mensal-kv-namespaces.ts";
+import { DIARIA_RETROSPECTIVA_URL } from "./lib/canonical-urls.ts";
+import { readRetrospectivaNamespaceId } from "./lib/shared/retrospectiva-kv-namespaces.ts";
+import { mensalPathFromCycle } from "./lib/shared/retrospectiva-path.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, "..");
@@ -48,11 +49,30 @@ const REPO_ROOT = resolve(__dir, "..");
  * ao push (achado do review da PR #7592).
  */
 export function articleKvNamespaceId(): string {
-  return readArtigoMensalNamespaceId("ARTICLES");
+  return readRetrospectivaNamespaceId("ARTICLES");
 }
 
+/**
+ * Chave do KV a partir do CICLO do repo (`YYMM-MM`).
+ *
+ * #7658: a chave passou a ser derivada do PATH público (`mensalPathFromCycle`,
+ * `article:2607`), não mais o ciclo cru (`article:2607-08`). É a mesma função
+ * que o Worker usa pra classificar a URL — se as duas divergirem, o publisher
+ * grava numa chave que o Worker nunca lê, e o sintoma é 404 com o conteúdo
+ * publicado do lado.
+ *
+ * Lança em ciclo malformado: gravar sob uma chave inventada seria pior que
+ * falhar aqui, porque só apareceria como página faltando semanas depois.
+ */
 export function articleKvKey(cycle: string): string {
-  return `article:${cycle}`;
+  const path = mensalPathFromCycle(cycle);
+  if (!path) {
+    throw new Error(
+      `ciclo "${cycle}" não vira path de retrospectiva (esperado YYMM-MM, ex: 2607-08) — ` +
+        "recusando gravar sob uma chave que o Worker não leria.",
+    );
+  }
+  return `article:${path}`;
 }
 
 /**
@@ -97,7 +117,7 @@ async function main(): Promise<void> {
     // caminho de push: o dry-run não precisa de credencial nenhuma.
     loadProjectEnv(REPO_ROOT);
     console.error(
-      `[build-article-page] --push: enviando article:${cycle} (${page.html.length} bytes) pro KV ARTICLES...`,
+      `[build-article-page] --push: enviando ${articleKvKey(cycle)} (${page.html.length} bytes) pro KV ARTICLES...`,
     );
     await uploadTextToWorkerKV(page.html, articleKvKey(cycle), {
       kvNamespaceId: articleKvNamespaceId(),
@@ -126,7 +146,9 @@ async function main(): Promise<void> {
           `O artigo completo foi publicado normalmente; o não-apoiador verá o paywall sem trecho.`,
       );
     }
-    console.error(`[build-article-page] push concluído. URL pública: ${DIARIA_ARTIGO_URL}/${cycle}`);
+    console.error(
+      `[build-article-page] push concluído. URL pública: ${DIARIA_RETROSPECTIVA_URL}/${mensalPathFromCycle(cycle)}`,
+    );
   } else {
     console.error(
       `[build-article-page] dry-run (default) — HTML gerado (${page.html.length} bytes), NENHUM push ao KV. Use --push para gravar.`,

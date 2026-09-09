@@ -14,7 +14,7 @@
  * do Hermes entrega ao Telegram) só NESSA primeira vez — ticks seguintes
  * continuam contando no resumo, sem repetir o aviso a cada ~120min.
  *
- * @see scripts/check-continuo-escalate-label.ts (I/O: `gh pr view`/`gh pr edit`)
+ * @see scripts/check-continuo-escalate-label.ts (I/O: `gh pr view` + REST, #7704)
  * @see hermes/scripts/continuo-pr-review.sh (ramo `1)` de `try_merge_gate()`)
  */
 

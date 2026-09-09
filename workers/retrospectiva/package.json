@@ -1,0 +1,15 @@
+{
+  "name": "diaria-retrospectiva",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260827.1",
+    "typescript": "^5.0.0",
+    "wrangler": "^4.126.0"
+  }
+}

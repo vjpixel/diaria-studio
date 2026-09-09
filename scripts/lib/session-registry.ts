@@ -246,6 +246,59 @@ export function isCoordinatorKind(kind: string): boolean {
   return (COORDINATOR_SESSION_KINDS as readonly string[]).includes(kind);
 }
 
+/**
+ * Os kinds com AUTORIDADE DE MERGE (#7702) — subconjunto próprio de
+ * `COORDINATOR_SESSION_KINDS`.
+ *
+ * A docstring de `COORDINATOR_SESSION_KINDS` acima justificava o conjunto
+ * dizendo que os 3 kinds "despacham subagentes implementadores **e decidem
+ * quando um merge entra**". A segunda metade nunca foi verdade pra
+ * `continuo`: `hermes/skills/hermes-diaria-continuo/SKILL.md` — o skill que
+ * o cron do Hermes de fato roda, e o único consumidor real do kind (nenhuma
+ * skill deste repo o usa, ver CLAUDE.md) — diz em dois lugares que
+ * `continuo-pr-review.sh` é a **única autoridade de merge**. O tick abre PR
+ * e para.
+ *
+ * As duas perguntas, agora separadas:
+ *   - `COORDINATOR_SESSION_KINDS` — *"há rodada ativa?"* Chamador sem
+ *     registro é subagente dela → bloqueia (#5716). `continuo` continua
+ *     aqui: ela despacha implementadores, e é este registro que impede o
+ *     subagente dela de mergear o próprio PR.
+ *   - `MERGE_AUTHORITY_SESSION_KINDS` — *"quem decide que um merge entra, e
+ *     portanto pode conceder janela?"* `continuo` sai.
+ *
+ * Enquanto eram um conjunto só, o efeito era uma inversão: o kind que nunca
+ * mergeia bloqueava o `gh pr merge` de todos, e o que de fato mergeia
+ * (`continuo-review`) não bloqueia ninguém. Somado a `attended: false` do
+ * cron, `continuo` era uma coordenadora que só bloqueia e nunca concede —
+ * toda sessão interativa que quisesse mergear com o contínuo no ar era
+ * empurrada pro escape hatch do #7303.
+ *
+ * **Não confundir com `onlyUnreachableCoordinatorsActive`/#7546:**
+ * *inalcançável* é "não dá pra PEDIR janela"; *sem autoridade de merge* é
+ * "não há a quem pedir". Uma `overnight --unattended` é a primeira sem ser a
+ * segunda — continua com autoridade, continua bloqueando, e o hatch do #7303
+ * continua sendo o caminho dela.
+ *
+ * `test/session-beacon-blast-radius.test.ts` trava que este conjunto não
+ * diverge de `MERGE_AUTHORITY_KINDS` (`block-gh-pr-merge-subagent.mjs`).
+ */
+export const MERGE_AUTHORITY_SESSION_KINDS: readonly SessionKind[] = ["overnight", "develop"];
+
+/**
+ * `true` quando `kind` decide merge — e portanto pode conceder janela (#7702).
+ *
+ * Type predicate (diferente de `isCoordinatorKind`, que devolve `boolean` cru):
+ * depois de um `if (hasMergeAuthorityKind(k))` o TypeScript sabe que `k` é um
+ * dos kinds com autoridade, em vez de seguir como `string`. Não muda call site
+ * nenhum; só deixa de jogar fora a informação na saída.
+ */
+export function hasMergeAuthorityKind(
+  kind: string,
+): kind is (typeof MERGE_AUTHORITY_SESSION_KINDS)[number] {
+  return (MERGE_AUTHORITY_SESSION_KINDS as readonly string[]).includes(kind);
+}
+
 /** Um worktree aberto por uma sessão (#6168 Parte A) — substitui e subsume o
  * `active_worktrees?: number`, que era só uma contagem e nunca foi populado
  * por skill nenhuma (#5156 item 6). */
@@ -4983,7 +5036,10 @@ export interface GrantMergeResult {
  *   propriedade que o #5716 protege (a coordenadora decide quando entra
  *   merge) em vez de contorná-la; sem isso, "conceder a si mesma" seria só um
  *   relabel com outro nome.
- * - **`not-a-coordinator`** — só overnight/develop/continuo concedem.
+ * - **`not-a-coordinator`** — só overnight/develop concedem
+ *   (`MERGE_AUTHORITY_SESSION_KINDS`). `continuo` deixou de qualificar no
+ *   #7702: é rodada, mas não decide merge. O nome do motivo ficou por
+ *   retrocompatibilidade de quem faz match nele.
  */
 export function grantMergeWindow(
   repoRoot: string,
@@ -4992,7 +5048,12 @@ export function grantMergeWindow(
   grantedTo: string,
   meta: { pr?: number; tag?: string; now?: string; force?: boolean } = {},
 ): GrantMergeResult {
-  if (!isCoordinatorKind(kind)) return { ok: false, reason: "not-a-coordinator" };
+  // #7702: quem concede janela precisa ter AUTORIDADE DE MERGE, não só ser
+  // uma rodada. `continuo` deixou de qualificar — ela nunca decidiu merge
+  // nenhum (`continuo-pr-review.sh` é a única autoridade do fluxo dela), e
+  // conceder o que não se tem era o que sustentava a ficção de que pedir
+  // janela a um cron era um caminho real.
+  if (!hasMergeAuthorityKind(kind)) return { ok: false, reason: "not-a-coordinator" };
   if (grantedTo === sessionId || grantedTo.trim() === "") return { ok: false, reason: "self-grant-refused" };
 
   // #6303 review cruzado (P1·a): recusa conceder a OUTRA COORDENADORA.
@@ -5336,16 +5397,28 @@ export function requireKind(value: string | undefined): SessionKind {
 }
 
 /**
- * Como `requireKind`, mas recusa `interactive` (#6168) — usada nos
- * subcomandos que só fazem sentido pra uma coordenadora. Hoje: `grant-merge`
- * (só coordenadora concede janela, #6296).
+ * Como `requireKind`, mas exige AUTORIDADE DE MERGE — usada nos subcomandos
+ * que só fazem sentido pra quem decide merge. Hoje: `grant-merge` (#6296).
+ *
+ * **#7702: passou a checar `hasMergeAuthorityKind`, não `isCoordinatorKind`.**
+ * Enquanto checava coordenadora, este gate aceitava `--kind continuo` e dizia
+ * na própria mensagem que continuo podia — mas `grantMergeWindow` logo abaixo
+ * recusa com `not-a-coordinator`. O operador passava a validação que o
+ * afirmava permitido e falhava adiante, com uma mensagem que contradizia a
+ * primeira (achado do pr-test-analyzer nesta PR). O nome da função ficou por
+ * retrocompatibilidade de import; o critério é autoridade de merge.
  */
 export function requireCoordinatorKind(value: string | undefined): SessionKind {
   const kind = requireKind(value);
-  if (!isCoordinatorKind(kind)) {
+  if (!hasMergeAuthorityKind(kind)) {
     throw new Error(
-      `--kind "${kind}" não é uma sessão coordenadora — só overnight/develop/continuo podem executar esta operação. ` +
-        "Uma sessão interativa nunca concede janela de merge (nem a si mesma): peça à coordenadora registrada (#6296).",
+      `--kind "${kind}" não tem autoridade de merge — só overnight/develop podem executar esta operação. ` +
+        (kind === "continuo"
+          ? "continuo é uma RODADA, mas não decide merge (#7702): quem mergeia no fluxo contínuo é " +
+            "`continuo-pr-review.sh`, e nada a impede de conceder janela porque ela nunca teve uma pra dar. " +
+            "Uma sessão interativa bloqueada por uma rodada continuo não precisa de concessão — ela já tem " +
+            "direito de mergear, só falta `merge-lock-acquire --pr N`."
+          : "Uma sessão interativa nunca concede janela de merge (nem a si mesma): peça à coordenadora registrada (#6296)."),
     );
   }
   return kind;
@@ -5825,7 +5898,9 @@ function main(): void {
             process.exitCode = 1;
             break;
           case "not-a-coordinator":
-            process.stdout.write("session-registry: grant-merge RECUSADO — só overnight/develop/continuo concedem\n");
+            process.stdout.write(
+              "session-registry: grant-merge RECUSADO — só overnight/develop concedem (#7702: continuo é rodada, mas não decide merge)\n",
+            );
             process.exitCode = 1;
             break;
           case "grantee-is-coordinator-refused":

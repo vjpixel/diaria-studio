@@ -39,7 +39,7 @@ seguem para as respectivas plataformas.
   (não recorte do artigo — o mecanismo fica no artigo, é o que faz a pessoa
   clicar) + link pra `especial.diar.ia.br/{ano}/{slug}/`. Não é o texto
   integral do artigo, nem o conteúdo do paywall `artigo.diar.ia.br`
-  (`workers/artigo-mensal`, canal separado).
+  (`workers/retrospectiva`, canal separado).
 - **Visibilidade: restrita ao nível R$10+.** `data/snippets/artigo-especial-apoiadores.md`
   vende o Artigo Especial como benefício desse tier — post público entregaria
   o benefício a quem não paga no mesmo instante em que entrega a quem paga.

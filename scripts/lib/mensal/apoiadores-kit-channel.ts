@@ -1,46 +1,62 @@
 /**
- * scripts/lib/mensal/apoiadores-kit-channel.ts (#7633)
+ * scripts/lib/mensal/apoiadores-kit-channel.ts (#7633, dobrado sobre o
+ * genérico em #7681)
  *
- * Decisões PURAS do canal Kit do envio extra pra apoiadores Mantenedor/
- * Patrono — config, audiência e guards. Zero I/O: quem fala com o Kit é
- * `scripts/sync-apoio-mensal-tag-kit.ts` (audiência) e
- * `scripts/publish-monthly-apoiadores-kit.ts` (broadcast). Mesma divisão
- * pura/I/O do resto do projeto, e é o que permite testar os guards de blast
- * radius e de audiência vazia sem fixture de rede.
+ * O que este módulo tem de PRÓPRIO do envio mensal pra apoiadores é pequeno:
+ * quais níveis recebem, qual chave de `platform.config.json` carrega o nome da
+ * tag, e qual comando popula essa tag. Todo o resto — por que a audiência é
+ * uma tag e não um segmento, como o diff casa, quando o blast radius bloqueia
+ * — é idêntico a qualquer canal do Kit mirado por nível de apoio, e mora em
+ * `lib/shared/kit-apoio-tag.ts`.
+ *
+ * ## A dobra (#7681)
+ *
+ * A versão original (#7633) implementava tudo aqui. Quando o 2º canal do mesmo
+ * formato apareceu (#7659, e-mail do Artigo Especial pra apoio R$10+), o
+ * genérico nasceu em `shared/` — mas este módulo NÃO foi reescrito na hora,
+ * porque a #7651 estava em voo tocando-o e o conflito custaria mais do que a
+ * duplicação temporária valia. Enquanto as duas conviveram,
+ * `test/kit-apoio-tag-parity-7659.test.ts` travou as implementações contra os
+ * mesmos casos pra que não divergissem em silêncio; com a dobra feita, aquele
+ * teste perdeu o sentido e saiu junto.
+ *
+ * Os nomes exportados aqui foram PRESERVADOS (têm consumidores:
+ * `publish-monthly-apoiadores-kit.ts`, `sync-apoio-mensal-tag-kit.ts`,
+ * `send-monthly-apoiadores.ts`) — o que mudou é que agora são fachada fina, e
+ * não uma segunda implementação.
  *
  * ## Por que TAG e não SEGMENT — a armadilha central deste canal
  *
- * O Kit não tem "lista" como a Brevo. `POST /v4/broadcasts` aceita
- * `subscriber_filter` só do tipo `tag` ou `segment` (confirmado ao vivo no
- * #6323: 422 "Only `segment` or `tag` filters allowed"), e a conta JÁ tem os
- * 6 segmentos `Apoio — {…}` condicionados no custom field `apoio_nivel`
- * (`apoio-segments-canonical-kit.ts`) — parece o alvo óbvio, e não é:
- *
- *   - `GET /v4/subscribers?segment_id=X` **ignora silenciosamente** o
- *     parâmetro: `pagination.total_count` volta com o total da CONTA, não do
- *     segmento (medido ao vivo nos 6 segmentos em 24/08/2026). Não existe
- *     rota que devolva "quem está no segmento X" nem "qual é a condição do
- *     segmento X".
- *   - Consequência: mirar `segment` é enviar às cegas — não dá pra conferir a
- *     audiência antes do disparo, nem depois. Pra um envio pago-por-apoio a
- *     uma audiência de dezenas de pessoas, isso é o oposto do que se quer.
- *
- * Por isso a audiência é uma TAG dedicada (`kit_apoiadores.audience_tag`),
- * cuja membresia É legível (`GET /v4/tags/{id}/subscribers`) e portanto
- * auditável antes de qualquer envio. Os 6 segmentos continuam existindo como
- * conveniência de navegação no painel — nunca como alvo de envio.
+ * Resumo; o detalhe medido está em `lib/shared/kit-apoio-tag.ts`. O Kit não
+ * tem "lista" como a Brevo, e `POST /v4/broadcasts` só aceita
+ * `subscriber_filter` de tipo `tag` ou `segment`. Os 6 segmentos `Apoio — {…}`
+ * da conta parecem o alvo óbvio e não servem: a membresia de segmento não é
+ * legível pela API (`GET /v4/subscribers?segment_id=X` ignora o parâmetro em
+ * silêncio, medido nos 6 em 24/08/2026), então mirar segmento é enviar sem
+ * poder conferir a audiência — nem antes, nem depois.
  *
  * ## A tag é PROJEÇÃO do custom field, não uma 2ª fonte de verdade
  *
  * Quem decide o nível de cada pessoa continua sendo `sync-apoio-nivel-kit.ts`
- * (#6049), que grava `apoio_nivel` a partir do apoia.se com carência de 1 mês
- * e guard de blast radius. `sync-apoio-mensal-tag-kit.ts` só projeta esse
- * campo em membresia de tag — não reimplementa carência nem consulta o
- * apoia.se. Se a regra de quem é Mantenedor/Patrono mudar, ela muda LÁ, e a
- * tag acompanha na próxima sincronização.
+ * (#6049), que grava `apoio_nivel` a partir do apoia.se com carência de 1 mês.
+ * `sync-apoio-mensal-tag-kit.ts` só projeta esse campo em membresia de tag.
  */
 
 import type { ApoioNivel } from "../apoio-segments-canonical-kit.ts";
+import {
+  resolveAudienceTagName,
+  resolveAudienceTagId,
+  checkAudienceNotEmpty,
+  diffTagMembership,
+  evaluateTagBlastRadius,
+  APOIO_TAG_BLAST_RADIUS_THRESHOLD,
+  type TagNameResolution,
+  type TagIdResolution,
+  type AudienceCheck,
+  type TagMembershipDiff,
+  type BlastRadiusResult,
+  type ResolvedAudience,
+} from "../shared/kit-apoio-tag.ts";
 
 /**
  * Níveis que recebem o envio extra — decisão 2 do #4482, preservada em todas
@@ -49,6 +65,13 @@ import type { ApoioNivel } from "../apoio-segments-canonical-kit.ts";
  */
 export const APOIADORES_MENSAL_NIVEIS: readonly ApoioNivel[] = ["mantenedor", "patrono"] as const;
 
+/** Chave de `platform.config.json` que carrega o nome da tag deste canal. */
+const CONFIG_PATH = "kit_apoiadores.audience_tag";
+
+/** Comando que cria/popula a tag — entra nas mensagens de erro dos guards,
+ *  que só são acionáveis se disserem o que rodar. */
+export const APOIADORES_TAG_SYNC_COMMAND = "npx tsx scripts/sync-apoio-mensal-tag-kit.ts --push";
+
 /** Config de `platform.config.json` → `kit_apoiadores`. */
 export interface KitApoiadoresChannelConfig {
   /** Nome da tag de audiência no Kit. Resolvida por NOME em runtime (o id é
@@ -56,141 +79,81 @@ export interface KitApoiadoresChannelConfig {
   audience_tag?: string;
 }
 
-export type ApoiadoresTagNameResolution = { ok: true; tagName: string } | { ok: false; reason: string };
+// ── fachada sobre os guards genéricos ─────────────────────────────────────
+//
+// Os aliases de tipo existem pros consumidores que já os importam pelo nome
+// antigo; são o MESMO tipo, não cópias.
+
+export type ApoiadoresTagNameResolution = TagNameResolution;
+export type ApoiadoresTagIdResolution = TagIdResolution;
+export type ApoiadoresAudienceCheck = AudienceCheck;
+export type ApoiadoresTagDiff = TagMembershipDiff;
+export type ApoiadoresBlastRadiusResult = BlastRadiusResult;
 
 /**
- * Valida o nome de tag vindo da config antes de qualquer chamada de rede.
- * Ausente/vazio é erro, nunca default silencioso: sem tag não há filtro, e
- * `subscriber_filter` ausente no Kit significa **base INTEIRA** (#6126) — o
- * modo de falha deste canal é mandar um digest de apoiador pra todo mundo,
- * não deixar de mandar.
+ * Prova, no tipo, de que a audiência passou pelos três guards (#7651). Alias
+ * do `ResolvedAudience` genérico — a marca é a mesma, então um valor produzido
+ * aqui e um produzido pelo canal do Artigo Especial são intercambiáveis por
+ * construção, o que é correto: os dois significam "tag existente, id válido,
+ * pelo menos 1 membro".
  */
-export function resolveApoiadoresTagName(config: KitApoiadoresChannelConfig | undefined | null): ApoiadoresTagNameResolution {
-  const raw = config?.audience_tag;
-  const tagName = typeof raw === "string" ? raw.trim() : "";
-  if (!tagName) {
-    return {
-      ok: false,
-      reason:
-        "platform.config.json → kit_apoiadores.audience_tag ausente/vazio. Sem nome de tag não há " +
-        "audiência: um subscriber_filter ausente no Kit significa a BASE INTEIRA (#6126), então " +
-        "recusar aqui é o modo de falha seguro.",
-    };
-  }
-  return { ok: true, tagName };
+export type ResolvedAudienceTag = ResolvedAudience;
+
+export function resolveApoiadoresTagName(
+  config: KitApoiadoresChannelConfig | undefined | null,
+): ApoiadoresTagNameResolution {
+  return resolveAudienceTagName(config?.audience_tag, CONFIG_PATH);
 }
 
-export type ApoiadoresTagIdResolution = { ok: true; tagId: number } | { ok: false; reason: string };
-
-/**
- * Valida o id resolvido por `findTagIdByName` (que NUNCA cria a tag — ver
- * `kit-broadcasts.ts`). Gêmeo de `resolveAudienceTagId` do canal diário: é o
- * guard que separa "não envia" de "envia pra base inteira".
- */
 export function resolveApoiadoresTagId(tagName: string, tagId: number | null): ApoiadoresTagIdResolution {
-  if (tagId === null) {
-    return {
-      ok: false,
-      reason:
-        `tag "${tagName}" não existe no Kit — rode 'npx tsx scripts/sync-apoio-mensal-tag-kit.ts --push' ` +
-        "antes (é ele quem cria/popula a audiência a partir do custom field apoio_nivel). Recusando: " +
-        "filtro não resolvido no Kit vira audiência INTEIRA.",
-    };
-  }
-  if (!Number.isInteger(tagId) || tagId <= 0) {
-    return { ok: false, reason: `id de tag inválido para "${tagName}": ${String(tagId)}.` };
-  }
-  return { ok: true, tagId };
+  return resolveAudienceTagId(tagName, tagId, APOIADORES_TAG_SYNC_COMMAND);
 }
 
-export type ApoiadoresAudienceCheck = { ok: true } | { ok: false; reason: string };
-
-/**
- * Tag resolvida (id válido) mas VAZIA — recusa criar o broadcast. Mesmo
- * racional do #6582 no canal diário: um filtro válido com zero destinatários
- * produz um rascunho que reporta sucesso e não entrega a ninguém. Aqui o
- * cenário é ainda mais provável, porque a tag só existe depois de um `--push`
- * do sync de audiência — nunca "por padrão".
- */
 export function checkApoiadoresAudienceNotEmpty(tagName: string, memberCount: number): ApoiadoresAudienceCheck {
-  if (!Number.isInteger(memberCount) || memberCount < 0) {
-    return { ok: false, reason: `contagem de membros inválida para a tag "${tagName}": ${String(memberCount)}.` };
-  }
-  if (memberCount === 0) {
-    return {
-      ok: false,
-      reason:
-        `tag "${tagName}" resolveu (id válido) mas está VAZIA — 0 membros. Recusando criar um broadcast ` +
-        "que reportaria sucesso sem entregar a ninguém. Rode 'sync-apoio-mensal-tag-kit.ts --push' e " +
-        "confira se há Mantenedor/Patrono com apoio_nivel gravado no Kit (sync-apoio-nivel-kit.ts).",
-    };
-  }
-  return { ok: true };
-}
-
-// ── diff de membresia (puro) ──────────────────────────────────────────────
-
-export interface ApoiadoresTagDiff {
-  /** E-mails que DEVEM ganhar a tag (são Mantenedor/Patrono e ainda não a têm). */
-  toAdd: string[];
-  /** E-mails que DEVEM perder a tag (a têm e não são mais Mantenedor/Patrono). */
-  toRemove: string[];
-  /** E-mails já corretos — só pra log/contagem. */
-  unchanged: string[];
+  return checkAudienceNotEmpty(tagName, memberCount, APOIADORES_TAG_SYNC_COMMAND, APOIADORES_MENSAL_NIVEIS);
 }
 
 /**
- * Pure: diff de membresia desejada × atual, casando por e-mail normalizado
- * (trim + lowercase — mesma normalização de `fetchCurrentKitState`).
+ * Fecha o encadeamento dos três guards num único valor que o construtor do
+ * payload aceita. Devolve `null` se qualquer um deles reprovou — o caller já
+ * reportou o motivo específico e não deve seguir.
  *
- * Casar por E-MAIL e não por id é deliberado: o desejado vem da leitura de
- * assinantes (que traz id) mas o atual vem de `GET /tags/{id}/subscribers`, e
- * cruzar as duas listas por id assumiria que os dois endpoints falam do mesmo
- * espaço de identidade sem nunca ter sido medido. E-mail é o identificador
- * que o resto do projeto já usa pra casar pessoas entre plataformas.
+ * Recebe os RESULTADOS (não faz I/O nem revalida): manter a checagem e a prova
+ * em funções separadas é o que permite ao caller logar a razão exata de cada
+ * falha, que é o que o operador lê pra saber o que corrigir. É por isso que
+ * este canal usa esta função em vez de `resolveVerifiedAudience` (a variante
+ * genérica que faz o lookup ela mesma): aqui as três chamadas de rede já estão
+ * espalhadas no `main()`, cada uma com seu log.
  */
+export function resolveApoiadoresAudience(
+  tagNameResolution: ApoiadoresTagNameResolution,
+  tagIdResolution: ApoiadoresTagIdResolution,
+  audienceCheck: ApoiadoresAudienceCheck,
+): ResolvedAudienceTag | null {
+  if (!tagNameResolution.ok || !tagIdResolution.ok || !audienceCheck.ok) return null;
+  return {
+    tagId: tagIdResolution.tagId,
+    tagName: tagNameResolution.tagName,
+    memberCount: audienceCheck.memberCount,
+  } as ResolvedAudienceTag;
+}
+
 export function diffApoiadoresTagMembership(
   desiredEmails: readonly string[],
   currentEmails: readonly string[],
 ): ApoiadoresTagDiff {
-  const norm = (e: string) => e.trim().toLowerCase();
-  const desired = new Set(desiredEmails.map(norm).filter(Boolean));
-  const current = new Set(currentEmails.map(norm).filter(Boolean));
-  const toAdd: string[] = [];
-  const unchanged: string[] = [];
-  for (const e of desired) (current.has(e) ? unchanged : toAdd).push(e);
-  const toRemove = [...current].filter((e) => !desired.has(e));
-  return { toAdd: toAdd.sort(), toRemove: toRemove.sort(), unchanged: unchanged.sort() };
+  return diffTagMembership(desiredEmails, currentEmails);
 }
 
-// ── guard de blast radius (puro) ──────────────────────────────────────────
-
-/** Mesma proporção do guard de `sync-apoio-nivel-beehiiv.ts` — remover mais
- *  de 30% da audiência numa rodada é sinal de dado parcial, não de 30% dos
+/** Mesma proporção do guard de `sync-apoio-nivel-beehiiv.ts` — remover mais de
+ *  30% da audiência numa rodada é sinal de dado parcial, não de 30% dos
  *  apoiadores terem cancelado no mesmo dia. */
-export const APOIADORES_TAG_BLAST_RADIUS_THRESHOLD = 0.3;
+export const APOIADORES_TAG_BLAST_RADIUS_THRESHOLD = APOIO_TAG_BLAST_RADIUS_THRESHOLD;
 
-export interface ApoiadoresBlastRadiusResult {
-  blocked: boolean;
-  removalCount: number;
-  currentCount: number;
-  ratio: number;
-}
-
-/**
- * Pure: bloqueia o `--push` inteiro (adições inclusive) quando a proporção de
- * remoções passa do limiar — a falha típica que isso pega é uma leitura
- * parcial do Kit ou do apoia.se virando "todo mundo perdeu o nível". `force`
- * é a decisão consciente do editor, sempre logada pelo caller.
- *
- * Audiência vazia (`currentCount === 0`) nunca bloqueia: é o estado da 1ª
- * sincronização, em que só há adições.
- */
 export function evaluateApoiadoresBlastRadius(
   removalCount: number,
   currentCount: number,
   force: boolean,
 ): ApoiadoresBlastRadiusResult {
-  const ratio = currentCount > 0 ? removalCount / currentCount : 0;
-  return { blocked: !force && ratio > APOIADORES_TAG_BLAST_RADIUS_THRESHOLD, removalCount, currentCount, ratio };
+  return evaluateTagBlastRadius(removalCount, currentCount, force);
 }

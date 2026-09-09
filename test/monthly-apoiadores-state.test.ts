@@ -393,8 +393,9 @@ test("decidePublishKitAction: status sent, SEM --force -> bloqueia (mesmo sem ki
 });
 
 test("decidePublishKitAction (#7633): brevoCampaignId de um canal aposentado NÃO bloqueia o canal Kit", () => {
-  // Um rascunho órfão no ESP anterior (que nunca enviou nada) não pode
-  // impedir o envio real pelo canal atual — os guards são por canal.
+  // O que existe no ESP anterior — rascunho órfão, ou campanha de fato
+  // enviada (a Brevo entregou o ciclo 2607-08, #7655) — não pode impedir o
+  // envio pelo canal atual. Os guards são por canal, de propósito.
   const state: ApoiadoresState = { ...PREPARED, brevoCampaignId: 555 };
   assert.deepEqual(decidePublishKitAction(state, false), { action: "create" });
 });

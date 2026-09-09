@@ -1582,6 +1582,35 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5845",
   },
   {
+    name: "Diaria-Onboarding-Watch-Returning",
+    description:
+      "watcher de recadastro: quem ja foi assinante e volta nao pode receber o e-mail 1 de boas-vindas de novo",
+    steps: [{ key: "watch", script: "scripts/onboarding-watch-returning.ts", args: ["--send"] }],
+    logPath: "onboarding/.watch-returning.log",
+    // Mesmo guard da task-irmã `Diaria-Onboarding-Welcome-Run`, que escreve o
+    // MESMO arquivo (#5956): sem ele, uma junction `data/` caída no `helios`
+    // faria `readStore` devolver store vazio e o write seguinte apagaria o
+    // histórico de onboarding de todos os assinantes. O script também checa
+    // `corrupted` por conta própria — os dois são cinto e suspensório, porque
+    // este watcher roda de hora em hora (mais exposição que a rodada diária).
+    guard: {
+      requiredFile: "onboarding/store.json",
+      abortMessage:
+        "store.json nao encontrado (data/onboarding/store.json) -- provavel junction data/ nao montada; " +
+        "abortando por seguranca, NAO semeando nem gravando.",
+    },
+    // De hora em hora, no minuto :00. A rodada de onboarding é 09:05, então a
+    // execução das 09:00 cobre quem se cadastrou durante a noite ou a manhã —
+    // 5 minutos de folga. FRESTA CONHECIDA: quem se cadastrar ENTRE 09:00 e
+    // 09:05 é detectado pela rodada antes deste watcher agir, e o e-mail 1
+    // sai. Fechar isso exigiria acoplar o check ao próprio
+    // `onboarding-welcome-run.ts`; não se justifica pelo tamanho da lista
+    // (uma pessoa hoje). Sai limpo e barato quando a watchlist está vazia:
+    // nem resolve credencial do Kit nesse caso.
+    schedule: { kind: "interval", hours: 1 },
+    issue: "#7660",
+  },
+  {
     name: "Diaria-Onboarding-Welcome-Run",
     description:
       "sequencia diaria de boas-vindas via Brevo transacional (e-mail 1 imediato, e-mail 2 D+3, " +

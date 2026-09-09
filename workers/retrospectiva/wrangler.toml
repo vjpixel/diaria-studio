@@ -1,0 +1,59 @@
+name = "retrospectiva"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# #7658: as TRÊS retrospectivas num domínio só. Este Worker é o antigo
+# `workers/anual` renomeado (a base mais completa das duas — rate-limit,
+# sitemap, robots, anti-probing) absorvendo o `workers/artigo-mensal`.
+#
+# `especial.diar.ia.br` (`workers/artigos`, Artigo Especial, apoio R$10+) NÃO
+# entra aqui: outro produto, outro tier, outro mecanismo de gate.
+[[routes]]
+pattern = "retrospectiva.diar.ia.br"
+custom_domain = true
+
+# Hosts LEGADOS, atendidos por este mesmo Worker só pra devolver 301 pro path
+# novo (`src/index.ts`, `legacyRedirectPath`). Os links antigos já saíram em
+# e-mail com UTM — quebrar perde clique e mede errado.
+#
+# CUTOVER FEITO em 09/09/2026: os três domínios estão anexados a ESTE Worker
+# (conferido em `GET /accounts/{id}/workers/domains` e por 301 real), e os
+# Workers `anual` e `artigo-mensal` foram apagados da conta. Não há mais nada
+# a soltar — este arquivo é a verdade do que serve cada host.
+#
+# ⚠️ Consequência prática: comentar uma destas rotas e deployar REMOVE o
+# custom domain e apaga o registro DNS. Não é "adiar", é derrubar o host.
+[[routes]]
+pattern = "anual.diar.ia.br"
+custom_domain = true
+
+[[routes]]
+pattern = "artigo.diar.ia.br"
+custom_domain = true
+
+# HTML pré-renderizado das 3 retrospectivas, sob `article:{path}` e
+# `article:{path}:teaser`. Namespace ÚNICO desde o #7658 — é o antigo namespace
+# do `anual`, e o mensal foi republicado nele sob as chaves novas
+# (`article:2607` etc.): a chave já distingue mensal de anual pelo formato do
+# path, então dois namespaces só criariam a chance de ler do errado.
+[[kv_namespaces]]
+binding = "ARTICLES"
+id = "bcdffe6c2daf452d95824429231f9dd3"
+
+# Allowlist de e-mails com apoio Mantenedor/Patrono (R$25+), chave `emails`
+# (JSON array), populada por `scripts/build-apoiador-allowlist.ts --push`. É o
+# MESMO namespace que o `artigo-mensal` usava — só o gate de `/AAMM` consulta.
+# Fail-closed: namespace ausente/vazio/corrompido = ninguém passa.
+[[kv_namespaces]]
+binding = "ALLOWLIST"
+id = "9b06bf0af3b042cdb9670d9a0726f2f0"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "132c0969a2cf4dfda0a9e7fb511695a4"
+
+[observability]
+enabled = true
+head_sampling_rate = 1

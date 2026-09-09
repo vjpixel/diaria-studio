@@ -44,12 +44,26 @@ function contact(
 }
 
 describe("computeApoiadorAllowlist (#3940)", () => {
-  it("apoiador R$10 exato → entra (gate é >=, não >)", () => {
+  it("#7658: apoiador R$10 (tier \"apoiador\") NÃO entra — o Panorama do Mês é recompensa de Mantenedor R$25+", () => {
+    // Era o caso central do #3940 ("R$10 exato entra") e virou o oposto: a
+    // página da apoia.se vende o Panorama do Mês no tier Mantenedor, e o que
+    // o Apoiador R$10 compra é o Artigo Especial, que tem gate próprio em
+    // workers/artigos. Ver PANORAMA_DO_MES_NIVEIS.
     const contacts = [contact(["dez@x.com"], { label: "apoiando", monthlyValue: 10, matchedEmail: "dez@x.com" })];
-    assert.deepEqual(computeApoiadorAllowlist(contacts), ["dez@x.com"]);
+    assert.deepEqual(computeApoiadorAllowlist(contacts), []);
   });
 
-  it("apoiador R$25+ (mantenedor/patrono) também entra", () => {
+  it("#7658: R$25 exato entra (limiar é >=, não >)", () => {
+    const contacts = [contact(["vinte5@x.com"], { label: "apoiando", monthlyValue: 25, matchedEmail: "vinte5@x.com" })];
+    assert.deepEqual(computeApoiadorAllowlist(contacts), ["vinte5@x.com"]);
+  });
+
+  it("#7658: R$24,99 NÃO entra (logo abaixo do limiar)", () => {
+    const contacts = [contact(["quase25@x.com"], { label: "apoiando", monthlyValue: 24.99, matchedEmail: "quase25@x.com" })];
+    assert.deepEqual(computeApoiadorAllowlist(contacts), []);
+  });
+
+  it("mantenedor e patrono entram", () => {
     const contacts = [
       contact(["mantenedor@x.com"], { label: "apoiando", monthlyValue: 25, matchedEmail: "mantenedor@x.com" }),
       contact(["patrono@x.com"], { label: "apoiando", monthlyValue: 100, matchedEmail: "patrono@x.com" }),
@@ -57,12 +71,12 @@ describe("computeApoiadorAllowlist (#3940)", () => {
     assert.deepEqual(computeApoiadorAllowlist(contacts), ["mantenedor@x.com", "patrono@x.com"]);
   });
 
-  it("R$5 (\"amigo\", abaixo do gate R$10) → NÃO entra", () => {
+  it("R$5 (\"amigo\") → NÃO entra", () => {
     const contacts = [contact(["amigo5@x.com"], { label: "apoiando", monthlyValue: 5, matchedEmail: "amigo5@x.com" })];
     assert.deepEqual(computeApoiadorAllowlist(contacts), []);
   });
 
-  it("R$9,99 (abaixo de R$10) → NÃO entra", () => {
+  it("R$9,99 → NÃO entra", () => {
     const contacts = [contact(["quase@x.com"], { label: "apoiando", monthlyValue: 9.99, matchedEmail: "quase@x.com" })];
     assert.deepEqual(computeApoiadorAllowlist(contacts), []);
   });
@@ -88,7 +102,7 @@ describe("computeApoiadorAllowlist (#3940)", () => {
     const contacts = [
       contact(["principal@x.com", "secundario@x.com"], {
         label: "apoiando",
-        monthlyValue: 15,
+        monthlyValue: 30,
         matchedEmail: "principal@x.com",
       }),
     ];
@@ -99,10 +113,13 @@ describe("computeApoiadorAllowlist (#3940)", () => {
     const contacts = [
       contact(["zebra@x.com"], { label: "apoiando", monthlyValue: 50, matchedEmail: "zebra@x.com" }),
       contact(["amigo@x.com"], { label: "apoiando", monthlyValue: 5, matchedEmail: "amigo@x.com" }),
+      // #7658: R$10 é o tier "apoiador" — passou a ficar de fora, junto com o
+      // "amigo". Antes desta issue este contato entrava.
       contact(["abelha@x.com"], { label: "apoiando", monthlyValue: 10, matchedEmail: "abelha@x.com" }),
+      contact(["ancora@x.com"], { label: "apoiando", monthlyValue: 25, matchedEmail: "ancora@x.com" }),
       contact(["naoapoia@x.com"], { label: "nao_apoia" }),
     ];
-    assert.deepEqual(computeApoiadorAllowlist(contacts), ["abelha@x.com", "zebra@x.com"]);
+    assert.deepEqual(computeApoiadorAllowlist(contacts), ["ancora@x.com", "zebra@x.com"]);
   });
 
   it("lista vazia → []", () => {

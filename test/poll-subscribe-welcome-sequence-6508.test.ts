@@ -3,10 +3,12 @@
  *
  * Guard de regressão contra o bug: cadastro via API direta
  * (`subscribeToKit` no worker `poll`) nunca entrava na sequence de
- * boas-vindas do Kit. Quem passa pelo FORM `9839463` já entrava
- * automaticamente via Automation Rule (rule id `5578342`), mas o worker
- * `poll` cria subscriber via `POST /v4/subscribers` SEM passar pelo form,
- * então precisava do vínculo explícito `POST /v4/sequences/{id}/subscribers`.
+ * boas-vindas do Kit. A premissa da época era que quem passasse pelo form já
+ * entrava automaticamente via Automation Rule (rule id `5578342`), enquanto o
+ * worker `poll` cria subscriber via `POST /v4/subscribers` SEM passar pelo
+ * form, e por isso precisava do vínculo explícito
+ * `POST /v4/sequences/{id}/subscribers`. Ver a ressalva do #7723 abaixo: essa
+ * rule não existe operacionalmente.
  *
  * Este teste usa um mock fetch para simular o Kit API e confirma:
  *   1. Com `KIT_WELCOME_SEQUENCE_ID` configurado, o subscriber criado
@@ -19,10 +21,22 @@
  *
  * #6694 acrescenta:
  *   5. `createState === "inactive"` (double opt-in pendente, #6340) ⇒ NUNCA
- *      chama `/sequences/{id}/subscribers` explicitamente — só a Automation
- *      Rule do Kit (disparada pelo vínculo ao form DOI, fora do alcance
- *      deste teste unitário) pode inscrever esse subscriber. Evita boas-vindas
- *      antes da confirmação do double opt-in E a duplicidade com a rule.
+ *      chama `/sequences/{id}/subscribers` explicitamente. O que este guard
+ *      protege é a fronteira do double opt-in: ninguém entra na régua de
+ *      boas-vindas antes de confirmar.
+ *
+ * ⚠️ #7723 (09/09/2026) — a justificativa ORIGINAL do item 5 dizia que a
+ * inscrição ficava a cargo da Automation Rule do Kit (`5578342`, disparada
+ * pelo vínculo ao form). Isso foi medido e é FALSO: Rules é "Paid feature"
+ * no plano Free, e a sequence `2876508` está `active: false` (todo enroll
+ * responde `422 "Sequence is inactive"`). Não existe segundo caminho.
+ *
+ * A ASSERÇÃO continua correta e vale a pena manter — não inscrever antes da
+ * confirmação é o comportamento certo. O que mudou é que hoje ela descreve o
+ * fim da linha, não uma delegação: quem confirma não entra em sequence
+ * nenhuma do Kit. A régua de boas-vindas vive na Brevo
+ * (`scripts/onboarding-welcome-run.ts`). Limpar a sequence morta e este
+ * branch é follow-up da #7723.
  */
 
 import { describe, it } from "node:test";
@@ -179,19 +193,26 @@ describe("subscribeToKit — sequence de boas-vindas (#6508)", () => {
       );
     };
 
-    // KIT_DOI_FORM_ID configurado + worker "poll" na allowlist do
+    // KIT_DOI_FORM_ID de DESIGNER form + worker "poll" na allowlist do
     // DOUBLE_OPT_IN_FLAG (optin-flag-6340.ts) ⇒ resolveKitCreateState
     // devolve "inactive" — o subscriber ainda não confirmou o double opt-in.
+    //
+    // #7723: precisa ser um designer form (`9897918`). O valor anterior aqui
+    // era `9839463`, que é form de SISTEMA — `verificarDoiForm` agora o
+    // recusa e o cadastro nasce "active", justamente pra não prender ninguém
+    // em "inactive" sem caminho de confirmação. Com o id antigo este teste
+    // deixa de exercitar o que diz exercitar: `createState` vira "active" e
+    // o branch sob teste nunca roda.
     const result = await subscribeViaConfiguredBackend(
-      { ...baseEnv, KIT_DOI_FORM_ID: "9839463", KIT_WELCOME_SEQUENCE_ID: "2876508" },
+      { ...baseEnv, KIT_DOI_FORM_ID: "9897918", KIT_WELCOME_SEQUENCE_ID: "2876508" },
       { name: "Teste", email: "teste@example.com" },
       fetchImpl,
     );
 
     assert.ok(result.ok, `assinatura deveria ter sucesso, got: ${JSON.stringify(result)}`);
-    const hasFormLinkCall = calls.some(c => c.url.includes("/forms/9839463/subscribers/"));
+    const hasFormLinkCall = calls.some(c => c.url.includes("/forms/9897918/subscribers/"));
     const hasSequenceCall = calls.some(c => c.url.includes("/sequences/"));
     assert.ok(hasFormLinkCall, "deveria ter vinculado ao form DOI (dispara o e-mail de confirmação, #6340)");
-    assert.equal(hasSequenceCall, false, "NUNCA deveria inscrever na sequence explicitamente antes da confirmação do double opt-in — só a Automation Rule do Kit pode fazer isso");
+    assert.equal(hasSequenceCall, false, "NUNCA deveria inscrever na sequence explicitamente antes da confirmação do double opt-in");
   });
 });

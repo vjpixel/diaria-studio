@@ -125,19 +125,36 @@ KIT_REFERRING_SITE_FIELD = "referring_site"
 # criado na conta de produção (id 1358403, key "origem_paga", 06/09/2026).
 KIT_ORIGEM_PAGA_FIELD = "origem_paga"
 
-# #6340/#6508 (28/08/2026, decisão do editor via /diaria-desbloqueia) — form
-# "Newsletter site" no Kit, o mesmo já vinculado à sequence "Boas-vindas"
-# (#6508) via Automation Rule ("Subscribes to a form" → subscribe to
-# sequence). Liga o double opt-in de verdade: `resolveKitCreateState`
-# passa a criar `state: "inactive"` pro worker `poll` (já em
-# DOUBLE_OPT_IN_FLAG.enabledForWorkers, optin-flag-6340.ts) e
-# `vincularKitDoiForm` vincula o subscriber a este form — o vínculo dispara
-# o e-mail "Important: confirm your subscription" quando "Send confirmation
-# email" estiver ligado no dashboard do Kit pra este form (configuração
-# operacional fora do alcance deste repo, confirmada pelo editor antes
-# desta mudança). VAR, não secret — ID de form não é sensível, mesmo
-# tratamento dos KIT_*_FIELD acima.
-KIT_DOI_FORM_ID = "9839463"
+# #6340/#7723 — designer form "Cadastro DOI (confirmacao)", criado no painel
+# do Kit em 09/09/2026 e verificado ao vivo: `resolveKitCreateState` cria
+# `state: "inactive"` pro worker `poll` (já em
+# DOUBLE_OPT_IN_FLAG.enabledForWorkers, optin-flag-6340.ts), e o vínculo de
+# `vincularKitDoiForm` dispara o e-mail de confirmação — copy em português,
+# botão teal #00A0A0, remetente oi@news.diar.ia.br, redirect pós-confirmação
+# em https://eia.diar.ia.br/confirmado. Copy canônica:
+# docs/kit-doi-confirmation-copy.md.
+#
+# ⚠️ NÃO voltar pra 9839463 ("Newsletter site"): é form de SISTEMA
+# (`format: null`), sem página de edição e sem o toggle "Send confirmation
+# email" — apontar pra ele deixou o DOI mudo de 26/08 a 09/09/2026, porque o
+# vínculo responde 201 do mesmo jeito. `verificarDoiForm`
+# (workers/poll/src/doi-form-guard-7723.ts) recusa ids de sistema e faz o
+# cadastro nascer "active", de propósito (#6565): "inactive" sem caminho de
+# confirmação prende o assinante pra sempre.
+#
+# O comentário anterior dizia que este form também alimenta a sequence
+# "Boas-vindas" (2876508) via Automation Rule 5578342 — e é nisso que o
+# branch `createState !== "inactive"` de subscribe.ts se apoia pra pular a
+# inscrição explícita. Medido em 09/09/2026: esse caminho não existe. Rules
+# é "Paid feature" no plano Free (app.kit.com/rules redireciona pra
+# billing), e a própria sequence está `active: false` com
+# `subscriber_count: 0` — toda inscrição responde 422 "Sequence is
+# inactive". Ou seja, trocar este id NÃO regride o welcome; ele já estava
+# parado por dois motivos independentes. Follow-up na #7723.
+#
+# VAR, não secret — ID de form não é sensível, mesmo tratamento dos
+# KIT_*_FIELD acima.
+KIT_DOI_FORM_ID = "9897918"
 
 # #6048 (item 4/5, Gate B aprovado pelo editor 25/08/2026 — rollout worker-a-
 # worker, poll primeiro por ser o de menor volume). env.SUBSCRIBE_BACKEND ===

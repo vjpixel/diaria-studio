@@ -77,7 +77,12 @@
  * ordenado — a ORDEM não é garantida estável entre chamadas).
  */
 
-import { EXEC_TRACK_UI, DEPENDS_ON_BLOCK_LABEL, type ExecTrack } from "./issue-exec-track.ts";
+import {
+  EXEC_TRACK_UI,
+  DEPENDS_ON_BLOCK_LABEL,
+  TRIAGED_OVERNIGHT_LABEL,
+  type ExecTrack,
+} from "./issue-exec-track.ts";
 
 /** Veredito que uma invocação de `route-issue.ts` pode pedir — mesmo union de
  * `ExecTrack` (`issue-exec-track.ts`), re-exportado com o nome que o CLI usa
@@ -140,6 +145,15 @@ export const ROUTABLE_LABELS: readonly string[] = [
   // veredito que ela produz em `classifyExecTrack`: overnight (entra na fila
   // de perguntas do briefing da Fase 0), não develop cat. C.
   "trade-off-real",
+  // #7694 — `triada-overnight` confirma o veredito `overnight` que a issue já
+  // teria por omissão, trocando `matched: "default"` por um sinal positivo
+  // (ver docstring de `TRIAGED_OVERNIGHT_LABEL`). Precisa estar aqui pelos
+  // DOIS lados: pra ser aplicável via `--motivo triada`, e — mais importante —
+  // pra entrar no conjunto `remove` quando a issue for roteada pra qualquer
+  // outro track depois. Sem isso, uma issue triada e depois bloqueada
+  // carregaria um "já conferi, é overnight" obsoleto pra sempre (o defeito
+  // que a #7316 corrigiu pra `dependencia-aberta`).
+  TRIAGED_OVERNIGHT_LABEL,
   // #6197 (3a) — labels de mecanismos paralelos que o verbo agora pode aplicar:
   // RESOLVED_BY_PROSE_LABELS (fora-de-rodada) + ALARM_EVENT_LABEL (overnight)
   "epic-guarda-chuva",
@@ -221,6 +235,12 @@ export const MOTIVO_LABEL: Readonly<Record<string, string>> = {
   // ninguém olhou (`matched: "default"`), e o julgamento seria refeito do
   // zero a cada rodada — exatamente o que `issue-decisions.ts` (#5373) evita.
   "trade-off": "trade-off-real",
+  // #7694 — o 2º motivo que aplica label mantendo o veredito `overnight`, e o
+  // complemento exato de `trade-off`: registra "triei e NÃO tem pergunta",
+  // enquanto `trade-off` registra "triei e TEM pergunta pro briefing". Sem
+  // este, a única forma de sair de `matched: "default"` era declarar um
+  // trade-off que não existe.
+  "triada": TRIAGED_OVERNIGHT_LABEL,
 };
 
 /**

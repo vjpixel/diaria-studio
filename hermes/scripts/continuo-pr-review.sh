@@ -155,30 +155,28 @@ REPO="/home/vjpixel/diaria-studio"
 cd "$REPO"
 git fetch origin -q
 
-# #7446 item 2: `escalate` não tinha dono nem sinal — a PR ficava
-# implicitamente esperando o pickup do `/diaria-overnight` (sem agendador,
-# só roda quando o editor inicia uma rodada), invisível até alguém olhar por
-# acaso (medido: PR #7432, review `approve`, escalada por CI vermelho,
-# parada 15h). O label abaixo marca a PR como "tem dono declarado — revisão
-# humana ou pickup do overnight", e a notificação (linha de log, que o cron
-# entrega ao Telegram, `Deliver: telegram` no job) só sai da PRIMEIRA vez que
-# ela escala (ver `try_merge_gate`, ramo `1)`) — ticks seguintes continuam
-# contando ESCALATED no resumo, sem repetir o aviso. `gh label create` é
-# idempotente aqui (`|| true` engole "already exists"); falha de outra
-# natureza (gh indisponível) não bloqueia o resto do script.
-gh label create "continuo-escalado" --color "D93F0B" \
-  --description "PR escalada pelo gate de merge do contínuo (#7446 item 2) — aguardando revisão humana ou pickup do /diaria-overnight" \
-  >/dev/null 2>&1 || true
-
-# #7567: mesmo mecanismo do bloco acima, lado `reject` — até aqui `gate=
-# reject` só comentava (deduplicado desde #7446 item 1) e nunca ganhava
-# nenhum sinal PERSISTENTE (label, notificação) além do 1º comentário. PR
-# rejeitada ficava sem dono declarado e sem forma de ser filtrada depois do
-# 1º tick — medido ao vivo na PR #7593 (#7567). Ver
-# scripts/lib/continuo-reject-owner.ts para o rationale completo.
-gh label create "continuo-rejeitado" --color "B60205" \
-  --description "PR rejeitada pelo gate de merge do contínuo (#7567) — decidir entre consertar ou fechar (hermes-diaria-continuo/SKILL.md §3 passo 1)" \
-  >/dev/null 2>&1 || true
+# #7446 item 2 / #7567: `escalate` e `reject` não tinham dono nem sinal — a
+# PR ficava implicitamente esperando o pickup do `/diaria-overnight` (sem
+# agendador, só roda quando o editor inicia uma rodada), invisível até
+# alguém olhar por acaso (medido: PR #7432, review `approve`, escalada por
+# CI vermelho, parada 15h; PR #7593, `reject`, esquecida). O label marca a
+# PR como "tem dono declarado", e a notificação (linha de log, que o cron
+# entrega ao Telegram, `Deliver: telegram` no job) só sai da PRIMEIRA vez —
+# ticks seguintes contam ESCALATED/REJECTED no resumo sem repetir o aviso.
+#
+# #7704: aqui havia dois `gh label create ... >/dev/null 2>&1 || true`, e os
+# DOIS falhavam desde sempre com `HTTP 422: description is too long (maximum
+# is 100 characters)` — as descrições tinham 116 e 132 chars. O `|| true`,
+# escrito supondo que a única falha possível era "already exists", engolia o
+# 422; `continuo-escalado` e `continuo-rejeitado` nunca existiram no repo, e
+# o `gh pr edit --add-label` seguinte falhava por label inexistente, também
+# em silêncio. A criação passou a morar junto da aplicação, em
+# `scripts/lib/continuo-labels.ts` (specs + `ensureContinuoLabel`, por REST,
+# com o teto de 100 travado em teste) — chamada por
+# `check-continuo-{escalate,reject}-label.ts` no momento de labelar, não
+# aqui no topo do tick. Não reintroduza a criação de label neste arquivo:
+# uma spec duplicada em bash é exatamente como as duas divergiram sem
+# ninguém perceber.
 
 # #6934: identidade de sessão pro merge-lock cross-sessão (`session-registry.ts
 # merge-lock-acquire`/`-release`) — decisão (b) do comentário durável da
@@ -495,6 +493,26 @@ try_merge_gate() {
         # if $v == null then ... else $v end` distingue "ausente" (usa o
         # default) de "presente e false" (preserva o valor real).
         FIRST_TIME=$(printf '%s' "$ESCALATE_JSON" | jq -r '.firstTime as $v | if $v == null then true else $v end' 2>/dev/null || echo "true")
+        # #7704: `labelApplied: false` com rc=0 é o modo de falha REAL
+        # deste caminho — o wrapper nunca aborta (a decisão `firstTime`
+        # já foi tomada), então o único sinal de "o label não pegou"
+        # vinha num campo de JSON que ninguém lia, e a PR seguia sem
+        # dono declarado em silêncio. `labelApplied` significa "o label
+        # ESTÁ na PR ao final" (true também quando já estava lá antes),
+        # então `false` aqui é sempre falha, nunca o estado estacionário
+        # de uma PR já sinalizada — a semântica que torna esta checagem
+        # possível sem cruzar com `firstTime`.
+        #
+        # DENTRO do ramo rc=0 de propósito: no ramo rc≠0 a falha já foi
+        # contada logo abaixo, e checar `labelApplied` lá também
+        # dobraria INFRA_ERRORS pro MESMO erro (stdout vazio → jq sai 0
+        # com saída vazia, que também não é "true").
+        ESCALATE_LABEL_APPLIED=$(printf '%s' "$ESCALATE_JSON" | jq -r '.labelApplied // false' 2>/dev/null || echo "false")
+        if [ "$ESCALATE_LABEL_APPLIED" != "true" ]; then
+          echo "[continuo-pr-review] PR #$pr: check-continuo-escalate-label.ts não aplicou o label (labelApplied=false) — a PR fica sem dono declarado: $ESCALATE_STDERR" >&2
+          INFRA_ERRORS=$((INFRA_ERRORS + 1))
+          log_infra_error "$pr" "escalate_label_not_applied" "$ESCALATE_STDERR"
+        fi
       else
         # Review externo (PR #7449, achado #1): faltava o padrão de
         # visibilidade do #6910 — os outros 6+ pontos de falha de infra
@@ -586,6 +604,26 @@ try_merge_gate() {
       REJECT_FIRST_TIME="true"
       if [ "$REJECT_LABEL_RC" -eq 0 ]; then
         REJECT_FIRST_TIME=$(printf '%s' "$REJECT_LABEL_JSON" | jq -r '.firstTime as $v | if $v == null then true else $v end' 2>/dev/null || echo "true")
+        # #7704: `labelApplied: false` com rc=0 é o modo de falha REAL
+        # deste caminho — o wrapper nunca aborta (a decisão `firstTime`
+        # já foi tomada), então o único sinal de "o label não pegou"
+        # vinha num campo de JSON que ninguém lia, e a PR seguia sem
+        # dono declarado em silêncio. `labelApplied` significa "o label
+        # ESTÁ na PR ao final" (true também quando já estava lá antes),
+        # então `false` aqui é sempre falha, nunca o estado estacionário
+        # de uma PR já sinalizada — a semântica que torna esta checagem
+        # possível sem cruzar com `firstTime`.
+        #
+        # DENTRO do ramo rc=0 de propósito: no ramo rc≠0 a falha já foi
+        # contada logo abaixo, e checar `labelApplied` lá também
+        # dobraria INFRA_ERRORS pro MESMO erro (stdout vazio → jq sai 0
+        # com saída vazia, que também não é "true").
+        REJECT_LABEL_APPLIED=$(printf '%s' "$REJECT_LABEL_JSON" | jq -r '.labelApplied // false' 2>/dev/null || echo "false")
+        if [ "$REJECT_LABEL_APPLIED" != "true" ]; then
+          echo "[continuo-pr-review] PR #$pr: check-continuo-reject-label.ts não aplicou o label (labelApplied=false) — a PR fica sem dono declarado: $REJECT_LABEL_STDERR" >&2
+          INFRA_ERRORS=$((INFRA_ERRORS + 1))
+          log_infra_error "$pr" "reject_label_not_applied" "$REJECT_LABEL_STDERR"
+        fi
       else
         echo "[continuo-pr-review] PR #$pr: check-continuo-reject-label.ts falhou (rc=$REJECT_LABEL_RC) — notificando mesmo assim (fail-open): $REJECT_LABEL_STDERR" >&2
         INFRA_ERRORS=$((INFRA_ERRORS + 1))

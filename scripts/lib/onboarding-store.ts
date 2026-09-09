@@ -62,8 +62,27 @@ export type OnboardingEmail3State =
   | "skipped_sem_dados";
 
 export interface OnboardingEntry {
-  /** id da subscription na Beehiiv (chave do mapa `entries`). */
+  /**
+   * Chave do mapa `entries`. **A semântica muda conforme o backend vigente
+   * quando a entrada nasceu**: entradas criadas sob a Beehiiv guardam
+   * `sub_c32a8dc4-...`; as criadas sob o Kit (desde #7599) guardam o id
+   * numérico do Kit como string. Nada no tipo distingue as duas — por isso
+   * existe `kit_subscriber_id` abaixo.
+   */
   subscription_id: string;
+  /**
+   * #7670: id numérico do Kit, resolvido PELO E-MAIL quando
+   * `subscription_id` é um id legado da Beehiiv.
+   *
+   * Cache, não fonte de verdade: existe só pra não repetir o lookup por
+   * e-mail em toda rodada. A chave do mapa e `subscription_id` continuam
+   * intocados — rekeyar o store é migração, não efeito colateral de um
+   * refresh diário.
+   *
+   * Ausente = ou a entrada já nasceu com id do Kit em `subscription_id`, ou
+   * o refresh ainda não rodou pra ela.
+   */
+  kit_subscriber_id?: number;
   email: string;
   /** Status Beehiiv no momento da detecção (`active` | `pending` | ...). */
   status_detectado: string;
@@ -92,6 +111,25 @@ export interface OnboardingEntry {
   email3_campaign_id: number | null;
   /** ISO — quando o destino do e-mail 3 foi decidido (qualquer branch). */
   email3_decided_at: string | null;
+  /**
+   * #7674: rótulo da recuperação MANUAL que criou esta entrada (ex.:
+   * `"#7665"`, `"#7675"`), gravado pelo modo dirigido de
+   * `onboarding-welcome-run.ts`. Ausente/`null` = entrada nasceu da
+   * detecção automática, o caso normal.
+   *
+   * Existe para que uma auditoria posterior consiga separar as duas
+   * origens: sem isto, uma coorte semeada à mão fica indistinguível de
+   * uma detectada, e qualquer medição de "quantos o onboarding alcançou
+   * sozinho" passa a contar recuperação manual como detecção.
+   *
+   * Sem `| null` de propósito (achado do review da PR #7683): nenhum
+   * produtor grava `null` — a detecção automática simplesmente não escreve
+   * o campo, e a semeadura só escreve string não-vazia (`planSeed` recusa
+   * `seededBy` em branco). Admitir `null` no tipo criaria um terceiro
+   * estado inalcançável, convidando consumidores a distinguir
+   * `=== undefined` de `== null` sem que a diferença exista.
+   */
+  seeded_by?: string;
 }
 
 export interface OnboardingStore {

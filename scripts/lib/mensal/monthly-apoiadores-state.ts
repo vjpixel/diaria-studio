@@ -435,9 +435,11 @@ export type PublishKitDecision = { action: "create" } | { action: "blocked"; rea
  *   1. `status === "sent"` — ciclo já confirmado como enviado (`--mark-sent`).
  *   2. `kitBroadcastId != null` — já existe broadcast criado pra este ciclo.
  *
- * `brevoCampaignId` de um ciclo antigo NÃO bloqueia aqui, de propósito: um
- * rascunho órfão no ESP anterior (que nunca enviou nada, #7633) não é motivo
- * pra impedir o envio real pelo canal atual.
+ * `brevoCampaignId` de um ciclo antigo NÃO bloqueia aqui, de propósito: o que
+ * aconteceu no ESP anterior — rascunho órfão ou até campanha enviada (o canal
+ * Brevo enviou o ciclo 2607-08, #7655) — não é motivo pra impedir o envio pelo
+ * canal atual. O guard de duplicata é POR CANAL; cruzar os dois bloquearia um
+ * envio legítimo pelo Kit só porque a Brevo já tinha entregue aquele ciclo.
  *
  * `force: true` ignora os dois.
  */

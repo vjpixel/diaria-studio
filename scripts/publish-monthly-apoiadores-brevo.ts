@@ -92,6 +92,15 @@
  * ausente/`null` continua abortando de forma clara (exit 2) — esse caminho
  * só é alcançável hoje via edição manual do config, não é mais o estado
  * padrão do repo.
+ *
+ * ATUALIZAÇÃO (#7655, 08/09/2026): o parágrafo acima envelheceu mal e
+ * enganou por um mês. A lista 8 foi populada À MÃO pelo editor no mesmo
+ * 04/08/2026 (hoje: 10 assinantes, 11 únicos, 1 blacklisted) e a campanha
+ * 12 ("Mensal apoiadores 2607-08") foi criada e ENVIADA pela UI naquele dia
+ * — 10 entregues, 4 aberturas únicas, 2 cliques únicos. Nada disso passou
+ * por este script, então nem o state local nem esta docstring souberam. O
+ * canal ATUAL é o Kit (`publish-monthly-apoiadores-kit.ts`, #7633); este
+ * arquivo fica como histórico até a limpeza pós-1º envio Kit.
  */
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";

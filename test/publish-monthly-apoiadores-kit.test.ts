@@ -37,7 +37,8 @@ import {
 } from "../scripts/publish-monthly-apoiadores-kit.ts";
 import type { RenderedMonthlyApoiadoresKitEmail } from "../scripts/render-monthly-apoiadores-kit.ts";
 import type { ApoiadoresState } from "../scripts/lib/mensal/monthly-apoiadores-state.ts";
-import type { CreateBroadcastInput } from "../scripts/lib/kit-broadcasts.ts";
+import { buildTagFilter, type CreateBroadcastInput } from "../scripts/lib/kit-broadcasts.ts";
+import { resolveApoiadoresAudience } from "../scripts/lib/mensal/apoiadores-kit-channel.ts";
 
 const CONTENT: ApoiadoresKitEmailContent = {
   subject: "Assunto de teste",
@@ -54,9 +55,21 @@ const FAKE_RENDERED: RenderedMonthlyApoiadoresKitEmail = {
   htmlPath: "/fake/path/apoiadores-kit-preview.html",
 };
 
+/**
+ * #7651: o builder passou a exigir `ResolvedAudienceTag` — prova de tipo de que
+ * os 3 guards de audiência rodaram. Os testes constroem a prova pelo caminho
+ * REAL (`resolveApoiadoresAudience` sobre os 3 resultados), não por cast: se
+ * amanhã a função exigir um 4º guard, estes testes quebram, que é o ponto.
+ */
+const AUDIENCIA = resolveApoiadoresAudience(
+  { ok: true, tagName: "apoio-mensal" },
+  { ok: true, tagId: 42 },
+  { ok: true, memberCount: 8 }, // #7681: o guard devolve o tamanho que validou
+)!;
+
 describe("#7633 — buildApoiadoresKitBroadcastInput", () => {
   it("monta subject/content/preview_text/description a partir do render e do ciclo", () => {
-    const input = buildApoiadoresKitBroadcastInput(CONTENT, "2607-08", 42);
+    const input = buildApoiadoresKitBroadcastInput(CONTENT, "2607-08", AUDIENCIA);
     assert.equal(input.subject, CONTENT.subject);
     assert.equal(input.content, CONTENT.html);
     assert.equal(input.preview_text, CONTENT.previewText);
@@ -64,17 +77,17 @@ describe("#7633 — buildApoiadoresKitBroadcastInput", () => {
   });
 
   it("send_at é SEMPRE null — rascunho, nunca agenda", () => {
-    const input = buildApoiadoresKitBroadcastInput(CONTENT, "2607-08", 42);
+    const input = buildApoiadoresKitBroadcastInput(CONTENT, "2607-08", AUDIENCIA);
     assert.equal(input.send_at, null);
   });
 
   it("subscriber_filter é SEMPRE a tag resolvida — nunca vazio (vazio = base inteira, #6126)", () => {
-    const input = buildApoiadoresKitBroadcastInput(CONTENT, "2607-08", 42);
+    const input = buildApoiadoresKitBroadcastInput(CONTENT, "2607-08", AUDIENCIA);
     assert.deepEqual(input.subscriber_filter, [{ all: [{ type: "tag", ids: [42] }] }]);
   });
 
   it("public: false — a recompensa de apoiador não vira página pública (diferente da anual/diária)", () => {
-    assert.equal(buildApoiadoresKitBroadcastInput(CONTENT, "2607-08", 42).public, false);
+    assert.equal(buildApoiadoresKitBroadcastInput(CONTENT, "2607-08", AUDIENCIA).public, false);
   });
 
   it("buildApoiadoresKitDescription inclui o ciclo pra rastreabilidade no painel", () => {
@@ -398,7 +411,7 @@ describe("#7633 — main()", () => {
 // a base INTEIRA, e o script reportaria sucesso.
 
 describe("#7633 — verifyAudienceFilter", () => {
-  const expected = [{ all: [{ type: "tag" as const, ids: [42] }] }];
+  const expected = buildTagFilter(42);
 
   it("filtro relido idêntico -> verified true", () => {
     assert.deepEqual(verifyAudienceFilter([{ all: [{ type: "tag", ids: [42] }] }], expected), { verified: true });

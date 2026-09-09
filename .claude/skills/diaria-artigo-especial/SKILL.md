@@ -1,14 +1,15 @@
 ---
 name: diaria-artigo-especial
-description: Fecha as 3 ações manuais que seguem o deploy de um Artigo Especial (`especial.diar.ia.br/{ano}/{slug}/`) — post teaser no apoia.se, posts agendados no LinkedIn (página diar.ia.br D+1 09:00 BRT + perfil pessoal D+2 09:30 BRT — #6014) e atualização + pin do box "Artigo Especial" (slot 2, desde #6748 — era slot 3, eliminado) da diária. Requer a máquina do editor (Claude in Chrome logado) — não roda no `helios`. Uso — `/diaria-artigo-especial --slug {slug} [--ano AAAA] [--at ISO] [--skip apoiase,linkedin,box] [--dry-run] [--unpin]`.
+description: Fecha as 4 ações manuais que seguem o deploy de um Artigo Especial (`especial.diar.ia.br/{ano}/{slug}/`) — post teaser no apoia.se, posts agendados no LinkedIn (página diar.ia.br D+1 09:00 BRT + perfil pessoal D+2 09:30 BRT — #6014), atualização + pin do box "Artigo Especial" (slot 2, desde #6748 — era slot 3, eliminado) da diária, e e-mail pros apoiadores R$10+ via Kit (#7659). Requer a máquina do editor (Claude in Chrome logado) — não roda no `helios`. Uso — `/diaria-artigo-especial --slug {slug} [--ano AAAA] [--at ISO] [--skip apoiase,linkedin,box,email] [--dry-run] [--unpin]`.
 ---
 
 # /diaria-artigo-especial
 
 Fecha o loop de divulgação de um Artigo Especial já **deployado** (issue
-#5979). Todo mês o artigo sai com 3 ações manuais repetidas pelo editor:
-post teaser no apoia.se, posts agendados no LinkedIn (página + perfil), e
-atualização do box "Artigo Especial" da diária pinado no slot 2 (desde
+#5979). Todo mês o artigo sai com 4 ações manuais repetidas pelo editor:
+post teaser no apoia.se, posts agendados no LinkedIn (página + perfil),
+e-mail pros apoiadores R$10+ (#7659) e atualização do box "Artigo
+Especial" da diária pinado no slot 2 (desde
 #6748 — era slot 3 até 29/08/2026, quando o #6748 eliminou o slot 3 da
 rotação inteira; pinar no slot 3 hoje escreveria a config e reportaria
 sucesso sem NENHUM efeito, porque `stitch-newsletter.ts` nunca mais
@@ -16,7 +17,7 @@ renderiza esse slot). **Trade-off aceito na troca para o slot 2**: o slot 2
 só existe no gap D2/D3 — em edição de 2 destaques (#2343/#3369) o box do
 Artigo Especial não aparece nessa edição, mesmo pinado (diferente do antigo
 slot 3, que injetava sempre após o último destaque, independente da
-contagem). Esta skill empacota as 3 ações num único playbook, com gate
+contagem). Esta skill empacota as 4 ações num único playbook, com gate
 humano único antes de qualquer publicação e state file por canal pra
 resumir com segurança.
 
@@ -36,12 +37,15 @@ inteira não fecha de ponta a ponta.
 
 | Pergunta | Decisão |
 |---|---|
-| Conteúdo do post apoia.se | **CHAMADA, não recorte (revisto pelo editor 23/08/2026, 1ª execução ao vivo — substitui a decisão original de reaproveitar os `leadParagraphs`).** Título + 2 parágrafos curtos que despertem curiosidade + URL. O texto levanta uma tensão e para; o mecanismo/a tese fica no artigo, que é o que a pessoa vai lá buscar. Nunca o texto integral nem o conteúdo do paywall (`artigo.diar.ia.br`, `workers/artigo-mensal` — canal separado). |
+| Conteúdo do post apoia.se | **CHAMADA, não recorte (revisto pelo editor 23/08/2026, 1ª execução ao vivo — substitui a decisão original de reaproveitar os `leadParagraphs`).** Título + 2 parágrafos curtos que despertem curiosidade + URL. O texto levanta uma tensão e para; o mecanismo/a tese fica no artigo, que é o que a pessoa vai lá buscar. Nunca o texto integral nem o conteúdo do paywall (`retrospectiva.diar.ia.br/AAMM`, `workers/retrospectiva` — canal separado). |
 | Conteúdo dos posts LinkedIn | Mesma regra de chamada acima (editor, 23/08/2026): o post não entrega a tese completa no feed. Isca concreta (o caso real) + promessa do que o artigo responde, sem responder. |
 | **Link do artigo no LinkedIn** | **NUNCA divulgar a URL direta de `especial.diar.ia.br` nos posts de LinkedIn** (editor, 23/08/2026; justificativa corrigida em #6014/#6013: o artigo é PÚBLICO e indexado de propósito — está no `sitemap.xml` com `robots.txt` liberando crawlers de IA. O que o tier R$10+ compra é antecedência, entrega por e-mail e arquivo, não exclusividade de leitura). O CTA fecha no apoia.se porque é lá que a conversão acontece, não porque o artigo seja inacessível. Os 2 posts de LinkedIn fecham com a linha literal `Apoie nosso trabalho e leia o artigo completo em: apoia.se/diaria` (frase do editor, não reescrever, não passar por Clarice/humanizador). Só `apoiase.md` leva a URL direta, porque ali o público já é apoiador. Vale pra qualquer canal público futuro (Facebook, Instagram, X): CTA aponta pro apoia.se, nunca pro artigo. |
 | Conta(s) e horário LinkedIn | Página diar.ia.br (`webhook_target: "diaria"`) **D+1 09:00 BRT** e perfil pessoal (`webhook_target: "pixel"`) **D+2 09:30 BRT**, textos distintos (#6014 item 1 — o default único antigo D+1 17:30 colidia com o `d3` da edição diária no mesmo minuto). Agenda do dia: `09:00 especial-pagina | 10:00 d1 | 12:30 d2 | 17:30 d3`. |
 | Box | Reescrever `data/snippets/artigo-especial-apoiadores.md` + pinar no slot 2 (`boxes_divulgacao.slot2` + `boxes_divulgacao_auto.pinned_slots: [2]` em `platform.config.json` — era slot 3 até o #6748 eliminá-lo, ver seção "Decisões já tomadas" acima). |
-| Visibilidade apoia.se | **Restrito a apoiadores R$10+ (revisto pelo editor 23/08/2026, 1ª execução ao vivo — substitui "público").** Motivo: `data/snippets/artigo-especial-apoiadores.md` vende o Artigo Especial como benefício de R$10+/mês; post público entregaria o benefício a quem não paga no mesmo instante. A restrição é do POST — o artigo em si segue público em `especial.diar.ia.br` (o canal com paywall continua sendo outro: `artigo.diar.ia.br`, `workers/artigo-mensal`). Consequência no texto: o `apoiase.md` fala com quem JÁ apoia, sem CTA de conversão. |
+| **E-mail: íntegra ou chamada + link?** (#7659) | **Chamada + link**, e por impossibilidade técnica, não por gosto: o artigo é um documento web de 43–52 KB com `<style>`, CSS grid, infográficos e barra de progresso — não sobrevive a cliente de e-mail, e acima de ~102 KB o Gmail corta a mensagem (cortando o pixel de abertura junto). Mandar a íntegra entregaria um artigo quebrado E perderia a medição. |
+| **E-mail: envio extra ou substitui a diária?** (#7659) | **Extra** — a diária do dia sai normal, mesma escolha da anual (#7569). Audiências diferentes (R$10+ × base inteira) e o volume é de 1 e-mail a mais por mês pra algumas dezenas de pessoas que pagam justamente por ele. |
+| **E-mail: unificar com a Retrospectiva do Mês?** (#7659) | **Não** — dois envios distintos, com audiências distintas: Retrospectiva do Mês é recompensa de Mantenedor/Patrono (R$25+, tag `apoio-mensal`), Artigo Especial é de Apoiador (R$10+, tag `apoio-especial`). Unificar entregaria a recompensa de R$25 a quem paga R$10 — o mesmo vazamento que a #7658 corrigiu do lado da web. |
+| Visibilidade apoia.se | **Restrito a apoiadores R$10+ (revisto pelo editor 23/08/2026, 1ª execução ao vivo — substitui "público").** Motivo: `data/snippets/artigo-especial-apoiadores.md` vende o Artigo Especial como benefício de R$10+/mês; post público entregaria o benefício a quem não paga no mesmo instante. A restrição é do POST — o artigo em si segue público em `especial.diar.ia.br` (o canal com paywall continua sendo outro: `retrospectiva.diar.ia.br/AAMM`, `workers/retrospectiva`). Consequência no texto: o `apoiase.md` fala com quem JÁ apoia, sem CTA de conversão. |
 
 ## Argumentos
 
@@ -55,9 +59,9 @@ inteira não fecha de ponta a ponta.
   (reusa `computeScheduledAt`, não reimplementa — ver docstring do módulo).
   Imprimir os horários assumidos em destaque quando `--at` for omitido
   (banner, regra #5321 do `CLAUDE.md`).
-- `--skip apoiase,linkedin,box` — pula canal(is) especificados (mesmo padrão
-  `--skip` do Stage 5 diário).
-- `--dry-run` — gera os 3 textos, mostra tudo, não publica/agenda/grava
+- `--skip apoiase,linkedin,box,email` — pula canal(is) especificados (mesmo
+  padrão `--skip` do Stage 5 diário).
+- `--dry-run` — gera os 4 textos, mostra tudo, não publica/agenda/grava
   nada. Para no gate humano (Passo 2 abaixo).
 - `--unpin` — só remove o `2` de `boxes_divulgacao_auto.pinned_slots`
   (`platform.config.json`) — usar quando o artigo envelhecer e o slot 2
@@ -106,8 +110,8 @@ inteira não fecha de ponta a ponta.
    `data/artigo-especial/{ano}-{slug}/published.json`
    (`scripts/lib/artigo-especial-state.ts` — `readArtigoEspecialState`,
    `decideChannelAction` por canal: `apoiase`, `linkedin_pagina`,
-   `linkedin_perfil`, `box`). Canal já `done` sem `--force` é pulado nos
-   Passos 3-5 (log, não erro). `--force` reexecuta.
+   `linkedin_perfil`, `box`, `email`). Canal já `done` sem `--force` é pulado
+   nos Passos 3-5 (log, não erro). `--force` reexecuta.
 
 6. **Resolver o `--at`.** Se `--at` foi passado, validar com
    `validateExplicitAt` (ISO parseável, futuro) — vale pros dois canais.
@@ -115,7 +119,7 @@ inteira não fecha de ponta a ponta.
    (default #6014: página D+1 09:00 BRT, perfil D+2 09:30 BRT) e imprimir
    o banner dos defaults aplicados.
 
-## Passo 1 — gerar os 3 textos (agente, 1 dispatch)
+## Passo 1 — gerar os 4 textos (agente, 1 dispatch)
 
 Dispatch de **1** subagente `general-purpose` com `model: sonnet` explícito
 (#2019 — subagente ad-hoc sempre com model explícito), a partir dos
@@ -123,7 +127,7 @@ metadados do Passo 0 (`title`, `description`, `leadParagraphs`, `url`):
 
 ```
 Agent(subagent_type="general-purpose", model="sonnet", prompt=<
-  Gere 3 textos a partir deste artigo especial (metadados abaixo). Nunca
+  Gere 4 textos a partir deste artigo especial (metadados abaixo). Nunca
   invente fatos além do que os metadados sustentam.
 
   Os 3 são CHAMADA, não recorte (editor, 23/08/2026 — ver tabela de
@@ -141,13 +145,20 @@ Agent(subagent_type="general-purpose", model="sonnet", prompt=<
      (ver context/publishers/linkedin.md seções 1-8 pro tom esperado).
   3. linkedin-perfil.md — 1ª pessoa (voz do Pixel), mesmo CTA, mais pessoal
      (mesmo espírito do post_pixel do Stage 6 diário).
+  4. email.md — chamada pro e-mail que vai SÓ pra quem apoia R$10+ (#7659).
+     Fale com quem JÁ apoia: sem CTA de conversão, sem "assine", sem
+     explicar o que é a diar.ia.br. 2 parágrafos, mesmo espírito do
+     apoiase.md — e NÃO repita o texto dele palavra por palavra: as duas
+     superfícies alcançam a mesma pessoa no mesmo dia. Não termine com a
+     URL: o e-mail tem botão próprio (o render descarta o parágrafo que for
+     só a URL, e ficaria um e-mail com o link pedido duas vezes).
 
   Metadados: {title, description, url, image, leadParagraphs}
-  Escreva os 3 arquivos em data/artigo-especial/{ano}-{slug}/.
+  Escreva os 4 arquivos em data/artigo-especial/{ano}-{slug}/.
 >)
 ```
 
-Depois, para os 3 arquivos:
+Depois, para os 4 arquivos:
 
 ```
 Skill("humanizador", "Humanize este texto em português, mantendo o sentido: <texto>")
@@ -161,13 +172,13 @@ mcp__clarice__correct_text(<texto humanizado>)
 
 Aplicar todas as sugestões da Clarice incondicionalmente (mesma disciplina
 do Stage 2 diário — #4514), exceto sugestão que corrompa marca/identificador
-técnico. Gravar o texto final (humanizado + corrigido) de volta nos 3
+técnico. Gravar o texto final (humanizado + corrigido) de volta nos 4
 arquivos.
 
-**Isenção do `--skip`**: se `--skip apoiase` (ou `linkedin`), ainda assim
-gerar o texto correspondente é opcional — pular a geração de um canal que já
+**Isenção do `--skip`**: se `--skip apoiase` (ou `linkedin`, ou `email`),
+ainda assim gerar o texto correspondente é opcional — pular a geração de um canal que já
 será pulado nos Passos 3-4 evita trabalho descartado. `box` não usa nenhum
-dos 3 arquivos (o gancho do box vem separado, ver Passo 5).
+dos 4 arquivos (o gancho do box vem separado, ver Passo 5).
 
 ## Passo 2 — gate humano único
 
@@ -191,8 +202,15 @@ LinkedIn perfil (agenda {--at resolvido}):
 Box (slot 2, pinado até --unpin — só aparece em edição de 3 destaques, #6748):
 {preview do box com título/gancho}
 
-Aprovar os 3? sim / ajustar {canal} / abortar
+E-mail (RASCUNHO no Kit, audiência = tag {kit_artigo_especial.audience_tag}, N membros):
+{email.md}
+
+Aprovar os 4? sim / ajustar {canal} / abortar
 ```
+
+O e-mail entra no MESMO gate mesmo sendo reversível (o broadcast sai sempre
+como rascunho, e o disparo é ação humana no painel): o texto é o que o
+apoiador vai ler, e revisá-lo aqui evita uma 2ª passada de revisão no Kit.
 
 `AskUserQuestion` falhando → halt banner (#3938), nunca prosseguir sem
 resposta. `--dry-run` para aqui, sem publicar nada.
@@ -278,6 +296,77 @@ Grava o detalhe de cada dispatch (`worker_queue_key`, `route`,
 automaticamente contra o Worker via `verify-social-worker-dispatch.ts`
 depois do dispatch) e o status agregado por canal em `published.json`.
 
+## Passo 4b — e-mail pros apoiadores R$10+ (Kit, rascunho)
+
+Canal `email` (#7659) — pulado se `--skip email` ou já `done` sem `--force`.
+
+Fecha o buraco que a issue nomeia: o Artigo Especial é vendido na apoia.se
+como recompensa do tier **Apoiador (R$10/mês)** com "entrega por e-mail", e
+até aqui e-mail nenhum existia — quem apoiava descobria o artigo pelo post no
+apoia.se ou pelo box da diária, ou não descobria.
+
+**Audiência.** Tag `kit_artigo_especial.audience_tag` (`platform.config.json`),
+projeção do custom field `apoio_nivel` pros níveis de R$10+ — o MESMO
+conjunto que o gate da web usa (`ARTIGOS_ESPECIAIS_APOIO_THRESHOLD`), nunca
+uma 2ª lista. Tag **separada** da `apoio-mensal` (R$25+, Retrospectiva do
+Mês): colapsar as duas entregaria a recompensa de R$25 a quem paga R$10.
+
+Antes do 1º envio de cada mês (ou sempre que houver dúvida de que a
+audiência está fresca), na ordem:
+
+```bash
+npx tsx scripts/sync-apoio-nivel-kit.ts --push          # apoia.se → apoio_nivel
+npx tsx scripts/sync-apoio-especial-tag-kit.ts          # dry-run: confira o diff
+npx tsx scripts/sync-apoio-especial-tag-kit.ts --push   # apoio_nivel → tag
+```
+
+Rodar o 2º antes do 1º numa virada de mês projeta o estado velho. O sync é
+dry-run por padrão, verifica cada mutação por releitura (nunca confia no 2xx
+do Kit) e recusa o push inteiro se as remoções passarem de 30% da tag
+(`--force-blast-radius` é a decisão consciente).
+
+**Criar o rascunho:**
+
+```bash
+npx tsx scripts/publish-artigo-especial-kit.ts --ano {ano} --slug {slug} --dry-run
+npx tsx scripts/publish-artigo-especial-kit.ts --ano {ano} --slug {slug}
+```
+
+O broadcast sai **sempre como rascunho** (`send_at: null`) e `public: false`
+— test email, conferência visual e disparo continuam sendo ação humana no
+painel do Kit (Broadcasts → Drafts). O script recusa criar qualquer coisa se
+a tag não resolver ou estiver vazia (filtro ausente no Kit significa a base
+INTEIRA, #6126) e **relê o broadcast pra conferir o `subscriber_filter`
+aplicado** — o 2xx da criação não é prova de que o filtro pegou.
+
+**A conferência de audiência tem 3 desfechos, e 2 deles param o canal:**
+
+| `audienceVerification.status` | O que significa | O que o script faz |
+|---|---|---|
+| `confirmed` | a API ecoou exatamente o filtro enviado | canal `email` vira `done` |
+| `diverged` | ecoou OUTRO filtro — no pior caso a base inteira | erro, canal `failed` |
+| `unconfirmed` | a releitura não respondeu (1 retentativa) ou não trouxe o campo | erro, canal `failed` |
+
+`unconfirmed` também para de propósito: este passo é o único do fluxo sem
+gate humano depois, e tratar "não sei" como "confirmado" aqui seria aceitar
+em silêncio uma audiência não conferida. Nos dois casos o rascunho **existe**
+e o id fica gravado — o que falta é olho humano no painel antes de disparar,
+e uma reexecução é bloqueada pelo guard de duplicata.
+
+Grava `email-published.json` (id do broadcast, tag, nº de membros e a
+verificação COM a razão) e o status do canal `email` em `published.json` —
+`done` no sucesso, `failed` com o motivo em qualquer falha, como os canais
+irmãos já fazem. Exit 2 = guard (config/audiência/idempotência), exit 1 =
+falha real. Falha aqui **continua** pros outros canais.
+
+**O e-mail leva chamada + link, não o artigo inteiro** — e isso é mecânico,
+não preferência: os Artigos Especiais são documentos web de 43–52 KB com
+`<style>` próprio, CSS grid, infográficos e barra de progresso; nada disso
+sobrevive a um cliente de e-mail, e acima de ~102 KB o Gmail corta a
+mensagem (justamente no fim, onde fica o pixel de abertura). Reabrir isso não
+é mexer no render — é decidir se vale escrever uma 2ª versão do artigo, feita
+pra e-mail.
+
 ## Passo 5 — box (script + PR)
 
 Canal `box` — pulado se `--skip box` ou já `done` sem `--force`.
@@ -360,7 +449,7 @@ implícito `false` — mesmo fluxo de branch/PR, sem tocar em
   canal). Resume (`--force` não necessário — falha é sempre retentável, ver
   `decideChannelAction`) reexecuta só o(s) canal(is) `pending`/`failed`.
 - **Canal já `done`** → pulado no resume, sem `--force`.
-- **`--unpin`** → não gera nenhum dos 3 textos, não toca no state file de
+- **`--unpin`** → não gera nenhum dos 4 textos, não toca no state file de
   apoiase/LinkedIn — só o Passo 5 roda (`applyBoxPin` com `pin: false`),
   removendo `2` de `pinned_slots` sem tocar `boxes_divulgacao.slot2` (ver
   docstring de `applyBoxPin`) — o slot volta a ser candidato do auto-select
@@ -379,8 +468,10 @@ data/artigo-especial/{ano}-{slug}/
   apoiase.md                  chamada publica (Passo 1)
   linkedin-pagina.md          post pagina diar.ia.br (Passo 1)
   linkedin-perfil.md          post perfil pessoal (Passo 1)
-  published.json              status agregado por canal — apoiase/linkedin_pagina/linkedin_perfil/box (Passo 0 guard, atualizado nos Passos 3-5)
+  email.md                    chamada do e-mail pros apoiadores R$10+ (Passo 1)
+  published.json              status agregado por canal — apoiase/linkedin_pagina/linkedin_perfil/box/email (Passo 0 guard, atualizado nos Passos 3-5)
   linkedin-published.json     detalhe do dispatch LinkedIn (worker_queue_key, route, scheduled_at — Passo 4)
+  email-published.json        detalhe do broadcast Kit (broadcastId, tag + nº de membros, audienceVerification com a razão — Passo 4b)
 ```
 
 `platform.config.json` (`boxes_divulgacao.slot2` + `pinned_slots` — desde
