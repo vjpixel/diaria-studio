@@ -110,7 +110,7 @@ export function resolveApoiadoresTagId(tagName: string, tagId: number | null): A
 }
 
 export function checkApoiadoresAudienceNotEmpty(tagName: string, memberCount: number): ApoiadoresAudienceCheck {
-  return checkAudienceNotEmpty(tagName, memberCount, APOIADORES_TAG_SYNC_COMMAND);
+  return checkAudienceNotEmpty(tagName, memberCount, APOIADORES_TAG_SYNC_COMMAND, APOIADORES_MENSAL_NIVEIS);
 }
 
 /**
