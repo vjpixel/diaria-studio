@@ -16,7 +16,7 @@
  * resolvido pra a lista de e-mails que qualificam.
  *
  * Uso:
- *   npx tsx scripts/build-apoiador-allowlist.ts [--out <path>] [--push] [--allow-partial]
+ *   npx tsx scripts/build-apoiador-allowlist.ts [--out <path>] [--push] [--allow-partial] [--force-blast-radius]
  *
  * Sem `--out`: imprime o JSON (array de e-mails) em stdout.
  * `--push` (+ credenciais Cloudflare no env): grava no KV `ALLOWLIST` via
@@ -40,6 +40,18 @@
  * de contatos, cenário onde recusar sempre tornaria o push impraticável),
  * sempre logando os e-mails afetados.
  *
+ * **Guard de blast radius (#7688):** antes do push, o script LÊ a allowlist
+ * atual do KV e compara. Se as remoções passarem de 30%
+ * (`APOIO_TAG_BLAST_RADIUS_THRESHOLD`, o mesmo limiar dos 4 syncs de audiência
+ * vizinhos), recusa o push inteiro e lista QUEM sai — `--force-blast-radius` é
+ * a decisão consciente. Falha na LEITURA também recusa, pela mesma razão:
+ * sem o estado anterior o guard não roda, e sobrescrever às cegas é o que esta
+ * issue fechou. Até o #7688 o script tinha guard para dado FALTANDO
+ * (`data.error`, `findTransientFailureContacts`) e nenhum para dado que
+ * ENCOLHEU — medido ao vivo em 08/09/2026, quando o push do limiar novo levou
+ * a allowlist de 21 para 10 sem nenhum aviso proporcional. Quem sai perde
+ * acesso às Retrospectivas do Mês já publicadas.
+ *
  * HISTÓRICO (#3940 → #7580): `--push` nunca tinha sido executado, e o
  * namespace era um literal `REPLACE_ME_...`. Em 07/09/2026 a allowlist foi
  * publicada pela primeira vez (21 apoiadores, contra `contacts.jsonl` real) —
@@ -53,8 +65,13 @@ import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { buildApoiosData, computeRewardGroup, type ContactWithStatus, type RewardGroup } from "./studio-ui/studio-apoios.ts";
-import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
+import { uploadTextToWorkerKV, getTextFromWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { readArtigoMensalNamespaceId } from "./lib/mensal/artigo-mensal-kv-namespaces.ts";
+import {
+  diffTagMembership,
+  evaluateTagBlastRadius,
+  APOIO_TAG_BLAST_RADIUS_THRESHOLD,
+} from "./lib/shared/kit-apoio-tag.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, "..");
@@ -142,6 +159,79 @@ export function findTransientFailureContacts(contacts: ContactWithStatus[]): Con
   return contacts.filter((c) => c.status.label === "sem_dados");
 }
 
+// ── guard de blast radius (#7688) ─────────────────────────────────────────
+
+/**
+ * Pura: lê o JSON gravado no KV e devolve a allowlist ATUAL.
+ *
+ * `null` (chave ausente — 1º push de todos) vira `[]`, que é a leitura certa:
+ * ninguém tinha acesso, então não há remoção possível e o guard nunca bloqueia
+ * a primeira escrita.
+ *
+ * Conteúdo que não é um array de strings LANÇA em vez de virar `[]`: tratar
+ * lixo como "lista vazia" transformaria uma leitura corrompida em "0 remoções",
+ * que é exatamente o silêncio que este guard existe pra impedir.
+ *
+ * @pure
+ */
+export function parseCurrentAllowlist(raw: string | null): string[] {
+  if (raw === null) return [];
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (e) {
+    throw new Error(
+      `a allowlist atual no KV não é JSON válido (${(e as Error).message}) — recusando comparar contra ela. ` +
+        "Conferir a chave 'emails' no namespace ALLOWLIST antes de sobrescrever.",
+    );
+  }
+  if (!Array.isArray(parsed) || parsed.some((e) => typeof e !== "string")) {
+    throw new Error(
+      "a allowlist atual no KV não é um array de strings — recusando comparar contra ela. " +
+        "Conferir a chave 'emails' no namespace ALLOWLIST antes de sobrescrever.",
+    );
+  }
+  return parsed as string[];
+}
+
+export interface AllowlistBlastRadius {
+  entram: string[];
+  saem: string[];
+  inalterados: string[];
+  blocked: boolean;
+  ratio: number;
+  currentCount: number;
+}
+
+/**
+ * Pura: quem entra, quem sai, e se a proporção de saídas passa do limiar.
+ *
+ * Reusa `diffTagMembership`/`evaluateTagBlastRadius` (`lib/shared/kit-apoio-tag.ts`,
+ * #7659) em vez de reimplementar: é a MESMA pergunta que os 4 syncs de
+ * audiência vizinhos já fazem, com o mesmo limiar de 30%, e ter duas respostas
+ * diferentes pra ela seria a origem do próximo bug.
+ *
+ * @pure
+ */
+export function evaluateAllowlistBlastRadius(
+  next: readonly string[],
+  current: readonly string[],
+  force: boolean,
+): AllowlistBlastRadius {
+  const diff = diffTagMembership(next, current);
+  const blast = evaluateTagBlastRadius(diff.toRemove.length, current.length, force);
+  return {
+    entram: diff.toAdd,
+    saem: diff.toRemove,
+    inalterados: diff.unchanged,
+    blocked: blast.blocked,
+    ratio: blast.ratio,
+    currentCount: blast.currentCount,
+  };
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   loadProjectEnv(REPO_ROOT);
@@ -192,11 +282,63 @@ async function main(): Promise<void> {
       );
     }
 
+    const kvNamespaceId = apoiadorAllowlistKvNamespaceId();
+
+    // #7688: LER antes de escrever por cima. Até aqui o script era o único
+    // sync de audiência do projeto sem guard de blast radius — e nem sequer
+    // consultava o estado anterior, então uma leitura parcial do apoia.se que
+    // derrubasse metade dos apoiadores seria aplicada sem nada acusar.
+    let current: string[];
+    try {
+      current = parseCurrentAllowlist(
+        await getTextFromWorkerKV(APOIADOR_ALLOWLIST_KV_KEY, { kvNamespaceId }),
+      );
+    } catch (e) {
+      if (!hasFlag(argv, "force-blast-radius")) {
+        console.error(
+          `[build-apoiador-allowlist] RECUSANDO --push: não foi possível ler a allowlist ATUAL do KV pra ` +
+            `comparar (${(e as Error).message}). Sem essa leitura o guard de blast radius não tem como ` +
+            "rodar, e sobrescrever às cegas é justamente o que o #7688 fechou. Re-tente, ou use " +
+            "--force-blast-radius pra gravar assumindo o risco (sempre logado).",
+        );
+        process.exit(1);
+        return;
+      }
+      console.error(
+        `[build-apoiador-allowlist] aviso: leitura da allowlist atual falhou (${(e as Error).message}), ` +
+          "mas --force-blast-radius foi passado — gravando SEM comparação prévia.",
+      );
+      current = [];
+    }
+
+    const blast = evaluateAllowlistBlastRadius(allowlist, current, hasFlag(argv, "force-blast-radius"));
+    console.error(
+      `[build-apoiador-allowlist] diff vs KV: +${blast.entram.length} entram · -${blast.saem.length} saem · ` +
+        `${blast.inalterados.length} já corretos (allowlist atual: ${blast.currentCount}).`,
+    );
+    // Lista explícita, como os syncs vizinhos — quem revisa precisa ver QUEM
+    // perde acesso, não só quantos.
+    for (const e of blast.entram) console.error(`[build-apoiador-allowlist]   + ${e}`);
+    for (const e of blast.saem) console.error(`[build-apoiador-allowlist]   - ${e}`);
+
+    if (blast.blocked) {
+      console.error(
+        `[build-apoiador-allowlist] RECUSANDO --push: ${blast.saem.length}/${blast.currentCount} remoções ` +
+          `(${(blast.ratio * 100).toFixed(1)}%) — acima do limiar de ` +
+          `${(APOIO_TAG_BLAST_RADIUS_THRESHOLD * 100).toFixed(0)}%. Quem sai perde acesso às Retrospectivas ` +
+          "do Mês já publicadas, então uma queda desse tamanho precisa ser confirmada, não aplicada por " +
+          "inércia: confira se não é leitura parcial do apoia.se/virada de mês. Se a queda for REAL (ex: " +
+          "mudança de limiar), use --force-blast-radius.",
+      );
+      process.exit(1);
+      return;
+    }
+
     console.error(
       `[build-apoiador-allowlist] --push: enviando ${allowlist.length} e-mail(s) pro KV ALLOWLIST...`,
     );
     await uploadTextToWorkerKV(payload, APOIADOR_ALLOWLIST_KV_KEY, {
-      kvNamespaceId: apoiadorAllowlistKvNamespaceId(),
+      kvNamespaceId,
       contentType: "application/json",
     });
     console.error(`[build-apoiador-allowlist] push concluído.`);
