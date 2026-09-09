@@ -1206,3 +1206,19 @@ export function validateWaterfallTiers(tiers: unknown): WaterfallTierSpec[] {
   }
   return out;
 }
+
+// #7738 — cálculo do teto fila diária unificada (diferenciado de 1º-envio vitalício).
+// Usa buildDailySendQueue com guards de queued (engajados) / committed (warm) corretos,
+// NUNCA superestimando: se guard falhar (size==0 e lookup não confirmado), retorna 0.
+export function computeDailyQueueAvailable<
+  T extends Pick<StoreRow, "email"|"send_eligible"|"sends_count"|"priority_points"|"brevo_list_ids"|"created"|"cohort"|"mv_bucket">,
+>(rows: T[], guards: { queuedListIds: ReadonlySet<string>; committedListIds: ReadonlySet<string> }, cutoffNovosIso?: string|null): number {
+  // Definição operacional do teto: fila unificada que ainda pode receber HOJE,
+  // excluindo já agendados (queued) e já enviados (committed) — distinção de #7738.
+  const eligible = buildDailySendQueue(rows, guards, cutoffNovosIso);
+  // Segurança contra superestimativa: se a consulta de guards falhou (vazio + lookup não confirmado),
+  // disponíveis = 0 (nunca assume fila cheia sem prova — regra #3682 / #7738).
+  const guardsConfirmed = guards.queuedListIds.size > 0 || guards.committedListIds.size > 0 || eligible.length > 0;
+  if (!guardsConfirmed && eligible.length === 0) return 0;
+  return eligible.length;
+}

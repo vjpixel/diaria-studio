@@ -1191,7 +1191,7 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       );
     }
 
-    let queueAvailable = proposal.availableFirstSend;
+    let queueAvailable = (proposal as any).availableDailyQueue ?? proposal.availableFirstSend;  // #7738: teto = fila diária unificada (se disponível); 1º-envio vitalício só como fallback, nunca superestimado
     if (queueAvailable < desiredVolume && proposal.mvOnDemandPlan.byCohort.length > 0) {
       if (!hasMv) {
         report.note(
