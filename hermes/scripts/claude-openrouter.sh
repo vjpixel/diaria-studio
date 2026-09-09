@@ -51,11 +51,14 @@
 #     procurar o id. Tratamento dos 3 casos: issue #6803.
 #   - Elo final de assinatura claude.ai (#7649, decisão do editor 08/09/2026):
 #     depois do glm-5.3-flash, a cadeia tenta MAIS UM elo — o MESMO `claude
-#     -p`, mas SEM nenhuma das 5 vars ANTHROPIC_* de gateway (unset explícito,
-#     nunca "deixar de exportar" — ANTHROPIC_AUTH_TOKEN tem PRECEDÊNCIA sobre
-#     o OAuth da assinatura, então resíduo herdado do ambiente pai
-#     transformaria este elo "grátis" numa chamada PAGA em silêncio; regra
-#     #5608/#6714 do diaria-studio). Sentinela reconhecida por
+#     -p`, mas SEM nenhuma das 8 vars ANTHROPIC_*/CLAUDE_CODE_USE_* de auth e
+#     gateway (unset explícito, nunca "deixar de exportar" — ANTHROPIC_AUTH_TOKEN
+#     e ANTHROPIC_API_KEY têm PRECEDÊNCIA sobre o OAuth da assinatura, então
+#     resíduo herdado do ambiente pai transformaria este elo "grátis" numa
+#     chamada PAGA em silêncio; regra #5608/#6714 do diaria-studio, a lista
+#     ampliada de 5→8 vars no review do #7649 depois de faltar justo
+#     ANTHROPIC_API_KEY, a causa do incidente real da edição 260818). Sentinela
+#     reconhecida por
 #     `is_subscription_lane_model()`. Sem `--max-budget-usd` (não há custo em
 #     dólar por chamada na assinatura). Novos exit codes SÓ deste elo: 96 =
 #     guard fail-closed disparou (resíduo de ANTHROPIC_* sobreviveu ao unset)
@@ -473,10 +476,11 @@ for MODEL in "${MODELS[@]}"; do
   # bem diferentes, e nenhuma das duas era distinguível antes disto.
   ATTEMPT_START_TS=$(date +%s)
   if is_subscription_lane_model "$MODEL"; then
-    # #7649: elo final de assinatura claude.ai. SEM nenhuma das 5 vars
-    # ANTHROPIC_* de gateway — `unset` EXPLÍCITO, nunca "deixar de
-    # exportar": ANTHROPIC_AUTH_TOKEN tem PRECEDÊNCIA sobre o OAuth da
-    # assinatura (confirmado ao vivo em #6718/#5608), então qualquer
+    # #7649: elo final de assinatura claude.ai. SEM nenhuma das 8 vars de
+    # auth/gateway (ANTHROPIC_*, CLAUDE_CODE_USE_BEDROCK/VERTEX) — `unset`
+    # EXPLÍCITO, nunca "deixar de exportar": ANTHROPIC_AUTH_TOKEN e
+    # ANTHROPIC_API_KEY têm PRECEDÊNCIA sobre o OAuth da assinatura
+    # (confirmado ao vivo em #6718/#5608), então qualquer
     # resíduo herdado do ambiente pai transformaria este elo "grátis" numa
     # chamada PAGA em silêncio — exatamente a classe #5608/#6714 que o
     # CLAUDE.md do diaria-studio proíbe. Guard fail-closed logo abaixo
@@ -493,10 +497,24 @@ for MODEL in "${MODELS[@]}"; do
     #
     # Sem --max-budget-usd (item 4): não existe custo em dólar por chamada
     # na assinatura — o teto não tem o que proteger neste elo.
+    # #7649 review (rodada overnight 260909, veredito REJECT no 1o passe): a
+    # lista original tinha só as 5 vars de gateway OpenRouter — faltava
+    # justamente ANTHROPIC_API_KEY, a var que já causou o incidente REAL
+    # documentado no CLAUDE.md (edição 260818, #5608): processo herda a key
+    # do .env (legítima ali pra geo-citation-monitor.ts/audit-context-tokens.ts)
+    # e o CLI troca a assinatura pela API paga em silêncio. Lista agora
+    # alinhada ao subconjunto de auth de CLAUDE_CLI_STRIPPED_ENV_VARS
+    # (scripts/overnight/run-scheduled-edicao.ts) — API_KEY + as 2 de
+    # roteamento Bedrock/Vertex (mesma classe de shadowing). As 3 vars de
+    # identidade de sessão pai daquela lista (#5791, hipótese não confirmada)
+    # ficam de fora aqui de propósito: não são vetor de auth, são outra
+    # classe de risco, fora do escopo desta issue.
     OUT=$(printf '%s' "$PROMPT" | (
-      unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN \
+      unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY \
+            CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX \
             ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL
-      for _subscription_guard_var in ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN \
+      for _subscription_guard_var in ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY \
+          CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX \
           ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL; do
         if [ -n "${!_subscription_guard_var:-}" ]; then
           echo "FATAL (#7649): $_subscription_guard_var sobreviveu ao unset explícito no elo de assinatura — abortando ANTES de invocar claude. Prefira abortar demais a rodar com dúvida (regra #5608/#6714 do diaria-studio): um resíduo aqui transformaria o elo 'grátis' numa chamada PAGA no gateway em silêncio." >&2

@@ -4,22 +4,26 @@
  * Guard de regressão para o elo final de assinatura claude.ai adicionado a
  * `claude-openrouter.sh` — depois do glm-5.3-flash, quando os 3 elos `:free`
  * E o pago falham, a cadeia agora tenta MAIS UM elo: o MESMO `claude -p`,
- * mas SEM nenhuma das 5 vars ANTHROPIC_* de gateway.
+ * mas SEM nenhuma das 8 vars ANTHROPIC_* / CLAUDE_CODE_USE_* de auth e gateway.
  *
  * A regra #5608/#6714 do CLAUDE.md deste repo (nunca trocar a assinatura
  * claude.ai pela API pay-per-token) é a razão de este arquivo existir:
- * ANTHROPIC_AUTH_TOKEN tem PRECEDÊNCIA sobre o OAuth da assinatura, então
- * um resíduo dessas vars no ambiente transformaria o elo "grátis" numa
- * chamada PAGA no gateway em silêncio. Cobre:
+ * ANTHROPIC_AUTH_TOKEN e ANTHROPIC_API_KEY têm PRECEDÊNCIA sobre o OAuth da
+ * assinatura, então um resíduo dessas vars no ambiente transformaria o elo
+ * "grátis" numa chamada PAGA em silêncio. A lista cresceu de 5→8 vars num
+ * review de segurança da própria PR (#7649): a 1ª versão só cobria as 5
+ * vars de gateway OpenRouter e deixava passar ANTHROPIC_API_KEY —
+ * justamente a var do incidente REAL já documentado no CLAUDE.md (edição
+ * 260818). Cobre:
  *
  *   1. A sentinela `sonnet` é o último elo de MODELS_DEFAULT (depois do
  *      glm-5.3-flash) e `is_subscription_lane_model()` existe.
  *   2. O branch de invocação do elo de assinatura NUNCA exporta nenhuma das
- *      5 vars ANTHROPIC_* de gateway (estático — grep na fatia do source) e
- *      o branch openrouter (else) CONTINUA exportando todas.
+ *      8 vars de auth/gateway (estático — grep na fatia do source) e o
+ *      branch openrouter (else) continua exportando as 5 dele normalmente.
  *   3. O guard fail-closed (unset + checagem `${!v:-}` + `exit 97`) existe
  *      dentro do branch de assinatura, e dispara de verdade quando uma das
- *      5 vars sobrevive ao `unset` (teste AO VIVO, isolado — nunca toca
+ *      8 vars sobrevive ao `unset` (teste AO VIVO, isolado — nunca toca
  *      ~/.hermes/auth.json real nem invoca `claude` de verdade).
  *   4. RC=97 vira ABORT IMEDIATO (`exit 96`) — checado ANTES da
  *      classificação SAW_QUOTA_SIGNAL/SAW_CONFIG_ERROR_SIGNAL (posição no
@@ -102,7 +106,7 @@ describe("claude-openrouter.sh — branch de invocação (#7649 item 2)", () => 
   const sub = subscriptionBranch(src);
   const openrouter = openrouterBranch(src);
 
-  it("o branch de assinatura NUNCA contém `export ANTHROPIC_` (nenhuma das 5 vars de gateway)", () => {
+  it("o branch de assinatura NUNCA contém `export ANTHROPIC_` (nenhuma das vars de gateway/auth)", () => {
     assert.doesNotMatch(
       sub,
       /export ANTHROPIC_/,
@@ -111,17 +115,21 @@ describe("claude-openrouter.sh — branch de invocação (#7649 item 2)", () => 
     );
   });
 
-  it("o branch de assinatura faz `unset` explícito das 5 vars (não 'deixar de exportar')", () => {
+  it("o branch de assinatura faz `unset` explícito das 8 vars (não 'deixar de exportar') — inclui ANTHROPIC_API_KEY " +
+      "(review #7649: faltava, é a var do incidente REAL da edição 260818) e Bedrock/Vertex", () => {
     assert.match(
       sub,
-      /unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN \\\s*\n\s*ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL/,
+      /unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY \\\s*\n\s*CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX \\\s*\n\s*ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL/,
     );
   });
 
-  it("o branch de assinatura tem o guard fail-closed (loop pelas 5 vars, `exit 97` se alguma sobreviver)", () => {
+  it("o branch de assinatura tem o guard fail-closed (loop pelas 8 vars, `exit 97` se alguma sobreviver)", () => {
     for (const v of [
       "ANTHROPIC_BASE_URL",
       "ANTHROPIC_AUTH_TOKEN",
+      "ANTHROPIC_API_KEY",
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_USE_VERTEX",
       "ANTHROPIC_DEFAULT_HAIKU_MODEL",
       "ANTHROPIC_DEFAULT_SONNET_MODEL",
       "ANTHROPIC_DEFAULT_OPUS_MODEL",
@@ -224,7 +232,7 @@ describe("claude-openrouter.sh — guard fail-closed dispara de verdade (#7649 i
   assert.ok(guardMatch, "não encontrei o bloco literal do guard pra extrair");
   const guardSnippet = guardMatch![0];
 
-  it("com as 5 vars genuinamente ausentes, o guard não aborta (RC=0)", () => {
+  it("com as 8 vars genuinamente ausentes, o guard não aborta (RC=0)", () => {
     const script = `${guardSnippet}\necho SURVIVED`;
     const out = execFileSync("bash", ["-c", script], { encoding: "utf8" }).trim();
     assert.equal(out, "SURVIVED", "guard abortou mesmo com o ambiente limpo — falso positivo");
@@ -243,5 +251,21 @@ describe("claude-openrouter.sh — guard fail-closed dispara de verdade (#7649 i
     }
     assert.ok(threw, "o guard deveria abortar (exit 97) quando ANTHROPIC_AUTH_TOKEN sobrevive ao unset");
     assert.match(stderr, /FATAL \(#7649\)/);
+  });
+
+  it("com ANTHROPIC_API_KEY sobrevivendo ao unset (readonly), o guard aborta com exit 97 — " +
+      "reprodução direta do incidente real da edição 260818 (#5608), não do gateway", () => {
+    const script = `export ANTHROPIC_API_KEY="sk-ant-poisoned"\nreadonly ANTHROPIC_API_KEY\n${guardSnippet}\necho SURVIVED`;
+    let threw = false;
+    let stderr = "";
+    try {
+      execFileSync("bash", ["-c", script], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    } catch (e: any) {
+      threw = true;
+      stderr = String(e.stderr ?? "");
+      assert.equal(e.status, 97, `esperava exit 97, saiu ${e.status}`);
+    }
+    assert.ok(threw, "o guard deveria abortar (exit 97) quando ANTHROPIC_API_KEY sobrevive ao unset");
+    assert.match(stderr, /ANTHROPIC_API_KEY/);
   });
 });
