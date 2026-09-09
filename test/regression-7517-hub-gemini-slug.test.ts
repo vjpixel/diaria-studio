@@ -1,27 +1,46 @@
-import { describe, it, expect } from 'vitest';
-import { readFileSync, existsSync } from 'fs';
-import { resolve } from 'path';
+/**
+ * test/regression-7517-hub-gemini-slug.test.ts (#7798, #633)
+ *
+ * Regressão do #7517: o dataset do hub `google-gemini` foi reconstruído
+ * perdendo 2 slugs. Este teste não exercita lógica — verifica que os
+ * artefatos gerados (páginas, dataset e sitemap) seguem contendo os slugs
+ * restaurados, que é exatamente o que a reconstrução defasada apagava.
+ */
+import { test, describe } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync, existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-describe('regression #7517 — google-gemini hub reconstruído', () => {
-  it('página do hub contém os 2 slugs restaurados (rebuild)', () => {
-    const page = resolve(__dirname, '../workers/arquivo/src/hubs/google-gemini.generated.ts');
-    // Se arquivo .ts gerado existe, verifica conteúdo; caso não, checa pages
-    const html = resolve(__dirname, '../workers/site/public/p/banco-da-inglaterra-teme-colapso-economico-global/index.html');
-    expect(existsSync(html)).toBe(true);
-    const index = readFileSync(resolve(__dirname, '../workers/site/public/index.html'), 'utf-8');
-    expect(index).toContain('banco-da-inglaterra-teme-colapso-economico-global');
-    expect(index).toContain('google-lanca-dois-modelos-gemini-de-uma-vez');
+const here = resolve(fileURLToPath(import.meta.url), "..");
+const repoRoot = resolve(here, "..");
+
+const SLUGS = [
+  "banco-da-inglaterra-teme-colapso-economico-global",
+  "google-lanca-dois-modelos-gemini-de-uma-vez",
+] as const;
+
+describe("regressão #7517 — hub google-gemini reconstruído", () => {
+  test("página do slug restaurado existe e o índice cita os 2 slugs", () => {
+    const html = resolve(repoRoot, `workers/site/public/p/${SLUGS[0]}/index.html`);
+    assert.equal(existsSync(html), true, `página ausente: ${html}`);
+
+    const index = readFileSync(resolve(repoRoot, "workers/site/public/index.html"), "utf-8");
+    for (const slug of SLUGS) {
+      assert.ok(index.includes(slug), `index.html não cita o slug restaurado ${slug}`);
+    }
   });
 
-  it('.ts do hub tem UPDATED_DATE 2026-09-03 (não 08-27 defasado)', () => {
-    const ts = readFileSync(resolve(__dirname, '../scripts/lib/hubs/google-gemini.ts'), 'utf-8');
-    expect(ts).toContain('2026-09-03');
-    // data antiga pode aparecer em comentário histórico; gate = nova data presente
+  test("dataset do hub tem UPDATED_DATE 2026-09-03 (não a 08-27 defasada)", () => {
+    const ts = readFileSync(resolve(repoRoot, "scripts/lib/hubs/google-gemini.ts"), "utf-8");
+    // A data antiga pode sobreviver em comentário histórico; o gate é a nova estar presente.
+    assert.ok(ts.includes("2026-09-03"), "dataset do hub não tem a UPDATED_DATE 2026-09-03");
   });
 
-  it('sitemap do hub contém os 2 slugs restaurados', () => {
-    const sitemap = readFileSync(resolve(__dirname, '../workers/site/public/sitemap.xml'), 'utf-8');
-    expect(sitemap).toContain('banco-da-inglaterra-teme-colapso-economico-global');
-    expect(sitemap).toContain('google-lanca-dois-modelos-gemini-de-uma-vez');
+  test("sitemap contém os 2 slugs restaurados", () => {
+    const sitemap = readFileSync(resolve(repoRoot, "workers/site/public/sitemap.xml"), "utf-8");
+    for (const slug of SLUGS) {
+      assert.ok(sitemap.includes(slug), `sitemap.xml não cita o slug restaurado ${slug}`);
+    }
   });
 });
