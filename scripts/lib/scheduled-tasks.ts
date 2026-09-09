@@ -183,6 +183,35 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4485 item 2",
   },
   {
+    name: "Diaria-Kv-Image-Binding-Smoke",
+    description:
+      "smoke test do binding KV POLL de workers/site (/img/{key}) — distingue key-ausente de binding morto (#7663)",
+    steps: [{ key: "check", script: "scripts/check-kv-image-binding.ts" }],
+    logPath: "kv-image-smoke/.check.log",
+    // Diária 06:45 BRT — slot livre (ver grep de `hour: 6, minute:` neste
+    // arquivo; o vizinho mais próximo é 06:15). Sem pressa de latência: o
+    // que este check vigia (deploy parcial, drift preview/produção,
+    // namespace renomeado do lado da Cloudflare) não é escala de incidente
+    // agudo — é o mesmo raciocínio de `Diaria-Home-Meta-Check` (#5005/#5113,
+    // ver comentário dela logo abaixo): detectar de madrugada não conserta
+    // nada de madrugada, a correção é ação manual do editor no painel
+    // Cloudflare. Cedo o bastante pra aparecer no e-mail de alarme antes do
+    // editor começar o dia, sem competir com o cluster 09:00-12:45.
+    //
+    // Alarma só na TRANSIÇÃO pra `binding-morto` (dedup em `shouldAlarmNow`,
+    // scripts/check-kv-image-binding.ts) — nunca em `cannot-verify` (rede/
+    // DNS/5xx do Cloudflare não pode virar falso alarme, regra inegociável
+    // da #7663) nem repetido todo dia enquanto a queda persiste.
+    //
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado de subagente
+    // overnight, mesma disciplina do #5704/#5878/#5502 acima) — arme real é
+    // ação POSTERIOR do editor via `scripts/setup-systemd-timers.ts` na
+    // checkout compartilhada (helios).
+    schedule: { kind: "daily", hour: 6, minute: 45 },
+    enabled: false,
+    issue: "#7663",
+  },
+  {
     name: "Diaria-Home-Meta-Check",
     description: "smoke-test dos eixos de drift da home diar.ia.br (og:title, self-links http, rotulos EN, host legado, porta na URL)",
     steps: [{ key: "check", script: "scripts/home-meta-check.ts" }],
