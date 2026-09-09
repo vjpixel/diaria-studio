@@ -63,8 +63,7 @@ import {
 import { loadSentOrQueuedEmails, excludeSentOrQueued } from "./clarice-build-segment.ts";
 import {
   brevoGet,
-  fetchCommittedCampaignListIds,
-  fetchQueuedCampaignListIds, // #7738 — eixo separado de `committed` (queued∪sent), ver buildDailySendQueue
+  fetchQueuedAndCommittedCampaignListIds, // #7738/#7854 — 1 Promise.all cobre os 2 eixos, sem refazer status=queued
   fetchDraftCampaigns,
   warnIfCampaignQuotaLow, // #6458
   BrevoRateLimitError, // #6831
@@ -349,8 +348,10 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     // funcionando (ou falhando) de qualquer jeito.
     warnIfCampaignQuotaLow();
     try {
-      committed = await fetchCommittedCampaignListIds(apiKey);
-      queued = await fetchQueuedCampaignListIds(apiKey); // #7738
+      // #7854 (review): 1 chamada cobre os 2 eixos — `fetchCommittedCampaignListIds`
+      // sozinha refaria `status=queued` internamente uma 2ª vez contra um
+      // endpoint com quota apertada (100 req/hora/conta, CLAUDE.md).
+      ({ queued, committed } = await fetchQueuedAndCommittedCampaignListIds(apiKey));
     } catch (err) {
       committedLookupFailed = true;
       committedLookupError = err instanceof Error ? err.message : String(err);

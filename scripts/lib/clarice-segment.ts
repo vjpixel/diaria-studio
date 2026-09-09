@@ -1208,17 +1208,28 @@ export function validateWaterfallTiers(tiers: unknown): WaterfallTierSpec[] {
 }
 
 // #7738 — cálculo do teto fila diária unificada (diferenciado de 1º-envio vitalício).
-// Usa buildDailySendQueue com guards de queued (engajados) / committed (warm) corretos,
-// NUNCA superestimando: se guard falhar (size==0 e lookup não confirmado), retorna 0.
+// Usa buildDailySendQueue com guards de queued (engajados) / committed (warm) corretos.
 export function computeDailyQueueAvailable<
   T extends Pick<StoreRow, "email"|"send_eligible"|"sends_count"|"priority_points"|"brevo_list_ids"|"created"|"cohort"|"mv_bucket">,
 >(rows: T[], guards: { queuedListIds: ReadonlySet<string>; committedListIds: ReadonlySet<string> }, cutoffNovosIso?: string|null): number {
   // Definição operacional do teto: fila unificada que ainda pode receber HOJE,
   // excluindo já agendados (queued) e já enviados (committed) — distinção de #7738.
-  const eligible = buildDailySendQueue(rows, guards, cutoffNovosIso);
-  // Segurança contra superestimativa: se a consulta de guards falhou (vazio + lookup não confirmado),
-  // disponíveis = 0 (nunca assume fila cheia sem prova — regra #3682 / #7738).
-  const guardsConfirmed = guards.queuedListIds.size > 0 || guards.committedListIds.size > 0 || eligible.length > 0;
-  if (!guardsConfirmed && eligible.length === 0) return 0;
-  return eligible.length;
+  //
+  // Esta função NÃO decide sozinha "nunca superestimar" — não há como
+  // distinguir aqui "guard vazio porque não há nada agendado/enviado" de
+  // "guard vazio porque a consulta à Brevo falhou": os dois Sets chegam
+  // vazios do mesmo jeito. Essa distinção é responsabilidade do CHAMADOR
+  // (achado do review da PR #7854, que fechou #7738: uma versão anterior
+  // tinha um branch `guardsConfirmed` aqui que NUNCA disparava — se
+  // `eligible.length>0` ele próprio já tornava `guardsConfirmed` true pela
+  // cláusula `|| eligible.length>0`, então a função sempre devolvia
+  // `eligible.length`, igual a este código sem o branch morto). O guard REAL
+  // contra superestimar por falha de lookup é `committedLookupFailed` em
+  // `clarice-plan-wave.ts`/`clarice-wave-plan.ts` — vira BLOQUEIO estrutural
+  // (`buildWaveProposal`) ANTES deste valor ser lido por `clarice-envio-run.ts`
+  // (regra #3682/#7738: nunca agendar sem a checagem de comprometidos ter
+  // passado). Chamador novo que reuse esta função fora desse caminho
+  // guardado precisa da MESMA disciplina — checar a falha de lookup no
+  // PRÓPRIO chamador, não esperar que esta função a detecte.
+  return buildDailySendQueue(rows, guards, cutoffNovosIso).length;
 }

@@ -25,6 +25,7 @@ import {
   fetchQueuedCampaignListIds,
   fetchSentCampaignListIds,
   fetchCommittedCampaignListIds,
+  fetchQueuedAndCommittedCampaignListIds, // #7738/#7854
 } from "../scripts/lib/brevo-client.ts";
 import { excludeCommittedToQueuedCampaigns, type StoreRow } from "../scripts/lib/clarice-segment.ts";
 
@@ -245,6 +246,70 @@ describe("fetchQueuedCampaignListIds (#2994) — cobertura direta (não existia 
     try {
       const ids = await fetchQueuedCampaignListIds("fake-key");
       assert.deepEqual([...ids], ["68"]);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+});
+
+describe("fetchQueuedAndCommittedCampaignListIds (#7738/#7854) — 1 chamada cobre os 2 eixos, sem refazer status=queued", () => {
+  it("devolve queued PURO (sem sent) e committed (queued∪sent) a partir da MESMA rodada de requests", async () => {
+    const orig = globalThis.fetch;
+    let queuedCalls = 0;
+    let sentCalls = 0;
+    globalThis.fetch = (async (url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes("status=queued")) {
+        queuedCalls++;
+        return makeJsonResponse({ campaigns: [{ id: 1, recipients: { lists: [74] } }] });
+      }
+      if (urlStr.includes("status=sent")) {
+        sentCalls++;
+        return makeJsonResponse({ campaigns: [{ id: 2, recipients: { lists: [72] } }] });
+      }
+      throw new Error(`URL inesperada: ${urlStr}`);
+    }) as unknown as typeof fetch;
+    try {
+      const { queued, committed } = await fetchQueuedAndCommittedCampaignListIds("fake-key");
+      assert.deepEqual([...queued], ["74"], "queued é só status=queued, sem misturar sent");
+      assert.deepEqual([...committed].sort(), ["72", "74"], "committed é a união queued+sent");
+      // #7854 (achado do review): antes desta função, um chamador que queria
+      // os 2 eixos chamava fetchCommittedCampaignListIds (que já busca
+      // status=queued internamente) E fetchQueuedCampaignListIds de novo —
+      // refazendo status=queued. Esta função busca cada status 1× só.
+      assert.equal(queuedCalls, 1, "status=queued buscado só 1 vez, não 2");
+      assert.equal(sentCalls, 1);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  it("falha em QUALQUER um dos 2 eixos (queued OU sent) propaga pro chamador — sem devolver metade dos dados", async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes("status=queued")) return makeJsonResponse({ campaigns: [] });
+      if (urlStr.includes("status=sent")) throw new Error("Brevo 401: chave invalida");
+      throw new Error(`URL inesperada: ${urlStr}`);
+    }) as unknown as typeof fetch;
+    try {
+      await assert.rejects(() => fetchQueuedAndCommittedCampaignListIds("fake-key"), /401/);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  it("fetchCommittedCampaignListIds (compat) continua delegando pra esta função — mesmo resultado de antes", async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes("status=queued")) return makeJsonResponse({ campaigns: [{ id: 1, recipients: { lists: [74] } }] });
+      if (urlStr.includes("status=sent")) return makeJsonResponse({ campaigns: [{ id: 2, recipients: { lists: [72] } }] });
+      throw new Error(`URL inesperada: ${urlStr}`);
+    }) as unknown as typeof fetch;
+    try {
+      const ids = await fetchCommittedCampaignListIds("fake-key");
+      assert.deepEqual([...ids].sort(), ["72", "74"]);
     } finally {
       globalThis.fetch = orig;
     }

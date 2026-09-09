@@ -863,6 +863,30 @@ export async function fetchCommittedCampaignListIds(
   apiKey: string,
   _sleep = _defaultSleep,
 ): Promise<Set<string>> {
+  return (await fetchQueuedAndCommittedCampaignListIds(apiKey, _sleep)).committed;
+}
+
+/**
+ * #7738 — variante de `fetchCommittedCampaignListIds` que devolve TAMBÉM o
+ * Set `queued` puro (sem `sent`), sem buscar `status=queued` DUAS VEZES.
+ *
+ * `buildDailySendQueue`/`computeDailyQueueAvailable` (`clarice-segment.ts`)
+ * precisam dos dois eixos separados por linha (`queued` pra quem já
+ * recebeu, `committed`=queued∪sent pra quem nunca recebeu — ver docstring
+ * de `isDailyQueueEligible`). Um chamador que quisesse os dois antes deste
+ * helper tinha que chamar `fetchQueuedCampaignListIds` E
+ * `fetchCommittedCampaignListIds` separadamente — a 2ª internamente REFAZ a
+ * consulta `status=queued` que a 1ª já fez, dobrando o custo contra um
+ * endpoint com quota apertada (100 req/hora/conta, CLAUDE.md) sem nenhum
+ * ganho (review da PR que fechou #7738, achado #7854). Mesma retry de rede
+ * (`COMMITTED_LOOKUP_RETRY_DELAYS_MS`, só em `TypeError`) que
+ * `fetchCommittedCampaignListIds` sempre teve — extraída pra cá, não
+ * duplicada.
+ */
+export async function fetchQueuedAndCommittedCampaignListIds(
+  apiKey: string,
+  _sleep = _defaultSleep,
+): Promise<{ queued: Set<string>; committed: Set<string> }> {
   let lastErr: unknown;
   for (let attempt = 0; ; attempt++) {
     try {
@@ -870,7 +894,7 @@ export async function fetchCommittedCampaignListIds(
         fetchQueuedCampaignListIds(apiKey),
         fetchSentCampaignListIds(apiKey),
       ]);
-      return new Set([...queued, ...sent]);
+      return { queued, committed: new Set([...queued, ...sent]) };
     } catch (err) {
       lastErr = err;
       if (!(err instanceof TypeError)) throw err; // não é falha de rede — retry não ajudaria
