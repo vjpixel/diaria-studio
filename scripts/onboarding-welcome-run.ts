@@ -71,7 +71,11 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveBeehiivConfig, beehiivApiBase, type BeehiivConfig } from "./lib/beehiiv-config.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
 import { kitFetch } from "./lib/kit-client.ts";
-import { listAllKitSubscribers, getSubscriberById as getKitSubscriberById } from "./lib/kit-subscribers.ts";
+import {
+  listAllKitSubscribers,
+  getSubscriberById as getKitSubscriberById,
+  getKitSubscriberByEmail,
+} from "./lib/kit-subscribers.ts";
 import {
   planSeed,
   renderSeedPlan,
@@ -333,19 +337,57 @@ async function fetchSubscriberStatsKit(id: number, config: KitConfig): Promise<O
   }
 }
 
-/** Equivalente Kit de `fetchSubscriptionById` (refresh de status + stats
- *  antes da decisão) — `subscription_id` do store é o id numérico do Kit
- *  como string (ver `fetchSubscriptionsSinceKit`). */
+/**
+ * Equivalente Kit de `fetchSubscriptionById` (refresh de status + stats antes
+ * da decisão).
+ *
+ * ## Por que existe o caminho por E-MAIL (#7670)
+ *
+ * `subscription_id` é a chave do store, e a semântica dela MUDA conforme o
+ * backend vigente na época em que a entrada nasceu: entradas criadas sob a
+ * Beehiiv guardam `sub_c32a8dc4-...`, as criadas sob o Kit guardam o id
+ * numérico. Nada no tipo distingue as duas.
+ *
+ * Com o backend em `kit` desde o #7599, `Number("sub_c32a8dc4-...")` é `NaN`
+ * e este helper devolvia `null` na primeira linha — sem tentar nada, sem
+ * sinal. Consequência medida em 08/09/2026: o e-mail 3 NUNCA disparou pra
+ * ninguém (585 `skipped_sem_dados`, 19 `pending`, zero enviados), com 5
+ * entradas já vencidas do D+10 e `email3_decided_at: null`. A decisão do
+ * e-mail 3 depende de stats de abertura frescos; sem refresh, ela nunca
+ * decide. E desde a decisão registrada na #7599 o e-mail 3 passou a ser o
+ * PEDIDO DE APOIO — ou seja, a única conversão de receita do onboarding
+ * estava atrás de um degrau que nunca disparou.
+ *
+ * O e-mail, que o store sempre guardou, é a chave estável entre os dois
+ * mundos. `getKitSubscriberByEmail` já faz match EXATO e lança em
+ * ambiguidade (#7373), então não há risco de refrescar o assinante errado.
+ *
+ * Devolve `resolvedKitId` quando a resolução veio pelo e-mail, para o caller
+ * gravar em `kit_subscriber_id` e não repetir a busca toda rodada.
+ */
 async function fetchSubscriptionByIdKit(
   config: KitConfig,
   subscriptionId: string,
-): Promise<{ status: string; stats: OpenStats | null } | null> {
+  emailFallback?: string,
+): Promise<{ status: string; stats: OpenStats | null; resolvedKitId?: number } | null> {
   const id = Number(subscriptionId);
-  if (!Number.isFinite(id)) return null;
+  if (Number.isFinite(id)) {
+    try {
+      const subscriber = await getKitSubscriberById(id, config);
+      const stats = await fetchSubscriberStatsKit(id, config);
+      return { status: subscriber.state, stats };
+    } catch {
+      return null;
+    }
+  }
+
+  // id não-numérico = entrada legada da Beehiiv. Resolve pelo e-mail.
+  if (!emailFallback) return null;
   try {
-    const subscriber = await getKitSubscriberById(id, config);
-    const stats = await fetchSubscriberStatsKit(id, config);
-    return { status: subscriber.state, stats };
+    const subscriber = await getKitSubscriberByEmail(emailFallback, config);
+    if (!subscriber) return null;
+    const stats = await fetchSubscriberStatsKit(subscriber.id, config);
+    return { status: subscriber.state, stats, resolvedKitId: subscriber.id };
   } catch {
     return null;
   }
@@ -864,17 +906,52 @@ async function main(): Promise<void> {
     return needsStatusRefresh;
   });
   const statsById: Record<string, OpenStats | null> = {};
+  /** #7670: entradas cujo refresh falhou E que estão vencidas no e-mail 3 —
+   *  pra essas o fallback "usa o estado do store" NÃO resolve nada, porque a
+   *  decisão do e-mail 3 depende de stats de abertura que o store não guarda.
+   *  Contadas à parte pra virarem aviso explícito no sumário. */
+  const refreshFalhouEmail3: string[] = [];
   for (const e of candidates) {
     const fresh =
       backend === "kit"
-        ? await fetchSubscriptionByIdKit(kitCfg!, e.subscription_id)
+        ? await fetchSubscriptionByIdKit(
+            kitCfg!,
+            // #7670: id do Kit já resolvido numa rodada anterior entra pelo
+            // caminho numérico direto, sem repetir o lookup por e-mail.
+            e.kit_subscriber_id != null ? String(e.kit_subscriber_id) : e.subscription_id,
+            e.email,
+          )
         : await fetchSubscriptionById(beeCfg!.config.publicationId, beeCfg!.config.apiKey, e.subscription_id);
     if (fresh) {
       e.status_detectado = fresh.status ?? e.status_detectado;
       statsById[e.subscription_id] = fresh.stats ?? null;
+      // #7670: id do Kit resolvido pelo e-mail (entrada legada da Beehiiv) —
+      // grava pra não repetir a busca em toda rodada. NÃO mexe em
+      // `subscription_id` nem na chave do mapa: rekeyar o store é migração,
+      // não efeito colateral de um refresh.
+      const resolvido = "resolvedKitId" in fresh ? fresh.resolvedKitId : undefined;
+      if (backend === "kit" && typeof resolvido === "number") {
+        e.kit_subscriber_id = resolvido;
+      }
     } else {
+      const vencidoNoEmail3 =
+        e.email3_state === "pending" && e.created_at != null && nowSec >= e.created_at + email3Days * 86_400;
+      if (vencidoNoEmail3) refreshFalhouEmail3.push(e.email);
       process.stderr.write(`[onboarding] refresh falhou pra ${e.subscription_id} — usando estado do store\n`);
     }
+  }
+
+  // #7670: para status, "usa o estado do store" é degradação aceitável. Para
+  // o e-mail 3 NÃO é: a elegibilidade depende de aberturas, que o store não
+  // guarda, então a entrada fica `pending` para sempre e ninguém recebe — foi
+  // exatamente assim que o e-mail 3 nunca disparou pra ninguém até 08/09/2026,
+  // com o run saindo exit 0 e um `stderr.write` solto no meio do log.
+  if (refreshFalhouEmail3.length > 0) {
+    const aviso =
+      `#7670: ${refreshFalhouEmail3.length} entrada(s) VENCIDA(S) no e-mail 3 ficaram sem stats frescos ` +
+      `(refresh falhou) — a decisão do e-mail 3 não roda pra elas: ${refreshFalhouEmail3.join(", ")}`;
+    summary.notes.push(aviso);
+    process.stderr.write(`[onboarding] ${aviso}\n`);
   }
 
   // --- 3. Plano ---
