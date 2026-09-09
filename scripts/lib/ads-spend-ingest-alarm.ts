@@ -75,13 +75,25 @@
  * "`data/onboarding/store.json` ausente ... `verdict === 'cannot-verify'`,
  * sai limpo, NUNCA alarma a partir de uma leitura que não aconteceu";
  * `meta-capi-staleness.ts`: mesmo padrão para token/rede indisponível). Log
- * ausente pode significar "task ainda não armada nesta máquina" — estado
- * legítimo enquanto o editor não rodou `setup-systemd-timers.ts` pra
- * armar `Diaria-Microsoft-Ads-Spend-Ingest`/`Diaria-Google-Ads-Spend-Ingest`
- * (ambas marcadas "DECLARADA, NÃO ARMADA" no registro na data desta
- * issue) — alarmar (email + issue) para esse estado a cada execução até
- * alguém armar manualmente reproduziria o mesmo ruído que os dois
- * precedentes decidiram evitar. O que MUDOU aqui, e é o que fecha a classe
+ * ausente pode significar "task ainda não armada NESTA máquina" — estado
+ * legítimo numa máquina onde o editor ainda não rodou
+ * `setup-systemd-timers.ts`, e alarmar por isso a cada execução até alguém
+ * armar reproduziria o ruído que os dois precedentes decidiram evitar.
+ *
+ * ATENÇÃO ao alcance dessa justificativa (corrigido pelo coordenador da
+ * rodada 260909, #7518): a 1ª versão desta docstring afirmava que as duas
+ * tasks de ingestão estavam "DECLARADA, NÃO ARMADA" no registro. É FALSO —
+ * `Diaria-Google-Ads-Spend-Ingest` e `Diaria-Microsoft-Ads-Spend-Ingest`
+ * não carregam esse marcador, e no helios (onde este alarme roda) os dois
+ * timers respondem `enabled`, com runs diários no journal. Ou seja: NESTA
+ * máquina, log ausente NÃO é "task não armada" — seria anomalia de fato.
+ * A decisão de não auto-alarmar se sustenta pelo resto do argumento
+ * (consistência com os precedentes + o guard estático abaixo), não por
+ * essa premissa. Se um dia o custo aparecer, é aqui que se mexe. Escrever
+ * uma premissa falsa numa docstring é o defeito que esta própria PR
+ * conserta em outro lugar (a "prosa vencida" do #7137).
+ *
+ * O que MUDOU aqui, e é o que fecha a classe
  * de bug desta issue, é a diferença entre "cannot-verify silencioso" e "bug
  * anterior": o veredito nunca mais se disfarça de `ok`/`alarm-no-run` — ele
  * aparece honesto no log/console (`console.log` do CLI, nunca omitido) e é
