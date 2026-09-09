@@ -110,7 +110,8 @@ if (result.preserved_stash) {
       `   ref: ${result.preserved_stash.ref ?? "(não capturado)"} | mensagem identificável: ` +
       `'${result.preserved_stash.message}'.\n` +
       `   Localizar: git stash list | grep -F '${result.preserved_stash.message}'\n` +
-      `   Resolver: git stash show -p <ref> ; git status ; git diff — NÃO 'git stash drop' até revisar.\n\n`,
+      `   Resolver: git stash show -p ${result.preserved_stash.ref ?? `'${result.preserved_stash.message}'`}` +
+      ` ; git status ; git diff — NÃO 'git stash drop' até revisar.\n\n`,
   );
 }
 
