@@ -73,8 +73,13 @@ export function stripHeredocSpans(command) {
 // versão anterior pegava — passaram a escapar. Reconhecer esse prefixo devolve
 // a semântica correta ("está em POSIÇÃO DE COMANDO") sem voltar a casar
 // wrapper no meio de um texto citado.
+// O valor da atribuição pode vir citado e conter espaço
+// (`NODE_OPTIONS="--stack-size 4096" npm ci`), e o no-op pode levar flags
+// próprias (`sudo -u foo`, `env -i`) — as duas coisas achadas no review da
+// PR #7774. Flag com valor só nas que de fato pedem um (`-u`/`-g`/`-C`),
+// senão `env -i npm ci` engoliria o `npm` como se fosse argumento do `-i`.
 const COMMAND_PREFIX_RE =
-  /^(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*|(?:sudo|env|exec|nice|command|time|nohup)(?:\.exe)?)\s+)*/i;
+  /^(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)|(?:sudo|env|exec|nice|command|time|nohup)(?:\.exe)?(?:\s+(?:-[ugCG]\s+\S+|--(?:user|group|chdir)=\S+|-{1,2}[A-Za-z][A-Za-z-]*))*)\s+)*/i;
 
 /** Remove o prefixo no-op, devolvendo o comando de fato invocado no segmento. */
 export function stripCommandPrefix(segment) {

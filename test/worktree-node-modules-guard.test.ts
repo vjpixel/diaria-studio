@@ -229,6 +229,17 @@ test("hook enxerga através de sudo/env/atribuição inline e de agrupamento (#7
   // O prefixo restrito não reabre o falso positivo do texto citado.
   assert.equal(blocked(`gh pr comment 1 --body "rode npm ci depois"`), false, "corpo de comentário é texto");
   assert.equal(blocked("npx tsx scripts/x.ts"), false, "npx não é npm install");
+
+  // Rodada seguinte do review: o prefixo no-op pode levar flag própria, e o
+  // valor da atribuição pode vir citado com espaço dentro.
+  assert.ok(blocked("sudo -u foo npm ci"), "sudo com flag que leva valor");
+  assert.ok(blocked("env -i npm ci"), "env -i (flag sem valor não engole o npm)");
+  assert.ok(blocked("sudo -E -H npm ci"), "flags encadeadas sem valor");
+  assert.ok(blocked(`NODE_OPTIONS="--stack-size 4096" npm ci`), "valor citado com espaço");
+  assert.ok(blocked(`NPM_CONFIG_CACHE='/tmp/a b' npm ci`), "valor citado com aspas simples");
+  assert.ok(blocked(`sudo -u foo bash -c "npm ci"`), "flag com valor + wrapper");
+  assert.equal(blocked("A=B npm run test"), false, "atribuição antes de npm run segue liberada");
+  assert.equal(blocked(`curl --data '{"a":1}' http://x`), false, "JSON citado não vira comando");
 });
 
 // O hook é self-contained (nenhum import de `.ts`, convenção dos hooks
