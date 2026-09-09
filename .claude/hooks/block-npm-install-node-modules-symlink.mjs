@@ -66,8 +66,13 @@ export function stripHeredocSpans(command) {
   return result;
 }
 
+// Ancorado em `^`: o wrapper só conta quando ABRE o segmento, isto é, quando
+// está em posição de comando. Achado do review da PR #7774: sem a âncora,
+// `echo "ver bash -c 'npm ci' no guard"` — texto que apenas MENCIONA o
+// comando — tinha o miolo promovido a comando e era bloqueado. Mesma classe do
+// falso positivo do heredoc, por outra porta.
 const SHELL_WRAPPER_FLAG_RE =
-  /(?:^|[\s;&|])(?:bash|sh|zsh|dash|ksh|powershell|pwsh|cmd)(?:\.exe)?\s+(?:-c|-Command|-command|\/c|\/C)\s+/gi;
+  /^(?:[A-Za-z]:[^\s]*|[^\s]*\/)?(?:bash|sh|zsh|dash|ksh|powershell|pwsh|cmd)(?:\.exe)?\s+(?:-c|-Command|-command|\/c|\/C)\s+/i;
 
 /**
  * A partir de `start`, lê uma string entre aspas simples ou duplas e devolve
@@ -93,43 +98,81 @@ function readQuotedString(text, start) {
   return null; // string não fechada — nada confiável a promover
 }
 
+// Separadores de comando do shell. `(` e `)` entram na lista por causa do
+// achado do review da PR #7774: sem eles, `(cd /wt && npm ci)` e
+// `RESULT=$(cd /wt && npm ci)` deixavam um `)` colado no segmento, e
+// `isNpmInstallSegment` — que exige espaço ou fim de string depois do
+// subcomando — não casava. Subshell é a forma idiomática de rodar algo num
+// diretório sem mexer no `cd` da sessão, então era um bypass mais provável que
+// o `bash -c` já coberto.
+const SEGMENT_BREAKERS = new Set(["(", ")", "&", "|", ";", "\n"]);
+
 /**
- * Desembrulha o comando passado a um wrapper de shell — `bash -c "cd /wt &&
- * npm ci"`, `powershell -Command "..."`, `cmd /c "..."` —, promovendo o
- * CONTEÚDO dessas strings a comando de verdade (recursivo, até 3 níveis).
- *
- * Achado do review da PR #7774: o hook irmão usa `stripQuotedSpans`, que
- * DESCARTA o conteúdo citado. Serve pra não confundir separadores dentro de
- * uma string, mas aqui deixaria passar justamente o `npm ci` perigoso, que é o
- * que está DENTRO das aspas. Desembrulhar só o argumento de um wrapper
- * conhecido — e não toda string citada — mantém `git commit -m "roda npm ci"`
- * fora do radar.
+ * Divide em segmentos de comando RESPEITANDO aspas: separador dentro de uma
+ * string citada não quebra o segmento, e a string chega inteira ao chamador
+ * (que decide se o conteúdo dela é comando ou texto).
  */
-export function unwrapShellWrappers(command, depth = 0) {
-  if (typeof command !== "string" || depth > 3) return String(command ?? "");
-  let unwrapped = command;
-  let found = false;
-  SHELL_WRAPPER_FLAG_RE.lastIndex = 0;
-  let m;
-  while ((m = SHELL_WRAPPER_FLAG_RE.exec(command)) !== null) {
-    const quoted = readQuotedString(command, m.index + m[0].length);
-    if (!quoted || !quoted.value) continue;
-    found = true;
-    unwrapped += "\n" + quoted.value;
+function splitTopLevel(text) {
+  const segments = [];
+  let current = "";
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"' || ch === "'") {
+      const quoted = readQuotedString(text, i);
+      if (quoted) {
+        current += text.slice(i, quoted.end);
+        i = quoted.end;
+        continue;
+      }
+      // Aspas não fechadas: trata como caractere comum e segue.
+    }
+    if (SEGMENT_BREAKERS.has(ch)) {
+      segments.push(current);
+      current = "";
+      i++;
+      continue;
+    }
+    current += ch;
+    i++;
   }
-  return found ? unwrapShellWrappers(unwrapped, depth + 1) : unwrapped;
+  segments.push(current);
+  return segments.map((seg) => seg.trim()).filter(Boolean);
 }
 
 /**
- * Divide o comando em segmentos separados por `&&`, `;`, `||`, `|`, nova
- * linha — depois de remover corpos de heredoc e de promover o conteúdo de
- * wrappers de shell a comando.
+ * Quando o segmento ABRE com um wrapper de shell — `bash -c "cd /wt && npm
+ * ci"`, `powershell -Command "..."`, `cmd /c "..."` —, devolve o conteúdo da
+ * string que ele executa; senão, `null`.
+ *
+ * Achado do review da PR #7774: o hook irmão usa `stripQuotedSpans`, que
+ * DESCARTA o conteúdo citado. Serve pra não confundir separadores dentro de
+ * uma string, mas aqui jogaria fora justamente o `npm ci` perigoso, que é o
+ * que está DENTRO das aspas. Promover só o argumento de um wrapper que abre o
+ * segmento — e não toda string citada, em qualquer posição — mantém
+ * `git commit -m "roda npm ci"` e `echo "use bash -c 'npm ci'"` fora do radar.
  */
-export function commandSegments(command) {
-  return unwrapShellWrappers(stripHeredocSpans(String(command)))
-    .split(/(?:&&|\|\||;|\||\n)/)
-    .map((seg) => seg.trim().replace(/^['"]|['"]$/g, "").trim())
-    .filter(Boolean);
+export function shellWrapperPayload(segment) {
+  const m = SHELL_WRAPPER_FLAG_RE.exec(segment);
+  if (!m) return null;
+  const quoted = readQuotedString(segment, m[0].length);
+  return quoted && quoted.value ? quoted.value : null;
+}
+
+/**
+ * Segmentos de comando do texto, já sem corpo de heredoc e com o conteúdo de
+ * wrappers de shell expandido no lugar (recursivo, até 3 níveis).
+ */
+export function commandSegments(command, depth = 0) {
+  const segments = splitTopLevel(stripHeredocSpans(String(command)));
+  if (depth > 3) return segments;
+  const expanded = [];
+  for (const segment of segments) {
+    const payload = shellWrapperPayload(segment);
+    if (payload) expanded.push(...commandSegments(payload, depth + 1));
+    else expanded.push(segment);
+  }
+  return expanded;
 }
 
 /**

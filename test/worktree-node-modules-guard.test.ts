@@ -169,6 +169,33 @@ test("hook não é enganado por wrapper de shell nem por heredoc (#7774)", async
   assert.equal(blocked('git commit -m "roda npm ci"', "/wt"), false, "mensagem de commit não é comando");
 });
 
+// Rodada seguinte do mesmo review, os dois também reproduzidos antes do fix:
+// (1) BYPASS — subshell (`(cd /wt && npm ci)`) e command substitution
+//     (`$(...)`) deixavam um `)` colado no segmento, e `isNpmInstallSegment`
+//     exige espaço ou fim de string depois do subcomando. Subshell é a forma
+//     idiomática de rodar algo num diretório sem mexer no `cd` da sessão —
+//     mais provável, aqui, que o `bash -c` da rodada anterior.
+// (2) FALSO POSITIVO — o wrapper era reconhecido em QUALQUER posição do texto,
+//     então `echo "use bash -c 'npm ci'"` tinha o miolo promovido a comando.
+//     Mesma classe do falso positivo do heredoc, por outra porta: agora o
+//     wrapper só conta quando ABRE o segmento (posição de comando).
+test("hook cobre subshell e não reage a wrapper citado como texto (#7774)", async () => {
+  const hook = await import(`../.claude/hooks/${HOOK_BASENAME}`);
+  const inspect = (dir: string) => (dir.replaceAll("\\", "/").endsWith("/wt") ? "/principal/node_modules" : null);
+  const blocked = (cmd: string, cwd = "/x") => Boolean(hook.findBlockedNpmInstall(cmd, cwd, inspect));
+
+  assert.ok(blocked("(cd /wt && npm ci)"), "subshell");
+  assert.ok(blocked("RESULT=$(cd /wt && npm ci)"), "command substitution");
+  assert.ok(blocked("cd /wt && (npm ci)"), "subshell só com o install");
+  assert.ok(blocked("npm ci &", "/wt"), "background");
+  assert.ok(blocked("/usr/bin/npm ci", "/wt"), "npm por caminho absoluto");
+
+  assert.equal(blocked(`echo "ver bash -c 'npm ci' no guard"`, "/wt"), false, "wrapper citado dentro de echo é texto");
+  assert.equal(blocked(`git log --grep "bash -c \\"npm ci\\""`, "/wt"), false, "wrapper citado num --grep é texto");
+  assert.equal(blocked("npm ls", "/wt"), false, "npm ls não reinstala");
+  assert.equal(blocked("cd /outro && npm ci"), false, "diretório sem symlink segue liberado");
+});
+
 // O hook é self-contained (nenhum import de `.ts`, convenção dos hooks
 // irmãos), então a paridade com a lib precisa ser travada por teste.
 test("hook e lib concordam nos mesmos casos (paridade do guard duplicado)", async () => {
