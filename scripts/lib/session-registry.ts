@@ -178,6 +178,13 @@ import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./cli-args.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
 import { withFileLock } from "./file-lock.ts";
+// #7836 — mesma constante que `.claude/hooks/inject-session-id.mjs` importa
+// pra montar `INJECTABLE_SUBCOMMANDS`. Usada aqui em `requireSessionId` (só
+// pra enriquecer a mensagem de erro com a fonte única, sem duplicar a
+// lista) e no texto de uso do `default` do switch abaixo — ver docblock de
+// `session-id-required-subcommands.ts` pro motivo de ser um módulo à parte
+// em vez de o hook importar `session-registry.ts` inteiro.
+import { SESSION_ID_REQUIRED_SUBCOMMANDS } from "./session-id-required-subcommands.ts";
 
 /**
  * #6168: `interactive` é o 4º kind — sessão comum do editor, registrada
@@ -5548,7 +5555,9 @@ function requireSessionId(values: Record<string, string>): string {
   if (!sessionId) {
     throw new Error(
       "--session-id ausente — normalmente injetado automaticamente por " +
-        ".claude/hooks/inject-session-id.mjs a partir do payload do hook PreToolUse. " +
+        ".claude/hooks/inject-session-id.mjs a partir do payload do hook PreToolUse " +
+        `(subcomandos reconhecidos: ${SESSION_ID_REQUIRED_SUBCOMMANDS.join(", ")} — ver ` +
+        "scripts/lib/session-id-required-subcommands.ts, #7836). " +
         "Se você está chamando este script fora do harness do Claude Code, passe --session-id explicitamente.",
     );
   }

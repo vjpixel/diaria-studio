@@ -31,6 +31,13 @@ import {
   buildUpdatedCommand,
   detectChainedSessionIdRisk,
 } from "../.claude/hooks/inject-session-id.mjs";
+// #7836 — fonte única (ver scripts/lib/session-id-required-subcommands.ts).
+// Iterar sobre ESTA lista em vez de reproduzir os nomes à mão aqui é o que
+// fecha a classe de omissão da issue: se um subcomando novo entrar na lista
+// compartilhada sem o hook derivar dela, o teste abaixo pega — e se o hook
+// já deriva dela (como agora), qualquer subcomando adicionado aqui já sai
+// coberto automaticamente, sem precisar lembrar de atualizar o teste.
+import { SESSION_ID_REQUIRED_SUBCOMMANDS } from "../scripts/lib/session-id-required-subcommands.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const hookPath = join(__dirname, "..", ".claude", "hooks", "inject-session-id.mjs");
@@ -89,6 +96,35 @@ describe("needsSessionId", () => {
         `esperava true para subcomando ${sub}`,
       );
     }
+  });
+
+  it(
+    "TODO subcomando de SESSION_ID_REQUIRED_SUBCOMMANDS (#7836) → true, sem precisar listar " +
+      "os nomes de novo aqui — inclui self-authorize-merge, grant-merge, check-merge-grant, " +
+      "consume-merge-grant, merge-lock-renew e conflicts, que o teste manual acima nunca cobriu",
+    () => {
+      for (const sub of SESSION_ID_REQUIRED_SUBCOMMANDS) {
+        assert.equal(
+          needsSessionId(`npx tsx scripts/lib/session-registry.ts ${sub} --kind overnight`),
+          true,
+          `esperava true para subcomando ${sub} (da lista compartilhada)`,
+        );
+      }
+    },
+  );
+
+  it("self-authorize-merge (#7303) → true (#7836 — regressão: ficou de fora da regex por 6 dias)", () => {
+    assert.equal(
+      needsSessionId('npx tsx scripts/lib/session-registry.ts self-authorize-merge --reason "teste"'),
+      true,
+    );
+    assert.equal(
+      buildUpdatedCommand(
+        'npx tsx scripts/lib/session-registry.ts self-authorize-merge --reason "teste"',
+        "sess-7836",
+      ),
+      'npx tsx scripts/lib/session-registry.ts self-authorize-merge --reason "teste" --session-id \'sess-7836\'',
+    );
   });
 
   it("session-registry.ts list-active → false (leitura pura, sem noção de sessão atual)", () => {

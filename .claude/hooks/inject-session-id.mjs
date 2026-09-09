@@ -104,6 +104,15 @@
 // disciplina fail-open do `--session-id`: `--pid` já presente no comando
 // nunca é sobrescrito.
 
+// #7836 — fonte única de "quais subcomandos de session-registry.ts precisam
+// de --session-id" (ver docblock do módulo importado). Node 22.18+ resolve
+// import de `.ts` via type-stripping nativo sem flag (CLAUDE.md #1a); este
+// arquivo é minúsculo e sem dependências além de sintaxe TS pura, então
+// importá-lo aqui não paga o custo de carregar `session-registry.ts`
+// (6300+ linhas, fs/child_process/parseArgs/file-lock) no hot path do
+// PreToolUse de todo Bash da sessão.
+import { SESSION_ID_REQUIRED_SUBCOMMANDS } from "../../scripts/lib/session-id-required-subcommands.ts";
+
 const TARGET_MARKER = "overnight-session-marker.ts";
 const TARGET_REGISTRY = "session-registry.ts";
 // #6259/#6265: `resolve-develop-plan-path.ts` é o 3º alvo — diferente dos
@@ -148,8 +157,18 @@ const TARGET_CLEANUP_WORKTREES = "cleanup-merged-worktrees.ts";
 // falha alta e cedo do subcomando irmão).
 // #6334: `merge-lock-renew` entra pelo mesmo motivo que `merge-lock-acquire`/
 // `merge-lock-release` — precisa da flag pra saber de quem é o hold a renovar.
-const INJECTABLE_SUBCOMMANDS =
-  /\b(register|heartbeat|end|claim-issue|unclaim-issue|is-claimed|conflicts|grant-merge|check-merge-grant|consume-merge-grant|merge-lock-acquire|merge-lock-release|merge-lock-renew)\b/;
+//
+// #7836: esta lista deixou de ser mantida à mão aqui — `self-authorize-merge`
+// (#7303) ficou de fora por 6 dias porque era uma 2ª lista, divergente desta,
+// e ninguém lembrou de atualizar as duas juntas (mesmo modo de falha de
+// `unclaim-issue`/#6317 e `merge-lock-renew`/#6334, cada um "adicionado
+// depois, um de cada vez" — ver a issue). Agora importa de
+// `scripts/lib/session-id-required-subcommands.ts`, que `session-registry.ts`
+// TAMBÉM importa — uma lista só, não duas envelhecendo em paralelo.
+// `test/session-id-required-subcommands.test.ts` trava essa lista contra os
+// `case "X":` reais do switch de `session-registry.ts` (ver docblock do
+// módulo importado pro porquê de não ser 100% derivável do código sozinho).
+const INJECTABLE_SUBCOMMANDS = new RegExp(`\\b(${SESSION_ID_REQUIRED_SUBCOMMANDS.join("|")})\\b`);
 // #6160: só o subcomando `register` aceita `--pid` (ver CLI de
 // scripts/lib/session-registry.ts) — os demais subcomandos não têm parâmetro
 // homônimo, então a injeção de `--pid` é restrita a este subcomando.
