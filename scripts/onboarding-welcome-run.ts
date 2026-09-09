@@ -915,6 +915,12 @@ async function main(): Promise<void> {
     store.consecutive_zero_detections ?? 0,
     summary.detected_new,
   );
+  // #7665: carimba QUANDO a streak foi atualizada. É o que permite ao alarme
+  // de continuidade distinguir "rodou e detectou zero" de "parou de rodar" —
+  // sem isso a streak congela quando o run morre, e congelada abaixo do
+  // limiar o alarme diria `ok` indefinidamente (achado P1 do review da
+  // PR #7805).
+  store.last_zero_detection_run_at = new Date().toISOString();
   const alarm = zeroDetectionAlarm(store.consecutive_zero_detections);
   if (alarm) {
     summary.notes.push(alarm);
