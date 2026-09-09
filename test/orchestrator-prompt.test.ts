@@ -329,7 +329,13 @@ describe("orchestrator-prompt (#634)", () => {
       // #6454 (04/09, mesma edição): +5 linhas líquidas — §6d-site ganhou
       // `--sitemap` como flag obrigatória (não só `--slug`), com o motivo
       // em 1 parágrafo curto. Teto 735→745 com headroom mínimo.
-      "orchestrator-stage-6.md": 745,
+      // #7686 (08/09): +2 linhas — §6d-site precisa avisar que a home sai
+      // deste commit SEM a edição recém-publicada, e que quem a inclui é o
+      // workflow das 06:00. Sem esse aviso no prompt, a leitura natural do
+      // passo ("publiquei a página e regenerei a home") faz quem executa
+      // tratar a ausência como bug e desfazer o filtro do #7686 — a
+      // anticipação de ~9h volta em silêncio. Teto 745→747.
+      "orchestrator-stage-6.md": 747,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       const budget = PER_FILE_LINE_BUDGET[file];
