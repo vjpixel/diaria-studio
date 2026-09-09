@@ -3703,6 +3703,12 @@ function runTasklistReal(pid: number): TasklistResult {
     const result = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH", "/FO", "CSV"], {
       encoding: "utf8",
       windowsHide: true,
+      // Mesmo timeout dos outros `spawnSync` deste arquivo (git status/rev-parse)
+      // — sem isso, um `tasklist` travado (SO sob carga, AV interceptando)
+      // trava `planSessionGc`/`decideSessionGc` inteiro sem saída (achado do
+      // review do #7687: `spawnSync` expira devolvendo `status: null`, que
+      // `isPidAliveViaTasklist` já trata como `false` corretamente).
+      timeout: 10_000,
     });
     return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
   } catch {
