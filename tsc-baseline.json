@@ -258,6 +258,7 @@
   "test/session-beacon-blast-radius.test.ts::TS7016": 2,
   "test/session-beacon-hook.test.ts::TS7016": 1,
   "test/session-conflicts-and-merge-grant.test.ts::TS7016": 2,
+  "test/session-registry-7743-regression.test.ts::TS7016": 1,
   "test/session-transcript.test.ts::TS2339": 1,
   "test/singularize-md-sections.test.ts::TS18048": 6,
   "test/site-worker-kit-fallback-6429.test.ts::TS2578": 1,

@@ -5045,7 +5045,22 @@ export function selfAuthorizeMerge(
   // task agendada/dispatched, sem interlocutor do outro lado (o próprio
   // cenário que motivou o #7303: PR pronto, sem caminho de merge). Ver a
   // docstring de `attended` em `SessionRecord`.
-  const responsiveCoordinators = coordinators.filter((s) => s.attended !== false);
+  //
+  // **#7743 — a precedência do hook em `block-gh-pr-merge-subagent.mjs`
+  // (`onlyUnreachableCoordinatorsActive`) é espelhada aqui.** As duas
+  // cópias da mesma lógica divergiam: o hook caía na leitura antiga por
+  // `kind` quando o campo `attended` estava ausente (record pré-#7546,
+  // `registerSession` só passou a gravá-lo agora), enquanto esta função
+  // contava `undefined !== false` como responsiva. Mesmo record dava
+  // vereditos opostos — a auto-autorização era concedida e o `gh pr merge`
+  // real seguia bloqueado. Precedência por coordenadora, nesta ordem:
+  //   1. `attended === false` → inalcançável (sinal explícito, `--unattended`);
+  //   2. `attended === true` → alcançável;
+  //   3. campo AUSENTE → cai na leitura antiga, `kind === "continuo"` decide
+  //      (preserva o comportamento pré-#7546 pros registros já em disco).
+  const responsiveCoordinators = coordinators.filter(
+    (s) => !(s.attended === false || (s.attended === undefined && s.kind === "continuo")),
+  );
   if (responsiveCoordinators.length > 0) {
     const responsiveKinds = [...new Set(responsiveCoordinators.map((s) => s.kind))];
     return { ok: false, reason: "responsive-coordinator-active", coordinatorKinds: responsiveKinds };
