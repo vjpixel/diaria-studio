@@ -94,6 +94,36 @@ if (result.outcome === "preexisting_unmerged_state") {
   );
 }
 
+// #7740: banner — um stash deste sync ficou preservado (pop falhou ou
+// conflitou) sem ser recuperado automaticamente. Cobre os outcomes que os
+// banners #6668/#6800 acima NÃO cobrem (`stash_pop_failed`, `ff_failed` com
+// pop também falho, `stash_partial_failure_unrecovered`) — o vazamento que a
+// #7740 descreve era exatamente este: o stash ficava pra trás sem nenhum
+// sinal legível apontando de volta pra ele. O stash em si já é identificável
+// em `git stash list` pela mensagem (ver `GIT_SYNC_STASH_MESSAGE`, gravada no
+// próprio stash desde este fix) — o banner só garante que o operador VEJA
+// isso agora, não precise descobrir via análise forense depois (como a #7740
+// precisou fazer pros 248 acumulados).
+if (result.preserved_stash) {
+  process.stderr.write(
+    `\n📦 STASH PRESERVADO (não recuperado) — outcome '${result.outcome}'.\n` +
+      `   ref: ${result.preserved_stash.ref ?? "(não capturado)"} | mensagem identificável: ` +
+      `'${result.preserved_stash.message}'.\n` +
+      `   Localizar: git stash list | grep -F '${result.preserved_stash.message}'\n` +
+      // #7740: com `ref` capturado, `git stash show -p <sha>` funciona direto.
+      // SEM ele, NÃO sugerir `git stash show -p '<mensagem>'`: git resolve
+      // revisão, não mensagem, e o comando falha com "is not a valid
+      // reference" (verificado ao vivo no review da PR #7791 — a 1ª versão
+      // deste banner afirmava o contrário e estava errada). O caminho que
+      // funciona é achar o índice pela mensagem e usar o `stash@{N}`.
+      `   Resolver: ${
+        result.preserved_stash.ref
+          ? `git stash show -p ${result.preserved_stash.ref}`
+          : `ache o índice com o 'git stash list' acima e rode git stash show -p 'stash@{N}'`
+      } ; git status ; git diff — NÃO 'git stash drop' até revisar.\n\n`,
+  );
+}
+
 // #7336: banner — sync foi recusado por rodar dentro de um worktree de
 // agente. Ainda fail-soft (exit 0 abaixo, inalterado) — o chamador que
 // invocou este script de dentro de um worktree provavelmente tem um bug de
