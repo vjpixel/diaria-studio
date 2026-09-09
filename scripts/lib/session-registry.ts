@@ -5544,17 +5544,68 @@ function requireSessionId(values: Record<string, string>): string {
  * o toplevel do PRÓPRIO worktree (o mesmo bug que `resolveSharedLockPath`
  * já descartou por esse motivo) — não usar.
  *
- * Fail-soft: se o comando git falhar (não é repo git, git indisponível,
- * versão de git anterior a 2.31 sem `--path-format`), cai pra `cwd` —
- * comportamento pré-#6372, correto pro caso comum (processo já rodando na
- * raiz do checkout principal), só reabrindo o gap de worktree quando o git
- * não está disponível pra desambiguar.
+ * Fail-soft, mas não fail-BLIND (#7699): se o comando git falhar (não é
+ * repo git, git indisponível, versão de git anterior a 2.31 sem
+ * `--path-format`), o pré-#6372 caía direto pro `cwd` cru — correto no caso
+ * comum (processo já rodando na raiz do checkout principal), mas catastrófico
+ * quando o `cwd` é um diretório qualquer FORA do repo: `sessionsDir(cwd)`
+ * grava `{cwd}/data/sessions/…` ali dentro, silenciosamente, sem nenhum sinal
+ * de erro. Foi exatamente isso que produziu a árvore recursiva
+ * `data/data/data/…` de 20 níveis no `helios` (#7699) — `data/` é uma
+ * junction/symlink pro OneDrive que **não é um repo git** (`git rev-parse`
+ * falha ali de propósito), então um processo cujo `cwd` ficou preso dentro
+ * dela (herdado de um `cd` anterior — o cwd persiste entre chamadas Bash do
+ * harness) caía no fallback, devolvia o próprio `.../diaria-studio-data`
+ * como "repoRoot", e `sessionsDir` criava um `data/` NOVO ali dentro — cada
+ * iteração seguinte repete o mesmo erro sobre o diretório recém-criado,
+ * empilhando um nível a cada vez.
+ *
+ * Por isso o fallback agora VALIDA o candidato antes de aceitá-lo, subindo a
+ * árvore de diretórios a partir de `cwd` (`looksLikeRepoRoot`, marcador:
+ * `package.json` com `"name": "diaria-studio"` — o mesmo `name` que
+ * `npm ci`/`npm test` já dependem de existir na raiz correta) até achar a
+ * raiz real OU esgotar a árvore. `cwd` legítimo (processo rodando na raiz do
+ * checkout principal, só o `git` que falhou) continua resolvendo igual a
+ * antes — o marcador bate já na 1ª iteração. Só quando NENHUM ancestral tem
+ * o marcador (cenário do #7699: `cwd` genuinamente fora do repo) é que a
+ * função agora RECUSA ALTO em vez de devolver um palpite — melhor um comando
+ * que falha com erro claro do que um `data/data/…` silencioso.
  *
  * `cwd` (default `process.cwd()`) existe como parâmetro explícito — não só
  * pra deixar `git rev-parse` correr no diretório certo, mas pra tornar a
  * função testável sem precisar mutar o cwd real do processo de teste
  * (`process.chdir` afetaria QUALQUER outro teste rodando no mesmo processo).
  */
+const REPO_ROOT_MARKER_PACKAGE_NAME = "diaria-studio";
+
+/** `true` se `dir` parece a raiz deste repo — `package.json` legível com
+ * `"name": "diaria-studio"`. Não usa `.git` como marcador porque o cenário
+ * que este guard existe pra pegar é justamente "aqui não tem `.git`" (senão
+ * o `git rev-parse` do caminho principal já teria resolvido). */
+function looksLikeRepoRoot(dir: string): boolean {
+  const pkgPath = join(dir, "package.json");
+  if (!existsSync(pkgPath)) return false;
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { name?: unknown };
+    return pkg.name === REPO_ROOT_MARKER_PACKAGE_NAME;
+  } catch {
+    return false;
+  }
+}
+
+/** Sobe de `cwd` até a raiz do filesystem procurando `looksLikeRepoRoot`.
+ * Devolve o 1º ancestral (incluindo o próprio `cwd`) que bater, ou
+ * `undefined` se nenhum bater. */
+function findRepoRootAncestor(cwd: string): string | undefined {
+  let dir = cwd;
+  for (;;) {
+    if (looksLikeRepoRoot(dir)) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined; // chegou na raiz do filesystem
+    dir = parent;
+  }
+}
+
 export function resolveRepoRoot(cwd: string = process.cwd()): string {
   try {
     const res = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
@@ -5566,18 +5617,26 @@ export function resolveRepoRoot(cwd: string = process.cwd()): string {
       return dirname(res.stdout.trim());
     }
   } catch {
-    // git indisponível/timeout — fail-soft pro cwd, ver docstring acima.
+    // git indisponível/timeout — cai pro fallback validado abaixo.
   }
-  return cwd;
+  const ancestor = findRepoRootAncestor(cwd);
+  if (ancestor) return ancestor;
+  throw new Error(
+    `resolveRepoRoot: "git rev-parse" falhou e nenhum ancestral de "${cwd}" parece a raiz do repo ` +
+      `(procurado: package.json com "name": "${REPO_ROOT_MARKER_PACKAGE_NAME}"). Recusando devolver "${cwd}" ` +
+      "às cegas — é exatamente esse fallback cego que produziu a árvore data/data/data/… do #7699 quando " +
+      "o cwd ficou preso dentro da pasta OneDrive sincronizada (que não é um repo git). Rode este comando " +
+      "com o cwd dentro do checkout do repo, ou garanta que o git esteja disponível.",
+  );
 }
 
 function main(): void {
   const argv = process.argv.slice(2);
   const { positional, values, flags } = parseArgs(argv);
   const command = positional[0];
-  const repoRoot = resolveRepoRoot();
 
   try {
+    const repoRoot = resolveRepoRoot();
     switch (command) {
       case "register": {
         const kind = requireKind(values.kind);

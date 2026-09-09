@@ -168,11 +168,47 @@ describe("resolveRepoRoot — resolve o checkout PRINCIPAL, nunca o worktree/cwd
     );
   });
 
-  it("fail-soft: fora de qualquer repo git, cai pro próprio cwd passado", () => {
-    const notARepo = join(tmpdir(), `session-registry-test-not-a-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    mkdirSync(notARepo, { recursive: true });
-    roots.push(notARepo);
-    assert.equal(resolveRepoRoot(notARepo), notARepo);
+  it("fail-soft (mas não cego, #7699): fora de repo git, com package.json diaria-studio no próprio cwd, ainda resolve pro cwd", () => {
+    // Caso legítimo do fallback: git indisponível/falhou, mas o cwd É de fato
+    // a raiz do repo (marcador presente). Preserva o comportamento útil do
+    // #6372 — só recusa quando o cwd não parece a raiz de jeito nenhum.
+    const notAGitRepo = join(tmpdir(), `session-registry-test-not-a-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(notAGitRepo, { recursive: true });
+    roots.push(notAGitRepo);
+    writeFileSync(join(notAGitRepo, "package.json"), JSON.stringify({ name: "diaria-studio" }));
+    assert.equal(resolveRepoRoot(notAGitRepo), notAGitRepo);
+  });
+
+  it("#7699: cwd fora do repo (sem marcador em nenhum ancestral) lança, nunca devolve o cwd às cegas", () => {
+    // Reproduz a suspeita registrada na issue #7699: um processo cujo cwd
+    // ficou preso dentro da árvore OneDrive sincronizada (`data/`, que não é
+    // um repo git e não tem `package.json` — é conteúdo de negócio, não
+    // código) não pode fazer resolveRepoRoot devolver esse diretório em
+    // silêncio. Devolver isso silenciosamente é exatamente o que produz
+    // `data/data/data/…` recursivo: sessionsDir(cwd) escreve `data/sessions/`
+    // dentro do próprio cwd bogus.
+    const oneDriveDataDir = join(
+      tmpdir(),
+      `session-registry-test-onedrive-data-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(oneDriveDataDir, { recursive: true });
+    roots.push(oneDriveDataDir);
+    assert.throws(() => resolveRepoRoot(oneDriveDataDir), /resolveRepoRoot/);
+  });
+
+  it("#7699: cwd sem package.json mas com ancestral que tem o marcador resolve pro ancestral, não pro cwd", () => {
+    // Cobre o caso comum de subdiretório do repo sem git disponível — ex:
+    // rodando de dentro de scripts/lib/ com git ausente do PATH. O guard
+    // precisa achar a raiz subindo, não só aceitar/rejeitar o cwd cru.
+    const fakeRepoRoot = join(
+      tmpdir(),
+      `session-registry-test-fake-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    const subdir = join(fakeRepoRoot, "scripts", "lib");
+    mkdirSync(subdir, { recursive: true });
+    roots.push(fakeRepoRoot);
+    writeFileSync(join(fakeRepoRoot, "package.json"), JSON.stringify({ name: "diaria-studio" }));
+    assert.equal(resolveRepoRoot(subdir), fakeRepoRoot);
   });
 });
 
@@ -3139,9 +3175,12 @@ describe("CLI self-authorize-merge (#7303)", () => {
   });
 
   function makeRoot(): string {
+    // Sem `.git`, com `package.json` marcador — pra `resolveRepoRoot` cair
+    // no fallback validado (#7699) e aceitar este cwd isolado como raiz.
     const root = mkdtempSync(join(tmpdir(), "self-authorize-merge-cli-"));
     roots.push(root);
     mkdirSync(join(root, "data", "sessions"), { recursive: true });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "diaria-studio" }));
     return root;
   }
 
@@ -3228,9 +3267,12 @@ describe("#6952 — escrita concorrente sob o lock do registro de sessão", () =
   function makeRoot(): string {
     // Sem `.git`: `resolveRepoRoot` cai no fallback do cwd quando o `git
     // rev-parse` falha, que é o que queremos — raiz isolada e previsível.
+    // O `package.json` marcador é o que faz o fallback VALIDADO (#7699)
+    // aceitar esse cwd em vez de recusar alto por não parecer a raiz.
     const root = mkdtempSync(join(tmpdir(), "registry-6952-"));
     casRoots.push(root);
     mkdirSync(join(root, "data", "sessions"), { recursive: true });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "diaria-studio" }));
     return root;
   }
 
@@ -3720,6 +3762,9 @@ describe("#6952 — troca de concessão durante a espera do lock", () => {
     roots.push(root);
     const sessionsDir = join(root, "data", "sessions");
     mkdirSync(sessionsDir, { recursive: true });
+    // Marcador pro fallback validado do resolveRepoRoot (#7699) — o
+    // `consume-merge-grant` abaixo é spawnado como CLI com cwd:root.
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "diaria-studio" }));
 
     const nowIso = new Date().toISOString();
     const recordPath = join(sessionsDir, `overnight-${machineTag()}-coord-6952.json`);
@@ -3972,11 +4017,13 @@ const TSX_LOADER_7002 = pathToFileURL(
   fileURLToPath(new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url)),
 ).href;
 
-/** Raiz isolada (sem `.git`, pra `resolveRepoRoot` cair no cwd) já com `data/sessions/`. */
+/** Raiz isolada (sem `.git`, pra `resolveRepoRoot` cair no fallback validado
+ * — #7699 — via `package.json` marcador) já com `data/sessions/`. */
 function freshCliRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "registry-7002-"));
   roots.push(root);
   mkdirSync(join(root, "data", "sessions"), { recursive: true });
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "diaria-studio" }));
   return root;
 }
 
@@ -4712,9 +4759,12 @@ describe("CLI register --unattended (#7546)", () => {
   });
 
   function makeRegisterRoot(): string {
+    // package.json marcador: fallback validado do resolveRepoRoot (#7699)
+    // precisa dele pra aceitar este cwd isolado sem `.git`.
     const root = mkdtempSync(join(tmpdir(), "register-unattended-7546-"));
     registerRoots.push(root);
     mkdirSync(join(root, "data", "sessions"), { recursive: true });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "diaria-studio" }));
     return root;
   }
 
