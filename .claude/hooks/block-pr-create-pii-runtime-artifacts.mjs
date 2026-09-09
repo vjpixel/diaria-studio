@@ -263,16 +263,112 @@ export const ALLOWLISTED_EMAILS = [
  * misture placeholder e e-mail real continua barrada pelo e-mail real.
  */
 export function isAllowlistedEmailLine(line) {
+  return isEmailLineFullyExempt(line, null);
+}
+
+/**
+ * Generalização de `isAllowlistedEmailLine` (#7822) — mesma lógica de
+ * remoção de token inteiro, mas aceita um segundo conjunto de e-mails
+ * isentos além de `ALLOWLISTED_EMAILS`: os e-mails que JÁ ESTAVAM na versão
+ * de BASE do MESMO arquivo (#7662/#7822 — ver `readBaseEmailSet`/
+ * `buildBaseEmailsByFile` abaixo). `extraExemptSet`, quando fornecido, deve
+ * conter e-mails já em minúsculas (mesma convenção de `ALLOWLISTED_EMAILS`
+ * comparado via `.toLowerCase()`).
+ *
+ * `extraExemptSet` nulo/undefined não isenta nada além do allowlist fixo —
+ * é o estado "não verifiquei a base" (arquivo novo, `git show` falhou), e
+ * precisa continuar barrando: por isso o 2º parâmetro nunca tem default de
+ * `Set` vazio automático aqui — quem chama decide explicitamente `null`
+ * (nenhuma isenção extra) ou um `Set` de fato lido da base.
+ */
+export function isEmailLineFullyExempt(line, extraExemptSet) {
   if (typeof line !== "string") return false;
   // Deriva de `EMAIL_RE` em vez de copiar o padrão (review da PR #7245):
   // duplicar convidava as duas cópias a divergirem numa edição futura.
   // O match é do TOKEN INTEIRO e guloso, e é isso que impede o
   // contrabando por substring — `notseu@email.com` casa inteiro, não bate
-  // nenhum literal da allowlist, e a linha segue barrada.
-  const stripped = line.replace(new RegExp(EMAIL_RE.source, "g"), (m) =>
-    ALLOWLISTED_EMAILS.includes(m.toLowerCase()) ? "" : m,
-  );
+  // nenhum literal da allowlist/base, e a linha segue barrada.
+  const stripped = line.replace(new RegExp(EMAIL_RE.source, "g"), (m) => {
+    const lower = m.toLowerCase();
+    if (ALLOWLISTED_EMAILS.includes(lower)) return "";
+    if (extraExemptSet && extraExemptSet.has(lower)) return "";
+    return m;
+  });
   return !EMAIL_RE.test(stripped);
+}
+
+/**
+ * Extrai, em minúsculas, todos os e-mails que casam `EMAIL_RE` em `text`
+ * (conteúdo inteiro de um arquivo, não linha a linha) — usado só para
+ * derivar o conjunto de e-mails já presentes na versão de BASE de um
+ * arquivo (#7822), nunca para escanear a branch em si (isso continua sendo
+ * só as linhas `+`, ver `parseAddedLinesByFile`).
+ */
+export function extractEmailsSet(text) {
+  const out = new Set();
+  if (typeof text !== "string" || text === "") return out;
+  const re = new RegExp(EMAIL_RE.source, "g");
+  for (const m of text.matchAll(re)) out.add(m[0].toLowerCase());
+  return out;
+}
+
+/**
+ * Lê a versão de BASE (`git show <base>:<path>`) de um arquivo via
+ * `gitRunner` injetável (mesma forma de `resolveGitRoot`, testável sem
+ * git) e devolve o conjunto de e-mails já presentes nela — `null` quando a
+ * leitura falha (arquivo novo sem versão-base, path renomeado, `git`
+ * indisponível, timeout).
+ *
+ * **`null` é o sinal de "não verificado" — NUNCA de "sem e-mails".** É essa
+ * distinção que `buildBaseEmailsByFile` usa para decidir se isenta ou não:
+ * ver a docstring de lá para o porquê disso ter que ser fail-CLOSED (mantém
+ * o bloqueio), ao contrário de todo o resto deste hook, que é fail-open por
+ * infra.
+ */
+export function readBaseEmailSet(path, base, cwd, gitRunner) {
+  const content = gitRunner(["show", `${base}:${path}`], cwd);
+  if (content === null) return null;
+  return extractEmailsSet(content);
+}
+
+/**
+ * Monta `Map<path, Set<string>>` dos e-mails já presentes na BASE, um
+ * conjunto por arquivo TOCADO pela branch (#7822 — "linha `+` cujos e-mails
+ * já aparecem na versão da BASE do MESMO arquivo").
+ *
+ * **Por que um arquivo pode ficar de FORA do Map (fail-closed por
+ * construção, não por exceção especial):**
+ *   - status `A` (arquivo NOVO) — não existe versão-base para comparar.
+ *     Isso preserva a cobertura do incidente de origem (#6753) por
+ *     construção: aquele dump era 100% arquivo novo, então nenhum endereço
+ *     dele seria isento por esta rota, com ou sem `git show` funcionando.
+ *   - `readBaseEmailSet` devolveu `null` (`git show` falhou — base
+ *     indisponível, path renomeado cujo destino não existe na base, timeout,
+ *     git fora do PATH) — "não consegui verificar" nunca pode virar "está
+ *     tudo bem", que é exatamente o inverso do fail-open do resto do hook
+ *     (comentário no chamador explica a assimetria).
+ *
+ * Em QUALQUER um desses casos o path simplesmente não entra no Map — e
+ * `findDangerousDiffContent` trata `baseEmailsByFile.get(path)` ausente
+ * (`undefined`) como "nenhuma isenção extra", que é o comportamento
+ * fail-closed desejado sem precisar de um 3º estado explícito no Map.
+ *
+ * Não busca base para path já isento por `isFixturePath` — economiza um
+ * `git show` que o resultado nunca usaria (fixture nunca entra na checagem
+ * de PII, com ou sem base).
+ */
+export function buildBaseEmailsByFile(nameStatusEntries, touchedPaths, base, cwd, gitRunner) {
+  const map = new Map();
+  const statusByPath = new Map(nameStatusEntries.map((e) => [e.path, e.status]));
+  for (const path of touchedPaths) {
+    if (isFixturePath(path)) continue;
+    const status = statusByPath.get(path);
+    if (status && status.startsWith("A")) continue; // arquivo novo: sem base, sem isenção
+    const emails = readBaseEmailSet(path, base, cwd, gitRunner);
+    if (emails !== null) map.set(path, emails);
+    // emails === null (cannot-verify): path fica de fora do Map de propósito.
+  }
+  return map;
 }
 
 /**
@@ -332,7 +428,7 @@ export function parseAddedLinesByFile(diffText) {
  * está limpa. `nameStatusEntries`/`addedLinesByFile` vêm de
  * `parseNameStatus`/`parseAddedLinesByFile` (produção) ou fixtures (teste).
  */
-export function findDangerousDiffContent(nameStatusEntries, addedLinesByFile) {
+export function findDangerousDiffContent(nameStatusEntries, addedLinesByFile, baseEmailsByFile = new Map()) {
   const findings = [];
 
   for (const entry of nameStatusEntries) {
@@ -348,11 +444,16 @@ export function findDangerousDiffContent(nameStatusEntries, addedLinesByFile) {
 
   for (const [path, lines] of addedLinesByFile.entries()) {
     if (isFixturePath(path)) continue;
-    // #7244: `isAllowlistedEmailLine` dispensa só a linha cujos ÚNICOS
-    // e-mails são os literais de placeholder de UI — um e-mail real na mesma
-    // linha continua barrando. NÃO há isenção por domínio (nem RFC 2606):
-    // ver o porquê na docstring de `ALLOWLISTED_EMAILS`.
-    const emailLines = lines.filter((l) => EMAIL_RE.test(l) && !isAllowlistedEmailLine(l));
+    // #7244: isento fixo (`ALLOWLISTED_EMAILS`) dispensa só a linha cujos
+    // ÚNICOS e-mails são literais de placeholder de UI. #7822: isento POR
+    // ARQUIVO (`baseEmailsByFile.get(path)`) dispensa também os e-mails já
+    // presentes na versão de BASE do MESMO arquivo — `undefined` (path fora
+    // do Map: arquivo novo ou base não verificável, ver
+    // `buildBaseEmailsByFile`) não isenta nada, então a linha segue barrada
+    // por padrão (fail-closed). Nenhum dos dois é isenção por domínio (nem
+    // RFC 2606): ver o porquê na docstring de `ALLOWLISTED_EMAILS`.
+    const baseEmails = baseEmailsByFile.get(path);
+    const emailLines = lines.filter((l) => EMAIL_RE.test(l) && !isEmailLineFullyExempt(l, baseEmails));
     if (emailLines.length > 0) {
       findings.push({
         path,
@@ -550,7 +651,20 @@ if (
 
       const nameStatusEntries = parseNameStatus(nameStatusRaw);
       const addedLinesByFile = parseAddedLinesByFile(diffRaw);
-      const findings = findDangerousDiffContent(nameStatusEntries, addedLinesByFile);
+      // #7822 — isenta linha `+` cujo e-mail já estava na BASE do MESMO
+      // arquivo. `readBaseEmailSet` via `runGit` devolve `null` em qualquer
+      // falha de leitura (git indisponível, path sem base) e
+      // `buildBaseEmailsByFile` propaga isso como "path fora do Map" —
+      // fail-CLOSED aqui é intencional, ao contrário do resto deste hook:
+      // ver a docstring de `buildBaseEmailsByFile`/`readBaseEmailSet`.
+      const baseEmailsByFile = buildBaseEmailsByFile(
+        nameStatusEntries,
+        addedLinesByFile.keys(),
+        base,
+        cwd,
+        runGit,
+      );
+      const findings = findDangerousDiffContent(nameStatusEntries, addedLinesByFile, baseEmailsByFile);
 
       if (findings.length > 0) {
         process.stdout.write(

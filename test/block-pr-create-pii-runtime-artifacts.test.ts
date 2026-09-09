@@ -11,6 +11,10 @@ import {
   buildDenyMessage,
   EMAIL_RE,
   isAllowlistedEmailLine,
+  isEmailLineFullyExempt,
+  extractEmailsSet,
+  readBaseEmailSet,
+  buildBaseEmailsByFile,
   resolveRepoRootCandidates,
   resolveGitRoot,
   cdTargetFromCommand,
@@ -406,6 +410,215 @@ describe("findDangerousDiffContent com allowlist (#7217)", () => {
     assert.equal(findings[0].kind, "pii-email");
     // Conta 1 linha, não 2 — a do placeholder foi dispensada.
     assert.match(findings[0].detail, /^1 linha/);
+  });
+});
+
+// ─── #7822: isenção de linha `+` cujo e-mail JÁ ESTAVA na BASE do MESMO
+// arquivo ──────────────────────────────────────────────────────────────────
+//
+// Achado ao vivo (#7662, bloqueou 2 rodadas independentes): acrescentar
+// `email@newsletter.7min.ai` a DUAS chaves novas de `platform.config.json`
+// não introduz PII — o endereço já vive no arquivo (`senders[]`) desde
+// antes. O guard escaneava só linhas `+`, sem olhar se o e-mail já estava
+// na base do MESMO arquivo.
+//
+// O PONTO CRÍTICO desta família de teste: quando a leitura da base falha
+// (`git show` erra, arquivo novo sem base, git indisponível), o resultado
+// tem que ser cannot-verify -> MANTÉM O BLOQUEIO. Ao contrário do resto
+// deste hook (fail-OPEN por infra — git indisponível nunca trava
+// `gh pr create`), esta isenção específica é fail-CLOSED: uma falha de
+// verificação nunca pode virar "libere a linha".
+
+describe("isEmailLineFullyExempt (#7822) — generalização de isAllowlistedEmailLine", () => {
+  it("sem extraExemptSet (null) se comporta como isAllowlistedEmailLine", () => {
+    assert.equal(isEmailLineFullyExempt("seu@email.com", null), true);
+    assert.equal(isEmailLineFullyExempt("real@gmail.com", null), false);
+  });
+
+  it("isenta e-mail presente no extraExemptSet", () => {
+    const exempt = new Set(["email@newsletter.7min.ai"]);
+    assert.equal(isEmailLineFullyExempt('"email@newsletter.7min.ai"', exempt), true);
+  });
+
+  it("case-insensitive: extraExemptSet em minúsculas casa e-mail em qualquer caixa", () => {
+    const exempt = new Set(["email@newsletter.7min.ai"]);
+    assert.equal(isEmailLineFullyExempt("EMAIL@NEWSLETTER.7MIN.AI", exempt), true);
+  });
+
+  it("e-mail que NÃO está no extraExemptSet continua barrado", () => {
+    const exempt = new Set(["email@newsletter.7min.ai"]);
+    assert.equal(isEmailLineFullyExempt("outro.real@gmail.com", exempt), false);
+  });
+
+  it("linha mista: 1 e-mail isento + 1 e-mail novo -> continua barrada (mesma semântica do #7244)", () => {
+    const exempt = new Set(["email@newsletter.7min.ai"]);
+    assert.equal(
+      isEmailLineFullyExempt('"email@newsletter.7min.ai", "novo.real@gmail.com"', exempt),
+      false,
+    );
+  });
+
+  it("extraExemptSet vazio nunca isenta nada", () => {
+    assert.equal(isEmailLineFullyExempt("qualquer@gmail.com", new Set()), false);
+  });
+});
+
+describe("extractEmailsSet (#7822)", () => {
+  it("extrai todos os e-mails de um texto multi-linha, em minúsculas", () => {
+    const content = '{ "a": "Foo@Bar.com", "b": "baz@qux.org" }\nmais texto sem email';
+    const set = extractEmailsSet(content);
+    assert.deepEqual([...set].sort(), ["baz@qux.org", "foo@bar.com"]);
+  });
+
+  it("texto sem e-mail -> Set vazio", () => {
+    assert.equal(extractEmailsSet("nenhum email aqui").size, 0);
+  });
+
+  it("entrada não-string -> Set vazio, nunca lança", () => {
+    assert.equal(extractEmailsSet(undefined).size, 0);
+    assert.equal(extractEmailsSet(null).size, 0);
+  });
+});
+
+describe("readBaseEmailSet (#7822)", () => {
+  it("git show bem-sucedido -> Set dos e-mails do conteúdo da base", () => {
+    const fakeGit = () => '"senders": ["email@newsletter.7min.ai"]';
+    const result = readBaseEmailSet("platform.config.json", "abc123", "/repo", fakeGit as never);
+    assert.deepEqual([...(result ?? [])], ["email@newsletter.7min.ai"]);
+  });
+
+  it("git show falhando (null) -> null, NUNCA Set vazio (cannot-verify != sem e-mails)", () => {
+    const fakeGit = () => null;
+    const result = readBaseEmailSet("novo.json", "abc123", "/repo", fakeGit as never);
+    assert.equal(result, null);
+  });
+});
+
+describe("buildBaseEmailsByFile (#7822)", () => {
+  it("arquivo M com e-mail já na base -> entra no Map com o Set correto", () => {
+    const nameStatus = [{ status: "M", path: "platform.config.json" }];
+    const fakeGit = () => '"senders": ["email@newsletter.7min.ai"]';
+    const map = buildBaseEmailsByFile(nameStatus, ["platform.config.json"], "abc", "/repo", fakeGit as never);
+    assert.ok(map.get("platform.config.json")?.has("email@newsletter.7min.ai"));
+  });
+
+  it("arquivo NOVO (status A) nunca entra no Map — sem base, sem isenção possível", () => {
+    const nameStatus = [{ status: "A", path: "novo-dump.json" }];
+    let called = false;
+    const fakeGit = () => {
+      called = true;
+      return "qualquer coisa";
+    };
+    const map = buildBaseEmailsByFile(nameStatus, ["novo-dump.json"], "abc", "/repo", fakeGit as never);
+    assert.equal(map.has("novo-dump.json"), false);
+    assert.equal(called, false, "nem deveria tentar git show pra arquivo status A");
+  });
+
+  it("git show falhando -> arquivo fica de FORA do Map (fail-closed)", () => {
+    const nameStatus = [{ status: "M", path: "algum.json" }];
+    const fakeGit = () => null;
+    const map = buildBaseEmailsByFile(nameStatus, ["algum.json"], "abc", "/repo", fakeGit as never);
+    assert.equal(map.has("algum.json"), false);
+  });
+
+  it("path de fixture nunca dispara git show", () => {
+    const nameStatus = [{ status: "M", path: "test/fixtures/emails.json" }];
+    let called = false;
+    const fakeGit = () => {
+      called = true;
+      return "x";
+    };
+    buildBaseEmailsByFile(nameStatus, ["test/fixtures/emails.json"], "abc", "/repo", fakeGit as never);
+    assert.equal(called, false);
+  });
+});
+
+describe("findDangerousDiffContent com baseEmailsByFile (#7822) — casos (a)-(f) do teste de regressão", () => {
+  it("(a) e-mail já presente na base do MESMO arquivo -> passa (caso real #7662)", () => {
+    const nameStatus = [{ status: "M", path: "platform.config.json" }];
+    const addedLines = new Map([
+      ["platform.config.json", ['"always_consider_senders": ["email@newsletter.7min.ai"]']],
+    ]);
+    const baseEmails = new Map([["platform.config.json", new Set(["email@newsletter.7min.ai"])]]);
+    assert.deepEqual(findDangerousDiffContent(nameStatus, addedLines, baseEmails), []);
+  });
+
+  it("(b) e-mail NOVO no mesmo arquivo (não está na base) -> barra", () => {
+    const nameStatus = [{ status: "M", path: "platform.config.json" }];
+    const addedLines = new Map([
+      ["platform.config.json", ['"always_consider_senders": ["novo.assinante@exemplo.com"]']],
+    ]);
+    const baseEmails = new Map([["platform.config.json", new Set(["email@newsletter.7min.ai"])]]);
+    const findings = findDangerousDiffContent(nameStatus, addedLines, baseEmails);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].kind, "pii-email");
+  });
+
+  it("(c) e-mail existe em OUTRO arquivo da base, não neste -> barra (comparação é POR ARQUIVO)", () => {
+    // O caso vizinho perigoso: mover um endereço real de um arquivo pra
+    // outro não pode virar isenção — a base de "outro-arquivo.json" não diz
+    // nada sobre o que já estava em "platform.config.json".
+    const nameStatus = [{ status: "M", path: "platform.config.json" }];
+    const addedLines = new Map([
+      ["platform.config.json", ['"novo_campo": "movido@exemplo.com"']],
+    ]);
+    // A base do arquivo TOCADO (platform.config.json) NÃO tem esse e-mail —
+    // ele só existia em "outro-arquivo.json" (não representado aqui, porque
+    // o Map é por arquivo tocado).
+    const baseEmails = new Map([["platform.config.json", new Set(["email@newsletter.7min.ai"])]]);
+    const findings = findDangerousDiffContent(nameStatus, addedLines, baseEmails);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].kind, "pii-email");
+  });
+
+  it("(d) arquivo NOVO (status A) cheio de e-mails -> barra (reconstituição do #6753 continua reprovando)", () => {
+    const nameStatus = [{ status: "A", path: "scripts/_tmp_engagement_backup3/b29f6620_p1.json" }];
+    const addedLines = new Map([
+      [
+        "scripts/_tmp_engagement_backup3/b29f6620_p1.json",
+        ['{ "email": "sintetico.fixture@exemplo-teste.invalid" }'],
+      ],
+    ]);
+    // baseEmailsByFile vazio simula o comportamento real de buildBaseEmailsByFile
+    // pra status A (nunca entra no Map).
+    const findings = findDangerousDiffContent(nameStatus, addedLines, new Map());
+    const kinds = findings.map((f) => f.kind);
+    assert.ok(kinds.includes("runtime-artifact"));
+    assert.ok(kinds.includes("pii-email"));
+  });
+
+  it("(e) git show da base falhando (cannot-verify) -> barra, NUNCA isenta por não ter conseguido ler", () => {
+    const nameStatus = [{ status: "M", path: "platform.config.json" }];
+    const addedLines = new Map([
+      ["platform.config.json", ['"campo": "assinante.real@exemplo.com"']],
+    ]);
+    // baseEmailsByFile.get("platform.config.json") é undefined — exatamente
+    // o que buildBaseEmailsByFile produz quando readBaseEmailSet devolve
+    // null (git show falhou). NÃO É um Set vazio explícito — é ausência de
+    // entrada no Map, e o comportamento tem que ser idêntico ao de nunca
+    // ter chamado buildBaseEmailsByFile (default findDangerousDiffContent()).
+    const baseEmails = new Map(); // path não presente == cannot-verify
+    const findings = findDangerousDiffContent(nameStatus, addedLines, baseEmails);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].kind, "pii-email");
+  });
+
+  it("(f) diferença só de CAIXA entre a linha adicionada e o e-mail da base -> isenta (mesma normalização de ALLOWLISTED_EMAILS)", () => {
+    const nameStatus = [{ status: "M", path: "platform.config.json" }];
+    const addedLines = new Map([
+      ["platform.config.json", ['"campo": "EMAIL@NEWSLETTER.7MIN.AI"']],
+    ]);
+    const baseEmails = new Map([["platform.config.json", new Set(["email@newsletter.7min.ai"])]]);
+    assert.deepEqual(findDangerousDiffContent(nameStatus, addedLines, baseEmails), []);
+  });
+
+  it("chamada SEM 3º argumento (retrocompatibilidade) continua funcionando sem isenção extra", () => {
+    const nameStatus = [{ status: "M", path: "platform.config.json" }];
+    const addedLines = new Map([
+      ["platform.config.json", ['"campo": "algum@exemplo.com"']],
+    ]);
+    const findings = findDangerousDiffContent(nameStatus, addedLines);
+    assert.equal(findings.length, 1);
   });
 });
 
