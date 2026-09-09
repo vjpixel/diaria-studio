@@ -108,6 +108,7 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
 | `~/.hermes/scripts/opus-daily-diff-review.sh` | review Opus do diff ACUMULADO do dia (cron separado, 1x/dia; #6865, ex-`daily-consolidated-review.sh`) | Anthropic (assinatura) |
 | `~/.hermes/scripts/continuo-pr-review.sh` | review Sonnet de toda PR aberta no repo, exceto `bot/*` (escopo ampliado além de `continuo/*` no #7446 item 4 — PR de qualquer branch podia ficar sem merger nenhum; cron separado, cadência: derivar com `hermes cron list --all` — nunca esta prosa, #6928; #6865) — o MODELO nunca mergeia (`gh pr merge` fora do `--allowedTools`); o SCRIPT BASH mergeia depois, atrás de 8 portões fail-closed (#6926) — `REPO` fixo em `diaria-studio`, nunca toca PR do fork (#6817 item 6). `escalate` label a PR (`continuo-escalado`) e notifica só na 1ª vez (#7446 item 2). | Anthropic (assinatura) |
 | `npx tsx scripts/check-continuo-ci-fixer-candidate.ts` / `mark-continuo-ci-fix-attempted.ts` | antes de reivindicar issue nova, escolhe a PR `continuo/*` mais antiga com CI `fail` e sem tentativa de conserto ainda (§3b, #7446 item 3); cap de 1 tentativa via label `continuo-ci-fix-tentado` | determinístico (npx tsx), sem LLM |
+| `npx tsx scripts/check-continuo-pr-cap.ts` / `scripts/lib/continuo-pr-cap.ts` | antes de reivindicar issue nova, conta PRs `continuo/*` abertas (exclui `continuo/rescue-*`); teto 3 — se >= 3, trabalha própria fila (§3c, #7746) | determinístico (npx tsx), sem LLM, fail-soft permite quando `gh` falha |
 
 ## Cada ciclo (tick do cron)
 
@@ -353,6 +354,25 @@ recebeu a tentativa e segue vermelha fica coberta pelo `escalate` do
 gate de merge (#7446 item 2, label `continuo-escalado`) e pela checagem 9
 de `watch-continuo-health.sh` (#7446 item 6, alarme de fila) — nunca fica
 invisível, só para de ser retentada mecanicamente.
+
+### 3c. Antes de reivindicar issue nova: teto de PRs `continuo/*` (#7746)
+
+Antes de reivindicar, contar as PRs `continuo/*` abertas (exclui `continuo/rescue-*`):
+
+```
+npx tsx scripts/check-continuo-pr-cap.ts
+```
+
+Retorna `{"open":N,"cap":3,"mayClaim":boolean,"counted":string[]}`. Se `mayClaim` false (`open >= 3`): **não reivindicar** — trabalhar a própria fila (§3b: consertar/rejeitar uma das 3; fechar rejeitada; consertar CI se aplicável) e reportar no relatório do tick. Se `mayClaim` true: reivindicar normalmente.
+
+Fail-soft (mesma disciplina do §3b `checked: -1`): `gh pr list` falhando → `mayClaim=true`, `counted=[]`, motivo visível no stderr; um tick a mais é barato, contínuo travado por infra não é (#7746).
+
+Regras de contagem (#7746):
+- Conta TODAS as abertas (não só sem veredito) — pressão empurra pro §3 passo 1.
+- Exclui drafts de resgate (`continuo/rescue-*`, #7130 / #7742): não são trabalho ativo.
+- Teto é 3 (mesmo do overnight, #6299); com review a cada 120 min, 3 PRs sem veredito = no máximo ~2h até todas terem veredito.
+
+Não confundir com #6917 ("PR aberta encerra o tick") — isto não encerra nem impede o tick; muda o QUE ele trabalha.
 
 ### 4. Implementar issues elegíveis — via harness delegado
 
