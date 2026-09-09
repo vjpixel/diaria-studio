@@ -28,6 +28,7 @@
       "project": ["**/*.ts"]
     }
   },
+  "ignoreDependencies": ["vitest"],
   "ignoreExportsUsedInFile": true,
   // test/systemd-units.test.ts (#4807) faz shell-out condicional pro parser
   // real do systemd (`systemd-analyze calendar`) pra validar o OnCalendar=
@@ -41,5 +42,5 @@
   // scripts/lib/session-registry.ts (#7687) invoca `tasklist` (Windows,
   // System32) pra confirmar PID vivo quando `process.kill(pid, 0)` lança
   // EPERM ambíguo no libuv/Windows -- utilitário do SO, não npm.
-  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist", "taskkill"]
+  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist", "taskkill", "vitest"]
 }
