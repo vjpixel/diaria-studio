@@ -30,6 +30,8 @@ import {
   DEFAULT_BATCH_TIMEOUT_MS,
   computeWorkerTimeoutMs,
   pipeWorkerStream,
+  sleepSync,
+  DEFAULT_RETRY_DELAY_MS,
   type RunTestBatchesParallelOptions,
 } from "../scripts/run-tests.ts";
 import { PassThrough } from "node:stream";
@@ -369,6 +371,35 @@ describe("shouldRetryBatch (#6495, alargado pelo #6857) — status != 0 + ERR_MO
   });
 });
 
+describe("shouldRetryBatch (#7736) — assinatura colateral: ENOENT ao LER um .test.ts que sumiu do disco", () => {
+  // Evidência real (PR #7735, comentário da issue #7736): na MESMA run,
+  // `test/spawn-npx-windows-guard.test.ts` enumerou `test/use-melhor-body-
+  // prefetch-7668.test.ts` via readdirSync e falhou ao lê-lo com ENOENT —
+  // sintoma diferente de ERR_MODULE_NOT_FOUND (é leitura de dado, não
+  // import de módulo), mas mesma causa de fundo suspeita.
+  const VANISHED = "Error: ENOENT: no such file or directory, open '/repo/test/use-melhor-body-prefetch-7668.test.ts'";
+
+  it("status != 0 + assinatura de arquivo .test.ts sumido → retry", () => {
+    const output = `${VANISHED}\nℹ fail 1\n`;
+    assert.equal(shouldRetryBatch(output, 1), true);
+  });
+
+  it("status 0 → nunca retry, mesmo com o texto presente em algum log", () => {
+    const output = `${VANISHED}\nℹ fail 0\n`;
+    assert.equal(shouldRetryBatch(output, 0), false);
+  });
+
+  it("ENOENT genérico (não .test.ts, não a frase completa) → NÃO retry — assinatura estreita de propósito", () => {
+    const output = "Error: ENOENT: no such file or directory, open '/repo/data/fixture.json'\nℹ fail 1\n";
+    assert.equal(shouldRetryBatch(output, 1), false);
+  });
+
+  it("fixture legítima que só cita a palavra ENOENT (sem a frase completa + path .test.ts) → NÃO retry", () => {
+    const output = 'throw new Error("ENOENT: no such file or directory");\nℹ fail 1\n';
+    assert.equal(shouldRetryBatch(output, 1), false);
+  });
+});
+
 describe("runTestBatches — retry automático (#6495)", () => {
   const ERR_OUTPUT = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/test/foo.test.ts'\nℹ fail 0\n";
 
@@ -376,6 +407,7 @@ describe("runTestBatches — retry automático (#6495)", () => {
     let calls = 0;
     const exit = runTestBatches({
       files: ["/a.test.ts"],
+      retryDelayMs: 0, // #7736: sem isso o teste pagaria o DEFAULT_RETRY_DELAY_MS real (Atomics.wait)
       spawn: (() => {
         calls++;
         if (calls === 1) return { status: 1, stdout: ERR_OUTPUT, stderr: "" };
@@ -392,6 +424,7 @@ describe("runTestBatches — retry automático (#6495)", () => {
     let calls = 0;
     const exit = runTestBatches({
       files: ["/a.test.ts"],
+      retryDelayMs: 0,
       spawn: (() => {
         calls++;
         return { status: 1, stdout: ERR_OUTPUT, stderr: "" };
@@ -440,6 +473,7 @@ describe("runTestBatches — retry automático (#6495)", () => {
     const exit = runTestBatches({
       files: ["/a.test.ts", "/b.test.ts"],
       batchSize: 1,
+      retryDelayMs: 0,
       spawn: ((_cmd: unknown, args: unknown) => {
         const file = (args as string[]).slice(3)[0];
         seen.push(file === "/a.test.ts" ? 1 : 2);
@@ -456,6 +490,72 @@ describe("runTestBatches — retry automático (#6495)", () => {
     assert.equal(exit, 0);
     assert.equal(attemptForBatch2, 2, "batch 2 rodou original + retry");
     assert.deepEqual(seen, [1, 2, 2], "batch 1 rodou 1×, batch 2 rodou 2× (original + retry)");
+  });
+});
+
+describe("runTestBatches — espera antes do retry (#7736)", () => {
+  // Evidência da issue: o retry IMEDIATO (#6495) já existia e, medido ao
+  // vivo, falhou de novo 2 de 3 vezes com o mesmo sintoma — "é corrida, não
+  // defeito determinístico". A mitigação é dar um respiro antes do retry;
+  // estes testes travam SÓ o mecanismo de injeção (nunca esperam o tempo
+  // real), porque provar timing real de Atomics.wait dentro da suíte seria
+  // lento e flaky por definição.
+  const ERR_OUTPUT = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/test/foo.test.ts'\nℹ fail 0\n";
+
+  it("sleepFn injetado é chamado com retryDelayMs ANTES do 2º spawn, quando o retry dispara", () => {
+    const sleeps: number[] = [];
+    let calls = 0;
+    const exit = runTestBatches({
+      files: ["/a.test.ts"],
+      retryDelayMs: 1234,
+      sleepFn: (ms: number) => sleeps.push(ms),
+      spawn: (() => {
+        calls++;
+        if (calls === 1) return { status: 1, stdout: ERR_OUTPUT, stderr: "" };
+        return { status: 0, stdout: "ℹ fail 0\n", stderr: "" };
+      }) as unknown as typeof import("node:child_process").spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+    });
+    assert.equal(exit, 0);
+    assert.deepEqual(sleeps, [1234], "sleepFn deve ter sido chamado exatamente 1× com o retryDelayMs configurado");
+  });
+
+  it("sem retry (batch verde) → sleepFn NUNCA é chamado", () => {
+    const sleeps: number[] = [];
+    runTestBatches({
+      files: ["/a.test.ts"],
+      retryDelayMs: 1234,
+      sleepFn: (ms: number) => sleeps.push(ms),
+      spawn: (() => ({ status: 0, stdout: "ℹ fail 0\n", stderr: "" })) as unknown as typeof import("node:child_process").spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+    });
+    assert.deepEqual(sleeps, [], "batch que nunca falhou não tem motivo pra esperar nada");
+  });
+
+  it("falha comum (sem assinatura de flake) → sleepFn NUNCA é chamado, mesmo com retryDelayMs > 0", () => {
+    const sleeps: number[] = [];
+    runTestBatches({
+      files: ["/a.test.ts"],
+      retryDelayMs: 1234,
+      sleepFn: (ms: number) => sleeps.push(ms),
+      spawn: (() => ({ status: 1, stdout: "AssertionError: boom\nℹ fail 1\n", stderr: "" })) as unknown as typeof import("node:child_process").spawnSync,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+    });
+    assert.deepEqual(sleeps, [], "falha real nunca dispara retry, logo nunca espera");
+  });
+
+  it("DEFAULT_RETRY_DELAY_MS é o default de fábrica (2s) quando nada override", () => {
+    assert.equal(DEFAULT_RETRY_DELAY_MS, 2000);
+  });
+
+  it("sleepSync com ms <= 0 retorna imediatamente (não chama Atomics.wait de verdade)", () => {
+    const inicio = Date.now();
+    sleepSync(0);
+    sleepSync(-5);
+    assert.ok(Date.now() - inicio < 100, "ms <= 0 não deve pausar de verdade");
   });
 });
 
@@ -1292,6 +1392,7 @@ describe("#6783 — marcador contável do flake de módulo", () => {
     let calls = 0;
     const exit = runTestBatches({
       files: ["/a.test.ts"],
+      retryDelayMs: 0,
       spawn: (() => {
         calls++;
         if (calls === 1) {
