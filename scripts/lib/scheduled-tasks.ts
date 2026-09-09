@@ -630,6 +630,22 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#7362",
   },
   {
+    name: "Diaria-Kit-Subscriber-State-Transition-Alarm",
+    description:
+      "alarma quando um assinante Kit sai de active (complained/bounced/cancelled/inactive) ou SOME da conta — o caso de origem foi um apoiador com 84,68% de abertura que ficou 11 dias sem edição, descoberto só porque ele reclamou por WhatsApp (#7660)",
+    steps: [{ key: "check", script: "scripts/kit-subscriber-state-transition-alarm.ts", args: ["--fetch"] }],
+    logPath: "kit-subscriber-state-transition-alarm/.alarm-check.log",
+    // Diária 11:15 — depois do cluster matinal de checks Kit (10:30-10:50) e
+    // fora dele, porque este alarme BUSCA o próprio snapshot (`--fetch`) em
+    // vez de depender do que os vizinhos gravaram: enfileirar junto só somaria
+    // chamadas REST no mesmo minuto sem ganhar nada. Cadência diária e não
+    // interval: a detecção é um DIFF entre snapshots consecutivos, e um
+    // snapshot a cada 4h só encurtaria a janela de descoberta de horas num
+    // evento cuja recuperação é manual e leva dias.
+    schedule: { kind: "daily", hour: 11, minute: 15 },
+    issue: "#7660",
+  },
+  {
     name: "Diaria-Codex-Credential-Alarm",
     description:
       "avisa quando resta UMA conta OpenAI Codex viva no pool do Hermes — contas são OAuth (não há endpoint de saldo), então o único sinal é o resultado da última tentativa de uso, que o Hermes persiste em ~/.hermes/auth.json",

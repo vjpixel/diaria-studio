@@ -15,7 +15,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, cpSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, cpSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,7 +37,7 @@ after(() => {
 });
 
 interface Snapshots {
-  prev?: { id: number; state: string }[];
+  prev?: { id: number; state: string; address?: string }[];
   current?: { id: number; email_address: string; state: string; fields?: Record<string, string> }[];
 }
 
@@ -50,11 +50,12 @@ function runCli(name: string, snaps: Snapshots): { stdout: string; status: numbe
   mkdirSync(join(repo, "scripts", "lib"), { recursive: true });
   mkdirSync(join(repo, "data", "kit-sub-state"), { recursive: true });
   cpSync(join(ROOT, "scripts"), join(repo, "scripts"), { recursive: true });
-  // `node_modules` por symlink: o CLI só precisa de `tsx` pra rodar.
-  try {
-    execFileSync("ln", ["-sfn", join(ROOT, "node_modules"), join(repo, "node_modules")]);
-  } catch {
-    /* ambiente sem ln — o npx do PATH resolve mesmo assim */
+  // `node_modules` por link: o CLI só precisa de `tsx` pra rodar. `junction`
+  // é o tipo que funciona no Windows sem privilégio de symlink (o `ln` que
+  // estava aqui antes simplesmente não existe pra `execFileSync` no Windows,
+  // e a suíte inteira falhava localmente enquanto passava no CI Linux).
+  if (!existsSync(join(repo, "node_modules"))) {
+    symlinkSync(join(ROOT, "node_modules"), join(repo, "node_modules"), "junction");
   }
   cpSync(join(ROOT, "tsconfig.json"), join(repo, "tsconfig.json"));
 
@@ -63,7 +64,10 @@ function runCli(name: string, snaps: Snapshots): { stdout: string; status: numbe
   if (snaps.current !== undefined) writeFileSync(join(stateDir, "current.json"), JSON.stringify(snaps.current), "utf8");
 
   try {
-    const stdout = execFileSync("npx", ["tsx", join(repo, SCRIPT_REL), "--dry-run"], {
+    // `process.execPath --import tsx`, nunca `npx`: o binário `npx` é um
+    // `.cmd` no Windows e `execFileSync` não o resolve (falha muda, sem
+    // stdout nenhum). É também a invocação que o task-runner do repo usa.
+    const stdout = execFileSync(process.execPath, ["--import", "tsx", join(repo, SCRIPT_REL), "--dry-run"], {
       cwd: repo,
       encoding: "utf8",
       timeout: 90_000,
@@ -77,10 +81,11 @@ function runCli(name: string, snaps: Snapshots): { stdout: string; status: numbe
 }
 
 describe("CLI do alarme de transição Kit (#7660)", () => {
-  it("current.json AUSENTE é erro duro (exit 1) — nunca no-op verde", () => {
+  it("current.json AUSENTE (sem --fetch) é erro duro (exit 1) — nunca no-op verde", () => {
     const { stdout, status } = runCli("sem-current", { prev: [{ id: 1, state: "active" }] });
     assert.equal(status, 1, "sair 0 aqui deixaria a task agendada verde sem ter checado nada");
     assert.match(stdout, /current\.json/);
+    assert.match(stdout, /--fetch/, "a mensagem precisa dizer qual é o modo que BUSCA o snapshot");
   });
 
   it("sem prev.json: grava linha de base e sai 0, sem detectar transição", () => {
@@ -110,6 +115,33 @@ describe("CLI do alarme de transição Kit (#7660)", () => {
     assert.equal(status, 0);
     assert.match(stdout, /0 transição\(ões\) detectada\(s\)/);
     assert.match(stdout, /nenhuma/);
+  });
+
+  it("assinante que SUMIU da conta é detectado — o 2º evento do caso de origem", () => {
+    const { stdout, status } = runCli("sumiu", {
+      prev: [
+        { id: 1, state: "complained", address: "pedro@x.com" },
+        { id: 2, state: "active", address: "b@x.com" },
+      ],
+      current: [{ id: 2, email_address: "b@x.com", state: "active" }],
+    });
+    assert.equal(status, 0);
+    assert.match(stdout, /1 desaparecimento\(s\), 1 ainda não alertado\(s\)/);
+    assert.match(stdout, /pedro@x\.com \(id 1\) complained → ausente/);
+  });
+
+  it("transição E desaparecimento no mesmo diff geram DUAS ações, não uma", () => {
+    const { stdout, status } = runCli("dois-eventos", {
+      prev: [
+        { id: 1, state: "active", address: "a@x.com" },
+        { id: 2, state: "active", address: "b@x.com" },
+      ],
+      current: [{ id: 1, email_address: "a@x.com", state: "complained" }],
+    });
+    assert.equal(status, 0);
+    assert.match(stdout, /1 transição\(ões\) detectada\(s\), 1 ainda não alertada\(s\)/);
+    assert.match(stdout, /1 desaparecimento\(s\), 1 ainda não alertado\(s\)/);
+    assert.match(stdout, /2 ação\(ões\)/);
   });
 
   it("--dry-run não escreve prev.json por cima nem cria o latch", () => {

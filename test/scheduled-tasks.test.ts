@@ -1367,6 +1367,44 @@ describe("#7665 — Diaria-Onboarding-Continuity-Alarm registrada, diária, syst
   });
 });
 
+describe("#7660 — Diaria-Kit-Subscriber-State-Transition-Alarm registrada, diária 11:15, NÃO armada", () => {
+  const NOME = "Diaria-Kit-Subscriber-State-Transition-Alarm";
+
+  it("está presente no registro, com o step apontando pro script correto e diária às 11:15", () => {
+    const t = getScheduledTaskByName(NOME);
+    assert.ok(t, `${NOME} ausente de SCHEDULED_TASKS`);
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/kit-subscriber-state-transition-alarm.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 11, minute: 15 });
+    assert.equal(t!.issue, "#7660");
+  });
+
+  it("roda com --fetch — sem a flag o script exige o snapshot no disco e sai 1", () => {
+    const t = getScheduledTaskByName(NOME)!;
+    assert.deepEqual(t.steps[0].args, ["--fetch"]);
+  });
+
+  it("horário de 11:15 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== NOME && t.schedule.hour === 11 && t.schedule.minute === 15,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("nenhuma outra task roda o mesmo script — o alarme tem uma dona só", () => {
+    const donas = SCHEDULED_TASKS.filter((t) =>
+      t.steps.some((s) => s.script === "scripts/kit-subscriber-state-transition-alarm.ts"),
+    );
+    assert.deepEqual(donas.map((t) => t.name), [NOME]);
+  });
+});
+
 describe("#7663 — Diaria-Kv-Image-Binding-Smoke registrada, diária, DECLARADA e NÃO ARMADA", () => {
   it("está presente no registro, com o step apontando pro script correto, diária às 06:45, enabled: false", () => {
     const t = getScheduledTaskByName("Diaria-Kv-Image-Binding-Smoke");
