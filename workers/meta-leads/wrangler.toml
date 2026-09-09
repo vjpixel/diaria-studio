@@ -1,0 +1,39 @@
+name = "meta-leads"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# #7769: Worker que recebe o webhook `leadgen` do Meta Lead Ads (formulário
+# instantâneo) e cria o subscriber no Kit. Zero KV/DO — stateless, cada
+# request se resolve sozinha (Kit já dedup por e-mail, ver src/kit.ts).
+#
+# NÃO deployar (`wrangler deploy`) nem `wrangler secret put` a partir deste
+# worktree — decisão do editor, ação POSTERIOR (ver PR body / SECRETS.md
+# deste diretório para os passos completos, incluindo criar o App no Meta
+# for Developers e subscrever a Página ao campo `leadgen`).
+
+[vars]
+# Versão da Graph API usada em GET /{leadgen_id} — não secret, atualizar
+# aqui quando a Meta depreciar a versão atual (política de ~2 anos por
+# versão). Default no código (graph.ts::DEFAULT_GRAPH_API_VERSION) é o mesmo
+# valor — esta var só existe pra permitir override sem novo deploy de código.
+META_GRAPH_API_VERSION = "v21.0"
+
+# Nomes dos custom fields no Kit — mesma convenção gate-por-ausência de
+# workers/poll/src/subscribe.ts (campo só é mandado se a var estiver
+# configurada). Os 4 primeiros já existem na conta Kit de produção (#6318);
+# origem_cadastro existe desde #6048 (id 1348066). KIT_NAME_FIELD é opcional
+# — sem ele configurado aqui, o nome do lead simplesmente não é enviado.
+KIT_UTM_SOURCE_FIELD = "utm_source"
+KIT_UTM_MEDIUM_FIELD = "utm_medium"
+KIT_UTM_CAMPAIGN_FIELD = "utm_campaign"
+KIT_REFERRING_SITE_FIELD = "referring_site"
+KIT_ORIGEM_CADASTRO_FIELD = "origem_cadastro"
+
+# Observability — mesmo padrão de workers/poll (#5920): webhook externo sem
+# volume previsível, precisa de erro/latência observável sem `wrangler tail`
+# aberto o tempo todo.
+[observability]
+enabled = true
+head_sampling_rate = 1
