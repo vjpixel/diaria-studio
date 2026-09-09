@@ -1,16 +1,19 @@
 /**
- * test/poll-confirmado-5167.test.ts (#5167 item 7)
+ * test/poll-confirmado-5167.test.ts (#5167 item 7; redirect desde #7737)
  *
- * Regressão (#633) pra `GET /confirmado` — destino do double opt-in da
- * Beehiiv (`opt_in_redirect_url`, item 8 — fora do escopo desta unidade).
- * Cobre: render puro (sem I/O), a Response completa, e o wiring no router
- * do worker `poll` (sem exigir nenhum secret — rota pública, como /stats).
+ * Regressão (#633) pra `GET /confirmado` no Worker `poll`
+ * (`eia.diar.ia.br/confirmado`) — destino histórico do double opt-in da
+ * Beehiiv/Kit. Desde #7737 (decisão do editor) a página REAL mora no apex
+ * (`diar.ia.br/confirmado`, Worker `site` — cobertura em
+ * `test/site-worker-confirmado-7737.test.ts`; render puro em
+ * `test/confirmado-page-shared-7737.test.ts`) — esta rota agora só devolve
+ * 301 pra lá, mas continua no ar (link já entregue em e-mails de
+ * confirmação e gravado em `opt_in_redirect_url` da Beehiiv).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { renderConfirmadoPage, handleConfirmadoPage, PAGE_URL } from "../workers/poll/src/confirmado.ts";
-import { GTM_CONTAINER_ID } from "../scripts/lib/shared/seo-meta.ts";
+import { handleConfirmadoRedirect, CONFIRMADO_REDIRECT_URL } from "../workers/poll/src/confirmado.ts";
 import type { Env } from "../workers/poll/src/index.ts";
 import worker from "../workers/poll/src/index.ts";
 
@@ -46,103 +49,26 @@ function makeEnv(): Env {
   };
 }
 
-describe("renderConfirmadoPage (#5167 item 7) — unit", () => {
-  it("PAGE_URL é eia.diar.ia.br/confirmado", () => {
-    assert.equal(PAGE_URL, "https://eia.diar.ia.br/confirmado");
-  });
-
-  it("confirma o cadastro e diz quando a 1ª edição chega", () => {
-    const html = renderConfirmadoPage();
-    assert.match(html, /Assinatura confirmada/);
-    assert.match(html, /primeira edição chega/);
-  });
-
-  it("linka as 4 portas — cursos, livros, jogo, arquivo", () => {
-    const html = renderConfirmadoPage();
-    assert.match(html, /<a href="https:\/\/cursos\.diar\.ia\.br\/">/);
-    assert.match(html, /<a href="https:\/\/livros\.diar\.ia\.br\/">/);
-    assert.match(html, /<a href="https:\/\/eia\.diar\.ia\.br\/jogar">/);
-    assert.match(html, /<a href="https:\/\/arquivo\.diar\.ia\.br\/">/);
-  });
-
-  it("porta de cursos (#5518 B4) cumpre a promessa do e-mail de confirmação", () => {
-    const html = renderConfirmadoPage();
-    assert.match(html, /Cursos gratuitos de IA/);
-  });
-
-  it("CTA pro survey de interesses f7528798 (URL confirmada via MCP get_survey)", () => {
-    const html = renderConfirmadoPage();
-    assert.match(
-      html,
-      /<a href="https:\/\/diar\.ia\.br\/forms\/f7528798-f8d5-4fcd-98c2-dc113e8c268b">/,
-    );
-  });
-
-  it("(#5800) CTA do formulário de interesses sem seta — só os 4 links de curadoria mantêm \" →\"", () => {
-    const html = renderConfirmadoPage();
-    assert.match(
-      html,
-      /<a href="https:\/\/diar\.ia\.br\/forms\/f7528798-f8d5-4fcd-98c2-dc113e8c268b">Responder o formulário de interesses<\/a>/,
-    );
-    assert.doesNotMatch(html, /Responder o formulário de interesses →/);
-  });
-
-  it("(#5800) formulário de interesses vem ANTES das 4 portas de curadoria", () => {
-    const html = renderConfirmadoPage();
-    const surveyIdx = html.indexOf('<div class="confirmado-survey">');
-    const portasIdx = html.indexOf('<div class="confirmado-portas">');
-    assert.ok(surveyIdx >= 0 && portasIdx >= 0, "seções ausentes do HTML");
-    assert.ok(surveyIdx < portasIdx, "survey deveria vir antes de portas");
-  });
-
-  it("(#5800) CTA do survey estilizado como botão preenchido, não link sublinhado", () => {
-    const html = renderConfirmadoPage();
-    assert.match(html, /\.confirmado-survey a \{[^}]*background: var\(--teal\)/);
-    assert.match(html, /\.confirmado-survey a \{[^}]*border-radius: 4px/);
-    assert.doesNotMatch(html, /\.confirmado-survey a \{[^}]*border-bottom: 1px solid var\(--teal\)/);
-  });
-
-  it("<title> e canonical batem com PAGE_URL", () => {
-    const html = renderConfirmadoPage();
-    assert.match(html, /<title>Assinatura confirmada — diar\.ia\.br<\/title>/);
-    assert.match(html, /<link rel="canonical" href="https:\/\/eia\.diar\.ia\.br\/confirmado">/);
+describe("CONFIRMADO_REDIRECT_URL (#7737)", () => {
+  it("aponta pro apex — diar.ia.br/confirmado", () => {
+    assert.equal(CONFIRMADO_REDIRECT_URL, "https://diar.ia.br/confirmado");
   });
 });
 
-describe("renderConfirmadoPage (#5499 item 5) — instrumentação GTM/GA4/pixel", () => {
-  it("carrega o container GTM canônico no <head> (GA4/Meta Pixel vivem dentro do container, não hardcoded aqui)", () => {
-    const html = renderConfirmadoPage();
-    const headMatch = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
-    assert.ok(headMatch, "sem <head>...</head> pra inspecionar");
-    const head = headMatch![1];
-    assert.match(head, /googletagmanager\.com\/gtm\.js/, "script do GTM ausente do <head>");
-    assert.match(head, new RegExp(`['"]${GTM_CONTAINER_ID}['"]`), `container ID (${GTM_CONTAINER_ID}) ausente do <head>`);
-  });
-
-  it("não referencia gclid/fbclid/msclkid/li_fat_id (#5499 item 7 — não se aplica a /confirmado, ver docstring do módulo)", () => {
-    const html = renderConfirmadoPage();
-    assert.doesNotMatch(html, /gclid|fbclid|msclkid|li_fat_id/i);
+describe("handleConfirmadoRedirect (#7737) — Response", () => {
+  it("301 permanente pro apex", () => {
+    const res = handleConfirmadoRedirect();
+    assert.equal(res.status, 301);
+    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmado");
   });
 });
 
-describe("handleConfirmadoPage (#5167 item 7) — Response", () => {
-  it("200, HTML, cacheável", async () => {
-    const res = handleConfirmadoPage();
-    assert.equal(res.status, 200);
-    assert.equal(res.headers.get("Content-Type"), "text/html;charset=utf-8");
-    assert.ok(res.headers.get("Cache-Control")?.includes("public"));
-    const body = await res.text();
-    assert.match(body, /Assinatura confirmada/);
-  });
-});
-
-describe("GET /confirmado (#5167 item 7) — router", () => {
-  it("responde 200 sem exigir nenhum secret (rota pública)", async () => {
+describe("GET /confirmado (#5167 item 7, redirect desde #7737) — router", () => {
+  it("301 pro apex sem exigir nenhum secret (rota pública)", async () => {
     const env = makeEnv();
     const res = await worker.fetch(new Request("https://eia.diar.ia.br/confirmado"), env);
-    assert.equal(res.status, 200);
-    const body = await res.text();
-    assert.match(body, /Assinatura confirmada/);
+    assert.equal(res.status, 301);
+    assert.equal(res.headers.get("Location"), "https://diar.ia.br/confirmado");
   });
 
   it("só GET — outro método cai no 404 padrão do router (não crasha)", async () => {

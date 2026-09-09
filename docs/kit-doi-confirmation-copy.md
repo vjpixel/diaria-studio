@@ -90,10 +90,16 @@ Gmail (#6504).
 |---|---|---|
 | Remetente | `diaria` em `mail.beehiiv.com` | `oi` em `news.diar.ia.br` (o sender já verificado da conta) |
 | Link do botão | `diaria.beehiiv.com/opt_in?opt_in_token=…` | token do Kit, inserido pelo editor de conteúdo do form |
-| Redirect pós-confirmação | `https://eia.diar.ia.br/confirmado` (`opt_in_redirect_url`, medido nas settings da Beehiiv em 09/09/2026) | default é `https://app.kit.com/confirm-subscription` — **reapontar para `https://eia.diar.ia.br/confirmado`** |
+| Redirect pós-confirmação | `https://eia.diar.ia.br/confirmado` (`opt_in_redirect_url`, medido nas settings da Beehiiv em 09/09/2026) | default é `https://app.kit.com/confirm-subscription` — **reapontar para `https://diar.ia.br/confirmado`** |
 
-A página `/confirmado` foi criada no #5167 e continua no ar; não há motivo
-para mandar o assinante para uma URL da Kit.
+A página `/confirmado` foi criada no #5167 e continua no ar — desde o #7737
+(decisão do editor) ela é servida no APEX (`diar.ia.br/confirmado`, Worker
+`site`), não mais em `eia.diar.ia.br` (que agora só faz 301 pra lá — link
+antigo continua funcionando). **Pendente:** o campo "After confirming
+redirect to" do form 9897918 no painel do Kit ainda aponta pra
+`eia.diar.ia.br/confirmado` — atualizar manualmente para
+`https://diar.ia.br/confirmado` (ação de painel, fora do escopo de código
+do #7737).
 
 ## Marca no corpo
 
