@@ -154,7 +154,9 @@ describe("#7686 guard — bloco `run: |` do regen-home.yml não pode ter linha e
     let blockIndent: number | null = null;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      const runMatch = line.match(/^(\s*)run:\s*\|/);
+      // `- run: |` (chave inline no item da lista) é tão comum quanto `run: |`
+      // numa linha própria — sem o `(?:-\s+)?` o guard nem entrava no bloco.
+      const runMatch = line.match(/^(\s*)(?:-\s+)?run:\s*\|/);
       if (runMatch) {
         blockIndent = runMatch[1].length;
         continue;
@@ -166,8 +168,25 @@ describe("#7686 guard — bloco `run: |` do regen-home.yml não pode ter linha e
       // Indentação <= a do `run:` encerra o bloco. Legítimo quando é a
       // próxima chave YAML (`- name:`, `if:`, `env:`, `uses:`, `id:` ...);
       // qualquer outra coisa é texto do script vazando pra fora do bloco.
-      const looksLikeYamlKey = /^\s*(-\s+)?[A-Za-z_][A-Za-z0-9_-]*:(\s|$)/.test(line) || /^\s*-\s/.test(line);
-      if (!looksLikeYamlKey) violations.push(`linha ${i + 1}: ${line.slice(0, 60)}`);
+      //
+      // Em COLUNA 0 a régua é mais dura (review da #7734, P2): prosa vazada
+      // que comece com `Palavra:` ("Nota:", "Contexto:") passaria pela regex
+      // genérica de chave. Num workflow do Actions, coluna 0 só pode ser
+      // chave de TOPO — e o conjunto é fechado e pequeno. Fora dele é
+      // vazamento, ponto.
+      const TOP_LEVEL_KEYS = new Set(["name", "on", "env", "jobs", "concurrency", "permissions", "defaults", "run-name"]);
+      const keyMatch = line.match(/^\s*(?:-\s+)?([A-Za-z_][A-Za-z0-9_-]*):(?:\s|$)/);
+      const looksLikeYamlKey =
+        indent === 0
+          ? keyMatch !== null && TOP_LEVEL_KEYS.has(keyMatch[1])
+          : keyMatch !== null || /^\s*-\s/.test(line);
+      if (!looksLikeYamlKey) {
+        violations.push(`linha ${i + 1}: ${line.slice(0, 60)}`);
+        // NÃO encerra o bloco numa violação (review da #7734, P3): as linhas
+        // seguintes do mesmo vazamento também são reportadas, em vez de só a
+        // primeira — quem corrige vê o tamanho real do problema.
+        continue;
+      }
       blockIndent = null;
     }
     assert.deepEqual(
