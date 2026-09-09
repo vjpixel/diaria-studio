@@ -1,4 +1,12 @@
 /**
+ * RESERVADO #7817 (opção 3): nestes arquivos (test + SKILL.md + scripts/lib/overnight-*.ts),
+ * "60 min" / "60 minutos" é número reservado para o limiar de stall
+ * (OVERNIGHT_STALL_THRESHOLD_MIN = 45 desde 17/08/2026). Nenhuma frase
+ * legítima de outro contexto (cadência de cron, TTL, retry) pode usar o
+ * exato 60; use ~1h / ~2h / forma indireta. Premissa auditável: guard
+ * protege apenas o limiar; falso-positivo de frase não-relacionada é
+ * aceitável desde que documentado (P3 manutenção, não risco real).
+ *
  * test/overnight-stall-threshold.test.ts (#5568, regressão #633)
  *
  * O limiar de stall do overnight era o literal `60` repetido em três
@@ -268,4 +276,32 @@ describe("prosa em sincronia com a constante", () => {
       );
     });
   }
+});
+
+describe("#7817 opção 3 — 60 min reservado, falso-positivo documentado", () => {
+  /**
+   * Premissa de manutenção (P3): o guard de stall protege o limiar de
+   * 45 min (OVERNIGHT_STALL_THRESHOLD_MIN). Frases legítimas que mencionam
+   * 60 minutos em outro contexto (cadência de cron ~60min, retry, TTL)
+   * devem usar forma indireta (~1h) — documentado no topo deste arquivo.
+   * Este teste NÃO adiciona allowlist ampla; apenas registra a premissa
+   * audível para que editorações futuras saibam que o exato 60 está
+   * reservado neste arquivo, não no conteúdo do limiar.
+   */
+  it("premissa documentada: 60 min é reservado para stall nestes arquivos (#7817 op.3)", () => {
+    // A afirmação é documental, não funcional — confirma que o header
+    // do arquivo contém a reserva, para evitar que alguém remova a nota.
+    const content = readFileSync(
+      resolve(REPO_ROOT, "test/overnight-stall-threshold.test.ts"),
+      "utf-8",
+    );
+    assert.ok(
+      content.includes("RESERVADO #7817"),
+      "premissa #7817 (opção 3) deve permanecer documentada no topo do arquivo",
+    );
+    assert.ok(
+      content.includes("60 minutos é número reservado"),
+      "reserva de 60 min deve ser explícita para auditoriabilidade",
+    );
+  });
 });
