@@ -104,14 +104,44 @@
 // disciplina fail-open do `--session-id`: `--pid` já presente no comando
 // nunca é sobrescrito.
 
-// #7836 — fonte única de "quais subcomandos de session-registry.ts precisam
-// de --session-id" (ver docblock do módulo importado). Node 22.18+ resolve
-// import de `.ts` via type-stripping nativo sem flag (CLAUDE.md #1a); este
-// arquivo é minúsculo e sem dependências além de sintaxe TS pura, então
-// importá-lo aqui não paga o custo de carregar `session-registry.ts`
-// (6300+ linhas, fs/child_process/parseArgs/file-lock) no hot path do
-// PreToolUse de todo Bash da sessão.
-import { SESSION_ID_REQUIRED_SUBCOMMANDS } from "../../scripts/lib/session-id-required-subcommands.ts";
+// #7836 P0 (revertido em produção no mesmo dia, achado ao vivo) — a 1ª
+// versão deste fix importava `scripts/lib/session-id-required-subcommands.ts`
+// direto, apostando que "Node 22.18+ resolve import de .ts via type-stripping
+// nativo sem flag" bastava. A aposta era falsa PRA ESTE HOOK especificamente:
+// `.claude/settings.json` spawna este arquivo com o binário `node` cru,
+// resolvido pelo PATH do processo que dispara o PreToolUse — não pelo `node`
+// que uma sessão Bash prefixa manualmente. Nesta máquina (e em qualquer outra
+// sem Node 22.18+ como `node` default do PATH do harness), isso é o `node`
+// do sistema/distro — medido ao vivo: v20.20.2, sem type-stripping nativo. O
+// `import` de `.ts` lança ERR_UNKNOWN_FILE_EXTENSION NA CARGA DO MÓDULO,
+// antes de qualquer linha deste arquivo rodar — não é um erro capturável
+// pelo try/catch runtime lá embaixo, é falha de RESOLUÇÃO do processo Node
+// inteiro. Resultado: TODA injeção de --session-id parou de funcionar em
+// produção (não só self-authorize-merge) até os merges travarem.
+//
+// Fix real: a lista volta a ser um literal PLANO neste arquivo (zero import,
+// zero dependência de versão de Node) — o padrão "duplica em JS puro" que os
+// hooks irmãos já seguem. `test/session-id-required-subcommands-hook-sync.
+// test.ts` trava esta lista contra a exportada por
+// session-id-required-subcommands.ts (rodando via `npx tsx`, que SIM garante
+// Node 22.18+) — divergência futura entre as duas cópias falha CI, mesma
+// garantia de antes, sem o import em runtime do hook.
+const SESSION_ID_REQUIRED_SUBCOMMANDS = [
+  "register",
+  "heartbeat",
+  "end",
+  "claim-issue",
+  "unclaim-issue",
+  "is-claimed",
+  "conflicts",
+  "grant-merge",
+  "check-merge-grant",
+  "consume-merge-grant",
+  "merge-lock-acquire",
+  "merge-lock-release",
+  "merge-lock-renew",
+  "self-authorize-merge",
+];
 
 const TARGET_MARKER = "overnight-session-marker.ts";
 const TARGET_REGISTRY = "session-registry.ts";
