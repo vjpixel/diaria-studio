@@ -11,11 +11,17 @@
  * Cores inline espelham `scripts/lib/shared/design-tokens.ts` (INK/TEAL/
  * PAPER/BEGE) — mesma convenção de `workers/artigos` ("Design system
  * aplicado inline... sem dependências externas"). Sem import cruzado pro
- * lado Node do repo (Workers não compartilham módulo com `scripts/lib/`,
- * ver `test/lib-boundary.test.ts` — a fronteira lá é interna a
- * `scripts/lib/`, mas a convenção observada em TODOS os workers existentes
- * é zero import de `scripts/`).
+ * lado Node do repo — exceto `scripts/lib/shared/` (worker-safe, sem I/O,
+ * ver `test/worker-bundle-node-only-imports.test.ts`): este Worker já
+ * importa `retrospectiva-path.ts`/`robots-txt.ts`/`rate-limit.ts` de lá
+ * (`src/index.ts`), e o registry de UTM abaixo entra pelo mesmo caminho
+ * (#7715).
  */
+import {
+  RETROSPECTIVA_MENSAL_UTM_SOURCE,
+  RETROSPECTIVA_MENSAL_UTM_MEDIUM,
+  buildRetrospectivaMensalCampaign,
+} from "../../../scripts/lib/shared/utm-registry.ts"; // #7715
 
 const INK = "#171411";
 const TEAL = "#00A0A0";
@@ -24,6 +30,22 @@ const BEGE = "#EBE5D0";
 
 /** URL canônica de apoio (espelha `DIARIA_APOIASE_URL`, `scripts/lib/canonical-urls.ts`). */
 const APOIASE_URL = "https://apoia.se/diaria";
+
+/**
+ * URL de apoio com UTM próprio (#7715) — `path` é o path público da página
+ * (`AAMM`, ex: `2607`), o mesmo que `classifyRetrospectivaPath` resolve no
+ * roteador. Único CTA de apoio desta página; as duas superfícies que o usam
+ * (paywall seco e bloco de conversão do trecho) chamam este helper em vez de
+ * `APOIASE_URL` cru.
+ */
+function apoiaseUrlComUtm(path: string): string {
+  const params = new URLSearchParams({
+    utm_source: RETROSPECTIVA_MENSAL_UTM_SOURCE,
+    utm_medium: RETROSPECTIVA_MENSAL_UTM_MEDIUM,
+    utm_campaign: buildRetrospectivaMensalCampaign(path),
+  });
+  return `${APOIASE_URL}?${params.toString()}`;
+}
 
 function escHtml(s: string): string {
   return s
@@ -98,11 +120,11 @@ export function renderEmailForm(cycle: string): string {
  * `RETROSPECTIVA_DO_MES_NIVEIS` (`scripts/build-apoiador-allowlist.ts`), que é
  * quem de fato monta a allowlist.
  */
-export function renderPaywall(): string {
+export function renderPaywall(path: string): string {
   const body = `
     <h1>Este artigo é exclusivo para apoiadores da diar.ia.br</h1>
     <p>A Retrospectiva do Mês faz parte da recompensa de Mantenedor, a partir de R$25/mês — não encontramos um apoio ativo nesse nível para esse e-mail neste mês.</p>
-    <p><a class="button" href="${APOIASE_URL}">Apoiar a diar.ia.br</a></p>
+    <p><a class="button" href="${escHtml(apoiaseUrlComUtm(path))}">Apoiar a diar.ia.br</a></p>
     <p class="muted">Já apoia e acha que isso é um erro? <a href="?entrar=1">Entre com seu e-mail</a>.</p>
   `;
   return shell("diar.ia.br — Conteúdo exclusivo para apoiadores", body);
@@ -173,7 +195,7 @@ const ASSINAR_URL =
  * que é quem monta a allowlist — mudar o limiar sem mudar o texto quebra o
  * teste.
  */
-export function renderTeaserWithPaywall(teaserHtml: string): string {
+export function renderTeaserWithPaywall(teaserHtml: string, path: string): string {
   // ÚLTIMO `</body>`, não o primeiro. `String.replace` com regex não-global
   // casa o PRIMEIRO, e o #7592 já mostrou o estrago disso nas páginas de
   // edição: numa newsletter que cita HTML como texto, o primeiro `</body>`
@@ -206,7 +228,7 @@ export function renderTeaserWithPaywall(teaserHtml: string): string {
       destaques, as recomendações e o fechamento.
     </p>
     <p style="margin:0 0 20px;">
-      <a href="${APOIASE_URL}" style="display:inline-block;background:${TEAL};color:#fff;text-decoration:none;font-weight:bold;padding:14px 28px;border-radius:8px;font-size:16px;">Apoiar a diar.ia.br</a>
+      <a href="${escHtml(apoiaseUrlComUtm(path))}" style="display:inline-block;background:${TEAL};color:#fff;text-decoration:none;font-weight:bold;padding:14px 28px;border-radius:8px;font-size:16px;">Apoiar a diar.ia.br</a>
     </p>
     <p style="font-size:14px;line-height:1.6;margin:0 0 8px;color:${INK};opacity:.75;">
       Já apoia? <a href="?entrar=1" style="color:${INK};text-decoration-color:${TEAL};">Entre com seu e-mail</a>.

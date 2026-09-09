@@ -74,7 +74,7 @@ describe("#7580 — o corte é no fim do 1º destaque", () => {
 describe("#7580 — o artigo completo NUNCA vai no corpo do não-apoiador", () => {
   it("o trecho não contém o 2º nem o 3º destaque", { skip: !temDraft(CICLO) }, () => {
     const md = readFileSync(draftPath(CICLO), "utf8");
-    const html = renderTeaserWithPaywall(buildArticleTeaserHtml(md, CICLO).html);
+    const html = renderTeaserWithPaywall(buildArticleTeaserHtml(md, CICLO).html, "2608");
     // Âncoras tiradas do draft REAL, não inventadas: se o corte regredir, é
     // este texto que aparece.
     const doSegundo = md.split("**DESTAQUE 2")[1]?.split("\n").find((l) => l.trim().length > 80);
@@ -94,7 +94,7 @@ describe("#7580 — o bloco de conversão, e o fail-closed nas duas direções",
   const teaser = "<html><body><p>começo do artigo</p></body></html>";
 
   it("injeta apoio em destaque e cadastro como linha secundária", () => {
-    const out = renderTeaserWithPaywall(teaser);
+    const out = renderTeaserWithPaywall(teaser, "2608");
     assert.match(out, /apoia\.se\/diaria/, "CTA de apoio");
     assert.match(out, /diar\.ia\.br\/assinar/, "CTA de cadastro");
     // Hierarquia: o apoio é o único `<a>` com fundo sólido (botão).
@@ -104,21 +104,21 @@ describe("#7580 — o bloco de conversão, e o fail-closed nas duas direções",
   });
 
   it("preserva o conteúdo do trecho", () => {
-    assert.match(renderTeaserWithPaywall(teaser), /começo do artigo/);
+    assert.match(renderTeaserWithPaywall(teaser, "2608"), /começo do artigo/);
   });
 
   it("o CTA do apoiador aponta pra porta explícita, não pra `?` (que serve o trecho)", () => {
     // `href="?"` voltaria ao trecho e deixaria o formulário de e-mail
     // inalcançável — um laço.
-    assert.match(renderTeaserWithPaywall(teaser), /href="\?entrar=1"/);
+    assert.match(renderTeaserWithPaywall(teaser, "2608"), /href="\?entrar=1"/);
   });
 
   it("REGRESSÃO: trecho sem </body> LANÇA — servir sem o bloco seria dar conteúdo de graça", () => {
-    assert.throws(() => renderTeaserWithPaywall("<html><body><p>sem fim</p></html>"), /sem <\/body>/);
+    assert.throws(() => renderTeaserWithPaywall("<html><body><p>sem fim</p></html>", "2608"), /sem <\/body>/);
   });
 
   it("o paywall seco continua existindo para quando não há trecho", () => {
-    const seco = renderPaywall();
+    const seco = renderPaywall("2608");
     assert.match(seco, /exclusivo para apoiadores/);
     assert.match(seco, /apoia\.se\/diaria/);
   });
@@ -217,7 +217,7 @@ describe("#7580 — o invariante roda SEM data/ (achado P1 do review)", () => {
   });
 
   it("e continua fora depois de o Worker montar o bloco de conversão", () => {
-    const servido = renderTeaserWithPaywall(buildArticleTeaserHtml(DRAFT_SINTETICO, "2608-09").html);
+    const servido = renderTeaserWithPaywall(buildArticleTeaserHtml(DRAFT_SINTETICO, "2608-09").html, "2608");
     assert.ok(!servido.includes("SEGREDO-DO-SEGUNDO-DESTAQUE"));
     assert.match(servido, /apoia\.se\/diaria/, "e o CTA está lá");
   });
@@ -242,7 +242,7 @@ describe("#7580 — injeção no ÚLTIMO </body> (regressão do #7592, reintrodu
   it("com DOIS </body>, o bloco entra antes do último", () => {
     // O #7592 corrigiu isto nas páginas de edição e eu reintroduzi aqui: numa
     // newsletter que cita HTML como texto, o primeiro `</body>` é o do exemplo.
-    const out = renderTeaserWithPaywall("<body>artigo <code>&lt;/body&gt;</code></body>resto</body>");
+    const out = renderTeaserWithPaywall("<body>artigo <code>&lt;/body&gt;</code></body>resto</body>", "2608");
     assert.equal((out.match(/apoia\.se\/diaria/g) ?? []).length, 1, "injeta uma vez só");
     assert.match(out, /resto[\s\S]*apoia\.se\/diaria[\s\S]*<\/body>$/, "antes do ÚLTIMO </body>");
   });

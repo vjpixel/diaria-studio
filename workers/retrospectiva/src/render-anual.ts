@@ -10,9 +10,17 @@
  * "cadastre-se", não "apoie" + "cadastre-se" hierarquizados.
  *
  * Cores inline espelham `scripts/lib/shared/design-tokens.ts` — mesma
- * convenção observada em todos os Workers com host público (zero import
- * cruzado do lado de RENDER pro Node do repo).
+ * convenção observada em todos os Workers com host público. Import cruzado
+ * pro Node do repo só via `scripts/lib/shared/` (worker-safe, sem I/O — ver
+ * `test/worker-bundle-node-only-imports.test.ts`): o registry de UTM abaixo
+ * entra pelo mesmo caminho que `src/index.ts` já usa para `retrospectiva-
+ * path.ts`/`robots-txt.ts`/`rate-limit.ts` (#7715).
  */
+import {
+  RETROSPECTIVA_ANUAL_UTM_SOURCE,
+  RETROSPECTIVA_ANUAL_UTM_MEDIUM,
+  buildRetrospectivaAnualCampaign,
+} from "../../../scripts/lib/shared/utm-registry.ts"; // #7715
 
 const INK = "#171411";
 const TEAL = "#00A0A0";
@@ -27,6 +35,26 @@ const BEGE = "#EBE5D0";
  * funcionar (adicionado nesta mesma unidade, #7581).
  */
 const SUBSCRIBE_ENDPOINT = "https://eia.diar.ia.br/jogar/subscribe";
+
+/**
+ * `SUBSCRIBE_ENDPOINT` com UTM próprio anexado como query string (#7715) —
+ * `path` é o path público da página (`AAAA`/`aniversarioAAAA`, ex: `2026`/
+ * `aniversario2026`), o mesmo que `classifyRetrospectivaPath` resolve no
+ * roteador. `workers/poll/src/subscribe.ts` lê o corpo do POST, não a query
+ * string, então isto não muda o cadastro em si — é a MEDIÇÃO do CTA (o link
+ * de saída da página) que ganha atribuição, escopo desta issue; ligar o
+ * subscribe em si a um `utm_source` dinâmico por edição é decisão à parte
+ * (mexeria na allowlist de spoofing de `client-utm-allowlist.ts`, fora do
+ * escopo dos 4 itens da #7715).
+ */
+function subscribeEndpointComUtm(path: string): string {
+  const params = new URLSearchParams({
+    utm_source: RETROSPECTIVA_ANUAL_UTM_SOURCE,
+    utm_medium: RETROSPECTIVA_ANUAL_UTM_MEDIUM,
+    utm_campaign: buildRetrospectivaAnualCampaign(path),
+  });
+  return `${SUBSCRIBE_ENDPOINT}?${params.toString()}`;
+}
 
 function escHtml(s: string): string {
   return s
@@ -83,8 +111,8 @@ function shell(title: string, description: string, canonical: string, bodyHtml: 
  * (fetch JSON pro worker `poll`, mesma origem cross-domain de sempre); sem
  * JS, faz um POST de página inteira pro mesmo endpoint (funciona, resposta
  * crua do worker `poll` — degradação aceitável). */
-function renderSignupForm(idSuffix: string): string {
-  return `<form class="signup" id="anual-signup-${idSuffix}" method="POST" action="${SUBSCRIBE_ENDPOINT}">
+function renderSignupForm(idSuffix: string, path: string): string {
+  return `<form class="signup" id="anual-signup-${idSuffix}" method="POST" action="${escHtml(subscribeEndpointComUtm(path))}">
     <input type="hidden" name="source" value="apex">
     <div class="hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
     <input type="email" name="email" placeholder="seu@email.com" required autocomplete="email">
@@ -99,7 +127,7 @@ function renderSignupForm(idSuffix: string): string {
  * página" (decisão do editor, comentário-marcador da #7581). Falha de rede
  * degrada pro submit nativo (o `<form>` continua com `action`/`method`
  * corretos, então um `preventDefault` que nunca roda ainda funciona). */
-function signupScript(idSuffix: string): string {
+function signupScript(idSuffix: string, path: string): string {
   return `<script>
 (function () {
   var form = document.getElementById("anual-signup-${idSuffix}");
@@ -116,7 +144,7 @@ function signupScript(idSuffix: string): string {
     if (!email || !optin) { setStatus("Preencha o e-mail e marque a caixinha."); return; }
     if (btn) btn.disabled = true;
     setStatus("Cadastrando…");
-    window.fetch(${JSON.stringify(SUBSCRIBE_ENDPOINT)}, {
+    window.fetch(${JSON.stringify(subscribeEndpointComUtm(path))}, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: email, optin: optin, website: website, source: "apex" })
@@ -158,18 +186,18 @@ export function renderEmailForm(slug: string, canonical: string): string {
 }
 
 /** Trecho ausente/sem teaser publicado — paywall seco com CTA de cadastro. */
-export function renderNoTeaser(canonical: string): string {
+export function renderNoTeaser(canonical: string, path: string): string {
   const body = `
     <h1>Esta retrospectiva é exclusiva para quem assina a diar.ia.br</h1>
     <p>Cadastro grátis. Assinantes ativos leem a edição completa.</p>
-    ${renderSignupForm("noteaser")}
+    ${renderSignupForm("noteaser", path)}
     <p class="muted">Já assina? <a href="?entrar=1">Entre com seu e-mail</a>.</p>
   `;
   return shell(
     "diar.ia.br — Retrospectiva anual (cadastro)",
     "A retrospectiva anual da diar.ia.br é exclusiva para assinantes. Cadastro gratuito.",
     canonical,
-    body + signupScript("noteaser"),
+    body + signupScript("noteaser", path),
   );
 }
 
@@ -183,7 +211,7 @@ export function renderNoTeaser(canonical: string): string {
  * conversão entregaria conteúdo de graça sem pedir cadastro em troca. Quem
  * chama trata como "sem trecho" e cai em `renderNoTeaser`.
  */
-export function renderTeaserWithSignup(teaserHtml: string, canonical: string): string {
+export function renderTeaserWithSignup(teaserHtml: string, canonical: string, path: string): string {
   const ocorrencias = [...teaserHtml.matchAll(/<\/body\s*>/gi)];
   const ultima = ocorrencias.at(-1);
   if (ultima?.index === undefined) {
@@ -199,13 +227,13 @@ export function renderTeaserWithSignup(teaserHtml: string, canonical: string): s
     <p style="font-size:16px;line-height:1.6;margin:0 0 20px;color:${INK};opacity:.85;">
       Cadastro grátis — o mesmo que já recebe a diária todo dia útil.
     </p>
-    ${renderSignupForm("teaser")}
+    ${renderSignupForm("teaser", path)}
     <p style="font-size:14px;line-height:1.6;margin:12px 0 0;color:${INK};opacity:.75;">
       Já assina? <a href="?entrar=1" style="color:${INK};text-decoration-color:${TEAL};">Entre com seu e-mail</a>.
     </p>
   </div>
 </div>
-${signupScript("teaser")}`;
+${signupScript("teaser", path)}`;
   return `${teaserHtml.slice(0, ultima.index)}${bloco}\n${teaserHtml.slice(ultima.index)}`;
 }
 

@@ -239,13 +239,13 @@ function injectSeo(
  *  (#7658/#7715) — `isAccessibleForFree: true`, sem `hasPart` (#7720). */
 async function cadastroTeaserResponse(env: Env, path: string, canonical: string): Promise<Response> {
   const teaser = await loadArticleTeaser(env, path);
-  if (!teaser) return htmlResponse(anual.renderNoTeaser(canonical));
+  if (!teaser) return htmlResponse(anual.renderNoTeaser(canonical, path));
   try {
-    const rendered = anual.renderTeaserWithSignup(teaser, canonical);
+    const rendered = anual.renderTeaserWithSignup(teaser, canonical, path);
     return htmlResponse(injectSeo(rendered, teaser, canonical, true));
   } catch (e) {
     console.error(`[retrospectiva] trecho presente mas não injetável: ${e instanceof Error ? e.message : e}`);
-    return htmlResponse(anual.renderNoTeaser(canonical));
+    return htmlResponse(anual.renderNoTeaser(canonical, path));
   }
 }
 
@@ -306,13 +306,13 @@ async function handleCadastro(
  */
 async function apoioTeaserResponse(env: Env, path: string, canonical: string): Promise<Response> {
   const teaser = await loadArticleTeaser(env, path);
-  if (!teaser) return htmlResponse(mensal.renderPaywall());
+  if (!teaser) return htmlResponse(mensal.renderPaywall(path));
   try {
-    const rendered = mensal.renderTeaserWithPaywall(teaser);
+    const rendered = mensal.renderTeaserWithPaywall(teaser, path);
     return htmlResponse(injectSeo(rendered, teaser, canonical, false, "#retrospectiva-paywall"));
   } catch (e) {
     console.error(`[retrospectiva] trecho mensal não injetável: ${e instanceof Error ? e.message : e}`);
-    return htmlResponse(mensal.renderPaywall());
+    return htmlResponse(mensal.renderPaywall(path));
   }
 }
 

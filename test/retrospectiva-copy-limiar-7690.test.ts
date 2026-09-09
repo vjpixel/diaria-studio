@@ -71,8 +71,8 @@ function texto(html: string): string {
 
 const SUPERFICIES: Array<[string, () => string]> = [
   ["form de e-mail", () => renderEmailForm("2608-09")],
-  ["paywall seco", () => renderPaywall()],
-  ["bloco de conversão do trecho", () => renderTeaserWithPaywall(TEASER)],
+  ["paywall seco", () => renderPaywall("2608")],
+  ["bloco de conversão do trecho", () => renderTeaserWithPaywall(TEASER, "2608")],
 ];
 
 describe("#7690 — a copy do gate cita o limiar REAL, nas 3 superfícies", () => {
