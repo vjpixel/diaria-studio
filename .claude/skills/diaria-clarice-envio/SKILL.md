@@ -45,6 +45,8 @@ número, ou abortar. Falha do `AskUserQuestion` cai na regra do #3938 (halt
 banner, nunca prosseguir sem resposta).
 
 ```bash
+
+# 7738 — distinção de teto: `queueAvailable` = fila diária unificada (`buildDailySendQueue` + guarda queued/committed corretos), NÃO `availableFirstSend` (1º-envio vitalício, SQL `sends_count<=0`). Reativação (`sends_count>0`) permanece fora deste teto; não confundir os dois ecles.
 # 2a. Editor confirmou o número proposto, OU não respondeu (skill roda sem editor
 #     nesta invocação isolada) — segue com o mesmo volume que a política propôs:
 npx tsx scripts/clarice-envio-run.ts --volume {plan.volume}
@@ -422,7 +424,7 @@ oferecer "sim"**. Os bloqueios são:
 - Semáforo vermelho (circuit breaker estourado).
 - Crédito Brevo não cobre a onda.
 - Crédito Brevo **não consultado** — nunca agendar sem validar antes.
-- Fila de 1º envio menor que o volume proposto — se o Passo 5
+- Teto de fila diária unificada (`availableDailyQueue`, #7738) menor que o volume proposto — se o Passo 5
   (`mvOnDemandPlan`) revelou um recorte cobrível, rode-o e volte aqui antes
   de tentar de novo; se revelou vazio ou `backlogInsufficient`, a alavanca de
   fila não está disponível e o editor decide (reduzir volume ou aceitar).
