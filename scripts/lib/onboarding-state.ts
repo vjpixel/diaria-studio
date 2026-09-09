@@ -444,6 +444,51 @@ export function shouldResetCursorForBackendSwitch(
   return storedBackend !== currentBackend;
 }
 
+/**
+ * Sentinela de "não deu pra contar a coorte órfã" — o fetch da janela entre
+ * o cursor antigo e o bootstrap falhou (rede, auth, backend fora do ar).
+ * NUNCA confundir com `0`, que é a afirmação positiva "contei, e não havia
+ * ninguém na janela": a decisão do editor sobre reinscrever depende de saber
+ * qual dos dois é (#7665).
+ */
+export const BOOTSTRAP_GAP_COUNT_UNKNOWN = -1;
+
+/**
+ * Monta a nota de bootstrap de troca de backend de detecção (#7599) com o
+ * relato da coorte órfã (#7665 residual).
+ *
+ * **O que a nota NÃO promete, de propósito.** A decisão do editor no #7665
+ * foi *reportar*, nunca reinscrever: quem caiu na janela entre o cursor
+ * antigo e o bootstrap não recebe boas-vindas automaticamente — reinscrever
+ * é ação externa, tomada por quem lê o aviso. Por isso o texto diz
+ * "reinscrever só sob decisão do editor" e o teste de regressão trava a
+ * AUSÊNCIA de qualquer promessa de ação automática, não só a presença do
+ * número.
+ *
+ * @pure testável sem I/O
+ */
+export function buildBackendSwitchNote(
+  backendAnterior: "beehiiv" | "kit" | null | undefined,
+  backend: "beehiiv" | "kit",
+  gapCount: number,
+  /** `false` quando o re-bootstrap veio de campo AUSENTE (backend nunca
+   *  registrado, #7599), não de uma troca real. Aí não existe janela a
+   *  reportar — e afirmar "0 cadastros" seria pior que omitir, porque diz
+   *  ao editor que se mediu e não havia ninguém, quando não se mediu nada. */
+  houveTrocaReal = true,
+): string {
+  const gapReport = !houveTrocaReal
+    ? "; sem janela de coorte órfã (backend anterior desconhecido — nada a comparar)"
+    : gapCount >= 0
+      ? `; janela entre cursor antigo e bootstrap: ${gapCount} cadastros ` +
+        `(coorte órfã — reinscrever só sob decisão do editor, #7665)`
+      : "; não foi possível contar coorte órfã";
+  return (
+    `bootstrap (troca de backend de detecção ${backendAnterior} → ${backend}): cursor remarcado em now; ` +
+    `nenhuma entrada retroativa adicionada (#7599)${gapReport}`
+  );
+}
+
 // ---------------------------------------------------------------------------
 // #7599: alarme de detecção zerada — item 4 da issue
 // ---------------------------------------------------------------------------

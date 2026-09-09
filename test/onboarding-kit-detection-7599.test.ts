@@ -210,10 +210,25 @@ describe("onboarding-welcome-run.ts — detecção via Kit (#7599)", () => {
         summary.notes.some((n) => n.includes("troca de backend")),
         `esperada nota de re-bootstrap por troca de backend: ${JSON.stringify(summary.notes)}`,
       );
-      assert.equal(
-        hitPaths().length,
-        0,
-        `re-bootstrap por troca de backend não deveria sequer chamar o Kit — obteve: ${JSON.stringify(hitPaths())}`,
+      // #7665 relaxou este assert de "zero chamadas" para "só LEITURA".
+      //
+      // O invariante que o #7599 protege é **nunca reenviar retroativo**, e
+      // quem o garante são os dois asserts acima (`detected_new === 0` e a
+      // nota de re-bootstrap) — "zero chamadas" era um proxy estrutural que
+      // tornava a garantia trivialmente verdadeira enquanto o caminho não
+      // precisava ler nada. O #7665 (decisão do editor: REPORTAR a coorte
+      // órfã, nunca reinscrevê-la) exige uma leitura pra contar quem caiu na
+      // janela entre o cursor antigo e o bootstrap. Ler não é enviar.
+      //
+      // O que continua travado, e é o que importa: toda chamada é de leitura
+      // do domínio `/subscribers` (o mock não expõe rota de envio, então
+      // qualquer POST de broadcast apareceria aqui como path estranho), e
+      // `detected_new` segue 0. O caso do campo AUSENTE (backend nunca
+      // registrado) mantém o assert original de zero chamadas logo abaixo —
+      // lá não há janela a contar, então a leitura não se justifica.
+      assert.ok(
+        hitPaths().every((p) => p.startsWith("/subscribers")),
+        `re-bootstrap por troca de backend só pode LER (/subscribers, pra contar a coorte órfã do #7665) — obteve: ${JSON.stringify(hitPaths())}`,
       );
 
       const written = JSON.parse(readFileSync(storePath, "utf8")) as {
