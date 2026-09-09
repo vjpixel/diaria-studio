@@ -297,8 +297,8 @@ export function computeRollingWindow(
     comparavel = false;
     motivo =
       `linha-base é de ${base!.data_apuracao}, não de ${baseEsperada} (dia imediatamente anterior ao início ` +
-      `da janela, ${inicio}) — falta linha de apuração entre as duas, e gasto/cadastros reportados somam mais ` +
-      `dias que os ${dias} pedidos`;
+      `da janela, ${inicio}) — falta linha de apuração entre as duas, e gasto/cadastros reportados abrangem ` +
+      `mais dia(s) que o(s) ${dias} pedido(s)`;
   }
 
   return {
