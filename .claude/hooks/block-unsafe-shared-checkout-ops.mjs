@@ -576,12 +576,53 @@ export const GIT_DESTRUCTIVE_COMMANDS = ["checkout", "restore", "clean", "reset"
  * checkout <branch>` (sem `--`) NÃO casa — é troca de branch, coberta em
  * outro hook. Devolve os paths depois do `--`, ou `null` se o segmento não
  * for um checkout com `--`.
+ *
+ * **Exceção fix iteration 1 do #7767 (lockout real, não hipotético):**
+ * `scripts/lib/git-sync.ts` — que roda no Stage 0 de TODA edição — instrui
+ * literalmente `git checkout HEAD -- <arquivo>` como o remédio documentado
+ * pro estado absorvente `preexisting_unmerged_state` (índice com caminhos
+ * UU/AA de uma stash pop conflitante de rodada anterior). Bloquear esse
+ * comando quando uma coordenadora está ativa deixaria o fluxo de edição sem
+ * caminho de recuperação. `HEAD` como ref explícito (não `origin/master`,
+ * não qualquer outro ref — o caso do incidente que originou o #7730) é
+ * exempto: descarta o lado LOCAL de um path específico em favor do último
+ * commit já mergeado, blast radius bem mais estreito que
+ * `git checkout origin/master -- .` (árvore inteira, ref arbitrário
+ * potencialmente divergente).
  */
 function extractGitCheckoutDashDashPaths(tokens) {
   if (tokens[0]?.toLowerCase() !== "git" || tokens[1]?.toLowerCase() !== "checkout") return null;
   const dashIdx = tokens.indexOf("--");
   if (dashIdx === -1) return null;
+  const refToken = dashIdx > 2 ? tokens[dashIdx - 1] : undefined;
+  if (refToken?.toUpperCase() === "HEAD") return null; // exceção documentada acima
   return tokens.slice(dashIdx + 1);
+}
+
+/**
+ * `git checkout -f`/`--force` (com ou sem `--`) — descarta modificações
+ * locais mesmo quando git normalmente recusaria (troca de branch com
+ * arquivo modificado que conflitaria). Achado do fix iteration 1 do #7767:
+ * o falso-negativo original só olhava `--`, então `git checkout -f
+ * <branch>` (força a troca por cima de mudanças locais, tão destrutivo
+ * quanto `reset --hard`) passava batido.
+ */
+function isGitCheckoutForce(tokens) {
+  if (tokens[0]?.toLowerCase() !== "git" || tokens[1]?.toLowerCase() !== "checkout") return false;
+  return tokens.slice(2).some((t) => t === "-f" || t === "--force");
+}
+
+/**
+ * `git checkout .` (SEM `--` explícito) — idioma comum pra "descartar tudo
+ * que mudou no cwd". Não há ambiguidade real (nenhuma branch se chama
+ * literalmente `.`), então git resolve isso como pathspec mesmo sem `--`.
+ * Achado do fix iteration 1 do #7767 (mesmo tipo de falso-negativo do
+ * `-f` acima — `detectDestructiveGitTarget` só casava com `--` literal).
+ */
+function isGitCheckoutBareDot(tokens) {
+  if (tokens[0]?.toLowerCase() !== "git" || tokens[1]?.toLowerCase() !== "checkout") return false;
+  const nonFlags = tokens.slice(2).filter((t) => !t.startsWith("-"));
+  return nonFlags.length === 1 && nonFlags[0] === ".";
 }
 
 /** `git restore <path...>` — sempre destrutivo (equivalente moderno do checkout -- path). */
@@ -629,6 +670,8 @@ export function detectDestructiveGitTarget(command) {
   for (const tokens of commandSegments(command)) {
     const checkoutPaths = extractGitCheckoutDashDashPaths(tokens);
     if (checkoutPaths !== null) return { wholeTree: false, paths: checkoutPaths };
+    if (isGitCheckoutForce(tokens)) return { wholeTree: true, paths: [] };
+    if (isGitCheckoutBareDot(tokens)) return { wholeTree: true, paths: [] };
     const restorePaths = extractGitRestorePaths(tokens);
     if (restorePaths !== null) return { wholeTree: false, paths: restorePaths };
     if (isGitCleanForce(tokens)) return { wholeTree: true, paths: [] };

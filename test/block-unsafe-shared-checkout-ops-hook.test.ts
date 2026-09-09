@@ -502,6 +502,31 @@ describe("detectDestructiveGitTarget (#7730)", () => {
     assert.equal(detectDestructiveGitTarget("git switch master"), null);
   });
 
+  it("(fix iteration 1 #7767) 'git checkout HEAD -- <path>' → NÃO casa — exceção do lockout git-sync.ts", () => {
+    assert.equal(detectDestructiveGitTarget("git checkout HEAD -- data/foo.md"), null);
+    assert.equal(detectDestructiveGitTarget("git checkout head -- data/foo.md"), null); // case-insensitive
+  });
+
+  it("(fix iteration 1 #7767) 'git checkout origin/master -- <path>' CONTINUA casando — exceção é só HEAD", () => {
+    assert.deepEqual(detectDestructiveGitTarget("git checkout origin/master -- data/foo.md"), {
+      wholeTree: false,
+      paths: ["data/foo.md"],
+    });
+  });
+
+  it("(fix iteration 1 #7767) 'git checkout -f <branch>' → wholeTree true (falso-negativo original: só olhava '--')", () => {
+    assert.deepEqual(detectDestructiveGitTarget("git checkout -f master"), { wholeTree: true, paths: [] });
+    assert.deepEqual(detectDestructiveGitTarget("git checkout --force master"), { wholeTree: true, paths: [] });
+  });
+
+  it("(fix iteration 1 #7767) 'git checkout .' (SEM --) → wholeTree true", () => {
+    assert.deepEqual(detectDestructiveGitTarget("git checkout ."), { wholeTree: true, paths: [] });
+  });
+
+  it("(fix iteration 1 #7767) 'git checkout -b feature/x' continua NÃO casando — criação de branch, não força nem é '.'", () => {
+    assert.equal(detectDestructiveGitTarget("git checkout -b feature/x"), null);
+  });
+
   it("'git restore <path...>' → wholeTree false", () => {
     const t = detectDestructiveGitTarget("git restore test/foo.test.ts");
     assert.deepEqual(t, { wholeTree: false, paths: ["test/foo.test.ts"] });

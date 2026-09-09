@@ -87,9 +87,50 @@ export function stripQuotedSpans(command) {
 
 const SEPARATOR_RE = /(?:&&|;|\|\||\||\n)/;
 
+/**
+ * Remove o CORPO de heredocs (`<<EOF ... EOF`, `<<'EOF' ... EOF`,
+ * `<<-EOF ... EOF`), preservando a linha de abertura. Duplicado de
+ * `stripHeredocSpans` em `block-unsafe-shared-checkout-ops.mjs` (#7757) —
+ * fix iteration 1 do #7767: este hook novo tinha `commandSegments` próprio
+ * SEM essa correção, então um heredoc cujo corpo citasse a linha literal
+ * `git push` (ex: corpo de um `gh issue comment`/`gh pr create --body-file`
+ * documentando este mesmo hook) era detectado como push real — mesma
+ * classe de falso-positivo do Modo 2 do #7757, reintroduzida por
+ * duplicação em vez de reuso (self-contained hooks não importam um do
+ * outro — cada um carrega sua própria cópia mínima).
+ */
+export function stripHeredocSpans(command) {
+  if (typeof command !== "string") return command;
+  const startRe = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/g;
+  let result = "";
+  let lastIndex = 0;
+  let m;
+  while ((m = startRe.exec(command)) !== null) {
+    if (m.index < lastIndex) continue; // dentro de um heredoc já removido
+    const delim = m[2];
+    const isDashVariant = m[0].startsWith("<<-");
+    const markerEnd = m.index + m[0].length;
+    const lineEnd = command.indexOf("\n", markerEnd);
+    if (lineEnd === -1) {
+      result += command.slice(lastIndex);
+      lastIndex = command.length;
+      break;
+    }
+    const bodyStart = lineEnd + 1;
+    const terminatorRe = new RegExp(`^${isDashVariant ? "[ \\t]*" : ""}${delim}[ \\t]*$`, "m");
+    const termMatch = terminatorRe.exec(command.slice(bodyStart));
+    const stripEnd = termMatch ? bodyStart + termMatch.index + termMatch[0].length : command.length;
+    result += command.slice(lastIndex, lineEnd + 1);
+    lastIndex = stripEnd;
+    startRe.lastIndex = stripEnd;
+  }
+  result += command.slice(lastIndex);
+  return result;
+}
+
 function commandSegments(command) {
   if (typeof command !== "string") return [];
-  const stripped = stripQuotedSpans(command);
+  const stripped = stripQuotedSpans(stripHeredocSpans(command));
   return stripped
     .split(SEPARATOR_RE)
     .map((seg) => seg.trim().split(/\s+/).filter(Boolean))

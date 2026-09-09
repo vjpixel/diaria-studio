@@ -7,6 +7,7 @@ import {
   isBareGitPush,
   commandHasBareGitPush,
   isLinkedWorktree,
+  stripHeredocSpans,
   BARE_PUSH_IN_WORKTREE_BLOCK_REASON,
 } from "../.claude/hooks/block-worktree-bare-push.mjs";
 
@@ -84,6 +85,33 @@ describe("commandHasBareGitPush (#7722)", () => {
 
   it("tipo não-string → false", () => {
     assert.equal(commandHasBareGitPush(undefined), false);
+  });
+
+  it("(fix iteration 1 #7767) NÃO detecta 'git push' dentro do CORPO de um heredoc — mesma classe do #7757, reintroduzida por duplicação neste hook novo", () => {
+    const cmd =
+      "cat <<'EOF' > /tmp/body.md\n" +
+      "O guard bloqueou 'git push' num comando que nunca rodou de verdade.\n" +
+      "EOF\n" +
+      "gh issue comment 7767 --body-file /tmp/body.md";
+    assert.equal(commandHasBareGitPush(cmd), false);
+  });
+
+  it("(fix iteration 1 #7767) AINDA detecta 'git push' real que vem DEPOIS de um heredoc no mesmo comando", () => {
+    const cmd = "cat <<'EOF' > /tmp/x.md\ntexto qualquer\nEOF\ngit push";
+    assert.equal(commandHasBareGitPush(cmd), true);
+  });
+});
+
+describe("stripHeredocSpans (#7767 fix iteration 1, duplicado de block-unsafe-shared-checkout-ops.mjs)", () => {
+  it("remove o CORPO do heredoc, preserva a linha de abertura e o que vem depois", () => {
+    const cmd = "cat <<EOF > x.md\ngit push\nEOF\necho done";
+    const stripped = stripHeredocSpans(cmd);
+    assert.doesNotMatch(stripped, /git push/);
+    assert.match(stripped, /echo done/);
+  });
+
+  it("sem heredoc: devolve inalterado", () => {
+    assert.equal(stripHeredocSpans("git push"), "git push");
   });
 });
 
