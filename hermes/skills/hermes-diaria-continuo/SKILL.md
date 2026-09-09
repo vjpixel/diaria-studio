@@ -13,14 +13,10 @@ metadata:
 
 # Hermes Diária Contínuo (v0.5.0 — arquitetura delegada)
 
-## O que mudou na v0.5.0 (28/08/2026, decisão do editor)
+## Papel do Hermes nesta skill
 
-A v0.4 **parafraseava** as regras do repo em prosa que envelhecia em silêncio —
-a cópia local do `classifyExecTrack` dizia 5 categorias quando o código real
-tem 6 (`epica`, #6201, nunca chegou aqui). A v0.5 troca paráfrase por
-**execução**: classificação roda o código real do repo, e implementação roda
-dentro do harness do Claude Code (CLAUDE.md carregado, hooks e scripts reais),
-com modelos do OpenRouter — sem tocar a cota da assinatura Anthropic.
+Histórico versão a versão (incluindo o porquê da v0.5.0 trocar paráfrase por
+execução) vive em `references/changelog.md` — aqui fica só o comportamento atual.
 
 Papel do Hermes nesta skill: **orquestrador** (loop do cron, claims, fila,
 relatório no Telegram). Quem pensa sobre código é o harness delegado.
@@ -108,6 +104,7 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
 | `~/.hermes/scripts/opus-daily-diff-review.sh` | review Opus do diff ACUMULADO do dia (cron separado, 1x/dia; #6865, ex-`daily-consolidated-review.sh`) | Anthropic (assinatura) |
 | `~/.hermes/scripts/continuo-pr-review.sh` | review Sonnet de toda PR aberta no repo, exceto `bot/*` (escopo ampliado além de `continuo/*` no #7446 item 4 — PR de qualquer branch podia ficar sem merger nenhum; cron separado, cadência: derivar com `hermes cron list --all` — nunca esta prosa, #6928; #6865) — o MODELO nunca mergeia (`gh pr merge` fora do `--allowedTools`); o SCRIPT BASH mergeia depois, atrás de 8 portões fail-closed (#6926) — `REPO` fixo em `diaria-studio`, nunca toca PR do fork (#6817 item 6). `escalate` label a PR (`continuo-escalado`) e notifica só na 1ª vez (#7446 item 2). | Anthropic (assinatura) |
 | `npx tsx scripts/check-continuo-ci-fixer-candidate.ts` / `mark-continuo-ci-fix-attempted.ts` | antes de reivindicar issue nova, escolhe a PR `continuo/*` mais antiga com CI `fail` e sem tentativa de conserto ainda (§3b, #7446 item 3); cap de 1 tentativa via label `continuo-ci-fix-tentado` | determinístico (npx tsx), sem LLM |
+| `npx tsx scripts/check-continuo-pr-cap.ts` / `scripts/lib/continuo-pr-cap.ts` | antes de reivindicar issue nova, conta PRs `continuo/*` abertas (exclui `continuo/rescue-*`); teto 3 — se >= 3, trabalha própria fila (§3c, #7746) | determinístico (npx tsx), sem LLM, fail-soft permite quando `gh` falha |
 
 ## Cada ciclo (tick do cron)
 
@@ -311,13 +308,9 @@ ordem:
 
 ### 3b. Antes de reivindicar issue nova: candidata de conserto de CI (#7446 item 3)
 
-**Medido ao vivo (04-05/09/2026): PR #7429/#7432 com CI em FAILURE há
-17h/15h, sem ninguém tentar consertar** — o tick que abre a PR morre
-(budget/crash/fim) antes do CI terminar, e o próximo reivindica outra
-issue sem voltar. **NÃO reintroduz "PR pendente bloqueia o tick"** (#6917:
-"PR aberta NUNCA encerra o tick" segue valendo — aquilo é PR aguardando
-REVIEW, estado normal; isto é CI **vermelho**, estado quebrado que ninguém
-mais conserta sozinho). Só muda a PRIORIDADE do que o tick faz primeiro.
+Não reintroduz "PR pendente bloqueia o tick" (#6917 segue valendo): muda só
+a PRIORIDADE do que o tick faz primeiro. Incidente que motivou e o porquê da
+ordem de marcação: `references/ci-fixer-rationale-20260905.md`.
 
 Logo antes de reivindicar uma issue nova (depois de processar a fila de PRs
 do passo 3 acima), rodar:
@@ -335,10 +328,8 @@ ainda. Se houver candidata:
    `npx tsx scripts/mark-continuo-ci-fix-attempted.ts --pr N` — aplica
    `continuo-ci-fix-tentado`, fechando o cap de 1 tentativa por PR
    (`selectCiFixCandidate`, `scripts/lib/continuo-ci-fixer-eligibility.ts`)
-   ANTES de gastar tempo consertando (review da PR #7450: marcar só DEPOIS
-   deixaria uma janela de corrida do tamanho do conserto inteiro entre 2
-   ticks escolhendo a MESMA PR; marcar antes reduz a janela pro intervalo
-   entre "escolher" e "marcar"). Exit ≠ 0 = o label NÃO pegou de verdade —
+   ANTES de gastar tempo consertando (porquê: reference acima).
+   Exit ≠ 0 = o label NÃO pegou de verdade —
    tratar como falha real (não seguir como se tivesse fechado o cap; a PR
    segue candidata no próximo tick, o que é aceitável — a alternativa,
    assumir sucesso silenciosamente, É o livelock que este mecanismo existe
@@ -353,6 +344,25 @@ recebeu a tentativa e segue vermelha fica coberta pelo `escalate` do
 gate de merge (#7446 item 2, label `continuo-escalado`) e pela checagem 9
 de `watch-continuo-health.sh` (#7446 item 6, alarme de fila) — nunca fica
 invisível, só para de ser retentada mecanicamente.
+
+### 3c. Antes de reivindicar issue nova: teto de PRs `continuo/*` (#7746)
+
+Antes de reivindicar, contar as PRs `continuo/*` abertas (exclui `continuo/rescue-*`):
+
+```
+npx tsx scripts/check-continuo-pr-cap.ts
+```
+
+Retorna `{"open":N,"cap":3,"mayClaim":boolean,"counted":string[]}`. Se `mayClaim` false (`open >= 3`): **não reivindicar** — trabalhar a própria fila (§3b: consertar/rejeitar uma das 3; fechar rejeitada; consertar CI se aplicável) e reportar no relatório do tick. Se `mayClaim` true: reivindicar normalmente.
+
+Fail-soft (mesma disciplina do §3b `checked: -1`): `gh pr list` falhando → `mayClaim=true`, `counted=[]`, motivo visível no stderr; um tick a mais é barato, contínuo travado por infra não é (#7746).
+
+Regras de contagem (#7746):
+- Conta TODAS as abertas (não só sem veredito) — pressão empurra pro §3 passo 1.
+- Exclui drafts de resgate (`continuo/rescue-*`, #7130 / #7742): não são trabalho ativo.
+- Teto é 3 (mesmo do overnight, #6299); com review a cada 120 min, 3 PRs sem veredito = no máximo ~2h até todas terem veredito.
+
+Não confundir com #6917 ("PR aberta encerra o tick") — isto não encerra nem impede o tick; muda o QUE ele trabalha.
 
 ### 4. Implementar issues elegíveis — via harness delegado
 
@@ -559,23 +569,19 @@ aparecerem na classificação.
 prosa: derivar com `hermes cron list --all` (#6928; já foi registrada
 errada aqui duas vezes) — com **assinatura
 Anthropic** (Sonnet) — review de TODA PR aberta no repo, exceto `bot/*`
-(escopo ampliado além de `continuo/*` no #7446 item 4; #7242 já havia
-corrigido a prosa de "1 PR por vez" para "todas as PRs elegíveis abertas por
-execução" — o loop sempre iterou todas, nunca uma só), não o
-diff acumulado do dia (papel distinto do #6). Existe pra dar ao contínuo
+(escopo ampliado além de `continuo/*` no #7446 item 4). Revisa TODAS as PRs
+elegíveis abertas por execução, nunca uma só, e nunca o diff acumulado do dia
+(papel distinto do #6). Existe pra dar ao contínuo
 um revisor externo separado do tick, já que o contínuo é impedido de
 mergear a própria PR (#6864) e o review diário sozinho deixava PRs
-esperando até ~1 dia (#6849/#6864/#6865). O descompasso "12:1" que
-entrou nesta prosa e no script era derivado de cadências erradas —
-corrigido no #6928, e o motivo do script não depende da razão. Posta comentário de
+esperando até ~1 dia (#6849/#6864/#6865). Posta comentário de
 review no formato que `check-pr-review-authenticity.ts` reconhece como
 `independent-review` (#6732) — um review de verdade, de uma sessão
 distinta da que abriu a PR, então o formato reconhecido passa a
 corresponder a um dispatch real, não a texto auto-declarado pela
-delegação (#6849). **Autoridade de merge desde #6926** (esta seção dizia
-"NUNCA mergeia" — desatualizado; ver tabela da seção "Ferramentas desta
+delegação (#6849). **Autoridade de merge desde #6926** — ver a tabela de "Ferramentas desta
 skill" acima e `scripts/lib/continuo-merge-gate.ts` para os 8 portões
-fail-closed que decidem `merge`/`escalate`/`reject`). `escalate` labela a PR
+fail-closed que decidem `merge`/`escalate`/`reject`. `escalate` labela a PR
 (`continuo-escalado`) e notifica só na 1ª vez que ela escala (#7446 item 2)
 — o pickup do `/diaria-overnight` (seção 3, passo 3, #6823) e a revisão
 humana continuam sendo os dois caminhos que resolvem uma PR escalada.
@@ -620,8 +626,8 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Pitfalls herdados (ver references/)
 
-- `subagent-mcp-drain-20260828.md` (references/) — drain subagente MCP (#6465, epic #6464): lote 5-10 (#6496), anti-fabricação (verificar `.jsonl` + manifest, NÃO confiar só em EXIT=0), dedup obrigatório (`subscriber_id` + `(sub, url_hash, clicked_at)`) devido a duplicados em fronteiras de página, fonte única Helios/Neo (`data/beehiiv-backup/subscriber-engagement/` — `.worktrees/agent-*` NÃO sincronizam automaticamente), claim hygiene (`--kind continuo`).
-- `tick-20260828-claim-collision-and-subagent.md` (references/) — aprendizados operacionais do tick 21:05 BRT 28/08: claim colisão `continuo` vs `develop` (sessão stale não bloqueia claim ativo) + delegação de drain a subagente + detecção de claim obsoleto.
+- `subagent-mcp-drain-20260828.md` (references/) — drain subagente MCP (#6465): lote 5-10, anti-fabricação (nunca confiar só em EXIT=0), dedup obrigatório, fonte única Helios/Neo, claim hygiene.
+- `tick-20260828-claim-collision-and-subagent.md` (references/) — colisão de claim `continuo` vs `develop` (sessão stale não bloqueia claim ativo) e detecção de claim obsoleto.
 - Rotação de modelo do Hermes (v0.4 §rotação): OBSOLETA para implementação —
   o fallback de modelo agora vive no wrapper. Mantida só para o modelo que o
   próprio Hermes usa para orquestrar/relatar.
