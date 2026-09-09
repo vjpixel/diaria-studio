@@ -1830,6 +1830,102 @@ describe("extractCoverageLine + renderCoverage (#1093)", () => {
     );
   });
 
+  it("#7666: coverage line para no INÍCIO do callout bold-wrap colado (sem `---`), sem engoli-lo", () => {
+    // Bug real, edição 260909: o box de agradecimento a apoiadores saiu
+    // DUPLICADO no HTML — uma vez como parágrafo solto na coverage (os `**`
+    // aninhados casados errado pelo conversor genérico) e outra como callout
+    // de verdade. Caminho que dispara: o snippet `agradecimento-apoiadores.md`
+    // documenta o bloco colado APÓS a frase-CTA, sem `---` à frente, e é esse
+    // caminho que duplicava. Com o fix, a região de intro particiona em
+    // coverage → callout → trailer sem sobreposição.
+    const callout = "**Agradeço às novas apoiadoras e ao novo apoiador: Josiane, Melina e Vitor. Seu apoio ajuda a manter essa curadoria diária de pé!**";
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+      "",
+      "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+      "",
+      callout,
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const line = extractCoverageLine(md);
+    assert.ok(line, "coverage line deve ser extraída");
+    assert.match(line!, /^Olá! Eu sou o \[Pixel\]/);
+    assert.match(line!, /considere apoiar o projeto\]\(https:\/\/apoia\.se\/diaria\)\.$/);
+    // O callout bold-wrap NÃO deve fazer parte da coverage line — ele é do
+    // extractIntroCallout. Antes do fix, o coverage engolia o bloco inteiro.
+    assert.doesNotMatch(line!, /Agradeço às novas apoiadoras/);
+    assert.doesNotMatch(line!, /\*\*/);
+  });
+
+  it("#7666: extractIntroCallout captura o callout colado (sem `---`), mesmo com coverage line presente", () => {
+    const callout = "**Agradeço às novas apoiadoras e ao novo apoiador: Josiane, Melina e Vitor. Seu apoio ajuda a manter essa curadoria diária de pé!**";
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+      "",
+      "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+      "",
+      callout,
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const calloutText = extractIntroCallout(md);
+    assert.equal(
+      calloutText,
+      "Agradeço às novas apoiadoras e ao novo apoiador: Josiane, Melina e Vitor. Seu apoio ajuda a manter essa curadoria diária de pé!",
+    );
+  });
+
+  it("#7666: renderHTML NÃO duplica o agradecimento quando o callout está colado (sem `---`)", () => {
+    const callout = "**Agradeço às novas apoiadoras e ao novo apoiador: Josiane, Melina e Vitor. Seu apoio ajuda a manter essa curadoria diária de pé!**";
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+      "",
+      "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+      "",
+      callout,
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "**[Título do destaque](https://example.com/d1)**",
+      "",
+      "Corpo do destaque.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Importa por isso.",
+    ].join("\n");
+    const content = {
+      title: "Título do destaque",
+      subtitle: "",
+      coverImage: "",
+      destaques: [{ title: "Título do destaque", url: "https://example.com/d1", body: "Corpo do destaque.", why: "Importa por isso.", category: "🚀 LANÇAMENTO", credit: null }],
+      eia: { credit: "", correctAnswer: null },
+      sections: [],
+      sorteio: null,
+      encerrar: null,
+      erroIntencional: null,
+      coverageLine: extractCoverageLine(md),
+      introCallout: extractIntroCallout(md),
+      coverageLineTrailer: extractCoverageLineTrailer(md),
+    };
+    const html = renderHTML(content);
+    // O texto do agradecimento aparece exatamente 1× no HTML.
+    const agradecimentoCount = html.split("Agradeço às novas apoiadoras").length - 1;
+    assert.equal(agradecimentoCount, 1, "agradecimento deve aparecer exatamente 1 vez (sem duplicação)");
+    // E ele aparece DENTRO do markup de callout (fundo #EBE5D0), não como
+    // `<p>` de intro solto.
+    const calloutIdx = html.indexOf("Agradeço às novas apoiadoras");
+    const panelIdx = html.indexOf("background:#EBE5D0");
+    assert.ok(calloutIdx >= panelIdx, "agradecimento deve estar dentro do painel de callout (fundo #EBE5D0)");
+  });
+
   it("#3691: bloco de boas-vindas SEM a frase-CTA de apoio ainda é capturado (fallback)", () => {
     // Bug real, edição 260720: o editor removeu a frase-CTA "considere
     // apoiar o projeto" do bloco de boas-vindas (pra não competir com o box
