@@ -66,13 +66,28 @@ export function stripHeredocSpans(command) {
   return result;
 }
 
-// Ancorado em `^`: o wrapper só conta quando ABRE o segmento, isto é, quando
-// está em posição de comando. Achado do review da PR #7774: sem a âncora,
-// `echo "ver bash -c 'npm ci' no guard"` — texto que apenas MENCIONA o
-// comando — tinha o miolo promovido a comando e era bloqueado. Mesma classe do
-// falso positivo do heredoc, por outra porta.
+// Prefixo que não muda QUAL comando roda: atribuição de variável inline
+// (`FOO=bar cmd`) e wrappers no-op (`sudo`, `env`, `exec`, `nice`, `command`,
+// `time`, `nohup`). Achado do review da PR #7774: ao ancorar a detecção do
+// wrapper em `^`, `sudo bash -c "npm ci"` e `FOO=bar bash -c "npm ci"` — que a
+// versão anterior pegava — passaram a escapar. Reconhecer esse prefixo devolve
+// a semântica correta ("está em POSIÇÃO DE COMANDO") sem voltar a casar
+// wrapper no meio de um texto citado.
+const COMMAND_PREFIX_RE =
+  /^(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*|(?:sudo|env|exec|nice|command|time|nohup)(?:\.exe)?)\s+)*/i;
+
+/** Remove o prefixo no-op, devolvendo o comando de fato invocado no segmento. */
+export function stripCommandPrefix(segment) {
+  const text = String(segment).trim();
+  return text.replace(COMMAND_PREFIX_RE, "").trim();
+}
+
+// Ancorado em `^` (depois do prefixo no-op): o wrapper só conta quando está em
+// posição de comando. Sem a âncora, `echo "ver bash -c 'npm ci' no guard"` —
+// texto que apenas MENCIONA o comando — tinha o miolo promovido a comando e
+// era bloqueado. Mesma classe do falso positivo do heredoc, por outra porta.
 const SHELL_WRAPPER_FLAG_RE =
-  /^(?:[A-Za-z]:[^\s]*|[^\s]*\/)?(?:bash|sh|zsh|dash|ksh|powershell|pwsh|cmd)(?:\.exe)?\s+(?:-c|-Command|-command|\/c|\/C)\s+/i;
+  /^(?:[A-Za-z]:[^\s]*|[^\s]*\/)?['"]?(?:bash|sh|zsh|dash|ksh|powershell|pwsh|cmd)(?:\.exe)?['"]?\s+(?:-c|-Command|-command|\/c|\/C)\s+/i;
 
 /**
  * A partir de `start`, lê uma string entre aspas simples ou duplas e devolve
@@ -105,7 +120,7 @@ function readQuotedString(text, start) {
 // subcomando — não casava. Subshell é a forma idiomática de rodar algo num
 // diretório sem mexer no `cd` da sessão, então era um bypass mais provável que
 // o `bash -c` já coberto.
-const SEGMENT_BREAKERS = new Set(["(", ")", "&", "|", ";", "\n"]);
+const SEGMENT_BREAKERS = new Set(["(", ")", "{", "}", "&", "|", ";", "\n"]);
 
 /**
  * Divide em segmentos de comando RESPEITANDO aspas: separador dentro de uma
@@ -153,9 +168,10 @@ function splitTopLevel(text) {
  * `git commit -m "roda npm ci"` e `echo "use bash -c 'npm ci'"` fora do radar.
  */
 export function shellWrapperPayload(segment) {
-  const m = SHELL_WRAPPER_FLAG_RE.exec(segment);
+  const command = stripCommandPrefix(segment);
+  const m = SHELL_WRAPPER_FLAG_RE.exec(command);
   if (!m) return null;
-  const quoted = readQuotedString(segment, m[0].length);
+  const quoted = readQuotedString(command, m[0].length);
   return quoted && quoted.value ? quoted.value : null;
 }
 
@@ -181,7 +197,11 @@ export function commandSegments(command, depth = 0) {
  * estiver lá. `npm run`, `npm test`, `npm ls` etc. não contam.
  */
 export function isNpmInstallSegment(segment) {
-  return /^(?:[A-Za-z]:[^\s]*|[^\s]*\/)?npm(?:\.cmd)?\s+(?:ci|install|i|add)(?:\s|$)/.test(String(segment).trim());
+  // `stripCommandPrefix` pelo mesmo motivo do wrapper: `sudo npm ci` e
+  // `FOO=bar npm ci` instalam igual (achado do review da PR #7774).
+  return /^(?:[A-Za-z]:[^\s]*|[^\s]*\/)?npm(?:\.cmd)?\s+(?:ci|install|i|add)(?:\s|$)/.test(
+    stripCommandPrefix(segment),
+  );
 }
 
 /** `--prefix <dir>` / `--prefix=<dir>` redireciona o alvo do npm. */

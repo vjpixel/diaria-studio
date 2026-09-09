@@ -196,6 +196,41 @@ test("hook cobre subshell e não reage a wrapper citado como texto (#7774)", asy
   assert.equal(blocked("cd /outro && npm ci"), false, "diretório sem symlink segue liberado");
 });
 
+// Terceiro par de achados do mesmo review: ancorar o wrapper em `^` para matar
+// o falso positivo do texto citado passou a exigir que ele ABRISSE o segmento,
+// e com isso `sudo bash -c "npm ci"` / `FOO=bar bash -c "npm ci"` — que a
+// versão anterior pegava — escaparam. O prefixo que não muda QUAL comando roda
+// (atribuição inline + no-op como sudo/env/exec/nice/command/time/nohup) passou
+// a ser reconhecido, e vale igual para o `npm` direto: `sudo npm ci` instala
+// como qualquer outro. `{ ...; }` fechou junto, pela mesma porta do subshell.
+test("hook enxerga através de sudo/env/atribuição inline e de agrupamento (#7774)", async () => {
+  const hook = await import(`../.claude/hooks/${HOOK_BASENAME}`);
+  const inspect = (dir: string) => (dir.replaceAll("\\", "/").endsWith("/wt") ? "/principal/node_modules" : null);
+  const blocked = (cmd: string, cwd = "/wt") => Boolean(hook.findBlockedNpmInstall(cmd, cwd, inspect));
+
+  // npm direto atrás de prefixo no-op.
+  assert.ok(blocked("sudo npm ci"), "sudo npm ci");
+  assert.ok(blocked("env FOO=bar npm ci"), "env com atribuição");
+  assert.ok(blocked("FOO=bar npm ci"), "atribuição inline");
+
+  // Wrapper de shell atrás do mesmo prefixo.
+  assert.ok(blocked('sudo bash -c "npm ci"'), "sudo + wrapper");
+  assert.ok(blocked('env FOO=bar bash -c "npm ci"'), "env + wrapper");
+  assert.ok(blocked('TERM=xterm bash -c "cd /wt && npm ci"', "/x"), "atribuição + wrapper + cd");
+  assert.ok(blocked('nice bash -c "npm ci"'), "nice");
+  assert.ok(blocked('exec bash -c "npm ci"'), "exec");
+  assert.ok(blocked('command bash -c "npm ci"'), "command");
+  assert.ok(blocked('nohup bash -c "npm ci"'), "nohup");
+  assert.ok(blocked(`'bash' -c "npm ci"`), "binário do shell entre aspas");
+
+  // Agrupamento por chaves, mesma porta do subshell.
+  assert.ok(blocked("{ cd /wt && npm ci; }", "/x"), "agrupamento por chaves");
+
+  // O prefixo restrito não reabre o falso positivo do texto citado.
+  assert.equal(blocked(`gh pr comment 1 --body "rode npm ci depois"`), false, "corpo de comentário é texto");
+  assert.equal(blocked("npx tsx scripts/x.ts"), false, "npx não é npm install");
+});
+
 // O hook é self-contained (nenhum import de `.ts`, convenção dos hooks
 // irmãos), então a paridade com a lib precisa ser travada por teste.
 test("hook e lib concordam nos mesmos casos (paridade do guard duplicado)", async () => {
