@@ -84,7 +84,11 @@ describe("buildCarouselSlideTexts (pure)", () => {
     assert.equal(texts.p3.title, "Três.");
     assert.equal(texts.p1.kicker, "01 / 03");
     assert.equal(texts.p3.kicker, "03 / 03");
-    assert.equal(texts.cta.title, INSTAGRAM_CTA_LINE);
+    // #7676: título do CTA passa por splitParagraphIntoTwoBlocks — as 2
+    // frases de INSTAGRAM_CTA_LINE agora saem em blocos separados, não mais
+    // coladas (antes iam cru, e o wrap quebrava a 2ª frase no meio).
+    assert.equal(texts.cta.title, splitParagraphIntoTwoBlocks(INSTAGRAM_CTA_LINE));
+    assert.match(texts.cta.title, /\n\n/, "CTA tem 2 frases — deve dividir em 2 blocos");
     for (const slot of CAROUSEL_SLIDE_SLOTS) assert.equal(texts[slot].footer, "diar.ia.br");
   });
 
@@ -146,44 +150,38 @@ describe("splitParagraphIntoTwoBlocks (pure, #6136 item 2)", () => {
   it("1 frase só sem vírgula -> NÃO divide (#7253, era o bug: caía pra fronteira de PALAVRA arbitrária)", () => {
     const texto = "Uma frase unica mas bem mais longa sem ponto final nenhum no meio dela toda";
     const result = splitParagraphIntoTwoBlocks(texto);
-    assert.equal(result, texto, "sem fronteira de sentença nem de oração, o bloco deve voltar inalterado");
+    assert.equal(result, texto, "sem fronteira de sentença, o bloco deve voltar inalterado");
     assert.doesNotMatch(result, /\n\n/);
   });
 
-  it("1 frase só, com vírgula -> quebra na fronteira de ORAÇÃO mais próxima do meio (#7253 nível 2)", () => {
+  it("1 frase só, com vírgula -> NÃO divide (#7253, decisão do editor 08/09/2026: vírgula deixou de ser fronteira aceita)", () => {
     const texto = "Uma frase única mas bem mais longa, sem ponto final nenhum no meio dela toda";
     const result = splitParagraphIntoTwoBlocks(texto);
-    assert.match(result, /\n\n/);
-    const [first, second] = result.split("\n\n");
-    assert.equal(`${first} ${second}`, texto);
-    assert.ok(first.endsWith(","), "1º bloco deveria terminar na vírgula (fronteira de oração)");
+    assert.equal(result, texto, "vírgula não é mais fronteira de corte válida — só fim de frase");
+    assert.doesNotMatch(result, /\n\n/);
   });
 
-  it("#7253 (D3 p1 da 260903): frase única com 2 vírgulas — corte não pode cair no meio de \"nível crítico\"", () => {
+  it("#7253 (D1 p1 da 260909): frase única com vírgula — não pode cortar \"...num site alemão,\" | \"incluindo mensagens...\"", () => {
+    const texto =
+      "Pesquisadores encontraram mais de 15 mil edições feitas por agentes de IA da OpenAI num site alemão, incluindo mensagens ensinando uns aos outros a burlar as regras da própria empresa que os criou.";
+    const result = splitParagraphIntoTwoBlocks(texto);
+    assert.equal(result, texto, "frase única — mesmo com vírgula no meio, deve virar bloco único");
+    assert.doesNotMatch(result, /\n\n/);
+  });
+
+  it("#7253 (D3 p1 da 260903, caso histórico que motivou a issue): frase única com 2 vírgulas — vira bloco único", () => {
     const texto =
       "A OpenAI diz que o Astra, seu próximo modelo, é o primeiro a cruzar o nível crítico de cibersegurança na régua interna que ela usa desde 2023 para medir risco.";
     const result = splitParagraphIntoTwoBlocks(texto);
-    assert.match(result, /\n\n/, "tem vírgulas suficientes para uma fronteira de oração viável");
-    assert.doesNotMatch(result, /cruzar o nível\n\ncrítico/, "não pode cortar dentro do sintagma \"nível crítico\"");
-    const [first, second] = result.split("\n\n");
-    assert.equal(`${first} ${second}`.replace(/\s+/g, " "), texto);
+    assert.equal(result, texto, "sem fim de frase no meio, o parágrafo não deve ser dividido");
+    assert.doesNotMatch(result, /\n\n/);
   });
 
-  it("#7253 (D1 p2 da 260903): frase única com 2 vírgulas — corte não pode partir a locução \"sem um humano\"", () => {
-    const texto =
-      "A versão Cyber foi desenhada pra apoiar fluxos agentivos, sistemas que tomam decisões em cadeia sem um humano clicando em cada etapa, o que muda o tipo de risco que times de segurança precisam vigiar.";
-    const result = splitParagraphIntoTwoBlocks(texto);
-    assert.match(result, /\n\n/, "tem vírgulas suficientes para uma fronteira de oração viável");
-    assert.doesNotMatch(result, /cadeia sem\n\num humano/, "não pode cortar entre \"sem\" e seu complemento");
-    const [first, second] = result.split("\n\n");
-    assert.equal(`${first} ${second}`.replace(/\s+/g, " "), texto);
-  });
-
-  it("#7253: hífen simples (palavra composta) NÃO é tratado como fronteira de oração", () => {
+  it("#7253: hífen simples (palavra composta) NÃO é tratado como fronteira de corte", () => {
     const texto = "O porta-voz negou o vazamento mas não respondeu quando questionado sobre o prazo final";
     const result = splitParagraphIntoTwoBlocks(texto);
-    // Sem vírgula/ponto-e-vírgula/dois-pontos/travessão, só o hífen de "porta-voz"
-    // — que não é fronteira de oração — não deve produzir corte.
+    // Sem fim de frase, só o hífen de "porta-voz" — que nunca foi fronteira
+    // de sentença — não deve produzir corte.
     assert.equal(result, texto);
   });
 
@@ -403,16 +401,23 @@ describe("buildFlatCardSvg com layout fixed ancora o texto no TOPO (#6078)", () 
  * SEMANAL, layout `fill` — nunca tocado por este item da issue).
  */
 describe("handle + micro-CTA no SVG do carrossel diário (#6086 itens a/b, rodapé compacto desde #6136 item 1)", () => {
-  it("slide de parágrafo (p1) renderiza handle compacto (@ verde, sem wordmark) e micro-CTA no SVG", () => {
+  it("slide de parágrafo (p1) renderiza handle compacto (@ verde + wordmark colorido) e micro-CTA no SVG", () => {
     const genericText = "Primeiro parágrafo.\n\nSegundo parágrafo.\n\nTerceiro parágrafo.";
     const texts = buildCarouselSlideTexts(genericText);
     const svg = buildFlatCardSvg(texts.p1, DAILY_CAROUSEL_LAYOUT);
+    // #7672: o "diar.ia.br" do handle compacto usa a MESMA colorização do
+    // wordmark do rodapé completo (pontos + "br" em brand, "diar"/"ia" em
+    // ink) — antes saía como texto plano escapado, marca inteira em ink.
     assert.match(
       svg,
-      new RegExp(`<tspan fill="${COLORS.brand}">@</tspan>diar\\.ia\\.br`),
-      "handle compacto: '@' em brand seguido do resto do handle",
+      new RegExp(
+        `<tspan fill="${COLORS.brand}">@</tspan>diar<tspan fill="${COLORS.brand}">\\.</tspan>ia<tspan fill="${COLORS.brand}">\\.</tspan><tspan fill="${COLORS.brand}">br</tspan>`,
+      ),
+      "handle compacto: '@' em brand seguido do wordmark colorido (pontos e 'br' em brand)",
     );
-    assert.doesNotMatch(svg, /diar<tspan/, "#6136 item 1: sem wordmark completo — nunca 'diar.ia.br @diar.ia.br'");
+    // #6136 item 1 continua valendo: sem "diar.ia.br · @diar.ia.br" duplicado
+    // — só 1 ocorrência do wordmark completo no rodapé (dentro do handle).
+    assert.equal((svg.match(/diar<tspan/g) ?? []).length, 1, "wordmark completo aparece só 1× (dentro do handle)");
     assert.match(svg, new RegExp(DAILY_CAROUSEL_MICRO_CTA));
   });
 

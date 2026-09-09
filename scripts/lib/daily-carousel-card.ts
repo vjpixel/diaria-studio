@@ -181,14 +181,17 @@ export const DAILY_CAROUSEL_MICRO_CTA = "Segue pra não perder amanhã";
 
 /**
  * (#6136 item 3) Kicker do slide de CTA final — upgrade de "Newsletter
- * grátis" pra uma chamada explícita de ASSINATURA. O `title` desse slide
- * (`INSTAGRAM_CTA_LINE`) é deliberadamente mantido intacto — mesmo copy da
+ * grátis" pra uma chamada explícita de ASSINATURA. O COPY desse slide
+ * (`INSTAGRAM_CTA_LINE`) é deliberadamente mantido intacto — mesmo texto da
  * legenda, decisão original do #6005 Parte B pra não divergir — e por
  * design nunca usa a palavra "assine" (o texto do Instagram evita CTA de
- * e-mail explícito no corpo, ver `social-cta-lines.ts`). O kicker é a única
- * linha do slide livre pra dizer isso sem tocar no corpo: pequena, no topo,
- * cor de marca — não compete visualmente com o texto principal (mesma classe
- * de risco que a issue pede pra evitar).
+ * e-mail explícito no corpo, ver `social-cta-lines.ts`). "Intacto" é sobre
+ * as PALAVRAS, não a apresentação: desde o #7676 o `title` renderizado passa
+ * por `splitParagraphIntoTwoBlocks` (mesma quebra visual dos slides de
+ * parágrafo) — o texto não muda, só ganha respiro entre as 2 frases. O
+ * kicker é a única linha do slide livre pra dizer isso sem tocar no corpo:
+ * pequena, no topo, cor de marca — não compete visualmente com o texto
+ * principal (mesma classe de risco que a issue pede pra evitar).
  */
 export const DAILY_CAROUSEL_CTA_KICKER = "Assine grátis, direto no seu e-mail";
 
@@ -198,29 +201,21 @@ export const DAILY_CAROUSEL_CTA_KICKER = "Assine grátis, direto no seu e-mail";
  * (não confundir com os 3 cards-parágrafo já existentes — isto é uma quebra
  * dentro de CADA um deles).
  *
- * Cascata de candidatos de corte, cada nível só é tentado se o anterior não
- * achou nenhum (#7253, substitui o fallback "qualquer espaço" que causava o
- * bug original):
- *   1. Fronteira de SENTENÇA — fim de `.`/`!`/`?` seguido de espaço.
- *   2. Fronteira de ORAÇÃO — vírgula, ponto e vírgula, dois-pontos ou
- *      travessão seguido de espaço. Um degrau abaixo de sentença, mas ainda
- *      uma fronteira sintática real (o texto do `social-writer` é quase
- *      sempre 1 frase só com 1+ vírgulas — ver #7253, evidência do D1 p2 com
- *      2 vírgulas e 0 pontos internos).
- *   3. NENHUMA fronteira segura → **não divide**, retorna o texto inteiro.
- *      Este é o ponto central da correção do #7253: dividir por "espaço mais
- *      próximo do meio" cortava no meio de sintagmas/locuções (ex: "nível" |
- *      "crítico", "sem" | "um humano") porque nem toda posição de espaço é
- *      uma fronteira legível — só fim de sentença e fim de oração são. Um
- *      card com 1 bloco só (texto ancorado no topo desde o #6078) é sempre
- *      preferível a um card com 2 blocos que cortam a frase no meio.
+ * ÚNICO ponto de corte aceito (#7253, decisão do editor 08/09/2026— remove
+ * o nível de fronteira de ORAÇÃO que existiu aqui): fronteira de SENTENÇA,
+ * fim de `.`/`!`/`?` seguido de espaço. Sem essa fronteira → **não divide**,
+ * retorna o texto inteiro. Cortar por vírgula/ponto-e-vírgula/dois-pontos/
+ * travessão (nível intermediário testado antes) ainda partia frase única de
+ * forma visível ("...num site alemão," | "incluindo mensagens...") — não é
+ * fronteira legível o bastante pro leitor, mesmo sendo sintaticamente real.
+ * Um card com 1 bloco só (texto ancorado no topo desde o #6078) é sempre
+ * preferível a um card com 2 blocos que partem a frase no meio.
  *
  * Nunca corta DENTRO de um trecho `**marcado**` (#6086 item c) — um corte
  * ali quebraria o par de delimitadores, deixando `**` órfão na saída
- * (regressão fácil de não perceber num teste que não testa marcação); vale
- * pros 2 níveis de fronteira acima, não só o de sentença. Texto sem nenhum
- * ponto de corte viável fora de um trecho marcado volta INALTERADO — nunca
- * produz um segundo bloco vazio.
+ * (regressão fácil de não perceber num teste que não testa marcação). Texto
+ * sem nenhum ponto de corte viável fora de um trecho marcado volta
+ * INALTERADO — nunca produz um segundo bloco vazio.
  */
 export function splitParagraphIntoTwoBlocks(text: string): string {
   const trimmed = text.trim();
@@ -239,7 +234,15 @@ export function splitParagraphIntoTwoBlocks(text: string): string {
   const mid = trimmed.length / 2;
   const candidates: number[] = [];
 
-  // Nível 1 — fronteira de sentença: fim de `.`/`!`/`?` (+ fechamento de aspas/parênteses) seguido de espaço.
+  // Fronteira de sentença: fim de `.`/`!`/`?` (+ fechamento de aspas/parênteses) seguido de espaço.
+  // ÚNICO nível de corte aceito (#7253, decisão do editor 08/09/2026): um
+  // fallback pra fronteira de oração (vírgula/ponto-e-vírgula/dois-pontos/
+  // travessão) existiu aqui, mas ainda partia frase única no meio de forma
+  // visível ("...num site alemão," | "incluindo mensagens..."). Medição sobre
+  // as 12 edições com carrossel diário (260824+): restringir a só este nível
+  // faz 23,6% dos parágrafos (26/110) virarem bloco único em vez de 2 blocos,
+  // sem aumentar overflow (1 caso antes, 1 caso depois) — o respiro perdido é
+  // absorvido pela linha em branco que o bloco único não precisa mais gastar.
   const sentenceRe = /[.!?]+(?:["'”’)\]]*)\s+/g;
   let sm: RegExpExecArray | null;
   while ((sm = sentenceRe.exec(trimmed)) !== null) {
@@ -247,21 +250,7 @@ export function splitParagraphIntoTwoBlocks(text: string): string {
     if (pos > 0 && pos < trimmed.length && !insideBold(pos)) candidates.push(pos);
   }
 
-  if (candidates.length === 0) {
-    // Nível 2 — fronteira de oração: vírgula, ponto e vírgula, dois-pontos ou
-    // travessão (—/–) seguido de espaço. Hífen simples ("-") FICA DE FORA de
-    // propósito: aparece dentro de palavras compostas ("porta-voz") e faixas
-    // numéricas ("20-30") sem ser fronteira de oração nenhuma. Ainda uma
-    // fronteira sintática real, não um corte arbitrário (#7253).
-    const clauseRe = /[,;:—–](?:["'”’)\]]*)\s+/g;
-    let cm: RegExpExecArray | null;
-    while ((cm = clauseRe.exec(trimmed)) !== null) {
-      const pos = cm.index + cm[0].length;
-      if (pos > 0 && pos < trimmed.length && !insideBold(pos)) candidates.push(pos);
-    }
-  }
-
-  if (candidates.length === 0) return trimmed; // sem fronteira de sentença NEM de oração — não divide (#7253)
+  if (candidates.length === 0) return trimmed; // sem fronteira de sentença — não divide (#7253)
 
   const splitAt = candidates.reduce((best, pos) => (Math.abs(pos - mid) < Math.abs(best - mid) ? pos : best));
   const first = trimmed.slice(0, splitAt).trim();
@@ -305,7 +294,14 @@ export function buildCarouselSlideTexts(genericText: string): Record<CarouselSli
     ...(Object.fromEntries(entries) as Record<"p1" | "p2" | "p3", FlatCardText>),
     // CTA final: sem handle/microCta — redundante ali (ver comentário acima).
     // #6136 item 3: kicker upgradado pra chamada explícita de assinatura.
-    cta: { kicker: DAILY_CAROUSEL_CTA_KICKER, title: INSTAGRAM_CTA_LINE, footer: "diar.ia.br" },
+    // #7676: título também passa por splitParagraphIntoTwoBlocks — antes ia
+    // cru, e as 2 frases de INSTAGRAM_CTA_LINE saíam coladas num bloco só,
+    // com o wrap quebrando a 2ª frase no meio sem respiro nenhum entre elas.
+    cta: {
+      kicker: DAILY_CAROUSEL_CTA_KICKER,
+      title: splitParagraphIntoTwoBlocks(INSTAGRAM_CTA_LINE),
+      footer: "diar.ia.br",
+    },
   };
 }
 

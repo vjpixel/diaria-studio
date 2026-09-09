@@ -361,6 +361,19 @@ function fillingFontSize(title: string, availableWidth: number, availableHeight:
 const WORDMARK = "diar.ia.br";
 
 /**
+ * Pure: markup colorido do wordmark `diar.ia.br` sozinho — `diar`/`ia` em
+ * ink (texto padrão, sem `fill` explícito), os 2 pontos e o `br` em
+ * `COLORS.brand` (teal), igual ao wordmark de `buildOverlaySvg`/`buildCardSvg`
+ * (gen-social-card-4x5.ts). Extraído de `footerMarkup` (#7672) pra ser a
+ * ÚNICA fonte da colorização — antes `handleOnlyMarkup` reimplementava o
+ * wordmark sem essa regra e o `@diar.ia.br` do modo compacto saía com a
+ * marca inteira em ink, só a arroba em teal (achado ao vivo, edição 260909).
+ */
+function wordmarkMarkup(): string {
+  return `diar<tspan fill="${COLORS.brand}">.</tspan>ia<tspan fill="${COLORS.brand}">.</tspan><tspan fill="${COLORS.brand}">br</tspan>`;
+}
+
+/**
  * Pure: monta o `<text>` do rodapé — se `footer` TERMINA com o wordmark
  * `diar.ia.br` (caso de `buildFlatCardTexts`: capa leva "{range} · diar.ia.br",
  * CTA leva só "diar.ia.br"), os pontos e o "br" saem em `COLORS.brand`
@@ -373,19 +386,25 @@ const WORDMARK = "diar.ia.br";
 function footerMarkup(footer: string): string {
   if (!footer.endsWith(WORDMARK)) return esc(footer);
   const prefix = footer.slice(0, -WORDMARK.length);
-  return `${esc(prefix)}diar<tspan fill="${COLORS.brand}">.</tspan>ia<tspan fill="${COLORS.brand}">.</tspan><tspan fill="${COLORS.brand}">br</tspan>`;
+  return `${esc(prefix)}${wordmarkMarkup()}`;
 }
 
 /**
  * (#6136 item 1) Rodapé em MODO COMPACTO — só o handle, `@` em `COLORS.brand`,
- * resto em `COLORS.ink`. Substitui inteiramente `footerMarkup(footer) + handleMarkup`
- * (que lia "diar.ia.br · @diar.ia.br", o mesmo nome duas vezes) quando
+ * `diar.ia.br` com a MESMA colorização de `footerMarkup`/`wordmarkMarkup`
+ * (#7672 — antes saía inteiro em `COLORS.ink`, perdendo a cor de marca).
+ * Substitui inteiramente `footerMarkup(footer) + handleMarkup` (que lia
+ * "diar.ia.br · @diar.ia.br", o mesmo nome duas vezes) quando
  * `FlatCardText.compactHandle` está ligado. Handle sem `@` inicial (entrada
- * malformada) cai no texto plano — nunca lança.
+ * malformada) cai no texto plano — nunca lança. Handle com `@` mas resto
+ * diferente do wordmark (ex: um handle de outra conta) cai no texto plano
+ * escapado depois do `@`, mesma tolerância de antes.
  */
 function handleOnlyMarkup(handle: string): string {
   if (!handle.startsWith("@")) return esc(handle);
-  return `<tspan fill="${COLORS.brand}">@</tspan>${esc(handle.slice(1))}`;
+  const rest = handle.slice(1);
+  const restMarkup = rest === WORDMARK ? wordmarkMarkup() : esc(rest);
+  return `<tspan fill="${COLORS.brand}">@</tspan>${restMarkup}`;
 }
 
 /**
