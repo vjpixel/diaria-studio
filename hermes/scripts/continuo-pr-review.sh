@@ -758,13 +758,12 @@ VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramen
     --model sonnet --effort low 1>&2
   CLAUDE_RC=$?
   set -e
-  echo "[continuo-pr-review] PR #$PR: revisada (veredito e comentário na própria PR no GitHub)"
-
   if [ "$CLAUDE_RC" -ne 0 ]; then
     echo "[continuo-pr-review] PR #$PR: sessão de review saiu com rc=$CLAUDE_RC — não conta como revisada, tenta de novo no próximo tick" >&2
     FAILED=$((FAILED + 1))
     continue
   fi
+  echo "[continuo-pr-review] PR #$PR: revisada (veredito e comentário na própria PR no GitHub)"
   REVIEWED=$((REVIEWED + 1))
 
   # #6926: portão de merge — SÓ depois da sessão de review já ter saído
