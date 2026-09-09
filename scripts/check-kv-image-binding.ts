@@ -170,18 +170,20 @@ async function main(): Promise<void> {
     ROOT,
   );
 
-  saveState({ lastStatus: result.status, lastCheckedAt: new Date().toISOString() });
-
-  if (!alarmNow) return;
-
-  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-  const { subject, body } = buildAlarmEmail(result);
-  try {
+  if (alarmNow) {
+    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
+    const { subject, body } = buildAlarmEmail(result);
+    // Mesmo racional de home-meta-check.ts/hub-drift-check.ts: SEM try/catch
+    // em volta do envio — se `sendGmailMessage` falhar (credencial ausente,
+    // Gmail fora do ar), `main()` deve lançar e o `saveState` abaixo NUNCA
+    // roda. Assim a próxima execução ainda vê `lastStatus !== "binding-morto"`
+    // e tenta alarmar de novo, em vez de marcar a queda como "já avisado"
+    // com o editor nunca tendo recebido nada.
     await sendGmailMessage(to, subject, body);
     console.log(`${LOG_PREFIX} alarme enviado para ${to}`);
-  } catch (error) {
-    console.error(`${LOG_PREFIX} falha ao enviar alarme:`, error instanceof Error ? error.message : error);
   }
+
+  saveState({ lastStatus: result.status, lastCheckedAt: new Date().toISOString() });
 }
 
 if (isMainModule(import.meta.url)) {
