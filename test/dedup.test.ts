@@ -258,6 +258,17 @@ describe("dedup", () => {
     const result = dedup(articles, new Set(), 0.85);
     assert.equal(result.kept.length, 2);
   });
+
+  it("#7662: allowlist de sender NÃO isenta a Pass 1 (url-match contra últimas 3 edições) — higiene ≠ correção", () => {
+    const articles = [
+      { url: "https://newsletter.7min.ai/edition-42", title: "já usado", flag: "newsletter_extracted", always_consider: true },
+      { url: "https://newsletter.7min.ai/edition-43", title: "novo", flag: "newsletter_extracted", always_consider: true },
+    ];
+    const past = new Set(["https://newsletter.7min.ai/edition-42"]);
+    const result = dedup(articles, past, 0.85);
+    assert.equal(result.kept.length, 1);
+    assert.equal(result.kept[0].url, "https://newsletter.7min.ai/edition-43");
+  });
 });
 
 describe("extractPastTitles (#231)", () => {

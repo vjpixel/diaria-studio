@@ -779,4 +779,88 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     // Guard #1756: threads_found>0 + arquivo ausente -> warn loud via log-event.
     assert.ok(logEventCalls.some((args) => args.includes("warn") && args.some((a) => a.includes("threads_found"))));
   });
+
+  it("#7662 item 1 — since_hours_by_sender dispara UMA chamada extra de fetch-newsletter-threads, isolada, com a janela do override", async () => {
+    const { exec, calls } = makeFakeExec(
+      happyExecHandlers({
+        "fetch-newsletter-threads.ts": () => ok(JSON.stringify({ threads_found: 1, threads_written: 1, skipped_no_body: 0 })),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const deps = baseDeps({
+      exec,
+      execAsync,
+      existsSync: () => true, // captured-newsletters.json presente -> #1756 guard não dispara
+      readFile: (p) => {
+        if (p.endsWith("platform.config.json")) {
+          return JSON.stringify({
+            newsletter_auto_capture: {
+              enabled: true,
+              senders: ["email@newsletter.7min.ai", "b@example.com"],
+              since_hours: 48,
+              since_hours_by_sender: { "email@newsletter.7min.ai": 168 },
+            },
+          });
+        }
+        return "[]"; // captured-newsletters.json body (não usado por este teste)
+      },
+    });
+
+    const result = await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      deps,
+    );
+
+    assert.equal(result.code, 0);
+    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads"));
+    assert.equal(fetchCalls.length, 2, "1 chamada pros senders default + 1 isolada pro sender com override");
+
+    const defaultCall = fetchCalls.find((c) => c.args.includes("48"));
+    const overrideCall = fetchCalls.find((c) => c.args.includes("168"));
+    assert.ok(defaultCall, "chamada com since-hours default (48) existe");
+    assert.ok(overrideCall, "chamada com since-hours do override (168) existe");
+    assert.ok(defaultCall!.args[defaultCall!.args.indexOf("--senders") + 1].includes("b@example.com"));
+    assert.equal(overrideCall!.args[overrideCall!.args.indexOf("--senders") + 1], "email@newsletter.7min.ai");
+  });
+
+  it("#7662 — since_hours_by_sender com sender ausente de senders[] gera warn via log-event, nunca falha em silêncio", async () => {
+    const { exec, calls } = makeFakeExec(happyExecHandlers());
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const logEventCalls: string[][] = [];
+    const deps = baseDeps({
+      exec: (script, args) => {
+        if (script.includes("log-event")) logEventCalls.push(args);
+        return exec(script, args);
+      },
+      execAsync,
+      existsSync: () => true,
+      readFile: (p) => {
+        if (p.endsWith("platform.config.json")) {
+          return JSON.stringify({
+            newsletter_auto_capture: {
+              enabled: true,
+              senders: ["b@example.com"],
+              since_hours: 48,
+              since_hours_by_sender: { "email@newsletter.7min.ai": 168 }, // não está em senders[]
+            },
+          });
+        }
+        return "[]";
+      },
+    });
+
+    const result = await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      deps,
+    );
+
+    assert.equal(result.code, 0);
+    assert.ok(
+      logEventCalls.some((args) => args.includes("warn") && args.some((a) => a.includes("since_hours_by_sender"))),
+      "warning explícito, não silêncio — allowlist/override sem efeito precisa aparecer no log",
+    );
+    // Sem override efetivo (sender ausente de senders[]), só a chamada default deve rodar.
+    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads"));
+    assert.equal(fetchCalls.length, 1);
+  });
 });

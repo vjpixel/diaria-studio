@@ -551,6 +551,51 @@ describe("filterDateWindow — editor_submitted nunca removido pela janela (#465
   });
 });
 
+// ---------------------------------------------------------------------------
+// #7662 — always_consider (sender allowlist) nunca removido pela janela de
+// data. Mesmo mecanismo/precedente de editor_submitted acima (#4656) —
+// isenção de higiene, não de correção.
+// ---------------------------------------------------------------------------
+
+describe("filterDateWindow — always_consider (allowlist de sender, #7662) nunca removido pela janela", () => {
+  it("matéria fora da janela de data, com always_consider, é poupada (item (d) da issue #7662)", () => {
+    const input = {
+      lancamento: [
+        {
+          url: "https://newsletter.7min.ai/old-edition-link",
+          title: "Matéria antiga do 7min.ai",
+          date: "2026-04-10",
+          flag: "newsletter_extracted",
+          always_consider: true,
+        },
+      ],
+      radar: [],
+    };
+    const { kept, removed } = filterDateWindow(input, "2026-04-24", 3);
+    assert.equal(kept.lancamento.length, 1, "always_consider não deve sumir");
+    assert.equal(kept.lancamento[0].date_unverified, true);
+    assert.equal(kept.lancamento[0].date_window_spared, true);
+    assert.equal(removed.length, 0);
+  });
+
+  it("regressão: artigo NORMAL newsletter_extracted (sem always_consider) continua caindo pela janela", () => {
+    const input = {
+      lancamento: [
+        {
+          url: "https://other-newsletter.example/old",
+          title: "Newsletter não-allowlisted, antiga",
+          date: "2026-04-10",
+          flag: "newsletter_extracted",
+        },
+      ],
+      radar: [],
+    };
+    const { kept, removed } = filterDateWindow(input, "2026-04-24", 3);
+    assert.equal(kept.lancamento.length, 0, "sem always_consider, a janela de data continua valendo");
+    assert.equal(removed.length, 1);
+  });
+});
+
 describe("bucketWindowDays (#1155, #1629 — agora aceita Category)", () => {
   // #1629: bucketWindowDays foi adaptado pra receber a Category do artigo
   // (não o Bucket). Bucket `radar` mistura articles com category=pesquisa

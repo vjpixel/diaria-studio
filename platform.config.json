@@ -102,6 +102,10 @@
       "cyberman@mail.beehiiv.com"
     ],
     "since_hours": 48,
+    "since_hours_by_sender": {
+      "email@newsletter.7min.ai": 168
+    },
+    "always_consider_senders": ["email@newsletter.7min.ai"],
     "min_primary_urls": 5
   },
   "boxes_divulgacao": {

@@ -74,6 +74,13 @@ interface Article {
    * `dedup.ts` Pass 1d e `verify-accessibility.ts` §1i).
    */
   flag?: string;
+  /**
+   * #7662: true quando o artigo veio de um sender em
+   * `newsletter_auto_capture.always_consider_senders` — mesmo tratamento
+   * de `editor_submitted` na janela de data abaixo (isenção de higiene,
+   * nunca de correção).
+   */
+  always_consider?: boolean;
   [key: string]: unknown;
 }
 
@@ -252,6 +259,12 @@ export function filterDateWindow(
       }
 
       const isEditorSubmitted = article.flag === "editor_submitted";
+      // #7662: sender allowlisted é isento da janela de data — mesmo
+      // precedente de editor_submitted (#4656). Combinado abaixo em
+      // isDateWindowExempt; isEditorSubmitted continua sendo logado
+      // separadamente em `editor_submitted` (RemovedEntry) sem mudança.
+      const isAlwaysConsider = article.always_consider === true;
+      const isDateWindowExempt = isEditorSubmitted || isAlwaysConsider;
       const eff = effectiveDate(article);
       // Sem date nem published_at = mantém com benefício da dúvida (#1322
       // preserva regra antiga). Editor-submitted normalmente cai aqui e está
@@ -270,7 +283,7 @@ export function filterDateWindow(
         // sobrepor essa decisão editorial. Mantido com date_unverified pro
         // editor reconsiderar no gate — `date_window_spared` documenta que
         // teria sido removido não fosse a isenção.
-        if (isEditorSubmitted) {
+        if (isDateWindowExempt) {
           kept[bucket].push({ ...article, date_unverified: true, date_window_spared: true });
           continue;
         }

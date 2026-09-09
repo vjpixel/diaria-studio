@@ -476,28 +476,64 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
     let autoCaptureEnabled = false;
     let senders: string[] = [];
     let sinceHours = 48;
+    // #7662 item 1: janela de captura configurável por sender. Um dia sem
+    // rodar a pipeline (fim de semana, rodada pulada) tira a edição de um
+    // sender confiado da janela de 48h default — `since_hours_by_sender`
+    // (config, nunca hard-code) permite alargar só pra senders específicos
+    // sem afetar os demais.
+    let sinceHoursBySender: Record<string, number> = {};
     try {
       const cfg = JSON.parse(deps.readFile(resolve(deps.rootDir, "platform.config.json"))) as {
-        newsletter_auto_capture?: { enabled?: boolean; senders?: string[]; since_hours?: number };
+        newsletter_auto_capture?: { enabled?: boolean; senders?: string[]; since_hours?: number; since_hours_by_sender?: Record<string, number> };
       };
       const nac = cfg.newsletter_auto_capture;
       autoCaptureEnabled = nac?.enabled === true;
       senders = Array.isArray(nac?.senders) ? nac.senders : [];
       sinceHours = typeof nac?.since_hours === "number" ? nac.since_hours : 48;
+      sinceHoursBySender = nac?.since_hours_by_sender && typeof nac.since_hours_by_sender === "object" ? nac.since_hours_by_sender : {};
     } catch {
       report.note("⚠️  0b-bis: platform.config.json ilegível — pulando auto-capture de newsletters.");
     }
 
     if (autoCaptureEnabled && senders.length > 0) {
       const threadsOut = `${editionDir}/_internal/captured-newsletters.json`;
-      const fetchResult = softStep(deps, report, "fetch-newsletter-threads (0b-bis)", "scripts/fetch-newsletter-threads.ts", [
-        "--senders",
-        senders.join(","),
-        "--since-hours",
-        String(sinceHours),
-        "--out",
-        threadsOut,
-      ]);
+      const sendersSet = new Set(senders.map((s) => s.toLowerCase()));
+      // Nunca degradar em silêncio: sender configurado em since_hours_by_sender
+      // que não está em senders[] não tem efeito nenhum (a thread nunca é
+      // buscada) — avisar em vez de assumir que "está funcionando".
+      for (const s of Object.keys(sinceHoursBySender)) {
+        if (!sendersSet.has(s.toLowerCase())) {
+          logEvent(deps, opts.edition, "warn", `0b-bis: since_hours_by_sender inclui "${s}" ausente de senders[] — sem efeito`, { informational: true });
+        }
+      }
+      // Overrides agrupados por sender: os senders SEM override buscam na
+      // janela default numa única chamada; cada sender COM override busca
+      // isolado, na sua própria janela — fetch-newsletter-threads.ts faz
+      // merge por thread_id no mesmo --out, então múltiplas chamadas são
+      // seguras (não se sobrescrevem).
+      const overrideSenders = senders.filter((s) => typeof sinceHoursBySender[s] === "number");
+      const defaultSenders = senders.filter((s) => typeof sinceHoursBySender[s] !== "number");
+      const fetchGroups: Array<{ senders: string[]; hours: number }> = [];
+      if (defaultSenders.length > 0) fetchGroups.push({ senders: defaultSenders, hours: sinceHours });
+      for (const s of overrideSenders) fetchGroups.push({ senders: [s], hours: sinceHoursBySender[s] });
+
+      let fetchOk = false;
+      let lastSummary: { threads_found?: number; threads_written?: number } | undefined;
+      for (const group of fetchGroups) {
+        const fetchResult = softStep(deps, report, `fetch-newsletter-threads (0b-bis, ${group.hours}h)`, "scripts/fetch-newsletter-threads.ts", [
+          "--senders",
+          group.senders.join(","),
+          "--since-hours",
+          String(group.hours),
+          "--out",
+          threadsOut,
+        ]);
+        if (fetchResult.result.code === 0) {
+          fetchOk = true;
+          lastSummary = fetchResult.json as { threads_found?: number; threads_written?: number } | undefined;
+        }
+      }
+      const fetchResult = { result: { code: fetchOk ? 0 : 1 }, json: lastSummary };
       if (fetchResult.result.code === 0) {
         const summary = fetchResult.json as { threads_found?: number; threads_written?: number } | undefined;
         logEvent(deps, opts.edition, "info", "0b-bis: newsletters capturadas", { details: summary });

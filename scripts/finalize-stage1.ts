@@ -51,6 +51,8 @@ export interface Article {
   score?: number;
   score_recovered?: boolean;
   editor_submitted_placeholder?: boolean;
+  /** #7662: sender em `newsletter_auto_capture.always_consider_senders` — bypassa o piso de score abaixo, mesmo tratamento de `editor_submitted`. */
+  always_consider?: boolean;
   [key: string]: unknown;
 }
 
@@ -451,6 +453,18 @@ export function applyScoreFilter(
         bypassed_placeholders.push(marked);
         kept.push(marked);
       }
+      continue;
+    }
+
+    // #7662: sender allowlisted bypassa o piso de score dentro da edição —
+    // mesmo tratamento que load-carry-over.ts já dá a newsletter_extracted
+    // no carry-over entre edições (#1278), agora estendido ao corte
+    // intra-edição que a issue aponta como lacuna. Sem o check de título
+    // placeholder do editor_submitted acima: o título aqui é sempre
+    // sintético (`(newsletter:{sender})`), não uma submissão manual.
+    if (article.always_consider === true) {
+      bypassed.push(article);
+      kept.push(article);
       continue;
     }
 
