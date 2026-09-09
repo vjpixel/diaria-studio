@@ -33,6 +33,32 @@ describe("toAlarmFinding — family (#5558/#5561, 15º emissor)", () => {
   });
 });
 
+// #7701 — `alarm-service-down` é o único verdict deste alarme cuja condição SÓ
+// normaliza por AÇÃO (`systemctl --user restart onedrive`, ação manual do
+// editor — este alarme nunca muta o serviço). Sem `alarm-acao` a issue nascia
+// com `alarm` puro, que `classifyExecTrack` roteava pra `fora-de-rodada`, e a
+// #7503 ficou parada até o editor religar o serviço à mão (10h de baixa).
+// `alarm-canary-stale` é ambíguo (sync degradado que se resolve sozinho, ou a
+// task parada) — fica como está, `alarm` puro.
+describe("toAlarmFinding — labels (#7701)", () => {
+  it("alarm-service-down leva alarm-acao (roteia pra overnight, nunca fora-de-rodada)", () => {
+    const finding = toAlarmFinding("alarm-service-down", "inactive");
+    // Asserções SEMÂNTICAS (review da PR, P3): `length === 2` e
+    // `deepEqual(["bug"])` quebrariam com qualquer label extra ou reordenação
+    // — inclusive o ALARM_LABEL que `ensureAlarmIssue` injeta no envio real
+    // (#5112) — sem dizer o que mudou. O que importa é presença/ausência do
+    // `alarm-acao`, imune a ordem e a labels vizinhos.
+    assert.ok(finding.labels?.includes("bug"));
+    assert.ok(finding.labels?.includes("alarm-acao"));
+  });
+
+  it("alarm-canary-stale NÃO leva alarm-acao (condição ambíguo, auto-resolve ou task parada)", () => {
+    const finding = toAlarmFinding("alarm-canary-stale", "active");
+    assert.ok(finding.labels?.includes("bug"));
+    assert.ok(!finding.labels?.includes("alarm-acao"));
+  });
+});
+
 describe("parseSystemctlIsActiveOutput", () => {
   it('"active" → active', () => {
     assert.equal(parseSystemctlIsActiveOutput("active\n", 0), "active");

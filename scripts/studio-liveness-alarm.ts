@@ -56,6 +56,7 @@ import { hasFlag, getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { parseSystemctlIsActiveOutput, type OnedriveServiceState } from "./lib/onedrive-sync-alarm.ts";
+import { ALARM_ACTION_LABEL } from "./lib/alarm-issues.ts";
 import {
   recordStudioHttpCheck,
   shouldSendStudioLivenessAlarm,
@@ -164,7 +165,13 @@ export function toAlarmFinding(evaluation: StudioLivenessEvaluation): AlarmFindi
       "comentada/fechada sozinha quando o achado deixar de reproduzir por",
       `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
     ].join("\n"),
-    labels: ["bug"],
+    // #7701 (review da PR #7726, P2): mesma classe do alarm-service-down do
+    // OneDrive — a condição só normaliza por ação MANUAL do editor ("religar/
+    // reiniciar é ação manual", acima), então sem `alarm-acao` a issue nasce
+    // `family:estado` e roteia fora-de-rodada: nenhuma overnight/develop a
+    // pega, e o Studio fica no chão até alguém ler o alarme (foi o padrão do
+    // #7503, 10h de baixa). Com o label, roteia pra overnight como ação.
+    labels: ["bug", ALARM_ACTION_LABEL],
     priority: "P1",
     family: "estado",
   };

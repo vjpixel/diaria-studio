@@ -70,6 +70,7 @@ import {
   emptyAlarmIssuesState,
   saveAlarmIssuesState,
   saveState,
+  ALARM_ACTION_LABEL,
   type AlarmFinding,
   type AlarmIssuesState,
   type AlarmIssueResult,
@@ -191,7 +192,14 @@ export function toAlarmFinding(verdict: OnedriveSyncAlarmVerdict, serviceState: 
       "comentada/fechada sozinha quando o achado deixar de reproduzir por",
       `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
     ].join("\n"),
-    labels: ["bug"],
+    // #7701 — `alarm-service-down` é o único verdict deste alarme cuja condição
+    // SÓ normaliza por AÇÃO (`systemctl --user restart onedrive`, ação manual
+    // do editor — este alarme nunca muta o serviço). Sem `alarm-acao`,
+    // `classifyExecTrack` roteava `alarm` puro pra `fora-de-rodada` e a issue
+    // #7503 ficou parada até o editor religar o serviço à mão (10h de baixa).
+    // `alarm-canary-stale` fica como está (`alarm` puro): é ambíguo — pode
+    // ser sync degradado que se resolve sozinho, ou a task parada (#7701).
+    labels: verdict === "alarm-service-down" ? ["bug", ALARM_ACTION_LABEL] : ["bug"],
     priority: "P1",
     family: "estado",
   };
