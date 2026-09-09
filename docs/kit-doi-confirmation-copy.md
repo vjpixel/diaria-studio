@@ -14,6 +14,22 @@
 > `kit-doi-confirmation-copy-proposta-6812.md` — vale como referência de tom,
 > não como fonte.
 
+## Estado: JÁ COLADA (09/09/2026)
+
+A copy abaixo está **no ar** no designer form **`9897918` — "Cadastro DOI
+(confirmacao)"**, criado no painel do Kit em 09/09/2026 a partir do template
+"Clare". `platform.config.json` (`kit.doiFormId`) e
+`workers/poll/wrangler.toml` (`KIT_DOI_FORM_ID`) já apontam para ele.
+
+Verificado ao vivo, não por inspeção do painel: um subscriber criado
+`inactive` + vinculado ao form recebeu o e-mail em 09/09/2026 04:31:45Z, e o
+HTML entregue traz o assunto e os três parágrafos abaixo, o botão único com
+`background-color:#00A0A0` (nas duas variantes, MSO e não-MSO) e o link
+`app.kit.com/forms/confirm?key=…`. Remetente: `oi` em `news.diar.ia.br`.
+
+A seção seguinte descreve onde a configuração vive, para quem precisar
+reeditar ou recriar o form.
+
 ## Onde colar
 
 ⚠️ **Não é o form `9839463` ("Newsletter site")**, apesar do que a #6812 e a
