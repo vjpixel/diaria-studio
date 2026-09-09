@@ -62,9 +62,18 @@ export function handleConfirmadoRedirect(requestUrl?: string | URL): Response {
     try {
       const search = new URL(requestUrl).search;
       if (search) location = `${CONFIRMADO_REDIRECT_URL}${search}`;
-    } catch {
+    } catch (e) {
       // URL inválida: cai no destino seco em vez de propagar erro — este
       // redirect nunca deve ser o que derruba a confirmação de um assinante.
+      // Mas fail-soft SEM observação é como se perde defeito (foi a lição do
+      // #7776): loga no mesmo formato estruturado que o resto do worker usa
+      // (`console.error(JSON.stringify({ event, ... }))`, ver index.ts). Pelo
+      // router este ramo é inalcançável — o runtime dos Workers garante
+      // `request.url` absoluta —, então uma linha aqui significa chamador
+      // novo passando string malformada, que é exatamente o que se quer ver.
+      console.error(
+        JSON.stringify({ event: "confirmado_redirect_url_invalida", error: String(e) }),
+      );
     }
   }
   return new Response(null, { status: 301, headers: { Location: location } });
