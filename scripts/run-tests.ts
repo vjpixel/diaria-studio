@@ -42,14 +42,32 @@
  * no meio do `npm test`**. A árvore de trabalho saía do merge ref da PR e
  * virava `master`; todo teste que rodasse DEPOIS disso lia a versão da base.
  *
- * Isso explica cada sintoma sem sobra: o arquivo "que genuinamente existia no
- * commit testado" era um arquivo ADICIONADO pela PR — inexistente em `master`,
- * portanto sumido do disco após o checkout; a falha era determinística (o
- * checkout ocorre em toda run, não por acaso); e nunca reproduziu localmente
- * porque localmente se roda o arquivo isolado, sem `task-runner.test.ts`
- * antes. O #6783 registrou o mesmo padrão 2× ("sempre em arquivo recém-criado",
- * "batch 8 de ~9-10" — ou seja, tarde, depois do checkout) e foi fechado por
- * este achado.
+ * Isso explica os sintomas: o arquivo "que genuinamente existia no commit
+ * testado" era um arquivo ADICIONADO pela PR — inexistente em `master`,
+ * portanto sumido do disco após o checkout. O #6783 registrou o mesmo padrão
+ * 2× ("sempre em arquivo recém-criado", "batch 8 de ~9-10" — ou seja, tarde,
+ * depois do checkout) e foi fechado por este achado.
+ *
+ * **Por que não reproduzia localmente** (medido em 09/09/2026, não deduzido —
+ * a 1ª versão desta nota dizia "porque localmente se roda o arquivo isolado",
+ * o que estava ERRADO: o #6495 relata explicitamente ter rodado a suíte
+ * COMPLETA localmente, e `task-runner.test.ts` já existia havia ~3 semanas).
+ * O discriminante é o estado do HEAD:
+ *
+ *   - **Local, sobre o branch `master`:** `git checkout master` é no-op e o
+ *     `merge --ff-only origin/master` só avança o branch. Nenhum arquivo
+ *     desaparece — não existe arquivo que só a PR tenha. Verificado: HEAD
+ *     avançou, árvore limpa, sem sintoma.
+ *   - **CI, sobre `refs/pull/N/merge` DESTACADO:** o mesmo `checkout master`
+ *     ABANDONA o merge ref, e todo arquivo adicionado pela PR some do disco.
+ *     Verificado: rodar só `task-runner.test.ts` num clone destacado move o
+ *     HEAD para `master`.
+ *
+ * Ou seja, o discriminante nunca foi "suíte inteira vs. arquivo isolado" — é
+ * "HEAD destacado num merge ref vs. HEAD sobre um branch". Sobre a
+ * determinismo: dentro de uma run de CI o checkout acontece sempre, mas o
+ * conjunto de arquivos AFETADOS depende de quais rodam depois dele, então o
+ * efeito observado varia entre PRs (o #7736 fala em "intermitência" por isso).
  *
  * A mitigação abaixo (lista explícita de arquivos + retry) permanece: ela é
  * defensável por si e cobre outras causas de I/O do runner. Mas NÃO é mais a
@@ -115,9 +133,16 @@
  * nativo) — o arquivo é encontrado pelo processo PAI (senão não seria
  * passado como argumento) e falha no `import()` do processo FILHO. Restou
  * um padrão: as únicas 2 ocorrências reais foram sempre em arquivo de teste
- * NOVO, adicionado pelo próprio PR — hipótese líder é um glitch de
- * filesystem do runner em torno de um arquivo recém-materializado pelo
- * `actions/checkout`, não confirmável sem instrumentação adicional na CI.
+ * NOVO, adicionado pelo próprio PR.
+ *
+ * **ATUALIZAÇÃO (#7736, 09/09/2026): a "hipótese líder" que este parágrafo
+ * registrava — glitch de filesystem do `actions/checkout` — foi DERRUBADA.**
+ * Ver "CAUSA RAIZ ENCONTRADA" no topo deste arquivo: era
+ * `task-runner.test.ts` rodando `git checkout master` na raiz do repo no meio
+ * da suíte, o que faz exatamente o arquivo "adicionado pelo próprio PR" sumir
+ * do disco. O padrão que esta seção observou estava certo; a explicação, não.
+ * NÃO leia o texto abaixo como diagnóstico vigente — ele é mantido só porque
+ * foi o que justificou a mitigação.
  *
  * Enquanto a causa raiz exata não é isolada, este wrapper aplica a
  * mitigação PRAGMÁTICA autorizada pela própria issue: é um erro de
