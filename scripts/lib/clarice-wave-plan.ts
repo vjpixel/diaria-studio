@@ -1245,6 +1245,20 @@ export interface WaveProposalInput {
    * "fila cheia, mas pulando por cima de safra mais nova bloqueada no MV".
    */
   availableFirstSendByCohort: CohortComposition[];
+  /**
+   * #7738 — teto da fila DIÁRIA UNIFICADA (`computeDailyQueueAvailable` em
+   * `clarice-segment.ts`): engajados de qualquer ciclo anterior
+   * (`priority_points>0`) + ramp-warm (1º envio), a MESMA fila que
+   * `clarice-envio-run.ts --daily` de fato usa. Distinto de
+   * `availableFirstSend`, que conta só quem NUNCA recebeu email na vida
+   * (1º-envio vitalício) — sub-representa a capacidade real assim que o
+   * editor pede volume acima do ramp-warm restante (achado ao vivo #7738,
+   * onda 2026-09-10: 4254 disponíveis reportado com 19k+ elegíveis reais).
+   * `undefined` só em chamador legado que ainda não populou este campo —
+   * `clarice-envio-run.ts` cai em `availableFirstSend` nesse caso (mesmo
+   * fallback de antes do #7738, nunca superestima).
+   */
+  availableDailyQueue?: number;
   mvBacklog: MvBacklog;
   nonOpeners: NonOpenerExposure;
   /** Crédito Brevo restante no ciclo de cobrança. `null` = não consultado. */

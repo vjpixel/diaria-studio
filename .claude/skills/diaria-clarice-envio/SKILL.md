@@ -424,10 +424,18 @@ oferecer "sim"**. Os bloqueios são:
 - Semáforo vermelho (circuit breaker estourado).
 - Crédito Brevo não cobre a onda.
 - Crédito Brevo **não consultado** — nunca agendar sem validar antes.
-- Teto de fila diária unificada (`availableDailyQueue`, #7738) menor que o volume proposto — se o Passo 5
-  (`mvOnDemandPlan`) revelou um recorte cobrível, rode-o e volte aqui antes
-  de tentar de novo; se revelou vazio ou `backlogInsufficient`, a alavanca de
-  fila não está disponível e o editor decide (reduzir volume ou aceitar).
+- Fila de 1º envio (`availableFirstSend`) menor que o volume proposto — se o
+  Passo 5 (`mvOnDemandPlan`) revelou um recorte cobrível, rode-o e volte aqui
+  antes de tentar de novo; se revelou vazio ou `backlogInsufficient`, a
+  alavanca de fila não está disponível e o editor decide (reduzir volume ou
+  aceitar). **Nota #7738:** este bloqueio de PLANEJAMENTO (`buildWaveProposal`)
+  continua no eixo estrito de `availableFirstSend` — só o teto de EXECUÇÃO
+  (Passo 4/6, `queueAvailable` em `clarice-envio-run.ts`) já usa a fila diária
+  unificada (`availableDailyQueue`). É possível a proposta bloquear aqui
+  mesmo com fila diária suficiente pro volume pedido; segue como
+  acompanhamento aberto — não fechado por este fix (`mvOnDemandPlan` é
+  dimensionado por safra via `availableFirstSendByCohort`, sem equivalente
+  ainda pra fila diária unificada).
 - `/diaria-clarice-novos` do ciclo nunca rodou, ou rodou há mais de 48h
   (#4664) — sem isso, cadastro novo (`cohortSendRank: 0`) perde prioridade
   em silêncio pra leads frios.

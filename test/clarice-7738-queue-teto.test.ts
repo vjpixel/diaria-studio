@@ -25,13 +25,14 @@ function row(email: string, opts: Partial<any> = {}): any {
 describe("#7738 wiring real — queued vs committed (não #7784)", () => {
   it("engajados (hasSendHistory) usam queuedListIds; warm usam committedListIds", () => {
     // #7784 falhou ao colocar committed em both — anula engajados.
+    // brevo_list_ids é JSON array serializado na coluna TEXT (clarice-db.ts:123)
+    // — parseBrevoListIds faz JSON.parse e retorna [] em qualquer string que
+    // não parseie, então o guard precisa do formato real pra exercitar o filtro.
     const rows = [
-      row("e1@test.com", { sends_count: 3, priority_points: 10, brevo_list_ids: "list-A" }),
-      row("w1@test.com", { sends_count: 0, priority_points: 0, brevo_list_ids: "list-B" }),
+      row("e1@test.com", { sends_count: 3, priority_points: 10, brevo_list_ids: JSON.stringify(["list-A"]) }),
+      row("w1@test.com", { sends_count: 0, priority_points: 0, brevo_list_ids: JSON.stringify(["list-B"]) }),
     ];
-    const queued = new Set(["list-A"]);
-    const committed = new Set(["list-B"]);
-    const q = buildDailySendQueue(rows, { queuedListIds: queued, committedListIds: committed });
+    const q = buildDailySendQueue(rows, { queuedListIds: new Set(), committedListIds: new Set() });
     assert.deepStrictEqual(q.map((r: any) => r.email), ["e1@test.com", "w1@test.com"]); // ambos elegíveis se listas não estão no guard
     // Se queued tem list-A, e1 sai; se committed tem list-B, w1 sai — wiring correto.
     const qBlocked = buildDailySendQueue(rows, { queuedListIds: new Set(["list-A"]), committedListIds: new Set(["list-B"]) });
@@ -39,10 +40,11 @@ describe("#7738 wiring real — queued vs committed (não #7784)", () => {
   });
 
   it("não inverte: queued em committed ou vice-versa", () => {
-    const r = row("a@test.com", { sends_count: 5, priority_points: 20, brevo_list_ids: "X" });
+    const r = row("a@test.com", { sends_count: 5, priority_points: 20, brevo_list_ids: JSON.stringify(["X"]) });
     // Queued guard bloqueia X → não deve aparecer se committed for usado por engajado (erro #7784)
     const wrong = buildDailySendQueue([r], { queuedListIds: new Set(), committedListIds: new Set(["X"]) });
-    // Com #7784 o engajado seria filtrado por committed (errado); com wiring real, queued está vazio → passa (correto)
+    // Com wiring real, engajado (hasSendHistory) usa queuedListIds — committed vazio não filtra nada.
+    assert.strictEqual(wrong.length, 1);
     // O teste assertivo: se queued tem X, deve sair.
     assert.strictEqual(buildDailySendQueue([r], { queuedListIds: new Set(["X"]), committedListIds: new Set() }).length, 0);
   });
@@ -56,9 +58,10 @@ describe("#7738 pool suficiente / insuficiente / fallback", () => {
   });
 
   it("pool insuficiente: alguns já agendados (queued)", () => {
-    const rows = Array.from({ length: 50 }, (_, i) => row(`u${i}@t`, { sends_count: 0, brevo_list_ids: `l${i}` }));
-    const queued = new Set(rows.map((r: any) => r.brevo_list_ids as string));
-    const q = computeDailyQueueAvailable(rows, { queuedListIds: queued, committedListIds: new Set() });
+    // sends_count: 0 → sem histórico → o guard consultado é committedListIds, não queuedListIds.
+    const rows = Array.from({ length: 50 }, (_, i) => row(`u${i}@t`, { sends_count: 0, brevo_list_ids: JSON.stringify([`l${i}`]) }));
+    const committed = new Set(Array.from({ length: 50 }, (_, i) => `l${i}`));
+    const q = computeDailyQueueAvailable(rows, { queuedListIds: new Set(), committedListIds: committed });
     assert.strictEqual(q, 0); // todos já agendados
   });
 
@@ -68,7 +71,8 @@ describe("#7738 pool suficiente / insuficiente / fallback", () => {
   });
 
   it("nunca retorna > eligible real (capacidade não superestimada)", () => {
-    const rows = [row("a@test.com", { sends_count: 0, brevo_list_ids: "L1" })];
+    const rows = [row("a@test.com", { sends_count: 0, brevo_list_ids: JSON.stringify(["L1"]) })];
+    // sends_count: 0 → sem histórico → guard consultado é committedListIds.
     // Com guard vazio → 1; com guard contendo L1 → 0
     assert.strictEqual(computeDailyQueueAvailable(rows, { queuedListIds: new Set(), committedListIds: new Set() }), 1);
     assert.strictEqual(computeDailyQueueAvailable(rows, { committedListIds: new Set(["L1"]), queuedListIds: new Set() }), 0);
