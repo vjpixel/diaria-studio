@@ -18,11 +18,13 @@ custom_domain = true
 # novo (`src/index.ts`, `legacyRedirectPath`). Os links antigos já saíram em
 # e-mail com UTM — quebrar perde clique e mede errado.
 #
-# ⚠️ CUTOVER: estes dois domínios estão hoje atrelados aos Workers `anual` e
-# `artigo-mensal`. Um `wrangler deploy` daqui NÃO os rouba sozinho — é preciso
-# soltá-los dos Workers antigos primeiro (removendo a rota de lá e
-# re-deployando, ou desanexando pelo painel), senão o deploy falha com o
-# domínio já em uso. Ver o passo a passo no README deste diretório.
+# CUTOVER FEITO em 09/09/2026: os três domínios estão anexados a ESTE Worker
+# (conferido em `GET /accounts/{id}/workers/domains` e por 301 real), e os
+# Workers `anual` e `artigo-mensal` foram apagados da conta. Não há mais nada
+# a soltar — este arquivo é a verdade do que serve cada host.
+#
+# ⚠️ Consequência prática: comentar uma destas rotas e deployar REMOVE o
+# custom domain e apaga o registro DNS. Não é "adiar", é derrubar o host.
 [[routes]]
 pattern = "anual.diar.ia.br"
 custom_domain = true

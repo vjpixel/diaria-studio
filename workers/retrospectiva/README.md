@@ -28,26 +28,22 @@ Qualquer ambiguidade — KV fora do ar, Kit indisponível, allowlist ausente ou 
 
 `anual.diar.ia.br` e `artigo.diar.ia.br` continuam respondendo — por este mesmo Worker — com **301** pro path novo, preservando a query. Os links antigos já saíram em e-mail com UTM; quebrar perde clique e mede errado. A tradução usa as mesmas funções puras dos publishers (`anualPathFromSlug`, `mensalPathFromCycle`), não um mapa à mão por edição.
 
-## Cutover (uma vez, na primeira publicação)
+## Cutover — FEITO em 09/09/2026
 
-⚠️ Os dois domínios legados estão atrelados aos Workers `anual` e `artigo-mensal`. Um `wrangler deploy` daqui **não os toma sozinho** — o deploy falha com "domínio já em uso". Ordem segura, que não derruba o que está no ar:
+Executado e verificado ao vivo. Os três domínios estão anexados a este Worker; `anual` e `artigo-mensal` foram apagados da conta. O que ficou registrado, porque o roteiro original estava errado num ponto que causou ~10 min de indisponibilidade:
 
-1. **Deploy só do host novo.** Comentar temporariamente os dois blocos `[[routes]]` legados no `wrangler.toml` e rodar `npx wrangler deploy`. Isso publica `retrospectiva.diar.ia.br` sem tocar em nada que já serve tráfego.
-2. **Republicar o conteúdo sob as chaves novas**, no namespace `ARTICLES` deste Worker:
-   ```bash
-   npx tsx scripts/build-article-page.ts --cycle 2608-09 --push   # → article:2608
-   npx tsx scripts/build-article-page.ts --cycle 2607-08 --push   # → article:2607
-   npx tsx scripts/build-article-page.ts --cycle 2606-07 --push   # → article:2606
-   npx tsx scripts/build-article-page.ts --cycle 2605-06 --push   # → article:2605
-   npx tsx scripts/build-article-page.ts --cycle 2604-05 --push   # → article:2604
-   ```
-   (a anual entra por `scripts/build-annual-page.ts --slug {slug} --push` quando houver edição publicada).
-3. **Conferir** cada path novo ao vivo, com e sem `?email=`, antes de mexer nos domínios antigos.
-4. **Soltar os domínios legados**: remover os blocos `[[routes]]` de `workers/anual`/`workers/artigo-mensal` e re-deployar os dois — ou desanexar pelo painel da Cloudflare.
-5. **Reanexar aqui**: descomentar os dois blocos legados e `npx wrangler deploy` de novo. A partir daí os hosts antigos redirecionam.
-6. **Apagar os Workers antigos** (`anual`, `artigo-mensal`) no painel, já sem domínio.
+**`deploy-retrospectiva.yml` dispara no merge.** No instante em que a PR entra em `master`, a CI publica o Worker com o `wrangler.toml` versionado — incluindo os três `custom_domain`. Ou seja, a CI faz o passo de mover os domínios sozinha, antes de qualquer ação manual.
 
-O passo 3 é o que torna isso reversível: enquanto os domínios antigos não se moveram, o estado anterior continua servindo normalmente.
+O roteiro anterior mandava começar com um "deploy só do host novo", com as rotas legadas comentadas, "sem tocar em nada que já serve tráfego". Depois que a CI já anexou os domínios aqui, essa frase deixa de valer: **comentar uma rota e deployar REMOVE o custom domain e apaga o DNS**. Foi o que derrubou `anual.` e `artigo.` até o re-deploy com o arquivo íntegro.
+
+### Se um dia for preciso repetir isto (outro Worker, outro rename)
+
+1. Faça o trabalho de CONTEÚDO antes do merge — republicar o KV sob as chaves novas, criar as secrets no Worker novo (**secrets não migram no rename**; `KIT_API_KEY` teve que ser recriada), e conferir pelo `*.workers.dev`, que não depende de custom domain.
+2. Só então mergeie. A CI publica e move os domínios de uma vez.
+3. Confira o estado real com `GET /accounts/{id}/workers/domains` — foi o que detectou o problema — e com um 301 de verdade em cada host antigo.
+4. Apague os Workers antigos só depois, e só depois de conferir que não têm mais domínio nem rota: enquanto existem, reanexar um domínio a eles é o rollback mais rápido.
+
+Nunca deploye este Worker com rota comentada esperando que isso "adie" alguma coisa.
 
 ## KV
 
