@@ -190,9 +190,13 @@ export function renderTeaserWithPaywall(teaserHtml: string): string {
   if (ultima?.index === undefined) {
     throw new Error("teaser sem </body> — não há onde injetar o bloco de conversão (#7580)");
   }
+  // `id="retrospectiva-paywall"` (#7720) — nenhum estilo depende dele, é só o
+  // marcador que `index.ts` usa como `hasPart.cssSelector` no JSON-LD de
+  // paywall (o texto pago em si nunca chega aqui, ver docstring de
+  // `retrospectiva-seo.ts`).
   const bloco = `
 <div style="position:relative;margin-top:-120px;height:120px;background:linear-gradient(to bottom, rgba(255,255,255,0), ${PAPER});pointer-events:none;"></div>
-<div style="background:${BEGE};padding:40px 20px;font-family:-apple-system,Helvetica,Arial,sans-serif;">
+<div id="retrospectiva-paywall" style="background:${BEGE};padding:40px 20px;font-family:-apple-system,Helvetica,Arial,sans-serif;">
   <div style="max-width:520px;margin:0 auto;background:${PAPER};border-radius:12px;padding:32px 28px;box-sizing:border-box;">
     <h2 style="font-family:Georgia,'Times New Roman',serif;font-size:22px;line-height:1.3;margin:0 0 12px;color:${INK};">
       O resto deste artigo é para quem apoia a diar.ia.br
