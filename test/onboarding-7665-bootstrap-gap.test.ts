@@ -1,29 +1,74 @@
 /**
  * test/onboarding-7665-bootstrap-gap.test.ts (#7665 residual)
  *
- * Bugfix de regressão: o bootstrap de troca de backend (#7599) agora
- * conta a coorte órfã entre cursor antigo e now, reportando no aviso
- * (não executa reinscrição — decisão do editor, ação externa).
+ * Regressão do relato de coorte órfã no bootstrap de troca de backend de
+ * detecção (#7599): quem cadastrou na janela entre o cursor antigo e o
+ * bootstrap não recebe boas-vindas, e a nota precisa DIZER isso — com o
+ * número, e sem prometer nenhuma ação automática. A decisão do editor no
+ * #7665 foi reportar, nunca reinscrever.
  *
- * Verifica que a nota contém o texto de gap e não afirma reinscrição.
+ * **A 1ª versão deste arquivo importava de `vitest`** — dependência que este
+ * repo não usa (o runner é `node:test`), o que quebrava o `Typecheck ratchet`
+ * com um `TS2307` novo — **e era tautológica**: montava `notaBase + gapReport`
+ * à mão dentro do próprio teste e assertava sobre a string que acabara de
+ * concatenar, sem chamar nenhuma função do código. Passaria verde com o bug
+ * presente, ou com a função deletada. Aqui o teste chama
+ * `buildBackendSwitchNote` de verdade — a montagem da nota foi extraída de
+ * dentro do `main()` de `onboarding-welcome-run.ts` pra `onboarding-state.ts`
+ * justamente pra poder ser exercida sem I/O, mesmo padrão de
+ * `shouldResetCursorForBackendSwitch` (#7599) ao lado.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import {
+  buildBackendSwitchNote,
+  BOOTSTRAP_GAP_COUNT_UNKNOWN,
+} from "../scripts/lib/onboarding-state.ts";
 
-describe("#7665 bootstrap gap report (residual, não executa reinscrição)", () => {
-  it("nota de bootstrap contém referência à coorte órfã, não ação automática", () => {
-    const notaBase =
-      "bootstrap (troca de backend de detecção beehiiv → kit): cursor remarcado em now; nenhuma entrada retroativa adicionada (#7599)";
-    const gapReport = "; janela entre cursor antigo e bootstrap: 31 cadastros (coorte órfã — reinscrever só sob decisão do editor, #7665)";
-    const nota = notaBase + gapReport;
-    expect(nota).toContain("coorte órfã");
-    expect(nota).toContain("#7665");
-    expect(nota).toContain("reinscrever só sob decisão do editor");
-    expect(nota).not.toContain("reinscrito automaticamente");
-    expect(nota).not.toContain("enviado retroativo");
+describe("#7665 bootstrap gap report (residual — reporta, nunca reinscreve)", () => {
+  it("gapCount > 0: nota traz o número e nomeia a coorte órfã", () => {
+    const nota = buildBackendSwitchNote("beehiiv", "kit", 31);
+    assert.match(nota, /31 cadastros/);
+    assert.match(nota, /coorte órfã/);
+    assert.match(nota, /#7665/);
+    assert.match(nota, /reinscrever só sob decisão do editor/);
   });
 
-  it("gapCount -1 (falha no fetch) não oculta o aviso", () => {
-    const nota = "; não foi possível contar coorte órfã";
-    expect(nota).toContain("não foi possível contar");
+  it("nota NUNCA promete ação automática — é o ponto da decisão do editor", () => {
+    const nota = buildBackendSwitchNote("beehiiv", "kit", 31);
+    assert.doesNotMatch(nota, /reinscrito automaticamente/);
+    assert.doesNotMatch(nota, /enviado retroativo/);
+    assert.doesNotMatch(nota, /reinscrevemos|reenviado|já foram/i);
+  });
+
+  it("gapCount 0 afirma 'contei e não havia ninguém' — não é o mesmo que falha", () => {
+    const nota = buildBackendSwitchNote("beehiiv", "kit", 0);
+    assert.match(nota, /0 cadastros/);
+    assert.doesNotMatch(nota, /não foi possível contar/);
+  });
+
+  it("falha no fetch (UNKNOWN) reporta que não contou, e NÃO inventa um número", () => {
+    const nota = buildBackendSwitchNote("beehiiv", "kit", BOOTSTRAP_GAP_COUNT_UNKNOWN);
+    assert.match(nota, /não foi possível contar coorte órfã/);
+    assert.doesNotMatch(nota, /cadastros/, "sem número inventado quando a contagem falhou");
+    assert.doesNotMatch(nota, /-1/, "a sentinela nunca vaza pro texto lido pelo editor");
+  });
+
+  it("UNKNOWN é -1, e qualquer negativo cai no mesmo relato (a sentinela não é mágica de call site)", () => {
+    assert.equal(BOOTSTRAP_GAP_COUNT_UNKNOWN, -1);
+    assert.match(buildBackendSwitchNote("kit", "beehiiv", -7), /não foi possível contar/);
+  });
+
+  it("preserva a nota do #7599 (bootstrap, sem entrada retroativa) e nomeia os dois backends", () => {
+    const nota = buildBackendSwitchNote("beehiiv", "kit", 5);
+    assert.match(nota, /troca de backend de detecção beehiiv → kit/);
+    assert.match(nota, /cursor remarcado em now/);
+    assert.match(nota, /nenhuma entrada retroativa adicionada \(#7599\)/);
+  });
+
+  it("backend anterior desconhecido (null) não quebra a nota — é o caso do 1º bootstrap", () => {
+    const nota = buildBackendSwitchNote(null, "kit", 0);
+    assert.match(nota, /troca de backend de detecção null → kit/);
+    assert.match(nota, /0 cadastros/);
   });
 });

@@ -96,6 +96,8 @@ import {
   buildRunPlan,
   classifyNewSubscribers,
   shouldResetCursorForBackendSwitch,
+  buildBackendSwitchNote,
+  BOOTSTRAP_GAP_COUNT_UNKNOWN,
   updateZeroDetectionStreak,
   zeroDetectionAlarm,
   type DetectedSubscription,
@@ -855,13 +857,20 @@ async function main(): Promise<void> {
         ? await fetchSubscriptionsSinceKit(kitCfg!, store.last_detection_cursor)
         : await fetchSubscriptionsSince(beeCfg!.config.publicationId, beeCfg!.config.apiKey, store.last_detection_cursor);
       gapCount = gapFetch.length;
-    } catch (_) { gapCount = -1; }
+    } catch (err) {
+      // O relato degrada pra "não foi possível contar" (a nota já diz isso
+      // ao editor), mas o MOTIVO ia embora com o `catch (_)` mudo — e é ele
+      // que distingue "backend fora do ar nesta rodada" de "auth quebrada,
+      // vai falhar em toda rodada daqui pra frente".
+      gapCount = BOOTSTRAP_GAP_COUNT_UNKNOWN;
+      process.stderr.write(
+        `[onboarding-welcome-run] #7665: falha ao contar a coorte órfã do bootstrap ` +
+          `(${backendAnterior} → ${backend}): ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
     store.last_detection_cursor = nowSec;
     store.last_detection_backend = backend;
-    const gapReport = gapCount >= 0 ? `; janela entre cursor antigo e bootstrap: ${gapCount} cadastros (coorte órfã — reinscrever só sob decisão do editor, #7665)` : "; não foi possível contar coorte órfã";
-    const nota =
-      `bootstrap (troca de backend de detecção ${backendAnterior} → ${backend}): cursor remarcado em now; ` +
-      `nenhuma entrada retroativa adicionada (#7599)${gapReport}`;
+    const nota = buildBackendSwitchNote(backendAnterior, backend, gapCount);
     if (args.send) {
       writeStore(store, storePath);
       summary.notes.push(nota);
