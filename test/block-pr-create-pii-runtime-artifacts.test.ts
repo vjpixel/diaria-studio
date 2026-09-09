@@ -582,7 +582,7 @@ describe("findDangerousDiffContent com baseEmailsByFile (#7822) — casos (a)-(f
     // baseEmailsByFile vazio simula o comportamento real de buildBaseEmailsByFile
     // pra status A (nunca entra no Map).
     const findings = findDangerousDiffContent(nameStatus, addedLines, new Map());
-    const kinds = findings.map((f) => f.kind);
+    const kinds = findings.map((f: { kind: string }) => f.kind);
     assert.ok(kinds.includes("runtime-artifact"));
     assert.ok(kinds.includes("pii-email"));
   });
