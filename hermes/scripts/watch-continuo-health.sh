@@ -395,6 +395,50 @@ fi
 # velha) porque os dois modos de falha são distintos: muitas PRs pequenas
 # acumulando (merger não dá conta do volume) vs. 1 PR presa há muito tempo
 # (merger não decide aquele caso — CI vermelho sem fixer, escalate sem dono).
+#
+# #7832 (09/09/2026): a issue #7807 confirmou que o alarme acima estava
+# certo (9 abertas, mais velha há 9.8h) mas o corpo mandava investigar o
+# gate de merge — em 09/09 as 9 estavam vermelhas por 8 causas MECÂNICAS
+# independentes (teto de SKILL.md, vitest em 3 PRs, lockfile fora de sync,
+# TS2345, removal-declaration faltando, conflito com master), não por falta
+# de merger. `pr_first_failed_check` adiciona, por PR, o primeiro check que
+# falhou (`gh pr view <N> --json statusCheckRollup`) — separa de imediato PR
+# VERDE esperando merger (problema de gate/coordenação) de PR VERMELHA
+# (problema de conteúdo, o gate está certo em não decidir). Fail-soft por
+# PR: `gh pr view` falhando numa PR vira "(status indisponível)" só naquela
+# linha — nunca derruba o alarme inteiro (mesma disciplina do `checked: -1`
+# do §3b). Só chamado quando o alarme já vai disparar (dentro do `if` de
+# limiar abaixo) — no máximo ~10 chamadas extras por alarme dado o limiar de
+# contagem, bem abaixo de qualquer rate limit do `gh`.
+pr_first_failed_check() {
+  local prnum="$1"
+  local json
+  json=$(gh pr view "$prnum" --json statusCheckRollup 2>/dev/null)
+  if [ $? -ne 0 ] || [ -z "$json" ]; then
+    echo "#$prnum  (status indisponível)"
+    return
+  fi
+  printf '%s' "$json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    checks = data.get('statusCheckRollup') or []
+    failing = []
+    for c in checks:
+        state = (c.get('conclusion') if c.get('__typename') == 'CheckRun' else c.get('state')) or ''
+        if state.upper() in ('FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'STARTUP_FAILURE', 'ACTION_REQUIRED'):
+            wf = c.get('workflowName') or ''
+            name = c.get('name') or c.get('context') or '?'
+            failing.append(f'{wf} — {name}' if wf else name)
+    if not failing:
+        print('#$prnum  (verde, só esperando merger)')
+    else:
+        extra = f'   [+{len(failing) - 1} outros]' if len(failing) > 1 else ''
+        print(f'#$prnum  {failing[0]}{extra}')
+except Exception:
+    print('#$prnum  (status indisponível)')
+"
+}
 QUEUE_COUNT_THRESHOLD=5
 QUEUE_AGE_H_THRESHOLD=12
 QUEUE_JSON=$(gh pr list --state open --json number,headRefName,createdAt 2>/dev/null)
@@ -428,10 +472,27 @@ except Exception:
     IFS=$'\t' read -r QUEUE_COUNT QUEUE_OLDEST_H QUEUE_OLDEST_PR QUEUE_OLDEST_BRANCH <<< "$QUEUE_SUMMARY"
     QUEUE_OLDEST_H_INT=${QUEUE_OLDEST_H%.*}
     if [ "$QUEUE_COUNT" -ge "$QUEUE_COUNT_THRESHOLD" ] || [ "$QUEUE_OLDEST_H_INT" -ge "$QUEUE_AGE_H_THRESHOLD" ] 2>/dev/null; then
+      QUEUE_NUMBERS=$(printf '%s' "$QUEUE_JSON" | python3 -c "
+import sys, json
+try:
+    for pr in json.load(sys.stdin):
+        print(pr['number'])
+except Exception:
+    pass")
+      QUEUE_CHECK_LINES=""
+      while IFS= read -r QN; do
+        [ -z "$QN" ] && continue
+        QUEUE_CHECK_LINES="${QUEUE_CHECK_LINES}$(pr_first_failed_check "$QN")"$'\n'
+      done <<< "$QUEUE_NUMBERS"
       file_issue "[watch-continuo] fila de PRs sem merge" \
         "[watch-continuo] fila de PRs sem merge: $QUEUE_COUNT abertas, mais velha há ${QUEUE_OLDEST_H}h" \
         "bug,P1" \
         "Detectado por watch-continuo-health.sh via \`gh pr list --state open\` — $QUEUE_COUNT PRs abertas (limiar: $QUEUE_COUNT_THRESHOLD), PR mais velha #$QUEUE_OLDEST_PR (\`$QUEUE_OLDEST_BRANCH\`) parada há ${QUEUE_OLDEST_H}h (limiar: ${QUEUE_AGE_H_THRESHOLD}h).
+
+Primeiro check que falhou por PR (\`gh pr view <N> --json statusCheckRollup\`, #7832):
+
+\`\`\`
+${QUEUE_CHECK_LINES}\`\`\`
 
 Mesma classe do incidente 04-05/09/2026 (#7446): 8 PRs abertas, nenhuma avançando sozinha — reject sem estado terminal, escalate sem dono com agendador, CI vermelho em PR \`continuo/*\` sem fixer, branch fora de \`continuo/*\` sem merger. Checar \`gh pr list --state open\` e, por PR, por que o gate não decidiu (\`gh pr view <N> --json comments\` pro histórico de \`continuo-pr-review.sh\`, \`gh pr checks <N>\` pro CI)."
     else
