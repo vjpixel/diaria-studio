@@ -74,7 +74,26 @@ function parseModelsDefault(wrapperSource: string): string[] {
     slugs.length > 0,
     "MODELS_DEFAULT foi encontrado mas nenhum slug entre aspas foi extraído — regex desalinhado com o formato real.",
   );
-  return slugs;
+  return slugs.map((slug) => resolveShellVarRef(slug, cleaned));
+}
+
+/**
+ * `MODELS_DEFAULT` referencia o elo de assinatura por variável
+ * (`"$SUBSCRIPTION_LANE_MODEL"`, #7649) em vez do literal `"sonnet"` — de
+ * propósito, pra `is_subscription_lane_model()` e o array nunca divergirem
+ * do mesmo valor por edição em só um lugar. Mas o docstring deste teste é
+ * claro: a tabela do SKILL.md documenta os slugs REAIS que o wrapper roda,
+ * não nomes de variável bash — um leitor do SKILL.md não sabe o que
+ * `$SUBSCRIPTION_LANE_MODEL` significa. Resolve a referência pro valor
+ * atribuído (`VAR="valor"`) antes de comparar contra a doc; se a var não
+ * existir, mantém o literal cru (falha de presença/ordem abaixo aponta o
+ * problema real, em vez de mascarar com um resolve silencioso).
+ */
+function resolveShellVarRef(slug: string, wrapperSourceNoComments: string): string {
+  const varMatch = slug.match(/^\$(\w+)$/);
+  if (!varMatch) return slug;
+  const assign = wrapperSourceNoComments.match(new RegExp(`\\b${varMatch[1]}="([^"]+)"`));
+  return assign ? assign[1] : slug;
 }
 
 function findWrapperTableRow(skillSource: string): string {
@@ -96,17 +115,33 @@ describe("cadeia de modelos do Hermes: wrapper e SKILL.md não podem divergir (#
   const models = parseModelsDefault(wrapperSource);
   const tableRow = findWrapperTableRow(skillSource);
 
-  it("MODELS_DEFAULT tem pelo menos 1 modelo :free e o fallback pago glm-5.3-flash por último", () => {
-    assert.ok(models.length >= 2, "cadeia degenerada a 1 único modelo — sem fallback.");
+  it("MODELS_DEFAULT tem pelo menos 1 modelo :free, glm-5.3-flash como último elo de GATEWAY, e o elo de assinatura (#7649) como terminal real", () => {
+    // #7649 (rodada overnight 260909) acrescentou 1 elo depois do glm —
+    // claude.ai via assinatura, sem gateway — como rede de segurança de
+    // CAUDA além do próprio glm. Isso NÃO reabre o risco que este teste
+    // sempre existiu pra travar (glm virar primário por reordenação
+    // acidental): glm continua sendo o ÚLTIMO elo PAGO DE GATEWAY da
+    // cadeia — só passou a existir um elo A MAIS depois dele, de natureza
+    // diferente (sem gateway, sem custo em dólar). As duas afirmações são
+    // compatíveis; o teste agora checa as duas explicitamente em vez de só
+    // "é o último elemento do array".
+    assert.ok(models.length >= 3, "cadeia degenerada — sem free tier, fallback pago E elo de assinatura.");
     assert.ok(
-      models.slice(0, -1).some((m) => m.endsWith(":free")),
-      "nenhum dos modelos antes do fallback termina em :free — a cadeia deveria priorizar free tier.",
+      models.slice(0, -2).some((m) => m.endsWith(":free")),
+      "nenhum dos modelos antes do fallback pago termina em :free — a cadeia deveria priorizar free tier.",
+    );
+    assert.equal(
+      models[models.length - 2],
+      "z-ai/glm-5.3-flash",
+      "o fallback pago (z-ai/glm-5.3-flash) deve continuar como ÚLTIMO ELO DE GATEWAY da cadeia — " +
+        "é a rede de segurança paga, não deve virar primário por acidente de reordenação, e nenhum " +
+        "elo de gateway novo deveria entrar DEPOIS dele.",
     );
     assert.equal(
       models[models.length - 1],
-      "z-ai/glm-5.3-flash",
-      "o fallback pago (z-ai/glm-5.3-flash) deve continuar como ÚLTIMO da cadeia — " +
-        "é a rede de segurança, não deve virar primário por acidente de reordenação.",
+      "sonnet",
+      "o elo de assinatura claude.ai (#7649) deve continuar como o TERMINAL real da cadeia, " +
+        "depois de glm-5.3-flash — é a rede de segurança de cauda que roda sem gateway/custo em dólar.",
     );
   });
 

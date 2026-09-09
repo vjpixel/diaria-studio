@@ -336,8 +336,9 @@ def main() -> int:
     # nasce ruidoso e é desligado na primeira semana.
     f_prod = mod.detect_price_changes(igual, baseline=BASE)
     assert_true(
-        "#6818: execução diária com preço inalterado sai exit 0, apesar dos modelos fora da OpenRouter",
-        mod.price_check_exit_code(f_prod) == 0 and len(f_prod["out_of_scope"]) == 2,
+        "#6818: execução diária com preço inalterado sai exit 0, apesar dos modelos fora da OpenRouter"
+        " (2 do gpt-5.6-luna + 'sonnet' do elo de assinatura, #7649)",
+        mod.price_check_exit_code(f_prod) == 0 and len(f_prod["out_of_scope"]) == 3,
     )
 
     # 7. Preço não-numérico NUNCA vira 0.0 — 0.0 leria como "de graça" e
@@ -392,6 +393,51 @@ def main() -> int:
     assert_true(
         "primario do continuo tambem esta na allowlist (mesma classe de erro)",
         set(mod.CONTINUO_PRIMARY_MODEL_IDS) <= set(mod.PAID_ALLOWLIST),
+    )
+
+    # --- #7649 (08/09/2026): elo de assinatura claude.ai de claude-openrouter.sh ---
+    #
+    # Mesma classe de drift do PR #7648 (glm -> deepseek): um elo novo que
+    # apareca em `session_model_usage` sem entrar na allowlist certa vira
+    # falso positivo de vazamento pago. Aqui e o oposto do #7648 (constante
+    # nova em vez de troca de slug), mas o invariante que protege e o mesmo.
+    assert_true(
+        "#7649: elo de assinatura ('sonnet') esta na PAID_ALLOWLIST (nunca sinalizado como vazamento)",
+        "sonnet" in mod.PAID_ALLOWLIST,
+    )
+    assert_true(
+        "#7649: _is_leak('sonnet', 'anthropic') -> False (nao e vazamento, mesmo com provider billable)",
+        mod._is_leak("sonnet", "anthropic") is False,
+    )
+    assert_true(
+        "#7649: _is_leak('sonnet', '') -> False mesmo com provider AUSENTE (fail-closed do #6446 nao pega um id na allowlist)",
+        mod._is_leak("sonnet", "") is False,
+    )
+    assert_true(
+        "#7649: elo de assinatura esta em PAID_MODELS_NOT_ON_OPENROUTER (nao e um id do catalogo da OpenRouter)",
+        "sonnet" in mod.PAID_MODELS_NOT_ON_OPENROUTER,
+    )
+    # Controle negativo (mesma disciplina do PR #7648): sem as 2 entradas, o
+    # invariante da secao 9 acima (`PAID_ALLOWLIST <= coberto`) FALHA — prova
+    # que o teste discrimina de verdade, nao passa vazio.
+    coberto_sem_sonnet = (set(mod.PAID_PRICE_BASELINE) | set(mod.PAID_MODELS_NOT_ON_OPENROUTER)) - {"sonnet"}
+    assert_true(
+        "#7649 controle negativo: sem 'sonnet' em PAID_MODELS_NOT_ON_OPENROUTER, o invariante da secao 9 QUEBRA",
+        not (set(mod.PAID_ALLOWLIST) <= coberto_sem_sonnet),
+    )
+    # detect_price_changes: o elo de assinatura tem que sair como out_of_scope
+    # (fronteira PERMANENTE — nao ha preco no catalogo da OpenRouter pra
+    # verificar), nunca como unverifiable (que alarmaria TODO dia, pra
+    # sempre, e o alarme que sempre grita e o que ninguem le — mesmo
+    # raciocinio do item 9b acima).
+    f_sonnet = mod.detect_price_changes(
+        {}, baseline={}, not_on_openrouter={"sonnet"},
+    )
+    assert_true(
+        "#7649: elo de assinatura no price-check -> out_of_scope, exit 0, nunca 'indeterminado'",
+        any(u["modelo"] == "sonnet" for u in f_sonnet["out_of_scope"])
+        and not f_sonnet["unverifiable"]
+        and mod.price_check_exit_code(f_sonnet) == 0,
     )
 
     # --- achados do review do PR #7085 ---

@@ -124,25 +124,54 @@ describe("claude-openrouter.sh — chave fora do cmdline (#6718)", () => {
   });
 
   it("a exportação acontece no mesmo subshell que invoca o claude (chega ao CLI, não vaza pro shell chamador)", () => {
+    // #7649: existem HOJE 2 blocos `OUT=$(printf ... | ( ... ))` no arquivo —
+    // o do elo de assinatura (sem ANTHROPIC_AUTH_TOKEN) e o do branch
+    // OpenRouter (#6718, único que este describe testa). `findIndex` sem
+    // âncora pegava o 1º subshell/1ª invocação `claude -p` do ARQUIVO (o de
+    // assinatura, que vem antes no source), não o do branch que de fato
+    // exporta a chave. `iExport` continua inequívoco (só 1 ocorrência,
+    // travado pelo 1º teste deste describe) — todo o resto se ancora nele:
+    // iSub é o ÚLTIMO subshell aberto ANTES do export (o que de fato o
+    // contém), iClaude é o `claude -p` a partir do export em diante.
     const lines = logicalCodeLines();
-    const iSub = lines.findIndex((l) => l.includes(`OUT=$(printf '%s' "$PROMPT" | (`));
     const iExport = lines.findIndex((l) => l.trim().startsWith(`export ${VAR}=`));
-    const iClaude = lines.findIndex((l) => l.includes("claude -p"));
+    assert.ok(iExport >= 0, "export de ANTHROPIC_AUTH_TOKEN não encontrado — já coberto pelo 1º teste deste describe");
+    let iSub = -1;
+    for (let i = iExport; i >= 0; i--) {
+      if (lines[i].includes(`OUT=$(printf '%s' "$PROMPT" | (`)) {
+        iSub = i;
+        break;
+      }
+    }
+    const iClaude = lines.slice(iExport).findIndex((l) => l.includes("claude -p"));
+    const iClaudeAbs = iClaude >= 0 ? iExport + iClaude : -1;
     const iClose = lines.findIndex((l, i) => i > iSub && l.trim() === "))");
     const iRc = lines.findIndex((l) => l.trim() === "RC=$?");
-    assert.ok(iSub >= 0, "subshell do OUT=$(printf ... | ( não encontrado — a estrutura do fix #6718 mudou");
+    assert.ok(iSub >= 0, "subshell do OUT=$(printf ... | ( não encontrado ANTES do export — a estrutura do fix #6718 mudou");
     assert.ok(iExport > iSub, "ANTHROPIC_AUTH_TOKEN exportado FORA do bloco do wrapper: se este trecho for colado/fonteado num shell interativo (o padrão do incidente #5608), a var sequestra sessões da assinatura claude.ai — o export tem que ficar dentro do subshell do OUT=$(...)");
-    assert.ok(iClaude > iExport, "o claude -p roda ANTES do export da chave — a delegação sobe sem auth");
-    assert.ok(iClose > iExport && iClose > iClaude, "export e claude -p não estão contidos no MESMO subshell (fechamento )) antes de ambos): a chave pode não chegar ao CLI ou o escopo do wrapper se rompe — preservar o bloco OUT=$(printf ... | ( ... )) do fix #6718");
-    assert.ok(iRc > iClaude, "âncora RC=$? não encontrada depois da invocação — estrutura do loop de tentativas mudou");
+    assert.ok(iClaudeAbs > iExport, "o claude -p roda ANTES do export da chave — a delegação sobe sem auth");
+    assert.ok(iClose > iExport && iClose > iClaudeAbs, "export e claude -p não estão contidos no MESMO subshell (fechamento )) antes de ambos): a chave pode não chegar ao CLI ou o escopo do wrapper se rompe — preservar o bloco OUT=$(printf ... | ( ... )) do fix #6718");
+    assert.ok(iRc > iClaudeAbs, "âncora RC=$? não encontrada depois da invocação — estrutura do loop de tentativas mudou");
   });
 
   it("a junção de continuações cobre o padrão multi-linha (o guard não pode passar vazio)", () => {
     // O padrão do vazamento era multi-linha com `\` — se a junção parar de
     // funcionar, as asserções acima podiam passar sem nunca ver a invocação
     // inteira. A linha lógica do claude tem que conter flags de linhas seguintes.
-    const claudeLine = logicalCodeLines().find((l) => l.includes("claude -p"));
-    assert.ok(claudeLine, "linha lógica do claude -p não encontrada");
+    //
+    // #7649: existem HOJE 2 invocações `claude -p` no arquivo — a do elo de
+    // assinatura (sem ANTHROPIC_AUTH_TOKEN, sem --max-budget-usd, de propósito
+    // — #7649 item 4) e a do branch OpenRouter (#6718, que ESTE arquivo
+    // testa). `.find()` pegava a 1ª do arquivo (a de assinatura, que vem
+    // ANTES no source) e falhava por procurar uma flag que ela nunca teve.
+    // A linha certa é a que segue o `export ANTHROPIC_AUTH_TOKEN=` — só o
+    // branch OpenRouter tem essa var — mesma âncora que o teste de posição
+    // acima já usa pra achar iExport/iClaude.
+    const lines = logicalCodeLines();
+    const iExport = lines.findIndex((l) => l.trim().startsWith(`export ${VAR}=`));
+    assert.ok(iExport >= 0, "export de ANTHROPIC_AUTH_TOKEN não encontrado — já coberto pelo 1º teste deste describe");
+    const claudeLine = lines.slice(iExport).find((l) => l.includes("claude -p"));
+    assert.ok(claudeLine, "linha lógica do claude -p do branch OpenRouter (após o export da chave) não encontrada");
     assert.match(claudeLine, /--max-budget-usd "\$BUDGET"/, "continuações \\ não foram juntadas — o guard deste arquivo ficou cego ao padrão multi-linha da #6718");
   });
 });

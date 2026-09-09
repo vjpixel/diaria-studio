@@ -65,6 +65,37 @@ const KNOWN_TS_ONLY_MODELS: ReadonlySet<string> = new Set([
   "openai/gpt-5.6-luna",
 ]);
 
+/**
+ * Entradas que existem em `PAID_ALLOWLIST` (Python) e DELIBERADAMENTE NÃO
+ * devem ser espelhadas em `EXPECTED_PAID_MODELS` (TS) — o inverso de
+ * `KNOWN_TS_ONLY_MODELS` acima. Sem esta lista, a regra 1 ("toda entrada do
+ * Python também está no TS") forçaria adicionar cada slug daqui ao TS pra
+ * passar, o que é exatamente o erro que aconteceu uma vez (revertido antes
+ * do merge, ver comentário em `openrouter-billing-leak.ts`).
+ *
+ * Cada entrada aqui precisa do MESMO nível de justificativa que uma adição
+ * normal — não é um jeito de silenciar o teste, é registrar que a
+ * divergência foi investigada e é intencional NESTA direção.
+ */
+const KNOWN_PYTHON_ONLY_MODELS: ReadonlySet<string> = new Set([
+  // Elo de assinatura claude.ai (#7649, hermes/scripts/claude-openrouter.sh).
+  // PAID_ALLOWLIST (Python) o inclui porque hermes-model-cost-report.py
+  // soma custo de TODAS as fontes (Codex, assinatura, gateway) — escopo
+  // amplo, "sonnet" é gasto esperado ali.
+  // `EXPECTED_PAID_MODELS` (TS) tem escopo mais estreito e mais sensível:
+  // é lido só pelo feed de billing REAL do OpenRouter especificamente. O
+  // elo de assinatura roda com `unset` fail-closed das 8 vars de
+  // auth/gateway — NUNCA deveria gerar uma linha de billing no OpenRouter.
+  // Se "sonnet" aparecer lá um dia, isso significa que o guard fail-closed
+  // falhou (#5608/#6714: sessão sequestrada, faturando a preço cheio em
+  // silêncio) — é exatamente o alarme que este guard existe pra soar. Ver
+  // o comentário em EXPECTED_PAID_MODELS (openrouter-billing-leak.ts) pra
+  // detalhe completo; achado do review de segurança da rodada overnight
+  // 260909, que pegou uma 1ª versão desta PR espelhando "sonnet" nos dois
+  // lados e desarmando este alarme por conveniência de teste.
+  "sonnet",
+]);
+
 function parsePythonAllowlist(source: string): string[] {
   const match = source.match(/PAID_ALLOWLIST\s*=\s*\{([^}]*)\}/);
   assert.ok(
@@ -98,14 +129,29 @@ describe("#6994 — EXPECTED_PAID_MODELS (TS) x PAID_ALLOWLIST (Python) não div
     assert.deepEqual(parsePythonAllowlist(comAspasNoComentario), ["z-ai/glm-5.3-flash"]);
   });
 
-  it("toda entrada do PAID_ALLOWLIST (Python) também está em EXPECTED_PAID_MODELS (TS)", () => {
+  it("toda entrada do PAID_ALLOWLIST (Python) também está em EXPECTED_PAID_MODELS (TS), exceto as documentadas em KNOWN_PYTHON_ONLY_MODELS", () => {
     const pythonSlugs = parsePythonAllowlist(readFileSync(PYTHON_PATH, "utf8"));
-    const missingFromTs = pythonSlugs.filter((slug) => !EXPECTED_PAID_MODELS.has(slug));
+    const missingFromTs = pythonSlugs.filter(
+      (slug) => !EXPECTED_PAID_MODELS.has(slug) && !KNOWN_PYTHON_ONLY_MODELS.has(slug),
+    );
     assert.deepEqual(
       missingFromTs,
       [],
-      `PAID_ALLOWLIST (Python) tem entrada(s) ausente(s) de EXPECTED_PAID_MODELS (TS): ${missingFromTs.join(", ")}. ` +
-        "Investigue antes de adicionar cegamente — pode ser typo em qualquer um dos dois lados.",
+      `PAID_ALLOWLIST (Python) tem entrada(s) ausente(s) de EXPECTED_PAID_MODELS (TS) e não documentada(s) em ` +
+        `KNOWN_PYTHON_ONLY_MODELS: ${missingFromTs.join(", ")}. Investigue antes de adicionar cegamente — pode ser ` +
+        "typo em qualquer um dos dois lados, OU divergência intencional (documente em KNOWN_PYTHON_ONLY_MODELS " +
+        "se o TS tiver um motivo real pra NÃO espelhar).",
+    );
+  });
+
+  it("KNOWN_PYTHON_ONLY_MODELS não vira lixo morto — cada entrada precisa continuar existindo em PAID_ALLOWLIST", () => {
+    const pythonSlugs = new Set(parsePythonAllowlist(readFileSync(PYTHON_PATH, "utf8")));
+    const stale = [...KNOWN_PYTHON_ONLY_MODELS].filter((slug) => !pythonSlugs.has(slug));
+    assert.deepEqual(
+      stale,
+      [],
+      `KNOWN_PYTHON_ONLY_MODELS cita slug(s) que sumiram de PAID_ALLOWLIST: ${stale.join(", ")}. ` +
+        "Remova a(s) entrada(s) — a exceção não serve mais pra nada.",
     );
   });
 
