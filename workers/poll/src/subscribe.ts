@@ -55,8 +55,16 @@ import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
 import { ARQUIVO_INLINE_UTM, HUB_INLINE_UTM, JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, JOGAR_POSTWEB_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4, #4578, #5167 itens 1/2
 import { sendCompleteRegistrationEvent, logMetaCapiSendResult } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
-import { DOUBLE_OPT_IN_FLAG } from "./optin-flag-6340"; // #6340
-import { verificarDoiForm, mensagemDoiFormInvalido } from "./doi-form-guard-7723"; // #7723
+// #7723: consome a maquinaria COMPARTILHADA (scripts/lib/shared/kit-doi.ts),
+// a mesma de `cursos` e `reativar`. Antes o poll tinha copias locais de
+// `resolveKitCreateState`/`vincularKitDoiForm` — duas implementacoes da
+// mesma regra, que e a classe de bug que o #7723 existe pra fechar.
+import {
+  resolveKitCreateState,
+  vincularKitDoiForm,
+  extrairSubscriberId,
+  mensagemSubscriberIdAusente,
+} from "../../../scripts/lib/shared/kit-doi.ts"; // #7723
 
 /** UTM próprio do cadastro inline (#3580) — `utm_source` continua
  * `eia-standalone` (convenção de medição), medium/campaign distintos pra medir
@@ -645,38 +653,23 @@ async function subscribeToBeehiiv(
  * acima) — o cenário "preso em inactive sem e-mail" descrito aqui até
  * 27/08/2026 não é mais alcançável por este caminho.
  *
- * RISCO CONHECIDO, não resolvido nesta unidade (mesma classe do item 5 da
- * issue #6340, "guard de envio duplicado... herdada, não nova"): a criação
- * via `POST /v4/subscribers` é idempotente por e-mail (ver docstring do
- * módulo), mas o corpo desta função sempre manda `state` no payload. Se um
- * subscriber que JÁ confirmou (virou `active` no Kit) reenviar o mesmo
- * formulário de cadastro, o 2º POST tentaria regravar `state: "inactive"`
- * por cima — não confirmado ao vivo se o Kit de fato regride um `active`
- * já confirmado (a docstring de `subscribeToKit` só confirma que
- * `first_name`/`fields` são atualizados num 2º POST, nunca testou `state`).
- * Registrar, não resolver aqui — reverificar antes do 1º `--push` real
- * deste fluxo em produção.
+ * RISCO RESOLVIDO por medição ao vivo (#7723, 09/09/2026) — a versão
+ * anterior desta nota registrava como "não confirmado se o Kit regride um
+ * `active` já confirmado" e pedia reverificação antes do 1º push real.
+ * Reverificado: **o Kit NÃO regride**.
+ *
+ * Procedimento: `POST /v4/subscribers` com `state: "active"` (201, criou
+ * `active`), depois um 2º POST no MESMO e-mail com `state: "inactive"` — a
+ * resposta veio `200` e `subscriber.state: "active"`. O upsert atualiza
+ * campos, mas preserva o `state` de quem já existe; ele NÃO é regravado pelo
+ * payload.
+ *
+ * Consequência prática, que vale para os 3 workers: um assinante já
+ * confirmado que reenvia o formulário não é rebaixado a `inactive` nem perde
+ * o recebimento. Por isso `cursos` não precisou do GET-check de idempotência
+ * que o `reativar` tem (lá o GET existe por outro motivo: o guard de
+ * descadastro nativo pendente, #4538).
  */
-function resolveKitCreateState(env: Env): "active" | "inactive" {
-  // #6565 + #7723: sem um form de confirmação UTILIZÁVEL, criar `inactive`
-  // prende o subscriber para sempre (nenhum e-mail de confirmação sai, nada
-  // promove inactive→active sozinho) — o rollout do flag por worker só se
-  // aplica quando o caminho de confirmação de fato existe.
-  //
-  // O #6565 cobria só a AUSÊNCIA do id. O #7723 acrescentou o caso que de
-  // fato aconteceu: id presente apontando para um form de SISTEMA do Kit,
-  // que não tem o toggle "Send confirmation email" e portanto nunca envia
-  // nada. Ver `doi-form-guard-7723.ts`.
-  const veredito = verificarDoiForm(env.KIT_DOI_FORM_ID);
-  if (!veredito.ok) {
-    const aviso = mensagemDoiFormInvalido(veredito);
-    if (aviso) console.error(aviso);
-    return "active";
-  }
-  return DOUBLE_OPT_IN_FLAG.enabledForWorkers.includes("poll")
-    ? DOUBLE_OPT_IN_FLAG.createState
-    : "active";
-}
 
 /**
  * #6340: vincula o subscriber recém-criado a `KIT_DOI_FORM_ID` — dispara o
@@ -686,35 +679,6 @@ function resolveKitCreateState(env: Env): "active" | "inactive" {
  * uma falha aqui não deveria reverter uma criação de subscriber que já
  * teve sucesso (mesmo racional de fail-soft do resto do arquivo).
  */
-async function vincularKitDoiForm(
-  env: Env,
-  apiKey: string,
-  base: string,
-  subscriberId: number,
-  utm: SubscribeUtm,
-  fetchImpl: typeof fetch,
-): Promise<void> {
-  const formId = env.KIT_DOI_FORM_ID;
-  if (!formId) return;
-  const referrer = `https://diar.ia.br/?utm_source=${encodeURIComponent(utm.source)}&utm_medium=${encodeURIComponent(utm.medium)}&utm_campaign=${encodeURIComponent(utm.campaign)}`;
-  try {
-    const res = await fetchImpl(`${base}/forms/${formId}/subscribers/${subscriberId}`, {
-      method: "POST",
-      headers: {
-        "X-Kit-Api-Key": apiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ referrer }),
-      signal: AbortSignal.timeout(SUBSCRIBE_FETCH_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      const bodyText = await res.text().catch(() => "<unreadable>");
-      console.error(`[vincularKitDoiForm] Kit respondeu ${res.status} ao vincular subscriber ${subscriberId} ao form ${formId}: ${bodyText.slice(0, 500)}`);
-    }
-  } catch (err) {
-    console.error(`[vincularKitDoiForm] fetch exception: ${String(err)}`);
-  }
-}
 
 async function subscribeToKit(
   env: Env,
@@ -745,7 +709,7 @@ async function subscribeToKit(
   // DOUBLE_OPT_IN_FLAG.enabledForWorkers OU sem KIT_DOI_FORM_ID configurado
   // (ver resolveKitCreateState acima) — era o literal fixo "active" antes
   // do #6340.
-  const createState = resolveKitCreateState(env);
+  const createState = resolveKitCreateState(env.KIT_DOI_FORM_ID, "poll");
   const body: Record<string, unknown> = {
     email_address: input.email,
     state: createState,
@@ -782,12 +746,19 @@ async function subscribeToKit(
     // quando `createState === "active"` (worker fora do rollout), mesmo com
     // KIT_DOI_FORM_ID configurado por engano/antecipação.
     if (createState === "inactive") {
-      const resBody = await res.clone().json().catch(() => undefined) as { subscriber?: { id?: number } } | undefined;
-      const subscriberId = resBody?.subscriber?.id;
-      if (typeof subscriberId === "number") {
-        await vincularKitDoiForm(env, apiKey, base, subscriberId, utm, fetchImpl);
+      const extraido = await extrairSubscriberId(res);
+      if (extraido.ok) {
+        await vincularKitDoiForm({
+          apiKey,
+          base,
+          formId: env.KIT_DOI_FORM_ID,
+          subscriberId: extraido.id,
+          referrer: `https://diar.ia.br/?utm_source=${encodeURIComponent(utm.source)}&utm_medium=${encodeURIComponent(utm.medium)}&utm_campaign=${encodeURIComponent(utm.campaign)}`,
+          fetchImpl,
+          timeoutMs: SUBSCRIBE_FETCH_TIMEOUT_MS,
+        });
       } else {
-        console.error(`[subscribeToKit] #6340: resposta ${res.status} sem subscriber.id — não foi possível vincular ao form DOI (e-mail de confirmação NÃO disparado por este caminho).`);
+        console.error(mensagemSubscriberIdAusente(extraido, input.email, res.status));
       }
     }
     // #6508/#6694: cadastro via API direta também entra na sequence de

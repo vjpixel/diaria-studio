@@ -1,0 +1,174 @@
+/**
+ * test/kit-doi-todos-os-workers-7723.test.ts (#7723)
+ *
+ * O double opt-in passou a valer nos TRÊS workers que criam assinante no Kit
+ * (`poll`, `cursos`, `reativar`), por instrução direta do editor — "habilita
+ * DOI em todos os lugares", 09/09/2026.
+ *
+ * O que estes testes protegem não é "o DOI funciona" (isso o
+ * `doi-form-guard-7723` já cobre), é a classe de bug do próprio #7723:
+ * **um worker ficar para trás em silêncio**. Por isso o foco é
+ * (a) a regra viver num lugar só, (b) todo worker que cria assinante estar na
+ * flag, e (c) as fontes de config concordarem entre si.
+ */
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import {
+  DOUBLE_OPT_IN_FLAG,
+  resolveKitCreateState,
+  vincularKitDoiForm,
+} from "../scripts/lib/shared/kit-doi.ts";
+
+const WORKERS_COM_CADASTRO = ["poll", "cursos", "reativar"] as const;
+
+test("os 3 workers que criam assinante estão no rollout", () => {
+  for (const w of WORKERS_COM_CADASTRO) {
+    assert.ok(
+      DOUBLE_OPT_IN_FLAG.enabledForWorkers.includes(w),
+      `worker "${w}" cria assinante e ficou fora do DOI — é exatamente assim que um caminho fica sem confirmação em silêncio`,
+    );
+  }
+});
+
+test("cada worker tem KIT_DOI_FORM_ID no wrangler.toml, e todos apontam para o MESMO form", () => {
+  const ids = new Map<string, string>();
+  for (const w of WORKERS_COM_CADASTRO) {
+    const toml = readFileSync(new URL(`../workers/${w}/wrangler.toml`, import.meta.url), "utf8");
+    const m = toml.match(/^KIT_DOI_FORM_ID\s*=\s*"([^"]*)"/m);
+    assert.ok(m, `workers/${w}/wrangler.toml não define KIT_DOI_FORM_ID — o worker cria assinante sem caminho de confirmação`);
+    ids.set(w, m[1]);
+  }
+  const distintos = new Set(ids.values());
+  assert.equal(
+    distintos.size,
+    1,
+    `os workers apontam para forms diferentes (${JSON.stringify(Object.fromEntries(ids))}) — divergir aqui manda metade dos cadastros para um form e metade para outro`,
+  );
+});
+
+test("o form configurado nos workers bate com platform.config.json", () => {
+  const cfg = JSON.parse(readFileSync(new URL("../platform.config.json", import.meta.url), "utf8"));
+  const toml = readFileSync(new URL("../workers/poll/wrangler.toml", import.meta.url), "utf8");
+  const doWorker = toml.match(/^KIT_DOI_FORM_ID\s*=\s*"([^"]*)"/m)?.[1];
+  assert.equal(cfg.kit.doiFormId, doWorker, "config duplicada de propósito (worker lê env, scripts leem o JSON) precisa andar junta");
+});
+
+test("resolveKitCreateState: worker no rollout + form utilizável ⇒ inactive", () => {
+  for (const w of WORKERS_COM_CADASTRO) {
+    assert.equal(resolveKitCreateState("9897918", w, () => {}), "inactive", `worker ${w}`);
+  }
+});
+
+test("resolveKitCreateState: form de SISTEMA ⇒ active, mesmo com o worker no rollout", () => {
+  const logs: string[] = [];
+  assert.equal(resolveKitCreateState("9839463", "cursos", (m) => logs.push(m)), "active");
+  assert.equal(logs.length, 1, "config errada tem que LOGAR — foi a ausência de sinal que escondeu o bug por 2 semanas");
+  assert.match(logs[0], /9839463/);
+  assert.match(logs[0], /cursos/, "a mensagem precisa dizer QUAL worker, senão não dá pra achar a config errada");
+});
+
+test("resolveKitCreateState: id ausente ⇒ active em silêncio (caminho documentado, não anomalia)", () => {
+  const logs: string[] = [];
+  assert.equal(resolveKitCreateState(undefined, "reativar", (m) => logs.push(m)), "active");
+  assert.equal(resolveKitCreateState("   ", "reativar", (m) => logs.push(m)), "active");
+  assert.equal(logs.length, 0);
+});
+
+test("resolveKitCreateState: worker FORA do rollout ⇒ active mesmo com form bom", () => {
+  // `KitDoiWorker` é um union FECHADO de propósito (ver KIT_DOI_WORKERS): alargar
+  // pra `string` reintroduziria o bug do typo silencioso que o #7723 fecha. Este
+  // caso testa a defesa em PROFUNDIDADE — o que acontece se um worker fora do
+  // rollout chegar em runtime (config, deploy defasado), que o tipo por
+  // construção não consegue cobrir. Daí o @ts-expect-error: a violação de tipo é
+  // o objeto do teste, não um descuido.
+  // @ts-expect-error worker fora do union — é exatamente o cenário sob teste
+  assert.equal(resolveKitCreateState("9897918", "worker-inexistente", () => {}), "active");
+});
+
+test("vincularKitDoiForm é best-effort — erro do Kit nunca lança (a assinatura não pode ser desfeita)", async () => {
+  const logs: string[] = [];
+  await vincularKitDoiForm({
+    apiKey: "k",
+    base: "https://api.kit.test/v4",
+    formId: "9897918",
+    subscriberId: 1,
+    referrer: "https://diar.ia.br/",
+    fetchImpl: async () => new Response("boom", { status: 500 }),
+    log: (m) => logs.push(m),
+  });
+  assert.equal(logs.length, 1, "falha silenciosa aqui é o bug original — precisa logar");
+  assert.match(logs[0], /500/);
+
+  logs.length = 0;
+  await vincularKitDoiForm({
+    apiKey: "k",
+    base: "https://api.kit.test/v4",
+    formId: "9897918",
+    subscriberId: 1,
+    referrer: "https://diar.ia.br/",
+    fetchImpl: async () => { throw new Error("rede caiu"); },
+    log: (m) => logs.push(m),
+  });
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /rede caiu/);
+});
+
+test("vincularKitDoiForm sem formId não chama a rede", async () => {
+  let chamou = false;
+  await vincularKitDoiForm({
+    apiKey: "k",
+    base: "https://api.kit.test/v4",
+    formId: undefined,
+    subscriberId: 1,
+    referrer: "https://diar.ia.br/",
+    fetchImpl: async () => { chamou = true; return new Response("{}"); },
+  });
+  assert.equal(chamou, false);
+});
+
+test("vincularKitDoiForm bate no endpoint certo, com o subscriber no PATH", async () => {
+  let url = "";
+  let body: unknown = null;
+  await vincularKitDoiForm({
+    apiKey: "k",
+    base: "https://api.kit.test/v4",
+    formId: "9897918",
+    subscriberId: 4242,
+    referrer: "https://cursos.diar.ia.br/?utm_source=x",
+    fetchImpl: async (u, init) => {
+      url = String(u);
+      body = JSON.parse(String((init as RequestInit).body));
+      return new Response("{}", { status: 200 });
+    },
+  });
+  assert.equal(url, "https://api.kit.test/v4/forms/9897918/subscribers/4242");
+  assert.deepEqual(body, { referrer: "https://cursos.diar.ia.br/?utm_source=x" });
+});
+
+// Onde estava um teste tautológico (`scopeExcludesLegacyBase === true`, um
+// campo que NENHUM código de produção lê — só pegaria alguém apagando a
+// linha) agora está a verificação de comportamento que ele fingia fazer:
+// quem já é `active` não é rebaixado. Medido ao vivo em 09/09/2026 — o upsert
+// do Kit responde 200 preservando `state: "active"` mesmo quando o payload
+// manda `inactive`. Este teste trava o lado que É nosso: nunca mandamos
+// `inactive` para quem o worker já sabe estar `active`.
+test("assinante já ATIVO não é rebaixado a inactive pelo nosso payload", async () => {
+  const { activateSubscriptionKit } = await import("../workers/reativar/src/index.ts");
+  const chamadas: { url: string; body: unknown }[] = [];
+  const fetchImpl = async (u: URL | RequestInfo, init?: RequestInit) => {
+    const url = String(u);
+    chamadas.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
+    if (url.includes("?email_address=")) {
+      return new Response(JSON.stringify({ subscribers: [{ id: 1, state: "active" }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ subscriber: { id: 1 } }), { status: 200 });
+  };
+  const env = { KIT_API_KEY: "k", KIT_API_URL: "https://kit.test/v4", KIT_DOI_FORM_ID: "9897918" } as never;
+
+  await activateSubscriptionKit(env, "jaativo@b.com", fetchImpl as typeof fetch);
+
+  const criacao = chamadas.find((c) => c.url.endsWith("/subscribers") && c.body !== null);
+  assert.equal(criacao, undefined, "quem já é active não passa pelo POST de criação — early-return de idempotência");
+});

@@ -119,6 +119,23 @@ KIT_ORIGEM_PAGA_FIELD = "origem_paga"
 # #6048 (item 4/5, Gate B aprovado pelo editor 25/08/2026 — rollout worker-a-
 # worker, poll já verificado ao vivo, cursos é o 2º). env.SUBSCRIBE_BACKEND
 # === "kit" em workers/cursos/src/subscribe.ts — cadastro pelo gate de cursos
-# passa a ir pro Kit em vez da Beehiiv. reativar segue em Beehiiv até
-# verificação ao vivo deste worker.
+# passa a ir pro Kit em vez da Beehiiv. (A frase seguinte dizia "reativar
+# segue em Beehiiv até verificação ao vivo deste worker" — desatualizada:
+# workers/reativar/wrangler.toml já fixa SUBSCRIBE_BACKEND = "kit", os 3
+# workers migraram. Corrigido em 09/09/2026, #7723.)
 SUBSCRIBE_BACKEND = "kit"
+
+# #7723 (09/09/2026, "habilita DOI em todos os lugares") — designer form
+# "Cadastro DOI (confirmacao)" do Kit, o MESMO usado pelo worker `poll`.
+# Criar o assinante `inactive` e VINCULAR a este form e o que dispara o
+# e-mail de confirmacao; sem o vinculo, `inactive` e uma prisao (nada promove
+# inactive->active sozinho).
+#
+# NAO apontar para 9839463 ("Newsletter site"): e form de SISTEMA, sem o
+# toggle "Send confirmation email" — o vinculo responde 201 e nada e enviado.
+# `verificarDoiForm` (scripts/lib/shared/kit-doi.ts) recusa ids de sistema e
+# faz o cadastro nascer "active", de proposito.
+#
+# VAR, nao secret — id de form nao e sensivel. Precisa andar junto com
+# platform.config.json -> kit.doiFormId.
+KIT_DOI_FORM_ID = "9897918"

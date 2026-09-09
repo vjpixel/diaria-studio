@@ -89,6 +89,11 @@ export interface Env {
   KIT_API_KEY?: string;
   /** Override só pra teste (mock server local) — default `https://api.kit.com/v4`. */
   KIT_API_URL?: string;
+  /** #7723: designer form do Kit com "Send confirmation email" ligado. É o
+   * VÍNCULO a ele que dispara o e-mail de confirmação — sem isso, criar
+   * `inactive` prende o assinante para sempre. VAR, não secret (id de form
+   * não é sensível). Ver `scripts/lib/shared/kit-doi.ts`. */
+  KIT_DOI_FORM_ID?: string;
   /** Nome do custom field Kit onde gravar o nome capturado (mesmo papel de
    * `BEEHIIV_NAME_FIELD`) — nenhum criado em produção ainda, degrade gracioso. */
   KIT_NAME_FIELD?: string;
