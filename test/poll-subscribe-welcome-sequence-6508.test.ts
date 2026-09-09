@@ -43,12 +43,15 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-// Import the subscribe module via tsx dynamic import
-const mod = await import(join(ROOT, "workers/poll/src/subscribe.ts"));
+// Import the subscribe module via tsx dynamic import. `pathToFileURL` is
+// required — the loader ESM só aceita URL (file://) ou especificador
+// relativo, e um path absoluto do Windows (`C:\...`) é lido como esquema
+// `c:` em vez de path, disparando ERR_UNSUPPORTED_ESM_URL_SCHEME (#7739).
+const mod = await import(pathToFileURL(join(ROOT, "workers/poll/src/subscribe.ts")).href);
 
 // We can't import the internal `subscribeToKit` (not exported — #6291),
 // but we CAN import `subscribeViaConfiguredBackend` (the single entrypoint)
