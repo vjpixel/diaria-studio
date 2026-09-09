@@ -93,6 +93,14 @@ describe("guard: todo Worker com host público (custom_domain) tem /robots.txt p
     );
   });
 
+  // ⚠️ Limite conhecido (#7733): o corpo da asserção abaixo é chaveado só por
+  // `workerDir` — `host` entra apenas no NOME do teste. Enquanto todo Worker
+  // servia 1 host isso era invisível; com `retrospectiva` servindo 3, são 3
+  // asserções estruturalmente idênticas sobre o mesmo diretório, não 3
+  // verificações de host. Os 3 hosts se comportam corretamente hoje (os dois
+  // legados redirecionam 301 tudo, `/robots.txt` inclusive, e isso tem
+  // cobertura precisa em `test/worker-retrospectiva-router-7658.test.ts`), mas
+  // um Worker multi-host futuro cujo host não sirva nem redirecione passaria.
   for (const { workerDir, host } of hosts) {
     it(`workers/${workerDir} (${host}) serve /robots.txt próprio (não o default da Cloudflare)`, () => {
       const publicRobots = join(WORKERS_DIR, workerDir, "public", "robots.txt");
