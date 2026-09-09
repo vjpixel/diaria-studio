@@ -102,6 +102,16 @@ const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 // subagente ativo pra proteger.
 const SOFT_STALE_MS = 90 * 60 * 1000;
 
+// #7702: janela de liveness do kind `interactive` — duplicada de
+// `INTERACTIVE_SOFT_STALE_MS` (`scripts/lib/session-registry.ts`), pela mesma
+// razão self-contained do resto deste arquivo. Bem mais curta que os 90 min
+// de coordenadora, e de propósito: uma sessão interativa bate heartbeat a
+// cada interação do editor, então 15 min de silêncio já significa que
+// ninguém está ali. Usada só por `readLiveInteractiveRegistrationFor` — errar
+// pra CURTO aqui é o lado seguro (a sessão volta a ser bloqueada, o
+// comportamento pré-#7702).
+const INTERACTIVE_SOFT_STALE_MS = 15 * 60 * 1000;
+
 // #6168: o kind `interactive` (escrito automaticamente pelo beacon,
 // `.claude/hooks/session-beacon.mjs`) NÃO entra aqui, e isso é uma decisão,
 // não um esquecimento — uma sessão interativa não despacha subagente
@@ -111,6 +121,42 @@ const SOFT_STALE_MS = 90 * 60 * 1000;
 // `readLiveMergeGrantFor` abaixo). `test/session-beacon-blast-radius.test.ts`
 // trava que este conjunto continua com 3 kinds.
 export const COORDINATOR_KINDS = new Set(["overnight", "develop", "continuo"]);
+
+/**
+ * Os kinds que têm AUTORIDADE DE MERGE (#7702) — subconjunto próprio de
+ * `COORDINATOR_KINDS`, e a distinção é o ponto desta issue.
+ *
+ * `COORDINATOR_KINDS` responde *"há rodada ativa?"* — chamador sem registro
+ * é subagente dela, bloqueia. `continuo` pertence a esse conjunto e continua
+ * pertencendo: o tick DELA despacha subagente implementador, e é o registro
+ * dela que impede esse subagente de mergear o próprio PR (#5716).
+ *
+ * Este conjunto responde a outra pergunta: *"quem decide que um merge
+ * entra, e portanto pode conceder janela via `grant-merge`?"*. `continuo`
+ * **não** responde a essa — `hermes/skills/hermes-diaria-continuo/SKILL.md`,
+ * o skill que o cron do Hermes de fato roda (e o único consumidor real do
+ * kind), diz em dois lugares que `continuo-pr-review.sh` é a **única
+ * autoridade de merge**. O tick abre PR e para; review e merge são de outro
+ * processo, em outro cron.
+ *
+ * Até o #7702 as duas perguntas eram o mesmo conjunto, e a consequência era
+ * uma inversão: o kind que nunca mergeia (`continuo`) bloqueava o
+ * `gh pr merge` de todo mundo, enquanto o que de fato mergeia
+ * (`continuo-review`, de `continuo-pr-review.sh`) não bloqueia ninguém — é
+ * deliberadamente não-coordenador. Pior, `continuo` roda como cron
+ * (`attended: false`) e não responde a `grant-merge`: era uma coordenadora
+ * que só bloqueia e nunca concede. Medido ao vivo em 09/09/2026, ao mergear
+ * a PR #7696 de uma sessão interativa com o editor presente.
+ *
+ * `continuo-review` NÃO foi promovido pra cá nesta unidade, de propósito: ele
+ * é o que de fato mergeia, mas não despacha subagente nenhum e o merge lock
+ * já o serializa — dar a ele poder de BLOQUEAR peers seria ampliar o guard,
+ * não corrigi-lo, e ninguém pediu isso.
+ *
+ * `test/session-beacon-blast-radius.test.ts` trava que este conjunto não
+ * diverge de `MERGE_AUTHORITY_SESSION_KINDS` (`session-registry.ts`).
+ */
+export const MERGE_AUTHORITY_KINDS = new Set(["overnight", "develop"]);
 
 /** TTL da concessão de janela (#6296) — duplicado de `MERGE_GRANT_TTL_MS` em
  * session-registry.ts, porque este hook é self-contained (sem import de `.ts`). */
@@ -582,6 +628,87 @@ export function onlyUnreachableCoordinatorsActive(scan) {
 }
 
 /**
+ * `true` quando há PELO MENOS 1 rodada ativa e NENHUMA delas tem autoridade
+ * de merge (#7702) — na prática, "as únicas rodadas de pé são `continuo`".
+ *
+ * Distinta de `onlyUnreachableCoordinatorsActive`, e as duas respondem
+ * perguntas que se pareciam antes desta issue:
+ *   - *inalcançável* (aquela) = "não dá pra PEDIR janela a ninguém" → é o
+ *     que habilita o escape hatch de auto-autorização (#7303);
+ *   - *sem autoridade de merge* (esta) = "não há a QUEM pedir, porque
+ *     ninguém ativo decide merge nenhum" → não há o que contornar, a
+ *     sessão interativa simplesmente não devia estar bloqueada.
+ *
+ * Uma `overnight` rodando com `--unattended` é inalcançável mas TEM
+ * autoridade: continua bloqueando (e o hatch do #7303 continua sendo o
+ * caminho dela). Um `continuo` é as duas coisas — e é o único caso hoje.
+ *
+ * Pura — opera sobre o `kinds` já lido por `readActiveCoordinatorScan`.
+ */
+export function everyActiveRoundLacksMergeAuthority(scan) {
+  const kinds = scan?.kinds;
+  if (!(kinds instanceof Map) || kinds.size === 0) return false;
+  for (const kind of kinds.values()) {
+    if (MERGE_AUTHORITY_KINDS.has(kind)) return false;
+  }
+  return true;
+}
+
+/**
+ * `true` quando `sessionId` tem um registro VIVO de kind `interactive` em
+ * `data/sessions/` (#7702).
+ *
+ * É o discriminador que separa "sessão interativa de verdade" de "subagente
+ * despachado pela rodada", e ele existe de graça: `session-beacon.mjs`
+ * registra a sessão do checkout PRINCIPAL como `interactive`, e recusa
+ * explicitamente registrar quem roda de um worktree vinculado — que é
+ * exatamente como todo subagente implementador roda (`isolation:
+ * "worktree"`). Um subagente, portanto, NUNCA tem registro `interactive`, e
+ * a leniência do #7702 não o alcança.
+ *
+ * **Falso negativo é o lado seguro, e é conhecido:** uma sessão interativa
+ * rodando a partir de um worktree também não emite beacon (consequência
+ * declarada em `session-beacon.mjs`), então cai aqui como `false` e continua
+ * bloqueada — degradação pro comportamento pré-#7702, nunca um bypass.
+ *
+ * Mesma disciplina de liveness da varredura de coordenadoras
+ * (`SOFT_STALE_MS`/`MAX_SESSION_AGE_MS`): registro velho não conta. Busca
+ * por sufixo `-{sessionId}.json` como `readLiveSelfAuthorizationFor`, e
+ * exige `kind === "interactive"` no conteúdo — o nome do arquivo sozinho não
+ * decide. Nunca lança: qualquer falha vira `false` (bloqueia).
+ */
+export function readLiveInteractiveRegistrationFor(repoRoot, sessionId, now = Date.now()) {
+  if (typeof sessionId !== "string" || sessionId === "") return false;
+  const dir = sessionsDir(repoRoot);
+  let entries;
+  try {
+    if (!existsSync(dir)) return false;
+    entries = readdirSync(dir);
+  } catch {
+    return false;
+  }
+  const suffix = `-${sessionId}.json`;
+  for (const name of entries) {
+    if (!name.endsWith(suffix) || name.startsWith(".") || name.includes("-safeBackup-")) continue;
+    try {
+      const record = JSON.parse(readFileSync(join(dir, name), "utf8"));
+      if (!record || typeof record !== "object") continue;
+      if (record.kind !== "interactive") continue;
+      if (record.sessionId !== sessionId) continue;
+      const heartbeatMs = Date.parse(record.lastHeartbeat ?? record.startedAt ?? "");
+      if (!Number.isFinite(heartbeatMs)) continue;
+      const ageMs = now - heartbeatMs;
+      if (ageMs < 0 || ageMs > INTERACTIVE_SOFT_STALE_MS) continue;
+      return true;
+    } catch {
+      // Entrada ilegível: não conta como prova de sessão interativa viva.
+      // Fail-closed — o efeito é bloquear, que é o comportamento anterior.
+    }
+  }
+  return false;
+}
+
+/**
  * Procura, no PRÓPRIO record de `sessionId` (qualquer kind — ao contrário de
  * `readLiveMergeGrantFor`, que só varre coordenadoras), uma auto-autorização
  * de merge viva (#7303, `SelfAuthorizedMerge`).
@@ -840,6 +967,48 @@ export function classifyMergeBlockCause(activeCoordinatorSessionIds, callerSessi
   // o lock, para todos.
   if (typeof holder === "string" && holder !== callerSessionId) return "lock-held-other";
 
+  // #7702: rodada ativa SEM autoridade de merge não bloqueia sessão
+  // interativa registrada.
+  //
+  // O caso é `continuo` de pé e mais nada. Ela despacha subagente
+  // implementador — por isso continua em `COORDINATOR_KINDS`, e por isso o
+  // subagente dela continua caindo em "not-authorized" logo abaixo (não tem
+  // registro `interactive`: roda em worktree vinculado, e o beacon recusa
+  // registrar de lá). Mas ela não mergeia nada: `continuo-pr-review.sh` é a
+  // única autoridade de merge do fluxo. Bloquear uma sessão interativa em
+  // nome dela cobrava `grant-merge` de um cron que não responde, pra
+  // proteger uma serialização que não existe — o que sobrava era o escape
+  // hatch do #7303 como caminho OBRIGATÓRIO de todo merge interativo
+  // enquanto o contínuo estivesse no ar, que é a maior parte do dia.
+  //
+  // Só três coisas juntas liberam, e nenhuma é dispensável:
+  //   - TODA rodada ativa sem autoridade de merge (uma `overnight`/`develop`
+  //     no ar, mesmo `--unattended`, volta a bloquear — o caminho dela é o
+  //     #7303);
+  //   - varredura CONFIÁVEL (`scanDegraded`) — sem isso, "só tem continuo"
+  //     pode ser uma `overnight` que o I/O do OneDrive não deixou ler, e a
+  //     regra deste arquivo é bloquear na dúvida;
+  //   - chamador com registro `interactive` VIVO — é o que prova que não é
+  //     subagente.
+  //
+  // **Destrava IDENTIDADE, nunca TEMPO** — mesmo princípio da concessão
+  // (#6303 P1·a) e da auto-autorização (#7303), e aqui ele não é cerimônia:
+  // `continuo-pr-review.sh` É a autoridade de merge do fluxo contínuo, roda
+  // no próprio cron, e registra-se como `continuo-review` — kind que NÃO
+  // está em `COORDINATOR_KINDS` e portanto é INVISÍVEL a esta varredura.
+  // Liberar sem lock aqui correria contra justamente o processo que de fato
+  // mergeia. Então esta sessão passa a porta de identidade abaixo e cai na
+  // regra de contenção como qualquer outra: pega o merge lock e mergeia.
+  //
+  // O ganho real não é pular o lock — é deixar de precisar de
+  // `grant-merge` (de um cron que não responde) ou de `self-authorize-merge`
+  // (#7303) só pra ter DIREITO de mergear. De 3 passos e uma decisão de
+  // julgamento pra 1 passo mecânico.
+  const lenientInteractive =
+    ctx.roundsLackMergeAuthority === true &&
+    ctx.scanDegraded !== true &&
+    ctx.callerIsLiveInteractive === true;
+
   // #6296 — DEFEITO 2: a janela concedida por conversa ganha representação
   // mecânica. Medido ao vivo em 260826: o protocolo inteiro da Parte F do
   // #6168 rodou (peer achado, SendMessage entregue, colisão por arquivo
@@ -890,7 +1059,12 @@ export function classifyMergeBlockCause(activeCoordinatorSessionIds, callerSessi
   // Duas portas de identidade, e só duas. Note que isto NÃO é mais um
   // retorno terminal — passar aqui só significa "tem direito de mergear"; se
   // pode mergear AGORA é o bloco de lock abaixo que decide (P1·a).
-  if (!grantCoversTarget && !isCoordinator) return "not-authorized"; // comportamento pré-#6296
+  // #7702 acrescentou a TERCEIRA porta (`lenientInteractive`, computada
+  // acima): sessão interativa registrada quando nenhuma rodada ativa tem
+  // autoridade de merge. Não afrouxa a proteção do #5716 — subagente não tem
+  // registro `interactive` (roda em worktree vinculado, e o beacon recusa
+  // registrar de lá), então continua caindo aqui.
+  if (!grantCoversTarget && !isCoordinator && !lenientInteractive) return "not-authorized"; // comportamento pré-#6296
 
   // #6296 — DEFEITO 1: dois mecanismos governavam a mesma ação sem se
   // compor. `grep -c 'mergeLock\|merge-lock\|\.merge-lock'` neste arquivo
@@ -1020,7 +1194,14 @@ export const BLOCK_REASON =
   "com `register --unattended` porque roda como task agendada/dispatched, sem quem leia SendMessage " +
   "(#7303, #7546): `session-registry.ts self-authorize-merge --reason \"...\" [--pr N]` é o escape hatch — " +
   "recusa sozinho se houver alguma coordenadora ALCANÇÁVEL ativa (nesse caso, peça a janela dela " +
-  "normalmente); depois dele, o passo de merge-lock-acquire acima continua obrigatório do mesmo jeito.";
+  "normalmente); depois dele, o passo de merge-lock-acquire acima continua obrigatório do mesmo jeito. " +
+  "#7702: se as ÚNICAS rodadas ativas forem `continuo`, você NÃO precisa nem de grant-merge nem de " +
+  "self-authorize-merge — `continuo` não tem autoridade de merge (quem mergeia no fluxo dela é " +
+  "`continuo-pr-review.sh`), então uma sessão interativa REGISTRADA já tem direito de mergear. Nesse " +
+  "caso este bloqueio é só o merge lock: rode `session-registry.ts merge-lock-acquire --pr N`, mergeie, " +
+  "e `merge-lock-release --pr N`. (Se você é sessão interativa e mesmo assim caiu em \"not-authorized\", " +
+  "seu registro `interactive` não está vivo — sessão rodando de um worktree não emite beacon, ver " +
+  "`session-beacon.mjs`.)";
 
 /**
  * Complemento ao `BLOCK_REASON` explicando POR QUE uma concessão de merge
@@ -1201,6 +1382,11 @@ if (
         // #6303 Finding B: varredura degradada não pode alimentar a
         // leniência "sou a única coordenadora, posso sem lock".
         scanDegraded: scan.degraded,
+        // #7702: as duas metades da leniência "rodada sem autoridade de
+        // merge não bloqueia sessão interativa". Calculadas aqui (I/O) e
+        // consumidas por `classifyMergeBlockCause`, que segue pura.
+        roundsLackMergeAuthority: everyActiveRoundLacksMergeAuthority(scan),
+        callerIsLiveInteractive: readLiveInteractiveRegistrationFor(repoRoot, payload.session_id),
         // #7223 review (achado #7171 parte 2) — ver docblock de
         // `resolveGrantWasConsumed`: só conta quando o PR da concessão
         // consumida bate com o PR sendo mergeado agora.

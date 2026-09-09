@@ -31,6 +31,8 @@ import { join } from "node:path";
 
 import {
   COORDINATOR_SESSION_KINDS,
+  MERGE_AUTHORITY_SESSION_KINDS,
+  hasMergeAuthorityKind,
   GC_INTERACTIVE_MAX_AGE_MS,
   INTERACTIVE_SOFT_STALE_MS,
   SOFT_STALE_MS,
@@ -45,7 +47,7 @@ import {
   type SessionRecord,
 } from "../scripts/lib/session-registry.ts";
 import { shouldSkipForSharedSession } from "../scripts/cleanup-merged-worktrees.ts";
-import { COORDINATOR_KINDS } from "../.claude/hooks/block-gh-pr-merge-subagent.mjs";
+import { COORDINATOR_KINDS, MERGE_AUTHORITY_KINDS } from "../.claude/hooks/block-gh-pr-merge-subagent.mjs";
 import {
   TOUCHED_PATHS_CAP as HOOK_TOUCHED_PATHS_CAP,
   normalizePath as hookNormalizePath,
@@ -110,6 +112,31 @@ describe("#6168 blast radius 2 — COORDINATOR_KINDS não recebe o kind novo", (
     for (const kind of COORDINATOR_SESSION_KINDS) assert.equal(isCoordinatorKind(kind), true);
     assert.equal(isCoordinatorKind("interactive"), false);
     assert.equal(isCoordinatorKind("qualquer-outra-coisa"), false);
+  });
+
+  it("#7702: MERGE_AUTHORITY_KINDS (hook) e MERGE_AUTHORITY_SESSION_KINDS (TS) não divergem", () => {
+    // 4ª cópia de conjunto de kinds entre `.mjs` self-contained e `.ts`,
+    // mesma dívida travada pelos testes acima.
+    assert.deepEqual([...MERGE_AUTHORITY_KINDS].sort(), [...MERGE_AUTHORITY_SESSION_KINDS].sort());
+  });
+
+  it("#7702: autoridade de merge é subconjunto PRÓPRIO das coordenadoras, e continuo é o que fica de fora", () => {
+    // Subconjunto: quem decide merge é necessariamente uma rodada.
+    for (const kind of MERGE_AUTHORITY_SESSION_KINDS) {
+      assert.equal(isCoordinatorKind(kind), true, `${kind} tem autoridade de merge mas não é rodada`);
+    }
+    // PRÓPRIO, e é o ponto da issue: `continuo` é rodada (o registro dela
+    // ainda bloqueia os subagentes que ela despacha, #5716) mas não decide
+    // merge nenhum — `continuo-pr-review.sh` é a única autoridade do fluxo
+    // dela. Colapsar os dois conjuntos de novo reintroduz o #7702.
+    assert.equal(isCoordinatorKind("continuo"), true);
+    assert.equal(hasMergeAuthorityKind("continuo"), false);
+    assert.equal(hasMergeAuthorityKind("interactive"), false);
+    assert.equal(hasMergeAuthorityKind("continuo-review"), false);
+    assert.ok(
+      MERGE_AUTHORITY_SESSION_KINDS.length < COORDINATOR_SESSION_KINDS.length,
+      "os dois conjuntos voltaram a ser iguais — a distinção do #7702 se perdeu",
+    );
   });
 });
 

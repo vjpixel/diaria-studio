@@ -356,7 +356,16 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   completa local, #2959) → branch → PR com `Closes #NNNN` (ou
   `REFS #NNNN, NÃO CLOSES`, #5010) → self-review (#2038) → agente fixer se
   houver findings acionáveis → review leve do coordenador → `gh pr checks
-  --watch` → gate de 2 condições → squash-merge. **Convenção de branch,
+  --watch` → gate de 2 condições → squash-merge. **⚠️ A cauda desta cadeia
+  (`gh pr checks --watch` → gate → squash-merge) descreve o fluxo desta skill
+  DESTE repo, que hoje não tem consumidor (#7702).** O que roda em produção é
+  a skill do Hermes (`hermes/skills/hermes-diaria-continuo/`, invocada pelo
+  cron do `helios` — ver CLAUDE.md), e lá o tick **abre a PR e para**:
+  `continuo-pr-review.sh` é a **única autoridade de merge** do fluxo contínuo,
+  num cron separado, registrando-se com o kind `continuo-review`. Não assumir,
+  a partir deste parágrafo, que uma sessão `continuo` revisa ou mergeia — foi
+  exatamente essa leitura que produziu um diagnóstico errado no #7702, e é por
+  isso que `continuo` saiu de `MERGE_AUTHORITY_SESSION_KINDS`. **Convenção de branch,
   análoga a overnight/develop:** `continuo/fix-{issue}-{slug}` (solo) ou
   `continuo/batch-{slug}` (lote) — necessário mesmo sem código novo, porque
   `.claude/hooks/pr-create-review.mjs` (`resolveEffort`) só reconhece
