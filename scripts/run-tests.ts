@@ -221,7 +221,7 @@
  * problema de origem continuaria, só que multiplicado por worker em vez de
  * por batch sequencial.
  */
-import { spawnSync, fork, type ChildProcess } from "node:child_process";
+import { spawnSync, fork, type ChildProcess, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { availableParallelism } from "node:os";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
@@ -256,6 +256,70 @@ export const BATCH_SIZE = 150;
 export function cleanChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const { NODE_TEST_CONTEXT: _ctx, NODE_TEST_WORKER_ID: _wid, ...rest } = env;
   return rest;
+}
+
+/** #7753: `SpawnSyncOptions` do `@types/node` não declara `detached` (só
+ *  `SpawnOptions`, o tipo do `spawn` assíncrono, tem esse campo) — mas o
+ *  runtime do Node HONRA `detached: true` em `spawnSync` de qualquer forma
+ *  (mesma chamada `uv_spawn` por baixo dos dois; confirmado ao vivo:
+ *  `spawnSync` com `detached: true` torna o processo líder de um novo grupo
+ *  POSIX igual ao `spawn` assíncrono). Este alias só existe pra passar o
+ *  campo pelo type-checker sem `as any` — atribuir a uma variável tipada
+ *  (em vez de um objeto literal inline) evita o "excess property check" do
+ *  TS sem enfraquecer o resto da tipagem de `SpawnSyncOptions`. */
+type SpawnSyncOptionsDetached = SpawnSyncOptionsWithStringEncoding & { detached?: boolean };
+
+/** #7753: `spawnSync` com `timeout`+`killSignal` manda o sinal só para o
+ *  processo FILHO direto (`node --test <batch>`) — mas o runner nativo roda
+ *  com `--test-isolation=process` (default), ou seja 1 processo NETO por
+ *  arquivo do batch. O SIGKILL do timeout mata o pai; os netos sobrevivem,
+ *  são reparentados pro `init`/`systemd --user` e ficam rodando pra sempre
+ *  (medido ao vivo: 11 órfãos de ~4,7 dias, `load average` 2,6× o número de
+ *  cores). Este helper mata a ÁRVORE inteira, não só o PID isolado —
+ *  chamado depois de `spawn(...)` sempre que `runOne`/`bisectHangingBatch`
+ *  passam `detached: true` (o que os torna líder de um novo grupo de
+ *  processos POSIX; os netos herdam esse mesmo pgid por padrão, então
+ *  `-pid` alcança todos eles).
+ *
+ *  POSIX: `process.kill(-pid, signal)` — pid negativo é a convenção do
+ *  kernel pra "grupo de processos inteiro", não um PID isolado.
+ *  Windows: não existe grupo de processo POSIX — `detached` só cria um
+ *  console group próprio. Usa `taskkill /T /F /PID <pid>` (mata a árvore
+ *  inteira), **sempre por PID, nunca por nome de imagem** (`node.exe` de
+ *  outra sessão morreria junto — ver #6982).
+ *
+ *  Idempotente/best-effort: se o grupo já não existe mais (processo já
+ *  reaped, sem netos, ou já matamos antes), o erro (ESRCH no POSIX; exit
+ *  code não-zero do `taskkill`, ex: "not found") é engolido — o objetivo é
+ *  garantir que não sobrou nada, não provar que havia algo pra matar. */
+export function killProcessTree(pid: number | undefined, signal: NodeJS.Signals = "SIGKILL"): void {
+  if (typeof pid !== "number" || !Number.isFinite(pid) || pid <= 0) return;
+  if (process.platform === "win32") {
+    try {
+      spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore" });
+    } catch {
+      // best-effort — ver docstring acima.
+    }
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // ESRCH (grupo já não existe) ou EPERM — best-effort, ver docstring acima.
+  }
+}
+
+/** #7753: `true` quando o `result` de um `spawn(...)` indica que o processo
+ *  foi morto pelo mecanismo de timeout — via `error.code === "ETIMEDOUT"`
+ *  (`spawnSync` reporta assim na maioria das plataformas, #6833 P3) OU via
+ *  `result.signal` batendo com o `killSignal` configurado (caminho que
+ *  `spawnSync` também usa em algumas combinações de SO/versão do Node).
+ *  Extraído pra decidir, num único lugar, quando vale a pena chamar
+ *  `killProcessTree` — nunca depois de um batch que terminou normalmente. */
+export function wasKilledByTimeout(result: ReturnType<typeof spawnSync>, killSignal: NodeJS.Signals): boolean {
+  const timedOut = Boolean(result.error) && (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
+  const killedBySignal = result.signal === killSignal;
+  return timedOut || killedBySignal;
 }
 
 /** Pure: parte uma lista em batches de tamanho `size` (último pode ser menor). */
@@ -512,19 +576,25 @@ export function bisectHangingBatch(
   if (Date.now() >= deadline) {
     return { clean: [], hanging: [], inconclusive: [...batch] };
   }
-  const result = spawn(process.execPath, ["--import", "tsx", "--test", ...extraArgs, ...batch], {
+  const bisectSpawnOpts: SpawnSyncOptionsDetached = {
     encoding: "utf8",
     stdio: ["inherit", "pipe", "pipe"],
     maxBuffer: 256 * 1024 * 1024,
     timeout: subTimeoutMs,
     killSignal: "SIGKILL",
+    // #7753: líder de um novo grupo de processos — ver docstring de
+    // `killProcessTree`, chamada logo abaixo pra alcançar os netos do
+    // `--test-isolation=process` que o SIGKILL do timeout, sozinho, não mata.
+    detached: true,
     env: cleanChildEnv(),
-  });
+  };
+  const result = spawn(process.execPath, ["--import", "tsx", "--test", ...extraArgs, ...batch], bisectSpawnOpts);
+  const spawnTimedOut = Boolean(result.error) && (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
+  const killedBySignal = Boolean(result.signal);
+  if (spawnTimedOut || killedBySignal) killProcessTree(result.pid, "SIGKILL");
   const out = result.stdout ? String(result.stdout) : "";
   const err = result.stderr ? String(result.stderr) : "";
   const combined = `${out}\n${err}`;
-  const spawnTimedOut = Boolean(result.error) && (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
-  const killedBySignal = Boolean(result.signal);
   const noSummary = !result.error && !hasTestSummary(combined);
   const reproducedHere = spawnTimedOut || killedBySignal || noSummary;
   if (!reproducedHere) {
@@ -669,8 +739,8 @@ export function processChunkedBatches(
   // orçamento de bisecção já reservado (nunca soma tempo novo ao teto do
   // worker, ver `computeWorkerTimeoutMs`). Sem argumento, comportamento
   // idêntico ao de sempre.
-  const runOne = (batch: string[], timeoutMs: number = batchTimeoutMs) =>
-    spawn(process.execPath, ["--import", "tsx", "--test", ...extraArgs, ...batch], {
+  const runOne = (batch: string[], timeoutMs: number = batchTimeoutMs) => {
+    const spawnOpts: SpawnSyncOptionsDetached = {
       encoding: "utf8",
       stdio: ["inherit", "pipe", "pipe"],
       // Review #6807 (P1, confiança alta): sem isto, o default de 1 MB do
@@ -687,12 +757,28 @@ export function processChunkedBatches(
       // numa promise pendente pode ignorar SIGTERM.
       timeout: timeoutMs,
       killSignal: "SIGKILL",
+      // #7753: líder de um novo grupo de processos — sem isto, o SIGKILL
+      // do timeout acima alcança só este processo direto (`node --test`),
+      // nunca os netos que `--test-isolation=process` (default do runner
+      // nativo) spawna — 1 por arquivo do batch. Ver docstring de
+      // `killProcessTree`, chamada logo abaixo.
+      detached: true,
       // #6877 — ver docstring de `cleanChildEnv`: nunca propagar
       // NODE_TEST_CONTEXT/NODE_TEST_WORKER_ID herdados (processo pai já
       // rodando dentro de outro `node --test`) pro batch, senão o `--test`
       // deste grandchild se recusa a rodar ("run() called recursively").
       env: cleanChildEnv(),
-    });
+    };
+    const result = spawn(process.execPath, ["--import", "tsx", "--test", ...extraArgs, ...batch], spawnOpts);
+    // #7753: batch morto por timeout (ETIMEDOUT no spawn, ou `result.signal`
+    // batendo com o killSignal) — mata o GRUPO inteiro, não só este PID,
+    // pra não vazar os netos do runner. Best-effort/idempotente (ver
+    // docstring de `killProcessTree`) — nunca dispara em batch saudável.
+    if (wasKilledByTimeout(result, "SIGKILL")) {
+      killProcessTree(result.pid, "SIGKILL");
+    }
+    return result;
+  };
 
   /** `spawn` está tipado como `typeof spawnSync` (assinatura genérica) —
    *  na prática, com `encoding: "utf8"` sempre passado em `runOne`, o

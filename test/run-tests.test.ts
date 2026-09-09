@@ -7,7 +7,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,8 @@ import {
   DEFAULT_BATCH_TIMEOUT_MS,
   computeWorkerTimeoutMs,
   pipeWorkerStream,
+  killProcessTree,
+  wasKilledByTimeout,
   sleepSync,
   DEFAULT_RETRY_DELAY_MS,
   type RunTestBatchesParallelOptions,
@@ -42,6 +44,20 @@ import { PassThrough } from "node:stream";
  *  sozinho não basta mais) usam esta constante para não duplicar a string
  *  em cada mock. */
 const OK_SUMMARY = "# tests 1\n# pass 1\n# fail 0\n";
+
+/** #7753: `process.kill(pid, 0)` não manda sinal nenhum — só testa se o
+ *  processo existe e é alcançável (mesma convenção POSIX que `kill -0`).
+ *  `true` = ainda vivo; `false` = morto (ESRCH) — usado pelo teste de
+ *  regressão de vazamento de processo pra confirmar que o neto não ficou
+ *  órfão depois do timeout. */
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 describe("chunk (#6495)", () => {
   it("parte em batches do tamanho pedido, último batch menor sobra", () => {
@@ -664,6 +680,11 @@ describe("runTestBatches — batch que TRAVA/MORRE produz exit != 0 (#6822, Defe
     });
     assert.equal(seenOptions?.timeout, 12345);
     assert.equal(seenOptions?.killSignal, "SIGKILL");
+    // #7753: sem isto, o SIGKILL do timeout mata só o processo direto
+    // (`node --test`) — os netos do `--test-isolation=process` (1 processo
+    // por arquivo do batch) sobrevivem, reparentados pro init/systemd, e
+    // ficam rodando pra sempre (11 órfãos de ~4,7 dias medidos ao vivo).
+    assert.equal(seenOptions?.detached, true, "spawn precisa virar líder de um novo grupo de processos pro kill de grupo alcançar os netos");
   });
 
   it("DEFAULT_BATCH_TIMEOUT_MS é positivo e finito, generoso o bastante pra não disparar em batch normal (>60s)", () => {
@@ -1368,6 +1389,171 @@ describe("runTestBatchesParallel (#6877) — integração REAL com fork() (sem s
   it("cleanChildEnv: env sem as chaves NODE_TEST_* não lança, devolve intacto", () => {
     const fakeEnv = { PATH: "/usr/bin" };
     assert.deepEqual(cleanChildEnv(fakeEnv as NodeJS.ProcessEnv), fakeEnv);
+  });
+});
+
+describe("wasKilledByTimeout / killProcessTree (#7753) — unit, sem processo real", () => {
+  it("wasKilledByTimeout: true quando error.code === ETIMEDOUT", () => {
+    const result = {
+      status: null,
+      signal: null,
+      pid: 42,
+      stdout: "",
+      stderr: "",
+      output: [],
+      error: Object.assign(new Error("spawnSync node ETIMEDOUT"), { code: "ETIMEDOUT" }),
+    } as unknown as ReturnType<typeof import("node:child_process").spawnSync>;
+    assert.equal(wasKilledByTimeout(result, "SIGKILL"), true);
+  });
+
+  it("wasKilledByTimeout: true quando result.signal bate com o killSignal (sem error.code)", () => {
+    const result = {
+      status: null,
+      signal: "SIGKILL",
+      pid: 42,
+      stdout: "",
+      stderr: "",
+      output: [],
+    } as unknown as ReturnType<typeof import("node:child_process").spawnSync>;
+    assert.equal(wasKilledByTimeout(result, "SIGKILL"), true);
+  });
+
+  it("wasKilledByTimeout: false no caminho feliz (status 0, sem error, sem signal) — nunca dispara em batch saudável", () => {
+    const result = {
+      status: 0,
+      signal: null,
+      pid: 42,
+      stdout: OK_SUMMARY,
+      stderr: "",
+      output: [],
+    } as unknown as ReturnType<typeof import("node:child_process").spawnSync>;
+    assert.equal(wasKilledByTimeout(result, "SIGKILL"), false);
+  });
+
+  it("killProcessTree (POSIX): manda o sinal pro GRUPO (-pid), nunca pro PID isolado", (t) => {
+    if (process.platform === "win32") return; // caminho POSIX só — ver teste Windows abaixo
+    const calls: Array<{ pid: number; signal: string }> = [];
+    t.mock.method(process, "kill", (pid: number, signal: string) => {
+      calls.push({ pid, signal });
+      return true;
+    });
+    killProcessTree(4242, "SIGKILL");
+    assert.deepEqual(calls, [{ pid: -4242, signal: "SIGKILL" }], "pid negativo é a convenção do kernel pra 'grupo inteiro', não o PID isolado");
+  });
+
+  it("killProcessTree: ESRCH (grupo já não existe) é engolido, nunca lança — best-effort", (t) => {
+    if (process.platform === "win32") return;
+    t.mock.method(process, "kill", () => {
+      throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
+    });
+    assert.doesNotThrow(() => killProcessTree(4242, "SIGKILL"));
+  });
+
+  it("killProcessTree: pid ausente/inválido (undefined, 0, negativo, NaN) nunca chama process.kill", (t) => {
+    if (process.platform === "win32") return;
+    const calls: unknown[] = [];
+    t.mock.method(process, "kill", (...args: unknown[]) => {
+      calls.push(args);
+      return true;
+    });
+    killProcessTree(undefined, "SIGKILL");
+    killProcessTree(0, "SIGKILL");
+    killProcessTree(-1, "SIGKILL");
+    killProcessTree(NaN, "SIGKILL");
+    assert.deepEqual(calls, [], "sem PID válido não há grupo pra alcançar — nunca chama process.kill(-0)/(-NaN)/etc.");
+  });
+});
+
+// REGRESSÃO (#7753, issue original): "várias sessões node.js começam em
+// paralelo" — 11 órfãos de ~4,7 dias medidos ao vivo no `300` (`load
+// average` 2,6× o número de cores). Causa: `spawnSync` com `timeout` mata só
+// o processo DIRETO (`node --test <batch>`); o runner nativo roda com
+// `--test-isolation=process` (default), spawnando 1 processo NETO por
+// arquivo — o SIGKILL do timeout nunca alcançava esse neto, que sobrevivia
+// reparentado pro init/systemd.
+//
+// Este teste dispara `runTestBatches` de VERDADE (spawnSync real, nunca
+// injetado) sobre um arquivo-fixture que trava de propósito, com
+// `batchTimeoutMs` bem curto — reproduz o cenário exato da issue (medido ao
+// vivo antes do fix, ver PR): o processo `node --test` do batch spawna um
+// neto isolado pro único arquivo, o neto escreve o PRÓPRIO pid num arquivo
+// (prova de que ele de fato rodou e ficou vivo o suficiente pra travar), e
+// nunca retorna. Depois do timeout, assere que o neto NÃO sobreviveu —
+// antes do fix (detached:true + killProcessTree no grupo), este teste FALHA
+// (o pid continua respondendo a `process.kill(pid, 0)`).
+describe("runOne mata a árvore inteira no timeout — integração REAL (#7753, sem spawn injetado)", () => {
+  it("batch travado + timeout curto → o processo NETO (isolamento por processo) morre junto, não fica órfão", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "run-tests-orphan-it-"));
+    const pidFile = join(dir, "grandchild.pid");
+    try {
+      // Escreve o próprio PID assim que o processo isolado do arquivo sobe
+      // (topo do módulo — roda antes de qualquer `test()`), depois trava
+      // pra sempre. `--test-isolation=process` garante que ESTE processo
+      // (o que executa este arquivo) é um filho do `node --test` que
+      // `runTestBatches` spawna — o "neto" da perspectiva deste script de
+      // teste, exatamente como na issue.
+      const hangFile = join(dir, "hang.test.ts");
+      writeFileSync(
+        hangFile,
+        [
+          `import { writeFileSync } from "node:fs";`,
+          `import { test } from "node:test";`,
+          `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
+          // Segura o event loop com um timer ATIVO, não com uma promise que
+          // nunca resolve: o runner do Node cancela a promise ociosa sozinho
+          // (~400ms no Node 20), e aí o batch termina ANTES do timeout — o
+          // teste passaria com e sem o fix. Um `setInterval` mantém o handle
+          // vivo em qualquer versão, então o timeout dispara de verdade e o
+          // neto só morre se `killProcessTree` matar o grupo (achado
+          // alta/P2 do review da PR #7764).
+          `test("trava de propósito (#7753 fixture)", async () => { setInterval(() => {}, 1000); await new Promise(() => {}); });`,
+        ].join("\n"),
+      );
+
+      const exit = runTestBatches({
+        files: [hangFile],
+        batchTimeoutMs: 5000,
+        bisectBudgetMs: 0, // desliga a bisecção (#6822) — não é o que este teste cobre, e cada rodada extra é mais um spawn real
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+      });
+
+      assert.equal(exit, 1, "batch travado é falha dura (#6822) — nunca sai 0");
+
+      // O neto precisa ter chegado a rodar (senão o teste não prova nada —
+      // teria "passado" só porque o processo nunca subiu).
+      assert.ok(existsSync(pidFile), "o processo isolado do arquivo precisa ter subido e escrito o próprio pid antes de travar");
+      const grandchildPid = Number(readFileSync(pidFile, "utf8").trim());
+      assert.ok(Number.isInteger(grandchildPid) && grandchildPid > 0, `pid do neto inválido: ${grandchildPid}`);
+
+      // `runTestBatches` já retornou (spawnSync é síncrono) — o kill do
+      // grupo já foi enviado antes do retorno. Pequena folga só pro kernel
+      // processar o SIGKILL e reparentar/liberar o pid.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      const grandchildAlive = isPidAlive(grandchildPid);
+      assert.equal(
+        grandchildAlive,
+        false,
+        `REGRESSÃO #7753: neto (pid ${grandchildPid}) sobreviveu ao timeout do batch — vira órfão de vida longa (era exatamente o padrão medido ao vivo: 11 processos com ~4,7 dias de idade, PPID reparentado pro init/systemd)`,
+      );
+    } finally {
+      // Rede de segurança: se o teste falhar ANTES do fix (ou por algum
+      // motivo o kill não alcançar), garante que este teste não deixa pra
+      // trás o mesmo tipo de órfão que está testando — nunca confia que a
+      // asserção acima já limpou.
+      if (existsSync(pidFile)) {
+        const leftoverPid = Number(readFileSync(pidFile, "utf8").trim());
+        if (Number.isInteger(leftoverPid) && leftoverPid > 0 && isPidAlive(leftoverPid)) {
+          try {
+            process.kill(leftoverPid, "SIGKILL");
+          } catch {
+            // já morto entre o assert e aqui — ok.
+          }
+        }
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
