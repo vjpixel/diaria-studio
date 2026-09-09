@@ -262,8 +262,6 @@ export interface DestaqueGroup {
   key: string;
   label: string;
   imageUrl: string;
-  /** É IA? publica DUAS imagens (opção A e B), não uma. */
-  extraImages?: { label: string; url: string }[];
   /** #6005 Parte B / #6064: os 5 slides do carrossel diário do Instagram
    * (capa + 3 parágrafos + CTA), quando os 4 slides sem foto existem no
    * `06-public-images.json` (tudo-ou-nada, mesma regra de
@@ -276,7 +274,16 @@ export interface DestaqueGroup {
 /**
  * Reagrupa os posts POR DESTAQUE (não por seção): cada imagem aparece 1×, com
  * todos os textos que a acompanham logo abaixo, cada um rotulado com as redes
- * de destino. Ordem: destaques numerados, depois É IA?, depois post_pixel.
+ * de destino. Ordem: destaques numerados, depois post_pixel.
+ *
+ * #7678: a seção `## eia` (post do "É IA?") não é mais gerada em
+ * `03-social.md` pelo `merge-social-md.ts` — o post é dispatchado por
+ * `publish-eia-social.ts` a partir de `01-eia-social.md`. groupByDestaque
+ * ignora posts cujo destaque seja "eia" (não há mais como gerar um grupo
+ * dele a partir de `03-social.md`): se um `## eia` sobrar em um
+ * `03-social.md` legado (edições antigas, ou reestrutura manual), o bloco
+ * simplesmente não vira grupo — não quebra o preview, e o lint de
+ * `## dN`/`## post_pixel` continua sem ver o `## eia` no caminho.
  */
 export function groupByDestaque(
   platforms: Platform[],
@@ -288,25 +295,17 @@ export function groupByDestaque(
     const channels = channelsForSection(platform.name);
     for (const post of platform.posts) {
       const key = post.destaque.toLowerCase().replace(/\s+/g, "");
+      // #7678: "eia" não é mais um destaque gerado em 03-social.md.
+      if (key === "eia") continue;
       if (!groups.has(key)) {
         const label = isPostPixel(post.destaque)
           ? `POST PESSOAL — vjpixel (imagem do D${postPixelImageNum})`
-          : /^eia$/i.test(key)
-            ? "É IA?"
-            : post.destaque;
-        const isEia = /^eia$/i.test(key);
+          : post.destaque;
         const isNumberedDestaque = /^d\d+$/.test(key);
         groups.set(key, {
           key,
           label,
-          // É IA? não tem imagem `d{N}`: são as duas opções A/B do quiz.
-          imageUrl: isEia ? "" : getImageUrl(post.destaque, imageUrls, postPixelImageNum),
-          extraImages: isEia
-            ? [
-                { label: "Opção A", url: resolveSocialImageUrl(imageUrls.eia_a, () => {}) },
-                { label: "Opção B", url: resolveSocialImageUrl(imageUrls.eia_b, () => {}) },
-              ].filter(img => img.url)
-            : undefined,
+          imageUrl: getImageUrl(post.destaque, imageUrls, postPixelImageNum),
           carouselImages: isNumberedDestaque
             ? buildCarouselImages(key, imageUrls)
             : undefined,
@@ -318,7 +317,6 @@ export function groupByDestaque(
   }
   const order = (k: string): number => {
     if (/^d\d+$/.test(k)) return Number(k.slice(1));
-    if (k === "eia") return 90;
     return 99; // post_pixel por último
   };
   return [...groups.values()].sort((a, b) => order(a.key) - order(b.key));
@@ -382,15 +380,16 @@ function renderCarouselGallery(group: DestaqueGroup): string {
 }
 
 export function renderDestaqueGroup(group: DestaqueGroup, color: string): string {
+  // #7678: o ramo `extraImages` (par A/B do "É IA?") saiu junto com a seção
+  // `## eia` — nada mais popula esse campo a partir de 03-social.md, então
+  // era uma condição que nunca podia ser verdadeira. O par A/B continua
+  // existindo no produto, só que pelo caminho de `publish-eia-social.ts` /
+  // `01-eia-social.md`, que não passa por aqui.
   const imgHtml = group.carouselImages?.length
     ? renderCarouselGallery(group)
-    : group.extraImages?.length
-      ? `<div class="post-image eia-pair">${group.extraImages
-          .map(img => `<figure><img src="${escHtml(img.url)}" alt="${escHtml(`${group.label} — ${img.label}`)}" /><figcaption>${escHtml(img.label)}</figcaption></figure>`)
-          .join("")}</div>`
-      : group.imageUrl
-        ? `<div class="post-image"><img src="${escHtml(group.imageUrl)}" alt="${escHtml(group.label)}" /></div>`
-        : "";
+    : group.imageUrl
+      ? `<div class="post-image"><img src="${escHtml(group.imageUrl)}" alt="${escHtml(group.label)}" /></div>`
+      : "";
   return `
   <div class="post">
     <div class="post-header" style="border-left: 3px solid ${color}">${escHtml(group.label)}</div>
@@ -487,9 +486,6 @@ export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, post
     margin-top: 10px;
     word-spacing: 4px;
   }
-  .eia-pair { display:flex; gap:10px; }
-  .eia-pair figure { flex:1; margin:0; }
-  .eia-pair figcaption { font-size:12px; color:#666; text-align:center; padding:4px 0 8px; }
   .carousel-gallery-scroll {
     display: flex;
     gap: 10px;
