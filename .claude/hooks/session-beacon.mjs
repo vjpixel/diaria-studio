@@ -203,6 +203,53 @@ function statIsDirectory(path) {
  * custa um registro a mais, não um registro a menos — e um registro a menos
  * seria justamente cegar o `conflicts` da sessão real.
  */
+
+/**
+ * Deriva lista (worktree_path, branch) de `git worktree list --porcelain`.
+ * Só faz sentido quando a sessão está operando em worktrees (padrão deste
+ * projeto: Bash com cd por chamada). Não spawnar no beacon — usamos
+ * leitura de arquivo do .git do main + worktrees/.  Se falhar, retorna null
+ * (fail-open); o guard que consome isso trata como "não sei, vou exigir
+ * explicitação" (ver item 4).
+ */
+export function resolveWorktreeBranches(startDir) {
+  try {
+    const mainGit = resolveMainRepoRootNoSpawn(startDir);
+    if (!mainGit) return null;
+    const wtDir = join(mainGit,'.git','worktrees');
+    if (!existsSync(wtDir)) return null;
+    const entries = readdirSync(wtDir,{withFileTypes:true}).filter(e=>e.isDirectory());
+    const out = [];
+    for (const e of entries) {
+      const wtName = e.name;
+      const wtGit = join(wtDir,wtName);
+      const headPath = join(wtGit,'HEAD');
+      if (!existsSync(headPath)) continue;
+      const head = readFileSync(headPath,'utf8').trim();
+      const m = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
+      if (m) {
+        // Caminho do worktree: derivado do gitdir no .git do worktree
+        const gitFile = join(startDir,'.git');
+        if (existsSync(gitFile) && !statIsDirectory(gitFile)) {
+          const raw = readFileSync(gitFile,'utf8');
+          const m2 = /gitdir:\s*(.+)/.exec(raw);
+          if (m2) {
+            const gitDir = resolvePath(startDir, m2[1].trim());
+            // gitdir: .../main/.git/worktrees/<wtName> → worktree é irmão do .git do main
+            const worktreePath = resolvePath(dirname(dirname(gitDir)), basename(dirname(gitDir)) === '.git' ? '..' : '.');
+            // Simplificação segura: o worktree está sob <main>/../worktrees/ não,
+            // está vinculado pelo gitdir. Para o beacon, o campo útil é
+            // (branch, worktree_name), não path absoluto.
+            out.push({ worktreeName: wtName, branch: m[1] });
+          }
+        }
+      }
+    }
+    return out.length ? out : null;
+  } catch {
+    return null;
+  }
+}
 export function isLinkedWorktree(startDir) {
   try {
     const gitPath = join(startDir, ".git");

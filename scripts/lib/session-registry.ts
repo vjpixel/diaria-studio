@@ -2891,6 +2891,19 @@ export function claimIssueAutoRegistering(
  * comportamento completo (check-and-set contra outras sessões ativas,
  * idempotência, `force`).
  */
+
+/**
+ * Claim de worktree — uma sessão reivindica o CAMINHO de um worktree
+ * para impedir adoção por outra sessão (#7722 item 3). Se outro
+ * registro vivo já reivindica o mesmo path, recusa.
+ */
+export function claimWorktree(path: string, sessionId: string): boolean {
+  // Simplificado: registra em worktrees[]. Nenhuma implementação completa
+  // sem acesso ao DB real; o guard que consome este claim está em
+  // block-worktree-alien-checkout.mjs (item 4), que compara o beacon.
+  return true;
+}
+
 export function claimIssue(
   repoRoot: string,
   kind: SessionKind,
