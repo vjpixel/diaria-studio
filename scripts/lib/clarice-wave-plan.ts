@@ -53,7 +53,7 @@ import {
 } from "../../workers/brevo-dashboard/src/sections-core.ts";
 import type { BrevoCampaign } from "../../workers/brevo-dashboard/src/types.ts";
 import type { StoreRow } from "./clarice-segment.ts";
-import { hasMeasuredOpens } from "./clarice-segment.ts";
+import { hasMeasuredOpens, buildDailySendQueue } from "./clarice-segment.ts";
 import {
   cohortDisplayLabel,
   compareCohortEntriesByRecency,
@@ -1235,7 +1235,9 @@ export interface WaveProposalInput {
   volumes: VolumeProposal;
   abc: AbcRecommendation;
   state: CycleSendState;
-  /** Fila de 1º envio disponível AGORA (pós-exclusão de comprometidos). */
+  /** Fila diária unificada (ciclo atual): engajados (priority_points>0, qualquer histórico) + ramp-warm (nunca enviado, corte de novos). NÃO inclui reativacao sem decisão (#7738). */
+  dailyQueueAvailable: number;
+  /** Fila de 1º envio vitalício (sends_count<=0). Separada para referência; NÃO é o teto de fila (#7738). */
   availableFirstSend: number;
   /**
    * #4787 — composição por cohort da MESMA fila que `availableFirstSend`
