@@ -643,9 +643,11 @@ function checkUseMelhorTempoConsistent(editionDir: string): InvariantViolation[]
  *
  * `stitch-newsletter.ts` escreve `_internal/use-melhor-tempo-source.json` com a
  * fonte real de cada estimativa injetada (`wordcount` | `youtube` |
- * `title-heuristic`). Este check lê esse artifact e sinaliza quando MUITOS
- * itens ainda caem no fallback de title-heuristic — o sintoma silencioso do
- * bug: body não cacheado no Stage 1 → estimativa de `(5 min)` em vez da real.
+ * `title-heuristic`). Este check lê esse artifact e sinaliza quando QUALQUER
+ * item ainda cai no fallback de title-heuristic — sem piso percentual, de
+ * propósito: é warning-only, e a contagem/percentual vai na mensagem pra quem
+ * lê decidir. É o sintoma silencioso do bug: body não cacheado no Stage 1 →
+ * estimativa de `(5 min)` em vez da real.
  *
  * severity: "warning" (não bloqueia o gate, #7668 — é um sinal de qualidade,
  * não uma reprovação do conteúdo). O editor cura o conteúdo; este check diz

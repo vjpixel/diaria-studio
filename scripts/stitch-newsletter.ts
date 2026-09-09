@@ -570,7 +570,7 @@ function writeUseMelhorTempoInstrumentation(
  * verificou acessibilidade — aqui o único objetivo é obter o body pra
  * contagem de palavras, não re-avaliar verdict.
  */
-async function fetchBodyForCache(
+export async function fetchBodyForCache(
   bodiesDir: string,
   url: string,
 ): Promise<string | null> {
@@ -606,7 +606,7 @@ async function fetchBodyForCache(
  * bodies que chegam são salvos via `saveCachedBody` pra que execuções
  * seguintes (verify-dates, re-stitch) reutilizem, sem refetch repetido.
  */
-async function prefetchUseMelhorBodies(
+export async function prefetchUseMelhorBodies(
   items: ArticleLike[],
   bodiesDir: string,
 ): Promise<void> {
