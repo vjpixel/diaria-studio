@@ -23,6 +23,31 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const NOOP_FIXTURE = "test-fixtures/clarice-sync-daily/noop-exit0.ts";
 const NOOP_EXIT1_FIXTURE = "test-fixtures/clarice-sync-daily/noop-exit1.ts";
 
+/**
+ * syncCode() de teste — no-op que NUNCA toca em git. Toda invocação de
+ * `runScheduledTask()` neste arquivo que não seja *sobre* o comportamento de
+ * sync (essas injetam o próprio mock, ver describe "sync de código antes dos
+ * passos" abaixo) precisa injetar isto explicitamente — sem injeção, o
+ * default de `runScheduledTask()` é o `syncCode()` REAL de `./git-sync.ts`,
+ * que roda `checkout`/`fetch`/`merge --ff-only`/`stash` contra `rootDir`
+ * (aqui, `ROOT` — a raiz real do repo). Foi exatamente essa lacuna que
+ * moveu o HEAD do repo durante o `npm test` do CI (#7736, "CULPADO
+ * IDENTIFICADO") — 13 call sites deste arquivo passavam `rootDir: ROOT` sem
+ * injetar `syncCode`, então cada um deles rodava o sync real de verdade.
+ * `NOOP_SYNC` fecha essa lacuna: mesmo com `rootDir: ROOT`, nenhum destes
+ * testes chama git nunca mais.
+ */
+const NOOP_SYNC_RESULT: GitSyncResult = {
+  outcome: "already_up_to_date",
+  message: "syncCode de teste (no-op) — nunca toca em git, ver #7736",
+  branch_before: "master",
+  warnings: [],
+  proceed: true,
+  up_to_date: true,
+  commits_behind: 0,
+};
+const NOOP_SYNC = (): GitSyncResult => NOOP_SYNC_RESULT;
+
 function baseDef(overrides: Partial<ScheduledTaskDefinition> = {}): ScheduledTaskDefinition {
   return {
     name: "Diaria-Teste-Fixture",
@@ -50,7 +75,12 @@ describe("runScheduledTask — caso feliz (spawn real via node --import tsx)", (
     const tempLogPath = join(workDir, "happy-temp.log");
     const logPathOverride = join(workDir, "happy-final.log");
 
-    const result = runScheduledTask(baseDef(), { rootDir: ROOT, logPathOverride, tempLogPathOverride: tempLogPath });
+    const result = runScheduledTask(baseDef(), {
+      rootDir: ROOT,
+      logPathOverride,
+      tempLogPathOverride: tempLogPath,
+      syncCode: NOOP_SYNC,
+    });
 
     assert.equal(result.code, 0);
     assert.equal(result.guardAborted, false);
@@ -70,7 +100,12 @@ describe("runScheduledTask — caso feliz (spawn real via node --import tsx)", (
     const logPathOverride = join(workDir, "fail-final.log");
 
     const def = baseDef({ steps: [{ key: "noop", script: NOOP_EXIT1_FIXTURE }] });
-    const result = runScheduledTask(def, { rootDir: ROOT, logPathOverride, tempLogPathOverride: tempLogPath });
+    const result = runScheduledTask(def, {
+      rootDir: ROOT,
+      logPathOverride,
+      tempLogPathOverride: tempLogPath,
+      syncCode: NOOP_SYNC,
+    });
 
     assert.equal(result.code, 1);
     assert.deepEqual(result.steps, [{ key: "noop", code: 1, bestEffort: false }]);
@@ -100,6 +135,7 @@ describe("runScheduledTask — log não gravável (parent do LogPath é um arqui
       rootDir: ROOT,
       logPathOverride: badLogPath,
       tempLogPathOverride: tempLogPath,
+      syncCode: NOOP_SYNC,
     });
 
     assert.notEqual(result.code, 0);
@@ -137,6 +173,7 @@ describe("runScheduledTask — retry-then-recover do log-append (achado do fleet
       logPathOverride,
       tempLogPathOverride: tempLogPath,
       appendLog,
+      syncCode: NOOP_SYNC,
     });
 
     assert.equal(attempts, 3, "esperava exatamente 3 tentativas (2 falhas + 1 sucesso)");
@@ -164,6 +201,7 @@ describe("runScheduledTask — retry-then-recover do log-append (achado do fleet
       logPathOverride,
       tempLogPathOverride: tempLogPath,
       appendLog,
+      syncCode: NOOP_SYNC,
     });
 
     assert.equal(attempts, 2, "esperava parar de tentar assim que a 2ª tentativa sucede");
@@ -203,6 +241,7 @@ describe("runScheduledTask — falha de spawn nunca vira exit 0 silencioso (defe
       logPathOverride,
       tempLogPathOverride: tempLogPath,
       execStep: fakeExecStep,
+      syncCode: NOOP_SYNC,
     });
 
     assert.equal(result.code, 1);
@@ -223,6 +262,7 @@ describe("runScheduledTask — falha de spawn nunca vira exit 0 silencioso (defe
       logPathOverride,
       tempLogPathOverride: tempLogPath,
       execStep: throwingExecStep,
+      syncCode: NOOP_SYNC,
     });
 
     assert.equal(result.code, 1);
@@ -266,6 +306,7 @@ describe("runScheduledTask — sequenciamento multi-passo (#4740, molde run-clar
       logPathOverride,
       tempLogPathOverride: tempLogPath,
       execStep: fakeExecStep,
+      syncCode: NOOP_SYNC,
     });
 
     assert.equal(calls.length, 3, "esperava os 3 passos rodando, mesmo com step1 falhando");
@@ -299,6 +340,7 @@ describe("runScheduledTask — sequenciamento multi-passo (#4740, molde run-clar
       logPathOverride,
       tempLogPathOverride: tempLogPath,
       execStep: fakeExecStep,
+      syncCode: NOOP_SYNC,
     });
 
     assert.equal(result.code, 0, "step best-effort falhando não deveria reprovar a run");
@@ -318,7 +360,13 @@ describe("runScheduledTask — sequenciamento multi-passo (#4740, molde run-clar
       steps: [{ key: "extract", script: "extract.ts", args: ["--log", "{tempLogPath}", "--out", "foo.json"] }],
     });
 
-    runScheduledTask(def, { rootDir: ROOT, logPathOverride, tempLogPathOverride: tempLogPath, execStep: fakeExecStep });
+    runScheduledTask(def, {
+      rootDir: ROOT,
+      logPathOverride,
+      tempLogPathOverride: tempLogPath,
+      execStep: fakeExecStep,
+      syncCode: NOOP_SYNC,
+    });
 
     assert.deepEqual(capturedArgs, ["--log", tempLogPath, "--out", "foo.json"]);
   });
@@ -357,6 +405,7 @@ describe("runScheduledTask — guard de pré-condição (#4552, molde Diaria-Bre
       logPathOverride,
       tempLogPathOverride: tempLogPath,
       execStep: fakeExecStep,
+      syncCode: NOOP_SYNC,
     });
 
     assert.equal(stepCalled, false, "nenhum passo deveria ter rodado com o guard abortando");
@@ -389,6 +438,7 @@ describe("runScheduledTask — guard de pré-condição (#4552, molde Diaria-Bre
       logPathOverride,
       tempLogPathOverride: tempLogPath,
       execStep: fakeExecStep,
+      syncCode: NOOP_SYNC,
     });
 
     assert.equal(stepCalled, true);
@@ -411,6 +461,7 @@ describe("runScheduledTask — injeção de relógio (now)", () => {
         tempLogPathOverride: tempLogPath,
         now: () => fixedDate,
         execStep: () => ({ code: 0, output: "ok" }),
+        syncCode: NOOP_SYNC,
       });
 
       const content = readFileSync(logPathOverride, "utf8");
@@ -611,5 +662,41 @@ describe("runScheduledTask — sync de código antes dos passos (#6431)", () => 
     assert.match(content, /\[git-sync\] outcome=synced_stashed/);
     assert.match(content, /\[git-sync\] WARN: aviso 1/);
     assert.match(content, /\[git-sync\] WARN: aviso 2/);
+  });
+});
+
+describe("runScheduledTask — guard 'syncCode obrigatório sob node:test' (#7736)", () => {
+  it("lança se rodando sob node:test (NODE_TEST_CONTEXT definido) sem syncCode injetado", () => {
+    // Este próprio arquivo já roda sob node:test — NODE_TEST_CONTEXT está
+    // genuinamente definido aqui, sem precisar simular nada.
+    assert.ok(
+      process.env.NODE_TEST_CONTEXT,
+      "pré-condição do teste: esperava rodar sob node:test com NODE_TEST_CONTEXT definido",
+    );
+
+    assert.throws(
+      () => runScheduledTask(baseDef(), { rootDir: ROOT }),
+      /chamado sem 'opts\.syncCode'.*NODE_TEST_CONTEXT/s,
+      "esperava o guard do #7736 lançar quando syncCode não é injetado sob node:test",
+    );
+  });
+
+  it("NÃO lança quando syncCode é injetado, mesmo sob node:test", () => {
+    const workDir = mkdtempSync(join(tmpdir(), "task-runner-syncguard-"));
+    try {
+      const tempLogPath = join(workDir, "syncguard-temp.log");
+      const logPathOverride = join(workDir, "syncguard-final.log");
+
+      assert.doesNotThrow(() =>
+        runScheduledTask(baseDef(), {
+          rootDir: ROOT,
+          logPathOverride,
+          tempLogPathOverride: tempLogPath,
+          syncCode: NOOP_SYNC,
+        }),
+      );
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
   });
 });

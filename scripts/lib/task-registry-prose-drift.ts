@@ -86,17 +86,28 @@ export function extractProseArmedClaim(line: string): ProseArmedClaim {
   // entrada do Onboarding (#6105). Remover trechos cotados antes de casar
   // os padrões; a afirmação vigente fica sempre fora de aspas.
   const effective = line.replace(/(["“][^"”]{0,160}["”])/g, " ");
+  // #7762: contexto de negação —Remove trecho negado (e qualquer
+  // substring ARMADA contido nele) antes de avaliar afirmação,
+  // para que "NÃO ARMADA" em caixa alta não classifique como armed.
+  let cleaned = effective;
+  for (const re of NOT_ARMED_PATTERNS) {
+    const m = re.exec(cleaned);
+    if (m) {
+      // Remove apenas o trecho de negação exato (preserva ARMADA depois).
+      cleaned = cleaned.slice(0, m.index) + " " + cleaned.slice(m.index + m[0].length);
+    }
+  }
   let lastMatchIndex = -1;
   let claim: ProseArmedClaim = "unknown";
   for (const re of ARMED_PATTERNS) {
-    const m = re.exec(effective);
+    const m = re.exec(cleaned); // avalia após remover negação
     if (m && m.index > lastMatchIndex) {
       lastMatchIndex = m.index;
       claim = "armed";
     }
   }
   for (const re of NOT_ARMED_PATTERNS) {
-    const m = re.exec(effective);
+    const m = re.exec(effective); // avalia na linha original (cronologia)
     if (m && m.index > lastMatchIndex) {
       lastMatchIndex = m.index;
       claim = "not-armed";

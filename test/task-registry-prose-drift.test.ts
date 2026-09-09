@@ -115,3 +115,13 @@ describe("task-registry-prose-drift (#6105 item 2)", () => {
     });
   });
 });
+    it("#7762: NÃO ARMADA em CAIXA ALTA não classifica como armed (regressão)", () => {
+      assert.equal(
+        extractProseArmedClaim("**Digest diário de gasto em ads (#7487), DECLARADA, NÃO ARMADA nesta unidade.**"),
+        "not-armed",
+      );
+      assert.equal(
+        extractProseArmedClaim("Task `Diaria-Ads-Daily-Digest`: ainda NÃO ARMADA no helios."),
+        "not-armed",
+      );
+    });
