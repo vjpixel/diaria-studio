@@ -213,6 +213,29 @@ export function buildMensalApoiadoresKitCampaign(ciclo: string, posicao: string)
 // (não os repetem), então inventário e emissão não têm como divergir.
 // ---------------------------------------------------------------------------
 
+/**
+ * `utm_source`/`utm_medium` do e-mail do Artigo Especial (#7659) — canal
+ * `email` de `/diaria-artigo-especial`, audiência de apoio R$10+ no Kit.
+ *
+ * Fonte própria pelo motivo de sempre: não misturar a atribuição deste envio
+ * (raro, audiência de apoiadores) com a da diária (`kit`) nem com a do digest
+ * mensal de apoiadores (`mensal-apoiadores-kit`, R$25+). Consumido por
+ * `scripts/lib/artigo-especial-email-render.ts`.
+ */
+export const ARTIGO_ESPECIAL_EMAIL_UTM_SOURCE = "artigo-especial-email";
+export const ARTIGO_ESPECIAL_EMAIL_UTM_MEDIUM = "email";
+
+/**
+ * `utm_campaign` do e-mail do Artigo Especial —
+ * `artigo-especial-email-{ano}-{slug}`. Por artigo, não por ciclo: os Artigos
+ * Especiais não são garantidamente mensais.
+ *
+ * @pure
+ */
+export function buildArtigoEspecialEmailCampaign(ano: string, slug: string): string {
+  return `${ARTIGO_ESPECIAL_EMAIL_UTM_SOURCE}-${ano}-${slug}`;
+}
+
 /** `utm_source` de tudo que nasce no jogo standalone "É IA?" (#3518). */
 export const EIA_STANDALONE_SOURCE = "eia-standalone";
 
@@ -884,6 +907,22 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "'mensal-beehiiv'). Motivo da troca, diferente das anteriores: o backend da newsletter " +
       "virou \"kit\" (#7388) e a base inteira migrou (#7386) — manter um 2º ESP vivo só pra este " +
       "envio virou manutenção sem contrapartida. `utm_source` próprio pelo mesmo motivo de sempre.",
+    status: "ativo",
+  },
+  {
+    id: "artigo-especial-email",
+    label: "Artigo Especial (e-mail, apoio R$10+)",
+    source: ARTIGO_ESPECIAL_EMAIL_UTM_SOURCE,
+    medium: ARTIGO_ESPECIAL_EMAIL_UTM_MEDIUM,
+    campaignPattern: `${ARTIGO_ESPECIAL_EMAIL_UTM_SOURCE}-{ano}-{slug}`,
+    originFile: "scripts/lib/artigo-especial-email-render.ts",
+    description:
+      "E-mail do Artigo Especial pros apoiadores a partir de R$10/mês, via Kit (#7659) — o canal que " +
+      "faltava: a recompensa era vendida como 'entrega por e-mail' e só existia como post no apoia.se e " +
+      "box da diária. Campaign por {ano}-{slug} e não por ciclo mensal porque os Artigos Especiais não " +
+      "são garantidamente mensais. `utm_source` próprio pra separar a série de cliques deste envio da " +
+      "diária ('kit') e do digest mensal de apoiadores ('mensal-apoiadores-kit'), que têm audiência e " +
+      "cadência distintas.",
     status: "ativo",
   },
   {
