@@ -631,6 +631,7 @@ export const CLAIM_RELEASE_MS = MAX_SESSION_AGE_MS;
  * usam `CLAIM_RELEASE_MS` (24h), bem mais longa que `SOFT_STALE_MS` (90min) —
  * ver a docstring de `CLAIM_RELEASE_MS` pro porquê da divergência.
  */
+
 export function claimReleaseMsForKind(kind: string): number {
   return kind === "interactive" ? INTERACTIVE_SOFT_STALE_MS : CLAIM_RELEASE_MS;
 }
@@ -2891,6 +2892,45 @@ export function claimIssueAutoRegistering(
  * comportamento completo (check-and-set contra outras sessões ativas,
  * idempotência, `force`).
  */
+
+/**
+ * Claim de worktree — uma sessão reivindica o CAMINHO de um worktree
+ * para impedir adoção por outra sessão (#7722 item 3). Se outro
+ * registro vivo já reivindica o mesmo path, recusa.
+ */
+function findActiveSessionFiles(root: string, kind: SessionKind): string[] {
+  const dir = join(root, "data", "sessions", kind);
+  try {
+    return (readdirSync(dir, { withFileTypes: true }) || [])
+      .filter((d: any) => d.isFile() && d.name.endsWith(".json"))
+      .map((d: any) => join(dir, d.name));
+  } catch { return []; }
+}
+
+export function claimWorktree(path: string, sessionId: string, repoRoot?: string): boolean {
+  // Implementação real (#7722 item 3, corrigindo #7806 stub).
+  const root = repoRoot || process.cwd();
+  const file = sessionFilePath(root, "continuo", machineTag(), sessionId);
+  const current = readJsonSafe<any>(file);
+  const nowMs = Date.now();
+  const ttl = 30 * 60 * 1000;
+  if (current && current.worktree_claim && current.worktree_claim.path === path) {
+    if ((current.worktree_claim.expires_at ?? 0) > nowMs) return true; // já nosso, idempotente
+  }
+  // Buscar outra sessão viva com mesmo path (simplificado: scan de session-dir do repo)
+  const others = findActiveSessionFiles(root, "continuo");
+  for (const otherPath of others) {
+    if (otherPath === file) continue;
+    const other = readJsonSafe<any>(otherPath);
+    if (other?.worktree_claim?.path === path && (other.worktree_claim.expires_at ?? 0) > nowMs && (other.session_id ?? other.id ?? other.sessionId) !== sessionId) {
+      return false; // concorrente viva
+    }
+  }
+  const record = { ...current, session_id: sessionId, worktree_claim: { path, sessionId, claimed_at: new Date().toISOString(), expires_at: nowMs + ttl } };
+  writeJsonSafe(file, record);
+  return true;
+}
+
 export function claimIssue(
   repoRoot: string,
   kind: SessionKind,
