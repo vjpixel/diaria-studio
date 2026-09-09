@@ -1,0 +1,16 @@
+{
+  "name": "diaria-meta-leads",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Ponte Meta Lead Ads → Kit (#7769): recebe o webhook `leadgen`, busca o lead na Graph API e cria o subscriber no Kit. Viabiliza o local de conversão \"Site e formulário instantâneo\" (#7768) sem exportação manual de CSV nem intermediário pago.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260827.1",
+    "typescript": "^5.0.0",
+    "wrangler": "^4.126.0"
+  }
+}

@@ -1,0 +1,36 @@
+name: Deploy meta-leads Worker
+
+# #7769: ponte Meta Lead Ads → Kit. Deploy automático desde o nascimento —
+# os workers anteriores (#3268, #3399, #4084) só ganharam workflow depois de
+# cada um servir versão defasada em produção por dias; não repetir.
+#
+# Este worker é MAIS sensível a defasagem que os demais: ele é o único
+# consumidor de um webhook externo com janela de retenção (a Meta descarta
+# lead após 90 dias e reentrega só por algumas horas). Uma versão velha no
+# ar que rejeite payload não vira página quebrada que alguém percebe — vira
+# lead perdido em silêncio.
+#
+# Secrets reusados: CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_WORKERS_TOKEN.
+# Os secrets do PRÓPRIO worker (META_APP_SECRET, META_WEBHOOK_VERIFY_TOKEN,
+# META_LEADS_PAGE_ACCESS_TOKEN, KIT_API_KEY) são one-time manuais via
+# `wrangler secret put` — ver workers/meta-leads/SECRETS.md.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'workers/meta-leads/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-meta-leads
+  cancel-in-progress: false
+
+jobs:
+  # #7118: bloco de steps extraído para .github/workflows/deploy-worker.yml
+  # (workflow_call).
+  deploy:
+    uses: ./.github/workflows/deploy-worker.yml
+    with:
+      worker: meta-leads
+    secrets: inherit

@@ -1,0 +1,57 @@
+name = "meta-leads"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# #7769 — ponte Meta Lead Ads → Kit. Recebe o webhook `leadgen` da Meta,
+# busca o lead na Graph API e cria o subscriber no Kit. Existe pra que
+# habilitar o local de conversão "Site e formulário instantâneo" (#7768) não
+# deixe leads presos no Leads Center (a Meta descarta lead após 90 dias).
+#
+# Secrets — TODOS obrigatórios pro fluxo funcionar, setar via:
+#   cd workers/meta-leads && npx wrangler secret put META_APP_SECRET
+#   cd workers/meta-leads && npx wrangler secret put META_WEBHOOK_VERIFY_TOKEN
+#   cd workers/meta-leads && npx wrangler secret put META_LEADS_PAGE_ACCESS_TOKEN
+#   cd workers/meta-leads && npx wrangler secret put KIT_API_KEY
+#
+# Ao contrário dos demais workers do repo, a ausência de secret aqui NÃO é
+# fail-soft silencioso: sem `META_WEBHOOK_VERIFY_TOKEN` o handshake responde
+# 503, sem `META_APP_SECRET` todo POST é recusado com 403, e sem
+# `KIT_API_KEY` o POST responde 500 pra Meta reentregar. O rationale está no
+# topo de `src/leadgen.ts` — resumo: aqui o fail-soft perderia a pessoa que
+# preencheu o formulário, e o clique já foi pago.
+#
+# AÇÃO PENDENTE DO EDITOR (mesmo padrão dos #4320/#4382/#4490/#4534), na
+# ordem — cada passo depende do anterior:
+#   1. App no Meta for Developers com `leads_retrieval` (+ `pages_show_list`,
+#      `pages_manage_ads`); App Review se a Meta exigir pro uso em produção.
+#   2. `wrangler secret put` dos 4 secrets acima.
+#   3. Subscrever a Página ao campo `leadgen`, apontando o webhook pra
+#      https://meta-leads.<subdomínio>.workers.dev/webhook — a Meta chama o
+#      GET de verificação na hora de salvar, então os secrets do passo 2
+#      precisam já estar no ar.
+#   4. Só então publicar o rascunho `BR · conversao · sem teto — Cópia` com
+#      o local de conversão "Site e formulário instantâneo", decidindo se o
+#      ad set original é pausado ou fica rodando em paralelo (dois ad sets
+#      ativos dobram o gasto potencial da campanha).
+
+[vars]
+# Nomes dos custom fields no Kit — VARs, não secrets (nome de campo não é
+# sensível; mesmo tratamento dos 3 workers de cadastro existentes).
+#
+# ARMADILHA JÁ SOFRIDA (#6318): sem estas vars o worker calcula a atribuição
+# e a DESCARTA em silêncio — o gate-por-ausência só anexa `fields` para as
+# chaves configuradas. Foi o que aconteceu entre 25 e 26/08/2026, quando
+# toda a base nova entrou no Kit sem origem nenhuma. Os campos já existem na
+# conta de produção.
+KIT_UTM_SOURCE_FIELD = "utm_source"
+KIT_UTM_MEDIUM_FIELD = "utm_medium"
+KIT_UTM_CAMPAIGN_FIELD = "utm_campaign"
+KIT_REFERRING_SITE_FIELD = "referring_site"
+KIT_ORIGEM_CADASTRO_FIELD = "origem_cadastro"
+
+# #5920 — todo worker com `main` público retém log.
+[observability]
+enabled = true
+head_sampling_rate = 1
