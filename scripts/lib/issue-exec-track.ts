@@ -247,8 +247,15 @@ const OUT_OF_ROUND_LABELS = new Set(["on-hold", "wontfix"]);
  * — os dois Sets seriam idênticos hoje, mas respondem a perguntas
  * diferentes, e uma label futura de `fora-de-rodada` automática entraria só
  * num deles.
+ *
+ * CÓPIA, não a mesma referência (achado do type-design-analyzer no review da
+ * PR #7711): `ReadonlySet` é promessa de tipo, não de runtime. Atribuir o
+ * mesmo objeto faria um `.add()` em `OUT_OF_ROUND_LABELS` — plausível, já que
+ * a docstring acima convida a ampliar um conceito sem o outro — alterar
+ * silenciosamente o comportamento de `--incluir-engavetadas` no
+ * `desbloqueia-scan`. Uma linha fecha a classe de bug.
  */
-export const ENGAVETADAS_LABELS: ReadonlySet<string> = OUT_OF_ROUND_LABELS;
+export const ENGAVETADAS_LABELS: ReadonlySet<string> = new Set(OUT_OF_ROUND_LABELS);
 
 /**
  * #6201 item 8 — issue `[ÉPICA]` guarda-chuva: nunca implementada direto,

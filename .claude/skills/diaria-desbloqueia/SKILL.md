@@ -111,14 +111,21 @@ npx tsx scripts/route-issue.ts --issue N --track {develop|overnight} \
   --reason "decisão já registrada em comentário anterior — reclassificando sem nova pergunta (#6628)"
 ```
 
-Para cada issue em `bloqueioConfirmado` **com `semSinal: false`**: nada muda
-— o bloqueio segue de pé e já está documentado. Comentar (curto, sem
+Para cada issue em `bloqueioConfirmado` **com `escopo` ≠ `"sem-sinal"`**
+(ou seja `"bloqueada"`/`"develop"`/`"fora-de-rodada"`): nada muda — o
+bloqueio segue de pé e já está documentado. Comentar (curto, sem
 `route-issue.ts` — o track já está correto) confirmando que a sessão revisou
 e o estado é o mesmo: `Revisado por /diaria-desbloqueia — bloqueio de
 execução de {recorded_at} ("{motivo}") segue valendo, nenhuma mudança.`
-**Nunca** perguntar de novo o que o `bloqueio-execucao` já documenta.
+**Nunca** perguntar de novo O QUE o `bloqueio-execucao` já documenta.
 
-Para cada issue em `bloqueioConfirmado` **com `semSinal: true`** (#7694):
+> Isto **não** proíbe o Passo 3b de tocar o mesmo grupo. São perguntas de
+> natureza diferente: aqui é *"o que falta?"* — já respondido, não se
+> repergunta; lá é *"você pode agir nisso agora?"* — nunca perguntado antes.
+> O que blinda contra repetição no Passo 3b é o marcador `acao-adiada`, não
+> esta regra.
+
+Para cada issue em `bloqueioConfirmado` **com `escopo: "sem-sinal"`** (#7694):
 aqui o estado MUDA, e é o achado de maior valor da varredura — a thread
 documenta um bloqueio e a **label está faltando**, então a issue estava
 classificada `overnight` e o `helios` ia tentar executá-la e falhar.
@@ -127,6 +134,12 @@ Comentar não basta: rotear.
 ```bash
 npx tsx scripts/route-issue.ts --issue N --track bloqueada   --reason "{motivo do bloqueio-execucao já registrado na thread}"   # --motivo conta-de-terceiro | plataforma | kit | execucao — conforme a thread
 ```
+
+Se `dependenciasNaoResolvidas` no relatório não estiver vazio, o estado das
+dependências dessas issues **não** foi verificado (`gh` sem rede, token
+expirado, issue apagada) — elas aparecem como `bloqueio-confirmado` por
+segurança, não por confirmação. Não afirmar "bloqueio segue valendo" pra
+elas sem rodar o scan de novo.
 
 Para cada issue em `bloqueioObsoleto` (#7707): a condição de desbloqueio já
 foi satisfeita — a issue de que ela dependia fechou. Rotear pra fora de

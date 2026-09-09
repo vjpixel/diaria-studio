@@ -2,9 +2,9 @@
  * scripts/lib/desbloqueia-scan.ts (#6628)
  *
  * Miolo puro (sem I/O) de `/diaria-desbloqueia`. Responde, por issue
- * candidata (`classifyExecTrackWithRule` deu `bloqueada`, `develop`, ou
- * `overnight` com `matched: "default"` — ver "#7694" abaixo), uma pergunta:
- * **a thread já resolve isso, ou ainda precisa perguntar ao editor?**
+ * candidata — `bloqueada`, `develop`, `overnight` com `matched: "default"`
+ * (#7694), ou `fora-de-rodada` não-engavetada (#7708) —, uma pergunta: **a
+ * thread já resolve isso, ou ainda falta algo do editor?**
  *
  * Existe porque as duas superfícies que já coletam desbloqueio do editor
  * (`/diaria-develop` Fase 0.5, `/diaria-overnight` briefing da Fase 0) só
@@ -16,7 +16,7 @@
  * `scripts/lib/issue-decisions.ts`, #5373, existe pra evitar — mas só se
  * alguém consultar os marcadores ANTES de perguntar).
  *
- * ## As 4 saídas
+ * ## As 8 saídas
  *
  *   - `ja-destravada`      — existe `decisao-editor` e ela é o marcador MAIS
  *     RECENTE da thread (seu `decided_at` não é anterior ao `recorded_at`
@@ -30,6 +30,19 @@
  *     lembrando o estado e segue sem pergunta.
  *   - `precisa-pergunta`   — nem decisão nem bloqueio recentes cobrem o
  *     estado atual da issue. Candidata real à bateria de `AskUserQuestion`.
+ *   - `bloqueio-obsoleto`  — o bloqueio declarava `condicao.tipo:
+ *     "depends_on"` e a issue apontada JÁ FECHOU (#7707). A condição foi
+ *     satisfeita; o bloqueio não vale mais. O chamador roteia pra fora de
+ *     `bloqueada`, nunca comenta "segue valendo".
+ *   - `acao-imediata-candidata` — SÓ pra candidata `fora-de-rodada`
+ *     (#7708): a issue saiu da fila por um mecanismo paralelo (alarme de
+ *     estado, decisão em prosa, sem-direção) e ninguém avaliou se existe uma
+ *     ação do editor que a destrava agora. Alimenta o pedido de ação
+ *     imediata do playbook.
+ *   - `acao-adiada`         — já pedimos a ação e o editor adiou; o cooldown
+ *     (`ACAO_ADIADA_COOLDOWN_DAYS`) ainda vale (#7708). **Nunca** vira
+ *     pergunta — é o que impede a skill de repetir a mesma bateria a cada
+ *     rodada e queimar a paciência do editor em duas execuções.
  *   - `sem-sinal-nao-triada` — SÓ pra candidata `sem sinal` (#7694): a thread
  *     não tem marcador nenhum e nenhuma label classificou a issue. Não é
  *     "precisa perguntar" — é "ninguém olhou ainda". Vira TRIAGEM (o
@@ -72,7 +85,7 @@
  * ausência de label?":
  *
  *   - `bloqueio-execucao` recente na thread → `bloqueio-confirmado` com
- *     `semSinal: true`. **É o achado de maior valor desta extensão**: o
+ *     `escopo: "sem-sinal"`. **É o achado de maior valor desta extensão**: o
  *     bloqueio está documentado e a LABEL está faltando. Ação do playbook
  *     não é comentar "segue valendo" (como na candidata `bloqueada`), é
  *     `route-issue.ts --track bloqueada` pra corrigir a classificação.
@@ -201,7 +214,7 @@ export interface DesbloqueioIssueInput {
    * tratá-lo como "dependência satisfeita" desbloquearia por engano — o
    * oposto exato do defeito que a #7707 corrige.
    */
-  dependencyState?: "open" | "closed" | "missing" | null;
+  dependencyState: "open" | "closed" | "missing" | null;
   /** #7708 — `true` quando `on-hold`/`wontfix` também devem ser varridas
    * (`--incluir-engavetadas`). Default `false`: engavetada pelo editor não
    * se repergunta a cada rodada. */
@@ -401,9 +414,24 @@ export interface DesbloqueioScanReport {
    * docstring de `erro-leitura` acima). O chamador reporta e sugere retry. */
   erroLeitura: DesbloqueioCandidate[];
   /** Issues varridas fora do escopo desta skill (`agendada`, `epica`,
-   * `fora-de-rodada`, e `overnight` já triado) — só o número, pra auditoria
-   * de cobertura. */
+   * `overnight` já triado, e `fora-de-rodada` engavetada) — só o número, pra
+   * auditoria de cobertura. */
   foraDoEscopo: number[];
+  /**
+   * #7711 review — dependências (`condicao.tipo === "depends_on"`) cujo
+   * estado NÃO deu pra resolver: issue inexistente, `gh` sem rede, token
+   * expirado, JSON malformado. Todas resolvem pra `"missing"`, que nunca
+   * desbloqueia — direção segura —, mas sem este campo a diferença entre
+   * "dependência genuinamente aberta" e "não deu pra checar" não chegava a
+   * quem consome o JSON, e uma falha sistêmica de rede virava um relatório
+   * "nada mudou" indistinguível de uma rodada limpa.
+   *
+   * Preenchido pelo CLI (`runDesbloqueioScan`), não por
+   * `scanDesbloqueioCandidates` — o miolo puro não faz I/O e não tem como
+   * saber. Vazio quando não houve dependência a resolver OU todas
+   * resolveram.
+   */
+  dependenciasNaoResolvidas?: number[];
 }
 
 /**
@@ -411,7 +439,21 @@ export interface DesbloqueioScanReport {
  * comentários, ou o erro de por que não deu pra buscar) nos 8 destinos +
  * fora-de-escopo. Ordem de entrada preservada dentro de cada grupo.
  */
-type DesbloqueioGroupKey = Exclude<keyof DesbloqueioScanReport, "foraDoEscopo">;
+/**
+ * As chaves de `DesbloqueioScanReport` que são LISTA DE CANDIDATAS.
+ *
+ * Filtra por TIPO do valor, não por nome de campo (achado do
+ * type-design-analyzer no review da PR #7711): a versão anterior era
+ * `Exclude<keyof DesbloqueioScanReport, "foraDoEscopo">`, que depende de um
+ * literal de string. Renomear `foraDoEscopo` tornaria o `Exclude` um no-op
+ * SILENCIOSO — o TS não reclama de excluir uma chave que não existe —, e
+ * `number[]` passaria a ser um destino "válido" pro `push` de um
+ * `DesbloqueioCandidate`, quebrando só em runtime. O mapped type sobrevive
+ * a rename e a campos novos não-candidata sem tocar nada.
+ */
+type DesbloqueioGroupKey = {
+  [K in keyof DesbloqueioScanReport]-?: DesbloqueioScanReport[K] extends DesbloqueioCandidate[] ? K : never;
+}[keyof DesbloqueioScanReport];
 
 const STATUS_TO_GROUP = {
   "ja-destravada": "jaDestravadas",

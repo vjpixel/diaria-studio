@@ -435,3 +435,68 @@ describe("#7708 isAcaoAdiadaAtiva — o cooldown", () => {
     assert.equal(isAcaoAdiadaAtiva(podre, { now: agora }), false);
   });
 });
+
+describe("#7711 review — pedido_em no futuro e granularidade de dia", () => {
+  const agora = new Date("2026-09-09T12:00:00Z");
+  const adiada = (pedidoEm: string): AcaoAdiada => ({
+    pedido_em: pedidoEm,
+    acao: "reiniciar a unit",
+    motivo: "",
+    sessao: "develop",
+  });
+  const bloco = (recordedAt: string): ExecutionBlock => ({
+    recorded_at: recordedAt,
+    motivo: "sintoma",
+    sessao: "overnight",
+    condicao: { tipo: "externo", descricao: "sintoma" },
+  });
+
+  // Achado do silent-failure-hunter: sem a trava, `idadeDias` fica negativo,
+  // e um `pedido_em` datado com um ano de erro suprimiria a issue por mais de
+  // um ano — invisivel, sem sinal nenhum. O marcador e composto por sessao
+  // LLM e este repo ja documentou `TZ=... date` errando hora no Git Bash.
+  it("pedido_em no FUTURO nao suprime (fail-open) — 1 dia a frente", () => {
+    assert.equal(isAcaoAdiadaAtiva(adiada("2026-09-10T12:00:00Z"), { now: agora }), false);
+  });
+
+  it("pedido_em no FUTURO nao suprime — 1 ano a frente (o caso que sumiria pra sempre)", () => {
+    assert.equal(isAcaoAdiadaAtiva(adiada("2027-09-09T12:00:00Z"), { now: agora }), false);
+  });
+
+  it("pedido_em === now AINDA suprime — e o adiamento acabado de gravar, o caso mais comum", () => {
+    assert.equal(isAcaoAdiadaAtiva(adiada(agora.toISOString()), { now: agora }), true);
+  });
+
+  // Achado do code-reviewer: `recorded_at` e truncado em DIA por
+  // `route-issue.ts` (`slice(0, 10)`), `pedido_em` e timestamp completo, e
+  // `"2026-09-09" > "2026-09-09T09:00:00Z"` e SEMPRE false em comparacao
+  // lexicografica. Os testes antigos geravam os dois lados com
+  // `toISOString()` cheio e por isso nunca exercitaram o formato real.
+  it("recorded_at em formato REAL (AAAA-MM-DD) de dia posterior reabre a pergunta", () => {
+    assert.equal(
+      isAcaoAdiadaAtiva(adiada("2026-09-08T09:00:00Z"), { now: agora, blocoMaisRecente: bloco("2026-09-09") }),
+      false,
+    );
+  });
+
+  it("recorded_at em formato real do MESMO dia mantem a supressao (limitacao assumida)", () => {
+    assert.equal(
+      isAcaoAdiadaAtiva(adiada("2026-09-09T09:00:00Z"), { now: agora, blocoMaisRecente: bloco("2026-09-09") }),
+      true,
+    );
+  });
+
+  it("recorded_at em formato real de dia anterior mantem a supressao", () => {
+    assert.equal(
+      isAcaoAdiadaAtiva(adiada("2026-09-08T09:00:00Z"), { now: agora, blocoMaisRecente: bloco("2026-09-07") }),
+      true,
+    );
+  });
+
+  it("recorded_at ilegivel nao reabre nem quebra — deixa o cooldown decidir sozinho", () => {
+    assert.equal(
+      isAcaoAdiadaAtiva(adiada("2026-09-08T09:00:00Z"), { now: agora, blocoMaisRecente: bloco("data-podre") }),
+      true,
+    );
+  });
+});

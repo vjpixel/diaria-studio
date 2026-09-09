@@ -340,6 +340,33 @@ export interface AcaoAdiada {
  */
 export const ACAO_ADIADA_COOLDOWN_DAYS = 7;
 
+/**
+ * Dia (UTC) de um timestamp de marcador, ou `null` se não parsear.
+ *
+ * Existe porque os três marcadores deste módulo NÃO têm a mesma
+ * granularidade, e comparar as strings direto dá resultado errado em
+ * silêncio (achado do code-reviewer no review da PR #7711):
+ * `ExecutionBlock.recorded_at` é truncado em DIA na escrita
+ * (`route-issue.ts` grava `now.toISOString().slice(0, 10)` → `"2026-09-09"`),
+ * enquanto `AcaoAdiada.pedido_em` e `IssueDecision.decided_at` são
+ * timestamps completos (`"2026-09-09T09:00:00Z"`). Em comparação
+ * lexicográfica o prefixo mais curto é sempre MENOR:
+ *
+ *     "2026-09-09" > "2026-09-09T09:00:00Z"   // false, sempre
+ *
+ * ...então um bloqueio gravado no mesmo dia de um adiamento parecia
+ * ANTERIOR a ele, e o gatilho de "sintoma novo" nunca disparava nesse caso.
+ *
+ * A granularidade comum é o DIA — é o que o marcador mais grosseiro
+ * carrega, e não há como recuperar a hora que ele nunca gravou. Comparar
+ * em dia é honesto sobre isso, em vez de fingir precisão de segundo.
+ */
+function diaUtcDoMarcador(iso: string): number | null {
+  const t = Date.parse(iso.length === 10 ? `${iso}T00:00:00Z` : iso);
+  if (Number.isNaN(t)) return null;
+  return Math.floor(t / 86_400_000);
+}
+
 const ACAO_ADIADA_MARKER_PREFIX = "<!-- acao-adiada: ";
 const ACAO_ADIADA_MARKER_SUFFIX = " -->";
 
@@ -405,13 +432,30 @@ export function latestAcaoAdiadaFor(commentsBodies: readonly string[]): AcaoAdia
  * reabertura, e basta um:
  *
  *   1. **Tempo** — passaram `ACAO_ADIADA_COOLDOWN_DAYS` desde `pedido_em`.
- *   2. **Sintoma novo** — existe um `bloqueio-execucao` gravado DEPOIS do
- *      adiamento. Aí o que se pergunta mudou: o adiamento respondia ao
- *      estado antigo, e suprimir com base nele esconderia um fato novo.
+ *   2. **Sintoma novo** — existe um `bloqueio-execucao` gravado num DIA
+ *      posterior ao do adiamento. Aí o que se pergunta mudou: o adiamento
+ *      respondia ao estado antigo, e suprimir com base nele esconderia um
+ *      fato novo.
+ *
+ * A comparação do gatilho 2 é em DIA, não em instante — `recorded_at` só
+ * carrega o dia (ver `diaUtcDoMarcador`). **Limitação assumida:** um
+ * bloqueio gravado no MESMO dia do adiamento não reabre a pergunta, porque
+ * o dado disponível genuinamente não diz qual veio primeiro. O prejuízo é
+ * limitado pelo gatilho 1 — no pior caso a pergunta volta em
+ * `ACAO_ADIADA_COOLDOWN_DAYS` dias, nunca "nunca".
  *
  * `pedido_em` inválido (não-data) → `false` (não suprime). Fail-open é o
  * lado certo aqui: na dúvida, perguntar de novo é recuperável; suprimir pra
  * sempre por causa de um timestamp podre não é.
+ *
+ * `pedido_em` no FUTURO → `false`, pelo mesmo fail-open (achado do
+ * silent-failure-hunter no review da PR #7711). Sem essa trava, `idadeDias`
+ * fica negativo, é sempre `< ACAO_ADIADA_COOLDOWN_DAYS`, e a issue some da
+ * bateria até o relógio real alcançar `pedido_em` **e mais 7 dias** — com um
+ * erro de ano, para sempre, sem sinal nenhum. Não é hipótese remota: o
+ * marcador é composto por uma sessão LLM, não por código determinístico, e
+ * este repo já documentou `TZ=... date` devolvendo hora errada no Git Bash.
+ * Um adiamento datado no futuro é dado corrompido, não um adiamento válido.
  */
 export function isAcaoAdiadaAtiva(
   adiada: AcaoAdiada | null,
@@ -421,8 +465,17 @@ export function isAcaoAdiadaAtiva(
   const pedidoEm = new Date(adiada.pedido_em).getTime();
   if (Number.isNaN(pedidoEm)) return false;
   const bloco = opts.blocoMaisRecente;
-  if (bloco && bloco.recorded_at > adiada.pedido_em) return false;
+  if (bloco) {
+    const diaBloco = diaUtcDoMarcador(bloco.recorded_at);
+    const diaAdiamento = diaUtcDoMarcador(adiada.pedido_em);
+    // `null` em qualquer um dos dois → não dá pra afirmar que houve sintoma
+    // novo; deixa o gatilho 1 (tempo) decidir sozinho.
+    if (diaBloco !== null && diaAdiamento !== null && diaBloco > diaAdiamento) return false;
+  }
   const now = (opts.now ?? new Date()).getTime();
+  // Futuro → fail-open (ver docstring). `pedidoEm === now` ainda suprime:
+  // é o adiamento acabado de gravar, o caso mais comum de todos.
+  if (pedidoEm > now) return false;
   const idadeDias = (now - pedidoEm) / 86_400_000;
   return idadeDias < ACAO_ADIADA_COOLDOWN_DAYS;
 }

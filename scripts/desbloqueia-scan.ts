@@ -3,14 +3,21 @@
  * scripts/desbloqueia-scan.ts (#6628)
  *
  * Wrapper de I/O de `/diaria-desbloqueia`. Varre issues abertas candidatas
- * (`bloqueada`/`develop`, mais o bucket `overnight ·sem sinal` desde a
- * #7694 — ver abaixo), lê o CORPO E TODOS OS COMENTÁRIOS de cada uma, e
- * classifica nos 8 status de `scripts/lib/desbloqueia-scan.ts`. Só dois
- * grupos viram `AskUserQuestion` no playbook
- * (`.claude/skills/diaria-desbloqueia/SKILL.md`): `precisaPergunta` (o que
- * falta pra destravar) e `acaoImediataCandidatas` (#7708 — "faça isto
- * agora"). Os outros seis nunca geram pergunta — `acaoAdiada` em especial
- * existe justamente pra NÃO gerar.
+ * — `bloqueada`/`develop`, mais o bucket `overnight ·sem sinal` (#7694) e
+ * `fora-de-rodada` não-engavetada (#7708), ambos detalhados abaixo —, lê o
+ * CORPO E TODOS OS COMENTÁRIOS de cada uma, e
+ * classifica nos 8 status de `scripts/lib/desbloqueia-scan.ts`. TRÊS grupos
+ * podem virar `AskUserQuestion` no playbook
+ * (`.claude/skills/diaria-desbloqueia/SKILL.md`): `precisaPergunta` (Passo 3
+ * — o que falta pra destravar), e `acaoImediataCandidatas` +
+ * `bloqueioConfirmado` (Passo 3b — "faça isto agora", #7708). Os outros
+ * cinco nunca geram pergunta; `acaoAdiada` em especial existe justamente pra
+ * NÃO gerar.
+ *
+ * As duas perguntas sobre `bloqueioConfirmado` são de natureza diferente e
+ * não se contradizem: o Passo 2 nunca repergunta O QUE o bloqueio já
+ * documenta; o Passo 3b pergunta se o editor pode AGIR agora sobre esse
+ * mesmo bloqueio já documentado.
  *
  * ## `fora-de-rodada` no escopo, e o anti-fadiga que o torna viável (#7708)
  *
@@ -97,7 +104,7 @@
  * nunca comenta, nunca aplica label, nunca chama `route-issue.ts`. Isso é
  * responsabilidade do playbook, depois que o editor responder.
  */
-import { spawnSync } from "node:child_process";
+import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 import {
@@ -118,6 +125,29 @@ import { latestExecutionBlockFor } from "./lib/issue-decisions.ts";
 const SCOPED_TRACKS = ["bloqueada", "develop", "sem-sinal", "fora-de-rodada"] as const;
 type ScopedTrack = (typeof SCOPED_TRACKS)[number];
 
+/**
+ * Runner de `gh` injetável. É o MESMO shape de `GhRunFn` em
+ * `scripts/route-issue.ts` (`(args, cwd) => GhSpawnResult`) de propósito —
+ * a primeira versão desta PR inventou um tipo próprio
+ * (`(issueNumber, cwd) => {status: number, …}`) e o review do
+ * type-design-analyzer apontou as três divergências que isso trouxe:
+ * `status: number` forçando um sentinela `-1` inventado onde `spawnSync`
+ * devolve `null` no timeout; assinatura amarrada a um único subcomando; e um
+ * timeout de 15s copiado à mão, divergindo de `GH_SPAWN_TIMEOUT_MS` (10s) —
+ * que, se um dia for ajustado por incidente, deixaria esta cópia esquecida
+ * atrás.
+ *
+ * Os TRÊS caminhos de I/O deste módulo o recebem (`fetchOpenIssues`,
+ * `fetchCommentsChecked`, `resolveDependencyStates`), o que permite testar
+ * `runDesbloqueioScan` fim-a-fim. Isso não é conveniência: o review de
+ * cobertura apontou que o bug que a #7707 corrige vivia exatamente na
+ * FIAÇÃO (extrair `condicao.issue` do comentário → resolver o estado →
+ * enfiar em `dependencyState`), não no miolo puro — e um teste que só
+ * exercita o miolo passando `dependencyState` à mão continuaria verde se
+ * alguém removesse a chamada a `resolveDependencyStates`.
+ */
+export type GhRunFn = (args: string[], cwd: string) => GhSpawnResult;
+
 interface GhIssueListEntry {
   number: number;
   title: string;
@@ -127,7 +157,12 @@ interface GhIssueListEntry {
   updatedAt: string;
 }
 
-function fetchOpenIssues(cwd: string, limit: number, only: number[] | null): GhIssueListEntry[] {
+function fetchOpenIssues(
+  cwd: string,
+  limit: number,
+  only: number[] | null,
+  runGh: GhRunFn,
+): GhIssueListEntry[] {
   const args = [
     "issue",
     "list",
@@ -138,7 +173,7 @@ function fetchOpenIssues(cwd: string, limit: number, only: number[] | null): GhI
     "--json",
     "number,title,labels,body,state,updatedAt",
   ];
-  const result = spawnSync("gh", args, { cwd, encoding: "utf8", timeout: 30_000 });
+  const result = runGh(args, cwd);
   if (result.status !== 0) {
     throw new Error(`gh issue list falhou (status ${result.status ?? "null"}): ${result.stderr.trim()}`);
   }
@@ -164,12 +199,12 @@ function fetchOpenIssues(cwd: string, limit: number, only: number[] | null): GhI
  * dependem disso), e mudar sua assinatura quebraria todo mundo que já usa
  * `[]` como "sem comentário, sem erro". Este wrapper é local e pequeno.
  */
-function fetchCommentsChecked(issueNumber: number, cwd: string): { comments: string[]; error: string | null } {
-  const result = spawnSync("gh", ["issue", "view", String(issueNumber), "--json", "comments"], {
-    cwd,
-    encoding: "utf8",
-    timeout: 15_000,
-  });
+function fetchCommentsChecked(
+  issueNumber: number,
+  cwd: string,
+  runGh: GhRunFn,
+): { comments: string[]; error: string | null } {
+  const result = runGh(["issue", "view", String(issueNumber), "--json", "comments"], cwd);
   if (result.status !== 0) {
     const reason = result.stderr?.trim() || `gh issue view #${issueNumber} falhou (status ${result.status ?? "null"})`;
     console.error(`[desbloqueia-scan] ${reason}`);
@@ -208,26 +243,27 @@ function fetchCommentsChecked(issueNumber: number, cwd: string): { comments: str
  */
 export type DependencyState = "open" | "closed" | "missing";
 
-/** Injetável só pra teste — em produção é sempre `spawnSync("gh", …)`. Sem
- * isso o único caminho de I/O da #7707 ficaria sem cobertura: um
- * `depends_on` aberto é raro no backlog (0 na medição de 09/09/2026), então
- * o smoke ao vivo não o exercita. */
-export type IssueStateFetcher = (issueNumber: number, cwd: string) => { status: number; stdout: string; stderr: string };
-
-const defaultIssueStateFetcher: IssueStateFetcher = (n, cwd) => {
-  const r = spawnSync("gh", ["issue", "view", String(n), "--json", "state"], {
-    cwd,
-    encoding: "utf8",
-    timeout: 15_000,
-  });
-  return { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
-};
-
+/**
+ * Runner de `gh` injetável. É o MESMO shape de `GhRunFn` em
+ * `scripts/route-issue.ts` (`(args, cwd) => GhSpawnResult`) de propósito —
+ * a primeira versão desta PR inventou um tipo próprio
+ * (`(issueNumber, cwd) => {status: number, …}`) e o review do
+ * type-design-analyzer apontou as três divergências que isso trouxe:
+ * `status: number` forçando um sentinela `-1` inventado onde `spawnSync`
+ * devolve `null` no timeout; assinatura amarrada a um único subcomando; e um
+ * timeout de 15s copiado à mão, divergindo de `GH_SPAWN_TIMEOUT_MS`
+ * (10s) — que, se um dia for ajustado por incidente, deixaria esta cópia
+ * esquecida atrás.
+ *
+ * Existe porque sem injeção os caminhos de I/O da #7707/#7708 ficariam sem
+ * cobertura: um `depends_on` aberto é raro no backlog (0 na medição de
+ * 09/09/2026), então o smoke ao vivo não os exercita.
+ */
 export function resolveDependencyStates(
   wanted: readonly number[],
   openNumbers: ReadonlySet<number>,
   cwd: string,
-  fetchState: IssueStateFetcher = defaultIssueStateFetcher,
+  runGh: GhRunFn = spawnGhSync,
 ): Map<number, DependencyState> {
   const out = new Map<number, DependencyState>();
   for (const n of new Set(wanted)) {
@@ -235,7 +271,7 @@ export function resolveDependencyStates(
       out.set(n, "open");
       continue;
     }
-    const result = fetchState(n, cwd);
+    const result = runGh(["issue", "view", String(n), "--json", "state"], cwd);
     if (result.status !== 0) {
       // `gh` falha tanto pra issue inexistente quanto pra rede caída. Os dois
       // viram `missing`, que NUNCA desbloqueia — a direção segura: na dúvida,
@@ -262,10 +298,13 @@ export function runDesbloqueioScan(
     track?: ScopedTrack;
     skipSemSinal?: boolean;
     incluirEngavetadas?: boolean;
+    /** Injetável só pra teste — ver `GhRunFn`. */
+    runGh?: GhRunFn;
   } = {},
 ): DesbloqueioScanReport {
   const limit = opts.limit ?? 500;
-  const issues = fetchOpenIssues(cwd, limit, opts.issues ?? null);
+  const runGh = opts.runGh ?? spawnGhSync;
+  const issues = fetchOpenIssues(cwd, limit, opts.issues ?? null, runGh);
   // `--track sem-sinal` pedindo explicitamente o bucket vence um
   // `--skip-sem-sinal` que tenha vindo junto (pedido explícito > desligamento
   // genérico); fora isso, a flag desliga o bucket.
@@ -277,6 +316,14 @@ export function runDesbloqueioScan(
 
   // Passada 1 (barata, sem gh issue view): filtra pra quem é candidata real
   // ANTES de gastar uma chamada de comentário. Ver docstring do módulo.
+  //
+  // As rejeitadas são guardadas em `foraDaPassada1`: `scanDesbloqueioCandidates`
+  // nunca as vê (é isso que economiza a chamada de comentário), então sem
+  // isto o `foraDoEscopo` do relatório vinha SEMPRE vazio pelo caminho do
+  // CLI — o campo prometia "auditoria de cobertura" e entregava silêncio
+  // (medido: 0 fora-de-escopo sobre 68 issues abertas). Achado por um teste
+  // fim-a-fim escrito no review da PR #7711.
+  const foraDaPassada1: number[] = [];
   const candidates = issues.filter((issue) => {
     const escopoInfo = resolveDesbloqueioEscopo({
       labels: issue.labels.map((l) => l.name),
@@ -284,15 +331,17 @@ export function runDesbloqueioScan(
       state: issue.state,
       incluirEngavetadas: opts.incluirEngavetadas,
     });
-    if (!escopoInfo) return false;
-    if (escopoInfo.escopo === "sem-sinal" && !includeSemSinal) return false;
-    if (opts.track && escopoInfo.escopo !== opts.track) return false;
-    return true;
+    const dentro =
+      escopoInfo !== null &&
+      !(escopoInfo.escopo === "sem-sinal" && !includeSemSinal) &&
+      !(opts.track && escopoInfo.escopo !== opts.track);
+    if (!dentro) foraDaPassada1.push(issue.number);
+    return dentro;
   });
 
   // Passada 2: só pras candidatas reais, busca a thread completa.
   const fetched = candidates.map((issue) => {
-    const { comments, error } = fetchCommentsChecked(issue.number, cwd);
+    const { comments, error } = fetchCommentsChecked(issue.number, cwd, runGh);
     return { issue, comments, error };
   });
 
@@ -305,7 +354,7 @@ export function runDesbloqueioScan(
     const bloco = latestExecutionBlockFor(comments);
     if (bloco?.condicao.tipo === "depends_on") deps.push(bloco.condicao.issue);
   }
-  const dependencyStates = resolveDependencyStates(deps, openNumbers, cwd);
+  const dependencyStates = resolveDependencyStates(deps, openNumbers, cwd, runGh);
 
   const inputs: DesbloqueioIssueInput[] = fetched.map(({ issue, comments, error }) => {
     const bloco = error ? null : latestExecutionBlockFor(comments);
@@ -324,7 +373,27 @@ export function runDesbloqueioScan(
     };
   });
 
-  return scanDesbloqueioCandidates(inputs);
+  // #7711 review (silent-failure-hunter): sem isto, uma rodada com `gh` sem
+  // rede resolve TODAS as dependências pra `missing`, toda issue cai em
+  // `bloqueio-confirmado` — indistinguível de "dependência genuinamente
+  // aberta" — e o único sinal é uma linha em stderr, que desaparece pra quem
+  // redireciona stdout (`> report.json`, uso comum em automação). A falha
+  // sistêmica virava "nada mudou" no relatório. `fetchCommentsChecked` já
+  // fazia certo (propaga pro grupo `erroLeitura`); esta era a assimetria.
+  const dependenciasNaoResolvidas = [...dependencyStates.entries()]
+    .filter(([, estado]) => estado === "missing")
+    .map(([n]) => n);
+
+  const report = scanDesbloqueioCandidates(inputs);
+  return {
+    ...report,
+    // Une o que a passada 1 rejeitou com o que o miolo rejeitou. Os dois
+    // conjuntos são disjuntos por construção (o miolo só vê o que passou),
+    // mas somar é o que faz `foraDoEscopo` significar de fato "toda issue
+    // varrida que não é candidata".
+    foraDoEscopo: [...foraDaPassada1, ...report.foraDoEscopo].sort((a, b) => a - b),
+    dependenciasNaoResolvidas,
+  };
 }
 
 function parseIssuesArg(raw: string): number[] {
