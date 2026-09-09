@@ -52,7 +52,7 @@ describe("createBroadcast", () => {
         captured = { url, init };
         return jsonResponse(201, { broadcast: { id: 1, subject: "Assunto", status: "draft" } });
       }) as typeof fetch,
-      () => createBroadcast({ subject: "Assunto", content: "<p>oi</p>" }, TEST_CONFIG),
+      () => createBroadcast({ subject: "Assunto", content: "<p>oi</p>", subscriber_filter: buildAllSubscribersFilter() }, TEST_CONFIG),
     );
     assert.equal(result.id, 1);
     assert.equal(captured?.init?.method, "POST");
@@ -64,7 +64,7 @@ describe("createBroadcast", () => {
   it("resposta 2xx sem envelope broadcast lança erro nomeado", async () => {
     await assert.rejects(
       withMockFetch((async () => jsonResponse(201, {})) as typeof fetch, () =>
-        createBroadcast({ subject: "x", content: "x" }, TEST_CONFIG),
+        createBroadcast({ subject: "x", content: "x", subscriber_filter: buildAllSubscribersFilter() }, TEST_CONFIG),
       ),
       /createBroadcast.*sem o envelope/,
     );
