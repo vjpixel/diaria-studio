@@ -540,6 +540,54 @@ else
   echo "[watch] fabricacao de tick: ok (sem sinal de fabricacao; #7537)"
 fi
 
+# --- Parada dura por AUTH no cron do contínuo (#7647) --------------------
+# 08/09/2026: o refresh token do Codex foi reusado por outro cliente, o cron
+# passou a falhar com 401/403, e o contínuo parou 7 TICKS em silêncio — o
+# `failure_streak` subia dentro do `jobs.json` do Hermes e nada no repo lia.
+# Esta checagem é a metade repo-side do #7647: lê o veredito determinístico
+# de `scripts/check-continuo-auth-stall.ts` (que não toca credencial, não lê
+# auth.json e não mexe no pool — higiene de conta é ação externa do editor) e
+# alarma. Mesma disciplina fail-soft das checagens acima: `stalled:false` por
+# jobs.json ilegível é INDETERMINADO (conta em FAILS), nunca "está saudável".
+AUTH_JSON=$(npx tsx /home/vjpixel/diaria-studio/scripts/check-continuo-auth-stall.ts --json 2>/dev/null)
+AUTH_PARSE=$(printf '%s' "$AUTH_JSON" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print('STALLED' if d['stalled'] else ('UNKNOWN' if 'ileg' in d['reason'] else 'OK'))
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+case "$AUTH_PARSE" in *__ERR__*) AUTH_PARSE="__ERR__" ;; esac
+case "$AUTH_PARSE" in STALLED|UNKNOWN|OK) : ;; *) AUTH_PARSE="__ERR__" ;; esac
+AUTH_REASON=$(printf '%s' "$AUTH_JSON" | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin)['reason'])
+except Exception:
+    print('(sem motivo legivel)')" 2>/dev/null || echo "(sem motivo legivel)")
+if [ "$AUTH_PARSE" = "__ERR__" ]; then
+  echo "[watch] parada por auth: INDETERMINADO (check-continuo-auth-stall falhou)" >&2
+  FAILS=$((FAILS + 1))
+elif [ "$AUTH_PARSE" = "UNKNOWN" ]; then
+  echo "[watch] parada por auth: INDETERMINADO (jobs.json ilegivel: $AUTH_REASON)" >&2
+  FAILS=$((FAILS + 1))
+elif [ "$AUTH_PARSE" = "STALLED" ]; then
+  file_issue "[watch-continuo] parada dura por auth" \
+    "[watch-continuo] parada dura por auth (401/403) no cron do contínuo" \
+    "bug,P1" \
+    "Detectado por watch-continuo-health.sh via scripts/check-continuo-auth-stall.ts (#7647).
+
+\`\`\`
+$AUTH_REASON
+\`\`\`
+
+**Ação (externa, decisão do editor — o detector NÃO executa nada disso):** conferir no helios se a credencial do cron do contínuo ainda é válida e se o refresh token não está sendo reusado por outro cliente; renovar/rotacionar a conta do pool se for o caso. O detector é deliberadamente read-only sobre \`jobs.json\` — não lê \`auth.json\`, não invoca \`hermes auth add|remove\`, não toca o pool de credenciais.
+
+P1: o modo de falha é silencioso por construção — em 08/09/2026 custou 7 ticks do contínuo sem que nada no repo notasse, e o único sinal era o \`failure_streak\` subindo dentro do estado do agendador."
+else
+  echo "[watch] parada por auth: ok ($AUTH_REASON; #7647)"
+fi
+
 echo "[watch] varredura concluída (checagens indeterminadas/falhas de infra: $FAILS)"
 # Exit honesto (finding P2 do review #6469): FAILS>0 = o observador NÃO pôde
 # garantir a varredura — o cron do Hermes registra a falha e o failure_streak
