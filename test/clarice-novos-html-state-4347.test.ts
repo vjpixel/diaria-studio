@@ -240,34 +240,7 @@ test("runReconcile: state COM pendingSend mas SEM API key -> aborta ANTES de ten
 });
 
 // #7765 — regressão: caminho de exit 3 (disparo incerto) deve atualizar
-// lastRunAt sem alterar lastHtmlSha256/sentCount.
-describe("#7765 touchLastRunAt (exit 3)", () => {
-  it("atualiza lastRunAt mantendo prev state intacto (não soma sentCount)", () => {
-    const { touchLastRunAt, readNovosState, writeNovosState } = require("../scripts/lib/clarice-novos-state.ts") as typeof import("../scripts/lib/clarice-novos-state.ts");
-    const fs = require("node:fs");
-    const path = require("node:path");
-    const tmpDir = path.resolve(__dirname, "../tmp-test-7765");
-    fs.mkdirSync(tmpDir, { recursive: true });
-    // state inicial com valores fixos (simulando rodada anterior concluída)
-    const inicial = {
-      lastRunAt: "2026-09-05T12:00:00.000Z",
-      lastHtmlSha256: "aabb...",
-      lastCycle: "2609-09",
-      lastListId: 99,
-      lastCampaignId: 111,
-      sentCount: 350,
-      pendingSend: null,
-    };
-    writeNovosState(inicial, tmpDir);
-    const antes = new Date("2026-09-05T12:00:00.000Z").getTime();
-    touchLastRunAt(tmpDir);
-    const depois = readNovosState(tmpDir);
-    expect(depois).not.toBeNull();
-    expect(depois!.lastRunAt).not.toBe(inicial.lastRunAt); // atualizado
-    expect(depois!.lastHtmlSha256).toBe(inicial.lastHtmlSha256); // preservado
-    expect(depois!.sentCount).toBe(inicial.sentCount); // NÃO somado
-    expect(depois!.lastCampaignId).toBe(inicial.lastCampaignId); // preservado
-    // cleanup
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-});
+// lastRunAt sem alterar lastHtmlSha256/sentCount. Movida para
+// test/clarice-novos-state.test.ts (#7771) — cobre `clarice-novos-state.ts`
+// diretamente, mesmo arquivo das demais unit tests de touchLastRunAt/
+// readNovosState/writeNovosState; este arquivo cobre só a integração da CLI.
