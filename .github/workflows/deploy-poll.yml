@@ -109,8 +109,16 @@ jobs:
           done
 
           if [ -z "$run_id" ]; then
-            echo "Nenhum run de deploy-site.yml encontrado para $SHA depois de ~3min — seguindo sem esperar (não deveria acontecer já que este push tocou workers/site/**; investigar se persistir)."
-            exit 0
+            # Fail-CLOSED (self-review #7833 finding 1): este push tocou
+            # workers/site/** segundo o próprio git diff, então um run de
+            # deploy-site.yml DEVERIA existir — se depois de ~3min não
+            # apareceu (lookup da API lento/instável, ou divergência entre
+            # este git diff e o `paths:` filter real do GitHub), o risco é
+            # justamente o que este job existe pra fechar. Abortar aqui é
+            # mais seguro que seguir sem esperar — nunca reintroduzir a
+            # janela de 404 do #7755 por um timeout de lookup.
+            echo "Nenhum run de deploy-site.yml encontrado para $SHA depois de ~3min — abortando (fail-closed) em vez de seguir sem esperar. Investigar: lookup da API lento, ou divergência entre este git diff e o paths filter de deploy-site.yml."
+            exit 1
           fi
 
           echo "Aguardando run $run_id (deploy-site.yml) concluir..."
