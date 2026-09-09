@@ -71,10 +71,12 @@ e-mail é seu.
 
 Depois de confirmar, sua primeira edição chega numa manhã de segunda a sexta,
 com 5 minutos das notícias essenciais sobre IA e os tutoriais que importam.
-
-Se não foi você que se cadastrou, é só ignorar este e-mail. Sem o clique
-acima, nada é enviado.
 ```
+
+> **Decisão do editor (09/09/2026):** o parágrafo final da versão Beehiiv —
+> *"Se não foi você que se cadastrou, é só ignorar este e-mail. Sem o clique
+> acima, nada é enviado."* — foi **removido**. Não recolocar ao reeditar o
+> form.
 
 O botão é o **único** elemento de ação — sem link concorrente. Densidade
 promocional above the fold é o gatilho de classificador identificado no
