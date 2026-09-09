@@ -268,6 +268,44 @@ test("hook reconhece npm/wrapper por posição estrutural, não por lista de pre
   assert.equal(blocked(`git commit -m 'fix: npm install lento'`), false, "mensagem de commit é texto");
 });
 
+// Achado do review da PR #7848: mascarar TODO span citado desligava a detecção
+// quando o próprio nome do programa vinha citado — `"npm" ci` roda exatamente
+// como `npm ci`. A distinção que resolve, sem parser de shell: span citado SEM
+// espaço dentro é um token (nome de programa), span COM espaço é prosa.
+test("nome de programa citado é token, não texto (#7848)", async () => {
+  const hook = await import(`../.claude/hooks/${HOOK_BASENAME}`);
+  const inspect = (dir: string) => (dir.replaceAll("\\", "/").endsWith("/wt") ? "/principal/node_modules" : null);
+  const blocked = (cmd: string, cwd = "/wt") => Boolean(hook.findBlockedNpmInstall(cmd, cwd, inspect));
+
+  assert.ok(blocked(`"npm" ci`), "npm citado com aspas duplas");
+  assert.ok(blocked(`'npm' install`), "npm citado com aspas simples");
+  assert.ok(blocked(`'bash' -c "npm ci"`), "binário do wrapper citado");
+  assert.ok(blocked(`"npm" ci --prefix /wt`, "/x"), "npm citado + --prefix");
+
+  // Span COM espaço segue sendo prosa — é o que separa token de texto.
+  assert.equal(blocked(`gh issue create --title "npm"`), false, "argumento citado de uma palavra não é comando");
+  assert.equal(blocked(`echo "npm" && echo ok`), false, "eco de uma palavra não é npm install");
+  assert.equal(blocked(`git commit -m "roda npm ci"`), false, "prosa citada segue sendo texto");
+});
+
+// `maskQuotedSpans` precisa preservar OFFSET, não só esconder texto: o payload
+// do wrapper é lido no texto ORIGINAL a partir do índice casado na versão
+// mascarada. Escape (`\"`) ocupa 2 caracteres no original e 1 no valor lido,
+// então o span mascarado é preenchido até a largura original.
+test("maskQuotedSpans preserva comprimento e offsets", async () => {
+  const hook = await import(`../.claude/hooks/${HOOK_BASENAME}`);
+  for (const input of [
+    `git commit -m "roda npm ci"`,
+    `bash -c "bash -c \\"npm ci\\""`,
+    `echo "a\\"b" fim`,
+    `'npm' ci`,
+    `"aspas nao fechadas`,
+    ``,
+  ]) {
+    assert.equal(hook.maskQuotedSpans(input).length, input.length, `comprimento preservado em: ${input}`);
+  }
+});
+
 // O hook é self-contained (nenhum import de `.ts`, convenção dos hooks
 // irmãos), então a paridade com a lib precisa ser travada por teste.
 test("hook e lib concordam nos mesmos casos (paridade do guard duplicado)", async () => {

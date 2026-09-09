@@ -84,13 +84,17 @@ export function stripHeredocSpans(command) {
 // `git commit -m "roda npm ci"` e `echo "use bash -c 'npm ci'"` (não
 // bloqueiam). O mesmo vale para o wrapper de shell.
 //
-// Limitação honesta, herdada de tratar aspas como texto — o NOME do programa
-// citado também vira texto, então escapam: `env -S 'npm ci'` (que executa o
-// conteúdo citado), `'bash' -c "npm ci"`, e um caminho citado com espaço
-// (`"C:/Program Files/nodejs/npm.cmd" ci`). É o mesmo trade-off do corpo de
-// heredoc que de fato roda um comando, e do hook irmão. Fechar isso pediria um
-// parser de shell de verdade; o custo não se paga para um guard que é uma das
-// camadas, não a única.
+// Nome de programa citado (`"npm" ci`, `'bash' -c "..."`) NÃO é exceção: um
+// span citado sem espaço dentro é um token, não prosa, e fica visível — ver
+// `maskQuotedSpans`.
+//
+// Limitações honestas que sobram, todas herdadas de tratar aspas como texto:
+// um caminho citado COM espaço (`"C:/Program Files/nodejs/npm.cmd" ci`),
+// `env -S 'npm ci'` (que executa o conteúdo citado), e truques de quoting que
+// partem o nome do comando no meio (`np"m" ci`, `npm${IFS}ci`). É o mesmo
+// trade-off do corpo de heredoc que de fato roda um comando, e do hook irmão.
+// Fechar isso pediria um parser de shell de verdade; o custo não se paga para
+// um guard que é uma das camadas, não a única.
 
 /**
  * Devolve o segmento com o CONTEÚDO de cada string citada trocado por espaços,
@@ -104,7 +108,18 @@ export function maskQuotedSpans(segment) {
   while (i < text.length) {
     const quoted = readQuotedString(text, i);
     if (quoted) {
-      masked += " ".repeat(quoted.end - i);
+      // Span citado SEM espaço é um token — tipicamente o nome do programa
+      // (`"npm" ci`, `'bash' -c "..."`), forma que executa exatamente como sem
+      // as aspas. Mascará-lo desligava a detecção inteira (achado do review da
+      // PR #7848). Fica visível, com as aspas viradas em espaço: mesmo
+      // comprimento, offsets preservados, e o token continua delimitado.
+      // Span COM espaço é prosa (`-m "roda npm ci"`) e segue mascarado.
+      const width = quoted.end - i;
+      // `padEnd`/`slice` porque escape (`\"`) ocupa 2 caracteres no original e
+      // 1 no valor lido: sem isso o span encolheria e todo offset à direita
+      // sairia do lugar.
+      const token = ` ${quoted.value} `.slice(0, width).padEnd(width, " ");
+      masked += /\s/.test(quoted.value) ? " ".repeat(width) : token;
       i = quoted.end;
       continue;
     }
