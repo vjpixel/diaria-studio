@@ -260,6 +260,73 @@ describe("REGRESSÃO #7601: comentário HTML dentro de um bloco é tolerado e pr
 });
 
 /**
+ * REGRESSÃO #7692: `LINE_REGEX` rejeitava um bullet com categoria antes da
+ * 1ª ref (`- Categoria: [label](arquivo) + ...`), formato usado nas 8 linhas
+ * reais do bloco `## Legado do ZenBook` importado em 06/09/2026 (bloco que
+ * hoje não existe mais — as memórias foram triadas em 09/09/2026 — mas o
+ * parser precisa continuar aceitando o formato para não travar o round-trip
+ * se ele reaparecer, ver docstring de `LINE_REGEX`). Fixture: as 8 linhas
+ * reais citadas no corpo da issue #7692, verbatim.
+ */
+describe("REGRESSÃO #7692: bullet com categoria (prefixo) antes da 1ª ref", () => {
+  const FIXTURE_WITH_PREFIX = `# Memory index
+
+## Legado do ZenBook — importado 06/09/2026, NÃO triado
+- Beehiiv/editor: [autor vazio](feedback_beehiiv_empty_author_correct.md) + [3-dot do template](feedback_beehiiv_template_click_3dot.md)
+- Escrita/estilo: [URLs clicáveis](feedback_clickable_urls.md) + [regras do erro intencional](feedback_erro_intencional_regras.md)
+- Overnight/PR: [hook de review na PR](feedback_auto_code_review_pr_hook.md)
+- Testes/CI: [guard de imports na CLI](feedback_cli_guard_imports.md)
+- Clarice/dados: [programa de e-mail](project_clarice_email_program.md)
+- Design/layout: [teal em landing pages](feedback_teal_accent_landing_pages.md)
+- Infra/ferramentas: [falso positivo do link check Amazon](feedback_amazon_link_check_false_positive.md)
+- Processo: [caveman muda decisões da skill](feedback_caveman_skill_changes_decisions.md)`;
+
+  it("extrai as 8 linhas sem lançar, capturando o prefixo de categoria em cada uma", () => {
+    const manifest = extractManifest(FIXTURE_WITH_PREFIX);
+    const block = manifest.blocks[0];
+    assert.equal(block.heading, "Legado do ZenBook — importado 06/09/2026, NÃO triado");
+    assert.equal(block.lines.length, 8);
+    assert.equal(block.lines[0].prefix, "Beehiiv/editor");
+    assert.equal(block.lines[0].refs.length, 2);
+    assert.equal(block.lines[0].refs[0].label, "autor vazio");
+    assert.equal(block.lines[2].prefix, "Overnight/PR");
+    assert.equal(block.lines[7].prefix, "Processo");
+    assert.equal(block.lines[7].refs[0].file, "feedback_caveman_skill_changes_decisions.md");
+  });
+
+  it("round-trip extract → generate é byte a byte idêntico com prefixo de categoria presente", () => {
+    const manifest = extractManifest(FIXTURE_WITH_PREFIX);
+    const regenerated = generateMemoryMd(manifest);
+    assert.equal(regenerated, FIXTURE_WITH_PREFIX);
+  });
+
+  it("round-trip é idempotente numa 2ª rodada (extract → generate → extract → generate)", () => {
+    const first = generateMemoryMd(extractManifest(FIXTURE_WITH_PREFIX));
+    const second = generateMemoryMd(extractManifest(first));
+    assert.equal(second, first);
+    assert.equal(second, FIXTURE_WITH_PREFIX);
+  });
+
+  it("bullet sem prefixo continua sem o campo `prefix` (não regride o formato já aceito)", () => {
+    const manifest = extractManifest(
+      "# Memory index\n\n- [label](arquivo.md) — descrição\n- [a](a.md) + [b](b.md)",
+    );
+    assert.equal(manifest.blocks[0].lines[0].prefix, undefined);
+    assert.equal(manifest.blocks[0].lines[1].prefix, undefined);
+  });
+
+  it("descrição contendo ': ' não é confundida com prefixo quando a linha não abre com categoria", () => {
+    // ": " só é tratado como delimitador de prefixo quando aparece ANTES da
+    // 1ª ref — depois da 1ª ref, ": " dentro da descrição é texto comum.
+    const manifest = extractManifest(
+      "# Memory index\n\n- [label](arquivo.md) — nota: detalhe com dois-pontos",
+    );
+    assert.equal(manifest.blocks[0].lines[0].prefix, undefined);
+    assert.equal(manifest.blocks[0].lines[0].description, "nota: detalhe com dois-pontos");
+  });
+});
+
+/**
  * REGRESSÃO #7601: round-trip contra o `MEMORY.md` REAL desta máquina, não
  * só a fixture sintética acima — é o guard que faltava (o formato só quebrou
  * porque nada verificava que o gerador relê o que escreve, ver issue). O
