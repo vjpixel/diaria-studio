@@ -62,11 +62,39 @@ function listarTestes(dir: string, acc: string[] = []): string[] {
   return acc;
 }
 
-/** Remove comentários de bloco e de linha antes de procurar uso de símbolo —
- *  senão a própria docstring deste arquivo (que CITA `describe(`) contaria
- *  como uso. */
-function semComentarios(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+/**
+ * Escapa metacaracteres de regex — `@jest/globals` tem `/`, e um `.` num nome
+ * futuro casaria qualquer caractere. (A 1ª versão usava
+ * `replace("/", "\\/")`, que escapa só a PRIMEIRA ocorrência — achado P4 do
+ * review da PR #7808.)
+ */
+function escaparRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+}
+
+/**
+ * Analisa LINHA A LINHA, em posição de statement, em vez de remover
+ * comentários do arquivo inteiro.
+ *
+ * A 1ª versão fazia `src.replace(/\/\*[\s\S]*?\*\//g, " ")` pra que a própria
+ * docstring deste arquivo (que CITA `describe(`) não contasse como uso. O
+ * review da PR #7808 mostrou que isso cria um **falso NEGATIVO** — o pior
+ * defeito possível num guard, porque some justamente com o que ele existe pra
+ * pegar: um template literal contendo uma sequência parecida com `/*`,
+ * seguido mais adiante no MESMO arquivo por um JSDoc real, faz a regex comer
+ * tudo entre os dois — inclusive um `import ... from "vitest"` legítimo no
+ * meio. O revisor reproduziu, e confirmou que o padrão (`/*` dentro de
+ * string) já existe em arquivos reais do repo.
+ *
+ * Ancorar em posição de statement resolve os dois lados de uma vez: linha de
+ * comentário começa com `*` ou `//`, e menção dentro de string não começa a
+ * linha com `import`. Sem regex de comentário, sem esse modo de falha.
+ */
+function linhasDeCodigo(src: string): string[] {
+  return src.split("\n").filter((l) => {
+    const t = l.trimStart();
+    return t !== "" && !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*");
+  });
 }
 
 describe("guard: todo teste usa node:test como runner (#7807)", () => {
@@ -79,10 +107,19 @@ describe("guard: todo teste usa node:test como runner (#7807)", () => {
   it("nenhum arquivo de teste importa runner que não seja node:test", () => {
     const infratores: string[] = [];
     for (const arquivo of arquivos) {
-      const src = semComentarios(readFileSync(arquivo, "utf8"));
+      const linhas = linhasDeCodigo(readFileSync(arquivo, "utf8"));
       for (const runner of RUNNERS_PROIBIDOS) {
-        const re = new RegExp(`from\\s+["']${runner.replace("/", "\\/")}["']`);
-        if (re.test(src)) infratores.push(`${relative(ROOT, arquivo)} → ${runner}`);
+        const alvo = escaparRegex(runner);
+        // Só posição de statement: `import ... from "runner"` ou
+        // `require("runner")`. Uma STRING que apenas contenha o texto
+        // `from "vitest"` (um teste SOBRE este guard, uma fixture de mensagem
+        // de erro) deixa de ser acusada — falso positivo P3 do review.
+        const re = new RegExp(
+          `^\\s*import\\b[^;]*from\\s*["']${alvo}["']|require\\(\\s*["']${alvo}["']`,
+        );
+        if (linhas.some((l) => re.test(l))) {
+          infratores.push(`${relative(ROOT, arquivo)} → ${runner}`);
+        }
       }
     }
     assert.deepEqual(
@@ -97,11 +134,17 @@ describe("guard: todo teste usa node:test como runner (#7807)", () => {
   it("todo arquivo que usa describe()/it() importa esses símbolos de node:test", () => {
     const infratores: string[] = [];
     for (const arquivo of arquivos) {
-      const src = semComentarios(readFileSync(arquivo, "utf8"));
-      const usa = /\b(describe|it)\s*\(/.test(src);
-      if (!usa) continue;
-      const importaDoNodeTest = /from\s+["']node:test["']/.test(src);
-      if (!importaDoNodeTest) infratores.push(relative(ROOT, arquivo));
+      const src = readFileSync(arquivo, "utf8");
+      // `import ... from "node:test"` OU `await import("node:test")` — o
+      // dinâmico é uso legítimo do runner certo e era acusado pela 1ª versão
+      // (falso positivo P3 do review).
+      const importaDoNodeTest =
+        /from\s*["']node:test["']/.test(src) || /import\(\s*["']node:test["']/.test(src);
+      if (importaDoNodeTest) continue;
+      // Uso em posição de statement — linha de docstring (` * describe(`) não
+      // conta, e por isso este arquivo não se acusa.
+      const usa = linhasDeCodigo(src).some((l) => /^\s*(describe|it)\s*\(/.test(l));
+      if (usa) infratores.push(relative(ROOT, arquivo));
     }
     assert.deepEqual(
       infratores,
