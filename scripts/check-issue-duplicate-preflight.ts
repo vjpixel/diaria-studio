@@ -25,7 +25,7 @@
  */
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { assessDuplicatePreflight } from "./lib/issue-duplicate-preflight.ts";
-import { fetchMasterCommitsForIssue } from "./lib/master-commit-fetch.ts";
+import { fetchMasterCommitsForIssue, fetchMasterCommitsForProvenance } from "./lib/master-commit-fetch.ts";
 
 export function main(argv: string[], cwd: string): number {
   const { values } = parseArgs(argv);
@@ -46,10 +46,23 @@ export function main(argv: string[], cwd: string): number {
     return 2;
   }
 
+  // Preflight de PROVENIÊNCIA (#7801) — quando o fix pode estar sob outro número.
+  const provenanceRaw = values.provenance ? String(values.provenance) : "";
+  const provenanceVals = provenanceRaw ? provenanceRaw.split(",").map((s) => s.trim()).filter(Boolean) : [];
+  const provenanceCommits: import("./lib/issue-duplicate-preflight.ts").MasterCommitInfo[] = [];
+  for (const p of provenanceVals) {
+    const pr = fetchMasterCommitsForProvenance(cwd, String(p));
+    if (!pr.error) provenanceCommits.push(...pr.commits);
+  }
+  // Dedup por SHA (mesmo commit pode aparecer em #N e em provenance).
+  const shaSeen = new Set<string>();
+  const provenanceUnique = provenanceCommits.filter((c) => { if (shaSeen.has(c.sha)) return false; shaSeen.add(c.sha); return true; });
+
   const result = assessDuplicatePreflight({
     issueNumber,
     issueUpdatedAt: values["updated-at"] ?? null,
     commits: fetchResult.commits,
+    provenanceCommits: provenanceUnique,
   });
 
   console.log(JSON.stringify(result, null, 2));

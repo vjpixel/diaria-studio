@@ -95,6 +95,9 @@ export interface MasterCommitInfo {
   body: string;
   /** ISO 8601, data de autoria do commit (`%aI` do `git log`). */
   authorDateIso: string;
+  /** Quando true, este commit veio do fetch por PROVENIÊNCIA (não por #N
+   * direto) — usado para distinguir origem antes de classificar. */
+  provenance?: boolean;
 }
 
 /** `MasterCommitInfo` + o marcador já extraído. */
@@ -103,8 +106,29 @@ export interface MasterCommitMatch extends MasterCommitInfo {
 }
 
 /** Anexa `closeMarker` a cada commit — puro, sem I/O. */
+/** Extremamente conservador: para commits de PROVENIÊNCIA (não diretos #N),
+ * qualquer `closes` no corpo indica que um número relacionado foi fechado —
+ * tratamos como `closes` para não perder o sinal de fix mergeado sob outro ID.
+ * Se não há `closes`, cai no comportamento padrão (`refs`/`unknown`). */
+function parseCommitCloseMarkerProvenance(body: string): CommitCloseMarker {
+  if (/\bcloses\b/i.test(body)) return "closes";
+  if (/\brefs\b/i.test(body)) return "refs";
+  return "unknown";
+}
+
 export function classifyMasterCommits(commits: MasterCommitInfo[], issueNumber: number): MasterCommitMatch[] {
-  return commits.map((c) => ({ ...c, closeMarker: parseCommitCloseMarker(c.body, issueNumber) }));
+  return commits.map((c) => {
+    const direct = parseCommitCloseMarker(c.body, issueNumber);
+    // Fallback conservador SÓ para provenance: quando o commit veio do fetch
+    // por origem (range/PR/commit) e não cita #N diretamente, qualquer
+    // `closes` no corpo ainda pode ser sinal do fix mergeado sob outro ID.
+    // PARA commits diretos (#N) NÃO aplicamos o fallback — se o número
+    // direto não aparece, não presumimos que ele fecha esta issue.
+    const marker = c.provenance
+      ? parseCommitCloseMarkerProvenance(c.body)
+      : direct;
+    return { ...c, closeMarker: marker };
+  });
 }
 
 export type DuplicatePreflightVerdict =
@@ -122,13 +146,11 @@ export type DuplicatePreflightVerdict =
 
 export interface DuplicatePreflightInput {
   issueNumber: number;
-  /** `updatedAt` da issue (ISO 8601), de `gh issue view --json updatedAt`.
-   * `null`/ausente desativa o sinal 3 (`resolvedAfterLastUpdate` sempre
-   * `false`) sem afetar o veredito principal. */
   issueUpdatedAt?: string | null;
-  /** Commits de `origin/master` que já citam `#issueNumber` no grep — ver
-   * `scripts/lib/master-commit-fetch.ts`. Vazio = "não está em master". */
   commits: MasterCommitInfo[];
+  /** Commits em master que citam a PROVENIÊNCIA (range de diff, PR, commit
+   * de origem) — usados quando o fix foi mergeado sob outro número. */
+  provenanceCommits?: MasterCommitInfo[];
 }
 
 export interface DuplicatePreflightResult {
@@ -157,8 +179,16 @@ function sortByDateDesc(commits: MasterCommitMatch[]): MasterCommitMatch[] {
  * duplicidade.
  */
 export function assessDuplicatePreflight(input: DuplicatePreflightInput): DuplicatePreflightResult {
-  const { issueNumber, issueUpdatedAt, commits } = input;
-  const classified = sortByDateDesc(classifyMasterCommits(commits, issueNumber));
+  const { issueNumber, issueUpdatedAt, commits, provenanceCommits = [] } = input;
+  // Unifica commits de #N com commits de PROVENIÊNCIA (mesmo achado, número
+  // diferente — caso #7801). Dedup por SHA para não duplicar quando o
+  // mesmo commit cita ambos (ex: commit que cita #7743 e 44205ff0).
+  const shaSeen = new Set<string>();
+  const unified: MasterCommitInfo[] = [];
+  for (const c of [...commits, ...provenanceCommits.map((pc) => ({ ...pc, provenance: true as const }))]) {
+    if (!shaSeen.has(c.sha)) { shaSeen.add(c.sha); unified.push(c); }
+  }
+  const classified = sortByDateDesc(classifyMasterCommits(unified, issueNumber));
 
   if (classified.length === 0) {
     return {
@@ -185,7 +215,8 @@ export function assessDuplicatePreflight(input: DuplicatePreflightInput): Duplic
         `provavelmente já resolvida por completo. Considerar CLOSEOUT (confirmar + fechar) em vez de dispatch.` +
         (resolvedAfterLastUpdate
           ? " O commit é posterior à última atualização da issue — ninguém reavaliou depois do merge."
-          : ""),
+          : "") +
+        (provenanceCommits.length > 0 ? " (detectado via proveniência — fix pode ter sido mergeado sob outro número; verifique a origem do achado.)" : ""),
     };
   }
 
