@@ -21,6 +21,7 @@ import {
   buildIndexHtml,
   extractHeroImage,
   extractPageMeta,
+  extractPageDek,
   slugFromCanonicalUrl,
 } from "../scripts/lib/site-home-page.ts";
 import { buildSitemapXml, addSitemapEntry, sitemapEntryFromPost } from "../scripts/lib/site-archive-pages.ts";
@@ -46,11 +47,12 @@ const WORDMARK_HTML = WORDMARK_DISPLAY_SEGMENTS.map((seg) => {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC_DIR = resolve(ROOT, "workers", "site", "public");
 
-function fakePageHtml(title: string, description: string, heroSrc?: string): string {
+function fakePageHtml(title: string, description: string, heroSrc?: string, dek?: string): string {
   const hero = heroSrc
     ? `<img class="hero" src="${heroSrc}" alt="${title}" width="536" style="display:block;width:100%;height:auto;border-radius:6px;margin-top:24px;" border="0">`
     : "";
-  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>${title}</title><meta name="description" content="${description}"></head><body>${hero}</body></html>`;
+  const dekTag = dek ? `<meta name="dek" content="${dek}">` : "";
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>${title}</title><meta name="description" content="${description}">${dekTag}</head><body>${hero}</body></html>`;
 }
 
 describe("slugFromCanonicalUrl", () => {
@@ -75,6 +77,20 @@ describe("extractPageMeta", () => {
     const meta = extractPageMeta(html);
     assert.equal(meta.title, "Título & assunto");
     assert.equal(meta.description, 'Descrição com "aspas"');
+  });
+});
+
+// #7921: extractPageDek lê a tag SEPARADA <meta name="dek"> — sem D1,
+// diferente de extractPageMeta().description (D1 + D2|D3, SEO/#6281).
+describe("extractPageDek (#7921)", () => {
+  it("lê o conteúdo de <meta name=\"dek\">, decodificando entidades", () => {
+    const html = fakePageHtml("Título D1", "Título D1. D2 | D3", undefined, "D2 &amp; D3 title");
+    assert.equal(extractPageDek(html), "D2 & D3 title");
+  });
+
+  it("\"\" quando a página não tem <meta name=\"dek\"> (HTML pré-#7921, ou edição sem D2/D3)", () => {
+    const html = fakePageHtml("Título D1", "Título D1. D2 | D3");
+    assert.equal(extractPageDek(html), "");
   });
 });
 
@@ -161,6 +177,35 @@ describe("buildHomeFeed", () => {
     assert.ok(!feed.some((e) => e.slug === "sem-pagina-gerada"));
   });
 
+  // #7921: `description` do feed vem de <meta name="dek"> (SÓ D2|D3) — NUNCA
+  // de <meta name="description"> (D1 + D2|D3, #6281/SEO). Regressão literal
+  // do bug: a home mostrava "D1. D2 | D3" repetindo o D1 que já está no
+  // <h2>/<h3> do card logo acima.
+  it("description do feed é a DEK (D2|D3), não a meta description de SEO (que tem D1)", () => {
+    const sitemap = buildSitemapXml([{ loc: "https://diar.ia.br/p/com-dek", lastmod: "2026-08-26" }]);
+    const html = fakePageHtml(
+      "Pesquisador da Anthropic teme fim da humanidade",
+      "Pesquisador da Anthropic teme fim da humanidade. Meta lança Muse | Siri finalmente aprende a falar português",
+      undefined,
+      "Meta lança Muse | Siri finalmente aprende a falar português",
+    );
+    const feed = buildHomeFeed(sitemap, () => html);
+    assert.equal(feed.length, 1);
+    assert.equal(feed[0].description, "Meta lança Muse | Siri finalmente aprende a falar português");
+    assert.ok(
+      !feed[0].description.includes("Pesquisador da Anthropic teme fim da humanidade"),
+      "description do feed não deveria repetir o D1/título",
+    );
+  });
+
+  it("description do feed é \"\" (nunca a description de SEO) quando a página não tem <meta name=\"dek\"> (HTML pré-#7921)", () => {
+    const sitemap = buildSitemapXml([{ loc: "https://diar.ia.br/p/sem-dek", lastmod: "2026-08-26" }]);
+    const html = fakePageHtml("Título D1", "Título D1. D2 | D3 sem dek");
+    const feed = buildHomeFeed(sitemap, () => html);
+    assert.equal(feed.length, 1);
+    assert.equal(feed[0].description, "");
+  });
+
   it("pula página sem <title> extraível (não só página ausente)", () => {
     const sitemap = buildSitemapXml([{ loc: "https://diar.ia.br/p/sem-titulo", lastmod: "2026-08-26" }]);
     const feed = buildHomeFeed(sitemap, () => `<!DOCTYPE html><html><head></head><body></body></html>`);
@@ -233,6 +278,13 @@ describe("buildIndexHtml", () => {
 
   it("link do destaque do dia aponta pra a URL real da feature", () => {
     assert.match(html, /href="https:\/\/diar\.ia\.br\/p\/destaque-do-dia"/);
+  });
+
+  // #7921 item 2 — "ou pelo email →" removido do bloco da home (pedido do
+  // editor). A CSS órfã `.feature-hint` também sai junto (nada mais a marca).
+  it("não tem mais o texto 'ou pelo email' nem a classe feature-hint (#7921)", () => {
+    assert.ok(!html.includes("ou pelo email"), "texto 'ou pelo email' deveria ter sido removido");
+    assert.ok(!html.includes("feature-hint"), "classe feature-hint (HTML e CSS) deveria ter sido removida");
   });
 
   it("arquivo lista a edição anterior com link pra /p/{slug}", () => {

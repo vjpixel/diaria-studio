@@ -40,6 +40,8 @@ import {
   UnresolvedMergeTagError,
   LEGACY_SLUG_CORRECTIONS,
   applyLegacySlugCorrections,
+  rewriteLegacyImageHost,
+  deriveDek,
 } from "../scripts/lib/site-archive-pages.ts";
 import { generateArchivePages, loadPosts, loadKitArchivePosts } from "../scripts/gen-archive-pages.ts";
 import type { UnifiedCachedPost } from "../scripts/lib/shared/edition-cache-reader.ts";
@@ -1086,6 +1088,95 @@ describe("LEGACY_SLUG_CORRECTIONS / applyLegacySlugCorrections (#7280)", () => {
       );
       assert.ok(!sitemap.includes(oldLoc), `slug antigo não deveria sobrar no sitemap: ${oldSlug}`);
     }
+  });
+});
+
+// #7921: "linha fina" (feature-dek/archive-dek na home) não pode repetir o
+// D1 — deriveDek devolve SÓ D2|D3 (diferente de ownEditionDescription/
+// deriveMetaDescription, que carregam D1 + D2|D3 de propósito pra SEO,
+// #6281). buildArchivePageHtml injeta essa dek separada num <meta
+// name="dek"> — ver test/site-home-page-6375.test.ts pro consumo do lado
+// da home (extractPageDek).
+describe("deriveDek (#7921)", () => {
+  it("D2 | D3 (subtitle) — nunca inclui o título/D1", () => {
+    const post = makePost({ title: "Título D1", subtitle: "D2 title | D3 title" });
+    assert.equal(deriveDek(post), "D2 title | D3 title");
+  });
+
+  it("cai pro preview_text quando subtitle está ausente", () => {
+    const post = makePost({ title: "Título D1", subtitle: null, preview_text: "Preview D2|D3" });
+    assert.equal(deriveDek(post), "Preview D2|D3");
+  });
+
+  it("undefined quando não há subtitle nem preview_text — chamador decide o fallback", () => {
+    const post = makePost({ title: "Título D1", subtitle: null, preview_text: null });
+    assert.equal(deriveDek(post), undefined);
+  });
+
+  it("integração: buildArchivePageHtml injeta <meta name=\"dek\"> com SÓ D2|D3, distinto de <meta name=\"description\"> (que tem D1)", () => {
+    const post = makePost({
+      slug: "edicao-com-dek",
+      title: "Título D1 da edição",
+      subtitle: "D2 title | D3 title",
+    });
+    const html = buildArchivePageHtml(post);
+    assert.match(html, /<meta name="dek" content="D2 title \| D3 title">/);
+    assert.match(html, /<meta name="description" content="Título D1 da edição\. D2 title \| D3 title">/);
+  });
+
+  it("integração: sem D2/D3, buildArchivePageHtml NÃO injeta <meta name=\"dek\"> (undefined omite a tag)", () => {
+    const post = makePost({ slug: "edicao-sem-dek", title: "Só D1", subtitle: null, preview_text: null });
+    const html = buildArchivePageHtml(post);
+    assert.ok(!html.includes('name="dek"'), "sem D2/D3 não deveria haver <meta name=\"dek\">");
+  });
+});
+
+// #7911: 5 páginas do acervo importado citavam
+// diar-ia-poll.diaria.workers.dev/img/{key}, host cuja rota /img/ hoje
+// devolve 404 (migrada pro #7657 pra diar.ia.br/img/{key}, mesmo KV).
+// Regressão que reprova se `buildArchivePageHtml` voltar a deixar o host
+// morto passar (ex: alguém regenerar o acervo a partir de um cache antigo).
+describe("rewriteLegacyImageHost (#7911)", () => {
+  it("reescreve o host antigo pro atual, preservando a key", () => {
+    const out = rewriteLegacyImageHost(
+      '<img src="https://diar-ia-poll.diaria.workers.dev/img/img-260512-04-d1-2x1.jpg">',
+    );
+    assert.equal(out, '<img src="https://diar.ia.br/img/img-260512-04-d1-2x1.jpg">');
+  });
+
+  it("reescreve MÚLTIPLAS ocorrências na mesma página", () => {
+    const html =
+      '<img src="https://diar-ia-poll.diaria.workers.dev/img/a.jpg">' +
+      '<img src="https://diar-ia-poll.diaria.workers.dev/img/b.jpg">';
+    const out = rewriteLegacyImageHost(html);
+    assert.equal(out.match(/diar-ia-poll\.diaria\.workers\.dev/g), null, "nenhuma ocorrência do host antigo deveria sobrar");
+    assert.equal((out.match(/https:\/\/diar\.ia\.br\/img\//g) ?? []).length, 2);
+  });
+
+  it("HTML sem o host antigo passa intacto", () => {
+    const html = '<img src="https://diar.ia.br/img/ja-correto.jpg"><p>texto normal</p>';
+    assert.equal(rewriteLegacyImageHost(html), html);
+  });
+
+  it("não mexe em outras rotas do mesmo host antigo (ex: /jogar) — só /img/", () => {
+    const html = '<a href="https://diar-ia-poll.diaria.workers.dev/jogar?edition=260515">votar</a>';
+    assert.equal(rewriteLegacyImageHost(html), html);
+  });
+
+  it("integração: buildArchivePageHtml entrega img já no host atual, mesmo partindo de HTML cacheado com o host antigo", () => {
+    const post = makePost({
+      slug: "edicao-com-host-antigo",
+      content: {
+        free: {
+          web:
+            '<!DOCTYPE html><html><head><style>body{color:#000}</style></head>' +
+            '<body><img src="https://diar-ia-poll.diaria.workers.dev/img/img-260512-04-d1-2x1.jpg"></body></html>',
+        },
+      },
+    });
+    const html = buildArchivePageHtml(post);
+    assert.ok(!html.includes("diar-ia-poll.diaria.workers.dev"), "host antigo não deveria sobrar na página gerada");
+    assert.ok(html.includes("https://diar.ia.br/img/img-260512-04-d1-2x1.jpg"));
   });
 });
 

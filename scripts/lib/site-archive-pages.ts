@@ -118,6 +118,21 @@ function ownEditionDescription(post: ArchivePost): string | undefined {
 }
 
 /**
+ * "Linha fina" da edição — SÓ D2 | D3 (`post.subtitle`/`post.preview_text`),
+ * NUNCA o D1 (#7921). Diferente de `ownEditionDescription` (usada na `<meta
+ * name="description">` de SEO, onde D1 + D2|D3 é intencional — #6281,
+ * description alinhada com `<title>`), esta é a linha VISÍVEL abaixo do
+ * título na home (`feature-dek`/`archive-dek`, `site-home-page.ts`) — ali o
+ * D1 já está no `<h2>`/`<h3>` logo acima, então repeti-lo na linha fina é
+ * puro eco. `undefined` quando a edição não tem D2/D3 (só D1, ou campos
+ * ausentes) — o chamador decide o fallback (home hoje esconde a linha fina
+ * vazia via CSS/condicional, nunca mostra "undefined").
+ */
+export function deriveDek(post: ArchivePost): string | undefined {
+  return post.subtitle?.trim() || post.preview_text?.trim() || undefined;
+}
+
+/**
  * `meta_default_description` NÃO é priorizado (mudança do #6281, ver
  * histórico da issue original) — a premissa de que era sempre `null`
  * (#5101 item 2) só valia pro subconjunto amostrado ali. Medido ao vivo no
@@ -226,6 +241,28 @@ export function applyLegacySlugCorrections(posts: ArchivePost[]): ArchivePost[] 
 }
 
 /**
+ * Host antigo de `/img/{key}` (#7911) — servia as imagens de destaque/É IA?
+ * ANTES do #7657 migrar essa rota pra ser servida também em
+ * `diar.ia.br/img/{key}` (mesmo KV/namespace, `handleImage` em
+ * `workers/poll/src/index.ts`). Hoje `diar-ia-poll.diaria.workers.dev/img/`
+ * responde 404 pra qualquer key — o worker segue vivo (serve `/robots.txt`
+ * etc), só a rota de imagem não é mais servida por ele. 5 páginas do acervo
+ * importado (`content.free.web` cacheado ANTES da migração) ainda citam
+ * esse host.
+ */
+const LEGACY_IMG_HOST_RE = /https:\/\/diar-ia-poll\.diaria\.workers\.dev\/img\//g;
+
+/**
+ * Reescreve toda referência ao host antigo de `/img/{key}` pro host atual
+ * (`diar.ia.br`), preservando a key — troca cega de domínio, sempre segura
+ * (ver `LEGACY_IMG_HOST_RE`). `html` sem nenhuma ocorrência passa intocado
+ * (mesma string, sem alocação extra além do `.replace()` em si).
+ */
+export function rewriteLegacyImageHost(html: string): string {
+  return html.replace(LEGACY_IMG_HOST_RE, `${ARCHIVE_BASE_URL}/img/`);
+}
+
+/**
  * Tier 1 do #7116: remove blocos `<style>` BYTE-IDÊNTICOS repetidos dentro
  * da MESMA página, mantendo só a 1ª ocorrência de cada um — a Beehiiv
  * carimba o mesmo CSS (global do tema + por bloco de conteúdo) várias vezes
@@ -329,6 +366,7 @@ export function buildArchivePageHtml(post: ArchivePost): string {
 
   const title = escHtml(derivePageTitle(post));
   const description = escHtml(deriveMetaDescription(post));
+  const dek = deriveDek(post);
   const canonical = archiveUrlForSlug(post.slug);
 
   let html = rawHtml;
@@ -343,6 +381,18 @@ export function buildArchivePageHtml(post: ArchivePost): string {
   // gerador: corrigir só os arquivos de saída foi desfeito pela primeira
   // regeneração em massa (#7588).
   html = stripArchiveHero(html);
+
+  // #7911 — 5 páginas do acervo importado citavam
+  // `diar-ia-poll.diaria.workers.dev/img/{key}`, host que hoje devolve 404
+  // pra essa rota — o #7657 migrou `/img/{key}` pra ser servida também (e,
+  // pro público, exclusivamente) em `diar.ia.br/img/{key}`, MESMO KV, só o
+  // host mudou. Corrigir só os 5 arquivos gerados foi insuficiente
+  // (mesma lição do #7412 acima): sem corrigir aqui, a próxima regeneração
+  // em massa reintroduz o host morto a partir do HTML cru ainda cacheado.
+  // Substituição cega de domínio é segura — a key depois de `/img/` não
+  // muda, `handleImage` (workers/poll/src/index.ts) serve as duas origens
+  // a partir do mesmo namespace.
+  html = rewriteLegacyImageHost(html);
 
   // Precisa haver <html ...> pra injetar lang + (no fallback abaixo) head —
   // sem essa tag, um .replace() vira no-op silencioso e a página sai sem
@@ -368,6 +418,12 @@ export function buildArchivePageHtml(post: ArchivePost): string {
     `<meta charset="utf-8">` +
     `<title>${title}</title>` +
     `<meta name="description" content="${description}">` +
+    // #7921: "linha fina" pra consumo da HOME (site-home-page.ts,
+    // extractPageDek) — SÓ D2 | D3, distinto de <meta name="description">
+    // acima (que carrega D1 + D2|D3 de propósito, #6281). Omitido quando a
+    // edição não tem D2/D3 (deriveDek devolve undefined) — o HOME trata a
+    // ausência sem quebrar (ver extractPageDek/buildHomeFeed).
+    (dek ? `<meta name="dek" content="${escHtml(dek)}">` : "") +
     `<link rel="canonical" href="${escHtml(canonical)}">`;
 
   if (/<head[^>]*>/i.test(html)) {

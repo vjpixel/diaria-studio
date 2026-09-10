@@ -1,5 +1,5 @@
 /**
- * test/block-worktree-alien-commit-hook-sync.test.ts (#7895)
+ * test/block-worktree-alien-commit-hook-sync.test.ts (#7895, #7903)
  *
  * `test/continuo-7722-worktree-guard.test.ts` só valida conteúdo ESTÁTICO
  * de `.claude/hooks/block-worktree-alien-commit.mjs` (grep de funções/
@@ -17,6 +17,12 @@
  * nunca lança em payload malformado, e bloqueia (emite
  * `hookSpecificOutput.permissionDecision: "deny"`) só quando há de fato um
  * claim conflitante de OUTRA sessão para este mesmo worktree.
+ *
+ * **#7903**: os testes de claim conflitante/divergência de branch abaixo
+ * escrevem no arquivo AUTORITATIVO (`data/sessions/.worktree-claims/
+ * <hash>.json`, via `claimWorktree` de `session-registry.ts`), não mais no
+ * mirror (`data/sessions/*.json`) — a leitura mudou de fonte, os testes
+ * precisam refletir o que o hook de fato lê agora.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -28,10 +34,11 @@ import {
   commandHasGitCommit,
   isGitCommitCommand,
   findConflictingClaimSessionId,
-  getWorktreeListedBranch,
+  readWorktreeClaimRecord,
   getHeadBranch,
   isLinkedWorktree,
 } from "../.claude/hooks/block-worktree-alien-commit.mjs";
+import { claimWorktree } from "../scripts/lib/session-registry.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK_PATH = join(ROOT, ".claude", "hooks", "block-worktree-alien-commit.mjs");
@@ -152,72 +159,71 @@ describe("block-worktree-alien-commit.mjs — funções puras exportadas (#7895)
     assert.doesNotThrow(() => getHeadBranch(ROOT));
   });
 
-  it("getWorktreeListedBranch faz parse correto do formato porcelain", () => {
-    const porcelain = [
-      "worktree /repo/main",
-      "HEAD abc123",
-      "branch refs/heads/master",
-      "",
-      "worktree /repo/.claude/worktrees/agent-x",
-      "HEAD def456",
-      "branch refs/heads/overnight/fix-7895-registrar-hook-worktree-alien-commit",
-      "",
-    ].join("\n");
-    assert.equal(
-      getWorktreeListedBranch("/repo/.claude/worktrees/agent-x", porcelain),
-      "overnight/fix-7895-registrar-hook-worktree-alien-commit",
-    );
-    assert.equal(getWorktreeListedBranch("/repo/nao-existe", porcelain), null);
-  });
-
-  it("findConflictingClaimSessionId: só sinaliza quando OUTRA sessão reivindica o MESMO path, com claim não-expirado", async () => {
-    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  it("readWorktreeClaimRecord/findConflictingClaimSessionId: lêem o arquivo AUTORITATIVO (data/sessions/.worktree-claims/, #7903), não o mirror", async () => {
+    const { mkdtempSync, writeFileSync, rmSync, mkdirSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const tmp = mkdtempSync(join(tmpdir(), "alien-commit-unit-"));
     try {
-      const sessionsDir = join(tmp, "data", "sessions");
-      mkdirSync(sessionsDir, { recursive: true });
       const worktreePath = join(tmp, "worktree-a");
 
-      // sem registros: sem conflito
+      // sem claim nenhuma: sem conflito, sem record
+      assert.equal(findConflictingClaimSessionId(tmp, worktreePath, "me"), null);
+      assert.equal(readWorktreeClaimRecord(tmp, worktreePath), null);
+
+      // claim de OUTRO path: sem conflito neste path
+      claimWorktree(join(tmp, "worktree-b"), "other-session", tmp);
       assert.equal(findConflictingClaimSessionId(tmp, worktreePath, "me"), null);
 
-      // claim de OUTRO path: sem conflito
-      writeFileSync(
-        join(sessionsDir, "other.json"),
-        JSON.stringify({
-          session_id: "other-session",
-          worktree_claim: { path: join(tmp, "worktree-b"), expires_at: Date.now() + 100000 },
-        }),
-      );
-      assert.equal(findConflictingClaimSessionId(tmp, worktreePath, "me"), null);
-
-      // claim do MESMO path, sessão diferente: conflito
-      writeFileSync(
-        join(sessionsDir, "conflict.json"),
-        JSON.stringify({
-          session_id: "alien-session",
-          worktree_claim: { path: worktreePath, expires_at: Date.now() + 100000 },
-        }),
-      );
+      // claim do MESMO path, sessão diferente: conflito — via claimWorktree
+      // real (#7892: chave é o hash do path, não o sessionId chamador)
+      claimWorktree(worktreePath, "alien-session", tmp);
       assert.equal(findConflictingClaimSessionId(tmp, worktreePath, "me"), "alien-session");
 
       // a PRÓPRIA sessão reivindicando: nunca é conflito consigo mesma
       assert.equal(findConflictingClaimSessionId(tmp, worktreePath, "alien-session"), null);
 
-      // claim expirado: ignorado
-      writeFileSync(
-        join(sessionsDir, "conflict.json"),
-        JSON.stringify({
-          session_id: "alien-session",
-          worktree_claim: { path: worktreePath, expires_at: Date.now() - 1000 },
-        }),
+      // claim expirado: ignorado (corrompe o TTL direto no disco, mesmo
+      // padrão de test/continuo-7722-worktree-guard.test.ts)
+      const record = readWorktreeClaimRecord(tmp, worktreePath);
+      assert.equal(record.sessionId, "alien-session");
+      // 2 claims coexistem no diretório (worktree-a e worktree-b) — localiza
+      // o arquivo pelo CONTEÚDO (path), não pelo primeiro da listagem.
+      const { readdirSync, readFileSync: readFile } = await import("node:fs");
+      const claimDir = join(tmp, "data", "sessions", ".worktree-claims");
+      const claimFileName = readdirSync(claimDir).find(
+        (name) => JSON.parse(readFile(join(claimDir, name), "utf8")).path === worktreePath,
       );
+      assert.ok(claimFileName, "esperava achar o arquivo de claim de worktreePath");
+      const claimFile = join(claimDir, claimFileName);
+      const raw = JSON.parse(readFile(claimFile, "utf8"));
+      raw.expires_at = Date.now() - 1000;
+      writeFileSync(claimFile, JSON.stringify(raw));
       assert.equal(findConflictingClaimSessionId(tmp, worktreePath, "me"), null);
+      assert.equal(readWorktreeClaimRecord(tmp, worktreePath), null);
 
       // registro malformado: fail-open, não lança
-      writeFileSync(join(sessionsDir, "bad.json"), "{not json");
+      writeFileSync(claimFile, "{not json");
       assert.doesNotThrow(() => findConflictingClaimSessionId(tmp, worktreePath, "me"));
+      assert.doesNotThrow(() => readWorktreeClaimRecord(tmp, worktreePath));
+
+      // diretório .worktree-claims/ inexistente: fail-open (mkdirSync nunca chamado)
+      const tmp2 = join(tmp, "sem-claims-nenhuma");
+      mkdirSync(tmp2, { recursive: true });
+      assert.equal(readWorktreeClaimRecord(tmp2, join(tmp2, "wt")), null);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("readWorktreeClaimRecord expõe o campo branch gravado por claimWorktree (#7903)", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const tmp = mkdtempSync(join(tmpdir(), "alien-commit-branch-"));
+    try {
+      const worktreePath = join(tmp, "wt");
+      claimWorktree(worktreePath, "session-a", tmp, "fix/7903-example");
+      const record = readWorktreeClaimRecord(tmp, worktreePath);
+      assert.equal(record.branch, "fix/7903-example");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -240,7 +246,7 @@ describe("block-worktree-alien-commit.mjs — integração com um LINKED WORKTRE
   // — pra confirmar que `checkoutRoot`/`repoRoot` resolvem corretamente daí,
   // não do `import.meta.url` do arquivo (que aponta pro checkout deste
   // teste, não pro worktree temporário).
-  it("detecta conflito de claim quando o worktree_claim aponta pro worktree TEMPORÁRIO (não pro checkout do hook)", async () => {
+  it("detecta conflito de claim quando o claim autoritativo aponta pro worktree TEMPORÁRIO (não pro checkout do hook)", async () => {
     const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const tmp = mkdtempSync(join(tmpdir(), "alien-commit-worktree-"));
@@ -259,16 +265,10 @@ describe("block-worktree-alien-commit.mjs — integração com um LINKED WORKTRE
       git(["branch", "feature-branch"], mainRepo);
       git(["worktree", "add", "-q", linkedWorktree, "feature-branch"], mainRepo);
 
-      // data/sessions/ vive no checkout PRINCIPAL (mainRepo), não no worktree
-      const sessionsDir = join(mainRepo, "data", "sessions");
-      mkdirSync(sessionsDir, { recursive: true });
-      writeFileSync(
-        join(sessionsDir, "alien.json"),
-        JSON.stringify({
-          session_id: "alien-session-id",
-          worktree_claim: { path: linkedWorktree, expires_at: Date.now() + 3_600_000 },
-        }),
-      );
+      // data/sessions/ vive no checkout PRINCIPAL (mainRepo), não no
+      // worktree. #7903: claim gravado via `claimWorktree` real, no arquivo
+      // AUTORITATIVO (`.worktree-claims/`), não no mirror antigo.
+      claimWorktree(linkedWorktree, "alien-session-id", mainRepo);
 
       const { stdout } = runHook({
         tool_name: "Bash",
@@ -305,20 +305,93 @@ describe("block-worktree-alien-commit.mjs — integração com um LINKED WORKTRE
       git(["branch", "feature-branch"], mainRepo);
       git(["worktree", "add", "-q", linkedWorktree, "feature-branch"], mainRepo);
 
-      const sessionsDir = join(mainRepo, "data", "sessions");
-      mkdirSync(sessionsDir, { recursive: true });
-      writeFileSync(
-        join(sessionsDir, "own.json"),
-        JSON.stringify({
-          session_id: "my-session-id",
-          worktree_claim: { path: linkedWorktree, expires_at: Date.now() + 3_600_000 },
-        }),
-      );
+      claimWorktree(linkedWorktree, "my-session-id", mainRepo, "feature-branch");
 
       const { stdout } = runHook({
         tool_name: "Bash",
         tool_input: { command: 'git commit -m "test"' },
         session_id: "my-session-id", // mesma sessão do claim
+        cwd: linkedWorktree,
+      });
+
+      assert.equal(stdout, "");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("#7903: bloqueia por BLOCK_REASON_BRANCH_DIVERGE quando a branch foi trocada por baixo depois do claim", async () => {
+    // Cenário que a checagem antiga (git worktree list --porcelain vs. git
+    // rev-parse HEAD do MESMO worktree) nunca conseguia detectar, por
+    // construção — as duas fontes vinham do mesmo HEAD. Agora comparamos
+    // contra o `branch` gravado no CLAIM, que reflete o estado no momento
+    // em que a sessão reivindicou o worktree, não o estado atual.
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const tmp = mkdtempSync(join(tmpdir(), "alien-commit-branch-diverge-"));
+    const mainRepo = join(tmp, "main");
+    const linkedWorktree = join(tmp, "wt");
+    try {
+      mkdirSync(mainRepo, { recursive: true });
+      const git = (args: string[], cwd: string) =>
+        execFileSync("git", args, { cwd, encoding: "utf8" });
+      git(["init", "-q"], mainRepo);
+      git(["config", "user.email", "test@example.com"], mainRepo);
+      git(["config", "user.name", "Test"], mainRepo);
+      writeFileSync(join(mainRepo, "README.md"), "x");
+      git(["add", "."], mainRepo);
+      git(["commit", "-q", "-m", "init"], mainRepo);
+      git(["branch", "feature-branch"], mainRepo);
+      git(["worktree", "add", "-q", linkedWorktree, "feature-branch"], mainRepo);
+
+      // A mesma sessão reivindica com a branch original...
+      claimWorktree(linkedWorktree, "my-session-id", mainRepo, "feature-branch");
+      // ...mas outra sessão troca a branch por baixo (mesmo cenário do
+      // incidente de origem do #7722 item 4).
+      git(["branch", "outra-branch"], mainRepo);
+      git(["checkout", "-q", "outra-branch"], linkedWorktree);
+
+      const { stdout } = runHook({
+        tool_name: "Bash",
+        tool_input: { command: 'git commit -m "test"' },
+        session_id: "my-session-id", // mesma sessão do claim — só a branch divergiu
+        cwd: linkedWorktree,
+      });
+
+      assert.ok(stdout.length > 0, "esperava bloqueio por divergência de branch");
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.hookSpecificOutput?.permissionDecision, "deny");
+      assert.match(parsed.hookSpecificOutput?.permissionDecisionReason ?? "", /diverge/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("#7903: NÃO bloqueia por branch quando a branch atual bate com a branch do claim", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const tmp = mkdtempSync(join(tmpdir(), "alien-commit-branch-ok-"));
+    const mainRepo = join(tmp, "main");
+    const linkedWorktree = join(tmp, "wt");
+    try {
+      mkdirSync(mainRepo, { recursive: true });
+      const git = (args: string[], cwd: string) =>
+        execFileSync("git", args, { cwd, encoding: "utf8" });
+      git(["init", "-q"], mainRepo);
+      git(["config", "user.email", "test@example.com"], mainRepo);
+      git(["config", "user.name", "Test"], mainRepo);
+      writeFileSync(join(mainRepo, "README.md"), "x");
+      git(["add", "."], mainRepo);
+      git(["commit", "-q", "-m", "init"], mainRepo);
+      git(["branch", "feature-branch"], mainRepo);
+      git(["worktree", "add", "-q", linkedWorktree, "feature-branch"], mainRepo);
+
+      claimWorktree(linkedWorktree, "my-session-id", mainRepo, "feature-branch");
+
+      const { stdout } = runHook({
+        tool_name: "Bash",
+        tool_input: { command: 'git commit -m "test"' },
+        session_id: "my-session-id",
         cwd: linkedWorktree,
       });
 

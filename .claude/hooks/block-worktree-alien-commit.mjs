@@ -8,9 +8,10 @@
 // `fix/7707-...` checked out) — a sessão DONA do worktree, sem saber disso,
 // segue trabalhando e commita ali. Este guard barra o `git commit` quando
 // há evidência de que outra sessão reivindicou este mesmo worktree path
-// (`data/sessions/*.json` → `worktree_claim.path`) por um `session_id`
+// (`data/sessions/.worktree-claims/<hash>.json`, #7892/#7903 — arquivo
+// autoritativo indexado por path, não o mirror) por um `session_id`
 // diferente do que está commitando, ou quando o branch atual do HEAD não
-// bate com o que `git worktree list --porcelain` reporta para este path.
+// bate com o `branch` gravado nesse mesmo claim no momento em que foi feito.
 //
 // #7895 (achado da Fase 1.5, rodada overnight 260909-260910): a versão
 // entregue no #7810 nunca lia o payload `PreToolUse` — rodava sua lógica
@@ -24,6 +25,23 @@
 // substituindo o `process.exit(1)`/`console.error` da versão anterior, que
 // não é o contrato que o harness lê para bloquear um `PreToolUse`.
 //
+// #7903 (achado do review consolidado diário, PR #7899): a versão acima
+// tinha 2 defeitos que a deixavam praticamente inerte. (1) A checagem de
+// claim lia só o MIRROR (`data/sessions/*.json` → `worktree_claim`), nunca
+// o arquivo indexado por path (`data/sessions/.worktree-claims/<hash>.json`)
+// que o #7892 tornou a fonte de verdade — o mirror é last-writer-wins POR
+// SESSÃO (uma sessão que reivindica vários worktrees sobrescreve o próprio
+// mirror a cada claim novo), então uma claim antiga continuava viva no
+// arquivo autoritativo sem o mirror refletir isso: falso-negativo. Corrigido
+// lendo `worktreeClaimFilePath` diretamente (cópia self-contained da mesma
+// chave de `session-registry.ts`). (2) `BLOCK_REASON_BRANCH_DIVERGE` nunca
+// disparava — comparava `git rev-parse --abbrev-ref HEAD` deste worktree com
+// a branch que `git worktree list --porcelain` reporta PARA O MESMO path:
+// as duas vêm do mesmo HEAD, então são sempre iguais por construção, código
+// morto que parecia proteção. Corrigido comparando contra o `branch`
+// gravado NO MOMENTO DO CLAIM (`claimWorktree` ganhou esse parâmetro) — só
+// isso detecta de fato uma troca de branch por baixo depois do claim.
+//
 // Self-contained (nenhum import de `scripts/*.ts`) — mesma razão documentada
 // nos hooks irmãos: import estático de `.ts` quebra o hook inteiro, em
 // silêncio, num Node sem type-stripping nativo.
@@ -32,8 +50,9 @@
 // no payload, `data/sessions/` ausente, JSON corrompido), nunca deve travar
 // um `git commit` legítimo.
 
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -115,53 +134,89 @@ export function sessionsDir(repoRoot) {
 }
 
 /**
- * Varre `data/sessions/*.json` procurando um `worktree_claim.path` (formato
- * gravado por `session-registry.ts` `claimWorktree`, campo top-level
- * `session_id`) que aponte para ESTE worktree (`checkoutRoot`) mas
- * pertença a um `session_id` DIFERENTE do que está tentando commitar.
- * Devolve o `session_id` reivindicante, ou `null` (sem conflito, ou estado
- * ambíguo — fail-open).
+ * Cópia self-contained de `worktreeClaimKey`/`worktreeClaimFilePath`
+ * (`scripts/lib/session-registry.ts`, #7892) — a chave do arquivo
+ * autoritativo de claim é um hash estável do path normalizado. Duplicado
+ * (não importado) pela mesma razão documentada no topo do arquivo: hooks
+ * self-contained não importam `.ts`.
  */
-export function findConflictingClaimSessionId(repoRoot, checkoutRoot, callerSessionId, now = Date.now()) {
+function worktreeClaimKey(path) {
+  const normalized = path.replaceAll("\\", "/").replace(/\/+$/, "");
+  return createHash("sha256").update(normalized).digest("hex").slice(0, 20);
+}
+
+function worktreeClaimFilePath(repoRoot, path) {
+  return join(repoRoot, "data", "sessions", ".worktree-claims", `${worktreeClaimKey(path)}.json`);
+}
+
+/**
+ * Lê o registro autoritativo de claim (`data/sessions/.worktree-claims/
+ * <hash>.json`, gravado por `session-registry.ts` `claimWorktree`) para
+ * `checkoutRoot`. Devolve o record parseado (`{ path, sessionId, branch,
+ * claimed_at, expires_at }`) quando o arquivo existe e está vivo (`now` <
+ * `expires_at`), ou `null` — arquivo ausente, malformado, ou claim expirada
+ * (fail-open em todos os casos ambíguos).
+ *
+ * **#7903**: substitui a varredura de `data/sessions/*.json` (mirror) que
+ * este hook usava antes — o mirror é last-writer-wins POR SESSÃO (uma
+ * sessão que reivindica vários worktrees em sequência sobrescreve o próprio
+ * mirror a cada claim novo), então uma claim antiga podia seguir viva no
+ * arquivo autoritativo sem o mirror refletir isso. O arquivo indexado por
+ * path é a fonte de verdade desde o #7892; ler só ele fecha esse
+ * falso-negativo.
+ */
+export function readWorktreeClaimRecord(repoRoot, checkoutRoot, now = Date.now()) {
+  const claimFile = worktreeClaimFilePath(repoRoot, resolvePath(checkoutRoot));
+  let record;
+  try {
+    if (!existsSync(claimFile)) return null;
+    record = JSON.parse(readFileSync(claimFile, "utf8"));
+  } catch {
+    return null;
+  }
+  if (!record || typeof record !== "object") return null;
+  const expiresAt = record.expires_at ?? record.expiresAt;
+  if (typeof expiresAt === "number" && Number.isFinite(expiresAt) && expiresAt <= now) return null; // claim expirada
+  return record;
+}
+
+/**
+ * `session_id` de quem reivindica um worktree via `record` (já lido —
+ * `readWorktreeClaimRecord`), quando é uma sessão DIFERENTE de
+ * `callerSessionId`. `null` — sem claim viva, claim é da própria sessão, ou
+ * estado ambíguo (fail-open). Variante que não faz I/O — usada pelo caminho
+ * de runtime (que já leu `record` uma vez pra reusar no check de branch
+ * também); `findConflictingClaimSessionId` abaixo é o wrapper que lê +
+ * checa numa chamada só, mantido para os chamadores/testes existentes.
+ */
+export function findConflictingClaimSessionIdFromRecord(record, callerSessionId) {
   // Self-review (#7899 finding 8): sem `callerSessionId` não dá pra distinguir
   // "é a própria sessão" de "é outra sessão" — nunca sinalizar conflito nesse
   // estado (fail-open), senão o claim da PRÓPRIA sessão (bem provável de
   // existir, dado que o convencional é reivindicar o worktree antes de
   // trabalhar nele) seria lido como alheio.
   if (typeof callerSessionId !== "string" || callerSessionId === "") return null;
-  const dir = sessionsDir(repoRoot);
-  let entries;
-  try {
-    if (!existsSync(dir)) return null;
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-  const wantedPath = resolvePath(checkoutRoot);
-  for (const entry of entries) {
-    if (!entry.isFile?.() || !entry.name.endsWith(".json") || entry.name.startsWith(".")) continue;
-    let record;
-    try {
-      record = JSON.parse(readFileSync(join(dir, entry.name), "utf8"));
-    } catch {
-      continue;
-    }
-    if (!record || typeof record !== "object") continue;
-    const claim = record.worktree_claim;
-    if (!claim || typeof claim.path !== "string" || claim.path === "") continue;
-    if (resolvePath(claim.path) !== wantedPath) continue;
-    const expiresAt = claim.expires_at ?? claim.expiresAt;
-    if (typeof expiresAt === "number" && Number.isFinite(expiresAt) && expiresAt <= now) continue; // claim expirado
-    // Self-review (#7899 finding 7): mesma cadeia de fallback de
-    // `session-registry.ts` (`claimWorktree`: `other.session_id ?? other.id
-    // ?? other.sessionId`) — um record que só carrega `id` não pode ser
-    // silenciosamente pulado (falso-negativo).
-    const recordSessionId = record.session_id ?? record.id ?? record.sessionId ?? claim.sessionId;
-    if (typeof recordSessionId !== "string" || recordSessionId === "") continue;
-    if (recordSessionId === callerSessionId) continue; // é a própria sessão
-    return recordSessionId;
-  }
-  return null;
+  if (!record) return null;
+  // Mesma cadeia de fallback de `session-registry.ts` (`claimWorktree`:
+  // `other.session_id ?? other.id ?? other.sessionId`) — um record que só
+  // carrega `id` não pode ser silenciosamente pulado (falso-negativo,
+  // #7899 finding 7, preservado na migração pro arquivo autoritativo).
+  const recordSessionId = record.session_id ?? record.id ?? record.sessionId;
+  if (typeof recordSessionId !== "string" || recordSessionId === "") return null;
+  if (recordSessionId === callerSessionId) return null; // é a própria sessão
+  return recordSessionId;
+}
+
+/**
+ * `session_id` de quem reivindica `checkoutRoot` HOJE via o registro
+ * autoritativo (`readWorktreeClaimRecord`), quando é uma sessão DIFERENTE
+ * de `callerSessionId`. `null` — sem claim viva, claim é da própria sessão,
+ * ou estado ambíguo (fail-open). Lê + checa numa chamada só; ver
+ * `findConflictingClaimSessionIdFromRecord` para a variante sem I/O.
+ */
+export function findConflictingClaimSessionId(repoRoot, checkoutRoot, callerSessionId, now = Date.now()) {
+  const record = readWorktreeClaimRecord(repoRoot, checkoutRoot, now);
+  return findConflictingClaimSessionIdFromRecord(record, callerSessionId);
 }
 
 /** Branch do HEAD atual do worktree (`cwd: checkoutRoot`), `null` em erro
@@ -179,42 +234,20 @@ export function getHeadBranch(checkoutRoot) {
   }
 }
 
-/** Branch que `git worktree list --porcelain` reporta para `checkoutRoot`
- * (parser do formato porcelain: blocos `worktree <path>` / `branch
- * refs/heads/<nome>` / `HEAD ...`, separados por linha em branco). `null`
- * quando não encontra o worktree na lista ou em erro. */
-export function getWorktreeListedBranch(checkoutRoot, gitOutput) {
-  const wantedPath = resolvePath(checkoutRoot);
-  const lines = gitOutput.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    if (!lines[i].startsWith("worktree ")) continue;
-    const wtPath = lines[i].slice("worktree ".length).trim();
-    if (resolvePath(wtPath) !== wantedPath) continue;
-    for (let j = i + 1; j < lines.length; j++) {
-      if (lines[j].startsWith("branch ")) {
-        return lines[j].slice("branch ".length).trim().replace(/^refs\/heads\//, "");
-      }
-      if (lines[j].startsWith("worktree ") || lines[j] === "") break;
-    }
-    return null; // worktree achado, sem linha `branch` (detached)
-  }
-  return null;
-}
-
 export const BLOCK_REASON_CLAIM =
   "`git commit` bloqueado pelo guard mecânico #7722 item 4: este worktree tem um claim ativo " +
-  "(`data/sessions/*.json` → `worktree_claim.path`) de uma sessão DIFERENTE da que está tentando " +
+  "(`data/sessions/.worktree-claims/<hash>.json`, #7892) de uma sessão DIFERENTE da que está tentando " +
   "commitar agora. Provável cenário: outra sessão adotou/mexeu neste worktree e trocou a branch por " +
   "baixo — commitar aqui pode ir parar num branch/PR que não é o seu. Releia os registros em " +
-  "`data/sessions/*.json` (campo `worktree_claim.path`) pra identificar a sessão reivindicante " +
+  "`data/sessions/.worktree-claims/` pra identificar a sessão reivindicante " +
   "antes de prosseguir — `session-registry.ts is-claimed` é sobre claims de ISSUE, não de worktree, " +
   "não serve pra confirmar este caso (#7899 finding 4).";
 
 export const BLOCK_REASON_BRANCH_DIVERGE =
-  "`git commit` bloqueado pelo guard mecânico #7722 item 4: a branch do HEAD deste worktree diverge " +
-  "da branch que `git worktree list` registra para este path — sinal de que outra sessão trocou a " +
-  "branch por baixo deste worktree entre o dispatch e agora. Confirme com `git status`/`git branch` " +
-  "antes de commitar.";
+  "`git commit` bloqueado pelo guard mecânico #7722 item 4 (#7903): a branch do HEAD deste worktree " +
+  "diverge da branch registrada NO MOMENTO DO CLAIM (`data/sessions/.worktree-claims/<hash>.json` → " +
+  "`branch`) — sinal de que a branch foi trocada por baixo deste worktree entre o claim e agora. " +
+  "Confirme com `git status`/`git branch` antes de commitar.";
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (
@@ -281,7 +314,10 @@ if (
       }
 
       const callerSessionId = payload.session_id;
-      const conflictingSessionId = findConflictingClaimSessionId(repoRoot, checkoutRoot, callerSessionId);
+      // Lido uma vez, reusado pelos dois checks abaixo (claim conflitante +
+      // divergência de branch) — evita 2 leituras do mesmo arquivo.
+      const claimRecord = readWorktreeClaimRecord(repoRoot, checkoutRoot);
+      const conflictingSessionId = findConflictingClaimSessionIdFromRecord(claimRecord, callerSessionId);
       if (conflictingSessionId) {
         process.stdout.write(
           JSON.stringify({
@@ -295,28 +331,23 @@ if (
         return;
       }
 
-      const branchNow = getHeadBranch(checkoutRoot);
-      if (branchNow) {
-        try {
-          const gitOutput = execFileSync("git", ["worktree", "list", "--porcelain"], {
-            cwd: checkoutRoot,
-            encoding: "utf8",
-            timeout: 1000,
-          }).trim();
-          const listedBranch = getWorktreeListedBranch(checkoutRoot, gitOutput);
-          if (listedBranch && listedBranch !== branchNow) {
-            process.stdout.write(
-              JSON.stringify({
-                hookSpecificOutput: {
-                  hookEventName: "PreToolUse",
-                  permissionDecision: "deny",
-                  permissionDecisionReason: BLOCK_REASON_BRANCH_DIVERGE,
-                },
-              }),
-            );
-          }
-        } catch {
-          // fail-open: sem `git worktree list` não dá pra comparar
+      // #7903: compara contra a branch gravada NO MOMENTO DO CLAIM (não
+      // mais contra `git worktree list --porcelain` — ambos os dois lados
+      // dessa comparação vinham do MESMO HEAD deste worktree, então nunca
+      // podiam divergir por construção, código morto que parecia proteção).
+      const claimedBranch = typeof claimRecord?.branch === "string" ? claimRecord.branch : null;
+      if (claimedBranch) {
+        const branchNow = getHeadBranch(checkoutRoot);
+        if (branchNow && branchNow !== claimedBranch) {
+          process.stdout.write(
+            JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "deny",
+                permissionDecisionReason: BLOCK_REASON_BRANCH_DIVERGE,
+              },
+            }),
+          );
         }
       }
     } catch {

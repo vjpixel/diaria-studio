@@ -25,13 +25,35 @@ const EMAIL_RE = /[^\s"'<>@,;:()[\]{}]+@[^\s"'<>@,;:()[\]{}]+\.[A-Za-z]{2,}/g;
  *  eco de erro pelo mesmo caminho do e-mail. */
 const PHONE_RE = /(?:\+?\d[\d\s().-]{7,}\d)/g;
 
+/** Escapa metacaracteres de regex — usado para transformar um valor
+ *  conhecido (ex: nome do lead) num literal seguro dentro de um regex. */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * Remove PII reconhecível de um texto vindo de terceiro, preservando o
  * suficiente pra diagnosticar (código de erro, campo, mensagem).
  *
- * @param text  Corpo de resposta de Kit/Graph, cru.
- * @returns     Mesmo texto com e-mails e telefones substituídos por marcador.
+ * E-mail e telefone têm formato reconhecível por regex; nome não tem —
+ * por isso `knownNames` (#7897) aceita os valores que O PRÓPRIO CHAMADOR já
+ * conhece (ex: `contact.name` resolvido do lead) e os redige por match
+ * literal, case-insensitive. Sem essa via, um nome ecoado por Kit/Graph num
+ * corpo de erro passaria pelas duas regexes abaixo sem ser tocado.
+ *
+ * @param text        Corpo de resposta de Kit/Graph, cru.
+ * @param knownNames  Valores adicionais (tipicamente o nome do lead) a
+ *                     redigir por match literal, caso apareçam no texto.
+ * @returns           Mesmo texto com e-mails, telefones e `knownNames`
+ *                     substituídos por marcador.
  */
-export function redactPii(text: string): string {
-  return text.replace(EMAIL_RE, "[email redigido]").replace(PHONE_RE, "[telefone redigido]");
+export function redactPii(text: string, knownNames: readonly string[] = []): string {
+  let redacted = text.replace(EMAIL_RE, "[email redigido]").replace(PHONE_RE, "[telefone redigido]");
+  for (const name of knownNames) {
+    const trimmed = name.trim();
+    if (!trimmed) continue;
+    const nameRe = new RegExp(escapeRegExp(trimmed), "gi");
+    redacted = redacted.replace(nameRe, "[nome redigido]");
+  }
+  return redacted;
 }

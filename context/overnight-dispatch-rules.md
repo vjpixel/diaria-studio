@@ -468,6 +468,26 @@ havia ponto de interceptação mecânico (é texto livre, não uma chamada de
 ferramenta) — só o registro explícito no ponto de uso, aqui e no CLAUDE.md,
 reduz a chance de recorrência.
 
+**Mesma regra vale ao responder uma mensagem ESPONTÂNEA do editor no meio da
+rodada, não só ao terminar uma unidade de trabalho (#7886).** Uma pergunta de
+status do editor ("como está?") é legítima de responder a qualquer momento —
+o que NÃO é legítimo é a resposta terminar oferecendo continuar como se fosse
+uma decisão em aberto. **Antes de formular a resposta, reconsultar
+`plan.json` → `loop_estendido`/`batch_approval`**: se `loop_estendido: true`
+e/ou `batch_approval` já registra aprovação, "quer que eu retome despachando
+mais issues, ou prefere que eu pare por aqui?" já tem resposta gravada — não
+é pergunta nova, é a mesma pergunta pós-sucesso da regra acima, só que
+disparada por uma interrupção do editor em vez de pelo fim de uma unidade.
+Responder com "Sigo despachando X e Y" (informar, retomando de fato), nunca
+com uma pergunta que reabre algo já aprovado no briefing. Incidente de
+referência (rodada 260909-260910): o coordenador respondeu a um `como está?`
+espontâneo terminando com exatamente essa pergunta, apesar de
+`loop_estendido: true` e `batch_approval: "editor_approved"` já gravados — o
+editor teve que apontar o problema em vez de simplesmente responder "sim".
+Sem ponto de interceptação mecânico possível aqui também (é texto livre em
+resposta a uma mensagem ad-hoc, não uma chamada de `AskUserQuestion`) — o
+registro explícito é a única mitigação disponível.
+
 ## 18. `session-registry.ts claim-issue`/`is-claimed` — nunca em comando encadeado (#5751)
 
 **Escopo diferente dos itens 1-14**: como os itens 15-17, este é critério do

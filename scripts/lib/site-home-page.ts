@@ -152,6 +152,10 @@ export const ARCHIVE_CARD_LIMIT = 6;
 export interface HomeFeedEntry {
   slug: string;
   title: string;
+  /** "Linha fina" exibida abaixo do título (`feature-dek`/`archive-dek`) —
+   *  SÓ D2 | D3, nunca o D1 (#7921; `extractPageDek`, não `extractPageMeta`
+   *  — essa carrega o D1 também, de propósito, mas só pra `<meta
+   *  name="description">` de SEO). `""` quando a edição não tem D2/D3. */
   description: string;
   url: string;
   date: string | null;
@@ -215,6 +219,20 @@ export function extractPageMeta(html: string): { title: string; description: str
     title: titleMatch ? stripHtmlBasic(titleMatch[1]) : "",
     description: descMatch ? stripHtmlBasic(descMatch[1]) : "",
   };
+}
+
+/**
+ * Lê `<meta name="dek">` (#7921) — a "linha fina" SÓ D2 | D3, sem o D1, que
+ * `buildArchivePageHtml` injeta separado de `<meta name="description">`
+ * (essa carrega D1 + D2|D3 de propósito, #6281 — SEO, alinhada ao
+ * `<title>`). A home usava a description por engano e herdava o D1
+ * duplicado — o `<h2>`/`<h3>` do card já mostra o D1 logo acima da linha
+ * fina. `""` quando a tag não existe (edição sem D2/D3, ou HTML pré-#7921
+ * ainda não regenerado) — mesma degradação de `extractPageMeta`.
+ */
+export function extractPageDek(html: string): string {
+  const dekMatch = html.match(/<meta\s+name=["']dek["']\s+content=["']([^"']*)["']/i);
+  return dekMatch ? stripHtmlBasic(dekMatch[1]) : "";
 }
 
 /**
@@ -460,11 +478,18 @@ export function buildHomeFeed(
       console.warn(`site-home-page: página ausente pra slug "${slug}" — pulando do feed da home`);
       continue;
     }
-    const { title, description } = extractPageMeta(html);
+    const { title } = extractPageMeta(html);
     if (!title) {
       console.warn(`site-home-page: <title> vazio/ilegível pra slug "${slug}" — pulando do feed da home`);
       continue;
     }
+    // #7921: linha fina do card/feature = SÓ D2 | D3 (`<meta name="dek">`,
+    // ver deriveDek/buildArchivePageHtml), nunca a `<meta
+    // name="description">` de SEO (D1 + D2|D3 de propósito, #6281) — usar
+    // a description aqui repetia o D1, que já está no `<h2>`/`<h3>` do
+    // card. "" (página gerada antes do #7921, sem a tag ainda) degrada pra
+    // linha fina vazia — nunca pula a entrada nem mostra "undefined".
+    const description = extractPageDek(html);
     const image = extractHeroImage(html);
     if (image) warnIfEiaHostNotRewritten(slug, image);
     if (!image) {
@@ -834,7 +859,6 @@ export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
       <p class="feature-dek">${escHtml(feature.description)}</p>
       <div class="feature-actions">
         <a class="btn btn-ink" href="${escHtml(feature.url)}">Ler edição</a>
-        <span class="feature-hint">ou pelo email →</span>
       </div>`
     : `<p class="feature-dek">Nenhuma edição publicada ainda.</p>`;
 
@@ -1007,7 +1031,6 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .feature-title:hover { color: var(--teal-deep); }
 .feature-dek { font-family: Georgia, serif; font-size: 18px; line-height: 1.45; color: var(--ink-soft); font-style: italic; margin-top: 20px; max-width: 62ch; }
 .feature-actions { display: flex; align-items: center; gap: 14px; margin-top: 28px; flex-wrap: wrap; }
-.feature-hint { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
 .feature-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center; }
 .feature-media { display: block; }
 .feature-media img { display: block; width: 100%; height: auto; border-radius: ${CARD_RADIUS}; }
