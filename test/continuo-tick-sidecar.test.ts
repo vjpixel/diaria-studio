@@ -57,6 +57,18 @@ describe("parseAgentLogLine", () => {
     assert.equal(event?.at, "2026-09-08T09:51:26.124Z");
   });
 
+  it("parseia uma linha 'tool X failed' (outcome failed, com bracket)", () => {
+    const line =
+      '2026-09-09 18:58:45,199 INFO [cron_5d791ef6fc2c_20260909_185000] agent.tool_executor: tool read_file failed (0.06s): {"error": "File not found"}';
+    const event = parseAgentLogLine(line);
+    assert.ok(event);
+    assert.equal(event?.sessionId, "cron_5d791ef6fc2c_20260909_185000");
+    assert.equal(event?.tool, "read_file");
+    assert.equal(event?.outcome, "failed");
+    assert.equal(event?.durationS, 0.06);
+    assert.equal(event?.sizeChars, null);
+  });
+
   it("devolve null pra linha sem bracket de sessão — nunca inventa sessionId", () => {
     const line =
       '2026-09-09 18:58:45,199 INFO agent.tool_executor: tool read_file failed (0.06s): {"error": "File not found"}';

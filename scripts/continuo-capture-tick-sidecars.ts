@@ -34,7 +34,15 @@
  * sidecar (ou com uma falha de leitura) é quem chama, sem confundir
  * "não consegui capturar" com um veredito de alarme.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
@@ -85,6 +93,23 @@ function readAllToolCallEvents(logFiles: readonly string[]): ToolCallEvent[] {
   return events;
 }
 
+/**
+ * Escreve o sidecar de forma atômica: grava num arquivo temporário no MESMO
+ * diretório e só então `renameSync` pro nome final (`renameSync` é atômico
+ * em POSIX — o kernel troca a entrada do diretório de uma vez, nunca deixa
+ * um estado parcial visível). Sem isso, um `writeFileSync` direto no nome
+ * final deixa o `.json` truncado/inválido se o processo for morto no meio
+ * da escrita (timeout do cron/SIGKILL) — e como `listAlreadyCaptured()` só
+ * checa existência do nome, o arquivo corrompido marcaria a sessão como
+ * "já capturada" pra sempre (achado do self-review do #7889).
+ */
+function writeSidecarAtomically(sidecarDir: string, sessionId: string, contents: string): void {
+  const finalPath = join(sidecarDir, sidecarFileName(sessionId));
+  const tmpPath = join(sidecarDir, `.${sidecarFileName(sessionId)}.tmp-${process.pid}`);
+  writeFileSync(tmpPath, contents, "utf8");
+  renameSync(tmpPath, finalPath);
+}
+
 function listAlreadyCaptured(sidecarDir: string): Set<string> {
   if (!existsSync(sidecarDir)) return new Set();
   const captured = new Set<string>();
@@ -123,8 +148,7 @@ function main(): void {
   for (const sessionId of toCapture) {
     const events = sessionsWithEvents.get(sessionId) ?? [];
     const sidecar = buildTickSidecar(sessionId, events, nowIso);
-    const path = join(sidecarDir, sidecarFileName(sessionId));
-    writeFileSync(path, `${JSON.stringify(sidecar, null, 2)}\n`, "utf8");
+    writeSidecarAtomically(sidecarDir, sessionId, `${JSON.stringify(sidecar, null, 2)}\n`);
   }
 
   // Prune (item 2/3 da #7814: retido por semanas, não indefinidamente).

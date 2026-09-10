@@ -90,6 +90,52 @@ describe("continuo-capture-tick-sidecars CLI", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("sidecar corrompido pré-existente (write não-atômico interrompido): fica intocado, nunca recapturado nem podado (#7889)", () => {
+    // Cenário exato do finding P2 do self-review: um `.json` truncado/inválido
+    // já presente em `sidecar-dir` — simula o que um `writeFileSync` direto
+    // (não-atômico) deixaria pra trás se o processo morresse no meio da
+    // escrita. `renameSync` corrige a ESCRITA daqui pra frente, mas o teste
+    // confirma que, SE um arquivo assim existir por algum motivo residual, o
+    // fluxo de captura/poda não quebra nem re-processa a sessão.
+    const dir = mkdtempSync(join(tmpdir(), "continuo-sidecar-test-corrupt-"));
+    const logsDir = join(dir, "logs");
+    const sidecarDir = join(dir, "sidecars");
+    mkdirSync(logsDir, { recursive: true });
+    mkdirSync(sidecarDir, { recursive: true });
+
+    const sessionId = "cron_5d791ef6fc2c_20260909_085000";
+    const logLines = [
+      `2026-09-09 09:00:00,000 INFO [${sessionId}] agent.tool_executor: tool write_file completed (0.20s, 611 chars)`,
+      `2026-09-09 09:00:05,000 INFO [${sessionId}] agent.tool_executor: tool terminal completed (1.0s, 100 chars)`,
+    ].join("\n");
+    writeFileSync(join(logsDir, "agent.log"), logLines, "utf8");
+
+    // JSON truncado — exatamente o estado que um kill no meio de writeFileSync deixaria.
+    const corruptPath = join(sidecarDir, `${sessionId}.json`);
+    writeFileSync(corruptPath, '{"sessionId": "cron_5d791ef6fc2c_20260909_085000", "toolCa', "utf8");
+
+    const nowIso = "2026-09-09T12:00:00.000Z";
+    const out = runCli([
+      "--logs-dir", logsDir,
+      "--sidecar-dir", sidecarDir,
+      "--now-iso", nowIso,
+      "--min-idle-minutes", "60",
+      "--json",
+    ]);
+    const summary = JSON.parse(out.stdout);
+
+    // Não recapturado: o nome do arquivo já existe (listAlreadyCaptured só
+    // checa existência), então a sessão nunca entra em `toCapture`.
+    assert.deepEqual(summary.captured, []);
+    // Não podado: `capturedAt` ilegível (JSON.parse falha -> "") é
+    // "indeterminado", e indeterminado nunca vira remoção (selectSidecarsToPrune).
+    assert.deepEqual(summary.pruned, []);
+    // O arquivo corrompido permanece exatamente como estava — intocado.
+    assert.equal(readFileSync(corruptPath, "utf8"), '{"sessionId": "cron_5d791ef6fc2c_20260909_085000", "toolCa');
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("logs-dir ausente: sai limpo (exit 0), sem capturar nada", () => {
     const dir = mkdtempSync(join(tmpdir(), "continuo-sidecar-test-empty-"));
     const out = runCli(["--logs-dir", join(dir, "nao-existe"), "--sidecar-dir", join(dir, "sidecars"), "--json"]);
