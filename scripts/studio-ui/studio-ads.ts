@@ -198,8 +198,8 @@ export function buildAdsData(rootDir: string, opts: BuildAdsDataOptions = {}): A
 }
 
 // ─── #7536: "Economia da campanha ao vivo" (teste 2608) — Google Ads +
-// Microsoft Ads apenas; Meta Ads fica de fora desta unidade (ver docstring
-// de scripts/lib/ads-campaign-economics-fetch.ts) ──────────────────────
+// Microsoft Ads + Meta Ads, os 3 canais (ver docstring de
+// scripts/lib/ads-campaign-economics-fetch.ts) ─────────────────────────
 
 export interface AdsCampaignEconomicsSnapshot {
   generatedAt: string;
@@ -260,8 +260,8 @@ export function clearAdsCampaignEconomicsCache(): void {
 
 /**
  * Monta o snapshot de "Economia da campanha ao vivo" pra `GET /api/ads`
- * (#7536) — Google Ads + Microsoft Ads via REST ao vivo (nunca via
- * `spend.csv`, que só agrega por MÊS) + cadastros por canal via Kit API.
+ * (#7536) — Google Ads + Microsoft Ads + Meta Ads via REST ao vivo (nunca
+ * via `spend.csv`, que só agrega por MÊS) + cadastros por canal via Kit API.
  * **Assíncrona** (diferente de `buildAdsData`) — bate em rede de verdade;
  * mesmo padrão de `buildMetricsData` (`studio-metrics.ts`). Nunca lança:
  * cada fonte é fail-soft por conta própria

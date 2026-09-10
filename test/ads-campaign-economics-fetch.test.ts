@@ -14,10 +14,14 @@ import assert from "node:assert/strict";
 import {
   fetchGoogleAdsChannelMetrics,
   fetchMicrosoftAdsChannelMetrics,
+  fetchMetaAdsChannelMetrics,
+  normalizeMetaAdsInsightsRows,
   fetchKitSignupsByChannel,
   fetchCampaignEconomicsSources,
   googleAdsAuthConfigFromEnv,
   microsoftAdsAuthConfigFromEnv,
+  metaAdsAuthConfigFromEnv,
+  META_ADS_TESTE_CANAL,
 } from "../scripts/lib/ads-campaign-economics-fetch.ts";
 import type { GoogleAdsAuthConfig } from "../scripts/lib/google-ads-ingest.ts";
 import type { MicrosoftAdsAuthConfig } from "../scripts/lib/microsoft-ads-ingest.ts";
@@ -80,6 +84,96 @@ describe("#7536 — fetchMicrosoftAdsChannelMetrics", () => {
     const result = await fetchMicrosoftAdsChannelMetrics(fetchImpl, AUTH);
     assert.deepEqual(result.metrics, []);
     assert.ok(result.error);
+  });
+});
+
+describe("#7536 — fetchMetaAdsChannelMetrics / normalizeMetaAdsInsightsRows", () => {
+  it("insights OK: normaliza pra ChannelDailyMetric[], marca fetchedAt", async () => {
+    const fetchImpl = (async (url: string) => {
+      assert.match(url, /act_10151064543294811\/insights/);
+      assert.match(url, /access_token=tok-123/);
+      return jsonResponse(200, {
+        data: [{ date_start: "2026-01-01", date_stop: "2026-01-01", spend: "87.65", clicks: "92", impressions: "2202" }],
+        paging: {},
+      });
+    }) as typeof fetch;
+
+    const result = await fetchMetaAdsChannelMetrics(fetchImpl, "tok-123", { now: new Date("2026-01-02T00:00:00Z") });
+    assert.equal(result.error, null);
+    assert.equal(result.metrics.length, 1);
+    assert.equal(result.metrics[0].canal, META_ADS_TESTE_CANAL);
+    assert.equal(result.metrics[0].gastoBrl, 87.65);
+    assert.equal(result.metrics[0].cliques, 92);
+    assert.equal(result.metrics[0].impressoes, 2202);
+    assert.ok(result.fetchedAt);
+  });
+
+  it("segue paginação via paging.next até esgotar", async () => {
+    let calls = 0;
+    const fetchImpl = (async (url: string) => {
+      calls++;
+      if (url.includes("page2marker")) {
+        return jsonResponse(200, { data: [{ date_start: "2026-01-02", spend: "10", clicks: "1", impressions: "10" }], paging: {} });
+      }
+      return jsonResponse(200, {
+        data: [{ date_start: "2026-01-01", spend: "20", clicks: "2", impressions: "20" }],
+        paging: { next: "https://graph.facebook.com/v21.0/act_x/insights?after=page2marker" },
+      });
+    }) as typeof fetch;
+
+    const result = await fetchMetaAdsChannelMetrics(fetchImpl, "tok", { now: new Date("2026-01-02T00:00:00Z") });
+    assert.equal(calls, 2);
+    assert.equal(result.metrics.length, 2);
+    assert.equal(result.error, null);
+  });
+
+  it("erro do Graph API (payload.error) nunca lança — vira { metrics: [], error }", async () => {
+    const fetchImpl = (async () => jsonResponse(400, { error: { message: "Invalid OAuth access token", code: 190 } })) as typeof fetch;
+    const result = await fetchMetaAdsChannelMetrics(fetchImpl, "tok-invalido");
+    assert.deepEqual(result.metrics, []);
+    assert.match(result.error ?? "", /Invalid OAuth access token/);
+    assert.equal(result.fetchedAt, null);
+  });
+
+  it("falha de rede nunca lança — vira { metrics: [], error }", async () => {
+    const fetchImpl = (async () => {
+      throw new Error("ECONNRESET");
+    }) as unknown as typeof fetch;
+    const result = await fetchMetaAdsChannelMetrics(fetchImpl, "tok");
+    assert.deepEqual(result.metrics, []);
+    assert.match(result.error ?? "", /ECONNRESET/);
+  });
+
+  it("corpo não-JSON nunca lança — vira { metrics: [], error }", async () => {
+    const fetchImpl = (async () => new Response("not json", { status: 200 })) as typeof fetch;
+    const result = await fetchMetaAdsChannelMetrics(fetchImpl, "tok");
+    assert.deepEqual(result.metrics, []);
+    assert.ok(result.error);
+  });
+
+  it("linha sem date_start reconhecível é descartada, nunca contamina como 0", () => {
+    const out = normalizeMetaAdsInsightsRows(
+      [
+        { date_start: "2026-01-01", spend: "5", clicks: "1", impressions: "10" },
+        { spend: "999" }, // sem date_start — descartada
+        { date_start: "not-a-date", spend: "1" }, // formato inválido — descartada
+      ],
+      "canal-x",
+    );
+    assert.equal(out.length, 1);
+    assert.equal(out[0].date, "2026-01-01");
+  });
+});
+
+describe("#7536 — metaAdsAuthConfigFromEnv", () => {
+  it("META_ADS_ACCESS_TOKEN presente -> auth completo", () => {
+    const result = metaAdsAuthConfigFromEnv({ META_ADS_ACCESS_TOKEN: "tok" });
+    assert.deepEqual(result, { auth: { accessToken: "tok" } });
+  });
+
+  it("META_ADS_ACCESS_TOKEN ausente -> missing", () => {
+    const result = metaAdsAuthConfigFromEnv({});
+    assert.deepEqual(result, { missing: ["META_ADS_ACCESS_TOKEN"] });
   });
 });
 
@@ -256,6 +350,7 @@ describe("#7536 — fetchCampaignEconomicsSources", () => {
     assert.equal(result.signups.length, 1);
     assert.match(result.sources["Google Ads"].error ?? "", /GOOGLE_ADS_/);
     assert.match(result.sources["Microsoft Ads"].error ?? "", /MICROSOFT_ADS_/);
+    assert.match(result.sources["Meta Ads"].error ?? "", /META_ADS_/);
     assert.equal(result.sources["Kit"].error, null);
   });
 
@@ -264,5 +359,29 @@ describe("#7536 — fetchCampaignEconomicsSources", () => {
     const result = await fetchCampaignEconomicsSources(fetchImpl, null, { env: {} });
     assert.deepEqual(result.signups, []);
     assert.match(result.sources["Kit"].error ?? "", /KIT_API_KEY/);
+  });
+
+  it("META_ADS_ACCESS_TOKEN presente: fonte Meta Ads entra em metrics junto de Google/Microsoft", async () => {
+    const fetchImpl = (async (url: string) => {
+      if (url.includes("oauth2.googleapis.com")) return jsonResponse(200, { access_token: "tok" });
+      if (url.includes("graph.facebook.com")) {
+        return jsonResponse(200, { data: [{ date_start: "2026-01-05", spend: "42", clicks: "4", impressions: "40" }], paging: {} });
+      }
+      // Google/Microsoft GAQL/Reporting API — sem credencial completa nesta chamada, então nunca alcançado.
+      return jsonResponse(200, { results: [] });
+    }) as typeof fetch;
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      jsonResponse(200, { subscribers: [], pagination: emptyPagination })) as typeof fetch;
+
+    let result: Awaited<ReturnType<typeof fetchCampaignEconomicsSources>>;
+    try {
+      result = await fetchCampaignEconomicsSources(fetchImpl, null, { env: { META_ADS_ACCESS_TOKEN: "tok-meta" } });
+    } finally {
+      globalThis.fetch = orig;
+    }
+    assert.equal(result.sources["Meta Ads"].error, null);
+    assert.equal(result.metrics.length, 1);
+    assert.equal(result.metrics[0].canal, "Meta Ads (teste 2608)");
   });
 });
