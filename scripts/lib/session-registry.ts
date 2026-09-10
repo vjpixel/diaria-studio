@@ -5175,6 +5175,28 @@ export interface GrantMergeResult {
   ok: boolean;
   reason: GrantMergeReason;
   grant?: MergeGrant;
+  /**
+   * #7857: só presente quando `reason === "granted"`. `true` quando
+   * `grantedTo` bate o `sessionId` de alguma sessão ATIVA no registry no
+   * momento da concessão; `false` quando não bate nenhuma. `undefined` para
+   * qualquer outro `reason` (recusa não concede nada, não há beneficiário
+   * pra reconhecer).
+   *
+   * Não bloqueia nada — a sessão-alvo pode legitimamente ainda não ter se
+   * registrado (concessão "adiantada", torcendo pra ela aparecer antes do
+   * TTL expirar). `false` é só o sinal que falta pro CLI avisar sobre a
+   * confusão medida ao vivo no #7857: `--granted-to` recebendo o nome CURTO
+   * que `ListAgents` exibe (ex: `02d2e8`) em vez do `session_id` real (UUID
+   * completo) — `check-merge-grant --session-id <id-errado>` respondia
+   * `granted: true` (o registro existe, gravado pro id errado), mas o gate
+   * real do #5716 (que compara o `session_id` do processo chamador contra
+   * `merge_grant.grantedTo` — `visible_to_merge_gate` é o campo que
+   * `check-merge-grant` DERIVA desse resultado, nunca o inverso) nunca
+   * reconhecia o id errado, e a concessão ficava invisível pro guard sem
+   * nenhum aviso até alguém comparar `check-merge-grant` com e sem
+   * `--session-id` manualmente.
+   */
+  granteeRecognized?: boolean;
 }
 
 /**
@@ -5316,7 +5338,10 @@ export function grantMergeWindow(
     },
     (onDisk) => onDisk?.merge_grant?.grantedAt === grant.grantedAt,
   );
-  return { ok: true, reason: "granted", grant };
+  // #7857: reusa o `grantee` já resolvido acima (checagem de
+  // grantee-is-coordinator) — não bloqueia (a beneficiária pode ainda não
+  // ter se registrado), só informa pro CLI decidir se avisa.
+  return { ok: true, reason: "granted", grant, granteeRecognized: grantee !== undefined };
 }
 
 /**
@@ -6110,6 +6135,22 @@ function main(): void {
               `session-registry: grant-merge ok — janela concedida a ${grantedTo}` +
                 `${pr !== undefined ? ` (PR #${pr})` : ""}, TTL ${Math.round(MERGE_GRANT_TTL_MS / 60000)}min, uso único\n`,
             );
+            // #7857: `grantedTo` não bate NENHUMA sessão ativa no registry —
+            // aviso, não recusa (a beneficiária pode ainda não ter se
+            // registrado). Vai pro stderr, nunca stdout (stdout aqui é
+            // mensagem de linha única esperada pelo operador/script que
+            // chama grant-merge; ver o mesmo padrão em check-merge-grant
+            // abaixo).
+            if (result.granteeRecognized === false) {
+              process.stderr.write(
+                `session-registry: ATENÇÃO — "${grantedTo}" não corresponde ao session_id de NENHUMA sessão ` +
+                  "ativa em data/sessions/ agora (achado ao vivo #7857). A janela foi gravada mesmo assim — a " +
+                  "beneficiária pode simplesmente ainda não ter se registrado. Mas se este valor veio do nome " +
+                  "CURTO exibido pelo ListAgents (ex: \"02d2e8\") em vez do session_id REAL (UUID completo), a " +
+                  "concessão nunca vai ficar visível pro gate do #5716: confirme com `list-active` ou peça o " +
+                  "session_id de volta à beneficiária antes de assumir que o merge vai destravar.\n",
+              );
+            }
             break;
           case "self-grant-refused":
             process.stdout.write(
@@ -6206,6 +6247,21 @@ function main(): void {
               "Isto não é 'a coordenadora não concedeu' nem 'expirou' — peça RECONCESSÃO à coordenadora " +
               `(${found.grantedBy.kind}-${found.grantedBy.sessionId}) pra que o grant volte a existir no ` +
               "arquivo real (#6972).\n",
+          );
+        }
+        // #7857: `--session-id` conferido aqui não corresponde ao sessionId
+        // de NENHUMA sessão ativa registrada — mesmo achado do `grant-merge`
+        // acima, só que do lado de quem RECONFERE. Não é prova de que o id
+        // está errado (a própria sessão pode ainda não ter mandado
+        // heartbeat), mas é o mesmo sinal de possível confusão nome-curto
+        // (ListAgents) vs session_id real que motivou a issue.
+        if (!listActiveSessions(repoRoot).some((s) => s.sessionId === sessionId)) {
+          process.stderr.write(
+            `session-registry: ATENÇÃO — "${sessionId}" (o --session-id conferido) não corresponde ao ` +
+              "session_id de NENHUMA sessão ativa em data/sessions/ agora. Se este valor veio do nome CURTO " +
+              'exibido pelo ListAgents (ex: "02d2e8") em vez do session_id REAL (UUID completo), o resultado ' +
+              "acima pode estar respondendo pela identidade ERRADA (#7857) — confirme com `list-active` antes " +
+              "de agir sobre este resultado.\n",
           );
         }
         if (!found) process.exitCode = 1;

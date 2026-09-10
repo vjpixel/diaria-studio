@@ -4502,6 +4502,159 @@ describe("#6972 — proveniência do grant vencedor (arquivo real × cópia de c
   });
 });
 
+// ─── #7857 — grant-merge/check-merge-grant avisam quando --granted-to (ou
+// --session-id reconferido) não bate NENHUMA sessão viva no registry ───────
+//
+// Achado ao vivo: uma sessão peer passou o nome CURTO exibido pelo
+// `ListAgents` (ex: "02d2e8") como --granted-to em vez do session_id REAL
+// (UUID completo). `grant-merge` aceitou em silêncio, gravou a concessão
+// pro id errado, e só depois de 3 rodadas de tentativa alguém percebeu a
+// divergência entre `check-merge-grant --session-id <id-errado>`
+// (`granted: true`) e sem `--session-id` (`granted: false`, id real
+// auto-injetado). O fix não bloqueia — a sessão-alvo pode legitimamente
+// ainda não ter se registrado — só avisa.
+describe("#7857 — grant-merge/check-merge-grant avisam sobre grantedTo sem sessão viva correspondente", () => {
+  it("grantMergeWindow: --granted-to que NÃO bate nenhuma sessão ativa ainda concede, com granteeRecognized: false", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "coord-7857a", { tag: "host-a" });
+    const r = grantMergeWindow(root, "overnight", "coord-7857a", "02d2e8-nome-curto-nao-registrado", {
+      pr: 7857,
+      tag: "host-a",
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.reason, "granted");
+    assert.equal(r.granteeRecognized, false, "nenhuma sessão ativa tem esse sessionId — deveria sinalizar");
+  });
+
+  it("grantMergeWindow: --granted-to que BATE uma sessão ativa concede com granteeRecognized: true, sem sinal de confusão", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "coord-7857b", { tag: "host-a" });
+    registerSession(root, "interactive", "a8fe4e06-f965-41ab-95e5-409ab87ef4d9", { tag: "host-a" });
+    const r = grantMergeWindow(root, "overnight", "coord-7857b", "a8fe4e06-f965-41ab-95e5-409ab87ef4d9", {
+      pr: 7857,
+      tag: "host-a",
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.reason, "granted");
+    assert.equal(r.granteeRecognized, true);
+  });
+
+  it("CLI grant-merge: --granted-to desconhecido concede (não bloqueia) e emite WARNING em stderr nomeando a confusão nome-curto-vs-session-id", () => {
+    const root = freshCliRoot();
+    const tag = machineTag();
+    writeFileSync(
+      join(root, "data", "sessions", `overnight-${tag}-coord-7857c.json`),
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: tag,
+        sessionId: "coord-7857c",
+        startedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(Date.now() - 30 * 1000).toISOString(),
+        claimed_issues: [],
+      }),
+      "utf8",
+    );
+
+    const res = cli7002(root, [
+      "grant-merge",
+      "--kind",
+      "overnight",
+      "--session-id",
+      "coord-7857c",
+      "--granted-to",
+      "02d2e8",
+      "--pr",
+      "7857",
+    ]);
+
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /grant-merge ok/);
+    assert.match(res.stderr, /não corresponde ao session_id de NENHUMA sessão ativa/);
+    assert.match(res.stderr, /nome CURTO/);
+    assert.match(res.stderr, /ListAgents/);
+
+    // A concessão foi gravada mesmo com o aviso — #7857 é warning, não recusa.
+    const found = findLiveMergeGrant(root, "02d2e8");
+    assert.ok(found, "concessão deveria existir mesmo pra um grantedTo não reconhecido");
+  });
+
+  it("CLI grant-merge: --granted-to que bate sessão ativa NÃO emite warning nenhum", () => {
+    const root = freshCliRoot();
+    const tag = machineTag();
+    writeFileSync(
+      join(root, "data", "sessions", `overnight-${tag}-coord-7857d.json`),
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: tag,
+        sessionId: "coord-7857d",
+        startedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(Date.now() - 30 * 1000).toISOString(),
+        claimed_issues: [],
+      }),
+      "utf8",
+    );
+    writeFileSync(
+      join(root, "data", "sessions", `interactive-${tag}-benef-7857d.json`),
+      JSON.stringify({
+        kind: "interactive",
+        machineTag: tag,
+        sessionId: "benef-7857d",
+        startedAt: new Date(Date.now() - 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(Date.now() - 5 * 1000).toISOString(),
+        claimed_issues: [],
+      }),
+      "utf8",
+    );
+
+    const res = cli7002(root, [
+      "grant-merge",
+      "--kind",
+      "overnight",
+      "--session-id",
+      "coord-7857d",
+      "--granted-to",
+      "benef-7857d",
+      "--pr",
+      "7857",
+    ]);
+
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /grant-merge ok/);
+    assert.equal(res.stderr, "", "grantedTo reconhecido não deveria emitir nenhum aviso");
+  });
+
+  it("CLI check-merge-grant: --session-id reconferido sem sessão ativa correspondente também avisa (mesmo sinal, lado de quem reconfere)", () => {
+    const root = freshCliRoot();
+    const tag = machineTag();
+    writeFileSync(
+      join(root, "data", "sessions", `overnight-${tag}-coord-7857e.json`),
+      JSON.stringify({
+        kind: "overnight",
+        machineTag: tag,
+        sessionId: "coord-7857e",
+        startedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+        lastHeartbeat: new Date(Date.now() - 30 * 1000).toISOString(),
+        claimed_issues: [],
+        merge_grant: {
+          grantedTo: "02d2e8",
+          grantedBy: "coord-7857e",
+          grantedAt: new Date().toISOString(),
+          pr: 7857,
+        },
+      }),
+      "utf8",
+    );
+
+    const res = cli7002(root, ["check-merge-grant", "--session-id", "02d2e8"]);
+
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    const payload = JSON.parse(res.stdout.trim());
+    assert.equal(payload.granted, true, "o registro existe pra esse id, mesmo que seja o id errado");
+    assert.match(res.stderr, /não corresponde ao session_id de NENHUMA sessão ativa/);
+    assert.match(res.stderr, /nome CURTO/);
+  });
+});
+
 // ─── #7169/#7171 — glue de CLI dos dois fixes (review independente, PR #7223) ───
 //
 // As funções puras (`assessCrossMachineSyncFreshness`) já tinham teste
