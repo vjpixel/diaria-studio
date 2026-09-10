@@ -23,6 +23,12 @@
     será deletado. Execute este script APENAS no clone permanente do repo,
     após o merge do PR. (Mesma ressalva do `.ps1` original, pré-#5115.)
 
+    Também publica (best-effort) um marcador cross-machine em
+    data/edicao-diaria-schedule-attestation.json a cada registro/remoção —
+    ver scripts/lib/edicao-schedule-attestation.ts (#7036). Consumido pelo
+    alarme edicao-diaria-staleness-alarm.ts pra não silenciar por engano
+    quando esta máquina está armada mas o alarme roda em outra (helios).
+
 .PARAMETER Unregister
     Remove a task "Diaria-Edicao-Diaria" do Task Scheduler.
 
@@ -36,7 +42,7 @@
         -File .\scripts\overnight\setup-edicao-schedule.ps1 -Unregister
 
 .NOTES
-    Issue: #5611 (reverte parte do #5115/#5162; história original #2068/#4998)
+    Issue: #5611 (reverte parte do #5115/#5162; história original #2068/#4998); #7036 (atestação cross-machine)
     Requer: Windows com Task Scheduler (schtasks.exe ou New-ScheduledTask).
     Sem privilégios de Admin, a task é registrada para o usuário atual
     (sem "Run as SYSTEM") — suficiente: roda no contexto do usuário que tem
@@ -61,6 +67,39 @@ $TaskName = "Diaria-Edicao-Diaria"
 $TaskDesc = "diar.ia.br: roda /diaria-edicao D+1 de dom-qui 16:00 BRT (Stages 0-4 + pre-render, via run-scheduled-edicao.ts), pula se a edicao ja foi iniciada."
 
 # ---------------------------------------------------------------------------
+# Atestação cross-machine (#7036) — publica em data/ (junction do OneDrive,
+# ver CLAUDE.md § Setup) se ESTA máquina tem a task armada, pra que o alarme
+# `edicao-diaria-staleness-alarm.ts` rodando em OUTRA máquina (hoje: helios)
+# não silencie por engano quando o agendador LOCAL dele está `disabled` mas
+# a via Windows está de fato ativa. Best-effort: nunca falha o
+# registro/remoção da task se a escrita der erro (`data/` pode não existir
+# nesta máquina, permissão, OneDrive fora do ar) — só avisa.
+# Formato/consumidor: scripts/lib/edicao-schedule-attestation.ts.
+# ---------------------------------------------------------------------------
+$AttestationPath = Join-Path $RepoRoot "data\edicao-diaria-schedule-attestation.json"
+
+function Write-EdicaoScheduleAttestation {
+    param([bool]$Armed)
+    try {
+        $attestation = [ordered]@{
+            machine    = $env:COMPUTERNAME
+            scheduler  = "windows-task-scheduler"
+            armed      = $Armed
+            updatedAt  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+        }
+        $dataDir = Split-Path -Parent $AttestationPath
+        if (-not (Test-Path $dataDir)) {
+            Write-Warning "Atestação cross-machine NÃO gravada — '$dataDir' não existe nesta máquina (ver CLAUDE.md § Setup, junction do OneDrive)."
+            return
+        }
+        ($attestation | ConvertTo-Json -Compress) | Set-Content -Path $AttestationPath -Encoding utf8 -NoNewline
+        Write-Output "Atestação cross-machine gravada em $AttestationPath (armed=$Armed)."
+    } catch {
+        Write-Warning "Falha ao gravar atestação cross-machine em '$AttestationPath' (não bloqueia o registro/remoção da task): $_"
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Guard: garantir que o runner existe no path derivado
 # ---------------------------------------------------------------------------
 if (-not (Test-Path $RunnerPath)) {
@@ -79,6 +118,7 @@ if ($Unregister) {
     } else {
         Write-Output "Task '$TaskName' não encontrada (já removida ou nunca registrada)."
     }
+    Write-EdicaoScheduleAttestation -Armed $false
     exit 0
 }
 
@@ -125,8 +165,10 @@ Register-ScheduledTask `
 # não especificada nesta chamada volta ao default, incluindo Enabled=True. Se o
 # editor tinha desabilitado a task manualmente, restaurar esse estado aqui;
 # senão o -Force reativa a task silenciosamente, sem log nem aviso.
+$RestoredAsDisabled = $false
 if ($Existing -and $Existing.State -eq "Disabled") {
     Disable-ScheduledTask -TaskName $TaskName | Out-Null
+    $RestoredAsDisabled = $true
 }
 
 if ($Existing) {
@@ -134,6 +176,11 @@ if ($Existing) {
 } else {
     Write-Output "Task '$TaskName' registrada."
 }
+
+# armed=false se o estado Disabled anterior foi restaurado acima — a
+# atestação precisa refletir o estado FINAL da task, não a intenção
+# genérica de "registrei/atualizei" (#7036).
+Write-EdicaoScheduleAttestation -Armed (-not $RestoredAsDisabled)
 
 Write-Output ""
 Write-Output "Configuração:"

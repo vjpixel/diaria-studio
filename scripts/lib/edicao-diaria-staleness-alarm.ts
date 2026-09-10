@@ -129,7 +129,7 @@ export type EdicaoTimerState = "armed" | "disabled" | "unknown";
 
 /**
  * LIMITAÇÃO CONHECIDA de `"disabled"` — cross-machine (#6898, apontada no
- * review da PR #7033).
+ * review da PR #7033; parcialmente mitigada pelo #7036).
  *
  * Quem produz este valor (`queryTaskArmed`) só enxerga o agendador da
  * máquina em que O ALARME roda. Hoje as duas coisas coincidem: nada está
@@ -146,10 +146,21 @@ export type EdicaoTimerState = "armed" | "disabled" | "unknown";
  * classe de regressão do #5563 de volta, que é o que este módulo existe
  * pra impedir.
  *
- * Por isso o caller LOGA em nível de aviso toda vez que silencia por
- * `disabled` (ver `scripts/edicao-diaria-staleness-alarm.ts`): enquanto não
- * houver atestação cross-machine, o rastro no log é o que permite alguém
- * notar que o alarme está calado por um estado que deixou de ser verdade.
+ * **#7036 mitiga o caso mais provável**: `queryTimerState` (no script I/O)
+ * combina este valor LOCAL com a atestação cross-machine de
+ * `edicao-schedule-attestation.ts` (`data/edicao-diaria-schedule-attestation.json`,
+ * sincronizado via OneDrive) — se a máquina que armou por último publicou
+ * `armed: true`, o veredito final NUNCA silencia por `disabled`, mesmo que
+ * o agendador local esteja de fato desarmado. A limitação documentada aqui
+ * só sobrevive integralmente pro lado que ainda não escreve o marcador
+ * (systemd/Linux — ver TODO explícito na docstring de
+ * `edicao-schedule-attestation.ts`); o writer Windows
+ * (`setup-edicao-schedule.ps1`) já publica seu estado. Por isso o caller
+ * ainda LOGA em nível de aviso toda vez que o veredito FINAL (pós-atestação)
+ * silencia por `disabled` (ver `scripts/edicao-diaria-staleness-alarm.ts`):
+ * enquanto o lado Linux não escrever o marcador, o rastro no log continua
+ * sendo o que permite alguém notar que o alarme está calado por um estado
+ * que deixou de ser verdade.
  */
 export const TIMER_DISABLED_CROSS_MACHINE_CAVEAT =
   "silenciado por `systemctl is-enabled` da máquina LOCAL — não atesta o agendador de outra máquina (#6898)";
