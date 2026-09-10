@@ -35,6 +35,16 @@
 #   (item 5 — adoção de prefixo de branch — CORTADO no #6798, 01/09/2026:
 #    informational, 0 correções, dedup falhava e produziu issue duplicada 3x
 #    antes do fix; sucessor mais preciso é `check-branch-issue-consistency.ts`.)
+#   0 (captura, não alarme, #7814): antes de qualquer checagem, extrai
+#      sidecars enxuto de `~/.hermes/logs/agent.log*` (chamadas de
+#      ferramenta + session_id, nunca o transcript inteiro) pra
+#      `data/continuo/tick-sidecars/` via
+#      `scripts/continuo-capture-tick-sidecars.ts` — o log de origem
+#      rotaciona por tamanho sem política declarada e já perdeu a evidência
+#      de uma ocorrência da checagem 11 antes de alguém investigar (#7641).
+#      Roda ANTES das checagens (inclusive antes de qualquer `exit`
+#      antecipado de infra) pra maximizar a chance de captura mesmo se o
+#      resto do script falhar depois.
 #
 # Fail-soft por checagem: uma checagem quebrada reporta e segue pras demais;
 # só o exit final agrega. Sem estado próprio além do GitHub (dedup por título).
@@ -43,6 +53,19 @@ set -uo pipefail
 REPO="/home/vjpixel/diaria-studio"
 cd "$REPO" || { echo "ERRO: repo ausente"; exit 1; }
 FAILS=0
+
+# ── 0. Captura de sidecars de tick (#7814) ───────────────────────────────────
+# Só LÊ ~/.hermes/logs/, só ESCREVE em data/continuo/tick-sidecars/ (não em
+# ~/.hermes/). Roda primeiro e nunca aborta o script — falha aqui é
+# indeterminado (perda de evidência potencial), não um alarme por si só;
+# quem consome a AUSÊNCIA de sidecar continua sendo um humano investigando a
+# checagem 11 abaixo, exatamente como hoje.
+if npx tsx scripts/continuo-capture-tick-sidecars.ts --json >/tmp/continuo-sidecar-capture.json 2>/tmp/continuo-sidecar-capture.err; then
+  echo "[watch] sidecars de tick: $(cat /tmp/continuo-sidecar-capture.json)"
+else
+  echo "[watch] sidecars de tick: FALHA na captura ($(tail -1 /tmp/continuo-sidecar-capture.err 2>/dev/null))" >&2
+  FAILS=$((FAILS + 1))
+fi
 
 # Dedup: existe issue ABERTA cujo título CONTÉM o marcador?
 # Filtro LOCAL de propósito (bug achado no teste ao vivo do PR #6469: a busca
