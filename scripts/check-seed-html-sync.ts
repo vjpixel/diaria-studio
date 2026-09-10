@@ -35,6 +35,7 @@
 import { spawnSync } from "node:child_process";
 import type { PrCheckSpawnFn } from "./lib/spawn-types.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { buildHomeFeed, buildIndexHtml } from "./lib/site-home-page.ts";
 
 /** Alias local — mesmo padrão de scripts/check-pr-bugfix.ts (#2699). */
 export type SpawnFn = PrCheckSpawnFn;
@@ -127,6 +128,98 @@ export function findDriftedPairs(
   });
 }
 
+/**
+ * #7864: mesmo limite de `gen-home-page.ts` (`DEFAULT_ARCHIVE_LIMIT`) — a
+ * home mostra 6 cards de arquivo + a feature; manter os dois em sincronia
+ * evita que este re-render produza um `index.html` estruturalmente diferente
+ * do gerador oficial por um detalhe de limite, não de conteúdo.
+ */
+const HOME_ARCHIVE_LIMIT = 6;
+
+/** Lê o conteúdo de `path` na árvore de `ref` via `git show` — `null` se o path não existir nesse ref (nunca lança por ausência, só por erro de git genuíno). */
+function readFileAtRef(ref: string, path: string, spawnFn: SpawnFn): string | null {
+  const r = spawnFn("git", ["show", `${ref}:${path}`], { encoding: "utf8" });
+  if (r.status !== 0) return null;
+  return r.stdout;
+}
+
+/**
+ * #7864: re-renderiza `workers/site/public/index.html` a partir do
+ * `sitemap.xml` + páginas de edição (`workers/site/public/p/{slug}/index.html`)
+ * como estavam no HEAD_SHA do PR — mesmo miolo puro que `gen-home-page.ts`
+ * usa em produção (`buildHomeFeed`/`buildIndexHtml`, `scripts/lib/site-home-page.ts`),
+ * só que lendo do objeto git do commit em vez do working directory. Isso
+ * garante corretude mesmo se o working directory do runner não estiver
+ * necessariamente no HEAD_SHA exato do PR (`actions/checkout@v4` no evento
+ * `pull_request` traz o merge ref, não o head puro) — mesma técnica que
+ * `getChangedFiles` já usa pra diffar sem depender do working directory.
+ *
+ * Lança se o sitemap não existir em `ref` — nesse caso não há como avaliar
+ * "bateria ou não", e o chamador trata isso como drift real (fail-safe).
+ */
+export function renderHomePageAtRef(ref: string, spawnFn: SpawnFn): string {
+  const sitemapXml = readFileAtRef(ref, "workers/site/public/sitemap.xml", spawnFn);
+  if (sitemapXml === null) {
+    throw new Error(`renderHomePageAtRef: workers/site/public/sitemap.xml não encontrado em ${ref}`);
+  }
+  const readPageHtml = (slug: string): string | null =>
+    readFileAtRef(ref, `workers/site/public/p/${slug}/index.html`, spawnFn);
+  // +1 pra separar a feature (feed[0]) e ainda sobrar HOME_ARCHIVE_LIMIT
+  // entradas de arquivo — mesma soma de gen-home-page.ts.
+  const feed = buildHomeFeed(sitemapXml, readPageHtml, HOME_ARCHIVE_LIMIT + 1);
+  const feature = feed[0] ?? null;
+  const archive = feed.slice(1);
+  return buildIndexHtml({ feature, archive });
+}
+
+/**
+ * #7864: resolve se o par `home-do-site` é drift REAL ou falso-positivo.
+ *
+ * `findDriftedPairs` só olha presença no diff — nunca compara conteúdo. Para
+ * este par especificamente, `sitemap.xml` pode mudar (nova edição D+1
+ * publicada) sem que nenhuma edição nova fique elegível pra home HOJE (a
+ * mais recente elegível já era a mesma de antes) — nesse caso, re-renderizar
+ * `index.html` produz um resultado byte-a-byte idêntico ao já committed, e
+ * não há "esquecimento de build" real pra reportar.
+ *
+ * Retorna `true` (drift real, deve reprovar) quando o re-render diverge do
+ * `index.html` committed em `headSha`, OU quando o `index.html` não existe
+ * nesse ref (caso degenerado — tratado como drift, nunca engolido em
+ * silêncio), OU quando o próprio re-render lança (sitemap ausente/corrompido
+ * — fail-safe: sem conseguir confirmar "não é drift", reprova como hoje).
+ */
+export function confirmHomeDrift(headSha: string, spawnFn: SpawnFn): boolean {
+  const committed = readFileAtRef(headSha, "workers/site/public/index.html", spawnFn);
+  if (committed === null) return true;
+  let rendered: string;
+  try {
+    rendered = renderHomePageAtRef(headSha, spawnFn);
+  } catch (e) {
+    console.error(
+      `[#7864] falha ao re-renderizar a home pra confirmar drift — tratando como drift real: ${(e as Error).message}`,
+    );
+    return true;
+  }
+  return rendered !== committed;
+}
+
+/**
+ * #7864: aplica a confirmação por re-render só ao par `home-do-site` — os
+ * demais pares (cursos/livros) não têm essa fonte de falso-positivo (seus
+ * seeds sempre implicam mudança visível de conteúdo, ver corpo da issue) e
+ * continuam reprovando só por presença no diff, como sempre.
+ */
+export function filterConfirmedDrift(
+  candidates: SeedHtmlPair[],
+  headSha: string,
+  spawnFn: SpawnFn,
+): SeedHtmlPair[] {
+  return candidates.filter((pair) => {
+    if (pair.name !== "home-do-site") return true;
+    return confirmHomeDrift(headSha, spawnFn);
+  });
+}
+
 function formatFailure(drifted: SeedHtmlPair[]): string {
   const lines = [
     `[#3105] Seed de página estática mudou sem o HTML correspondente no mesmo PR.`,
@@ -165,7 +258,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  const drifted = findDriftedPairs(changedFiles);
+  const candidates = findDriftedPairs(changedFiles);
+  const drifted = filterConfirmedDrift(candidates, headSha, spawnSync as SpawnFn);
   if (drifted.length === 0) {
     console.log("[#3105] Nenhum seed de página estática divergiu do HTML gerado. Pass.");
     process.exit(0);

@@ -17,16 +17,46 @@ import assert from "node:assert/strict";
 import {
   findDriftedPairs,
   getChangedFiles,
+  renderHomePageAtRef,
+  confirmHomeDrift,
+  filterConfirmedDrift,
   SEED_HTML_PAIRS,
   type SeedHtmlPair,
   type SpawnFn,
 } from "../scripts/check-seed-html-sync.ts";
+import { buildHomeFeed, buildIndexHtml } from "../scripts/lib/site-home-page.ts";
 
 const CURSOS_PAIR = SEED_HTML_PAIRS.find((p) => p.name === "cursos") as SeedHtmlPair;
 const LIVROS_PAIR = SEED_HTML_PAIRS.find((p) => p.name === "livros") as SeedHtmlPair;
+const HOME_PAIR = SEED_HTML_PAIRS.find((p) => p.name === "home-do-site") as SeedHtmlPair;
 
 function mockSpawn(stdout: string): SpawnFn {
   return () => ({ status: 0, stdout, stderr: "" });
+}
+
+/**
+ * Mocka `git show {ref}:{path}` — só responde pro `ref` esperado; qualquer
+ * outro ref, ou path ausente de `files`, simula o `status != 0` real do git
+ * pra revisão/arquivo inexistente (mesmo padrão de `readFileAtRef`).
+ */
+function mockGitShow(expectedRef: string, files: Record<string, string>): SpawnFn {
+  return (cmd, args) => {
+    if (cmd !== "git" || args[0] !== "show") {
+      throw new Error(`mockGitShow: chamada inesperada — ${cmd} ${args.join(" ")}`);
+    }
+    const spec = args[1] ?? "";
+    const sep = spec.indexOf(":");
+    const ref = spec.slice(0, sep);
+    const path = spec.slice(sep + 1);
+    if (ref !== expectedRef || !(path in files)) {
+      return { status: 128, stdout: "", stderr: `fatal: path '${path}' does not exist in '${ref}'` };
+    }
+    return { status: 0, stdout: files[path] as string, stderr: "" };
+  };
+}
+
+function fakePageHtml(title: string, description: string): string {
+  return `<!DOCTYPE html><html><head><title>${title}</title><meta name="description" content="${description}"></head><body></body></html>`;
 }
 
 describe("findDriftedPairs (#3105)", () => {
@@ -149,5 +179,98 @@ describe("getChangedFiles (#3105) — parsing de `git diff --name-status`", () =
   it("linhas vazias são ignoradas", () => {
     const files = getChangedFiles("base", "head", mockSpawn("\n\n"));
     assert.deepEqual(files, []);
+  });
+});
+
+describe("#7864: confirmHomeDrift/filterConfirmedDrift — falso-positivo do par home-do-site", () => {
+  const REF = "deadbeef";
+  // Datas fixas e distantes o bastante do "hoje" real (qualquer dia em que o
+  // teste rodar) pra `buildHomeFeed` sempre classificar do mesmo jeito:
+  // 2020 é sempre passado, 2099 é sempre futuro (filtrado da home).
+  const SITEMAP_XML = [
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+    "<urlset>",
+    "<url><loc>https://diar.ia.br/p/edicao-atual/</loc><lastmod>2020-01-01</lastmod></url>",
+    // #7864: entrada nova (D+1) cujo lastmod ainda não chegou — o achado ao
+    // vivo da issue. Ela muda o sitemap.xml no diff, mas nunca fica
+    // elegível pra home enquanto `lastmod` > hoje.
+    "<url><loc>https://diar.ia.br/p/edicao-d-mais-1/</loc><lastmod>2099-01-01</lastmod></url>",
+    "</urlset>",
+  ].join("");
+  const PAGE_HTML = fakePageHtml("Título Atual", "Descrição atual");
+
+  function baseFiles(): Record<string, string> {
+    return {
+      "workers/site/public/sitemap.xml": SITEMAP_XML,
+      "workers/site/public/p/edicao-atual/index.html": PAGE_HTML,
+    };
+  }
+
+  /** O que `gen-home-page.ts`/produção já teria renderizado pra este sitemap. */
+  function expectedRenderedHtml(): string {
+    const feed = buildHomeFeed(
+      SITEMAP_XML,
+      (slug) => baseFiles()[`workers/site/public/p/${slug}/index.html`] ?? null,
+      7,
+    );
+    return buildIndexHtml({ feature: feed[0] ?? null, archive: feed.slice(1) });
+  }
+
+  it("renderHomePageAtRef reproduz o mesmo HTML que gen-home-page.ts produziria (lendo via git show)", () => {
+    const files = baseFiles();
+    const spawnFn = mockGitShow(REF, files);
+    assert.equal(renderHomePageAtRef(REF, spawnFn), expectedRenderedHtml());
+  });
+
+  it("(a) achado da issue: sitemap mudou, index.html não, mas re-render BATE com o committed — não é drift", () => {
+    const files = baseFiles();
+    files["workers/site/public/index.html"] = expectedRenderedHtml();
+    const spawnFn = mockGitShow(REF, files);
+
+    assert.equal(confirmHomeDrift(REF, spawnFn), false);
+    assert.deepEqual(filterConfirmedDrift([HOME_PAIR], REF, spawnFn), []);
+  });
+
+  it("(b) sitemap mudou, index.html não, re-render NÃO bate — drift real (regressão do comportamento original)", () => {
+    const files = baseFiles();
+    // index.html committed ficou pra trás de verdade — nunca foi
+    // regenerado, nem pra refletir a edição já elegível hoje.
+    files["workers/site/public/index.html"] = "<html><body>home defasada, nunca regenerada</body></html>";
+    const spawnFn = mockGitShow(REF, files);
+
+    assert.equal(confirmHomeDrift(REF, spawnFn), true);
+    assert.deepEqual(filterConfirmedDrift([HOME_PAIR], REF, spawnFn), [HOME_PAIR]);
+  });
+
+  it("index.html ausente no ref inteiramente — tratado como drift (nunca engolido em silêncio)", () => {
+    const files = baseFiles(); // sem "workers/site/public/index.html"
+    const spawnFn = mockGitShow(REF, files);
+    assert.equal(confirmHomeDrift(REF, spawnFn), true);
+  });
+
+  it("sitemap ausente/corrompido no ref — renderHomePageAtRef lança, confirmHomeDrift trata como drift (fail-safe)", () => {
+    const spawnFn = mockGitShow(REF, {
+      "workers/site/public/index.html": "<html></html>",
+      // sem "workers/site/public/sitemap.xml"
+    });
+    assert.throws(() => renderHomePageAtRef(REF, spawnFn), /sitemap\.xml não encontrado/);
+    assert.equal(confirmHomeDrift(REF, spawnFn), true);
+  });
+
+  it("(c) cursos/livros NUNCA disparam re-render — passam por filterConfirmedDrift sem chamar git", () => {
+    const throwingSpawn: SpawnFn = () => {
+      throw new Error("filterConfirmedDrift não deveria chamar git para pares que não são home-do-site");
+    };
+    const candidates = [CURSOS_PAIR, LIVROS_PAIR];
+    assert.deepEqual(filterConfirmedDrift(candidates, REF, throwingSpawn), candidates);
+  });
+
+  it("(c) lote misto: home confirmado + cursos/livros passam intactos", () => {
+    const files = baseFiles();
+    files["workers/site/public/index.html"] = expectedRenderedHtml(); // home: falso-positivo, não é drift
+    const spawnFn = mockGitShow(REF, files);
+
+    const candidates = [CURSOS_PAIR, HOME_PAIR, LIVROS_PAIR];
+    assert.deepEqual(filterConfirmedDrift(candidates, REF, spawnFn), [CURSOS_PAIR, LIVROS_PAIR]);
   });
 });
