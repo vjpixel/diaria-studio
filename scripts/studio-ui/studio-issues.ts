@@ -48,6 +48,7 @@
 import { spawnGhSync, GH_SPAWN_TIMEOUT_MS } from "../lib/shared/gh-run.ts";
 import {
   classifyExecTrackWithRule,
+  resolveExecTrackReason,
   EXEC_TRACK_ACTIONABLE,
   EXEC_TRACK_MATCH_REASON,
   EXEC_TRACK_UI,
@@ -123,6 +124,15 @@ export interface TriageIssue {
    * "agendado para 15/09" em vez do texto estático "data marcada" que
    * escondia a data (o editor precisava abrir a issue pra descobrir). */
   execTrackWaitUntilLabel: string | null;
+  /** Motivo (short/long) já resolvido PARA ESTA ISSUE, com `{date}`
+   * interpolado no SERVIDOR (#7884, regressão do #7868/PR #7878, que deixava
+   * a interpolação só no cliente — servia `execTrackReasonUi.reasons` cru,
+   * e um cliente mais velho que o servidor renderizava o placeholder `{date}`
+   * literal). `null` quando `execTrackMatched` é `null` (caller legado). O
+   * front deve preferir este campo sobre `execTrackReasonUi.reasons` +
+   * substituição manual — que continua servido como vocabulário estático e
+   * rede de segurança pra cliente novo + servidor velho. */
+  execTrackReason: { short: string; long: string } | null;
   /**
    * #6436 — claim ATIVO de uma sessão coordenadora (`data/sessions/`), se
    * houver. Antes desta issue, uma issue `claimed-por-outra-sessao` (em
@@ -331,6 +341,7 @@ ${i.body ?? ""}`);
       execTrack: result.track,
       execTrackMatched: result.matched as ExecTrackMatch,
       execTrackWaitUntilLabel: result.waitUntilLabel ?? null,
+      execTrackReason: resolveExecTrackReason(result.matched as ExecTrackMatch, result.waitUntilLabel ?? null),
       // Preenchido depois por `attachClaims` (precisa de `data/sessions/`,
       // I/O que `parseIssues` — puro sobre o JSON do `gh` — não faz).
       claim: null,

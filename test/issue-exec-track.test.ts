@@ -19,6 +19,7 @@ import {
   classifyExecTrackFromListItem,
   parseWaitUntil,
   formatWaitUntilLabel,
+  resolveExecTrackReason,
   EXEC_TRACK_LABELS,
   EXEC_TRACK_UI,
   type ExecTrack,
@@ -283,6 +284,40 @@ describe("classifyExecTrack — marcador aguardando-ate", () => {
     it("dia e mês de um dígito ganham zero à esquerda", () => {
       const data = parseWaitUntil("<!-- aguardando-ate: 2026-01-05 -->")!;
       assert.equal(formatWaitUntilLabel(data, new Date("2026-01-01T00:00:00Z")), "05/01");
+    });
+  });
+
+  describe("resolveExecTrackReason — #7884 (interpolação server-side)", () => {
+    it("marker:aguardando-ate com waitUntilLabel → short e long SEM nenhuma ocorrência de {date}", () => {
+      const data = parseWaitUntil("<!-- aguardando-ate: 2026-09-15 -->")!;
+      const label = formatWaitUntilLabel(data, new Date("2026-09-10T12:00:00Z"));
+      const resolved = resolveExecTrackReason("marker:aguardando-ate", label);
+      assert.ok(resolved);
+      assert.equal(resolved!.short.includes("{date}"), false);
+      assert.equal(resolved!.long.includes("{date}"), false);
+      assert.equal(resolved!.short, "agendado para 15/09");
+      assert.match(resolved!.long, /agendado para 15\/09/);
+    });
+
+    it("marker:aguardando-ate SEM waitUntilLabel cai no fallback genérico, nunca vaza {date} cru", () => {
+      const resolved = resolveExecTrackReason("marker:aguardando-ate", null);
+      assert.ok(resolved);
+      assert.equal(resolved!.short.includes("{date}"), false);
+      assert.equal(resolved!.short, "agendado para data no corpo da issue");
+    });
+
+    it("matched sem {date} na frase é retornado intacto (substituição inócua)", () => {
+      const resolved = resolveExecTrackReason("label:windows", null);
+      assert.deepEqual(resolved, EXEC_TRACK_MATCH_REASON["label:windows"]);
+    });
+
+    it("matched === null (caller legado) → null", () => {
+      assert.equal(resolveExecTrackReason(null, "15/09"), null);
+    });
+
+    it("matched desconhecido (fora do catálogo) → null, sem lançar", () => {
+      // @ts-expect-error — testando robustez contra valor fora do union em runtime
+      assert.equal(resolveExecTrackReason("nao-existe", "15/09"), null);
     });
   });
 

@@ -21,6 +21,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerSession, claimIssueCheckAndSet } from "../scripts/lib/session-registry.ts";
+import { EXEC_TRACK_MATCH_REASON } from "../scripts/lib/issue-exec-track.ts";
 import {
   derivePriority,
   deriveTrackFromBranch,
@@ -251,6 +252,39 @@ describe("parseIssues — files + execTrack (#3562, entrega 2; #5462)", () => {
     ];
     const [issue] = parseIssues(raw);
     assert.equal(issue.execTrack, "develop");
+  });
+
+  it("marcador aguardando-ate futuro -> execTrackReason já interpolado no payload, sem {date} cru (#7884)", () => {
+    // Regressão do #7884: PR #7878 (#7868) interpolava {date} só no CLIENTE
+    // (reasonCell em triagem.js). Um cliente mais velho que o servidor
+    // (skew de deploy) renderizava o placeholder cru. `execTrackReason` é o
+    // servidor entregando o texto JÁ resolvido — este teste garante que o
+    // {date} nunca sobrevive até o payload.
+    const raw: GhIssueRaw[] = [
+      {
+        number: 8,
+        title: "t",
+        url: "u",
+        state: "OPEN",
+        labels: [],
+        body: "<!-- aguardando-ate: 2026-09-15 -->",
+      },
+    ];
+    const [issue] = parseIssues(raw);
+    assert.equal(issue.execTrack, "agendada");
+    assert.equal(issue.execTrackMatched, "marker:aguardando-ate");
+    assert.ok(issue.execTrackReason);
+    assert.equal(issue.execTrackReason!.short.includes("{date}"), false);
+    assert.equal(issue.execTrackReason!.long.includes("{date}"), false);
+    assert.match(issue.execTrackReason!.short, /agendado para \d{2}\/\d{2}/);
+  });
+
+  it("execTrack sem marker:aguardando-ate -> execTrackReason também resolvido (sem {date} na frase)", () => {
+    const raw: GhIssueRaw[] = [
+      { number: 9, title: "t", url: "u", state: "OPEN", labels: [{ name: "windows" }], body: "" },
+    ];
+    const [issue] = parseIssues(raw);
+    assert.deepEqual(issue.execTrackReason, EXEC_TRACK_MATCH_REASON["label:windows"]);
   });
 });
 

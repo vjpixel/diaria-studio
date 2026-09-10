@@ -1037,6 +1037,45 @@ export const EXEC_TRACK_MATCH_REASON: Record<ExecTrackMatch, { short: string; lo
   },
 };
 
+/**
+ * Resolve o motivo (short/long) de UMA issue já com `{date}` interpolado —
+ * server-side (#7884, regressão do #7868/PR #7878). O #7868 tinha deixado a
+ * interpolação só no CLIENTE (`reasonCell` em `triagem.js`), servindo
+ * `EXEC_TRACK_MATCH_REASON` cru em `execTrackReasonUi.reasons` — um cliente
+ * mais VELHO que o servidor (aba aberta antes de um deploy, checkout de
+ * `public/` defasado em relação ao processo) renderiza o placeholder `{date}`
+ * literal em vez de resolvê-lo, porque a lógica de substituição não existia
+ * na versão do JS que ele carregou.
+ *
+ * Mover a interpolação pra cá elimina essa classe de skew: o payload de
+ * `/api/issues` já entrega o texto final por issue (`TriageIssue.execTrackReason`),
+ * e QUALQUER cliente — novo ou velho — que apenas exiba esse campo mostra a
+ * data certa. `execTrackReasonUi` (vocabulário estático, com o placeholder)
+ * continua sendo servido, e o cliente novo mantém o `replaceAll` como rede de
+ * segurança (cliente novo + servidor velho, que ainda não manda
+ * `execTrackReason`, continua funcionando via fallback).
+ *
+ * `matched === null` (caller legado que não populou `ExecTrackMatch`) retorna
+ * `null` — nada a resolver.
+ */
+export function resolveExecTrackReason(
+  matched: ExecTrackMatch | null,
+  waitUntilLabel?: string | null,
+): { short: string; long: string } | null {
+  if (matched === null) return null;
+  const entry = EXEC_TRACK_MATCH_REASON[matched];
+  if (!entry) return null;
+  // Mesmo fallback genérico do cliente (#7868) — nunca deixa `{date}` cru
+  // vazar caso `waitUntilLabel` não tenha sido populado por algum motivo
+  // (não deveria acontecer pra `marker:aguardando-ate`, mas a substituição é
+  // inócua pros demais `matched`, que não carregam `{date}` na frase).
+  const dateText = waitUntilLabel || "data no corpo da issue";
+  return {
+    short: entry.short.replaceAll("{date}", dateText),
+    long: entry.long.replaceAll("{date}", dateText),
+  };
+}
+
 /** Forma do badge por valor, na ordem de LEITURA da legenda: do que anda
  * sozinho hoje à noite até o que não anda de jeito nenhum — `agendada` entra
  * entre `develop` e `bloqueada` (#5682): anda sozinha *depois*, na data; não

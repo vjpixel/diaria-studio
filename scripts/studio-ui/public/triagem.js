@@ -235,7 +235,18 @@ function renderDispatchTrackLegend() {
 // já formatado `DD/MM`/`DD/MM/AAAA` no servidor — nenhuma lógica de data aqui,
 // só substituição de texto). Qualquer outro `matched` não tem `{date}` na
 // frase, então a substituição é inócua pra eles.
-export function reasonCell(track, matched, reasonUiOverride, waitUntilLabel) {
+//
+// #7884 — regressão do #7868: a interpolação acima só rodava no cliente, e
+// um cliente mais VELHO que o servidor (aba aberta antes de um deploy,
+// checkout de `public/` defasado) não tinha essa lógica ainda — renderizava
+// o placeholder `{date}` cru. `resolvedReason` (5º argumento, opcional) é o
+// texto JÁ interpolado no SERVIDOR (`TriageIssue.execTrackReason`,
+// `resolveExecTrackReason` em `issue-exec-track.ts`) — quando presente, tem
+// prioridade: nenhuma lógica de substituição roda aqui, então mesmo um
+// cliente velho que só sabe fazer `innerHTML = resolvedReason.short` está
+// correto. O `replaceAll` abaixo fica como rede de segurança pra cliente
+// novo + servidor velho (que ainda não manda `execTrackReason`).
+export function reasonCell(track, matched, reasonUiOverride, waitUntilLabel, resolvedReason) {
   const ui = reasonUiOverride ?? data.execTrackReasonUi;
   // Payload ainda não chegou (1º render antes do fetch) ou servidor antigo:
   // sem vocabulário não há o que dizer, e inventar texto aqui recriaria a 2ª
@@ -246,6 +257,9 @@ export function reasonCell(track, matched, reasonUiOverride, waitUntilLabel) {
   // houver, que é a leitura conservadora — some da coluna só o que sabemos
   // que anda sozinho.
   if (ui.actionable?.[track] === true) return '<span class="reason-none">—</span>';
+  if (resolvedReason) {
+    return `<span class="reason-text" title="${escapeHtml(resolvedReason.long)}">${escapeHtml(resolvedReason.short)}</span>`;
+  }
   const entry = ui.reasons?.[matched];
   if (!entry) return '<span class="reason-none">—</span>';
   // Fallback genérico se o servidor não populou a data (não deveria acontecer
@@ -359,7 +373,7 @@ function renderIssuesTable() {
       <td>${escapeHtml(i.title)}</td>
       <td>${dispatchBadge(i.execTrack, i.execTrackMatched)}${claimBadge(i.claim)}</td>
       <td>${priorityBadge(i.priority)}</td>
-      <td>${reasonCell(i.execTrack, i.execTrackMatched, undefined, i.execTrackWaitUntilLabel)}</td>
+      <td>${reasonCell(i.execTrack, i.execTrackMatched, undefined, i.execTrackWaitUntilLabel, i.execTrackReason)}</td>
       <td class="mono">${ageLabel(i.createdAt)}</td>
       <td class="mono">${fmtTime(i.updatedAt)}</td>
     `;
