@@ -155,6 +155,22 @@ não é morto por isso.
 | Neo (20) | 76 | 8 |
 | 300 (8) | 28 | 4 |
 
+Medição no Neo (20 cores), suíte completa, CPU da máquina amostrada a cada 5 s
+(inclui o que mais estava rodando — ruidoso, mas as três rodadas foram
+seguidas, na mesma máquina):
+
+| regime | processos em voo | wall clock | CPU média | CPU pico |
+|---|---|---|---|---|
+| antigo | 76 | 396 s | 86% | 100% |
+| 1 × nCPU | 20 | 478 s | 78% | 100% |
+| **0,5 × nCPU (atual)** | **8** | **454 s** | **60%** | **90%** |
+
+Nenhum batch estourou o teto nas três, e as falhas locais (pré-existentes,
+dependentes desta máquina) foram as mesmas. O custo real ficou em ~15% de wall
+clock, bem abaixo dos 2,5× que o #7875 mediu com teto de tempo fixo — o que
+confirma que aquele número vinha dos batches mortos e re-tentados, não da
+concorrência menor em si.
+
 CI continua como estava (runner dedicado, ninguém usando). O plano é impresso
 no stderr no início da rodada.
 
