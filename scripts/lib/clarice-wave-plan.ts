@@ -1531,9 +1531,16 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
   // total (a fila "cheia" da safra errada, caso real da issue).
   const proactiveMvTarget = cohortInversion?.coldTailCount ?? 0;
   const mvOnDemandPlan = planMvOnDemand(input.mvBacklog, Math.max(firstSendDeficit, proactiveMvTarget));
-  if (input.availableFirstSend < input.volumes.total) {
+  // #7856: teto do BLOQUEIO usa a mesma fila diária unificada que
+  // `clarice-envio-run.ts` já usa desde #7738 (engajados de ciclo anterior +
+  // ramp-warm), não só `availableFirstSend` (1º-envio vitalício) — sem isto o
+  // planejamento bloqueava/alertava um volume que a execução real aceitaria.
+  // `undefined` só em chamador legado que não populou `availableDailyQueue`
+  // (mesmo fallback de `clarice-envio-run.ts`, nunca superestima).
+  const queueAvailable = input.availableDailyQueue ?? input.availableFirstSend;
+  if (queueAvailable < input.volumes.total) {
     blockers.push(
-      `Fila de 1º envio (${fmt(input.availableFirstSend)}) é menor que o volume proposto (${fmt(input.volumes.total)}) — as últimas ondas sairiam menores que o planejado ou puxariam público de outra natureza.` +
+      `Fila diária disponível (${fmt(queueAvailable)}) é menor que o volume proposto (${fmt(input.volumes.total)}) — as últimas ondas sairiam menores que o planejado ou puxariam público de outra natureza.` +
         (mvOnDemandPlan.byCohort.length > 0
           ? ` Verificação MV sob demanda ${mvOnDemandPlan.backlogInsufficient ? "reduziria (mas NÃO cobre inteiramente)" : "cobriria"}: ${fmt(mvOnDemandPlan.totalPlanned)} de ${fmt(mvOnDemandPlan.targetVerifyCount)} contato(s) alvo, em ${mvOnDemandPlan.byCohort.length} cohort(s) (~US$ ${mvOnDemandPlan.estimatedCostUsd.toFixed(2)}) — ver seção "Verificação MV sob demanda" abaixo.`
           : ` Backlog MV (${fmt(input.mvBacklog.total)} contatos, excluindo cohorts MV-isentos) não tem candidato pra cobrir o déficit — a alavanca de fila não está disponível aqui.`),
@@ -1571,10 +1578,10 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
       "Nem toda onda anterior reportou tamanho de lista — o total já enviado é um PISO, não um número exato.",
     );
   }
-  const queueAfter = input.availableFirstSend - input.volumes.total;
+  const queueAfter = queueAvailable - input.volumes.total;
   if (queueAfter >= 0 && queueAfter < input.volumes.total) {
     warnings.push(
-      `Fila de 1º envio acaba logo: sobram ${fmt(queueAfter)} depois desta onda — menos que uma onda inteira. A alavanca pra continuar é verificar o backlog do MillionVerifier (${fmt(input.mvBacklog.total)} contatos, ~US$ ${input.mvBacklog.estimatedCostUsd.toFixed(0)}), não trocar o público pra reenvio.`,
+      `Fila diária acaba logo: sobram ${fmt(queueAfter)} depois desta onda — menos que uma onda inteira. A alavanca pra continuar é verificar o backlog do MillionVerifier (${fmt(input.mvBacklog.total)} contatos, ~US$ ${input.mvBacklog.estimatedCostUsd.toFixed(0)}), não trocar o público pra reenvio.`,
     );
   }
   if (input.nonOpeners.count > 0) {

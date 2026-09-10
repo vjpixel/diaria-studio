@@ -1751,7 +1751,36 @@ describe("buildWaveProposal (#4657)", () => {
 
   it("BLOQUEIA quando a fila é menor que o volume proposto", () => {
     const p = buildWaveProposal(proposalInput({ availableFirstSend: 100 }));
-    assert.match(p.blockers.join(" "), /Fila de 1º envio/);
+    assert.match(p.blockers.join(" "), /Fila diária disponível/);
+  });
+
+  it("REGRESSÃO #7856: NÃO bloqueia quando availableFirstSend é insuficiente mas a fila diária unificada cobre o volume", () => {
+    // Cenário do #7738/#7856: `availableFirstSend` (1º-envio vitalício) pode
+    // sub-representar a capacidade real assim que o editor pede volume acima
+    // do ramp-warm restante — a fila diária unificada (`availableDailyQueue`,
+    // engajados de ciclo anterior + ramp-warm) já é o que `clarice-envio-run.ts`
+    // usa como teto de EXECUÇÃO desde #7738/#7854. O planejamento
+    // (`buildWaveProposal`) tinha ficado defasado, bloqueando/avisando com a
+    // métrica mais estreita mesmo quando a execução real aceitaria o volume.
+    const p = buildWaveProposal(
+      proposalInput({
+        availableFirstSend: 100, // sozinho, insuficiente pro volume (1000)
+        availableDailyQueue: 2000, // fila unificada cobre o volume proposto
+      }),
+    );
+    assert.doesNotMatch(p.blockers.join(" "), /Fila diária disponível/);
+  });
+
+  it("REGRESSÃO #7856: continua bloqueando quando NEM a fila diária unificada cobre o volume", () => {
+    const p = buildWaveProposal(
+      proposalInput({ availableFirstSend: 100, availableDailyQueue: 300 }),
+    );
+    assert.match(p.blockers.join(" "), /Fila diária disponível \(300\)/);
+  });
+
+  it("REGRESSÃO #7856: sem availableDailyQueue (chamador legado), cai no fallback availableFirstSend — nunca superestima", () => {
+    const p = buildWaveProposal(proposalInput({ availableFirstSend: 100 }));
+    assert.match(p.blockers.join(" "), /Fila diária disponível \(100\)/);
   });
 
   it("REGRESSÃO #3682: falha na consulta de comprometidos BLOQUEIA, não avisa", () => {
@@ -1810,6 +1839,19 @@ describe("buildWaveProposal (#4657)", () => {
     // que a saída NÃO é trocar o público pra reenvio (mudança de natureza da
     // onda — aquisição → retenção — disfarçada de continuidade).
     assert.match(p.warnings.join(" "), /não trocar o público pra reenvio/);
+  });
+
+  it("REGRESSÃO #7856: o aviso de 'fila acaba logo' também segue a fila diária unificada, não só availableFirstSend", () => {
+    // availableFirstSend (300) sozinho estaria BEM abaixo do volume (1000) —
+    // mas a fila diária unificada (1500) sobra 500 depois da onda, o mesmo
+    // cenário de "acaba logo" do teste acima. Sem o #7856 aplicado também
+    // aqui, `queueAfter` teria saído negativo (300 - 1000) e o aviso nem
+    // apareceria — silenciando o sinal certo por causa da métrica errada.
+    const p = buildWaveProposal(
+      proposalInput({ availableFirstSend: 300, availableDailyQueue: 1500 }),
+    );
+    assert.equal(p.blockers.length, 0);
+    assert.match(p.warnings.join(" "), /Fila diária acaba logo: sobram 500/);
   });
 
   it("AVISA sobre não-abridores acumulados ainda elegíveis (canário pós-sunset #5041)", () => {
