@@ -90,11 +90,15 @@
  * completa.
  *
  * Puro: sem I/O, sem rede, sem `gh`. Recebe labels + corpo já buscados.
+ * Única exceção: a whitelist AAARRR (`aarrr-whitelist.json`, lida uma vez
+ * por processo) quando o caller não injeta `aarrrWhitelist`.
  *
  * @see .claude/skills/diaria-overnight/SKILL.md § Fase 0 passo 4
  * @see .claude/skills/diaria-develop/SKILL.md § Fronteira com o overnight nas ambíguas
  * @see scripts/lib/issue-decisions.ts (mesmo padrão de julgamento gravado)
  */
+
+import { isBlockedByAarrrWhitelist, loadAarrrWhitelist } from "./aarrr-whitelist.ts";
 
 /** Qual sessão consegue trabalhar a issue. Exclusivo — exatamente um valor
  * por issue, e a união dos seis cobre o backlog aberto inteiro.
@@ -154,6 +158,7 @@ export type ExecTrackMatch =
   | "label:beehiiv"
   | "label:bloqueio-execucao"
   | "label:dependencia-aberta"
+  | "label:aarrr-fora-da-whitelist"
   | "marker:aguardando-ate"
   | "label:not-this-week"
   | "label:next-month"
@@ -193,6 +198,7 @@ export const EXEC_TRACK_MATCH_CATALOG: readonly ExecTrackMatch[] = [
   "label:beehiiv",
   "label:bloqueio-execucao",
   "label:dependencia-aberta",
+  "label:aarrr-fora-da-whitelist",
   "marker:aguardando-ate",
   "label:not-this-week",
   "label:next-month",
@@ -580,6 +586,8 @@ export interface ExecTrackInput {
    * `scripts/studio-ui/studio-issues.ts` ter esquecido de propagá-lo).
    */
   state?: string | null;
+  /** Etapas AAARRR liberadas. Injetável pra teste; default = `aarrr-whitelist.json`. */
+  aarrrWhitelist?: ReadonlySet<string>;
 }
 
 /**
@@ -644,6 +652,11 @@ export function formatWaitUntilLabel(date: Date, now: Date = new Date()): string
  *                         `bloqueada`, sem precisar remover a label de
  *                         bloqueio pra obter a leitura certa (caso real:
  *                         #461/#463).
+ *  2b. `bloqueada`      — a issue tem label `aarrr:*` e nenhuma das suas
+ *                         etapas está em `aarrr-whitelist.json` (priorização
+ *                         por funil, decisão do editor 10/09/2026). Vence
+ *                         sobre develop/overnight: nenhuma sessão resolve
+ *                         etapa não liberada. Issue sem `aarrr:*` passa reto.
  *   3. `bloqueada`      — bloqueio externo (nenhuma sessão destrava sozinha).
  *                         Exceção (#5694): `external-blocker` acompanhada de
  *                         `credencial-escopo` NÃO conta aqui — vira `develop`
@@ -715,6 +728,10 @@ export function classifyExecTrackWithRule(input: ExecTrackInput): ExecTrackResul
   // real. Checado logo após `OUT_OF_ROUND_LABELS` (que ainda vence — o
   // editor engavetando uma épica é mais forte que "é uma épica").
   if (has(EPIC_LABEL)) return { track: "epica", matched: `label:${EPIC_LABEL}` };
+
+  if (isBlockedByAarrrWhitelist(labels, input.aarrrWhitelist ?? loadAarrrWhitelist())) {
+    return { track: "bloqueada", matched: "label:aarrr-fora-da-whitelist" };
+  }
 
   // #5694 — `external-blocker` + `credencial-escopo` sai de `BLOCKED_LABELS`
   // (vira `develop` no passo 5 abaixo). Só essa combinação específica: outra
@@ -873,7 +890,7 @@ export const EXEC_TRACK_EXPLAIN: Record<ExecTrack, string> = {
   agendada:
     "Agendada — tem data específica pra ser resolvida, registrada no marcador `aguardando-ate: AAAA-MM-DD`. Não está bloqueada por nada: é trabalho fazível que volta sozinho ao fluxo normal na data, sem ninguém precisar remover label. Adiamento sem data (`not-this-week`, `next-month`, `on-hold`) não é Agendada.",
   bloqueada:
-    "Bloqueada — nenhuma sessão destrava sozinha: conta de terceiro, credencial, plataforma plan-gated, deferimento vago sem data (`not-this-week`, `next-month`), ou dependência de outra issue ainda aberta (label `dependencia-aberta`, #7137 — aplicada/removida por script a partir do marcador `depends-on: #N`, desarma sozinha quando a dependência fecha). Marcador `aguardando-ate:` com data futura é Agendada, não Bloqueada — a menos que um bloqueio real coexista. Exceção (#5694): `external-blocker` + `credencial-escopo` (credencial já existe, só falta escopo) não é Bloqueada — vira Develop.",
+    "Bloqueada — nenhuma sessão destrava sozinha: etapa do funil (`aarrr:*`) fora de `aarrr-whitelist.json`, conta de terceiro, credencial, plataforma plan-gated, deferimento vago sem data (`not-this-week`, `next-month`), ou dependência de outra issue ainda aberta (label `dependencia-aberta`, #7137 — aplicada/removida por script a partir do marcador `depends-on: #N`, desarma sozinha quando a dependência fecha). Marcador `aguardando-ate:` com data futura é Agendada, não Bloqueada — a menos que um bloqueio real coexista. Exceção (#5694): `external-blocker` + `credencial-escopo` (credencial já existe, só falta escopo) não é Bloqueada — vira Develop.",
   epica:
     "Épica — issue `[ÉPICA]` guarda-chuva (label `epic-guarda-chuva`, #5968), nunca implementada direto: fecha só quando as issues-filhas mergearem. Vence sobre bloqueio/deferimento real (#6201) — uma épica com `kit-migration`/`beehiiv`/etc. coexistindo continua Épica, não Bloqueada, exceto se o editor já tirou a issue de circulação (`on-hold`/`wontfix`, que vence até Épica).",
   "fora-de-rodada":
@@ -968,6 +985,10 @@ export const EXEC_TRACK_MATCH_REASON: Record<ExecTrackMatch, { short: string; lo
   "label:dependencia-aberta": {
     short: "depende de issue aberta",
     long: "Label `dependencia-aberta` (#7137): a issue declara `depends-on: #N` e essa dependência ainda está aberta. Desarma SOZINHA quando a dependência fechar — quem remove a label é `scripts/reconcile-issue-dependencies.ts`, nunca a mão. O número da dependência está no corpo da issue.",
+  },
+  "label:aarrr-fora-da-whitelist": {
+    short: "etapa do funil não liberada",
+    long: "Labels `aarrr:*`: nenhuma das etapas do funil desta issue está em `aarrr-whitelist.json`. Destrava o editor adicionando a etapa à whitelist (ou removendo a label `aarrr:*`).",
   },
   "marker:aguardando-ate": {
     // `{date}` é interpolado pelo caller (`reasonCell` em triagem.js) com

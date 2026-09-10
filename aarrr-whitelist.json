@@ -1,0 +1,4 @@
+{
+  "_doc": "Whitelist de etapas AAARRR que as sessões autônomas (overnight, develop, continuo, hermes) podem resolver. Issue com label aarrr:* só é trabalhada se ao menos UMA das suas etapas estiver aqui; issue sem nenhuma label aarrr:* não é afetada. Valores válidos: awareness, acquisition, activation, retention, referral, revenue. Lista vazia = toda issue com label aarrr:* fica Bloqueada. Ver scripts/lib/aarrr-whitelist.ts.",
+  "whitelist": []
+}
