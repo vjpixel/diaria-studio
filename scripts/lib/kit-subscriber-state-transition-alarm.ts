@@ -243,11 +243,28 @@ export function onboardingCorrelationLines(
 /** Playbook de recuperação — o mesmo para transição e desaparecimento, e a
  *  razão de o alarme não ser só um relatório: sem ele, quem lê a issue
  *  precisa redescobrir do zero que `complained` não volta por API e que o
- *  recadastro dispara boas-vindas indevidas (#7660, 3º comentário). */
+ *  recadastro dispara boas-vindas indevidas (#7660, 3º comentário).
+ *
+ *  Item 0 (#7902): `cancelled` é o estado que resulta de
+ *  `POST /subscribers/{id}/unsubscribe` (`unsubscribeKitSubscriber`,
+ *  `kit-subscribers.ts`) — a PESSOA pediu pra sair (link de descadastro ou
+ *  painel do Kit), não uma falha de entrega. Diferente de
+ *  `complained`/`bounced`, que são sinal de problema de deliverability e
+ *  genuinamente pedem investigação, `cancelled` isolado (sem `apoio_nivel`,
+ *  sem correlação suspeita com um envio recente) normalmente NÃO precisa de
+ *  ação de recuperação — insistir em reativar quem pediu pra sair ignora o
+ *  próprio pedido. Achado ao vivo que motivou a clarificação: #7902, um
+ *  cadastro via ads pagos (`utm_source: meta-ads`) que cancelou 2 dias
+ *  depois — comportamento normal de churn de aquisição paga, não um bug. */
 export function kitLossRecoveryPlaybook(): string[] {
   return [
     "## Recuperação (#7660)",
     "",
+    "> `cancelled` = a própria pessoa se descadastrou (link de descadastro ou painel do",
+    "   Kit) — não é falha de entrega. Diferente de `complained`/`bounced`, isolado (sem",
+    "   `apoio_nivel`, sem correlação de envio suspeita abaixo) normalmente NÃO precisa de",
+    "   ação: reativar quem pediu pra sair ignora o pedido dele. Confirme que não foi um",
+    "   cancelamento em massa por erro nosso antes de tratar como churn espontâneo.",
     "1. O Kit NÃO reativa `complained`/`bounced` por API. O único caminho é a pessoa",
     "   se recadastrar pelo form de DOI (`platform.config.json` → `kit.doiFormId`).",
     "   `cancelled`/`inactive` têm caminhos diferentes — conferir o painel antes.",

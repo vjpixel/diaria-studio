@@ -29,6 +29,7 @@ import {
   kitStateTransitionFindingKey,
   kitDisappearanceFindingKey,
   emptyKitStateTransitionAlarmState,
+  kitLossRecoveryPlaybook,
   KIT_STATE_TRANSITION_ALARM_STATES,
   type KitLossOnboardingContext,
   type KitStateTransitionSnapshotEntry,
@@ -144,6 +145,35 @@ describe("toStateTransitionAlarmFindings (#7660)", () => {
       { id: 2, address: "b@x.com", fromState: "active", toState: "bounced", detectedAt: NOW.toISOString() },
     ]);
     assert.equal(new Set(fs.map((f) => f.fingerprint)).size, 2);
+  });
+
+  // #7902: uma transição active → cancelled (unsubscribe voluntário, ver
+  // `unsubscribeKitSubscriber`) é um evento REAL e corretamente detectado —
+  // não um falso positivo de código. O que faltava era a issue deixar claro,
+  // de cara, que `cancelled` não pede o mesmo playbook de "recuperação
+  // urgente" que `complained`/`bounced`. Regressão: o corpo da finding
+  // carrega essa distinção pra QUALQUER `toState`, não só `cancelled`, porque
+  // `buildLossFindingBody` compõe o mesmo playbook nos dois eventos.
+  it("corpo da finding distingue cancelled (unsubscribe voluntário) de complained/bounced", () => {
+    const [f] = toStateTransitionAlarmFindings([
+      {
+        id: 4286599678,
+        address: "jose@x.com",
+        fromState: "active",
+        toState: "cancelled",
+        detectedAt: NOW.toISOString(),
+      },
+    ]);
+    assert.match(f.body, /a própria pessoa se descadastrou/);
+    assert.match(f.body, /não é falha de entrega/);
+  });
+});
+
+describe("kitLossRecoveryPlaybook (#7902)", () => {
+  it("item 0 explica que cancelled é ação da própria pessoa, não perda a recuperar", () => {
+    const linhas = kitLossRecoveryPlaybook().join("\n");
+    assert.match(linhas, /^> `cancelled` = a própria pessoa se descadastrou/m);
+    assert.match(linhas, /normalmente NÃO precisa de/);
   });
 });
 
