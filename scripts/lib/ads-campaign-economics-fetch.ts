@@ -223,9 +223,15 @@ const META_GRAPH_API_VERSION_DEFAULT = "v21.0";
 const META_ADS_INSIGHTS_MAX_PAGES = 10;
 
 /** 1 linha de `act_{id}/insights` já parseada (JSON) — `spend`/`clicks`/
- *  `impressions` vêm como STRING decimal na Graph API (confirmado ao vivo
- *  no comentário da issue #7536: `spend 87,65`), nunca `number` — o parser
- *  aceita os dois pela mesma cautela dupla de `GaqlPerformanceApiRow`. */
+ *  `impressions` vêm como STRING decimal na Graph API, nunca `number`
+ *  (confirmado ao vivo em 09/09/2026, chamando `GET act_{id}/insights?
+ *  time_increment=1&fields=spend,clicks,impressions,date_start` direto:
+ *  o body raw devolve `"spend":"170.17"` — PONTO decimal, formato
+ *  americano. O `87,65` citado no comentário da issue #7536 era a
+ *  formatação PT-BR que a ferramenta MCP usou pra EXIBIR o número pro
+ *  editor, não o valor literal do JSON — não confundir os dois. O parser
+ *  aceita string OU number pela mesma cautela dupla de
+ *  `GaqlPerformanceApiRow`, mas nunca precisa tratar vírgula. */
 export interface MetaAdsInsightsApiRow {
   date_start?: string;
   date_stop?: string;

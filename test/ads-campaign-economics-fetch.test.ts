@@ -163,6 +163,25 @@ describe("#7536 — fetchMetaAdsChannelMetrics / normalizeMetaAdsInsightsRows", 
     assert.equal(out.length, 1);
     assert.equal(out[0].date, "2026-01-01");
   });
+
+  it("paginação sem fim (paging.next sempre presente) excede maxPages -> { metrics: [], error }, nunca loop infinito", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      // Sempre devolve paging.next apontando pra si mesmo — nunca termina
+      // por conta própria; só o guard maxPages deveria interromper.
+      return jsonResponse(200, {
+        data: [{ date_start: "2026-01-01", spend: "1", clicks: "1", impressions: "1" }],
+        paging: { next: "https://graph.facebook.com/v21.0/act_x/insights?after=loop" },
+      });
+    }) as typeof fetch;
+
+    const result = await fetchMetaAdsChannelMetrics(fetchImpl, "tok", { now: new Date("2026-01-02T00:00:00Z"), maxPages: 3 });
+    assert.deepEqual(result.metrics, []);
+    assert.equal(result.fetchedAt, null);
+    assert.match(result.error ?? "", /maxPages=3/);
+    assert.equal(calls, 3);
+  });
 });
 
 describe("#7536 — metaAdsAuthConfigFromEnv", () => {
@@ -226,6 +245,13 @@ describe("#7536 — fetchKitSignupsByChannel", () => {
               created_at: "2026-01-06T10:00:00.000Z",
               fields: {},
             },
+            {
+              id: 5,
+              email_address: "i@j.com",
+              state: "active",
+              created_at: "2026-01-07T10:00:00.000Z",
+              fields: { utm_source: "meta-ads" },
+            },
           ],
           pagination: emptyPagination,
         })) as typeof fetch,
@@ -233,13 +259,15 @@ describe("#7536 — fetchKitSignupsByChannel", () => {
     );
 
     assert.equal(result.error, null);
-    assert.equal(result.signups.length, 3);
+    assert.equal(result.signups.length, 4);
     const googleD1 = result.signups.find((s) => s.canal === "Google Ads (teste 2608)" && s.date === "2026-01-05");
     const msD1 = result.signups.find((s) => s.canal === "Microsoft Ads (teste 2608)" && s.date === "2026-01-05");
     const googleD2 = result.signups.find((s) => s.canal === "Google Ads (teste 2608)" && s.date === "2026-01-06");
+    const metaD3 = result.signups.find((s) => s.canal === META_ADS_TESTE_CANAL && s.date === "2026-01-07");
     assert.equal(googleD1?.cadastros, 1);
     assert.equal(msD1?.cadastros, 1);
     assert.equal(googleD2?.cadastros, 1);
+    assert.equal(metaD3?.cadastros, 1);
   });
 
   it("dateRangeStart filtra cadastros anteriores ao início do teste", async () => {
