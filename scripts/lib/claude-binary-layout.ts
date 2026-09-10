@@ -13,7 +13,7 @@
  * procurar — mesma família de risco documentada na #7140 (resposta errada,
  * plausível, aceita como se fosse a resposta certa).
  *
- * Estado medido ao vivo (helios, 02-03/09/2026, reproduzido de novo ao
+ * Estado medido ao vivo (300, 02-03/09/2026, reproduzido de novo ao
  * investigar esta issue): o install global do CLI
  * (`~/.npm-global/lib/node_modules/@anthropic-ai/claude-code/`) tinha
  * `bin/` contendo **só `claude.exe`** (binário Windows) numa máquina

@@ -94,7 +94,7 @@ describe("buildWatchdogOnCalendar — validação real via systemd-analyze (quan
     // `times.length > 0` abaixo passaria feliz validando 1 ocorrência em vez
     // de 20. Forçar o TZ remove a dependência em vez de confiar nela.
     //
-    // O comentário anterior justificava isto dizendo que "`helios` roda em
+    // O comentário anterior justificava isto dizendo que "`300` roda em
     // Etc/UTC". O TZ do SISTEMA é mesmo `Etc/UTC`, mas o do PROCESSO não
     // precisa ser (a sessão que achou o #6974 rodava em `America/Sao_Paulo`
     // por herança do shell) — a premissa era falsa e é justamente a que

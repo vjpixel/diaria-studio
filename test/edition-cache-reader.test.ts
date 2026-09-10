@@ -527,7 +527,7 @@ describe("loadBeehiivCache / loadKitCache / loadUnifiedEditionCache (I/O real, d
         JSON.stringify({ slug: "a", publish_date: 100, status: "confirmed" }),
       );
       writeFileSync(
-        join(dir, "post_78ed9837-helios-safeBackup-0001.json"),
+        join(dir, "post_78ed9837-300-safeBackup-0001.json"),
         JSON.stringify({ slug: "a", publish_date: 100, status: "confirmed" }),
       );
       const posts = loadBeehiivCache(dir);

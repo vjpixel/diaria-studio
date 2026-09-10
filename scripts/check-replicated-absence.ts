@@ -14,8 +14,8 @@
  *   npx tsx scripts/check-replicated-absence.ts --file data/.foo-issues.json [--executing-machine]
  *
  * `--executing-machine`: passe só quando ESTA máquina é a que roda a
- * task/timer investigado (ex: rodando isto em `helios` pra checar o próprio
- * store de `helios`). Sem a flag (default, e o caso mais comum quando se
+ * task/timer investigado (ex: rodando isto em `300` pra checar o próprio
+ * store de `300`). Sem a flag (default, e o caso mais comum quando se
  * investiga a partir da máquina do editor), o veredito nunca confirma
  * ausência — só aponta pra checar na máquina executora.
  *

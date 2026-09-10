@@ -539,7 +539,7 @@ test("#7045 — worktree É excluído quando seu nome aparece em touched_paths/d
   ];
   const activeSession: SessionRecord = {
     kind: "continuo",
-    machineTag: "helios",
+    machineTag: "300",
     sessionId: "sess-continuo",
     startedAt: "2026-09-01T00:00:00.000Z",
     lastHeartbeat: "2026-09-01T00:05:00.000Z",
@@ -599,7 +599,7 @@ test("#7045 — sessão STALE não exclui worktree nenhum (mesmo com footprint)"
   const entries = [{ path: "C:/repo/.claude/worktrees/agent-x", branch: "develop/fix-1", locked: false }];
   const staleSession: SessionRecord = {
     kind: "overnight",
-    machineTag: "helios",
+    machineTag: "300",
     sessionId: "sess-morta",
     startedAt: "2026-08-30T00:00:00.000Z",
     lastHeartbeat: "2026-08-30T00:05:00.000Z",
@@ -791,7 +791,7 @@ test("#7304 — cleanup rodado pela PRÓPRIA sessão remove o próprio worktree,
 
   const propria: SessionRecord = {
     kind: "overnight",
-    machineTag: "helios",
+    machineTag: "300",
     sessionId: "sess-propria",
     startedAt: "2026-09-03T00:00:00.000Z",
     lastHeartbeat: "2026-09-03T00:05:00.000Z",
@@ -799,7 +799,7 @@ test("#7304 — cleanup rodado pela PRÓPRIA sessão remove o próprio worktree,
   };
   const peer: SessionRecord = {
     kind: "continuo",
-    machineTag: "helios",
+    machineTag: "300",
     sessionId: "sess-peer",
     startedAt: "2026-09-03T00:00:00.000Z",
     lastHeartbeat: "2026-09-03T00:05:00.000Z",

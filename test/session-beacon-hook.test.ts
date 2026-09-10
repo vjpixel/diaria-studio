@@ -216,7 +216,7 @@ describe("#6168 Parte B — o beacon nunca destrói estado alheio", () => {
     // dano do #6294, por outro caminho.
     const previous = {
       kind: "overnight",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "sess-1",
       startedAt: iso(-3_600_000),
       lastHeartbeat: iso(-60_000),
@@ -225,7 +225,7 @@ describe("#6168 Parte B — o beacon nunca destrói estado alheio", () => {
     const r = buildBeaconRecord(previous, event({ newPaths: ["a.ts"] }));
     assert.deepEqual(r!.claimed_issues, [5653, 5942, 6035]);
     assert.equal(r!.kind, "overnight", "o beacon NÃO rebaixa uma coordenadora a interactive");
-    assert.equal(r!.machineTag, "helios");
+    assert.equal(r!.machineTag, "300");
     assert.equal(r!.startedAt, previous.startedAt, "startedAt original preservado — o beacon não rejuvenesce a sessão");
   });
 
@@ -236,8 +236,8 @@ describe("#6168 Parte B — o beacon nunca destrói estado alheio", () => {
     const dir = join(root, "sessions");
     try {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, "overnight-helios-sess-1.json"), "{}", "utf8");
-      assert.equal(findExistingSessionFile(dir, "sess-1"), "overnight-helios-sess-1.json");
+      writeFileSync(join(dir, "overnight-300-sess-1.json"), "{}", "utf8");
+      assert.equal(findExistingSessionFile(dir, "sess-1"), "overnight-300-sess-1.json");
       assert.equal(findExistingSessionFile(dir, "sess-outra"), null);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -271,9 +271,9 @@ describe("#6168 Parte B — o beacon nunca destrói estado alheio", () => {
     const dir = join(root, "sessions");
     try {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, "interactive-helios-sess-1.json"), "{}", "utf8");
-      writeFileSync(join(dir, "overnight-helios-sess-1.json"), "{}", "utf8");
-      assert.equal(findExistingSessionFile(dir, "sess-1"), "overnight-helios-sess-1.json");
+      writeFileSync(join(dir, "interactive-300-sess-1.json"), "{}", "utf8");
+      writeFileSync(join(dir, "overnight-300-sess-1.json"), "{}", "utf8");
+      assert.equal(findExistingSessionFile(dir, "sess-1"), "overnight-300-sess-1.json");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -284,9 +284,9 @@ describe("#6168 Parte B — o beacon nunca destrói estado alheio", () => {
     const dir = join(root, "sessions");
     try {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, "interactive-helios-sess-1.json"), "{}", "utf8");
-      writeFileSync(join(dir, "develop-helios-sess-1.json"), "{}", "utf8");
-      assert.equal(findExistingSessionFile(dir, "sess-1"), "develop-helios-sess-1.json");
+      writeFileSync(join(dir, "interactive-300-sess-1.json"), "{}", "utf8");
+      writeFileSync(join(dir, "develop-300-sess-1.json"), "{}", "utf8");
+      assert.equal(findExistingSessionFile(dir, "sess-1"), "develop-300-sess-1.json");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -297,8 +297,8 @@ describe("#6168 Parte B — o beacon nunca destrói estado alheio", () => {
     const dir = join(root, "sessions");
     try {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, "interactive-helios-sess-1.json"), "{}", "utf8");
-      assert.equal(findExistingSessionFile(dir, "sess-1"), "interactive-helios-sess-1.json");
+      writeFileSync(join(dir, "interactive-300-sess-1.json"), "{}", "utf8");
+      assert.equal(findExistingSessionFile(dir, "sess-1"), "interactive-300-sess-1.json");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -320,9 +320,9 @@ describe("#6168 Parte B — o beacon nunca destrói estado alheio", () => {
     const dir = join(root, "sessions");
     try {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, "interactive-helios-sess-1.json"), "{}", "utf8");
-      writeFileSync(join(dir, "continuo-review-helios-sess-1.json"), "{}", "utf8");
-      assert.equal(findExistingSessionFile(dir, "sess-1"), "interactive-helios-sess-1.json");
+      writeFileSync(join(dir, "interactive-300-sess-1.json"), "{}", "utf8");
+      writeFileSync(join(dir, "continuo-review-300-sess-1.json"), "{}", "utf8");
+      assert.equal(findExistingSessionFile(dir, "sess-1"), "interactive-300-sess-1.json");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -337,7 +337,7 @@ describe("#6168 Parte B — o beacon nunca destrói estado alheio", () => {
     const dir = join(root, "sessions");
     try {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, "continuo-review-helios-sess-1.json"), "{}", "utf8");
+      writeFileSync(join(dir, "continuo-review-300-sess-1.json"), "{}", "utf8");
       assert.equal(findExistingSessionFile(dir, "sess-1"), null);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -351,7 +351,7 @@ describe("#6168 Parte B — o beacon nunca destrói estado alheio", () => {
     const dir = join(root, "sessions");
     try {
       mkdirSync(dir, { recursive: true });
-      const resolvedPath = join(dir, "interactive-helios-sess-1.json");
+      const resolvedPath = join(dir, "interactive-300-sess-1.json");
       writeFileSync(resolvedPath, "{}", "utf8");
       assert.equal(resolveWritePathAtWriteTime(dir, "sess-1", resolvedPath), resolvedPath);
     } finally {
@@ -367,8 +367,8 @@ describe("#6168 Parte B — o beacon nunca destrói estado alheio", () => {
       // O `interactive-*` que o beacon resolveu originalmente NÃO existe mais
       // em disco (foi promovido/removido por `registerSession` entre a
       // resolução e este ponto) — só o `overnight-*` promovido existe agora.
-      const resolvedPath = join(dir, "interactive-helios-sess-1.json");
-      const promotedPath = join(dir, "overnight-helios-sess-1.json");
+      const resolvedPath = join(dir, "interactive-300-sess-1.json");
+      const promotedPath = join(dir, "overnight-300-sess-1.json");
       writeFileSync(promotedPath, "{}", "utf8");
       assert.equal(resolveWritePathAtWriteTime(dir, "sess-1", resolvedPath), promotedPath);
     } finally {
@@ -381,7 +381,7 @@ describe("#6168 Parte B — o beacon nunca destrói estado alheio", () => {
     const dir = join(root, "sessions");
     try {
       mkdirSync(dir, { recursive: true });
-      const resolvedPath = join(dir, "interactive-helios-sess-1.json");
+      const resolvedPath = join(dir, "interactive-300-sess-1.json");
       assert.equal(resolveWritePathAtWriteTime(dir, "sess-1", resolvedPath), resolvedPath);
     } finally {
       rmSync(root, { recursive: true, force: true });

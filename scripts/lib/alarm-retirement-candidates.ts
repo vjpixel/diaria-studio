@@ -88,7 +88,7 @@
  * (`NOT_PLANNED` por falta de commit associado, não por descarte), e isso
  * lê exatamente como "3 execuções sem ação". Casos reais vistos nesta
  * mesma issue: o timer órfão de `systemd-unit-rate-alarm` (desarmado à mão
- * no `helios`) e de `cursos-error-alarm` (idem). Se a lista de candidatos
+ * no `300`) e de `cursos-error-alarm` (idem). Se a lista de candidatos
  * começar a dar falso positivo por esse padrão, o conserto correto NÃO é
  * subir `ALARM_RETIREMENT_THRESHOLD` — é ensinar o mecanismo a distinguir
  * "fechou porque alguém agiu (ainda que fora do repo)" de "fechou porque

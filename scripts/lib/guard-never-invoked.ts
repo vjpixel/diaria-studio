@@ -4,7 +4,7 @@
  * Lógica PURA do guard mecânico do próprio guard: detecta scripts
  * `check-*.ts`/`*-alarm.ts`/`*-gate.ts`/`*-drift-check.ts` sem nenhum ponto
  * de invocação nas superfícies verificáveis LOCALMENTE (fora do escopo
- * deste guard: crons/timers do servidor `helios`, que exigem SSH e não são
+ * deste guard: crons/timers do servidor `300`, que exigem SSH e não são
  * enumeráveis a partir deste repo — ver docstring do CLI,
  * `scripts/check-guard-never-invoked.ts`).
  *

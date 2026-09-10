@@ -187,7 +187,7 @@ describe("readActiveCoordinatorSessionIds (#6971) — fail-open sempre", () => {
 
   it("sessão overnight fresca, mesma máquina → incluída", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-helios-sess1.json", {
+    writeSession(root, "overnight-300-sess1.json", {
       kind: "overnight",
       sessionId: "sess1",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
@@ -200,8 +200,8 @@ describe("readActiveCoordinatorSessionIds (#6971) — fail-open sempre", () => {
   it("JSON malformado em uma entrada não derruba a leitura das demais", () => {
     const root = freshRoot();
     mkdirSync(sessionsDir(root), { recursive: true });
-    writeFileSync(join(sessionsDir(root), "overnight-helios-broken.json"), "{not valid json", "utf8");
-    writeSession(root, "overnight-helios-sess2.json", {
+    writeFileSync(join(sessionsDir(root), "overnight-300-broken.json"), "{not valid json", "utf8");
+    writeSession(root, "overnight-300-sess2.json", {
       kind: "overnight",
       sessionId: "sess2",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
@@ -320,7 +320,7 @@ describe("shouldBlockSharedCheckoutRm (#6971)", () => {
         targetPaths: [insidePath],
         checkoutRoot: root,
         isWorktree: false,
-        activeCoordinatorSessionIds: new Set(["develop-helios-3132ef2c"]),
+        activeCoordinatorSessionIds: new Set(["develop-300-3132ef2c"]),
         callerSessionId: undefined,
       }),
       true,

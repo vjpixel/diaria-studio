@@ -21,7 +21,7 @@ effort: medium
 > produção dela — revertido no #6060. Guard mecânico:
 > `test/continuo-infra-consumidor-externo.test.ts`. Remover ESTE arquivo
 > (o pedido original do #6056) segue possível, mas só depois de confirmar no
-> `helios` que a `hermes-diaria-continuo` duplica o conteúdo em vez de
+> `300` que a `hermes-diaria-continuo` duplica o conteúdo em vez de
 > CITÁ-LO — o padrão deste repo é citar, não duplicar.
 
 > **Estado (#5293, atualizado 14/08/2026): itens 1-6 implementados.** A
@@ -260,7 +260,7 @@ item 18 de `context/overnight-dispatch-rules.md`):
 3. **na SAÍDA, antes de encerrar o tick** — junto do `end` obrigatório abaixo.
 
 **Encerrar o registro ao fim de CADA tick — não é opcional (#6168).** A skill
-externa `hermes-diaria-continuo` (no `helios`, fora deste repo) registra com um
+externa `hermes-diaria-continuo` (no `300`, fora deste repo) registra com um
 `session-id` ESTÁVEL entre ticks. Sem `end` no fechamento, o registro sobrevive
 carregando `claimed_issues` de trabalho já encerrado, e nada distingue "tick
 rodando agora" de "tick que terminou há 50 min" — na prática, overnight e
@@ -360,7 +360,7 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   (`gh pr checks --watch` → gate → squash-merge) descreve o fluxo desta skill
   DESTE repo, que hoje não tem consumidor (#7702).** O que roda em produção é
   a skill do Hermes (`hermes/skills/hermes-diaria-continuo/`, invocada pelo
-  cron do `helios` — ver CLAUDE.md), e lá o tick **abre a PR e para**:
+  cron do `300` — ver CLAUDE.md), e lá o tick **abre a PR e para**:
   `continuo-pr-review.sh` é a **única autoridade de merge** do fluxo contínuo,
   num cron separado, registrando-se com o kind `continuo-review`. Não assumir,
   a partir deste parágrafo, que uma sessão `continuo` revisa ou mergeia — foi

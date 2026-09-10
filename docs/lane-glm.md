@@ -126,7 +126,7 @@ preferência de implementação. Não confundir com decisão de design não
 verificada — o teste aconteceu e os dois lados (sessões autenticadas por
 assinatura claude.ai vs. por gateway) foram comparados lado a lado.
 
-Reprodução (`helios`, 01/09/2026): subiu 1 sessão `claude --model
+Reprodução (`300`, 01/09/2026): subiu 1 sessão `claude --model
 z-ai/glm-5.3-flash --remote-control` autenticada via `ANTHROPIC_BASE_URL` +
 `ANTHROPIC_AUTH_TOKEN` (OpenRouter) ao lado de 2 sessões autenticadas pela
 assinatura claude.ai. As 2 sessões claude.ai criaram socket em

@@ -22,7 +22,7 @@ regra fabricada, #7130 laço não fechado, #6712 estado alucinado).
 ## Uso
 
 ```bash
-# no helios, onde o Ollama roda
+# no 300, onde o Ollama roda
 python3 probe.py idle                                  # a máquina está medível?
 python3 probe.py show      --model qwen-64k:latest     # o que o Ollama declara
 python3 probe.py window    --model qwen-64k:latest     # janela ÚTIL real

@@ -3,7 +3,7 @@
  *
  * Lógica PURA (sem I/O) do contrapeso que o #6960 pede depois de o editor
  * decidir, em 01/09/2026, desligar o auto-updater do Claude Code no
- * `helios` (motivo/decisão registrados em comentário na #6927 — o binário
+ * `300` (motivo/decisão registrados em comentário na #6927 — o binário
  * quebrou 5x no mesmo dia). O alarme do #6927
  * (`scripts/claude-session-version-drift-alarm.ts`) mede um sintoma
  * diferente: `/proc/<pid>/exe` terminando em `(deleted)`, sinal de que

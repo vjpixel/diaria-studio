@@ -3,7 +3,7 @@
  *
  * `successExitCodes` em `scripts/lib/scheduled-tasks.ts` só vira
  * comportamento REAL quando a unit `.service` correspondente, já ARMADA em
- * `~/.config/systemd/user/` no `helios`, declara `SuccessExitStatus=` pra
+ * `~/.config/systemd/user/` no `300`, declara `SuccessExitStatus=` pra
  * esse exit code (feature nativa do systemd, `man systemd.exec`) — ver
  * `scripts/lib/systemd-units.ts` (`buildSystemdUnitFiles`), que é quem
  * GERA esse texto a partir do registro.
@@ -22,7 +22,7 @@
  *
  * `isExitCodeArmedForUnit` lê a unit REAL em disco (se acessível — sessão
  * cloud/worktree isolado/clone fresco nunca tem `~/.config/systemd/user/`
- * populado, então "não encontrado" é o caminho normal fora do `helios`, não
+ * populado, então "não encontrado" é o caminho normal fora do `300`, não
  * um erro) e confirma que `SuccessExitStatus=` já inclui o exit code em
  * questão. Fail-soft SEMPRE na direção conservadora: qualquer situação em
  * que não dá pra confirmar a declaração (arquivo ausente, sem permissão,

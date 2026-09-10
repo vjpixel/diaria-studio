@@ -11,7 +11,7 @@ pergunta o que falta pra uma issue rodar no `/diaria-overnight` ou no
 e que **lê a thread inteira antes de perguntar**, pra nunca repetir uma
 pergunta já respondida num comentário.
 
-Produto desta skill: a fila fica mais gorda pro `helios` (#5751) e o editor
+Produto desta skill: a fila fica mais gorda pro `300` (#5751) e o editor
 gasta minutos, não uma sessão inteira, destravando o backlog.
 
 ## Requisito central — ler tudo antes de perguntar QUALQUER coisa
@@ -128,7 +128,7 @@ execução de {recorded_at} ("{motivo}") segue valendo, nenhuma mudança.`
 Para cada issue em `bloqueioConfirmado` **com `escopo: "sem-sinal"`** (#7694):
 aqui o estado MUDA, e é o achado de maior valor da varredura — a thread
 documenta um bloqueio e a **label está faltando**, então a issue estava
-classificada `overnight` e o `helios` ia tentar executá-la e falhar.
+classificada `overnight` e o `300` ia tentar executá-la e falhar.
 Comentar não basta: rotear.
 
 ```bash
@@ -227,7 +227,7 @@ acha?"*. Sempre com o comando/passo exato e as 3 saídas:
 
 > A unit `diaria-reconcile-send-audiences.service` está caída desde 05/09.
 > Rodar `systemctl --user restart diaria-reconcile-send-audiences` no
-> `helios` destrava. Já rodou?
+> `300` destrava. Já rodou?
 > ( já rodei / agora não / não é isso — o problema é outro )
 
 **Priorização dentro do cap.** `AskUserQuestion` é 4 perguntas × 4 opções por
@@ -285,7 +285,7 @@ que ninguém fez.
 
 ## Passo 5 — relatório final
 
-**Guard obrigatório antes de escrever qualquer "pronto pro helios"/"fica pro
+**Guard obrigatório antes de escrever qualquer "pronto pro 300"/"fica pro
 develop": re-rodar `npx tsx scripts/desbloqueia-scan.ts` (ou, por issue,
 reler o label + o comentário `route-issue` mais recente) e citar o campo
 `track` retornado — nunca o recall de prosa lida antes ("decisão
@@ -296,10 +296,10 @@ Beehiiv/LinkedIn/Facebook: um comentário em prosa dizendo "Roteado para
 overnight" pode estar desatualizado se o label que a classificação
 mecânica lê (ex: `trade-off-real`) não foi removido — foi exatamente o
 que aconteceu com #5125 em 260828. Ler "Roteado para develop" e escrever
-"pronto pro helios" no relatório é o mesmo erro pelo lado inverso —
+"pronto pro 300" no relatório é o mesmo erro pelo lado inverso —
 substituir o valor mecânico já visível por um padrão genérico
-("decisão registrada = resolvido = helios pega"). Nenhum dos dois é
-aceitável: o relatório só pode nomear `helios`/overnight para uma issue
+("decisão registrada = resolvido = 300 pega"). Nenhum dos dois é
+aceitável: o relatório só pode nomear `300`/overnight para uma issue
 cujo `track` mecânico, checado nesta mesma rodada, é `overnight`.
 
 Terminar com um resumo, não uma lista de comandos executados:
@@ -320,7 +320,7 @@ Varridas: N candidatas (bloqueada/develop/·sem sinal/fora-de-rodada)
   {I} não perguntadas nesta rodada — cooldown de adiamento ativo, ou cortadas pelo cap
   {F} erro de leitura — não foi possível ler a thread, ninguém foi perguntado (rodar de novo: #...)
 
-Pronto pro helios na próxima rodada: #X, #Y, #Z
+Pronto pro 300 na próxima rodada: #X, #Y, #Z
 Seguem bloqueadas: #W (motivo: ...)
 Esperando ação sua: #V (ação: ..., adiada em {data})
 ```
@@ -329,7 +329,7 @@ Esperando ação sua: #V (ação: ..., adiada em {data})
 
 - **Triar não é implementar.** O Passo 2b decide o TRACK de uma issue
   `·sem sinal` e nada mais — nunca começa o trabalho da issue, mesmo quando
-  ele é óbvio e pequeno. Issue triada como `overnight` fica pro `helios`
+  ele é óbvio e pequeno. Issue triada como `overnight` fica pro `300`
   (#5751), sem exceção.
 - **Não implementa nada.** Se o editor quiser seguir direto pra
   implementação, esta skill não encadeia sozinha (mesma fronteira do

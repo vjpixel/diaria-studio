@@ -18,7 +18,7 @@ import { spawnSync } from "node:child_process";
 import {
   DEVELOP_PULADA_MOTIVOS,
   findInvalidPuladaMotivos,
-  findHeliosBuraco,
+  findDeixadoPara300Buraco,
   checkDevelopPlanMotivosFromIssues,
   checkDevelopPlanMotivos,
   type DevelopPlanIssueLike,
@@ -235,69 +235,109 @@ describe("CLI (scripts/validate-develop-plan-motivo.ts)", () => {
     assert.equal(r.status, 2);
     assert.match(r.stderr, /uso: --plan/);
   });
+
+  // #7682 — a CLI wira `findDeixadoPara300Buraco` separadamente de
+  // `checkDevelopPlanMotivos` (ver validate-develop-plan-motivo.ts); os
+  // testes acima só cobrem o vocabulário. Este cobre o caminho do "buraco"
+  // fim-a-fim via subprocess, com os dois valores (novo e alias legado).
+  it("#7682: status deixado-para-o-300 em issue de track develop → exit 1, mensagem cita o issue e os dois valores (novo + legado)", () => {
+    const planPath = writePlanFixture({
+      issues: [{ number: 5125, status: "deixado-para-o-300", exec_track_painel: "develop" }],
+    });
+    const r = run(["--plan", planPath]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /#5125/);
+    assert.match(r.stderr, /deixado-para-o-300/);
+    assert.match(r.stderr, /deixado-para-o-helios/);
+  });
+
+  it("#7682: status deixado-para-o-helios (alias legado) em issue de track develop → MESMO exit 1 e mensagem do valor novo", () => {
+    const planPath = writePlanFixture({
+      issues: [{ number: 5125, status: "deixado-para-o-helios", exec_track_painel: "develop" }],
+    });
+    const r = run(["--plan", planPath]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /#5125/);
+  });
+
+  it("#7682: deixado-para-o-300/helios em track overnight (legítimo) → exit 0, não aciona o gate do buraco", () => {
+    const planPath = writePlanFixture({
+      issues: [
+        { number: 1, status: "deixado-para-o-300", exec_track_painel: "overnight" },
+        { number: 2, status: "deixado-para-o-helios", exec_track_painel: "overnight" },
+      ],
+    });
+    const r = run(["--plan", planPath]);
+    assert.equal(r.status, 0);
+  });
 });
 
-// ─── #5907 (b): findHeliosBuraco — deixado-para-o-helios em track develop/bloqueada ──
+// ─── #5907 (b): findDeixadoPara300Buraco — deixado-para-o-300 em track develop/bloqueada ──
+// (nome/valor renomeados de `findHeliosBuraco`/`deixado-para-o-helios` no
+// #7682, rename de máquina `helios`/`predator` → `300`; o valor legado
+// continua sendo LIDO — ver bloco "alias legado" mais abaixo.)
 
-describe("findHeliosBuraco — #5907(b), buraco do helios", () => {
-  it("status deixado-para-o-helios com exec_track_painel develop é reportado", () => {
+describe("findDeixadoPara300Buraco — #5907(b), buraco do 300", () => {
+  it("status deixado-para-o-300 com exec_track_painel develop é reportado", () => {
     const issues: DevelopPlanIssueLike[] = [
-      { number: 5125, status: "deixado-para-o-helios", exec_track_painel: "develop" },
+      { number: 5125, status: "deixado-para-o-300", exec_track_painel: "develop" },
     ];
-    assert.deepEqual(findHeliosBuraco(issues), [5125]);
+    assert.deepEqual(findDeixadoPara300Buraco(issues), [5125]);
   });
 
   it("exec_track_painel bloqueada também é reportado", () => {
     const issues: DevelopPlanIssueLike[] = [
-      { number: 5878, status: "deixado-para-o-helios", exec_track_painel: "bloqueada" },
+      { number: 5878, status: "deixado-para-o-300", exec_track_painel: "bloqueada" },
     ];
-    assert.deepEqual(findHeliosBuraco(issues), [5878]);
+    assert.deepEqual(findDeixadoPara300Buraco(issues), [5878]);
   });
 
-  it("exec_track_painel epica também é reportado (#6201 — nunca implementada direto, sem-sentido pro helios 'deixar' pra depois)", () => {
+  it("exec_track_painel epica também é reportado (#6201 — nunca implementada direto, sem-sentido pro 300 'deixar' pra depois)", () => {
     const issues: DevelopPlanIssueLike[] = [
-      { number: 461, status: "deixado-para-o-helios", exec_track_painel: "epica" },
+      { number: 461, status: "deixado-para-o-300", exec_track_painel: "epica" },
     ];
-    assert.deepEqual(findHeliosBuraco(issues), [461]);
+    assert.deepEqual(findDeixadoPara300Buraco(issues), [461]);
   });
 
-  it("track overnight é legítimo (helios pega sozinho) — não reporta", () => {
+  it("track overnight é legítimo (300 pega sozinho) — não reporta", () => {
     const issues: DevelopPlanIssueLike[] = [
-      { number: 5904, status: "deixado-para-o-helios", exec_track_painel: "overnight" },
-      { number: 5901, status: "deixado-para-o-helios", exec_track_painel: "overnight" },
+      { number: 5904, status: "deixado-para-o-300", exec_track_painel: "overnight" },
+      { number: 5901, status: "deixado-para-o-300", exec_track_painel: "overnight" },
     ];
-    assert.deepEqual(findHeliosBuraco(issues), []);
+    assert.deepEqual(findDeixadoPara300Buraco(issues), []);
   });
 
   it("sem exec_track_painel gravado não reporta aqui (gap (a) da mesma issue, gate próprio)", () => {
     const issues: DevelopPlanIssueLike[] = [
-      { number: 5125, status: "deixado-para-o-helios" },
-      { number: 5891, status: "deixado-para-o-helios" },
+      { number: 5125, status: "deixado-para-o-300" },
+      { number: 5891, status: "deixado-para-o-300" },
     ];
-    assert.deepEqual(findHeliosBuraco(issues), []);
+    assert.deepEqual(findDeixadoPara300Buraco(issues), []);
   });
 
   it("outros status (pulada/mergeada) nunca são reportados", () => {
     const issues: DevelopPlanIssueLike[] = [
-      { number: 1, status: "pulada", motivo: "deixado-para-o-helios", exec_track_painel: "develop" },
+      { number: 1, status: "pulada", motivo: "deixado-para-o-300", exec_track_painel: "develop" },
       { number: 2, status: "mergeada", exec_track_painel: "develop" },
     ];
-    assert.deepEqual(findHeliosBuraco(issues), []);
+    assert.deepEqual(findDeixadoPara300Buraco(issues), []);
   });
 
   it("saída ordenada por número", () => {
     const issues: DevelopPlanIssueLike[] = [
-      { number: 5891, status: "deixado-para-o-helios", exec_track_painel: "develop" },
-      { number: 5125, status: "deixado-para-o-helios", exec_track_painel: "bloqueada" },
+      { number: 5891, status: "deixado-para-o-300", exec_track_painel: "develop" },
+      { number: 5125, status: "deixado-para-o-300", exec_track_painel: "bloqueada" },
     ];
-    assert.deepEqual(findHeliosBuraco(issues), [5125, 5891]);
+    assert.deepEqual(findDeixadoPara300Buraco(issues), [5125, 5891]);
   });
 
   it("fixture da 260821c (shape real, inline — data/ não é versionado): sem track gravado não reporta", () => {
     // Estrutura copiada do plan.json real da 260821c: 15 issues, 10 com
-    // status "deixado-para-o-helios", nenhuma com exec_track_painel gravado.
-    // data/ não vai pro git, então a fixture é inline; se um dia um plan
-    // real com track preenchido precisar de fixture, usar tmpdir+writeFileSync.
+    // status "deixado-para-o-helios" (valor gravado ANTES do rename #7682 —
+    // preservado aqui verbatim, é exatamente o que uma fixture real antiga
+    // contém), nenhuma com exec_track_painel gravado. data/ não vai pro
+    // git, então a fixture é inline; se um dia um plan real com track
+    // preenchido precisar de fixture, usar tmpdir+writeFileSync.
     const issues: DevelopPlanIssueLike[] = [
       { number: 5892, status: "deixado-para-o-helios" },
       { number: 5894, status: "deixado-para-o-helios" },
@@ -312,6 +352,54 @@ describe("findHeliosBuraco — #5907(b), buraco do helios", () => {
       { number: 5897, status: "mergeada" },
       { number: 5869, status: "pulada", motivo: "deixado-para-o-helios" },
     ];
-    assert.deepEqual(findHeliosBuraco(issues), []);
+    assert.deepEqual(findDeixadoPara300Buraco(issues), []);
+  });
+});
+
+// ─── #7682: alias legado `deixado-para-o-helios` continua sendo LIDO ───────
+//
+// Decisão do editor (issue #7682): o rename `helios`/`predator` → `300` na
+// máquina é retroativo em prosa/comentários/docs, mas NUNCA nos valores já
+// gravados em plan.json de rodadas passadas — a máquina escreve
+// `deixado-para-o-300` daqui pra frente, mas continua LENDO
+// `deixado-para-o-helios` como equivalente, permanentemente (sem gatilho de
+// migração/remoção do alias).
+
+describe("#7682 — alias `deixado-para-o-helios` permanece legível (regressão, #633)", () => {
+  it("DEVELOP_PULADA_MOTIVOS aceita os dois valores — novo (300) e legado (helios)", () => {
+    assert.ok(DEVELOP_PULADA_MOTIVOS.includes("deixado-para-o-300" as never));
+    assert.ok(DEVELOP_PULADA_MOTIVOS.includes("deixado-para-o-helios" as never));
+  });
+
+  it("findInvalidPuladaMotivos: motivo deixado-para-o-helios (plan.json antigo) NÃO é reportado como inválido", () => {
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 5125, status: "pulada", motivo: "deixado-para-o-helios" },
+    ];
+    assert.deepEqual(findInvalidPuladaMotivos(issues), []);
+  });
+
+  it("findDeixadoPara300Buraco: status deixado-para-o-helios (plan.json antigo) é tratado IDÊNTICO ao valor novo", () => {
+    const legado: DevelopPlanIssueLike[] = [
+      { number: 5125, status: "deixado-para-o-helios", exec_track_painel: "develop" },
+    ];
+    const novo: DevelopPlanIssueLike[] = [
+      { number: 5125, status: "deixado-para-o-300", exec_track_painel: "develop" },
+    ];
+    assert.deepEqual(findDeixadoPara300Buraco(legado), findDeixadoPara300Buraco(novo));
+    assert.deepEqual(findDeixadoPara300Buraco(legado), [5125]);
+  });
+
+  it("checkDevelopPlanMotivos (I/O): plan.json GRAVADO ANTES DO RENAME (#7682), com deixado-para-o-helios, continua lido corretamente", () => {
+    // Fixture representando um plan.json real de uma rodada anterior ao
+    // rename da máquina (08-10/09/2026) — nunca migrado, deve continuar
+    // válido pra sempre (alias permanente, sem gatilho de remoção).
+    const planPath = writePlanFixture({
+      started_at: "2026-08-21T10:00:00Z",
+      issues: [
+        { number: 5892, status: "deixado-para-o-helios", exec_track_painel: "overnight" },
+        { number: 5658, status: "pulada", motivo: "deixado-para-o-helios" },
+      ],
+    });
+    assert.deepEqual(checkDevelopPlanMotivos(planPath), { status: "ok" });
   });
 });

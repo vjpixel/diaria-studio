@@ -19,7 +19,7 @@
  * label aconteceu (o passo 4 dele revalida com `classifyExecTrack` e falha
  * ruidosamente; nada disso rodava). Em Linux a forma ingênua funciona por
  * acidente (`file://` + `/home/...` = `file:///home/...`), então o bug era
- * invisível no `helios` e só aparecia onde o editor roda.
+ * invisível no `300` e só aparecia onde o editor roda.
  *
  * O helper canônico `isMainModule` (`scripts/lib/cli-args.ts`) normaliza via
  * `fileURLToPath` e já é usado por centenas de scripts deste repo. Este teste

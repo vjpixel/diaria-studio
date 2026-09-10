@@ -9,7 +9,7 @@
  *
  * ## Portabilidade do teste (#6206)
  *
- * O cenário sob teste é POSIX (systemd no `helios`), mas o TESTE roda também
+ * O cenário sob teste é POSIX (systemd no `300`), mas o TESTE roda também
  * na máquina Windows do editor — e antes do #6206 falhava lá inteiro (26 das
  * 52 falhas locais), por duas premissas do próprio teste, nunca da função:
  *
@@ -35,7 +35,7 @@ import { delimiter, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { resolveClaudeBin, isExecutableFile, CLAUDE_BIN_HOME_CANDIDATES } from "../scripts/lib/resolve-claude-bin.ts";
 
 /**
- * PATH real do `systemctl --user show-environment` no helios (260817), montado
+ * PATH real do `systemctl --user show-environment` no 300 (260817), montado
  * com o `delimiter` da plataforma — a função divide por ele, não por `:` fixo.
  */
 const SYSTEMD_USER_PATH = [

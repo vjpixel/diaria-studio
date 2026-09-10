@@ -401,7 +401,7 @@ describe("CLI wrapper (#5535 — main() precisa rodar de fato)", () => {
 describe("#7708 acao-adiada — round-trip do marcador", () => {
   const base: AcaoAdiada = {
     pedido_em: "2026-09-09T12:00:00Z",
-    acao: "reiniciar a unit diaria-reconcile-send-audiences no helios",
+    acao: "reiniciar a unit diaria-reconcile-send-audiences no 300",
     motivo: "não estou no servidor agora",
     sessao: "develop",
   };

@@ -401,7 +401,7 @@ describe("push-link-titles-kv.ts CLI (#4198)", () => {
   test("--all sem nenhum ciclo com prioritized.md → exit 1 (#6222: fixture isolada via --monthly-dir, nunca escaneia data/ real)", () => {
     // #6222: sem `--monthly-dir`, este teste dependia de `data/monthly/`
     // estar ausente (a forma do CI) — numa máquina com `data/` real
-    // (editor, `helios`) SEMPRE há ao menos 1 ciclo com prioritized.md,
+    // (editor, `300`) SEMPRE há ao menos 1 ciclo com prioritized.md,
     // então `--all` encontrava ciclos de verdade e o teste falhava. Um
     // tmpdir vazio reproduz "nenhum ciclo encontrado" deterministicamente,
     // em qualquer ambiente.

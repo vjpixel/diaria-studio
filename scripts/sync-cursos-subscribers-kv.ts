@@ -100,7 +100,7 @@ const EMPTY_GUARD_RATIO = 0.5;
  * PATH resolve `npx` pro Node do SISTEMA — que pode ser mais antigo que o
  * Node com que ESTE script está rodando (`ExecStart` do unit aponta pra um
  * Node ≥22 explícito, mas isso não afeta o PATH que o processo herda).
- * Reproduzido ao vivo em `helios` 05/09/2026: unit falhando com `exit 1`
+ * Reproduzido ao vivo em `300` 05/09/2026: unit falhando com `exit 1`
  * silencioso (journalctl não captura stdout/stderr do processo) porque
  * `npx` resolvia Node 20.20.2 via `/usr/bin/npx`, e wrangler exige ≥22
  * (CLAUDE.md 1a). `dirname(process.execPath)` — o diretório do binário Node

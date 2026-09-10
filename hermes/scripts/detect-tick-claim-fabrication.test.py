@@ -75,13 +75,13 @@ def _write_session(sessions_dir: Path, session_id: str, started: datetime,
     sessions_dir.mkdir(parents=True, exist_ok=True)
     record = {
         "kind": "continuo",
-        "machineTag": "helios",
+        "machineTag": "300",
         "sessionId": session_id,
         "startedAt": _iso(started),
         "lastHeartbeat": _iso(heartbeat),
         "claimed_issues": claimed_issues or [],
     }
-    (sessions_dir / f"continuo-helios-{session_id}.json").write_text(
+    (sessions_dir / f"continuo-300-{session_id}.json").write_text(
         json.dumps(record), encoding="utf-8"
     )
 

@@ -131,7 +131,7 @@ export type RescueOutcome =
  *   `createFileLock`, compartilhado entre todos os worktrees do mesmo
  *   repositório físico) em vez de inventar um lock novo, porque o risco é
  *   idêntico ao que motivou aquele lock: duas sessões continuo-like (a
- *   interativa `/diaria-continuo` e o cron do hermes no helios) podem
+ *   interativa `/diaria-continuo` e o cron do hermes no 300) podem
  *   reentrar quase juntas no mesmo checkout compartilhado. Se o lock não for
  *   adquirido, o resgate degrada explicitamente para `"rescue_failed"` — fail
  *   loud, nunca corre a sequência mesmo assim, nunca falha em silêncio (o
@@ -147,7 +147,7 @@ export function rescueOrphanedWork(
       outcome: "rescue_failed",
       message:
         `lock '${lock.path}' já está em uso por outro processo — outra sessão continuo-like (a ` +
-        `interativa /diaria-continuo ou o cron do hermes no helios) pode estar reentrando no mesmo ` +
+        `interativa /diaria-continuo ou o cron do hermes no 300) pode estar reentrando no mesmo ` +
         `checkout compartilhado agora. Recuperação de trabalho órfão ADIADA: nunca corre ` +
         `status→checkout→add→commit concorrente com outro processo (mesma classe de risco que motivou ` +
         `o lock de scripts/lib/git-sync.ts, #7130 review finding 1). Trabalho, se sujo, permanece ` +

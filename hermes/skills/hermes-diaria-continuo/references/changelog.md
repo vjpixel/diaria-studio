@@ -210,7 +210,7 @@ passada, não para quem está rodando um tick.
   registro indefinidamente — a sessão nunca ficava `stale`, e um claim
   órfão de um tick sem PR nunca expirava sozinho (medido em 28/08: 7 issues
   em `claimed_issues`, 6 sem PR aberto). Passos 1.3 e 4.1 atualizados.
-- 0.5.1 (28/08/2026): subagent MCP drain (#6465, epic #6464) — lote 5 posts (`claude -p` + MCP Beehiiv, `proc_...` EXIT=0). Padrões: (a) limite #6496 (5-10, nunca 20+); (b) anti-fabricação (`.jsonl` + manifest, não só EXIT=0); (c) dedup obrigatório (`subscriber_id` + `(sub, url_hash, clicked_at)`); (d) fonte única Helios/Neo (`data/beehiiv-backup/subscriber-engagement/` — `.worktrees/agent-*` NÃO sincronizam automaticamente); (e) claim hygiene (`--kind continuo`, unclaim só sem worktree ativo). Ver `references/subagent-mcp-drain-20260828.md`. Corrigido erro de assumir que `worktree` era fonte sincronizada; fonte real é `.jsonl` + manifest.
+- 0.5.1 (28/08/2026): subagent MCP drain (#6465, epic #6464) — lote 5 posts (`claude -p` + MCP Beehiiv, `proc_...` EXIT=0). Padrões: (a) limite #6496 (5-10, nunca 20+); (b) anti-fabricação (`.jsonl` + manifest, não só EXIT=0); (c) dedup obrigatório (`subscriber_id` + `(sub, url_hash, clicked_at)`); (d) fonte única 300/Neo (`data/beehiiv-backup/subscriber-engagement/` — `.worktrees/agent-*` NÃO sincronizam automaticamente); (e) claim hygiene (`--kind continuo`, unclaim só sem worktree ativo). Ver `references/subagent-mcp-drain-20260828.md`. Corrigido erro de assumir que `worktree` era fonte sincronizada; fonte real é `.jsonl` + manifest.
 - 0.5.0 (28/08/2026): arquitetura delegada — classificação via código real
   (`classifyExecTrackWithRule`, 6 categorias), implementação via
   `claude-delegate.sh` (harness Claude Code + OpenRouter), review diário

@@ -34,7 +34,7 @@ import { isMainModule } from "./lib/cli-args.ts";
 /** Job do cron do Hermes que roda o tick do contínuo (`hermes cron list`). */
 export const CONTINUO_JOB_ID = "5d791ef6fc2c";
 
-/** `jobs.json` do Hermes na máquina onde o cron roda (`helios`). Não é
+/** `jobs.json` do Hermes na máquina onde o cron roda (`300`). Não é
  *  segredo — é estado do agendador. Parametrizável por argumento porque
  *  hardcodar o path tornava a função intestável e amarrava o módulo a uma
  *  máquina específica (achado do review da PR #7654). */

@@ -31,7 +31,7 @@
  * ver `scripts/overnight-session-marker.ts` e os dois hooks que o consomem.
  * Migrar esses dois mecanismos pra dentro deste registro foi avaliado e
  * descartado: a rodada `/diaria-overnight` que estava genuinamente ativa em
- * OUTRA máquina (`helios`) no momento em que este PR foi escrito usa o
+ * OUTRA máquina (`300`) no momento em que este PR foi escrito usa o
  * formato antigo (sem `session_id`) — qualquer migração que exigisse reescrever
  * esse marker quebraria a rodada em voo. Este registro é aditivo: cobre os
  * itens 3/4/6/7/9 do #5156 (claim de issue, merge lock, teto de concorrência,
@@ -102,7 +102,7 @@
  *     antes do `merge-lock-release` correspondente falha, mesmo sendo a
  *     mesma sessão. Ver `merge-lock-renew` pra estender o TTL de um hold
  *     que já é seu. **`--pr` não é opcional na prática (#7169/#7223,
- *     achado ao vivo na rodada helios/#7217):** o próprio `BLOCK_REASON`
+ *     achado ao vivo na rodada no 300, #7217):** o próprio `BLOCK_REASON`
  *     de `.claude/hooks/block-gh-pr-merge-subagent.mjs` já recomenda
  *     `merge-lock-acquire --pr N`/`merge-lock-release --pr N` — seguir o
  *     comando SEM `--pr` deixou `gh pr merge` bloqueado repetidamente pelo
@@ -148,7 +148,7 @@
  * **#6130 — conflitos de sync do OneDrive e GC de registros encerrados.**
  * `data/sessions/` vive numa junction OneDrive compartilhada entre máquinas
  * e pode bifurcar um arquivo de sessão em cópias de conflito com sufixo
- * `-safeBackup-NNNN` (ex: `continuo-predator-{uuid}-predator-safeBackup-0001.json`)
+ * `-safeBackup-NNNN` (ex: `continuo-300-{uuid}-300-safeBackup-0001.json`)
  * — o `#5427` já fazia `listActiveSessions` IGNORAR essas cópias pra não
  * ressuscitar sessão já encerrada (arquivo real removido, só o backup
  * sobrou). O `#6130` fecha o lado oposto: quando o arquivo REAL de uma
@@ -165,7 +165,7 @@
  * `gc` (novo, #6130) remove registros de sessão ENCERRADA — mas NUNCA por
  * staleness de heartbeat sozinha: uma sessão pode estar viva e só ter
  * parado de bater heartbeat (achado ao vivo do #6130 — `stale: true` com
- * processo `claude` ainda rodando no `helios`). Ver docstring de
+ * processo `claude` ainda rodando no `300`). Ver docstring de
  * `planSessionGc` pra árvore de decisão completa (checagem de PID vivo na
  * MESMA máquina, janela conservadora bem maior que qualquer heartbeat
  * esperado quando não há sinal de processo verificável).
@@ -191,7 +191,7 @@ import { SESSION_ID_REQUIRED_SUBCOMMANDS } from "./session-id-required-subcomman
  * AUTOMATICAMENTE pelo hook `.claude/hooks/session-beacon.mjs` (nenhuma skill
  * chama `register` pra ela). Fecha o buraco 3 da issue: até aqui só as 3
  * skills coordenadoras se registravam, e a maioria das sessões reais —
- * interativas — era invisível ao registro (incidente #5751: o `helios` tinha
+ * interativas — era invisível ao registro (incidente #5751: o `300` tinha
  * #5738 em `claimed_issues` enquanto uma sessão interativa a implementava e
  * mergeava em paralelo).
  *
@@ -1057,7 +1057,7 @@ function writeJsonSafeWithCas(
  * cego no path do kind novo (`sessionFilePath`), sem olhar se já existe um
  * arquivo de OUTRO kind pro mesmo `sessionId` — e sobrariam dois registros
  * pra uma sessão só, contando dobrado em `list-active` (achado ao vivo do
- * #6326: `overnight-helios-{uuid}.json` + `interactive-helios-{uuid}.json`
+ * #6326: `overnight-300-{uuid}.json` + `interactive-300-{uuid}.json`
  * simultâneos, o 2º congelado a partir do momento em que o beacon passa a
  * enriquecer só o 1º).
  *
@@ -3537,7 +3537,7 @@ const REAL_MERGE_LOCK_IO: MergeLockIo = {
  * Limiar de "cadência de heartbeat esperada" pra sinalizar sync cross-máquina
  * potencialmente degradado (#7169) — deliberadamente bem menor que
  * `SOFT_STALE_MS` (90min, sinal de "sessão morta"). O incidente de origem
- * (02/09/2026): `data/sessions/` do `helios` ficou congelado por 1h13
+ * (02/09/2026): `data/sessions/` do `300` ficou congelado por 1h13
  * (`onedrive.service` morto às 18:37, sem alarme) enquanto uma coordenadora
  * seguia genuinamente ativa lá — 73min < 90min, então o registro dela nunca
  * cruzou `SOFT_STALE_MS` e continuou contando como "ativa" em
@@ -4640,7 +4640,7 @@ export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
 // mecanismos: uma sessão VIVA cujo real já reflete tudo que os backups do
 // grupo carregam (reconciliação em dia), mas os backups continuam em disco
 // para sempre — o #6970 mediu 15 arquivos `-safeBackup-` em `data/sessions/`
-// do helios, um criado no mesmo dia da medição.
+// do 300, um criado no mesmo dia da medição.
 //
 // **Restrição de `merge_grant`, reavaliada no #6573 pós-#6952.** Até o
 // #6952 (PR #6969, mergeada), `mergeSessionRecords` NÃO unia `merge_grant`
@@ -5156,7 +5156,7 @@ export function applySafeBackupCapPrune(
 /**
  * Normaliza um caminho pra comparação entre sessões: separadores POSIX, sem
  * `./` inicial, sem barra final. `data/` é compartilhado entre Windows
- * (`Neo`) e Linux (`helios`), então um caminho gravado com `\` por uma máquina
+ * (`Neo`) e Linux (`300`), então um caminho gravado com `\` por uma máquina
  * precisa casar com o mesmo caminho gravado com `/` pela outra — sem isto, a
  * detecção de sobreposição seria cega justamente no cenário cross-máquina que
  * a issue chama de caso normal.
@@ -5499,7 +5499,7 @@ export interface GrantMergeResult {
  * `merge_grant` no record da coordenadora que concede, nunca num arquivo
  * novo.
  *
- * Motivação medida (260826, `helios`): o protocolo da Parte F foi executado à
+ * Motivação medida (260826, `300`): o protocolo da Parte F foi executado à
  * mão e cada passo funcionou — `ListAgents` achou o peer, `SendMessage`
  * entregou, o peer conferiu colisão por arquivo nos 3 PRs dele, concedeu a
  * janela, e o `merge-lock-acquire` deu ok. **E o `gh pr merge` foi bloqueado
@@ -5954,7 +5954,7 @@ function requireSessionId(values: Record<string, string>): string {
  * quando o `cwd` é um diretório qualquer FORA do repo: `sessionsDir(cwd)`
  * grava `{cwd}/data/sessions/…` ali dentro, silenciosamente, sem nenhum sinal
  * de erro. Foi exatamente isso que produziu a árvore recursiva
- * `data/data/data/…` de 20 níveis no `helios` (#7699) — `data/` é uma
+ * `data/data/data/…` de 20 níveis no `300` (#7699) — `data/` é uma
  * junction/symlink pro OneDrive que **não é um repo git** (`git rev-parse`
  * falha ali de propósito), então um processo cujo `cwd` ficou preso dentro
  * dela (herdado de um `cd` anterior — o cwd persiste entre chamadas Bash do

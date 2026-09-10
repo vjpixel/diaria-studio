@@ -2,7 +2,7 @@
 /**
  * scripts/continuo-capture-tick-sidecars.ts (#7814)
  *
- * Extrai sidecars enxutos de `~/.hermes/logs/agent.log*` (o helios) pra
+ * Extrai sidecars enxutos de `~/.hermes/logs/agent.log*` (o 300) pra
  * `data/continuo/tick-sidecars/` — a evidência ORIGINAL que o `agent.log`
  * roda o risco de rotacionar pra fora ANTES de alguém investigar um alarme
  * de fabricação de conclusão (#7537), a issue que motivou este script. Ver

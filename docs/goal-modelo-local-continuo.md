@@ -1,7 +1,7 @@
 # Briefing — escolha do modelo local do contínuo
 
 Material de apoio para o `/goal` que busca o modelo local ideal da skill
-`hermes-diaria-continuo` no helios. Reúne o que já foi medido em 06/09/2026
+`hermes-diaria-continuo` no 300. Reúne o que já foi medido em 06/09/2026
 para que a sessão do goal **parta daqui em vez de redescobrir**.
 
 ## O workload (não confunda com "resolver issues")

@@ -20,7 +20,7 @@ describe("flattenClaims", () => {
     const sessions: ClaimBearingSession[] = [
       {
         kind: "continuo",
-        machineTag: "helios",
+        machineTag: "300",
         sessionId: "abc123",
         claimed_issues: [6051, 6185],
         claimed_issues_at: { "6051": "2026-08-20T00:00:00Z", "6185": "2026-08-21T00:00:00Z" },
@@ -34,8 +34,8 @@ describe("flattenClaims", () => {
     ];
     const entries = flattenClaims(sessions);
     assert.deepEqual(entries, [
-      { issueNumber: 6051, kind: "continuo", machineTag: "helios", sessionId: "abc123", claimedAt: "2026-08-20T00:00:00Z", stale: false },
-      { issueNumber: 6185, kind: "continuo", machineTag: "helios", sessionId: "abc123", claimedAt: "2026-08-21T00:00:00Z", stale: false },
+      { issueNumber: 6051, kind: "continuo", machineTag: "300", sessionId: "abc123", claimedAt: "2026-08-20T00:00:00Z", stale: false },
+      { issueNumber: 6185, kind: "continuo", machineTag: "300", sessionId: "abc123", claimedAt: "2026-08-21T00:00:00Z", stale: false },
       { issueNumber: 6300, kind: "overnight", machineTag: "neo", sessionId: "def456", claimedAt: null, stale: false },
     ]);
   });
@@ -44,7 +44,7 @@ describe("flattenClaims", () => {
     const sessions: ClaimBearingSession[] = [
       {
         kind: "develop",
-        machineTag: "helios",
+        machineTag: "300",
         sessionId: "sess-ociosa",
         claimed_issues: [7263],
         claimed_issues_at: { "7263": "2026-09-01T00:00:00Z" },
@@ -81,7 +81,7 @@ describe("flattenClaims", () => {
     const sessions: ClaimBearingSession[] = [
       {
         kind: "overnight",
-        machineTag: "helios",
+        machineTag: "300",
         sessionId: "sess-viva",
         claimed_issues: [6051, 6185],
         claimed_issues_effective: [6051, 6185],
@@ -95,7 +95,7 @@ describe("flattenClaims", () => {
 
   it("#6623: claimed_issues_effective AUSENTE cai no fallback claimed_issues bruto (fixture antiga, comportamento preservado)", () => {
     const sessions: ClaimBearingSession[] = [
-      { kind: "continuo", machineTag: "helios", sessionId: "x", claimed_issues: [42] },
+      { kind: "continuo", machineTag: "300", sessionId: "x", claimed_issues: [42] },
     ];
     assert.deepEqual(flattenClaims(sessions).map((e) => e.issueNumber), [42]);
   });
@@ -108,7 +108,7 @@ describe("findAgedClaims", () => {
     const entries = flattenClaims([
       {
         kind: "continuo",
-        machineTag: "helios",
+        machineTag: "300",
         sessionId: "5d791ef6",
         claimed_issues: [6051],
         claimed_issues_at: { "6051": new Date(NOW - 7 * 3_600_000).toISOString() },
@@ -125,7 +125,7 @@ describe("findAgedClaims", () => {
     const entries = flattenClaims([
       {
         kind: "continuo",
-        machineTag: "helios",
+        machineTag: "300",
         sessionId: "5d791ef6",
         claimed_issues: [6051],
         claimed_issues_at: { "6051": new Date(NOW - 7 * 3_600_000).toISOString() },
@@ -139,7 +139,7 @@ describe("findAgedClaims", () => {
     const entries = flattenClaims([
       {
         kind: "continuo",
-        machineTag: "helios",
+        machineTag: "300",
         sessionId: "x",
         claimed_issues: [1],
         claimed_issues_at: { "1": new Date(NOW - 60_000).toISOString() },
@@ -150,7 +150,7 @@ describe("findAgedClaims", () => {
 
   it("claim sem claimedAt conhecido (sessão pré-#6436) nunca reporta — idade desconhecida ≠ idade excedida", () => {
     const entries = flattenClaims([
-      { kind: "continuo", machineTag: "helios", sessionId: "x", claimed_issues: [1] },
+      { kind: "continuo", machineTag: "300", sessionId: "x", claimed_issues: [1] },
     ]);
     assert.deepEqual(findAgedClaims(entries, NOW, CLAIM_STALE_AGE_MS, () => false), []);
   });
@@ -159,7 +159,7 @@ describe("findAgedClaims", () => {
     const entries = flattenClaims([
       {
         kind: "continuo",
-        machineTag: "helios",
+        machineTag: "300",
         sessionId: "x",
         claimed_issues: [1],
         claimed_issues_at: { "1": new Date(NOW - 7 * 3_600_000).toISOString() },
@@ -175,7 +175,7 @@ describe("findAgedClaims", () => {
     const entries = flattenClaims([
       {
         kind: "continuo",
-        machineTag: "helios",
+        machineTag: "300",
         sessionId: "x",
         claimed_issues: [6677],
         claimed_issues_at: { "6677": new Date(NOW - 7 * 3_600_000).toISOString() },
@@ -195,7 +195,7 @@ describe("findAgedClaims", () => {
     const entries = flattenClaims([
       {
         kind: "continuo",
-        machineTag: "helios",
+        machineTag: "300",
         sessionId: "x",
         claimed_issues: [6677],
         claimed_issues_at: { "6677": new Date(NOW - 7 * 3_600_000).toISOString() },
@@ -215,7 +215,7 @@ describe("findAgedClaims", () => {
     const entries = flattenClaims([
       {
         kind: "continuo",
-        machineTag: "helios",
+        machineTag: "300",
         sessionId: "x",
         claimed_issues: [6677],
         claimed_issues_at: { "6677": new Date(NOW - 7 * 3_600_000).toISOString() },
@@ -235,7 +235,7 @@ describe("findAgedClaims", () => {
     const entries = flattenClaims([
       {
         kind: "continuo",
-        machineTag: "helios",
+        machineTag: "300",
         sessionId: "x",
         claimed_issues: [6677],
         claimed_issues_at: { "6677": new Date(NOW - 7 * 3_600_000).toISOString() },
@@ -249,7 +249,7 @@ describe("findAgedClaims", () => {
     const entries = flattenClaims([
       {
         kind: "continuo",
-        machineTag: "helios",
+        machineTag: "300",
         sessionId: "x",
         claimed_issues: [300, 100, 200],
         claimed_issues_at: {

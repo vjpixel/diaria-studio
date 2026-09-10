@@ -11,10 +11,10 @@ const TASKS = ["Diaria-Foo", "Diaria-Bar", "Diaria-Baz"];
 describe("task-registry-prose-drift (#6105 item 2)", () => {
   describe("extractProseArmedClaim", () => {
     it("reconhece ARMADA em maiúsculas", () => {
-      assert.equal(extractProseArmedClaim("**ARMADA em 17/08/2026** na `helios`"), "armed");
+      assert.equal(extractProseArmedClaim("**ARMADA em 17/08/2026** na `300`"), "armed");
     });
     it("reconhece 'Confirmado ativo'", () => {
-      assert.equal(extractProseArmedClaim("Confirmado ativo em `helios` (260812)"), "armed");
+      assert.equal(extractProseArmedClaim("Confirmado ativo em `300` (260812)"), "armed");
     });
     it("reconhece NÃO armada com e sem acento", () => {
       assert.equal(extractProseArmedClaim("DECLARADA — ainda NÃO armada."), "not-armed");
@@ -28,7 +28,7 @@ describe("task-registry-prose-drift (#6105 item 2)", () => {
     });
     it("nota histórica ENTRE ASPAS não conta como afirmação (achado ao vivo #6105)", () => {
       const line =
-        "**Task `Diaria-Foo` — ARMADA em `helios`.** ... Esta entrada dizia \"ainda NÃO armada nesta unidade\" até 25/08/2026 — texto corrigido.";
+        "**Task `Diaria-Foo` — ARMADA em `300`.** ... Esta entrada dizia \"ainda NÃO armada nesta unidade\" até 25/08/2026 — texto corrigido.";
       assert.equal(extractProseArmedClaim(line), "armed");
     });
     it("linha descritiva pura = unknown (nunca alarma)", () => {
@@ -36,7 +36,7 @@ describe("task-registry-prose-drift (#6105 item 2)", () => {
     });
     it("quando ambos aparecem, vence o ÚLTIMO da linha (narativa cronológica)", () => {
       assert.equal(
-        extractProseArmedClaim("Antes **NÃO armada**, hoje **ARMADA em 25/08/2026** na helios."),
+        extractProseArmedClaim("Antes **NÃO armada**, hoje **ARMADA em 25/08/2026** na 300."),
         "armed",
       );
       assert.equal(
@@ -51,7 +51,7 @@ describe("task-registry-prose-drift (#6105 item 2)", () => {
       // Estrutura real do registro: entrada própria + citação de vizinhas
       // coladas à afirmação.
       const line =
-        "**Task `Diaria-Foo`, diária 09:05 BRT (logo depois de `Diaria-Bar` acima, mesmo guard das tasks-irmãs `Diaria-Foo`/`Diaria-Bar`). **ARMADA em `helios`**.";
+        "**Task `Diaria-Foo`, diária 09:05 BRT (logo depois de `Diaria-Bar` acima, mesmo guard das tasks-irmãs `Diaria-Foo`/`Diaria-Bar`). **ARMADA em `300`**.";
       const own = resolveLineOwnership(line, TASKS);
       assert.equal(own.owner, "Diaria-Foo");
       assert.equal(own.claim, "armed");
@@ -73,7 +73,7 @@ describe("task-registry-prose-drift (#6105 item 2)", () => {
       const prose = [
         "# Registro",
         "**Task `Diaria-Foo`, diária — ainda NÃO armada nesta unidade.**",
-        "Outra entrada: **Task `Diaria-Bar`: **ARMADA em 17/08/2026** na `helios`.",
+        "Outra entrada: **Task `Diaria-Bar`: **ARMADA em 17/08/2026** na `300`.",
         "`Diaria-Baz` é citado de passagem por `Diaria-Bar` acima, sem entrada própria com afirmação.",
       ].join("\n");
       const real = new Map<string, import("../scripts/lib/task-registry-prose-drift.ts").RealArmedState>([
@@ -121,7 +121,7 @@ describe("task-registry-prose-drift (#6105 item 2)", () => {
         "not-armed",
       );
       assert.equal(
-        extractProseArmedClaim("Task `Diaria-Ads-Daily-Digest`: ainda NÃO ARMADA no helios."),
+        extractProseArmedClaim("Task `Diaria-Ads-Daily-Digest`: ainda NÃO ARMADA no 300."),
         "not-armed",
       );
     });

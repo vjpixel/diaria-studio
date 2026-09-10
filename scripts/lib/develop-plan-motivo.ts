@@ -71,18 +71,25 @@ import { normalizeIssues, type IssuesBearing } from "./plan-issues-normalize.ts"
  * #5272 e foi removido junto do cap de re-varredura — nunca gravado por uma
  * sessão atual, não entra aqui.
  *
- * `deixado-para-o-helios` (#5909, refina #5751): issue que exige a máquina
+ * `deixado-para-o-300` (#5909, refina #5751): issue que exige a máquina
  * Windows/Neo do editor (labels `windows`, `external-blocker` +
- * `credencial-escopo`) — o Helios (servidor Linux) não executa nem dirige o
- * browser do Neo. Terminal no track Helios por construção: a sessão registra
+ * `credencial-escopo`) — o servidor `300` (Linux) não executa nem dirige o
+ * browser do Neo. Terminal no track `300` por construção: a sessão registra
  * a issue como `pulada` com este motivo e o roteamento label-driven
  * (`classifyExecTrack`) é quem garante que ela reapareça no track certo.
+ *
+ * `deixado-para-o-helios` (legado, #7682): valor gravado por rodadas
+ * anteriores ao rename da máquina de `helios`/`predator` para `300`
+ * (08-10/09/2026) — alias PERMANENTE aceito na leitura, nunca mais
+ * escrito. Sem gatilho de remoção: rodadas antigas em `data/` não são
+ * migradas (ver CLAUDE.md).
  */
 export const DEVELOP_PULADA_MOTIVOS = [
   "nao-destravavel-na-sessao",
   "decisao-adiada",
   "claimed-por-outra-sessao",
   "ja-resolvida-antes-da-sessao",
+  "deixado-para-o-300",
   "deixado-para-o-helios",
 ] as const;
 
@@ -105,7 +112,7 @@ export interface DevelopPlanIssueLike {
   motivo?: unknown;
   /** Track calculado pelo `classifyExecTrack` e gravado no plan.json pelo
    * passo 6a da Fase 0 (#5907: hoje é prosa pura — o gap (a) da issue).
-   * Consumido por `findHeliosBuraco` (#5907 b). */
+   * Consumido por `findDeixadoPara300Buraco` (#5907 b). */
   exec_track_painel?: unknown;
   /** Obrigatório (string não-vazia) quando `motivo ===
    * "ja-resolvida-antes-da-sessao"` — ver docstring do módulo. */
@@ -158,8 +165,9 @@ export function findInvalidPuladaMotivos(
 }
 
 /**
- * #5907 (b) — `deixado-para-o-helios` aplicado a issue que o helios NUNCA
- * pega manda a issue pra um buraco: o develop não faz, o overnight não faz.
+ * #5907 (b) — `deixado-para-o-300` (ou o alias legado
+ * `deixado-para-o-helios`, #7682) aplicado a issue que o `300` NUNCA pega
+ * manda a issue pra um buraco: o develop não faz, o overnight não faz.
  * Issue com track painel `develop`, `bloqueada` ou `epica` não pode terminar
  * como `pulada` com esse motivo — o roteamento label-driven
  * (`classifyExecTrack`) é quem decide pra onde ela vai, e nenhum desses
@@ -169,17 +177,18 @@ export function findInvalidPuladaMotivos(
  * legítimas para essas tracks: `mergeada`, `entregue-fora-de-codigo`,
  * `nao-tentada`, ou `pulada` com outro motivo do vocabulário.
  *
- * Pure: devolve os números das issues cujo status é exatamente
- * `deixado-para-o-helios` com `exec_track_painel` conhecido e incompatível.
- * Issues sem `exec_track_painel` gravado NÃO são reportadas aqui — a falta
- * do campo é o gap (a) da mesma #5907 (gate próprio no passo 6a), não deste.
+ * Pure: devolve os números das issues cujo status é `deixado-para-o-300` OU
+ * `deixado-para-o-helios` (alias legado) com `exec_track_painel` conhecido
+ * e incompatível. Issues sem `exec_track_painel` gravado NÃO são reportadas
+ * aqui — a falta do campo é o gap (a) da mesma #5907 (gate próprio no passo
+ * 6a), não deste.
  */
-export function findHeliosBuraco(
+export function findDeixadoPara300Buraco(
   issues: DevelopPlanIssueLike[],
 ): number[] {
   const out: number[] = [];
   for (const issue of issues) {
-    if (issue?.status !== "deixado-para-o-helios") continue;
+    if (issue?.status !== "deixado-para-o-300" && issue?.status !== "deixado-para-o-helios") continue;
     const track = typeof issue.exec_track_painel === "string" ? issue.exec_track_painel : null;
     if (track === "develop" || track === "bloqueada" || track === "epica") {
       out.push(typeof issue.number === "number" ? issue.number : Number.NaN);

@@ -69,7 +69,7 @@
 # opcional/estilístico. `${BASH_SOURCE[0]}` sozinho, sem resolver o
 # symlink primeiro, resolve pro caminho de INVOCAÇÃO quando o script é
 # deployado como symlink (`~/.hermes/scripts/claude-delegate.sh ->
-# .../hermes/scripts/claude-delegate.sh`, o caso real no `helios`) — o
+# .../hermes/scripts/claude-delegate.sh`, o caso real no `300`) — o
 # `dirname` cai fora do repo, e este `source` nunca encontra o arquivo.
 # `continuo-pr-review.sh` sobrevivia ao mesmo bug só porque foi deployado
 # como STUB com `exec` (troca de processo, `BASH_SOURCE` novo já é o

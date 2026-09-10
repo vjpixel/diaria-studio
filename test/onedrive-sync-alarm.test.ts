@@ -84,9 +84,9 @@ describe("parseSystemctlIsActiveOutput", () => {
 describe("buildOnedriveSyncCanary", () => {
   it("serializa writtenAt (ISO) + machineId", () => {
     const now = new Date("2026-08-17T14:33:34.000Z");
-    const canary = buildOnedriveSyncCanary(now, "helios");
+    const canary = buildOnedriveSyncCanary(now, "300");
     assert.equal(canary.writtenAt, "2026-08-17T14:33:34.000Z");
-    assert.equal(canary.machineId, "helios");
+    assert.equal(canary.machineId, "300");
   });
 });
 

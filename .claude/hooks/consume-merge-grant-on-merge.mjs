@@ -77,7 +77,7 @@ const MERGE_GRANT_TTL_MS = 10 * 60 * 1000;
 
 /** Duplicado de `CLOCK_SKEW_TOLERANCE_MS` — ver block-gh-pr-merge-subagent.mjs
  * Finding A pro racional completo (relógios não sincronizados entre `Neo` e
- * `helios` podem fazer uma concessão genuinamente recente parecer "no
+ * `300` podem fazer uma concessão genuinamente recente parecer "no
  * futuro"). */
 const CLOCK_SKEW_TOLERANCE_MS = 60 * 1000;
 

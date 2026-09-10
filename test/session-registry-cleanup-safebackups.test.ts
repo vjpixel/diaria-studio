@@ -246,7 +246,7 @@ describe("planSafeBackupCleanup (#6970)", () => {
 
   it("backups ÓRFÃOS (real desapareceu por completo, claims+grant vivos só nos backups) NUNCA são REMOVIDOS por este módulo, mas SÃO reportados como orphan-backups-only (#7002 incidente ao vivo 01/09/2026; observabilidade adicionada em resposta ao self-review finding 2 do #7005)", () => {
     // Reprodução do incidente real relatado pela coordenadora durante esta
-    // rodada: o arquivo REAL overnight-helios-{sessionId}.json sumiu do
+    // rodada: o arquivo REAL overnight-300-{sessionId}.json sumiu do
     // disco (lost-update, vizinho de #6952/#6573) enquanto a sessão seguia
     // viva; só sobraram 2 cópias -safeBackup- carregando 10 claims + um
     // merge_grant íntegros. planSafeBackupCleanup itera os REAIS existentes
@@ -257,18 +257,18 @@ describe("planSafeBackupCleanup (#6970)", () => {
     // em vez de ficar invisível: um operador rodando `--dry-run` precisa ver
     // que há estado órfão a revisar, não concluir "nada a fazer".
     const root = freshRoot();
-    writeRawSessionFile(root, "overnight-helios-sessXYZ-safeBackup-0001.json", {
+    writeRawSessionFile(root, "overnight-300-sessXYZ-safeBackup-0001.json", {
       kind: "overnight",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "sessXYZ",
       startedAt: "2026-09-01T10:00:00.000Z",
       lastHeartbeat: "2026-09-01T10:55:00.000Z",
       claimed_issues: [6947, 6970, 6972, 6621, 6623, 6624],
       merge_grant: { grantedTo: "outra-sessao", grantedBy: "sessXYZ", grantedAt: "2026-09-01T10:50:00.000Z" },
     });
-    writeRawSessionFile(root, "overnight-helios-sessXYZ-safeBackup-0002.json", {
+    writeRawSessionFile(root, "overnight-300-sessXYZ-safeBackup-0002.json", {
       kind: "overnight",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "sessXYZ",
       startedAt: "2026-09-01T10:00:00.000Z",
       lastHeartbeat: "2026-09-01T11:00:00.000Z",
@@ -277,10 +277,10 @@ describe("planSafeBackupCleanup (#6970)", () => {
     // O beacon recria um registro `interactive` pra mesma sessionId — este
     // arquivo É um "real" (não tem -safeBackup- no nome), mas de kind
     // diferente e sem as claims: não muda o fato de que os 2 backups acima
-    // continuam órfãos (nenhum deles bate o stem "interactive-helios-sessXYZ").
-    writeRawSessionFile(root, "interactive-helios-sessXYZ.json", {
+    // continuam órfãos (nenhum deles bate o stem "interactive-300-sessXYZ").
+    writeRawSessionFile(root, "interactive-300-sessXYZ.json", {
       kind: "interactive",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "sessXYZ",
       startedAt: "2026-09-01T10:00:00.000Z",
       lastHeartbeat: "2026-09-01T11:05:00.000Z",
@@ -290,10 +290,10 @@ describe("planSafeBackupCleanup (#6970)", () => {
     const plan = planSafeBackupCleanup(root);
     // Os 2 backups órfãos aparecem no plano — mas SEMPRE com action
     // "orphan-backups-only", nunca "removable" (eles não batem o stem de
-    // NENHUM real existente: "interactive-helios-sessXYZ" tem no próprio
+    // NENHUM real existente: "interactive-300-sessXYZ" tem no próprio
     // nome "sessXYZ" mas kind diferente de "overnight", e o agrupamento é
     // por STEM completo do arquivo, não só sessionId).
-    const orphanEntries = plan.filter((e) => e.backupPaths.some((p) => p.includes("overnight-helios-sessXYZ")));
+    const orphanEntries = plan.filter((e) => e.backupPaths.some((p) => p.includes("overnight-300-sessXYZ")));
     assert.equal(orphanEntries.length, 2, "cada backup órfão vira 1 entrada própria no plano");
     for (const e of orphanEntries) {
       assert.equal(e.action, "orphan-backups-only");

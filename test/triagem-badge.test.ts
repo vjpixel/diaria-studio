@@ -246,12 +246,12 @@ describe("triagem.js claimBadge — #6436 visibilidade de claim ativo", () => {
     assert.equal(claimBadge(undefined), "");
   });
 
-  it("claim da sessão continuo (cron 60min, nunca stale por si só) → 'em andamento — continuo-helios'", () => {
-    const html = claimBadge({ kind: "continuo", machineTag: "helios", sessionId: "5d791ef6", claimedAt: "2026-08-20T00:00:00Z" });
+  it("claim da sessão continuo (cron 60min, nunca stale por si só) → 'em andamento — continuo-300'", () => {
+    const html = claimBadge({ kind: "continuo", machineTag: "300", sessionId: "5d791ef6", claimedAt: "2026-08-20T00:00:00Z" });
     // 28/08 (pedido do editor): kind vira classe própria — continuo ganha cor
     // destacada em vez de sumir no badge neutro. A classe base permanece.
     assert.match(html, /class="claim-badge claim-kind-continuo"/);
-    assert.match(html, />em andamento — continuo-helios</);
+    assert.match(html, />em andamento — continuo-300</);
     assert.match(html, /2026-08-20T00:00:00Z/, "tooltip carrega a data da 1ª reivindicação");
   });
 
@@ -270,13 +270,13 @@ describe("triagem.js claimBadge — #6436 visibilidade de claim ativo", () => {
   it("#7263: claim.stale === true → badge distinto ('sessão possivelmente ociosa'), nunca 'em andamento'", () => {
     const html = claimBadge({
       kind: "develop",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "sess-ociosa",
       claimedAt: "2026-09-01T00:00:00Z",
       stale: true,
     });
     assert.match(html, /class="claim-badge claim-stale claim-kind-develop"/);
-    assert.match(html, />reivindicada — sessão possivelmente ociosa \(develop-helios\)</);
+    assert.match(html, />reivindicada — sessão possivelmente ociosa \(develop-300\)</);
     assert.doesNotMatch(html, />em andamento/);
     assert.match(html, /OCIOSA/, "tooltip explica o motivo do badge diferente");
   });

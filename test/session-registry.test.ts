@@ -413,9 +413,9 @@ describe("registerSession / heartbeat / endSession", () => {
     const path = sessionFilePath(root, "develop", "Neo", "sess-cross-machine");
     assert.ok(existsSync(path));
 
-    // Sem --tag, o default é machineTag() LOCAL ("helios" aqui) — nunca
+    // Sem --tag, o default é machineTag() LOCAL ("300" aqui) — nunca
     // encontra o registro de "Neo": reproduz o bug relatado na issue.
-    const removedWithoutTag = endSession(root, "develop", "sess-cross-machine", "helios");
+    const removedWithoutTag = endSession(root, "develop", "sess-cross-machine", "300");
     assert.equal(removedWithoutTag, false, "sem o tag certo, nada é removido");
     assert.ok(existsSync(path), "registro de outra máquina continua intacto");
 
@@ -526,14 +526,14 @@ describe("instrumentação de ciclo de vida (#6624)", () => {
 // dispara no PreToolUse e cria `interactive-{tag}-{sessionId}.json` ANTES de a
 // skill chamar `register --kind overnight|develop|continuo` pro MESMO
 // sessionId. Sem a promoção, sobravam dois arquivos pra uma sessão só —
-// achado ao vivo em 26/08/2026 (`overnight-helios-{uuid}.json` +
-// `interactive-helios-{uuid}.json` simultâneos).
+// achado ao vivo em 26/08/2026 (`overnight-300-{uuid}.json` +
+// `interactive-300-{uuid}.json` simultâneos).
 
 describe("registerSession — promoção de kind quando o beacon registrou primeiro (#6326)", () => {
   it("beacon cria interactive-X; register --kind overnight com o mesmo X deixa UM arquivo, kind overnight, campos de beacon intactos", () => {
     const root = freshRoot();
     const sessionId = "sess-6326-a";
-    const tag = "helios";
+    const tag = "300";
 
     // Simula o que o beacon já escreveu antes do `register` da skill rodar.
     writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
@@ -585,7 +585,7 @@ describe("registerSession — promoção de kind quando o beacon registrou prime
   it("promoção preserva claimed_issues acumuladas no registro interactive antigo", () => {
     const root = freshRoot();
     const sessionId = "sess-6326-b";
-    const tag = "helios";
+    const tag = "300";
 
     writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
       kind: "interactive",
@@ -605,7 +605,7 @@ describe("registerSession — promoção de kind quando o beacon registrou prime
   it("listActiveSessions nunca devolve dois registros pro mesmo sessionId após a promoção", () => {
     const root = freshRoot();
     const sessionId = "sess-6326-c";
-    const tag = "helios";
+    const tag = "300";
     const now = Date.parse("2026-08-26T10:10:00.000Z");
 
     writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
@@ -628,7 +628,7 @@ describe("registerSession — promoção de kind quando o beacon registrou prime
   it("re-register do MESMO kind após a promoção continua idempotente e preserva claimed_issues (não regride #6294/#6303)", () => {
     const root = freshRoot();
     const sessionId = "sess-6326-d";
-    const tag = "helios";
+    const tag = "300";
 
     writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
       kind: "interactive",
@@ -662,7 +662,7 @@ describe("registerSession — promoção de kind quando o beacon registrou prime
   it("promoção preserva claims que só existiam num -safeBackup- do registro antigo (#6130 não regride)", () => {
     const root = freshRoot();
     const sessionId = "sess-6326-e";
-    const tag = "predator";
+    const tag = "300";
 
     // Registro interactive "real" — sem o claim 999 (foi perdido/nunca
     // sincronizado no arquivo real, típico de conflito de escrita do OneDrive).
@@ -692,7 +692,7 @@ describe("registerSession — promoção de kind quando o beacon registrou prime
 
   it("sem registro de OUTRO kind pra este sessionId, registerSession continua criando um registro novo normalmente", () => {
     const root = freshRoot();
-    const result = registerSession(root, "overnight", "sess-6326-f", { tag: "helios", startedAt: "2026-08-26T10:00:00.000Z" });
+    const result = registerSession(root, "overnight", "sess-6326-f", { tag: "300", startedAt: "2026-08-26T10:00:00.000Z" });
     assert.equal(result.outcome, "created");
     assert.equal(result.promotedFrom, undefined);
     assert.equal(result.record.kind, "overnight");
@@ -702,7 +702,7 @@ describe("registerSession — promoção de kind quando o beacon registrou prime
   it("registro de OUTRO kind ILEGÍVEL (JSON corrompido, nem real nem backup legível) — não cria 2º registro ativo em silêncio (#6326 fleet review item 1)", () => {
     const root = freshRoot();
     const sessionId = "sess-6326-unreadable";
-    const tag = "helios";
+    const tag = "300";
 
     // Arquivo de OUTRO kind existe PELO NOME, mas o conteúdo é JSON inválido
     // — simula sync do OneDrive pegando o arquivo no meio de um write.
@@ -749,7 +749,7 @@ describe("registerSession — promoção de kind quando o beacon registrou prime
   it("rmSync do registro antigo FALHA na promoção — outcome promoted-orphan-left, nunca reportado como sucesso limpo (#6326 fleet review item 2)", () => {
     const root = freshRoot();
     const sessionId = "sess-6326-rmfail";
-    const tag = "helios";
+    const tag = "300";
 
     writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
       kind: "interactive",
@@ -794,7 +794,7 @@ describe("registerSession — promoção de kind quando o beacon registrou prime
   it("#7028: rmSync falha na promoção — o registro antigo órfão é carimbado com endedAt, e listActiveSessions não conta 2 sessões", () => {
     const root = freshRoot();
     const sessionId = "sess-7028-endedat";
-    const tag = "helios";
+    const tag = "300";
 
     writeRawSessionFile(root, `overnight-${tag}-${sessionId}.json`, {
       kind: "overnight",
@@ -1389,20 +1389,20 @@ describe("claimIssueCheckAndSet — recusa colisão entre sessões ativas (#6236
 
   it("#6436: grava claimed_issues_at na 1ª reivindicação, NUNCA sobrescreve numa re-reivindicação (cenário `continuo`)", () => {
     const root = freshRoot();
-    registerSession(root, "continuo", "sess-continuo", { tag: "helios", startedAt: new Date(NOW).toISOString() });
+    registerSession(root, "continuo", "sess-continuo", { tag: "300", startedAt: new Date(NOW).toISOString() });
 
     const firstClaimAt = new Date(NOW).toISOString();
-    claimIssueCheckAndSet(root, "continuo", "sess-continuo", 6051, "helios", firstClaimAt);
+    claimIssueCheckAndSet(root, "continuo", "sess-continuo", 6051, "300", firstClaimAt);
 
-    const contentAfterFirst = JSON.parse(readFileSync(sessionFilePath(root, "continuo", "helios", "sess-continuo"), "utf8"));
+    const contentAfterFirst = JSON.parse(readFileSync(sessionFilePath(root, "continuo", "300", "sess-continuo"), "utf8"));
     assert.equal(contentAfterFirst.claimed_issues_at["6051"], firstClaimAt);
 
     // re-reivindicação 7h depois (o ciclo de 60min da `continuo` repetido várias vezes) — MESMO timestamp preservado.
     const reClaimAt = new Date(NOW + 7 * 60 * 60 * 1000).toISOString();
-    const reResult = claimIssueCheckAndSet(root, "continuo", "sess-continuo", 6051, "helios", reClaimAt);
+    const reResult = claimIssueCheckAndSet(root, "continuo", "sess-continuo", 6051, "300", reClaimAt);
     assert.equal(reResult.reason, "already-own");
 
-    const contentAfterReclaim = JSON.parse(readFileSync(sessionFilePath(root, "continuo", "helios", "sess-continuo"), "utf8"));
+    const contentAfterReclaim = JSON.parse(readFileSync(sessionFilePath(root, "continuo", "300", "sess-continuo"), "utf8"));
     assert.equal(
       contentAfterReclaim.claimed_issues_at["6051"],
       firstClaimAt,
@@ -1892,7 +1892,7 @@ describe("assessCrossMachineSyncFreshness (#7169) — sinaliza registro de OUTRA
   const NOW = Date.parse("2026-09-02T21:37:45.000Z"); // hora do heartbeat "fresco" citado na issue
   const record = (overrides: Partial<ActiveSessionRecord>): ActiveSessionRecord => ({
     kind: "overnight",
-    machineTag: "helios",
+    machineTag: "300",
     sessionId: "b73bdec9",
     startedAt: new Date(NOW - 60 * 60 * 1000).toISOString(),
     lastHeartbeat: new Date(NOW).toISOString(),
@@ -1911,7 +1911,7 @@ describe("assessCrossMachineSyncFreshness (#7169) — sinaliza registro de OUTRA
 
   it("mesma sessão, mas lida da PRÓPRIA máquina (machineTag bate) → nunca sinaliza — leitura local não tem sync no caminho", () => {
     const stale73min = record({ lastHeartbeat: new Date(NOW - 73 * 60 * 1000).toISOString() });
-    const result = assessCrossMachineSyncFreshness([stale73min], NOW, "helios");
+    const result = assessCrossMachineSyncFreshness([stale73min], NOW, "300");
     assert.equal(result.stale, false);
     assert.deepEqual(result.staleSessions, []);
   });
@@ -2187,7 +2187,7 @@ describe("acquireMergeLock — atomicidade sob concorrência (#5161 item 1)", ()
     const path = mergeLockPath(root);
     // Simula cada máquina com seu PRÓPRIO inode/disco: mesmo path lógico,
     // mas o arquivo NÃO é visível entre os dois — exatamente o que acontece
-    // quando `data/` é um junction OneDrive sincronizado entre `helios` e
+    // quando `data/` é um junction OneDrive sincronizado entre `300` e
     // `Neo`: cada máquina lê do inode que o OneDrive sincronizou localmente,
     // não do inode único de um filesystem compartilhado real.
     const diskA = new Map<string, string>();
@@ -2217,9 +2217,9 @@ describe("acquireMergeLock — atomicidade sob concorrência (#5161 item 1)", ()
       readCurrent: (p) => (diskB.has(p) ? (JSON.parse(diskB.get(p)!) as MergeLockRecord) : null),
       overwrite: (p, data) => diskB.set(p, data),
     };
-    const resultA = acquireMergeLock(root, "sess-helios", NOW, MERGE_LOCK_TTL_MS, ioA);
+    const resultA = acquireMergeLock(root, "sess-300", NOW, MERGE_LOCK_TTL_MS, ioA);
     const resultB = acquireMergeLock(root, "sess-neo", NOW, MERGE_LOCK_TTL_MS, ioB);
-    assert.equal(resultA, true, "A (helios) vê path ausente no seu inode e recebe `true`");
+    assert.equal(resultA, true, "A (300) vê path ausente no seu inode e recebe `true`");
     assert.equal(resultB, true, "B (neo) vê path ausente no SEU inode e também recebe `true` — a limitação advisory do #6182");
   });
 });
@@ -2382,7 +2382,7 @@ describe("mergeSessionRecords (#6130)", () => {
   it("une claimed_issues de todos os registros e usa o de heartbeat mais recente como base", () => {
     const older: SessionRecord = {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s1",
       startedAt: "2026-08-18T04:00:00.000Z",
       lastHeartbeat: "2026-08-18T14:26:00.000Z",
@@ -2391,7 +2391,7 @@ describe("mergeSessionRecords (#6130)", () => {
     };
     const newer: SessionRecord = {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s1",
       startedAt: "2026-08-18T04:00:00.000Z",
       lastHeartbeat: "2026-08-18T15:32:00.000Z",
@@ -2407,7 +2407,7 @@ describe("mergeSessionRecords (#6130)", () => {
   it("#6436: une claimed_issues_at mantendo o timestamp MAIS ANTIGO por issue entre cópias", () => {
     const older: SessionRecord = {
       kind: "continuo",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "s1",
       startedAt: "2026-08-18T04:00:00.000Z",
       lastHeartbeat: "2026-08-18T14:26:00.000Z",
@@ -2416,7 +2416,7 @@ describe("mergeSessionRecords (#6130)", () => {
     };
     const newer: SessionRecord = {
       kind: "continuo",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "s1",
       startedAt: "2026-08-18T04:00:00.000Z",
       lastHeartbeat: "2026-08-18T15:32:00.000Z",
@@ -2433,7 +2433,7 @@ describe("mergeSessionRecords (#6130)", () => {
   it("une um claim que existe SÓ no registro mais antigo (o cenário real do #6130 — claim desaparece do 'atual')", () => {
     const older: SessionRecord = {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s1",
       startedAt: "2026-08-18T04:00:00.000Z",
       lastHeartbeat: "2026-08-18T15:16:00.000Z",
@@ -2441,7 +2441,7 @@ describe("mergeSessionRecords (#6130)", () => {
     };
     const newerSemClaim: SessionRecord = {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s1",
       startedAt: "2026-08-18T04:00:00.000Z",
       lastHeartbeat: "2026-08-18T15:32:00.000Z",
@@ -2458,12 +2458,12 @@ describe("listActiveSessions / isIssueClaimedByOther — união de claims de bac
   it("is-claimed enxerga um claim presente SÓ num backup, ausente do arquivo real 'atual'", () => {
     const root = freshRoot();
     // Arquivo real — claim 5657 já foi removido/nunca chegou aqui (conflito de sync).
-    registerSession(root, "continuo", "s1", { tag: "predator", startedAt: "2026-08-18T15:00:00.000Z" });
-    claimIssue(root, "continuo", "s1", 5518, "predator", "2026-08-18T15:32:00.000Z");
+    registerSession(root, "continuo", "s1", { tag: "300", startedAt: "2026-08-18T15:00:00.000Z" });
+    claimIssue(root, "continuo", "s1", 5518, "300", "2026-08-18T15:32:00.000Z");
     // Backup do MESMO sessionId carrega um claim que o arquivo real não tem.
-    writeRawSessionFile(root, "continuo-predator-s1-predator-safeBackup-0001.json", {
+    writeRawSessionFile(root, "continuo-300-s1-300-safeBackup-0001.json", {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s1",
       startedAt: "2026-08-18T15:00:00.000Z",
       lastHeartbeat: "2026-08-18T15:16:00.000Z",
@@ -2480,15 +2480,15 @@ describe("listActiveSessions / isIssueClaimedByOther — união de claims de bac
     const root = freshRoot();
     // Arquivo real com heartbeat velho (>90min) — sozinho já seria stale.
     const staleHb = new Date(NOW - 3 * 60 * 60 * 1000).toISOString();
-    registerSession(root, "continuo", "s2", { tag: "predator", startedAt: staleHb });
-    heartbeat(root, "continuo", "s2", {}, "predator", staleHb);
-    claimIssue(root, "continuo", "s2", 42, "predator", staleHb);
+    registerSession(root, "continuo", "s2", { tag: "300", startedAt: staleHb });
+    heartbeat(root, "continuo", "s2", {}, "300", staleHb);
+    claimIssue(root, "continuo", "s2", 42, "300", staleHb);
     // Backup com heartbeat FRESCO (o sync gravou uma versão mais nova como
     // cópia de conflito em vez de sobrescrever o arquivo real).
     const freshHb = new Date(NOW - 5 * 60 * 1000).toISOString();
-    writeRawSessionFile(root, "continuo-predator-s2-predator-safeBackup-0001.json", {
+    writeRawSessionFile(root, "continuo-300-s2-300-safeBackup-0001.json", {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s2",
       startedAt: staleHb,
       lastHeartbeat: freshHb,
@@ -2507,9 +2507,9 @@ describe("listActiveSessions / isIssueClaimedByOther — união de claims de bac
     // remover o arquivo real — é esse carimbo (e não a mera ausência do
     // real) que autoriza descartar o grupo, agora que "backup órfão vivo"
     // passou a ser um estado real e distinto.
-    writeRawSessionFile(root, "continuo-predator-s-encerrada-predator-safeBackup-0001.json", {
+    writeRawSessionFile(root, "continuo-300-s-encerrada-300-safeBackup-0001.json", {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s-encerrada",
       startedAt: new Date(NOW - 60 * 1000).toISOString(),
       lastHeartbeat: new Date(NOW - 60 * 1000).toISOString(),
@@ -2523,9 +2523,9 @@ describe("listActiveSessions / isIssueClaimedByOther — união de claims de bac
 
   it("backup ÓRFÃO STALE (sem carimbo, heartbeat fora da janela de liveness) também nunca ressuscita claim", () => {
     const root = freshRoot();
-    writeRawSessionFile(root, "continuo-predator-s-morta-predator-safeBackup-0001.json", {
+    writeRawSessionFile(root, "continuo-300-s-morta-300-safeBackup-0001.json", {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s-morta",
       startedAt: new Date(NOW - 10 * 60 * 60 * 1000).toISOString(),
       lastHeartbeat: new Date(NOW - SOFT_STALE_MS - 60 * 1000).toISOString(),
@@ -2664,12 +2664,12 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
   it("ressalva #6130: heartbeat MUITO stale mas pid confirmado VIVO na máquina local — NUNCA remove", () => {
     const root = freshRoot();
     registerSession(root, "continuo", "s-viva", {
-      tag: "helios",
+      tag: "300",
       pid: 4242,
       startedAt: new Date(NOW - 10 * ONE_DAY_MS).toISOString(), // além até da janela conservadora
     });
 
-    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: (pid) => pid === 4242 });
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "300", isPidAlive: (pid) => pid === 4242 });
     assert.equal(plan.length, 1);
     assert.equal(plan[0].action, "kept", "processo vivo protege o registro mesmo com heartbeat morto há 10 dias");
     assert.match(plan[0].reason, /VIVO/);
@@ -2683,12 +2683,12 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
     // janela conservadora. Ver docstring de decideSessionGc.
     const root = freshRoot();
     registerSession(root, "continuo", "s-morta", {
-      tag: "helios",
+      tag: "300",
       pid: 9999,
       startedAt: new Date(NOW - 2 * 60 * ONE_MIN_MS).toISOString(), // 2h — stale mas bem aquém de 7 dias
     });
 
-    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "300", isPidAlive: () => false });
     assert.equal(plan.length, 1);
     assert.equal(plan[0].action, "kept", "pid morto cai pra janela conservadora, não remove na hora");
     assert.doesNotMatch(plan[0].reason, /\bMORTO\b/);
@@ -2697,12 +2697,12 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
   it("#6294: mesma máquina, pid reportado MORTO, heartbeat ALÉM da janela conservadora — remove (mesmo caminho de 'sem pid')", () => {
     const root = freshRoot();
     registerSession(root, "continuo", "s-morta-velha", {
-      tag: "helios",
+      tag: "300",
       pid: 9999,
       startedAt: new Date(NOW - 10 * ONE_DAY_MS).toISOString(), // 10 dias > janela conservadora de 7
     });
 
-    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "300", isPidAlive: () => false });
     assert.equal(plan.length, 1);
     assert.equal(plan[0].action, "removed", "além da janela conservadora, remove independente do pid reportar morto");
   });
@@ -2710,12 +2710,12 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
   it("#6294: pid VIVO continua protegendo incondicionalmente, sem mudança de comportamento", () => {
     const root = freshRoot();
     registerSession(root, "continuo", "s-viva-2", {
-      tag: "helios",
+      tag: "300",
       pid: 4242,
       startedAt: new Date(NOW - 10 * ONE_DAY_MS).toISOString(),
     });
 
-    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: (pid) => pid === 4242 });
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "300", isPidAlive: (pid) => pid === 4242 });
     assert.equal(plan.length, 1);
     assert.equal(plan[0].action, "kept");
     assert.match(plan[0].reason, /VIVO/);
@@ -2724,7 +2724,7 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
   it("máquina DIFERENTE (sem como checar pid) — mantém até a janela conservadora, remove depois", () => {
     const root = freshRoot();
     registerSession(root, "overnight", "s-remota", {
-      tag: "helios",
+      tag: "300",
       pid: 111,
       startedAt: new Date(NOW - 2 * ONE_DAY_MS).toISOString(), // stale, mas < 7 dias
     });
@@ -2782,17 +2782,17 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
 
   it("garbageCollectSessions remove o GRUPO inteiro (real + backups) junto", () => {
     const root = freshRoot();
-    registerSession(root, "continuo", "s-grupo", { tag: "predator", startedAt: new Date(NOW - 10 * ONE_DAY_MS).toISOString() });
-    const realPath = sessionFilePath(root, "continuo", "predator", "s-grupo");
-    writeRawSessionFile(root, "continuo-predator-s-grupo-predator-safeBackup-0001.json", {
+    registerSession(root, "continuo", "s-grupo", { tag: "300", startedAt: new Date(NOW - 10 * ONE_DAY_MS).toISOString() });
+    const realPath = sessionFilePath(root, "continuo", "300", "s-grupo");
+    writeRawSessionFile(root, "continuo-300-s-grupo-300-safeBackup-0001.json", {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s-grupo",
       startedAt: new Date(NOW - 10 * ONE_DAY_MS).toISOString(),
       lastHeartbeat: new Date(NOW - 10 * ONE_DAY_MS).toISOString(),
       claimed_issues: [],
     });
-    const backupPath = join(sessionsDir(root), "continuo-predator-s-grupo-predator-safeBackup-0001.json");
+    const backupPath = join(sessionsDir(root), "continuo-300-s-grupo-300-safeBackup-0001.json");
     assert.ok(existsSync(realPath));
     assert.ok(existsSync(backupPath));
 
@@ -2828,16 +2828,16 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
     const root = freshRoot();
     // overnight: softStaleMs = SOFT_STALE_MS (90min) × 4 = 6h. 6,5h fica além.
     const ageMs = 6.5 * 60 * 60 * 1000;
-    writeRawSessionFile(root, "overnight-helios-s-orfa-helios-safeBackup-0001.json", {
+    writeRawSessionFile(root, "overnight-300-s-orfa-300-safeBackup-0001.json", {
       kind: "overnight",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "s-orfa",
       startedAt: new Date(NOW - ageMs).toISOString(),
       lastHeartbeat: new Date(NOW - ageMs).toISOString(),
       claimed_issues: [111, 222],
     });
 
-    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "300", isPidAlive: () => false });
     assert.equal(plan.length, 1);
     assert.equal(
       plan[0].action,
@@ -2852,32 +2852,32 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
     const root = freshRoot();
     // overnight: janela efetiva = 90min × 4 = 6h. 3h fica dentro.
     const ageMs = 3 * 60 * 60 * 1000;
-    writeRawSessionFile(root, "overnight-helios-s-recente-helios-safeBackup-0001.json", {
+    writeRawSessionFile(root, "overnight-300-s-recente-300-safeBackup-0001.json", {
       kind: "overnight",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "s-recente",
       startedAt: new Date(NOW - ageMs).toISOString(),
       lastHeartbeat: new Date(NOW - ageMs).toISOString(),
       claimed_issues: [],
     });
 
-    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "300", isPidAlive: () => false });
     assert.equal(plan.length, 1);
     assert.equal(plan[0].action, "kept", "3h < 4×90min=6h — ainda dentro da janela, GC não remove cedo demais");
   });
 
   it("#6595: órfão SEM timestamp legível é mantido (fail-safe), independente da janela do kind", () => {
     const root = freshRoot();
-    writeRawSessionFile(root, "overnight-helios-s-sem-ts-helios-safeBackup-0001.json", {
+    writeRawSessionFile(root, "overnight-300-s-sem-ts-300-safeBackup-0001.json", {
       kind: "overnight",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "s-sem-ts",
       startedAt: "não-é-uma-data",
       lastHeartbeat: "também-não",
       claimed_issues: [999],
     });
 
-    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "300", isPidAlive: () => false });
     assert.equal(plan.length, 1);
     assert.equal(plan[0].action, "kept", "timestamp ilegível nunca é removido, nem no caminho de órfão");
     assert.match(plan[0].reason, /ilegível/);
@@ -2891,16 +2891,16 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
     // que a mesma função já garante pra sessão ancorada em arquivo real.
     const root = freshRoot();
     const ageMs = 10 * 60 * 60 * 1000; // 10h — além das 6h do órfão overnight, mas bem aquém dos 7 dias
-    writeRawSessionFile(root, "overnight-helios-s-kind-vazio-helios-safeBackup-0001.json", {
+    writeRawSessionFile(root, "overnight-300-s-kind-vazio-300-safeBackup-0001.json", {
       // `kind` omitido de propósito — simula registro corrompido/legado.
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "s-kind-vazio",
       startedAt: new Date(NOW - ageMs).toISOString(),
       lastHeartbeat: new Date(NOW - ageMs).toISOString(),
       claimed_issues: [],
     } as Partial<SessionRecord>);
 
-    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "300", isPidAlive: () => false });
     assert.equal(plan.length, 1);
     assert.equal(
       plan[0].action,
@@ -2912,11 +2912,11 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
   it("#6595: sessão COM arquivo real e heartbeat de 3 dias segue mantida — os 7 dias NÃO regrediram", () => {
     const root = freshRoot();
     registerSession(root, "overnight", "s-real-3d", {
-      tag: "helios",
+      tag: "300",
       startedAt: new Date(NOW - 3 * ONE_DAY_MS).toISOString(),
     });
 
-    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "300", isPidAlive: () => false });
     assert.equal(plan.length, 1);
     assert.equal(
       plan[0].action,
@@ -2933,24 +2933,24 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
     // janelas efetivamente distintas pra este teste discriminar.
     const ageMs = 65 * 60 * 1000; // 65min
 
-    writeRawSessionFile(root, "overnight-helios-s-ov-helios-safeBackup-0001.json", {
+    writeRawSessionFile(root, "overnight-300-s-ov-300-safeBackup-0001.json", {
       kind: "overnight",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "s-ov",
       startedAt: new Date(NOW - ageMs).toISOString(),
       lastHeartbeat: new Date(NOW - ageMs).toISOString(),
       claimed_issues: [],
     });
-    writeRawSessionFile(root, "interactive-helios-s-int-helios-safeBackup-0001.json", {
+    writeRawSessionFile(root, "interactive-300-s-int-300-safeBackup-0001.json", {
       kind: "interactive",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "s-int",
       startedAt: new Date(NOW - ageMs).toISOString(),
       lastHeartbeat: new Date(NOW - ageMs).toISOString(),
       claimed_issues: [],
     });
 
-    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "300", isPidAlive: () => false });
     const overnightEntry = plan.find((e) => e.identity.includes("s-ov"));
     const interactiveEntry = plan.find((e) => e.identity.includes("s-int"));
     assert.ok(overnightEntry && interactiveEntry);
@@ -3000,9 +3000,9 @@ describe("parseSessionFileName valida o prefixo contra os 5 SessionKind conhecid
   });
 
   it("aceita sessionId com hífens (UUID) — o corte fica logo após a tag", () => {
-    assert.deepEqual(parseSessionFileName("overnight-helios-abc-123-def-456.json"), {
+    assert.deepEqual(parseSessionFileName("overnight-300-abc-123-def-456.json"), {
       kind: "overnight",
-      tag: "helios",
+      tag: "300",
       sessionId: "abc-123-def-456",
     });
   });
@@ -3036,16 +3036,16 @@ describe("parseSessionFileName valida o prefixo contra os 5 SessionKind conhecid
     // silêncio. `parseSessionFileName` precisa desempatar pelo prefixo mais
     // longo (mesma técnica de `groupBackupsByRealStem`), não pela ordem do
     // array.
-    assert.deepEqual(parseSessionFileName("continuo-review-helios-sess1.json"), {
+    assert.deepEqual(parseSessionFileName("continuo-review-300-sess1.json"), {
       kind: "continuo-review",
-      tag: "helios",
+      tag: "300",
       sessionId: "sess1",
     });
     // Um registro "continuo" de verdade (sem o sufixo "-review") continua
     // resolvendo pro kind certo — a correção não quebra o caso comum.
-    assert.deepEqual(parseSessionFileName("continuo-helios-sess1.json"), {
+    assert.deepEqual(parseSessionFileName("continuo-300-sess1.json"), {
       kind: "continuo",
-      tag: "helios",
+      tag: "300",
       sessionId: "sess1",
     });
   });
@@ -3442,12 +3442,12 @@ describe("#6952 — escrita concorrente sob o lock do registro de sessão", () =
 // É essa assimetria que explica o sintoma medido: a claim sobrevivia porque o
 // #6130/#6436 a uniram; o grant sumia porque ninguém uniu.
 //
-// O ambiente não é hipotético: `data/sessions/` do helios tinha 15 arquivos
+// O ambiente não é hipotético: `data/sessions/` do 300 tinha 15 arquivos
 // `-safeBackup-` no dia em que isto foi escrito.
 describe("#6952 (2ª metade) — merge_grant sobrevive à união de cópias de conflito", () => {
   const BASE = {
     kind: "overnight" as const,
-    machineTag: "helios",
+    machineTag: "300",
     sessionId: "coord-6952",
     startedAt: "2026-09-01T10:00:00.000Z",
   };
@@ -3622,13 +3622,13 @@ describe("#6952 (2ª metade) — merge_grant sobrevive à união de cópias de c
 
     // Arquivo REAL: heartbeat mais novo, SEM o grant.
     writeFileSync(
-      join(sessionsDir, "overnight-helios-coord-6952.json"),
+      join(sessionsDir, "overnight-300-coord-6952.json"),
       JSON.stringify({ ...BASE, lastHeartbeat: "2026-09-01T12:00:30.000Z", claimed_issues: [] }),
       "utf8",
     );
     // Cópia de conflito: heartbeat mais antigo, COM o grant.
     writeFileSync(
-      join(sessionsDir, "overnight-helios-coord-6952-safeBackup-0001.json"),
+      join(sessionsDir, "overnight-300-coord-6952-safeBackup-0001.json"),
       JSON.stringify({
         ...BASE,
         lastHeartbeat: "2026-09-01T12:00:00.000Z",
@@ -3652,7 +3652,7 @@ describe("#6952 (2ª metade) — merge_grant sobrevive à união de cópias de c
     );
     // E o `consumedAt` foi parar no arquivo que de fato carrega a concessão.
     const backup = JSON.parse(
-      readFileSync(join(sessionsDir, "overnight-helios-coord-6952-safeBackup-0001.json"), "utf8"),
+      readFileSync(join(sessionsDir, "overnight-300-coord-6952-safeBackup-0001.json"), "utf8"),
     );
     assert.ok(backup.merge_grant?.consumedAt, "o consumedAt precisa ter sido gravado no backup");
   });
@@ -3664,9 +3664,9 @@ describe("#6952 (2ª metade) — merge_grant sobrevive à união de cópias de c
     const now = Date.parse("2026-09-01T12:01:00.000Z");
 
     for (const [name, hb] of [
-      ["overnight-helios-coord-6952.json", "2026-09-01T12:00:30.000Z"],
-      ["overnight-helios-coord-6952-safeBackup-0001.json", "2026-09-01T12:00:00.000Z"],
-      ["overnight-helios-coord-6952-safeBackup-0002.json", "2026-09-01T11:59:00.000Z"],
+      ["overnight-300-coord-6952.json", "2026-09-01T12:00:30.000Z"],
+      ["overnight-300-coord-6952-safeBackup-0001.json", "2026-09-01T12:00:00.000Z"],
+      ["overnight-300-coord-6952-safeBackup-0002.json", "2026-09-01T11:59:00.000Z"],
     ] as const) {
       writeFileSync(
         join(sessionsDir, name),
@@ -3694,7 +3694,7 @@ describe("#6952 (2ª metade) — merge_grant sobrevive à união de cópias de c
 
     // Arquivo REAL: heartbeat mais novo, SEM grant (o beacon reescreveu).
     writeFileSync(
-      join(sessionsDir, "overnight-helios-coord-6952.json"),
+      join(sessionsDir, "overnight-300-coord-6952.json"),
       JSON.stringify({
         ...BASE,
         lastHeartbeat: "2026-09-01T12:00:30.000Z",
@@ -3704,7 +3704,7 @@ describe("#6952 (2ª metade) — merge_grant sobrevive à união de cópias de c
     );
     // Cópia de conflito do OneDrive: heartbeat mais antigo, COM o grant.
     writeFileSync(
-      join(sessionsDir, "overnight-helios-coord-6952-safeBackup-0001.json"),
+      join(sessionsDir, "overnight-300-coord-6952-safeBackup-0001.json"),
       JSON.stringify({
         ...BASE,
         lastHeartbeat: "2026-09-01T12:00:00.000Z",
@@ -3894,10 +3894,10 @@ describe("#6952 — dedupe respeita a fronteira de máquina", () => {
       }),
       "utf8",
     );
-    // helios: MESMO sessionId (colisão), sem concessão nenhuma.
+    // 300: MESMO sessionId (colisão), sem concessão nenhuma.
     writeFileSync(
-      join(sessionsDir, "develop-helios-sess-colisao.json"),
-      JSON.stringify({ ...shared, machineTag: "helios", lastHeartbeat: iso(0) }),
+      join(sessionsDir, "develop-300-sess-colisao.json"),
+      JSON.stringify({ ...shared, machineTag: "300", lastHeartbeat: iso(0) }),
       "utf8",
     );
 
@@ -3910,13 +3910,13 @@ describe("#6952 — dedupe respeita a fronteira de máquina", () => {
     );
 
     const neo = colisao.find((r) => r.machineTag === "Neo");
-    const helios = colisao.find((r) => r.machineTag === "helios");
-    assert.ok(neo && helios, "as duas tags precisam sobreviver ao dedupe");
+    const m300 = colisao.find((r) => r.machineTag === "300");
+    assert.ok(neo && m300, "as duas tags precisam sobreviver ao dedupe");
     assert.ok(neo!.merge_grant, "a concessão do Neo tem que continuar no registro do Neo");
     assert.equal(
-      helios!.merge_grant,
+      m300!.merge_grant,
       undefined,
-      "a concessão do Neo vazou pro registro do helios — grant cruzando a fronteira de máquina",
+      "a concessão do Neo vazou pro registro do 300 — grant cruzando a fronteira de máquina",
     );
   });
 });
@@ -4005,7 +4005,7 @@ describe("#6952 — endSession quebra lock órfão antes de adquirir", () => {
 // ─── #7002/#7003/#6999/#6972 — a âncora some, a sessão continua VIVA ───────
 //
 // Os quatro modos deste bloco nasceram da MESMA janela de evidência (rodada
-// `/diaria-overnight` 260901b/c, helios, 01-02/09/2026): o arquivo REAL de uma
+// `/diaria-overnight` 260901b/c, 300, 01-02/09/2026): o arquivo REAL de uma
 // coordenadora ATIVA desapareceu de `data/sessions/` sob escrita concorrente no
 // junction OneDrive, e sobraram só cópias `-safeBackup-` com as 10 claims e um
 // `merge_grant` íntegros. Todo o read-path as descartou, porque "backup sem
@@ -4057,17 +4057,17 @@ describe("#7002 — grupo de backups ÓRFÃO mas VIVO volta a contar como sessã
 
   it("cenário da issue: o real da coordenadora sumiu, as cópias vivas guardam as claims → a sessão volta a aparecer COM elas", () => {
     const root = freshRoot();
-    writeRawSessionFile(root, "overnight-helios-coord-7002-helios-safeBackup-0001.json", {
+    writeRawSessionFile(root, "overnight-300-coord-7002-300-safeBackup-0001.json", {
       kind: "overnight",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "coord-7002",
       startedAt: iso(NOW - 2 * 60 * 60 * 1000),
       lastHeartbeat: iso(NOW - 60 * 1000),
       claimed_issues: [6947, 6970],
     });
-    writeRawSessionFile(root, "overnight-helios-coord-7002-helios-safeBackup-0002.json", {
+    writeRawSessionFile(root, "overnight-300-coord-7002-300-safeBackup-0002.json", {
       kind: "overnight",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "coord-7002",
       startedAt: iso(NOW - 2 * 60 * 60 * 1000),
       lastHeartbeat: iso(NOW - 2 * 60 * 1000),
@@ -4092,9 +4092,9 @@ describe("#7002 — grupo de backups ÓRFÃO mas VIVO volta a contar como sessã
 
   it("o beacon recriando um interactive VAZIO não apaga as claims dos backups órfãos", () => {
     const root = freshRoot();
-    writeRawSessionFile(root, "overnight-helios-coord-7002b-helios-safeBackup-0001.json", {
+    writeRawSessionFile(root, "overnight-300-coord-7002b-300-safeBackup-0001.json", {
       kind: "overnight",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "coord-7002b",
       startedAt: iso(NOW - 2 * 60 * 60 * 1000),
       lastHeartbeat: iso(NOW - 5 * 60 * 1000),
@@ -4102,9 +4102,9 @@ describe("#7002 — grupo de backups ÓRFÃO mas VIVO volta a contar como sessã
     });
     // O beacon recria `interactive-{tag}-{sessionId}.json` com heartbeat MAIS
     // NOVO e sem claim nenhuma — foi ele que "venceu" a leitura na issue.
-    writeRawSessionFile(root, "interactive-helios-coord-7002b.json", {
+    writeRawSessionFile(root, "interactive-300-coord-7002b.json", {
       kind: "interactive",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "coord-7002b",
       startedAt: iso(NOW - 60 * 1000),
       lastHeartbeat: iso(NOW - 10 * 1000),
@@ -4119,7 +4119,7 @@ describe("#7002 — grupo de backups ÓRFÃO mas VIVO volta a contar como sessã
 
   it("endSession carimba endedAt em TODAS as cópias do grupo — encerrar continua encerrando", () => {
     const root = freshRoot();
-    const tag = "helios";
+    const tag = "300";
     registerSession(root, "develop", "sess-fim-7002", { tag, startedAt: iso(NOW - 30 * 60 * 1000) });
     claimIssueCheckAndSet(root, "develop", "sess-fim-7002", 4242, tag, iso(NOW - 20 * 60 * 1000));
     const backupName = `develop-${tag}-sess-fim-7002-${tag}-safeBackup-0001.json`;
@@ -4142,9 +4142,9 @@ describe("#7002 — grupo de backups ÓRFÃO mas VIVO volta a contar como sessã
 
   it("merge_grant que vive só no grupo órfão VIVO volta a ser encontrável — e sai marcado como cópia de conflito (#6972)", () => {
     const root = freshRoot();
-    writeRawSessionFile(root, "overnight-helios-coord-7002c-helios-safeBackup-0001.json", {
+    writeRawSessionFile(root, "overnight-300-coord-7002c-300-safeBackup-0001.json", {
       kind: "overnight",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "coord-7002c",
       startedAt: iso(NOW - 60 * 60 * 1000),
       lastHeartbeat: iso(NOW - 60 * 1000),
@@ -4161,7 +4161,7 @@ describe("#7002 — grupo de backups ÓRFÃO mas VIVO volta a contar como sessã
 describe("#7003 — claim-issue nunca recria o registro ZERADO quando a âncora some com a sessão viva", () => {
   const NOW = Date.parse("2026-09-02T12:00:00.000Z");
   const iso = (ms: number) => new Date(ms).toISOString();
-  const TAG = "helios";
+  const TAG = "300";
   const PREVIAS = [6947, 6952, 6955, 6960, 6962, 6966, 6968, 6970, 6971, 6972];
 
   function orphanComAsDezClaims(root: string, sessionId: string): void {
@@ -4321,7 +4321,7 @@ describe("#7003 — claim-issue nunca recria o registro ZERADO quando a âncora 
 describe("#6999 — grant-merge: guard de --session-id e mensagem que nomeia a CONCEDENTE", () => {
   const NOW = Date.parse("2026-09-02T12:00:00.000Z");
   const iso = (ms: number) => new Date(ms).toISOString();
-  const TAG = "helios";
+  const TAG = "300";
 
   it("fix 1 (implementado em 26/08, travado aqui): sem --session-id o comando falha ALTO, nomeando a flag", () => {
     const root = freshCliRoot();
@@ -4409,7 +4409,7 @@ describe("#6999 — grant-merge: guard de --session-id e mensagem que nomeia a C
 describe("#6972 — proveniência do grant vencedor (arquivo real × cópia de conflito)", () => {
   const NOW = Date.parse("2026-09-02T12:00:00.000Z");
   const iso = (ms: number) => new Date(ms).toISOString();
-  const TAG = "helios";
+  const TAG = "300";
 
   function coordenadoraViva(root: string, sessionId: string): void {
     writeRawSessionFile(root, `overnight-${TAG}-${sessionId}.json`, {

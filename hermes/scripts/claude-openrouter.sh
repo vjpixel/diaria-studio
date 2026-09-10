@@ -7,9 +7,9 @@
 # Delega integralmente pro arquivo com o nome novo, no MESMO diretório
 # (resolve via BASH_SOURCE + readlink -f, imune a symlink de deploy — é a
 # mesma lição do #6943/#6922, replicada aqui de propósito porque este shim
-# é justamente o alvo do symlink real em ~/.hermes/scripts/ no `helios`).
+# é justamente o alvo do symlink real em ~/.hermes/scripts/ no `300`).
 #
-# Remover este shim (e recriar o symlink do helios apontando direto pro
+# Remover este shim (e recriar o symlink do 300 apontando direto pro
 # nome novo) é follow-up de 1 ciclo — ver comentário no PR #7649 Parte 2 e
 # hermes/README.md.
 set -euo pipefail

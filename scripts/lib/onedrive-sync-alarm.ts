@@ -3,7 +3,7 @@
  *
  * Lógica PURA do alarme de sync do OneDrive parado — achado ao vivo em
  * 17/08/2026 (#5548): o serviço `onedrive.service` (systemd --user, máquina
- * `helios`) morreu silenciosamente (`Active: inactive (dead)`, exit
+ * `300`) morreu silenciosamente (`Active: inactive (dead)`, exit
  * status=0 depois de ~7 dias no ar) e ficou 17h parado sem que ninguém
  * percebesse — `systemd` não reinicia uma unit que saiu com exit 0, então
  * nada sinalizou o problema. `data/` (junction/symlink pro OneDrive) continua
@@ -16,7 +16,7 @@
  *
  * `assessCrossMachineSyncFreshness` (`scripts/lib/session-registry.ts`,
  * #7169) cobre a mesma classe de falha por outro caminho — nasceu citando
- * como motivação "onedrive.service morreu em silêncio no helios por 73min,
+ * como motivação "onedrive.service morreu em silêncio no 300 por 73min,
  * sem alarme", que é literalmente o domínio deste módulo. Os dois são
  * úteis e NÃO devem ser fundidos (um é síncrono no momento da decisão de
  * merge; o outro roda agendado, independente de haver sessão) — mas quem
@@ -64,7 +64,7 @@
  *      staleness, é ausência de baseline), mas é logado.
  *
  * **Limitação honesta (documentada em `docs/onedrive-sync-setup.md`):** com
- * uma única máquina escrevendo o canário (`helios`, hoje o único host
+ * uma única máquina escrevendo o canário (`300`, hoje o único host
  * 24/7 rodando alarmes deste repo), o canário detecta primariamente "este
  * timer está rodando + `data/` é gravável" — não prova por si só que outra
  * máquina RECEBEU a escrita via OneDrive. Combinado com o check de serviço

@@ -4,7 +4,7 @@
  * Lógica pura de `scripts/lib/edicao-schedule-attestation.ts` — o marcador
  * cross-machine que ataca a lacuna do `TIMER_DISABLED_CROSS_MACHINE_CAVEAT`
  * (#6898): `queryTaskArmed` só enxerga o agendador da máquina LOCAL, e se a
- * via Windows for reativada sem o par Linux, o alarme rodando no `helios`
+ * via Windows for reativada sem o par Linux, o alarme rodando no `300`
  * silenciaria por engano lendo `disabled` sobre um agendador que não é o
  * que de fato importa.
  */
@@ -42,7 +42,7 @@ describe("readEffectiveScheduleAttestation — o fio que o alarme usa, contra ar
   it("lê OS DOIS arquivos: Windows armado + Linux desarmado → efetivo armado (regressão do clobber, #7036)", () => {
     withDir((dir) => {
       write(dir, WIN, JSON.stringify(buildEdicaoScheduleAttestation("NEO", "windows-task-scheduler", true, now)));
-      write(dir, LNX, JSON.stringify(buildEdicaoScheduleAttestation("helios", "systemd", false, now)));
+      write(dir, LNX, JSON.stringify(buildEdicaoScheduleAttestation("300", "systemd", false, now)));
       const r = readEffectiveScheduleAttestation(dir, now);
       assert.equal(r.effective?.armed, true);
       assert.equal(r.effective?.scheduler, "windows-task-scheduler");
@@ -52,7 +52,7 @@ describe("readEffectiveScheduleAttestation — o fio que o alarme usa, contra ar
 
   it("só o arquivo do systemd armado também é lido (o Linux conta)", () => {
     withDir((dir) => {
-      write(dir, LNX, JSON.stringify(buildEdicaoScheduleAttestation("helios", "systemd", true, now)));
+      write(dir, LNX, JSON.stringify(buildEdicaoScheduleAttestation("300", "systemd", true, now)));
       assert.equal(readEffectiveScheduleAttestation(dir, now).effective?.scheduler, "systemd");
     });
   });
@@ -65,7 +65,7 @@ describe("readEffectiveScheduleAttestation — o fio que o alarme usa, contra ar
 
   it("marcador no arquivo ERRADO (scheduler não bate) é descartado e reportado", () => {
     withDir((dir) => {
-      write(dir, WIN, JSON.stringify(buildEdicaoScheduleAttestation("helios", "systemd", true, now)));
+      write(dir, WIN, JSON.stringify(buildEdicaoScheduleAttestation("300", "systemd", true, now)));
       const r = readEffectiveScheduleAttestation(dir, now);
       assert.equal(r.effective, null);
       assert.deepEqual(r.mismatched, [join(dir, WIN)]);
@@ -96,7 +96,7 @@ describe("readEffectiveScheduleAttestation — o fio que o alarme usa, contra ar
 describe("pickEffectiveAttestation — um marcador por agendador", () => {
   const now = new Date("2026-09-10T19:00:00Z");
   const winArmed = buildEdicaoScheduleAttestation("NEO", "windows-task-scheduler", true, now);
-  const linuxDisarmed = buildEdicaoScheduleAttestation("helios", "systemd", false, now);
+  const linuxDisarmed = buildEdicaoScheduleAttestation("300", "systemd", false, now);
 
   it("Windows armado + Linux desarmado → vence o armado (desarmar um lado não apaga o outro)", () => {
     assert.equal(pickEffectiveAttestation([winArmed, linuxDisarmed], now), winArmed);
@@ -120,7 +120,7 @@ describe("pickEffectiveAttestation — um marcador por agendador", () => {
   it("os dois stale → null", () => {
     const old = new Date(now.getTime() - ATTESTATION_STALE_MS - 1000);
     const a = buildEdicaoScheduleAttestation("NEO", "windows-task-scheduler", true, old);
-    const b = buildEdicaoScheduleAttestation("helios", "systemd", true, old);
+    const b = buildEdicaoScheduleAttestation("300", "systemd", true, old);
     assert.equal(pickEffectiveAttestation([a, b], now), null);
   });
 
@@ -141,7 +141,7 @@ describe("buildEdicaoScheduleAttestation / parseEdicaoScheduleAttestation — ro
 
   it("armed=false round-trip (desarmado explicitamente, não ausência)", () => {
     const now = new Date("2026-09-01T19:00:00Z");
-    const attestation = buildEdicaoScheduleAttestation("helios", "systemd", false, now);
+    const attestation = buildEdicaoScheduleAttestation("300", "systemd", false, now);
     const roundTripped = parseEdicaoScheduleAttestation(JSON.stringify(attestation));
     assert.equal(roundTripped?.armed, false);
   });
@@ -233,7 +233,7 @@ describe("resolveEdicaoTimerStateCrossMachine — o cenário real do #7036", () 
     assert.equal(resolveEdicaoTimerStateCrossMachine("unknown", null, now), "unknown");
   });
 
-  it("cenário do #7036: local='disabled' (helios/Linux) + atestação de OUTRA máquina armada (Windows) → 'armed', NÃO silencia", () => {
+  it("cenário do #7036: local='disabled' (300/Linux) + atestação de OUTRA máquina armada (Windows) → 'armed', NÃO silencia", () => {
     const attestation = buildEdicaoScheduleAttestation("NEO", "windows-task-scheduler", true, now);
     assert.equal(resolveEdicaoTimerStateCrossMachine("disabled", attestation, now), "armed");
   });
@@ -244,7 +244,7 @@ describe("resolveEdicaoTimerStateCrossMachine — o cenário real do #7036", () 
   });
 
   it("atestação com armed=false (a mesma ou outra máquina confirmando desarmado) → preserva o LOCAL, nunca piora", () => {
-    const attestation = buildEdicaoScheduleAttestation("helios", "systemd", false, now);
+    const attestation = buildEdicaoScheduleAttestation("300", "systemd", false, now);
     assert.equal(resolveEdicaoTimerStateCrossMachine("disabled", attestation, now), "disabled");
     assert.equal(resolveEdicaoTimerStateCrossMachine("unknown", attestation, now), "unknown");
   });

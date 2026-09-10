@@ -8,16 +8,16 @@ import {
 
 // ─── Reprodução do incidente real (#7083) ───────────────────────────────────
 //
-// Duas sessões, na máquina do editor (NÃO a máquina executora `helios`),
+// Duas sessões, na máquina do editor (NÃO a máquina executora `300`),
 // leram a ausência local de `data/.session-registry-safebackup-alarm-issues.json`
 // e concluíram "o alarme nunca rodou". Na realidade a task rodava
-// normalmente todo dia em `helios` — o arquivo só não tinha replicado ainda
+// normalmente todo dia em `300` — o arquivo só não tinha replicado ainda
 // (ou, no caso mais estreito investigado depois, nunca replicaria para
 // aquele arquivo específico apesar do sync geral saudável).
 
 test("ausência observada numa máquina não-executora nunca é 'confirmada' — reproduz e corrige o erro do #7083", () => {
   const verdict = classifyReplicatedAbsence({
-    isExecutingMachine: false, // sessão rodando na máquina do editor, não em helios
+    isExecutingMachine: false, // sessão rodando na máquina do editor, não em 300
     fileExists: false, // .session-registry-safebackup-alarm-issues.json ausente localmente
   });
 
@@ -31,12 +31,12 @@ test("ausência observada numa máquina não-executora nunca é 'confirmada' —
 
 test("a mesma ausência, checada NA máquina executora, é conclusiva", () => {
   // Evidência real trazida pela sessão coordenadora (#7083, comentário de
-  // correção): em `helios`, o arquivo existe (15714 bytes, escrito no
+  // correção): em `300`, o arquivo existe (15714 bytes, escrito no
   // mesmo minuto da última execução do timer armado) — mas o teste aqui
   // cobre o contrafactual (arquivo ausente NA PRÓPRIA máquina executora),
   // que é o único caso em que a ausência de fato prova não-execução.
   const verdict = classifyReplicatedAbsence({
-    isExecutingMachine: true, // rodando em helios, a própria máquina que executa o timer
+    isExecutingMachine: true, // rodando em 300, a própria máquina que executa o timer
     fileExists: false,
   });
 

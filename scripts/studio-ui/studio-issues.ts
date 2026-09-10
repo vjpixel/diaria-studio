@@ -356,9 +356,9 @@ ${i.body ?? ""}`);
  * write-path real de claim (bloqueio de re-claim entre sessões concorrentes
  * via `claimIssueCheckAndSet`) — apertá-lo ali arriscaria colisão genuína
  * entre sessões que só estão lentas, não mortas. Achado ao vivo em 260828:
- * uma sessão overnight-helios teve o PID morto sem chamar `end`/soltar o
+ * uma sessão overnight-300 teve o PID morto sem chamar `end`/soltar o
  * claim; `lastHeartbeat` ficou congelado, mas como `SOFT_STALE_MS` é 90min
- * o painel continuou mostrando "em andamento — overnight-helios" por até
+ * o painel continuou mostrando "em andamento — overnight-300" por até
  * 90min depois do processo já estar morto. Este módulo (consumidor único de
  * `PANEL_DISPLAY_STALE_MS`) recalcula staleness OUTRA VEZ sobre
  * `lastHeartbeat`, só pra decidir se o claim aparece no payload — não toca

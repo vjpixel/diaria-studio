@@ -41,7 +41,7 @@
  * Como os outros alarmes locais deste repo, o registro na task
  * (`scripts/lib/scheduled-tasks.ts` → `Diaria-Dmarc-Enforcement-Alarm`)
  * nasce DECLARADO — armar via `scripts/setup-systemd-timers.ts` na checkout
- * compartilhada (`helios`) é ação POSTERIOR do editor.
+ * compartilhada (`300`) é ação POSTERIOR do editor.
  */
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";

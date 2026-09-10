@@ -12,8 +12,8 @@
  *
  * A issue oferecia dois caminhos. Um alarme de drift roda como scheduled
  * task — e, por "tasks só no servidor" (decisão já tomada pro projeto:
- * máquinas locais não rodam mais tasks agendadas, só o `helios`/servidor
- * roda), um alarme desse tipo só executa NO `helios`. O `helios` é, por
+ * máquinas locais não rodam mais tasks agendadas, só o `300`/servidor
+ * roda), um alarme desse tipo só executa NO `300`. O `300` é, por
  * definição, uma máquina que já está conectada — ele não pode observar o
  * estado local do ZenBook/Neo enquanto essas máquinas estiverem
  * desconectadas, que é exatamente o caso de uso que a issue quer cobrir. Um

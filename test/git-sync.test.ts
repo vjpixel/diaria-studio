@@ -1154,7 +1154,7 @@ describe("git-sync — #3423: TOCTOU race no stash-recovery, serializada via loc
       true,
     );
     assert.equal(isAgentWorktreeCheckout("/home/editor/diaria-studio"), false);
-    assert.equal(isAgentWorktreeCheckout("/home/helios/diaria-studio"), false);
+    assert.equal(isAgentWorktreeCheckout("/home/300/diaria-studio"), false);
     // Não deve casar falso-positivo por substring solta sem os separadores certos
     assert.equal(isAgentWorktreeCheckout("/home/editor/not-claude-worktrees-dir"), false);
   });

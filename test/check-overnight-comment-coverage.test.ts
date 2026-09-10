@@ -125,7 +125,18 @@ describe("deriveCandidateIssues", () => {
   // diz explicitamente que ambos NÃO levam comentário na issue ("corrida
   // evitada, não bloqueio"), e o roteamento label-driven
   // (`classifyExecTrack`) já recoloca cada uma no track certo.
-  it("issue pulada com motivo deixado-para-o-helios NUNCA é candidata (#5909)", () => {
+  it("issue pulada com motivo deixado-para-o-300 NUNCA é candidata (#5909)", () => {
+    const issues: PlanIssueLike[] = [
+      { number: 5878, status: "pulada", motivo: "deixado-para-o-300" },
+      { number: 5869, status: "pulada", motivo: "deixado-para-o-300" },
+    ];
+    assert.deepEqual(deriveCandidateIssues(issues, new Map()), []);
+  });
+
+  // #7682 — rename da máquina helios/predator → 300: o alias legado
+  // `deixado-para-o-helios` (valor gravado por rodadas anteriores ao
+  // rename, 08-10/09/2026) precisa continuar isento IDÊNTICO ao valor novo.
+  it("issue pulada com motivo LEGADO deixado-para-o-helios também NUNCA é candidata (#7682, regressão)", () => {
     const issues: PlanIssueLike[] = [
       { number: 5878, status: "pulada", motivo: "deixado-para-o-helios" },
       { number: 5869, status: "pulada", motivo: "deixado-para-o-helios" },
@@ -175,7 +186,7 @@ describe("deriveCandidateIssues", () => {
     assert.deepEqual(deriveCandidateIssues(issues, new Map()), []);
   });
 
-  it("isenção de deixado-para-o-helios não vaza pra outros motivos nem pra pulada sem motivo", () => {
+  it("isenção de deixado-para-o-300 não vaza pra outros motivos nem pra pulada sem motivo", () => {
     const issues: PlanIssueLike[] = [
       { number: 1, status: "pulada", motivo: "bloqueio-externo" },
       { number: 2, status: "pulada", motivo: "decisao-adiada" },

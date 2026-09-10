@@ -332,7 +332,7 @@ describe("syncKvKeys: ordem list→put→delete + write-amplification (#4442, er
   });
 });
 
-describe("wranglerSpawnEnv (#7338 — reprodução ao vivo em helios 05/09/2026)", () => {
+describe("wranglerSpawnEnv (#7338 — reprodução ao vivo em 300 05/09/2026)", () => {
   it("prepende dirname(process.execPath) ao PATH herdado — npx/wrangler resolvem o Node deste processo, não o do PATH do caller", () => {
     const env = wranglerSpawnEnv("conta-123");
     const nodeBinDir = env.PATH?.split(delimiter)[0];

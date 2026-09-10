@@ -4,7 +4,7 @@
  * Regressão do alarme das contas OpenAI Codex do Hermes.
  *
  * As fixtures não são inventadas: reproduzem o estado REAL medido em
- * `~/.hermes/auth.json` no helios em 03/09/2026, quando o alarme foi escrito —
+ * `~/.hermes/auth.json` no 300 em 03/09/2026, quando o alarme foi escrito —
  * 2 contas `exhausted` com `usage_limit_reached`/429 e reset ~26 e ~29 dias à
  * frente, 1 conta `ok`. É o caso que motivou a issue.
  *
@@ -35,7 +35,7 @@ import {
   type CodexCredentialEntry,
 } from "../scripts/lib/codex-credential-pool.ts";
 
-/** Estado real medido no helios em 03/09/2026. */
+/** Estado real medido no 300 em 03/09/2026. */
 const POOL_REAL: CodexCredentialEntry[] = [
   {
     label: "vjpixel",
@@ -292,7 +292,7 @@ describe("#7320 — resets_at no passado", () => {
 });
 
   it("#7320 — conta indeterminada por data vencida NÃO conta como viva (fail-closed)", () => {
-  // Cenário exato de 30/09/2026 no helios: 2 esgotadas com data já vencida,
+  // Cenário exato de 30/09/2026 no 300: 2 esgotadas com data já vencida,
   // 1 viva. O alarme tem de continuar disparando — ninguém confirmou que as
   // duas voltaram.
   const v = evaluateCodexPool(

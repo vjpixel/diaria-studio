@@ -4,7 +4,7 @@
  * Guard de regressão contra a classe de erro do #6056/#6059/#6060: remover a
  * infra do kind `continuo` deste repo tratando-a como código morto.
  *
- * Ela NÃO é morta — o `helios` roda um cron **do Hermes**
+ * Ela NÃO é morta — o `300` roda um cron **do Hermes**
  * (`~/.hermes/cron/jobs.json`, job `5d791ef6fc2c`, `every 60m`,
  * `workdir=/home/vjpixel/diaria-studio`) que invoca a skill LOCAL
  * `hermes-diaria-continuo` DENTRO deste checkout, consumindo tudo que este
@@ -19,7 +19,7 @@
  *   - **desde o PR #6446 a fonte canônica da skill é ESTE repo**:
  *     `hermes/skills/hermes-diaria-continuo/SKILL.md`. O path
  *     `/home/vjpixel/.hermes/skills/productivity/hermes-diaria-continuo/` no
- *     `helios` é um SYMLINK pra cá (bootstrap em `hermes/README.md`) — não é
+ *     `300` é um SYMLINK pra cá (bootstrap em `hermes/README.md`) — não é
  *     mais "fora do repo", mas o CONSUMIDOR (o cron do Hermes) continua
  *     externo. Nada disso mora em `~/.claude/skills/` (lá só existe o
  *     `humanizador`);
@@ -38,7 +38,7 @@
  * uma some.
  *
  * **Se você chegou aqui porque este teste falhou:** não "conserte" deletando o
- * teste. Vá ler a `hermes-diaria-continuo` no `helios` primeiro e confirme que
+ * teste. Vá ler a `hermes-diaria-continuo` no `300` primeiro e confirme que
  * o consumidor externo morreu de verdade — só então remova o par (infra +
  * este teste) numa PR que explique isso.
  */
@@ -79,7 +79,7 @@ describe("infra do kind continuo tem consumidor externo (#6056/#6059/#6060)", ()
   });
 
   for (const arquivo of ARQUIVOS_CONSUMIDOS_PELO_HERMES) {
-    it(`${arquivo} existe — invocado pela hermes-diaria-continuo no helios`, () => {
+    it(`${arquivo} existe — invocado pela hermes-diaria-continuo no 300`, () => {
       assert.ok(
         existsSync(join(ROOT, arquivo)),
         `${arquivo} sumiu. Ver o cabeçalho deste teste antes de remover: ele é ` +
@@ -114,14 +114,14 @@ describe("infra do kind continuo tem consumidor externo (#6056/#6059/#6060)", ()
     // de review/histórico que aquele arquivo tem.
     const root = mkdtempSync(join(tmpdir(), "continuo-end-"));
     try {
-      registerSession(root, "continuo", "hermes-cron-5d791ef6fc2c", { tag: "helios" });
+      registerSession(root, "continuo", "hermes-cron-5d791ef6fc2c", { tag: "300" });
       assert.equal(
-        endSession(root, "continuo", "hermes-cron-5d791ef6fc2c", "helios"),
+        endSession(root, "continuo", "hermes-cron-5d791ef6fc2c", "300"),
         true,
         "end deveria remover o registro do tick",
       );
       assert.equal(
-        endSession(root, "continuo", "hermes-cron-5d791ef6fc2c", "helios"),
+        endSession(root, "continuo", "hermes-cron-5d791ef6fc2c", "300"),
         false,
         'end idempotente: 2ª chamada reporta "nada a remover", nunca sucesso falso (#5797)',
       );
@@ -138,9 +138,9 @@ describe("infra do kind continuo tem consumidor externo (#6056/#6059/#6060)", ()
     // tick anterior segurava, no meio do trabalho.
     const root = mkdtempSync(join(tmpdir(), "continuo-reg-"));
     try {
-      registerSession(root, "continuo", "hermes-cron-5d791ef6fc2c", { tag: "helios" });
-      claimIssue(root, "continuo", "hermes-cron-5d791ef6fc2c", 6232, "helios");
-      const again = registerSession(root, "continuo", "hermes-cron-5d791ef6fc2c", { tag: "helios", pid: 999 });
+      registerSession(root, "continuo", "hermes-cron-5d791ef6fc2c", { tag: "300" });
+      claimIssue(root, "continuo", "hermes-cron-5d791ef6fc2c", 6232, "300");
+      const again = registerSession(root, "continuo", "hermes-cron-5d791ef6fc2c", { tag: "300", pid: 999 });
       assert.deepEqual(again.record.claimed_issues, [6232], "re-registro preservou o claim em voo");
       assert.equal(again.record.pid, 999, "e ainda aplicou o campo novo que motivou o re-registro");
     } finally {

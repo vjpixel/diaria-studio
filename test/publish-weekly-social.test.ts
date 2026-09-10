@@ -458,7 +458,7 @@ describe("integração: semana sem candidatos válidos — nenhum publisher é c
           encoding: "utf8",
           // #6222: subprocesso separado — o `MockAgent`/network-guard do
           // processo PAI não alcança aqui. Numa máquina com `.env` real
-          // (editor, `helios`), `loadProjectEnv()` (chamado dentro do
+          // (editor, `300`), `loadProjectEnv()` (chamado dentro do
           // script) populava credenciais REAIS de Worker/Facebook/Cloudflare
           // em `process.env` — herdadas por este spawn via `...process.env`
           // — que, se algum código sob teste chegasse a tentar publicar

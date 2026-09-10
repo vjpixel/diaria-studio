@@ -7,7 +7,7 @@
  * 28/08/2026): `https://diar.ia.br/` hoje é servida por
  * `workers/site/public/index.html`, código deste repo, não pela Beehiiv.
  * Renomear arquivo(s) + task agendada tem blast radius próprio (a task roda
- * no `helios` via systemd) e fica pra decisão futura — rastreado em #6498,
+ * no `300` via systemd) e fica pra decisão futura — rastreado em #6498,
  * que também decide o destino do eixo `english-labels` (só faz sentido
  * numa home-tema-Beehiiv; numa home HTML nossa não detecta mais o que foi
  * criado pra detectar — ver nota de escopo no topo de

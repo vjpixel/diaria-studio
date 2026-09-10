@@ -189,7 +189,7 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
 
   it("sessão kind=overnight fresca → incluída", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-helios-sess1.json", {
+    writeSession(root, "overnight-300-sess1.json", {
       kind: "overnight",
       sessionId: "sess1",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
@@ -201,13 +201,13 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
 
   it("sessão kind=develop e kind=continuo também contam", () => {
     const root = freshRoot();
-    writeSession(root, "develop-helios-sess2.json", {
+    writeSession(root, "develop-300-sess2.json", {
       kind: "develop",
       sessionId: "sess2",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
       machineTag: machineTag(),
     });
-    writeSession(root, "continuo-helios-sess3.json", {
+    writeSession(root, "continuo-300-sess3.json", {
       kind: "continuo",
       sessionId: "sess3",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
@@ -240,7 +240,7 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
 
   it("sessão mais velha que MAX_SESSION_AGE_MS (24h) é ignorada — rodada abandonada não trava o guard pra sempre", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-helios-sess5.json", {
+    writeSession(root, "overnight-300-sess5.json", {
       kind: "overnight",
       sessionId: "sess5",
       startedAt: new Date(NOW - 25 * ONE_HOUR_MS).toISOString(),
@@ -251,7 +251,7 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
 
   it("timestamp no futuro é ignorado (clock skew/corrupção nunca vira sessão ativa)", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-helios-sess6.json", {
+    writeSession(root, "overnight-300-sess6.json", {
       kind: "overnight",
       sessionId: "sess6",
       startedAt: new Date(NOW + 10 * ONE_HOUR_MS).toISOString(),
@@ -263,8 +263,8 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
   it("JSON malformado em uma entrada não derruba a leitura das demais", () => {
     const root = freshRoot();
     mkdirSync(sessionsDir(root), { recursive: true });
-    writeFileSync(join(sessionsDir(root), "overnight-helios-broken.json"), "{not valid json", "utf8");
-    writeSession(root, "overnight-helios-sess7.json", {
+    writeFileSync(join(sessionsDir(root), "overnight-300-broken.json"), "{not valid json", "utf8");
+    writeSession(root, "overnight-300-sess7.json", {
       kind: "overnight",
       sessionId: "sess7",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
@@ -286,7 +286,7 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
 
   it("ignora cópias de conflito do OneDrive (-safeBackup-)", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-helios-sess8-safeBackup-0001.json", {
+    writeSession(root, "overnight-300-sess8-safeBackup-0001.json", {
       kind: "overnight",
       sessionId: "sess8",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
@@ -690,7 +690,7 @@ describe("readActiveCoordinatorScan (#6303 Finding B)", () => {
     const root = freshRoot();
     mkdirSync(sessionsDir(root), { recursive: true });
     writeFileSync(
-      join(sessionsDir(root), "overnight-helios-s1.json"),
+      join(sessionsDir(root), "overnight-300-s1.json"),
       JSON.stringify({
         kind: "overnight",
         sessionId: "s1",
@@ -710,9 +710,9 @@ describe("readActiveCoordinatorScan (#6303 Finding B)", () => {
     // sobrevivente se achar sozinha.
     const root = freshRoot();
     mkdirSync(sessionsDir(root), { recursive: true });
-    writeFileSync(join(sessionsDir(root), "overnight-helios-broken.json"), "{not valid json", "utf8");
+    writeFileSync(join(sessionsDir(root), "overnight-300-broken.json"), "{not valid json", "utf8");
     writeFileSync(
-      join(sessionsDir(root), "overnight-helios-s2.json"),
+      join(sessionsDir(root), "overnight-300-s2.json"),
       JSON.stringify({
         kind: "overnight",
         sessionId: "s2",
@@ -729,7 +729,7 @@ describe("readActiveCoordinatorScan (#6303 Finding B)", () => {
   it("readActiveCoordinatorSessionIds (wrapper) continua devolvendo só o Set, ignorando degraded", () => {
     const root = freshRoot();
     mkdirSync(sessionsDir(root), { recursive: true });
-    writeFileSync(join(sessionsDir(root), "overnight-helios-broken.json"), "{not valid json", "utf8");
+    writeFileSync(join(sessionsDir(root), "overnight-300-broken.json"), "{not valid json", "utf8");
     assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set());
   });
 });
@@ -757,9 +757,9 @@ describe("readActiveCoordinatorScan opts.crossMachine (#6621)", () => {
 
   it("default (crossMachine ausente/false) preserva o filtro por máquina — sessão de outra máquina excluída", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-helios-eXXX.json", {
+    writeSession(root, "overnight-300-eXXX.json", {
       kind: "overnight",
-      sessionId: "coordenadora-helios",
+      sessionId: "coordenadora-300",
       lastHeartbeat: new Date(NOW - ONE_HOUR_MS).toISOString(),
       machineTag: "outra-maquina-qualquer",
     });
@@ -769,21 +769,21 @@ describe("readActiveCoordinatorScan opts.crossMachine (#6621)", () => {
 
   it("crossMachine: true inclui coordenadora de OUTRA máquina", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-helios-eXXX.json", {
+    writeSession(root, "overnight-300-eXXX.json", {
       kind: "overnight",
-      sessionId: "coordenadora-helios",
+      sessionId: "coordenadora-300",
       lastHeartbeat: new Date(NOW - ONE_HOUR_MS).toISOString(),
       machineTag: "outra-maquina-qualquer",
     });
     const scan = readActiveCoordinatorScan(root, NOW, { crossMachine: true });
-    assert.deepEqual(scan.ids, new Set(["coordenadora-helios"]));
+    assert.deepEqual(scan.ids, new Set(["coordenadora-300"]));
   });
 
   it("crossMachine: true soma coordenadoras da máquina local E de outra — size reflete o total global", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-helios-eXXX.json", {
+    writeSession(root, "overnight-300-eXXX.json", {
       kind: "overnight",
-      sessionId: "coordenadora-helios",
+      sessionId: "coordenadora-300",
       lastHeartbeat: new Date(NOW - ONE_HOUR_MS).toISOString(),
       machineTag: "outra-maquina-qualquer",
     });
@@ -817,24 +817,24 @@ describe("classifyMergeBlockCause com scan crossMachine (#6621, incidente PR #66
   const ONE_HOUR_MS = 60 * 60 * 1000;
 
   it("coordenadora VIVA só em outra máquina: sessão interativa local sem grant/identidade é BLOQUEADA (regressão do incidente #6621)", () => {
-    // Reproduz o incidente literal do #6621: overnight vivo em helios,
+    // Reproduz o incidente literal do #6621: overnight vivo em 300,
     // sessão interativa em Neo sem concessão nenhuma tenta `gh pr merge`. Com
-    // o scan LOCAL (sem crossMachine), a coordenadora de helios não entra no
+    // o scan LOCAL (sem crossMachine), a coordenadora de 300 não entra no
     // Set em Neo, `coordinators.size` vale 0, e `classifyMergeBlockCause`
     // permitia (retornava null) — o merge sem lock que o guard existe pra
     // barrar. Com `crossMachine: true` alimentando a função (o que o
-    // entrypoint CLI agora faz), a coordenadora de helios entra na contagem
+    // entrypoint CLI agora faz), a coordenadora de 300 entra na contagem
     // e o caller sem identidade é bloqueado.
     const root = freshRoot();
-    writeSession(root, "overnight-helios-eXXX.json", {
+    writeSession(root, "overnight-300-eXXX.json", {
       kind: "overnight",
-      sessionId: "coordenadora-helios",
+      sessionId: "coordenadora-300",
       lastHeartbeat: new Date(NOW - ONE_HOUR_MS / 6).toISOString(), // 10min atrás
       machineTag: "outra-maquina-qualquer",
     });
 
     const localScan = readActiveCoordinatorScan(root, NOW); // sem crossMachine
-    assert.equal(localScan.ids.size, 0, "scan local não vê a coordenadora de helios");
+    assert.equal(localScan.ids.size, 0, "scan local não vê a coordenadora de 300");
     assert.equal(
       classifyMergeBlockCause(localScan.ids, "sessao-interativa-neo", { mergeLockHolder: null, scanDegraded: false }),
       null,
@@ -842,7 +842,7 @@ describe("classifyMergeBlockCause com scan crossMachine (#6621, incidente PR #66
     );
 
     const crossScan = readActiveCoordinatorScan(root, NOW, { crossMachine: true });
-    assert.equal(crossScan.ids.size, 1, "scan cross-máquina vê a coordenadora de helios");
+    assert.equal(crossScan.ids.size, 1, "scan cross-máquina vê a coordenadora de 300");
     assert.equal(
       classifyMergeBlockCause(crossScan.ids, "sessao-interativa-neo", { mergeLockHolder: null, scanDegraded: false }),
       "not-authorized",
@@ -1326,7 +1326,7 @@ describe("readLiveSelfAuthorizationFor (#7303)", () => {
 
   it("registro com self_authorized_merge VIVO (dentro do TTL) → devolve o record", () => {
     const root = freshRoot();
-    writeSession(root, "interactive-helios-sess-bloqueada.json", {
+    writeSession(root, "interactive-300-sess-bloqueada.json", {
       kind: "interactive",
       sessionId: "sess-bloqueada",
       machineTag: machineTag(),
@@ -1346,7 +1346,7 @@ describe("readLiveSelfAuthorizationFor (#7303)", () => {
 
   it("registro EXPIRADO (além do TTL de 10min) → null", () => {
     const root = freshRoot();
-    writeSession(root, "interactive-helios-sess-velha.json", {
+    writeSession(root, "interactive-300-sess-velha.json", {
       kind: "interactive",
       sessionId: "sess-velha",
       machineTag: machineTag(),
@@ -1360,7 +1360,7 @@ describe("readLiveSelfAuthorizationFor (#7303)", () => {
 
   it("registro de OUTRA sessão não é encontrado — casa por sufixo -{sessionId}.json", () => {
     const root = freshRoot();
-    writeSession(root, "interactive-helios-sess-outra.json", {
+    writeSession(root, "interactive-300-sess-outra.json", {
       kind: "interactive",
       sessionId: "sess-outra",
       machineTag: machineTag(),
@@ -1371,7 +1371,7 @@ describe("readLiveSelfAuthorizationFor (#7303)", () => {
 
   it("cópia de conflito do OneDrive (-safeBackup-) é ignorada", () => {
     const root = freshRoot();
-    writeSession(root, "interactive-helios-sess-bkp-safeBackup-0001.json", {
+    writeSession(root, "interactive-300-sess-bkp-safeBackup-0001.json", {
       kind: "interactive",
       sessionId: "sess-bkp",
       machineTag: machineTag(),
@@ -1383,7 +1383,7 @@ describe("readLiveSelfAuthorizationFor (#7303)", () => {
   it("JSON malformado numa entrada não derruba a busca — segue pras demais", () => {
     const root = freshRoot();
     mkdirSync(sessionsDir(root), { recursive: true });
-    writeFileSync(join(sessionsDir(root), "interactive-helios-sess-bloqueada.json"), "{not valid json", "utf8");
+    writeFileSync(join(sessionsDir(root), "interactive-300-sess-bloqueada.json"), "{not valid json", "utf8");
     assert.equal(readLiveSelfAuthorizationFor(root, "sess-bloqueada", NOW), null);
   });
 });

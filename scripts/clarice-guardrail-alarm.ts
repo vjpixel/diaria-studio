@@ -211,7 +211,7 @@ export function shouldSkipForLowQuota(assertQuota: () => void = assertCampaignQu
  * **#6695 (achado pós-#6563):** declarar `successExitCodes` no registro NÃO
  * basta sozinho — só vira `SuccessExitStatus=` real na unit systemd depois
  * de `npx tsx scripts/setup-systemd-timers.ts` REGENERAR o `.service` e o
- * editor COPIAR o resultado pra `~/.config/systemd/user/` no `helios`
+ * editor COPIAR o resultado pra `~/.config/systemd/user/` no `300`
  * (`daemon-reload` + `enable --now` de novo) — passo manual, nenhum
  * PR/CI/watchdog dispara isso sozinho. A unit já armada em produção antes
  * deste commit não tem `SuccessExitStatus=75`, então `main()` não confia
@@ -219,7 +219,7 @@ export function shouldSkipForLowQuota(assertQuota: () => void = assertCampaignQu
  * `main()` logo abaixo), que checa a unit REAL em disco antes de emitir
  * 75; sem confirmação, cai pra exit 0 (sempre seguro, com ou sem a
  * declaração) e loga um aviso pedindo o `setup-systemd-timers.ts` manual.
- * **Ação pendente do editor no `helios` (não fechada por este commit):**
+ * **Ação pendente do editor no `300` (não fechada por este commit):**
  * `npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Guardrail-Alarm`
  * seguido de `cp .systemd-units/diaria-clarice-guardrail-alarm.service
  * ~/.config/systemd/user/ && systemctl --user daemon-reload` — sem isso,
@@ -324,7 +324,7 @@ async function main(): Promise<void> {
         `[clarice-guardrail-alarm] AVISO: unit systemd ainda não declara SuccessExitStatus=${EX_TEMPFAIL} — ` +
           `saindo com exit 0 em vez de ${EX_TEMPFAIL} pra não marcar a unit como failed. ` +
           `Rodar 'npx tsx scripts/setup-systemd-timers.ts --task ${TASK_NAME}' + copiar pra ` +
-          `~/.config/systemd/user/ + 'systemctl --user daemon-reload' no helios pra habilitar o exit ${EX_TEMPFAIL} (#6695).`,
+          `~/.config/systemd/user/ + 'systemctl --user daemon-reload' no 300 pra habilitar o exit ${EX_TEMPFAIL} (#6695).`,
       );
     }
     console.log(`[clarice-guardrail-alarm] pulando esta execução — ${skipReason}`);

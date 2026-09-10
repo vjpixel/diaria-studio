@@ -679,7 +679,7 @@ for PR in $PR_NUMBERS; do
 
   # #6923: os dois campos JSON antigos (base/head ref oid) que este bloco
   # pedia via `gh pr view` não existem no `gh` 2.46 (pacote ESM do Ubuntu
-  # do helios) — "Unknown JSON field", TODA PR pulada em TODA rodada,
+  # do 300) — "Unknown JSON field", TODA PR pulada em TODA rodada,
   # silenciosamente até o #6910 revelar o motivo.
   # Fix: REST v3 via `gh api`, onde `.base.sha`/`.head.sha` são estáveis há
   # anos independente da versão do `gh` — 1 chamada em vez de 3, e nunca

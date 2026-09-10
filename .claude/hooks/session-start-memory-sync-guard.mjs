@@ -14,11 +14,11 @@
 // ─────────────────────────────────────────────────────────────────────────
 //
 // Um alarme de drift, neste repo, é uma scheduled task — e scheduled tasks
-// só rodam no `helios`/servidor (decisão já em vigor: máquinas locais não
+// só rodam no `300`/servidor (decisão já em vigor: máquinas locais não
 // rodam mais tasks agendadas, ver CLAUDE.md e
-// `docs/scheduled-tasks-registry.md`). O `helios` já É uma máquina
+// `docs/scheduled-tasks-registry.md`). O `300` já É uma máquina
 // conectada — um alarme rodando lá nunca alcança o estado LOCAL de uma
-// máquina que está justamente fora do mecanismo (não há como o `helios`
+// máquina que está justamente fora do mecanismo (não há como o `300`
 // enxergar `~/.claude/projects/.../memory/` do ZenBook sem que o ZenBook
 // primeiro sincronize algo, o que é exatamente o que falhou em acontecer).
 // Um `SessionStart` vendorado no `diaria-studio`, em vez disso, chega a

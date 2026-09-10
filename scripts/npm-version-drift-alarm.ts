@@ -3,7 +3,7 @@
  * scripts/npm-version-drift-alarm.ts (#6960)
  *
  * O contrapeso pedido em #6960 depois de o editor desligar o auto-updater
- * do Claude Code no `helios` (decisão registrada na #6927 — o binário
+ * do Claude Code no `300` (decisão registrada na #6927 — o binário
  * quebrou 5x no mesmo dia). O alarme do #6927
  * (`scripts/claude-session-version-drift-alarm.ts`) mede reinstalação
  * RECENTE (`/proc/<pid>/exe` apontando pra staging removido) — com o

@@ -32,7 +32,7 @@
  *
  * ─── Onde roda ──────────────────────────────────────────────────────────────
  *
- * No `helios`, que é onde `~/.hermes/auth.json` existe e onde as tasks
+ * No `300`, que é onde `~/.hermes/auth.json` existe e onde as tasks
  * agendadas do projeto rodam desde 11/08. `--auth-json` permite apontar para
  * outro caminho (teste, ou leitura de fora via cópia) — mas o caminho padrão
  * é o local, e o script NUNCA tenta SSH: se o arquivo não existe, ele diz
@@ -155,7 +155,7 @@ async function main(argv: string[]): Promise<number> {
     const msg =
       `[codex-credential-alarm] não foi possível ler o pool em ${authPath} ` +
       `(arquivo ausente, JSON inválido, ou sem credential_pool["${POOL_KEY}"]). ` +
-      `Este script roda no helios, onde o arquivo existe — rodá-lo noutra máquina ` +
+      `Este script roda no 300, onde o arquivo existe — rodá-lo noutra máquina ` +
       `sem --auth-json não mede nada.`;
     if (asJson) {
       process.stdout.write(`${JSON.stringify({ ok: false, reason: "pool_unreadable", path: authPath })}\n`);

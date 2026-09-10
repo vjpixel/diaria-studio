@@ -368,7 +368,7 @@ const ALARM_EVENT_LABEL = "alarm-evento";
  *
  * Roteia pra `overnight` (não `develop`) porque a remediação típica —
  * `setup-systemd-timers.ts`/`arm-systemd-timers.ts` no servidor — é
- * exatamente o tipo de ação mecânica que uma rodada desassistida no `helios`
+ * exatamente o tipo de ação mecânica que uma rodada desassistida no `300`
  * já executa sem precisar do editor presente; não é cat. A-E do develop.
  *
  * Aplicada pelo emissor JUNTO de `alarm` (`family: "estado"` sempre adiciona
@@ -900,7 +900,7 @@ export const EXEC_TRACK_EXPLAIN: Record<ExecTrack, string> = {
 /**
  * A issue neste track pode ser trabalhada por ALGUMA sessão hoje? (#7644)
  *
- * `overnight` = o helios pega sozinho; `develop` = uma sessão com o editor
+ * `overnight` = o 300 pega sozinho; `develop` = uma sessão com o editor
  * presente pega. Os outros quatro não têm sessão que os pegue no estado
  * atual — cada um por um motivo diferente, que é o que
  * `EXEC_TRACK_MATCH_REASON` abaixo nomeia.
@@ -1010,7 +1010,7 @@ export const EXEC_TRACK_MATCH_REASON: Record<ExecTrackMatch, { short: string; lo
   },
   "label:windows": {
     short: "exige máquina Windows",
-    long: "Label `windows`: precisa do Chrome logado / ComfyUI / `data/` local. É Develop — acionável numa sessão na máquina do editor, nunca no helios.",
+    long: "Label `windows`: precisa do Chrome logado / ComfyUI / `data/` local. É Develop — acionável numa sessão na máquina do editor, nunca no 300.",
   },
   "label:trade-off-real": {
     short: "trade-off na fila do briefing",

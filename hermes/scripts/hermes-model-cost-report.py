@@ -25,7 +25,7 @@ Hermes CORE (overrides de sessao persistidos, provavelmente
 `~/.hermes/sessions/sessions.json`, mais a cadeia de smart_model_routing
 em `~/.hermes/config.yaml`) — nenhum dos dois vive neste repo, e nao
 existem nesta maquina/worktree (checado em 29/08/2026: `~/.hermes/`
-inteiro ausente aqui, por design — so existe no `helios`). Investigar/
+inteiro ausente aqui, por design — so existe no `300`). Investigar/
 corrigir a causa raiz exige acesso a essa maquina; nao reproduzido nem
 instrumentado a partir daqui. O que ESTE script ja cobre (deteccao
 pos-fato via `vazamento_pago`/`_is_leak`, com base no `model`/`provider`

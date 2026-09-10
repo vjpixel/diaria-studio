@@ -104,7 +104,7 @@ function peer(
 
 describe("#6168 — normalização de caminho é cross-máquina", () => {
   it("separador do Windows casa com o do Linux", () => {
-    // `data/` é o MESMO OneDrive no Neo (Windows) e no helios (Linux). Sem
+    // `data/` é o MESMO OneDrive no Neo (Windows) e no 300 (Linux). Sem
     // isto, a detecção de sobreposição seria cega exatamente no cenário que a
     // issue chama de caso normal.
     assert.equal(normalizeBeaconPath("scripts\\lib\\session-registry.ts"), "scripts/lib/session-registry.ts");
@@ -247,7 +247,7 @@ describe("#6168 Parte C — conflicts é consulta, e nunca cria arquivo", () => 
     assert.equal(mesma.some((c) => c.kind === "branch-shared"), true);
 
     const outra = findSessionConflicts(
-      [peer({ kind: "develop", sessionId: "o", branch: "x", machineTag: "helios" })],
+      [peer({ kind: "develop", sessionId: "o", branch: "x", machineTag: "300" })],
       { sessionId: "eu", branch: "x", machineTag: "Neo" },
     );
     assert.equal(outra.some((c) => c.kind === "branch-shared"), false);

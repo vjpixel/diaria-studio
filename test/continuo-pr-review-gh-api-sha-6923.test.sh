@@ -2,7 +2,7 @@
 # test/continuo-pr-review-gh-api-sha-6923.test.sh (#6923)
 #
 # Regressão: `gh pr view --json baseRefOid/headRefOid` não existe no `gh`
-# 2.46 do helios (pacote ESM da distro) — a chamada falhava com
+# 2.46 do 300 (pacote ESM da distro) — a chamada falhava com
 # "Unknown JSON field: \"baseRefOid\"" ANTES de qualquer diff ser lido, e
 # por ser a primeira coisa que o laço faz por PR, TODA PR era pulada em
 # TODA rodada (nenhum teste exercitava esse caminho, por isso a quebra

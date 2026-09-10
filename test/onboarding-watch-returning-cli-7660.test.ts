@@ -356,7 +356,7 @@ describe("watcher de recadastro — fiação (#7660)", () => {
     // (porque ninguém está lá), e o `writeStore` seguinte gravaria um objeto
     // com UMA entrada por cima do arquivo real — apagando todo mundo que
     // aguarda e-mail 2 ou 3. Cenário concreto no projeto: junction `data/` do
-    // OneDrive caída no `helios` (#5956).
+    // OneDrive caída no `300` (#5956).
     const { server, url } = await mockCom("active");
     const dir = mkdtempSync(resolve(tmpdir(), "diaria-watch-"));
     try {

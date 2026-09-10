@@ -206,7 +206,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado de subagente
     // overnight, mesma disciplina do #5704/#5878/#5502 acima) — arme real é
     // ação POSTERIOR do editor via `scripts/setup-systemd-timers.ts` na
-    // checkout compartilhada (helios).
+    // checkout compartilhada (300).
     schedule: { kind: "daily", hour: 6, minute: 45 },
     enabled: false,
     issue: "#7663",
@@ -328,7 +328,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `SuccessExitStatus=75` real na unit systemd depois de
     // `npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Guardrail-Alarm`
     // + copiar o `.service` regenerado pra `~/.config/systemd/user/` +
-    // `systemctl --user daemon-reload` no `helios` (ação manual do editor,
+    // `systemctl --user daemon-reload` no `300` (ação manual do editor,
     // nenhum PR/CI regenera isso sozinho). Até esse passo rodar, o script
     // (`isExitCodeArmedForUnit`, #6695) detecta a unit desatualizada e
     // sai com 0 em vez de 75 — nunca `failed`, mas também sem o sinal fino
@@ -731,7 +731,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // #5125: condição inegociável do editor pra publicar a 1ª página de
     // entidade fora da rodada original de 3 (Apple) — "a página nasce com
     // regeneração automática, senão não é publicada". Armada em 17/08/2026
-    // na checkout compartilhada (`helios`) — ver
+    // na checkout compartilhada (`300`) — ver
     // docs/entity-pages-regen-setup.md.
     issue: "#5125, #7147",
   },
@@ -1046,7 +1046,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   // ramp-warm e engajados... trabalha tudo só a partir do score"). A fila
   // única por score (`--daily`, #7408/#7413) já é montada pela ÚNICA task
   // `Diaria-Clarice-Envio` (19:10) acima. Os timers systemd correspondentes
-  // foram desarmados (`disable --now`) na `helios` na mesma unidade que
+  // foram desarmados (`disable --now`) na `300` na mesma unidade que
   // removeu `scripts/clarice-envio-engajados-{run,alarm}.ts` e
   // `scripts/lib/clarice-envio-engajados-{policy,enabled,alarm,state}.ts`.
   {
@@ -1249,7 +1249,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do #5220/#5217/#5311/#5494/#5607/#5704/#5754/#5845 acima) —
     // armar via `scripts/setup-systemd-timers.ts` na checkout compartilhada
-    // (`helios`) é ação POSTERIOR do editor/coordenador, fora do alcance de
+    // (`300`) é ação POSTERIOR do editor/coordenador, fora do alcance de
     // um subagente implementador em worktree isolado.
     issue: "#7174",
   },
@@ -1270,7 +1270,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do #5220/#5217/#5311/#5494/#5607/#5704/#5754/#5845/#7174
     // acima) — armar via `scripts/setup-systemd-timers.ts` na checkout
-    // compartilhada (`helios`) é ação POSTERIOR do editor/coordenador, fora
+    // compartilhada (`300`) é ação POSTERIOR do editor/coordenador, fora
     // do alcance de um subagente implementador em worktree isolado. Comando
     // exato pra armar (deixado no corpo do PR, #7180): `systemctl --user
     // enable --now diaria-metrics-health-alarm.timer` depois de rodar
@@ -1294,7 +1294,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do #5220/#5217/#5311/#5494/#5607/#5704/#5754/#5845/#7174/
     // #7180 acima) — armar via `scripts/setup-systemd-timers.ts` na
-    // checkout compartilhada (`helios`) é ação POSTERIOR do
+    // checkout compartilhada (`300`) é ação POSTERIOR do
     // editor/coordenador, fora do alcance de um subagente implementador em
     // worktree isolado. Comando exato pra armar (deixado no corpo do PR,
     // #7385): `systemctl --user enable --now diaria-reconcile-send-
@@ -1438,7 +1438,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // cadência diária é suficiente, não precisa de intervalo curto como o
     // sweep de units failed. Achado ao vivo que motivou (#5607): 6 tasks
     // no registro (incluindo o próprio Diaria-Systemd-Failed-Units-Alarm)
-    // nunca tiveram timer armado na helios, e nenhum alarme existente
+    // nunca tiveram timer armado na 300, e nenhum alarme existente
     // pegou isso — só foram achadas por acaso.
     // NOTA (mesmo padrão documentado em docs/scheduled-tasks-registry.md
     // pras outras tasks desta unidade): ainda NÃO armada — rodar
@@ -1478,7 +1478,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // disciplina do #5220/#5217/#5311/#5494/#5607 acima) -- maquina Windows
     // nao roda mais tasks Diaria (#5074); arme real e acao POSTERIOR do
     // editor via `scripts/setup-systemd-timers.ts` na checkout
-    // compartilhada (helios).
+    // compartilhada (300).
     schedule: { kind: "daily", hour: 9, minute: 50 },
     issue: "#5704",
   },
@@ -1513,7 +1513,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do #5704/#5878 acima) -- maquina Windows nao roda mais
     // tasks Diaria (#5074); arme real e acao POSTERIOR do editor via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (helios).
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (300).
     schedule: { kind: "daily", hour: 9, minute: 52 },
     issue: "#7544",
   },
@@ -1528,7 +1528,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // dentro do cluster matinal, sem colisão. Fail-soft por design: sem as
     // 6 env vars MICROSOFT_ADS_* → exit 0, nada escrito (mesmo padrão do
     // #5704). DECLARADA — arme via setup-systemd-timers.ts e posterior do
-    // editor (helios).
+    // editor (300).
     name: "Diaria-Microsoft-Ads-Editorial-Reasons",
     description: "captura motivos editoriais de assets rejeitados (Campaign Management API v13 SOAP)",
     steps: [{ key: "check", script: "scripts/microsoft-ads-editorial-reasons.ts" }],
@@ -1598,7 +1598,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do #5220/#5217/#5311/#5494/#5607/#5704 acima) — arme real
     // via `scripts/setup-systemd-timers.ts` na checkout compartilhada
-    // (`helios`) é ação POSTERIOR do editor.
+    // (`300`) é ação POSTERIOR do editor.
     issue: "#5754",
   },
   {
@@ -1623,7 +1623,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do #5220/#5217/#5311/#5494/#5607/#5704/#5754 acima) —
     // armar via `scripts/setup-systemd-timers.ts` na checkout compartilhada
-    // (`helios`) é ação POSTERIOR do editor.
+    // (`300`) é ação POSTERIOR do editor.
     issue: "#5845",
   },
   {
@@ -1633,7 +1633,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     steps: [{ key: "watch", script: "scripts/onboarding-watch-returning.ts", args: ["--send"] }],
     logPath: "onboarding/.watch-returning.log",
     // Mesmo guard da task-irmã `Diaria-Onboarding-Welcome-Run`, que escreve o
-    // MESMO arquivo (#5956): sem ele, uma junction `data/` caída no `helios`
+    // MESMO arquivo (#5956): sem ele, uma junction `data/` caída no `300`
     // faria `readStore` devolver store vazio e o write seguinte apagaria o
     // histórico de onboarding de todos os assinantes. O script também checa
     // `corrupted` por conta própria — os dois são cinto e suspensório, porque
@@ -1672,7 +1672,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // detected_new: 0 — base existente fica de fora por desenho).
     schedule: { kind: "daily", hour: 9, minute: 5 },
     // Achado do review de fleet do PR #5956: sem este guard, uma junction
-    // `data/` que caiu momentaneamente em `helios` faria `readStore` devolver
+    // `data/` que caiu momentaneamente em `300` faria `readStore` devolver
     // `emptyStore()` silenciosamente (indistinguível de "1ª execução") — e a
     // semântica de bootstrap (`last_detection_cursor: null` → marca cursor em
     // `now`, zero envios) resetaria o tracking de quem já está no meio da
@@ -1688,8 +1688,8 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         "montada ainda; abortando por seguranca, sem resetar o cursor de bootstrap.",
     },
     // DECLARADA, NÃO ARMADA nesta unidade (sessão develop rodando no
-    // Windows do editor, não na checkout compartilhada `helios`) — armar
-    // via `scripts/setup-systemd-timers.ts` em `helios` é ação POSTERIOR
+    // Windows do editor, não na checkout compartilhada `300`) — armar
+    // via `scripts/setup-systemd-timers.ts` em `300` é ação POSTERIOR
     // do editor, mesma disciplina do #5845/#5754/#5704 acima.
     issue: "#5908",
   },
@@ -1723,7 +1723,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     },
     // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado de rodada
     // overnight) — armar via `scripts/setup-systemd-timers.ts` na checkout
-    // compartilhada (`helios`) é ação POSTERIOR do editor, mesma disciplina
+    // compartilhada (`300`) é ação POSTERIOR do editor, mesma disciplina
     // de toda task nova deste arquivo.
     //
     // Escopo desta unidade é SÓ detecção — o alarme de sequence do Kit que
@@ -1755,7 +1755,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // e o wrapper confirma existsSync(DATA_DIR) antes de tentar qualquer coisa.
     // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do #5845/#5908/#5754 acima) — armar via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
     // é ação POSTERIOR do editor.
     issue: "#6130",
   },
@@ -1776,7 +1776,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `null`, o CLI aborta com exit 1 sem escrever nada; nunca trata "gh
     // falhou" como "backlog limpo").
     // DECLARADA, NÃO ARMADA nesta unidade — armar via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
     // é ação POSTERIOR do editor.
     issue: "#6198",
   },
@@ -1796,7 +1796,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // API indisponível/auth), que o próprio script já reporta com exit != 0.
     // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do #5845/#5908/#5754/#6130 acima) — armar via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
     // é ação POSTERIOR do editor.
     issue: "#6189",
   },
@@ -1832,7 +1832,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do #5845/#5908/#5754/#6130/#6189 acima) — armar via
     // `scripts/setup-systemd-timers.ts` na checkout compartilhada
-    // (`helios`) e acao POSTERIOR do editor.
+    // (`300`) e acao POSTERIOR do editor.
     issue: "#6960",
   },
   {
@@ -1922,7 +1922,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do resto do registro) -- armar via
     // `scripts/setup-systemd-timers.ts` na checkout compartilhada
-    // (`helios`) e confirmar em `systemctl --user list-timers` e em
+    // (`300`) e confirmar em `systemctl --user list-timers` e em
     // `docs/scheduled-tasks-registry.md` sao acao POSTERIOR do editor.
     issue: "#7184",
   },
@@ -1946,7 +1946,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do resto do registro acima) -- armar via
     // `scripts/setup-systemd-timers.ts` na checkout compartilhada
-    // (`helios`) e acao POSTERIOR do editor.
+    // (`300`) e acao POSTERIOR do editor.
     issue: "#7270, #7288",
   },
   {
@@ -1967,7 +1967,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     schedule: { kind: "daily", hour: 10, minute: 5 },
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do resto do registro) -- armar via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
     // e acao POSTERIOR do editor.
     issue: "#5597, #7137",
   },
@@ -1998,7 +1998,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     },
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do resto do registro) -- armar via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
     // e acao POSTERIOR do editor.
     issue: "#7487",
   },
@@ -2017,7 +2017,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // devolve relatorio vazio, sempre sai 0 (e relatorio, nao gate).
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do resto do registro) -- armar via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
     // e acao POSTERIOR do editor.
     issue: "#6798, #7137",
   },
@@ -2036,7 +2036,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // reporta o erro (nao um alarme falso de "0 corrompidos").
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do resto do registro) -- armar via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
     // e acao POSTERIOR do editor.
     issue: "#5214, #7137",
   },
@@ -2057,7 +2057,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // alarme falso (mesmo padrao de task-never-armed-alarm.ts).
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do resto do registro) -- armar via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
     // e acao POSTERIOR do editor. Ironia notada e registrada no corpo da PR:
     // este e exatamente o guard que a #7137 cita como "o guard da prosa
     // vencida e ele proprio um dos desarmados" -- corrigido aqui.
@@ -2078,7 +2078,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // disponivel; nunca chama rede nem `gh`.
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do resto do registro) -- armar via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
     // e acao POSTERIOR do editor.
     issue: "#7137",
   },
@@ -2097,7 +2097,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // com aviso (mesmo padrao de check-dependency-prose-lint.ts, #7137 item 4).
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do resto do registro) -- armar via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
     // e acao POSTERIOR do editor.
     issue: "#7137",
   },
@@ -2121,7 +2121,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // falha de rede/DNS na leitura dos sinais vira log + return, nunca
     // abre issue a partir de leitura que falhou (docstring do script).
     // DECLARADA, NAO ARMADA nesta unidade -- armar via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
     // e acao POSTERIOR do editor.
     issue: "#6442",
   },
@@ -2143,7 +2143,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // docstring de scripts/lib/meta-capi-staleness.ts.
     // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do resto do registro) -- armar via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`)
     // e acao POSTERIOR do editor.
     issue: "#7776",
   },

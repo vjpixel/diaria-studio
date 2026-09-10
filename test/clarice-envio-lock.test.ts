@@ -150,7 +150,7 @@ describe("breakEnvioLock", () => {
     const result = breakEnvioLock(root, "2607-08", now, {
       checkPidAlive: () => true,
       // acquireEnvioLock grava o hostname REAL da máquina (`os.hostname()`) —
-      // hardcodear um literal (ex: "helios") só passaria no host onde o dev
+      // hardcodear um literal (ex: "300") só passaria no host onde o dev
       // escreveu o teste. Usar o mesmo hostname() garante "mesmo host" de
       // verdade, em qualquer runner/máquina (achado ao vivo em CI, #5832).
       currentHost: hostname(),

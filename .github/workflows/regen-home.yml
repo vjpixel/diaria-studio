@@ -23,7 +23,7 @@ name: Regenerar home às 06:00 BRT
 # do editor (08/09/2026): "a página da edição pode ficar pronta antes, sem
 # problema". A fronteira das 06:00 é só da HOME.
 #
-# Por que GitHub Actions e não uma scheduled task no `helios`
+# Por que GitHub Actions e não uma scheduled task no `300`
 # (`scripts/lib/scheduled-tasks.ts`): `gen-home-page.ts` lê SÓ entrada já
 # commitada — `workers/site/public/sitemap.xml` + `workers/site/public/p/
 # {slug}/index.html` — e nenhum `data/` (que é junction do OneDrive,

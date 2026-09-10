@@ -1041,10 +1041,10 @@ describe("detectSafeBackupConflictFiles (#4900 item c)", () => {
   it("detecta arquivos com o padrão -safeBackup- do cliente OneDrive Linux", () => {
     const files = detectSafeBackupConflictFiles([
       "history.jsonl",
-      "history-helios-safeBackup-0001.jsonl",
+      "history-300-safeBackup-0001.jsonl",
       "staleness-alarm-state.json",
     ]);
-    assert.deepEqual(files, ["history-helios-safeBackup-0001.jsonl"]);
+    assert.deepEqual(files, ["history-300-safeBackup-0001.jsonl"]);
   });
 
   it("lista sem conflito -> array vazio", () => {

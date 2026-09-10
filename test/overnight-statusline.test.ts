@@ -1250,7 +1250,7 @@ describe("renderOvernightBar — #3071: rótulo 'concluída' substitui fallback 
 //
 // Regressão do bug relatado ao vivo (02/09/2026): a barra ficou congelada em
 // "57% (4/7) · fila principal" lendo `data/overnight/260901c/plan.json` —
-// rodada do helios da noite anterior que parou no meio (1 issue `elegivel`,
+// rodada do 300 da noite anterior que parou no meio (1 issue `elegivel`,
 // 2 `escopo-residual`), logo `isPlanConcluded` nunca vira true e o guard de
 // conclusão do #3590 nunca recolhe a barra. `readTodayDevelopPlan` já aplicava
 // `isStaleDevelopPlan` desde o #2800/#2803; `readTodayPlan` nunca aplicou.
@@ -1290,14 +1290,14 @@ describe("readTodayPlan — guard de zumbi por idade (#7106)", () => {
     assert.match(renderOvernightBar(plan), /50%\s+\(1\/2\)/);
   });
 
-  it("rodada VIVA de outra máquina (helios) NÃO é filtrada — o guard é de idade, não de identidade", () => {
+  it("rodada VIVA de outra máquina (300) NÃO é filtrada — o guard é de idade, não de identidade", () => {
     const root = mkdtempSync(join(tmpdir(), "statusline-foreign-"));
     const now = new Date("2026-09-02T13:00:00Z");
     const planPath = seedPlan(root, "260902", new Date(now.getTime() - 60 * 1000));
-    writeFileSync(planPath, JSON.stringify({ ...PARTIAL_PLAN, machine_id: "helios" }));
+    writeFileSync(planPath, JSON.stringify({ ...PARTIAL_PLAN, machine_id: "300" }));
     utimesSync(planPath, new Date(now.getTime() - 60 * 1000), new Date(now.getTime() - 60 * 1000));
 
     const plan = readTodayPlan(root, now);
-    assert.ok(plan, "overnight roda no helios — filtrar por máquina esconderia a rodada real");
+    assert.ok(plan, "overnight roda no 300 — filtrar por máquina esconderia a rodada real");
   });
 });

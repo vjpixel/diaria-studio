@@ -4,8 +4,8 @@
  * ─── A classe de erro que este módulo existe pra fechar ─────────────────────
  *
  * `data/` é uma junction/symlink pro OneDrive, compartilhada entre máquinas
- * (`helios`, a máquina do editor, etc.). Um arquivo escrito por uma task
- * agendada roda numa máquina EXECUTORA (ex: `helios`) e chega em qualquer
+ * (`300`, a máquina do editor, etc.). Um arquivo escrito por uma task
+ * agendada roda numa máquina EXECUTORA (ex: `300`) e chega em qualquer
  * outra máquina só depois de replicar via sync — com atraso, e ocasionalmente
  * sem replicar de jeito nenhum (#5548: serviço do OneDrive morto; achado
  * ainda mais estreito no #7083: um arquivo ESPECÍFICO falhou em replicar
@@ -15,7 +15,7 @@
  * Duas sessões independentes, no mesmo turno (#7083), leram a AUSÊNCIA local
  * de `data/.session-registry-safebackup-alarm-issues.json` numa máquina que
  * NÃO executa a task e concluíram "o alarme nunca rodou" — quando na
- * verdade a task rodava normalmente todo dia em `helios` (timer armado,
+ * verdade a task rodava normalmente todo dia em `300` (timer armado,
  * store de 15.714 bytes escrito no mesmo minuto da última execução). O erro:
  * tratar "não vejo o arquivo aqui" como equivalente a "o arquivo nunca foi
  * escrito", quando a pergunta certa ("esta task rodou?") só tem resposta

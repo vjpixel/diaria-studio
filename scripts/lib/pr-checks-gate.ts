@@ -7,7 +7,7 @@
  *
  *   `gh pr checks {N} --json bucket --jq '[.[] | select(.bucket != "pass")] | length'`
  *
- * — não roda no `gh` 2.46.0 do `helios` (apt do Ubuntu): a flag `--json` só
+ * — não roda no `gh` 2.46.0 do `300` (apt do Ubuntu): a flag `--json` só
  * chegou em `gh pr checks` em versão posterior. O comando falha em stderr
  * com `exit 1`, e dentro de `$(...)` isso vira **string vazia** — qualquer
  * comparação que trate "vazio" como "0 achados" (`[ -z "$X" ]`,
@@ -15,7 +15,7 @@
  * ao PR #6212).
  *
  * Este módulo substitui a condição 1 por `gh pr view --json
- * statusCheckRollup`, que roda na versão instalada tanto no `helios` quanto
+ * statusCheckRollup`, que roda na versão instalada tanto no `300` quanto
  * na máquina do editor (confirmado na própria issue #6225). O I/O (chamar
  * `gh`, tratar exit code/JSON malformado) fica no entrypoint CLI
  * (`scripts/check-pr-checks-gate.ts`) — mesmo padrão de

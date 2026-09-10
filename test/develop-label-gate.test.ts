@@ -38,10 +38,10 @@ describe("#6271 — isWorkFinished separa 'terminei' de 'não trabalhei'", () =>
     );
   });
 
-  it("deixado-para-o-helios NÃO conta — a sessão declarou que não é trabalho dela", () => {
+  it("deixado-para-o-300 NÃO conta — a sessão declarou que não é trabalho dela", () => {
     // Acusar aqui seria contraditório com o proprio status: ela nao trabalhou
     // a issue, entao nao consumiu a razao que a trouxe pro Develop.
-    assert.equal(isWorkFinished({ number: 1, status: "pulada", motivo: "deixado-para-o-helios" }), false);
+    assert.equal(isWorkFinished({ number: 1, status: "pulada", motivo: "deixado-para-o-300" }), false);
   });
 
   it("nao-tentada NÃO conta — é o caso das 2 issues legítimas da medição (#6048, #467)", () => {
@@ -118,7 +118,7 @@ describe("#6271 — o gate acusa resíduo e só resíduo", () => {
     const r = checkDevelopLabelCleared(
       [
         { number: 6048, status: "nao-tentada" },
-        { number: 467, status: "pulada", motivo: "deixado-para-o-helios" },
+        { number: 467, status: "pulada", motivo: "deixado-para-o-300" },
       ],
       [
         { number: 6048, labels: DEV_LABELS },

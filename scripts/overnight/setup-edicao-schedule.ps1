@@ -27,7 +27,7 @@
     data/edicao-diaria-schedule-attestation.json a cada registro/remoção —
     ver scripts/lib/edicao-schedule-attestation.ts (#7036). Consumido pelo
     alarme edicao-diaria-staleness-alarm.ts pra não silenciar por engano
-    quando esta máquina está armada mas o alarme roda em outra (helios).
+    quando esta máquina está armada mas o alarme roda em outra (300).
 
 .PARAMETER Unregister
     Remove a task "Diaria-Edicao-Diaria" do Task Scheduler.
@@ -69,7 +69,7 @@ $TaskDesc = "diar.ia.br: roda /diaria-edicao D+1 de dom-qui 16:00 BRT (Stages 0-
 # ---------------------------------------------------------------------------
 # Atestação cross-machine (#7036) — publica em data/ (junction do OneDrive,
 # ver CLAUDE.md § Setup) se ESTA máquina tem a task armada, pra que o alarme
-# `edicao-diaria-staleness-alarm.ts` rodando em OUTRA máquina (hoje: helios)
+# `edicao-diaria-staleness-alarm.ts` rodando em OUTRA máquina (hoje: 300)
 # não silencie por engano quando o agendador LOCAL dele está `disabled` mas
 # a via Windows está de fato ativa. Best-effort: nunca falha o
 # registro/remoção da task se a escrita der erro (`data/` pode não existir
