@@ -82,6 +82,14 @@ describe("formatDecisionMarker + parseDecisionMarkers round-trip", () => {
     const parsed = parseDecisionMarkers([marker]);
     assert.deepEqual(parsed, [d]);
   });
+
+  it("sessao 'interactive' é reconhecida (#7853) — decisão de sessão interativa não é mais descartada em silêncio", () => {
+    const d = decision({ sessao: "interactive" });
+    const marker = formatDecisionMarker(d);
+    const parsed = parseDecisionMarkers([marker]);
+    assert.deepEqual(parsed, [d]);
+    assert.deepEqual(latestDecisionFor([marker]), d);
+  });
 });
 
 describe("parseDecisionMarkers", () => {
@@ -109,6 +117,60 @@ describe("parseDecisionMarkers", () => {
     const d2 = decision({ decided_at: "2026-08-14T14:34:00Z" });
     const bodies = [formatDecisionMarker(d1), formatDecisionMarker(d2)];
     assert.deepEqual(parseDecisionMarkers(bodies), [d1, d2]);
+  });
+
+  it("sessao fora do enum conhecido é descartada mas emite console.warn (#7853) — produtor legítimo, valor não previsto", () => {
+    const payload = {
+      decided_at: "2026-08-14T00:00:00Z",
+      pergunta: "pergunta",
+      resposta: "resposta",
+      sessao: "sessao-desconhecida",
+    };
+    const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+    const marker = `<!-- decisao-editor: ${encoded} -->`;
+
+    const warnCalls: unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnCalls.push(args);
+    };
+    try {
+      assert.deepEqual(parseDecisionMarkers([marker]), []);
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(warnCalls.length, 1);
+    assert.match(String(warnCalls[0][0]), /sessao-desconhecida/);
+  });
+
+  it("marcador malformado (JSON inválido) segue silencioso — não confundir com o warn de sessao desconhecida (#7853)", () => {
+    const bad = "<!-- decisao-editor: {not valid json} -->";
+    const warnCalls: unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnCalls.push(args);
+    };
+    try {
+      assert.deepEqual(parseDecisionMarkers([bad]), []);
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(warnCalls.length, 0);
+  });
+
+  it("marcador com campo faltando (payload genuinamente malformado) segue silencioso, sem warn (#7853)", () => {
+    const incomplete = '<!-- decisao-editor: {"decided_at":"2026-08-14T00:00:00Z"} -->';
+    const warnCalls: unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnCalls.push(args);
+    };
+    try {
+      assert.deepEqual(parseDecisionMarkers([incomplete]), []);
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(warnCalls.length, 0);
   });
 });
 
