@@ -70,6 +70,20 @@ export const DMARC_TARGET_DOMAIN = "news.diar.ia.br";
  * efeito de enforcement, mas reportado separadamente — "sem registro" e
  * "registro explícito p=none" são estados diferentes que o caller deve
  * poder distinguir no relatório).
+ *
+ * **Distinção obrigatória entre "não existe registro" e "não consegui ler"
+ * (#7933, achado 2):** `dns.resolveTxt` rejeita tanto quando o registro
+ * genuinamente não existe (`ENODATA`/`ENOTFOUND`, resposta autoritativa)
+ * quanto quando a resolução falhou por outro motivo (timeout, resolver
+ * fora do ar, `SERVFAIL`, sem rede) — só o primeiro caso é `policy: null`
+ * legítimo; o segundo PROPAGA (lança) em vez de virar `null` silencioso,
+ * porque um soluço de DNS na hora certa faria o motor ler `none` e
+ * recomendar escalar a partir de um domínio que na verdade já está em
+ * política mais alta. O caller (`buildDmarcEnforcementReport`) deixa a
+ * exceção subir; `resolveDmarcEnforcementReport`
+ * (`scripts/lib/dmarc-enforcement-alarm.ts`) já trata qualquer rejeição
+ * como fail-soft (`ok:false`, sem finding) — mesmo racional do resto do
+ * módulo.
  */
 export async function readCurrentDmarcPolicy(
   domain: string,
@@ -78,9 +92,22 @@ export async function readCurrentDmarcPolicy(
   let records: string[][];
   try {
     records = await resolveTxtFn(`_dmarc.${domain}`);
-  } catch {
-    // ENODATA/ENOTFOUND — nenhum registro DMARC publicado.
-    return { policy: null, raw: null };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    if (code === "ENODATA" || code === "ENOTFOUND") {
+      // Resposta autoritativa "não existe esse registro" — legítimo,
+      // equivalente a `p=none` efetivo.
+      return { policy: null, raw: null };
+    }
+    // Qualquer outro código (ETIMEOUT/ECONNREFUSED/EREFUSED/ESERVFAIL/
+    // sem `.code` nenhum) é "não consegui LER", não "não existe registro"
+    // (#7933, achado 2) — propaga pro caller. `buildDmarcEnforcementReport`
+    // deixa a exceção subir, e `resolveDmarcEnforcementReport`
+    // (scripts/lib/dmarc-enforcement-alarm.ts) já trata qualquer rejeição
+    // como `ok:false` fail-soft (sem finding) — nunca deve virar
+    // "escalate" a partir de um `none` que só existe porque o DNS soluçou
+    // no exato momento da leitura.
+    throw e;
   }
   const flat = records.map((chunks) => chunks.join(""));
   const dmarcRecord = flat.find((r) => r.trim().toLowerCase().startsWith("v=dmarc1"));

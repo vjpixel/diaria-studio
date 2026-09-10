@@ -119,10 +119,11 @@ describe("decideDmarcEnforcement — caminho feliz (healthy => escalate)", () =>
     assert.equal(d.nextPolicy, "reject");
   });
 
-  it("reject -> já no teto, nextPolicy continua 'reject' (não-op, nunca lança)", () => {
+  it("reject -> já no teto, recomendação é 'hold' e nextPolicy é null — nunca 'escalate reject -> reject' (#7933)", () => {
     const d = decideDmarcEnforcement(signals(), "reject");
     assert.equal(d.level, "healthy");
-    assert.equal(d.nextPolicy, "reject");
+    assert.equal(d.recommendation, "hold");
+    assert.equal(d.nextPolicy, null);
   });
 });
 
