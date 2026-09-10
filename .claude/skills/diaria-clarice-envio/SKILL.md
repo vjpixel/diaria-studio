@@ -316,9 +316,20 @@ Depois de rodar, **repetir o Passo 1** — a fila mudou.
 
 ## Passo 5 — Verificação MV sob demanda (#4659)
 
-Só relevante quando o Passo 1 revelar um **déficit** de fila de 1º envio
-(o mesmo bloqueio "Fila de 1º envio... é menor que o volume proposto"). Nesse
-caso a saída de `clarice-plan-wave.ts` já traz `mvOnDemandPlan` calculado:
+Só relevante quando o Passo 1 revelar um **déficit de fila de 1º envio** —
+`mvOnDemandPlan.byCohort` não-vazio, derivado de `firstSendDeficit`
+(`availableFirstSend` contra o volume-alvo).
+
+⚠️ **Esse gatilho NÃO é mais o mesmo do bloqueio do Passo 7** (#7856/#7873
+desacoplaram os dois). O blocker de lá hoje diz *"Fila diária disponível…
+é menor que o volume proposto"* e mede a fila UNIFICADA; este passo continua
+medindo só o 1º-envio vitalício, porque é isso que a verificação MV produz.
+Consequência prática: dá pra ter `mvOnDemandPlan` cheio (falta público de
+AQUISIÇÃO) sem bloqueio nenhum no Passo 7 (a fila unificada cobre o volume),
+e vice-versa. Ler um como proxy do outro leva à alavanca errada.
+
+Quando o gatilho dispara, a saída de `clarice-plan-wave.ts` já traz
+`mvOnDemandPlan` calculado:
 quantos contatos verificar, de quais cohorts — na MESMA ordem de prioridade
 da fila de envio (`cohortSendRank`, morno→frio — #4542 já corrigiu uma
 inversão dessa ordem, não reintroduzir) — e o custo estimado.
