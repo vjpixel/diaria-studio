@@ -12,6 +12,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   parseLatestLogRun,
   isRunFromToday,
@@ -24,7 +27,10 @@ import {
   buildAdsSpendIngestAlarmEmail,
   type PlatformLogInput,
 } from "../scripts/lib/ads-spend-ingest-alarm.ts";
-import { toAlarmFinding } from "../scripts/ads-spend-ingest-alarm.ts";
+import { toAlarmFinding, DEFAULT_GOOGLE_LOG_PATH, DEFAULT_MICROSOFT_LOG_PATH } from "../scripts/ads-spend-ingest-alarm.ts";
+
+const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const SCRIPT_PATH = resolve(PROJECT_ROOT, "scripts", "ads-spend-ingest-alarm.ts");
 
 const GOOGLE_LOG_PATH = "data/aquisicao/.google-ads-ingest.log";
 const MICROSOFT_LOG_PATH = "data/aquisicao/.microsoft-ads-ingest.log";
@@ -411,5 +417,32 @@ describe("toAlarmFinding", () => {
       NOW,
     );
     assert.equal(toAlarmFinding(defectMicrosoftEv).fingerprint, "defect");
+  });
+});
+
+describe("CLI: resolução de --google-log-path/--microsoft-log-path ausentes (#7518, achado 260910)", () => {
+  it("sem os overrides de path, usa os DEFAULT_*_LOG_PATH reais — nunca colapsa pra string vazia", () => {
+    // Achado ao vivo (rodada overnight 260910): `getArg(argv, "google-log-path") ?? DEFAULT_GOOGLE_LOG_PATH`
+    // nunca caía no default, porque `getArg` (scripts/lib/cli-args.ts) retorna
+    // "" — não undefined/null — pra flag ausente, e "" não é nullish. Isso
+    // colapsava os dois paths pra "" no caminho REAL de produção (systemd
+    // timer, sem nenhum --*-log-path passado), fazendo `existsSync("")`
+    // retornar false e o alarme reportar `cannot-verify` silencioso mesmo
+    // com os 2 logs reais presentes e saudáveis — o alarme reescrito pelo
+    // próprio #7518 nunca disse "ok" em produção por essa razão.
+    const result = spawnSync(process.execPath, ["--import", "tsx", SCRIPT_PATH, "--dry-run"], {
+      cwd: PROJECT_ROOT,
+      encoding: "utf8",
+    });
+    const stdout = result.stdout ?? "";
+    // Nunca reproduz o padrão de bug — paths vazios entre parênteses.
+    assert.doesNotMatch(stdout, /google=[a-z-]+\(\)/);
+    assert.doesNotMatch(stdout, /microsoft=[a-z-]+\(\)/);
+    // O path efetivamente usado é o DEFAULT_* real (absoluto, não vazio) —
+    // presente e existente mesmo que os arquivos apontados não existam
+    // neste ambiente (cannot-verify por log_missing é aceitável; log_path
+    // vazio nunca é).
+    assert.ok(stdout.includes(DEFAULT_GOOGLE_LOG_PATH), `stdout deveria conter o path default do Google: ${stdout}`);
+    assert.ok(stdout.includes(DEFAULT_MICROSOFT_LOG_PATH), `stdout deveria conter o path default do Microsoft: ${stdout}`);
   });
 });
