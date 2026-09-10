@@ -5,7 +5,7 @@
 # INVOCAÇÃO quando o script é chamado através de um SYMLINK — o `source
 # .../lib/claude-binary-preflight.sh` (e o de free-quota-exhaustion.sh)
 # procurava `lib/` do lado do symlink, que não existe (deploy real do
-# `helios`: `~/.hermes/scripts/claude-openrouter.sh` é symlink pro repo,
+# `helios`: `~/.hermes/scripts/claude-delegate.sh` é symlink pro repo,
 # sem `~/.hermes/scripts/lib/`). O contínuo ficou 8 de 11 ticks sem fazer
 # NADA por isso — o wrapper morria antes de qualquer chamada, sempre no
 # mesmo lugar (#6922/#6943).
@@ -19,7 +19,7 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-WRAPPER="$REPO/hermes/scripts/claude-openrouter.sh"
+WRAPPER="$REPO/hermes/scripts/claude-delegate.sh"
 
 TMPDIR_TEST="$(mktemp -d)"
 cleanup() { rm -rf "$TMPDIR_TEST"; }
@@ -28,7 +28,7 @@ trap cleanup EXIT
 # Symlink SEM lib/ ao lado — reproduz o deploy real (não um stub com
 # `exec`, que sobrevive ao bug por troca de processo; um SYMLINK de
 # verdade, que é o caso que quebra).
-SYMLINK="$TMPDIR_TEST/claude-openrouter.sh"
+SYMLINK="$TMPDIR_TEST/claude-delegate.sh"
 ln -s "$WRAPPER" "$SYMLINK"
 
 # Fake `claude` — responde --version (preflight) e qualquer outra

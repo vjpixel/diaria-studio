@@ -2,7 +2,7 @@
  * test/hermes-continuo-false-negative-guard.test.ts (#6712)
  *
  * Guard de regressão contra o padrão de falso-negativo medido ao vivo em
- * 29/08/2026 (2 ocorrências no mesmo dia): o wrapper `claude-openrouter.sh`
+ * 29/08/2026 (2 ocorrências no mesmo dia): o wrapper `claude-delegate.sh`
  * pode estourar `--max-budget-usd` DEPOIS de já ter commitado e aberto PR
  * (#6702 → PR #6713) ou criado um worktree (`.claude/worktrees/fix-6706-...`)
  * — em ambos os casos o relatório do tick leu "nada foi feito", desfez o

@@ -32,7 +32,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-openrouter.sh");
+const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-delegate.sh");
 
 describe("captura de evidência real de falha (#6666 item 1)", () => {
   const source = readFileSync(WRAPPER_PATH, "utf8");

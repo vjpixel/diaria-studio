@@ -130,7 +130,7 @@ describe("dispatch-glm-lane-unit.sh — condição (b) do docs/lane-glm.md, prod
 });
 
 describe("dispatch-glm-lane-unit.sh — condição (c), --model sempre explícito", () => {
-  it("invocação do claude-openrouter.sh sempre passa --model z-ai/glm-5.3-flash", () => {
+  it("invocação do claude-delegate.sh sempre passa --model z-ai/glm-5.3-flash", () => {
     const src = readScript();
     assert.match(src, /--model\s+z-ai\/glm-5\.3-flash/);
   });
@@ -225,11 +225,11 @@ describe("dispatch-glm-lane-unit.sh — worktree é sempre limpo ao sair (#6941 
 });
 
 describe("dispatch-glm-lane-unit.sh — snapshot de custo por unidade (condição (d))", () => {
-  it("snapshot de crédito é tirado ANTES e DEPOIS da chamada ao claude-openrouter.sh", () => {
+  it("snapshot de crédito é tirado ANTES e DEPOIS da chamada ao claude-delegate.sh", () => {
     const src = readScript();
     const beforeIdx = src.indexOf("CREDITS_BEFORE_JSON=");
     // busca a invocação REAL (com aspas do path), não a menção em comentário
-    const dispatchIdx = src.indexOf('"$REPO/hermes/scripts/claude-openrouter.sh"');
+    const dispatchIdx = src.indexOf('"$REPO/hermes/scripts/claude-delegate.sh"');
     const afterIdx = src.indexOf("CREDITS_AFTER_JSON=");
     assert.ok(beforeIdx !== -1 && dispatchIdx !== -1 && afterIdx !== -1, "não encontrou um dos 3 marcadores no script");
     assert.ok(beforeIdx < dispatchIdx, "snapshot 'before' deveria vir antes do dispatch");
@@ -247,7 +247,7 @@ describe("dispatch-glm-lane-unit.sh — snapshot de custo por unidade (condiçã
     assert.match(src, /record-glm-lane-unit\.ts/);
   });
 
-  it("#6941 P0/P1: o rc da invocação do claude-openrouter.sh é propagado como --status completed|infra-error, nunca só logado", () => {
+  it("#6941 P0/P1: o rc da invocação do claude-delegate.sh é propagado como --status completed|infra-error, nunca só logado", () => {
     const src = readScript();
     assert.match(src, /CLAUDE_RC.*-ne 0/);
     assert.match(src, /STATUS="infra-error"/);

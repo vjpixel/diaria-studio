@@ -13,7 +13,7 @@
  * > "O desenho é allowlist de saída, não blacklist de segredo — e essa
  * > distinção é a decisão."
  *
- * O precedente óbvio seria copiar `hermes/scripts/claude-openrouter.sh`
+ * O precedente óbvio seria copiar `hermes/scripts/claude-delegate.sh`
  * (`redact_secrets_in_file`, linhas ~296-310), que já lê `~/.hermes/
  * auth.json`, extrai só o `sk-or-*` num subshell, e redige qualquer string
  * com esse prefixo nos logs. Funciona, está em produção — mas é

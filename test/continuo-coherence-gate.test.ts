@@ -112,11 +112,11 @@ describe("evaluateContinuoCoherence — rejeita (retrospectivo: teria pego o #66
   it("overlap contra recentMasterFiles (não só activeFiles) também rejeita", () => {
     const r = evaluateContinuoCoherence({
       ...base,
-      issueBody: "editar hermes/scripts/claude-openrouter.sh",
-      recentMasterFiles: ["hermes/scripts/claude-openrouter.sh"],
+      issueBody: "editar hermes/scripts/claude-delegate.sh",
+      recentMasterFiles: ["hermes/scripts/claude-delegate.sh"],
     });
     assert.equal(r.admit, false);
-    assert.deepEqual(r.overlappingPaths, ["hermes/scripts/claude-openrouter.sh"]);
+    assert.deepEqual(r.overlappingPaths, ["hermes/scripts/claude-delegate.sh"]);
   });
 
   it("path sob scripts/lib/shared/ mencionado -> reject (abstração compartilhada) mesmo sem overlap", () => {

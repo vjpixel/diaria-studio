@@ -153,7 +153,7 @@ export interface GlmLaneUnitRecord {
    *  `extractIndependentReviewVerdict`, #6926) precisa existir antes
    *  deste critério valer de fato. */
   reviewRounds: number | null;
-  /** `"completed"` = a invocação do claude-openrouter.sh terminou (rc=0);
+  /** `"completed"` = a invocação do claude-delegate.sh terminou (rc=0);
    *  `"infra-error"` = ela falhou/deu timeout — a unidade ainda CONTA pro
    *  teto de 10 (consumiu um despacho, possivelmente custou dinheiro),
    *  mas é EXCLUÍDA das estatísticas que julgam o comportamento do

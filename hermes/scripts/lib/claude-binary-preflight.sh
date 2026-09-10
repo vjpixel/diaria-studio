@@ -2,7 +2,7 @@
 # claude-binary-preflight.sh (#6875, #6879, #6891, #7468) — checagem
 # compartilhada: o binário Claude Code precisa existir e responder a
 # `--version` antes de qualquer script de cron tentar usá-lo
-# (claude-openrouter.sh, continuo-pr-review.sh, opus-daily-diff-review.sh).
+# (claude-delegate.sh, continuo-pr-review.sh, opus-daily-diff-review.sh).
 # Sem isso, a falha real (binário ausente/quebrado, postinstall não rodou)
 # vira sintoma enigmático no meio do script chamador em vez de erro
 # nomeado logo no início.
@@ -68,8 +68,8 @@
 # #6943 (01/09/2026): o `readlink -f` é OBRIGATÓRIO no chamador, não
 # opcional/estilístico. `${BASH_SOURCE[0]}` sozinho, sem resolver o
 # symlink primeiro, resolve pro caminho de INVOCAÇÃO quando o script é
-# deployado como symlink (`~/.hermes/scripts/claude-openrouter.sh ->
-# .../hermes/scripts/claude-openrouter.sh`, o caso real no `helios`) — o
+# deployado como symlink (`~/.hermes/scripts/claude-delegate.sh ->
+# .../hermes/scripts/claude-delegate.sh`, o caso real no `helios`) — o
 # `dirname` cai fora do repo, e este `source` nunca encontra o arquivo.
 # `continuo-pr-review.sh` sobrevivia ao mesmo bug só porque foi deployado
 # como STUB com `exec` (troca de processo, `BASH_SOURCE` novo já é o

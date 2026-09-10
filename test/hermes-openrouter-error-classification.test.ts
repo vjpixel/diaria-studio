@@ -2,7 +2,7 @@
  * test/hermes-openrouter-error-classification.test.ts (#6696)
  *
  * Guard de regressao contra 3 findings do review consolidado do range
- * `5bad85fc..3dd36e8d` sobre `hermes/scripts/claude-openrouter.sh`, onde o
+ * `5bad85fc..3dd36e8d` sobre `hermes/scripts/claude-delegate.sh`, onde o
  * commit do #6666 (budget/stdout-capture) reintroduziu um mascaramento que o
  * #6617 (config-inválida vs rate-limit) tinha acabado de remover:
  *
@@ -34,7 +34,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-openrouter.sh");
+const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-delegate.sh");
 
 describe("classificação de erro do wrapper OpenRouter (#6696)", () => {
   const source = readFileSync(WRAPPER_PATH, "utf8");

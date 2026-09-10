@@ -2,7 +2,7 @@
  * test/hermes-budget-guard.test.ts (#6666)
  *
  * Guard de regressao contra o bug descrito na #6666: o wrapper
- * `claude-openrouter.sh` usava `BUDGET="0.25"`, mas o CLAUDE.md tem 76KB
+ * `claude-delegate.sh` usava `BUDGET="0.25"`, mas o CLAUDE.md tem 76KB
  * (~19k tokens de entrada), e o CLI rastreia o custo de carregar o contexto
  * contra `--max-budget-usd`. A chamada com CLAUDE.md carregado ja excede
  * $0.25 no primeiro request, e o erro "Exceeded USD budget" vai pro STDOUT
@@ -41,7 +41,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-openrouter.sh");
+const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-delegate.sh");
 const SKILL_PATH = join(ROOT, "hermes/skills/hermes-diaria-continuo/SKILL.md");
 
 describe("guard de budget do wrapper (#6666)", () => {
@@ -103,7 +103,7 @@ describe("guard de budget do wrapper (#6666)", () => {
 describe("call sites do wrapper nao sobrepoem o piso de BUDGET (#6712)", () => {
   /**
    * O default do wrapper nao basta: a SKILL.md invoca
-   * `claude-openrouter.sh --budget N`, e um `--budget` explicito SOBREPOE o
+   * `claude-delegate.sh --budget N`, e um `--budget` explicito SOBREPOE o
    * default. Em 29/08/2026 o wrapper tinha default 2.0 e a skill passava
    * exatamente 2.0 — subir so o default teria deixado o bug intacto no
    * caminho que de fato roda. Este teste trava os dois lados juntos.

@@ -2,7 +2,7 @@
  * test/hermes-key-not-in-cmdline.test.ts (#6718)
  *
  * Guard de regressão do vazamento de credencial medido ao vivo em 29/08/2026:
- * `hermes/scripts/claude-openrouter.sh` passava `ANTHROPIC_AUTH_TOKEN` como
+ * `hermes/scripts/claude-delegate.sh` passava `ANTHROPIC_AUTH_TOKEN` como
  * argumento de `env VAR=valor`, e argumentos de processo são world-readable
  * em `/proc/<pid>/cmdline` (0444) — um `ps -eo args` trivial, sem privilégio
  * nenhum, imprimia a chave inteira (`sk-or-v1-...`) durante TODA a duração da
@@ -36,7 +36,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-openrouter.sh");
+const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-delegate.sh");
 const VAR = "ANTHROPIC_AUTH_TOKEN";
 
 /**
@@ -87,7 +87,7 @@ function logicalCodeLines(): string[] {
   return out;
 }
 
-describe("claude-openrouter.sh — chave fora do cmdline (#6718)", () => {
+describe("claude-delegate.sh — chave fora do cmdline (#6718)", () => {
   it("toda ocorrência de ANTHROPIC_AUTH_TOKEN= em código é `export`", () => {
     const lines = logicalCodeLines().filter((l) => l.includes(`${VAR}=`));
     assert.ok(

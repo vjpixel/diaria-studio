@@ -96,7 +96,7 @@ export const EXPECTED_PAID_MODELS: ReadonlySet<string> = new Set([
   // (SONNET_DELIBERATELY_NOT_MIRRORED): este módulo lê o feed de billing
   // REAL do OpenRouter, e "sonnet" no gateway só pode significar que o
   // guard fail-closed do #7649 (unset + abort das 8 vars de auth/gateway
-  // em hermes/scripts/claude-openrouter.sh) falhou — é exatamente o sinal
+  // em hermes/scripts/claude-delegate.sh) falhou — é exatamente o sinal
   // de defesa-em-profundidade que este guard existe pra capturar. Espelhar
   // a entrada de PAID_ALLOWLIST (Python) aqui desarmaria esse alarme pro
   // pior cenário possível (#5608/#6714: sessão da assinatura sequestrada,

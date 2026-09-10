@@ -1,7 +1,7 @@
 /**
  * test/hermes-openrouter-catalog-recheck.test.ts (#6803)
  *
- * Guard de regressão: `hermes/scripts/claude-openrouter.sh` não pode mais
+ * Guard de regressão: `hermes/scripts/claude-delegate.sh` não pode mais
  * classificar "model not found"/"invalid model" no stderr como config
  * PERMANENTE (SAW_CONFIG_ERROR_SIGNAL, exit 4) sem antes reconsultar o
  * catálogo público do OpenRouter (`GET /api/v1/models`, sem auth).
@@ -24,7 +24,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-openrouter.sh");
+const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-delegate.sh");
 
 describe("reconsulta de catálogo antes do exit 4 de config-inválida (#6803)", () => {
   const source = readFileSync(WRAPPER_PATH, "utf8");

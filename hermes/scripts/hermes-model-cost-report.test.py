@@ -395,7 +395,7 @@ def main() -> int:
         set(mod.CONTINUO_PRIMARY_MODEL_IDS) <= set(mod.PAID_ALLOWLIST),
     )
 
-    # --- #7649 (08/09/2026): elo de assinatura claude.ai de claude-openrouter.sh ---
+    # --- #7649 (08/09/2026): elo de assinatura claude.ai de claude-delegate.sh ---
     #
     # Mesma classe de drift do PR #7648 (glm -> deepseek): um elo novo que
     # apareca em `session_model_usage` sem entrar na allowlist certa vira

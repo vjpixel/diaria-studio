@@ -1,0 +1,728 @@
+#!/usr/bin/env bash
+# claude-delegate.sh — roda `claude -p` (harness do Claude Code) com modelo
+# do OpenRouter, SEM tocar a cota da assinatura claude.ai.
+#
+# Por que existe (28/08/2026): o hermes-diaria-continuo parafraseava as regras
+# do repo (classifyExecTrack etc.) em prosa que envelhecia em silêncio — 5
+# categorias na cópia vs 6 no código real. Este wrapper troca paráfrase por
+# execução: o modelo roda DENTRO do checkout, com CLAUDE.md carregado e os
+# scripts reais.
+#
+# Mecanismo: o OpenRouter fala a Messages API da Anthropic nativamente
+# (validado ao vivo em /api/v1/messages, 28/08). ANTHROPIC_BASE_URL +
+# ANTHROPIC_AUTH_TOKEN apontam o CLI pra lá; --model aceita slug do OpenRouter
+# (com aviso de "modelo desconhecido", inofensivo).
+#
+# REGRAS INEGOCIÁVEIS (#5608 do diaria-studio):
+#   - As env vars ANTHROPIC_* vivem SÓ no processo filho (export num
+#     subshell que envolve o `claude`; #6718 — nunca como argumento de `env`,
+#     que fica world-readable no /proc/<pid>/cmdline).
+#     NUNCA exportar no ambiente global — sequestram sessões da assinatura
+#     e desligam os conectores claude.ai (Beehiiv/Gmail) do pipeline.
+#   - Este wrapper é pra fila de issues/código. NÃO usar pra nada que precise
+#     dos conectores claude.ai.
+#
+# Gotchas embutidos:
+#   - Prompt via STDIN (--allowedTools é variádico e engole prompt posicional).
+#   - Fallback de modelo: free primeiro; se free falhar (balde diário esgota —
+#     compartilhado por CONTA entre todos os :free), cai pro glm-5.3-flash
+#     pago (~USD 0,075/M in; teto diário da chave limita o estrago).
+#   - Exit codes na falha total da cadeia (#6617, 28/08/2026): 1 = falha
+#     transitória (quota/rate-limit/timeout — "volta sozinho" é uma leitura
+#     válida); 4 = pelo menos um modelo da cadeia falhou com sinal de CONFIG
+#     INVÁLIDA (model id que o provedor não reconhece) e nenhum sinal de
+#     quota apareceu — "volta sozinho" é falso aqui, precisa correção manual
+#     do MODELS_DEFAULT/--model. Motivado por incidente real: o watchdog de
+#     rate-limit do Hermes lia rc≠0 como sinônimo de quota-exhaustion e
+#     pausava o job dizendo "reset natural resolve", mas `z-ai/glm-5.2:free`
+#     ESTAVA AUSENTE do catálogo do OpenRouter na medição de 28/08
+#     (/api/v1/models) — naquele momento a cadeia não ia se recuperar sozinha.
+#
+#     ATENÇÃO (medido 30/08/2026, mesmo endpoint): `z-ai/glm-5.2:free` ESTÁ
+#     no catálogo hoje. A ausência de 28/08 foi uma janela, não uma remoção
+#     permanente — o texto anterior aqui dizia "tinha saído do catálogo" e
+#     isso virou mentira em 2 dias. Consequência prática pro exit 4: os sinais
+#     que o disparam (`no endpoints found` e vizinhos, regex do SAW_CONFIG_
+#     ERROR_SIGNAL abaixo — NÃO `unrecognized_model`, que é ruído filtrado)
+#     não distinguem id INVÁLIDO de id válido temporariamente sem endpoint.
+#     Nesse 2º caso o exit 4 pede correção manual de uma config que está
+#     certa. Antes de editar MODELS_DEFAULT por causa de um exit 4, conferir
+#     o catálogo: `curl -s https://openrouter.ai/api/v1/models` (sem auth) e
+#     procurar o id. Tratamento dos 3 casos: issue #6803.
+#   - Elo final de assinatura claude.ai (#7649, decisão do editor 08/09/2026):
+#     depois do glm-5.3-flash, a cadeia tenta MAIS UM elo — o MESMO `claude
+#     -p`, mas SEM nenhuma das 8 vars ANTHROPIC_*/CLAUDE_CODE_USE_* de auth e
+#     gateway (unset explícito, nunca "deixar de exportar" — ANTHROPIC_AUTH_TOKEN
+#     e ANTHROPIC_API_KEY têm PRECEDÊNCIA sobre o OAuth da assinatura, então
+#     resíduo herdado do ambiente pai transformaria este elo "grátis" numa
+#     chamada PAGA em silêncio; regra #5608/#6714 do diaria-studio, a lista
+#     ampliada de 5→8 vars no review do #7649 depois de faltar justo
+#     ANTHROPIC_API_KEY, a causa do incidente real da edição 260818). Sentinela
+#     reconhecida por
+#     `is_subscription_lane_model()`. Sem `--max-budget-usd` (não há custo em
+#     dólar por chamada na assinatura). Novos exit codes SÓ deste elo: 96 =
+#     guard fail-closed disparou (resíduo de ANTHROPIC_* sobreviveu ao unset)
+#     — ABORT IMEDIATO da cadeia inteira, nunca "próximo elo" nem "tenta de
+#     novo sozinho"; corrigir o ambiente antes de qualquer nova invocação.
+#     `exit 3` de "nenhuma chave OpenRouter legível" (linha ~229) virou
+#     WARNING (a cadeia segue, pulando direto pros elos que não dependem da
+#     key — normalmente só o de assinatura) — antes matava o script inteiro
+#     antes mesmo de chegar no elo que não precisa de chave nenhuma.
+#   - Marcador de exaustão da cota free (#6712, 31/08/2026): quando um elo
+#     `:free` bate 429/rate-limit, este script grava
+#     `${TMPDIR:-/tmp}/claude-openrouter-free-quota-exhausted-until` com o
+#     epoch do próximo reset (00:00 UTC). Invocações SEGUINTES (mesmo dia,
+#     processo diferente) leem esse marcador ANTES de montar a cadeia e
+#     pulam direto pro(s) elo(s) pago(s) — sem gastar requisição sabendo
+#     que vai bater 429 de novo. Medido no diagnóstico da issue: ~70
+#     invocações/tick × 2 tentativas free desperdiçadas = ~140
+#     requisições/tick jogadas fora depois do 1º 429 do dia, sem esse
+#     marcador. `--model` explícito nunca é filtrado (é escolha do
+#     caller). Miolo puro/testável em `lib/free-quota-exhaustion.sh`.
+#
+# Uso:
+#   echo "<tarefa>" | claude-delegate.sh [--tools "Read,Bash(npx tsx:*)"] \
+#     [--cwd DIR] [--budget USD] [--timeout SECS] [--model SLUG] [--effort LEVEL]
+set -euo pipefail
+
+# #6891 (01/09/2026): desliga o auto-updater DENTRO deste processo — nunca
+# export persistente de shell (mesma disciplina do #6714 pras
+# ANTHROPIC_BASE_URL/AUTH_TOKEN). `export` aqui só vive neste script e seus
+# filhos (é um processo próprio invocado pelo cron, nunca sourced numa
+# sessão interativa) — as sessões do editor continuam atualizando
+# normalmente. Ataca a CAUSA da quebra recorrente medida em #6875/#6891 (o
+# updater reinstala em ciclo e abre uma janela em que o shim aponta pro
+# binário antes do postinstall terminar).
+export DISABLE_AUTOUPDATER=1
+
+# Preflight (#6875, extraído pro lib compartilhado no #6879): falha do
+# binário precisa ser nomeada, não enigmática.
+# shellcheck source=./lib/claude-binary-preflight.sh
+source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/lib/claude-binary-preflight.sh"
+claude_binary_preflight
+
+# shellcheck source=./lib/free-quota-exhaustion.sh
+source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/lib/free-quota-exhaustion.sh"
+
+# #6712 (31/08/2026): marcador de exaustão da cota free-models-per-day —
+# ver docstring de lib/free-quota-exhaustion.sh pro mecanismo completo.
+# Path ESTÁVEL (não $$-escopado): precisa sobreviver ENTRE invocações
+# deste wrapper (chamadas diferentes, mesmo dia) pra o benefício aparecer —
+# um marcador por-PID nunca seria lido por ninguém além do processo que o
+# escreveu.
+FREE_QUOTA_EXHAUSTED_MARKER="${TMPDIR:-/tmp}/claude-openrouter-free-quota-exhausted-until"
+
+# #6965 item 1 (01/09/2026, P2): rotação/limpeza dos logs crus em /tmp. Sem
+# isso, STDERR_LOG ($$-escopado, ver mais abaixo) sobrevive indefinidamente
+# quando a cadeia falha inteira — o caminho de erro nunca o remove, DE
+# PROPÓSITO (é a evidência que sobra pra investigar). O job do contínuo roda
+# a cada ~30min, sem teto de disco: acumulação silenciosa em /tmp é o tipo
+# de falha que só aparece quando o disco enche e derruba outra coisa que não
+# tem nada a ver. Teto por IDADE (não por contagem — mais simples, e já
+# cobre o caso real: ninguém investiga um log de dias atrás pra uma falha de
+# agora). NÃO alcança `claude-openrouter-last-failure.log` (path ESTÁVEL,
+# sobrescrito a cada falha nova por design, #6666 item 1 — não acumula,
+# então não precisa de rotação). Fail-soft: limpeza é higiene, nunca pode
+# abortar a delegação atual.
+STDERR_LOG_MAX_AGE_DAYS="${STDERR_LOG_MAX_AGE_DAYS:-7}"
+find "${TMPDIR:-/tmp}" -maxdepth 1 -type f \
+  \( -name 'claude-openrouter-stderr.*.log' -o -name 'claude-openrouter-attempt.*.log' -o -name 'claude-openrouter-attempt-stderr.*.log' \) \
+  -mtime "+${STDERR_LOG_MAX_AGE_DAYS}" -delete 2>/dev/null || true
+
+TOOLS="Read,Grep,Glob,Bash"
+CWD="/home/vjpixel/diaria-studio"
+BUDGET="20.0"
+TIMEOUT="1800"
+# --effort (#6816): passthrough opcional pro --effort nativo do `claude -p`
+# (low|medium|high|xhigh|max, confirmado via `claude -p --help`). Vazio por
+# default = comportamento de hoje, sem override (o CLI decide sozinho). Existe
+# pra permitir A/B de esforço por camada sem editar este script a cada teste —
+# quem decide o valor é o call site (SKILL.md/cron), nunca um default aqui.
+# Não confundir com `agent.reasoning_overrides` do Hermes nativo (~/.hermes) —
+# aquele é outro mecanismo, fora deste repo, e não alcança quem passa por este
+# wrapper (o wrapper nunca lê ~/.hermes/config.yaml).
+EFFORT=""
+# #6712: BUDGET de $2.0 → $20.0. O #6666 tinha subido de $0.25 → $2.0
+# tratando o SINTOMA; a causa é outra e o valor certo é ordens de grandeza
+# maior. O CLI NÃO reconhece o slug do gateway
+# ("[claude-code:unrecognized_model] {\"model\":\"z-ai/glm-5.3-flash\"}" em
+# todo /tmp/claude-openrouter-stderr.*.log) e contabiliza contra
+# --max-budget-usd usando o preço DEFAULT da Anthropic (~$3/M in, $15/M out,
+# $0.30/M cache read) em vez do preço real do modelo. Erro de ~14-18x
+# (18.1x / 14.1x / 16.6x nos 3 pontos medidos abaixo — média 16.3x; o valor
+# varia com a proporção in/out/cache de cada delegação, não é uma constante).
+#
+# Medido no tick de 29/08/2026 19:52-20:32Z, 3 delegações reais:
+#   1.86M tokens -> custo real $0.067  |  CLI estimou $1.21
+#   3.80M tokens -> custo real $0.137  |  CLI estimou $1.93
+#   4.39M tokens -> custo real $0.159  |  CLI estimou $2.64
+# (preço real medido do glm-5.3-flash: $0.0361/M, derivado do billing.)
+# As 3 estouraram budget de $1.0/$1.5/$2.0 gastando centavos, e o tick de
+# 40min produziu ZERO PRs — trabalho interrompido no meio, reportado como
+# "falha de infra".
+#
+# O --max-budget-usd NÃO é o controle de custo desta pipeline: quem limita
+# gasto de verdade é o teto diário da key na OpenRouter, aplicado pelo
+# PROVEDOR e imune a erro de estimativa. (O valor do teto vive no dashboard
+# da OpenRouter, não neste repo — em 29/08/2026 era $3/dia, com intenção
+# declarada do editor de baixar para $1; conferir lá, nunca assumir daqui.)
+# Aqui o budget fica só como rede contra runaway catastrófico. Não voltar a
+# calibrá-lo pelo custo esperado de uma delegação — a régua está errada,
+# então qualquer valor "justo" calculado nela volta a cortar trabalho
+# legítimo.
+#
+# DOIS PRESSUPOSTOS que este valor carrega, e que morrem em silêncio se a
+# cadeia mudar (achados do review da PR #6722):
+#
+#   (a) O fator de erro foi medido SÓ para z-ai/glm-5.3-flash. Um modelo
+#       cujo preço real se aproxime do default da Anthropic torna $20 um teto
+#       de gasto REAL de $20, não de ~$1. Ao mexer em MODELS_DEFAULT ou passar
+#       --model novo, remedir antes de confiar neste número.
+#   (b) "A key limita" vale para o elo PAGO. Os dois elos `:free` da cadeia
+#       são protegidos por o custo real ser zero, não pelo teto da key — se um
+#       `:free` virar pago (mudança do lado da OpenRouter, sem aviso), essa
+#       proteção some sem nada falhar.
+#
+# (O erro "Exceeded USD budget" vai pro STDOUT, não stderr — por isso o
+# capture de stdout no RC≠0 introduzido pelo #6666 continua necessário.)
+#
+# Os 3 tetos distintos citados acima ($1.0/$1.5/$2.0) não vêm daqui: este é
+# só o DEFAULT. Um `--budget` explícito no call site o sobrepõe, e em
+# 29/08/2026 o tick reagiu ao abort tentando valores cada vez MENORES. Por
+# isso test/hermes-budget-guard.test.ts trava o call site da SKILL.md junto
+# com este default — subir um sem o outro não conserta o caminho que roda.
+# Decisivo é o contexto — dots-3 tem 512k na variante :free vs 262k do
+# laguna, e este wrapper roda `claude -p` DENTRO do checkout com CLAUDE.md
+# inteiro carregado, então contexto maior importa mais que o resto do
+# benchmark (dots-3 também vence Terminal-Bench 2.1, o mais próximo deste
+# caso de uso — números vêm de fontes diferentes, Poolside vs BenchLM:
+# sinal, não prova). laguna segue em segundo — não por id morto: o #6617
+# tinha diagnosticado z-ai/glm-5.2:free como fora do catálogo, mas a
+# "Correção de premissa" do #6663 mediu ao vivo em 28/08/2026 que o id
+# continua resolvendo (endpoint ativo, ctx 256k) — a troca de posição do
+# laguna é só sobre contexto menor, não sobre um id inválido. glm-5.3-flash
+# (pago) continua por último, é o fallback.
+#
+# #7649 (08/09/2026): elo final de assinatura claude.ai, depois do
+# glm-5.3-flash — quando os 3 :free E o pago falharem, a cadeia não morre
+# mais: cai pro OAuth nativo da assinatura (ver docstring do topo). A
+# sentinela é a string nua "sonnet" — nenhum id real do catálogo da
+# OpenRouter é uma palavra sem "/" (todos são "provedor/modelo"), então não
+# há colisão possível. `is_subscription_lane_model()` abaixo é a ÚNICA fonte
+# de verdade sobre "isto é o elo de assinatura?" — usada pro branch de
+# invocação (sem export de gateway), pro fallback de "sem chave OpenRouter"
+# (exit 3 virou warning, ver mais abaixo) e implicitamente sobrevive ao
+# filtro de cota free (`filter_out_free_models` só remove sufixo `:free`,
+# que esta sentinela nunca tem).
+SUBSCRIPTION_LANE_MODEL="sonnet"
+is_subscription_lane_model() {
+  [ "${1:-}" = "$SUBSCRIPTION_LANE_MODEL" ]
+}
+MODELS_DEFAULT=("dots-studio/dots-3-note-preview:free" "thinkingmachines/inkling-small:free" "poolside/laguna-s-2.1:free" "z-ai/glm-5.3-flash" "$SUBSCRIPTION_LANE_MODEL")
+MODEL_FORCED=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tools)   TOOLS="$2"; shift 2 ;;
+    --cwd)     CWD="$2"; shift 2 ;;
+    --budget)  BUDGET="$2"; shift 2 ;;
+    --timeout) TIMEOUT="$2"; shift 2 ;;
+    --model)   MODEL_FORCED="$2"; shift 2 ;;
+    --effort)  EFFORT="$2"; shift 2 ;;
+    *) echo "arg desconhecido: $1" >&2; exit 2 ;;
+  esac
+done
+
+# Mesma disciplina do --timeout/--budget acima: validar ANTES do loop de
+# tentativas, não deixar o CLI rejeitar no meio da cadeia.
+case "$EFFORT" in
+  ''|low|medium|high|xhigh|max) ;;
+  *) echo "ERRO: --effort deve ser low|medium|high|xhigh|max, veio '$EFFORT'" >&2; exit 2 ;;
+esac
+
+# Validar numéricos ANTES do loop (finding do review #6446: valor malformado
+# faria TODOS os modelos falharem identicamente, mascarado como "cadeia caiu").
+case "$TIMEOUT" in (*[!0-9]*|'') echo "ERRO: --timeout deve ser inteiro em segundos, veio '$TIMEOUT'" >&2; exit 2 ;; esac
+case "$BUDGET" in (*[!0-9.]*|''|.|*.*.*) echo "ERRO: --budget deve ser numérico em USD, veio '$BUDGET'" >&2; exit 2 ;; esac
+
+# Mesma fonte de chave que o próprio Hermes usa (credential_pool.openrouter).
+# try/except (finding do review #6446): auth.json ausente/corrompido imprimia
+# traceback cru e matava o script via set -e ANTES do guard de mensagem abaixo.
+KEY=$(python3 - <<'PY'
+import json
+try:
+    a = json.load(open('/home/vjpixel/.hermes/auth.json'))
+except Exception:
+    raise SystemExit(0)  # stdout vazio -> guard do shell dá a mensagem
+for c in a.get('credential_pool', {}).get('openrouter', []):
+    t = c.get('access_token', '')
+    if t.startswith('sk-or-'):
+        print(t)
+        break
+PY
+)
+if [ -z "$KEY" ]; then
+  # #7649 item 3: isto MATAVA o script inteiro (exit 3) antes de sequer
+  # montar a cadeia — mas o elo de assinatura, logo abaixo, não precisa de
+  # chave nenhuma. Virou warning; a filtragem que pula direto pro elo de
+  # assinatura quando não há key acontece mais abaixo, depois de MODELS
+  # estar montado (MODEL_FORCED e a lógica da cota free precisam rodar
+  # primeiro — não duplicar essa filtragem aqui).
+  echo "AVISO: nenhuma chave OpenRouter legível em ~/.hermes/auth.json (arquivo ausente, JSON inválido, ou sem token sk-or-*) — elos que dependem dela vão falhar; seguindo mesmo assim, o elo de assinatura (#7649) não precisa de key" >&2
+fi
+
+PROMPT=$(cat)
+[ -n "$PROMPT" ] || { echo "ERRO: prompt vazio no stdin" >&2; exit 2; }
+
+if [ -n "$MODEL_FORCED" ]; then
+  MODELS=("$MODEL_FORCED")
+else
+  MODELS=("${MODELS_DEFAULT[@]}")
+  # #6712: se uma invocação ANTERIOR (mesmo dia, processo diferente) já
+  # detectou a cota free exaurida, pula direto pro(s) elo(s) pago(s) —
+  # sem gastar requisição sabendo que vai bater 429. `--model` explícito
+  # (MODEL_FORCED acima) NUNCA é filtrado — é escolha deliberada do
+  # caller, não a cadeia default.
+  NOW_EPOCH=$(date -u +%s)
+  if [ -f "$FREE_QUOTA_EXHAUSTED_MARKER" ]; then
+    MARKER_EPOCH=$(cat "$FREE_QUOTA_EXHAUSTED_MARKER" 2>/dev/null || echo "")
+    if [ -n "$MARKER_EPOCH" ] && [ "$(is_exhaustion_marker_valid "$MARKER_EPOCH" "$NOW_EPOCH" 2>/dev/null || echo false)" = "true" ]; then
+      mapfile -t PAID_ONLY < <(filter_out_free_models "${MODELS[@]}")
+      if [ "${#PAID_ONLY[@]}" -gt 0 ]; then
+        echo "[claude-openrouter] cota free marcada como exaurida até $(date -u -d "@$MARKER_EPOCH" -Iseconds 2>/dev/null || date -u -r "$MARKER_EPOCH" -Iseconds 2>/dev/null || echo "$MARKER_EPOCH epoch") (#6712) — pulando elos :free, indo direto pro(s) elo(s) pago(s)" >&2
+        MODELS=("${PAID_ONLY[@]}")
+      fi
+      # PAID_ONLY vazio (cadeia é 100% :free, sem elo pago configurado) —
+      # fail-soft: mantém a cadeia inteira, melhor tentar o free "exaurido"
+      # (pode já ter resetado, marcador pode estar errado) do que ficar
+      # sem NENHUM modelo pra tentar.
+    fi
+  fi
+  # #7649 item 3: se não há chave OpenRouter legível (warning acima, em vez
+  # do exit 3 de antes), TODO elo que não seja o de assinatura vai falhar
+  # de qualquer forma (token vazio) — pular direto pro elo de assinatura em
+  # vez de queimar até `$TIMEOUT` segundos por tentativa fadada (o default é
+  # 1800s cada; 4 tentativas inúteis adiariam o único elo que funcionaria).
+  # Mesma disciplina fail-soft do filtro de cota free logo acima: se por
+  # algum motivo futuro o sentinela sumir de MODELS, mantém a cadeia
+  # inteira em vez de ficar sem NENHUM modelo pra tentar.
+  if [ -z "$KEY" ]; then
+    ONLY_SUBSCRIPTION_LANE=()
+    for m in "${MODELS[@]}"; do
+      if is_subscription_lane_model "$m"; then
+        ONLY_SUBSCRIPTION_LANE+=("$m")
+      fi
+    done
+    if [ "${#ONLY_SUBSCRIPTION_LANE[@]}" -gt 0 ]; then
+      echo "[claude-openrouter] sem chave OpenRouter legível — pulando direto pro elo de assinatura (#7649), sem queimar tentativas que falhariam com token vazio" >&2
+      MODELS=("${ONLY_SUBSCRIPTION_LANE[@]}")
+    fi
+  fi
+fi
+
+# Sem --bare de propósito: --bare desliga o auto-discovery do CLAUDE.md, que é
+# metade do valor deste wrapper. A troca de auth é garantida pelo env mesmo
+# assim — ANTHROPIC_AUTH_TOKEN tem precedência sobre o OAuth da assinatura
+# (o CLI avisa "connectors are disabled ... takes precedence", validado 28/08).
+cd "$CWD"
+# stderr CRU sempre preservado em arquivo (finding do review #6446: o filtro
+# de ruído era a ÚNICA cópia — linha real que contivesse um dos padrões era
+# perdida pra sempre). O terminal segue filtrado; o arquivo tem tudo.
+STDERR_LOG="${TMPDIR:-/tmp}/claude-openrouter-stderr.$$.log"
+# Sinais agregados pra decidir o exit code final (#6617): "unrecognized_model"
+# sozinho é ruído esperado de QUALQUER modelo de terceiro (o CLI não conhece
+# nenhum slug do OpenRouter) — não distingue modelo válido de inválido. O que
+# distingue é o PROVEDOR recusar o modelo (rc≠0 + saída vazia + nenhum sinal
+# de quota/rate-limit no mesmo stderr) vs. a conta ficar sem cota (429/rate
+# limit explícito, ou timeout — esses SIM se resolvem sozinhos no reset).
+SAW_QUOTA_SIGNAL=0
+SAW_CONFIG_ERROR_SIGNAL=0
+
+# #6803: "model not found"/"invalid model" no stderr pode ser ausência
+# TRANSITÓRIA do catálogo (indisponibilidade momentânea), não config
+# permanente — medido ao vivo em 30/08/2026: `z-ai/glm-5.2:free` disparou
+# esse sinal em 28/08 (exit 4, "config inválida, não volta sozinha") e
+# estava de volta no catálogo 2 dias depois. Antes de marcar
+# SAW_CONFIG_ERROR_SIGNAL=1 (que produz exit 4, para o job pedindo correção
+# manual de MODELS_DEFAULT), reconsulta `GET /api/v1/models` — endpoint
+# público, sem auth, barato — e confirma se o id realmente sumiu. Se o
+# curl falhar (rede indisponível, timeout) o resultado é "não confirmado":
+# mantém o comportamento ANTERIOR (exit 4) por segurança — não dá pra provar
+# que o id existe, então não dá pra baixar a severidade.
+# #6965 item 2 (01/09/2026, P1): a chave do OpenRouter pode vazar pro log
+# cru. O log é gravado SEM FILTRO de propósito (#6666 item 1 — filtrar
+# perderia a linha real que um watchdog precisa ler), mas isso não impede
+# que a chave apareça numa mensagem de erro ecoada pelo provedor e acabe
+# persistida em /tmp — inclusive no path ESTÁVEL e previsível
+# claude-openrouter-last-failure.log. Redige o valor LITERAL de $KEY (cobre
+# o caso comum: a própria chave desta invocação) e, como rede de segurança,
+# qualquer string com o prefixo sk-or- (cobre uma chave DIFERENTE da usada
+# nesta tentativa — rotação concorrente, token de outra invocação citado em
+# texto gerado pelo modelo). Best-effort/fail-soft: falha do sed (arquivo
+# lido por outro processo no mesmo instante, disco cheio) nunca aborta a
+# cadeia — o pior caso é "log não redigido nesta tentativa", nunca
+# "delegação perdida por causa de higiene de log".
+redact_secrets_in_file() {
+  local target="$1"
+  [ -s "$target" ] || return 0
+  if [ -n "${KEY:-}" ]; then
+    local esc_key
+    esc_key=$(printf '%s' "$KEY" | sed -e 's/[.[\*^$/&|]/\\&/g')
+    sed -i "s|$esc_key|[REDACTED_OPENROUTER_KEY]|g" "$target" 2>/dev/null || true
+  fi
+  sed -i -E 's/sk-or-[A-Za-z0-9_-]{10,}/[REDACTED_OPENROUTER_KEY]/g' "$target" 2>/dev/null || true
+}
+
+model_in_openrouter_catalog() {
+  local model="$1"
+  local catalog
+  if ! catalog=$(curl -sf --max-time 10 "https://openrouter.ai/api/v1/models" 2>/dev/null); then
+    return 2
+  fi
+  # #6987/#6989 (01/09/2026): `command grep` — neste ambiente `grep` é uma
+  # FUNÇÃO de shell que shella pro binário `claude` (ver docstring do topo
+  # deste arquivo, mesma issue). Se o binário quebrar, `grep` falha junto e
+  # o `if` abaixo cairia no `return 1` (modelo "ausente do catálogo"),
+  # promovendo o modelo a SAW_CONFIG_ERROR_SIGNAL (exit 4, correção manual)
+  # por uma causa que não tem nada a ver com o modelo. `command grep`
+  # bypassa a função e vai direto ao binário do sistema, imune à quebra.
+  if printf '%s' "$catalog" | command grep -qF "\"id\":\"$model\""; then
+    return 0
+  fi
+  return 1
+}
+
+for MODEL in "${MODELS[@]}"; do
+  echo "[claude-openrouter] tentando model=$MODEL" >&2
+  # #7468: re-verifica (e re-repara, fail-soft) o binário ENTRE tentativas
+  # da cadeia — o preflight do topo do script (`claude_binary_preflight`,
+  # linha ~83) só cobre o INÍCIO; medido no tick 260905 (3/3): o binário
+  # quebra DENTRO da janela de uma sessão `:free` longa (14-27min), e as
+  # tentativas seguintes da MESMA invocação deste wrapper herdavam o
+  # binário quebrado porque nada re-checava entre elas. `claude_binary_ensure`
+  # nunca sai do processo (fail-soft) — se não conseguir reparar, a
+  # tentativa prossegue mesmo assim e é classificada normalmente pelos
+  # greps abaixo (tipicamente cai no ramo "sem sinal claro").
+  claude_binary_ensure || echo "[claude-openrouter] AVISO: binário Claude Code segue quebrado/stub antes de tentar model=$MODEL (#7468) — prosseguindo mesmo assim, a falha (se houver) é classificada abaixo" >&2
+  ATTEMPT_LOG="${TMPDIR:-/tmp}/claude-openrouter-attempt.$$.log"
+  : > "$ATTEMPT_LOG"
+  set +e
+  # #6617 review finding 1: redirecionar direto pro arquivo (síncrono) em vez
+  # de passar por `tee` dentro de process substitution — `OUT=$(...)` só
+  # espera o pipeline de STDOUT fechar, nunca o job assíncrono do `>(...)`
+  # terminar de escrever, então o `grep` de classificação logo abaixo podia
+  # ler um $ATTEMPT_LOG parcialmente flushado e perder o próprio sinal que
+  # decide entre exit 1 e exit 4. Filtro de ruído pro terminal roda DEPOIS,
+  # já sobre o arquivo completo.
+  # ANTHROPIC_DEFAULT_HAIKU_MODEL fixa o modelo das chamadas de BACKGROUND do
+  # CLI no mesmo slug barato da tentativa atual (#6716). Sem isto, `--model` só
+  # governa a conversa: as chamadas auxiliares usam o default do CLI e saíram
+  # como Claude Sonnet 5 a preço cheio no billing do OpenRouter — medido em
+  # 29/08/2026 nas sessões 76433685 ($0.38) e 1520faa3 ($0.417), ~75% do custo
+  # de cada delegação, contra ~$0.09 se tudo tivesse rodado no slug pedido.
+  #
+  # CAUSA IDENTIFICADA (31/08/2026, docs oficiais do Claude Code). A hipótese
+  # anterior registrada aqui — auto-compact como candidato provável — está
+  # DESCARTADA: a doc de prompt-caching diz que a chamada de compactação usa o
+  # MESMO modelo da conversa, e a sumarização de `--resume` já está atrelada ao
+  # ANTHROPIC_DEFAULT_HAIKU_MODEL. Nenhuma das duas explicaria cobrança em
+  # Sonnet.
+  #
+  # O que explica: ANTHROPIC_DEFAULT_HAIKU_MODEL cobre APENAS o alias `haiku` e
+  # as funcionalidades de background. Caminho interno que peça modelo pela
+  # FAMÍLIA `sonnet`/`opus` resolve pelo ID default embutido no binário do CLI —
+  # uma string real da Anthropic — que o gateway fatura a preço cheio. Daí os
+  # dois exports abaixo, irmãos do de haiku.
+  #
+  # TRADE-OFF ACEITO (review da PR #6717, número revisado na #6859): quando
+  # o elo corrente é `:free`, o background passa a puxar do MESMO balde
+  # `free-models-per-day` (por CONTA) que o primário — até 3 saques por
+  # delegação em vez de 1 agora que HAIKU/SONNET/OPUS estão todos pinados
+  # (era "2" quando só HAIKU existia; sobe se algum caminho interno da
+  # família sonnet/opus disparar no mesmo tick que o de haiku), então o
+  # balde seca mais cedo e a cadeia cai no pago antes. Antes do fix essas
+  # chamadas iam pro Sonnet pago e não tocavam o balde. O custo em DINHEIRO
+  # cai de qualquer forma; o que piora é a cota free, que já é o gargalo do
+  # #6712 (17h/dia de pausa). Se isso incomodar, a alternativa é fixar o
+  # background sempre no elo PAGO barato (glm-5.3-flash) em vez de "$MODEL"
+  # — não feito aqui pra manter a propriedade "background nunca custa mais
+  # que o primário" e evitar um slug hardcoded.
+  #
+  # O que torna isso traiçoeiro: essas chamadas NÃO aparecem no transcript
+  # .jsonl da sessão (as duas acima registram só glm-5.3-flash), então
+  # auditoria por transcript nunca as vê — a fonte é o billing do gateway.
+  #
+  # Usa "$MODEL" (o elo corrente da cadeia) em vez de um slug fixo pra valer
+  # em qualquer posição: o background herda o mesmo custo do primário, nunca
+  # um modelo mais caro que o que se pediu.
+  #
+  # A doc do Claude Code confirma que esta var cobre "background functionality"
+  # (`ANTHROPIC_SMALL_FAST_MODEL` é o nome legado, deprecado). O fallback
+  # pra Sonnet quando ela NÃO está setada só é documentado pra Bedrock — que
+  # valha igual num gateway genérico é inferência do padrão observado aqui,
+  # não fato documentado. Se o billing seguir mostrando um supporting model
+  # depois desta linha, a causa é outra: reabrir #6716 em vez de trocar o slug.
+  # #6718: as vars ANTHROPIC_* entram por `export` num subshell, não por
+  # `env VAR=valor` — argumentos de processo são world-readable em
+  # /proc/<pid>/cmdline (0444; um `ps -eo args` trivial imprimia a chave
+  # inteira durante TODA a delegação, até 40 min por tick), enquanto
+  # /proc/<pid>/environ é 0400 (só o dono lê). O subshell preserva o escopo
+  # que o `env` garantia: as vars morrem com ele e NUNCA escapam pro shell
+  # que chamou o wrapper (regra #5608 — sequestrariam sessões da assinatura).
+  # #6666 item 1 ("capturar o erro real"): registrar quanto tempo o processo
+  # viveu junto do exit code — os 3 stderr logs inspecionados no incidente
+  # (#6666) só tinham avisos de ruído, sem timing; um processo que morre em
+  # <1s (crash imediato) vs um que roda até o TIMEOUT completo são causas
+  # bem diferentes, e nenhuma das duas era distinguível antes disto.
+  ATTEMPT_START_TS=$(date +%s)
+  if is_subscription_lane_model "$MODEL"; then
+    # #7649: elo final de assinatura claude.ai. SEM nenhuma das 8 vars de
+    # auth/gateway (ANTHROPIC_*, CLAUDE_CODE_USE_BEDROCK/VERTEX) — `unset`
+    # EXPLÍCITO, nunca "deixar de exportar": ANTHROPIC_AUTH_TOKEN e
+    # ANTHROPIC_API_KEY têm PRECEDÊNCIA sobre o OAuth da assinatura
+    # (confirmado ao vivo em #6718/#5608), então qualquer
+    # resíduo herdado do ambiente pai transformaria este elo "grátis" numa
+    # chamada PAGA em silêncio — exatamente a classe #5608/#6714 que o
+    # CLAUDE.md do diaria-studio proíbe. Guard fail-closed logo abaixo
+    # confirma que o `unset` pegou de verdade ANTES de invocar `claude`;
+    # se algo sobreviver, aborta a cadeia inteira na hora (RC=97 é
+    # reconhecido no bloco de classificação abaixo e vira `exit 96` sem
+    # passar pelo caminho normal de "tenta o próximo elo").
+    #
+    # Nenhum ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL é setado neste
+    # ramo, de propósito (item 2 da issue) — o pin dos outros elos existe
+    # só pra impedir que chamadas de BACKGROUND caiam em modelo caro no
+    # GATEWAY; não há gateway aqui, o comportamento NATIVO da assinatura
+    # já é o correto.
+    #
+    # Sem --max-budget-usd (item 4): não existe custo em dólar por chamada
+    # na assinatura — o teto não tem o que proteger neste elo.
+    # #7649 review (rodada overnight 260909, veredito REJECT no 1o passe): a
+    # lista original tinha só as 5 vars de gateway OpenRouter — faltava
+    # justamente ANTHROPIC_API_KEY, a var que já causou o incidente REAL
+    # documentado no CLAUDE.md (edição 260818, #5608): processo herda a key
+    # do .env (legítima ali pra geo-citation-monitor.ts/audit-context-tokens.ts)
+    # e o CLI troca a assinatura pela API paga em silêncio. Lista agora
+    # alinhada ao subconjunto de auth de CLAUDE_CLI_STRIPPED_ENV_VARS
+    # (scripts/overnight/run-scheduled-edicao.ts) — API_KEY + as 2 de
+    # roteamento Bedrock/Vertex (mesma classe de shadowing). As 3 vars de
+    # identidade de sessão pai daquela lista (#5791, hipótese não confirmada)
+    # ficam de fora aqui de propósito: não são vetor de auth, são outra
+    # classe de risco, fora do escopo desta issue.
+    OUT=$(printf '%s' "$PROMPT" | (
+      unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY \
+            CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX \
+            ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL
+      for _subscription_guard_var in ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY \
+          CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX \
+          ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL; do
+        if [ -n "${!_subscription_guard_var:-}" ]; then
+          echo "FATAL (#7649): $_subscription_guard_var sobreviveu ao unset explícito no elo de assinatura — abortando ANTES de invocar claude. Prefira abortar demais a rodar com dúvida (regra #5608/#6714 do diaria-studio): um resíduo aqui transformaria o elo 'grátis' numa chamada PAGA no gateway em silêncio." >&2
+          exit 97
+        fi
+      done
+      timeout "$TIMEOUT" \
+      claude -p \
+        --model "$MODEL" \
+        --allowedTools "$TOOLS" \
+        ${EFFORT:+--effort "$EFFORT"} 2> "$ATTEMPT_LOG"
+    ))
+  else
+    OUT=$(printf '%s' "$PROMPT" | (
+      export ANTHROPIC_BASE_URL="https://openrouter.ai/api"
+      export ANTHROPIC_AUTH_TOKEN="$KEY"
+      export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL"
+      export ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL"
+      # OPUS_MODEL: risco só TEÓRICO hoje (review da PR #6859) — o único call
+      # site (hermes-diaria-continuo/SKILL.md) passa `--tools "Read,Grep,Glob,
+      # Bash,Edit,Write"`, sem Task/Agent, então não há como este processo
+      # despachar um subagente que peça Opus. Vira risco real se algum call
+      # site futuro incluir Task/Agent nas --tools — não remover o pin por
+      # isso (custa nada, evita a classe de bug se/quando isso mudar), só
+      # lembrar que ele está PROTEGENDO um caminho que não existe ainda.
+      export ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL"
+      export CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000
+      timeout "$TIMEOUT" \
+      claude -p \
+        --model "$MODEL" \
+        --allowedTools "$TOOLS" \
+        --max-budget-usd "$BUDGET" \
+        ${EFFORT:+--effort "$EFFORT"} 2> "$ATTEMPT_LOG"
+    ))
+  fi
+  RC=$?
+  ATTEMPT_DURATION_S=$(( $(date +%s) - ATTEMPT_START_TS ))
+    set -e
+    # #6696 finding 2: snapshot do stderr PURO antes do stdout entrar no
+    # mesmo arquivo. Este wrapper roda DENTRO deste checkout, onde as
+    # próprias tarefas falam de "model not found"/"rate limit" (assunto
+    # das issues #6617/#6666) — se o texto GERADO pelo modelo for
+    # misturado ao stderr antes de classificar, uma resposta que discuta
+    # o próprio bug e morra com rc≠0 pode disparar um exit 4 espúrio
+    # (rotação de um modelo que estava são). Os greps de config-inválida e
+    # rate-limit abaixo classificam só contra este snapshot; só o grep de
+    # budget-exceeded (que precisa ver o STDOUT, ver #6666) usa o log
+    # combinado, montado depois deste ponto.
+    STDERR_ONLY_LOG="${TMPDIR:-/tmp}/claude-openrouter-attempt-stderr.$$.log"
+    cp "$ATTEMPT_LOG" "$STDERR_ONLY_LOG"
+    # #6666: capturar stdout também no RC≠0 — "Exceeded USD budget" é erro do CLI
+    # que vai pro STDOUT (não stderr), então o classify-grep de stderr nunca o via.
+    # Sem isso, a cadeia falha silenciosamente com rc=1 e stderr vazio.
+    echo "$OUT" >> "$ATTEMPT_LOG"
+    # #6965 item 2: redige ANTES de qualquer persistência/classificação —
+    # cobre STDERR_ONLY_LOG (snapshot puro, usado pelos classificadores de
+    # config/rate-limit) e ATTEMPT_LOG (que carrega $OUT também, e é a
+    # fonte do STDERR_LOG persistido e do last-failure.log estável abaixo).
+    redact_secrets_in_file "$STDERR_ONLY_LOG"
+    redact_secrets_in_file "$ATTEMPT_LOG"
+    # #6965 item 3 (P3): tamanho em bytes de stdout/stderr — rc + duração
+    # (já capturados pelo #6666 item 1) não distinguem "morreu instantâneo
+    # sem escrever nada" de "rodou e falhou com output"; os bytes fecham
+    # essa lacuna sem exigir leitura humana do arquivo.
+    BYTES_STDOUT=$(printf '%s' "$OUT" | wc -c)
+    BYTES_STDERR=$(wc -c < "$STDERR_ONLY_LOG" 2>/dev/null || echo 0)
+    cat "$ATTEMPT_LOG" >> "$STDERR_LOG"
+    if [ $RC -eq 0 ] && [ -n "$OUT" ]; then
+      printf '%s\n' "$OUT"
+      echo "[claude-openrouter] ok model=$MODEL" >&2
+      rm -f "$STDERR_LOG" "$ATTEMPT_LOG" "$STDERR_ONLY_LOG"
+      exit 0
+    fi
+    # #7649: RC=97 é o guard fail-closed do elo de assinatura disparando —
+    # NUNCA "próximo elo da cadeia" (não há elo mais seguro que este) nem
+    # "transitório, reset resolve sozinho" (é um bug de ambiente, precisa de
+    # correção manual). Sai ANTES de entrar na classificação
+    # SAW_QUOTA_SIGNAL/SAW_CONFIG_ERROR_SIGNAL de propósito — misturar este
+    # caso com qualquer um dos dois mascararia a gravidade (é a mesma classe
+    # de incidente que a regra #5608/#6714 do diaria-studio existe pra
+    # prevenir). Log já redigido/persistido pelas linhas acima.
+    if [ "$RC" -eq 97 ]; then
+      echo "[claude-openrouter] ABORT IMEDIATO (#7649): guard fail-closed do elo de assinatura disparou — resíduo de ANTHROPIC_* sobreviveu ao unset explícito. Não repetir sem correção manual do ambiente; stderr cru em $STDERR_LOG" >&2
+      exit 96
+    fi
+    # #6696 finding 3: filtro de ruído só no caminho de FALHA. Antes disto
+    # rodava incondicionalmente ANTES do check de sucesso acima — mesmo um
+    # run bem-sucedido tinha a resposta inteira do modelo impressa também
+    # em stderr (o ATTEMPT_LOG já continha $OUT quando o grep rodava),
+    # duplicando log e inflando a chance de falso-positivo por substring
+    # nos watchdogs que varrem esse output.
+    command grep -vE "not a model this version|unrecognized_model|connectors are disabled" "$ATTEMPT_LOG" >&2 || true
+    # #6666 item 1: registrar rc + duração de vida do processo — nenhum dos
+    # 3 stderr logs inspecionados no incidente tinha isso, só ruído de
+    # conector/unrecognized_model, então não dava pra distinguir "processo
+    # morreu na hora" de "rodou até o TIMEOUT e não terminou a tempo".
+    echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT bytes_stdout=$BYTES_STDOUT bytes_stderr=$BYTES_STDERR" >&2
+    echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT bytes_stdout=$BYTES_STDOUT bytes_stderr=$BYTES_STDERR" >> "$STDERR_LOG"
+    # #6666 item 1: cópia num path ESTÁVEL (não $$-escopado) da última
+    # falha — o path com PID some junto com o processo e, sem nada
+    # arquivando-o, o log fica irrecuperável assim que o PID é reciclado ou
+    # /tmp é limpo. Sobrescrita a cada falha nova (best-effort — investigar
+    # "a falha mais recente" é o caso de uso; falhas concorrentes de ticks
+    # paralelos ainda têm o path $$-escopado como fonte completa).
+    # Review #6808 (P2, confiança alta): a linha de diagnóstico (rc+duração)
+    # só ia pro STDERR_LOG ($$-escopado, some com o processo) — o
+    # last-failure.log ESTÁVEL era uma cópia do ATTEMPT_LOG de ANTES da
+    # linha de diagnóstico ser escrita, então o arquivo que devia sobreviver
+    # não continha o próprio dado que o #6666 item 1 existe pra preservar.
+    # Fix: apendar a linha de diagnóstico ao ATTEMPT_LOG antes da cópia.
+    echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT bytes_stdout=$BYTES_STDOUT bytes_stderr=$BYTES_STDERR" >> "$ATTEMPT_LOG"
+    cp -f "$ATTEMPT_LOG" "${TMPDIR:-/tmp}/claude-openrouter-last-failure.log" 2>/dev/null || true
+    # Classificar o motivo desta tentativa (finding do review #6446 cobria só
+    # rc=0/saída-vazia vs timeout vs rc≠0 genérico; #6617 acrescenta a
+    # distinção quota-transitória vs config-permanente dentro do rc≠0/vazio).
+    if [ $RC -eq 124 ]; then
+      SAW_QUOTA_SIGNAL=1
+      echo "[claude-openrouter] falhou model=$MODEL: TIMEOUT (${TIMEOUT}s) — próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+    # #6987/#6989: `command grep` nos 3 classificadores abaixo — mesmo
+    # motivo do `model_in_openrouter_catalog` acima. Se `grep` (a função)
+    # quebrar aqui, o `elif` seguinte silenciosamente nunca casaria,
+    # empurrando a classificação pro ramo genérico errado — o binário
+    # quebrado nunca pode se disfarçar de "sem sinal claro" nem de
+    # "config inválida".
+    elif command grep -qiE "model not found|invalid model|not a valid model|no endpoints found|no allowed providers" "$STDERR_ONLY_LOG"; then
+      # #6617 review finding 3: checar config-inválida ANTES de rate-limit —
+      # "not a valid model" também casaria com um grep solto por "valid model"
+      # numa mensagem de quota, então a ordem evita falso-negativo cruzado.
+      #
+      # #6803: antes de marcar como config PERMANENTE (exit 4), reconsulta o
+      # catálogo — o provedor pode ter recusado o modelo por indisponibilidade
+      # TRANSITÓRIA, não porque o id deixou de existir.
+      if model_in_openrouter_catalog "$MODEL"; then
+        SAW_QUOTA_SIGNAL=1
+        echo "[claude-openrouter] falhou model=$MODEL rc=$RC: PROVEDOR REJEITOU, mas o id CONTINUA no catálogo agora (/api/v1/models) — provável indisponibilidade TRANSITÓRIA (#6803), tratando como rate-limit/quota, NÃO como config permanente; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+      else
+        SAW_CONFIG_ERROR_SIGNAL=1
+        echo "[claude-openrouter] falhou model=$MODEL rc=$RC: MODELO INEXISTENTE/INVÁLIDO no provedor — confirmado ausente do catálogo agora (ou catálogo inacessível) (#6803); config permanente, NÃO é rate-limit; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+      fi
+    elif command grep -qiE "rate.?limit|too many requests|quota exceeded|http.{0,10}429|status.{0,10}429|429.{0,10}(too many|rate)|\\(429\\)" "$STDERR_ONLY_LOG"; then
+      # #6617 review finding 4: "429" sozinho podia casar com ruído não
+      # relacionado (contagem de bytes, linha) — agora exige contexto de
+      # rate-limit textual OU o número junto de "http"/"status".
+      SAW_QUOTA_SIGNAL=1
+      echo "[claude-openrouter] falhou model=$MODEL rc=$RC: RATE-LIMIT/QUOTA (sinal no stderr) — transitório, próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+      # #6712: grava o marcador de exaustão SÓ quando o elo que bateu
+      # 429/rate-limit é `:free` — o limite free-models-per-day é POR
+      # CONTA e compartilhado entre todos os elos :free (medido no corpo
+      # da issue), então UM elo free exaurido já significa que os OUTROS
+      # elos free também vão falhar; um elo PAGO batendo rate-limit é outra
+      # causa (teto de gasto da chave, ex.) e não diz nada sobre a cota
+      # free — não escrever o marcador nesse caso.
+      case "$MODEL" in
+        *:free)
+          RESET_EPOCH=$(next_utc_midnight_epoch "$(date -u +%s)")
+          echo "$RESET_EPOCH" > "$FREE_QUOTA_EXHAUSTED_MARKER" 2>/dev/null || \
+            echo "[claude-openrouter] AVISO: falha ao gravar $FREE_QUOTA_EXHAUSTED_MARKER (#6712) — próxima invocação vai tentar :free de novo, cosmético (não perde a chamada atual)" >&2
+          ;;
+      esac
+    elif command grep -qE "Exceeded USD budget" "$ATTEMPT_LOG"; then
+      # #6696 finding 1: budget-exceeded é DETERMINÍSTICO pro mesmo valor de
+      # BUDGET — o mesmo prompt estoura em TODO run até alguém mexer no
+      # valor, então não é "transitório, reset resolve" (SAW_QUOTA_SIGNAL);
+      # é config permanente (SAW_CONFIG_ERROR_SIGNAL), a mesma classe que o
+      # #6617 criou o exit 4 pra sinalizar. Classificar como quota mascarava
+      # de volta o exato incidente que o #6617 corrigiu: CLAUDE.md crescendo
+      # além do que o BUDGET comporta faria todo tick estourar e o
+      # watchdog/consumidor leria "reset natural resolve" — nunca a correção
+      # manual necessária (subir BUDGET ou cortar contexto).
+      #
+      # #6796: este é o ÚNICO classificador que ainda vê texto GERADO pelo
+      # modelo (ATTEMPT_LOG = STDERR_ONLY_LOG + $OUT, e $OUT é a resposta do
+      # modelo) — não dá pra migrar pro snapshot stderr-only como os outros
+      # 2 (finding 2 do #6696), porque "Exceeded USD budget" é erro do CLI
+      # que vai pro STDOUT (#6666), nunca pro stderr. O padrão anterior
+      # ("exceeded.*budget|budget.*exceeded|too expensive|cost.*exceed") era
+      # frouxo o bastante pra casar PROSA — este checkout roda tarefas que
+      # discutem justamente orçamento/custo (#6712, #6716, #6791), então um
+      # tick em que o modelo escreve "o job excedeu o budget" e morre com
+      # rc≠0 disparava SAW_CONFIG_ERROR_SIGNAL espúrio (exit 4, pede correção
+      # manual sobre modelos que estavam sãos). O CLI emite o texto literal
+      # "Exceeded USD budget" (capitalização exata, confirmada nos comentários
+      # acima e em #6666/#6712/test/hermes-budget-guard.test.ts) — casar só
+      # essa string reduz a superfície a "o modelo reproduziu literalmente a
+      # frase do CLI em inglês", muito mais raro que prosa PT-BR sobre custo.
+      SAW_CONFIG_ERROR_SIGNAL=1
+      echo "[claude-openrouter] falhou model=$MODEL rc=$RC: ORÇAMENTO EXCEDIDO (stdout: BUDGET=$BUDGET insuficiente para o contexto carregado) — permanente até o valor mudar, NÃO é rate-limit; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+    elif [ $RC -eq 0 ]; then
+      echo "[claude-openrouter] falhou model=$MODEL: saída VAZIA com rc=0 (sessão terminou sem texto final) — próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+    else
+      echo "[claude-openrouter] falhou model=$MODEL rc=$RC — sem sinal claro de quota nem de modelo inválido; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+    fi
+  rm -f "$ATTEMPT_LOG" "$STDERR_ONLY_LOG"
+done
+
+# #6617 review finding 2: qualquer sinal de config inválida em QUALQUER
+# modelo da cadeia já é acionável — não esperar que NENHUM modelo tenha
+# mostrado sinal de quota. MODELS_DEFAULT mistura :free com pago; é bem
+# possível que o modelo pago bata rate-limit real enquanto um :free tem id
+# morto no mesmo run, e nesse caso misturar os dois sob exit 1 mascararia de
+# novo o exato incidente que esta issue corrige.
+if [ "$SAW_CONFIG_ERROR_SIGNAL" -eq 1 ]; then
+  if [ "$SAW_QUOTA_SIGNAL" -eq 1 ]; then
+    echo "ERRO: todos os modelos da cadeia falharam — sinais MISTOS (config inválida em pelo menos 1 modelo, quota/rate-limit em outro). Tratando como config inválida: não assumir que o reset de cota resolve sozinho." >&2
+  else
+    echo "ERRO: todos os modelos da cadeia falharam — sinal de CONFIG INVÁLIDA (model id que o provedor não reconhece), NÃO de rate-limit. Não vai se resolver sozinho no reset de cota; corrigir MODELS_DEFAULT/--model." >&2
+  fi
+  exit 4
+fi
+echo "ERRO: todos os modelos da cadeia falharam" >&2
+exit 1

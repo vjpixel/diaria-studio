@@ -29,7 +29,7 @@
 # AUTH: assinatura claude.ai (OAuth), DE PROPÓSITO — este script NÃO seta
 # ANTHROPIC_BASE_URL/AUTH_TOKEN/API_KEY nenhum (#5608: sessão de Claude Code
 # autentica pela assinatura; e é o Opus que queremos aqui). Não confundir com
-# claude-openrouter.sh, que faz o oposto.
+# claude-delegate.sh, que faz o oposto.
 #
 # Estado: data/continuo/last-daily-review-sha (avança SÓ após review completo).
 set -euo pipefail
@@ -130,7 +130,7 @@ echo "$PROMPT" | timeout 5400 claude -p \
 # #6987/#6989 (01/09/2026): `command grep` — neste ambiente `grep` é uma
 # função de shell que shella pro binário `claude`; se ele quebrar, todo
 # `grep` falha junto. `command grep` bypassa a função e vai direto ao
-# binário do sistema, imune à quebra (ver hermes/scripts/claude-openrouter.sh
+# binário do sistema, imune à quebra (ver hermes/scripts/claude-delegate.sh
 # pra docstring completa do mecanismo).
 if ! command grep -q "RESUMO-DAILY-REVIEW:" "$OUT_FILE"; then
   echo "[daily-review] ERRO: output não contém o marcador RESUMO-DAILY-REVIEW — review possivelmente incompleto; marco NÃO avançado (transcript em $OUT_FILE)" >&2

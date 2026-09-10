@@ -74,7 +74,7 @@
  * A lacuna documentada abaixo (histórico, mantido pra contexto) foi
  * fechada assim que uma management key passou a existir no `.env`
  * (`OPENROUTER_MANAGEMENT_KEY`, sincronizada via Doppler): a chave de
- * inferência usada por `hermes/scripts/claude-openrouter.sh` sempre
+ * inferência usada por `hermes/scripts/claude-delegate.sh` sempre
  * respondeu `403` neste endpoint (`is_provisioning_key: false`); a
  * management key responde `200` com custo real por dia/modelo.
  *
@@ -82,7 +82,7 @@
  * por PR:** este repo proíbe qualquer sessão de Claude Code (overnight,
  * develop, interativa) de autenticar via API (`CLAUDE.md`, "NUNCA trocar a
  * conta claude.ai pela API", #5608) — a ÚNICA coisa que fatura no
- * OpenRouter é a delegação do contínuo via `claude-openrouter.sh`. Não é
+ * OpenRouter é a delegação do contínuo via `claude-delegate.sh`. Não é
  * uma inferência deste script; é o invariante que o resto do repo já
  * impõe. Por isso a métrica de custo não tem eixo "por trilha" (sempre
  * seria 100% `continuo`, 0% nas demais) — só por modelo, que é o que o

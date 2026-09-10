@@ -7,7 +7,7 @@ DIFERENTES, não confundir uma com a outra:
 
 ```
 ~/.hermes/skills/productivity/hermes-diaria-continuo  ->  hermes/skills/hermes-diaria-continuo   (symlink de verdade)
-~/.hermes/scripts/claude-openrouter.sh                 →  hermes/scripts/claude-openrouter.sh    (STUB com exec, NÃO symlink)
+~/.hermes/scripts/claude-delegate.sh                   →  hermes/scripts/claude-delegate.sh    (STUB com exec, NÃO symlink)
 ~/.hermes/scripts/opus-daily-diff-review.sh            →  hermes/scripts/opus-daily-diff-review.sh   (STUB)
 ~/.hermes/scripts/continuo-pr-review.sh                →  hermes/scripts/continuo-pr-review.sh       (STUB)
 ~/.hermes/scripts/hermes-model-cost-report.py          →  hermes/scripts/hermes-model-cost-report.py (STUB)
@@ -36,7 +36,7 @@ symlink de verdade — o guard de traversal do cron se aplica a `--script`
 de job (o que dispara os scripts abaixo), não ao carregamento de skill.
 
 **Drift confirmado ao vivo, #6943 (01/09/2026): `~/.hermes/scripts/
-claude-openrouter.sh` era um SYMLINK de verdade no `helios`, não o STUB
+claude-delegate.sh` era um SYMLINK de verdade no `helios`, não o STUB
 que esta tabela documenta.** Achado via transcript do tick das 12:06
 (`preflight missing`, erro apontando pra `~/.hermes/scripts/lib/...`, um
 caminho que só existe se `${BASH_SOURCE[0]}` resolveu pro symlink em vez
@@ -50,7 +50,7 @@ foi bloqueada pelo classificador de permissão da sessão que investigou;
 não insistiu, ficou pro editor decidir. O fix do lado do REPO (#6943 —
 `readlink -f` antes do `dirname` nos `source` afetados) faz a resolução
 funcionar pros DOIS formatos, então este drift específico deixou de
-quebrar o pipeline — mas o deploy real de `claude-openrouter.sh` ainda
+quebrar o pipeline — mas o deploy real de `claude-delegate.sh` ainda
 não foi convertido pra stub; esta tabela descreve o estado PRETENDIDO,
 não confirmado como o atual pra esta linha.
 
@@ -91,7 +91,7 @@ symlink, scripts via stub:
 ln -sfn /home/vjpixel/diaria-studio/hermes/skills/hermes-diaria-continuo \
   ~/.hermes/skills/productivity/hermes-diaria-continuo
 
-for f in claude-openrouter.sh opus-daily-diff-review.sh continuo-pr-review.sh \
+for f in claude-delegate.sh opus-daily-diff-review.sh continuo-pr-review.sh \
          hermes-model-cost-report.py monitor-cron-model-rotation.py \
          pause-cron-on-ratelimit.py detect-context-truncation.py; do
   cat > ~/.hermes/scripts/$f <<STUB

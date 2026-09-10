@@ -1,7 +1,7 @@
 /**
  * test/claude-openrouter-free-quota-marker.test.ts (#6712)
  *
- * Guard de regressão de alto nível: confirma que `claude-openrouter.sh`
+ * Guard de regressão de alto nível: confirma que `claude-delegate.sh`
  * de fato usa o mecanismo de `lib/free-quota-exhaustion.sh` (source +
  * chamadas), sem duplicar a cobertura de comportamento — essa já está em
  * `hermes/scripts/lib/free-quota-exhaustion.test.sh` (miolo puro) e
@@ -19,14 +19,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-openrouter.sh");
+const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-delegate.sh");
 const LIB_PATH = join(ROOT, "hermes/scripts/lib/free-quota-exhaustion.sh");
 
 function readWrapper(): string {
   return readFileSync(WRAPPER_PATH, "utf8");
 }
 
-describe("claude-openrouter.sh — marcador de exaustão da cota free (#6712)", () => {
+describe("claude-delegate.sh — marcador de exaustão da cota free (#6712)", () => {
   it("lib/free-quota-exhaustion.sh existe e é sourceável (sintaxe válida)", () => {
     assert.doesNotThrow(() => readFileSync(LIB_PATH, "utf8"));
   });

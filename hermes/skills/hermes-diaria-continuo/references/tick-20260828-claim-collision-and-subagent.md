@@ -53,7 +53,7 @@ No banner desta sessão (`provider=openrouter`,
 `model=thinkingmachines/inkling:free`).
 
 **CORREÇÃO (30/08/2026).** A frase original desta seção dizia que o wrapper
-`claude-openrouter.sh` "resolve via `fallback_chains.coding_fallback` em
+`claude-delegate.sh` "resolve via `fallback_chains.coding_fallback` em
 `~/.hermes/config.yaml`". Isso está errado por DOIS motivos independentes, e
 os dois foram medidos:
 

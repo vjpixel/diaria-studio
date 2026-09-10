@@ -7,7 +7,7 @@
 # teste que só confirma "a string existe em algum lugar do arquivo" passa
 # mesmo se o renovador estiver no lugar ERRADO, ex: iniciado DEPOIS da
 # delegação, ou nunca morto) e executa o fragmento de verdade, com a chamada
-# real ao `claude-openrouter.sh` substituída por um mock que só dorme —
+# real ao `claude-delegate.sh` substituída por um mock que só dorme —
 # prova que o renovador (a) roda ENQUANTO a delegação está em voo e (b) para
 # de verdade quando ela retorna (kill/wait), não fica órfão batendo
 # heartbeat pra sempre.
@@ -56,7 +56,7 @@ if [ -z "$RAW" ]; then
 fi
 
 # ── Checagens estruturais no fragmento REAL extraído (não numa cópia solta) ─
-assert_contains "renovador em background inicia ANTES do pipe pro claude-openrouter.sh" "$RAW" 'HEARTBEAT_PID=$!'
+assert_contains "renovador em background inicia ANTES do pipe pro claude-delegate.sh" "$RAW" 'HEARTBEAT_PID=$!'
 assert_contains "renovador chama session-registry.ts heartbeat --kind continuo" "$RAW" "session-registry.ts heartbeat"
 assert_contains "renovador é morto depois da delegação (kill)" "$RAW" 'kill "$HEARTBEAT_PID"'
 assert_contains "renovador é esperado depois do kill (wait — evita zumbi)" "$RAW" 'wait "$HEARTBEAT_PID"'
@@ -76,7 +76,7 @@ else
 fi
 
 # ── Execução REAL do mecanismo (mock só na chamada de rede/LLM) ────────────
-# Substitui a chamada real ao claude-openrouter.sh (que exigiria rede/gateway
+# Substitui a chamada real ao claude-delegate.sh (que exigiria rede/gateway
 # do Hermes) por um `sleep` — o resto do fragmento (o renovador, o kill, o
 # wait) roda EXATAMENTE como está escrito no SKILL.md, sem reescrita.
 EXEC_FRAGMENT="$(mktemp)"
@@ -92,7 +92,7 @@ sed \
   -e "/--kind continuo --session-id/d" \
   "$FRAGMENT" > "$EXEC_FRAGMENT"
 
-# Substitui o bloco `printf ... | ~/.hermes/scripts/claude-openrouter.sh ...`
+# Substitui o bloco `printf ... | ~/.hermes/scripts/claude-delegate.sh ...`
 # inteiro por um `sleep 1` que simula a delegação "em voo" por 1s — sem
 # tocar rede nenhuma, real ou mockada por HTTP; só o tempo de execução
 # importa pra este teste (o renovador tem que estar rodando durante esse
@@ -102,7 +102,7 @@ import re, sys
 path, marker = sys.argv[1], sys.argv[2]
 with open(path) as f:
     content = f.read()
-# Remove o bloco printf...claude-openrouter.sh inteiro (multi-linha) por um sleep 1.
+# Remove o bloco printf...claude-delegate.sh inteiro (multi-linha) por um sleep 1.
 content = re.sub(
     r'printf .*?--budget 20\.0 --timeout 2400\n',
     'sleep 1\n',

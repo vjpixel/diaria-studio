@@ -28,7 +28,7 @@
  *   npx tsx scripts/check-continuo-workdir.ts --path ~/.hermes/auth.json --intent read
  *   npx tsx scripts/check-continuo-workdir.ts --check-self-mod \
  *     --path hermes/skills/hermes-diaria-continuo/SKILL.md \
- *     --active hermes/skills/hermes-diaria-continuo/SKILL.md,~/.hermes/scripts/claude-openrouter.sh
+ *     --active hermes/skills/hermes-diaria-continuo/SKILL.md,~/.hermes/scripts/claude-delegate.sh
  *
  * Um 3º modo (#6817 item 5) responde "este path exige o verbo `write-
  * hermes-config.ts` em vez de escrita direta?" — só gate pra ESCRITA;
