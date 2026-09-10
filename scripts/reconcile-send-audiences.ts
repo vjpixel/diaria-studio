@@ -84,6 +84,7 @@ const KIT_DEFAULT_AUDIENCE_TAG = "rampa-kit";
 interface PlatformConfig {
   kit_diaria?: { audience_tag?: string };
   brevo_diaria?: { api_key_env?: string; list_id?: number };
+  publishing?: { newsletter?: { backend?: string } };
 }
 
 function readPlatformConfig(): PlatformConfig {
@@ -163,6 +164,9 @@ export interface GuardOutcome {
   orphans: ReturnType<typeof findOrphans>;
   recentDelivery: RecentDeliveryMeasurement[];
   beehiivDeliveryGap: ReturnType<typeof checkBeehiivDeliveryGap> | null;
+  /** #7482: `true` quando o gap não foi calculado de propósito (0 ativos +
+   *  backend=kit) — distingue de "não deu pra medir" (measured=false). */
+  beehiivGapSkippedPostMigration: boolean;
   blocking: boolean;
 }
 
@@ -171,14 +175,30 @@ export function decideOutcome(
   orphans: ReturnType<typeof findOrphans>,
   recentDelivery: RecentDeliveryMeasurement[],
   beehiivActiveCount: number,
+  newsletterBackend?: string,
 ): GuardOutcome {
   const beehiivDelivery = recentDelivery.find((r) => r.platform === "beehiiv");
+  // #7482 (decisão do editor, 10/09/2026): com o canal principal já em
+  // "kit", 0 ativos na Beehiiv é o estado ESPERADO pós-migração — não uma
+  // divergência a investigar. O "destinatários reais" que ainda aparece
+  // positivo é sempre resíduo do ÚLTIMO envio real feito antes da migração
+  // terminar (dado histórico, não uma medição de canal errado) — comparar
+  // esse resíduo contra 0 ativos vai gerar sempre o mesmo alarme falso, sem
+  // nunca convergir sozinho. Pular o check inteiro nesse caso.
+  const skipBeehiivGap = newsletterBackend === "kit" && beehiivActiveCount === 0;
   const beehiivDeliveryGap =
-    beehiivDelivery?.measured && typeof beehiivDelivery.recipients === "number"
+    !skipBeehiivGap && beehiivDelivery?.measured && typeof beehiivDelivery.recipients === "number"
       ? checkBeehiivDeliveryGap(beehiivActiveCount, beehiivDelivery.recipients)
       : null;
   const blocking = audience.overlapCount > 0 || orphans.length > 0;
-  return { audience, orphans, recentDelivery, beehiivDeliveryGap, blocking };
+  return {
+    audience,
+    orphans,
+    recentDelivery,
+    beehiivDeliveryGap,
+    beehiivGapSkippedPostMigration: skipBeehiivGap,
+    blocking,
+  };
 }
 
 function formatReport(outcome: GuardOutcome): string {
@@ -210,7 +230,11 @@ function formatReport(outcome: GuardOutcome): string {
         : `    ${r.platform}: não medido (${r.reason})`,
     );
   }
-  if (outcome.beehiivDeliveryGap) {
+  if (outcome.beehiivGapSkippedPostMigration) {
+    lines.push(
+      "  gap de entrega Beehiiv: não checado — 0 ativos + backend=kit, esperado pós-migração (decisão do editor, #7482).",
+    );
+  } else if (outcome.beehiivDeliveryGap) {
     const g = outcome.beehiivDeliveryGap;
     lines.push(
       g.ok
@@ -323,7 +347,13 @@ async function main(): Promise<void> {
     measureBrevoRecentDelivery(brevoApiKey, brevoListId),
   ]);
 
-  const outcome = decideOutcome(audience, orphans, recentDelivery, beehiivActiveEmails.length);
+  const outcome = decideOutcome(
+    audience,
+    orphans,
+    recentDelivery,
+    beehiivActiveEmails.length,
+    platformConfig.publishing?.newsletter?.backend,
+  );
 
   if (asJson) {
     process.stdout.write(
@@ -333,6 +363,7 @@ async function main(): Promise<void> {
           orphans: maskOrphansForJson(outcome.orphans),
           recentDelivery: outcome.recentDelivery,
           beehiivDeliveryGap: outcome.beehiivDeliveryGap,
+          beehiivGapSkippedPostMigration: outcome.beehiivGapSkippedPostMigration,
           decision: { exitCode: outcome.blocking ? 1 : 0, blocking: outcome.blocking },
         },
         null,
