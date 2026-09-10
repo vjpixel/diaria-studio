@@ -88,8 +88,10 @@ const emailsDoCsv = (csv: string): string[] =>
 
 /**
  * 2 engajados (score>0, já receberam) + 2 ramp-warm (score=0, MV verificado,
- * nunca receberam) + 1 decaído (score=0 mas já recebeu — território
- * reativação, fica fora dos dois) + 1 não-elegível.
+ * nunca receberam) + 1 decaído (score<=0 mas já recebeu e `send_eligible=1`
+ * — desde #7873/#7406, `priority_points` é ORDENAÇÃO, não FILTRO: entra na
+ * fila igual, só ordenado por último) + 1 não-elegível (`send_eligible=0`,
+ * essa sim fica fora — é elegibilidade real, não score).
  */
 function storeParaDaily(dir: string): string {
   const dbPath = resolve(dir, "store.db");
@@ -123,7 +125,11 @@ test("main --daily: une engajados+ramp-warm numa fila só, ordenada por score DE
   );
   const summary = JSON.parse(logs[0]);
   assert.equal(summary.mode, "daily-queue");
-  assert.equal(summary.selected, 4, "2 engajados + 2 ramp-warm — decaído e inelegível ficam fora");
+  assert.equal(
+    summary.selected,
+    5,
+    "2 engajados + 2 ramp-warm + decaído (score<=0 mas elegível, #7873) — só o inelegível fica fora",
+  );
   assert.equal(summary.guard_scope, "per-contact (#7406)");
   assert.equal(summary.label, "Fila única do envio diário (#7406)");
 });
@@ -142,6 +148,7 @@ test("main --daily: CSV sai na ordem certa (score alto→baixo, depois recência
     "engajado-baixo@gmail.com",
     "ramp-recente@gmail.com",
     "ramp-antigo@gmail.com",
+    "decaido@gmail.com",
   ]);
 });
 
@@ -283,7 +290,11 @@ test("main --daily: falha na consulta de campanhas comprometidas em --dry-run PR
   }
   const summary = JSON.parse(logs[0]);
   assert.equal(summary.mode, "daily-queue");
-  assert.equal(summary.selected, 4, "sem a checagem de comprometidos, dry-run segue com o universo inteiro (mesmo padrão --group/--tiers)");
+  assert.equal(
+    summary.selected,
+    5,
+    "sem a checagem de comprometidos, dry-run segue com o universo inteiro (mesmo padrão --group/--tiers) — inclui o decaído elegível (#7873)",
+  );
 });
 
 test("main --daily: isDerivedStale (#4205) ABORTA — a metade re-envio da fila usa priority_points igual 'engajados'", async () => {
