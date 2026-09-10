@@ -325,6 +325,22 @@ export function cleanChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Proc
  *  TS sem enfraquecer o resto da tipagem de `SpawnSyncOptions`. */
 type SpawnSyncOptionsDetached = SpawnSyncOptionsWithStringEncoding & { detached?: boolean };
 
+/** #7934: opções de isolamento de processo pro `spawnSync` de cada batch.
+ *
+ *  `detached` só fora do Windows. No POSIX ele é o que torna o batch líder
+ *  de um grupo de processos, e é o grupo que o `killProcessTree` mata (#7753).
+ *  No Windows não existe grupo POSIX: `killProcessTree` usa `taskkill /T`,
+ *  que segue a árvore por PID, e `detached` só tira o console herdado do
+ *  filho. Sem console, o batch e cada neto do `--test-isolation=process`
+ *  alocavam um console PRÓPRIO e visível — a fila de janelas de terminal que
+ *  o editor via a cada `npm test`.
+ *
+ *  `windowsHide` em todo spawn: filho que precisar criar console cria sem
+ *  janela, e os netos herdam esse console escondido. No-op fora do Windows. */
+export function batchSpawnIsolation(platform: NodeJS.Platform = process.platform): { detached: boolean; windowsHide: true } {
+  return { detached: platform !== "win32", windowsHide: true };
+}
+
 /** #7753: `spawnSync` com `timeout`+`killSignal` manda o sinal só para o
  *  processo FILHO direto (`node --test <batch>`) — mas o runner nativo roda
  *  com `--test-isolation=process` (default), ou seja 1 processo NETO por
@@ -352,7 +368,7 @@ export function killProcessTree(pid: number | undefined, signal: NodeJS.Signals 
   if (typeof pid !== "number" || !Number.isFinite(pid) || pid <= 0) return;
   if (process.platform === "win32") {
     try {
-      spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore" });
+      spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", windowsHide: true });
     } catch {
       // best-effort — ver docstring acima.
     }
@@ -392,6 +408,9 @@ export function wasKilledByTimeout(result: ReturnType<typeof spawnSync>, killSig
  *  diferença entre "100% de CPU" (esperado numa suíte) e "máquina travada"
  *  (o que o editor relatou).
  *
+ *  #7934: fora do CI a concorrência passou a ter teto mesmo assim, por
+ *  escolha do editor e não por desempenho — ver `resolveConcurrencyPlan`.
+ *
  *  Escape hatch: `RUN_TESTS_PRIORITY=normal` desliga; `low` desce mais.
  *  Fail-soft — `setPriority` lança EACCES/EPERM em alguns ambientes (sandbox,
  *  container sem CAP_SYS_NICE) e isso nunca pode derrubar a suíte. */
@@ -423,6 +442,64 @@ export function lowerOwnPriority(env: NodeJS.ProcessEnv = process.env): boolean 
     // igual, só não cede CPU. Derrubar a rodada por isso seria pior.
     return false;
   }
+}
+
+/** #7934: processos de teste em voo por CPU, fora do CI, somando todos os
+ *  workers — o regime anterior era `4 × (nCPU-1)`. Decisão do editor
+ *  (10/09/2026): prefere a suíte local mais lenta a ela ocupar a máquina
+ *  inteira, principalmente no Zenbook e no 300, que têm bem menos núcleos que
+ *  o Neo. `0.5` e não `1`: medido no Neo, 1 processo por núcleo ainda deixava
+ *  a CPU em 78% de média (86% no regime antigo) — a suíte é I/O-bound, então
+ *  só abaixo de 1 por núcleo sobra CPU de fato. */
+export const LOCAL_PROCS_PER_CPU = 0.5;
+
+export interface ConcurrencyPlan {
+  /** `--test-concurrency` de cada worker; `null` = não passar a flag (default do Node). */
+  perWorker: number | null;
+  /** Multiplicador do teto de tempo do batch — mesma razão em que a concorrência caiu. */
+  timeoutScale: number;
+  /** Processos de teste em voo somando os workers, pro log. */
+  total: number | null;
+}
+
+/** #7934: quantos processos de teste cada worker pode rodar ao mesmo tempo.
+ *
+ *  O #7875 mediu que cortar a concorrência pela metade estourou os batches
+ *  contra o teto FIXO de 300 s. O teto do batch agora escala na mesma razão
+ *  (`timeoutScale`): o batch pode demorar mais, mas não é morto por isso.
+ *
+ *  - `CI` definido e sem `RUN_TESTS_MAX_PROCS` → nada muda (runner dedicado,
+ *    ninguém usando a máquina).
+ *  - `RUN_TESTS_MAX_PROCS=N` → teto explícito, vale inclusive no CI.
+ *  - `--test-concurrency` já nos args → quem chamou decidiu; nada muda.
+ *  - Default local → `LOCAL_PROCS_PER_CPU × nCPU`, dividido entre os workers.
+ *
+ *  O default do Node, com `--test-isolation=process`, é `nCPU - 1` por
+ *  `node --test`. Teto que não fica abaixo disso não muda nada e devolve o
+ *  plano vazio. */
+export function resolveConcurrencyPlan(
+  env: NodeJS.ProcessEnv,
+  cpus: number,
+  workers: number,
+  extraArgs: readonly string[] = [],
+): ConcurrencyPlan {
+  const none: ConcurrencyPlan = { perWorker: null, timeoutScale: 1, total: null };
+  if (extraArgs.some((a) => a.startsWith("--test-concurrency"))) return none;
+  const safeCpus = Number.isFinite(cpus) && cpus > 0 ? Math.floor(cpus) : 1;
+  const safeWorkers = Number.isFinite(workers) && workers > 0 ? Math.floor(workers) : 1;
+  const explicit = Number((env.RUN_TESTS_MAX_PROCS ?? "").trim());
+  let total: number;
+  if (Number.isFinite(explicit) && explicit > 0) {
+    total = Math.floor(explicit);
+  } else if (env.CI) {
+    return none;
+  } else {
+    total = Math.max(1, Math.floor(LOCAL_PROCS_PER_CPU * safeCpus));
+  }
+  const perWorker = Math.max(1, Math.floor(total / safeWorkers));
+  const nodeDefault = Math.max(1, safeCpus - 1);
+  if (perWorker >= nodeDefault) return none;
+  return { perWorker, timeoutScale: nodeDefault / perWorker, total: perWorker * safeWorkers };
 }
 
 /** Pure: parte uma lista em batches de tamanho `size` (último pode ser menor). */
@@ -688,7 +765,8 @@ export function bisectHangingBatch(
     // #7753: líder de um novo grupo de processos — ver docstring de
     // `killProcessTree`, chamada logo abaixo pra alcançar os netos do
     // `--test-isolation=process` que o SIGKILL do timeout, sozinho, não mata.
-    detached: true,
+    // #7934: só no POSIX; no Windows `detached` abria uma janela por batch.
+    ...batchSpawnIsolation(),
     env: cleanChildEnv(),
   };
   const result = spawn(process.execPath, ["--import", "tsx", "--test", ...extraArgs, ...batch], bisectSpawnOpts);
@@ -865,7 +943,8 @@ export function processChunkedBatches(
       // nunca os netos que `--test-isolation=process` (default do runner
       // nativo) spawna — 1 por arquivo do batch. Ver docstring de
       // `killProcessTree`, chamada logo abaixo.
-      detached: true,
+      // #7934: só no POSIX; no Windows `detached` abria uma janela por batch.
+      ...batchSpawnIsolation(),
       // #6877 — ver docstring de `cleanChildEnv`: nunca propagar
       // NODE_TEST_CONTEXT/NODE_TEST_WORKER_ID herdados (processo pai já
       // rodando dentro de outro `node --test`) pro batch, senão o `--test`
@@ -1624,7 +1703,26 @@ if (isMainModule(import.meta.url)) {
     // se `fork()`/IPC lançarem de um jeito não previsto pelos handlers
     // `error`/`exit` de `runWorker`) — mas um wrapper síncrono que decidiu
     // nunca deixar uma rejeição não-tratada sair como crash sem contexto.
-    runTestBatchesParallel({ files, extraArgs }).then(
+    // #7934: teto de processos em voo fora do CI + teto de tempo do batch
+    // escalado na mesma razão (ver `resolveConcurrencyPlan`).
+    let cpus = 1;
+    try {
+      cpus = availableParallelism();
+    } catch {
+      // mesmo fail-soft do `DEFAULT_WORKER_COUNT`
+    }
+    const plan = resolveConcurrencyPlan(process.env, cpus, DEFAULT_WORKER_COUNT, extraArgs);
+    const batchTimeoutMs = process.env.RUN_TESTS_BATCH_TIMEOUT_MS
+      ? DEFAULT_BATCH_TIMEOUT_MS
+      : Math.round(DEFAULT_BATCH_TIMEOUT_MS * plan.timeoutScale);
+    if (plan.perWorker !== null) {
+      process.stderr.write(
+        `run-tests: teto de ${plan.total} processos de teste em voo (${DEFAULT_WORKER_COUNT} workers × ${plan.perWorker}, ${cpus} CPUs); ` +
+          `teto por batch ${Math.round(batchTimeoutMs / 1000)}s. RUN_TESTS_MAX_PROCS=N ajusta (#7934).\n`,
+      );
+    }
+    const planArgs = plan.perWorker !== null ? [`--test-concurrency=${plan.perWorker}`] : [];
+    runTestBatchesParallel({ files, extraArgs: [...planArgs, ...extraArgs], batchTimeoutMs }).then(
       (code) => {
         process.exitCode = code;
       },
