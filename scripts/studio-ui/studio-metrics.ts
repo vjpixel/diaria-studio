@@ -25,25 +25,36 @@
  * Beehiiv, `data/metas.json`) tem seu próprio estado de erro, e a tela
  * degrada por camada, nunca em bloco.
  *
- * **Simplificação declarada nesta fatia (documentada no PR, não escondida):**
- * a leitura VIVA do Kit (`listAllKitSubscribers`, decisão 12) não está
- * implementada aqui — `kitActive` de `base-ativa` é sempre `null`. Como o
- * `MetricDef.computar` de `base-ativa` já trata `kitActive: null` como
- * ausência honesta (nunca `0` fingindo zero assinante), a zona de Baseline/
- * Queda mostra o lado Beehiiv real + o lado Kit como "sem coleta viva nesta
- * fatia" — nunca inventa um total fundido. Extensão natural de F8 (#7180) ou
- * de um follow-up desta issue, não bloqueante pro v1 read-only.
+ * **`kitActive` de `base-ativa` — deixou de ser um `null` fixo (#7916, fatia
+ * 1/N).** Antes desta fatia a leitura VIVA do Kit (`listAllKitSubscribers`,
+ * decisão 12 do épico) não estava implementada e `kitActive` era sempre
+ * `null`. Agora `loadKitActiveLayer` conta `subscription` com
+ * `platform='kit' AND status='active'` no MESMO store `diaria-subscribers`
+ * que `queryKitRegistros` já lê (nenhuma chamada de rede nova, nenhuma leitura
+ * direta da API do Kit) e expõe o frescor (`MAX(updated_at)` das linhas
+ * contadas — proxy de "quando a última ingestão rodou", ver docstring de
+ * `KitActiveSummary`) e o motivo quando indisponível — nunca um número cego.
+ * Ainda uma simplificação declarada: `baseAtivaAnterior` (comparação com o
+ * dia anterior, zona "Queda") continua com `kitActive: null` de propósito —
+ * o store não guarda série histórica do Kit por dia, só o estado ATUAL, e
+ * reusar a contagem de HOJE como se fosse "ontem" inflaria/desinflaria a
+ * variação calculada de forma silenciosa. Follow-up natural (F8/#7180 ou uma
+ * fatia futura desta issue) é uma série diária dedicada, não bloqueante pro
+ * v1.
  *
- * **`registros()` do Kit lê o store `diaria-subscribers` (#6464), que hoje
- * NÃO captura `utm_source` para o Kit (só `utm_medium`/`utm_channel`/
- * `referring_site`, ver `SubscriptionFields`)** — `classifyAcquisition`
- * ainda resolve boa parte da classificação via `referring_site`
- * (`resolveGroupKey`), mas o resultado é sistematicamente mais conservador
- * (menos `pago`/`reativacao` detectados) até um follow-up popular a coluna.
- * Documentado, não escondido — a mesma nota do docstring de `registry.ts`
- * ("subscription está POPULADA NO CÓDIGO mas o store real ainda não foi
- * reingerido") já avisa que hoje a cobertura tende a ficar baixa e a métrica
- * sai `indeterminado` por `subscriptionCoverageLow`, o caminho honesto.
+ * **`registros()` do Kit lê o store `diaria-subscribers` (#6464) — `utm_source`
+ * corrigido no #7916 (fatia 1/N).** Antes desta fatia o SELECT de
+ * `queryKitRegistros` nem lia a coluna `subscription.utm_source` e o valor
+ * saía sempre `null`, mesmo quando `ingestKitRoster` já gravava
+ * `fields.utm_source` ali desde #7207 — bug de LEITURA, não de ingestão. Ver
+ * a docstring de `queryKitRegistros` para o detalhe; `classifyAcquisition`
+ * agora enxerga o `utm_source` real quando ele existe, e continua caindo em
+ * `referring_site` (`resolveGroupKey`) quando a Kit genuinamente não tem o
+ * campo preenchido — nunca inventa `"organico"` como default. A mesma nota
+ * do docstring de `registry.ts` ("subscription está POPULADA NO CÓDIGO mas o
+ * store real ainda não foi reingerido") segue valendo pra cobertura baixa em
+ * geral — a métrica sai `indeterminado` por `subscriptionCoverageLow`, o
+ * caminho honesto.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -65,7 +76,7 @@ import {
 import { evaluateMeta, type Meta, type MetaStatus, type MedicaoDia } from "../lib/metrics/metas.ts";
 import { loadMetas, validateMetas } from "../lib/metrics/metas-store.ts";
 import type { CapturaLogEntry } from "../lib/metrics/captura-log.ts";
-import { openDiariaSubscribersDbSafe, getStoreCounts } from "../lib/diaria-subscribers-db.ts";
+import { openDiariaSubscribersDbSafe, getStoreCounts, getKitActiveSummary } from "../lib/diaria-subscribers-db.ts";
 import {
   latestSnapshotDate,
   listSnapshotDates,
@@ -141,6 +152,31 @@ export interface MetricsPlacar {
   janelaDias: number;
 }
 
+/**
+ * Contribuição do Kit pra `base-ativa` (#7916, fatia 1/N) — exposta À PARTE
+ * do `MetricResult` fundido (`queda.baseAtiva`) porque o resultado fundido
+ * só carrega 1 `frescor` (o mais restritivo, ver `computeBaseAtiva`), e
+ * "informar frescor e eventuais falhas de coleta" da contribuição do Kit
+ * (critério de aceite da issue) exige poder inspecionar o lado Kit sozinho,
+ * sem decompor o resultado fundido.
+ */
+export interface MetricsKitActiveLayer {
+  /** `false` quando o store `diaria-subscribers` está ausente/ilegível —
+   *  mesma causa raiz de `MetricsSubscriptionCoverageLayer.available`. */
+  available: boolean;
+  /** `null` quando `available === false`; nunca `0` fingindo "Kit sem
+   *  assinante ativo" no lugar de "não deu pra medir". */
+  count: number | null;
+  /** ISO 8601 do `MAX(updated_at)` das linhas contadas — ver docstring de
+   *  `KitActiveSummary` (`diaria-subscribers-db.ts`). `null` quando
+   *  `available === false` OU quando o store existe mas não tem nenhuma
+   *  linha Kit ativa ainda. */
+  asOf: string | null;
+  /** Não-nulo explica por que `count`/`asOf` são `null`, ou por que `asOf`
+   *  ficou `null` com `count === 0`. */
+  motivo: string | null;
+}
+
 export interface MetricsSnapshot {
   execMode: ExecMode;
   generatedAt: string;
@@ -157,6 +193,8 @@ export interface MetricsSnapshot {
   queda: {
     baseAtiva: MetricResult;
     baseAtivaAnterior: MetricResult | null;
+    /** Frescor/motivo da contribuição Kit isolada — ver `MetricsKitActiveLayer`. */
+    kitActiveLayer: MetricsKitActiveLayer;
   };
   metas: MetricsMetasLayer;
   placar: MetricsPlacar;
@@ -245,10 +283,44 @@ function loadSubscriptionCoverage(
   };
 }
 
+/**
+ * Monta a camada de contribuição Kit pra `base-ativa` (#7916, fatia 1/N) —
+ * `db === null` (store ausente/ilegível, mesma causa de
+ * `MetricsSubscriptionCoverageLayer.available === false`) é o único jeito de
+ * `available` sair `false`; qualquer erro de leitura na query em si também
+ * cai aqui via `try/catch` (fail-soft, mesmo padrão do resto do módulo —
+ * nunca deixa uma exceção de SQL derrubar o snapshot inteiro).
+ */
+function loadKitActiveLayer(db: DatabaseSync | null): MetricsKitActiveLayer {
+  if (!db) {
+    return {
+      available: false,
+      count: null,
+      asOf: null,
+      motivo: "store diaria-subscribers ausente ou ilegível — contribuição do Kit tratada como indeterminada",
+    };
+  }
+  try {
+    const summary = getKitActiveSummary(db);
+    return {
+      available: true,
+      count: summary.count,
+      asOf: summary.asOf,
+      motivo:
+        summary.count === 0
+          ? "nenhuma subscription Kit com status='active' encontrada no store ainda"
+          : null,
+    };
+  } catch (e) {
+    return { available: false, count: null, asOf: null, motivo: (e as Error).message };
+  }
+}
+
 interface KitSubscriptionRow {
   email: string | null;
   external_id: string | null;
   entered_at: string | null;
+  utm_source: string | null;
   utm_medium: string | null;
   utm_channel: string | null;
   referring_site: string | null;
@@ -256,17 +328,27 @@ interface KitSubscriptionRow {
 
 /**
  * Lê os cadastros do Kit dentro de `janela` a partir do store unificado
- * (`diaria-subscribers-db.ts`). `utm_source` sai sempre `null` — a coluna
- * não existe na ingestão do Kit hoje (ver docstring do módulo); `email`
- * cai pra um identificador sintético quando o alias não tem e-mail
- * populado, nunca descarta a linha silenciosamente.
+ * (`diaria-subscribers-db.ts`).
+ *
+ * **`utm_source` (#7916, fatia 1/N — corrigido; ANTES saía sempre `null`).**
+ * A coluna `subscription.utm_source` existe desde #7207 e `ingestKitRoster`
+ * (`kit-subscribers-ingest.ts`) já grava `fields.utm_source` nela a cada
+ * rodada de ingestão — o bug real não era ausência de dado na ingestão, era
+ * este SELECT nunca ter incluído a coluna e a linha abaixo forçar `null`
+ * incondicionalmente, mascarando o valor real quando ele existia. Corrigido
+ * para propagar o valor da coluna; continua saindo `null` explícito (nunca
+ * `"organico"`/outro default inventado) quando a Kit genuinamente não tem o
+ * custom field preenchido pra aquele assinante, ou pra linhas ingeridas
+ * antes do #7207 existir. `email` cai pra um identificador sintético quando
+ * o alias não tem e-mail populado, nunca descarta a linha silenciosamente.
  */
 function queryKitRegistros(db: DatabaseSync, janela: Janela): AcquisitionRecordInput[] {
   const dias = new Set(enumerarDiasInclusive(janela.de, janela.ate));
   const rows = db
     .prepare(
       `SELECT ia.email AS email, ia.external_id AS external_id, s.entered_at AS entered_at,
-              s.utm_medium AS utm_medium, s.utm_channel AS utm_channel, s.referring_site AS referring_site
+              s.utm_source AS utm_source, s.utm_medium AS utm_medium, s.utm_channel AS utm_channel,
+              s.referring_site AS referring_site
        FROM subscription s
        LEFT JOIN identity_alias ia ON ia.subscriber_id = s.subscriber_id AND ia.platform = s.platform
        WHERE s.platform = 'kit' AND s.entered_at IS NOT NULL`,
@@ -282,7 +364,7 @@ function queryKitRegistros(db: DatabaseSync, janela: Janela): AcquisitionRecordI
     out.push({
       email: r.email ?? `kit-id:${r.external_id ?? "desconhecido"}`,
       dia,
-      utm_source: null,
+      utm_source: r.utm_source ?? null,
       utm_medium: r.utm_medium ?? null,
       utm_channel: r.utm_channel ?? null,
       referring_site: r.referring_site ?? null,
@@ -434,18 +516,32 @@ export async function buildMetricsData(rootDir: string, opts: BuildMetricsDataOp
   const acqDeps = buildAcquisitionDeps(db, capturaLog.entries, coverageLayer.low, coverageLayer.motivo);
   const janelaHoje = janelaDia(diaReferencia);
 
+  // ── Contribuição Kit pra base-ativa (#7916, fatia 1/N) — MESMO db acima,
+  //    nenhuma abertura extra do store. `baseAtivaAnterior` (dia anterior)
+  //    NÃO recebe esta contagem — ver docstring do módulo, "sem série
+  //    histórica do Kit ainda".
+  const kitActiveLayer = loadKitActiveLayer(db);
+
   // ── Baseline (zona 1) ──────────────────────────────────────────────
   const baseline: MetricBaselineItem[] = [];
   for (const id of BASELINE_METRIC_IDS) {
     const def = getMetric(id);
     if (!def) continue;
-    const result = await computeBaseline(def, janelaHoje, acqDeps, beehiivSubs, beehiivLayer, hojeFromNow);
+    const result = await computeBaseline(def, janelaHoje, acqDeps, beehiivSubs, beehiivLayer, hojeFromNow, kitActiveLayer.count);
     baseline.push({ metric: summarizeMetric(def), result });
   }
 
   // ── Queda (zona 2) — base-ativa decomposta por plataforma ──────────
   const baseAtivaDef = getMetric("base-ativa")!;
-  const baseAtiva = await computeBaseAtiva(baseAtivaDef, janelaDia(diaReferencia), beehiivSubs, beehiivLayer, hojeFromNow, "plataforma");
+  const baseAtiva = await computeBaseAtiva(
+    baseAtivaDef,
+    janelaDia(diaReferencia),
+    beehiivSubs,
+    beehiivLayer,
+    hojeFromNow,
+    kitActiveLayer.count,
+    "plataforma",
+  );
   let baseAtivaAnterior: MetricResult | null = null;
   if (beehiivLayer.previousDate) {
     const prevSubs = readSnapshotSubscribers(beehiivRoot, beehiivLayer.previousDate);
@@ -455,6 +551,11 @@ export async function buildMetricsData(rootDir: string, opts: BuildMetricsDataOp
       prevSubs,
       { ...beehiivLayer, date: beehiivLayer.previousDate },
       hojeFromNow,
+      // Sem série histórica do Kit por dia no store hoje — reusar a
+      // contagem ATUAL como se fosse "ontem" inflaria/desinflaria a
+      // variação calculada em silêncio. `null` explícito, mesma disciplina
+      // do resto do módulo.
+      null,
       "plataforma",
     );
   }
@@ -492,12 +593,25 @@ export async function buildMetricsData(rootDir: string, opts: BuildMetricsDataOp
     beehiivSnapshot: beehiivLayer,
     diaReferencia,
     baseline,
-    queda: { baseAtiva, baseAtivaAnterior },
+    queda: { baseAtiva, baseAtivaAnterior, kitActiveLayer },
     metas: metasLayer,
     placar,
     decomposicaoCadastros,
   };
   cacheByRoot.set(rootDir, { data, expiresAt: nowMs + cacheTtlMs });
+  // `db` (aberto acima por `loadSubscriptionCoverage`) só é consumido
+  // SINCRONAMENTE dentro desta função — `acqDeps.registros`/`kitActiveLayer`
+  // já rodaram antes deste ponto, e `data` acima é um snapshot puro (nenhum
+  // callback lazy segura `db` vivo depois do retorno). Fechar aqui evita
+  // vazar o handle `DatabaseSync` (WAL/SHM) a cada chamada — achado ao vivo
+  // ao escrever os testes do #7916: sem este close, o handle nunca era
+  // liberado e travava a limpeza do diretório temporário no Windows.
+  try {
+    db?.close();
+  } catch (e) {
+    // best-effort cleanup — nunca deixar isso virar 500 pra um request cujo dado já foi computado/cacheado com sucesso
+    console.error(`[studio-metrics] falha ao fechar diaria-subscribers.db (ignorada, dado já cacheado): ${(e as Error).message}`);
+  }
   return data;
 }
 
@@ -508,6 +622,7 @@ async function computeBaseline(
   beehiivSubs: readonly BeehiivBackupSubscriber[],
   beehiivLayer: MetricsBeehiivSnapshotLayer,
   hoje: string,
+  kitActive: number | null,
 ): Promise<MetricResult> {
   switch (def.id) {
     case "cadastros-dia":
@@ -531,7 +646,7 @@ async function computeBaseline(
           "(#7178) — ver docstring de studio-metrics.ts",
       };
     case "base-ativa":
-      return computeBaseAtiva(def, janela, beehiivSubs, beehiivLayer, hoje);
+      return computeBaseAtiva(def, janela, beehiivSubs, beehiivLayer, hoje, kitActive);
     case "leitor-v1":
       return computeLeitorV1(def, janela, beehiivSubs, beehiivLayer);
     default:
@@ -551,13 +666,16 @@ function computeBaseAtiva(
   beehiivSubs: readonly BeehiivBackupSubscriber[],
   beehiivLayer: MetricsBeehiivSnapshotLayer,
   hoje: string,
+  kitActive: number | null,
   decomposicao?: string,
 ): Promise<MetricResult> {
   const deps: BaseAtivaDeps = {
     beehiiv: beehiivLayer.date ? { date: beehiivLayer.date, active: countActive(beehiivSubs) } : null,
-    // Leitura viva do Kit não implementada nesta fatia — ver docstring do
-    // topo do módulo. `null` é o sinal honesto de "sem coleta", nunca `0`.
-    kitActive: null,
+    // Contagem real do store `diaria-subscribers` (#7916, fatia 1/N) — vem
+    // de `loadKitActiveLayer` no chamador; `null` continua sendo o sinal
+    // honesto de "sem coleta" quando o store está ausente/ilegível, nunca
+    // um `0` fingindo "Kit sem assinante ativo".
+    kitActive,
     hoje,
   };
   return def.computar({ janela, decomposicao, deps });
