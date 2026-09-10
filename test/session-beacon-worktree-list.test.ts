@@ -99,7 +99,7 @@ test("#7722 item 2 — sem .git/worktrees (repo sem worktree nenhum) → null, f
 test("#7722 item 2 — buildBeaconRecord publica `known_worktrees` (path+branch) a partir de worktreeBranches do event", () => {
   const event = {
     kind: "overnight",
-    machineTag: "helios",
+    machineTag: "300",
     sessionId: "sess-1",
     branch: "master", // o singular, do checkout principal — sempre "errado" neste cenário
     newPaths: [],
@@ -123,7 +123,7 @@ test("#7722 item 2 — buildBeaconRecord publica `known_worktrees` (path+branch)
 test("#7722 item 2 — buildBeaconRecord descarta entradas sem path resolvido (gitdir ilegível)", () => {
   const event = {
     kind: "overnight",
-    machineTag: "helios",
+    machineTag: "300",
     sessionId: "sess-1",
     branch: "master",
     newPaths: [],
@@ -229,7 +229,7 @@ test("#7722 item 2 — buildBeaconRecord NUNCA escreve no campo `worktrees` (con
   // `known_worktrees`, nunca `worktrees`.
   const event = {
     kind: "overnight",
-    machineTag: "helios",
+    machineTag: "300",
     sessionId: "sess-1",
     branch: "master",
     newPaths: [],

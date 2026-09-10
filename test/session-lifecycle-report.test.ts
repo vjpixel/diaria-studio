@@ -19,7 +19,7 @@ describe("parseSessionLifecycleLine", () => {
     const line = JSON.stringify({
       event: "ended",
       kind: "overnight",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "s1",
       ts: "2026-08-28T12:00:00.000Z",
       ageMs: 3600000,
@@ -49,7 +49,7 @@ describe("parseSessionLifecycleLine", () => {
 describe("parseSessionLifecycleLog", () => {
   it("parseia múltiplas linhas, descarta as inválidas silenciosamente", () => {
     const content = [
-      JSON.stringify({ event: "ended", kind: "overnight", machineTag: "helios", sessionId: "a", ts: "2026-08-28T00:00:00.000Z" }),
+      JSON.stringify({ event: "ended", kind: "overnight", machineTag: "300", sessionId: "a", ts: "2026-08-28T00:00:00.000Z" }),
       "{corrompida",
       JSON.stringify({ event: "gc-removed-without-end", kind: "develop", machineTag: "Neo", sessionId: "b", ts: "2026-08-28T01:00:00.000Z" }),
       "",
@@ -74,8 +74,8 @@ describe("summarizeSessionLifecycle", () => {
 
   it("agrega ended vs gc-removed-without-end, calcula a proporção certa", () => {
     const events = [
-      { event: "ended" as const, kind: "overnight" as const, machineTag: "helios", sessionId: "a", ts: "t" },
-      { event: "ended" as const, kind: "overnight" as const, machineTag: "helios", sessionId: "b", ts: "t" },
+      { event: "ended" as const, kind: "overnight" as const, machineTag: "300", sessionId: "a", ts: "t" },
+      { event: "ended" as const, kind: "overnight" as const, machineTag: "300", sessionId: "b", ts: "t" },
       { event: "gc-removed-without-end" as const, kind: "develop" as const, machineTag: "Neo", sessionId: "c", ts: "t" },
     ];
     const summary = summarizeSessionLifecycle(events);
@@ -87,9 +87,9 @@ describe("summarizeSessionLifecycle", () => {
 
   it("decompõe por kind", () => {
     const events = [
-      { event: "ended" as const, kind: "overnight" as const, machineTag: "helios", sessionId: "a", ts: "t" },
-      { event: "gc-removed-without-end" as const, kind: "overnight" as const, machineTag: "helios", sessionId: "b", ts: "t" },
-      { event: "ended" as const, kind: "continuo" as const, machineTag: "helios", sessionId: "c", ts: "t" },
+      { event: "ended" as const, kind: "overnight" as const, machineTag: "300", sessionId: "a", ts: "t" },
+      { event: "gc-removed-without-end" as const, kind: "overnight" as const, machineTag: "300", sessionId: "b", ts: "t" },
+      { event: "ended" as const, kind: "continuo" as const, machineTag: "300", sessionId: "c", ts: "t" },
     ];
     const summary = summarizeSessionLifecycle(events);
     assert.deepEqual(summary.byKind.overnight, { ended: 1, gcRemovedWithoutEnd: 1 });

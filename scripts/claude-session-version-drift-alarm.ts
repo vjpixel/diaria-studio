@@ -21,7 +21,7 @@
  *   npx tsx scripts/claude-session-version-drift-alarm.ts --threshold-hours 24  # default 24 (medição real: 31h/36h)
  *
  * Plataforma: Linux apenas — depende de `/proc/<pid>/exe` (achado do #6875
- * é específico do `helios`, único servidor que roda sessões de vida longa
+ * é específico do `300`, único servidor que roda sessões de vida longa
  * hoje). Em qualquer outra plataforma (`process.platform !== "linux"`), o
  * script sai 0 sem checar nada (fail-soft — nunca falha o timer systemd por
  * rodar num SO onde a técnica não se aplica).

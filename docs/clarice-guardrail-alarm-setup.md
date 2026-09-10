@@ -42,7 +42,7 @@ systemctl --user enable --now diaria-clarice-guardrail-alarm.timer
 Isso registra a task `Diaria-Clarice-Guardrail-Alarm` (a cada 4h). Idempotente
 — re-executar regenera os units. Remover: `systemctl --user disable --now diaria-clarice-guardrail-alarm.timer`.
 
-## Ação PENDENTE no `helios` (#6695, 29/08/2026)
+## Ação PENDENTE no `300` (#6695, 29/08/2026)
 
 O commit `5997cddd` (#6562/#6563) fez o script sair com exit 75
 (`EX_TEMPFAIL`) quando `shouldSkipForLowQuota` acusa cota Brevo baixa, e

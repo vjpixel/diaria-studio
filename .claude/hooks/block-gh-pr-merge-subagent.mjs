@@ -199,7 +199,7 @@ export const MERGE_LOCK_TTL_MS = 2 * 60 * 1000;
  * Tolerância de clock skew entre máquinas — duplicado de
  * `CLOCK_SKEW_TOLERANCE_MS` em `scripts/lib/session-registry.ts` (mesmo
  * racional: `data/sessions/` é compartilhado via OneDrive entre `Neo` e
- * `helios`, e relógios não perfeitamente sincronizados podem fazer um
+ * `300`, e relógios não perfeitamente sincronizados podem fazer um
  * timestamp genuinamente recente, escrito por OUTRA máquina, parecer "no
  * futuro" pra quem lê). **A cópia deste valor aqui era a lacuna real do
  * fleet review #6303 Finding A:** `isMergeGrantLive`/`findLiveMergeGrant` (o
@@ -868,7 +868,7 @@ export function readLiveSelfAuthorizationFor(repoRoot, sessionId, now = Date.now
  * (`machineTag()`), duplicada aqui porque o hook é self-contained (sem import
  * de `.ts`). #5787 Defeito 2: preciso comparar `record.machineTag` contra a
  * máquina onde o hook roda, já que `data/sessions/` é compartilhado via
- * OneDrive entre helios/Neo.
+ * OneDrive entre 300/Neo.
  */
 export function machineTag() {
   try {
@@ -1278,7 +1278,7 @@ export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionI
  * os dois casos reais pós-#6296.
  *
  * Três defeitos corrigidos no #6497 (achado ao vivo: sessão interativa no
- * `helios` tentou mergear com uma rodada `/diaria-develop` ativa no `Neo`):
+ * `300` tentou mergear com uma rodada `/diaria-develop` ativa no `Neo`):
  *
  *   1. **Não mencionava o merge lock.** O texto terminava em "confirmar com
  *      `check-merge-grant`, e só então tentar `gh pr merge` de novo" — mas
@@ -1292,7 +1292,7 @@ export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionI
  *      ainda acrescenta `LOCK_CONTENTION_HINT` quando a causa REAL do
  *      bloqueio é de fato o lock — texto preciso em vez de só genérico.
  *   2. **"nesta máquina" era falso.** `data/sessions/*.json` é sincronizado
- *      via OneDrive entre as máquinas do projeto — uma sessão no `helios`
+ *      via OneDrive entre as máquinas do projeto — uma sessão no `300`
  *      pode estar bloqueada por uma coordenadora rodando no `Neo`. O texto
  *      agora fala em registro COMPARTILHADO entre máquinas, nunca "nesta
  *      máquina".

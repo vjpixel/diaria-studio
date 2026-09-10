@@ -17,7 +17,7 @@ O auto-updater do Claude Code compara a versão contra a que o **processo em
 execução** carregou, não contra a versão em disco. Uma sessão de vida longa
 (`--remote-control`, tmux) fica com uma versão velha carregada em memória
 enquanto o disco já reinstalou — e esse descompasso realimenta o ciclo de
-reinstalação. Medição de fechamento do #6875 (`helios`, 01/09/2026):
+reinstalação. Medição de fechamento do #6875 (`300`, 01/09/2026):
 reinstalações a cada ~30min, ~214MB por ciclo sem ninguém consumir o
 resultado, com duas sessões de 31h e 36h vivas; zero problemas em 1h22
 depois de reiniciá-las.
@@ -45,7 +45,7 @@ tratado como pendente, nunca como "ok" por omissão).
 ## O que ele NÃO cobre
 
 - Não roda em nenhuma plataforma além de Linux (`process.platform !==
-  "linux"` → sai 0 sem checar nada) — o achado é específico do `helios`,
+  "linux"` → sai 0 sem checar nada) — o achado é específico do `300`,
   único servidor com sessões de vida longa hoje.
 - Não abre issue automaticamente (diferente de `node-modules-loop-alarm.ts`)
   — o achado reaparece toda vez que uma sessão fica velha o bastante, então
@@ -78,7 +78,7 @@ npx tsx scripts/claude-session-version-drift-alarm.ts --threshold-hours 12
 ## Setup (ação local one-time do editor)
 
 `local` — precisa do junction `data/` (OneDrive) + `data/.credentials.json`
-com o scope `gmail.send`. Roda só em Linux (`helios`).
+com o scope `gmail.send`. Roda só em Linux (`300`).
 
 ```bash
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Claude-Session-Version-Drift-Alarm

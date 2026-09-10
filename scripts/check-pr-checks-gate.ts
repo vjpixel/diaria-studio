@@ -19,7 +19,7 @@
  * `startedAt` do run mais antigo caiu perto do push.
  *
  * Substitui `gh pr checks {N} --json bucket --jq '...'`, que não roda no
- * `gh` 2.46.0 do `helios` (apt do Ubuntu — `--json` só chegou em `gh pr
+ * `gh` 2.46.0 do `300` (apt do Ubuntu — `--json` só chegou em `gh pr
  * checks` numa versão posterior; achado ao vivo #6225 aplicando o gate ao
  * PR #6212).
  *

@@ -135,12 +135,12 @@ export type EdicaoTimerState = "armed" | "disabled" | "unknown";
  * máquina em que O ALARME roda. Hoje as duas coisas coincidem: nada está
  * agendado em máquina nenhuma e a edição é rodada à mão por decisão do
  * editor (19/08/2026, banner de `docs/scheduled-edicao-setup.md`), então
- * `disabled` no `helios` é a resposta certa sobre o mundo inteiro.
+ * `disabled` no `300` é a resposta certa sobre o mundo inteiro.
  *
  * O que quebra a coincidência: o #5611 desenhou a via WINDOWS como ativa,
  * com o par Linux ficando `disabled` de propósito, "pronto para reativação
  * se a via Windows precisar de fallback". Se esse arranjo voltar, um alarme
- * rodando no `helios` responderá `disabled` sobre o timer Linux —
+ * rodando no `300` responderá `disabled` sobre o timer Linux —
  * confiante e ERRADO sobre o agendador que de fato importa — e toda falha
  * silenciosa da via Windows viraria `timer-disabled`, nunca um alarme. É a
  * classe de regressão do #5563 de volta, que é o que este módulo existe

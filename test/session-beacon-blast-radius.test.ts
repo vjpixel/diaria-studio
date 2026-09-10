@@ -207,7 +207,7 @@ describe("#6168 blast radius 1 — cleanup não passa a pular sempre", () => {
 
 describe("#6168 blast radius 3 — claim de interativa BLOQUEIA coordenadora", () => {
   it("overnight não reivindica issue já reivindicada por sessão interativa viva", () => {
-    // Premissa deliberada da issue: é o caso do #5751, em que o helios tinha
+    // Premissa deliberada da issue: é o caso do #5751, em que o 300 tinha
     // #5738 em claimed_issues enquanto uma sessão interativa a implementava
     // e mergeava em paralelo.
     const root = makeTempRepo();
@@ -430,10 +430,10 @@ describe("#6168 — retrocompatibilidade com registro no formato antigo", () => 
     const root = makeTempRepo();
     try {
       writeFileSync(
-        join(root, "data", "sessions", "overnight-helios-antiga.json"),
+        join(root, "data", "sessions", "overnight-300-antiga.json"),
         JSON.stringify({
           kind: "overnight",
-          machineTag: "helios",
+          machineTag: "300",
           sessionId: "antiga",
           startedAt: isoAgo(60_000),
           lastHeartbeat: isoAgo(60_000),

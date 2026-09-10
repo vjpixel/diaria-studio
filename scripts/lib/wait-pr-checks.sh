@@ -5,7 +5,7 @@
 # embutido. Existe pra ser o ÚNICO lugar onde alguém precisa lembrar dessa
 # disciplina: achado ao vivo no #6921 — 5 laços `while true; do gh pr
 # checks ...; sleep 20; done` escritos à mão por sessões de agente ficaram
-# órfãos no `helios` por até 15h, todos vigiando PRs já mergeadas há horas,
+# órfãos no `300` por até 15h, todos vigiando PRs já mergeadas há horas,
 # batendo na API do GitHub sem parar porque nenhum tinha timeout nem teto
 # de iteração — a vida do laço estava atada à intenção de quem o criou, não
 # a um dono verificável. O CI deste repo leva ~8min (#6877); nenhuma espera

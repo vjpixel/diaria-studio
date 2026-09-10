@@ -127,7 +127,7 @@ describe("findActiveContinuoSession (#5293)", () => {
     // racional do commit que corrigiu session-beacon.mjs.
     const dir = tmp();
     try {
-      writeSession(dir, "continuo-review", "helios", "sess-x", {
+      writeSession(dir, "continuo-review", "300", "sess-x", {
         kind: "continuo-review",
         sessionId: "sess-x",
         lastHeartbeat: "2026-08-14T11:55:00.000Z",

@@ -27,7 +27,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   checkDevelopPlanMotivos,
-  findHeliosBuraco,
+  findDeixadoPara300Buraco,
   DEVELOP_PULADA_MOTIVOS,
   type DevelopPlanIssueLike,
 } from "./lib/develop-plan-motivo.ts";
@@ -47,20 +47,21 @@ if (isMainModule(import.meta.url)) {
   }
 
   const result = checkDevelopPlanMotivos(planPath);
-  // #5907 (b) — buraco do helios: status deixado-para-o-helios em issue de
-  // track develop/bloqueada. Reportado junto, mesma passada de gate.
+  // #5907 (b) — buraco do 300: status deixado-para-o-300 (ou o alias legado
+  // deixado-para-o-helios, #7682) em issue de track develop/bloqueada.
+  // Reportado junto, mesma passada de gate.
   const plan = JSON.parse(readFileSync(planPath, "utf8")) as IssuesBearing<DevelopPlanIssueLike>;
-  const heliosBuraco = findHeliosBuraco(normalizeIssues(plan));
-  if (result.status === "ok" && heliosBuraco.length === 0) {
+  const deixadoPara300Buraco = findDeixadoPara300Buraco(normalizeIssues(plan));
+  if (result.status === "ok" && deixadoPara300Buraco.length === 0) {
     console.log("ok — todo motivo de issue pulada está no vocabulário fechado");
     process.exit(0);
   }
 
-  if (heliosBuraco.length > 0) {
+  if (deixadoPara300Buraco.length > 0) {
     console.error(
-      `[validate-develop-plan-motivo] #5907(b): status "deixado-para-o-helios" em issue de track develop/bloqueada — o helios NUNCA pega essas; a issue fica num buraco (develop não faz, overnight não faz). Reclassifique (mergeada / entregue-fora-de-codigo / nao-tentada / pulada com motivo válido) ou corrija o exec_track_painel:`,
+      `[validate-develop-plan-motivo] #5907(b): status "deixado-para-o-300" (ou o alias legado "deixado-para-o-helios") em issue de track develop/bloqueada — o 300 NUNCA pega essas; a issue fica num buraco (develop não faz, overnight não faz). Reclassifique (mergeada / entregue-fora-de-codigo / nao-tentada / pulada com motivo válido) ou corrija o exec_track_painel:`,
     );
-    for (const n of heliosBuraco) {
+    for (const n of deixadoPara300Buraco) {
       console.error(`  #${Number.isFinite(n) ? n : "?"}`);
     }
   }

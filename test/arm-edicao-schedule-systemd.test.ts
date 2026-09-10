@@ -40,7 +40,7 @@ function fakeDeps(overrides: Partial<ArmDeps> = {}) {
     },
     dataDirExists: () => true,
     writeFile: (path, content) => writes.push({ path, content }),
-    machine: "helios",
+    machine: "300",
     now: NOW,
     ...overrides,
   };
@@ -75,14 +75,14 @@ describe("armEdicaoScheduleSystemd", () => {
     assert.equal(writes.length, 1);
     assert.ok(writes[0].path.endsWith(EDICAO_SCHEDULE_ATTESTATION_FILES.systemd));
     const att = parseEdicaoScheduleAttestation(writes[0].content);
-    assert.deepEqual(att, { machine: "helios", scheduler: "systemd", armed: true, updatedAt: NOW.toISOString() });
+    assert.deepEqual(att, { machine: "300", scheduler: "systemd", armed: true, updatedAt: NOW.toISOString() });
   });
 
   it("--disarm grava armed=false, e NUNCA no arquivo do Windows (regressão do clobber)", () => {
     const { deps, writes } = fakeDeps();
     armEdicaoScheduleSystemd("disarm", "/data", deps);
     assert.deepEqual(parseEdicaoScheduleAttestation(writes[0].content), {
-      machine: "helios",
+      machine: "300",
       scheduler: "systemd",
       armed: false,
       updatedAt: NOW.toISOString(),

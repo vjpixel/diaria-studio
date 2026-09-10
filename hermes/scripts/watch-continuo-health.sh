@@ -587,7 +587,7 @@ except Exception:
 $TRUNC_SESSIONS
 \`\`\`
 
-**Acao**: investigar a sessao mais recente (primeiro_seen) — abrir o transcript no helios e conferir se chamadas foram truncadas. O alarme dispara com 2+ sessoes no valor suspeito (~32770 = 2^15) ou 1+ sessao produtiva (calls >= 3) com media < 50% do teto. P1: truncagem em silencio degrade a qualidade da fila continua sem deixar rastro visivel."
+**Acao**: investigar a sessao mais recente (primeiro_seen) — abrir o transcript no 300 e conferir se chamadas foram truncadas. O alarme dispara com 2+ sessoes no valor suspeito (~32770 = 2^15) ou 1+ sessao produtiva (calls >= 3) com media < 50% do teto. P1: truncagem em silencio degrade a qualidade da fila continua sem deixar rastro visivel."
 else
   echo "[watch] truncagem: $TRUNC_PARSE (janela 24h, sem truncagem ativa; #7528)"
 fi
@@ -637,7 +637,7 @@ except Exception:
 $FAB_DETAILS
 \`\`\`
 
-**Ação**: investigar a sessão correlacionada no helios (transcript do tick). Reproduzido ao vivo 06/09/2026: modelo alegou relatório escrito em data/continuo/last-tick-report.md (arquivo nunca existiu) e classificação com n=4 issues (existiam 41 abertas). Não promover o modelo local a primário do contínuo enquanto este alarme disparar (docs/goal-modelo-local-continuo.md). P1: relatório fabricado passa pro Telegram como se estivesse tudo bem, e a fila drena sem ninguém perceber."
+**Ação**: investigar a sessão correlacionada no 300 (transcript do tick). Reproduzido ao vivo 06/09/2026: modelo alegou relatório escrito em data/continuo/last-tick-report.md (arquivo nunca existiu) e classificação com n=4 issues (existiam 41 abertas). Não promover o modelo local a primário do contínuo enquanto este alarme disparar (docs/goal-modelo-local-continuo.md). P1: relatório fabricado passa pro Telegram como se estivesse tudo bem, e a fila drena sem ninguém perceber."
 else
   echo "[watch] fabricacao de tick: ok (sem sinal de fabricacao; #7537)"
 fi
@@ -766,7 +766,7 @@ $REG_DETAILS
 
 **O que isso significa**: o passo \`session-registry.ts register --kind continuo\` (SKILL.md, passo 1.3) não rodou cedo o suficiente nesse tick, provavelmente porque o tick falhou antes de chegar lá (credencial, rede, guard de colisão). **Risco concreto**: sem registro, o detector de fabricação de conclusão (checagem 11, #7537) correlaciona a sessão ERRADA (a mais recente de outro tick) contra o que este tick alega — foi exatamente o que aconteceu no #7641, custando uma investigação extra pra descartar como falso positivo.
 
-**Ação**: conferir o log do tick correlacionado (bracket do sidecar acima) no helios pra entender por que o registro não aconteceu — tipicamente uma falha cedo no passo 1 (ver checagem de parada por auth abaixo). Não é uma correção automática por design — item 1 da proposta original (wrapper no cron do Hermes que registra ANTES de invocar o modelo) foi avaliado e adiado por tocar o contrato do protocolo do tick e o wrapper genérico \`claude-delegate.sh\` (reusado por outras skills do Hermes); reconsiderar se este alarme disparar com frequência."
+**Ação**: conferir o log do tick correlacionado (bracket do sidecar acima) no 300 pra entender por que o registro não aconteceu — tipicamente uma falha cedo no passo 1 (ver checagem de parada por auth abaixo). Não é uma correção automática por design — item 1 da proposta original (wrapper no cron do Hermes que registra ANTES de invocar o modelo) foi avaliado e adiado por tocar o contrato do protocolo do tick e o wrapper genérico \`claude-delegate.sh\` (reusado por outras skills do Hermes); reconsiderar se este alarme disparar com frequência."
 else
   echo "[watch] registro de sessão continuo: ok (todo tick recente com sessão registrada; #7890)"
 fi
@@ -812,7 +812,7 @@ elif [ "$AUTH_PARSE" = "STALLED" ]; then
 $AUTH_REASON
 \`\`\`
 
-**Ação (externa, decisão do editor — o detector NÃO executa nada disso):** conferir no helios se a credencial do cron do contínuo ainda é válida e se o refresh token não está sendo reusado por outro cliente; renovar/rotacionar a conta do pool se for o caso. O detector é deliberadamente read-only sobre \`jobs.json\` — não lê \`auth.json\`, não invoca \`hermes auth add|remove\`, não toca o pool de credenciais.
+**Ação (externa, decisão do editor — o detector NÃO executa nada disso):** conferir no 300 se a credencial do cron do contínuo ainda é válida e se o refresh token não está sendo reusado por outro cliente; renovar/rotacionar a conta do pool se for o caso. O detector é deliberadamente read-only sobre \`jobs.json\` — não lê \`auth.json\`, não invoca \`hermes auth add|remove\`, não toca o pool de credenciais.
 
 P1: o modo de falha é silencioso por construção — em 08/09/2026 custou 7 ticks do contínuo sem que nada no repo notasse, e o único sinal era o \`failure_streak\` subindo dentro do estado do agendador."
 else

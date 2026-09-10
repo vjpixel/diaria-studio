@@ -110,7 +110,7 @@ const POSIX_SH = ["", "bin", "sh"].join("/");
  * POSIX-only de verdade: o alvo é um script `.sh` executado por `sh`, e a
  * máquina Windows do editor não tem interpretador nesse caminho. Não há o que
  * verificar aqui fora do POSIX — declarar `skipped` com o motivo é mais
- * honesto que falhar como se fosse defeito (#6206). O `helios`, onde o
+ * honesto que falhar como se fosse defeito (#6206). O `300`, onde o
  * `node-modules-health-check.sh` de fato roda, e o CI seguem cobrindo.
  *
  * **Não "conserte" isto apontando pro `sh.exe` do Git for Windows.** Ele

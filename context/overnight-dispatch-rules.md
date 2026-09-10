@@ -701,7 +701,7 @@ de `rm`).
 
 **Escopo:** qualquer sessão que investigue "esta task/alarme rodou?" lendo
 `data/` (junction/symlink compartilhada por OneDrive entre máquinas —
-`helios`, a máquina do editor, etc.) — não só o overnight.
+`300`, a máquina do editor, etc.) — não só o overnight.
 
 `data/` só reflete o que uma OUTRA máquina escreveu depois que o OneDrive
 replica — com atraso normal, e ocasionalmente sem replicar (#5548: serviço
@@ -710,7 +710,7 @@ replicar com o sync GERAL saudável, outros dotfiles de alarme chegando
 normalmente na mesma janela). **Duas sessões independentes, no mesmo turno,
 leram a ausência local de `data/.session-registry-safebackup-alarm-issues.json`
 numa máquina que não executa a task e concluíram "o alarme nunca rodou" — a
-task rodava normalmente todo dia em `helios` (timer armado, store escrito no
+task rodava normalmente todo dia em `300` (timer armado, store escrito no
 minuto da última execução).**
 
 **Regra:** ausência de um arquivo em `data/`, observada numa máquina que NÃO

@@ -13,7 +13,7 @@
  * em `scripts/lib/guard-never-invoked.ts`.
  *
  * **Limitação conhecida, documentada de propósito (não é bug):** os timers
- * systemd REAIS vivem no servidor `helios`, alcançável só por SSH — fora do
+ * systemd REAIS vivem no servidor `300`, alcançável só por SSH — fora do
  * alcance de um worktree isolado (mesma limitação que motivou a correção
  * de escopo no comentário de 02/09 da #7137: duas afirmações da issue
  * original erraram por não terem esse acesso). Este guard mede só a

@@ -67,8 +67,8 @@
  * Só entra na checagem a issue que ESTA sessão **terminou de trabalhar** —
  * ver `WORK_FINISHED_STATUSES`. Isso é o que separa resíduo de fila:
  *
- *   - issue nunca tentada (`nao-tentada`) ou deixada pro `helios`
- *     (`deixado-para-o-helios`) **não** entra: ela continua sendo fila
+ *   - issue nunca tentada (`nao-tentada`) ou deixada pro `300`
+ *     (`deixado-para-o-300`) **não** entra: ela continua sendo fila
  *     legítima do Develop, e é exatamente o caso das 2 issues corretas da
  *     medição (#6048, #467);
  *   - issue `pulada` por bloqueio (`nao-destravavel-na-sessao`,

@@ -935,7 +935,7 @@ test("pushCohortsToKV: erro do uploadFn propaga (nunca engole silenciosamente)",
 // #6222: os dois testes abaixo passam `--db-path` apontando pra um path
 // dentro de um tmpdir isolado (nunca criado, sempre "ausente" pro
 // `fetchAdminOptOutEmails`) — SEM isso, `main()` cai no `DEFAULT_DB_PATH`
-// real. Numa máquina onde `data/` existe (editor, `helios`), o store de
+// real. Numa máquina onde `data/` existe (editor, `300`), o store de
 // produção tem opt-outs administrativos reais (`sends_count > 0` +
 // blacklisted/unsubscribed), e `applyAdminOptOuts` os ADICIONA ao
 // agregado mesmo com campanhas=[] — `cohorts.universe` deixa de ser 0, o

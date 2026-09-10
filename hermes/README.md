@@ -1,6 +1,6 @@
 # hermes/ — código do Hermes que opera ESTE repo (fonte canônica)
 
-Skill e scripts do agente Hermes (`helios`) que dirigem a fila técnica da
+Skill e scripts do agente Hermes (`300`) que dirigem a fila técnica da
 diária. **Este diretório é a fonte da verdade**; os paths que o Hermes lê
 apontam pra cá (decisão do editor, 28/08/2026) — mas de duas formas
 DIFERENTES, não confundir uma com a outra:
@@ -36,7 +36,7 @@ symlink de verdade — o guard de traversal do cron se aplica a `--script`
 de job (o que dispara os scripts abaixo), não ao carregamento de skill.
 
 **Drift confirmado ao vivo, #6943 (01/09/2026): `~/.hermes/scripts/
-claude-delegate.sh` era um SYMLINK de verdade no `helios`, não o STUB
+claude-delegate.sh` era um SYMLINK de verdade no `300`, não o STUB
 que esta tabela documenta.** Achado via transcript do tick das 12:06
 (`preflight missing`, erro apontando pra `~/.hermes/scripts/lib/...`, um
 caminho que só existe se `${BASH_SOURCE[0]}` resolveu pro symlink em vez
@@ -84,7 +84,7 @@ existe pra prevenir (dois processos mergeando a mesma PR). O antigo
 `~/.hermes/scripts/daily-consolidated-review.sh` foi aposentado como
 `daily-consolidated-review.sh.retired-260831` (não apagado — histórico).
 
-Recriar numa máquina nova (só o `helios` roda o Hermes hoje) — skill via
+Recriar numa máquina nova (só o `300` roda o Hermes hoje) — skill via
 symlink, scripts via stub:
 
 ```bash

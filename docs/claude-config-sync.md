@@ -64,7 +64,7 @@ tinha acontecido uma vez (ver "Atualização (260810)" abaixo: `model`/
 `effortLevel` divergentes do committed, sem aviso). O caso que motivou a
 correção: 3 commits (`d28b5b6` habilitando o `pr-review-toolkit`, `d6c2fc5`
 ligando `remoteControlAtStartup`, `2c96997` gravando `outputStyle`) live no
-`helios` e ausentes no Neo e no ZenBook, sem sinal disso em lugar nenhum.
+`300` e ausentes no Neo e no ZenBook, sem sinal disso em lugar nenhum.
 
 **Como funciona agora:** hook `SessionStart` no `settings.json` do
 `claude-config` chama `sync-check.cjs` (também no `claude-config`), que se
@@ -119,16 +119,16 @@ compare-a com o repo: se divergir, há edição local não commitada ali (no Neo
 duas eram byte-idênticas, então nada se perdeu).
 
 **Corolário — árvore suja trava tudo, e o modo de falha é circular.** Em
-06/09 o `helios` estava em `skipped`/`working-tree-sujo` com 1 commit não
+06/09 o `300` estava em `skipped`/`working-tree-sujo` com 1 commit não
 aplicado, por duas causas: um arquivo de estado novo
 (`.diaria-studio-autosync-state.json`) sem entrada no `.gitignore`, e `autoMode`
 gerado em runtime pelo Claude dentro do `settings.json` — que, sendo symlink
 para o repo, faz config gerada sujar o repo sozinha. O detalhe que importa: **o
-fix do `.gitignore` já existia no remoto** (#6310), e o helios não conseguia
+fix do `.gitignore` já existia no remoto** (#6310), e o 300 não conseguia
 recebê-lo justamente porque a sujeira que o fix resolve bloqueava o pull.
 Descartar `autoMode` não resolveria (regenera na sessão seguinte e trava de
 novo) — foi versionado. Ao versionar config gerada, conferir se ela é do
-PROJETO ou da MÁQUINA: o `soft_deny: Bash(gh pr merge*)` do helios faz sentido
+PROJETO ou da MÁQUINA: o `soft_deny: Bash(gh pr merge*)` do 300 faz sentido
 num host desassistido, mas em máquina interativa atrita com o auto-merge do
 #5251.
 
@@ -136,7 +136,7 @@ num host desassistido, mas em máquina interativa atrita com o auto-merge do
 chicken-and-egg: máquina que ainda não puxou até `90b537c` não tem o
 `sync-check.cjs` nem a entrada de hook, então precisa de UM `git pull`/
 `bootstrap` manual para receber o próprio mecanismo — a partir daí se propaga
-sozinha. Verificado ao vivo só no `helios`; Neo e ZenBook pendentes (o ZenBook
+sozinha. Verificado ao vivo só no `300`; Neo e ZenBook pendentes (o ZenBook
 é o que importa, por causa da detecção de cópia).
 
 **Ainda manual:** `memory/` (ver acima) e o `bootstrap` inicial de máquina
@@ -199,19 +199,19 @@ e o bootstrap passou a clonar `re-plan` em `~/Projects/Re-plan` + rodar
    `/sprint-start`/`/day-plan`/etc. e a statusline funcionando após reiniciar
    o Claude Code.
 2. Rodar `bootstrap.sh`/`bootstrap.ps1` nas demais máquinas (incluindo
-   `helios`) e **confirmar ao vivo**.
+   `300`) e **confirmar ao vivo**.
 
 ## Atualização (260810 — sessão `/diaria-develop`; fechamento em 260811 — overnight)
 
-`helios` confirmado ao vivo: `bootstrap.sh` re-rodado, todos os itens já
+`300` confirmado ao vivo: `bootstrap.sh` re-rodado, todos os itens já
 symlinkados (`settings.json`, `agents/`, `statusline-wrapper.cjs`), `re-plan`
 popula `~/.claude/commands/` com os 5 comandos, `ccusage` instalado,
 `statusline-wrapper.cjs` executado manualmente contra um payload de
 statusline válido e respondeu sem erro. Item 2 acima está satisfeito para
-as duas máquinas conhecidas do editor (Windows + `helios`); resta apenas
+as duas máquinas conhecidas do editor (Windows + `300`); resta apenas
 se houver uma terceira máquina no futuro.
 
-**Achado no caminho, corrigido:** o `settings.json` local em `helios`
+**Achado no caminho, corrigido:** o `settings.json` local em `300`
 tinha `model`/`effortLevel` divergentes do valor committed no
 `claude-config`, sem nenhum aviso — como o arquivo é um symlink direto pro
 repo git, qualquer edição ao vivo da sessão escreve através do symlink pro
@@ -223,7 +223,7 @@ bloquear) com o diff resumido e as duas ações possíveis: commit+push (vira
 config permanente, compartilhada) ou `git checkout -- .` (descarta,
 mantém a máquina de origem como única fonte de verdade).
 
-O drift específico achado em `helios` (260810) foi verificado como
+O drift específico achado em `300` (260810) foi verificado como
 resolvido organicamente numa sessão overnight posterior (260811) —
 `git status --porcelain` em `~/claude-config` veio limpo, sem working tree
 dirty. Não houve decisão explícita a tomar; o `git pull --ff-only` de uma
@@ -287,10 +287,10 @@ julgamento explícito para escolher entre eles — o argumento decisivo é
 onde cada um consegue RODAR:
 
 - Um alarme de drift, neste repo, é sempre uma **scheduled task** — e
-  scheduled tasks só rodam no `helios`/servidor (`docs/scheduled-tasks-
+  scheduled tasks só rodam no `300`/servidor (`docs/scheduled-tasks-
   registry.md`; máquinas locais não rodam mais tasks agendadas, ver
   `local-machine-nao-roda-mais-tasks-diaria` na memória do editor). O
-  `helios` já É uma máquina conectada por definição — ele não tem como
+  `300` já É uma máquina conectada por definição — ele não tem como
   observar `~/.claude/projects/{slug}/memory/` de uma máquina que está
   justamente fora do mecanismo, sem que essa máquina primeiro sincronize
   alguma coisa (o que é exatamente o que falhou em acontecer). Um alarme
@@ -343,7 +343,7 @@ depois que `~/.claude/settings.json` já é symlink pro repo. Numa máquina que
 nunca rodou `bootstrap` — ou que caiu no fallback de cópia do Windows sem
 Modo Desenvolvedor — o mecanismo nunca chega a se armar sozinho. É
 exatamente o estado medido ao vivo no Neo e no ZenBook em 28/08/2026
-(comentários de #6310): a implementação existia e funcionava no `helios`,
+(comentários de #6310): a implementação existia e funcionava no `300`,
 mas não tinha como chegar às outras duas máquinas sem alguém rodar o
 bootstrap manualmente — o mesmo passo que dependia de lembrar, que é o
 problema original da issue.
@@ -395,7 +395,7 @@ os três casos (repo ausente, presente-mas-não-armado, já-armado) todos
 saíram com `exit 0` no pai, nunca lançaram, e o estado gravado bateu com a
 decisão esperada. **O que este PR NÃO pôde verificar:** o `git clone`/
 bootstrap reais contra o `claude-config` de verdade, em nenhuma das 3
-máquinas (helios/Neo/ZenBook) — isso é efeito de rede/IO fora do alcance de
+máquinas (300/Neo/ZenBook) — isso é efeito de rede/IO fora do alcance de
 um worktree isolado de subagente; fica para confirmação ao vivo do editor
 (mesmo padrão dos demais itens desta issue marcados "verificado ao vivo").
 

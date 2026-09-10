@@ -8,7 +8,7 @@
  * `hermes/scripts/lib/free-quota-exhaustion.test.sh`.
  *
  * O bug do #6943 SÓ aparece invocando através de um symlink sem `lib/` ao
- * lado (o deploy real do `helios`) — testar o arquivo real direto nunca
+ * lado (o deploy real do `300`) — testar o arquivo real direto nunca
  * reproduz, por isso a lógica de reprodução vive inteira no `.sh`.
  */
 

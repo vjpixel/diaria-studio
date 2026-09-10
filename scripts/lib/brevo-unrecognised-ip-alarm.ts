@@ -8,7 +8,7 @@
  * `clarice-guardrail-alarm.ts`).
  *
  * Origem: incidente #6124/#6132 (24-25/08/2026) — a Brevo passou a rejeitar
- * o IP do `helios` na conta Clarice, e ninguém percebeu por ~26h porque o
+ * o IP do `300` na conta Clarice, e ninguém percebeu por ~26h porque o
  * sinal (401 com mensagem autoexplicativa, incluindo o próprio IP bloqueado
  * e a URL da allowlist) nunca virou um achado nomeado — só 4 units systemd
  * falhando em silêncio, e `Diaria-Systemd-Failed-Units-Alarm` reportando a

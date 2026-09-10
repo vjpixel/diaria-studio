@@ -31,7 +31,7 @@
  * below-floor com conteúdo ilegível (`skipped`), ou falha ao escrever
  * algum `.service` sob `--apply` (`errors` — as demais já escritas com
  * sucesso continuam válidas, ver mensagem); 2 = relatório "cannot-verify"
- * — diretório ausente/ilegível (normal fora do `helios`, ex: worktree
+ * — diretório ausente/ilegível (normal fora do `300`, ex: worktree
  * isolado, sessão cloud) OU toda unit node-based encontrada é
  * "cannot-verify" (nenhuma below-floor nem ok pra basear um plano).
  */

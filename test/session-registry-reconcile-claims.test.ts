@@ -119,7 +119,7 @@ describe("decideClaimReconciliation (#6581) — pura, sem I/O", () => {
   it("cenário (a) — claim válida só no backup, com claimed_issues_at POSTERIOR ao heartbeat do real → adiciona (#6698)", () => {
     const real: SessionRecord = {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s10",
       startedAt: "2026-08-01T00:00:00.000Z",
       lastHeartbeat: "2026-08-01T00:00:00.000Z",
@@ -139,7 +139,7 @@ describe("decideClaimReconciliation (#6581) — pura, sem I/O", () => {
   it("cenário (b) — claim removida por unclaimIssue pré-#6567 (claimed_issues_at ANTERIOR/igual ao heartbeat do real) → NÃO ressuscita (#6698)", () => {
     const real: SessionRecord = {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s11",
       // O real já bateu heartbeat DEPOIS da claim original (ex: um
       // `unclaimIssue` pré-#6567 que só tocou o real) — teve chance de
@@ -164,7 +164,7 @@ describe("decideClaimReconciliation (#6581) — pura, sem I/O", () => {
   it("cenário (b), timestamp EXATAMENTE igual ao heartbeat do real → também não ressuscita (limite inclusivo, #6698)", () => {
     const real: SessionRecord = {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s12",
       startedAt: "2026-08-01T00:00:00.000Z",
       lastHeartbeat: "2026-08-05T00:00:00.000Z",
@@ -181,7 +181,7 @@ describe("decideClaimReconciliation (#6581) — pura, sem I/O", () => {
   it("sem claimed_issues_at (claim pré-#6436) → sem evidência, preserva o comportamento anterior (adiciona, #6698)", () => {
     const real: SessionRecord = {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s13",
       startedAt: "2026-08-01T00:00:00.000Z",
       lastHeartbeat: "2026-08-10T00:00:00.000Z",
@@ -199,21 +199,21 @@ describe("decideClaimReconciliation (#6581) — pura, sem I/O", () => {
 describe("planClaimReconciliation / reconcileClaims (#6581)", () => {
   it("união correta entre real + N backups — issues exclusivas de cada backup são somadas", () => {
     const root = freshRoot();
-    registerSession(root, "continuo", "s1", { tag: "predator" });
-    claimIssueCheckAndSet(root, "continuo", "s1", 100, "predator");
-    const realPath = sessionFilePath(root, "continuo", "predator", "s1");
+    registerSession(root, "continuo", "s1", { tag: "300" });
+    claimIssueCheckAndSet(root, "continuo", "s1", 100, "300");
+    const realPath = sessionFilePath(root, "continuo", "300", "s1");
 
-    writeRawSessionFile(root, "continuo-predator-s1-predator-safeBackup-0001.json", {
+    writeRawSessionFile(root, "continuo-300-s1-300-safeBackup-0001.json", {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s1",
       startedAt: "2026-08-01T00:00:00.000Z",
       lastHeartbeat: "2026-08-01T00:00:00.000Z",
       claimed_issues: [100, 200],
     });
-    writeRawSessionFile(root, "continuo-predator-s1-predator-safeBackup-0002.json", {
+    writeRawSessionFile(root, "continuo-300-s1-300-safeBackup-0002.json", {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s1",
       startedAt: "2026-08-01T00:00:00.000Z",
       lastHeartbeat: "2026-08-01T00:00:00.000Z",
@@ -257,12 +257,12 @@ describe("planClaimReconciliation / reconcileClaims (#6581)", () => {
 
   it("idempotente: rodar reconcileClaims 2× não muda nada na 2ª", () => {
     const root = freshRoot();
-    registerSession(root, "continuo", "s3", { tag: "predator" });
-    claimIssueCheckAndSet(root, "continuo", "s3", 10, "predator");
-    const realPath = sessionFilePath(root, "continuo", "predator", "s3");
-    writeRawSessionFile(root, "continuo-predator-s3-predator-safeBackup-0001.json", {
+    registerSession(root, "continuo", "s3", { tag: "300" });
+    claimIssueCheckAndSet(root, "continuo", "s3", 10, "300");
+    const realPath = sessionFilePath(root, "continuo", "300", "s3");
+    writeRawSessionFile(root, "continuo-300-s3-300-safeBackup-0001.json", {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s3",
       startedAt: "2026-08-01T00:00:00.000Z",
       lastHeartbeat: "2026-08-01T00:00:00.000Z",
@@ -347,11 +347,11 @@ describe("planClaimReconciliation / reconcileClaims (#6581)", () => {
 
   it("dry-run (planClaimReconciliation) não escreve nada no disco", () => {
     const root = freshRoot();
-    registerSession(root, "continuo", "s5", { tag: "predator" });
-    const realPath = sessionFilePath(root, "continuo", "predator", "s5");
-    writeRawSessionFile(root, "continuo-predator-s5-predator-safeBackup-0001.json", {
+    registerSession(root, "continuo", "s5", { tag: "300" });
+    const realPath = sessionFilePath(root, "continuo", "300", "s5");
+    writeRawSessionFile(root, "continuo-300-s5-300-safeBackup-0001.json", {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s5",
       startedAt: "2026-08-01T00:00:00.000Z",
       lastHeartbeat: "2026-08-01T00:00:00.000Z",
@@ -398,15 +398,15 @@ describe("planClaimReconciliation / reconcileClaims (#6581)", () => {
 
   it("nunca ressuscita uma claim legitimamente removida via unclaimIssue entre o plano e a escrita (#6583 fleet review — 3 revisores independentes)", () => {
     const root = freshRoot();
-    registerSession(root, "continuo", "s7", { tag: "predator" });
-    claimIssueCheckAndSet(root, "continuo", "s7", 10, "predator");
-    const realPath = sessionFilePath(root, "continuo", "predator", "s7");
+    registerSession(root, "continuo", "s7", { tag: "300" });
+    claimIssueCheckAndSet(root, "continuo", "s7", 10, "300");
+    const realPath = sessionFilePath(root, "continuo", "300", "s7");
 
     // Backup mostra 10, 20 e 30 — 20 e 30 são "novidade" do ponto de vista do
     // plano (real só tem 10 até aqui).
-    writeRawSessionFile(root, "continuo-predator-s7-predator-safeBackup-0001.json", {
+    writeRawSessionFile(root, "continuo-300-s7-300-safeBackup-0001.json", {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "s7",
       startedAt: "2026-08-01T00:00:00.000Z",
       lastHeartbeat: "2026-08-01T00:00:00.000Z",
@@ -425,7 +425,7 @@ describe("planClaimReconciliation / reconcileClaims (#6581)", () => {
     // remoção a TODO backup do grupo (#6567) — com isso, o PRÓPRIO backup
     // deixa de listar 20 (e ganha 30 como efeito colateral da escrita
     // mesclada de unclaimIssue): passa a valer [10, 30] nos dois arquivos.
-    const unclaimResult = unclaimIssue(root, "continuo", "s7", 20, "predator");
+    const unclaimResult = unclaimIssue(root, "continuo", "s7", 20, "300");
     assert.equal(unclaimResult.ok, true);
     assert.deepEqual(readRealRecord(root, realPath).claimed_issues, [10, 30]);
 
@@ -517,12 +517,12 @@ describe("CLI session-registry-reconcile-claims (#6583 fleet review — cobertur
 
   it("dry-run (default, sem --push) nunca escreve no disco", () => {
     const root = freshRoot();
-    registerSession(root, "continuo", "cli-s1", { tag: "predator" });
-    claimIssueCheckAndSet(root, "continuo", "cli-s1", 1, "predator");
-    const realPath = sessionFilePath(root, "continuo", "predator", "cli-s1");
-    writeRawSessionFile(root, "continuo-predator-cli-s1-predator-safeBackup-0001.json", {
+    registerSession(root, "continuo", "cli-s1", { tag: "300" });
+    claimIssueCheckAndSet(root, "continuo", "cli-s1", 1, "300");
+    const realPath = sessionFilePath(root, "continuo", "300", "cli-s1");
+    writeRawSessionFile(root, "continuo-300-cli-s1-300-safeBackup-0001.json", {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "cli-s1",
       startedAt: "2026-08-01T00:00:00.000Z",
       lastHeartbeat: "2026-08-01T00:00:00.000Z",
@@ -539,12 +539,12 @@ describe("CLI session-registry-reconcile-claims (#6583 fleet review — cobertur
 
   it("--push grava de verdade a união no arquivo real", () => {
     const root = freshRoot();
-    registerSession(root, "continuo", "cli-s2", { tag: "predator" });
-    claimIssueCheckAndSet(root, "continuo", "cli-s2", 1, "predator");
-    const realPath = sessionFilePath(root, "continuo", "predator", "cli-s2");
-    writeRawSessionFile(root, "continuo-predator-cli-s2-predator-safeBackup-0001.json", {
+    registerSession(root, "continuo", "cli-s2", { tag: "300" });
+    claimIssueCheckAndSet(root, "continuo", "cli-s2", 1, "300");
+    const realPath = sessionFilePath(root, "continuo", "300", "cli-s2");
+    writeRawSessionFile(root, "continuo-300-cli-s2-300-safeBackup-0001.json", {
       kind: "continuo",
-      machineTag: "predator",
+      machineTag: "300",
       sessionId: "cli-s2",
       startedAt: "2026-08-01T00:00:00.000Z",
       lastHeartbeat: "2026-08-01T00:00:00.000Z",

@@ -84,7 +84,7 @@
  * rodada 260909, #7518): a 1ª versão desta docstring afirmava que as duas
  * tasks de ingestão estavam "DECLARADA, NÃO ARMADA" no registro. É FALSO —
  * `Diaria-Google-Ads-Spend-Ingest` e `Diaria-Microsoft-Ads-Spend-Ingest`
- * não carregam esse marcador, e no helios (onde este alarme roda) os dois
+ * não carregam esse marcador, e no 300 (onde este alarme roda) os dois
  * timers respondem `enabled`, com runs diários no journal. Ou seja: NESTA
  * máquina, log ausente NÃO é "task não armada" — seria anomalia de fato.
  * A decisão de não auto-alarmar se sustenta pelo resto do argumento

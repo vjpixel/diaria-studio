@@ -4,7 +4,7 @@
  * Guard de tamanho do `hermes/skills/hermes-diaria-continuo/SKILL.md` —
  * mesmo racional de `test/claude-md-size.test.ts` (#5904), aplicado ao 2º
  * arquivo de prompt que é carregado incondicionalmente sempre que ele roda:
- * o `helios` (via cron do Hermes, ver `test/continuo-infra-consumidor-
+ * o `300` (via cron do Hermes, ver `test/continuo-infra-consumidor-
  * externo.test.ts`) lê o SKILL.md inteiro em TODO tick do contínuo. Medido
  * em 02/09/2026: 48.282 bytes, crescendo ~7KB/dia (cada incidente/decisão
  * vira um parágrafo novo no changelog ou nos passos operacionais, narrativa

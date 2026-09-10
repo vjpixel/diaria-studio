@@ -25,7 +25,7 @@ Lógica:
 # `str | None`/`list[str]`/`set[str]` introduzidas nesta revisão usam sintaxe
 # de anotação do Python 3.10+; sem este import, DEFINIR as funções (não só
 # chamá-las) já lança TypeError num interpretador mais antigo — e não há
-# garantia versionada aqui de qual Python roda no `helios`. O future import
+# garantia versionada aqui de qual Python roda no `300`. O future import
 # torna toda anotação uma string avaliada preguiçosamente, seguro desde 3.7+.
 from __future__ import annotations
 

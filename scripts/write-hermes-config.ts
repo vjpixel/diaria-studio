@@ -46,7 +46,7 @@
  *
  * `--validate-cmd`/`--smoke-cmd` são strings de shell — este script não
  * conhece o binário `hermes`; quem chama decide o comando exato (o próprio
- * ambiente do `helios` é quem tem `hermes` no PATH, não este repo/CI).
+ * ambiente do `300` é quem tem `hermes` no PATH, não este repo/CI).
  * Omitir os dois ainda produz backup + escrita — é o mínimo do verbo, nunca
  * um erro (nem toda mudança tem probe automatizado disponível).
  *

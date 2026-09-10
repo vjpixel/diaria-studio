@@ -14,7 +14,7 @@ cegas.
 
 ### O problema que ele nomeia
 
-O editor desligou o auto-updater do Claude Code no `helios` (#6927, 01/09) porque
+O editor desligou o auto-updater do Claude Code no `300` (#6927, 01/09) porque
 o updater comparava a versão contra a que o **processo em execução** carregou, não
 contra a do disco, e isso realimentava o ciclo de reinstalação (5 quebras do
 binário no mesmo dia, ~214MB por ciclo). Com o updater desligado, o silêncio do
@@ -91,7 +91,7 @@ npx tsx scripts/npm-version-drift-alarm.ts --threshold-days 7 # default 7
 
 `local` — precisa do junction `data/` (OneDrive) + `data/.credentials.json` com
 o scope `gmail.send` (só quando há achado pra de fato enviar o e-mail). Roda em
-qualquer plataforma que tenha `npm` — não é específico do `helios`.
+qualquer plataforma que tenha `npm` — não é específico do `300`.
 
 ```bash
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Npm-Version-Drift-Alarm
@@ -103,4 +103,4 @@ Cadência: `daily, 10:40 BRT` (`scripts/lib/scheduled-tasks.ts`) — 1 checagem/
 já dá granularidade suficiente pro limiar de 7d sem custo de rodar mais vezes.
 **DECLARADA, NÃO ARMADA nesta unidade** (worktree isolado, mesma disciplina das
 outras entradas do registro) — armar via `scripts/setup-systemd-timers.ts` na
-checkout compartilhada (`helios`) é ação POSTERIOR do editor.
+checkout compartilhada (`300`) é ação POSTERIOR do editor.

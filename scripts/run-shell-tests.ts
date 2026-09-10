@@ -8,7 +8,7 @@
  *
  * **Por que isso é P2 e não higiene.** Teste que não roda não é rede de
  * segurança; é a aparência de uma. E a área coberta por estes é justamente
- * `hermes/` + o fluxo do contínuo — o consumidor externo no `helios`, onde
+ * `hermes/` + o fluxo do contínuo — o consumidor externo no `300`, onde
  * este repo já reverteu uma remoção por ter quebrado o loop de produção
  * (#6059/#6060). O lugar de maior risco de regressão era o que tinha
  * cobertura decorativa.

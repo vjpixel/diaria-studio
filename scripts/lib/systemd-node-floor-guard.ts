@@ -10,7 +10,7 @@
  * como nasceram, quebrados, e o gerador nunca mais roda sobre eles até o
  * editor religar manualmente.
  *
- * Achado ao vivo (#7522, 09/09/2026): 9 units em `helios` apontavam pra
+ * Achado ao vivo (#7522, 09/09/2026): 9 units em `300` apontavam pra
  * `/usr/bin/node` (Node 20.20.2 do sistema, abaixo do piso) — todas
  * `enabled`, incluindo 3 alarmes (`diaria-corrupted-names-weekly-check`,
  * `diaria-guard-never-invoked-weekly-check`, `diaria-task-registry-prose-
@@ -190,7 +190,7 @@ export function resolveNodeVersionForPath(nodePath: string): string | null {
  * contra o piso de Node. Tri-state honesto (#7776): diretório
  * ausente/ilegível vira `verdict: "cannot-verify"` no nível do RELATÓRIO
  * (nunca "ok" por omissão — sessão cloud/worktree isolado é o caso normal
- * fora do `helios`, mas ainda assim não é "verificado limpo").
+ * fora do `300`, mas ainda assim não é "verificado limpo").
  *
  * Prioridade do veredito agregado: `"below-floor"` (qualquer unit abaixo do
  * piso) > `"cannot-verify"` (nenhum below-floor confirmado, mas pelo menos

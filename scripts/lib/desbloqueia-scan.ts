@@ -69,7 +69,7 @@
  * bloqueio: o `matched: "default"` (badge `·sem sinal` do painel Triagem) —
  * nenhuma label/marcador classificou a issue, ou seja **ninguém olhou**. Uma
  * issue genuinamente bloqueada a que ninguém aplicou a label ficava invisível
- * pra esta skill, o `helios` tentava executá-la e falhava (medição de
+ * pra esta skill, o `300` tentava executá-la e falhava (medição de
  * 08/09/2026: 26 das 68 abertas estavam nesse bucket, contra 9 candidatas no
  * escopo antigo).
  *

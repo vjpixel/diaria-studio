@@ -462,7 +462,7 @@ Para cada issue elegível (após claim):
 ) &
 HEARTBEAT_PID=$!
 
-printf '%s' "Implemente a issue #N do repo atual (leia fresca: gh api repos/{owner}/{repo}/issues/N p/ título+corpo e gh api repos/{owner}/{repo}/issues/N/comments p/ comentários). #7572: em gh 2.46 (Ubuntu ESM, Helios) 'gh issue view N --comments' quebra com GraphQL 'repository.issue.projectCards deprecated' (Projects clássico descontinuado) — o caminho canônico é a REST API. 'gh issue view N --json title,body' e '--json comments' também funcionam, mas o REST é o que sobrevive à deprecacao. NUNCA parsear saida do gh com Python ad-hoc (regra dura, secao 3).
+printf '%s' "Implemente a issue #N do repo atual (leia fresca: gh api repos/{owner}/{repo}/issues/N p/ título+corpo e gh api repos/{owner}/{repo}/issues/N/comments p/ comentários). #7572: em gh 2.46 (Ubuntu ESM, 300) 'gh issue view N --comments' quebra com GraphQL 'repository.issue.projectCards deprecated' (Projects clássico descontinuado) — o caminho canônico é a REST API. 'gh issue view N --json title,body' e '--json comments' também funcionam, mas o REST é o que sobrevive à deprecacao. NUNCA parsear saida do gh com Python ad-hoc (regra dura, secao 3).
 Siga o CLAUDE.md. Crie branch com o prefixo continuo/ (convenção
 continuo/fix-N-slug — é o que faz o PR aparecer como CONTINUO na Triagem
 do Studio, #6446), implemente com edições cirúrgicas, adicione
@@ -626,7 +626,7 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Pitfalls herdados (ver references/)
 
-- `subagent-mcp-drain-20260828.md` (references/) — drain subagente MCP (#6465): lote 5-10, anti-fabricação (nunca confiar só em EXIT=0), dedup obrigatório, fonte única Helios/Neo, claim hygiene.
+- `subagent-mcp-drain-20260828.md` (references/) — drain subagente MCP (#6465): lote 5-10, anti-fabricação (nunca confiar só em EXIT=0), dedup obrigatório, fonte única 300/Neo, claim hygiene.
 - `tick-20260828-claim-collision-and-subagent.md` (references/) — colisão de claim `continuo` vs `develop` (sessão stale não bloqueia claim ativo) e detecção de claim obsoleto.
 - Rotação de modelo do Hermes (v0.4 §rotação): OBSOLETA para implementação —
   o fallback de modelo agora vive no wrapper. Mantida só para o modelo que o

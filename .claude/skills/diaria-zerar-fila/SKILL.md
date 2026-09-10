@@ -231,9 +231,9 @@ Na rodada de 02–03/09 havia três coordenadoras vivas e nenhuma dona do estado
 
 Encerrar as outras sessões **não** é a saída — e não está disponível:
 
-- `overnight` e `contínuo` rodam por **cron no helios**, desassistidos. Esta skill roda numa sessão que morre quando o editor fecha o terminal; matá-los deixa a janela noturna descoberta.
+- `overnight` e `contínuo` rodam por **cron no 300**, desassistidos. Esta skill roda numa sessão que morre quando o editor fecha o terminal; matá-los deixa a janela noturna descoberta.
 - O `contínuo` tem **consumidor externo a este repo** (cron do Hermes). Removê-lo já quebrou produção uma vez (#6059) e teve de ser revertido (#6060).
-- Máquinas diferentes têm capacidades diferentes: `data/` e Chrome logado só no Neo; systemd e os crons só no helios.
+- Máquinas diferentes têm capacidades diferentes: `data/` e Chrome logado só no Neo; systemd e os crons só no 300.
 
 Então a skill não elimina as outras — ela **declara posse enquanto roda**.
 
@@ -248,7 +248,7 @@ Então a skill não elimina as outras — ela **declara posse enquanto roda**.
 ### Durante a janela
 
 - **Todo merge passa por você, serial.** É a correção do que hoje é "cada sessão mergeia e torce". Uma fila, uma dona.
-- **Não duplicar o helios.** O filtro do #5751 **vale** — issue que o `overnight`/`contínuo` já reivindicou é deles; `is-claimed` decide, e você segue em frente. (O goal ad-hoc de 02/09 revogou esse filtro; a revogação era daquela rodada, não desta skill.)
+- **Não duplicar o 300.** O filtro do #5751 **vale** — issue que o `overnight`/`contínuo` já reivindicou é deles; `is-claimed` decide, e você segue em frente. (O goal ad-hoc de 02/09 revogou esse filtro; a revogação era daquela rodada, não desta skill.)
 - **Sessão que não responde ao anúncio fica fora da coordenação** — não se presume cooperação, e também não se assume que ela morreu (ver #7194: silêncio não é morte).
 
 ### Na saída
@@ -272,7 +272,7 @@ merge-lock-acquire --pr N   →   gh pr merge N --squash   →   merge-lock-rele
 1. `npx tsx scripts/sync-code.ts` — a rodada não pode começar com código defasado.
 2. **Registrar posse da janela** — `register --kind develop`, e anunciar às sessões vivas (ver "Posse da janela"). Sem isso você não mergeia, e o contrato desta skill não se cumpre.
 3. `npx tsx scripts/fetch-open-issues-for-triage.ts` — o snapshot de partida, já com `execTrack` por issue. **Nunca fixar números de issue nesta skill**: eles envelhecem em horas e viram desinformação (mesmo erro que o #6928 corrigiu na cadência do contínuo, registrada errada duas vezes).
-4. `npx tsx scripts/lib/session-registry.ts list-active` — quem mais está trabalhando, e o que já reivindicou. Se `is-claimed` disser que o `helios` pegou, pular e seguir.
+4. `npx tsx scripts/lib/session-registry.ts list-active` — quem mais está trabalhando, e o que já reivindicou. Se `is-claimed` disser que o `300` pegou, pular e seguir.
 5. **Verificar se master está vermelho.** Com o merge quebrado, nada anda — é P0 de fato, independente da label.
 6. **Passe de reclassificação, antes de despachar qualquer coisa.** Ler por inteiro toda issue fora de `overnight` — em subagentes paralelos, é 100% paralelizável — e reclassificar o que a leitura destravar (remover label + `route-issue.ts`). Historicamente **mais da metade** de `agendada` e de `bloqueada` volta a ser executável; ver "CLASSIFICAÇÃO NÃO É VEREDITO". Despachar antes deste passe é despachar metade do alvo.
 

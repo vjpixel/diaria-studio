@@ -6,14 +6,14 @@ scope: claim hygiene + subagent drain delegation + stale claim detection
 
 # Tick 2026-08-28 — aprendizados operacionais (referência)
 
-Capturado do ciclo real (`hermes-diaria-continuo` v0.5.0) rodado no Helios.
+Capturado do ciclo real (`hermes-diaria-continuo` v0.5.0) rodado no 300.
 Não é uma nova regra de produto — é registro observado.
 
 ## 1. Claim colisão: `continuo` vs `develop` (o que realmente aconteceu)
 
 Estado observado (lido do filesystem, não inferido):
 
-- `continuo-helios-hermes-cron-5d791ef6fc2c.json`: `kind=continuo`,
+- `continuo-300-hermes-cron-5d791ef6fc2c.json`: `kind=continuo`,
   `claimed_issues=[6465]`, `lastHeartbeat=21:05`, SUBPROCESSO ativo (batch 5).
 - `develop-Neo-d6f4bcac-313c-...` (stale): `kind=develop`, `claimed_issues` ainda
   contém `[6465]`, `lastHeartbeat=17:45` (3h20 antes do tick, > 90min).

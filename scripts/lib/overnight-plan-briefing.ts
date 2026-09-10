@@ -13,7 +13,7 @@
  *
  * Achado concreto que motivou (05/09/2026): `data/overnight/260905/plan.json`
  * tinha `batch_approval: "default_proposed"` + `loop_estendido: false` +
- * `machine_id: "helios"` — compatível tanto com "rodou sem editor" quanto
+ * `machine_id: "300"` — compatível tanto com "rodou sem editor" quanto
  * com "defeito silencioso", sem nada no plano que distinguisse os dois. A
  * investigação da #7493 provou que a FONTE de perguntas (`precisa-resposta`)
  * tinha secado, mas não conseguiu fechar se o fallback de loop-estendido

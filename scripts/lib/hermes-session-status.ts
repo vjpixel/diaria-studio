@@ -31,12 +31,12 @@
  * ## Honestidade de escopo — schema real não inspecionado
  *
  * Este módulo nunca teve acesso ao `sessions.json` real (vive em `~/.hermes`
- * no `helios`, fora do alcance desta sessão/worktree). `DEFAULT_ALLOWED_
+ * no `300`, fora do alcance desta sessão/worktree). `DEFAULT_ALLOWED_
  * SESSION_FIELDS` é um ponto de partida derivado literalmente da decisão do
  * editor ("last_status, override de modelo da sessão, sinal de exaustão de
  * conta") — os nomes de campo exatos (`last_status` vs. `status`, etc.)
  * precisam ser confirmados contra o arquivo real na próxima vez que alguém
- * tiver acesso ao `helios`, e ajustados via `--fields` (CLI) ou um novo
+ * tiver acesso ao `300`, e ajustados via `--fields` (CLI) ou um novo
  * default aqui. `extractSessionStatus` é pura e agnóstica ao nome exato dos
  * campos — o comportamento de allowlist-fecha-por-padrão não depende de
  * acertar os nomes de primeira.

@@ -100,16 +100,26 @@ export function isEmbeddedHtmlFilename(name: string): boolean {
 // ---------------------------------------------------------------------------
 
 /** Sufixos de nome de máquina realmente usados no projeto (ver CLAUDE.md /
- *  memory: helios — servidor Linux 24/7, também participa de conflito
- *  OneDrive, ver #7170 —, neo, predator, Zenbook) + o padrão
+ *  memory: neo, Zenbook, e o servidor Linux 24/7 — renomeado de
+ *  `helios`/`predator` para `300` em 08-10/09/2026, #7682; `helios` e
+ *  `predator` NÃO são máquinas diferentes, são dois apelidos da MESMA
+ *  máquina (Acer Predator Helios 300) usados ao longo do tempo, então os
+ *  dois seguem na alternância — arquivos de conflito já gravados em `data/`
+ *  antes do rename carregam um ou outro sufixo e ficariam órfãos se
+ *  saíssem). `300` entra como 3º apelido da mesma máquina, não uma 4ª —
+ *  são 3 máquinas reais (neo, Zenbook, servidor) pros 4 nomes na
+ *  alternância. Verificado em 10/09/2026 (#7682 Parte C): nenhum arquivo em
+ *  `data/` usa sufixo puramente numérico (`-NNN.ext`) que colidiria com
+ *  `-300` sendo lido como esse sufixo em vez de nome de máquina — sem
+ *  colisão medida, `300` entra sem âncora extra. + o padrão
  *  `-safeBackup-NNNN` que o cliente OneDrive gera em conflito de eTag
  *  (#7170) + `.bak[-data]` de backup manual. Casa `-Neo`, `-Neo-2` …
- *  `-Neo-10` (OneDrive numera conflitos repetidos), `-helios`,
+ *  `-Neo-10` (OneDrive numera conflitos repetidos), `-helios`, `-300`,
  *  `-predator-safeBackup-0001`, `-fromWindows-260817-0146`, `.db.bak`,
  *  `.db.bak-260728-pre-build`. */
 const BACKUP_SIBLING_PATTERNS: readonly RegExp[] = [
   /-safeBackup-\d+(?=\.[^./]+$|$)/i,
-  /-(predator|neo|zenbook|helios)(-\d+)?(?=\.[^./]+$)/i,
+  /-(predator|neo|zenbook|helios|300)(-\d+)?(?=\.[^./]+$)/i,
   /-fromWindows-\d{6}-\d{4}(?=\.[^./]+$)/i,
   /\.bak(-\d{6}[-\w]*)?$/i,
 ];

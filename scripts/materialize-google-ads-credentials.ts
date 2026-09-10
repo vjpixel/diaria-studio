@@ -49,7 +49,7 @@ import { isMainModule } from "./lib/cli-args.ts";
 /** Timeout do fallback `doppler secrets get` (#6704) — mesmo valor do #6630
  * pro runner de lock, mesma classe de falha: `doppler` sem sessão válida
  * (token expirado, prompt interativo, retry de rede) pode pendurar
- * indefinidamente. Numa task agendada não-interativa (helios), sem timeout o
+ * indefinidamente. Numa task agendada não-interativa (300), sem timeout o
  * processo trava pra sempre e o `catch {}` fail-soft abaixo nunca roda porque
  * a chamada nunca retorna — o guard "fail-soft" só existe se a chamada de
  * fato conseguir FALHAR em vez de travar. */
@@ -118,7 +118,7 @@ export function fetchFromDopplerDirectly(): string | null {
  * `scripts/sync-env.ts`, nunca deixa o destino truncado numa falha parcial.
  * `mode` (achado do fleet review, #6450): sem ele o arquivo herda o umask
  * padrão do processo (tipicamente 0644 em Linux) — inaceitável pra um
- * arquivo com `private_key` num servidor multiusuário como o `helios`.
+ * arquivo com `private_key` num servidor multiusuário como o `300`.
  * `renameSync` preserva o mode do arquivo de origem (`.tmp`), então basta
  * setar no `writeFileSync`. */
 function writeFileAtomic(path: string, content: string, mode?: number): void {

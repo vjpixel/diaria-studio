@@ -46,7 +46,7 @@ describe("checkOvernightPlanBriefingFromRoot", () => {
 
   it("cenário real 260905: reason legítimo (sem-editor-presente) valida", () => {
     const plan: OvernightPlanRootLike = {
-      machine_id: "helios",
+      machine_id: "300",
       briefing: {
         asked: false,
         reason: "sem-editor-presente",

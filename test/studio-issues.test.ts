@@ -428,8 +428,8 @@ describe("fetchTriageData (#3562)", () => {
 
     it("claim de sessão ATIVA aparece na issue", () => {
       root = mkdtempSync(join(tmpdir(), "studio-issues-claims-"));
-      registerSession(root, "continuo", "5d791ef6", { tag: "helios" });
-      claimIssueCheckAndSet(root, "continuo", "5d791ef6", 6051, "helios");
+      registerSession(root, "continuo", "5d791ef6", { tag: "300" });
+      claimIssueCheckAndSet(root, "continuo", "5d791ef6", 6051, "300");
 
       const run = mockRun([{ number: 6051, title: "x", url: "u", state: "OPEN", labels: [] }], []);
       const data = fetchTriageData(root, { run, now: () => Date.now() });
@@ -447,8 +447,8 @@ describe("fetchTriageData (#3562)", () => {
       // de "issue livre", quando na prática o claim seguia valendo por até
       // ~22h a mais.
       const staleStart = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
-      registerSession(root, "continuo", "sess-ociosa", { tag: "helios", startedAt: staleStart });
-      claimIssueCheckAndSet(root, "continuo", "sess-ociosa", 6051, "helios", staleStart);
+      registerSession(root, "continuo", "sess-ociosa", { tag: "300", startedAt: staleStart });
+      claimIssueCheckAndSet(root, "continuo", "sess-ociosa", 6051, "300", staleStart);
 
       const run = mockRun([{ number: 6051, title: "x", url: "u", state: "OPEN", labels: [] }], []);
       const data = fetchTriageData(root, { run, now: () => Date.now() });
@@ -459,8 +459,8 @@ describe("fetchTriageData (#3562)", () => {
     it("#7263: claim de sessão morta há mais de CLAIM_RELEASE_MS (24h) continua NÃO aparecendo — o claim já foi de fato liberado", () => {
       root = mkdtempSync(join(tmpdir(), "studio-issues-claims-released-"));
       const veryStaleStart = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(); // 25h > CLAIM_RELEASE_MS (24h)
-      registerSession(root, "continuo", "sess-abandonada", { tag: "helios", startedAt: veryStaleStart });
-      claimIssueCheckAndSet(root, "continuo", "sess-abandonada", 6052, "helios", veryStaleStart);
+      registerSession(root, "continuo", "sess-abandonada", { tag: "300", startedAt: veryStaleStart });
+      claimIssueCheckAndSet(root, "continuo", "sess-abandonada", 6052, "300", veryStaleStart);
 
       const run = mockRun([{ number: 6052, title: "x", url: "u", state: "OPEN", labels: [] }], []);
       const data = fetchTriageData(root, { run, now: () => Date.now() });
@@ -472,8 +472,8 @@ describe("fetchTriageData (#3562)", () => {
       // 25min: > PANEL_DISPLAY_STALE_MS (20min), mas < SOFT_STALE_MS (90min) —
       // `listActiveSessions` ainda considera esta sessão `stale: false`.
       const heartbeat = new Date(Date.now() - 25 * 60 * 1000).toISOString();
-      registerSession(root, "continuo", "sess-heartbeat-velho", { tag: "helios", startedAt: heartbeat });
-      claimIssueCheckAndSet(root, "continuo", "sess-heartbeat-velho", 6051, "helios", heartbeat);
+      registerSession(root, "continuo", "sess-heartbeat-velho", { tag: "300", startedAt: heartbeat });
+      claimIssueCheckAndSet(root, "continuo", "sess-heartbeat-velho", 6051, "300", heartbeat);
 
       const run = mockRun([{ number: 6051, title: "x", url: "u", state: "OPEN", labels: [] }], []);
       const data = fetchTriageData(root, { run, now: () => Date.now() });
@@ -483,8 +483,8 @@ describe("fetchTriageData (#3562)", () => {
     it("#6592 — claim com heartbeat < PANEL_DISPLAY_STALE_MS (20min) continua aparecendo (não regride #6436)", () => {
       root = mkdtempSync(join(tmpdir(), "studio-issues-claims-panel-fresh-"));
       const heartbeat = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-      registerSession(root, "continuo", "sess-fresca", { tag: "helios", startedAt: heartbeat });
-      claimIssueCheckAndSet(root, "continuo", "sess-fresca", 6051, "helios", heartbeat);
+      registerSession(root, "continuo", "sess-fresca", { tag: "300", startedAt: heartbeat });
+      claimIssueCheckAndSet(root, "continuo", "sess-fresca", 6051, "300", heartbeat);
 
       const run = mockRun([{ number: 6051, title: "x", url: "u", state: "OPEN", labels: [] }], []);
       const data = fetchTriageData(root, { run, now: () => Date.now() });
@@ -618,7 +618,7 @@ describe("attachClaims (#6436)", () => {
     const [claimed] = attachClaims([issue(6051)], [
       {
         kind: "continuo",
-        machineTag: "helios",
+        machineTag: "300",
         sessionId: "5d791ef6",
         claimed_issues: [6051],
         claimed_issues_at: { "6051": "2026-08-20T00:00:00Z" },
@@ -626,7 +626,7 @@ describe("attachClaims (#6436)", () => {
     ]);
     assert.deepEqual(claimed!.claim, {
       kind: "continuo",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "5d791ef6",
       claimedAt: "2026-08-20T00:00:00Z",
       stale: false,
@@ -635,7 +635,7 @@ describe("attachClaims (#6436)", () => {
 
   it("issue sem claim de nenhuma sessão ativa → claim null", () => {
     const [free] = attachClaims([issue(1)], [
-      { kind: "overnight", machineTag: "helios", sessionId: "x", claimed_issues: [2] },
+      { kind: "overnight", machineTag: "300", sessionId: "x", claimed_issues: [2] },
     ]);
     assert.equal(free!.claim, null);
   });
@@ -648,7 +648,7 @@ describe("attachClaims (#6436)", () => {
 
   it("issue reivindicada por 2 sessões simultaneamente (dado corrompido) → a 1ª da lista vence, sem lançar", () => {
     const [claimed] = attachClaims([issue(9)], [
-      { kind: "overnight", machineTag: "helios", sessionId: "first", claimed_issues: [9] },
+      { kind: "overnight", machineTag: "300", sessionId: "first", claimed_issues: [9] },
       { kind: "develop", machineTag: "neo", sessionId: "second", claimed_issues: [9] },
     ]);
     assert.equal(claimed!.claim?.sessionId, "first");
@@ -658,7 +658,7 @@ describe("attachClaims (#6436)", () => {
     const [claimed] = attachClaims([issue(7263)], [
       {
         kind: "develop",
-        machineTag: "helios",
+        machineTag: "300",
         sessionId: "sess-ociosa",
         claimed_issues: [7263],
         claimed_issues_at: { "7263": "2026-09-01T00:00:00Z" },
@@ -667,7 +667,7 @@ describe("attachClaims (#6436)", () => {
     ]);
     assert.deepEqual(claimed!.claim, {
       kind: "develop",
-      machineTag: "helios",
+      machineTag: "300",
       sessionId: "sess-ociosa",
       claimedAt: "2026-09-01T00:00:00Z",
       stale: true,

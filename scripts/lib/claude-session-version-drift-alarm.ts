@@ -2,7 +2,7 @@
  * scripts/lib/claude-session-version-drift-alarm.ts (#6927)
  *
  * Lógica PURA (sem I/O) do alarme "sem política" que nomeia o estado
- * medido ao vivo em #6875/#6891 (helios, 01/09/2026): uma sessão de Claude
+ * medido ao vivo em #6875/#6891 (300, 01/09/2026): uma sessão de Claude
  * Code de vida longa (`--remote-control`, tmux) mantém em memória o
  * binário da versão que carregou no START, mesmo depois de o
  * auto-updater reinstalar em disco — e o updater compara a versão contra

@@ -32,7 +32,7 @@
 // chamada de ferramenta de TODA sessão — registrada ou não, skill ou
 // conversa comum. Nenhuma skill precisa cooperar, e é essa propriedade que
 // fecha o buraco 3 da issue (sessão interativa invisível ao registro —
-// incidente #5751, em que o `helios` segurava #5738 em `claimed_issues`
+// incidente #5751, em que o `300` segurava #5738 em `claimed_issues`
 // enquanto uma sessão interativa a implementava e mergeava em paralelo).
 //
 // ─────────────────────────────────────────────────────────────────────────
@@ -513,7 +513,7 @@ export function buildBeaconRecord(previous, event) {
  * arquivos presentes eram `{develop|continuo}-*` + `interactive-*`, o
  * coordenador vinha primeiro (certo, por sorte de ordenação) — mas quando
  * eram `interactive-*` + `overnight-*` (o par exato medido ao vivo no
- * `helios` pela #6326), `interactive` vinha ANTES de `overnight` e o beacon
+ * `300` pela #6326), `interactive` vinha ANTES de `overnight` e o beacon
  * escolhia o arquivo ERRADO **permanentemente**: escrevia heartbeat no
  * `interactive-*` só recém-promovido-e-removido por `registerSession`,
  * recriando-o, e o `overnight-*` coordenador ficava sem heartbeat do beacon

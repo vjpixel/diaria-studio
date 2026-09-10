@@ -43,9 +43,9 @@
  *      nunca true e o guard de conclusão do #3590 nunca dispara — congelava a
  *      barra na sua % parcial indefinidamente.
  *      Diferente do develop, NÃO há guard de identidade de máquina aqui: o
- *      overnight roda no `helios`, então filtrar por `machine_id` esconderia
+ *      overnight roda no `300`, então filtrar por `machine_id` esconderia
  *      justamente a rodada que o editor quer acompanhar. É a IDADE que separa
- *      "rodada viva no helios" de "rodada morta de ontem".
+ *      "rodada viva no 300" de "rodada morta de ontem".
  *
  *   4. IDLE — barra presente sem edição, develop nem overnight (#2255):
  *      Sem edição alguma:  "{branch}  [████████████] diar.ia.br · sem rodada ativa"
@@ -647,13 +647,13 @@ export function readTodayPlan(cwd: string, now: Date = new Date()): Plan | null 
       // #7106: guard de zumbi — mesmo `isStaleDevelopPlan` que o caminho de develop
       // já aplicava desde o #2800/#2803, que nunca chegou ao caminho de overnight.
       // Sem ele, uma rodada MORTA (encerrada sem todas as issues terminais — o caso
-      // comum quando o helios para no meio) congelava a barra na sua % parcial
+      // comum quando o 300 para no meio) congelava a barra na sua % parcial
       // indefinidamente: `isPlanConcluded` nunca vira true, então o guard de
       // conclusão do #3590 não recolhe a barra, e nada mais a expira.
       // Deliberadamente SEM `isForeignDevelopPlan` aqui: o overnight roda no
-      // `helios`, não nesta máquina — filtrar por máquina esconderia justamente a
+      // `300`, não nesta máquina — filtrar por máquina esconderia justamente a
       // rodada que o editor quer acompanhar. É a IDADE que separa "rodada viva no
-      // helios" de "rodada morta de ontem", não a identidade da máquina.
+      // 300" de "rodada morta de ontem", não a identidade da máquina.
       if (isStaleDevelopPlan(planPath, now)) continue;
       // First entry that passes → this is the current/latest run
       return plan;

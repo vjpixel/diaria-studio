@@ -4,11 +4,11 @@
  * Marcador cross-machine que ataca a lacuna documentada em
  * `TIMER_DISABLED_CROSS_MACHINE_CAVEAT` (`edicao-diaria-staleness-alarm.ts`,
  * #6898): `queryTaskArmed("Diaria-Edicao-Diaria")` só enxerga o agendador da
- * máquina em que O ALARME roda (hoje: `helios`/Linux). Enquanto nada está
+ * máquina em que O ALARME roda (hoje: `300`/Linux). Enquanto nada está
  * agendado em máquina nenhuma (decisão do editor, 19/08/2026) isso é
  * suficiente — mas se a via Windows for reativada no futuro SEM o par
  * Linux (`.service`/`.timer`) também ser reativado, o alarme continuaria
- * lendo `disabled` no `helios` e silenciando pra sempre, mesmo com a
+ * lendo `disabled` no `300` e silenciando pra sempre, mesmo com a
  * edição falhando em silêncio no Windows. Mesma classe de regressão do
  * #5563 (silêncio que não avisa).
  *
@@ -209,7 +209,7 @@ export function readEffectiveScheduleAttestation(dataDir: string, now: Date): Ef
  * algum lugar" — nunca enfraquecê-lo. Se `attestation.armed === true` (e
  * não stale), o resultado é sempre `"armed"`, mesmo que a consulta LOCAL
  * desta máquina diga `"disabled"` — é exatamente o cenário do #7036: a via
- * Windows reativada sem o par Linux ser reativado faria o `helios`
+ * Windows reativada sem o par Linux ser reativado faria o `300`
  * consultar seu PRÓPRIO systemd, ver `disabled`, e sem esta atestação
  * silenciar um alarme que deveria disparar porque a automação está de
  * fato armada (na outra máquina).

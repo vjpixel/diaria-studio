@@ -14,7 +14,7 @@ Existiu como `scripts/cursos-error-alarm.ts` (task systemd `Diaria-Cursos-Error-
 
 **O que NÃO foi removido, de propósito:** `scripts/lib/shared/cursos-alarm-counters.ts` (as 4 chaves + `incrementKvCounter`) e os pontos de incremento em `workers/cursos/src/index.ts`/`subscribe.ts` — são instrumentação do WORKER (grava contadores no KV nos mesmos pontos onde já loga), não do alarme que os lia. Removê-los exigiria deploy do worker sem ganho claro (os contadores não têm custo de manutenção — só ficam sem leitor); se algum dia surgir um leitor melhor (ex: dashboard, ou um novo alarme com critério diferente), os dados já estarão lá.
 
-**Ação manual pendente do editor:** desarmar a task no `helios` —
+**Ação manual pendente do editor:** desarmar a task no `300` —
 ```bash
 systemctl --user disable --now diaria-cursos-error-alarm.timer
 ```

@@ -5,7 +5,7 @@
 # INVOCAÇÃO quando o script é chamado através de um SYMLINK — o `source
 # .../lib/claude-binary-preflight.sh` (e o de free-quota-exhaustion.sh)
 # procurava `lib/` do lado do symlink, que não existe (deploy real do
-# `helios`: `~/.hermes/scripts/claude-delegate.sh` é symlink pro repo,
+# `300`: `~/.hermes/scripts/claude-delegate.sh` é symlink pro repo,
 # sem `~/.hermes/scripts/lib/`). O contínuo ficou 8 de 11 ticks sem fazer
 # NADA por isso — o wrapper morria antes de qualquer chamada, sempre no
 # mesmo lugar (#6922/#6943).

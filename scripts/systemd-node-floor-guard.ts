@@ -6,7 +6,7 @@
  * reporta qualquer unit node-based cujo `ExecStart=` roda um node abaixo do
  * piso do projeto (>=22.5, `check-node-version.ts`) — a condição que deixou
  * `diaria-corrupted-names-weekly-check.service` (e mais 8 units) `failed`
- * em `helios` porque `node:sqlite` não existe no Node do sistema.
+ * em `300` porque `node:sqlite` não existe no Node do sistema.
  *
  * NUNCA muta nada: não escreve em `~/.config/systemd/user/`, não chama
  * `systemctl` (nem `daemon-reload`/`enable`/`restart`). Religar os units

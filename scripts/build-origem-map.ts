@@ -24,7 +24,7 @@
  * aproximação disponível da origem real de cadastro — mas só entra em jogo
  * quando o custom field `origem_original` não resolve o caso (passivo
  * histórico promovido antes da #5231, ou gate ainda desligado numa das duas
- * pontas — score/`helios` ou clique/Worker `reativar`).
+ * pontas — score/`300` ou clique/Worker `reativar`).
  *
  * ## Precedência
  *

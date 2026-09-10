@@ -70,7 +70,7 @@ function fallback(reason: string): void {
 }
 
 function formatDateBR(date: Date): string {
-  // YYYY-MM-DD no timezone do servidor (UTC no Helios)
+  // YYYY-MM-DD no timezone do servidor (UTC no 300)
   const y = date.getUTCFullYear();
   const m = String(date.getUTCMonth() + 1).padStart(2, "0");
   const d = String(date.getUTCDate()).padStart(2, "0");

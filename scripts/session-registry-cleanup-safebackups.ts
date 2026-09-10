@@ -10,9 +10,9 @@
  * NUNCA remove backup ("quem remove é o GC"), e `planSessionGc` só recolhe
  * backup ÓRFÃO (sessão já ENCERRADA, arquivo real ausente) — uma sessão VIVA
  * com backups já reconciliados acumula esses arquivos pra sempre. Medido ao
- * vivo (#6970): 15 arquivos `-safeBackup-` em `data/sessions/` do helios, um
+ * vivo (#6970): 15 arquivos `-safeBackup-` em `data/sessions/` do 300, um
  * criado no mesmo dia da medição — o mecanismo que os produz (conflito de
- * escrita concorrente do OneDrive entre `Neo`/`helios`) está ativo, não é
+ * escrita concorrente do OneDrive entre `Neo`/`300`) está ativo, não é
  * resíduo histórico.
  *
  * **Restrição de `merge_grant` (ver docstring de `planSafeBackupCleanup`/

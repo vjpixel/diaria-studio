@@ -23,7 +23,8 @@
  *    ambígua, etc.) precisa de comentário explicando o motivo (regra do
  *    #5777). Candidata direto, sem I/O extra — o `status` já vem do
  *    `plan.json`. **Excluídos de propósito** (`#5909` + #7065): os motivos
- *    `deixado-para-o-helios` e `claimed-por-outra-sessao` são Coordenação de
+ *    `deixado-para-o-300` (e o alias legado `deixado-para-o-helios`, #7682)
+ *    e `claimed-por-outra-sessao` são Coordenação de
  *    sessão, não bloqueio — a skill `.claude/skills/diaria-develop/SKILL.md`
  *    diz explicitamente que ambos NÃO levam comentário ("corrida evitada, não
  *    bloqueio" / "ruído sem valor quando dezenas ficam nesse status na mesma
@@ -130,7 +131,8 @@ export function deriveCandidateIssues(
       // #5909 + #7065 — motivos de Coordenação de sessão são isentos de
       // propósito: a skill `.claude/skills/diaria-develop/SKILL.md` diz
       // explicitamente que estes NÃO levam comentário na issue
-      // (`deixado-para-o-helios`: "sem comentário — corrida evitada, não
+      // (`deixado-para-o-300`, ou o alias legado `deixado-para-o-helios`:
+      // "sem comentário — corrida evitada, não
       // bloqueio"; `claimed-por-outra-sessao`: "sem comentário — corrida
       // evitada, não bloqueio"). O roteamento label-driven
       // (`classifyExecTrack`) já garante que cada uma reapareça no track
@@ -152,6 +154,7 @@ export function deriveCandidateIssues(
       // Motivo normal (`bloqueio-externo`, `ambigua`, `requer-sessao-local`…)
       // segue exigindo comentário: a isenção é nominal, nunca por categoria.
       if (
+        motivo === "deixado-para-o-300" ||
         motivo === "deixado-para-o-helios" ||
         motivo === "claimed-por-outra-sessao" ||
         motivo === "sem-resposta"

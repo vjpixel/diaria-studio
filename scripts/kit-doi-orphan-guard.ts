@@ -82,7 +82,7 @@
  *
  * Como os outros alarmes locais deste repo, o registro na task
  * (`scripts/lib/scheduled-tasks.ts`) nasce DECLARADO — armar via
- * `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`) é
+ * `scripts/setup-systemd-timers.ts` na checkout compartilhada (`300`) é
  * ação POSTERIOR do editor.
  */
 import { existsSync, readFileSync } from "node:fs";

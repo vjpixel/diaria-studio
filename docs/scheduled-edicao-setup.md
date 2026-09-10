@@ -4,10 +4,10 @@
 > nenhuma, e isso é intencional — a edição passou a ser rodada à mão. O Windows nunca chegou a
 > assumir a via que o #5611 previu (**confirmado ao vivo em 19/08/2026**: `Get-ScheduledTask -TaskName
 > 'Diaria*'` nesta máquina devolve uma única task, `Diaria-Overnight-Watchdog`, `Disabled`).
-> **O estado do `helios` NÃO foi reconsultado nesta sessão** — não há SSH configurado na máquina do
+> **O estado do `300` NÃO foi reconsultado nesta sessão** — não há SSH configurado na máquina do
 > editor e o unit não é versionado, então a afirmação sobre o timer Linux vem do registro do #5611
 > (17/08), não de um `systemctl` rodado agora. Para certeza: `systemctl --user list-timers --all |
-> grep diaria` em `helios`.
+> grep diaria` em `300`.
 > A última execução registrada em `data/overnight-schedule.log` é de 17/08 (FAIL, `Credit balance
 > is too low` — #5608), e não há nenhuma depois dela. O alarme de staleness continua desarmado pelo mesmo motivo: não há o que vigiar.
 > Tudo abaixo descreve o mecanismo, que continua íntegro e pronto para rearme se o editor decidir
@@ -20,7 +20,7 @@
 > **VIA ATIVA: WINDOWS (17/08/2026, #5611)** — decisão do editor:
 > `Diaria-Edicao-Diaria` precisa rodar no Windows porque depende de acesso
 > ao navegador (Claude in Chrome). O timer systemd `diaria-edicao-diaria.timer`
-> em `helios` (Linux) foi **desabilitado** na mesma sessão
+> em `300` (Linux) foi **desabilitado** na mesma sessão
 > (`systemctl --user disable --now`) para evitar duas máquinas armadas na
 > mesma janela disparando duas rodadas. O #5611 reverte parte do cutover
 > #5115/#5162 (que tinha removido o par `.ps1` do Windows) — mas em vez de
@@ -271,7 +271,7 @@ Mesmo achado ao vivo do watchdog (#4857, incidente #4823): `buildEdicaoSystemdUn
 
 O horário de disparo é sempre pensado em BRT: `OnCalendar=` inclui
 `America/Sao_Paulo` explicitamente (`scripts/lib/edicao-systemd-units.ts`) —
-independe do fuso do sistema (`helios` roda em `Etc/UTC`).
+independe do fuso do sistema (`300` roda em `Etc/UTC`).
 
 O cálculo de D+1 usa explicitamente `America/Sao_Paulo` via `Intl.DateTimeFormat` em ambas as plataformas (independente do fuso da máquina).
 
@@ -295,4 +295,4 @@ Sexta, sábado e domingo **não** têm disparo automático (sem edições nesses
 
 O alarme de staleness (task separada, diária 18:20 BRT, ver `docs/scheduled-tasks-registry.md`) lê `data/overnight-schedule.log` — arquivo dentro de `data/`, sincronizado por OneDrive entre as máquinas do projeto, então em princípio funcionaria igual não importa qual máquina gravou a última entrada. Mas ele **não checa se algum timer está de fato armado**, só se o log tem uma entrada pra edição de amanhã — com o timer Linux desabilitado (banner no topo) e a task Windows ainda sem confirmação de arme real (§Setup — Windows), o alarme dispararia `alarm-never-fired` todo dia sobre um estado hoje intencional (nenhuma via disparando ainda).
 
-Por isso ele foi desabilitado junto com o timer Linux, na mesma sessão de 17/08/2026. **A redação anterior desta seção dizia que ele ficava "pausado até o editor confirmar que a task Windows está registrada e habilitada" — isso deixou de valer em 19/08/2026**: o editor informou que cancelou o agendamento da edição diária **de propósito**, e a edição passou a ser rodada à mão. Não há confirmação pendente e não há arme a esperar; o alarme segue desarmado porque **não há o que vigiar**. Reativá-lo só faz sentido se o agendamento voltar, o que é decisão nova do editor e não tarefa em aberto. Se voltar, reativar é só `systemctl --user enable --now diaria-edicao-diaria-staleness-alarm.timer` em `helios` — o alarme em si não precisa de nenhuma mudança de código para funcionar cross-platform (ele já lê o log compartilhado, não distingue qual runner gravou a linha).
+Por isso ele foi desabilitado junto com o timer Linux, na mesma sessão de 17/08/2026. **A redação anterior desta seção dizia que ele ficava "pausado até o editor confirmar que a task Windows está registrada e habilitada" — isso deixou de valer em 19/08/2026**: o editor informou que cancelou o agendamento da edição diária **de propósito**, e a edição passou a ser rodada à mão. Não há confirmação pendente e não há arme a esperar; o alarme segue desarmado porque **não há o que vigiar**. Reativá-lo só faz sentido se o agendamento voltar, o que é decisão nova do editor e não tarefa em aberto. Se voltar, reativar é só `systemctl --user enable --now diaria-edicao-diaria-staleness-alarm.timer` em `300` — o alarme em si não precisa de nenhuma mudança de código para funcionar cross-platform (ele já lê o log compartilhado, não distingue qual runner gravou a linha).

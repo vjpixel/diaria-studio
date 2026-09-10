@@ -205,7 +205,7 @@ jobs:
     # `scripts/run-tests.ts` varre só `*.test.ts` e nenhum step os invocava.
     # Eram 12 arquivos (a issue contava 5, olhando só `test/`), todos passando
     # — cobertura real que existia e não valia nada, justamente sobre
-    # `hermes/` e o fluxo do contínuo, que é o consumidor externo no helios e
+    # `hermes/` e o fluxo do contínuo, que é o consumidor externo no 300 e
     # a área onde este repo já reverteu uma remoção (#6059/#6060).
     #
     # Aqui e não em ci.yml pelo mesmo motivo do `validate-agents` acima:

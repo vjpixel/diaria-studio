@@ -1,6 +1,6 @@
 ---
 name: diaria-artigo-especial
-description: Fecha as 4 ações manuais que seguem o deploy de um Artigo Especial (`especial.diar.ia.br/{ano}/{slug}/`) — post teaser no apoia.se, posts agendados no LinkedIn (página diar.ia.br D+1 09:00 BRT + perfil pessoal D+2 09:30 BRT — #6014), atualização + pin do box "Artigo Especial" (slot 2, desde #6748 — era slot 3, eliminado) da diária, e e-mail pros apoiadores R$10+ via Kit (#7659). Requer a máquina do editor (Claude in Chrome logado) — não roda no `helios`. Uso — `/diaria-artigo-especial --slug {slug} [--ano AAAA] [--at ISO] [--skip apoiase,linkedin,box,email] [--dry-run] [--unpin]`.
+description: Fecha as 4 ações manuais que seguem o deploy de um Artigo Especial (`especial.diar.ia.br/{ano}/{slug}/`) — post teaser no apoia.se, posts agendados no LinkedIn (página diar.ia.br D+1 09:00 BRT + perfil pessoal D+2 09:30 BRT — #6014), atualização + pin do box "Artigo Especial" (slot 2, desde #6748 — era slot 3, eliminado) da diária, e e-mail pros apoiadores R$10+ via Kit (#7659). Requer a máquina do editor (Claude in Chrome logado) — não roda no `300`. Uso — `/diaria-artigo-especial --slug {slug} [--ano AAAA] [--at ISO] [--skip apoiase,linkedin,box,email] [--dry-run] [--unpin]`.
 ---
 
 # /diaria-artigo-especial

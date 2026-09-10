@@ -348,7 +348,7 @@ export interface AcaoAdiada {
   /** ISO 8601 — quando a ação foi pedida e adiada. */
   pedido_em: string;
   /** A ação que foi pedida (ex: "reiniciar a unit diaria-reconcile-send-audiences
-   * no helios") — gravada pra a repergunta, depois do cooldown, poder citar o
+   * no 300") — gravada pra a repergunta, depois do cooldown, poder citar o
    * que já tinha sido pedido em vez de recomeçar do zero. */
   acao: string;
   /** Por que o editor adiou, quando ele disse. String vazia = adiou sem

@@ -34,11 +34,11 @@ describe("#7743 — selfAuthorizeMerge concorda com onlyUnreachableCoordinatorsA
     // `continuo` registrada antes do #7546 e ainda viva só de heartbeat
     // (`heartbeat()` nunca recomputa `attended`; só `registerSession` faz).
     writeFileSync(
-      join(sessionsDir(root), "continuo-helios-legado.json"),
+      join(sessionsDir(root), "continuo-300-legado.json"),
       JSON.stringify({
         kind: "continuo",
         sessionId: "legado",
-        machineTag: "helios",
+        machineTag: "300",
         startedAt: new Date().toISOString(),
         lastHeartbeat: new Date().toISOString(),
       }),
@@ -68,11 +68,11 @@ describe("#7743 — selfAuthorizeMerge concorda com onlyUnreachableCoordinatorsA
     const root = makeTempRepo();
     roots.push(root);
     writeFileSync(
-      join(sessionsDir(root), "overnight-helios-legado.json"),
+      join(sessionsDir(root), "overnight-300-legado.json"),
       JSON.stringify({
         kind: "overnight",
         sessionId: "legado",
-        machineTag: "helios",
+        machineTag: "300",
         startedAt: new Date().toISOString(),
         lastHeartbeat: new Date().toISOString(),
       }),

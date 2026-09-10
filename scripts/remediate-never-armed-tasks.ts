@@ -15,7 +15,7 @@
  * Sync`, `Diaria-Metrics-Health-Alarm`, `Diaria-Reconcile-Send-Audiences`)
  * declaradas em PRs anteriores por subagentes em worktrees isolados — que,
  * por desenho (#4807), NUNCA armam timer, só declaram — nunca tiveram o
- * passo de arme rodado na `helios` depois do merge. O alarme pegou a
+ * passo de arme rodado na `300` depois do merge. O alarme pegou a
  * divergência corretamente e abriu as 3 issues; a remediação em si foi feita
  * manualmente (comentário do editor nas issues), sem nenhum rastro em código
  * — exatamente o padrão que este script existe para substituir.

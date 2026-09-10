@@ -558,7 +558,7 @@ describe("#7708 — fora-de-rodada no escopo + anti-fadiga do acao-adiada", () =
   const adiada = (pedidoEm: string) =>
     formatAcaoAdiadaMarker({
       pedido_em: pedidoEm,
-      acao: "reiniciar a unit diaria-reconcile-send-audiences no helios",
+      acao: "reiniciar a unit diaria-reconcile-send-audiences no 300",
       motivo: "",
       sessao: "develop",
     });
@@ -607,7 +607,7 @@ describe("#7708 — fora-de-rodada no escopo + anti-fadiga do acao-adiada", () =
       baseInput({ labels: ["alarm"], comments: [adiada(diasAtras(2))], now: agora }),
     );
     assert.equal(r?.status, "acao-adiada");
-    assert.equal(r?.acaoAdiada?.acao, "reiniciar a unit diaria-reconcile-send-audiences no helios");
+    assert.equal(r?.acaoAdiada?.acao, "reiniciar a unit diaria-reconcile-send-audiences no 300");
   });
 
   it("adiamento EXPIRADO volta a ser perguntável, mas o candidate ainda carrega o pedido anterior", () => {

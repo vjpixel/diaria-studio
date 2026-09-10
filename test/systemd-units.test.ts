@@ -60,7 +60,7 @@ describe("scheduleToOnCalendar", () => {
     );
   });
 
-  // Achado ao vivo (#4807, 260810, cross-session): helios roda em Etc/UTC.
+  // Achado ao vivo (#4807, 260810, cross-session): 300 roda em Etc/UTC.
   // Sem fuso explícito no OnCalendar=, systemd interpreta as horas do
   // registry (pensadas em BRT) como se já fossem UTC -- Diaria-Clarice-Sync
   // (registry: 08:30) disparava às 08:30 UTC = 05:30 BRT, 30min ANTES do
@@ -116,7 +116,7 @@ describe("scheduleToOnCalendar — validação real via systemd-analyze (quando 
    * O regex antigo (`/Next elapse: .* 11:30:00 UTC/`) exigia o UTC na MESMA
    * linha do `Next elapse:`, e `.` não casa newline — então ele só passava
    * onde o processo roda em UTC. O CI roda em UTC e ficava verde; toda máquina
-   * ou sessão em BRT (o `helios` com `TZ` no ambiente, o Windows do editor)
+   * ou sessão em BRT (o `300` com `TZ` no ambiente, o Windows do editor)
    * ficava permanentemente vermelha, num teste cujo COMPORTAMENTO sob teste
    * estava certo o tempo todo.
    *

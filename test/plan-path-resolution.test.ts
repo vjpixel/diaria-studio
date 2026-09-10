@@ -97,7 +97,7 @@ test("cross-máquina: mesmo AAMMDD, sessão de OUTRA MÁQUINA (machine_id difere
   // entre máquinas), disco compartilhado simulando o mesmo OneDrive.
   const disk = fakeDisk();
 
-  // "Máquina A" grava o plano da rodada dela (machine_id: "predator",
+  // "Máquina A" grava o plano da rodada dela (machine_id: "300",
   // session_id: "session-maquina-A" — o campo machine_id em si não entra
   // no probe/resolver, é gravado à parte no plan.json pelo passo 7 da
   // skill; o que o resolver vê é só o session_id).

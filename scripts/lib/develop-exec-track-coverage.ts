@@ -33,7 +33,7 @@
  * `scripts/check-develop-exec-track-coverage.ts`.
  *
  * @see scripts/lib/issue-exec-track.ts (fonte do enum `ExecTrack`)
- * @see scripts/lib/develop-plan-motivo.ts (`findHeliosBuraco`, consumidor do campo — gap b)
+ * @see scripts/lib/develop-plan-motivo.ts (`findDeixadoPara300Buraco`, consumidor do campo — gap b)
  * @see scripts/lib/develop-target-set-coverage.ts (gate irmão — mesma forma)
  * @see .claude/skills/diaria-develop/SKILL.md Fase 2 (onde o CLI develop-específico roda)
  *

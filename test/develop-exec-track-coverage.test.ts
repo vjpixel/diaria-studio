@@ -28,7 +28,7 @@ describe("findMissingExecTrack — #5907(a), cobertura do passo 6a", () => {
   it("todas as entradas com track válido → ok (listas vazias)", () => {
     const issues: DevelopPlanIssueLike[] = [
       { number: 1, status: "mergeada", exec_track_painel: "overnight" },
-      { number: 2, status: "pulada", motivo: "deixado-para-o-helios", exec_track_painel: "develop" },
+      { number: 2, status: "pulada", motivo: "deixado-para-o-300", exec_track_painel: "develop" },
       { number: 3, status: "pendente", exec_track_painel: "bloqueada" },
     ];
     assert.deepEqual(findMissingExecTrack(issues), { missing: [], invalid: [] });
@@ -36,8 +36,8 @@ describe("findMissingExecTrack — #5907(a), cobertura do passo 6a", () => {
 
   it("entrada sem exec_track_painel → missing (o gap da 260821c)", () => {
     const issues: DevelopPlanIssueLike[] = [
-      { number: 5125, status: "deixado-para-o-helios" },
-      { number: 5891, status: "deixado-para-o-helios" },
+      { number: 5125, status: "deixado-para-o-300" },
+      { number: 5891, status: "deixado-para-o-300" },
     ];
     assert.deepEqual(findMissingExecTrack(issues), { missing: [5125, 5891], invalid: [] });
   });
@@ -128,7 +128,7 @@ describe("checkExecTrackCoverageFromPlan — shape do plan.json", () => {
     ];
     const issues: DevelopPlanIssueLike[] = numerosReais.map((number) => ({
       number,
-      status: number === 5875 || number === 5897 ? "mergeada" : "deixado-para-o-helios",
+      status: number === 5875 || number === 5897 ? "mergeada" : "deixado-para-o-300",
     }));
     const r = findMissingExecTrack(issues);
     assert.deepEqual(r.missing.sort((a, b) => a - b), [...numerosReais].sort((a, b) => a - b));

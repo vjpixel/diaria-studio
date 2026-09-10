@@ -212,7 +212,7 @@ describe("#6898 defeito 2 — timer desarmado de propósito não é falha", () =
   const now = new Date("2026-09-01T21:20:00Z");
 
   it("timer `disabled` sem edição em disco → timer-disabled, e NÃO alarma", () => {
-    // O estado real do helios em 01/09/2026: unit `disabled` desde 17/08 e
+    // O estado real do 300 em 01/09/2026: unit `disabled` desde 17/08 e
     // última linha do log um FAIL antigo (edição 260818). Antes do #6898
     // isso rendia `alarm-never-fired`/`alarm-failed` todo dia.
     const ev = evaluateEdicaoDiariaStaleness("260902", true, false, null, now, "disabled");

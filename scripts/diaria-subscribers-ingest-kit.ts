@@ -139,7 +139,7 @@ export interface KitIngestDeps {
 /**
  * Detecta cópias de conflito do OneDrive pro arquivo alvo — mesmo padrão
  * medido em `data/run-log.jsonl` (23 cópias: `run-log-Neo{,-2..-10}.jsonl`,
- * `run-log-Zenbook{,-2..-6}.jsonl`, `run-log-predator{,-safeBackup-*}.jsonl`).
+ * `run-log-Zenbook{,-2..-6}.jsonl`, `run-log-300{,-safeBackup-*}.jsonl`).
  * Com um `.db` SQLite no meio, a bifurcação é pior que ruído — ver docstring
  * de `scripts/lib/kit-subscribers-ingest.ts::ingestKitRoster`. Retorna os
  * nomes de arquivo encontrados (vazio = nenhum conflito). @pure sobre a
@@ -421,7 +421,7 @@ export async function main(
   // ingestão de audiência por broadcast abaixo nunca tocava. Escritor único
   // (mesma disciplina de `data/run-log.jsonl` fork por máquina): execução
   // MANUAL é dry-run por padrão; `--write` explícito grava de verdade. A
-  // task agendada no `helios` (Diaria-Kit-Roster-Ingest,
+  // task agendada no `300` (Diaria-Kit-Roster-Ingest,
   // scripts/lib/scheduled-tasks.ts) sempre passa `--write`.
   // -------------------------------------------------------------------------
   const capturaLogPath = getArg(argv, "captura-log") || DEFAULT_CAPTURA_LOG_PATH;

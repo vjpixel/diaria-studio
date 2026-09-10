@@ -133,7 +133,7 @@ describe("readActiveCoordinatorSessionIds (#6509) — fail-open sempre", () => {
 
   it("sessão kind=overnight fresca, mesma máquina → incluída", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-helios-sess1.json", {
+    writeSession(root, "overnight-300-sess1.json", {
       kind: "overnight",
       sessionId: "sess1",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
@@ -145,19 +145,19 @@ describe("readActiveCoordinatorSessionIds (#6509) — fail-open sempre", () => {
 
   it("kind=develop e kind=continuo também contam; kind desconhecido é ignorado", () => {
     const root = freshRoot();
-    writeSession(root, "develop-helios-sess2.json", {
+    writeSession(root, "develop-300-sess2.json", {
       kind: "develop",
       sessionId: "sess2",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
       machineTag: machineTag(),
     });
-    writeSession(root, "continuo-helios-sess3.json", {
+    writeSession(root, "continuo-300-sess3.json", {
       kind: "continuo",
       sessionId: "sess3",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
       machineTag: machineTag(),
     });
-    writeSession(root, "outro-helios-sess4.json", {
+    writeSession(root, "outro-300-sess4.json", {
       kind: "algo-nao-reconhecido",
       sessionId: "sess4",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
@@ -179,7 +179,7 @@ describe("readActiveCoordinatorSessionIds (#6509) — fail-open sempre", () => {
 
   it("sessão mais velha que MAX_SESSION_AGE_MS (24h) é ignorada", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-helios-sess6.json", {
+    writeSession(root, "overnight-300-sess6.json", {
       kind: "overnight",
       sessionId: "sess6",
       startedAt: new Date(NOW - 25 * ONE_HOUR_MS).toISOString(),
@@ -190,7 +190,7 @@ describe("readActiveCoordinatorSessionIds (#6509) — fail-open sempre", () => {
 
   it("sessão sem heartbeat há mais de SOFT_STALE_MS (90 min) é ignorada", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-helios-sess7.json", {
+    writeSession(root, "overnight-300-sess7.json", {
       kind: "overnight",
       sessionId: "sess7",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
@@ -203,8 +203,8 @@ describe("readActiveCoordinatorSessionIds (#6509) — fail-open sempre", () => {
   it("JSON malformado em uma entrada não derruba a leitura das demais (fail-open por entrada, (d))", () => {
     const root = freshRoot();
     mkdirSync(sessionsDir(root), { recursive: true });
-    writeFileSync(join(sessionsDir(root), "overnight-helios-broken.json"), "{not valid json", "utf8");
-    writeSession(root, "overnight-helios-sess8.json", {
+    writeFileSync(join(sessionsDir(root), "overnight-300-broken.json"), "{not valid json", "utf8");
+    writeSession(root, "overnight-300-sess8.json", {
       kind: "overnight",
       sessionId: "sess8",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
@@ -221,7 +221,7 @@ describe("readActiveCoordinatorSessionIds (#6509) — fail-open sempre", () => {
       JSON.stringify({ heldBy: "x", acquiredAt: new Date(NOW).toISOString() }),
       "utf8",
     );
-    writeSession(root, "overnight-helios-sess9-safeBackup-0001.json", {
+    writeSession(root, "overnight-300-sess9-safeBackup-0001.json", {
       kind: "overnight",
       sessionId: "sess9",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),

@@ -85,7 +85,7 @@ function parseArgs(argv: string[]): Args {
  * faria a task sair verde tendo perdido a observação inteira — a mesma
  * classe de silêncio do #7599, em que o onboarding rodava, detectava 0 e
  * saía exit 0 por semanas sem ninguém receber nada. Aqui aborta com exit 2,
- * que é o que o alarme de units falhas do `helios` enxerga (achado do review
+ * que é o que o alarme de units falhas do `300` enxerga (achado do review
  * da PR #7698).
  */
 function readWatchlist(path: string): ReturningWatchlist {
@@ -153,7 +153,7 @@ async function main(): Promise<void> {
   // apagaria o histórico de onboarding de TODO MUNDO (quem aguarda o e-mail
   // 2 em D+3, quem aguarda a decisão do e-mail 3) num único `writeStore`,
   // sem erro visível. O cenário é concreto neste projeto: junction `data/`
-  // do OneDrive momentaneamente caída no `helios` — foi exatamente por isso
+  // do OneDrive momentaneamente caída no `300` — foi exatamente por isso
   // que a task-irmã `Diaria-Onboarding-Welcome-Run` ganhou
   // `guard.requiredFile` no #5956.
   const { store, corrupted } = readStore(storePath);
@@ -172,7 +172,7 @@ async function main(): Promise<void> {
   let mudouLista = false;
   /** #7698: quantas consultas ao Kit falharam. Sem isto, um apagão do Kit
    *  fazia a task sair 0 — indistinguível de "consultei todo mundo e ninguém
-   *  recadastrou". O alarme de units falhas do `helios` só enxerga exit ≠ 0,
+   *  recadastrou". O alarme de units falhas do `300` só enxerga exit ≠ 0,
    *  e é justamente durante o apagão que a rodada das 09:05 pode detectar o
    *  recadastro primeiro e mandar o e-mail indevido. */
   let falhasDeConsulta = 0;
