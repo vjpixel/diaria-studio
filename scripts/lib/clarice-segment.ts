@@ -849,11 +849,29 @@ export function isDailyQueueEligible(
  * dois lados — documentado, não corrigido, porque o comportamento em si
  * está certo (`test/clarice-segment.test.ts` cobre o caso).
  *
- * Desempate PRESERVA o comportamento de cada grupo original (não introduz
- * ordenação nova): `priority_points > 0` (ex-engajados) desempata por email
- * ASC, igual `segmentEngajados`; `priority_points = 0` (ex-ramp-warm)
- * desempata por `compareContactRecency` (cadastro mais recente primeiro),
- * igual `segmentRampWarm`.
+ * Desempate: `priority_points > 0` (ex-engajados) desempata por email ASC,
+ * igual `segmentEngajados`; score ≤ 0 ordena por `compareContactRecency`
+ * (cadastro mais recente primeiro), igual `segmentRampWarm`.
+ *
+ * **#7876 — o bloco de score ≤ 0 é ordenado por safra INTEIRO, sem ser
+ * fatiado pela magnitude do decaimento.** Antes, `pa !== pb` rodava primeiro
+ * pra qualquer par: dentro do pool de score negativo (-1, -2, … -30) isso
+ * criava dezenas de sub-blocos por VALOR de score antes de a recência entrar,
+ * e quem decaiu -1 passava inteiro na frente de quem decaiu -2 por mais nova
+ * que fosse a safra deste. Isso só ficou visível depois do #7873, que trouxe
+ * 268k contatos de score ≤ 0 pra dentro da fila — 263.998 deles entre -1 e
+ * -10 (medição de 09/09/2026, ciclo 2608-09), ou seja, o pool inteiro
+ * despedaçado por ruído de decaimento.
+ *
+ * Score negativo não é sinal editorial: é quanto tempo faz que a pessoa não
+ * interage. Dentro do pool quem ordena é a SAFRA — decisão do editor
+ * (09/09/2026), consistente com o #5169 (`compareContactRecency` = `created`
+ * DESC, cohort não entra enquanto `created` for confiável). Efeito medido:
+ * dos 19.000 primeiros da fila, 18.894 passam a ser cadastros de 2026.
+ *
+ * Acima de zero nada muda — lá a magnitude É sinal (engajamento recente
+ * medido), então score DESC continua governando, e o bloco inteiro mantém
+ * prioridade TOTAL sobre o pool ≤ 0 (#7236).
  */
 export function compareDailyQueueOrder(
   a: Pick<StoreRow, "email" | "priority_points" | "created" | "cohort">,
@@ -861,8 +879,16 @@ export function compareDailyQueueOrder(
 ): number {
   const pa = a.priority_points ?? 0;
   const pb = b.priority_points ?? 0;
-  if (pa !== pb) return pb - pa;
-  if (pa > 0) return a.email.localeCompare(b.email);
+  const posA = pa > 0;
+  const posB = pb > 0;
+  // Score positivo tem prioridade TOTAL sobre o bloco ≤ 0 (#7236).
+  if (posA !== posB) return posA ? -1 : 1;
+  if (posA) {
+    // Ambos positivos: score DESC (o valor É sinal editorial), email ASC no empate.
+    if (pa !== pb) return pb - pa;
+    return a.email.localeCompare(b.email);
+  }
+  // Ambos ≤ 0: a SAFRA manda, a magnitude do decaimento não fatia (#7876).
   return compareContactRecency(a, b);
 }
 
