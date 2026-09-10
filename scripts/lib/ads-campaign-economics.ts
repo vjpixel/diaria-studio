@@ -1,13 +1,15 @@
 /**
  * scripts/lib/ads-campaign-economics.ts (#7536, "Economia da campanha ao
- * vivo" — escopo Google Ads + Microsoft Ads, Meta Ads fora desta unidade)
+ * vivo" — Google Ads + Microsoft Ads + Meta Ads, os 3 canais do teste 2608)
  *
  * Núcleo PURO/testável do que a tela `/ads` precisa pra responder, 3+ vezes
  * por dia, "o teste de 3 canais pagos (#5524) está indo bem?" sem esperar
  * o custo por leitor amadurecer (~02/10, ver #7536). Nenhuma chamada de
  * rede/disco aqui — `scripts/lib/ads-campaign-economics-fetch.ts` é quem
- * busca os dados (Google Ads GAQL, Microsoft Ads Reporting API, Kit API) e
- * chama estas funções pra transformar em algo renderizável.
+ * busca os dados (Google Ads GAQL, Microsoft Ads Reporting API, Meta Ads
+ * Graph API, Kit API) e chama estas funções pra transformar em algo
+ * renderizável. Genérico por canal (`ChannelDailyMetric.canal` é uma string
+ * livre) — nenhuma mudança foi necessária aqui pra Meta Ads entrar.
  *
  * ## Os 5 requisitos de tela que vieram de MEDIÇÃO, não de gosto (issue)
  *

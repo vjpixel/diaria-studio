@@ -10,8 +10,12 @@
  * (`GOOGLE_ADS_*`/`MICROSOFT_ADS_*` no ambiente) que o script chama via
  * `fetch` direto. A Meta Ads MCP (`mcp__claude_ai_Meta_Ads__*`) só existe
  * dentro de uma sessão do Claude Code — não há endpoint REST documentado
- * com key própria para este projeto, e não há `META_ADS_*` no `.env` (ver
- * `docs/meta-ads-mcp-tools.md`). Por isso este módulo NÃO faz `fetch`: ele
+ * com key própria para este projeto. (Desde #7536, `META_ADS_ACCESS_TOKEN`
+ * EXISTE no `.env` — mas é pro caminho DIÁRIO ao vivo de
+ * `scripts/lib/ads-campaign-economics-fetch.ts` (`insights`, ad account),
+ * um endpoint/escopo distinto deste módulo MENSAL, que continua sem
+ * caminho REST próprio: ver `docs/meta-ads-mcp-tools.md`.) Por isso este
+ * módulo NÃO faz `fetch`: ele
  * normaliza um envelope JÁ CAPTURADO da tool `ads_get_ad_entities` (pela
  * sessão/agente que tem acesso ao conector) — o CLI
  * (`scripts/meta-ads-ingest-spend.ts`) lê esse envelope de um arquivo via
