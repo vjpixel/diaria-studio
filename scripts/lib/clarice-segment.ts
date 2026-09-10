@@ -786,12 +786,21 @@ export function isNamedGroupKey(key: string): key is NamedGroupKey {
 
 /**
  * Elegível pra fila única do envio diário? Une os dois predicados que hoje
- * são `isEngajados`/`isRampWarm` (`clarice-segment.ts`):
+ * são `isEngajados`/`isRampWarm` (`clarice-segment.ts`) — **corrigido pelo
+ * #7873**: até aqui o ramo de `sends_count > 0` reusava o predicado inteiro
+ * de `isEngajados` (`priority_points > 0` como FILTRO), mas a decisão do
+ * editor na #7406 ("não faz mais sentido ter grupos diferentes... a gente
+ * pode trabalhar tudo só a partir do score") pediu `priority_points` como
+ * ORDENAÇÃO (`compareDailyQueueOrder`, que já fazia isso corretamente), não
+ * como corte de elegibilidade. Medido em produção (09/09/2026, ciclo
+ * `2608-09`): o filtro reduzia a fila de ~268k pra 9 contatos.
  *
- *   - `sends_count > 0` (já recebeu): mesma condição de `isEngajados` —
- *     `priority_points > 0`. Quem já recebeu e decaiu pra score ≤ 0 fica de
- *     fora (mesmo comportamento de hoje — território de `reativacao`, fora
- *     de escopo desta unificação).
+ *   - `sends_count > 0` (já recebeu): elegível independente do score —
+ *     quem decaiu a score ≤ 0 continua na fila, só ordenado por último
+ *     (`compareDailyQueueOrder`). Não distinguir "reativação" como público
+ *     à parte é intencional aqui: a #7406 pediu UMA fila; se um predicado
+ *     de reativação separado vier a ser necessário, é decisão de escopo
+ *     nova, declarada explicitamente — não o efeito colateral deste filtro.
  *   - `sends_count = 0` (nunca recebeu): mesma condição de `isRampWarm` —
  *     `mv_bucket='verified'` OU cohort MV-isento, excluindo quem está dentro
  *     da janela `novos` (`cutoffNovosIso`, #5410 — esse público continua
@@ -816,7 +825,7 @@ export function isDailyQueueEligible(
   cutoffNovosIso?: string | null,
 ): boolean {
   if (!isSendEligible(r) || isTestAccount(r.email)) return false;
-  if (hasSendHistory(r)) return (r.priority_points ?? 0) > 0;
+  if (hasSendHistory(r)) return true;
   return isRampWarm(r, cutoffNovosIso);
 }
 
