@@ -133,10 +133,13 @@ export async function fetchDatasetServerLastFiredTime(
 
   let res: Response;
   try {
-    res = await fetchImpl(
-      `${base}/${datasetId}?fields=server_last_fired_time&access_token=${encodeURIComponent(options.accessToken)}`,
-      { signal: AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS) },
-    );
+    // Token vai no header Authorization, nunca na query string (#7893,
+    // mesmo padrão do #7779) — evita vazamento via log que capture a URL
+    // completa (head_sampling_rate, String(err) de exceção de fetch).
+    res = await fetchImpl(`${base}/${datasetId}?fields=server_last_fired_time`, {
+      signal: AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS),
+      headers: { Authorization: `Bearer ${options.accessToken}` },
+    });
   } catch {
     return { ok: false, reason: "network_error" };
   }
