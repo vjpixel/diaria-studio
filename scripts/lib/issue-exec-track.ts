@@ -224,6 +224,14 @@ export interface ExecTrackResult {
    * sempre bate num dos valores listados lá — só não dá pra provar isso ao
    * compilador. #6200. */
   matched: string;
+  /** Data já formatada (`DD/MM`/`DD/MM/AAAA`, ver `formatWaitUntilLabel`) do
+   * marcador `aguardando-ate:` — só populado quando `matched ===
+   * "marker:aguardando-ate"`; `undefined` em todo outro caso (#7868). Vive
+   * aqui, e não só em `EXEC_TRACK_MATCH_REASON`, porque a data é dado da
+   * ISSUE (varia por chamada), enquanto a entrada do Record é texto FIXO do
+   * catálogo — a frase carrega o template `{date}`, este campo carrega o
+   * valor que a preenche. */
+  waitUntilLabel?: string;
 }
 
 /** Fora de qualquer rodada: o editor tirou de circulação, não é "ainda não". */
@@ -597,6 +605,22 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
 }
 
 /**
+ * Formata a data do marcador `aguardando-ate:` pro badge "Motivo" da Triagem
+ * (#7868) — `DD/MM`, ou `DD/MM/AAAA` quando o ano da data difere do ano de
+ * `now` (marcador cruza o ano — sem o ano, "05/01" perto da virada do ano
+ * fica ambíguo entre "já passou" e "ainda vem"). Usa os componentes UTC
+ * porque `parseWaitUntil` sempre constrói a data como `T00:00:00Z` — misturar
+ * `getDate()`/`getUTCDate()` aqui reintroduziria o mesmo tipo de deslize de
+ * fuso que motivou `TZ no Git Bash devolve UTC` em outro contexto.
+ */
+export function formatWaitUntilLabel(date: Date, now: Date = new Date()): string {
+  const dd = String(date.getUTCDate()).padStart(2, "0");
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const yyyy = date.getUTCFullYear();
+  return yyyy === now.getUTCFullYear() ? `${dd}/${mm}` : `${dd}/${mm}/${yyyy}`;
+}
+
+/**
  * Classifica a issue. Primeira regra que casa vence — a ordem codifica
  * precedência, não conveniência:
  *
@@ -703,7 +727,9 @@ export function classifyExecTrackWithRule(input: ExecTrackInput): ExecTrackResul
   if (blockedLabel) return { track: "bloqueada", matched: `label:${blockedLabel}`  };
 
   const waitUntil = parseWaitUntil(body);
-  if (waitUntil && waitUntil.getTime() > now.getTime()) return { track: "agendada", matched: "marker:aguardando-ate" };
+  if (waitUntil && waitUntil.getTime() > now.getTime()) {
+    return { track: "agendada", matched: "marker:aguardando-ate", waitUntilLabel: formatWaitUntilLabel(waitUntil, now) };
+  }
 
   const deferredLabel = labels.find((l) => DEFERRED_LABELS.has(l));
   if (deferredLabel) return { track: "bloqueada", matched: `label:${deferredLabel}`  };
@@ -944,8 +970,14 @@ export const EXEC_TRACK_MATCH_REASON: Record<ExecTrackMatch, { short: string; lo
     long: "Label `dependencia-aberta` (#7137): a issue declara `depends-on: #N` e essa dependência ainda está aberta. Desarma SOZINHA quando a dependência fechar — quem remove a label é `scripts/reconcile-issue-dependencies.ts`, nunca a mão. O número da dependência está no corpo da issue.",
   },
   "marker:aguardando-ate": {
-    short: "data marcada",
-    long: "Marcador `aguardando-ate: AAAA-MM-DD` com data futura. Não está bloqueada por nada — é trabalho fazível que volta sozinho ao fluxo na data, sem ninguém remover label. A data está no corpo da issue.",
+    // `{date}` é interpolado pelo caller (`reasonCell` em triagem.js) com
+    // `TriageIssue.execTrackWaitUntilLabel` (#7868) — sem essa interpolação,
+    // o editor via só "agendado" sem saber para quando, e tinha que abrir a
+    // issue pra descobrir. Fallback pro literal "{date}" nunca vaza pro
+    // cliente: `reasonCell` sempre substitui, com valor conhecido ou um
+    // texto genérico quando o servidor não populou o label por algum motivo.
+    short: "agendado para {date}",
+    long: "Marcador `aguardando-ate: AAAA-MM-DD` — agendado para {date}. Não está bloqueada por nada — é trabalho fazível que volta sozinho ao fluxo na data, sem ninguém remover label.",
   },
   "label:not-this-week": {
     short: "adiada, sem data",

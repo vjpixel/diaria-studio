@@ -18,6 +18,7 @@ import {
   classifyExecTrackWithRule,
   classifyExecTrackFromListItem,
   parseWaitUntil,
+  formatWaitUntilLabel,
   EXEC_TRACK_LABELS,
   EXEC_TRACK_UI,
   type ExecTrack,
@@ -266,6 +267,23 @@ describe("classifyExecTrack — marcador aguardando-ate", () => {
   it("29 de fevereiro é aceito em ano bissexto e recusado fora dele", () => {
     assert.ok(parseWaitUntil("<!-- aguardando-ate: 2028-02-29 -->"));
     assert.equal(parseWaitUntil("<!-- aguardando-ate: 2027-02-29 -->"), null);
+  });
+
+  describe("formatWaitUntilLabel — #7868", () => {
+    it("mesmo ano de `now` → DD/MM, sem ano", () => {
+      const data = parseWaitUntil("<!-- aguardando-ate: 2026-09-15 -->")!;
+      assert.equal(formatWaitUntilLabel(data, new Date("2026-09-10T12:00:00Z")), "15/09");
+    });
+
+    it("ano diferente de `now` (marcador cruza o ano) → DD/MM/AAAA", () => {
+      const data = parseWaitUntil("<!-- aguardando-ate: 2027-01-05 -->")!;
+      assert.equal(formatWaitUntilLabel(data, new Date("2026-12-20T12:00:00Z")), "05/01/2027");
+    });
+
+    it("dia e mês de um dígito ganham zero à esquerda", () => {
+      const data = parseWaitUntil("<!-- aguardando-ate: 2026-01-05 -->")!;
+      assert.equal(formatWaitUntilLabel(data, new Date("2026-01-01T00:00:00Z")), "05/01");
+    });
   });
 
   it("marcador em linha própria entre parágrafos é encontrado", () => {
@@ -751,6 +769,17 @@ describe("classifyExecTrackWithRule — matched (#6200)", () => {
     const r = classifyExecTrackWithRule({ labels: [], body: "<!-- aguardando-ate: 2026-09-01 -->", now: NOW });
     assert.equal(r.track, "agendada");
     assert.equal(r.matched, "marker:aguardando-ate");
+  });
+
+  it("marcador aguardando-ate futuro popula waitUntilLabel formatado (#7868)", () => {
+    const r = classifyExecTrackWithRule({ labels: [], body: "<!-- aguardando-ate: 2026-09-01 -->", now: NOW });
+    assert.equal(r.waitUntilLabel, "01/09");
+  });
+
+  it("nenhum outro matched populava waitUntilLabel (#7868)", () => {
+    const r = classifyExecTrackWithRule({ labels: ["windows"], body: "", now: NOW });
+    assert.equal(r.matched, "label:windows");
+    assert.equal(r.waitUntilLabel, undefined);
   });
 
   it("label not-this-week → label:not-this-week (2ª checagem bloqueada)", () => {
