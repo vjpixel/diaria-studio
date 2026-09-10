@@ -4953,6 +4953,181 @@ export function cleanupReconciledSafeBackups(repoRoot: string, opts: { now?: num
   return plan;
 }
 
+// ─── Poda por CONTAGEM de -safeBackup- (#7858) ─────────────────────────────
+//
+// `cleanupReconciledSafeBackups` (#6970, acima) só remove um backup quando o
+// grupo INTEIRO já está seguro pra descartar (claims reconciliadas E nenhum
+// merge_grant útil preso só no backup) — nunca poda parcialmente um grupo
+// que ainda tem QUALQUER pendência. Isso deixa um buraco: o grupo de uma
+// sessão VIVA, escrevendo heartbeat sob conflito de sync do OneDrive,
+// acumula backup indefinidamente enquanto alguma pendência (por menor que
+// seja) persistir — achado ao vivo do #7858 (22 cópias `-safeBackup-` do
+// MESMO grupo, sessão overnight ATIVA no momento da medição).
+//
+// Esta poda é um BACKSTOP independente, por CONTAGEM: nunca espera o grupo
+// inteiro ficar seguro — remove, um a um, do backup MAIS ANTIGO (por mtime)
+// pro mais novo, só enquanto sobrar mais que `capPerGroup` backups. Cada
+// candidato só é removido se a composição do que SOBRARIA (arquivo real +
+// os demais backups do grupo, excluindo o candidato) já reproduz tudo que o
+// candidato carrega — mesma disciplina de segurança de
+// `decideClaimReconciliation`/`mergeGrantBlocksBackupCleanup`, só aplicada
+// par a par dentro do grupo (contra o que SOBRA), não só contra o real
+// sozinho. Um candidato com claim ou merge_grant único que NENHUM outro
+// arquivo do grupo reproduz nunca é removido, mesmo acima do cap — a poda é
+// sempre subordinada à segurança, nunca o contrário. NUNCA remove o arquivo
+// REAL, nem toca `decideSessionGc`/reconstrução de âncora (#7002/#7003) —
+// só descarta backup comprovadamente redundante.
+
+export const SAFE_BACKUP_CAP_DEFAULT = 3;
+
+export interface SafeBackupCapPruneEntry {
+  path: string;
+  reason: string;
+}
+
+export interface SafeBackupCapPruneResult {
+  identity: string;
+  realPath: string;
+  /** Backups removidos (ou que SERIAM removidos, no plano). */
+  removed: SafeBackupCapPruneEntry[];
+  /** Backups mantidos — dentro do cap, ou não comprovadamente redundantes. */
+  kept: string[];
+}
+
+/** `statSync(path).mtimeMs`, ou `null` se ilegível/ausente — nunca lança. */
+function statMtimeOrNull(path: string): number | null {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Plano PURO (só leitura) da poda por contagem. Ordena backups do grupo por
+ * `mtimeMs` (mais antigo primeiro; mtime indisponível ordena como o mais
+ * antigo possível — mesma direção conservadora do resto do módulo: prefere
+ * remover o que nem dá pra datar). Testa cada candidato, do mais antigo pro
+ * mais novo, PARANDO assim que restarem `capPerGroup` backups — nunca poda
+ * abaixo do cap, mesmo que os restantes também fossem redundantes (mantém
+ * margem de recuperação manual).
+ *
+ * Grupo com `backupNames.length <= capPerGroup` nunca aparece no resultado
+ * (nada a podar) — mesmo padrão de "nada a fazer" de `planSafeBackupCleanup`.
+ */
+export function planSafeBackupCapPrune(
+  repoRoot: string,
+  opts: { now?: number; capPerGroup?: number } = {},
+): SafeBackupCapPruneResult[] {
+  const now = opts.now ?? Date.now();
+  const capPerGroup = opts.capPerGroup ?? SAFE_BACKUP_CAP_DEFAULT;
+  const dir = sessionsDir(repoRoot);
+  const names = listSessionJsonFiles(repoRoot);
+  const realNames = names.filter((n) => !n.includes("-safeBackup-")).sort();
+  const backupsByRealStem = groupBackupsByRealStem(names);
+  const results: SafeBackupCapPruneResult[] = [];
+
+  for (const realName of realNames) {
+    const stem = realName.slice(0, -".json".length);
+    const backupNames = backupsByRealStem.get(stem) ?? [];
+    if (backupNames.length <= capPerGroup) continue; // dentro do cap — nada a podar
+
+    const realPath = join(dir, realName);
+    const realRecord = readJsonSafe<SessionRecord>(realPath);
+    if (!realRecord) continue; // real ilegível — sem base segura pra comparar, mesma disciplina fail-soft de planSafeBackupCleanup
+
+    const withMtime = backupNames
+      .map((n) => {
+        const path = join(dir, n);
+        return { name: n, path, mtimeMs: statMtimeOrNull(path) ?? 0 };
+      })
+      .sort((a, b) => a.mtimeMs - b.mtimeMs);
+
+    let remaining = withMtime.slice();
+    const removed: SafeBackupCapPruneEntry[] = [];
+
+    // Cada candidato é avaliado contra `remaining` no estado ATUAL (já
+    // descontando remoções deste mesmo laço, não o grupo original) — é essa
+    // ordem sequencial que torna seguro podar 2 backups adjacentes com a
+    // MESMA claim única (o 1º ainda vê o 2º presente e é liberado; o 2º já
+    // não vê o 1º e é preservado). Paralelizar esta avaliação reintroduziria
+    // risco de perda de dado sem nenhum teste que pegasse isso hoje.
+    for (const candidate of withMtime) {
+      if (remaining.length <= capPerGroup) break; // já dentro do cap
+
+      const others = remaining.filter((r) => r.name !== candidate.name);
+      const candidateRecord = readJsonSafe<SessionRecord>(candidate.path);
+      if (!candidateRecord) {
+        // Backup ilegível não carrega informação recuperável — seguro
+        // remover (nada a perder).
+        removed.push({ path: candidate.path, reason: "backup ilegível/corrompido — nada a preservar" });
+        remaining = others;
+        continue;
+      }
+
+      const otherRecords = others
+        .map((r) => readJsonSafe<SessionRecord>(r.path))
+        .filter((r): r is SessionRecord => r !== null);
+
+      // Composição do que SOBRARIA sem este candidato: real + demais
+      // backups do grupo. `mergeSessionRecords` agrega claims/merge_grant
+      // com a MESMA lógica que o read-path real usa (#6952) — não é uma 2ª
+      // regra de merge divergente.
+      const composite = mergeSessionRecords([realRecord, ...otherRecords]);
+
+      const { addedIssues } = decideClaimReconciliation(composite, [candidateRecord]);
+      if (addedIssues.length > 0) {
+        // Candidato carrega claim que nada mais no grupo reproduz — não é
+        // seguro remover, mesmo acima do cap.
+        continue;
+      }
+
+      if (mergeGrantBlocksBackupCleanup(composite, [candidateRecord], now)) {
+        // Mesma checagem de merge_grant vivo/consumido que
+        // cleanupReconciledSafeBackups já usa contra o real — aqui contra o
+        // que SOBRARIA sem este candidato.
+        continue;
+      }
+
+      removed.push({
+        path: candidate.path,
+        reason: `grupo acima do cap (${withMtime.length} > ${capPerGroup}) — claims e merge_grant já reproduzidos pelo que sobra no grupo`,
+      });
+      remaining = others;
+    }
+
+    if (removed.length > 0) {
+      results.push({ identity: stem, realPath, removed, kept: remaining.map((r) => r.path) });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Aplica `planSafeBackupCapPrune`: o plano em si já lê o estado do disco no
+ * momento da chamada (sem cache entre plano e aplicação — as duas etapas
+ * rodam na mesma invocação). Remoção best-effort (`rmSync`, nunca lança) —
+ * mesmo idioma de `cleanupReconciledSafeBackups`: uma falha de I/O fica pra
+ * próxima execução retentar. Nunca escreve no arquivo real.
+ */
+export function applySafeBackupCapPrune(
+  repoRoot: string,
+  opts: { now?: number; capPerGroup?: number } = {},
+): SafeBackupCapPruneResult[] {
+  const plan = planSafeBackupCapPrune(repoRoot, opts);
+  for (const entry of plan) {
+    for (const item of entry.removed) {
+      try {
+        rmSync(item.path, { force: true });
+      } catch {
+        // best-effort — próxima execução retenta
+      }
+    }
+  }
+  return plan;
+}
+
 // ─── Beacon: caminhos tocados (#6168 Parte A) ──────────────────────────────
 
 /**

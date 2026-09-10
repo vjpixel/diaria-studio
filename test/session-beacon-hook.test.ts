@@ -36,6 +36,7 @@ import {
   resolveMainRepoRootNoSpawn,
   sniffVerb,
   isLinkedWorktree,
+  findGitRootNoSpawn,
 } from "../.claude/hooks/session-beacon.mjs";
 
 describe("statIsDirectory não usa require() morto em .mjs puro ESM (#6322 achado 1)", () => {
@@ -729,6 +730,70 @@ describe("#6303 P1/P2 — o beacon NÃO registra subagente", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// ─── #7712 achado colateral — cwdRoot via payload.cwd, não via hookDir ─────
+//
+// Medição direta (10/09/2026): instrumentar a cópia deste hook dentro de um
+// worktree de subagente (`isolation: "worktree"`) e disparar uma chamada
+// Bash real não teve NENHUM efeito — a cópia que roda de verdade é sempre a
+// do checkout PRINCIPAL (`${CLAUDE_PROJECT_DIR}` fixo). Isso significa que,
+// antes deste fix, `hookDir`/`cwdRoot` derivados de `import.meta.url`
+// resolviam SEMPRE pro checkout principal — o discriminador "#6303 NÃO
+// registrar subagente" nunca via um worktree de verdade, mesmo quando o
+// subagente que disparou a chamada estava rodando de dentro de um. O teste
+// abaixo prova o cenário: um `payload.cwd` que aponta pra dentro de um
+// worktree vinculado precisa fazer `findGitRootNoSpawn` devolver a RAIZ do
+// worktree (não a do checkout principal) — é essa raiz que, passada a
+// `isLinkedWorktree`, faz o discriminador funcionar.
+describe("findGitRootNoSpawn (#7712 achado colateral)", () => {
+  it("sobe de um subdiretório fundo até achar a raiz do WORKTREE (não a do checkout principal)", () => {
+    const base = mkdtempSync(join(tmpdir(), "beacon-cwdroot-"));
+    try {
+      const main = join(base, "principal");
+      const wt = join(base, "wt");
+      mkdirSync(join(main, ".git", "worktrees", "wt"), { recursive: true });
+      mkdirSync(join(wt, "scripts", "lib"), { recursive: true });
+      writeFileSync(join(wt, ".git"), `gitdir: ${join(main, ".git", "worktrees", "wt")}\n`, "utf8");
+
+      const deepCwd = join(wt, "scripts", "lib");
+      const found = findGitRootNoSpawn(deepCwd);
+
+      assert.equal(found, wt, "deve achar a raiz do WORKTREE, não a do checkout principal");
+      // É esta propriedade que fecha o achado colateral do #7712: com a
+      // raiz correta, o discriminador funciona.
+      assert.equal(isLinkedWorktree(found), true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("startDir já É a raiz (checkout principal) → devolve ela mesma", () => {
+    const root = mkdtempSync(join(tmpdir(), "beacon-cwdroot-main-"));
+    try {
+      mkdirSync(join(root, ".git"), { recursive: true });
+      assert.equal(findGitRootNoSpawn(root), root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("nenhum .git em nenhum ancestral até maxDepth → null (fail-soft: caller cai pro comportamento pré-#7712)", () => {
+    const base = mkdtempSync(join(tmpdir(), "beacon-cwdroot-nogit-"));
+    try {
+      const deep = join(base, "a", "b", "c");
+      mkdirSync(deep, { recursive: true });
+      assert.equal(findGitRootNoSpawn(deep, 2), null, "maxDepth=2 não alcança a raiz sem .git nenhum");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("cwd vazio/ausente → null, nunca lança", () => {
+    assert.equal(findGitRootNoSpawn(""), null);
+    assert.equal(findGitRootNoSpawn(undefined), null);
+    assert.equal(findGitRootNoSpawn(null), null);
   });
 });
 

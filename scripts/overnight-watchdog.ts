@@ -562,6 +562,63 @@ export function hasHealthyIdleSession(rootDir: string, kind: WatchableKind, nowM
   );
 }
 
+/**
+ * Checagem de plausibilidade (#7910): um `elapsed_min` cru pode ser um
+ * artefato de FONTE quebrada (ex: pós-compactação de contexto, a
+ * coordenadora "esquece" de chamar `log-event.ts --agent overnight` — ver
+ * o relato completo na issue), não um stall genuíno. Merge de PR é o sinal
+ * mais barato e inequívoco de trabalho real acontecendo: nenhum merge
+ * acontece sem uma sessão viva rodando `gh pr merge` (guard #5716 — só a
+ * coordenadora consegue). Se algum PR foi mergeado DEPOIS de `sinceMs` (a
+ * "última atividade" que o watchdog mediu pela fonte run-log/plan.json), o
+ * gap não é silêncio real.
+ *
+ * Pure: recebe os timestamps já resolvidos (não faz I/O) — o I/O fica em
+ * `fetchRecentMergeActivity` abaixo, fail-soft por padrão.
+ */
+export function hasMergeActivitySince(
+  mergedAtIsoTimestamps: readonly string[],
+  sinceMs: number,
+): boolean {
+  return mergedAtIsoTimestamps.some((iso) => {
+    const t = new Date(iso).getTime();
+    return !isNaN(t) && t > sinceMs;
+  });
+}
+
+/**
+ * Busca PRs mergeados recentemente via `gh pr list --state merged` e aplica
+ * `hasMergeActivitySince` contra `sinceMs`. Fail-soft TOTAL (#7910): `gh`
+ * indisponível, rate-limited, ou timeout nunca lança — retorna `false`
+ * (mesmo comportamento de antes desta checagem existir, ou seja, reporta o
+ * stall cru como sempre reportou). O objetivo é reduzir falso-positivo
+ * quando o sinal está disponível, nunca introduzir um novo modo de falha.
+ *
+ * `--limit 30` sozinho basta porque `gh pr list --state merged` devolve
+ * mais-recente-primeiro por padrão (confirmado ao vivo) — se esse default
+ * mudar, a checagem passaria a examinar os 30 merges MAIS ANTIGOS em vez
+ * dos mais recentes, reintroduzindo o falso-positivo em silêncio.
+ */
+export async function fetchRecentMergeActivity(
+  rootDir: string,
+  sinceMs: number,
+): Promise<boolean> {
+  try {
+    const out = execFileSync(
+      "gh",
+      ["pr", "list", "--state", "merged", "--json", "mergedAt", "--limit", "30"],
+      { cwd: rootDir, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: WATCHDOG_IO_TIMEOUT_MS },
+    );
+    const parsed = JSON.parse(out) as Array<{ mergedAt: string }>;
+    return hasMergeActivitySince(
+      parsed.map((p) => p.mergedAt).filter((v): v is string => typeof v === "string"),
+      sinceMs,
+    );
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Alert channels
 // ---------------------------------------------------------------------------
@@ -657,6 +714,11 @@ function emitRunLogEvent(
   aammdd: string,
   elapsedMin: number,
   lastSource: string,
+  // #7910: mensagem configurável — "stall_detected" (default, comportamento
+  // pré-existente) vs "watchdog_source_broken" (checagem de plausibilidade
+  // achou merge recente; não é um stall real, mas fica registrado no
+  // run-log pra quem for investigar depois).
+  message: string = "stall_detected",
 ): void {
   const logScript = resolve(rootDir, "scripts", "log-event.ts");
   if (!existsSync(logScript)) return;
@@ -674,7 +736,7 @@ function emitRunLogEvent(
         "--level",
         "warn",
         "--message",
-        "stall_detected",
+        message,
         "--details",
         JSON.stringify({
           reason: "unknown",
@@ -774,7 +836,13 @@ export function parseArgs(
 // Main
 // ---------------------------------------------------------------------------
 
-export type WatchdogDiagnosisAction = "skip_unknown_activity" | "dry_run" | "no_stall" | "healthy_idle" | "stall";
+export type WatchdogDiagnosisAction =
+  | "skip_unknown_activity"
+  | "dry_run"
+  | "no_stall"
+  | "healthy_idle"
+  | "stall_source_broken"
+  | "stall";
 
 export interface WatchdogDiagnosis {
   action: WatchdogDiagnosisAction;
@@ -824,8 +892,19 @@ export function diagnoseWatchdogActivity(params: {
    * travado do coordenador overnight, um mecanismo diferente).
    */
   isHealthyIdle: boolean;
+  /**
+   * #7910: `true` quando `fetchRecentMergeActivity` achou ao menos um PR
+   * mergeado DEPOIS de `lastActivityMs` — sinal de trabalho real acontecendo
+   * apesar do gap aparente na fonte run-log/plan.json (típico de
+   * instrumentação degradada pós-compactação de contexto da coordenadora).
+   * Default `false` nos testes existentes que não passam este campo —
+   * preserva o comportamento anterior a esta checagem quando o caller não
+   * a calculou (ex: dry-run, que não faz I/O de rede).
+   */
+  hasRecentMergeActivity?: boolean;
 }): WatchdogDiagnosis {
   const { aammdd, dryRun, lastActivityMs, lastSource, nowMs, thresholdMin, isHealthyIdle } = params;
+  const hasRecentMergeActivity = params.hasRecentMergeActivity ?? false;
   const elapsedMin = Math.round((nowMs - lastActivityMs) / 60_000);
 
   if (lastActivityMs === 0) {
@@ -874,6 +953,18 @@ export function diagnoseWatchdogActivity(params: {
     };
   }
 
+  if (hasRecentMergeActivity) {
+    return {
+      action: "stall_source_broken",
+      lines: [
+        `[watchdog] Rodada ${aammdd} parece sem atividade há ${elapsedMin} min pela fonte '${lastSource}', ` +
+          `mas há PR mergeado depois desse instante — sinal de FONTE quebrada (ex: instrumentação degradada ` +
+          `pós-compactação de contexto, #7910), não stall real. Registrando aviso sem halt banner/alerta.`,
+      ],
+      elapsedMin,
+    };
+  }
+
   return { action: "stall", lines: [], elapsedMin };
 }
 
@@ -915,6 +1006,18 @@ async function runWatchdogForKind(
   );
   const isHealthyIdle = hasHealthyIdleSession(ROOT, kind, nowMs);
 
+  // #7910: só paga a chamada de rede (`gh pr list`) quando há candidato
+  // real a stall — não-dry-run, timestamp disponível, e de fato acima do
+  // limiar. `detectStall` é a mesma checagem pura que `diagnoseWatchdogActivity`
+  // faz internamente; recalculá-la aqui evita reestruturar essa função só
+  // pra decidir SE deve buscar o sinal de merge (o resultado final ainda
+  // passa por `diagnoseWatchdogActivity`, fonte única do veredito).
+  const isStallCandidate =
+    !dryRun && lastActivityMs !== 0 && detectStall(lastActivityMs, nowMs, thresholdMin);
+  const hasRecentMergeActivity = isStallCandidate
+    ? await fetchRecentMergeActivity(ROOT, lastActivityMs)
+    : false;
+
   const diagnosis = diagnoseWatchdogActivity({
     aammdd,
     dryRun,
@@ -923,9 +1026,20 @@ async function runWatchdogForKind(
     nowMs,
     thresholdMin,
     isHealthyIdle,
+    hasRecentMergeActivity,
   });
 
   for (const line of diagnosis.lines) console.log(line);
+
+  if (diagnosis.action === "stall_source_broken") {
+    // Aviso mais leve no run-log — sem halt banner nem push. `main()`
+    // seguirá normalmente na próxima invocação; nenhum `stall_event` é
+    // gravado em `plan.json` (não é dedup material, e escrever ali
+    // realimentaria o próprio mtime como "atividade", mascarando um stall
+    // genuíno subsequente).
+    emitRunLogEvent(ROOT, kind, aammdd, diagnosis.elapsedMin, lastSource, "watchdog_source_broken");
+    return;
+  }
 
   if (diagnosis.action !== "stall") return;
 
