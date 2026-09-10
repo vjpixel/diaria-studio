@@ -280,6 +280,7 @@
 import { spawnSync, fork, type ChildProcess, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { availableParallelism } from "node:os";
+import os from "node:os";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -376,6 +377,53 @@ export function wasKilledByTimeout(result: ReturnType<typeof spawnSync>, killSig
   const timedOut = Boolean(result.error) && (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
   const killedBySignal = result.signal === killSignal;
   return timedOut || killedBySignal;
+}
+
+/** #7875: prioridade de CPU da suíte. **NÃO reduz concorrência** — reduzir
+ *  foi MEDIDO e reprovou (ver a tabela em `docs/run-tests-concurrency.md`):
+ *  cair de 80 pra 40 processos em voo deixou a rodada 2,5× mais lenta e fez
+ *  4 batches estourarem `DEFAULT_BATCH_TIMEOUT_MS`. A suíte é pesada em I/O,
+ *  então o oversubscribe compra sobreposição real; o problema nunca foi o
+ *  NÚMERO de processos, e sim eles disputarem CPU de igual pra igual com o
+ *  trabalho interativo do editor.
+ *
+ *  Prioridade resolve exatamente isso e só isso: a suíte continua usando a
+ *  máquina inteira quando ela está ociosa (zero custo de wall clock), mas
+ *  qualquer coisa interativa — terminal, editor, browser — preempta. É a
+ *  diferença entre "100% de CPU" (esperado numa suíte) e "máquina travada"
+ *  (o que o editor relatou).
+ *
+ *  Escape hatch: `RUN_TESTS_PRIORITY=normal` desliga; `low` desce mais.
+ *  Fail-soft — `setPriority` lança EACCES/EPERM em alguns ambientes (sandbox,
+ *  container sem CAP_SYS_NICE) e isso nunca pode derrubar a suíte. */
+export function resolvePriority(raw: string | undefined): number | null {
+  switch ((raw ?? "").trim().toLowerCase()) {
+    case "normal":
+      return null; // desligado — mantém a prioridade herdada
+    case "low":
+      return os.constants.priority.PRIORITY_LOW;
+    case "":
+    case "below-normal":
+      return os.constants.priority.PRIORITY_BELOW_NORMAL;
+    default:
+      return os.constants.priority.PRIORITY_BELOW_NORMAL;
+  }
+}
+
+/** #7875: aplica `resolvePriority` ao processo atual, best-effort. Exportada
+ *  pra teste; o CLI chama uma vez, antes de qualquer fork/spawn. */
+export function lowerOwnPriority(env: NodeJS.ProcessEnv = process.env): boolean {
+  const target = resolvePriority(env.RUN_TESTS_PRIORITY);
+  if (target === null) return false;
+  try {
+    os.setPriority(0, target);
+    return true;
+  } catch {
+    // Sem permissão pra renice (container sem CAP_SYS_NICE, política de SO):
+    // seguir em prioridade normal é degradação aceitável — a suíte roda
+    // igual, só não cede CPU. Derrubar a rodada por isso seria pior.
+    return false;
+  }
 }
 
 /** Pure: parte uma lista em batches de tamanho `size` (último pode ser menor). */
@@ -1546,6 +1594,12 @@ function runAsWorker(payloadPath: string): void {
 
 // CLI guard (#cli-guard): só roda como main; importável em testes sem disparar.
 if (isMainModule(import.meta.url)) {
+  // #7875: cede CPU pro trabalho interativo ANTES de qualquer fork/spawn —
+  // toda a árvore de processos da suíte herda daqui (medido: filho de um
+  // processo em BELOW_NORMAL nasce em BELOW_NORMAL, tanto no Windows quanto
+  // via nice no POSIX). Precisa vir antes do `runAsWorker`/
+  // `runTestBatchesParallel` justamente pra que a herança pegue todo mundo.
+  lowerOwnPriority();
   const workerPayloadPath = getArg(process.argv.slice(2), "worker");
   if (workerPayloadPath) {
     // #6877: este processo é um WORKER — despachado internamente por

@@ -34,8 +34,12 @@ import {
   wasKilledByTimeout,
   sleepSync,
   DEFAULT_RETRY_DELAY_MS,
+  resolvePriority,
+  lowerOwnPriority,
   type RunTestBatchesParallelOptions,
 } from "../scripts/run-tests.ts";
+import os from "node:os";
+import { spawnSync } from "node:child_process";
 import { PassThrough } from "node:stream";
 
 /** Sumário mínimo válido do node:test (reporter tap, o default sem TTY —
@@ -1279,6 +1283,100 @@ describe("computeWorkerTimeoutMs (#6939) — teto do worker soma o orçamento de
       bisectBudgetMs: 10 * 60 * 1000,
     });
     assert.equal(timeoutMs, 5 * 60 * 1000 + 10 * 60 * 1000 + 2 * 60 * 1000);
+  });
+});
+
+describe("prioridade de CPU (#7875)", () => {
+  // CONTEXTO (o que este bloco protege contra): a 1ª tentativa de fix pro
+  // #7875 foi reduzir a concorrência (teto de `--test-concurrency` pra que
+  // `workers × concorrência` não passasse do hardware). MEDIDO e REPROVADO —
+  // 80 → 40 processos em voo deixou a rodada 2,5× mais lenta (236s → >600s,
+  // nem terminou) e fez 4 batches estourarem o timeout de 300s. A suíte é
+  // I/O-bound: oversubscrever compra sobreposição real. Estes testes travam
+  // o mecanismo que de fato resolve (ceder CPU, não reduzir trabalho) pra
+  // que ninguém "conserte" isto de volta pro caminho que já reprovou.
+  it("default é below-normal — a suíte cede CPU sem precisar de env nenhuma", () => {
+    assert.equal(resolvePriority(undefined), os.constants.priority.PRIORITY_BELOW_NORMAL);
+    assert.equal(resolvePriority(""), os.constants.priority.PRIORITY_BELOW_NORMAL);
+    assert.equal(resolvePriority("below-normal"), os.constants.priority.PRIORITY_BELOW_NORMAL);
+  });
+
+  it("RUN_TESTS_PRIORITY=normal desliga (null = não mexe na prioridade herdada)", () => {
+    assert.equal(resolvePriority("normal"), null);
+    assert.equal(resolvePriority("NORMAL"), null, "case-insensitive");
+    assert.equal(resolvePriority(" normal "), null, "tolera espaço");
+  });
+
+  it("RUN_TESTS_PRIORITY=low desce mais que o default", () => {
+    assert.equal(resolvePriority("low"), os.constants.priority.PRIORITY_LOW);
+    assert.ok(
+      os.constants.priority.PRIORITY_LOW > os.constants.priority.PRIORITY_BELOW_NORMAL,
+      "no Node, número MAIOR = prioridade menor",
+    );
+  });
+
+  it("valor inválido cai no default seguro, nunca lança nem desliga", () => {
+    assert.equal(resolvePriority("banana"), os.constants.priority.PRIORITY_BELOW_NORMAL);
+  });
+
+  it("lowerOwnPriority respeita o desligamento e não toca no processo", () => {
+    // Único caminho seguro de exercitar no processo ATUAL: o que por
+    // definição não muta nada.
+    const antes = os.getPriority();
+    assert.equal(lowerOwnPriority({ RUN_TESTS_PRIORITY: "normal" }), false);
+    assert.equal(os.getPriority(), antes, "com 'normal' a prioridade do processo fica intacta");
+  });
+
+  // A mutação real fica CONTIDA num processo filho. Chamar `lowerOwnPriority`
+  // no processo de teste rebaixaria o próprio runner — e no Windows *subir*
+  // prioridade de volta exige privilégio que normalmente não se tem, então o
+  // "restaura no final" falha calado e o rebaixamento vaza pro resto da
+  // rodada (medido ao vivo: o arquivo saiu de ~8 s pra >400 s). Não mutar o
+  // que se está verificando.
+  it("lowerOwnPriority de fato baixa a prioridade — verificado em processo filho isolado", () => {
+    const child = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        [
+          "const os = require('node:os');",
+          "const antes = os.getPriority();",
+          "try { os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch { process.exit(42); }",
+          "console.log(JSON.stringify({ antes, depois: os.getPriority() }));",
+        ].join(""),
+      ],
+      { encoding: "utf8" },
+    );
+    if (child.status === 42) return; // ambiente sem permissão de renice — nada a afirmar
+    assert.equal(child.status, 0, `filho falhou: ${child.stderr}`);
+    const { antes, depois } = JSON.parse(child.stdout.trim()) as { antes: number; depois: number };
+    assert.ok(depois > antes, `esperado prioridade MENOR (número maior): antes=${antes} depois=${depois}`);
+    assert.equal(depois, os.constants.priority.PRIORITY_BELOW_NORMAL);
+  });
+
+  it("o filho HERDA a prioridade — é o que faz 1 chamada no entrypoint cobrir a árvore toda", () => {
+    // Invariante central do fix: `lowerOwnPriority` roda uma vez, antes de
+    // qualquer fork/spawn, e todo `node --test` + todo neto por arquivo
+    // nascem já rebaixados. Se a herança parar de valer, o fix vira no-op
+    // para os processos que de fato consomem a CPU.
+    const child = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        [
+          "const os = require('node:os');",
+          "const { spawnSync } = require('node:child_process');",
+          "try { os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch { process.exit(42); }",
+          "const neto = spawnSync(process.execPath, ['-e', \"console.log(require('node:os').getPriority())\"], { encoding: 'utf8' });",
+          "console.log(JSON.stringify({ pai: os.getPriority(), neto: Number(neto.stdout.trim()) }));",
+        ].join(""),
+      ],
+      { encoding: "utf8" },
+    );
+    if (child.status === 42) return;
+    assert.equal(child.status, 0, `filho falhou: ${child.stderr}`);
+    const { pai, neto } = JSON.parse(child.stdout.trim()) as { pai: number; neto: number };
+    assert.equal(neto, pai, "neto tem que herdar a prioridade do pai — senão o fix não alcança quem gasta CPU");
   });
 });
 
