@@ -10,7 +10,8 @@
  * (I/O genérico) e `scripts/lib/shared/kit-apoio-tag.ts` (decisões puras) —
  * este arquivo só resolve config, credencial e flags.
  *
- * ## Uma tag SEPARADA da `apoio-mensal`, de propósito
+ * ## Uma tag SEPARADA da `apoio-retrospectiva` (renomeada de `apoio-mensal`
+ * no #7867 item 4), de propósito
  *
  * A tag do envio mensal (`kit_apoiadores.audience_tag`, #7633) cobre
  * Mantenedor/Patrono (R$25+); esta cobre R$10+. Os conjuntos são diferentes e

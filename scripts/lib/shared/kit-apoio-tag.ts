@@ -43,7 +43,8 @@
  * o #7681 — não há mais uma 2ª implementação destas regras em lugar nenhum:
  *
  *   - `lib/mensal/apoiadores-kit-channel.ts` (#7633) — envio extra mensal,
- *     tag `apoio-mensal`, Mantenedor/Patrono (R$25+).
+ *     tag `apoio-retrospectiva` (renomeada de `apoio-mensal` no #7867 item 4),
+ *     Mantenedor/Patrono (R$25+).
  *   - `lib/artigo-especial-kit-channel.ts` (#7659) — e-mail do Artigo
  *     Especial, tag `apoio-especial`, Apoiador+ (R$10+).
  *

@@ -470,11 +470,23 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
     );
   }
 
+  if (scheduleAt && verification.verified !== true) {
+    log(
+      `AVISO: broadcast AGENDADO para ${scheduleAt}, mas a audiência não pôde ser CONFIRMADA (${verification.reason}) ` +
+        "— o state fica em draft_prepared (não 'sent') de propósito, então confira a audiência no painel e rode " +
+        "'send-monthly-apoiadores.ts --mark-sent' manualmente depois de confirmar.",
+    );
+  }
+
   try {
-    // markSent = true só quando --schedule foi passado E a audiência
-    // conferiu (chegar aqui já garante isso — o caso `verified === false`
-    // acima já lançou e retornou antes deste ponto).
-    persistState(verification.verified, scheduleAt !== null);
+    // markSent = true só quando --schedule foi passado E a audiência foi
+    // CONFIRMADA (`verified === true`, estritamente — não `!== false`).
+    // `verified === null` (releitura falhou/não ecoou o campo) chega até
+    // aqui sem lançar, mas "não confirmável" não é "confirmado": marcar
+    // "sent" nesse caso removeria o único checkpoint humano restante
+    // (--mark-sent) sobre um broadcast cuja audiência ninguém verificou de
+    // fato — achado do review da #7867 (PR #7882).
+    persistState(verification.verified, scheduleAt !== null && verification.verified === true);
   } catch (e) {
     log(
       `ERRO CRÍTICO: o broadcast Kit id=${created.id} FOI CRIADO, mas o registro de idempotência NÃO foi ` +

@@ -720,4 +720,47 @@ describe("#7867 item 1 — main() com --schedule", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("#7867 review (PR #7882): releitura NÃO CONFIRMÁVEL (verified:null) + --schedule NUNCA marca 'sent'", async () => {
+    // Regressão do achado do silent-failure-hunter: `verified` tem 3
+    // estados (true/false/null), e só `false` lançava antes do fix — `null`
+    // (rede falhou na releitura) caía direto no `markSent = scheduleAt !==
+    // null`, gravando "sent" sem NENHUMA confirmação de audiência. Com o
+    // fix, `markSent` exige `verified === true` estritamente.
+    const root = mkTmpRoot();
+    const restore = silenceStderr();
+    try {
+      writePlatformConfig(root, "apoio-mensal");
+      process.env.KIT_API_KEY = "fake_key";
+      process.argv = [
+        "node",
+        "publish-monthly-apoiadores-kit.ts",
+        "--cycle",
+        "2607-08",
+        "--schedule",
+        "2026-09-15T10:00:00-03:00",
+      ];
+      mockProcessExit();
+
+      const spy = makeSpy({
+        getBroadcast: async () => {
+          throw new Error("ECONNRESET");
+        },
+      });
+      await main(root, spy.deps);
+
+      assert.equal(exitCode, null, "releitura que falha na REDE não aborta — o broadcast já existe de qualquer jeito");
+      assert.equal(spy.written.length, 1);
+      assert.equal(
+        spy.written[0].state.status,
+        "draft_prepared",
+        "audiência NÃO CONFIRMADA nunca vira 'sent', mesmo com --schedule e mesmo sem divergência CONFIRMADA",
+      );
+      assert.equal(spy.written[0].state.kitAudienceVerified, null);
+      assert.equal(spy.written[0].state.sentAt, null);
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
