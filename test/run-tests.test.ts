@@ -28,6 +28,7 @@ import {
   DEFAULT_WORKER_COUNT,
   BATCH_SIZE,
   DEFAULT_BATCH_TIMEOUT_MS,
+  DEFAULT_BISECT_BUDGET_MS,
   computeWorkerTimeoutMs,
   pipeWorkerStream,
   killProcessTree,
@@ -1461,6 +1462,57 @@ describe("prioridade de CPU (#7875)", () => {
   });
 });
 
+// #7885: os 3 testes deste describe nunca passavam `batchTimeoutMs`/
+// `bisectBudgetMs` — herdavam os defaults de PRODUÇÃO (`DEFAULT_BATCH_
+// TIMEOUT_MS` 5min + `DEFAULT_BISECT_BUDGET_MS` 10min), dimensionados pra
+// batches REAIS de ~150 arquivos levando 40-90s. As fixtures aqui são
+// arquivos de 1 linha que sempre completaram em <1s em toda medição feita
+// (isolado, arquivo inteiro, spawnSync aninhado replicando a produção, e
+// sob contenção real de CPU — 40 processos concorrentes num 20-core, ver
+// issue). Resultado: `computeWorkerTimeoutMs` somava os dois defaults +
+// margem fixa e chegava a ~17min de teto ANTES do próprio mecanismo interno
+// de SIGKILL+killProcessTree deste módulo ter chance de rodar — bem acima
+// do teto de qualquer harness externo com paciência menor (a issue cita
+// timeout de Bash de 120s/600s), que aborta a árvore de processos por FORA
+// do controle deste script, sem o cleanup de `killProcessTree` — a causa
+// mais provável dos órfãos "de 3 gerações" relatados na issue. Nenhuma
+// tentativa de reprodução do hang em si (isolado, arquivo inteiro, camada
+// extra de spawnSync aninhado, sob 40 processos de carga real) reproduziu
+// um travamento GENUÍNO nesta máquina (Neo, 20 cores — mesma da issue) —
+// ver comentário da issue #7885 com o que foi descartado. Isto não afirma
+// ter corrigido a causa do hang (que segue não reproduzida/não confirmada);
+// bound explicitamente o teto pra um valor proporcional à fixture — reduz
+// o pior caso de "5-17min de espera + janela de órfãos" pra segundos,
+// independente da causa raiz.
+const TRIVIAL_FIXTURE_BATCH_TIMEOUT_MS = 20_000;
+
+// REGRESSÃO (#7885): trava o orçamento de pior caso de um worker rodando
+// fixtures triviais MUITO abaixo do que os defaults de produção dariam —
+// sem isto, alguém podia reintroduzir a omissão de `batchTimeoutMs`/
+// `bisectBudgetMs` nos `it()`s abaixo (voltando ao teto de ~17min) sem
+// nenhum teste acusar. `computeWorkerTimeoutMs` é a MESMA função que
+// `runWorker` usa em produção — este teste não reimplementa a conta.
+it("REGRESSÃO (#7885): teto do worker pra fixtures triviais fica em segundos, não nos ~17min dos defaults de produção", () => {
+  const worstCaseWithFixtureTimeout = computeWorkerTimeoutMs({
+    batches: [["a.test.ts"]],
+    batchTimeoutMs: TRIVIAL_FIXTURE_BATCH_TIMEOUT_MS,
+    bisectBudgetMs: 0,
+  });
+  const worstCaseWithProductionDefaults = computeWorkerTimeoutMs({
+    batches: [["a.test.ts"]],
+    batchTimeoutMs: DEFAULT_BATCH_TIMEOUT_MS,
+    bisectBudgetMs: DEFAULT_BISECT_BUDGET_MS,
+  });
+  assert.ok(
+    worstCaseWithFixtureTimeout < 3 * 60 * 1000,
+    `teto do worker com timeout de fixture deveria ficar bem abaixo de 3min, ficou em ${worstCaseWithFixtureTimeout}ms`,
+  );
+  assert.ok(
+    worstCaseWithFixtureTimeout < worstCaseWithProductionDefaults / 5,
+    "o teto com timeout de fixture precisa ser uma fração pequena do teto com defaults de produção — senão a fixture não está mais bounded",
+  );
+});
+
 describe("runTestBatchesParallel (#6877) — integração REAL com fork() (sem spawn injetado)", () => {
   it("2 batches distribuídos em 2 workers reais (fork + IPC) → exit 0, ambos completam", async () => {
     const dir = mkdtempSync(join(tmpdir(), "run-tests-parallel-it-"));
@@ -1478,6 +1530,9 @@ describe("runTestBatchesParallel (#6877) — integração REAL com fork() (sem s
         batchSize: 1, // força 2 batches → 2 workers reais em paralelo
         workerCount: 2,
         scriptPath,
+        // #7885: ver comentário acima do describe.
+        batchTimeoutMs: TRIVIAL_FIXTURE_BATCH_TIMEOUT_MS,
+        bisectBudgetMs: 0,
       });
       assert.equal(exit, 0, "2 arquivos de teste genuinamente OK, rodados via fork() real → exit 0");
     } finally {
@@ -1501,6 +1556,9 @@ describe("runTestBatchesParallel (#6877) — integração REAL com fork() (sem s
         batchSize: 1,
         workerCount: 2,
         scriptPath,
+        // #7885: ver comentário acima do describe.
+        batchTimeoutMs: TRIVIAL_FIXTURE_BATCH_TIMEOUT_MS,
+        bisectBudgetMs: 0,
       });
       assert.equal(exit, 1, "1 worker com falha real de asserção → agregado nunca vira 0");
     } finally {
