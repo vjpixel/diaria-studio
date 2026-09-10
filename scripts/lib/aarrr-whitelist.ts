@@ -19,7 +19,7 @@
  * Fail-closed: arquivo ausente/malformado = whitelist vazia (bloqueia toda
  * issue etiquetada), nunca "libera tudo".
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,19 +46,28 @@ export function parseAarrrWhitelist(raw: string): ReadonlySet<string> {
   }
 }
 
-let cached: ReadonlySet<string> | null = null;
+let cached: { mtimeMs: number; set: ReadonlySet<string> } | null = null;
 
-/** Whitelist do repo, lida uma vez por processo. */
+/** Whitelist do repo. Relida quando o arquivo muda (mtime) — o Studio é um
+ * processo longo e precisa refletir a edição sem restart. */
 export function loadAarrrWhitelist(): ReadonlySet<string> {
-  if (cached) return cached;
-  let raw = "";
+  let mtimeMs = -1;
   try {
-    raw = readFileSync(WHITELIST_PATH, "utf8");
+    mtimeMs = statSync(WHITELIST_PATH).mtimeMs;
   } catch {
     // ausente → whitelist vazia (fail-closed)
   }
-  cached = parseAarrrWhitelist(raw);
-  return cached;
+  if (cached && cached.mtimeMs === mtimeMs) return cached.set;
+  let raw = "";
+  if (mtimeMs >= 0) {
+    try {
+      raw = readFileSync(WHITELIST_PATH, "utf8");
+    } catch {
+      // ilegível → whitelist vazia (fail-closed)
+    }
+  }
+  cached = { mtimeMs, set: parseAarrrWhitelist(raw) };
+  return cached.set;
 }
 
 /** A issue está vetada pela whitelist? Sem label `aarrr:*` → nunca. */

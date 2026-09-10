@@ -273,6 +273,9 @@ export function resolveDesbloqueioEscopo(
     now: input.now,
   };
   const { track, matched } = classifyExecTrackWithRule(trackInput);
+  // Vetada pela whitelist AAARRR: destrava editando `aarrr-whitelist.json`,
+  // não respondendo pergunta — nunca vira candidata a AskUserQuestion.
+  if (matched === "label:aarrr-fora-da-whitelist") return null;
   if (track === "bloqueada" || track === "develop") return { escopo: track, track, matched };
   // #7694 — `overnight` só entra pelo bucket `·sem sinal`. Com sinal
   // positivo (trade-off-real, alarm-evento, triada-overnight) já foi triado.

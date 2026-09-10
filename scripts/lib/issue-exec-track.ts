@@ -90,8 +90,8 @@
  * completa.
  *
  * Puro: sem I/O, sem rede, sem `gh`. Recebe labels + corpo já buscados.
- * Única exceção: a whitelist AAARRR (`aarrr-whitelist.json`, lida uma vez
- * por processo) quando o caller não injeta `aarrrWhitelist`.
+ * Única exceção: a whitelist AAARRR (`aarrr-whitelist.json`, relida quando
+ * o mtime muda) quando o caller não injeta `aarrrWhitelist`.
  *
  * @see .claude/skills/diaria-overnight/SKILL.md § Fase 0 passo 4
  * @see .claude/skills/diaria-develop/SKILL.md § Fronteira com o overnight nas ambíguas

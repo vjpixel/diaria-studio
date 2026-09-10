@@ -7,7 +7,9 @@ import {
   isBlockedByAarrrWhitelist,
   parseAarrrWhitelist,
   loadAarrrWhitelist,
+  AARRR_STAGES,
 } from "../scripts/lib/aarrr-whitelist.ts";
+import { resolveDesbloqueioEscopo } from "../scripts/lib/desbloqueia-scan.ts";
 
 const NOW = new Date("2026-09-10T12:00:00Z");
 const classify = (labels: string[], wl: string[], body = "") =>
@@ -42,6 +44,19 @@ describe("whitelist AAARRR no classificador", () => {
   it("on-hold e épica continuam vencendo", () => {
     assert.equal(classify(["aarrr:revenue", "on-hold"], []).track, "fora-de-rodada");
     assert.equal(classify(["aarrr:revenue", "epic-guarda-chuva"], []).track, "epica");
+  });
+});
+
+describe("caminho de produção (whitelist não injetada)", () => {
+  const blocked = AARRR_STAGES.find((s) => !loadAarrrWhitelist().has(s));
+
+  it("classificador usa aarrr-whitelist.json por default", { skip: !blocked }, () => {
+    const r = classifyExecTrackWithRule({ labels: [`aarrr:${blocked}`], body: "", now: NOW });
+    assert.equal(r.matched, "label:aarrr-fora-da-whitelist");
+  });
+
+  it("desbloqueia não pergunta sobre issue vetada pela whitelist", { skip: !blocked }, () => {
+    assert.equal(resolveDesbloqueioEscopo({ labels: [`aarrr:${blocked}`], body: "", state: "OPEN", now: NOW }), null);
   });
 });
 
