@@ -44,7 +44,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
+import { hasFlag, getArg, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import {
@@ -173,8 +173,22 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const isDryRun = hasFlag(argv, "dry-run");
   const toOverride = getArg(argv, "to");
-  const googleLogPath = getArg(argv, "google-log-path") ?? DEFAULT_GOOGLE_LOG_PATH;
-  const microsoftLogPath = getArg(argv, "microsoft-log-path") ?? DEFAULT_MICROSOFT_LOG_PATH;
+  // #7518 (2ª causa raiz, achada em produção depois do fix original mergear):
+  // `getArg` (import acima) usa "" como sentinela pra flag AUSENTE —
+  // documentado no próprio `cli-args.ts` — então `getArg(...) ?? default`
+  // NUNCA cai no default (`??` só reage a null/undefined, "" não é
+  // nullish). Achado ao vivo (#7518, rodada 260910): sem os 2 overrides
+  // passados explicitamente (o caso normal, real, do systemd timer),
+  // `googleLogPath`/`microsoftLogPath` colapsavam pra "" — `readPlatformLog("")`
+  // reporta `exists: false` (`existsSync("")` é sempre false) e o
+  // veredito combinado vira `cannot-verify` silencioso (fail-soft, sem
+  // e-mail/issue) mesmo com os 2 logs reais presentes e saudáveis. O
+  // alarme reescrito pelo próprio #7518 nunca disse `ok` em produção por
+  // essa razão. `getStringArg` retorna `undefined` genuíno quando a flag
+  // está ausente (ver docstring de `cli-args.ts`) — o `??` funciona.
+  const googleLogPath = getStringArg(argv, "google-log-path", { example: DEFAULT_GOOGLE_LOG_PATH }) ?? DEFAULT_GOOGLE_LOG_PATH;
+  const microsoftLogPath =
+    getStringArg(argv, "microsoft-log-path", { example: DEFAULT_MICROSOFT_LOG_PATH }) ?? DEFAULT_MICROSOFT_LOG_PATH;
 
   const now = new Date();
   const google = readPlatformLog(googleLogPath);
