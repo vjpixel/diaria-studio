@@ -9,10 +9,14 @@
  * falharam alinhamento.
  *
  * **Por que existe:** cada relatório é 1 anexo por dia por domínio, ilegível
- * à mão. A decisão de subir `_dmarc.news.diar.ia.br` de `p=none` pra
- * `quarantine`/`reject` (#6111, gated até 2026-09-15) depende de 2-4 semanas
- * de relatório limpo ACUMULADO — sem este script, ninguém lê o `rua=` que
- * chega, e a decisão de enforcement fica sem dado nenhum pra sustentar.
+ * à mão. O gate de calendário "2-4 semanas de relatório agregado limpo"
+ * (#6111) foi abandonado como critério de decisão — o motor de enforcement
+ * DMARC (`scripts/dmarc-enforcement-engine.ts` + `scripts/lib/
+ * dmarc-enforcement-policy.ts`, task semanal `Diaria-Dmarc-Enforcement-Alarm`,
+ * #6442) decide a partir de sinal PRÓPRIO (bounce/complaint via Kit), não do
+ * relatório de terceiro agregado aqui. Este script continua existindo pela
+ * série histórica de `alignedPct` (ver abaixo) e como observabilidade
+ * complementar — sem ele, ninguém lê o `rua=` que chega.
  *
  * **Busca no Gmail (mesmo conector do `inbox-drain.ts`):** os relatórios
  * chegam na caixa da conta autenticada (mesmo refresh token OAuth de
@@ -60,9 +64,11 @@
  * execução (não-dry-run) acrescenta 1 linha por domínio em
  * `data/dmarc-aligned-pct.jsonl` — append-only, nunca sobrescreve rodadas
  * anteriores. Existe porque DUAS decisões futuras precisam da mesma série e
- * nenhuma delas tinha dado nenhum até agora: (a) #7334 — o limiar de
- * enforcement `p=none`→`quarantine` gated até 2026-09-15 precisa de "2-4
- * semanas de relatório limpo" medido em percentual, não vibe; (b) #6690 —
+ * nenhuma delas tinha dado nenhum até agora: (a) #7334 — o critério de
+ * "relatório limpo" (agora só uma das referências consultadas pelo motor de
+ * enforcement do #6442, que decide primariamente por sinal próprio Kit, não
+ * mais por este relatório de terceiro) precisa de percentual medido, não
+ * vibe; (b) #6690 —
  * calibrar o limiar do alarme de `alarmFindingsFor` (hoje dispara com
  * QUALQUER volume não-alinhado > 0, o que nunca fecha pra sempre num
  * domínio com forwarding corporativo legítimo) exige olhar a série real
