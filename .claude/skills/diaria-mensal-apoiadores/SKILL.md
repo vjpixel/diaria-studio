@@ -1,6 +1,6 @@
 ---
 name: diaria-mensal-apoiadores
-description: Envia a edição mensal (data/monthly/{ciclo}/draft.md) por e-mail pros apoiadores dos níveis Mantenedor/Patrono — skill manual e separada do fluxo 0-5 de /diaria-mensal (o editor decide o timing). Canal Kit (migrado de Brevo, #7633; e a Brevo tinha migrado da Beehiiv, #4572). Cria SEMPRE rascunho — o disparo é ação humana no painel. Uso — `/diaria-mensal-apoiadores --cycle YYMM-MM [--force] [--mark-sent]`.
+description: Envia a edição mensal (data/monthly/{ciclo}/draft.md) por e-mail pros apoiadores dos níveis Mantenedor/Patrono — skill manual e separada do fluxo 0-5 de /diaria-mensal (o editor decide o timing). Canal Kit (migrado de Brevo, #7633; e a Brevo tinha migrado da Beehiiv, #4572). Cria rascunho por padrão (disparo manual no painel), ou agenda direto com `--schedule` (#7867 item 1). Uso — `/diaria-mensal-apoiadores --cycle YYMM-MM [--force] [--mark-sent] [--schedule "AAAA-MM-DDTHH:mm"]`.
 ---
 
 # /diaria-mensal-apoiadores
@@ -21,8 +21,10 @@ description: Envia a edição mensal (data/monthly/{ciclo}/draft.md) por e-mail 
 > lição de método, não uma nota de rodapé.
 >
 > **Estado da audiência:** `sync-apoio-mensal-tag-kit.ts --push` rodou em
-> 08/09/2026 e criou a tag `apoio-mensal` (id 23210615) com os 8
-> Mantenedor/Patrono do momento. Quem recebeu em agosto e não está mais:
+> 08/09/2026 e criou a tag `apoio-mensal` (id 23210615, renomeada pra
+> `apoio-retrospectiva` no #7867 item 4 — mesmo id, config já aponta pro nome
+> novo; a renomeação REAL da tag no painel do Kit é ação manual pendente do
+> editor) com os 8 Mantenedor/Patrono do momento. Quem recebeu em agosto e não está mais:
 > 1 caiu pra `apoiador` (R$10–25, abaixo do corte), 2 estão sem `apoio_nivel`
 > (apoio não vigente) e 1 está blacklisted na Brevo e não existe no Kit.
 >
@@ -117,8 +119,10 @@ nível (com carência de 1 mês e guard de blast radius) é
 npx tsx scripts/sync-apoio-mensal-tag-kit.ts
 ```
 
-Dry-run: mostra quem entraria e quem sairia da tag `apoio-mensal`, sem tocar
-em nada. Para aplicar:
+Dry-run: mostra quem entraria e quem sairia da tag `apoio-retrospectiva`
+(nome de config desde #7867 item 4 — o script continua chamado
+`sync-apoio-mensal-tag-kit.ts`, renomear o arquivo ficou fora de escopo),
+sem tocar em nada. Para aplicar:
 
 ```bash
 npx tsx scripts/sync-apoio-mensal-tag-kit.ts --push
@@ -148,14 +152,21 @@ Beehiiv; o conteúdo é channel-agnostic). Opcional — o Passo 2 funciona sem
 ele —, mas sem esse state prévio o `--force`/`--mark-sent` do Passo 1 não têm
 o que referenciar.
 
-## Passo 2 — Publicar (cria o broadcast Kit, sempre rascunho)
+## Passo 2 — Publicar (cria o broadcast Kit)
 
 ```bash
 # Preview local — NUNCA chama a API do Kit, nem lê/grava o state.
 npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE --dry-run
 
-# Cria o broadcast de verdade — SEMPRE rascunho (send_at: null).
+# Cria o broadcast de verdade — rascunho por padrão (send_at: null).
 npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE
+
+# #7867 item 1: cria JÁ AGENDADO via send_at e marca status "sent" direto —
+# dispensa o Passo 3 (--mark-sent) neste caminho. SEM guard de data (decisão
+# do editor): o script não checa colisão com a edição diária — a escolha do
+# horário/dia é julgamento do editor, igual ao Passo 2 "escolher um dia sem
+# edição diária pesada" abaixo, só que aplicado ANTES de rodar o comando.
+npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE --schedule "2026-09-15T10:00:00-03:00"
 ```
 
 - Renderiza a variante Kit (`lib/mensal/monthly-apoiadores-kit-render.ts`):
@@ -183,14 +194,20 @@ npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE
   2º broadcast pro mesmo ciclo (`kitBroadcastId` gravado ou ciclo `sent`);
   `--force` ignora. Depois de criar, grava o id de volta.
 
-Depois de criado, ação manual do editor no painel do Kit:
+**Sem `--schedule`** (caminho manual, rascunho): ação manual do editor no
+painel do Kit:
 1. Test send (Broadcasts → o rascunho → Send preview) pra conferir
    visualmente.
 2. Escolher um dia SEM edição diária pesada antes de disparar (decisão 1 do
    #4482 — evitar 2 e-mails no mesmo dia).
 3. Send/Schedule pela UI.
 
-## Passo 3 — Confirmar o envio
+**Com `--schedule`** (#7867 item 1): o broadcast já sai agendado — nada a
+fazer no painel além de conferir (test send continua possível antes do
+horário chegar). O state já vira `status: "sent"` — o Passo 3 abaixo não é
+necessário neste caminho.
+
+## Passo 3 — Confirmar o envio (só o caminho manual, sem `--schedule`)
 
 ```bash
 npx tsx scripts/send-monthly-apoiadores.ts --cycle $CYCLE --mark-sent
@@ -200,6 +217,8 @@ Grava `status: "sent"` + `sentAt` no state local. Sem isso, nada registra que
 o ciclo já saiu, e o Passo 1 continuaria "permitido" indefinidamente. Depois
 de marcado, uma nova tentativa dos Passos 1/2 pro MESMO ciclo é bloqueada por
 padrão; `--force` cobre o caso legítimo "preciso reenviar uma correção".
+**Continua existindo pro caminho manual** — só é dispensável quando o Passo 2
+já rodou com `--schedule` (item 1 acima), que grava `status: "sent"` sozinho.
 
 ## Saídas
 

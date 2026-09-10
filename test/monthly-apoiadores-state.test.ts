@@ -27,6 +27,7 @@ import {
   buildApoiadoresBrevoPublishedState,
   decidePublishKitAction,
   buildApoiadoresKitPublishedState,
+  buildApoiadoresKitScheduledState,
   type ApoiadoresState,
 } from "../scripts/lib/mensal/monthly-apoiadores-state.ts";
 
@@ -429,6 +430,51 @@ test("buildApoiadoresKitPublishedState: preserva segments e brevoCampaignId do p
   const s = buildApoiadoresKitPublishedState(previous, "2607-08", "2026-08-04T10:00:00.000Z", "/x/y.html", "Assunto", 999);
   assert.deepEqual(s.segments, PREPARED.segments);
   assert.equal(s.brevoCampaignId, 555);
+});
+
+// #7867 item 1 — caminho --schedule: grava status "sent" direto (dispensa
+// --mark-sent), sentAt = o horário AGENDADO (send_at mandado pra API), não o
+// instante da chamada.
+
+test("buildApoiadoresKitScheduledState: grava status 'sent' e sentAt = horário agendado", () => {
+  const s = buildApoiadoresKitScheduledState(
+    null,
+    "2607-08",
+    "2026-08-04T10:00:00.000Z",
+    "/x/apoiadores-kit-preview.html",
+    "Assunto",
+    999,
+    "2026-09-15T10:00:00-03:00",
+  );
+  assert.deepEqual(s, {
+    cycle: "2607-08",
+    status: "sent",
+    preparedAt: "2026-08-04T10:00:00.000Z",
+    sentAt: "2026-09-15T10:00:00-03:00",
+    htmlPath: "/x/apoiadores-kit-preview.html",
+    subject: "Assunto",
+    segments: [],
+    brevoCampaignId: null,
+    kitBroadcastId: 999,
+    kitAudienceVerified: null,
+  });
+});
+
+test("buildApoiadoresKitScheduledState: preserva segments e brevoCampaignId do previous", () => {
+  const previous: ApoiadoresState = { ...PREPARED, brevoCampaignId: 555 };
+  const s = buildApoiadoresKitScheduledState(
+    previous,
+    "2607-08",
+    "2026-08-04T10:00:00.000Z",
+    "/x/y.html",
+    "Assunto",
+    999,
+    "2026-09-15T10:00:00-03:00",
+    true,
+  );
+  assert.deepEqual(s.segments, PREPARED.segments);
+  assert.equal(s.brevoCampaignId, 555);
+  assert.equal(s.kitAudienceVerified, true);
 });
 
 // ---------------------------------------------------------------------------

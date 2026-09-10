@@ -19,6 +19,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   draftToEmailApoiadoresKit,
+  extractDestaqueTitle,
+  deriveApoiadoresKitSubject,
   APOIADORES_KIT_UTM_PROFILE,
 } from "../scripts/lib/mensal/monthly-apoiadores-kit-render.ts";
 import { APOIADORES_BREVO_UTM_PROFILE } from "../scripts/lib/mensal/monthly-apoiadores-brevo-render.ts";
@@ -179,5 +181,49 @@ describe("#7633 — isolamento entre os 3 perfis que coexistem no repo", () => {
     assert.equal(CLARICE_UTM_PROFILE.source, MENSAL_UTM_SOURCE);
     assert.equal(CLARICE_UTM_PROFILE.pollMergeTag, "{{ contact.EMAIL }}");
     assert.equal(CLARICE_UTM_PROFILE.pollBrand, "clarice");
+  });
+});
+
+// ── #7867 item 3 — subject próprio, derivado do título do Destaque 1 ───────
+
+describe("#7867 item 3 — extractDestaqueTitle", () => {
+  it("extrai o título (linha após o header) do destaque pedido", () => {
+    assert.equal(extractDestaqueTitle(FULL_DRAFT, 1), "Título do destaque");
+  });
+
+  it("destaque inexistente -> null", () => {
+    assert.equal(extractDestaqueTitle(FULL_DRAFT, 2), null);
+  });
+
+  it("tolera '**' de negrito Drive ao redor do título", () => {
+    const draft = ["**DESTAQUE 1 | BRASIL**", "", "**Título em negrito**", "", "Corpo."].join("\n");
+    assert.equal(extractDestaqueTitle(draft, 1), "Título em negrito");
+  });
+});
+
+describe("#7867 item 3 — deriveApoiadoresKitSubject", () => {
+  it('formato "Retrospectiva de {mês}: {título do D1}"', () => {
+    assert.equal(deriveApoiadoresKitSubject(FULL_DRAFT, "2608"), "Retrospectiva de agosto: Título do destaque");
+  });
+
+  it("mês por extenso em minúsculas, do yymm — não do subject herdado", () => {
+    assert.equal(deriveApoiadoresKitSubject(FULL_DRAFT, "2601"), "Retrospectiva de janeiro: Título do destaque");
+    assert.equal(deriveApoiadoresKitSubject(FULL_DRAFT, "2612"), "Retrospectiva de dezembro: Título do destaque");
+  });
+
+  it("yymm inválido -> lança (nunca gera subject com mês incorreto)", () => {
+    assert.throws(() => deriveApoiadoresKitSubject(FULL_DRAFT, "2613"), /yymm inválido/);
+  });
+
+  it("draft sem Destaque 1 -> lança (subject vazio num canal pago não é fallback silencioso)", () => {
+    const semDestaque = ["**ASSUNTO**", "1. Assunto", "", "**PREVIEW**", "", "Preview."].join("\n");
+    assert.throws(() => deriveApoiadoresKitSubject(semDestaque, "2608"), /Destaque 1/);
+  });
+
+  it("ignora completamente o chosenSubject/ASSUNTO do draft — nunca herda do Clarice", () => {
+    // FULL_DRAFT tem "**ASSUNTO (3 OPÇÕES)**\n1. Assunto de teste" — o subject
+    // derivado não pode conter esse texto.
+    const subject = deriveApoiadoresKitSubject(FULL_DRAFT, "2608");
+    assert.doesNotMatch(subject, /Assunto de teste/);
   });
 });

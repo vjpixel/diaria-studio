@@ -44,7 +44,7 @@ inteira não fecha de ponta a ponta.
 | Box | Reescrever `data/snippets/artigo-especial-apoiadores.md` + pinar no slot 2 (`boxes_divulgacao.slot2` + `boxes_divulgacao_auto.pinned_slots: [2]` em `platform.config.json` — era slot 3 até o #6748 eliminá-lo, ver seção "Decisões já tomadas" acima). |
 | **E-mail: íntegra ou chamada + link?** (#7659) | **Chamada + link**, e por impossibilidade técnica, não por gosto: o artigo é um documento web de 43–52 KB com `<style>`, CSS grid, infográficos e barra de progresso — não sobrevive a cliente de e-mail, e acima de ~102 KB o Gmail corta a mensagem (cortando o pixel de abertura junto). Mandar a íntegra entregaria um artigo quebrado E perderia a medição. |
 | **E-mail: envio extra ou substitui a diária?** (#7659) | **Extra** — a diária do dia sai normal, mesma escolha da anual (#7569). Audiências diferentes (R$10+ × base inteira) e o volume é de 1 e-mail a mais por mês pra algumas dezenas de pessoas que pagam justamente por ele. |
-| **E-mail: unificar com a Retrospectiva do Mês?** (#7659) | **Não** — dois envios distintos, com audiências distintas: Retrospectiva do Mês é recompensa de Mantenedor/Patrono (R$25+, tag `apoio-mensal`), Artigo Especial é de Apoiador (R$10+, tag `apoio-especial`). Unificar entregaria a recompensa de R$25 a quem paga R$10 — o mesmo vazamento que a #7658 corrigiu do lado da web. |
+| **E-mail: unificar com a Retrospectiva do Mês?** (#7659) | **Não** — dois envios distintos, com audiências distintas: Retrospectiva do Mês é recompensa de Mantenedor/Patrono (R$25+, tag `apoio-retrospectiva`, renomeada de `apoio-mensal` no #7867 item 4), Artigo Especial é de Apoiador (R$10+, tag `apoio-especial`). Unificar entregaria a recompensa de R$25 a quem paga R$10 — o mesmo vazamento que a #7658 corrigiu do lado da web. |
 | Visibilidade apoia.se | **Restrito a apoiadores R$10+ (revisto pelo editor 23/08/2026, 1ª execução ao vivo — substitui "público").** Motivo: `data/snippets/artigo-especial-apoiadores.md` vende o Artigo Especial como benefício de R$10+/mês; post público entregaria o benefício a quem não paga no mesmo instante. A restrição é do POST — o artigo em si segue público em `especial.diar.ia.br` (o canal com paywall continua sendo outro: `retrospectiva.diar.ia.br/AAMM`, `workers/retrospectiva`). Consequência no texto: o `apoiase.md` fala com quem JÁ apoia, sem CTA de conversão. |
 
 ## Argumentos
@@ -308,8 +308,9 @@ apoia.se ou pelo box da diária, ou não descobria.
 **Audiência.** Tag `kit_artigo_especial.audience_tag` (`platform.config.json`),
 projeção do custom field `apoio_nivel` pros níveis de R$10+ — o MESMO
 conjunto que o gate da web usa (`ARTIGOS_ESPECIAIS_APOIO_THRESHOLD`), nunca
-uma 2ª lista. Tag **separada** da `apoio-mensal` (R$25+, Retrospectiva do
-Mês): colapsar as duas entregaria a recompensa de R$25 a quem paga R$10.
+uma 2ª lista. Tag **separada** da `apoio-retrospectiva` (R$25+, Retrospectiva
+do Mês, renomeada de `apoio-mensal` no #7867 item 4): colapsar as duas
+entregaria a recompensa de R$25 a quem paga R$10.
 
 Antes do 1º envio de cada mês (ou sempre que houver dúvida de que a
 audiência está fresca), na ordem:

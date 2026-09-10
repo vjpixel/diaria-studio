@@ -10,6 +10,11 @@
  *
  * ## Por que não existe um estado "sent" automático
  *
+ * (Exceção pontual desde #7867 item 1: `buildApoiadoresKitScheduledState`
+ * abaixo grava "sent" automaticamente no caminho `--schedule` do canal Kit,
+ * porque ali quem manda o `send_at` pra API É o próprio script — não há
+ * ambiguidade de "o que o ESP fez" quando o script mandou o horário.)
+ *
  * Este módulo hoje serve DOIS consumidores com disciplina de escrita
  * diferente — não generalizar a frase abaixo pro módulo inteiro:
  *
@@ -489,6 +494,46 @@ export function buildApoiadoresKitPublishedState(
     status: "draft_prepared",
     preparedAt,
     sentAt: null,
+    htmlPath,
+    subject,
+    segments: previous?.segments ?? [],
+    brevoCampaignId: previous?.brevoCampaignId ?? null,
+    kitBroadcastId,
+    kitAudienceVerified,
+  };
+}
+
+/**
+ * Variante de `buildApoiadoresKitPublishedState` pro caminho `--schedule`
+ * (#7867 item 1): grava `status: "sent"` DIRETO — dispensa o `--mark-sent`
+ * manual (`send-monthly-apoiadores.ts`, Passo 1/3) no caminho automatizado,
+ * que continua existindo pro caminho manual (rascunho + disparo pela UI).
+ *
+ * `sentAt` recebe o `send_at` que foi mandado pra API (o horário AGENDADO),
+ * não o instante desta chamada — mesma semântica de "quando o envio
+ * aconteceu" que `--mark-sent` registra manualmente, só que aqui o script
+ * sabe por si mesmo porque foi ele quem mandou agendar.
+ *
+ * Só chamar isto depois de confirmar a audiência (`kitAudienceVerified !==
+ * false`) — o caller (`publish-monthly-apoiadores-kit.ts`) nunca marca
+ * "sent" quando a releitura do `subscriber_filter` divergiu, agendado ou
+ * não: audiência errada não é sucesso só porque o envio está na fila.
+ */
+export function buildApoiadoresKitScheduledState(
+  previous: ApoiadoresState | null,
+  cycle: string,
+  preparedAt: string,
+  htmlPath: string,
+  subject: string,
+  kitBroadcastId: number,
+  sentAt: string,
+  kitAudienceVerified: boolean | null = null,
+): ApoiadoresState {
+  return {
+    cycle,
+    status: "sent",
+    preparedAt,
+    sentAt,
     htmlPath,
     subject,
     segments: previous?.segments ?? [],

@@ -22,9 +22,15 @@
  *      credencial do Kit no ambiente, idempotência (state do ciclo).
  *   3. Audiência: resolve a tag POR NOME (`findTagIdByName`, que nunca cria) e
  *      recusa se ela não existir ou estiver vazia.
- *   4. Cria o broadcast (`POST /v4/broadcasts`) sem `send_at` — rascunho. O
- *      test-send, a conferência visual e o disparo continuam sendo ação
- *      humana no painel do Kit.
+ *   4. Cria o broadcast (`POST /v4/broadcasts`). **Rascunho por padrão**
+ *      (`send_at: null`) — test-send, conferência visual e disparo continuam
+ *      sendo ação humana no painel do Kit. **Com `--schedule` (#7867 item 1)**
+ *      agenda via `send_at` e grava `status: "sent"` direto no state,
+ *      dispensando `--mark-sent` (`send-monthly-apoiadores.ts`) no caminho
+ *      automatizado — que continua existindo pro caminho manual. Sem guard
+ *      de data (decisão explícita do editor, #7867): o script não checa
+ *      `data/editions/` nem opina sobre colisão com a edição diária do dia —
+ *      a escolha do horário é julgamento do editor.
  *   5. **Relê o broadcast e confere o `subscriber_filter` aplicado** — o 2xx
  *      da criação não é prova de que o filtro pegou, e o erro que passaria
  *      batido aqui é o pior do domínio (rascunho mirando a base inteira).
@@ -72,13 +78,15 @@
  *   npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle 2607-08 --dry-run
  *   npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle 2607-08
  *   npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle 2607-08 --force
+ *   npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle 2607-08 --schedule "2026-09-15T10:00:00-03:00"
  */
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { hasFlag, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { requireMonthlyCycleArg, monthlyDir } from "./lib/mensal/monthly-paths.ts";
+import { APOIO_EXCLUSIVE_PREVIEW_TEXT } from "./lib/shared/apoio-preview-text.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
 import {
   createBroadcast,
@@ -106,6 +114,7 @@ import {
   writeApoiadoresState,
   decidePublishKitAction,
   buildApoiadoresKitPublishedState,
+  buildApoiadoresKitScheduledState,
   type ApoiadoresState,
 } from "./lib/mensal/monthly-apoiadores-state.ts";
 
@@ -125,9 +134,12 @@ export function buildApoiadoresKitDescription(cycle: string): string {
 }
 
 /**
- * Pura — monta o payload de `POST /v4/broadcasts`. NUNCA inclui `send_at`
- * (rascunho sempre) e SEMPRE inclui um `subscriber_filter` de tag resolvida.
- * `public: false` de propósito — ver docstring do módulo.
+ * Pura — monta o payload de `POST /v4/broadcasts`. `send_at` é `null`
+ * (rascunho) por padrão; `--schedule` (#7867 item 1) passa um ISO 8601 pra
+ * agendar via API — sem checagem de colisão com a edição diária, decisão
+ * explícita do editor (ver docstring do módulo). SEMPRE inclui um
+ * `subscriber_filter` de tag resolvida. `public: false` de propósito — ver
+ * docstring do módulo.
  *
  * #7651: recebe `ResolvedAudienceTag`, não um `tagId: number` cru. O tipo é
  * construtível só por `resolveApoiadoresAudience`, que exige os três guards
@@ -138,13 +150,15 @@ export function buildApoiadoresKitBroadcastInput(
   content: ApoiadoresKitEmailContent,
   cycle: string,
   audience: ResolvedAudienceTag,
+  /** ISO 8601, ou `null`/omitido = rascunho (#7867 item 1). */
+  scheduleAt: string | null = null,
 ): CreateBroadcastInput {
   return {
     subject: content.subject,
     content: content.html,
     preview_text: content.previewText,
     description: buildApoiadoresKitDescription(cycle),
-    send_at: null,
+    send_at: scheduleAt,
     subscriber_filter: buildTagFilter(audience.tagId),
     public: false,
   };
@@ -222,6 +236,27 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
   const cycle = requireMonthlyCycleArg(argv);
   const log = (msg: string) => process.stderr.write(`${LOG_PREFIX} ${msg}\n`);
 
+  // #7867 item 1: --schedule agenda via API (send_at) em vez de sempre criar
+  // rascunho. Sem guard de data de propósito (decisão do editor, #7867) —
+  // este script não checa `data/editions/` nem opina sobre colisão com a
+  // edição diária do dia; a escolha do horário é julgamento do editor.
+  let scheduleAt: string | null = null;
+  try {
+    const scheduleRaw = getStringArg(argv, "schedule", { example: "2026-09-15T10:00:00-03:00" });
+    if (scheduleRaw !== undefined) {
+      if (Number.isNaN(Date.parse(scheduleRaw))) {
+        log(`ERRO: --schedule "${scheduleRaw}" não é uma data/hora ISO 8601 válida (ex: 2026-09-15T10:00:00-03:00).`);
+        process.exit(1);
+        return;
+      }
+      scheduleAt = scheduleRaw;
+    }
+  } catch (e) {
+    log(`ERRO: ${(e as Error).message}`);
+    process.exit(1);
+    return;
+  }
+
   const platformConfigPath = resolve(rootDir, "platform.config.json");
   const platformConfig = existsSync(platformConfigPath)
     ? (JSON.parse(readFileSync(platformConfigPath, "utf8")) as { kit_apoiadores?: KitApoiadoresChannelConfig })
@@ -259,7 +294,10 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
   const rendered = deps.renderEmail(cycle);
   const content: ApoiadoresKitEmailContent = {
     subject: rendered.subject,
-    previewText: rendered.previewText,
+    // #7867 item 2: preview fixo — sinalização de exclusividade, não teaser
+    // derivado do conteúdo (`rendered.previewText`, descartado aqui de
+    // propósito).
+    previewText: APOIO_EXCLUSIVE_PREVIEW_TEXT,
     html: rendered.html,
   };
 
@@ -267,7 +305,10 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
     log(`[DRY RUN] HTML já escrito em ${rendered.htmlPath}`);
     log(`  Assunto: ${content.subject}`);
     log(`  Preview: ${content.previewText}`);
-    log(`  Broadcast que SERIA criado: tag de audiência="${tagName}", rascunho (send_at: null), public: false.`);
+    log(
+      `  Broadcast que SERIA criado: tag de audiência="${tagName}", ` +
+        `${scheduleAt ? `AGENDADO para ${scheduleAt}` : "rascunho (send_at: null)"}, public: false.`,
+    );
     return;
   }
 
@@ -304,10 +345,16 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
     return;
   }
 
-  const created = await deps.createBroadcast(buildApoiadoresKitBroadcastInput(content, cycle, audience), kitConfig);
+  const created = await deps.createBroadcast(
+    buildApoiadoresKitBroadcastInput(content, cycle, audience, scheduleAt),
+    kitConfig,
+  );
   log(
-    `broadcast criado: id=${created.id} (rascunho, audiência = tag "${tagName}" id=${tagId}) — test email, ` +
-      "conferência visual e disparo continuam sendo ação manual no painel do Kit.",
+    scheduleAt
+      ? `broadcast criado: id=${created.id} (AGENDADO para ${scheduleAt}, audiência = tag "${tagName}" id=${tagId}) — ` +
+          "sem --mark-sent necessário no caminho automatizado."
+      : `broadcast criado: id=${created.id} (rascunho, audiência = tag "${tagName}" id=${tagId}) — test email, ` +
+          "conferência visual e disparo continuam sendo ação manual no painel do Kit.",
   );
 
   // #7633 (achado do silent-failure-hunter) — o 2xx da criação NÃO é prova de
@@ -325,19 +372,32 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
   }
   if (verification.verified !== true) log(`AVISO: ${verification.reason}`);
 
-  const persistState = (audienceVerified: boolean | null): void => {
-    deps.writeState(
-      dir,
-      buildApoiadoresKitPublishedState(
-        existingState,
-        cycle,
-        new Date().toISOString(),
-        rendered.htmlPath,
-        content.subject,
-        created.id,
-        audienceVerified,
-      ),
-    );
+  // #7867 item 1: com --schedule, o caminho FELIZ grava status "sent" direto
+  // (via buildApoiadoresKitScheduledState) — dispensa --mark-sent. A
+  // divergência de audiência (abaixo) NUNCA marca "sent", agendado ou não:
+  // um broadcast com audiência errada não é sucesso só porque foi agendado.
+  const persistState = (audienceVerified: boolean | null, markSent: boolean): void => {
+    const state = markSent
+      ? buildApoiadoresKitScheduledState(
+          existingState,
+          cycle,
+          new Date().toISOString(),
+          rendered.htmlPath,
+          content.subject,
+          created.id,
+          scheduleAt as string, // markSent só é true quando scheduleAt existe (ver chamada abaixo)
+          audienceVerified,
+        )
+      : buildApoiadoresKitPublishedState(
+          existingState,
+          cycle,
+          new Date().toISOString(),
+          rendered.htmlPath,
+          content.subject,
+          created.id,
+          audienceVerified,
+        );
+    deps.writeState(dir, state);
   };
 
   if (verification.verified === false) {
@@ -345,17 +405,25 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
     // próxima invocação cair no guard de idempotência em vez de criar um 2º
     // rascunho por cima de um problema não resolvido (mesma disciplina do
     // #6693 no canal diário). `kitAudienceVerified: false` deixa o incidente
-    // registrado no arquivo, não só no terminal desta sessão.
+    // registrado no arquivo, não só no terminal desta sessão. NUNCA markSent
+    // aqui — mesmo com --schedule, audiência divergente não é sucesso.
     let persistError: string | undefined;
     try {
-      persistState(false);
+      persistState(false, false);
     } catch (e) {
       persistError = (e as Error).message;
     }
+    // Com --schedule, o broadcast já está AGENDADO — não é mais um rascunho
+    // inerte no painel, é um envio real na fila do Kit. A mensagem precisa
+    // deixar isso explícito: o risco não é "não dispare", é "isto VAI disparar
+    // sozinho pra possivelmente a base inteira se ninguém intervier".
+    const acao = scheduleAt
+      ? `este broadcast está AGENDADO para ${scheduleAt} e VAI DISPARAR SOZINHO — cancele/reagende AGORA no ` +
+        "painel do Kit (Broadcasts) se a audiência estiver errada"
+      : "NÃO dispare esse rascunho sem antes conferir a audiência no painel do Kit";
     throw new Error(
       `AUDIÊNCIA NÃO CONFERE: o broadcast Kit id=${created.id} FOI CRIADO, mas ${verification.reason} ` +
-        "NÃO dispare esse rascunho sem antes conferir a audiência no painel do Kit — no pior caso ele está " +
-        "mirando a base INTEIRA em vez da tag de apoiadores." +
+        `${acao} — no pior caso ele está mirando a base INTEIRA em vez da tag de apoiadores.` +
         (persistError
           ? ` ADICIONALMENTE, o state local não pôde ser gravado (${persistError}) — o guard de idempotência ` +
             "NÃO vai reconhecer este broadcast e uma reexecução criaria um 2º rascunho."
@@ -403,7 +471,10 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
   }
 
   try {
-    persistState(verification.verified);
+    // markSent = true só quando --schedule foi passado E a audiência
+    // conferiu (chegar aqui já garante isso — o caso `verified === false`
+    // acima já lançou e retornou antes deste ponto).
+    persistState(verification.verified, scheduleAt !== null);
   } catch (e) {
     log(
       `ERRO CRÍTICO: o broadcast Kit id=${created.id} FOI CRIADO, mas o registro de idempotência NÃO foi ` +

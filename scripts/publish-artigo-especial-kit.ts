@@ -56,6 +56,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule, getStringArg, parseArgs } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { APOIO_EXCLUSIVE_PREVIEW_TEXT } from "./lib/shared/apoio-preview-text.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
 import {
   createBroadcast,
@@ -366,6 +367,10 @@ async function runPublishArtigoEspecialKitInner(options: RunOptions): Promise<vo
     ano,
     slug,
   });
+  // #7867 item 2: preview fixo — sinalização de exclusividade, não teaser
+  // derivado do conteúdo (o `previewText` que `renderArtigoEspecialEmail`
+  // gerou é descartado aqui de propósito).
+  email.previewText = APOIO_EXCLUSIVE_PREVIEW_TEXT;
   // `withArtigoEspecialEmailUtm` devolve a URL inalterada quando ela não
   // parseia — decisão certa (e-mail sem UTM é perda de medição; e-mail que não
   // sai é perda de entrega), mas silenciosa: sem este aviso, a atribuição de um
