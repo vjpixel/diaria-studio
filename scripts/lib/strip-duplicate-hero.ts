@@ -148,7 +148,23 @@ export const HASH_VERIFIED_DUPLICATE_HERO_ASSETS: ReadonlySet<string> = new Set(
   "d4f8d565-df7f-4fff-b347-7972aa6b1868",
   "b87ba438-9c0a-44a1-acf7-3d9eb3b1a207",
   "fe718e29-0890-413d-898e-122837a239ba",
+  // Varredura das páginas não corrigidas (10/09/2026): o D1 do corpo vem do
+  // NOSSO host (`img-{AAMMDD}-04-d1-2x1-*.jpg`), não de `asset/file/`, então
+  // nem o critério por id nem o hash da #7499 o viam. Hash exato também não
+  // fecha (a Beehiiv recomprime via `cdn-cgi/image`); a confirmação foi
+  // visual — 32x16 em cinza, distância média 0,1–0,2 contra ≥30 das demais.
+  "a3d67398-8494-4479-b3c1-0ddf6f399142",
+  "1c4f3339-5a82-481b-95ce-62609367dc49",
+  "4c41ad4e-df05-4ee9-9142-2a3b779439d2",
+  "0c179341-fb1b-4a2f-8823-2c2f0cea167f",
+  "a02d7e74-5816-4b5d-b23f-1ff18404f5b7",
 ]);
+
+/** Há alguma `<img>` (de qualquer host) depois do marcador do corpo? */
+function hasAnyBodyImage(html: string): boolean {
+  const at = html.indexOf(CONTENT_BLOCKS_MARKER);
+  return at >= 0 && /<img\b/.test(html.slice(at));
+}
 
 /**
  * Remoção usada pelo GERADOR do acervo (`buildArchivePageHtml`) — o ponto
@@ -161,7 +177,9 @@ export function stripArchiveHero(html: string): string {
   const byId = stripDuplicateHeroImage(html);
   if (byId.changed) return byId.html;
   const hero = findHeroLayout(html);
-  if (!hero || hero.bodySrcs.length === 0) return html;
+  // Qualquer host conta: a cópia do corpo pode vir do nosso próprio host.
+  // Sem imagem nenhuma no corpo, o hero é a única imagem — nunca remover.
+  if (!hero || !hasAnyBodyImage(html)) return html;
   const id = assetIdOf(hero.heroTag);
   if (!id || !HASH_VERIFIED_DUPLICATE_HERO_ASSETS.has(id)) return html;
   return removeHero(html, hero).html;

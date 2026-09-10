@@ -29,6 +29,24 @@ const page = (opts: { heroId?: string; bodyId?: string; wrapper?: boolean } = {}
   );
 };
 
+// Regressão: 5 páginas escaparam porque a cópia do corpo vinha do nosso host,
+// sem `asset/file/` — o ramo da lista verificada exigia imagem Beehiiv no corpo.
+test("stripArchiveHero: hero da lista é removido quando o corpo tem a cópia em host próprio", () => {
+  const known = "1c4f3339-5a82-481b-95ce-62609367dc49";
+  const html = page({ heroId: known, bodyId: "" }).replace(
+    "<h1>Titulo</h1>",
+    `<h1>Titulo</h1><img src="https://diar-ia-poll.diaria.workers.dev/img/img-260825-04-d1-2x1-39233390.jpg">`,
+  );
+  const out = stripArchiveHero(html);
+  assert.ok(!out.includes(known));
+  assert.ok(out.includes("img-260825-04-d1-2x1-39233390.jpg"));
+});
+
+test("stripArchiveHero: hero da lista fica quando é a única imagem da página", () => {
+  const html = page({ heroId: "1c4f3339-5a82-481b-95ce-62609367dc49", bodyId: "" });
+  assert.strictEqual(stripArchiveHero(html), html);
+});
+
 test("remove o hero duplicado junto com seu wrapper", () => {
   const r = stripDuplicateHeroImage(page());
   assert.equal(r.changed, true);
