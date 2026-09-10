@@ -633,6 +633,17 @@ de por grupo escolhido, #7408/#7413). Não há mais `--group`/audiência a
 escolher no caminho de produção — quem quiser reproduzir uma composição
 manual da fila usa `clarice-build-segment.ts --daily --cycle {ciclo} --budget N --send-date {AAAA-MM-DD} --dry-run`.
 
+**`priority_points` é ORDENAÇÃO, nunca FILTRO de elegibilidade (#7873, corrige
+desvio introduzido na implementação inicial desta fila).** Quem já recebeu
+(`sends_count>0`) e decaiu pra score ≤0 continua elegível pra fila única —
+só ordena por último (`compareDailyQueueOrder`), nunca é excluído por causa
+do score. `isDailyQueueEligible` chegou a herdar `priority_points > 0` como
+corte pra esse ramo (mesmo predicado do extinto grupo `engajados`), o que
+reduziu a fila medida de ~268k pra 9 contatos em produção (09/09/2026) —
+contradizia a própria decisão do editor citada acima ("trabalha tudo só a
+partir do score"). O guard de duplicidade por contato (queued/committed,
+#7236) é a única coisa que de fato exclui alguém já enviado — score nunca é.
+
 ---
 
 ## Verificação final

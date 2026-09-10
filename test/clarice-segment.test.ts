@@ -1444,15 +1444,17 @@ test("assertRecencySelectionMonotonic — listas vazias (de qualquer lado) devol
 // Fila única do envio diário (#7406) — substitui engajados/ramp-warm
 // ---------------------------------------------------------------------------
 
-test("isDailyQueueEligible: equivale a isEngajados quando sends_count>0", () => {
+test("isDailyQueueEligible: sends_count>0 é elegível independente do score (#7873 — score é ORDENAÇÃO, não filtro; #7406)", () => {
   const engajado = row({ email: "e@x.com", sends_count: 5, priority_points: 40 });
   const decaido = row({ email: "d@x.com", sends_count: 5, priority_points: 0 });
   const negativo = row({ email: "n@x.com", sends_count: 5, priority_points: -10 });
-  assert.equal(isDailyQueueEligible(engajado), isEngajados(engajado));
   assert.equal(isDailyQueueEligible(engajado), true);
-  assert.equal(isDailyQueueEligible(decaido), isEngajados(decaido));
-  assert.equal(isDailyQueueEligible(decaido), false, "score decaído a 0 continua fora — território de reativação, não desta fila");
-  assert.equal(isDailyQueueEligible(negativo), isEngajados(negativo));
+  assert.equal(isDailyQueueEligible(decaido), true, "score decaído a 0 continua elegível — só ordena por último, não é excluído");
+  assert.equal(isDailyQueueEligible(negativo), true, "score negativo continua elegível — mesma razão");
+  // isEngajados continua o predicado ANTIGO (grupo nomeado, ainda existe pro `--group` legado) —
+  // isDailyQueueEligible diverge dele de propósito desde o #7873, não deve mais equivaler.
+  assert.equal(isEngajados(decaido), false);
+  assert.equal(isEngajados(negativo), false);
 });
 
 test("isDailyQueueEligible: equivale a isRampWarm quando sends_count=0", () => {
@@ -1504,24 +1506,19 @@ test("buildDailySendQueue: união de quem hoje é engajados+ramp-warm, na ordem 
   const engajadoBaixo = row({ email: "a-engajado-baixo@x.com", sends_count: 3, priority_points: 10 });
   const rampWarmRecente = row({ email: "b-ramp-recente@x.com", sends_count: 0, mv_bucket: "verified", cohort: "leads-2026h2", created: "2026-08-01T00:00:00Z" });
   const rampWarmAntigo = row({ email: "y-ramp-antigo@x.com", sends_count: 0, mv_bucket: "verified", cohort: "leads-2022h1", created: "2022-01-01T00:00:00Z" });
-  const foraDaFila = row({ email: "decaido@x.com", sends_count: 3, priority_points: 0 }); // território reativação
+  const decaido = row({ email: "decaido@x.com", sends_count: 3, priority_points: 0 }); // #7873 — já recebeu, score decaiu a 0: elegível, ordenado por último (empata com ramp-warm por score=0, desempata por recência)
 
   const noGuard = { queuedListIds: new Set<string>(), committedListIds: new Set<string>() };
   const queue = buildDailySendQueue(
-    [rampWarmAntigo, engajadoBaixo, foraDaFila, rampWarmRecente, engajadoAlto],
+    [rampWarmAntigo, engajadoBaixo, decaido, rampWarmRecente, engajadoAlto],
     noGuard,
   );
 
   assert.deepEqual(
     queue.map((r) => r.email),
-    [engajadoAlto.email, engajadoBaixo.email, rampWarmRecente.email, rampWarmAntigo.email],
-    "todo score>0 antes de todo score=0, cada bloco na ordem do grupo original — sem tier explícito",
+    [engajadoAlto.email, engajadoBaixo.email, rampWarmRecente.email, rampWarmAntigo.email, decaido.email],
+    "score>0 antes de score=0; dentro do bloco score=0 (decaido + ramp-warm empatam), compareContactRecency ordena por `created` DESC e decaido — sem `created` — fica por último (dado conhecido bate desconhecido)",
   );
-
-  // Equivale à UNIÃO de segmentEngajados + segmentRampWarm sobre o mesmo universo.
-  const universe = [rampWarmAntigo, engajadoBaixo, foraDaFila, rampWarmRecente, engajadoAlto];
-  const uniaoEsperada = new Set([...segmentEngajados(universe), ...segmentRampWarm(universe)].map((r) => r.email));
-  assert.deepEqual(new Set(queue.map((r) => r.email)), uniaoEsperada);
 });
 
 test("buildDailySendQueue: guard POR CONTATO — quem já recebeu (queued) NUNCA usa o guard committed que zeraria o grupo (achado 260731, #7236)", () => {
