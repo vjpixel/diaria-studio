@@ -12,19 +12,13 @@
  * qualquer outro subprocess. ARMAR (copiar pra `~/.config/systemd/user/` +
  * `systemctl --user enable --now`) é ação humana explícita na máquina real.
  *
- * **TODO (#7036):** ao contrário do par Windows (`setup-edicao-schedule.ps1`,
- * que chama `Register-ScheduledTask`/`Unregister-ScheduledTask` diretamente
- * e por isso já publica a atestação cross-machine de
- * `scripts/lib/edicao-schedule-attestation.ts`), este script nunca vê o
- * momento em que a task é de fato armada — isso acontece via
- * `systemctl --user enable --now` digitado à mão pelo editor, fora de
- * qualquer script deste repo. Sem um hook nesse momento, o lado Linux não
- * escreve `data/edicao-diaria-schedule-attestation.json`. Se um wrapper de
- * armamento for criado (ex: um script que rode o `systemctl` E grave o
- * marcador com `scheduler: "systemd"`), é ali que a escrita deve entrar —
- * até lá, `edicao-diaria-staleness-alarm.ts` trata a ausência do marcador
- * como "sem informação cross-machine" (fail-soft, nunca como "desarmado em
- * algum lugar").
+ * **Armar/desarmar: `scripts/overnight/arm-edicao-schedule-systemd.ts
+ * --arm|--disarm` (#7036), nunca `systemctl` direto.** Este gerador não vê o
+ * momento em que o timer é armado; o wrapper roda o `systemctl --user
+ * enable|disable --now` E publica a atestação cross-machine
+ * (`scripts/lib/edicao-schedule-attestation.ts`) que o alarme
+ * `edicao-diaria-staleness-alarm.ts` lê. `systemctl` digitado à mão arma
+ * sem publicar nada — o alarme de outra máquina não fica sabendo.
  *
  * Uso:
  *   npx tsx scripts/overnight/setup-edicao-schedule-systemd.ts [--out-dir <dir>]

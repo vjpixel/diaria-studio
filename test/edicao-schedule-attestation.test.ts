@@ -18,8 +18,41 @@ import {
   parseEdicaoScheduleAttestation,
   isAttestationStale,
   resolveEdicaoTimerStateCrossMachine,
+  pickEffectiveAttestation,
+  EDICAO_SCHEDULE_ATTESTATION_FILES,
   ATTESTATION_STALE_MS,
 } from "../scripts/lib/edicao-schedule-attestation.ts";
+
+describe("pickEffectiveAttestation — um marcador por agendador", () => {
+  const now = new Date("2026-09-10T19:00:00Z");
+  const winArmed = buildEdicaoScheduleAttestation("NEO", "windows-task-scheduler", true, now);
+  const linuxDisarmed = buildEdicaoScheduleAttestation("helios", "systemd", false, now);
+
+  it("Windows armado + Linux desarmado → vence o armado (desarmar um lado não apaga o outro)", () => {
+    assert.equal(pickEffectiveAttestation([winArmed, linuxDisarmed], now), winArmed);
+    assert.equal(pickEffectiveAttestation([linuxDisarmed, winArmed], now), winArmed);
+    assert.equal(
+      resolveEdicaoTimerStateCrossMachine("disabled", pickEffectiveAttestation([linuxDisarmed, winArmed], now), now),
+      "armed",
+    );
+  });
+
+  it("nenhum marcador → null (comportamento local preservado)", () => {
+    assert.equal(pickEffectiveAttestation([null, null], now), null);
+    assert.equal(pickEffectiveAttestation([], now), null);
+  });
+
+  it("armado STALE é ignorado; sobra o desarmado válido", () => {
+    const staleArmed = buildEdicaoScheduleAttestation("NEO", "windows-task-scheduler", true, new Date(now.getTime() - ATTESTATION_STALE_MS - 1000));
+    assert.equal(pickEffectiveAttestation([staleArmed, linuxDisarmed], now), linuxDisarmed);
+  });
+
+  it("os dois agendadores têm arquivos DISTINTOS", () => {
+    assert.notEqual(EDICAO_SCHEDULE_ATTESTATION_FILES.systemd, EDICAO_SCHEDULE_ATTESTATION_FILES["windows-task-scheduler"]);
+    // nome do Windows é o original, mantido por compat com o writer PS1 em produção
+    assert.equal(EDICAO_SCHEDULE_ATTESTATION_FILES["windows-task-scheduler"], "edicao-diaria-schedule-attestation.json");
+  });
+});
 
 describe("buildEdicaoScheduleAttestation / parseEdicaoScheduleAttestation — round-trip", () => {
   it("serializa e reparseia sem perda", () => {
