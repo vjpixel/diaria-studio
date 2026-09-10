@@ -261,4 +261,48 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
     assert.equal(outcome.blocking, false);
     assert.equal(outcome.beehiivDeliveryGap?.ok, true);
   });
+
+  // REGRESSÃO #7482 (decisão do editor, 10/09/2026): 0 ativos na Beehiiv +
+  // backend=kit é o estado ESPERADO pós-migração — o "destinatários reais"
+  // positivo que ainda aparece é resíduo do último envio ANTES da migração
+  // terminar, não uma medição de canal errado. Sem este guard, comparar 314
+  // contra 0 sempre reporta "inesperado, investigar" mesmo sendo normal.
+  it("0 ativos na Beehiiv + backend=kit: pula o gap check, nunca alarma 'inesperado' (#7482)", () => {
+    const audience = reconcileSendAudiences([{ name: "kit", emails: ["a@x.com"] }]);
+    const outcome = decideOutcome(
+      audience,
+      [],
+      [{ platform: "beehiiv", measured: true, recipients: 314 }],
+      0,
+      "kit",
+    );
+    assert.equal(outcome.beehiivGapSkippedPostMigration, true);
+    assert.equal(outcome.beehiivDeliveryGap, null);
+  });
+
+  it("0 ativos na Beehiiv SEM backend=kit: continua alarmando normalmente (comportamento antigo preservado)", () => {
+    const audience = reconcileSendAudiences([{ name: "kit", emails: ["a@x.com"] }]);
+    const outcome = decideOutcome(
+      audience,
+      [],
+      [{ platform: "beehiiv", measured: true, recipients: 314 }],
+      0,
+      undefined,
+    );
+    assert.equal(outcome.beehiivGapSkippedPostMigration, false);
+    assert.equal(outcome.beehiivDeliveryGap?.ok, false);
+  });
+
+  it("Beehiiv com ativos > 0 + backend=kit: gap check continua rodando normalmente (só pula quando 0)", () => {
+    const audience = reconcileSendAudiences([{ name: "beehiiv", emails: ["a@x.com"] }]);
+    const outcome = decideOutcome(
+      audience,
+      [],
+      [{ platform: "beehiiv", measured: true, recipients: 314 }],
+      317,
+      "kit",
+    );
+    assert.equal(outcome.beehiivGapSkippedPostMigration, false);
+    assert.equal(outcome.beehiivDeliveryGap?.ok, true);
+  });
 });
