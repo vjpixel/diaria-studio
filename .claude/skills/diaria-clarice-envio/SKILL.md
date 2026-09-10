@@ -46,7 +46,7 @@ banner, nunca prosseguir sem resposta).
 
 ```bash
 
-# 7738 — distinção de teto: `queueAvailable` = fila diária unificada (`buildDailySendQueue` + guarda queued/committed corretos), NÃO `availableFirstSend` (1º-envio vitalício, SQL `sends_count<=0`). Reativação (`sends_count>0`) permanece fora deste teto; não confundir os dois ecles.
+# 7738 — distinção de teto: `queueAvailable` = fila diária unificada (`buildDailySendQueue` + guarda queued/committed corretos), NÃO `availableFirstSend` (1º-envio vitalício, SQL `sends_count<=0`). Desde o #7873 quem já recebeu (`sends_count>0`) ENTRA nesse teto independente do score — o que era "território de reativação" deixou de ser um recorte à parte; quem garante "não recebeu neste ciclo/mês" é o guard cycle-wide (`sent-or-queued.json`, #5395) + o filtro de recência (#7234), nunca o `priority_points`.
 # 2a. Editor confirmou o número proposto, OU não respondeu (skill roda sem editor
 #     nesta invocação isolada) — segue com o mesmo volume que a política propôs:
 npx tsx scripts/clarice-envio-run.ts --volume {plan.volume}
@@ -316,9 +316,20 @@ Depois de rodar, **repetir o Passo 1** — a fila mudou.
 
 ## Passo 5 — Verificação MV sob demanda (#4659)
 
-Só relevante quando o Passo 1 revelar um **déficit** de fila de 1º envio
-(o mesmo bloqueio "Fila de 1º envio... é menor que o volume proposto"). Nesse
-caso a saída de `clarice-plan-wave.ts` já traz `mvOnDemandPlan` calculado:
+Só relevante quando o Passo 1 revelar um **déficit de fila de 1º envio** —
+`mvOnDemandPlan.byCohort` não-vazio, derivado de `firstSendDeficit`
+(`availableFirstSend` contra o volume-alvo).
+
+⚠️ **Esse gatilho NÃO é mais o mesmo do bloqueio do Passo 7** (#7856/#7873
+desacoplaram os dois). O blocker de lá hoje diz *"Fila diária disponível…
+é menor que o volume proposto"* e mede a fila UNIFICADA; este passo continua
+medindo só o 1º-envio vitalício, porque é isso que a verificação MV produz.
+Consequência prática: dá pra ter `mvOnDemandPlan` cheio (falta público de
+AQUISIÇÃO) sem bloqueio nenhum no Passo 7 (a fila unificada cobre o volume),
+e vice-versa. Ler um como proxy do outro leva à alavanca errada.
+
+Quando o gatilho dispara, a saída de `clarice-plan-wave.ts` já traz
+`mvOnDemandPlan` calculado:
 quantos contatos verificar, de quais cohorts — na MESMA ordem de prioridade
 da fila de envio (`cohortSendRank`, morno→frio — #4542 já corrigiu uma
 inversão dessa ordem, não reintroduzir) — e o custo estimado.
@@ -395,12 +406,21 @@ nova é inventar confiança que o dado não sustenta.
 
 ### O que olhar com atenção
 
-**Fila de 1º envio secando.** No ciclo 2607-08 as ondas caíram de ~3.300/dia
-(d3) pra ~350/dia (d5) em dois dias. Quando `availableFirstSend` fica perto
-do volume proposto, a proposta emite o aviso apontando o **backlog do
-MillionVerifier** como alavanca — não "troque pra reenvio". Trocar o público
-é mudar a natureza da onda (aquisição → retenção) disfarçado de continuidade,
-e é decisão do editor, não default da skill.
+**Fila secando.** No ciclo 2607-08 as ondas caíram de ~3.300/dia (d3) pra
+~350/dia (d5) em dois dias. Quando a fila diária (`availableDailyQueue`) fica
+perto do volume proposto, a proposta emite o aviso apontando o **backlog do
+MillionVerifier** como alavanca — não "troque pra reenvio".
+
+**Desde o #7873 esse aviso dispara MUITO mais tarde**, e é preciso ler qual
+das duas filas está secando: `availableFirstSend` (1º-envio vitalício) pode
+estar em ~0 com `availableDailyQueue` na casa das centenas de milhares, porque
+quem já recebeu antes passou a entrar na fila. O que "secar" passou a
+significar, na prática, é *esgotar quem ainda não recebeu NESTE ciclo* — e aí
+a alavanca não é mais o MV (que só produz 1º-envio), é esperar o ciclo virar.
+O MV continua sendo a alavanca certa quando o que falta é público de
+AQUISIÇÃO especificamente (medição de 09/09/2026, ciclo 2608-09:
+`availableFirstSend` 3 contra `availableDailyQueue` 268.034 — as duas contando
+a mesma base, respondendo perguntas diferentes).
 
 **Não-abridores acumulados.** `nonOpeners` conta quem já recebeu 2+ envios
 sem nunca abrir e **continua elegível** — o sunset da #4430 nunca foi
@@ -424,18 +444,20 @@ oferecer "sim"**. Os bloqueios são:
 - Semáforo vermelho (circuit breaker estourado).
 - Crédito Brevo não cobre a onda.
 - Crédito Brevo **não consultado** — nunca agendar sem validar antes.
-- Fila de 1º envio (`availableFirstSend`) menor que o volume proposto — se o
-  Passo 5 (`mvOnDemandPlan`) revelou um recorte cobrível, rode-o e volte aqui
-  antes de tentar de novo; se revelou vazio ou `backlogInsufficient`, a
-  alavanca de fila não está disponível e o editor decide (reduzir volume ou
-  aceitar). **Nota #7738:** este bloqueio de PLANEJAMENTO (`buildWaveProposal`)
-  continua no eixo estrito de `availableFirstSend` — só o teto de EXECUÇÃO
-  (Passo 4/6, `queueAvailable` em `clarice-envio-run.ts`) já usa a fila diária
-  unificada (`availableDailyQueue`). É possível a proposta bloquear aqui
-  mesmo com fila diária suficiente pro volume pedido; segue como
-  acompanhamento aberto — não fechado por este fix (`mvOnDemandPlan` é
+- Fila diária disponível (`availableDailyQueue ?? availableFirstSend`) menor
+  que o volume proposto — se o Passo 5 (`mvOnDemandPlan`) revelou um recorte
+  cobrível, rode-o e volte aqui antes de tentar de novo; se revelou vazio ou
+  `backlogInsufficient`, a alavanca de fila não está disponível e o editor
+  decide (reduzir volume ou aceitar). **#7856 (fecha o resíduo do #7738):**
+  este bloqueio de PLANEJAMENTO (`buildWaveProposal`) usa a MESMA fila diária
+  unificada que o teto de EXECUÇÃO (`queueAvailable` em
+  `clarice-envio-run.ts`) já usava desde o #7738 — as duas camadas não
+  divergem mais. O fallback pra `availableFirstSend` só entra em chamador
+  legado que não populou `availableDailyQueue` (nunca superestima).
+  Segue aberto só o que o #7856 NÃO cobriu: `mvOnDemandPlan` continua
   dimensionado por safra via `availableFirstSendByCohort`, sem equivalente
-  ainda pra fila diária unificada).
+  pra fila diária unificada — o plano de MV sob demanda pode sair menor do
+  que a fila unificada justificaria.
 - `/diaria-clarice-novos` do ciclo nunca rodou, ou rodou há mais de 48h
   (#4664) — sem isso, cadastro novo (`cohortSendRank: 0`) perde prioridade
   em silêncio pra leads frios.

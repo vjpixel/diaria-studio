@@ -1139,7 +1139,11 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
     // Se esse racional deixar de valer (ex.: crédito baixo virar sinal de
     // parar por outro motivo de negócio), reabrir #5042 com o editor antes
     // de mudar o comportamento — nunca alinhar os dois caminhos em silêncio.
-    report.section("Passo 4 — Fila de 1º envio");
+    // #7738/#7873: o rótulo dizia "Fila de 1º envio", mas o teto aplicado
+    // logo abaixo (`queueAvailable`) é a fila diária UNIFICADA desde o #7738 —
+    // e desde o #7873 ela é dominada por quem JÁ recebeu antes. Rótulo
+    // mentiroso num relatório que o editor lê vira erro de leitura depois.
+    report.section("Passo 4 — Fila diária disponível");
     const probe = proposeNextVolume({
       baseVolume: proposal.volumes.baseVolume,
       step: effectiveStep,
