@@ -1490,13 +1490,14 @@ describe("runTestBatchesParallel (#6877) — integração REAL com fork() (sem s
   // — não "segundos"), independente da causa raiz.
   const TRIVIAL_FIXTURE_BATCH_TIMEOUT_MS = 20_000;
 
-  // REGRESSÃO (#7885): trava o orçamento de pior caso de um worker rodando
-  // fixtures triviais MUITO abaixo do que os defaults de produção dariam —
-  // sem isto, alguém podia reintroduzir a omissão de `batchTimeoutMs`/
-  // `bisectBudgetMs` nos `it()`s abaixo (voltando ao teto de ~17min pro
-  // caso de 1 batch) sem nenhum teste acusar. `computeWorkerTimeoutMs` é a
-  // MESMA função que `runWorker` usa em produção — este teste não
-  // reimplementa a conta.
+  // REGRESSÃO (#7885): documenta e trava a PROPRIEDADE da constante — com
+  // `TRIVIAL_FIXTURE_BATCH_TIMEOUT_MS` e bisect desligado, o teto de pior
+  // caso de um worker fica em poucos minutos, contra ~17min dos defaults de
+  // produção. NÃO trava o fio: se alguém remover `batchTimeoutMs`/
+  // `bisectBudgetMs` dos `it()`s abaixo, este teste continua passando (o
+  // guard disso seria instrumentar `runTestBatchesParallel`, fora de escopo
+  // aqui). `computeWorkerTimeoutMs` é a MESMA função que `runWorker` usa em
+  // produção — este teste não reimplementa a conta.
   it("REGRESSÃO (#7885): teto do worker pra fixtures triviais fica em minutos, não nos ~17min dos defaults de produção", () => {
     const worstCaseWithFixtureTimeout = computeWorkerTimeoutMs({
       batches: [["a.test.ts"]],
