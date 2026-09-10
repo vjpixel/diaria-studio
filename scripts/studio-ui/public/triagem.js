@@ -229,7 +229,13 @@ function renderDispatchTrackLegend() {
 //
 // Exportada pra ser testável direto, como `dispatchBadge`: o caller de teste
 // passa `reasonUiOverride` em vez de mutar `data`.
-export function reasonCell(track, matched, reasonUiOverride) {
+//
+// #7868 — `waitUntilLabel` (4º argumento, opcional) interpola o `{date}` que
+// o texto de `marker:aguardando-ate` carrega (`TriageIssue.execTrackWaitUntilLabel`,
+// já formatado `DD/MM`/`DD/MM/AAAA` no servidor — nenhuma lógica de data aqui,
+// só substituição de texto). Qualquer outro `matched` não tem `{date}` na
+// frase, então a substituição é inócua pra eles.
+export function reasonCell(track, matched, reasonUiOverride, waitUntilLabel) {
   const ui = reasonUiOverride ?? data.execTrackReasonUi;
   // Payload ainda não chegou (1º render antes do fetch) ou servidor antigo:
   // sem vocabulário não há o que dizer, e inventar texto aqui recriaria a 2ª
@@ -242,7 +248,14 @@ export function reasonCell(track, matched, reasonUiOverride) {
   if (ui.actionable?.[track] === true) return '<span class="reason-none">—</span>';
   const entry = ui.reasons?.[matched];
   if (!entry) return '<span class="reason-none">—</span>';
-  return `<span class="reason-text" title="${escapeHtml(entry.long)}">${escapeHtml(entry.short)}</span>`;
+  // Fallback genérico se o servidor não populou a data (não deveria acontecer
+  // pra `marker:aguardando-ate` — `classifyExecTrackWithRule` sempre a
+  // calcula junto do `matched` — mas nunca vaza o placeholder cru `{date}`
+  // se acontecer).
+  const dateText = waitUntilLabel || "data no corpo da issue";
+  const short = entry.short.replaceAll("{date}", dateText);
+  const long = entry.long.replaceAll("{date}", dateText);
+  return `<span class="reason-text" title="${escapeHtml(long)}">${escapeHtml(short)}</span>`;
 }
 
 function ciBadge(ciState) {
@@ -346,7 +359,7 @@ function renderIssuesTable() {
       <td>${escapeHtml(i.title)}</td>
       <td>${dispatchBadge(i.execTrack, i.execTrackMatched)}${claimBadge(i.claim)}</td>
       <td>${priorityBadge(i.priority)}</td>
-      <td>${reasonCell(i.execTrack, i.execTrackMatched)}</td>
+      <td>${reasonCell(i.execTrack, i.execTrackMatched, undefined, i.execTrackWaitUntilLabel)}</td>
       <td class="mono">${ageLabel(i.createdAt)}</td>
       <td class="mono">${fmtTime(i.updatedAt)}</td>
     `;

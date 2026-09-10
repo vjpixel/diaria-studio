@@ -116,6 +116,13 @@ export interface TriageIssue {
    * (`default` — nenhuma label disse o contrário, ninguém olhou). `null` só
    * quando a classificação foi feita sem o detalhe (caller legado). */
   execTrackMatched: ExecTrackMatch | null;
+  /** Data já formatada (`DD/MM`/`DD/MM/AAAA`) do marcador `aguardando-ate:`,
+   * quando `execTrackMatched === "marker:aguardando-ate"` — `null` em
+   * qualquer outro caso (#7868). A coluna "Motivo" interpola isto no
+   * `{date}` do texto servido por `EXEC_TRACK_MATCH_REASON`, pra mostrar
+   * "agendado para 15/09" em vez do texto estático "data marcada" que
+   * escondia a data (o editor precisava abrir a issue pra descobrir). */
+  execTrackWaitUntilLabel: string | null;
   /**
    * #6436 — claim ATIVO de uma sessão coordenadora (`data/sessions/`), se
    * houver. Antes desta issue, uma issue `claimed-por-outra-sessao` (em
@@ -323,6 +330,7 @@ ${i.body ?? ""}`);
       // fechada quando `state` chega até ela.
       execTrack: result.track,
       execTrackMatched: result.matched as ExecTrackMatch,
+      execTrackWaitUntilLabel: result.waitUntilLabel ?? null,
       // Preenchido depois por `attachClaims` (precisa de `data/sessions/`,
       // I/O que `parseIssues` — puro sobre o JSON do `gh` — não faz).
       claim: null,

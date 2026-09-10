@@ -115,7 +115,7 @@ describe("triagem.js dispatchBadge — #6200 badge de 'sem sinal'", () => {
 const REASON_UI = {
   reasons: {
     "label:kit-migration": { short: "migração Kit em curso", long: "Bloqueada pela migração de canal para o Kit." },
-    "marker:aguardando-ate": { short: "data marcada", long: "Volta sozinha ao fluxo na data." },
+    "marker:aguardando-ate": { short: "agendado para {date}", long: "Volta sozinha ao fluxo em {date}." },
     "label:windows": { short: "exige máquina Windows", long: "Precisa do Chrome logado / ComfyUI." },
     default: { short: "sem sinal — ninguém triou", long: "Nasce Overnight por construção." },
   },
@@ -137,9 +137,25 @@ describe("triagem.js reasonCell — #7644 coluna 'Motivo'", () => {
   });
 
   it("o texto longo vai pro tooltip, não pra célula", () => {
+    const html = reasonCell("agendada", "marker:aguardando-ate", REASON_UI, "15/09");
+    assert.match(html, /title="Volta sozinha ao fluxo em 15\/09\."/);
+    assert.match(html, />agendado para 15\/09</);
+  });
+
+  // #7868 — a coluna mostrava só "data marcada" (texto fixo), obrigando o
+  // editor a abrir a issue pra descobrir QUAL data. `waitUntilLabel` (4º
+  // argumento) é o dado por-issue que interpola o `{date}` do template
+  // servido em `EXEC_TRACK_MATCH_REASON`.
+  it("#7868 — interpola a data recebida no placeholder {date} da célula E do tooltip", () => {
+    const html = reasonCell("agendada", "marker:aguardando-ate", REASON_UI, "05/01/2027");
+    assert.match(html, />agendado para 05\/01\/2027</);
+    assert.match(html, /title="Volta sozinha ao fluxo em 05\/01\/2027\."/);
+  });
+
+  it("#7868 — sem waitUntilLabel (servidor antigo/dado ausente), nunca vaza o placeholder cru", () => {
     const html = reasonCell("agendada", "marker:aguardando-ate", REASON_UI);
-    assert.match(html, /title="Volta sozinha ao fluxo na data\."/);
-    assert.match(html, />data marcada</);
+    assert.doesNotMatch(html, /\{date\}/);
+    assert.match(html, />agendado para data no corpo da issue</);
   });
 
   it("track ACIONÁVEL renderiza '—' mesmo tendo frase disponível pro seu matched", () => {
