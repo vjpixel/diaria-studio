@@ -34,6 +34,7 @@ import {
   runAllWatchedKinds,
   WATCHED_KINDS,
   buildHaltBannerArgs,
+  hasMergeActivitySince,
   type StallEvent,
 } from "../scripts/overnight-watchdog.ts";
 import { parseHaltBannerArgs } from "../scripts/render-halt-banner.ts";
@@ -494,6 +495,108 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       isHealthyIdle: true,
     });
     assert.equal(result.action, "no_stall");
+  });
+
+  // #7910: elapsed_min absurdo pós-compactação de contexto — merge de PR
+  // recente na janela é sinal de fonte quebrada, não stall genuíno.
+  it("#7910: hasRecentMergeActivity=true + stall por elapsed → stall_source_broken, não stall", () => {
+    const lastActivityMs = nowMs - 900 * 60_000; // 900 min, como o incidente real (#7910)
+    const result = diagnoseWatchdogActivity({
+      aammdd: "260909",
+      dryRun: false,
+      lastActivityMs,
+      lastSource: "run-log",
+      nowMs,
+      thresholdMin: 45,
+      isHealthyIdle: false,
+      hasRecentMergeActivity: true,
+    });
+    assert.equal(result.action, "stall_source_broken");
+    assert.equal(result.elapsedMin, 900);
+    assert.ok(
+      result.lines.some((l) => /fonte quebrada/i.test(l)),
+      "deve explicar que é sinal de fonte quebrada, não stall real",
+    );
+  });
+
+  it("#7910: hasRecentMergeActivity=false (default) + stall por elapsed → continua action=stall (comportamento pré-existente preservado)", () => {
+    const lastActivityMs = nowMs - 900 * 60_000;
+    const result = diagnoseWatchdogActivity({
+      aammdd: "260909",
+      dryRun: false,
+      lastActivityMs,
+      lastSource: "run-log",
+      nowMs,
+      thresholdMin: 45,
+      isHealthyIdle: false,
+      // hasRecentMergeActivity omitido de propósito — todos os callers
+      // pré-#7910 (e a maioria dos testes acima) não passam este campo.
+    });
+    assert.equal(result.action, "stall");
+  });
+
+  it("#7910: hasRecentMergeActivity=true mas SEM stall (atividade recente) → continua no_stall", () => {
+    const lastActivityMs = nowMs - 5 * 60_000;
+    const result = diagnoseWatchdogActivity({
+      aammdd: "260909",
+      dryRun: false,
+      lastActivityMs,
+      lastSource: "run-log",
+      nowMs,
+      thresholdMin: 60,
+      isHealthyIdle: false,
+      hasRecentMergeActivity: true,
+    });
+    assert.equal(result.action, "no_stall");
+  });
+
+  it("#7910: healthy_idle vence stall_source_broken quando os dois sinais estão presentes (ordem de precedência preservada)", () => {
+    const lastActivityMs = nowMs - 900 * 60_000;
+    const result = diagnoseWatchdogActivity({
+      aammdd: "260909",
+      dryRun: false,
+      lastActivityMs,
+      lastSource: "run-log",
+      nowMs,
+      thresholdMin: 45,
+      isHealthyIdle: true,
+      hasRecentMergeActivity: true,
+    });
+    assert.equal(result.action, "healthy_idle");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasMergeActivitySince (#7910)
+// ---------------------------------------------------------------------------
+
+describe("hasMergeActivitySince (#7910)", () => {
+  const sinceMs = new Date("2026-09-09T22:00:00Z").getTime();
+
+  it("PR mergeado DEPOIS de sinceMs → true", () => {
+    assert.equal(
+      hasMergeActivitySince(["2026-09-10T09:36:00Z", "2026-09-10T10:04:00Z"], sinceMs),
+      true,
+    );
+  });
+
+  it("todos os PRs mergeados ANTES de sinceMs → false", () => {
+    assert.equal(hasMergeActivitySince(["2026-09-09T10:00:00Z", "2026-09-09T21:00:00Z"], sinceMs), false);
+  });
+
+  it("lista vazia → false", () => {
+    assert.equal(hasMergeActivitySince([], sinceMs), false);
+  });
+
+  it("timestamp malformado é ignorado, não derruba a checagem dos demais", () => {
+    assert.equal(
+      hasMergeActivitySince(["not-a-date", "2026-09-10T09:36:00Z"], sinceMs),
+      true,
+    );
+  });
+
+  it("timestamp EXATAMENTE igual a sinceMs → false (estritamente depois, não igual)", () => {
+    assert.equal(hasMergeActivitySince([new Date(sinceMs).toISOString()], sinceMs), false);
   });
 });
 

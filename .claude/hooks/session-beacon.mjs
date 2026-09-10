@@ -274,6 +274,51 @@ export function resolveWorktreeBranches(startDir) {
     return null;
   }
 }
+
+/**
+ * Sobe de `startDir` procurando o primeiro ancestral com `.git` (arquivo OU
+ * diretório) — sem spawnar processo (mesma disciplina do resto deste
+ * arquivo). `null` se nada for achado até `maxDepth` níveis ou em qualquer
+ * falha de I/O (fail-soft: o chamador cai de volta pro comportamento
+ * anterior a este helper existir).
+ *
+ * #7712 achado colateral: existe especificamente pra resolver `cwdRoot` a
+ * partir de `payload.cwd` — o cwd REAL da chamada que disparou o hook —, em
+ * vez de `import.meta.url` (a localização do PRÓPRIO arquivo do hook).
+ * Medição direta (10/09/2026, mesmo método da 4ª medição do #7712 pra
+ * `inject-session-id.mjs`): instrumentar a cópia deste hook dentro de um
+ * worktree de subagente (`isolation: "worktree"`) e disparar uma chamada
+ * Bash real não produziu NENHUM efeito — o hook que de fato roda é sempre a
+ * cópia do checkout PRINCIPAL (`${CLAUDE_PROJECT_DIR}` fixo na raiz
+ * original da sessão em `.claude/settings.json`). Isso confirma que
+ * `hookDir`/`cwdRoot` derivados de `import.meta.url` resolvem SEMPRE pro
+ * checkout principal — nunca pro worktree do subagente — e por isso
+ * `isLinkedWorktree(cwdRoot)` nunca reconhecia um subagente de worktree como
+ * tal: o guard "#6303 review cruzado — NÃO registrar subagente" (ver mais
+ * abaixo) tinha o discriminador sempre falso pra esse caso.
+ *
+ * `payload.cwd` não é garantido ser a raiz exata do worktree/checkout (a
+ * sessão pode ter feito `cd` pra um subdiretório) — daí a subida, em vez de
+ * assumir `.git` direto em `payload.cwd` como `resolveMainRepoRootNoSpawn`
+ * faz. `maxDepth=8` é folgado pra qualquer profundidade real do repo
+ * (`scripts/lib/shared/...` já é o caso mais fundo hoje, 3 níveis).
+ */
+export function findGitRootNoSpawn(startDir, maxDepth = 8) {
+  try {
+    if (typeof startDir !== "string" || startDir.trim() === "") return null;
+    let dir = startDir;
+    for (let i = 0; i < maxDepth; i++) {
+      if (existsSync(join(dir, ".git"))) return dir;
+      const parent = dirname(dir);
+      if (parent === dir) return null; // raiz do filesystem, sem achar .git
+      dir = parent;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function isLinkedWorktree(startDir) {
   try {
     const gitPath = join(startDir, ".git");
@@ -732,7 +777,13 @@ if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_ar
       if (!sessionId) return; // sem identidade não há beacon possível
 
       const hookDir = dirname(fileURLToPath(import.meta.url));
-      const cwdRoot = join(hookDir, "..", "..");
+      // #7712 achado colateral: `payload.cwd` (o cwd REAL da chamada que
+      // disparou o hook) é a fonte correta — `hookDir`/`import.meta.url`
+      // resolvem sempre pro checkout PRINCIPAL, mesmo quando quem disparou
+      // é um subagente `isolation: "worktree"` (ver docstring de
+      // `findGitRootNoSpawn`). Fail-soft: sem `payload.cwd` utilizável, ou
+      // se a subida não achar `.git`, cai no comportamento pré-#7712.
+      const cwdRoot = findGitRootNoSpawn(payload.cwd) ?? join(hookDir, "..", "..");
 
       // #6303 review cruzado (P2): NÃO registrar subagente.
       //

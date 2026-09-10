@@ -9,13 +9,16 @@
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   sessionsDir,
   planSafeBackupCleanup,
   cleanupReconciledSafeBackups,
+  planSafeBackupCapPrune,
+  applySafeBackupCapPrune,
+  SAFE_BACKUP_CAP_DEFAULT,
   type SessionRecord,
 } from "../scripts/lib/session-registry.ts";
 
@@ -33,6 +36,14 @@ function freshRoot(): string {
 function writeRawSessionFile(root: string, name: string, record: Partial<SessionRecord>): void {
   mkdirSync(sessionsDir(root), { recursive: true });
   writeFileSync(join(sessionsDir(root), name), JSON.stringify(record), "utf8");
+}
+
+/** Carimba mtime explícito num arquivo de `data/sessions/` — pra controlar
+ * ordem "mais antigo pro mais novo" nos testes de `planSafeBackupCapPrune`
+ * sem depender de `setTimeout` entre writes. */
+function setMtime(root: string, name: string, isoOrMs: string | number): void {
+  const t = typeof isoOrMs === "number" ? isoOrMs : Date.parse(isoOrMs);
+  utimesSync(join(sessionsDir(root), name), t / 1000, t / 1000);
 }
 
 const BASE: SessionRecord = {
@@ -440,5 +451,180 @@ describe("cleanupReconciledSafeBackups (#6970) — execução real, isolada em t
     const plan = cleanupReconciledSafeBackups(root);
     assert.equal(plan[0]!.action, "skipped-unreadable-real");
     assert.ok(existsSync(backupPath), "backup nunca é removido quando o real não pôde ser relido");
+  });
+});
+
+// ─── planSafeBackupCapPrune / applySafeBackupCapPrune (#7858) ──────────────
+//
+// Backstop por CONTAGEM: grupos que `planSafeBackupCleanup` nunca zera
+// (pendência real, ou merge_grant útil preso num backup) ainda assim não
+// devem acumular backup sem limite — achado ao vivo #7858 (22 cópias do
+// MESMO grupo, sessão viva).
+describe("planSafeBackupCapPrune (#7858)", () => {
+  it("grupo dentro do cap (<=default) não aparece no plano", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
+    for (let i = 1; i <= SAFE_BACKUP_CAP_DEFAULT; i++) {
+      writeRawSessionFile(root, `develop-Neo-s1-safeBackup-000${i}.json`, { ...BASE, claimed_issues: [1] });
+    }
+    const plan = planSafeBackupCapPrune(root);
+    assert.deepEqual(plan, [], "exatamente no cap não é 'acima do cap' — nada a podar");
+  });
+
+  it("grupo acima do cap: remove os mais ANTIGOS, mantém o cap de backups redundantes", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
+    // 5 backups idênticos ao real (totalmente redundantes entre si) — só a
+    // ordem de mtime deve decidir quem sai.
+    const names = ["a", "b", "c", "d", "e"].map((s) => `develop-Neo-s1-safeBackup-${s}.json`);
+    names.forEach((n, i) => {
+      writeRawSessionFile(root, n, { ...BASE, claimed_issues: [1] });
+      setMtime(root, n, `2026-08-01T00:0${i}:00.000Z`); // a=mais antigo ... e=mais novo
+    });
+
+    const plan = planSafeBackupCapPrune(root, { capPerGroup: 3 });
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0]!.removed.length, 2, "5 backups, cap 3 → remove os 2 mais antigos");
+    assert.deepEqual(
+      plan[0]!.removed.map((r) => r.path.split("/").pop()),
+      ["develop-Neo-s1-safeBackup-a.json", "develop-Neo-s1-safeBackup-b.json"],
+      "remove do mais antigo pro mais novo, nunca o inverso",
+    );
+    assert.equal(plan[0]!.kept.length, 3);
+  });
+
+  it("candidato com claim ÚNICA (nenhum outro backup/real reproduz) NUNCA é removido, mesmo acima do cap", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
+    const names = ["a", "b", "c", "d"].map((s) => `develop-Neo-s1-safeBackup-${s}.json`);
+    // Backup "a" (o mais antigo) carrega uma claim (99) que NINGUÉM mais no
+    // grupo reproduz — real e os demais backups só têm [1].
+    writeRawSessionFile(root, names[0]!, { ...BASE, claimed_issues: [1, 99] });
+    writeRawSessionFile(root, names[1]!, { ...BASE, claimed_issues: [1] });
+    writeRawSessionFile(root, names[2]!, { ...BASE, claimed_issues: [1] });
+    writeRawSessionFile(root, names[3]!, { ...BASE, claimed_issues: [1] });
+    names.forEach((n, i) => setMtime(root, n, `2026-08-01T00:0${i}:00.000Z`));
+
+    const plan = planSafeBackupCapPrune(root, { capPerGroup: 2 });
+    assert.equal(plan.length, 1);
+    const removedNames = plan[0]!.removed.map((r) => r.path.split("/").pop());
+    assert.ok(!removedNames.includes(names[0]), "backup com claim única nunca é removido");
+    // Mesmo com "a" protegido, o backstop ainda tenta trazer o grupo ao cap
+    // removendo outros candidatos seguros (b, que é redundante).
+    assert.ok(plan[0]!.kept.includes(join(sessionsDir(root), names[0]!)));
+  });
+
+  it("candidato com merge_grant VIVO único (real e demais backups não reproduzem) nunca é removido", () => {
+    const root = freshRoot();
+    const grantedAt = "2026-08-01T00:00:00.000Z";
+    writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
+    const names = ["a", "b", "c", "d"].map((s) => `develop-Neo-s1-safeBackup-${s}.json`);
+    writeRawSessionFile(root, names[0]!, {
+      ...BASE,
+      claimed_issues: [1],
+      merge_grant: { grantedTo: "outra-sessao", grantedBy: "s1", grantedAt },
+    });
+    writeRawSessionFile(root, names[1]!, { ...BASE, claimed_issues: [1] });
+    writeRawSessionFile(root, names[2]!, { ...BASE, claimed_issues: [1] });
+    writeRawSessionFile(root, names[3]!, { ...BASE, claimed_issues: [1] });
+    names.forEach((n, i) => setMtime(root, n, `2026-08-01T00:0${i}:00.000Z`));
+
+    const now = Date.parse(grantedAt) + 60_000; // dentro do TTL de 10min
+    const plan = planSafeBackupCapPrune(root, { capPerGroup: 2, now });
+    const removedNames = plan[0]!.removed.map((r) => r.path.split("/").pop());
+    assert.ok(!removedNames.includes(names[0]), "backup com merge_grant vivo único nunca é removido");
+  });
+
+  it("nunca poda abaixo do cap, mesmo que TODOS os backups fossem redundantes", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
+    const names = ["a", "b", "c", "d", "e", "f"].map((s) => `develop-Neo-s1-safeBackup-${s}.json`);
+    names.forEach((n, i) => {
+      writeRawSessionFile(root, n, { ...BASE, claimed_issues: [1] });
+      setMtime(root, n, `2026-08-01T00:0${i}:00.000Z`);
+    });
+
+    const plan = planSafeBackupCapPrune(root, { capPerGroup: 3 });
+    assert.equal(plan[0]!.kept.length, 3, "nunca fica com menos que o cap, mesmo com excesso de redundância");
+    assert.equal(plan[0]!.removed.length, 3);
+  });
+
+  it("backup ILEGÍVEL é sempre removido primeiro (nada a perder)", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
+    writeFileSync(join(sessionsDir(root), "develop-Neo-s1-safeBackup-bad.json"), "{not valid json", "utf8");
+    const names = ["b", "c", "d"].map((s) => `develop-Neo-s1-safeBackup-${s}.json`);
+    names.forEach((n) => writeRawSessionFile(root, n, { ...BASE, claimed_issues: [1] }));
+    setMtime(root, "develop-Neo-s1-safeBackup-bad.json", "2026-08-01T00:00:00.000Z"); // mais antigo
+    names.forEach((n, i) => setMtime(root, n, `2026-08-01T00:0${i + 1}:00.000Z`));
+
+    const plan = planSafeBackupCapPrune(root, { capPerGroup: 2 });
+    assert.equal(plan.length, 1);
+    assert.ok(
+      plan[0]!.removed.some((r) => r.path.endsWith("safeBackup-bad.json")),
+      "backup ilegível é candidato preferencial à poda",
+    );
+  });
+
+  it("real ilegível → grupo pulado inteiramente (sem base segura pra comparar)", () => {
+    const root = freshRoot();
+    mkdirSync(sessionsDir(root), { recursive: true });
+    writeFileSync(join(sessionsDir(root), "develop-Neo-s1.json"), "{not valid json", "utf8");
+    const names = ["a", "b", "c", "d"].map((s) => `develop-Neo-s1-safeBackup-${s}.json`);
+    names.forEach((n, i) => {
+      writeRawSessionFile(root, n, { ...BASE, claimed_issues: [1] });
+      setMtime(root, n, `2026-08-01T00:0${i}:00.000Z`);
+    });
+    const plan = planSafeBackupCapPrune(root, { capPerGroup: 2 });
+    assert.deepEqual(plan, [], "real ilegível → não poda o grupo");
+  });
+
+  it("cap 0: pode chegar a 0 backups se todos forem redundantes", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
+    const names = ["a", "b"].map((s) => `develop-Neo-s1-safeBackup-${s}.json`);
+    names.forEach((n, i) => {
+      writeRawSessionFile(root, n, { ...BASE, claimed_issues: [1] });
+      setMtime(root, n, `2026-08-01T00:0${i}:00.000Z`);
+    });
+    const plan = planSafeBackupCapPrune(root, { capPerGroup: 0 });
+    assert.equal(plan[0]!.kept.length, 0);
+    assert.equal(plan[0]!.removed.length, 2);
+  });
+});
+
+describe("applySafeBackupCapPrune (#7858)", () => {
+  it("remove de verdade os backups excedentes do disco, preserva o real e os mantidos", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
+    const names = ["a", "b", "c", "d"].map((s) => `develop-Neo-s1-safeBackup-${s}.json`);
+    names.forEach((n, i) => {
+      writeRawSessionFile(root, n, { ...BASE, claimed_issues: [1] });
+      setMtime(root, n, `2026-08-01T00:0${i}:00.000Z`);
+    });
+
+    const result = applySafeBackupCapPrune(root, { capPerGroup: 2 });
+    assert.equal(result[0]!.removed.length, 2);
+    assert.ok(!existsSync(join(sessionsDir(root), names[0]!)), "mais antigo removido de verdade");
+    assert.ok(!existsSync(join(sessionsDir(root), names[1]!)), "2º mais antigo removido de verdade");
+    assert.ok(existsSync(join(sessionsDir(root), names[2]!)), "mais recentes preservados");
+    assert.ok(existsSync(join(sessionsDir(root), names[3]!)));
+    assert.ok(existsSync(join(sessionsDir(root), "develop-Neo-s1.json")), "real nunca é tocado");
+  });
+
+  it("idempotente: rodar 2x não lança e a 2ª vez já está dentro do cap", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, "develop-Neo-s1.json", { ...BASE, claimed_issues: [1] });
+    const names = ["a", "b", "c", "d"].map((s) => `develop-Neo-s1-safeBackup-${s}.json`);
+    names.forEach((n, i) => {
+      writeRawSessionFile(root, n, { ...BASE, claimed_issues: [1] });
+      setMtime(root, n, `2026-08-01T00:0${i}:00.000Z`);
+    });
+
+    const first = applySafeBackupCapPrune(root, { capPerGroup: 2 });
+    assert.equal(first[0]!.removed.length, 2);
+
+    const second = applySafeBackupCapPrune(root, { capPerGroup: 2 });
+    assert.deepEqual(second, [], "já dentro do cap — 2ª rodada não encontra mais nada a podar");
   });
 });

@@ -40,13 +40,32 @@
  * inteiramente — `planSafeBackupCleanup`/`cleanupReconciledSafeBackups` já
  * são fail-soft (diretório ausente → plano vazio), mas o guard evita até a
  * tentativa.
+ *
+ * **Fase 2 — poda por CONTAGEM (#7858).** A fase 1 acima (`planSafeBackupCleanup`/
+ * `cleanupReconciledSafeBackups`) só remove um grupo INTEIRO quando ele está
+ * 100% reconciliado; um grupo com QUALQUER pendência (claim ainda não
+ * fundida, merge_grant útil preso num backup) acumula backup pra sempre
+ * enquanto essa pendência persistir — achado ao vivo do #7858 (22 cópias do
+ * MESMO grupo, sessão VIVA). A fase 2 (`planSafeBackupCapPrune`/
+ * `applySafeBackupCapPrune`, mesmo módulo) roda DEPOIS, como backstop: poda
+ * por par, do mais antigo pro mais novo, só o que já está comprovadamente
+ * redundante contra o que sobra no grupo — nunca abaixo de `--cap` backups
+ * por grupo (default `SAFE_BACKUP_CAP_DEFAULT` = 3), nunca um backup com
+ * informação única. Roda incondicionalmente (mesmo default/`--push` da fase
+ * 1) — não tem flag própria de liga/desliga; `--cap <N>` ajusta o piso.
  */
 import { existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { planSafeBackupCleanup, cleanupReconciledSafeBackups } from "./lib/session-registry.ts";
+import {
+  planSafeBackupCleanup,
+  cleanupReconciledSafeBackups,
+  planSafeBackupCapPrune,
+  applySafeBackupCapPrune,
+  SAFE_BACKUP_CAP_DEFAULT,
+} from "./lib/session-registry.ts";
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[session-registry-cleanup-safebackups]";
@@ -58,10 +77,21 @@ function resolveRoot(argv: string[]): string {
   return DEFAULT_ROOT;
 }
 
+/** `--cap <N>` override do piso por grupo da fase 2 (#7858). */
+function resolveCap(argv: string[]): number {
+  const idx = argv.indexOf("--cap");
+  if (idx !== -1 && argv[idx + 1]) {
+    const n = Number(argv[idx + 1]);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return SAFE_BACKUP_CAP_DEFAULT;
+}
+
 export function main(argv: string[] = process.argv.slice(2)): void {
   const root = resolveRoot(argv);
   loadProjectEnv(root);
   const isPush = hasFlag(argv, "push");
+  const capPerGroup = resolveCap(argv);
   const dataDir = resolve(root, "data");
 
   if (!existsSync(dataDir)) {
@@ -88,6 +118,24 @@ export function main(argv: string[] = process.argv.slice(2)): void {
       `${isPush ? "recolhidos" : "seriam recolhidos"}, ${totalBackupsRemoved} backup(s) ${isPush ? "removido(s)" : "seriam removido(s)"}. ` +
       `${pendingCount} grupo(s) aguardando reconciliação de claims, ${hasGrantCount} preservado(s) por carregar merge_grant, ` +
       `${unreadableRealCount} real(is) ilegível(is) (pulado(s)), ${orphanCount} backup(s) órfão(s) (fora do escopo deste script — ver GC).`,
+  );
+
+  // Fase 2 (#7858) — backstop por contagem, roda sobre o estado que sobrou
+  // depois da fase 1 (fresh read, mesmo processo).
+  const capPlan = isPush
+    ? applySafeBackupCapPrune(root, { capPerGroup })
+    : planSafeBackupCapPrune(root, { capPerGroup });
+  const capBackupsRemoved = capPlan.reduce((sum, e) => sum + e.removed.length, 0);
+
+  for (const entry of capPlan) {
+    console.log(
+      `${LOG_PREFIX} ${isPush ? "cap-pruned" : "would-cap-prune"} ${entry.identity} — ` +
+        `${entry.removed.length} backup(s), mantendo ${entry.kept.length} (cap ${capPerGroup})`,
+    );
+  }
+  console.log(
+    `${LOG_PREFIX} fase 2 (cap=${capPerGroup}): ${capPlan.length} grupo(s) acima do cap, ` +
+      `${capBackupsRemoved} backup(s) ${isPush ? "removido(s)" : "seriam removido(s)"}.`,
   );
 
   if (unreadableRealCount > 0) {
