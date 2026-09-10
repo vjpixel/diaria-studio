@@ -1376,8 +1376,22 @@ describe("prioridade de CPU (#7875)", () => {
     }
     assert.equal(child.status, 0, `filho falhou: ${child.stderr}`);
     const { antes, depois } = JSON.parse(child.stdout.trim()) as { antes: number; depois: number };
-    assert.ok(depois > antes, `esperado prioridade MENOR (número maior): antes=${antes} depois=${depois}`);
-    assert.equal(depois, os.constants.priority.PRIORITY_BELOW_NORMAL);
+    // NÃO assertar `depois > antes`. Quando a suíte roda pelo `run-tests.ts`
+    // (produção e CI), este processo já é descendente do entrypoint que
+    // rebaixou a árvore: o filho NASCE em BELOW_NORMAL e a chamada vira
+    // no-op. A asserção de "diminuiu" quebrou no CI com `antes=10 depois=10`
+    // enquanto o fix estava correto — e esse fato é, ele próprio, a prova
+    // e2e de que a herança do entrypoint chega até aqui (o que o hang do
+    // #7885 impede de medir localmente).
+    //
+    // O invariante real são as duas coisas abaixo: termina NO ALVO, e nunca
+    // SOBE (subir seria o oposto do que o fix quer, e exigiria privilégio).
+    assert.equal(
+      depois,
+      os.constants.priority.PRIORITY_BELOW_NORMAL,
+      `esperado terminar em BELOW_NORMAL: antes=${antes} depois=${depois}`,
+    );
+    assert.ok(depois >= antes, `lowerOwnPriority nunca pode SUBIR prioridade: antes=${antes} depois=${depois}`);
   });
 
   // REGRESSÃO do achado do review da PR #7883 (confiança alta): os testes de
