@@ -92,11 +92,15 @@ export async function createKitSubscriberFromLead(
       signal: AbortSignal.timeout(KIT_FETCH_TIMEOUT_MS),
     });
   } catch (err) {
-    return { ok: false, status: 502, reason: `fetch_exception: ${redactPii(String(err))}` };
+    return { ok: false, status: 502, reason: `fetch_exception: ${redactPii(String(err), [contact.name])}` };
   }
   // 200 (upsert de e-mail já existente) e 201 (criação) são ambos sucesso —
   // mesma idempotência documentada em `subscribeToKit` (workers/poll).
   if (res.ok) return { ok: true, status: res.status };
   const bodyText = await res.text().catch(() => "<unreadable>");
-  return { ok: false, status: res.status, reason: `kit_${res.status}: ${redactPii(bodyText).slice(0, 300)}` };
+  return {
+    ok: false,
+    status: res.status,
+    reason: `kit_${res.status}: ${redactPii(bodyText, [contact.name]).slice(0, 300)}`,
+  };
 }

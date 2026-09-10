@@ -2984,6 +2984,20 @@ export function claimIssueAutoRegistering(
  * `rec?.worktree_claim?.path` do arquivo de sessão. Esse mirror é cosmético
  * (último a escrever "vence" nele, igual antes), NUNCA a fonte de verdade da
  * colisão — a fonte de verdade é sempre o arquivo indexado por path.
+ *
+ * **CORREÇÃO (#7903, 10/09/2026)** — o hook consumidor lia SÓ o mirror
+ * (`data/sessions/*.json`), nunca o arquivo indexado por path descrito
+ * acima, então herdava o mesmo problema de last-writer-wins que este
+ * refactor (#7892) já tinha corrigido na escrita: sessão B reivindica wt1 e
+ * depois wt2 → o mirror de B aponta só pra wt2, e a sessão A commitando em
+ * wt1 passava batido mesmo com a claim de B sobre wt1 ainda viva no arquivo
+ * autoritativo. O hook foi corrigido pra ler `worktreeClaimFilePath`
+ * diretamente (cópia self-contained da mesma lógica de chave). `branch`
+ * (parâmetro novo aqui) é o 2º fix do #7903: grava a branch do HEAD no
+ * momento do claim pra o hook comparar contra o HEAD atual e detectar troca
+ * de branch por baixo — o check anterior (`git worktree list --porcelain`
+ * vs. `git rev-parse HEAD`, ambos do MESMO worktree) nunca podia divergir
+ * por construção.
  */
 function worktreeClaimKey(path: string): string {
   // #7900 Finding 4: sem `.toLowerCase()` de propósito, ao contrário de
@@ -3003,7 +3017,7 @@ function worktreeClaimFilePath(root: string, path: string): string {
   return join(root, "data", "sessions", ".worktree-claims", `${worktreeClaimKey(path)}.json`);
 }
 
-export function claimWorktree(path: string, sessionId: string, repoRoot?: string): boolean {
+export function claimWorktree(path: string, sessionId: string, repoRoot?: string, branch?: string): boolean {
   // #7900 fleet review Finding 1 (P1/alta): a versão anterior fazia um
   // read→check→write DESTRAVADO no arquivo de claim — TOCTOU clássico. Duas
   // chamadas concorrentes (dois subagentes-irmãos tentando o MESMO path por
@@ -3024,6 +3038,7 @@ export function claimWorktree(path: string, sessionId: string, repoRoot?: string
 
   let claimed = false;
   let claimedAt = new Date().toISOString();
+  let resolvedBranch: string | undefined;
   withFileLock(lockPath, () => {
     const currentClaim = readJsonSafe<any>(claimFile);
     const claimLive = currentClaim && (currentClaim.expires_at ?? 0) > nowMs;
@@ -3031,7 +3046,15 @@ export function claimWorktree(path: string, sessionId: string, repoRoot?: string
       return; // outro dono (sessionId distinto) segura este path vivo — recusa
     }
     claimedAt = claimLive && currentClaim.sessionId === sessionId ? currentClaim.claimed_at : claimedAt;
-    writeJsonSafe(claimFile, { path, sessionId, claimed_at: claimedAt, expires_at: nowMs + ttl });
+    // `branch` (#7903): grava a branch do HEAD no momento do claim, pra
+    // `block-worktree-alien-commit.mjs` comparar contra o HEAD atual e
+    // detectar troca de branch por baixo — sem isso, comparar HEAD com
+    // `git worktree list --porcelain` (versão anterior) é sempre igual por
+    // construção (as duas derivam do mesmo HEAD), código morto que parecia
+    // proteção. `branch` omitido (chamador não informou) preserva o valor
+    // já gravado, se houver — nunca apaga um branch conhecido por omissão.
+    resolvedBranch = branch ?? (claimLive ? currentClaim.branch : undefined);
+    writeJsonSafe(claimFile, { path, sessionId, branch: resolvedBranch, claimed_at: claimedAt, expires_at: nowMs + ttl });
     claimed = true;
   });
 
@@ -3056,7 +3079,7 @@ export function claimWorktree(path: string, sessionId: string, repoRoot?: string
         writeJsonSafe(sessionFile, {
           ...currentSession,
           session_id: sessionId,
-          worktree_claim: { path, sessionId, claimed_at: claimedAt, expires_at: nowMs + ttl },
+          worktree_claim: { path, sessionId, branch: resolvedBranch, claimed_at: claimedAt, expires_at: nowMs + ttl },
         });
       },
       2_000,

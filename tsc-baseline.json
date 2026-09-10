@@ -117,6 +117,7 @@
   "test/gen-social-card-4x5.test.ts::TS2345": 1,
   "test/geo-citation-staleness-alarm.test.ts::TS2741": 3,
   "test/home-meta-check-script.test.ts::TS2741": 1,
+  "test/hook-command-tokenizer-parity-7896.test.ts::TS7016": 2,
   "test/hub-prose-contract-4899.test.ts::TS2345": 2,
   "test/inbox-drain.test.ts::TS18046": 1,
   "test/inbox-drain.test.ts::TS2339": 2,

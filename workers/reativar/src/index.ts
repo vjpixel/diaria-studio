@@ -43,6 +43,16 @@
  * sozinha não ativa mais ninguém", sem qualificar — afirmação mais forte que
  * o código sustenta (achado do review da PR #7760).
  *
+ * **#7894**: o caminho Beehiiv legado (`activateSubscription`) não ganhou
+ * guard de DOI equivalente ao do Kit — decisão consciente, não lacuna
+ * esquecida: sem tráfego real hoje (`SUBSCRIBE_BACKEND = "kit"` fixo em
+ * `wrangler.toml`, único ambiente, sem `[env.*]` que sobrescreva), portar o
+ * mecanismo inteiro pra um caminho morto não paga o custo. O mínimo que
+ * fecha o risco de regressão silenciosa — a config voltar a apontar pro
+ * caminho sem-DOI sem ninguém notar — é `test/reativar-legacy-beehiiv-path-
+ * disabled-7894.test.ts`, que falha se `SUBSCRIBE_BACKEND` deixar de estar
+ * fixo em `"kit"`.
+ *
  * O que NÃO mudou nem no caminho Kit: continua sem KV/rate-limit por IP.
  * Chamadas em massa à URL ainda geram e-mails de confirmação não solicitados —
  * é abuso de envio, não mais ativação indevida. Se o volume aparecer, é aí

@@ -480,6 +480,12 @@ npx tsx scripts/serve-preview.ts \
 ```
 Rodar com `run_in_background: true`. Ler `preview_url` novo de `preview-server-url.json` pra popular `{preview_url}` no resumo do gate (4e) — diferente do Artifact, a URL muda a cada re-render (porta efêmera nova), nunca fica igual entre 3c e 4b.
 
+**Checar `livros_promo` no manifest (#7862).** `monthly-preview-cloudflare.ts` já loga `warn: 04-livros-promo.jpg ausente` no stderr quando a captura (Chrome, roda só no `neo`) não rodou pro ciclo — mas esse warning saía só no log do script, DEPOIS do ponto em que o editor aprovaria o gate, então passava batido (2 ciclos seguidos, 2607-08 e 2608-09). Extrair pro banner do gate (4e) em vez de deixar só no log:
+```bash
+LIVROS_PROMO_PRESENT=$(node -e "try{const j=JSON.parse(require('fs').readFileSync('data/monthly/$CYCLE/_internal/public-images.json','utf8'));console.log(j.images && j.images.livros_promo ? '1':'0')}catch(e){console.log('0')}")
+```
+`LIVROS_PROMO_PRESENT=0` alimenta o item de aviso do resumo consolidado (4e) — nunca bloqueia (o box degrada com elegância pra só-texto, título/descrição/link intactos, sem `<img>` quebrado).
+
 ### 4c. Lint do draft (sumarizado)
 
 ```bash
@@ -541,6 +547,9 @@ Fact-check (_internal/04-fact-check.json):
 
 [se Etapa 3 sinalizou selection == "fallback_last" — #5321, aviso repetido aqui já que a Etapa 3 não pausa mais]
 ⚠️ É IA? do recap: NENHUMA edição do mês teve poll elegível — usando o último dia ({EAI_EDITION}) por fallback. Motivo: {reason}. Responda "trocar-eia AAMMDD" pra escolher outra edição manualmente.
+
+[se LIVROS_PROMO_PRESENT != "1" — #7862]
+⚠️ Box LIVROS sem imagem — 04-livros-promo.jpg ausente/não capturado neste ciclo (`scripts/capture-livros-promo.ts`, requer Chrome, roda só no `neo`). O box sai só-texto (título/descrição/link intactos, sem `<img>` quebrado) — nunca bloqueia o envio. Rodar a captura manualmente antes do gate se quiser a imagem neste ciclo.
 
 ⚠️  Seções CLARICE — DIVULGAÇÃO e CLARICE — TUTORIAL são PLACEHOLDERS
     ([Placeholder — inserir aqui...]) — preenchidas manualmente pela Clarice
