@@ -155,7 +155,24 @@ const PUBLISHED_DATE = "2026-08-04";
 //    Anthropic). Sem seção que o abrigue, sem volume pra abrir uma.
 // Nenhum número derivado muda com estas 2 edições (conferido contra os 6
 // padrões do arquivo); bump por fonte nova + revisão, não por reescrita.
-const UPDATED_DATE = "2026-09-02";
+//
+// 2026-09-03 (#7101/#7103, lote hub-staleness 260910): `generate-hub-sources.ts
+// --hub anthropic-claude` trouxe 1 edição nova (03/09/2026,
+// "Google lança dois modelos Gemini de uma vez"), casando `LAUNCH_PATTERN`
+// pela manchete interna "Anthropic lança Fable e Mythos 5.1" (fonte
+// primária: https://www.anthropic.com/claude-fable-and-mythos-5-1).
+// Diferente das notas anteriores, este SIM muda número derivado: `launches`
+// vai de 12 para 13 (e `mythos`/`fable` incrementam — sem impacto de prosa,
+// esses dois só alimentam contagem genérica no FAQ, nunca lista nomeada).
+// A lista nomeada do 2º surto (`sections[0].paragraphs[0]`, 3ª frase) É
+// literal — adicionado o 8º item (Fable e Mythos 5.1) à enumeração, "7
+// lançamentos em 15 semanas" -> "8 lançamentos em 21 semanas" (9/abr a
+// 3/set, confirmado por diferença de dias), e a data de fechamento da série
+// movida de 27/07 para 03/09/2026. Sem seção nova — mesmo tema (Fable/
+// Mythos) que `sections[2]`/FAQ já cobrem, e o gap de 38 dias desde o
+// lançamento anterior (27/07) fica abaixo do hiato de 125 dias já citado
+// como "o" hiato longo do período, então não abre um 3º surto.
+const UPDATED_DATE = "2026-09-03";
 
 /** `matchedHeadlines` vem em NFD (achado original ao vivo: `/anthropic
  * lanç/i` batia 0 das 12 manchetes reais antes da normalização NFC) — ver a
@@ -222,7 +239,7 @@ export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[]
     },
     {
       question: "Quantos lançamentos de modelo ou ferramenta a Anthropic teve nesse período?",
-      answer: `Foram ${launches} lançamentos entre ${formatDateShort(launchWindow.first)} e ${formatDateShort(launchWindow.last)}, e não em ritmo constante: 5 deles couberam em 66 dias, até ${gapFromLong}; depois veio um hiato de ${gapDays} dias sem nenhum produto novo; e os 7 restantes saíram em 15 semanas, de 9 de abril a 27 de julho de 2026.`,
+      answer: `Foram ${launches} lançamentos entre ${formatDateShort(launchWindow.first)} e ${formatDateShort(launchWindow.last)}, e não em ritmo constante: 5 deles couberam em 66 dias, até ${gapFromLong}; depois veio um hiato de ${gapDays} dias sem nenhum produto novo; e os 8 restantes saíram em 21 semanas, de 9 de abril a 3 de setembro de 2026.`,
     },
     {
       question: "A Anthropic teve conflito com o governo dos EUA?",
@@ -312,7 +329,7 @@ export function getAnthropicClaudeHub(): HubContent {
         paragraphs: [
           `A Anthropic lançou ${launches} modelos ou ferramentas próprios entre ${formatDateShort(launchWindow.first)} e ${formatDateShort(launchWindow.last)}, mas o ritmo não foi constante: teve 2 surtos separados por um hiato longo. No primeiro, 5 lançamentos couberam em 66 dias: [Claude Sonnet 4.5](https://diar.ia.br/p/openai-lanc-a-instant-checkout-no-chatgpt), um [modelo compacto e acessível](https://diar.ia.br/p/google-veo-3-1), a ferramenta [Claude Skills](https://diar.ia.br/p/lancamento-claude-skills) para empresas, um [modelo para pesquisa biomédica](https://diar.ia.br/p/restricoes-sora-2-hollywood) e uma [plataforma de pesquisa sociológica](https://diar.ia.br/p/anthropic-lanc-a-plataforma-de-pesquisa-sociolo-gica).`,
           `Depois veio um hiato de exatos ${gapDays} dias sem nenhum lançamento novo, de ${gapFromLong} a ${gapToLong}, período em que as manchetes giraram em torno de valuation, parcerias e do início do confronto com o governo dos EUA, não de produto novo.`,
-          "O segundo surto foi mais denso: 7 lançamentos em 15 semanas, entre 9 de abril e 27 de julho de 2026. Nessa janela saíram a [fábrica de agentes](https://diar.ia.br/p/50-dos-empregos-mudam-em-3-anos-diz-estudo), [Claude Opus 4.7](https://diar.ia.br/p/anthropic-lan-a-claude-opus-4-7), o [Project Deal](https://diar.ia.br/p/openai-lanc-a-gpt-5-5-com-foco-em-agentes), [Fable 5](https://diar.ia.br/p/anthropic-lanca-fable-5-com-bloqueios-embutidos), o [aval dos EUA para lançar o Mythos](https://diar.ia.br/p/openai-lan-a-gpt-5-6-sol-terra-e-luna) [fonte primária](https://www.cnnbrasil.com.br/economia/negocios/eua-autorizam-anthropic-a-divulgar-modelo-que-gerou-temor-sobre-seguranca/), [Sonnet 5](https://diar.ia.br/p/anthropic-lan-a-sonnet-5) e [Claude Opus 5](https://diar.ia.br/p/anthropic-lan-a-o-claude-opus-5), este último fechando a série de lançamentos do período, em 27 de julho de 2026.",
+          "O segundo surto foi mais denso: 8 lançamentos em 21 semanas, entre 9 de abril e 3 de setembro de 2026. Nessa janela saíram a [fábrica de agentes](https://diar.ia.br/p/50-dos-empregos-mudam-em-3-anos-diz-estudo), [Claude Opus 4.7](https://diar.ia.br/p/anthropic-lan-a-claude-opus-4-7), o [Project Deal](https://diar.ia.br/p/openai-lanc-a-gpt-5-5-com-foco-em-agentes), [Fable 5](https://diar.ia.br/p/anthropic-lanca-fable-5-com-bloqueios-embutidos), o [aval dos EUA para lançar o Mythos](https://diar.ia.br/p/openai-lan-a-gpt-5-6-sol-terra-e-luna) [fonte primária](https://www.cnnbrasil.com.br/economia/negocios/eua-autorizam-anthropic-a-divulgar-modelo-que-gerou-temor-sobre-seguranca/), [Sonnet 5](https://diar.ia.br/p/anthropic-lan-a-sonnet-5) e [Claude Opus 5](https://diar.ia.br/p/anthropic-lan-a-o-claude-opus-5), em 27 de julho de 2026, e — mais de um mês depois, já fora do ritmo denso do resto do surto — [Fable e Mythos 5.1](https://diar.ia.br/p/google-lanca-dois-modelos-gemini-de-uma-vez) [fonte primária](https://www.anthropic.com/claude-fable-and-mythos-5-1), este último fechando a série de lançamentos do período, em 3 de setembro de 2026.",
         ],
         // #4921 Onda 2: cronologia derivada de SOURCES — os dois surtos e o
         // hiato entre eles, hoje só afirmados em prosa acima, também aparecem

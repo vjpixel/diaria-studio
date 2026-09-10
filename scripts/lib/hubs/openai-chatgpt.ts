@@ -134,7 +134,19 @@ const PUBLISHED_DATE = "2026-08-09";
 // contratação, escritório) — já justifica abrir seção própria, e este
 // comentário existe pra que essa decisão não precise ser re-derivada do
 // zero. Até lá, nenhum número derivado muda e a prosa segue válida.
-const UPDATED_DATE = "2026-09-02";
+//
+// 2026-09-03 (#7103, lote hub-staleness 260910): 1 edição nova (03/09/2026,
+// "Google lança dois modelos Gemini de uma vez"), casando `HUB_KEYWORD_PATTERNS`
+// pela manchete interna "OpenAI diz que Astra cruzou limite crítico" (fonte
+// primária: https://openai.com/index/path-to-astra). Não bate nenhum dos
+// padrões literais deste arquivo (`GPT5X_PATTERN`, `CODEX_PATTERN`,
+// `HACK_AUTONOMO_PATTERN`, `MICROSOFT_PATTERN`, `FINANCEIRO_PATTERN`,
+// `PROCESSOS_PATTERN`, `SAUDE_PATTERN`, `LAUNCH_PATTERN`) — fato isolado,
+// mesmo critério conservador das notas acima: sem seção nova. Único efeito
+// é a janela de cobertura (`oldest`/`newest`, 100% derivada) do FAQ
+// "Com que frequência..." avançar até 03/09/2026 — nenhuma prosa
+// hand-authored cita essa data, então nenhuma reescrita de corpo.
+const UPDATED_DATE = "2026-09-03";
 
 /** `matchedHeadlines` vem em NFD (mesmo achado de `anthropic-claude.ts`) —
  * ver a nota completa em `countMatching`, agora em

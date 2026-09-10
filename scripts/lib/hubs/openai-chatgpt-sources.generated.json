@@ -1119,5 +1119,17 @@
       "https://openai.com/index/expanding-our-presence-in-brazil"
     ],
     "editionTitle": "Tem 22 a 25 anos? A IA já pode afetar seu emprego"
+  },
+  {
+    "date": "2026-09-03",
+    "editionSlug": "google-lanca-dois-modelos-gemini-de-uma-vez",
+    "url": "https://diar.ia.br/p/google-lanca-dois-modelos-gemini-de-uma-vez",
+    "matchedHeadlines": [
+      "OpenAI diz que Astra cruzou limite crítico"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/path-to-astra"
+    ],
+    "editionTitle": "Google lança dois modelos Gemini de uma vez"
   }
 ]
