@@ -260,7 +260,7 @@ export function kitLossRecoveryPlaybook(): string[] {
   return [
     "## Recuperação (#7660)",
     "",
-    "0. `cancelled` = a própria pessoa se descadastrou (link de descadastro ou painel do",
+    "> `cancelled` = a própria pessoa se descadastrou (link de descadastro ou painel do",
     "   Kit) — não é falha de entrega. Diferente de `complained`/`bounced`, isolado (sem",
     "   `apoio_nivel`, sem correlação de envio suspeita abaixo) normalmente NÃO precisa de",
     "   ação: reativar quem pediu pra sair ignora o pedido dele. Confirme que não foi um",

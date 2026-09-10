@@ -172,7 +172,7 @@ describe("toStateTransitionAlarmFindings (#7660)", () => {
 describe("kitLossRecoveryPlaybook (#7902)", () => {
   it("item 0 explica que cancelled é ação da própria pessoa, não perda a recuperar", () => {
     const linhas = kitLossRecoveryPlaybook().join("\n");
-    assert.match(linhas, /^0\. `cancelled` = a própria pessoa se descadastrou/m);
+    assert.match(linhas, /^> `cancelled` = a própria pessoa se descadastrou/m);
     assert.match(linhas, /normalmente NÃO precisa de/);
   });
 });
