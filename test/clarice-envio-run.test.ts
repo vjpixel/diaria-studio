@@ -660,6 +660,26 @@ describe("clarice-envio-run (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    // #7880 self-review (finding 1/2): exit 0/2 com stdout ILEGÍVEL não é o
+    // mesmo que "0 colisões confirmadas" — trata como NÃO EXECUTADA (mesmo
+    // texto do branch de erro), nunca como "✅ ... nenhuma colisão" (falsa
+    // tranquilização, achado #2038).
+    it("#7880: auditoria pós-montagem sai code 0 com stdout ilegível => relatório avisa NÃO EXECUTADA, nunca afirma 'nenhuma colisão'", async () => {
+      const root = freshRoot();
+      const handlers = goldenHandlers();
+      handlers["scripts/audit-wave-no-duplicate-sends.ts"] = {
+        code: 0,
+        stdout: "not valid json{{{",
+        stderr: "",
+      };
+      const { exec } = makeFakeExec(handlers);
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.ok(r.reportMarkdown.includes("NÃO EXECUTADA"), "relatório avisa que a auditoria não foi de fato verificada");
+      assert.ok(!r.reportMarkdown.includes("nenhuma colisão"), "nunca afirma 'nenhuma colisão' sem ter parseado o resultado");
+      rmSync(root, { recursive: true, force: true });
+    });
+
     // -----------------------------------------------------------------------
     // #6958 (achados 7/8 do review da PR #6958): a janela de 30d (acelerador)
     // tinha rate/utilização calculada e DESCARTADA — o relatório agora

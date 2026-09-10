@@ -1444,8 +1444,21 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
     const auditResult = deps.exec("scripts/audit-wave-no-duplicate-sends.ts", [
       "--cycle", cycle, "--group", "daily", "--month", auditMonth, "--json",
     ]);
-    if (auditResult.code === 0 || auditResult.code === 2) {
-      const auditJson = parseStepJson<{ checked?: number; collisions?: WaveCollision[] }>(auditResult.stdout);
+    const auditJsonParsed =
+      auditResult.code === 0 || auditResult.code === 2
+        ? parseStepJson<{ checked?: number; collisions?: WaveCollision[] }>(auditResult.stdout)
+        : undefined;
+    if ((auditResult.code === 0 || auditResult.code === 2) && auditJsonParsed === undefined) {
+      // exit 0/2 mas stdout ilegível — não é a mesma coisa que "0 colisões
+      // confirmadas": o parse falhou, então nada foi de fato verificado.
+      // Cair no MESMO texto do branch de erro em vez de imprimir "✅ ...
+      // nenhuma colisão", que seria uma falsa tranquilização (achado #2038).
+      report.note(
+        `⚠️  auditoria pós-montagem (#7880) NÃO EXECUTADA (exit ${auditResult.code}, saída ilegível): ` +
+          "seguindo sem essa checagem extra (as 2 camadas do store continuam ativas).",
+      );
+    } else if (auditResult.code === 0 || auditResult.code === 2) {
+      const auditJson = auditJsonParsed;
       const collisions = auditJson?.collisions ?? [];
       if (collisions.length > 0) {
         report.note(
