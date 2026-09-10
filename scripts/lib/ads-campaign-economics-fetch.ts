@@ -315,7 +315,12 @@ export async function fetchMetaAdsChannelMetrics(
 
   const { since, until } = toMetaAdsDateRange(now, lookbackDays);
   const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
-  let url = `${base}/act_${adAccountId}/insights?level=account&time_increment=1&time_range=${timeRange}&fields=spend,clicks,impressions&limit=100&access_token=${encodeURIComponent(accessToken)}`;
+  let url = `${base}/act_${adAccountId}/insights?level=account&time_increment=1&time_range=${timeRange}&fields=spend,clicks,impressions&limit=100`;
+  // Token vai no header Authorization, nunca na query string (#7893, mesmo
+  // padrão do #7779) — passado em TODAS as páginas, não só a 1ª: o
+  // `paging.next` que a Graph API devolve não reintroduz um access_token
+  // que nunca esteve na URL original.
+  const authHeaders = { Authorization: `Bearer ${accessToken}` };
 
   const allRows: MetaAdsInsightsApiRow[] = [];
   let pages = 0;
@@ -330,7 +335,7 @@ export async function fetchMetaAdsChannelMetrics(
     }
     let res: Response;
     try {
-      res = await fetchImpl(url);
+      res = await fetchImpl(url, { headers: authHeaders });
     } catch (e) {
       return { metrics: [], fetchedAt: null, error: `falha de rede no Graph API (Meta Ads insights): ${e instanceof Error ? e.message : e}` };
     }

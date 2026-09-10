@@ -127,6 +127,21 @@ describe("#7776 — fetchDatasetServerLastFiredTime (rede injetável, nunca lan�
     assert.equal(r.ok, false);
     if (!r.ok) assert.equal(r.reason, "meta_error");
   });
+
+  it("#7893 — token vai no header Authorization, nunca na query string", async () => {
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      assert.equal(headers?.Authorization, "Bearer segredo-nao-vaza");
+      const urlStr = String(url);
+      assert.doesNotMatch(urlStr, /access_token=/);
+      // A URL, mesmo capturada bruta (ex: por um `String(err)` de exceção
+      // de fetch), nunca contém o token — só o header carrega o segredo.
+      assert.doesNotMatch(urlStr, /segredo-nao-vaza/);
+      return new Response(JSON.stringify({ server_last_fired_time: null }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const r = await fetchDatasetServerLastFiredTime({ accessToken: "segredo-nao-vaza", fetchImpl });
+    assert.deepEqual(r, { ok: true, serverLastFiredTime: null });
+  });
 });
 
 describe("#7776 — evaluateMetaCapiStaleness (veredito consolidado)", () => {

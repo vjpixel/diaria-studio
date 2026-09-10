@@ -91,7 +91,7 @@ describe("#7536 — fetchMetaAdsChannelMetrics / normalizeMetaAdsInsightsRows", 
   it("insights OK: normaliza pra ChannelDailyMetric[], marca fetchedAt", async () => {
     const fetchImpl = (async (url: string) => {
       assert.match(url, /act_10151064543294811\/insights/);
-      assert.match(url, /access_token=tok-123/);
+      assert.doesNotMatch(url, /access_token=/);
       return jsonResponse(200, {
         data: [{ date_start: "2026-01-01", date_stop: "2026-01-01", spend: "87.65", clicks: "92", impressions: "2202" }],
         paging: {},
@@ -124,6 +124,30 @@ describe("#7536 — fetchMetaAdsChannelMetrics / normalizeMetaAdsInsightsRows", 
     const result = await fetchMetaAdsChannelMetrics(fetchImpl, "tok", { now: new Date("2026-01-02T00:00:00Z") });
     assert.equal(calls, 2);
     assert.equal(result.metrics.length, 2);
+    assert.equal(result.error, null);
+  });
+
+  it("#7893 — token vai no header Authorization, nunca na query string, em TODAS as páginas", async () => {
+    let calls = 0;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls++;
+      const headers = init?.headers as Record<string, string> | undefined;
+      assert.equal(headers?.Authorization, "Bearer segredo-nao-vaza");
+      assert.doesNotMatch(url, /access_token=/);
+      // A URL, mesmo capturada bruta (ex: por um `String(err)` de exceção
+      // de fetch), nunca contém o token — só o header carrega o segredo.
+      assert.doesNotMatch(url, /segredo-nao-vaza/);
+      if (url.includes("page2marker")) {
+        return jsonResponse(200, { data: [{ date_start: "2026-01-02", spend: "1", clicks: "1", impressions: "1" }], paging: {} });
+      }
+      return jsonResponse(200, {
+        data: [{ date_start: "2026-01-01", spend: "1", clicks: "1", impressions: "1" }],
+        paging: { next: "https://graph.facebook.com/v21.0/act_x/insights?after=page2marker" },
+      });
+    }) as typeof fetch;
+
+    const result = await fetchMetaAdsChannelMetrics(fetchImpl, "segredo-nao-vaza", { now: new Date("2026-01-02T00:00:00Z") });
+    assert.equal(calls, 2);
     assert.equal(result.error, null);
   });
 
