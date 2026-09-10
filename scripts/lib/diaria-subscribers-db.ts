@@ -1136,6 +1136,42 @@ export function getStoreCounts(db: DatabaseSync): {
   };
 }
 
+export interface KitActiveSummary {
+  /** COUNT(*) de `subscription` com `platform='kit' AND status='active'` —
+   *  `status` aqui é o ESTADO CRU do Kit (`sub.state`, gravado por
+   *  `ingestKitRoster`), não um booleano derivado. `'active'` é o único
+   *  estado que representa membro ativo da base; double opt-in pendente é
+   *  `'inactive'` (ver `KIT_EXITED_STATES` em `kit-subscribers-ingest.ts`
+   *  pros estados de saída). */
+  count: number;
+  /** `MAX(updated_at)` dessas linhas — ISO 8601, `null` quando `count === 0`
+   *  (nenhuma linha ativa do Kit no store ainda). `upsertSubscription` grava
+   *  o `now` do chamador em `updated_at` a cada rodada de ingestão (#7174) —
+   *  não é um timestamp de sync dedicado, mas é o sinal mais honesto já
+   *  disponível sem introduzir uma tabela nova só para isso (#7916, fatia
+   *  1/N: "a contribuição do Kit deixa de ser um null fixo e informa
+   *  frescor"). */
+  asOf: string | null;
+}
+
+/**
+ * Conta assinantes Kit ativos no store `subscription` e devolve o frescor
+ * (MAX(updated_at) das linhas contadas) junto — nunca um número cego
+ * (#7916). Puramente uma leitura — quem chama decide como tratar `db` ainda
+ * não disponível (mesmo padrão fail-soft de `getStoreCounts`/
+ * `openDiariaSubscribersDbSafe`, quem detecta essa ausência é o CALLER).
+ */
+export function getKitActiveSummary(db: DatabaseSync): KitActiveSummary {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n, MAX(updated_at) AS asOf
+       FROM subscription
+       WHERE platform = 'kit' AND status = 'active'`,
+    )
+    .get() as { n: number; asOf: string | null };
+  return { count: row.n, asOf: row.asOf ?? null };
+}
+
 // ---------------------------------------------------------------------------
 // Leitura — helpers pra fatias 6 (painel Studio, #6590) e 7 (leitor-v1
 // cross-plataforma, #6591). Vivem aqui (não em cada consumidor) pela mesma

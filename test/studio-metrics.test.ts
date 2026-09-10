@@ -63,19 +63,32 @@ function writeMetas(root: string, metas: unknown[]): void {
  *  (sem utm/referring_site — a classe default de `classifyAcquisition`
  *  quando não há sinal nenhum é "sem sinal positivo", que classifica fora
  *  de organico/iniciativa; passar `referringSite` empurra pra "organico"). */
-function seedKitSubscription(root: string, email: string, enteredAtIso: string, referringSite: string | null = "google.com"): void {
+function seedKitSubscription(
+  root: string,
+  email: string,
+  enteredAtIso: string,
+  referringSite: string | null = "google.com",
+  opts: { utmSource?: string | null; status?: string; updatedAt?: string } = {},
+): void {
   const dbDir = join(root, "data", "diaria-subscribers");
   mkdirSync(dbDir, { recursive: true });
   const db = openDiariaSubscribersDb(join(dbDir, "diaria-subscribers.db"));
   try {
     const id = ensureSubscriber(db, "kit", `kit-${email}`, email);
-    upsertSubscription(db, id, "kit", {
-      status: "active",
-      enteredAt: enteredAtIso,
-      exitedAt: null,
-      source: "kit",
-      referringSite,
-    });
+    upsertSubscription(
+      db,
+      id,
+      "kit",
+      {
+        status: opts.status ?? "active",
+        enteredAt: enteredAtIso,
+        exitedAt: null,
+        source: "kit",
+        referringSite,
+        utmSource: opts.utmSource ?? null,
+      },
+      opts.updatedAt,
+    );
   } finally {
     db.close();
   }
@@ -228,6 +241,105 @@ describe("buildMetricsData — honestidade de dado", () => {
       const data = await buildMetricsData(root, { forceRefresh: true });
       assert.equal(data.decomposicaoCadastros.valor, null);
       assert.equal(data.decomposicaoCadastros.qualidade, "indeterminado");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildMetricsData — utm_source do Kit propaga na classificação (#7916, fatia 1/N)", () => {
+  it("REGRESSÃO: Kit com utm_source='google-ads' classifica como 'pago' — ANTES desta fatia o SELECT nem lia a coluna e o valor saía sempre null", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      const dia = "2026-09-05";
+      writeCapturaLog(root, [dia]);
+      seedKitSubscription(root, "pago@example.com", `${dia}T10:00:00.000Z`, null, { utmSource: "google-ads" });
+      const data = await buildMetricsData(root, { forceRefresh: true, now: () => new Date(`${dia}T18:00:00Z`) });
+      const pago = data.decomposicaoCadastros.series?.find((p) => p.chave === "pago");
+      assert.ok(pago, "bucket 'pago' precisa existir na decomposição — prova que utm_source='google-ads' chegou até classifyAcquisition");
+      assert.equal(pago!.valor, 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("Kit sem utm_source (e sem referring_site) fica 'indeterminado' — ausência de origem nunca vira 'organico' por default", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      const dia = "2026-09-06";
+      writeCapturaLog(root, [dia]);
+      seedKitSubscription(root, "semorigem@example.com", `${dia}T10:00:00.000Z`, null, {});
+      const data = await buildMetricsData(root, { forceRefresh: true, now: () => new Date(`${dia}T18:00:00Z`) });
+      const pago = data.decomposicaoCadastros.series?.find((p) => p.chave === "pago");
+      const organico = data.decomposicaoCadastros.series?.find((p) => p.chave === "organico");
+      const indeterminado = data.decomposicaoCadastros.series?.find((p) => p.chave === "indeterminado");
+      assert.equal(pago?.valor ?? 0, 0, "sem utm_source real, nunca deve cair em 'pago' por engano");
+      assert.equal(organico?.valor ?? 0, 0, "ausência de origem não é 'organico' — classificação inventada seria pior que indeterminado");
+      assert.equal(indeterminado?.valor ?? 0, 1, "sem nenhum sinal positivo de origem, a classe honesta é 'indeterminado'");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildMetricsData — kitActive real, não mais null fixo (#7916, fatia 1/N)", () => {
+  it("store sem store diaria-subscribers: kitActiveLayer.available=false, count=null, motivo explícito", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      mkdirSync(join(root, "data"), { recursive: true });
+      const data = await buildMetricsData(root, { forceRefresh: true });
+      assert.equal(data.queda.kitActiveLayer.available, false);
+      assert.equal(data.queda.kitActiveLayer.count, null);
+      assert.ok(data.queda.kitActiveLayer.motivo);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("REGRESSÃO: kit ativo no store deixa de ser null fixo — count real + frescor (asOf) expostos", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      const dia = "2026-09-07";
+      writeBeehiivSnapshot(root, dia, [beehiivSubscriberLine()]);
+      seedKitSubscription(root, "kit1@example.com", `${dia}T10:00:00.000Z`, "google.com", { updatedAt: `${dia}T12:00:00.000Z` });
+      seedKitSubscription(root, "kit2@example.com", `${dia}T11:00:00.000Z`, "google.com", { updatedAt: `${dia}T13:00:00.000Z` });
+      const data = await buildMetricsData(root, { forceRefresh: true, now: () => new Date(`${dia}T18:00:00Z`) });
+
+      assert.equal(data.queda.kitActiveLayer.available, true);
+      assert.equal(data.queda.kitActiveLayer.count, 2, "2 assinantes Kit ativos seedados — nunca mais null fixo");
+      assert.equal(data.queda.kitActiveLayer.asOf, `${dia}T13:00:00.000Z`, "frescor = MAX(updated_at) das linhas Kit ativas, nunca cego");
+
+      const kitSeries = data.queda.baseAtiva.series?.find((s) => s.chave === "kit");
+      assert.ok(kitSeries, "base-ativa decomposta por plataforma precisa incluir a série 'kit'");
+      assert.equal(kitSeries!.valor, 2, "a contagem real do Kit chega até o MetricResult fundido, não só na camada exposta");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("baseAtivaAnterior (dia anterior) NÃO reusa a contagem ATUAL do Kit — sem série histórica, kit fica null explícito nessa comparação", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    try {
+      const hoje = "2026-09-08";
+      const ontem = "2026-09-07";
+      writeBeehiivSnapshot(root, ontem, [beehiivSubscriberLine()]);
+      writeBeehiivSnapshot(root, hoje, [beehiivSubscriberLine(), beehiivSubscriberLine({ email: "b@example.com" })]);
+      seedKitSubscription(root, "kit1@example.com", `${hoje}T10:00:00.000Z`, "google.com");
+      const data = await buildMetricsData(root, { forceRefresh: true, now: () => new Date(`${hoje}T18:00:00Z`) });
+
+      assert.equal(data.queda.kitActiveLayer.count, 1, "contagem ATUAL do Kit é real");
+      const kitSeriesAnterior = data.queda.baseAtivaAnterior?.series?.find((s) => s.chave === "kit");
+      assert.ok(kitSeriesAnterior, "decomposição do dia anterior também traz a série 'kit'");
+      assert.equal(
+        kitSeriesAnterior!.valor,
+        null,
+        "sem série histórica do Kit por dia, reusar a contagem de HOJE como se fosse 'ontem' inflaria a comparação em silêncio",
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

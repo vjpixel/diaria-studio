@@ -15,6 +15,7 @@ import {
   findSubscriberIdsByEmail,
   getCohortEventCounts,
   getStoreCounts,
+  getKitActiveSummary,
   SUBSCRIPTION_COVERAGE_WARN_FRACTION,
   computeSubscriptionCoverage,
   getSubscriptionsForSubscriber,
@@ -1040,6 +1041,61 @@ describe("getStoreCounts — guard de cobertura de subscription (#7229)", () => 
       true,
       "fração real por presença é 40% (4 de 10) — abaixo do limiar; a razão bruta (120%) mascararia isto",
     );
+    db.close();
+  });
+});
+
+describe("getKitActiveSummary — contribuição real do Kit pra base-ativa (#7916, fatia 1/N)", () => {
+  it("conta só platform='kit' AND status='active' — ignora inactive/cancelled e outras plataformas", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const now = "2026-09-10T12:00:00.000Z";
+    const active1 = ensureSubscriber(db, "kit", "kit-1", "ativo1@example.com");
+    upsertSubscription(db, active1, "kit", { status: "active", enteredAt: "2026-09-01", exitedAt: null, source: "organico" }, now);
+    const active2 = ensureSubscriber(db, "kit", "kit-2", "ativo2@example.com");
+    upsertSubscription(db, active2, "kit", { status: "active", enteredAt: "2026-09-02", exitedAt: null, source: "organico" }, now);
+    // inactive (double opt-in pendente) — não é membro ativo, não conta.
+    const pending = ensureSubscriber(db, "kit", "kit-3", "pendente@example.com");
+    upsertSubscription(db, pending, "kit", { status: "inactive", enteredAt: "2026-09-03", exitedAt: null, source: "organico" }, now);
+    // cancelled — saiu da base, não conta.
+    const cancelled = ensureSubscriber(db, "kit", "kit-4", "cancelado@example.com");
+    upsertSubscription(
+      db,
+      cancelled,
+      "kit",
+      { status: "cancelled", enteredAt: "2026-09-01", exitedAt: now, source: "organico" },
+      now,
+    );
+    // active na Beehiiv — plataforma diferente, não conta pro Kit.
+    const beehiivActive = ensureSubscriber(db, "beehiiv", "bh-1", "beehiiv@example.com");
+    upsertSubscription(db, beehiivActive, "beehiiv", { status: "active", enteredAt: "2026-09-01", exitedAt: null, source: "organico" }, now);
+
+    const summary = getKitActiveSummary(db);
+    assert.equal(summary.count, 2, "só os 2 subscribers kit com status='active' contam");
+    assert.equal(summary.asOf, now, "frescor = MAX(updated_at) das linhas ativas contadas");
+    db.close();
+  });
+
+  it("store sem nenhuma subscription Kit ativa: count=0, asOf=null (nunca um número cego)", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const summary = getKitActiveSummary(db);
+    assert.equal(summary.count, 0);
+    assert.equal(summary.asOf, null, "sem linha ativa, não há frescor a reportar — null explícito, nunca uma data inventada");
+    db.close();
+  });
+
+  it("reingestão (upsert) atualiza o frescor pro timestamp da rodada mais recente", () => {
+    const db = openDiariaSubscribersDb(":memory:");
+    const id = ensureSubscriber(db, "kit", "kit-1", "leitor@example.com");
+    upsertSubscription(db, id, "kit", { status: "active", enteredAt: "2026-09-01", exitedAt: null, source: "organico" }, "2026-09-05T00:00:00.000Z");
+    let summary = getKitActiveSummary(db);
+    assert.equal(summary.asOf, "2026-09-05T00:00:00.000Z");
+
+    // Rodada de ingestão seguinte, mesmo assinante — ON CONFLICT DO UPDATE
+    // atualiza updated_at, nunca duplica a linha.
+    upsertSubscription(db, id, "kit", { status: "active", enteredAt: "2026-09-01", exitedAt: null, source: "organico" }, "2026-09-10T09:00:00.000Z");
+    summary = getKitActiveSummary(db);
+    assert.equal(summary.count, 1, "reingestão idempotente — não duplica a contagem");
+    assert.equal(summary.asOf, "2026-09-10T09:00:00.000Z", "frescor reflete a rodada mais recente");
     db.close();
   });
 });
