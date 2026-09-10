@@ -519,6 +519,44 @@ describe("loadBeehiivCache / loadKitCache / loadUnifiedEditionCache (I/O real, d
     }
   });
 
+  it("loadBeehiivCache ignora cópias de conflito -safeBackup- do OneDrive (#7101/#7103 — sem isso, o post conta 2x)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-7101-beehiiv-safebackup-"));
+    try {
+      writeFileSync(
+        join(dir, "post_78ed9837.json"),
+        JSON.stringify({ slug: "a", publish_date: 100, status: "confirmed" }),
+      );
+      writeFileSync(
+        join(dir, "post_78ed9837-helios-safeBackup-0001.json"),
+        JSON.stringify({ slug: "a", publish_date: 100, status: "confirmed" }),
+      );
+      const posts = loadBeehiivCache(dir);
+      assert.equal(posts.length, 1);
+      assert.equal(posts[0].slug, "a");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("loadKitCache ignora cópias de conflito -safeBackup- do OneDrive (mesmo guard do lado Beehiiv)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-7101-kit-safebackup-"));
+    try {
+      const raw = {
+        id: 1,
+        subject: "Edição Kit",
+        status: "completed",
+        published_at: "2026-08-25T09:00:00Z",
+        public_url: "https://diar.ia.br/kit/edicao-kit",
+      };
+      writeFileSync(join(dir, "broadcast_1.json"), JSON.stringify(raw));
+      writeFileSync(join(dir, "broadcast_1-neo-safeBackup-0001.json"), JSON.stringify(raw));
+      const posts = loadKitCache(dir);
+      assert.equal(posts.length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("loadKitCache lê e normaliza os arquivos do diretório", () => {
     const dir = mkdtempSync(join(tmpdir(), "diaria-6187-kit-"));
     try {

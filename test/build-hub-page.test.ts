@@ -78,7 +78,7 @@ describe("buildAnthropicClaudeFaq (#4558 Parte A) — regression do bug NFD/NFC"
     const launchFaq = faq.find((f) => /Foram \d+ lançamentos/.test(f.answer));
     assert.ok(launchFaq);
     assert.doesNotMatch(launchFaq.answer, /Foram 0 lançamentos/);
-    assert.match(launchFaq.answer, /Foram 12 lançamentos/);
+    assert.match(launchFaq.answer, /Foram 13 lançamentos/);
   });
 
   it("cada resposta do FAQ aparece idêntica no corpo visível da página (paridade com o JSON-LD)", () => {

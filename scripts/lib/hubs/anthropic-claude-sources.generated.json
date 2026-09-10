@@ -956,5 +956,17 @@
       "https://claude.com/blog/claude-in-chrome-generally-available"
     ],
     "editionTitle": "Claude e Codex instalaram código sem dono"
+  },
+  {
+    "date": "2026-09-03",
+    "editionSlug": "google-lanca-dois-modelos-gemini-de-uma-vez",
+    "url": "https://diar.ia.br/p/google-lanca-dois-modelos-gemini-de-uma-vez",
+    "matchedHeadlines": [
+      "Anthropic lança Fable e Mythos 5.1"
+    ],
+    "primarySourceUrls": [
+      "https://www.anthropic.com/claude-fable-and-mythos-5-1"
+    ],
+    "editionTitle": "Google lança dois modelos Gemini de uma vez"
   }
 ]
