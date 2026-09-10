@@ -132,17 +132,24 @@ CONTINUO_PAID_FALLBACK_MODEL = "deepseek/deepseek-v4-flash"
 # atualiza o baseline junto. Baseline defasado gera alarme, nunca silencio —
 # a direcao segura.
 PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {
-    # Medido ao vivo em 08/09/2026 contra o catalogo da OpenRouter, no mesmo
-    # dia em que virou o fallback pago do config.yaml.
+    # Medido ao vivo em 10/09/2026 contra o catalogo da OpenRouter (#7907),
+    # apos o watchdog do item 4 (#7811) ter disparado sozinho em producao. A
+    # promocao de lancamento do glm-5.3-flash expirou em 09-10/09/2026 (~1
+    # dia depois do previsto — provavel diferenca de fuso na virada de
+    # Singapura). Decisao do editor ja registrada em #6818 (09/09/2026):
+    # MANTER o glm-5.3-flash de qualquer jeito, absorvendo o dobro do custo
+    # (~$176 -> ~$352/mes), sem avaliar substituto nesta rodada — atualizar o
+    # baseline aqui e o que impede o mesmo alarme de repetir todo dia sobre
+    # um aumento ja visto, medido e autorizado.
     "deepseek/deepseek-v4-flash": {
-        "prompt": 0.000000084,          # $0,084/M
-        "completion": 0.000000168,      # $0,168/M
-        "input_cache_read": 0.0000000168,  # $0,0168/M
+        "prompt": 0.00000008708,             # $0,08708/M (era $0,084/M, +3,7%)
+        "completion": 0.00000017416,         # $0,17416/M (era $0,168/M, +3,7%)
+        "input_cache_read": 0.000000017416,  # $0,017416/M (era $0,0168/M, +3,7%)
     },
     "z-ai/glm-5.3-flash": {
-        "prompt": 0.000000075,          # $0,075/M — promocao, expira 09/09/2026
-        "completion": 0.00000025,       # $0,25/M
-        "input_cache_read": 0.000000015,  # $0,015/M — 90% do mix do tick (#6712)
+        "prompt": 0.00000015,            # $0,15/M — preco de lista, promo caiu
+        "completion": 0.0000005,         # $0,50/M — preco de lista, promo caiu
+        "input_cache_read": 0.00000003,  # $0,03/M — 90% do mix do tick (#6712)
     },
 }
 
