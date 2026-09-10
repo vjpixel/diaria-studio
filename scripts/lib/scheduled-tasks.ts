@@ -2102,6 +2102,30 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#7137",
   },
   {
+    name: "Diaria-Dmarc-Enforcement-Alarm",
+    description:
+      "roda o motor read-only de decisao DMARC (news.diar.ia.br, sinal proprio Kit bounce/complaint) " +
+      "e abre/atualiza 1 issue quando recomenda escalar p=none->quarantine->reject ou considerar rollback -- " +
+      "aplicar continua acao MANUAL do editor no Cloudflare (#6442)",
+    steps: [{ key: "alarm", script: "scripts/dmarc-enforcement-alarm.ts" }],
+    logPath: "dmarc-enforcement/.alarm.log",
+    // Domingo 12:30 BRT -- mesma familia semanal de revisao/decisao do
+    // backlog (Diaria-Issue-File-Collisions-Weekly-Check 12:15 acima), slot
+    // livre (ver grep de `kind: "weekly"` neste arquivo). Semanal, nao
+    // diaria/interval: uma transicao de politica DNS e rara e discreta, nao
+    // um numero que muda todo dia -- ver docstring de
+    // `scripts/lib/dmarc-enforcement-policy.ts`, analogia com o freio
+    // Clarice, ponto 3.
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 12, minute: 30 },
+    // Sem guard -- o script e fail-soft por design: KIT_API_KEY ausente ou
+    // falha de rede/DNS na leitura dos sinais vira log + return, nunca
+    // abre issue a partir de leitura que falhou (docstring do script).
+    // DECLARADA, NAO ARMADA nesta unidade -- armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // e acao POSTERIOR do editor.
+    issue: "#6442",
+  },
+  {
     name: "Diaria-Meta-Capi-Staleness-Alarm",
     description:
       "compara server_last_fired_time do dataset Meta contra now -- a Conversions API do #5504 e " +
