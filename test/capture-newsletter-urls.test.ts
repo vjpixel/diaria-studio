@@ -480,6 +480,24 @@ describe("#7662 — always_consider_senders allowlist", () => {
     );
     assert.ok(articles.some((a) => a.url === dest), "URL final decodificada, não o wrapper");
   });
+
+  it("#7871 review (P3) — URL que casa 2 heurísticas ao mesmo tempo entra 1 única vez em always_consider_exemptions", () => {
+    // Casa affiliate (utm_campaign=...newsletter...) E sender-own
+    // (newsletter.7min.ai é o domínio do próprio sender) simultaneamente —
+    // antes do fix, isso gerava 2 entradas duplicadas pra mesma URL.
+    const thread = fixtureThread({
+      thread_id: "t-7871-double-match",
+      body: "Double match: https://newsletter.7min.ai/edition-100?utm_campaign=weekly_newsletter",
+    });
+    const { articles, result } = processThreads(
+      [thread],
+      { processed_thread_ids: [] },
+      { alwaysConsiderSenders: ["email@newsletter.7min.ai"] },
+    );
+    assert.ok(articles.some((a) => a.url.includes("edition-100")), "a URL ainda chega ao pool, isenta");
+    const doubleMatchExemptions = result.always_consider_exemptions.filter((e) => e.url.includes("edition-100"));
+    assert.equal(doubleMatchExemptions.length, 1, `esperava 1 entrada só, recebeu: ${JSON.stringify(doubleMatchExemptions)}`);
+  });
 });
 
 describe("#7662 — loadAlwaysConsiderConfig: nunca degrada em silêncio", () => {

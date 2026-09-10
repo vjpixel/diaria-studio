@@ -517,8 +517,17 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
       if (defaultSenders.length > 0) fetchGroups.push({ senders: defaultSenders, hours: sinceHours });
       for (const s of overrideSenders) fetchGroups.push({ senders: [s], hours: sinceHoursBySender[s] });
 
-      let fetchOk = false;
-      let lastSummary: { threads_found?: number; threads_written?: number } | undefined;
+      // #7871 review (PR #7871, findings inline em stage-0-run.ts:533): com
+      // múltiplos fetchGroups (overrides), o summary NUNCA pode ser "o do
+      // último grupo bem-sucedido" — isso sobrescreve (em vez de agregar) o
+      // que os grupos anteriores acharam e mascara falha PARCIAL como
+      // sucesso total quando o código de saída combinado usa OR. Agregamos
+      // threads_found/threads_written somando só os grupos que de fato
+      // tiveram sucesso, e logamos cada grupo que falhar individualmente —
+      // nunca em silêncio, mesmo quando outro grupo teve sucesso — pra não
+      // enfraquecer o guard #1756 (que compara summary.threads_found contra
+      // o conteúdo real do arquivo).
+      const groupResults: Array<{ group: { senders: string[]; hours: number }; code: number; json: { threads_found?: number; threads_written?: number } | undefined }> = [];
       for (const group of fetchGroups) {
         const fetchResult = softStep(deps, report, `fetch-newsletter-threads (0b-bis, ${group.hours}h)`, "scripts/fetch-newsletter-threads.ts", [
           "--senders",
@@ -528,25 +537,38 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
           "--out",
           threadsOut,
         ]);
-        if (fetchResult.result.code === 0) {
-          fetchOk = true;
-          lastSummary = fetchResult.json as { threads_found?: number; threads_written?: number } | undefined;
-        }
+        groupResults.push({ group, code: fetchResult.result.code, json: fetchResult.json as { threads_found?: number; threads_written?: number } | undefined });
       }
-      const fetchResult = { result: { code: fetchOk ? 0 : 1 }, json: lastSummary };
-      if (fetchResult.result.code === 0) {
-        const summary = fetchResult.json as { threads_found?: number; threads_written?: number } | undefined;
-        logEvent(deps, opts.edition, "info", "0b-bis: newsletters capturadas", { details: summary });
+      const okGroups = groupResults.filter((g) => g.code === 0);
+      const failedGroups = groupResults.filter((g) => g.code !== 0);
+      const fetchOk = okGroups.length > 0;
+      for (const failed of failedGroups) {
+        logEvent(
+          deps,
+          opts.edition,
+          "warn",
+          `0b-bis: fetch-newsletter-threads falhou pro grupo [${failed.group.senders.join(", ")}] (${failed.group.hours}h) — falha parcial, outros grupos podem ter sucedido`,
+          { informational: true },
+        );
+      }
+      if (fetchOk) {
+        const summary = {
+          threads_found: okGroups.reduce((sum, g) => sum + (g.json?.threads_found ?? 0), 0),
+          threads_written: okGroups.reduce((sum, g) => sum + (g.json?.threads_written ?? 0), 0),
+        };
+        logEvent(deps, opts.edition, "info", "0b-bis: newsletters capturadas", {
+          details: { ...summary, groups_ok: okGroups.length, groups_failed: failedGroups.length },
+        });
         // #1756 — guard: threads_found>0 mas o arquivo ficou ausente/vazio.
         const capturedPath = resolve(deps.rootDir, threadsOut);
         const captured = deps.existsSync(capturedPath) ? deps.readFile(capturedPath).trim() : "";
-        if ((summary?.threads_found ?? 0) > 0 && (!captured || captured === "[]")) {
+        if ((summary.threads_found ?? 0) > 0 && (!captured || captured === "[]")) {
           logEvent(deps, opts.edition, "warn", "0b-bis: threads_found > 0 mas captured-newsletters.json ficou vazio/ausente — falha silenciosa do script", {
             details: summary,
           });
         }
         // Passo 5 do 0b-bis: capture-newsletter-urls.ts (não-bloqueante).
-        softStep(deps, report, "capture-newsletter-urls (0b-bis)", "scripts/capture-newsletter-urls.ts", [
+        const urlsResult = softStep(deps, report, "capture-newsletter-urls (0b-bis)", "scripts/capture-newsletter-urls.ts", [
           "--threads",
           threadsOut,
           "--out",
@@ -554,6 +576,24 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
           "--cursor",
           "data/newsletter-capture-cursor.json",
         ]);
+        // #7871 review (finding em stage-0-run.ts:539): o docstring de
+        // CaptureResult.config_warnings promete que este script propaga
+        // config_warnings/always_consider_exemptions pro log/relatório —
+        // sem isso a observabilidade "por URL e por regra" pedida pela
+        // issue #7662 ficava presa em stderr de um passo que roda em
+        // background, nunca chegando em data/run-log.jsonl (o que
+        // /diaria-log lê).
+        const urlsJson = urlsResult.json as { config_warnings?: string[]; always_consider_exemptions?: Array<{ url: string; sender: string; rule: string }> } | undefined;
+        if (urlsJson?.config_warnings && urlsJson.config_warnings.length > 0) {
+          logEvent(deps, opts.edition, "warn", "0b-bis: capture-newsletter-urls reportou config_warnings", {
+            details: { config_warnings: urlsJson.config_warnings },
+          });
+        }
+        if (urlsJson?.always_consider_exemptions && urlsJson.always_consider_exemptions.length > 0) {
+          logEvent(deps, opts.edition, "info", "0b-bis: always_consider isentou URLs de heurísticas de higiene", {
+            details: { count: urlsJson.always_consider_exemptions.length, exemptions: urlsJson.always_consider_exemptions },
+          });
+        }
       } else {
         logEvent(deps, opts.edition, "info", "0b-bis skipped: fetch-newsletter-threads falhou", { informational: true });
       }

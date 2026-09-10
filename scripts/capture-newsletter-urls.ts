@@ -188,9 +188,23 @@ export function processThreads(
       } else {
         // #7662 observabilidade: registrar o que TERIA sido filtrado, pra
         // saber se a isenção está de fato valendo e detectar wrapper novo.
-        if (isTracking) exemptions.push({ url: rawUrl, sender: thread.sender, rule: "tracking" });
-        if (isAffiliate) exemptions.push({ url, sender: thread.sender, rule: "affiliate" });
-        if (isSenderOwn) exemptions.push({ url, sender: thread.sender, rule: "sender-own" });
+        // #7871 review (P3, capture-newsletter-urls.ts:191): as 3 checagens
+        // acima não são mutuamente exclusivas — uma URL de tracking que
+        // também aponta pro domínio do próprio sender casava 2 regras ao
+        // mesmo tempo e entrava 2x em always_consider_exemptions, inflando a
+        // contagem sem indicar que era a mesma URL. 1 entrada por URL,
+        // prioridade tracking > affiliate > sender-own (mesma ordem em que
+        // as heurísticas já são checadas acima).
+        const matchedRule: "tracking" | "affiliate" | "sender-own" | undefined = isTracking
+          ? "tracking"
+          : isAffiliate
+            ? "affiliate"
+            : isSenderOwn
+              ? "sender-own"
+              : undefined;
+        if (matchedRule) {
+          exemptions.push({ url: matchedRule === "tracking" ? rawUrl : url, sender: thread.sender, rule: matchedRule });
+        }
       }
 
       // Dedup by canonical URL — correção, nunca isenta (#7662)
