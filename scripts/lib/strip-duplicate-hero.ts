@@ -118,6 +118,55 @@ export function removeHero(
   };
 }
 
+/**
+ * Heros confirmados como duplicata POR HASH (#7499) — o asset id do topo
+ * difere do da imagem do corpo, mas o conteúdo é byte-idêntico. A comparação
+ * por hash exige rede, que o gerador do acervo não pode depender; o veredito
+ * já medido fica gravado aqui por asset id (não por slug, que pode ser
+ * corrigido por `applyLegacySlugCorrections`).
+ */
+export const HASH_VERIFIED_DUPLICATE_HERO_ASSETS: ReadonlySet<string> = new Set([
+  "5f04e005-61e3-4dad-a357-73a44336054d",
+  "9556b657-0ac8-4da9-a0a0-364f22eb2658",
+  "dfed33e4-b2d4-4e17-9320-d1ddd125c2d0",
+  "9bfcb447-7142-4a59-97dd-bbdd80b935e9",
+  "282f6aa3-83fb-46b9-a8af-e828bd7672f6",
+  "0f71b7f8-69bb-4f52-a35b-77fc03f26a66",
+  "29f82609-14f4-47c3-a916-de20e9a7eaac",
+  "7fe4c315-9cdc-4c9c-b43e-ea0402a7b586",
+  "1b5dc687-587f-452d-b9ac-262372bb45d3",
+  "e72a69eb-d252-4bb0-a67c-8e853c65429e",
+  "9b286ad1-8035-4986-bec4-b319f9e82a75",
+  "6bd9291c-f8b0-4a1c-8e81-dbfb313064d0",
+  "a126c9be-d948-43ef-81bd-c10d866efcac",
+  "190cc1ee-da54-408f-a171-247fe3c549ea",
+  "eb5174c0-ebf9-4b05-87fb-66af3b7e127d",
+  "2b396dc2-7b87-496f-9911-fef2a8a926cb",
+  "d0ac3920-3cb2-4707-99cb-1aa93c59359e",
+  "086cbbf3-cac9-43ba-86d0-67d3cb0a68bf",
+  "c24e54d1-3150-4e01-842b-b00b06709fc4",
+  "d4f8d565-df7f-4fff-b347-7972aa6b1868",
+  "b87ba438-9c0a-44a1-acf7-3d9eb3b1a207",
+  "fe718e29-0890-413d-898e-122837a239ba",
+]);
+
+/**
+ * Remoção usada pelo GERADOR do acervo (`buildArchivePageHtml`) — o ponto
+ * que faltava no #7412: a correção original só editou os arquivos gerados, e
+ * a regeneração em massa do #7588 (a partir do cache Beehiiv, que segue com o
+ * hero) trouxe as 135 duplicatas de volta. Cobre os dois critérios: asset id
+ * repetido no corpo, ou hero na lista verificada por hash.
+ */
+export function stripArchiveHero(html: string): string {
+  const byId = stripDuplicateHeroImage(html);
+  if (byId.changed) return byId.html;
+  const hero = findHeroLayout(html);
+  if (!hero || hero.bodySrcs.length === 0) return html;
+  const id = assetIdOf(hero.heroTag);
+  if (!id || !HASH_VERIFIED_DUPLICATE_HERO_ASSETS.has(id)) return html;
+  return removeHero(html, hero).html;
+}
+
 export function stripDuplicateHeroImage(html: string): StripHeroResult {
   const markerAt = html.indexOf(CONTENT_BLOCKS_MARKER);
   if (markerAt < 0) {

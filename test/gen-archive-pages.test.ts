@@ -169,6 +169,20 @@ describe("derivePageTitle / deriveMetaDescription (#5101 item 2, #6281)", () => 
 });
 
 describe("buildArchivePageHtml", () => {
+  // Regressão #7412: a correção só editou os arquivos gerados e a regeneração
+  // em massa do #7588 trouxe as 135 capas duplicadas de volta do cache.
+  it("remove o hero duplicado do HTML de origem (#7412)", () => {
+    const id = "64dde96e-7aa0-4736-8805-17075f59987e";
+    const img = `<img src="https://media.beehiiv.com/uploads/asset/file/${id}/cover.jpg">`;
+    const web =
+      `<!DOCTYPE html><html><head></head><body><div style='padding-bottom:2rem;'>${img}</div>` +
+      `<div id='content-blocks'><h1>T</h1>${img}<p>texto</p></div></body></html>`;
+    const html = buildArchivePageHtml(makePost({ content: { free: { web } } }));
+    assert.equal(html.split(id).length - 1, 1);
+    assert.doesNotMatch(html, /padding-bottom:2rem;'>/);
+    assert.match(html, /<p>texto<\/p>/);
+  });
+
   it("injeta lang=\"pt-BR\" quando o HTML de origem não tem lang nenhum", () => {
     const html = buildArchivePageHtml(makePost());
     assert.match(html, /<html lang="pt-BR">/);

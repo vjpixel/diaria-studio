@@ -26,6 +26,7 @@ import { escHtml } from "./html-escape.ts";
 import { loadPublishDateOverrides } from "./beehiiv-publish-date.ts";
 import type { UnifiedCachedPost } from "./shared/edition-cache-reader.ts";
 import { editionCtaBlock } from "./edition-page-cta.ts";
+import { stripArchiveHero } from "./strip-duplicate-hero.ts";
 
 export interface ArchivePost {
   slug: string;
@@ -337,6 +338,11 @@ export function buildArchivePageHtml(post: ArchivePost): string {
   // pro resultado (as demais transformações abaixo não tocam `<style>`),
   // mas rodar cedo mantém `html` menor pelo resto da função.
   html = dedupeStyleBlocksInPage(html);
+
+  // #7412 — hero duplicado do acervo importado. Tem que morar AQUI, no
+  // gerador: corrigir só os arquivos de saída foi desfeito pela primeira
+  // regeneração em massa (#7588).
+  html = stripArchiveHero(html);
 
   // Precisa haver <html ...> pra injetar lang + (no fallback abaixo) head —
   // sem essa tag, um .replace() vira no-op silencioso e a página sai sem
