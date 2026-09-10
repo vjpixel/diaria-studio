@@ -158,6 +158,44 @@ describe("triagem.js reasonCell — #7644 coluna 'Motivo'", () => {
     assert.match(html, />agendado para data no corpo da issue</);
   });
 
+  // #7884 — regressão do #7868: a interpolação rodava só aqui (cliente), e um
+  // cliente mais VELHO que o servidor renderizava `{date}` cru porque não
+  // tinha essa lógica ainda. `resolvedReason` (5º argumento) é o texto JÁ
+  // interpolado NO SERVIDOR — quando presente, tem prioridade, SEM nenhuma
+  // lógica de substituição rodar aqui.
+  it("#7884 — resolvedReason (servidor) tem prioridade sobre a interpolação local", () => {
+    const html = reasonCell(
+      "agendada",
+      "marker:aguardando-ate",
+      REASON_UI,
+      undefined,
+      { short: "agendado para 15/09", long: "Volta sozinha ao fluxo em 15/09." },
+    );
+    assert.match(html, />agendado para 15\/09</);
+    assert.match(html, /title="Volta sozinha ao fluxo em 15\/09\."/);
+  });
+
+  it("#7884 — badge servido pelo servidor já vem com a data interpolada, nunca com o placeholder cru", () => {
+    // Cenário exato pedido no teste de regressão da issue: o servidor
+    // resolveu {date} e mandou o texto final — nenhuma ocorrência de {date}
+    // sobrevive ao HTML renderizado, mesmo que o vocabulário estático
+    // (REASON_UI) ainda carregue o template.
+    const html = reasonCell(
+      "agendada",
+      "marker:aguardando-ate",
+      REASON_UI,
+      undefined,
+      { short: "agendado para 05/01/2027", long: "Marcador `aguardando-ate: 2027-01-05` — agendado para 05/01/2027." },
+    );
+    assert.doesNotMatch(html, /\{date\}/);
+    assert.match(html, />agendado para 05\/01\/2027</);
+  });
+
+  it("#7884 — sem resolvedReason (servidor velho), cai no comportamento antigo (replaceAll local)", () => {
+    const html = reasonCell("agendada", "marker:aguardando-ate", REASON_UI, "15/09", undefined);
+    assert.match(html, />agendado para 15\/09</);
+  });
+
   it("track ACIONÁVEL renderiza '—' mesmo tendo frase disponível pro seu matched", () => {
     // `label:windows` TEM entrada em `reasons` — o que suprime a célula é a
     // acionabilidade do track, não a falta de texto. É a distinção que faz a
