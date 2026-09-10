@@ -26,7 +26,6 @@ import { fileURLToPath } from "node:url";
 export const AARRR_LABEL_PREFIX = "aarrr:";
 
 export const AARRR_STAGES = ["awareness", "acquisition", "activation", "retention", "referral", "revenue"] as const;
-export type AarrrStage = (typeof AARRR_STAGES)[number];
 
 const WHITELIST_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "aarrr-whitelist.json");
 
