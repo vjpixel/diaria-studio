@@ -292,7 +292,7 @@ cadência semanal — vive no corpo da própria issue, não duplicada aqui):
 - **Aviso de conflito de escrita OneDrive.** Se `data/geo-citations/`
   contiver algum arquivo `*-safeBackup-*` (padrão do cliente OneDrive Linux
   quando 2 máquinas escrevem `history.jsonl` na mesma janela — achado ao
-  vivo: `history-300-safeBackup-0001.jsonl`, 8 registros órfãos), o
+  vivo, anterior ao rename da máquina #7682: `history-helios-safeBackup-0001.jsonl`, 8 registros órfãos), o
   monitor avisa a cada execução. **Só detecta, não reconcilia** — mesclar o
   arquivo órfão de volta é operação manual sobre dado real de produção. A
   causa raiz (2 máquinas rodando a mesma task) fecha com a épica #4798.

@@ -107,8 +107,9 @@ export function isEmbeddedHtmlFilename(name: string): boolean {
  *  dois seguem na alternância — arquivos de conflito já gravados em `data/`
  *  antes do rename carregam um ou outro sufixo e ficariam órfãos se
  *  saíssem). `300` entra como 3º apelido da mesma máquina, não uma 4ª —
- *  são 3 máquinas reais (neo, Zenbook, servidor) pros 4 nomes na
- *  alternância. Verificado em 10/09/2026 (#7682 Parte C): nenhum arquivo em
+ *  são 3 máquinas reais (neo, Zenbook, servidor) pros 5 nomes na
+ *  alternância (neo, zenbook, predator, helios, 300 — os 3 últimos, o
+ *  mesmo servidor). Verificado em 10/09/2026 (#7682 Parte C): nenhum arquivo em
  *  `data/` usa sufixo puramente numérico (`-NNN.ext`) que colidiria com
  *  `-300` sendo lido como esse sufixo em vez de nome de máquina — sem
  *  colisão medida, `300` entra sem âncora extra. + o padrão

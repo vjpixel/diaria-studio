@@ -138,8 +138,9 @@ export interface KitIngestDeps {
 
 /**
  * Detecta cópias de conflito do OneDrive pro arquivo alvo — mesmo padrão
- * medido em `data/run-log.jsonl` (23 cópias: `run-log-Neo{,-2..-10}.jsonl`,
- * `run-log-Zenbook{,-2..-6}.jsonl`, `run-log-300{,-safeBackup-*}.jsonl`).
+ * medido em `data/run-log.jsonl` (23 cópias, anterior ao rename da máquina
+ * #7682 — os arquivos reais levam o nome antigo: `run-log-Neo{,-2..-10}.jsonl`,
+ * `run-log-Zenbook{,-2..-6}.jsonl`, `run-log-predator{,-safeBackup-*}.jsonl`).
  * Com um `.db` SQLite no meio, a bifurcação é pior que ruído — ver docstring
  * de `scripts/lib/kit-subscribers-ingest.ts::ingestKitRoster`. Retorna os
  * nomes de arquivo encontrados (vazio = nenhum conflito). @pure sobre a

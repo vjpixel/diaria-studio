@@ -102,7 +102,7 @@
  *     antes do `merge-lock-release` correspondente falha, mesmo sendo a
  *     mesma sessão. Ver `merge-lock-renew` pra estender o TTL de um hold
  *     que já é seu. **`--pr` não é opcional na prática (#7169/#7223,
- *     achado ao vivo na rodada 300/#7217):** o próprio `BLOCK_REASON`
+ *     achado ao vivo na rodada no 300, #7217):** o próprio `BLOCK_REASON`
  *     de `.claude/hooks/block-gh-pr-merge-subagent.mjs` já recomenda
  *     `merge-lock-acquire --pr N`/`merge-lock-release --pr N` — seguir o
  *     comando SEM `--pr` deixou `gh pr merge` bloqueado repetidamente pelo

@@ -123,6 +123,31 @@ describe("isBackupSiblingFilename — cópias-irmãs de conflito do OneDrive", (
       assert.equal(isBackupSiblingFilename(name), false, name);
     }
   });
+
+  // #7682 Parte C — rename da máquina helios/predator → 300. `helios` já
+  // casava antes (só não tinha exemplo próprio); `300` é o apelido NOVO,
+  // ambos precisam continuar casando — arquivos de conflito gravados nos
+  // dois momentos (antes e depois do rename) convivem em `data/`.
+  it("casa `helios` (nome antigo, preservado — arquivos de conflito antigos) E `300` (nome novo, #7682)", () => {
+    for (const name of ["clarice-users-helios.db", "clarice-users-helios-safeBackup-0001.db", "clarice-users-300.db", "clarice-users-300-safeBackup-0001.db", "run-log-300.jsonl", "run-log-300-2.jsonl"]) {
+      assert.equal(isBackupSiblingFilename(name), true, name);
+    }
+  });
+
+  // #7682 Parte C — risco documentado, não corrigido: `300` é um número
+  // puro (ao contrário de `predator`/`neo`/`zenbook`/`helios`, que são
+  // palavras), então QUALQUER arquivo terminando em `-300.ext` por razão
+  // NÃO relacionada a nome de máquina (um id de campanha, uma contagem, um
+  // número de sequência) casa igual. Medido em 10/09/2026 (#7682): nenhum
+  // arquivo real em `data/` tem esse formato hoje — risco aceito, sem
+  // âncora extra, registrado aqui como comportamento conhecido (não uma
+  // regressão a corrigir) para que uma mudança futura da regex veja o que
+  // está em jogo.
+  it("#7682 risco aceito, documentado: `-NNN.ext` genérico (não-máquina) TAMBÉM casa — não há âncora que distinga", () => {
+    for (const name of ["campaign-300.json", "edition-report-300.html", "IMG-300.jpg"]) {
+      assert.equal(isBackupSiblingFilename(name), true, `${name} — falso positivo aceito, ver docstring de BACKUP_SIBLING_PATTERNS`);
+    }
+  });
 });
 
 describe("isMvCacheFilename", () => {

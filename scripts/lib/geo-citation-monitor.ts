@@ -1282,7 +1282,8 @@ export function detectProviderDrop(
  * do cliente OneDrive Linux (abraunegg, `-safeBackup-`) — sinal de que 2+
  * máquinas escreveram o mesmo log JSONL na mesma janela e o OneDrive
  * resolveu RENOMEANDO em vez de mesclar ou avisar (#4900 item c, achado ao
- * vivo: `history-300-safeBackup-0001.jsonl` com 8 registros órfãos que
+ * vivo, ANTERIOR ao rename da máquina #7682 — o arquivo real leva o nome
+ * antigo: `history-helios-safeBackup-0001.jsonl` com 8 registros órfãos que
  * só existem nesse arquivo). Esta função só DETECTA — reconciliar os dados
  * é operação manual sobre dado real de produção, deliberadamente fora de
  * escopo de qualquer PR de código (ver docstring de `listSafeBackupConflictFiles`

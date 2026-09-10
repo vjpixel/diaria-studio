@@ -235,6 +235,41 @@ describe("CLI (scripts/validate-develop-plan-motivo.ts)", () => {
     assert.equal(r.status, 2);
     assert.match(r.stderr, /uso: --plan/);
   });
+
+  // #7682 — a CLI wira `findDeixadoPara300Buraco` separadamente de
+  // `checkDevelopPlanMotivos` (ver validate-develop-plan-motivo.ts); os
+  // testes acima só cobrem o vocabulário. Este cobre o caminho do "buraco"
+  // fim-a-fim via subprocess, com os dois valores (novo e alias legado).
+  it("#7682: status deixado-para-o-300 em issue de track develop → exit 1, mensagem cita o issue e os dois valores (novo + legado)", () => {
+    const planPath = writePlanFixture({
+      issues: [{ number: 5125, status: "deixado-para-o-300", exec_track_painel: "develop" }],
+    });
+    const r = run(["--plan", planPath]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /#5125/);
+    assert.match(r.stderr, /deixado-para-o-300/);
+    assert.match(r.stderr, /deixado-para-o-helios/);
+  });
+
+  it("#7682: status deixado-para-o-helios (alias legado) em issue de track develop → MESMO exit 1 e mensagem do valor novo", () => {
+    const planPath = writePlanFixture({
+      issues: [{ number: 5125, status: "deixado-para-o-helios", exec_track_painel: "develop" }],
+    });
+    const r = run(["--plan", planPath]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /#5125/);
+  });
+
+  it("#7682: deixado-para-o-300/helios em track overnight (legítimo) → exit 0, não aciona o gate do buraco", () => {
+    const planPath = writePlanFixture({
+      issues: [
+        { number: 1, status: "deixado-para-o-300", exec_track_painel: "overnight" },
+        { number: 2, status: "deixado-para-o-helios", exec_track_painel: "overnight" },
+      ],
+    });
+    const r = run(["--plan", planPath]);
+    assert.equal(r.status, 0);
+  });
 });
 
 // ─── #5907 (b): findDeixadoPara300Buraco — deixado-para-o-300 em track develop/bloqueada ──

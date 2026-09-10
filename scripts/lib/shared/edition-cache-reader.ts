@@ -469,8 +469,9 @@ export function editorialDate(post: Pick<UnifiedCachedPost, "displayed_date" | "
  * mesmo mecanismo documentado em `scripts/lib/session-registry.ts` §151
  * para `data/sessions/`) é excluído do glob — sem isso, um post com backup
  * presente conta DUAS vezes em qualquer consumidor desta camada (achado
- * ao vivo #7101/#7103, 260910: `post_{id}.json` +
- * `post_{id}-300-safeBackup-0001.json` duplicaram a mesma edição nos
+ * ao vivo #7101/#7103, 260910 (anterior ao rename da máquina #7682 — o
+ * arquivo real leva o nome antigo): `post_{id}.json` +
+ * `post_{id}-helios-safeBackup-0001.json` duplicaram a mesma edição nos
  * datasets de hub gerados por `generate-hub-sources.ts`).
  */
 export function loadBeehiivCache(dir: string = DEFAULT_BEEHIIV_POSTS_DIR): UnifiedCachedPost[] {
