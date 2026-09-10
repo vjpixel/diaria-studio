@@ -3,6 +3,10 @@
 Por que `scripts/run-tests.ts` satura a máquina de propósito, por que **reduzir
 a concorrência foi medido e reprovado**, e o que de fato resolve.
 
+> **Atualização #7934 (10/09/2026):** fora do CI a suíte agora tem teto de
+> processos por escolha do editor, e não abre mais janelas no Windows. Ver a
+> seção do #7934 no fim deste documento.
+
 ## O sintoma que originou
 
 Relato do editor (09/09/2026): *"vários terminais com o node abrem em sequência,
@@ -121,10 +125,71 @@ travada", que era o relato.
 `setPriority` é best-effort: lança `EACCES`/`EPERM` em container sem
 `CAP_SYS_NICE`, e nesse caso a suíte roda normal, só não cede CPU.
 
+## #7934: teto de processos fora do CI e fim das janelas (10/09/2026)
+
+Com a prioridade no ar a máquina parou de travar, mas o editor pediu duas
+coisas a mais: nenhuma janela de terminal, e CPU limitada de verdade, porque
+Zenbook e 300 têm bem menos núcleos que o Neo. **É uma decisão do editor, não
+uma medição nova que desmente a de cima:** a suíte local fica mais lenta, e o
+editor aceita isso em troca de uma máquina usável.
+
+**Janelas.** A causa não era a concorrência. O `detached: true` do #7753, no
+Windows, tira o console herdado: o batch e cada neto do
+`--test-isolation=process` alocavam um console próprio e visível. No Windows
+o `killProcessTree` usa `taskkill /T` (árvore por PID) e nunca precisou de
+grupo, então `detached` agora só vale no POSIX, e todo spawn leva
+`windowsHide` (`batchSpawnIsolation`). Probe no Neo: 1 janela nova visível
+com as opções antigas, 0 com as novas.
+
+**CPU.** Fora do CI, `resolveConcurrencyPlan` passa `--test-concurrency` pra
+que o total em voo seja `LOCAL_PROCS_PER_CPU × nCPU` (hoje 0,5, meio processo
+por núcleo), dividido entre os workers. Com 1 por núcleo a CPU média no Neo
+ainda ficou em 78% (86% no regime antigo): a suíte é I/O-bound, e só abaixo de
+1 por núcleo sobra CPU de fato. O teto do batch escala na mesma razão em
+que a concorrência caiu. O modo de falha medido acima era batch estourando um
+teto **fixo** de 300 s; com o teto escalado, o batch pode demorar mais, mas
+não é morto por isso.
+
+| máquina | antes (`4 × (nCPU-1)`) | agora (0,5 × nCPU, arredondado por worker) |
+|---|---|---|
+| Neo (20) | 76 | 8 |
+| 300 (8) | 28 | 4 |
+
+Medição no Neo (20 cores), suíte completa, CPU da máquina amostrada a cada 5 s
+(inclui o que mais estava rodando — ruidoso, mas as três rodadas foram
+seguidas, na mesma máquina):
+
+| regime | processos em voo | wall clock | CPU média | CPU pico |
+|---|---|---|---|---|
+| antigo | 76 | 396 s | 86% | 100% |
+| 1 × nCPU | 20 | 478 s | 78% | 100% |
+| **0,5 × nCPU (atual)** | **8** | **454 s** | **60%** | **90%** |
+
+Nenhum batch estourou o teto nas três, e as falhas locais (pré-existentes,
+dependentes desta máquina) foram as mesmas. O custo real ficou em ~15% de wall
+clock, bem abaixo dos 2,5× que o #7875 mediu com teto de tempo fixo — o que
+confirma que aquele número vinha dos batches mortos e re-tentados, não da
+concorrência menor em si.
+
+CI continua como estava (runner dedicado, ninguém usando; `CI=false`/`CI=0`
+contam como local). Quando há teto, ele é impresso no stderr no início da
+rodada; máquina pequena, em que o teto não fica abaixo do default do Node,
+roda sem teto e sem aviso. O teto de tempo da bisecção (#6822) escala junto
+com o do batch.
+
+| env | efeito |
+|---|---|
+| `RUN_TESTS_MAX_PROCS=N` | teto explícito de processos em voo (vale inclusive no CI) |
+| `RUN_TESTS_MAX_PROCS=1000` | na prática volta ao regime antigo |
+| `--test-concurrency=N` nos args | quem chamou decide; o plano não sobrepõe |
+| `RUN_TESTS_BATCH_TIMEOUT_MS` | teto de batch explícito; não é escalado |
+
 ## Antes de "otimizar" isto de novo
 
-Reduzir concorrência já foi tentado e medido. Se for reabrir, o ônus é
-apresentar medição **no caminho paralelo real** que mostre wall clock não pior
-que o atual e nenhum batch estourando os 300 s — não um benchmark de `node
---test` isolado. `test/run-tests.test.ts` trava o mecanismo atual em
-`describe("prioridade de CPU (#7875)")`.
+Reduzir concorrência por **desempenho** foi medido e reprovou (acima); o teto
+do #7934 existe por **escolha do editor**, sabendo do custo em wall clock.
+Subir `LOCAL_PROCS_PER_CPU` de volta é decisão dele, não otimização. Mexer no
+desempenho continua pedindo medição **no caminho paralelo real**, não num
+`node --test` isolado. `test/run-tests.test.ts` trava os mecanismos em
+`describe("prioridade de CPU (#7875)")` e
+`describe("teto de processos em voo fora do CI (#7934)")`.

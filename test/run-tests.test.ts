@@ -37,6 +37,9 @@ import {
   DEFAULT_RETRY_DELAY_MS,
   resolvePriority,
   lowerOwnPriority,
+  batchSpawnIsolation,
+  resolveConcurrencyPlan,
+  LOCAL_PROCS_PER_CPU,
   type RunTestBatchesParallelOptions,
 } from "../scripts/run-tests.ts";
 import os from "node:os";
@@ -689,7 +692,24 @@ describe("runTestBatches — batch que TRAVA/MORRE produz exit != 0 (#6822, Defe
     // (`node --test`) — os netos do `--test-isolation=process` (1 processo
     // por arquivo do batch) sobrevivem, reparentados pro init/systemd, e
     // ficam rodando pra sempre (11 órfãos de ~4,7 dias medidos ao vivo).
-    assert.equal(seenOptions?.detached, true, "spawn precisa virar líder de um novo grupo de processos pro kill de grupo alcançar os netos");
+    // #7934: `detached` só no POSIX — no Windows ele abria uma janela de
+    // console por batch, e `taskkill /T` já alcança a árvore por PID.
+    assert.equal(
+      seenOptions?.detached,
+      process.platform !== "win32",
+      "POSIX: spawn precisa virar líder de um novo grupo de processos pro kill de grupo alcançar os netos; Windows: nunca detached",
+    );
+    assert.equal(seenOptions?.windowsHide, true, "#7934: sem windowsHide o batch abre janela de terminal no Windows");
+  });
+
+  describe("batchSpawnIsolation (#7934)", () => {
+    it("Windows: nunca detached (abria uma janela por batch), sempre windowsHide", () => {
+      assert.deepEqual(batchSpawnIsolation("win32"), { detached: false, windowsHide: true });
+    });
+    it("POSIX: detached continua ligado — é o grupo que o killProcessTree mata (#7753)", () => {
+      assert.deepEqual(batchSpawnIsolation("linux"), { detached: true, windowsHide: true });
+      assert.deepEqual(batchSpawnIsolation("darwin"), { detached: true, windowsHide: true });
+    });
   });
 
   it("DEFAULT_BATCH_TIMEOUT_MS é positivo e finito, generoso o bastante pra não disparar em batch normal (>60s)", () => {
@@ -1310,6 +1330,83 @@ function podeRebaixar(): boolean {
   return podeRebaixarCache;
 }
 
+describe("teto de processos em voo fora do CI (#7934)", () => {
+  // Decisão do editor (10/09/2026): menos CPU vale mais que suíte local
+  // rápida. O que o #7875 mediu de ruim ao cortar concorrência foi batch
+  // estourando teto de tempo FIXO — por isso o plano também escala o teto.
+  it("default local = LOCAL_PROCS_PER_CPU × nCPU dividido pelos workers", () => {
+    const plan = resolveConcurrencyPlan({}, 20, 4);
+    assert.equal(plan.perWorker, Math.floor((LOCAL_PROCS_PER_CPU * 20) / 4));
+    assert.equal(plan.total, plan.perWorker! * 4);
+    assert.ok(plan.total! < 4 * 19, "precisa ficar abaixo do regime anterior (4 × (nCPU-1))");
+  });
+
+  it("máquina fraca (300: 8 CPUs) cai bem abaixo do regime anterior de 28", () => {
+    const plan = resolveConcurrencyPlan({}, 8, 4);
+    assert.equal(plan.perWorker, 1);
+    assert.equal(plan.total, 4);
+  });
+
+  it("máquina minúscula (2 CPUs): nunca zero processos — 1 por worker é o piso", () => {
+    const plan = resolveConcurrencyPlan({}, 2, 2);
+    assert.equal(plan.perWorker, null, "com 2 CPUs o default do Node já é 1 por worker — nada a cortar");
+    assert.equal(resolveConcurrencyPlan({}, 1, 1).perWorker, null);
+  });
+
+  it("teto de tempo escala na mesma razão da concorrência cortada — nunca menor que o antigo", () => {
+    const plan = resolveConcurrencyPlan({}, 20, 4);
+    assert.equal(plan.timeoutScale, 19 / plan.perWorker!);
+    assert.ok(plan.timeoutScale > 1);
+  });
+
+  it("CI sem override: nada muda (runner dedicado)", () => {
+    assert.deepEqual(resolveConcurrencyPlan({ CI: "true" }, 4, 4), { perWorker: null, timeoutScale: 1, total: null });
+  });
+
+  it("CI=false / CI=0 contam como local — o teto continua valendo", () => {
+    assert.deepEqual(resolveConcurrencyPlan({ CI: "false" }, 20, 4), resolveConcurrencyPlan({}, 20, 4));
+    assert.deepEqual(resolveConcurrencyPlan({ CI: "0" }, 20, 4), resolveConcurrencyPlan({}, 20, 4));
+  });
+
+  it("REGRESSÃO: o taskkill do killProcessTree também leva windowsHide (senão o kill abre janela)", () => {
+    const fonte = readFileSync(fileURLToPath(new URL("../scripts/run-tests.ts", import.meta.url)), "utf8");
+    assert.match(fonte, /spawnSync\("taskkill",.*windowsHide: true/);
+  });
+
+  it("REGRESSÃO: o plano usa os workers que de fato rodam e escala a bisecção junto", () => {
+    const fonte = readFileSync(fileURLToPath(new URL("../scripts/run-tests.ts", import.meta.url)), "utf8");
+    const entrypoint = fonte.slice(fonte.lastIndexOf("if (isMainModule(import.meta.url))"));
+    assert.match(entrypoint, /resolveConcurrencyPlan\(process\.env, cpus, workersInUse/);
+    assert.match(entrypoint, /runTestBatchesParallel\(\{[^}]*bisectTimeoutMs/);
+  });
+
+  it("RUN_TESTS_MAX_PROCS vale inclusive no CI e nunca dá menos de 1 por worker", () => {
+    assert.equal(resolveConcurrencyPlan({ CI: "true", RUN_TESTS_MAX_PROCS: "8" }, 20, 4).perWorker, 2);
+    assert.equal(resolveConcurrencyPlan({ RUN_TESTS_MAX_PROCS: "1" }, 20, 4).perWorker, 1);
+  });
+
+  it("RUN_TESTS_MAX_PROCS inválido cai no default local, nunca lança", () => {
+    assert.deepEqual(resolveConcurrencyPlan({ RUN_TESTS_MAX_PROCS: "banana" }, 8, 4), resolveConcurrencyPlan({}, 8, 4));
+  });
+
+  it("--test-concurrency já nos args: quem chamou decidiu, o plano não sobrepõe", () => {
+    assert.equal(resolveConcurrencyPlan({}, 20, 4, ["--test-concurrency=3"]).perWorker, null);
+  });
+
+  it("teto que não fica abaixo do default do Node devolve plano vazio (não passa flag à toa)", () => {
+    assert.equal(resolveConcurrencyPlan({ RUN_TESTS_MAX_PROCS: "1000" }, 8, 4).perWorker, null);
+  });
+
+  it("REGRESSÃO: o entrypoint aplica o plano — flag e teto de tempo chegam no runTestBatchesParallel", () => {
+    const fonte = readFileSync(fileURLToPath(new URL("../scripts/run-tests.ts", import.meta.url)), "utf8");
+    const entrypoint = fonte.slice(fonte.lastIndexOf("if (isMainModule(import.meta.url))"));
+    const posPlano = entrypoint.indexOf("resolveConcurrencyPlan(");
+    const posDespacho = entrypoint.indexOf("runTestBatchesParallel(");
+    assert.ok(posPlano !== -1 && posPlano < posDespacho, "o entrypoint precisa calcular o plano antes de despachar");
+    assert.match(entrypoint, /runTestBatchesParallel\(\{[^}]*planArgs[^}]*batchTimeoutMs/, "plano calculado e descartado seria no-op");
+  });
+});
+
 describe("prioridade de CPU (#7875)", () => {
   // CONTEXTO (o que este bloco protege contra): a 1ª tentativa de fix pro
   // #7875 foi reduzir a concorrência (teto de `--test-concurrency` pra que
@@ -1319,6 +1416,8 @@ describe("prioridade de CPU (#7875)", () => {
   // I/O-bound: oversubscrever compra sobreposição real. Estes testes travam
   // o mecanismo que de fato resolve (ceder CPU, não reduzir trabalho) pra
   // que ninguém "conserte" isto de volta pro caminho que já reprovou.
+  // (#7934: o teto de processos que entrou depois é escolha do editor, não
+  // otimização — ver o describe do #7934 acima.)
   it("default é below-normal — a suíte cede CPU sem precisar de env nenhuma", () => {
     assert.equal(resolvePriority(undefined), os.constants.priority.PRIORITY_BELOW_NORMAL);
     assert.equal(resolvePriority(""), os.constants.priority.PRIORITY_BELOW_NORMAL);
