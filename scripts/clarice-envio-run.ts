@@ -332,7 +332,8 @@ export interface EnvioPlanProposal {
   note: string;
   brake: { level: RiskSnapshot["brake"]["level"]; reasons: string[] };
   overrideApplied: boolean;
-  /** Fila de 1º envio ANTES de qualquer MV sob demanda (plan-only nunca roda MV). */
+  /** Teto de fila (diária unificada, #7738 — 1º-envio vitalício como fallback
+   *  de chamador legado) ANTES de qualquer MV sob demanda (plan-only nunca roda MV). */
   queueAvailable: number;
   brevoCredits: number | null;
   mvOnDemand: { deficit: number; estimatedCostUsd: number; backlogAvailable: boolean };
@@ -1166,7 +1167,7 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
         note: probe.note,
         brake: { level: risk.brake.level, reasons: [...risk.brake.reasons] },
         overrideApplied: risk.overrideApplied,
-        queueAvailable: proposal.availableFirstSend,
+        queueAvailable: proposal.availableDailyQueue ?? proposal.availableFirstSend, // #7738
         brevoCredits: proposal.brevoCredits,
         mvOnDemand: {
           deficit: proposal.mvOnDemandPlan.deficit,
@@ -1191,7 +1192,7 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       );
     }
 
-    let queueAvailable = proposal.availableFirstSend;
+    let queueAvailable = proposal.availableDailyQueue ?? proposal.availableFirstSend;  // #7738: teto = fila diária unificada (populada por clarice-plan-wave.ts); 1º-envio vitalício só como fallback (chamador legado), nunca superestimado
     if (queueAvailable < desiredVolume && proposal.mvOnDemandPlan.byCohort.length > 0) {
       if (!hasMv) {
         report.note(
@@ -1226,7 +1227,7 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
           replan,
         );
         if (replanProposal) {
-          queueAvailable = replanProposal.availableFirstSend;
+          queueAvailable = replanProposal.availableDailyQueue ?? replanProposal.availableFirstSend; // #7738: mesmo teto do Passo 4, recalculado pós-MV
           proposal = replanProposal;
           report.note(`fila após MV sob demanda: ${queueAvailable}.`);
           // Achado do code-reviewer no review da PR: os guards estruturais

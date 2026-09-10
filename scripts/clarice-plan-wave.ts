@@ -57,12 +57,13 @@ import {
   excludeCommittedToQueuedCampaigns,
   segmentRampWarm,
   segmentNovos,
+  computeDailyQueueAvailable, // #7738
   type StoreRow,
 } from "./lib/clarice-segment.ts";
 import { loadSentOrQueuedEmails, excludeSentOrQueued } from "./clarice-build-segment.ts";
 import {
   brevoGet,
-  fetchCommittedCampaignListIds,
+  fetchQueuedAndCommittedCampaignListIds, // #7738/#7854 — 1 Promise.all cobre os 2 eixos, sem refazer status=queued
   fetchDraftCampaigns,
   warnIfCampaignQuotaLow, // #6458
   BrevoRateLimitError, // #6831
@@ -319,6 +320,14 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   // que nem entra no `--json` que a skill de fato lê. Agora vira BLOQUEIO
   // estrutural, como o crédito não-consultado já fazia.
   let committed = new Set<string>();
+  // #7738 — eixo `queued` puro (sem `sent`), separado de `committed`
+  // (queued∪sent): `buildDailySendQueue`/`computeDailyQueueAvailable` usam
+  // `queued` pra quem JÁ recebeu (`hasSendHistory`) e `committed` pra quem
+  // nunca recebeu — mesma dupla consulta que `clarice-build-segment.ts
+  // --daily` já faz (ver comentário lá, #7406). Mesmo try/catch de
+  // `committed`: se uma falhar, as duas ficam vazias e `committedLookupFailed`
+  // cobre ambas (fail-safe — nunca superestima a fila diária unificada).
+  let queued = new Set<string>();
   let committedLookupFailed = false;
   // #7007 — `err.message` sobrevive além do `console.error` (stderr de um
   // subprocesso que `clarice-envio-run.ts` nunca lê) e vira parte do bloqueio
@@ -339,7 +348,10 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     // funcionando (ou falhando) de qualquer jeito.
     warnIfCampaignQuotaLow();
     try {
-      committed = await fetchCommittedCampaignListIds(apiKey);
+      // #7854 (review): 1 chamada cobre os 2 eixos — `fetchCommittedCampaignListIds`
+      // sozinha refaria `status=queued` internamente uma 2ª vez contra um
+      // endpoint com quota apertada (100 req/hora/conta, CLAUDE.md).
+      ({ queued, committed } = await fetchQueuedAndCommittedCampaignListIds(apiKey));
     } catch (err) {
       committedLookupFailed = true;
       committedLookupError = err instanceof Error ? err.message : String(err);
@@ -378,6 +390,16 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   // #4787: composição por safra da MESMA fila que `availableFirstSend` conta
   // — alimenta o gatilho proativo de inversão de safra em buildWaveProposal.
   const availableFirstSendByCohort = summarizeAvailableFirstSendByCohort(availableFirstSendRows);
+  // #7738 — teto da fila DIÁRIA UNIFICADA (engajados de qualquer ciclo
+  // anterior + ramp-warm), distinta de `availableFirstSend` (só 1º-envio
+  // vitalício). Mesmo guard `sent-or-queued.json` cycle-wide do #5395
+  // aplicado ANTES de `computeDailyQueueAvailable` — sem isso reintroduziria
+  // pro eixo novo exatamente o gap que o #5395 já corrigiu pro eixo antigo.
+  const availableDailyQueue = computeDailyQueueAvailable(
+    excludeSentOrQueued(rows, sentOrQueuedEmails),
+    { queuedListIds: queued, committedListIds: committed },
+    novosCutoff?.cutoffIso ?? null,
+  );
 
   // 5. Crédito Brevo — validado ANTES de qualquer proposta de escrita.
   let brevoCredits: number | null = null;
@@ -436,6 +458,7 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     hourCellsBrt: hourTest.status === "ativo" ? hourTest.hoursBrt : undefined,
     availableFirstSend,
     availableFirstSendByCohort,
+    availableDailyQueue, // #7738
     mvBacklog: summarizeMvBacklog(rows),
     nonOpeners: measureNonOpenerExposure(rows),
     brevoCredits,
