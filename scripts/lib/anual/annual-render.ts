@@ -148,7 +148,11 @@ export function renderAnnualEmail(draft: AnnualDraft, opts: AnnualRenderOptions)
   const body: string[] = [];
 
   body.push(sectionOpen(LAYOUT.leadTop));
-  body.push(kicker(`Retrospectiva · ${opts.windowLabel}`));
+  // Kicker só "Retrospectiva" (decisão do editor, gate da 1ª edição — #7587
+  // item 10): a janela já está na intro, e `windowLabel` cai no SLUG da pasta
+  // quando ninguém passa `--window-label`, vazando "2026-aniversario" pro topo
+  // do e-mail e da página pública.
+  body.push(kicker("Retrospectiva"));
   if (draft.intro) {
     for (const p of draft.intro.split(/\n\s*\n/).map((x) => x.trim()).filter(Boolean)) {
       body.push(paragraph(p, brand, "font-size:17px;"));
