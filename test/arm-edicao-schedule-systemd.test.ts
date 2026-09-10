@@ -18,6 +18,15 @@ import {
   EDICAO_SCHEDULE_ATTESTATION_FILES,
   parseEdicaoScheduleAttestation,
 } from "../scripts/lib/edicao-schedule-attestation.ts";
+import { buildEdicaoArmInstructions } from "../scripts/overnight/setup-edicao-schedule-systemd.ts";
+
+describe("buildEdicaoArmInstructions — o que o gerador manda o operador rodar", () => {
+  it("arma via wrapper, nunca `systemctl enable` direto (senão o alarme não fica sabendo)", () => {
+    const text = buildEdicaoArmInstructions("/repo/.systemd-units");
+    assert.match(text, /arm-edicao-schedule-systemd\.ts --arm/);
+    assert.doesNotMatch(text, /systemctl --user enable/);
+  });
+});
 
 const NOW = new Date("2026-09-10T19:00:00Z");
 
@@ -72,7 +81,12 @@ describe("armEdicaoScheduleSystemd", () => {
   it("--disarm grava armed=false, e NUNCA no arquivo do Windows (regressão do clobber)", () => {
     const { deps, writes } = fakeDeps();
     armEdicaoScheduleSystemd("disarm", "/data", deps);
-    assert.equal(parseEdicaoScheduleAttestation(writes[0].content)?.armed, false);
+    assert.deepEqual(parseEdicaoScheduleAttestation(writes[0].content), {
+      machine: "helios",
+      scheduler: "systemd",
+      armed: false,
+      updatedAt: NOW.toISOString(),
+    });
     assert.ok(!writes[0].path.endsWith(EDICAO_SCHEDULE_ATTESTATION_FILES["windows-task-scheduler"]));
   });
 

@@ -19,9 +19,79 @@ import {
   isAttestationStale,
   resolveEdicaoTimerStateCrossMachine,
   pickEffectiveAttestation,
+  readEffectiveScheduleAttestation,
   EDICAO_SCHEDULE_ATTESTATION_FILES,
   ATTESTATION_STALE_MS,
 } from "../scripts/lib/edicao-schedule-attestation.ts";
+
+describe("readEffectiveScheduleAttestation — o fio que o alarme usa, contra arquivos reais", () => {
+  const now = new Date("2026-09-10T19:00:00Z");
+  const write = (dir: string, file: string, content: string) => writeFileSync(join(dir, file), content, "utf8");
+  const WIN = EDICAO_SCHEDULE_ATTESTATION_FILES["windows-task-scheduler"];
+  const LNX = EDICAO_SCHEDULE_ATTESTATION_FILES.systemd;
+
+  function withDir(fn: (dir: string) => void) {
+    const dir = mkdtempSync(join(tmpdir(), "edicao-att-"));
+    try {
+      fn(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("lê OS DOIS arquivos: Windows armado + Linux desarmado → efetivo armado (regressão do clobber, #7036)", () => {
+    withDir((dir) => {
+      write(dir, WIN, JSON.stringify(buildEdicaoScheduleAttestation("NEO", "windows-task-scheduler", true, now)));
+      write(dir, LNX, JSON.stringify(buildEdicaoScheduleAttestation("helios", "systemd", false, now)));
+      const r = readEffectiveScheduleAttestation(dir, now);
+      assert.equal(r.effective?.armed, true);
+      assert.equal(r.effective?.scheduler, "windows-task-scheduler");
+      assert.equal(resolveEdicaoTimerStateCrossMachine("disabled", r.effective, now), "armed");
+    });
+  });
+
+  it("só o arquivo do systemd armado também é lido (o Linux conta)", () => {
+    withDir((dir) => {
+      write(dir, LNX, JSON.stringify(buildEdicaoScheduleAttestation("helios", "systemd", true, now)));
+      assert.equal(readEffectiveScheduleAttestation(dir, now).effective?.scheduler, "systemd");
+    });
+  });
+
+  it("diretório vazio → nada efetivo, nada reportado", () => {
+    withDir((dir) => {
+      assert.deepEqual(readEffectiveScheduleAttestation(dir, now), { effective: null, stale: [], unreadable: [], mismatched: [] });
+    });
+  });
+
+  it("marcador no arquivo ERRADO (scheduler não bate) é descartado e reportado", () => {
+    withDir((dir) => {
+      write(dir, WIN, JSON.stringify(buildEdicaoScheduleAttestation("helios", "systemd", true, now)));
+      const r = readEffectiveScheduleAttestation(dir, now);
+      assert.equal(r.effective, null);
+      assert.deepEqual(r.mismatched, [join(dir, WIN)]);
+    });
+  });
+
+  it("corrompido → reportado como ilegível, não vira veredito", () => {
+    withDir((dir) => {
+      write(dir, LNX, "{not json");
+      const r = readEffectiveScheduleAttestation(dir, now);
+      assert.equal(r.effective, null);
+      assert.deepEqual(r.unreadable, [join(dir, LNX)]);
+    });
+  });
+
+  it("stale → ignorado na decisão mas REPORTADO (o corte de 90 dias não pode ser silencioso)", () => {
+    withDir((dir) => {
+      const old = new Date(now.getTime() - ATTESTATION_STALE_MS - 1000);
+      write(dir, WIN, JSON.stringify(buildEdicaoScheduleAttestation("NEO", "windows-task-scheduler", true, old)));
+      const r = readEffectiveScheduleAttestation(dir, now);
+      assert.equal(r.effective, null);
+      assert.equal(r.stale.length, 1);
+      assert.equal(r.stale[0].machine, "NEO");
+    });
+  });
+});
 
 describe("pickEffectiveAttestation — um marcador por agendador", () => {
   const now = new Date("2026-09-10T19:00:00Z");
@@ -45,6 +115,13 @@ describe("pickEffectiveAttestation — um marcador por agendador", () => {
   it("armado STALE é ignorado; sobra o desarmado válido", () => {
     const staleArmed = buildEdicaoScheduleAttestation("NEO", "windows-task-scheduler", true, new Date(now.getTime() - ATTESTATION_STALE_MS - 1000));
     assert.equal(pickEffectiveAttestation([staleArmed, linuxDisarmed], now), linuxDisarmed);
+  });
+
+  it("os dois stale → null", () => {
+    const old = new Date(now.getTime() - ATTESTATION_STALE_MS - 1000);
+    const a = buildEdicaoScheduleAttestation("NEO", "windows-task-scheduler", true, old);
+    const b = buildEdicaoScheduleAttestation("helios", "systemd", true, old);
+    assert.equal(pickEffectiveAttestation([a, b], now), null);
   });
 
   it("os dois agendadores têm arquivos DISTINTOS", () => {

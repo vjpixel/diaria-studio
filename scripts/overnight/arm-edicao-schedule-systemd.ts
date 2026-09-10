@@ -86,8 +86,10 @@ export function armEdicaoScheduleSystemd(action: ArmAction, dataDir: string, dep
       message: `timer ${action === "arm" ? "armado" : "desarmado"}, mas '${dataDir}' não existe nesta máquina — atestação cross-machine NÃO gravada (ver CLAUDE.md § Setup, data/ via OneDrive).`,
     };
   }
+  // Fora do try de propósito: é função pura — se lançar, é bug de código e
+  // deve estourar alto, não virar "falha de escrita best-effort".
+  const attestation = buildEdicaoScheduleAttestation(deps.machine, "systemd", action === "arm", deps.now);
   try {
-    const attestation = buildEdicaoScheduleAttestation(deps.machine, "systemd", action === "arm", deps.now);
     deps.writeFile(attestationPath, JSON.stringify(attestation));
   } catch (e) {
     return {

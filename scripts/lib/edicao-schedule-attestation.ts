@@ -46,6 +46,9 @@
  * @see scripts/overnight/arm-edicao-schedule-systemd.ts (writer Linux)
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
 export type EdicaoScheduleScheduler = "windows-task-scheduler" | "systemd";
 
 /** Nome do marcador de cada agendador, relativo a `data/` — ver docstring
@@ -146,6 +149,54 @@ export function pickEffectiveAttestation(
     (a): a is EdicaoScheduleAttestation => a !== null && !isAttestationStale(a, now),
   );
   return valid.find((a) => a.armed) ?? valid[0] ?? null;
+}
+
+export interface EffectiveScheduleAttestationRead {
+  /** Resultado de `pickEffectiveAttestation` sobre os marcadores aceitos. */
+  effective: EdicaoScheduleAttestation | null;
+  /** Marcadores válidos porém stale — descartados pela decisão, mas o caller
+   * LOGA: sem isso o corte de 90 dias derruba um "armado" em silêncio. */
+  stale: EdicaoScheduleAttestation[];
+  /** Arquivo existe mas não parseia (JSON corrompido/schema errado). */
+  unreadable: string[];
+  /** Marcador com `scheduler` que não bate com o arquivo onde estava — a
+   * premissa "cada lado no próprio arquivo" quebrou; descartado. */
+  mismatched: string[];
+}
+
+/**
+ * Lê o marcador de CADA agendador em `dataDir` e reduz a um efetivo. É o
+ * fio que o alarme usa — extraído do script I/O pra ser testável contra
+ * arquivos reais. Nunca lança: ausente é o caso comum e fica fora de todas
+ * as listas; o resto é reportado pro caller logar.
+ */
+export function readEffectiveScheduleAttestation(dataDir: string, now: Date): EffectiveScheduleAttestationRead {
+  const accepted: EdicaoScheduleAttestation[] = [];
+  const result: EffectiveScheduleAttestationRead = { effective: null, stale: [], unreadable: [], mismatched: [] };
+  for (const [scheduler, file] of Object.entries(EDICAO_SCHEDULE_ATTESTATION_FILES) as Array<
+    [EdicaoScheduleScheduler, string]
+  >) {
+    const path = join(dataDir, file);
+    if (!existsSync(path)) continue;
+    let attestation: EdicaoScheduleAttestation | null;
+    try {
+      attestation = parseEdicaoScheduleAttestation(readFileSync(path, "utf8"));
+    } catch {
+      attestation = null;
+    }
+    if (attestation === null) {
+      result.unreadable.push(path);
+      continue;
+    }
+    if (attestation.scheduler !== scheduler) {
+      result.mismatched.push(path);
+      continue;
+    }
+    if (isAttestationStale(attestation, now)) result.stale.push(attestation);
+    accepted.push(attestation);
+  }
+  result.effective = pickEffectiveAttestation(accepted, now);
+  return result;
 }
 
 /**

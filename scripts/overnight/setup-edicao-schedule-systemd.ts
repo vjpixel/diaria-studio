@@ -55,6 +55,23 @@ export function generateEdicaoSystemdUnits(repoRootAbs: string, outDirAbs: strin
   return [servicePath, timerPath];
 }
 
+/**
+ * Instruções de armamento impressas após gerar. Armar passa pelo wrapper
+ * `arm-edicao-schedule-systemd.ts` (#7036) — `systemctl --user enable --now`
+ * direto arma sem publicar a atestação cross-machine.
+ */
+export function buildEdicaoArmInstructions(outDirAbs: string): string {
+  return (
+    "\nARMAR (ação manual na máquina real, fora do escopo desta geração):\n" +
+    "  mkdir -p ~/.config/systemd/user\n" +
+    `  cp ${outDirAbs}/${EDICAO_UNIT_NAME}.service ${outDirAbs}/${EDICAO_UNIT_NAME}.timer ~/.config/systemd/user/\n` +
+    "  systemctl --user daemon-reload\n" +
+    "  npx tsx scripts/overnight/arm-edicao-schedule-systemd.ts --arm   # nunca `systemctl enable` direto (#7036)\n" +
+    "\nVerificar depois de armado:\n" +
+    `  systemctl --user list-timers ${EDICAO_UNIT_NAME}.timer\n`
+  );
+}
+
 export function main(argv: string[], repoRootAbs: string, execNodeVersion: string = process.version): number {
   let outDirArg: string | undefined;
   try {
@@ -69,15 +86,7 @@ export function main(argv: string[], repoRootAbs: string, execNodeVersion: strin
 
   console.log(`Edição diária agendada (#2068) -> ${written.length} arquivo(s) gerado(s) em ${outDirAbs}:\n`);
   for (const p of written) console.log(`  ${p}`);
-  console.log(
-    "\nARMAR (ação manual na máquina real, fora do escopo desta geração):\n" +
-      "  mkdir -p ~/.config/systemd/user\n" +
-      `  cp ${outDirAbs}/${EDICAO_UNIT_NAME}.service ${outDirAbs}/${EDICAO_UNIT_NAME}.timer ~/.config/systemd/user/\n` +
-      "  systemctl --user daemon-reload\n" +
-      `  systemctl --user enable --now ${EDICAO_UNIT_NAME}.timer\n` +
-      "\nVerificar depois de armado:\n" +
-      `  systemctl --user list-timers ${EDICAO_UNIT_NAME}.timer\n`,
-  );
+  console.log(buildEdicaoArmInstructions(outDirAbs));
 
   const nodeCheck = checkNodeVersion(execNodeVersion);
   if (!nodeCheck.ok) {
