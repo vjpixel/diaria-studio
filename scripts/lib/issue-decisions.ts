@@ -42,7 +42,7 @@
 import { spawnSync } from "node:child_process";
 import { isMainModule } from "./cli-args.ts";
 
-export type SessionKind = "continuo" | "overnight" | "develop";
+export type SessionKind = "continuo" | "overnight" | "develop" | "interactive";
 
 /** Payload estruturado de uma decisão do editor registrada num comentário. */
 export interface IssueDecision {
@@ -74,16 +74,32 @@ export function formatDecisionMarker(opts: IssueDecision): string {
   return `${MARKER_PREFIX}${encoded}${MARKER_SUFFIX}`;
 }
 
-function isValidDecision(value: unknown): value is IssueDecision {
+const KNOWN_DECISION_SESSION_KINDS: readonly SessionKind[] = [
+  "continuo",
+  "overnight",
+  "develop",
+  "interactive",
+];
+
+/** Formato do payload OK (todos os campos exceto `sessao` presentes e do
+ * tipo certo), independente de `sessao` bater com o enum conhecido — usado
+ * pra distinguir "produtor legítimo com valor de `sessao` não previsto" de
+ * "payload genuinamente malformado" no `console.warn` de `parseDecisionMarkers`
+ * (#7853). */
+function hasValidDecisionShape(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
   return (
     typeof v.decided_at === "string" &&
     v.decided_at.length > 0 &&
     typeof v.pergunta === "string" &&
-    typeof v.resposta === "string" &&
-    (v.sessao === "continuo" || v.sessao === "overnight" || v.sessao === "develop")
+    typeof v.resposta === "string"
   );
+}
+
+function isValidDecision(value: unknown): value is IssueDecision {
+  if (!hasValidDecisionShape(value)) return false;
+  return (KNOWN_DECISION_SESSION_KINDS as readonly unknown[]).includes(value.sessao);
 }
 
 /** Extrai TODOS os marcadores válidos de uma lista de corpos de comentário.
@@ -108,7 +124,22 @@ export function parseDecisionMarkers(commentsBodies: readonly string[]): IssueDe
     } catch {
       continue; // marcador malformado (base64 ou JSON inválido) — ignora, não lança
     }
-    if (isValidDecision(parsed)) decisions.push(parsed);
+    if (isValidDecision(parsed)) {
+      decisions.push(parsed);
+      continue;
+    }
+    // Payload por outro lado válido (todos os campos certos), só `sessao`
+    // não bate com o enum conhecido: produtor legítimo com valor não
+    // previsto (#7853), diferente de base64/JSON corrompido acima — que
+    // segue silencioso. Este caso ganha warn pra não repetir o gap que
+    // fez `sessao: "interactive"` ser descartado por meses sem sinal.
+    if (hasValidDecisionShape(parsed) && typeof parsed.sessao === "string") {
+      console.warn(
+        `[issue-decisions] marcador decisao-editor descartado: sessao "${parsed.sessao}" ` +
+          `fora do enum conhecido (${KNOWN_DECISION_SESSION_KINDS.join(", ")}) — payload ` +
+          "por outro lado válido.",
+      );
+    }
   }
   return decisions;
 }
