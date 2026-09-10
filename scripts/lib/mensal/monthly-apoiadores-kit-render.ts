@@ -40,7 +40,7 @@
  * `draftToEmail`), pelo mesmo racional do #4593: são funções sobre CONTEÚDO,
  * sem nada de ESP na forma.
  */
-import { draftToEmail, type MonthlyUtmProfile } from "./monthly-render.ts";
+import { draftToEmail, splitByLabels, normalizeLabel, type MonthlyUtmProfile } from "./monthly-render.ts";
 import { filterDraftForApoiadores } from "./monthly-draft-filter.ts";
 import {
   MENSAL_APOIADORES_KIT_UTM_SOURCE,
@@ -97,4 +97,90 @@ export function draftToEmailApoiadoresKit(
     eiaPrevResultLine,
     APOIADORES_KIT_UTM_PROFILE,
   );
+}
+
+// ── Subject próprio (#7867 item 3) ──────────────────────────────────────
+//
+// Até aqui o canal herdava `_internal/02-chosen-subject.txt`, compartilhado
+// com o envio Clarice — cujo formato é `diar.ia.br | {Mês} {Ano} — {ângulo}`,
+// pensado pro produto Clarice, não pro produto "Retrospectiva do Mês" que
+// este canal vende aos apoiadores Mantenedor/Patrono. Editor reescreveu à
+// mão no painel do Kit em 2608-09 exatamente por esse descompasso.
+//
+// Formato novo, gerado sem depender do arquivo compartilhado:
+// "Retrospectiva de {mês}: {título do Destaque 1}".
+
+const PT_BR_MONTH_NAMES_LOWER = [
+  "janeiro",
+  "fevereiro",
+  "março",
+  "abril",
+  "maio",
+  "junho",
+  "julho",
+  "agosto",
+  "setembro",
+  "outubro",
+  "novembro",
+  "dezembro",
+] as const;
+
+/**
+ * Extrai só o TÍTULO (o H2 que `renderDestaque` monta) do destaque `n` do
+ * draft, sem montar HTML — usado exclusivamente pela derivação de subject
+ * abaixo. Não é o parser canônico do render (esse é `renderDestaque` em
+ * `monthly-render.ts`, que faz a mesma extração como parte de montar o
+ * bloco completo); duplicar aqui as ~5 linhas de extração de título evita
+ * acoplar a derivação de subject à assinatura de `renderDestaque` (que
+ * devolve HTML pronto, não a string do título isolada).
+ */
+export function extractDestaqueTitle(draft: string, n: number): string | null {
+  const sections = splitByLabels(draft.replace(/\r\n/g, "\n"));
+  for (const raw of sections) {
+    const chunk = raw.trim();
+    if (!chunk) continue;
+    const lines = chunk.split("\n");
+    const label = normalizeLabel(lines[0]);
+    if (!new RegExp(`^DESTAQUE\\s+${n}\\b`).test(label)) continue;
+    let i = 1;
+    while (i < lines.length && !lines[i].trim()) i++;
+    if (i >= lines.length) return null;
+    const title = lines[i]
+      .trim()
+      .replace(/^\*\*+/, "")
+      .replace(/\*\*+$/, "")
+      .trim();
+    return title || null;
+  }
+  return null;
+}
+
+/**
+ * Deriva o subject próprio deste canal (#7867 item 3) — nunca lê
+ * `02-chosen-subject.txt`. "{tema}" vem do TÍTULO do Destaque 1 (a frase
+ * editorial completa), não do rótulo curto de kicker ("BRASIL", "AGENTES")
+ * — um kicker sozinho ("Retrospectiva de agosto: AGENTES") é ruim como
+ * subject; o título já é a frase pensada pra atrair clique.
+ *
+ * Lança se o Destaque 1 não puder ser localizado no draft (mês inválido, ou
+ * draft sem seção `DESTAQUE 1`) — um subject vazio/genérico num canal pago
+ * não é caso pra fallback silencioso. Se o D1 der subject ruim com
+ * frequência, é decisão de produto do editor (documentado na issue #7867),
+ * não algo pra este código truncar/reescrever sozinho.
+ */
+export function deriveApoiadoresKitSubject(draft: string, yymm: string): string {
+  const mm = Number(yymm.slice(2, 4));
+  const monthName = PT_BR_MONTH_NAMES_LOWER[mm - 1];
+  if (!monthName) {
+    throw new Error(`deriveApoiadoresKitSubject: yymm inválido "${yymm}" — não deriva mês por extenso.`);
+  }
+  const title = extractDestaqueTitle(draft, 1);
+  if (!title) {
+    throw new Error(
+      "deriveApoiadoresKitSubject: não encontrei o título do Destaque 1 no draft — sem ele não há subject " +
+        'seguro a gerar (nunca cai num fallback silencioso num canal pago). Confira se o draft tem a seção ' +
+        '"DESTAQUE 1 | ..." com o título na linha seguinte ao header.',
+    );
+  }
+  return `Retrospectiva de ${monthName}: ${title}`;
 }

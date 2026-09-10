@@ -28,6 +28,16 @@
  * `/diaria-mensal-apoiadores`), que chama `renderMonthlyApoiadoresKitEmail`
  * internamente.
  *
+ * ## Subject próprio, não herdado (#7867 item 3)
+ *
+ * Este canal NÃO lê mais `_internal/02-chosen-subject.txt` (compartilhado
+ * com o envio Clarice, formato `diar.ia.br | {Mês} {Ano} — {ângulo}`).
+ * `deriveApoiadoresKitSubject` (`lib/mensal/monthly-apoiadores-kit-render.ts`)
+ * gera `"Retrospectiva de {mês}: {título do Destaque 1}"` a partir do próprio
+ * `draft.md` — reflete o nome do produto pago ("Retrospectiva do Mês"), não
+ * o canal Clarice. `02-chosen-subject.txt` continua servindo o Clarice sem
+ * mudança.
+ *
  * Uso:
  *   npx tsx scripts/render-monthly-apoiadores-kit.ts --cycle 2607-08
  *
@@ -41,7 +51,11 @@
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { draftToEmailApoiadoresKit, APOIADORES_KIT_UTM_PROFILE } from "./lib/mensal/monthly-apoiadores-kit-render.ts";
+import {
+  draftToEmailApoiadoresKit,
+  deriveApoiadoresKitSubject,
+  APOIADORES_KIT_UTM_PROFILE,
+} from "./lib/mensal/monthly-apoiadores-kit-render.ts";
 import { parseEiaLegend, captionForGenerator } from "./lib/mensal/monthly-render.ts";
 import { relinkMonthlyEditionHtml } from "./monthly-relink-to-diaria.ts"; // #4048 (mesmo relink dos demais canais)
 import { isMainModule } from "./lib/cli-args.ts";
@@ -75,9 +89,6 @@ export function renderMonthlyApoiadoresKitEmail(cycle: string): RenderedMonthlyA
   }
   const draft = readFileSync(draftPath, "utf8");
 
-  const chosenSubjectPath = resolve(monthlyDir, "_internal", "02-chosen-subject.txt");
-  const chosenSubject = existsSync(chosenSubjectPath) ? readFileSync(chosenSubjectPath, "utf8").trim() : null;
-
   const images = readPublicImages(monthlyDir);
   const missingImages = missingImageKeys(images);
   if (missingImages.length) {
@@ -106,7 +117,7 @@ export function renderMonthlyApoiadoresKitEmail(cycle: string): RenderedMonthlyA
 
   let { subject, previewText, html } = draftToEmailApoiadoresKit(
     draft,
-    chosenSubject,
+    null, // #7867 item 3: nunca mais 02-chosen-subject.txt — subject é sobrescrito abaixo com o formato próprio do canal.
     yymm,
     eiaImageUrlA,
     eiaImageUrlB,
@@ -116,6 +127,13 @@ export function renderMonthlyApoiadoresKitEmail(cycle: string): RenderedMonthlyA
     livrosImageUrl,
     null, // eiaPrevResultLine: opt-in, não plugado nesta variante (mesmo estado do render Brevo)
   );
+
+  // #7867 item 3: subject GERADO por este canal — "Retrospectiva de {mês}:
+  // {título do D1}" — não herdado de `_internal/02-chosen-subject.txt`
+  // (compartilhado com o envio Clarice, formato "diar.ia.br | {Mês} {Ano} —
+  // ..."). Lança se o D1 não puder ser localizado — subject vazio/genérico
+  // num canal pago não é caso pra fallback silencioso.
+  subject = deriveApoiadoresKitSubject(draft, yymm);
 
   // #4048: mesmo pós-processo dos demais canais — reescreve destaques pra
   // apontar pra edição diária de origem, com sourceOverride pra não vazar

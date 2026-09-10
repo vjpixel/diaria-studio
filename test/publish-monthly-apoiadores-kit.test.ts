@@ -76,9 +76,14 @@ describe("#7633 — buildApoiadoresKitBroadcastInput", () => {
     assert.equal(input.description, "diar.ia.br mensal apoiadores — 2607-08");
   });
 
-  it("send_at é SEMPRE null — rascunho, nunca agenda", () => {
+  it("send_at é null por padrão — rascunho, nunca agenda sem --schedule", () => {
     const input = buildApoiadoresKitBroadcastInput(CONTENT, "2607-08", AUDIENCIA);
     assert.equal(input.send_at, null);
+  });
+
+  it("#7867 item 1: send_at recebe o horário passado quando scheduleAt é dado", () => {
+    const input = buildApoiadoresKitBroadcastInput(CONTENT, "2607-08", AUDIENCIA, "2026-09-15T10:00:00-03:00");
+    assert.equal(input.send_at, "2026-09-15T10:00:00-03:00");
   });
 
   it("subscriber_filter é SEMPRE a tag resolvida — nunca vazio (vazio = base inteira, #6126)", () => {
@@ -185,6 +190,9 @@ describe("#7633 — main()", () => {
       assert.equal(spy.created.length, 1);
       assert.equal(spy.created[0].send_at, null);
       assert.deepEqual(spy.created[0].subscriber_filter, [{ all: [{ type: "tag", ids: [42] }] }]);
+      // #7867 item 2: preview FIXO, nunca o `previewText` derivado do
+      // render (`FAKE_RENDERED.previewText` = "Preview de teste").
+      assert.equal(spy.created[0].preview_text, "Exclusivo para apoiadores");
       assert.equal(spy.written.length, 1);
       assert.equal(spy.written[0].state.kitBroadcastId, 999);
       assert.equal(spy.written[0].state.status, "draft_prepared");
@@ -553,6 +561,203 @@ describe("#7633 — main(): corrida de dois publishers", () => {
       await assert.rejects(() => main(root, spy.deps), /race de idempotência/);
       assert.equal(spy.created.length, 1, "os dois processos criaram rascunho — é justamente o que o erro relata");
       assert.equal(spy.written.length, 0, "não pode sobrescrever o id do outro processo em silêncio");
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── #7867 item 1 — --schedule agenda e marca "sent" direto ─────────────────
+//
+// Sem guard de data (decisão explícita do editor, #7867) — os testes abaixo
+// cobrem só o que muda: send_at agendado, status "sent" gravado sem exigir
+// --mark-sent, e o caso especial em que a audiência diverge NA MESMA rodada
+// agendada (broadcast já real na fila do Kit, não mais um rascunho inerte).
+
+describe("#7867 item 1 — main() com --schedule", () => {
+  afterEach(() => {
+    process.exit = originalExit;
+    process.argv = originalArgv;
+    delete process.env.KIT_API_KEY;
+  });
+
+  it("agenda via send_at e grava status 'sent' direto, sem exigir --mark-sent", async () => {
+    const root = mkTmpRoot();
+    const restore = silenceStderr();
+    try {
+      writePlatformConfig(root, "apoio-mensal");
+      process.env.KIT_API_KEY = "fake_key";
+      process.argv = [
+        "node",
+        "publish-monthly-apoiadores-kit.ts",
+        "--cycle",
+        "2607-08",
+        "--schedule",
+        "2026-09-15T10:00:00-03:00",
+      ];
+      mockProcessExit();
+
+      const spy = makeSpy();
+      await main(root, spy.deps);
+
+      assert.equal(exitCode, null);
+      assert.equal(spy.created.length, 1);
+      assert.equal(spy.created[0].send_at, "2026-09-15T10:00:00-03:00");
+      assert.equal(spy.written.length, 1);
+      assert.equal(spy.written[0].state.status, "sent", "--schedule dispensa o --mark-sent manual");
+      assert.equal(spy.written[0].state.sentAt, "2026-09-15T10:00:00-03:00");
+      assert.equal(spy.written[0].state.kitBroadcastId, 999);
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--schedule com --dry-run mostra o horário agendado, mas não cria nem grava nada", async () => {
+    const root = mkTmpRoot();
+    const restore = silenceStderr();
+    try {
+      writePlatformConfig(root, "apoio-mensal");
+      delete process.env.KIT_API_KEY;
+      process.argv = [
+        "node",
+        "publish-monthly-apoiadores-kit.ts",
+        "--cycle",
+        "2607-08",
+        "--dry-run",
+        "--schedule",
+        "2026-09-15T10:00:00-03:00",
+      ];
+      mockProcessExit();
+
+      const spy = makeSpy();
+      await main(root, spy.deps);
+
+      assert.equal(exitCode, null);
+      assert.equal(spy.created.length, 0);
+      assert.equal(spy.written.length, 0);
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--schedule com data/hora inválida: exit(1), nada renderizado nem criado", async () => {
+    const root = mkTmpRoot();
+    const restore = silenceStderr();
+    try {
+      writePlatformConfig(root, "apoio-mensal");
+      process.env.KIT_API_KEY = "fake_key";
+      process.argv = [
+        "node",
+        "publish-monthly-apoiadores-kit.ts",
+        "--cycle",
+        "2607-08",
+        "--schedule",
+        "não é uma data",
+      ];
+      mockProcessExit();
+
+      const spy = makeSpy();
+      await assert.rejects(() => main(root, spy.deps), /__mocked_exit__/);
+      assert.equal(exitCode, 1);
+      assert.deepEqual(spy.renderCalls, [], "data inválida é erro de uso, nem chega a renderizar");
+      assert.equal(spy.created.length, 0);
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--schedule sem valor: exit(1) (getStringArg recusa flag vazia)", async () => {
+    const root = mkTmpRoot();
+    const restore = silenceStderr();
+    try {
+      writePlatformConfig(root, "apoio-mensal");
+      process.env.KIT_API_KEY = "fake_key";
+      process.argv = ["node", "publish-monthly-apoiadores-kit.ts", "--cycle", "2607-08", "--schedule"];
+      mockProcessExit();
+
+      const spy = makeSpy();
+      await assert.rejects(() => main(root, spy.deps), /__mocked_exit__/);
+      assert.equal(exitCode, 1);
+      assert.equal(spy.created.length, 0);
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("audiência diverge NUM broadcast --schedule: nunca marca 'sent', mesmo já agendado de verdade", async () => {
+    const root = mkTmpRoot();
+    const restore = silenceStderr();
+    try {
+      writePlatformConfig(root, "apoio-mensal");
+      process.env.KIT_API_KEY = "fake_key";
+      process.argv = [
+        "node",
+        "publish-monthly-apoiadores-kit.ts",
+        "--cycle",
+        "2607-08",
+        "--schedule",
+        "2026-09-15T10:00:00-03:00",
+      ];
+      mockProcessExit();
+
+      const spy = makeSpy({
+        getBroadcast: async () => ({ subscriber_filter: [] }),
+      });
+      await assert.rejects(() => main(root, spy.deps), /AGENDADO para 2026-09-15T10:00:00-03:00/);
+
+      assert.equal(spy.created.length, 1, "o broadcast chegou a ser criado E agendado — é o cenário do alerta");
+      assert.equal(spy.written.length, 1);
+      assert.equal(spy.written[0].state.status, "draft_prepared", "audiência errada nunca vira 'sent'");
+      assert.equal(spy.written[0].state.kitAudienceVerified, false);
+      assert.equal(spy.written[0].state.kitBroadcastId, 999);
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#7867 review (PR #7882): releitura NÃO CONFIRMÁVEL (verified:null) + --schedule NUNCA marca 'sent'", async () => {
+    // Regressão do achado do silent-failure-hunter: `verified` tem 3
+    // estados (true/false/null), e só `false` lançava antes do fix — `null`
+    // (rede falhou na releitura) caía direto no `markSent = scheduleAt !==
+    // null`, gravando "sent" sem NENHUMA confirmação de audiência. Com o
+    // fix, `markSent` exige `verified === true` estritamente.
+    const root = mkTmpRoot();
+    const restore = silenceStderr();
+    try {
+      writePlatformConfig(root, "apoio-mensal");
+      process.env.KIT_API_KEY = "fake_key";
+      process.argv = [
+        "node",
+        "publish-monthly-apoiadores-kit.ts",
+        "--cycle",
+        "2607-08",
+        "--schedule",
+        "2026-09-15T10:00:00-03:00",
+      ];
+      mockProcessExit();
+
+      const spy = makeSpy({
+        getBroadcast: async () => {
+          throw new Error("ECONNRESET");
+        },
+      });
+      await main(root, spy.deps);
+
+      assert.equal(exitCode, null, "releitura que falha na REDE não aborta — o broadcast já existe de qualquer jeito");
+      assert.equal(spy.written.length, 1);
+      assert.equal(
+        spy.written[0].state.status,
+        "draft_prepared",
+        "audiência NÃO CONFIRMADA nunca vira 'sent', mesmo com --schedule e mesmo sem divergência CONFIRMADA",
+      );
+      assert.equal(spy.written[0].state.kitAudienceVerified, null);
+      assert.equal(spy.written[0].state.sentAt, null);
     } finally {
       restore();
       rmSync(root, { recursive: true, force: true });

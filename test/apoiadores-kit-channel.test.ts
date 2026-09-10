@@ -39,9 +39,9 @@ describe("#7633 — resolveApoiadoresTagName", () => {
   });
 
   it("nome válido -> ok, com trim", () => {
-    const r = resolveApoiadoresTagName({ audience_tag: "  apoio-mensal  " });
+    const r = resolveApoiadoresTagName({ audience_tag: "  apoio-retrospectiva  " });
     assert.equal(r.ok, true);
-    if (r.ok) assert.equal(r.tagName, "apoio-mensal");
+    if (r.ok) assert.equal(r.tagName, "apoio-retrospectiva");
   });
 
   it("a razão do erro explica o modo de falha (filtro ausente = base inteira)", () => {
@@ -53,19 +53,19 @@ describe("#7633 — resolveApoiadoresTagName", () => {
 
 describe("#7633 — resolveApoiadoresTagId", () => {
   it("tag inexistente (null) -> recusa, apontando pro sync que cria a audiência", () => {
-    const r = resolveApoiadoresTagId("apoio-mensal", null);
+    const r = resolveApoiadoresTagId("apoio-retrospectiva", null);
     assert.equal(r.ok, false);
     if (!r.ok) assert.match(r.reason, /sync-apoio-mensal-tag-kit/);
   });
 
   it("id inválido (0, negativo, não-inteiro) -> recusa", () => {
     for (const bad of [0, -1, 1.5, Number.NaN]) {
-      assert.equal(resolveApoiadoresTagId("apoio-mensal", bad).ok, false, `aceitou id inválido: ${bad}`);
+      assert.equal(resolveApoiadoresTagId("apoio-retrospectiva", bad).ok, false, `aceitou id inválido: ${bad}`);
     }
   });
 
   it("id válido -> ok", () => {
-    const r = resolveApoiadoresTagId("apoio-mensal", 123);
+    const r = resolveApoiadoresTagId("apoio-retrospectiva", 123);
     assert.equal(r.ok, true);
     if (r.ok) assert.equal(r.tagId, 123);
   });
@@ -73,20 +73,20 @@ describe("#7633 — resolveApoiadoresTagId", () => {
 
 describe("#7633 — checkApoiadoresAudienceNotEmpty", () => {
   it("tag vazia -> recusa (broadcast que reporta sucesso e não entrega a ninguém)", () => {
-    const r = checkApoiadoresAudienceNotEmpty("apoio-mensal", 0);
+    const r = checkApoiadoresAudienceNotEmpty("apoio-retrospectiva", 0);
     assert.equal(r.ok, false);
     if (!r.ok) assert.match(r.reason, /VAZIA/);
   });
 
   it("contagem inválida -> recusa", () => {
-    assert.equal(checkApoiadoresAudienceNotEmpty("apoio-mensal", -3).ok, false);
-    assert.equal(checkApoiadoresAudienceNotEmpty("apoio-mensal", 1.5).ok, false);
+    assert.equal(checkApoiadoresAudienceNotEmpty("apoio-retrospectiva", -3).ok, false);
+    assert.equal(checkApoiadoresAudienceNotEmpty("apoio-retrospectiva", 1.5).ok, false);
   });
 
   it("pelo menos 1 membro -> ok", () => {
     // #7681: o `ok` passou a carregar `memberCount` — o guard devolve o número
     // que validou, em vez de exigir uma 2ª consulta pra logá-lo.
-    assert.deepEqual(checkApoiadoresAudienceNotEmpty("apoio-mensal", 1), { ok: true, memberCount: 1 });
+    assert.deepEqual(checkApoiadoresAudienceNotEmpty("apoio-retrospectiva", 1), { ok: true, memberCount: 1 });
   });
 });
 
@@ -153,7 +153,7 @@ describe("#7633 — evaluateApoiadoresBlastRadius", () => {
 });
 
 describe("#7651 — resolveApoiadoresAudience", () => {
-  const nomeOk = { ok: true, tagName: "apoio-mensal" } as const;
+  const nomeOk = { ok: true, tagName: "apoio-retrospectiva" } as const;
   const idOk = { ok: true, tagId: 42 } as const;
   // #7681: o guard de audiência passou a devolver o `memberCount` que validou.
   const membrosOk = { ok: true, memberCount: 8 } as const;
@@ -163,7 +163,7 @@ describe("#7651 — resolveApoiadoresAudience", () => {
     const audiencia = resolveApoiadoresAudience(nomeOk, idOk, membrosOk);
     assert.ok(audiencia);
     assert.equal(audiencia.tagId, 42);
-    assert.equal(audiencia.tagName, "apoio-mensal");
+    assert.equal(audiencia.tagName, "apoio-retrospectiva");
     assert.equal(audiencia.memberCount, 8, "a prova carrega o tamanho conferido, pro log do caller");
   });
 

@@ -524,6 +524,30 @@ describe("#7659 — runPublishArtigoEspecialKit: guards antes de qualquer criaç
   });
 });
 
+describe("#7867 item 2 — preview fixo sobrescreve o derivado do conteúdo", () => {
+  it("createBroadcast recebe preview_text FIXO, não a description do artigo", async () => {
+    const { rootDir, dataDir } = makeFixture();
+    let previewEnviado: string | undefined;
+    await runPublishArtigoEspecialKit({
+      ano: "2026",
+      slug: "o-agente",
+      dataDir,
+      rootDir,
+      dryRun: false,
+      force: false,
+      log: silent,
+      deps: makeDeps({
+        createBroadcast: async (input) => {
+          previewEnviado = input.preview_text ?? undefined;
+          return { id: 555 };
+        },
+      }),
+    });
+    assert.equal(previewEnviado, "Exclusivo para apoiadores");
+    assert.notEqual(previewEnviado, META.description, "não pode vazar o preview derivado do conteúdo");
+  });
+});
+
 describe("#7659 — runPublishArtigoEspecialKit: caminho feliz e idempotência", () => {
   it("cria o rascunho e grava o detalhe + o canal no state", async () => {
     const { rootDir, dataDir } = makeFixture();
