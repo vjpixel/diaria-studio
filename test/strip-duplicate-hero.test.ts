@@ -5,6 +5,8 @@ import {
   findHeroLayout,
   removeHero,
   srcOf,
+  stripArchiveHero,
+  HASH_VERIFIED_DUPLICATE_HERO_ASSETS,
 } from "../scripts/lib/strip-duplicate-hero.ts";
 
 const ID_A = "6d1c1f0e-e9a7-4421-ab47-8ea1001a2ccf";
@@ -177,4 +179,21 @@ test("removeHero não decide nada — remove mesmo se o corpo tiver outra imagem
 test("srcOf extrai o src da tag", () => {
   assert.match(srcOf(img(ID_A))!, /^https:\/\/media\.beehiiv\.com\//);
   assert.equal(srcOf("<img>"), null);
+});
+
+test("stripArchiveHero: remove hero da lista verificada por hash mesmo com asset id diferente (#7412)", () => {
+  const known = [...HASH_VERIFIED_DUPLICATE_HERO_ASSETS][0];
+  const out = stripArchiveHero(page({ heroId: known, bodyId: ID_B }));
+  assert.ok(!out.includes(known));
+  assert.ok(out.includes(ID_B));
+});
+
+test("stripArchiveHero: hero exclusivo fora da lista fica intacto", () => {
+  const html = page({ heroId: ID_A, bodyId: ID_B });
+  assert.strictEqual(stripArchiveHero(html), html);
+});
+
+test("stripArchiveHero: é idempotente", () => {
+  const once = stripArchiveHero(page());
+  assert.strictEqual(stripArchiveHero(once), once);
 });
