@@ -36,12 +36,16 @@ describe("#7722 worktree guard — regressão executável (não grep)", () => {
     assert.ok(beacon.includes("resolveWorktreeBranches"), "resolveWorktreeBranches deve continuar exportada");
   });
 
-  it("hook block-worktree-alien-commit.mjs é ESM coerente com fail-open", () => {
+  it("hook block-worktree-alien-commit.mjs é ESM coerente com fail-open (#7895: reescrito para ler payload PreToolUse real)", () => {
     const guard = fs.readFileSync(".claude/hooks/block-worktree-alien-commit.mjs", "utf8");
-    assert.ok(guard.includes('import { execSync }'), "deve importar execSync via ESM");
+    assert.ok(guard.includes('import { execFileSync }'), "deve importar execFileSync via ESM");
     assert.ok(!guard.includes('require("child_process")'), "não deve usar require CJS");
-    // Fail-open: bloqueia apenas quando há divergência confirmada; não é stub que sempre retorna blocked
-    assert.ok(guard.includes("BLOQUEADO"), "deve conter mensagem de bloqueio");
-    assert.ok(guard.includes("process.exit(1)") || guard.includes("console.error"), "deve sair 1 apenas quando bloqueado");
+    // #7895: protocolo de bloqueio passou a ser o mesmo dos hooks irmãos
+    // (JSON no stdout com hookSpecificOutput.permissionDecision: "deny"),
+    // não mais process.exit(1)/console.error — ver
+    // test/block-worktree-alien-commit-hook-sync.test.ts para a cobertura
+    // executável via payload PreToolUse real (o que este teste estático não cobre).
+    assert.ok(guard.includes("permissionDecision"), 'deve usar o protocolo JSON permissionDecision: "deny"');
+    assert.ok(guard.includes("commandHasGitCommit"), "deve gatear a lógica em git commit real, não rodar em todo Bash (#7895)");
   });
 });
