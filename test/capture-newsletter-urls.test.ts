@@ -14,6 +14,7 @@ import {
   processThreads,
   stripHtml,
   main,
+  loadAlwaysConsiderConfig,
 } from "../scripts/capture-newsletter-urls.ts";
 import type {
   CapturedThread,
@@ -380,5 +381,182 @@ describe("main() CLI integration", () => {
     assert.ok(existsSync(outPath));
     const articles = JSON.parse(readFileSync(outPath, "utf8"));
     assert.deepEqual(articles, []);
+  });
+});
+
+describe("#7662 — always_consider_senders allowlist", () => {
+  const SENDER = "7min.ai <email@newsletter.7min.ai>";
+
+  function fixtureThread(overrides: Partial<CapturedThread> = {}): CapturedThread {
+    return {
+      thread_id: "t-7662",
+      sender: SENDER,
+      subject: "7min.ai Weekly",
+      date: "2026-09-09T08:00:00Z",
+      body: [
+        // (a) tracking wrapper NOT covered by any known TRACKER_DECODERS —
+        // isTrackingUrl fires, decodeTrackerUrl does not decode it.
+        "Tracking: https://link.mail.beehiiv.com/click?url=https://example.com/article-a",
+        // (b) affiliate path
+        "Affiliate: https://go.granola.ai/partner-abc",
+        // (c) sender's own domain (auto-promo)
+        "Own edition: https://newsletter.7min.ai/edition-99",
+        // control: a normal external link, always kept regardless of allowlist
+        "External: https://example.com/normal-article",
+      ].join("\n"),
+      ...overrides,
+    };
+  }
+
+  it("sender na allowlist: as 3 URLs que seriam filtradas chegam ao pool, marcadas always_consider", () => {
+    const { articles, result } = processThreads(
+      [fixtureThread()],
+      { processed_thread_ids: [] },
+      { alwaysConsiderSenders: ["email@newsletter.7min.ai"] },
+    );
+
+    assert.equal(result.urls_filtered, 0, "nada filtrado quando o sender está na allowlist");
+    assert.equal(articles.length, 4, "as 4 URLs (3 que seriam heuristicamente filtradas + 1 normal) chegam ao pool");
+    assert.ok(articles.every((a) => a.always_consider === true));
+    assert.ok(articles.some((a) => a.url.includes("example.com/article-a")));
+    assert.ok(articles.some((a) => a.url.includes("go.granola.ai")));
+    assert.ok(articles.some((a) => a.url.includes("newsletter.7min.ai/edition-99")));
+    assert.ok(articles.some((a) => a.url.includes("example.com/normal-article")));
+
+    // Observabilidade (#7662): cada URL isenta aparece nomeada com a regra
+    // que TERIA sido aplicada — não só um contador agregado.
+    assert.equal(result.always_consider_exemptions.length, 3);
+    const rules = result.always_consider_exemptions.map((e) => e.rule).sort();
+    assert.deepEqual(rules, ["affiliate", "sender-own", "tracking"]);
+    assert.ok(result.always_consider_exemptions.every((e) => e.sender === SENDER));
+  });
+
+  it("sem allowlist: comportamento atual preservado — as 3 URLs continuam filtradas", () => {
+    const { articles, result } = processThreads(
+      [fixtureThread({ thread_id: "t-7662-no-allow" })],
+      { processed_thread_ids: [] },
+      { alwaysConsiderSenders: [] },
+    );
+
+    assert.equal(result.urls_filtered, 3, "as 3 heurísticas continuam cortando sem a allowlist");
+    assert.equal(articles.length, 1, "só a URL normal sobrevive");
+    assert.equal(articles[0].url, "https://example.com/normal-article");
+    assert.ok(articles.every((a) => a.always_consider === undefined));
+    assert.equal(result.always_consider_exemptions.length, 0);
+  });
+
+  it("sender fora da allowlist (mesmo com allowlist configurada) não é isento", () => {
+    const otherThread = fixtureThread({
+      thread_id: "t-7662-other-sender",
+      sender: "Other Newsletter <other@mail.beehiiv.com>",
+    });
+    const { articles, result } = processThreads(
+      [otherThread],
+      { processed_thread_ids: [] },
+      { alwaysConsiderSenders: ["email@newsletter.7min.ai"] },
+    );
+    // Só tracking + affiliate são filtrados aqui — o "sender-own" da fixture
+    // aponta pra newsletter.7min.ai, que não é o domínio DESTE sender, então
+    // isSenderOwnUrl nunca dispararia pra ele mesmo sem allowlist nenhuma.
+    assert.equal(result.urls_filtered, 2);
+    assert.equal(articles.length, 2);
+    assert.ok(articles.every((a) => a.always_consider === undefined));
+  });
+
+  it("decodeTrackerUrl continua rodando em always_consider — queremos a URL final, não o wrapper", () => {
+    // 7min.ai's own known tracker wrapper (track.newsletter.7min.ai/c/...) IS
+    // decoded by decodeTrackerUrl regardless of allowlist — the issue is
+    // explicit that decoding must never be skipped, allowlist or not.
+    const dest = "https://example.com/decoded-destination";
+    const encoded = Buffer.from(`x|y|${dest}`, "utf8").toString("base64");
+    const thread = fixtureThread({
+      thread_id: "t-7662-decode",
+      body: `Wrapped: https://track.newsletter.7min.ai/c/${encoded}`,
+    });
+    const { articles } = processThreads(
+      [thread],
+      { processed_thread_ids: [] },
+      { alwaysConsiderSenders: ["email@newsletter.7min.ai"] },
+    );
+    assert.ok(articles.some((a) => a.url === dest), "URL final decodificada, não o wrapper");
+  });
+
+  it("#7871 review (P3) — URL que casa 2 heurísticas ao mesmo tempo entra 1 única vez em always_consider_exemptions", () => {
+    // Casa affiliate (utm_campaign=...newsletter...) E sender-own
+    // (newsletter.7min.ai é o domínio do próprio sender) simultaneamente —
+    // antes do fix, isso gerava 2 entradas duplicadas pra mesma URL.
+    const thread = fixtureThread({
+      thread_id: "t-7871-double-match",
+      body: "Double match: https://newsletter.7min.ai/edition-100?utm_campaign=weekly_newsletter",
+    });
+    const { articles, result } = processThreads(
+      [thread],
+      { processed_thread_ids: [] },
+      { alwaysConsiderSenders: ["email@newsletter.7min.ai"] },
+    );
+    assert.ok(articles.some((a) => a.url.includes("edition-100")), "a URL ainda chega ao pool, isenta");
+    const doubleMatchExemptions = result.always_consider_exemptions.filter((e) => e.url.includes("edition-100"));
+    assert.equal(doubleMatchExemptions.length, 1, `esperava 1 entrada só, recebeu: ${JSON.stringify(doubleMatchExemptions)}`);
+  });
+});
+
+describe("#7662 — loadAlwaysConsiderConfig: nunca degrada em silêncio", () => {
+  beforeEach(() => {
+    mkdirSync(TMP_DIR, { recursive: true });
+  });
+  afterEach(() => {
+    rmSync(TMP_DIR, { recursive: true, force: true });
+  });
+
+  it("config ilegível vira config_warnings, não [] silencioso", () => {
+    const badPath = tmpFile("bad-platform-config.json");
+    writeFileSync(badPath, "{ not valid json", "utf8");
+    const { alwaysConsiderSenders, configWarnings } = loadAlwaysConsiderConfig(badPath);
+    assert.deepEqual(alwaysConsiderSenders, []);
+    assert.equal(configWarnings.length, 1);
+    assert.ok(configWarnings[0].includes("ilegível"));
+  });
+
+  it("config ausente vira config_warnings, não [] silencioso", () => {
+    const { alwaysConsiderSenders, configWarnings } = loadAlwaysConsiderConfig(tmpFile("does-not-exist.json"));
+    assert.deepEqual(alwaysConsiderSenders, []);
+    assert.equal(configWarnings.length, 1);
+    assert.ok(configWarnings[0].includes("não encontrado"));
+  });
+
+  it("sender em always_consider_senders ausente de senders[] gera warning — allowlist sem efeito é reportada, não silenciosa", () => {
+    const cfgPath = tmpFile("mismatched-platform-config.json");
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({
+        newsletter_auto_capture: {
+          senders: ["a@example.com"],
+          always_consider_senders: ["email@newsletter.7min.ai"],
+        },
+      }),
+      "utf8",
+    );
+    const { alwaysConsiderSenders, configWarnings } = loadAlwaysConsiderConfig(cfgPath);
+    assert.deepEqual(alwaysConsiderSenders, ["email@newsletter.7min.ai"]);
+    assert.equal(configWarnings.length, 1);
+    assert.ok(configWarnings[0].includes("email@newsletter.7min.ai"));
+    assert.ok(configWarnings[0].includes("senders[]"));
+  });
+
+  it("config bem-formada e consistente não gera warning", () => {
+    const cfgPath = tmpFile("ok-platform-config.json");
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({
+        newsletter_auto_capture: {
+          senders: ["email@newsletter.7min.ai"],
+          always_consider_senders: ["email@newsletter.7min.ai"],
+        },
+      }),
+      "utf8",
+    );
+    const { alwaysConsiderSenders, configWarnings } = loadAlwaysConsiderConfig(cfgPath);
+    assert.deepEqual(alwaysConsiderSenders, ["email@newsletter.7min.ai"]);
+    assert.deepEqual(configWarnings, []);
   });
 });

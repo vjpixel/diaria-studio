@@ -417,6 +417,36 @@ describe("#721 — applyScoreFilter", () => {
     const { kept } = applyScoreFilter([article], 40, hlUrls, empty);
     assert.equal(kept.length, 1);
   });
+
+  // #7662: piso de score DENTRO da edição bypassa pra sender allowlisted —
+  // mesmo tratamento que load-carry-over.ts já dá a newsletter_extracted
+  // entre edições (#1278), agora estendido ao corte intra-edição.
+  it("#7662 — always_consider bypassa o piso de score, sem checagem de título placeholder", () => {
+    const article: Article = {
+      url: "https://newsletter.7min.ai/edition-99",
+      title: "(newsletter:7min.ai)", // título sintético, nunca passaria o check de placeholder do editor_submitted
+      score: 5,
+      flag: "newsletter_extracted",
+      always_consider: true,
+    };
+    const { kept, removed, bypassed } = applyScoreFilter([article], 40, empty, empty);
+    assert.equal(kept.length, 1, "always_consider passa mesmo com título sintético/placeholder-like");
+    assert.equal(removed.length, 0);
+    assert.equal(bypassed.length, 1);
+    assert.equal(kept[0].editor_submitted_placeholder, undefined, "não é o caminho editor_submitted — nunca marca placeholder");
+  });
+
+  it("#7662 — regressão: newsletter_extracted SEM always_consider continua sujeito ao piso de score dentro da edição", () => {
+    const article: Article = {
+      url: "https://other-newsletter.example/low-score",
+      title: "(newsletter:other)",
+      score: 5,
+      flag: "newsletter_extracted",
+    };
+    const { kept, removed } = applyScoreFilter([article], 40, empty, empty);
+    assert.equal(kept.length, 0, "sem always_consider, o corte de score dentro da edição segue valendo (item 4 da issue #7662)");
+    assert.equal(removed.length, 1);
+  });
 });
 
 // ---------------------------------------------------------------------------

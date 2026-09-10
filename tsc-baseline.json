@@ -108,7 +108,7 @@
   "test/extract-hub-facts-5060.test.ts::TS2339": 5,
   "test/extract-hub-facts-5060.test.ts::TS7006": 1,
   "test/fetch-retry.test.ts::TS2531": 1,
-  "test/filter-date-window.test.ts::TS2345": 32,
+  "test/filter-date-window.test.ts::TS2345": 34,
   "test/finalize-stage1.test.ts::TS18048": 5,
   "test/format-weekly-social.test.ts::TS2345": 2,
   "test/gate-badge.test.ts::TS7016": 1,

@@ -104,6 +104,16 @@ export interface SyntheticInboxArticle {
   submitted_subject?: string;
   submitted_via?: string;
   tracker_decoded?: boolean; // #719: set when URL was decoded from a tracker
+  /**
+   * #7662: true quando o sender do e-mail está em
+   * `platform.config.json → newsletter_auto_capture.always_consider_senders`.
+   * Isenta o artigo das heurísticas de higiene (URL tracking/afiliado/
+   * domínio-próprio já aplicadas em capture-newsletter-urls.ts; janela de
+   * data em filter-date-window.ts; piso de score dentro da edição em
+   * finalize-stage1.ts) — nunca das correções (dedup, acessibilidade,
+   * regras editoriais de seção).
+   */
+  always_consider?: boolean;
 }
 
 export interface InboxBlock {
@@ -287,6 +297,20 @@ export function senderDomain(from: string): string {
   const host = (m[2] ?? m[1] ?? "").trim();
   // Remove subdomínios comuns (mail., link., etc) — fica com root domain
   return host.replace(/^(mail|link|news|hello|notify|hi)\./i, "");
+}
+
+/**
+ * #7662: extrai o endereço de e-mail completo do header From (display name
+ * entre "<" e ">", ou o header inteiro quando não há display name — retorna
+ * o mesmo endereço nos dois casos). Usado para casar contra
+ * `newsletter_auto_capture.senders[]`/`always_consider_senders[]` em
+ * platform.config.json, que listam endereços completos — `senderDomain`
+ * sozinho não diferencia dois senders no mesmo domínio de e-mail (ex: dois
+ * remetentes `@mail.beehiiv.com` distintos).
+ */
+export function senderEmail(from: string): string {
+  const m = from.match(/<([^<>]+@[^<>]+)>/) ?? from.match(/([^\s<>]+@[^\s<>]+)/);
+  return (m?.[1] ?? "").trim().toLowerCase();
 }
 
 /** True se URL pertence ao domínio do sender (auto-promo da própria newsletter).

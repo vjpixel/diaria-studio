@@ -476,41 +476,99 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
     let autoCaptureEnabled = false;
     let senders: string[] = [];
     let sinceHours = 48;
+    // #7662 item 1: janela de captura configurável por sender. Um dia sem
+    // rodar a pipeline (fim de semana, rodada pulada) tira a edição de um
+    // sender confiado da janela de 48h default — `since_hours_by_sender`
+    // (config, nunca hard-code) permite alargar só pra senders específicos
+    // sem afetar os demais.
+    let sinceHoursBySender: Record<string, number> = {};
     try {
       const cfg = JSON.parse(deps.readFile(resolve(deps.rootDir, "platform.config.json"))) as {
-        newsletter_auto_capture?: { enabled?: boolean; senders?: string[]; since_hours?: number };
+        newsletter_auto_capture?: { enabled?: boolean; senders?: string[]; since_hours?: number; since_hours_by_sender?: Record<string, number> };
       };
       const nac = cfg.newsletter_auto_capture;
       autoCaptureEnabled = nac?.enabled === true;
       senders = Array.isArray(nac?.senders) ? nac.senders : [];
       sinceHours = typeof nac?.since_hours === "number" ? nac.since_hours : 48;
+      sinceHoursBySender = nac?.since_hours_by_sender && typeof nac.since_hours_by_sender === "object" ? nac.since_hours_by_sender : {};
     } catch {
       report.note("⚠️  0b-bis: platform.config.json ilegível — pulando auto-capture de newsletters.");
     }
 
     if (autoCaptureEnabled && senders.length > 0) {
       const threadsOut = `${editionDir}/_internal/captured-newsletters.json`;
-      const fetchResult = softStep(deps, report, "fetch-newsletter-threads (0b-bis)", "scripts/fetch-newsletter-threads.ts", [
-        "--senders",
-        senders.join(","),
-        "--since-hours",
-        String(sinceHours),
-        "--out",
-        threadsOut,
-      ]);
-      if (fetchResult.result.code === 0) {
-        const summary = fetchResult.json as { threads_found?: number; threads_written?: number } | undefined;
-        logEvent(deps, opts.edition, "info", "0b-bis: newsletters capturadas", { details: summary });
+      const sendersSet = new Set(senders.map((s) => s.toLowerCase()));
+      // Nunca degradar em silêncio: sender configurado em since_hours_by_sender
+      // que não está em senders[] não tem efeito nenhum (a thread nunca é
+      // buscada) — avisar em vez de assumir que "está funcionando".
+      for (const s of Object.keys(sinceHoursBySender)) {
+        if (!sendersSet.has(s.toLowerCase())) {
+          logEvent(deps, opts.edition, "warn", `0b-bis: since_hours_by_sender inclui "${s}" ausente de senders[] — sem efeito`, { informational: true });
+        }
+      }
+      // Overrides agrupados por sender: os senders SEM override buscam na
+      // janela default numa única chamada; cada sender COM override busca
+      // isolado, na sua própria janela — fetch-newsletter-threads.ts faz
+      // merge por thread_id no mesmo --out, então múltiplas chamadas são
+      // seguras (não se sobrescrevem).
+      const overrideSenders = senders.filter((s) => typeof sinceHoursBySender[s] === "number");
+      const defaultSenders = senders.filter((s) => typeof sinceHoursBySender[s] !== "number");
+      const fetchGroups: Array<{ senders: string[]; hours: number }> = [];
+      if (defaultSenders.length > 0) fetchGroups.push({ senders: defaultSenders, hours: sinceHours });
+      for (const s of overrideSenders) fetchGroups.push({ senders: [s], hours: sinceHoursBySender[s] });
+
+      // #7871 review (PR #7871, findings inline em stage-0-run.ts:533): com
+      // múltiplos fetchGroups (overrides), o summary NUNCA pode ser "o do
+      // último grupo bem-sucedido" — isso sobrescreve (em vez de agregar) o
+      // que os grupos anteriores acharam e mascara falha PARCIAL como
+      // sucesso total quando o código de saída combinado usa OR. Agregamos
+      // threads_found/threads_written somando só os grupos que de fato
+      // tiveram sucesso, e logamos cada grupo que falhar individualmente —
+      // nunca em silêncio, mesmo quando outro grupo teve sucesso — pra não
+      // enfraquecer o guard #1756 (que compara summary.threads_found contra
+      // o conteúdo real do arquivo).
+      const groupResults: Array<{ group: { senders: string[]; hours: number }; code: number; json: { threads_found?: number; threads_written?: number } | undefined }> = [];
+      for (const group of fetchGroups) {
+        const fetchResult = softStep(deps, report, `fetch-newsletter-threads (0b-bis, ${group.hours}h)`, "scripts/fetch-newsletter-threads.ts", [
+          "--senders",
+          group.senders.join(","),
+          "--since-hours",
+          String(group.hours),
+          "--out",
+          threadsOut,
+        ]);
+        groupResults.push({ group, code: fetchResult.result.code, json: fetchResult.json as { threads_found?: number; threads_written?: number } | undefined });
+      }
+      const okGroups = groupResults.filter((g) => g.code === 0);
+      const failedGroups = groupResults.filter((g) => g.code !== 0);
+      const fetchOk = okGroups.length > 0;
+      for (const failed of failedGroups) {
+        logEvent(
+          deps,
+          opts.edition,
+          "warn",
+          `0b-bis: fetch-newsletter-threads falhou pro grupo [${failed.group.senders.join(", ")}] (${failed.group.hours}h) — falha parcial, outros grupos podem ter sucedido`,
+          { informational: true },
+        );
+      }
+      if (fetchOk) {
+        const summary = {
+          threads_found: okGroups.reduce((sum, g) => sum + (g.json?.threads_found ?? 0), 0),
+          threads_written: okGroups.reduce((sum, g) => sum + (g.json?.threads_written ?? 0), 0),
+        };
+        logEvent(deps, opts.edition, "info", "0b-bis: newsletters capturadas", {
+          details: { ...summary, groups_ok: okGroups.length, groups_failed: failedGroups.length },
+        });
         // #1756 — guard: threads_found>0 mas o arquivo ficou ausente/vazio.
         const capturedPath = resolve(deps.rootDir, threadsOut);
         const captured = deps.existsSync(capturedPath) ? deps.readFile(capturedPath).trim() : "";
-        if ((summary?.threads_found ?? 0) > 0 && (!captured || captured === "[]")) {
+        if ((summary.threads_found ?? 0) > 0 && (!captured || captured === "[]")) {
           logEvent(deps, opts.edition, "warn", "0b-bis: threads_found > 0 mas captured-newsletters.json ficou vazio/ausente — falha silenciosa do script", {
             details: summary,
           });
         }
         // Passo 5 do 0b-bis: capture-newsletter-urls.ts (não-bloqueante).
-        softStep(deps, report, "capture-newsletter-urls (0b-bis)", "scripts/capture-newsletter-urls.ts", [
+        const urlsResult = softStep(deps, report, "capture-newsletter-urls (0b-bis)", "scripts/capture-newsletter-urls.ts", [
           "--threads",
           threadsOut,
           "--out",
@@ -518,6 +576,24 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
           "--cursor",
           "data/newsletter-capture-cursor.json",
         ]);
+        // #7871 review (finding em stage-0-run.ts:539): o docstring de
+        // CaptureResult.config_warnings promete que este script propaga
+        // config_warnings/always_consider_exemptions pro log/relatório —
+        // sem isso a observabilidade "por URL e por regra" pedida pela
+        // issue #7662 ficava presa em stderr de um passo que roda em
+        // background, nunca chegando em data/run-log.jsonl (o que
+        // /diaria-log lê).
+        const urlsJson = urlsResult.json as { config_warnings?: string[]; always_consider_exemptions?: Array<{ url: string; sender: string; rule: string }> } | undefined;
+        if (urlsJson?.config_warnings && urlsJson.config_warnings.length > 0) {
+          logEvent(deps, opts.edition, "warn", "0b-bis: capture-newsletter-urls reportou config_warnings", {
+            details: { config_warnings: urlsJson.config_warnings },
+          });
+        }
+        if (urlsJson?.always_consider_exemptions && urlsJson.always_consider_exemptions.length > 0) {
+          logEvent(deps, opts.edition, "info", "0b-bis: always_consider isentou URLs de heurísticas de higiene", {
+            details: { count: urlsJson.always_consider_exemptions.length, exemptions: urlsJson.always_consider_exemptions },
+          });
+        }
       } else {
         logEvent(deps, opts.edition, "info", "0b-bis skipped: fetch-newsletter-threads falhou", { informational: true });
       }

@@ -779,4 +779,217 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     // Guard #1756: threads_found>0 + arquivo ausente -> warn loud via log-event.
     assert.ok(logEventCalls.some((args) => args.includes("warn") && args.some((a) => a.includes("threads_found"))));
   });
+
+  it("#7662 item 1 — since_hours_by_sender dispara UMA chamada extra de fetch-newsletter-threads, isolada, com a janela do override", async () => {
+    const { exec, calls } = makeFakeExec(
+      happyExecHandlers({
+        "fetch-newsletter-threads.ts": () => ok(JSON.stringify({ threads_found: 1, threads_written: 1, skipped_no_body: 0 })),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const deps = baseDeps({
+      exec,
+      execAsync,
+      existsSync: () => true, // captured-newsletters.json presente -> #1756 guard não dispara
+      readFile: (p) => {
+        if (p.endsWith("platform.config.json")) {
+          return JSON.stringify({
+            newsletter_auto_capture: {
+              enabled: true,
+              senders: ["email@newsletter.7min.ai", "b@example.com"],
+              since_hours: 48,
+              since_hours_by_sender: { "email@newsletter.7min.ai": 168 },
+            },
+          });
+        }
+        return "[]"; // captured-newsletters.json body (não usado por este teste)
+      },
+    });
+
+    const result = await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      deps,
+    );
+
+    assert.equal(result.code, 0);
+    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads"));
+    assert.equal(fetchCalls.length, 2, "1 chamada pros senders default + 1 isolada pro sender com override");
+
+    const defaultCall = fetchCalls.find((c) => c.args.includes("48"));
+    const overrideCall = fetchCalls.find((c) => c.args.includes("168"));
+    assert.ok(defaultCall, "chamada com since-hours default (48) existe");
+    assert.ok(overrideCall, "chamada com since-hours do override (168) existe");
+    assert.ok(defaultCall!.args[defaultCall!.args.indexOf("--senders") + 1].includes("b@example.com"));
+    assert.equal(overrideCall!.args[overrideCall!.args.indexOf("--senders") + 1], "email@newsletter.7min.ai");
+  });
+
+  it("#7662 — since_hours_by_sender com sender ausente de senders[] gera warn via log-event, nunca falha em silêncio", async () => {
+    const { exec, calls } = makeFakeExec(happyExecHandlers());
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const logEventCalls: string[][] = [];
+    const deps = baseDeps({
+      exec: (script, args) => {
+        if (script.includes("log-event")) logEventCalls.push(args);
+        return exec(script, args);
+      },
+      execAsync,
+      existsSync: () => true,
+      readFile: (p) => {
+        if (p.endsWith("platform.config.json")) {
+          return JSON.stringify({
+            newsletter_auto_capture: {
+              enabled: true,
+              senders: ["b@example.com"],
+              since_hours: 48,
+              since_hours_by_sender: { "email@newsletter.7min.ai": 168 }, // não está em senders[]
+            },
+          });
+        }
+        return "[]";
+      },
+    });
+
+    const result = await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      deps,
+    );
+
+    assert.equal(result.code, 0);
+    assert.ok(
+      logEventCalls.some((args) => args.includes("warn") && args.some((a) => a.includes("since_hours_by_sender"))),
+      "warning explícito, não silêncio — allowlist/override sem efeito precisa aparecer no log",
+    );
+    // Sem override efetivo (sender ausente de senders[]), só a chamada default deve rodar.
+    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads"));
+    assert.equal(fetchCalls.length, 1);
+  });
+
+  it("#7871 — multi-grupo (since_hours_by_sender): summary AGREGA os grupos bem-sucedidos, falha parcial não vira sucesso total silencioso", async () => {
+    const { exec, calls } = makeFakeExec(
+      happyExecHandlers({
+        "fetch-newsletter-threads.ts": (args) => {
+          // Grupo default (48h) sucede; grupo do override (168h) falha.
+          if (args.includes("48")) return ok(JSON.stringify({ threads_found: 5, threads_written: 5, skipped_no_body: 0 }));
+          return fail(1, "gmail rate limit");
+        },
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const logEventCalls: string[][] = [];
+    const deps = baseDeps({
+      exec: (script, args) => {
+        if (script.includes("log-event")) logEventCalls.push(args);
+        return exec(script, args);
+      },
+      execAsync,
+      existsSync: () => true, // captured-newsletters.json presente -> #1756 guard não dispara
+      readFile: (p) => {
+        if (p.endsWith("platform.config.json")) {
+          return JSON.stringify({
+            newsletter_auto_capture: {
+              enabled: true,
+              senders: ["email@newsletter.7min.ai", "b@example.com"],
+              since_hours: 48,
+              since_hours_by_sender: { "email@newsletter.7min.ai": 168 },
+            },
+          });
+        }
+        return "[]";
+      },
+    });
+
+    const result = await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      deps,
+    );
+
+    assert.equal(result.code, 0, "falha PARCIAL de 1 grupo nunca aborta o Stage 0 (fail-soft)");
+    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads"));
+    assert.equal(fetchCalls.length, 2, "os 2 grupos rodam, mesmo um deles falhando");
+
+    // O grupo que falhou é logado INDIVIDUALMENTE — nunca em silêncio.
+    const failWarn = logEventCalls.find(
+      (args) => args.includes("warn") && args.some((a) => a.includes("fetch-newsletter-threads falhou pro grupo")),
+    );
+    assert.ok(failWarn, `esperava warn nomeando o grupo que falhou, recebeu: ${JSON.stringify(logEventCalls)}`);
+
+    // O summary "0b-bis: newsletters capturadas" reflete a SOMA dos grupos
+    // bem-sucedidos (só o default, 5 threads) — nunca zerado/sobrescrito
+    // pelo grupo que falhou depois dele no array.
+    const successLog = logEventCalls.find((args) => args.includes("info") && args.some((a) => a.includes("newsletters capturadas")));
+    assert.ok(successLog, "esperava log de sucesso agregado mesmo com falha parcial");
+    const detailsIdx = successLog!.indexOf("--details");
+    assert.ok(detailsIdx !== -1);
+    const details = JSON.parse(successLog![detailsIdx + 1]) as { threads_found?: number; groups_ok?: number; groups_failed?: number };
+    assert.equal(details.threads_found, 5, "soma dos grupos OK — sem perder o resultado do grupo default por causa do grupo do override falhar depois");
+    assert.equal(details.groups_ok, 1);
+    assert.equal(details.groups_failed, 1);
+
+    // Falha parcial não bloqueia o passo seguinte (capture-newsletter-urls.ts
+    // roda mesmo assim, sobre o que foi capturado pelos grupos OK).
+    assert.ok(calls.some((c) => c.script.includes("capture-newsletter-urls")));
+  });
+
+  it("#7871 — config_warnings/always_consider_exemptions de capture-newsletter-urls.ts propagam pro log estruturado (não ficam presos em stderr)", async () => {
+    const { exec, calls } = makeFakeExec(
+      happyExecHandlers({
+        "fetch-newsletter-threads.ts": () => ok(JSON.stringify({ threads_found: 2, threads_written: 2, skipped_no_body: 0 })),
+        "capture-newsletter-urls.ts": () =>
+          ok(
+            JSON.stringify({
+              processed: 1,
+              skipped_already: 0,
+              articles_produced: 2,
+              urls_extracted: 2,
+              urls_filtered: 0,
+              always_consider_exemptions: [{ url: "https://newsletter.7min.ai/edition-99", sender: "Newsletter <email@newsletter.7min.ai>", rule: "sender-own" }],
+              config_warnings: ['always_consider_senders inclui "x@example.com" que não está em senders[]'],
+            }),
+          ),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const logEventCalls: string[][] = [];
+    const deps = baseDeps({
+      exec: (script, args) => {
+        if (script.includes("log-event")) logEventCalls.push(args);
+        return exec(script, args);
+      },
+      execAsync,
+      existsSync: () => true,
+      readFile: (p) => {
+        if (p.endsWith("platform.config.json")) {
+          return JSON.stringify({
+            newsletter_auto_capture: {
+              enabled: true,
+              senders: ["email@newsletter.7min.ai"],
+              since_hours: 48,
+              always_consider_senders: ["email@newsletter.7min.ai"],
+            },
+          });
+        }
+        return "[]";
+      },
+    });
+
+    const result = await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      deps,
+    );
+
+    assert.equal(result.code, 0);
+    assert.ok(calls.some((c) => c.script.includes("capture-newsletter-urls")));
+
+    const warnLog = logEventCalls.find((args) => args.includes("warn") && args.some((a) => a.includes("config_warnings")));
+    assert.ok(warnLog, `esperava log-event warn com config_warnings, recebeu: ${JSON.stringify(logEventCalls)}`);
+    const warnDetailsIdx = warnLog!.indexOf("--details");
+    const warnDetails = JSON.parse(warnLog![warnDetailsIdx + 1]) as { config_warnings: string[] };
+    assert.ok(warnDetails.config_warnings.some((w) => w.includes("x@example.com")));
+
+    const exemptionsLog = logEventCalls.find((args) => args.includes("info") && args.some((a) => a.includes("always_consider isentou")));
+    assert.ok(exemptionsLog, `esperava log-event info com always_consider_exemptions, recebeu: ${JSON.stringify(logEventCalls)}`);
+    const exDetailsIdx = exemptionsLog!.indexOf("--details");
+    const exDetails = JSON.parse(exemptionsLog![exDetailsIdx + 1]) as { count: number };
+    assert.equal(exDetails.count, 1);
+  });
 });
