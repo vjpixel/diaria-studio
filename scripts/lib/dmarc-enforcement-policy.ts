@@ -220,7 +220,11 @@ function ratePct(count: number, total: number): number {
  *    `< MIN_MATURITY_DAYS`) ⇒ `healthy-immature`, `hold` — sinal está limpo
  *    mas ainda não decorreu tempo suficiente pra confiar na amostra.
  * 4. **Saudável e maduro** ⇒ `healthy`, `escalate` pro próximo degrau
- *    (`nextEnforcementStep`).
+ *    (`nextEnforcementStep`) — EXCETO se já não houver degrau real pra subir
+ *    (`currentPolicy` já é `reject`, o teto): `nextEnforcementStep("reject")`
+ *    é não-op e devolve `"reject"` de novo, então `nextPolicy ===
+ *    currentPolicy` viraria uma recomendação vazia "escalar reject → reject"
+ *    (#7933, achado 1) — nesse caso o veredito é `hold`, `nextPolicy: null`.
  */
 export function decideDmarcEnforcement(
   signals: DmarcSignals,
@@ -290,14 +294,34 @@ export function decideDmarcEnforcement(
     };
   }
 
+  const nextPolicy = nextEnforcementStep(currentPolicy);
+  if (nextPolicy === currentPolicy) {
+    // Já no teto (`reject`) — `nextEnforcementStep` é não-op aqui (ver sua
+    // docstring), mas ainda assim NÃO é um degrau real pra escalar. Sem esse
+    // guard o alarme abriria "motor recomenda escalar reject → reject"
+    // (#7933, achado 1) sempre que o sinal estivesse limpo com o domínio já
+    // no teto — `hold`, não `escalate`, é o veredito correto: não há pra
+    // onde subir.
+    return {
+      level: "healthy",
+      recommendation: "hold",
+      nextPolicy: null,
+      bounceRatePct,
+      complaintRatePct,
+      reasons: [
+        `sinal limpo (bounce ${fmtPct(bounceRatePct)} < ${fmtPct(thresholds.bounce)}, complaint ${fmtPct(complaintRatePct)} < ${fmtPct(thresholds.complaint)}) e domínio maduro (${signals.daysSinceFirstSend} dias >= piso ${MIN_MATURITY_DAYS}), mas já está no teto de enforcement ('${currentPolicy}') — nada pra escalar, segurando.`,
+      ],
+    };
+  }
+
   return {
     level: "healthy",
     recommendation: "escalate",
-    nextPolicy: nextEnforcementStep(currentPolicy),
+    nextPolicy,
     bounceRatePct,
     complaintRatePct,
     reasons: [
-      `sinal limpo (bounce ${fmtPct(bounceRatePct)} < ${fmtPct(thresholds.bounce)}, complaint ${fmtPct(complaintRatePct)} < ${fmtPct(thresholds.complaint)}) e domínio maduro (${signals.daysSinceFirstSend} dias >= piso ${MIN_MATURITY_DAYS}) — recomenda escalar ${currentPolicy} → ${nextEnforcementStep(currentPolicy)}.`,
+      `sinal limpo (bounce ${fmtPct(bounceRatePct)} < ${fmtPct(thresholds.bounce)}, complaint ${fmtPct(complaintRatePct)} < ${fmtPct(thresholds.complaint)}) e domínio maduro (${signals.daysSinceFirstSend} dias >= piso ${MIN_MATURITY_DAYS}) — recomenda escalar ${currentPolicy} → ${nextPolicy}.`,
     ],
   };
 }
