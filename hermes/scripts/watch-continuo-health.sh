@@ -45,6 +45,16 @@
 #      Roda ANTES das checagens (inclusive antes de qualquer `exit`
 #      antecipado de infra) pra maximizar a chance de captura mesmo se o
 #      resto do script falhar depois.
+#   13. registro de sessão do contínuo ausente (#7890) — o passo "session-
+#      registry.ts register --kind continuo" do tick (SKILL.md passo 1.3) é
+#      hoje PROSA, sem verificação externa de que rodou. Se o tick falhar
+#      cedo (ex: falha de credencial), o registro nunca acontece — foi
+#      exatamente esse gap que fez o detector de fabricação (checagem 11)
+#      correlacionar a sessão ERRADA no #7641. Correlaciona a janela de
+#      tempo de cada sidecar de tick recente (checagem 0, #7814) contra as
+#      janelas `[startedAt, lastHeartbeat]` de `data/sessions/continuo-*.json`
+#      — tick sem NENHUMA sessão continuo cuja janela se sobreponha vira
+#      alarme. `scripts/check-continuo-session-registration.ts`.
 #
 # Fail-soft por checagem: uma checagem quebrada reporta e segue pras demais;
 # só o exit final agrega. Sem estado próprio além do GitHub (dedup por título).
@@ -697,6 +707,68 @@ $PRICE_DETAILS
 Mesma classe da issue #6818: uma promoção de lançamento expira e o custo do tick dobra sem nenhuma mudança de config/código/volume. **Ação**: recalcular o custo-mix real com o preço novo (não pelo preço de prompt isolado — no mix do tick, output é ~9% dos tokens e até 84% da conta), decidir se mantém o modelo ao preço novo ou troca por um candidato mais barato medido contra o workload real (nunca por ficha técnica), e atualizar \`PAID_PRICE_BASELINE\` pra refletir o preço vigente — senão este alarme repete todo dia."
 else
   echo "[watch] preço OpenRouter: ok (sem aumento vs baseline; #6818 item 4)"
+fi
+
+# ── 13. registro de sessão do contínuo ausente (#7890) ─────────────────────
+# Achado durante o #7814: o tick de 08/09 (#7641) nunca gravou
+# `data/sessions/continuo-*.json` pra si mesmo (provavelmente por ter
+# falhado cedo, antes do passo 1.3) — a checagem 11 acima correlacionou a
+# sessão ERRADA (a mais recente de um tick anterior) e produziu uma
+# acusação de fabricação que exigiu investigação extra pra descartar como
+# falso positivo. `session-registry.ts register --kind continuo` continua
+# sendo um passo em PROSA no SKILL.md (#7890 optou por verificação externa
+# em vez de mover o registro pro wrapper genérico `claude-delegate.sh` —
+# ver justificativa no corpo do PR): esta checagem correlaciona a janela de
+# tempo de cada sidecar de tick recente (checagem 0) contra as janelas
+# `[startedAt, lastHeartbeat]` das sessões `kind=continuo` já registradas.
+# status=alarm -> tick com sidecar mas SEM sessão continuo na janela;
+# indeterminate (diretório de sidecars/sessões ausente) NÃO alarma — mesma
+# disciplina fail-soft das checagens acima.
+REG_JSON=$(npx tsx /home/vjpixel/diaria-studio/scripts/check-continuo-session-registration.ts --json 2>/dev/null)
+REG_PARSE=$(printf '%s' "$REG_JSON" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d['status'])
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+case "$REG_PARSE" in *__ERR__*) REG_PARSE="__ERR__" ;; esac
+case "$REG_PARSE" in ok|alarm|indeterminate) : ;; *) REG_PARSE="__ERR__" ;; esac
+if [ "$REG_PARSE" = "__ERR__" ]; then
+  echo "[watch] registro de sessão continuo: INDETERMINADO (check-continuo-session-registration falhou)" >&2
+  FAILS=$((FAILS + 1))
+elif [ "$REG_PARSE" = "indeterminate" ]; then
+  REG_REASON=$(printf '%s' "$REG_JSON" | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin)['reason'])
+except Exception:
+    print('(sem motivo legivel)')" 2>/dev/null || echo "(sem motivo legivel)")
+  echo "[watch] registro de sessão continuo: indeterminado ($REG_REASON — ok, não alarma; #7890)"
+elif [ "$REG_PARSE" = "alarm" ]; then
+  REG_DETAILS=$(printf '%s' "$REG_JSON" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(f\"  {d['reason']}\")
+    for t in d.get('unregisteredTicks', []):
+        print(f\"  tick sem sessão: {t['sessionId']} ({t['firstAt']} .. {t['lastAt']})\")
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+  file_issue "[watch-continuo] tick sem registro de sessão" \
+    "[watch-continuo] tick sem registro de sessão (session-registry.ts register --kind continuo, #7890)" \
+    "bug,P2" \
+    "Detectado por watch-continuo-health.sh via scripts/check-continuo-session-registration.ts (#7890) — pelo menos 1 tick recente (com sidecar de ferramentas capturado, #7814) não tem NENHUMA sessão \`kind=continuo\` em \`data/sessions/\` cuja janela \`[startedAt, lastHeartbeat]\` se sobreponha:
+
+\`\`\`
+$REG_DETAILS
+\`\`\`
+
+**O que isso significa**: o passo \`session-registry.ts register --kind continuo\` (SKILL.md, passo 1.3) não rodou cedo o suficiente nesse tick, provavelmente porque o tick falhou antes de chegar lá (credencial, rede, guard de colisão). **Risco concreto**: sem registro, o detector de fabricação de conclusão (checagem 11, #7537) correlaciona a sessão ERRADA (a mais recente de outro tick) contra o que este tick alega — foi exatamente o que aconteceu no #7641, custando uma investigação extra pra descartar como falso positivo.
+
+**Ação**: conferir o log do tick correlacionado (bracket do sidecar acima) no helios pra entender por que o registro não aconteceu — tipicamente uma falha cedo no passo 1 (ver checagem de parada por auth abaixo). Não é uma correção automática por design — item 1 da proposta original (wrapper no cron do Hermes que registra ANTES de invocar o modelo) foi avaliado e adiado por tocar o contrato do protocolo do tick e o wrapper genérico \`claude-delegate.sh\` (reusado por outras skills do Hermes); reconsiderar se este alarme disparar com frequência."
+else
+  echo "[watch] registro de sessão continuo: ok (todo tick recente com sessão registrada; #7890)"
 fi
 
 # --- Parada dura por AUTH no cron do contínuo (#7647) --------------------
