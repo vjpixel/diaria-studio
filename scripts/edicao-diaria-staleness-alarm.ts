@@ -47,7 +47,10 @@ import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { nextEditionDate } from "./lib/next-edition-date.ts";
 import { queryTaskArmed } from "./lib/scheduled-task-status.ts";
-import { parseEdicaoScheduleAttestation, resolveEdicaoTimerStateCrossMachine } from "./lib/edicao-schedule-attestation.ts";
+import {
+  readEffectiveScheduleAttestation,
+  resolveEdicaoTimerStateCrossMachine,
+} from "./lib/edicao-schedule-attestation.ts";
 import {
   findLastEdicaoLogEntry,
   isEdicaoDiariaScheduledWeekday,
@@ -77,10 +80,6 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = resolve(ROOT, "data");
 const SCHEDULE_LOG_PATH = join(DATA_DIR, "overnight-schedule.log");
-/** Marcador cross-machine (#7036) — ver docstring de `edicao-schedule-attestation.ts`
- * pra quem escreve (hoje só `setup-edicao-schedule.ps1`, lado Windows) e o
- * TODO explícito do lado Linux. Leitura sempre best-effort. */
-const SCHEDULE_ATTESTATION_PATH = join(DATA_DIR, "edicao-diaria-schedule-attestation.json");
 const STATE_PATH = join(DATA_DIR, ".edicao-diaria-staleness-alarm-state.json");
 const ALARM_ISSUES_STATE_PATH = join(DATA_DIR, ".edicao-diaria-staleness-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
@@ -181,23 +180,6 @@ function edicaoExists(aammdd: string): boolean {
 }
 
 /**
- * #7036 — leitura best-effort do marcador cross-machine. Ausente/corrompido
- * → `null`, nunca lança (mesmo padrão fail-soft do resto do arquivo — ver
- * docstring de `edicao-schedule-attestation.ts`).
- */
-function readScheduleAttestation(): ReturnType<typeof parseEdicaoScheduleAttestation> {
-  if (!existsSync(SCHEDULE_ATTESTATION_PATH)) return null;
-  try {
-    return parseEdicaoScheduleAttestation(readFileSync(SCHEDULE_ATTESTATION_PATH, "utf8"));
-  } catch (e) {
-    console.warn(
-      `${LOG_PREFIX} falha ao ler atestação cross-machine (${SCHEDULE_ATTESTATION_PATH}) — tratando como ausente: ${(e as Error).message}`,
-    );
-    return null;
-  }
-}
-
-/**
  * #6898 defeito 2 — o timer está armado? Sem isso, "desligado de propósito"
  * e "quebrado em silêncio" são o MESMO estado observável pro alarme, e ele
  * acusa o editor todo dia por uma automação que o próprio editor desligou.
@@ -205,10 +187,10 @@ function readScheduleAttestation(): ReturnType<typeof parseEdicaoScheduleAttesta
  * pura distingue — só `disabled` silencia, ver `EdicaoTimerState`.
  *
  * #7036 — o resultado LOCAL é então combinado com a atestação cross-machine
- * (`data/edicao-diaria-schedule-attestation.json`, se presente): se alguma
- * máquina publicou `armed: true` recentemente, o veredito final nunca é
- * `disabled`, mesmo que o agendador DESTA máquina esteja de fato desarmado
- * — ver `resolveEdicaoTimerStateCrossMachine`.
+ * (um marcador por agendador em `data/`, se presentes): se alguma máquina
+ * publicou `armed: true` recentemente, o veredito final nunca é `disabled`,
+ * mesmo que o agendador DESTA máquina esteja de fato desarmado — ver
+ * `pickEffectiveAttestation` e `resolveEdicaoTimerStateCrossMachine`.
  */
 function queryTimerState(now: Date): EdicaoTimerState {
   let local: EdicaoTimerState = "unknown";
@@ -219,7 +201,18 @@ function queryTimerState(now: Date): EdicaoTimerState {
   } catch (e) {
     console.warn(`${LOG_PREFIX} falha ao consultar armamento do timer — tratando como unknown: ${(e as Error).message}`);
   }
-  const attestation = readScheduleAttestation();
+  // #7036 — um marcador por agendador em data/; ver edicao-schedule-attestation.ts.
+  const read = readEffectiveScheduleAttestation(DATA_DIR, now);
+  for (const path of read.unreadable) console.warn(`${LOG_PREFIX} atestação cross-machine ilegível (${path}) — ignorada (#7036).`);
+  for (const path of read.mismatched) {
+    console.warn(`${LOG_PREFIX} atestação em ${path} declara outro agendador — ignorada, cada lado escreve só o próprio arquivo (#7036).`);
+  }
+  for (const a of read.stale) {
+    console.warn(
+      `${LOG_PREFIX} atestação de ${a.machine} (${a.scheduler}, armed=${a.armed}) está stale desde ${a.updatedAt} — ignorada; rearme/desarme por lá pra renovar (#7036).`,
+    );
+  }
+  const attestation = read.effective;
   const resolved = resolveEdicaoTimerStateCrossMachine(local, attestation, now);
   if (local === "disabled" && resolved === "armed") {
     console.warn(

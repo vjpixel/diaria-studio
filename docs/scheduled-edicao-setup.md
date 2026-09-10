@@ -151,7 +151,9 @@ npx tsx scripts/overnight/setup-edicao-schedule-systemd.ts
 mkdir -p ~/.config/systemd/user
 cp .systemd-units/diaria-edicao-diaria.service .systemd-units/diaria-edicao-diaria.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now diaria-edicao-diaria.timer
+# Arma o timer E publica a atestação cross-machine (#7036) — não use
+# `systemctl --user enable --now` direto: arma sem avisar o alarme de edição.
+npx tsx scripts/overnight/arm-edicao-schedule-systemd.ts --arm
 ```
 
 ### Verificar
@@ -164,7 +166,7 @@ journalctl --user -u diaria-edicao-diaria.service -n 50
 ### Remover
 
 ```bash
-systemctl --user disable --now diaria-edicao-diaria.timer
+npx tsx scripts/overnight/arm-edicao-schedule-systemd.ts --disarm
 rm ~/.config/systemd/user/diaria-edicao-diaria.service ~/.config/systemd/user/diaria-edicao-diaria.timer
 systemctl --user daemon-reload
 ```

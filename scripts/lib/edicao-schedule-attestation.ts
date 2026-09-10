@@ -20,31 +20,43 @@
  * já é precedente de arquivo compartilhado lido sem se importar com qual
  * runner gravou.
  *
- * **Quem escreve hoje — só o lado Windows, e só parcialmente (TODO):**
- * `scripts/overnight/setup-edicao-schedule.ps1` é o único ponto do repo
- * que de fato chama o verbo de armar/desarmar (`Register-ScheduledTask`/
- * `Unregister-ScheduledTask`) — por isso ele grava este marcador ao rodar
- * (best-effort, nunca bloqueia o registro da task se a escrita falhar). O
- * lado Linux (`scripts/overnight/setup-edicao-schedule-systemd.ts`) SÓ
- * GERA os arquivos `.service`/`.timer` em disco — armar de verdade é
- * `systemctl --user enable --now`, digitado à mão pelo editor fora de
- * qualquer script deste repo (ver docstring de aquele arquivo). Não há
- * hoje um hook centralizado que saiba "acabei de armar/desarmar" do lado
- * Linux para escrever este marcador — **TODO**: se/quando um wrapper de
- * armamento Linux for criado (ex: `scripts/overnight/arm-edicao-schedule-systemd.sh`
- * que roda o `systemctl --user enable --now` E grava o marcador), ele deve
- * escrever aqui com `scheduler: "systemd"`. Até lá, a leitura é
- * necessariamente BEST-EFFORT: marcador ausente é tratado como "sem
- * informação cross-machine", nunca como "desarmado em algum lugar" — vide
+ * **Quem escreve — um arquivo POR agendador** (`EDICAO_SCHEDULE_ATTESTATION_FILES`):
+ * - Windows: `scripts/overnight/setup-edicao-schedule.ps1`, único ponto que
+ *   chama `Register-ScheduledTask`/`Unregister-ScheduledTask`, grava
+ *   `edicao-diaria-schedule-attestation.json` (nome original, mantido por
+ *   compat com o writer já em produção).
+ * - Linux: `scripts/overnight/arm-edicao-schedule-systemd.ts` — wrapper que
+ *   roda `systemctl --user enable|disable --now` E grava
+ *   `edicao-diaria-schedule-attestation-systemd.json`. Substitui o
+ *   `systemctl` digitado à mão (que nunca publicava nada — o TODO que a PR
+ *   #7860 deixou aberto).
+ *
+ * Um arquivo por lado, e não um compartilhado, porque os writers escrevem
+ * o próprio estado: com um arquivo só, desarmar o Linux gravaria
+ * `armed: false` POR CIMA do `armed: true` do Windows e reabriria o buraco
+ * do #7036 pela porta dos fundos. O leitor combina os dois via
+ * `pickEffectiveAttestation`. Leitura segue BEST-EFFORT: marcador ausente
+ * é "sem informação cross-machine", nunca "desarmado em algum lugar" — vide
  * `resolveEdicaoTimerStateCrossMachine`.
  *
  * @see scripts/lib/edicao-diaria-staleness-alarm.ts (consumidor — combina com `EdicaoTimerState` local)
  * @see scripts/lib/onedrive-sync-alarm.ts (mesmo padrão de canário cross-machine)
  * @see scripts/lib/machine-id.ts (identidade de máquina — mesmo sinal, `os.hostname()`)
- * @see scripts/overnight/setup-edicao-schedule.ps1 (único writer hoje)
+ * @see scripts/overnight/setup-edicao-schedule.ps1 (writer Windows)
+ * @see scripts/overnight/arm-edicao-schedule-systemd.ts (writer Linux)
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
 export type EdicaoScheduleScheduler = "windows-task-scheduler" | "systemd";
+
+/** Nome do marcador de cada agendador, relativo a `data/` — ver docstring
+ * do módulo pro porquê de um arquivo por lado. */
+export const EDICAO_SCHEDULE_ATTESTATION_FILES: Readonly<Record<EdicaoScheduleScheduler, string>> = {
+  "windows-task-scheduler": "edicao-diaria-schedule-attestation.json",
+  systemd: "edicao-diaria-schedule-attestation-systemd.json",
+};
 
 export interface EdicaoScheduleAttestation {
   /** `os.hostname()` (ou `$env:COMPUTERNAME` do lado PowerShell) da máquina
@@ -80,9 +92,10 @@ export function buildEdicaoScheduleAttestation(
  * partir de um marcador ilegível.
  *
  * Tolerante a BOM UTF-8 (`﻿`) no início do conteúdo — defesa em
- * profundidade (#7036, achado do review da PR #7860): o único writer hoje
- * (`setup-edicao-schedule.ps1`) já escreve sem BOM, mas qualquer outro
- * escritor futuro (ou uma ferramenta do editor que salve com BOM) não deve
+ * profundidade (#7036, achado do review da PR #7860): os dois writers
+ * (`setup-edicao-schedule.ps1`, `arm-edicao-schedule-systemd.ts`) escrevem
+ * sem BOM, mas qualquer outro escritor (ou uma ferramenta do editor que
+ * salve com BOM) não deve
  * fazer esta atestação falhar em SILÊNCIO — sem isso, `JSON.parse` lançaria
  * sobre o BOM e o erro seria tratado como "arquivo ausente", exatamente a
  * classe de falha silenciosa que este mecanismo existe pra evitar.
@@ -122,6 +135,71 @@ export function isAttestationStale(attestation: EdicaoScheduleAttestation, now: 
 }
 
 /**
+ * Pure — reduz os marcadores de todos os agendadores a UM efetivo pra
+ * `resolveEdicaoTimerStateCrossMachine`. Mesma regra de só-fortalecer:
+ * qualquer marcador não-stale com `armed: true` vence (a automação está
+ * armada em ALGUM lugar); sem nenhum armado, devolve o primeiro não-stale
+ * (que não muda o veredito local); nenhum válido → `null`.
+ */
+export function pickEffectiveAttestation(
+  attestations: ReadonlyArray<EdicaoScheduleAttestation | null>,
+  now: Date,
+): EdicaoScheduleAttestation | null {
+  const valid = attestations.filter(
+    (a): a is EdicaoScheduleAttestation => a !== null && !isAttestationStale(a, now),
+  );
+  return valid.find((a) => a.armed) ?? valid[0] ?? null;
+}
+
+export interface EffectiveScheduleAttestationRead {
+  /** Resultado de `pickEffectiveAttestation` sobre os marcadores aceitos. */
+  effective: EdicaoScheduleAttestation | null;
+  /** Marcadores válidos porém stale — descartados pela decisão, mas o caller
+   * LOGA: sem isso o corte de 90 dias derruba um "armado" em silêncio. */
+  stale: EdicaoScheduleAttestation[];
+  /** Arquivo existe mas não parseia (JSON corrompido/schema errado). */
+  unreadable: string[];
+  /** Marcador com `scheduler` que não bate com o arquivo onde estava — a
+   * premissa "cada lado no próprio arquivo" quebrou; descartado. */
+  mismatched: string[];
+}
+
+/**
+ * Lê o marcador de CADA agendador em `dataDir` e reduz a um efetivo. É o
+ * fio que o alarme usa — extraído do script I/O pra ser testável contra
+ * arquivos reais. Nunca lança: ausente é o caso comum e fica fora de todas
+ * as listas; o resto é reportado pro caller logar.
+ */
+export function readEffectiveScheduleAttestation(dataDir: string, now: Date): EffectiveScheduleAttestationRead {
+  const accepted: EdicaoScheduleAttestation[] = [];
+  const result: EffectiveScheduleAttestationRead = { effective: null, stale: [], unreadable: [], mismatched: [] };
+  for (const [scheduler, file] of Object.entries(EDICAO_SCHEDULE_ATTESTATION_FILES) as Array<
+    [EdicaoScheduleScheduler, string]
+  >) {
+    const path = join(dataDir, file);
+    if (!existsSync(path)) continue;
+    let attestation: EdicaoScheduleAttestation | null;
+    try {
+      attestation = parseEdicaoScheduleAttestation(readFileSync(path, "utf8"));
+    } catch {
+      attestation = null;
+    }
+    if (attestation === null) {
+      result.unreadable.push(path);
+      continue;
+    }
+    if (attestation.scheduler !== scheduler) {
+      result.mismatched.push(path);
+      continue;
+    }
+    if (isAttestationStale(attestation, now)) result.stale.push(attestation);
+    accepted.push(attestation);
+  }
+  result.effective = pickEffectiveAttestation(accepted, now);
+  return result;
+}
+
+/**
  * Pure — combina o estado LOCAL (`queryTaskArmed` traduzido pro caller —
  * `"armed" | "disabled" | "unknown"`, mesmo domínio de `EdicaoTimerState`
  * em `edicao-diaria-staleness-alarm.ts`, não importado aqui de propósito
@@ -139,9 +217,8 @@ export function isAttestationStale(attestation: EdicaoScheduleAttestation, now: 
  * Atestação ausente, corrompida, ou stale → tratada como "sem informação
  * cross-machine", preserva o comportamento LOCAL de hoje (pré-#7036) —
  * fail-soft: nunca inventa "desarmado em algum lugar" a partir da
- * ausência do marcador (o único writer hoje é o lado Windows, então
- * ausência é o caso comum enquanto o TODO do lado Linux não for
- * implementado).
+ * ausência do marcador (ausência é o caso comum: nada armado em lugar
+ * nenhum, ou armado por fora dos dois writers).
  */
 export function resolveEdicaoTimerStateCrossMachine(
   local: "armed" | "disabled" | "unknown",
