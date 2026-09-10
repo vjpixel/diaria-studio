@@ -150,8 +150,11 @@ describe("seções do corpo", () => {
     }
   });
 
-  it("o rótulo da janela aparece — é o que diz o período coberto", () => {
-    assert.ok(r.html.includes("agosto/2025 a agosto/2026"));
+  it("o rótulo da janela NÃO entra no kicker — o período é dito na intro (#7587 item 10)", () => {
+    // Era "o rótulo da janela aparece". Revertido por decisão do editor no gate
+    // da 1ª edição: o kicker virou só "Retrospectiva", e a janela fica no texto
+    // da INTRO, escrito pelo writer — não carimbada a partir de `windowLabel`.
+    assert.ok(!r.html.includes("agosto/2025 a agosto/2026"));
   });
 
   it("o fio condutor de um tema aparece", () => {
@@ -168,5 +171,18 @@ describe("seções do corpo", () => {
     assert.ok(r.html.startsWith("<!DOCTYPE html>"));
     assert.ok(r.html.includes("<table"));
     assert.ok(/background:#FFFFFF/i.test(r.html), "e-mail sem fundo explícito vira cinza em dark mode");
+  });
+});
+
+describe("kicker — só \"Retrospectiva\", nunca a janela nem o slug (#7587 item 10)", () => {
+  it("o slug da pasta (fallback de --window-label) não vaza pro topo da peça", () => {
+    const r = renderAnnualEmail(parseAnnualDraft(draftMd({})), {
+      windowLabel: "2026-aniversario",
+      tipo: "aniversario",
+      images: IMAGES,
+    });
+    assert.ok(r.html.includes(">Retrospectiva</p>"), "o kicker precisa ser exatamente \"Retrospectiva\"");
+    assert.ok(!r.html.includes("2026-aniversario"), "o slug da pasta não é texto editorial");
+    assert.ok(!r.html.includes("Retrospectiva ·"), "sem separador nem sufixo depois do kicker");
   });
 });
