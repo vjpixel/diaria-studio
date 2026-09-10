@@ -1286,6 +1286,29 @@ describe("computeWorkerTimeoutMs (#6939) — teto do worker soma o orçamento de
   });
 });
 
+/** Constantes de prioridade nos testes — alias explícito pra não confundir
+ *  com o `osConstants` que `scripts/run-tests.ts` importa. */
+const osConstantsTest = os.constants;
+
+/** #7883 (achado do review): distingue "este ambiente NEGA renice" de "o fix
+ *  quebrou". Sem isso, um early-return por permissão faz o teste passar com
+ *  zero asserção e parecer verde. Mede num processo filho pra não mutar o
+ *  runner. Memoizado — spawn não é barato e a resposta não muda na rodada. */
+let podeRebaixarCache: boolean | null = null;
+function podeRebaixar(): boolean {
+  if (podeRebaixarCache !== null) return podeRebaixarCache;
+  const r = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      "const os=require('node:os');try{os.setPriority(0,os.constants.priority.PRIORITY_BELOW_NORMAL);process.exit(os.getPriority()>0?0:1)}catch{process.exit(1)}",
+    ],
+    { encoding: "utf8" },
+  );
+  podeRebaixarCache = r.status === 0;
+  return podeRebaixarCache;
+}
+
 describe("prioridade de CPU (#7875)", () => {
   // CONTEXTO (o que este bloco protege contra): a 1ª tentativa de fix pro
   // #7875 foi reduzir a concorrência (teto de `--test-concurrency` pra que
@@ -1347,11 +1370,52 @@ describe("prioridade de CPU (#7875)", () => {
       ],
       { encoding: "utf8" },
     );
-    if (child.status === 42) return; // ambiente sem permissão de renice — nada a afirmar
+    if (child.status === 42) {
+      assert.ok(!podeRebaixar(), "filho falhou ao renice num ambiente que PERMITE renice — isso é defeito, não ambiente");
+      return;
+    }
     assert.equal(child.status, 0, `filho falhou: ${child.stderr}`);
     const { antes, depois } = JSON.parse(child.stdout.trim()) as { antes: number; depois: number };
     assert.ok(depois > antes, `esperado prioridade MENOR (número maior): antes=${antes} depois=${depois}`);
     assert.equal(depois, os.constants.priority.PRIORITY_BELOW_NORMAL);
+  });
+
+  // REGRESSÃO do achado do review da PR #7883 (confiança alta): os testes de
+  // herança abaixo provam que o SO propaga prioridade, mas NÃO que a produção
+  // está LIGADA — apagar a chamada `lowerOwnPriority()` do entrypoint (que é
+  // o fix inteiro do #7875) passaria por eles sem acusar nada.
+  //
+  // O teste ideal seria end-to-end (rodar o CLI real e deixar um arquivo de
+  // teste reportar a prioridade herdada). Foi escrito e NÃO entrou: nesta
+  // máquina qualquer `node --test` spawnado trava em `spawn ETIMEDOUT`
+  // (pré-existente, reproduzido em master limpo — ver a seção de limite de
+  // validação no PR #7883), então ele custava 120 s de timeout e degradava a
+  // suíte local. Enquanto esse hang não for resolvido, este guard estrutural
+  // cobre a regressão concreta que o review apontou: a chamada sumir.
+  it("REGRESSÃO: o entrypoint CHAMA lowerOwnPriority antes de qualquer fork/spawn", () => {
+    const fonte = readFileSync(fileURLToPath(new URL("../scripts/run-tests.ts", import.meta.url)), "utf8");
+    const entrypoint = fonte.slice(fonte.lastIndexOf("if (isMainModule(import.meta.url))"));
+    assert.ok(
+      entrypoint.length > 0,
+      "não achei o bloco de entrypoint em scripts/run-tests.ts — este guard precisa ser reescrito",
+    );
+    const posChamada = entrypoint.indexOf("lowerOwnPriority()");
+    assert.ok(
+      posChamada !== -1,
+      "o entrypoint não chama mais lowerOwnPriority() — o fix do #7875 virou no-op: a suíte volta a " +
+        "disputar CPU de igual pra igual com o trabalho interativo",
+    );
+    // Precisa vir ANTES do despacho: a árvore herda no fork/spawn, então
+    // rebaixar depois não alcança quem já nasceu.
+    for (const depois of ["runAsWorker(", "runTestBatchesParallel("]) {
+      const posDepois = entrypoint.indexOf(depois);
+      assert.ok(posDepois !== -1, `esperava achar ${depois} no entrypoint`);
+      assert.ok(
+        posChamada < posDepois,
+        `lowerOwnPriority() precisa vir ANTES de ${depois} — depois do fork/spawn os filhos já nasceram ` +
+          "em prioridade normal e não herdam mais nada",
+      );
+    }
   });
 
   it("o filho HERDA a prioridade — é o que faz 1 chamada no entrypoint cobrir a árvore toda", () => {
@@ -1373,7 +1437,10 @@ describe("prioridade de CPU (#7875)", () => {
       ],
       { encoding: "utf8" },
     );
-    if (child.status === 42) return;
+    if (child.status === 42) {
+      assert.ok(!podeRebaixar(), "filho falhou ao renice num ambiente que PERMITE renice — isso é defeito, não ambiente");
+      return;
+    }
     assert.equal(child.status, 0, `filho falhou: ${child.stderr}`);
     const { pai, neto } = JSON.parse(child.stdout.trim()) as { pai: number; neto: number };
     assert.equal(neto, pai, "neto tem que herdar a prioridade do pai — senão o fix não alcança quem gasta CPU");

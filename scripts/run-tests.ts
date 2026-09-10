@@ -279,8 +279,7 @@
  */
 import { spawnSync, fork, type ChildProcess, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { availableParallelism } from "node:os";
-import os from "node:os";
+import { availableParallelism, constants as osConstants, setPriority } from "node:os";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -401,12 +400,12 @@ export function resolvePriority(raw: string | undefined): number | null {
     case "normal":
       return null; // desligado — mantém a prioridade herdada
     case "low":
-      return os.constants.priority.PRIORITY_LOW;
+      return osConstants.priority.PRIORITY_LOW;
     case "":
     case "below-normal":
-      return os.constants.priority.PRIORITY_BELOW_NORMAL;
+      return osConstants.priority.PRIORITY_BELOW_NORMAL;
     default:
-      return os.constants.priority.PRIORITY_BELOW_NORMAL;
+      return osConstants.priority.PRIORITY_BELOW_NORMAL;
   }
 }
 
@@ -416,7 +415,7 @@ export function lowerOwnPriority(env: NodeJS.ProcessEnv = process.env): boolean 
   const target = resolvePriority(env.RUN_TESTS_PRIORITY);
   if (target === null) return false;
   try {
-    os.setPriority(0, target);
+    setPriority(0, target);
     return true;
   } catch {
     // Sem permissão pra renice (container sem CAP_SYS_NICE, política de SO):
