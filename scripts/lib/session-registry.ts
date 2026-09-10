@@ -175,6 +175,7 @@ import { basename, dirname, join } from "node:path";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { parseArgs, isMainModule } from "./cli-args.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
 import { withFileLock } from "./file-lock.ts";
@@ -2938,37 +2939,133 @@ export function claimIssueAutoRegistering(
  * Claim de worktree — uma sessão reivindica o CAMINHO de um worktree
  * para impedir adoção por outra sessão (#7722 item 3). Se outro
  * registro vivo já reivindica o mesmo path, recusa.
+ *
+ * **CORREÇÃO (#7892, 09-10/09/2026) — chave por PATH, não por `sessionId`.**
+ * A versão original (#7722/PR #7810) gravava a claim como um campo único
+ * (`worktree_claim`) DENTRO do arquivo de sessão indexado por `sessionId`
+ * (`sessionFilePath(root, "continuo", tag, sessionId)`) — um record por
+ * sessão, um `worktree_claim` por record. Isso pressupõe que `sessionId`
+ * identifica univocamente "quem está reivindicando o quê", premissa que o
+ * #7712 mediu como FALSA (4 medições independentes, ver docblock de
+ * `block-gh-pr-merge-subagent.mjs`): um subagente despachado via ferramenta
+ * `Agent` com `isolation: "worktree"` herda LITERALMENTE o `session_id` do
+ * coordenador que o despachou — não tem identidade própria. Quando o
+ * coordenador despacha N subagentes concorrentes em worktrees DISTINTOS
+ * (padrão normal do overnight/develop, até vários simultâneos), todos
+ * calculam o MESMO `file` (mesmo `sessionId`) — o último `claimWorktree` a
+ * escrever sobrescreve o `worktree_claim` do anterior em silêncio, e a
+ * varredura de "outra sessão com mesmo path" (`findActiveSessionFiles`)
+ * também nunca via os próprios concorrentes, porque lia
+ * `data/sessions/{kind}/` (um SUBDIRETÓRIO que este mecanismo nunca escreve)
+ * enquanto `sessionFilePath` grava achatado em `data/sessions/{kind}-{tag}-
+ * {sessionId}.json` — os dois caminhos nunca se cruzavam, então a detecção
+ * de colisão nunca disparava, independente do problema de identidade.
+ *
+ * Fix: a claim passa a ser indexada pelo PRÓPRIO worktree — um arquivo por
+ * PATH reivindicado (`worktreeClaimFilePath`, hash estável do path
+ * normalizado), não um campo dentro do record da sessão. Dois `claimWorktree`
+ * com o MESMO `sessionId` (subagentes-irmãos do mesmo coordenador) mas paths
+ * DIFERENTES nunca tocam o mesmo arquivo — não colidem, cada um reivindica o
+ * seu. Duas chamadas para o MESMO path — a única forma de "colisão real"
+ * fazer sentido aqui — continuam detectadas: se o claim vivo no arquivo
+ * pertence a OUTRO `sessionId`, recusa (`false`); se é do MESMO `sessionId`
+ * (o mesmo subagente reconfirmando, ou o coordenador verificando o que já é
+ * seu), é idempotente — renova o TTL, aceita (`true`).
+ *
+ * `sessionId` continua sendo o discriminador de "é o mesmo dono?" — o que
+ * mudou é o que serve de CHAVE de armazenamento (path, não sessionId), o que
+ * é exatamente o efeito de uma chave composta (path, sessionId) sem precisar
+ * escrever N registros por sessão: o path já distingue os concorrentes, o
+ * sessionId dentro do arquivo resolve o resto.
+ *
+ * `worktree_claim` continua sendo mirrorado no record da sessão (best-effort,
+ * nunca bloqueia o claim principal) para não quebrar o consumidor existente
+ * — `.claude/hooks/block-worktree-alien-commit.mjs`, que lê
+ * `rec?.worktree_claim?.path` do arquivo de sessão. Esse mirror é cosmético
+ * (último a escrever "vence" nele, igual antes), NUNCA a fonte de verdade da
+ * colisão — a fonte de verdade é sempre o arquivo indexado por path.
  */
-function findActiveSessionFiles(root: string, kind: SessionKind): string[] {
-  const dir = join(root, "data", "sessions", kind);
-  try {
-    return (readdirSync(dir, { withFileTypes: true }) || [])
-      .filter((d: any) => d.isFile() && d.name.endsWith(".json"))
-      .map((d: any) => join(dir, d.name));
-  } catch { return []; }
+function worktreeClaimKey(path: string): string {
+  // #7900 Finding 4: sem `.toLowerCase()` de propósito, ao contrário de
+  // `isCallerInLinkedWorktree` (`block-gh-pr-merge-subagent.mjs`) — lá o
+  // lowercase existe pra tolerar capitalização de drive DIVERGENTE que o
+  // próprio `git rev-parse` pode devolver no Windows para o MESMO `.git`.
+  // Aqui o `path` é fornecido pelo chamador, não derivado de `git
+  // rev-parse` — dois worktrees REAIS e DISTINTOS que só diferem em
+  // capitalização são um caso real (Linux é case-sensitive); normalizar
+  // caixa aqui trocaria "path controlado" por "colisão falsa" sem nenhum
+  // ganho equivalente ao caso do guard de merge.
+  const normalized = path.replaceAll("\\", "/").replace(/\/+$/, "");
+  return createHash("sha256").update(normalized).digest("hex").slice(0, 20);
+}
+
+function worktreeClaimFilePath(root: string, path: string): string {
+  return join(root, "data", "sessions", ".worktree-claims", `${worktreeClaimKey(path)}.json`);
 }
 
 export function claimWorktree(path: string, sessionId: string, repoRoot?: string): boolean {
-  // Implementação real (#7722 item 3, corrigindo #7806 stub).
+  // #7900 fleet review Finding 1 (P1/alta): a versão anterior fazia um
+  // read→check→write DESTRAVADO no arquivo de claim — TOCTOU clássico. Duas
+  // chamadas concorrentes (dois subagentes-irmãos tentando o MESMO path por
+  // engano, ou uma sessão intrusa correndo contra a dona no exato incidente
+  // que o #7722 existe pra prevenir) podiam ler "livre" ao mesmo tempo e as
+  // duas escreverem "ganhei", justamente o bug de colisão que este mecanismo
+  // deveria detectar. O arquivo já tem `withFileLock`/`breakStaleLock` pra
+  // essa classe exata de bug (mesma raiz do #6952 noutro campo deste
+  // registro) — reusado aqui em vez de reinventado.
   const root = repoRoot || process.cwd();
-  const file = sessionFilePath(root, "continuo", machineTag(), sessionId);
-  const current = readJsonSafe<any>(file);
+  const claimFile = worktreeClaimFilePath(root, path);
+  const lockPath = `${claimFile}.lock`;
   const nowMs = Date.now();
   const ttl = 30 * 60 * 1000;
-  if (current && current.worktree_claim && current.worktree_claim.path === path) {
-    if ((current.worktree_claim.expires_at ?? 0) > nowMs) return true; // já nosso, idempotente
-  }
-  // Buscar outra sessão viva com mesmo path (simplificado: scan de session-dir do repo)
-  const others = findActiveSessionFiles(root, "continuo");
-  for (const otherPath of others) {
-    if (otherPath === file) continue;
-    const other = readJsonSafe<any>(otherPath);
-    if (other?.worktree_claim?.path === path && (other.worktree_claim.expires_at ?? 0) > nowMs && (other.session_id ?? other.id ?? other.sessionId) !== sessionId) {
-      return false; // concorrente viva
+
+  mkdirSync(dirname(claimFile), { recursive: true });
+  breakStaleLock(lockPath); // lock órfão (dono morreu) não pode travar o claim pra sempre
+
+  let claimed = false;
+  let claimedAt = new Date().toISOString();
+  withFileLock(lockPath, () => {
+    const currentClaim = readJsonSafe<any>(claimFile);
+    const claimLive = currentClaim && (currentClaim.expires_at ?? 0) > nowMs;
+    if (claimLive && currentClaim.sessionId !== sessionId) {
+      return; // outro dono (sessionId distinto) segura este path vivo — recusa
     }
+    claimedAt = claimLive && currentClaim.sessionId === sessionId ? currentClaim.claimed_at : claimedAt;
+    writeJsonSafe(claimFile, { path, sessionId, claimed_at: claimedAt, expires_at: nowMs + ttl });
+    claimed = true;
+  });
+
+  if (!claimed) return false;
+
+  // Mirror best-effort no record da sessão — só pro consumidor legado
+  // (block-worktree-alien-commit.mjs); nunca decide a colisão acima (#7900
+  // Finding 3: last-writer-wins entre subagentes-irmãos é uma limitação
+  // conhecida e aceita desse consumidor legado, não deste mecanismo). Sob
+  // lock próprio (#7900 Finding 2) pra não atropelar outros campos
+  // CAS-protegidos do mesmo record de sessão (merge_grant, claimed_issues,
+  // heartbeat) — timeout curto: é cosmético, nunca vale travar o claim real
+  // por ele.
+  try {
+    const sessionFile = sessionFilePath(root, "continuo", machineTag(), sessionId);
+    const sessionLockPath = `${sessionFile}.lock`;
+    breakStaleLock(sessionLockPath);
+    withFileLock(
+      sessionLockPath,
+      () => {
+        const currentSession = readJsonSafe<any>(sessionFile);
+        writeJsonSafe(sessionFile, {
+          ...currentSession,
+          session_id: sessionId,
+          worktree_claim: { path, sessionId, claimed_at: claimedAt, expires_at: nowMs + ttl },
+        });
+      },
+      2_000,
+    );
+  } catch {
+    // Mirror é cosmético — nunca deixa uma falha (inclusive timeout de lock)
+    // aqui derrubar o claim real, já commitado acima.
   }
-  const record = { ...current, session_id: sessionId, worktree_claim: { path, sessionId, claimed_at: new Date().toISOString(), expires_at: nowMs + ttl } };
-  writeJsonSafe(file, record);
+
   return true;
 }
 

@@ -1,27 +1,120 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { claimWorktree } from "../scripts/lib/session-registry.ts";
+
+function tmpRoot(): string {
+  return mkdtempSync(join(tmpdir(), "claim-worktree-"));
+}
 
 describe("#7722 worktree guard — regressão executável (não grep)", () => {
-  it("findActiveSessionFiles consulta data/sessions e retorna paths válidos", () => {
-    // O arquivo editado deve usar data/sessions (não .claude/sessions) e não usar require CJS
-    const reg = fs.readFileSync("scripts/lib/session-registry.ts", "utf8");
-    assert.ok(reg.includes('join(root, "data", "sessions", kind)'), "deve apontar para data/sessions");
-    assert.ok(reg.includes("readdirSync(dir"), "deve ler diretorio de sessoes");
-    assert.ok(!reg.includes('require("path")'), "não pode usar require CJS no findActiveSessionFiles");
+  it("claimWorktree é real (não stub constante true)", () => {
+    const root = tmpRoot();
+    try {
+      assert.strictEqual(claimWorktree(join(root, "wt-a"), "session-a", root), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
-  it("claimWorktree é real (não stub constante true) e usa file de sessao", () => {
-    const reg = fs.readFileSync("scripts/lib/session-registry.ts", "utf8");
-    assert.ok(reg.includes("Implementação real (#7722"), "deve ser implementacao real");
-    assert.ok(reg.includes("worktree_claim"), "deve usar worktree_claim");
-    assert.ok(reg.includes("readJsonSafe"), "deve ler registro");
+  it("#7892: mesmo sessionId, paths DIFERENTES — nunca colide (subagentes-irmãos do mesmo coordenador)", () => {
+    // Cenário real do #7892: subagentes despachados via ferramenta `Agent`
+    // com isolation:"worktree" herdam LITERALMENTE o session_id do
+    // coordenador (#7712, 4 medições independentes). O coordenador despacha
+    // N deles em worktrees distintos — o guard não pode tratar isso como
+    // colisão.
+    const root = tmpRoot();
+    const sharedSessionId = "coordinator-session-herdado-por-todos";
+    try {
+      const claim1 = claimWorktree(join(root, "wt-subagent-1"), sharedSessionId, root);
+      const claim2 = claimWorktree(join(root, "wt-subagent-2"), sharedSessionId, root);
+      const claim3 = claimWorktree(join(root, "wt-subagent-3"), sharedSessionId, root);
+      assert.strictEqual(claim1, true, "subagente 1 reivindica o próprio worktree");
+      assert.strictEqual(claim2, true, "subagente 2 reivindica o próprio worktree — não é sobrescrito pelo 1");
+      assert.strictEqual(claim3, true, "subagente 3 reivindica o próprio worktree — não é sobrescrito pelos anteriores");
+      // As 3 claims continuam vivas simultaneamente — reconfirmar cada uma.
+      assert.strictEqual(claimWorktree(join(root, "wt-subagent-1"), sharedSessionId, root), true, "claim 1 não foi apagada pelas seguintes");
+      assert.strictEqual(claimWorktree(join(root, "wt-subagent-2"), sharedSessionId, root), true, "claim 2 não foi apagada pela 3");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
-  it("conflito entre duas sessoes: verificado pelo scan de others (codigo presente)", () => {
-    const reg = fs.readFileSync("scripts/lib/session-registry.ts", "utf8");
-    assert.ok(reg.includes("findActiveSessionFiles(root"), "deve chamar findActiveSessionFiles para outros claims");
-    assert.ok(reg.includes("other?.worktree_claim?.path === path"), "deve comparar path do outro claim");
+  it("#7892: MESMO path, sessionIds DIFERENTES — continua detectando colisão real", () => {
+    // Duas identidades genuinamente distintas disputando o MESMO worktree
+    // (o incidente de origem do #7722 — outra sessão adota um worktree que
+    // não é dela) precisa continuar bloqueado.
+    const root = tmpRoot();
+    const path = join(root, "wt-disputado");
+    try {
+      assert.strictEqual(claimWorktree(path, "session-dona", root), true, "primeira sessão reivindica");
+      assert.strictEqual(claimWorktree(path, "session-intrusa", root), false, "segunda sessão (identidade diferente) é recusada");
+      // A dona confirmando de novo continua ok (idempotente).
+      assert.strictEqual(claimWorktree(path, "session-dona", root), true, "a dona original reconfirma sem problema");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#7892 fleet review Finding 1: duas identidades disputando o MESMO path CONCORRENTEMENTE — exatamente uma vence (sem lock, a race deixava as duas ganharem)", async () => {
+    // A versão sem lock fazia read→check→write destravado: duas chamadas
+    // verdadeiramente concorrentes podiam ambas ler "livre" antes de
+    // qualquer uma escrever, e as duas retornarem `true` — a colisão que
+    // este mecanismo existe pra detectar passava batido. `claimWorktree` é
+    // síncrono (I/O bloqueante), então a concorrência real precisa vir de
+    // dois PROCESSOS separados, não de duas promises no mesmo event loop
+    // (que nunca entrelaçam I/O síncrono).
+    const root = tmpRoot();
+    const path = join(root, "wt-race");
+    const runnerScript = join(root, "claim-runner.mjs");
+    fs.writeFileSync(
+      runnerScript,
+      [
+        "import { claimWorktree } from " + JSON.stringify(join(process.cwd(), "scripts/lib/session-registry.ts")) + ";",
+        "const [, , root, path, sessionId, delayMs] = process.argv;",
+        "await new Promise((r) => setTimeout(r, Number(delayMs)));",
+        "process.stdout.write(String(claimWorktree(path, sessionId, root)));",
+      ].join("\n"),
+    );
+    try {
+      const { spawn } = await import("node:child_process");
+      const run = (sessionId: string, delayMs: number) =>
+        new Promise<string>((resolve, reject) => {
+          const child = spawn(process.execPath, [runnerScript, root, path, sessionId, String(delayMs)], {
+            stdio: ["ignore", "pipe", "inherit"],
+          });
+          let out = "";
+          child.stdout.on("data", (d) => { out += d.toString(); });
+          child.on("close", (code) => (code === 0 ? resolve(out.trim()) : reject(new Error(`exit ${code}`))));
+        });
+      // Mesmo delay nos dois — maximiza a chance de colidirem no mesmo instante.
+      const [resultA, resultB] = await Promise.all([run("session-race-a", 20), run("session-race-b", 20)]);
+      const wins = [resultA, resultB].filter((r) => r === "true").length;
+      assert.strictEqual(wins, 1, `exatamente uma identidade deveria vencer a disputa pelo mesmo path, mas ganharam ${wins} (resultA=${resultA}, resultB=${resultB})`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#7892: claim expirado libera o path para outra identidade", () => {
+    const root = tmpRoot();
+    const path = join(root, "wt-expira");
+    try {
+      assert.strictEqual(claimWorktree(path, "session-dona", root), true);
+      // Corrompe o TTL diretamente no disco pra simular expiração sem sleep.
+      const claimDir = join(root, "data", "sessions", ".worktree-claims");
+      const [claimFileName] = fs.readdirSync(claimDir);
+      const claimFile = join(claimDir, claimFileName);
+      const raw = JSON.parse(fs.readFileSync(claimFile, "utf8"));
+      raw.expires_at = Date.now() - 1000;
+      fs.writeFileSync(claimFile, JSON.stringify(raw));
+      assert.strictEqual(claimWorktree(path, "session-outra", root), true, "path livre após expirar, outra identidade reivindica");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("hook session-beacon.mjs é ESM, sem require CJS", () => {
