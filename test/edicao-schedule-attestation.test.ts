@@ -10,6 +10,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildEdicaoScheduleAttestation,
   parseEdicaoScheduleAttestation,
@@ -59,6 +62,34 @@ describe("parseEdicaoScheduleAttestation — fail-soft", () => {
 
   it("array em vez de objeto → null", () => {
     assert.equal(parseEdicaoScheduleAttestation("[]"), null);
+  });
+});
+
+describe("parseEdicaoScheduleAttestation — tolerância a BOM UTF-8 (#7036, achado do review da PR #7860)", () => {
+  it("string com BOM (\\uFEFF) na frente do JSON ainda parseia corretamente", () => {
+    const now = new Date("2026-09-01T19:00:00Z");
+    const attestation = buildEdicaoScheduleAttestation("NEO", "windows-task-scheduler", true, now);
+    const withBom = "﻿" + JSON.stringify(attestation);
+    assert.deepEqual(parseEdicaoScheduleAttestation(withBom), attestation);
+  });
+
+  it("arquivo real gravado com BOM UTF-8 (repro exato do que Set-Content -Encoding utf8 produz no PowerShell 5.1) é lido corretamente via readFileSync + parse", () => {
+    const dir = mkdtempSync(join(tmpdir(), "edicao-schedule-attestation-bom-"));
+    const filePath = join(dir, "attestation.json");
+    try {
+      const now = new Date("2026-09-01T19:00:00Z");
+      const attestation = buildEdicaoScheduleAttestation("NEO", "windows-task-scheduler", true, now);
+      // Grava com BOM UTF-8 explícito, replicando o bug: Set-Content -Encoding
+      // utf8 no Windows PowerShell 5.1 escreve UTF-8 COM BOM (só corrigido em
+      // PS7+ com utf8NoBOM) — sem a tolerância em parseEdicaoScheduleAttestation,
+      // JSON.parse lançaria sobre o BOM e a atestação seria silenciosamente
+      // tratada como "arquivo ausente".
+      writeFileSync(filePath, "﻿" + JSON.stringify(attestation), "utf8");
+      const raw = readFileSync(filePath, "utf8");
+      assert.deepEqual(parseEdicaoScheduleAttestation(raw), attestation);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

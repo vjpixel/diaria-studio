@@ -92,7 +92,15 @@ function Write-EdicaoScheduleAttestation {
             Write-Warning "Atestação cross-machine NÃO gravada — '$dataDir' não existe nesta máquina (ver CLAUDE.md § Setup, junction do OneDrive)."
             return
         }
-        ($attestation | ConvertTo-Json -Compress) | Set-Content -Path $AttestationPath -Encoding utf8 -NoNewline
+        # Set-Content -Encoding utf8 grava com BOM no Windows PowerShell 5.1
+        # (só corrigido em PS7+ com utf8NoBOM) — o consumidor Node
+        # (readFileSync(path, "utf8")) não remove BOM automaticamente e
+        # JSON.parse lança, falhando em SILÊNCIO porque
+        # parseEdicaoScheduleAttestation trata qualquer erro de parse como
+        # "arquivo ausente" (#7036, achado do review da PR #7860). Escrever
+        # via .NET com UTF8Encoding($false) = sem BOM, robusto em PS 5.1 e 7+.
+        $json = $attestation | ConvertTo-Json -Compress
+        [System.IO.File]::WriteAllText($AttestationPath, $json, (New-Object System.Text.UTF8Encoding($false)))
         Write-Output "Atestação cross-machine gravada em $AttestationPath (armed=$Armed)."
     } catch {
         Write-Warning "Falha ao gravar atestação cross-machine em '$AttestationPath' (não bloqueia o registro/remoção da task): $_"

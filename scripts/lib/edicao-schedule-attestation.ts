@@ -78,11 +78,20 @@ export function buildEdicaoScheduleAttestation(
  * "arquivo nunca existiu" — o caller (`resolveEdicaoTimerStateCrossMachine`)
  * trata as duas coisas de forma idêntica, nunca inventa um veredito a
  * partir de um marcador ilegível.
+ *
+ * Tolerante a BOM UTF-8 (`﻿`) no início do conteúdo — defesa em
+ * profundidade (#7036, achado do review da PR #7860): o único writer hoje
+ * (`setup-edicao-schedule.ps1`) já escreve sem BOM, mas qualquer outro
+ * escritor futuro (ou uma ferramenta do editor que salve com BOM) não deve
+ * fazer esta atestação falhar em SILÊNCIO — sem isso, `JSON.parse` lançaria
+ * sobre o BOM e o erro seria tratado como "arquivo ausente", exatamente a
+ * classe de falha silenciosa que este mecanismo existe pra evitar.
  */
 export function parseEdicaoScheduleAttestation(raw: string | null): EdicaoScheduleAttestation | null {
   if (raw === null) return null;
   try {
-    const obj: unknown = JSON.parse(raw);
+    const stripped = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
+    const obj: unknown = JSON.parse(stripped);
     if (
       obj !== null &&
       typeof obj === "object" &&
