@@ -5046,6 +5046,12 @@ export function planSafeBackupCapPrune(
     let remaining = withMtime.slice();
     const removed: SafeBackupCapPruneEntry[] = [];
 
+    // Cada candidato é avaliado contra `remaining` no estado ATUAL (já
+    // descontando remoções deste mesmo laço, não o grupo original) — é essa
+    // ordem sequencial que torna seguro podar 2 backups adjacentes com a
+    // MESMA claim única (o 1º ainda vê o 2º presente e é liberado; o 2º já
+    // não vê o 1º e é preservado). Paralelizar esta avaliação reintroduziria
+    // risco de perda de dado sem nenhum teste que pegasse isso hoje.
     for (const candidate of withMtime) {
       if (remaining.length <= capPerGroup) break; // já dentro do cap
 

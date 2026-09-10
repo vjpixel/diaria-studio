@@ -593,6 +593,11 @@ export function hasMergeActivitySince(
  * (mesmo comportamento de antes desta checagem existir, ou seja, reporta o
  * stall cru como sempre reportou). O objetivo é reduzir falso-positivo
  * quando o sinal está disponível, nunca introduzir um novo modo de falha.
+ *
+ * `--limit 30` sozinho basta porque `gh pr list --state merged` devolve
+ * mais-recente-primeiro por padrão (confirmado ao vivo) — se esse default
+ * mudar, a checagem passaria a examinar os 30 merges MAIS ANTIGOS em vez
+ * dos mais recentes, reintroduzindo o falso-positivo em silêncio.
  */
 export async function fetchRecentMergeActivity(
   rootDir: string,
