@@ -55,11 +55,23 @@ describe(".claude/hooks/block-worktree-alien-commit.mjs existe e é registrado (
     assert.ok(existsSync(HOOK_PATH), `esperado existir: ${HOOK_PATH}`);
   });
 
-  it("está registrado em .claude/settings.json sob PreToolUse/Bash", () => {
-    const settings = readFileSync(join(ROOT, ".claude", "settings.json"), "utf8");
+  it("está registrado em .claude/settings.json sob PreToolUse/hooks[matcher=Bash]/args (não só em algum lugar do arquivo)", () => {
+    // Self-review (#7899 finding 9): checagem por substring em qualquer
+    // lugar do arquivo não pegaria uma futura regressão de posicionamento
+    // (ex: hook movido pra PostToolUse, ou pro matcher errado) — navega o
+    // JSON estruturado até o array de args da entrada certa.
+    const settings = JSON.parse(readFileSync(join(ROOT, ".claude", "settings.json"), "utf8"));
+    const preToolUse = settings?.hooks?.PreToolUse;
+    assert.ok(Array.isArray(preToolUse), "settings.json deve ter hooks.PreToolUse como array");
+    const bashGroup = preToolUse.find((g: { matcher?: string }) => g.matcher === "Bash");
+    assert.ok(bashGroup, "deve existir um grupo PreToolUse com matcher \"Bash\"");
+    const entries: Array<{ args?: string[] }> = bashGroup.hooks ?? [];
+    const registered = entries.some((h) =>
+      (h.args ?? []).some((a) => a.includes("block-worktree-alien-commit.mjs")),
+    );
     assert.ok(
-      settings.includes("block-worktree-alien-commit.mjs"),
-      "block-worktree-alien-commit.mjs precisa aparecer em .claude/settings.json — #7895 (era código morto, entregue no #7810 sem wiring)",
+      registered,
+      "block-worktree-alien-commit.mjs precisa estar em hooks.PreToolUse[matcher=Bash][].args — #7895 (era código morto, entregue no #7810 sem wiring)",
     );
   });
 });
@@ -206,6 +218,111 @@ describe("block-worktree-alien-commit.mjs — funções puras exportadas (#7895)
       // registro malformado: fail-open, não lança
       writeFileSync(join(sessionsDir, "bad.json"), "{not json");
       assert.doesNotThrow(() => findConflictingClaimSessionId(tmp, worktreePath, "me"));
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("block-worktree-alien-commit.mjs — integração com um LINKED WORKTREE real (#7899 findings 1 e 2)", () => {
+  // Reproduz de verdade o cenário que a review do PR #7899 achou quebrado:
+  // (1) `checkoutRoot` derivado de `import.meta.url` (path do ARQUIVO do
+  // hook) em vez de `payload.cwd` — sob `isolation: "worktree"` o harness
+  // carrega o hook a partir de `${CLAUDE_PROJECT_DIR}`, fixo na raiz
+  // original, não no worktree (#7712); (2) `git rev-parse --git-common-dir`
+  // devolve path ABSOLUTO e `path.join(checkoutRoot, commonDir, "..")`
+  // (bug anterior) não re-raiza nele, produzindo um path inexistente.
+  //
+  // Este teste cria um repo git de verdade + um worktree VINCULADO de
+  // verdade num diretório temporário (nunca toca o checkout real nem
+  // `data/sessions/` real) e roda o hook via `execFileSync` passando
+  // `payload.cwd` = path do worktree — exatamente a forma que o harness usa
+  // — pra confirmar que `checkoutRoot`/`repoRoot` resolvem corretamente daí,
+  // não do `import.meta.url` do arquivo (que aponta pro checkout deste
+  // teste, não pro worktree temporário).
+  it("detecta conflito de claim quando o worktree_claim aponta pro worktree TEMPORÁRIO (não pro checkout do hook)", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const tmp = mkdtempSync(join(tmpdir(), "alien-commit-worktree-"));
+    const mainRepo = join(tmp, "main");
+    const linkedWorktree = join(tmp, "wt");
+    try {
+      mkdirSync(mainRepo, { recursive: true });
+      const git = (args: string[], cwd: string) =>
+        execFileSync("git", args, { cwd, encoding: "utf8" });
+      git(["init", "-q"], mainRepo);
+      git(["config", "user.email", "test@example.com"], mainRepo);
+      git(["config", "user.name", "Test"], mainRepo);
+      writeFileSync(join(mainRepo, "README.md"), "x");
+      git(["add", "."], mainRepo);
+      git(["commit", "-q", "-m", "init"], mainRepo);
+      git(["branch", "feature-branch"], mainRepo);
+      git(["worktree", "add", "-q", linkedWorktree, "feature-branch"], mainRepo);
+
+      // data/sessions/ vive no checkout PRINCIPAL (mainRepo), não no worktree
+      const sessionsDir = join(mainRepo, "data", "sessions");
+      mkdirSync(sessionsDir, { recursive: true });
+      writeFileSync(
+        join(sessionsDir, "alien.json"),
+        JSON.stringify({
+          session_id: "alien-session-id",
+          worktree_claim: { path: linkedWorktree, expires_at: Date.now() + 3_600_000 },
+        }),
+      );
+
+      const { stdout } = runHook({
+        tool_name: "Bash",
+        tool_input: { command: 'git commit -m "test"' },
+        session_id: "my-session-id", // diferente de alien-session-id
+        cwd: linkedWorktree, // simula o payload.cwd que o harness de fato envia
+      });
+
+      assert.ok(stdout.length > 0, "esperava bloqueio (stdout com JSON de deny) — se vazio, os bugs #1/#2 voltaram");
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.hookSpecificOutput?.permissionDecision, "deny");
+      assert.match(parsed.hookSpecificOutput?.permissionDecisionReason ?? "", /claim ativo/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("NÃO bloqueia quando o claim é da PRÓPRIA sessão (mesmo cenário de worktree real)", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const tmp = mkdtempSync(join(tmpdir(), "alien-commit-worktree-own-"));
+    const mainRepo = join(tmp, "main");
+    const linkedWorktree = join(tmp, "wt");
+    try {
+      mkdirSync(mainRepo, { recursive: true });
+      const git = (args: string[], cwd: string) =>
+        execFileSync("git", args, { cwd, encoding: "utf8" });
+      git(["init", "-q"], mainRepo);
+      git(["config", "user.email", "test@example.com"], mainRepo);
+      git(["config", "user.name", "Test"], mainRepo);
+      writeFileSync(join(mainRepo, "README.md"), "x");
+      git(["add", "."], mainRepo);
+      git(["commit", "-q", "-m", "init"], mainRepo);
+      git(["branch", "feature-branch"], mainRepo);
+      git(["worktree", "add", "-q", linkedWorktree, "feature-branch"], mainRepo);
+
+      const sessionsDir = join(mainRepo, "data", "sessions");
+      mkdirSync(sessionsDir, { recursive: true });
+      writeFileSync(
+        join(sessionsDir, "own.json"),
+        JSON.stringify({
+          session_id: "my-session-id",
+          worktree_claim: { path: linkedWorktree, expires_at: Date.now() + 3_600_000 },
+        }),
+      );
+
+      const { stdout } = runHook({
+        tool_name: "Bash",
+        tool_input: { command: 'git commit -m "test"' },
+        session_id: "my-session-id", // mesma sessão do claim
+        cwd: linkedWorktree,
+      });
+
+      assert.equal(stdout, "");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

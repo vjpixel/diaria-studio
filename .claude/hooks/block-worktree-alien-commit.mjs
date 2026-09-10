@@ -123,6 +123,12 @@ export function sessionsDir(repoRoot) {
  * ambíguo — fail-open).
  */
 export function findConflictingClaimSessionId(repoRoot, checkoutRoot, callerSessionId, now = Date.now()) {
+  // Self-review (#7899 finding 8): sem `callerSessionId` não dá pra distinguir
+  // "é a própria sessão" de "é outra sessão" — nunca sinalizar conflito nesse
+  // estado (fail-open), senão o claim da PRÓPRIA sessão (bem provável de
+  // existir, dado que o convencional é reivindicar o worktree antes de
+  // trabalhar nele) seria lido como alheio.
+  if (typeof callerSessionId !== "string" || callerSessionId === "") return null;
   const dir = sessionsDir(repoRoot);
   let entries;
   try {
@@ -146,9 +152,13 @@ export function findConflictingClaimSessionId(repoRoot, checkoutRoot, callerSess
     if (resolvePath(claim.path) !== wantedPath) continue;
     const expiresAt = claim.expires_at ?? claim.expiresAt;
     if (typeof expiresAt === "number" && Number.isFinite(expiresAt) && expiresAt <= now) continue; // claim expirado
-    const recordSessionId = record.session_id ?? record.sessionId ?? claim.sessionId;
+    // Self-review (#7899 finding 7): mesma cadeia de fallback de
+    // `session-registry.ts` (`claimWorktree`: `other.session_id ?? other.id
+    // ?? other.sessionId`) — um record que só carrega `id` não pode ser
+    // silenciosamente pulado (falso-negativo).
+    const recordSessionId = record.session_id ?? record.id ?? record.sessionId ?? claim.sessionId;
     if (typeof recordSessionId !== "string" || recordSessionId === "") continue;
-    if (typeof callerSessionId === "string" && callerSessionId !== "" && recordSessionId === callerSessionId) continue; // é a própria sessão
+    if (recordSessionId === callerSessionId) continue; // é a própria sessão
     return recordSessionId;
   }
   return null;
@@ -195,8 +205,10 @@ export const BLOCK_REASON_CLAIM =
   "`git commit` bloqueado pelo guard mecânico #7722 item 4: este worktree tem um claim ativo " +
   "(`data/sessions/*.json` → `worktree_claim.path`) de uma sessão DIFERENTE da que está tentando " +
   "commitar agora. Provável cenário: outra sessão adotou/mexeu neste worktree e trocou a branch por " +
-  "baixo — commitar aqui pode ir parar num branch/PR que não é o seu. Confirme com " +
-  "`npx tsx scripts/lib/session-registry.ts is-claimed` (ou releia `data/sessions/`) antes de prosseguir.";
+  "baixo — commitar aqui pode ir parar num branch/PR que não é o seu. Releia os registros em " +
+  "`data/sessions/*.json` (campo `worktree_claim.path`) pra identificar a sessão reivindicante " +
+  "antes de prosseguir — `session-registry.ts is-claimed` é sobre claims de ISSUE, não de worktree, " +
+  "não serve pra confirmar este caso (#7899 finding 4).";
 
 export const BLOCK_REASON_BRANCH_DIVERGE =
   "`git commit` bloqueado pelo guard mecânico #7722 item 4: a branch do HEAD deste worktree diverge " +
@@ -219,12 +231,43 @@ if (
       const command = payload.tool_input?.command;
       if (!commandHasGitCommit(command)) return;
 
-      const hookDir = dirname(fileURLToPath(import.meta.url));
-      const checkoutRoot = join(hookDir, "..", "..");
+      // Self-review (#7899 finding 1): NUNCA derivar o cwd real da chamada a
+      // partir de `import.meta.url`/`dirname` do ARQUIVO deste hook — medição
+      // ao vivo documentada em `block-gh-pr-merge-subagent.mjs` (#7712)
+      // mostrou que, para uma sessão spawnada com `isolation: "worktree"`, o
+      // harness carrega o hook a partir de `${CLAUDE_PROJECT_DIR}`, que fica
+      // FIXO na raiz da sessão original — não acompanha o worktree. Só
+      // `payload.cwd` reflete o cwd de fato da chamada `Bash` que disparou
+      // este hook. Fallback pro path do próprio arquivo só quando `cwd`
+      // vem ausente do payload (nunca deveria acontecer em uso real, mas
+      // mantém o hook testável/funcional fora do harness).
+      const payloadCwd = typeof payload.cwd === "string" && payload.cwd !== "" ? payload.cwd : null;
+      const probeCwd = payloadCwd ?? join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+      // `payload.cwd` pode ser uma SUBPASTA do worktree (a sessão pode ter
+      // dado `cd` antes do `git commit`), não necessariamente a raiz — usa
+      // `git rev-parse --show-toplevel` pra resolver a raiz de verdade, que
+      // é o que `worktree_claim.path`/`isLinkedWorktree` (checagem de
+      // `.git` DIRETO sob o path) esperam.
+      let checkoutRoot = probeCwd;
+      try {
+        const toplevel = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+          cwd: probeCwd,
+          encoding: "utf8",
+          timeout: 1000,
+        }).trim();
+        if (toplevel) checkoutRoot = toplevel;
+      } catch {
+        // fail-open: usa probeCwd mesmo (pode não ser a raiz exata do worktree)
+      }
       if (!isLinkedWorktree(checkoutRoot)) return; // fora de escopo: só worktree (mesmo escopo de block-worktree-bare-push.mjs)
 
       // git-common-dir (repo root para data/sessions) — cada worktree tem seu
       // próprio checkoutRoot, mas data/sessions/ vive só no checkout principal.
+      // Self-review (#7899 finding 2): `git rev-parse --git-common-dir`
+      // devolve um path ABSOLUTO — `resolvePath(commonDir, "..")` re-raiza
+      // corretamente nele; `join(checkoutRoot, commonDir, "..")` (bug
+      // anterior) faz concatenação de string e produz um path inexistente
+      // quando `commonDir` já é absoluto (reproduzido ao vivo neste worktree).
       let repoRoot = checkoutRoot;
       try {
         const commonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
@@ -232,7 +275,7 @@ if (
           encoding: "utf8",
           timeout: 1000,
         }).trim();
-        if (commonDir) repoRoot = resolvePath(join(checkoutRoot, commonDir, ".."));
+        if (commonDir) repoRoot = resolvePath(commonDir, "..");
       } catch {
         // fail-open: usa checkoutRoot mesmo
       }
