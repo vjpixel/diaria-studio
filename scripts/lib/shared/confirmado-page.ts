@@ -3,10 +3,13 @@
  *
  * Render puro (sem I/O, sem env) da página de confirmação do double opt-in
  * da Beehiiv/Kit — extraído de `workers/poll/src/confirmado.ts`, onde toda a
- * história desta página (por que ela existe, o survey de interesses, as 4
- * "portas" de curadoria, a instrumentação GTM, e por que `gclid`/`fbclid`/
- * `msclkid`/`li_fat_id` não se aplicam aqui) segue documentada — não
- * repetida neste arquivo pra não duplicar a fonte da verdade.
+ * história desta página (por que ela existe, as 4 "portas" de curadoria, a
+ * instrumentação GTM, e por que `gclid`/`fbclid`/`msclkid`/`li_fat_id` não
+ * se aplicam aqui) segue documentada — não repetida neste arquivo pra não
+ * duplicar a fonte da verdade. O CTA pro survey de interesses (#5167,
+ * estilizado como botão em #5800) foi removido em #7855 — pedido direto do
+ * editor; o formulário (`https://diar.ia.br/forms/f7528798-…`) continua
+ * existindo, só deixou de ser chamado por esta página.
  *
  * Motivo da extração (decisão do editor, comentário `decisao-editor` na
  * issue #7737): a página passa a ser servida em `diar.ia.br/confirmado`
@@ -37,16 +40,6 @@ export const PAGE_URL = "https://diar.ia.br/confirmado";
 const PAGE_TITLE = "Assinatura confirmada — diar.ia.br";
 const PAGE_DESCRIPTION = "Sua assinatura da newsletter diar.ia.br está confirmada.";
 
-/**
- * URL pública do survey de interesses (#5167 — "168 respostas, parado desde
- * 22/05, a página de confirmação é o momento de engajamento máximo e é boa
- * chance de reanimá-lo"). Confirmado ao vivo via MCP `get_survey` em
- * 13/08/2026 (`url` do payload) — NÃO é o `editor_url` do dashboard, que
- * exige login. Alimenta `context/audience-profile.md` via
- * `scripts/update-audience.ts`.
- */
-const INTEREST_SURVEY_URL = "https://diar.ia.br/forms/f7528798-f8d5-4fcd-98c2-dc113e8c268b";
-
 /** CSS específico desta página — pequeno o bastante pra não justificar
  * extração pra `curadoria-page.ts` (só esta página usa este layout de
  * "portas" + confirmação). */
@@ -61,13 +54,7 @@ function renderConfirmadoStyles(): string {
   .confirmado-portas a { font-family: Georgia, 'Times New Roman', serif; font-size: 18px; font-weight: 700;
     color: var(--ink); text-decoration: none; }
   .confirmado-portas a:hover { color: var(--teal); }
-  .confirmado-portas p { font-size: 14px; line-height: 1.5; color: var(--ink); opacity: 0.75; margin: 4px 0 0; }
-  .confirmado-survey { padding: 22px 26px; background: var(--card); border: 1px solid var(--rule); border-radius: 2px; margin: 0 0 40px; }
-  .confirmado-survey p { font-size: 15px; line-height: 1.5; color: var(--ink); margin: 0 0 14px; }
-  .confirmado-survey a { display: inline-block; font-family: Georgia, 'Times New Roman', serif; font-size: 15px;
-    font-weight: 700; color: var(--paper); background: var(--teal); text-decoration: none; padding: 10px 20px;
-    border-radius: 4px; }
-  .confirmado-survey a:hover { opacity: 0.85; }`;
+  .confirmado-portas p { font-size: 14px; line-height: 1.5; color: var(--ink); opacity: 0.75; margin: 4px 0 0; }`;
 }
 
 /** Puro — sem I/O, sem env. Testável direto. */
@@ -103,10 +90,6 @@ ${renderCuradoriaFooterStyles()}
     <div class="wrap">
       <p class="confirmado-lede">Pronto — você já está na lista. Obrigado por confirmar.</p>
       <p class="confirmado-timing">Sua primeira edição chega numa manhã de segunda a sexta, direto no seu e-mail: 5 minutos de leitura com as notícias e tutoriais de IA que importam.</p>
-      <div class="confirmado-survey">
-        <p>Quer receber notícias mais alinhadas com o seu interesse? Um formulário rápido ajuda a gente a calibrar o que entra na curadoria.</p>
-        <a href="${INTEREST_SURVEY_URL}">Responder o formulário de interesses</a>
-      </div>
       <div class="confirmado-portas">
         <h2>Enquanto isso</h2>
         <ul>

@@ -19,10 +19,11 @@
  * mais a página em si (que agora mora em `scripts/lib/shared/confirmado-page.ts`,
  * consumida pelo Worker `site`).
  *
- * Não repetir aqui o racional completo de por que esta página existe (o
- * survey de interesses, as 4 "portas" de curadoria, GTM/#5499, por que
- * `gclid`/`fbclid`/`msclkid`/`li_fat_id` não se aplicam) — ele vive na
- * docstring de `scripts/lib/shared/confirmado-page.ts` agora, fonte única.
+ * Não repetir aqui o racional completo de por que esta página existe (as
+ * 4 "portas" de curadoria, GTM/#5499, por que `gclid`/`fbclid`/`msclkid`/
+ * `li_fat_id` não se aplicam) — ele vive na docstring de
+ * `scripts/lib/shared/confirmado-page.ts` agora, fonte única. (O CTA do
+ * survey de interesses, #5167, foi removido dessa página em #7855.)
  * Também não repetir por que o link de confirmação em si sobrevive no
  * Worker `poll` (eia.diar.ia.br já é o domínio de marca de `/jogar`,
  * `/vote`, etc. — mesmo Worker que autentica o funil de DOI) — só o
