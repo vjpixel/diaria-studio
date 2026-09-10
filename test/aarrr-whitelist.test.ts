@@ -22,8 +22,19 @@ describe("whitelist AAARRR no classificador", () => {
   });
 
   it("issue com etapa fora da whitelist fica bloqueada", () => {
-    const r = classify(["bug", "aarrr:retention"], []);
+    const r = classify(["enhancement", "aarrr:retention"], []);
     assert.deepEqual(r, { track: "bloqueada", matched: "label:aarrr-fora-da-whitelist" });
+  });
+
+  it("#7945 — label bug nunca é vetada pela whitelist, tenha ou não etapa liberada", () => {
+    assert.equal(classify(["bug", "aarrr:retention"], []).track, "overnight");
+    assert.equal(classify(["bug", "P1", "aarrr:activation"], []).track, "overnight");
+    assert.equal(classify(["bug", "aarrr:retention"], ["retention"]).track, "overnight");
+  });
+
+  it("#7945 — bug não desarma bloqueio real coexistindo", () => {
+    assert.equal(classify(["bug", "aarrr:retention", "external-blocker"], []).track, "bloqueada");
+    assert.equal(classify(["bug", "aarrr:revenue", "on-hold"], []).track, "fora-de-rodada");
   });
 
   it("vence sobre develop/overnight/agendada", () => {
