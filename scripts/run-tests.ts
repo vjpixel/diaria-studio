@@ -491,7 +491,7 @@ export function resolveConcurrencyPlan(
   let total: number;
   if (Number.isFinite(explicit) && explicit > 0) {
     total = Math.floor(explicit);
-  } else if (env.CI) {
+  } else if (env.CI && env.CI.trim().toLowerCase() !== "false" && env.CI.trim() !== "0") {
     return none;
   } else {
     total = Math.max(1, Math.floor(LOCAL_PROCS_PER_CPU * safeCpus));
@@ -1711,18 +1711,26 @@ if (isMainModule(import.meta.url)) {
     } catch {
       // mesmo fail-soft do `DEFAULT_WORKER_COUNT`
     }
-    const plan = resolveConcurrencyPlan(process.env, cpus, DEFAULT_WORKER_COUNT, extraArgs);
+    // Workers que de fato vão rodar: 1 batch só cai no caminho single-process,
+    // e nunca há mais grupos que batches (`splitIntoWorkerGroups`).
+    const batchCount = Math.ceil(files.length / BATCH_SIZE);
+    const workersInUse = batchCount <= 1 ? 1 : Math.min(DEFAULT_WORKER_COUNT, batchCount);
+    const plan = resolveConcurrencyPlan(process.env, cpus, workersInUse, extraArgs);
     const batchTimeoutMs = process.env.RUN_TESTS_BATCH_TIMEOUT_MS
       ? DEFAULT_BATCH_TIMEOUT_MS
       : Math.round(DEFAULT_BATCH_TIMEOUT_MS * plan.timeoutScale);
+    // A bisecção roda sob o mesmo `--test-concurrency` — escala junto.
+    const bisectTimeoutMs = process.env.RUN_TESTS_BISECT_TIMEOUT_MS
+      ? DEFAULT_BISECT_TIMEOUT_MS
+      : Math.round(DEFAULT_BISECT_TIMEOUT_MS * plan.timeoutScale);
     if (plan.perWorker !== null) {
       process.stderr.write(
-        `run-tests: teto de ${plan.total} processos de teste em voo (${DEFAULT_WORKER_COUNT} workers × ${plan.perWorker}, ${cpus} CPUs); ` +
+        `run-tests: teto de ${plan.total} processos de teste em voo (${workersInUse} workers × ${plan.perWorker}, ${cpus} CPUs); ` +
           `teto por batch ${Math.round(batchTimeoutMs / 1000)}s. RUN_TESTS_MAX_PROCS=N ajusta (#7934).\n`,
       );
     }
     const planArgs = plan.perWorker !== null ? [`--test-concurrency=${plan.perWorker}`] : [];
-    runTestBatchesParallel({ files, extraArgs: [...planArgs, ...extraArgs], batchTimeoutMs }).then(
+    runTestBatchesParallel({ files, extraArgs: [...planArgs, ...extraArgs], batchTimeoutMs, bisectTimeoutMs }).then(
       (code) => {
         process.exitCode = code;
       },

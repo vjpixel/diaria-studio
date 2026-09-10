@@ -1362,6 +1362,23 @@ describe("teto de processos em voo fora do CI (#7934)", () => {
     assert.deepEqual(resolveConcurrencyPlan({ CI: "true" }, 4, 4), { perWorker: null, timeoutScale: 1, total: null });
   });
 
+  it("CI=false / CI=0 contam como local — o teto continua valendo", () => {
+    assert.deepEqual(resolveConcurrencyPlan({ CI: "false" }, 20, 4), resolveConcurrencyPlan({}, 20, 4));
+    assert.deepEqual(resolveConcurrencyPlan({ CI: "0" }, 20, 4), resolveConcurrencyPlan({}, 20, 4));
+  });
+
+  it("REGRESSÃO: o taskkill do killProcessTree também leva windowsHide (senão o kill abre janela)", () => {
+    const fonte = readFileSync(fileURLToPath(new URL("../scripts/run-tests.ts", import.meta.url)), "utf8");
+    assert.match(fonte, /spawnSync\("taskkill",.*windowsHide: true/);
+  });
+
+  it("REGRESSÃO: o plano usa os workers que de fato rodam e escala a bisecção junto", () => {
+    const fonte = readFileSync(fileURLToPath(new URL("../scripts/run-tests.ts", import.meta.url)), "utf8");
+    const entrypoint = fonte.slice(fonte.lastIndexOf("if (isMainModule(import.meta.url))"));
+    assert.match(entrypoint, /resolveConcurrencyPlan\(process\.env, cpus, workersInUse/);
+    assert.match(entrypoint, /runTestBatchesParallel\(\{[^}]*bisectTimeoutMs/);
+  });
+
   it("RUN_TESTS_MAX_PROCS vale inclusive no CI e nunca dá menos de 1 por worker", () => {
     assert.equal(resolveConcurrencyPlan({ CI: "true", RUN_TESTS_MAX_PROCS: "8" }, 20, 4).perWorker, 2);
     assert.equal(resolveConcurrencyPlan({ RUN_TESTS_MAX_PROCS: "1" }, 20, 4).perWorker, 1);

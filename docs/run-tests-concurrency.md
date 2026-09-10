@@ -171,8 +171,11 @@ clock, bem abaixo dos 2,5× que o #7875 mediu com teto de tempo fixo — o que
 confirma que aquele número vinha dos batches mortos e re-tentados, não da
 concorrência menor em si.
 
-CI continua como estava (runner dedicado, ninguém usando). O plano é impresso
-no stderr no início da rodada.
+CI continua como estava (runner dedicado, ninguém usando; `CI=false`/`CI=0`
+contam como local). Quando há teto, ele é impresso no stderr no início da
+rodada; máquina pequena, em que o teto não fica abaixo do default do Node,
+roda sem teto e sem aviso. O teto de tempo da bisecção (#6822) escala junto
+com o do batch.
 
 | env | efeito |
 |---|---|
