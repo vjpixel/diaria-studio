@@ -1841,6 +1841,19 @@ describe("buildWaveProposal (#4657)", () => {
     assert.match(p.warnings.join(" "), /não trocar o público pra reenvio/);
   });
 
+  it("REGRESSÃO #7856: o aviso de 'fila acaba logo' também segue a fila diária unificada, não só availableFirstSend", () => {
+    // availableFirstSend (300) sozinho estaria BEM abaixo do volume (1000) —
+    // mas a fila diária unificada (1500) sobra 500 depois da onda, o mesmo
+    // cenário de "acaba logo" do teste acima. Sem o #7856 aplicado também
+    // aqui, `queueAfter` teria saído negativo (300 - 1000) e o aviso nem
+    // apareceria — silenciando o sinal certo por causa da métrica errada.
+    const p = buildWaveProposal(
+      proposalInput({ availableFirstSend: 300, availableDailyQueue: 1500 }),
+    );
+    assert.equal(p.blockers.length, 0);
+    assert.match(p.warnings.join(" "), /Fila diária acaba logo: sobram 500/);
+  });
+
   it("AVISA sobre não-abridores acumulados ainda elegíveis (canário pós-sunset #5041)", () => {
     const p = buildWaveProposal(proposalInput({ nonOpeners: { count: 112_172, fraction: 0.675, minSends: 2 } }));
     assert.match(p.warnings.join(" "), /NUNCA abrir/);

@@ -1581,7 +1581,7 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
   const queueAfter = queueAvailable - input.volumes.total;
   if (queueAfter >= 0 && queueAfter < input.volumes.total) {
     warnings.push(
-      `Fila de 1º envio acaba logo: sobram ${fmt(queueAfter)} depois desta onda — menos que uma onda inteira. A alavanca pra continuar é verificar o backlog do MillionVerifier (${fmt(input.mvBacklog.total)} contatos, ~US$ ${input.mvBacklog.estimatedCostUsd.toFixed(0)}), não trocar o público pra reenvio.`,
+      `Fila diária acaba logo: sobram ${fmt(queueAfter)} depois desta onda — menos que uma onda inteira. A alavanca pra continuar é verificar o backlog do MillionVerifier (${fmt(input.mvBacklog.total)} contatos, ~US$ ${input.mvBacklog.estimatedCostUsd.toFixed(0)}), não trocar o público pra reenvio.`,
     );
   }
   if (input.nonOpeners.count > 0) {
