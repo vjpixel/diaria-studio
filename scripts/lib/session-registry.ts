@@ -2986,7 +2986,16 @@ export function claimIssueAutoRegistering(
  * colisão — a fonte de verdade é sempre o arquivo indexado por path.
  */
 function worktreeClaimKey(path: string): string {
-  const normalized = path.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
+  // #7900 Finding 4: sem `.toLowerCase()` de propósito, ao contrário de
+  // `isCallerInLinkedWorktree` (`block-gh-pr-merge-subagent.mjs`) — lá o
+  // lowercase existe pra tolerar capitalização de drive DIVERGENTE que o
+  // próprio `git rev-parse` pode devolver no Windows para o MESMO `.git`.
+  // Aqui o `path` é fornecido pelo chamador, não derivado de `git
+  // rev-parse` — dois worktrees REAIS e DISTINTOS que só diferem em
+  // capitalização são um caso real (Linux é case-sensitive); normalizar
+  // caixa aqui trocaria "path controlado" por "colisão falsa" sem nenhum
+  // ganho equivalente ao caso do guard de merge.
+  const normalized = path.replaceAll("\\", "/").replace(/\/+$/, "");
   return createHash("sha256").update(normalized).digest("hex").slice(0, 20);
 }
 
@@ -2995,32 +3004,66 @@ function worktreeClaimFilePath(root: string, path: string): string {
 }
 
 export function claimWorktree(path: string, sessionId: string, repoRoot?: string): boolean {
+  // #7900 fleet review Finding 1 (P1/alta): a versão anterior fazia um
+  // read→check→write DESTRAVADO no arquivo de claim — TOCTOU clássico. Duas
+  // chamadas concorrentes (dois subagentes-irmãos tentando o MESMO path por
+  // engano, ou uma sessão intrusa correndo contra a dona no exato incidente
+  // que o #7722 existe pra prevenir) podiam ler "livre" ao mesmo tempo e as
+  // duas escreverem "ganhei", justamente o bug de colisão que este mecanismo
+  // deveria detectar. O arquivo já tem `withFileLock`/`breakStaleLock` pra
+  // essa classe exata de bug (mesma raiz do #6952 noutro campo deste
+  // registro) — reusado aqui em vez de reinventado.
   const root = repoRoot || process.cwd();
   const claimFile = worktreeClaimFilePath(root, path);
+  const lockPath = `${claimFile}.lock`;
   const nowMs = Date.now();
   const ttl = 30 * 60 * 1000;
 
-  const currentClaim = readJsonSafe<any>(claimFile);
-  const claimLive = currentClaim && (currentClaim.expires_at ?? 0) > nowMs;
-  if (claimLive && currentClaim.sessionId !== sessionId) {
-    return false; // outro dono (sessionId distinto) segura este path vivo
-  }
+  mkdirSync(dirname(claimFile), { recursive: true });
+  breakStaleLock(lockPath); // lock órfão (dono morreu) não pode travar o claim pra sempre
 
-  const claimedAt = claimLive && currentClaim.sessionId === sessionId ? currentClaim.claimed_at : new Date().toISOString();
-  writeJsonSafe(claimFile, { path, sessionId, claimed_at: claimedAt, expires_at: nowMs + ttl });
+  let claimed = false;
+  let claimedAt = new Date().toISOString();
+  withFileLock(lockPath, () => {
+    const currentClaim = readJsonSafe<any>(claimFile);
+    const claimLive = currentClaim && (currentClaim.expires_at ?? 0) > nowMs;
+    if (claimLive && currentClaim.sessionId !== sessionId) {
+      return; // outro dono (sessionId distinto) segura este path vivo — recusa
+    }
+    claimedAt = claimLive && currentClaim.sessionId === sessionId ? currentClaim.claimed_at : claimedAt;
+    writeJsonSafe(claimFile, { path, sessionId, claimed_at: claimedAt, expires_at: nowMs + ttl });
+    claimed = true;
+  });
+
+  if (!claimed) return false;
 
   // Mirror best-effort no record da sessão — só pro consumidor legado
-  // (block-worktree-alien-commit.mjs); nunca decide a colisão acima.
+  // (block-worktree-alien-commit.mjs); nunca decide a colisão acima (#7900
+  // Finding 3: last-writer-wins entre subagentes-irmãos é uma limitação
+  // conhecida e aceita desse consumidor legado, não deste mecanismo). Sob
+  // lock próprio (#7900 Finding 2) pra não atropelar outros campos
+  // CAS-protegidos do mesmo record de sessão (merge_grant, claimed_issues,
+  // heartbeat) — timeout curto: é cosmético, nunca vale travar o claim real
+  // por ele.
   try {
     const sessionFile = sessionFilePath(root, "continuo", machineTag(), sessionId);
-    const currentSession = readJsonSafe<any>(sessionFile);
-    writeJsonSafe(sessionFile, {
-      ...currentSession,
-      session_id: sessionId,
-      worktree_claim: { path, sessionId, claimed_at: claimedAt, expires_at: nowMs + ttl },
-    });
+    const sessionLockPath = `${sessionFile}.lock`;
+    breakStaleLock(sessionLockPath);
+    withFileLock(
+      sessionLockPath,
+      () => {
+        const currentSession = readJsonSafe<any>(sessionFile);
+        writeJsonSafe(sessionFile, {
+          ...currentSession,
+          session_id: sessionId,
+          worktree_claim: { path, sessionId, claimed_at: claimedAt, expires_at: nowMs + ttl },
+        });
+      },
+      2_000,
+    );
   } catch {
-    // Mirror é cosmético — nunca deixa uma falha aqui derrubar o claim real.
+    // Mirror é cosmético — nunca deixa uma falha (inclusive timeout de lock)
+    // aqui derrubar o claim real, já commitado acima.
   }
 
   return true;

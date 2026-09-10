@@ -59,6 +59,46 @@ describe("#7722 worktree guard — regressão executável (não grep)", () => {
     }
   });
 
+  it("#7892 fleet review Finding 1: duas identidades disputando o MESMO path CONCORRENTEMENTE — exatamente uma vence (sem lock, a race deixava as duas ganharem)", async () => {
+    // A versão sem lock fazia read→check→write destravado: duas chamadas
+    // verdadeiramente concorrentes podiam ambas ler "livre" antes de
+    // qualquer uma escrever, e as duas retornarem `true` — a colisão que
+    // este mecanismo existe pra detectar passava batido. `claimWorktree` é
+    // síncrono (I/O bloqueante), então a concorrência real precisa vir de
+    // dois PROCESSOS separados, não de duas promises no mesmo event loop
+    // (que nunca entrelaçam I/O síncrono).
+    const root = tmpRoot();
+    const path = join(root, "wt-race");
+    const runnerScript = join(root, "claim-runner.mjs");
+    fs.writeFileSync(
+      runnerScript,
+      [
+        "import { claimWorktree } from " + JSON.stringify(join(process.cwd(), "scripts/lib/session-registry.ts")) + ";",
+        "const [, , root, path, sessionId, delayMs] = process.argv;",
+        "await new Promise((r) => setTimeout(r, Number(delayMs)));",
+        "process.stdout.write(String(claimWorktree(path, sessionId, root)));",
+      ].join("\n"),
+    );
+    try {
+      const { spawn } = await import("node:child_process");
+      const run = (sessionId: string, delayMs: number) =>
+        new Promise<string>((resolve, reject) => {
+          const child = spawn(process.execPath, [runnerScript, root, path, sessionId, String(delayMs)], {
+            stdio: ["ignore", "pipe", "inherit"],
+          });
+          let out = "";
+          child.stdout.on("data", (d) => { out += d.toString(); });
+          child.on("close", (code) => (code === 0 ? resolve(out.trim()) : reject(new Error(`exit ${code}`))));
+        });
+      // Mesmo delay nos dois — maximiza a chance de colidirem no mesmo instante.
+      const [resultA, resultB] = await Promise.all([run("session-race-a", 20), run("session-race-b", 20)]);
+      const wins = [resultA, resultB].filter((r) => r === "true").length;
+      assert.strictEqual(wins, 1, `exatamente uma identidade deveria vencer a disputa pelo mesmo path, mas ganharam ${wins} (resultA=${resultA}, resultB=${resultB})`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("#7892: claim expirado libera o path para outra identidade", () => {
     const root = tmpRoot();
     const path = join(root, "wt-expira");
