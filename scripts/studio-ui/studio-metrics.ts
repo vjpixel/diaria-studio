@@ -606,7 +606,12 @@ export async function buildMetricsData(rootDir: string, opts: BuildMetricsDataOp
   // vazar o handle `DatabaseSync` (WAL/SHM) a cada chamada — achado ao vivo
   // ao escrever os testes do #7916: sem este close, o handle nunca era
   // liberado e travava a limpeza do diretório temporário no Windows.
-  db?.close();
+  try {
+    db?.close();
+  } catch (e) {
+    // best-effort cleanup — nunca deixar isso virar 500 pra um request cujo dado já foi computado/cacheado com sucesso
+    console.error(`[studio-metrics] falha ao fechar diaria-subscribers.db (ignorada, dado já cacheado): ${(e as Error).message}`);
+  }
   return data;
 }
 

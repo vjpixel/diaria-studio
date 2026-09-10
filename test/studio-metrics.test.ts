@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
 import { buildMetricsData, clearMetricsCache } from "../scripts/studio-ui/studio-metrics.ts";
 import { openDiariaSubscribersDb, ensureSubscriber, upsertSubscription } from "../scripts/lib/diaria-subscribers-db.ts";
 
@@ -383,6 +384,43 @@ describe("buildMetricsData — cache + forceRefresh", () => {
       const after = await buildMetricsData(root, { now: () => new Date("2026-09-03T10:00:02Z"), cacheTtlMs: 1000 });
       assert.equal(after.cached, false);
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildMetricsData — db?.close() falho nunca vira 500 (silent-failure-hunter, PR #7942)", () => {
+  it("REGRESSÃO: DatabaseSync.close() lançando não propaga — dado já computado/cacheado é devolvido do mesmo jeito", async () => {
+    clearMetricsCache();
+    const root = makeRoot();
+    // Seed ANTES de patchear `close()` — `seedKitSubscription` fecha o
+    // próprio handle no finally dela, e não é o alvo desta simulação.
+    seedKitSubscription(root, "kit1@example.com", "2026-09-07T10:00:00.000Z", "google.com");
+    // `loadSubscriptionCoverage` (dentro de buildMetricsData) abre o MESMO
+    // módulo builtin `node:sqlite` que `openDiariaSubscribersDb` usa aqui —
+    // patchear o protótipo simula um close() que lança (handle já fechado,
+    // lock de arquivo no Windows) sem depender de reproduzir o lock real.
+    const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
+      DatabaseSync: { prototype: { close: () => void } };
+    };
+    const originalClose = DatabaseSync.prototype.close;
+    DatabaseSync.prototype.close = function patchedClose(this: { close: () => void }) {
+      // Fecha de verdade (libera o handle real — sem isso o rmSync do
+      // finally trava no Windows, já que o arquivo continuaria aberto) e
+      // só DEPOIS simula a falha, reproduzindo um close() que lança mesmo
+      // tendo liberado o recurso (ex: erro tardio de flush/lock).
+      originalClose.call(this);
+      throw new Error("simulated close() failure — handle already closed / Windows file lock");
+    };
+    try {
+      await assert.doesNotReject(
+        () => buildMetricsData(root, { forceRefresh: true, now: () => new Date("2026-09-07T18:00:00Z") }),
+        "close() falhar no cleanup best-effort não pode derrubar um request cujo dado já foi computado",
+      );
+      const data = await buildMetricsData(root, { now: () => new Date("2026-09-07T18:00:00Z") });
+      assert.equal(data.queda.kitActiveLayer.available, true, "o dado computado antes do close() continua íntegro/cacheado");
+    } finally {
+      DatabaseSync.prototype.close = originalClose;
       rmSync(root, { recursive: true, force: true });
     }
   });
