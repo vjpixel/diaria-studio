@@ -111,3 +111,24 @@ o alvo no repo) sem atualizar os jobs em paralelo
 → job `3330b108a5b2`; `monitor-cron-model-rotation.py` → jobs
 `496cd687d3e0`/`86303d0ed84b`; `pause-cron-on-ratelimit.py` → jobs
 `c3ac9f22c347`/`2cb556b0c30d`).
+
+## Modelo do tick agendado: o job ignora `model.default` (#6908)
+
+O job do cron carrega `model` e `provider` **nos próprios campos** de
+`~/.hermes/cron/jobs.json` — e esses vencem o `model.default` de
+`~/.hermes/config.yaml`. Medido ao vivo no bench do #7602 (08/09/2026):
+trocar só o `model.default` mudou o smoke por CLI, mas o
+`cron run 5d791ef6fc2c` continuou disparando o modelo antigo. (O mesmo job
+também carrega `reasoning_effort` — lido no `jobs.json` vivo em 10/09/2026:
+`high` —, então esforço também não se ajusta pelo `config.yaml`.)
+
+Consequência: **avaliar ou promover modelo mexendo só no `config.yaml` não
+afeta o tick agendado** — que é justamente o workload que se quer medir.
+Pra trocar o modelo do contínuo, alterar o job em `jobs.json` **só via
+`npx tsx scripts/write-hermes-config.ts`** — o único verbo autorizado a
+escrever config viva do Hermes, com backup/validação/revert (nunca
+`Edit`/`Write` direto; ver `scripts/lib/hermes-runtime-sensitive-paths.ts`)
+— e conferir depois pelo `billing_provider` de
+`session_model_usage`, nunca pelo `hermes auth status` (que reporta estado
+nominal, #7647). Estado vivo nunca se cita daqui: ler com
+`hermes cron list --all` ou direto do `jobs.json`.
