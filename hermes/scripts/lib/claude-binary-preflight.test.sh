@@ -251,7 +251,7 @@ assert_contains "encontrado e quebrado: mensagem de binário quebrado, não de P
 # tornava "claude" bare resolvível); o fix do #7565 cria um symlink
 # `$cmd -> candidato` num dir temp e VALIDA com `command -v` antes de
 # declarar sucesso. Este teste invoca "claude" bare DEPOIS do preflight —
-# exatamente como `claude-openrouter.sh:430` faz — pra travar a regressão
+# exatamente como `claude-delegate.sh:430` faz — pra travar a regressão
 # de verdade, não só checar o texto do AVISO.
 
 mkdir -p "$WORKDIR/pkgdir/bin"

@@ -133,7 +133,7 @@ export function isPathAllowed(
  * Guard de auto-modificação (#6817 item 4) — pura. `activeSkillPaths` é a
  * lista de arquivos que o tick CORRENTE está executando (o job em
  * `~/.hermes/cron/jobs.json`, o SKILL.md sendo lido agora, o wrapper
- * `claude-openrouter.sh` que despachou este processo) — resolvida pelo
+ * `claude-delegate.sh` que despachou este processo) — resolvida pelo
  * CLI, não por este módulo. `true` significa "este path é o chão sob os
  * pés do tick corrente — não aplicar a mudança AGORA, abrir PR pra
  * próximo tick/decisão do editor" (achado #6059: contínuo deletando a

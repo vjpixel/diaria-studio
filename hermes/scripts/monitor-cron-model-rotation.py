@@ -46,7 +46,7 @@ JOB_ID = "5d791ef6fc2c"
 # rodar em NENHUM modelo, apesar do tick ter terminado com "sucesso" do
 # ponto de vista do Hermes.
 #
-# #6697 finding 1: "falhou model=X" FOI removido daqui. `claude-openrouter.sh`
+# #6697 finding 1: "falhou model=X" FOI removido daqui. `claude-delegate.sh`
 # imprime essa linha para CADA modelo que falha antes de um seguinte dar
 # certo — o fallback em cadeia é o comportamento de PROJETO, não uma falha
 # (o caso comum é o :free #1 estourar cota e o #2 responder normalmente). O
@@ -55,7 +55,7 @@ JOB_ID = "5d791ef6fc2c"
 # `exit 4` no fim do loop do wrapper.
 #
 # #6795: "rc=1" foi removido pelo MESMO motivo que já valeu para
-# "falhou model=" — `claude-openrouter.sh:282,288,300,304` imprime
+# "falhou model=" — `claude-delegate.sh:282,288,300,304` imprime
 # "falhou model=$MODEL rc=$RC: ..." em stderr para CADA modelo que falha
 # antes de um seguinte dar certo, e um `:free` estourar cota (rc=1) seguido
 # de sucesso no próximo elo é o tick normal e bem-sucedido, não uma falha de
@@ -76,7 +76,7 @@ DELEGATION_FAILURE_MARKERS = (
 # Achado no self-review desta mesma PR: um corte em `[^\s:]+` (parar no
 # primeiro ':') TRUNCA slugs `:free` — a maioria dos modelos da chain
 # (ex: "poolside/laguna-s-2.1:free") tem um ':' DENTRO do próprio nome, não
-# só como delimitador do log. `claude-openrouter.sh` imprime "falhou
+# só como delimitador do log. `claude-delegate.sh` imprime "falhou
 # model=$MODEL" seguido ora por espaço ("model=$MODEL rc=$RC: ..."), ora por
 # ':' direto ("model=$MODEL: TIMEOUT ...") — captura por \S+ (não-espaço) e
 # só depois remove um ':' remanescente no fim (`.rstrip(":")`), que nunca

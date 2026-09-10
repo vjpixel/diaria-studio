@@ -78,7 +78,7 @@ const KNOWN_TS_ONLY_MODELS: ReadonlySet<string> = new Set([
  * divergência foi investigada e é intencional NESTA direção.
  */
 const KNOWN_PYTHON_ONLY_MODELS: ReadonlySet<string> = new Set([
-  // Elo de assinatura claude.ai (#7649, hermes/scripts/claude-openrouter.sh).
+  // Elo de assinatura claude.ai (#7649, hermes/scripts/claude-delegate.sh).
   // PAID_ALLOWLIST (Python) o inclui porque hermes-model-cost-report.py
   // soma custo de TODAS as fontes (Codex, assinatura, gateway) — escopo
   // amplo, "sonnet" é gasto esperado ali.

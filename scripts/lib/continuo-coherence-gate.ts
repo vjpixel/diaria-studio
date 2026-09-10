@@ -44,7 +44,7 @@
  * ## Por que é mecânico e não julgamento de LLM
  *
  * O pedido explícito era "critério MECÂNICO, não prosa que envelhece em
- * silêncio" — mesma lição do `claude-openrouter.sh` (paráfrase de regra
+ * silêncio" — mesma lição do `claude-delegate.sh` (paráfrase de regra
  * divergiu do código real). Isto não é um classificador perfeito: os 4
  * critérios da issue original (abstração compartilhada / refactor-dedup /
  * dependência de outra PR / fatia de épico) não são 100% decidíveis SÓ pelo
@@ -60,7 +60,7 @@
  *      — dois commits no mesmo arquivo/módulo perto um do outro no tempo,
  *      não um playbook em iteração ativa tocado o tempo todo (achado da
  *      review da PR #6848: sem o filtro de "hotness", `SKILL.md`/
- *      `claude-openrouter.sh` — tocados 4-6× em 48h em rodadas ativas —
+ *      `claude-delegate.sh` — tocados 4-6× em 48h em rodadas ativas —
  *      disparavam pra qualquer issue que só os MENCIONASSE, mesmo issues já
  *      resolvidas e sem relação nenhuma com o padrão real).
  *   2. **Sinal textual explícito**: palavras-chave PT-BR de baixa
@@ -139,7 +139,7 @@ const CROSS_PR_DEP_RE =
 /** Review da PR #6848 (code-reviewer, P2, demonstrado ao vivo contra a
  *  issue #6820 já mergeada): um arquivo tocado MUITAS vezes na janela
  *  recente (ex: `hermes/skills/hermes-diaria-continuo/SKILL.md`,
- *  `hermes/scripts/claude-openrouter.sh` — playbooks em iteração ativa,
+ *  `hermes/scripts/claude-delegate.sh` — playbooks em iteração ativa,
  *  6+ toques em 48h) não é sinal útil de "duas PRs pisando uma na outra"
  *  — é só um arquivo popular. O padrão real medido (#6699) é o OPOSTO:
  *  um arquivo tocado 1-2 vezes, criado numa PR e contornado na seguinte.

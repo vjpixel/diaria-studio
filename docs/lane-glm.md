@@ -17,7 +17,7 @@ objetivo declarado é duplo: **drenar a fila técnica** (31 issues no track
 `overnight` no dia da decisão) e **medir o custo** de `z-ai/glm-5.3-flash` sob
 volume real.
 
-Ele invoca `hermes/scripts/claude-openrouter.sh`, que seta `ANTHROPIC_BASE_URL`
+Ele invoca `hermes/scripts/claude-delegate.sh`, que seta `ANTHROPIC_BASE_URL`
 + `ANTHROPIC_AUTH_TOKEN` apontando para o OpenRouter — exatamente o padrão que
 o #6714 proibiu. Daí precisar de exceção escrita.
 
@@ -57,7 +57,7 @@ drena. **O piloto não começa antes da #6926 mergear.**
 ### (c) `--model` explícito, sempre
 
 A invocação passa **`--model z-ai/glm-5.3-flash`**. Não é detalhe: sem
-`--model`, `claude-openrouter.sh` roda a `MODELS_DEFAULT` inteira
+`--model`, `claude-delegate.sh` roda a `MODELS_DEFAULT` inteira
 (`dots-studio/dots-3-note-preview:free` → `poolside/laguna-s-2.1:free` →
 `z-ai/glm-5.3-flash`), e a exceção passaria a cobrir três modelos, dois deles
 nunca avaliados aqui.
@@ -145,7 +145,7 @@ autenticada por gateway não tem conta ali pra se registrar.
 
 Consequência de desenho, direta: **um lane em modelo de gateway só pode
 receber trabalho por invocação** (`claude -p`, como este harness faz via
-`hermes/scripts/claude-openrouter.sh` UMA VEZ por unidade) — nunca como
+`hermes/scripts/claude-delegate.sh` UMA VEZ por unidade) — nunca como
 sessão de vida longa que o coordenador desperta com `SendMessage`. Não há
 conserto deste lado (a malha de peers é do produto, fora deste repo); o
 valor de registrar isto é impedir que uma sessão futura tente a mesma forma
@@ -208,7 +208,7 @@ chamada de TOPO da ferramenta Bash, nunca numa chamada enterrada dentro de
 um script — um `claim-issue` daqui dentro sempre falharia). O script só
 CONFERE que a claim existe (`is-claimed`) e recusa despachar se não achar.
 Roda num worktree isolado (removido ao final, sucesso ou falha), invoca
-`hermes/scripts/claude-openrouter.sh` UMA VEZ (nunca sessão de vida longa),
+`hermes/scripts/claude-delegate.sh` UMA VEZ (nunca sessão de vida longa),
 tira snapshot de `/api/v1/credits` (`scripts/glm-lane-credits.ts`) antes e
 depois, e registra a unidade append-only em `data/glm-lane/units.jsonl`
 (`scripts/record-glm-lane-unit.ts`) — incluindo se a invocação terminou

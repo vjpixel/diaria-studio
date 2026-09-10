@@ -2,7 +2,7 @@
  * test/claude-openrouter-log-hygiene-6965.test.ts (#6965)
  *
  * Guard de regressão para as 3 lacunas do log de diagnóstico de
- * `hermes/scripts/claude-openrouter.sh` levantadas pela issue #6965 (não
+ * `hermes/scripts/claude-delegate.sh` levantadas pela issue #6965 (não
  * cobertas pelas PRs #6803/#6808):
  *
  * 1. (P2) Rotação/limpeza dos logs crus em /tmp — sem isso, o STDERR_LOG
@@ -27,9 +27,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-openrouter.sh");
+const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-delegate.sh");
 
-describe("claude-openrouter.sh — item 1: rotação/limpeza dos logs crus em /tmp (#6965)", () => {
+describe("claude-delegate.sh — item 1: rotação/limpeza dos logs crus em /tmp (#6965)", () => {
   const source = readFileSync(WRAPPER_PATH, "utf8");
 
   it("roda uma limpeza por IDADE dos logs $$-escopados antes de qualquer tentativa", () => {
@@ -81,7 +81,7 @@ describe("claude-openrouter.sh — item 1: rotação/limpeza dos logs crus em /t
   });
 });
 
-describe("claude-openrouter.sh — item 2: redação de segredo antes de persistir (#6965, P1)", () => {
+describe("claude-delegate.sh — item 2: redação de segredo antes de persistir (#6965, P1)", () => {
   const source = readFileSync(WRAPPER_PATH, "utf8");
 
   it("existe uma função de redação de segredos", () => {
@@ -154,7 +154,7 @@ describe("claude-openrouter.sh — item 2: redação de segredo antes de persist
   });
 });
 
-describe("claude-openrouter.sh — item 3: bytes de stdout/stderr no diagnóstico (#6965, P3)", () => {
+describe("claude-delegate.sh — item 3: bytes de stdout/stderr no diagnóstico (#6965, P3)", () => {
   const source = readFileSync(WRAPPER_PATH, "utf8");
 
   it("computa BYTES_STDOUT a partir de $OUT", () => {

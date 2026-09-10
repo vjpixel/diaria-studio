@@ -89,7 +89,7 @@ check_script() {
   fi
 }
 
-check_script "$DIR/claude-openrouter.sh" "claude-openrouter"
+check_script "$DIR/claude-delegate.sh" "claude-openrouter"
 check_script "$DIR/continuo-pr-review.sh" "continuo-pr-review"
 check_script "$DIR/opus-daily-diff-review.sh" "opus-daily-diff-review"
 

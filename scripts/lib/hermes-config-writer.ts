@@ -42,7 +42,7 @@
  * — então reusar o padrão já validado em produção (blacklist de chave) é
  * consistente, não uma contradição da decisão. `DEFAULT_SENSITIVE_CONFIG_KEYS`
  * é AMPLIADA quando um nome novo de chave sensível aparecer — igual
- * `redact_secrets_in_file` em `claude-openrouter.sh` já opera.
+ * `redact_secrets_in_file` em `claude-delegate.sh` já opera.
  */
 
 /** Chaves cujo VALOR é substituído por `<redacted>` na saída de

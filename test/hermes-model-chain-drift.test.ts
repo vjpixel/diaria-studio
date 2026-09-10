@@ -2,7 +2,7 @@
  * test/hermes-model-chain-drift.test.ts (#6663)
  *
  * Guard de regressão contra o drift medido no #6663: `MODELS_DEFAULT` em
- * `hermes/scripts/claude-openrouter.sh` (o que o wrapper de fato roda) e a
+ * `hermes/scripts/claude-delegate.sh` (o que o wrapper de fato roda) e a
  * tabela "ferramenta | o que faz | modelo" de
  * `hermes/skills/hermes-diaria-continuo/SKILL.md` (a doc que o loop do
  * Hermes/quem investiga lê) divergiram silenciosamente — o #6617 trocou o
@@ -28,7 +28,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-openrouter.sh");
+const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-delegate.sh");
 const SKILL_PATH = join(ROOT, "hermes/skills/hermes-diaria-continuo/SKILL.md");
 
 /**
@@ -65,7 +65,7 @@ function parseModelsDefault(wrapperSource: string): string[] {
   const match = cleaned.match(/MODELS_DEFAULT=\(([^)]*)\)/);
   assert.ok(
     match,
-    "MODELS_DEFAULT=(...) não encontrado em hermes/scripts/claude-openrouter.sh — " +
+    "MODELS_DEFAULT=(...) não encontrado em hermes/scripts/claude-delegate.sh — " +
       "o script mudou de forma estrutural, atualize o regex deste teste.",
   );
   const inner = match![1];
@@ -99,10 +99,10 @@ function resolveShellVarRef(slug: string, wrapperSourceNoComments: string): stri
 function findWrapperTableRow(skillSource: string): string {
   const line = skillSource
     .split("\n")
-    .find((l) => l.includes("claude-openrouter.sh") && l.trim().startsWith("|"));
+    .find((l) => l.includes("claude-delegate.sh") && l.trim().startsWith("|"));
   assert.ok(
     line,
-    "Nenhuma linha de tabela referenciando claude-openrouter.sh encontrada em " +
+    "Nenhuma linha de tabela referenciando claude-delegate.sh encontrada em " +
       "hermes/skills/hermes-diaria-continuo/SKILL.md — a tabela 'ferramenta | o que faz | modelo' mudou de forma.",
   );
   return line!;
@@ -149,7 +149,7 @@ describe("cadeia de modelos do Hermes: wrapper e SKILL.md não podem divergir (#
     it(`slug "${slug}" de MODELS_DEFAULT aparece, em forma COMPLETA, na tabela do SKILL.md`, () => {
       assert.ok(
         tableRow.includes(slug),
-        `"${slug}" está em MODELS_DEFAULT (hermes/scripts/claude-openrouter.sh) mas não aparece ` +
+        `"${slug}" está em MODELS_DEFAULT (hermes/scripts/claude-delegate.sh) mas não aparece ` +
           "na linha da tabela 'ferramenta | o que faz | modelo' de " +
           "hermes/skills/hermes-diaria-continuo/SKILL.md (linha ~40). Atualize a tabela para " +
           "os slugs REAIS que o wrapper roda hoje, em forma completa (não abreviada).",
@@ -203,7 +203,7 @@ describe("cadeia de modelos do Hermes: wrapper e SKILL.md não podem divergir (#
   // Achado (sessão 31/08, ao destravar #6790): a 1ª versão buscava o
   // verbo negativo só DEPOIS da menção ao wrapper (`afterWrapper`) —
   // uma frase corretora com a negação ANTES do nome do wrapper (ex:
-  // "não é verdade que claude-openrouter.sh usa fallback_chains")
+  // "não é verdade que claude-delegate.sh usa fallback_chains")
   // escaparia da detecção e viraria falso-positivo de violação.
   //
   // 1ª tentativa de fix: buscar na JANELA INTEIRA. Review independente
@@ -212,7 +212,7 @@ describe("cadeia de modelos do Hermes: wrapper e SKILL.md não podem divergir (#
   // nenhuma, só coincidentemente dentro das 3 linhas antes do trecho,
   // passaria a eximir uma afirmação genuinamente errada (falso
   // negativo — contra-exemplo construído pelo review: "O roteamento
-  // não é feito manualmente... claude-openrouter.sh lê o
+  // não é feito manualmente... claude-delegate.sh lê o
   // fallback_chains..." deixaria de ser flagado).
   //
   // Fix final: busca a partir do PRIMEIRO dos dois marcadores (menção
@@ -225,7 +225,7 @@ describe("cadeia de modelos do Hermes: wrapper e SKILL.md não podem divergir (#
   // poder ser testada em isolamento contra os 2 contra-exemplos.
   // -----------------------------------------------------------------------
 
-  it("nenhum doc afirma que claude-openrouter.sh lê config.yaml / fallback_chains / coding_fallback (#6790)", () => {
+  it("nenhum doc afirma que claude-delegate.sh lê config.yaml / fallback_chains / coding_fallback (#6790)", () => {
     const REF_DIR = join(ROOT, "hermes/skills/hermes-diaria-continuo/references");
     const SKILL_MD = join(ROOT, "hermes/skills/hermes-diaria-continuo/SKILL.md");
 
@@ -238,14 +238,14 @@ describe("cadeia de modelos do Hermes: wrapper e SKILL.md não podem divergir (#
       const lines = src.split("\n");
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        if (!line.includes("claude-openrouter")) continue;
+        if (!line.includes("claude-delegate")) continue;
         // Janela de 3 linhas pra trás e 2 pra frente: a afirmação é
         // contextual, não só a linha que menciona o wrapper.
         const windowLines = lines.slice(Math.max(0, i - 3), i + 3);
         if (!isUnnegatedForbiddenClaim(windowLines)) continue;
         assert.fail(
           `doc ${f.replace(ROOT + "/", "")}:` +
-            ` linha ${i + 1} associa claude-openrouter.sh a termo proibido sem negação: "${line.trim()}"`,
+            ` linha ${i + 1} associa claude-delegate.sh a termo proibido sem negação: "${line.trim()}"`,
         );
       }
     }
@@ -261,7 +261,7 @@ const FORBIDDEN_CHAIN_SOURCE = /fallback_chains|coding_fallback|fallback_chain_k
 
 /**
  * Pure (#6790): decide se `windowLines` (contexto de texto ao redor de uma
- * menção a "claude-openrouter") contém uma afirmação NÃO-NEGADA de que o
+ * menção a "claude-delegate") contém uma afirmação NÃO-NEGADA de que o
  * wrapper lê a cadeia de `config.yaml`/`fallback_chains`/`coding_fallback`
  * — `true` = violação (deve falhar o teste), `false` = ausente ou
  * corretora (isenta).
@@ -287,11 +287,11 @@ export function isUnnegatedForbiddenClaim(windowLines: string[]): boolean {
   const window = windowLines.join(" ");
   const forbiddenMatch = FORBIDDEN_CHAIN_SOURCE.exec(window);
   if (!forbiddenMatch) return false;
-  const wrapperIdx = window.indexOf("claude-openrouter");
+  const wrapperIdx = window.indexOf("claude-delegate");
   if (wrapperIdx === -1) return false;
 
   // A negação só conta se estiver na MESMA sentença de um dos 2 marcadores
-  // (cobre "Não é verdade que claude-openrouter.sh usa X" — negação ANTES
+  // (cobre "Não é verdade que claude-delegate.sh usa X" — negação ANTES
   // do wrapper, mas na mesma frase) OU na sentença seguinte (cobre "X.
   // Isso está errado." — o padrão real do corpus, correção como frase
   // separada). Uma negação numa sentença ANTERIOR não-relacionada nunca
@@ -320,7 +320,7 @@ describe("isUnnegatedForbiddenClaim (#6790 — puro, os 3 cenários que derrubar
   it("frase corretora real do corpus (negação DEPOIS do wrapper e do termo proibido) → isenta", () => {
     const windowLines = [
       "**CORREÇÃO (30/08/2026).** A frase original desta seção dizia que o wrapper",
-      "`claude-openrouter.sh` \"resolve via `fallback_chains.coding_fallback` em",
+      "`claude-delegate.sh` \"resolve via `fallback_chains.coding_fallback` em",
       "`~/.hermes/config.yaml`\". Isso está errado por DOIS motivos independentes, e",
     ];
     assert.equal(isUnnegatedForbiddenClaim(windowLines), false);
@@ -332,13 +332,13 @@ describe("isUnnegatedForbiddenClaim (#6790 — puro, os 3 cenários que derrubar
     // manual não tem nada a ver com a afirmação (falsa) que vem depois.
     const windowLines = [
       "O roteamento não é feito manualmente pelo editor.",
-      "claude-openrouter.sh lê o fallback_chains do config.yaml pra decidir o modelo.",
+      "claude-delegate.sh lê o fallback_chains do config.yaml pra decidir o modelo.",
     ];
     assert.equal(isUnnegatedForbiddenClaim(windowLines), true, "deve flagar — a negação anterior é de outro assunto");
   });
 
   it("negação ANTES do wrapper mas ligada à MESMA afirmação (o bug original do afterWrapper) → isenta", () => {
-    const windowLines = ['Não é verdade que claude-openrouter.sh usa fallback_chains do config.yaml.'];
+    const windowLines = ['Não é verdade que claude-delegate.sh usa fallback_chains do config.yaml.'];
     assert.equal(isUnnegatedForbiddenClaim(windowLines), false);
   });
 
@@ -347,6 +347,6 @@ describe("isUnnegatedForbiddenClaim (#6790 — puro, os 3 cenários que derrubar
   });
 
   it("sem termo proibido → nunca viola", () => {
-    assert.equal(isUnnegatedForbiddenClaim(["claude-openrouter.sh roda MODELS_DEFAULT hardcoded"]), false);
+    assert.equal(isUnnegatedForbiddenClaim(["claude-delegate.sh roda MODELS_DEFAULT hardcoded"]), false);
   });
 });

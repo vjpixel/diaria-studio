@@ -3,7 +3,7 @@
 #
 # Miolo PURO (sem I/O real, `source`ável de teste) do marcador de exaustão
 # da cota `free-models-per-day` do OpenRouter, usado por
-# `claude-openrouter.sh`.
+# `claude-delegate.sh`.
 #
 # ## O problema que isto fecha (#6712, achado ao vivo 29/08/2026)
 #

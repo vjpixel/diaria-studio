@@ -758,7 +758,7 @@ export function everyActiveRoundLacksMergeAuthority(scan) {
  * registra a sessão do checkout PRINCIPAL como `interactive`, e recusa
  * explicitamente registrar quem roda de um worktree vinculado — que é
  * exatamente como o implementador do fluxo contínuo roda (`claude -p` via
- * `claude-openrouter.sh`, `isolation: "worktree"`). Esse subagente não tem
+ * `claude-delegate.sh`, `isolation: "worktree"`). Esse subagente não tem
  * registro `interactive`, e a leniência do #7702 não o alcança.
  *
  * **O alcance dessa garantia é o fluxo contínuo, não "subagente" em geral —

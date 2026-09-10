@@ -69,7 +69,7 @@
 # Invocação por UNIDADE, não sessão de vida longa (docs/lane-glm.md,
 # mitigação ao vazamento do #6716 — sessão longa compacta mais, e é a
 # compactação que dispara as chamadas Sonnet auxiliares faturadas em
-# cheio). Este script roda `claude -p` (via claude-openrouter.sh) UMA VEZ
+# cheio). Este script roda `claude -p` (via claude-delegate.sh) UMA VEZ
 # e sai — nunca um loop, nunca reusa a mesma sessão pra 2 issues.
 #
 # Antes de cada despacho, o gate de critérios de morte
@@ -346,9 +346,9 @@ rm -f "$CREDITS_STDERR_TMP"
 STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 START_EPOCH=$(date +%s)
 
-echo "[glm-lane] despachando claude-openrouter.sh --model z-ai/glm-5.3-flash (issue #$ISSUE${EXISTING_PR:+, PR #$EXISTING_PR})..."
+echo "[glm-lane] despachando claude-delegate.sh --model z-ai/glm-5.3-flash (issue #$ISSUE${EXISTING_PR:+, PR #$EXISTING_PR})..."
 set +e
-printf '%s' "$PROMPT" | "$REPO/hermes/scripts/claude-openrouter.sh" \
+printf '%s' "$PROMPT" | "$REPO/hermes/scripts/claude-delegate.sh" \
   --model z-ai/glm-5.3-flash \
   --cwd "$WORKTREE_DIR" \
   --tools "$TOOLS" \
@@ -419,9 +419,9 @@ if [ "$CLAUDE_RC" -ne 0 ]; then
   # conselho literalmente. Só "considere retentar" quando NENHUMA PR
   # existe ainda (nesse caso, sim, é seguro despachar de novo do zero).
   if [ -n "${PR_NUMBER:-}" ]; then
-    echo "[glm-lane] a invocação do claude-openrouter.sh saiu com rc=$CLAUDE_RC — unidade registrada como infra-error, não conta pros critérios de morte que medem o MODELO. JÁ EXISTE a PR #$PR_NUMBER pra esta issue — revise-a, ou rode de novo com 'scripts/dispatch-glm-lane-unit.sh $ISSUE --pr $PR_NUMBER' pra iterar. NÃO despache sem --pr, isso abriria uma PR duplicada." >&2
+    echo "[glm-lane] a invocação do claude-delegate.sh saiu com rc=$CLAUDE_RC — unidade registrada como infra-error, não conta pros critérios de morte que medem o MODELO. JÁ EXISTE a PR #$PR_NUMBER pra esta issue — revise-a, ou rode de novo com 'scripts/dispatch-glm-lane-unit.sh $ISSUE --pr $PR_NUMBER' pra iterar. NÃO despache sem --pr, isso abriria uma PR duplicada." >&2
   else
-    echo "[glm-lane] a invocação do claude-openrouter.sh saiu com rc=$CLAUDE_RC — unidade registrada como infra-error, não conta pros critérios de morte que medem o MODELO. Nenhuma PR foi aberta ainda pra issue #$ISSUE; considere retentar do zero (sem --pr)." >&2
+    echo "[glm-lane] a invocação do claude-delegate.sh saiu com rc=$CLAUDE_RC — unidade registrada como infra-error, não conta pros critérios de morte que medem o MODELO. Nenhuma PR foi aberta ainda pra issue #$ISSUE; considere retentar do zero (sem --pr)." >&2
   fi
   exit 1
 fi

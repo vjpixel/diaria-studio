@@ -2,7 +2,7 @@
  * test/claude-openrouter-subscription-lane-7649.test.ts (#7649, Parte 1)
  *
  * Guard de regressão para o elo final de assinatura claude.ai adicionado a
- * `claude-openrouter.sh` — depois do glm-5.3-flash, quando os 3 elos `:free`
+ * `claude-delegate.sh` — depois do glm-5.3-flash, quando os 3 elos `:free`
  * E o pago falham, a cadeia agora tenta MAIS UM elo: o MESMO `claude -p`,
  * mas SEM nenhuma das 8 vars ANTHROPIC_* / CLAUDE_CODE_USE_* de auth e gateway.
  *
@@ -51,7 +51,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-openrouter.sh");
+const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-delegate.sh");
 const LIB_PATH = join(ROOT, "hermes/scripts/lib/free-quota-exhaustion.sh");
 
 function readWrapper(): string {
@@ -77,7 +77,7 @@ function openrouterBranch(src: string): string {
   return src.slice(elseIdx, fiIdx);
 }
 
-describe("claude-openrouter.sh — sentinela do elo de assinatura (#7649)", () => {
+describe("claude-delegate.sh — sentinela do elo de assinatura (#7649)", () => {
   it("MODELS_DEFAULT termina com a sentinela, depois do glm-5.3-flash", () => {
     const src = readWrapper();
     assert.match(
@@ -101,7 +101,7 @@ describe("claude-openrouter.sh — sentinela do elo de assinatura (#7649)", () =
   });
 });
 
-describe("claude-openrouter.sh — branch de invocação (#7649 item 2)", () => {
+describe("claude-delegate.sh — branch de invocação (#7649 item 2)", () => {
   const src = readWrapper();
   const sub = subscriptionBranch(src);
   const openrouter = openrouterBranch(src);
@@ -161,7 +161,7 @@ describe("claude-openrouter.sh — branch de invocação (#7649 item 2)", () => 
   });
 });
 
-describe("claude-openrouter.sh — RC=97 vira ABORT IMEDIATO, nunca 'próximo elo' (#7649 item 2)", () => {
+describe("claude-delegate.sh — RC=97 vira ABORT IMEDIATO, nunca 'próximo elo' (#7649 item 2)", () => {
   const src = readWrapper();
 
   it("`if [ \"$RC\" -eq 97 ]` aparece ANTES do classificador SAW_QUOTA/SAW_CONFIG (RC -eq 124)", () => {
@@ -179,7 +179,7 @@ describe("claude-openrouter.sh — RC=97 vira ABORT IMEDIATO, nunca 'próximo el
   });
 });
 
-describe("claude-openrouter.sh — exit 3 (sem chave OpenRouter) virou warning (#7649 item 3)", () => {
+describe("claude-delegate.sh — exit 3 (sem chave OpenRouter) virou warning (#7649 item 3)", () => {
   const src = readWrapper();
 
   it("não existe mais um `exit 3` matando o script na checagem da chave", () => {
@@ -202,7 +202,7 @@ describe("claude-openrouter.sh — exit 3 (sem chave OpenRouter) virou warning (
   });
 });
 
-describe("claude-openrouter.sh — sentinela sobrevive ao filtro de cota free (#7649 item 5, AO VIVO)", () => {
+describe("claude-delegate.sh — sentinela sobrevive ao filtro de cota free (#7649 item 5, AO VIVO)", () => {
   it("filter_out_free_models mantém 'sonnet' junto com o elo pago, filtrando só os :free", () => {
     const out = execFileSync(
       "bash",
@@ -218,7 +218,7 @@ describe("claude-openrouter.sh — sentinela sobrevive ao filtro de cota free (#
   });
 });
 
-describe("claude-openrouter.sh — guard fail-closed dispara de verdade (#7649 item 7, AO VIVO, isolado)", () => {
+describe("claude-delegate.sh — guard fail-closed dispara de verdade (#7649 item 7, AO VIVO, isolado)", () => {
   // Extrai o loop do guard LITERALMENTE do source (mesma disciplina de
   // "não reimplementar o parser bash" do describe acima) e roda ele isolado,
   // num subshell contrived — nunca toca ~/.hermes/auth.json real nem invoca

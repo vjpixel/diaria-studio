@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT_PATH = join(ROOT, "hermes/scripts/claude-openrouter-symlink-preflight.test.sh");
 
-describe("claude-openrouter.sh — source resolve através de symlink de deploy (#6943)", () => {
+describe("claude-delegate.sh — source resolve através de symlink de deploy (#6943)", () => {
   it("bash hermes/scripts/claude-openrouter-symlink-preflight.test.sh sai com exit 0", () => {
     let out = "";
     try {

@@ -2,7 +2,7 @@
  * test/hermes-background-model-pin.test.ts (#6716)
  *
  * Guard de regressão do vazamento de custo medido em 29/08/2026: o wrapper
- * `hermes/scripts/claude-openrouter.sh` passava `--model <slug-barato>` mas
+ * `hermes/scripts/claude-delegate.sh` passava `--model <slug-barato>` mas
  * NÃO fixava o modelo das chamadas de BACKGROUND do CLI (summarization pra
  * `--resume`, auto-compact). Essas chamadas usavam o default do CLI e saíam
  * como Claude Sonnet 5 a preço cheio no billing do OpenRouter — ~75% do custo
@@ -37,7 +37,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-openrouter.sh");
+const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-delegate.sh");
 
 /**
  * Linhas de código do wrapper, sem comentários shell (o docblock do próprio
@@ -94,7 +94,7 @@ export function stripInlineComment(line: string): string {
   return line;
 }
 
-describe("claude-openrouter.sh — pin do modelo de background (#6716)", () => {
+describe("claude-delegate.sh — pin do modelo de background (#6716)", () => {
   /**
    * #6716, 31/08/2026 — o pin de haiku NÃO bastava, e a razão está nos docs.
    *

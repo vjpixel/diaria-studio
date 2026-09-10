@@ -8,7 +8,7 @@
  *
  * ## O bug que isto fecha
  *
- * A delegação do contínuo (`claude -p` via `claude-openrouter.sh`, `--tools`
+ * A delegação do contínuo (`claude -p` via `claude-delegate.sh`, `--tools`
  * sem `Agent`/`Task`) recebe do hook `.claude/hooks/pr-create-review.mjs` a
  * instrução de despachar `pr-review-toolkit:code-reviewer` via ferramenta
  * Agent. Sem essa ferramenta, o dispatch é impossível — mas a sessão, ao

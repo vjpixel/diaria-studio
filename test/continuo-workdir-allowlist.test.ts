@@ -107,7 +107,7 @@ describe("isPathAllowed (#6817)", () => {
 
 describe("isSelfModification (#6817 item 4)", () => {
   it("path é um dos arquivos ativos do tick corrente -> true", () => {
-    const active = ["/x/SKILL.md", "/x/claude-openrouter.sh"];
+    const active = ["/x/SKILL.md", "/x/claude-delegate.sh"];
     assert.equal(isSelfModification("/x/SKILL.md", active), true);
   });
 

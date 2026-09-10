@@ -10,7 +10,7 @@
  * distingue "ferramenta quebrada" de "padrão não encontrado" (os dois saem
  * não-zero) — um laço de espera de CI que lê isso como "nada pendente"
  * anuncia CI fechado com job ainda rodando; um classificador de erro do
- * `claude-openrouter.sh` que lê isso como "sem sinal" cai no ramo errado.
+ * `claude-delegate.sh` que lê isso como "sem sinal" cai no ramo errado.
  *
  * `command grep` bypassa a função de shell e vai direto ao binário do
  * sistema, imune à quebra. Este arquivo trava os 4 call sites decisórios
@@ -78,8 +78,8 @@ describe("reprodução do mecanismo (#6987) — `grep` é função de shell shel
   });
 });
 
-describe("hermes/scripts/claude-openrouter.sh — 5 grep decisórios usam `command grep` (#6987/#6989)", () => {
-  const source = readSource("hermes/scripts/claude-openrouter.sh");
+describe("hermes/scripts/claude-delegate.sh — 5 grep decisórios usam `command grep` (#6987/#6989)", () => {
+  const source = readSource("hermes/scripts/claude-delegate.sh");
 
   it("model_in_openrouter_catalog: `command grep -qF` (decide exit 4 vs retry transitório)", () => {
     assert.match(
@@ -137,7 +137,7 @@ describe("hermes/scripts/claude-openrouter.sh — 5 grep decisórios usam `comma
       bareGrepLines.length,
       0,
       `encontrei ${bareGrepLines.length} linha(s) de código com \`grep\` sem o prefixo ` +
-        `\`command\` em claude-openrouter.sh: ${JSON.stringify(bareGrepLines)} — todo grep ` +
+        `\`command\` em claude-delegate.sh: ${JSON.stringify(bareGrepLines)} — todo grep ` +
         "neste wrapper roda dentro de um checkout onde o binário `claude` quebra com " +
         "frequência medida (#6875/#6891); qualquer grep novo precisa do prefixo `command` " +
         "(#6987/#6989)",

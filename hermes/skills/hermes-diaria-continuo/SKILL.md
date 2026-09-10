@@ -59,7 +59,7 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
   mudança, rodar `npx tsx scripts/check-continuo-workdir.ts --check-self-mod
   --path {caminho da mudança} --active {lista separada por vírgula dos
   arquivos que ESTE tick está executando agora}` — tipicamente o próprio
-  `SKILL.md`, o wrapper `claude-openrouter.sh`, o job corrente em
+  `SKILL.md`, o wrapper `claude-delegate.sh`, o job corrente em
   `~/.hermes/cron/jobs.json`. `exit 1` (self-modification): **não aplicar
   a mudança neste tick** — abrir PR e deixar pro próximo tick ou decisão
   do editor. `exit 0`: seguro aplicar. Rationale (review da PR #6854 que achou
@@ -99,7 +99,7 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
 
 | ferramenta | o que faz | modelo |
 |---|---|---|
-| `~/.hermes/scripts/claude-openrouter.sh` | roda `claude -p` com OpenRouter (stdin=prompt; `--tools`, `--budget`, `--timeout`); último elo é assinatura claude.ai, sem gateway (#7649) | `dots-studio/dots-3-note-preview:free` → `thinkingmachines/inkling-small:free` → `poolside/laguna-s-2.1:free` → `z-ai/glm-5.3-flash` → `sonnet` |
+| `~/.hermes/scripts/claude-delegate.sh` | roda `claude -p` com OpenRouter (stdin=prompt; `--tools`, `--budget`, `--timeout`); último elo é assinatura claude.ai, sem gateway (#7649) | `dots-studio/dots-3-note-preview:free` → `thinkingmachines/inkling-small:free` → `poolside/laguna-s-2.1:free` → `z-ai/glm-5.3-flash` → `sonnet` |
 | `npx tsx --eval` (direto, sem LLM) | classificação determinística | nenhum |
 | `~/.hermes/scripts/opus-daily-diff-review.sh` | review Opus do diff ACUMULADO do dia (cron separado, 1x/dia; #6865, ex-`daily-consolidated-review.sh`) | Anthropic (assinatura) |
 | `~/.hermes/scripts/continuo-pr-review.sh` | review Sonnet de toda PR aberta no repo, exceto `bot/*` (escopo ampliado além de `continuo/*` no #7446 item 4 — PR de qualquer branch podia ficar sem merger nenhum; cron separado, cadência: derivar com `hermes cron list --all` — nunca esta prosa, #6928; #6865) — o MODELO nunca mergeia (`gh pr merge` fora do `--allowedTools`); o SCRIPT BASH mergeia depois, atrás de 8 portões fail-closed (#6926) — `REPO` fixo em `diaria-studio`, nunca toca PR do fork (#6817 item 6). `escalate` label a PR (`continuo-escalado`) e notifica só na 1ª vez (#7446 item 2). | Anthropic (assinatura) |
@@ -471,7 +471,7 @@ com gh pr create referenciando a issue. NÃO mergeie — desde o #6864, nem
 o coordenador deste tick mergeia mais: o merge acontece exclusivamente no
 pickup (#6823) ou no review consolidado. Se a issue for inviável/ambígua
 além do trivial, comente nela o bloqueio via gh issue comment e pare." | \
-  ~/.hermes/scripts/claude-openrouter.sh \
+  ~/.hermes/scripts/claude-delegate.sh \
     --tools "Read,Grep,Glob,Bash,Edit,Write" \
     --budget 20.0 --timeout 2400
 

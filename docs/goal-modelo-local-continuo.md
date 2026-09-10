@@ -10,7 +10,7 @@ A skill v0.5.0 é **arquitetura delegada**. O modelo local é **orquestrador**:
 
 | tarefa | quem faz |
 |---|---|
-| escrever código, abrir PR | `claude -p` via `~/.hermes/scripts/claude-openrouter.sh` |
+| escrever código, abrir PR | `claude -p` via `~/.hermes/scripts/claude-delegate.sh` |
 | classificar issue | `npx tsx` determinístico, **sem LLM** |
 | revisar PR | crons separados (Opus/Sonnet, assinatura Anthropic) |
 | mergear | fase bash de `continuo-pr-review.sh`, 8 portões fail-closed |
