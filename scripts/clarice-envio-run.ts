@@ -113,6 +113,7 @@ import { writeLastBrakeSnapshot } from "./lib/clarice-envio-last-brake.ts";
 import { proposeNextVolume, brtDayKey, type NextVolumeDecision } from "./lib/clarice-envio-policy.ts";
 import type { RiskSnapshot } from "./clarice-envio-risk.ts";
 import { SCHEDULE_AT_WARNING_PREFIX, type InvocationSummary } from "./clarice-schedule-group.ts"; // #7042
+import type { WaveCollision } from "./lib/clarice-wave-audit.ts"; // #7880
 
 // #5048 — mesmo achado do #4983 (script irmão clarice-novos-run.ts): este é o
 // processo ORQUESTRADOR, invocado sob systemd --user (task Diaria-Clarice-Envio,
@@ -1426,6 +1427,52 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
     step(deps, report, "clarice-import-waves", "scripts/clarice-import-waves.ts", [
       "--cycle", cycle, "--group", waveKeyBase, "--label", label, "--execute",
     ]);
+
+    // #7880 — auditoria PÓS-montagem contra a Brevo AO VIVO: as duas camadas
+    // acima (`sent-or-queued.json`, filtro de recência) leem só o STORE
+    // LOCAL — se ele estiver defasado, concordam com a defasagem e não
+    // acusam nada ("guard defasado concorda com sujeito defasado"). Este
+    // passo cruza `daily.csv` (já escrito pelo `clarice-build-segment.ts`
+    // acima) contra `status=sent`/`status=queued` buscados AGORA na Brevo —
+    // ver `scripts/lib/clarice-wave-audit.ts` pro racional completo.
+    // NÃO-BLOQUEANTE nesta 1ª versão (decisão do editor, #7880): reporta e
+    // segue — nunca lança `EnvioAbort`, mesmo com colisão encontrada (exit
+    // 2) ou falha na própria checagem (exit 1: cota baixa, rede, etc.) — as
+    // 2 camadas existentes continuam sendo a proteção estrutural; esta é
+    // defesa em profundidade opcional.
+    const auditMonth = sendDate.slice(0, 7);
+    const auditResult = deps.exec("scripts/audit-wave-no-duplicate-sends.ts", [
+      "--cycle", cycle, "--group", "daily", "--month", auditMonth, "--json",
+    ]);
+    if (auditResult.code === 0 || auditResult.code === 2) {
+      const auditJson = parseStepJson<{ checked?: number; collisions?: WaveCollision[] }>(auditResult.stdout);
+      const collisions = auditJson?.collisions ?? [];
+      if (collisions.length > 0) {
+        report.note(
+          `⚠️  AUDITORIA (#7880): ${collisions.length} de ${auditJson?.checked ?? "?"} contato(s) da onda ` +
+            `já receberam/estão agendados pra receber e-mail Brevo em ${auditMonth}, segundo a API AO VIVO ` +
+            "(não o store local) — verificação NÃO-BLOQUEANTE nesta versão; investigar antes do disparo:",
+        );
+        for (const c of collisions.slice(0, 20)) {
+          const camps = c.campaigns
+            .map((camp) => `#${camp.id ?? "?"} "${camp.name ?? "?"}" (${camp.status ?? "?"}, ${camp.date ?? "sem data"})`)
+            .join(", ");
+          report.note(`  ${c.email} — lista(s) ${c.listIds.join(", ")}: ${camps}`);
+        }
+        if (collisions.length > 20) {
+          report.note(`  ... e mais ${collisions.length - 20} colisão(ões) (ver --json completo do passo acima).`);
+        }
+      } else {
+        report.note(
+          `✅ auditoria pós-montagem (#7880): ${auditJson?.checked ?? 0} contato(s) verificado(s) contra a Brevo ao vivo em ${auditMonth} — nenhuma colisão.`,
+        );
+      }
+    } else {
+      const detail = auditResult.stderr.trim().split("\n").slice(-4).join(" | ") || "(sem stderr)";
+      report.note(
+        `⚠️  auditoria pós-montagem (#7880) NÃO EXECUTADA (exit ${auditResult.code}): ${detail} — seguindo sem essa checagem extra (as 2 camadas do store continuam ativas).`,
+      );
+    }
 
     // --- Passo 7: criar + agendar cada célula (ou a onda única). ---
     report.section("Passo 7 — Criar e agendar");

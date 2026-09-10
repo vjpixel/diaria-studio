@@ -540,6 +540,13 @@ npx tsx scripts/clarice-split-group-cells.ts --cycle $CYCLE --wave {N} --date {Y
 #    sair MAIOR que a segmentada (ver nota EDITOR_SEED_EMAILS abaixo).
 npx tsx scripts/clarice-import-waves.ts --cycle $CYCLE --group {dia} --label "{label}" --execute
 
+# 3b. Auditar a onda contra a Brevo AO VIVO (#7880, defesa em profundidade —
+#     NÃO-BLOQUEANTE, só reporta). O guard de recência e o dedup cycle-wide
+#     acima leem só o STORE LOCAL — se ele estiver defasado, os dois
+#     concordam com a defasagem e não acusam nada. --month default = mês de
+#     ENVIO do ciclo; passe --month explícito se a onda cai na virada do mês.
+npx tsx scripts/audit-wave-no-duplicate-sends.ts --cycle $CYCLE --group ramp-warm
+
 # 4. Criar a campanha como RASCUNHO — uma por célula (--group + --key, hora EXPLÍCITA)
 npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --group {dia} --key {dia}-A \
   --subject "{assunto A}" --schedule-at {YYYY-MM-DD}T09:00:00Z --create
@@ -572,6 +579,10 @@ npx tsx scripts/clarice-split-group-cells.ts --cycle $CYCLE --wave {N} --date {Y
 
 # 3. Importar — --group é a chave do DIA (1 lista só, --key não é necessário)
 npx tsx scripts/clarice-import-waves.ts --cycle $CYCLE --group {dia} --label "{label}" --execute
+
+# 3b. Auditar a onda contra a Brevo AO VIVO (#7880, defesa em profundidade —
+#     NÃO-BLOQUEANTE, só reporta). Ver nota do fluxo com A/B/C acima.
+npx tsx scripts/audit-wave-no-duplicate-sends.ts --cycle $CYCLE --group ramp-warm
 
 # 4. Criar rascunho — --group basta (1 lista só), hora EXPLÍCITA
 npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --group {dia} \

@@ -149,6 +149,8 @@ function goldenHandlers(opts: { proposal?: Partial<WaveProposal>; risk?: Record<
     "scripts/clarice-build-segment.ts": jsonResult({ selected: proposal.volumes.baseVolume, cycle: CYCLE, group: "daily" }),
     "scripts/clarice-split-group-cells.ts": textResult("ok"),
     "scripts/clarice-import-waves.ts": jsonResult({ mode: "execute", results: [] }),
+    // #7880 — default "sem colisão" (exit 0); testes específicos sobrescrevem.
+    "scripts/audit-wave-no-duplicate-sends.ts": jsonResult({ cycle: CYCLE, group: "daily", month: "2026-08", checked: 0, collisions: [] }),
     "scripts/clarice-schedule-group.ts": [
       jsonResult({ key: "d12-qua12", listId: 500, campaignId: 900, phase: "create", status: "draft" }),
       jsonResult({ key: "d12-qua12", listId: 500, campaignId: 900, phase: "schedule", status: "scheduled", scheduledAt: `${SEND_DATE}T09:00:00.000Z` }),
@@ -595,6 +597,66 @@ describe("clarice-envio-run (#5026)", () => {
       const importCall = calls.find((c) => c.script === "scripts/clarice-import-waves.ts");
       assert.ok(importCall);
       assert.deepEqual(importCall!.args, ["--cycle", CYCLE, "--group", "d12-qua12", "--label", `${CYCLE} d12-qua12`, "--execute"]);
+
+      // #7880 — auditoria pós-montagem: roda DEPOIS do import (o CSV já
+      // existe), com `--group daily` (mesmo grupo do `--daily` do Passo 6,
+      // não a chave da onda/célula) e `--month` derivado de `sendDate`
+      // (#7234 — nunca do ciclo, que pode discordar na virada do mês).
+      const auditCall = calls.find((c) => c.script === "scripts/audit-wave-no-duplicate-sends.ts");
+      assert.ok(auditCall, "deveria ter rodado a auditoria pós-montagem (#7880)");
+      assert.deepEqual(auditCall!.args, ["--cycle", CYCLE, "--group", "daily", "--month", "2026-08", "--json"]);
+      assert.ok(calls.indexOf(auditCall!) > calls.indexOf(importCall!), "auditoria roda DEPOIS do import (#7880)");
+      assert.ok(r.reportMarkdown.includes("nenhuma colisão"), "sem colisão na fixture default => relatório confirma");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    // #7880 — REGRESSÃO: a issue original era "o guard existe mas nunca é
+    // chamado" (script + lógica pura entregues, zero call site real). Este
+    // teste prova a conexão: uma colisão relatada pelo script de auditoria
+    // aparece no relatório da rodada, NOME + LISTA + CAMPANHA, e NÃO aborta
+    // a rodada (decisão do editor: não-bloqueante nesta 1ª versão).
+    it("#7880: auditoria pós-montagem acha colisão => relatório NOMEIA o contato/lista/campanha, rodada SEGUE (code 0)", async () => {
+      const root = freshRoot();
+      const handlers = goldenHandlers();
+      handlers["scripts/audit-wave-no-duplicate-sends.ts"] = {
+        code: 2,
+        stdout: JSON.stringify({
+          cycle: CYCLE,
+          group: "daily",
+          month: "2026-08",
+          checked: 3456,
+          collisions: [
+            {
+              email: "colidiu@example.com",
+              listIds: ["77"],
+              campaigns: [{ id: 900123, name: "Ciclo 2607-08 · onda d9", status: "sent", date: "2026-08-09T09:00:00.000Z" }],
+            },
+          ],
+        }),
+        stderr: "",
+      };
+      const { exec } = makeFakeExec(handlers);
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.ok(r.reportMarkdown.includes("colidiu@example.com"), "e-mail em colisão nomeado no relatório");
+      assert.ok(r.reportMarkdown.includes("lista(s) 77"), "lista em colisão nomeada no relatório");
+      assert.ok(r.reportMarkdown.includes("900123"), "campanha em colisão nomeada no relatório");
+      assert.ok(r.reportMarkdown.includes("NÃO-BLOQUEANTE") || r.reportMarkdown.includes("AUDITORIA"), "relatório sinaliza que é a checagem #7880");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#7880: auditoria pós-montagem FALHA (exit 1 — cota baixa/rede) => rodada SEGUE (code 0), aviso no relatório, nunca aborta", async () => {
+      const root = freshRoot();
+      const handlers = goldenHandlers();
+      handlers["scripts/audit-wave-no-duplicate-sends.ts"] = {
+        code: 1,
+        stdout: "",
+        stderr: "❌ cota de campanhas da Brevo abaixo da reserva — tente novamente após o reset horário.",
+      };
+      const { exec } = makeFakeExec(handlers);
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.ok(r.reportMarkdown.includes("NÃO EXECUTADA"), "relatório avisa que a auditoria não rodou, sem abortar a onda");
       rmSync(root, { recursive: true, force: true });
     });
 
