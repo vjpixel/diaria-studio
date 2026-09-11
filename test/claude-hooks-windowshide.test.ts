@@ -29,6 +29,23 @@
  * OUTRA chamada caindo dentro da janela) é aceitável pro custo/benefício de
  * um guard estático simples — nenhum hook real hoje tem duas chamadas
  * spawn/execFile close o bastante pra colidir.
+ *
+ * **2º guard, mais estrito, só pro arquivo que este PR toca (achado do fleet
+ * review pré-merge, silent-failure-hunter):** `detached: true` sozinho NÃO
+ * cobre `runBootstrap()`/`cloneRepo()` em `session-start-claude-config-sync.mjs`
+ * — as duas chamam `execFile` SEM `detached` (são síncronas do ponto de
+ * vista do filho que as invoca), mas ainda alocam console próprio no
+ * Windows por rodarem um binário de console (`git`/`powershell.exe`) —
+ * é exatamente por isso que a #7952 pediu `windowsHide` nelas também. O
+ * guard geral acima nunca as veria (não têm `detached: true` pra ancorar a
+ * busca). `findWindowsHideMissingCalls` cobre TODA chamada
+ * `execFile`/`execFileSync`/`spawn`/`spawnSync`, com ou sem `detached` —
+ * mas só é aplicado a `session-start-claude-config-sync.mjs`, não a todo
+ * hook do diretório: os outros hooks têm `execFileSync("git", ...)` sem
+ * `windowsHide` pré-existentes, fora do escopo desta issue (#7952 mira
+ * especificamente o hook de SessionStart, o de maior frequência — 1x por
+ * sessão nova) — aplicar o guard estrito a todo o diretório seria escopo
+ * novo, não a regressão deste PR.
  */
 
 import { describe, it } from "node:test";
@@ -55,6 +72,24 @@ export function findDetachedWithoutWindowsHide(content: string): number[] {
   let match: RegExpExecArray | null;
   while ((match = detachedRe.exec(content)) !== null) {
     const start = Math.max(0, match.index - WINDOW_CHARS);
+    const end = Math.min(content.length, match.index + WINDOW_CHARS);
+    const window = content.slice(start, end);
+    if (!/windowsHide\s*:\s*true/.test(window)) {
+      offenders.push(match.index);
+    }
+  }
+  return offenders;
+}
+
+/** 2º guard, mais estrito (ver docstring do módulo) — varre TODA chamada
+ * `execFile`/`execFileSync`/`spawn`/`spawnSync`, com ou sem `detached`, e
+ * confirma `windowsHide: true` na janela ao redor. Pura. */
+export function findWindowsHideMissingCalls(content: string): number[] {
+  const offenders: number[] = [];
+  const callRe = /\b(?:execFileSync|execFile|spawnSync|spawn)\s*\(/g;
+  let match: RegExpExecArray | null;
+  while ((match = callRe.exec(content)) !== null) {
+    const start = match.index;
     const end = Math.min(content.length, match.index + WINDOW_CHARS);
     const window = content.slice(start, end);
     if (!/windowsHide\s*:\s*true/.test(window)) {
@@ -110,6 +145,23 @@ describe("findDetachedWithoutWindowsHide (#7952) — lógica pura", () => {
   });
 });
 
+describe("findWindowsHideMissingCalls (#7952, achado do fleet review) — lógica pura", () => {
+  it("execFile SEM detached e SEM windowsHide -> 1 ofensor (era invisível pro 1º guard)", () => {
+    const content = `execFile("git", ["clone", url, dir], { timeout: 60000 }, cb);`;
+    assert.deepEqual(findWindowsHideMissingCalls(content).length, 1);
+  });
+
+  it("execFile SEM detached mas COM windowsHide -> nenhum ofensor", () => {
+    const content = `execFile("git", ["clone", url, dir], { timeout: 60000, windowsHide: true }, cb);`;
+    assert.deepEqual(findWindowsHideMissingCalls(content), []);
+  });
+
+  it("spawn detached COM windowsHide -> nenhum ofensor (mesma chamada, os 2 guards concordam)", () => {
+    const content = `spawn("node", [], { detached: true, windowsHide: true });`;
+    assert.deepEqual(findWindowsHideMissingCalls(content), []);
+  });
+});
+
 describe("Regressão #7952 — .claude/hooks/*.mjs reais deste repo", () => {
   const files = listHookFiles();
 
@@ -129,4 +181,29 @@ describe("Regressão #7952 — .claude/hooks/*.mjs reais deste repo", () => {
       );
     });
   }
+});
+
+describe("Regressão #7952 (guard estrito) — session-start-claude-config-sync.mjs", () => {
+  const STRICT_FILE = "session-start-claude-config-sync.mjs";
+
+  it(`${STRICT_FILE}: TODA chamada execFile/execFileSync/spawn/spawnSync declara windowsHide:true, ` +
+    "com ou sem detached (os 3 pontos que a #7952 corrigiu — runBootstrap e cloneRepo não têm " +
+    "detached, então o guard geral acima nunca os veria)", () => {
+    const path = join(HOOKS_DIR, STRICT_FILE);
+    let content: string;
+    try {
+      content = readFileSync(path, "utf8");
+    } catch {
+      assert.fail(`${STRICT_FILE} deveria existir em ${HOOKS_DIR} — este guard é específico dele`);
+      return;
+    }
+    const offenders = findWindowsHideMissingCalls(content);
+    assert.deepEqual(
+      offenders,
+      [],
+      `${STRICT_FILE}: ${offenders.length} chamada(s) de processo sem windowsHide:true (offsets: ` +
+        `${offenders.join(", ")}) — mesmo sem detached, rodar um binário de console (git/powershell.exe) ` +
+        "aloca janela no Windows (#7952).",
+    );
+  });
 });
