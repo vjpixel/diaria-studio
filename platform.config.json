@@ -146,6 +146,10 @@
   "logging": {
     "path": "data/run-log.jsonl"
   },
+  "notifications": {
+    "email_policy": "legacy",
+    "note": "#7957 — rollout reversível do portão scripts/lib/editor-notify.ts. 'legacy' (default): todo script já migrado pra notifyEditor manda e-mail em qualquer achado 'acao'/'urgente' tratado com sucesso (preserva o comportamento pré-#7957 de sempre e-mailar). 'urgent_only': só 'urgente' com issue RECÉM-CRIADA manda e-mail — o regime alvo da #7957. Trocar pra 'urgent_only' quando a migração dos ~44 scripts (item 3) estiver completa e o silêncio novo tiver sido validado."
+  },
   "image_generator": "gemini",
   "openai": {
     "model": "gpt-image-2",
