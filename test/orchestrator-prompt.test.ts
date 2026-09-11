@@ -1306,6 +1306,54 @@ describe("#6171: fronteira de contexto pós-gate 4 — /diaria-edicao nunca enca
   });
 });
 
+describe("#7983: fusão Stage 5+6 — /diaria-5-publicacao encadeia pro gate de agendamento na MESMA sessão", () => {
+  // Decisão do editor (11/09/2026): diferente de toda outra transição de stage
+  // (#5578), Stage 5 e Stage 6 passam a rodar numa invocação só. Mesma
+  // disciplina do bloco #6171 acima: pinar a instrução em si (não só o hash
+  // opaco do snapshot), pra detectar reversão silenciosa da fusão.
+  const stage5 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-5.md"), "utf8");
+  const stage6 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-6.md"), "utf8");
+
+  it("Stage 5 instrui continuar lendo orchestrator-stage-6.md na MESMA sessão", () => {
+    assert.ok(
+      stage5.includes("CONTINUE nesta mesma sessao: leia `orchestrator-stage-6.md`"),
+      "orchestrator-stage-5.md precisa instruir explicitamente a continuação pro Stage 6 na mesma sessão (#7983)",
+    );
+    assert.ok(
+      stage5.includes("#7983"),
+      "orchestrator-stage-5.md precisa referenciar #7983 na nota de fusão",
+    );
+  });
+
+  it("a antiga instrução de parada pós-Stage-5 (nunca ler orchestrator-stage-6.md) não sobrevive", () => {
+    assert.ok(
+      !stage5.includes("nunca leia `orchestrator-stage-6.md` nesta sessao"),
+      "texto antigo (Stage 5 sempre para e nunca lê Stage 6) não deveria sobreviver — a fusão #7983 inverteu esse comportamento",
+    );
+  });
+
+  it("Stage 5 não imprime /diaria-6-agendamento como próximo passo do editor", () => {
+    assert.ok(
+      !/Proximo passo → \/diaria-6-agendamento/.test(stage5),
+      "a mensagem pós-dispatch não pode mais instruir o editor a digitar /diaria-6-agendamento — o Stage 5 chega lá sozinho (#7983)",
+    );
+  });
+
+  it("Stage 6 continua rodando o assert do sentinel do Stage 5 mesmo na continuação fundida", () => {
+    assert.ok(
+      stage6.includes("Rodar SEMPRE, inclusive vindo do Stage 5 na mesma sessao"),
+      "orchestrator-stage-6.md precisa reforçar que o assert do sentinel roda mesmo quando chega via a fusão #7983 — sem isso, dispatch parcial ou backend errado (#7963) passariam sem checagem",
+    );
+  });
+
+  it("Stage 6 documenta /diaria-6-agendamento como porta de retomada, não como o caminho normal", () => {
+    assert.ok(
+      stage6.includes("porta de RETOMADA"),
+      "orchestrator-stage-6.md precisa deixar explícito que a invocação standalone é retomada, não o fluxo normal pós-fusão (#7983)",
+    );
+  });
+});
+
 describe("#6444: gate 4 consome a decisão gravada pelo painel do Studio (/revisao) antes de montar o resumo", () => {
   // #6447 (Fatia 4) já implementava a ESCRITA de _internal/.step-4-decision.json
   // via botão "Aprovar gate" do painel, documentada como escopo intencionalmente
