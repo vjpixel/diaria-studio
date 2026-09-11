@@ -546,7 +546,7 @@ describe("#5205 — ENTITY_PERPLEXITY_FOOTER_NAV_UTM estava fora de UTM_EMITTERS
 
 describe("#8005 — hubFooterNavUtm/entityFooterNavUtm substituem as 15 constantes HUB_*/ENTITY_*_FOOTER_NAV_UTM", () => {
   it("hubFooterNavUtm(slug) emite {source: 'hub-{slug}', medium: 'footer-nav'} — mesmos valores das 7 constantes removidas", () => {
-    const slugs = [
+    const slugs: shared.HubSlug[] = [
       "anthropic-claude",
       "openai-chatgpt",
       "google-gemini",
@@ -564,7 +564,7 @@ describe("#8005 — hubFooterNavUtm/entityFooterNavUtm substituem as 15 constant
   });
 
   it("entityFooterNavUtm(slug) emite {source: 'entity-{slug}', medium: 'footer-nav'} — mesmos valores das 8 constantes removidas", () => {
-    const slugs = ["perplexity", "xai", "amazon", "samsung", "apple", "deepseek", "oracle", "alibaba"];
+    const slugs: shared.EntitySlug[] = ["perplexity", "xai", "amazon", "samsung", "apple", "deepseek", "oracle", "alibaba"];
     for (const slug of slugs) {
       assert.deepEqual(shared.entityFooterNavUtm(slug), {
         source: `entity-${slug}`,
@@ -574,11 +574,17 @@ describe("#8005 — hubFooterNavUtm/entityFooterNavUtm substituem as 15 constant
   });
 
   it("hubFooterNavUtm nunca colide com entityFooterNavUtm pro mesmo slug (prefixo distinto)", () => {
-    assert.notEqual(shared.hubFooterNavUtm("perplexity").source, shared.entityFooterNavUtm("perplexity").source);
+    // "perplexity" não é um HubSlug de verdade — o cast existe só pra checar,
+    // no nível de VALOR, que os dois prefixos nunca colidiriam se algum dia
+    // um slug fosse compartilhado entre hub e entity; não é um uso real da API.
+    assert.notEqual(
+      shared.hubFooterNavUtm("perplexity" as shared.HubSlug).source,
+      shared.entityFooterNavUtm("perplexity").source,
+    );
   });
 
   it("UTM_EMITTERS ainda registra as 7 entries hub-*-footer-nav com os valores emitidos pela factory", () => {
-    const hubSlugs = [
+    const hubSlugs: shared.HubSlug[] = [
       "anthropic-claude",
       "openai-chatgpt",
       "google-gemini",
@@ -597,7 +603,7 @@ describe("#8005 — hubFooterNavUtm/entityFooterNavUtm substituem as 15 constant
   });
 
   it("UTM_EMITTERS ainda registra as 8 entries entity-*-footer-nav com os valores emitidos pela factory", () => {
-    const entitySlugs = ["perplexity", "xai", "amazon", "samsung", "apple", "deepseek", "oracle", "alibaba"];
+    const entitySlugs: shared.EntitySlug[] = ["perplexity", "xai", "amazon", "samsung", "apple", "deepseek", "oracle", "alibaba"];
     for (const slug of entitySlugs) {
       const entry = shared.findUtmEmitter(`entity-${slug}-footer-nav`);
       assert.ok(entry, `entry entity-${slug}-footer-nav deveria existir`);
