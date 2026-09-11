@@ -30,8 +30,10 @@
  *     de 5 classes do projeto).
  *
  * Salva snapshot em `data/ga4-cache/{YYYY-MM-DD}.json` (timestamp da
- * execução) + `data/ga4-cache/latest.json` (sempre sobrescrito — ponteiro
- * pro snapshot mais recente, mesmo padrão de `data/beehiiv-cache/`).
+ * execução) + `data/ga4-cache/latest.json` (ponteiro pro snapshot mais
+ * recente, mesmo padrão de `data/beehiiv-cache/`) — **exceto quando o
+ * snapshot é parcial** (`--end` != "yesterday", #8000): nesse caso só o
+ * arquivo datado grava, `latest.json` fica intocado.
  *
  * FAIL-SOFT explícito (a credencial/propriedade ainda não existe nesta
  * sessão — configuração é ação de painel do editor, ver
@@ -40,12 +42,24 @@
  * pro doc de setup, nunca uma stack trace genérica. Exit codes:
  *   0 = sucesso
  *   1 = erro de API/IO (rede, resposta inesperada)
- *   2 = config ausente (property ID ou credencial OAuth)
+ *   2 = config ausente (property ID ou credencial OAuth) OU flag CLI
+ *       inválida (`--days`/`--end` malformados — ver `resolveEndDate`)
  *
  * Uso:
- *   npx tsx scripts/ga4-sync.ts                  # janela padrão (7 dias)
+ *   npx tsx scripts/ga4-sync.ts                  # janela padrão (7 dias), endDate "yesterday"
  *   npx tsx scripts/ga4-sync.ts --days 30
+ *   npx tsx scripts/ga4-sync.ts --end today       # inclui o dia corrente (parcial — ver abaixo)
+ *   npx tsx scripts/ga4-sync.ts --end 2026-09-10  # data absoluta
  *   npx tsx scripts/ga4-sync.ts --dry-run         # monta os relatórios, não chama a API
+ *
+ * `--end <yesterday|today|YYYY-MM-DD>` (#8000): default `yesterday` — o
+ * comportamento sem a flag é preservado byte a byte. O dia corrente no GA4 é
+ * parcial e ainda sofre reprocessamento; por isso o default nunca muda. Só
+ * serve como saída de emergência pra leitura ad-hoc ("como está o tráfego
+ * hoje?"). Quando `--end` resolve pra algo != "yesterday", o snapshot salvo
+ * carrega `partial: true` e `data/ga4-cache/latest.json` (o ponteiro pra
+ * série confiável que outros consumidores leem) NUNCA é sobrescrito com um
+ * snapshot parcial — só o arquivo datado (`{YYYY-MM-DD}.json`) grava.
  *
  * Env:
  *   GA4_PROPERTY_ID   obrigatório — Property ID NUMÉRICO (ex: 123456789),
@@ -59,7 +73,7 @@ import { fileURLToPath } from "node:url";
 
 import { gFetch, GoogleAuthError } from "./google-auth.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, getIntArg, isMainModule } from "./lib/cli-args.ts";
+import { hasFlag, getIntArg, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import {
   resolveGa4PropertyId,
   runGa4Report,
@@ -97,10 +111,53 @@ const CHANNEL_REPORT_LIMIT = 10_000;
  */
 const CHANNEL_GROUP_REPORT_LIMIT = 1_000;
 
+/** Default de `--end` (#8000) — comportamento preservado byte a byte quando a flag é omitida. */
+export const DEFAULT_END_DATE = "yesterday";
+
+/**
+ * Valida `--end` (#8000): "yesterday" (default), "today", ou data absoluta
+ * `YYYY-MM-DD`. Nunca lança silenciosamente — a mensagem nomeia os 3
+ * formatos aceitos. Puro, sem I/O.
+ */
+export function resolveEndDate(rawEnd: string | undefined): string {
+  if (rawEnd === undefined) return DEFAULT_END_DATE;
+  if (rawEnd === "yesterday" || rawEnd === "today") return rawEnd;
+  if (isValidCalendarDate(rawEnd)) return rawEnd;
+  throw new Error(
+    `--end inválido: "${rawEnd}". Use "yesterday" (default), "today", ou uma data absoluta "YYYY-MM-DD".`,
+  );
+}
+
+/**
+ * Valida "YYYY-MM-DD" como data de calendário REAL, não só o formato — a
+ * regex sozinha (`/^\d{4}-\d{2}-\d{2}$/`) aceita "2026-13-40", que o `Date`
+ * do JS normaliza em silêncio (rola pro mês/dia seguinte) em vez de rejeitar
+ * (achado P3 do fleet review da #8000). `Date.UTC` + reconferência dos 3
+ * componentes contra o que foi digitado pega esse overflow.
+ */
+function isValidCalendarDate(raw: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (!match) return false;
+  const [, yearStr, monthStr, dayStr] = match;
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+  );
+}
+
 export interface Ga4Snapshot {
   fetched_at: string;
   property_id: string;
   window_days: number;
+  end_date: string;
+  /** `true` quando `--end` != "yesterday" (dia corrente incluído, ainda
+   *  sujeito a reprocessamento no GA4) — ausente/`false` no caminho default.
+   *  `saveSnapshot` usa este campo pra NUNCA sobrescrever `latest.json` com
+   *  um snapshot parcial (#8000). */
+  partial?: boolean;
   overview: Ga4FlatRow[];
   top_pages: Ga4FlatRow[];
   /** Relatório FINO — o que classifica sessões nas 5 classes de F1 via
@@ -112,12 +169,14 @@ export interface Ga4Snapshot {
   channel_group: Ga4FlatRow[];
 }
 
-/** Monta os 4 requests desta ingestão (puro — testável sem rede). */
+/** Monta os 4 requests desta ingestão (puro — testável sem rede). `endDate`
+ *  default "yesterday" preserva o comportamento anterior byte a byte (#8000). */
 export function buildSyncRequests(
   propertyId: string,
   windowDays: number,
+  endDate: string = DEFAULT_END_DATE,
 ): Record<"overview" | "topPages" | "channel" | "channelGroup", Ga4RunReportRequest> {
-  const dateRanges = [{ startDate: `${windowDays}daysAgo`, endDate: "yesterday" }];
+  const dateRanges = [{ startDate: `${windowDays}daysAgo`, endDate }];
   return {
     overview: {
       propertyId,
@@ -155,8 +214,13 @@ export function buildSyncRequests(
   };
 }
 
-async function fetchSnapshot(propertyId: string, windowDays: number, fetchImpl: Ga4FetchImpl): Promise<Ga4Snapshot> {
-  const requests = buildSyncRequests(propertyId, windowDays);
+async function fetchSnapshot(
+  propertyId: string,
+  windowDays: number,
+  endDate: string,
+  fetchImpl: Ga4FetchImpl,
+): Promise<Ga4Snapshot> {
+  const requests = buildSyncRequests(propertyId, windowDays, endDate);
   const [overviewRes, topPagesRes, channelRes, channelGroupRes] = await Promise.all([
     runGa4Report(requests.overview, fetchImpl),
     runGa4Report(requests.topPages, fetchImpl),
@@ -167,6 +231,8 @@ async function fetchSnapshot(propertyId: string, windowDays: number, fetchImpl: 
     fetched_at: new Date().toISOString(),
     property_id: propertyId,
     window_days: windowDays,
+    end_date: endDate,
+    ...(endDate !== DEFAULT_END_DATE ? { partial: true as const } : {}),
     overview: extractReportRows(overviewRes),
     top_pages: extractReportRows(topPagesRes),
     channel: extractReportRows(channelRes),
@@ -174,13 +240,36 @@ async function fetchSnapshot(propertyId: string, windowDays: number, fetchImpl: 
   };
 }
 
-function saveSnapshot(snapshot: Ga4Snapshot): { datedPath: string; latestPath: string } {
-  mkdirSync(CACHE_DIR, { recursive: true });
+/**
+ * Salva o snapshot datado sempre; só sobrescreve `latest.json` (o ponteiro
+ * pra série confiável que outros consumidores leem) quando o snapshot NÃO é
+ * parcial (#8000) — um `--end today`/data absoluta nunca deve envenenar
+ * `latest.json` com um dia ainda incompleto/sujeito a reprocessamento.
+ *
+ * "É parcial" é DERIVADO de `end_date`, nunca só do campo `partial` do
+ * objeto recebido (achado do fleet review da #8000): o único produtor de
+ * hoje (`fetchSnapshot`) mantém os dois sincronizados, mas nada além dessa
+ * convenção impede um chamador futuro de montar um `Ga4Snapshot` com
+ * `end_date: "today"` e esquecer `partial: true` — o que reintroduziria em
+ * silêncio o bug que esta issue existe pra prevenir. `snapshot.partial ===
+ * true` continua valendo como sinal adicional (ex: um chamador que queira
+ * forçar não-overwrite mesmo com `end_date` default), mas `end_date !==
+ * DEFAULT_END_DATE` sozinho já basta pra recusar o overwrite.
+ */
+export function saveSnapshot(
+  snapshot: Ga4Snapshot,
+  cacheDir: string = CACHE_DIR,
+): { datedPath: string; latestPath: string | null } {
+  mkdirSync(cacheDir, { recursive: true });
   const dateStr = snapshot.fetched_at.slice(0, 10);
-  const datedPath = resolve(CACHE_DIR, `${dateStr}.json`);
-  const latestPath = resolve(CACHE_DIR, "latest.json");
+  const datedPath = resolve(cacheDir, `${dateStr}.json`);
   const json = JSON.stringify(snapshot, null, 2);
   writeFileSync(datedPath, json, "utf8");
+  const isPartial = snapshot.partial === true || snapshot.end_date !== DEFAULT_END_DATE;
+  if (isPartial) {
+    return { datedPath, latestPath: null };
+  }
+  const latestPath = resolve(cacheDir, "latest.json");
   writeFileSync(latestPath, json, "utf8");
   return { datedPath, latestPath };
 }
@@ -189,8 +278,10 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const dryRun = hasFlag(argv, "dry-run");
   let days: number;
+  let endDate: string;
   try {
     days = getIntArg(argv, "days", { min: 1 }) ?? DEFAULT_WINDOW_DAYS;
+    endDate = resolveEndDate(getStringArg(argv, "end", { example: "today" }));
   } catch (e) {
     console.error(`[ga4-sync] ${e instanceof Error ? e.message : e}`);
     process.exit(2);
@@ -208,14 +299,20 @@ async function main(): Promise<void> {
   }
 
   if (dryRun) {
-    const requests = buildSyncRequests(propertyId, days);
-    console.log(JSON.stringify({ dry_run: true, property_id: propertyId, window_days: days, requests }, null, 2));
+    const requests = buildSyncRequests(propertyId, days, endDate);
+    console.log(
+      JSON.stringify(
+        { dry_run: true, property_id: propertyId, window_days: days, end_date: endDate, requests },
+        null,
+        2,
+      ),
+    );
     return;
   }
 
   let snapshot: Ga4Snapshot;
   try {
-    snapshot = await fetchSnapshot(propertyId, days, gFetch);
+    snapshot = await fetchSnapshot(propertyId, days, endDate, gFetch);
   } catch (e) {
     if (e instanceof GoogleAuthError) {
       console.error(`[ga4-sync] ${e.message}`);
@@ -232,11 +329,13 @@ async function main(): Promise<void> {
         ok: true,
         property_id: propertyId,
         window_days: days,
+        end_date: endDate,
+        partial: snapshot.partial ?? false,
         overview_rows: snapshot.overview.length,
         top_pages_rows: snapshot.top_pages.length,
         channel_rows: snapshot.channel.length,
         channel_group_rows: snapshot.channel_group.length,
-        saved_to: [datedPath, latestPath],
+        saved_to: latestPath ? [datedPath, latestPath] : [datedPath],
       },
       null,
       2,
