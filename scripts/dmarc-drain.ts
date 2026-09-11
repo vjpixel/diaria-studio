@@ -56,25 +56,29 @@
  * anteriores, então a "janela de 2-4 semanas" da #6111 é reconstituível
  * concatenando os arquivos).
  *
- * Alarme: se qualquer domínio tiver volume NÃO-alinhado > 0, avisa o editor
- * (mesmo padrão `alarm-issues.ts` dos outros alarmes do repo — issue com
- * fingerprint por domínio, auto-fecha depois de 2 execuções limpas).
+ * Alarme: se `alignedPct` de um domínio cair abaixo de `ALIGNED_PCT_ALARM_FLOOR`,
+ * avisa o editor (mesmo padrão `alarm-issues.ts` dos outros alarmes do repo —
+ * issue com fingerprint por domínio, auto-fecha depois de 2 execuções limpas).
+ *
+ * **Limiar calibrado com dado real (#6690, 10/09/2026).** Até aqui o gatilho
+ * era "QUALQUER volume não-alinhado > 0" — nunca fecha pra sempre num
+ * domínio com forwarding corporativo legítimo (DMARC real nunca chega a
+ * 100% por causa disso), e a issue #6690 reabriu repetidamente por 1-6
+ * mensagens de um único IP `[Enterprise Outlook]`. A série histórica de
+ * `alignedPct` (instrumentada no #7334/#6690, 05/09/2026) já tinha ~40
+ * execuções acumuladas quando esta calibração foi feita: `news.diar.ia.br`
+ * variou entre 99.5% e 100% ao longo de 6 dias (2026-09-04..09-10),
+ * `diar.ia.br` sempre 100%. `ALIGNED_PCT_ALARM_FLOOR = 99` dá margem pro
+ * ruído de forwarding observado (~0.3-0.5%) sem deixar de alarmar uma queda
+ * de configuração real (SPF/DKIM quebrado tipicamente derruba o
+ * alinhamento em dezenas de pontos percentuais, não fração de 1%).
  *
  * **Série histórica de `alignedPct` (#7334, #6690, 05/09/2026):** cada
  * execução (não-dry-run) acrescenta 1 linha por domínio em
  * `data/dmarc-aligned-pct.jsonl` — append-only, nunca sobrescreve rodadas
- * anteriores. Existe porque DUAS decisões futuras precisam da mesma série e
- * nenhuma delas tinha dado nenhum até agora: (a) #7334 — o critério de
- * "relatório limpo" (agora só uma das referências consultadas pelo motor de
- * enforcement do #6442, que decide primariamente por sinal próprio Kit, não
- * mais por este relatório de terceiro) precisa de percentual medido, não
- * vibe; (b) #6690 —
- * calibrar o limiar do alarme de `alarmFindingsFor` (hoje dispara com
- * QUALQUER volume não-alinhado > 0, o que nunca fecha pra sempre num
- * domínio com forwarding corporativo legítimo) exige olhar a série real
- * antes de escolher um número. Esta unidade só INSTRUMENTA — não decide o
- * limiar de nenhuma das duas, e não muda o gatilho do alarme existente nem
- * configuração DNS.
+ * anteriores. Segue existindo pra #7334 (critério de "relatório limpo" do
+ * motor de enforcement do #6442) e pra revisar este limiar no futuro se o
+ * perfil de forwarding mudar.
  */
 import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -268,13 +272,20 @@ export async function fetchReports(
 
 // ─── Alarme: volume não-autenticado ─────────────────────────────────────────
 
-/** Condição de alarme por domínio: qualquer volume NÃO-alinhado (issue
- * #6189, item 4 — "alarmar se aparecer volume não-autenticado"). Pura. */
+/** Piso de `alignedPct` abaixo do qual o alarme dispara (#6690) — ver
+ * justificativa/dado real no docstring do módulo, acima. */
+export const ALIGNED_PCT_ALARM_FLOOR = 99;
+
+/** Condição de alarme por domínio: `alignedPct` abaixo de
+ * `ALIGNED_PCT_ALARM_FLOOR` (issue #6189 item 4 original — "alarmar se
+ * aparecer volume não-autenticado" — recalibrada em #6690 pra não disparar
+ * pra sempre em ruído de forwarding corporativo). Pura. */
 export function alarmFindingsFor(summaries: DmarcDomainSummary[]): AlarmFinding[] {
   const findings: AlarmFinding[] = [];
   for (const s of summaries) {
     const unalignedCount = s.totalMessages - s.alignedMessages;
     if (unalignedCount <= 0) continue;
+    if (s.alignedPct >= ALIGNED_PCT_ALARM_FLOOR) continue;
     const topIps = s.failedAlignmentSources
       .slice(0, 5)
       .map((f) => `${f.sourceIp} (${f.count})`)
@@ -288,7 +299,7 @@ export function alarmFindingsFor(summaries: DmarcDomainSummary[]): AlarmFinding[
         `${unalignedCount} mensagem(ns) de ${s.totalMessages} não alinharam DMARC para **${s.domain}** ` +
         `(${s.alignedPct}% alinhado no período ${new Date(s.windowBegin * 1000).toISOString().slice(0, 10)}..${new Date(s.windowEnd * 1000).toISOString().slice(0, 10)}).\n\n` +
         `IPs de origem com falha de alinhamento: ${topIps || "(nenhum IP individual, ver resumo completo)"}.\n\n` +
-        `Ver \`data/dmarc-reports/\` para o resumo completo desta execução. Contexto: #6111, #6189.`,
+        `Ver \`data/dmarc-reports/\` para o resumo completo desta execução. Piso do alarme: ${ALIGNED_PCT_ALARM_FLOOR}% (#6690). Contexto: #6111, #6189.`,
       labels: ["bug", "P2", "diaria"],
     });
   }

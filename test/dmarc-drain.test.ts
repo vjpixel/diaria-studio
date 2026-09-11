@@ -20,7 +20,9 @@ import {
   DEFAULT_GMAIL_QUERY,
   buildAlignedPctHistoryEntries,
   appendAlignedPctHistory,
+  ALIGNED_PCT_ALARM_FLOOR,
 } from "../scripts/dmarc-drain.ts";
+import type { DmarcDomainSummary } from "../scripts/lib/dmarc-report.ts";
 import { aggregateDmarcReports } from "../scripts/lib/dmarc-report.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -88,6 +90,62 @@ test("alarmFindingsFor dispara 1 achado por domínio com volume não-alinhado > 
   assert.equal(findings[0].family, "estado");
   assert.match(findings[0].body, /198\.51\.100\.7/);
   assert.match(findings[0].body, /6 mensagem/); // 5 + 1 não alinhadas
+});
+
+test("alarmFindingsFor (#6690): forwarding corporativo esporádico (alignedPct acima do piso) NÃO dispara", () => {
+  const summary: DmarcDomainSummary = {
+    domain: "news.diar.ia.br",
+    reportCount: 40,
+    windowBegin: 1787616000,
+    windowEnd: 1788998399,
+    totalMessages: 2583,
+    spfRawPassMessages: 2570,
+    dkimRawPassMessages: 2580,
+    alignedMessages: 2575, // 99.7% — igual ao dado real que motivou a calibração
+    spfRawPassPct: 99.5,
+    dkimRawPassPct: 99.9,
+    alignedPct: 99.7,
+    failedAlignmentSources: [{ sourceIp: "35.174.145.124", count: 8, reportedBy: ["google.com"] }],
+  };
+  assert.deepEqual(alarmFindingsFor([summary]), []);
+});
+
+test("alarmFindingsFor (#6690): alignedPct abaixo do piso ainda dispara (queda real não fica cega)", () => {
+  const summary: DmarcDomainSummary = {
+    domain: "news.diar.ia.br",
+    reportCount: 5,
+    windowBegin: 1787616000,
+    windowEnd: 1788998399,
+    totalMessages: 100,
+    spfRawPassMessages: 10,
+    dkimRawPassMessages: 10,
+    alignedMessages: 10, // 10% — queda de configuração real (SPF/DKIM quebrado), não ruído
+    spfRawPassPct: 10,
+    dkimRawPassPct: 10,
+    alignedPct: 10,
+    failedAlignmentSources: [{ sourceIp: "203.0.113.9", count: 90, reportedBy: ["google.com"] }],
+  };
+  const findings = alarmFindingsFor([summary]);
+  assert.equal(findings.length, 1);
+  assert.match(findings[0].body, /Piso do alarme: 99% \(#6690\)/);
+});
+
+test("alarmFindingsFor (#6690): exatamente no piso NÃO dispara (limite inclusivo)", () => {
+  const summary: DmarcDomainSummary = {
+    domain: "news.diar.ia.br",
+    reportCount: 1,
+    windowBegin: 1787616000,
+    windowEnd: 1788998399,
+    totalMessages: 100,
+    spfRawPassMessages: 99,
+    dkimRawPassMessages: 99,
+    alignedMessages: 99, // exatamente 99% == ALIGNED_PCT_ALARM_FLOOR
+    spfRawPassPct: 99,
+    dkimRawPassPct: 99,
+    alignedPct: ALIGNED_PCT_ALARM_FLOOR,
+    failedAlignmentSources: [{ sourceIp: "198.51.100.1", count: 1, reportedBy: ["google.com"] }],
+  };
+  assert.deepEqual(alarmFindingsFor([summary]), []);
 });
 
 // ─── alignedPct history (#7334, #6690) ──────────────────────────────────────
