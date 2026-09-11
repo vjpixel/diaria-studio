@@ -20,7 +20,11 @@ import {
   DEFAULT_GMAIL_QUERY,
   buildAlignedPctHistoryEntries,
   appendAlignedPctHistory,
+  ALIGNED_PCT_ALARM_FLOOR_DEFAULT,
+  ALIGNED_PCT_ALARM_FLOOR_BY_DOMAIN,
+  alignedPctAlarmFloorFor,
 } from "../scripts/dmarc-drain.ts";
+import type { DmarcDomainSummary } from "../scripts/lib/dmarc-report.ts";
 import { aggregateDmarcReports } from "../scripts/lib/dmarc-report.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -88,6 +92,130 @@ test("alarmFindingsFor dispara 1 achado por domínio com volume não-alinhado > 
   assert.equal(findings[0].family, "estado");
   assert.match(findings[0].body, /198\.51\.100\.7/);
   assert.match(findings[0].body, /6 mensagem/); // 5 + 1 não alinhadas
+});
+
+test("alarmFindingsFor (#6690): forwarding corporativo esporádico (alignedPct acima do piso) NÃO dispara", () => {
+  const summary: DmarcDomainSummary = {
+    domain: "news.diar.ia.br",
+    reportCount: 40,
+    windowBegin: 1787616000,
+    windowEnd: 1788998399,
+    totalMessages: 2583,
+    spfRawPassMessages: 2570,
+    dkimRawPassMessages: 2580,
+    alignedMessages: 2575, // 99.7% — igual ao dado real que motivou a calibração
+    spfRawPassPct: 99.5,
+    dkimRawPassPct: 99.9,
+    alignedPct: 99.7,
+    failedAlignmentSources: [{ sourceIp: "35.174.145.124", count: 8, reportedBy: ["google.com"] }],
+  };
+  assert.deepEqual(alarmFindingsFor([summary]), []);
+});
+
+test("alarmFindingsFor (#6690): alignedPct abaixo do piso ainda dispara (queda real não fica cega)", () => {
+  const summary: DmarcDomainSummary = {
+    domain: "news.diar.ia.br",
+    reportCount: 5,
+    windowBegin: 1787616000,
+    windowEnd: 1788998399,
+    totalMessages: 100,
+    spfRawPassMessages: 10,
+    dkimRawPassMessages: 10,
+    alignedMessages: 10, // 10% — queda de configuração real (SPF/DKIM quebrado), não ruído
+    spfRawPassPct: 10,
+    dkimRawPassPct: 10,
+    alignedPct: 10,
+    failedAlignmentSources: [{ sourceIp: "203.0.113.9", count: 90, reportedBy: ["google.com"] }],
+  };
+  const findings = alarmFindingsFor([summary]);
+  assert.equal(findings.length, 1);
+  assert.match(findings[0].body, /Piso do alarme: 99% \(#6690\)/);
+});
+
+test("alarmFindingsFor (#6690): exatamente no piso do domínio NÃO dispara (limite inclusivo)", () => {
+  const floor = alignedPctAlarmFloorFor("news.diar.ia.br");
+  assert.equal(floor, 99); // news.diar.ia.br está no mapa por-domínio
+  const summary: DmarcDomainSummary = {
+    domain: "news.diar.ia.br",
+    reportCount: 1,
+    windowBegin: 1787616000,
+    windowEnd: 1788998399,
+    totalMessages: 100,
+    spfRawPassMessages: 99,
+    dkimRawPassMessages: 99,
+    alignedMessages: 99, // exatamente 99% == piso de news.diar.ia.br
+    spfRawPassPct: 99,
+    dkimRawPassPct: 99,
+    alignedPct: floor,
+    failedAlignmentSources: [{ sourceIp: "198.51.100.1", count: 1, reportedBy: ["google.com"] }],
+  };
+  assert.deepEqual(alarmFindingsFor([summary]), []);
+});
+
+test("alarmFindingsFor (#6690, achado do fleet review): domínio SEM histórico de ruído usa piso 100 " +
+  "— 1ª falha num domínio historicamente 100% ainda dispara, mesmo diluída por volume cumulativo", () => {
+  assert.equal(alignedPctAlarmFloorFor("diar.ia.br"), ALIGNED_PCT_ALARM_FLOOR_DEFAULT);
+  assert.equal(ALIGNED_PCT_ALARM_FLOOR_DEFAULT, 100);
+  // Mesmo formato de "1ª falha diluída" que motivou o achado: volume alto,
+  // 1 única mensagem não-alinhada, alignedPct arredonda pra 99.7% — acima
+  // do piso relaxado de news.diar.ia.br (99), mas diar.ia.br não está no
+  // mapa por-domínio, então usa o piso 100 (default) e ainda dispara.
+  const summary: DmarcDomainSummary = {
+    domain: "diar.ia.br",
+    reportCount: 13,
+    windowBegin: 1787529600,
+    windowEnd: 1788998399,
+    totalMessages: 389,
+    spfRawPassMessages: 388,
+    dkimRawPassMessages: 388,
+    alignedMessages: 388, // 1 não-alinhada — a 1ª falha desse domínio
+    spfRawPassPct: 99.7,
+    dkimRawPassPct: 99.7,
+    alignedPct: 99.7,
+    failedAlignmentSources: [{ sourceIp: "203.0.113.55", count: 1, reportedBy: ["google.com"] }],
+  };
+  const findings = alarmFindingsFor([summary]);
+  assert.equal(findings.length, 1);
+  assert.match(findings[0].body, /Piso do alarme: 100% \(#6690\)/);
+});
+
+test("alarmFindingsFor (#6690, achado do fleet review, 2ª rodada): arredondamento de alignedPct não pode " +
+  "apagar 1 falha real num domínio de piso 100 — compara contra a razão CRUA, não o valor já arredondado", () => {
+  const summary: DmarcDomainSummary = {
+    domain: "diar.ia.br", // sem entrada no mapa por-domínio -> piso 100
+    reportCount: 3,
+    windowBegin: 1787529600,
+    windowEnd: 1788998399,
+    totalMessages: 2000,
+    spfRawPassMessages: 1999,
+    dkimRawPassMessages: 1999,
+    alignedMessages: 1999, // 1 mensagem não-alinhada — mas 1999/2000*100=99.95, que pct() arredonda pra 100.0
+    spfRawPassPct: 99.95,
+    dkimRawPassPct: 99.95,
+    alignedPct: 100, // valor JÁ arredondado que pct() devolveria — NÃO deve ser o que a decisão usa
+    failedAlignmentSources: [{ sourceIp: "203.0.113.77", count: 1, reportedBy: ["google.com"] }],
+  };
+  const findings = alarmFindingsFor([summary]);
+  assert.equal(findings.length, 1, "1 mensagem não-alinhada num domínio de piso 100 tem que alarmar, mesmo com alignedPct exibindo 100.0 arredondado");
+});
+
+test("alarmFindingsFor (#6690, achado do fleet review): domínio SEM tráfego (totalMessages=0) NÃO dispara " +
+  "— guard load-bearing contra o sentinela alignedPct=0 de pct()", () => {
+  const summary: DmarcDomainSummary = {
+    domain: "diar.ia.br",
+    reportCount: 0,
+    windowBegin: 1787529600,
+    windowEnd: 1788998399,
+    totalMessages: 0,
+    spfRawPassMessages: 0,
+    dkimRawPassMessages: 0,
+    alignedMessages: 0,
+    spfRawPassPct: 0,
+    dkimRawPassPct: 0,
+    alignedPct: 0, // sentinela de pct() quando totalMessages===0 — sempre < qualquer piso
+    failedAlignmentSources: [],
+  };
+  assert.deepEqual(alarmFindingsFor([summary]), []);
 });
 
 // ─── alignedPct history (#7334, #6690) ──────────────────────────────────────
