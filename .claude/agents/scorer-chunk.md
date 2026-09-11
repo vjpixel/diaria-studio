@@ -25,17 +25,27 @@ Antes de pontuar, releia (mesmos sinais que o scorer usa — paridade é essenci
 2. Para cada artigo, atribuir nota **0-100** considerando (idêntico ao scorer):
    - **Relevância para a audiência** — julgamento informado por `audience-profile.md`: público de tecnologia/produto/startups/IA no Brasil; CTR por categoria (categorias acima da média geral = bônus, abaixo = penalidade — use os números ATUAIS do profile, não valores fixos); sinal BR vs INT (seção "Engajamento por origem" do profile — ler a direção/magnitude de lá, não assumir); CTR por domínio (fontes com histórico alto = confiança). O artigo muda como nosso público trabalha, decide ou investe? **"Outro" não é acionável (#4845):** é a 2ª categoria de maior CTR do profile, mas é o fallback do categorizador para artigos sem categoria clara — não busque deliberadamente um artigo "Outro" como alvo de bônus.
    - **Atualidade** (mais recente > mais antigo dentro da janela).
+   <!-- CALIBRATED:impact_routine:start -->
    - **Impacto prático na rotina (#357)** — afeta (ou afetará em <6 meses) como as pessoas trabalham, estudam, são contratadas ou decidem? +10 se sim; +5 extra com ângulo/dado brasileiro. Bônus aditivo.
+   <!-- CALIBRATED:impact_routine:end -->
    - **Afinidade de audiência para `use_melhor` (#2063)** — se o artigo está no bucket `use_melhor` E tem o campo `audience_affinity` preenchido, aplicar bônus/penalidade proporcional:
      - `affinity >= 0.7` → **+10 pontos**
      - `affinity 0.4–0.69` → **+5 pontos**
      - `affinity 0.1–0.39` → **+0 pontos**
      - `affinity < 0.1` → **−5 pontos**
      - **SEM `audience_affinity`** → comportamento padrão inalterado (sem bônus/penalidade).
+   <!-- CALIBRATED:hands_on:start -->
    - **Tutorial hands-on curto (#2143, agnóstico de bucket desde #4843)** — se `audience_affinity.matched` contém `"hands_on:true"`, aplicar **+8 pontos** adicionais (cumulativo com o bônus de `affinity`, quando aplicável), **independente do bucket** — auditoria de cliques 260810 mediu lift equivalente no Radar (2,18×) e no Use Melhor (2,75×). Critério: tutorial completável em ≤2h, com passos concretos (passo a passo / step-by-step), scope fechado e/ou ferramenta consumer sem setup cloud/IAM/API-key obrigatório. **Exemplos aprovados pelo editor (260612):** guia PT-BR de NotebookLM, vídeo OpenAI Academy para docentes, Transformers.js (navegador, sem key), Scikit-LLM (Python básico ~1h). **Exemplos reprovados:** AWS Bedrock, LangSmith, Agent-EvalKit (requerem conta cloud/IAM ou agente em produção). Se `audience_affinity` não existir ou não contiver `"hands_on:true"`, sem bônus nem penalidade.
+   <!-- CALIBRATED:hands_on:end -->
+   <!-- CALIBRATED:academy:start -->
    - **Tutorial/academy oficial (`use_melhor` — #2276)** — se `audience_affinity.matched` contém `"academy:true"` (domínio de ensino oficial ou título com "curso/trilha/bootcamp/formação"), aplicar **+6 pontos** adicionais (cumulativo com `affinity` e `hands_on`). Rationale: categoria Treinamento tem o CTR mais alto do perfil (ver números ATUAIS em `audience-profile.md`, não citar valor fixo aqui, #4845). Sem penalidade se ausente.
+   <!-- CALIBRATED:academy:end -->
+   <!-- CALIBRATED:howto_br:start -->
    - **How-to PT-BR aplicado (`use_melhor` — #2278)** — se `audience_affinity.matched` contém `"howto_br:true"` (título/slug com padrão "como usar IA para..." PT-BR), aplicar **+5 pontos** adicionais. Se contém `"howto_br_source:true"` (fonte BR confiável: Canaltech, Tecnoblog, TechTudo, Olhar Digital, Meiobit, Startups.com.br, Exame, InfoMoney, B9), aplicar **+3 pontos** adicionais independente do título (cumulativo com `howto_br:true` quando ambos presentes). Rationale: how-to em PT-BR = máxima relevância editorial. Cumulativo. Sem penalidade se ausente.
+   <!-- CALIBRATED:howto_br:end -->
+   <!-- CALIBRATED:primary_source:start -->
    - **Fonte primária cadastrada (`primary_source:true` — #5665)** — se `audience_affinity.matched` contém `"primary_source:true"`, aplicar **+10 pontos** adicionais, cumulativo com todos os outros bônus. O sinal é pré-computado deterministicamente a partir da coluna `Tipo=Primária` de `seed/sources.csv`; não julgue a origem por conta própria. Sem penalidade se ausente.
+   <!-- CALIBRATED:primary_source:end -->
 
    Pontue cada artigo **pelo seu mérito absoluto**, não em relação aos outros do chunk — assim os scores são comparáveis entre chunks no merge.
 3. **Auditoria dos bônus (#4842).** Para viabilizar auditoria retroativa do rubrico, registre para CADA artigo:

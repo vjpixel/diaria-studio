@@ -1,0 +1,14 @@
+{
+  "_comment": "Espelho legível-por-máquina dos pesos de bônus REAIS hardcoded em .claude/agents/scorer.md/scorer-chunk.md (blocos CALIBRATED-*). Este arquivo é o ALVO nomeado que scripts/lib/calibration-file-allowlist.ts protege — qualquer PR que mude um valor aqui, OU o conteúdo dentro de um marcador CALIBRATED-bloco-start/end nos agent prompts, é uma calibração de verdade e precisa passar pelo portão de sign-off (#7978). Nunca lido pelo scorer em runtime (o scorer é um LLM seguindo o prompt em texto, não este JSON) — é só o espelho que o CI usa pra saber 'o que mudou' quando um PR de calibração for revisado, e o candidato inicial de shadow-mode (#7977) replica estes mesmos valores.",
+  "version": "1",
+  "updated_at": "2026-09-11T00:00:00.000Z",
+  "bonuses": {
+    "primary_source": { "points": 10, "issue": "#5665", "agent_files": [".claude/agents/scorer.md", ".claude/agents/scorer-chunk.md"] },
+    "hands_on": { "points": 8, "issue": "#2143", "agent_files": [".claude/agents/scorer.md", ".claude/agents/scorer-chunk.md"] },
+    "academy": { "points": 6, "issue": "#2276", "agent_files": [".claude/agents/scorer.md", ".claude/agents/scorer-chunk.md"] },
+    "howto_br": { "points": 5, "points_source_extra": 3, "issue": "#2278", "agent_files": [".claude/agents/scorer.md", ".claude/agents/scorer-chunk.md"], "_note": "o +3 extra por fonte BR confiável (howto_br_source) é parte do MESMO bullet do prompt — modelado como points_source_extra dentro de 1 entrada, mesmo padrão de impact_routine/points_br_extra acima." },
+    "impact_routine": { "points": 10, "points_br_extra": 5, "issue": "#357", "agent_files": [".claude/agents/scorer.md", ".claude/agents/scorer-chunk.md"], "_note": "o +5 extra por ângulo/dado brasileiro é parte do MESMO bullet do prompt (não uma linha separada) — modelado como points_br_extra dentro de 1 entrada, não como um 2º bônus 'impact_routine_br', pra o marcador CALIBRATED cobrir os dois valores no mesmo bloco." }
+  },
+  "_non_calibratable": ["negative_impact", "bucket"],
+  "_ver_tambem": "scripts/lib/scoring-features.ts NON_CALIBRATABLE_FEATURES — mesma lista, fonte de verdade em TS pro que não pode virar coeficiente de regressão"
+}
