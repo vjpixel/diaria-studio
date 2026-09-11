@@ -17,8 +17,14 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { addDaysYmd, nearestSnapshotOnOrBefore, toMetricsHealthAlarmFinding } from "../scripts/check-metrics-health.ts";
+import {
+  addDaysYmd,
+  nearestSnapshotOnOrBefore,
+  toMetricsHealthAlarmFinding,
+  buildCrossPlatformLeitorResult,
+} from "../scripts/check-metrics-health.ts";
 import type { MetricsHealthFinding } from "../scripts/lib/metrics/health.ts";
+import type { Janela } from "../scripts/lib/metrics/registry.ts";
 
 describe("nearestSnapshotOnOrBefore", () => {
   const dates = ["2026-08-10", "2026-08-17", "2026-08-24"];
@@ -118,5 +124,48 @@ describe("toMetricsHealthAlarmFinding — o finding builder REAL (não uma dupli
   it("body inclui o motivo verbatim (evidência citável, eixo de veracidade do #6798)", () => {
     const finding = toMetricsHealthAlarmFinding(FINDING);
     assert.ok(finding.body.includes(FINDING.motivo));
+  });
+});
+
+describe("buildCrossPlatformLeitorResult (#7515/#7516)", () => {
+  const JANELA: Janela = { de: "2026-09-10", ate: "2026-09-10", granularidade: "dia", fuso: "BRT" };
+
+  it("qualidade é sempre 'piso', nunca 'exato' (mesma semântica de leitor-store.ts)", () => {
+    const r = buildCrossPlatformLeitorResult(
+      { leitores_v1: 123, generated_at: "2026-09-10T12:00:00.000Z", subscription_data_coverage_low: false, note: "PISO — número mínimo" },
+      JANELA,
+    );
+    assert.equal(r.qualidade, "piso");
+    assert.equal(r.valor, 123);
+    assert.equal(r.frescor, "2026-09-10T12:00:00.000Z");
+    assert.equal(r.motivo, "PISO — número mínimo");
+  });
+
+  it("cobertura de subscription baixa (#7198) -> motivo ganha aviso explícito", () => {
+    const r = buildCrossPlatformLeitorResult(
+      { leitores_v1: 5, generated_at: "2026-09-10T12:00:00.000Z", subscription_data_coverage_low: true, note: "PISO — número mínimo" },
+      JANELA,
+    );
+    assert.match(r.motivo!, /cobertura de "subscription" baixa/);
+    assert.match(r.motivo!, /#7198/);
+    assert.match(r.motivo!, /^PISO — número mínimo/); // nota original preservada, aviso é acréscimo
+  });
+
+  it("nunca retorna valor null quando o summary tem um número (mesmo 0)", () => {
+    const r = buildCrossPlatformLeitorResult(
+      { leitores_v1: 0, generated_at: "2026-09-10T12:00:00.000Z", subscription_data_coverage_low: false, note: "PISO" },
+      JANELA,
+    );
+    assert.equal(r.valor, 0);
+    assert.notEqual(r.valor, null);
+  });
+
+  it("janela repassada verbatim (chamador decide o dia; função é pura sobre o par summary+janela)", () => {
+    const outraJanela: Janela = { de: "2026-08-28", ate: "2026-08-28", granularidade: "dia", fuso: "BRT" };
+    const r = buildCrossPlatformLeitorResult(
+      { leitores_v1: 1, generated_at: "x", subscription_data_coverage_low: false, note: "PISO" },
+      outraJanela,
+    );
+    assert.deepEqual(r.janela, outraJanela);
   });
 });
