@@ -65,13 +65,18 @@
  * domínio com forwarding corporativo legítimo (DMARC real nunca chega a
  * 100% por causa disso), e a issue #6690 reabriu repetidamente por 1-6
  * mensagens de um único IP `[Enterprise Outlook]`. A série histórica de
- * `alignedPct` (instrumentada no #7334/#6690, 05/09/2026) já tinha ~40
- * execuções acumuladas quando esta calibração foi feita: `news.diar.ia.br`
- * variou entre 99.5% e 100% ao longo de 6 dias (2026-09-04..09-10),
- * `diar.ia.br` sempre 100%. `ALIGNED_PCT_ALARM_FLOOR = 99` dá margem pro
- * ruído de forwarding observado (~0.3-0.5%) sem deixar de alarmar uma queda
- * de configuração real (SPF/DKIM quebrado tipicamente derruba o
- * alinhamento em dezenas de pontos percentuais, não fração de 1%).
+ * `alignedPct` (instrumentada no #7334/#6690, 05/09/2026) tinha 5 execuções
+ * reais acumuladas quando esta calibração foi feita (`recordedAt` 2026-
+ * 09-06..09-10 — a janela de busca de cada execução cobre até 35 dias de
+ * relatórios, então `reportCount` — 26 a 40 — é o Nº de relatórios XML
+ * agregados NUMA execução, não o Nº de execuções): `news.diar.ia.br` variou
+ * entre 99.4% e 99.7% nas 5 execuções, `diar.ia.br` sempre 100%. Números
+ * exatos: `data/dmarc-aligned-pct.jsonl` (gitignored, cresce a cada
+ * execução — não recopiar aqui de novo se a série mudar; ler o arquivo).
+ * `ALIGNED_PCT_ALARM_FLOOR = 99` dá margem pro ruído de forwarding
+ * observado (~0.3-0.6%) sem deixar de alarmar uma queda de configuração
+ * real (SPF/DKIM quebrado tipicamente derruba o alinhamento em dezenas de
+ * pontos percentuais, não fração de 1%).
  *
  * **Série histórica de `alignedPct` (#7334, #6690, 05/09/2026):** cada
  * execução (não-dry-run) acrescenta 1 linha por domínio em
