@@ -55,12 +55,20 @@ import { NON_CALIBRATABLE_FEATURES, type ScoringFeatureRow } from "./lib/scoring
 
 const ROOT = resolve(import.meta.dirname, "..");
 
-/** Features booleanas candidatas a calibração — exclui explicitamente tudo em NON_CALIBRATABLE_FEATURES. */
-const CANDIDATE_FEATURES = (
+/**
+ * Features booleanas candidatas a calibração — exclui explicitamente tudo em
+ * NON_CALIBRATABLE_FEATURES. Exportado (junto com `CandidateFeature`) pra ser
+ * a ÚNICA fonte de verdade de "quais nomes de feature um peso candidato pode
+ * usar" — `scripts/lib/shadow-score.ts` importa `CandidateFeature` pra tipar
+ * `CandidateWeights`, em vez de aceitar qualquer `string` como chave (achado
+ * de review do #7977: chave com typo/nome obsoleto degradava
+ * silenciosamente pra peso 0, sem nenhum sinal).
+ */
+export const CANDIDATE_FEATURES = (
   ["primary_source", "hands_on", "academy", "howto_br", "howto_br_source", "has_official_link", "negative_impact"] as const
 ).filter((f) => !NON_CALIBRATABLE_FEATURES.has(f));
 
-type CandidateFeature = (typeof CANDIDATE_FEATURES)[number];
+export type CandidateFeature = (typeof CANDIDATE_FEATURES)[number];
 
 const EVENT_COUNT_MIN = 30;
 const EVALUABLE_EDITIONS_MIN = 40;
