@@ -6,12 +6,13 @@
  * para `complained`/`bounced`/`cancelled`/`inactive`, E quando alguém SOME
  * da conta inteira (evento distinto, #7660 3º comentário). Compara o
  * snapshot anterior (`data/kit-sub-state/prev.json`) com o atual
- * (`current.json`), abre uma issue por assinante e por evento, avisa o
- * editor por e-mail, e roda o snapshot atual por cima do anterior.
+ * (`current.json`), registra cada achado via `notifyEditor` (severidade
+ * `"silencio"`, #7902/#7960 — ver seção abaixo), e roda o snapshot atual por
+ * cima do anterior.
  *
  * **Não escreve no Kit.** Só `GET /v4/subscribers`. A recuperação
  * (re-registro via DOI para `complained`/`bounced`, reativação manual para
- * `cancelled`/`inactive`) é ação do editor, e o corpo da issue carrega o
+ * `cancelled`/`inactive`) é ação do editor, e o corpo do registro carrega o
  * playbook — inclusive a armadilha do recadastro disparar boas-vindas
  * indevidas (`kitLossRecoveryPlaybook`).
  *
@@ -28,6 +29,21 @@
  * literalmente o estado da PR #7673, cujo `current.json` nenhum script deste
  * repo jamais produziu. Já `prev.json` ausente é legítimo (1ª execução): não
  * há transição a detectar contra o vazio, então grava a linha de base e sai.
+ *
+ * ## Notificação: `"silencio"` (#7902, #7960)
+ *
+ * Migrado de "abre 1 issue por assinante/evento + e-mail" pro portão
+ * `notifyEditor` (`scripts/lib/editor-notify.ts`) com severidade
+ * `"silencio"` — decisão explícita do editor (#7957): perda de assinante
+ * isolada (sobretudo `cancelled`, que é a PRÓPRIA pessoa pedindo pra saír,
+ * ver `kitLossRecoveryPlaybook` item 0) não justifica issue nem e-mail a
+ * cada ocorrência; o registro que sobra é só `data/run-log.jsonl`. Achado
+ * concreto que motivou (#7902): cadastro via ads pagos que cancelou 2 dias
+ * depois — churn normal de aquisição, não um bug a investigar.
+ * `notifyEditor` NUNCA lança pra `"silencio"` (só grava o log), então não há
+ * mais caminho de falha de issue/e-mail a propagar ou reter no latch —
+ * `advanceKitStateTransitionAlarmState` avança incondicionalmente com TODAS
+ * as transições/desaparecimentos novos da rodada.
  *
  * ## A varredura é por estado, não um `status=all` só
  *
@@ -59,7 +75,7 @@
  * a constante em `scripts/lib/kit-subscriber-state-transition-alarm.ts`.
  *
  * @see scripts/lib/kit-subscriber-state-transition-alarm.ts (lógica pura)
- * @see scripts/lib/alarm-issues.ts (abertura/fechamento das issues)
+ * @see scripts/lib/editor-notify.ts (portão de notificação, severidade "silencio")
  */
 import { resolve, join } from "node:path";
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
@@ -72,23 +88,14 @@ import {
   shouldAlarmKitStateTransition,
   shouldAlarmKitDisappearance,
   advanceKitStateTransitionAlarmState,
-  selectLatchableEvents,
   emptyKitStateTransitionAlarmState,
   KIT_STATE_TRANSITION_ALARM_STATES,
   KIT_STATE_TRANSITION_FROM_STATE,
-  type KitDisappearance,
   type KitLossOnboardingContext,
   type KitStateTransitionAlarmState,
   type KitStateTransitionSnapshotEntry,
 } from "./lib/kit-subscriber-state-transition-alarm.ts";
-import {
-  applyAlarmReconciliation,
-  planAlarmReconciliation,
-  loadAlarmIssuesState,
-  saveAlarmIssuesState,
-  saveState,
-  type AlarmFinding,
-} from "./lib/alarm-issues.ts";
+import { saveState, type AlarmFinding } from "./lib/alarm-issues.ts";
 import {
   listAllKitSubscribers,
   type KitSubscriberListStatus,
@@ -97,21 +104,14 @@ import {
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { readStore, DEFAULT_STORE_PATH } from "./lib/onboarding-store.ts";
-import { sendGmailMessage } from "./lib/gmail-send.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
 
 const ROOT = resolve(import.meta.dirname ?? ".", "..");
 const STATE_DIR = resolve(ROOT, "data", "kit-sub-state");
 const PREV_PATH = join(STATE_DIR, "prev.json");
 const CURRENT_PATH = join(STATE_DIR, "current.json");
 const LATCH_PATH = join(STATE_DIR, ".transition-latch.json");
-const ISSUES_STATE_PATH = join(STATE_DIR, ".alarm-issues.json");
 const LOG = "[kit-subscriber-state-transition-alarm]";
-
-/** `family: "evento"` nas findings — a issue não fecha sozinha, então este
- *  valor nunca chega a ser usado pra fechar nada. Existe porque
- *  `planAlarmReconciliation`/`applyAlarmReconciliation` o exigem. */
-const CLOSE_AFTER_RUNS = 2;
 
 function loadPrev(): KitStateTransitionSnapshotEntry[] {
   if (!existsSync(PREV_PATH)) return [];
@@ -132,8 +132,8 @@ function loadLatch(): KitStateTransitionAlarmState {
   try {
     return JSON.parse(readFileSync(LATCH_PATH, "utf8")) as KitStateTransitionAlarmState;
   } catch {
-    // Latch corrompido re-alarma (pior caso: 1 issue duplicada, que o
-    // fingerprint de `alarm-issues` ainda deduplica) em vez de silenciar.
+    // Latch corrompido re-alarma (pior caso: 1 log duplicado no run-log,
+    // #7902/#7960) em vez de silenciar.
     return emptyKitStateTransitionAlarmState();
   }
 }
@@ -219,74 +219,6 @@ export function loadOnboardingCorrelations(
   return map;
 }
 
-/** Só o que o e-mail lê de um `AlarmFindingOutcome` — declarado à parte pra
- *  o teste montar um outcome sem depender do envelope inteiro do
- *  `alarm-issues.ts`. */
-export interface AlarmEmailOutcome {
-  fingerprint: string;
-  action: string;
-  issueNumber: number | null;
-  url: string | null;
-  error?: string;
-}
-
-/**
- * Corpo do e-mail — o canal que faltava no caso de origem, onde a saída
- * ficou onze dias sem ninguém saber. A issue é o registro durável; o e-mail
- * é o que chega ao editor no mesmo dia.
- *
- * Exportado pra ser testável em unidade, como `buildKitSubscriberLimitAlarmEmail`
- * no alarme irmão — um bug de formatação aqui falharia exatamente do jeito
- * que este alarme existe pra impedir (achado do review da PR #7828).
- *
- * Outcome com `action: "failed"` sai NOMEADO e com o erro, nunca como um
- * `#?` mudo: é o único aviso de que aquele assinante ficou sem registro
- * durável nesta rodada (será retentado na próxima, ver `selectLatchableEvents`).
- */
-export function buildAlarmEmail(
-  transitions: readonly { address: string; id: number; fromState: string; toState: string }[],
-  disappearances: readonly KitDisappearance[],
-  findingOutcomes: readonly AlarmEmailOutcome[],
-): { subject: string; body: string } {
-  const total = transitions.length + disappearances.length;
-  const falhas = findingOutcomes.filter((o) => o.action === "failed");
-  const ok = findingOutcomes.filter((o) => o.action !== "failed");
-  const subject =
-    `[diar.ia.br] Kit: ${total} assinante(s) saíram da base` +
-    (falhas.length ? ` — ${falhas.length} issue(s) NÃO abertas` : "");
-  const linhas = [
-    "Alarme de perda de assinante no Kit (#7660).",
-    "",
-    ...(transitions.length
-      ? [
-          "Transições de estado:",
-          ...transitions.map((t) => `  - ${t.address} (id ${t.id}): ${t.fromState} → ${t.toState}`),
-          "",
-        ]
-      : []),
-    ...(disappearances.length
-      ? [
-          "Sumiram da conta:",
-          ...disappearances.map((d) => `  - ${d.address ?? `id ${d.id}`} (último estado: ${d.lastState})`),
-          "",
-        ]
-      : []),
-    "Issues abertas com o playbook de recuperação:",
-    ...(ok.length
-      ? ok.map((o) => `  - ${o.url ?? `#${o.issueNumber ?? "?"}`}`)
-      : ["  (nenhuma — ver o log da task)"]),
-    ...(falhas.length
-      ? [
-          "",
-          "FALHA ao abrir issue (o assinante fica sem registro durável nesta rodada;",
-          "não entra no latch, então a próxima execução tenta de novo):",
-          ...falhas.map((o) => `  - ${o.fingerprint}: ${o.error ?? "erro não reportado"}`),
-        ]
-      : []),
-  ];
-  return { subject, body: linhas.join("\n") };
-}
-
 export async function run(argv: readonly string[], now: Date = new Date()): Promise<number> {
   const dry = argv.includes("--dry-run");
   const fetchMode = argv.includes("--fetch");
@@ -334,10 +266,10 @@ export async function run(argv: readonly string[], now: Date = new Date()): Prom
       `${disappearances.length} desaparecimento(s), ${novosSumicos.length} ainda não alertado(s).`,
   );
   if (transitions.length > 0 && !shouldAlarmKitStateTransition(latch, transitions)) {
-    console.log(`${LOG} transições já alertadas em execução anterior (latch) — sem reabrir issue.`);
+    console.log(`${LOG} transições já registradas em execução anterior (latch) — sem novo log.`);
   }
   if (disappearances.length > 0 && !shouldAlarmKitDisappearance(latch, disappearances)) {
-    console.log(`${LOG} desaparecimentos já alertados em execução anterior (latch) — sem reabrir issue.`);
+    console.log(`${LOG} desaparecimentos já registrados em execução anterior (latch) — sem novo log.`);
   }
 
   const correlations = loadOnboardingCorrelations();
@@ -345,11 +277,12 @@ export async function run(argv: readonly string[], now: Date = new Date()): Prom
     ...toStateTransitionAlarmFindings(novas, correlations),
     ...toDisappearanceAlarmFindings(novosSumicos, correlations),
   ];
-  const issuesState = loadAlarmIssuesState(ISSUES_STATE_PATH);
 
   if (dry) {
-    const acoes = planAlarmReconciliation(findings, issuesState, CLOSE_AFTER_RUNS);
-    console.log(`${LOG} --dry-run: ${acoes.length} ação(ões) — ${acoes.map((a) => a.kind).join(", ") || "nenhuma"}`);
+    console.log(
+      `${LOG} --dry-run: ${findings.length} ação(ões) — ` +
+        (findings.length > 0 ? `notifyEditor("silencio") por achado` : "nenhuma"),
+    );
     for (const t of novas) console.log(`${LOG} --dry-run: ${t.address} (id ${t.id}) ${t.fromState} → ${t.toState}`);
     for (const d of novosSumicos) {
       console.log(`${LOG} --dry-run: ${d.address ?? `id ${d.id}`} (id ${d.id}) ${d.lastState} → ausente`);
@@ -357,45 +290,23 @@ export async function run(argv: readonly string[], now: Date = new Date()): Prom
     return 0;
   }
 
-  const { nextState, findingOutcomes } = applyAlarmReconciliation(findings, issuesState, {
-    cwd: ROOT,
-    closeAfterRuns: CLOSE_AFTER_RUNS,
-  });
-  saveAlarmIssuesState(nextState, ISSUES_STATE_PATH);
-  for (const o of findingOutcomes) {
-    console.log(`${LOG} issue ${o.action}${o.issueNumber ? ` #${o.issueNumber}` : ""}${o.url ? ` ${o.url}` : ""}`);
-  }
-  const failedFingerprints = new Set(
-    findingOutcomes.filter((o) => o.action === "failed").map((o) => o.fingerprint),
-  );
-  if (failedFingerprints.size > 0) {
-    console.error(
-      `${LOG} ${failedFingerprints.size} issue(s) NÃO abertas — esses assinantes ficam FORA do latch ` +
-        `e serão reprocessados na próxima execução.`,
+  // "silencio" (#7902, #7960): nem issue, nem e-mail — só log em
+  // data/run-log.jsonl. `notifyEditor` nunca lança pra esta severidade, então
+  // não há falha a reter fora do latch: diferente do regime anterior
+  // (`applyAlarmReconciliation`), TODO achado desta rodada entra no latch.
+  for (const f of findings) {
+    await notifyEditor(
+      { check: f.check, fingerprint: f.fingerprint, severity: "silencio", subject: f.title, body: f.body },
+      { rootDir: ROOT },
     );
+    console.log(`${LOG} registrado (silencio): ${f.fingerprint}`);
   }
 
-  if (findings.length > 0) {
-    // Sem try/catch, mesma disciplina de kit-subscriber-limit-alarm.ts: se o
-    // envio falhar, o latch abaixo não avança e a próxima execução tenta de
-    // novo, em vez de marcar como avisado algo que o editor nunca recebeu.
-    const { subject, body } = buildAlarmEmail(novas, novosSumicos, findingOutcomes);
-    const to = resolveEditorEmail(join(ROOT, "platform.config.json"));
-    await sendGmailMessage(to, subject, body);
-    console.log(`${LOG} e-mail de alarme enviado pra ${to}.`);
-  }
-
-  // Latch e snapshot avançam DEPOIS das issues e do e-mail: se qualquer um
-  // lançar, a próxima execução redetecta e tenta de novo, em vez de perder o
-  // evento. E entram no latch só os eventos cuja issue de fato foi aberta
-  // (`selectLatchableEvents`) — latchar um que falhou o removeria de `novas`
-  // pra sempre, matando o retry que o `applyAlarmReconciliation` preserva.
+  // Latch e snapshot avançam DEPOIS do log: se `notifyEditor` lançasse (não
+  // lança pra "silencio", mas mantemos a ordem por disciplina — mesmo padrão
+  // dos alarmes irmãos), a próxima execução redetectaria e tentaria de novo.
   const activeIds = current.filter((s) => s.state === KIT_STATE_TRANSITION_FROM_STATE).map((s) => s.id);
-  const latchable = selectLatchableEvents(novas, novosSumicos, failedFingerprints);
-  saveState(
-    advanceKitStateTransitionAlarmState(latch, latchable.transitions, activeIds, now, latchable.disappearances),
-    LATCH_PATH,
-  );
+  saveState(advanceKitStateTransitionAlarmState(latch, novas, activeIds, now, novosSumicos), LATCH_PATH);
   persistSnapshot(current);
   return 0;
 }

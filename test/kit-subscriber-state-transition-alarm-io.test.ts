@@ -20,11 +20,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  fetchCurrentSnapshot,
-  buildAlarmEmail,
-  loadOnboardingCorrelations,
-} from "../scripts/kit-subscriber-state-transition-alarm.ts";
+import { fetchCurrentSnapshot, loadOnboardingCorrelations } from "../scripts/kit-subscriber-state-transition-alarm.ts";
 import type { KitSubscriberSummary } from "../scripts/lib/kit-subscribers.ts";
 
 const realFetch = globalThis.fetch;
@@ -129,59 +125,6 @@ describe("fetchCurrentSnapshot (#7828)", () => {
     } finally {
       process.env.KIT_API_KEY = salvo;
     }
-  });
-});
-
-describe("buildAlarmEmail (#7828)", () => {
-  const t = { id: 1, address: "a@x.com", fromState: "active", toState: "complained" };
-  const d = { id: 2, address: "b@x.com", lastState: "active", detectedAt: "2026-09-09T00:00:00Z" };
-
-  it("nomeia os dois eventos e lista as issues abertas", () => {
-    const { subject, body } = buildAlarmEmail([t], [d], [
-      { fingerprint: "f1", action: "created", issueNumber: 10, url: "https://gh/10" },
-    ]);
-    assert.match(subject, /2 assinante\(s\)/);
-    assert.match(body, /a@x\.com \(id 1\): active → complained/);
-    assert.match(body, /b@x\.com \(último estado: active\)/);
-    assert.match(body, /https:\/\/gh\/10/);
-  });
-
-  it("issue que FALHOU aparece nomeada e com o erro, nunca como um '#?' mudo", () => {
-    const { subject, body } = buildAlarmEmail([t], [], [
-      {
-        fingerprint: "kit-subscriber-state-transition:1",
-        action: "failed",
-        issueNumber: null,
-        url: null,
-        error: "gh: HTTP 403",
-      },
-    ]);
-    assert.match(subject, /1 issue\(s\) NÃO abertas/, "a falha precisa estar no assunto, não escondida no corpo");
-    assert.match(body, /FALHA ao abrir issue/);
-    assert.match(body, /kit-subscriber-state-transition:1/);
-    assert.match(body, /gh: HTTP 403/);
-    assert.doesNotMatch(body, /- #\?/);
-  });
-
-  it("falha e sucesso na mesma rodada não se misturam nas duas listas", () => {
-    const { body } = buildAlarmEmail([t], [], [
-      { fingerprint: "ok", action: "created", issueNumber: 10, url: "https://gh/10" },
-      { fingerprint: "ruim", action: "failed", issueNumber: null, url: null, error: "boom" },
-    ]);
-    const abertas = body.slice(body.indexOf("Issues abertas"), body.indexOf("FALHA ao abrir"));
-    assert.match(abertas, /https:\/\/gh\/10/);
-    assert.doesNotMatch(abertas, /ruim/);
-  });
-
-  it("sem nenhuma issue, diz isso em vez de deixar a seção vazia", () => {
-    const { body } = buildAlarmEmail([t], [], []);
-    assert.match(body, /\(nenhuma — ver o log da task\)/);
-  });
-
-  it("desaparecimento sem address cai no id, nunca em 'null'", () => {
-    const { body } = buildAlarmEmail([], [{ ...d, address: null }], []);
-    assert.match(body, /id 2 \(último estado: active\)/);
-    assert.doesNotMatch(body, /null/);
   });
 });
 

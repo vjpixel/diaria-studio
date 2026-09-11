@@ -25,9 +25,6 @@ import {
   shouldAlarmKitStateTransition,
   shouldAlarmKitDisappearance,
   advanceKitStateTransitionAlarmState,
-  selectLatchableEvents,
-  kitStateTransitionFindingKey,
-  kitDisappearanceFindingKey,
   emptyKitStateTransitionAlarmState,
   kitLossRecoveryPlaybook,
   KIT_STATE_TRANSITION_ALARM_STATES,
@@ -296,45 +293,6 @@ describe("onboardingCorrelationLines (#7660, 1º comentário)", () => {
     );
     assert.match(f.body, /CORRELAÇÃO/);
     assert.match(f.body, /#7660/);
-  });
-});
-
-describe("selectLatchableEvents — issue que falhou NÃO entra no latch (#7828)", () => {
-  const t = { id: 1, address: "a@x.com", fromState: "active", toState: "complained", detectedAt: NOW.toISOString() };
-  const d = { id: 2, address: "b@x.com", lastState: "active", detectedAt: NOW.toISOString() };
-
-  it("sem falha, tudo é latchável", () => {
-    const r = selectLatchableEvents([t], [d], new Set());
-    assert.deepEqual(r.transitions.map((x) => x.id), [1]);
-    assert.deepEqual(r.disappearances.map((x) => x.id), [2]);
-  });
-
-  it("transição cuja issue falhou fica FORA — senão o retry morre e o assinante some em silêncio", () => {
-    const r = selectLatchableEvents([t], [d], new Set([kitStateTransitionFindingKey(1)]));
-    assert.deepEqual(r.transitions, []);
-    assert.deepEqual(r.disappearances.map((x) => x.id), [2], "a falha de uma não pode arrastar a outra");
-  });
-
-  it("desaparecimento cuja issue falhou fica FORA", () => {
-    const r = selectLatchableEvents([t], [d], new Set([kitDisappearanceFindingKey(2)]));
-    assert.deepEqual(r.transitions.map((x) => x.id), [1]);
-    assert.deepEqual(r.disappearances, []);
-  });
-
-  it("o fingerprint da transição não silencia o desaparecimento do MESMO id", () => {
-    const mesmoId = { id: 1, address: "a@x.com", lastState: "complained", detectedAt: NOW.toISOString() };
-    const r = selectLatchableEvents([t], [mesmoId], new Set([kitStateTransitionFindingKey(1)]));
-    assert.deepEqual(r.transitions, []);
-    assert.deepEqual(r.disappearances.map((x) => x.id), [1]);
-  });
-
-  it("ponta a ponta: falha → não latcha → próxima execução redetecta e realarma", () => {
-    const latch0 = emptyKitStateTransitionAlarmState();
-    const falhou = new Set([kitStateTransitionFindingKey(1)]);
-    const latchable = selectLatchableEvents([t], [], falhou);
-    const latch1 = advanceKitStateTransitionAlarmState(latch0, latchable.transitions, [], NOW, latchable.disappearances);
-    assert.deepEqual(latch1.alertedSubscriberIds, [], "o id da issue que falhou não pode entrar no latch");
-    assert.equal(shouldAlarmKitStateTransition(latch1, [t]), true, "a próxima execução PRECISA realarmar");
   });
 });
 
