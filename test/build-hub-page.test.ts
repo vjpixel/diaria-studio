@@ -312,6 +312,10 @@ for (const slug of Object.keys(HUB_LOADERS)) {
       );
     });
 
+    it(`footerNavUtm.source do loader é exatamente "hub-${slug}" — pega copy-paste de outro slug entre factory calls válidas (#8005 achado pr-test-analyzer)`, () => {
+      assert.equal(hub.footerNavUtm.source, `hub-${slug}`);
+    });
+
     it("o link diar.ia.br do rodapé emite o UTM de hub.footerNavUtm, catalogado em UTM_EMITTERS", () => {
       const html = renderHubPage(hub);
       const m = /href="https:\/\/diar\.ia\.br\/?\?(utm_source=[^"]+)"/.exec(html);

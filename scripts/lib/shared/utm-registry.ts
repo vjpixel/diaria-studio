@@ -604,7 +604,16 @@ export const LIVROS_FOOTER_NAV_UTM = {
  * virão, decisão do editor 260804: hubs de empresa e temáticos coexistem)
  * chama esta função com o próprio slug — não precisa mais de constante
  * dedicada. */
-export function hubFooterNavUtm(slug: string) {
+export type HubSlug =
+  | "anthropic-claude"
+  | "openai-chatgpt"
+  | "google-gemini"
+  | "meta-ai"
+  | "brasil-regulacao"
+  | "mercado-trabalho"
+  | "medicina-saude";
+
+export function hubFooterNavUtm(slug: HubSlug) {
   return {
     source: `hub-${slug}`,
     medium: "footer-nav",
@@ -648,7 +657,17 @@ export const HUB_INDEX_FOOTER_NAV_UTM = {
  * só `source` variando por uma regra mecânica (`entity-{slug}`). Uma página
  * de entidade nova chama esta função com o próprio slug — não precisa mais
  * de constante dedicada. */
-export function entityFooterNavUtm(slug: string) {
+export type EntitySlug =
+  | "perplexity"
+  | "xai"
+  | "amazon"
+  | "samsung"
+  | "apple"
+  | "deepseek"
+  | "oracle"
+  | "alibaba";
+
+export function entityFooterNavUtm(slug: EntitySlug) {
   return {
     source: `entity-${slug}`,
     medium: "footer-nav",
