@@ -20,7 +20,9 @@ import {
   DEFAULT_GMAIL_QUERY,
   buildAlignedPctHistoryEntries,
   appendAlignedPctHistory,
-  ALIGNED_PCT_ALARM_FLOOR,
+  ALIGNED_PCT_ALARM_FLOOR_DEFAULT,
+  ALIGNED_PCT_ALARM_FLOOR_BY_DOMAIN,
+  alignedPctAlarmFloorFor,
 } from "../scripts/dmarc-drain.ts";
 import type { DmarcDomainSummary } from "../scripts/lib/dmarc-report.ts";
 import { aggregateDmarcReports } from "../scripts/lib/dmarc-report.ts";
@@ -130,7 +132,9 @@ test("alarmFindingsFor (#6690): alignedPct abaixo do piso ainda dispara (queda r
   assert.match(findings[0].body, /Piso do alarme: 99% \(#6690\)/);
 });
 
-test("alarmFindingsFor (#6690): exatamente no piso NÃO dispara (limite inclusivo)", () => {
+test("alarmFindingsFor (#6690): exatamente no piso do domínio NÃO dispara (limite inclusivo)", () => {
+  const floor = alignedPctAlarmFloorFor("news.diar.ia.br");
+  assert.equal(floor, 99); // news.diar.ia.br está no mapa por-domínio
   const summary: DmarcDomainSummary = {
     domain: "news.diar.ia.br",
     reportCount: 1,
@@ -139,11 +143,57 @@ test("alarmFindingsFor (#6690): exatamente no piso NÃO dispara (limite inclusiv
     totalMessages: 100,
     spfRawPassMessages: 99,
     dkimRawPassMessages: 99,
-    alignedMessages: 99, // exatamente 99% == ALIGNED_PCT_ALARM_FLOOR
+    alignedMessages: 99, // exatamente 99% == piso de news.diar.ia.br
     spfRawPassPct: 99,
     dkimRawPassPct: 99,
-    alignedPct: ALIGNED_PCT_ALARM_FLOOR,
+    alignedPct: floor,
     failedAlignmentSources: [{ sourceIp: "198.51.100.1", count: 1, reportedBy: ["google.com"] }],
+  };
+  assert.deepEqual(alarmFindingsFor([summary]), []);
+});
+
+test("alarmFindingsFor (#6690, achado do fleet review): domínio SEM histórico de ruído usa piso 100 " +
+  "— 1ª falha num domínio historicamente 100% ainda dispara, mesmo diluída por volume cumulativo", () => {
+  assert.equal(alignedPctAlarmFloorFor("diar.ia.br"), ALIGNED_PCT_ALARM_FLOOR_DEFAULT);
+  assert.equal(ALIGNED_PCT_ALARM_FLOOR_DEFAULT, 100);
+  // Mesmo formato de "1ª falha diluída" que motivou o achado: volume alto,
+  // 1 única mensagem não-alinhada, alignedPct arredonda pra 99.7% — acima
+  // do piso relaxado de news.diar.ia.br (99), mas diar.ia.br não está no
+  // mapa por-domínio, então usa o piso 100 (default) e ainda dispara.
+  const summary: DmarcDomainSummary = {
+    domain: "diar.ia.br",
+    reportCount: 13,
+    windowBegin: 1787529600,
+    windowEnd: 1788998399,
+    totalMessages: 389,
+    spfRawPassMessages: 388,
+    dkimRawPassMessages: 388,
+    alignedMessages: 388, // 1 não-alinhada — a 1ª falha desse domínio
+    spfRawPassPct: 99.7,
+    dkimRawPassPct: 99.7,
+    alignedPct: 99.7,
+    failedAlignmentSources: [{ sourceIp: "203.0.113.55", count: 1, reportedBy: ["google.com"] }],
+  };
+  const findings = alarmFindingsFor([summary]);
+  assert.equal(findings.length, 1);
+  assert.match(findings[0].body, /Piso do alarme: 100% \(#6690\)/);
+});
+
+test("alarmFindingsFor (#6690, achado do fleet review): domínio SEM tráfego (totalMessages=0) NÃO dispara " +
+  "— guard load-bearing contra o sentinela alignedPct=0 de pct()", () => {
+  const summary: DmarcDomainSummary = {
+    domain: "diar.ia.br",
+    reportCount: 0,
+    windowBegin: 1787529600,
+    windowEnd: 1788998399,
+    totalMessages: 0,
+    spfRawPassMessages: 0,
+    dkimRawPassMessages: 0,
+    alignedMessages: 0,
+    spfRawPassPct: 0,
+    dkimRawPassPct: 0,
+    alignedPct: 0, // sentinela de pct() quando totalMessages===0 — sempre < qualquer piso
+    failedAlignmentSources: [],
   };
   assert.deepEqual(alarmFindingsFor([summary]), []);
 });

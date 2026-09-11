@@ -277,20 +277,50 @@ export async function fetchReports(
 
 // ─── Alarme: volume não-autenticado ─────────────────────────────────────────
 
-/** Piso de `alignedPct` abaixo do qual o alarme dispara (#6690) — ver
- * justificativa/dado real no docstring do módulo, acima. */
-export const ALIGNED_PCT_ALARM_FLOOR = 99;
+/** Piso DEFAULT de `alignedPct` abaixo do qual o alarme dispara (#6690) — ver
+ * justificativa/dado real no docstring do módulo, acima. Só relaxado pra
+ * domínio com histórico MEDIDO de ruído de forwarding (`ALIGNED_PCT_ALARM_FLOOR_BY_DOMAIN`
+ * abaixo) — um domínio sem esse histórico usa 100 (qualquer não-alinhado > 0
+ * alarma, mesmo comportamento de antes do #6690). */
+export const ALIGNED_PCT_ALARM_FLOOR_DEFAULT = 100;
 
-/** Condição de alarme por domínio: `alignedPct` abaixo de
- * `ALIGNED_PCT_ALARM_FLOOR` (issue #6189 item 4 original — "alarmar se
- * aparecer volume não-autenticado" — recalibrada em #6690 pra não disparar
- * pra sempre em ruído de forwarding corporativo). Pura. */
+/** Piso relaxado, POR DOMÍNIO — nunca um valor único pra todos (#6690, achado
+ * do fleet review pré-merge: um piso único calibrado com o ruído de
+ * `news.diar.ia.br` (99.4%-99.7% nas 5 execuções medidas) aplicado sem
+ * distinção a `diar.ia.br` — que nas MESMAS 5 execuções ficou 100.0% o tempo
+ * todo, zero tolerância histórica — apagaria justamente a 1ª falha real
+ * desse domínio, porque o volume cumulativo dilui 1 mensagem não-alinhada
+ * pra bem acima de 99%. Domínio sem entrada aqui usa `ALIGNED_PCT_ALARM_FLOOR_DEFAULT`
+ * (100 — qualquer não-alinhado alarma, sem tolerância, o comportamento
+ * seguro de antes do #6690). Só entra aqui o domínio com ruído MEDIDO em
+ * `data/dmarc-aligned-pct.jsonl` — nunca por suposição. */
+export const ALIGNED_PCT_ALARM_FLOOR_BY_DOMAIN: Readonly<Record<string, number>> = {
+  "news.diar.ia.br": 99,
+};
+
+/** Resolve o piso efetivo pro domínio — pura, testável sem tocar o mapa
+ * direto. */
+export function alignedPctAlarmFloorFor(domain: string): number {
+  return ALIGNED_PCT_ALARM_FLOOR_BY_DOMAIN[domain] ?? ALIGNED_PCT_ALARM_FLOOR_DEFAULT;
+}
+
+/** Condição de alarme por domínio: `alignedPct` abaixo do piso EFETIVO desse
+ * domínio (issue #6189 item 4 original — "alarmar se aparecer volume
+ * não-autenticado" — recalibrada em #6690 pra não disparar pra sempre em
+ * ruído de forwarding corporativo MEDIDO, sem apagar a mesma tolerância em
+ * domínio sem esse ruído). Pura. */
 export function alarmFindingsFor(summaries: DmarcDomainSummary[]): AlarmFinding[] {
   const findings: AlarmFinding[] = [];
   for (const s of summaries) {
     const unalignedCount = s.totalMessages - s.alignedMessages;
+    // Guard load-bearing mesmo parecendo redundante com o piso abaixo
+    // (achado do fleet review pré-merge, #6690): `pct()` em dmarc-report.ts
+    // devolve 0 como sentinela quando totalMessages===0 — sem este `continue`
+    // primeiro, um domínio SEM tráfego nenhum teria alignedPct=0, que é
+    // sempre < qualquer piso, e alarmaria "0 mensagem de 0 não alinharam".
     if (unalignedCount <= 0) continue;
-    if (s.alignedPct >= ALIGNED_PCT_ALARM_FLOOR) continue;
+    const floor = alignedPctAlarmFloorFor(s.domain);
+    if (s.alignedPct >= floor) continue;
     const topIps = s.failedAlignmentSources
       .slice(0, 5)
       .map((f) => `${f.sourceIp} (${f.count})`)
@@ -304,7 +334,7 @@ export function alarmFindingsFor(summaries: DmarcDomainSummary[]): AlarmFinding[
         `${unalignedCount} mensagem(ns) de ${s.totalMessages} não alinharam DMARC para **${s.domain}** ` +
         `(${s.alignedPct}% alinhado no período ${new Date(s.windowBegin * 1000).toISOString().slice(0, 10)}..${new Date(s.windowEnd * 1000).toISOString().slice(0, 10)}).\n\n` +
         `IPs de origem com falha de alinhamento: ${topIps || "(nenhum IP individual, ver resumo completo)"}.\n\n` +
-        `Ver \`data/dmarc-reports/\` para o resumo completo desta execução. Piso do alarme: ${ALIGNED_PCT_ALARM_FLOOR}% (#6690). Contexto: #6111, #6189.`,
+        `Ver \`data/dmarc-reports/\` para o resumo completo desta execução. Piso do alarme: ${floor}% (#6690). Contexto: #6111, #6189.`,
       labels: ["bug", "P2", "diaria"],
     });
   }
