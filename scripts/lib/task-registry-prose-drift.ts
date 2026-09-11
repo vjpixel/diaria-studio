@@ -168,3 +168,23 @@ export function evaluateProseDrift(
   }
   return { findings, unverifiable: [...unverifiable].sort(), checked };
 }
+
+/** Exit code usado quando drift é encontrado — NÃO é 1 (#7553). Mesmo
+ *  padrão de `NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE`/`successExitCodes: [3]`
+ *  já usado por `Diaria-Clarice-Novos` (#5743): "achado real, não erro do
+ *  script" precisa de um código distinto de 1, senão o
+ *  `Diaria-Systemd-Failed-Units-Alarm` (#5942) genérico lê a unit como
+ *  `failed` pra sempre que existir drift — indistinguível de o próprio
+ *  script ter quebrado. Achado ao vivo: #7553 reabriu 2x no mesmo dia
+ *  (#5978) porque cada drift novo reacionava o alarme genérico, não o
+ *  drift-check em si. */
+export const PROSE_DRIFT_FOUND_EXIT_CODE = 3;
+
+/** Resolve o exit code do CLI a partir da avaliação — pura, testável sem
+ *  spawnar processo (`task-registry-prose-drift-check.ts` só chama isto e
+ *  faz `process.exit`). 0 = sem drift; `PROSE_DRIFT_FOUND_EXIT_CODE` = há
+ *  drift, mas isso não é uma falha do script — quem registra
+ *  `successExitCodes: [3]` no `scheduled-tasks.ts` sabe disso. */
+export function resolveProseDriftExitCode(evaluation: Pick<ProseDriftEvaluation, "findings">): number {
+  return evaluation.findings.length > 0 ? PROSE_DRIFT_FOUND_EXIT_CODE : 0;
+}

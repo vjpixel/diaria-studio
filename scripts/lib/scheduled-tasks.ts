@@ -2061,7 +2061,14 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // e acao POSTERIOR do editor. Ironia notada e registrada no corpo da PR:
     // este e exatamente o guard que a #7137 cita como "o guard da prosa
     // vencida e ele proprio um dos desarmados" -- corrigido aqui.
-    issue: "#6105, #7137",
+    //
+    // #7553: drift encontrado sai exit 3, nao 1 -- "achou drift" nao e uma
+    // falha do script, e o Diaria-Systemd-Failed-Units-Alarm generico
+    // confundia os dois (unit marcada `failed` toda vez que existia drift
+    // real, reabrindo #7553 repetidamente). Mesmo padrao de
+    // Diaria-Clarice-Novos (#5743).
+    successExitCodes: [3],
+    issue: "#6105, #7137, #7553",
   },
   {
     name: "Diaria-Guard-Never-Invoked-Weekly-Check",

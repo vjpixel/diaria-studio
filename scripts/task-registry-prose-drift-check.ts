@@ -17,7 +17,12 @@
  *   npx tsx scripts/task-registry-prose-drift-check.ts            # avalia + imprime
  *   npx tsx scripts/task-registry-prose-drift-check.ts --json     # saída programática
  *
- * Exit codes: 0 = sem drift (ou nada verificável); 1 = drift encontrado.
+ * Exit codes: 0 = sem drift (ou nada verificável); 3 = drift encontrado
+ *   (#7553 — NÃO é 1, senão o `Diaria-Systemd-Failed-Units-Alarm` genérico
+ *   confunde "achou drift" com "o script quebrou"; a task
+ *   `Diaria-Task-Registry-Prose-Drift-Alarm` declara `successExitCodes: [3]`
+ *   em `scheduled-tasks.ts` pra não marcar a unit como `failed` nesse caso
+ *   — mesmo padrão de `Diaria-Clarice-Novos`/#5743).
  *
  * @module
  */
@@ -30,6 +35,7 @@ import { unitBaseName } from "./lib/systemd-units.ts";
 import { parseSystemctlListTimersOutput } from "./lib/task-never-armed-alarm.ts";
 import {
   evaluateProseDrift,
+  resolveProseDriftExitCode,
   type RealArmedState,
 } from "./lib/task-registry-prose-drift.ts";
 import { listScheduledTaskNames } from "./lib/scheduled-tasks.ts";
@@ -86,4 +92,4 @@ if (hasFlag(process.argv, "--json")) {
   }
 }
 
-process.exit(evaluation.findings.length > 0 ? 1 : 0);
+process.exit(resolveProseDriftExitCode(evaluation));

@@ -4,6 +4,8 @@ import {
   extractProseArmedClaim,
   resolveLineOwnership,
   evaluateProseDrift,
+  resolveProseDriftExitCode,
+  PROSE_DRIFT_FOUND_EXIT_CODE,
 } from "../scripts/lib/task-registry-prose-drift.ts";
 
 const TASKS = ["Diaria-Foo", "Diaria-Bar", "Diaria-Baz"];
@@ -125,3 +127,22 @@ describe("task-registry-prose-drift (#6105 item 2)", () => {
         "not-armed",
       );
     });
+
+describe("resolveProseDriftExitCode (#7553)", () => {
+  it("sem findings -> exit 0", () => {
+    assert.equal(resolveProseDriftExitCode({ findings: [] }), 0);
+  });
+
+  it("com findings -> exit 3, NUNCA 1 (regressão #7553: 1 confundia o Systemd-Failed-Units-Alarm genérico)", () => {
+    const evaluation = evaluateProseDrift(
+      "`Diaria-Foo`: **ARMADA**.",
+      ["Diaria-Foo"],
+      new Map([["Diaria-Foo", "not-armed" as const]]),
+    );
+    assert.equal(evaluation.findings.length, 1);
+    const exitCode = resolveProseDriftExitCode(evaluation);
+    assert.equal(exitCode, PROSE_DRIFT_FOUND_EXIT_CODE);
+    assert.equal(exitCode, 3);
+    assert.notEqual(exitCode, 1);
+  });
+});
