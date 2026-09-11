@@ -70,13 +70,6 @@ const ALLOWLIST: string[] = [
   "scripts/hub-staleness-check.ts",
   "scripts/kit-doi-orphan-guard.ts",
   "scripts/kit-subscriber-limit-alarm.ts",
-  // #7960: severidade "silencio" (decisão do editor, #7957) — mas este
-  // arquivo hoje bundla e-mail COM criação de issue via
-  // applyAlarmReconciliation/latch de retry; "silencio" exige remover a
-  // issue também, não só o e-mail — refactor maior que o de
-  // codex-credential-alarm.ts (que era só e-mail), deixado pra unidade
-  // dedicada.
-  "scripts/kit-subscriber-state-transition-alarm.ts",
   "scripts/linkedin-weekly-staleness-alarm.ts",
   "scripts/meta-capi-staleness-alarm.ts",
   "scripts/onboarding-continuity-alarm.ts",

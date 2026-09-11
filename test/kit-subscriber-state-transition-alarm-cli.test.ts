@@ -11,6 +11,12 @@
  * Cada caso monta seu próprio `data/kit-sub-state/` num diretório
  * temporário e roda o CLI de verdade, com `--dry-run` — o caminho sem
  * `--dry-run` chama `gh` pra abrir issue e não tem lugar num teste.
+ *
+ * **#7902/#7960: o parágrafo acima deixou de valer pro caminho sem
+ * `--dry-run`.** Migrado pra `notifyEditor({severity: "silencio"})`, o
+ * script não chama mais `gh` nem Gmail — só `data/run-log.jsonl` — então o
+ * caminho de verdade (não-dry) passou a ser testável sem mock nenhum; ver
+ * describe "modo real (não-dry): 'silencio' só loga" abaixo.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -45,7 +51,11 @@ interface Snapshots {
  *  apontando `HOME`-like via cwd — o script usa caminhos relativos à raiz do
  *  próprio arquivo, então rodamos o script do repo com um `data/` plantado
  *  numa cópia rasa da árvore. */
-function runCli(name: string, snaps: Snapshots): { stdout: string; status: number } {
+function runCli(
+  name: string,
+  snaps: Snapshots,
+  extraArgs: readonly string[] = ["--dry-run"],
+): { stdout: string; status: number; repoDir: string } {
   const repo = join(sandbox, name);
   mkdirSync(join(repo, "scripts", "lib"), { recursive: true });
   mkdirSync(join(repo, "data", "kit-sub-state"), { recursive: true });
@@ -67,16 +77,16 @@ function runCli(name: string, snaps: Snapshots): { stdout: string; status: numbe
     // `process.execPath --import tsx`, nunca `npx`: o binário `npx` é um
     // `.cmd` no Windows e `execFileSync` não o resolve (falha muda, sem
     // stdout nenhum). É também a invocação que o task-runner do repo usa.
-    const stdout = execFileSync(process.execPath, ["--import", "tsx", join(repo, SCRIPT_REL), "--dry-run"], {
+    const stdout = execFileSync(process.execPath, ["--import", "tsx", join(repo, SCRIPT_REL), ...extraArgs], {
       cwd: repo,
       encoding: "utf8",
       timeout: 90_000,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    return { stdout, status: 0 };
+    return { stdout, status: 0, repoDir: repo };
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; status?: number };
-    return { stdout: (e.stdout ?? "") + (e.stderr ?? ""), status: e.status ?? 1 };
+    return { stdout: (e.stdout ?? "") + (e.stderr ?? ""), status: e.status ?? 1, repoDir: repo };
   }
 }
 
@@ -157,5 +167,36 @@ describe("CLI do alarme de transição Kit (#7660)", () => {
       "prev.json deve continuar intacto em --dry-run",
     );
     assert.equal(existsSync(join(stateDir, ".transition-latch.json")), false);
+  });
+});
+
+describe("modo real (não-dry): 'silencio' só loga (#7902/#7960)", () => {
+  it("transição vira 1 linha em data/run-log.jsonl, sem gh/e-mail — e avança prev.json + latch", () => {
+    const { stdout, status, repoDir } = runCli(
+      "silencio-real",
+      {
+        prev: [{ id: 1, state: "active", address: "a@x.com" }],
+        current: [{ id: 1, email_address: "a@x.com", state: "complained" }],
+      },
+      [], // sem --dry-run: exercita o caminho real, que não chama gh/Gmail
+    );
+    assert.equal(status, 0, `esperava exit 0; stdout/stderr: ${stdout}`);
+
+    const runLogPath = join(repoDir, "data", "run-log.jsonl");
+    assert.ok(existsSync(runLogPath), "notifyEditor('silencio') devia gravar em data/run-log.jsonl");
+    const linhas = readFileSync(runLogPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const entry = linhas.find((l) => l.details?.channel === "silencio");
+    assert.ok(entry, `nenhuma linha com channel:"silencio" em ${JSON.stringify(linhas)}`);
+    assert.match(entry.details.fingerprint, /kit-subscriber-state-transition:1/);
+    assert.match(entry.message, /a@x\.com.*complained/);
+
+    const stateDir = join(repoDir, "data", "kit-sub-state");
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(stateDir, "prev.json"), "utf8")).map((e: { id: number }) => e.id),
+      [1],
+      "snapshot avança mesmo sem issue/e-mail — silencio não retém o latch",
+    );
+    const latch = JSON.parse(readFileSync(join(stateDir, ".transition-latch.json"), "utf8"));
+    assert.deepEqual(latch.alertedSubscriberIds, [1]);
   });
 });
