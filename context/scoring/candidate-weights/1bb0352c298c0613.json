@@ -1,0 +1,8 @@
+{
+  "label": "calibrate-scoring-weights: has_official_link",
+  "created_at": "2026-09-11T20:09:51.894Z",
+  "rationale": "Saída de calibrate-scoring-weights.ts (#7990) — regressão logística L2 sobre 80 edições de treino (25 em holdout, nunca usadas no fit). Feature(s) calibrada(s): has_official_link (coef=-0.1928, odds_ratio=0.825, proposto=-2pt, sem bônus prévio no rubrico). Escala log-odds→pontos: 10.00 (default documentado — nenhuma feature elegível nesta rodada tinha âncora). AUC holdout: real=0.440 shadow=0.481.",
+  "weights": {
+    "has_official_link": -2
+  }
+}
