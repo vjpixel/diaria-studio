@@ -46,13 +46,8 @@ const HOOKS_DIR = join(ROOT, ".claude", "hooks");
  * passam de ~600 chars entre `detached:` e o fechamento do objeto). */
 const WINDOW_CHARS = 600;
 
-export interface DetachedWithoutWindowsHide {
-  file: string;
-  /** Offset (não linha — mais barato de calcular, suficiente pra achar no editor) do `detached: true` ofensor. */
-  offset: number;
-}
-
-/** Pura — recebe o conteúdo já lido de um arquivo `.mjs`, devolve todo
+/** Pura — recebe o conteúdo já lido de um arquivo `.mjs`, devolve o offset
+ * (não linha — mais barato de calcular, suficiente pra achar no editor) de todo
  * `detached: true` sem `windowsHide: true` na janela ao redor. */
 export function findDetachedWithoutWindowsHide(content: string): number[] {
   const offenders: number[] = [];
