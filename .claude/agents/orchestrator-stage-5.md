@@ -419,7 +419,7 @@ npx tsx scripts/smoke-test-vote.ts --edition {AAMMDD}  # exit 2 (410/403) ou 3 (
 
 **Sempre** ao fim do Stage 5 — mesmo se publicacao foi manual ou algum canal ficou `pending_manual`:
 
-**Backend-aware (#464, achado do review — sem isso o Stage 6 nunca roda com `backend: "kit"`):** `--outputs` referencia o artefato que o passo 5c-1/5c-1-kit de fato escreveu — `assertSentinel` (Stage 6, pré-condição) checa exatamente os paths gravados aqui, não um path fixo. Backend `"beehiiv"` (default):
+**Backend-aware (#464, achado do review — sem isso o Stage 6 nunca roda com `backend: "kit"`):** `--outputs` referencia o artefato que o passo 5c-1/5c-1-kit de fato escreveu — `assertSentinel` (Stage 6, pré-condição) checa exatamente os paths gravados aqui, não um path fixo. **Desde #7963 isto também é um gate MECÂNICO, não só prosa:** `pipeline-sentinel.ts write --step 5` recusa (exit 1, SEM `--bypass-reason`) gravar o sentinel se `--outputs` citar o artefato do backend OPOSTO ao ativo em `platform.config.json` (ex: `05-published.json` sob backend `"kit"`) — mesmo assim, seguir o branch certo abaixo evita o erro de largada. Backend `"beehiiv"` (default):
 
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write \

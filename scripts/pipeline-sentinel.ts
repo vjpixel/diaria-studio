@@ -47,6 +47,11 @@ import { resolveEditionDir as resolveFindEditionDir } from "./lib/find-current-e
 import { getRulesForStage } from "./lib/invariant-checks/index.ts";
 import type { InvariantViolation } from "./lib/invariant-checks/types.ts";
 import {
+  findWrongBackendNewsletterOutputs,
+  loadNewsletterBackend,
+  type NewsletterBackend,
+} from "./lib/newsletter-backend.ts";
+import {
   assertMarker,
   assertSentinel,
   readSentinel,
@@ -271,6 +276,38 @@ export function checkStageInvariantsForWrite(
   return { passed: errors.length === 0, errors };
 }
 
+/**
+ * #7963: gate mecânico pré-`write` — recusa gravar o sentinel dos Stages 5 e
+ * 6 (os únicos cujos outputs citam um artefato de newsletter específico de
+ * backend) se `outputs` contiver o artefato do backend OPOSTO ao ativo em
+ * `platform.config.json`.
+ *
+ * Diferente de `checkStageInvariantsForWrite` (que roda regras que checam o
+ * DISCO), este guard checa a própria STRING passada em `--outputs` — pega o
+ * erro de "lista de outputs errada" mesmo quando o artefato certo também
+ * existe em disco (o `check-invariants` de Stage 5 não reprovaria isso,
+ * porque ele valida arquivos existentes, não o `--outputs` do sentinel).
+ *
+ * Sem bypass: ao contrário de `checkStageInvariantsForWrite`, não existe
+ * cenário legítimo de falso-positivo aqui — um backend nunca escreve o
+ * artefato do outro, então citar o artefato errado é sempre um erro de
+ * contabilidade, nunca uma checagem desatualizada.
+ *
+ * Pure: recebe os `outputs` já parseados + o backend resolvido; quem chama
+ * decide como reportar (nenhum `console.error`/`process.exit` aqui).
+ */
+export function checkBackendOutputsForWrite(
+  step: number,
+  outputs: string[],
+  backend: NewsletterBackend = loadNewsletterBackend(),
+): { passed: boolean; wrongOutputs: string[]; backend: NewsletterBackend } {
+  if (step !== 5 && step !== 6) {
+    return { passed: true, wrongOutputs: [], backend };
+  }
+  const wrongOutputs = findWrongBackendNewsletterOutputs(outputs, backend);
+  return { passed: wrongOutputs.length === 0, wrongOutputs, backend };
+}
+
 function main(): void {
   const [, , subcmd, ...rest] = process.argv;
   const args = parseCliArgs(rest).values;
@@ -308,12 +345,26 @@ function main(): void {
         console.error("[error] --outputs é obrigatório para write");
         process.exit(1);
       }
+      const outputs = args.outputs.split(",").map((s) => s.trim()).filter(Boolean);
       // #6009: gate mecânico — recusa escrever o sentinel se check-invariants
       // pro mesmo stage reportar violação de severity=error. Restrito ao
       // layout padrão da diária (sem --dir custom, editionId AAMMDD de 6
       // dígitos) — ver docstring de checkStageInvariantsForWrite.
       const editionIsAammdd = /^\d{6}$/.test(args.edition);
       if (!args.dir && editionIsAammdd) {
+        // #7963: gate SEM bypass — outputs citando o artefato de newsletter
+        // do backend OPOSTO ao ativo é sempre um erro de contabilidade
+        // (ver docstring de checkBackendOutputsForWrite), nunca um
+        // falso-positivo conhecido como o check-invariants abaixo pode ser.
+        const backendResult = checkBackendOutputsForWrite(step, outputs);
+        if (!backendResult.passed) {
+          console.error(
+            `[error] sentinel step ${step} NÃO escrito — outputs cita artefato do backend ERRADO ` +
+              `para publishing.newsletter.backend="${backendResult.backend}": ${backendResult.wrongOutputs.join(", ")}. ` +
+              `Esse backend nunca escreve esse arquivo — corrija --outputs pro artefato do backend ativo (#7963).`,
+          );
+          process.exit(1);
+        }
         const invariantResult = checkStageInvariantsForWrite(editionDir, step);
         if (!invariantResult.passed) {
           if (args["bypass-reason"]) {
@@ -334,7 +385,6 @@ function main(): void {
           }
         }
       }
-      const outputs = args.outputs.split(",").map((s) => s.trim()).filter(Boolean);
       try {
         writeSentinel(editionDir, step, outputs);
         console.log(`sentinel step ${step} escrito em ${editionDir}/_internal/.step-${step}-done.json`);

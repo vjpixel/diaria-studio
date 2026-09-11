@@ -509,7 +509,7 @@ Exit code handling: `0` = derivação concluída (contagem no stdout); `!=0` = l
 
 ### 6f. Escrever sentinel de conclusao
 
-**Backend-aware (#464, mesmo motivo do §5h/Stage 5 e da Pre-condicao acima).** Backend `"beehiiv"` (default):
+**Backend-aware (#464, mesmo motivo do §5h/Stage 5 e da Pre-condicao acima).** **Desde #7963, mesmo gate mecânico do §5h** — `write --step 6` também recusa (exit 1, sem bypass) `--outputs` com o artefato de newsletter do backend errado. Backend `"beehiiv"` (default):
 
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write \
