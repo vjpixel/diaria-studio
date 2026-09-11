@@ -248,29 +248,56 @@ describe("computeBraveCreditStats", () => {
     rmSync(path, { force: true });
   });
 
-  it("alert_level=warn at 80%", () => {
+  // (#7943) Denominador do alerta é MONTHLY_FREE_CREDIT_QUERIES=1000
+  // (crédito grátis mensal $5 / $0,005 por query) — não mais o antigo
+  // FREE_TIER_LIMIT=2000 (um hard cap que nunca existiu nesta conta Postpaid).
+  it("alert_level=warn at 80% do crédito grátis mensal (#7943)", () => {
     const path = makeTmpPath();
     const now = new Date("2026-05-15T12:00:00Z");
     const lines = [];
-    for (let i = 0; i < 1600; i++) {
+    for (let i = 0; i < 850; i++) {
       lines.push(JSON.stringify({ timestamp: "2026-05-10T10:00:00Z", query: `q${i}`, status: "ok" }));
     }
     writeFileSync(path, lines.join("\n"), "utf8");
     const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.percent_used, 85, "850/1000 (crédito grátis mensal) = 85%");
     assert.equal(stats.alert_level, "warn");
     rmSync(path, { force: true });
   });
 
-  it("alert_level=critical at 95%", () => {
+  it("alert_level=critical at 95% do crédito grátis mensal (#7943)", () => {
     const path = makeTmpPath();
     const now = new Date("2026-05-15T12:00:00Z");
     const lines = [];
-    for (let i = 0; i < 1900; i++) {
+    for (let i = 0; i < 960; i++) {
       lines.push(JSON.stringify({ timestamp: "2026-05-10T10:00:00Z", query: `q${i}`, status: "ok" }));
     }
     writeFileSync(path, lines.join("\n"), "utf8");
     const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.percent_used, 96, "960/1000 (crédito grátis mensal) = 96%");
     assert.equal(stats.alert_level, "critical");
+    rmSync(path, { force: true });
+  });
+
+  // (#7943) Modelo de custo: percent_used/alert_level agora derivam de
+  // custo projetado (queries_this_month_real * QUERY_COST_USD) contra o
+  // crédito grátis mensal (MONTHLY_FREE_CREDIT_USD=$5), não mais de uma
+  // contagem de queries contra um hard cap fixo de 2000.
+  it("expõe cost_this_month_usd/monthly_free_credit_usd/projected_cost_month_end_usd (#7943)", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-05-10T12:00:00Z"); // day 10 of 31-day month
+    const lines = [];
+    for (let i = 0; i < 100; i++) {
+      lines.push(JSON.stringify({ timestamp: "2026-05-05T10:00:00Z", query: `q${i}`, status: "ok" }));
+    }
+    writeFileSync(path, lines.join("\n"), "utf8");
+    const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.free_tier_limit, 1000, "denominador é o equivalente em queries do crédito grátis mensal ($5/$0,005)");
+    assert.equal(stats.monthly_free_credit_usd, 5);
+    assert.equal(stats.cost_this_month_usd, 0.5, "100 queries * $0,005 = $0,50");
+    assert.equal(stats.percent_used, 10, "$0,50 de $5,00 = 10%");
+    assert.equal(stats.projected_month_end, 310, "projeção de queries inalterada (100/10*31=310)");
+    assert.equal(stats.projected_cost_month_end_usd, 1.55, "310 queries projetadas * $0,005 = $1,55");
     rmSync(path, { force: true });
   });
 
@@ -389,7 +416,7 @@ describe("computeBraveCreditStats", () => {
     assert.equal(stats.effective_used, 5, "base do alerta = contagem local (header descartado)");
     assert.equal(stats.alert_basis, "local", "header descartado → cai pra local");
     assert.equal(stats.header_discarded, true, "deve sinalizar que o header foi descartado");
-    assert.equal(stats.alert_level, "ok", "NÃO deve ser critical — 5/2000 é ok");
+    assert.equal(stats.alert_level, "ok", "NÃO deve ser critical — 5/1000 (crédito grátis mensal, #7943) é ok");
     assert.equal(stats.delta_untracked, undefined, "delta não deve refletir o gap implausível");
     rmSync(path, { force: true });
   });
@@ -404,7 +431,9 @@ describe("computeBraveCreditStats", () => {
   // X-RateLimit-Remaining não é confiável o bastante pra servir de base de
   // alerta sozinho — provavelmente multi-valor/CSV (uma janela por rate-limit, cf.
   // issue #3707 hipótese 2, não confirmado por falta de BRAVE_API_KEY live) e
-  // FREE_TIER_LIMIT pode nem refletir mais o plano da conta (hipótese 1).
+  // FREE_TIER_LIMIT (hipótese 1) de fato não refletia o plano da conta —
+  // confirmado e corrigido pelo #7943 (plano é Postpaid, sem hard cap de
+  // queries; ver MONTHLY_FREE_CREDIT_QUERIES/MONTHLY_FREE_CREDIT_USD acima).
   // Decisão consciente (#3707): abrir mão desta proteção específica (Path B
   // subnotificado só detectável via header) em troca de nunca mais alertar
   // falso-positivo a partir de um header não confiável — queries_this_month_real
@@ -428,7 +457,12 @@ describe("computeBraveCreditStats", () => {
     assert.equal(stats.alert_basis, "local", "alert_basis é sempre local pós-#3707");
     assert.equal(stats.header_discarded, undefined, "header plausível não é descartado — continua exposto pra diagnóstico");
     assert.equal(stats.real_used_raw, 1951, "real_used_raw continua exposto (reconcile-brave-path-b.ts ainda o usa)");
-    assert.equal(stats.alert_level, "ok", "999/2000=49.95% — NÃO é mais critical, mesmo com header sugerindo 1951");
+    // (#7943) 999 queries reais ~= 99,9% do crédito grátis mensal (1000
+    // queries-equivalente) — CRITICAL sob o novo modelo de custo, mesmo sem o
+    // header: o ponto do #3707 (não promover o header pro alerta) continua de
+    // pé, só o denominador mudou de 2000 (hard cap inexistente) pra 1000
+    // (crédito grátis real).
+    assert.equal(stats.alert_level, "critical", "999/1000 (crédito grátis mensal, #7943) = 99.9% — CRITICAL");
     assert.equal(stats.projected_month_end, 1033, "projeção agora deriva só de queries_this_month_real (999/29*30≈1033), não do header");
     rmSync(path, { force: true });
   });
@@ -466,9 +500,11 @@ describe("computeBraveCreditStats", () => {
     const stats = computeBraveCreditStats(null, path, now);
     assert.equal(stats.queries_this_month_real, 442, "real bate exato com o dashboard oficial");
     assert.equal(stats.queries_this_month, 2008, "total combinado (real+estimated) ainda reflete a poluição — informativo, não usado no alerta");
-    // ANTES do fix: effective_used=2008 → percent_used=100.4% → alert_level="critical" (falso positivo real).
+    // ANTES do fix (#3707): effective_used=2008 → percent_used=100.4% → alert_level="critical" (falso positivo real).
     assert.equal(stats.effective_used, 442, "alerta usa só a contagem real, ignorando as 1566 estimated");
-    assert.equal(stats.percent_used, 22.1, "442/2000=22.1% — não 100.4%");
+    // (#7943) denominador é o crédito grátis mensal (1000 queries-equivalente),
+    // não mais o antigo hard cap de 2000.
+    assert.equal(stats.percent_used, 44.2, "442/1000 (crédito grátis mensal, #7943) = 44.2% — não 100.4%");
     assert.equal(stats.alert_level, "ok", "não deve mais alertar critical com esse estado de arquivo");
     rmSync(path, { force: true });
   });
@@ -619,11 +655,16 @@ describe("computeBraveCreditStats — leitura fresca do header durante exaustão
     // CRÍTICO: a entrada error NÃO conta como query real — só as 1000 de 260709 contam.
     assert.equal(stats.queries_this_month_real, 1000, "entrada status=error não deve inflar o contador real");
     assert.equal(stats.queries_this_edition_real, 0, "a única entrada desta edição é status=error — não conta");
-    // (#3707) alert_level agora deriva só de queries_this_month_real (1000/2000=50%,
-    // "ok") — não mais do header (que seria 1951/2000=97.55%, "critical"). A leitura
-    // fresca do header continua exposta via quota_remaining_last_seen/age_hours
-    // abaixo pra diagnóstico/reconcile (#3122), mas não gate mais o alerta.
-    assert.equal(stats.alert_level, "ok", "1000/2000=50% — alerta não deriva mais do header (#3707)");
+    // (#3707) alert_level deriva só de queries_this_month_real — não mais do
+    // header (que seria 1951/2000=97.55%, "critical" sob o modelo antigo). A
+    // leitura fresca do header continua exposta via
+    // quota_remaining_last_seen/age_hours abaixo pra diagnóstico/reconcile
+    // (#3122), mas não gate mais o alerta. (#7943) 1000 reais == 100% do
+    // crédito grátis mensal (1000 queries-equivalente) — CRITICAL sob o novo
+    // modelo de custo, coincidentemente o mesmo veredito do header antigo
+    // aqui, mas por um motivo correto (custo real) em vez de um header não
+    // confiável.
+    assert.equal(stats.alert_level, "critical", "1000/1000 (crédito grátis mensal, #7943) = 100% — CRITICAL");
     // A leitura foi feita 3h antes de `now` (09:00 vs 12:00 do mesmo dia) — fresca.
     assert.equal(stats.quota_remaining_age_hours, 3, "leitura de hoje às 09:00, now=12:00 → 3h de idade");
     rmSync(path, { force: true });
@@ -650,11 +691,13 @@ describe("computeBraveCreditStats — leitura fresca do header durante exaustão
     // exatamente o sintoma relatado: brave-credits.jsonl "silencioso" desde 260709.
     assert.equal(stats.quota_remaining_last_seen, 49);
     assert.equal(stats.queries_this_edition, 0, "260713 não deixou NENHUM rastro no jsonl — o sintoma relatado na issue");
-    // (#3707) alert_level não deriva mais do header — 1000 reais/2000=50%, "ok".
-    // A preocupação original do #3389 (header obsoleto sendo lido como "critical"
-    // fresco) fica moot pro alerta em si pós-#3707; quota_remaining_age_hours
-    // abaixo segue expondo a idade da leitura pra diagnóstico/reconcile.
-    assert.equal(stats.alert_level, "ok", "1000/2000=50% — não deriva mais do header (#3707)");
+    // (#3707) alert_level não deriva mais do header. A preocupação original do
+    // #3389 (header obsoleto sendo lido como "critical" fresco) fica moot pro
+    // alerta em si pós-#3707; quota_remaining_age_hours abaixo segue expondo a
+    // idade da leitura pra diagnóstico/reconcile. (#7943) 1000 reais == 100%
+    // do crédito grátis mensal — CRITICAL sob o novo modelo, mesmo veredito de
+    // antes por coincidência (era header ilegítimo; agora é custo real).
+    assert.equal(stats.alert_level, "critical", "1000/1000 (crédito grátis mensal, #7943) = 100% — CRITICAL");
     // (#3389 defesa em profundidade) quota_remaining_age_hours EXPÕE que essa
     // leitura tem 4 dias (96h) — mesmo que o fix principal (gravar header em
     // erros) por algum motivo não capture uma leitura nova, o relatório agora

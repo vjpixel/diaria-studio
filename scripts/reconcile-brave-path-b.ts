@@ -34,7 +34,13 @@
  * ## Sanity cap (#3122 fix 3, defense-in-depth)
  *
  * Independente da lógica incremental, uma ÚNICA rodada nunca injeta mais que o
- * espaço restante no free tier deste mês (`FREE_TIER_LIMIT - queries_this_month_real`)
+ * espaço restante no ciclo de quota assumido do header (`HEADER_QUOTA_CYCLE_SIZE
+ * - queries_this_month_real`, antigo `FREE_TIER_LIMIT` — renomeado no #7943:
+ * este cap é matemática diagnóstica derivada do header X-RateLimit-Remaining,
+ * DESACOPLADA do alerta de custo em `computeBraveCreditStats`, que passou a usar
+ * `MONTHLY_FREE_CREDIT_QUERIES`/`MONTHLY_FREE_CREDIT_USD` — ver o comentário de
+ * `HEADER_QUOTA_CYCLE_SIZE` em `brave-credits.ts` para por que o valor numérico
+ * aqui ficou inalterado)
  * — protege contra qualquer bug residual na lógica incremental (estado corrompido,
  * cycle reset mal-detectado, etc.) sem depender só do heuristic de descarte do #3002.
  * Quando o cap dispara, loga um warning bem visível — nunca falha silenciosamente.
@@ -88,7 +94,7 @@ import {
   writeBraveReconcileState,
   DEFAULT_PATH,
   DEFAULT_RECONCILE_STATE_PATH,
-  FREE_TIER_LIMIT,
+  HEADER_QUOTA_CYCLE_SIZE,
 } from "./lib/brave-credits.ts";
 import { getArg, isMainModule } from "./lib/cli-args.ts";
 
@@ -163,14 +169,14 @@ export function main(
   // (#3122 fix 3) Sanity cap: uma única rodada nunca injeta mais que o espaço
   // livre no free tier deste mês, mesmo que o gap calculado seja maior (defense-
   // in-depth contra bug residual na lógica incremental).
-  const cap = Math.max(0, FREE_TIER_LIMIT - stats.queries_this_month_real);
+  const cap = Math.max(0, HEADER_QUOTA_CYCLE_SIZE - stats.queries_this_month_real);
   let injected = gap;
   let capped = false;
   if (injected > cap) {
     capped = true;
     console.error(
       `🚨 [reconcile-brave-path-b] SANITY CAP disparado: gap calculado (${gap}, base=${gapBasis}) ` +
-        `excede o espaço livre do free tier este mês (${cap} = ${FREE_TIER_LIMIT} - ` +
+        `excede o espaço livre no ciclo de quota assumido do header este mês (${cap} = ${HEADER_QUOTA_CYCLE_SIZE} - ` +
         `${stats.queries_this_month_real} reais). Injetando ${cap} em vez de ${gap} — ` +
         `INVESTIGAR (estado de reconcile corrompido? cycle reset não detectado?).`,
     );

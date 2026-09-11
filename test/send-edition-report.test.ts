@@ -396,9 +396,16 @@ const BRAVE_BASE: BraveCreditStats = {
   queries_this_edition_estimated: 0,
   queries_this_month_real: 1000,
   queries_this_month_estimated: 0,
+  // (#7943) fixture legado — free_tier_limit/percent_used/effective_used
+  // preservam os números pré-#7943 de propósito (o objetivo deste describe é
+  // só exercitar a exibição do header obsoleto/fresco, não o novo modelo de
+  // custo — ver test/brave-credits.test.ts para os asserts do modelo em si).
   free_tier_limit: 2000,
+  cost_this_month_usd: 5,
+  monthly_free_credit_usd: 5,
   percent_used: 97.55,
   projected_month_end: 1951,
+  projected_cost_month_end_usd: 9.76,
   alert_level: "critical",
   effective_used: 1951,
   alert_basis: "brave_header",
