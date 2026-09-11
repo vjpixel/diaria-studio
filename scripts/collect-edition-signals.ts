@@ -329,13 +329,23 @@ interface EditorRequestEntry {
  * `signalsFromRecurringEditorRequests`).
  */
 export const REQUEST_TYPE_ARTIFACT_MAP: Record<string, string> = {
-  "title-choice": ".claude/agents/title-picker.md + regra de título em context/editorial-rules.md",
-  "title-length": ".claude/agents/title-picker.md + regra de título em context/editorial-rules.md",
+  // title-choice/title-length (#7974): title-picker.md só ENTRA no caminho
+  // fallback (editor aprova o gate sem podar pra 1 título por destaque) — o
+  // dono de verdade das 3 opções de título é writer-destaque.md, que roda
+  // sempre. Apontar só pro fallback deixava o artefato mais provável (quem
+  // ESCREVE os títulos) de fora sempre que a correção veio do caminho comum
+  // (editor poda manualmente no gate).
+  "title-choice": ".claude/agents/writer-destaque.md (escreve as 3 opções) + .claude/agents/title-picker.md (fallback de seleção quando o editor não poda) + regra de título em context/editorial-rules.md",
+  "title-length": ".claude/agents/writer-destaque.md (escreve as 3 opções, inclui a regra de ≤52 chars) + .claude/agents/title-picker.md (fallback de seleção) + regra de título em context/editorial-rules.md",
   "destaque-swap": "rubrico do scorer / .claude/agents/scorer-select.md",
   "destaque-promote": "rubrico do scorer / .claude/agents/scorer-select.md",
   "destaque-cut": "rubrico do scorer / .claude/agents/scorer-select.md",
   "lead-rewrite": ".claude/agents/writer-destaque.md + context/templates/newsletter.md",
-  "tone": ".claude/agents/writer-destaque.md + context/templates/newsletter.md",
+  // tone (#7974): o passe de correção de voz É a skill humanizador, que roda
+  // DEPOIS de writer-destaque — uma queixa recorrente de tom pode ser o
+  // rascunho do writer OU o humanizador não pegando o padrão; nomear só
+  // writer-destaque escondia a metade humanizador do problema.
+  "tone": ".claude/agents/writer-destaque.md (rascunho) + skill humanizador (passe de correção de voz que roda depois) + context/templates/newsletter.md",
   "length-cut": ".claude/agents/writer-destaque.md + context/templates/newsletter.md",
   "link-swap": "context/editorial-rules.md (regras de fonte) ou seed/sources.csv",
   "image-redo": "prompt de imagem no Stage 3 / .claude/agents/image-crop-reviewer.md",
