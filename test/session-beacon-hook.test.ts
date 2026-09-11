@@ -37,6 +37,7 @@ import {
   sniffVerb,
   isLinkedWorktree,
   findGitRootNoSpawn,
+  machineTag,
 } from "../.claude/hooks/session-beacon.mjs";
 
 describe("statIsDirectory não usa require() morto em .mjs puro ESM (#6322 achado 1)", () => {
@@ -383,6 +384,49 @@ describe("#6168 Parte B — o beacon nunca destrói estado alheio", () => {
       mkdirSync(dir, { recursive: true });
       const resolvedPath = join(dir, "interactive-300-sess-1.json");
       assert.equal(resolveWritePathAtWriteTime(dir, "sess-1", resolvedPath), resolvedPath);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#7962: path resolvido é COORDENADOR e sumiu, nada reapareceu → NUNCA recria o coordenador do zero, cai no interactive default", () => {
+    const root = mkdtempSync(join(tmpdir(), "beacon-rewrite4-"));
+    const dir = join(root, "sessions");
+    try {
+      mkdirSync(dir, { recursive: true });
+      // `existing` encontrou `overnight-300-sess-1.json` no início da
+      // invocação (é o `resolvedPath`), mas sumiu do disco antes deste ponto
+      // — a MESMA perda de âncora sob escrita concorrente que
+      // `claimIssueAutoRegistering` existe pra reparar do lado
+      // `session-registry.ts` (#7002/#7003). Nada reapareceu no diretório.
+      const resolvedPath = join(dir, `overnight-${machineTag()}-sess-1.json`);
+      const got = resolveWritePathAtWriteTime(dir, "sess-1", resolvedPath);
+      assert.notEqual(
+        got,
+        resolvedPath,
+        "cair de volta no path do coordenador recriaria a âncora do zero (claimed_issues: []), " +
+          "silenciosamente — exatamente o bug da #7962",
+      );
+      assert.equal(
+        got,
+        join(dir, `interactive-${machineTag()}-sess-1.json`),
+        "mesmo destino do caminho 'nunca achei nada'",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#7962: develop/continuo também nunca são recriados do zero — só overnight testado acima, mesma regra pros outros 2 kinds coordenadores", () => {
+    const root = mkdtempSync(join(tmpdir(), "beacon-rewrite5-"));
+    const dir = join(root, "sessions");
+    try {
+      mkdirSync(dir, { recursive: true });
+      for (const kind of ["develop", "continuo"]) {
+        const resolvedPath = join(dir, `${kind}-${machineTag()}-sess-1.json`);
+        const got = resolveWritePathAtWriteTime(dir, "sess-1", resolvedPath);
+        assert.notEqual(got, resolvedPath, `kind=${kind} não pode ser recriado do zero pelo beacon`);
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
