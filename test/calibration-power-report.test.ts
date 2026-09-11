@@ -139,6 +139,48 @@ describe("buildPowerReport (#7976)", () => {
     }
   });
 
+  it("feature CONSTANTE (100% true, nunca false): n_true reflete a contagem real, nunca zera junto com n_false (achado de review do #7976)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "power-report-constant-"));
+    try {
+      // academy=true em TODAS as 40 linhas, em 20 edições — nunca false.
+      for (let e = 0; e < 20; e++) {
+        const ed = String(260800 + e);
+        writeEdition(dir, ed, [
+          { url: `https://x.com/${ed}-a`, primary_source: false, keep: true },
+          { url: `https://x.com/${ed}-b`, primary_source: false, keep: false },
+        ]);
+      }
+      const report = buildPowerReport(dir);
+      const feature = report.features.find((f) => f.feature === "primary_source")!;
+      // primary_source aqui é sempre false (nunca true) — n_false deve
+      // refletir as 40 linhas reais, n_true deve ser 0 (genuinamente, não
+      // por colapso do bug antigo que zerava os DOIS lados juntos).
+      assert.equal(feature.n_true, 0);
+      assert.equal(feature.n_false, 40, "n_false não pode zerar só porque n_true é 0 (bug do #7976: os dois colapsavam juntos)");
+      assert.equal(feature.passes_event_bar, false);
+      assert.equal(feature.diff, 0, "diff indefinido (um lado vazio) vira 0, mas n_true/n_false continuam reais");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("edições_skipped: JSON malformado é reportado com motivo, não só silenciosamente excluído da contagem", () => {
+    const dir = mkdtempSync(join(tmpdir(), "power-report-skipped-"));
+    try {
+      writeEdition(dir, "260811", [{ url: "https://x.com/a", primary_source: true, keep: true }]);
+      mkdirSync(join(dir, "260812", "_internal"), { recursive: true });
+      writeFileSync(join(dir, "260812", "_internal", "scoring-features.json"), "{ inválido", "utf8");
+      writeFileSync(join(dir, "260812", "_internal", "01-approved.json"), "{}", "utf8");
+      const report = buildPowerReport(dir);
+      assert.equal(report.editions_analyzed, 1);
+      assert.equal(report.editions_skipped.length, 1);
+      assert.equal(report.editions_skipped[0].edition, "260812");
+      assert.match(report.editions_skipped[0].reason, /JSON malformado/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("mesma seed produz o mesmo p-valor entre 2 rodadas (determinístico, sem depender de Math.random global)", () => {
     const dir = mkdtempSync(join(tmpdir(), "power-report-determ-"));
     try {

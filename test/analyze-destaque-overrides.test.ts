@@ -135,6 +135,33 @@ describe("analyzeEditionOverrides — Track B (pool) (#7976)", () => {
   });
 });
 
+describe("analyzeEditionOverrides — bucket video (#7976, achado de review)", () => {
+  it("video → radar vira bucket_moved, não bucket_kept (diffBucketOverrides exclui video de propósito, #5995 — não pode mascarar o move aqui)", () => {
+    const cat = { video: [{ url: "https://x.com/a", title: "A" }] };
+    const appr = { radar: [{ url: "https://x.com/a", title: "A" }] };
+    const events = analyzeEditionOverrides("260811", cat, appr, []);
+    const e = byLabel(events, "https://x.com/a");
+    assert.equal(e.track_b, "bucket_moved");
+    assert.deepEqual(e.bucket_move, { from: "video", to: "radar" });
+  });
+
+  it("radar → video vira bucket_moved, não bucket_kept (mesmo bug, direção oposta)", () => {
+    const cat = { radar: [{ url: "https://x.com/a", title: "A" }] };
+    const appr = { video: [{ url: "https://x.com/a", title: "A" }] };
+    const events = analyzeEditionOverrides("260811", cat, appr, []);
+    const e = byLabel(events, "https://x.com/a");
+    assert.equal(e.track_b, "bucket_moved");
+    assert.deepEqual(e.bucket_move, { from: "radar", to: "video" });
+  });
+
+  it("video → video (sem mudança) continua bucket_kept", () => {
+    const cat = { video: [{ url: "https://x.com/a", title: "A" }] };
+    const appr = { video: [{ url: "https://x.com/a", title: "A" }] };
+    const events = analyzeEditionOverrides("260811", cat, appr, []);
+    assert.equal(byLabel(events, "https://x.com/a").track_b, "bucket_kept");
+  });
+});
+
 describe("analyzeAllEditions — I/O real (#7976)", () => {
   function writeEdition(root: string, ed: string, cat: unknown, appr: unknown, features?: unknown): void {
     const dir = join(root, ed, "_internal");

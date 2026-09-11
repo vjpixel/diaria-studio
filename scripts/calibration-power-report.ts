@@ -40,9 +40,11 @@
  * método ainda não tem — refinamento fica pra quando `calibrate-scoring-
  * weights.ts` (regressão de verdade) for escrito.
  *
- * Features numéricas (`score`, `recency_hours`, `title_char_count`) NÃO
- * são cobertas por este relatório v1 — só as booleanas calibráveis. Ver
- * `CANDIDATE_FEATURES` abaixo.
+ * Features numéricas (`score`, `score_base`, `recency_hours`,
+ * `title_char_count`, `cluster_sources_count`, entre outras — todo campo
+ * de `ScoringFeatureRow` que não é booleano) NÃO são cobertas por este
+ * relatório v1 — só as booleanas calibráveis. Ver `CANDIDATE_FEATURES`
+ * abaixo pra lista exaustiva do que ESTÁ coberto.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -83,27 +85,37 @@ function keptUrlsFromApproved(json: any): Set<string> {
   return urls;
 }
 
-function loadEditionRows(editionsRoot: string): EditionRows[] {
+function loadEditionRows(editionsRoot: string): { editions: EditionRows[]; skipped: Array<{ edition: string; reason: string }> } {
   const editionDirs = enumerateEditionDirs(editionsRoot);
   const out: EditionRows[] = [];
+  const skipped: Array<{ edition: string; reason: string }> = [];
   for (const [edition, dir] of [...editionDirs.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     const featuresPath = join(dir, "_internal", "scoring-features.json");
     const approvedPath = join(dir, "_internal", "01-approved.json");
-    if (!existsSync(featuresPath) || !existsSync(approvedPath)) continue;
+    if (!existsSync(featuresPath) || !existsSync(approvedPath)) continue; // candidata nem existe — não é "pulada", nunca foi elegível
     try {
       const featuresPayload = JSON.parse(readFileSync(featuresPath, "utf8"));
       const approvedJson = JSON.parse(readFileSync(approvedPath, "utf8"));
       const rows: ScoringFeatureRow[] = Array.isArray(featuresPayload?.rows) ? featuresPayload.rows : [];
-      if (rows.length === 0) continue;
+      if (rows.length === 0) {
+        skipped.push({ edition, reason: "scoring-features.json sem rows (ausente, não-array, ou vazio)" });
+        continue;
+      }
       const keptUrls = keptUrlsFromApproved(approvedJson);
       const kept = rows.map((r) => keptUrls.has(r.url));
       out.push({ edition, rows, kept });
-    } catch {
-      // Edição com dado malformado — pula, não trava o relatório inteiro.
+    } catch (err) {
+      // Achado de review do #7976: catch sem discriminação escondia erro de
+      // I/O real (permissão, OneDrive travado, corrida ENOENT) sob o mesmo
+      // rótulo de "JSON malformado desta edição" — e nenhum dos dois casos
+      // aparecia em lugar nenhum do relatório. Agora sempre registrado em
+      // `skipped`, nunca só um `continue` silencioso.
+      const reason = err instanceof SyntaxError ? `JSON malformado: ${err.message}` : `erro de leitura/I-O: ${err instanceof Error ? err.message : String(err)}`;
+      skipped.push({ edition, reason });
       continue;
     }
   }
-  return out;
+  return { editions: out, skipped };
 }
 
 /** Pseudo-random determinístico (mulberry32) — permite reproduzir o relatório exato com a mesma seed, sem depender de Math.random() global. */
@@ -145,8 +157,21 @@ function featureValue(row: ScoringFeatureRow, feature: CandidateFeature): boolea
   return (row as unknown as Record<string, unknown>)[feature] === true;
 }
 
-/** Diferença de taxa kept(F=true) - kept(F=false), agregada sobre o subconjunto de edições dado. Retorna null se algum lado tiver 0 linhas (diferença indefinida). */
-function computeDiff(editions: EditionRows[], feature: CandidateFeature): { diff: number; nTrue: number; nFalse: number } | null {
+/**
+ * Contagens brutas de kept(F=true)/kept(F=false), agregadas sobre o
+ * subconjunto de edições dado. `nTrue`/`nFalse` são SEMPRE as contagens
+ * reais — nunca zeram quando um dos lados está vazio (achado de review do
+ * #7976: uma versão anterior fazia `nTrue`/`nFalse` colapsarem pra 0
+ * JUNTOS sempre que um dos dois lados tinha 0 linhas, então uma feature
+ * praticamente constante — ex: `academy=true` em 500 linhas, `false` em
+ * nenhuma — era relatada como "n_true=0, n_false=0", escondendo as 500
+ * linhas reais). `diff` é `null` só quando genuinamente indefinido (um dos
+ * dois lados tem 0 linhas).
+ */
+function computeCounts(
+  editions: EditionRows[],
+  feature: CandidateFeature,
+): { nTrue: number; nFalse: number; keptTrue: number; keptFalse: number; diff: number | null } {
   let trueTotal = 0;
   let trueKept = 0;
   let falseTotal = 0;
@@ -162,15 +187,16 @@ function computeDiff(editions: EditionRows[], feature: CandidateFeature): { diff
       }
     }
   }
-  if (trueTotal === 0 || falseTotal === 0) return null;
-  return { diff: trueKept / trueTotal - falseKept / falseTotal, nTrue: trueTotal, nFalse: falseTotal };
+  const diff = trueTotal > 0 && falseTotal > 0 ? trueKept / trueTotal - falseKept / falseTotal : null;
+  return { nTrue: trueTotal, nFalse: falseTotal, keptTrue: trueKept, keptFalse: falseKept, diff };
 }
 
 function analyzeFeature(editions: EditionRows[], feature: CandidateFeature, seed: number): FeatureReport {
-  const observed = computeDiff(editions, feature);
-  const nTrue = observed?.nTrue ?? 0;
-  const nFalse = observed?.nFalse ?? 0;
-  const diff = observed?.diff ?? 0;
+  const observed = computeCounts(editions, feature);
+  const { nTrue, nFalse, keptTrue, keptFalse } = observed;
+  const diff = observed.diff ?? 0; // 0 só quando indefinido (um lado vazio) — nTrue/nFalse acima já carregam a contagem real nesse caso
+  const keptRateTrue = nTrue > 0 ? keptTrue / nTrue : 0;
+  const keptRateFalse = nFalse > 0 ? keptFalse / nFalse : 0;
 
   let evaluableEditions = 0;
   for (const ed of editions) {
@@ -219,16 +245,16 @@ function analyzeFeature(editions: EditionRows[], feature: CandidateFeature, seed
   const mid = Math.floor(editions.length / 2);
   const early = editions.slice(0, mid);
   const late = editions.slice(mid);
-  const earlyDiff = computeDiff(early, feature)?.diff ?? 0;
-  const lateDiff = computeDiff(late, feature)?.diff ?? 0;
+  const earlyDiff = computeCounts(early, feature).diff ?? 0;
+  const lateDiff = computeCounts(late, feature).diff ?? 0;
   const forwardChainingConsistent = early.length > 0 && late.length > 0 && Math.sign(earlyDiff) === Math.sign(lateDiff) && earlyDiff !== 0;
 
   return {
     feature,
     n_true: nTrue,
     n_false: nFalse,
-    kept_rate_true: 0, // placeholder — fillKeptRates() sobrescreve com precisão logo depois
-    kept_rate_false: 0, // placeholder — fillKeptRates() sobrescreve com precisão logo depois
+    kept_rate_true: keptRateTrue,
+    kept_rate_false: keptRateFalse,
     diff,
     evaluable_editions: evaluableEditions,
     passes_event_bar: passesEventBar,
@@ -239,39 +265,28 @@ function analyzeFeature(editions: EditionRows[], feature: CandidateFeature, seed
   };
 }
 
-/** Recalcula kept_rate_true/false com precisão (evita repetir a lógica acima 2x). */
-function fillKeptRates(editions: EditionRows[], report: FeatureReport): FeatureReport {
-  let trueTotal = 0;
-  let trueKept = 0;
-  let falseTotal = 0;
-  let falseKept = 0;
-  for (const ed of editions) {
-    for (let i = 0; i < ed.rows.length; i++) {
-      if (featureValue(ed.rows[i], report.feature)) {
-        trueTotal++;
-        if (ed.kept[i]) trueKept++;
-      } else {
-        falseTotal++;
-        if (ed.kept[i]) falseKept++;
-      }
-    }
-  }
-  return {
-    ...report,
-    kept_rate_true: trueTotal > 0 ? trueKept / trueTotal : 0,
-    kept_rate_false: falseTotal > 0 ? falseKept / falseTotal : 0,
-  };
+export interface PowerReportResult {
+  editions_analyzed: number;
+  /** Edições candidatas (têm scoring-features.json + 01-approved.json) que foram puladas mesmo assim — dado malformado (JSON inválido) ou `rows` ausente/vazio. Nunca escondido: um relatório de evidência que perde linhas em silêncio é pior que um que não perde nenhuma (achado de review do #7976). */
+  editions_skipped: Array<{ edition: string; reason: string }>;
+  features: FeatureReport[];
 }
 
-export function buildPowerReport(editionsRoot: string, seed = 42): { editions_analyzed: number; features: FeatureReport[] } {
-  const editions = loadEditionRows(editionsRoot);
-  const features = CANDIDATE_FEATURES.map((f, i) => fillKeptRates(editions, analyzeFeature(editions, f, seed + i)));
-  return { editions_analyzed: editions.length, features };
+export function buildPowerReport(editionsRoot: string, seed = 42): PowerReportResult {
+  const { editions, skipped } = loadEditionRows(editionsRoot);
+  const features = CANDIDATE_FEATURES.map((f, i) => analyzeFeature(editions, f, seed + i));
+  return { editions_analyzed: editions.length, editions_skipped: skipped, features };
 }
 
-function formatReport(report: { editions_analyzed: number; features: FeatureReport[] }): string {
+function formatReport(report: PowerReportResult): string {
   const lines: string[] = [];
   lines.push(`[calibration-power-report] ${report.editions_analyzed} edições analisadas (scoring-features.json + 01-approved.json presentes).`);
+  if (report.editions_skipped.length > 0) {
+    lines.push(
+      `  ${report.editions_skipped.length} edição(ões) candidata(s) PULADA(S) (arquivo presente mas dado malformado/vazio/erro de leitura — nunca silencioso):`,
+    );
+    for (const s of report.editions_skipped) lines.push(`    ${s.edition}: ${s.reason}`);
+  }
   lines.push("");
   for (const f of report.features) {
     const bar = f.passes_event_bar ? "PASSA a barra de evidência" : "abaixo da barra de evidência";
