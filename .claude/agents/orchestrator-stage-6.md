@@ -13,12 +13,16 @@ Stage 6 e o **gate final do pipeline**. Apresenta ao editor o resumo completo de
 
 Interacao humana SO neste stage (alem do Stage 4).
 
+> **Fusao 5+6 (#7983, 11/09/2026).** O caminho NORMAL de chegada aqui e a continuacao direta do `orchestrator-stage-5.md` na MESMA sessao — nao uma invocacao nova. `/diaria-6-agendamento` continua valendo como porta de RETOMADA (a sessao morreu depois do dispatch, o editor saiu e voltou horas depois, ou e retry do agendamento); nos dois casos este playbook e identico, porque tudo que ele consome vem de arquivo. A fronteira que NAO mudou e a do #6171 (pos-gate 4): o Stage 5 continua comecando sempre em sessao nova.
+
 **`{EDITION_DIR}` (#2463/#3025):** diretorio REAL da edicao no disco — pode ser o layout flat legado OU o nested novo, dependendo de quando a edicao foi criada. Resolver **uma vez**, logo apos ter `{AAMMDD}`, e usar em todo path abaixo — nunca montar `data/editions/` + `{AAMMDD}` a mao:
 ```bash
 EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
 ```
 
 ### Pre-condicao: sentinel Stage 5
+
+**Rodar SEMPRE, inclusive vindo do Stage 5 na mesma sessao (#7983).** O `assert` le o sentinel do DISCO, nunca a memoria da sessao — quando a fusao encadeou ate aqui, o §5h acabou de escrever o arquivo e o assert sai `0` em milissegundos. Pular o check porque "acabei de rodar o Stage 5" e exatamente o tipo de atalho que a fusao NAO autoriza: e ele que pega dispatch parcial (canal que falhou depois do sentinel) e backend errado (exit `2`, #7963).
 
 **`assertSentinel` compara contra os `outputs` GRAVADOS pelo §5h da Stage 5** (não um path fixo) — então este `assert` já lê o caminho certo automaticamente, seja qual for o backend, DESDE que §5h tenha gravado o output certo (ver "Branch por backend" no §5h da Stage 5, #464 — achado do review PR #6096: antes essa branch não existia e este `assert` FATALizava toda edição com `backend: "kit"`, já que o sentinel gravado apontava sempre pra `05-published.json`, que o Kit nunca escreve). `--outputs` aqui é só o valor a comparar se o sentinel ficar ausente/corrompido (ver exit `2` abaixo) — informar o esperado pro backend ATUAL:
 

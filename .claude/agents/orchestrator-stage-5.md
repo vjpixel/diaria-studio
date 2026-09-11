@@ -11,6 +11,8 @@ description: Detalhe da Etapa 5 (publicacao auto — draft Beehiiv + social agen
 
 Stage 5 e **dispatch puro** — sem gate proprio. O gate de revisao editorial esta no Stage 4; o gate de agendamento esta no Stage 6 (Agendamento).
 
+> **Fusao 5+6 (#7983, 11/09/2026).** Desde esta issue o Stage 5 e o Stage 6 rodam numa INVOCACAO SO: ao terminar este playbook, continue lendo `orchestrator-stage-6.md` na mesma sessao (ver §"Resumo apos Stage 5" no fim deste arquivo). Os dois stages seguem SEPARADOS em tudo que e estado — numeracao, sentinels, invariants, `find-current-edition --stage 5|6`, statusline, Studio; o que foi fundido e so o ponto de entrada. `/diaria-6-agendamento` continua existindo como porta de RETOMADA (sessao morreu depois do dispatch, ou retry do agendamento).
+
 Quatro acoes em paralelo: (1) criar rascunho Beehiiv + enviar test email + rodar loop review; (2) LinkedIn agendado; (3) **Facebook AGENDADO** (`--schedule`); (4) **canal Brevo diária** (`brevo_diaria`) — cria a campanha como RASCUNHO (#5772), agendamento fica pro Stage 6, mesma divisão do Beehiiv.
 
 **PARA antes do Schedule do Beehiiv** — a newsletter fica como RASCUNHO com test email enviado e o loop review concluido. O clique de "Schedule" NAO acontece no Stage 5 — e responsabilidade do Stage 6.
@@ -462,9 +464,9 @@ Exit 1 = logar warn (nao bloquear Stage 6).
 
 ---
 
-## Resumo apos Stage 5 (pre-Stage 6)
+## Resumo apos Stage 5 (entrada do Stage 6 — MESMA sessao)
 
-Apresentar resumo para o editor saber que dispatch completou e Stage 6 esta pendente:
+Apresentar resumo para o editor saber que dispatch completou e que o gate de agendamento vem a seguir:
 
 ```
 Publicacao dispatchada — edicao {AAMMDD}
@@ -475,11 +477,15 @@ Publicacao dispatchada — edicao {AAMMDD}
   Threads: agendado x N (ou "env vars ausentes — pular" se nao configurado; destaques >500 chars ficam de fora, ver failed em 06-social-published.json)
   Brevo diária: rascunho criado (campaign_id {N}, addedActual {N} — #6793: sem teto de max-add desde o item 7) — agendamento no Stage 6 (ou "pulado — {motivo}" se status skipped/failed, #5772)
 
-Proximo passo → /diaria-6-agendamento {AAMMDD}
-(agendamento Beehiiv + Brevo diária + auto-reporter)
+Proximo passo (MESMA sessao) → gate de agendamento
+(agendamento newsletter + Brevo diária + auto-reporter)
 ```
 
-**Isto e uma sugestao de proximo comando, nao uma instrucao de encadeamento.** Pare aqui e retorne o resumo ao editor — nunca leia `orchestrator-stage-6.md` nesta sessao. Desde o #6171, a fronteira de contexto pos-gate do Stage 4 (`orchestrator-stage-4.md` §"Fluxo pos-gate") garante que este stage e SEMPRE lido a partir de uma sessao nova (skill standalone `/diaria-5-publicacao`, inclusive quando a edicao inteira veio de `/diaria-edicao`) — nao ha mais um caminho onde este playbook e lido como continuacao direta do Stage 4 na mesma sessao.
+**CONTINUE nesta mesma sessao: leia `orchestrator-stage-6.md` e execute o Stage 6 em seguida (#7983).** Esta e a unica transicao de stage do pipeline diario que encadeia sozinha — o Stage 5 e o Stage 6 foram fundidos numa invocacao so por decisao do editor (11/09/2026). Nao imprima "rode /diaria-6-agendamento" como se fosse o proximo passo do editor: o proximo passo e SEU, agora, e o unico ponto de parada e o gate humano de §6c.
+
+**O que NAO mudou:** o gate de §6c continua onde estava (e um dos dois gates de projeto do CLAUDE.md, criterio 1 — irreversivel pra terceiros); os dois sentinels (`.step-5-done.json` e `.step-6-done.json`) continuam separados, cada um escrito no fim do seu stage; os invariants de Stage 5 e de Stage 6 continuam rodando separados; e a fronteira de contexto pos-gate 4 (#6171, `orchestrator-stage-4.md` §"Fluxo pos-gate") continua intacta — este playbook segue sendo SEMPRE lido a partir de uma sessao nova, nunca como continuacao do Stage 4.
+
+**Se a sessao morrer entre o dispatch e o gate** (ou o editor sair e voltar horas depois — aconteceu em 5 das 18 edicoes medidas antes da fusao): `/diaria-6-agendamento {AAMMDD}` continua existindo exatamente pra isso, como porta de RETOMADA. O sentinel `.step-5-done.json` ja esta escrito, entao ela retoma direto no gate.
 
 Se alguma parte foi pulada (ex: `chromeMcp === false`, lido do `preflight-state.json` no inicio deste stage — ver acima), incluir bloco de retomada explicito:
 

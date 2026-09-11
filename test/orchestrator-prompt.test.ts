@@ -335,7 +335,13 @@ describe("orchestrator-prompt (#634)", () => {
       // passo ("publiquei a página e regenerei a home") faz quem executa
       // tratar a ausência como bug e desfazer o filtro do #7686 — a
       // anticipação de ~9h volta em silêncio. Teto 745→747.
-      "orchestrator-stage-6.md": 747,
+      // #7983 (11/09): +2 linhas líquidas — fusão dos Stages 5 e 6 numa
+      // invocação só (decisão do editor). Prosa nova avisa que o caminho
+      // normal de chegada aqui é a continuação direta do Stage 5 na mesma
+      // sessão, e reforça que o assert do sentinel roda mesmo assim — sem
+      // isso, quem lê o playbook pode achar que "acabei de rodar o Stage 5"
+      // dispensa a checagem. Teto 747→753 com headroom mínimo.
+      "orchestrator-stage-6.md": 753,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       const budget = PER_FILE_LINE_BUDGET[file];
@@ -1296,6 +1302,54 @@ describe("#6171: fronteira de contexto pós-gate 4 — /diaria-edicao nunca enca
     assert.ok(
       stage5.includes("#6171"),
       "orchestrator-stage-5.md precisa referenciar #6171 na nota de fronteira de sessão",
+    );
+  });
+});
+
+describe("#7983: fusão Stage 5+6 — /diaria-5-publicacao encadeia pro gate de agendamento na MESMA sessão", () => {
+  // Decisão do editor (11/09/2026): diferente de toda outra transição de stage
+  // (#5578), Stage 5 e Stage 6 passam a rodar numa invocação só. Mesma
+  // disciplina do bloco #6171 acima: pinar a instrução em si (não só o hash
+  // opaco do snapshot), pra detectar reversão silenciosa da fusão.
+  const stage5 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-5.md"), "utf8");
+  const stage6 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-6.md"), "utf8");
+
+  it("Stage 5 instrui continuar lendo orchestrator-stage-6.md na MESMA sessão", () => {
+    assert.ok(
+      stage5.includes("CONTINUE nesta mesma sessao: leia `orchestrator-stage-6.md`"),
+      "orchestrator-stage-5.md precisa instruir explicitamente a continuação pro Stage 6 na mesma sessão (#7983)",
+    );
+    assert.ok(
+      stage5.includes("#7983"),
+      "orchestrator-stage-5.md precisa referenciar #7983 na nota de fusão",
+    );
+  });
+
+  it("a antiga instrução de parada pós-Stage-5 (nunca ler orchestrator-stage-6.md) não sobrevive", () => {
+    assert.ok(
+      !stage5.includes("nunca leia `orchestrator-stage-6.md` nesta sessao"),
+      "texto antigo (Stage 5 sempre para e nunca lê Stage 6) não deveria sobreviver — a fusão #7983 inverteu esse comportamento",
+    );
+  });
+
+  it("Stage 5 não imprime /diaria-6-agendamento como próximo passo do editor", () => {
+    assert.ok(
+      !/Proximo passo → \/diaria-6-agendamento/.test(stage5),
+      "a mensagem pós-dispatch não pode mais instruir o editor a digitar /diaria-6-agendamento — o Stage 5 chega lá sozinho (#7983)",
+    );
+  });
+
+  it("Stage 6 continua rodando o assert do sentinel do Stage 5 mesmo na continuação fundida", () => {
+    assert.ok(
+      stage6.includes("Rodar SEMPRE, inclusive vindo do Stage 5 na mesma sessao"),
+      "orchestrator-stage-6.md precisa reforçar que o assert do sentinel roda mesmo quando chega via a fusão #7983 — sem isso, dispatch parcial ou backend errado (#7963) passariam sem checagem",
+    );
+  });
+
+  it("Stage 6 documenta /diaria-6-agendamento como porta de retomada, não como o caminho normal", () => {
+    assert.ok(
+      stage6.includes("porta de RETOMADA"),
+      "orchestrator-stage-6.md precisa deixar explícito que a invocação standalone é retomada, não o fluxo normal pós-fusão (#7983)",
     );
   });
 });

@@ -1,11 +1,11 @@
 ---
 name: diaria-edicao
-description: Roda as Etapas 1-4 da diar.ia.br (Pesquisa → Revisão). Uso — `/diaria-edicao AAMMDD [--no-gates] [--skip canal[,canal...]]`. Etapas 5-6 rodam em sessão separada — ver "Fronteira de contexto pós-gate 4" (#6171).
+description: Roda as Etapas 1-4 da diar.ia.br (Pesquisa → Revisão). Uso — `/diaria-edicao AAMMDD [--no-gates] [--skip canal[,canal...]]`. Etapas 5-6 (fundidas, #7983) rodam em sessão separada — ver "Fronteira de contexto pós-gate 4" (#6171).
 ---
 
 # /diaria-edicao
 
-Executa as Etapas 1-4 da diar.ia.br (Pesquisa → Escrita → Imagens → Revisão). **Modo default: pre-gate** (#1523) — Stages 1-3 rodam auto-approve, o gate humano é no Stage 4 (Revisão); editor revisa HTML preview + social. Aprovado o gate, a sessão termina e instrui os comandos `/diaria-5-publicacao`/`/diaria-6-agendamento` numa sessão nova (#6171, ver "Fronteira de contexto pós-gate 4" no Passo 2b) — este comando não dispatcha publishers sozinho.
+Executa as Etapas 1-4 da diar.ia.br (Pesquisa → Escrita → Imagens → Revisão). **Modo default: pre-gate** (#1523) — Stages 1-3 rodam auto-approve, o gate humano é no Stage 4 (Revisão); editor revisa HTML preview + social. Aprovado o gate, a sessão termina e instrui o comando `/diaria-5-publicacao` numa sessão nova (#6171, ver "Fronteira de contexto pós-gate 4" no Passo 2b) — este comando não dispatcha publishers sozinho. `/diaria-5-publicacao` cobre as Etapas 5 e 6 inteiras nessa sessão nova (fusão #7983) — não é mais preciso encadear um segundo comando.
 
 ## Argumentos
 
@@ -171,7 +171,7 @@ Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`). **Desde 
   1. Pré-render técnico (HTML + imagens + upload Worker + close-poll)
   2. **GATE HUMANO** — apresenta resumo consolidado: destaques, títulos, links, lints, preview HTML + social ao editor
   3. Aprovado → grava sentinel `.step-4-done.json`
-  → **PARE** (ver "Fronteira de contexto pós-gate 4" abaixo). `/diaria-edicao` termina aqui — Etapas 5 e 6 rodam como comandos separados.
+  → **PARE** (ver "Fronteira de contexto pós-gate 4" abaixo). `/diaria-edicao` termina aqui — Etapas 5 e 6 rodam numa sessão separada, num único comando (fusão #7983).
 
 **Modo pre-gate (default):** Stages 1-3 auto-approve. Stage 4 gate de revisão é o único ponto de interação antes do fim deste comando. `auto_approve = true` internamente para Stages 1-3; Stage 4 consulta editor no gate de revisão.
 
@@ -185,11 +185,7 @@ O editor (ou a automação que estiver conduzindo a sessão) abre uma sessão NO
 ```
 /diaria-5-publicacao {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao}
 ```
-seguido, quando esse comando terminar, de:
-```
-/diaria-6-agendamento {AAMMDD}
-```
-Cada uma dessas skills já é resumível via arquivo (#5578) — lê o estado da edição em `data/editions/{AAMMDD}/` e `_internal/`, não depende de nada que só existisse na conversa do Stage 4. O comportamento de publicação em si (dispatch automático dos canais, gates de Stage 5/6) **não muda** — só o ponto onde a sessão para de acumular contexto muda. Ver detalhe completo em `orchestrator-stage-4.md` §"Fluxo pós-gate — fronteira de contexto (#6171)".
+**Desde a fusão 5+6 (#7983), este único comando cobre as Etapas 5 E 6 inteiras** — dispatch de todos os canais, gate humano de agendamento, Schedule e auto-reporter, tudo na mesma sessão nova. Não é mais preciso digitar `/diaria-6-agendamento` em seguida; essa skill continua existindo só como porta de retomada (sessão morreu entre dispatch e gate). Ela já é resumível via arquivo (#5578) — lê o estado da edição em `data/editions/{AAMMDD}/` e `_internal/`, não depende de nada que só existisse na conversa do Stage 4. O comportamento de publicação em si (dispatch automático dos canais, gate de agendamento) **não muda** — só o ponto onde a sessão para de acumular contexto muda. Ver detalhe completo em `orchestrator-stage-4.md` §"Fluxo pós-gate — fronteira de contexto (#6171)".
 
 Resume-aware: ao retomar, listar arquivos em `data/editions/{AAMMDD}/` e pular para o stage adequado conforme as condições do § 0 Setup — **com o teto do Stage 4 aplicado por cima**: se o § 0b determinar que o próximo stage acionável é 5 ou 6 (ex: sentinel `.step-4-done.json` já existe de uma run anterior), `/diaria-edicao` não lê `orchestrator-stage-5.md`/`orchestrator-stage-6.md` mesmo assim — imprime a mesma mensagem de "Fronteira de contexto pós-gate 4" acima e termina. O § 0b continua sendo a fonte de verdade sobre QUAL stage é o próximo; só quem decide SE esta sessão o executa é o teto do `/diaria-edicao`.
 

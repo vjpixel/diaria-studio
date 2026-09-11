@@ -835,8 +835,9 @@ Próximo passo → abra uma sessão NOVA e rode:
   /diaria-5-publicacao {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao}
 
 Isso mantém o contexto desta revisão fora da Publicação/Agendamento (#6171) —
-`/diaria-5-publicacao` e, na sequência, `/diaria-6-agendamento {AAMMDD}` retomam
-sozinhos a partir dos arquivos em disco (mesmo mecanismo do #5578).
+`/diaria-5-publicacao` cobre as Etapas 5 e 6 inteiras nessa sessão nova (fusão
+#7983) e retoma sozinho a partir dos arquivos em disco (mesmo mecanismo do
+#5578).
 ```
 
 Isto vale mesmo em `auto_approve = true` (`--no-gates`): o pré-render já rodou, o sentinel já foi escrito, e a mensagem acima ainda é o que a sessão imprime antes de encerrar — `--no-gates` pula a CONFIRMAÇÃO do gate, não a fronteira de contexto pós-gate.
