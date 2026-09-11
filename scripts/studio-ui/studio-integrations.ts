@@ -197,7 +197,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     kind: "api",
     envVars: ["BRAVE_API_KEY"],
     probe: "env-only",
-    note: "Free tier 2000 queries/mês (Stage 1). Sem BRAVE_API_KEY, cai pro fallback Path B (agents Haiku).",
+    note: "Postpaid: $5 de crédito grátis/mês (~1000 queries, Stage 1) — sem hard cap, só fatura acima disso (#7943). Sem BRAVE_API_KEY, cai pro fallback Path B (agents Haiku).",
   },
   {
     id: "brevo_clarice",

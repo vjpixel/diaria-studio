@@ -10,15 +10,24 @@
  * abaixo — o guard `entry.status === "error"` exclui essas entradas da contagem,
  * mas ainda usa seu `quota_remaining` pra atualizar `quota_remaining_last_seen`.
  *
- * Free tier: 2000 queries/mês (⚠️ #3707: possivelmente desatualizado — a conta
- * pode ter migrado pra um plano pago por budget, ver nota em `FREE_TIER_LIMIT`
- * abaixo). Counter local dá visibilidade imediata — dashboard Brave tem ~1h de
- * delay.
+ * (#7943, resolve a hipótese 1 do #3707) A conta é plano **Postpaid**
+ * (pay-as-you-go) — confirmado ao vivo no dashboard da Brave (260910): $5,00 de
+ * crédito grátis por mês (~1000 requests a $0,005/request), sem hard cap de
+ * queries. Postpaid NUNCA bloqueia — só acumula custo além do crédito grátis
+ * (confirmado por e-mail oficial da Brave: "API access is not affected"). Não
+ * existe mais "free tier de 2000 queries" nesta conta — ver
+ * `MONTHLY_FREE_CREDIT_QUERIES`/`MONTHLY_FREE_CREDIT_USD`/`QUERY_COST_USD`
+ * abaixo, que substituem o antigo `FREE_TIER_LIMIT` como base do alerta.
+ * Counter local dá visibilidade imediata — dashboard Brave tem ~1h de delay.
  *
- * (#3707) O alerta (`percent_used`/`alert_level`/`effective_used` em
- * `computeBraveCreditStats`) usa EXCLUSIVAMENTE `queries_this_month_real` —
- * nunca o header `X-RateLimit-Remaining`. Ver o comentário extenso dentro de
- * `computeBraveCreditStats` para o incidente que motivou essa mudança.
+ * (#7943) O alerta (`percent_used`/`alert_level`/`effective_used`/
+ * `cost_this_month_usd` em `computeBraveCreditStats`) usa EXCLUSIVAMENTE
+ * `queries_this_month_real` — nunca o header `X-RateLimit-Remaining` — e mede
+ * CUSTO PROJETADO (`queries_this_month_real * QUERY_COST_USD`) contra o
+ * crédito grátis mensal (`MONTHLY_FREE_CREDIT_USD`), não mais "queries
+ * restantes de um free tier com hard cap". Ver o comentário extenso dentro de
+ * `computeBraveCreditStats` para o incidente que motivou a mudança de base
+ * (#3707) e a correção de modelo (#7943).
  *
  * ## Semântica de query (#2378, revisado #3389)
  *
@@ -41,9 +50,10 @@
  * - **Escopo mensal usa UTC de ponta a ponta.** `timestamp` é gravado como
  *   `new Date().toISOString()` (UTC). `monthPrefix` é `now.toISOString()
  *   .slice(0,7)` (UTC). Ambos usam UTC → filtro de mês é consistente
- *   independentemente do timezone da máquina (BRT ou qualquer outro).
- *   O ciclo de 2000 queries/mês do Brave é também UTC-calendário, então
- *   a escolha de UTC é correta (não introduz desvio de 3h vs BRT).
+ *   independentemente do timezone da máquina (BRT ou qualquer outro). O
+ *   crédito grátis mensal do Brave (Postpaid, #7943) também vira no
+ *   mês-calendário UTC, então a escolha de UTC é correta (não introduz desvio
+ *   de 3h vs BRT).
  *
  * - **`daysInMonth` para projeção.** Calculado como
  *   `new Date(getUTCFullYear(), getUTCMonth() + 1, 0).getDate()` — correto:
@@ -211,9 +221,32 @@ export interface BraveCreditStats {
   queries_this_edition_estimated: number;
   queries_this_month_real: number;
   queries_this_month_estimated: number;
+  // (#7943) Denominador do alerta: equivalente em queries do crédito grátis
+  // mensal (`MONTHLY_FREE_CREDIT_USD / QUERY_COST_USD`) — NÃO um hard cap.
+  // Nome mantido (`free_tier_limit`) por compat de shape com consumidores
+  // existentes (`send-edition-report.ts`); o valor e o modelo por trás dele
+  // mudaram — ver `MONTHLY_FREE_CREDIT_QUERIES` abaixo.
   free_tier_limit: number;
+  // (#7943) Custo projetado até agora (`queries_this_month_real * QUERY_COST_USD`),
+  // em USD, 2 casas decimais. Base real do alerta — `percent_used`/`alert_level`
+  // são derivados deste valor contra `monthly_free_credit_usd`, não de uma
+  // contagem de queries contra um cap fixo.
+  cost_this_month_usd: number;
+  // (#7943) Crédito grátis mensal em USD (constante, exposta para o relatório
+  // não precisar importar `MONTHLY_FREE_CREDIT_USD` separadamente).
+  monthly_free_credit_usd: number;
+  // (#7943) `cost_this_month_usd / monthly_free_credit_usd * 100` — equivalente
+  // numericamente a `effective_used / free_tier_limit * 100`, mantido como %
+  // por compat com o formato pré-existente do relatório.
   percent_used: number;
   projected_month_end: number | null;
+  // (#7943) Projeção de custo até o fim do mês, em USD — mesma extrapolação
+  // linear de `projected_month_end`, convertida a `QUERY_COST_USD`. `null` nas
+  // mesmas condições que `projected_month_end` (dia do mês inválido/ausente).
+  projected_cost_month_end_usd: number | null;
+  // (#7943) Plano é Postpaid — NUNCA bloqueia, só fatura acima do crédito
+  // grátis. "critical" aqui significa "custo acima do esperado", não "vai
+  // parar de funcionar" (ver linguagem suavizada em send-edition-report.ts).
   alert_level: "ok" | "warn" | "critical";
   // (#2608 C) reconciliação com quota real via header X-RateLimit-Remaining —
   // (#3707) estes campos permanecem só DIAGNÓSTICOS/de reconciliação (consumidos
@@ -231,7 +264,7 @@ export interface BraveCreditStats {
   // não uso real subnotificado). (#3707) Continua computado como sinal
   // diagnóstico no relatório — só não afeta mais o alerta.
   header_discarded?: true;
-  // (#3122) uso absoluto derivado do header (`FREE_TIER_LIMIT - quota_remaining_last_seen`,
+  // (#3122) uso absoluto derivado do header (`HEADER_QUOTA_CYCLE_SIZE - quota_remaining_last_seen`,
   // clampado ≥0), SEM o desconto de `queries_this_month` e SEM o guard de descarte
   // de #3002 aplicado ao valor em si (só reflete se o header foi lido — permanece
   // ausente quando não há `quota_remaining` este mês). Existe para consumidores
@@ -252,13 +285,27 @@ export interface BraveCreditStats {
   quota_remaining_age_hours?: number;
 }
 
-// (#3707 hipótese 1, NÃO resolvida nesta rodada) Este valor pode estar desatualizado —
-// o dashboard oficial da Brave, checado ao vivo em 260720, mostrou um plano pago
-// por budget em dólar ($5/mês), sem menção a "2000 queries grátis". Fora de escopo
-// aqui (precisaria de API/export de custo real da Brave, que não existe ainda);
-// o fix desta issue (ver `computeBraveCreditStats`) evita o sintoma (alerta falso)
-// trocando a base de cálculo, mas não resolve se 2000 é o denominador certo.
-export const FREE_TIER_LIMIT = 2000;
+// (#7943, resolve #3707 hipótese 1) Confirmado ao vivo (260910): plano
+// Postpaid, $5,00/1000 requests, $5,00 de crédito grátis por mês. Sem hard
+// cap de queries — estas três constantes substituem o antigo `FREE_TIER_LIMIT`
+// (2000 queries, um cap que nunca existiu nesta conta) como base do alerta.
+export const QUERY_COST_USD = 0.005; // $5,00 / 1000 requests
+export const MONTHLY_FREE_CREDIT_USD = 5; // crédito grátis mensal, não cumulativo entre meses
+// Equivalente em queries do crédito grátis mensal — só para exibição/compat de
+// shape (`free_tier_limit`); o alerta em si é calculado em USD, não em queries.
+export const MONTHLY_FREE_CREDIT_QUERIES = Math.round(MONTHLY_FREE_CREDIT_USD / QUERY_COST_USD); // 1000
+
+// (#7943) HEADER_QUOTA_CYCLE_SIZE (antigo `FREE_TIER_LIMIT`, valor preservado
+// em 2000): usado EXCLUSIVAMENTE pra matemática diagnóstica derivada do header
+// `X-RateLimit-Remaining` (`real_used`/`delta_untracked`/`real_used_raw`
+// abaixo, e o sanity cap de `reconcile-brave-path-b.ts`) — DESACOPLADO do
+// alerta de custo (que agora usa `MONTHLY_FREE_CREDIT_QUERIES`/
+// `MONTHLY_FREE_CREDIT_USD` acima). O tamanho real do ciclo de contagem do
+// header nunca foi verificado ao vivo contra a conta Postpaid (sem
+// BRAVE_API_KEY nesta sessão) — mantido inalterado deliberadamente, pra não
+// trocar uma suposição não verificada (2000) por outra (1000) na matemática
+// de reconciliação do Path B, que é diagnóstica e fora do escopo do #7943.
+export const HEADER_QUOTA_CYCLE_SIZE = 2000;
 const WARN_THRESHOLD = 0.8;
 const CRITICAL_THRESHOLD = 0.95;
 
@@ -297,9 +344,12 @@ export function computeBraveCreditStats(
       queries_this_edition_estimated: 0,
       queries_this_month_real: 0,
       queries_this_month_estimated: 0,
-      free_tier_limit: FREE_TIER_LIMIT,
+      free_tier_limit: MONTHLY_FREE_CREDIT_QUERIES,
+      cost_this_month_usd: 0,
+      monthly_free_credit_usd: MONTHLY_FREE_CREDIT_USD,
       percent_used: 0,
       projected_month_end: null,
+      projected_cost_month_end_usd: null,
       alert_level: "ok",
       effective_used: 0,
       alert_basis: "local",
@@ -361,7 +411,7 @@ export function computeBraveCreditStats(
   // ex: mudança de API ou janela errada, que daria real_used negativo).
   const real_used =
     typeof quota_remaining_last_seen === "number"
-      ? Math.max(0, FREE_TIER_LIMIT - quota_remaining_last_seen)
+      ? Math.max(0, HEADER_QUOTA_CYCLE_SIZE - quota_remaining_last_seen)
       : undefined;
 
   // (#3002) Descartar o header quando ele diverge implausivelmente da contagem
@@ -424,13 +474,21 @@ export function computeBraveCreditStats(
   const projected_month_end =
     dayOfMonth > 0 ? Math.round((projectionBase / dayOfMonth) * daysInMonth) : null;
 
-  const percent_used = effective_used / FREE_TIER_LIMIT;
+  // (#7943) Base do alerta: custo projetado (queries_this_month_real *
+  // QUERY_COST_USD) contra o crédito grátis mensal (MONTHLY_FREE_CREDIT_USD)
+  // — NÃO mais "queries restantes de um free tier com hard cap de 2000". Plano
+  // é Postpaid: nunca bloqueia, só fatura acima do crédito grátis; ver
+  // linguagem suavizada de "critical" em send-edition-report.ts.
+  const cost_this_month_usd = Math.round(effective_used * QUERY_COST_USD * 100) / 100;
+  const percent_used = effective_used / MONTHLY_FREE_CREDIT_QUERIES;
   const alert_level: BraveCreditStats["alert_level"] =
     percent_used >= CRITICAL_THRESHOLD
       ? "critical"
       : percent_used >= WARN_THRESHOLD
         ? "warn"
         : "ok";
+  const projected_cost_month_end_usd =
+    projected_month_end !== null ? Math.round(projected_month_end * QUERY_COST_USD * 100) / 100 : null;
 
   // (#3389) Idade da leitura do header em horas — defesa em profundidade (ver
   // doc do campo em BraveCreditStats acima). NaN-safe: só computa quando o
@@ -450,9 +508,12 @@ export function computeBraveCreditStats(
     queries_this_edition_estimated,
     queries_this_month_real,
     queries_this_month_estimated,
-    free_tier_limit: FREE_TIER_LIMIT,
+    free_tier_limit: MONTHLY_FREE_CREDIT_QUERIES,
+    cost_this_month_usd,
+    monthly_free_credit_usd: MONTHLY_FREE_CREDIT_USD,
     percent_used: Math.round(percent_used * 10000) / 100, // 2 decimais como %
     projected_month_end,
+    projected_cost_month_end_usd,
     alert_level,
     effective_used,
     alert_basis,
@@ -481,7 +542,7 @@ export function computeBraveCreditStats(
 export interface BraveReconcileState {
   /** Último `X-RateLimit-Remaining` visto (para diagnóstico). */
   quota_remaining: number;
-  /** `FREE_TIER_LIMIT - quota_remaining`, clampado ≥0 — a âncora usada no diff. */
+  /** `HEADER_QUOTA_CYCLE_SIZE - quota_remaining`, clampado ≥0 — a âncora usada no diff. */
   real_used: number;
   /** Quando este estado foi gravado (ISO 8601). */
   timestamp: string;

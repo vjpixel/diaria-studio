@@ -2,7 +2,11 @@
  * brave-search.ts (#1555 — P0 full)
  *
  * Wrapper para Brave Search API (https://api.search.brave.com/res/v1/web/search).
- * Free tier: 2000 queries/mês, 1 query/segundo.
+ * Plano Postpaid (pay-as-you-go, confirmado #7943): $5,00/1000 requests, com
+ * $5,00 de crédito grátis por mês (~1000 requests) — NÃO é um free tier com
+ * hard cap de queries, e o plano NUNCA bloqueia (só fatura acima do crédito
+ * grátis). Rate limit da API é 1 query/segundo, independente de billing — ver
+ * `scripts/lib/brave-credits.ts` para o modelo de alerta de custo.
  *
  * API key em env `BRAVE_API_KEY` (lida no caller, passada como arg pra manter
  * a função pura/testável). Quando ausente, caller deve fallback pros agents.
