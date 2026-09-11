@@ -104,7 +104,7 @@
 // testes lá afirma isso.
 
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostname } from "node:os";
 
@@ -581,7 +581,35 @@ export function findExistingSessionFile(sessionsDir, sessionId, fs = { existsSyn
  * só um `existsSync`). Se sumiu, re-resolve via `findExistingSessionFile`
  * (que agora já prefere kind coordenador, ver acima) — achando um registro
  * novo (o promovido), escreve nele; não achando nada, cai de volta no
- * `resolvedPath` original (comportamento anterior, cria o registro do zero).
+ * `resolvedPath` original SE ele for `interactive` (comportamento anterior,
+ * cria o registro do zero) — **mas NUNCA se `resolvedPath` for de kind
+ * COORDENADOR** (ver #7962 abaixo).
+ *
+ * **#7962 — `resolvedPath` coordenador que sumiu não pode ser recriado
+ * vazio.** Quando `existing` (calculado no início da invocação, ver
+ * entrypoint) achou um registro `overnight-*`/`develop-*`/`continuo-*`,
+ * `resolvedPath` É esse arquivo. Se ele sumir do disco entre essa resolução
+ * e este ponto — a MESMA perda de âncora sob escrita concorrente que
+ * `claimIssueAutoRegistering` (#7002/#7003, `scripts/lib/session-registry.ts`)
+ * existe pra reparar — e a re-resolução acima não achar nada, cair de volta
+ * no `resolvedPath` original faria `writeJsonAtomicWithCas` gravar ali com
+ * `current = null`: `buildBeaconRecord(null, event)` produz
+ * `claimed_issues: []` e RECRIA a âncora coordenadora do zero, silenciosamente
+ * — sem passar pela reconstrução a partir de cópias de conflito que só o
+ * lado `session-registry.ts` sabe fazer. Pior que perder o arquivo: DEIXA UM
+ * ARQUIVO REAL zerado no lugar, então a próxima `claim-issue` encontra
+ * "sessão existe" e nunca sequer tenta reconstruir — é exatamente o
+ * `claims recuperadas: 0` medido ao vivo na #7962 (o beacon, não
+ * `session-registry.ts`, é quem grava o zero; a reconstrução do lado TS só
+ * herda o que já chegou vazio).
+ *
+ * A correção: quando `resolvedPath` é de kind coordenador e nada reapareceu,
+ * cair no MESMO destino do caminho "nunca achei nada" de sempre — o path
+ * `interactive` default — em vez de reescrever o coordenador. Isso deixa a
+ * âncora coordenadora genuinamente ausente (honesto, reflete a realidade) até
+ * que `claimIssueAutoRegistering`/`grantMergeWindow` a reconstruam de verdade
+ * a partir das cópias de conflito na próxima escrita real (claim/grant) —
+ * nunca um heartbeat sozinho decide isso.
  *
  * **Risco residual, deliberadamente não eliminado:** não há lock
  * cross-processo aqui (mesma limitação documentada pro merge lock em
@@ -597,7 +625,18 @@ export function findExistingSessionFile(sessionsDir, sessionId, fs = { existsSyn
 export function resolveWritePathAtWriteTime(sessionsDir, sessionId, resolvedPath, fs = { existsSync, readdirSync }) {
   if (fs.existsSync(resolvedPath)) return resolvedPath;
   const reresolved = findExistingSessionFile(sessionsDir, sessionId, fs);
-  return reresolved ? join(sessionsDir, reresolved) : resolvedPath;
+  if (reresolved) return join(sessionsDir, reresolved);
+  // #7962: `resolvedPath` pode ser um arquivo de kind COORDENADOR que existia
+  // no início desta invocação e sumiu antes deste write. Cair de volta nele
+  // recriaria a âncora coordenadora do zero (`claimed_issues: []`) — nunca
+  // fazer isso. Mesmo destino do caminho "nunca achei nada": o `interactive`
+  // default para este `sessionId`.
+  const resolvedName = basename(resolvedPath);
+  const isCoordinatorPath = COORDINATOR_KIND_PREFIXES.some((k) => resolvedName.startsWith(`${k}-`));
+  if (isCoordinatorPath) {
+    return join(sessionsDir, `${BEACON_KIND}-${machineTag()}-${sessionId}.json`);
+  }
+  return resolvedPath;
 }
 
 /** Write atômico (write-then-rename), mesmo padrão de `writeFileAtomic` — ver #6130 item 4. */
