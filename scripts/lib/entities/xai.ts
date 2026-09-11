@@ -25,7 +25,7 @@
  * correspondente. Datas ESTÁTICAS — mesma disciplina de `perplexity.ts`.
  */
 import type { EntityContent } from "../shared/entity-page.ts";
-import { ENTITY_XAI_FOOTER_NAV_UTM } from "../shared/utm-registry.ts";
+import { entityFooterNavUtm } from "../shared/utm-registry.ts";
 import { formatMonthYear } from "../shared/geo-faq.ts";
 
 const MENTIONS: EntityContent["mentions"] = [
@@ -160,6 +160,6 @@ export function getXaiEntity(): EntityContent {
     publishedDate: "2026-08-14",
     updatedDate: "2026-08-14",
     methodologyNote: buildMethodologyNote(MENTIONS),
-    footerNavUtm: ENTITY_XAI_FOOTER_NAV_UTM,
+    footerNavUtm: entityFooterNavUtm("xai"),
   };
 }

@@ -42,7 +42,7 @@
  * Beehiiv, ver comentário do próprio arquivo de overrides.
  */
 import type { EntityContent } from "../shared/entity-page.ts";
-import { ENTITY_APPLE_FOOTER_NAV_UTM } from "../shared/utm-registry.ts";
+import { entityFooterNavUtm } from "../shared/utm-registry.ts";
 import { formatMonthYear } from "../shared/geo-faq.ts";
 
 const MENTIONS: EntityContent["mentions"] = [
@@ -153,6 +153,6 @@ export function getAppleEntity(): EntityContent {
     publishedDate: "2026-08-15",
     updatedDate: "2026-08-15",
     methodologyNote: buildMethodologyNote(MENTIONS),
-    footerNavUtm: ENTITY_APPLE_FOOTER_NAV_UTM,
+    footerNavUtm: entityFooterNavUtm("apple"),
   };
 }

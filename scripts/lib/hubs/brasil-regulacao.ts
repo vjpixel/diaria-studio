@@ -75,7 +75,7 @@ import {
   type HubContent,
   type HubSourceEdition,
 } from "../shared/hub-page.ts";
-import { HUB_BRASIL_REGULACAO_FOOTER_NAV_UTM } from "../shared/utm-registry.ts";
+import { hubFooterNavUtm } from "../shared/utm-registry.ts";
 import sourcesRaw from "./brasil-regulacao-sources.generated.json" with { type: "json" };
 import type { HubSourceEntry } from "../../generate-hub-sources.ts";
 
@@ -310,7 +310,7 @@ export function getBrasilRegulacaoHub(): HubContent {
     sourceEditions: toSourceEditions(SOURCES),
     publishedDate: PUBLISHED_DATE,
     updatedDate: UPDATED_DATE,
-    footerNavUtm: HUB_BRASIL_REGULACAO_FOOTER_NAV_UTM,
+    footerNavUtm: hubFooterNavUtm("brasil-regulacao"),
     // #5627: ressalva de procedência da errata do Marco Legal — o único
     // lugar do hub que ainda menciona a manchete de 22/05/2026 que tratou a
     // aprovação do Senado como evento daquele mês (`prosa-sem-deixis` isenta

@@ -27,7 +27,9 @@ import {
 import { findParagraphLinks } from "../scripts/lib/shared/markdown-links.ts";
 import { buildAnthropicClaudeFaq, buildIntro, getAnthropicClaudeHub } from "../scripts/lib/hubs/anthropic-claude.ts";
 import { buildOpenaiChatgptFaq } from "../scripts/lib/hubs/openai-chatgpt.ts";
-import { knownUtmSources, HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM } from "../scripts/lib/shared/utm-registry.ts";
+import { knownUtmSources, hubFooterNavUtm } from "../scripts/lib/shared/utm-registry.ts";
+
+const HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM = hubFooterNavUtm("anthropic-claude");
 import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
 import sourcesRaw from "../scripts/lib/hubs/anthropic-claude-sources.generated.json" with { type: "json" };
 import openaiChatgptSourcesRaw from "../scripts/lib/hubs/openai-chatgpt-sources.generated.json" with { type: "json" };
@@ -308,6 +310,10 @@ for (const slug of Object.keys(HUB_LOADERS)) {
         introMatch![2],
         `hub "${slug}": FAQ computa ${faqMatch![2]} manchetes, INTRO afirma ${introMatch![2]}`,
       );
+    });
+
+    it(`footerNavUtm.source do loader é exatamente "hub-${slug}" — pega copy-paste de outro slug entre factory calls válidas (#8005 achado pr-test-analyzer)`, () => {
+      assert.equal(hub.footerNavUtm.source, `hub-${slug}`);
     });
 
     it("o link diar.ia.br do rodapé emite o UTM de hub.footerNavUtm, catalogado em UTM_EMITTERS", () => {

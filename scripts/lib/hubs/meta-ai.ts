@@ -55,7 +55,7 @@ import {
   type HubContent,
   type HubSourceEdition,
 } from "../shared/hub-page.ts";
-import { HUB_META_AI_FOOTER_NAV_UTM } from "../shared/utm-registry.ts";
+import { hubFooterNavUtm } from "../shared/utm-registry.ts";
 import sourcesRaw from "./meta-ai-sources.generated.json" with { type: "json" };
 import type { HubSourceEntry } from "../../generate-hub-sources.ts";
 
@@ -251,7 +251,7 @@ export function getMetaAiHub(): HubContent {
     sourceEditions: toSourceEditions(SOURCES),
     publishedDate: PUBLISHED_DATE,
     updatedDate: UPDATED_DATE,
-    footerNavUtm: HUB_META_AI_FOOTER_NAV_UTM,
+    footerNavUtm: hubFooterNavUtm("meta-ai"),
     methodologyNote: defaultMethodologyNote(SOURCES),
   };
 }

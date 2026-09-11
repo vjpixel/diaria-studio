@@ -74,7 +74,7 @@
  * mesma disciplina das demais entidades.
  */
 import type { EntityContent } from "../shared/entity-page.ts";
-import { ENTITY_ALIBABA_FOOTER_NAV_UTM } from "../shared/utm-registry.ts";
+import { entityFooterNavUtm } from "../shared/utm-registry.ts";
 import { formatMonthYear } from "../shared/geo-faq.ts";
 
 const MENTIONS: EntityContent["mentions"] = [
@@ -178,6 +178,6 @@ export function getAlibabaEntity(): EntityContent {
     publishedDate: "2026-08-16",
     updatedDate: "2026-08-16",
     methodologyNote: buildMethodologyNote(MENTIONS),
-    footerNavUtm: ENTITY_ALIBABA_FOOTER_NAV_UTM,
+    footerNavUtm: entityFooterNavUtm("alibaba"),
   };
 }

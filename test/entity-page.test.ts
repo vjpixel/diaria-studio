@@ -19,7 +19,33 @@ import {
   type EntityMention,
 } from "../scripts/lib/shared/entity-page.ts";
 import { getPerplexityEntity } from "../scripts/lib/entities/perplexity.ts";
-import { ENTITY_PERPLEXITY_FOOTER_NAV_UTM } from "../scripts/lib/shared/utm-registry.ts";
+import { getXaiEntity } from "../scripts/lib/entities/xai.ts";
+import { getAmazonEntity } from "../scripts/lib/entities/amazon.ts";
+import { getSamsungEntity } from "../scripts/lib/entities/samsung.ts";
+import { getAppleEntity } from "../scripts/lib/entities/apple.ts";
+import { getDeepseekEntity } from "../scripts/lib/entities/deepseek.ts";
+import { getOracleEntity } from "../scripts/lib/entities/oracle.ts";
+import { getAlibabaEntity } from "../scripts/lib/entities/alibaba.ts";
+import { entityFooterNavUtm, type EntitySlug } from "../scripts/lib/shared/utm-registry.ts";
+
+const ENTITY_PERPLEXITY_FOOTER_NAV_UTM = entityFooterNavUtm("perplexity");
+
+/** Getters das 8 páginas de entidade reais, chaveados pelo `EntitySlug`
+ * esperado — usado só pela cobertura genérica abaixo (#8005 achado
+ * pr-test-analyzer): os 7 getters além de perplexity não tinham NENHUM
+ * teste comparando `footerNavUtm.source` contra o slug esperado daquele
+ * arquivo específico — um copy-paste de `entityFooterNavUtm("oracle")`
+ * colado dentro de `alibaba.ts` por engano passaria em silêncio. */
+const ENTITY_GETTERS: Record<EntitySlug, () => { footerNavUtm: { source: string } }> = {
+  perplexity: getPerplexityEntity,
+  xai: getXaiEntity,
+  amazon: getAmazonEntity,
+  samsung: getSamsungEntity,
+  apple: getAppleEntity,
+  deepseek: getDeepseekEntity,
+  oracle: getOracleEntity,
+  alibaba: getAlibabaEntity,
+};
 
 /** Menção sintética válida — cada teste sobrescreve só o campo sob teste. */
 function mention(overrides: Partial<EntityMention> = {}): EntityMention {
@@ -290,8 +316,8 @@ describe("getPerplexityEntity (#5125 item 3 — PoC real)", () => {
     }
   });
 
-  it("usa ENTITY_PERPLEXITY_FOOTER_NAV_UTM (source catalogado, não literal solto)", () => {
-    assert.equal(entity.footerNavUtm, ENTITY_PERPLEXITY_FOOTER_NAV_UTM);
+  it("usa entityFooterNavUtm('perplexity') (source catalogado, não literal solto)", () => {
+    assert.deepEqual(entity.footerNavUtm, ENTITY_PERPLEXITY_FOOTER_NAV_UTM);
   });
 
   it("o link diar.ia.br do rodapé emite exatamente source/medium de ENTITY_PERPLEXITY_FOOTER_NAV_UTM", () => {
@@ -316,4 +342,13 @@ describe("getPerplexityEntity (#5125 item 3 — PoC real)", () => {
     assert.equal(params.get("utm_source"), ENTITY_PERPLEXITY_FOOTER_NAV_UTM.source);
     assert.equal(params.get("utm_medium"), ENTITY_PERPLEXITY_FOOTER_NAV_UTM.medium);
   });
+});
+
+describe("cobertura mínima das 8 páginas de entidade reais — footerNavUtm.source por slug (#8005 achado pr-test-analyzer)", () => {
+  for (const slug of Object.keys(ENTITY_GETTERS) as EntitySlug[]) {
+    it(`footerNavUtm.source de get${slug}Entity() é exatamente "entity-${slug}" — pega copy-paste de outro slug entre factory calls válidas`, () => {
+      const entity = ENTITY_GETTERS[slug]();
+      assert.equal(entity.footerNavUtm.source, `entity-${slug}`);
+    });
+  }
 });

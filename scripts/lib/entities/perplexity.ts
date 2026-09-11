@@ -42,7 +42,7 @@
  * asset committed contra um render fresco, um valor dinâmico quebraria isso).
  */
 import type { EntityContent } from "../shared/entity-page.ts";
-import { ENTITY_PERPLEXITY_FOOTER_NAV_UTM } from "../shared/utm-registry.ts";
+import { entityFooterNavUtm } from "../shared/utm-registry.ts";
 import { formatMonthYear } from "../shared/geo-faq.ts";
 
 const MENTIONS: EntityContent["mentions"] = [
@@ -163,6 +163,6 @@ export function getPerplexityEntity(): EntityContent {
     publishedDate: "2026-08-13",
     updatedDate: "2026-08-13",
     methodologyNote: buildMethodologyNote(MENTIONS),
-    footerNavUtm: ENTITY_PERPLEXITY_FOOTER_NAV_UTM,
+    footerNavUtm: entityFooterNavUtm("perplexity"),
   };
 }

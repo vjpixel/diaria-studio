@@ -66,7 +66,7 @@ import {
   type HubContent,
   type HubSourceEdition,
 } from "../shared/hub-page.ts";
-import { HUB_OPENAI_CHATGPT_FOOTER_NAV_UTM } from "../shared/utm-registry.ts";
+import { hubFooterNavUtm } from "../shared/utm-registry.ts";
 import sourcesRaw from "./openai-chatgpt-sources.generated.json" with { type: "json" };
 import type { HubSourceEntry } from "../../generate-hub-sources.ts";
 
@@ -385,7 +385,7 @@ export function getOpenaiChatgptHub(): HubContent {
     sourceEditions: toSourceEditions(SOURCES),
     publishedDate: PUBLISHED_DATE,
     updatedDate: UPDATED_DATE,
-    footerNavUtm: HUB_OPENAI_CHATGPT_FOOTER_NAV_UTM,
+    footerNavUtm: hubFooterNavUtm("openai-chatgpt"),
     methodologyNote: defaultMethodologyNote(SOURCES),
   };
 }
