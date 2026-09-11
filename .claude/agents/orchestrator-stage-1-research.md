@@ -620,6 +620,14 @@ npx tsx scripts/render-categorized-md.ts \
 
 Grava também `_internal/01-categorized.json` (mesmo conteúdo, JSON) e `_internal/01-approved.json` (cópia idêntica — gate ainda não rodou, mas o arquivo já existe pra resume).
 
+### 1v-scoring-features. Feature store de scoring (#7975, Camada 1 da #7972)
+
+```bash
+npx tsx scripts/backfill-scoring-features.ts --edition {AAMMDD} --editions-dir data/editions
+```
+
+Grava `_internal/scoring-features.json` — 1 linha por candidato do pool, com as features determinísticas (bônus aplicados, recência, domínio, link oficial, etc.) que a calibração de score (Fase 2, #7976) vai usar pra aprender pesos a partir das correções do editor. Read-only sobre `01-categorized.json`, só escreve o arquivo novo — nunca afeta a categorização/score real desta edição. **Fail-soft**: exit 1 = logar `warn` (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level warn --message 'scoring_features_write_failed'`) e continuar — ausência do feature store atrasa a Fase 2, nunca bloqueia a edição. (Exit 0 sem gravar nada é possível se o diretório da edição ainda não existir em `--editions-dir` — inofensivo aqui, este passo só roda depois de 1v já ter criado `_internal/01-categorized.json`.)
+
 ### 1v-bis..1v-quinquies. Lints warn-only (rodam em sequência)
 
 1. **1v-bis** — `lint-newsletter-md.ts --check tz-leak` (ex: "23h" sem fuso, "ontem" ambíguo).
